@@ -92,6 +92,27 @@ async def get_current_user(
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
 
+async def get_current_active_user(user: CurrentUser) -> User:
+    """Resolve the current user and reject soft-deleted accounts.
+
+    Phase 2 introduces soft-delete on most resources; user soft-delete is
+    represented by a non-null `deleted_at`. Today the User model has no
+    deleted_at column yet, so this defensively checks `getattr` and falls
+    through when absent. When the column lands the guard takes effect
+    without further wiring.
+    """
+    deleted_at = getattr(user, "deleted_at", None)
+    if deleted_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User account is deactivated",
+        )
+    return user
+
+
+CurrentActiveUser = Annotated[User, Depends(get_current_active_user)]
+
+
 def require_role(*roles: str):
     """Build a dependency that allows only the given roles (admin/manager/staff)."""
 
