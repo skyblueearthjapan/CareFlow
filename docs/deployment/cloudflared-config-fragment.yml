@@ -44,7 +44,7 @@
   # 1) carelink.kaipoke-api.net 宛 `/api/v1/*` のみ backend (18001) へ
   - hostname: carelink.kaipoke-api.net
     path: ^/api/v1/.*
-    service: http://localhost:18001
+    service: http://127.0.0.1:18001
     originRequest:
       noHappyEyeballs: true
       connectTimeout: 10s
@@ -52,7 +52,7 @@
 
   # 2) それ以外の carelink.kaipoke-api.net は frontend (Next.js, 18000) へ
   - hostname: carelink.kaipoke-api.net
-    service: http://localhost:18000
+    service: http://127.0.0.1:18000
     originRequest:
       noHappyEyeballs: true
       connectTimeout: 10s
@@ -62,7 +62,7 @@
   #    NextAuth が同一オリジン経由でプロキシする現構成では不要。
   #    有効化する場合は DNS にも `api.carelink` の CNAME 追加が必要。
   # - hostname: api.carelink.kaipoke-api.net
-  #   service: http://localhost:18001
+  #   service: http://127.0.0.1:18001
   #   originRequest:
   #     noHappyEyeballs: true
   #     connectTimeout: 10s
