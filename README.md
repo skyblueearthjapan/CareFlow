@@ -36,6 +36,19 @@ CareLink/
 
 詳細: `docs/audit/MASTER-AUDIT-REPORT.md` 参照。
 
+## VPS デプロイ
+
+本番環境は Hostinger Malaysia VPS (`carelink.kaipoke-api.net`)。Cloudflare Tunnel 経由で公開し、既存 `kaipoke-api` と同居する。
+
+詳細手順: `docs/deployment/runbook.md`
+
+関連:
+- `docs/deployment/preflight-check.sh` — 事前チェックスクリプト
+- `docs/deployment/docker-compose.production.yml` — 本番 compose
+- `docs/deployment/env-template.md` — `.env` テンプレート
+- `docs/deployment/cloudflared-config-fragment.yml` — ingress 追加断片
+- `docs/deployment/initial-admin-seed.md` — 初期管理者作成
+
 ## ライセンス
 
 Private（社内利用）

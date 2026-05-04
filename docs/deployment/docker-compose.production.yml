@@ -1,0 +1,97 @@
+# CareLink production stack (Hostinger Malaysia VPS).
+#
+# 既存 `backend/docker-compose.yml` (開発用) はそのまま温存し、本番では
+# 本ファイルを `/opt/carelink/docker-compose.yml` にコピーして使う。
+#
+# ポリシー:
+#   - 全ポートは 127.0.0.1 (loopback) bind。外部公開は cloudflared が担当。
+#   - kaipoke-api と同居するため `default bridge` のみを使用 (kaipoke-net は存在しない)。
+#   - postgres は host port 5432 を使うので、kaipoke-api 側の Postgres と
+#     ホストポート競合する場合は 5433:5432 等にずらす (loopback bind なので
+#     外部からは見えない)。
+#   - frontend は Dockerfile 未整備のため Phase 2 までコメントアウト。
+#
+# 環境変数は `backend/.env` `frontend/.env` から読み込む (env-template.md 参照)。
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: carelink-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-carelink}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      POSTGRES_DB: ${POSTGRES_DB:-carelink}
+      TZ: Asia/Tokyo
+    volumes:
+      - carelink-pg-data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-carelink} -d ${POSTGRES_DB:-carelink}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: carelink-backend:latest
+    container_name: carelink-backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      # Override DATABASE_URL so it points at the compose service name
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-carelink}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-carelink}
+      APP_ENV: production
+    ports:
+      - "127.0.0.1:18001:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:8000/api/v1/healthz', timeout=3); sys.exit(0 if r.status==200 else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ---------------------------------------------------------------------
+  # frontend: Phase 2 (D2 implementation 完了後に有効化)
+  # 現状 frontend/ には Dockerfile が無いため、ローカルビルド or
+  # Vercel 等の別ホスト経由で公開する選択肢を再評価する。
+  # ---------------------------------------------------------------------
+  # frontend:
+  #   build:
+  #     context: ./frontend
+  #     dockerfile: Dockerfile
+  #   image: carelink-frontend:latest
+  #   container_name: carelink-frontend
+  #   restart: unless-stopped
+  #   env_file:
+  #     - ./frontend/.env
+  #   ports:
+  #     - "127.0.0.1:18000:3000"
+  #   depends_on:
+  #     backend:
+  #       condition: service_healthy
+  #   healthcheck:
+  #     test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:3000/"]
+  #     interval: 30s
+  #     timeout: 5s
+  #     retries: 5
+  #     start_period: 30s
+
+volumes:
+  carelink-pg-data:
+    name: carelink-pg-data
+
+# default bridge (`bridge`) を暗黙利用。`kaipoke-net` は VPS 上に存在しないため
+# 明示 networks 定義はしない。kaipoke-api コンテナとは host loopback 経由で通信する。

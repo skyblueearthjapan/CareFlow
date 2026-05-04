@@ -1,0 +1,41 @@
+# /etc/cloudflared/config.yml に追加する ingress rule 断片
+#
+# 既存ファイルの ingress: 配列の先頭付近 (kaipoke-api ルールより前) に
+# carelink ルールを挿入する。ingress は上から評価され、最後の
+# `service: http_status:404` が catch-all として残っている必要がある。
+#
+# 既存ルールは絶対に削除しないこと。本ファイルは "差分" のみを示す。
+#
+# 反映前に必ずバックアップを取得:
+#   sudo cp /etc/cloudflared/config.yml /etc/cloudflared/config.yml.bak.$(date +%Y%m%d)
+#
+# 反映後の検証:
+#   sudo cloudflared tunnel ingress validate
+#   sudo systemctl reload cloudflared
+#   sudo systemctl status cloudflared --no-pager
+
+ingress:
+  # --- CareLink (新規追加) ----------------------------------------------
+  # frontend (Next.js) を carelink.kaipoke-api.net で公開
+  - hostname: carelink.kaipoke-api.net
+    service: http://localhost:18000
+    originRequest:
+      noHappyEyeballs: true
+      connectTimeout: 10s
+      noTLSVerify: false
+
+  # backend API を別ホストで直接公開する場合のみ有効化 (Phase 2)
+  # NextAuth が同一オリジン経由でプロキシする場合は不要
+  - hostname: api.carelink.kaipoke-api.net
+    service: http://localhost:18001
+    originRequest:
+      noHappyEyeballs: true
+      connectTimeout: 10s
+
+  # --- 既存 kaipoke-api ルール (変更しない) ------------------------------
+  - hostname: kaipoke-api.net
+    service: http://localhost:80
+  # 必要に応じてサブドメインルールが続く ...
+
+  # --- catch-all (必須・末尾固定) ----------------------------------------
+  - service: http_status:404
