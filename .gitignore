@@ -1,0 +1,63 @@
+# OS / Editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Node / Frontend
+node_modules/
+.next/
+out/
+dist/
+build/
+*.tsbuildinfo
+.env*.local
+.pnpm-store/
+
+# Python / Backend
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.pyc
+
+# Environment
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Sample data (大規模・参考用)
+Sampledata/
+
+# Database
+*.sqlite
+*.db
+*.sql.gz
+
+# Logs
+logs/
+*.log
+
+# Build cache
+.cache/
+.parcel-cache/
+
+# Docker
+.docker/
+
+# OS-specific temp
+*.tmp
+.tmp/
