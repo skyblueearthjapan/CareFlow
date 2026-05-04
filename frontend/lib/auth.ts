@@ -1,12 +1,20 @@
-import NextAuth, { type DefaultSession } from 'next-auth';
+import NextAuth from 'next-auth';
 import Credentials from 'next-auth/providers/credentials';
 import { z } from 'zod';
-
-export type AppRole = 'admin' | 'manager' | 'staff';
+import { env } from '@/lib/config/env';
+import type { AppRole } from '@/types/auth';
 
 const credentialsSchema = z.object({
   email: z.string().email(),
   password: z.string().min(1),
+});
+
+const loginResponseSchema = z.object({
+  id: z.union([z.string(), z.number()]).transform((v) => String(v)),
+  email: z.string().email(),
+  name: z.string().optional(),
+  role: z.enum(['admin', 'manager', 'staff']),
+  accessToken: z.string().min(1),
 });
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
@@ -26,36 +34,46 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         if (!parsed.success) return null;
         const { email, password } = parsed.data;
 
-        // TODO: replace with real call to BACKEND_API_BASE_URL /api/v1/auth/login
-        // const res = await fetch(`${process.env.BACKEND_API_BASE_URL}/auth/login`, { ... })
-        // expected response: { id, email, name, role: 'admin'|'manager'|'staff', accessToken }
-        if (!email || !password) return null;
-
-        return {
-          id: 'placeholder-user-id',
-          email,
-          name: email.split('@')[0] ?? 'user',
-          role: 'staff' satisfies AppRole,
-          accessToken: 'placeholder-bearer-token',
-        };
+        try {
+          const res = await fetch(`${env.BACKEND_API_BASE_URL}/api/v1/auth/login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, password }),
+            cache: 'no-store',
+          });
+          if (res.status !== 200) return null;
+          const json: unknown = await res.json();
+          const payload = loginResponseSchema.safeParse(json);
+          if (!payload.success) return null;
+          return {
+            id: payload.data.id,
+            email: payload.data.email,
+            name: payload.data.name ?? payload.data.email.split('@')[0] ?? 'user',
+            role: payload.data.role,
+            accessToken: payload.data.accessToken,
+          };
+        } catch {
+          return null;
+        }
       },
     }),
   ],
   callbacks: {
     async jwt({ token, user }) {
       if (user) {
-        token.role = (user as { role?: AppRole }).role ?? 'staff';
-        token.accessToken = (user as { accessToken?: string }).accessToken;
+        token.role = user.role;
+        token.accessToken = user.accessToken;
       }
       return token;
     },
     async session({ session, token }) {
       if (session.user) {
-        session.user.role = (token.role as AppRole | undefined) ?? 'staff';
+        session.user.role = token.role ?? 'staff';
       }
-      (session as DefaultSession & { accessToken?: string }).accessToken =
-        token.accessToken as string | undefined;
+      session.accessToken = token.accessToken;
       return session;
     },
   },
 });
+
+export type { AppRole };

@@ -8,11 +8,14 @@ Next.js 15 (App Router) + TypeScript strict + Tailwind CSS 3.4 + shadcn/ui ス�
 ```bash
 cd frontend
 cp .env.example .env.local
-npm install
-npm run dev
+pnpm install
+pnpm dev
 ```
 
 ブラウザで http://localhost:3000 を開くと `/dashboard` にリダイレクトされる。
+
+> **注**: `package.json` の `packageManager` フィールドで `pnpm@9.12.0` を固定している。
+> 初回 `pnpm install` を実行した後に生成される `pnpm-lock.yaml` は **必ず commit** すること（CI 再現性のため）。
 
 ## 主要スクリプト
 

@@ -1,6 +1,5 @@
 import type { DefaultSession } from 'next-auth';
-
-export type AppRole = 'admin' | 'manager' | 'staff';
+import type { AppRole } from '@/types/auth';
 
 declare module 'next-auth' {
   interface Session {
@@ -11,8 +10,8 @@ declare module 'next-auth' {
   }
 
   interface User {
-    role?: AppRole;
-    accessToken?: string;
+    role: AppRole;
+    accessToken: string;
   }
 }
 

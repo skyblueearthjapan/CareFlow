@@ -20,6 +20,7 @@ const config: Config = {
         'bg-base': 'var(--bg-base)',
         'bg-app': 'var(--bg-app)',
         'bg-muted': 'var(--bg-muted)',
+        'bg-window': 'var(--color-bg-window, #FAF7F2)',
         'border-default': 'var(--border-default)',
         'border-subtle': 'var(--border-subtle)',
         'border-strong': 'var(--border-strong)',
@@ -45,6 +46,7 @@ const config: Config = {
         md: 'var(--shadow-md)',
         lg: 'var(--shadow-lg)',
         xl: 'var(--shadow-xl)',
+        'outer-card': 'var(--shadow-outer-card)',
       },
       fontFamily: {
         sans: ['var(--font-sans)'],

@@ -1,11 +1,17 @@
 'use client';
 
 import { useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { signIn } from 'next-auth/react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card } from '@/components/ui/card';
 
 export default function LoginPage() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const callbackUrl = searchParams.get('callbackUrl') ?? '/dashboard';
+
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -16,9 +22,17 @@ export default function LoginPage() {
     setSubmitting(true);
     setError(null);
     try {
-      // TODO: replace with NextAuth signIn('credentials', { email, password, redirect: true, callbackUrl: '/dashboard' })
-      await new Promise((r) => setTimeout(r, 300));
-      window.location.href = '/dashboard';
+      const result = await signIn('credentials', {
+        email,
+        password,
+        redirect: false,
+        callbackUrl,
+      });
+      if (!result || result.error) {
+        setError('メールアドレスまたはパスワードが正しくありません');
+        return;
+      }
+      router.replace(result.url ?? callbackUrl);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'login failed');
     } finally {
