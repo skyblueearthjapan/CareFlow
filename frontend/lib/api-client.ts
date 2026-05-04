@@ -1,6 +1,9 @@
 /**
  * Bearer Token を自動添付する fetch ラッパ。
  * server-side では `auth()` から、client-side では `useSession()` から取得した accessToken を渡す。
+ *
+ * @deprecated Phase 2 以降の新規コードは `lib/api/client.ts` (openapi-fetch ベース) を優先してください。
+ *             本ファイルは既存呼び出し互換のため legacy として残しています。
  */
 
 const BASE_URL = process.env.BACKEND_API_BASE_URL ?? 'http://localhost:8000/api/v1';

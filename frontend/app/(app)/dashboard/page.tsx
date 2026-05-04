@@ -1,6 +1,27 @@
+'use client';
+
+import { useQuery } from '@tanstack/react-query';
+import { useSession } from 'next-auth/react';
+
 import { Card } from '@/components/ui/card';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { fetcher } from '@/lib/api/fetcher';
+
+interface HealthResponse {
+  status?: string;
+  [key: string]: unknown;
+}
 
 export default function DashboardPage() {
+  const { data: session } = useSession();
+  const accessToken = session?.accessToken ?? null;
+
+  const { data, isLoading, isError, error } = useQuery<HealthResponse>({
+    queryKey: ['healthz'],
+    queryFn: () => fetcher<HealthResponse>('/api/v1/healthz', { accessToken }),
+  });
+
   return (
     <section className="space-y-6">
       <header>
@@ -21,6 +42,29 @@ export default function DashboardPage() {
           <p className="mt-2 font-serif text-3xl font-bold tnum">--</p>
         </Card>
       </div>
+
+      <Card className="p-5">
+        <h2 className="font-serif text-lg font-bold text-text-primary">バックエンド疎通</h2>
+        <p className="mt-1 text-xs text-text-muted">
+          GET /api/v1/healthz — TanStack Query 動作確認用
+        </p>
+        <div className="mt-4">
+          {isLoading ? (
+            <Skeleton className="h-20 w-full" />
+          ) : isError ? (
+            <Alert variant="destructive">
+              <AlertTitle>取得に失敗しました</AlertTitle>
+              <AlertDescription>
+                {error instanceof Error ? error.message : '不明なエラー'}
+              </AlertDescription>
+            </Alert>
+          ) : (
+            <pre className="overflow-x-auto rounded-md bg-bg-muted p-3 text-xs text-text-primary">
+              {JSON.stringify(data ?? {}, null, 2)}
+            </pre>
+          )}
+        </div>
+      </Card>
       {/* TODO: fetch from BACKEND_API_BASE_URL /api/v1/dashboard */}
     </section>
   );
