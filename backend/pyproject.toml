@@ -55,6 +55,11 @@ ignore = ["E501", "B008"]
 [tool.ruff.format]
 quote-style = "double"
 
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+extend-exclude = "alembic/versions"
+
 [tool.mypy]
 python_version = "3.12"
 strict = false
