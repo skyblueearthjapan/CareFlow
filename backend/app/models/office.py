@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, Numeric, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, Index, Numeric, String, Text, func, text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -35,7 +35,7 @@ class Office(Base, TimestampMixin):
         Index(
             "ix_offices_active",
             "id",
-            postgresql_where=func.coalesce(deleted_at, None).is_(None),
+            postgresql_where=text("deleted_at IS NULL"),
         ),
     )
 

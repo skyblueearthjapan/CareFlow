@@ -10,9 +10,12 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
 from app.api.v1 import api_router
 from app.core.config import get_settings
+from app.core.rate_limit import limiter
 from app.db.session import dispose_engine
 
 
@@ -38,6 +41,10 @@ def create_app() -> FastAPI:
         redoc_url=f"{settings.api_v1_prefix}/redoc",
         lifespan=_lifespan,
     )
+
+    # slowapi: register the limiter on app state and wire its 429 handler.
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
     if settings.cors_origin_list:
         app.add_middleware(

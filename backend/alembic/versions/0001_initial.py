@@ -79,6 +79,14 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id", name="pk_offices"),
     )
     op.create_index("ix_offices_name", "offices", ["name"])
+    # Partial index for active (non-soft-deleted) offices — PG-only.
+    if op.get_bind().dialect.name == "postgresql":
+        op.create_index(
+            "ix_offices_active",
+            "offices",
+            ["id"],
+            postgresql_where=sa.text("deleted_at IS NULL"),
+        )
 
     # Now that offices exists, attach the deferred FK from staff.primary_office_id.
     with op.batch_alter_table("staff") as batch:
@@ -370,6 +378,8 @@ def downgrade() -> None:
     with op.batch_alter_table("staff") as batch:
         batch.drop_constraint("fk_staff_primary_office_id_offices", type_="foreignkey")
 
+    if op.get_bind().dialect.name == "postgresql":
+        op.drop_index("ix_offices_active", table_name="offices")
     op.drop_index("ix_offices_name", table_name="offices")
     op.drop_table("offices")
 

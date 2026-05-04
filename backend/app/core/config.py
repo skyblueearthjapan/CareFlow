@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import Field, field_validator
+from pydantic import Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -53,6 +53,21 @@ class Settings(BaseSettings):
     def _normalize_origins(cls, value: str) -> str:
         # Allow comma-separated string; we expose helper below.
         return value.strip()
+
+    @field_validator("jwt_secret")
+    @classmethod
+    def _validate_jwt_secret(cls, value: str, info: ValidationInfo) -> str:
+        """Reject short JWT secrets in production.
+
+        In dev/test we keep the lax default to avoid friction; production must
+        provide >=32 char secrets to keep HS256 signatures meaningful.
+        """
+        app_env = (info.data.get("app_env") or "").lower()
+        if app_env in {"prod", "production"} and len(value) < 32:
+            raise ValueError(
+                "JWT_SECRET must be at least 32 characters in production"
+            )
+        return value
 
     @property
     def cors_origin_list(self) -> list[str]:

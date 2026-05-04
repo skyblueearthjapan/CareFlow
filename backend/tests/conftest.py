@@ -67,7 +67,11 @@ async def client(_engine):
     """Yield an httpx AsyncClient bound to the FastAPI app via ASGITransport."""
     from httpx import ASGITransport, AsyncClient
 
+    from app.core.rate_limit import limiter
     from app.main import create_app
+
+    # Reset slowapi state per test so per-IP windows do not bleed across cases.
+    limiter.reset()
 
     app = create_app()
     transport = ASGITransport(app=app)

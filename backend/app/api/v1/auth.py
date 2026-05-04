@@ -5,10 +5,11 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Request, status
 from sqlalchemy import select
 
 from app.core.deps import CurrentUser, DbDep
+from app.core.rate_limit import limiter
 from app.core.security import (
     JWTError,
     create_access_token,
@@ -46,7 +47,12 @@ def _build_token_pair(user: User) -> TokenPair:
 
 
 @router.post("/login", response_model=LoginResponse, summary="Login with email + password")
-async def login(payload: LoginRequest, db: DbDep) -> LoginResponse:
+@limiter.limit("5/15minutes")
+async def login(request: Request, payload: LoginRequest, db: DbDep) -> LoginResponse:
+    # `request` is required by slowapi to extract the client IP for the
+    # per-IP 5/15min ceiling. The 6th attempt within the window returns 429
+    # before we ever touch the DB, which keeps both account-enumeration and
+    # lockout-driven DoS in check (Codex G2 followup).
     user = await db.scalar(select(User).where(User.email == str(payload.email)))
     now = datetime.now(tz=timezone.utc)
 
