@@ -1,22 +1,56 @@
-# /etc/cloudflared/config.yml に追加する ingress rule 断片
+# /etc/cloudflared/config.yml の `ingress:` 配列に **挿入する list item** の断片。
 #
-# 既存ファイルの ingress: 配列の先頭付近 (kaipoke-api ルールより前) に
-# carelink ルールを挿入する。ingress は上から評価され、最後の
-# `service: http_status:404` が catch-all として残っている必要がある。
+# ============================================================================
+# 重要: 本ファイルは "差分 (list items only)" であり、独立した完全な YAML ではない。
+#       既存の `ingress:` ブロック内の **最上部** に、下の list item 群をそのまま
+#       コピー&ペーストして挿入する。`ingress:` キーごと貼り付けてはならない。
+# ============================================================================
 #
-# 既存ルールは絶対に削除しないこと。本ファイルは "差分" のみを示す。
+# 既存ルールに対する絶対遵守事項:
+#   1. 既存の `ingress:` 配下の list item (kaipoke-api.net 含むカスタムルール、
+#      catch-all `service: http_status:404`) は **絶対に変更・削除しない**。
+#   2. 既存ファイルの末尾にある catch-all (`- service: http_status:404`) は
+#      cloudflared の仕様上 **必須** であり、これを残したまま新ルールを上に追加する。
+#   3. `tunnel:` `credentials-file:` 等 top-level key は触らない。
+#   4. ingress は上から評価されるため、より具体的な path/hostname を上に置く。
 #
-# 反映前に必ずバックアップを取得:
+# 反映前に必ずバックアップ:
 #   sudo cp /etc/cloudflared/config.yml /etc/cloudflared/config.yml.bak.$(date +%Y%m%d)
 #
-# 反映後の検証:
+# 反映手順 (例):
+#   sudo $EDITOR /etc/cloudflared/config.yml
+#   # 既存 ingress: 配下の最上部に下記 list item 群を挿入
 #   sudo cloudflared tunnel ingress validate
 #   sudo systemctl reload cloudflared
-#   sudo systemctl status cloudflared --no-pager
+#   sudo systemctl status cloudflared --no-pager | head -20
+#
+# 反映後の検証 (両ホストで 200 が返ること):
+#   curl -fsSI https://kaipoke-api.net                              # 既存サービス、200
+#   curl -fsSI https://carelink.kaipoke-api.net/                    # frontend、200
+#   curl -fsS  https://carelink.kaipoke-api.net/api/v1/healthz      # backend、200 + JSON
+#
+# 上記いずれかが失敗した場合は **即座に config.yml.bak.YYYYMMDD で revert** すること:
+#   sudo cp /etc/cloudflared/config.yml.bak.YYYYMMDD /etc/cloudflared/config.yml
+#   sudo systemctl reload cloudflared
+#
+# ============================================================================
+# ↓↓↓ ここから下を、既存 `ingress:` 配下の **最上部** にそのまま挿入 ↓↓↓
+# ============================================================================
 
-ingress:
-  # --- CareLink (新規追加) ----------------------------------------------
-  # frontend (Next.js) を carelink.kaipoke-api.net で公開
+  # --- CareLink (新規追加 list items) ----------------------------------------
+  # ingress は上から評価されるため、path 指定ルールを host-only ルールよりも
+  # 必ず先に置く。これを逆転させると path rule が永遠にマッチしない。
+
+  # 1) carelink.kaipoke-api.net 宛 `/api/v1/*` のみ backend (18001) へ
+  - hostname: carelink.kaipoke-api.net
+    path: ^/api/v1/.*
+    service: http://localhost:18001
+    originRequest:
+      noHappyEyeballs: true
+      connectTimeout: 10s
+      noTLSVerify: false
+
+  # 2) それ以外の carelink.kaipoke-api.net は frontend (Next.js, 18000) へ
   - hostname: carelink.kaipoke-api.net
     service: http://localhost:18000
     originRequest:
@@ -24,18 +58,16 @@ ingress:
       connectTimeout: 10s
       noTLSVerify: false
 
-  # backend API を別ホストで直接公開する場合のみ有効化 (Phase 2)
-  # NextAuth が同一オリジン経由でプロキシする場合は不要
-  - hostname: api.carelink.kaipoke-api.net
-    service: http://localhost:18001
-    originRequest:
-      noHappyEyeballs: true
-      connectTimeout: 10s
+  # 3) (任意) backend を別ホストで直接公開する場合のみ有効化 (Phase 2 以降)
+  #    NextAuth が同一オリジン経由でプロキシする現構成では不要。
+  #    有効化する場合は DNS にも `api.carelink` の CNAME 追加が必要。
+  # - hostname: api.carelink.kaipoke-api.net
+  #   service: http://localhost:18001
+  #   originRequest:
+  #     noHappyEyeballs: true
+  #     connectTimeout: 10s
 
-  # --- 既存 kaipoke-api ルール (変更しない) ------------------------------
-  - hostname: kaipoke-api.net
-    service: http://localhost:80
-  # 必要に応じてサブドメインルールが続く ...
-
-  # --- catch-all (必須・末尾固定) ----------------------------------------
-  - service: http_status:404
+  # ============================================================================
+  # ↑↑↑ ここまでを挿入。これ以降の既存ルール (kaipoke-api.net 等) と
+  #      末尾の catch-all (`- service: http_status:404`) は **絶対に変更しない**。
+  # ============================================================================

@@ -89,7 +89,10 @@ jobs:
     env:
       DATABASE_URL: postgresql+psycopg://carelink:carelink@localhost:5432/carelink_test
       ALEMBIC_DATABASE_URL: postgresql+psycopg://carelink:carelink@localhost:5432/carelink_test
-      JWT_SECRET: ${{ secrets.CI_JWT_SECRET || 'ci-dev-jwt-secret-not-for-prod' }}
+      # Hard-coded CI-only dummy. Do NOT reference repo secrets here:
+      # PR jobs from forks would otherwise be denied access (failing the run),
+      # and same-repo PRs could exfiltrate the secret via test code.
+      JWT_SECRET: "ci-only-dummy-jwt-secret-32chars-min"
       APP_ENV: test
     steps:
       - name: Checkout
@@ -154,7 +157,8 @@ jobs:
     env:
       DATABASE_URL: postgresql+psycopg://carelink:carelink@localhost:5432/carelink_smoke
       ALEMBIC_DATABASE_URL: postgresql+psycopg://carelink:carelink@localhost:5432/carelink_smoke
-      JWT_SECRET: ${{ secrets.CI_JWT_SECRET || 'ci-dev-jwt-secret-not-for-prod' }}
+      # Hard-coded CI-only dummy. See comment in `test` job above for rationale.
+      JWT_SECRET: "ci-only-dummy-jwt-secret-32chars-min"
       APP_ENV: test
     steps:
       - name: Checkout

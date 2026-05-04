@@ -3,10 +3,12 @@
 Usage:
     docker compose exec backend python scripts/create_admin.py
 
-Reads email/password from stdin (interactive prompt). On conflict (email
-already exists), updates password_hash and forces role='admin'. Intended
-for the very first deploy bootstrap; subsequent users should be created
-via the UI/API.
+Reads email/password from stdin (interactive prompt). Performs a
+**select-then-update upsert** (not a SQL `INSERT ... ON CONFLICT`):
+SELECT by email; if a row exists, overwrite `password_hash`, force
+`role='admin'`, and clear lockout fields; otherwise INSERT a new row.
+Intended for the very first deploy bootstrap and "rescue overwrite" of
+a forgotten password; subsequent users should be created via the UI/API.
 """
 
 from __future__ import annotations
@@ -28,7 +30,7 @@ from app.db.session import dispose_engine, get_session_factory  # noqa: E402
 from app.models.user import User  # noqa: E402
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-_MIN_PASSWORD_LEN = 8
+_MIN_PASSWORD_LEN = 12
 
 
 def _read_email() -> str:

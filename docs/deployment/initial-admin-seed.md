@@ -26,8 +26,11 @@ confirm password: ****************
 入力規約:
 
 - email: RFC 5322 にラフ準拠 (アプリの auth ロジックは厳格に検証しないが、スクリプト側で `@` を最低限チェック)
-- password: 12 文字以上推奨。スクリプト側では 8 文字未満を拒否
-- 既存 admin email が同一だった場合は **password のみ更新** (`ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash, role = 'admin'`)。これは「忘れ secret を上書きする」rescue 用途も兼ねる。
+- password: 12 文字以上必須 (スクリプト側で 12 文字未満を拒否)
+- 既存 admin email が同一だった場合は **password / role / lockout フィールドを上書き更新**。
+  実装は SQL `INSERT ... ON CONFLICT` ではなく **select-then-update upsert** (Python 側で
+  `SELECT WHERE email=...` → 存在すれば UPDATE / 無ければ INSERT)。これは「忘れ secret を
+  上書きする」rescue 用途も兼ねる。
 
 ## 成功確認
 
@@ -51,5 +54,5 @@ curl -fsS -X POST https://carelink.kaipoke-api.net/api/v1/auth/login \
 ## トラブルシュート
 
 - **`relation "users" does not exist`**: Alembic が走っていない。Phase E をやり直す。
-- **`duplicate key value violates unique constraint "users_email_key"`**: ON CONFLICT 句がない古いスクリプトの可能性。`scripts/create_admin.py` の最新版を確認。
-- **bcrypt が遅い (>3 sec)**: コンテナ ARM/x86 ミスマッチ。`docker compose build --no-cache backend` で再ビルド。
+- **`duplicate key value violates unique constraint "users_email_key"`**: select-then-update のセッションがまれにレースした可能性。再実行する。継続発生する場合は `scripts/create_admin.py` の最新版 (`upsert_admin` が select 後に UPDATE するパス) を確認。
+- **bcrypt が遅い (>3 sec)**: コンテナ ARM/x86 ミスマッチ。`docker compose -f docs/deployment/docker-compose.production.yml build --no-cache backend` で再ビルド。

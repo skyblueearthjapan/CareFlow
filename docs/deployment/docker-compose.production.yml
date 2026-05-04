@@ -1,23 +1,33 @@
 # CareLink production stack (Hostinger Malaysia VPS).
 #
-# 既存 `backend/docker-compose.yml` (開発用) はそのまま温存し、本番では
-# 本ファイルを `/opt/carelink/docker-compose.yml` にコピーして使う。
-#
-# ポリシー:
+# 利用方針 (重要):
+#   - 本ファイルは **リポジトリルートから直接 -f で参照** する。
+#     例) docker compose -f docs/deployment/docker-compose.production.yml up -d
+#     ※ 旧 runbook の `cp docker-compose.production.yml docker-compose.yml` は廃止。
+#   - 環境変数は **/opt/carelink/.env (= リポジトリルートの .env)** に統合する。
+#     compose は実行ディレクトリ (= リポジトリルート) の `.env` を自動ロードする。
+#     env_file: で各 service にも明示的に注入し、interpolate と env_file の双方を成立させる。
 #   - 全ポートは 127.0.0.1 (loopback) bind。外部公開は cloudflared が担当。
 #   - kaipoke-api と同居するため `default bridge` のみを使用 (kaipoke-net は存在しない)。
-#   - postgres は host port 5432 を使うので、kaipoke-api 側の Postgres と
-#     ホストポート競合する場合は 5433:5432 等にずらす (loopback bind なので
-#     外部からは見えない)。
-#   - frontend は Dockerfile 未整備のため Phase 2 までコメントアウト。
+#   - postgres は **host port を一切公開しない** (kaipoke-api との 5432 衝突回避)。
+#     host から psql する場合は `docker compose exec postgres psql -U carelink -d carelink` を使う。
+#   - frontend は Dockerfile が整備済み。standalone 出力 + pnpm multi-stage build。
 #
-# 環境変数は `backend/.env` `frontend/.env` から読み込む (env-template.md 参照)。
+# build context / env_file パスは **本ファイル (docs/deployment/) からの相対** で書く。
+# Compose 仕様では build context と env_file は compose file の場所を基準に
+# 解決されるため (cwd ではない)、`../../backend` `../../frontend` `../../.env`
+# の形でリポジトリルートを参照する。
 
 services:
   postgres:
     image: postgres:16-alpine
     container_name: carelink-postgres
     restart: unless-stopped
+    env_file:
+      # NOTE: env_file path is resolved relative to **this compose file**
+      # (docs/deployment/), not the CWD. The runbook places the unified .env at
+      # repo root (= /opt/carelink/.env), so we walk up two levels.
+      - ../../.env
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-carelink}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
@@ -25,8 +35,9 @@ services:
       TZ: Asia/Tokyo
     volumes:
       - carelink-pg-data:/var/lib/postgresql/data
-    ports:
-      - "127.0.0.1:5432:5432"
+    # NOTE: host port は意図的に公開しない (kaipoke-api 側 Postgres との 5432 衝突回避)。
+    #       container 間通信は default bridge 経由で `postgres:5432` を使う。
+    #       host から psql する場合は `docker compose exec postgres psql ...` を使うこと。
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-carelink} -d ${POSTGRES_DB:-carelink}"]
       interval: 10s
@@ -36,13 +47,18 @@ services:
 
   backend:
     build:
-      context: ./backend
+      # build context is resolved relative to **this compose file**
+      # (docs/deployment/), so walk up two levels to reach <repo-root>/backend.
+      context: ../../backend
       dockerfile: Dockerfile
     image: carelink-backend:latest
     container_name: carelink-backend
     restart: unless-stopped
     env_file:
-      - ./backend/.env
+      # NOTE: env_file path is resolved relative to **this compose file**
+      # (docs/deployment/), not the CWD. The runbook places the unified .env at
+      # repo root (= /opt/carelink/.env), so we walk up two levels.
+      - ../../.env
     environment:
       # Override DATABASE_URL so it points at the compose service name
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-carelink}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-carelink}
@@ -65,10 +81,16 @@ services:
 
   frontend:
     build:
+      # See backend build context note above re: relative-to-compose-file resolution.
       context: ../../frontend
       dockerfile: Dockerfile
     container_name: carelink-frontend
     restart: unless-stopped
+    env_file:
+      # NOTE: env_file path is resolved relative to **this compose file**
+      # (docs/deployment/), not the CWD. The runbook places the unified .env at
+      # repo root (= /opt/carelink/.env), so we walk up two levels.
+      - ../../.env
     depends_on:
       backend:
         condition: service_healthy
