@@ -70,14 +70,13 @@ docker compose exec postgres psql -U carelink -d carelink -c "\dt"
 ## Phase F: Backend / Frontend コンテナ起動
 
 ```bash
-docker compose up -d backend
-# frontend は Dockerfile が未整備 (Phase 2)
-# docker compose up -d frontend  ← Phase 2 で有効化
-docker compose ps
+docker compose -f docs/deployment/docker-compose.production.yml up -d backend frontend
+docker compose -f docs/deployment/docker-compose.production.yml ps
+curl -fsSI http://localhost:18000/
 ```
 
-成功条件: backend が `healthy`、`docker compose logs backend` に `Uvicorn running on 0.0.0.0:8000` が出力。
-失敗時: 起動直後の jwt_secret バリデーションエラーは `.env` の `APP_ENV` と `JWT_SECRET` 長を疑う。
+成功条件: `docker compose ps` で backend と frontend の双方が `Health=healthy`。`curl http://localhost:18000/` が 200 OK を返す。`docker compose logs backend` に `Uvicorn running on 0.0.0.0:8000`、`docker compose logs frontend` に `Ready` 出力。
+失敗時: 起動直後の jwt_secret バリデーションエラーは `.env` の `APP_ENV` と `JWT_SECRET` 長を疑う。frontend がビルドエラーで上がらない場合は `docker compose logs frontend` を確認し、`pnpm-lock.yaml` 不在による依存解決ズレが疑わしいときは frontend 側で `pnpm install --lockfile-only` してから再 build。
 
 ## Phase G: Cloudflared ingress 追加
 
@@ -138,7 +137,7 @@ docker compose exec backend python scripts/create_admin.py
 
 ## 既知の前提と制限
 
-- frontend Dockerfile は未整備のため、Phase F の frontend 起動は Phase 2 (D2 implementation 完了後)
+- frontend は Next.js 15 の standalone 出力 + pnpm multi-stage Dockerfile で本番ビルド (`frontend/Dockerfile`)。`pnpm-lock.yaml` が未 commit のため初回 build は `--no-frozen-lockfile` フォールバックパスを通る。安定運用前に lockfile を commit すること
 - `api.carelink.kaipoke-api.net` (バックエンド直公開) は任意。NextAuth callback で必要になった時点で有効化
 - INV-4 の通り `kaipoke-net` Docker network は存在しないため default bridge を使用
 - secret 値はすべて VPS 上で生成し、Git/Slack/メールに残さない
