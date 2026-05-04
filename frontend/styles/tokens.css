@@ -1,0 +1,93 @@
+/*
+ * CareLink Design Tokens — Warm & Human
+ * 詳細は docs/design/01-design-system.md を参照
+ */
+
+:root {
+  /* === Brand === */
+  --brand-primary: #0d9488;
+  --brand-primary-hover: #0f766e;
+  --brand-primary-light: #ccfbf1;
+  --brand-primary-50: #f0fdfa;
+  --brand-accent: #d97706;
+  --brand-accent-light: #fef3c7;
+
+  /* === Legacy aliases (executor brief) === */
+  --color-teal: #0d9488;
+  --color-teal-50: #f0fdfa;
+  --color-teal-100: #ccfbf1;
+  --color-terracotta: #d97706;
+  --color-terracotta-50: #fffbeb;
+  --color-cream: #faf7f2;
+  --color-bg: var(--color-cream);
+  --color-fg: #1f2937;
+  --color-muted: #6b7280;
+  --color-border: #e5e7eb;
+  --color-card: #ffffff;
+  --color-success: #10b981;
+  --color-warning: #f59e0b;
+  --color-danger: #ef4444;
+
+  /* === Surfaces / borders === */
+  --bg-base: #ffffff;
+  --bg-app: #faf7f2;
+  --bg-muted: #f5f1ea;
+  --bg-window: #e7e2d8;
+  --border-default: #e7e5e4;
+  --border-subtle: #f0ede8;
+  --border-strong: #d6d3d1;
+
+  /* === Text === */
+  --text-primary: #1c1917;
+  --text-secondary: #57534e;
+  --text-muted: #a8a29e;
+  --text-inverted: #ffffff;
+
+  /* === Semantic === */
+  --success: #059669;
+  --success-bg: #d1fae5;
+  --warning: #d97706;
+  --warning-bg: #fef3c7;
+  --error: #dc2626;
+  --error-bg: #fee2e2;
+  --info: #0d9488;
+  --info-bg: #ccfbf1;
+
+  /* === Typography === */
+  --font-sans: 'Inter', 'Hiragino Sans', 'Noto Sans JP', -apple-system, system-ui, sans-serif;
+  --font-serif: 'Noto Serif JP', 'Hiragino Mincho ProN', serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  /* === Radius === */
+  --radius-sm: 8px;
+  --radius: 10px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+
+  /* === Shadows === */
+  --shadow-xs: 0 1px 2px rgba(28, 25, 23, 0.04);
+  --shadow-sm: 0 1px 3px rgba(28, 25, 23, 0.06), 0 1px 2px rgba(28, 25, 23, 0.04);
+  --shadow-md: 0 4px 12px rgba(28, 25, 23, 0.06), 0 2px 4px rgba(28, 25, 23, 0.04);
+  --shadow-lg: 0 12px 24px rgba(28, 25, 23, 0.08), 0 4px 8px rgba(28, 25, 23, 0.04);
+  --shadow-xl: 0 24px 48px rgba(28, 25, 23, 0.10);
+  --shadow-outer-card: 0 1px 2px rgba(28, 25, 23, 0.04), 0 8px 24px rgba(28, 25, 23, 0.05);
+  --shadow-fab: 0 8px 24px rgba(13, 148, 136, 0.4), 0 0 0 6px rgba(13, 148, 136, 0.1);
+}
+
+/* === Density === */
+[data-density='compact'] {
+  --row-h: 36px;
+  --pad-card: 16px;
+  --gap: 8px;
+}
+[data-density='standard'] {
+  --row-h: 44px;
+  --pad-card: 20px;
+  --gap: 12px;
+}
+[data-density='comfy'] {
+  --row-h: 56px;
+  --pad-card: 28px;
+  --gap: 16px;
+}
