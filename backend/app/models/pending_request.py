@@ -119,6 +119,13 @@ class PendingRequest(Base, TimestampMixin):
     rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # ----- 業務反映完了タイムスタンプ (W7-BE3 冪等性) -----
+    applied_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment="業務反映完了タイムスタンプ (W7-BE3 冪等性). NULL = 未反映",
+    )
+
     # ----- 編集して承認の場合 -----
     edited_payload: Mapped[dict | None] = mapped_column(JSONBish, nullable=True)
 

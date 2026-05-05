@@ -121,11 +121,19 @@ class PendingRequestApplier:
     async def apply(self, db: AsyncSession, request: PendingRequest) -> None:
         """request.request_type に応じて対応する handler を呼び出す。
 
-        approve 済みの request に対して再度呼ばれた場合は黙って no-op。
+        approve 済み (applied_at IS NOT NULL or status='approved' with approved_at)
+        の request に対して再度呼ばれた場合は黙って no-op。
+
+        W7-BE3 (Codex Must-fix #5): ``applied_at`` 列が NOT NULL の場合は確実に
+        反映済みであるため二重反映を防止する。後方互換のため ``approved_at`` 経由の
+        判定も残す。
         """
         # ----- 冪等性ガード -----
+        if getattr(request, "applied_at", None) is not None:
+            # 既に業務反映完了。何もしない (二重反映の防止)。
+            return
         if request.status == RequestStatus.APPROVED.value and request.approved_at is not None:
-            # 既に適用済み。何もしない (二重反映の防止)。
+            # 既に適用済み (W2-BE5 経路). 何もしない (二重反映の防止)。
             return
 
         handler = _HANDLERS.get(request.request_type)
