@@ -15,20 +15,19 @@ export function Header({ title = 'CareFlow', onToggleSidebar }: HeaderProps) {
         <Button variant="ghost" size="icon" onClick={onToggleSidebar} aria-label="サイドバーを開閉">
           <Menu className="h-5 w-5" strokeWidth={1.75} />
         </Button>
-        <h1 className="font-serif text-lg font-bold text-text-primary">{title}</h1>
       </div>
 
       <div className="flex items-center gap-2">
-        <div className="mr-2 flex items-center gap-2">
-          <Heart className="h-6 w-6 text-brand-primary" strokeWidth={1.75} />
-          <span className="font-serif text-lg font-bold text-text-primary">CareFlow</span>
-        </div>
         <Button variant="ghost" size="icon" aria-label="通知">
           <Bell className="h-5 w-5" strokeWidth={1.75} />
         </Button>
         <Button variant="ghost" size="icon" aria-label="ユーザーメニュー">
           <User className="h-5 w-5" strokeWidth={1.75} />
         </Button>
+        <div className="ml-2 flex items-center gap-2">
+          <Heart className="h-6 w-6 text-brand-primary" strokeWidth={1.75} />
+          <span className="font-serif text-lg font-bold text-text-primary">{title}</span>
+        </div>
         {/* TODO: NextAuth signOut, role badge */}
       </div>
     </header>

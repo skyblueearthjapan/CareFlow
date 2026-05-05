@@ -9,6 +9,7 @@ import {
   UserCircle2,
   CalendarDays,
   CalendarPlus,
+  Heart,
   Building2,
   Plug,
   ShieldCheck,
@@ -71,8 +72,13 @@ export function Sidebar({ collapsed }: SidebarProps) {
       )}
       aria-label="Primary navigation"
     >
-      {/* Brand area: 60px spacer to align with header (brand moved to Header) */}
-      <div className="h-[60px] border-b border-border-default" />
+      {/* Brand area: 60px to align with header */}
+      <div className="flex h-[60px] items-center gap-2 border-b border-border-default px-4">
+        <Heart className="h-6 w-6 text-brand-primary" strokeWidth={1.75} />
+        {!collapsed && (
+          <span className="font-serif text-lg font-bold text-text-primary">CareFlow</span>
+        )}
+      </div>
 
       <nav className="flex-1 overflow-y-auto p-3">
         <ul className="space-y-1">
