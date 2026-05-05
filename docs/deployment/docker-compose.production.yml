@@ -107,7 +107,11 @@ services:
     ports:
       - "127.0.0.1:18000:3000"
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -t1 --spider http://localhost:3000/ || exit 1"]
+      # NOTE: BusyBox wget の `localhost` は IPv6 [::1] に解決されるが、
+      #       Next.js standalone server は 0.0.0.0 (IPv4 のみ) で listen するため
+      #       `http://localhost:3000/` だと Connection refused で 277 連続失敗していた。
+      #       明示的に 127.0.0.1 を指定し、軽量な /api/healthz を叩く。
+      test: ["CMD-SHELL", "wget -q -t1 --spider http://127.0.0.1:3000/api/healthz || exit 1"]
       interval: 30s
       timeout: 5s
       start_period: 30s
