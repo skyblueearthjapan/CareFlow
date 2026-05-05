@@ -1,11 +1,11 @@
-"""Course CRUD + Layer 2 (generate) endpoints (W2-BE4 / W4-BE8 / API 契約 §4).
+"""Course CRUD + Layer 2 (generate) + Layer 3 (assign-staff) endpoints.
 
-`docs/plans/v2-allocation-redesign.md` v0.9 §4.5 / §5.3 に対応する Course
+`docs/plans/v2-allocation-redesign.md` v0.9 §4.5 / §5.3 / §5.4 に対応する Course
 (コース) のリソース API。
 
 - W2-BE4: CRUD (`GET / POST / PATCH / DELETE`)
 - W4-BE8: `POST /generate` (Layer 2: K-means + 制約後処理)
-- W4-BE9: `POST /assign-staff` (Layer 3) は別チケットで追加予定
+- W4-BE9: `POST /assign-staff` (Layer 3: ハンガリアン法 + ローテーション)
 
 ## RBAC (API 契約 §4)
 
@@ -13,6 +13,7 @@
 - POST / PATCH         — admin / manager
 - DELETE (soft delete) — admin only
 - POST /generate       — admin / manager (W4-BE8)
+- POST /assign-staff   — admin / manager (W4-BE9)
 
 ## UNIQUE 制約
 
@@ -39,6 +40,9 @@ from app.services.scheduling import (
     CourseProposal,
     Layer2Clusterer,
     Layer2ClusterError,
+    Layer3Assigner,
+    Layer3AssignmentError,
+    StaffAssignment,
 )
 
 router = APIRouter()
@@ -166,6 +170,84 @@ async def generate_courses(
         proposals=result.proposals,
         total_distance_km=result.total_distance_km,
         validity_score=result.validity_score,
+    )
+
+
+# ---------------------------------------------------------------------------
+# W4-BE9 — POST /assign-staff (Layer 3 アルゴリズム)
+# ---------------------------------------------------------------------------
+
+
+class CourseAssignStaffRequest(BaseModel):
+    """``POST /api/v1/courses/assign-staff`` のリクエストボディ (W4-BE9).
+
+    Layer 3 (§5.4) を当該週に対して実行する。週単位の処理 — 内部では曜日ごとに
+    独立にハンガリアン法を解き、結果をマージする。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    iso_year: int = Field(ge=2000, le=2100)
+    iso_week: int = Field(ge=1, le=53)
+
+
+class CourseAssignStaffResponse(BaseModel):
+    """``POST /api/v1/courses/assign-staff`` のレスポンス (W4-BE9).
+
+    `assignments` は割当結果のリスト (1 件 = 1 (weekday, course_code, staff_id)).
+    `rotation_score` は Gini 係数 (0.0=完全均等, 1.0=1 人独占).
+    `total_distance_km` は (主拠点 → コース重心) の Haversine 合計。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    assignments: list[StaffAssignment]
+    rotation_score: float
+    total_distance_km: float
+
+
+@router.post(
+    "/assign-staff",
+    response_model=CourseAssignStaffResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Layer 3: assign staff to courses (W4-BE9)",
+)
+async def assign_staff_to_courses(
+    payload: CourseAssignStaffRequest,
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+) -> CourseAssignStaffResponse:
+    """Layer 3 アルゴリズムを実行し、当該週の確定済みコースにスタッフを割り付ける.
+
+    対象は ``course_status='course_fixed'`` のコースのみ。実行成功時、対象コース
+    は ``staff_assigned`` に遷移し、``assigned_staff_id`` / ``staff_assigned_at``
+    が埋まる (1 トランザクションで commit)。
+
+    ハード制約 (性別 / 勤務曜日 / 1 コース 1 スタッフ / マネージャー除外) を満た
+    せない場合、該当 (weekday × course) は割当結果に含まれない (= スキップ)。
+    呼び出し側は returned ``assignments`` の件数を確認すること。
+    """
+    assigner = Layer3Assigner()
+    try:
+        result = await assigner.assign(
+            db,
+            iso_year=payload.iso_year,
+            iso_week=payload.iso_week,
+        )
+    except Layer3AssignmentError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=exc.http_status, detail=str(exc)) from exc
+    except Exception:
+        await db.rollback()
+        raise
+
+    # サービス層は flush のみ。HTTP 層が commit を担う。
+    await db.commit()
+
+    return CourseAssignStaffResponse(
+        assignments=result.assignments,
+        rotation_score=result.rotation_score,
+        total_distance_km=result.total_distance_km,
     )
 
 

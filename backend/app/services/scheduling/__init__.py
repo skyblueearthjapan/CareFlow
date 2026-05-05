@@ -27,8 +27,17 @@ from app.services.scheduling.layer2_clustering import (
     Layer2Result,
     Layer2VisitInput,
 )
+from app.services.scheduling.layer3_assignment import (
+    CourseAssignmentTarget,
+    Layer3Assigner,
+    Layer3AssignmentError,
+    Layer3Result,
+    StaffAssignment,
+    StaffInfo,
+)
 
 __all__ = [
+    "CourseAssignmentTarget",
     "CourseProposal",
     "Layer1ExpandError",
     "Layer1Expander",
@@ -37,6 +46,11 @@ __all__ = [
     "Layer2Clusterer",
     "Layer2Result",
     "Layer2VisitInput",
+    "Layer3AssignmentError",
+    "Layer3Assigner",
+    "Layer3Result",
     "PoolEntry",
+    "StaffAssignment",
+    "StaffInfo",
     "VisitCreated",
 ]
