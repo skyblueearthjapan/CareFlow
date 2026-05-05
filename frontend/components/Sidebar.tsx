@@ -8,7 +8,6 @@ import {
   Users,
   UserCircle2,
   CalendarDays,
-  CalendarPlus,
   Heart,
   Building2,
   Plug,
@@ -36,7 +35,9 @@ const NAV_ITEMS = [
     adminOnly: true,
     strictAdmin: true,
   },
-  { href: '/special-weeks', label: '特別訪問週間', icon: CalendarPlus, adminOnly: true },
+  // 特別訪問週間 は患者マスタの設定として取り込む方針となったため、
+  // 独立したサイドバー項目は削除（v2 設計 §3.4 参照）。
+  // /special-weeks 配下のページ自体は v2 実装時にデプリケート予定。
 ] as const;
 
 export function Sidebar({ collapsed }: SidebarProps) {
