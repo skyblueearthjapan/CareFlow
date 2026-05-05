@@ -9,7 +9,10 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,css,md}\""
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,css,md}\"",
+    "e2e": "playwright test",
+    "e2e:ui": "playwright test --ui",
+    "e2e:install": "playwright install --with-deps"
   },
   "dependencies": {
     "@auth/core": "0.37.4",
@@ -45,6 +48,7 @@
     "zustand": "^4.5.5"
   },
   "devDependencies": {
+    "@playwright/test": "^1.48.2",
     "@types/node": "22.9.0",
     "@types/react": "19.0.0",
     "@types/react-dom": "19.0.0",
