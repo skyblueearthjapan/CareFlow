@@ -27,8 +27,12 @@ from app.models.user import User
 from app.schemas._pagination import Paginated
 from app.schemas.ai import AiLogRead, InterpretRequest, InterpretResponse
 from app.services.gemini_client import (
+    GeminiAPIKeyMissing,
     GeminiClient,
+    GeminiError,
     GeminiInvalidResponseError,
+    GeminiModelNotFound,
+    GeminiQuotaExceeded,
     GeminiRateLimitError,
     GeminiUnavailableError,
     InterpretResult,
@@ -97,12 +101,16 @@ async def _persist_log(
     cost_usd: float,
     confidence: float | None,
     error: str | None = None,
+    error_type: str | None = None,
 ) -> AiInterpretLog:
     """Insert a single AiInterpretLog row.
 
     `response` packs both the structured Gemini payload and a `_meta`
     wrapper carrying context_type / cost / raw — the table has no dedicated
-    columns for those today (see schemas/ai.py rationale).
+    columns for those today (see schemas/ai.py rationale). `error_type`
+    records the Python exception class name (e.g. "GeminiModelNotFound")
+    so operators can grep for misconfiguration without parsing the
+    free-form `error` string.
     """
     response_payload: dict[str, Any] = {
         "interpreted": interpreted or {},
@@ -113,6 +121,7 @@ async def _persist_log(
             "raw_response": raw_response,
             "user_text": user_text,
             "error": error,
+            "error_type": error_type,
         },
     }
     log = AiInterpretLog(
@@ -170,27 +179,9 @@ async def interpret(
             context_type=payload.context_type,
             context=context,
         )
-    except GeminiUnavailableError as exc:
-        # No API key / SDK missing → 503 (the service is configured-out).
-        await _persist_log(
-            db,
-            user_id=user.id,
-            rendered_prompt=payload.prompt,
-            user_text=payload.prompt,
-            context_type=payload.context_type,
-            interpreted=None,
-            raw_response=None,
-            model="(unavailable)",
-            latency_ms=0,
-            cost_usd=0.0,
-            confidence=None,
-            error=str(exc),
-        )
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Gemini API is not available: {exc}",
-        ) from exc
-    except GeminiRateLimitError as exc:
+    except GeminiModelNotFound as exc:
+        # 404 from upstream — the configured model id is retired or
+        # never existed on this API version. Operator action required.
         await _persist_log(
             db,
             user_id=user.id,
@@ -204,10 +195,79 @@ async def interpret(
             cost_usd=0.0,
             confidence=None,
             error=str(exc),
+            error_type=type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                f"Configured Gemini model {client.model!r} is not available — "
+                "contact admin to update the GEMINI_MODEL env var "
+                "(e.g. gemini-2.0-flash, gemini-2.5-flash)."
+            ),
+        ) from exc
+    except GeminiAPIKeyMissing as exc:
+        # No API key configured → 503 (configured-out).
+        await _persist_log(
+            db,
+            user_id=user.id,
+            rendered_prompt=payload.prompt,
+            user_text=payload.prompt,
+            context_type=payload.context_type,
+            interpreted=None,
+            raw_response=None,
+            model="(unavailable)",
+            latency_ms=0,
+            cost_usd=0.0,
+            confidence=None,
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Gemini API is not available: {exc}",
+        ) from exc
+    except GeminiUnavailableError as exc:
+        # SDK missing or other availability failure → 503.
+        await _persist_log(
+            db,
+            user_id=user.id,
+            rendered_prompt=payload.prompt,
+            user_text=payload.prompt,
+            context_type=payload.context_type,
+            interpreted=None,
+            raw_response=None,
+            model="(unavailable)",
+            latency_ms=0,
+            cost_usd=0.0,
+            confidence=None,
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Gemini API is not available: {exc}",
+        ) from exc
+    except GeminiRateLimitError as exc:
+        # Covers GeminiQuotaExceeded too (subclass).
+        await _persist_log(
+            db,
+            user_id=user.id,
+            rendered_prompt=payload.prompt,
+            user_text=payload.prompt,
+            context_type=payload.context_type,
+            interpreted=None,
+            raw_response=None,
+            model=client.model,
+            latency_ms=0,
+            cost_usd=0.0,
+            confidence=None,
+            error=str(exc),
+            error_type=type(exc).__name__,
         )
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Gemini API rate-limited / quota exhausted",
+            headers={"Retry-After": "60"},
         ) from exc
     except GeminiInvalidResponseError as exc:
         await _persist_log(
@@ -223,10 +283,32 @@ async def interpret(
             cost_usd=0.0,
             confidence=None,
             error=str(exc),
+            error_type=type(exc).__name__,
         )
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Gemini returned an unparseable response: {exc}",
+        ) from exc
+    except GeminiError as exc:
+        # Generic upstream failure (network, 5xx, parse) → 502.
+        await _persist_log(
+            db,
+            user_id=user.id,
+            rendered_prompt=payload.prompt,
+            user_text=payload.prompt,
+            context_type=payload.context_type,
+            interpreted=None,
+            raw_response=None,
+            model=client.model,
+            latency_ms=0,
+            cost_usd=0.0,
+            confidence=None,
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Gemini upstream call failed: {exc}",
         ) from exc
 
     log = await _persist_log(

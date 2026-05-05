@@ -24,27 +24,56 @@ from app.core.config import get_settings
 logger = logging.getLogger(__name__)
 
 
-# Approx pricing for gemini-1.5-flash as of 2026-Q1 (USD per 1K tokens).
-# These constants only feed local cost estimation in the AI interpret log;
-# update when Google publishes new pricing.
-_PRICE_INPUT_PER_1K_USD = 0.000075
-_PRICE_OUTPUT_PER_1K_USD = 0.0003
+# Approx pricing per 1M tokens (USD). Source: Google AI pricing page,
+# 2026-05 snapshot — update whenever Google publishes new tiers. The
+# table is keyed by *model id* so switching `GEMINI_MODEL` env vars
+# automatically picks the right cost line; unknown models fall back to
+# the gemini-2.0-flash entry (logged at WARNING in `estimate_cost_usd`).
+#
+# Reference (USD / 1M tokens):
+#   gemini-2.0-flash      input $0.10  output $0.40   (default, GA)
+#   gemini-2.5-flash      input $0.30  output $2.50   (newer, larger)
+#   gemini-1.5-flash      input $0.075 output $0.30   (RETIRED on v1beta)
+#   gemini-1.5-pro        input $1.25  output $5.00
+_PRICING_USD_PER_1M: dict[str, tuple[float, float]] = {
+    "gemini-2.0-flash": (0.10, 0.40),
+    "gemini-2.5-flash": (0.30, 2.50),
+    "gemini-1.5-flash": (0.075, 0.30),
+    "gemini-1.5-pro": (1.25, 5.00),
+}
 
 # Per-request request/response timeout (s).
 _DEFAULT_TIMEOUT_S = 15.0
-_DEFAULT_MODEL = "gemini-1.5-flash"
+_DEFAULT_MODEL = "gemini-2.0-flash"
 
 
-class GeminiUnavailableError(RuntimeError):
+class GeminiError(RuntimeError):
+    """Base for all Gemini-related failures (so callers can catch a single type)."""
+
+
+class GeminiUnavailableError(GeminiError):
     """Raised when the Gemini SDK is missing or no API key is configured."""
 
 
-class GeminiInvalidResponseError(RuntimeError):
+class GeminiAPIKeyMissing(GeminiUnavailableError):
+    """Alias for missing-API-key — distinct from SDK-missing semantically."""
+
+
+class GeminiInvalidResponseError(GeminiError):
     """Raised when Gemini returns content that is not parseable JSON."""
 
 
-class GeminiRateLimitError(RuntimeError):
+class GeminiRateLimitError(GeminiError):
     """Raised when Gemini rejects the request with a quota / 429 error."""
+
+
+class GeminiQuotaExceeded(GeminiRateLimitError):
+    """Specific subclass for daily/per-minute quota exhaustion (alias)."""
+
+
+class GeminiModelNotFound(GeminiError):
+    """Raised on 404 — the configured model is unknown / retired on this API
+    version. Operators should update GEMINI_MODEL env."""
 
 
 @dataclass
@@ -152,11 +181,24 @@ def build_prompt(context_type: str, user_text: str, context: dict[str, Any]) -> 
     return "\n\n".join(lines)
 
 
-def estimate_cost_usd(prompt_tokens: int, completion_tokens: int) -> float:
-    """Approximate USD cost based on the static price table above."""
+def estimate_cost_usd(
+    prompt_tokens: int,
+    completion_tokens: int,
+    model: str = _DEFAULT_MODEL,
+) -> float:
+    """Approximate USD cost using `_PRICING_USD_PER_1M` (input, output)."""
+    pricing = _PRICING_USD_PER_1M.get(model)
+    if pricing is None:
+        logger.warning(
+            "estimate_cost_usd: unknown model %r — falling back to %s pricing",
+            model,
+            _DEFAULT_MODEL,
+        )
+        pricing = _PRICING_USD_PER_1M[_DEFAULT_MODEL]
+    in_price, out_price = pricing
     return round(
-        (prompt_tokens / 1000.0) * _PRICE_INPUT_PER_1K_USD
-        + (completion_tokens / 1000.0) * _PRICE_OUTPUT_PER_1K_USD,
+        (prompt_tokens / 1_000_000.0) * in_price
+        + (completion_tokens / 1_000_000.0) * out_price,
         6,
     )
 
@@ -212,13 +254,15 @@ class GeminiClient:
     def __init__(
         self,
         *,
-        model: str = _DEFAULT_MODEL,
+        model: str | None = None,
         api_key: str | None = None,
         timeout_s: float = _DEFAULT_TIMEOUT_S,
     ) -> None:
-        self.model = model
+        settings = get_settings()
+        # Explicit ctor arg > env (settings.gemini_model) > module default.
+        self.model = model or getattr(settings, "gemini_model", None) or _DEFAULT_MODEL
         self.timeout_s = timeout_s
-        self._api_key = api_key if api_key is not None else get_settings().gemini_api_key
+        self._api_key = api_key if api_key is not None else settings.gemini_api_key
 
     def _invoke(self, prompt: str) -> tuple[str, int, int]:
         """Call Gemini and return (text, prompt_tokens, completion_tokens).
@@ -226,7 +270,7 @@ class GeminiClient:
         Tests override this method via monkeypatch.
         """
         if not self._api_key:
-            raise GeminiUnavailableError(
+            raise GeminiAPIKeyMissing(
                 "GEMINI_API_KEY is not set — cannot reach Gemini API"
             )
         try:
@@ -249,9 +293,25 @@ class GeminiClient:
             )
         except Exception as exc:  # pragma: no cover - SDK errors are network-dep
             msg = str(exc).lower()
+            # 404 surfaces as "is not found for API version" / "is not
+            # supported for generateContent" — flag those distinctly so
+            # the API layer can return 503 rather than a misleading 429.
+            if (
+                "404" in msg
+                or "is not found" in msg
+                or "not supported for generatecontent" in msg
+                or "model not found" in msg
+            ):
+                raise GeminiModelNotFound(
+                    f"Gemini model {self.model!r} not found / unsupported "
+                    f"on this API version: {exc}"
+                ) from exc
             if "rate" in msg or "quota" in msg or "429" in msg:
-                raise GeminiRateLimitError(str(exc)) from exc
-            raise GeminiInvalidResponseError(str(exc)) from exc
+                raise GeminiQuotaExceeded(str(exc)) from exc
+            # Anything else: bubble as generic GeminiError so the API
+            # layer maps it to 502 (upstream broken) rather than 422
+            # (which implies the response body was the problem).
+            raise GeminiError(str(exc)) from exc
 
         text = getattr(response, "text", None)
         if not text:
@@ -287,7 +347,7 @@ class GeminiClient:
 
         payload = _parse_json_payload(text)
         confidence = _extract_confidence(payload)
-        cost_usd = estimate_cost_usd(prompt_tokens, completion_tokens)
+        cost_usd = estimate_cost_usd(prompt_tokens, completion_tokens, self.model)
 
         return InterpretResult(
             interpreted=payload,

@@ -97,7 +97,7 @@ async def test_interpret_general_returns_actions_and_persists_log(
     assert body["confidence"] == pytest.approx(0.92)
     assert body["context_type"] == "general"
     assert body["interpreted"]["actions"][0]["action_type"] == "staff_weekly_override"
-    assert body["model"] == "gemini-1.5-flash"
+    assert body["model"] == "gemini-2.0-flash"
     assert "log_id" in body
 
     # Persistence: exactly one row, and `_meta` carries context_type / cost.
@@ -256,6 +256,101 @@ async def test_interpret_unavailable_returns_503(client, db, monkeypatch) -> Non
 
 
 @pytest.mark.asyncio
+async def test_interpret_model_not_found_returns_503(
+    client, db, monkeypatch
+) -> None:
+    """A 404 from upstream (retired model id) must surface as 503, NOT 429.
+
+    Reproduces the W4-B hotfix scenario where gemini-1.5-flash was removed
+    from `v1beta` and the previous `_invoke` exception classifier was
+    masking the 404 as a quota error, hiding the real misconfiguration.
+    """
+    admin = await _make_user(db, "ai-404@example.com", "admin")
+    # Simulate the SDK error string verbatim so we exercise the 404
+    # detection branch in `_invoke` if the test wants to drop one level
+    # deeper. Here we raise the typed exception directly to keep the
+    # test independent from the SDK message format.
+    monkeypatch.setattr(
+        gc.GeminiClient,
+        "_invoke",
+        _stub_invoke_raises(
+            gc.GeminiModelNotFound(
+                "404 models/gemini-1.5-flash is not found for API version v1beta, "
+                "or is not supported for generateContent"
+            )
+        ),
+    )
+    res = await client.post(
+        "/api/v1/ai/interpret",
+        headers=_bearer(admin),
+        json={"prompt": "田中さん木曜休み", "context_type": "general"},
+    )
+    assert res.status_code == 503, res.text
+    body = res.json()
+    assert "GEMINI_MODEL" in body["detail"]
+
+    rows = (await db.scalars(select(AiInterpretLog))).all()
+    assert len(rows) == 1
+    meta = rows[0].response["_meta"]
+    assert meta["error_type"] == "GeminiModelNotFound"
+    assert "is not found" in meta["error"]
+
+
+@pytest.mark.asyncio
+async def test_interpret_generic_gemini_error_returns_502(
+    client, db, monkeypatch
+) -> None:
+    """An unclassified upstream failure should map to 502, not 422.
+
+    422 is reserved for unparseable JSON bodies; transport / 5xx-style
+    failures must use 502 so monitoring can distinguish them.
+    """
+    admin = await _make_user(db, "ai-502@example.com", "admin")
+    monkeypatch.setattr(
+        gc.GeminiClient,
+        "_invoke",
+        _stub_invoke_raises(gc.GeminiError("upstream connection reset")),
+    )
+    res = await client.post(
+        "/api/v1/ai/interpret",
+        headers=_bearer(admin),
+        json={"prompt": "テスト", "context_type": "general"},
+    )
+    assert res.status_code == 502, res.text
+    rows = (await db.scalars(select(AiInterpretLog))).all()
+    assert rows[0].response["_meta"]["error_type"] == "GeminiError"
+
+
+@pytest.mark.asyncio
+async def test_invoke_classifies_404_as_model_not_found(monkeypatch) -> None:
+    """Unit-level: the SDK-string sniffer in `_invoke` must route 404
+    messages to `GeminiModelNotFound` rather than `GeminiQuotaExceeded`."""
+
+    class _FakeGenAI:
+        def configure(self, *, api_key):  # noqa: D401
+            return None
+
+        class GenerativeModel:  # noqa: D401
+            def __init__(self, model):
+                self.model = model
+
+            def generate_content(self, *args, **kwargs):
+                raise RuntimeError(
+                    "404 models/gemini-1.5-flash is not found for API "
+                    "version v1beta, or is not supported for generateContent"
+                )
+
+    fake_module = _FakeGenAI()
+    import sys
+
+    monkeypatch.setitem(sys.modules, "google.generativeai", fake_module)
+
+    client = gc.GeminiClient(api_key="test-key")
+    with pytest.raises(gc.GeminiModelNotFound):
+        client._invoke("hello")
+
+
+@pytest.mark.asyncio
 async def test_interpret_anonymous_returns_401(client) -> None:
     res = await client.post(
         "/api/v1/ai/interpret",
@@ -289,7 +384,7 @@ async def test_logs_admin_returns_rows(client, db, monkeypatch) -> None:
     assert body["total"] >= 1
     item = body["items"][0]
     assert item["context_type"] == "general"
-    assert item["model"] == "gemini-1.5-flash"
+    assert item["model"] == "gemini-2.0-flash"
 
 
 @pytest.mark.asyncio
