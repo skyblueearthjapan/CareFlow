@@ -61,34 +61,41 @@ async def _run_stage(name: str, coro) -> dict[str, int]:
 
 
 async def _main(sample1: Path, sample2: Path, dry_run: bool) -> int:
-    stages: list[tuple[str, dict[str, int]]] = []
+    try:
+        stages: list[tuple[str, dict[str, int]]] = []
 
-    stages.append(("patients", await _run_stage(
-        "patients", import_patients(sample1, dry_run))))
-    stages.append(("staff", await _run_stage(
-        "staff", import_staff(sample2, dry_run))))
-    stages.append(("users", await _run_stage(
-        "users", import_users(sample2, dry_run))))
-    stages.append(("weekly_pattern", await _run_stage(
-        "weekly_pattern", import_weekly_pattern(sample1, dry_run))))
-    stages.append(("special_weeks", await _run_stage(
-        "special_weeks", import_special_weeks(sample2, dry_run))))
-    stages.append(("staff_events", await _run_stage(
-        "staff_events", import_staff_events(sample2, dry_run))))
-    stages.append(("staff_overrides", await _run_stage(
-        "staff_overrides", import_staff_overrides(sample2, dry_run))))
+        stages.append(("patients", await _run_stage(
+            "patients", import_patients(sample1, dry_run))))
+        stages.append(("staff", await _run_stage(
+            "staff", import_staff(sample2, dry_run))))
+        stages.append(("users", await _run_stage(
+            "users", import_users(sample2, dry_run))))
+        stages.append(("weekly_pattern", await _run_stage(
+            "weekly_pattern", import_weekly_pattern(sample1, dry_run))))
+        stages.append(("special_weeks", await _run_stage(
+            "special_weeks", import_special_weeks(sample2, dry_run))))
+        stages.append(("staff_events", await _run_stage(
+            "staff_events", import_staff_events(sample2, dry_run))))
+        stages.append(("staff_overrides", await _run_stage(
+            "staff_overrides", import_staff_overrides(sample2, dry_run))))
 
-    print("\n===== summary =====")
-    print(f"{'stage':<18} {'created':>8} {'updated':>8} {'skipped':>8} {'failed':>8}")
-    total = {"created": 0, "updated": 0, "skipped": 0, "failed": 0}
-    for name, s in stages:
-        print(f"{name:<18} {s['created']:>8} {s['updated']:>8} "
-              f"{s['skipped']:>8} {s['failed']:>8}")
-        for k in total:
-            total[k] += s.get(k, 0)
-    print(f"{'TOTAL':<18} {total['created']:>8} {total['updated']:>8} "
-          f"{total['skipped']:>8} {total['failed']:>8}")
-    return 0 if total["failed"] == 0 else 1
+        print("\n===== summary =====")
+        print(f"{'stage':<18} {'created':>8} {'updated':>8} {'skipped':>8} {'failed':>8}")
+        total = {"created": 0, "updated": 0, "skipped": 0, "failed": 0}
+        for name, s in stages:
+            print(f"{name:<18} {s['created']:>8} {s['updated']:>8} "
+                  f"{s['skipped']:>8} {s['failed']:>8}")
+            for k in total:
+                total[k] += s.get(k, 0)
+        print(f"{'TOTAL':<18} {total['created']:>8} {total['updated']:>8} "
+              f"{total['skipped']:>8} {total['failed']:>8}")
+        return 0 if total["failed"] == 0 else 1
+    finally:
+        # Dispose inside the same event loop that created asyncpg connections,
+        # otherwise asyncpg's finalizers fire against a closed loop and emit
+        # "RuntimeError: Event loop is closed" during interpreter shutdown.
+        if not dry_run:
+            await dispose_engine()
 
 
 def main() -> int:
@@ -99,11 +106,7 @@ def main() -> int:
     if not args.sample2.exists():
         print(f"sample2 not found: {args.sample2}", file=sys.stderr)
         return 2
-    try:
-        return asyncio.run(_main(args.sample1, args.sample2, args.dry_run))
-    finally:
-        if not args.dry_run:
-            asyncio.run(dispose_engine())
+    return asyncio.run(_main(args.sample1, args.sample2, args.dry_run))
 
 
 if __name__ == "__main__":

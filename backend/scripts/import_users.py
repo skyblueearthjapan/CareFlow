@@ -138,13 +138,19 @@ async def import_users(xlsx: Path, dry_run: bool,
     return summary
 
 
+async def _main(xlsx: Path, dry_run: bool) -> dict[str, int]:
+    try:
+        return await import_users(xlsx, dry_run)
+    finally:
+        # Dispose inside the same loop that owns asyncpg connections to
+        # avoid "RuntimeError: Event loop is closed" on shutdown.
+        if not dry_run:
+            await dispose_engine()
+
+
 def main() -> int:
     args = build_parser("Import admin users (Sample 2 / 管理者)").parse_args()
-    try:
-        asyncio.run(import_users(args.xlsx, args.dry_run))
-    finally:
-        if not args.dry_run:
-            asyncio.run(dispose_engine())
+    asyncio.run(_main(args.xlsx, args.dry_run))
     return 0
 
 

@@ -144,15 +144,21 @@ async def import_staff_overrides(xlsx: Path, dry_run: bool) -> dict[str, int]:
     return summary
 
 
+async def _main(xlsx: Path, dry_run: bool) -> dict[str, int]:
+    try:
+        return await import_staff_overrides(xlsx, dry_run)
+    finally:
+        # Dispose inside the same loop that owns asyncpg connections to
+        # avoid "RuntimeError: Event loop is closed" on shutdown.
+        if not dry_run:
+            await dispose_engine()
+
+
 def main() -> int:
     args = build_parser(
         "Import staff weekly overrides (Sample 2 / スタッフ個別変更リクエスト)"
     ).parse_args()
-    try:
-        asyncio.run(import_staff_overrides(args.xlsx, args.dry_run))
-    finally:
-        if not args.dry_run:
-            asyncio.run(dispose_engine())
+    asyncio.run(_main(args.xlsx, args.dry_run))
     return 0
 
 
