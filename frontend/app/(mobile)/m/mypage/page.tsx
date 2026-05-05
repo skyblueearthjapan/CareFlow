@@ -1,7 +1,8 @@
 'use client';
 
+import { useState } from 'react';
 import { signOut, useSession } from 'next-auth/react';
-import { LogOut } from 'lucide-react';
+import { LogOut, Send } from 'lucide-react';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -9,9 +10,15 @@ import { Card } from '@/components/ui/card';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
+import { Skeleton } from '@/components/ui/skeleton';
+import { toast } from '@/components/ui/sonner';
 import { MobileSection } from '@/components/mobile/MobileSection';
 import { useUIStore } from '@/lib/stores/ui';
 import { useMyShifts } from '@/lib/queries/me';
+import {
+  useCreateShiftRequest,
+  useShiftRequests,
+} from '@/lib/queries/shift-requests';
 import { roleLabel } from '@/lib/schemas/staff';
 import { clearAllCheckins } from '@/lib/checkin-storage';
 import type { AppRole } from '@/types/auth';
@@ -33,9 +40,36 @@ function ProfileRow({
   );
 }
 
+/** Default target month = next month (`YYYY-MM-01`) in local TZ. */
+function nextMonthFirstIso(): string {
+  const d = new Date();
+  d.setMonth(d.getMonth() + 1, 1);
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  return `${yyyy}-${mm}-01`;
+}
+
+/** Build YYYY-MM-DD (first-of-month) options for the next 6 months. */
+function monthOptions(): { value: string; label: string }[] {
+  const out: { value: string; label: string }[] = [];
+  const base = new Date();
+  base.setDate(1);
+  for (let i = 1; i <= 6; i++) {
+    const d = new Date(base.getFullYear(), base.getMonth() + i, 1);
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    out.push({
+      value: `${yyyy}-${mm}-01`,
+      label: `${yyyy}年${mm}月`,
+    });
+  }
+  return out;
+}
+
 export default function MobileMyPage() {
   const { data: session } = useSession();
   const user = session?.user;
+  const staffId = user?.staffId ?? null;
 
   const density = useUIStore((s) => s.density);
   const setDensity = useUIStore((s) => s.setDensity);
@@ -49,6 +83,35 @@ export default function MobileMyPage() {
   const staffName = shiftsData?.staff?.name ?? null;
 
   const role = (user?.role as AppRole | undefined) ?? 'staff';
+
+  // ---- Shift request form state ----
+  const [targetMonth, setTargetMonth] = useState<string>(nextMonthFirstIso());
+  const [content, setContent] = useState('');
+  const createRequest = useCreateShiftRequest(staffId ?? '');
+  const { data: history, isLoading: historyLoading } = useShiftRequests(staffId);
+
+  async function handleSubmitShiftRequest() {
+    if (!staffId) {
+      toast.error('スタッフIDを取得できませんでした');
+      return;
+    }
+    if (!content.trim()) {
+      toast.error('内容を入力してください');
+      return;
+    }
+    try {
+      await createRequest.mutateAsync({
+        target_month: targetMonth,
+        content: content.trim(),
+      });
+      setContent('');
+      toast.success('シフト希望を提出しました');
+    } catch (err) {
+      toast.error('提出に失敗しました', {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
 
   return (
     <MobileSection title="マイページ">
@@ -81,31 +144,106 @@ export default function MobileMyPage() {
           シフト希望提出
         </h2>
         <p className="mt-1 text-xs text-text-muted">
-          翌週以降のシフト希望を入力できます。
+          翌週以降のシフト希望を入力してください。提出後は管理者が内容を確認します。
         </p>
-        {/* M5: explicit "coming soon" notice — disabled controls alone read as
-            broken UI on mobile. Until /api/v1/staff/me/shift-requests ships,
-            staff should keep submitting via Kaipoke as today. */}
-        <Alert className="mt-3">
-          <AlertTitle>この機能は近日公開予定です</AlertTitle>
-          <AlertDescription>
-            現状はカイポケ側で提出してください。
-          </AlertDescription>
-        </Alert>
-        <textarea
-          disabled
-          rows={3}
-          placeholder="例: 月・火 終日OK / 水 午後NG"
-          className="mt-3 w-full resize-none rounded-md border border-border-default bg-bg-muted p-2 text-sm text-text-primary placeholder:text-text-muted disabled:cursor-not-allowed"
-        />
+        <div className="mt-3 space-y-2">
+          <Label htmlFor="shift-month" className="text-xs">
+            対象月
+          </Label>
+          <select
+            id="shift-month"
+            value={targetMonth}
+            onChange={(e) => setTargetMonth(e.target.value)}
+            className="w-full rounded-md border border-border-default bg-bg-base p-2 text-sm text-text-primary"
+          >
+            {monthOptions().map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="mt-3 space-y-2">
+          <Label htmlFor="shift-content" className="text-xs">
+            希望内容
+          </Label>
+          <textarea
+            id="shift-content"
+            value={content}
+            onChange={(e) => setContent(e.target.value)}
+            rows={4}
+            maxLength={2000}
+            placeholder="例: 月・火 終日OK / 水 午後NG"
+            className="w-full resize-none rounded-md border border-border-default bg-bg-base p-2 text-sm text-text-primary placeholder:text-text-muted"
+          />
+          <p className="text-right text-[10px] text-text-muted">
+            {content.length} / 2000
+          </p>
+        </div>
         <Button
           type="button"
-          disabled
+          onClick={handleSubmitShiftRequest}
+          disabled={
+            !staffId || !content.trim() || createRequest.isPending
+          }
           className="mt-2 w-full"
-          variant="outline"
         >
-          保存 (準備中)
+          <Send className="mr-1 h-4 w-4" />
+          {createRequest.isPending ? '送信中…' : '提出する'}
         </Button>
+
+        <div className="mt-4 border-t border-border-default pt-3">
+          <h3 className="text-sm font-medium text-text-primary">
+            提出履歴
+          </h3>
+          {historyLoading && (
+            <div className="mt-2 space-y-2">
+              <Skeleton className="h-12 w-full" />
+              <Skeleton className="h-12 w-full" />
+            </div>
+          )}
+          {!historyLoading && history && history.length === 0 && (
+            <p className="mt-2 text-xs text-text-muted">
+              まだ提出はありません。
+            </p>
+          )}
+          {history && history.length > 0 && (
+            <ul className="mt-2 space-y-2">
+              {history.map((h) => (
+                <li
+                  key={h.id}
+                  className="rounded-md border border-border-default bg-bg-base p-2"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-medium text-text-primary">
+                      {h.target_month.slice(0, 7).replace('-', '/')}
+                    </span>
+                    <Badge
+                      variant={
+                        h.status === 'reviewed' ? 'success' : 'secondary'
+                      }
+                      className="text-[10px]"
+                    >
+                      {h.status === 'reviewed' ? '確認済' : '提出済'}
+                    </Badge>
+                  </div>
+                  <p className="mt-1 whitespace-pre-wrap text-xs text-text-secondary line-clamp-3">
+                    {h.content}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        {!staffId && (
+          <Alert className="mt-3" variant="destructive">
+            <AlertTitle>提出できません</AlertTitle>
+            <AlertDescription>
+              スタッフIDが紐付いていないアカウントです。管理者にご連絡ください。
+            </AlertDescription>
+          </Alert>
+        )}
       </Card>
 
       <Card className="p-4 space-y-4">

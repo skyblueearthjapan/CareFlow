@@ -33,6 +33,10 @@ import {
   type CheckInPayload,
   type MyVisit,
 } from '@/lib/queries/me';
+import {
+  useUploadPhoto,
+  useVisitPhotos,
+} from '@/lib/queries/visit-photos';
 
 function shortTime(t: string): string {
   return t.length >= 5 ? t.slice(0, 5) : t;
@@ -127,6 +131,10 @@ export default function MobileVisitDetailPage() {
   }, [visitId, staffId]);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // W4-D: real photo upload wired to /api/v1/visits/{id}/photos.
+  const { data: photos } = useVisitPhotos(visitId);
+  const uploadPhoto = useUploadPhoto(visitId);
 
   /**
    * "Server can't accept this yet" — only the explicit ApiError statuses
@@ -224,14 +232,23 @@ export default function MobileVisitDetailPage() {
     }
   }
 
-  function handlePhotoSelected(e: React.ChangeEvent<HTMLInputElement>) {
+  async function handlePhotoSelected(
+    e: React.ChangeEvent<HTMLInputElement>,
+  ) {
     const file = e.target.files?.[0];
-    if (!file) return;
-    // TODO(W2-C+): /api/v1/visits/{id}/photos に POST する。
-    toast.info('写真を選択しました', {
-      description: `${file.name} (アップロードは準備中)`,
-    });
+    // Always reset the input so re-selecting the same file fires `change`.
     e.target.value = '';
+    if (!file) return;
+    try {
+      await uploadPhoto.mutateAsync({ file });
+      toast.success('写真をアップロードしました', {
+        description: file.name,
+      });
+    } catch (err) {
+      toast.error('写真のアップロードに失敗しました', {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   // The displayed status combines server truth with the optimistic local flag.
@@ -342,19 +359,46 @@ export default function MobileVisitDetailPage() {
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              className="flex w-full items-center justify-center gap-2 rounded-md border border-dashed border-border-default bg-bg-base p-3 text-sm text-text-secondary hover:bg-bg-muted"
+              disabled={uploadPhoto.isPending}
+              className="flex w-full items-center justify-center gap-2 rounded-md border border-dashed border-border-default bg-bg-base p-3 text-sm text-text-secondary hover:bg-bg-muted disabled:cursor-not-allowed disabled:opacity-60"
             >
               <Camera className="h-4 w-4" />
-              写真を撮影 / 選択
+              {uploadPhoto.isPending
+                ? 'アップロード中…'
+                : '写真を撮影 / 選択'}
             </button>
             <input
               ref={fileInputRef}
               type="file"
-              accept="image/*"
+              accept="image/jpeg,image/png,image/webp"
               capture="environment"
               className="hidden"
               onChange={handlePhotoSelected}
             />
+
+            {photos && photos.length > 0 && (
+              <div className="grid grid-cols-3 gap-2 pt-1">
+                {photos.map((p) => (
+                  <a
+                    key={p.id}
+                    href={p.download_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="aspect-square overflow-hidden rounded-md border border-border-default bg-bg-muted"
+                  >
+                    {/* Thumbnail uses the same download URL — the route
+                        serves the binary; browser handles decode. */}
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={p.download_url}
+                      alt={p.caption ?? '訪問写真'}
+                      className="h-full w-full object-cover"
+                      loading="lazy"
+                    />
+                  </a>
+                ))}
+              </div>
+            )}
           </div>
         </>
       )}

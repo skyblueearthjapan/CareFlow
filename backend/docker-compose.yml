@@ -37,6 +37,16 @@ services:
       - .env
     environment:
       DATABASE_URL: postgresql+asyncpg://carelink:carelink@postgres:5432/carelink
+      # Wave 4-D: visit-photo storage path inside the container. Must
+      # match the bind-mount target below. Override via .env if you want
+      # the host directory layout.
+      VISIT_PHOTOS_DIR: /opt/carelink/data/visit_photos
+    volumes:
+      # Wave 4-D: persist uploaded visit photos on the host so they
+      # survive container rebuilds. Create ./data/visit_photos on the
+      # host first; chown to the container's `app` UID if SELinux/UID
+      # mapping bites.
+      - ./data/visit_photos:/opt/carelink/data/visit_photos
     ports:
       - "8000:8000"
     depends_on:
