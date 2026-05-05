@@ -32,7 +32,7 @@ export function Sidebar({ collapsed }: SidebarProps) {
       <div className="flex h-[60px] items-center gap-2 border-b border-border-default px-4">
         <Heart className="h-6 w-6 text-brand-primary" strokeWidth={1.75} />
         {!collapsed && (
-          <span className="font-serif text-lg font-bold text-text-primary">CareLink</span>
+          <span className="font-serif text-lg font-bold text-text-primary">CareFlow</span>
         )}
       </div>
 

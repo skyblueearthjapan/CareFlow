@@ -8,7 +8,7 @@ interface HeaderProps {
   onToggleSidebar: () => void;
 }
 
-export function Header({ title = 'CareLink', onToggleSidebar }: HeaderProps) {
+export function Header({ title = 'CareFlow', onToggleSidebar }: HeaderProps) {
   return (
     <header className="flex h-[60px] items-center justify-between border-b border-border-default bg-bg-base px-4">
       <div className="flex items-center gap-3">

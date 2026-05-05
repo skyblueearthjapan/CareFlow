@@ -85,7 +85,7 @@ export default function LoginPage() {
     <main className="flex min-h-screen items-center justify-center bg-bg-app px-4">
       <Card className="w-full max-w-sm p-8">
         <div className="mb-6 text-center">
-          <h1 className="font-serif text-2xl font-bold text-text-primary">CareLink</h1>
+          <h1 className="font-serif text-2xl font-bold text-text-primary">CareFlow</h1>
           <p className="mt-1 text-sm text-text-secondary">訪問看護スケジューリング</p>
         </div>
         <Suspense fallback={<div className="h-32" aria-hidden />}>

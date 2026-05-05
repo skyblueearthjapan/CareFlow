@@ -1,4 +1,4 @@
-# CareLink Frontend (D2 Foundation)
+# CareFlow Frontend (D2 Foundation)
 
 Next.js 15 (App Router) + TypeScript strict + Tailwind CSS 3.4 + shadcn/ui スタイル の雛形。
 本ディレクトリは D2 フェーズの **Frontend Foundation** スケルトンであり、画面の作り込みは含まない。
