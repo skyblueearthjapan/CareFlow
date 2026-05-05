@@ -43,6 +43,7 @@ import { fetcher } from '@/lib/api/fetcher';
 
 const COURSES_PATH = '/api/v1/courses';
 const COURSES_GENERATE_PATH = '/api/v1/courses/generate';
+const COURSES_ASSIGN_STAFF_PATH = '/api/v1/courses/assign-staff';
 const VISITS_PATH = '/api/v1/visits';
 
 const COURSES_KEY = ['courses'] as const;
@@ -496,6 +497,77 @@ export function useFixCourses(): UseMutationResult<FixCoursesResponse, Error, Fi
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: COURSES_KEY });
       // visits も invalidate (今後のタブ切替で最新化)
+      void qc.invalidateQueries({ queryKey: ['visits'] });
+    },
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// useAssignStaff — Layer 3 スタッフ割付実行 (W4-FE9 / 対応 BE: W4-BE9)
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * POST /api/v1/courses/assign-staff リクエストボディ (API 契約 §4.6).
+ *
+ * 1 リクエスト = 1 週分。BE 側 (W4-BE9) で全曜日 × 全コースに対し
+ * ハンガリアン法 + ローテーション分散でスタッフを割り当てる。
+ */
+export interface AssignStaffRequest {
+  iso_year: number;
+  iso_week: number;
+}
+
+/** 1 件の割付結果。`weekday × course_id` がキー。 */
+export interface StaffAssignmentEntry {
+  /** 0=Mon..6=Sun. */
+  weekday: number;
+  /** Course ID (= CourseV2Read.id). */
+  course_id: string;
+  /** 割り当てられたスタッフ ID. */
+  staff_id: string;
+}
+
+/** POST /api/v1/courses/assign-staff レスポンス (API 契約 §4.6). */
+export interface AssignStaffResponse {
+  assignments: StaffAssignmentEntry[];
+  /** ハンガリアン法の最適化目的関数値。距離 + ローテーションペナルティ等の合算. */
+  total_cost: number;
+}
+
+/**
+ * useAssignStaff — Layer 3 スタッフ割付を実行する。
+ *
+ * 流れ:
+ *   1. 「スタッフ割付を実行」ボタン (StaffAssignButton) 押下で mutateAsync
+ *   2. BE が当該週の `course_fixed` 全 course に対して staff_id を埋め、
+ *      状態を `staff_assigned` に進める (`staff_assigned_at` も埋まる)
+ *   3. onSuccess で `courses` キャッシュを invalidate → 画面更新
+ *
+ * W4-BE9 並行作業中の挙動:
+ *   - エンドポイント未実装の場合は 404 が返るため、呼び出し側 (StaffAssignButton)
+ *     で toast.error にフォールバックする。
+ */
+export function useAssignStaff(): UseMutationResult<
+  AssignStaffResponse,
+  Error,
+  AssignStaffRequest
+> {
+  const qc = useQueryClient();
+  const { data: session } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+
+  return useMutation<AssignStaffResponse, Error, AssignStaffRequest>({
+    mutationFn: (payload) =>
+      fetcher<AssignStaffResponse>(COURSES_ASSIGN_STAFF_PATH, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+        accessToken,
+        refreshToken,
+      }),
+    onSuccess: () => {
+      // courses は staff_id / status / staff_assigned_at が変わるので必ず再取得
+      void qc.invalidateQueries({ queryKey: COURSES_KEY });
+      // visits も将来的に staff_id を持つ可能性があるため invalidate
       void qc.invalidateQueries({ queryKey: ['visits'] });
     },
   });
