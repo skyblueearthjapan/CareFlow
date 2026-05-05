@@ -22,7 +22,6 @@ from app.api.v1 import (
     pending_requests,
     schedule,
     shift_requests,
-    special_weeks,
     staff,
     staff_events,
     staff_overrides,
@@ -63,7 +62,8 @@ api_router.include_router(integrations.router, prefix="/integrations", tags=["in
 api_router.include_router(geocoding.router, tags=["geocoding"])
 # Gemini-backed AI interpret + audit logs (Wave 4-B / D4 Phase E).
 api_router.include_router(ai.router, prefix="/ai", tags=["ai"])
-api_router.include_router(special_weeks.router, prefix="/special-weeks", tags=["special-weeks"])
+# W6-MIG2: /special-weeks API は廃止（special_weekly_pattern を patients に統合済）.
+# 旧ルーターは削除し、`/api/v1/special-weeks*` は FastAPI の既定 404 で応答する。
 # Wave 4-F: HTTP audit-log read API (admin only).
 api_router.include_router(audit_logs.router, prefix="/audit-logs", tags=["audit-logs"])
 # Wave 4-D: notifications inbox + admin-create (W6 will add producer side).
