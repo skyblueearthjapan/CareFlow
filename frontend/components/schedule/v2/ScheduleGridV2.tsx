@@ -57,7 +57,7 @@ import { addDays, toWeekStart, WeekSelector } from '@/components/schedule/WeekSe
 import { FixButton } from './FixButton';
 import { PatientCard } from './PatientCard';
 import { PoolPanel, POOL_DROPPABLE_ID } from './PoolPanel';
-import { TimeSlotCell } from './TimeSlotCell';
+import { TimeSlotCell, rejectDuplicateDrop, type VisitEntry } from './TimeSlotCell';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Time / weekday utilities
@@ -368,6 +368,27 @@ export function ScheduleGridV2({
     const cell = parseCellId(overId);
     if (!cell) return;
 
+    // 同一患者が同一スロットに既に存在する場合は drop 拒否
+    const targetKey = `${cell.weekday}:${cell.time}`;
+    const occupantsAtTarget = cellOccupants.get(targetKey) ?? [];
+    // 自分自身 (= 現在の配置先) への移動は拒否しない (移動なし = 同位置 drop)
+    const currentPlacement = placements.get(patientId);
+    const isSameSlot =
+      currentPlacement !== undefined &&
+      currentPlacement.weekday === cell.weekday &&
+      currentPlacement.startTime === cell.time;
+    if (!isSameSlot) {
+      // 既に別の配置として同 patientId が同スロットにある場合を拒否
+      const otherOccupants = occupantsAtTarget.filter((id) => id !== patientId);
+      const dummyEntries: VisitEntry[] = otherOccupants.map((id) => ({
+        patientId: id,
+        draggableId: `patient:${id}`,
+        patient: { id, name: id },
+        staffCount: 1,
+      }));
+      if (rejectDuplicateDrop(patientId, dummyEntries)) return;
+    }
+
     setPlacements((prev) => {
       const next = new Map(prev);
       const existing = prev.get(patientId);
@@ -642,36 +663,36 @@ function FragmentRow({
       {[0, 1, 2, 3, 4, 5, 6].map((wd) => {
         const key = `${wd}:${time}`;
         const occupantIds = cellOccupants.get(key) ?? [];
+        // VisitEntry[] を構築して TimeSlotCell に渡す
+        const entries: VisitEntry[] = occupantIds.flatMap((pid) => {
+          const placement = placements.get(pid);
+          if (!placement) return [];
+          const meta = patientMeta.get(pid);
+          return [
+            {
+              patientId: pid,
+              draggableId: patientDraggableId(pid),
+              patient: {
+                id: pid,
+                name: meta?.name ?? pid,
+                caption: meta?.caption,
+              },
+              staffCount: placement.staffCount,
+              onToggleStaffCount: canEdit ? () => onToggleStaffCount(pid) : undefined,
+              onUnassign: canEdit ? () => onUnassign(pid) : undefined,
+            } satisfies VisitEntry,
+          ];
+        });
         return (
           <TimeSlotCell
             key={key}
             droppableId={cellDroppableId(wd, time)}
             weekday={wd}
             time={time}
+            entries={entries}
             isHourBoundary={isHourBoundary}
             disabled={!canEdit}
-          >
-            {occupantIds.map((pid) => {
-              const placement = placements.get(pid);
-              if (!placement) return null;
-              const meta = patientMeta.get(pid);
-              return (
-                <PatientCard
-                  key={pid}
-                  draggableId={patientDraggableId(pid)}
-                  patient={{
-                    id: pid,
-                    name: meta?.name ?? pid,
-                    caption: meta?.caption,
-                  }}
-                  staffCount={placement.staffCount}
-                  onToggleStaffCount={() => onToggleStaffCount(pid)}
-                  onUnassign={() => onUnassign(pid)}
-                  disabled={!canEdit}
-                />
-              );
-            })}
-          </TimeSlotCell>
+          />
         );
       })}
     </>
