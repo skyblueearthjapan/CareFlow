@@ -16,7 +16,12 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
-import { INSURANCE_OPTIONS } from '@/lib/schemas/patient';
+import {
+  INSURANCE_LABELS_JA,
+  INSURANCE_VALUES,
+  SEX_LABELS_JA,
+  STATUS_LABELS_JA,
+} from '@/lib/schemas/patient';
 import { usePatients } from '@/lib/queries/patients';
 
 const PAGE_SIZE = 20;
@@ -89,9 +94,9 @@ export default function PatientsPage() {
             className="flex h-10 w-full rounded-md border border-border-default bg-bg-base px-3 py-2 text-sm text-text-primary focus-visible:outline-none focus-visible:border-brand-primary focus-visible:ring-2 focus-visible:ring-brand-primary-light"
           >
             <option value="">保険区分: すべて</option>
-            {INSURANCE_OPTIONS.map((v) => (
+            {INSURANCE_VALUES.map((v) => (
               <option key={v} value={v}>
-                {v}
+                {INSURANCE_LABELS_JA[v]}
               </option>
             ))}
           </select>
@@ -140,7 +145,6 @@ export default function PatientsPage() {
                   <th className="px-3 py-2 font-medium">氏名</th>
                   <th className="px-3 py-2 font-medium">カナ</th>
                   <th className="px-3 py-2 font-medium">性別</th>
-                  <th className="px-3 py-2 font-medium">年齢</th>
                   <th className="px-3 py-2 font-medium">保険</th>
                   <th className="px-3 py-2 font-medium">主担当拠点</th>
                   <th className="px-3 py-2 font-medium">状態</th>
@@ -156,24 +160,25 @@ export default function PatientsPage() {
                     <td className="px-3 py-2 tnum">{p.code}</td>
                     <td className="px-3 py-2 font-medium text-text-primary">{p.name}</td>
                     <td className="px-3 py-2 text-text-secondary">{p.kana ?? '--'}</td>
-                    <td className="px-3 py-2 text-text-secondary">{p.sex ?? '--'}</td>
-                    <td className="px-3 py-2 text-text-secondary tnum">
-                      {p.age ?? '--'}
+                    <td className="px-3 py-2 text-text-secondary">
+                      {p.sex && p.sex in SEX_LABELS_JA
+                        ? SEX_LABELS_JA[p.sex as keyof typeof SEX_LABELS_JA]
+                        : '--'}
                     </td>
                     <td className="px-3 py-2 text-text-secondary">
-                      {p.insurance ?? '--'}
+                      {p.insurance && p.insurance in INSURANCE_LABELS_JA
+                        ? INSURANCE_LABELS_JA[p.insurance as keyof typeof INSURANCE_LABELS_JA]
+                        : '--'}
                     </td>
                     <td className="px-3 py-2 text-text-secondary tnum">
-                      {p.primary_office_id
-                        ? p.primary_office_id.slice(0, 8)
-                        : '--'}
+                      {p.primary_office_id ? p.primary_office_id.slice(0, 8) : '--'}
                     </td>
                     <td className="px-3 py-2 text-text-secondary">
                       {p.deleted_at
                         ? '削除済'
-                        : p.status === 'active'
-                          ? '有効'
-                          : '無効'}
+                        : p.status && p.status in STATUS_LABELS_JA
+                          ? STATUS_LABELS_JA[p.status as keyof typeof STATUS_LABELS_JA]
+                          : '--'}
                     </td>
                     <td className="px-3 py-2">
                       <div className="flex gap-2">

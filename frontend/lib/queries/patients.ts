@@ -27,8 +27,10 @@ import { useSession } from 'next-auth/react';
 
 import { fetcher } from '@/lib/api/fetcher';
 import {
+  parseSpecialWeekInput,
   patientCreateSchema,
   patientUpdateSchema,
+  weeklyPatternToWire,
   type PatientCreate,
   type PatientFormValues,
   type PatientRead,
@@ -86,39 +88,66 @@ function dropUndefined(payload: Record<string, unknown>): Record<string, unknown
 }
 
 /**
- * Pre-process raw form values into a shape that matches the zod schemas:
+ * Pre-process raw form values into a shape that matches the v2 zod schemas
+ * (W1-FE1).
  *
- * - `weekly_pattern` is a structured `WeeklyPattern` dict (W3-C) bound by
- *   `WeeklyPatternEditor`. We pass it through as a plain object.
- * - `special_week` is a checkbox boolean → backend column is JSONB. We map
- *   `true` → `{ enabled: true }`.
+ * - `weekly_pattern` / `special_weekly_pattern` は構造化 `WeeklyPattern` 辞書
+ *   (`WeeklyPatternEditor` 出力) を `weeklyPatternToWire` で v2 dict に変換
+ * - `special_week_enabled` (boolean) と `special_week_active_input`
+ *   (テキスト) を `special_week_active: [{iso_year, iso_week}, ...]` に変換
+ * - 旧 v1 のみのフィールド (age / ng_time_* / required_staff_count / area /
+ *   ng_staff_ids / preferred_staff_ids / specified_type / continuous_request /
+ *   special_week) は backend v2 schema が `extra="forbid"` のため、混入させない
  *
  * Clear-vs-unchanged semantics (PATCH only):
- * If `initial` is provided and a previously set field is now empty, we emit
- * explicit `null` so the backend clears the column. Without `initial`
- * (Create flow), empty values stay `undefined` and `dropUndefined` removes
- * them from the payload.
+ *   `initial` を渡し、特別週が ON→OFF に変わった場合のみ
+ *   `special_week_active: []` を明示的に送信して列をクリアする。
  */
 function prepareFormPayload(
   values: PatientFormValues,
   initial?: PatientFormValues,
 ): Record<string, unknown> {
-  // Treat the structured weekly_pattern as a JSONB dict. We always emit it
-  // (it has sane defaults from `emptyWeeklyPattern`); on Create the schema
-  // accepts the dict, on Update it overwrites.
-  const weekly_pattern: Record<string, unknown> | null | undefined =
-    values.weekly_pattern as unknown as Record<string, unknown>;
-  void initial; // structured editor always produces a complete dict.
+  // 数値フィールドは form values が文字列なので coerce.
+  const lat = values.lat === '' ? undefined : Number(values.lat);
+  const lng = values.lng === '' ? undefined : Number(values.lng);
 
-  let special_week: { enabled: true } | null | undefined;
-  if (values.special_week) {
-    special_week = { enabled: true };
-  } else if (initial && initial.special_week) {
-    // Was true, now unchecked → explicit null to clear the JSONB column.
-    special_week = null;
+  // weekly_pattern: 常に構造化 dict を送る (Create では default、Update では上書き)。
+  const weekly_pattern = weeklyPatternToWire(values.weekly_pattern);
+
+  // 特別週: 有効化された場合のみ pattern + active を送る。
+  let special_weekly_pattern: Record<string, unknown> | null | undefined;
+  let special_week_active: Array<{ iso_year: number; iso_week: number }> | undefined;
+  if (values.special_week_enabled) {
+    special_weekly_pattern = weeklyPatternToWire(values.special_weekly_pattern);
+    special_week_active = parseSpecialWeekInput(values.special_week_active_input);
+  } else if (initial && initial.special_week_enabled) {
+    // Was enabled, now disabled → 明示クリア
+    special_weekly_pattern = null;
+    special_week_active = [];
   }
 
-  return { ...values, weekly_pattern, special_week };
+  const out: Record<string, unknown> = {
+    code: values.code,
+    name: values.name,
+    kana: values.kana === '' ? undefined : values.kana,
+    sex: values.sex === '' ? undefined : values.sex,
+    status: values.status,
+    insurance: values.insurance === '' ? undefined : values.insurance,
+    address: values.address === '' ? undefined : values.address,
+    lat: Number.isFinite(lat) ? lat : undefined,
+    lng: Number.isFinite(lng) ? lng : undefined,
+    primary_office_id: values.primary_office_id === '' ? undefined : values.primary_office_id,
+    sex_restriction: values.sex_restriction === '' ? undefined : values.sex_restriction,
+    note: values.note === '' ? undefined : values.note,
+    weekly_pattern,
+  };
+  if (special_weekly_pattern !== undefined) {
+    out.special_weekly_pattern = special_weekly_pattern;
+  }
+  if (special_week_active !== undefined) {
+    out.special_week_active = special_week_active;
+  }
+  return out;
 }
 
 /** GET /api/v1/patients — list (with client-side search/pagination wrapper). */
@@ -165,26 +194,19 @@ export function usePatients(
 }
 
 /** GET /api/v1/patients/{id} — single record. */
-export function usePatient(
-  id: string | null | undefined,
-): UseQueryResult<PatientRead, Error> {
+export function usePatient(id: string | null | undefined): UseQueryResult<PatientRead, Error> {
   const { data: session, status } = useSession();
   const { accessToken, refreshToken } = authPair(session);
 
   return useQuery<PatientRead, Error>({
     queryKey: [...PATIENTS_KEY, id],
     enabled: status === 'authenticated' && !!id,
-    queryFn: () =>
-      fetcher<PatientRead>(`/api/v1/patients/${id}`, { accessToken, refreshToken }),
+    queryFn: () => fetcher<PatientRead>(`/api/v1/patients/${id}`, { accessToken, refreshToken }),
   });
 }
 
 /** POST /api/v1/patients — create. */
-export function useCreatePatient(): UseMutationResult<
-  PatientRead,
-  Error,
-  PatientFormValues
-> {
+export function useCreatePatient(): UseMutationResult<PatientRead, Error, PatientFormValues> {
   const qc = useQueryClient();
   const { data: session } = useSession();
   const { accessToken, refreshToken } = authPair(session);

@@ -1,8 +1,12 @@
 /**
- * Patient detail (Phase 3-2 + 3-7 delete confirm).
+ * Patient detail — **v2 削減版** (W1-FE1).
  *
- * Sections: 基本情報 / 連絡先 / 保険 / 訪問条件 / 備考.
- * Edit/Delete buttons gated by role (admin/manager edit, admin delete).
+ * 設計仕様書 v0.9 §4.1 に合わせ、削除 10 項目 (年齢 / NG時間 / 必要スタッフ数 /
+ * エリア / 指定タイプ / NGスタッフ / 同行希望スタッフ / 継続要望 / 曜日優先度 /
+ * NG曜日) を表示しない。
+ *
+ * Sections: 基本情報 / 連絡先 / 保険・拠点 / 訪問条件 / 週間パターン /
+ *           特別訪問週間 / 備考
  */
 'use client';
 
@@ -25,12 +29,17 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/sonner';
 import { useDeletePatient, usePatient } from '@/lib/queries/patients';
-import { useStaffList } from '@/lib/queries/staff';
 import {
+  INSURANCE_LABELS_JA,
+  SEX_LABELS_JA,
+  SEX_RESTRICTION_LABELS_JA,
+  STATUS_LABELS_JA,
   VISIT_FREQUENCY_LABELS,
   WEEKDAY_LABELS_JA,
   coerceWeeklyPattern,
+  formatSpecialWeekInput,
   type PatientRead,
+  type SpecialWeekRef,
   type WeekdayKey,
 } from '@/lib/schemas/patient';
 
@@ -44,8 +53,6 @@ export default function PatientDetailPage() {
   const canDelete = role === 'admin';
 
   const { data, isLoading, isError, error } = usePatient(id);
-  // Staff master used to render NG / 同行希望スタッフ as `氏名 (コード)`.
-  const { data: staffList } = useStaffList({ limit: 500 });
   const deleteMutation = useDeletePatient();
   const [confirmOpen, setConfirmOpen] = useState(false);
 
@@ -75,11 +82,37 @@ export default function PatientDetailPage() {
       toast.success('患者を削除しました');
       router.push('/patients');
     } catch (e) {
-      toast.error(
-        `削除に失敗しました: ${e instanceof Error ? e.message : '不明なエラー'}`,
-      );
+      toast.error(`削除に失敗しました: ${e instanceof Error ? e.message : '不明なエラー'}`);
     }
   };
+
+  const sexLabel =
+    data.sex && data.sex in SEX_LABELS_JA
+      ? SEX_LABELS_JA[data.sex as keyof typeof SEX_LABELS_JA]
+      : '--';
+  const insuranceLabel =
+    data.insurance && data.insurance in INSURANCE_LABELS_JA
+      ? INSURANCE_LABELS_JA[data.insurance as keyof typeof INSURANCE_LABELS_JA]
+      : '--';
+  const sexRestrictionLabel =
+    data.sex_restriction && data.sex_restriction in SEX_RESTRICTION_LABELS_JA
+      ? SEX_RESTRICTION_LABELS_JA[data.sex_restriction as keyof typeof SEX_RESTRICTION_LABELS_JA]
+      : '--';
+  const statusLabel =
+    data.status && data.status in STATUS_LABELS_JA
+      ? STATUS_LABELS_JA[data.status as keyof typeof STATUS_LABELS_JA]
+      : '--';
+
+  const specialWeekRefs: SpecialWeekRef[] = (data.special_week_active ?? [])
+    .map((r) => {
+      const o = r as Record<string, unknown>;
+      const y = Number(o.iso_year);
+      const w = Number(o.iso_week);
+      if (!Number.isInteger(y) || !Number.isInteger(w)) return null;
+      return { iso_year: y, iso_week: w } as SpecialWeekRef;
+    })
+    .filter((x): x is SpecialWeekRef => x !== null);
+  const specialWeekActive = specialWeekRefs.length > 0;
 
   return (
     <section className="space-y-4">
@@ -125,9 +158,8 @@ export default function PatientDetailPage() {
             ['コード', data.code],
             ['氏名', data.name],
             ['カナ', data.kana ?? '--'],
-            ['性別', data.sex ?? '--'],
-            ['年齢', data.age != null ? String(data.age) : '--'],
-            ['状態', data.status === 'active' ? '有効' : '無効'],
+            ['性別', sexLabel],
+            ['状態', statusLabel],
           ]}
         />
       </Card>
@@ -147,7 +179,7 @@ export default function PatientDetailPage() {
         <h2 className="font-serif text-lg font-bold text-text-primary">保険・拠点</h2>
         <DetailGrid
           rows={[
-            ['保険区分', data.insurance ?? '--'],
+            ['保険区分', insuranceLabel],
             ['主担当拠点 ID', data.primary_office_id ?? '--'],
           ]}
         />
@@ -155,20 +187,7 @@ export default function PatientDetailPage() {
 
       <Card className="p-5 space-y-3">
         <h2 className="font-serif text-lg font-bold text-text-primary">訪問条件</h2>
-        <DetailGrid
-          rows={[
-            ['必要スタッフ数', String(data.required_staff_count ?? 1)],
-            ['性別制限', data.sex_restriction ?? '--'],
-            ['NG時間 (開始)', data.ng_time_start ?? '--'],
-            ['NG時間 (終了)', data.ng_time_end ?? '--'],
-            ['エリア', data.area ?? '--'],
-            ['指定タイプ', data.specified_type ?? '--'],
-            ['継続要望', data.continuous_request ? '有効' : '--'],
-            ['NGスタッフ', formatStaffIds(data.ng_staff_ids, staffList)],
-            ['同行希望スタッフ', formatStaffIds(data.preferred_staff_ids, staffList)],
-            ['特別週', data.special_week ? '有効' : '--'],
-          ]}
-        />
+        <DetailGrid rows={[['性別制限', sexRestrictionLabel]]} />
       </Card>
 
       <Card className="p-5 space-y-3">
@@ -177,10 +196,19 @@ export default function PatientDetailPage() {
       </Card>
 
       <Card className="p-5 space-y-3">
+        <h2 className="font-serif text-lg font-bold text-text-primary">特別訪問週間</h2>
+        <DetailGrid
+          rows={[
+            ['有効化', specialWeekActive ? 'ON' : '--'],
+            ['適用週', specialWeekActive ? formatSpecialWeekInput(specialWeekRefs) : '--'],
+          ]}
+        />
+        {specialWeekActive ? <WeeklyPatternView raw={data.special_weekly_pattern} /> : null}
+      </Card>
+
+      <Card className="p-5 space-y-3">
         <h2 className="font-serif text-lg font-bold text-text-primary">備考</h2>
-        <p className="whitespace-pre-wrap text-sm text-text-primary">
-          {data.note ?? '--'}
-        </p>
+        <p className="whitespace-pre-wrap text-sm text-text-primary">{data.note ?? '--'}</p>
       </Card>
 
       <Card className="p-5 space-y-1 text-xs text-text-muted">
@@ -202,23 +230,6 @@ export default function PatientDetailPage() {
   );
 }
 
-/** Resolve UUIDs against the staff master into `氏名 (コード)` labels. */
-function formatStaffIds(
-  ids: readonly string[] | null | undefined,
-  staffList: ReadonlyArray<{ id: string; name: string; code?: string | null }> | undefined,
-): string {
-  if (!ids || ids.length === 0) return '--';
-  if (!staffList) return ids.join(', ');
-  const idx = new Map(staffList.map((s) => [s.id, s]));
-  return ids
-    .map((id) => {
-      const s = idx.get(id);
-      if (!s) return id;
-      return s.code ? `${s.name} (${s.code})` : s.name;
-    })
-    .join(', ');
-}
-
 interface WeeklyPatternViewProps {
   raw: unknown;
 }
@@ -228,16 +239,26 @@ function WeeklyPatternView({ raw }: WeeklyPatternViewProps) {
     return <p className="text-sm text-text-muted">--</p>;
   }
   const wp = coerceWeeklyPattern(raw);
-  const ngWeekdays = wp.ng_weekdays ?? [];
   const labelDays = (days: WeekdayKey[]) =>
     days.length === 0 ? '--' : days.map((d) => WEEKDAY_LABELS_JA[d]).join('・');
-  const visitFreq = wp.visit_frequency
-    ? VISIT_FREQUENCY_LABELS[wp.visit_frequency]
-    : '--';
+  const visitFreq = wp.visit_frequency ? VISIT_FREQUENCY_LABELS[wp.visit_frequency] : '--';
   const timeRange =
     wp.preferred_start || wp.preferred_end
       ? `${wp.preferred_start ?? '--'} 〜 ${wp.preferred_end ?? '--'}`
       : '--';
+
+  const enabledEntries = wp.entries.filter((e) => e.enabled);
+  const entriesLabel =
+    enabledEntries.length === 0
+      ? '--'
+      : enabledEntries
+          .map(
+            (e) =>
+              `${WEEKDAY_LABELS_JA[e.weekday]}: ${e.staff_count} 名` +
+              (e.time_type !== wp.time_type ? ` (${e.time_type})` : ''),
+          )
+          .join(' / ');
+
   return (
     <DetailGrid
       rows={[
@@ -245,11 +266,10 @@ function WeeklyPatternView({ raw }: WeeklyPatternViewProps) {
         ['訪問頻度', visitFreq],
         ['訪問週', wp.visit_weeks ?? '--'],
         ['希望曜日', labelDays(wp.preferred_weekdays)],
-        ['曜日優先度', wp.weekday_priority],
         ['サービス時間', `${wp.service_minutes} 分`],
         ['時間タイプ', wp.time_type],
         ['希望時間', timeRange],
-        ['NG曜日', labelDays(ngWeekdays)],
+        ['曜日別 (人数)', entriesLabel],
       ]}
     />
   );
@@ -301,18 +321,10 @@ function DeleteConfirmDialog({
           <span className="ml-2 text-text-muted tnum">({patient.code})</span>
         </p>
         <DialogFooter>
-          <Button
-            variant="outline"
-            onClick={() => onOpenChange(false)}
-            disabled={submitting}
-          >
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
             キャンセル
           </Button>
-          <Button
-            variant="destructive"
-            onClick={onConfirm}
-            disabled={submitting}
-          >
+          <Button variant="destructive" onClick={onConfirm} disabled={submitting}>
             {submitting ? '削除中…' : '削除'}
           </Button>
         </DialogFooter>

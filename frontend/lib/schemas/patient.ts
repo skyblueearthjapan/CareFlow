@@ -1,62 +1,118 @@
 /**
- * Patient zod schemas — mirrors backend `app/schemas/patient.py`
- * (Read / Create / Update).
+ * Patient zod schemas — **v2 schema 経由の re-export レイヤ** (W1-FE1).
  *
- * Notes
- * ─────
- * - `sex` / `insurance` / `sex_restriction` are stored as plain strings on
- *   the backend (`str | None`). We tighten them with zod enums on the FE so
- *   form selects can be driven from `*_OPTIONS` constants.
- * - `weekly_pattern` / `special_week` map to JSONB columns on the backend
- *   (`dict | None`). The form captures `weekly_pattern` as a structured dict
- *   via `WeeklyPatternEditor` (W3-C); `special_week` is also a structured dict.
- * - W3-A additions (`area`, `ng_staff_ids`, `preferred_staff_ids`,
- *   `specified_type`, `continuous_request`) are present on the SQLAlchemy
- *   model but the pydantic schemas may not yet surface them — keep all five
- *   nullable/optional on the FE until the backend pass exposes them.
+ * 設計仕様書 v0.9 §4.1 / 実装手順書 v0.2 §2 W1-FE1 に基づき、
+ * v2 の `frontend/lib/schemas/v2/patient.ts` を上位の "Patient" 型として
+ * 公開する。既存の import 箇所（`from '@/lib/schemas/patient'`）は変更不要に
+ * できるよう、旧型名（`PatientRead` / `PatientCreate` / `patientCreateSchema`
+ * など）と互換 alias を保つ。
+ *
+ * 削除済み (v2 schema には含めない / UI からも消える):
+ *   age, ng_time_start, ng_time_end, required_staff_count, area,
+ *   ng_staff_ids, preferred_staff_ids, specified_type, continuous_request,
+ *   weekday_priority, ng_weekdays
+ *
+ * 追加 (§3.3 / §3.4):
+ *   - weekly_pattern.entries[].staff_count (1 or 2)
+ *   - special_weekly_pattern (JSONB, 同形)
+ *   - special_week_active (適用週リスト [{iso_year, iso_week}, ...])
  */
 import { z } from 'zod';
 
-export const SEX_OPTIONS = ['男性', '女性'] as const;
-export const INSURANCE_OPTIONS = ['医療保険', '介護保険'] as const;
-export const SEX_RESTRICTION_OPTIONS = ['女性のみ', '男性のみ', 'なし'] as const;
-export const STATUS_OPTIONS = ['active', 'inactive'] as const;
-export const SPECIFIED_TYPE_OPTIONS = ['必須', '同じ人希望', '最初は希望'] as const;
-
-export const sexEnum = z.enum(SEX_OPTIONS);
-export const insuranceEnum = z.enum(INSURANCE_OPTIONS);
-export const sexRestrictionEnum = z.enum(SEX_RESTRICTION_OPTIONS);
-export const statusEnum = z.enum(STATUS_OPTIONS);
-export const specifiedTypeEnum = z.enum(SPECIFIED_TYPE_OPTIONS);
-
-/** HH:MM (24h) — backend stores `time` (Python). */
-const timeStringSchema = z
-  .string()
-  .regex(/^([01]\d|2[0-3]):[0-5]\d$/, '時刻は HH:MM 形式で入力してください');
-
-const optionalNullableString = z
-  .string()
-  .trim()
-  .optional()
-  .transform((v) => (v === '' ? undefined : v));
-
-const optionalTime = z
-  .union([timeStringSchema, z.literal('')])
-  .optional()
-  .transform((v) => (v === '' || v === undefined ? undefined : v));
-
-const optionalEnum = <T extends readonly [string, ...string[]]>(values: T) =>
-  z
-    .union([z.enum(values as unknown as [string, ...string[]]), z.literal('')])
-    .optional()
-    .transform((v) => (v === '' || v === undefined ? undefined : (v as T[number])));
+import {
+  PATIENT_STATUS_V2_VALUES,
+  SEX_RESTRICTION_V2_VALUES,
+  SEX_V2_VALUES,
+  TIME_TYPE_V2_VALUES,
+  VISIT_FREQUENCY_V2_VALUES,
+  WEEKDAY_V2_VALUES,
+  patientV2BaseSchema,
+  patientV2CreateSchema,
+  patientV2ReadSchema,
+  patientV2UpdateSchema,
+  weeklyPatternEntryV2Schema,
+  weeklyPatternV2Schema,
+  specialWeekRefV2Schema,
+  type PatientV2Base,
+  type PatientV2Create,
+  type PatientV2Read,
+  type PatientV2Update,
+  type SpecialWeekRefV2,
+  type TimeTypeV2,
+  type VisitFrequencyV2,
+  type WeeklyPatternEntryV2,
+  type WeeklyPatternV2,
+  type WeekdayV2,
+} from './v2/patient';
 
 // ---------------------------------------------------------------------------
-// Structured weekly_pattern (W3-C)
+// v2 schema / 型の re-export (移行用 alias)
 // ---------------------------------------------------------------------------
 
-export const WEEKDAY_KEYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as const;
-export type WeekdayKey = (typeof WEEKDAY_KEYS)[number];
+export {
+  patientV2BaseSchema as patientBaseSchema,
+  patientV2CreateSchema as patientCreateSchema,
+  patientV2UpdateSchema as patientUpdateSchema,
+  patientV2ReadSchema as patientReadSchema,
+  weeklyPatternV2Schema,
+  weeklyPatternEntryV2Schema,
+  specialWeekRefV2Schema,
+};
+
+export type PatientBase = PatientV2Base;
+export type PatientCreate = PatientV2Create;
+export type PatientUpdate = PatientV2Update;
+export type PatientRead = PatientV2Read;
+export type SpecialWeekRef = SpecialWeekRefV2;
+export type WeeklyPatternEntry = WeeklyPatternEntryV2;
+export type { WeeklyPatternV2 };
+
+// ---------------------------------------------------------------------------
+// UI ラベル/オプション定数
+// v2 のサーバ側 enum (英語小文字) ↔ UI 表示 (日本語) のマッピング。
+// ---------------------------------------------------------------------------
+
+export const SEX_VALUES = SEX_V2_VALUES;
+export const SEX_LABELS_JA: Record<(typeof SEX_VALUES)[number], string> = {
+  male: '男性',
+  female: '女性',
+  unknown: '不明',
+};
+/** 既存ページ互換: v1 では日本語ラベル配列だったが v2 は enum 値配列。 */
+export const SEX_OPTIONS = SEX_VALUES;
+
+export const INSURANCE_VALUES = ['medical', 'care'] as const;
+export const INSURANCE_LABELS_JA: Record<(typeof INSURANCE_VALUES)[number], string> = {
+  medical: '医療保険',
+  care: '介護保険',
+};
+/** 既存ページ互換: v1 では `['医療保険','介護保険']` だった。
+ *  v2 では enum (`medical|care`) を選び、表示は `INSURANCE_LABELS_JA` 経由。 */
+export const INSURANCE_OPTIONS = INSURANCE_VALUES;
+
+export const SEX_RESTRICTION_VALUES = SEX_RESTRICTION_V2_VALUES;
+export const SEX_RESTRICTION_LABELS_JA: Record<(typeof SEX_RESTRICTION_VALUES)[number], string> = {
+  female_only: '女性のみ',
+  male_only: '男性のみ',
+};
+export const SEX_RESTRICTION_OPTIONS = SEX_RESTRICTION_VALUES;
+
+export const STATUS_VALUES = PATIENT_STATUS_V2_VALUES;
+export const STATUS_LABELS_JA: Record<(typeof STATUS_VALUES)[number], string> = {
+  active: '稼働中',
+  suspended: '一時休止',
+  admitted: '入院中',
+  pending: '開始前',
+  cancelled: '解約済み',
+};
+export const STATUS_OPTIONS = STATUS_VALUES;
+
+// ---------------------------------------------------------------------------
+// WeeklyPattern (UI 層用)
+// ---------------------------------------------------------------------------
+
+export const WEEKDAY_KEYS = WEEKDAY_V2_VALUES;
+export type WeekdayKey = WeekdayV2;
 
 export const WEEKDAY_LABELS_JA: Record<WeekdayKey, string> = {
   Mon: '月',
@@ -68,30 +124,61 @@ export const WEEKDAY_LABELS_JA: Record<WeekdayKey, string> = {
   Sun: '日',
 };
 
-export const VISIT_FREQUENCY_OPTIONS = ['every', 'biweekly', 'monthly'] as const;
-export const VISIT_FREQUENCY_LABELS: Record<
-  (typeof VISIT_FREQUENCY_OPTIONS)[number],
-  string
-> = {
+export const VISIT_FREQUENCY_OPTIONS = VISIT_FREQUENCY_V2_VALUES;
+export const VISIT_FREQUENCY_LABELS: Record<(typeof VISIT_FREQUENCY_OPTIONS)[number], string> = {
   every: '毎週',
   biweekly: '隔週',
   monthly: '月次',
 };
 
-export const WEEKDAY_PRIORITY_OPTIONS = ['高', '中', '低'] as const;
-export const TIME_TYPE_OPTIONS = ['固定', '午前', '午後', '終日', '時間帯'] as const;
+export const TIME_TYPE_OPTIONS = TIME_TYPE_V2_VALUES;
 
-export interface WeeklyPattern {
-  frequency_per_week: number;
-  visit_frequency: (typeof VISIT_FREQUENCY_OPTIONS)[number] | null;
-  visit_weeks: string | null;
-  preferred_weekdays: WeekdayKey[];
-  weekday_priority: (typeof WEEKDAY_PRIORITY_OPTIONS)[number];
-  service_minutes: number;
-  time_type: (typeof TIME_TYPE_OPTIONS)[number];
+export type TimeType = TimeTypeV2;
+export type VisitFrequency = VisitFrequencyV2;
+
+/**
+ * 曜日ごとの 1 エントリ (UI 編集用). サーバ送信時は
+ * `weeklyPatternV2Schema.entries[]` に入る。
+ *
+ * §3.3: staff_count = 2 で「2 名体制」を表現。
+ */
+export interface WeeklyPatternEntryUI {
+  weekday: WeekdayKey;
+  /** 当該曜日に訪問するか (false 時は `entries` から除外して保存) */
+  enabled: boolean;
+  staff_count: 1 | 2;
+  time_type: TimeType;
   preferred_start: string | null;
   preferred_end: string | null;
-  ng_weekdays: WeekdayKey[] | null;
+  service_minutes: number | null;
+}
+
+/** UI 上の WeeklyPattern. v1 から weekday_priority / ng_weekdays を取り除き、
+ *  entries[] (曜日ごと staff_count) を追加。 */
+export interface WeeklyPattern {
+  frequency_per_week: number;
+  visit_frequency: VisitFrequency | null;
+  visit_weeks: string | null;
+  preferred_weekdays: WeekdayKey[];
+  service_minutes: number;
+  time_type: TimeType;
+  preferred_start: string | null;
+  preferred_end: string | null;
+  /** 曜日ごとの staff_count 切替 (§3.3). enabled=true の曜日のみ送信時に flatten。 */
+  entries: WeeklyPatternEntryUI[];
+}
+
+/** 全曜日の初期 entry (enabled=false / staff_count=1). */
+export function makeDefaultEntries(): WeeklyPatternEntryUI[] {
+  return WEEKDAY_KEYS.map((d) => ({
+    weekday: d,
+    enabled: false,
+    staff_count: 1,
+    time_type: '終日',
+    preferred_start: null,
+    preferred_end: null,
+    service_minutes: null,
+  }));
 }
 
 export const emptyWeeklyPattern: WeeklyPattern = {
@@ -99,26 +186,43 @@ export const emptyWeeklyPattern: WeeklyPattern = {
   visit_frequency: null,
   visit_weeks: null,
   preferred_weekdays: [],
-  weekday_priority: '中',
   service_minutes: 30,
   time_type: '終日',
   preferred_start: null,
   preferred_end: null,
-  ng_weekdays: null,
+  entries: makeDefaultEntries(),
 };
 
-/** Shared base — fields common to Create/Read/Update. */
-export const patientBaseSchema = z.object({
+// ---------------------------------------------------------------------------
+// react-hook-form 用 form schema / values
+// ---------------------------------------------------------------------------
+
+const optionalNullableString = z
+  .string()
+  .trim()
+  .optional()
+  .transform((v) => (v === '' ? undefined : v));
+
+const optionalEnum = <T extends readonly [string, ...string[]]>(values: T) =>
+  z
+    .union([z.enum(values as unknown as [string, ...string[]]), z.literal('')])
+    .optional()
+    .transform((v) => (v === '' || v === undefined ? undefined : (v as T[number])));
+
+/**
+ * patientFormSchema — react-hook-form が直接 bind する shape.
+ *
+ * `weekly_pattern` / `special_weekly_pattern` は `WeeklyPatternEditor` が
+ * 構造化 dict を出力するため record として受ける（zod transform は通さず、
+ * 送信前に `weeklyPatternToWire` で v2 dict に直す）。
+ */
+export const patientFormSchema = z.object({
   code: z.string().min(1, 'コードは必須です').max(64),
   name: z.string().min(1, '氏名は必須です').max(120),
   kana: optionalNullableString,
-  sex: optionalEnum(SEX_OPTIONS),
-  age: z
-    .union([z.coerce.number().int().min(0).max(150), z.literal('')])
-    .optional()
-    .transform((v) => (v === '' || v === undefined ? undefined : (v as number))),
-  status: statusEnum.default('active'),
-  insurance: optionalEnum(INSURANCE_OPTIONS),
+  sex: optionalEnum(SEX_VALUES),
+  status: z.enum(STATUS_VALUES as unknown as [string, ...string[]]).default('active'),
+  insurance: optionalEnum(INSURANCE_VALUES),
   address: optionalNullableString,
   lat: z.preprocess(
     (v) => (v === '' || v === null || v === undefined ? undefined : v),
@@ -132,151 +236,37 @@ export const patientBaseSchema = z.object({
     .union([z.string().uuid(), z.literal('')])
     .optional()
     .transform((v) => (v === '' || v === undefined ? undefined : v)),
-  required_staff_count: z.coerce.number().int().min(1).max(10).default(1),
-  sex_restriction: optionalEnum(SEX_RESTRICTION_OPTIONS),
-  ng_time_start: optionalTime,
-  ng_time_end: optionalTime,
+  sex_restriction: optionalEnum(SEX_RESTRICTION_VALUES),
   note: optionalNullableString,
-  weekly_pattern: z.record(z.unknown()).nullish(),
-  special_week: z.record(z.unknown()).nullish(),
-  // TODO: W3-A backend pydantic 拡張完了後に nullable() を必須化検討
-  area: z.string().nullable().optional(),
-  ng_staff_ids: z.array(z.string().uuid()).nullable().optional().default([]),
-  preferred_staff_ids: z.array(z.string().uuid()).nullable().optional().default([]),
-  specified_type: z
-    .union([specifiedTypeEnum, z.literal('')])
-    .nullable()
-    .optional()
-    .transform((v) =>
-      v === '' || v === undefined || v === null
-        ? undefined
-        : (v as (typeof SPECIFIED_TYPE_OPTIONS)[number]),
-    ),
-  continuous_request: z.boolean().default(false),
-});
-
-export const patientCreateSchema = patientBaseSchema;
-
-/**
- * Update: all fields optional. Hand-written (not `.partial()`) so that the
- * `status` / `required_staff_count` defaults on the base schema do NOT leak
- * into PATCH payloads (which would silently overwrite server values).
- */
-export const patientUpdateSchema = z.object({
-  code: z.string().min(1).max(64).optional(),
-  name: z.string().min(1).max(120).optional(),
-  kana: optionalNullableString,
-  sex: optionalEnum(SEX_OPTIONS),
-  age: z
-    .union([z.coerce.number().int().min(0).max(150), z.literal('')])
-    .optional()
-    .transform((v) => (v === '' || v === undefined ? undefined : (v as number))),
-  status: z
-    .union([statusEnum, z.literal('')])
-    .optional()
-    .transform((v) =>
-      v === '' || v === undefined ? undefined : (v as (typeof STATUS_OPTIONS)[number]),
-    ),
-  insurance: optionalEnum(INSURANCE_OPTIONS),
-  address: optionalNullableString,
-  lat: z.preprocess(
-    (v) => (v === '' || v === null || v === undefined ? undefined : v),
-    z.coerce.number().min(-90).max(90).optional(),
-  ),
-  lng: z.preprocess(
-    (v) => (v === '' || v === null || v === undefined ? undefined : v),
-    z.coerce.number().min(-180).max(180).optional(),
-  ),
-  primary_office_id: z
-    .union([z.string().uuid(), z.literal('')])
-    .optional()
-    .transform((v) => (v === '' || v === undefined ? undefined : v)),
-  required_staff_count: z
-    .union([z.coerce.number().int().min(1).max(10), z.literal('')])
-    .optional()
-    .transform((v) => (v === '' || v === undefined ? undefined : (v as number))),
-  sex_restriction: optionalEnum(SEX_RESTRICTION_OPTIONS),
-  ng_time_start: optionalTime,
-  ng_time_end: optionalTime,
-  note: optionalNullableString,
-  weekly_pattern: z.record(z.unknown()).nullish(),
-  special_week: z.record(z.unknown()).nullish(),
-  // TODO: W3-A backend pydantic 拡張完了後に挙動再確認
-  area: z.string().nullable().optional(),
-  ng_staff_ids: z.array(z.string().uuid()).nullable().optional(),
-  preferred_staff_ids: z.array(z.string().uuid()).nullable().optional(),
-  specified_type: z
-    .union([specifiedTypeEnum, z.literal('')])
-    .nullable()
-    .optional()
-    .transform((v) =>
-      v === '' || v === undefined || v === null
-        ? undefined
-        : (v as (typeof SPECIFIED_TYPE_OPTIONS)[number]),
-    ),
-  continuous_request: z.boolean().optional(),
-});
-
-/** Read: server response. Includes server-generated fields. */
-export const patientReadSchema = patientBaseSchema.extend({
-  id: z.string().uuid(),
-  created_at: z.string(),
-  updated_at: z.string(),
-  deleted_at: z.string().nullable().optional(),
+  weekly_pattern: z.record(z.unknown()).optional(),
+  special_weekly_pattern: z.record(z.unknown()).optional(),
+  special_week_enabled: z.boolean().optional().default(false),
+  special_week_active_input: z.string().optional().default(''),
 });
 
 /**
- * Form-input schema — matches the actual shape that react-hook-form binds
- * to (`weekly_pattern` is a structured dict via WeeklyPatternEditor,
- * `special_week` is a checkbox boolean). The submit handler converts these
- * into the `dict | null` payload expected by `patientCreateSchema` /
- * `patientUpdateSchema`.
- *
- * Defined separately from `patientCreateSchema` so that resolver validation
- * does not reject the structured/checkbox values before our custom parsing
- * runs.
- */
-export const patientFormSchema = patientBaseSchema
-  .omit({ weekly_pattern: true, special_week: true })
-  .extend({
-    weekly_pattern: z.record(z.unknown()).optional(),
-    special_week: z.boolean().optional().default(false),
-  });
-
-export type PatientCreate = z.infer<typeof patientCreateSchema>;
-export type PatientUpdate = z.infer<typeof patientUpdateSchema>;
-export type PatientRead = z.infer<typeof patientReadSchema>;
-
-/**
- * react-hook-form input type — fields can be empty strings before zod
- * coercion runs. Used as `useForm<PatientFormValues>` so HTML inputs bind
- * cleanly without `as any`.
+ * react-hook-form 入力型. HTML inputs は文字列で bind するため数値・boolean は
+ * 文字列で表現し、送信時に coerce する。
  */
 export type PatientFormValues = {
   code: string;
   name: string;
   kana: string;
-  sex: '' | (typeof SEX_OPTIONS)[number];
-  age: string;
-  status: (typeof STATUS_OPTIONS)[number];
-  insurance: '' | (typeof INSURANCE_OPTIONS)[number];
+  sex: '' | (typeof SEX_VALUES)[number];
+  status: (typeof STATUS_VALUES)[number];
+  insurance: '' | (typeof INSURANCE_VALUES)[number];
   address: string;
   lat: string;
   lng: string;
   primary_office_id: string;
-  required_staff_count: string;
-  sex_restriction: '' | (typeof SEX_RESTRICTION_OPTIONS)[number];
-  ng_time_start: string;
-  ng_time_end: string;
+  sex_restriction: '' | (typeof SEX_RESTRICTION_VALUES)[number];
   note: string;
   weekly_pattern: WeeklyPattern;
-  special_week: boolean;
-  // W3-A additions
-  area: string;
-  ng_staff_ids: string[];
-  preferred_staff_ids: string[];
-  specified_type: '' | (typeof SPECIFIED_TYPE_OPTIONS)[number];
-  continuous_request: boolean;
+  special_weekly_pattern: WeeklyPattern;
+  /** 特別訪問週間 ON/OFF (§3.4 簡素実装) */
+  special_week_enabled: boolean;
+  /** 適用週入力 (例 "2026-W18, 2026-W19"). 送信時に正規化。 */
+  special_week_active_input: string;
 };
 
 export const emptyPatientFormValues: PatientFormValues = {
@@ -284,114 +274,188 @@ export const emptyPatientFormValues: PatientFormValues = {
   name: '',
   kana: '',
   sex: '',
-  age: '',
   status: 'active',
   insurance: '',
   address: '',
   lat: '',
   lng: '',
   primary_office_id: '',
-  required_staff_count: '1',
   sex_restriction: '',
-  ng_time_start: '',
-  ng_time_end: '',
   note: '',
   weekly_pattern: emptyWeeklyPattern,
-  special_week: false,
-  area: '',
-  ng_staff_ids: [],
-  preferred_staff_ids: [],
-  specified_type: '',
-  continuous_request: false,
+  special_weekly_pattern: emptyWeeklyPattern,
+  special_week_enabled: false,
+  special_week_active_input: '',
 };
 
+// ---------------------------------------------------------------------------
+// JSONB <-> UI 変換ヘルパ
+// ---------------------------------------------------------------------------
+
+const isWeekday = (v: unknown): v is WeekdayKey =>
+  typeof v === 'string' && (WEEKDAY_KEYS as readonly string[]).includes(v);
+
+const filterWeekdays = (arr: unknown): WeekdayKey[] =>
+  Array.isArray(arr) ? arr.filter(isWeekday) : [];
+
+const isTimeType = (v: unknown): v is TimeType =>
+  typeof v === 'string' && (TIME_TYPE_OPTIONS as readonly string[]).includes(v);
+
+const isVisitFrequency = (v: unknown): v is VisitFrequency =>
+  typeof v === 'string' && (VISIT_FREQUENCY_OPTIONS as readonly string[]).includes(v);
+
 /**
- * Coerce an arbitrary JSONB blob (from server) into a structured
- * `WeeklyPattern`. Unknown / missing keys fall back to `emptyWeeklyPattern`
- * defaults so the editor always has a valid shape to bind to.
+ * Coerce a raw `weekly_pattern` JSONB blob into a structured `WeeklyPattern`.
+ * Unknown / missing keys fall back to `emptyWeeklyPattern` defaults so the
+ * editor always has a valid shape to bind to.
  */
 export function coerceWeeklyPattern(raw: unknown): WeeklyPattern {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-    return { ...emptyWeeklyPattern };
+    return {
+      ...emptyWeeklyPattern,
+      entries: makeDefaultEntries(),
+    };
   }
   const r = raw as Record<string, unknown>;
-  const isWeekday = (v: unknown): v is WeekdayKey =>
-    typeof v === 'string' && (WEEKDAY_KEYS as readonly string[]).includes(v);
-  const filterWeekdays = (arr: unknown): WeekdayKey[] =>
-    Array.isArray(arr) ? arr.filter(isWeekday) : [];
 
   const freq = Number(r.frequency_per_week);
   const minutes = Number(r.service_minutes);
 
-  const visitFreq = VISIT_FREQUENCY_OPTIONS.includes(
-    r.visit_frequency as (typeof VISIT_FREQUENCY_OPTIONS)[number],
-  )
-    ? (r.visit_frequency as (typeof VISIT_FREQUENCY_OPTIONS)[number])
-    : null;
+  const visitFreq = isVisitFrequency(r.visit_frequency) ? r.visit_frequency : null;
+  const timeType = isTimeType(r.time_type) ? r.time_type : '終日';
 
-  const priority = WEEKDAY_PRIORITY_OPTIONS.includes(
-    r.weekday_priority as (typeof WEEKDAY_PRIORITY_OPTIONS)[number],
-  )
-    ? (r.weekday_priority as (typeof WEEKDAY_PRIORITY_OPTIONS)[number])
-    : '中';
-
-  const timeType = TIME_TYPE_OPTIONS.includes(
-    r.time_type as (typeof TIME_TYPE_OPTIONS)[number],
-  )
-    ? (r.time_type as (typeof TIME_TYPE_OPTIONS)[number])
-    : '終日';
-
-  const ngWeekdaysRaw = r.ng_weekdays;
-  const ngWeekdays =
-    ngWeekdaysRaw === null || ngWeekdaysRaw === undefined
-      ? null
-      : filterWeekdays(ngWeekdaysRaw);
+  const entries = makeDefaultEntries();
+  if (Array.isArray(r.entries)) {
+    for (const e of r.entries) {
+      if (!e || typeof e !== 'object') continue;
+      const o = e as Record<string, unknown>;
+      const day = isWeekday(o.weekday) ? o.weekday : null;
+      if (!day) continue;
+      const idx = WEEKDAY_KEYS.indexOf(day);
+      const sc = Number(o.staff_count);
+      const sm = Number(o.service_minutes);
+      entries[idx] = {
+        weekday: day,
+        enabled: true,
+        staff_count: sc === 2 ? 2 : 1,
+        time_type: isTimeType(o.time_type) ? o.time_type : timeType,
+        preferred_start:
+          typeof o.preferred_start === 'string' && o.preferred_start ? o.preferred_start : null,
+        preferred_end:
+          typeof o.preferred_end === 'string' && o.preferred_end ? o.preferred_end : null,
+        service_minutes: Number.isFinite(sm) ? sm : null,
+      };
+    }
+  }
 
   return {
     frequency_per_week: Number.isFinite(freq) ? Math.min(7, Math.max(1, freq)) : 1,
     visit_frequency: visitFreq,
     visit_weeks: typeof r.visit_weeks === 'string' ? r.visit_weeks : null,
     preferred_weekdays: filterWeekdays(r.preferred_weekdays),
-    weekday_priority: priority,
-    service_minutes: Number.isFinite(minutes)
-      ? Math.min(180, Math.max(1, minutes))
-      : 30,
+    service_minutes: Number.isFinite(minutes) ? Math.min(180, Math.max(1, minutes)) : 30,
     time_type: timeType,
     preferred_start:
       typeof r.preferred_start === 'string' && r.preferred_start ? r.preferred_start : null,
-    preferred_end:
-      typeof r.preferred_end === 'string' && r.preferred_end ? r.preferred_end : null,
-    ng_weekdays: ngWeekdays,
+    preferred_end: typeof r.preferred_end === 'string' && r.preferred_end ? r.preferred_end : null,
+    entries,
   };
+}
+
+/**
+ * UI の `WeeklyPattern` を v2 サーバ送信用 dict に直す。
+ * `entries[]` は enabled=true のエントリのみ送る。
+ */
+export function weeklyPatternToWire(wp: WeeklyPattern): Record<string, unknown> {
+  return {
+    frequency_per_week: wp.frequency_per_week,
+    visit_frequency: wp.visit_frequency ?? null,
+    visit_weeks: wp.visit_weeks ?? null,
+    preferred_weekdays: wp.preferred_weekdays.length > 0 ? wp.preferred_weekdays : null,
+    service_minutes: wp.service_minutes,
+    time_type: wp.time_type,
+    preferred_start: wp.preferred_start ?? null,
+    preferred_end: wp.preferred_end ?? null,
+    entries: wp.entries
+      .filter((e) => e.enabled)
+      .map((e) => ({
+        weekday: e.weekday,
+        staff_count: e.staff_count,
+        time_type: e.time_type,
+        preferred_start: e.preferred_start ?? null,
+        preferred_end: e.preferred_end ?? null,
+        service_minutes: e.service_minutes != null ? e.service_minutes : wp.service_minutes,
+      })),
+  };
+}
+
+/**
+ * special_week_active_input ("2026-W18, 2026-W19") を
+ * `[{iso_year, iso_week}, ...]` に正規化する。
+ *
+ * 受け付ける形式:
+ *   - "2026-W18, 2026-W19" (ISO week date 風)
+ *   - "2026-18 2026-19"
+ *   - "2026/18,2026/19"
+ *
+ * 不正トークンは黙って落とす。
+ */
+const ISO_WEEK_TOKEN_RE = /(\d{4})[-\/W ]+W?(\d{1,2})/g;
+
+export function parseSpecialWeekInput(input: string): SpecialWeekRefV2[] {
+  const out: SpecialWeekRefV2[] = [];
+  if (!input) return out;
+  const seen = new Set<string>();
+  for (const m of input.matchAll(ISO_WEEK_TOKEN_RE)) {
+    const y = Number(m[1]);
+    const w = Number(m[2]);
+    if (!Number.isInteger(y) || !Number.isInteger(w)) continue;
+    if (y < 2000 || y > 2100) continue;
+    if (w < 1 || w > 53) continue;
+    const key = `${y}-${w}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ iso_year: y, iso_week: w });
+  }
+  return out;
+}
+
+/** SpecialWeekRef[] → 表示・編集用テキスト ("2026-W18, 2026-W19"). */
+export function formatSpecialWeekInput(
+  refs: ReadonlyArray<SpecialWeekRef> | null | undefined,
+): string {
+  if (!refs || refs.length === 0) return '';
+  return refs.map((r) => `${r.iso_year}-W${String(r.iso_week).padStart(2, '0')}`).join(', ');
 }
 
 /** Map a server `PatientRead` into form-friendly string values. */
 export function patientReadToFormValues(p: PatientRead): PatientFormValues {
+  const refs: SpecialWeekRef[] = (p.special_week_active ?? [])
+    .map((r) => {
+      const o = r as Record<string, unknown>;
+      const y = Number(o.iso_year);
+      const w = Number(o.iso_week);
+      if (!Number.isInteger(y) || !Number.isInteger(w)) return null;
+      return { iso_year: y, iso_week: w } as SpecialWeekRef;
+    })
+    .filter((x): x is SpecialWeekRef => x !== null);
+
   return {
     code: p.code,
     name: p.name,
     kana: p.kana ?? '',
     sex: (p.sex as PatientFormValues['sex']) ?? '',
-    age: p.age !== undefined && p.age !== null ? String(p.age) : '',
-    status: p.status ?? 'active',
+    status: (p.status as PatientFormValues['status']) ?? 'active',
     insurance: (p.insurance as PatientFormValues['insurance']) ?? '',
     address: p.address ?? '',
     lat: p.lat !== undefined && p.lat !== null ? String(p.lat) : '',
     lng: p.lng !== undefined && p.lng !== null ? String(p.lng) : '',
     primary_office_id: p.primary_office_id ?? '',
-    required_staff_count: String(p.required_staff_count ?? 1),
-    sex_restriction:
-      (p.sex_restriction as PatientFormValues['sex_restriction']) ?? '',
-    ng_time_start: p.ng_time_start ?? '',
-    ng_time_end: p.ng_time_end ?? '',
+    sex_restriction: (p.sex_restriction as PatientFormValues['sex_restriction']) ?? '',
     note: p.note ?? '',
     weekly_pattern: coerceWeeklyPattern(p.weekly_pattern),
-    special_week: !!p.special_week,
-    area: p.area ?? '',
-    ng_staff_ids: p.ng_staff_ids ?? [],
-    preferred_staff_ids: p.preferred_staff_ids ?? [],
-    specified_type:
-      (p.specified_type as PatientFormValues['specified_type']) ?? '',
-    continuous_request: p.continuous_request ?? false,
+    special_weekly_pattern: coerceWeeklyPattern(p.special_weekly_pattern),
+    special_week_enabled: refs.length > 0,
+    special_week_active_input: formatSpecialWeekInput(refs),
   };
 }
