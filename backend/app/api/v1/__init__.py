@@ -7,8 +7,10 @@ from app.api.v1 import (
     allocate,
     auth,
     cities,
+    dashboard,
     diff,
     health,
+    integrations,
     offices,
     patients,
     staff,
@@ -26,5 +28,9 @@ api_router.include_router(offices.router, prefix="/offices", tags=["offices"])
 api_router.include_router(cities.router, prefix="/cities", tags=["cities"])
 api_router.include_router(diff.router, prefix="/diff", tags=["diff"])
 api_router.include_router(allocate.router, prefix="/allocate", tags=["allocate"])
+api_router.include_router(dashboard.router, prefix="/dashboard", tags=["dashboard"])
+api_router.include_router(
+    integrations.router, prefix="/integrations", tags=["integrations"]
+)
 
 __all__ = ["api_router"]
