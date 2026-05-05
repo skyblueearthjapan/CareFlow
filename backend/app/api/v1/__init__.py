@@ -19,6 +19,7 @@ from app.api.v1 import (
     notifications,
     offices,
     patients,
+    pending_requests,
     shift_requests,
     special_weeks,
     staff,
@@ -69,6 +70,10 @@ api_router.include_router(notifications.router, prefix="/notifications", tags=["
 # Wave 4-D: cross-staff shift-request status update (admin/manager only).
 api_router.include_router(
     shift_requests.status_router, prefix="/shift-requests", tags=["shift-requests"]
+)
+# W2-BE5: pending_requests (AI 入力 / 手動申請 + 承認フロー).
+api_router.include_router(
+    pending_requests.router, prefix="/pending-requests", tags=["pending-requests"]
 )
 
 __all__ = ["api_router"]
