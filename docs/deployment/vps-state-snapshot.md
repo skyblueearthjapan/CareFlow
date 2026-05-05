@@ -6,6 +6,10 @@
 
 ## Tunnel & Cloudflared
 
+> **重要 (2026-05-05 実測)**: cloudflared tunnel は **Cloudflare ダッシュボードのリモート管理モード**で動作中。ローカル `/etc/cloudflared/config.yml` 編集はランタイムに反映されない。
+
+### ローカルファイル (informational only)
+`/etc/cloudflared/config.yml`:
 ```yaml
 tunnel: ff143e2a-65a9-468d-a8dd-96e56e690ae7
 credentials-file: /root/.cloudflared/ff143e2a-65a9-468d-a8dd-96e56e690ae7.json
@@ -20,10 +24,29 @@ ingress:
   - service: http_status:404
 ```
 
+### 実際にロードされた設定 (`journalctl -u cloudflared | grep "Updated to new configuration"` 由来、version=4)
+```json
+{
+  "ingress": [
+    {"hostname":"kaipoke-api.net","service":"http://localhost:5000"},
+    {"hostname":"novnc.kaipoke-api.net","service":"http://localhost:6080"},
+    {"hostname":"linebot.kaipoke-api.net","service":"http://127.0.0.1:18789"},
+    {"service":"http_status:404"}
+  ]
+}
+```
+
+### 検出方法
+- ローカルファイル: `127.0.0.1:5000` / `127.0.0.1:6080`
+- ダッシュボード版: `localhost:5000` / `localhost:6080` ← micro-difference!
+- → ローカルとダッシュボードに drift があり、ダッシュボード版が優先される
+
 **確定事項:**
-- ワイルドカード `*.kaipoke-api.net` 不在 → `carelink.kaipoke-api.net` を新規 list item として追加で安全
-- 既存ルールは全て `http://127.0.0.1:port` 形式 → 我々の fragment も `127.0.0.1` で揃える (`localhost` だと将来 `/etc/hosts` 変更で挙動が変わるリスク)
+- ワイルドカード `*.kaipoke-api.net` 不在 → `carelink.kaipoke-api.net` を新規追加で安全
 - catch-all (`http_status:404`) は末尾に存在 → 必ず維持
+- **carelink hostname の追加は Cloudflare Zero Trust ダッシュボード経由でのみ可能**
+  - URL: https://one.dash.cloudflare.com → Networks → Tunnels → tunnel ID → Public Hostname tab → Add
+  - Service URL は `localhost:18000` を指定 (frontend 単一 hostname、API は Next.js rewrites 経由)
 
 ## Open ports (host)
 

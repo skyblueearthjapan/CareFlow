@@ -117,22 +117,55 @@ curl -fsS  http://localhost:18001/api/v1/healthz
 
 ## Phase G: Cloudflared ingress 追加
 
+> **重要 (2026-05-05 実測)**: 本 VPS の cloudflared tunnel は **Cloudflare ダッシュボードのリモート管理モード** で動作している。`/etc/cloudflared/config.yml` をローカル編集してもランタイムには反映されない。`journalctl -u cloudflared -n 200 | grep "Updated to new configuration"` で実際にロードされている JSON 設定を確認できる。version=4 等が表示されればダッシュボード管理モード。
+
+### G-1. 先に DNS CNAME を追加 (Cloudflare ダッシュボード)
+1. https://dash.cloudflare.com → `kaipoke-api.net` Zone → **DNS** → **Records** → **Add record**
+   - **Type**: `CNAME`
+   - **Name**: `carelink`
+   - **Target**: `<tunnel-uuid>.cfargotunnel.com` (例: `ff143e2a-65a9-468d-a8dd-96e56e690ae7.cfargotunnel.com`)
+   - **Proxy status**: 🟠 **Proxied** (オレンジ雲、必須)
+2. 確認: `nslookup carelink.kaipoke-api.net` が Cloudflare anycast IP (104.21.x.x / 172.67.x.x) を返す
+
+### G-2-A. ダッシュボード管理モード (デフォルト)
+1. https://one.dash.cloudflare.com → 左メニュー **Networks** → **Tunnels**
+2. 該当 tunnel ID を選択 → **Configure** または **Edit** ボタン
+3. **Public Hostname** タブ → **Add a public hostname**:
+
+   | 項目 | 値 |
+   |---|---|
+   | Subdomain | `carelink` |
+   | Domain | `kaipoke-api.net` |
+   | Path | (空) |
+   | Type | `HTTP` |
+   | URL | `localhost:18000` |
+
+4. **Save hostname**
+
+frontend だけを公開すれば十分。`/api/v1/*` への内部呼び出しは `frontend/next.config.js` の `rewrites()` が docker network 越しに backend へ転送する構成。**API 用に `api.carelink...` のような別 hostname は不要**。
+
+### G-2-B. ローカル管理モード (legacy fallback)
+万一 `journalctl` で "Updated to new configuration" のログが見当たらず、ローカル `/etc/cloudflared/config.yml` がそのまま使われている tunnel の場合:
 ```bash
 sudo cp /etc/cloudflared/config.yml /etc/cloudflared/config.yml.bak.$(date +%Y%m%d)
 sudo $EDITOR /etc/cloudflared/config.yml
 # docs/deployment/cloudflared-config-fragment.yml の "↓↓↓ ここから下を ... 挿入 ↓↓↓"
-# ブロックを、既存 `ingress:` 配下の **最上部** にそのままコピー&ペースト。
+# ブロックを、既存 `ingress:` 配下の **最上部** にコピー&ペースト。
 # 既存ルール (kaipoke-api 等) と末尾 catch-all (`- service: http_status:404`) は
-# 絶対に変更・削除しないこと。
+# 絶対に変更・削除しない。
 sudo cloudflared tunnel ingress validate
-sudo systemctl reload cloudflared
+sudo systemctl restart cloudflared   # reload は 2024+ で deprecated、restart 推奨
 sudo systemctl status cloudflared --no-pager | head -20
 ```
 
-Cloudflare Zone (`kaipoke-api.net`) の DNS に `carelink` の CNAME を追加 (Cloudflare ダッシュボード → DNS → Add CNAME → Target = 既存 tunnel id `<tunnel-uuid>.cfargotunnel.com`)。
+成功条件:
+- ダッシュボード管理モード: ダッシュボード保存後 30 秒以内に `curl -I https://carelink.kaipoke-api.net/` が **307 (NextAuth login redirect)** を返す
+- どのモードでも: `curl -I https://kaipoke-api.net` で **既存 kaipoke-api サービスが反応し続ける** (404/200 のいずれでも、cloudflare が応答していれば OK)
 
-成功条件: `cloudflared tunnel ingress validate` が OK、`systemctl reload` 後に `is-active` が active のまま、かつ `curl -I https://kaipoke-api.net` で **既存 kaipoke-api サービスが 200 を返し続ける**。
-失敗時: `config.yml.bak.*` で即座に revert し reload。kaipoke-api 側の疎通を `curl -I https://kaipoke-api.net` で必ず再確認 (既存サービス障害が最優先)。
+失敗時:
+- ダッシュボードモード: hostname 行を削除して保存 (即時ロールバック)
+- ローカルモード: `config.yml.bak.*` で revert + restart
+- いずれの場合も既存サービス疎通を `curl -I https://kaipoke-api.net` で必ず再確認 (既存サービス障害が最優先)
 
 ## Phase H: 公開疎通確認
 
