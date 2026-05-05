@@ -21,19 +21,14 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useMentor } from '@/lib/queries/mentor';
 import { useStaffEvents } from '@/lib/queries/staff-events';
-import {
-  useStaffOverrides,
-  type OverrideRange,
-} from '@/lib/queries/staff-overrides';
+import { useStaffOverrides, type OverrideRange } from '@/lib/queries/staff-overrides';
 import { useStaffShifts } from '@/lib/queries/staff-shifts';
 import { useDeleteStaff, useStaff } from '@/lib/queries/staff';
 import type { OverrideRead } from '@/lib/schemas/staff-overrides';
 import {
   WEEKDAY_LABELS,
-  assignmentVolumeLabel,
   roleLabel,
   sexLabel,
-  skillLevelLabel,
   statusLabel,
   type StaffRead,
 } from '@/lib/schemas/staff';
@@ -194,15 +189,9 @@ export default function StaffDetailPage() {
 }
 
 function BasicInfoCard({ staff }: { staff: StaffRead }) {
-  const areas = staff.areas ?? [];
-  const homeCoord =
-    staff.home_lat !== undefined &&
-    staff.home_lat !== null &&
-    staff.home_lng !== undefined &&
-    staff.home_lng !== null
-      ? `${staff.home_lat}, ${staff.home_lng}`
-      : '--';
-
+  // v2 (§4.2) 残置 8 項目のみ表示。メンターは「詳細」セクションへ移設済み。
+  // 削除済み: can_double_team / home_address+lat/lng / areas /
+  //           max_per_day / skill_level / assignment_volume.
   return (
     <Card>
       <CardHeader>
@@ -217,44 +206,7 @@ function BasicInfoCard({ staff }: { staff: StaffRead }) {
           <Row label="役割" value={roleLabel(staff.role)} />
           <Row label="状態" value={statusLabel(staff.status)} />
           <Row label="主拠点" value={staff.primary_office_id ?? '--'} />
-          <Row label="2人体制対応" value={staff.can_double_team ? '可' : '不可'} />
-          <Row label="メンター ID" value={staff.mentor_id ?? '--'} />
           <Row label="登録日時" value={formatDate(staff.created_at)} />
-          <Row label="自宅住所" value={staff.home_address ?? '--'} />
-          <Row label="自宅 緯度経度" value={homeCoord} />
-          <Row label="1日最大訪問数" value={String(staff.max_per_day ?? '--')} />
-          <Row label="割付ボリューム" value={assignmentVolumeLabel(staff.assignment_volume)} />
-          <div>
-            <dt className="text-xs text-text-muted">スキル</dt>
-            <dd>
-              {staff.skill_level ? (
-                <span className="inline-flex items-center rounded-full border border-border-default bg-bg-muted px-2 py-0.5 text-xs text-text-primary">
-                  {skillLevelLabel(staff.skill_level)}
-                </span>
-              ) : (
-                <span className="text-text-primary">--</span>
-              )}
-            </dd>
-          </div>
-          <div>
-            <dt className="text-xs text-text-muted">得意エリア</dt>
-            <dd>
-              {areas.length > 0 ? (
-                <div className="flex flex-wrap gap-1">
-                  {areas.map((a) => (
-                    <span
-                      key={a}
-                      className="inline-flex items-center rounded-full border border-border-default bg-bg-muted px-2 py-0.5 text-xs text-text-primary"
-                    >
-                      {a}
-                    </span>
-                  ))}
-                </div>
-              ) : (
-                <span className="text-text-primary">--</span>
-              )}
-            </dd>
-          </div>
           {staff.note && (
             <div className="md:col-span-2">
               <dt className="text-xs text-text-muted">備考</dt>
@@ -276,13 +228,7 @@ function Row({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ShiftsCard({
-  staffId,
-  canEdit,
-}: {
-  staffId: string;
-  canEdit: boolean;
-}) {
+function ShiftsCard({ staffId, canEdit }: { staffId: string; canEdit: boolean }) {
   const { data, isLoading, isError, error } = useStaffShifts(staffId);
   const [open, setOpen] = useState(false);
 
@@ -295,12 +241,7 @@ function ShiftsCard({
       <CardHeader className="flex flex-row items-center justify-between">
         <CardTitle>週間シフト</CardTitle>
         {canEdit && (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => setOpen(true)}
-          >
+          <Button type="button" variant="outline" size="sm" onClick={() => setOpen(true)}>
             <Pencil className="h-4 w-4" />
             編集
           </Button>
@@ -334,18 +275,11 @@ function ShiftsCard({
               {WEEKDAY_LABELS.map((label, weekday) => {
                 const s = rows.find((r) => r.weekday === weekday);
                 return (
-                  <tr
-                    key={weekday}
-                    className="border-b border-border-default last:border-0"
-                  >
+                  <tr key={weekday} className="border-b border-border-default last:border-0">
                     <td className="px-3 py-2">{label}</td>
                     <td className="px-3 py-2">{s?.is_on ? '〇' : '休'}</td>
-                    <td className="px-3 py-2 tnum text-text-secondary">
-                      {s?.start_time ?? '--'}
-                    </td>
-                    <td className="px-3 py-2 tnum text-text-secondary">
-                      {s?.end_time ?? '--'}
-                    </td>
+                    <td className="px-3 py-2 tnum text-text-secondary">{s?.start_time ?? '--'}</td>
+                    <td className="px-3 py-2 tnum text-text-secondary">{s?.end_time ?? '--'}</td>
                   </tr>
                 );
               })}
@@ -366,13 +300,7 @@ function ShiftsCard({
   );
 }
 
-function OverridesCard({
-  staffId,
-  canEdit,
-}: {
-  staffId: string;
-  canEdit: boolean;
-}) {
+function OverridesCard({ staffId, canEdit }: { staffId: string; canEdit: boolean }) {
   const range = useMemo<OverrideRange>(
     () => ({
       from: isoDateOffset(0),
@@ -390,12 +318,7 @@ function OverridesCard({
       <CardHeader className="flex flex-row items-center justify-between">
         <CardTitle>今後の休み・時間変更</CardTitle>
         {canEdit && (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => setAddOpen(true)}
-          >
+          <Button type="button" variant="outline" size="sm" onClick={() => setAddOpen(true)}>
             <Plus className="h-4 w-4" />
             追加
           </Button>
@@ -428,26 +351,17 @@ function OverridesCard({
                     <span className="inline-flex items-center rounded-full border border-border-default bg-bg-muted px-2 py-0.5 text-xs text-text-secondary">
                       {o.type}
                     </span>
-                    <span className="tnum font-medium text-text-primary">
-                      {o.date}
-                    </span>
+                    <span className="tnum font-medium text-text-primary">{o.date}</span>
                   </div>
                   {(o.start_time || o.end_time) && (
                     <div className="tnum text-text-secondary">
                       {o.start_time ?? '--'} 〜 {o.end_time ?? '--'}
                     </div>
                   )}
-                  {o.note && (
-                    <div className="text-xs text-text-muted">{o.note}</div>
-                  )}
+                  {o.note && <div className="text-xs text-text-muted">{o.note}</div>}
                 </div>
                 {canEdit && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setEditing(o)}
-                  >
+                  <Button type="button" variant="outline" size="sm" onClick={() => setEditing(o)}>
                     <Pencil className="h-4 w-4" />
                     編集
                   </Button>
@@ -460,11 +374,7 @@ function OverridesCard({
 
       {canEdit && (
         <>
-          <OverrideAddDialog
-            staffId={staffId}
-            open={addOpen}
-            onOpenChange={setAddOpen}
-          />
+          <OverrideAddDialog staffId={staffId} open={addOpen} onOpenChange={setAddOpen} />
           <OverrideEditDialog
             staffId={staffId}
             override={editing}
@@ -479,13 +389,7 @@ function OverridesCard({
   );
 }
 
-function EventsCard({
-  staffId,
-  canEdit,
-}: {
-  staffId: string;
-  canEdit: boolean;
-}) {
+function EventsCard({ staffId, canEdit }: { staffId: string; canEdit: boolean }) {
   const range = useMemo(
     () => ({
       from: isoDateOffset(-EVENTS_RANGE_DAYS_BACK),
@@ -503,12 +407,7 @@ function EventsCard({
       <CardHeader className="flex flex-row items-center justify-between">
         <CardTitle>研修日 / イベント</CardTitle>
         {canEdit && (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => setAddOpen(true)}
-          >
+          <Button type="button" variant="outline" size="sm" onClick={() => setAddOpen(true)}>
             <Plus className="h-4 w-4" />
             追加
           </Button>
@@ -528,9 +427,7 @@ function EventsCard({
             </AlertDescription>
           </Alert>
         ) : !data || data.length === 0 ? (
-          <p className="text-sm text-text-muted">
-            登録された研修・イベントはありません
-          </p>
+          <p className="text-sm text-text-muted">登録された研修・イベントはありません</p>
         ) : (
           <ul className="space-y-2 text-sm">
             {data.map((e) => (
@@ -543,24 +440,15 @@ function EventsCard({
                     <span className="inline-flex items-center rounded-full border border-border-default bg-bg-muted px-2 py-0.5 text-xs text-text-secondary">
                       {e.type}
                     </span>
-                    <span className="font-medium text-text-primary">
-                      {e.title}
-                    </span>
+                    <span className="font-medium text-text-primary">{e.title}</span>
                   </div>
                   <div className="tnum text-text-secondary">
                     {e.date}　{e.start_time} 〜 {e.end_time}
                   </div>
-                  {e.note && (
-                    <div className="text-xs text-text-muted">{e.note}</div>
-                  )}
+                  {e.note && <div className="text-xs text-text-muted">{e.note}</div>}
                 </div>
                 {canEdit && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setEditing(e)}
-                  >
+                  <Button type="button" variant="outline" size="sm" onClick={() => setEditing(e)}>
                     <Pencil className="h-4 w-4" />
                     編集
                   </Button>
@@ -573,11 +461,7 @@ function EventsCard({
 
       {canEdit && (
         <>
-          <EventAddDialog
-            staffId={staffId}
-            open={addOpen}
-            onOpenChange={setAddOpen}
-          />
+          <EventAddDialog staffId={staffId} open={addOpen} onOpenChange={setAddOpen} />
           <EventEditDialog
             staffId={staffId}
             event={editing}
@@ -608,17 +492,13 @@ function MentorCard({
   const mentorId = data?.mentor_staff_id ?? currentMentorIdHint;
   const mentorName = data?.mentor_staff_name ?? null;
 
+  // v2 (§4.2): メンターは「基本情報」ではなく「詳細」セクションに置く。
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
-        <CardTitle>メンター割付</CardTitle>
+        <CardTitle>詳細 — メンター（新人スタッフのみ設定）</CardTitle>
         {canEdit && (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => setOpen(true)}
-          >
+          <Button type="button" variant="outline" size="sm" onClick={() => setOpen(true)}>
             <Pencil className="h-4 w-4" />
             変更
           </Button>
@@ -637,15 +517,13 @@ function MentorCard({
         ) : mentorId ? (
           <div className="rounded border border-border-default p-3 text-sm">
             <div className="text-xs text-text-muted">担当メンター</div>
-            <div className="text-text-primary">
-              {mentorName ?? mentorId}
-            </div>
+            <div className="text-text-primary">{mentorName ?? mentorId}</div>
           </div>
         ) : (
           <Alert>
             <AlertTitle>メンター未設定</AlertTitle>
             <AlertDescription>
-              このスタッフにはメンターが割り当てられていません。
+              新人スタッフのみメンターを設定してください。通常スタッフでは未設定で構いません。
             </AlertDescription>
           </Alert>
         )}

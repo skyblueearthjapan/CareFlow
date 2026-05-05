@@ -3,16 +3,19 @@
 /**
  * Shared form fields used by both the new and edit staff pages.
  *
+ * W1-FE2 (v0.9 §4.2) で v2 仕様に沿ってフィールドを削減:
+ *   - 削除: can_double_team / 自宅住所 + lat/lng / 得意エリア /
+ *           1日最大訪問数 / スキル / 割付ボリューム (6 項目)
+ *   - 移設: メンターを「基本情報」から「詳細」セクションへ移動
+ *   - 状態: 在籍 / 休職 / 退職 の 3 値セレクト (default 在籍)
+ *
  * Kept under `_components/` so Next.js route conventions don't treat it as a
  * routable segment.
  */
-import { AddressGeocodeField } from '@/components/AddressGeocodeField';
 import { OfficeCombobox } from '@/components/master/OfficeCombobox';
 import { StaffCombobox } from '@/components/master/StaffCombobox';
 import { Input } from '@/components/ui/input';
 import {
-  STAFF_ASSIGNMENT_VOLUME_VALUES,
-  STAFF_SKILL_LEVEL_VALUES,
   type STAFF_ROLE_VALUES,
   type STAFF_SEX_VALUES,
   type STAFF_STATUS_VALUES,
@@ -21,9 +24,11 @@ import {
 type SexValue = (typeof STAFF_SEX_VALUES)[number];
 type RoleValue = (typeof STAFF_ROLE_VALUES)[number];
 type StatusValue = (typeof STAFF_STATUS_VALUES)[number];
-type SkillLevelValue = (typeof STAFF_SKILL_LEVEL_VALUES)[number];
-type AssignmentVolumeValue = (typeof STAFF_ASSIGNMENT_VOLUME_VALUES)[number];
 
+/**
+ * v2 (§4.2 残置 9 項目) に対応した form state.
+ * 削除済みフィールドはここに含めない。
+ */
 export interface StaffFormState {
   code: string;
   name: string;
@@ -33,17 +38,11 @@ export interface StaffFormState {
   status: StatusValue;
   role: RoleValue;
   primary_office_id: string;
-  can_double_team: boolean;
+  /**
+   * 詳細セクションで設定するメンター ID (新人スタッフのみ).
+   * v2 仕様で「基本情報」からは外し、「詳細」セクション末尾に配置する。
+   */
   mentor_id: string;
-  // W3-D additions — input strings; converted to nullable values on submit.
-  home_address: string;
-  home_lat: string;
-  home_lng: string;
-  /** Comma-separated list of area codes; trimmed/split on submit. */
-  areas: string;
-  max_per_day: string;
-  skill_level: SkillLevelValue | '';
-  assignment_volume: AssignmentVolumeValue | '';
   note: string;
 }
 
@@ -76,174 +75,66 @@ export function StaffFormFields({
   const set = <K extends keyof StaffFormState>(key: K, value: StaffFormState[K]) =>
     onChange({ ...form, [key]: value });
 
-  // Render `areas` chips for quick visual feedback alongside the comma-separated input.
-  const areaChips = form.areas
-    .split(',')
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-
   return (
     <div className="space-y-6">
-    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-      <Field label="氏名" required error={errors.name}>
-        <Input
-          value={form.name}
-          onChange={(e) => set('name', e.target.value)}
-          placeholder="例: 山田 花子"
-          required
-          maxLength={120}
-        />
-      </Field>
-
-      <Field label="カナ" error={errors.kana}>
-        <Input
-          value={form.kana}
-          onChange={(e) => set('kana', e.target.value)}
-          placeholder="例: ヤマダ ハナコ"
-          maxLength={120}
-        />
-      </Field>
-
-      <Field label="スタッフコード" error={errors.code}>
-        <Input
-          value={form.code}
-          onChange={(e) => set('code', e.target.value)}
-          placeholder="例: S001"
-          maxLength={32}
-        />
-      </Field>
-
-      <Field label="性別" error={errors.sex}>
-        <SelectInput
-          value={form.sex}
-          onChange={(v) => set('sex', v as SexValue | '')}
-          options={[{ value: '', label: '未指定' }, ...sexOptions]}
-        />
-      </Field>
-
-      <Field label="役割" required error={errors.role}>
-        <SelectInput
-          value={form.role}
-          onChange={(v) => set('role', v as RoleValue)}
-          options={roleOptions}
-        />
-      </Field>
-
-      <Field label="状態" required error={errors.status}>
-        <SelectInput
-          value={form.status}
-          onChange={(v) => set('status', v as StatusValue)}
-          options={statusOptions}
-        />
-      </Field>
-
-      <Field label="主拠点" error={errors.primary_office_id}>
-        <OfficeCombobox
-          value={form.primary_office_id}
-          onChange={(v) => set('primary_office_id', v)}
-        />
-      </Field>
-
-      <Field label="メンター" error={errors.mentor_id} hint="新人スタッフのみ設定">
-        <StaffCombobox
-          value={form.mentor_id}
-          onChange={(v) => set('mentor_id', v)}
-          excludeId={currentStaffId}
-        />
-      </Field>
-
-      <Field label="" className="md:col-span-2">
-        <label className="flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={form.can_double_team}
-            onChange={(e) => set('can_double_team', e.target.checked)}
-            className="h-4 w-4 rounded border-border-default"
-          />
-          <span>2人体制での訪問が可能</span>
-        </label>
-      </Field>
-    </div>
-
-    {/* W3-D: 拠点・能力 section */}
-    <div className="space-y-3 border-t border-border-default pt-4">
-      <h3 className="text-sm font-semibold text-text-primary">拠点・能力</h3>
+      {/* ─── 基本情報 (v2 §4.2 残置項目のみ — メンターは「詳細」へ移設) ─── */}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <div className="md:col-span-2">
-          <AddressGeocodeField
-            mode="controlled"
-            address={form.home_address}
-            lat={form.home_lat}
-            lng={form.home_lng}
-            onAddressChange={(v) => set('home_address', v)}
-            onLatChange={(v) => set('home_lat', v)}
-            onLngChange={(v) => set('home_lng', v)}
-            addressLabel="自宅住所"
-            latLabel="自宅 緯度"
-            lngLabel="自宅 経度"
-          />
-          {(errors.home_address || errors.home_lat || errors.home_lng) && (
-            <p className="mt-1 text-xs text-error">
-              {errors.home_address ?? errors.home_lat ?? errors.home_lng}
-            </p>
-          )}
-        </div>
-
-        <Field
-          label="得意エリア"
-          error={errors.areas}
-          hint="カンマ区切りで入力 (例: A1, A2, B1)"
-          className="md:col-span-2"
-        >
+        <Field label="氏名" required error={errors.name}>
           <Input
-            value={form.areas}
-            onChange={(e) => set('areas', e.target.value)}
-            placeholder="例: A1, A2, B1"
+            value={form.name}
+            onChange={(e) => set('name', e.target.value)}
+            placeholder="例: 山田 花子"
+            required
+            maxLength={120}
           />
-          {areaChips.length > 0 && (
-            <div className="mt-2 flex flex-wrap gap-1">
-              {areaChips.map((chip) => (
-                <span
-                  key={chip}
-                  className="inline-flex items-center rounded-full border border-border-default bg-bg-muted px-2 py-0.5 text-xs text-text-primary"
-                >
-                  {chip}
-                </span>
-              ))}
-            </div>
-          )}
         </Field>
 
-        <Field label="1日最大訪問数" required error={errors.max_per_day}>
+        <Field label="カナ" error={errors.kana}>
           <Input
-            type="number"
-            min={1}
-            max={20}
-            value={form.max_per_day}
-            onChange={(e) => set('max_per_day', e.target.value)}
-            placeholder="6"
+            value={form.kana}
+            onChange={(e) => set('kana', e.target.value)}
+            placeholder="例: ヤマダ ハナコ"
+            maxLength={120}
           />
         </Field>
 
-        <Field label="スキル" error={errors.skill_level}>
-          <SelectInput
-            value={form.skill_level}
-            onChange={(v) => set('skill_level', v as SkillLevelValue | '')}
-            options={[
-              { value: '', label: '未指定' },
-              ...STAFF_SKILL_LEVEL_VALUES.map((v) => ({ value: v, label: v })),
-            ]}
+        <Field label="スタッフコード" error={errors.code}>
+          <Input
+            value={form.code}
+            onChange={(e) => set('code', e.target.value)}
+            placeholder="例: S001"
+            maxLength={64}
           />
         </Field>
 
-        <Field label="割付ボリューム" error={errors.assignment_volume}>
+        <Field label="性別" error={errors.sex}>
           <SelectInput
-            value={form.assignment_volume}
-            onChange={(v) => set('assignment_volume', v as AssignmentVolumeValue | '')}
-            options={[
-              { value: '', label: '未指定' },
-              ...STAFF_ASSIGNMENT_VOLUME_VALUES.map((v) => ({ value: v, label: v })),
-            ]}
+            value={form.sex}
+            onChange={(v) => set('sex', v as SexValue | '')}
+            options={[{ value: '', label: '未指定' }, ...sexOptions]}
+          />
+        </Field>
+
+        <Field label="役割" required error={errors.role}>
+          <SelectInput
+            value={form.role}
+            onChange={(v) => set('role', v as RoleValue)}
+            options={roleOptions}
+          />
+        </Field>
+
+        <Field label="状態" required error={errors.status}>
+          <SelectInput
+            value={form.status}
+            onChange={(v) => set('status', v as StatusValue)}
+            options={statusOptions}
+          />
+        </Field>
+
+        <Field label="主拠点" error={errors.primary_office_id} className="md:col-span-2">
+          <OfficeCombobox
+            value={form.primary_office_id}
+            onChange={(v) => set('primary_office_id', v)}
           />
         </Field>
 
@@ -256,7 +147,25 @@ export function StaffFormFields({
           />
         </Field>
       </div>
-    </div>
+
+      {/* ─── 詳細 (§4.2 メンター移設先) ─── */}
+      <div className="space-y-3 border-t border-border-default pt-4">
+        <h3 className="text-sm font-semibold text-text-primary">詳細</h3>
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          <Field
+            label="メンター（新人スタッフのみ設定）"
+            error={errors.mentor_id}
+            hint="新人スタッフのみ、指導役のメンターを設定してください"
+            className="md:col-span-2"
+          >
+            <StaffCombobox
+              value={form.mentor_id}
+              onChange={(v) => set('mentor_id', v)}
+              excludeId={currentStaffId}
+            />
+          </Field>
+        </div>
+      </div>
     </div>
   );
 }
