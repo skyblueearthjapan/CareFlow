@@ -22,6 +22,7 @@ import { Input } from '@/components/ui/input';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Combobox, type ComboboxOption } from '@/components/ui/combobox';
+import { OfficeCombobox } from '@/components/master/OfficeCombobox';
 import { useStaffList } from '@/lib/queries/staff';
 import {
   INSURANCE_OPTIONS,
@@ -155,8 +156,18 @@ export function PatientForm({
               options={[['', '--'], ...INSURANCE_OPTIONS.map((v) => [v, v] as const)]}
             />
           </Field>
-          <Field label="主担当拠点 ID" error={errors.primary_office_id?.message}>
-            <Input {...register('primary_office_id')} placeholder="UUID" />
+          <Field label="主担当拠点" error={errors.primary_office_id?.message}>
+            <Controller
+              control={control}
+              name="primary_office_id"
+              render={({ field }) => (
+                <OfficeCombobox
+                  value={field.value ?? ''}
+                  onChange={field.onChange}
+                  disabled={submitting}
+                />
+              )}
+            />
           </Field>
         </div>
       </Card>

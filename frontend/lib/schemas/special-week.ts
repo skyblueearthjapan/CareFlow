@@ -155,6 +155,62 @@ export const emptySpecialWeekFormValues: SpecialWeekFormValues = {
   items: [],
 };
 
+// ---------------------------------------------------------------------------
+// react-hook-form input schema (W4-E)
+//
+// `SpecialWeekFormValues` binds every numeric / date / time input as a string
+// (the natural shape for HTML inputs). The wire-shape `specialWeekCreateSchema`
+// only accepts coerced numbers, so feeding it directly to `zodResolver` would
+// reject perfectly valid form input. Define a parallel schema that validates
+// the *string* shape — `prepareCreatePayload` (in queries/special-weeks.ts)
+// still hands the wire schemas the canonical payload at submit time.
+// ---------------------------------------------------------------------------
+
+const numericStringInRange = (min: number, max: number) =>
+  z
+    .string()
+    .min(1, '必須項目です')
+    .refine(
+      (s) => {
+        const n = Number(s);
+        return Number.isFinite(n) && Number.isInteger(n) && n >= min && n <= max;
+      },
+      `${min}〜${max} の整数で入力してください`,
+    );
+
+const optionalTimeString = z
+  .string()
+  .refine(
+    (s) => s === '' || /^([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/.test(s),
+    '時刻は HH:MM 形式で入力してください',
+  );
+
+export const specialWeekItemFormSchema = z.object({
+  patient_id: z.string(),
+  visit_date: isoDateSchema,
+  weekday: numericStringInRange(0, 6),
+  row_label: z.string(),
+  time_type: z.string(),
+  start_time: optionalTimeString,
+  end_time: optionalTimeString,
+  preferred_earliest: optionalTimeString,
+  preferred_latest: optionalTimeString,
+  service_minutes: numericStringInRange(1, 600),
+  required_staff_count: numericStringInRange(1, 10),
+  individual_change_handling: z.string(),
+  note: z.string(),
+});
+
+export const specialWeekFormSchema = z.object({
+  patient_id: z.string().uuid('患者を選択してください'),
+  week_start: isoDateSchema,
+  week_end: isoDateSchema,
+  apply_mode: applyModeEnum,
+  reason: z.string(),
+  status: statusEnum,
+  items: z.array(specialWeekItemFormSchema),
+});
+
 /** Map a server `SpecialWeekRead` into form-friendly string values. */
 export function specialWeekReadToFormValues(
   sw: SpecialWeekRead,

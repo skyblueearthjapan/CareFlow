@@ -2,23 +2,24 @@
  * Shared form for new/edit special week pages.
  *
  * - react-hook-form + useFieldArray for the dynamic items table.
- * - Header section: 患者ID / 週開始 / 週終了 / モード / status / 理由.
+ * - Header section: 患者 / 週開始 / 週終了 / モード / status / 理由.
  * - Items section: 日付 / 曜日 / time_type / 時刻 / 分 / 必要スタッフ.
- *
- * TODO(W3-E follow-up):
- *   - Replace `patient_id` text input with the W1-F Combobox primitive
- *     (患者検索) once it is wired up to the patients query.
+ * - W4-E: zodResolver wired to `specialWeekFormSchema` (string-typed input
+ *   validation) and patient_id replaced with `PatientCombobox`.
  */
 'use client';
 
 import * as React from 'react';
 import {
+  Controller,
   useFieldArray,
   useForm,
   type Resolver,
   type SubmitHandler,
 } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
 
+import { PatientCombobox } from '@/components/master/PatientCombobox';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -30,6 +31,7 @@ import {
   TIME_TYPE_OPTIONS,
   emptySpecialWeekFormValues,
   emptySpecialWeekItemFormValues,
+  specialWeekFormSchema,
   type SpecialWeekFormValues,
 } from '@/lib/schemas/special-week';
 
@@ -58,9 +60,10 @@ export function SpecialWeekForm({
   const form = useForm<SpecialWeekFormValues>({
     defaultValues: defaultValues ?? emptySpecialWeekFormValues,
     mode: 'onBlur',
-    // No zodResolver — items hold string-typed inputs that the schema only
-    // coerces on submit (`prepareCreatePayload` -> `specialWeekCreateSchema.parse`).
-    resolver: undefined as unknown as Resolver<SpecialWeekFormValues>,
+    // `specialWeekFormSchema` validates the string-typed RHF shape; the wire
+    // shape (numeric coercion, optional → undefined) is enforced separately
+    // by `prepareCreatePayload` -> `specialWeekCreateSchema.parse` on submit.
+    resolver: zodResolver(specialWeekFormSchema) as Resolver<SpecialWeekFormValues>,
   });
 
   const {
@@ -94,10 +97,17 @@ export function SpecialWeekForm({
         </h2>
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           {!lockPatient ? (
-            <Field label="患者 ID" required error={errors.patient_id?.message}>
-              <Input
-                {...register('patient_id', { required: '患者IDは必須です' })}
-                placeholder="UUID"
+            <Field label="患者" required error={errors.patient_id?.message}>
+              <Controller
+                control={control}
+                name="patient_id"
+                render={({ field }) => (
+                  <PatientCombobox
+                    value={field.value ?? ''}
+                    onChange={field.onChange}
+                    disabled={submitting}
+                  />
+                )}
               />
             </Field>
           ) : null}

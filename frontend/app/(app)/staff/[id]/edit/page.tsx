@@ -210,6 +210,7 @@ export default function StaffEditPage() {
               form={form}
               errors={errors}
               onChange={setForm}
+              currentStaffId={id}
               sexOptions={STAFF_SEX_VALUES.map((v) => ({ value: v, label: sexLabel(v) }))}
               roleOptions={STAFF_ROLE_VALUES.map((v) => ({ value: v, label: roleLabel(v) }))}
               statusOptions={STAFF_STATUS_VALUES.map((v) => ({

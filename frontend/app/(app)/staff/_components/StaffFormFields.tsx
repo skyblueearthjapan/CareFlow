@@ -7,6 +7,8 @@
  * routable segment.
  */
 import { AddressGeocodeField } from '@/components/AddressGeocodeField';
+import { OfficeCombobox } from '@/components/master/OfficeCombobox';
+import { StaffCombobox } from '@/components/master/StaffCombobox';
 import { Input } from '@/components/ui/input';
 import {
   STAFF_ASSIGNMENT_VOLUME_VALUES,
@@ -57,6 +59,9 @@ interface StaffFormFieldsProps {
   sexOptions: Option<SexValue>[];
   roleOptions: Option<RoleValue>[];
   statusOptions: Option<StatusValue>[];
+  /** Current staff id (edit mode) — excluded from mentor combobox so a
+   *  staff member cannot be assigned as their own mentor. */
+  currentStaffId?: string;
 }
 
 export function StaffFormFields({
@@ -66,6 +71,7 @@ export function StaffFormFields({
   sexOptions,
   roleOptions,
   statusOptions,
+  currentStaffId,
 }: StaffFormFieldsProps) {
   const set = <K extends keyof StaffFormState>(key: K, value: StaffFormState[K]) =>
     onChange({ ...form, [key]: value });
@@ -131,19 +137,18 @@ export function StaffFormFields({
         />
       </Field>
 
-      <Field label="主拠点 ID" error={errors.primary_office_id} hint="UUID。Wave 2 で拠点ピッカーに置換予定">
-        <Input
+      <Field label="主拠点" error={errors.primary_office_id}>
+        <OfficeCombobox
           value={form.primary_office_id}
-          onChange={(e) => set('primary_office_id', e.target.value)}
-          placeholder="例: 11111111-2222-3333-4444-555555555555"
+          onChange={(v) => set('primary_office_id', v)}
         />
       </Field>
 
-      <Field label="メンター ID" error={errors.mentor_id} hint="新人スタッフのみ設定">
-        <Input
+      <Field label="メンター" error={errors.mentor_id} hint="新人スタッフのみ設定">
+        <StaffCombobox
           value={form.mentor_id}
-          onChange={(e) => set('mentor_id', e.target.value)}
-          placeholder="例: 11111111-2222-3333-4444-555555555555"
+          onChange={(v) => set('mentor_id', v)}
+          excludeId={currentStaffId}
         />
       </Field>
 

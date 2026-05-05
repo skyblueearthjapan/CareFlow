@@ -1,7 +1,7 @@
 /**
- * Special-week list (Wave 3-E).
+ * Special-week list (Wave 3-E / W4-E).
  *
- * Filters: patient_id (UUID 直入力 / W3-F で患者 Combobox に置換予定), status.
+ * Filters: patient (Combobox) / status.
  * Roles: admin / manager のみアクセス可。「+ 新規登録」も同条件。
  */
 'use client';
@@ -10,10 +10,10 @@ import Link from 'next/link';
 import { useState } from 'react';
 import { useSession } from 'next-auth/react';
 
+import { PatientCombobox } from '@/components/master/PatientCombobox';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useSpecialWeeks } from '@/lib/queries/special-weeks';
 import { STATUS_OPTIONS } from '@/lib/schemas/special-week';
@@ -62,11 +62,10 @@ export default function SpecialWeeksPage() {
 
       <Card className="p-4">
         <div className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_220px]">
-          <Input
-            type="search"
-            placeholder="患者 ID (UUID) で絞り込み"
+          <PatientCombobox
             value={patientFilter}
-            onChange={(e) => setPatientFilter(e.target.value.trim())}
+            onChange={setPatientFilter}
+            placeholder="患者で絞り込み (未指定: 全件)"
           />
           <select
             value={statusFilter}
