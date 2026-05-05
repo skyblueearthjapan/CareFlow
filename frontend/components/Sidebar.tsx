@@ -9,7 +9,6 @@ import {
   UserCircle2,
   CalendarDays,
   CalendarPlus,
-  Heart,
   Building2,
   Plug,
   ShieldCheck,
@@ -23,15 +22,27 @@ interface SidebarProps {
 
 const NAV_ITEMS = [
   { href: '/dashboard', label: 'ダッシュボード', icon: LayoutDashboard },
+  { href: '/schedule', label: 'スケジュール', icon: CalendarDays },
   { href: '/patients', label: '患者', icon: Users },
   { href: '/staff', label: 'スタッフ', icon: UserCircle2 },
   { href: '/offices', label: '拠点', icon: Building2 },
-  { href: '/schedule', label: 'スケジュール', icon: CalendarDays },
-  { href: '/special-weeks', label: '特別訪問週間', icon: CalendarPlus, adminOnly: true },
   { href: '/integrations', label: '連携', icon: Plug, adminOnly: true },
   // Wave 4-F: admin user management + audit logs (admin role only).
-  { href: '/admin/users', label: 'ユーザー管理', icon: ShieldCheck, adminOnly: true, strictAdmin: true },
-  { href: '/admin/audit-logs', label: '監査ログ', icon: ScrollText, adminOnly: true, strictAdmin: true },
+  {
+    href: '/admin/users',
+    label: 'ユーザー管理',
+    icon: ShieldCheck,
+    adminOnly: true,
+    strictAdmin: true,
+  },
+  {
+    href: '/admin/audit-logs',
+    label: '監査ログ',
+    icon: ScrollText,
+    adminOnly: true,
+    strictAdmin: true,
+  },
+  { href: '/special-weeks', label: '特別訪問週間', icon: CalendarPlus, adminOnly: true },
 ] as const;
 
 export function Sidebar({ collapsed }: SidebarProps) {
@@ -60,13 +71,8 @@ export function Sidebar({ collapsed }: SidebarProps) {
       )}
       aria-label="Primary navigation"
     >
-      {/* Brand area: 60px to align with header */}
-      <div className="flex h-[60px] items-center gap-2 border-b border-border-default px-4">
-        <Heart className="h-6 w-6 text-brand-primary" strokeWidth={1.75} />
-        {!collapsed && (
-          <span className="font-serif text-lg font-bold text-text-primary">CareFlow</span>
-        )}
-      </div>
+      {/* Brand area: 60px spacer to align with header (brand moved to Header) */}
+      <div className="h-[60px] border-b border-border-default" />
 
       <nav className="flex-1 overflow-y-auto p-3">
         <ul className="space-y-1">
@@ -95,9 +101,7 @@ export function Sidebar({ collapsed }: SidebarProps) {
 
       {/* Footer card slot */}
       <div className="border-t border-border-default p-3">
-        {!collapsed && (
-          <p className="text-xs text-text-muted">v0.1.0 — D2 Foundation</p>
-        )}
+        {!collapsed && <p className="text-xs text-text-muted">v0.1.0 — D2 Foundation</p>}
       </div>
     </aside>
   );
