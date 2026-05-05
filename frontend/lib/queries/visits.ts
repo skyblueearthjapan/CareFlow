@@ -151,7 +151,11 @@ export function useUnassignedVisits(
   const { week_start, week_end } = params;
 
   return useQuery<UseVisitsResult, Error>({
-    queryKey: [...VISITS_KEY, 'unassigned', { week_start, week_end, role }],
+    queryKey: [
+      ...VISITS_KEY,
+      'unassigned',
+      { week_start, week_end, role, sessionStaffId },
+    ],
     enabled: status === 'authenticated',
     queryFn: async () => {
       // Staff w/o staffId would 403; mirror the safe empty state.

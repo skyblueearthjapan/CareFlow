@@ -131,7 +131,11 @@ export function WeekGrid({
     return map;
   }, [visits]);
 
-  /** Set of visit ids that should render with the warning tone. */
+  /**
+   * Set of cell-scoped warning keys (`${staffId}|${date}|${visitId}|${role}`).
+   * Scoping by staff/role prevents a flagged chip in one row from "infecting"
+   * another row when the same visit fans out to primary/secondary/mentor.
+   */
   const flagged = useMemo(() => {
     const out = new Set<string>();
     for (const [key, arr] of buckets) {
@@ -147,11 +151,11 @@ export function WeekGrid({
       }
       if (overCap || overlapping.size > 0) {
         for (const e of arr) {
-          if (overCap || overlapping.has(e.visit.id)) out.add(e.visit.id);
+          if (overCap || overlapping.has(e.visit.id)) {
+            out.add(`${key}|${e.visit.id}|${e.role}`);
+          }
         }
       }
-      // referencing key to satisfy lint without wasted work
-      void key;
     }
     return out;
   }, [buckets, maxPerDay]);
@@ -227,7 +231,11 @@ export function WeekGrid({
                           <VisitChip
                             key={`${e.visit.id}|${e.role}`}
                             visit={e.visit}
-                            tone={flagged.has(e.visit.id) ? 'warning' : 'default'}
+                            tone={
+                              flagged.has(`${key}|${e.visit.id}|${e.role}`)
+                                ? 'warning'
+                                : 'default'
+                            }
                             canEdit={canEditVisit}
                             onClick={onVisitClick}
                             officeLabel={

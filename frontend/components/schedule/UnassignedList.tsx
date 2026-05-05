@@ -25,13 +25,9 @@ export function UnassignedList({ visits, onSelect }: UnassignedListProps) {
         <p className="text-sm text-text-muted">未割当の訪問はありません。</p>
       ) : (
         <ul className="divide-y divide-border-default">
-          {visits.map((v) => (
-            <li key={v.id}>
-              <button
-                type="button"
-                onClick={() => onSelect?.(v)}
-                className="flex w-full items-center justify-between gap-3 px-1 py-2 text-left text-sm hover:bg-bg-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary"
-              >
+          {visits.map((v) => {
+            const rowContent = (
+              <>
                 <span className="tnum text-text-secondary">
                   {v.visit_date} {trimSeconds(v.start_time)}–
                   {trimSeconds(v.end_time)}
@@ -40,9 +36,26 @@ export function UnassignedList({ visits, onSelect }: UnassignedListProps) {
                   {v.patient_name ?? '(未設定)'}
                 </span>
                 <span className="text-xs text-text-muted">{v.status}</span>
-              </button>
-            </li>
-          ))}
+              </>
+            );
+            return (
+              <li key={v.id}>
+                {onSelect ? (
+                  <button
+                    type="button"
+                    onClick={() => onSelect(v)}
+                    className="flex w-full items-center justify-between gap-3 px-1 py-2 text-left text-sm hover:bg-bg-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary"
+                  >
+                    {rowContent}
+                  </button>
+                ) : (
+                  <div className="flex w-full items-center justify-between gap-3 px-1 py-2 text-left text-sm">
+                    {rowContent}
+                  </div>
+                )}
+              </li>
+            );
+          })}
         </ul>
       )}
     </Card>
