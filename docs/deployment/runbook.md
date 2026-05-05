@@ -288,6 +288,128 @@ docker compose -f docs/deployment/docker-compose.production.yml --env-file .env 
 
 ---
 
+## Phase 5: 監視・バックアップ自動化 (Wave 5-B)
+
+本 Phase は **初回デプロイ完了後 (Phase H 通過後)** に 1 度だけ VPS 上で設定する。
+スクリプト本体はリポジトリ配下にあるため、`git pull` で更新は自動反映される。
+cron / logrotate などの **OS 側エントリだけ** を初回手動登録する。
+
+設置するもの:
+- `docs/deployment/scripts/healthcheck-carelink.sh` (5 分毎)
+- `docs/deployment/scripts/backup-carelink-db.sh` (日次 02:30)
+- `docs/deployment/scripts/notify-failure.sh` (上記 2 つから呼び出し)
+- `docs/deployment/scripts/logrotate-carelink.conf`
+- `docs/deployment/backup-restore-runbook.md` (リストア手順)
+
+### 5-1. ログ / state ディレクトリ作成
+
+```bash
+sudo mkdir -p /var/log/carelink /var/lib/carelink /opt/carelink/backups
+sudo chmod 0755 /var/log/carelink /var/lib/carelink
+sudo chmod 0750 /opt/carelink/backups
+```
+
+### 5-2. スクリプトに実行権限を付与
+
+`git clone` 直後は実行ビットが落ちている可能性があるため明示的に付与する。
+
+```bash
+sudo chmod +x /opt/carelink/docs/deployment/scripts/healthcheck-carelink.sh
+sudo chmod +x /opt/carelink/docs/deployment/scripts/backup-carelink-db.sh
+sudo chmod +x /opt/carelink/docs/deployment/scripts/notify-failure.sh
+```
+
+### 5-3. healthcheck cron 登録 (5 分毎)
+
+```bash
+sudo tee /etc/cron.d/carelink-healthcheck >/dev/null <<'EOF'
+# CareLink container + endpoint healthcheck (Wave 5-B)
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+*/5 * * * * root /opt/carelink/docs/deployment/scripts/healthcheck-carelink.sh
+EOF
+sudo chmod 644 /etc/cron.d/carelink-healthcheck
+```
+
+動作確認:
+```bash
+sudo /opt/carelink/docs/deployment/scripts/healthcheck-carelink.sh && echo OK
+tail -n 5 /var/log/carelink/healthcheck.log
+```
+
+**チェック内容:**
+1. `curl http://127.0.0.1:18001/api/v1/healthz` が 200
+2. `curl http://127.0.0.1:18000/api/healthz` が 200
+3. `carelink-postgres` / `carelink-backend` / `carelink-frontend` の 3 container が `Up ... (healthy)`
+
+**失敗判定:** `/var/lib/carelink/healthcheck.failcount` をインクリメントし、**3 連続失敗** で `notify-failure.sh` を起動 (= 15 分間継続失敗で alert)。成功すると counter は 0 にリセット。
+
+### 5-4. backup cron 登録 (日次 02:30 JST)
+
+```bash
+sudo tee /etc/cron.d/carelink-backup >/dev/null <<'EOF'
+# CareLink daily PostgreSQL backup (Wave 5-B). Server TZ assumed JST.
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+30 2 * * * root /opt/carelink/docs/deployment/scripts/backup-carelink-db.sh
+EOF
+sudo chmod 644 /etc/cron.d/carelink-backup
+```
+
+動作確認 (任意のタイミングで手動実行):
+```bash
+sudo /opt/carelink/docs/deployment/scripts/backup-carelink-db.sh
+ls -lh /opt/carelink/backups/daily-*.sql.gz | tail -3
+tail -n 10 /var/log/carelink/backup.log
+```
+
+**保持期間:** 7 日 (`find -mtime +7 -delete`)。
+**サイズ目安:** 初期は数 MB、運用 1 年後でも数百 MB を想定。`/opt/carelink/backups` 配下が 10GB を超えたら別ストレージ (object store) を検討。
+
+### 5-5. webhook 通知の設定 (任意)
+
+Slack / Discord / generic webhook URL を `/opt/carelink/.env` に追記:
+
+```bash
+echo 'NOTIFY_WEBHOOK_URL=https://hooks.slack.com/services/XXX/YYY/ZZZ' | sudo tee -a /opt/carelink/.env
+sudo chmod 600 /opt/carelink/.env
+```
+
+`notify-failure.sh` は cron 起動時に `/opt/carelink/.env` を source して env を取得する。
+未設定時は noop + log のみで cron は失敗扱いにならない。
+
+メール (sendmail / postfix) は **本 Phase ではサポートしない**。MTA 構築は別途。
+
+### 5-6. logrotate 設置
+
+```bash
+sudo ln -sf /opt/carelink/docs/deployment/scripts/logrotate-carelink.conf /etc/logrotate.d/carelink
+sudo logrotate -d /etc/logrotate.d/carelink   # dry-run; "log does not need rotating" が出ればOK
+```
+
+ローテーションポリシー:
+- `/var/log/carelink/healthcheck.log`: 週次、4 世代 (= 約 1 ヶ月分)
+- `/var/log/carelink/backup.log`: 月次、3 世代 (= 約 3 ヶ月分)
+
+### 5-7. Restore リハーサル
+
+リストア手順は `docs/deployment/backup-restore-runbook.md` を参照。
+**RTO 15 分 / RPO 24 時間** を前提に運用する。月 1 回ステージング環境でリハーサルを実施し、所要時間を測定して runbook を更新すること。
+
+### 5-8. W5-A `deploy.yml` smoke との連携
+
+GitHub Actions `deploy.yml` (Wave 5-A) の最終 step `Smoke test` は `/api/v1/healthz` を 30 秒以内に確認する。
+deploy 完了後 5 分以内に `healthcheck-carelink.sh` も成功することを **継続 smoke** として扱う。失敗が観測された場合は自動 alert (5-3) が発火する想定。
+
+deploy 直後の 1 サイクル (5 分後) を手動で確認する手順:
+
+```bash
+ssh root@72.60.211.213 'tail -n 5 /var/log/carelink/healthcheck.log'
+# 直近行が "OK backend=200 frontend=200 containers=3/3 healthy" であれば成功
+```
+
+---
+
 ## 既知の前提と制限
 
 - frontend は Next.js 15 の standalone 出力 + pnpm multi-stage Dockerfile で本番ビルド (`frontend/Dockerfile`)。`pnpm-lock.yaml` が未 commit のため初回 build は `--no-frozen-lockfile` フォールバックパスを通る。安定運用前に lockfile を commit すること
