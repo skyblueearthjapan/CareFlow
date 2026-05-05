@@ -259,6 +259,50 @@ export function useApproveWithEdit(): UseMutationResult<
   });
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Create-and-Apply (single TX, admin/manager only)
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * POST /api/v1/pending-requests/create-and-apply — 申請作成 + 即時反映 (単一 TX).
+ *
+ * W7-BE3 で導入された single-TX エンドポイント。PC admin/manager の AI 即時反映
+ * フローで使用する (W8-FE1 Codex 再レビュー Must-fix #1)。
+ *
+ * 旧来の useCreatePendingRequest + useApproveRequest の 2 コールでは、
+ * applier 失敗時に申請レコードだけが残ってしまう不整合が生じていた。
+ * 本フックは create → apply → approved 遷移を **同一トランザクション** で実行し、
+ * 失敗時は全体を rollback するため整合性を保証する。
+ *
+ * RBAC: admin / manager のみ (Backend 側でも require_role("admin", "manager") で
+ * ガードされており、staff が呼んだ場合は 403 が返る)。
+ */
+export function useCreateAndApplyPendingRequest(): UseMutationResult<
+  PendingRequestV2Read,
+  Error,
+  PendingRequestV2Create
+> {
+  const qc = useQueryClient();
+  const { data: session } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+
+  return useMutation<PendingRequestV2Read, Error, PendingRequestV2Create>({
+    mutationFn: async (values) => {
+      const parsed = pendingRequestV2CreateSchema.parse(values);
+      const raw = await fetcher<unknown>(`${PENDING_REQUESTS_BASE}/create-and-apply`, {
+        method: 'POST',
+        body: JSON.stringify(parsed),
+        accessToken,
+        refreshToken,
+      });
+      return pendingRequestV2ReadSchema.parse(raw);
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: PENDING_REQUESTS_KEY });
+    },
+  });
+}
+
 interface RejectVariables {
   id: string;
   rejection_reason: string;

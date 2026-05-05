@@ -1,15 +1,16 @@
 /**
- * useAiSubmissionHandler — unit tests (W7-FE1).
+ * useAiSubmissionHandler — unit tests (W7-FE1 / W8-FE1).
  *
- * 3 ケース:
- *   1. patient_create + admin → pending POST が呼ばれる
+ * 4 ケース:
+ *   1. patient_create + admin (PC) → createAndApply が呼ばれる (create/approve は呼ばれない)
  *   2. staff_create + staff → out_of_scope に切り替わる（POST は呼ばれない）
  *   3. missing_fields があれば missingInfoSlot が render される
+ *   4. patient_create + admin (mobile) → create のみ呼ばれ createAndApply は呼ばれない
  *
  * テストランナー: vitest + @testing-library/react
  * モック戦略:
  *   - next-auth の useSession をモック（role を注入）
- *   - useCreatePendingRequest / useApproveRequest をモック
+ *   - useCreatePendingRequest / useApproveRequest / useCreateAndApplyPendingRequest をモック
  *   - sonner の toast をスパイ
  *
  * NOTE: このファイルは vitest + @testing-library/react を想定している。
@@ -33,6 +34,7 @@ vi.mock('next-auth/react', () => ({
 // pending_requests query hooks
 const mockMutateAsync = vi.fn();
 const mockApproveMutateAsync = vi.fn();
+const mockCreateAndApplyMutateAsync = vi.fn();
 
 vi.mock('@/lib/queries/pending_requests', () => ({
   useCreatePendingRequest: () => ({
@@ -41,6 +43,10 @@ vi.mock('@/lib/queries/pending_requests', () => ({
   }),
   useApproveRequest: () => ({
     mutateAsync: mockApproveMutateAsync,
+    isPending: false,
+  }),
+  useCreateAndApplyPendingRequest: () => ({
+    mutateAsync: mockCreateAndApplyMutateAsync,
     isPending: false,
   }),
 }));
@@ -88,19 +94,31 @@ function makeInterpretResponse(
 describe('useAiSubmissionHandler', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockMutateAsync.mockResolvedValue({ id: 'req-001' });
+    mockMutateAsync.mockResolvedValue({
+      id: 'req-001',
+      request_type: 'patient_create',
+      status: 'pending',
+    });
     mockApproveMutateAsync.mockResolvedValue({ id: 'req-001', status: 'approved' });
+    mockCreateAndApplyMutateAsync.mockResolvedValue({
+      id: 'req-001',
+      request_type: 'patient_create',
+      status: 'approved',
+    });
   });
 
   /**
-   * ケース 1: patient_create + admin → pending POST が呼ばれる
+   * ケース 1: patient_create + admin (PC) → createAndApply が呼ばれる
    *
    * admin ロール + PC (isMobile: false) で patient_create を送信した場合:
-   *   - useCreatePendingRequest.mutateAsync が 'patient_create' で呼ばれる
-   *   - useApproveRequest.mutateAsync が続いて呼ばれる（即時承認）
+   *   - useCreateAndApplyPendingRequest.mutateAsync が 'patient_create' で呼ばれる
+   *   - useCreatePendingRequest.mutateAsync / useApproveRequest.mutateAsync は呼ばれない
    *   - toast.success が呼ばれる
+   *
+   * W8-FE1 Codex 再レビュー Must-fix #1: 旧来の create + approve の 2 コールから
+   * create-and-apply 単一 TX に変更。
    */
-  it('patient_create + admin → pending POST and approve are called', async () => {
+  it('patient_create + admin (PC) → createAndApply is called, create/approve are NOT called', async () => {
     mockSession.mockReturnValue({
       data: { user: { role: 'admin' } },
       status: 'authenticated',
@@ -116,12 +134,14 @@ describe('useAiSubmissionHandler', () => {
       await result.current.onSubmitInterceptor(interpretResult);
     });
 
-    expect(mockMutateAsync).toHaveBeenCalledOnce();
-    expect(mockMutateAsync).toHaveBeenCalledWith(
+    // PC admin → 単一 TX の createAndApply を使用
+    expect(mockCreateAndApplyMutateAsync).toHaveBeenCalledOnce();
+    expect(mockCreateAndApplyMutateAsync).toHaveBeenCalledWith(
       expect.objectContaining({ request_type: 'patient_create' }),
     );
-    // PC admin → 即時承認 (approve)
-    expect(mockApproveMutateAsync).toHaveBeenCalledOnce();
+    // create / approve は呼ばれない
+    expect(mockMutateAsync).not.toHaveBeenCalled();
+    expect(mockApproveMutateAsync).not.toHaveBeenCalled();
     expect(toast.success).toHaveBeenCalledWith(expect.stringContaining('patient_create'));
   });
 
@@ -190,7 +210,44 @@ describe('useAiSubmissionHandler', () => {
 
     // POST はまだ呼ばれていない（補完待ち）
     expect(mockMutateAsync).not.toHaveBeenCalled();
+    expect(mockCreateAndApplyMutateAsync).not.toHaveBeenCalled();
     // missingInfoSlot が null でない
     expect(result.current.missingInfoSlot).not.toBeNull();
+  });
+
+  /**
+   * ケース 4: patient_create + admin (mobile) → create のみ呼ばれ createAndApply は呼ばれない
+   *
+   * admin ロールでも isMobile: true の場合は即時反映なし (§3.5.1)。
+   * 通常の create のみが呼ばれ、createAndApply / approve は呼ばれないことを確認。
+   *
+   * W8-FE1 Codex 再レビュー Must-fix #1: モバイル admin は従来通り create のみ。
+   */
+  it('patient_create + admin (mobile) → create is called, createAndApply is NOT called', async () => {
+    mockSession.mockReturnValue({
+      data: { user: { role: 'admin' } },
+      status: 'authenticated',
+    });
+
+    // isMobile: true — モバイル admin
+    const { result } = renderHook(() => useAiSubmissionHandler({ isMobile: true }));
+
+    const interpretResult = makeInterpretResponse('patient_create', {
+      name: '鈴木一郎',
+    });
+
+    await act(async () => {
+      await result.current.onSubmitInterceptor(interpretResult);
+    });
+
+    // モバイル → create のみ (即時反映なし)
+    expect(mockMutateAsync).toHaveBeenCalledOnce();
+    expect(mockMutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ request_type: 'patient_create' }),
+    );
+    // createAndApply / approve は呼ばれない
+    expect(mockCreateAndApplyMutateAsync).not.toHaveBeenCalled();
+    expect(mockApproveMutateAsync).not.toHaveBeenCalled();
+    expect(toast.success).toHaveBeenCalledWith(expect.stringContaining('patient_create'));
   });
 });

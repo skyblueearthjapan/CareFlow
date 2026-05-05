@@ -32,7 +32,10 @@ import { useSession } from 'next-auth/react';
 import { toast } from 'sonner';
 
 import { MissingInfoModal } from '@/components/ai/MissingInfoModal';
-import { useApproveRequest, useCreatePendingRequest } from '@/lib/queries/pending_requests';
+import {
+  useCreateAndApplyPendingRequest,
+  useCreatePendingRequest,
+} from '@/lib/queries/pending_requests';
 import type { InterpretResponse, InterpretedAction } from '@/lib/schemas/ai';
 import type {
   PendingRequestV2Create,
@@ -216,7 +219,7 @@ export function useAiSubmissionHandler({
   const { data: session } = useSession();
   const role = session?.user?.role ?? null;
   const create = useCreatePendingRequest();
-  const approve = useApproveRequest();
+  const createAndApply = useCreateAndApplyPendingRequest();
 
   // MissingInfoModal の open 状態と、補完待ちのデータを管理する。
   const [missingInfoOpen, setMissingInfoOpen] = useState(false);
@@ -237,7 +240,11 @@ export function useAiSubmissionHandler({
   const shouldAutoApprove = !isMobile && (role === 'admin' || role === 'manager');
 
   /**
-   * pending_requests に POST し、PC admin/manager の場合は即時承認する。
+   * pending_requests に POST する。
+   *
+   * PC admin/manager の場合は `create-and-apply` (単一 TX) を使い、申請作成と業務反映を
+   * アトミックに実行する (W8-FE1 Codex 再レビュー Must-fix #1)。
+   * モバイル全員 + PC staff の場合は通常の create のみ。承認は別フロー。
    */
   const postRequest = useCallback(
     async (
@@ -253,25 +260,18 @@ export function useAiSubmissionHandler({
 
       const body = buildCreatePayload(result, action, requestType);
 
-      // 1. pending として申請を作成（AI 経由は全件履歴に残す — §3.5.3 監査要件）
-      const created = await create.mutateAsync(body);
-
-      // 2. PC admin/manager のみ approve を続けて呼び、即時反映 + approved 履歴へ更新。
       if (shouldAutoApprove) {
-        try {
-          await approve.mutateAsync(created.id);
-          toast.success(`AI 申請を提出しました: ${requestType}（即時反映・承認済）`);
-        } catch (e) {
-          toast.warning(
-            `申請は作成されました。承認に失敗したため履歴から手動で承認してください: ${(e as Error).message}`,
-          );
-        }
-        return;
+        // PC admin/manager: 単一 TX で create + apply (applier 失敗時に申請レコードが
+        // 残る不整合を防ぐ — W7-BE3 POST /pending-requests/create-and-apply)。
+        await createAndApply.mutateAsync(body);
+        toast.success(`AI 反映完了 (即時): ${requestType}`);
+      } else {
+        // モバイル全員 + PC staff: 通常の create のみ (approve は別フロー)。
+        await create.mutateAsync(body);
+        toast.success(`AI 申請を提出しました: ${requestType}`);
       }
-
-      toast.success(`AI 申請を提出しました: ${requestType}`);
     },
-    [create, approve, shouldAutoApprove],
+    [create, createAndApply, shouldAutoApprove],
   );
 
   /**
