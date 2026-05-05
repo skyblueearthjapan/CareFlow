@@ -6,6 +6,7 @@ from app.api.v1 import (
     admin,
     ai,
     allocate,
+    audit_logs,
     auth,
     cities,
     dashboard,
@@ -14,13 +15,16 @@ from app.api.v1 import (
     health,
     integrations,
     mentor,
+    notifications,
     offices,
     patients,
+    shift_requests,
     special_weeks,
     staff,
     staff_events,
     staff_overrides,
     staff_shifts,
+    visit_photos,
     visits,
 )
 
@@ -38,7 +42,15 @@ api_router.include_router(
 )
 api_router.include_router(staff_events.router, prefix="/staff", tags=["staff-events"])
 api_router.include_router(mentor.router, prefix="/staff", tags=["mentor"])
+# Wave 4-D: shift-request sub-resource (/staff/{id}/shift-requests).
+api_router.include_router(
+    shift_requests.router, prefix="/staff", tags=["shift-requests"]
+)
 api_router.include_router(staff.router, prefix="/staff", tags=["staff"])
+# Wave 4-D: visit photo sub-resource (/visits/{id}/photos[...]) — registered
+# before visits.router so its routes are matched before the generic
+# /visits/{visit_id} catch-all.
+api_router.include_router(visit_photos.router, prefix="/visits", tags=["visit-photos"])
 api_router.include_router(visits.router, prefix="/visits", tags=["visits"])
 api_router.include_router(offices.router, prefix="/offices", tags=["offices"])
 api_router.include_router(cities.router, prefix="/cities", tags=["cities"])
@@ -54,6 +66,18 @@ api_router.include_router(geocoding.router, tags=["geocoding"])
 api_router.include_router(ai.router, prefix="/ai", tags=["ai"])
 api_router.include_router(
     special_weeks.router, prefix="/special-weeks", tags=["special-weeks"]
+)
+# Wave 4-F: HTTP audit-log read API (admin only).
+api_router.include_router(
+    audit_logs.router, prefix="/audit-logs", tags=["audit-logs"]
+)
+# Wave 4-D: notifications inbox + admin-create (W6 will add producer side).
+api_router.include_router(
+    notifications.router, prefix="/notifications", tags=["notifications"]
+)
+# Wave 4-D: cross-staff shift-request status update (admin/manager only).
+api_router.include_router(
+    shift_requests.status_router, prefix="/shift-requests", tags=["shift-requests"]
 )
 
 __all__ = ["api_router"]

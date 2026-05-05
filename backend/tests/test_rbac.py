@@ -30,7 +30,11 @@ async def test_admin_users_admin_returns_200(client, db) -> None:
     admin = await _make_user(db, "rbac-admin@example.com", "admin")
     res = await client.get("/api/v1/admin/users", headers=_bearer(admin))
     assert res.status_code == 200, res.text
-    assert res.json() == []
+    body = res.json()
+    # Wave 4-F: list endpoint now returns a Paginated envelope and includes
+    # the requesting admin (themselves) in the result set.
+    assert body["total"] >= 1
+    assert any(item["email"] == "rbac-admin@example.com" for item in body["items"])
 
 
 @pytest.mark.asyncio

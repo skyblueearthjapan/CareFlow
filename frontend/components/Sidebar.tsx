@@ -12,6 +12,8 @@ import {
   Heart,
   Building2,
   Plug,
+  ShieldCheck,
+  ScrollText,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -27,6 +29,9 @@ const NAV_ITEMS = [
   { href: '/schedule', label: 'スケジュール', icon: CalendarDays },
   { href: '/special-weeks', label: '特別訪問週間', icon: CalendarPlus, adminOnly: true },
   { href: '/integrations', label: '連携', icon: Plug, adminOnly: true },
+  // Wave 4-F: admin user management + audit logs (admin role only).
+  { href: '/admin/users', label: 'ユーザー管理', icon: ShieldCheck, adminOnly: true, strictAdmin: true },
+  { href: '/admin/audit-logs', label: '監査ログ', icon: ScrollText, adminOnly: true, strictAdmin: true },
 ] as const;
 
 export function Sidebar({ collapsed }: SidebarProps) {
@@ -35,9 +40,17 @@ export function Sidebar({ collapsed }: SidebarProps) {
   const role = session?.user?.role;
   const width = collapsed ? 'w-[72px]' : 'w-[232px]';
 
-  const items = NAV_ITEMS.filter(
-    (item) => !('adminOnly' in item && item.adminOnly) || role !== 'staff',
-  );
+  const items = NAV_ITEMS.filter((item) => {
+    // strictAdmin items are visible only to `admin`. Other adminOnly items
+    // remain visible to admin + manager (the long-standing convention).
+    if ('strictAdmin' in item && item.strictAdmin) {
+      return role === 'admin';
+    }
+    if ('adminOnly' in item && item.adminOnly) {
+      return role !== 'staff';
+    }
+    return true;
+  });
 
   return (
     <aside

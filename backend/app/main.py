@@ -17,6 +17,7 @@ from app.api.v1 import api_router
 from app.core.config import get_settings
 from app.core.rate_limit import limiter
 from app.db.session import dispose_engine
+from app.middleware.audit import AuditLogMiddleware
 
 
 @asynccontextmanager
@@ -54,6 +55,14 @@ def create_app() -> FastAPI:
             allow_methods=["*"],
             allow_headers=["*"],
         )
+
+    # Audit middleware writes one row per mutation request (Wave 4-F).
+    # Registered AFTER CORS so the captured `path` matches what reached the
+    # route handler (CORS preflights are OPTIONS — auto-skipped).
+    app.add_middleware(
+        AuditLogMiddleware,
+        path_prefix=settings.api_v1_prefix,
+    )
 
     app.include_router(api_router, prefix=settings.api_v1_prefix)
 
