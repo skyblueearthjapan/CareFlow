@@ -89,11 +89,11 @@ export function useUpdateStaffShifts(
       qc.setQueryData<ShiftsResponse>(key, { shifts });
       return { previous };
     },
-    onError: (err, vars, context) => {
+    onError: (err, vars, context, mutationCtx) => {
       if (context?.previous) {
         qc.setQueryData(key, context.previous);
       }
-      options.onError?.(err, vars, context);
+      options.onError?.(err, vars, context, mutationCtx);
     },
     ...options,
     onSuccess: (data, variables, onMutateResult, context) => {
