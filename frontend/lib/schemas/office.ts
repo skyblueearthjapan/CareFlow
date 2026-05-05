@@ -2,11 +2,11 @@
  * Office (拠点) zod schemas — Phase 3-12.
  *
  * Mirrors backend `app/schemas/office.py` (OfficeRead/Create/Update). The
- * `allowed_cities` field is a UI-side helper: it captures the city UUIDs
- * picked in the Combobox and is wired to the office_cities M2M table.
+ * `allowed_cities` field captures the city UUIDs picked in the Combobox and
+ * is wired to the office_cities M2M table.
  *
- * TODO(Phase 3-14): backend OfficeRead does not yet expose city ids; once
- * the API is extended, drop the optional fallback here.
+ * Done: migration 0002_add_office_prefecture_code added prefecture/code
+ * columns and OfficeRead now exposes allowed_cities directly from the API.
  */
 import { z } from 'zod';
 

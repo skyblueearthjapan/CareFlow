@@ -39,12 +39,28 @@ export function OfficeForm({
     search: cityFilter || undefined,
     prefecture: prefecture || undefined,
   });
+  // Always fetch the full prefecture list so the datalist works regardless of
+  // the active filter. Limit kept small — server returns distinct prefectures
+  // implicitly via the city rows.
+  const { cities: allCitiesForPrefectures } = useCities({ limit: 2000 });
 
   const prefectures = useMemo(() => {
     const set = new Set<string>();
-    for (const c of cities) set.add(c.prefecture);
+    for (const c of allCitiesForPrefectures) set.add(c.prefecture);
     return Array.from(set).sort();
-  }, [cities]);
+  }, [allCitiesForPrefectures]);
+
+  // Currently-selected cities: pulled from the unfiltered set so already-saved
+  // entries remain visible even when the user filters by another prefecture.
+  const selectedCities = useMemo(() => {
+    const sel = new Set(allowed);
+    return allCitiesForPrefectures.filter((c) => sel.has(c.id));
+  }, [allCitiesForPrefectures, allowed]);
+
+  const unselectedCities = useMemo(() => {
+    const sel = new Set(allowed);
+    return cities.filter((c) => !sel.has(c.id));
+  }, [cities, allowed]);
 
   const toggleCity = (cityId: string) => {
     setAllowed((prev) =>
@@ -132,31 +148,60 @@ export function OfficeForm({
           value={cityFilter}
           onChange={(e) => setCityFilter(e.target.value)}
         />
+        {!prefecture && !cityFilter && (
+          <p className="mt-1 text-xs text-status-warning">
+            都道府県で絞り込んでください（候補は最大 200 件まで表示）
+          </p>
+        )}
         <div className="mt-2 max-h-56 overflow-y-auto rounded-md border border-border-default p-2">
           {citiesLoading ? (
             <p className="text-xs text-text-muted">読み込み中...</p>
-          ) : cities.length === 0 ? (
+          ) : cities.length === 0 && allowed.length === 0 ? (
             <p className="text-xs text-text-muted">該当する市区町村がありません</p>
           ) : (
-            <ul className="space-y-1">
-              {cities.slice(0, 200).map((city) => {
-                const checked = allowed.includes(city.id);
-                return (
-                  <li key={city.id}>
-                    <label className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-sm hover:bg-bg-muted">
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => toggleCity(city.id)}
-                      />
-                      <span>
-                        {city.prefecture} / {city.name}
-                      </span>
-                    </label>
-                  </li>
-                );
-              })}
-            </ul>
+            <>
+              {selectedCities.length > 0 && (
+                <>
+                  <p className="px-2 text-[10px] font-semibold uppercase tracking-wide text-text-muted">
+                    選択済み ({selectedCities.length})
+                  </p>
+                  <ul className="space-y-1 border-b border-border-default pb-2 mb-2">
+                    {selectedCities.map((city) => (
+                      <li key={`sel-${city.id}`}>
+                        <label className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-sm hover:bg-bg-muted">
+                          <input
+                            type="checkbox"
+                            checked
+                            onChange={() => toggleCity(city.id)}
+                          />
+                          <span>
+                            {city.prefecture} / {city.name}
+                          </span>
+                        </label>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+              {unselectedCities.length > 0 && (
+                <ul className="space-y-1">
+                  {unselectedCities.slice(0, 200).map((city) => (
+                    <li key={city.id}>
+                      <label className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-sm hover:bg-bg-muted">
+                        <input
+                          type="checkbox"
+                          checked={false}
+                          onChange={() => toggleCity(city.id)}
+                        />
+                        <span>
+                          {city.prefecture} / {city.name}
+                        </span>
+                      </label>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
           )}
         </div>
         <p className="mt-1 text-xs text-text-muted">選択中: {allowed.length} 件</p>

@@ -18,8 +18,9 @@ function normalizeCities(data: CitiesResponse | undefined): City[] {
 }
 
 export interface UseCitiesParams {
-  /** Substring filter applied client-side over name + prefecture. */
+  /** Substring filter passed as `q` to the server (name/prefecture ILIKE). */
   search?: string;
+  /** Exact prefecture filter forwarded to the server. */
   prefecture?: string;
   limit?: number;
   offset?: number;
@@ -30,29 +31,28 @@ export function useCities(params: UseCitiesParams = {}) {
   const accessToken = session?.accessToken ?? null;
   const refreshToken = session?.refreshToken ?? null;
 
-  const limit = params.limit ?? 500;
+  const limit = params.limit ?? 2000;
   const offset = params.offset ?? 0;
+  const search = params.search?.trim() || undefined;
+  const prefecture = params.prefecture?.trim() || undefined;
 
   const query = useQuery<CitiesResponse>({
-    queryKey: ['cities', limit, offset],
-    queryFn: () =>
-      fetcher<CitiesResponse>(
-        `/api/v1/cities?limit=${limit}&offset=${offset}`,
-        { accessToken, refreshToken },
-      ),
+    queryKey: ['cities', limit, offset, search ?? null, prefecture ?? null],
+    queryFn: () => {
+      const usp = new URLSearchParams({
+        limit: String(limit),
+        offset: String(offset),
+      });
+      if (search) usp.set('q', search);
+      if (prefecture) usp.set('prefecture', prefecture);
+      return fetcher<CitiesResponse>(`/api/v1/cities?${usp.toString()}`, {
+        accessToken,
+        refreshToken,
+      });
+    },
     enabled: status === 'authenticated',
   });
 
   const all = normalizeCities(query.data);
-  const filtered = all.filter((city) => {
-    if (params.prefecture && city.prefecture !== params.prefecture) return false;
-    if (params.search) {
-      const q = params.search.toLowerCase();
-      const haystack = `${city.prefecture}${city.name}`.toLowerCase();
-      if (!haystack.includes(q)) return false;
-    }
-    return true;
-  });
-
-  return { ...query, cities: filtered, allCities: all };
+  return { ...query, cities: all, allCities: all };
 }

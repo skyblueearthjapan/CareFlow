@@ -30,29 +30,26 @@ export function useOffices(params: UseOfficesParams = {}) {
 
   const limit = params.limit ?? 100;
   const offset = params.offset ?? 0;
+  const search = params.search?.trim() || undefined;
 
   const query = useQuery<OfficesResponse>({
-    queryKey: ['offices', limit, offset],
-    queryFn: () =>
-      fetcher<OfficesResponse>(
-        `/api/v1/offices?limit=${limit}&offset=${offset}`,
-        { accessToken, refreshToken },
-      ),
+    queryKey: ['offices', limit, offset, search ?? null],
+    queryFn: () => {
+      const usp = new URLSearchParams({
+        limit: String(limit),
+        offset: String(offset),
+      });
+      if (search) usp.set('q', search);
+      return fetcher<OfficesResponse>(`/api/v1/offices?${usp.toString()}`, {
+        accessToken,
+        refreshToken,
+      });
+    },
     enabled: status === 'authenticated',
   });
 
   const all = normalizeOffices(query.data);
-  const filtered = params.search
-    ? all.filter((o) => {
-        const q = params.search!.toLowerCase();
-        return (
-          o.name.toLowerCase().includes(q) ||
-          (o.address ?? '').toLowerCase().includes(q)
-        );
-      })
-    : all;
-
-  return { ...query, offices: filtered, allOffices: all };
+  return { ...query, offices: all, allOffices: all };
 }
 
 export function useOffice(id: string | undefined) {

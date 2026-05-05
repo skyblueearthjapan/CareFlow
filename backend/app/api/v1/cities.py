@@ -10,7 +10,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 
 from app.core.deps import DbDep, require_role
@@ -43,7 +43,9 @@ async def _commit_or_409(db) -> None:
 async def list_cities(
     db: DbDep,
     _user: Annotated[User, Depends(require_role("admin", "manager", "staff"))],
-    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+    q: Annotated[str | None, Query(description="Substring filter on name/prefecture")] = None,
+    prefecture: Annotated[str | None, Query(description="Exact prefecture filter")] = None,
+    limit: Annotated[int, Query(ge=1, le=2000)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> list[City]:
     stmt = (
@@ -53,6 +55,11 @@ async def list_cities(
         .limit(limit)
         .offset(offset)
     )
+    if prefecture:
+        stmt = stmt.where(City.prefecture == prefecture)
+    if q:
+        like = f"%{q}%"
+        stmt = stmt.where(or_(City.name.ilike(like), City.prefecture.ilike(like)))
     rows = (await db.scalars(stmt)).all()
     return list(rows)
 
