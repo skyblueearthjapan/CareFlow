@@ -8,6 +8,7 @@ import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
+import { toast } from '@/components/ui/sonner';
 import { MobileSection } from '@/components/mobile/MobileSection';
 import {
   currentMonthStartIso,
@@ -84,7 +85,13 @@ export default function MobileHomePage() {
       action={
         <button
           type="button"
-          aria-label="通知"
+          aria-label="通知 (準備中)"
+          aria-disabled="true"
+          onClick={() => {
+            // Notification route ships with W2-D; until then make the dead-end
+            // tap explicit instead of leaving the user staring at silence.
+            toast.info('通知機能は準備中です');
+          }}
           className="relative inline-flex h-10 w-10 items-center justify-center rounded-full text-text-secondary hover:bg-bg-muted"
         >
           <Bell className="h-5 w-5" />

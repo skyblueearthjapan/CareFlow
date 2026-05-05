@@ -32,7 +32,11 @@ export function MobileShell({ children }: MobileShellProps) {
         aria-label="Bottom navigation"
       >
         {TABS.map(({ href, label, icon: Icon }) => {
-          const active = pathname?.startsWith(href);
+          // Exact match OR a strict path-segment prefix (e.g. `/m/today/123`).
+          // Avoid the loose `startsWith(href)` which would also match
+          // `/m/home123` or `/m/todayspecial`.
+          const active =
+            pathname === href || pathname?.startsWith(`${href}/`);
           return (
             <Link
               key={href}

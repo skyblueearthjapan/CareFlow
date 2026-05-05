@@ -3,6 +3,7 @@
 import { signOut, useSession } from 'next-auth/react';
 import { LogOut } from 'lucide-react';
 
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Switch } from '@/components/ui/switch';
@@ -10,6 +11,7 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { MobileSection } from '@/components/mobile/MobileSection';
 import { useUIStore } from '@/lib/stores/ui';
+import { useMyShifts } from '@/lib/queries/me';
 import { roleLabel } from '@/lib/schemas/staff';
 import type { AppRole } from '@/types/auth';
 
@@ -39,6 +41,12 @@ export default function MobileMyPage() {
   const sidebarCollapsed = useUIStore((s) => s.sidebarCollapsed);
   const setSidebarCollapsed = useUIStore((s) => s.setSidebarCollapsed);
 
+  // Fetch the staff record so 所属事業所 shows a human name instead of a raw
+  // UUID. Backend doesn't yet expose office name, so name is the closest stable
+  // label we have until /api/v1/staff/{id} grows an office join.
+  const { data: shiftsData } = useMyShifts();
+  const staffName = shiftsData?.staff?.name ?? null;
+
   const role = (user?.role as AppRole | undefined) ?? 'staff';
 
   return (
@@ -61,7 +69,7 @@ export default function MobileMyPage() {
         <div className="mt-3 divide-y divide-border-default">
           <ProfileRow
             label="所属事業所"
-            value={user?.staffId ? user.staffId : '--'}
+            value={staffName ?? (user?.staffId ? '読込中…' : '--')}
           />
           <ProfileRow label="ロール" value={roleLabel(role)} />
         </div>
@@ -74,8 +82,15 @@ export default function MobileMyPage() {
         <p className="mt-1 text-xs text-text-muted">
           翌週以降のシフト希望を入力できます。
         </p>
-        {/* TODO(W2-C+): バックエンドに /api/v1/staff/me/shift-requests が
-            実装され次第、テキストエリア + POST を有効化する。 */}
+        {/* M5: explicit "coming soon" notice — disabled controls alone read as
+            broken UI on mobile. Until /api/v1/staff/me/shift-requests ships,
+            staff should keep submitting via Kaipoke as today. */}
+        <Alert className="mt-3">
+          <AlertTitle>この機能は近日公開予定です</AlertTitle>
+          <AlertDescription>
+            現状はカイポケ側で提出してください。
+          </AlertDescription>
+        </Alert>
         <textarea
           disabled
           rows={3}

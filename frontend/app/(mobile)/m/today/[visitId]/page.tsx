@@ -91,24 +91,86 @@ export default function MobileVisitDetailPage() {
   const checkIn = useCheckIn(visitId);
   const checkOut = useCheckOut(visitId);
 
-  // Local optimistic state — backend endpoint is not implemented yet, so we
-  // keep an in-memory "checked in" flag to drive the UI. Once the server
-  // returns a fresh visit with `status === 'checked_in'`, this can be
-  // removed in favor of `visit.status`.
+  // The check-in/out backend endpoints are not implemented yet (Phase 5
+  // backlog). Rather than dropping the user's tap on the floor when they
+  // navigate away, we persist a small record under
+  // `checkin:{visitId}` in localStorage so the screen rehydrates the
+  // correct UI state on revisit. mutateAsync is currently expected to
+  // reject; on 404/405/501/network we keep the local copy. Once the server
+  // ships, `onSuccess` clears the entry and `visit.status` becomes the
+  // source of truth again.
+  type LocalCheckin = {
+    status: 'checked_in' | 'checked_out';
+    at: string;
+    lat?: number;
+    lng?: number;
+    photo_uri?: string;
+  };
+  const storageKey = visitId ? `checkin:${visitId}` : null;
+
+  function readLocalCheckin(key: string | null): LocalCheckin | null {
+    if (!key || typeof window === 'undefined') return null;
+    try {
+      const raw = window.localStorage.getItem(key);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as LocalCheckin;
+      if (parsed.status === 'checked_in' || parsed.status === 'checked_out') {
+        return parsed;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  function writeLocalCheckin(key: string | null, value: LocalCheckin) {
+    if (!key || typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem(key, JSON.stringify(value));
+    } catch {
+      /* quota / private mode — ignore */
+    }
+  }
+
+  function clearLocalCheckin(key: string | null) {
+    if (!key || typeof window === 'undefined') return;
+    try {
+      window.localStorage.removeItem(key);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // Seed from localStorage so a previous check-in survives navigation.
   const [localStatus, setLocalStatus] = useState<
     'idle' | 'checked_in' | 'checked_out'
-  >('idle');
+  >(() => readLocalCheckin(storageKey)?.status ?? 'idle');
 
-  // Reset local status when the visit id changes.
+  // When the visit id changes, re-seed from storage for the new id.
   const lastVisitIdRef = useRef(visitId);
   useEffect(() => {
     if (lastVisitIdRef.current !== visitId) {
       lastVisitIdRef.current = visitId;
-      setLocalStatus('idle');
+      setLocalStatus(readLocalCheckin(storageKey)?.status ?? 'idle');
     }
-  }, [visitId]);
+  }, [visitId, storageKey]);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  /**
+   * Treat the mutation as "the server can't accept this yet" for any of:
+   *   - 404 (route missing), 405 (method not allowed),
+   *   - 501 (not implemented),
+   *   - network errors (ApiError not produced → no `status` property).
+   * For 5xx other than 501 we still surface a hard error.
+   */
+  function isUnimplementedServerError(err: unknown): boolean {
+    if (err instanceof ApiError) {
+      return err.status === 404 || err.status === 405 || err.status === 501;
+    }
+    // Non-ApiError → fetch-level failure (TypeError "Failed to fetch", etc.)
+    return true;
+  }
 
   async function handleCheckIn() {
     const geo = await getGeolocation();
@@ -117,21 +179,25 @@ export default function MobileVisitDetailPage() {
         description: '位置情報なしで記録します',
       });
     }
-    const payload: CheckInPayload = {
-      ...geo,
-      at: new Date().toISOString(),
-    };
+    const at = new Date().toISOString();
+    const payload: CheckInPayload = { ...geo, at };
     try {
       await checkIn.mutateAsync(payload);
+      // Server accepted → drop the local fallback record.
+      clearLocalCheckin(storageKey);
       setLocalStatus('checked_in');
       toast.success('チェックインしました');
     } catch (err) {
-      // TODO(W2-C+): backend `/api/v1/visits/{id}/checkin` 未実装。
-      // 暫定でローカル状態のみ更新する。
-      if (err instanceof ApiError && (err.status === 404 || err.status === 405)) {
+      if (isUnimplementedServerError(err)) {
+        writeLocalCheckin(storageKey, {
+          status: 'checked_in',
+          at,
+          lat: geo.lat,
+          lng: geo.lng,
+        });
         setLocalStatus('checked_in');
-        toast.warning('サーバー未対応のため端末のみ記録', {
-          description: '記録はバックエンド実装後に同期されます',
+        toast.warning('現在オフライン保存中', {
+          description: 'サーバ実装後に同期されます',
         });
       } else {
         toast.error('チェックインに失敗しました', {
@@ -143,20 +209,24 @@ export default function MobileVisitDetailPage() {
 
   async function handleCheckOut() {
     const geo = await getGeolocation();
-    const payload: CheckInPayload = {
-      ...geo,
-      at: new Date().toISOString(),
-    };
+    const at = new Date().toISOString();
+    const payload: CheckInPayload = { ...geo, at };
     try {
       await checkOut.mutateAsync(payload);
+      clearLocalCheckin(storageKey);
       setLocalStatus('checked_out');
       toast.success('チェックアウトしました');
     } catch (err) {
-      // TODO(W2-C+): backend 未実装。同上のローカル fallback。
-      if (err instanceof ApiError && (err.status === 404 || err.status === 405)) {
+      if (isUnimplementedServerError(err)) {
+        writeLocalCheckin(storageKey, {
+          status: 'checked_out',
+          at,
+          lat: geo.lat,
+          lng: geo.lng,
+        });
         setLocalStatus('checked_out');
-        toast.warning('サーバー未対応のため端末のみ記録', {
-          description: '記録はバックエンド実装後に同期されます',
+        toast.warning('現在オフライン保存中', {
+          description: 'サーバ実装後に同期されます',
         });
       } else {
         toast.error('チェックアウトに失敗しました', {

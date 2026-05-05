@@ -1,21 +1,23 @@
 /**
  * Self-scoped TanStack Query hooks for the mobile experience (Wave 2-C).
  *
- * The backend's `/api/v1/visits` already filters to the caller's `staff_id`
- * when `user.role === 'staff'`, so a `staff_id=` query param is unnecessary
- * for staff users. For admin/manager (who would otherwise see everyone's
- * visits) we filter on the client by `primary_staff_id` matching
- * `session.user.staffId` so the mobile screens always show "my visits".
+ * Privacy: every list call passes `?staff_id={session.user.staffId}` so the
+ * server narrows visits to "mine" before returning. The backend enforces this
+ * for the `staff` role automatically; for admin/manager the explicit query
+ * param is what keeps the mobile screens to "my visits only" without pulling
+ * everyone's PHI to the client. There is no client-side fallback filter — if
+ * the staffId is missing the query stays disabled.
  *
  * Endpoints touched:
- *   GET  /api/v1/visits                    list (auto-filtered for staff role)
+ *   GET  /api/v1/visits?staff_id={id}      list (server-filtered to "mine")
  *   GET  /api/v1/staff/{id}                detail (no shifts in current schema)
  *   POST /api/v1/visits/{id}/checkin       NOT YET IMPLEMENTED on the backend
  *   POST /api/v1/visits/{id}/checkout      NOT YET IMPLEMENTED on the backend
  *
- * The check-in / check-out mutations call the (planned) endpoints best-effort
- * and surface a toast when the backend returns 404/501 so the user knows the
- * server side is still pending. See TODO markers in `useCheckIn`/`useCheckOut`.
+ * The check-in / check-out mutations call the (planned) endpoints best-effort.
+ * Until the server lands, callers are expected to fall back to localStorage on
+ * 404/405/501/network errors (see `m/today/[visitId]/page.tsx`). Wave 2-D will
+ * remove the local fallback once the routes ship.
  */
 'use client';
 
@@ -59,17 +61,6 @@ function authPair(session: ReturnType<typeof useSession>['data']) {
   };
 }
 
-/** Filter to "my" visits (covers admin/manager who'd otherwise get everyone). */
-function filterMyVisits(visits: MyVisit[], staffId: string | null): MyVisit[] {
-  if (!staffId) return [];
-  return visits.filter(
-    (v) =>
-      v.primary_staff_id === staffId ||
-      v.secondary_staff_id === staffId ||
-      v.mentor_staff_id === staffId,
-  );
-}
-
 export interface UseMyVisitsParams {
   /** ISO date `YYYY-MM-DD` to filter to a single day (client-side). */
   date?: string;
@@ -77,11 +68,21 @@ export interface UseMyVisitsParams {
   weekStart?: string;
 }
 
-/** Add days to an ISO date string. */
-function addDays(iso: string, n: number): string {
-  const d = new Date(`${iso}T00:00:00`);
-  d.setDate(d.getDate() + n);
-  return d.toISOString().slice(0, 10);
+/**
+ * Add `days` to a `YYYY-MM-DD` string, returning another `YYYY-MM-DD`.
+ *
+ * Built from local-date components only — never calls `toISOString()`, which
+ * would shift in non-UTC timezones / across DST and produce off-by-one dates
+ * around midnight (the original symptom of M6).
+ */
+function addDays(iso: string, days: number): string {
+  const [y, m, d] = iso.split('-').map(Number);
+  const dt = new Date(y ?? 1970, (m ?? 1) - 1, (d ?? 1));
+  dt.setDate(dt.getDate() + days);
+  const yyyy = dt.getFullYear();
+  const mm = String(dt.getMonth() + 1).padStart(2, '0');
+  const dd = String(dt.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
 }
 
 /** GET /api/v1/visits → my visits, optionally filtered by date or week. */
@@ -95,11 +96,18 @@ export function useMyVisits(
     queryKey: [...ME_KEY, 'visits', { staffId, date: params.date, weekStart: params.weekStart }],
     enabled: status === 'authenticated' && !!staffId,
     queryFn: async () => {
-      const all = await fetcher<MyVisit[]>(
-        '/api/v1/visits?limit=500&offset=0',
+      // Always pin the request to the caller's staff_id. This is what keeps
+      // admin/manager from accidentally pulling the whole org's visits to the
+      // mobile bundle — server enforces visibility, client only paints.
+      const qs = new URLSearchParams({
+        staff_id: staffId ?? '',
+        limit: '100',
+        offset: '0',
+      });
+      const mine = await fetcher<MyVisit[]>(
+        `/api/v1/visits?${qs.toString()}`,
         { accessToken, refreshToken },
       );
-      const mine = filterMyVisits(all, staffId);
       if (params.date) {
         return mine.filter((v) => v.visit_date === params.date);
       }
@@ -136,28 +144,35 @@ export function useMyVisit(
 
 /**
  * GET /api/v1/staff/{id} — currently does not return `shifts`. Until the
- * backend grows a shifts payload (planned Wave 2 work) this hook simply
- * returns the staff record; consumers that needed shift data should handle
- * the empty fallback. The `weekday` arg is accepted for forward-compat.
+ * backend grows a shifts payload (planned Wave 2 work) this hook returns the
+ * staff record on `data.staff` and an empty `shifts` array; consumers that
+ * needed shift data should handle the empty fallback. The `weekday` arg is
+ * accepted for forward-compat.
  */
+export interface UseMyShiftsResult {
+  staff: StaffRead | null;
+  shifts: StaffShift[];
+}
+
 export function useMyShifts(
   _weekday?: number,
-): UseQueryResult<StaffShift[], Error> {
+): UseQueryResult<UseMyShiftsResult, Error> {
   const { data: session, status } = useSession();
   const { accessToken, refreshToken, staffId } = authPair(session);
 
-  return useQuery<StaffShift[], Error>({
+  return useQuery<UseMyShiftsResult, Error>({
     queryKey: [...ME_KEY, 'shifts', { staffId, weekday: _weekday }],
     enabled: status === 'authenticated' && !!staffId,
     queryFn: async () => {
       // TODO(W2-C+): backend `/api/v1/staff/{id}` doesn't return shifts yet.
-      // Fetch the staff record so the call still validates auth, then return [].
-      if (!staffId) return [];
-      await fetcher<StaffRead>(`/api/v1/staff/${staffId}`, {
+      // Fetch the staff record so the call still validates auth + lets the UI
+      // surface the staff name (rather than a raw UUID) for "所属事業所".
+      if (!staffId) return { staff: null, shifts: [] };
+      const staff = await fetcher<StaffRead>(`/api/v1/staff/${staffId}`, {
         accessToken,
         refreshToken,
       });
-      return [];
+      return { staff, shifts: [] };
     },
   });
 }
@@ -173,10 +188,10 @@ export interface CheckInPayload {
 /**
  * POST /api/v1/visits/{id}/checkin
  *
- * NOTE: backend endpoint is not yet implemented. The mutation will call
- * the URL anyway and surface the (likely 404) error to the caller via the
- * standard react-query error path; UI code is expected to wrap the call
- * in try/catch and render a "サーバー未対応" toast on failure.
+ * NOTE: backend endpoint is not yet implemented. The mutation calls the URL
+ * anyway; until the route ships, callers fall back to a localStorage
+ * permanent record on 404/405/501/network errors so check-in survives page
+ * navigation. Phase 5 will replace the local fallback with server sync.
  */
 export function useCheckIn(
   visitId: string,
@@ -234,7 +249,12 @@ export function todayIso(): string {
   return `${yyyy}-${mm}-${dd}`;
 }
 
-/** Monday of the current ISO week (`YYYY-MM-DD`). */
+/**
+ * Monday of the current ISO week as `YYYY-MM-DD` in local TZ.
+ *
+ * Built from local-date components (no UTC conversion) to avoid the M6
+ * Sunday-midnight / DST-skip drift.
+ */
 export function currentWeekStartIso(): string {
   const d = new Date();
   const dow = d.getDay(); // 0 = Sun
