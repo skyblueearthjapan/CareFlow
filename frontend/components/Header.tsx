@@ -1,8 +1,9 @@
 'use client';
 
+import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { signOut, useSession } from 'next-auth/react';
-import { Bell, BellOff, Check, Heart, LogOut, Menu, User } from 'lucide-react';
+import { Bell, BellOff, Check, Heart, LogOut, Menu, ShieldCheck, User } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -34,6 +35,7 @@ export function Header({ title = 'CareFlow', onToggleSidebar }: HeaderProps) {
         </div>
         <NotificationButton />
         <UserMenuButton />
+        <AdminUsersButton />
       </div>
     </header>
   );
@@ -237,5 +239,21 @@ function UserMenuButton() {
         )}
       </PopoverContent>
     </Popover>
+  );
+}
+
+// ============================================================
+// Admin: Users management quick-access button
+// ============================================================
+
+function AdminUsersButton() {
+  const { data: session } = useSession();
+  if (session?.user?.role !== 'admin') return null;
+  return (
+    <Button variant="ghost" size="icon" asChild aria-label="ユーザー管理" title="ユーザー管理">
+      <Link href="/admin/users">
+        <ShieldCheck className="h-5 w-5" strokeWidth={1.75} />
+      </Link>
+    </Button>
   );
 }
