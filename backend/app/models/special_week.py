@@ -21,6 +21,7 @@ from sqlalchemy import (
     String,
     Text,
     Time,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -58,6 +59,14 @@ class SpecialWeek(Base, TimestampMixin):
         "SpecialWeekItem",
         back_populates="special_week",
         cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "patient_id",
+            "week_start",
+            name="uq_special_weeks_patient_week_start",
+        ),
     )
 
 
