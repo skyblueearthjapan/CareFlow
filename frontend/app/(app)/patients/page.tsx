@@ -1,48 +1,110 @@
+/**
+ * Patient master list (Phase 3-1).
+ *
+ * Filters: 検索 (name/kana/code, 300ms debounce), 保険区分, 状態 (有効/削除済).
+ * Pagination: limit=20, prev/next + page numbers.
+ * Roles: 「+ 新規登録」 is admin/manager only.
+ */
 'use client';
 
-import { useQuery } from '@tanstack/react-query';
+import Link from 'next/link';
+import { useEffect, useMemo, useState } from 'react';
 import { useSession } from 'next-auth/react';
 
-import { Card } from '@/components/ui/card';
-import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { fetcher } from '@/lib/api/fetcher';
+import { Button } from '@/components/ui/button';
+import { Card } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Skeleton } from '@/components/ui/skeleton';
+import { INSURANCE_OPTIONS } from '@/lib/schemas/patient';
+import { usePatients } from '@/lib/queries/patients';
 
-interface PatientRow {
-  id?: string | number;
-  name?: string;
-  status?: string;
-  [key: string]: unknown;
-}
-
-type PatientsResponse = PatientRow[] | { items?: PatientRow[] };
-
-function normalizePatients(data: PatientsResponse | undefined): PatientRow[] {
-  if (!data) return [];
-  if (Array.isArray(data)) return data;
-  return Array.isArray(data.items) ? data.items : [];
-}
+const PAGE_SIZE = 20;
 
 export default function PatientsPage() {
-  const { data: session, status } = useSession();
-  const accessToken = session?.accessToken ?? null;
-  const refreshToken = session?.refreshToken ?? null;
-  const userId = session?.user?.id ?? null;
+  const { data: session } = useSession();
+  const role = session?.user?.role;
+  const canCreate = role === 'admin' || role === 'manager';
 
-  const { data, isLoading, isError, error } = useQuery<PatientsResponse>({
-    queryKey: ['patients', userId],
-    queryFn: () => fetcher<PatientsResponse>('/api/v1/patients', { accessToken, refreshToken }),
-    enabled: status === 'authenticated',
+  const [searchInput, setSearchInput] = useState('');
+  const [search, setSearch] = useState('');
+  const [insurance, setInsurance] = useState<string>('');
+  const [showActiveOnly, setShowActiveOnly] = useState(true);
+  const [page, setPage] = useState(1);
+
+  // 300ms debounce for the search box.
+  useEffect(() => {
+    const handle = window.setTimeout(() => {
+      setSearch(searchInput);
+      setPage(1);
+    }, 300);
+    return () => window.clearTimeout(handle);
+  }, [searchInput]);
+
+  const { data, isLoading, isError, error } = usePatients({
+    page,
+    limit: PAGE_SIZE,
+    search,
+    insurance: insurance || undefined,
   });
 
-  const rows = normalizePatients(data);
+  const items = useMemo(() => {
+    if (!data) return [];
+    return showActiveOnly ? data.items.filter((p) => !p.deleted_at) : data.items;
+  }, [data, showActiveOnly]);
+
+  const total = data?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   return (
     <section className="space-y-4">
-      <header>
-        <h1 className="font-serif text-2xl font-bold text-text-primary">患者マスタ</h1>
-        <p className="text-sm text-text-secondary">患者一覧 — D3 で実装予定</p>
+      <header className="flex items-end justify-between gap-4">
+        <div>
+          <h1 className="font-serif text-2xl font-bold text-text-primary">患者マスタ</h1>
+          <p className="text-sm text-text-secondary">
+            {total > 0 ? `全 ${total} 件` : '登録済み患者を一覧表示します'}
+          </p>
+        </div>
+        {canCreate ? (
+          <Button asChild>
+            <Link href="/patients/new">+ 新規登録</Link>
+          </Button>
+        ) : null}
       </header>
+
+      <Card className="p-4">
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_220px_auto]">
+          <Input
+            type="search"
+            placeholder="氏名・カナ・コードで検索"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+          />
+          <select
+            value={insurance}
+            onChange={(e) => {
+              setInsurance(e.target.value);
+              setPage(1);
+            }}
+            className="flex h-10 w-full rounded-md border border-border-default bg-bg-base px-3 py-2 text-sm text-text-primary focus-visible:outline-none focus-visible:border-brand-primary focus-visible:ring-2 focus-visible:ring-brand-primary-light"
+          >
+            <option value="">保険区分: すべて</option>
+            {INSURANCE_OPTIONS.map((v) => (
+              <option key={v} value={v}>
+                {v}
+              </option>
+            ))}
+          </select>
+          <label className="flex items-center gap-2 text-sm text-text-secondary">
+            <input
+              type="checkbox"
+              checked={showActiveOnly}
+              onChange={(e) => setShowActiveOnly(e.target.checked)}
+            />
+            有効のみ
+          </label>
+        </div>
+      </Card>
 
       <Card className="p-5">
         {isLoading ? (
@@ -58,24 +120,70 @@ export default function PatientsPage() {
               {error instanceof Error ? error.message : '不明なエラー'}
             </AlertDescription>
           </Alert>
-        ) : rows.length === 0 ? (
-          <p className="text-sm text-text-muted">データなし</p>
+        ) : items.length === 0 ? (
+          <p className="text-sm text-text-muted">患者が登録されていません</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="border-b border-border-default text-left text-text-secondary">
                 <tr>
-                  <th className="px-3 py-2 font-medium">ID</th>
+                  <th className="px-3 py-2 font-medium">コード</th>
                   <th className="px-3 py-2 font-medium">氏名</th>
+                  <th className="px-3 py-2 font-medium">カナ</th>
+                  <th className="px-3 py-2 font-medium">性別</th>
+                  <th className="px-3 py-2 font-medium">年齢</th>
+                  <th className="px-3 py-2 font-medium">保険</th>
+                  <th className="px-3 py-2 font-medium">主担当拠点</th>
                   <th className="px-3 py-2 font-medium">状態</th>
+                  <th className="px-3 py-2 font-medium">操作</th>
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row, idx) => (
-                  <tr key={row.id ?? idx} className="border-b border-border-default last:border-0">
-                    <td className="px-3 py-2 tnum">{String(row.id ?? '--')}</td>
-                    <td className="px-3 py-2">{row.name ?? '--'}</td>
-                    <td className="px-3 py-2 text-text-secondary">{row.status ?? '--'}</td>
+                {items.map((p) => (
+                  <tr
+                    key={p.id}
+                    className="border-b border-border-default last:border-0 hover:bg-bg-muted/30"
+                  >
+                    <td className="px-3 py-2 tnum">{p.code}</td>
+                    <td className="px-3 py-2 font-medium text-text-primary">{p.name}</td>
+                    <td className="px-3 py-2 text-text-secondary">{p.kana ?? '--'}</td>
+                    <td className="px-3 py-2 text-text-secondary">{p.sex ?? '--'}</td>
+                    <td className="px-3 py-2 text-text-secondary tnum">
+                      {p.age ?? '--'}
+                    </td>
+                    <td className="px-3 py-2 text-text-secondary">
+                      {p.insurance ?? '--'}
+                    </td>
+                    <td className="px-3 py-2 text-text-secondary tnum">
+                      {p.primary_office_id
+                        ? p.primary_office_id.slice(0, 8)
+                        : '--'}
+                    </td>
+                    <td className="px-3 py-2 text-text-secondary">
+                      {p.deleted_at
+                        ? '削除済'
+                        : p.status === 'active'
+                          ? '有効'
+                          : '無効'}
+                    </td>
+                    <td className="px-3 py-2">
+                      <div className="flex gap-2">
+                        <Link
+                          href={`/patients/${p.id}`}
+                          className="text-brand-primary hover:underline"
+                        >
+                          詳細
+                        </Link>
+                        {canCreate ? (
+                          <Link
+                            href={`/patients/${p.id}/edit`}
+                            className="text-brand-primary hover:underline"
+                          >
+                            編集
+                          </Link>
+                        ) : null}
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -83,7 +191,71 @@ export default function PatientsPage() {
           </div>
         )}
       </Card>
-      {/* TODO: fetch from BACKEND_API_BASE_URL /api/v1/patients */}
+
+      {totalPages > 1 ? (
+        <Pagination page={page} totalPages={totalPages} onChange={setPage} />
+      ) : null}
     </section>
   );
+}
+
+interface PaginationProps {
+  page: number;
+  totalPages: number;
+  onChange: (page: number) => void;
+}
+
+function Pagination({ page, totalPages, onChange }: PaginationProps) {
+  // Compact page-number window: max 7 buttons.
+  const pages = buildPageWindow(page, totalPages);
+  return (
+    <nav className="flex items-center justify-center gap-1" aria-label="ページネーション">
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => onChange(Math.max(1, page - 1))}
+        disabled={page <= 1}
+      >
+        前へ
+      </Button>
+      {pages.map((p, idx) =>
+        p === '…' ? (
+          <span key={`gap-${idx}`} className="px-2 text-text-muted">
+            …
+          </span>
+        ) : (
+          <Button
+            key={p}
+            variant={p === page ? 'default' : 'outline'}
+            size="sm"
+            onClick={() => onChange(p)}
+          >
+            {p}
+          </Button>
+        ),
+      )}
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => onChange(Math.min(totalPages, page + 1))}
+        disabled={page >= totalPages}
+      >
+        次へ
+      </Button>
+    </nav>
+  );
+}
+
+function buildPageWindow(page: number, totalPages: number): Array<number | '…'> {
+  if (totalPages <= 7) {
+    return Array.from({ length: totalPages }, (_, i) => i + 1);
+  }
+  const out: Array<number | '…'> = [1];
+  const start = Math.max(2, page - 1);
+  const end = Math.min(totalPages - 1, page + 1);
+  if (start > 2) out.push('…');
+  for (let p = start; p <= end; p++) out.push(p);
+  if (end < totalPages - 1) out.push('…');
+  out.push(totalPages);
+  return out;
 }
