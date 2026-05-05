@@ -27,6 +27,7 @@ const loginResponseSchema = z.object({
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
   session: { strategy: 'jwt' },
+  trustHost: true,
   pages: {
     signIn: '/login',
   },
