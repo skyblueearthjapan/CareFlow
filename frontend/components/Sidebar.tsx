@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useSession } from 'next-auth/react';
 import { LayoutDashboard, Users, UserCircle2, CalendarDays, Heart, Building2, Plug } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -15,12 +16,18 @@ const NAV_ITEMS = [
   { href: '/staff', label: 'スタッフ', icon: UserCircle2 },
   { href: '/offices', label: '拠点', icon: Building2 },
   { href: '/schedule', label: 'スケジュール', icon: CalendarDays },
-  { href: '/integrations', label: '連携', icon: Plug },
+  { href: '/integrations', label: '連携', icon: Plug, adminOnly: true },
 ] as const;
 
 export function Sidebar({ collapsed }: SidebarProps) {
   const pathname = usePathname();
+  const { data: session } = useSession();
+  const role = session?.user?.role;
   const width = collapsed ? 'w-[72px]' : 'w-[232px]';
+
+  const items = NAV_ITEMS.filter(
+    (item) => !('adminOnly' in item && item.adminOnly) || role !== 'staff',
+  );
 
   return (
     <aside
@@ -40,7 +47,7 @@ export function Sidebar({ collapsed }: SidebarProps) {
 
       <nav className="flex-1 overflow-y-auto p-3">
         <ul className="space-y-1">
-          {NAV_ITEMS.map(({ href, label, icon: Icon }) => {
+          {items.map(({ href, label, icon: Icon }) => {
             const active = pathname?.startsWith(href);
             return (
               <li key={href}>

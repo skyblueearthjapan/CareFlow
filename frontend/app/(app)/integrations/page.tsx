@@ -1,22 +1,30 @@
 'use client';
 
+import { Suspense } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { useSession } from 'next-auth/react';
 
 import { Card } from '@/components/ui/card';
+import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import KaipokePage from './kaipoke/page';
-import GeocodingPage from './geocoding/page';
-import AiLogsPage from './ai/page';
 
-const VALID_TABS = ['kaipoke', 'geocoding', 'ai'] as const;
-type TabKey = (typeof VALID_TABS)[number];
+import { AiLogsList } from './_components/AiLogsList';
+import { GeocodingCacheList } from './_components/GeocodingCacheList';
+import { KaipokeJobsList } from './_components/KaipokeJobsList';
 
-export default function IntegrationsPage() {
+const ALL_TABS = ['kaipoke', 'geocoding', 'ai'] as const;
+type TabKey = (typeof ALL_TABS)[number];
+
+function IntegrationsPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { data: session } = useSession();
+  const isAdmin = session?.user?.role === 'admin';
+  const validTabs: readonly TabKey[] = isAdmin ? ALL_TABS : ['kaipoke'];
+
   const raw = searchParams?.get('tab') ?? 'kaipoke';
-  const tab = (VALID_TABS.includes(raw as TabKey) ? raw : 'kaipoke') as TabKey;
+  const tab = (validTabs.includes(raw as TabKey) ? raw : 'kaipoke') as TabKey;
 
   const setTab = (next: string) => {
     const usp = new URLSearchParams(searchParams?.toString() ?? '');
@@ -36,30 +44,49 @@ export default function IntegrationsPage() {
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList>
           <TabsTrigger value="kaipoke">Kaipoke ジョブ</TabsTrigger>
-          <TabsTrigger value="geocoding">Geocoding キャッシュ</TabsTrigger>
-          <TabsTrigger value="ai">AI ログ</TabsTrigger>
+          {isAdmin && <TabsTrigger value="geocoding">Geocoding キャッシュ</TabsTrigger>}
+          {isAdmin && <TabsTrigger value="ai">AI ログ</TabsTrigger>}
         </TabsList>
 
         <TabsContent value="kaipoke">
           <Card className="p-5">
-            <KaipokePage />
+            {tab === 'kaipoke' && <KaipokeJobsList />}
           </Card>
         </TabsContent>
-        <TabsContent value="geocoding">
-          <Card className="p-5">
-            <GeocodingPage />
-          </Card>
-        </TabsContent>
-        <TabsContent value="ai">
-          <Card className="p-5">
-            <AiLogsPage />
-          </Card>
-        </TabsContent>
+        {isAdmin && (
+          <TabsContent value="geocoding">
+            <Card className="p-5">
+              {tab === 'geocoding' && <GeocodingCacheList />}
+            </Card>
+          </TabsContent>
+        )}
+        {isAdmin && (
+          <TabsContent value="ai">
+            <Card className="p-5">
+              {tab === 'ai' && <AiLogsList />}
+            </Card>
+          </TabsContent>
+        )}
       </Tabs>
 
       <p className="text-xs text-text-muted">
         詳しいジョブ操作は <Link className="text-brand-primary hover:underline" href="/integrations/kaipoke">Kaipoke ジョブ画面</Link> から。
       </p>
     </section>
+  );
+}
+
+export default function IntegrationsPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="space-y-3">
+          <Skeleton className="h-8 w-48" />
+          <Skeleton className="h-32 w-full" />
+        </div>
+      }
+    >
+      <IntegrationsPageInner />
+    </Suspense>
   );
 }

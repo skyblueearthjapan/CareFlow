@@ -38,15 +38,6 @@ class KaipokeJobCreate(KaipokeJobBase):
     pass
 
 
-class KaipokeJobUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    status: KaipokeJobStatus | None = None
-    result_summary: dict[str, Any] | None = None
-    started_at: datetime | None = None
-    completed_at: datetime | None = None
-
-
 class KaipokeJobItemRead(BaseModel):
     model_config = ConfigDict(from_attributes=True, extra="forbid")
 

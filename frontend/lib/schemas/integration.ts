@@ -63,9 +63,18 @@ export const KaipokeJobReadSchema = z.object({
 
 export const KaipokeJobCreateSchema = z.object({
   job_type: KaipokeJobTypeSchema,
-  week_start: z.string().min(1, 'week_start は必須です'),
+  week_start: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'YYYY-MM-DD で入力してください'),
   params: z.record(z.unknown()).default({}),
 });
+
+export interface Paginated<T> {
+  items: T[];
+  total: number;
+  limit: number;
+  offset: number;
+}
 
 export type KaipokeJob = z.infer<typeof KaipokeJobReadSchema>;
 export type KaipokeJobItem = z.infer<typeof KaipokeJobItemReadSchema>;

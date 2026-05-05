@@ -113,8 +113,10 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id", name="pk_kaipoke_job_items"),
     )
-    op.create_index(
-        "ix_kaipoke_job_items_job_seq", "kaipoke_job_items", ["job_id", "seq"]
+    op.create_unique_constraint(
+        "uq_kaipoke_job_items_job_seq",
+        "kaipoke_job_items",
+        ["job_id", "seq"],
     )
 
     # ----- geocoding_cache -----
@@ -195,7 +197,11 @@ def downgrade() -> None:
 
     op.drop_table("geocoding_cache")
 
-    op.drop_index("ix_kaipoke_job_items_job_seq", table_name="kaipoke_job_items")
+    op.drop_constraint(
+        "uq_kaipoke_job_items_job_seq",
+        "kaipoke_job_items",
+        type_="unique",
+    )
     op.drop_table("kaipoke_job_items")
 
     op.drop_index("ix_kaipoke_jobs_type_week", table_name="kaipoke_jobs")

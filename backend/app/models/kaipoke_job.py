@@ -9,7 +9,16 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import (
+    Date,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -85,5 +94,7 @@ class KaipokeJobItem(Base, TimestampMixin):
     job: Mapped["KaipokeJob"] = relationship("KaipokeJob", back_populates="items")
 
     __table_args__ = (
-        Index("ix_kaipoke_job_items_job_seq", "job_id", "seq"),
+        UniqueConstraint(
+            "job_id", "seq", name="uq_kaipoke_job_items_job_seq"
+        ),
     )

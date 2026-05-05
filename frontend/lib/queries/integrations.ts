@@ -15,6 +15,7 @@ import type {
   GeocodingCache,
   KaipokeJob,
   KaipokeJobCreate,
+  Paginated,
 } from '@/lib/schemas/integration';
 
 // --- Kaipoke jobs ---------------------------------------------------------
@@ -34,17 +35,17 @@ export function useKaipokeJobs(params: UseKaipokeJobsParams = {}) {
 
   const { weekStart, status: jobStatus, type, limit = 50, offset = 0 } = params;
 
-  return useQuery<KaipokeJob[]>({
+  return useQuery<Paginated<KaipokeJob>>({
     queryKey: ['integrations', 'kaipoke', 'jobs', weekStart ?? null, jobStatus ?? null, type ?? null, limit, offset],
     queryFn: () => {
       const usp = new URLSearchParams({ limit: String(limit), offset: String(offset) });
       if (weekStart) usp.set('week_start', weekStart);
       if (jobStatus) usp.set('status', jobStatus);
       if (type) usp.set('type', type);
-      return fetcher<KaipokeJob[]>(`/api/v1/integrations/kaipoke/jobs?${usp.toString()}`, {
-        accessToken,
-        refreshToken,
-      });
+      return fetcher<Paginated<KaipokeJob>>(
+        `/api/v1/integrations/kaipoke/jobs?${usp.toString()}`,
+        { accessToken, refreshToken },
+      );
     },
     enabled: status === 'authenticated',
   });
@@ -121,12 +122,12 @@ export function useGeocodingCache(params: UseGeocodingCacheParams = {}) {
 
   const { q, limit = 100, offset = 0 } = params;
 
-  return useQuery<GeocodingCache[]>({
+  return useQuery<Paginated<GeocodingCache>>({
     queryKey: ['integrations', 'geocoding', 'cache', q ?? null, limit, offset],
     queryFn: () => {
       const usp = new URLSearchParams({ limit: String(limit), offset: String(offset) });
       if (q) usp.set('q', q);
-      return fetcher<GeocodingCache[]>(
+      return fetcher<Paginated<GeocodingCache>>(
         `/api/v1/integrations/geocoding/cache?${usp.toString()}`,
         { accessToken, refreshToken },
       );
@@ -152,14 +153,14 @@ export function useAiInterpretLogs(params: UseAiInterpretLogsParams = {}) {
 
   const { since, until, model, limit = 100, offset = 0 } = params;
 
-  return useQuery<AiInterpretLog[]>({
+  return useQuery<Paginated<AiInterpretLog>>({
     queryKey: ['integrations', 'ai', 'logs', since ?? null, until ?? null, model ?? null, limit, offset],
     queryFn: () => {
       const usp = new URLSearchParams({ limit: String(limit), offset: String(offset) });
       if (since) usp.set('since', since);
       if (until) usp.set('until', until);
       if (model) usp.set('model', model);
-      return fetcher<AiInterpretLog[]>(
+      return fetcher<Paginated<AiInterpretLog>>(
         `/api/v1/integrations/ai/logs?${usp.toString()}`,
         { accessToken, refreshToken },
       );

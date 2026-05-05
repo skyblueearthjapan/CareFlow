@@ -8,12 +8,12 @@ scope for this wave — these endpoints just persist + list jobs.
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import and_, select
+from sqlalchemy import and_, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
@@ -22,6 +22,7 @@ from app.models.ai_interpret_log import AiInterpretLog
 from app.models.geocoding_cache import GeocodingCache
 from app.models.kaipoke_job import KaipokeJob
 from app.models.user import User
+from app.schemas._pagination import Paginated
 from app.schemas.integrations import (
     AiInterpretLogRead,
     GeocodingCacheRead,
@@ -55,7 +56,7 @@ async def _commit_or_409(db) -> None:
 
 @router.get(
     "/kaipoke/jobs",
-    response_model=list[KaipokeJobRead],
+    response_model=Paginated[KaipokeJobRead],
     summary="List Kaipoke jobs",
 )
 async def list_kaipoke_jobs(
@@ -66,14 +67,7 @@ async def list_kaipoke_jobs(
     job_type: Annotated[str | None, Query(alias="type")] = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
-) -> list[KaipokeJobRead]:
-    stmt = (
-        select(KaipokeJob)
-        .options(selectinload(KaipokeJob.items))
-        .order_by(KaipokeJob.created_at.desc())
-        .limit(limit)
-        .offset(offset)
-    )
+) -> Paginated[KaipokeJobRead]:
     conditions = []
     if week_start is not None:
         conditions.append(KaipokeJob.week_start == week_start)
@@ -81,11 +75,28 @@ async def list_kaipoke_jobs(
         conditions.append(KaipokeJob.status == job_status)
     if job_type is not None:
         conditions.append(KaipokeJob.job_type == job_type)
+
+    base = select(KaipokeJob)
+    count_stmt = select(func.count()).select_from(KaipokeJob)
     if conditions:
-        stmt = stmt.where(and_(*conditions))
+        base = base.where(and_(*conditions))
+        count_stmt = count_stmt.where(and_(*conditions))
+
+    stmt = (
+        base.options(selectinload(KaipokeJob.items))
+        .order_by(KaipokeJob.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
 
     rows = (await db.scalars(stmt)).all()
-    return [KaipokeJobRead.model_validate(j, from_attributes=True) for j in rows]
+    total = (await db.scalar(count_stmt)) or 0
+    return Paginated[KaipokeJobRead](
+        items=[KaipokeJobRead.model_validate(j, from_attributes=True) for j in rows],
+        total=int(total),
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.get(
@@ -150,22 +161,37 @@ async def cancel_kaipoke_job(
     db: DbDep,
     _user: Annotated[User, Depends(require_role("admin"))],
 ) -> KaipokeJobRead:
-    job = await db.scalar(
-        select(KaipokeJob)
-        .where(KaipokeJob.id == job_id)
-        .options(selectinload(KaipokeJob.items))
+    # Atomic state-transition: only flip pending/running -> cancelled and rely
+    # on rowcount to decide between 404 (no row at all) and 409 (already in a
+    # terminal state). This avoids the SELECT-then-UPDATE race with the
+    # background worker that promotes running -> completed.
+    now = datetime.now(timezone.utc)
+    stmt = (
+        update(KaipokeJob)
+        .where(
+            KaipokeJob.id == job_id,
+            KaipokeJob.status.in_(("pending", "running")),
+        )
+        .values(
+            status="cancelled",
+            completed_at=func.coalesce(KaipokeJob.completed_at, now),
+        )
+        .execution_options(synchronize_session=False)
     )
-    if job is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
-    if job.status not in {"pending", "running"}:
+    result = await db.execute(stmt)
+    if result.rowcount == 0:
+        # Distinguish 404 from 409: was the row missing or simply terminal?
+        existing = await db.scalar(
+            select(KaipokeJob.status).where(KaipokeJob.id == job_id)
+        )
+        if existing is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Not found"
+            )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Cannot cancel job in status '{job.status}'",
+            detail=f"Cannot cancel job in status '{existing}'",
         )
-
-    job.status = "cancelled"
-    if job.completed_at is None:
-        job.completed_at = datetime.utcnow()
 
     await _commit_or_409(db)
 
@@ -183,7 +209,7 @@ async def cancel_kaipoke_job(
 
 @router.get(
     "/geocoding/cache",
-    response_model=list[GeocodingCacheRead],
+    response_model=Paginated[GeocodingCacheRead],
     summary="List geocoding cache entries (admin)",
 )
 async def list_geocoding_cache(
@@ -192,17 +218,26 @@ async def list_geocoding_cache(
     q: Annotated[str | None, Query(description="Substring filter on address")] = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
-) -> list[GeocodingCacheRead]:
+) -> Paginated[GeocodingCacheRead]:
+    base = select(GeocodingCache)
+    count_stmt = select(func.count()).select_from(GeocodingCache)
+    if q:
+        base = base.where(GeocodingCache.address.ilike(f"%{q}%"))
+        count_stmt = count_stmt.where(GeocodingCache.address.ilike(f"%{q}%"))
+
     stmt = (
-        select(GeocodingCache)
-        .order_by(GeocodingCache.looked_up_at.desc())
+        base.order_by(GeocodingCache.looked_up_at.desc())
         .limit(limit)
         .offset(offset)
     )
-    if q:
-        stmt = stmt.where(GeocodingCache.address.ilike(f"%{q}%"))
     rows = (await db.scalars(stmt)).all()
-    return [GeocodingCacheRead.model_validate(r, from_attributes=True) for r in rows]
+    total = (await db.scalar(count_stmt)) or 0
+    return Paginated[GeocodingCacheRead](
+        items=[GeocodingCacheRead.model_validate(r, from_attributes=True) for r in rows],
+        total=int(total),
+        limit=limit,
+        offset=offset,
+    )
 
 
 # --- AI interpret logs (admin only) ---------------------------------------
@@ -210,7 +245,7 @@ async def list_geocoding_cache(
 
 @router.get(
     "/ai/logs",
-    response_model=list[AiInterpretLogRead],
+    response_model=Paginated[AiInterpretLogRead],
     summary="List AI interpret logs (admin)",
 )
 async def list_ai_interpret_logs(
@@ -221,13 +256,7 @@ async def list_ai_interpret_logs(
     model: Annotated[str | None, Query(description="Exact model id filter")] = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
-) -> list[AiInterpretLogRead]:
-    stmt = (
-        select(AiInterpretLog)
-        .order_by(AiInterpretLog.created_at.desc())
-        .limit(limit)
-        .offset(offset)
-    )
+) -> Paginated[AiInterpretLogRead]:
     conditions = []
     if since is not None:
         conditions.append(AiInterpretLog.created_at >= since)
@@ -235,8 +264,23 @@ async def list_ai_interpret_logs(
         conditions.append(AiInterpretLog.created_at < until)
     if model is not None:
         conditions.append(AiInterpretLog.model == model)
-    if conditions:
-        stmt = stmt.where(and_(*conditions))
 
+    base = select(AiInterpretLog)
+    count_stmt = select(func.count()).select_from(AiInterpretLog)
+    if conditions:
+        base = base.where(and_(*conditions))
+        count_stmt = count_stmt.where(and_(*conditions))
+
+    stmt = (
+        base.order_by(AiInterpretLog.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
     rows = (await db.scalars(stmt)).all()
-    return [AiInterpretLogRead.model_validate(r, from_attributes=True) for r in rows]
+    total = (await db.scalar(count_stmt)) or 0
+    return Paginated[AiInterpretLogRead](
+        items=[AiInterpretLogRead.model_validate(r, from_attributes=True) for r in rows],
+        total=int(total),
+        limit=limit,
+        offset=offset,
+    )
