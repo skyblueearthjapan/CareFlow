@@ -14,7 +14,16 @@ import { useSession } from 'next-auth/react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
+import { toast } from '@/components/ui/sonner';
 import { useDeletePatient, usePatient } from '@/lib/queries/patients';
 import type { PatientRead } from '@/lib/schemas/patient';
 
@@ -54,10 +63,12 @@ export default function PatientDetailPage() {
   const handleDelete = async () => {
     try {
       await deleteMutation.mutateAsync(id);
+      toast.success('患者を削除しました');
       router.push('/patients');
     } catch (e) {
-      // eslint-disable-next-line no-alert -- Phase 4 で正規 Toast 統合予定
-      alert(`削除に失敗しました: ${e instanceof Error ? e.message : '不明なエラー'}`);
+      toast.error(
+        `削除に失敗しました: ${e instanceof Error ? e.message : '不明なエラー'}`,
+      );
     }
   };
 
@@ -141,7 +152,10 @@ export default function PatientDetailPage() {
             ['性別制限', data.sex_restriction ?? '--'],
             ['NG時間 (開始)', data.ng_time_start ?? '--'],
             ['NG時間 (終了)', data.ng_time_end ?? '--'],
-            ['週間訪問パターン', data.weekly_pattern ?? '--'],
+            [
+              '週間訪問パターン',
+              data.weekly_pattern ? JSON.stringify(data.weekly_pattern) : '--',
+            ],
             ['特別週', data.special_week ? '有効' : '--'],
           ]}
         />
@@ -160,17 +174,16 @@ export default function PatientDetailPage() {
         <div>更新: {data.updated_at}</div>
       </Card>
 
-      {confirmOpen ? (
-        <DeleteConfirmDialog
-          patient={data}
-          submitting={deleteMutation.isPending}
-          onCancel={() => setConfirmOpen(false)}
-          onConfirm={() => {
-            setConfirmOpen(false);
-            void handleDelete();
-          }}
-        />
-      ) : null}
+      <DeleteConfirmDialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        patient={data}
+        submitting={deleteMutation.isPending}
+        onConfirm={() => {
+          setConfirmOpen(false);
+          void handleDelete();
+        }}
+      />
     </section>
   );
 }
@@ -193,42 +206,39 @@ function DetailGrid({ rows }: DetailGridProps) {
 }
 
 interface DeleteConfirmDialogProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
   patient: PatientRead;
   submitting: boolean;
-  onCancel: () => void;
   onConfirm: () => void;
 }
 
 function DeleteConfirmDialog({
+  open,
+  onOpenChange,
   patient,
   submitting,
-  onCancel,
   onConfirm,
 }: DeleteConfirmDialogProps) {
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="delete-confirm-title"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
-      onClick={onCancel}
-    >
-      <Card
-        className="w-full max-w-md p-5 space-y-4"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h3 id="delete-confirm-title" className="font-serif text-lg font-bold text-text-primary">
-          患者を削除しますか？
-        </h3>
-        <p className="text-sm text-text-secondary">
-          以下の患者を削除します（ソフト削除）。この操作は取り消せます（管理者復旧）。
-        </p>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>患者を削除しますか？</DialogTitle>
+          <DialogDescription>
+            以下の患者を削除します（ソフト削除）。この操作は取り消せます（管理者復旧）。
+          </DialogDescription>
+        </DialogHeader>
         <p className="rounded-md border border-border-default bg-bg-muted/50 px-3 py-2 text-sm">
           <span className="font-medium">{patient.name}</span>
           <span className="ml-2 text-text-muted tnum">({patient.code})</span>
         </p>
-        <div className="flex justify-end gap-2">
-          <Button variant="outline" onClick={onCancel} disabled={submitting}>
+        <DialogFooter>
+          <Button
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+            disabled={submitting}
+          >
             キャンセル
           </Button>
           <Button
@@ -238,8 +248,8 @@ function DeleteConfirmDialog({
           >
             {submitting ? '削除中…' : '削除'}
           </Button>
-        </div>
-      </Card>
-    </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

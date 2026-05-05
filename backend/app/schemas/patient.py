@@ -25,6 +25,8 @@ class PatientBase(BaseModel):
     ng_time_start: time | None = None
     ng_time_end: time | None = None
     note: str | None = None
+    weekly_pattern: dict | None = None
+    special_week: dict | None = None
 
 
 class PatientCreate(PatientBase):
@@ -48,6 +50,8 @@ class PatientUpdate(BaseModel):
     ng_time_start: time | None = None
     ng_time_end: time | None = None
     note: str | None = None
+    weekly_pattern: dict | None = None
+    special_week: dict | None = None
 
 
 class PatientRead(PatientBase):

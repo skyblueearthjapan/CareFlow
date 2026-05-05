@@ -106,6 +106,15 @@ export default function PatientsPage() {
         </div>
       </Card>
 
+      {data?.truncated ? (
+        <Alert variant="warning">
+          <AlertTitle>結果が打ち切られました</AlertTitle>
+          <AlertDescription>
+            患者数が表示上限 (500 件) を超えています。検索条件で絞ってください。
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
       <Card className="p-5">
         {isLoading ? (
           <div className="space-y-2">

@@ -11,6 +11,7 @@ import { useMemo, useState } from 'react';
 import { useSession } from 'next-auth/react';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { toast } from '@/components/ui/sonner';
 import { useCreatePatient } from '@/lib/queries/patients';
 import type { PatientFormValues } from '@/lib/schemas/patient';
 
@@ -30,12 +31,12 @@ export default function NewPatientPage() {
       setErrorMessage(null);
       try {
         const created = await createMutation.mutateAsync(values);
+        toast.success('患者を登録しました');
         router.push(`/patients/${created.id}`);
       } catch (e) {
         const msg = e instanceof Error ? e.message : '不明なエラー';
         setErrorMessage(msg);
-        // eslint-disable-next-line no-alert -- Phase 4 で正規 Toast 統合予定
-        alert(`登録に失敗しました: ${msg}`);
+        toast.error(`登録に失敗しました: ${msg}`);
       }
     },
     [createMutation, router],

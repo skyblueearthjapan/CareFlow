@@ -53,7 +53,13 @@ export interface PatientsListResult {
   total: number;
   page: number;
   limit: number;
+  /** True when the backend list returned exactly the hard cap (500), so the
+   * client view may be silently truncated. */
+  truncated: boolean;
 }
+
+/** Backend hard cap for the list endpoint — keep in sync with the API. */
+const PATIENT_LIST_HARD_CAP = 500;
 
 const PATIENTS_KEY = ['patients'] as const;
 
@@ -68,18 +74,47 @@ function authPair(session: ReturnType<typeof useSession>['data']): {
 }
 
 /**
- * Strip Wave-2-only form fields from the payload before hitting the backend
- * (`weekly_pattern`, `special_week` columns don't exist yet).
- * TODO(Wave 2): drop this once backend gains the columns.
+ * Drop `undefined` keys so PATCH semantics aren't polluted (only fields
+ * the user actually changed go on the wire).
  */
-function stripWave2(payload: Record<string, unknown>): Record<string, unknown> {
-  const { weekly_pattern: _wp, special_week: _sw, ...rest } = payload;
-  // Drop undefined keys so PATCH semantics aren't polluted.
+function dropUndefined(payload: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(rest)) {
+  for (const [k, v] of Object.entries(payload)) {
     if (v !== undefined) out[k] = v;
   }
   return out;
+}
+
+/**
+ * Pre-process raw form values into a shape that matches the zod schemas:
+ *
+ * - `weekly_pattern` is a JSON string in the textarea → parse to dict (or
+ *   `undefined` when empty). Throws on invalid JSON; the form surfaces it
+ *   as a validation error.
+ * - `special_week` is a checkbox boolean → backend column is JSONB. We map
+ *   `true` → `{ enabled: true }`, `false` → `undefined`.
+ */
+function prepareFormPayload(values: PatientFormValues): Record<string, unknown> {
+  const wpRaw = values.weekly_pattern?.trim() ?? '';
+  let weekly_pattern: Record<string, unknown> | undefined;
+  if (wpRaw) {
+    try {
+      const parsed = JSON.parse(wpRaw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        weekly_pattern = parsed as Record<string, unknown>;
+      } else {
+        throw new Error('weekly_pattern must be a JSON object');
+      }
+    } catch (err) {
+      throw new Error(
+        `weekly_pattern の JSON が不正です: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+  const special_week = values.special_week ? { enabled: true } : undefined;
+  return { ...values, weekly_pattern, special_week };
 }
 
 /** GET /api/v1/patients — list (with client-side search/pagination wrapper). */
@@ -102,9 +137,10 @@ export function usePatients(
       // remains usable until backend search lands. Capped at the backend
       // hard limit (500) to keep payloads bounded.
       const all = await fetcher<PatientRead[]>(
-        `/api/v1/patients?limit=500&offset=0`,
+        `/api/v1/patients?limit=${PATIENT_LIST_HARD_CAP}&offset=0`,
         { accessToken, refreshToken },
       );
+      const truncated = all.length === PATIENT_LIST_HARD_CAP;
       const filtered = all.filter((p) => {
         if (insurance && p.insurance !== insurance) return false;
         if (!search) return true;
@@ -118,6 +154,7 @@ export function usePatients(
         total: filtered.length,
         page,
         limit,
+        truncated,
       };
     },
   });
@@ -150,8 +187,9 @@ export function useCreatePatient(): UseMutationResult<
 
   return useMutation<PatientRead, Error, PatientFormValues>({
     mutationFn: async (values) => {
-      const parsed: PatientCreate = patientCreateSchema.parse(values);
-      const body = stripWave2(parsed as unknown as Record<string, unknown>);
+      const prepared = prepareFormPayload(values);
+      const parsed: PatientCreate = patientCreateSchema.parse(prepared);
+      const body = dropUndefined(parsed as unknown as Record<string, unknown>);
       return fetcher<PatientRead>('/api/v1/patients', {
         method: 'POST',
         body: JSON.stringify(body),
@@ -175,8 +213,9 @@ export function useUpdatePatient(
 
   return useMutation<PatientRead, Error, PatientFormValues>({
     mutationFn: async (values) => {
-      const parsed: PatientUpdate = patientUpdateSchema.parse(values);
-      const body = stripWave2(parsed as unknown as Record<string, unknown>);
+      const prepared = prepareFormPayload(values);
+      const parsed: PatientUpdate = patientUpdateSchema.parse(prepared);
+      const body = dropUndefined(parsed as unknown as Record<string, unknown>);
       return fetcher<PatientRead>(`/api/v1/patients/${id}`, {
         method: 'PATCH',
         body: JSON.stringify(body),

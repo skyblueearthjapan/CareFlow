@@ -13,6 +13,7 @@ import { useSession } from 'next-auth/react';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Skeleton } from '@/components/ui/skeleton';
+import { toast } from '@/components/ui/sonner';
 import { usePatient, useUpdatePatient } from '@/lib/queries/patients';
 import {
   patientReadToFormValues,
@@ -38,12 +39,12 @@ export default function EditPatientPage() {
       setErrorMessage(null);
       try {
         await updateMutation.mutateAsync(values);
+        toast.success('患者情報を更新しました');
         router.push(`/patients/${id}`);
       } catch (e) {
         const msg = e instanceof Error ? e.message : '不明なエラー';
         setErrorMessage(msg);
-        // eslint-disable-next-line no-alert -- Phase 4 で正規 Toast 統合予定
-        alert(`更新に失敗しました: ${msg}`);
+        toast.error(`更新に失敗しました: ${msg}`);
       }
     },
     [updateMutation, router, id],

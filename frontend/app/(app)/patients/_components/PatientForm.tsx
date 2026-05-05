@@ -12,7 +12,7 @@
 'use client';
 
 import * as React from 'react';
-import { useForm, type SubmitHandler } from 'react-hook-form';
+import { useForm, type Resolver, type SubmitHandler } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 
 import { Button } from '@/components/ui/button';
@@ -53,10 +53,12 @@ export function PatientForm({
   submitLabel = '保存',
 }: PatientFormProps) {
   const form = useForm<PatientFormValues>({
-    // `as never` is required because zod's transform output type doesn't
-    // perfectly line up with the form input type (string→number coercion);
-    // resolver still validates against the same schema at runtime.
-    resolver: zodResolver(patientCreateSchema) as never,
+    // zod's transform output type (`PatientCreate`) doesn't line up with the
+    // form input type (`PatientFormValues`, all strings before coercion), so
+    // we annotate the resolver as `Resolver<PatientFormValues>` instead of
+    // letting TS infer the mismatched output. Runtime validation still uses
+    // the same schema.
+    resolver: zodResolver(patientCreateSchema) as Resolver<PatientFormValues>,
     defaultValues: defaultValues ?? emptyPatientFormValues,
     mode: 'onBlur',
   });
@@ -64,10 +66,31 @@ export function PatientForm({
   const {
     register,
     handleSubmit,
+    setError,
     formState: { errors },
   } = form;
 
   const submitHandler: SubmitHandler<PatientFormValues> = async (values) => {
+    // weekly_pattern is a textarea (JSON string) but the backend column is
+    // JSONB. Validate parseability here so a malformed payload surfaces as a
+    // form error instead of a 422 round-trip.
+    const wp = values.weekly_pattern?.trim() ?? '';
+    if (wp) {
+      try {
+        const parsed: unknown = JSON.parse(wp);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          throw new Error('JSON オブジェクトを入力してください');
+        }
+      } catch (err) {
+        setError('weekly_pattern', {
+          type: 'manual',
+          message: `JSON が不正です: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        });
+        return;
+      }
+    }
     await onSubmit(values);
   };
 
@@ -179,6 +202,11 @@ export function PatientForm({
             placeholder='例: {"mon":["09:00"],"wed":["14:00"]}'
             className="mt-2 w-full rounded-md border border-border-default bg-bg-base px-3 py-2 text-sm font-mono text-text-primary placeholder:text-text-muted focus-visible:outline-none focus-visible:border-brand-primary focus-visible:ring-2 focus-visible:ring-brand-primary-light"
           />
+          {errors.weekly_pattern?.message ? (
+            <p className="mt-1 text-xs text-error">
+              {String(errors.weekly_pattern.message)}
+            </p>
+          ) : null}
           <label className="mt-2 inline-flex items-center gap-2 text-sm text-text-secondary">
             <input type="checkbox" {...register('special_week')} />
             特別週 (special_week)
