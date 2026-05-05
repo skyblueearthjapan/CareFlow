@@ -21,11 +21,11 @@ import re
 import logging
 from typing import List, Dict, Optional, Tuple, Set
 
-from .allocation_models import (
+from .models import (
     Patient, Staff, VisitRequest, Event, StaffChange,
     WeeklyPattern, ConfirmedHistory, AssignmentResult, Interval
 )
-from .allocation_utils import (
+from .utils import (
     EXTRA_BUFFER_MIN, ASSIGN_BUFFER_MIN,
     calc_distance_km, dist_to_score, intervals_overlap, merge_intervals,
     compute_gaps, intersect_gaps, get_effective_window,
