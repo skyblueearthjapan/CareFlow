@@ -1,4 +1,17 @@
-"""Visit (訪問) — single row per scheduled visit."""
+"""Visit (訪問) — single row per scheduled visit.
+
+W2-BE4 (`docs/plans/v2-allocation-redesign.md` v0.9 §3.3 / §4.5):
+  - ``course_id`` FK NULL — コース所属 (Layer 2 で決定)
+  - ``required_staff_count`` (1 or 2) — 2 名体制対応
+  - ``visit_group_id`` UUID NULL — 2 名体制の訪問グルーピング
+
+2 名体制の場合は **同じ ``visit_group_id`` を持つ visit が 2 行存在** し、
+``visit_staff_assignments`` 経由で計 2 スタッフが割り当てられる
+(各 visit 行に 1 人ずつ)。
+
+primary_staff_id / secondary_staff_id は v1 互換のため残置 (Wave 6 まで併用)。
+v2 正規のスタッフ割当は ``app.models.visit_staff_assignment.VisitStaffAssignment``。
+"""
 
 from __future__ import annotations
 
@@ -7,10 +20,12 @@ from datetime import date, datetime, time
 from typing import TYPE_CHECKING, Literal
 
 from sqlalchemy import (
+    CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
     Index,
+    SmallInteger,
     String,
     Text,
     Time,
@@ -71,8 +86,8 @@ class Visit(Base, TimestampMixin):
     # Relationships used for denormalized name fields in VisitRead.
     # `lazy="raise_on_sql"` on async sessions would be safer; we explicitly
     # use selectinload() in the routers to avoid lazy-load surprises.
-    patient: Mapped["Patient"] = relationship("Patient", foreign_keys=[patient_id], lazy="noload")
-    primary_staff: Mapped["Staff | None"] = relationship(
+    patient: Mapped[Patient] = relationship("Patient", foreign_keys=[patient_id], lazy="noload")
+    primary_staff: Mapped[Staff | None] = relationship(
         "Staff", foreign_keys=[primary_staff_id], lazy="noload"
     )
 
@@ -89,6 +104,22 @@ class Visit(Base, TimestampMixin):
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     kaipoke_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
+    # ---- W2-BE4 v2 additions (§3.3 / §4.5) ----------------------------------
+    # 所属コース (Layer 2 で決定; CRUD 段階では NULL のまま運用しても可)
+    course_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("courses.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # 必要スタッフ数 (1 or 2). DB 側 CHECK で範囲を担保
+    required_staff_count: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, default=1, server_default="1"
+    )
+    # 2 名体制グルーピングキー (§3.3).
+    # 通常 (required_staff_count=1) は NULL.
+    # 2 名体制 (required_staff_count=2) では同じ UUID を持つ visit が 2 行。
+    visit_group_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
@@ -96,4 +127,12 @@ class Visit(Base, TimestampMixin):
         Index("ix_visits_patient_date", "patient_id", "visit_date"),
         Index("ix_visits_primary_date", "primary_staff_id", "visit_date"),
         Index("ix_visits_status", "status"),
+        # W2-BE4: コース別検索 / 2 名体制ペア検索
+        Index("ix_visits_course", "course_id"),
+        Index("ix_visits_group", "visit_group_id"),
+        # required_staff_count は 1 or 2 のみ受け付ける (§3.3)
+        CheckConstraint(
+            "required_staff_count IN (1, 2)",
+            name="ck_visits_required_staff_count_v2",
+        ),
     )

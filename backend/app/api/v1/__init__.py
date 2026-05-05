@@ -9,6 +9,7 @@ from app.api.v1 import (
     audit_logs,
     auth,
     cities,
+    courses,
     dashboard,
     diff,
     geocoding,
@@ -49,6 +50,8 @@ api_router.include_router(staff.router, prefix="/staff", tags=["staff"])
 # /visits/{visit_id} catch-all.
 api_router.include_router(visit_photos.router, prefix="/visits", tags=["visit-photos"])
 api_router.include_router(visits.router, prefix="/visits", tags=["visits"])
+# W2-BE4: Course CRUD (generate / fix / assign-staff は Wave 4 で追加).
+api_router.include_router(courses.router, prefix="/courses", tags=["courses"])
 api_router.include_router(offices.router, prefix="/offices", tags=["offices"])
 api_router.include_router(cities.router, prefix="/cities", tags=["cities"])
 api_router.include_router(diff.router, prefix="/diff", tags=["diff"])
