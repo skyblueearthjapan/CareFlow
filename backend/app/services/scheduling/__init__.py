@@ -20,11 +20,23 @@ from app.services.scheduling.layer1_expander import (
     PoolEntry,
     VisitCreated,
 )
+from app.services.scheduling.layer2_clustering import (
+    CourseProposal,
+    Layer2Clusterer,
+    Layer2ClusterError,
+    Layer2Result,
+    Layer2VisitInput,
+)
 
 __all__ = [
+    "CourseProposal",
     "Layer1ExpandError",
     "Layer1Expander",
     "Layer1Result",
+    "Layer2ClusterError",
+    "Layer2Clusterer",
+    "Layer2Result",
+    "Layer2VisitInput",
     "PoolEntry",
     "VisitCreated",
 ]

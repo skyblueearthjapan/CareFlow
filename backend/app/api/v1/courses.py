@@ -1,16 +1,18 @@
-"""Course CRUD endpoints (W2-BE4 / API 契約 §4).
+"""Course CRUD + Layer 2 (generate) endpoints (W2-BE4 / W4-BE8 / API 契約 §4).
 
-`docs/plans/v2-allocation-redesign.md` v0.9 §4.5 に対応する Course
-(コース) のリソース API。本チケットでは **CRUD のみ** を実装する。
+`docs/plans/v2-allocation-redesign.md` v0.9 §4.5 / §5.3 に対応する Course
+(コース) のリソース API。
 
-- generate / fix / assign-staff の各エンドポイントは Wave 4 で追加予定
-  (W4-BE8 / W4-BE9)。本ファイルは将来そこへ拡張される。
+- W2-BE4: CRUD (`GET / POST / PATCH / DELETE`)
+- W4-BE8: `POST /generate` (Layer 2: K-means + 制約後処理)
+- W4-BE9: `POST /assign-staff` (Layer 3) は別チケットで追加予定
 
 ## RBAC (API 契約 §4)
 
-- GET (list / detail) — admin / manager
+- GET (list / detail)  — admin / manager
 - POST / PATCH         — admin / manager
 - DELETE (soft delete) — admin only
+- POST /generate       — admin / manager (W4-BE8)
 
 ## UNIQUE 制約
 
@@ -24,6 +26,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
@@ -32,6 +35,11 @@ from app.models.course import Course
 from app.models.user import User
 from app.schemas.course import CourseCreate, CourseRead, CourseUpdate
 from app.schemas.v2.enums import CourseStatus
+from app.services.scheduling import (
+    CourseProposal,
+    Layer2Clusterer,
+    Layer2ClusterError,
+)
 
 router = APIRouter()
 
@@ -87,6 +95,78 @@ async def list_courses(
 
     rows = (await db.scalars(stmt)).all()
     return [_to_read(c) for c in rows]
+
+
+# ---------------------------------------------------------------------------
+# W4-BE8 — POST /generate (Layer 2 アルゴリズム)
+# ---------------------------------------------------------------------------
+
+
+class CourseGenerateRequest(BaseModel):
+    """``POST /api/v1/courses/generate`` のリクエストボディ (W4-BE8).
+
+    Layer 2 (§5.3) を当該曜日に対して実行する。``staff_count`` は省略時 4。
+    ``random_state`` を指定すると K-means の初期化が再現可能になる
+    (受入基準 2 で fixture 評価に使用)。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    iso_year: int = Field(ge=2000, le=2100)
+    iso_week: int = Field(ge=1, le=53)
+    weekday: int = Field(ge=0, le=6)
+    staff_count: int = Field(default=4, ge=1, le=4)
+    random_state: int | None = Field(default=None)
+
+
+class CourseGenerateResponse(BaseModel):
+    """``POST /api/v1/courses/generate`` のレスポンス (W4-BE8).
+
+    `proposals` は案 (proposed) のみ。DB へのコース確定は別エンドポイント
+    (将来の `POST /api/v1/courses/{id}/fix`) で行う。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    proposals: list[CourseProposal]
+    total_distance_km: float
+    validity_score: float
+
+
+@router.post(
+    "/generate",
+    response_model=CourseGenerateResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Layer 2: generate course proposals (W4-BE8)",
+)
+async def generate_courses(
+    payload: CourseGenerateRequest,
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+) -> CourseGenerateResponse:
+    """Layer 2 アルゴリズムを実行し、コース分け案を返す.
+
+    本エンドポイントは案を返すのみで DB を変更しない (commit しない)。
+    確定は別途 ``POST /api/v1/courses`` (CRUD) でコース作成する。
+    """
+    clusterer = Layer2Clusterer()
+    try:
+        result = await clusterer.generate_proposals(
+            db,
+            iso_year=payload.iso_year,
+            iso_week=payload.iso_week,
+            weekday=payload.weekday,
+            staff_count=payload.staff_count,
+            random_state=payload.random_state,
+        )
+    except Layer2ClusterError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=str(exc)) from exc
+
+    return CourseGenerateResponse(
+        proposals=result.proposals,
+        total_distance_km=result.total_distance_km,
+        validity_score=result.validity_score,
+    )
 
 
 @router.get("/{course_id}", response_model=CourseRead, summary="Get course by id")
