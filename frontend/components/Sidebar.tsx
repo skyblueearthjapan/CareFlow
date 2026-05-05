@@ -13,6 +13,7 @@ import {
   Plug,
   ScrollText,
   Inbox,
+  HelpCircle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -37,6 +38,7 @@ const NAV_ITEMS = [
     adminOnly: true,
     strictAdmin: true,
   },
+  { href: '/help/ai', label: 'AI ヘルプ', icon: HelpCircle },
   // 特別訪問週間 は患者マスタの設定として取り込む方針となったため、
   // 独立したサイドバー項目は削除（v2 設計 §3.4 参照）。
   // /special-weeks 配下のページ自体は v2 実装時にデプリケート予定。
