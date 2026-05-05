@@ -20,6 +20,7 @@ from app.api.v1 import (
     offices,
     patients,
     pending_requests,
+    schedule,
     shift_requests,
     special_weeks,
     staff,
@@ -75,5 +76,8 @@ api_router.include_router(
 api_router.include_router(
     pending_requests.router, prefix="/pending-requests", tags=["pending-requests"]
 )
+# W3-BE-FIX: POST /schedule/fix (週レイアウト → patients.weekly_pattern).
+# W4-BE7 で /schedule/generate-week が同じ router に追加される予定。
+api_router.include_router(schedule.router, prefix="/schedule", tags=["schedule"])
 
 __all__ = ["api_router"]
