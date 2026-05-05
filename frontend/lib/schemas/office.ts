@@ -32,7 +32,7 @@ export const OfficeReadSchema = z.object({
 
 export const OfficeCreateSchema = z.object({
   name: z.string().min(1, '拠点名は必須です'),
-  code: z.string().optional(),
+  code: z.string().nullable().optional(),
   address: z.string().nullable().optional(),
   lat: z.number().finite().nullable().optional(),
   lng: z.number().finite().nullable().optional(),

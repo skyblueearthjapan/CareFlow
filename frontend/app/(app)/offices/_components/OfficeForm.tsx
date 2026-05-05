@@ -42,6 +42,9 @@ export function OfficeForm({
   // Always fetch the full prefecture list so the datalist works regardless of
   // the active filter. Limit kept small — server returns distinct prefectures
   // implicitly via the city rows.
+  // TODO: Phase 5 — switch to `useCities({ ids: [...allowed] })` bulk lookup so
+  // selected city labels resolve correctly when the city catalogue grows beyond
+  // 2000 rows.
   const { cities: allCitiesForPrefectures } = useCities({ limit: 2000 });
 
   const prefectures = useMemo(() => {
@@ -74,7 +77,7 @@ export function OfficeForm({
 
     const payload: OfficeCreate = {
       name,
-      code: code || undefined,
+      code: code || null,
       address: address || null,
       lat: lat === '' ? null : Number(lat),
       lng: lng === '' ? null : Number(lng),

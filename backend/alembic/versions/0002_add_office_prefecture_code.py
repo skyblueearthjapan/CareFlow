@@ -6,6 +6,17 @@ Create Date: 2026-05-05
 
 W1-C critic fix: silent data drop on `prefecture` / `code` columns missing.
 Also adds an active-only unique partial index on `name` (M3).
+
+## Preflight (production)
+
+Before applying this migration on production data with active office rows,
+check for duplicate active names:
+
+    SELECT name, COUNT(*) FROM offices WHERE deleted_at IS NULL GROUP BY name HAVING COUNT(*) > 1;
+
+If any rows are returned, resolve duplicates first (rename or soft-delete one)
+before running `alembic upgrade head`. Otherwise the partial unique index
+`uq_offices_name_active` creation will fail.
 """
 
 from __future__ import annotations
