@@ -282,14 +282,33 @@ interface ScheduleGridV2Props {
    *  本ファイルは PendingRequestPanel コンポーネント自体を import しない
    *  (ファイル所有違反を避ける) ため、props 経由で受け取る形にする. */
   pendingPanelSlot?: React.ReactNode;
+  /**
+   * W8-FE2: controlled モード用 props.
+   * 指定しない場合は uncontrolled (= 従来動作) にフォールバックする.
+   * 親 (/schedule/page.tsx) から渡すことで、全タブが同一の週 state を共有できる.
+   */
+  weekStart?: Date;
+  onWeekChange?: (next: Date) => void;
 }
 
 export function ScheduleGridV2({
   canEdit,
   showPendingPanel = false,
   pendingPanelSlot,
+  weekStart: weekStartProp,
+  onWeekChange,
 }: ScheduleGridV2Props) {
-  const [weekStart, setWeekStart] = useState<Date>(() => toWeekStart(new Date()));
+  // W8-FE2: controlled / uncontrolled 切替パターン.
+  // weekStart prop が渡された場合は controlled、渡されない場合は uncontrolled (従来動作).
+  const [internalWeekStart, setInternalWeekStart] = useState<Date>(() => toWeekStart(new Date()));
+  const weekStart = weekStartProp ?? internalWeekStart;
+  const setWeekStart = (d: Date) => {
+    if (onWeekChange) {
+      onWeekChange(d);
+    } else {
+      setInternalWeekStart(d);
+    }
+  };
 
   // 患者マスタを取得 (limit 500). Layer 1 の対象は active 患者だけだが、
   // UI 側で簡易フィルタ。

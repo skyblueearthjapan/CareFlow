@@ -169,6 +169,8 @@ export default function SchedulePage() {
             canEdit={canEdit}
             showPendingPanel
             pendingPanelSlot={<PendingRequestPanel />}
+            weekStart={weekStart}
+            onWeekChange={setWeekStart}
           />
         </TabsContent>
 
