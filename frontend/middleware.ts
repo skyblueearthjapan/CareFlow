@@ -35,6 +35,8 @@ export default auth((req: NextRequest & { auth?: { user?: { role?: string } } | 
 });
 
 export const config = {
-  // /api/* と /login と Next.js 内部資産は除外
-  matcher: ['/((?!api|_next/static|_next/image|favicon.ico|login).*)'],
+  // /api/* と /login と Next.js 内部資産 + PWA assets は除外
+  matcher: [
+    '/((?!api|_next/static|_next/image|favicon.ico|login|manifest.webmanifest|sw.js|offline.html|icons/).*)',
+  ],
 };
