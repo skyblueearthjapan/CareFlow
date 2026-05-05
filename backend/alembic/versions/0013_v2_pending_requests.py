@@ -49,7 +49,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "0013_v2_pending_requests"
-down_revision: Union[str, Sequence[str], None] = "0012_v2_courses_visit_assignments"
+down_revision: Union[str, Sequence[str], None] = "0012_v2_courses_and_visit_extension"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
