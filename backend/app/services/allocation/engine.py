@@ -1,9 +1,13 @@
 """
 allocation_engine.py - Core visit allocation engine for the careflow scheduler.
 
-Mirrors and improves upon the GAS UnifiedCode.js allocation logic.
-Allocates visit requests to staff members considering events, 2-staff paired
-visits, staff constraints, patient preferences, and distance optimization.
+Ported from PlaywrightTest1/lib/allocation_engine.py (byte-for-byte modulo
+``logger`` plumbing). Allocates visit requests to staff members considering
+events, 2-staff paired visits, staff constraints, patient preferences, and
+distance optimization.
+
+Licensed under Apache License, Version 2.0 (Apache-2.0); see the project
+root LICENSE / NOTICE for the full attribution.
 
 Allocation pipeline:
   1. Insert events as fixed time anchors

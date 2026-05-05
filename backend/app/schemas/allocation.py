@@ -7,6 +7,7 @@ Phase W1-D (continuation). Pydantic v2 strict; pure DTOs that mirror
 from __future__ import annotations
 
 from datetime import date
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -57,11 +58,19 @@ class AssignmentItem(BaseModel):
 
 
 class AllocateSummary(BaseModel):
-    """件数サマリー (assigned/unassigned/total)。"""
+    """件数サマリー (assigned/unassigned/total)。
+
+    ``mapping_phase`` は ORM→engine 入力マッピングの完成度を caller に通知する。
+    現状 ``"minimal"`` (Patient/Staff/VisitRequest の最小フィールドのみ) で
+    動いており、area filter / soft_cap / work_days / lat-lng 距離スコア /
+    2-opt 等の高度判定は無効化されている。W1-G で full mapping
+    (lat/lng, shifts, areas, weekly_patterns, NG staff, 等) に切り替える。
+    """
 
     total: int
     assigned: int
     unassigned: int
+    mapping_phase: Literal["minimal", "full"] = "minimal"
 
 
 class AllocateResponse(BaseModel):

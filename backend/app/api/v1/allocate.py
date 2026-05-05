@@ -13,14 +13,16 @@ the engine into the HTTP surface. Richer DB→model mapping lands in W1-G.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import asdict
-from datetime import date, timedelta
+from datetime import date, time, timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 
 from app.core.deps import DbDep, require_role
+from app.core.rate_limit import limiter
 from app.models.patient import Patient as PatientORM
 from app.models.staff import Staff as StaffORM
 from app.models.user import User
@@ -42,11 +44,11 @@ router = APIRouter()
 
 
 _WEEKDAY_CODES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+_MAX_VISITS_PER_RUN = 5000
+_ALLOCATE_TIMEOUT_SEC = 30.0
 
 
-def _to_minutes(t) -> int | None:
-    if t is None:
-        return None
+def _to_minutes(t: time) -> int:
     return t.hour * 60 + t.minute
 
 
@@ -88,13 +90,19 @@ def _build_inputs(
 
     requests: list[VisitRequest] = []
     for v in visits_db:
+        if v.start_time is None or v.end_time is None:
+            # Visit.start_time / end_time are NOT NULL at the DB level
+            # (`models/visit.py`). Hitting a NULL here means schema/data
+            # corruption — fail loudly rather than mask with a 60-min default.
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Visit time data corrupted",
+            )
         weekday = _WEEKDAY_CODES[v.visit_date.weekday()]
         date_str = v.visit_date.strftime("%Y/%m/%d")
         start_min = _to_minutes(v.start_time)
         end_min = _to_minutes(v.end_time)
-        service_min = (end_min - start_min) if (
-            start_min is not None and end_min is not None
-        ) else 60
+        service_min = end_min - start_min
         requests.append(
             VisitRequest(
                 request_id=str(v.id),
@@ -118,11 +126,15 @@ def _build_inputs(
     response_model=AllocateResponse,
     summary="Run the allocation engine for a single ISO week",
 )
+@limiter.limit("3/minute")
 async def run_allocate(
+    request: Request,
     payload: AllocateRequest,
     db: DbDep,
     _user: Annotated[User, Depends(require_role("admin", "manager"))],
 ) -> AllocateResponse:
+    # ``request`` is required by slowapi to extract the client IP for the
+    # per-IP 3/min ceiling on this CPU-heavy endpoint.
     if payload.week_start.weekday() != 0:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -149,6 +161,15 @@ async def run_allocate(
         ).all()
     )
 
+    if len(visits_db) > _MAX_VISITS_PER_RUN:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=(
+                f"Too many visits for a single allocation run: "
+                f"{len(visits_db)} > {_MAX_VISITS_PER_RUN}"
+            ),
+        )
+
     engine_staff, patient_map, requests = _build_inputs(
         patients_db, staff_db, visits_db
     )
@@ -163,11 +184,31 @@ async def run_allocate(
     if not requests:
         return AllocateResponse(
             week_start=payload.week_start,
-            summary=AllocateSummary(total=0, assigned=0, unassigned=0),
+            summary=AllocateSummary(
+                total=0,
+                assigned=0,
+                unassigned=0,
+                mapping_phase="minimal",
+            ),
             assignments=[],
         )
 
-    out = engine.allocate(requests)
+    # CPU-bound engine; offload to default thread executor so the asyncio
+    # event loop keeps serving other requests on the same worker. Bounded
+    # by a hard timeout to surface runaway runs as 504 instead of stalling
+    # the worker indefinitely.
+    loop = asyncio.get_running_loop()
+    try:
+        out = await asyncio.wait_for(
+            loop.run_in_executor(None, engine.allocate, requests),
+            timeout=_ALLOCATE_TIMEOUT_SEC,
+        )
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=f"Allocation timed out (>{_ALLOCATE_TIMEOUT_SEC:.0f}s)",
+        ) from exc
+
     results = out.get("results", [])
 
     items = [AssignmentItem(**asdict(r)) for r in results]
@@ -180,6 +221,7 @@ async def run_allocate(
             total=len(results),
             assigned=assigned,
             unassigned=unassigned,
+            mapping_phase="minimal",
         ),
         assignments=items,
     )

@@ -7,7 +7,7 @@ Covers:
 
 Designed for pytest >= 7.x. Run from repo root::
 
-    pytest lib/test_allocation_engine.py -v
+    pytest backend/tests/test_allocation_engine.py -v
 """
 from __future__ import annotations
 
