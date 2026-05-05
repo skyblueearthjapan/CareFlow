@@ -1,48 +1,26 @@
 /**
- * Office (拠点) zod schemas — Phase 3-12.
+ * Office (拠点) zod schemas — v2 re-export shim (W1-FE3).
  *
- * Mirrors backend `app/schemas/office.py` (OfficeRead/Create/Update). The
- * `allowed_cities` field captures the city UUIDs picked in the Combobox and
- * is wired to the office_cities M2M table.
+ * 設計仕様書 v0.9 §4.3 に基づき、拠点マスタは Wave 0-C で `lib/schemas/v2/office.ts`
+ * に再定義済み。本ファイルは Wave 1 の移行期間中、既存 import パスを壊さないための
+ * 互換 re-export 層として残置する。
  *
- * Done: migration 0002_add_office_prefecture_code added prefecture/code
- * columns and OfficeRead now exposes allowed_cities directly from the API.
+ * 旧 schema が公開していた以下のシンボルを v2 schema にマップする:
+ *   - `OfficeReadSchema`     → `officeV2ReadSchema`
+ *   - `OfficeCreateSchema`   → `officeV2CreateSchema`
+ *   - `OfficeUpdateSchema`   → `officeV2UpdateSchema`
+ *   - `Office`, `OfficeCreate`, `OfficeUpdate` 型も同様
+ *
+ * Wave 1 が完了したら本ファイルを削除し、各 import を `@/lib/schemas/v2/office`
+ * に直接張り直す予定（実装手順書 v0.2 §0-C）。
  */
-import { z } from 'zod';
-
-const numericLike = z
-  .union([z.number(), z.string()])
-  .transform((v) => (typeof v === 'string' ? Number(v) : v))
-  .pipe(z.number().finite());
-
-export const OfficeReadSchema = z.object({
-  id: z.string().uuid(),
-  name: z.string().min(1),
-  code: z.string().nullable().optional(),
-  address: z.string().nullable().optional(),
-  lat: numericLike.nullable().optional(),
-  lng: numericLike.nullable().optional(),
-  prefecture: z.string().nullable().optional(),
-  note: z.string().nullable().optional(),
-  allowed_cities: z.array(z.string().uuid()).default([]),
-  created_at: z.string(),
-  updated_at: z.string(),
-  deleted_at: z.string().nullable().optional(),
-});
-
-export const OfficeCreateSchema = z.object({
-  name: z.string().min(1, '拠点名は必須です'),
-  code: z.string().nullable().optional(),
-  address: z.string().nullable().optional(),
-  lat: z.number().finite().nullable().optional(),
-  lng: z.number().finite().nullable().optional(),
-  prefecture: z.string().nullable().optional(),
-  note: z.string().nullable().optional(),
-  allowed_cities: z.array(z.string().uuid()).default([]),
-});
-
-export const OfficeUpdateSchema = OfficeCreateSchema.partial();
-
-export type Office = z.infer<typeof OfficeReadSchema>;
-export type OfficeCreate = z.infer<typeof OfficeCreateSchema>;
-export type OfficeUpdate = z.infer<typeof OfficeUpdateSchema>;
+export {
+  officeV2ReadSchema as OfficeReadSchema,
+  officeV2CreateSchema as OfficeCreateSchema,
+  officeV2UpdateSchema as OfficeUpdateSchema,
+} from '@/lib/schemas/v2/office';
+export type {
+  OfficeV2Read as Office,
+  OfficeV2Create as OfficeCreate,
+  OfficeV2Update as OfficeUpdate,
+} from '@/lib/schemas/v2/office';
