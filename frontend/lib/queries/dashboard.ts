@@ -63,6 +63,9 @@ export function useDashboardKpi(): UseQueryResult<DashboardKpi, Error> {
     queryKey: [...DASHBOARD_KEY, 'kpi', userId],
     enabled: status === 'authenticated',
     // KPI numbers don't need to be live-fresh; refetch every minute.
+    // Note: this 60s interval is intentionally longer than the global
+    // `staleTime: 30_000` so the cache goes stale before the timer fires —
+    // each interval tick produces exactly one network request.
     refetchInterval: 60_000,
     queryFn: () =>
       fetcher<DashboardKpi>('/api/v1/dashboard/kpi', { accessToken, refreshToken }),
@@ -81,6 +84,7 @@ export function useDashboardTrend(
   return useQuery<DashboardTrend, Error>({
     queryKey: [...DASHBOARD_KEY, 'trend', safeDays, userId],
     enabled: status === 'authenticated',
+    // 60s > global staleTime (30s) so each tick produces exactly one fetch.
     refetchInterval: 60_000,
     queryFn: () =>
       fetcher<DashboardTrend>(`/api/v1/dashboard/trend?days=${safeDays}`, {

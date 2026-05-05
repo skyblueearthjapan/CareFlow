@@ -8,9 +8,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class DashboardKpiResponse(BaseModel):
-    """Today + this-week roll-up for the dashboard KPI cards."""
+    """Today + this-week roll-up for the dashboard KPI cards.
 
-    model_config = ConfigDict(from_attributes=True)
+    No `from_attributes=True` because the route hand-builds this from
+    aggregate scalars, never from an ORM row.
+    """
 
     today_visits: int = Field(..., ge=0, description="Total visits scheduled today.")
     today_completed: int = Field(..., ge=0, description="Visits with status='completed' today.")

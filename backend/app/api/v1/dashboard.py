@@ -19,12 +19,13 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 from typing import Annotated
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, Query, status
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, or_, select
 
 from app.core.deps import CurrentActiveUser, DbDep
-from app.models.visit import Visit
+from app.models.visit import Visit, VisitStatus  # noqa: F401  (VisitStatus used in comments)
 from app.schemas.dashboard import (
     DashboardKpiResponse,
     DashboardTrendItem,
@@ -32,6 +33,11 @@ from app.schemas.dashboard import (
 )
 
 router = APIRouter()
+
+# All "today"/"end" date math is anchored to JST so a request issued from a
+# UTC-region VPS still uses Japan local-day boundaries (the staff-facing UI
+# is JST-only). See VisitStatus for allowed `status` values referenced below.
+JST = ZoneInfo("Asia/Tokyo")
 
 _ALLOWED_ROLES = {"admin", "manager", "staff"}
 
@@ -46,6 +52,10 @@ def _require_dashboard_role(role: str) -> None:
 def _staff_scope(stmt, role: str, staff_id: UUID | None):
     """Restrict a select() to the caller's own visits when role='staff'.
 
+    A visit is "the caller's own" when the caller is in any of the three
+    staff slots — primary, secondary (同行), or mentor — so a同行/mentor
+    visit still surfaces in the dashboard KPIs of the accompanying staff.
+
     Returns a sentinel (None) when the user is staff without a linked
     `staff_id`, so the caller can short-circuit to empty aggregates instead
     of issuing a query that would return everything.
@@ -54,7 +64,13 @@ def _staff_scope(stmt, role: str, staff_id: UUID | None):
         return stmt
     if staff_id is None:
         return None
-    return stmt.where(Visit.primary_staff_id == staff_id)
+    return stmt.where(
+        or_(
+            Visit.primary_staff_id == staff_id,
+            Visit.secondary_staff_id == staff_id,
+            Visit.mentor_staff_id == staff_id,
+        )
+    )
 
 
 def _iso_week_bounds(today: date) -> tuple[date, date]:
@@ -100,16 +116,23 @@ def _count_overlaps(rows: list[tuple[UUID | None, object, object]]) -> int:
 async def get_kpi(db: DbDep, user: CurrentActiveUser) -> DashboardKpiResponse:
     _require_dashboard_role(user.role)
 
-    today = datetime.utcnow().date()
+    today = datetime.now(JST).date()
     week_start, week_end = _iso_week_bounds(today)
 
     # ---- Today's roll-up ---------------------------------------------------
+    # Cancelled visits are excluded so they neither count toward
+    # `today_visits` nor inflate `today_overlapping`. Compare against the
+    # `VisitStatus` Literal values exported from `app.models.visit`.
     today_stmt = select(
         Visit.primary_staff_id,
         Visit.start_time,
         Visit.end_time,
         Visit.status,
-    ).where(Visit.deleted_at.is_(None), Visit.visit_date == today)
+    ).where(
+        Visit.deleted_at.is_(None),
+        Visit.visit_date == today,
+        Visit.status != "cancelled",
+    )
 
     today_stmt = _staff_scope(today_stmt, user.role, user.staff_id)
     if today_stmt is None:
@@ -169,7 +192,7 @@ async def get_trend(
 ) -> DashboardTrendResponse:
     _require_dashboard_role(user.role)
 
-    end = datetime.utcnow().date()
+    end = datetime.now(JST).date()
     start = end - timedelta(days=days - 1)
 
     stmt = (

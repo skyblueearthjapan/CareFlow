@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, datetime, time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from sqlalchemy import (
     Date,
@@ -23,6 +23,13 @@ from app.db.base import Base, TimestampMixin
 if TYPE_CHECKING:
     from app.models.patient import Patient
     from app.models.staff import Staff
+
+
+# Allowed values for `Visit.status`. The DB column is currently `String(16)`
+# without a CHECK constraint; tightening that is deferred to a separate
+# migration. This Literal lets routers/services compare against a single
+# source of truth instead of hard-coding strings.
+VisitStatus = Literal["planned", "in_progress", "completed", "cancelled"]
 
 
 class Visit(Base, TimestampMixin):
