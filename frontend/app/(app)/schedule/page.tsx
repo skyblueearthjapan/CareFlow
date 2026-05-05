@@ -23,6 +23,7 @@
  */
 import { useSession } from 'next-auth/react';
 
+import { PendingRequestPanel } from '@/components/schedule/v2/PendingRequestPanel';
 import { ScheduleGridV2 } from '@/components/schedule/v2/ScheduleGridV2';
 
 export default function SchedulePage() {
@@ -39,7 +40,11 @@ export default function SchedulePage() {
         </p>
       </header>
 
-      <ScheduleGridV2 canEdit={canEdit} />
+      <ScheduleGridV2
+        canEdit={canEdit}
+        showPendingPanel
+        pendingPanelSlot={<PendingRequestPanel />}
+      />
     </section>
   );
 }
