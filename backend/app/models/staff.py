@@ -1,10 +1,14 @@
-"""Staff (スタッフ) + secondary offices + shifts + weekly overrides + events + mentor pairs."""
+"""Staff (スタッフ) + secondary offices + shifts + weekly overrides + events + mentor pairs.
+
+W1-BE2 (v2 整理): can_double_team / home_address / home_lat / home_lng /
+areas / max_per_day / skill_level / assignment_volume の 8 カラムを削除済み
+(設計書 §4.2). 物理 DROP は migration 0010 で実施。
+"""
 
 from __future__ import annotations
 
 import uuid
 from datetime import date, datetime, time
-from decimal import Decimal
 
 from sqlalchemy import (
     Boolean,
@@ -13,14 +17,13 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
-    Numeric,
     SmallInteger,
     String,
     Text,
     Time,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, UUID as PG_UUID
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin
@@ -44,33 +47,21 @@ class Staff(Base, TimestampMixin):
         ForeignKey("offices.id", ondelete="SET NULL"),
         nullable=True,
     )
-    can_double_team: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     mentor_id: Mapped[uuid.UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
         ForeignKey("staff.id", ondelete="SET NULL"),
         nullable=True,
     )
 
-    # W3-A additions
-    home_address: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    home_lat: Mapped[Decimal | None] = mapped_column(Numeric(10, 7), nullable=True)
-    home_lng: Mapped[Decimal | None] = mapped_column(Numeric(10, 7), nullable=True)
-    areas: Mapped[list[str] | None] = mapped_column(
-        ARRAY(String(16)), nullable=True, default=list
-    )
-    max_per_day: Mapped[int] = mapped_column(Integer, nullable=False, default=6)
-    skill_level: Mapped[str | None] = mapped_column(String(16), nullable=True)
-    assignment_volume: Mapped[str | None] = mapped_column(String(16), nullable=True)
-
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    secondary_offices: Mapped[list["StaffSecondaryOffice"]] = relationship(
+    secondary_offices: Mapped[list[StaffSecondaryOffice]] = relationship(
         "StaffSecondaryOffice",
         back_populates="staff",
         cascade="all, delete-orphan",
     )
-    shifts: Mapped[list["StaffShift"]] = relationship(
+    shifts: Mapped[list[StaffShift]] = relationship(
         "StaffShift",
         back_populates="staff",
         cascade="all, delete-orphan",
@@ -93,7 +84,7 @@ class StaffSecondaryOffice(Base):
         primary_key=True,
     )
 
-    staff: Mapped["Staff"] = relationship("Staff", back_populates="secondary_offices")
+    staff: Mapped[Staff] = relationship("Staff", back_populates="secondary_offices")
 
 
 class StaffShift(Base):
@@ -111,7 +102,7 @@ class StaffShift(Base):
     start_time: Mapped[time | None] = mapped_column(Time, nullable=True)
     end_time: Mapped[time | None] = mapped_column(Time, nullable=True)
 
-    staff: Mapped["Staff"] = relationship("Staff", back_populates="shifts")
+    staff: Mapped[Staff] = relationship("Staff", back_populates="shifts")
 
 
 class StaffWeeklyOverride(Base, TimestampMixin):
