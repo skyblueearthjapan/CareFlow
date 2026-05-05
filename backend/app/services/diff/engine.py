@@ -365,6 +365,28 @@ def compare_schedules(
     current_entries = parse_kaipoke_csv(current_csv)
     optimized_entries = parse_optimized_csv(optimized_csv)
 
+    return _compare_entries(
+        current_entries=current_entries,
+        optimized_entries=optimized_entries,
+        target_users=target_users,
+        target_week_start=target_week_start,
+        target_week_end=target_week_end,
+    )
+
+
+def _compare_entries(
+    current_entries: list[ScheduleEntry],
+    optimized_entries: list[ScheduleEntry],
+    target_users: list[str] | None = None,
+    target_week_start: int | None = None,
+    target_week_end: int | None = None,
+) -> list[Correction]:
+    """ScheduleEntry リスト同士を比較して差分を生成 (内部実装).
+
+    元の ``compare_schedules`` のマッチング部分を切り出した内部関数。
+    パスからの読み込みと、テキストコンテンツからの読み込み（StringIO経由）
+    の両方が共有する。
+    """
     logger.debug("  現在のエントリ数: %d", len(current_entries))
     logger.debug("  最適化エントリ数: %d", len(optimized_entries))
 
@@ -838,19 +860,11 @@ def parse_csv_from_content(content: str, csv_type: str = "kaipoke") -> list[Sche
     if content and content[0] == "﻿":
         content = content[1:]
 
-    # 一時ファイルに書き込んで既存パーサーを再利用
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".csv", encoding="utf-8", delete=False,
-    ) as f:
-        f.write(content)
-        tmp_path = f.name
-
-    try:
-        if csv_type == "kaipoke":
-            return parse_kaipoke_csv(tmp_path)
-        return parse_optimized_csv(tmp_path)
-    finally:
-        os.unlink(tmp_path)
+    # StringIO 経由で csv.reader にかける（tempfile 不要）
+    rows = list(csv.reader(io.StringIO(content)))
+    if csv_type == "kaipoke":
+        return _parse_kaipoke_rows(rows)
+    return _parse_optimized_rows(rows)
 
 
 def compare_schedules_from_content(
@@ -878,30 +892,21 @@ def compare_schedules_from_content(
     if optimized_content and optimized_content[0] == "﻿":
         optimized_content = optimized_content[1:]
 
-    # 一時ファイルに書き込み
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".csv", encoding="utf-8", delete=False,
-    ) as f:
-        f.write(current_content)
-        current_tmp = f.name
+    # StringIO 経由で行配列を作り、行ベースの内部パーサーで解析
+    # （tempfile / os.unlink 不要）
+    current_rows = list(csv.reader(io.StringIO(current_content)))
+    optimized_rows = list(csv.reader(io.StringIO(optimized_content)))
 
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".csv", encoding="utf-8", delete=False,
-    ) as f:
-        f.write(optimized_content)
-        optimized_tmp = f.name
+    current_entries = _parse_kaipoke_rows(current_rows)
+    optimized_entries = _parse_optimized_rows(optimized_rows)
 
-    try:
-        return compare_schedules(
-            current_csv=current_tmp,
-            optimized_csv=optimized_tmp,
-            target_users=target_users,
-            target_week_start=target_week_start,
-            target_week_end=target_week_end,
-        )
-    finally:
-        os.unlink(current_tmp)
-        os.unlink(optimized_tmp)
+    return _compare_entries(
+        current_entries=current_entries,
+        optimized_entries=optimized_entries,
+        target_users=target_users,
+        target_week_start=target_week_start,
+        target_week_end=target_week_end,
+    )
 
 
 def validate_correction_data(corrections: list[Correction]) -> dict:

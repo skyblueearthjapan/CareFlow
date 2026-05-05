@@ -20,12 +20,22 @@ class DiffRequest(BaseModel):
     current_csv: str = Field(
         ...,
         max_length=10_000_000,
-        description="Kaipoke現状CSVのテキスト (10MB上限)",
+        description=(
+            "Kaipoke現状CSVのテキスト (max_length=文字数, バイト数ではない). "
+            "UTF-8 マルチバイト文字を含む場合、バイト換算では 10MB を超える "
+            "可能性がある。厳密なバイト上限が必要なら middleware 側でボディ "
+            "サイズをチェックすること。"
+        ),
     )
     optimized_csv: str = Field(
         ...,
         max_length=10_000_000,
-        description="最適化後CSVのテキスト (10MB上限)",
+        description=(
+            "最適化後CSVのテキスト (max_length=文字数, バイト数ではない). "
+            "UTF-8 マルチバイト文字を含む場合、バイト換算では 10MB を超える "
+            "可能性がある。厳密なバイト上限が必要なら middleware 側でボディ "
+            "サイズをチェックすること。"
+        ),
     )
     target_week_start: int = Field(..., ge=1, le=31, description="対象週の開始日 (1-31)")
     target_week_end: int = Field(..., ge=1, le=31, description="対象週の終了日 (1-31)")
