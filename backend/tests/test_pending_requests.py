@@ -585,6 +585,8 @@ async def test_manager_can_approve(client, db) -> None:
 
 @pytest.mark.asyncio
 async def test_db_row_persisted(client, db) -> None:
+    from uuid import UUID
+
     admin = await _make_user(db, "pr-dbrow@example.com", "admin")
     staff = await _make_staff(db)
     res = await client.post(
@@ -593,7 +595,7 @@ async def test_db_row_persisted(client, db) -> None:
         json=_staff_off_payload(staff_id=staff.id),
     )
     assert res.status_code == 201
-    pr_id = res.json()["id"]
+    pr_id = UUID(res.json()["id"])
 
     # SQLAlchemy で直接確認
     from sqlalchemy import select

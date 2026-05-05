@@ -192,6 +192,8 @@ async def _apply_staff_event(db: AsyncSession, request: PendingRequest, payload:
     starts_at_raw = payload.get("starts_at")
     ends_at_raw = payload.get("ends_at")
 
+    starts_at: datetime | None
+    ends_at: datetime | None
     if starts_at_raw is None or ends_at_raw is None:
         # date + start_time / end_time 形式も許容 (staff_events.py と同じ規約)
         d = _coerce_date(payload.get("date") or request.target_date)
