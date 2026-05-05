@@ -11,6 +11,7 @@
  * (`./[id]`, `./new`, `./[id]/edit`).
  */
 import Link from 'next/link';
+import { useSession } from 'next-auth/react';
 import { useMemo, useState } from 'react';
 import { Plus, Search } from 'lucide-react';
 
@@ -19,6 +20,7 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
+import { useOffices } from '@/lib/queries/offices';
 import { useStaffList } from '@/lib/queries/staff';
 import {
   STAFF_SEX_VALUES,
@@ -43,27 +45,50 @@ function matchesSearch(row: StaffRead, term: string): boolean {
 }
 
 export default function StaffPage() {
+  const { data: session } = useSession();
+  const role = session?.user?.role;
+  const canCreate = role === 'admin' || role === 'manager';
+
   const [search, setSearch] = useState('');
   const [sexFilter, setSexFilter] = useState<SexFilter>('all');
   const [officeFilter, setOfficeFilter] = useState<string>('all');
   const [page, setPage] = useState(0);
 
   // Fetch a generous slice; backend caps at 500 per request.
-  const { data, isLoading, isError, error } = useStaffList({ limit: 500, offset: 0 });
+  const STAFF_LIMIT = 500;
+  const { data, isLoading, isError, error } = useStaffList({ limit: STAFF_LIMIT, offset: 0 });
+  const { allOffices } = useOffices();
 
   const allRows = data ?? [];
 
-  // Build the unique office list locally for the filter dropdown until a
-  // dedicated `useOfficesList` hook lands (Wave 2 / W1-C scope).
+  // id -> name lookup driven by the offices master (W1-C). Falls back to the
+  // raw UUID prefix if the office hasn't been fetched yet (e.g. soft-deleted
+  // primary office).
+  const officeNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const o of allOffices) {
+      map.set(o.id, o.name);
+    }
+    return map;
+  }, [allOffices]);
+
+  const officeLabel = (officeId: string | null | undefined): string => {
+    if (!officeId) return '--';
+    return officeNameById.get(officeId) ?? `${officeId.slice(0, 8)}…`;
+  };
+
+  // Filter dropdown shows only offices actually referenced by the staff list,
+  // labelled by master name where available.
   const officeOptions = useMemo(() => {
     const seen = new Map<string, string>();
     for (const row of allRows) {
       if (row.primary_office_id && !seen.has(row.primary_office_id)) {
-        seen.set(row.primary_office_id, row.primary_office_id.slice(0, 8));
+        seen.set(row.primary_office_id, officeLabel(row.primary_office_id));
       }
     }
     return Array.from(seen.entries());
-  }, [allRows]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allRows, officeNameById]);
 
   const filtered = useMemo(() => {
     return allRows.filter((row) => {
@@ -87,13 +112,25 @@ export default function StaffPage() {
             登録済み {allRows.length} 名 / 表示 {filtered.length} 名
           </p>
         </div>
-        <Button asChild>
-          <Link href="/staff/new">
-            <Plus className="h-4 w-4" />
-            新規スタッフ
-          </Link>
-        </Button>
+        {canCreate && (
+          <Button asChild>
+            <Link href="/staff/new">
+              <Plus className="h-4 w-4" />
+              新規スタッフ
+            </Link>
+          </Button>
+        )}
       </header>
+
+      {allRows.length >= STAFF_LIMIT && (
+        <Alert>
+          <AlertTitle>表示件数の上限に達しました</AlertTitle>
+          <AlertDescription>
+            登録スタッフが {STAFF_LIMIT} 名以上のため、最新 {STAFF_LIMIT} 件のみ表示しています。
+            検索条件を絞るか、Wave 2 のページング機能をお待ちください。
+          </AlertDescription>
+        </Alert>
+      )}
 
       <Card className="p-4">
         <div className="flex flex-wrap items-center gap-3">

@@ -1,12 +1,21 @@
 'use client';
 
 /**
- * Tiny native-dialog–free confirm modal used by the staff detail page.
+ * Confirm modal used by the staff detail page for soft-delete.
  *
- * No portal required — overlay just sits on top via fixed positioning.
- * Replace with a shared shadcn/ui Dialog once D5 lands.
+ * Built on the shared `<Dialog>` primitive (W1-F) so we get Radix's focus
+ * trap + Esc-to-close + scroll-lock for free instead of the hand-rolled
+ * overlay we shipped initially.
  */
 import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 
 interface DeleteConfirmModalProps {
   open: boolean;
@@ -25,31 +34,29 @@ export function DeleteConfirmModal({
   onCancel,
   onConfirm,
 }: DeleteConfirmModalProps) {
-  if (!open) return null;
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
-      onClick={onCancel}
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        // Radix fires onOpenChange(false) for Esc, overlay click, and the
+        // built-in close button — funnel them all through `onCancel`.
+        if (!next) onCancel();
+      }}
     >
-      <div
-        className="w-full max-w-md rounded-lg border border-border-default bg-bg-base p-5 shadow-lg"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h2 className="font-serif text-lg font-bold text-text-primary">{title}</h2>
-        {description && (
-          <p className="mt-2 text-sm text-text-secondary">{description}</p>
-        )}
-        <div className="mt-4 flex justify-end gap-3">
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+          {description && <DialogDescription>{description}</DialogDescription>}
+        </DialogHeader>
+        <DialogFooter>
           <Button variant="outline" onClick={onCancel} disabled={confirming}>
             キャンセル
           </Button>
           <Button variant="destructive" onClick={onConfirm} disabled={confirming}>
             {confirming ? '削除中…' : '削除する'}
           </Button>
-        </div>
-      </div>
-    </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

@@ -18,6 +18,7 @@ const loginResponseSchema = z.object({
     email: z.string().email(),
     name: z.string().optional(),
     role: z.enum(['admin', 'manager', 'staff']),
+    staff_id: z.string().nullable().optional(),
   }),
   tokens: z.object({
     access_token: z.string().min(1),
@@ -60,6 +61,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
             email: user.email,
             name: user.name ?? user.email.split('@')[0] ?? 'user',
             role: user.role,
+            staffId: user.staff_id ?? null,
             accessToken: tokens.access_token,
             refreshToken: tokens.refresh_token,
           };
@@ -73,6 +75,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     async jwt({ token, user }) {
       if (user) {
         token.role = user.role;
+        token.staffId = user.staffId ?? null;
         token.accessToken = user.accessToken;
         token.refreshToken = user.refreshToken;
         if (user.id) {
@@ -84,6 +87,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     async session({ session, token }) {
       if (session.user) {
         session.user.role = (token.role as AppRole | undefined) ?? 'staff';
+        session.user.staffId = (token.staffId as string | null | undefined) ?? null;
         if (token.sub) {
           session.user.id = token.sub;
         }

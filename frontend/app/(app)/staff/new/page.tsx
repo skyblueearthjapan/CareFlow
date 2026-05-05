@@ -9,7 +9,8 @@
  */
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useSession } from 'next-auth/react';
+import { useEffect, useState } from 'react';
 import { ArrowLeft } from 'lucide-react';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -59,6 +60,17 @@ function toPayload(form: StaffFormState): StaffCreate {
 
 export default function StaffNewPage() {
   const router = useRouter();
+  const { data: session, status } = useSession();
+  const role = session?.user?.role;
+
+  // Backend rejects POST /staff for the staff role with 403; redirect early
+  // so the form never renders for an unauthorised user.
+  useEffect(() => {
+    if (status === 'authenticated' && role === 'staff') {
+      router.replace('/dashboard');
+    }
+  }, [status, role, router]);
+
   const [form, setForm] = useState<StaffFormState>(EMPTY_FORM);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
@@ -67,6 +79,10 @@ export default function StaffNewPage() {
       router.push(`/staff/${data.id}`);
     },
   });
+
+  if (status === 'authenticated' && role === 'staff') {
+    return null;
+  }
 
   const onSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();

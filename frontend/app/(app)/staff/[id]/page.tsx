@@ -14,6 +14,7 @@
  */
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
+import { useSession } from 'next-auth/react';
 import { useState } from 'react';
 import { ArrowLeft, Pencil, Trash2 } from 'lucide-react';
 
@@ -60,6 +61,10 @@ export default function StaffDetailPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const id = params?.id;
+
+  const { data: session } = useSession();
+  const role = session?.user?.role;
+  const sessionStaffId = session?.user?.staffId ?? null;
 
   const [confirmOpen, setConfirmOpen] = useState(false);
 
@@ -109,6 +114,14 @@ export default function StaffDetailPage() {
 
   const mockShifts = buildMockShifts(data.id);
 
+  // Role-based UI gating: backend already enforces 403, but hiding the affordances
+  // avoids "click → fail" confusion. admin/manager get full access; a staff user
+  // may only edit their own record (and never delete).
+  const isPrivileged = role === 'admin' || role === 'manager';
+  const isOwnRecord = role === 'staff' && sessionStaffId === data.id;
+  const canEdit = isPrivileged || isOwnRecord;
+  const canDelete = isPrivileged;
+
   return (
     <section className="space-y-6">
       <header className="flex flex-wrap items-center gap-3">
@@ -123,16 +136,20 @@ export default function StaffDetailPage() {
           {statusLabel(data.status)}
         </span>
         <div className="ml-auto flex gap-2">
-          <Button asChild variant="outline" size="sm">
-            <Link href={`/staff/${data.id}/edit`}>
-              <Pencil className="h-4 w-4" />
-              編集
-            </Link>
-          </Button>
-          <Button variant="destructive" size="sm" onClick={() => setConfirmOpen(true)}>
-            <Trash2 className="h-4 w-4" />
-            削除
-          </Button>
+          {canEdit && (
+            <Button asChild variant="outline" size="sm">
+              <Link href={`/staff/${data.id}/edit`}>
+                <Pencil className="h-4 w-4" />
+                編集
+              </Link>
+            </Button>
+          )}
+          {canDelete && (
+            <Button variant="destructive" size="sm" onClick={() => setConfirmOpen(true)}>
+              <Trash2 className="h-4 w-4" />
+              削除
+            </Button>
+          )}
         </div>
       </header>
 

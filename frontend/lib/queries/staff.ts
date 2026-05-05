@@ -65,13 +65,21 @@ export function useStaffList(params: UseStaffListParams = {}) {
 export function useStaff(staffId: string | null | undefined) {
   const { accessToken, refreshToken, isAuthenticated } = useAuthTokens();
 
+  // Normalize the cache key so undefined never appears in `queryKey` (StrictMode
+  // can otherwise serialize `[..., 'detail', undefined]` and confuse devtools);
+  // the queryFn also fast-fails to defend against a rogue StrictMode double-fire
+  // before `enabled` evaluates.
+  const normalizedId = staffId ?? '__none__';
+
   return useQuery<StaffRead>({
-    queryKey: [...staffKey, 'detail', staffId],
-    queryFn: () =>
-      fetcher<StaffRead>(`${STAFF_BASE}/${staffId}`, {
+    queryKey: [...staffKey, 'detail', normalizedId],
+    queryFn: () => {
+      if (!staffId) throw new Error('staff id is required');
+      return fetcher<StaffRead>(`${STAFF_BASE}/${staffId}`, {
         accessToken,
         refreshToken,
-      }),
+      });
+    },
     enabled: isAuthenticated && !!staffId,
   });
 }
@@ -119,8 +127,9 @@ export function useUpdateStaff(options: UpdateOptions = {}) {
       }),
     ...options,
     onSuccess: (data, variables, onMutateResult, context) => {
+      // `staffKey` covers every nested key (list + detail) — a second invalidate
+      // for `[...staffKey, 'detail', id]` is redundant.
       void qc.invalidateQueries({ queryKey: staffKey });
-      void qc.invalidateQueries({ queryKey: [...staffKey, 'detail', variables.id] });
       options.onSuccess?.(data, variables, onMutateResult, context);
     },
   });

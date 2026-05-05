@@ -114,7 +114,7 @@ export function StaffFormFields({
         <Input
           value={form.primary_office_id}
           onChange={(e) => set('primary_office_id', e.target.value)}
-          placeholder="000-0000-..."
+          placeholder="例: 11111111-2222-3333-4444-555555555555"
         />
       </Field>
 
@@ -122,7 +122,7 @@ export function StaffFormFields({
         <Input
           value={form.mentor_id}
           onChange={(e) => set('mentor_id', e.target.value)}
-          placeholder="000-0000-..."
+          placeholder="例: 11111111-2222-3333-4444-555555555555"
         />
       </Field>
 
