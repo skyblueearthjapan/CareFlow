@@ -21,7 +21,7 @@ class MentorRead(BaseModel):
 
     staff_id: UUID
     mentor_staff_id: UUID | None = None
-    mentor_name: str | None = None
+    mentor_staff_name: str | None = None
 
 
 class MentorAssign(BaseModel):

@@ -192,7 +192,7 @@ export function validateOverrideForm(
   const errs: Partial<Record<keyof OverrideFormState | '_form', string>> = {};
   for (const issue of result.error.issues) {
     const key = issue.path[0];
-    if (typeof key === 'string' && key in (state as Record<string, unknown>)) {
+    if (typeof key === 'string' && key in (state as unknown as Record<string, unknown>)) {
       errs[key as keyof OverrideFormState] = issue.message;
     } else {
       errs._form = issue.message;

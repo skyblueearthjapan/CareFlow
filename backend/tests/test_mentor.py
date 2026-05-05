@@ -45,7 +45,7 @@ async def test_mentor_get_returns_null_when_unset(client, db) -> None:
     body = res.json()
     assert body["staff_id"] == str(s.id)
     assert body["mentor_staff_id"] is None
-    assert body["mentor_name"] is None
+    assert body["mentor_staff_name"] is None
 
 
 @pytest.mark.asyncio
@@ -61,7 +61,7 @@ async def test_mentor_put_sets_then_clears(client, db) -> None:
     )
     assert set_res.status_code == 200, set_res.text
     assert set_res.json()["mentor_staff_id"] == str(mentor.id)
-    assert set_res.json()["mentor_name"] == "メンター先生"
+    assert set_res.json()["mentor_staff_name"] == "メンター先生"
 
     clear_res = await client.put(
         f"/api/v1/staff/{mentee.id}/mentor",

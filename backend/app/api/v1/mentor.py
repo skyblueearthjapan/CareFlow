@@ -43,7 +43,7 @@ def _to_read(staff: Staff, mentor: Staff | None) -> MentorRead:
     return MentorRead(
         staff_id=staff.id,
         mentor_staff_id=mentor.id if mentor is not None else None,
-        mentor_name=mentor.name if mentor is not None else None,
+        mentor_staff_name=mentor.name if mentor is not None else None,
     )
 
 
