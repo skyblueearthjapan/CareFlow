@@ -1,25 +1,53 @@
-"""Patient (利用者) and patient<->office many-to-many."""
+"""Patient (利用者) and patient<->office many-to-many.
+
+W1-BE1 (v2 patient master cleanup, §4.1):
+  * Removed columns (drop in 0009_v2_patient_master_cleanup):
+      age, ng_time_start, ng_time_end, specified_type, ng_staff_ids,
+      preferred_staff_ids, continuous_request, required_staff_count, area
+  * Added columns (add in 0009_v2_patient_master_cleanup):
+      special_weekly_pattern (JSONB),
+      special_week_active    (JSONB; ``[{"iso_year","iso_week"}, ...]``)
+
+The legacy ``special_week`` JSONB column is kept for backward compatibility
+with the existing ``special_weeks`` / ``special_week_items`` ad-hoc data,
+which Wave 6 (W6-MIG2) will retire separately.
+
+The v1 allocation engine (``app.services.allocation.engine``) and a few
+import scripts still reference the dropped attributes; those code paths
+are guarded by ``getattr(..., default)`` lookups (see ``allocate.py``)
+or are CLI-only and will be retired in Wave 4-6 when the v1 engine is
+frozen.
+
+JSONB column rendering: production uses PostgreSQL where ``JSONB`` maps
+directly. The pytest suite uses SQLite; ``JSONB().with_variant(JSON(),
+'sqlite')`` substitutes the cross-dialect ``JSON`` type so
+``Base.metadata.create_all`` succeeds without a custom compile hook.
+"""
 
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, time
+from datetime import datetime
 
 from sqlalchemy import (
-    Boolean,
+    JSON,
     DateTime,
     ForeignKey,
     Index,
     Numeric,
-    SmallInteger,
     String,
     Text,
-    Time,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID as PG_UUID
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin
+
+# Cross-dialect JSONB: PostgreSQL gets native JSONB, SQLite (tests) gets JSON.
+# Without ``with_variant``, ``Base.metadata.create_all`` on SQLite raises
+# ``CompileError: Compiler ... can't render element of type JSONB``.
+JSONBish = JSONB().with_variant(JSON(), "sqlite")
 
 
 class Patient(Base, TimestampMixin):
@@ -32,7 +60,6 @@ class Patient(Base, TimestampMixin):
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     kana: Mapped[str | None] = mapped_column(String(120), nullable=True)
     sex: Mapped[str | None] = mapped_column(String(8), nullable=True)  # male/female/unknown
-    age: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
     insurance: Mapped[str | None] = mapped_column(String(16), nullable=True)  # medical/care
 
@@ -46,29 +73,25 @@ class Patient(Base, TimestampMixin):
         nullable=True,
     )
 
-    required_staff_count: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=1)
     sex_restriction: Mapped[str | None] = mapped_column(String(8), nullable=True)
-    ng_time_start: Mapped[time | None] = mapped_column(Time, nullable=True)
-    ng_time_end: Mapped[time | None] = mapped_column(Time, nullable=True)
 
-    weekly_pattern: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    special_week: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # 通常パターン (§3.4 / §4.1). 既存。``staff_count`` キーは v2 schema 側で扱う。
+    weekly_pattern: Mapped[dict | None] = mapped_column(JSONBish, nullable=True)
+    # 旧 v1 の "special_week" JSONB (per-patient hint). 旧 special_weeks/items の
+    # 補助。Wave 6 (W6-MIG2) で正式廃止予定。
+    special_week: Mapped[dict | None] = mapped_column(JSONBish, nullable=True)
 
-    # W3-A additions
-    area: Mapped[str | None] = mapped_column(String(16), nullable=True)
-    ng_staff_ids: Mapped[list[uuid.UUID] | None] = mapped_column(
-        ARRAY(PG_UUID(as_uuid=True)), nullable=True, default=list
-    )
-    preferred_staff_ids: Mapped[list[uuid.UUID] | None] = mapped_column(
-        ARRAY(PG_UUID(as_uuid=True)), nullable=True, default=list
-    )
-    specified_type: Mapped[str | None] = mapped_column(String(16), nullable=True)
-    continuous_request: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # ---- W1-BE1 v2 additions ------------------------------------------------
+    # 特別週パターン (§3.4 Option A 確定)
+    special_weekly_pattern: Mapped[dict | None] = mapped_column(JSONBish, nullable=True)
+    # 適用週リスト [{iso_year:int, iso_week:int}, ...]
+    # SQLAlchemy 上の型は dict だが、実用上は list[dict] として保持する。
+    special_week_active: Mapped[list | None] = mapped_column(JSONBish, nullable=True)
 
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    allowed_offices: Mapped[list["PatientAllowedOffice"]] = relationship(
+    allowed_offices: Mapped[list[PatientAllowedOffice]] = relationship(
         "PatientAllowedOffice",
         back_populates="patient",
         cascade="all, delete-orphan",
@@ -94,4 +117,4 @@ class PatientAllowedOffice(Base):
         primary_key=True,
     )
 
-    patient: Mapped["Patient"] = relationship("Patient", back_populates="allowed_offices")
+    patient: Mapped[Patient] = relationship("Patient", back_populates="allowed_offices")
