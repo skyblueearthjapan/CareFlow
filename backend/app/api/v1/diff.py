@@ -11,9 +11,10 @@ import csv
 from dataclasses import asdict
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.core.deps import require_role
+from app.core.rate_limit import limiter
 from app.models.user import User
 from app.schemas.diff import DiffEdit, DiffRequest, DiffResponse, DiffSummary
 from app.services.diff import compare_schedules_from_content
@@ -26,7 +27,9 @@ router = APIRouter()
     response_model=DiffResponse,
     summary="Compute correction list between current and optimized CSV",
 )
+@limiter.limit("5/minute")
 async def compute_diff(
+    request: Request,
     payload: DiffRequest,
     _user: Annotated[User, Depends(require_role("admin", "manager"))],
 ) -> DiffResponse:

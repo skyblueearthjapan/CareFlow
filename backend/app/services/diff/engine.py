@@ -22,9 +22,7 @@ import csv
 import io
 import json
 import logging
-import os
 import re
-import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Optional
@@ -219,15 +217,8 @@ def read_csv_auto_encoding(file_path: str) -> list[list[str]]:
     return rows
 
 
-def parse_kaipoke_csv(file_path: str) -> list[ScheduleEntry]:
-    """カイポケ出力CSVをパース.
-
-    CSVフォーマット（18列）:
-    職員名1, 職種1, 職員名2, 職種2, 同行2, 職員名3, 職種3, 同行3,
-    事業所名, 日付, 曜日, 利用者, 業務種別, サービス内容,
-    開始時間, 終了時間, 提供時間, 備考
-    """
-    rows = read_csv_auto_encoding(file_path)
+def _parse_kaipoke_rows(rows: list[list[str]]) -> list[ScheduleEntry]:
+    """rows (list of CSV rows) → ScheduleEntry リスト (カイポケ18列フォーマット)."""
     entries: list[ScheduleEntry] = []
     skipped_rows = 0
 
@@ -277,14 +268,20 @@ def parse_kaipoke_csv(file_path: str) -> list[ScheduleEntry]:
     return entries
 
 
-def parse_optimized_csv(file_path: str) -> list[ScheduleEntry]:
-    """最適化CSVをパース.
+def parse_kaipoke_csv(file_path: str) -> list[ScheduleEntry]:
+    """カイポケ出力CSV (18列) をパース — path wrapper.
 
-    CSVフォーマット（想定）:
-    利用者名, 日付, 曜日, サービス内容, 開始時間, 終了時間, 職員1, 職員2, 備考
-    または カイポケと同じフォーマット
+    CSVフォーマット（18列）:
+    職員名1, 職種1, 職員名2, 職種2, 同行2, 職員名3, 職種3, 同行3,
+    事業所名, 日付, 曜日, 利用者, 業務種別, サービス内容,
+    開始時間, 終了時間, 提供時間, 備考
     """
     rows = read_csv_auto_encoding(file_path)
+    return _parse_kaipoke_rows(rows)
+
+
+def _parse_optimized_rows(rows: list[list[str]]) -> list[ScheduleEntry]:
+    """rows (list of CSV rows) → ScheduleEntry リスト (最適化CSV)."""
     entries: list[ScheduleEntry] = []
 
     if not rows:
@@ -300,8 +297,8 @@ def parse_optimized_csv(file_path: str) -> list[ScheduleEntry]:
 
     # カイポケフォーマット（18列）の場合
     if len(header) >= 18 and "職員名" in str(header[0]):
-        logger.debug("parse_optimized_csv: カイポケフォーマットとして検出 → parse_kaipoke_csvに委譲")
-        return parse_kaipoke_csv(file_path)
+        logger.debug("parse_optimized_csv: カイポケフォーマットとして検出 → _parse_kaipoke_rowsに委譲")
+        return _parse_kaipoke_rows(rows)
 
     logger.debug("parse_optimized_csv: 簡易フォーマットとしてパース")
     # 簡易フォーマット（利用者, 日付, 曜日, サービス, 開始, 終了, 職員1, 職員2, 備考）
@@ -324,6 +321,17 @@ def parse_optimized_csv(file_path: str) -> list[ScheduleEntry]:
 
     logger.debug("parse_optimized_csv: %d件パース（簡易フォーマット）", len(entries))
     return entries
+
+
+def parse_optimized_csv(file_path: str) -> list[ScheduleEntry]:
+    """最適化CSVをパース — path wrapper.
+
+    CSVフォーマット（想定）:
+    利用者名, 日付, 曜日, サービス内容, 開始時間, 終了時間, 職員1, 職員2, 備考
+    または カイポケと同じフォーマット
+    """
+    rows = read_csv_auto_encoding(file_path)
+    return _parse_optimized_rows(rows)
 
 
 def compare_schedules(

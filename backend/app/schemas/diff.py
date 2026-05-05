@@ -17,8 +17,16 @@ class DiffRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    current_csv: str = Field(..., description="Kaipoke現状CSVのテキスト")
-    optimized_csv: str = Field(..., description="最適化後CSVのテキスト")
+    current_csv: str = Field(
+        ...,
+        max_length=10_000_000,
+        description="Kaipoke現状CSVのテキスト (10MB上限)",
+    )
+    optimized_csv: str = Field(
+        ...,
+        max_length=10_000_000,
+        description="最適化後CSVのテキスト (10MB上限)",
+    )
     target_week_start: int = Field(..., ge=1, le=31, description="対象週の開始日 (1-31)")
     target_week_end: int = Field(..., ge=1, le=31, description="対象週の終了日 (1-31)")
     target_users: list[str] | None = Field(
