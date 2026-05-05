@@ -49,7 +49,7 @@ from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import and_, select
+from sqlalchemy import and_, delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.course import (
@@ -61,6 +61,7 @@ from app.models.office import Office
 from app.models.patient import Patient
 from app.models.staff import Staff, StaffShift, StaffWeeklyOverride
 from app.models.visit import VISIT_STATUS_PLANNED, Visit
+from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.services.scheduling.layer2_clustering import haversine_km
 
 # ---------------------------------------------------------------------------
@@ -732,17 +733,37 @@ class Layer3Assigner:
         db: AsyncSession,
         assignments: list[StaffAssignment],
     ) -> None:
-        """``courses.assigned_staff_id`` を更新し ``staff_assigned`` に遷移させる.
+        """割当結果を DB に反映する (W7-BE4 / Codex Must-fix #7).
 
-        本サービスは commit しない。呼び出し側がトランザクション境界を握る。
+        実施内容:
+            1. ``courses.assigned_staff_id`` / ``course_status`` を更新
+               (``staff_assigned`` 遷移)
+            2. **当該コース配下の planned visits** を取得し、v2 正規表現で
+               ある ``visit_staff_assignments`` に行を INSERT
+               (Staff の visit 可視性は本テーブル経由)
+            3. 2 名体制 (``required_staff_count == 2`` または ``visit_group_id``
+               が設定済み) の場合は primary + secondary の 2 行を INSERT
+               (secondary は同じ ``visit_group_id`` グループ内の partner visit
+               の所属 course の ``assigned_staff_id`` から導出)
+            4. レガシー互換のため visits.primary_staff_id / secondary_staff_id
+               も同期更新 (Wave 6 まで併用)
+            5. 冪等性: 既存の ``visit_staff_assignments`` 行は DELETE してから
+               再 INSERT する
+
+        本サービスは commit しない。呼び出し側がトランザクション境界を握る
+        (§5.4 / module docstring)。
         """
         if not assignments:
             return
+
+        # ---------- 1. course の更新 ----------
         course_ids = [a.course_id for a in assignments]
         stmt = select(Course).where(Course.id.in_(course_ids))
         courses = list((await db.scalars(stmt)).all())
         course_by_id = {c.id: c for c in courses}
         now = datetime.now(UTC)
+        # course.id -> assigned staff_id (今回の Layer 3 出力)
+        staff_by_course: dict[UUID, UUID] = {}
         for a in assignments:
             c = course_by_id.get(a.course_id)
             if c is None:
@@ -750,6 +771,111 @@ class Layer3Assigner:
             c.assigned_staff_id = a.staff_id
             c.course_status = COURSE_STATUS_STAFF_ASSIGNED
             c.staff_assigned_at = now
+            staff_by_course[a.course_id] = a.staff_id
+
+        if not staff_by_course:
+            await db.flush()
+            return
+
+        # ---------- 2. 対象 visits をロード ----------
+        # 当該コース配下の planned visits + (2 名体制ペア解決のため) 同一
+        # visit_group_id を共有する別コースの visits も併せて取得する。
+        visit_stmt = select(Visit).where(
+            Visit.course_id.in_(list(staff_by_course.keys())),
+            Visit.status == VISIT_STATUS_PLANNED,
+            Visit.deleted_at.is_(None),
+        )
+        target_visits = list((await db.scalars(visit_stmt)).all())
+
+        if not target_visits:
+            await db.flush()
+            return
+
+        # 2 名体制グループの partner 解決のため、同じ visit_group_id を持つ
+        # visit を全件取得 (別コースに所属する partner も含む)
+        group_ids = {v.visit_group_id for v in target_visits if v.visit_group_id is not None}
+        group_visits: list[Visit] = []
+        if group_ids:
+            partner_stmt = select(Visit).where(
+                Visit.visit_group_id.in_(list(group_ids)),
+                Visit.status == VISIT_STATUS_PLANNED,
+                Visit.deleted_at.is_(None),
+            )
+            group_visits = list((await db.scalars(partner_stmt)).all())
+
+        # visit_group_id -> [Visit, Visit, ...]
+        visits_by_group: dict[UUID, list[Visit]] = {}
+        for v in group_visits:
+            if v.visit_group_id is None:
+                continue
+            visits_by_group.setdefault(v.visit_group_id, []).append(v)
+
+        # partner visit の course から secondary staff_id を解決するために、
+        # まだ staff_by_course にない course_id の assigned_staff_id を補完
+        # (= 別コースが今回の assignments に含まれていないケース)
+        unknown_course_ids: set[UUID] = set()
+        for vs in visits_by_group.values():
+            for v in vs:
+                if v.course_id is not None and v.course_id not in staff_by_course:
+                    unknown_course_ids.add(v.course_id)
+        if unknown_course_ids:
+            extra_stmt = select(Course).where(Course.id.in_(list(unknown_course_ids)))
+            for c in (await db.scalars(extra_stmt)).all():
+                if c.assigned_staff_id is not None:
+                    staff_by_course[c.id] = c.assigned_staff_id
+
+        # ---------- 3. 既存の visit_staff_assignments を冪等のため DELETE ----------
+        target_visit_ids = [v.id for v in target_visits]
+        await db.execute(
+            delete(VisitStaffAssignment).where(VisitStaffAssignment.visit_id.in_(target_visit_ids))
+        )
+
+        # ---------- 4. visit_staff_assignments を再 INSERT ----------
+        for visit in target_visits:
+            primary_staff_id = (
+                staff_by_course.get(visit.course_id) if visit.course_id is not None else None
+            )
+            if primary_staff_id is None:
+                # 当該 visit のコースが今回の出力に含まれていない (= 想定外)
+                continue
+
+            staff_ids: list[UUID] = [primary_staff_id]
+            secondary_staff_id: UUID | None = None
+
+            # 2 名体制: required_staff_count == 2 もしくは visit_group_id がある
+            is_two_person = visit.required_staff_count == 2 or visit.visit_group_id is not None
+            if is_two_person and visit.visit_group_id is not None:
+                # 同 group の partner visit の course から secondary を解決
+                for partner in visits_by_group.get(visit.visit_group_id, []):
+                    if partner.id == visit.id:
+                        continue
+                    if partner.course_id is None:
+                        continue
+                    partner_staff = staff_by_course.get(partner.course_id)
+                    if partner_staff is None or partner_staff == primary_staff_id:
+                        continue
+                    secondary_staff_id = partner_staff
+                    break
+                if secondary_staff_id is not None:
+                    staff_ids.append(secondary_staff_id)
+
+            # 重複排除 (primary == secondary になり得ないが念のため)
+            seen: set[UUID] = set()
+            for sid in staff_ids:
+                if sid in seen:
+                    continue
+                seen.add(sid)
+                db.add(
+                    VisitStaffAssignment(
+                        visit_id=visit.id,
+                        staff_id=sid,
+                    )
+                )
+
+            # ---------- 5. レガシー互換: visits.primary/secondary_staff_id ----------
+            visit.primary_staff_id = primary_staff_id
+            visit.secondary_staff_id = secondary_staff_id
+
         await db.flush()
 
 
