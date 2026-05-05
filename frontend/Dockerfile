@@ -11,10 +11,15 @@ RUN if [ -f pnpm-lock.yaml ]; then pnpm install --frozen-lockfile; else pnpm ins
 
 # builder stage: build the app
 FROM base AS builder
+ARG GIT_SHA=dev
+ENV GIT_SHA=$GIT_SHA
+ENV NEXT_PUBLIC_BUILD_ID=$GIT_SHA
 RUN corepack enable && corepack prepare pnpm@9.12.0 --activate
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
+# Inject BUILD_ID into sw.js cache version (stable per release).
+RUN sed -i "s/__BUILD_ID__/${GIT_SHA}/g" /app/public/sw.js || true
 RUN pnpm build
 
 # runner stage: minimal production image

@@ -71,4 +71,8 @@ jobs:
         run: pnpm typecheck
 
       - name: Build
+        env:
+          # Surface commit SHA so next.config.js generateBuildId and sw.js
+          # CACHE_VERSION can derive a stable per-release identifier.
+          GIT_SHA: ${{ github.sha }}
         run: pnpm build

@@ -1,20 +1,31 @@
-// CareFlow minimal Service Worker (Wave 2-E revise)
+// CareFlow minimal Service Worker (Wave 2-E revise2)
 // - install: precache /offline.html, skipWaiting
 // - activate: clients.claim, drop stale cache versions
 // - fetch:
-//   * /api/*           -> network-only (PII / session / auth never cached)
-//   * /login, /logout* -> network-only (avoid stale auth nav HTML)
-//   * /_next/static/*  -> cache-first
-//   * navigation       -> network-first; offline fallback /offline.html
-//   * other GET        -> network-first with LRU runtime cache (max 50)
+//   * /api/*                            -> network-only (PII / session / auth never cached)
+//   * /login, /logout*                  -> network-only (avoid stale auth nav HTML)
+//   * cacheable allowlist (static/icon/manifest/offline)
+//                                       -> cache-first
+//   * everything else (HTML / RSC / _next/data / cookie-scoped pages)
+//                                       -> network-only; navigation may fall back to /offline.html
 //
-// NOTE: bump CACHE_VERSION on every release until BUILD_ID is wired in
-// (Phase 9 TODO: derive from next.config.js generateBuildId / GIT_SHA).
-const CACHE_VERSION = 'careflow-v2';
+// CACHE_VERSION is replaced at Docker build time via `sed -i` in frontend/Dockerfile
+// (`__BUILD_ID__` -> $GIT_SHA). Falls back to 'dev' for local builds.
+const CACHE_VERSION = 'careflow-__BUILD_ID__';
 const STATIC_CACHE = `${CACHE_VERSION}-static`;
-const RUNTIME_CACHE = `${CACHE_VERSION}-runtime`;
-const RUNTIME_MAX_ENTRIES = 50;
 const OFFLINE_URL = '/offline.html';
+
+// Explicit allowlist for cache-first behavior. HTML/RSC/cookie-scoped responses
+// are intentionally excluded to prevent PII pollution in Cache Storage.
+function isCacheable(url) {
+  if (url.pathname.startsWith('/_next/static/')) return true;
+  if (url.pathname.startsWith('/icons/')) return true;
+  if (url.pathname.startsWith('/fonts/')) return true;
+  if (url.pathname === '/manifest.webmanifest' || url.pathname === '/manifest.json') return true;
+  if (url.pathname === '/offline.html') return true;
+  if (url.pathname === '/favicon.ico') return true;
+  return false;
+}
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -40,17 +51,6 @@ self.addEventListener('activate', (event) => {
   );
 });
 
-async function trimCache(cacheName, maxEntries) {
-  const cache = await caches.open(cacheName);
-  const keys = await cache.keys();
-  if (keys.length <= maxEntries) return;
-  // FIFO eviction (sufficient for residual bound; full LRU = Phase 9).
-  const overflow = keys.length - maxEntries;
-  for (let i = 0; i < overflow; i += 1) {
-    await cache.delete(keys[i]);
-  }
-}
-
 self.addEventListener('fetch', (event) => {
   const req = event.request;
   if (req.method !== 'GET') return;
@@ -72,8 +72,12 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Next static assets: cache-first.
-  if (url.pathname.startsWith('/_next/static/')) {
+  const isNavigation =
+    req.mode === 'navigate' ||
+    (req.headers.get('accept') || '').includes('text/html');
+
+  // Allowlisted public assets: cache-first.
+  if (isCacheable(url)) {
     event.respondWith(
       (async () => {
         const cache = await caches.open(STATIC_CACHE);
@@ -81,7 +85,11 @@ self.addEventListener('fetch', (event) => {
         if (cached) return cached;
         try {
           const res = await fetch(req);
-          if (res.ok) cache.put(req, res.clone());
+          if (res.ok) {
+            // Await put before returning so the cache write is durable; no
+            // trim needed because the allowlist is bounded by static surface.
+            await cache.put(req, res.clone());
+          }
           return res;
         } catch (err) {
           if (cached) return cached;
@@ -92,25 +100,14 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  const isNavigation =
-    req.mode === 'navigate' ||
-    (req.headers.get('accept') || '').includes('text/html');
-
-  // Default: network-first; on failure fall back to cache, then offline page for nav.
+  // Everything else (authenticated HTML, RSC payloads, /_next/data, cookie-
+  // scoped pages, etc.): network-only. Navigation requests fall back to the
+  // precached offline shell when the network is unavailable.
   event.respondWith(
     (async () => {
-      const cache = await caches.open(RUNTIME_CACHE);
       try {
-        const res = await fetch(req);
-        if (res.ok) {
-          cache.put(req, res.clone());
-          // Async LRU trim — don't block the response.
-          trimCache(RUNTIME_CACHE, RUNTIME_MAX_ENTRIES).catch(() => {});
-        }
-        return res;
+        return await fetch(req);
       } catch (err) {
-        const cached = await cache.match(req);
-        if (cached) return cached;
         if (isNavigation) {
           const offline = await caches.match(OFFLINE_URL);
           if (offline) return offline;

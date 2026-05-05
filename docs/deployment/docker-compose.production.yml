@@ -84,6 +84,11 @@ services:
       # See backend build context note above re: relative-to-compose-file resolution.
       context: ../../frontend
       dockerfile: Dockerfile
+      args:
+        # GIT_SHA is injected into sw.js CACHE_VERSION at build time so that
+        # service worker caches are invalidated per release. Set via deployment
+        # script (`GIT_SHA=$(git rev-parse HEAD) docker compose ... build`).
+        GIT_SHA: ${GIT_SHA:-dev}
     container_name: carelink-frontend
     restart: unless-stopped
     env_file:
