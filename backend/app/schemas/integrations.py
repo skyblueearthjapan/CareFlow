@@ -4,6 +4,8 @@ Covers:
   - KaipokeJob / KaipokeJobItem (fetch/push background jobs)
   - GeocodingCache (admin read-only listing)
   - AiInterpretLog (admin read-only listing)
+  - Wave 4-A: kaipoke status + relay (expand/export/diff/apply/stop)
+              + correction sheets / items (差分プレビュー)
 """
 
 from __future__ import annotations
@@ -13,7 +15,6 @@ from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
-
 
 # --- Kaipoke jobs ----------------------------------------------------------
 
@@ -96,3 +97,115 @@ class AiInterpretLogRead(BaseModel):
     user_id: UUID | None = None
     created_at: datetime
     updated_at: datetime
+
+
+# --- Wave 4-A: kaipoke status + relay -------------------------------------
+
+
+class KaipokeStatusRead(BaseModel):
+    """Combined: live kaipoke /status + the most recent DB-backed job row."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    kaipoke: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Raw kaipoke /api/status response (or {} if unreachable)",
+    )
+    login_remain_sec: int | None = Field(default=None, alias="loginRemainSec")
+    last_sync_at: datetime | None = Field(default=None, alias="lastSyncAt")
+    running_job: KaipokeJobRead | None = Field(default=None, alias="runningJob")
+    reachable: bool = True
+    error: str | None = None
+
+
+class IntegrationExpandRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    month: str = Field(pattern=r"^\d{4}-\d{2}$")
+    dry_run: bool = Field(default=False, alias="dryRun")
+
+
+class IntegrationExportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    month: str = Field(pattern=r"^\d{4}-\d{2}$")
+    format: Literal["csv", "xlsx"] = "csv"
+
+
+class IntegrationDiffRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    month: str = Field(pattern=r"^\d{4}-\d{2}$")
+
+
+class IntegrationApplyRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    sheet_id: UUID = Field(alias="sheetId")
+    dry_run: bool = Field(default=False, alias="dryRun")
+
+
+class JobAccepted(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    job_id: UUID = Field(alias="jobId")
+    kaipoke_job_id: str | None = Field(default=None, alias="kaipokeJobId")
+    status: KaipokeJobStatus
+
+
+class DiffAccepted(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    job_id: UUID = Field(alias="jobId")
+    sheet_id: UUID = Field(alias="sheetId")
+    summary: dict[str, int] = Field(default_factory=dict)
+
+
+class JobItemPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    manually_handled: bool | None = Field(default=None, alias="manuallyHandled")
+    comment: str | None = None
+
+
+# --- Correction sheets / items (Phase C) ----------------------------------
+
+CorrectionAction = Literal[
+    "add",
+    "delete",
+    "update",
+    "companion_change",
+]
+
+
+class CorrectionItemRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+    id: UUID
+    sheet_id: UUID
+    patient_id: UUID | None = None
+    visit_id: UUID | None = None
+    action: str
+    before: dict[str, Any] | None = None
+    after: dict[str, Any] | None = None
+    include: bool
+    comment: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class CorrectionSheetRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+    id: UUID
+    target_month: str
+    status: str
+    created_by_user_id: UUID | None = None
+    created_at: datetime
+    updated_at: datetime
+    items: list[CorrectionItemRead] = Field(default_factory=list)
+
+
+class CorrectionItemUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    include: bool | None = None
+    comment: str | None = None
+
+
+class CorrectionBulkSelect(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    ids: list[UUID]
+    patch: CorrectionItemUpdate

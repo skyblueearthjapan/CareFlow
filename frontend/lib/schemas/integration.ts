@@ -104,3 +104,99 @@ export const AiInterpretLogReadSchema = z.object({
   updated_at: z.string(),
 });
 export type AiInterpretLog = z.infer<typeof AiInterpretLogReadSchema>;
+
+// --- Wave 4-A: kaipoke status + relay --------------------------------------
+
+export const KaipokeStatusSchema = z.object({
+  kaipoke: z.record(z.unknown()).default({}),
+  loginRemainSec: z.number().int().nullable().optional(),
+  lastSyncAt: z.string().nullable().optional(),
+  runningJob: KaipokeJobReadSchema.nullable().optional(),
+  reachable: z.boolean().default(true),
+  error: z.string().nullable().optional(),
+});
+export type KaipokeStatus = z.infer<typeof KaipokeStatusSchema>;
+
+export const JobAcceptedSchema = z.object({
+  jobId: z.string().uuid(),
+  kaipokeJobId: z.string().nullable().optional(),
+  status: KaipokeJobStatusSchema,
+});
+export type JobAccepted = z.infer<typeof JobAcceptedSchema>;
+
+export const DiffAcceptedSchema = z.object({
+  jobId: z.string().uuid(),
+  sheetId: z.string().uuid(),
+  summary: z.record(z.number().int()).default({}),
+});
+export type DiffAccepted = z.infer<typeof DiffAcceptedSchema>;
+
+export const ExpandRequestSchema = z.object({
+  month: z.string().regex(/^\d{4}-\d{2}$/, 'YYYY-MM で入力してください'),
+  dryRun: z.boolean().optional(),
+});
+export type ExpandRequest = z.infer<typeof ExpandRequestSchema>;
+
+export const ExportRequestSchema = z.object({
+  month: z.string().regex(/^\d{4}-\d{2}$/, 'YYYY-MM で入力してください'),
+  format: z.enum(['csv', 'xlsx']).default('csv'),
+});
+export type ExportRequest = z.infer<typeof ExportRequestSchema>;
+
+export const DiffRequestSchema = z.object({
+  month: z.string().regex(/^\d{4}-\d{2}$/, 'YYYY-MM で入力してください'),
+});
+export type DiffRequest = z.infer<typeof DiffRequestSchema>;
+
+export const ApplyRequestSchema = z.object({
+  sheetId: z.string().uuid(),
+  dryRun: z.boolean().optional(),
+});
+export type ApplyRequest = z.infer<typeof ApplyRequestSchema>;
+
+// --- Wave 4-A: correction sheets / items (Phase C) -------------------------
+
+export const CORRECTION_ACTIONS = [
+  'add',
+  'delete',
+  'update',
+  'companion_change',
+] as const;
+
+export const CorrectionItemReadSchema = z.object({
+  id: z.string().uuid(),
+  sheet_id: z.string().uuid(),
+  patient_id: z.string().uuid().nullable().optional(),
+  visit_id: z.string().uuid().nullable().optional(),
+  action: z.string(),
+  before: z.record(z.unknown()).nullable().optional(),
+  after: z.record(z.unknown()).nullable().optional(),
+  include: z.boolean(),
+  comment: z.string().nullable().optional(),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+export type CorrectionItem = z.infer<typeof CorrectionItemReadSchema>;
+
+export const CorrectionSheetReadSchema = z.object({
+  id: z.string().uuid(),
+  target_month: z.string(),
+  status: z.string(),
+  created_by_user_id: z.string().uuid().nullable().optional(),
+  created_at: z.string(),
+  updated_at: z.string(),
+  items: z.array(CorrectionItemReadSchema).default([]),
+});
+export type CorrectionSheet = z.infer<typeof CorrectionSheetReadSchema>;
+
+export const CorrectionItemUpdateSchema = z.object({
+  include: z.boolean().optional(),
+  comment: z.string().nullable().optional(),
+});
+export type CorrectionItemUpdate = z.infer<typeof CorrectionItemUpdateSchema>;
+
+export const CorrectionBulkSelectSchema = z.object({
+  ids: z.array(z.string().uuid()),
+  patch: CorrectionItemUpdateSchema,
+});
+export type CorrectionBulkSelect = z.infer<typeof CorrectionBulkSelectSchema>;

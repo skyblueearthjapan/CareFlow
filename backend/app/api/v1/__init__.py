@@ -4,11 +4,13 @@ from fastapi import APIRouter
 
 from app.api.v1 import (
     admin,
+    ai,
     allocate,
     auth,
     cities,
     dashboard,
     diff,
+    geocoding,
     health,
     integrations,
     mentor,
@@ -46,6 +48,10 @@ api_router.include_router(dashboard.router, prefix="/dashboard", tags=["dashboar
 api_router.include_router(
     integrations.router, prefix="/integrations", tags=["integrations"]
 )
+# Geocoding relay: POST /geocode + GET /geocoding/cache (Wave 4-C).
+api_router.include_router(geocoding.router, tags=["geocoding"])
+# Gemini-backed AI interpret + audit logs (Wave 4-B / D4 Phase E).
+api_router.include_router(ai.router, prefix="/ai", tags=["ai"])
 api_router.include_router(
     special_weeks.router, prefix="/special-weeks", tags=["special-weeks"]
 )

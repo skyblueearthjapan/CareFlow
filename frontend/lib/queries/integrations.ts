@@ -1,8 +1,9 @@
 /**
- * TanStack Query hooks for /api/v1/integrations/* — Phase 5-1 Wave 2-B.
+ * TanStack Query hooks for /api/v1/integrations/* — Phase 5-1 Wave 2-B + 4-A.
  *
  * Covers Kaipoke jobs (list/detail/create/cancel), geocoding cache (admin),
- * and AI interpret logs (admin). Mirrors backend `api/v1/integrations.py`.
+ * AI interpret logs (admin), kaipoke status + relay (expand/export/diff/apply),
+ * and correction-sheet editing. Mirrors backend `api/v1/integrations.py`.
  */
 'use client';
 
@@ -12,9 +13,19 @@ import { useSession } from 'next-auth/react';
 import { fetcher } from '@/lib/api/fetcher';
 import type {
   AiInterpretLog,
+  ApplyRequest,
+  CorrectionItem,
+  CorrectionItemUpdate,
+  CorrectionSheet,
+  DiffAccepted,
+  DiffRequest,
+  ExpandRequest,
+  ExportRequest,
   GeocodingCache,
+  JobAccepted,
   KaipokeJob,
   KaipokeJobCreate,
+  KaipokeStatus,
   Paginated,
 } from '@/lib/schemas/integration';
 
@@ -144,6 +155,210 @@ export interface UseAiInterpretLogsParams {
   model?: string;
   limit?: number;
   offset?: number;
+}
+
+// --- Wave 4-A: kaipoke status + relay -------------------------------------
+
+export function useKaipokeStatus(refetchMs = 60_000) {
+  const { data: session, status } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+
+  return useQuery<KaipokeStatus>({
+    queryKey: ['integrations', 'status'],
+    queryFn: () =>
+      fetcher<KaipokeStatus>('/api/v1/integrations/status', {
+        accessToken,
+        refreshToken,
+      }),
+    enabled: status === 'authenticated' && session?.user?.role === 'admin',
+    refetchInterval: refetchMs,
+  });
+}
+
+function useRelayMutation<TReq, TRes>(path: string) {
+  const { data: session } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+  const qc = useQueryClient();
+
+  return useMutation<TRes, Error, TReq>({
+    mutationFn: (payload) =>
+      fetcher<TRes>(`/api/v1/integrations/${path}`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+        accessToken,
+        refreshToken,
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['integrations', 'kaipoke', 'jobs'] });
+      void qc.invalidateQueries({ queryKey: ['integrations', 'status'] });
+      void qc.invalidateQueries({ queryKey: ['integrations', 'jobs'] });
+    },
+  });
+}
+
+export function useStartExpand() {
+  return useRelayMutation<ExpandRequest, JobAccepted>('expand');
+}
+
+export function useStartExport() {
+  return useRelayMutation<ExportRequest, JobAccepted>('export');
+}
+
+export function useStartDiff() {
+  return useRelayMutation<DiffRequest, DiffAccepted>('diff');
+}
+
+export function useStartApply() {
+  return useRelayMutation<ApplyRequest, JobAccepted>('apply');
+}
+
+export function useStopJob() {
+  const { data: session } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+  const qc = useQueryClient();
+
+  return useMutation<KaipokeJob, Error, string>({
+    mutationFn: (id) =>
+      fetcher<KaipokeJob>(`/api/v1/integrations/jobs/${id}/stop`, {
+        method: 'POST',
+        accessToken,
+        refreshToken,
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['integrations'] });
+    },
+  });
+}
+
+export function useIntegrationJobs(limit = 20) {
+  const { data: session, status } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+
+  return useQuery<Paginated<KaipokeJob>>({
+    queryKey: ['integrations', 'jobs', limit],
+    queryFn: () =>
+      fetcher<Paginated<KaipokeJob>>(
+        `/api/v1/integrations/jobs?limit=${limit}`,
+        { accessToken, refreshToken },
+      ),
+    enabled: status === 'authenticated' && session?.user?.role === 'admin',
+    refetchInterval: 30_000,
+  });
+}
+
+// --- Wave 4-A: correction sheets / items ---------------------------------
+
+export function useCorrectionSheet(month?: string) {
+  const { data: session, status } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+
+  return useQuery<CorrectionSheet>({
+    queryKey: ['integrations', 'correction-sheets', 'latest', month ?? null],
+    queryFn: () => {
+      const usp = new URLSearchParams();
+      if (month) usp.set('month', month);
+      const q = usp.toString();
+      return fetcher<CorrectionSheet>(
+        `/api/v1/integrations/correction-sheets/latest${q ? `?${q}` : ''}`,
+        { accessToken, refreshToken },
+      );
+    },
+    enabled: status === 'authenticated' && session?.user?.role === 'admin',
+    retry: false,
+  });
+}
+
+export interface UseCorrectionItemsFilter {
+  type?: string;
+  include?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+export function useCorrectionItems(
+  sheetId: string | undefined,
+  filter: UseCorrectionItemsFilter = {},
+) {
+  const { data: session, status } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+  const { type, include, limit = 100, offset = 0 } = filter;
+
+  return useQuery<Paginated<CorrectionItem>>({
+    queryKey: [
+      'integrations',
+      'correction-items',
+      sheetId,
+      type ?? null,
+      include ?? null,
+      limit,
+      offset,
+    ],
+    queryFn: () => {
+      const usp = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+      if (type) usp.set('type', type);
+      if (include !== undefined) usp.set('include', String(include));
+      return fetcher<Paginated<CorrectionItem>>(
+        `/api/v1/integrations/correction-sheets/${sheetId}/items?${usp.toString()}`,
+        { accessToken, refreshToken },
+      );
+    },
+    enabled: status === 'authenticated' && Boolean(sheetId),
+  });
+}
+
+export function useUpdateCorrectionItem() {
+  const { data: session } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+  const qc = useQueryClient();
+
+  return useMutation<CorrectionItem, Error, { id: string; patch: CorrectionItemUpdate }>({
+    mutationFn: ({ id, patch }) =>
+      fetcher<CorrectionItem>(`/api/v1/integrations/correction-items/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+        accessToken,
+        refreshToken,
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['integrations', 'correction-items'] });
+      void qc.invalidateQueries({ queryKey: ['integrations', 'correction-sheets'] });
+    },
+  });
+}
+
+export function useBulkUpdateItems() {
+  const { data: session } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+  const qc = useQueryClient();
+
+  return useMutation<
+    { updated: number },
+    Error,
+    { sheetId: string; ids: string[]; patch: CorrectionItemUpdate }
+  >({
+    mutationFn: ({ sheetId, ids, patch }) =>
+      fetcher<{ updated: number }>(
+        `/api/v1/integrations/correction-sheets/${sheetId}/items/bulk`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ ids, patch }),
+          accessToken,
+          refreshToken,
+        },
+      ),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['integrations', 'correction-items'] });
+      void qc.invalidateQueries({ queryKey: ['integrations', 'correction-sheets'] });
+    },
+  });
 }
 
 export function useAiInterpretLogs(params: UseAiInterpretLogsParams = {}) {

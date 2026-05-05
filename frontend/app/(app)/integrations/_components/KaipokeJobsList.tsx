@@ -61,7 +61,7 @@ export function KaipokeJobsList() {
         <div>
           <h2 className="font-serif text-xl font-bold text-text-primary">Kaipoke ジョブ</h2>
           <p className="text-sm text-text-secondary">
-            Playwright による fetch / push の実行ログ (Phase 5-2 で実行ロジック実装予定)
+            Playwright による fetch / push ジョブの実行履歴と詳細ログ
           </p>
         </div>
         {isAdmin && (

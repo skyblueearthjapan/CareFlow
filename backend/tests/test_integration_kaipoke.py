@@ -1,0 +1,317 @@
+"""Tests for /api/v1/integrations/* — Wave 4-A (kaipoke relay).
+
+Stubs `KaipokeClient` via `set_test_client()` so we never hit the network.
+Covers: HTTP shape, RBAC boundary (admin only), 409 busy, 502 upstream
+error, diff coalesce (delete+add ±1d → companion_change), apply selection
+filtering, bulk update, and correction-sheet listing.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from app.core.security import create_access_token, hash_password
+from app.models import User
+from app.services import kaipoke_client as kc_module
+
+# --- helpers ---------------------------------------------------------------
+
+
+async def _make_user(db, email: str, role: str) -> User:
+    user = User(
+        email=email,
+        password_hash=hash_password("does-not-matter-here"),
+        role=role,
+    )
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+
+def _bearer(user: User) -> dict[str, str]:
+    token = create_access_token(subject=user.id, role=user.role, staff_id=user.staff_id)
+    return {"Authorization": f"Bearer {token}"}
+
+
+class StubKaipokeClient:
+    """Drop-in stub: each method returns whatever is queued in `responses`."""
+
+    def __init__(self) -> None:
+        self.responses: dict[str, Any] = {}
+        self.errors: dict[str, Exception] = {}
+        self.calls: list[tuple[str, Any]] = []
+
+    async def aclose(self) -> None:  # pragma: no cover — interface stub
+        pass
+
+    async def status(self) -> dict[str, Any]:
+        return self._dispatch("status", None)
+
+    async def expand(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._dispatch("expand", payload)
+
+    async def export(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._dispatch("export", payload)
+
+    async def diff(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._dispatch("diff", payload)
+
+    async def apply(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._dispatch("apply", payload)
+
+    async def job_status(self, job_id: str) -> dict[str, Any]:
+        return self._dispatch("job_status", job_id)
+
+    async def stop(self, job_id: str) -> dict[str, Any]:
+        return self._dispatch("stop", job_id)
+
+    def _dispatch(self, name: str, payload: Any) -> dict[str, Any]:
+        self.calls.append((name, payload))
+        if name in self.errors:
+            raise self.errors[name]
+        return self.responses.get(name, {})
+
+
+@pytest.fixture
+def stub_kaipoke():
+    """Install a StubKaipokeClient as the module-level override for the test."""
+    stub = StubKaipokeClient()
+    kc_module.set_test_client(stub)  # type: ignore[arg-type]
+    try:
+        yield stub
+    finally:
+        kc_module.set_test_client(None)
+
+
+# --- 1. status -------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_status_admin_combines_kaipoke_and_db(client, db, stub_kaipoke) -> None:
+    admin = await _make_user(db, "wave4-admin@example.com", "admin")
+    stub_kaipoke.responses["status"] = {"loginRemainSec": 1200, "lastSyncAt": "2026-05-05T01:00:00Z"}
+
+    res = await client.get("/api/v1/integrations/status", headers=_bearer(admin))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["reachable"] is True
+    assert body["kaipoke"]["loginRemainSec"] == 1200
+    assert body["loginRemainSec"] == 1200
+
+
+@pytest.mark.asyncio
+async def test_status_manager_returns_403(client, db, stub_kaipoke) -> None:
+    manager = await _make_user(db, "wave4-manager@example.com", "manager")
+    res = await client.get("/api/v1/integrations/status", headers=_bearer(manager))
+    assert res.status_code == 403, res.text
+
+
+# --- 2. expand -------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_expand_creates_job_and_returns_202(client, db, stub_kaipoke) -> None:
+    admin = await _make_user(db, "wave4-expand@example.com", "admin")
+    stub_kaipoke.responses["expand"] = {"jobId": "kp-123"}
+
+    res = await client.post(
+        "/api/v1/integrations/expand",
+        headers=_bearer(admin),
+        json={"month": "2026-05", "dryRun": False},
+    )
+    assert res.status_code == 202, res.text
+    body = res.json()
+    assert body["status"] == "running"
+    assert body["kaipokeJobId"] == "kp-123"
+    assert body["jobId"]
+
+
+@pytest.mark.asyncio
+async def test_expand_busy_returns_409(client, db, stub_kaipoke) -> None:
+    admin = await _make_user(db, "wave4-busy@example.com", "admin")
+    stub_kaipoke.errors["expand"] = kc_module.KaipokeBusyError({"detail": "busy"})
+
+    res = await client.post(
+        "/api/v1/integrations/expand",
+        headers=_bearer(admin),
+        json={"month": "2026-05"},
+    )
+    assert res.status_code == 409, res.text
+
+
+@pytest.mark.asyncio
+async def test_expand_upstream_failure_returns_502(client, db, stub_kaipoke) -> None:
+    admin = await _make_user(db, "wave4-fail@example.com", "admin")
+    stub_kaipoke.errors["expand"] = kc_module.KaipokeApiError(500, {"err": "boom"})
+
+    res = await client.post(
+        "/api/v1/integrations/expand",
+        headers=_bearer(admin),
+        json={"month": "2026-05"},
+    )
+    assert res.status_code == 502, res.text
+
+
+# --- 3. diff + correction sheet -------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_diff_persists_correction_sheet_and_coalesces(client, db, stub_kaipoke) -> None:
+    admin = await _make_user(db, "wave4-diff@example.com", "admin")
+    pid = "11111111-2222-3333-4444-555555555555"
+    stub_kaipoke.responses["diff"] = {
+        "items": [
+            # Should coalesce delete+add for same patient into companion_change.
+            {"action": "delete", "patient_id": pid, "date": "2026-05-10",
+             "before": {"k": "v"}},
+            {"action": "add", "patient_id": pid, "date": "2026-05-10",
+             "after": {"k": "v2"}},
+            # Standalone update.
+            {"action": "update", "patient_id": pid, "date": "2026-05-12",
+             "before": {"x": 1}, "after": {"x": 2}},
+        ],
+    }
+
+    res = await client.post(
+        "/api/v1/integrations/diff",
+        headers=_bearer(admin),
+        json={"month": "2026-05"},
+    )
+    assert res.status_code == 202, res.text
+    body = res.json()
+    assert body["sheetId"]
+    assert body["summary"]["companion_change"] == 1
+    assert body["summary"]["update"] == 1
+    assert body["summary"]["total"] == 2
+
+    # Latest endpoint should now find the sheet.
+    latest = await client.get(
+        "/api/v1/integrations/correction-sheets/latest?month=2026-05",
+        headers=_bearer(admin),
+    )
+    assert latest.status_code == 200
+    sheet = latest.json()
+    assert sheet["target_month"] == "2026-05"
+    assert len(sheet["items"]) == 2
+
+
+# --- 4. apply --------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apply_requires_selected_items(client, db, stub_kaipoke) -> None:
+    admin = await _make_user(db, "wave4-apply@example.com", "admin")
+    # First create a sheet via diff
+    stub_kaipoke.responses["diff"] = {
+        "items": [
+            {"action": "update", "patient_id": "00000000-0000-0000-0000-000000000001",
+             "before": {"x": 1}, "after": {"x": 2}},
+        ],
+    }
+    diff_res = await client.post(
+        "/api/v1/integrations/diff",
+        headers=_bearer(admin),
+        json={"month": "2026-06"},
+    )
+    sheet_id = diff_res.json()["sheetId"]
+
+    # Bulk-deselect everything → apply must 422
+    items_res = await client.get(
+        f"/api/v1/integrations/correction-sheets/{sheet_id}/items",
+        headers=_bearer(admin),
+    )
+    item_id = items_res.json()["items"][0]["id"]
+    await client.post(
+        f"/api/v1/integrations/correction-sheets/{sheet_id}/items/bulk",
+        headers=_bearer(admin),
+        json={"ids": [item_id], "patch": {"include": False}},
+    )
+
+    stub_kaipoke.responses["apply"] = {"jobId": "kp-apply"}
+    res = await client.post(
+        "/api/v1/integrations/apply",
+        headers=_bearer(admin),
+        json={"sheetId": sheet_id, "dryRun": True},
+    )
+    assert res.status_code == 422, res.text
+
+
+# --- 5. correction items PATCH ---------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_patch_correction_item_updates_include(client, db, stub_kaipoke) -> None:
+    admin = await _make_user(db, "wave4-patch@example.com", "admin")
+    stub_kaipoke.responses["diff"] = {
+        "items": [
+            {"action": "update", "before": {"a": 1}, "after": {"a": 2}},
+        ],
+    }
+    diff_res = await client.post(
+        "/api/v1/integrations/diff",
+        headers=_bearer(admin),
+        json={"month": "2026-07"},
+    )
+    sheet_id = diff_res.json()["sheetId"]
+    items_res = await client.get(
+        f"/api/v1/integrations/correction-sheets/{sheet_id}/items",
+        headers=_bearer(admin),
+    )
+    item_id = items_res.json()["items"][0]["id"]
+
+    res = await client.patch(
+        f"/api/v1/integrations/correction-items/{item_id}",
+        headers=_bearer(admin),
+        json={"include": False, "comment": "skip"},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["include"] is False
+    assert body["comment"] == "skip"
+
+
+# --- 6. jobs alias --------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_jobs_listing_alias_returns_paginated(client, db, stub_kaipoke) -> None:
+    admin = await _make_user(db, "wave4-jobs@example.com", "admin")
+    stub_kaipoke.responses["expand"] = {"jobId": "kp-list-1"}
+    await client.post(
+        "/api/v1/integrations/expand",
+        headers=_bearer(admin),
+        json={"month": "2026-05"},
+    )
+
+    res = await client.get(
+        "/api/v1/integrations/jobs?limit=5",
+        headers=_bearer(admin),
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["total"] >= 1
+    assert body["limit"] == 5
+    assert isinstance(body["items"], list)
+
+
+# --- 7. RBAC: anonymous on every relay endpoint ---------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "method,path,body",
+    [
+        ("GET", "/api/v1/integrations/status", None),
+        ("POST", "/api/v1/integrations/expand", {"month": "2026-05"}),
+        ("POST", "/api/v1/integrations/diff", {"month": "2026-05"}),
+    ],
+)
+async def test_relay_endpoints_require_auth(client, method, path, body) -> None:
+    if method == "GET":
+        res = await client.get(path)
+    else:
+        res = await client.post(path, json=body)
+    assert res.status_code == 401, res.text

@@ -48,6 +48,12 @@ class Settings(BaseSettings):
     # --- Integrations forward target ---
     integration_base_url: str = Field(default="http://integrations:8001")
 
+    # --- Kaipoke API (Wave 4-A) ---
+    kaipoke_api_base_url: str = Field(default="https://kaipoke-api.net")
+    kaipoke_api_token: str = Field(default="")
+    kaipoke_export_dir: str = Field(default="/tmp/carelink/exports")
+    kaipoke_export_ttl_seconds: int = Field(default=1800)  # 30 minutes
+
     @field_validator("cors_origins")
     @classmethod
     def _normalize_origins(cls, value: str) -> str:
