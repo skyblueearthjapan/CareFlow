@@ -34,12 +34,19 @@ def _bearer(user: User) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def _payload(start="2026-05-10T09:00:00", end="2026-05-10T10:00:00") -> dict:
+def _payload(
+    date: str = "2026-05-10",
+    start: str = "09:00",
+    end: str = "10:00",
+    type_: str = "研修",
+    title: str = "新人研修",
+) -> dict:
     return {
-        "event_type": "研修",
-        "starts_at": start,
-        "ends_at": end,
-        "title": "新人研修",
+        "date": date,
+        "type": type_,
+        "start_time": start,
+        "end_time": end,
+        "title": title,
     }
 
 
@@ -53,7 +60,31 @@ async def test_events_create_normalises_japanese_type(client, db) -> None:
         json=_payload(),
     )
     assert res.status_code == 201, res.text
-    assert res.json()["event_type"] == "training"
+    body = res.json()
+    # Frontend-aligned fields.
+    assert body["type"] == "研修"
+    assert body["date"] == "2026-05-10"
+    assert body["start_time"] == "09:00"
+    assert body["end_time"] == "10:00"
+    assert body["title"] == "新人研修"
+    # Internal DB shape no longer exposed.
+    assert "starts_at" not in body
+    assert "ends_at" not in body
+    assert "event_type" not in body
+
+
+@pytest.mark.asyncio
+async def test_events_create_collapses_other_types_to_event(client, db) -> None:
+    admin = await _make_user(db, "ev-admin-collapse@example.com", "admin")
+    staff = await _make_staff(db)
+    res = await client.post(
+        f"/api/v1/staff/{staff.id}/events",
+        headers=_bearer(admin),
+        json=_payload(type_="会議", title="月次会議"),
+    )
+    assert res.status_code == 201, res.text
+    # 'meeting' on the DB → 'イベント' on the wire (Frontend zod is binary).
+    assert res.json()["type"] == "イベント"
 
 
 @pytest.mark.asyncio
@@ -63,7 +94,7 @@ async def test_events_create_rejects_inverted_range(client, db) -> None:
     res = await client.post(
         f"/api/v1/staff/{staff.id}/events",
         headers=_bearer(admin),
-        json=_payload(start="2026-05-10T10:00:00", end="2026-05-10T09:00:00"),
+        json=_payload(start="10:00", end="09:00"),
     )
     assert res.status_code == 422, res.text
 
@@ -85,6 +116,7 @@ async def test_events_list_then_patch_then_delete(client, db) -> None:
     )
     assert listed.status_code == 200
     assert len(listed.json()) == 1
+    assert listed.json()[0]["date"] == "2026-05-10"
 
     patched = await client.patch(
         f"/api/v1/staff/{staff.id}/events/{eid}",
@@ -93,6 +125,10 @@ async def test_events_list_then_patch_then_delete(client, db) -> None:
     )
     assert patched.status_code == 200, patched.text
     assert patched.json()["title"] == "改名済み"
+    # Other fields are preserved by the partial update.
+    assert patched.json()["start_time"] == "09:00"
+    assert patched.json()["end_time"] == "10:00"
+    assert patched.json()["type"] == "研修"
 
     deleted = await client.delete(
         f"/api/v1/staff/{staff.id}/events/{eid}", headers=_bearer(admin)

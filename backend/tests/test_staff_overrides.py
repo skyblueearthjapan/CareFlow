@@ -43,15 +43,21 @@ async def test_overrides_create_normalises_japanese(client, db) -> None:
         headers=_bearer(admin),
         json={
             "date": "2026-05-06",
-            "override_type": "休み",
-            "reason": "私用",
+            "type": "休み",
+            "note": "私用",
         },
     )
     assert res.status_code == 201, res.text
     body = res.json()
-    assert body["override_type"] == "off"
-    assert body["weekday"] == 2  # 2026-05-06 is a Wednesday
-    assert body["reason"] == "私用"
+    # New Frontend-aligned contract.
+    assert body["type"] == "休み"
+    assert body["date"] == "2026-05-06"
+    assert body["note"] == "私用"
+    # Internal DB key triple is no longer exposed.
+    assert "iso_year" not in body
+    assert "weekday" not in body
+    assert "override_type" not in body
+    assert "reason" not in body
 
 
 @pytest.mark.asyncio
@@ -63,7 +69,7 @@ async def test_overrides_create_custom_time_requires_times(client, db) -> None:
         headers=_bearer(admin),
         json={
             "date": "2026-05-07",
-            "override_type": "時間変更",
+            "type": "時間変更",
             # missing start_time/end_time
         },
     )
@@ -79,7 +85,7 @@ async def test_overrides_list_filters_by_date_range(client, db) -> None:
         r = await client.post(
             f"/api/v1/staff/{staff.id}/overrides",
             headers=_bearer(admin),
-            json={"date": d, "override_type": "休み"},
+            json={"date": d, "type": "休み"},
         )
         assert r.status_code == 201, r.text
 
@@ -91,7 +97,8 @@ async def test_overrides_list_filters_by_date_range(client, db) -> None:
     assert res.status_code == 200, res.text
     body = res.json()
     assert len(body) == 1
-    assert body[0]["iso_year"] == 2026
+    assert body[0]["date"] == "2026-06-10"
+    assert body[0]["type"] == "休み"
 
 
 @pytest.mark.asyncio
@@ -101,7 +108,7 @@ async def test_overrides_patch_changes_type(client, db) -> None:
     create = await client.post(
         f"/api/v1/staff/{staff.id}/overrides",
         headers=_bearer(admin),
-        json={"date": "2026-05-08", "override_type": "休み"},
+        json={"date": "2026-05-08", "type": "休み"},
     )
     assert create.status_code == 201
     oid = create.json()["id"]
@@ -110,14 +117,16 @@ async def test_overrides_patch_changes_type(client, db) -> None:
         f"/api/v1/staff/{staff.id}/overrides/{oid}",
         headers=_bearer(admin),
         json={
-            "override_type": "時間変更",
+            "type": "時間変更",
             "start_time": "10:00",
             "end_time": "16:00",
         },
     )
     assert patch.status_code == 200, patch.text
-    assert patch.json()["override_type"] == "custom_time"
-    assert patch.json()["start_time"] == "10:00"
+    body = patch.json()
+    assert body["type"] == "時間変更"
+    assert body["start_time"] == "10:00"
+    assert body["end_time"] == "16:00"
 
 
 @pytest.mark.asyncio
@@ -127,7 +136,7 @@ async def test_overrides_delete_returns_204(client, db) -> None:
     create = await client.post(
         f"/api/v1/staff/{staff.id}/overrides",
         headers=_bearer(admin),
-        json={"date": "2026-05-09", "override_type": "休み"},
+        json={"date": "2026-05-09", "type": "休み"},
     )
     assert create.status_code == 201
     oid = create.json()["id"]
@@ -148,6 +157,6 @@ async def test_overrides_post_staff_role_returns_403(client, db) -> None:
     res = await client.post(
         f"/api/v1/staff/{staff.id}/overrides",
         headers=_bearer(sr_user),
-        json={"date": "2026-05-09", "override_type": "休み"},
+        json={"date": "2026-05-09", "type": "休み"},
     )
     assert res.status_code == 403, res.text

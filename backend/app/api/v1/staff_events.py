@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime, time
 from typing import Annotated
 from uuid import UUID
 
@@ -16,6 +16,17 @@ from app.models.user import User
 from app.schemas.staff_events import EventCreate, EventRead, EventUpdate
 
 router = APIRouter()
+
+
+def _combine(d: date, hhmm: str) -> datetime:
+    """Combine YYYY-MM-DD + HH:MM into a naive datetime (UTC-anchored).
+
+    The DB column is `DateTime(timezone=True)` but we have no tz from the
+    Frontend; treating the value as naive matches what the rest of the
+    backend does for wall-clock-only inputs.
+    """
+    h, m = hhmm.split(":")[:2]
+    return datetime.combine(d, time(int(h), int(m)))
 
 
 def _check_read_access(user: User, staff_id: UUID) -> None:
@@ -56,18 +67,18 @@ async def list_events(
     staff_id: UUID,
     db: DbDep,
     user: CurrentActiveUser,
-    starts_from: Annotated[datetime | None, Query(alias="from")] = None,
-    starts_to: Annotated[datetime | None, Query(alias="to")] = None,
+    date_from: Annotated[date | None, Query(alias="from")] = None,
+    date_to: Annotated[date | None, Query(alias="to")] = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 200,
 ) -> list[StaffEvent]:
     _check_read_access(user, staff_id)
     await _ensure_staff_exists(db, staff_id)
 
     stmt = select(StaffEvent).where(StaffEvent.staff_id == staff_id)
-    if starts_from is not None:
-        stmt = stmt.where(StaffEvent.ends_at >= starts_from)
-    if starts_to is not None:
-        stmt = stmt.where(StaffEvent.starts_at <= starts_to)
+    if date_from is not None:
+        stmt = stmt.where(StaffEvent.ends_at >= datetime.combine(date_from, time.min))
+    if date_to is not None:
+        stmt = stmt.where(StaffEvent.starts_at <= datetime.combine(date_to, time.max))
     stmt = stmt.order_by(StaffEvent.starts_at).limit(limit)
     rows = (await db.scalars(stmt)).all()
     return list(rows)
@@ -86,7 +97,14 @@ async def create_event(
     _user: Annotated[User, Depends(require_role("admin", "manager"))],
 ) -> StaffEvent:
     await _ensure_staff_exists(db, staff_id)
-    row = StaffEvent(staff_id=staff_id, **payload.model_dump())
+    row = StaffEvent(
+        staff_id=staff_id,
+        event_type=payload.type,  # already normalised to canonical English
+        starts_at=_combine(payload.date, payload.start_time),
+        ends_at=_combine(payload.date, payload.end_time),
+        title=payload.title,
+        note=payload.note,
+    )
     db.add(row)
     await _commit_or_422(db)
     await db.refresh(row)
@@ -114,7 +132,30 @@ async def update_event(
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
 
-    for k, v in payload.model_dump(exclude_unset=True).items():
+    data = payload.model_dump(exclude_unset=True)
+
+    # Compute new wall-clock anchor (date + times) when any of those three
+    # fields is supplied. We re-derive both starts_at/ends_at consistently
+    # so partial updates can not leave the row in a torn state.
+    if any(k in data for k in ("date", "start_time", "end_time")):
+        # Ignore explicit `None` values for these (treated as "no change").
+        new_date = data.pop("date", None) or row.starts_at.date()
+        cur_start_hhmm = row.starts_at.strftime("%H:%M")
+        cur_end_hhmm = row.ends_at.strftime("%H:%M")
+        new_start = data.pop("start_time", None) or cur_start_hhmm
+        new_end = data.pop("end_time", None) or cur_end_hhmm
+        row.starts_at = _combine(new_date, new_start)
+        row.ends_at = _combine(new_date, new_end)
+    else:
+        # Drop any explicit-None entries so we don't accidentally null the
+        # column.
+        for k in ("date", "start_time", "end_time"):
+            data.pop(k, None)
+
+    if "type" in data:
+        row.event_type = data.pop("type")
+
+    for k, v in data.items():
         setattr(row, k, v)
 
     if row.starts_at >= row.ends_at:

@@ -144,10 +144,10 @@ async def create_override(
         iso_year=iso_year,
         iso_week=iso_week,
         weekday=weekday,
-        override_type=payload.override_type,
+        override_type=payload.type,  # already normalised to DB code
         start_time=_parse_hhmm(payload.start_time),
         end_time=_parse_hhmm(payload.end_time),
-        reason=payload.reason,
+        reason=payload.note,
     )
     db.add(row)
     await _commit_or_409(db)
@@ -190,8 +190,11 @@ async def update_override(
     if "end_time" in data:
         row.end_time = _parse_hhmm(data.pop("end_time"))
 
+    # Frontend → DB column name mapping (the schema validator already
+    # normalised `type` to its canonical English code).
+    _api_to_db = {"type": "override_type", "note": "reason"}
     for k, v in data.items():
-        setattr(row, k, v)
+        setattr(row, _api_to_db.get(k, k), v)
 
     # Cross-field validation after merge.
     if (
