@@ -13,6 +13,7 @@ from app.api.v1 import (
     integrations,
     offices,
     patients,
+    special_weeks,
     staff,
     visits,
 )
@@ -31,6 +32,9 @@ api_router.include_router(allocate.router, prefix="/allocate", tags=["allocate"]
 api_router.include_router(dashboard.router, prefix="/dashboard", tags=["dashboard"])
 api_router.include_router(
     integrations.router, prefix="/integrations", tags=["integrations"]
+)
+api_router.include_router(
+    special_weeks.router, prefix="/special-weeks", tags=["special-weeks"]
 )
 
 __all__ = ["api_router"]

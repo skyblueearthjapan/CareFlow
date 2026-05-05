@@ -17,6 +17,22 @@ export const STAFF_SEX_VALUES = ['F', 'M', 'X'] as const;
 export const STAFF_STATUS_VALUES = ['active', 'inactive'] as const;
 export const STAFF_ROLE_VALUES = ['admin', 'manager', 'staff'] as const;
 
+// W3-D additions — mirror backend `staff` model + pydantic schema columns
+// added in W3-A (home_address / home_lat / home_lng / areas / max_per_day /
+// skill_level / assignment_volume). Treated as optional on the FE so older
+// clients / responses without the fields still parse cleanly.
+export const STAFF_SKILL_LEVEL_VALUES = ['新人', '中堅', 'ベテラン'] as const;
+export const STAFF_ASSIGNMENT_VOLUME_VALUES = ['少なめ', '通常', '多め'] as const;
+
+const optionalCoercedLat = z.preprocess(
+  (v) => (v === '' || v === null || v === undefined ? undefined : v),
+  z.coerce.number().min(-90).max(90).optional(),
+);
+const optionalCoercedLng = z.preprocess(
+  (v) => (v === '' || v === null || v === undefined ? undefined : v),
+  z.coerce.number().min(-180).max(180).optional(),
+);
+
 export const staffBaseSchema = z.object({
   code: z.string().max(32).nullable().optional(),
   name: z.string().min(1, '氏名は必須です').max(120),
@@ -27,6 +43,14 @@ export const staffBaseSchema = z.object({
   primary_office_id: z.string().uuid().nullable().optional(),
   can_double_team: z.boolean().default(false),
   mentor_id: z.string().uuid().nullable().optional(),
+  // W3-D additions
+  home_address: z.string().max(255).nullable().optional(),
+  home_lat: optionalCoercedLat,
+  home_lng: optionalCoercedLng,
+  areas: z.array(z.string()).nullable().optional().default([]),
+  max_per_day: z.coerce.number().int().min(1).max(20).default(6),
+  skill_level: z.enum(STAFF_SKILL_LEVEL_VALUES).nullable().optional(),
+  assignment_volume: z.enum(STAFF_ASSIGNMENT_VOLUME_VALUES).nullable().optional(),
   note: z.string().nullable().optional(),
 });
 
@@ -42,6 +66,14 @@ export const staffUpdateSchema = z.object({
   primary_office_id: z.string().uuid().nullable().optional(),
   can_double_team: z.boolean().optional(),
   mentor_id: z.string().uuid().nullable().optional(),
+  // W3-D additions
+  home_address: z.string().max(255).nullable().optional(),
+  home_lat: optionalCoercedLat,
+  home_lng: optionalCoercedLng,
+  areas: z.array(z.string()).nullable().optional(),
+  max_per_day: z.coerce.number().int().min(1).max(20).optional(),
+  skill_level: z.enum(STAFF_SKILL_LEVEL_VALUES).nullable().optional(),
+  assignment_volume: z.enum(STAFF_ASSIGNMENT_VOLUME_VALUES).nullable().optional(),
   note: z.string().nullable().optional(),
 });
 
@@ -150,3 +182,10 @@ export const statusLabel = (status: StaffRead['status']): string => {
       return status ?? '--';
   }
 };
+
+export const skillLevelLabel = (level: StaffRead['skill_level']): string =>
+  level ?? '--';
+
+export const assignmentVolumeLabel = (
+  volume: StaffRead['assignment_volume'],
+): string => volume ?? '--';

@@ -25,8 +25,10 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { useDeleteStaff, useStaff } from '@/lib/queries/staff';
 import {
   WEEKDAY_LABELS,
+  assignmentVolumeLabel,
   roleLabel,
   sexLabel,
+  skillLevelLabel,
   statusLabel,
   type MentorAssignment,
   type StaffEvent,
@@ -229,6 +231,15 @@ export default function StaffDetailPage() {
 }
 
 function BasicInfoCard({ staff }: { staff: StaffRead }) {
+  const areas = staff.areas ?? [];
+  const homeCoord =
+    staff.home_lat !== undefined &&
+    staff.home_lat !== null &&
+    staff.home_lng !== undefined &&
+    staff.home_lng !== null
+      ? `${staff.home_lat}, ${staff.home_lng}`
+      : '--';
+
   return (
     <Card>
       <CardHeader>
@@ -246,6 +257,41 @@ function BasicInfoCard({ staff }: { staff: StaffRead }) {
           <Row label="2人体制対応" value={staff.can_double_team ? '可' : '不可'} />
           <Row label="メンター ID" value={staff.mentor_id ?? '--'} />
           <Row label="登録日時" value={formatDate(staff.created_at)} />
+          <Row label="自宅住所" value={staff.home_address ?? '--'} />
+          <Row label="自宅 緯度経度" value={homeCoord} />
+          <Row label="1日最大訪問数" value={String(staff.max_per_day ?? '--')} />
+          <Row label="割付ボリューム" value={assignmentVolumeLabel(staff.assignment_volume)} />
+          <div>
+            <dt className="text-xs text-text-muted">スキル</dt>
+            <dd>
+              {staff.skill_level ? (
+                <span className="inline-flex items-center rounded-full border border-border-default bg-bg-muted px-2 py-0.5 text-xs text-text-primary">
+                  {skillLevelLabel(staff.skill_level)}
+                </span>
+              ) : (
+                <span className="text-text-primary">--</span>
+              )}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-xs text-text-muted">得意エリア</dt>
+            <dd>
+              {areas.length > 0 ? (
+                <div className="flex flex-wrap gap-1">
+                  {areas.map((a) => (
+                    <span
+                      key={a}
+                      className="inline-flex items-center rounded-full border border-border-default bg-bg-muted px-2 py-0.5 text-xs text-text-primary"
+                    >
+                      {a}
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <span className="text-text-primary">--</span>
+              )}
+            </dd>
+          </div>
           {staff.note && (
             <div className="md:col-span-2">
               <dt className="text-xs text-text-muted">備考</dt>

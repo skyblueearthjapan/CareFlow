@@ -40,8 +40,23 @@ const EMPTY_FORM: StaffFormState = {
   primary_office_id: '',
   can_double_team: false,
   mentor_id: '',
+  home_address: '',
+  home_lat: '',
+  home_lng: '',
+  areas: '',
+  max_per_day: '6',
+  skill_level: '',
+  assignment_volume: '',
   note: '',
 };
+
+/** Split a comma-separated string into trimmed, non-empty area codes. */
+function parseAreas(value: string): string[] {
+  return value
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
 
 function toPayload(form: StaffFormState): StaffCreate {
   return {
@@ -54,6 +69,13 @@ function toPayload(form: StaffFormState): StaffCreate {
     primary_office_id: form.primary_office_id.trim() || null,
     can_double_team: form.can_double_team,
     mentor_id: form.mentor_id.trim() || null,
+    home_address: form.home_address.trim() || null,
+    home_lat: form.home_lat.trim() === '' ? undefined : Number(form.home_lat),
+    home_lng: form.home_lng.trim() === '' ? undefined : Number(form.home_lng),
+    areas: parseAreas(form.areas),
+    max_per_day: form.max_per_day.trim() === '' ? 6 : Number(form.max_per_day),
+    skill_level: form.skill_level === '' ? null : form.skill_level,
+    assignment_volume: form.assignment_volume === '' ? null : form.assignment_volume,
     note: form.note.trim() || null,
   };
 }

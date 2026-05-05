@@ -3,7 +3,16 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useSession } from 'next-auth/react';
-import { LayoutDashboard, Users, UserCircle2, CalendarDays, Heart, Building2, Plug } from 'lucide-react';
+import {
+  LayoutDashboard,
+  Users,
+  UserCircle2,
+  CalendarDays,
+  CalendarPlus,
+  Heart,
+  Building2,
+  Plug,
+} from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 interface SidebarProps {
@@ -16,6 +25,7 @@ const NAV_ITEMS = [
   { href: '/staff', label: 'スタッフ', icon: UserCircle2 },
   { href: '/offices', label: '拠点', icon: Building2 },
   { href: '/schedule', label: 'スケジュール', icon: CalendarDays },
+  { href: '/special-weeks', label: '特別訪問週間', icon: CalendarPlus, adminOnly: true },
   { href: '/integrations', label: '連携', icon: Plug, adminOnly: true },
 ] as const;
 
