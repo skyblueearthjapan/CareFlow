@@ -131,6 +131,10 @@ class PendingRequestV2Read(PendingRequestV2Base):
 
     approved_by: UUID | None = Field(default=None, description="承認者 (§4.4)")
     approved_at: datetime | None = None
+    applied_at: datetime | None = Field(
+        default=None,
+        description="業務反映完了タイムスタンプ (W7-BE3 冪等性). NULL = 未反映",
+    )
 
     rejected_by: UUID | None = Field(default=None, description="却下者 (§4.4)")
     rejected_at: datetime | None = None
@@ -138,3 +142,19 @@ class PendingRequestV2Read(PendingRequestV2Base):
         default=None,
         description="却下理由 (rejected の場合必須, §4.4)",
     )
+
+
+class PendingRequestCreateAndApplyRequest(PendingRequestV2Base):
+    """POST /api/v1/pending-requests/create-and-apply リクエスト (W7-BE3 Codex #3).
+
+    admin / manager が申請と承認・業務反映を 1 アクションで実行するフロー。
+    payload 構造は通常の Create と同一。
+    """
+
+
+class PendingRequestCreateAndApplyResponse(PendingRequestV2Read):
+    """POST /api/v1/pending-requests/create-and-apply レスポンス (W7-BE3 Codex #3).
+
+    作成された PendingRequest の全フィールドを返す。
+    applied_at は必ずセットされている (同一 TX 内で設定される)。
+    """
