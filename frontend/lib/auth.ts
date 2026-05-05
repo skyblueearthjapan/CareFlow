@@ -97,6 +97,19 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       return session;
     },
   },
+  events: {
+    // PHI-adjacent local fallback records (mobile check-in/out) must not
+    // outlive the session — purge every `checkin:*` key on sign-out so a
+    // user-switch on a shared device cannot read the previous account's
+    // data. Runs on the client; on the server `localStorage` is undefined
+    // and `clearAllCheckins()` is a no-op.
+    async signOut() {
+      if (typeof window !== 'undefined') {
+        const { clearAllCheckins } = await import('@/lib/checkin-storage');
+        clearAllCheckins();
+      }
+    },
+  },
 });
 
 export type { AppRole };

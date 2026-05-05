@@ -62,10 +62,20 @@ function authPair(session: ReturnType<typeof useSession>['data']) {
 }
 
 export interface UseMyVisitsParams {
-  /** ISO date `YYYY-MM-DD` to filter to a single day (client-side). */
+  /** ISO date `YYYY-MM-DD` to filter to a single day. */
   date?: string;
-  /** Monday `YYYY-MM-DD` of the target ISO week (client-side). */
+  /** Monday `YYYY-MM-DD` of the target ISO week. */
   weekStart?: string;
+  /**
+   * Inclusive lower bound forwarded to the backend as `?week_start=`. When
+   * omitted, falls back to the value derived from `date` / `weekStart`.
+   */
+  weekStartFilter?: string;
+  /**
+   * Inclusive upper bound forwarded to the backend as `?week_end=`. When
+   * omitted, falls back to the value derived from `date` / `weekStart`.
+   */
+  weekEndFilter?: string;
 }
 
 /**
@@ -75,7 +85,7 @@ export interface UseMyVisitsParams {
  * would shift in non-UTC timezones / across DST and produce off-by-one dates
  * around midnight (the original symptom of M6).
  */
-function addDays(iso: string, days: number): string {
+export function addDays(iso: string, days: number): string {
   const [y, m, d] = iso.split('-').map(Number);
   const dt = new Date(y ?? 1970, (m ?? 1) - 1, (d ?? 1));
   dt.setDate(dt.getDate() + days);
@@ -92,8 +102,33 @@ export function useMyVisits(
   const { data: session, status } = useSession();
   const { accessToken, refreshToken, staffId } = authPair(session);
 
+  // Resolve server-side `week_start` / `week_end` (inclusive) so the backend
+  // narrows the result set instead of relying on a client-side slice. When a
+  // single `date` is provided we collapse the range to that one day; when a
+  // `weekStart` is provided we expand to a 7-day window. Explicit
+  // `weekStartFilter` / `weekEndFilter` always win.
+  const serverWeekStart =
+    params.weekStartFilter ?? params.date ?? params.weekStart ?? null;
+  const serverWeekEnd =
+    params.weekEndFilter ??
+    (params.date
+      ? params.date
+      : params.weekStart
+        ? addDays(params.weekStart, 6) // inclusive end (Monday + 6 = Sunday)
+        : null);
+
   return useQuery<MyVisit[], Error>({
-    queryKey: [...ME_KEY, 'visits', { staffId, date: params.date, weekStart: params.weekStart }],
+    queryKey: [
+      ...ME_KEY,
+      'visits',
+      {
+        staffId,
+        date: params.date,
+        weekStart: params.weekStart,
+        weekStartFilter: serverWeekStart,
+        weekEndFilter: serverWeekEnd,
+      },
+    ],
     enabled: status === 'authenticated' && !!staffId,
     queryFn: async () => {
       // Always pin the request to the caller's staff_id. This is what keeps
@@ -101,13 +136,23 @@ export function useMyVisits(
       // mobile bundle — server enforces visibility, client only paints.
       const qs = new URLSearchParams({
         staff_id: staffId ?? '',
-        limit: '100',
+        // Backend caps `limit` at 500 (see `backend/app/api/v1/visits.py`).
+        // A week-bounded request fits comfortably within that ceiling.
+        limit: '500',
         offset: '0',
       });
+      if (serverWeekStart) {
+        qs.set('week_start', serverWeekStart);
+      }
+      if (serverWeekEnd) {
+        qs.set('week_end', serverWeekEnd);
+      }
       const mine = await fetcher<MyVisit[]>(
         `/api/v1/visits?${qs.toString()}`,
         { accessToken, refreshToken },
       );
+      // Belt-and-braces client-side narrowing in case the server returns a
+      // wider window than we asked for (older deployments, caching, etc.).
       if (params.date) {
         return mine.filter((v) => v.visit_date === params.date);
       }

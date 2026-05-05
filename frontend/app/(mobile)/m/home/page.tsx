@@ -11,6 +11,7 @@ import { Badge } from '@/components/ui/badge';
 import { toast } from '@/components/ui/sonner';
 import { MobileSection } from '@/components/mobile/MobileSection';
 import {
+  addDays,
   currentMonthStartIso,
   currentWeekStartIso,
   nextMonthStartIso,
@@ -45,20 +46,34 @@ export default function MobileHomePage() {
   const { data: session } = useSession();
   const userName = session?.user?.name ?? 'スタッフ';
 
-  // Pull all my visits in one shot (capped at 500 by the fetcher) and slice
-  // client-side for today / this-week / this-month counts. This keeps the API
-  // surface tiny while we wait for backend aggregation endpoints.
-  const { data: allVisits, isLoading, isError, error } = useMyVisits();
-
   const today = todayIso();
   const weekStart = currentWeekStartIso();
-  const weekEnd = (() => {
-    const d = new Date(`${weekStart}T00:00:00`);
-    d.setDate(d.getDate() + 7);
-    return d.toISOString().slice(0, 10);
-  })();
+  // Exclusive upper bound for week count (`< weekEnd`). Built from local
+  // date components via `addDays` so it never round-trips through UTC and
+  // therefore can't drift across midnight in non-UTC locales.
+  const weekEnd = addDays(weekStart, 7);
   const monthStart = currentMonthStartIso();
   const monthEnd = nextMonthStartIso();
+
+  // Forward `week_start` / `week_end` (inclusive) to the backend so the
+  // server narrows the result set instead of relying on client-side slicing
+  // of a 100-row page. Range covers the broadest window any of the three
+  // counters need: month start (this month) → end of current ISO week.
+  // Inclusive `week_end` is `weekEnd - 1` because `weekEnd` is the
+  // exclusive next-Monday. We also extend the lower bound to the start of
+  // the current month so the "this month" count is correct.
+  const rangeStart = monthStart < weekStart ? monthStart : weekStart;
+  // Inclusive end = max(monthEnd-1, weekEnd-1). `monthEnd` is the first day
+  // of next month (exclusive); subtract a day for an inclusive bound.
+  const inclusiveMonthEnd = addDays(monthEnd, -1);
+  const inclusiveWeekEnd = addDays(weekEnd, -1);
+  const rangeEnd =
+    inclusiveMonthEnd > inclusiveWeekEnd ? inclusiveMonthEnd : inclusiveWeekEnd;
+
+  const { data: allVisits, isLoading, isError, error } = useMyVisits({
+    weekStartFilter: rangeStart,
+    weekEndFilter: rangeEnd,
+  });
 
   const todayCount = allVisits?.filter((v) => v.visit_date === today).length ?? 0;
   const weekCount =
