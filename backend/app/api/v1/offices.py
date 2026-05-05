@@ -2,14 +2,18 @@
 
 Staff role is read-only (GET list/detail). Mutations are admin/manager;
 soft-delete is admin only.
+
+W1-BE3 (v2): adds `POST /offices/resolve` — patient address → office auto
+assignment using `OfficeAssigner`. The CRUD handlers below are unchanged.
 """
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
@@ -18,8 +22,65 @@ from app.core.deps import DbDep, require_role
 from app.models.office import Office, OfficeCity
 from app.models.user import User
 from app.schemas.office import OfficeCreate, OfficeRead, OfficeUpdate
+from app.services.office_assigner import OfficeAssigner
 
 router = APIRouter()
+
+
+# ---------------------------------------------------------------------------
+# W1-BE3: Address → Office resolver
+# ---------------------------------------------------------------------------
+
+
+class OfficeResolveRequest(BaseModel):
+    """`POST /offices/resolve` 入力。
+
+    `docs/plans/v2-api-contracts.md` §3.1 に対応。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    address: str = Field(min_length=1, description="患者住所（市区町村名を含む）")
+
+
+class OfficeResolveResponse(BaseModel):
+    """`POST /offices/resolve` 出力。
+
+    `docs/plans/v2-api-contracts.md` §3.1 に対応。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    office_id: UUID | None
+    office_name: str | None
+    matched_city_id: UUID | None
+    confidence: Literal["exact", "fuzzy", "none"]
+
+
+@router.post(
+    "/resolve",
+    response_model=OfficeResolveResponse,
+    summary="Resolve office for a patient address (W1-BE3)",
+)
+async def resolve_office(
+    payload: OfficeResolveRequest,
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+) -> OfficeResolveResponse:
+    """住所文字列から該当する拠点を自動判定する。
+
+    `OfficeAssigner.resolve_with_details` の薄いラッパ。エンドポイントは
+    患者作成・更新画面の補助 UI（自動判定ヒント表示）から呼ばれる想定。
+    患者マスタへの実際の `primary_office_id` 書込みは W1-BE1 (`patients.py`)
+    が担当する。
+    """
+    result = await OfficeAssigner.resolve_with_details(db, payload.address)
+    return OfficeResolveResponse(
+        office_id=result.office.id if result.office is not None else None,
+        office_name=result.office.name if result.office is not None else None,
+        matched_city_id=result.matched_city_id,
+        confidence=result.confidence,
+    )
 
 
 async def _commit_or_409(db) -> None:
@@ -115,9 +176,7 @@ async def create_office(
     await _commit_or_409(db)
 
     refreshed = await db.scalar(
-        select(Office)
-        .where(Office.id == office.id)
-        .options(selectinload(Office.cities))
+        select(Office).where(Office.id == office.id).options(selectinload(Office.cities))
     )
     assert refreshed is not None
     return _to_read(refreshed)
@@ -149,9 +208,7 @@ async def update_office(
     await _commit_or_409(db)
 
     refreshed = await db.scalar(
-        select(Office)
-        .where(Office.id == office.id)
-        .options(selectinload(Office.cities))
+        select(Office).where(Office.id == office.id).options(selectinload(Office.cities))
     )
     assert refreshed is not None
     return _to_read(refreshed)
