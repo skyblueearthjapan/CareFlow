@@ -521,17 +521,21 @@ export interface AssignStaffRequest {
 export interface StaffAssignmentEntry {
   /** 0=Mon..6=Sun. */
   weekday: number;
+  /** コース記号 (A/B/C/D/M)。 */
+  course_code: string;
   /** Course ID (= CourseV2Read.id). */
   course_id: string;
   /** 割り当てられたスタッフ ID. */
   staff_id: string;
 }
 
-/** POST /api/v1/courses/assign-staff レスポンス (API 契約 §4.6). */
+/** POST /api/v1/courses/assign-staff レスポンス (API 契約 §4.6 / W4-BE9 実装). */
 export interface AssignStaffResponse {
   assignments: StaffAssignmentEntry[];
-  /** ハンガリアン法の最適化目的関数値。距離 + ローテーションペナルティ等の合算. */
-  total_cost: number;
+  /** ローテーション分散度 (Gini 係数等). 低いほど均等に分散. */
+  rotation_score: number;
+  /** 全コース合算の総直線距離 (km). */
+  total_distance_km: number;
 }
 
 /**

@@ -234,7 +234,7 @@
 | 概要 | Layer 3 のスタッフ割付（ハンガリアン法 + ローテーション） |
 | 担当チケット | W4-BE9 |
 | Request body | `{ "iso_year": int, "iso_week": int }` |
-| Response 200 | `{ "assignments": [{ "weekday": int, "course_id": uuid, "staff_id": uuid }], "total_cost": float }` |
+| Response 200 | `{ "assignments": [{ "weekday": int, "course_code": str, "course_id": uuid, "staff_id": uuid }], "rotation_score": float, "total_distance_km": float }` |
 | RBAC | Admin / Manager |
 | 状態遷移 | 関連する全 course を `course_fixed` → `staff_assigned` に進める（`staff_assigned_at` 埋める） |
 | ハード制約 | 性別 / 勤務曜日 / 1 コース 1 スタッフ / マネージャー除外 |

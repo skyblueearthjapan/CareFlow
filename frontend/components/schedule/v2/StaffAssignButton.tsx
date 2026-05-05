@@ -87,7 +87,7 @@ export function StaffAssignButton({
       });
       const count = res.assignments.length;
       toast.success(
-        `スタッフ割付を実行しました: ${count} 件 (総コスト ${res.total_cost.toFixed(1)})`,
+        `スタッフ割付を実行しました: ${count} 件 (ローテ分散 ${res.rotation_score.toFixed(2)} / 総距離 ${res.total_distance_km.toFixed(1)} km)`,
       );
       onAssigned?.(res);
       setOpen(false);
