@@ -12,6 +12,7 @@ from app.models.geocoding_cache import GeocodingCache
 from app.models.kaipoke_job import KaipokeJob, KaipokeJobItem
 from app.models.office import Office, OfficeCity
 from app.models.patient import Patient, PatientAllowedOffice
+from app.models.special_week import SpecialWeek, SpecialWeekItem
 from app.models.staff import (
     MentorAssignment,
     Staff,
@@ -37,6 +38,8 @@ __all__ = [
     "OfficeCity",
     "Patient",
     "PatientAllowedOffice",
+    "SpecialWeek",
+    "SpecialWeekItem",
     "Staff",
     "StaffEvent",
     "StaffSecondaryOffice",

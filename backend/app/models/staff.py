@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, datetime, time
+from decimal import Decimal
 
 from sqlalchemy import (
     Boolean,
@@ -12,13 +13,14 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     SmallInteger,
     String,
     Text,
     Time,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy.dialects.postgresql import ARRAY, UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin
@@ -48,6 +50,17 @@ class Staff(Base, TimestampMixin):
         ForeignKey("staff.id", ondelete="SET NULL"),
         nullable=True,
     )
+
+    # W3-A additions
+    home_address: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    home_lat: Mapped[Decimal | None] = mapped_column(Numeric(10, 7), nullable=True)
+    home_lng: Mapped[Decimal | None] = mapped_column(Numeric(10, 7), nullable=True)
+    areas: Mapped[list[str] | None] = mapped_column(
+        ARRAY(String(16)), nullable=True, default=list
+    )
+    max_per_day: Mapped[int] = mapped_column(Integer, nullable=False, default=6)
+    skill_level: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    assignment_volume: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

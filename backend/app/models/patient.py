@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime, time
 
 from sqlalchemy import (
+    Boolean,
     DateTime,
     ForeignKey,
     Index,
@@ -15,7 +16,7 @@ from sqlalchemy import (
     Text,
     Time,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin
@@ -52,6 +53,17 @@ class Patient(Base, TimestampMixin):
 
     weekly_pattern: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     special_week: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    # W3-A additions
+    area: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    ng_staff_ids: Mapped[list[uuid.UUID] | None] = mapped_column(
+        ARRAY(PG_UUID(as_uuid=True)), nullable=True, default=list
+    )
+    preferred_staff_ids: Mapped[list[uuid.UUID] | None] = mapped_column(
+        ARRAY(PG_UUID(as_uuid=True)), nullable=True, default=list
+    )
+    specified_type: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    continuous_request: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -15,6 +15,16 @@ from app.schemas.patient import (
     PatientRead,
     PatientUpdate,
 )
+from app.schemas.special_week import (
+    SpecialWeekBase,
+    SpecialWeekCreate,
+    SpecialWeekItemBase,
+    SpecialWeekItemCreate,
+    SpecialWeekItemRead,
+    SpecialWeekItemUpdate,
+    SpecialWeekRead,
+    SpecialWeekUpdate,
+)
 from app.schemas.staff import StaffBase, StaffCreate, StaffRead, StaffUpdate
 from app.schemas.visit import VisitBase, VisitCreate, VisitRead, VisitUpdate
 
@@ -34,6 +44,14 @@ __all__ = [
     "PatientRead",
     "PatientUpdate",
     "RefreshRequest",
+    "SpecialWeekBase",
+    "SpecialWeekCreate",
+    "SpecialWeekItemBase",
+    "SpecialWeekItemCreate",
+    "SpecialWeekItemRead",
+    "SpecialWeekItemUpdate",
+    "SpecialWeekRead",
+    "SpecialWeekUpdate",
     "StaffBase",
     "StaffCreate",
     "StaffRead",

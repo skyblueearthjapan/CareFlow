@@ -1,4 +1,4 @@
-"""Patient schemas — Phase 2 CRUD payloads."""
+"""Patient schemas — Phase 2 CRUD payloads (W3-A: master extension fields)."""
 
 from __future__ import annotations
 
@@ -9,6 +9,8 @@ from pydantic import BaseModel, ConfigDict
 
 
 class PatientBase(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     code: str
     name: str
     kana: str | None = None
@@ -27,6 +29,12 @@ class PatientBase(BaseModel):
     note: str | None = None
     weekly_pattern: dict | None = None
     special_week: dict | None = None
+    # W3-A additions
+    area: str | None = None
+    ng_staff_ids: list[UUID] | None = None
+    preferred_staff_ids: list[UUID] | None = None
+    specified_type: str | None = None  # 必須 / 同じ人希望 / 最初は希望
+    continuous_request: bool = False
 
 
 class PatientCreate(PatientBase):
@@ -34,6 +42,8 @@ class PatientCreate(PatientBase):
 
 
 class PatientUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     code: str | None = None
     name: str | None = None
     kana: str | None = None
@@ -52,10 +62,16 @@ class PatientUpdate(BaseModel):
     note: str | None = None
     weekly_pattern: dict | None = None
     special_week: dict | None = None
+    # W3-A additions
+    area: str | None = None
+    ng_staff_ids: list[UUID] | None = None
+    preferred_staff_ids: list[UUID] | None = None
+    specified_type: str | None = None
+    continuous_request: bool | None = None
 
 
 class PatientRead(PatientBase):
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
 
     id: UUID
     created_at: datetime
