@@ -38,6 +38,7 @@ COPY --chown=app:app alembic ./alembic
 COPY --chown=app:app alembic.ini ./alembic.ini
 COPY --chown=app:app pyproject.toml ./pyproject.toml
 COPY --chown=app:app scripts ./scripts
+COPY --chown=app:app data ./data
 
 USER app
 
