@@ -152,3 +152,11 @@ class PatientRead(PatientBase):
     created_at: datetime
     updated_at: datetime
     deleted_at: datetime | None = None
+
+    # Asymmetric: write paths (PatientCreate/PatientUpdate) keep strict
+    # WeeklyPatternSchema / SpecialWeekDataSchema validation, read paths
+    # accept any JSONB shape so that GET /patients does not 500 on rows
+    # that predate the W3-A Literal validators (e.g. weekday_priority=''
+    # or frequency_per_week=0 emitted by earlier import scripts).
+    weekly_pattern: dict | None = None  # type: ignore[assignment]
+    special_week: dict | None = None  # type: ignore[assignment]
