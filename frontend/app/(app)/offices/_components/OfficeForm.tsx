@@ -168,11 +168,7 @@ export function OfficeForm({
                     {selectedCities.map((city) => (
                       <li key={`sel-${city.id}`}>
                         <label className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-sm hover:bg-bg-muted">
-                          <input
-                            type="checkbox"
-                            checked
-                            onChange={() => toggleCity(city.id)}
-                          />
+                          <input type="checkbox" checked onChange={() => toggleCity(city.id)} />
                           <span>
                             {city.prefecture} / {city.name}
                           </span>
