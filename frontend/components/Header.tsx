@@ -28,12 +28,12 @@ export function Header({ title = 'CareFlow', onToggleSidebar }: HeaderProps) {
       </div>
 
       <div className="flex items-center gap-2">
-        <NotificationButton />
-        <UserMenuButton />
-        <div className="ml-2 flex items-center gap-2">
+        <div className="mr-2 flex items-center gap-2">
           <Heart className="h-6 w-6 text-brand-primary" strokeWidth={1.75} />
           <span className="font-serif text-lg font-bold text-text-primary">{title}</span>
         </div>
+        <NotificationButton />
+        <UserMenuButton />
       </div>
     </header>
   );
