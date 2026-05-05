@@ -17,13 +17,15 @@ from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, or_, select
 
 from app.core.deps import DbDep, require_role
 from app.models.ai_interpret_log import AiInterpretLog
 from app.models.patient import Patient
 from app.models.staff import Staff
 from app.models.user import User
+from app.models.visit import Visit
+from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.schemas._pagination import Paginated
 from app.schemas.ai import AiLogRead, InterpretRequest, InterpretResponse
 from app.services.gemini_client import (
@@ -48,12 +50,27 @@ router = APIRouter()
 _WEEKDAY_JA = ["月曜日", "火曜日", "水曜日", "木曜日", "金曜日", "土曜日", "日曜日"]
 
 
-async def _build_default_context(db, supplied: dict[str, Any]) -> dict[str, Any]:
+async def _build_default_context(db, supplied: dict[str, Any], user: User) -> dict[str, Any]:
     """Auto-fill today / iso_week / staff_list / patient_list when missing.
 
     Caller-supplied values always win — the route handler can pre-pin a
     specific iso_week (e.g. when the user is browsing a past week) and we
     won't overwrite it.
+
+    W7-BE2 (AI context RBAC / Codex Must-fix #2):
+      AI 入力プロンプトに渡す既定 context は、設計仕様書 §3.5.3
+      (ロール別の操作スコープ) に従い user.role でスコープを絞る。
+
+      - admin / manager: 従来通り全件 (最大 200)
+      - staff: 自分軸のみ
+          * staff_list: 自分自身 1 件 (User.staff_id 経由)
+          * patient_list: 自分が担当する患者のみ
+              (visit_staff_assignments / visits.primary_staff_id /
+               visits.secondary_staff_id のいずれかで紐付く患者)
+
+      User.staff_id が紐付いていない staff (まだ Staff レコードに
+      対応していない pure-login user) は staff_list / patient_list
+      とも空配列で返す (個人情報最小化を優先)。
     """
     ctx = dict(supplied) if supplied else {}
     today = date.today()
@@ -62,23 +79,81 @@ async def _build_default_context(db, supplied: dict[str, Any]) -> dict[str, Any]
     ctx.setdefault("iso_week", f"{iso.week:02d}")
     ctx.setdefault("weekday", _WEEKDAY_JA[today.weekday()])
 
+    role = (user.role or "").lower()
+    is_privileged = role in {"admin", "manager"}
+
     if "staff_list" not in ctx:
-        # Cap at 200 active staff to keep the prompt small.
-        result = await db.execute(
-            select(Staff.code, Staff.name)
-            .where(Staff.deleted_at.is_(None), Staff.status == "active")
-            .order_by(Staff.name)
-            .limit(200)
-        )
-        ctx["staff_list"] = [f"{name} ({code or '-'})" for code, name in result.all()]
+        if is_privileged:
+            # admin / manager: cap at 200 active staff to keep the prompt small.
+            result = await db.execute(
+                select(Staff.code, Staff.name)
+                .where(Staff.deleted_at.is_(None), Staff.status == "active")
+                .order_by(Staff.name)
+                .limit(200)
+            )
+            ctx["staff_list"] = [f"{name} ({code or '-'})" for code, name in result.all()]
+        else:
+            # staff: 自分自身のみ。User に staff_id が紐付いていない場合は空。
+            if user.staff_id is None:
+                ctx["staff_list"] = []
+            else:
+                result = await db.execute(
+                    select(Staff.code, Staff.name).where(
+                        Staff.id == user.staff_id,
+                        Staff.deleted_at.is_(None),
+                    )
+                )
+                ctx["staff_list"] = [f"{name} ({code or '-'})" for code, name in result.all()]
+
     if "patient_list" not in ctx:
-        result = await db.execute(
-            select(Patient.code, Patient.name)
-            .where(Patient.deleted_at.is_(None))
-            .order_by(Patient.name)
-            .limit(200)
-        )
-        ctx["patient_list"] = [f"{name} ({code or '-'})" for code, name in result.all()]
+        if is_privileged:
+            result = await db.execute(
+                select(Patient.code, Patient.name)
+                .where(Patient.deleted_at.is_(None))
+                .order_by(Patient.name)
+                .limit(200)
+            )
+            ctx["patient_list"] = [f"{name} ({code or '-'})" for code, name in result.all()]
+        else:
+            # staff: 自分が担当する患者のみ。
+            if user.staff_id is None:
+                ctx["patient_list"] = []
+            else:
+                # 自分軸 = visit_staff_assignments で紐付いた visit、
+                # または v1 互換の visits.primary_staff_id /
+                # secondary_staff_id で紐付いた visit の患者集合。
+                assigned_patient_ids = (
+                    select(Visit.patient_id)
+                    .join(
+                        VisitStaffAssignment,
+                        VisitStaffAssignment.visit_id == Visit.id,
+                    )
+                    .where(
+                        VisitStaffAssignment.staff_id == user.staff_id,
+                        Visit.deleted_at.is_(None),
+                    )
+                )
+                legacy_patient_ids = select(Visit.patient_id).where(
+                    or_(
+                        Visit.primary_staff_id == user.staff_id,
+                        Visit.secondary_staff_id == user.staff_id,
+                    ),
+                    Visit.deleted_at.is_(None),
+                )
+                result = await db.execute(
+                    select(Patient.code, Patient.name)
+                    .where(
+                        Patient.deleted_at.is_(None),
+                        or_(
+                            Patient.id.in_(assigned_patient_ids),
+                            Patient.id.in_(legacy_patient_ids),
+                        ),
+                    )
+                    .order_by(Patient.name)
+                    .limit(200)
+                )
+                ctx["patient_list"] = [f"{name} ({code or '-'})" for code, name in result.all()]
+
     return ctx
 
 
@@ -166,7 +241,7 @@ async def interpret(
     user: Annotated[User, Depends(require_role("admin", "manager", "staff"))],
     client: Annotated[GeminiClient, Depends(get_gemini_client)],
 ) -> InterpretResponse:
-    context = await _build_default_context(db, payload.context)
+    context = await _build_default_context(db, payload.context, user)
 
     try:
         result: InterpretResult = client.interpret(
