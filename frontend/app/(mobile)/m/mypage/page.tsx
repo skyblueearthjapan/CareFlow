@@ -1,8 +1,142 @@
-export default function MobileMyPage() {
+'use client';
+
+import { signOut, useSession } from 'next-auth/react';
+import { LogOut } from 'lucide-react';
+
+import { Button } from '@/components/ui/button';
+import { Card } from '@/components/ui/card';
+import { Switch } from '@/components/ui/switch';
+import { Label } from '@/components/ui/label';
+import { Badge } from '@/components/ui/badge';
+import { MobileSection } from '@/components/mobile/MobileSection';
+import { useUIStore } from '@/lib/stores/ui';
+import { roleLabel } from '@/lib/schemas/staff';
+import type { AppRole } from '@/types/auth';
+
+function ProfileRow({
+  label,
+  value,
+}: {
+  label: string;
+  value: React.ReactNode;
+}) {
   return (
-    <section className="space-y-2">
-      <h1 className="font-serif text-xl font-bold text-text-primary">マイページ</h1>
-      <p className="text-sm text-text-secondary">D3 で実装</p>
-    </section>
+    <div className="flex items-baseline justify-between gap-3 py-2">
+      <span className="text-xs text-text-muted">{label}</span>
+      <span className="text-sm text-text-primary text-right truncate">
+        {value}
+      </span>
+    </div>
+  );
+}
+
+export default function MobileMyPage() {
+  const { data: session } = useSession();
+  const user = session?.user;
+
+  const density = useUIStore((s) => s.density);
+  const setDensity = useUIStore((s) => s.setDensity);
+  const sidebarCollapsed = useUIStore((s) => s.sidebarCollapsed);
+  const setSidebarCollapsed = useUIStore((s) => s.setSidebarCollapsed);
+
+  const role = (user?.role as AppRole | undefined) ?? 'staff';
+
+  return (
+    <MobileSection title="マイページ">
+      <Card className="p-4">
+        <div className="flex items-center gap-3">
+          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-brand-primary/15 font-serif text-lg font-bold text-brand-primary">
+            {(user?.name ?? '?').slice(0, 1)}
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="truncate font-medium text-text-primary">
+              {user?.name ?? '--'}
+            </p>
+            <p className="truncate text-xs text-text-muted">
+              {user?.email ?? '--'}
+            </p>
+          </div>
+          <Badge variant="secondary">{roleLabel(role)}</Badge>
+        </div>
+        <div className="mt-3 divide-y divide-border-default">
+          <ProfileRow
+            label="所属事業所"
+            value={user?.staffId ? user.staffId : '--'}
+          />
+          <ProfileRow label="ロール" value={roleLabel(role)} />
+        </div>
+      </Card>
+
+      <Card className="p-4">
+        <h2 className="font-serif text-base font-bold text-text-primary">
+          シフト希望提出
+        </h2>
+        <p className="mt-1 text-xs text-text-muted">
+          翌週以降のシフト希望を入力できます。
+        </p>
+        {/* TODO(W2-C+): バックエンドに /api/v1/staff/me/shift-requests が
+            実装され次第、テキストエリア + POST を有効化する。 */}
+        <textarea
+          disabled
+          rows={3}
+          placeholder="例: 月・火 終日OK / 水 午後NG"
+          className="mt-3 w-full resize-none rounded-md border border-border-default bg-bg-muted p-2 text-sm text-text-primary placeholder:text-text-muted disabled:cursor-not-allowed"
+        />
+        <Button
+          type="button"
+          disabled
+          className="mt-2 w-full"
+          variant="outline"
+        >
+          保存 (準備中)
+        </Button>
+      </Card>
+
+      <Card className="p-4 space-y-4">
+        <h2 className="font-serif text-base font-bold text-text-primary">
+          表示設定
+        </h2>
+        <div className="flex items-center justify-between">
+          <div>
+            <Label htmlFor="density-toggle" className="text-sm">
+              コンパクト表示
+            </Label>
+            <p className="text-xs text-text-muted">行間を詰めます</p>
+          </div>
+          <Switch
+            id="density-toggle"
+            checked={density === 'compact'}
+            onCheckedChange={(v) => setDensity(v ? 'compact' : 'comfortable')}
+          />
+        </div>
+        <div className="flex items-center justify-between">
+          <div>
+            <Label htmlFor="sidebar-toggle" className="text-sm">
+              サイドバーを畳む (PC)
+            </Label>
+            <p className="text-xs text-text-muted">
+              次回のPC表示で適用されます
+            </p>
+          </div>
+          <Switch
+            id="sidebar-toggle"
+            checked={sidebarCollapsed}
+            onCheckedChange={setSidebarCollapsed}
+          />
+        </div>
+      </Card>
+
+      <Button
+        type="button"
+        variant="outline"
+        className="w-full"
+        onClick={() => {
+          void signOut({ callbackUrl: '/login' });
+        }}
+      >
+        <LogOut className="h-4 w-4" />
+        ログアウト
+      </Button>
+    </MobileSection>
   );
 }
