@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { LayoutDashboard, Users, UserCircle2, CalendarDays, Heart } from 'lucide-react';
+import { LayoutDashboard, Users, UserCircle2, CalendarDays, Heart, Building2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 interface SidebarProps {
@@ -13,6 +13,7 @@ const NAV_ITEMS = [
   { href: '/dashboard', label: 'ダッシュボード', icon: LayoutDashboard },
   { href: '/patients', label: '患者', icon: Users },
   { href: '/staff', label: 'スタッフ', icon: UserCircle2 },
+  { href: '/offices', label: '拠点', icon: Building2 },
   { href: '/schedule', label: 'スケジュール', icon: CalendarDays },
 ] as const;
 

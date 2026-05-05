@@ -1,0 +1,128 @@
+/**
+ * TanStack Query hooks for /api/v1/offices — Phase 3-12.
+ */
+'use client';
+
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useSession } from 'next-auth/react';
+
+import { fetcher } from '@/lib/api/fetcher';
+import type { Office, OfficeCreate, OfficeUpdate } from '@/lib/schemas/office';
+
+type OfficesResponse = Office[] | { items?: Office[] };
+
+function normalizeOffices(data: OfficesResponse | undefined): Office[] {
+  if (!data) return [];
+  if (Array.isArray(data)) return data;
+  return Array.isArray(data.items) ? data.items : [];
+}
+
+export interface UseOfficesParams {
+  search?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export function useOffices(params: UseOfficesParams = {}) {
+  const { data: session, status } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+
+  const limit = params.limit ?? 100;
+  const offset = params.offset ?? 0;
+
+  const query = useQuery<OfficesResponse>({
+    queryKey: ['offices', limit, offset],
+    queryFn: () =>
+      fetcher<OfficesResponse>(
+        `/api/v1/offices?limit=${limit}&offset=${offset}`,
+        { accessToken, refreshToken },
+      ),
+    enabled: status === 'authenticated',
+  });
+
+  const all = normalizeOffices(query.data);
+  const filtered = params.search
+    ? all.filter((o) => {
+        const q = params.search!.toLowerCase();
+        return (
+          o.name.toLowerCase().includes(q) ||
+          (o.address ?? '').toLowerCase().includes(q)
+        );
+      })
+    : all;
+
+  return { ...query, offices: filtered, allOffices: all };
+}
+
+export function useOffice(id: string | undefined) {
+  const { data: session, status } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+
+  return useQuery<Office>({
+    queryKey: ['offices', 'detail', id],
+    queryFn: () =>
+      fetcher<Office>(`/api/v1/offices/${id}`, { accessToken, refreshToken }),
+    enabled: status === 'authenticated' && Boolean(id),
+  });
+}
+
+export function useCreateOffice() {
+  const { data: session } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+  const qc = useQueryClient();
+
+  return useMutation<Office, Error, OfficeCreate>({
+    mutationFn: (payload) =>
+      fetcher<Office>('/api/v1/offices', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+        accessToken,
+        refreshToken,
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['offices'] });
+    },
+  });
+}
+
+export function useUpdateOffice(id: string) {
+  const { data: session } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+  const qc = useQueryClient();
+
+  return useMutation<Office, Error, OfficeUpdate>({
+    mutationFn: (payload) =>
+      fetcher<Office>(`/api/v1/offices/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+        accessToken,
+        refreshToken,
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['offices'] });
+    },
+  });
+}
+
+export function useDeleteOffice() {
+  const { data: session } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+  const qc = useQueryClient();
+
+  return useMutation<void, Error, string>({
+    mutationFn: (id) =>
+      fetcher<void>(`/api/v1/offices/${id}`, {
+        method: 'DELETE',
+        accessToken,
+        refreshToken,
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['offices'] });
+    },
+  });
+}
