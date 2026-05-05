@@ -36,6 +36,7 @@ import time
 from typing import Any, Iterable
 from uuid import UUID
 
+from sqlalchemy.exc import ProgrammingError
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
@@ -192,12 +193,31 @@ async def _persist_async(payload: dict[str, Any]) -> None:
 
     Wrapped in a broad try/except so a misconfigured DB never crashes the
     server's request loop — we log the failure and move on.
+
+    Schema-mismatch defence
+    -----------------------
+    A production incident (Wave 4-G) showed that an out-of-date
+    ``audit_logs`` table (missing newer columns) raised
+    :class:`sqlalchemy.exc.ProgrammingError` on every mutation, and the
+    background task crash leaked back into Starlette's exception group via
+    the asyncio task callback. We now catch ``ProgrammingError`` first with
+    an *operator-targeted* WARN message so on-call sees the fix
+    (`alembic upgrade head`) without grepping for stack frames; the broad
+    ``except Exception`` below remains as a last-resort safety net so the
+    fire-and-forget contract (response already sent) is never violated.
     """
     try:
         factory = get_session_factory()
         async with factory() as session:
             session.add(AuditLog(**payload))
             await session.commit()
+    except ProgrammingError:
+        # Most commonly `UndefinedColumnError` — schema drift between code
+        # and DB. Surface clearly so ops can run the migration.
+        logger.exception(
+            "audit-log middleware: DB schema mismatch — "
+            "alembic upgrade head が必要 (audit row dropped, response unaffected)"
+        )
     except Exception:  # pragma: no cover - defensive
         logger.exception("audit-log middleware: persist failed (swallowed)")
 

@@ -78,6 +78,25 @@ def _safe_pattern(raw: object) -> dict:
     return raw if isinstance(raw, dict) else {}
 
 
+def _coerce_positive_int(value: object) -> int | None:
+    """Accept JSONB int-or-float values; reject ``bool`` and non-numerics.
+
+    Background: JSON has no distinct int type, so values importer-side may
+    arrive as ``float`` (``60.0``) when round-tripped through openpyxl.
+    Earlier code used ``isinstance(value, int)`` which silently rejected
+    those rows AND silently accepted ``True`` (Python bool is a subclass of
+    int) — Claude review M2.
+    """
+    if isinstance(value, bool):  # bool ⊂ int — exclude explicitly.
+        return None
+    if not isinstance(value, (int, float)):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 def _coerce_str_list(value: object) -> list[str]:
     """Coerce JSONB list-ish values into ``list[str]``; empty on junk."""
     if not isinstance(value, list):
@@ -111,12 +130,14 @@ def _build_inputs(
         pattern_by_pid[pid] = wp
 
         time_type = wp.get("time_type") or "固定"
-        service_minutes = wp.get("service_minutes")
-        if not isinstance(service_minutes, int) or service_minutes <= 0:
+        service_minutes = _coerce_positive_int(wp.get("service_minutes"))
+        if service_minutes is None or service_minutes <= 0:
             service_minutes = 60
-        weekly_count = wp.get("frequency_per_week")
-        if not isinstance(weekly_count, int) or weekly_count < 0:
+        weekly_count = _coerce_positive_int(wp.get("frequency_per_week"))
+        if weekly_count is None or weekly_count < 0:
             weekly_count = 0
+        # weekday_priority is a domain-enum string — keep the simple "" → "低"
+        # fallback. No int-coercion needed.
         day_priority = wp.get("weekday_priority") or "低"
 
         ng_staff_ids = [str(x) for x in (p.ng_staff_ids or [])]

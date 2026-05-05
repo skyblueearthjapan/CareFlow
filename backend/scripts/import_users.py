@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import logging
+import os
 import re
 import secrets
 import sys
@@ -44,7 +46,8 @@ from app.models.user import USER_ROLES, User  # noqa: E402
 
 SHEET_NAME = "管理者"
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-DEFAULT_OUTPUT = Path(__file__).resolve().parent.parent / "data" / "initial_users.csv"
+
+logger = logging.getLogger(__name__)
 
 
 def _norm_role(value: Any) -> str:
@@ -72,7 +75,7 @@ def _generate_temp_password() -> str:
 
 
 async def import_users(xlsx: Path, dry_run: bool,
-                       output_csv: Path = DEFAULT_OUTPUT) -> dict[str, int]:
+                       output_csv: Path | None = None) -> dict[str, int]:
     idx_map, rows = iter_rows(xlsx, SHEET_NAME)
     if not idx_map:
         raise RuntimeError(f"empty header row in sheet '{SHEET_NAME}'")
@@ -97,6 +100,9 @@ async def import_users(xlsx: Path, dry_run: bool,
         print_summary("users", **summary, errors=failures)
         return summary
 
+    # Wave 4-G: only NEW users with a freshly generated temp password are
+    # written out. "(existing - …)" rows contain no actionable secret and
+    # are dropped to minimise the blast radius of the CSV.
     csv_rows: list[tuple[str, str, str]] = []
     factory = get_session_factory()
     async with factory() as session:
@@ -120,27 +126,53 @@ async def import_users(xlsx: Path, dry_run: bool,
                 summary["created"] += 1
             else:
                 # Existing user: leave password alone, only sync role.
+                # No CSV row — nothing secret to hand off.
                 if obj.role != role:
                     obj.role = role
                 summary["updated"] += 1
-                csv_rows.append((email, role, "(existing - password unchanged)"))
 
         await session.commit()
 
-    output_csv.parent.mkdir(parents=True, exist_ok=True)
-    with output_csv.open("w", encoding="utf-8", newline="") as fp:
-        writer = csv.writer(fp)
-        writer.writerow(["email", "role", "temp_password"])
-        writer.writerows(csv_rows)
-    print(f"[users] temp-password CSV → {output_csv}")
+    if output_csv is None:
+        # Wave 4-G: never write temp passwords to disk implicitly. Surface
+        # them via stdout so the operator sees them but they don't linger
+        # on the container filesystem after the import process exits.
+        if csv_rows:
+            print(
+                "[users] temp-password CSV output skipped (no --out PATH); "
+                "new credentials below — copy them now, they will not be "
+                "recoverable later."
+            )
+            for email, role, temp_pw in csv_rows:
+                print(f"  - {email}\t{role}\t{temp_pw}")
+        else:
+            print("[users] no new users created — no CSV to write.")
+    else:
+        output_csv.parent.mkdir(parents=True, exist_ok=True)
+        with output_csv.open("w", encoding="utf-8", newline="") as fp:
+            writer = csv.writer(fp)
+            writer.writerow(["email", "role", "temp_password"])
+            writer.writerows(csv_rows)
+        # Lock to owner-only read/write — this file holds plaintext
+        # bootstrap passwords until the operator distributes them.
+        try:
+            os.chmod(output_csv, 0o600)
+        except (OSError, NotImplementedError):
+            # Windows / non-POSIX FS: chmod is a no-op. Warn so the
+            # operator knows to apply ACLs manually.
+            logger.warning(
+                "[users] could not chmod 0600 %s — apply ACLs manually",
+                output_csv,
+            )
+        print(f"[users] temp-password CSV → {output_csv} (mode 0600)")
 
     print_summary("users", **summary, errors=failures)
     return summary
 
 
-async def _main(xlsx: Path, dry_run: bool) -> dict[str, int]:
+async def _main(xlsx: Path, dry_run: bool, output_csv: Path | None) -> dict[str, int]:
     try:
-        return await import_users(xlsx, dry_run)
+        return await import_users(xlsx, dry_run, output_csv=output_csv)
     finally:
         # Dispose inside the same loop that owns asyncpg connections to
         # avoid "RuntimeError: Event loop is closed" on shutdown.
@@ -149,8 +181,18 @@ async def _main(xlsx: Path, dry_run: bool) -> dict[str, int]:
 
 
 def main() -> int:
-    args = build_parser("Import admin users (Sample 2 / 管理者)").parse_args()
-    asyncio.run(_main(args.xlsx, args.dry_run))
+    parser = build_parser("Import admin users (Sample 2 / 管理者)")
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help=(
+            "destination CSV for newly-generated temp passwords. If omitted "
+            "the credentials are printed to stdout once and not persisted."
+        ),
+    )
+    args = parser.parse_args()
+    asyncio.run(_main(args.xlsx, args.dry_run, args.out))
     return 0
 
 

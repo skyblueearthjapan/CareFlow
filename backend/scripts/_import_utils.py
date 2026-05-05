@@ -199,6 +199,39 @@ def parse_id_list(value: Any) -> list[str]:
     return [t.strip() for t in s.replace("、", ",").split(",") if t.strip()]
 
 
+_VALID_PRIORITIES = {"高", "中", "低"}
+
+
+def normalize_weekday_priority(value: Any, *, default: str = "低") -> str:
+    """Coerce raw Excel cells to one of {高, 中, 低}.
+
+    Empty / blank / unrecognised values fall back to ``default`` (=低), so
+    callers can rely on the result always being a valid enum string. Mirrors
+    the Wave 4-G normalisation pass we run on existing rows.
+    """
+    s = clean_str(value)
+    if s is None:
+        return default
+    if s in _VALID_PRIORITIES:
+        return s
+    return default
+
+
+def normalize_frequency(value: Any) -> int | None:
+    """Normalise weekly visit frequency: empty / 0 / negative / junk → None.
+
+    The Optional contract on ``weekly_pattern.frequency_per_week`` is "NULL
+    means no constraint, anything else is a positive int". Zero historically
+    leaked through because Excel cells stayed at 0 when operators cleared
+    them; we normalise that here so importer output matches the runtime
+    expectation.
+    """
+    parsed = parse_int(value)
+    if parsed is None or parsed <= 0:
+        return None
+    return parsed
+
+
 def header_index(headers: Iterable[Any]) -> dict[str, int]:
     """Build {normalized_header_text: 0-based-col-index}. Strips/None-skips."""
     out: dict[str, int] = {}
@@ -265,7 +298,9 @@ __all__ = [
     "header_index",
     "is_blank",
     "iter_rows",
+    "normalize_frequency",
     "normalize_sex",
+    "normalize_weekday_priority",
     "parse_areas",
     "parse_bool",
     "parse_date",

@@ -41,6 +41,8 @@ from _import_utils import (  # noqa: E402
     cell,
     clean_str,
     iter_rows,
+    normalize_frequency,
+    normalize_weekday_priority,
     parse_bool,
     parse_id_list,
     parse_int,
@@ -66,13 +68,9 @@ def _hhmm(t: Any) -> str | None:
     return parsed.strftime("%H:%M")
 
 
-def _norm_priority(value: Any) -> str | None:
-    s = clean_str(value)
-    if s is None:
-        return None
-    if s in {"高", "中", "低"}:
-        return s
-    return None
+def _norm_priority(value: Any) -> str:
+    """Wave 4-G: empty / unrecognised → '低' (default), never None."""
+    return normalize_weekday_priority(value, default="低")
 
 
 def _norm_time_type(value: Any) -> str:
@@ -115,8 +113,10 @@ def build_payload(row: tuple, idx: dict[str, int]) -> dict[str, Any] | None:
         return None
 
     pattern: dict[str, Any] = {
-        "frequency_per_week": parse_int(cell(row, idx, "週訪問回数")),
+        # Wave 4-G: 0 / negative / blank → None (Optional contract).
+        "frequency_per_week": normalize_frequency(cell(row, idx, "週訪問回数")),
         "preferred_weekdays": parse_weekdays(cell(row, idx, "希望曜日（複数可）")),
+        # Wave 4-G: blank / unrecognised → '低' (always a valid enum string).
         "weekday_priority": _norm_priority(cell(row, idx, "曜日優先度")),
         "service_minutes": parse_int(cell(row, idx, "サービス時間")),
         "time_type": _norm_time_type(cell(row, idx, "時間タイプ")),

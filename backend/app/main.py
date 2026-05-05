@@ -18,6 +18,7 @@ from app.core.config import get_settings
 from app.core.rate_limit import limiter
 from app.db.session import dispose_engine
 from app.middleware.audit import AuditLogMiddleware
+from app.middleware.security_headers import SecurityHeadersMiddleware
 
 
 @asynccontextmanager
@@ -47,6 +48,15 @@ def create_app() -> FastAPI:
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+    # Production guard: a wildcard origin combined with allow_credentials=True
+    # is rejected by browsers anyway, but mis-set values here can quietly
+    # disable the protection on staging-like environments. Fail startup loudly.
+    if settings.is_production:
+        if not settings.cors_origin_list:
+            raise ValueError("CORS_ORIGINS must be set in production")
+        if "*" in settings.cors_origin_list:
+            raise ValueError("CORS wildcard not allowed in production")
+
     if settings.cors_origin_list:
         app.add_middleware(
             CORSMiddleware,
@@ -63,6 +73,11 @@ def create_app() -> FastAPI:
         AuditLogMiddleware,
         path_prefix=settings.api_v1_prefix,
     )
+
+    # Security headers (Wave 4-G). Registered last so it wraps the entire
+    # middleware stack and stamps every outgoing response, including 4xx/5xx
+    # synthesised by inner middleware (e.g. CORS preflight rejections).
+    app.add_middleware(SecurityHeadersMiddleware)
 
     app.include_router(api_router, prefix=settings.api_v1_prefix)
 
