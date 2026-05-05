@@ -1,0 +1,131 @@
+{
+  "_comment": "W4-BE9 受入基準用 fixture. 4 拠点 (千葉市稲毛区/若葉区/中央区/美浜区相当) 24 患者 × 4 スタッフ × 4 週連続シミュレーション. ローテーション分散度 (Gini) が naive round-robin 以下になることを検証する.",
+
+  "current_iso_year": 2026,
+  "current_iso_week": 22,
+
+  "offices": [
+    {"office_id": "office-inage", "name": "稲毛事業所", "lat": 35.6383, "lng": 140.1041},
+    {"office_id": "office-tsuga", "name": "都賀事業所", "lat": 35.6500, "lng": 140.1700}
+  ],
+
+  "staff": [
+    {
+      "staff_id": "staff-S1",
+      "name": "S1 山田",
+      "gender": "female",
+      "role": "staff",
+      "primary_office_lat": 35.6383,
+      "primary_office_lng": 140.1041,
+      "work_days": ["Mon", "Tue", "Wed", "Thu", "Fri"]
+    },
+    {
+      "staff_id": "staff-S2",
+      "name": "S2 佐藤",
+      "gender": "female",
+      "role": "staff",
+      "primary_office_lat": 35.6383,
+      "primary_office_lng": 140.1041,
+      "work_days": ["Mon", "Tue", "Wed", "Thu", "Fri"]
+    },
+    {
+      "staff_id": "staff-S3",
+      "name": "S3 鈴木",
+      "gender": "male",
+      "role": "staff",
+      "primary_office_lat": 35.6500,
+      "primary_office_lng": 140.1700,
+      "work_days": ["Mon", "Tue", "Wed", "Thu", "Fri"]
+    },
+    {
+      "staff_id": "staff-S4",
+      "name": "S4 田中",
+      "gender": "female",
+      "role": "staff",
+      "primary_office_lat": 35.6500,
+      "primary_office_lng": 140.1700,
+      "work_days": ["Mon", "Tue", "Wed", "Thu", "Fri"]
+    },
+    {
+      "staff_id": "staff-M1",
+      "name": "M1 マネージャー",
+      "gender": "female",
+      "role": "manager",
+      "primary_office_lat": 35.6383,
+      "primary_office_lng": 140.1041,
+      "work_days": ["Mon", "Tue", "Wed", "Thu", "Fri"]
+    }
+  ],
+
+  "courses_per_week": [
+    {
+      "iso_week": 22,
+      "weekday": 0,
+      "course_code": "A",
+      "patients": [
+        {"patient_id": "p01", "gender_restriction": null, "lat": 35.6200, "lng": 140.0800},
+        {"patient_id": "p02", "gender_restriction": null, "lat": 35.6210, "lng": 140.0820},
+        {"patient_id": "p03", "gender_restriction": null, "lat": 35.6195, "lng": 140.0785},
+        {"patient_id": "p04", "gender_restriction": null, "lat": 35.6225, "lng": 140.0810},
+        {"patient_id": "p05", "gender_restriction": null, "lat": 35.6180, "lng": 140.0795},
+        {"patient_id": "p06", "gender_restriction": null, "lat": 35.6215, "lng": 140.0825}
+      ]
+    },
+    {
+      "iso_week": 22,
+      "weekday": 0,
+      "course_code": "B",
+      "patients": [
+        {"patient_id": "p07", "gender_restriction": null, "lat": 35.6400, "lng": 140.1100},
+        {"patient_id": "p08", "gender_restriction": null, "lat": 35.6410, "lng": 140.1115},
+        {"patient_id": "p09", "gender_restriction": null, "lat": 35.6395, "lng": 140.1085},
+        {"patient_id": "p10", "gender_restriction": null, "lat": 35.6420, "lng": 140.1120},
+        {"patient_id": "p11", "gender_restriction": null, "lat": 35.6385, "lng": 140.1095},
+        {"patient_id": "p12", "gender_restriction": null, "lat": 35.6405, "lng": 140.1110}
+      ]
+    },
+    {
+      "iso_week": 22,
+      "weekday": 0,
+      "course_code": "C",
+      "patients": [
+        {"patient_id": "p13", "gender_restriction": null, "lat": 35.6650, "lng": 140.1650},
+        {"patient_id": "p14", "gender_restriction": null, "lat": 35.6660, "lng": 140.1670},
+        {"patient_id": "p15", "gender_restriction": null, "lat": 35.6645, "lng": 140.1635},
+        {"patient_id": "p16", "gender_restriction": null, "lat": 35.6670, "lng": 140.1680},
+        {"patient_id": "p17", "gender_restriction": "female", "lat": 35.6635, "lng": 140.1645},
+        {"patient_id": "p18", "gender_restriction": null, "lat": 35.6655, "lng": 140.1660}
+      ]
+    },
+    {
+      "iso_week": 22,
+      "weekday": 0,
+      "course_code": "D",
+      "patients": [
+        {"patient_id": "p19", "gender_restriction": null, "lat": 35.6400, "lng": 140.1800},
+        {"patient_id": "p20", "gender_restriction": null, "lat": 35.6410, "lng": 140.1820},
+        {"patient_id": "p21", "gender_restriction": null, "lat": 35.6395, "lng": 140.1785},
+        {"patient_id": "p22", "gender_restriction": null, "lat": 35.6420, "lng": 140.1815},
+        {"patient_id": "p23", "gender_restriction": null, "lat": 35.6385, "lng": 140.1795},
+        {"patient_id": "p24", "gender_restriction": null, "lat": 35.6405, "lng": 140.1810}
+      ]
+    }
+  ],
+
+  "history": [
+    {"iso_year": 2026, "iso_week": 21, "weekday": 0, "course_code": "A", "staff_id": "staff-S1"},
+    {"iso_year": 2026, "iso_week": 21, "weekday": 0, "course_code": "B", "staff_id": "staff-S2"},
+    {"iso_year": 2026, "iso_week": 21, "weekday": 0, "course_code": "C", "staff_id": "staff-S4"},
+    {"iso_year": 2026, "iso_week": 21, "weekday": 0, "course_code": "D", "staff_id": "staff-S3"},
+
+    {"iso_year": 2026, "iso_week": 20, "weekday": 0, "course_code": "A", "staff_id": "staff-S2"},
+    {"iso_year": 2026, "iso_week": 20, "weekday": 0, "course_code": "B", "staff_id": "staff-S1"},
+    {"iso_year": 2026, "iso_week": 20, "weekday": 0, "course_code": "C", "staff_id": "staff-S3"},
+    {"iso_year": 2026, "iso_week": 20, "weekday": 0, "course_code": "D", "staff_id": "staff-S4"},
+
+    {"iso_year": 2026, "iso_week": 19, "weekday": 0, "course_code": "A", "staff_id": "staff-S3"},
+    {"iso_year": 2026, "iso_week": 19, "weekday": 0, "course_code": "B", "staff_id": "staff-S4"},
+    {"iso_year": 2026, "iso_week": 19, "weekday": 0, "course_code": "C", "staff_id": "staff-S2"},
+    {"iso_year": 2026, "iso_week": 19, "weekday": 0, "course_code": "D", "staff_id": "staff-S1"}
+  ]
+}
