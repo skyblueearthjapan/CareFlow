@@ -25,7 +25,14 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/sonner';
 import { useDeletePatient, usePatient } from '@/lib/queries/patients';
-import type { PatientRead } from '@/lib/schemas/patient';
+import { useStaffList } from '@/lib/queries/staff';
+import {
+  VISIT_FREQUENCY_LABELS,
+  WEEKDAY_LABELS_JA,
+  coerceWeeklyPattern,
+  type PatientRead,
+  type WeekdayKey,
+} from '@/lib/schemas/patient';
 
 export default function PatientDetailPage() {
   const params = useParams<{ id: string }>();
@@ -37,6 +44,8 @@ export default function PatientDetailPage() {
   const canDelete = role === 'admin';
 
   const { data, isLoading, isError, error } = usePatient(id);
+  // Staff master used to render NG / 同行希望スタッフ as `氏名 (コード)`.
+  const { data: staffList } = useStaffList({ limit: 500 });
   const deleteMutation = useDeletePatient();
   const [confirmOpen, setConfirmOpen] = useState(false);
 
@@ -152,14 +161,19 @@ export default function PatientDetailPage() {
             ['性別制限', data.sex_restriction ?? '--'],
             ['NG時間 (開始)', data.ng_time_start ?? '--'],
             ['NG時間 (終了)', data.ng_time_end ?? '--'],
-            [
-              '週間訪問パターン',
-              data.weekly_pattern ? JSON.stringify(data.weekly_pattern) : '--',
-            ],
+            ['エリア', data.area ?? '--'],
+            ['指定タイプ', data.specified_type ?? '--'],
+            ['継続要望', data.continuous_request ? '有効' : '--'],
+            ['NGスタッフ', formatStaffIds(data.ng_staff_ids, staffList)],
+            ['同行希望スタッフ', formatStaffIds(data.preferred_staff_ids, staffList)],
             ['特別週', data.special_week ? '有効' : '--'],
           ]}
         />
-        {/* TODO(Wave 2): NG スタッフ / 同行希望スタッフ 表示 */}
+      </Card>
+
+      <Card className="p-5 space-y-3">
+        <h2 className="font-serif text-lg font-bold text-text-primary">週間訪問パターン</h2>
+        <WeeklyPatternView raw={data.weekly_pattern} />
       </Card>
 
       <Card className="p-5 space-y-3">
@@ -185,6 +199,59 @@ export default function PatientDetailPage() {
         }}
       />
     </section>
+  );
+}
+
+/** Resolve UUIDs against the staff master into `氏名 (コード)` labels. */
+function formatStaffIds(
+  ids: readonly string[] | null | undefined,
+  staffList: ReadonlyArray<{ id: string; name: string; code?: string | null }> | undefined,
+): string {
+  if (!ids || ids.length === 0) return '--';
+  if (!staffList) return ids.join(', ');
+  const idx = new Map(staffList.map((s) => [s.id, s]));
+  return ids
+    .map((id) => {
+      const s = idx.get(id);
+      if (!s) return id;
+      return s.code ? `${s.name} (${s.code})` : s.name;
+    })
+    .join(', ');
+}
+
+interface WeeklyPatternViewProps {
+  raw: unknown;
+}
+
+function WeeklyPatternView({ raw }: WeeklyPatternViewProps) {
+  if (!raw || typeof raw !== 'object') {
+    return <p className="text-sm text-text-muted">--</p>;
+  }
+  const wp = coerceWeeklyPattern(raw);
+  const ngWeekdays = wp.ng_weekdays ?? [];
+  const labelDays = (days: WeekdayKey[]) =>
+    days.length === 0 ? '--' : days.map((d) => WEEKDAY_LABELS_JA[d]).join('・');
+  const visitFreq = wp.visit_frequency
+    ? VISIT_FREQUENCY_LABELS[wp.visit_frequency]
+    : '--';
+  const timeRange =
+    wp.preferred_start || wp.preferred_end
+      ? `${wp.preferred_start ?? '--'} 〜 ${wp.preferred_end ?? '--'}`
+      : '--';
+  return (
+    <DetailGrid
+      rows={[
+        ['週あたり訪問回数', String(wp.frequency_per_week)],
+        ['訪問頻度', visitFreq],
+        ['訪問週', wp.visit_weeks ?? '--'],
+        ['希望曜日', labelDays(wp.preferred_weekdays)],
+        ['曜日優先度', wp.weekday_priority],
+        ['サービス時間', `${wp.service_minutes} 分`],
+        ['時間タイプ', wp.time_type],
+        ['希望時間', timeRange],
+        ['NG曜日', labelDays(ngWeekdays)],
+      ]}
+    />
   );
 }
 

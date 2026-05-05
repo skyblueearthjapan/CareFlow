@@ -88,42 +88,27 @@ function dropUndefined(payload: Record<string, unknown>): Record<string, unknown
 /**
  * Pre-process raw form values into a shape that matches the zod schemas:
  *
- * - `weekly_pattern` is a JSON string in the textarea → parse to dict.
- *   Throws on invalid JSON; the form surfaces it as a validation error.
+ * - `weekly_pattern` is a structured `WeeklyPattern` dict (W3-C) bound by
+ *   `WeeklyPatternEditor`. We pass it through as a plain object.
  * - `special_week` is a checkbox boolean → backend column is JSONB. We map
  *   `true` → `{ enabled: true }`.
  *
  * Clear-vs-unchanged semantics (PATCH only):
- * If `initial` is provided and a previously non-empty JSON field is now
- * empty, we emit explicit `null` so the backend clears the column. Without
- * `initial` (Create flow), empty values stay `undefined` and `dropUndefined`
- * removes them from the payload.
+ * If `initial` is provided and a previously set field is now empty, we emit
+ * explicit `null` so the backend clears the column. Without `initial`
+ * (Create flow), empty values stay `undefined` and `dropUndefined` removes
+ * them from the payload.
  */
 function prepareFormPayload(
   values: PatientFormValues,
   initial?: PatientFormValues,
 ): Record<string, unknown> {
-  const wpRaw = values.weekly_pattern?.trim() ?? '';
-  let weekly_pattern: Record<string, unknown> | null | undefined;
-  if (wpRaw) {
-    try {
-      const parsed = JSON.parse(wpRaw);
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        weekly_pattern = parsed as Record<string, unknown>;
-      } else {
-        throw new Error('weekly_pattern must be a JSON object');
-      }
-    } catch (err) {
-      throw new Error(
-        `weekly_pattern の JSON が不正です: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-    }
-  } else if (initial && (initial.weekly_pattern?.trim() ?? '') !== '') {
-    // Field was previously set, user cleared it → explicit null.
-    weekly_pattern = null;
-  }
+  // Treat the structured weekly_pattern as a JSONB dict. We always emit it
+  // (it has sane defaults from `emptyWeeklyPattern`); on Create the schema
+  // accepts the dict, on Update it overwrites.
+  const weekly_pattern: Record<string, unknown> | null | undefined =
+    values.weekly_pattern as unknown as Record<string, unknown>;
+  void initial; // structured editor always produces a complete dict.
 
   let special_week: { enabled: true } | null | undefined;
   if (values.special_week) {

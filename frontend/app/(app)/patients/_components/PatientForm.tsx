@@ -1,33 +1,39 @@
 /**
  * Shared form for new/edit patient pages.
  *
- * - react-hook-form + zodResolver(patientCreateSchema)
- * - Sections: 基本情報 / 連絡先 / 保険 / 訪問条件 / 備考
+ * - react-hook-form + zodResolver(patientFormSchema)
+ * - Sections: 基本情報 / 連絡先 / 保険・拠点 / 訪問条件 / 週間パターン / 備考
  * - Re-used by `patients/new/page.tsx` and `patients/[id]/edit/page.tsx`.
  *
- * TODO(Wave 2):
- *   - weekly_pattern を構造化エディタに差し替え (現状 textarea で JSON 直書き)
- *   - NG スタッフ / 同行希望スタッフ UI
+ * W3-C:
+ *   - Adds 訪問条件 拡張 (area / NG・希望スタッフ / specified_type / continuous_request)
+ *   - 週間訪問パターン textarea → `<WeeklyPatternEditor />` (構造化)
  */
 'use client';
 
 import * as React from 'react';
-import { useForm, type Resolver, type SubmitHandler } from 'react-hook-form';
+import { Controller, useForm, type Resolver, type SubmitHandler } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Combobox, type ComboboxOption } from '@/components/ui/combobox';
+import { useStaffList } from '@/lib/queries/staff';
 import {
   INSURANCE_OPTIONS,
   SEX_OPTIONS,
   SEX_RESTRICTION_OPTIONS,
+  SPECIFIED_TYPE_OPTIONS,
   STATUS_OPTIONS,
   emptyPatientFormValues,
   patientFormSchema,
   type PatientFormValues,
 } from '@/lib/schemas/patient';
+
+import { WeeklyPatternEditor } from './WeeklyPatternEditor';
 
 interface PatientFormProps {
   /** Pre-filled values (edit mode). */
@@ -53,10 +59,10 @@ export function PatientForm({
   submitLabel = '保存',
 }: PatientFormProps) {
   const form = useForm<PatientFormValues>({
-    // `patientFormSchema` matches the textarea/checkbox shape react-hook-form
-    // actually binds to (weekly_pattern: string, special_week: boolean). The
-    // dict-shape conversion happens in `prepareFormPayload` before the
-    // create/update schemas validate the wire payload.
+    // `patientFormSchema` matches the structured/checkbox shape react-hook-form
+    // actually binds to (weekly_pattern: WeeklyPattern dict, special_week:
+    // boolean). The wire-shape conversion happens in `prepareFormPayload`
+    // before the create/update schemas validate the payload.
     resolver: zodResolver(patientFormSchema) as Resolver<PatientFormValues>,
     defaultValues: defaultValues ?? emptyPatientFormValues,
     mode: 'onBlur',
@@ -65,33 +71,26 @@ export function PatientForm({
   const {
     register,
     handleSubmit,
-    setError,
+    control,
     formState: { errors },
   } = form;
 
   const submitHandler: SubmitHandler<PatientFormValues> = async (values) => {
-    // weekly_pattern is a textarea (JSON string) but the backend column is
-    // JSONB. Validate parseability here so a malformed payload surfaces as a
-    // form error instead of a 422 round-trip.
-    const wp = values.weekly_pattern?.trim() ?? '';
-    if (wp) {
-      try {
-        const parsed: unknown = JSON.parse(wp);
-        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-          throw new Error('JSON オブジェクトを入力してください');
-        }
-      } catch (err) {
-        setError('weekly_pattern', {
-          type: 'manual',
-          message: `JSON が不正です: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        });
-        return;
-      }
-    }
     await onSubmit(values);
   };
+
+  // Staff master for NG / 希望スタッフ Combobox. Excludes soft-deleted rows.
+  const { data: staffList } = useStaffList({ limit: 500 });
+  const staffOptions: ComboboxOption[] = React.useMemo(
+    () =>
+      (staffList ?? [])
+        .filter((s) => !s.deleted_at)
+        .map((s) => ({
+          value: s.id,
+          label: s.code ? `${s.name} (${s.code})` : s.name,
+        })),
+    [staffList],
+  );
 
   return (
     <form onSubmit={handleSubmit(submitHandler)} className="space-y-6">
@@ -188,33 +187,102 @@ export function PatientForm({
           <Field label="NG時間 (終了)" error={errors.ng_time_end?.message}>
             <Input type="time" {...register('ng_time_end')} />
           </Field>
+          <Field label="エリア" error={errors.area?.message} hint='例: A1, B2'>
+            <Input {...register('area')} placeholder="A1" />
+          </Field>
+          <Field label="指定タイプ" error={errors.specified_type?.message}>
+            <SelectInput
+              {...register('specified_type')}
+              options={[
+                ['', 'なし'],
+                ...SPECIFIED_TYPE_OPTIONS.map((v) => [v, v] as const),
+              ]}
+            />
+          </Field>
+          <Field
+            label="NGスタッフ"
+            error={errors.ng_staff_ids?.message as string | undefined}
+            className="md:col-span-2"
+          >
+            <Controller
+              control={control}
+              name="ng_staff_ids"
+              render={({ field }) => (
+                <Combobox
+                  multiple
+                  options={staffOptions}
+                  value={field.value ?? []}
+                  onChange={field.onChange}
+                  placeholder="スタッフを選択"
+                  emptyText="スタッフが見つかりません"
+                />
+              )}
+            />
+          </Field>
+          <Field
+            label="同行希望スタッフ"
+            error={errors.preferred_staff_ids?.message as string | undefined}
+            className="md:col-span-2"
+          >
+            <Controller
+              control={control}
+              name="preferred_staff_ids"
+              render={({ field }) => (
+                <Combobox
+                  multiple
+                  options={staffOptions}
+                  value={field.value ?? []}
+                  onChange={field.onChange}
+                  placeholder="スタッフを選択"
+                  emptyText="スタッフが見つかりません"
+                />
+              )}
+            />
+          </Field>
+          <Field label="継続要望" className="md:col-span-2">
+            <Controller
+              control={control}
+              name="continuous_request"
+              render={({ field }) => (
+                <label className="inline-flex items-center gap-2 text-sm text-text-primary">
+                  <Checkbox
+                    checked={!!field.value}
+                    onCheckedChange={(c) => field.onChange(c === true)}
+                  />
+                  継続的な訪問を希望する
+                </label>
+              )}
+            />
+          </Field>
         </div>
-        <div className="rounded-md border border-dashed border-border-default bg-bg-muted/40 p-3">
-          <p className="text-xs text-text-muted">
-            週間訪問パターン (weekly_pattern) — Wave 2 で構造化エディタに差し替え予定。
-            現状は JSON 文字列で直接編集してください。
-          </p>
-          {/* TODO(Wave 2): structured weekly pattern editor + backend column. */}
-          <textarea
-            {...register('weekly_pattern')}
-            rows={3}
-            placeholder='例: {"mon":["09:00"],"wed":["14:00"]}'
-            className="mt-2 w-full rounded-md border border-border-default bg-bg-base px-3 py-2 text-sm font-mono text-text-primary placeholder:text-text-muted focus-visible:outline-none focus-visible:border-brand-primary focus-visible:ring-2 focus-visible:ring-brand-primary-light"
-          />
-          {errors.weekly_pattern?.message ? (
-            <p className="mt-1 text-xs text-error">
-              {String(errors.weekly_pattern.message)}
-            </p>
-          ) : null}
-          <label className="mt-2 inline-flex items-center gap-2 text-sm text-text-secondary">
-            <input type="checkbox" {...register('special_week')} />
-            特別週 (special_week)
-          </label>
-        </div>
-        {/* TODO(Wave 2): NG スタッフ / 同行希望スタッフ UI */}
-        <p className="text-xs text-text-muted">
-          NGスタッフ・同行希望スタッフ設定 — Wave 2 で実装予定。
-        </p>
+      </Card>
+
+      <Card className="p-5 space-y-4">
+        <h2 className="font-serif text-lg font-bold text-text-primary">週間訪問パターン</h2>
+        <Controller
+          control={control}
+          name="weekly_pattern"
+          render={({ field }) => (
+            <WeeklyPatternEditor
+              value={field.value}
+              onChange={field.onChange}
+              disabled={submitting}
+            />
+          )}
+        />
+        <Controller
+          control={control}
+          name="special_week"
+          render={({ field }) => (
+            <label className="inline-flex items-center gap-2 text-sm text-text-secondary">
+              <Checkbox
+                checked={!!field.value}
+                onCheckedChange={(c) => field.onChange(c === true)}
+              />
+              特別週 (special_week)
+            </label>
+          )}
+        />
       </Card>
 
       <Card className="p-5 space-y-4">
@@ -248,15 +316,19 @@ interface FieldProps {
   required?: boolean;
   error?: string;
   className?: string;
+  hint?: string;
   children: React.ReactNode;
 }
 
-function Field({ label, required, error, className, children }: FieldProps) {
+function Field({ label, required, error, className, hint, children }: FieldProps) {
   return (
     <label className={`flex flex-col gap-1 text-sm ${className ?? ''}`}>
       <span className="font-medium text-text-secondary">
         {label}
         {required ? <span className="ml-1 text-error">*</span> : null}
+        {hint ? (
+          <span className="ml-2 text-xs font-normal text-text-muted">{hint}</span>
+        ) : null}
       </span>
       {children}
       {error ? <span className="text-xs text-error">{error}</span> : null}
