@@ -3,26 +3,31 @@
 /**
  * Staff master — detail view (Phase 3-7..3-11).
  *
- * Shows the basic record plus four read-only sections:
- *   - Weekly shifts        (3-8)  -> backend table exists, no REST yet
- *   - Weekly overrides     (3-9)  -> backend table exists, no REST yet
- *   - Events / 研修日       (3-10) -> backend table exists, no REST yet
- *   - Mentor assignments   (3-11) -> backend table exists, no REST yet
- *
- * Until those endpoints land in Wave 2 we render mock fixtures shaped like
- * the zod schemas (so the UI is the only thing to swap out later).
+ * All four sections are now backed by live endpoints:
+ *   - Weekly shifts        (3-8)  GET/PUT  /api/v1/staff/:id/shifts
+ *   - Weekly overrides     (3-9)  GET/POST/PATCH/DELETE /api/v1/staff/:id/overrides
+ *   - Events / 研修日       (3-10) /api/v1/staff/:id/events            (F5-Frontend-B)
+ *   - Mentor assignments   (3-11) /api/v1/staff/:id/mentor             (F5-Frontend-B)
  */
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
-import { useState } from 'react';
-import { ArrowLeft, Pencil, Trash2 } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { ArrowLeft, Pencil, Plus, Trash2 } from 'lucide-react';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
+import { useMentor } from '@/lib/queries/mentor';
+import { useStaffEvents } from '@/lib/queries/staff-events';
+import {
+  useStaffOverrides,
+  type OverrideRange,
+} from '@/lib/queries/staff-overrides';
+import { useStaffShifts } from '@/lib/queries/staff-shifts';
 import { useDeleteStaff, useStaff } from '@/lib/queries/staff';
+import type { OverrideRead } from '@/lib/schemas/staff-overrides';
 import {
   WEEKDAY_LABELS,
   assignmentVolumeLabel,
@@ -30,34 +35,34 @@ import {
   sexLabel,
   skillLevelLabel,
   statusLabel,
-  type MentorAssignment,
-  type StaffEvent,
   type StaffRead,
-  type StaffShift,
-  type StaffWeeklyOverride,
 } from '@/lib/schemas/staff';
+import type { StaffShiftItem } from '@/lib/schemas/staff-shifts';
+import type { EventRead } from '@/lib/schemas/staff-events';
 
 import { DeleteConfirmModal } from '../_components/DeleteConfirmModal';
+import { EventAddDialog } from './_components/EventAddDialog';
+import { EventEditDialog } from './_components/EventEditDialog';
+import { MentorAssignDialog } from './_components/MentorAssignDialog';
+import { OverrideAddDialog } from './_components/OverrideAddDialog';
+import { OverrideEditDialog } from './_components/OverrideEditDialog';
+import { ShiftsEditDialog } from './_components/ShiftsEditDialog';
 
-// ---------------------------------------------------------------------------
-// Mock fixtures — TODO(Wave 2): replace with real GET /api/v1/staff/:id/...
-// endpoints once the backend exposes them. The shape matches the zod schemas
-// in lib/schemas/staff.ts.
-// ---------------------------------------------------------------------------
-function buildMockShifts(staffId: string): StaffShift[] {
-  // Mon-Fri on, weekend off — typical pattern.
-  return WEEKDAY_LABELS.map((_, weekday) => ({
-    staff_id: staffId,
-    weekday,
-    is_on: weekday < 5,
-    start_time: weekday < 5 ? '09:00' : null,
-    end_time: weekday < 5 ? '17:00' : null,
-  }));
+/** Overrides default window: today through +90 days. */
+const OVERRIDES_RANGE_DAYS_FORWARD = 90;
+
+/** Default events lookback / lookahead window (in days) for the detail view. */
+const EVENTS_RANGE_DAYS_BACK = 30;
+const EVENTS_RANGE_DAYS_FORWARD = 180;
+
+function isoDateOffset(days: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
 }
-
-const MOCK_OVERRIDES: StaffWeeklyOverride[] = [];
-const MOCK_EVENTS: StaffEvent[] = [];
-const MOCK_MENTOR_ASSIGNMENTS: MentorAssignment[] = [];
 
 export default function StaffDetailPage() {
   const params = useParams<{ id: string }>();
@@ -113,8 +118,6 @@ export default function StaffDetailPage() {
 
   if (!data) return null;
 
-  const mockShifts = buildMockShifts(data.id);
-
   // Role-based UI gating: backend already enforces 403, but hiding the affordances
   // avoids "click → fail" confusion. Backend policy (see backend/app/api/v1/staff.py):
   //   - PATCH /staff/{id}  -> admin/manager only
@@ -166,57 +169,17 @@ export default function StaffDetailPage() {
 
       <BasicInfoCard staff={data} />
 
-      <Card>
-        <CardHeader>
-          <CardTitle>週間シフト</CardTitle>
-          <p className="text-xs text-text-muted">
-            {/* TODO(Wave 2): replace with GET /api/v1/staff/:id/shifts */}
-            読み取り表示のみ。編集 UI は Wave 2。
-          </p>
-        </CardHeader>
-        <CardContent>
-          <ShiftsTable shifts={mockShifts} />
-        </CardContent>
-      </Card>
+      <ShiftsCard staffId={data.id} canEdit={canEdit} />
 
-      <Card>
-        <CardHeader>
-          <CardTitle>今後の休み・時間変更</CardTitle>
-          <p className="text-xs text-text-muted">
-            {/* TODO(Wave 2): replace with GET /api/v1/staff/:id/weekly-overrides */}
-            読み取り表示のみ。編集 UI は Wave 2。
-          </p>
-        </CardHeader>
-        <CardContent>
-          <OverridesList overrides={MOCK_OVERRIDES} />
-        </CardContent>
-      </Card>
+      <OverridesCard staffId={data.id} canEdit={canEdit} />
 
-      <Card>
-        <CardHeader>
-          <CardTitle>研修日 / イベント</CardTitle>
-          <p className="text-xs text-text-muted">
-            {/* TODO(Wave 2): replace with GET /api/v1/staff/:id/events */}
-            読み取り表示のみ。編集 UI は Wave 2。
-          </p>
-        </CardHeader>
-        <CardContent>
-          <EventsList events={MOCK_EVENTS} />
-        </CardContent>
-      </Card>
+      <EventsCard staffId={data.id} canEdit={canEdit} />
 
-      <Card>
-        <CardHeader>
-          <CardTitle>メンター割付</CardTitle>
-          <p className="text-xs text-text-muted">
-            {/* TODO(Wave 2): replace with GET /api/v1/staff/:id/mentor-assignments */}
-            読み取り表示のみ。編集 UI は Wave 2。
-          </p>
-        </CardHeader>
-        <CardContent>
-          <MentorList assignments={MOCK_MENTOR_ASSIGNMENTS} />
-        </CardContent>
-      </Card>
+      <MentorCard
+        staffId={data.id}
+        canEdit={canEdit}
+        currentMentorIdHint={data.mentor_id ?? null}
+      />
 
       <DeleteConfirmModal
         open={confirmOpen}
@@ -313,90 +276,390 @@ function Row({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ShiftsTable({ shifts }: { shifts: StaffShift[] }) {
+function ShiftsCard({
+  staffId,
+  canEdit,
+}: {
+  staffId: string;
+  canEdit: boolean;
+}) {
+  const { data, isLoading, isError, error } = useStaffShifts(staffId);
+  const [open, setOpen] = useState(false);
+
+  // The bulk PUT contract guarantees 7 rows back, but during onboarding the
+  // server may return an empty array — render the dialog's defaults instead.
+  const rows: StaffShiftItem[] = data?.shifts ?? [];
+
   return (
-    <table className="w-full text-sm">
-      <thead className="border-b border-border-default text-left text-text-secondary">
-        <tr>
-          <th className="px-3 py-2 font-medium">曜日</th>
-          <th className="px-3 py-2 font-medium">勤務</th>
-          <th className="px-3 py-2 font-medium">開始</th>
-          <th className="px-3 py-2 font-medium">終了</th>
-        </tr>
-      </thead>
-      <tbody>
-        {shifts.map((s) => (
-          <tr key={s.weekday} className="border-b border-border-default last:border-0">
-            <td className="px-3 py-2">{WEEKDAY_LABELS[s.weekday]}</td>
-            <td className="px-3 py-2">{s.is_on ? '〇' : '休'}</td>
-            <td className="px-3 py-2 tnum text-text-secondary">{s.start_time ?? '--'}</td>
-            <td className="px-3 py-2 tnum text-text-secondary">{s.end_time ?? '--'}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between">
+        <CardTitle>週間シフト</CardTitle>
+        {canEdit && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setOpen(true)}
+          >
+            <Pencil className="h-4 w-4" />
+            編集
+          </Button>
+        )}
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <div className="space-y-2">
+            <Skeleton className="h-8 w-full" />
+            <Skeleton className="h-8 w-full" />
+            <Skeleton className="h-8 w-full" />
+          </div>
+        ) : isError ? (
+          <Alert variant="destructive">
+            <AlertTitle>取得に失敗しました</AlertTitle>
+            <AlertDescription>
+              {error instanceof Error ? error.message : '不明なエラー'}
+            </AlertDescription>
+          </Alert>
+        ) : (
+          <table className="w-full text-sm">
+            <thead className="border-b border-border-default text-left text-text-secondary">
+              <tr>
+                <th className="px-3 py-2 font-medium">曜日</th>
+                <th className="px-3 py-2 font-medium">勤務</th>
+                <th className="px-3 py-2 font-medium">開始</th>
+                <th className="px-3 py-2 font-medium">終了</th>
+              </tr>
+            </thead>
+            <tbody>
+              {WEEKDAY_LABELS.map((label, weekday) => {
+                const s = rows.find((r) => r.weekday === weekday);
+                return (
+                  <tr
+                    key={weekday}
+                    className="border-b border-border-default last:border-0"
+                  >
+                    <td className="px-3 py-2">{label}</td>
+                    <td className="px-3 py-2">{s?.is_on ? '〇' : '休'}</td>
+                    <td className="px-3 py-2 tnum text-text-secondary">
+                      {s?.start_time ?? '--'}
+                    </td>
+                    <td className="px-3 py-2 tnum text-text-secondary">
+                      {s?.end_time ?? '--'}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </CardContent>
+
+      {canEdit && (
+        <ShiftsEditDialog
+          staffId={staffId}
+          initialShifts={rows}
+          open={open}
+          onOpenChange={setOpen}
+        />
+      )}
+    </Card>
   );
 }
 
-function OverridesList({ overrides }: { overrides: StaffWeeklyOverride[] }) {
-  if (overrides.length === 0) {
-    return <p className="text-sm text-text-muted">登録された変更はありません</p>;
-  }
+function OverridesCard({
+  staffId,
+  canEdit,
+}: {
+  staffId: string;
+  canEdit: boolean;
+}) {
+  const range = useMemo<OverrideRange>(
+    () => ({
+      from: isoDateOffset(0),
+      to: isoDateOffset(OVERRIDES_RANGE_DAYS_FORWARD),
+    }),
+    [],
+  );
+
+  const { data, isLoading, isError, error } = useStaffOverrides(staffId, range);
+  const [addOpen, setAddOpen] = useState(false);
+  const [editing, setEditing] = useState<OverrideRead | null>(null);
+
   return (
-    <ul className="space-y-2 text-sm">
-      {overrides.map((o) => (
-        <li key={o.id} className="rounded border border-border-default p-3">
-          <div className="font-medium">
-            {o.iso_year}年 第{o.iso_week}週 {WEEKDAY_LABELS[o.weekday]}曜日
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between">
+        <CardTitle>今後の休み・時間変更</CardTitle>
+        {canEdit && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setAddOpen(true)}
+          >
+            <Plus className="h-4 w-4" />
+            追加
+          </Button>
+        )}
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <div className="space-y-2">
+            <Skeleton className="h-12 w-full" />
+            <Skeleton className="h-12 w-full" />
           </div>
-          <div className="text-text-secondary">
-            {o.override_type === 'off'
-              ? '休み'
-              : `時間変更: ${o.start_time ?? '--'} ~ ${o.end_time ?? '--'}`}
-          </div>
-          {o.reason && <div className="text-xs text-text-muted">{o.reason}</div>}
-        </li>
-      ))}
-    </ul>
+        ) : isError ? (
+          <Alert variant="destructive">
+            <AlertTitle>取得に失敗しました</AlertTitle>
+            <AlertDescription>
+              {error instanceof Error ? error.message : '不明なエラー'}
+            </AlertDescription>
+          </Alert>
+        ) : !data || data.length === 0 ? (
+          <p className="text-sm text-text-muted">登録された変更はありません</p>
+        ) : (
+          <ul className="space-y-2 text-sm">
+            {data.map((o) => (
+              <li
+                key={o.id}
+                className="flex items-center justify-between gap-3 rounded border border-border-default p-3"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="inline-flex items-center rounded-full border border-border-default bg-bg-muted px-2 py-0.5 text-xs text-text-secondary">
+                      {o.type}
+                    </span>
+                    <span className="tnum font-medium text-text-primary">
+                      {o.date}
+                    </span>
+                  </div>
+                  {(o.start_time || o.end_time) && (
+                    <div className="tnum text-text-secondary">
+                      {o.start_time ?? '--'} 〜 {o.end_time ?? '--'}
+                    </div>
+                  )}
+                  {o.note && (
+                    <div className="text-xs text-text-muted">{o.note}</div>
+                  )}
+                </div>
+                {canEdit && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setEditing(o)}
+                  >
+                    <Pencil className="h-4 w-4" />
+                    編集
+                  </Button>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </CardContent>
+
+      {canEdit && (
+        <>
+          <OverrideAddDialog
+            staffId={staffId}
+            open={addOpen}
+            onOpenChange={setAddOpen}
+          />
+          <OverrideEditDialog
+            staffId={staffId}
+            override={editing}
+            open={!!editing}
+            onOpenChange={(next) => {
+              if (!next) setEditing(null);
+            }}
+          />
+        </>
+      )}
+    </Card>
   );
 }
 
-function EventsList({ events }: { events: StaffEvent[] }) {
-  if (events.length === 0) {
-    return <p className="text-sm text-text-muted">登録された研修・イベントはありません</p>;
-  }
+function EventsCard({
+  staffId,
+  canEdit,
+}: {
+  staffId: string;
+  canEdit: boolean;
+}) {
+  const range = useMemo(
+    () => ({
+      from: isoDateOffset(-EVENTS_RANGE_DAYS_BACK),
+      to: isoDateOffset(EVENTS_RANGE_DAYS_FORWARD),
+    }),
+    [],
+  );
+
+  const { data, isLoading, isError, error } = useStaffEvents(staffId, range);
+  const [addOpen, setAddOpen] = useState(false);
+  const [editing, setEditing] = useState<EventRead | null>(null);
+
   return (
-    <ul className="space-y-2 text-sm">
-      {events.map((e) => (
-        <li key={e.id} className="rounded border border-border-default p-3">
-          <div className="font-medium">{e.title ?? e.event_type}</div>
-          <div className="text-text-secondary">
-            {formatDate(e.starts_at)} 〜 {formatDate(e.ends_at)}
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between">
+        <CardTitle>研修日 / イベント</CardTitle>
+        {canEdit && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setAddOpen(true)}
+          >
+            <Plus className="h-4 w-4" />
+            追加
+          </Button>
+        )}
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <div className="space-y-2">
+            <Skeleton className="h-12 w-full" />
+            <Skeleton className="h-12 w-full" />
           </div>
-          {e.note && <div className="text-xs text-text-muted">{e.note}</div>}
-        </li>
-      ))}
-    </ul>
+        ) : isError ? (
+          <Alert variant="destructive">
+            <AlertTitle>取得に失敗しました</AlertTitle>
+            <AlertDescription>
+              {error instanceof Error ? error.message : '不明なエラー'}
+            </AlertDescription>
+          </Alert>
+        ) : !data || data.length === 0 ? (
+          <p className="text-sm text-text-muted">
+            登録された研修・イベントはありません
+          </p>
+        ) : (
+          <ul className="space-y-2 text-sm">
+            {data.map((e) => (
+              <li
+                key={e.id}
+                className="flex items-center justify-between gap-3 rounded border border-border-default p-3"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="inline-flex items-center rounded-full border border-border-default bg-bg-muted px-2 py-0.5 text-xs text-text-secondary">
+                      {e.type}
+                    </span>
+                    <span className="font-medium text-text-primary">
+                      {e.title}
+                    </span>
+                  </div>
+                  <div className="tnum text-text-secondary">
+                    {e.date}　{e.start_time} 〜 {e.end_time}
+                  </div>
+                  {e.note && (
+                    <div className="text-xs text-text-muted">{e.note}</div>
+                  )}
+                </div>
+                {canEdit && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setEditing(e)}
+                  >
+                    <Pencil className="h-4 w-4" />
+                    編集
+                  </Button>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </CardContent>
+
+      {canEdit && (
+        <>
+          <EventAddDialog
+            staffId={staffId}
+            open={addOpen}
+            onOpenChange={setAddOpen}
+          />
+          <EventEditDialog
+            staffId={staffId}
+            event={editing}
+            open={!!editing}
+            onOpenChange={(next) => {
+              if (!next) setEditing(null);
+            }}
+          />
+        </>
+      )}
+    </Card>
   );
 }
 
-function MentorList({ assignments }: { assignments: MentorAssignment[] }) {
-  if (assignments.length === 0) {
-    return <p className="text-sm text-text-muted">メンター割付はありません</p>;
-  }
+function MentorCard({
+  staffId,
+  canEdit,
+  currentMentorIdHint,
+}: {
+  staffId: string;
+  canEdit: boolean;
+  /** Falls back to staff.mentor_id while the dedicated endpoint is loading. */
+  currentMentorIdHint: string | null;
+}) {
+  const { data, isLoading, isError, error } = useMentor(staffId);
+  const [open, setOpen] = useState(false);
+
+  const mentorId = data?.mentor_staff_id ?? currentMentorIdHint;
+  const mentorName = data?.mentor_staff_name ?? null;
+
   return (
-    <ul className="space-y-2 text-sm">
-      {assignments.map((a) => (
-        <li key={a.id} className="rounded border border-border-default p-3">
-          <div>
-            メンター {a.mentor_id.slice(0, 8)} → メンティ {a.mentee_id.slice(0, 8)}
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between">
+        <CardTitle>メンター割付</CardTitle>
+        {canEdit && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setOpen(true)}
+          >
+            <Pencil className="h-4 w-4" />
+            変更
+          </Button>
+        )}
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <Skeleton className="h-10 w-full" />
+        ) : isError ? (
+          <Alert variant="destructive">
+            <AlertTitle>取得に失敗しました</AlertTitle>
+            <AlertDescription>
+              {error instanceof Error ? error.message : '不明なエラー'}
+            </AlertDescription>
+          </Alert>
+        ) : mentorId ? (
+          <div className="rounded border border-border-default p-3 text-sm">
+            <div className="text-xs text-text-muted">担当メンター</div>
+            <div className="text-text-primary">
+              {mentorName ?? mentorId}
+            </div>
           </div>
-          <div className="text-text-secondary">
-            {a.start_date} 〜 {a.end_date ?? '継続中'}
-          </div>
-        </li>
-      ))}
-    </ul>
+        ) : (
+          <Alert>
+            <AlertTitle>メンター未設定</AlertTitle>
+            <AlertDescription>
+              このスタッフにはメンターが割り当てられていません。
+            </AlertDescription>
+          </Alert>
+        )}
+      </CardContent>
+
+      {canEdit && (
+        <MentorAssignDialog
+          staffId={staffId}
+          currentMentorId={mentorId}
+          open={open}
+          onOpenChange={setOpen}
+        />
+      )}
+    </Card>
   );
 }
 

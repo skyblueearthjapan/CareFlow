@@ -1,0 +1,225 @@
+/**
+ * TanStack Query hooks for staff events (研修日 / イベント).
+ *
+ * Endpoints (F5-Backend contract):
+ *   GET    /api/v1/staff/{staff_id}/events?from=YYYY-MM-DD&to=YYYY-MM-DD
+ *   POST   /api/v1/staff/{staff_id}/events
+ *   PATCH  /api/v1/staff/{staff_id}/events/{event_id}
+ *   DELETE /api/v1/staff/{staff_id}/events/{event_id}
+ *
+ * Pattern follows `lib/queries/staff.ts` for auth/cache invalidation, and
+ * `lib/queries/visits.ts` for the optimistic-update flavour (snapshot →
+ * mutate → rollback on error → invalidate on settle).
+ */
+'use client';
+
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type UseMutationResult,
+  type UseQueryResult,
+} from '@tanstack/react-query';
+import { useSession } from 'next-auth/react';
+
+import { fetcher } from '@/lib/api/fetcher';
+import {
+  eventCreateSchema,
+  eventUpdateSchema,
+  type EventCreate,
+  type EventRead,
+  type EventUpdate,
+} from '@/lib/schemas/staff-events';
+
+const STAFF_EVENTS_KEY = ['staff', 'events'] as const;
+
+function staffEventsBase(staffId: string) {
+  return `/api/v1/staff/${staffId}/events`;
+}
+
+function authPair(session: ReturnType<typeof useSession>['data']) {
+  return {
+    accessToken: session?.accessToken ?? null,
+    refreshToken: session?.refreshToken ?? null,
+  };
+}
+
+export interface DateRange {
+  from: string; // YYYY-MM-DD inclusive
+  to: string; // YYYY-MM-DD inclusive
+}
+
+function buildListUrl(staffId: string, range?: DateRange): string {
+  if (!range) return staffEventsBase(staffId);
+  const qs = new URLSearchParams();
+  qs.set('from', range.from);
+  qs.set('to', range.to);
+  return `${staffEventsBase(staffId)}?${qs.toString()}`;
+}
+
+/** GET .../events — list (optionally filtered by date range). */
+export function useStaffEvents(
+  staffId: string | null | undefined,
+  range?: DateRange,
+): UseQueryResult<EventRead[], Error> {
+  const { data: session, status } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+  const normalizedId = staffId ?? '__none__';
+
+  return useQuery<EventRead[], Error>({
+    queryKey: [...STAFF_EVENTS_KEY, normalizedId, range ?? null],
+    enabled: status === 'authenticated' && !!staffId,
+    queryFn: () => {
+      if (!staffId) throw new Error('staff id is required');
+      return fetcher<EventRead[]>(buildListUrl(staffId, range), {
+        accessToken,
+        refreshToken,
+      });
+    },
+  });
+}
+
+/** POST .../events — create. */
+export function useCreateEvent(
+  staffId: string,
+): UseMutationResult<EventRead, Error, EventCreate> {
+  const qc = useQueryClient();
+  const { data: session } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+
+  return useMutation<EventRead, Error, EventCreate>({
+    mutationFn: async (values) => {
+      const parsed = eventCreateSchema.parse(values);
+      return fetcher<EventRead>(staffEventsBase(staffId), {
+        method: 'POST',
+        body: JSON.stringify(parsed),
+        accessToken,
+        refreshToken,
+      });
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({
+        queryKey: [...STAFF_EVENTS_KEY, staffId],
+      });
+    },
+  });
+}
+
+interface UpdateEventVariables {
+  eventId: string;
+  payload: EventUpdate;
+}
+
+/**
+ * PATCH .../events/{event_id} — update with optimistic write-through to the
+ * cached list. On error we revert and let the invalidate-on-settle re-fetch
+ * authoritatively.
+ */
+export function useUpdateEvent(
+  staffId: string,
+): UseMutationResult<
+  EventRead,
+  Error,
+  UpdateEventVariables,
+  { previous: Array<[readonly unknown[], EventRead[] | undefined]> }
+> {
+  const qc = useQueryClient();
+  const { data: session } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+
+  return useMutation<
+    EventRead,
+    Error,
+    UpdateEventVariables,
+    { previous: Array<[readonly unknown[], EventRead[] | undefined]> }
+  >({
+    mutationFn: async ({ eventId, payload }) => {
+      const parsed = eventUpdateSchema.parse(payload);
+      return fetcher<EventRead>(`${staffEventsBase(staffId)}/${eventId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(parsed),
+        accessToken,
+        refreshToken,
+      });
+    },
+    onMutate: async ({ eventId, payload }) => {
+      await qc.cancelQueries({ queryKey: [...STAFF_EVENTS_KEY, staffId] });
+      const snapshots = qc.getQueriesData<EventRead[]>({
+        queryKey: [...STAFF_EVENTS_KEY, staffId],
+      });
+      for (const [key, list] of snapshots) {
+        if (!list) continue;
+        qc.setQueryData<EventRead[]>(
+          key,
+          list.map((e) => (e.id === eventId ? { ...e, ...payload } : e)),
+        );
+      }
+      return { previous: snapshots };
+    },
+    onError: (_err, _vars, ctx) => {
+      if (!ctx) return;
+      for (const [key, value] of ctx.previous) {
+        qc.setQueryData(key, value);
+      }
+    },
+    onSettled: () => {
+      void qc.invalidateQueries({
+        queryKey: [...STAFF_EVENTS_KEY, staffId],
+      });
+    },
+  });
+}
+
+/** DELETE .../events/{event_id} — soft-removal (optimistic). */
+export function useDeleteEvent(
+  staffId: string,
+): UseMutationResult<
+  void,
+  Error,
+  string,
+  { previous: Array<[readonly unknown[], EventRead[] | undefined]> }
+> {
+  const qc = useQueryClient();
+  const { data: session } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+
+  return useMutation<
+    void,
+    Error,
+    string,
+    { previous: Array<[readonly unknown[], EventRead[] | undefined]> }
+  >({
+    mutationFn: async (eventId) => {
+      await fetcher<void>(`${staffEventsBase(staffId)}/${eventId}`, {
+        method: 'DELETE',
+        accessToken,
+        refreshToken,
+      });
+    },
+    onMutate: async (eventId) => {
+      await qc.cancelQueries({ queryKey: [...STAFF_EVENTS_KEY, staffId] });
+      const snapshots = qc.getQueriesData<EventRead[]>({
+        queryKey: [...STAFF_EVENTS_KEY, staffId],
+      });
+      for (const [key, list] of snapshots) {
+        if (!list) continue;
+        qc.setQueryData<EventRead[]>(
+          key,
+          list.filter((e) => e.id !== eventId),
+        );
+      }
+      return { previous: snapshots };
+    },
+    onError: (_err, _vars, ctx) => {
+      if (!ctx) return;
+      for (const [key, value] of ctx.previous) {
+        qc.setQueryData(key, value);
+      }
+    },
+    onSettled: () => {
+      void qc.invalidateQueries({
+        queryKey: [...STAFF_EVENTS_KEY, staffId],
+      });
+    },
+  });
+}

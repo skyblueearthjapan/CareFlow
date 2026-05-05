@@ -1,0 +1,295 @@
+'use client';
+
+/**
+ * Edit (or delete) an existing staff event.
+ *
+ * Hooks: `useUpdateEvent` (PATCH) + `useDeleteEvent` (DELETE).
+ * Delete is gated behind a nested `<DeleteConfirmModal>` (AlertDialog
+ * equivalent) so an accidental tap can't drop the row.
+ */
+import { useEffect, useState } from 'react';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { useForm, type Resolver } from 'react-hook-form';
+import { toast } from 'sonner';
+
+import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import {
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from '@/components/ui/form';
+import { Input } from '@/components/ui/input';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { Textarea } from '@/components/ui/textarea';
+import { useDeleteEvent, useUpdateEvent } from '@/lib/queries/staff-events';
+import {
+  eventCreateSchema,
+  type EventCreate,
+  type EventRead,
+} from '@/lib/schemas/staff-events';
+
+import { DeleteConfirmModal } from '../../_components/DeleteConfirmModal';
+
+interface EventEditDialogProps {
+  staffId: string;
+  event: EventRead | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}
+
+export function EventEditDialog({
+  staffId,
+  event,
+  open,
+  onOpenChange,
+}: EventEditDialogProps) {
+  const update = useUpdateEvent(staffId);
+  const remove = useDeleteEvent(staffId);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  // Re-use the create schema for edits — every field is required when
+  // present in the form, and the API accepts the full body for PATCH too.
+  const form = useForm<EventCreate>({
+    // ZodEffects (from `.refine`) doesn't infer cleanly through zodResolver;
+    // cast matches the pattern used in `PatientForm.tsx`.
+    resolver: zodResolver(eventCreateSchema) as Resolver<EventCreate>,
+    defaultValues: {
+      date: event?.date ?? '',
+      title: event?.title ?? '',
+      start_time: event?.start_time ?? '09:00',
+      end_time: event?.end_time ?? '17:00',
+      type: event?.type ?? '研修',
+      note: event?.note ?? '',
+    },
+  });
+
+  // Reset whenever a new event is bound (open) so old values don't bleed.
+  useEffect(() => {
+    if (event && open) {
+      form.reset({
+        date: event.date,
+        title: event.title,
+        start_time: event.start_time,
+        end_time: event.end_time,
+        type: event.type,
+        note: event.note ?? '',
+      });
+    }
+  }, [event, open, form]);
+
+  const onSubmit = async (values: EventCreate) => {
+    if (!event) return;
+    try {
+      await update.mutateAsync({
+        eventId: event.id,
+        payload: {
+          ...values,
+          note:
+            values.note && values.note.trim() !== ''
+              ? values.note.trim()
+              : null,
+        },
+      });
+      toast.success('イベントを更新しました');
+      onOpenChange(false);
+    } catch (err) {
+      toast.error(
+        `更新に失敗しました: ${err instanceof Error ? err.message : '不明なエラー'}`,
+      );
+    }
+  };
+
+  const onDelete = async () => {
+    if (!event) return;
+    try {
+      await remove.mutateAsync(event.id);
+      toast.success('イベントを削除しました');
+      setConfirmDelete(false);
+      onOpenChange(false);
+    } catch (err) {
+      toast.error(
+        `削除に失敗しました: ${err instanceof Error ? err.message : '不明なエラー'}`,
+      );
+    }
+  };
+
+  const isBusy = update.isPending || remove.isPending;
+
+  return (
+    <>
+      <Dialog
+        open={open}
+        onOpenChange={(next) => {
+          if (!next && isBusy) return;
+          onOpenChange(next);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>研修・イベントを編集</DialogTitle>
+            <DialogDescription>
+              内容を変更するか、削除できます。
+            </DialogDescription>
+          </DialogHeader>
+
+          <Form {...form}>
+            <form
+              onSubmit={form.handleSubmit(onSubmit)}
+              className="grid gap-4 py-2"
+            >
+              <FormField
+                control={form.control}
+                name="date"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>日付</FormLabel>
+                    <FormControl>
+                      <Input type="date" {...field} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name="type"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>種別</FormLabel>
+                    <Select
+                      value={field.value}
+                      onValueChange={field.onChange}
+                    >
+                      <FormControl>
+                        <SelectTrigger aria-label="種別を選択">
+                          <SelectValue />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        <SelectItem value="研修">研修</SelectItem>
+                        <SelectItem value="イベント">イベント</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name="title"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>タイトル</FormLabel>
+                    <FormControl>
+                      <Input maxLength={100} {...field} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <div className="grid grid-cols-2 gap-4">
+                <FormField
+                  control={form.control}
+                  name="start_time"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>開始時刻</FormLabel>
+                      <FormControl>
+                        <Input type="time" {...field} />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="end_time"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>終了時刻</FormLabel>
+                      <FormControl>
+                        <Input type="time" {...field} />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
+
+              <FormField
+                control={form.control}
+                name="note"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>備考</FormLabel>
+                    <FormControl>
+                      <Textarea
+                        rows={3}
+                        {...field}
+                        value={field.value ?? ''}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <DialogFooter className="sm:justify-between">
+                <Button
+                  type="button"
+                  variant="destructive"
+                  onClick={() => setConfirmDelete(true)}
+                  disabled={isBusy}
+                >
+                  削除
+                </Button>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => onOpenChange(false)}
+                    disabled={isBusy}
+                  >
+                    キャンセル
+                  </Button>
+                  <Button type="submit" disabled={isBusy}>
+                    {update.isPending ? '保存中…' : '保存'}
+                  </Button>
+                </div>
+              </DialogFooter>
+            </form>
+          </Form>
+        </DialogContent>
+      </Dialog>
+
+      <DeleteConfirmModal
+        open={confirmDelete}
+        title="イベントを削除しますか？"
+        description="この操作は元に戻せません。"
+        confirming={remove.isPending}
+        onCancel={() => setConfirmDelete(false)}
+        onConfirm={onDelete}
+      />
+    </>
+  );
+}
