@@ -1,8 +1,8 @@
 """Dashboard aggregation endpoints (Phase 7 — W2-D).
 
 Read-only endpoints that summarise the `visits` table for the homepage
-dashboard. Staff users only see their own assigned visits (primary slot);
-admin/manager see everything.
+dashboard. Staff users see their own assigned visits across all three slots
+(primary, secondary/同行, mentor); admin/manager see everything.
 
 Implementation notes
 ────────────────────
@@ -12,6 +12,8 @@ Implementation notes
 * Trend uses a single `GROUP BY visit_date` query over the requested window
   and back-fills missing days with zeros so the chart is gap-free.
 * The week aggregate is the ISO week containing today (Mon–Sun).
+* `cancelled` visits are excluded from every aggregate (today / week / trend)
+  so they neither inflate visit totals nor drag down completion rates.
 """
 
 from __future__ import annotations
@@ -25,7 +27,11 @@ from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import case, func, or_, select
 
 from app.core.deps import CurrentActiveUser, DbDep
-from app.models.visit import Visit, VisitStatus  # noqa: F401  (VisitStatus used in comments)
+from app.models.visit import (
+    VISIT_STATUS_CANCELLED,
+    VISIT_STATUS_COMPLETED,
+    Visit,
+)
 from app.schemas.dashboard import (
     DashboardKpiResponse,
     DashboardTrendItem,
@@ -36,7 +42,8 @@ router = APIRouter()
 
 # All "today"/"end" date math is anchored to JST so a request issued from a
 # UTC-region VPS still uses Japan local-day boundaries (the staff-facing UI
-# is JST-only). See VisitStatus for allowed `status` values referenced below.
+# is JST-only). Status comparisons below use the typed constants imported
+# from `app.models.visit` (backed by the `VisitStatus` Literal).
 JST = ZoneInfo("Asia/Tokyo")
 
 _ALLOWED_ROLES = {"admin", "manager", "staff"}
@@ -121,8 +128,8 @@ async def get_kpi(db: DbDep, user: CurrentActiveUser) -> DashboardKpiResponse:
 
     # ---- Today's roll-up ---------------------------------------------------
     # Cancelled visits are excluded so they neither count toward
-    # `today_visits` nor inflate `today_overlapping`. Compare against the
-    # `VisitStatus` Literal values exported from `app.models.visit`.
+    # `today_visits` nor inflate `today_overlapping`. Status constants come
+    # from `app.models.visit` (typed by the `VisitStatus` Literal).
     today_stmt = select(
         Visit.primary_staff_id,
         Visit.start_time,
@@ -131,7 +138,7 @@ async def get_kpi(db: DbDep, user: CurrentActiveUser) -> DashboardKpiResponse:
     ).where(
         Visit.deleted_at.is_(None),
         Visit.visit_date == today,
-        Visit.status != "cancelled",
+        Visit.status != VISIT_STATUS_CANCELLED,
     )
 
     today_stmt = _staff_scope(today_stmt, user.role, user.staff_id)
@@ -147,20 +154,25 @@ async def get_kpi(db: DbDep, user: CurrentActiveUser) -> DashboardKpiResponse:
 
     today_rows = (await db.execute(today_stmt)).all()
     today_visits = len(today_rows)
-    today_completed = sum(1 for r in today_rows if r.status == "completed")
+    today_completed = sum(1 for r in today_rows if r.status == VISIT_STATUS_COMPLETED)
     today_unassigned = sum(1 for r in today_rows if r.primary_staff_id is None)
     today_overlapping = _count_overlaps(
         [(r.primary_staff_id, r.start_time, r.end_time) for r in today_rows]
     )
 
     # ---- This week's roll-up ----------------------------------------------
+    # Cancelled visits are excluded so the weekly total and completion rate
+    # reflect operational visits only (consistent with today's KPI above).
     week_stmt = select(
         func.count(Visit.id).label("total"),
-        func.sum(case((Visit.status == "completed", 1), else_=0)).label("completed"),
+        func.sum(case((Visit.status == VISIT_STATUS_COMPLETED, 1), else_=0)).label(
+            "completed"
+        ),
     ).where(
         Visit.deleted_at.is_(None),
         Visit.visit_date >= week_start,
         Visit.visit_date <= week_end,
+        Visit.status != VISIT_STATUS_CANCELLED,
     )
     week_stmt = _staff_scope(week_stmt, user.role, user.staff_id)
     # _staff_scope cannot return None here because we returned early above.
@@ -199,7 +211,9 @@ async def get_trend(
         select(
             Visit.visit_date.label("d"),
             func.count(Visit.id).label("total"),
-            func.sum(case((Visit.status == "completed", 1), else_=0)).label("completed"),
+            func.sum(case((Visit.status == VISIT_STATUS_COMPLETED, 1), else_=0)).label(
+                "completed"
+            ),
             func.sum(case((Visit.primary_staff_id.is_(None), 1), else_=0)).label(
                 "unassigned"
             ),
@@ -208,6 +222,9 @@ async def get_trend(
             Visit.deleted_at.is_(None),
             Visit.visit_date >= start,
             Visit.visit_date <= end,
+            # Cancelled visits are excluded from trend totals to match the
+            # exclusion rule applied to today/week aggregates.
+            Visit.status != VISIT_STATUS_CANCELLED,
         )
         .group_by(Visit.visit_date)
         .order_by(Visit.visit_date.asc())

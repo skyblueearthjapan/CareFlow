@@ -25,11 +25,19 @@ if TYPE_CHECKING:
     from app.models.staff import Staff
 
 
-# Allowed values for `Visit.status`. The DB column is currently `String(16)`
-# without a CHECK constraint; tightening that is deferred to a separate
-# migration. This Literal lets routers/services compare against a single
-# source of truth instead of hard-coding strings.
+# Allowed values for `Visit.status`. The DB column is `String(16)` without a
+# CHECK constraint at the DB level; tightening that is deferred to a separate
+# migration. SQLAlchemy 2.0 supports `Mapped[Literal[...]]`, so the column
+# below is typed as `Mapped[VisitStatus]` for static-type enforcement, while
+# routers/services compare against the constants exported here instead of
+# hard-coding strings.
 VisitStatus = Literal["planned", "in_progress", "completed", "cancelled"]
+
+# Status constants — a single source of truth for status string comparisons.
+VISIT_STATUS_PLANNED: VisitStatus = "planned"
+VISIT_STATUS_IN_PROGRESS: VisitStatus = "in_progress"
+VISIT_STATUS_COMPLETED: VisitStatus = "completed"
+VISIT_STATUS_CANCELLED: VisitStatus = "cancelled"
 
 
 class Visit(Base, TimestampMixin):
@@ -73,7 +81,9 @@ class Visit(Base, TimestampMixin):
     end_time: Mapped[time] = mapped_column(Time, nullable=False)
 
     type: Mapped[str] = mapped_column(String(16), nullable=False)
-    status: Mapped[str] = mapped_column(String(16), nullable=False, default="planned")
+    status: Mapped[VisitStatus] = mapped_column(
+        String(16), nullable=False, default=VISIT_STATUS_PLANNED
+    )
     source: Mapped[str] = mapped_column(String(16), nullable=False, default="manual")
 
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
