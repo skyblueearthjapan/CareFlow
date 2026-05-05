@@ -2,6 +2,22 @@
 
 訪問看護スケジューリングアプリ。既存 GAS UI（careflow-scheduler）+ VPS Python/Playwright（PlaywrightTest1）の後継として新規構築。
 
+## v1 凍結のお知らせ (2026-05-06)
+
+CareFlow v2 (本リポジトリ) の Wave 6 完了に伴い、v1 系の保守を凍結します。
+
+- **`careflow-scheduler` (GAS) リポジトリ**: 保守凍結。バグ修正・機能追加は受け付けません。
+  既存ユーザーは v2 (`carelink.kaipoke-api.net`) へ移行してください。
+- **VPS Python 割当エンジン v1** (旧 `PlaywrightTest1` / `python_engine`): 廃止予定。
+  v2 の Layer 1〜3 アルゴリズム (`backend/app/services/scheduling/`) で完全代替済み。
+  運用切替後 1 ヶ月の経過観察を経て撤去します。
+- **kaipoke-api 中継ジョブ**: v2 backend (`backend/app/services/kaipoke_*`) からのみ稼働継続。
+  v1 GAS 経由の呼び出しは順次停止します。
+
+新規開発・バグ修正・運用改善は **すべて v2 (本 `CareFlow` リポジトリ)** で行います。
+v1 → v2 移行手順とリリース内容は `docs/RELEASE-NOTES-v2.md` を参照してください。
+
+
 ## アーキテクチャ
 
 - **Frontend**: Next.js 15 (App Router) + TypeScript + Tailwind CSS + shadcn/ui
