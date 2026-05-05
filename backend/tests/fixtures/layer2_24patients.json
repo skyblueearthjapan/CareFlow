@@ -1,0 +1,35 @@
+{
+  "_comment": "W4-BE8 受入基準用 fixture. 千葉市稲毛区/若葉区相当の 24 名. 4 クラスタ自然形成 + 同クラスタ内は時間帯重複なし. random_state=0 で総直線距離が naive round-robin の 70% 以下になることを検証する.",
+  "iso_year": 2026,
+  "iso_week": 19,
+  "weekday": 0,
+  "patients": [
+    {"patient_id": "p01", "weekday": 0, "start_time": "09:00", "end_time": "10:00", "service_min": 60, "lat": 35.6200, "lng": 140.0800},
+    {"patient_id": "p02", "weekday": 0, "start_time": "10:15", "end_time": "11:15", "service_min": 60, "lat": 35.6210, "lng": 140.0820},
+    {"patient_id": "p03", "weekday": 0, "start_time": "11:30", "end_time": "12:30", "service_min": 60, "lat": 35.6195, "lng": 140.0785},
+    {"patient_id": "p04", "weekday": 0, "start_time": "13:00", "end_time": "14:00", "service_min": 60, "lat": 35.6225, "lng": 140.0810},
+    {"patient_id": "p05", "weekday": 0, "start_time": "14:15", "end_time": "15:15", "service_min": 60, "lat": 35.6180, "lng": 140.0795},
+    {"patient_id": "p06", "weekday": 0, "start_time": "15:30", "end_time": "16:30", "service_min": 60, "lat": 35.6215, "lng": 140.0825},
+
+    {"patient_id": "p07", "weekday": 0, "start_time": "09:00", "end_time": "10:00", "service_min": 60, "lat": 35.6400, "lng": 140.1100},
+    {"patient_id": "p08", "weekday": 0, "start_time": "10:15", "end_time": "11:15", "service_min": 60, "lat": 35.6410, "lng": 140.1115},
+    {"patient_id": "p09", "weekday": 0, "start_time": "11:30", "end_time": "12:30", "service_min": 60, "lat": 35.6395, "lng": 140.1085},
+    {"patient_id": "p10", "weekday": 0, "start_time": "13:00", "end_time": "14:00", "service_min": 60, "lat": 35.6420, "lng": 140.1120},
+    {"patient_id": "p11", "weekday": 0, "start_time": "14:15", "end_time": "15:15", "service_min": 60, "lat": 35.6385, "lng": 140.1095},
+    {"patient_id": "p12", "weekday": 0, "start_time": "15:30", "end_time": "16:30", "service_min": 60, "lat": 35.6405, "lng": 140.1110},
+
+    {"patient_id": "p13", "weekday": 0, "start_time": "09:00", "end_time": "10:00", "service_min": 60, "lat": 35.6650, "lng": 140.1650},
+    {"patient_id": "p14", "weekday": 0, "start_time": "10:15", "end_time": "11:15", "service_min": 60, "lat": 35.6660, "lng": 140.1670},
+    {"patient_id": "p15", "weekday": 0, "start_time": "11:30", "end_time": "12:30", "service_min": 60, "lat": 35.6645, "lng": 140.1635},
+    {"patient_id": "p16", "weekday": 0, "start_time": "13:00", "end_time": "14:00", "service_min": 60, "lat": 35.6670, "lng": 140.1680},
+    {"patient_id": "p17", "weekday": 0, "start_time": "14:15", "end_time": "15:15", "service_min": 60, "lat": 35.6635, "lng": 140.1645},
+    {"patient_id": "p18", "weekday": 0, "start_time": "15:30", "end_time": "16:30", "service_min": 60, "lat": 35.6655, "lng": 140.1660},
+
+    {"patient_id": "p19", "weekday": 0, "start_time": "09:00", "end_time": "10:00", "service_min": 60, "lat": 35.6400, "lng": 140.1800},
+    {"patient_id": "p20", "weekday": 0, "start_time": "10:15", "end_time": "11:15", "service_min": 60, "lat": 35.6410, "lng": 140.1820},
+    {"patient_id": "p21", "weekday": 0, "start_time": "11:30", "end_time": "12:30", "service_min": 60, "lat": 35.6395, "lng": 140.1785},
+    {"patient_id": "p22", "weekday": 0, "start_time": "13:00", "end_time": "14:00", "service_min": 60, "lat": 35.6420, "lng": 140.1815},
+    {"patient_id": "p23", "weekday": 0, "start_time": "14:15", "end_time": "15:15", "service_min": 60, "lat": 35.6385, "lng": 140.1795},
+    {"patient_id": "p24", "weekday": 0, "start_time": "15:30", "end_time": "16:30", "service_min": 60, "lat": 35.6405, "lng": 140.1810}
+  ]
+}
