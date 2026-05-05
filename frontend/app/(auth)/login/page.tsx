@@ -1,13 +1,13 @@
 'use client';
 
-import { useState } from 'react';
+import { Suspense, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { signIn } from 'next-auth/react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card } from '@/components/ui/card';
 
-export default function LoginPage() {
+function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const callbackUrl = searchParams.get('callbackUrl') ?? '/dashboard';
@@ -41,44 +41,56 @@ export default function LoginPage() {
   };
 
   return (
+    <form onSubmit={onSubmit} className="space-y-4">
+      <div>
+        <label htmlFor="email" className="mb-1 block text-sm text-text-secondary">
+          メールアドレス
+        </label>
+        <Input
+          id="email"
+          type="email"
+          autoComplete="email"
+          required
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+        />
+      </div>
+      <div>
+        <label htmlFor="password" className="mb-1 block text-sm text-text-secondary">
+          パスワード
+        </label>
+        <Input
+          id="password"
+          type="password"
+          autoComplete="current-password"
+          required
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+        />
+      </div>
+      {error && (
+        <p role="alert" aria-live="polite" className="text-sm text-error">
+          {error}
+        </p>
+      )}
+      <Button type="submit" className="w-full" disabled={submitting}>
+        {submitting ? 'ログイン中…' : 'ログイン'}
+      </Button>
+    </form>
+  );
+}
+
+export default function LoginPage() {
+  return (
     <main className="flex min-h-screen items-center justify-center bg-bg-app px-4">
       <Card className="w-full max-w-sm p-8">
         <div className="mb-6 text-center">
           <h1 className="font-serif text-2xl font-bold text-text-primary">CareLink</h1>
           <p className="mt-1 text-sm text-text-secondary">訪問看護スケジューリング</p>
         </div>
-        <form onSubmit={onSubmit} className="space-y-4">
-          <div>
-            <label htmlFor="email" className="mb-1 block text-sm text-text-secondary">
-              メールアドレス
-            </label>
-            <Input
-              id="email"
-              type="email"
-              autoComplete="email"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-            />
-          </div>
-          <div>
-            <label htmlFor="password" className="mb-1 block text-sm text-text-secondary">
-              パスワード
-            </label>
-            <Input
-              id="password"
-              type="password"
-              autoComplete="current-password"
-              required
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-          </div>
-          {error && <p className="text-sm text-error">{error}</p>}
-          <Button type="submit" className="w-full" disabled={submitting}>
-            {submitting ? 'ログイン中…' : 'ログイン'}
-          </Button>
-        </form>
+        <Suspense fallback={<div className="h-32" aria-hidden />}>
+          <LoginForm />
+        </Suspense>
       </Card>
     </main>
   );
