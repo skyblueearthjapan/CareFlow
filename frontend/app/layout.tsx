@@ -18,11 +18,12 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: '#0D9488',
+  themeColor: '#0d9488',
 };
 
 // Static SW registration script (no dynamic content; safe to inline).
-const SW_REGISTER_SRC = `if('serviceWorker' in navigator){window.addEventListener('load',function(){navigator.serviceWorker.register('/sw.js').catch(console.error);});}`;
+// `afterInteractive` Script strategy already runs post-load — no extra `load` listener needed.
+const SW_REGISTER_SRC = `if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(console.error);}`;
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
