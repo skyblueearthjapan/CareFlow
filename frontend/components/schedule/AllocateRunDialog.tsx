@@ -23,6 +23,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { ApiError } from '@/lib/api-client';
 import { useRunAllocate, type AllocateResponse } from '@/lib/queries/allocate';
 import { addDays } from '@/components/schedule/WeekSelector';
 
@@ -60,11 +61,26 @@ export function AllocateRunDialog({
       await mutation.mutateAsync(formatIsoDate(weekStart));
       toast.success('割当を実行しました');
     } catch (err) {
+      if (err instanceof ApiError && err.status === 429) {
+        toast.error(
+          '短時間に実行が集中しています。1分後に再試行してください',
+        );
+        return;
+      }
       toast.error(
         `割当に失敗しました: ${err instanceof Error ? err.message : '不明なエラー'}`,
       );
     }
   };
+
+  const errorMessage = (() => {
+    const err = mutation.error;
+    if (!err) return null;
+    if (err instanceof ApiError && err.status === 429) {
+      return '短時間に実行が集中しています。1分後に再試行してください';
+    }
+    return err instanceof Error ? err.message : '不明なエラー';
+  })();
 
   return (
     <Dialog
@@ -81,6 +97,13 @@ export function AllocateRunDialog({
             {format(weekEnd, 'M月d日', { locale: ja })} の訪問を再割当します。
           </DialogDescription>
         </DialogHeader>
+
+        {errorMessage ? (
+          <Alert variant="destructive">
+            <AlertTitle>割当に失敗しました</AlertTitle>
+            <AlertDescription>{errorMessage}</AlertDescription>
+          </Alert>
+        ) : null}
 
         {result ? (
           <div className="space-y-3 py-2">

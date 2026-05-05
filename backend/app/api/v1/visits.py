@@ -6,6 +6,7 @@ secondary, or mentor staff; admin/manager see everything.
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Annotated
 from uuid import UUID
 
@@ -67,6 +68,12 @@ async def list_visits(
     user: CurrentActiveUser,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
+    week_start: Annotated[date | None, Query(description="Inclusive start date (yyyy-MM-dd)")] = None,
+    week_end: Annotated[date | None, Query(description="Inclusive end date (yyyy-MM-dd)")] = None,
+    staff_id: Annotated[
+        UUID | None,
+        Query(description="Filter to visits where this staff is primary/secondary/mentor"),
+    ] = None,
 ) -> list[dict]:
     if user.role not in {"admin", "manager", "staff"}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
@@ -79,11 +86,22 @@ async def list_visits(
             selectinload(Visit.primary_staff),
         )
     )
+    # Determine the effective staff filter:
+    #   - staff role: always force-narrow to the caller's own staff_id (ignore
+    #     any client-supplied value to prevent cross-staff peeking).
+    #   - admin/manager: honor the optional `staff_id` query for the mobile
+    #     "my visits" view; without it they continue to see everyone.
     if user.role == "staff":
         if user.staff_id is None:
             return []
         stmt = stmt.where(_staff_visibility_filter(user.staff_id))
-    stmt = stmt.order_by(Visit.visit_date.desc(), Visit.start_time.desc()).limit(limit).offset(offset)
+    elif staff_id is not None:
+        stmt = stmt.where(_staff_visibility_filter(staff_id))
+    if week_start is not None:
+        stmt = stmt.where(Visit.visit_date >= week_start)
+    if week_end is not None:
+        stmt = stmt.where(Visit.visit_date <= week_end)
+    stmt = stmt.order_by(Visit.visit_date, Visit.start_time).limit(limit).offset(offset)
     rows = (await db.scalars(stmt)).all()
     return [_serialize_visit(v) for v in rows]
 

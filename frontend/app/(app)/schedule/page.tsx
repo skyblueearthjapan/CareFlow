@@ -22,7 +22,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { useOffices } from '@/lib/queries/offices';
 import { usePatients } from '@/lib/queries/patients';
 import { useStaffList } from '@/lib/queries/staff';
-import { useVisits } from '@/lib/queries/visits';
+import { useUnassignedVisits, useVisits } from '@/lib/queries/visits';
 import type { VisitRead } from '@/lib/schemas/visit';
 
 import { AllocateRunDialog } from '@/components/schedule/AllocateRunDialog';
@@ -49,6 +49,9 @@ export default function SchedulePage() {
   const role = session?.user?.role ?? 'staff';
   const canRunAllocate = role === 'admin' || role === 'manager';
   const canDeleteVisit = role === 'admin';
+  // Edit/Save are admin/manager-only; staff role gets read-only chips so a
+  // click can't reach the edit dialog (which the backend would 403 anyway).
+  const canEditVisit = role === 'admin' || role === 'manager';
 
   const [weekStart, setWeekStart] = useState<Date>(() => toWeekStart(new Date()));
   const [officeFilter, setOfficeFilter] = useState<string>('');
@@ -66,6 +69,14 @@ export default function SchedulePage() {
     week_end: weekEndIso,
     staff_id: staffFilter || undefined,
     patient_id: patientFilter || undefined,
+  });
+  // Unassigned uses a separate query so the staff/patient row filter doesn't
+  // accidentally hide visits with `primary_staff_id IS NULL` from the
+  // operator's drilldown. Admin/manager see every unassigned visit; staff
+  // role sees the empty list (backend visibility filter).
+  const unassignedQuery = useUnassignedVisits({
+    week_start: weekStartIso,
+    week_end: weekEndIso,
   });
   const staffQuery = useStaffList({ limit: 200 });
   const officesQuery = useOffices({ limit: 200 });
@@ -100,10 +111,7 @@ export default function SchedulePage() {
     () => visits.filter((v) => !!v.primary_staff_id),
     [visits],
   );
-  const unassigned = useMemo(
-    () => visits.filter((v) => !v.primary_staff_id),
-    [visits],
-  );
+  const unassigned = unassignedQuery.data?.items ?? [];
 
   const officeOptions: ComboboxOption[] = [
     { label: 'すべての拠点', value: '' },
@@ -126,6 +134,7 @@ export default function SchedulePage() {
   }, [allOffices]);
 
   const handleVisitClick = (v: VisitRead) => {
+    if (!canEditVisit) return;
     setEditingVisit(v);
     setEditOpen(true);
   };
@@ -161,30 +170,36 @@ export default function SchedulePage() {
           <WeekSelector weekStart={weekStart} onChange={setWeekStart} />
         </div>
         {role !== 'staff' ? (
-          <div className="mt-3 grid gap-3 sm:grid-cols-3">
-            <div>
-              <Combobox
-                options={officeOptions}
-                value={officeFilter}
-                onChange={setOfficeFilter}
-                placeholder="拠点で絞込"
-              />
-            </div>
-            <div>
-              <Combobox
-                options={staffOptions}
-                value={staffFilter}
-                onChange={setStaffFilter}
-                placeholder="スタッフで絞込"
-              />
-            </div>
-            <div>
-              <Combobox
-                options={patientOptions}
-                value={patientFilter}
-                onChange={setPatientFilter}
-                placeholder="患者で絞込"
-              />
+          <div className="mt-3 space-y-2">
+            <p className="text-xs text-text-muted">
+              注: 拠点フィルタは「拠点に所属するスタッフ」で絞り込みます (visit
+              直接紐付けは Phase 4-12 予定)
+            </p>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div>
+                <Combobox
+                  options={officeOptions}
+                  value={officeFilter}
+                  onChange={setOfficeFilter}
+                  placeholder="拠点で絞込"
+                />
+              </div>
+              <div>
+                <Combobox
+                  options={staffOptions}
+                  value={staffFilter}
+                  onChange={setStaffFilter}
+                  placeholder="スタッフで絞込"
+                />
+              </div>
+              <div>
+                <Combobox
+                  options={patientOptions}
+                  value={patientFilter}
+                  onChange={setPatientFilter}
+                  placeholder="患者で絞込"
+                />
+              </div>
             </div>
           </div>
         ) : (
@@ -198,6 +213,15 @@ export default function SchedulePage() {
           </div>
         )}
       </Card>
+
+      {role === 'staff' && !sessionStaffId ? (
+        <Alert variant="destructive">
+          <AlertTitle>スタッフプロファイルが未設定です</AlertTitle>
+          <AlertDescription>
+            あなたのアカウントにスタッフ情報が紐付いていないため、訪問予定を表示できません。管理者にお問い合わせください。
+          </AlertDescription>
+        </Alert>
+      ) : null}
 
       {visitsQuery.isError ? (
         <Alert variant="destructive">
@@ -235,12 +259,16 @@ export default function SchedulePage() {
           staff={visibleStaff}
           visits={assigned}
           maxPerDay={SOFT_CAP_PER_DAY}
+          canEditVisit={canEditVisit}
           onVisitClick={handleVisitClick}
           officeLabel={officeLabelById}
         />
       )}
 
-      <UnassignedList visits={unassigned} onSelect={handleVisitClick} />
+      <UnassignedList
+        visits={unassigned}
+        onSelect={canEditVisit ? handleVisitClick : undefined}
+      />
 
       <VisitEditDialog
         open={editOpen}

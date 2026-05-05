@@ -3,16 +3,15 @@
  *
  * Endpoints (backend `app/api/v1/visits.py`)
  * ──────────────────────────────────────────
- *   GET    /api/v1/visits?limit&offset
+ *   GET    /api/v1/visits?limit&offset&week_start&week_end
  *   GET    /api/v1/visits/{id}
  *   POST   /api/v1/visits         (admin/manager)
  *   PATCH  /api/v1/visits/{id}    (admin/manager)
  *   DELETE /api/v1/visits/{id}    (admin)
  *
- * The backend currently has no `week_start` / `staff_id` / `patient_id`
- * server-side filters (see backend `list_visits`). We fetch a generous
- * window and filter client-side; once backend grows query params, swap
- * the client filter for URL params.
+ * The backend filters visit_date by `week_start..week_end` (inclusive) and
+ * orders by `(visit_date, start_time)` so the 500-row hard cap maps to a
+ * within-week truncation we can surface in the UI without silent loss.
  */
 'use client';
 
@@ -40,9 +39,9 @@ const VISITS_BASE = '/api/v1/visits';
 const VISIT_LIST_HARD_CAP = 500;
 
 export interface UseVisitsParams {
-  /** Inclusive ISO date (yyyy-MM-dd). Filters client-side until backend supports it. */
+  /** Inclusive ISO date (yyyy-MM-dd). Forwarded to the backend. */
   week_start?: string;
-  /** Inclusive ISO date (yyyy-MM-dd). */
+  /** Inclusive ISO date (yyyy-MM-dd). Forwarded to the backend. */
   week_end?: string;
   staff_id?: string;
   patient_id?: string;
@@ -69,7 +68,21 @@ function dropUndefined(payload: Record<string, unknown>): Record<string, unknown
   return out;
 }
 
-/** GET /api/v1/visits — list (with client-side date/staff/patient filter). */
+function buildListUrl(params: {
+  week_start?: string;
+  week_end?: string;
+  staff_id?: string | null;
+}): string {
+  const qs = new URLSearchParams();
+  qs.set('limit', String(VISIT_LIST_HARD_CAP));
+  qs.set('offset', '0');
+  if (params.week_start) qs.set('week_start', params.week_start);
+  if (params.week_end) qs.set('week_end', params.week_end);
+  if (params.staff_id) qs.set('staff_id', params.staff_id);
+  return `${VISITS_BASE}?${qs.toString()}`;
+}
+
+/** GET /api/v1/visits — list (week range pushed down to backend). */
 export function useVisits(
   params: UseVisitsParams = {},
 ): UseQueryResult<UseVisitsResult, Error> {
@@ -97,24 +110,60 @@ export function useVisits(
       if (role === 'staff' && !sessionStaffId) {
         return { items: [], truncated: false };
       }
+      // Staff role: the backend already narrows to the caller; we pass the
+      // explicit staff_id only for admin/manager. The "__none__" sentinel is
+      // never sent over the wire.
+      const wireStaffId =
+        role === 'staff' ? null : effectiveStaffId ?? null;
       const all = await fetcher<VisitRead[]>(
-        `${VISITS_BASE}?limit=${VISIT_LIST_HARD_CAP}&offset=0`,
+        buildListUrl({ week_start, week_end, staff_id: wireStaffId }),
         { accessToken, refreshToken },
       );
+      const filtered = patient_id
+        ? all.filter((v) => v.patient_id === patient_id)
+        : all;
+      // Truncation reflects the raw backend window; if the page hit the cap,
+      // the week may be incomplete regardless of the patient filter.
       const truncated = all.length === VISIT_LIST_HARD_CAP;
-      const filtered = all.filter((v) => {
-        if (week_start && v.visit_date < week_start) return false;
-        if (week_end && v.visit_date > week_end) return false;
-        if (effectiveStaffId) {
-          const matches =
-            v.primary_staff_id === effectiveStaffId ||
-            v.secondary_staff_id === effectiveStaffId ||
-            v.mentor_staff_id === effectiveStaffId;
-          if (!matches) return false;
-        }
-        if (patient_id && v.patient_id !== patient_id) return false;
-        return true;
-      });
+      return { items: filtered, truncated };
+    },
+  });
+}
+
+export interface UseUnassignedVisitsParams {
+  week_start?: string;
+  week_end?: string;
+}
+
+/**
+ * GET /api/v1/visits — unassigned slice (primary_staff_id is null) for the
+ * given week. Staff filters are intentionally not applied because admins/
+ * managers need to see every unallocated visit regardless of the row filter.
+ */
+export function useUnassignedVisits(
+  params: UseUnassignedVisitsParams = {},
+): UseQueryResult<UseVisitsResult, Error> {
+  const { data: session, status } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+  const role = session?.user?.role ?? 'staff';
+  const sessionStaffId = session?.user?.staffId ?? null;
+
+  const { week_start, week_end } = params;
+
+  return useQuery<UseVisitsResult, Error>({
+    queryKey: [...VISITS_KEY, 'unassigned', { week_start, week_end, role }],
+    enabled: status === 'authenticated',
+    queryFn: async () => {
+      // Staff w/o staffId would 403; mirror the safe empty state.
+      if (role === 'staff' && !sessionStaffId) {
+        return { items: [], truncated: false };
+      }
+      const all = await fetcher<VisitRead[]>(
+        buildListUrl({ week_start, week_end }),
+        { accessToken, refreshToken },
+      );
+      const filtered = all.filter((v) => !v.primary_staff_id);
+      const truncated = all.length === VISIT_LIST_HARD_CAP;
       return { items: filtered, truncated };
     },
   });

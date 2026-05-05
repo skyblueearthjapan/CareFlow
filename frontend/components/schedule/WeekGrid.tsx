@@ -4,7 +4,9 @@
  * Staff × day grid for a single ISO week.
  *
  * Layout: rows = staff, columns = Mon–Sun. Visits are bucketed by
- * `(primary_staff_id, visit_date)` and rendered as `<VisitChip>` stacks.
+ * `(staffId, visit_date)` where `staffId` is the chip's "owning" staff —
+ * primary, secondary (同行), or mentor (指導). The same visit may appear in
+ * up to three rows so co-visits are visible from each staff member's view.
  *
  * Highlighting:
  *  - cells over `maxPerDay` are flagged on every chip in that cell.
@@ -28,12 +30,30 @@ interface WeekGridProps {
   visits: VisitRead[];
   /** Soft cap; cells exceeding this count are highlighted in red. */
   maxPerDay?: number;
+  /** False (staff role) makes chips non-interactive. */
+  canEditVisit?: boolean;
   onVisitClick?: (visit: VisitRead) => void;
   /** Optional lookup `office_id -> short label` for the chip suffix. */
   officeLabel?: (officeId: string | null | undefined) => string | null;
 }
 
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'] as const;
+const FULL_WEEKDAY_LABELS = [
+  '月曜日',
+  '火曜日',
+  '水曜日',
+  '木曜日',
+  '金曜日',
+  '土曜日',
+  '日曜日',
+] as const;
+
+type ChipRole = 'primary' | 'secondary' | 'mentor';
+
+interface ChipEntry {
+  visit: VisitRead;
+  role: ChipRole;
+}
 
 function dateKey(d: Date): string {
   const yyyy = d.getFullYear();
@@ -56,11 +76,18 @@ function overlaps(a: VisitRead, b: VisitRead): boolean {
   return a0 < b1 && b0 < a1;
 }
 
+function roleBadge(role: ChipRole): string | null {
+  if (role === 'secondary') return '同行';
+  if (role === 'mentor') return '指導';
+  return null;
+}
+
 export function WeekGrid({
   weekStart,
   staff,
   visits,
   maxPerDay = 6,
+  canEditVisit = true,
   onVisitClick,
   officeLabel,
 }: WeekGridProps) {
@@ -69,19 +96,36 @@ export function WeekGrid({
     [weekStart],
   );
 
-  /** Bucket: `${staffId}|${yyyy-MM-dd}` -> visits sorted by start_time. */
+  /** Bucket: `${staffId}|${yyyy-MM-dd}` -> entries sorted by start_time.
+   * A visit fans out to every staff slot it occupies (primary / secondary /
+   * mentor) so each staff row shows their own co-visits. */
   const buckets = useMemo(() => {
-    const map = new Map<string, VisitRead[]>();
-    for (const v of visits) {
-      const sid = v.primary_staff_id ?? '__unassigned__';
-      const key = `${sid}|${v.visit_date}`;
+    const map = new Map<string, ChipEntry[]>();
+    const push = (sid: string, entry: ChipEntry) => {
+      const key = `${sid}|${entry.visit.visit_date}`;
       const arr = map.get(key);
-      if (arr) arr.push(v);
-      else map.set(key, [v]);
+      if (arr) arr.push(entry);
+      else map.set(key, [entry]);
+    };
+    for (const v of visits) {
+      if (v.primary_staff_id) {
+        push(v.primary_staff_id, { visit: v, role: 'primary' });
+      }
+      if (v.secondary_staff_id && v.secondary_staff_id !== v.primary_staff_id) {
+        push(v.secondary_staff_id, { visit: v, role: 'secondary' });
+      }
+      if (
+        v.mentor_staff_id &&
+        v.mentor_staff_id !== v.primary_staff_id &&
+        v.mentor_staff_id !== v.secondary_staff_id
+      ) {
+        push(v.mentor_staff_id, { visit: v, role: 'mentor' });
+      }
     }
     for (const arr of map.values()) {
       arr.sort(
-        (a, b) => timeToMinutes(a.start_time) - timeToMinutes(b.start_time),
+        (a, b) =>
+          timeToMinutes(a.visit.start_time) - timeToMinutes(b.visit.start_time),
       );
     }
     return map;
@@ -95,15 +139,15 @@ export function WeekGrid({
       const overlapping = new Set<string>();
       for (let i = 0; i < arr.length; i += 1) {
         for (let j = i + 1; j < arr.length; j += 1) {
-          if (overlaps(arr[i]!, arr[j]!)) {
-            overlapping.add(arr[i]!.id);
-            overlapping.add(arr[j]!.id);
+          if (overlaps(arr[i]!.visit, arr[j]!.visit)) {
+            overlapping.add(arr[i]!.visit.id);
+            overlapping.add(arr[j]!.visit.id);
           }
         }
       }
       if (overCap || overlapping.size > 0) {
-        for (const v of arr) {
-          if (overCap || overlapping.has(v.id)) out.add(v.id);
+        for (const e of arr) {
+          if (overCap || overlapping.has(e.visit.id)) out.add(e.visit.id);
         }
       }
       // referencing key to satisfy lint without wasted work
@@ -120,39 +164,53 @@ export function WeekGrid({
     );
   }
 
+  const weekLabel = `${format(weekStart, 'yyyy年M月d日', { locale: ja })} 週`;
+
   return (
     <div className="overflow-x-auto rounded-md border border-border-default bg-bg-base">
       <table className="w-full border-collapse text-sm">
+        <caption className="sr-only">{weekLabel}の週次スケジュール</caption>
         <thead>
           <tr className="border-b border-border-default bg-bg-muted/50 text-text-secondary">
-            <th className="sticky left-0 z-10 min-w-[10rem] bg-bg-muted/50 px-3 py-2 text-left font-medium">
+            <th
+              scope="col"
+              className="sticky left-0 z-10 min-w-[10rem] bg-bg-muted/50 px-3 py-2 text-left font-medium"
+            >
               スタッフ
             </th>
-            {days.map((d, i) => (
-              <th
-                key={d.toISOString()}
-                className="min-w-[9rem] px-2 py-2 text-left font-medium"
-              >
-                <div className="flex items-baseline gap-2">
-                  <span className="tnum">{format(d, 'M/d', { locale: ja })}</span>
-                  <span className="text-xs text-text-muted">
-                    ({WEEKDAY_LABELS[i]})
-                  </span>
-                </div>
-              </th>
-            ))}
+            {days.map((d, i) => {
+              const ariaLabel = `${format(d, 'M月d日', { locale: ja })} ${FULL_WEEKDAY_LABELS[i]}`;
+              return (
+                <th
+                  key={d.toISOString()}
+                  scope="col"
+                  aria-label={ariaLabel}
+                  className="min-w-[9rem] px-2 py-2 text-left font-medium"
+                >
+                  <div className="flex items-baseline gap-2">
+                    <span className="tnum">{format(d, 'M/d', { locale: ja })}</span>
+                    <span className="text-xs text-text-muted">
+                      ({WEEKDAY_LABELS[i]})
+                    </span>
+                  </div>
+                </th>
+              );
+            })}
           </tr>
         </thead>
         <tbody>
           {staff.map((s) => (
             <tr key={s.id} className="border-b border-border-default last:border-0">
-              <td className="sticky left-0 z-10 min-w-[10rem] bg-bg-base px-3 py-2 align-top font-medium text-text-primary">
+              <th
+                scope="row"
+                className="sticky left-0 z-10 min-w-[10rem] bg-bg-base px-3 py-2 text-left align-top font-medium text-text-primary"
+              >
                 {s.name}
-              </td>
+              </th>
               {days.map((d) => {
                 const key = `${s.id}|${dateKey(d)}`;
-                const cellVisits = buckets.get(key) ?? [];
-                const overCap = cellVisits.length > maxPerDay;
+                const cellEntries = buckets.get(key) ?? [];
+                const overCap = cellEntries.length > maxPerDay;
                 return (
                   <td
                     key={key}
@@ -161,21 +219,23 @@ export function WeekGrid({
                       overCap && 'bg-error/5',
                     )}
                   >
-                    {cellVisits.length === 0 ? (
+                    {cellEntries.length === 0 ? (
                       <div className="h-6" aria-hidden />
                     ) : (
                       <div className="flex flex-col gap-1">
-                        {cellVisits.map((v) => (
+                        {cellEntries.map((e) => (
                           <VisitChip
-                            key={v.id}
-                            visit={v}
-                            tone={flagged.has(v.id) ? 'warning' : 'default'}
+                            key={`${e.visit.id}|${e.role}`}
+                            visit={e.visit}
+                            tone={flagged.has(e.visit.id) ? 'warning' : 'default'}
+                            canEdit={canEditVisit}
                             onClick={onVisitClick}
                             officeLabel={
                               officeLabel
                                 ? officeLabel(s.primary_office_id)
                                 : null
                             }
+                            roleBadge={roleBadge(e.role)}
                           />
                         ))}
                       </div>
