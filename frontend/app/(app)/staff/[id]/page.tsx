@@ -64,7 +64,6 @@ export default function StaffDetailPage() {
 
   const { data: session } = useSession();
   const role = session?.user?.role;
-  const sessionStaffId = session?.user?.staffId ?? null;
 
   const [confirmOpen, setConfirmOpen] = useState(false);
 
@@ -115,12 +114,13 @@ export default function StaffDetailPage() {
   const mockShifts = buildMockShifts(data.id);
 
   // Role-based UI gating: backend already enforces 403, but hiding the affordances
-  // avoids "click → fail" confusion. admin/manager get full access; a staff user
-  // may only edit their own record (and never delete).
+  // avoids "click → fail" confusion. Backend policy (see backend/app/api/v1/staff.py):
+  //   - PATCH /staff/{id}  -> admin/manager only
+  //   - DELETE /staff/{id} -> admin only
+  // Staff users (even on their own record) cannot edit; they read-only.
   const isPrivileged = role === 'admin' || role === 'manager';
-  const isOwnRecord = role === 'staff' && sessionStaffId === data.id;
-  const canEdit = isPrivileged || isOwnRecord;
-  const canDelete = isPrivileged;
+  const canEdit = isPrivileged;
+  const canDelete = role === 'admin';
 
   return (
     <section className="space-y-6">

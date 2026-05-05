@@ -8,6 +8,7 @@
  */
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
+import { useSession } from 'next-auth/react';
 import { useEffect, useState } from 'react';
 import { ArrowLeft } from 'lucide-react';
 
@@ -65,6 +66,20 @@ export default function StaffEditPage() {
   const router = useRouter();
   const id = params?.id;
 
+  // Route guard: backend PATCH /staff/{id} is admin/manager only, so staff
+  // users must be redirected back to the detail view rather than rendering a
+  // form they cannot submit.
+  const { data: session, status } = useSession();
+  const role = session?.user?.role;
+  const isPrivileged = role === 'admin' || role === 'manager';
+  const denied = status === 'authenticated' && !isPrivileged;
+
+  useEffect(() => {
+    if (denied && id) {
+      router.replace(`/staff/${id}`);
+    }
+  }, [denied, id, router]);
+
   const { data, isLoading, isError, error } = useStaff(id);
 
   const [form, setForm] = useState<StaffFormState | null>(null);
@@ -83,6 +98,17 @@ export default function StaffEditPage() {
   });
 
   if (!id) return null;
+
+  // Show a skeleton while session is resolving or while we are redirecting an
+  // unauthorized staff user away from this route.
+  if (status === 'loading' || denied) {
+    return (
+      <section className="space-y-4">
+        <Skeleton className="h-8 w-1/3" />
+        <Skeleton className="h-64 w-full" />
+      </section>
+    );
+  }
 
   if (isLoading || form === null) {
     return (

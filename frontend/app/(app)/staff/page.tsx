@@ -124,10 +124,10 @@ export default function StaffPage() {
 
       {allRows.length >= STAFF_LIMIT && (
         <Alert>
-          <AlertTitle>表示件数の上限に達しました</AlertTitle>
+          <AlertTitle>表示件数の上限に達している可能性があります</AlertTitle>
           <AlertDescription>
-            登録スタッフが {STAFF_LIMIT} 名以上のため、最新 {STAFF_LIMIT} 件のみ表示しています。
-            検索条件を絞るか、Wave 2 のページング機能をお待ちください。
+            結果が {STAFF_LIMIT} 件に達しました。さらに該当するスタッフが存在する可能性があります。
+            検索条件で絞り込むか、Wave 2 のページング機能をお待ちください。
           </AlertDescription>
         </Alert>
       )}
