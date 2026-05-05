@@ -5,6 +5,7 @@ import { Sparkles } from 'lucide-react';
 
 import { AiInputModal } from '@/components/AiInputModal';
 import { useUIStore } from '@/lib/stores/ui';
+import { useAiSubmissionHandler } from '@/lib/ai/useAiSubmissionHandler';
 
 /**
  * Floating Action Button for the global AI input modal.
@@ -68,6 +69,11 @@ export function AiFab() {
   const aiInputOpen = useUIStore((s) => s.aiInputOpen);
   const setAiInputOpen = useUIStore((s) => s.setAiInputOpen);
   const toggleAiInput = useUIStore((s) => s.toggleAiInput);
+
+  // W7-FE1: pending_requests 統合 (Must-fix #6)
+  const { onSubmitInterceptor, missingInfoSlot, submissionMode } = useAiSubmissionHandler({
+    isMobile: false,
+  });
 
   const [position, setPosition] = useState<Position | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -178,7 +184,13 @@ export function AiFab() {
 
   // Avoid SSR/initial-render flicker by not rendering until we know where to place the button.
   if (!position) {
-    return <AiInputModal />;
+    return (
+      <AiInputModal
+        submissionMode={submissionMode}
+        onSubmitInterceptor={onSubmitInterceptor}
+        missingInfoSlot={missingInfoSlot}
+      />
+    );
   }
 
   return (
@@ -205,7 +217,11 @@ export function AiFab() {
         <Sparkles className="h-6 w-6" strokeWidth={1.75} />
         <span className="sr-only">{aiInputOpen ? 'AI 入力を閉じる' : 'AI 入力を開く'}</span>
       </button>
-      <AiInputModal />
+      <AiInputModal
+        submissionMode={submissionMode}
+        onSubmitInterceptor={onSubmitInterceptor}
+        missingInfoSlot={missingInfoSlot}
+      />
     </>
   );
 }
