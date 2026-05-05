@@ -32,7 +32,6 @@ from app.services.gemini_client import (
     GeminiError,
     GeminiInvalidResponseError,
     GeminiModelNotFound,
-    GeminiQuotaExceeded,
     GeminiRateLimitError,
     GeminiUnavailableError,
     InterpretResult,
@@ -71,9 +70,7 @@ async def _build_default_context(db, supplied: dict[str, Any]) -> dict[str, Any]
             .order_by(Staff.name)
             .limit(200)
         )
-        ctx["staff_list"] = [
-            f"{name} ({code or '-'})" for code, name in result.all()
-        ]
+        ctx["staff_list"] = [f"{name} ({code or '-'})" for code, name in result.all()]
     if "patient_list" not in ctx:
         result = await db.execute(
             select(Patient.code, Patient.name)
@@ -81,9 +78,7 @@ async def _build_default_context(db, supplied: dict[str, Any]) -> dict[str, Any]
             .order_by(Patient.name)
             .limit(200)
         )
-        ctx["patient_list"] = [
-            f"{name} ({code or '-'})" for code, name in result.all()
-        ]
+        ctx["patient_list"] = [f"{name} ({code or '-'})" for code, name in result.all()]
     return ctx
 
 
@@ -333,7 +328,9 @@ async def interpret(
         model=result.model,
         latency_ms=result.latency_ms,
         cost_usd=result.cost_usd,
+        # `payload.context_type` はバリデータで旧名→新名に正規化済み (schemas/ai.py)
         context_type=payload.context_type,
+        missing_fields=result.missing_fields,
     )
 
 
@@ -371,9 +368,7 @@ async def list_logs(
 
     rows = (
         await db.scalars(
-            base.order_by(AiInterpretLog.created_at.desc())
-            .limit(limit)
-            .offset(offset)
+            base.order_by(AiInterpretLog.created_at.desc()).limit(limit).offset(offset)
         )
     ).all()
     total = (await db.scalar(count_stmt)) or 0
