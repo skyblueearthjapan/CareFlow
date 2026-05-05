@@ -1,0 +1,73 @@
+# CareLink pre-commit hooks (Wave 5-A).
+#
+# 開発者ローカルで commit 直前に走らせる guard。CI と二重に同じ check を回し、
+# CI で発見する前に開発者が気付ける状態を作る。
+#
+# Setup:
+#   pip install pre-commit
+#   pre-commit install
+#
+# Bypass (推奨しない):
+#   git commit --no-verify  # CI 側の同じ check で結局 fail するため一時的のみ
+
+repos:
+  # ---------------------------------------------------------------------
+  # gitleaks: secret scan (Bearer / sk- / AIzaSy / ghp_ 等)
+  # ---------------------------------------------------------------------
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks
+        name: gitleaks (secret scan)
+        # `protect` ではなく default の `gitleaks` (== `protect --staged`) を使用。
+        # staged 差分に対してのみ scan するため high-throughput。
+
+  # ---------------------------------------------------------------------
+  # ruff (backend Python lint + format)
+  # ---------------------------------------------------------------------
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check (backend)
+        entry: ruff check
+        language: system
+        files: ^backend/.*\.py$
+        require_serial: false
+        # ruff は repo 内 venv にインストールされている前提。
+        # 未インストール時は `pip install -e backend[dev]` を案内する error を出す。
+        pass_filenames: true
+
+      - id: ruff-format
+        name: ruff format --check (backend)
+        entry: ruff format --check
+        language: system
+        files: ^backend/.*\.py$
+        pass_filenames: true
+
+  # ---------------------------------------------------------------------
+  # prettier (frontend, optional)
+  # ---------------------------------------------------------------------
+  - repo: local
+    hooks:
+      - id: prettier
+        name: prettier --check (frontend)
+        entry: bash -c 'cd frontend && pnpm exec prettier --check "$@"' --
+        language: system
+        files: ^frontend/.*\.(ts|tsx|js|jsx|json|css|md)$
+        pass_filenames: true
+        # pnpm が無い環境では skip される (entry が exit 1 -> developer 対応)。
+        # 本格運用前に CI 側にも prettier --check job を追加すること。
+
+  # ---------------------------------------------------------------------
+  # pre-commit hooks 標準セット (whitespace / EOF / YAML)
+  # ---------------------------------------------------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+        args: ["--allow-multiple-documents"]
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]
+      - id: check-merge-conflict

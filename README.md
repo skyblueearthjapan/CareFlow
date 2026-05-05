@@ -36,6 +36,26 @@ CareLink/
 
 詳細: `docs/audit/MASTER-AUDIT-REPORT.md` 参照。
 
+## 開発者セットアップ (pre-commit)
+
+ローカル環境で commit 直前に CI と同じ guard (gitleaks / ruff / prettier) を回すため、
+`pre-commit` を有効化する。
+
+```bash
+# 1) pre-commit を pip でインストール (一度だけ)
+pip install pre-commit
+
+# 2) このリポジトリの hook を有効化 (.git/hooks/pre-commit を生成)
+pre-commit install
+
+# 3) 初回フル走査 (任意、既存ファイルもチェック)
+pre-commit run --all-files
+```
+
+設定ファイル: `.pre-commit-config.yaml`。CI 側 (`.github/workflows/ci.yml`) と
+gitleaks / ruff / bearer-token 検査が二重化されているので、commit 段階で
+落とせば PR 上で fail せずに済む。
+
 ## VPS デプロイ
 
 本番環境は Hostinger Malaysia VPS (`carelink.kaipoke-api.net`)。Cloudflare Tunnel 経由で公開し、既存 `kaipoke-api` と同居する。

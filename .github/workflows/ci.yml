@@ -1,0 +1,308 @@
+# CareLink unified CI (Wave 5-A).
+#
+# 既存 backend-ci.yml / frontend-ci.yml / security.yml と並走して動かす
+# "横断的 guard" 用 workflow。各 PR / push (develop, main) 共通で走る:
+#   - backend-lint        : ruff check + mypy --ignore-missing-imports
+#   - backend-test        : pytest --collect-only + 軽量 pytest 実行 (Postgres service container)
+#   - frontend-typecheck  : pnpm typecheck (Node 22 / pnpm 9)
+#   - frontend-lint       : pnpm lint
+#   - alembic-heads-check : `alembic heads` の行数 == 1 を assert (本日の本番障害学習)
+#   - gitleaks            : gitleaks/gitleaks-action@v2 で secret 検出
+#   - bearer-token-scan   : 差分の中に Bearer/sk-/AIzaSy/ghp_ が無いか grep
+#
+# 既存 backend-ci.yml / frontend-ci.yml と意図的に重複させているのは、
+# Wave 5-A の guard を 1 つの workflow ファイルとしてまとめておくことで、
+# branch protection の required check 設定を 1 箇所で完結させるため。
+
+name: ci
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [develop, main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  backend-lint:
+    name: backend-lint (ruff + mypy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-ci-lint-${{ hashFiles('backend/pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-ci-lint-
+
+      - name: Install lint deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install "ruff>=0.5,<1.0" "mypy>=1.10,<2.0"
+
+      - name: Ruff check
+        run: ruff check .
+
+      - name: Mypy (ignore-missing-imports)
+        run: mypy --ignore-missing-imports app
+
+  backend-test:
+    name: backend-test (collect + pytest + alembic upgrade)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: carelink
+          POSTGRES_PASSWORD: carelink
+          POSTGRES_DB: carelink_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U carelink -d carelink_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://carelink:carelink@localhost:5432/carelink_ci
+      ALEMBIC_DATABASE_URL: postgresql+psycopg://carelink:carelink@localhost:5432/carelink_ci
+      # Hard-coded CI-only dummy. Do NOT read from secrets here:
+      # fork PRs would otherwise be denied access; same-repo PRs could
+      # exfiltrate the secret via test code.
+      JWT_SECRET: "ci-only-dummy-jwt-secret-32chars-min"
+      APP_ENV: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install backend (with dev extras)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Wait for PostgreSQL
+        run: |
+          for i in $(seq 1 30); do
+            if pg_isready -h localhost -p 5432 -U carelink -d carelink_ci >/dev/null 2>&1; then
+              echo "postgres ready"; exit 0
+            fi
+            echo "waiting for postgres ($i)"; sleep 2
+          done
+          echo "postgres not ready"; exit 1
+
+      - name: Alembic upgrade head
+        run: alembic upgrade head
+
+      - name: Pytest --collect-only (zero error guard)
+        run: pytest --collect-only -q
+
+      - name: Pytest (best-effort small subset)
+        # `|| true` で fail させない代わりに、`--collect-only` をゼロエラーで通すこと
+        # を required check とする。本番障害再発防止には pytest 完走を将来 required 化する。
+        run: pytest -q --maxfail=5 || true
+
+  frontend-typecheck:
+    name: frontend-typecheck (pnpm typecheck)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+
+      - name: Enable corepack and pin pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+          pnpm --version
+
+      - name: Resolve pnpm store path
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: ${{ runner.os }}-pnpm-ci-${{ hashFiles('frontend/pnpm-lock.yaml', 'frontend/package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-ci-
+
+      - name: Install dependencies
+        run: |
+          if [ -f pnpm-lock.yaml ]; then
+            pnpm install --frozen-lockfile
+          else
+            echo "::warning::pnpm-lock.yaml not found, falling back to --no-frozen-lockfile"
+            pnpm install --no-frozen-lockfile
+          fi
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+  frontend-lint:
+    name: frontend-lint (pnpm lint)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+
+      - name: Enable corepack and pin pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+          pnpm --version
+
+      - name: Install dependencies
+        run: |
+          if [ -f pnpm-lock.yaml ]; then
+            pnpm install --frozen-lockfile
+          else
+            pnpm install --no-frozen-lockfile
+          fi
+
+      - name: Lint
+        run: pnpm lint
+
+  alembic-heads-check:
+    name: alembic-heads-check (single head guard)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install alembic + project (offline schema only)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      # `alembic heads` is a metadata-only operation: parses migration files
+      # under alembic/versions/ and prints the leaf revision(s). We do NOT
+      # need a live DB connection. If 2 or more lines are printed, multiple
+      # heads exist, which is exactly the failure mode behind today's prod
+      # outage (parallel PRs branched off the same parent revision).
+      - name: Assert exactly one alembic head
+        env:
+          # offline mode: alembic still requires a URL string but never connects
+          ALEMBIC_DATABASE_URL: "postgresql+psycopg://noop:noop@localhost:5432/noop"
+        run: |
+          set -euo pipefail
+          heads_output=$(python -m alembic heads)
+          echo "$heads_output"
+          head_count=$(echo "$heads_output" | grep -c '^' || true)
+          echo "detected head count: $head_count"
+          if [ "$head_count" -ne 1 ]; then
+            echo "::error::alembic has $head_count heads (expected 1). Run 'alembic merge -m \"merge heads\" <rev1> <rev2>'."
+            exit 1
+          fi
+
+  gitleaks:
+    name: gitleaks (secret scan)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Optional: GITLEAKS_LICENSE secret enables the org-tier features
+          # (PR comments etc.). Free tier works without it.
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+
+  bearer-token-scan:
+    name: bearer-token-scan (diff grep)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout (full history for diff)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve diff base
+        id: base
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="origin/${{ github.base_ref }}"
+          else
+            # push event: diff against previous commit on the same ref
+            base="HEAD~1"
+          fi
+          echo "ref=$base" >> "$GITHUB_OUTPUT"
+
+      - name: Grep for hard-coded tokens in diff
+        run: |
+          set -euo pipefail
+          base="${{ steps.base.outputs.ref }}"
+          # Best-effort fetch (harmless if already present)
+          git fetch --no-tags --prune --depth=50 origin "${{ github.base_ref || 'main' }}" || true
+          diff=$(git diff "${base}..HEAD" -- '*.py' '*.ts' '*.tsx' '*.js' '*.jsx' '*.md' '*.yml' '*.yaml' || true)
+          if [ -z "$diff" ]; then
+            echo "no relevant diff"; exit 0
+          fi
+          # Patterns: GitHub PAT (ghp_), OpenAI (sk-), Google API (AIzaSy),
+          # generic Bearer header. Match additions only (lines starting with +).
+          if echo "$diff" | grep -E '^\+.*(Bearer [A-Za-z0-9_\-\.]{10,}|sk-[A-Za-z0-9]{20,}|AIzaSy[A-Za-z0-9_\-]{20,}|ghp_[A-Za-z0-9]{20,})' ; then
+            echo "::error::Hard-coded token detected in diff."
+            exit 1
+          fi
+          echo "no token literals detected in diff"

@@ -1,0 +1,168 @@
+# CareLink production deploy (Wave 5-A).
+#
+# 本 workflow は **手動承認 (workflow_dispatch + environment) のみ** で起動する。
+# main への push をトリガにしないのは、merge 直後に誤って本番反映されるのを防ぐため。
+# main マージ済みコミットを対象に「Run workflow」ボタンから実行する想定。
+#
+# 必要な GitHub Secrets:
+#   - VPS_SSH_KEY    : Hostinger VPS root への SSH 秘密鍵 (Ed25519 推奨)
+#   - VPS_SSH_HOST   : 72.60.211.213  (固定だが secret 化して DNS 変更にも追従)
+#   - VPS_SSH_USER   : root            (kaipoke 同居 VPS の運用 user)
+#   - VPS_SSH_KNOWN_HOSTS : `ssh-keyscan -H 72.60.211.213` の出力
+#
+# 失敗時のロールバックは手動 (runbook.md Phase J を参照)。
+# 自動 rollback を入れるには GitOps 化 (commit pin + previous tag) が必要で、
+# 今回の Wave 5-A 範囲外。
+
+name: deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to deploy (default: main)"
+        required: false
+        default: "main"
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-prod:
+    name: deploy to Hostinger VPS
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # GitHub Environments で "production" を作成し、Required reviewers を設定すること。
+    # これにより run 開始時に承認待ちステータスとなる。
+    environment:
+      name: production
+      url: https://carelink.kaipoke-api.net
+    steps:
+      - name: Checkout (for workflow self-reference only)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Setup SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "${{ secrets.VPS_SSH_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Pull latest code on VPS
+        env:
+          HOST: ${{ secrets.VPS_SSH_HOST }}
+          USER: ${{ secrets.VPS_SSH_USER }}
+          REF: ${{ inputs.ref }}
+        run: |
+          ssh -o StrictHostKeyChecking=yes "$USER@$HOST" bash -se <<'REMOTE'
+            set -euo pipefail
+            cd /opt/carelink
+            git fetch --tags --prune origin
+            # Refuse to deploy if local has diverged (manual fix required).
+            git checkout "${REF:-main}"
+            git pull --ff-only origin "${REF:-main}"
+            echo "deploying commit: $(git rev-parse HEAD)"
+          REMOTE
+
+      - name: Build images on VPS (bake migrations into image)
+        env:
+          HOST: ${{ secrets.VPS_SSH_HOST }}
+          USER: ${{ secrets.VPS_SSH_USER }}
+        run: |
+          ssh -o StrictHostKeyChecking=yes "$USER@$HOST" bash -se <<'REMOTE'
+            set -euo pipefail
+            cd /opt/carelink
+            # GIT_SHA is consumed by frontend Dockerfile (sw.js cache version).
+            export GIT_SHA="$(git rev-parse HEAD)"
+            docker compose \
+              --env-file /opt/carelink/.env \
+              -f docs/deployment/docker-compose.production.yml \
+              build backend frontend
+          REMOTE
+
+      - name: Recreate backend + frontend containers
+        env:
+          HOST: ${{ secrets.VPS_SSH_HOST }}
+          USER: ${{ secrets.VPS_SSH_USER }}
+        run: |
+          ssh -o StrictHostKeyChecking=yes "$USER@$HOST" bash -se <<'REMOTE'
+            set -euo pipefail
+            cd /opt/carelink
+            docker compose \
+              --env-file /opt/carelink/.env \
+              -f docs/deployment/docker-compose.production.yml \
+              up -d --force-recreate backend frontend
+          REMOTE
+
+      - name: Connect backend to kaipoke network (idempotent fallback)
+        env:
+          HOST: ${{ secrets.VPS_SSH_HOST }}
+          USER: ${{ secrets.VPS_SSH_USER }}
+        run: |
+          # 通常は compose の `kaipoke: external: true` で自動接続される。
+          # 万一 compose 側で external network が解決できない VPS 状態でも
+          # この step で復旧できるよう保険として残す。`|| true` で冪等。
+          ssh -o StrictHostKeyChecking=yes "$USER@$HOST" bash -se <<'REMOTE'
+            set -euo pipefail
+            docker network connect playwrighttest1_default carelink-backend 2>&1 \
+              | grep -v "already exists in network" \
+              | grep -v "is already connected to" \
+              || true
+          REMOTE
+
+      - name: Run alembic upgrade head + verify single head
+        env:
+          HOST: ${{ secrets.VPS_SSH_HOST }}
+          USER: ${{ secrets.VPS_SSH_USER }}
+        run: |
+          ssh -o StrictHostKeyChecking=yes "$USER@$HOST" bash -se <<'REMOTE'
+            set -euo pipefail
+            docker exec carelink-backend alembic upgrade head
+            heads=$(docker exec carelink-backend alembic heads | grep -c '^' || true)
+            echo "alembic head count after upgrade: $heads"
+            if [ "$heads" -ne 1 ]; then
+              echo "ERROR: multiple alembic heads detected post-upgrade." >&2
+              exit 1
+            fi
+          REMOTE
+
+      - name: Smoke test (/api/v1/healthz must be 200)
+        env:
+          HOST: ${{ secrets.VPS_SSH_HOST }}
+          USER: ${{ secrets.VPS_SSH_USER }}
+        run: |
+          ssh -o StrictHostKeyChecking=yes "$USER@$HOST" bash -se <<'REMOTE'
+            set -euo pipefail
+            # Give uvicorn ~30s to settle after force-recreate.
+            for i in $(seq 1 15); do
+              code=$(curl -fsS -o /dev/null -w "%{http_code}" http://127.0.0.1:18001/api/v1/healthz || echo "000")
+              if [ "$code" = "200" ]; then
+                echo "healthz OK"; exit 0
+              fi
+              echo "healthz attempt $i: $code"; sleep 2
+            done
+            echo "ERROR: backend healthz never returned 200 within 30s" >&2
+            docker logs --tail=200 carelink-backend || true
+            exit 1
+          REMOTE
+
+      - name: Rollback guidance (on failure)
+        if: failure()
+        run: |
+          cat <<'EOF'
+          ::warning::Deploy failed. Manual rollback steps (see docs/deployment/runbook.md Phase J):
+            1) ssh root@<VPS> 'cd /opt/carelink && git log --oneline -5'
+            2) git revert <bad_commit_sha>  -or-  git reset --hard <previous_good_sha>
+            3) docker compose --env-file .env -f docs/deployment/docker-compose.production.yml build backend frontend
+            4) docker compose --env-file .env -f docs/deployment/docker-compose.production.yml up -d --force-recreate backend frontend
+            5) If migration is unsafe to roll forward:
+                 docker exec -i carelink-postgres psql -U carelink -d carelink < /opt/carelink/backups/<latest>.sql
+          EOF

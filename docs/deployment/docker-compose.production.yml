@@ -8,7 +8,11 @@
 #     compose は実行ディレクトリ (= リポジトリルート) の `.env` を自動ロードする。
 #     env_file: で各 service にも明示的に注入し、interpolate と env_file の双方を成立させる。
 #   - 全ポートは 127.0.0.1 (loopback) bind。外部公開は cloudflared が担当。
-#   - kaipoke-api と同居するため `default bridge` のみを使用 (kaipoke-net は存在しない)。
+#   - kaipoke-api と同居するため `default bridge` に加え、external network
+#     `playwrighttest1_default` (= kaipoke-api 側の compose project network) に
+#     `kaipoke` alias で参加させる。これにより `up -d --force-recreate backend`
+#     後に手動で `docker network connect playwrighttest1_default carelink-backend`
+#     を打たなくても、container 再生成時に自動で kaipoke 側 network へ再接続される。
 #   - postgres は **host port を一切公開しない** (kaipoke-api との 5432 衝突回避)。
 #     host から psql する場合は `docker compose exec postgres psql -U carelink -d carelink` を使う。
 #   - frontend は Dockerfile が整備済み。standalone 出力 + pnpm multi-stage build。
@@ -78,6 +82,14 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+    networks:
+      - default
+      # `kaipoke` alias は下部の `networks:` ブロックで `external: true` として
+      # 定義されている `playwrighttest1_default` network を指す。
+      # backend container を recreate しても自動で再接続されるため、運用 runbook
+      # から `docker network connect playwrighttest1_default carelink-backend`
+      # の手動コマンドが不要になる (Wave 5-A 改修)。
+      - kaipoke
 
   frontend:
     build:
@@ -123,5 +135,18 @@ volumes:
   carelink-pg-data:
     name: carelink-pg-data
 
-# default bridge (`bridge`) を暗黙利用。`kaipoke-net` は VPS 上に存在しないため
-# 明示 networks 定義はしない。kaipoke-api コンテナとは host loopback 経由で通信する。
+networks:
+  # compose project 内の default network (= deployment_default)。
+  # 本ファイルが docs/deployment/ にあるため compose project 名は通常 `deployment`
+  # になる。明示 name を指定したい場合は `docker compose -p carelink ...` を使うこと。
+  default:
+    driver: bridge
+
+  # kaipoke-api 側 compose project が作成済みの external network。
+  # backend service が `networks: [default, kaipoke]` で参加することにより、
+  # `up -d --force-recreate backend` 後も自動的に kaipoke 側へ接続される。
+  # 万一 VPS で network 名が変わった場合は `docker network ls | grep playwright`
+  # で実名を確認し、ここを更新する。
+  kaipoke:
+    external: true
+    name: playwrighttest1_default

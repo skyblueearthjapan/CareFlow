@@ -64,9 +64,22 @@ JWT_REFRESH_TTL_SECONDS=2592000
 # --- External APIs ---
 GOOGLE_MAPS_API_KEY=__SET_IF_USED__
 GEMINI_API_KEY=__SET_IF_USED__
+# Gemini model id (Google が定期的に旧モデルを 404 にするため pin しておく)
+GEMINI_MODEL=gemini-2.0-flash
 
 # --- Integrations forward target (D4 worker, Phase 2) ---
 INTEGRATION_BASE_URL=http://integrations:8001
+
+# --- Kaipoke API relay (Wave 4-A) ---
+# 既存 Flask + Playwright service。本番では同一 VPS 上の kaipoke-api コンテナと
+# external network `playwrighttest1_default` 経由で通信する。
+KAIPOKE_API_BASE_URL=https://kaipoke-api.net
+KAIPOKE_API_TOKEN=__SET_IF_USED__
+KAIPOKE_EXPORT_DIR=/tmp/carelink/exports
+KAIPOKE_EXPORT_TTL_SECONDS=1800
+
+# --- Visit photo storage (Wave 4-D) ---
+VISIT_PHOTOS_DIR=/opt/carelink/data/visit_photos
 
 # --- NextAuth (frontend) ---
 NEXTAUTH_URL=https://carelink.kaipoke-api.net
@@ -85,3 +98,23 @@ BACKEND_API_BASE_URL=http://backend:8000
 - `APP_ENV=production` を忘れると JWT バリデーションが効かず、弱秘密のまま運用されてしまう。
 - `CORS_ORIGINS` に `*` や `http://...` (非 HTTPS) を入れない。
 - `.env` のパーミッションは `chmod 600` 必須。`ls -l /opt/carelink/.env` で `-rw-------` を確認。
+
+## `backend/.env.example` との整合 (Wave 5-A)
+
+本テンプレートは `backend/.env.example` + `frontend/.env.example` を統合した
+スーパーセット。新規 env 変数を増やす際は **3 ファイル全てを同時に更新する**:
+
+1. `backend/.env.example` — backend dev 環境用デフォルト
+2. `frontend/.env.example` — frontend dev 環境用デフォルト (存在する場合)
+3. `docs/deployment/env-template.md` (本ファイル) — 本番統合 `.env`
+
+整合チェック (CI 化未実装、手動コマンド):
+
+```bash
+diff <(grep -E '^[A-Z_]+=' backend/.env.example | cut -d= -f1 | sort) \
+     <(grep -E '^[A-Z_]+=' docs/deployment/env-template.md | cut -d= -f1 | sort) \
+  | grep -E '^[<>]' || echo "OK: keys match"
+```
+
+`<` で出るキーは template 側が漏れている (本番 `.env` で参照されないので backend が起動失敗の可能性)、
+`>` で出るキーは backend dev 側に存在しない frontend / 運用専用キー (POSTGRES_*, NEXTAUTH_* 等) で許容。

@@ -14,6 +14,25 @@
 > alias dcp='docker compose -f docs/deployment/docker-compose.production.yml --env-file .env'
 > ```
 
+### 本日 (2026-05-05) の本番障害から得た原則 (必読)
+
+1. **本番 image は migrations を bake-in している**。
+   `app/Dockerfile` は `alembic/` ディレクトリを image にコピーしているため、
+   新しい revision を追加した場合は **必ず `up -d` の前に `build` をやり直す**。
+   `git pull` 後に `up -d --force-recreate` だけ実行すると古い image (旧 migrations)
+   が再生成され、`alembic upgrade head` が「revision not found」で失敗する。
+2. **`--env-file /opt/carelink/.env --file docs/deployment/docker-compose.production.yml`
+   は省略不可**。compose v2 は cwd の `.env` を interpolation 用には拾うが、
+   `--env-file` 無しだと `env_file:` で参照される repo root `.env` のパスが
+   ズレる事例が観測された。常にフル指定する。
+3. **`alembic upgrade head` 後に必ず `alembic heads` を実行**し、出力が 1 行
+   (= 単一 head) であることを確認する。複数 head は merge revision が
+   未作成の状態。CI 側の `alembic-heads-check` job でも防御している。
+4. **並列 PR で migration を作成する際は事前に revision 番号を割当**てる。
+   独立に `alembic revision --autogenerate` を打つと両方が同じ親 revision を
+   `down_revision` に設定し、merge 時に複数 head が発生する。Slack チャンネルに
+   「次の revision は 0009」とアナウンスしてから作業を始める運用にする。
+
 ---
 
 ## Phase A: Pre-flight (VPS 状態確認)
@@ -96,20 +115,35 @@ docker compose -f docs/deployment/docker-compose.production.yml --env-file .env 
 ```bash
 cd /opt/carelink
 docker compose -f docs/deployment/docker-compose.production.yml --env-file .env run --rm backend alembic upgrade head
+
+# ★ 必ず head 数を確認 (本日の本番障害学習)
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env run --rm backend alembic heads
+# 期待: 1 行のみ (例: `0008_merge_w4d_w4f (head)`). 2 行以上なら multiple heads 状態。
+# その場合はデプロイを中断し、`alembic merge -m "merge heads" <revA> <revB>` で merge revision を作成してから再実行。
+
 docker compose -f docs/deployment/docker-compose.production.yml --env-file .env exec postgres psql -U carelink -d carelink -c "\dt"
 ```
 
-成功条件: `alembic_version` テーブルに `0001_initial` が記録、users/staff/visit/patient 等のテーブルが存在。
+成功条件: `alembic_version` テーブルに最新 head が記録、`alembic heads` が単一 head を返す、users/staff/visit/patient 等のテーブルが存在。
 失敗時: マイグレーション失敗時は `alembic downgrade base` でロールバックし、`docker compose -f docs/deployment/docker-compose.production.yml --env-file .env down -v` でボリュームごと作り直す（DB は新規なので破壊して問題なし。Phase H 後はこの手は使えない）。
 
 ## Phase F: Backend / Frontend コンテナ起動
 
+> **重要**: `up -d` の前に **必ず `build`** を実行する (本日の本番障害学習)。
+> 本番 image は `alembic/` を bake-in しているため、新 migration を反映するには
+> 再 build が必須。`git pull` だけでは反映されない。
+
 ```bash
 cd /opt/carelink
-docker compose -f docs/deployment/docker-compose.production.yml --env-file .env up -d backend frontend
+export GIT_SHA="$(git rev-parse HEAD)"  # frontend sw.js cache version
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env build backend frontend
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env up -d --force-recreate backend frontend
 docker compose -f docs/deployment/docker-compose.production.yml --env-file .env ps
 curl -fsSI http://localhost:18000/
 curl -fsS  http://localhost:18001/api/v1/healthz
+
+# kaipoke external network への接続確認 (Wave 5-A 以降は compose 側で自動接続)
+docker network inspect playwrighttest1_default | grep carelink-backend
 ```
 
 成功条件: `docker compose ps` で backend と frontend の双方が `Health=healthy`。`curl http://localhost:18000/` が 200 OK、`curl http://localhost:18001/api/v1/healthz` が 200 + JSON。`docker compose logs backend` に `Uvicorn running on 0.0.0.0:8000`、`docker compose logs frontend` に `Ready` 出力。
@@ -208,11 +242,44 @@ docker compose -f docs/deployment/docker-compose.production.yml --env-file .env 
 
 何か致命的な問題が出た場合の取り消し順序 (上から順に実施)。
 
+### 緊急 rollback (本日の本番障害学習を反映)
+
+application 層の障害 (新リリースで /api/v1/* が 5xx) であれば、まず **コードを 1 つ前の commit に戻して再 build** が最速:
+
+```bash
+cd /opt/carelink
+git log --oneline -10                  # 直前の安定 commit を特定
+git revert <bad_commit_sha>            # revert commit を作る (force reset より安全)
+git push origin main                   # GitHub に上げて履歴を残す (任意)
+export GIT_SHA="$(git rev-parse HEAD)"
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env build backend frontend
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env up -d --force-recreate backend frontend
+curl -fsS http://localhost:18001/api/v1/healthz
+```
+
+DB 破壊を伴うマイグレーションが原因なら **DB バックアップから復元**:
+
+```bash
+# 最新のバックアップを確認 (運用開始後は cron で /opt/carelink/backups/*.sql を取得しておく)
+ls -lt /opt/carelink/backups/ | head -5
+
+# 一旦 backend を停止して接続を切る
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env stop backend
+
+# psql に流し込む
+docker exec -i carelink-postgres psql -U carelink -d carelink < /opt/carelink/backups/<latest>.sql
+
+# backend を再起動 (image は revert 済みのものに揃えてから)
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env up -d backend
+```
+
+### 通常 rollback 手順 (上から順に実施)
+
 1. **ingress revert**: `sudo cp /etc/cloudflared/config.yml.bak.YYYYMMDD /etc/cloudflared/config.yml && sudo systemctl reload cloudflared`
 2. **container 停止**: `cd /opt/carelink && docker compose -f docs/deployment/docker-compose.production.yml --env-file .env down`
 3. **DB 巻き戻し** (本番運用後はバックアップから):
    - 初回デプロイ直後で運用データなし → `docker compose -f docs/deployment/docker-compose.production.yml --env-file .env down -v` でボリュームごと削除
-   - 運用後 → `docker compose -f docs/deployment/docker-compose.production.yml --env-file .env exec postgres pg_dump -U carelink carelink > /tmp/restore.sql` で取得済みのダンプを `psql` で流し込む
+   - 運用後 → `docker exec -i carelink-postgres psql -U carelink -d carelink < /opt/carelink/backups/<latest>.sql` で復元 (上記 緊急 rollback 参照)
 4. **DNS revert**: Cloudflare ダッシュボードで CNAME `carelink` を削除 or proxied OFF
 5. **イメージ削除** (再デプロイで影響を残したくない場合): `docker image rm carelink-backend:latest carelink-frontend:latest`
 
@@ -227,4 +294,10 @@ docker compose -f docs/deployment/docker-compose.production.yml --env-file .env 
 - `api.carelink.kaipoke-api.net` (バックエンド直公開) は任意。NextAuth callback で必要になった時点で有効化 (現構成では `carelink.kaipoke-api.net/api/v1/*` の path rule で backend を公開しているため不要)
 - Postgres は **host port を公開していない** (kaipoke-api との 5432 衝突回避)。host から psql する場合は常に `docker compose -f docs/deployment/docker-compose.production.yml --env-file .env exec postgres psql ...` を使う
 - INV-4 の通り `kaipoke-net` Docker network は存在しないため default bridge を使用
+- ただし Wave 5-A 以降は **`playwrighttest1_default` を external network として
+  compose に取り込み**、backend container が再生成 (`up -d --force-recreate`)
+  されても自動で kaipoke 側 network に接続される。手動 `docker network connect`
+  は不要。VPS で network 名が変わった場合は
+  `docs/deployment/docker-compose.production.yml` の `networks.kaipoke.name`
+  を更新する
 - secret 値はすべて VPS 上で生成し、Git/Slack/メールに残さない
