@@ -141,6 +141,15 @@ export function usePendingRequests(
  * UI からの直接利用は **W3-FE6 では非ターゲット**（履歴ビューは閲覧 / 承認 /
  * 却下が中心）。ただしファイル所有が同一のため、後続 (W5-FE11) で AI 解釈結果
  * を pending に流し込むユースケースに備えて API を提供しておく。
+ *
+ * **W5-FE11 利用ノート**: `<SubmitToPendingHandler />` (`components/ai/`)
+ * から AI 解釈結果を `pending` として作成するために本フックを利用する。
+ * 直後に PC admin/manager のみ {@link useApproveRequest} を呼ぶ 2 ステップで
+ * §3.5.3 の「即時反映 + approved 履歴」を実現する（POST 単独ではサーバが
+ * 常に `pending` で作成する仕様のため）。
+ *
+ * Backend の RBAC (`_enforce_staff_self_scope`) に依存するため、フロント側では
+ * Staff の自分軸チェックは行わない（403 が返ったら toast 表示で十分）。
  */
 export function useCreatePendingRequest(): UseMutationResult<
   PendingRequestV2Read,
