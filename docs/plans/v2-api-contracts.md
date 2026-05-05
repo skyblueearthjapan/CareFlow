@@ -312,8 +312,50 @@
 | 概要 | weekly_pattern から visits を生成。特別週判定。新規患者は保留プールへ |
 | 担当チケット | W4-BE7 |
 | Request body | `{ "iso_year": int, "iso_week": int }` |
-| Response 200 | `{ "visits_created": int, "pool_patient_ids": [uuid] }` |
+| Response 200 | 下記 `GenerateWeekResponse` |
 | RBAC | Admin / Manager |
+| 冪等性 | 同一 (iso_year, iso_week) で再実行すると、当該週の auto-visit (status=planned, source=auto) のみ削除して再生成。`completed` / `cancelled` / `source != "auto"` の visit は保護される。 |
+
+#### `GenerateWeekResponse` (W4-BE8 / W4-BE9 が消費する出力)
+
+```jsonc
+{
+  "iso_year": 2026,
+  "iso_week": 19,
+  "visits_created": [
+    {
+      "visit_id": "uuid",
+      "patient_id": "uuid",
+      "weekday": 0,                // 0=Mon..6=Sun
+      "visit_date": "2026-05-04",  // YYYY-MM-DD
+      "start_time": "09:00",       // HH:MM
+      "end_time":   "10:00",       // HH:MM
+      "staff_count": 1,            // 1 or 2 (§3.3 2 名体制)
+      "special_week_applied": false  // §3.4 適用週フラグ
+    }
+  ],
+  "pool": [
+    {
+      "patient_id": "uuid",
+      "patient_name": "田中 太郎",
+      "preferred_weekdays": ["Mon", "Wed"],   // §4.1 weekly_pattern.preferred_weekdays
+      "frequency_per_week": 2                  // §4.1 weekly_pattern.frequency_per_week
+    }
+  ],
+  "summary": {
+    "patients_processed":          50,  // 当該週で処理した active 患者数
+    "visits_created":             120,  // 生成された visit 行数 (2 名体制は 2 行)
+    "pool_count":                   3,  // 保留プールに積まれた患者数
+    "special_week_applied_count":   2   // 特別週パターン適用された患者数
+  }
+}
+```
+
+> **2 名体制の表現**: `weekly_pattern.entries[].staff_count = 2` の entry は
+> `visits_created` に同一 (weekday, start_time) で 2 行返る。
+> 各行は同じ `visit_group_id` を共有して DB に保存されるが、
+> レスポンス JSON には `visit_group_id` を露出しない (W4-BE8 が消費する
+> 際は `(weekday, start_time, patient_id)` でグルーピング可能)。
 
 ---
 
