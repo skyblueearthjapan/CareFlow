@@ -142,6 +142,41 @@ function authPair(session: ReturnType<typeof useSession>['data']): {
   };
 }
 
+/**
+ * ISO 8601 の (year, week) → 当該週の月曜日 (UTC) を返す。
+ *
+ * ISO 8601 では「最初の木曜を含む週が第 1 週」と定義されているため、
+ * 1 月 4 日が必ず第 1 週に含まれる性質を利用して算出する。
+ */
+function isoWeekToMonday(isoYear: number, isoWeek: number): Date {
+  const jan4 = new Date(Date.UTC(isoYear, 0, 4));
+  const jan4Day = jan4.getUTCDay() || 7; // Mon=1..Sun=7
+  const week1Monday = new Date(jan4);
+  week1Monday.setUTCDate(jan4.getUTCDate() - (jan4Day - 1));
+  const target = new Date(week1Monday);
+  target.setUTCDate(week1Monday.getUTCDate() + (isoWeek - 1) * 7);
+  return target;
+}
+
+/** Date → 'YYYY-MM-DD' (UTC ベース). */
+function toIsoDate(d: Date): string {
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+/**
+ * (iso_year, iso_week, weekday) → 当該曜日 1 日のみの 'YYYY-MM-DD'.
+ *
+ * weekday は 0=Mon..6=Sun (BE 仕様).
+ */
+function isoWeekdayToDate(isoYear: number, isoWeek: number, weekday: number): string {
+  const monday = isoWeekToMonday(isoYear, isoWeek);
+  monday.setUTCDate(monday.getUTCDate() + weekday);
+  return toIsoDate(monday);
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Hooks
 // ─────────────────────────────────────────────────────────────────────────
@@ -327,6 +362,7 @@ export function useFixCourses(): UseMutationResult<FixCoursesResponse, Error, Fi
     mutationFn: async (req) => {
       const { iso_year, iso_week, weekday, entries } = req;
       const courseIds: string[] = [];
+      const fixedAt = new Date().toISOString();
 
       // 1. 既存コースを fetch
       const listQs = new URLSearchParams({
@@ -346,6 +382,8 @@ export function useFixCourses(): UseMutationResult<FixCoursesResponse, Error, Fi
       }
 
       // 2. entries を逐次 create / update
+      //    - status を course_fixed に遷移させる際は course_fixed_at も同送する
+      //      (Reviewer Mid-1: BE 側で自動補完していないため FE から明示的に設定)
       for (const entry of entries) {
         const found = existingByCode.get(entry.code);
         if (found) {
@@ -353,6 +391,7 @@ export function useFixCourses(): UseMutationResult<FixCoursesResponse, Error, Fi
             method: 'PATCH',
             body: JSON.stringify({
               course_status: 'course_fixed',
+              course_fixed_at: fixedAt,
             } satisfies CourseV2Update),
             accessToken,
             refreshToken,
@@ -372,16 +411,34 @@ export function useFixCourses(): UseMutationResult<FixCoursesResponse, Error, Fi
             accessToken,
             refreshToken,
           });
-          courseIds.push(created.id);
-          existingByCode.set(entry.code, created);
+          // 新規作成直後は course_fixed_at が NULL のままになる可能性があるため
+          // 続けて PATCH で同じ確定タイムスタンプを書き込む。
+          if (created.course_fixed_at == null) {
+            const stamped = await fetcher<CourseV2Read>(`${COURSES_PATH}/${created.id}`, {
+              method: 'PATCH',
+              body: JSON.stringify({
+                course_fixed_at: fixedAt,
+              } satisfies CourseV2Update),
+              accessToken,
+              refreshToken,
+            });
+            courseIds.push(stamped.id);
+            existingByCode.set(entry.code, stamped);
+          } else {
+            courseIds.push(created.id);
+            existingByCode.set(entry.code, created);
+          }
         }
       }
 
       // 3. visits.course_id を patient_id ベースで紐付け
+      //    BE は iso_year/iso_week/weekday を受け付けないため、当該曜日 1 日に
+      //    絞った week_start/week_end (= 同一日) で問い合わせる
+      //    (Reviewer M-1 修正: 別曜日 visit を誤って書き換えないようにする)。
+      const dayDate = isoWeekdayToDate(iso_year, iso_week, weekday);
       const visitsQs = new URLSearchParams({
-        iso_year: String(iso_year),
-        iso_week: String(iso_week),
-        weekday: String(weekday),
+        week_start: dayDate,
+        week_end: dayDate,
         limit: '500',
         offset: '0',
       });
