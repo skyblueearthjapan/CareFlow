@@ -2,10 +2,11 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import {
   useForm,
   type DefaultValues,
+  type FieldValues,
   type UseFormProps,
   type UseFormReturn,
 } from 'react-hook-form';
-import type { z, ZodType } from 'zod';
+import { z, type ZodType, type ZodTypeDef } from 'zod';
 
 /**
  * react-hook-form + zod 用ヘルパ。
@@ -13,18 +14,21 @@ import type { z, ZodType } from 'zod';
  *   const schema = z.object({ name: z.string().min(1) });
  *   const form = useFormWithSchema(schema, { name: '' });
  */
-export function useFormWithSchema<TSchema extends ZodType>(
+export function useFormWithSchema<
+  TInput extends FieldValues,
+  TSchema extends ZodType<unknown, ZodTypeDef, TInput>,
+>(
   schema: TSchema,
-  defaults?: Partial<z.infer<TSchema>>,
+  defaults?: DefaultValues<TInput>,
   options?: Omit<
-    UseFormProps<z.infer<TSchema>>,
+    UseFormProps<TInput, unknown, z.output<TSchema>>,
     'resolver' | 'defaultValues'
   >,
-): UseFormReturn<z.infer<TSchema>> {
-  return useForm<z.infer<TSchema>>({
+): UseFormReturn<TInput, unknown, z.output<TSchema>> {
+  return useForm<TInput, unknown, z.output<TSchema>>({
     ...options,
     resolver: zodResolver(schema),
-    defaultValues: defaults as DefaultValues<z.infer<TSchema>> | undefined,
+    defaultValues: defaults,
   });
 }
 

@@ -1,5 +1,9 @@
 'use client';
 
+// NOTE: react-day-picker is pinned at ~8.10.1.
+// shadcn/ui v9 of this component is incompatible (classNames keys + IconLeft/Right replaced by Chevron).
+// To upgrade to v9 see ADR-002 (TBD).
+
 import * as React from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { DayPicker } from 'react-day-picker';
