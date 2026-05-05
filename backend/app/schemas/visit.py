@@ -49,3 +49,7 @@ class VisitRead(VisitBase):
     created_at: datetime
     updated_at: datetime
     deleted_at: datetime | None = None
+    # Denormalized display names — populated by selectinload() in the router.
+    # Frontend (`schedule/page.tsx`) renders these directly without a join.
+    patient_name: str | None = None
+    staff_name: str | None = None

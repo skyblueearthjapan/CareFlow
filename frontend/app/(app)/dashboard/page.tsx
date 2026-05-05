@@ -14,12 +14,15 @@ interface HealthResponse {
 }
 
 export default function DashboardPage() {
-  const { data: session } = useSession();
+  const { data: session, status } = useSession();
   const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
 
+  // healthz is user-agnostic — no need to scope the cache key by user.id.
   const { data, isLoading, isError, error } = useQuery<HealthResponse>({
     queryKey: ['healthz'],
-    queryFn: () => fetcher<HealthResponse>('/api/v1/healthz', { accessToken }),
+    queryFn: () => fetcher<HealthResponse>('/api/v1/healthz', { accessToken, refreshToken }),
+    enabled: status === 'authenticated',
   });
 
   return (

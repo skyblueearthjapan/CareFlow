@@ -9,12 +9,20 @@ const credentialsSchema = z.object({
   password: z.string().min(1),
 });
 
+// Backend returns the LoginResponse shape from `backend/app/schemas/auth.py`:
+//   { user: { id, email, role, staff_id }, tokens: { access_token, refresh_token } }
+// (See Phase 2 Codex review — frontend was previously parsing a flat object.)
 const loginResponseSchema = z.object({
-  id: z.union([z.string(), z.number()]).transform((v) => String(v)),
-  email: z.string().email(),
-  name: z.string().optional(),
-  role: z.enum(['admin', 'manager', 'staff']),
-  accessToken: z.string().min(1),
+  user: z.object({
+    id: z.union([z.string(), z.number()]).transform((v) => String(v)),
+    email: z.string().email(),
+    name: z.string().optional(),
+    role: z.enum(['admin', 'manager', 'staff']),
+  }),
+  tokens: z.object({
+    access_token: z.string().min(1),
+    refresh_token: z.string().min(1),
+  }),
 });
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
@@ -45,12 +53,14 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           const json: unknown = await res.json();
           const payload = loginResponseSchema.safeParse(json);
           if (!payload.success) return null;
+          const { user, tokens } = payload.data;
           return {
-            id: payload.data.id,
-            email: payload.data.email,
-            name: payload.data.name ?? payload.data.email.split('@')[0] ?? 'user',
-            role: payload.data.role,
-            accessToken: payload.data.accessToken,
+            id: user.id,
+            email: user.email,
+            name: user.name ?? user.email.split('@')[0] ?? 'user',
+            role: user.role,
+            accessToken: tokens.access_token,
+            refreshToken: tokens.refresh_token,
           };
         } catch {
           return null;
@@ -63,14 +73,22 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       if (user) {
         token.role = user.role;
         token.accessToken = user.accessToken;
+        token.refreshToken = user.refreshToken;
+        if (user.id) {
+          token.sub = user.id;
+        }
       }
       return token;
     },
     async session({ session, token }) {
       if (session.user) {
         session.user.role = token.role ?? 'staff';
+        if (token.sub) {
+          session.user.id = token.sub;
+        }
       }
       session.accessToken = token.accessToken;
+      session.refreshToken = token.refreshToken;
       return session;
     },
   },

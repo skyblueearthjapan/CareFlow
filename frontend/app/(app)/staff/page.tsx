@@ -24,12 +24,15 @@ function normalizeStaff(data: StaffResponse | undefined): StaffRow[] {
 }
 
 export default function StaffPage() {
-  const { data: session } = useSession();
+  const { data: session, status } = useSession();
   const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+  const userId = session?.user?.id ?? null;
 
   const { data, isLoading, isError, error } = useQuery<StaffResponse>({
-    queryKey: ['staff'],
-    queryFn: () => fetcher<StaffResponse>('/api/v1/staff', { accessToken }),
+    queryKey: ['staff', userId],
+    queryFn: () => fetcher<StaffResponse>('/api/v1/staff', { accessToken, refreshToken }),
+    enabled: status === 'authenticated',
   });
 
   const rows = normalizeStaff(data);

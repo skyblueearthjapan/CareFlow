@@ -24,12 +24,15 @@ function normalizePatients(data: PatientsResponse | undefined): PatientRow[] {
 }
 
 export default function PatientsPage() {
-  const { data: session } = useSession();
+  const { data: session, status } = useSession();
   const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+  const userId = session?.user?.id ?? null;
 
   const { data, isLoading, isError, error } = useQuery<PatientsResponse>({
-    queryKey: ['patients'],
-    queryFn: () => fetcher<PatientsResponse>('/api/v1/patients', { accessToken }),
+    queryKey: ['patients', userId],
+    queryFn: () => fetcher<PatientsResponse>('/api/v1/patients', { accessToken, refreshToken }),
+    enabled: status === 'authenticated',
   });
 
   const rows = normalizePatients(data);

@@ -11,6 +11,8 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import selectinload
 
 from app.core.deps import CurrentActiveUser, DbDep, require_role
 from app.models.user import User
@@ -28,24 +30,62 @@ def _staff_visibility_filter(staff_id: UUID):
     )
 
 
+def _serialize_visit(visit: Visit) -> dict:
+    """Project a Visit (with optional eager-loaded patient/primary_staff) into
+    the VisitRead shape, including denormalized `patient_name`/`staff_name`.
+    """
+    data = {
+        "id": visit.id,
+        "patient_id": visit.patient_id,
+        "primary_staff_id": visit.primary_staff_id,
+        "secondary_staff_id": visit.secondary_staff_id,
+        "mentor_staff_id": visit.mentor_staff_id,
+        "visit_date": visit.visit_date,
+        "start_time": visit.start_time,
+        "end_time": visit.end_time,
+        "type": visit.type,
+        "status": visit.status,
+        "source": visit.source,
+        "note": visit.note,
+        "kaipoke_id": visit.kaipoke_id,
+        "created_at": visit.created_at,
+        "updated_at": visit.updated_at,
+        "deleted_at": visit.deleted_at,
+        "patient_name": getattr(visit.patient, "name", None) if visit.patient is not None else None,
+        "staff_name": (
+            getattr(visit.primary_staff, "name", None)
+            if visit.primary_staff is not None
+            else None
+        ),
+    }
+    return data
+
+
 @router.get("", response_model=list[VisitRead], summary="List visits")
 async def list_visits(
     db: DbDep,
     user: CurrentActiveUser,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
-) -> list[Visit]:
+) -> list[dict]:
     if user.role not in {"admin", "manager", "staff"}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
 
-    stmt = select(Visit).where(Visit.deleted_at.is_(None))
+    stmt = (
+        select(Visit)
+        .where(Visit.deleted_at.is_(None))
+        .options(
+            selectinload(Visit.patient),
+            selectinload(Visit.primary_staff),
+        )
+    )
     if user.role == "staff":
         if user.staff_id is None:
             return []
         stmt = stmt.where(_staff_visibility_filter(user.staff_id))
     stmt = stmt.order_by(Visit.visit_date.desc(), Visit.start_time.desc()).limit(limit).offset(offset)
     rows = (await db.scalars(stmt)).all()
-    return list(rows)
+    return [_serialize_visit(v) for v in rows]
 
 
 @router.get("/{visit_id}", response_model=VisitRead, summary="Get visit by id")
@@ -53,12 +93,17 @@ async def get_visit(
     visit_id: UUID,
     db: DbDep,
     user: CurrentActiveUser,
-) -> Visit:
+) -> dict:
     if user.role not in {"admin", "manager", "staff"}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
 
     visit = await db.scalar(
-        select(Visit).where(Visit.id == visit_id, Visit.deleted_at.is_(None))
+        select(Visit)
+        .where(Visit.id == visit_id, Visit.deleted_at.is_(None))
+        .options(
+            selectinload(Visit.patient),
+            selectinload(Visit.primary_staff),
+        )
     )
     if visit is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
@@ -71,7 +116,7 @@ async def get_visit(
         }:
             # Hide existence from non-assigned staff.
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
-    return visit
+    return _serialize_visit(visit)
 
 
 @router.post(
@@ -84,12 +129,30 @@ async def create_visit(
     payload: VisitCreate,
     db: DbDep,
     _user: Annotated[User, Depends(require_role("admin", "manager"))],
-) -> Visit:
+) -> dict:
     visit = Visit(**payload.model_dump())
     db.add(visit)
-    await db.commit()
-    await db.refresh(visit)
-    return visit
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        msg = str(exc).lower()
+        if "unique" in msg or "duplicate" in msg:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Conflict: duplicate value") from exc
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Validation error: invalid foreign key",
+        ) from exc
+    # Reload with relationships for the response.
+    visit = await db.scalar(
+        select(Visit)
+        .where(Visit.id == visit.id)
+        .options(
+            selectinload(Visit.patient),
+            selectinload(Visit.primary_staff),
+        )
+    )
+    return _serialize_visit(visit)
 
 
 @router.patch("/{visit_id}", response_model=VisitRead, summary="Update visit")
@@ -98,7 +161,7 @@ async def update_visit(
     payload: VisitUpdate,
     db: DbDep,
     _user: Annotated[User, Depends(require_role("admin", "manager"))],
-) -> Visit:
+) -> dict:
     visit = await db.scalar(
         select(Visit).where(Visit.id == visit_id, Visit.deleted_at.is_(None))
     )
@@ -107,9 +170,26 @@ async def update_visit(
 
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(visit, field, value)
-    await db.commit()
-    await db.refresh(visit)
-    return visit
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        msg = str(exc).lower()
+        if "unique" in msg or "duplicate" in msg:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Conflict: duplicate value") from exc
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Validation error: invalid foreign key",
+        ) from exc
+    visit = await db.scalar(
+        select(Visit)
+        .where(Visit.id == visit_id)
+        .options(
+            selectinload(Visit.patient),
+            selectinload(Visit.primary_staff),
+        )
+    )
+    return _serialize_visit(visit)
 
 
 @router.delete(

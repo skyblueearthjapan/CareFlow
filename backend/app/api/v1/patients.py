@@ -7,6 +7,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from app.core.deps import DbDep, require_role
 from app.models.patient import Patient
@@ -14,6 +15,27 @@ from app.models.user import User
 from app.schemas.patient import PatientCreate, PatientRead, PatientUpdate
 
 router = APIRouter()
+
+
+async def _commit_or_409(db) -> None:
+    """Commit and translate IntegrityError into a stable HTTP response.
+
+    `unique`/`duplicate` -> 409 Conflict; other FK/check errors -> 422.
+    """
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        msg = str(exc).lower()
+        if "unique" in msg or "duplicate" in msg:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Conflict: duplicate value",
+            ) from exc
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Validation error: invalid foreign key",
+        ) from exc
 
 
 @router.get("", response_model=list[PatientRead], summary="List patients")
@@ -63,7 +85,7 @@ async def create_patient(
 ) -> Patient:
     patient = Patient(**payload.model_dump())
     db.add(patient)
-    await db.commit()
+    await _commit_or_409(db)
     await db.refresh(patient)
     return patient
 
@@ -87,7 +109,7 @@ async def update_patient(
 
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(patient, field, value)
-    await db.commit()
+    await _commit_or_409(db)
     await db.refresh(patient)
     return patient
 

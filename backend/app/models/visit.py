@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, datetime, time
+from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     Date,
@@ -15,9 +16,13 @@ from sqlalchemy import (
     Time,
 )
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin
+
+if TYPE_CHECKING:
+    from app.models.patient import Patient
+    from app.models.staff import Staff
 
 
 class Visit(Base, TimestampMixin):
@@ -46,6 +51,14 @@ class Visit(Base, TimestampMixin):
         PG_UUID(as_uuid=True),
         ForeignKey("staff.id", ondelete="SET NULL"),
         nullable=True,
+    )
+
+    # Relationships used for denormalized name fields in VisitRead.
+    # `lazy="raise_on_sql"` on async sessions would be safer; we explicitly
+    # use selectinload() in the routers to avoid lazy-load surprises.
+    patient: Mapped["Patient"] = relationship("Patient", foreign_keys=[patient_id], lazy="noload")
+    primary_staff: Mapped["Staff | None"] = relationship(
+        "Staff", foreign_keys=[primary_staff_id], lazy="noload"
     )
 
     visit_date: Mapped[date] = mapped_column(Date, nullable=False)

@@ -10,9 +10,10 @@ import { fetcher } from '@/lib/api/fetcher';
 
 interface VisitRow {
   id?: string | number;
-  date?: string;
-  patientName?: string;
-  staffName?: string;
+  // Backend `VisitRead` (snake_case) — see backend/app/schemas/visit.py.
+  visit_date?: string;
+  patient_name?: string | null;
+  staff_name?: string | null;
   [key: string]: unknown;
 }
 
@@ -25,13 +26,15 @@ function normalizeVisits(data: VisitsResponse | undefined): VisitRow[] {
 }
 
 export default function SchedulePage() {
-  const { data: session } = useSession();
+  const { data: session, status } = useSession();
   const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+  const userId = session?.user?.id ?? null;
 
-  // TODO: backend /api/v1/visits は未実装の可能性あり。実装され次第クエリキー含めて見直す。
   const { data, isLoading, isError, error } = useQuery<VisitsResponse>({
-    queryKey: ['visits'],
-    queryFn: () => fetcher<VisitsResponse>('/api/v1/visits', { accessToken }),
+    queryKey: ['visits', userId],
+    queryFn: () => fetcher<VisitsResponse>('/api/v1/visits', { accessToken, refreshToken }),
+    enabled: status === 'authenticated',
   });
 
   const rows = normalizeVisits(data);
@@ -72,9 +75,9 @@ export default function SchedulePage() {
               <tbody>
                 {rows.map((row, idx) => (
                   <tr key={row.id ?? idx} className="border-b border-border-default last:border-0">
-                    <td className="px-3 py-2 tnum">{row.date ?? '--'}</td>
-                    <td className="px-3 py-2">{row.patientName ?? '--'}</td>
-                    <td className="px-3 py-2 text-text-secondary">{row.staffName ?? '--'}</td>
+                    <td className="px-3 py-2 tnum">{row.visit_date ?? '--'}</td>
+                    <td className="px-3 py-2">{row.patient_name ?? '--'}</td>
+                    <td className="px-3 py-2 text-text-secondary">{row.staff_name ?? '--'}</td>
                   </tr>
                 ))}
               </tbody>

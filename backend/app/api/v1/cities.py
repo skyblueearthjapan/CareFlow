@@ -11,6 +11,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from app.core.deps import DbDep, require_role
 from app.models.city import City
@@ -18,6 +19,24 @@ from app.models.user import User
 from app.schemas.city import CityCreate, CityRead, CityUpdate
 
 router = APIRouter()
+
+
+async def _commit_or_409(db) -> None:
+    """Commit and translate IntegrityError into 409/422 (see patients.py)."""
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        msg = str(exc).lower()
+        if "unique" in msg or "duplicate" in msg:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Conflict: duplicate value",
+            ) from exc
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Validation error: invalid foreign key",
+        ) from exc
 
 
 @router.get("", response_model=list[CityRead], summary="List cities")
@@ -65,7 +84,7 @@ async def create_city(
 ) -> City:
     city = City(**payload.model_dump())
     db.add(city)
-    await db.commit()
+    await _commit_or_409(db)
     await db.refresh(city)
     return city
 
@@ -85,7 +104,7 @@ async def update_city(
 
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(city, field, value)
-    await db.commit()
+    await _commit_or_409(db)
     await db.refresh(city)
     return city
 

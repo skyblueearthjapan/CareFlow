@@ -114,9 +114,13 @@ CurrentActiveUser = Annotated[User, Depends(get_current_active_user)]
 
 
 def require_role(*roles: str):
-    """Build a dependency that allows only the given roles (admin/manager/staff)."""
+    """Build a dependency that allows only the given roles (admin/manager/staff).
 
-    async def _checker(user: CurrentUser) -> User:
+    Chains through `get_current_active_user` so that future soft-deleted users
+    are rejected before a role check runs (Codex Phase 2 review fix).
+    """
+
+    async def _checker(user: CurrentActiveUser) -> User:
         if user.role not in roles:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
