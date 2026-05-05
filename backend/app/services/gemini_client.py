@@ -9,6 +9,22 @@ called without an API key.
 Cost is approximated locally via a static $/1K-token table — Gemini does not
 report cost in the response so we estimate from input/output tokens to stay
 within budget.
+
+TODO (W5-F follow-up / out of scope for this sprint):
+    Migrate from `google-generativeai` (deprecated upstream) to the new
+    `google-genai` SDK. The new SDK changes the GenerativeModel construction
+    pattern and the response shape (response.text → response.candidates[]),
+    so the migration touches `_invoke()` end-to-end and warrants its own
+    sprint with a fresh test pass. Tracking issue: TBD.
+
+Default model rationale (W5-F, 2026-05):
+    `_DEFAULT_MODEL` was bumped from `gemini-2.0-flash` to `gemini-2.5-flash`
+    after W4-B verification surfaced that gemini-2.0-flash returns
+    HTTP 404 ("model not found / not supported for generateContent") for
+    *new* API users on certain regional billing accounts. gemini-2.5-flash
+    is GA and accepts generateContent universally as of 2026-05.
+    Operators on legacy projects can still pin `GEMINI_MODEL=gemini-2.0-flash`
+    via env if pricing matters more than availability.
 """
 
 from __future__ import annotations
@@ -28,11 +44,12 @@ logger = logging.getLogger(__name__)
 # 2026-05 snapshot — update whenever Google publishes new tiers. The
 # table is keyed by *model id* so switching `GEMINI_MODEL` env vars
 # automatically picks the right cost line; unknown models fall back to
-# the gemini-2.0-flash entry (logged at WARNING in `estimate_cost_usd`).
+# the `_DEFAULT_MODEL` entry (logged at WARNING in `estimate_cost_usd`).
 #
 # Reference (USD / 1M tokens):
-#   gemini-2.0-flash      input $0.10  output $0.40   (default, GA)
-#   gemini-2.5-flash      input $0.30  output $2.50   (newer, larger)
+#   gemini-2.5-flash      input $0.30  output $2.50   (default, GA, 2026-05)
+#   gemini-2.0-flash      input $0.10  output $0.40   (cheaper but 404 on
+#                                                      some new accounts)
 #   gemini-1.5-flash      input $0.075 output $0.30   (RETIRED on v1beta)
 #   gemini-1.5-pro        input $1.25  output $5.00
 _PRICING_USD_PER_1M: dict[str, tuple[float, float]] = {
@@ -44,7 +61,10 @@ _PRICING_USD_PER_1M: dict[str, tuple[float, float]] = {
 
 # Per-request request/response timeout (s).
 _DEFAULT_TIMEOUT_S = 15.0
-_DEFAULT_MODEL = "gemini-2.0-flash"
+# 2026-05 W5-F bump: gemini-2.0-flash returns 404 generateContent for new
+# users on some billing accounts; gemini-2.5-flash is GA and works
+# universally. See module docstring for the full rationale.
+_DEFAULT_MODEL = "gemini-2.5-flash"
 
 
 class GeminiError(RuntimeError):
@@ -55,8 +75,12 @@ class GeminiUnavailableError(GeminiError):
     """Raised when the Gemini SDK is missing or no API key is configured."""
 
 
-class GeminiAPIKeyMissing(GeminiUnavailableError):
-    """Alias for missing-API-key — distinct from SDK-missing semantically."""
+class GeminiAPIKeyMissing(GeminiUnavailableError):  # noqa: N818
+    """Alias for missing-API-key — distinct from SDK-missing semantically.
+
+    Naming kept without ``Error`` suffix on purpose so callers grep for
+    ``APIKeyMissing`` consistently with other auth-related sentinels.
+    """
 
 
 class GeminiInvalidResponseError(GeminiError):
@@ -67,13 +91,21 @@ class GeminiRateLimitError(GeminiError):
     """Raised when Gemini rejects the request with a quota / 429 error."""
 
 
-class GeminiQuotaExceeded(GeminiRateLimitError):
-    """Specific subclass for daily/per-minute quota exhaustion (alias)."""
+class GeminiQuotaExceeded(GeminiRateLimitError):  # noqa: N818
+    """Specific subclass for daily/per-minute quota exhaustion (alias).
+
+    Suffix omitted intentionally to mirror Google's own ``QuotaExceeded``
+    response code naming.
+    """
 
 
-class GeminiModelNotFound(GeminiError):
+class GeminiModelNotFound(GeminiError):  # noqa: N818
     """Raised on 404 — the configured model is unknown / retired on this API
-    version. Operators should update GEMINI_MODEL env."""
+    version. Operators should update GEMINI_MODEL env.
+
+    Naming follows Google's ``NotFound`` status convention; the ``Error``
+    suffix is omitted on purpose.
+    """
 
 
 @dataclass
@@ -101,17 +133,17 @@ class InterpretResult:
 _BASE_PROMPT = (
     "あなたは訪問看護スケジュール管理システム CareFlow のAIアシスタントです。\n"
     "ユーザーの自然言語入力を、以下の JSON スキーマに厳密に従って構造化してください。\n"
-    "解釈不能な場合は action_type を \"unknown\" にし confidence を 0 にしてください。\n"
+    '解釈不能な場合は action_type を "unknown" にし confidence を 0 にしてください。\n'
 )
 
 _OUTPUT_SCHEMA_HINT = (
     "【出力スキーマ】\n"
     "{\n"
-    "  \"actions\": [\n"
+    '  "actions": [\n'
     "    {\n"
-    "      \"action_type\": \"<context-specific>\",\n"
-    "      \"confidence\": 0.0-1.0,\n"
-    "      \"fields\": { ... }\n"
+    '      "action_type": "<context-specific>",\n'
+    '      "confidence": 0.0-1.0,\n'
+    '      "fields": { ... }\n'
     "    }\n"
     "  ]\n"
     "}\n"
@@ -197,8 +229,7 @@ def estimate_cost_usd(
         pricing = _PRICING_USD_PER_1M[_DEFAULT_MODEL]
     in_price, out_price = pricing
     return round(
-        (prompt_tokens / 1_000_000.0) * in_price
-        + (completion_tokens / 1_000_000.0) * out_price,
+        (prompt_tokens / 1_000_000.0) * in_price + (completion_tokens / 1_000_000.0) * out_price,
         6,
     )
 
@@ -218,13 +249,9 @@ def _parse_json_payload(text: str) -> dict[str, Any]:
     try:
         loaded = json.loads(stripped)
     except json.JSONDecodeError as exc:
-        raise GeminiInvalidResponseError(
-            f"Gemini response is not valid JSON: {exc}"
-        ) from exc
+        raise GeminiInvalidResponseError(f"Gemini response is not valid JSON: {exc}") from exc
     if not isinstance(loaded, dict):
-        raise GeminiInvalidResponseError(
-            "Gemini response root must be a JSON object"
-        )
+        raise GeminiInvalidResponseError("Gemini response root must be a JSON object")
     return loaded
 
 
@@ -270,9 +297,7 @@ class GeminiClient:
         Tests override this method via monkeypatch.
         """
         if not self._api_key:
-            raise GeminiAPIKeyMissing(
-                "GEMINI_API_KEY is not set — cannot reach Gemini API"
-            )
+            raise GeminiAPIKeyMissing("GEMINI_API_KEY is not set — cannot reach Gemini API")
         try:
             import google.generativeai as genai  # type: ignore[import-not-found]
         except ImportError as exc:  # pragma: no cover - exercised only in env w/o SDK
@@ -319,9 +344,7 @@ class GeminiClient:
             try:
                 text = response.candidates[0].content.parts[0].text  # type: ignore[index]
             except Exception as exc:  # pragma: no cover
-                raise GeminiInvalidResponseError(
-                    "Gemini returned no candidate text"
-                ) from exc
+                raise GeminiInvalidResponseError("Gemini returned no candidate text") from exc
         usage = getattr(response, "usage_metadata", None)
         prompt_tokens = int(getattr(usage, "prompt_token_count", 0) or 0)
         completion_tokens = int(getattr(usage, "candidates_token_count", 0) or 0)

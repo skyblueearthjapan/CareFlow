@@ -21,9 +21,7 @@ from app.services import gemini_client as gc
 
 
 async def _make_user(db, email: str, role: str) -> User:
-    user = User(
-        email=email, password_hash=hash_password("does-not-matter"), role=role
-    )
+    user = User(email=email, password_hash=hash_password("does-not-matter"), role=role)
     db.add(user)
     await db.commit()
     await db.refresh(user)
@@ -31,13 +29,13 @@ async def _make_user(db, email: str, role: str) -> User:
 
 
 def _bearer(user: User) -> dict[str, str]:
-    token = create_access_token(
-        subject=user.id, role=user.role, staff_id=user.staff_id
-    )
+    token = create_access_token(subject=user.id, role=user.role, staff_id=user.staff_id)
     return {"Authorization": f"Bearer {token}"}
 
 
-def _stub_invoke(payload: dict[str, Any] | str, *, prompt_tokens: int = 50, completion_tokens: int = 30):
+def _stub_invoke(
+    payload: dict[str, Any] | str, *, prompt_tokens: int = 50, completion_tokens: int = 30
+):
     """Build an `_invoke` replacement that returns a canned response.
 
     `payload` may be the dict (will be JSON-encoded) or a raw string (used to
@@ -63,9 +61,7 @@ def _stub_invoke_raises(exc: Exception):
 
 
 @pytest.mark.asyncio
-async def test_interpret_general_returns_actions_and_persists_log(
-    client, db, monkeypatch
-) -> None:
+async def test_interpret_general_returns_actions_and_persists_log(client, db, monkeypatch) -> None:
     admin = await _make_user(db, "ai-general@example.com", "admin")
     monkeypatch.setattr(
         gc.GeminiClient,
@@ -97,7 +93,7 @@ async def test_interpret_general_returns_actions_and_persists_log(
     assert body["confidence"] == pytest.approx(0.92)
     assert body["context_type"] == "general"
     assert body["interpreted"]["actions"][0]["action_type"] == "staff_weekly_override"
-    assert body["model"] == "gemini-2.0-flash"
+    assert body["model"] == "gemini-2.5-flash"
     assert "log_id" in body
 
     # Persistence: exactly one row, and `_meta` carries context_type / cost.
@@ -203,13 +199,9 @@ async def test_interpret_patient_create_strategy(client, db, monkeypatch) -> Non
 
 
 @pytest.mark.asyncio
-async def test_interpret_invalid_json_returns_422_and_logs(
-    client, db, monkeypatch
-) -> None:
+async def test_interpret_invalid_json_returns_422_and_logs(client, db, monkeypatch) -> None:
     admin = await _make_user(db, "ai-bad@example.com", "admin")
-    monkeypatch.setattr(
-        gc.GeminiClient, "_invoke", _stub_invoke("えーっと あの えーっと")
-    )
+    monkeypatch.setattr(gc.GeminiClient, "_invoke", _stub_invoke("えーっと あの えーっと"))
     res = await client.post(
         "/api/v1/ai/interpret",
         headers=_bearer(admin),
@@ -256,9 +248,7 @@ async def test_interpret_unavailable_returns_503(client, db, monkeypatch) -> Non
 
 
 @pytest.mark.asyncio
-async def test_interpret_model_not_found_returns_503(
-    client, db, monkeypatch
-) -> None:
+async def test_interpret_model_not_found_returns_503(client, db, monkeypatch) -> None:
     """A 404 from upstream (retired model id) must surface as 503, NOT 429.
 
     Reproduces the W4-B hotfix scenario where gemini-1.5-flash was removed
@@ -297,9 +287,7 @@ async def test_interpret_model_not_found_returns_503(
 
 
 @pytest.mark.asyncio
-async def test_interpret_generic_gemini_error_returns_502(
-    client, db, monkeypatch
-) -> None:
+async def test_interpret_generic_gemini_error_returns_502(client, db, monkeypatch) -> None:
     """An unclassified upstream failure should map to 502, not 422.
 
     422 is reserved for unparseable JSON bodies; transport / 5xx-style
@@ -384,7 +372,7 @@ async def test_logs_admin_returns_rows(client, db, monkeypatch) -> None:
     assert body["total"] >= 1
     item = body["items"][0]
     assert item["context_type"] == "general"
-    assert item["model"] == "gemini-2.0-flash"
+    assert item["model"] == "gemini-2.5-flash"
 
 
 @pytest.mark.asyncio

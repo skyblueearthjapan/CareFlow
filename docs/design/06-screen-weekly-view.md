@@ -377,15 +377,15 @@ icon  患者   日付    時間    種別   理由   操作
 
 | 機能 | API |
 |---|---|
-| 週ビュー本体 | `GET /api/visits?week=2026-W18` |
-| 通常週パターン | `GET /api/patients/{id}/weekly-pattern` |
-| 特別週パターン | `GET /api/patients/{id}/special-week?week=...` |
-| その週だけ休み | `GET /api/staff/{id}/weekly-overrides?week=...` |
-| 未割当 | `GET /api/visits/unassigned?week=...` |
-| 自動割当 | `POST /api/allocate?week=...` |
-| 訪問編集 | `PATCH /api/visits/{id}` |
-| パターン更新 | `PUT /api/patients/{id}/weekly-pattern` |
-| 休み更新 | `PUT /api/staff/{id}/weekly-overrides` |
+| 週ビュー本体 | `GET /api/v1/visits?week=2026-W18` |
+| 通常週パターン | `GET /api/v1/patients/{id}/weekly-pattern` |
+| 特別週パターン | `GET /api/v1/patients/{id}/special-week?week=...` |
+| その週だけ休み | `GET /api/v1/staff/{id}/weekly-overrides?week=...` |
+| 未割当 | `GET /api/v1/visits/unassigned?week=...` |
+| 自動割当 | `POST /api/v1/allocate?week=...` |
+| 訪問編集 | `PATCH /api/v1/visits/{id}` |
+| パターン更新 | `PUT /api/v1/patients/{id}/weekly-pattern` |
+| 休み更新 | `PUT /api/v1/staff/{id}/weekly-overrides` |
 
 ---
 

@@ -125,9 +125,7 @@ async def test_reset_password_issues_new_credential(client, db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_delete_user_soft_deletes_and_excludes_from_default_list(
-    client, db
-) -> None:
+async def test_delete_user_soft_deletes_and_excludes_from_default_list(client, db) -> None:
     admin = await _make_user(db, "wave4f-admin-7@example.com", "admin")
     target = await _make_user(db, "byebye@example.com", "staff")
     res = await client.delete(
@@ -140,9 +138,7 @@ async def test_delete_user_soft_deletes_and_excludes_from_default_list(
     emails = [it["email"] for it in listing.json()["items"]]
     assert "byebye@example.com" not in emails
 
-    listing2 = await client.get(
-        "/api/v1/admin/users?include_deleted=true", headers=_bearer(admin)
-    )
+    listing2 = await client.get("/api/v1/admin/users?include_deleted=true", headers=_bearer(admin))
     emails2 = [it["email"] for it in listing2.json()["items"]]
     assert "byebye@example.com" in emails2
 
@@ -150,9 +146,7 @@ async def test_delete_user_soft_deletes_and_excludes_from_default_list(
 @pytest.mark.asyncio
 async def test_admin_cannot_self_delete(client, db) -> None:
     admin = await _make_user(db, "wave4f-admin-8@example.com", "admin")
-    res = await client.delete(
-        f"/api/v1/admin/users/{admin.id}", headers=_bearer(admin)
-    )
+    res = await client.delete(f"/api/v1/admin/users/{admin.id}", headers=_bearer(admin))
     assert res.status_code == 400, res.text
 
 
@@ -164,4 +158,42 @@ async def test_manager_cannot_create_user(client, db) -> None:
         headers=_bearer(manager),
         json={"email": "x@example.com", "role": "staff"},
     )
+    assert res.status_code == 403, res.text
+
+
+# ---------------------------------------------------------------------------
+# /audit-logs RBAC seeding contract (W5-F follow-up, issue #16)
+#
+# The /audit-logs endpoint is admin-only by design (see backend/app/api/v1/
+# audit_logs.py — `Depends(require_role("admin"))`). When chie.kawana
+# reported a 403 from /audit-logs in 2026-05, the root cause was NOT a bug
+# in the RBAC code — it was that the production user row carried role
+# `"manager"` (not `"admin"`). The 管理者 sheet in Sample 2 lists
+# `chie.kawana` with role=manager, and `import_users.py::_norm_role` keeps
+# any value that's already in USER_ROLES, so manager stays manager.
+#
+# These two tests pin the contract so that:
+#   1) admin really gets 200 from /audit-logs
+#   2) manager (chie's actual role) really gets 403 — confirming that the
+#      operational misunderstanding is not a regression in require_role.
+#
+# If business decides chie should access /audit-logs, the fix is to
+# PATCH her role to admin, NOT to relax audit_logs.py.
+
+
+@pytest.mark.asyncio
+async def test_audit_logs_admin_returns_200(client, db) -> None:
+    admin = await _make_user(db, "audit-rbac-admin@example.com", "admin")
+    res = await client.get("/api/v1/audit-logs", headers=_bearer(admin))
+    assert res.status_code == 200, res.text
+    assert "items" in res.json()
+
+
+@pytest.mark.asyncio
+async def test_audit_logs_manager_returns_403(client, db) -> None:
+    """Manager role (chie.kawana's actual role per Sample 2 管理者 sheet)
+    must NOT access /audit-logs. This documents that the 2026-05 403 report
+    is expected behaviour, not a bug."""
+    manager = await _make_user(db, "audit-rbac-manager@example.com", "manager")
+    res = await client.get("/api/v1/audit-logs", headers=_bearer(manager))
     assert res.status_code == 403, res.text

@@ -37,6 +37,10 @@
 
 ## Phase A: Pre-flight (VPS 状態確認)
 
+> **前提条件**: VPS への SSH (root) 接続済み / `docker` `docker compose` インストール済み / `/opt/carelink/preflight-check.sh` がリポ内にあるか scp 済み
+> **所要時間**: 2 分
+> **失敗時の戻し方**: スクリプトが exit 1 → 該当項目 (ディスク空き / cloudflared 等) を解消するまで Phase B 以降に進まない。VPS への変更は何もしていないため戻し作業は不要。
+
 `docs/deployment/preflight-check.sh` を VPS 上で実行し、以下を確認する。
 
 - ディスク空き 5 GB (= 5120 MB) 以上 (`df -BM` ベースで精密チェック)
@@ -54,18 +58,39 @@
 
 ## Phase B: コード配置
 
+> **前提条件**: GitHub deploy key (read) を VPS の `~/.ssh/id_ed25519_carelink` に配置済み、もしくは public repo 化済み
+> **所要時間**: 1 分
+> **失敗時の戻し方**: clone 後の `/opt/carelink` を `sudo rm -rf /opt/carelink` で削除して再試行。既存サービスへの影響なし。
+
 ```bash
 sudo mkdir -p /opt/carelink && sudo chown $USER:$USER /opt/carelink
 git clone https://github.com/skyblueearthjapan/CareLink.git /opt/carelink
 cd /opt/carelink
-git checkout develop
-git rev-parse HEAD  # commit hash を作業ログに記録
+git checkout main      # 本番は main を使用 (develop は staging)
+git rev-parse HEAD     # commit hash を作業ログに記録 (例: <your-commit-sha>)
 ```
 
 成功条件: `develop` HEAD が GitHub と一致 (`git status` clean)。
 失敗時: ネットワーク経由の clone 失敗なら deploy key 認証を確認。再デプロイ時に `/opt/carelink` が空でない場合は、本番データを退避してから `rm -rf` するか、別ディレクトリに clone して `rsync` で上書きする。
 
 ## Phase C: `.env` 作成 (統合 1 ファイル)
+
+> **前提条件**: VPS で `openssl` が使える (Ubuntu 標準) / 各 secret 値の本番用値が準備済み (Phase C-0 参照)
+> **所要時間**: 5 分 (値の貼り付け + chmod 確認)
+> **失敗時の戻し方**: `/opt/carelink/.env` を削除して再生成。既存サービスへの影響なし。
+
+### Phase C-0: 必要な secret 値を生成 (コピペで使用可)
+
+```bash
+# JWT_SECRET / NEXTAUTH_SECRET (32 byte base64)
+openssl rand -base64 32     # 例出力: <your-jwt-secret>
+
+# POSTGRES_PASSWORD (24 chars 英数)
+openssl rand -base64 18 | tr -d '/+=' | cut -c1-24    # 例: <your-pg-password>
+
+# 外部 API token (GEMINI_API_KEY / GOOGLE_MAPS_API_KEY) は各コンソールで発行 → コピペ
+# KAIPOKE_API_TOKEN は kaipoke-api 側で発行された値を使用
+```
 
 `docs/deployment/env-template.md` の手順に従い、**`/opt/carelink/.env`** を 1 ファイルだけ作成する。
 backend と frontend の両方の値を 1 つの `.env` に統合する形式 (compose は実行ディレクトリの `.env` を自動 interpolation 用にロードし、`env_file: - .env` で各 container にも注入される)。
@@ -97,6 +122,10 @@ ls -l .env  # -rw------- であることを確認
 
 ## Phase D: PostgreSQL 起動
 
+> **前提条件**: Phase C 完了 (`/opt/carelink/.env` 存在 + 600 perm)
+> **所要時間**: 1 分 (image pull 済の場合) / 3 分 (初回 pull)
+> **失敗時の戻し方**: `docker compose ... down -v postgres` でボリューム削除 (= 初回のみ安全。Phase H 通過後は backup-restore-runbook.md を参照)。
+
 ```bash
 cd /opt/carelink
 docker compose -f docs/deployment/docker-compose.production.yml --env-file .env up -d postgres
@@ -111,6 +140,10 @@ docker compose -f docs/deployment/docker-compose.production.yml --env-file .env 
 失敗時: 本 compose は **postgres の host port を公開していない** (kaipoke-api 側 Postgres との 5432 衝突回避)。host から psql する場合は常に `docker compose ... exec postgres psql ...` を使う。
 
 ## Phase E: Alembic マイグレーション
+
+> **前提条件**: Phase D で postgres が `Health=healthy` (= `pg_isready` 通過)
+> **所要時間**: 30 秒 (8 revisions、空 DB) / 数分 (運用中の DB)
+> **失敗時の戻し方**: 初回デプロイなら `down -v` で破壊。本番運用後は `backup-restore-runbook.md` Step 4-5 で直前 backup を復元。
 
 ```bash
 cd /opt/carelink
@@ -128,6 +161,10 @@ docker compose -f docs/deployment/docker-compose.production.yml --env-file .env 
 失敗時: マイグレーション失敗時は `alembic downgrade base` でロールバックし、`docker compose -f docs/deployment/docker-compose.production.yml --env-file .env down -v` でボリュームごと作り直す（DB は新規なので破壊して問題なし。Phase H 後はこの手は使えない）。
 
 ## Phase F: Backend / Frontend コンテナ起動
+
+> **前提条件**: Phase E まで成功 (alembic head が単一)、`/opt/carelink/.env` 設定済み、`playwrighttest1_default` external network が VPS 上に存在 (`docker network ls | grep playwrighttest1`)
+> **所要時間**: 5〜8 分 (frontend pnpm install + Next.js build がボトルネック)
+> **失敗時の戻し方**: `docker compose ... stop backend frontend` → 直前タグの image に切り戻して up -d (Phase J ③)。
 
 > **重要**: `up -d` の前に **必ず `build`** を実行する (本日の本番障害学習)。
 > 本番 image は `alembic/` を bake-in しているため、新 migration を反映するには
@@ -149,7 +186,27 @@ docker network inspect playwrighttest1_default | grep carelink-backend
 成功条件: `docker compose ps` で backend と frontend の双方が `Health=healthy`。`curl http://localhost:18000/` が 200 OK、`curl http://localhost:18001/api/v1/healthz` が 200 + JSON。`docker compose logs backend` に `Uvicorn running on 0.0.0.0:8000`、`docker compose logs frontend` に `Ready` 出力。
 失敗時: 起動直後の jwt_secret バリデーションエラーは `.env` の `APP_ENV` と `JWT_SECRET` 長を疑う。frontend がビルドエラーで上がらない場合は `docker compose -f docs/deployment/docker-compose.production.yml --env-file .env logs frontend` を確認し、`pnpm-lock.yaml` 不在による依存解決ズレが疑わしいときは frontend 側で `pnpm install --lockfile-only` してから再 build。
 
+### Phase F 完了チェックリスト (dry-run → 本実行)
+
+**dry-run / 確認** (まだ既存 traffic に影響なし):
+- [ ] `docker compose ... config` で interpolated YAML が想定通り (env が全て埋まっている)
+- [ ] `docker compose ... build --dry-run` (compose v2.20+) または `docker compose ... build --no-cache backend` を staging 等の別ホストで成功させる
+- [ ] backend image の `RUN alembic check` が通る (= bake-in alembic と DB schema が一致)
+- [ ] `docker compose ... ps postgres` が `Health=healthy`
+
+**本実行**:
+- [ ] `docker compose ... build backend frontend` 成功 (両方とも `Successfully tagged`)
+- [ ] `docker compose ... up -d --force-recreate backend frontend` 完了
+- [ ] `docker compose ... ps` で `backend` `frontend` 共に `Health=healthy` (60 秒以内)
+- [ ] `curl -fsS http://localhost:18001/api/v1/healthz` が 200 + `{"status":"ok"}`
+- [ ] `curl -fsSI http://localhost:18000/` が 200
+- [ ] `docker compose ... logs --tail=50 backend` に Traceback / ERROR 行が無い
+
 ## Phase G: Cloudflared ingress 追加
+
+> **前提条件**: Phase F 通過 (localhost:18000 が 200)、Cloudflare ダッシュボード (zone `kaipoke-api.net`) への管理権限
+> **所要時間**: 5 分 (DNS 反映含む)
+> **失敗時の戻し方**: ダッシュボードモードなら追加した hostname 行を削除して save (即時反映)。ローカルモードなら `config.yml.bak.YYYYMMDD` から復元 + `systemctl restart cloudflared`。**既存 `kaipoke-api.net` の疎通を必ず先に確認すること**。
 
 > **重要 (2026-05-05 実測)**: 本 VPS の cloudflared tunnel は **Cloudflare ダッシュボードのリモート管理モード** で動作している。`/etc/cloudflared/config.yml` をローカル編集してもランタイムには反映されない。`journalctl -u cloudflared -n 200 | grep "Updated to new configuration"` で実際にロードされている JSON 設定を確認できる。version=4 等が表示されればダッシュボード管理モード。
 
@@ -203,6 +260,11 @@ sudo systemctl status cloudflared --no-pager | head -20
 
 ## Phase H: 公開疎通確認
 
+> **前提条件**: Phase G 完了 (cloudflared に carelink hostname 追加済)
+> **所要時間**: 2 分 (DNS 伝搬待ちで前後)
+> **失敗時の戻し方**: Phase G の rollback (hostname 削除) を実施。frontend/backend container の再起動 (`docker compose ... restart backend frontend`) でも改善しない場合は Phase J 緊急 rollback。
+
+
 ```bash
 # DNS 反映 (60 秒程度待つ)
 dig +short carelink.kaipoke-api.net
@@ -228,6 +290,10 @@ curl -fsSI https://kaipoke-api.net
 
 ## Phase I: 初期管理者 user 作成
 
+> **前提条件**: Phase H 完了 (`/api/v1/healthz` が 200)
+> **所要時間**: 1 分
+> **失敗時の戻し方**: 作成した admin row を `DELETE FROM users WHERE email='<email>'` で削除して再試行。
+
 ```bash
 cd /opt/carelink
 docker compose -f docs/deployment/docker-compose.production.yml --env-file .env exec backend python scripts/create_admin.py
@@ -238,57 +304,167 @@ docker compose -f docs/deployment/docker-compose.production.yml --env-file .env 
 成功条件: `admin user upserted: <email>` のログ。`SELECT email, role FROM users` で `role=admin` を確認。
 失敗時: 既存 admin がある場合はスクリプトが select-then-update で password を上書き更新する仕様 (詳細は `initial-admin-seed.md`)。
 
-## Phase J: ロールバック手順
+## Phase J: 緊急 Rollback 手順
 
-何か致命的な問題が出た場合の取り消し順序 (上から順に実施)。
+> **前提条件**: VPS root SSH、`/opt/carelink/backups/` に直近 backup あり
+> **所要時間**: ① コード rollback 5 分 / ② DB rollback 15 分 / ③ image rollback 5 分
+> **失敗時の戻し方**: 既存 `kaipoke-api.net` 疎通が失われた場合は **cloudflared 設定 (Phase G ダッシュボード変更 or `/etc/cloudflared/config.yml.bak.*`) を最優先で revert**。CareFlow 自身の rollback より優先。
 
-### 緊急 rollback (本日の本番障害学習を反映)
+### J-0. 判断フローチャート
 
-application 層の障害 (新リリースで /api/v1/* が 5xx) であれば、まず **コードを 1 つ前の commit に戻して再 build** が最速:
+```
+[障害検知 (5xx / unhealthy / smoke fail)]
+        │
+        ▼
+   原因はどこか?
+        │
+   ┌────┴────┬─────────────┬──────────────┐
+   ▼         ▼             ▼              ▼
+ コード     migration    image不整合    インフラ
+ (新bug)   (DB破壊)     (build失敗)    (network/cf)
+   │         │             │              │
+   ▼         ▼             ▼              ▼
+ ① revert  ② DB restore  ③ image tag    Phase G/H
+ (5min)    (15min)        切替 (5min)    revert
+   │         │             │              │
+   ▼         ▼             ▼              ▼
+ healthz?  healthz?       healthz?       既存サービス疎通?
+   │         │             │              │
+   OK        OK            OK             OK
+   ▼         ▼             ▼              ▼
+ 完了      完了            完了           原因継続調査
+```
+
+判断基準:
+- **① コード rollback で復旧**: 直前デプロイの commit に application bug が含まれており、migration は無害 (DB schema が前後で互換)。最も多いケース。
+- **② DB rollback で復旧**: migration が schema 破壊的 (DROP COLUMN / 型変換失敗) で、forward migration では戻せない。**RPO 24 時間のデータロスを伴う**ため、business 判断 (失われる更新分の許容) を必ず確認。
+- **③ image rollback で復旧**: build 段階での dependency 解決ミス (pnpm-lock 不整合、新規追加 Python lib の wheel が無い等)。コード自体は OK だが image 構築が失敗しているケース。
+- **既存サービス影響あり**: cloudflared の ingress 変更が原因の可能性。Phase G の手順で hostname 削除 or `config.yml.bak` 復元を最優先。
+
+---
+
+### J-①: コード Rollback (application 層障害、5 分)
+
+新リリースの `/api/v1/*` が 5xx を吐いている、UI が真っ白、等。**最も多い & 最速** の手段。
 
 ```bash
+# 1) VPS で直前の安定 commit を特定
+ssh root@72.60.211.213
 cd /opt/carelink
-git log --oneline -10                  # 直前の安定 commit を特定
-git revert <bad_commit_sha>            # revert commit を作る (force reset より安全)
-git push origin main                   # GitHub に上げて履歴を残す (任意)
+git log --oneline -10
+# 出力例: <bad-sha>  feat(W5-X): broken change
+#        <good-sha> feat(W5-Y): last known good
+
+# 2) revert commit を作って push (force reset より安全、GitHub Actions の deploy.yml も再実行可能)
+git revert <bad-sha> --no-edit
+git push origin main      # GitHub Actions deploy.yml が手動 dispatch で再実行可能
+
+# 3) GitHub Actions で deploy を手動再実行 (Run workflow ボタン)、または VPS 上で直接 build + recreate
 export GIT_SHA="$(git rev-parse HEAD)"
 docker compose -f docs/deployment/docker-compose.production.yml --env-file .env build backend frontend
 docker compose -f docs/deployment/docker-compose.production.yml --env-file .env up -d --force-recreate backend frontend
-curl -fsS http://localhost:18001/api/v1/healthz
+
+# 4) 確認
+curl -fsS http://127.0.0.1:18001/api/v1/healthz   # 200 + {"status":"ok"} 期待
+curl -fsSI https://carelink.kaipoke-api.net/      # 200 期待
 ```
 
-DB 破壊を伴うマイグレーションが原因なら **DB バックアップから復元**:
+成功条件: healthz 200 + UI 表示復旧。
+**この方法で復旧しない場合は migration 起因 → ② へ。**
+
+---
+
+### J-②: DB Rollback (migration / DB 破壊起因、15 分目安)
+
+`alembic upgrade` が走った後にデータ不整合が発覚した場合。**直前 backup に戻すため RPO 24 時間 (= 最大 1 日分のデータロス)。**
+詳細手順は `docs/deployment/backup-restore-runbook.md` Step 1〜7 を参照。要約:
 
 ```bash
-# 最新のバックアップを確認 (運用開始後は cron で /opt/carelink/backups/*.sql を取得しておく)
-ls -lt /opt/carelink/backups/ | head -5
+ssh root@72.60.211.213
 
-# 一旦 backend を停止して接続を切る
-docker compose -f docs/deployment/docker-compose.production.yml --env-file .env stop backend
+# 1) 最新 backup を確認
+ls -lt /opt/carelink/backups/daily-*.sql.gz | head -3
+export BACKUP_FILE=/opt/carelink/backups/daily-<YYYYMMDD-HHMM>.sql.gz
 
-# psql に流し込む
-docker exec -i carelink-postgres psql -U carelink -d carelink < /opt/carelink/backups/<latest>.sql
+# 2) 現状スナップショット (保険、必須)
+docker exec carelink-postgres pg_dump -U carelink -d carelink \
+  > /tmp/pre-restore-snap-$(date +%Y%m%d-%H%M).sql
 
-# backend を再起動 (image は revert 済みのものに揃えてから)
+# 3) backend / frontend 停止 (接続を切る)
+cd /opt/carelink
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env stop backend frontend
+
+# 4) DB DROP + CREATE (PG13+ の WITH (FORCE) で接続強制切断)
+docker exec carelink-postgres psql -U carelink -d postgres -c "DROP DATABASE carelink WITH (FORCE);"
+docker exec carelink-postgres psql -U carelink -d postgres -c "CREATE DATABASE carelink OWNER carelink;"
+
+# 5) backup 流し込み (ON_ERROR_STOP で途中エラー時は中断)
+gunzip -c "$BACKUP_FILE" | docker exec -i carelink-postgres psql -U carelink -d carelink -v ON_ERROR_STOP=1
+
+# 6) backend 起動 + alembic head と DB の整合確認 → 必要なら upgrade
 docker compose -f docs/deployment/docker-compose.production.yml --env-file .env up -d backend
+sleep 10
+docker exec carelink-backend alembic current
+docker exec carelink-backend alembic heads
+# DB head が image head より古い場合のみ:
+docker exec carelink-backend alembic upgrade head
+
+# 7) frontend 再開 + smoke
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env up -d frontend
+curl -fsS http://127.0.0.1:18001/api/v1/healthz
+curl -fsSI https://carelink.kaipoke-api.net/
 ```
 
-### 通常 rollback 手順 (上から順に実施)
+成功条件: healthz 200 + UI 表示復旧 + 主要画面 (患者一覧/スタッフ一覧/週カレンダー) で過去データ表示。
+**復旧しない場合は ③ へ。**
 
-1. **ingress revert**: `sudo cp /etc/cloudflared/config.yml.bak.YYYYMMDD /etc/cloudflared/config.yml && sudo systemctl reload cloudflared`
-2. **container 停止**: `cd /opt/carelink && docker compose -f docs/deployment/docker-compose.production.yml --env-file .env down`
-3. **DB 巻き戻し** (本番運用後はバックアップから):
-   - 初回デプロイ直後で運用データなし → `docker compose -f docs/deployment/docker-compose.production.yml --env-file .env down -v` でボリュームごと削除
-   - 運用後 → `docker exec -i carelink-postgres psql -U carelink -d carelink < /opt/carelink/backups/<latest>.sql` で復元 (上記 緊急 rollback 参照)
-4. **DNS revert**: Cloudflare ダッシュボードで CNAME `carelink` を削除 or proxied OFF
-5. **イメージ削除** (再デプロイで影響を残したくない場合): `docker image rm carelink-backend:latest carelink-frontend:latest`
+---
 
-成功条件: `curl https://kaipoke-api.net` (既存サービス) が引き続き 200。CareLink 側は接続エラー or 404 になる。
-失敗時: 既存 kaipoke-api まで影響している場合は `cloudflared` の config.yml.bak を最優先で戻す。
+### J-③: コンテナ Image Rollback (build 失敗 / dependency 起因、5 分)
+
+`docker compose build` 自体が失敗、もしくは新 image が起動直後に panic、healthcheck timeout 等。
+**前提**: 本番 image を `carelink-backend:<sha>` `carelink-frontend:<sha>` で tag 化する運用が必要 (W6 で導入提案)。
+現時点では `latest` のみ tag 付与しているため、**ローカル docker registry に直前の image が `<none>` として残っている前提**で操作する。
+
+```bash
+ssh root@72.60.211.213
+
+# 1) 利用可能な image を確認 (直前の <none> tag を探す)
+docker images | grep -E '(carelink|<none>)' | head -10
+# 期待出力例:
+# carelink-backend  latest    abc123...   2 hours ago   500MB
+# <none>            <none>    def456...   1 day ago     500MB   ← これが直前 image
+
+# 2) 直前 image を tag 付与
+docker tag def456... carelink-backend:rollback-$(date +%Y%m%d-%H%M)
+docker tag def456... carelink-backend:latest
+
+# 3) container を recreate (image は :latest を参照しているため up -d で切替わる)
+cd /opt/carelink
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env up -d --force-recreate backend
+curl -fsS http://127.0.0.1:18001/api/v1/healthz
+
+# frontend 側も同様に rollback する場合は backend と同じ手順
+```
+
+> **W6 提案**: deploy.yml に `docker tag carelink-backend:latest carelink-backend:${{ github.sha }}` を追加し、過去 image を明示的に tag 保持することで本手順を「直前 sha tag に戻すだけ」に単純化できる。
+
+---
+
+### J-終了後: 後片付け
+
+- **revert commit がある場合**: 後続 PR で原因 commit を fix して再 merge → 通常 deploy で解消
+- **DB rollback を行った場合**: business 側に「失われたデータ範囲」を共有し、必要なら手動再入力依頼
+- **既存 `kaipoke-api.net` 疎通**: 必ず `curl -fsSI https://kaipoke-api.net` で確認 (CareFlow rollback 中に巻き込み事故が起きていないか)
+- **AuditLog 確認**: `docker exec carelink-postgres psql -U carelink -d carelink -c "SELECT * FROM audit_log ORDER BY created_at DESC LIMIT 20;"` で異常操作の有無を確認
 
 ---
 
 ## Phase 5: 監視・バックアップ自動化 (Wave 5-B)
+
+> **前提条件**: Phase H 通過 (本番疎通 OK)、root SSH、`webhook` URL (Slack/Discord) を払い出し済み (5-5 の通知用、未設定でも noop で動作)
+> **所要時間**: 15 分 (cron 登録 + 動作確認 healthcheck 1 周期)
+> **失敗時の戻し方**: `sudo rm /etc/cron.d/carelink-healthcheck /etc/cron.d/carelink-backup /etc/logrotate.d/carelink` で全 cron / logrotate を撤去 (既存サービス影響なし)。`/var/log/carelink/` `/var/lib/carelink/` `/opt/carelink/backups/` は残しても害なし。
 
 本 Phase は **初回デプロイ完了後 (Phase H 通過後)** に 1 度だけ VPS 上で設定する。
 スクリプト本体はリポジトリ配下にあるため、`git pull` で更新は自動反映される。
@@ -407,6 +583,65 @@ deploy 直後の 1 サイクル (5 分後) を手動で確認する手順:
 ssh root@72.60.211.213 'tail -n 5 /var/log/carelink/healthcheck.log'
 # 直近行が "OK backend=200 frontend=200 containers=3/3 healthy" であれば成功
 ```
+
+### Phase 5 完了チェックリスト (dry-run → 本実行)
+
+**dry-run / 確認**:
+- [ ] `sudo /opt/carelink/docs/deployment/scripts/healthcheck-carelink.sh && echo OK` が手動成功
+- [ ] `sudo /opt/carelink/docs/deployment/scripts/backup-carelink-db.sh` を手動実行 → `/opt/carelink/backups/daily-*.sql.gz` が作成され、サイズが想定範囲 (数 MB 以上)
+- [ ] `sudo logrotate -d /etc/logrotate.d/carelink` (dry-run) で構文エラーなし
+- [ ] webhook URL 設定時、`curl -X POST $NOTIFY_WEBHOOK_URL -d 'test'` で Slack/Discord に届く
+
+**本実行 (cron 登録後)**:
+- [ ] `sudo cat /etc/cron.d/carelink-healthcheck` `sudo cat /etc/cron.d/carelink-backup` 両方が存在 + 0644
+- [ ] cron 登録から 5 分後に `tail /var/log/carelink/healthcheck.log` に 1 行追加
+- [ ] 翌朝 02:30 JST 以降に `ls /opt/carelink/backups/` で当日分の `daily-*.sql.gz` が存在
+- [ ] `restore リハーサル`: 月 1 回 `backup-restore-runbook.md` Step 1〜7 を staging で実施 → `restore-rehearsal-YYYYMM.md` を audit/ に記録
+
+### 5-9. orphan network `deployment_default` 復旧手順 (W5-F)
+
+`docker compose ... up -d --force-recreate backend` を実行した後、
+古い `deployment_default` network が残ったまま frontend が古い network ID
+を参照し続ける症状が観測されている (compose v2 の force-recreate 仕様)。
+発症すると frontend の起動ログに以下のような stale network エラーが出る:
+
+```
+Error response from daemon: network <old-network-id> not found
+```
+
+**復旧手順 (本番影響最小):**
+
+```bash
+cd /opt/carelink
+
+# 1) 該当 orphan network を確認 (出力に deployment_default が含まれる)
+docker network ls | grep -E '(deployment_default|carelink)'
+
+# 2) 該当 orphan network を削除 (使用中の container があれば自動で
+#    disconnect される。失敗するなら 4) を先に実行)
+docker network rm deployment_default
+
+# 3) compose 全体を再起動して network を再作成 + 全 service を再 attach
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env up -d
+
+# 4) frontend が古い network ID を抱えたままなら force-recreate で完全に作り直し
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env up -d --force-recreate frontend
+
+# 5) 疎通確認
+curl -fsSI http://localhost:18000/
+curl -fsS  http://localhost:18001/api/v1/healthz
+docker network inspect playwrighttest1_default | grep carelink-backend
+```
+
+**予防策:**
+- `up -d --force-recreate backend` のような service 単位の force-recreate
+  は network 切替を伴うときに不整合を起こしやすい。原則として
+  `up -d --force-recreate` は **全 service まとめて** 実行する
+- どうしても backend 単独再生成が必要なときは、後段で `up -d frontend` を
+  追加実行して frontend を新 network に再 attach させる
+- 既存 kaipoke external network (`playwrighttest1_default`) には影響しないが、
+  操作前に必ず `docker network inspect playwrighttest1_default` で kaipoke
+  側 container が disconnect されていないことを確認する
 
 ---
 

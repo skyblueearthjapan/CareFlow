@@ -335,12 +335,12 @@
 
 | API | 用途 |
 |---|---|
-| `GET /api/patients` | 患者一覧 |
-| `POST /api/patients` | 新規作成 |
-| `GET /api/patients/{id}` | 詳細 |
-| `PATCH /api/patients/{id}` | 更新 |
-| `DELETE /api/patients/{id}` | 論理削除 |
-| `GET /api/staff` | スタッフ一覧 |
-| `GET /api/offices` | 拠点 |
-| `GET /api/cities` | 市区町村 |
-| `POST /api/geocode` | 住所→緯度経度（Google Maps API中継） |
+| `GET /api/v1/patients` | 患者一覧 |
+| `POST /api/v1/patients` | 新規作成 |
+| `GET /api/v1/patients/{id}` | 詳細 |
+| `PATCH /api/v1/patients/{id}` | 更新 |
+| `DELETE /api/v1/patients/{id}` | 論理削除 |
+| `GET /api/v1/staff` | スタッフ一覧 |
+| `GET /api/v1/offices` | 拠点 |
+| `GET /api/v1/cities` | 市区町村 |
+| `POST /api/v1/geocode` | 住所→緯度経度（Google Maps API中継） |
