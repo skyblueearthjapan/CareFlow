@@ -38,6 +38,11 @@ export interface PatientCardProps {
   onUnassign?: () => void;
   /** disabled 状態 (RBAC で staff / fix mutation 中など). */
   disabled?: boolean;
+  /**
+   * コンパクト表示モード (同一スロット複数エントリ時の横並び用).
+   * true のとき caption / +1 ボタンを非表示にして幅を節約する。
+   */
+  compact?: boolean;
 }
 
 /**
@@ -54,6 +59,7 @@ export function PatientCard({
   onToggleStaffCount,
   onUnassign,
   disabled = false,
+  compact = false,
 }: PatientCardProps) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: draggableId,
@@ -90,16 +96,15 @@ export function PatientCard({
           <User className="h-3 w-3 shrink-0 text-text-muted" aria-hidden />
         )}
         <span className="truncate font-medium">{patient.name}</span>
-        {patient.caption ? (
+        {patient.caption && !compact ? (
           <span className="truncate text-text-muted">({patient.caption})</span>
         ) : null}
       </div>
 
       {isPlaced ? (
         <div className="flex shrink-0 items-center gap-0.5">
-          {/* +1 トグル: 1 → 2 / 2 → 1。drag listeners が親 div にバインド
-              されているので button 側で stopPropagation して drag-start を抑止する。 */}
-          {onToggleStaffCount ? (
+          {/* +1 トグル: compact モードでは非表示 (幅を節約) */}
+          {onToggleStaffCount && !compact ? (
             <button
               type="button"
               className={cn(
