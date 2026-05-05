@@ -17,9 +17,18 @@ import { signOut } from 'next-auth/react';
 import { ApiError } from '@/lib/api-client';
 
 function resolveBaseUrl(): string {
+  // In the browser, use relative URLs so requests hit the same origin (e.g.
+  // https://carelink.kaipoke-api.net) and Cloudflared's path-based ingress
+  // routes /api/v1/* to the backend container. This avoids leaking
+  // Docker-internal URLs (http://backend:8000) into the client bundle and
+  // sidesteps NEXT_PUBLIC_* build-arg complexity.
+  if (typeof window !== 'undefined') {
+    return '';
+  }
+  // Server-side: prefer the docker-network URL.
   return (
-    process.env.NEXT_PUBLIC_BACKEND_API_BASE_URL ??
     process.env.BACKEND_API_BASE_URL ??
+    process.env.NEXT_PUBLIC_BACKEND_API_BASE_URL ??
     'http://localhost:8000'
   );
 }

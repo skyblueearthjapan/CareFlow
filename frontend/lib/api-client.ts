@@ -6,7 +6,10 @@
  *             本ファイルは既存呼び出し互換のため legacy として残しています。
  */
 
-const BASE_URL = process.env.BACKEND_API_BASE_URL ?? 'http://localhost:8000/api/v1';
+function resolveBaseUrl(): string {
+  if (typeof window !== 'undefined') return '';
+  return process.env.BACKEND_API_BASE_URL ?? 'http://localhost:8000';
+}
 
 export interface ApiClientOptions extends RequestInit {
   accessToken?: string | null;
@@ -27,7 +30,7 @@ export async function apiFetch<T = unknown>(
   path: string,
   { accessToken, headers, ...init }: ApiClientOptions = {},
 ): Promise<T> {
-  const url = path.startsWith('http') ? path : `${BASE_URL}${path}`;
+  const url = path.startsWith('http') ? path : `${resolveBaseUrl()}${path}`;
   const h = new Headers(headers ?? {});
   if (!h.has('Content-Type')) {
     h.set('Content-Type', 'application/json');

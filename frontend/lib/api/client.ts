@@ -9,11 +9,15 @@ import createClient, { type Middleware } from 'openapi-fetch';
 
 import type { paths } from '@/lib/api/types';
 
-/** Base URL for the backend. Falls back to localhost for dev. */
+/** Base URL for the backend. Browser uses same-origin relative URLs (handled by
+ * Cloudflared path-based routing); server-side uses docker-internal URL. */
 function resolveBaseUrl(): string {
+  if (typeof window !== 'undefined') {
+    return '';
+  }
   return (
-    process.env.NEXT_PUBLIC_BACKEND_API_BASE_URL ??
     process.env.BACKEND_API_BASE_URL ??
+    process.env.NEXT_PUBLIC_BACKEND_API_BASE_URL ??
     'http://localhost:8000'
   );
 }
