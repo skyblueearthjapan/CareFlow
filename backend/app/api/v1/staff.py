@@ -1,7 +1,14 @@
-"""Staff CRUD endpoints (Phase 2 domain router).
+"""Staff CRUD endpoints (Phase 2 domain router / W1-BE2 v2 schema).
 
 Staff role users may only see their own staff record (the one referenced by
 their `users.staff_id`); admin/manager see everyone.
+
+W1-BE2 (v2 整理 §4.2): リクエスト / レスポンスの schema (`StaffCreate` /
+`StaffUpdate` / `StaffRead`) は v2 9 項目構成に縮約済み。削除カラム
+(can_double_team / home_address / home_lat / home_lng / areas /
+max_per_day / skill_level / assignment_volume) を payload に含めて送ると
+``extra="forbid"`` により 422 で拒否される。状態 (`status`) は
+``active`` / ``on_leave`` / ``retired`` の 3 値 enum で厳密化。
 """
 
 from __future__ import annotations
@@ -73,9 +80,7 @@ async def get_staff(
         # Don't leak existence to non-owners.
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
 
-    staff = await db.scalar(
-        select(Staff).where(Staff.id == staff_id, Staff.deleted_at.is_(None))
-    )
+    staff = await db.scalar(select(Staff).where(Staff.id == staff_id, Staff.deleted_at.is_(None)))
     if staff is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     return staff
@@ -106,9 +111,7 @@ async def update_staff(
     db: DbDep,
     _user: Annotated[User, Depends(require_role("admin", "manager"))],
 ) -> Staff:
-    staff = await db.scalar(
-        select(Staff).where(Staff.id == staff_id, Staff.deleted_at.is_(None))
-    )
+    staff = await db.scalar(select(Staff).where(Staff.id == staff_id, Staff.deleted_at.is_(None)))
     if staff is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
 
@@ -129,9 +132,7 @@ async def delete_staff(
     db: DbDep,
     _user: Annotated[User, Depends(require_role("admin"))],
 ) -> None:
-    staff = await db.scalar(
-        select(Staff).where(Staff.id == staff_id, Staff.deleted_at.is_(None))
-    )
+    staff = await db.scalar(select(Staff).where(Staff.id == staff_id, Staff.deleted_at.is_(None)))
     if staff is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     staff.deleted_at = func.now()
