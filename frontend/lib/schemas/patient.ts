@@ -75,8 +75,8 @@ export const patientBaseSchema = z.object({
   ng_time_start: optionalTime,
   ng_time_end: optionalTime,
   note: optionalNullableString,
-  weekly_pattern: z.record(z.unknown()).optional(),
-  special_week: z.record(z.unknown()).optional(),
+  weekly_pattern: z.record(z.unknown()).nullish(),
+  special_week: z.record(z.unknown()).nullish(),
 });
 
 export const patientCreateSchema = patientBaseSchema;
@@ -123,8 +123,8 @@ export const patientUpdateSchema = z.object({
   ng_time_start: optionalTime,
   ng_time_end: optionalTime,
   note: optionalNullableString,
-  weekly_pattern: z.record(z.unknown()).optional(),
-  special_week: z.record(z.unknown()).optional(),
+  weekly_pattern: z.record(z.unknown()).nullish(),
+  special_week: z.record(z.unknown()).nullish(),
 });
 
 /** Read: server response. Includes server-generated fields. */
@@ -134,6 +134,23 @@ export const patientReadSchema = patientBaseSchema.extend({
   updated_at: z.string(),
   deleted_at: z.string().nullable().optional(),
 });
+
+/**
+ * Form-input schema — matches the actual shape that react-hook-form binds
+ * to (`weekly_pattern` is a textarea string, `special_week` is a checkbox
+ * boolean). The submit handler converts these into the `dict | null`
+ * payload expected by `patientCreateSchema` / `patientUpdateSchema`.
+ *
+ * Defined separately from `patientCreateSchema` so that resolver validation
+ * does not reject the textarea/checkbox values before our custom parsing
+ * runs.
+ */
+export const patientFormSchema = patientBaseSchema
+  .omit({ weekly_pattern: true, special_week: true })
+  .extend({
+    weekly_pattern: z.string().optional(),
+    special_week: z.boolean().optional().default(false),
+  });
 
 export type PatientCreate = z.infer<typeof patientCreateSchema>;
 export type PatientUpdate = z.infer<typeof patientUpdateSchema>;

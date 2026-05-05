@@ -31,7 +31,11 @@ export default function EditPatientPage() {
   const canEdit = role === 'admin' || role === 'manager';
 
   const { data: patient, isLoading, isError, error } = usePatient(id);
-  const updateMutation = useUpdatePatient(id);
+  const initialFormValues = useMemo(
+    () => (patient ? patientReadToFormValues(patient) : undefined),
+    [patient],
+  );
+  const updateMutation = useUpdatePatient(id, initialFormValues);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const handleSubmit = useMemo(
@@ -81,7 +85,7 @@ export default function EditPatientPage() {
     );
   }
 
-  const defaults = patientReadToFormValues(patient);
+  const defaults = initialFormValues ?? patientReadToFormValues(patient);
 
   return (
     <section className="space-y-4">

@@ -88,15 +88,23 @@ function dropUndefined(payload: Record<string, unknown>): Record<string, unknown
 /**
  * Pre-process raw form values into a shape that matches the zod schemas:
  *
- * - `weekly_pattern` is a JSON string in the textarea → parse to dict (or
- *   `undefined` when empty). Throws on invalid JSON; the form surfaces it
- *   as a validation error.
+ * - `weekly_pattern` is a JSON string in the textarea → parse to dict.
+ *   Throws on invalid JSON; the form surfaces it as a validation error.
  * - `special_week` is a checkbox boolean → backend column is JSONB. We map
- *   `true` → `{ enabled: true }`, `false` → `undefined`.
+ *   `true` → `{ enabled: true }`.
+ *
+ * Clear-vs-unchanged semantics (PATCH only):
+ * If `initial` is provided and a previously non-empty JSON field is now
+ * empty, we emit explicit `null` so the backend clears the column. Without
+ * `initial` (Create flow), empty values stay `undefined` and `dropUndefined`
+ * removes them from the payload.
  */
-function prepareFormPayload(values: PatientFormValues): Record<string, unknown> {
+function prepareFormPayload(
+  values: PatientFormValues,
+  initial?: PatientFormValues,
+): Record<string, unknown> {
   const wpRaw = values.weekly_pattern?.trim() ?? '';
-  let weekly_pattern: Record<string, unknown> | undefined;
+  let weekly_pattern: Record<string, unknown> | null | undefined;
   if (wpRaw) {
     try {
       const parsed = JSON.parse(wpRaw);
@@ -112,8 +120,19 @@ function prepareFormPayload(values: PatientFormValues): Record<string, unknown> 
         }`,
       );
     }
+  } else if (initial && (initial.weekly_pattern?.trim() ?? '') !== '') {
+    // Field was previously set, user cleared it → explicit null.
+    weekly_pattern = null;
   }
-  const special_week = values.special_week ? { enabled: true } : undefined;
+
+  let special_week: { enabled: true } | null | undefined;
+  if (values.special_week) {
+    special_week = { enabled: true };
+  } else if (initial && initial.special_week) {
+    // Was true, now unchecked → explicit null to clear the JSONB column.
+    special_week = null;
+  }
+
   return { ...values, weekly_pattern, special_week };
 }
 
@@ -203,9 +222,15 @@ export function useCreatePatient(): UseMutationResult<
   });
 }
 
-/** PATCH /api/v1/patients/{id} — update. */
+/** PATCH /api/v1/patients/{id} — update.
+ *
+ * Pass `initial` (the form values derived from the loaded record) so we can
+ * tell "user cleared a previously-set JSON field" apart from "field stays
+ * unchanged" and emit explicit `null` to clear it server-side.
+ */
 export function useUpdatePatient(
   id: string,
+  initial?: PatientFormValues,
 ): UseMutationResult<PatientRead, Error, PatientFormValues> {
   const qc = useQueryClient();
   const { data: session } = useSession();
@@ -213,7 +238,7 @@ export function useUpdatePatient(
 
   return useMutation<PatientRead, Error, PatientFormValues>({
     mutationFn: async (values) => {
-      const prepared = prepareFormPayload(values);
+      const prepared = prepareFormPayload(values, initial);
       const parsed: PatientUpdate = patientUpdateSchema.parse(prepared);
       const body = dropUndefined(parsed as unknown as Record<string, unknown>);
       return fetcher<PatientRead>(`/api/v1/patients/${id}`, {

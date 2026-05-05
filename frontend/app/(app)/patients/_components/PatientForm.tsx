@@ -25,7 +25,7 @@ import {
   SEX_RESTRICTION_OPTIONS,
   STATUS_OPTIONS,
   emptyPatientFormValues,
-  patientCreateSchema,
+  patientFormSchema,
   type PatientFormValues,
 } from '@/lib/schemas/patient';
 
@@ -53,12 +53,11 @@ export function PatientForm({
   submitLabel = '保存',
 }: PatientFormProps) {
   const form = useForm<PatientFormValues>({
-    // zod's transform output type (`PatientCreate`) doesn't line up with the
-    // form input type (`PatientFormValues`, all strings before coercion), so
-    // we annotate the resolver as `Resolver<PatientFormValues>` instead of
-    // letting TS infer the mismatched output. Runtime validation still uses
-    // the same schema.
-    resolver: zodResolver(patientCreateSchema) as Resolver<PatientFormValues>,
+    // `patientFormSchema` matches the textarea/checkbox shape react-hook-form
+    // actually binds to (weekly_pattern: string, special_week: boolean). The
+    // dict-shape conversion happens in `prepareFormPayload` before the
+    // create/update schemas validate the wire payload.
+    resolver: zodResolver(patientFormSchema) as Resolver<PatientFormValues>,
     defaultValues: defaultValues ?? emptyPatientFormValues,
     mode: 'onBlur',
   });
