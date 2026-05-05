@@ -15,6 +15,7 @@ import * as React from 'react';
 import { Controller, useForm, type Resolver, type SubmitHandler } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 
+import { AddressGeocodeField } from '@/components/AddressGeocodeField';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -130,20 +131,19 @@ export function PatientForm({
 
       <Card className="p-5 space-y-4">
         <h2 className="font-serif text-lg font-bold text-text-primary">連絡先</h2>
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          <Field label="住所" error={errors.address?.message} className="md:col-span-2">
-            <Input {...register('address')} />
-          </Field>
-          <Field label="緯度 (lat)" error={errors.lat?.message}>
-            <Input type="number" step="any" {...register('lat')} />
-          </Field>
-          <Field label="経度 (lng)" error={errors.lng?.message}>
-            <Input type="number" step="any" {...register('lng')} />
-          </Field>
-          <p className="text-xs text-text-muted md:col-span-2">
-            ※ Phase 5 で住所→緯度経度の自動変換を予定。現状は手動入力。
+        <AddressGeocodeField
+          mode="rhf"
+          formMethods={form}
+          addressFieldName="address"
+          latFieldName="lat"
+          lngFieldName="lng"
+          disabled={submitting}
+        />
+        {(errors.address?.message || errors.lat?.message || errors.lng?.message) && (
+          <p className="text-xs text-error">
+            {errors.address?.message ?? errors.lat?.message ?? errors.lng?.message}
           </p>
-        </div>
+        )}
       </Card>
 
       <Card className="p-5 space-y-4">

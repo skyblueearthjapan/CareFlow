@@ -6,6 +6,7 @@
  * Kept under `_components/` so Next.js route conventions don't treat it as a
  * routable segment.
  */
+import { AddressGeocodeField } from '@/components/AddressGeocodeField';
 import { Input } from '@/components/ui/input';
 import {
   STAFF_ASSIGNMENT_VOLUME_VALUES,
@@ -163,39 +164,25 @@ export function StaffFormFields({
     <div className="space-y-3 border-t border-border-default pt-4">
       <h3 className="text-sm font-semibold text-text-primary">拠点・能力</h3>
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <Field
-          label="自宅住所"
-          error={errors.home_address}
-          hint="住所→緯度経度自動取得 (Phase 5 TODO)"
-          className="md:col-span-2"
-        >
-          <Input
-            value={form.home_address}
-            onChange={(e) => set('home_address', e.target.value)}
-            placeholder="例: 東京都新宿区西新宿2-8-1"
-            maxLength={255}
+        <div className="md:col-span-2">
+          <AddressGeocodeField
+            mode="controlled"
+            address={form.home_address}
+            lat={form.home_lat}
+            lng={form.home_lng}
+            onAddressChange={(v) => set('home_address', v)}
+            onLatChange={(v) => set('home_lat', v)}
+            onLngChange={(v) => set('home_lng', v)}
+            addressLabel="自宅住所"
+            latLabel="自宅 緯度"
+            lngLabel="自宅 経度"
           />
-        </Field>
-
-        <Field label="自宅 緯度" error={errors.home_lat}>
-          <Input
-            type="number"
-            step="0.0000001"
-            value={form.home_lat}
-            onChange={(e) => set('home_lat', e.target.value)}
-            placeholder="例: 35.689487"
-          />
-        </Field>
-
-        <Field label="自宅 経度" error={errors.home_lng}>
-          <Input
-            type="number"
-            step="0.0000001"
-            value={form.home_lng}
-            onChange={(e) => set('home_lng', e.target.value)}
-            placeholder="例: 139.691711"
-          />
-        </Field>
+          {(errors.home_address || errors.home_lat || errors.home_lng) && (
+            <p className="mt-1 text-xs text-error">
+              {errors.home_address ?? errors.home_lat ?? errors.home_lng}
+            </p>
+          )}
+        </div>
 
         <Field
           label="得意エリア"

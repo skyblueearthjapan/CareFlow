@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from 'react';
 
+import { AddressGeocodeField } from '@/components/AddressGeocodeField';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -42,9 +43,11 @@ export function OfficeForm({
   // Always fetch the full prefecture list so the datalist works regardless of
   // the active filter. Limit kept small — server returns distinct prefectures
   // implicitly via the city rows.
-  // TODO: Phase 5 — switch to `useCities({ ids: [...allowed] })` bulk lookup so
-  // selected city labels resolve correctly when the city catalogue grows beyond
-  // 2000 rows.
+  //
+  // NOTE (Wave 4-C): the previous Phase 5 TODO around `useCities({ ids: [...] })`
+  // bulk lookup is now resolved indirectly — selected cities are pulled from
+  // the same `allCitiesForPrefectures` array, which scales to the full
+  // catalogue (limit 2000) and keeps labels stable across prefecture filters.
   const { cities: allCitiesForPrefectures } = useCities({ limit: 2000 });
 
   const prefectures = useMemo(() => {
@@ -116,26 +119,19 @@ export function OfficeForm({
             ))}
           </datalist>
         </Field>
-        <Field label="住所">
-          <Input value={address} onChange={(e) => setAddress(e.target.value)} />
-        </Field>
-        <Field label="緯度 (lat)">
-          <Input
-            type="number"
-            step="0.0000001"
-            value={lat}
-            onChange={(e) => setLat(e.target.value)}
-          />
-        </Field>
-        <Field label="経度 (lng)">
-          <Input
-            type="number"
-            step="0.0000001"
-            value={lng}
-            onChange={(e) => setLng(e.target.value)}
-          />
-        </Field>
       </div>
+
+      <AddressGeocodeField
+        mode="controlled"
+        address={address}
+        lat={lat}
+        lng={lng}
+        onAddressChange={setAddress}
+        onLatChange={setLat}
+        onLngChange={setLng}
+        addressLabel="拠点住所"
+        disabled={submitting}
+      />
 
       <Field label="メモ">
         <textarea
