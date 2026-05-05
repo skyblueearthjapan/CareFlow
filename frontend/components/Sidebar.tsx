@@ -12,6 +12,7 @@ import {
   Building2,
   Plug,
   ScrollText,
+  Inbox,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -26,6 +27,7 @@ const NAV_ITEMS = [
   { href: '/staff', label: 'スタッフ', icon: UserCircle2 },
   { href: '/offices', label: '拠点', icon: Building2 },
   { href: '/integrations', label: '連携', icon: Plug, adminOnly: true },
+  { href: '/admin/pending-requests', label: '申請履歴', icon: Inbox, adminOnly: true },
   // Wave 4-F: admin audit logs (admin role only). User management was moved
   // to the header rightmost button so admins can reach it from any screen.
   {
