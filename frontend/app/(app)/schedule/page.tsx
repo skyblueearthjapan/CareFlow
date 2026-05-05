@@ -89,15 +89,22 @@ export default function SchedulePage() {
   const [weekStart, setWeekStart] = useState<Date>(() => toWeekStart(new Date()));
   const { isoYear, isoWeek } = useMemo(() => toIsoYearWeek(weekStart), [weekStart]);
 
-  // ─────── Step 1 判定: Pool 確定済 (patients に weekly_pattern entries あり) ───────
-  // 患者マスタを参照して「1 件でも weekly_pattern.entries がある患者が居れば確定済」と見なす。
-  // 厳密な Layer 1 状態は BE に無いため UI 上の近似判定とする。
+  // ─────── Step 1 判定: Pool 確定済 (週訪問パターン登録済の患者あり) ───────
+  // 患者マスタを参照して「1 件でも weekly_pattern が登録された患者が居れば確定済」と見なす。
+  // WeeklyPattern は frequency_per_week / preferred_weekdays を持つので、それを判定材料とする。
+  // 厳密な Layer 1 状態は BE に無いため UI 上の近似判定。
   const patientsQuery = usePatients({ limit: 500 });
   const step1Done = useMemo(() => {
     const patients = patientsQuery.data?.items ?? [];
     return patients.some((p) => {
-      const entries = (p.weekly_pattern?.entries as unknown[] | undefined) ?? [];
-      return entries.length > 0;
+      const wp = p.weekly_pattern as
+        | { frequency_per_week?: unknown; preferred_weekdays?: unknown }
+        | null
+        | undefined;
+      if (!wp || typeof wp !== 'object') return false;
+      const freq = typeof wp.frequency_per_week === 'number' ? wp.frequency_per_week : 0;
+      const days = Array.isArray(wp.preferred_weekdays) ? wp.preferred_weekdays.length : 0;
+      return freq > 0 && days > 0;
     });
   }, [patientsQuery.data]);
 
