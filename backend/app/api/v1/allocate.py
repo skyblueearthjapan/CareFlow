@@ -140,22 +140,27 @@ def _build_inputs(
         # fallback. No int-coercion needed.
         day_priority = wp.get("weekday_priority") or "低"
 
-        ng_staff_ids = [str(x) for x in (p.ng_staff_ids or [])]
-        preferred_staff_ids = [str(x) for x in (p.preferred_staff_ids or [])]
+        # W1-BE1: ng_staff_ids / preferred_staff_ids / area / specified_type /
+        # continuous_request / required_staff_count are dropped at the DB
+        # level (0009_v2_patient_master_cleanup). Read defensively via
+        # ``getattr`` with safe defaults so this v1 engine entry-point keeps
+        # functioning until the v2 layered allocator (Wave 4) replaces it.
+        ng_staff_ids = [str(x) for x in (getattr(p, "ng_staff_ids", None) or [])]
+        preferred_staff_ids = [str(x) for x in (getattr(p, "preferred_staff_ids", None) or [])]
 
         patient_map[pid] = Patient(
             pid=pid,
             name=p.name,
-            area=p.area or "",
+            area=getattr(p, "area", None) or "",
             lat=float(p.lat) if p.lat is not None else None,
             lng=float(p.lng) if p.lng is not None else None,
             service_minutes=service_minutes,
             weekly_count=weekly_count,
-            need_staff=p.required_staff_count or 1,
+            need_staff=getattr(p, "required_staff_count", None) or 1,
             sex_limit=p.sex_restriction or "",
-            cont_pref="同じ人希望" if p.continuous_request else "",
+            cont_pref=("同じ人希望" if getattr(p, "continuous_request", False) else ""),
             fixed_staff_ids=preferred_staff_ids,
-            fixed_type=p.specified_type or "",
+            fixed_type=getattr(p, "specified_type", None) or "",
             ng_staff_ids=ng_staff_ids,
             pref_days=_coerce_str_list(wp.get("preferred_weekdays")),
             ng_days=_coerce_str_list(wp.get("ng_weekdays")),
@@ -277,9 +282,7 @@ async def run_allocate(
     patients_db = list(
         (await db.scalars(select(PatientORM).where(PatientORM.deleted_at.is_(None)))).all()
     )
-    staff_db = list(
-        (await db.scalars(select(StaffORM).where(StaffORM.deleted_at.is_(None)))).all()
-    )
+    staff_db = list((await db.scalars(select(StaffORM).where(StaffORM.deleted_at.is_(None)))).all())
     visits_db = list(
         (
             await db.scalars(
@@ -301,9 +304,7 @@ async def run_allocate(
             ),
         )
 
-    engine_staff, patient_map, requests = _build_inputs(
-        patients_db, staff_db, visits_db
-    )
+    engine_staff, patient_map, requests = _build_inputs(patients_db, staff_db, visits_db)
 
     engine = AllocationEngine(
         staff_list=engine_staff,
@@ -334,7 +335,7 @@ async def run_allocate(
             loop.run_in_executor(None, engine.allocate, requests),
             timeout=_ALLOCATE_TIMEOUT_SEC,
         )
-    except asyncio.TimeoutError as exc:
+    except TimeoutError as exc:
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
             detail=f"Allocation timed out (>{_ALLOCATE_TIMEOUT_SEC:.0f}s)",
