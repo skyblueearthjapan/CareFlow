@@ -125,15 +125,56 @@ class InterpretResult:
     cost_usd: float = 0.0
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    # W2-BE6: AI が検出した必須情報の欠落フィールド一覧（不足情報補完モーダル用）。
+    # None = 検出なし / 欠落なし。
+    missing_fields: list[str] | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
 
 # --- Prompt strategies (per context_type) ---------------------------------
 
+# --- Legacy context_type compatibility (W2-BE6) --------------------------
+# 旧 D4 Phase E 名 → v2 公式名。schemas/ai.py 側でも変換するが、`build_prompt`
+# が直接呼ばれた場合（テスト等）に対しても保険として正規化しておく。
+_LEGACY_CONTEXT_TYPE_MAP: dict[str, str] = {
+    "event_create": "staff_event",
+    "override_create": "staff_off",
+}
+
+
+# v2 で扱う公式 context_type 10 種 (§3.5.2 / §9 対応表)。
+# `backend/app/schemas/v2/enums.py::AiContextType` と完全一致させる。
+SUPPORTED_CONTEXT_TYPES: tuple[str, ...] = (
+    "patient_create",
+    "staff_create",
+    "staff_event",
+    "staff_off",
+    "staff_mentor",
+    "patient_cancel",
+    "patient_reschedule",
+    "patient_special_week",
+    "general",
+    "out_of_scope",
+)
+
+
 _BASE_PROMPT = (
     "あなたは訪問看護スケジュール管理システム CareFlow のAIアシスタントです。\n"
     "ユーザーの自然言語入力を、以下の JSON スキーマに厳密に従って構造化してください。\n"
     '解釈不能な場合は action_type を "unknown" にし confidence を 0 にしてください。\n'
+    "\n"
+    "【AI が扱える操作の範囲 (§3.5.2)】\n"
+    "✅ できること:\n"
+    "  - 患者の新規登録 / スタッフの新規登録 (不足情報はモーダルで補完)\n"
+    "  - スタッフの今週だけの休み登録 / イベント新規 / メンター登録\n"
+    "  - 患者の特別訪問週間 ON/OFF / 訪問キャンセル / 日時変更\n"
+    "❌ できないこと（範囲外なので out_of_scope を返す）:\n"
+    "  - 給与・経費・請求・契約書類\n"
+    "  - カイポケ等の外部システム操作\n"
+    "  - 患者・スタッフの「削除」\n"
+    "  - 拠点マスタの編集 / 監査ログ / ユーザー権限\n"
+    "範囲外と判断した場合は action_type を 'out_of_scope' にし、\n"
+    "fields に reason (理由) と suggested_path (代替手段) を含めてください。\n"
 )
 
 _OUTPUT_SCHEMA_HINT = (
@@ -143,14 +184,89 @@ _OUTPUT_SCHEMA_HINT = (
     "    {\n"
     '      "action_type": "<context-specific>",\n'
     '      "confidence": 0.0-1.0,\n'
-    '      "fields": { ... }\n'
+    '      "fields": { ... },\n'
+    '      "missing_fields": ["field_a", "field_b"]   // 必須項目が欠けている場合のみ\n'
     "    }\n"
     "  ]\n"
     "}\n"
     "複数アクションが含まれる場合は actions を複数返してください。\n"
     "信頼度は: 完全一致 0.95+、推測 0.7-0.9、曖昧 <0.7。\n"
+    "必須情報が欠けている場合は missing_fields にフィールド名一覧を含めてください\n"
+    "(例: 患者新規で氏名のみあって住所がない → missing_fields: ['address'])。\n"
+    "範囲外と判断した場合は action_type='out_of_scope' を使い、\n"
+    'fields = {"reason": "...", "suggested_path": "..."} としてください。\n'
     "応答は必ず単一の JSON オブジェクトのみで、Markdown コードフェンスは禁止です。\n"
 )
+
+
+# context_type ごとのプロンプト断片 (W2-BE6).
+# 文言は `docs/plans/v2-api-contracts.md` §9 / `docs/plans/v2-allocation-redesign.md` §3.5.2
+# の「対象内」表に対応する。各エントリは action_type / 主要 fields / 補足を伝える。
+_CONTEXT_PROMPT_TEMPLATES: dict[str, str] = {
+    "patient_create": (
+        "【コンテキスト】患者新規登録。\n"
+        "action_type は 'patient_create' を使用。\n"
+        " 主要 fields: name (氏名/必須), kana, address, phone, office_id,\n"
+        "  weekly_pattern (曜日別訪問希望), staff_count (1 or 2)。\n"
+        "氏名・住所・電話のいずれかが欠けていたら missing_fields に列挙してください。"
+    ),
+    "staff_create": (
+        "【コンテキスト】スタッフ新規登録。\n"
+        "action_type は 'staff_create' を使用。\n"
+        " 主要 fields: name (氏名/必須), kana, role (nurse/pt/ot/st 等),\n"
+        "  office_id, working_weekdays (出勤曜日), shift_start, shift_end。\n"
+        "氏名・職種・拠点のいずれかが欠けていたら missing_fields に列挙してください。"
+    ),
+    "staff_event": (
+        "【コンテキスト】スタッフのイベント登録 (会議・研修・外勤など)。\n"
+        "action_type は 'staff_event' を使用。\n"
+        " 主要 fields: staff_id, weekday, time_start, time_end, reason。\n"
+        "iso_week が読み取れる場合は含める。"
+    ),
+    "staff_off": (
+        "【コンテキスト】その週だけのスタッフ休み登録 (一日 / 時間帯)。\n"
+        "action_type は 'staff_off' を使用。\n"
+        " 主要 fields: staff_id, iso_week, weekday, time_start?, time_end?, reason?。\n"
+        "終日休みの場合は time_start / time_end を省略可。"
+    ),
+    "staff_mentor": (
+        "【コンテキスト】スタッフのメンター登録 (例: 鈴木さんのメンターを山田さんに)。\n"
+        "action_type は 'staff_mentor' を使用。\n"
+        " 主要 fields: staff_id (メンティー側), mentor_staff_id (メンター側)。"
+    ),
+    "patient_cancel": (
+        "【コンテキスト】患者の訪問キャンセル (1回限り)。\n"
+        "action_type は 'patient_cancel' を使用。\n"
+        " 主要 fields: patient_id, visit_date (YYYY-MM-DD), reason?。\n"
+        "「明日」「今日」のような相対日付は context.today を基準に解決してください。"
+    ),
+    "patient_reschedule": (
+        "【コンテキスト】患者の訪問日時変更。\n"
+        "action_type は 'patient_reschedule' を使用。\n"
+        " 主要 fields: patient_id, scope ('one_time' or 'permanent', 必須),\n"
+        "  visit_date, new_time_start, new_time_end?, new_weekday?。\n"
+        "scope が読み取れない場合は missing_fields に 'scope' を含める。"
+    ),
+    "patient_special_week": (
+        "【コンテキスト】患者の特別訪問週間 ON/OFF。\n"
+        "action_type は 'patient_special_week' を使用。\n"
+        " 主要 fields: patient_id, mode ('on' or 'off', 必須), iso_week (YYYY-Www)。\n"
+        "発話に「特別週オン/オフ」「特別訪問週間 解除」等が含まれます。"
+    ),
+    "out_of_scope": (
+        "【コンテキスト】範囲外操作の確認。\n"
+        "action_type は 'out_of_scope' を返してください。\n"
+        ' fields: { "reason": "<対応していない理由>",'
+        ' "suggested_path": "<代替手段 / 別画面>" }。'
+    ),
+    "general": (
+        "【コンテキスト】汎用。発話内容から最適な action_type を選んでください。\n"
+        "選択肢: 'patient_create' | 'staff_create' | 'staff_event' | 'staff_off' |\n"
+        " 'staff_mentor' | 'patient_cancel' | 'patient_reschedule' |\n"
+        " 'patient_special_week' | 'out_of_scope' | 'unknown'。\n"
+        "範囲外と判定したら 'out_of_scope' を返し、reason / suggested_path を含めてください。"
+    ),
+}
 
 
 def build_prompt(context_type: str, user_text: str, context: dict[str, Any]) -> str:
@@ -159,7 +275,13 @@ def build_prompt(context_type: str, user_text: str, context: dict[str, Any]) -> 
     `context` may carry `today`, `iso_week`, `staff_list`, `patient_list`
     pre-rendered from the route handler — the prompt builder treats them as
     optional hints and falls back to generic placeholders when absent.
+
+    W2-BE6: 旧 `event_create` / `override_create` は内部で `staff_event` /
+    `staff_off` に正規化してからテンプレートを引く。
     """
+    # 旧名 → 新名へ寄せる（schemas/ai.py 側でも変換するが二重防御）
+    normalized = _LEGACY_CONTEXT_TYPE_MAP.get(context_type, context_type)
+
     lines: list[str] = [_BASE_PROMPT]
 
     today = context.get("today")
@@ -183,34 +305,37 @@ def build_prompt(context_type: str, user_text: str, context: dict[str, Any]) -> 
         rendered = "\n".join(f"- {p}" for p in patient_list[:200])
         lines.append(f"【利用可能な患者一覧】\n{rendered}")
 
-    if context_type == "patient_create":
-        lines.append(
-            "【コンテキスト】患者新規登録。氏名・住所・電話・主要事業所・"
-            "曜日別訪問希望を抽出してください。\n"
-            "action_type は 'patient_create' を使用。"
-        )
-    elif context_type == "event_create":
-        lines.append(
-            "【コンテキスト】スタッフのイベント登録 (会議・研修・外勤など)。\n"
-            "action_type は 'staff_event' を使用。"
-            " fields: staff_id, weekday, time_start, time_end, reason"
-        )
-    elif context_type == "override_create":
-        lines.append(
-            "【コンテキスト】その週だけのスタッフ休み登録 (一日 / 時間帯)。\n"
-            "action_type は 'staff_weekly_override' を使用。"
-            " fields: staff_id, iso_week, weekday, time_start?, time_end?, reason?"
-        )
-    else:
-        lines.append(
-            "【コンテキスト】汎用。design 09 の action_type 一覧から最適なものを"
-            "選んでください ('staff_weekly_override' | 'staff_event' |"
-            " 'visit_cancel' | 'visit_postpone' | 'visit_add' | 'unknown')。"
-        )
+    template = _CONTEXT_PROMPT_TEMPLATES.get(normalized) or _CONTEXT_PROMPT_TEMPLATES["general"]
+    lines.append(template)
 
     lines.append(_OUTPUT_SCHEMA_HINT)
     lines.append(f"【ユーザー入力】{user_text}")
     return "\n\n".join(lines)
+
+
+def extract_missing_fields(payload: dict[str, Any]) -> list[str] | None:
+    """Pull the union of `missing_fields` from each action in the payload.
+
+    AI が必須情報の欠落を検出した場合、フロントの不足情報補完モーダル
+    (W5-FE12) が利用するための一覧を返す。欠落なし / 検出なしの場合は
+    None を返す（レスポンス側でも省略 / null）。
+
+    複数 actions に分かれている場合は重複排除してまとめる。
+    """
+    actions = payload.get("actions")
+    if not isinstance(actions, list) or not actions:
+        return None
+    seen: list[str] = []
+    for a in actions:
+        if not isinstance(a, dict):
+            continue
+        raw = a.get("missing_fields")
+        if not isinstance(raw, list):
+            continue
+        for item in raw:
+            if isinstance(item, str) and item and item not in seen:
+                seen.append(item)
+    return seen or None
 
 
 def estimate_cost_usd(
@@ -371,6 +496,7 @@ class GeminiClient:
         payload = _parse_json_payload(text)
         confidence = _extract_confidence(payload)
         cost_usd = estimate_cost_usd(prompt_tokens, completion_tokens, self.model)
+        missing_fields = extract_missing_fields(payload)
 
         return InterpretResult(
             interpreted=payload,
@@ -381,6 +507,7 @@ class GeminiClient:
             cost_usd=cost_usd,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
+            missing_fields=missing_fields,
             extra={"rendered_prompt": rendered},
         )
 
