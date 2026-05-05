@@ -4,6 +4,7 @@ import { Sparkles } from 'lucide-react';
 
 import { AiInputModal } from '@/components/AiInputModal';
 import { useUIStore } from '@/lib/stores/ui';
+import { useAiSubmissionHandler } from '@/lib/ai/useAiSubmissionHandler';
 
 /**
  * モバイル用 AI 入力 FAB.
@@ -15,11 +16,18 @@ import { useUIStore } from '@/lib/stores/ui';
  *
  * 詳細仕様: `docs/design/10-mobile.md` §10-8 / `docs/plans/v2-allocation-redesign.md` §3.5
  *
- * NOTE: 本チケット (W2-FE4) は雛形のみ。`pending_requests` への申請や
- * 不足情報補完モーダル等の本格的な統合は Wave 5 (FE10) で実施する。
+ * W7-FE1: `useAiSubmissionHandler` を使って `pending_requests` 統合を追加。
+ * - `isMobile: true` → admin/manager でも即時反映せず `pending` として申請
+ * - RBAC マッピングにより staff の権限外操作は out_of_scope としてガード
+ * - missing_fields がある場合は `MissingInfoModal` で補完を促す
  */
 export function MobileAiFab() {
   const setAiInputOpen = useUIStore((s) => s.setAiInputOpen);
+
+  // W7-FE1: pending_requests 統合 (Must-fix #6)
+  const { onSubmitInterceptor, missingInfoSlot, submissionMode } = useAiSubmissionHandler({
+    isMobile: true,
+  });
 
   return (
     <>
@@ -36,7 +44,12 @@ export function MobileAiFab() {
       >
         <Sparkles className="h-7 w-7" strokeWidth={1.75} />
       </button>
-      <AiInputModal />
+      <AiInputModal
+        submissionMode={submissionMode}
+        onSubmitInterceptor={onSubmitInterceptor}
+        missingInfoSlot={missingInfoSlot}
+        voiceFirst
+      />
     </>
   );
 }

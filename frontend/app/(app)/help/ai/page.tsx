@@ -19,6 +19,7 @@
 
 import { CheckCircle2, HelpCircle, Sparkles, XCircle } from 'lucide-react';
 
+import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import {
   AI_CAPABILITIES,
@@ -28,6 +29,7 @@ import {
   type AiCapabilityCategory,
   groupCapabilitiesByCategory,
 } from '@/lib/ai-capabilities';
+import { useUIStore } from '@/lib/stores/ui';
 
 const CATEGORY_ORDER: AiCapabilityCategory[] = ['master', 'staff_schedule', 'patient_visit'];
 
@@ -68,18 +70,33 @@ const FAQ_ITEMS: FaqItem[] = [
 export default function AiHelpPage() {
   const grouped = groupCapabilitiesByCategory(AI_CAPABILITIES);
 
+  // W7-FE1: ヘルプページの「AI 入力を試す」ボタンは、レイアウトの AiFab が
+  // useAiSubmissionHandler 統合済みで mount している AiInputModal を開く。
+  // 二重マウントを避けるため、本ページでは AiInputModal をレンダリングしない。
+  const setAiInputOpen = useUIStore((s) => s.setAiInputOpen);
+
   return (
     <section className="space-y-6">
       {/* ---------- ヘッダー ---------- */}
-      <header>
-        <h1 className="flex items-center gap-2 font-serif text-2xl font-bold text-text-primary">
-          <Sparkles className="h-6 w-6 text-brand-primary" strokeWidth={1.75} aria-hidden />
-          AI 機能ヘルプ
-        </h1>
-        <p className="mt-1 text-sm text-text-secondary">
-          AI で「できること / できないこと」、よくある質問をまとめています。 画面右下の AI
-          ボタン（音声・テキスト入力）から呼び出せます。
-        </p>
+      <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="flex items-center gap-2 font-serif text-2xl font-bold text-text-primary">
+            <Sparkles className="h-6 w-6 text-brand-primary" strokeWidth={1.75} aria-hidden />
+            AI 機能ヘルプ
+          </h1>
+          <p className="mt-1 text-sm text-text-secondary">
+            AI で「できること / できないこと」、よくある質問をまとめています。 画面右下の AI
+            ボタン（音声・テキスト入力）から呼び出せます。
+          </p>
+        </div>
+        <Button
+          type="button"
+          onClick={() => setAiInputOpen(true)}
+          className="shrink-0 self-start sm:self-auto"
+        >
+          <Sparkles className="mr-1.5 h-4 w-4" strokeWidth={1.75} />
+          AI 入力を試す
+        </Button>
       </header>
 
       {/* ---------- できること ---------- */}
