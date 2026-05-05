@@ -8,6 +8,7 @@ from app.models.ai_interpret_log import AiInterpretLog
 from app.models.audit_log import AuditLog
 from app.models.city import City
 from app.models.correction_sheet import CorrectionSheet, CorrectionSheetItem
+from app.models.course import Course
 from app.models.geocoding_cache import GeocodingCache
 from app.models.kaipoke_job import KaipokeJob, KaipokeJobItem
 from app.models.notification import Notification
@@ -26,6 +27,7 @@ from app.models.staff import (
 from app.models.user import User
 from app.models.visit import Visit
 from app.models.visit_photo import VisitPhoto
+from app.models.visit_staff_assignment import VisitStaffAssignment
 
 __all__ = [
     "AiInterpretLog",
@@ -33,6 +35,7 @@ __all__ = [
     "City",
     "CorrectionSheet",
     "CorrectionSheetItem",
+    "Course",
     "GeocodingCache",
     "KaipokeJob",
     "KaipokeJobItem",
@@ -53,4 +56,5 @@ __all__ = [
     "User",
     "Visit",
     "VisitPhoto",
+    "VisitStaffAssignment",
 ]
