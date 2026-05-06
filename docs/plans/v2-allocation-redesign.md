@@ -359,6 +359,29 @@ CareFlow 内の業務操作は原則 AI 対象。ただし以下は **AI 経由�
 種別選択は **不要**。恒久的な変更は既存の設定画面（出勤曜日・シフト時間）から
 行う運用。
 
+#### 3.5.8 スケジュール変更ダイアログの (a)/(b) モード（固定枠対応）
+
+> §3.6.8「固定枠 (週間訪問パターン)」導入後、患者カードを D&D したときの
+> 確認ダイアログは以下の 2 択に拡張する。
+
+スケジュール画面で患者カードを D&D（時刻・曜日の変更）した際、確認ダイアログ
+を表示し、管理者が適用範囲を選択する：
+
+| 選択肢 | 意味 | データへの反映 | API |
+|---|---|---|---|
+| **(a) 今週のみ反映** | 一回限りのイレギュラー対応 | 当該週の `visits` の時刻のみ更新。`patient_fixed_visits` / `weekly_pattern` は触らない | `POST /api/v1/schedule/fix`（既存）|
+| **(b) 固定枠を変更** | 翌週以降に恒久反映 | `patient_fixed_visits` を更新。次週以降の `generate-week` に即時反映 | `POST /api/v1/schedule/fix-or-pattern`（新規 §7.6.3） |
+
+##### 特別週判定
+- **(b)** を選択した週が `special_week_active` リストに含まれる場合 →
+  `mode='special'` の `patient_fixed_visits` を更新
+- 含まれない場合 → `mode='normal'` の `patient_fixed_visits` を更新
+
+##### scope との関係（§3.5.6 との整合）
+- 本ダイアログは **D&D 操作** に特化した実装フロー。
+- AI 経由の `patient_reschedule` が scope=`permanent` の場合も、
+  内部的には同じ `patient_fixed_visits` 更新パスを通る（§9.2 参照）。
+
 #### 3.5.7 AI 範囲の明示と境界線の伝達
 
 > **設計要件**: AI でできることとできないことを、ユーザーに **明確に伝える仕組み**
@@ -483,6 +506,57 @@ AI 応答: 「拠点の追加は AI では対応していません。サイド�
 | スタッフ追加・退職 | L3 全面再計算 |
 | 拠点変更 | L2 から再計算（距離が変わるため） |
 
+#### 3.6.8 固定枠 (週間訪問パターン)
+
+> Wave 9 Phase 5a 追記（2026-05-06）。`patient_fixed_visits` テーブルを導入し、
+> Layer 1 を hybrid 化することで「人が一度決めた配置を自動で繰り返す」運用を
+> システムとして永続化する。
+
+##### コンセプト
+
+スケジュール配置が安定した患者について、**希望 (weekly_pattern) → Pool → 配置確定**
+という毎週の手動ステップを省略する。「固定化」操作を実行すると、その週の配置が
+`patient_fixed_visits` テーブルに書き戻され、翌週以降は固定枠から直接 visits を
+生成できるようになる（Layer 1 hybrid 化）。
+
+##### ライフサイクル
+
+```
+[新規登録] 希望 weekly_pattern
+    ↓ Layer 1 (希望 expander)
+[Pool 配置] visits 仮配置
+    ↓ Layer 2 (Course 自動分類) + 手動微調整
+[配置確定] visits 確定
+    ↓ ★「固定化」操作 (個別 or 全患者一括)
+[固定枠] patient_fixed_visits (通常 / 特別週)
+    ↓ 翌週以降
+[自動展開] 固定枠から visits 直接生成 (Layer 1 hybrid 化)
+```
+
+##### Layer 1 hybrid 化
+
+`generate-week`（§5.2）実行時、患者ごとに分岐する：
+
+- `patient.has_fixed_visits(mode)` が **真** → `patient_fixed_visits` から
+  時刻・duration を読み取り、そのまま visits を生成する（旧 expander 不使用）
+- `patient.has_fixed_visits(mode)` が **偽** → 従来どおり `weekly_pattern` /
+  `special_weekly_pattern` を expander に渡して visits を生成し、保留プールへ
+
+`mode` の判定：
+- 当該週が `special_week_active` リストに含まれる → `mode='special'`
+- 含まれない → `mode='normal'`
+- `mode='special'` の固定枠が未設定の場合は `mode='normal'` にフォールバック
+
+##### 2 名体制の表現
+
+`patient_fixed_visits` は **時刻・duration のみ** を持つ。必要スタッフ数は
+`patients.required_staff_count` で引き続き表現し、固定枠テーブルには持たない。
+
+##### 指名スタッフ
+
+固定枠はスタッフを指名しない。Layer 3 のローテーションアルゴリズム（§5.4）が
+毎週担当スタッフを決定する運用を維持する。
+
 ---
 
 ## 4. データモデル
@@ -536,6 +610,57 @@ AI 応答: 「拠点の追加は AI では対応していません。サイド�
 | 項目 | 連動する判断 |
 |---|---|
 | 主担当拠点 | 拠点側仕様は §4.3 で確定済み。患者マスタ側のフィールドは 自動 + 手動上書き で運用 |
+
+### 4.1b patient_fixed_visits テーブル（W9-BE1）
+
+> Wave 9 Phase 5a 追記（2026-05-06）。§3.6.8 のライフサイクルを永続化する
+> 新規テーブル。Alembic `0017_v2_patient_fixed_visits` で追加する（§本書 §8 参照、
+> マイグレーション予約表 0017 番）。
+
+#### DDL（Alembic 0017 と整合）
+
+```sql
+CREATE TABLE patient_fixed_visits (
+    id           UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+    patient_id   UUID         NOT NULL
+                              REFERENCES patients(id) ON DELETE CASCADE,
+    mode         VARCHAR(16)  NOT NULL
+                              CHECK (mode IN ('normal', 'special')),
+    weekday      SMALLINT     NOT NULL
+                              CHECK (weekday BETWEEN 0 AND 6),  -- 0=Mon ... 6=Sun
+    start_time   TIME         NOT NULL,
+    duration_min INT          NOT NULL DEFAULT 30
+                              CHECK (duration_min BETWEEN 1 AND 480),
+    created_at   TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    updated_at   TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    UNIQUE (patient_id, mode, weekday)
+);
+
+CREATE INDEX idx_pfv_patient        ON patient_fixed_visits (patient_id);
+CREATE INDEX idx_pfv_patient_mode   ON patient_fixed_visits (patient_id, mode);
+```
+
+#### 制約・設計方針
+
+| 項目 | 内容 |
+|---|---|
+| 1 日複数訪問 | `UNIQUE (patient_id, mode, weekday)` により **1 患者 × 1 mode × 1 曜日 = 1 訪問のみ**（複数回/日は不可） |
+| 2 名体制 | `patients.required_staff_count`（1 or 2）で表現。固定枠テーブルには持たない |
+| 指名スタッフ | 持たない。Layer 3 ローテーションで毎週決定（§3.6.8 参照） |
+| ON DELETE CASCADE | 患者削除時に関連する固定枠も自動削除 |
+| mode='special' | `patients.special_week_active` に当該週が含まれる場合のみ適用される。未設定時は mode='normal' にフォールバック（§3.6.8 参照） |
+
+#### patients テーブルとの関係
+
+```
+patients (1) ──── (0..7 rows × 2 modes) patient_fixed_visits
+               ┌─ normal:  曜日ごとに最大 7 行（月〜日）
+               └─ special: 曜日ごとに最大 7 行（月〜日）
+```
+
+`patient.has_fixed_visits(mode)` の評価は、
+`SELECT COUNT(*) > 0 FROM patient_fixed_visits WHERE patient_id = ? AND mode = ?`
+で判定する（Layer 1 hybrid 化 / §3.6.8）。
 
 ### 4.2 スタッフマスタ（v1 → v2 整理）
 
@@ -951,3 +1076,4 @@ cost(weekday, course, staff) =
 | 2026-05-05 | v0.7 | §3.5「AI 入力の権限と承認フロー」と §4.4「申請履歴 (`pending_requests`)」を新規追加。AI 入力の権限マトリクス・申請ステータス・履歴 UI・スコープ選択（今週だけ／今後固定）を確定。AI 対象に新規患者・新規スタッフ登録を追加し、不足情報補完モーダル方式を採用。§3.5.7「AI 範囲の明示と境界線の伝達」で「できる/できない」の UX 要件を定義 |
 | 2026-05-05 | v0.8 | §3.6「3 レイヤー構造（自動 / 手動 / AI の役割分担）」を新規追加（時間配置 / コース分け / スタッフ割付）。§4.5「コース (Course)」のデータモデル定義を追加。§5「自動割り振りアルゴリズム」を 3 レイヤー対応に全面拡充（Layer 1 プール展開、Layer 2 K-means/CP-SAT、Layer 3 ハンガリアン法 + ローテーション）。マネージャー M1 の枠外・オーバーフロー扱いを明文化。固定の 3 段階（時間 / コース / スタッフ）と再算出トリガーを表で整理 |
 | 2026-05-05 | v0.9 | Codex レビュー対応。MVP 前提（Q1=サービス時間枠消費 / Q3=ハイブリッド / Q4=直線距離 / Q5=15分）を確定。2 名体制を `visits.required_staff_count` + `visit_group_id` + `visit_staff_assignments` で永続化（Layer 3 が 2 行返す形）。特別週は Option A（`special_weekly_pattern` + `special_week_active`）に確定。AI 即時反映でも `pending_requests` に `approved` で記録する監査要件を明記。Course 状態を単一 enum (`proposed`/`course_fixed`/`staff_assigned`) に整理。AI「対象外なし」の文言を「原則全業務、ただし削除・拠点・監査ログ・ユーザー権限・外部システム・給与関連は除外」に修正。Hungarian 法計算量を O(W × max(C,S)³) に訂正。15 分刻みに統一 |
+| 2026-05-06 | v1.0 | Wave 9 Phase 5a 追記。§3.6.8「固定枠 (週間訪問パターン)」ライフサイクル + Layer 1 hybrid 化を新規追加。§4.1b「patient_fixed_visits テーブル」スキーマ DDL・制約・設計方針を追加（Alembic 0017）。§3.5.8「スケジュール変更ダイアログ (a)/(b) モード」を §3.5 体系に追記（固定枠対応 D&D ダイアログ仕様） |

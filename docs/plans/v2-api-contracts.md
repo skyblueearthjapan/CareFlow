@@ -409,6 +409,172 @@
 
 ---
 
+## 8. patient_fixed_visits API（W9-BE1 / W9-BE2）
+
+> Wave 9 Phase 5a 追記（2026-05-06）。設計仕様 §3.6.8 / §4.1b に対応する。
+> W9-BE1 は Phase 1 で実装（GET / PUT / DELETE）、W9-BE2 は Phase 2 で実装
+>（from-week 系 / fix-or-pattern）。
+
+### 8.1 `GET /api/v1/patients/{patient_id}/fixed-visits`
+
+| 項目 | 内容 |
+|---|---|
+| 概要 | 患者の固定枠一覧取得 |
+| 担当チケット | W9-BE1 |
+| Query | `mode=normal\|special`（省略時: 両 mode を返す） |
+| Response 200 | `list[PatientFixedVisitV2Read]` |
+| RBAC | Admin / Manager（全患者） / Staff（自担当患者のみ） |
+
+### 8.2 `PUT /api/v1/patients/{patient_id}/fixed-visits`
+
+| 項目 | 内容 |
+|---|---|
+| 概要 | 患者の固定枠を完全置換（1 TX で当該 mode の全行削除 → 挿入） |
+| 担当チケット | W9-BE1 |
+| Request body | `PatientFixedVisitsBulkPut` |
+| Response 200 | `list[PatientFixedVisitV2Read]` |
+| RBAC | Admin / Manager のみ |
+| トランザクション | `(patient_id, mode)` の既存全行を DELETE し、items で指定した行を INSERT。1 TX で完結 |
+| バリデーション | `items` 内に同一 `weekday` が重複する場合は 422 を返す |
+
+### 8.3 `DELETE /api/v1/patients/{patient_id}/fixed-visits`
+
+| 項目 | 内容 |
+|---|---|
+| 概要 | 患者の固定枠を全削除（希望ベースの自動展開に戻す） |
+| 担当チケット | W9-BE1 |
+| Query | `mode=normal\|special`（**必須**） |
+| Response 204 | No Content |
+| RBAC | Admin / Manager のみ |
+| 効果 | 削除後の `generate-week` では `weekly_pattern` / `special_weekly_pattern` から visits を生成する（§3.6.8 Layer 1 hybrid 化のフォールバック） |
+
+### 8.4 `POST /api/v1/patients/{patient_id}/fixed-visits/from-week`（Phase 2）
+
+| 項目 | 内容 |
+|---|---|
+| 概要 | 当該週の visits を patient_fixed_visits に書き戻す（個別固定化） |
+| 担当チケット | W9-BE2 |
+| Query | `iso_year=2026&iso_week=20`（必須）、`mode=normal\|special`（省略可） |
+| Response 200 | `list[PatientFixedVisitV2Read]` |
+| RBAC | Admin / Manager のみ |
+| mode 自動推定 | `mode` 省略時: `special_week_active` に `(iso_year, iso_week)` が含まれれば `'special'`、なければ `'normal'` |
+| 書き戻し元 | `visits` + `visit_staff_assignments`（時刻・duration のみ取得。スタッフ情報は書き戻さない） |
+
+### 8.5 `POST /api/v1/patients/fixed-visits/from-week-bulk`（Phase 2）
+
+| 項目 | 内容 |
+|---|---|
+| 概要 | 全患者一括固定化 |
+| 担当チケット | W9-BE2 |
+| Query | `iso_year=2026&iso_week=20`（必須）、`mode=normal\|special`（省略可） |
+| Response 200 | `{ "updated_count": int, "patients": [uuid] }` |
+| RBAC | Admin / Manager のみ |
+| 処理方式 | 全 active 患者に対して §8.4 と同等の書き戻しを 1 TX で実行 |
+| 書き戻し元 | `visits` + `visit_staff_assignments`（時刻・duration のみ取得。スタッフ情報は書き戻さない、§8.4 と同方針） |
+| 冪等性 | 同一週に対し複数回呼んでも安全（PUT 同様 当該 (patient, mode) の既存全行を完全置換するため） |
+
+### 8.6 `POST /api/v1/schedule/fix-or-pattern`（Phase 2）
+
+> D&D ダイアログの (a)/(b) 選択に対応するエンドポイント（§3.5.8 参照）。
+
+| 項目 | 内容 |
+|---|---|
+| 概要 | スケジュール変更を「今週のみ」または「固定枠変更」のいずれかのモードで適用 |
+| 担当チケット | W9-BE2 |
+| Request body | `FixOrPatternRequest`（下記参照） |
+| Response 200 | `FixOrPatternResponse`（下記参照） |
+| RBAC | Admin / Manager のみ |
+
+#### `FixOrPatternRequest`
+
+```jsonc
+{
+  "mode":            "this_week_only" | "pattern_change",
+  "visit_id":        "<UUID>",
+  "new_weekday":     0,              // 0=Mon ... 6=Sun
+  "new_start_time":  "HH:MM",
+  "new_duration_min": 60,
+  "iso_year":        2026,
+  "iso_week":        20
+}
+```
+
+#### `FixOrPatternResponse`
+
+```jsonc
+{
+  "mode":                 "this_week_only" | "pattern_change",
+  "updated_visit":        VisitV2Read | null,         // mode=this_week_only のとき返る
+  "updated_fixed_visit":  PatientFixedVisitV2Read | null  // mode=pattern_change のとき返る
+}
+```
+
+#### 処理フロー
+
+- `mode = 'this_week_only'`: `POST /api/v1/schedule/fix`（§6.1）と同じ経路で
+  当該 visit の時刻のみ更新。`patient_fixed_visits` は触らない
+- `mode = 'pattern_change'`: `special_week_active` の状態に応じて
+  `normal` / `special` を自動判定し、`patient_fixed_visits` の該当行を
+  upsert する。翌週以降の `generate-week` から新しい固定枠が適用される
+
+---
+
+## 9. Pydantic / TypeScript 型定義（patient_fixed_visits）
+
+> 共有型の正式定義は `backend/app/schemas/v2/patient_fixed_visits.py` および
+> `frontend/lib/schemas/v2/patient_fixed_visits.ts` に配置する（W9-BE1 で作成）。
+> 本節は両ファイルの **参照用サマリ**。
+
+```python
+# Python (Pydantic)
+
+PatientFixedVisitMode = Literal['normal', 'special']
+
+class PatientFixedVisitV2Base(BaseModel):
+    weekday:      int   # 0..6 (0=Mon ... 6=Sun)
+    start_time:   time  # HH:MM 形式
+    duration_min: int = 30  # 1..480
+
+class PatientFixedVisitV2Read(PatientFixedVisitV2Base):
+    id:         UUID
+    patient_id: UUID
+    mode:       PatientFixedVisitMode
+    created_at: datetime
+    updated_at: datetime
+
+class PatientFixedVisitsBulkPut(BaseModel):
+    mode:  PatientFixedVisitMode
+    items: list[PatientFixedVisitV2Base]  # 0..7 件。同一 weekday の重複は 422
+```
+
+```typescript
+// TypeScript (zod)
+
+export const PatientFixedVisitModeSchema = z.enum(['normal', 'special']);
+export type PatientFixedVisitMode = z.infer<typeof PatientFixedVisitModeSchema>;
+
+export const PatientFixedVisitV2BaseSchema = z.object({
+  weekday:      z.number().int().min(0).max(6),
+  start_time:   z.string().regex(/^\d{2}:\d{2}$/),  // HH:MM
+  duration_min: z.number().int().min(1).max(480).default(30),
+});
+
+export const PatientFixedVisitV2ReadSchema = PatientFixedVisitV2BaseSchema.extend({
+  id:         z.string().uuid(),
+  patient_id: z.string().uuid(),
+  mode:       PatientFixedVisitModeSchema,
+  created_at: z.string().datetime(),
+  updated_at: z.string().datetime(),
+});
+
+export const PatientFixedVisitsBulkPutSchema = z.object({
+  mode:  PatientFixedVisitModeSchema,
+  items: z.array(PatientFixedVisitV2BaseSchema).max(7),
+});
+```
+
+---
+
 ## 8. AI API（W2-BE6 / W5-FE10）
 
 ### 8.1 `POST /api/v1/ai/interpret`（既存拡張）
