@@ -29,6 +29,7 @@ import { useSession } from 'next-auth/react';
 import { PendingRequestPanel } from '@/components/schedule/v2/PendingRequestPanel';
 import { ScheduleGridV2 } from '@/components/schedule/v2/ScheduleGridV2';
 import { CourseProposal } from '@/components/schedule/v2/CourseProposal';
+import { BulkFixToPatternButton } from '@/components/schedule/v2/BulkFixToPatternButton';
 import { WeekSelector, toWeekStart } from '@/components/schedule/WeekSelector';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { useCourses } from '@/lib/queries/courses';
@@ -141,14 +142,15 @@ export default function SchedulePage() {
         </p>
       </header>
 
-      {/* 進行ステップ表示 */}
-      <div className="flex flex-wrap items-center gap-4 rounded-lg border border-border-default bg-bg-muted px-4 py-2">
-        <span className="text-xs font-semibold text-text-muted">{isoWeekLabel}</span>
+      {/* 進行ステップ表示 + 一括固定化ボタン */}
+      <div className="flex flex-wrap items-center justify-between gap-4 rounded-lg border border-border-default bg-bg-muted px-4 py-2">
         <div className="flex flex-wrap items-center gap-4">
+          <span className="text-xs font-semibold text-text-muted">{isoWeekLabel}</span>
           <Step done={step1Done} label="Pool 確定" stepNumber={1} />
           <Step done={step2Done} label="コース確定" stepNumber={2} />
           <Step done={step3Done} label="スタッフ割付済" stepNumber={3} />
         </div>
+        <BulkFixToPatternButton canEdit={canEdit} isoYear={isoYear} isoWeek={isoWeek} />
       </div>
 
       {/* 3 タブ */}
