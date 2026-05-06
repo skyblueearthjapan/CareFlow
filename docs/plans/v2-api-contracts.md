@@ -594,6 +594,24 @@ export const PatientFixedVisitsBulkPutSchema = z.object({
 - プロンプトに `out_of_scope` アクションの選択肢を組み込み
 - `interpreted.action` が `out_of_scope` の場合、UI 側で「対応していません」メッセージを表示
 
+**`staff_mentor` mode B interpret 出力例（Wave 11 追記）**:
+
+入力: 「鈴木さんの月曜午前は田中さん、月曜午後は佐藤さん」
+
+```json
+{
+  "context_type": "staff_mentor",
+  "interpreted": {
+    "staff_id": "<鈴木の UUID>",
+    "assignments": [
+      { "weekday": 0, "part": "am", "companion_staff_id": "<田中の UUID>" },
+      { "weekday": 0, "part": "pm", "companion_staff_id": "<佐藤の UUID>" }
+    ]
+  },
+  "confidence": 0.95
+}
+```
+
 ### 8.2 `GET /api/v1/ai/logs`（既存維持）
 
 変更なし（参考用に列挙）
@@ -612,7 +630,7 @@ export const PatientFixedVisitsBulkPutSchema = z.object({
 |---|---|---|---|---|---|---|
 | 1 | `staff_off` | `staff_off` | スタッフのその週だけの休み登録 | AI / 手動 | ✅ | ❌ |
 | 2 | `staff_event` | `staff_event` | スタッフのイベント新規（会議・研修） | AI / 手動 | ✅ | ❌ |
-| ~~3~~ | ~~`staff_mentor`~~ | ~~`staff_mentor`~~ | ~~スタッフのメンター登録~~ **Wave 10 廃止**。同行スタッフ割付は §12 Staff Companion API を参照 | — | — | — |
+| 3 | `staff_mentor` | `staff_mentor` | 新人フラグ切替 + 同行スタッフ割付 (曜日×午前/午後/終日) | AI / 手動 | ✅ | ❌ |
 | 4 | `staff_create` | `staff_create` | スタッフ新規登録 | AI（不足情報補完モーダル経由） / 手動 | ✅ | ❌ |
 | 5 | `patient_create` | `patient_create` | 患者新規登録 | AI（不足情報補完モーダル経由） / 手動 | ✅ | ❌ |
 | 6 | `patient_cancel` | `patient_cancel` | 患者の訪問キャンセル | AI / 手動 | ✅ | ❌ |
@@ -638,7 +656,7 @@ export const PatientFixedVisitsBulkPutSchema = z.object({
 |---|---|
 | `staff_off` | `staff_weekly_overrides`（または v2 で改名する場合は同等テーブル） |
 | `staff_event` | `staff_events` |
-| `staff_mentor` | ~~`staff` (`mentor_id` 列の更新)~~ **Wave 10 廃止**。同行スタッフ割付は `§10 Staff Companion API` を参照 |
+| `staff_mentor` | `staff.is_trainee`（mode A）/ `staff_companion_assignments` 全削除 → INSERT（mode B）。詳細は §3.5.x 参照 |
 | `staff_create` | `staff` （新規 INSERT） |
 | `patient_create` | `patients`（新規 INSERT） |
 | `patient_cancel` | `visits`（status を `cancelled` へ） |
@@ -759,6 +777,48 @@ export const StaffCompanionAssignmentsBulkPutSchema = z.object({
 | `mentor_id` | **削除**（Wave 10 廃止。`staff_companion_assignments` に刷新） |
 | `is_trainee` | **追加**（`bool`、デフォルト `false`） |
 
+### 13.2 `StaffMentorPayload` schema（Wave 11 追記）
+
+> `staff_mentor` request_type の payload 定義。mode A / mode B の両方または
+> 片方を指定する。両方未指定の場合は 422 を返す。
+> 詳細バリデーション（`part` 排他、companion の role / status 等）は
+> `docs/plans/v2-allocation-redesign.md §3.5.x` を参照。
+
+```
+StaffMentorPayload {
+  staff_id:    UUID                      # 必須 (trainee = 新人本人)
+  is_trainee?: bool                      # 任意 (mode A: フラグ切替)
+  assignments?: list[{                   # 任意 (mode B: companion 一括設定)
+    weekday:            0..6,            # 0=月曜
+    part:               'am' | 'pm' | 'full',
+    companion_staff_id: UUID
+  }]
+}
+```
+
+#### バリデーション
+
+| 条件 | HTTP ステータス | メッセージ |
+|---|---|---|
+| `is_trainee` も `assignments` も未指定 | 422 | "either is_trainee or assignments must be provided" |
+| `weekday` が 0〜6 の範囲外 | 422 | weekday out of range |
+| `part` が `'am'`/`'pm'`/`'full'` 以外 | 422 | invalid part value |
+| 同一曜日に `'full'` と `'am'`/`'pm'` が共存 | 422 | 'full' and 'am'/'pm' are mutually exclusive for the same weekday |
+| `companion_staff_id` が trainee 自身 | 422 | companion must not be the trainee themselves |
+| companion の `role` が `manager`/`staff` 以外 | 422 | companion role must be manager or staff |
+| companion の `status` が `'在籍'` 以外 | 422 | companion must be an active staff member |
+
+#### mode B の冪等性
+
+`assignments` が指定された場合、`trainee_staff_id` に紐付く既存の
+`staff_companion_assignments` を全削除してから INSERT する（PUT 同等）。
+`assignments: []`（空配列）を指定すると全件削除となる。
+
+#### is_trainee の自動強制
+
+`assignments` が指定された場合（mode B）、対象スタッフの `is_trainee` が
+`false` であっても **自動的に `true` に強制** する。
+
 ---
 
 ## 14. 受入基準
@@ -768,5 +828,9 @@ export const StaffCompanionAssignmentsBulkPutSchema = z.object({
 - [x] context_type ↔ request_type の対応表が末尾にある
 - [x] 各 request_type が承認時に触るテーブルが明記されている（PendingRequestApplier の実装契約として）
 - [x] AI 経由不可の操作（patient/staff の delete、office の編集）が明示されている
-- [x] Staff Companion API（§10）が追加されている（GET / PUT / DELETE / companion-candidates の 4 エンドポイント）
+- [x] Staff Companion API（§12）が追加されている（GET / PUT / DELETE / companion-candidates の 4 エンドポイント）
 - [x] 旧 mentor API の廃止が §9.2 / §2.1 に明記されている
+- [x] W11: `staff_mentor` request_type が §11 対応表で再活性化されている（取消し線解除）
+- [x] W11: `StaffMentorPayload` schema が §13.2 に追記されている（mode A / mode B 両対応）
+- [x] W11: §10 AI API interpret 出力例に `staff_mentor` mode B サンプルが追加されている
+- [x] W11: §9.2 の `staff_mentor` 行が新方式（is_trainee + staff_companion_assignments）に更新されている
