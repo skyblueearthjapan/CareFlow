@@ -62,7 +62,12 @@ async def list_staff(
         if user.staff_id is None:
             return []
         stmt = stmt.where(Staff.id == user.staff_id)
-    stmt = stmt.order_by(Staff.created_at.desc()).limit(limit).offset(offset)
+    # 登録ナンバー (code) 昇順で常に固定表示。code 未設定は末尾、同コードは登録順で安定化。
+    stmt = (
+        stmt.order_by(Staff.code.asc().nulls_last(), Staff.created_at.asc())
+        .limit(limit)
+        .offset(offset)
+    )
     rows = (await db.scalars(stmt)).all()
     return list(rows)
 

@@ -123,7 +123,12 @@ async def list_patients(
     if user.role not in {"admin", "manager", "staff"}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
 
-    stmt = select(Patient).where(Patient.deleted_at.is_(None)).order_by(Patient.created_at.desc())
+    # 登録ナンバー (code) 昇順で常に固定表示。code 未設定は末尾、同コードは登録順で安定化。
+    stmt = (
+        select(Patient)
+        .where(Patient.deleted_at.is_(None))
+        .order_by(Patient.code.asc().nulls_last(), Patient.created_at.asc())
+    )
     if user.role == "staff":
         # Staff sees only patients they are assigned to via visits.
         # If the staff has no linked staff_id, return an empty page (defensive).

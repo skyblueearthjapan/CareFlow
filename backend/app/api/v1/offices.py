@@ -120,7 +120,8 @@ async def list_offices(
         select(Office)
         .where(Office.deleted_at.is_(None))
         .options(selectinload(Office.cities))
-        .order_by(Office.created_at.desc())
+        # 登録ナンバー (code) 昇順で常に固定表示。code 未設定は末尾、同コードは登録順で安定化。
+        .order_by(Office.code.asc().nulls_last(), Office.created_at.asc())
         .limit(limit)
         .offset(offset)
     )
