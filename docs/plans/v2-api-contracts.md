@@ -105,7 +105,7 @@
 
 **変更点（v1 → v2）**:
 - 削除: `can_double_team`, `home_address`, `home_lat`, `home_lng`, `areas`, `max_per_day`, `skill_level`, `assignment_volume`（6 項目 + `home_*` 3 項目）
-- `status`: `在籍 / 休職 / 退職` の 3 値に正規化（v1 の `active` / `inactive` から移行）
+- `status`: `在籍 / 休職 / 退職` の 3 値に正規化（v1 の `active` / `inactive` から `active` / `on_leave` / `retired` へ移行）
 - **Wave 10 変更**:
   - 削除: `mentor_id`（Wave 10 にて廃止。`staff_companion_assignments` に刷新）
   - 追加: `is_trainee: bool`（デフォルト `false`。新人スタッフフラグ）
@@ -612,6 +612,21 @@ export const PatientFixedVisitsBulkPutSchema = z.object({
 }
 ```
 
+**`patient_status_update` interpret 出力例（Wave 14 追記）**:
+
+入力: 「山田さんを入院中にして」
+
+```json
+{
+  "context_type": "patient_status_update",
+  "interpreted": {
+    "patient_id": "<山田の UUID>",
+    "status": "admitted"
+  },
+  "confidence": 0.97
+}
+```
+
 ### 8.2 `GET /api/v1/ai/logs`（既存維持）
 
 変更なし（参考用に列挙）
@@ -637,6 +652,8 @@ export const PatientFixedVisitsBulkPutSchema = z.object({
 | 7 | `patient_reschedule` | `patient_reschedule` | 患者の日時変更（**今週だけ / 今後固定** を選択） | AI / 手動 | ✅ | ✅（`one_time` / `permanent`） |
 | 8 | `patient_special_week_on` | `patient_special_week` | 患者の特別訪問週間 ON | AI / 手動 | ✅ | ❌ |
 | 9 | `patient_special_week_off` | `patient_special_week` | 患者の特別訪問週間 OFF | AI / 手動 | ✅ | ❌ |
+| 10 | `staff_status_update` | `staff_status_update` | スタッフ状態 (active/on_leave/retired) を変更 | AI / 手動 | ✅ | ❌ |
+| 11 | `patient_status_update` | `patient_status_update` | 患者状態 (active/suspended/admitted/pending/cancelled) を変更 | AI / 手動 | ✅ | ❌ |
 | ─ | （N/A） | `general` | 汎用フォールバック（既存） | AI のみ | ─ | ─ |
 | ─ | （N/A） | `out_of_scope` | AI が範囲外と判定 | AI のみ | ─ | ─ |
 
@@ -664,6 +681,8 @@ export const PatientFixedVisitsBulkPutSchema = z.object({
 | `patient_reschedule` (scope=permanent) | `patients.weekly_pattern` 更新 + 当該以降の visits 再生成 |
 | `patient_special_week_on` | `patients.special_week_active` に該当週を追加 |
 | `patient_special_week_off` | `patients.special_week_active` から該当週を削除 |
+| `staff_status_update` | `staff.status` を更新（active / on_leave / retired） |
+| `patient_status_update` | `patients.status` を更新（active / suspended / admitted / pending / cancelled） |
 
 ---
 
@@ -819,6 +838,46 @@ StaffMentorPayload {
 `assignments` が指定された場合（mode B）、対象スタッフの `is_trainee` が
 `false` であっても **自動的に `true` に強制** する。
 
+### 13.3 `StaffStatusUpdatePayload`（Wave 14 追記）
+
+> `staff_status_update` request_type の payload 定義。
+> 詳細バリデーションおよび RBAC は `docs/plans/v2-allocation-redesign.md §3.5.11` を参照。
+
+```
+StaffStatusUpdatePayload {
+  staff_id: UUID
+  status:   'active' | 'on_leave' | 'retired'
+}
+```
+
+#### バリデーション
+
+| 条件 | HTTP ステータス | メッセージ |
+|---|---|---|
+| `status` が値域外 | 422 | "invalid status value" |
+| `staff_id` 未指定 | 422 | "staff_id is required" |
+| 対象 staff に `deleted_at` がある | 404 | "staff not found" |
+
+### 13.4 `PatientStatusUpdatePayload`（Wave 14 追記）
+
+> `patient_status_update` request_type の payload 定義。
+> 詳細バリデーションおよび RBAC は `docs/plans/v2-allocation-redesign.md §3.5.11` を参照。
+
+```
+PatientStatusUpdatePayload {
+  patient_id: UUID
+  status:     'active' | 'suspended' | 'admitted' | 'pending' | 'cancelled'
+}
+```
+
+#### バリデーション
+
+| 条件 | HTTP ステータス | メッセージ |
+|---|---|---|
+| `status` が値域外 | 422 | "invalid status value" |
+| `patient_id` 未指定 | 422 | "patient_id is required" |
+| 対象 patient に `deleted_at` がある | 404 | "patient not found" |
+
 ---
 
 ## 14. 受入基準
@@ -834,3 +893,7 @@ StaffMentorPayload {
 - [x] W11: `StaffMentorPayload` schema が §13.2 に追記されている（mode A / mode B 両対応）
 - [x] W11: §10 AI API interpret 出力例に `staff_mentor` mode B サンプルが追加されている
 - [x] W11: §9.2 の `staff_mentor` 行が新方式（is_trainee + staff_companion_assignments）に更新されている
+- [x] W14: `staff_status_update` / `patient_status_update` が §11 対応表に追加されている
+- [x] W14: §13.3 に `StaffStatusUpdatePayload` schema が定義されている
+- [x] W14: §13.4 に `PatientStatusUpdatePayload` schema が定義されている
+- [x] W14: applier ハンドラ + Gemini プロンプト + AI capabilities (FE) が連動していること（W14-BE / W14-FE で実装）
