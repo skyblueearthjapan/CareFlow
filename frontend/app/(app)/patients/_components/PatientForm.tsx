@@ -109,6 +109,14 @@ export function PatientForm({
 
   const watchedAddress = watch('address');
 
+  // M-1 fix: officeMode を ref で参照することで debounce タイマー中の手動選択を反映する
+  // (タイマー設定時点の officeMode を closure に閉じ込めると、debounce 中にユーザーが
+  // OfficeCombobox を手動変更しても タイマー発火時に '古い auto' のままで自動上書きしてしまう)
+  const officeModeRef = React.useRef(officeMode);
+  React.useEffect(() => {
+    officeModeRef.current = officeMode;
+  }, [officeMode]);
+
   React.useEffect(() => {
     const address = watchedAddress?.trim();
     if (!address) {
@@ -121,7 +129,12 @@ export function PatientForm({
           const result = await resolveMut.mutateAsync(address);
           setResolveResult(result);
           // 自動セット: officeMode='auto' かつ confidence !== 'none' のみ
-          if (officeMode === 'auto' && result.confidence !== 'none' && result.office_id) {
+          // ref 経由で最新値を読み、debounce 中の手動切替も尊重する
+          if (
+            officeModeRef.current === 'auto' &&
+            result.confidence !== 'none' &&
+            result.office_id
+          ) {
             setValue('primary_office_id', result.office_id, { shouldDirty: true });
           }
         } catch {
