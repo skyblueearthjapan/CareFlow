@@ -828,9 +828,9 @@ StaffMentorPayload {
 - [x] context_type ↔ request_type の対応表が末尾にある
 - [x] 各 request_type が承認時に触るテーブルが明記されている（PendingRequestApplier の実装契約として）
 - [x] AI 経由不可の操作（patient/staff の delete、office の編集）が明示されている
-- [x] Staff Companion API（§10）が追加されている（GET / PUT / DELETE / companion-candidates の 4 エンドポイント）
+- [x] Staff Companion API（§12）が追加されている（GET / PUT / DELETE / companion-candidates の 4 エンドポイント）
 - [x] 旧 mentor API の廃止が §9.2 / §2.1 に明記されている
 - [x] W11: `staff_mentor` request_type が §11 対応表で再活性化されている（取消し線解除）
 - [x] W11: `StaffMentorPayload` schema が §13.2 に追記されている（mode A / mode B 両対応）
-- [x] W11: §10 interpret 出力例に `staff_mentor` mode B サンプルが追加されている
+- [x] W11: §10 AI API interpret 出力例に `staff_mentor` mode B サンプルが追加されている
 - [x] W11: §9.2 の `staff_mentor` 行が新方式（is_trainee + staff_companion_assignments）に更新されている
