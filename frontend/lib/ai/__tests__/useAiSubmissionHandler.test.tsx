@@ -360,4 +360,126 @@ describe('useAiSubmissionHandler', () => {
     );
     expect(toast.success).toHaveBeenCalledWith(expect.stringContaining('staff_mentor'));
   });
+
+  // ─── W14-FE: 状態変更 2 種 ────────────────────────────────────────────────
+
+  /**
+   * ケース 8 (W14-FE): staff_status_update + admin (PC) → createAndApply 経路
+   *
+   * admin が「鈴木さんを休職にして」を送信した場合、staff_status_update request_type で
+   * createAndApply が呼ばれることを確認する (RBAC: admin/manager → pending)。
+   */
+  it('staff_status_update + admin (PC) → createAndApply called with staff_status_update', async () => {
+    mockSession.mockReturnValue({
+      data: { user: { role: 'admin' } },
+      status: 'authenticated',
+    });
+
+    const { result } = renderHook(() => useAiSubmissionHandler({ isMobile: false }));
+
+    const interpretResult = makeInterpretResponse('staff_status_update', {
+      target_staff_id: 'aaaaaaaa-0000-0000-0000-000000000001',
+      status: 'on_leave',
+    });
+
+    await act(async () => {
+      await result.current.onSubmitInterceptor(interpretResult);
+    });
+
+    expect(mockCreateAndApplyMutateAsync).toHaveBeenCalledOnce();
+    expect(mockCreateAndApplyMutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ request_type: 'staff_status_update' }),
+    );
+    expect(mockMutateAsync).not.toHaveBeenCalled();
+    expect(mockApproveMutateAsync).not.toHaveBeenCalled();
+    expect(toast.success).toHaveBeenCalledWith(expect.stringContaining('staff_status_update'));
+  });
+
+  /**
+   * ケース 9 (W14-FE): patient_status_update + admin (PC) → createAndApply 経路
+   *
+   * admin が「山田さんを入院中にして」を送信した場合、patient_status_update request_type で
+   * createAndApply が呼ばれることを確認する (RBAC: admin/manager → pending)。
+   */
+  it('patient_status_update + admin (PC) → createAndApply called with patient_status_update', async () => {
+    mockSession.mockReturnValue({
+      data: { user: { role: 'admin' } },
+      status: 'authenticated',
+    });
+
+    const { result } = renderHook(() => useAiSubmissionHandler({ isMobile: false }));
+
+    const interpretResult = makeInterpretResponse('patient_status_update', {
+      target_patient_id: 'bbbbbbbb-0000-0000-0000-000000000002',
+      status: 'hospitalized',
+    });
+
+    await act(async () => {
+      await result.current.onSubmitInterceptor(interpretResult);
+    });
+
+    expect(mockCreateAndApplyMutateAsync).toHaveBeenCalledOnce();
+    expect(mockCreateAndApplyMutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ request_type: 'patient_status_update' }),
+    );
+    expect(mockMutateAsync).not.toHaveBeenCalled();
+    expect(mockApproveMutateAsync).not.toHaveBeenCalled();
+    expect(toast.success).toHaveBeenCalledWith(expect.stringContaining('patient_status_update'));
+  });
+
+  /**
+   * ケース 10 (W14-FE): staff_status_update + staff → out_of_scope
+   *
+   * staff ロールはスタッフ状態変更を操作できないため out_of_scope に分岐する。
+   * POST は一切呼ばれず、toast.error が呼ばれることを確認。
+   */
+  it('staff_status_update + staff → out_of_scope, no POST', async () => {
+    mockSession.mockReturnValue({
+      data: { user: { role: 'staff' } },
+      status: 'authenticated',
+    });
+
+    const { result } = renderHook(() => useAiSubmissionHandler({ isMobile: false }));
+
+    const interpretResult = makeInterpretResponse('staff_status_update', {
+      target_staff_id: 'aaaaaaaa-0000-0000-0000-000000000001',
+      status: 'resigned',
+    });
+
+    await act(async () => {
+      await result.current.onSubmitInterceptor(interpretResult);
+    });
+
+    expect(mockMutateAsync).not.toHaveBeenCalled();
+    expect(mockCreateAndApplyMutateAsync).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('staff'));
+  });
+
+  /**
+   * ケース 11 (W14-FE): patient_status_update + staff → out_of_scope
+   *
+   * staff ロールは患者状態変更を操作できないため out_of_scope に分岐する。
+   * POST は一切呼ばれず、toast.error が呼ばれることを確認。
+   */
+  it('patient_status_update + staff → out_of_scope, no POST', async () => {
+    mockSession.mockReturnValue({
+      data: { user: { role: 'staff' } },
+      status: 'authenticated',
+    });
+
+    const { result } = renderHook(() => useAiSubmissionHandler({ isMobile: false }));
+
+    const interpretResult = makeInterpretResponse('patient_status_update', {
+      target_patient_id: 'bbbbbbbb-0000-0000-0000-000000000002',
+      status: 'cancelled',
+    });
+
+    await act(async () => {
+      await result.current.onSubmitInterceptor(interpretResult);
+    });
+
+    expect(mockMutateAsync).not.toHaveBeenCalled();
+    expect(mockCreateAndApplyMutateAsync).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('patient_status_update'));
+  });
 });

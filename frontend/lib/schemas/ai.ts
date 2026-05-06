@@ -18,6 +18,8 @@ export const AI_CONTEXT_TYPES = [
   'patient_cancel',
   'patient_reschedule',
   'patient_special_week',
+  'staff_status_update',
+  'patient_status_update',
   'general',
   'out_of_scope',
 ] as const;
@@ -34,6 +36,8 @@ export const AI_CONTEXT_LABELS: Record<AiContextType, string> = {
   patient_cancel: '患者訪問キャンセル',
   patient_reschedule: '患者訪問日時変更',
   patient_special_week: '特別訪問週間 ON/OFF',
+  staff_status_update: 'スタッフ状態変更 (在籍/休職/退職)',
+  patient_status_update: '患者状態変更 (稼働中/一時休止/入院中/開始前/解約済み)',
   general: '汎用 (自動判定)',
   out_of_scope: '範囲外',
 };

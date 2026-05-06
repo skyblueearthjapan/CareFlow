@@ -35,6 +35,8 @@ export const REQUEST_TYPE_VALUES = [
   'patient_reschedule',
   'patient_special_week_on',
   'patient_special_week_off',
+  'staff_status_update',
+  'patient_status_update',
 ] as const;
 export const requestTypeEnum = z.enum(REQUEST_TYPE_VALUES);
 export type RequestType = z.infer<typeof requestTypeEnum>;
@@ -71,6 +73,8 @@ export const AI_CONTEXT_TYPE_VALUES = [
   'patient_cancel',
   'patient_reschedule',
   'patient_special_week',
+  'staff_status_update',
+  'patient_status_update',
   'general',
   'out_of_scope',
 ] as const;

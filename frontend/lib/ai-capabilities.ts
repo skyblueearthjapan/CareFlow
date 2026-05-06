@@ -66,6 +66,20 @@ export const AI_CAPABILITIES: AiCapability[] = [
     example: '「看護師の佐藤さんを新規登録」',
   },
   {
+    id: 'staff_status_update',
+    category: 'master',
+    label: 'スタッフ状態変更',
+    example: '「鈴木さんを休職にして」「田中さんは退職」',
+    contextType: 'staff_status_update',
+  },
+  {
+    id: 'patient_status_update',
+    category: 'master',
+    label: '患者状態変更',
+    example: '「山田さんを入院中にして」「佐藤さんは解約」',
+    contextType: 'patient_status_update',
+  },
+  {
     id: 'staff_mentor_trainee',
     category: 'master',
     label: '新人フラグ切替',
