@@ -230,9 +230,32 @@ _CONTEXT_PROMPT_TEMPLATES: dict[str, str] = {
         "終日休みの場合は time_start / time_end を省略可。"
     ),
     "staff_mentor": (
-        "【コンテキスト】スタッフのメンター登録 (例: 鈴木さんのメンターを山田さんに)。\n"
+        "【コンテキスト】スタッフの新人フラグ切替 + 同行スタッフ割付。\n"
         "action_type は 'staff_mentor' を使用。\n"
-        " 主要 fields: staff_id (メンティー側), mentor_staff_id (メンター側)。"
+        "用途は 2 通り (両方同時指定可):\n"
+        "\n"
+        "(A) 新人フラグ切替:\n"
+        "  fields: { staff_id, is_trainee: true/false }\n"
+        "  例「鈴木さんを新人にする」「鈴木さんの新人フラグを外す」\n"
+        "\n"
+        "(B) 同行スタッフ割付 (曜日 × 午前/午後/終日):\n"
+        "  fields: { staff_id, assignments: [{ weekday: 0..6, part: 'am'|'pm'|'full', companion_staff_id }, ...] }\n"
+        "  weekday: 0=月 / 1=火 / 2=水 / 3=木 / 4=金 / 5=土 / 6=日\n"
+        "  part: 'am'=午前 (9:00-12:00 目安) / 'pm'=午後 (13:00-18:00 目安) / 'full'=終日\n"
+        "  同曜日内で 'full' と 'am'/'pm' は排他。'am'+'pm' の同曜日併存は可。\n"
+        "  既存の同行スタッフ割付は全置換 (PUT 同等の冪等)。\n"
+        "  例「鈴木さんの月曜午前は田中さん、月曜午後は佐藤さん」\n"
+        "  → assignments: [\n"
+        "       { weekday: 0, part: 'am', companion_staff_id: <田中の UUID> },\n"
+        "       { weekday: 0, part: 'pm', companion_staff_id: <佐藤の UUID> }\n"
+        "     ]\n"
+        "  例「鈴木さんは平日全日 田中さんと同行」\n"
+        "  → assignments: [\n"
+        "       { weekday: 0..4, part: 'full', companion_staff_id: <田中の UUID> } を 5 件\n"
+        "     ]\n"
+        "\n"
+        "(A) と (B) の両方同時指定が可能。例「鈴木さんを新人にして、月曜午前は田中さんと同行」\n"
+        " → { is_trainee: true, assignments: [{weekday:0, part:'am', companion_staff_id:...}] }"
     ),
     "patient_cancel": (
         "【コンテキスト】患者の訪問キャンセル (1回限り)。\n"
@@ -264,6 +287,7 @@ _CONTEXT_PROMPT_TEMPLATES: dict[str, str] = {
         "選択肢: 'patient_create' | 'staff_create' | 'staff_event' | 'staff_off' |\n"
         " 'staff_mentor' | 'patient_cancel' | 'patient_reschedule' |\n"
         " 'patient_special_week' | 'out_of_scope' | 'unknown'。\n"
+        "'staff_mentor' は新人フラグ切替 (is_trainee) または曜日×部分 (am/pm/full) 同行スタッフ割付 (assignments[]) の 2 モード対応。\n"
         "範囲外と判定したら 'out_of_scope' を返し、reason / suggested_path を含めてください。"
     ),
 }
