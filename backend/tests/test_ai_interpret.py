@@ -843,6 +843,39 @@ async def test_interpret_anonymous_returns_401(client) -> None:
 
 
 # ---------------------------------------------------------------------------
+# W14-BE: Gemini プロンプト整合性テスト
+
+
+def test_staff_status_update_prompt_contains_required_keywords() -> None:
+    """staff_status_update プロンプトに必須キーワードが含まれる。"""
+    from app.services.gemini_client import build_prompt
+
+    prompt = build_prompt("staff_status_update", "鈴木さんを休職にして", {})
+
+    assert "status" in prompt
+    assert "on_leave" in prompt
+    assert "retired" in prompt
+    assert "active" in prompt
+    # 発話例が含まれること
+    assert "休職" in prompt
+    assert "退職" in prompt
+
+
+def test_patient_status_update_prompt_contains_required_keywords() -> None:
+    """patient_status_update プロンプトに必須キーワードが含まれる。"""
+    from app.services.gemini_client import build_prompt
+
+    prompt = build_prompt("patient_status_update", "山田さんを入院中にして", {})
+
+    assert "admitted" in prompt
+    assert "入院" in prompt
+    assert "cancelled" in prompt
+    assert "解約" in prompt
+    assert "suspended" in prompt
+    assert "patient_id" in prompt
+
+
+# ---------------------------------------------------------------------------
 # Logs endpoint RBAC
 
 

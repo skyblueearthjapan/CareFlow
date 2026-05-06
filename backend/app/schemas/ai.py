@@ -26,8 +26,9 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-# v2 公式の context_type 10 種（`backend/app/schemas/v2/enums.py::AiContextType`
+# v2 公式の context_type 12 種（`backend/app/schemas/v2/enums.py::AiContextType`
 # と完全一致 / 順序は対応表 §9 に揃える）。
+# W14-BE: staff_status_update / patient_status_update を追加。
 ContextType = Literal[
     # マスタ操作系
     "patient_create",
@@ -43,6 +44,9 @@ ContextType = Literal[
     # フォールバック / 範囲外
     "general",
     "out_of_scope",
+    # W14-BE: ステータス変更系
+    "staff_status_update",
+    "patient_status_update",
 ]
 
 # 旧 context_type → 新 context_type の互換マップ
@@ -52,8 +56,9 @@ LEGACY_CONTEXT_TYPE_MAP: dict[str, str] = {
     "override_create": "staff_off",
 }
 
-# 受け入れる入力の Literal（公式 10 種 + 旧 2 種）。
-# レスポンス側は正規化済みの公式 10 種のみを返す。
+# 受け入れる入力の Literal（公式 12 種 + 旧 2 種）。
+# レスポンス側は正規化済みの公式 12 種のみを返す。
+# W14-BE: staff_status_update / patient_status_update を追加。
 RequestContextType = Literal[
     "patient_create",
     "staff_create",
@@ -65,6 +70,9 @@ RequestContextType = Literal[
     "patient_special_week",
     "general",
     "out_of_scope",
+    # W14-BE: ステータス変更系
+    "staff_status_update",
+    "patient_status_update",
     # Deprecated aliases — 内部で変換される
     "event_create",
     "override_create",
