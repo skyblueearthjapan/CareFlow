@@ -3,17 +3,20 @@
  *
  * Loads via usePatient(id), submits via useUpdatePatient(id) -> PATCH.
  * Role gate: admin/manager only.
+ *
+ * W10-FE3: EditPageStickyBar を追加し、未保存変更を画面下部で通知する。
  */
 'use client';
 
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useSession } from 'next-auth/react';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/sonner';
+import { EditPageStickyBar } from '@/components/EditPageStickyBar';
 import { usePatient, useUpdatePatient } from '@/lib/queries/patients';
 import {
   patientReadToFormValues,
@@ -21,7 +24,7 @@ import {
   type WeeklyPattern,
 } from '@/lib/schemas/patient';
 
-import { PatientForm } from '../../_components/PatientForm';
+import { PatientForm, type PatientFormHandle } from '../../_components/PatientForm';
 import { PatientFixedVisitsPanel } from '../../_components/PatientFixedVisitsPanel';
 
 export default function EditPatientPage() {
@@ -39,6 +42,10 @@ export default function EditPatientPage() {
   );
   const updateMutation = useUpdatePatient(id, initialFormValues);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // sticky bar 用: フォームの isDirty 状態と外部操作ハンドル
+  const [isFormDirty, setIsFormDirty] = useState(false);
+  const formHandleRef = useRef<PatientFormHandle>(null);
 
   const handleSubmit = useMemo(
     () => async (values: PatientFormValues) => {
@@ -110,11 +117,21 @@ export default function EditPatientPage() {
         submitting={updateMutation.isPending}
         errorMessage={errorMessage}
         submitLabel="更新"
+        onDirtyChange={setIsFormDirty}
+        formRef={formHandleRef}
       />
 
       <PatientFixedVisitsPanel
         patientId={id}
         weeklyPattern={patient.weekly_pattern as WeeklyPattern | null | undefined}
+      />
+
+      <EditPageStickyBar
+        isDirty={isFormDirty}
+        isSaving={updateMutation.isPending}
+        errorMessage={errorMessage ?? undefined}
+        onDiscard={() => formHandleRef.current?.resetForm()}
+        onSave={() => formHandleRef.current?.submitForm()}
       />
     </section>
   );
