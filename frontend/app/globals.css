@@ -8,6 +8,12 @@
   html,
   body {
     height: 100%;
+    /* AppShell が h-screen + overflow-hidden で全画面を内包し、内部の <main>
+     * のみがスクロールを担う設計のため、ページ全体 (html/body level) では
+     * スクロールを発生させない。これがないと sonner notifications の <section>
+     * 等が body に追加された際、body 高さが 100vh を僅かに超えて
+     * html level の scrollbar が main の scrollbar と重複表示される。 */
+    overflow: hidden;
   }
   body {
     background-color: var(--bg-app);
