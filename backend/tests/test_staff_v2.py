@@ -1,6 +1,7 @@
 """W1-BE2 v2 スタッフマスタ整理のための CRUD + RBAC + バリデーション検証.
 
 設計仕様書 v0.9 §4.2 / 実装手順書 v0.2 §2 W1-BE2 / API 契約 §2 に対応。
+W10-BE1: mentor_id → is_trainee 置き換えに伴い更新。
 
 検証観点:
   1. 削除 8 カラム (can_double_team / home_address / home_lat / home_lng /
@@ -9,7 +10,7 @@
   2. 削除カラムを Create / Update リクエストに含めると 422 になる
      (StaffBase は ``extra="forbid"``)
   3. status の 3 値 enum バリデーション (active / on_leave / retired 以外で 422)
-  4. メンター (mentor_id) の設定・取得が動く
+  4. is_trainee (新人フラグ) の設定・取得が動く
   5. RBAC: 認証なし 401 / staff ロールでの delete 403 / 自分以外の取得 404
   6. 状態 3 値の境界値で 200
 """
@@ -213,58 +214,89 @@ async def test_v2_staff_patch_rejects_invalid_status(client, db) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 4. メンター (mentor_id) の設定・取得
+# 4. is_trainee (新人フラグ) の設定・取得 (W10-BE1)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_v2_staff_mentor_set_and_get(client, db) -> None:
-    """mentor_id を作成 / PATCH / GET で round-trip できる."""
-    admin = await _make_user(db, "v2-mentor-admin@example.com", "admin")
-
-    # メンター候補のスタッフを先に作る
-    mentor_payload = {"name": "メンター先輩", "kana": "メンターセンパイ"}
-    res_mentor = await client.post("/api/v1/staff", json=mentor_payload, headers=_bearer(admin))
-    assert res_mentor.status_code == 201, res_mentor.text
-    mentor_id = res_mentor.json()["id"]
-
-    # 新人スタッフを mentor_id 付きで作る
-    new_payload = {"name": "新人 一郎", "mentor_id": mentor_id}
-    res_new = await client.post("/api/v1/staff", json=new_payload, headers=_bearer(admin))
-    assert res_new.status_code == 201, res_new.text
-    assert res_new.json()["mentor_id"] == mentor_id
-
-    new_id = res_new.json()["id"]
-
-    # GET でも mentor_id が読める
-    res_get = await client.get(f"/api/v1/staff/{new_id}", headers=_bearer(admin))
-    assert res_get.status_code == 200, res_get.text
-    assert res_get.json()["mentor_id"] == mentor_id
+async def test_v2_staff_is_trainee_default_false(client, db) -> None:
+    """is_trainee を省略すると False になる."""
+    admin = await _make_user(db, "v2-trainee-default@example.com", "admin")
+    res = await client.post(
+        "/api/v1/staff",
+        json={"name": "デフォルト新人フラグ"},
+        headers=_bearer(admin),
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["is_trainee"] is False
 
 
 @pytest.mark.asyncio
-async def test_v2_staff_mentor_patch_to_null(client, db) -> None:
-    """mentor_id を PATCH で null クリアできる."""
-    admin = await _make_user(db, "v2-mentor-clear@example.com", "admin")
+async def test_v2_staff_is_trainee_set_and_get(client, db) -> None:
+    """is_trainee=True を作成 / GET で round-trip できる."""
+    admin = await _make_user(db, "v2-trainee-admin@example.com", "admin")
 
-    mentor = Staff(name="メンター")
-    mentee = Staff(name="メンティー")
-    db.add_all([mentor, mentee])
+    res_new = await client.post(
+        "/api/v1/staff",
+        json={"name": "新人 一郎", "is_trainee": True},
+        headers=_bearer(admin),
+    )
+    assert res_new.status_code == 201, res_new.text
+    assert res_new.json()["is_trainee"] is True
+
+    new_id = res_new.json()["id"]
+
+    # GET でも is_trainee が読める
+    res_get = await client.get(f"/api/v1/staff/{new_id}", headers=_bearer(admin))
+    assert res_get.status_code == 200, res_get.text
+    assert res_get.json()["is_trainee"] is True
+
+
+@pytest.mark.asyncio
+async def test_v2_staff_is_trainee_patch_to_false(client, db) -> None:
+    """is_trainee を PATCH で False にクリアできる."""
+    admin = await _make_user(db, "v2-trainee-clear@example.com", "admin")
+
+    trainee = Staff(name="新人スタッフ", is_trainee=True)
+    db.add(trainee)
     await db.commit()
-    await db.refresh(mentor)
-    await db.refresh(mentee)
-    mentee.mentor_id = mentor.id
-    await db.commit()
-    await db.refresh(mentee)
+    await db.refresh(trainee)
 
     # クリア
     res = await client.patch(
-        f"/api/v1/staff/{mentee.id}",
-        json={"mentor_id": None},
+        f"/api/v1/staff/{trainee.id}",
+        json={"is_trainee": False},
         headers=_bearer(admin),
     )
     assert res.status_code == 200, res.text
-    assert res.json()["mentor_id"] is None
+    assert res.json()["is_trainee"] is False
+
+
+@pytest.mark.asyncio
+async def test_v2_staff_mentor_id_not_in_response(client, db) -> None:
+    """W10-BE1: mentor_id が API レスポンスに含まれない."""
+    admin = await _make_user(db, "v2-mentor-gone@example.com", "admin")
+    res = await client.post(
+        "/api/v1/staff",
+        json={"name": "mentor_id 削除確認"},
+        headers=_bearer(admin),
+    )
+    assert res.status_code == 201, res.text
+    assert "mentor_id" not in res.json()
+
+
+@pytest.mark.asyncio
+async def test_v2_staff_mentor_id_in_create_rejected(client, db) -> None:
+    """W10-BE1: mentor_id を含む POST リクエストは 422 (extra=forbid)."""
+    admin = await _make_user(db, "v2-mentor-reject@example.com", "admin")
+    from uuid import uuid4
+
+    res = await client.post(
+        "/api/v1/staff",
+        json={"name": "メンターフィールドテスト", "mentor_id": str(uuid4())},
+        headers=_bearer(admin),
+    )
+    assert res.status_code == 422, res.text
 
 
 # ---------------------------------------------------------------------------

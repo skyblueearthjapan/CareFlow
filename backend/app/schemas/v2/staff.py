@@ -1,11 +1,11 @@
-"""StaffV2 schemas (Wave 0-C).
+"""StaffV2 schemas (Wave 0-C / W10-BE1).
 
-設計仕様書 v0.9 §4.2 に基づき、v2 で残す **9 項目** のみを保持する。
+設計仕様書 v0.9 §4.2 に基づき、v2 で残す項目のみを保持する。
 削除する 6 項目 (can_double_team / 自宅住所 + lat/lng / 得意エリア /
 1日最大訪問数 / スキル / 割付ボリューム) は v2 schema には含めない。
 
-メンターフィールド (`mentor_id`) は型としては **残す**（UI 上は基本情報ではなく
-「詳細セクション」扱いだが、データ層には残置）。
+W10-BE1: mentor_id 廃止 → is_trainee 追加。
+同行スタッフ管理は staff_companion_assignments テーブルへ移行。
 """
 
 from __future__ import annotations
@@ -30,10 +30,11 @@ SexV2 = Literal["male", "female", "unknown"]
 
 
 class StaffV2Base(BaseModel):
-    """スタッフマスタ v2 (§4.2 残す 9 項目).
+    """スタッフマスタ v2 (§4.2 残す項目).
 
     削除済み (v2 schema に含めない): can_double_team, home_address,
     home_lat, home_lng, areas, max_per_day, skill_level, assignment_volume。
+    W10-BE1: mentor_id 廃止 → is_trainee 追加。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -65,12 +66,9 @@ class StaffV2Base(BaseModel):
     note: str | None = Field(default=None, description="自由記述")
 
     # 詳細セクション (§4.2)
-    mentor_id: UUID | None = Field(
-        default=None,
-        description=(
-            "メンター。新人スタッフのみ設定。"
-            "UI 上は基本情報ではなく『詳細』セクション扱いだが、データ層には残置 (§4.2)"
-        ),
+    is_trainee: bool = Field(
+        default=False,
+        description="新人フラグ。True の場合は同行スタッフ (companion) と一緒に訪問",
     )
 
 
@@ -94,7 +92,7 @@ class StaffV2Update(BaseModel):
     status: StaffStatusV2 | None = None
     primary_office_id: UUID | None = None
     note: str | None = None
-    mentor_id: UUID | None = None
+    is_trainee: bool | None = None
 
 
 class StaffV2Read(StaffV2Base):
