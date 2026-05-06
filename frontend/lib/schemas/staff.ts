@@ -36,6 +36,8 @@ export const staffBaseSchema = z.object({
   primary_office_id: z.string().uuid().nullable().optional(),
   mentor_id: z.string().uuid().nullable().optional(),
   note: z.string().nullable().optional(),
+  /** W10-BE1: 新人フラグ。True の場合は同行スタッフと一緒に訪問 */
+  is_trainee: z.boolean().optional(),
 });
 
 export const staffCreateSchema = staffBaseSchema;
@@ -50,6 +52,7 @@ export const staffUpdateSchema = z.object({
   primary_office_id: z.string().uuid().nullable().optional(),
   mentor_id: z.string().uuid().nullable().optional(),
   note: z.string().nullable().optional(),
+  is_trainee: z.boolean().nullable().optional(),
 });
 
 export const staffReadSchema = staffBaseSchema.extend({

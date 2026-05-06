@@ -67,7 +67,7 @@ export function MentorAssignDialog({
       await update.mutateAsync({
         mentor_staff_id: selected ? selected : null,
       });
-      toast.success('メンターを更新しました');
+      toast.success('同行スタッフを更新しました');
       onOpenChange(false);
     } catch (err) {
       toast.error(`更新に失敗しました: ${err instanceof Error ? err.message : '不明なエラー'}`);
@@ -77,7 +77,7 @@ export function MentorAssignDialog({
   const onClear = async () => {
     try {
       await update.mutateAsync({ mentor_staff_id: null });
-      toast.success('メンターを解除しました');
+      toast.success('同行スタッフを解除しました');
       onOpenChange(false);
     } catch (err) {
       toast.error(`解除に失敗しました: ${err instanceof Error ? err.message : '不明なエラー'}`);
@@ -94,11 +94,11 @@ export function MentorAssignDialog({
     >
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>メンターを変更</DialogTitle>
-          <DialogDescription>割り当てるメンタースタッフを選択してください。</DialogDescription>
+          <DialogTitle>同行スタッフを変更</DialogTitle>
+          <DialogDescription>割り当てる同行スタッフを選択してください。</DialogDescription>
         </DialogHeader>
 
-        <div className="grid gap-3 py-2" role="group" aria-label="メンタースタッフを選択">
+        <div className="grid gap-3 py-2" role="group" aria-label="同行スタッフを選択">
           <Combobox
             options={options}
             value={selected}
@@ -117,7 +117,7 @@ export function MentorAssignDialog({
             onClick={onClear}
             disabled={isBusy || !currentMentorId}
           >
-            メンター解除
+            同行スタッフ解除
           </Button>
           <div className="flex gap-2">
             <Button

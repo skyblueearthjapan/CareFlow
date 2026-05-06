@@ -73,6 +73,13 @@ export const staffV2BaseSchema = z.object({
    * UI 上は基本情報ではなく「詳細」セクション扱いだが、データ層には残置 (§4.2)。
    */
   mentor_id: z.string().uuid().nullable().optional(),
+
+  /**
+   * 新人フラグ (W10-BE1)。
+   * True の場合は同行スタッフ (companion) と一緒に訪問。
+   * is_trainee=true の時のみ同行スタッフ割付パネルを表示する。
+   */
+  is_trainee: z.boolean().default(false),
 });
 export type StaffV2Base = z.infer<typeof staffV2BaseSchema>;
 
@@ -91,6 +98,8 @@ export const staffV2UpdateSchema = z.object({
   primary_office_id: z.string().uuid().nullable().optional(),
   note: z.string().nullable().optional(),
   mentor_id: z.string().uuid().nullable().optional(),
+  /** W10-BE1: 新人フラグ */
+  is_trainee: z.boolean().nullable().optional(),
 });
 export type StaffV2Update = z.infer<typeof staffV2UpdateSchema>;
 

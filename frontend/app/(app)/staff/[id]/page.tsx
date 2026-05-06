@@ -203,7 +203,7 @@ function BasicInfoCard({ staff }: { staff: StaffRead }) {
           <Row label="役割" value={roleLabel(staff.role)} />
           <Row label="状態" value={statusLabel(staff.status)} />
           <Row label="主拠点" value={staff.primary_office_id ?? '--'} />
-          <Row label="メンター ID" value={staff.mentor_id ?? '--'} />
+          <Row label="同行スタッフ ID" value={staff.mentor_id ?? '--'} />
           <Row label="登録日時" value={formatDate(staff.created_at)} />
           {staff.note && (
             <div className="md:col-span-2">
@@ -493,7 +493,7 @@ function MentorCard({
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
-        <CardTitle>メンター割付</CardTitle>
+        <CardTitle>同行スタッフ割付</CardTitle>
         {canEdit && (
           <Button type="button" variant="outline" size="sm" onClick={() => setOpen(true)}>
             <Pencil className="h-4 w-4" />
@@ -513,13 +513,15 @@ function MentorCard({
           </Alert>
         ) : mentorId ? (
           <div className="rounded border border-border-default p-3 text-sm">
-            <div className="text-xs text-text-muted">担当メンター</div>
+            <div className="text-xs text-text-muted">担当同行スタッフ</div>
             <div className="text-text-primary">{mentorName ?? mentorId}</div>
           </div>
         ) : (
           <Alert>
-            <AlertTitle>メンター未設定</AlertTitle>
-            <AlertDescription>このスタッフにはメンターが割り当てられていません。</AlertDescription>
+            <AlertTitle>同行スタッフ未設定</AlertTitle>
+            <AlertDescription>
+              このスタッフには同行スタッフが割り当てられていません。
+            </AlertDescription>
           </Alert>
         )}
       </CardContent>

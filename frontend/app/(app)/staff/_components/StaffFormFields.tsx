@@ -9,6 +9,8 @@
  * v2 (W1-BE2): backend は §4.2 の 9 項目のみ受け付ける (``extra="forbid"``)。
  * 削除済み: ``can_double_team`` / ``home_address`` / ``home_lat`` / ``home_lng`` /
  * ``areas`` / ``max_per_day`` / ``skill_level`` / ``assignment_volume``。
+ *
+ * W10-FE1: is_trainee フラグ追加。「メンター」ラベルを「同行スタッフ」に変更。
  */
 import { OfficeCombobox } from '@/components/master/OfficeCombobox';
 import { StaffCombobox } from '@/components/master/StaffCombobox';
@@ -34,6 +36,8 @@ export interface StaffFormState {
   primary_office_id: string;
   mentor_id: string;
   note: string;
+  /** W10-BE1: 新人フラグ (同行スタッフ割付の対象かどうか) */
+  is_trainee: boolean;
 }
 
 interface Option<T extends string> {
@@ -127,12 +131,26 @@ export function StaffFormFields({
           />
         </Field>
 
-        <Field label="メンター" error={errors.mentor_id} hint="新人スタッフのみ設定">
+        <Field label="同行スタッフ" error={errors.mentor_id} hint="新人スタッフのみ設定">
           <StaffCombobox
             value={form.mentor_id}
             onChange={(v) => set('mentor_id', v)}
             excludeId={currentStaffId}
           />
+        </Field>
+
+        <Field label="新人フラグ (同行スタッフ割付対象)" error={errors.is_trainee}>
+          <label className="flex cursor-pointer items-center gap-2">
+            <input
+              type="checkbox"
+              checked={form.is_trainee}
+              onChange={(e) => set('is_trainee', e.target.checked)}
+              className="h-4 w-4 rounded border border-border-default accent-brand-primary"
+            />
+            <span className="text-sm text-text-primary">
+              新人スタッフとして同行スタッフと一緒に訪問する
+            </span>
+          </label>
         </Field>
 
         <Field label="備考" error={errors.note} className="md:col-span-2">

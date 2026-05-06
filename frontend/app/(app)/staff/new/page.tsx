@@ -42,6 +42,7 @@ const EMPTY_FORM: StaffFormState = {
   primary_office_id: '',
   mentor_id: '',
   note: '',
+  is_trainee: false,
 };
 
 function toPayload(form: StaffFormState): StaffCreate {
@@ -55,6 +56,7 @@ function toPayload(form: StaffFormState): StaffCreate {
     primary_office_id: form.primary_office_id.trim() || null,
     mentor_id: form.mentor_id.trim() || null,
     note: form.note.trim() || null,
+    is_trainee: form.is_trainee,
   };
 }
 
