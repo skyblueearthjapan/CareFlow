@@ -18,9 +18,11 @@ import { usePatient, useUpdatePatient } from '@/lib/queries/patients';
 import {
   patientReadToFormValues,
   type PatientFormValues,
+  type WeeklyPattern,
 } from '@/lib/schemas/patient';
 
 import { PatientForm } from '../../_components/PatientForm';
+import { PatientFixedVisitsPanel } from '../../_components/PatientFixedVisitsPanel';
 
 export default function EditPatientPage() {
   const params = useParams<{ id: string }>();
@@ -67,9 +69,7 @@ export default function EditPatientPage() {
     return (
       <Alert variant="destructive">
         <AlertTitle>権限がありません</AlertTitle>
-        <AlertDescription>
-          患者の編集は管理者またはマネージャーのみ実行できます。
-        </AlertDescription>
+        <AlertDescription>患者の編集は管理者またはマネージャーのみ実行できます。</AlertDescription>
       </Alert>
     );
   }
@@ -110,6 +110,11 @@ export default function EditPatientPage() {
         submitting={updateMutation.isPending}
         errorMessage={errorMessage}
         submitLabel="更新"
+      />
+
+      <PatientFixedVisitsPanel
+        patientId={id}
+        weeklyPattern={patient.weekly_pattern as WeeklyPattern | null | undefined}
       />
     </section>
   );

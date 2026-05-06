@@ -29,3 +29,4 @@ export * from './office';
 export * from './course';
 export * from './visit';
 export * from './pending_request';
+export * from './patient_fixed_visit';
