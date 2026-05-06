@@ -133,15 +133,30 @@ function weeklyPatternToDayRows(pattern: WeeklyPattern | null | undefined): DayR
   };
 
   const preferred = pattern.preferred_weekdays ?? [];
-  const startTime = pattern.preferred_start ?? '09:00';
   const duration = pattern.service_minutes ?? 30;
+
+  // 開始時刻は preferred_start を最優先。未指定なら time_type からデフォルト時刻を導出。
+  // - 午前: 09:00 / 午後: 13:00 / 終日: 09:00 / 時間帯・固定: preferred_start (フォールバック 09:00)
+  const deriveStart = (): string => {
+    const ps = (pattern.preferred_start ?? '').slice(0, 5);
+    if (ps) return ps;
+    switch (pattern.time_type) {
+      case '午後':
+        return '13:00';
+      case '午前':
+      case '終日':
+      default:
+        return '09:00';
+    }
+  };
+  const startTime = deriveStart();
 
   for (const wd of preferred) {
     const idx = WEEKDAY_KEY_MAP[wd];
     if (idx !== undefined) {
       rows[idx] = {
         enabled: true,
-        start_time: startTime.slice(0, 5),
+        start_time: startTime,
         duration_min: Math.max(1, Math.min(480, duration)),
       };
     }

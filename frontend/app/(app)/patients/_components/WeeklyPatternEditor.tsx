@@ -19,7 +19,6 @@ import {
   VISIT_FREQUENCY_OPTIONS,
   WEEKDAY_KEYS,
   WEEKDAY_LABELS_JA,
-  WEEKDAY_PRIORITY_OPTIONS,
   type WeekdayKey,
   type WeeklyPattern,
 } from '@/lib/schemas/patient';
@@ -50,27 +49,15 @@ export function WeeklyPatternEditor({
       ? value.preferred_weekdays.filter((d) => d !== day)
       : [...value.preferred_weekdays, day];
     // Re-order to canonical Mon..Sun for stable display.
-    next.sort(
-      (a, b) => WEEKDAY_KEYS.indexOf(a) - WEEKDAY_KEYS.indexOf(b),
-    );
+    next.sort((a, b) => WEEKDAY_KEYS.indexOf(a) - WEEKDAY_KEYS.indexOf(b));
     update('preferred_weekdays', next);
-  };
-
-  const toggleNg = (day: WeekdayKey) => {
-    const current = value.ng_weekdays ?? [];
-    const has = current.includes(day);
-    const next = has ? current.filter((d) => d !== day) : [...current, day];
-    next.sort(
-      (a, b) => WEEKDAY_KEYS.indexOf(a) - WEEKDAY_KEYS.indexOf(b),
-    );
-    update('ng_weekdays', next.length === 0 ? null : next);
   };
 
   const showTimeRange = value.time_type === '時間帯' || value.time_type === '固定';
 
   return (
     <div className="space-y-4 rounded-md border border-border-default bg-bg-base p-4">
-      <h3 className="text-sm font-semibold text-text-primary">週間訪問パターン</h3>
+      <h3 className="text-sm font-semibold text-text-primary">週間訪問パターン(希望欄)</h3>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         <Field label="週あたり訪問回数" hint="1〜7">
@@ -82,10 +69,7 @@ export function WeeklyPatternEditor({
             value={value.frequency_per_week}
             onChange={(e) => {
               const n = Number(e.target.value);
-              update(
-                'frequency_per_week',
-                Number.isFinite(n) ? Math.min(7, Math.max(1, n)) : 1,
-              );
+              update('frequency_per_week', Number.isFinite(n) ? Math.min(7, Math.max(1, n)) : 1);
             }}
           />
         </Field>
@@ -97,16 +81,12 @@ export function WeeklyPatternEditor({
             onChange={(v) =>
               update(
                 'visit_frequency',
-                v === ''
-                  ? null
-                  : (v as (typeof VISIT_FREQUENCY_OPTIONS)[number]),
+                v === '' ? null : (v as (typeof VISIT_FREQUENCY_OPTIONS)[number]),
               )
             }
             options={[
               ['', '--'],
-              ...VISIT_FREQUENCY_OPTIONS.map(
-                (k) => [k, VISIT_FREQUENCY_LABELS[k]] as const,
-              ),
+              ...VISIT_FREQUENCY_OPTIONS.map((k) => [k, VISIT_FREQUENCY_LABELS[k]] as const),
             ]}
           />
         </Field>
@@ -121,20 +101,6 @@ export function WeeklyPatternEditor({
               const v = e.target.value.trim();
               update('visit_weeks', v === '' ? null : v);
             }}
-          />
-        </Field>
-
-        <Field label="曜日優先度">
-          <Select
-            disabled={disabled}
-            value={value.weekday_priority}
-            onChange={(v) =>
-              update(
-                'weekday_priority',
-                v as (typeof WEEKDAY_PRIORITY_OPTIONS)[number],
-              )
-            }
-            options={WEEKDAY_PRIORITY_OPTIONS.map((p) => [p, p] as const)}
           />
         </Field>
       </div>
@@ -174,10 +140,7 @@ export function WeeklyPatternEditor({
               value={value.service_minutes}
               onChange={(e) => {
                 const n = Number(e.target.value);
-                update(
-                  'service_minutes',
-                  Number.isFinite(n) ? Math.min(180, Math.max(1, n)) : 30,
-                );
+                update('service_minutes', Number.isFinite(n) ? Math.min(180, Math.max(1, n)) : 30);
               }}
               className="flex-1"
             />
@@ -190,9 +153,7 @@ export function WeeklyPatternEditor({
               }}
               options={[
                 ['', '--'],
-                ...SERVICE_MINUTES_PRESETS.map(
-                  (m) => [String(m), `${m}分`] as const,
-                ),
+                ...SERVICE_MINUTES_PRESETS.map((m) => [String(m), `${m}分`] as const),
               ]}
               className="w-24"
             />
@@ -203,9 +164,7 @@ export function WeeklyPatternEditor({
           <Select
             disabled={disabled}
             value={value.time_type}
-            onChange={(v) =>
-              update('time_type', v as (typeof TIME_TYPE_OPTIONS)[number])
-            }
+            onChange={(v) => update('time_type', v as (typeof TIME_TYPE_OPTIONS)[number])}
             options={TIME_TYPE_OPTIONS.map((t) => [t, t] as const)}
           />
         </Field>
@@ -237,30 +196,6 @@ export function WeeklyPatternEditor({
           </>
         ) : null}
       </div>
-
-      <Field label="NG曜日">
-        <div className="flex flex-wrap gap-3 pt-1">
-          {WEEKDAY_KEYS.map((day) => {
-            const id = `ng-${day}`;
-            const checked = (value.ng_weekdays ?? []).includes(day);
-            return (
-              <label
-                key={day}
-                htmlFor={id}
-                className="inline-flex items-center gap-1.5 text-sm text-text-primary"
-              >
-                <Checkbox
-                  id={id}
-                  disabled={disabled}
-                  checked={checked}
-                  onCheckedChange={() => toggleNg(day)}
-                />
-                {WEEKDAY_LABELS_JA[day]}
-              </label>
-            );
-          })}
-        </div>
-      </Field>
     </div>
   );
 }
@@ -276,11 +211,7 @@ function Field({ label, hint, children }: FieldProps) {
     <label className="flex flex-col gap-1 text-sm">
       <span className="font-medium text-text-secondary">
         {label}
-        {hint ? (
-          <span className="ml-2 text-xs font-normal text-text-muted">
-            {hint}
-          </span>
-        ) : null}
+        {hint ? <span className="ml-2 text-xs font-normal text-text-muted">{hint}</span> : null}
       </span>
       {children}
     </label>
