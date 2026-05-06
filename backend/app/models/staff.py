@@ -78,7 +78,9 @@ class Staff(Base, TimestampMixin):
         "StaffCompanionAssignment",
         foreign_keys="StaffCompanionAssignment.companion_staff_id",
         back_populates="companion",
-        cascade="all, delete-orphan",
+        # FK ondelete=CASCADE 側に削除を任せる。companion 側で
+        # delete-orphan を付けると削除が二重発火する恐れがあるため save-update のみ。
+        cascade="save-update, merge",
     )
 
     __table_args__ = (Index("ix_staff_status_office", "status", "primary_office_id"),)

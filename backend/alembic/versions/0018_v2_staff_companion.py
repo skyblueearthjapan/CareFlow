@@ -132,6 +132,11 @@ def upgrade() -> None:
                 server_default=sa.func.current_timestamp(),
                 nullable=False,
             ),
+            sa.CheckConstraint("weekday BETWEEN 0 AND 6", name="ck_sca_weekday"),
+            sa.CheckConstraint("part IN ('am','pm','full')", name="ck_sca_part"),
+            sa.CheckConstraint(
+                "trainee_staff_id != companion_staff_id", name="ck_sca_self_companion"
+            ),
         )
 
     op.create_unique_constraint(
