@@ -1,10 +1,14 @@
 'use client';
 
 /**
- * Staff master — edit form (Phase 3-7).
+ * Staff master — edit form (Phase 3-7 / W1-BE2 v2).
  *
  * Mirrors `../../new/page.tsx` but seeds the form from useStaff() and calls
  * useUpdateStaff with PATCH semantics.
+ *
+ * v2 (W1-BE2): backend は §4.2 の 9 項目のみ受け付ける (``extra="forbid"``)。
+ * 削除済み v1 フィールドは payload に含めない。``fromStaff`` で v1 値が
+ * 漏れていても normalize で v2 値に揃える。
  */
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
@@ -21,6 +25,8 @@ import {
   STAFF_ROLE_VALUES,
   STAFF_SEX_VALUES,
   STAFF_STATUS_VALUES,
+  normalizeStaffSex,
+  normalizeStaffStatus,
   roleLabel,
   sexLabel,
   staffUpdateSchema,
@@ -32,39 +38,20 @@ import {
 import { StaffFormFields, type StaffFormState } from '../../_components/StaffFormFields';
 
 function fromStaff(staff: StaffRead): StaffFormState {
+  // normalize: DB に v1 値 (F/M/X / inactive) が漏れ残っていても v2 系へ寄せる
+  const sex = normalizeStaffSex(staff.sex as string | null | undefined);
+  const status = normalizeStaffStatus(staff.status as string | null | undefined);
   return {
     code: staff.code ?? '',
     name: staff.name,
     kana: staff.kana ?? '',
-    sex: staff.sex ?? '',
-    status: staff.status,
+    sex: sex ?? '',
+    status,
     role: staff.role,
     primary_office_id: staff.primary_office_id ?? '',
-    can_double_team: staff.can_double_team,
     mentor_id: staff.mentor_id ?? '',
-    home_address: staff.home_address ?? '',
-    home_lat:
-      staff.home_lat !== undefined && staff.home_lat !== null
-        ? String(staff.home_lat)
-        : '',
-    home_lng:
-      staff.home_lng !== undefined && staff.home_lng !== null
-        ? String(staff.home_lng)
-        : '',
-    areas: (staff.areas ?? []).join(', '),
-    max_per_day: String(staff.max_per_day ?? 6),
-    skill_level: staff.skill_level ?? '',
-    assignment_volume: staff.assignment_volume ?? '',
     note: staff.note ?? '',
   };
-}
-
-/** Split a comma-separated string into trimmed, non-empty area codes. */
-function parseAreas(value: string): string[] {
-  return value
-    .split(',')
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
 }
 
 function toPayload(form: StaffFormState): StaffUpdate {
@@ -76,15 +63,7 @@ function toPayload(form: StaffFormState): StaffUpdate {
     status: form.status,
     role: form.role,
     primary_office_id: form.primary_office_id.trim() || null,
-    can_double_team: form.can_double_team,
     mentor_id: form.mentor_id.trim() || null,
-    home_address: form.home_address.trim() || null,
-    home_lat: form.home_lat.trim() === '' ? undefined : Number(form.home_lat),
-    home_lng: form.home_lng.trim() === '' ? undefined : Number(form.home_lng),
-    areas: parseAreas(form.areas),
-    max_per_day: form.max_per_day.trim() === '' ? undefined : Number(form.max_per_day),
-    skill_level: form.skill_level === '' ? null : form.skill_level,
-    assignment_volume: form.assignment_volume === '' ? null : form.assignment_volume,
     note: form.note.trim() || null,
   };
 }

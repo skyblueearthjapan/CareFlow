@@ -54,8 +54,8 @@ export function MentorAssignDialog({
       staffList
         // Self cannot mentor self.
         .filter((s) => s.id !== staffId)
-        // Inactive staff are filtered to keep the picker honest.
-        .filter((s) => s.status !== 'inactive')
+        // 在籍 (active) 以外 (休職 / 退職) は選択肢から除外
+        .filter((s) => s.status === 'active')
         .map((s) => ({ value: s.id, label: s.name })),
     [staffList, staffId],
   );
@@ -70,9 +70,7 @@ export function MentorAssignDialog({
       toast.success('メンターを更新しました');
       onOpenChange(false);
     } catch (err) {
-      toast.error(
-        `更新に失敗しました: ${err instanceof Error ? err.message : '不明なエラー'}`,
-      );
+      toast.error(`更新に失敗しました: ${err instanceof Error ? err.message : '不明なエラー'}`);
     }
   };
 
@@ -82,9 +80,7 @@ export function MentorAssignDialog({
       toast.success('メンターを解除しました');
       onOpenChange(false);
     } catch (err) {
-      toast.error(
-        `解除に失敗しました: ${err instanceof Error ? err.message : '不明なエラー'}`,
-      );
+      toast.error(`解除に失敗しました: ${err instanceof Error ? err.message : '不明なエラー'}`);
     }
   };
 
@@ -99,23 +95,15 @@ export function MentorAssignDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>メンターを変更</DialogTitle>
-          <DialogDescription>
-            割り当てるメンタースタッフを選択してください。
-          </DialogDescription>
+          <DialogDescription>割り当てるメンタースタッフを選択してください。</DialogDescription>
         </DialogHeader>
 
-        <div
-          className="grid gap-3 py-2"
-          role="group"
-          aria-label="メンタースタッフを選択"
-        >
+        <div className="grid gap-3 py-2" role="group" aria-label="メンタースタッフを選択">
           <Combobox
             options={options}
             value={selected}
             onChange={(v) => setSelected(v)}
-            placeholder={
-              isLoading ? '読み込み中…' : 'スタッフを検索して選択'
-            }
+            placeholder={isLoading ? '読み込み中…' : 'スタッフを検索して選択'}
             searchPlaceholder="氏名で検索…"
             emptyText="該当スタッフなし"
             disabled={isBusy || isLoading}

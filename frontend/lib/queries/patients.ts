@@ -27,6 +27,7 @@ import { useSession } from 'next-auth/react';
 
 import { fetcher } from '@/lib/api/fetcher';
 import {
+  normalizePatientInsurance,
   patientCreateSchema,
   patientUpdateSchema,
   type PatientCreate,
@@ -90,8 +91,11 @@ function dropUndefined(payload: Record<string, unknown>): Record<string, unknown
  *
  * - `weekly_pattern` is a structured `WeeklyPattern` dict (W3-C) bound by
  *   `WeeklyPatternEditor`. We pass it through as a plain object.
- * - `special_week` is a checkbox boolean → backend column is JSONB. We map
- *   `true` → `{ enabled: true }`.
+ * - `special_week` (form checkbox boolean) → v2 backend では
+ *   `special_weekly_pattern` (JSONB) として送る。`true` のときは
+ *   `weekly_pattern` のコピーを設定し、`false` で初期も `false` なら
+ *   送信しない (undefined)、`true→false` の差分時のみ明示的に `null` で
+ *   クリアする。
  *
  * Clear-vs-unchanged semantics (PATCH only):
  * If `initial` is provided and a previously set field is now empty, we emit
@@ -103,22 +107,27 @@ function prepareFormPayload(
   values: PatientFormValues,
   initial?: PatientFormValues,
 ): Record<string, unknown> {
+  // `special_week` (boolean) は `special_weekly_pattern` (JSONB) に変換するので
+  // wire 上には含めない。rest だけを通す。
+  const { special_week, ...rest } = values;
+  void special_week;
+
   // Treat the structured weekly_pattern as a JSONB dict. We always emit it
   // (it has sane defaults from `emptyWeeklyPattern`); on Create the schema
   // accepts the dict, on Update it overwrites.
   const weekly_pattern: Record<string, unknown> | null | undefined =
     values.weekly_pattern as unknown as Record<string, unknown>;
-  void initial; // structured editor always produces a complete dict.
 
-  let special_week: { enabled: true } | null | undefined;
+  let special_weekly_pattern: Record<string, unknown> | null | undefined;
   if (values.special_week) {
-    special_week = { enabled: true };
+    // チェック済み → 通常パターンと同じ shape を special にも適用
+    special_weekly_pattern = values.weekly_pattern as unknown as Record<string, unknown>;
   } else if (initial && initial.special_week) {
     // Was true, now unchecked → explicit null to clear the JSONB column.
-    special_week = null;
+    special_weekly_pattern = null;
   }
 
-  return { ...values, weekly_pattern, special_week };
+  return { ...rest, weekly_pattern, special_weekly_pattern };
 }
 
 /** GET /api/v1/patients — list (with client-side search/pagination wrapper). */
@@ -146,7 +155,11 @@ export function usePatients(
       );
       const truncated = all.length === PATIENT_LIST_HARD_CAP;
       const filtered = all.filter((p) => {
-        if (insurance && p.insurance !== insurance) return false;
+        if (insurance) {
+          // 旧 v1 値 (``医療保険`` / ``介護保険``) も v2 値に正規化して比較
+          const norm = normalizePatientInsurance(p.insurance as string | null | undefined);
+          if (norm !== insurance) return false;
+        }
         if (!search) return true;
         const hay = `${p.name ?? ''} ${p.kana ?? ''} ${p.code ?? ''}`.toLowerCase();
         return hay.includes(search);
@@ -165,26 +178,19 @@ export function usePatients(
 }
 
 /** GET /api/v1/patients/{id} — single record. */
-export function usePatient(
-  id: string | null | undefined,
-): UseQueryResult<PatientRead, Error> {
+export function usePatient(id: string | null | undefined): UseQueryResult<PatientRead, Error> {
   const { data: session, status } = useSession();
   const { accessToken, refreshToken } = authPair(session);
 
   return useQuery<PatientRead, Error>({
     queryKey: [...PATIENTS_KEY, id],
     enabled: status === 'authenticated' && !!id,
-    queryFn: () =>
-      fetcher<PatientRead>(`/api/v1/patients/${id}`, { accessToken, refreshToken }),
+    queryFn: () => fetcher<PatientRead>(`/api/v1/patients/${id}`, { accessToken, refreshToken }),
   });
 }
 
 /** POST /api/v1/patients — create. */
-export function useCreatePatient(): UseMutationResult<
-  PatientRead,
-  Error,
-  PatientFormValues
-> {
+export function useCreatePatient(): UseMutationResult<PatientRead, Error, PatientFormValues> {
   const qc = useQueryClient();
   const { data: session } = useSession();
   const { accessToken, refreshToken } = authPair(session);

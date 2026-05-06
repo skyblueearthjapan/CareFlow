@@ -1,49 +1,87 @@
 /**
- * Patient zod schemas — mirrors backend `app/schemas/patient.py`
- * (Read / Create / Update).
+ * Patient zod schemas — mirrors backend `app/schemas/v2/patient.py`
+ * (PatientV2Base / PatientV2Create / PatientV2Update / PatientV2Read).
+ *
+ * v2 (W1-BE1 / §4.1): backend は §4.1 の 16 項目のみ受け付ける。
+ * 削除済み (v2 schema に含めない):
+ *   age / ng_time_start / ng_time_end / required_staff_count / area /
+ *   ng_staff_ids / preferred_staff_ids / specified_type / continuous_request /
+ *   weekday_priority。
+ *
+ * 値域:
+ *   sex             ∈ male | female | unknown
+ *   status          ∈ active | suspended | admitted | pending | cancelled
+ *   insurance       ∈ medical | care
+ *   sex_restriction ∈ female_only | male_only | null
+ *
+ * 追加 (§3.4):
+ *   - special_weekly_pattern (JSONB)
+ *   - special_week_active (適用週リスト [{iso_year, iso_week}, ...])
  *
  * Notes
  * ─────
- * - `sex` / `insurance` / `sex_restriction` are stored as plain strings on
- *   the backend (`str | None`). We tighten them with zod enums on the FE so
- *   form selects can be driven from `*_OPTIONS` constants.
- * - `weekly_pattern` / `special_week` map to JSONB columns on the backend
- *   (`dict | None`). The form captures `weekly_pattern` as a structured dict
- *   via `WeeklyPatternEditor` (W3-C); `special_week` is also a structured dict.
- * - W3-A additions (`area`, `ng_staff_ids`, `preferred_staff_ids`,
- *   `specified_type`, `continuous_request`) are present on the SQLAlchemy
- *   model but the pydantic schemas may not yet surface them — keep all five
- *   nullable/optional on the FE until the backend pass exposes them.
+ * - backend は ``extra="ignore"`` なので未知フィールドは黙殺されるが、
+ *   送信側 (frontend) でも一致させて送信ペイロードを軽くする。
+ * - 旧 v1 値 (例: ``男性`` / ``女性`` / ``医療保険``) が DB に残っている前提で
+ *   ``patientReadToFormValues`` で v2 値に正規化する。
+ * - `weekly_pattern` / `special_weekly_pattern` は JSONB (dict)。フォームは
+ *   `WeeklyPatternEditor` (W3-C) で構造化。
  */
 import { z } from 'zod';
 
-export const SEX_OPTIONS = ['男性', '女性'] as const;
-export const INSURANCE_OPTIONS = ['医療保険', '介護保険'] as const;
-export const SEX_RESTRICTION_OPTIONS = ['女性のみ', '男性のみ', 'なし'] as const;
-export const STATUS_OPTIONS = ['active', 'inactive'] as const;
-export const SPECIFIED_TYPE_OPTIONS = ['必須', '同じ人希望', '最初は希望'] as const;
+// ---------------------------------------------------------------------------
+// Enum 定義 (backend `app/schemas/v2/patient.py` と完全一致)
+// ---------------------------------------------------------------------------
+
+export const SEX_OPTIONS = ['male', 'female', 'unknown'] as const;
+export const INSURANCE_OPTIONS = ['medical', 'care'] as const;
+export const SEX_RESTRICTION_OPTIONS = ['female_only', 'male_only'] as const;
+export const STATUS_OPTIONS = ['active', 'suspended', 'admitted', 'pending', 'cancelled'] as const;
 
 export const sexEnum = z.enum(SEX_OPTIONS);
 export const insuranceEnum = z.enum(INSURANCE_OPTIONS);
 export const sexRestrictionEnum = z.enum(SEX_RESTRICTION_OPTIONS);
 export const statusEnum = z.enum(STATUS_OPTIONS);
-export const specifiedTypeEnum = z.enum(SPECIFIED_TYPE_OPTIONS);
+
+// ---------------------------------------------------------------------------
+// 表示用ラベル
+// ---------------------------------------------------------------------------
+
+export const SEX_LABEL: Record<(typeof SEX_OPTIONS)[number], string> = {
+  male: '男性',
+  female: '女性',
+  unknown: '不明',
+};
+
+export const INSURANCE_LABEL: Record<(typeof INSURANCE_OPTIONS)[number], string> = {
+  medical: '医療保険',
+  care: '介護保険',
+};
+
+export const SEX_RESTRICTION_LABEL: Record<(typeof SEX_RESTRICTION_OPTIONS)[number], string> = {
+  female_only: '女性のみ',
+  male_only: '男性のみ',
+};
+
+export const STATUS_LABEL: Record<(typeof STATUS_OPTIONS)[number], string> = {
+  active: '稼働中',
+  suspended: '一時休止',
+  admitted: '入院中',
+  pending: '開始前',
+  cancelled: '解約済み',
+};
 
 /** HH:MM (24h) — backend stores `time` (Python). */
 const timeStringSchema = z
   .string()
   .regex(/^([01]\d|2[0-3]):[0-5]\d$/, '時刻は HH:MM 形式で入力してください');
+void timeStringSchema; // 互換のため一時的に保持 (未使用警告回避)
 
 const optionalNullableString = z
   .string()
   .trim()
   .optional()
   .transform((v) => (v === '' ? undefined : v));
-
-const optionalTime = z
-  .union([timeStringSchema, z.literal('')])
-  .optional()
-  .transform((v) => (v === '' || v === undefined ? undefined : v));
 
 const optionalEnum = <T extends readonly [string, ...string[]]>(values: T) =>
   z
@@ -69,10 +107,7 @@ export const WEEKDAY_LABELS_JA: Record<WeekdayKey, string> = {
 };
 
 export const VISIT_FREQUENCY_OPTIONS = ['every', 'biweekly', 'monthly'] as const;
-export const VISIT_FREQUENCY_LABELS: Record<
-  (typeof VISIT_FREQUENCY_OPTIONS)[number],
-  string
-> = {
+export const VISIT_FREQUENCY_LABELS: Record<(typeof VISIT_FREQUENCY_OPTIONS)[number], string> = {
   every: '毎週',
   biweekly: '隔週',
   monthly: '月次',
@@ -107,16 +142,69 @@ export const emptyWeeklyPattern: WeeklyPattern = {
   ng_weekdays: null,
 };
 
+// ---------------------------------------------------------------------------
+// v1 → v2 後方互換 (DB hot-fix 漏れ救済)
+// ---------------------------------------------------------------------------
+
+export function normalizePatientSex(
+  v: string | null | undefined,
+): (typeof SEX_OPTIONS)[number] | null {
+  if (v === null || v === undefined || v === '') return null;
+  if (v === 'male' || v === 'female' || v === 'unknown') return v;
+  if (['M', 'm', '男', '男性', 'Male'].includes(v)) return 'male';
+  if (['F', 'f', '女', '女性', 'Female'].includes(v)) return 'female';
+  if (['X', 'x', 'その他', 'Other', 'other', '不明'].includes(v)) return 'unknown';
+  return null;
+}
+
+export function normalizePatientInsurance(
+  v: string | null | undefined,
+): (typeof INSURANCE_OPTIONS)[number] | null {
+  if (v === null || v === undefined || v === '') return null;
+  if (v === 'medical' || v === 'care') return v;
+  if (v === '医療保険') return 'medical';
+  if (v === '介護保険') return 'care';
+  return null;
+}
+
+export function normalizePatientStatus(
+  v: string | null | undefined,
+): (typeof STATUS_OPTIONS)[number] {
+  if (
+    v === 'active' ||
+    v === 'suspended' ||
+    v === 'admitted' ||
+    v === 'pending' ||
+    v === 'cancelled'
+  ) {
+    return v;
+  }
+  // v1 の ``inactive`` は v2 に対応する厳密な値がないので ``suspended`` に寄せる
+  if (v === 'inactive') return 'suspended';
+  return 'active';
+}
+
+export function normalizePatientSexRestriction(
+  v: string | null | undefined,
+): (typeof SEX_RESTRICTION_OPTIONS)[number] | null {
+  if (v === null || v === undefined || v === '') return null;
+  if (v === 'female_only' || v === 'male_only') return v;
+  if (v === '女性のみ') return 'female_only';
+  if (v === '男性のみ') return 'male_only';
+  // v1 の ``なし`` は v2 では null
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// CRUD payloads (1:1 with backend pydantic models)
+// ---------------------------------------------------------------------------
+
 /** Shared base — fields common to Create/Read/Update. */
 export const patientBaseSchema = z.object({
   code: z.string().min(1, 'コードは必須です').max(64),
   name: z.string().min(1, '氏名は必須です').max(120),
   kana: optionalNullableString,
   sex: optionalEnum(SEX_OPTIONS),
-  age: z
-    .union([z.coerce.number().int().min(0).max(150), z.literal('')])
-    .optional()
-    .transform((v) => (v === '' || v === undefined ? undefined : (v as number))),
   status: statusEnum.default('active'),
   insurance: optionalEnum(INSURANCE_OPTIONS),
   address: optionalNullableString,
@@ -132,45 +220,33 @@ export const patientBaseSchema = z.object({
     .union([z.string().uuid(), z.literal('')])
     .optional()
     .transform((v) => (v === '' || v === undefined ? undefined : v)),
-  required_staff_count: z.coerce.number().int().min(1).max(10).default(1),
   sex_restriction: optionalEnum(SEX_RESTRICTION_OPTIONS),
-  ng_time_start: optionalTime,
-  ng_time_end: optionalTime,
   note: optionalNullableString,
   weekly_pattern: z.record(z.unknown()).nullish(),
-  special_week: z.record(z.unknown()).nullish(),
-  // TODO: W3-A backend pydantic 拡張完了後に nullable() を必須化検討
-  area: z.string().nullable().optional(),
-  ng_staff_ids: z.array(z.string().uuid()).nullable().optional().default([]),
-  preferred_staff_ids: z.array(z.string().uuid()).nullable().optional().default([]),
-  specified_type: z
-    .union([specifiedTypeEnum, z.literal('')])
-    .nullable()
+  special_weekly_pattern: z.record(z.unknown()).nullish(),
+  special_week_active: z
+    .array(
+      z.object({
+        iso_year: z.number().int(),
+        iso_week: z.number().int(),
+      }),
+    )
     .optional()
-    .transform((v) =>
-      v === '' || v === undefined || v === null
-        ? undefined
-        : (v as (typeof SPECIFIED_TYPE_OPTIONS)[number]),
-    ),
-  continuous_request: z.boolean().default(false),
+    .default([]),
 });
 
 export const patientCreateSchema = patientBaseSchema;
 
 /**
  * Update: all fields optional. Hand-written (not `.partial()`) so that the
- * `status` / `required_staff_count` defaults on the base schema do NOT leak
- * into PATCH payloads (which would silently overwrite server values).
+ * `status` defaults on the base schema do NOT leak into PATCH payloads
+ * (which would silently overwrite server values).
  */
 export const patientUpdateSchema = z.object({
   code: z.string().min(1).max(64).optional(),
   name: z.string().min(1).max(120).optional(),
   kana: optionalNullableString,
   sex: optionalEnum(SEX_OPTIONS),
-  age: z
-    .union([z.coerce.number().int().min(0).max(150), z.literal('')])
-    .optional()
-    .transform((v) => (v === '' || v === undefined ? undefined : (v as number))),
   status: z
     .union([statusEnum, z.literal('')])
     .optional()
@@ -191,30 +267,18 @@ export const patientUpdateSchema = z.object({
     .union([z.string().uuid(), z.literal('')])
     .optional()
     .transform((v) => (v === '' || v === undefined ? undefined : v)),
-  required_staff_count: z
-    .union([z.coerce.number().int().min(1).max(10), z.literal('')])
-    .optional()
-    .transform((v) => (v === '' || v === undefined ? undefined : (v as number))),
   sex_restriction: optionalEnum(SEX_RESTRICTION_OPTIONS),
-  ng_time_start: optionalTime,
-  ng_time_end: optionalTime,
   note: optionalNullableString,
   weekly_pattern: z.record(z.unknown()).nullish(),
-  special_week: z.record(z.unknown()).nullish(),
-  // TODO: W3-A backend pydantic 拡張完了後に挙動再確認
-  area: z.string().nullable().optional(),
-  ng_staff_ids: z.array(z.string().uuid()).nullable().optional(),
-  preferred_staff_ids: z.array(z.string().uuid()).nullable().optional(),
-  specified_type: z
-    .union([specifiedTypeEnum, z.literal('')])
-    .nullable()
-    .optional()
-    .transform((v) =>
-      v === '' || v === undefined || v === null
-        ? undefined
-        : (v as (typeof SPECIFIED_TYPE_OPTIONS)[number]),
-    ),
-  continuous_request: z.boolean().optional(),
+  special_weekly_pattern: z.record(z.unknown()).nullish(),
+  special_week_active: z
+    .array(
+      z.object({
+        iso_year: z.number().int(),
+        iso_week: z.number().int(),
+      }),
+    )
+    .optional(),
 });
 
 /** Read: server response. Includes server-generated fields. */
@@ -237,7 +301,11 @@ export const patientReadSchema = patientBaseSchema.extend({
  * runs.
  */
 export const patientFormSchema = patientBaseSchema
-  .omit({ weekly_pattern: true, special_week: true })
+  .omit({
+    weekly_pattern: true,
+    special_weekly_pattern: true,
+    special_week_active: true,
+  })
   .extend({
     weekly_pattern: z.record(z.unknown()).optional(),
     special_week: z.boolean().optional().default(false),
@@ -257,26 +325,16 @@ export type PatientFormValues = {
   name: string;
   kana: string;
   sex: '' | (typeof SEX_OPTIONS)[number];
-  age: string;
   status: (typeof STATUS_OPTIONS)[number];
   insurance: '' | (typeof INSURANCE_OPTIONS)[number];
   address: string;
   lat: string;
   lng: string;
   primary_office_id: string;
-  required_staff_count: string;
   sex_restriction: '' | (typeof SEX_RESTRICTION_OPTIONS)[number];
-  ng_time_start: string;
-  ng_time_end: string;
   note: string;
   weekly_pattern: WeeklyPattern;
   special_week: boolean;
-  // W3-A additions
-  area: string;
-  ng_staff_ids: string[];
-  preferred_staff_ids: string[];
-  specified_type: '' | (typeof SPECIFIED_TYPE_OPTIONS)[number];
-  continuous_request: boolean;
 };
 
 export const emptyPatientFormValues: PatientFormValues = {
@@ -284,25 +342,16 @@ export const emptyPatientFormValues: PatientFormValues = {
   name: '',
   kana: '',
   sex: '',
-  age: '',
   status: 'active',
   insurance: '',
   address: '',
   lat: '',
   lng: '',
   primary_office_id: '',
-  required_staff_count: '1',
   sex_restriction: '',
-  ng_time_start: '',
-  ng_time_end: '',
   note: '',
   weekly_pattern: emptyWeeklyPattern,
   special_week: false,
-  area: '',
-  ng_staff_ids: [],
-  preferred_staff_ids: [],
-  specified_type: '',
-  continuous_request: false,
 };
 
 /**
@@ -335,17 +384,13 @@ export function coerceWeeklyPattern(raw: unknown): WeeklyPattern {
     ? (r.weekday_priority as (typeof WEEKDAY_PRIORITY_OPTIONS)[number])
     : '中';
 
-  const timeType = TIME_TYPE_OPTIONS.includes(
-    r.time_type as (typeof TIME_TYPE_OPTIONS)[number],
-  )
+  const timeType = TIME_TYPE_OPTIONS.includes(r.time_type as (typeof TIME_TYPE_OPTIONS)[number])
     ? (r.time_type as (typeof TIME_TYPE_OPTIONS)[number])
     : '終日';
 
   const ngWeekdaysRaw = r.ng_weekdays;
   const ngWeekdays =
-    ngWeekdaysRaw === null || ngWeekdaysRaw === undefined
-      ? null
-      : filterWeekdays(ngWeekdaysRaw);
+    ngWeekdaysRaw === null || ngWeekdaysRaw === undefined ? null : filterWeekdays(ngWeekdaysRaw);
 
   return {
     frequency_per_week: Number.isFinite(freq) ? Math.min(7, Math.max(1, freq)) : 1,
@@ -353,45 +398,44 @@ export function coerceWeeklyPattern(raw: unknown): WeeklyPattern {
     visit_weeks: typeof r.visit_weeks === 'string' ? r.visit_weeks : null,
     preferred_weekdays: filterWeekdays(r.preferred_weekdays),
     weekday_priority: priority,
-    service_minutes: Number.isFinite(minutes)
-      ? Math.min(180, Math.max(1, minutes))
-      : 30,
+    service_minutes: Number.isFinite(minutes) ? Math.min(180, Math.max(1, minutes)) : 30,
     time_type: timeType,
     preferred_start:
       typeof r.preferred_start === 'string' && r.preferred_start ? r.preferred_start : null,
-    preferred_end:
-      typeof r.preferred_end === 'string' && r.preferred_end ? r.preferred_end : null,
+    preferred_end: typeof r.preferred_end === 'string' && r.preferred_end ? r.preferred_end : null,
     ng_weekdays: ngWeekdays,
   };
 }
 
-/** Map a server `PatientRead` into form-friendly string values. */
+/**
+ * Map a server `PatientRead` into form-friendly string values.
+ *
+ * 旧 v1 値 (例: ``男性`` / ``医療保険`` / ``inactive``) が DB に残っていても
+ * v2 値に正規化してフォームに渡す。 ``patientReadSchema`` は ``passthrough``
+ * 寄り (asymmetric) で、未知キーは握りつぶす想定。
+ */
 export function patientReadToFormValues(p: PatientRead): PatientFormValues {
   return {
     code: p.code,
     name: p.name,
     kana: p.kana ?? '',
-    sex: (p.sex as PatientFormValues['sex']) ?? '',
-    age: p.age !== undefined && p.age !== null ? String(p.age) : '',
-    status: p.status ?? 'active',
-    insurance: (p.insurance as PatientFormValues['insurance']) ?? '',
+    sex:
+      (normalizePatientSex(p.sex as string | null | undefined) as PatientFormValues['sex']) ?? '',
+    status: normalizePatientStatus(p.status as string | null | undefined),
+    insurance:
+      (normalizePatientInsurance(
+        p.insurance as string | null | undefined,
+      ) as PatientFormValues['insurance']) ?? '',
     address: p.address ?? '',
     lat: p.lat !== undefined && p.lat !== null ? String(p.lat) : '',
     lng: p.lng !== undefined && p.lng !== null ? String(p.lng) : '',
     primary_office_id: p.primary_office_id ?? '',
-    required_staff_count: String(p.required_staff_count ?? 1),
     sex_restriction:
-      (p.sex_restriction as PatientFormValues['sex_restriction']) ?? '',
-    ng_time_start: p.ng_time_start ?? '',
-    ng_time_end: p.ng_time_end ?? '',
+      (normalizePatientSexRestriction(
+        p.sex_restriction as string | null | undefined,
+      ) as PatientFormValues['sex_restriction']) ?? '',
     note: p.note ?? '',
     weekly_pattern: coerceWeeklyPattern(p.weekly_pattern),
-    special_week: !!p.special_week,
-    area: p.area ?? '',
-    ng_staff_ids: p.ng_staff_ids ?? [],
-    preferred_staff_ids: p.preferred_staff_ids ?? [],
-    specified_type:
-      (p.specified_type as PatientFormValues['specified_type']) ?? '',
-    continuous_request: p.continuous_request ?? false,
+    special_week: !!p.special_weekly_pattern,
   };
 }

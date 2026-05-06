@@ -25,11 +25,18 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/sonner';
 import { useDeletePatient, usePatient } from '@/lib/queries/patients';
-import { useStaffList } from '@/lib/queries/staff';
 import {
+  INSURANCE_LABEL,
+  SEX_LABEL,
+  SEX_RESTRICTION_LABEL,
+  STATUS_LABEL,
   VISIT_FREQUENCY_LABELS,
   WEEKDAY_LABELS_JA,
   coerceWeeklyPattern,
+  normalizePatientInsurance,
+  normalizePatientSex,
+  normalizePatientSexRestriction,
+  normalizePatientStatus,
   type PatientRead,
   type WeekdayKey,
 } from '@/lib/schemas/patient';
@@ -44,8 +51,6 @@ export default function PatientDetailPage() {
   const canDelete = role === 'admin';
 
   const { data, isLoading, isError, error } = usePatient(id);
-  // Staff master used to render NG / 同行希望スタッフ as `氏名 (コード)`.
-  const { data: staffList } = useStaffList({ limit: 500 });
   const deleteMutation = useDeletePatient();
   const [confirmOpen, setConfirmOpen] = useState(false);
 
@@ -75,9 +80,7 @@ export default function PatientDetailPage() {
       toast.success('患者を削除しました');
       router.push('/patients');
     } catch (e) {
-      toast.error(
-        `削除に失敗しました: ${e instanceof Error ? e.message : '不明なエラー'}`,
-      );
+      toast.error(`削除に失敗しました: ${e instanceof Error ? e.message : '不明なエラー'}`);
     }
   };
 
@@ -121,14 +124,17 @@ export default function PatientDetailPage() {
       <Card className="p-5 space-y-3">
         <h2 className="font-serif text-lg font-bold text-text-primary">基本情報</h2>
         <DetailGrid
-          rows={[
-            ['コード', data.code],
-            ['氏名', data.name],
-            ['カナ', data.kana ?? '--'],
-            ['性別', data.sex ?? '--'],
-            ['年齢', data.age != null ? String(data.age) : '--'],
-            ['状態', data.status === 'active' ? '有効' : '無効'],
-          ]}
+          rows={(() => {
+            const sexNorm = normalizePatientSex(data.sex as string | null | undefined);
+            const statusNorm = normalizePatientStatus(data.status as string | null | undefined);
+            return [
+              ['コード', data.code],
+              ['氏名', data.name],
+              ['カナ', data.kana ?? '--'],
+              ['性別', sexNorm ? SEX_LABEL[sexNorm] : '--'],
+              ['状態', STATUS_LABEL[statusNorm]],
+            ];
+          })()}
         />
       </Card>
 
@@ -146,28 +152,30 @@ export default function PatientDetailPage() {
       <Card className="p-5 space-y-3">
         <h2 className="font-serif text-lg font-bold text-text-primary">保険・拠点</h2>
         <DetailGrid
-          rows={[
-            ['保険区分', data.insurance ?? '--'],
-            ['主担当拠点 ID', data.primary_office_id ?? '--'],
-          ]}
+          rows={(() => {
+            const insuranceNorm = normalizePatientInsurance(
+              data.insurance as string | null | undefined,
+            );
+            return [
+              ['保険区分', insuranceNorm ? INSURANCE_LABEL[insuranceNorm] : '--'],
+              ['主担当拠点 ID', data.primary_office_id ?? '--'],
+            ];
+          })()}
         />
       </Card>
 
       <Card className="p-5 space-y-3">
         <h2 className="font-serif text-lg font-bold text-text-primary">訪問条件</h2>
         <DetailGrid
-          rows={[
-            ['必要スタッフ数', String(data.required_staff_count ?? 1)],
-            ['性別制限', data.sex_restriction ?? '--'],
-            ['NG時間 (開始)', data.ng_time_start ?? '--'],
-            ['NG時間 (終了)', data.ng_time_end ?? '--'],
-            ['エリア', data.area ?? '--'],
-            ['指定タイプ', data.specified_type ?? '--'],
-            ['継続要望', data.continuous_request ? '有効' : '--'],
-            ['NGスタッフ', formatStaffIds(data.ng_staff_ids, staffList)],
-            ['同行希望スタッフ', formatStaffIds(data.preferred_staff_ids, staffList)],
-            ['特別週', data.special_week ? '有効' : '--'],
-          ]}
+          rows={(() => {
+            const sexResNorm = normalizePatientSexRestriction(
+              data.sex_restriction as string | null | undefined,
+            );
+            return [
+              ['性別制限', sexResNorm ? SEX_RESTRICTION_LABEL[sexResNorm] : 'なし'],
+              ['特別週パターン', data.special_weekly_pattern ? '有効' : '--'],
+            ];
+          })()}
         />
       </Card>
 
@@ -178,9 +186,7 @@ export default function PatientDetailPage() {
 
       <Card className="p-5 space-y-3">
         <h2 className="font-serif text-lg font-bold text-text-primary">備考</h2>
-        <p className="whitespace-pre-wrap text-sm text-text-primary">
-          {data.note ?? '--'}
-        </p>
+        <p className="whitespace-pre-wrap text-sm text-text-primary">{data.note ?? '--'}</p>
       </Card>
 
       <Card className="p-5 space-y-1 text-xs text-text-muted">
@@ -202,23 +208,6 @@ export default function PatientDetailPage() {
   );
 }
 
-/** Resolve UUIDs against the staff master into `氏名 (コード)` labels. */
-function formatStaffIds(
-  ids: readonly string[] | null | undefined,
-  staffList: ReadonlyArray<{ id: string; name: string; code?: string | null }> | undefined,
-): string {
-  if (!ids || ids.length === 0) return '--';
-  if (!staffList) return ids.join(', ');
-  const idx = new Map(staffList.map((s) => [s.id, s]));
-  return ids
-    .map((id) => {
-      const s = idx.get(id);
-      if (!s) return id;
-      return s.code ? `${s.name} (${s.code})` : s.name;
-    })
-    .join(', ');
-}
-
 interface WeeklyPatternViewProps {
   raw: unknown;
 }
@@ -231,9 +220,7 @@ function WeeklyPatternView({ raw }: WeeklyPatternViewProps) {
   const ngWeekdays = wp.ng_weekdays ?? [];
   const labelDays = (days: WeekdayKey[]) =>
     days.length === 0 ? '--' : days.map((d) => WEEKDAY_LABELS_JA[d]).join('・');
-  const visitFreq = wp.visit_frequency
-    ? VISIT_FREQUENCY_LABELS[wp.visit_frequency]
-    : '--';
+  const visitFreq = wp.visit_frequency ? VISIT_FREQUENCY_LABELS[wp.visit_frequency] : '--';
   const timeRange =
     wp.preferred_start || wp.preferred_end
       ? `${wp.preferred_start ?? '--'} 〜 ${wp.preferred_end ?? '--'}`
@@ -301,18 +288,10 @@ function DeleteConfirmDialog({
           <span className="ml-2 text-text-muted tnum">({patient.code})</span>
         </p>
         <DialogFooter>
-          <Button
-            variant="outline"
-            onClick={() => onOpenChange(false)}
-            disabled={submitting}
-          >
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
             キャンセル
           </Button>
-          <Button
-            variant="destructive"
-            onClick={onConfirm}
-            disabled={submitting}
-          >
+          <Button variant="destructive" onClick={onConfirm} disabled={submitting}>
             {submitting ? '削除中…' : '削除'}
           </Button>
         </DialogFooter>

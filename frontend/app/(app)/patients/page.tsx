@@ -16,7 +16,15 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
-import { INSURANCE_OPTIONS } from '@/lib/schemas/patient';
+import {
+  INSURANCE_LABEL,
+  INSURANCE_OPTIONS,
+  SEX_LABEL,
+  STATUS_LABEL,
+  normalizePatientInsurance,
+  normalizePatientSex,
+  normalizePatientStatus,
+} from '@/lib/schemas/patient';
 import { usePatients } from '@/lib/queries/patients';
 
 const PAGE_SIZE = 20;
@@ -91,7 +99,7 @@ export default function PatientsPage() {
             <option value="">保険区分: すべて</option>
             {INSURANCE_OPTIONS.map((v) => (
               <option key={v} value={v}>
-                {v}
+                {INSURANCE_LABEL[v]}
               </option>
             ))}
           </select>
@@ -140,7 +148,6 @@ export default function PatientsPage() {
                   <th className="px-3 py-2 font-medium">氏名</th>
                   <th className="px-3 py-2 font-medium">カナ</th>
                   <th className="px-3 py-2 font-medium">性別</th>
-                  <th className="px-3 py-2 font-medium">年齢</th>
                   <th className="px-3 py-2 font-medium">保険</th>
                   <th className="px-3 py-2 font-medium">主担当拠点</th>
                   <th className="px-3 py-2 font-medium">状態</th>
@@ -148,53 +155,53 @@ export default function PatientsPage() {
                 </tr>
               </thead>
               <tbody>
-                {items.map((p) => (
-                  <tr
-                    key={p.id}
-                    className="border-b border-border-default last:border-0 hover:bg-bg-muted/30"
-                  >
-                    <td className="px-3 py-2 tnum">{p.code}</td>
-                    <td className="px-3 py-2 font-medium text-text-primary">{p.name}</td>
-                    <td className="px-3 py-2 text-text-secondary">{p.kana ?? '--'}</td>
-                    <td className="px-3 py-2 text-text-secondary">{p.sex ?? '--'}</td>
-                    <td className="px-3 py-2 text-text-secondary tnum">
-                      {p.age ?? '--'}
-                    </td>
-                    <td className="px-3 py-2 text-text-secondary">
-                      {p.insurance ?? '--'}
-                    </td>
-                    <td className="px-3 py-2 text-text-secondary tnum">
-                      {p.primary_office_id
-                        ? p.primary_office_id.slice(0, 8)
-                        : '--'}
-                    </td>
-                    <td className="px-3 py-2 text-text-secondary">
-                      {p.deleted_at
-                        ? '削除済'
-                        : p.status === 'active'
-                          ? '有効'
-                          : '無効'}
-                    </td>
-                    <td className="px-3 py-2">
-                      <div className="flex gap-2">
-                        <Link
-                          href={`/patients/${p.id}`}
-                          className="text-brand-primary hover:underline"
-                        >
-                          詳細
-                        </Link>
-                        {canCreate ? (
+                {items.map((p) => {
+                  const sexNorm = normalizePatientSex(p.sex as string | null | undefined);
+                  const insuranceNorm = normalizePatientInsurance(
+                    p.insurance as string | null | undefined,
+                  );
+                  const statusNorm = normalizePatientStatus(p.status as string | null | undefined);
+                  return (
+                    <tr
+                      key={p.id}
+                      className="border-b border-border-default last:border-0 hover:bg-bg-muted/30"
+                    >
+                      <td className="px-3 py-2 tnum">{p.code}</td>
+                      <td className="px-3 py-2 font-medium text-text-primary">{p.name}</td>
+                      <td className="px-3 py-2 text-text-secondary">{p.kana ?? '--'}</td>
+                      <td className="px-3 py-2 text-text-secondary">
+                        {sexNorm ? SEX_LABEL[sexNorm] : '--'}
+                      </td>
+                      <td className="px-3 py-2 text-text-secondary">
+                        {insuranceNorm ? INSURANCE_LABEL[insuranceNorm] : '--'}
+                      </td>
+                      <td className="px-3 py-2 text-text-secondary tnum">
+                        {p.primary_office_id ? p.primary_office_id.slice(0, 8) : '--'}
+                      </td>
+                      <td className="px-3 py-2 text-text-secondary">
+                        {p.deleted_at ? '削除済' : STATUS_LABEL[statusNorm]}
+                      </td>
+                      <td className="px-3 py-2">
+                        <div className="flex gap-2">
                           <Link
-                            href={`/patients/${p.id}/edit`}
+                            href={`/patients/${p.id}`}
                             className="text-brand-primary hover:underline"
                           >
-                            編集
+                            詳細
                           </Link>
-                        ) : null}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                          {canCreate ? (
+                            <Link
+                              href={`/patients/${p.id}/edit`}
+                              className="text-brand-primary hover:underline"
+                            >
+                              編集
+                            </Link>
+                          ) : null}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

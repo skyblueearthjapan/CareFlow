@@ -26,7 +26,6 @@ import {
   STAFF_SEX_VALUES,
   roleLabel,
   sexLabel,
-  skillLevelLabel,
   statusLabel,
   type StaffRead,
 } from '@/lib/schemas/staff';
@@ -200,9 +199,7 @@ export default function StaffPage() {
             </AlertDescription>
           </Alert>
         ) : paged.length === 0 ? (
-          <p className="text-sm text-text-muted">
-            該当するスタッフがいません
-          </p>
+          <p className="text-sm text-text-muted">該当するスタッフがいません</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -214,16 +211,12 @@ export default function StaffPage() {
                   <th className="px-3 py-2 font-medium">性別</th>
                   <th className="px-3 py-2 font-medium">役割</th>
                   <th className="px-3 py-2 font-medium">状態</th>
-                  <th className="px-3 py-2 font-medium">得意エリア</th>
-                  <th className="px-3 py-2 font-medium">スキル</th>
-                  <th className="px-3 py-2 font-medium">最大件数</th>
+                  <th className="px-3 py-2 font-medium">主拠点</th>
                   <th className="px-3 py-2 font-medium" />
                 </tr>
               </thead>
               <tbody>
-                {paged.map((row) => {
-                  const areas = row.areas ?? [];
-                  return (
+                {paged.map((row) => (
                   <tr
                     key={row.id}
                     className="border-b border-border-default last:border-0 hover:bg-bg-muted"
@@ -234,25 +227,8 @@ export default function StaffPage() {
                     <td className="px-3 py-2">{sexLabel(row.sex)}</td>
                     <td className="px-3 py-2">{roleLabel(row.role)}</td>
                     <td className="px-3 py-2">{statusLabel(row.status)}</td>
-                    <td className="px-3 py-2">
-                      {areas.length > 0 ? (
-                        <div className="flex flex-wrap gap-1">
-                          {areas.map((a) => (
-                            <span
-                              key={a}
-                              className="inline-flex items-center rounded-full border border-border-default bg-bg-muted px-2 py-0.5 text-xs text-text-primary"
-                            >
-                              {a}
-                            </span>
-                          ))}
-                        </div>
-                      ) : (
-                        <span className="text-text-muted">--</span>
-                      )}
-                    </td>
-                    <td className="px-3 py-2">{skillLevelLabel(row.skill_level)}</td>
-                    <td className="px-3 py-2 tnum text-text-secondary">
-                      {row.max_per_day ?? '--'}
+                    <td className="px-3 py-2 text-text-secondary">
+                      {officeLabel(row.primary_office_id)}
                     </td>
                     <td className="px-3 py-2 text-right">
                       <Link
@@ -263,8 +239,7 @@ export default function StaffPage() {
                       </Link>
                     </td>
                   </tr>
-                  );
-                })}
+                ))}
               </tbody>
             </table>
           </div>

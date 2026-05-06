@@ -2,6 +2,15 @@
  * Staff zod schemas — mirrors `backend/app/schemas/staff.py` (StaffBase /
  * StaffCreate / StaffUpdate / StaffRead).
  *
+ * v2 (W1-BE2 / §4.2): backend は ``extra="forbid"`` で 9 項目のみ受け付ける。
+ * 削除済み: ``can_double_team`` / ``home_address`` / ``home_lat`` / ``home_lng`` /
+ * ``areas`` / ``max_per_day`` / ``skill_level`` / ``assignment_volume``。
+ *
+ * 値域:
+ *   sex    ∈ male | female | unknown
+ *   role   ∈ admin | manager | staff
+ *   status ∈ active | on_leave | retired
+ *
  * Read-only Wave 1 scope also includes the surrounding domain types referenced
  * by the detail page: weekly shifts, weekly overrides, events, and mentor
  * assignments. Editable mutations for those are deferred to Wave 2 — until then
@@ -13,67 +22,33 @@ import { z } from 'zod';
 // Core staff CRUD payloads (1:1 with backend pydantic models)
 // ---------------------------------------------------------------------------
 
-export const STAFF_SEX_VALUES = ['F', 'M', 'X'] as const;
-export const STAFF_STATUS_VALUES = ['active', 'inactive'] as const;
+export const STAFF_SEX_VALUES = ['male', 'female', 'unknown'] as const;
+export const STAFF_STATUS_VALUES = ['active', 'on_leave', 'retired'] as const;
 export const STAFF_ROLE_VALUES = ['admin', 'manager', 'staff'] as const;
 
-// W3-D additions — mirror backend `staff` model + pydantic schema columns
-// added in W3-A (home_address / home_lat / home_lng / areas / max_per_day /
-// skill_level / assignment_volume). Treated as optional on the FE so older
-// clients / responses without the fields still parse cleanly.
-export const STAFF_SKILL_LEVEL_VALUES = ['新人', '中堅', 'ベテラン'] as const;
-export const STAFF_ASSIGNMENT_VOLUME_VALUES = ['少なめ', '通常', '多め'] as const;
-
-const optionalCoercedLat = z.preprocess(
-  (v) => (v === '' || v === null || v === undefined ? undefined : v),
-  z.coerce.number().min(-90).max(90).optional(),
-);
-const optionalCoercedLng = z.preprocess(
-  (v) => (v === '' || v === null || v === undefined ? undefined : v),
-  z.coerce.number().min(-180).max(180).optional(),
-);
-
 export const staffBaseSchema = z.object({
-  code: z.string().max(32).nullable().optional(),
+  code: z.string().max(64).nullable().optional(),
   name: z.string().min(1, '氏名は必須です').max(120),
   kana: z.string().max(120).nullable().optional(),
   sex: z.enum(STAFF_SEX_VALUES).nullable().optional(),
   status: z.enum(STAFF_STATUS_VALUES).default('active'),
   role: z.enum(STAFF_ROLE_VALUES).default('staff'),
   primary_office_id: z.string().uuid().nullable().optional(),
-  can_double_team: z.boolean().default(false),
   mentor_id: z.string().uuid().nullable().optional(),
-  // W3-D additions
-  home_address: z.string().max(255).nullable().optional(),
-  home_lat: optionalCoercedLat,
-  home_lng: optionalCoercedLng,
-  areas: z.array(z.string()).nullable().optional().default([]),
-  max_per_day: z.coerce.number().int().min(1).max(20).default(6),
-  skill_level: z.enum(STAFF_SKILL_LEVEL_VALUES).nullable().optional(),
-  assignment_volume: z.enum(STAFF_ASSIGNMENT_VOLUME_VALUES).nullable().optional(),
   note: z.string().nullable().optional(),
 });
 
 export const staffCreateSchema = staffBaseSchema;
 
 export const staffUpdateSchema = z.object({
-  code: z.string().max(32).nullable().optional(),
+  code: z.string().max(64).nullable().optional(),
   name: z.string().min(1).max(120).optional(),
   kana: z.string().max(120).nullable().optional(),
   sex: z.enum(STAFF_SEX_VALUES).nullable().optional(),
   status: z.enum(STAFF_STATUS_VALUES).optional(),
   role: z.enum(STAFF_ROLE_VALUES).optional(),
   primary_office_id: z.string().uuid().nullable().optional(),
-  can_double_team: z.boolean().optional(),
   mentor_id: z.string().uuid().nullable().optional(),
-  // W3-D additions
-  home_address: z.string().max(255).nullable().optional(),
-  home_lat: optionalCoercedLat,
-  home_lng: optionalCoercedLng,
-  areas: z.array(z.string()).nullable().optional(),
-  max_per_day: z.coerce.number().int().min(1).max(20).optional(),
-  skill_level: z.enum(STAFF_SKILL_LEVEL_VALUES).nullable().optional(),
-  assignment_volume: z.enum(STAFF_ASSIGNMENT_VOLUME_VALUES).nullable().optional(),
   note: z.string().nullable().optional(),
 });
 
@@ -87,6 +62,38 @@ export const staffReadSchema = staffBaseSchema.extend({
 export type StaffCreate = z.infer<typeof staffCreateSchema>;
 export type StaffUpdate = z.infer<typeof staffUpdateSchema>;
 export type StaffRead = z.infer<typeof staffReadSchema>;
+
+// ---------------------------------------------------------------------------
+// v1 → v2 後方互換 (DB hot-fix 漏れ救済)
+// ---------------------------------------------------------------------------
+
+/**
+ * 旧 v1 値 (F/M/X や 男/女) を v2 値 (male/female/unknown) に正規化する。
+ * 想定外の値が来た場合は ``null`` を返す。
+ */
+export function normalizeStaffSex(
+  v: string | null | undefined,
+): (typeof STAFF_SEX_VALUES)[number] | null {
+  if (v === null || v === undefined || v === '') return null;
+  if (v === 'male' || v === 'female' || v === 'unknown') return v;
+  if (['M', 'm', '男', '男性', 'Male'].includes(v)) return 'male';
+  if (['F', 'f', '女', '女性', 'Female'].includes(v)) return 'female';
+  if (['X', 'x', 'その他', 'Other', 'other'].includes(v)) return 'unknown';
+  return null;
+}
+
+/**
+ * 旧 v1 値 (``inactive``) を v2 値 (``on_leave``) に正規化する。
+ * v2 値 (``active`` / ``on_leave`` / ``retired``) はそのまま通す。
+ */
+export function normalizeStaffStatus(
+  v: string | null | undefined,
+): (typeof STAFF_STATUS_VALUES)[number] {
+  if (v === 'active' || v === 'on_leave' || v === 'retired') return v;
+  if (v === 'inactive' || v === '休職') return 'on_leave';
+  if (v === '退職') return 'retired';
+  return 'active';
+}
 
 // ---------------------------------------------------------------------------
 // Surrounding domain (read-only Wave 1)
@@ -146,14 +153,16 @@ export type MentorAssignment = z.infer<typeof mentorAssignmentSchema>;
 // Helpers shared by list filters
 // ---------------------------------------------------------------------------
 
-export const sexLabel = (sex: StaffRead['sex']): string => {
-  switch (sex) {
-    case 'F':
-      return '女性';
-    case 'M':
+export const sexLabel = (sex: StaffRead['sex'] | string | null | undefined): string => {
+  // 旧 v1 値 (F/M/X) も後方互換で読めるように normalize 経由で表示
+  const normalized = typeof sex === 'string' ? normalizeStaffSex(sex) : (sex ?? null);
+  switch (normalized) {
+    case 'male':
       return '男性';
-    case 'X':
-      return 'その他';
+    case 'female':
+      return '女性';
+    case 'unknown':
+      return '不明';
     default:
       return '--';
   }
@@ -172,20 +181,17 @@ export const roleLabel = (role: StaffRead['role']): string => {
   }
 };
 
-export const statusLabel = (status: StaffRead['status']): string => {
-  switch (status) {
+export const statusLabel = (status: StaffRead['status'] | string | null | undefined): string => {
+  const normalized =
+    typeof status === 'string' ? normalizeStaffStatus(status) : (status ?? 'active');
+  switch (normalized) {
     case 'active':
       return '在籍';
-    case 'inactive':
-      return '休止';
+    case 'on_leave':
+      return '休職';
+    case 'retired':
+      return '退職';
     default:
-      return status ?? '--';
+      return '--';
   }
 };
-
-export const skillLevelLabel = (level: StaffRead['skill_level']): string =>
-  level ?? '--';
-
-export const assignmentVolumeLabel = (
-  volume: StaffRead['assignment_volume'],
-): string => volume ?? '--';
