@@ -652,8 +652,8 @@ export const PatientFixedVisitsBulkPutSchema = z.object({
 | 7 | `patient_reschedule` | `patient_reschedule` | 患者の日時変更（**今週だけ / 今後固定** を選択） | AI / 手動 | ✅ | ✅（`one_time` / `permanent`） |
 | 8 | `patient_special_week_on` | `patient_special_week` | 患者の特別訪問週間 ON | AI / 手動 | ✅ | ❌ |
 | 9 | `patient_special_week_off` | `patient_special_week` | 患者の特別訪問週間 OFF | AI / 手動 | ✅ | ❌ |
-| ─ | `staff_status_update` | `staff_status_update` | スタッフ状態 (active/on_leave/retired) を変更 | AI / 手動 | ✅ | ❌ |
-| ─ | `patient_status_update` | `patient_status_update` | 患者状態 (active/suspended/admitted/pending/cancelled) を変更 | AI / 手動 | ✅ | ❌ |
+| 10 | `staff_status_update` | `staff_status_update` | スタッフ状態 (active/on_leave/retired) を変更 | AI / 手動 | ✅ | ❌ |
+| 11 | `patient_status_update` | `patient_status_update` | 患者状態 (active/suspended/admitted/pending/cancelled) を変更 | AI / 手動 | ✅ | ❌ |
 | ─ | （N/A） | `general` | 汎用フォールバック（既存） | AI のみ | ─ | ─ |
 | ─ | （N/A） | `out_of_scope` | AI が範囲外と判定 | AI のみ | ─ | ─ |
 
