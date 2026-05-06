@@ -577,7 +577,7 @@ export const PatientFixedVisitsBulkPutSchema = z.object({
 
 ---
 
-## 8. AI API（W2-BE6 / W5-FE10）
+## 10. AI API（W2-BE6 / W5-FE10）
 
 ### 8.1 `POST /api/v1/ai/interpret`（既存拡張）
 
@@ -600,7 +600,7 @@ export const PatientFixedVisitsBulkPutSchema = z.object({
 
 ---
 
-## 9. context_type ↔ request_type 対応表（**重要**）
+## 11. context_type ↔ request_type 対応表（**重要**）
 
 > 設計仕様書 §3.5.2 / §4.4 / 実装手順書 §1 0-C に基づく **唯一の対応表**。
 >
@@ -612,7 +612,7 @@ export const PatientFixedVisitsBulkPutSchema = z.object({
 |---|---|---|---|---|---|---|
 | 1 | `staff_off` | `staff_off` | スタッフのその週だけの休み登録 | AI / 手動 | ✅ | ❌ |
 | 2 | `staff_event` | `staff_event` | スタッフのイベント新規（会議・研修） | AI / 手動 | ✅ | ❌ |
-| 3 | `staff_mentor` | `staff_mentor` | スタッフのメンター登録（鈴木さんのメンターを山田さんに） | AI / 手動 | ✅ | ❌ |
+| ~~3~~ | ~~`staff_mentor`~~ | ~~`staff_mentor`~~ | ~~スタッフのメンター登録~~ **Wave 10 廃止**。同行スタッフ割付は §12 Staff Companion API を参照 | — | — | — |
 | 4 | `staff_create` | `staff_create` | スタッフ新規登録 | AI（不足情報補完モーダル経由） / 手動 | ✅ | ❌ |
 | 5 | `patient_create` | `patient_create` | 患者新規登録 | AI（不足情報補完モーダル経由） / 手動 | ✅ | ❌ |
 | 6 | `patient_cancel` | `patient_cancel` | 患者の訪問キャンセル | AI / 手動 | ✅ | ❌ |
@@ -651,13 +651,13 @@ export const PatientFixedVisitsBulkPutSchema = z.object({
 
 ---
 
-## 10. Staff Companion API（W10-BE1）
+## 12. Staff Companion API（W10-BE1）
 
 > Wave 10 Phase 6a 追記（2026-05-06）。新人スタッフ（`is_trainee = true`）の
 > 同行スタッフ割付を管理するエンドポイント群。
 > 旧 mentor API（`staff_mentor` request_type）は Wave 10 にて廃止し、本 API に刷新する。
 
-### 10.1 `GET /api/v1/staff/{staff_id}/companion-assignments`
+### 12.1 `GET /api/v1/staff/{staff_id}/companion-assignments`
 
 | 項目 | 内容 |
 |---|---|
@@ -666,7 +666,7 @@ export const PatientFixedVisitsBulkPutSchema = z.object({
 | Response 200 | `list[StaffCompanionAssignmentV2Read]` |
 | RBAC | Admin / Manager（全件） / Staff（自分のみ） |
 
-### 10.2 `PUT /api/v1/staff/{staff_id}/companion-assignments`
+### 12.2 `PUT /api/v1/staff/{staff_id}/companion-assignments`
 
 | 項目 | 内容 |
 |---|---|
@@ -679,7 +679,7 @@ export const PatientFixedVisitsBulkPutSchema = z.object({
 | バリデーション（409） | `staff.is_trainee = false` の場合は **409 Conflict** を返す |
 | バリデーション（422） | companion の `role` が `manager` / `staff` 以外の場合 / companion が自身の場合 / 同一 `(weekday, part)` が重複する場合 |
 
-### 10.3 `DELETE /api/v1/staff/{staff_id}/companion-assignments`
+### 12.3 `DELETE /api/v1/staff/{staff_id}/companion-assignments`
 
 | 項目 | 内容 |
 |---|---|
@@ -689,7 +689,7 @@ export const PatientFixedVisitsBulkPutSchema = z.object({
 | RBAC | Admin / Manager のみ |
 | idempotent | 既存レコードが 0 件でも 204 を返す |
 
-### 10.4 `GET /api/v1/staff/companion-candidates`
+### 12.4 `GET /api/v1/staff/companion-candidates`
 
 | 項目 | 内容 |
 |---|---|
@@ -702,7 +702,7 @@ export const PatientFixedVisitsBulkPutSchema = z.object({
 
 ---
 
-## 11. Pydantic / TypeScript 型定義（staff_companion_assignments）
+## 13. Pydantic / TypeScript 型定義（staff_companion_assignments）
 
 > 共有型の正式定義は `backend/app/schemas/v2/staff_companion_assignments.py` および
 > `frontend/lib/schemas/v2/staff_companion_assignments.ts` に配置する（W10-BE1 で作成）。
@@ -725,7 +725,7 @@ class StaffCompanionAssignmentV2Read(StaffCompanionAssignmentV2Base):
     updated_at:       datetime
 
 class StaffCompanionAssignmentsBulkPut(BaseModel):
-    items: list[StaffCompanionAssignmentV2Base]  # 0..14 件（7曜日 × 2 part の上限）
+    items: list[StaffCompanionAssignmentV2Base]  # 0..14 件（7曜日 × 最大 2 件 [am+pm] または 1 件 [full]、同曜日内 part 排他）
 ```
 
 ```typescript
@@ -752,7 +752,7 @@ export const StaffCompanionAssignmentsBulkPutSchema = z.object({
 });
 ```
 
-### 11.1 既存 Staff スキーマの変更点
+### 13.1 既存 Staff スキーマの変更点
 
 | フィールド | 変更内容 |
 |---|---|
@@ -761,7 +761,7 @@ export const StaffCompanionAssignmentsBulkPutSchema = z.object({
 
 ---
 
-## 12. 受入基準
+## 14. 受入基準
 
 - [x] patients / staff / offices / courses / visits / schedule / pending_requests / ai のすべてに新規 / 変更エンドポイントが列挙されている
 - [x] 各エンドポイントに **path / method / 担当チケット / RBAC / Request schema / Response schema** が記載されている
