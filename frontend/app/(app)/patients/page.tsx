@@ -26,6 +26,7 @@ import {
   normalizePatientStatus,
 } from '@/lib/schemas/patient';
 import { usePatients } from '@/lib/queries/patients';
+import { useOffices } from '@/lib/queries/offices';
 
 const PAGE_SIZE = 20;
 
@@ -55,6 +56,16 @@ export default function PatientsPage() {
     search,
     insurance: insurance || undefined,
   });
+
+  // 拠点 id → 名前マップ (一覧で primary_office_id を拠点名表示するため)
+  const { offices } = useOffices({ limit: 500 });
+  const officeNameMap = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const o of offices ?? []) {
+      m.set(o.id, o.name);
+    }
+    return m;
+  }, [offices]);
 
   const items = useMemo(() => {
     if (!data) return [];
@@ -175,8 +186,10 @@ export default function PatientsPage() {
                       <td className="px-3 py-2 text-text-secondary">
                         {insuranceNorm ? INSURANCE_LABEL[insuranceNorm] : '--'}
                       </td>
-                      <td className="px-3 py-2 text-text-secondary tnum">
-                        {p.primary_office_id ? p.primary_office_id.slice(0, 8) : '--'}
+                      <td className="px-3 py-2 text-text-secondary">
+                        {p.primary_office_id
+                          ? (officeNameMap.get(p.primary_office_id) ?? '--')
+                          : '--'}
                       </td>
                       <td className="px-3 py-2 text-text-secondary">
                         {p.deleted_at ? '削除済' : STATUS_LABEL[statusNorm]}
