@@ -26,7 +26,7 @@ const NAV_ITEMS = [
   { href: '/staff', label: 'スタッフ', icon: UserCircle2 },
   { href: '/offices', label: '拠点', icon: Building2 },
   { href: '/integrations', label: '連携', icon: Plug, adminOnly: true },
-  { href: '/admin/pending-requests', label: '申請履歴', icon: Inbox, adminOnly: true },
+  { href: '/admin/pending-requests', label: 'モバイル申請', icon: Inbox, adminOnly: true },
   // 監査ログ (admin) / AIヘルプ (全員) は上部ヘッダーのアイコンボタン群に残置 (Header.tsx 参照)。
   // 特別訪問週間 は患者マスタの設定として取り込む方針となったため、
   // 独立したサイドバー項目は削除（v2 設計 §3.4 参照）。
