@@ -9,7 +9,6 @@ import {
   Check,
   Heart,
   HelpCircle,
-  Inbox,
   LogOut,
   Menu,
   ScrollText,
@@ -48,7 +47,6 @@ export function Header({ title = 'CareFlow', onToggleSidebar }: HeaderProps) {
         <NotificationButton />
         <UserMenuButton />
         <AdminUsersButton />
-        <PendingRequestsButton />
         <AuditLogsButton />
         <AiHelpButton />
       </div>
@@ -274,21 +272,9 @@ function AdminUsersButton() {
 }
 
 // ============================================================
-// 申請履歴 / 監査ログ / AIヘルプ — Sidebar から移設したクイックアクセス
+// 監査ログ / AIヘルプ — Sidebar から移設したクイックアクセス
+// 申請履歴はサイドバーの連携の下に移設済 (Sidebar.tsx 参照)
 // ============================================================
-
-function PendingRequestsButton() {
-  const { data: session } = useSession();
-  const role = session?.user?.role;
-  if (role !== 'admin' && role !== 'manager') return null;
-  return (
-    <Button variant="ghost" size="icon" asChild aria-label="申請履歴" title="申請履歴">
-      <Link href="/admin/pending-requests">
-        <Inbox className="h-5 w-5" strokeWidth={1.75} />
-      </Link>
-    </Button>
-  );
-}
 
 function AuditLogsButton() {
   const { data: session } = useSession();
