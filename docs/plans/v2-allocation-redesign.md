@@ -257,7 +257,7 @@
 | マスタ新規 | **スタッフ新規登録** | 「新規スタッフで山田花子さん、火曜と金曜が固定休、稲毛拠点」 |
 | スタッフ予定 | その週だけの休み | 「田中さん木曜休み」 |
 | スタッフ予定 | イベント新規 | 「火曜午後 管理者会議」 |
-| スタッフ予定 | メンター登録 | 「鈴木さんのメンターを山田さんに」 |
+| スタッフ予定 | 同行スタッフ割付 | 「鈴木さんの同行を山田さんに（月曜午前）」 |
 | 患者対応 | 特別訪問週間 ON/OFF | 「佐藤さん来週特別週オン」 |
 | 患者対応 | 訪問キャンセル | 「田中さん明日キャンセル」 |
 | 患者対応 | 日時変更 | 「鈴木さん明日10時に1時間追加」 |
@@ -308,7 +308,7 @@ CareFlow 内の業務操作は原則 AI 対象。ただし以下は **AI 経由�
 | 自分が担当する患者の今日のキャンセル | ✅ |
 | 自分が担当する患者の日時変更依頼 | ✅ |
 | 自分が担当する患者の特別訪問週間 ON/OFF 依頼 | ✅ |
-| 他スタッフの休み・予定・メンター | ❌ |
+| 他スタッフの休み・予定・同行割付 | ❌ |
 | 自分が担当しない患者の操作 | ❌ |
 
 > スタッフが現場で患者から直接キャンセルや時間変更を聞いた場合、その場で
@@ -403,7 +403,7 @@ CareFlow 内の業務操作は原則 AI 対象。ただし以下は **AI 経由�
 - スタッフの新規登録（同上）
 - スタッフの今週だけの休み登録
 - スタッフのイベント新規（会議・研修）
-- スタッフのメンター登録
+- スタッフの同行スタッフ割付（`staff_companion_assignments`）
 - 患者の特別訪問週間 ON/OFF
 - 患者の訪問キャンセル
 - 患者の訪問日時変更（今週だけ / 今後固定 を選択）
@@ -431,6 +431,42 @@ AI 応答: 「拠点の追加は AI では対応していません。サイド�
   対象内/外が増減した時に 1 箇所で更新できる構成にする
 - 範囲外判定は Gemini プロンプトに「対象外の場合は `out_of_scope` アクション
   を返す」と明示することで実装
+
+#### 3.5.x スタッフ編集ページの保存単位（Wave 10 新設）
+
+> Wave 10 Phase 6a 追記（2026-05-06）。患者編集ページと同様に、スタッフ編集ページを
+> 「全部載せ」構成に統一し、保存単位と UI の粒度を明確化する。
+
+##### ページ構成
+
+スタッフ編集ページ `/staff/{id}/edit` は患者編集ページと同様の「全部載せ」構成を採用する。
+上半分と下半分で保存単位を分離する。
+
+| エリア | 内容 | 保存方式 | API |
+|---|---|---|---|
+| **上半分**（1 フォーム一括） | 基本情報 + 週間シフト + 今後の休み + 研修日・イベント | 1 回の PATCH で全フィールドを一括送信 | `PATCH /api/v1/staff/{id}` |
+| **下半分**（独立 PUT） | 同行スタッフ割付（`staff_companion_assignments`） | 独立した PUT。`is_trainee = true` のときのみ表示 | `PUT /api/v1/staff/{id}/companion-assignments` |
+
+##### sticky bar（画面下部固定保存バー）
+
+上半分・下半分ともに、**画面下部に固定表示される sticky bar** で保存操作を行う。
+患者編集ページにも同じ仕組みを適用して一貫した UX を実現する。
+
+| 状態 | 表示 |
+|---|---|
+| 未変更 | バー表示（薄いスタイル）、「更新」ボタン非活性 |
+| 変更あり | バーの色変化（強調スタイル）+ 警告アイコン表示 |
+
+バー上のボタン:
+
+- **「破棄」**: フォームの変更を元の値にリセット
+- **「更新」**: API を呼び出して保存
+
+##### 同行スタッフ割付の表示制御
+
+- `is_trainee = false` の場合: 下半分の同行スタッフ割付エリアは **非表示**
+- `is_trainee = true` に変更した場合: エリアが出現し、曜日 × 時間帯（am/pm/full）ごとに companion を選択できる
+- `is_trainee = false` に戻した場合: 変更保存時に既存の `staff_companion_assignments` を一括削除（§4.2.x の制約）
 
 ### 3.6 自動 / 手動 / AI の役割分担（3 レイヤー構造）
 
@@ -505,6 +541,45 @@ AI 応答: 「拠点の追加は AI では対応していません。サイド�
 | スタッフ休み（今週だけ） | L3 のみ（代替スタッフを当てる） |
 | スタッフ追加・退職 | L3 全面再計算 |
 | 拠点変更 | L2 から再計算（距離が変わるため） |
+
+#### 3.6.x 同行スタッフの Layer 3 連携（Wave 10 新設）
+
+> Wave 10 Phase 6a 追記（2026-05-06）。新人スタッフが訪問にアサインされた際、
+> Layer 3 がスタッフ割付を完了した後に companion を自動付与する拡張。
+
+##### 自動付与の仕組み
+
+新人スタッフ（`is_trainee = true`）が `visit_staff_assignments` にアサインされた訪問に対して、
+Layer 3 は `staff_companion_assignments` を参照し、対応する companion を **自動追加** する。
+
+処理ステップ:
+
+1. Layer 3 が当該曜日のコース割付を完了し、`visit_staff_assignments` に新人スタッフ行を INSERT する
+2. 該当訪問の `start_time` から **午前 / 午後** を判定する（下記「時刻の判定」参照）
+3. `staff_companion_assignments` から `(trainee_staff_id, weekday, part)` が一致する companion を取得する
+4. companion が存在する場合、同一 `visit_id` × `companion_staff_id` の行を `visit_staff_assignments` に追加する
+5. companion が存在しない場合（未設定）は処理を継続し、警告ログを記録する（割付失敗にはしない）
+
+##### 時刻の判定
+
+companion の当該曜日の `staff_shifts` レコードを参照し、シフト時間の中央時刻で午前 / 午後を分割する。
+
+| 条件 | 判定 |
+|---|---|
+| `part = 'am'` | シフト開始時刻 ≦ 訪問開始時刻 < シフト中央時刻 |
+| `part = 'pm'` | シフト中央時刻 ≦ 訪問開始時刻 < シフト終了時刻 |
+| `part = 'full'` | シフト全体（訪問時刻によらず常に同行） |
+
+例: シフト 9:00〜19:00 の場合、中央時刻は 14:00。午前 = 9:00〜14:00、午後 = 14:00〜19:00。
+
+##### 2 名体制との関係
+
+患者側 `required_staff_count = 2`（2 人体制患者）の同行要否と、新人側の companion 同行は **独立した仕組み** として扱う。
+
+- 2 つが同じ訪問で両方該当する場合は、`visit_staff_assignments` 行数が **3 以上** になりうる
+- これは設計上の許容範囲とし、運用側の判断で対処する（特別な制約は設けない）
+
+---
 
 #### 3.6.8 固定枠 (週間訪問パターン)
 
@@ -664,7 +739,7 @@ patients (1) ──── (0..7 rows × 2 modes) patient_fixed_visits
 
 ### 4.2 スタッフマスタ（v1 → v2 整理）
 
-集計: ✅ 残す **9** / ❌ 消す **6** / ⚠️ 要判断 (画面外項目別途)
+集計: ✅ 残す **9** / ❌ 消す **7** / ⚠️ 要判断 (画面外項目別途)
 
 #### ✅ 残す（9 項目）
 
@@ -678,9 +753,9 @@ patients (1) ──── (0..7 rows × 2 modes) patient_fixed_visits
 | | 状態 (**在籍 / 休職 / 退職** の 3 値) | 在籍以外は割当除外 |
 | | 主拠点 | 拠点マスタからプルダウン選択（稲毛 / 都賀）。§4.3 |
 | | 備考 | 自由記述 |
-| 詳細セクション | **メンター** | 新人スタッフのみ設定。基本情報ではなく **詳細セクション** に移設 |
+| 詳細セクション | **`is_trainee`（新人フラグ）** | 新人スタッフの場合 true。同行スタッフ割付が必要な場合に使用（§4.2.x 参照） |
 
-#### ❌ 消す（6 項目）
+#### ❌ 消す（7 項目）
 
 | 項目 | 削除理由 |
 |---|---|
@@ -690,6 +765,7 @@ patients (1) ──── (0..7 rows × 2 modes) patient_fixed_visits
 | 1日最大訪問数 | v2 は全員 6 人で固定 |
 | スキル (ベテラン / 中級 / 新人) | 患者の指定タイプを廃止したため割当に使われない |
 | 割付ボリューム (多め / 均等 / 少なめ) | 全員 6 人固定なので soft_cap 調整不要 |
+| **`mentor_id`（メンター）/ `mentor_assignments`** | Wave 10 にて廃止。同行スタッフ方式（`staff_companion_assignments`）に刷新（§4.2.x 参照） |
 
 #### ⚠️ 別途確認（画面に出ていない項目）
 
@@ -701,6 +777,53 @@ patients (1) ──── (0..7 rows × 2 modes) patient_fixed_visits
 | 勤務曜日 / シフト開始・終了時刻 | `staff_shifts`（7 行/staff） | ✅ **維持**（§3.4 で患者の特別週パターン UI のモデルとして言及されている） |
 | 週単位の休み・時間変更 | `staff_weekly_overrides` | 残す？廃止？ |
 | イベント・会議・研修 | `staff_events` | 残す？廃止？ |
+
+### 4.2.x `is_trainee` + `staff_companion_assignments`（Wave 10 新設）
+
+> Wave 10 Phase 6a 追記（2026-05-06）。旧 `mentor_id` / `mentor_assignments` を廃止し、
+> 新人スタッフと同行スタッフを明示的に管理する新方式に刷新する（Alembic 0018）。
+
+#### `staff.is_trainee`
+
+| 項目 | 内容 |
+|---|---|
+| 型 | `bool` |
+| デフォルト | `false` |
+| 意味 | 新人スタッフフラグ。`true` の場合、同行スタッフ割付（`staff_companion_assignments`）が必要 |
+| UI | スタッフ編集ページ詳細セクションに配置。`true` のときのみ同行スタッフ割付エリアを表示（§3.5.x 参照） |
+| 制約 | `false` に切り替えた場合、関連する `staff_companion_assignments` は一括削除する（残留させない） |
+
+#### `staff_companion_assignments` テーブル DDL（Alembic 0018 と整合）
+
+```sql
+CREATE TABLE staff_companion_assignments (
+    id                 UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    trainee_staff_id   UUID        NOT NULL
+                                   REFERENCES staff(id) ON DELETE CASCADE,
+    weekday            SMALLINT    NOT NULL
+                                   CHECK (weekday BETWEEN 0 AND 6),  -- 0=Mon ... 6=Sun
+    part               VARCHAR(4)  NOT NULL
+                                   CHECK (part IN ('am', 'pm', 'full')),
+    companion_staff_id UUID        NOT NULL
+                                   REFERENCES staff(id) ON DELETE CASCADE,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (trainee_staff_id, weekday, part),
+    CHECK (trainee_staff_id != companion_staff_id)
+);
+
+CREATE INDEX idx_sca_trainee    ON staff_companion_assignments (trainee_staff_id);
+CREATE INDEX idx_sca_companion  ON staff_companion_assignments (companion_staff_id);
+```
+
+#### 制約
+
+| 制約 | 内容 |
+|---|---|
+| 1 companion per slot | `UNIQUE (trainee_staff_id, weekday, part)` — 1 新人 × 1 曜日 × 1 時間帯 = 1 companion。同時刻に複数同行はなし |
+| companion の資格 | `role IN ('manager', 'staff')` かつ `status = '在籍'` かつ `deleted_at IS NULL` かつ trainee 本人以外（`CHECK trainee_staff_id != companion_staff_id`） |
+| trainee フラグが OFF の場合 | `is_trainee = false` に変更した際は、当該スタッフの関連レコードを一括削除。フラグ OFF の状態で割付レコードが存在することを許容しない |
+| part の定義 | `'am'`（午前）/ `'pm'`（午後）/ `'full'`（終日） |
 
 ### 4.3 拠点 (Office)
 
@@ -861,7 +984,8 @@ patients (1) ──── (0..7 rows × 2 modes) patient_fixed_visits
 |---|---|
 | `visits` (v1) | 維持。`course_id` FK 追加でコース所属を表現 |
 | 患者の `weekly_pattern` | 維持。`staff_count` 拡張、特別週パターンの追加（§3.4） |
-| `mentor_assignments` (v1) | スタッフマスタ「メンター」フィールドの裏側として維持 |
+| `mentor_assignments` (v1) | **Wave 10 にて廃止**。`staff_companion_assignments` に刷新（§4.2.x 参照） |
+| `staff_companion_assignments` | Wave 10 新設。`is_trainee` スタッフの曜日×時間帯ごとの companion を管理（Alembic 0018） |
 
 ---
 
@@ -1077,3 +1201,4 @@ cost(weekday, course, staff) =
 | 2026-05-05 | v0.8 | §3.6「3 レイヤー構造（自動 / 手動 / AI の役割分担）」を新規追加（時間配置 / コース分け / スタッフ割付）。§4.5「コース (Course)」のデータモデル定義を追加。§5「自動割り振りアルゴリズム」を 3 レイヤー対応に全面拡充（Layer 1 プール展開、Layer 2 K-means/CP-SAT、Layer 3 ハンガリアン法 + ローテーション）。マネージャー M1 の枠外・オーバーフロー扱いを明文化。固定の 3 段階（時間 / コース / スタッフ）と再算出トリガーを表で整理 |
 | 2026-05-05 | v0.9 | Codex レビュー対応。MVP 前提（Q1=サービス時間枠消費 / Q3=ハイブリッド / Q4=直線距離 / Q5=15分）を確定。2 名体制を `visits.required_staff_count` + `visit_group_id` + `visit_staff_assignments` で永続化（Layer 3 が 2 行返す形）。特別週は Option A（`special_weekly_pattern` + `special_week_active`）に確定。AI 即時反映でも `pending_requests` に `approved` で記録する監査要件を明記。Course 状態を単一 enum (`proposed`/`course_fixed`/`staff_assigned`) に整理。AI「対象外なし」の文言を「原則全業務、ただし削除・拠点・監査ログ・ユーザー権限・外部システム・給与関連は除外」に修正。Hungarian 法計算量を O(W × max(C,S)³) に訂正。15 分刻みに統一 |
 | 2026-05-06 | v1.0 | Wave 9 Phase 5a 追記。§3.6.8「固定枠 (週間訪問パターン)」ライフサイクル + Layer 1 hybrid 化を新規追加。§4.1b「patient_fixed_visits テーブル」スキーマ DDL・制約・設計方針を追加（Alembic 0017）。§3.5.8「スケジュール変更ダイアログ (a)/(b) モード」を §3.5 体系に追記（固定枠対応 D&D ダイアログ仕様） |
+| 2026-05-06 | v1.1 | Wave 10 Phase 6a 追記。§4.2.x「`is_trainee` + `staff_companion_assignments` DDL」新設（Alembic 0018）。旧 `mentor_id` / `mentor_assignments` を廃止。§3.6.x「同行スタッフの Layer 3 連携」（companion 自動付与・時刻判定・2名体制との独立性）を追加。§3.5.x「スタッフ編集ページの保存単位 + sticky bar UI」を追加。スタッフマスタ集計を消す 7 項目に更新 |

@@ -106,7 +106,9 @@
 **変更点（v1 → v2）**:
 - 削除: `can_double_team`, `home_address`, `home_lat`, `home_lng`, `areas`, `max_per_day`, `skill_level`, `assignment_volume`（6 項目 + `home_*` 3 項目）
 - `status`: `在籍 / 休職 / 退職` の 3 値に正規化（v1 の `active` / `inactive` から移行）
-- メンターフィールド (`mentor_id`) は維持（UI 上は詳細セクション扱い）
+- **Wave 10 変更**:
+  - 削除: `mentor_id`（Wave 10 にて廃止。`staff_companion_assignments` に刷新）
+  - 追加: `is_trainee: bool`（デフォルト `false`。新人スタッフフラグ）
 
 ### 2.2 `PATCH /api/v1/staff/{id}`
 
@@ -575,7 +577,7 @@ export const PatientFixedVisitsBulkPutSchema = z.object({
 
 ---
 
-## 8. AI API（W2-BE6 / W5-FE10）
+## 10. AI API（W2-BE6 / W5-FE10）
 
 ### 8.1 `POST /api/v1/ai/interpret`（既存拡張）
 
@@ -598,7 +600,7 @@ export const PatientFixedVisitsBulkPutSchema = z.object({
 
 ---
 
-## 9. context_type ↔ request_type 対応表（**重要**）
+## 11. context_type ↔ request_type 対応表（**重要**）
 
 > 設計仕様書 §3.5.2 / §4.4 / 実装手順書 §1 0-C に基づく **唯一の対応表**。
 >
@@ -610,7 +612,7 @@ export const PatientFixedVisitsBulkPutSchema = z.object({
 |---|---|---|---|---|---|---|
 | 1 | `staff_off` | `staff_off` | スタッフのその週だけの休み登録 | AI / 手動 | ✅ | ❌ |
 | 2 | `staff_event` | `staff_event` | スタッフのイベント新規（会議・研修） | AI / 手動 | ✅ | ❌ |
-| 3 | `staff_mentor` | `staff_mentor` | スタッフのメンター登録（鈴木さんのメンターを山田さんに） | AI / 手動 | ✅ | ❌ |
+| ~~3~~ | ~~`staff_mentor`~~ | ~~`staff_mentor`~~ | ~~スタッフのメンター登録~~ **Wave 10 廃止**。同行スタッフ割付は §12 Staff Companion API を参照 | — | — | — |
 | 4 | `staff_create` | `staff_create` | スタッフ新規登録 | AI（不足情報補完モーダル経由） / 手動 | ✅ | ❌ |
 | 5 | `patient_create` | `patient_create` | 患者新規登録 | AI（不足情報補完モーダル経由） / 手動 | ✅ | ❌ |
 | 6 | `patient_cancel` | `patient_cancel` | 患者の訪問キャンセル | AI / 手動 | ✅ | ❌ |
@@ -636,7 +638,7 @@ export const PatientFixedVisitsBulkPutSchema = z.object({
 |---|---|
 | `staff_off` | `staff_weekly_overrides`（または v2 で改名する場合は同等テーブル） |
 | `staff_event` | `staff_events` |
-| `staff_mentor` | `staff` (`mentor_id` 列の更新) |
+| `staff_mentor` | ~~`staff` (`mentor_id` 列の更新)~~ **Wave 10 廃止**。同行スタッフ割付は `§10 Staff Companion API` を参照 |
 | `staff_create` | `staff` （新規 INSERT） |
 | `patient_create` | `patients`（新規 INSERT） |
 | `patient_cancel` | `visits`（status を `cancelled` へ） |
@@ -647,10 +649,124 @@ export const PatientFixedVisitsBulkPutSchema = z.object({
 
 ---
 
-## 10. 受入基準
+---
+
+## 12. Staff Companion API（W10-BE1）
+
+> Wave 10 Phase 6a 追記（2026-05-06）。新人スタッフ（`is_trainee = true`）の
+> 同行スタッフ割付を管理するエンドポイント群。
+> 旧 mentor API（`staff_mentor` request_type）は Wave 10 にて廃止し、本 API に刷新する。
+
+### 12.1 `GET /api/v1/staff/{staff_id}/companion-assignments`
+
+| 項目 | 内容 |
+|---|---|
+| 概要 | 対象スタッフの同行スタッフ割付一覧を取得 |
+| 担当チケット | W10-BE1 |
+| Response 200 | `list[StaffCompanionAssignmentV2Read]` |
+| RBAC | Admin / Manager（全件） / Staff（自分のみ） |
+
+### 12.2 `PUT /api/v1/staff/{staff_id}/companion-assignments`
+
+| 項目 | 内容 |
+|---|---|
+| 概要 | 同行スタッフ割付を完全置換（1 TX で当該 trainee の全行削除 → items を INSERT） |
+| 担当チケット | W10-BE1 |
+| Request body | `StaffCompanionAssignmentsBulkPut` |
+| Response 200 | `list[StaffCompanionAssignmentV2Read]` |
+| RBAC | Admin / Manager のみ |
+| トランザクション | `trainee_staff_id` の既存全行を DELETE し、`items` で指定した行を INSERT。1 TX で完結 |
+| バリデーション（409） | `staff.is_trainee = false` の場合は **409 Conflict** を返す |
+| バリデーション（422） | companion の `role` が `manager` / `staff` 以外の場合 / companion が自身の場合 / 同一 `(weekday, part)` が重複する場合 |
+
+### 12.3 `DELETE /api/v1/staff/{staff_id}/companion-assignments`
+
+| 項目 | 内容 |
+|---|---|
+| 概要 | 対象スタッフの同行スタッフ割付を全削除（idempotent） |
+| 担当チケット | W10-BE1 |
+| Response 204 | No Content |
+| RBAC | Admin / Manager のみ |
+| idempotent | 既存レコードが 0 件でも 204 を返す |
+
+### 12.4 `GET /api/v1/staff/companion-candidates`
+
+| 項目 | 内容 |
+|---|---|
+| 概要 | companion 選択候補スタッフ一覧を取得 |
+| 担当チケット | W10-BE1 |
+| Query | `exclude_id={uuid}`（trainee 本人を除外するために指定） |
+| Response 200 | `list[StaffV2Read]` |
+| フィルタ条件 | `role IN ('manager', 'staff')` かつ `status = '在籍'` かつ `deleted_at IS NULL` かつ `id != exclude_id` |
+| RBAC | Admin / Manager のみ |
+
+---
+
+## 13. Pydantic / TypeScript 型定義（staff_companion_assignments）
+
+> 共有型の正式定義は `backend/app/schemas/v2/staff_companion_assignments.py` および
+> `frontend/lib/schemas/v2/staff_companion_assignments.ts` に配置する（W10-BE1 で作成）。
+> 本節は両ファイルの **参照用サマリ**。
+
+```python
+# Python (Pydantic)
+
+StaffCompanionPart = Literal['am', 'pm', 'full']
+
+class StaffCompanionAssignmentV2Base(BaseModel):
+    weekday:            int   # 0..6 (0=Mon ... 6=Sun)
+    part:               StaffCompanionPart
+    companion_staff_id: UUID
+
+class StaffCompanionAssignmentV2Read(StaffCompanionAssignmentV2Base):
+    id:               UUID
+    trainee_staff_id: UUID
+    created_at:       datetime
+    updated_at:       datetime
+
+class StaffCompanionAssignmentsBulkPut(BaseModel):
+    items: list[StaffCompanionAssignmentV2Base]  # 0..14 件（7曜日 × 最大 2 件 [am+pm] または 1 件 [full]、同曜日内 part 排他）
+```
+
+```typescript
+// TypeScript (zod)
+
+export const StaffCompanionPartSchema = z.enum(['am', 'pm', 'full']);
+export type StaffCompanionPart = z.infer<typeof StaffCompanionPartSchema>;
+
+export const StaffCompanionAssignmentV2BaseSchema = z.object({
+  weekday:            z.number().int().min(0).max(6),
+  part:               StaffCompanionPartSchema,
+  companion_staff_id: z.string().uuid(),
+});
+
+export const StaffCompanionAssignmentV2ReadSchema = StaffCompanionAssignmentV2BaseSchema.extend({
+  id:               z.string().uuid(),
+  trainee_staff_id: z.string().uuid(),
+  created_at:       z.string().datetime(),
+  updated_at:       z.string().datetime(),
+});
+
+export const StaffCompanionAssignmentsBulkPutSchema = z.object({
+  items: z.array(StaffCompanionAssignmentV2BaseSchema).max(14),
+});
+```
+
+### 13.1 既存 Staff スキーマの変更点
+
+| フィールド | 変更内容 |
+|---|---|
+| `mentor_id` | **削除**（Wave 10 廃止。`staff_companion_assignments` に刷新） |
+| `is_trainee` | **追加**（`bool`、デフォルト `false`） |
+
+---
+
+## 14. 受入基準
 
 - [x] patients / staff / offices / courses / visits / schedule / pending_requests / ai のすべてに新規 / 変更エンドポイントが列挙されている
 - [x] 各エンドポイントに **path / method / 担当チケット / RBAC / Request schema / Response schema** が記載されている
 - [x] context_type ↔ request_type の対応表が末尾にある
 - [x] 各 request_type が承認時に触るテーブルが明記されている（PendingRequestApplier の実装契約として）
 - [x] AI 経由不可の操作（patient/staff の delete、office の編集）が明示されている
+- [x] Staff Companion API（§10）が追加されている（GET / PUT / DELETE / companion-candidates の 4 エンドポイント）
+- [x] 旧 mentor API の廃止が §9.2 / §2.1 に明記されている
