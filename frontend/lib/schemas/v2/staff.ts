@@ -1,12 +1,8 @@
 /**
- * StaffV2 zod schemas (Wave 0-C).
+ * StaffV2 zod schemas (Wave 0-C / Wave 10 更新).
  *
- * 設計仕様書 v0.9 §4.2 に基づき、v2 で残す **9 項目** のみを保持する。
- * 削除する 6 項目 (can_double_team / 自宅住所 + lat/lng / 得意エリア /
- * 1日最大訪問数 / スキル / 割付ボリューム) は v2 schema には含めない。
- *
- * メンターフィールド (`mentor_id`) は型としては **残す**(UI 上は基本情報ではなく
- * 「詳細セクション」扱いだが、データ層には残置)。
+ * 設計仕様書 §4.2 に基づく。
+ * Wave 10: `mentor_id` 廃止 → `is_trainee` (bool) に刷新 (§4.2.x)。
  *
  * Backend `backend/app/schemas/v2/staff.py` の Pydantic schema と
  * **完全一致** させる。
@@ -67,12 +63,12 @@ export const staffV2BaseSchema = z.object({
 
   note: z.string().nullable().optional(),
 
-  // 詳細セクション (§4.2)
+  // 詳細セクション (§4.2.x / Wave 10)
   /**
-   * メンター。新人スタッフのみ設定。
-   * UI 上は基本情報ではなく「詳細」セクション扱いだが、データ層には残置 (§4.2)。
+   * 新人スタッフフラグ。true のとき同行スタッフ割付 (staff_companion_assignments) が必要。
+   * 旧 mentor_id は Wave 10 にて廃止 (§4.2.x / §13.1)。
    */
-  mentor_id: z.string().uuid().nullable().optional(),
+  is_trainee: z.boolean().default(false),
 });
 export type StaffV2Base = z.infer<typeof staffV2BaseSchema>;
 
@@ -80,7 +76,7 @@ export type StaffV2Base = z.infer<typeof staffV2BaseSchema>;
 export const staffV2CreateSchema = staffV2BaseSchema;
 export type StaffV2Create = z.infer<typeof staffV2CreateSchema>;
 
-/** PATCH /api/v1/staff/{id} リクエスト (W1-BE2). 全フィールド optional. */
+/** PATCH /api/v1/staff/{id} リクエスト (W1-BE2 / Wave 10). 全フィールド optional. */
 export const staffV2UpdateSchema = z.object({
   code: z.string().max(64).nullable().optional(),
   name: z.string().min(1).max(120).optional(),
@@ -90,7 +86,8 @@ export const staffV2UpdateSchema = z.object({
   status: staffStatusV2Enum.optional(),
   primary_office_id: z.string().uuid().nullable().optional(),
   note: z.string().nullable().optional(),
-  mentor_id: z.string().uuid().nullable().optional(),
+  /** Wave 10: 新人フラグ (§4.2.x). 旧 mentor_id は廃止 */
+  is_trainee: z.boolean().optional(),
 });
 export type StaffV2Update = z.infer<typeof staffV2UpdateSchema>;
 

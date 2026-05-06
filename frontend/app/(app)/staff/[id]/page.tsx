@@ -1,13 +1,18 @@
 'use client';
 
 /**
- * Staff master — detail view (Phase 3-7..3-11).
+ * Staff master — detail view (Phase 3-7..3-11 / W10-FE2).
  *
- * All four sections are now backed by live endpoints:
+ * All sections are backed by live endpoints:
  *   - Weekly shifts        (3-8)  GET/PUT  /api/v1/staff/:id/shifts
  *   - Weekly overrides     (3-9)  GET/POST/PATCH/DELETE /api/v1/staff/:id/overrides
- *   - Events / 研修日       (3-10) /api/v1/staff/:id/events            (F5-Frontend-B)
- *   - Mentor assignments   (3-11) /api/v1/staff/:id/mentor             (F5-Frontend-B)
+ *   - Events / 研修日       (3-10) /api/v1/staff/:id/events
+ *   - 同行スタッフ割付      (W10)  GET /api/v1/staff/:id/companion-assignments
+ *
+ * W10-FE2 変更点:
+ *   - 旧「メンター割付」セクション → 「同行スタッフ割付」(閲覧専用) に置換
+ *   - 基本情報に「新人」バッジ追加 (is_trainee=true 時)
+ *   - mentor_id 参照を全削除 (BE Phase 1 で列廃止済)
  */
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
@@ -19,7 +24,6 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
-import { useMentor } from '@/lib/queries/mentor';
 import { useStaffEvents } from '@/lib/queries/staff-events';
 import { useStaffOverrides, type OverrideRange } from '@/lib/queries/staff-overrides';
 import { useStaffShifts } from '@/lib/queries/staff-shifts';
@@ -38,10 +42,10 @@ import type { EventRead } from '@/lib/schemas/staff-events';
 import { DeleteConfirmModal } from '../_components/DeleteConfirmModal';
 import { EventAddDialog } from './_components/EventAddDialog';
 import { EventEditDialog } from './_components/EventEditDialog';
-import { MentorAssignDialog } from './_components/MentorAssignDialog';
 import { OverrideAddDialog } from './_components/OverrideAddDialog';
 import { OverrideEditDialog } from './_components/OverrideEditDialog';
 import { ShiftsEditDialog } from './_components/ShiftsEditDialog';
+import { StaffCompanionViewer } from './_components/StaffCompanionViewer';
 
 /** Overrides default window: today through +90 days. */
 const OVERRIDES_RANGE_DAYS_FORWARD = 90;
@@ -132,6 +136,11 @@ export default function StaffDetailPage() {
           </Link>
         </Button>
         <h1 className="font-serif text-2xl font-bold text-text-primary">{data.name}</h1>
+        {data.is_trainee && (
+          <span className="rounded bg-warning px-2 py-0.5 text-xs font-semibold text-warning-foreground">
+            新人
+          </span>
+        )}
         <span className="rounded bg-bg-muted px-2 py-1 text-xs text-text-secondary">
           {statusLabel(data.status)}
         </span>
@@ -170,11 +179,8 @@ export default function StaffDetailPage() {
 
       <EventsCard staffId={data.id} canEdit={canEdit} />
 
-      <MentorCard
-        staffId={data.id}
-        canEdit={canEdit}
-        currentMentorIdHint={data.mentor_id ?? null}
-      />
+      {/* 同行スタッフ割付 — is_trainee=true のときのみ表示 (§3.5.x) */}
+      {data.is_trainee && <CompanionCard staffId={data.id} canEdit={canEdit} />}
 
       <DeleteConfirmModal
         open={confirmOpen}
@@ -197,13 +203,12 @@ function BasicInfoCard({ staff }: { staff: StaffRead }) {
       <CardContent>
         <dl className="grid grid-cols-1 gap-3 text-sm md:grid-cols-2">
           <Row label="スタッフコード" value={staff.code ?? '--'} />
-          <Row label="氏名" value={staff.name} />
+          <Row label="氏名" value={staff.name} badge={staff.is_trainee ? '新人' : undefined} />
           <Row label="カナ" value={staff.kana ?? '--'} />
           <Row label="性別" value={sexLabel(staff.sex)} />
           <Row label="役割" value={roleLabel(staff.role)} />
           <Row label="状態" value={statusLabel(staff.status)} />
           <Row label="主拠点" value={staff.primary_office_id ?? '--'} />
-          <Row label="メンター ID" value={staff.mentor_id ?? '--'} />
           <Row label="登録日時" value={formatDate(staff.created_at)} />
           {staff.note && (
             <div className="md:col-span-2">
@@ -217,11 +222,18 @@ function BasicInfoCard({ staff }: { staff: StaffRead }) {
   );
 }
 
-function Row({ label, value }: { label: string; value: string }) {
+function Row({ label, value, badge }: { label: string; value: string; badge?: string }) {
   return (
     <div>
       <dt className="text-xs text-text-muted">{label}</dt>
-      <dd className="text-text-primary">{value}</dd>
+      <dd className="flex items-center gap-1.5 text-text-primary">
+        {value}
+        {badge && (
+          <span className="rounded bg-warning px-1.5 py-0.5 text-xs font-semibold text-warning-foreground">
+            {badge}
+          </span>
+        )}
+      </dd>
     </div>
   );
 }
@@ -474,64 +486,19 @@ function EventsCard({ staffId, canEdit }: { staffId: string; canEdit: boolean })
   );
 }
 
-function MentorCard({
-  staffId,
-  canEdit,
-  currentMentorIdHint,
-}: {
-  staffId: string;
-  canEdit: boolean;
-  /** Falls back to staff.mentor_id while the dedicated endpoint is loading. */
-  currentMentorIdHint: string | null;
-}) {
-  const { data, isLoading, isError, error } = useMentor(staffId);
-  const [open, setOpen] = useState(false);
-
-  const mentorId = data?.mentor_staff_id ?? currentMentorIdHint;
-  const mentorName = data?.mentor_staff_name ?? null;
-
+/**
+ * 同行スタッフ割付カード (W10-FE2 / §3.5.x).
+ * is_trainee=true の場合のみ StaffDetailPage から呼び出される。
+ */
+function CompanionCard({ staffId, canEdit }: { staffId: string; canEdit: boolean }) {
   return (
     <Card>
-      <CardHeader className="flex flex-row items-center justify-between">
-        <CardTitle>メンター割付</CardTitle>
-        {canEdit && (
-          <Button type="button" variant="outline" size="sm" onClick={() => setOpen(true)}>
-            <Pencil className="h-4 w-4" />
-            変更
-          </Button>
-        )}
+      <CardHeader>
+        <CardTitle>同行スタッフ割付</CardTitle>
       </CardHeader>
       <CardContent>
-        {isLoading ? (
-          <Skeleton className="h-10 w-full" />
-        ) : isError ? (
-          <Alert variant="destructive">
-            <AlertTitle>取得に失敗しました</AlertTitle>
-            <AlertDescription>
-              {error instanceof Error ? error.message : '不明なエラー'}
-            </AlertDescription>
-          </Alert>
-        ) : mentorId ? (
-          <div className="rounded border border-border-default p-3 text-sm">
-            <div className="text-xs text-text-muted">担当メンター</div>
-            <div className="text-text-primary">{mentorName ?? mentorId}</div>
-          </div>
-        ) : (
-          <Alert>
-            <AlertTitle>メンター未設定</AlertTitle>
-            <AlertDescription>このスタッフにはメンターが割り当てられていません。</AlertDescription>
-          </Alert>
-        )}
+        <StaffCompanionViewer staffId={staffId} canEdit={canEdit} />
       </CardContent>
-
-      {canEdit && (
-        <MentorAssignDialog
-          staffId={staffId}
-          currentMentorId={mentorId}
-          open={open}
-          onOpenChange={setOpen}
-        />
-      )}
     </Card>
   );
 }

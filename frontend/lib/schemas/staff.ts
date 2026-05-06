@@ -34,7 +34,8 @@ export const staffBaseSchema = z.object({
   status: z.enum(STAFF_STATUS_VALUES).default('active'),
   role: z.enum(STAFF_ROLE_VALUES).default('staff'),
   primary_office_id: z.string().uuid().nullable().optional(),
-  mentor_id: z.string().uuid().nullable().optional(),
+  /** Wave 10: 新人スタッフフラグ。true のとき同行スタッフ割付が必要 (§4.2.x) */
+  is_trainee: z.boolean().default(false),
   note: z.string().nullable().optional(),
 });
 
@@ -48,7 +49,8 @@ export const staffUpdateSchema = z.object({
   status: z.enum(STAFF_STATUS_VALUES).optional(),
   role: z.enum(STAFF_ROLE_VALUES).optional(),
   primary_office_id: z.string().uuid().nullable().optional(),
-  mentor_id: z.string().uuid().nullable().optional(),
+  /** Wave 10: 新人スタッフフラグ (§4.2.x) */
+  is_trainee: z.boolean().optional(),
   note: z.string().nullable().optional(),
 });
 
@@ -140,14 +142,20 @@ export const staffEventSchema = z.object({
 });
 export type StaffEvent = z.infer<typeof staffEventSchema>;
 
-export const mentorAssignmentSchema = z.object({
+/**
+ * Wave 10: 同行スタッフ割付スキーマ (staff_companion_assignments テーブル / §4.2.x).
+ * 旧 mentorAssignmentSchema は廃止。
+ */
+export const companionAssignmentSchema = z.object({
   id: z.string().uuid(),
-  mentor_id: z.string().uuid(),
-  mentee_id: z.string().uuid(),
-  start_date: z.string(),
-  end_date: z.string().nullable().optional(),
+  trainee_staff_id: z.string().uuid(),
+  weekday: z.number().int().min(0).max(6),
+  part: z.enum(['am', 'pm', 'full']),
+  companion_staff_id: z.string().uuid(),
+  created_at: z.string(),
+  updated_at: z.string(),
 });
-export type MentorAssignment = z.infer<typeof mentorAssignmentSchema>;
+export type CompanionAssignment = z.infer<typeof companionAssignmentSchema>;
 
 // ---------------------------------------------------------------------------
 // Helpers shared by list filters

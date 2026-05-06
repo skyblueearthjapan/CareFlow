@@ -11,7 +11,6 @@
  * ``areas`` / ``max_per_day`` / ``skill_level`` / ``assignment_volume``。
  */
 import { OfficeCombobox } from '@/components/master/OfficeCombobox';
-import { StaffCombobox } from '@/components/master/StaffCombobox';
 import { Input } from '@/components/ui/input';
 import {
   type STAFF_ROLE_VALUES,
@@ -32,7 +31,8 @@ export interface StaffFormState {
   status: StatusValue;
   role: RoleValue;
   primary_office_id: string;
-  mentor_id: string;
+  /** Wave 10: 新人スタッフフラグ (§4.2.x). 旧 mentor_id は廃止 */
+  is_trainee: boolean;
   note: string;
 }
 
@@ -48,9 +48,6 @@ interface StaffFormFieldsProps {
   sexOptions: Option<SexValue>[];
   roleOptions: Option<RoleValue>[];
   statusOptions: Option<StatusValue>[];
-  /** Current staff id (edit mode) — excluded from mentor combobox so a
-   *  staff member cannot be assigned as their own mentor. */
-  currentStaffId?: string;
 }
 
 export function StaffFormFields({
@@ -60,7 +57,6 @@ export function StaffFormFields({
   sexOptions,
   roleOptions,
   statusOptions,
-  currentStaffId,
 }: StaffFormFieldsProps) {
   const set = <K extends keyof StaffFormState>(key: K, value: StaffFormState[K]) =>
     onChange({ ...form, [key]: value });
@@ -127,12 +123,20 @@ export function StaffFormFields({
           />
         </Field>
 
-        <Field label="メンター" error={errors.mentor_id} hint="新人スタッフのみ設定">
-          <StaffCombobox
-            value={form.mentor_id}
-            onChange={(v) => set('mentor_id', v)}
-            excludeId={currentStaffId}
-          />
+        <Field
+          label="新人スタッフ"
+          error={errors.is_trainee}
+          hint="同行スタッフ割付が必要な場合にオン"
+        >
+          <label className="flex cursor-pointer items-center gap-2 pt-1">
+            <input
+              type="checkbox"
+              checked={form.is_trainee}
+              onChange={(e) => set('is_trainee', e.target.checked)}
+              className="h-4 w-4 rounded border-border-default accent-brand-primary"
+            />
+            <span className="text-sm text-text-primary">新人フラグをオン</span>
+          </label>
         </Field>
 
         <Field label="備考" error={errors.note} className="md:col-span-2">
