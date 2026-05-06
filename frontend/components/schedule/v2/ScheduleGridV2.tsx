@@ -58,6 +58,7 @@ import { FixButton } from './FixButton';
 import { PatientCard } from './PatientCard';
 import { PoolPanel, POOL_DROPPABLE_ID } from './PoolPanel';
 import { TimeSlotCell, rejectDuplicateDrop, type VisitEntry } from './TimeSlotCell';
+import { ScheduleChangeDialog } from './ScheduleChangeDialog';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Time / weekday utilities
@@ -344,6 +345,51 @@ export function ScheduleGridV2({
     return map;
   }, [allPatients]);
 
+  // ─────────────── D&D 後の変更反映ダイアログ state ───────────────
+  /**
+   * D&D でセル間移動が確定したときに開くダイアログ用の pending 情報。
+   * プール → セル / セル → セル (異なるスロット) の場合にのみ使用する。
+   */
+  interface PendingMove {
+    patientId: string;
+    weekday: number;
+    startTime: string;
+    serviceMinutes: number;
+    staffCount: 1 | 2;
+  }
+
+  const [pendingMove, setPendingMove] = useState<PendingMove | null>(null);
+  const [dialogOpen, setDialogOpen] = useState(false);
+
+  /** ダイアログ閉 / キャンセル時に楽観的更新を revert する。 */
+  const handleDialogClose = () => {
+    setDialogOpen(false);
+    if (pendingMove) {
+      // 元の配置に戻す (before snapshot を使う)
+      setPlacements((prev) => {
+        const next = new Map(prev);
+        next.delete(pendingMove.patientId);
+        return next;
+      });
+      setPool((prev) =>
+        prev.some((p) => p.patientId === pendingMove.patientId)
+          ? prev
+          : [
+              ...prev,
+              { patientId: pendingMove.patientId, serviceMinutes: pendingMove.serviceMinutes },
+            ],
+      );
+      setPendingMove(null);
+    }
+  };
+
+  /** ダイアログで「適用」が押された後の後処理 (楽観的更新確定)。 */
+  const handleDialogApplied = () => {
+    // 楽観的更新はすでに setPlacements 済みなので追加処理不要。
+    setPendingMove(null);
+    setDialogOpen(false);
+  };
+
   // ─────────────── DnD handlers ───────────────
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -367,7 +413,7 @@ export function ScheduleGridV2({
     if (!patientId) return;
     const overId = String(over.id);
 
-    // Drop on pool → 配置解除
+    // Drop on pool → 配置解除 (ダイアログ不要、即時 revert)
     if (overId === POOL_DROPPABLE_ID) {
       setPlacements((prev) => {
         if (!prev.has(patientId)) return prev;
@@ -396,39 +442,56 @@ export function ScheduleGridV2({
       currentPlacement !== undefined &&
       currentPlacement.weekday === cell.weekday &&
       currentPlacement.startTime === cell.time;
-    if (!isSameSlot) {
-      // 既に別の配置として同 patientId が同スロットにある場合を拒否
-      const otherOccupants = occupantsAtTarget.filter((id) => id !== patientId);
-      const dummyEntries: VisitEntry[] = otherOccupants.map((id) => ({
-        patientId: id,
-        draggableId: `patient:${id}`,
-        patient: { id, name: id },
-        staffCount: 1,
-      }));
-      if (rejectDuplicateDrop(patientId, dummyEntries)) return;
-    }
+    if (isSameSlot) return; // 同スロットへの drop は何もしない
+
+    // 既に別の配置として同 patientId が同スロットにある場合を拒否
+    const otherOccupants = occupantsAtTarget.filter((id) => id !== patientId);
+    const dummyEntries: VisitEntry[] = otherOccupants.map((id) => ({
+      patientId: id,
+      draggableId: `patient:${id}`,
+      patient: { id, name: id },
+      staffCount: 1,
+    }));
+    if (rejectDuplicateDrop(patientId, dummyEntries)) return;
+
+    // 楽観的更新: ダイアログが表示されるまで先に UI に反映する
+    const existingBefore = currentPlacement;
+    const serviceMinutes = (() => {
+      if (existingBefore) {
+        return Math.max(
+          15,
+          hhmmToMin(existingBefore.endTime) - hhmmToMin(existingBefore.startTime),
+        );
+      }
+      const inPool = pool.find((p) => p.patientId === patientId);
+      return inPool?.serviceMinutes ?? 60;
+    })();
+    const staffCount: 1 | 2 = existingBefore?.staffCount ?? 1;
 
     setPlacements((prev) => {
       const next = new Map(prev);
-      const existing = prev.get(patientId);
-      const serviceMinutes = (() => {
-        if (existing) {
-          return Math.max(15, hhmmToMin(existing.endTime) - hhmmToMin(existing.startTime));
-        }
-        const inPool = pool.find((p) => p.patientId === patientId);
-        return inPool?.serviceMinutes ?? 60;
-      })();
       next.set(patientId, {
         patientId,
         weekday: cell.weekday,
         startTime: cell.time,
         endTime: deriveEndTime(cell.time, serviceMinutes),
-        staffCount: existing?.staffCount ?? 1,
+        staffCount,
       });
       return next;
     });
     // プールに居た場合は除外
     setPool((prev) => prev.filter((p) => p.patientId !== patientId));
+
+    // ダイアログを開く (visitId は this_week の visit_id が必要だが、
+    // グリッド上は patient_id を visit_id として仮利用し、API 側で解決する)
+    setPendingMove({
+      patientId,
+      weekday: cell.weekday,
+      startTime: cell.time,
+      serviceMinutes,
+      staffCount,
+    });
+    setDialogOpen(true);
   };
 
   // ─────────────── 操作ハンドラ ───────────────
@@ -638,6 +701,23 @@ export function ScheduleGridV2({
           ) : null}
         </DragOverlay>
       </section>
+
+      {/* D&D 後の変更反映モード選択ダイアログ */}
+      {pendingMove ? (
+        <ScheduleChangeDialog
+          open={dialogOpen}
+          visitId={pendingMove.patientId}
+          patientName={patientMeta.get(pendingMove.patientId)?.name ?? pendingMove.patientId}
+          isSpecialWeek={false}
+          newWeekday={pendingMove.weekday}
+          newStartTime={pendingMove.startTime}
+          newDurationMin={pendingMove.serviceMinutes}
+          isoYear={isoWeek.iso_year}
+          isoWeek={isoWeek.iso_week}
+          onClose={handleDialogClose}
+          onApplied={handleDialogApplied}
+        />
+      ) : null}
     </DndContext>
   );
 }

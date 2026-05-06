@@ -1,5 +1,5 @@
 /**
- * TanStack Query hooks for Patient Fixed Visits (固定枠) API (W9-FE1).
+ * TanStack Query hooks for Patient Fixed Visits (固定枠) API (W9-FE1 / W9-FE2).
  *
  * Endpoints (backend `app/api/v1/patients/{id}/fixed-visits`)
  * ────────────────────────────────────────────────────────────
@@ -7,8 +7,9 @@
  *   PUT    /api/v1/patients/{id}/fixed-visits  body: PatientFixedVisitsBulkPut
  *   DELETE /api/v1/patients/{id}/fixed-visits?mode=normal|special
  *   POST   /api/v1/patients/{id}/fixed-visits/from-week  (Phase 2 endpoint)
+ *   POST   /api/v1/patients/fixed-visits/from-week-bulk  (Phase 4 W9-FE2 endpoint)
  *
- * Phase 2 の from-week は W9-BE2 で実装予定。本 Phase では GET/PUT/DELETE を使用。
+ * Phase 2 の from-week は W9-BE2 で実装済。本 Phase では GET/PUT/DELETE を使用。
  * from-week が未デプロイの状態では POST が 404 になる可能性があるため、
  * エラー時は "Phase 2 がデプロイされていません" のメッセージを返す。
  */
@@ -21,6 +22,7 @@ import {
   type UseMutationResult,
   type UseQueryResult,
 } from '@tanstack/react-query';
+import { toast } from 'sonner';
 import { useSession } from 'next-auth/react';
 
 import { fetcher } from '@/lib/api/fetcher';
@@ -187,6 +189,47 @@ export function useApplyFromWeek(
         void qc.invalidateQueries({ queryKey: FIXED_VISITS_KEY(patientId, mode) });
       }
       void qc.invalidateQueries({ queryKey: FIXED_VISITS_KEY(patientId) });
+    },
+  });
+}
+
+// ─── POST /api/v1/patients/fixed-visits/from-week-bulk (Phase 4 W9-FE2) ─────
+
+export interface ApplyFromWeekBulkParams {
+  iso_year: number;
+  iso_week: number;
+  mode?: PatientFixedVisitMode;
+}
+
+export interface ApplyFromWeekBulkResponse {
+  updated_count: number;
+}
+
+/**
+ * 全 active 患者の固定枠を、指定週のスケジュールから一括生成する (W9-FE2 endpoint)。
+ * 成功時は toast で更新人数を表示する。
+ */
+export function useApplyFromWeekBulk(): UseMutationResult<
+  ApplyFromWeekBulkResponse,
+  Error,
+  ApplyFromWeekBulkParams
+> {
+  const qc = useQueryClient();
+  const { data: session } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+
+  return useMutation<ApplyFromWeekBulkResponse, Error, ApplyFromWeekBulkParams>({
+    mutationFn: async (params) =>
+      fetcher<ApplyFromWeekBulkResponse>('/api/v1/patients/fixed-visits/from-week-bulk', {
+        method: 'POST',
+        body: JSON.stringify(params),
+        accessToken,
+        refreshToken,
+      }),
+    onSuccess: (data) => {
+      toast.success(`${data.updated_count} 名の患者の固定枠を更新しました`);
+      // 全患者の fixed-visits キャッシュを無効化する。
+      void qc.invalidateQueries({ queryKey: ['patients'] });
     },
   });
 }
