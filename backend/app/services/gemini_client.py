@@ -142,7 +142,7 @@ _LEGACY_CONTEXT_TYPE_MAP: dict[str, str] = {
 }
 
 
-# v2 で扱う公式 context_type 10 種 (§3.5.2 / §9 対応表)。
+# v2 で扱う公式 context_type 12 種 (§3.5.2 / §9 対応表 + W14-BE 追加 2 種)。
 # `backend/app/schemas/v2/enums.py::AiContextType` と完全一致させる。
 SUPPORTED_CONTEXT_TYPES: tuple[str, ...] = (
     "patient_create",
@@ -155,6 +155,8 @@ SUPPORTED_CONTEXT_TYPES: tuple[str, ...] = (
     "patient_special_week",
     "general",
     "out_of_scope",
+    "staff_status_update",
+    "patient_status_update",
 )
 
 
@@ -286,9 +288,32 @@ _CONTEXT_PROMPT_TEMPLATES: dict[str, str] = {
         "【コンテキスト】汎用。発話内容から最適な action_type を選んでください。\n"
         "選択肢: 'patient_create' | 'staff_create' | 'staff_event' | 'staff_off' |\n"
         " 'staff_mentor' | 'patient_cancel' | 'patient_reschedule' |\n"
-        " 'patient_special_week' | 'out_of_scope' | 'unknown'。\n"
+        " 'patient_special_week' | 'staff_status_update' | 'patient_status_update' |\n"
+        " 'out_of_scope' | 'unknown'。\n"
         "'staff_mentor' は新人フラグ切替 (is_trainee) または曜日×部分 (am/pm/full) 同行スタッフ割付 (assignments[]) の 2 モード対応。\n"
+        "'staff_status_update' はスタッフ状態変更 (active/on_leave/retired)。\n"
+        "'patient_status_update' は患者状態変更 (active/suspended/admitted/pending/cancelled)。\n"
         "範囲外と判定したら 'out_of_scope' を返し、reason / suggested_path を含めてください。"
+    ),
+    "staff_status_update": (
+        "【コンテキスト】スタッフの状態 (status) を変更。\n"
+        "action_type は 'staff_status_update' を使用。\n"
+        " 主要 fields: { staff_id, status: 'active'|'on_leave'|'retired' }\n"
+        "  active = 在籍 / on_leave = 休職 / retired = 退職\n"
+        "  例「鈴木さんを休職にして」 → status: 'on_leave'\n"
+        "  例「田中さんは退職」 → status: 'retired'\n"
+        "  例「鈴木さんを在籍に戻す」 → status: 'active'"
+    ),
+    "patient_status_update": (
+        "【コンテキスト】患者の状態 (status) を変更。\n"
+        "action_type は 'patient_status_update' を使用。\n"
+        " 主要 fields: { patient_id, status: 'active'|'suspended'|'admitted'|'pending'|'cancelled' }\n"
+        "  active = 稼働中 / suspended = 一時休止 / admitted = 入院中 /\n"
+        "  pending = 開始前 / cancelled = 解約済み\n"
+        "  例「山田さんを入院中にして」 → status: 'admitted'\n"
+        "  例「田中さんを一時休止」 → status: 'suspended'\n"
+        "  例「鈴木さんは解約」 → status: 'cancelled'\n"
+        "  例「佐藤さんは退院、稼働中に戻して」 → status: 'active'"
     ),
 }
 

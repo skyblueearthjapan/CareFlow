@@ -42,6 +42,8 @@ class RequestType(StrEnum):
     PATIENT_RESCHEDULE = "patient_reschedule"
     PATIENT_SPECIAL_WEEK_ON = "patient_special_week_on"
     PATIENT_SPECIAL_WEEK_OFF = "patient_special_week_off"
+    STAFF_STATUS_UPDATE = "staff_status_update"
+    PATIENT_STATUS_UPDATE = "patient_status_update"
 
 
 class RequestStatus(StrEnum):
@@ -86,3 +88,5 @@ class AiContextType(StrEnum):
     PATIENT_SPECIAL_WEEK = "patient_special_week"
     GENERAL = "general"
     OUT_OF_SCOPE = "out_of_scope"
+    STAFF_STATUS_UPDATE = "staff_status_update"
+    PATIENT_STATUS_UPDATE = "patient_status_update"

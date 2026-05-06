@@ -610,6 +610,60 @@ async def _apply_patient_special_week_off(
     await db.flush()
 
 
+async def _apply_staff_status_update(
+    db: AsyncSession, request: PendingRequest, payload: _Payload
+) -> None:
+    """スタッフの status 列を更新 (active / on_leave / retired)."""
+    staff_id = _coerce_uuid(payload.get("staff_id") or request.target_staff_id)
+    if staff_id is None:
+        raise PendingRequestApplyError(
+            "staff_status_update: staff_id is required",
+            http_status=422,
+        )
+    new_status = payload.get("status")
+    if new_status not in ("active", "on_leave", "retired"):
+        raise PendingRequestApplyError(
+            f"staff_status_update: status must be one of active/on_leave/retired, got {new_status!r}",
+            http_status=422,
+        )
+    staff = await db.scalar(select(Staff).where(Staff.id == staff_id, Staff.deleted_at.is_(None)))
+    if staff is None:
+        raise PendingRequestApplyError(
+            f"staff_status_update: staff {staff_id} not found",
+            http_status=404,
+        )
+    staff.status = new_status
+    await db.flush()
+
+
+async def _apply_patient_status_update(
+    db: AsyncSession, request: PendingRequest, payload: _Payload
+) -> None:
+    """患者の status 列を更新 (active / suspended / admitted / pending / cancelled)."""
+    patient_id = _coerce_uuid(payload.get("patient_id") or request.target_patient_id)
+    if patient_id is None:
+        raise PendingRequestApplyError(
+            "patient_status_update: patient_id is required",
+            http_status=422,
+        )
+    new_status = payload.get("status")
+    if new_status not in ("active", "suspended", "admitted", "pending", "cancelled"):
+        raise PendingRequestApplyError(
+            f"patient_status_update: status must be one of active/suspended/admitted/pending/cancelled, got {new_status!r}",
+            http_status=422,
+        )
+    patient = await db.scalar(
+        select(Patient).where(Patient.id == patient_id, Patient.deleted_at.is_(None))
+    )
+    if patient is None:
+        raise PendingRequestApplyError(
+            f"patient_status_update: patient {patient_id} not found",
+            http_status=404,
+        )
+    patient.status = new_status
+    await db.flush()
+
+
 # ----------------------------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------------------------
@@ -644,6 +698,8 @@ _HANDLERS: dict[str, _HandlerFn] = {
     RequestType.PATIENT_RESCHEDULE.value: _apply_patient_reschedule,
     RequestType.PATIENT_SPECIAL_WEEK_ON.value: _apply_patient_special_week_on,
     RequestType.PATIENT_SPECIAL_WEEK_OFF.value: _apply_patient_special_week_off,
+    RequestType.STAFF_STATUS_UPDATE.value: _apply_staff_status_update,
+    RequestType.PATIENT_STATUS_UPDATE.value: _apply_patient_status_update,
 }
 
 

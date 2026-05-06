@@ -1041,12 +1041,12 @@ async def test_http_approve_failure_rollback(client, db) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 14) handler 9 種網羅サニティ (登録漏れ防止)
+# 14) handler 11 種網羅サニティ (登録漏れ防止)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_all_nine_request_types_have_handlers() -> None:
+async def test_all_eleven_request_types_have_handlers() -> None:
     from app.services.pending_request_applier import _HANDLERS
 
     expected = {
@@ -1059,5 +1059,262 @@ async def test_all_nine_request_types_have_handlers() -> None:
         "patient_reschedule",
         "patient_special_week_on",
         "patient_special_week_off",
+        "staff_status_update",
+        "patient_status_update",
     }
     assert set(_HANDLERS.keys()) == expected
+
+
+# ---------------------------------------------------------------------------
+# W14-BE: staff_status_update
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apply_staff_status_update_active(db) -> None:
+    """staff_status_update: on_leave → active に戻す。"""
+    user = await _make_user(db, "apl-sstatus-active@example.com")
+    staff = Staff(name="休職中スタッフ", status="on_leave")
+    db.add(staff)
+    await db.commit()
+    await db.refresh(staff)
+
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="staff_status_update",
+        payload={"staff_id": str(staff.id), "status": "active"},
+        target_staff_id=staff.id,
+    )
+
+    applier = PendingRequestApplier()
+    await applier.apply(db, pr)
+    await db.commit()
+    await db.refresh(staff)
+    assert staff.status == "active"
+
+
+@pytest.mark.asyncio
+async def test_apply_staff_status_update_on_leave(db) -> None:
+    """staff_status_update: active → on_leave。"""
+    user = await _make_user(db, "apl-sstatus-leave@example.com")
+    staff = Staff(name="在籍スタッフ", status="active")
+    db.add(staff)
+    await db.commit()
+    await db.refresh(staff)
+
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="staff_status_update",
+        payload={"staff_id": str(staff.id), "status": "on_leave"},
+        target_staff_id=staff.id,
+    )
+
+    applier = PendingRequestApplier()
+    await applier.apply(db, pr)
+    await db.commit()
+    await db.refresh(staff)
+    assert staff.status == "on_leave"
+
+
+@pytest.mark.asyncio
+async def test_apply_staff_status_update_retired(db) -> None:
+    """staff_status_update: active → retired。"""
+    user = await _make_user(db, "apl-sstatus-retired@example.com")
+    staff = Staff(name="退職予定スタッフ", status="active")
+    db.add(staff)
+    await db.commit()
+    await db.refresh(staff)
+
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="staff_status_update",
+        payload={"staff_id": str(staff.id), "status": "retired"},
+        target_staff_id=staff.id,
+    )
+
+    applier = PendingRequestApplier()
+    await applier.apply(db, pr)
+    await db.commit()
+    await db.refresh(staff)
+    assert staff.status == "retired"
+
+
+@pytest.mark.asyncio
+async def test_apply_staff_status_update_invalid_status_raises(db) -> None:
+    """staff_status_update: 不正値 → 422。"""
+    user = await _make_user(db, "apl-sstatus-bad@example.com")
+    staff = Staff(name="スタッフ不正値", status="active")
+    db.add(staff)
+    await db.commit()
+    await db.refresh(staff)
+
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="staff_status_update",
+        payload={"staff_id": str(staff.id), "status": "inactive"},
+        target_staff_id=staff.id,
+    )
+
+    applier = PendingRequestApplier()
+    with pytest.raises(PendingRequestApplyError) as exc_info:
+        await applier.apply(db, pr)
+    assert exc_info.value.http_status == 422
+
+
+@pytest.mark.asyncio
+async def test_apply_staff_status_update_missing_staff_id_raises(db) -> None:
+    """staff_status_update: staff_id 未指定 → 422。"""
+    user = await _make_user(db, "apl-sstatus-noid@example.com")
+
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="staff_status_update",
+        payload={"status": "active"},
+    )
+
+    applier = PendingRequestApplier()
+    with pytest.raises(PendingRequestApplyError) as exc_info:
+        await applier.apply(db, pr)
+    assert exc_info.value.http_status == 422
+
+
+@pytest.mark.asyncio
+async def test_apply_staff_status_update_deleted_staff_raises(db) -> None:
+    """staff_status_update: 削除済みスタッフ (deleted_at IS NOT NULL) → 404。"""
+    from datetime import datetime
+
+    user = await _make_user(db, "apl-sstatus-del@example.com")
+    staff = Staff(name="削除済みスタッフ", status="active", deleted_at=datetime.utcnow())
+    db.add(staff)
+    await db.commit()
+    await db.refresh(staff)
+
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="staff_status_update",
+        payload={"staff_id": str(staff.id), "status": "retired"},
+        target_staff_id=staff.id,
+    )
+
+    applier = PendingRequestApplier()
+    with pytest.raises(PendingRequestApplyError) as exc_info:
+        await applier.apply(db, pr)
+    assert exc_info.value.http_status == 404
+
+
+# ---------------------------------------------------------------------------
+# W14-BE: patient_status_update
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apply_patient_status_update_admitted(db) -> None:
+    """patient_status_update: active → admitted。"""
+    user = await _make_user(db, "apl-pstatus-admit@example.com")
+    patient = await _make_patient(db, code="P-PST-ADM")
+
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="patient_status_update",
+        payload={"patient_id": str(patient.id), "status": "admitted"},
+        target_patient_id=patient.id,
+    )
+
+    applier = PendingRequestApplier()
+    await applier.apply(db, pr)
+    await db.commit()
+    await db.refresh(patient)
+    assert patient.status == "admitted"
+
+
+@pytest.mark.asyncio
+async def test_apply_patient_status_update_suspended(db) -> None:
+    """patient_status_update: active → suspended。"""
+    user = await _make_user(db, "apl-pstatus-sus@example.com")
+    patient = await _make_patient(db, code="P-PST-SUS")
+
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="patient_status_update",
+        payload={"patient_id": str(patient.id), "status": "suspended"},
+        target_patient_id=patient.id,
+    )
+
+    applier = PendingRequestApplier()
+    await applier.apply(db, pr)
+    await db.commit()
+    await db.refresh(patient)
+    assert patient.status == "suspended"
+
+
+@pytest.mark.asyncio
+async def test_apply_patient_status_update_invalid_status_raises(db) -> None:
+    """patient_status_update: 不正値 → 422。"""
+    user = await _make_user(db, "apl-pstatus-bad@example.com")
+    patient = await _make_patient(db, code="P-PST-BAD")
+
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="patient_status_update",
+        payload={"patient_id": str(patient.id), "status": "unknown_status"},
+        target_patient_id=patient.id,
+    )
+
+    applier = PendingRequestApplier()
+    with pytest.raises(PendingRequestApplyError) as exc_info:
+        await applier.apply(db, pr)
+    assert exc_info.value.http_status == 422
+
+
+@pytest.mark.asyncio
+async def test_apply_patient_status_update_missing_patient_id_raises(db) -> None:
+    """patient_status_update: patient_id 未指定 → 422。"""
+    user = await _make_user(db, "apl-pstatus-noid@example.com")
+
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="patient_status_update",
+        payload={"status": "admitted"},
+    )
+
+    applier = PendingRequestApplier()
+    with pytest.raises(PendingRequestApplyError) as exc_info:
+        await applier.apply(db, pr)
+    assert exc_info.value.http_status == 422
+
+
+@pytest.mark.asyncio
+async def test_apply_patient_status_update_deleted_patient_raises(db) -> None:
+    """patient_status_update: 削除済み患者 (deleted_at IS NOT NULL) → 404。"""
+    from datetime import datetime
+
+    user = await _make_user(db, "apl-pstatus-del@example.com")
+    patient = Patient(
+        code="P-PST-DEL", name="削除済み患者", status="active", deleted_at=datetime.utcnow()
+    )
+    db.add(patient)
+    await db.commit()
+    await db.refresh(patient)
+
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="patient_status_update",
+        payload={"patient_id": str(patient.id), "status": "cancelled"},
+        target_patient_id=patient.id,
+    )
+
+    applier = PendingRequestApplier()
+    with pytest.raises(PendingRequestApplyError) as exc_info:
+        await applier.apply(db, pr)
+    assert exc_info.value.http_status == 404
