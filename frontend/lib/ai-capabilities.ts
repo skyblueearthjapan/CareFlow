@@ -31,16 +31,19 @@ export const AI_CAPABILITY_CATEGORY_LABELS: Record<AiCapabilityCategory, string>
 /**
  * 個別の AI 機能（できること）1 件分の定義。
  *
- * @property id        — 内部識別子 (snake_case)。安定識別子としてログ等にも使う想定
- * @property category  — UI でのグルーピングに利用
- * @property label     — ユーザー向け短い見出し
- * @property example   — 「こう発話すると動く」例文。日本語の自然な指示文
+ * @property id          — 内部識別子 (snake_case)。安定識別子としてログ等にも使う想定
+ * @property category    — UI でのグルーピングに利用
+ * @property label       — ユーザー向け短い見出し
+ * @property example     — 「こう発話すると動く」例文。日本語の自然な指示文
+ * @property contextType — AI 解釈結果の context_type / action_type と対応する識別子 (任意)。
+ *                         同一 contextType を複数の capability が持つことも許容する。
  */
 export interface AiCapability {
   id: string;
   category: AiCapabilityCategory;
   label: string;
   example: string;
+  contextType?: string;
 }
 
 /**
@@ -63,10 +66,19 @@ export const AI_CAPABILITIES: AiCapability[] = [
     example: '「看護師の佐藤さんを新規登録」',
   },
   {
-    id: 'staff_mentor_assign',
+    id: 'staff_mentor_trainee',
     category: 'master',
-    label: 'スタッフの同行スタッフ登録',
-    example: '「鈴木さんの同行スタッフを山田さんに設定」',
+    label: '新人フラグ切替',
+    example: '「鈴木さんを新人にする」 / 「鈴木さんの新人フラグを外す」',
+    contextType: 'staff_mentor',
+  },
+  {
+    id: 'staff_mentor_companion',
+    category: 'master',
+    label: '同行スタッフ割付 (曜日×午前/午後/終日)',
+    example:
+      '「鈴木さんの月曜午前は田中さん、月曜午後は佐藤さん」 / 「鈴木さんは平日終日 田中さんと同行」',
+    contextType: 'staff_mentor',
   },
   {
     id: 'staff_override_create',

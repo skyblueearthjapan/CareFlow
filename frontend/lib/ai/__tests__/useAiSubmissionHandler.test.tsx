@@ -250,4 +250,114 @@ describe('useAiSubmissionHandler', () => {
     expect(mockApproveMutateAsync).not.toHaveBeenCalled();
     expect(toast.success).toHaveBeenCalledWith(expect.stringContaining('patient_create'));
   });
+
+  /**
+   * ケース 5: staff_mentor + assignments[] + admin (PC) → pending 経路 (createAndApply)
+   *
+   * W11-FE: assignments[] を含む staff_mentor payload を admin が送信した場合、
+   * BE が payload をそのまま解釈するため FE 側の変換は不要。
+   * createAndApply が staff_mentor request_type で呼ばれることを確認。
+   */
+  it('staff_mentor + assignments[] + admin (PC) → createAndApply called with staff_mentor', async () => {
+    mockSession.mockReturnValue({
+      data: { user: { role: 'admin' } },
+      status: 'authenticated',
+    });
+
+    const { result } = renderHook(() => useAiSubmissionHandler({ isMobile: false }));
+
+    const interpretResult = makeInterpretResponse('staff_mentor', {
+      target_staff_id: 'aaaaaaaa-0000-0000-0000-000000000001',
+      assignments: [
+        {
+          day_of_week: 1,
+          part: 'morning',
+          companion_staff_id: 'bbbbbbbb-0000-0000-0000-000000000002',
+        },
+        {
+          day_of_week: 1,
+          part: 'afternoon',
+          companion_staff_id: 'cccccccc-0000-0000-0000-000000000003',
+        },
+      ],
+    });
+
+    await act(async () => {
+      await result.current.onSubmitInterceptor(interpretResult);
+    });
+
+    expect(mockCreateAndApplyMutateAsync).toHaveBeenCalledOnce();
+    expect(mockCreateAndApplyMutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ request_type: 'staff_mentor' }),
+    );
+    expect(mockMutateAsync).not.toHaveBeenCalled();
+    expect(toast.success).toHaveBeenCalledWith(expect.stringContaining('staff_mentor'));
+  });
+
+  /**
+   * ケース 6: staff_mentor + assignments[] + staff → out_of_scope (RBAC)
+   *
+   * staff ロールは staff_mentor を操作できないため out_of_scope に分岐する。
+   * POST は一切呼ばれないことを確認。
+   */
+  it('staff_mentor + assignments[] + staff → out_of_scope, no POST', async () => {
+    mockSession.mockReturnValue({
+      data: { user: { role: 'staff' } },
+      status: 'authenticated',
+    });
+
+    const { result } = renderHook(() => useAiSubmissionHandler({ isMobile: false }));
+
+    const interpretResult = makeInterpretResponse('staff_mentor', {
+      target_staff_id: 'aaaaaaaa-0000-0000-0000-000000000001',
+      assignments: [
+        {
+          day_of_week: 2,
+          part: 'all_day',
+          companion_staff_id: 'bbbbbbbb-0000-0000-0000-000000000002',
+        },
+      ],
+    });
+
+    await act(async () => {
+      await result.current.onSubmitInterceptor(interpretResult);
+    });
+
+    expect(mockMutateAsync).not.toHaveBeenCalled();
+    expect(mockCreateAndApplyMutateAsync).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('staff'));
+  });
+
+  /**
+   * ケース 7: staff_mentor + assignments=[] (空配列) + admin (PC) → POST OK (同行スタッフ全削除)
+   *
+   * assignments が空配列でも POST 自体は成功する (BE 側で全削除として扱う)。
+   * FE では 422 を事前にブロックせず、BE に素通しする設計。
+   */
+  it('staff_mentor + assignments=[] (empty) + admin (PC) → POST OK (companion full clear)', async () => {
+    mockSession.mockReturnValue({
+      data: { user: { role: 'admin' } },
+      status: 'authenticated',
+    });
+
+    const { result } = renderHook(() => useAiSubmissionHandler({ isMobile: false }));
+
+    const interpretResult = makeInterpretResponse('staff_mentor', {
+      target_staff_id: 'aaaaaaaa-0000-0000-0000-000000000001',
+      assignments: [],
+    });
+
+    await act(async () => {
+      await result.current.onSubmitInterceptor(interpretResult);
+    });
+
+    expect(mockCreateAndApplyMutateAsync).toHaveBeenCalledOnce();
+    expect(mockCreateAndApplyMutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        request_type: 'staff_mentor',
+        payload: expect.objectContaining({ assignments: [] }),
+      }),
+    );
+    expect(toast.success).toHaveBeenCalledWith(expect.stringContaining('staff_mentor'));
+  });
 });

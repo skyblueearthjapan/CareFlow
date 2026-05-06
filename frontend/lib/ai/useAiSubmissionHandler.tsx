@@ -167,10 +167,7 @@ function buildCreatePayload(
 ): PendingRequestV2Create {
   const fields = action.fields as Record<string, unknown>;
 
-  const targetStaffId =
-    pickUuid(fields.target_staff_id) ??
-    pickUuid(fields.staff_id) ??
-    pickUuid(fields.mentor_staff_id);
+  const targetStaffId = pickUuid(fields.target_staff_id) ?? pickUuid(fields.staff_id);
   const targetPatientId = pickUuid(fields.target_patient_id) ?? pickUuid(fields.patient_id);
   const targetDate =
     pickIsoDate(fields.target_date) ?? pickIsoDate(fields.visit_date) ?? pickIsoDate(fields.date);
