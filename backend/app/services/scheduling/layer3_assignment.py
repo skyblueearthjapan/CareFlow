@@ -40,11 +40,13 @@ MVP 前提 (Q3=ハイブリッド, §5.4 / 受入基準):
 
 from __future__ import annotations
 
+import logging
 import math
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from datetime import date as date_cls
+from datetime import time as time_cls
 from typing import Any
 from uuid import UUID
 
@@ -60,9 +62,12 @@ from app.models.course import (
 from app.models.office import Office
 from app.models.patient import Patient
 from app.models.staff import Staff, StaffShift, StaffWeeklyOverride
+from app.models.staff_companion_assignment import StaffCompanionAssignment
 from app.models.visit import VISIT_STATUS_PLANNED, Visit
 from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.services.scheduling.layer2_clustering import haversine_km
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants — cost function weights (§5.4)
@@ -125,6 +130,7 @@ class StaffInfo:
     primary_office_lat: float | None
     primary_office_lng: float | None
     work_days: frozenset[int]  # 0=Mon..6=Sun
+    is_trainee: bool = False  # W10-BE2: 新人フラグ
 
 
 @dataclass
@@ -296,7 +302,8 @@ class Layer3Assigner:
         result = self.solve(course_targets, staff_pool, history=history)
 
         # ---------- 5. DB 反映 ----------
-        await self._persist(db, result.assignments)
+        trainee_ids = frozenset(s.staff_id for s in staff_pool if s.is_trainee)
+        await self._persist(db, result.assignments, trainee_staff_ids=trainee_ids)
 
         return result
 
@@ -597,6 +604,103 @@ class Layer3Assigner:
             )
         return targets
 
+    # ------------------------------------------------------------------ #
+    # private: companion helpers (W10-BE2 Phase 2 Layer 3)
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _visit_part(
+        visit_start: time_cls,
+        shift_start: time_cls | None,
+        shift_end: time_cls | None,
+    ) -> str:
+        """visit の start_time が午前 ('am') か午後 ('pm') かを返す.
+
+        companion スタッフのシフト (start_time / end_time) の中央時刻を境界とする。
+        シフト情報が欠落している場合はデフォルト境界 12:00 を使う。
+
+        Args:
+            visit_start: 訪問開始時刻。
+            shift_start: companion スタッフのシフト開始時刻 (None = 欠落)。
+            shift_end: companion スタッフのシフト終了時刻 (None = 欠落)。
+
+        Returns:
+            'am' or 'pm'
+        """
+        if shift_start is not None and shift_end is not None:
+            # シフト中央時刻を秒で算出
+            start_sec = shift_start.hour * 3600 + shift_start.minute * 60 + shift_start.second
+            end_sec = shift_end.hour * 3600 + shift_end.minute * 60 + shift_end.second
+            mid_sec = (start_sec + end_sec) // 2
+        else:
+            # デフォルト: 正午 (12:00)
+            mid_sec = 12 * 3600
+
+        visit_sec = visit_start.hour * 3600 + visit_start.minute * 60 + visit_start.second
+        return "am" if visit_sec < mid_sec else "pm"
+
+    async def _resolve_companion_staff_id(
+        self,
+        db: AsyncSession,
+        *,
+        trainee_staff_id: UUID,
+        weekday: int,
+        visit_start: time_cls,
+    ) -> UUID | None:
+        """新人スタッフ・曜日・訪問時刻に対応する companion staff_id を返す.
+
+        優先順位:
+          1. part='full' の companion 割付が存在すれば無条件で採用
+          2. visit_start が午前なら part='am'、午後なら part='pm' の割付を採用
+          3. 対応する割付がない場合は None を返す
+
+        Args:
+            db: SQLAlchemy 非同期セッション。
+            trainee_staff_id: 新人スタッフの UUID。
+            weekday: 訪問曜日 (0=Mon..6=Sun)。
+            visit_start: 訪問開始時刻。
+
+        Returns:
+            companion_staff_id または None (割付なし)。
+        """
+        stmt = select(StaffCompanionAssignment).where(
+            StaffCompanionAssignment.trainee_staff_id == trainee_staff_id,
+            StaffCompanionAssignment.weekday == weekday,
+        )
+        rows = list((await db.scalars(stmt)).all())
+        if not rows:
+            return None
+
+        # part='full' が最優先
+        for row in rows:
+            if row.part == "full":
+                return row.companion_staff_id
+
+        # companion シフトを取得してシフト中央時刻で am/pm 判定
+        # (全 companion が同じと仮定; 異なる companion は稀なので最初の am/pm で判断)
+        companion_ids = {row.companion_staff_id for row in rows}
+        shift_map: dict[UUID, StaffShift] = {}
+        for cid in companion_ids:
+            shift_stmt = select(StaffShift).where(
+                StaffShift.staff_id == cid,
+                StaffShift.weekday == weekday,
+            )
+            shift = (await db.scalars(shift_stmt)).first()
+            if shift is not None:
+                shift_map[cid] = shift
+
+        # visit の part を判定
+        # am/pm 割付が複数ある場合は各 companion の shift で独立判定
+        for row in rows:
+            shift = shift_map.get(row.companion_staff_id)
+            shift_start = shift.start_time if shift is not None else None
+            shift_end = shift.end_time if shift is not None else None
+            part = self._visit_part(visit_start, shift_start, shift_end)
+            if row.part == part:
+                return row.companion_staff_id
+
+        return None
+
     async def _load_active_staff(
         self,
         db: AsyncSession,
@@ -670,6 +774,7 @@ class Layer3Assigner:
                         float(office.lng) if office is not None and office.lng is not None else None
                     ),
                     work_days=frozenset(effective),
+                    is_trainee=staff.is_trainee,
                 )
             )
         return result
@@ -732,6 +837,8 @@ class Layer3Assigner:
         self,
         db: AsyncSession,
         assignments: list[StaffAssignment],
+        *,
+        trainee_staff_ids: frozenset[UUID] | None = None,
     ) -> None:
         """割当結果を DB に反映する (W7-BE4 / Codex Must-fix #7).
 
@@ -749,10 +856,14 @@ class Layer3Assigner:
                も同期更新 (Wave 6 まで併用)
             5. 冪等性: 既存の ``visit_staff_assignments`` 行は DELETE してから
                再 INSERT する
+            6. W10-BE2: is_trainee=True のスタッフが割り当てられた visit に
+               companion を自動追加 (``staff_companion_assignments`` を参照)
 
         本サービスは commit しない。呼び出し側がトランザクション境界を握る
         (§5.4 / module docstring)。
         """
+        if trainee_staff_ids is None:
+            trainee_staff_ids = frozenset()
         if not assignments:
             return
 
@@ -858,6 +969,28 @@ class Layer3Assigner:
                     break
                 if secondary_staff_id is not None:
                     staff_ids.append(secondary_staff_id)
+
+            # ---------- W10-BE2: 新人スタッフへの companion 自動付与 ----------
+            # is_trainee=True の staff が割り当てられている場合のみ実行
+            if primary_staff_id in trainee_staff_ids:
+                # visit の weekday は visit_date から算出 (0=Mon..6=Sun)
+                visit_weekday = visit.visit_date.weekday()
+                companion_id = await self._resolve_companion_staff_id(
+                    db,
+                    trainee_staff_id=primary_staff_id,
+                    weekday=visit_weekday,
+                    visit_start=visit.start_time,
+                )
+                if companion_id is not None:
+                    staff_ids.append(companion_id)
+                else:
+                    logger.warning(
+                        "W10-BE2: trainee staff %s has no companion for weekday=%d visit=%s"
+                        " (visit proceeds with trainee only)",
+                        primary_staff_id,
+                        visit_weekday,
+                        visit.id,
+                    )
 
             # 重複排除 (primary == secondary になり得ないが念のため)
             seen: set[UUID] = set()
@@ -981,6 +1114,7 @@ def staff_from_fixture_dict(d: dict[str, Any]) -> StaffInfo:
         primary_office_lat=float(office_lat) if office_lat is not None else None,
         primary_office_lng=float(office_lng) if office_lng is not None else None,
         work_days=work_days,
+        is_trainee=bool(d.get("is_trainee", False)),
     )
 
 

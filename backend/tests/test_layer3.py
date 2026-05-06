@@ -22,19 +22,22 @@ from pathlib import Path
 from uuid import UUID
 
 import pytest
+from sqlalchemy import select
 
 from app.core.security import create_access_token, hash_password
-from app.models import Course, Office, Patient, Staff, StaffShift, User, Visit
+from app.models import Course, Office, Patient, Staff, StaffShift, User, Visit, VisitStaffAssignment
 from app.models.course import (
     COURSE_STATUS_COURSE_FIXED,
     COURSE_STATUS_STAFF_ASSIGNED,
 )
+from app.models.staff_companion_assignment import StaffCompanionAssignment
 from app.models.visit import VISIT_STATUS_PLANNED
 from app.services.scheduling.layer3_assignment import (
     HUNGARIAN_INFINITY,
     ROTATION_EXCLUSION_WEEKS,
     CourseAssignmentTarget,
     Layer3Assigner,
+    StaffAssignment,
     StaffInfo,
     course_target_from_fixture_dict,
     history_from_fixture_list,
@@ -786,3 +789,432 @@ def test_solve_more_courses_than_staff() -> None:
     assert len(r.assignments) == 2
     # 2 件は別スタッフ
     assert len({a.staff_id for a in r.assignments}) == 2
+
+
+# ---------------------------------------------------------------------------
+# 10) W10-BE2: 新人スタッフへの companion 自動付与
+# ---------------------------------------------------------------------------
+# 共通ヘルパー
+
+
+async def _w10_setup_trainee_and_companion(
+    db,
+    *,
+    companion_shift_start: time = time(9, 0),
+    companion_shift_end: time = time(19, 0),
+) -> tuple[Staff, Staff, Course, Patient]:
+    """新人スタッフ + companion スタッフ + コース + 患者を作成して返す."""
+    office = Office(name="テスト事業所", lat=35.6383, lng=140.1041)
+    db.add(office)
+    await db.flush()
+
+    trainee = Staff(
+        code="TRAINEE",
+        name="新人 田中",
+        sex="female",
+        role="staff",
+        status="active",
+        is_trainee=True,
+        primary_office_id=office.id,
+    )
+    companion = Staff(
+        code="COMPANION",
+        name="先輩 鈴木",
+        sex="female",
+        role="staff",
+        status="active",
+        is_trainee=False,
+        primary_office_id=office.id,
+    )
+    db.add_all([trainee, companion])
+    await db.flush()
+
+    # trainee と companion のシフト (月曜)
+    db.add(StaffShift(staff_id=trainee.id, weekday=0, is_on=True))
+    db.add(
+        StaffShift(
+            staff_id=companion.id,
+            weekday=0,
+            is_on=True,
+            start_time=companion_shift_start,
+            end_time=companion_shift_end,
+        )
+    )
+    await db.flush()
+
+    course = Course(
+        iso_year=TEST_ISO_YEAR,
+        iso_week=TEST_ISO_WEEK,
+        weekday=0,
+        code="A",
+        course_status=COURSE_STATUS_COURSE_FIXED,
+    )
+    db.add(course)
+    await db.flush()
+
+    patient = Patient(
+        code="PT-W10",
+        name="W10 患者",
+        status="active",
+        lat=35.6383,
+        lng=140.1041,
+    )
+    db.add(patient)
+    await db.flush()
+
+    return trainee, companion, course, patient
+
+
+@pytest.mark.asyncio
+async def test_w10_companion_am_visit_auto_added(db) -> None:
+    """新人スタッフの午前 visit に companion am が自動付与される.
+
+    シフト 9:00–19:00 → 中央 14:00 → 9:00 start は am → part='am' の companion
+    """
+    trainee, companion, course, patient = await _w10_setup_trainee_and_companion(
+        db,
+        companion_shift_start=time(9, 0),
+        companion_shift_end=time(19, 0),
+    )
+
+    # companion 割付 (月曜 am)
+    db.add(
+        StaffCompanionAssignment(
+            trainee_staff_id=trainee.id,
+            weekday=0,
+            part="am",
+            companion_staff_id=companion.id,
+        )
+    )
+
+    visit = Visit(
+        patient_id=patient.id,
+        visit_date=TEST_WEEK_MONDAY,  # 月曜
+        start_time=time(9, 0),  # 午前
+        end_time=time(10, 0),
+        type="regular",
+        status=VISIT_STATUS_PLANNED,
+        source="auto",
+        required_staff_count=1,
+        course_id=course.id,
+    )
+    db.add(visit)
+    await db.commit()
+
+    assigner = Layer3Assigner()
+    await assigner._persist(
+        db,
+        [StaffAssignment(weekday=0, course_code="A", course_id=course.id, staff_id=trainee.id)],
+        trainee_staff_ids=frozenset([trainee.id]),
+    )
+    await db.commit()
+
+    rows = (
+        await db.scalars(
+            select(VisitStaffAssignment).where(VisitStaffAssignment.visit_id == visit.id)
+        )
+    ).all()
+    staff_ids_in_assignments = {r.staff_id for r in rows}
+
+    # trainee + companion の 2 行が存在すること
+    assert trainee.id in staff_ids_in_assignments, "trainee が割当されていない"
+    assert companion.id in staff_ids_in_assignments, "companion am が自動付与されていない"
+    assert len(rows) == 2
+
+
+@pytest.mark.asyncio
+async def test_w10_companion_pm_visit_auto_added(db) -> None:
+    """新人スタッフの午後 visit に companion pm が自動付与される.
+
+    シフト 9:00–19:00 → 中央 14:00 → 15:00 start は pm → part='pm' の companion
+    """
+    trainee, companion, course, patient = await _w10_setup_trainee_and_companion(
+        db,
+        companion_shift_start=time(9, 0),
+        companion_shift_end=time(19, 0),
+    )
+
+    # companion 割付 (月曜 pm)
+    db.add(
+        StaffCompanionAssignment(
+            trainee_staff_id=trainee.id,
+            weekday=0,
+            part="pm",
+            companion_staff_id=companion.id,
+        )
+    )
+
+    visit = Visit(
+        patient_id=patient.id,
+        visit_date=TEST_WEEK_MONDAY,
+        start_time=time(15, 0),  # 午後
+        end_time=time(16, 0),
+        type="regular",
+        status=VISIT_STATUS_PLANNED,
+        source="auto",
+        required_staff_count=1,
+        course_id=course.id,
+    )
+    db.add(visit)
+    await db.commit()
+
+    assigner = Layer3Assigner()
+    await assigner._persist(
+        db,
+        [StaffAssignment(weekday=0, course_code="A", course_id=course.id, staff_id=trainee.id)],
+        trainee_staff_ids=frozenset([trainee.id]),
+    )
+    await db.commit()
+
+    rows = (
+        await db.scalars(
+            select(VisitStaffAssignment).where(VisitStaffAssignment.visit_id == visit.id)
+        )
+    ).all()
+    staff_ids_in_assignments = {r.staff_id for r in rows}
+
+    assert trainee.id in staff_ids_in_assignments, "trainee が割当されていない"
+    assert companion.id in staff_ids_in_assignments, "companion pm が自動付与されていない"
+    assert len(rows) == 2
+
+
+@pytest.mark.asyncio
+async def test_w10_companion_full_takes_priority_over_am_pm(db) -> None:
+    """part='full' の companion 割付がある場合、am/pm 問わず優先採用される."""
+    trainee, companion, course, patient = await _w10_setup_trainee_and_companion(
+        db,
+        companion_shift_start=time(9, 0),
+        companion_shift_end=time(19, 0),
+    )
+
+    # companion_alt は am 専用
+    office_alt = Office(name="別事業所", lat=35.65, lng=140.17)
+    db.add(office_alt)
+    await db.flush()
+    companion_alt = Staff(
+        code="COMPANION_ALT",
+        name="別先輩",
+        sex="female",
+        role="staff",
+        status="active",
+        is_trainee=False,
+        primary_office_id=office_alt.id,
+    )
+    db.add(companion_alt)
+    await db.flush()
+    db.add(StaffShift(staff_id=companion_alt.id, weekday=0, is_on=True))
+
+    # full 優先の割付 (companion) + am 割付 (companion_alt)
+    db.add(
+        StaffCompanionAssignment(
+            trainee_staff_id=trainee.id,
+            weekday=0,
+            part="full",
+            companion_staff_id=companion.id,
+        )
+    )
+    db.add(
+        StaffCompanionAssignment(
+            trainee_staff_id=trainee.id,
+            weekday=0,
+            part="am",
+            companion_staff_id=companion_alt.id,
+        )
+    )
+
+    visit = Visit(
+        patient_id=patient.id,
+        visit_date=TEST_WEEK_MONDAY,
+        start_time=time(9, 0),  # 午前 だが full が優先
+        end_time=time(10, 0),
+        type="regular",
+        status=VISIT_STATUS_PLANNED,
+        source="auto",
+        required_staff_count=1,
+        course_id=course.id,
+    )
+    db.add(visit)
+    await db.commit()
+
+    assigner = Layer3Assigner()
+    await assigner._persist(
+        db,
+        [StaffAssignment(weekday=0, course_code="A", course_id=course.id, staff_id=trainee.id)],
+        trainee_staff_ids=frozenset([trainee.id]),
+    )
+    await db.commit()
+
+    rows = (
+        await db.scalars(
+            select(VisitStaffAssignment).where(VisitStaffAssignment.visit_id == visit.id)
+        )
+    ).all()
+    staff_ids_in_assignments = {r.staff_id for r in rows}
+
+    assert trainee.id in staff_ids_in_assignments, "trainee が割当されていない"
+    # full の companion が採用される
+    assert companion.id in staff_ids_in_assignments, "full companion が優先採用されていない"
+    # am の companion_alt は採用されない (full が優先)
+    assert companion_alt.id not in staff_ids_in_assignments, "am companion が誤って採用された"
+
+
+@pytest.mark.asyncio
+async def test_w10_trainee_plus_required_two_no_duplicate(db) -> None:
+    """patient.required_staff_count=2 (2 名体制) + is_trainee → 3 名体制, 重複なし.
+
+    - visit.required_staff_count=2: primary (trainee) + secondary (normal staff) の 2 名体制
+    - trainee → companion も追加 → 合計 3 名; 全員 distinct であること
+    - 火曜 (weekday=1) で構築し、月曜の他テストと衝突を避ける
+    """
+    # 独立したオフィス/スタッフを用意 (共有ヘルパーを使わず直接作成)
+    office = Office(name="W10-4 事業所", lat=35.64, lng=140.11)
+    db.add(office)
+    await db.flush()
+
+    trainee = Staff(
+        code="W10T4_TRAINEE",
+        name="新人 W10-4",
+        sex="female",
+        role="staff",
+        status="active",
+        is_trainee=True,
+        primary_office_id=office.id,
+    )
+    companion = Staff(
+        code="W10T4_COMP",
+        name="先輩 W10-4",
+        sex="female",
+        role="staff",
+        status="active",
+        is_trainee=False,
+        primary_office_id=office.id,
+    )
+    secondary = Staff(
+        code="W10T4_SEC",
+        name="secondary W10-4",
+        sex="female",
+        role="staff",
+        status="active",
+        is_trainee=False,
+        primary_office_id=office.id,
+    )
+    db.add_all([trainee, companion, secondary])
+    await db.flush()
+
+    # 火曜 (weekday=1) シフト
+    db.add(
+        StaffShift(
+            staff_id=trainee.id,
+            weekday=1,
+            is_on=True,
+            start_time=time(9, 0),
+            end_time=time(19, 0),
+        )
+    )
+    db.add(
+        StaffShift(
+            staff_id=companion.id,
+            weekday=1,
+            is_on=True,
+            start_time=time(9, 0),
+            end_time=time(19, 0),
+        )
+    )
+    db.add(StaffShift(staff_id=secondary.id, weekday=1, is_on=True))
+    await db.flush()
+
+    # 2 つのコース (火曜 = weekday=1)
+    course_a = Course(
+        iso_year=TEST_ISO_YEAR,
+        iso_week=TEST_ISO_WEEK,
+        weekday=1,
+        code="A",
+        course_status=COURSE_STATUS_COURSE_FIXED,
+    )
+    course_b = Course(
+        iso_year=TEST_ISO_YEAR,
+        iso_week=TEST_ISO_WEEK,
+        weekday=1,
+        code="B",
+        course_status=COURSE_STATUS_COURSE_FIXED,
+    )
+    db.add_all([course_a, course_b])
+    await db.flush()
+
+    patient = Patient(
+        code="PT-W10-4",
+        name="W10-4 患者",
+        status="active",
+        lat=35.64,
+        lng=140.11,
+    )
+    db.add(patient)
+    await db.flush()
+
+    # 火曜の visit (weekday=1 → visit_date = 月曜+1日 = 火曜)
+    visit_date_tue = date(TEST_WEEK_MONDAY.year, TEST_WEEK_MONDAY.month, TEST_WEEK_MONDAY.day + 1)
+    group_id = uuid.uuid4()
+    visit_a = Visit(
+        patient_id=patient.id,
+        visit_date=visit_date_tue,
+        start_time=time(9, 0),  # 午前
+        end_time=time(10, 0),
+        type="regular",
+        status=VISIT_STATUS_PLANNED,
+        source="auto",
+        required_staff_count=2,
+        visit_group_id=group_id,
+        course_id=course_a.id,
+    )
+    visit_b = Visit(
+        patient_id=patient.id,
+        visit_date=visit_date_tue,
+        start_time=time(9, 0),
+        end_time=time(10, 0),
+        type="regular",
+        status=VISIT_STATUS_PLANNED,
+        source="auto",
+        required_staff_count=2,
+        visit_group_id=group_id,
+        course_id=course_b.id,
+    )
+    db.add_all([visit_a, visit_b])
+
+    # companion 割付 (trainee → companion、火曜 am)
+    db.add(
+        StaffCompanionAssignment(
+            trainee_staff_id=trainee.id,
+            weekday=1,
+            part="am",
+            companion_staff_id=companion.id,
+        )
+    )
+    await db.commit()
+
+    assigner = Layer3Assigner()
+    await assigner._persist(
+        db,
+        [
+            StaffAssignment(weekday=1, course_code="A", course_id=course_a.id, staff_id=trainee.id),
+            StaffAssignment(
+                weekday=1, course_code="B", course_id=course_b.id, staff_id=secondary.id
+            ),
+        ],
+        trainee_staff_ids=frozenset([trainee.id]),
+    )
+    await db.commit()
+
+    rows_a = (
+        await db.scalars(
+            select(VisitStaffAssignment).where(VisitStaffAssignment.visit_id == visit_a.id)
+        )
+    ).all()
+    staff_ids_a = {r.staff_id for r in rows_a}
+
+    # visit_a: trainee (primary) + secondary (2名体制partner) + companion (新人同行)
+    assert trainee.id in staff_ids_a, "trainee が visit_a に割当されていない"
+    assert secondary.id in staff_ids_a, "secondary が 2名体制で追加されていない"
+    assert companion.id in staff_ids_a, "companion が新人同行で追加されていない"
+    # 重複なし
+    assert len(rows_a) == len(staff_ids_a), "重複が発生している"
+    assert len(rows_a) == 3, f"3 名体制になっていない: {len(rows_a)} 行"
