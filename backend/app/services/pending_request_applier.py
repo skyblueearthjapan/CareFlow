@@ -10,7 +10,7 @@
     |--------------------------|--------------------------------------------------|
     | staff_off                | staff_weekly_overrides (新規 INSERT)             |
     | staff_event              | staff_events (新規 INSERT)                       |
-    | staff_mentor             | staff.mentor_id (UPDATE)                          |
+    | staff_mentor             | staff.is_trainee (UPDATE) ※W10-BE1 で mentor_id 廃止 |
     | staff_create             | staff (新規 INSERT)                               |
     | patient_create           | patients (新規 INSERT)                            |
     | patient_cancel           | visits.status = "cancelled" (UPDATE)              |
@@ -235,16 +235,18 @@ async def _apply_staff_event(db: AsyncSession, request: PendingRequest, payload:
 
 
 async def _apply_staff_mentor(db: AsyncSession, request: PendingRequest, payload: _Payload) -> None:
-    """``staff_mentor``: ``staff.mentor_id`` を更新."""
+    """``staff_mentor``: W10-BE1 で mentor_id 廃止 → is_trainee (bool) を更新.
+
+    互換性維持のため request_type='staff_mentor' のエントリは引き続き受け付けるが、
+    payload.is_trainee (bool, optional) で is_trainee フラグを更新する。
+    旧 mentor_id フィールドは無視される。
+    """
     staff_id = _coerce_uuid(payload.get("staff_id") or request.target_staff_id)
     if staff_id is None:
         raise PendingRequestApplyError(
             "staff_mentor: staff_id is required",
             http_status=422,
         )
-    # ``mentor_id`` は明示的に None にすることで mentor 解除も許す。
-    mentor_id_raw = payload.get("mentor_id")
-    mentor_id = _coerce_uuid(mentor_id_raw) if mentor_id_raw is not None else None
 
     staff = await db.scalar(select(Staff).where(Staff.id == staff_id, Staff.deleted_at.is_(None)))
     if staff is None:
@@ -252,7 +254,10 @@ async def _apply_staff_mentor(db: AsyncSession, request: PendingRequest, payload
             f"staff_mentor: staff {staff_id} not found",
             http_status=404,
         )
-    staff.mentor_id = mentor_id
+    # is_trainee フラグを更新 (指定があれば)
+    is_trainee_raw = payload.get("is_trainee")
+    if is_trainee_raw is not None:
+        staff.is_trainee = bool(is_trainee_raw)
     await db.flush()
 
 
@@ -265,7 +270,9 @@ async def _apply_staff_create(db: AsyncSession, request: PendingRequest, payload
             http_status=422,
         )
     primary_office_id = _coerce_uuid(payload.get("primary_office_id"))
-    mentor_id = _coerce_uuid(payload.get("mentor_id"))
+    # W10-BE1: mentor_id 廃止 → is_trainee (bool) に置き換え
+    is_trainee_raw = payload.get("is_trainee")
+    is_trainee = bool(is_trainee_raw) if is_trainee_raw is not None else False
 
     row = Staff(
         code=payload.get("code"),
@@ -275,7 +282,7 @@ async def _apply_staff_create(db: AsyncSession, request: PendingRequest, payload
         status=str(payload.get("status") or "active"),
         role=str(payload.get("role") or "staff"),
         primary_office_id=primary_office_id,
-        mentor_id=mentor_id,
+        is_trainee=is_trainee,
         note=payload.get("note"),
     )
     db.add(row)

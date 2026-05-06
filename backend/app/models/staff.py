@@ -1,18 +1,21 @@
-"""Staff (スタッフ) + secondary offices + shifts + weekly overrides + events + mentor pairs.
+"""Staff (スタッフ) + secondary offices + shifts + weekly overrides + events + companion assignments.
 
 W1-BE2 (v2 整理): can_double_team / home_address / home_lat / home_lng /
 areas / max_per_day / skill_level / assignment_volume の 8 カラムを削除済み
 (設計書 §4.2). 物理 DROP は migration 0010 で実施。
+
+W10-BE1: mentor_id / MentorAssignment 廃止。is_trainee 追加。
+同行スタッフ管理は staff_companion_assignments テーブルへ移行。
 """
 
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, time
+from datetime import datetime, time
+from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     Boolean,
-    Date,
     DateTime,
     ForeignKey,
     Index,
@@ -27,6 +30,9 @@ from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin
+
+if TYPE_CHECKING:
+    from app.models.staff_companion_assignment import StaffCompanionAssignment
 
 
 class Staff(Base, TimestampMixin):
@@ -47,11 +53,7 @@ class Staff(Base, TimestampMixin):
         ForeignKey("offices.id", ondelete="SET NULL"),
         nullable=True,
     )
-    mentor_id: Mapped[uuid.UUID | None] = mapped_column(
-        PG_UUID(as_uuid=True),
-        ForeignKey("staff.id", ondelete="SET NULL"),
-        nullable=True,
-    )
+    is_trainee: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -65,6 +67,20 @@ class Staff(Base, TimestampMixin):
         "StaffShift",
         back_populates="staff",
         cascade="all, delete-orphan",
+    )
+    companion_assignments_as_trainee: Mapped[list[StaffCompanionAssignment]] = relationship(
+        "StaffCompanionAssignment",
+        foreign_keys="StaffCompanionAssignment.trainee_staff_id",
+        back_populates="trainee",
+        cascade="all, delete-orphan",
+    )
+    companion_assignments_as_companion: Mapped[list[StaffCompanionAssignment]] = relationship(
+        "StaffCompanionAssignment",
+        foreign_keys="StaffCompanionAssignment.companion_staff_id",
+        back_populates="companion",
+        # FK ondelete=CASCADE 側に削除を任せる。companion 側で
+        # delete-orphan を付けると削除が二重発火する恐れがあるため save-update のみ。
+        cascade="save-update, merge",
     )
 
     __table_args__ = (Index("ix_staff_status_office", "status", "primary_office_id"),)
@@ -152,27 +168,3 @@ class StaffEvent(Base, TimestampMixin):
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (Index("ix_staff_events_when", "staff_id", "starts_at"),)
-
-
-class MentorAssignment(Base, TimestampMixin):
-    __tablename__ = "mentor_assignments"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    mentor_id: Mapped[uuid.UUID] = mapped_column(
-        PG_UUID(as_uuid=True),
-        ForeignKey("staff.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    mentee_id: Mapped[uuid.UUID] = mapped_column(
-        PG_UUID(as_uuid=True),
-        ForeignKey("staff.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    start_date: Mapped[date] = mapped_column(Date, nullable=False)
-    end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
-
-    __table_args__ = (
-        UniqueConstraint("mentor_id", "mentee_id", "start_date", name="uq_mentor_pair_start"),
-    )

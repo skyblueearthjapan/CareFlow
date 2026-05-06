@@ -19,13 +19,13 @@ from app.models.pending_request import PendingRequest
 from app.models.shift_request import ShiftRequest
 from app.models.special_week import SpecialWeek, SpecialWeekItem
 from app.models.staff import (
-    MentorAssignment,
     Staff,
     StaffEvent,
     StaffSecondaryOffice,
     StaffShift,
     StaffWeeklyOverride,
 )
+from app.models.staff_companion_assignment import StaffCompanionAssignment
 from app.models.user import User
 from app.models.visit import Visit
 from app.models.visit_photo import VisitPhoto
@@ -41,7 +41,6 @@ __all__ = [
     "GeocodingCache",
     "KaipokeJob",
     "KaipokeJobItem",
-    "MentorAssignment",
     "Notification",
     "Office",
     "OfficeCity",
@@ -53,6 +52,7 @@ __all__ = [
     "SpecialWeek",
     "SpecialWeekItem",
     "Staff",
+    "StaffCompanionAssignment",
     "StaffEvent",
     "StaffSecondaryOffice",
     "StaffShift",

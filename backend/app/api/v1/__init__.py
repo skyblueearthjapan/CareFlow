@@ -15,7 +15,6 @@ from app.api.v1 import (
     geocoding,
     health,
     integrations,
-    mentor,
     notifications,
     offices,
     patient_fixed_visits,
@@ -24,6 +23,7 @@ from app.api.v1 import (
     schedule,
     shift_requests,
     staff,
+    staff_companion,
     staff_events,
     staff_overrides,
     staff_shifts,
@@ -44,10 +44,12 @@ api_router.include_router(
 # Sub-resource routers MUST be included BEFORE staff.router so that the more
 # specific paths (/staff/{id}/shifts etc.) are matched before the generic
 # /staff/{id} catch-all in staff.router.
+# W10-BE1: companion-candidates must be registered BEFORE /{staff_id} sub-resource
+# routes to avoid UUID path collision on /staff/companion-candidates.
+api_router.include_router(staff_companion.router, prefix="/staff", tags=["staff-companion"])
 api_router.include_router(staff_shifts.router, prefix="/staff", tags=["staff-shifts"])
 api_router.include_router(staff_overrides.router, prefix="/staff", tags=["staff-overrides"])
 api_router.include_router(staff_events.router, prefix="/staff", tags=["staff-events"])
-api_router.include_router(mentor.router, prefix="/staff", tags=["mentor"])
 # Wave 4-D: shift-request sub-resource (/staff/{id}/shift-requests).
 api_router.include_router(shift_requests.router, prefix="/staff", tags=["shift-requests"])
 api_router.include_router(staff.router, prefix="/staff", tags=["staff"])

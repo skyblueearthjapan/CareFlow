@@ -8,7 +8,8 @@ areas / max_per_day / skill_level / assignment_volume の 6 + 3 項目。
 状態 (`status`): 在籍 (active) / 休職 (on_leave) / 退職 (retired) の **3 値 enum**
 で厳密化 (DB は文字列のまま、Pydantic で Literal バリデート)。
 
-メンター (`mentor_id`): 維持 (UI 上は基本情報ではなく『詳細』セクション扱い)。
+W10-BE1: mentor_id 廃止、is_trainee 追加。
+同行スタッフ管理は staff_companion_assignments テーブルへ移行。
 """
 
 from __future__ import annotations
@@ -55,10 +56,10 @@ class StaffBase(BaseModel):
     )
     note: str | None = Field(default=None, description="自由記述")
 
-    # 詳細セクション (§4.2): メンターは維持
-    mentor_id: UUID | None = Field(
-        default=None,
-        description="メンター (新人スタッフのみ設定). UI 上は『詳細』セクション扱い",
+    # 詳細セクション (§4.2)
+    is_trainee: bool = Field(
+        default=False,
+        description="新人フラグ。True の場合は同行スタッフ (companion) と一緒に訪問",
     )
 
 
@@ -79,7 +80,7 @@ class StaffUpdate(BaseModel):
     status: StaffStatusV2 | None = None
     primary_office_id: UUID | None = None
     note: str | None = None
-    mentor_id: UUID | None = None
+    is_trainee: bool | None = None
 
 
 class StaffRead(StaffBase):
