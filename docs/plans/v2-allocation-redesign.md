@@ -261,6 +261,8 @@
 | 患者対応 | 特別訪問週間 ON/OFF | 「佐藤さん来週特別週オン」 |
 | 患者対応 | 訪問キャンセル | 「田中さん明日キャンセル」 |
 | 患者対応 | 日時変更 | 「鈴木さん明日10時に1時間追加」 |
+| **患者マスタ状態変更** | **patients.status 更新** (active / suspended / admitted / pending / cancelled) | 「山田さんを入院中にして」「鈴木さんは解約」 |
+| **スタッフマスタ状態変更** | **staff.status 更新** (active / on_leave / retired) | 「鈴木さんを休職にして」「田中さんは退職」 |
 
 ##### 不足情報補完モーダル（重要）
 
@@ -526,6 +528,60 @@ AI 応答: 「拠点の追加は AI では対応していません。サイド�
 | 「鈴木さんを新人から外す」 | mode A のみ | `{ "staff_id": "<鈴木>", "is_trainee": false }` |
 | 「鈴木さんの月曜午前は田中さん、月曜午後は佐藤さん」 | mode B のみ | `{ "staff_id": "<鈴木>", "assignments": [{ "weekday": 0, "part": "am", "companion_staff_id": "<田中>" }, { "weekday": 0, "part": "pm", "companion_staff_id": "<佐藤>" }] }` |
 | 「鈴木さんを新人にして、平日終日田中さんと同行」 | mode A + B | `{ "staff_id": "<鈴木>", "is_trainee": true, "assignments": [{ "weekday": 0, "part": "full", "companion_staff_id": "<田中>" }, ...(火〜金)] }` |
+
+#### 3.5.11 AI 経由の状態変更 (Wave 14)
+
+> Wave 14 追記（2026-05-06）。既存の `patients.status` / `staff.status` 列の更新を
+> AI 経由で行えるよう、`request_type` を 2 種類追加する。
+
+##### 概要
+
+管理者（admin / manager）が音声・テキストで患者やスタッフの稼働状態を変更する操作を
+AI 経由で受け付けるようにする。申請フロー（pending_requests）は他の request_type と同様。
+
+##### patient_status_update
+
+| 項目 | 内容 |
+|---|---|
+| request_type | `patient_status_update` |
+| context_type | `patient_status_update` |
+| 対象テーブル | `patients.status` |
+| 値域 | `active`（稼働中）/ `suspended`（一時休止）/ `admitted`（入院中）/ `pending`（開始前）/ `cancelled`（解約済み） |
+| payload | `{ patient_id: UUID, status: <値域> }` |
+| 発話例 | 「山田さんを入院中にして」「鈴木さんは解約」「田中さんを一時休止に」 |
+
+##### staff_status_update
+
+| 項目 | 内容 |
+|---|---|
+| request_type | `staff_status_update` |
+| context_type | `staff_status_update` |
+| 対象テーブル | `staff.status` |
+| 値域 | `active`（在籍）/ `on_leave`（休職）/ `retired`（退職） |
+| payload | `{ staff_id: UUID, status: <値域> }` |
+| 発話例 | 「鈴木さんを休職にして」「田中さんは退職」「山田さんを在籍に戻して」 |
+
+##### RBAC
+
+| ロール | 操作可否 | 備考 |
+|---|---|---|
+| `admin` | ✅ pending 申請可（PC: 即時反映） | §3.5.3 の基本原則に従う |
+| `manager` | ✅ pending 申請可（PC: 即時反映） | §3.5.3 の基本原則に従う |
+| `staff` | ❌ `out_of_scope` | 自分・他人の状態を AI 経由で変更不可 |
+
+> `staff` ロールが「自分を休職にして」等と入力した場合、AI は `out_of_scope` を返し
+> 「状態変更は管理者画面からのみ対応しています」と案内する。
+
+##### 対象テーブルの明示（§3.5.2 補足）
+
+§3.5.2「対象内」に記載したとおり、Wave 14 より以下のテーブルが AI 経由の対象に含まれる：
+
+| テーブル | カラム | request_type |
+|---|---|---|
+| `patients` | `status` | `patient_status_update` |
+| `staff` | `status` | `staff_status_update` |
+
+---
 
 ### 3.6 自動 / 手動 / AI の役割分担（3 レイヤー構造）
 
