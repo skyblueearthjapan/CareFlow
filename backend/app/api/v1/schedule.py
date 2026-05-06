@@ -23,17 +23,26 @@ HTTP 層。
 
 from __future__ import annotations
 
-from typing import Annotated
+from datetime import time
+from typing import Annotated, Literal
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import delete, select
 
 from app.core.deps import DbDep, require_role
+from app.models.patient import Patient
+from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.user import User
+from app.models.visit import Visit
+from app.schemas.v2.patient_fixed_visit import PatientFixedVisitMode, PatientFixedVisitV2Read
+from app.schemas.v2.visit import VisitV2Read
 from app.services.schedule_fix_service import (
     FixedVisit,
     ScheduleFixError,
     ScheduleFixService,
+    UpdateVisitLayoutResult,
     WeeklyPatternChange,
 )
 from app.services.scheduling import (
@@ -42,6 +51,7 @@ from app.services.scheduling import (
     PoolEntry,
     VisitCreated,
 )
+from app.services.scheduling.layer1_expander import _is_special_week_active
 
 router = APIRouter()
 
@@ -203,6 +213,161 @@ async def generate_week(
             special_week_applied_count=result.special_week_applied_count,
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# /fix-or-pattern Request / Response schemas (W9-BE2)
+# ---------------------------------------------------------------------------
+
+
+class FixOrPatternRequest(BaseModel):
+    """``POST /api/v1/schedule/fix-or-pattern`` のリクエストボディ.
+
+    mode='this_week_only'  → 当該 visit のみ更新 (固定枠は不変)
+    mode='pattern_change'  → patient_fixed_visits を更新 + 当該週 visit も更新
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["this_week_only", "pattern_change"]
+    visit_id: UUID
+    new_weekday: int = Field(ge=0, le=6)
+    new_start_time: time
+    new_duration_min: int = Field(ge=1, le=480)
+    iso_year: int
+    iso_week: int
+
+
+# ---------------------------------------------------------------------------
+# Endpoint: /fix-or-pattern (W9-BE2)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/fix-or-pattern",
+    status_code=status.HTTP_200_OK,
+    summary="訪問時刻変更: 今週のみ / 固定枠変更 (W9-BE2)",
+)
+async def fix_or_pattern(
+    body: FixOrPatternRequest,
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+) -> dict:
+    """訪問時刻変更の 2 モード実装.
+
+    this_week_only: 当該 visit のみ更新。patient_fixed_visits は変更しない。
+                    設計書 §3.5.8「既存 /schedule/fix を呼ぶ」に準拠し、
+                    ScheduleFixService.update_visit_layout 経由で更新する。
+    pattern_change: patient_fixed_visits を更新し、当該週 visit も更新する。
+    """
+    service = ScheduleFixService()
+
+    updated_visit: VisitV2Read | None = None
+    updated_fixed_visit: PatientFixedVisitV2Read | None = None
+
+    try:
+        if body.mode == "this_week_only":
+            # 設計書 §3.5.8: service 層で visit を一元変更する
+            _layout_result: UpdateVisitLayoutResult = await service.update_visit_layout(
+                db,
+                visit_id=body.visit_id,
+                iso_year=body.iso_year,
+                iso_week=body.iso_week,
+                new_weekday=body.new_weekday,
+                new_start_time=body.new_start_time,
+                new_duration_min=body.new_duration_min,
+            )
+            await db.commit()
+
+            # refresh して最新状態を schema に変換
+            visit = await db.scalar(select(Visit).where(Visit.id == body.visit_id))
+            if visit is not None:
+                updated_visit = VisitV2Read.model_validate(visit)
+
+        elif body.mode == "pattern_change":
+            # visit を取得 (patient_id 参照のため)
+            visit = await db.scalar(
+                select(Visit).where(Visit.id == body.visit_id, Visit.deleted_at.is_(None))
+            )
+            if visit is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Visit not found")
+
+            patient_id: UUID = visit.patient_id
+
+            # patient を取得して mode を決定
+            patient = await db.scalar(
+                select(Patient).where(Patient.id == patient_id, Patient.deleted_at.is_(None))
+            )
+            if patient is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found"
+                )
+
+            is_special = _is_special_week_active(patient, body.iso_year, body.iso_week)
+            fv_mode: PatientFixedVisitMode = "special" if is_special else "normal"
+
+            # 古い weekday (もし存在するなら削除してから upsert)
+            old_weekday = visit.visit_date.weekday()
+            await db.execute(
+                delete(PatientFixedVisit).where(
+                    PatientFixedVisit.patient_id == patient_id,
+                    PatientFixedVisit.mode == fv_mode,
+                    PatientFixedVisit.weekday == old_weekday,
+                )
+            )
+            # new_weekday の既存行も削除 (upsert)
+            await db.execute(
+                delete(PatientFixedVisit).where(
+                    PatientFixedVisit.patient_id == patient_id,
+                    PatientFixedVisit.mode == fv_mode,
+                    PatientFixedVisit.weekday == body.new_weekday,
+                )
+            )
+
+            new_fv = PatientFixedVisit(
+                patient_id=patient_id,
+                mode=fv_mode,
+                weekday=body.new_weekday,
+                start_time=body.new_start_time,
+                duration_min=body.new_duration_min,
+            )
+            db.add(new_fv)
+            await db.flush()
+
+            # 当該週の visit も service 経由で更新 (§3.5.8)
+            await service.update_visit_layout(
+                db,
+                visit_id=body.visit_id,
+                iso_year=body.iso_year,
+                iso_week=body.iso_week,
+                new_weekday=body.new_weekday,
+                new_start_time=body.new_start_time,
+                new_duration_min=body.new_duration_min,
+            )
+            await db.commit()
+
+            await db.refresh(visit)
+            await db.refresh(new_fv)
+            updated_visit = VisitV2Read.model_validate(visit)
+            updated_fixed_visit = PatientFixedVisitV2Read.model_validate(new_fv)
+
+    except ScheduleFixError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=exc.http_status, detail=str(exc)) from exc
+    except HTTPException:
+        await db.rollback()
+        raise
+    except Exception:
+        await db.rollback()
+        raise
+
+    return {
+        "mode": body.mode,
+        "updated_visit": updated_visit.model_dump(mode="json") if updated_visit else None,
+        "updated_fixed_visit": (
+            updated_fixed_visit.model_dump(mode="json") if updated_fixed_visit else None
+        ),
+    }
 
 
 __all__ = ["router"]

@@ -1,19 +1,24 @@
-"""Patient fixed-visit pattern endpoints (W9-BE1).
+"""Patient fixed-visit pattern endpoints (W9-BE1 / W9-BE2).
 
 GET    /patients/{patient_id}/fixed-visits[?mode=normal|special]
 PUT    /patients/{patient_id}/fixed-visits   body: PatientFixedVisitsBulkPut
 DELETE /patients/{patient_id}/fixed-visits?mode=normal|special
+POST   /patients/{patient_id}/fixed-visits/from-week  (W9-BE2: 個別固定化)
+POST   /patients/fixed-visits/from-week-bulk          (W9-BE2: 全患者一括固定化)
 
 RBAC:
-  GET    — admin / manager / staff (staff は担当患者のみ)
-  PUT    — admin / manager のみ
-  DELETE — admin / manager のみ
+  GET             — admin / manager / staff (staff は担当患者のみ)
+  PUT             — admin / manager のみ
+  DELETE          — admin / manager のみ
+  from-week       — admin / manager のみ
+  from-week-bulk  — admin / manager のみ
 
 UNIQUE (patient_id, mode, weekday) 違反は 409 Conflict。
 """
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Annotated
 from uuid import UUID
 
@@ -33,6 +38,7 @@ from app.schemas.v2.patient_fixed_visit import (
     PatientFixedVisitsBulkPut,
     PatientFixedVisitV2Read,
 )
+from app.services.scheduling.layer1_expander import _is_special_week_active
 
 router = APIRouter()
 
@@ -221,3 +227,221 @@ async def delete_fixed_visits(
         )
     )
     await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# W9-BE2: 全患者一括固定化 (collection-level; {id} より先に登録すること)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/fixed-visits/from-week-bulk",
+    summary="全患者一括固定化 (admin/manager のみ)",
+    status_code=status.HTTP_200_OK,
+)
+async def from_week_bulk(
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    iso_year: int = Query(...),
+    iso_week: int = Query(...),
+    mode: PatientFixedVisitMode | None = Query(default=None),
+) -> dict:
+    """全 active 患者に対し当該週 visits を patient_fixed_visits に書き戻す.
+
+    冪等性保証: 既存 (patient_id, mode) 全削除 → INSERT を 1 TX で実行。
+    """
+    # 全 active 患者を取得
+    patients_rows = (
+        await db.scalars(
+            select(Patient).where(
+                Patient.status == "active",
+                Patient.deleted_at.is_(None),
+            )
+        )
+    ).all()
+
+    # 当該週の月曜を導出 (weekday 計算用)
+    try:
+        week_monday = date.fromisocalendar(iso_year, iso_week, 1)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"invalid ISO week: year={iso_year} week={iso_week}",
+        ) from exc
+
+    week_sunday = date.fromordinal(week_monday.toordinal() + 6)
+
+    updated_patient_ids: list[UUID] = []
+
+    for patient in patients_rows:
+        # mode 自動推定
+        effective_mode: str = mode or (
+            "special" if _is_special_week_active(patient, iso_year, iso_week) else "normal"
+        )
+
+        # 当該週の visits 取得 (deleted_at IS NULL)
+        visit_rows = (
+            await db.scalars(
+                select(Visit).where(
+                    Visit.patient_id == patient.id,
+                    Visit.visit_date >= week_monday,
+                    Visit.visit_date <= week_sunday,
+                    Visit.deleted_at.is_(None),
+                )
+            )
+        ).all()
+
+        # weekday 重複チェック
+        weekday_counts: dict[int, int] = {}
+        for v in visit_rows:
+            wd = v.visit_date.weekday()
+            weekday_counts[wd] = weekday_counts.get(wd, 0) + 1
+        dup_weekdays = [wd for wd, cnt in weekday_counts.items() if cnt > 1]
+        if dup_weekdays:
+            # 一括処理ではエラーをスキップして次患者へ (bulk は best-effort)
+            continue
+
+        # 既存削除
+        await db.execute(
+            delete(PatientFixedVisit).where(
+                PatientFixedVisit.patient_id == patient.id,
+                PatientFixedVisit.mode == effective_mode,
+            )
+        )
+
+        # INSERT
+        for v in visit_rows:
+            wd = v.visit_date.weekday()
+            duration_min = int(
+                (v.end_time.hour * 60 + v.end_time.minute)
+                - (v.start_time.hour * 60 + v.start_time.minute)
+            )
+            if duration_min <= 0:
+                duration_min = 30
+            db.add(
+                PatientFixedVisit(
+                    patient_id=patient.id,
+                    mode=effective_mode,
+                    weekday=wd,
+                    start_time=v.start_time,
+                    duration_min=duration_min,
+                )
+            )
+
+        updated_patient_ids.append(patient.id)
+
+    await db.commit()
+
+    return {
+        "updated_count": len(updated_patient_ids),
+        "patients": [str(pid) for pid in updated_patient_ids],
+    }
+
+
+# ---------------------------------------------------------------------------
+# W9-BE2: 個別固定化 API
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/{patient_id}/fixed-visits/from-week",
+    response_model=list[PatientFixedVisitV2Read],
+    summary="当該週の visits を patient_fixed_visits に書き戻し (admin/manager のみ)",
+)
+async def from_week(
+    patient_id: UUID,
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    iso_year: int = Query(...),
+    iso_week: int = Query(...),
+    mode: PatientFixedVisitMode | None = Query(default=None),
+) -> list[PatientFixedVisitV2Read]:
+    """当該週の visits を patient_fixed_visits に書き戻す.
+
+    mode 未指定: patient.special_week_active に当該週があれば 'special'、なければ 'normal'。
+    visit_staff_assignments は読まない (時刻 + duration のみ)。
+    visits が 0 件 → 既存 fixed_visits を削除して空配列返す。
+    同一 weekday に複数 visit → 409。
+    """
+    patient = await _ensure_patient_exists(db, patient_id)
+
+    # mode 自動推定
+    effective_mode: str = mode or (
+        "special" if _is_special_week_active(patient, iso_year, iso_week) else "normal"
+    )
+
+    # 当該週の月曜 / 日曜を導出
+    try:
+        week_monday = date.fromisocalendar(iso_year, iso_week, 1)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"invalid ISO week: year={iso_year} week={iso_week}",
+        ) from exc
+
+    week_sunday = date.fromordinal(week_monday.toordinal() + 6)
+
+    # 当該週の visits 取得 (deleted_at IS NULL)
+    visit_rows = (
+        await db.scalars(
+            select(Visit).where(
+                Visit.patient_id == patient_id,
+                Visit.visit_date >= week_monday,
+                Visit.visit_date <= week_sunday,
+                Visit.deleted_at.is_(None),
+            )
+        )
+    ).all()
+
+    # 同一 weekday 重複チェック → 409
+    weekday_counts: dict[int, int] = {}
+    for v in visit_rows:
+        wd = v.visit_date.weekday()
+        weekday_counts[wd] = weekday_counts.get(wd, 0) + 1
+    dup_weekdays = [wd for wd, cnt in weekday_counts.items() if cnt > 1]
+    if dup_weekdays:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Duplicate visits on weekday(s) {dup_weekdays} for patient {patient_id}",
+        )
+
+    # 1 TX: 既存削除 → INSERT
+    await db.execute(
+        delete(PatientFixedVisit).where(
+            PatientFixedVisit.patient_id == patient_id,
+            PatientFixedVisit.mode == effective_mode,
+        )
+    )
+
+    for v in visit_rows:
+        wd = v.visit_date.weekday()
+        duration_min = int(
+            (v.end_time.hour * 60 + v.end_time.minute)
+            - (v.start_time.hour * 60 + v.start_time.minute)
+        )
+        if duration_min <= 0:
+            duration_min = 30
+        db.add(
+            PatientFixedVisit(
+                patient_id=patient_id,
+                mode=effective_mode,
+                weekday=wd,
+                start_time=v.start_time,
+                duration_min=duration_min,
+            )
+        )
+
+    await _commit_or_409(db)
+
+    # 結果を返す
+    rows = (
+        await db.scalars(
+            select(PatientFixedVisit)
+            .where(
+                PatientFixedVisit.patient_id == patient_id,
+                PatientFixedVisit.mode == effective_mode,
+            )
+            .order_by(PatientFixedVisit.weekday)
+        )
+    ).all()
+    return [PatientFixedVisitV2Read.model_validate(r) for r in rows]
