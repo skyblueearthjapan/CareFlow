@@ -3,7 +3,19 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { signOut, useSession } from 'next-auth/react';
-import { Bell, BellOff, Check, Heart, LogOut, Menu, ShieldCheck, User } from 'lucide-react';
+import {
+  Bell,
+  BellOff,
+  Check,
+  Heart,
+  HelpCircle,
+  Inbox,
+  LogOut,
+  Menu,
+  ScrollText,
+  ShieldCheck,
+  User,
+} from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -36,6 +48,9 @@ export function Header({ title = 'CareFlow', onToggleSidebar }: HeaderProps) {
         <NotificationButton />
         <UserMenuButton />
         <AdminUsersButton />
+        <PendingRequestsButton />
+        <AuditLogsButton />
+        <AiHelpButton />
       </div>
     </header>
   );
@@ -253,6 +268,45 @@ function AdminUsersButton() {
     <Button variant="ghost" size="icon" asChild aria-label="ユーザー管理" title="ユーザー管理">
       <Link href="/admin/users">
         <ShieldCheck className="h-5 w-5" strokeWidth={1.75} />
+      </Link>
+    </Button>
+  );
+}
+
+// ============================================================
+// 申請履歴 / 監査ログ / AIヘルプ — Sidebar から移設したクイックアクセス
+// ============================================================
+
+function PendingRequestsButton() {
+  const { data: session } = useSession();
+  const role = session?.user?.role;
+  if (role !== 'admin' && role !== 'manager') return null;
+  return (
+    <Button variant="ghost" size="icon" asChild aria-label="申請履歴" title="申請履歴">
+      <Link href="/admin/pending-requests">
+        <Inbox className="h-5 w-5" strokeWidth={1.75} />
+      </Link>
+    </Button>
+  );
+}
+
+function AuditLogsButton() {
+  const { data: session } = useSession();
+  if (session?.user?.role !== 'admin') return null;
+  return (
+    <Button variant="ghost" size="icon" asChild aria-label="監査ログ" title="監査ログ">
+      <Link href="/admin/audit-logs">
+        <ScrollText className="h-5 w-5" strokeWidth={1.75} />
+      </Link>
+    </Button>
+  );
+}
+
+function AiHelpButton() {
+  return (
+    <Button variant="ghost" size="icon" asChild aria-label="AIヘルプ" title="AIヘルプ">
+      <Link href="/help/ai">
+        <HelpCircle className="h-5 w-5" strokeWidth={1.75} />
       </Link>
     </Button>
   );
