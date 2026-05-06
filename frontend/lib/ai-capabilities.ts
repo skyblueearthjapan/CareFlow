@@ -15,7 +15,7 @@
 /**
  * AI 機能カテゴリ。設計書 §3.5.2 の対象内表に基づく。
  *
- * - `master`         — 患者・スタッフのマスタ操作（新規登録・メンター指定）
+ * - `master`         — 患者・スタッフのマスタ操作（新規登録・同行スタッフ指定）
  * - `staff_schedule` — スタッフのスケジュール（休み・イベント）
  * - `patient_visit`  — 患者の訪問予定（特別週・キャンセル・日時変更）
  */
@@ -65,8 +65,8 @@ export const AI_CAPABILITIES: AiCapability[] = [
   {
     id: 'staff_mentor_assign',
     category: 'master',
-    label: 'スタッフのメンター登録',
-    example: '「鈴木さんのメンターを山田さんに設定」',
+    label: 'スタッフの同行スタッフ登録',
+    example: '「鈴木さんの同行スタッフを山田さんに設定」',
   },
   {
     id: 'staff_override_create',

@@ -30,3 +30,4 @@ export * from './course';
 export * from './visit';
 export * from './pending_request';
 export * from './patient_fixed_visit';
+export * from './staff_companion_assignment';

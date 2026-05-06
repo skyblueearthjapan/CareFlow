@@ -82,7 +82,7 @@ const PATIENT_REQUEST_TYPES = new Set<RequestType>([
 const REQUEST_TYPE_LABEL: Record<RequestType, string> = {
   staff_off: 'スタッフ休み',
   staff_event: 'スタッフイベント',
-  staff_mentor: 'メンター',
+  staff_mentor: '同行スタッフ',
   staff_create: 'スタッフ新規',
   patient_create: '患者新規',
   patient_cancel: '患者キャンセル',

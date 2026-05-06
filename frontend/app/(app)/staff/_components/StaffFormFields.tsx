@@ -9,6 +9,8 @@
  * v2 (W1-BE2): backend は §4.2 の 9 項目のみ受け付ける (``extra="forbid"``)。
  * 削除済み: ``can_double_team`` / ``home_address`` / ``home_lat`` / ``home_lng`` /
  * ``areas`` / ``max_per_day`` / ``skill_level`` / ``assignment_volume``。
+ *
+ * W10-FE1: is_trainee フラグ追加。「メンター」ラベルを「同行スタッフ」に変更。
  */
 import { OfficeCombobox } from '@/components/master/OfficeCombobox';
 import { Input } from '@/components/ui/input';
