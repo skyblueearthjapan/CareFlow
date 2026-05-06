@@ -66,3 +66,30 @@ export const officeV2ReadSchema = officeV2BaseSchema.extend({
   allowed_cities: z.array(z.string().uuid()).default([]),
 });
 export type OfficeV2Read = z.infer<typeof officeV2ReadSchema>;
+
+// ---------------------------------------------------------------------------
+// POST /api/v1/offices/resolve — W1-BE3 (W12-FE: frontend integration)
+// ---------------------------------------------------------------------------
+
+/**
+ * confidence レベル:
+ *   - 'exact'  → 住所が担当市区町村に完全一致
+ *   - 'fuzzy'  → 部分一致 / 近隣エリア
+ *   - 'none'   → 担当エリア外 (手動選択を促す)
+ */
+export const RESOLVE_CONFIDENCE = ['exact', 'fuzzy', 'none'] as const;
+export type ResolveConfidence = (typeof RESOLVE_CONFIDENCE)[number];
+
+/** POST /api/v1/offices/resolve レスポンス. */
+export const officeResolveResponseSchema = z.object({
+  office_id: z.string().uuid().nullable(),
+  office_name: z.string().nullable(),
+  matched_city_id: z.string().uuid().nullable(),
+  confidence: z.enum(RESOLVE_CONFIDENCE),
+});
+export type OfficeResolveResponse = z.infer<typeof officeResolveResponseSchema>;
+
+/** POST /api/v1/offices/resolve リクエスト. */
+export const officeResolveRequestSchema = z.object({
+  address: z.string().min(1),
+});

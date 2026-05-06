@@ -36,6 +36,8 @@ import {
   patientFormSchema,
   type PatientFormValues,
 } from '@/lib/schemas/patient';
+import { useResolveOffice } from '@/lib/queries/offices';
+import type { OfficeResolveResponse } from '@/lib/schemas/office';
 
 import { WeeklyPatternEditor } from './WeeklyPatternEditor';
 
@@ -93,8 +95,57 @@ export function PatientForm({
     handleSubmit,
     control,
     reset,
+    setValue,
+    watch,
     formState: { errors, isDirty },
   } = form;
+
+  // ── W12-FE: 住所から主担当拠点を自動判定 ───────────────────────────────────
+  /** 'auto': 住所変更に応じて primary_office_id を自動セット
+   *  'manual': ユーザーが手動で選択した → 以降は自動セットしない */
+  const [officeMode, setOfficeMode] = React.useState<'auto' | 'manual'>('auto');
+  const [resolveResult, setResolveResult] = React.useState<OfficeResolveResponse | null>(null);
+  const resolveMut = useResolveOffice();
+
+  const watchedAddress = watch('address');
+
+  // M-1 fix: officeMode を ref で参照することで debounce タイマー中の手動選択を反映する
+  // (タイマー設定時点の officeMode を closure に閉じ込めると、debounce 中にユーザーが
+  // OfficeCombobox を手動変更しても タイマー発火時に '古い auto' のままで自動上書きしてしまう)
+  const officeModeRef = React.useRef(officeMode);
+  React.useEffect(() => {
+    officeModeRef.current = officeMode;
+  }, [officeMode]);
+
+  React.useEffect(() => {
+    const address = watchedAddress?.trim();
+    if (!address) {
+      setResolveResult(null);
+      return;
+    }
+    const timer = setTimeout(() => {
+      void (async () => {
+        try {
+          const result = await resolveMut.mutateAsync(address);
+          setResolveResult(result);
+          // 自動セット: officeMode='auto' かつ confidence !== 'none' のみ
+          // ref 経由で最新値を読み、debounce 中の手動切替も尊重する
+          if (
+            officeModeRef.current === 'auto' &&
+            result.confidence !== 'none' &&
+            result.office_id
+          ) {
+            setValue('primary_office_id', result.office_id, { shouldDirty: true });
+          }
+        } catch {
+          // silent — best-effort, ユーザー手動選択にフォールバック
+        }
+      })();
+    }, 600);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [watchedAddress]);
+  // ── /W12-FE ────────────────────────────────────────────────────────────────
 
   const submitHandler: SubmitHandler<PatientFormValues> = async (values) => {
     await onSubmit(values);
@@ -112,6 +163,9 @@ export function PatientForm({
     },
     resetForm: () => {
       reset(defaultValues ?? emptyPatientFormValues);
+      // リセット時に自動判定モードに戻す
+      setOfficeMode('auto');
+      setResolveResult(null);
     },
   }));
 
@@ -187,11 +241,37 @@ export function PatientForm({
               render={({ field }) => (
                 <OfficeCombobox
                   value={field.value ?? ''}
-                  onChange={field.onChange}
+                  onChange={(v) => {
+                    field.onChange(v);
+                    // ユーザーが手動選択 → 以降は住所変更で自動セットしない
+                    setOfficeMode('manual');
+                  }}
                   disabled={submitting}
                 />
               )}
             />
+            {/* W12-FE: 自動判定ヒント */}
+            {resolveResult && officeMode === 'auto' && resolveResult.confidence !== 'none' && (
+              <p className="text-xs text-text-muted">
+                🏢 拠点エリア: {resolveResult.office_name} (自動判定: {resolveResult.confidence})
+              </p>
+            )}
+            {resolveResult && resolveResult.confidence === 'none' && (
+              <p className="text-xs text-warning">⚠ 拠点エリア外: 手動で選択してください</p>
+            )}
+            {officeMode === 'manual' && (
+              <button
+                type="button"
+                onClick={() => {
+                  setOfficeMode('auto');
+                  // 自動判定モードに戻したとき、現在の住所で再判定を促すため resolveResult を維持
+                  // (次の住所変更 or 再マウントで再トリガーされる)
+                }}
+                className="text-xs text-brand-primary underline"
+              >
+                自動判定に戻す
+              </button>
+            )}
           </Field>
         </div>
       </Card>

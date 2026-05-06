@@ -7,7 +7,13 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSession } from 'next-auth/react';
 
 import { fetcher } from '@/lib/api/fetcher';
-import type { Office, OfficeCreate, OfficeUpdate } from '@/lib/schemas/office';
+import type {
+  Office,
+  OfficeCreate,
+  OfficeUpdate,
+  OfficeResolveResponse,
+} from '@/lib/schemas/office';
+import { officeResolveResponseSchema } from '@/lib/schemas/office';
 
 type OfficesResponse = Office[] | { items?: Office[] };
 
@@ -59,8 +65,7 @@ export function useOffice(id: string | undefined) {
 
   return useQuery<Office>({
     queryKey: ['offices', 'detail', id],
-    queryFn: () =>
-      fetcher<Office>(`/api/v1/offices/${id}`, { accessToken, refreshToken }),
+    queryFn: () => fetcher<Office>(`/api/v1/offices/${id}`, { accessToken, refreshToken }),
     enabled: status === 'authenticated' && Boolean(id),
   });
 }
@@ -121,5 +126,30 @@ export function useDeleteOffice() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['offices'] });
     },
+  });
+}
+
+/**
+ * POST /api/v1/offices/resolve — W12-FE.
+ *
+ * 住所文字列から主担当拠点を自動判定する。
+ * 失敗時は silent (best-effort)。呼び出し側でエラーを握りつぶす。
+ */
+export function useResolveOffice() {
+  const { data: session } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+
+  return useMutation<OfficeResolveResponse, Error, string>({
+    mutationFn: async (address: string): Promise<OfficeResolveResponse> => {
+      const raw = await fetcher<unknown>('/api/v1/offices/resolve', {
+        method: 'POST',
+        body: JSON.stringify({ address }),
+        accessToken,
+        refreshToken,
+      });
+      return officeResolveResponseSchema.parse(raw);
+    },
+    // 失敗時は toast 出さず silent (ユーザー手動選択にフォールバック)
   });
 }
