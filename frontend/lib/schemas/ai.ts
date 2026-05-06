@@ -7,21 +7,35 @@
  */
 import { z } from 'zod';
 
+// Wave 11 で v2 (10 種類) に揃える。BE `AiContextType` (v2/enums.py) と完全一致。
+// 旧 `event_create` / `override_create` は v2 で `staff_event` / `staff_off` に置換。
 export const AI_CONTEXT_TYPES = [
+  'staff_off',
+  'staff_event',
+  'staff_mentor',
+  'staff_create',
   'patient_create',
-  'event_create',
-  'override_create',
+  'patient_cancel',
+  'patient_reschedule',
+  'patient_special_week',
   'general',
+  'out_of_scope',
 ] as const;
 
 export const AiContextTypeSchema = z.enum(AI_CONTEXT_TYPES);
 export type AiContextType = z.infer<typeof AiContextTypeSchema>;
 
 export const AI_CONTEXT_LABELS: Record<AiContextType, string> = {
-  patient_create: '患者新規',
-  event_create: 'スタッフイベント新規',
-  override_create: 'スタッフ休み新規',
-  general: '汎用',
+  staff_off: 'スタッフ休み (その週だけ)',
+  staff_event: 'スタッフイベント (会議・研修)',
+  staff_mentor: '新人フラグ + 同行スタッフ割付',
+  staff_create: 'スタッフ新規登録',
+  patient_create: '患者新規登録',
+  patient_cancel: '患者訪問キャンセル',
+  patient_reschedule: '患者訪問日時変更',
+  patient_special_week: '特別訪問週間 ON/OFF',
+  general: '汎用 (自動判定)',
+  out_of_scope: '範囲外',
 };
 
 export const InterpretRequestSchema = z.object({
