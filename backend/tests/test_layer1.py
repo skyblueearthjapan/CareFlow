@@ -25,6 +25,7 @@ from sqlalchemy import select
 
 from app.core.security import create_access_token, hash_password
 from app.models import Patient, User, Visit
+from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.visit import (
     VISIT_STATUS_COMPLETED,
     VISIT_STATUS_PLANNED,
@@ -660,3 +661,128 @@ async def test_special_week_without_special_pattern_falls_back(db) -> None:
     assert result.special_week_applied_count == 0
     assert result.visits_created[0].special_week_applied is False
     assert result.visits_created[0].patient_id == patient.id
+
+
+# ---------------------------------------------------------------------------
+# W9-BE2: Layer 1 hybrid 化テスト
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_layer1_hybrid_fixed_visits_used_when_present(db) -> None:
+    """has_fixed_visits=True の患者 → fixed_visits ベースで visits を生成する."""
+    expander = Layer1Expander()
+
+    # 患者は weekly_pattern (希望) も持つが fixed_visits が優先される
+    normal_pattern = _pattern(
+        _entry("Fri", "15:00", "16:00"),  # 希望パターン (使われないはず)
+        frequency_per_week=1,
+    )
+    patient = await _make_patient(
+        db,
+        code="L1-HYB-001",
+        weekly_pattern=normal_pattern,
+    )
+
+    # patient_fixed_visits に normal mode の固定枠を登録 (Mon 09:00 60分)
+    fv = PatientFixedVisit(
+        patient_id=patient.id,
+        mode="normal",
+        weekday=0,  # Mon
+        start_time=time(9, 0),
+        duration_min=60,
+    )
+    db.add(fv)
+    await db.commit()
+
+    result = await expander.expand_week(db, iso_year=TEST_ISO_YEAR, iso_week=TEST_ISO_WEEK)
+    await db.commit()
+
+    assert result.visits_created_count == 1
+    vc = result.visits_created[0]
+    # 固定枠 (Mon 09:00–10:00) が使われているはず
+    assert vc.weekday == 0  # Mon
+    assert vc.start_time == "09:00"
+    assert vc.end_time == "10:00"
+    # 希望パターン (Fri) ではない
+    assert vc.patient_id == patient.id
+
+    # DB: source=auto, visit_date=月曜
+    rows = (await db.scalars(select(Visit).where(Visit.patient_id == patient.id))).all()
+    assert len(rows) == 1
+    assert rows[0].visit_date == TEST_WEEK_MONDAY
+    assert rows[0].source == LAYER1_VISIT_SOURCE
+
+
+@pytest.mark.asyncio
+async def test_layer1_hybrid_no_fixed_visits_uses_pattern(db) -> None:
+    """has_fixed_visits=False の患者 → weekly_pattern (希望) ベースで従来通り展開."""
+    expander = Layer1Expander()
+
+    pattern = _pattern(
+        _entry("Wed", "14:00", "15:00"),
+        frequency_per_week=1,
+    )
+    patient = await _make_patient(
+        db,
+        code="L1-HYB-002",
+        weekly_pattern=pattern,
+        # patient_fixed_visits は登録しない
+    )
+
+    result = await expander.expand_week(db, iso_year=TEST_ISO_YEAR, iso_week=TEST_ISO_WEEK)
+    await db.commit()
+
+    assert result.visits_created_count == 1
+    vc = result.visits_created[0]
+    assert vc.weekday == 2  # Wed
+    assert vc.start_time == "14:00"
+    assert vc.patient_id == patient.id
+
+
+@pytest.mark.asyncio
+async def test_layer1_hybrid_mixed_patients_in_same_week(db) -> None:
+    """同一週内に fixed_visits あり患者 / なし患者が混在 → 各々正しく分岐する."""
+    expander = Layer1Expander()
+
+    # 患者 A: fixed_visits あり (Mon 09:00)
+    p_a = await _make_patient(
+        db,
+        code="L1-HYB-003A",
+        weekly_pattern=_pattern(_entry("Fri", "15:00", "16:00")),  # 希望は無視
+    )
+    db.add(
+        PatientFixedVisit(
+            patient_id=p_a.id,
+            mode="normal",
+            weekday=0,  # Mon
+            start_time=time(9, 0),
+            duration_min=60,
+        )
+    )
+
+    # 患者 B: fixed_visits なし → weekly_pattern (Fri) を使う
+    p_b = await _make_patient(
+        db,
+        code="L1-HYB-003B",
+        weekly_pattern=_pattern(_entry("Fri", "10:00", "11:00")),
+    )
+
+    await db.commit()
+
+    result = await expander.expand_week(db, iso_year=TEST_ISO_YEAR, iso_week=TEST_ISO_WEEK)
+    await db.commit()
+
+    assert result.visits_created_count == 2
+
+    by_patient: dict = {}
+    for vc in result.visits_created:
+        by_patient[vc.patient_id] = vc
+
+    # 患者 A: fixed (Mon)
+    assert p_a.id in by_patient
+    assert by_patient[p_a.id].weekday == 0  # Mon
+
+    # 患者 B: pattern (Fri)
+    assert p_b.id in by_patient
+    assert by_patient[p_b.id].weekday == 4  # Fri

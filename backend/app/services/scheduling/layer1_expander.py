@@ -46,6 +46,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.patient import Patient
+from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.visit import Visit
 
 # ---------------------------------------------------------------------------
@@ -123,6 +124,51 @@ def _is_special_week_active(patient: Patient, iso_year: int, iso_week: int) -> b
         if iy == iso_year and iw == iso_week:
             return True
     return False
+
+
+async def _has_fixed_visits(db: AsyncSession, patient_id: UUID, mode: str) -> bool:
+    """``patient_fixed_visits`` に当該 (patient_id, mode) の行が存在するか."""
+    result = await db.scalar(
+        select(PatientFixedVisit.id).where(
+            PatientFixedVisit.patient_id == patient_id,
+            PatientFixedVisit.mode == mode,
+        )
+    )
+    return result is not None
+
+
+async def _expand_patient_fixed_visits(
+    db: AsyncSession,
+    *,
+    patient: Patient,
+    mode: str,
+    week_monday: date,
+) -> list[dict]:
+    """``patient_fixed_visits`` から当該週の entries 相当リストを生成する.
+
+    Returns:
+        list of dicts compatible with ``_entries_from_pattern`` output,
+        each having: weekday (int), start_time (time), service_minutes (int).
+    """
+    rows = (
+        await db.scalars(
+            select(PatientFixedVisit).where(
+                PatientFixedVisit.patient_id == patient.id,
+                PatientFixedVisit.mode == mode,
+            )
+        )
+    ).all()
+
+    entries: list[dict] = []
+    for fv in rows:
+        entries.append(
+            {
+                "weekday": fv.weekday,
+                "_start_time": fv.start_time,  # already a time object
+                "service_minutes": fv.duration_min,
+            }
+        )
+    return entries
 
 
 def _select_pattern(patient: Patient, iso_year: int, iso_week: int) -> tuple[dict | None, bool]:
@@ -332,30 +378,13 @@ class Layer1Expander:
 
         # ----- 各患者を展開 -----
         for patient in patients:
-            pattern, special_applied = _select_pattern(patient, iso_year, iso_week)
-            if special_applied:
-                result.special_week_applied_count += 1
-
-            if not _has_confirmed_entries(pattern):
-                # 新規患者 / 確定パターン未設定 → 保留プールへ
-                result.pool.append(
-                    PoolEntry(
-                        patient_id=patient.id,
-                        patient_name=patient.name,
-                        preferred_weekdays=_preferred_weekdays(patient.weekly_pattern),
-                        frequency_per_week=_frequency_per_week(patient.weekly_pattern),
-                    )
-                )
-                continue
-
-            # entries → visits 展開
-            entries = _entries_from_pattern(pattern)
-            created = await self._expand_entries_to_visits(
+            created = await self._expand_patient_to_visits(
                 db,
                 patient=patient,
-                entries=entries,
+                iso_year=iso_year,
+                iso_week=iso_week,
                 week_monday=week_monday,
-                special_applied=special_applied,
+                result=result,
             )
             result.visits_created.extend(created)
 
@@ -366,6 +395,148 @@ class Layer1Expander:
     # ------------------------------------------------------------------ #
     # private helpers
     # ------------------------------------------------------------------ #
+
+    async def _expand_patient_to_visits(
+        self,
+        db: AsyncSession,
+        *,
+        patient: Patient,
+        iso_year: int,
+        iso_week: int,
+        week_monday: date,
+        result: Layer1Result,
+    ) -> list[VisitCreated]:
+        """1 患者を固定枠 / 希望パターンどちらかで展開する (hybrid).
+
+        has_fixed_visits=True の場合は patient_fixed_visits から直接生成し、
+        False の場合は従来の weekly_pattern (希望) ベースで生成する。
+        """
+        # mode 判定: special_week_active に当該週が含まれるかどうか
+        is_special = _is_special_week_active(patient, iso_year, iso_week)
+        mode = "special" if is_special else "normal"
+
+        # 固定枠チェック
+        if await _has_fixed_visits(db, patient.id, mode):
+            # 固定枠ベースで展開
+            fixed_entries = await _expand_patient_fixed_visits(
+                db,
+                patient=patient,
+                mode=mode,
+                week_monday=week_monday,
+            )
+            if is_special:
+                result.special_week_applied_count += 1
+            return await self._expand_fixed_visits_to_visits(
+                db,
+                patient=patient,
+                fixed_entries=fixed_entries,
+                week_monday=week_monday,
+                special_applied=is_special,
+            )
+
+        # 従来: 希望パターン (weekly_pattern) ベース
+        pattern, special_applied = _select_pattern(patient, iso_year, iso_week)
+        if special_applied:
+            result.special_week_applied_count += 1
+
+        if not _has_confirmed_entries(pattern):
+            # 新規患者 / 確定パターン未設定 → 保留プールへ
+            result.pool.append(
+                PoolEntry(
+                    patient_id=patient.id,
+                    patient_name=patient.name,
+                    preferred_weekdays=_preferred_weekdays(patient.weekly_pattern),
+                    frequency_per_week=_frequency_per_week(patient.weekly_pattern),
+                )
+            )
+            return []
+
+        entries = _entries_from_pattern(pattern)
+        return await self._expand_entries_to_visits(
+            db,
+            patient=patient,
+            entries=entries,
+            week_monday=week_monday,
+            special_applied=special_applied,
+        )
+
+    async def _expand_fixed_visits_to_visits(
+        self,
+        db: AsyncSession,
+        *,
+        patient: Patient,
+        fixed_entries: list[dict],
+        week_monday: date,
+        special_applied: bool,
+    ) -> list[VisitCreated]:
+        """固定枠エントリ (patient_fixed_visits 由来) から visits を INSERT する.
+
+        course_id は NULL (Layer 2 でセット)。
+        required_staff_count は patients.required_staff_count を流用する。
+        """
+        created: list[VisitCreated] = []
+
+        # required_staff_count: patients テーブルにカラムが存在する場合のみ使用
+        staff_count = getattr(patient, "required_staff_count", 1) or 1
+        if staff_count not in (1, 2):
+            staff_count = 1
+
+        seen_weekdays: set[int] = set()
+
+        for fe in fixed_entries:
+            weekday: int = fe["weekday"]
+            if weekday in seen_weekdays:
+                continue
+            seen_weekdays.add(weekday)
+
+            start_t: time = fe["_start_time"]
+            service_min: int = fe["service_minutes"]
+            end_minutes = start_t.hour * 60 + start_t.minute + service_min
+            if end_minutes >= 24 * 60:
+                continue
+            end_t = time(end_minutes // 60, end_minutes % 60)
+
+            visit_date = date.fromordinal(week_monday.toordinal() + weekday)
+
+            visit_group_id: UUID | None = None
+            if staff_count == 2:
+                visit_group_id = uuid.uuid4()
+
+            for _slot_idx in range(staff_count):
+                visit = Visit(
+                    patient_id=patient.id,
+                    visit_date=visit_date,
+                    start_time=start_t,
+                    end_time=end_t,
+                    type=LAYER1_VISIT_TYPE,
+                    status=LAYER1_VISIT_STATUS,
+                    source=LAYER1_VISIT_SOURCE,
+                    required_staff_count=staff_count,
+                    course_id=None,
+                    visit_group_id=visit_group_id,
+                    note=(
+                        "Layer1: fixed pattern (special_week)"
+                        if special_applied
+                        else "Layer1: fixed pattern"
+                    ),
+                )
+                db.add(visit)
+                await db.flush()
+
+                created.append(
+                    VisitCreated(
+                        visit_id=visit.id,
+                        patient_id=patient.id,
+                        weekday=weekday,
+                        visit_date=visit_date,
+                        start_time=start_t.strftime("%H:%M"),
+                        end_time=end_t.strftime("%H:%M"),
+                        staff_count=staff_count,
+                        special_week_applied=special_applied,
+                    )
+                )
+
+        return created
 
     async def _delete_existing_auto_visits(
         self,
