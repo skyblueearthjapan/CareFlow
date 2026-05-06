@@ -737,6 +737,50 @@ async def test_interpret_model_not_found_returns_503(client, db, monkeypatch) ->
     assert "is not found" in meta["error"]
 
 
+# ---------------------------------------------------------------------------
+# W11-BE: staff_mentor プロンプト整合性テスト
+
+
+def test_staff_mentor_prompt_contains_assignments_keywords() -> None:
+    """staff_mentor context_type の build_prompt に W11-BE 拡張キーワードが含まれる。"""
+    from app.services.gemini_client import build_prompt
+
+    prompt = build_prompt("staff_mentor", "テスト発話", {})
+
+    # mode A / mode B の主要キーワードが含まれること
+    assert "is_trainee" in prompt
+    assert "assignments" in prompt
+    assert "weekday" in prompt
+    assert "part" in prompt
+    assert "companion_staff_id" in prompt
+    # weekday の意味定義
+    assert "0=月" in prompt
+    assert "'am'" in prompt
+    assert "'pm'" in prompt
+    assert "'full'" in prompt
+
+
+def test_general_prompt_mentions_staff_mentor_dual_mode() -> None:
+    """general context_type の build_prompt に staff_mentor 2 モード言及がある。"""
+    from app.services.gemini_client import build_prompt
+
+    prompt = build_prompt("general", "テスト発話", {})
+
+    assert "staff_mentor" in prompt
+    assert "is_trainee" in prompt
+    assert "assignments" in prompt
+
+
+def test_staff_mentor_prompt_excludes_old_mentor_staff_id() -> None:
+    """旧 mentor_staff_id の記述が staff_mentor プロンプトに残っていないこと。"""
+    from app.services.gemini_client import build_prompt
+
+    prompt = build_prompt("staff_mentor", "テスト発話", {})
+
+    # W10-BE1 以前の旧フィールド名が残留していないことを確認
+    assert "mentor_staff_id" not in prompt
+
+
 @pytest.mark.asyncio
 async def test_interpret_generic_gemini_error_returns_502(client, db, monkeypatch) -> None:
     """An unclassified upstream failure should map to 502, not 422.

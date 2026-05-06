@@ -10,7 +10,7 @@
     |--------------------------|--------------------------------------------------|
     | staff_off                | staff_weekly_overrides (新規 INSERT)             |
     | staff_event              | staff_events (新規 INSERT)                       |
-    | staff_mentor             | staff.is_trainee (UPDATE) ※W10-BE1 で mentor_id 廃止 |
+    | staff_mentor             | staff.is_trainee (UPDATE) / staff_companion_assignments (UPSERT) ※W11-BE |
     | staff_create             | staff (新規 INSERT)                               |
     | patient_create           | patients (新規 INSERT)                            |
     | patient_cancel           | visits.status = "cancelled" (UPDATE)              |
@@ -41,12 +41,13 @@ from datetime import date, datetime, time
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.patient import Patient
 from app.models.pending_request import PendingRequest
 from app.models.staff import Staff, StaffEvent, StaffWeeklyOverride
+from app.models.staff_companion_assignment import StaffCompanionAssignment
 from app.models.visit import VISIT_STATUS_CANCELLED, Visit
 from app.schemas.v2.enums import RequestScope, RequestStatus, RequestType
 
@@ -237,8 +238,13 @@ async def _apply_staff_event(db: AsyncSession, request: PendingRequest, payload:
 async def _apply_staff_mentor(db: AsyncSession, request: PendingRequest, payload: _Payload) -> None:
     """``staff_mentor``: W10-BE1 で mentor_id 廃止 → is_trainee (bool) を更新.
 
-    互換性維持のため request_type='staff_mentor' のエントリは引き続き受け付けるが、
-    payload.is_trainee (bool, optional) で is_trainee フラグを更新する。
+    W11-BE: assignments[] による companion-assignments 一括 upsert にも対応。
+
+    payload modes (両方同時指定可):
+    1. is_trainee: bool optional → staff.is_trainee 更新
+    2. assignments: list[{weekday: int, part: 'am'|'pm'|'full', companion_staff_id: UUID}] optional
+       → 当該 trainee_staff_id の既存全行を DELETE → assignments を INSERT (1 TX で完結、PUT 同等の冪等)
+
     旧 mentor_id フィールドは無視される。
     """
     staff_id = _coerce_uuid(payload.get("staff_id") or request.target_staff_id)
@@ -254,10 +260,104 @@ async def _apply_staff_mentor(db: AsyncSession, request: PendingRequest, payload
             f"staff_mentor: staff {staff_id} not found",
             http_status=404,
         )
-    # is_trainee フラグを更新 (指定があれば)
+
+    # mode 1: is_trainee 更新
     is_trainee_raw = payload.get("is_trainee")
     if is_trainee_raw is not None:
         staff.is_trainee = bool(is_trainee_raw)
+
+    # mode 2: assignments 一括 upsert
+    assignments = payload.get("assignments")
+    if assignments is not None:
+        if not isinstance(assignments, list):
+            raise PendingRequestApplyError(
+                "staff_mentor: assignments must be a list", http_status=422
+            )
+
+        validated: list[dict[str, Any]] = []
+        seen_keys: set[tuple[int, str]] = set()
+
+        for i, a in enumerate(assignments):
+            if not isinstance(a, dict):
+                raise PendingRequestApplyError(f"assignments[{i}] must be object", http_status=422)
+
+            wd = a.get("weekday")
+            part = a.get("part")
+            cid = _coerce_uuid(a.get("companion_staff_id"))
+
+            if not isinstance(wd, int) or wd < 0 or wd > 6:
+                raise PendingRequestApplyError(f"assignments[{i}].weekday invalid", http_status=422)
+            if part not in ("am", "pm", "full"):
+                raise PendingRequestApplyError(f"assignments[{i}].part invalid", http_status=422)
+            if cid is None:
+                raise PendingRequestApplyError(
+                    f"assignments[{i}].companion_staff_id required", http_status=422
+                )
+            if cid == staff_id:
+                raise PendingRequestApplyError(
+                    f"assignments[{i}]: self-companion not allowed", http_status=422
+                )
+
+            # (weekday, part) 重複チェック
+            key: tuple[int, str] = (wd, part)
+            if key in seen_keys:
+                raise PendingRequestApplyError(
+                    f"assignments[{i}]: duplicate (weekday, part)", http_status=422
+                )
+
+            # full / am-pm 排他チェック
+            if part == "full" and any(w == wd for w, _ in seen_keys):
+                raise PendingRequestApplyError(
+                    f"assignments[{i}]: full conflicts with am/pm on same weekday",
+                    http_status=422,
+                )
+            if part in ("am", "pm") and (wd, "full") in seen_keys:
+                raise PendingRequestApplyError(
+                    f"assignments[{i}]: am/pm conflicts with existing full on same weekday",
+                    http_status=422,
+                )
+
+            seen_keys.add(key)
+
+            # companion staff の存在 + role/status 検証
+            companion = await db.scalar(
+                select(Staff).where(Staff.id == cid, Staff.deleted_at.is_(None))
+            )
+            if companion is None:
+                raise PendingRequestApplyError(
+                    f"assignments[{i}]: companion staff not found", http_status=422
+                )
+            if companion.role not in ("manager", "staff"):
+                raise PendingRequestApplyError(
+                    f"assignments[{i}]: companion role must be manager/staff", http_status=422
+                )
+            if companion.status != "active":
+                raise PendingRequestApplyError(
+                    f"assignments[{i}]: companion not active", http_status=422
+                )
+
+            validated.append(
+                {
+                    "trainee_staff_id": staff_id,
+                    "weekday": wd,
+                    "part": part,
+                    "companion_staff_id": cid,
+                }
+            )
+
+        # trainee.is_trainee=True 必須: まだ true でなければ強制 true 化
+        if not staff.is_trainee:
+            staff.is_trainee = True
+
+        # 既存 staff_companion_assignments を全削除 → INSERT (1 TX)
+        await db.execute(
+            delete(StaffCompanionAssignment).where(
+                StaffCompanionAssignment.trainee_staff_id == staff_id
+            )
+        )
+        for a in validated:
+            db.add(StaffCompanionAssignment(**a))
+
     await db.flush()
 
 
