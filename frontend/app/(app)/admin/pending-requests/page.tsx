@@ -264,7 +264,7 @@ export default function AdminPendingRequestsPage() {
     <section className="space-y-4">
       <header className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="font-serif text-2xl font-bold text-text-primary">申請履歴</h1>
+          <h1 className="font-serif text-2xl font-bold text-text-primary">モバイル申請履歴</h1>
           <p className="text-sm text-text-secondary">
             全 {total} 件 — モバイル / AI 経由の申請を管理者が承認・却下します
           </p>
