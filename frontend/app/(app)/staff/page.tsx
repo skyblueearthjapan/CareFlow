@@ -212,7 +212,7 @@ export default function StaffPage() {
                   <th className="px-3 py-2 font-medium">役割</th>
                   <th className="px-3 py-2 font-medium">状態</th>
                   <th className="px-3 py-2 font-medium">主拠点</th>
-                  <th className="px-3 py-2 font-medium" />
+                  <th className="px-3 py-2 font-medium">操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -230,13 +230,23 @@ export default function StaffPage() {
                     <td className="px-3 py-2 text-text-secondary">
                       {officeLabel(row.primary_office_id)}
                     </td>
-                    <td className="px-3 py-2 text-right">
-                      <Link
-                        href={`/staff/${row.id}`}
-                        className="text-brand-primary hover:underline"
-                      >
-                        詳細
-                      </Link>
+                    <td className="px-3 py-2">
+                      <div className="flex gap-2">
+                        <Link
+                          href={`/staff/${row.id}`}
+                          className="text-brand-primary hover:underline"
+                        >
+                          詳細
+                        </Link>
+                        {canCreate ? (
+                          <Link
+                            href={`/staff/${row.id}/edit`}
+                            className="text-brand-primary hover:underline"
+                          >
+                            編集
+                          </Link>
+                        ) : null}
+                      </div>
                     </td>
                   </tr>
                 ))}

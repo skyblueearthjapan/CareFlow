@@ -39,6 +39,13 @@ import {
 
 import { WeeklyPatternEditor } from './WeeklyPatternEditor';
 
+export interface PatientFormHandle {
+  /** フォームを強制送信する (EditPageStickyBar の「更新」ボタン用) */
+  submitForm: () => void;
+  /** フォームを初期値にリセットする (EditPageStickyBar の「破棄」ボタン用) */
+  resetForm: () => void;
+}
+
 interface PatientFormProps {
   /** Pre-filled values (edit mode). */
   defaultValues?: PatientFormValues;
@@ -52,6 +59,13 @@ interface PatientFormProps {
   errorMessage?: string | null;
   /** Submit button label (default "保存"). */
   submitLabel?: string;
+  /**
+   * isDirty 状態が変わるたびに呼ばれるコールバック (W10-FE3: sticky bar 用)。
+   * 親がバーを制御する場合に使う。
+   */
+  onDirtyChange?: (isDirty: boolean) => void;
+  /** フォームのメソッドを親から呼び出すための ref (W10-FE3: sticky bar 用) */
+  formRef?: React.Ref<PatientFormHandle>;
 }
 
 export function PatientForm({
@@ -61,6 +75,8 @@ export function PatientForm({
   submitting = false,
   errorMessage = null,
   submitLabel = '保存',
+  onDirtyChange,
+  formRef,
 }: PatientFormProps) {
   const form = useForm<PatientFormValues>({
     // `patientFormSchema` matches the structured/checkbox shape react-hook-form
@@ -76,12 +92,28 @@ export function PatientForm({
     register,
     handleSubmit,
     control,
-    formState: { errors },
+    reset,
+    formState: { errors, isDirty },
   } = form;
 
   const submitHandler: SubmitHandler<PatientFormValues> = async (values) => {
     await onSubmit(values);
   };
+
+  // isDirty が変わるたびに親へ通知する
+  React.useEffect(() => {
+    onDirtyChange?.(isDirty);
+  }, [isDirty, onDirtyChange]);
+
+  // 外部から submit / reset を呼べるように ref を公開する
+  React.useImperativeHandle(formRef, () => ({
+    submitForm: () => {
+      void handleSubmit(submitHandler)();
+    },
+    resetForm: () => {
+      reset(defaultValues ?? emptyPatientFormValues);
+    },
+  }));
 
   return (
     <form onSubmit={handleSubmit(submitHandler)} className="space-y-6">
