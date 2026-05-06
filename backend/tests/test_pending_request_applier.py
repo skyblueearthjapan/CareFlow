@@ -193,6 +193,32 @@ async def test_apply_staff_mentor_updates_is_trainee_only(db) -> None:
     assert len(rows) == 0
 
 
+@pytest.mark.asyncio
+async def test_apply_staff_mentor_clears_is_trainee_when_false(db) -> None:
+    """W11-BE: mode A で is_trainee=false → 新人フラグを解除できる (Reviewer M-1 補完)."""
+    user = await _make_user(db, "apl-mentor-off@example.com")
+    # 既に新人フラグ ON のスタッフ
+    mentee = Staff(name="卒業予定", is_trainee=True)
+    db.add(mentee)
+    await db.commit()
+    await db.refresh(mentee)
+    assert mentee.is_trainee is True
+
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="staff_mentor",
+        payload={"staff_id": str(mentee.id), "is_trainee": False},
+        target_staff_id=mentee.id,
+    )
+
+    applier = PendingRequestApplier()
+    await applier.apply(db, pr)
+    await db.commit()
+    await db.refresh(mentee)
+    assert mentee.is_trainee is False
+
+
 # ---------------------------------------------------------------------------
 # W11-BE: staff_mentor mode B (assignments[]) テスト
 # ---------------------------------------------------------------------------
