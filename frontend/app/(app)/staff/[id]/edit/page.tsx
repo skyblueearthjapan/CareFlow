@@ -49,7 +49,7 @@ function fromStaff(staff: StaffRead): StaffFormState {
     status,
     role: staff.role,
     primary_office_id: staff.primary_office_id ?? '',
-    mentor_id: staff.mentor_id ?? '',
+    is_trainee: staff.is_trainee ?? false,
     note: staff.note ?? '',
   };
 }
@@ -63,7 +63,7 @@ function toPayload(form: StaffFormState): StaffUpdate {
     status: form.status,
     role: form.role,
     primary_office_id: form.primary_office_id.trim() || null,
-    mentor_id: form.mentor_id.trim() || null,
+    is_trainee: form.is_trainee,
     note: form.note.trim() || null,
   };
 }
@@ -189,7 +189,6 @@ export default function StaffEditPage() {
               form={form}
               errors={errors}
               onChange={setForm}
-              currentStaffId={id}
               sexOptions={STAFF_SEX_VALUES.map((v) => ({ value: v, label: sexLabel(v) }))}
               roleOptions={STAFF_ROLE_VALUES.map((v) => ({ value: v, label: roleLabel(v) }))}
               statusOptions={STAFF_STATUS_VALUES.map((v) => ({
