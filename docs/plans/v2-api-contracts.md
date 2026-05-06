@@ -105,7 +105,7 @@
 
 **変更点（v1 → v2）**:
 - 削除: `can_double_team`, `home_address`, `home_lat`, `home_lng`, `areas`, `max_per_day`, `skill_level`, `assignment_volume`（6 項目 + `home_*` 3 項目）
-- `status`: `在籍 / 休職 / 退職` の 3 値に正規化（v1 の `active` / `inactive` から移行）
+- `status`: `在籍 / 休職 / 退職` の 3 値に正規化（v1 の `active` / `inactive` から `active` / `on_leave` / `retired` へ移行）
 - **Wave 10 変更**:
   - 削除: `mentor_id`（Wave 10 にて廃止。`staff_companion_assignments` に刷新）
   - 追加: `is_trainee: bool`（デフォルト `false`。新人スタッフフラグ）
