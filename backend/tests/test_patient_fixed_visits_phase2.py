@@ -541,3 +541,55 @@ async def test_fix_or_pattern_invalid_mode_422(client, db) -> None:
         },
     )
     assert res.status_code == 422, res.text
+
+
+# ---------------------------------------------------------------------------
+# M2: fix-or-pattern の RBAC テスト (staff → 403)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fix_or_pattern_staff_forbidden(client, db) -> None:
+    """staff ロールは fix-or-pattern を呼べない (403)."""
+    import uuid
+
+    staff = await _make_staff(db, "スタッフ14")
+    staff_user = await _make_user(db, "fop-14-staff@example.com", "staff", staff_id=staff.id)
+
+    res = await client.post(
+        "/api/v1/schedule/fix-or-pattern",
+        headers=_bearer(staff_user),
+        json={
+            "mode": "this_week_only",
+            "visit_id": str(uuid.uuid4()),
+            "new_weekday": 0,
+            "new_start_time": "09:00",
+            "new_duration_min": 60,
+            "iso_year": TEST_ISO_YEAR,
+            "iso_week": TEST_ISO_WEEK,
+        },
+    )
+    assert res.status_code == 403, res.text
+
+
+@pytest.mark.asyncio
+async def test_fix_or_pattern_viewer_forbidden(client, db) -> None:
+    """viewer ロールは fix-or-pattern を呼べない (403)."""
+    import uuid
+
+    viewer = await _make_user(db, "fop-15-viewer@example.com", "viewer")
+
+    res = await client.post(
+        "/api/v1/schedule/fix-or-pattern",
+        headers=_bearer(viewer),
+        json={
+            "mode": "pattern_change",
+            "visit_id": str(uuid.uuid4()),
+            "new_weekday": 1,
+            "new_start_time": "10:00",
+            "new_duration_min": 30,
+            "iso_year": TEST_ISO_YEAR,
+            "iso_week": TEST_ISO_WEEK,
+        },
+    )
+    assert res.status_code == 403, res.text

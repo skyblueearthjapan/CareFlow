@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import date, time
 from typing import Any
 from uuid import UUID
 
@@ -33,6 +34,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.patient import Patient
+from app.models.visit import Visit
 from app.schemas.v2.patient import (
     WeekdayV2,
     WeeklyPatternEntryV2,
@@ -95,6 +97,16 @@ class ScheduleFixResult:
 
     patients_updated: int = 0
     weekly_pattern_changes: list[WeeklyPatternChange] = field(default_factory=list)
+
+
+@dataclass
+class UpdateVisitLayoutResult:
+    """``update_visit_layout`` の出力."""
+
+    visit_id: UUID
+    visit_date: date
+    start_time: time
+    end_time: time
 
 
 # ----------------------------------------------------------------------------
@@ -329,11 +341,99 @@ class ScheduleFixService:
         await db.flush()
         return result
 
+    async def update_visit_layout(
+        self,
+        db: AsyncSession,
+        *,
+        visit_id: UUID,
+        iso_year: int,
+        iso_week: int,
+        new_weekday: int,
+        new_start_time: time,
+        new_duration_min: int,
+    ) -> UpdateVisitLayoutResult:
+        """単一 visit の時刻 / 曜日 / duration を service 層で一元変更する (§3.5.8).
+
+        設計書 §3.5.8「既存 ``/schedule/fix`` を呼ぶ」仕様に準拠し、
+        visit の更新を service 層に集約する。commit/rollback は呼び出し側が担う。
+
+        Args:
+            db: 共有 SQLAlchemy セッション (commit/rollback は呼び出し側)。
+            visit_id: 更新対象の Visit.id。
+            iso_year: 対象週 (ISO 年)。visit_date の算出に使う。
+            iso_week: 対象週 (ISO 週)。visit_date の算出に使う。
+            new_weekday: 新しい曜日 (0=Mon..6=Sun)。
+            new_start_time: 新しい開始時刻。
+            new_duration_min: 新しい所要時間 (分)。
+
+        Returns:
+            UpdateVisitLayoutResult: 更新後の visit 属性。
+
+        Raises:
+            ScheduleFixError: visit 未存在 / 日付不正 / 時刻範囲超過。
+        """
+        if new_weekday < 0 or new_weekday > 6:
+            raise ScheduleFixError(
+                f"new_weekday must be 0..6, got {new_weekday}",
+                http_status=422,
+            )
+        if new_duration_min < 1 or new_duration_min > 480:
+            raise ScheduleFixError(
+                f"new_duration_min must be 1..480, got {new_duration_min}",
+                http_status=422,
+            )
+
+        # visit 取得
+        visit = await db.scalar(
+            select(Visit).where(Visit.id == visit_id, Visit.deleted_at.is_(None))
+        )
+        if visit is None:
+            raise ScheduleFixError(
+                f"Visit not found: {visit_id}",
+                http_status=404,
+            )
+
+        # iso 週の月曜から new_weekday 日後を計算
+        try:
+            week_monday = date.fromisocalendar(iso_year, iso_week, 1)
+        except ValueError as exc:
+            raise ScheduleFixError(
+                f"invalid ISO week: year={iso_year} week={iso_week}",
+                http_status=422,
+            ) from exc
+
+        new_visit_date = date.fromordinal(week_monday.toordinal() + new_weekday)
+
+        # 終了時刻を計算して範囲チェック
+        end_minutes = new_start_time.hour * 60 + new_start_time.minute + new_duration_min
+        if end_minutes >= 24 * 60:
+            raise ScheduleFixError(
+                "new_start_time + new_duration_min exceeds 24:00",
+                http_status=422,
+            )
+        new_end_time = time(end_minutes // 60, end_minutes % 60)
+
+        # visit を更新
+        visit.visit_date = new_visit_date
+        visit.start_time = new_start_time
+        visit.end_time = new_end_time
+
+        # 状態を確定 (commit は呼び出し側)
+        await db.flush()
+
+        return UpdateVisitLayoutResult(
+            visit_id=visit.id,
+            visit_date=new_visit_date,
+            start_time=new_start_time,
+            end_time=new_end_time,
+        )
+
 
 __all__ = [
     "FixedVisit",
     "ScheduleFixError",
     "ScheduleFixResult",
     "ScheduleFixService",
+    "UpdateVisitLayoutResult",
     "WeeklyPatternChange",
 ]
