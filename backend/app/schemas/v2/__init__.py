@@ -55,6 +55,12 @@ from app.schemas.v2.patient import (
     WeeklyPatternEntryV2,
     WeeklyPatternV2,
 )
+from app.schemas.v2.patient_fixed_visit import (
+    PatientFixedVisitMode,
+    PatientFixedVisitsBulkPut,
+    PatientFixedVisitV2Base,
+    PatientFixedVisitV2Read,
+)
 from app.schemas.v2.pending_request import (
     PendingRequestApprove,
     PendingRequestReject,
@@ -131,6 +137,11 @@ __all__ = [
     "VisitV2Create",
     "VisitV2Read",
     "VisitV2Update",
+    # patient_fixed_visit
+    "PatientFixedVisitMode",
+    "PatientFixedVisitsBulkPut",
+    "PatientFixedVisitV2Base",
+    "PatientFixedVisitV2Read",
     # pending_request
     "PendingRequestApprove",
     "PendingRequestReject",

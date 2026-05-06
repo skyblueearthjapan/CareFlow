@@ -14,6 +14,7 @@ from app.models.kaipoke_job import KaipokeJob, KaipokeJobItem
 from app.models.notification import Notification
 from app.models.office import Office, OfficeCity
 from app.models.patient import Patient, PatientAllowedOffice
+from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.pending_request import PendingRequest
 from app.models.shift_request import ShiftRequest
 from app.models.special_week import SpecialWeek, SpecialWeekItem
@@ -46,6 +47,7 @@ __all__ = [
     "OfficeCity",
     "Patient",
     "PatientAllowedOffice",
+    "PatientFixedVisit",
     "PendingRequest",
     "ShiftRequest",
     "SpecialWeek",

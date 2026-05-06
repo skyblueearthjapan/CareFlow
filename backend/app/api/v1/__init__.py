@@ -18,6 +18,7 @@ from app.api.v1 import (
     mentor,
     notifications,
     offices,
+    patient_fixed_visits,
     patients,
     pending_requests,
     schedule,
@@ -35,6 +36,11 @@ api_router.include_router(health.router)
 api_router.include_router(auth.router)
 api_router.include_router(admin.router)
 api_router.include_router(patients.router, prefix="/patients", tags=["patients"])
+# W9-BE1: patient fixed-visit pattern sub-resource.
+# Must be included BEFORE patients.router catch-all routes.
+api_router.include_router(
+    patient_fixed_visits.router, prefix="/patients", tags=["patient-fixed-visits"]
+)
 # Sub-resource routers MUST be included BEFORE staff.router so that the more
 # specific paths (/staff/{id}/shifts etc.) are matched before the generic
 # /staff/{id} catch-all in staff.router.
