@@ -52,6 +52,7 @@ import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { usePatients } from '@/lib/queries/patients';
 import type { ScheduleFixRequest, FixedVisitV2 } from '@/lib/queries/schedule_v2';
+import { useVisits } from '@/lib/queries/visits';
 import { addDays, toWeekStart, WeekSelector } from '@/components/schedule/WeekSelector';
 
 import { FixButton } from './FixButton';
@@ -345,12 +346,32 @@ export function ScheduleGridV2({
     return map;
   }, [allPatients]);
 
+  // ─────────────── 当該週の visit 一覧 (visit_id 解決用, M1) ───────────────
+  // D&D 後に ScheduleChangeDialog へ渡す visit_id を取得するため、
+  // 現在表示週の visits を fetch する。
+  const weekStartStr = format(weekStart, 'yyyy-MM-dd');
+  const weekEndStr = format(addDays(weekStart, 6), 'yyyy-MM-dd');
+  const weekVisitsQuery = useVisits({ week_start: weekStartStr, week_end: weekEndStr });
+
+  /** patient_id → visit.id (その週の最初の visit を使う). */
+  const patientVisitIdMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const v of weekVisitsQuery.data?.items ?? []) {
+      if (!map.has(v.patient_id)) {
+        map.set(v.patient_id, v.id);
+      }
+    }
+    return map;
+  }, [weekVisitsQuery.data]);
+
   // ─────────────── D&D 後の変更反映ダイアログ state ───────────────
   /**
    * D&D でセル間移動が確定したときに開くダイアログ用の pending 情報。
    * プール → セル / セル → セル (異なるスロット) の場合にのみ使用する。
    */
   interface PendingMove {
+    /** 当該週の Visit.id (UUID). BE の fix-or-pattern API が期待する visit_id. */
+    visitId: string;
     patientId: string;
     weekday: number;
     startTime: string;
@@ -482,9 +503,12 @@ export function ScheduleGridV2({
     // プールに居た場合は除外
     setPool((prev) => prev.filter((p) => p.patientId !== patientId));
 
-    // ダイアログを開く (visitId は this_week の visit_id が必要だが、
-    // グリッド上は patient_id を visit_id として仮利用し、API 側で解決する)
+    // ダイアログを開く。当該週の visit_id を patientVisitIdMap から解決する (M1)。
+    // 当該週にまだ visit が存在しない場合 (新規配置直後など) は空文字列を渡し、
+    // ScheduleChangeDialog 側で disabled になる。
+    const visitId = patientVisitIdMap.get(patientId) ?? '';
     setPendingMove({
+      visitId,
       patientId,
       weekday: cell.weekday,
       startTime: cell.time,
@@ -552,6 +576,18 @@ export function ScheduleGridV2({
     }
     return map;
   }, [placements]);
+
+  // ─────────────── L1: isSpecialWeek を patient.special_week_active から判定 ───────────────
+  const isSpecialWeek = useMemo(() => {
+    if (!pendingMove) return false;
+    const patient = allPatients.find((p) => p.id === pendingMove.patientId);
+    const activeList = patient?.special_week_active as
+      | Array<{ iso_year: number; iso_week: number }>
+      | undefined;
+    if (!activeList || activeList.length === 0) return false;
+    const { iso_year, iso_week } = toIsoYearWeek(weekStart);
+    return activeList.some((w) => w.iso_year === iso_year && w.iso_week === iso_week);
+  }, [pendingMove, allPatients, weekStart]);
 
   // ─────────────── render ───────────────
   if (patientsQuery.isLoading && allPatients.length === 0) {
@@ -706,9 +742,9 @@ export function ScheduleGridV2({
       {pendingMove ? (
         <ScheduleChangeDialog
           open={dialogOpen}
-          visitId={pendingMove.patientId}
+          visitId={pendingMove.visitId}
           patientName={patientMeta.get(pendingMove.patientId)?.name ?? pendingMove.patientId}
-          isSpecialWeek={false}
+          isSpecialWeek={isSpecialWeek}
           newWeekday={pendingMove.weekday}
           newStartTime={pendingMove.startTime}
           newDurationMin={pendingMove.serviceMinutes}
