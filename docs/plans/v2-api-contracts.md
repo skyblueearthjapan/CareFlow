@@ -409,13 +409,13 @@
 
 ---
 
-## 7.6 patient_fixed_visits API（W9-BE1 / W9-BE2）
+## 8. patient_fixed_visits API（W9-BE1 / W9-BE2）
 
 > Wave 9 Phase 5a 追記（2026-05-06）。設計仕様 §3.6.8 / §4.1b に対応する。
 > W9-BE1 は Phase 1 で実装（GET / PUT / DELETE）、W9-BE2 は Phase 2 で実装
 >（from-week 系 / fix-or-pattern）。
 
-### 7.6.1 `GET /api/v1/patients/{patient_id}/fixed-visits`
+### 8.1 `GET /api/v1/patients/{patient_id}/fixed-visits`
 
 | 項目 | 内容 |
 |---|---|
@@ -425,7 +425,7 @@
 | Response 200 | `list[PatientFixedVisitV2Read]` |
 | RBAC | Admin / Manager（全患者） / Staff（自担当患者のみ） |
 
-### 7.6.2 `PUT /api/v1/patients/{patient_id}/fixed-visits`
+### 8.2 `PUT /api/v1/patients/{patient_id}/fixed-visits`
 
 | 項目 | 内容 |
 |---|---|
@@ -437,7 +437,7 @@
 | トランザクション | `(patient_id, mode)` の既存全行を DELETE し、items で指定した行を INSERT。1 TX で完結 |
 | バリデーション | `items` 内に同一 `weekday` が重複する場合は 422 を返す |
 
-### 7.6.3 `DELETE /api/v1/patients/{patient_id}/fixed-visits`
+### 8.3 `DELETE /api/v1/patients/{patient_id}/fixed-visits`
 
 | 項目 | 内容 |
 |---|---|
@@ -448,7 +448,7 @@
 | RBAC | Admin / Manager のみ |
 | 効果 | 削除後の `generate-week` では `weekly_pattern` / `special_weekly_pattern` から visits を生成する（§3.6.8 Layer 1 hybrid 化のフォールバック） |
 
-### 7.6.4 `POST /api/v1/patients/{patient_id}/fixed-visits/from-week`（Phase 2）
+### 8.4 `POST /api/v1/patients/{patient_id}/fixed-visits/from-week`（Phase 2）
 
 | 項目 | 内容 |
 |---|---|
@@ -460,7 +460,7 @@
 | mode 自動推定 | `mode` 省略時: `special_week_active` に `(iso_year, iso_week)` が含まれれば `'special'`、なければ `'normal'` |
 | 書き戻し元 | `visits` + `visit_staff_assignments`（時刻・duration のみ取得。スタッフ情報は書き戻さない） |
 
-### 7.6.5 `POST /api/v1/patients/fixed-visits/from-week-bulk`（Phase 2）
+### 8.5 `POST /api/v1/patients/fixed-visits/from-week-bulk`（Phase 2）
 
 | 項目 | 内容 |
 |---|---|
@@ -469,9 +469,11 @@
 | Query | `iso_year=2026&iso_week=20`（必須）、`mode=normal\|special`（省略可） |
 | Response 200 | `{ "updated_count": int, "patients": [uuid] }` |
 | RBAC | Admin / Manager のみ |
-| 処理方式 | 全 active 患者に対して §7.6.4 と同等の書き戻しを 1 TX で実行 |
+| 処理方式 | 全 active 患者に対して §8.4 と同等の書き戻しを 1 TX で実行 |
+| 書き戻し元 | `visits` + `visit_staff_assignments`（時刻・duration のみ取得。スタッフ情報は書き戻さない、§8.4 と同方針） |
+| 冪等性 | 同一週に対し複数回呼んでも安全（PUT 同様 当該 (patient, mode) の既存全行を完全置換するため） |
 
-### 7.6.6 `POST /api/v1/schedule/fix-or-pattern`（Phase 2）
+### 8.6 `POST /api/v1/schedule/fix-or-pattern`（Phase 2）
 
 > D&D ダイアログの (a)/(b) 選択に対応するエンドポイント（§3.5.8 参照）。
 
@@ -517,7 +519,7 @@
 
 ---
 
-## 7.7 Pydantic / TypeScript 型定義（patient_fixed_visits）
+## 9. Pydantic / TypeScript 型定義（patient_fixed_visits）
 
 > 共有型の正式定義は `backend/app/schemas/v2/patient_fixed_visits.py` および
 > `frontend/lib/schemas/v2/patient_fixed_visits.ts` に配置する（W9-BE1 で作成）。
