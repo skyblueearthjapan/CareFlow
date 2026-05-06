@@ -43,6 +43,7 @@
 | **0014** | `0014_v2_ai_context_type_extend` | `0013_v2_pending_requests` | W2-BE6 | AI scope 拡張 | `ai_interpret_logs` の context_type 拡張に伴う補助変更（CHECK 制約や idx の追加。実装上は JSONB `_meta` で持つため migration は no-op の可能性あり。ただし枠は予約） |
 | **0015** | `0015_v2_drop_legacy_w3_master_fields` | `0014_v2_ai_context_type_extend` | W6-MIG1 | 既存データ移行 | W1-BE1/BE2 で残した backup column を本番削除（expand-contract 第 2 段）。Wave 6 で実行 |
 | **0016** | `0016_v2_special_weeks_route_410` | `0015_v2_drop_legacy_w3_master_fields` | W6-MIG2 | /special-weeks 廃止 | 既存 `special_weeks` / `special_week_items` テーブルの将来削除のための準備 migration（テーブルそのものは Wave 6 で別 deploy にて drop） |
+| **0017** | `0017_v2_patient_fixed_visits` | `0016_v2_special_weeks_route_410` | W9-BE1 | patient_fixed_visits 新設 | `patient_fixed_visits` テーブル新設（§4.1b DDL 参照）。`feat/v2-w9-be1-fixed-visits` ブランチで実装 |
 
 ### 1.1 直線リニアモデル
 
@@ -141,13 +142,14 @@ def downgrade() -> None:
 | 0013 | `pending_requests` テーブルおよび関連 enum DROP |
 | 0014 | no-op（JSONB `_meta` 書き換えなので追加スキーマ変更なし） |
 | 0015 | **不可逆** — 物理 DROP 後は元に戻せない。実行前に DB スナップショット必須 |
-| 0016 | route の 410 化のみであれば schema 変更なし（no-op）。Wave 6 で本番テーブル drop する場合は別 revision として 0017 を予約する |
+| 0016 | route の 410 化のみであれば schema 変更なし（no-op） |
+| 0017 | `patient_fixed_visits` テーブル DROP（CASCADE で関連行も削除される） |
 
 ---
 
 ## 5. 受入基準
 
-- [x] 0009〜0016 が **重複なく** Wave 1〜2 のチケットに 1:1 で割り振られている
+- [x] 0009〜0017 が **重複なく** Wave 1〜2・Wave 9 のチケットに 1:1 で割り振られている
 - [x] 0001〜0008 は v1 で消費済みであることが明記されている
 - [x] 各番号の `down_revision` が明示されている（線形モデル）
 - [x] expand-contract 戦略が 0009/0010 と 0015 の関係で説明されている
