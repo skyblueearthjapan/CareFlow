@@ -257,7 +257,7 @@
 | マスタ新規 | **スタッフ新規登録** | 「新規スタッフで山田花子さん、火曜と金曜が固定休、稲毛拠点」 |
 | スタッフ予定 | その週だけの休み | 「田中さん木曜休み」 |
 | スタッフ予定 | イベント新規 | 「火曜午後 管理者会議」 |
-| スタッフ予定 | 同行スタッフ割付 | 「鈴木さんの同行を山田さんに（月曜午前）」 |
+| スタッフ予定 | 新人フラグ切替 + 同行スタッフ割付 (曜日×午前/午後/終日) | 「鈴木さんを新人にする」「鈴木さんの月曜午前は田中さん」「鈴木さんを新人にして平日終日田中さん」 |
 | 患者対応 | 特別訪問週間 ON/OFF | 「佐藤さん来週特別週オン」 |
 | 患者対応 | 訪問キャンセル | 「田中さん明日キャンセル」 |
 | 患者対応 | 日時変更 | 「鈴木さん明日10時に1時間追加」 |
@@ -467,6 +467,65 @@ AI 応答: 「拠点の追加は AI では対応していません。サイド�
 - `is_trainee = false` の場合: 下半分の同行スタッフ割付エリアは **非表示**
 - `is_trainee = true` に変更した場合: エリアが出現し、曜日 × 時間帯（am/pm/full）ごとに companion を選択できる
 - `is_trainee = false` に戻した場合: 変更保存時に既存の `staff_companion_assignments` を一括削除（§4.2.x の制約）
+
+#### 3.5.x AI 経由の同行スタッフ割付 (Wave 11)
+
+> Wave 11 追記（2026-05-06）。既存 `staff_mentor` request_type の payload を拡張し、
+> 新人フラグ切替（mode A）と同行スタッフ割付（mode B）を AI 経由で一括処理できるよう
+> にする。**新規 request_type は追加しない**。
+
+##### 2 モードの概要
+
+| モード | トリガー | 操作内容 |
+|---|---|---|
+| **mode A**: 新人フラグ切替 | `payload.is_trainee` bool あり | `staff.is_trainee` を `true` / `false` に更新する |
+| **mode B**: 同行スタッフ割付 | `payload.assignments[]` あり | `staff_companion_assignments` を全削除 → INSERT（PUT 同等の冪等） |
+
+両モードは **同時指定可**（1 リクエストで完結）。
+
+##### mode B payload 構造
+
+```json
+{
+  "staff_id": "<trainee uuid>",
+  "assignments": [
+    { "weekday": 0, "part": "am", "companion_staff_id": "<uuid>" },
+    { "weekday": 0, "part": "pm", "companion_staff_id": "<uuid>" }
+  ]
+}
+```
+
+- `weekday`: 0〜6 (0 = 月曜)
+- `part`: `'am'` / `'pm'` / `'full'` のいずれか
+- `companion_staff_id`: 自身以外、`role IN ('manager','staff')`、`status = '在籍'`
+
+##### バリデーション
+
+| 検証項目 | 内容 |
+|---|---|
+| `weekday` 範囲 | 0〜6 のみ受け付ける |
+| `part` 値 | `'am'` / `'pm'` / `'full'` のみ |
+| `part` 排他 | 同一曜日内で `'full'` と `'am'`/`'pm'` は排他（`'full'` と同時に `'am'` または `'pm'` を指定した場合は 422） |
+| companion 資格 | `role IN ('manager','staff')` かつ `status = '在籍'` かつ `deleted_at IS NULL` かつ trainee 本人以外 |
+| 冪等性 | mode B 適用時は既存 `staff_companion_assignments` を全削除 → INSERT（PUT 同等） |
+
+##### is_trainee の自動強制
+
+`payload.assignments` が指定された場合（mode B）、trainee の `is_trainee` が `false` であっても
+**自動的に `true` に強制** する。運用上「新人にする」+「companion 設定」を 1 リクエストで
+完結させることを優先するため。
+
+> 両モードが指定されていない場合（`is_trainee` も `assignments` も未指定）は
+> 422 "either is_trainee or assignments must be provided" を返す。
+
+##### 発話例と対応モード
+
+| 発話例 | 適用モード | payload の概要 |
+|---|---|---|
+| 「鈴木さんを新人にする」 | mode A のみ | `{ "staff_id": "<鈴木>", "is_trainee": true }` |
+| 「鈴木さんを新人から外す」 | mode A のみ | `{ "staff_id": "<鈴木>", "is_trainee": false }` |
+| 「鈴木さんの月曜午前は田中さん、月曜午後は佐藤さん」 | mode B のみ | `{ "staff_id": "<鈴木>", "assignments": [{ "weekday": 0, "part": "am", "companion_staff_id": "<田中>" }, { "weekday": 0, "part": "pm", "companion_staff_id": "<佐藤>" }] }` |
+| 「鈴木さんを新人にして、平日終日田中さんと同行」 | mode A + B | `{ "staff_id": "<鈴木>", "is_trainee": true, "assignments": [{ "weekday": 0, "part": "full", "companion_staff_id": "<田中>" }, ...(火〜金)] }` |
 
 ### 3.6 自動 / 手動 / AI の役割分担（3 レイヤー構造）
 
