@@ -18,9 +18,16 @@ export {
   officeV2ReadSchema as OfficeReadSchema,
   officeV2CreateSchema as OfficeCreateSchema,
   officeV2UpdateSchema as OfficeUpdateSchema,
+  // W12-FE: resolve endpoint schemas
+  RESOLVE_CONFIDENCE,
+  officeResolveResponseSchema,
+  officeResolveRequestSchema,
 } from '@/lib/schemas/v2/office';
 export type {
   OfficeV2Read as Office,
   OfficeV2Create as OfficeCreate,
   OfficeV2Update as OfficeUpdate,
+  // W12-FE: resolve endpoint types
+  ResolveConfidence,
+  OfficeResolveResponse,
 } from '@/lib/schemas/v2/office';
