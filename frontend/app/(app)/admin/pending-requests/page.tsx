@@ -69,6 +69,7 @@ const STAFF_REQUEST_TYPES = new Set<RequestType>([
   'staff_event',
   'staff_mentor',
   'staff_create',
+  'staff_status_update',
 ]);
 
 const PATIENT_REQUEST_TYPES = new Set<RequestType>([
@@ -77,6 +78,7 @@ const PATIENT_REQUEST_TYPES = new Set<RequestType>([
   'patient_reschedule',
   'patient_special_week_on',
   'patient_special_week_off',
+  'patient_status_update',
 ]);
 
 const REQUEST_TYPE_LABEL: Record<RequestType, string> = {
@@ -84,11 +86,13 @@ const REQUEST_TYPE_LABEL: Record<RequestType, string> = {
   staff_event: 'スタッフイベント',
   staff_mentor: '同行スタッフ',
   staff_create: 'スタッフ新規',
+  staff_status_update: 'スタッフ状態変更',
   patient_create: '患者新規',
   patient_cancel: '患者キャンセル',
   patient_reschedule: '日時変更',
   patient_special_week_on: '特別週ON',
   patient_special_week_off: '特別週OFF',
+  patient_status_update: '患者状態変更',
 };
 
 const STATUS_LABEL: Record<RequestStatus, string> = {

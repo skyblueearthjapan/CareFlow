@@ -24,6 +24,8 @@
  *   | patient_reschedule        | pending        | pending           |
  *   | patient_special_week_on   | pending        | out_of_scope      |
  *   | patient_special_week_off  | pending        | out_of_scope      |
+ *   | staff_status_update       | pending        | out_of_scope      |
+ *   | patient_status_update     | pending        | out_of_scope      |
  *   | out_of_scope              | out_of_scope   | out_of_scope      |
  */
 
@@ -122,6 +124,8 @@ const ACTION_TYPE_TO_REQUEST_TYPE: Record<string, RequestType> = {
   patient_reschedule: 'patient_reschedule',
   // patient_special_week は payload.mode で on/off を分岐する。
   patient_special_week: 'patient_special_week_on',
+  staff_status_update: 'staff_status_update',
+  patient_status_update: 'patient_status_update',
 };
 
 /**

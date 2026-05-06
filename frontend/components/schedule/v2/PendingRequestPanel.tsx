@@ -58,11 +58,13 @@ const REQUEST_TYPE_LABEL: Record<RequestType, string> = {
   staff_event: 'スタッフ予定',
   staff_mentor: '同行スタッフ',
   staff_create: 'スタッフ新規',
+  staff_status_update: 'スタッフ状態変更',
   patient_create: '患者新規',
   patient_cancel: '患者キャンセル',
   patient_reschedule: '日時変更',
   patient_special_week_on: '特別週ON',
   patient_special_week_off: '特別週OFF',
+  patient_status_update: '患者状態変更',
 };
 
 // ─────────────────────────────────────────────────────────────────────────
