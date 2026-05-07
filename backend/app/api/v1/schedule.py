@@ -434,6 +434,15 @@ class PlaceAndFixRequest(BaseModel):
     )
 
 
+class PlaceAndFixResponse(BaseModel):
+    """``POST /api/v1/schedule/place-and-fix`` のレスポンス."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    visit: VisitV2Read
+    fixed_visit: PatientFixedVisitV2Read | None = None
+
+
 # ---------------------------------------------------------------------------
 # Endpoint: /place-and-fix (W15-BE-FIXPATTERN)
 # ---------------------------------------------------------------------------
@@ -441,6 +450,7 @@ class PlaceAndFixRequest(BaseModel):
 
 @router.post(
     "/place-and-fix",
+    response_model=PlaceAndFixResponse,
     status_code=status.HTTP_200_OK,
     summary="ドロップ即固定枠化 (W15-BE-FIXPATTERN)",
 )
@@ -448,7 +458,7 @@ async def place_and_fix(
     body: PlaceAndFixRequest,
     db: DbDep,
     _user: Annotated[User, Depends(require_role("admin", "manager"))],
-) -> dict:
+) -> PlaceAndFixResponse:
     """新規 visit を作成し、必要に応じて patient_fixed_visits を upsert する.
 
     Wave 15 主フロー: ScheduleChangeDialog (今週のみ / 固定枠変更) を廃止し、
@@ -560,12 +570,7 @@ async def place_and_fix(
         PatientFixedVisitV2Read.model_validate(new_fv) if new_fv is not None else None
     )
 
-    return {
-        "visit": visit_read.model_dump(mode="json"),
-        "fixed_visit": (
-            fixed_visit_read.model_dump(mode="json") if fixed_visit_read is not None else None
-        ),
-    }
+    return PlaceAndFixResponse(visit=visit_read, fixed_visit=fixed_visit_read)
 
 
 __all__ = ["router"]
