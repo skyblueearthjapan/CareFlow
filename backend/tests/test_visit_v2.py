@@ -20,7 +20,7 @@ import pytest
 from sqlalchemy import select
 
 from app.core.security import create_access_token, hash_password
-from app.models import Course, Patient, Staff, User, Visit, VisitStaffAssignment
+from app.models import Course, Office, Patient, Staff, User, Visit, VisitStaffAssignment
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -62,8 +62,17 @@ async def _make_staff(db, name: str = "スタッフ") -> Staff:
 
 
 async def _make_course(db, **overrides) -> Course:
+    """W15-BE-FIXPATTERN: courses.office_id NOT NULL のため
+    Course 作成前に Office を自動作成して FK を埋める。
+    呼び出し側が明示的に office_id を渡せば、その値を尊重する。
+    """
     base = {"iso_year": 2026, "iso_week": 22, "weekday": 0, "code": "A"}
     base.update(overrides)
+    if "office_id" not in base:
+        office = Office(name=f"事業所-{base['code']}-{base['weekday']}")
+        db.add(office)
+        await db.flush()
+        base["office_id"] = office.id
     c = Course(**base)
     db.add(c)
     await db.commit()

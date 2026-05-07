@@ -1,17 +1,21 @@
-"""Schedule endpoints (W3-BE-FIX / W4-BE7).
+"""Schedule endpoints (W3-BE-FIX / W4-BE7 / W9-BE2 / W15-BE-FIXPATTERN).
 
 設計仕様書 ``docs/plans/v2-allocation-redesign.md`` v0.9 §3.6.2 (Layer 1
 時間配置) と API 契約 ``docs/plans/v2-api-contracts.md`` §6 に対応する
 HTTP 層。
 
 実装エンドポイント:
-    - POST /api/v1/schedule/fix         (W3-BE-FIX): 週レイアウト確定
-    - POST /api/v1/schedule/generate-week (W4-BE7): Layer 1 アルゴリズム
+    - POST /api/v1/schedule/fix             (W3-BE-FIX): 週レイアウト確定
+    - POST /api/v1/schedule/generate-week   (W4-BE7): Layer 1 アルゴリズム
+    - POST /api/v1/schedule/fix-or-pattern  (W9-BE2): **既存 visit の時刻変更**
+    - POST /api/v1/schedule/place-and-fix   (W15-BE-FIXPATTERN): ドロップ即固定枠化
 
 ## RBAC (API 契約 §6)
 
-- POST /schedule/fix          — admin / manager のみ (staff は 403)
-- POST /schedule/generate-week — admin / manager のみ (staff は 403)
+- POST /schedule/fix             — admin / manager のみ (staff は 403)
+- POST /schedule/generate-week   — admin / manager のみ (staff は 403)
+- POST /schedule/fix-or-pattern  — admin / manager のみ (staff は 403)
+- POST /schedule/place-and-fix   — admin / manager のみ (staff は 403)
 
 ## トランザクション
 
@@ -23,7 +27,7 @@ HTTP 層。
 
 from __future__ import annotations
 
-from datetime import time
+from datetime import date, time, timedelta
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -223,6 +227,13 @@ async def generate_week(
 class FixOrPatternRequest(BaseModel):
     """``POST /api/v1/schedule/fix-or-pattern`` のリクエストボディ.
 
+    **既存 visit の時刻変更専用** エンドポイント (W9-BE2)。
+
+    新規配置 (visit が DB に未存在 / 保留プールから初配置) は
+    ``POST /api/v1/schedule/place-and-fix`` (W15-BE-FIXPATTERN) を使用すること。
+    本 endpoint に空文字列 ``""`` を渡しても Pydantic UUID バリデーションで
+    422 となるため、FE 側は visit_id が空のときは place-and-fix に切替える。
+
     mode='this_week_only'  → 当該 visit のみ更新 (固定枠は不変)
     mode='pattern_change'  → patient_fixed_visits を更新 + 当該週 visit も更新
     """
@@ -230,6 +241,7 @@ class FixOrPatternRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     mode: Literal["this_week_only", "pattern_change"]
+    # NOTE: visit_id は既存 Visit.id (UUID) のみ。空文字列は 422 となる。
     visit_id: UUID
     new_weekday: int = Field(ge=0, le=6)
     new_start_time: time
@@ -253,7 +265,16 @@ async def fix_or_pattern(
     db: DbDep,
     _user: Annotated[User, Depends(require_role("admin", "manager"))],
 ) -> dict:
-    """訪問時刻変更の 2 モード実装.
+    """**既存 visit の時刻変更**専用エンドポイント (W9-BE2).
+
+    Wave 15 主フロー (ドロップ即固定枠化) では
+    ``POST /api/v1/schedule/place-and-fix`` を使用する。本 endpoint は
+    既存 Visit.id を指定した時刻変更にのみ用いる。
+
+    422 恒久対策 (W15-BE-FIXPATTERN):
+        ``visit_id`` は Pydantic UUID 型で受ける。空文字列 ``""`` を渡すと
+        FastAPI バリデーションが 422 を返す (= 設計通り)。新規配置 (visit が
+        未存在) の場合は place-and-fix を呼ぶこと。
 
     this_week_only: 当該 visit のみ更新。patient_fixed_visits は変更しない。
                     設計書 §3.5.8「既存 /schedule/fix を呼ぶ」に準拠し、
@@ -368,6 +389,188 @@ async def fix_or_pattern(
             updated_fixed_visit.model_dump(mode="json") if updated_fixed_visit else None
         ),
     }
+
+
+# ---------------------------------------------------------------------------
+# /place-and-fix Request / Response schemas (W15-BE-FIXPATTERN)
+# ---------------------------------------------------------------------------
+
+
+class PlaceAndFixRequest(BaseModel):
+    """``POST /api/v1/schedule/place-and-fix`` のリクエストボディ.
+
+    Wave 15 で新設された「ドロップ即固定枠化」フロー専用 (W15-BE-FIXPATTERN)。
+
+    Phase 1 で導入した 422 バグ恒久対策:
+        - 保留プールから初配置 (visit が DB に未存在) のとき、FE は本
+          endpoint を呼ぶ (visit_id を送らない)
+        - 既存 visit の時刻変更は ``/fix-or-pattern`` を継続使用
+
+    挙動:
+        1. ``visits`` に新規行を作成 (1 トランザクション内)
+           - patient_id, visit_date = ISO 週から計算, status='planned',
+             source='manual'
+        2. ``fix_pattern=True`` のとき: ``patient_fixed_visits`` を upsert
+           - mode は ``_is_special_week_active(patient, iso_year, iso_week)``
+             で判定 ('special' / 'normal')
+        3. 1 トランザクション (``db.commit()`` 1 回)
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    patient_id: UUID
+    iso_year: int = Field(ge=2000, le=2100)
+    iso_week: int = Field(ge=1, le=53)
+    weekday: int = Field(ge=0, le=6, description="0=Mon..6=Sun")
+    start_time: time
+    duration_min: int = Field(ge=1, le=480)
+    staff_count: Literal[1, 2] = 1
+    fix_pattern: bool = Field(
+        default=True,
+        description=(
+            "True: patient_fixed_visits を upsert (恒久) / "
+            "False: 今週のみ visit 作成 (固定枠を作らない)"
+        ),
+    )
+
+
+class PlaceAndFixResponse(BaseModel):
+    """``POST /api/v1/schedule/place-and-fix`` のレスポンス."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    visit: VisitV2Read
+    fixed_visit: PatientFixedVisitV2Read | None = None
+
+
+# ---------------------------------------------------------------------------
+# Endpoint: /place-and-fix (W15-BE-FIXPATTERN)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/place-and-fix",
+    response_model=PlaceAndFixResponse,
+    status_code=status.HTTP_200_OK,
+    summary="ドロップ即固定枠化 (W15-BE-FIXPATTERN)",
+)
+async def place_and_fix(
+    body: PlaceAndFixRequest,
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+) -> PlaceAndFixResponse:
+    """新規 visit を作成し、必要に応じて patient_fixed_visits を upsert する.
+
+    Wave 15 主フロー: ScheduleChangeDialog (今週のみ / 固定枠変更) を廃止し、
+    ドロップ即固定枠化に統一。「今週のみ」運用は ``fix_pattern=False`` で表現。
+
+    挙動:
+        1. patient 存在チェック (404 if not found)
+        2. ISO (iso_year, iso_week) の月曜 + weekday から visit_date を算出
+        3. duration_min から end_time を算出 (24:00 越えは 422)
+        4. ``Visit`` 作成 (status='planned', source='manual',
+           required_staff_count=staff_count)
+        5. ``fix_pattern=True`` のとき:
+           - special_week_active 判定で mode を決定
+           - 同一 (patient_id, mode, weekday) の既存行を DELETE → INSERT
+             (upsert) して固定枠を更新
+        6. 1 トランザクションで commit。例外時は rollback。
+
+    Returns:
+        ``{"visit": VisitV2Read, "fixed_visit": PatientFixedVisitV2Read | None}``
+    """
+    # ----- 入力検証 (Pydantic で済まない範囲) -----
+    try:
+        week_monday = date.fromisocalendar(body.iso_year, body.iso_week, 1)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"invalid ISO week: year={body.iso_year} week={body.iso_week}",
+        ) from exc
+
+    visit_date = week_monday + timedelta(days=body.weekday)
+
+    # 終了時刻計算 (24:00 越え禁止)
+    end_minutes = body.start_time.hour * 60 + body.start_time.minute + body.duration_min
+    if end_minutes >= 24 * 60:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="start_time + duration_min exceeds 24:00",
+        )
+    end_time = time(end_minutes // 60, end_minutes % 60)
+
+    try:
+        # ----- patient 取得 (存在チェック) -----
+        patient = await db.scalar(
+            select(Patient).where(
+                Patient.id == body.patient_id,
+                Patient.deleted_at.is_(None),
+            )
+        )
+        if patient is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Patient not found",
+            )
+
+        # ----- 1) visits に新規行を作成 -----
+        new_visit = Visit(
+            patient_id=body.patient_id,
+            visit_date=visit_date,
+            start_time=body.start_time,
+            end_time=end_time,
+            type="regular",
+            status="planned",
+            source="manual",
+            required_staff_count=body.staff_count,
+        )
+        db.add(new_visit)
+        await db.flush()
+
+        # ----- 2) fix_pattern=True のとき patient_fixed_visits を upsert -----
+        new_fv: PatientFixedVisit | None = None
+        if body.fix_pattern:
+            is_special = _is_special_week_active(patient, body.iso_year, body.iso_week)
+            fv_mode: PatientFixedVisitMode = "special" if is_special else "normal"
+
+            # 同一 (patient_id, mode, weekday) を DELETE して INSERT (upsert)
+            await db.execute(
+                delete(PatientFixedVisit).where(
+                    PatientFixedVisit.patient_id == body.patient_id,
+                    PatientFixedVisit.mode == fv_mode,
+                    PatientFixedVisit.weekday == body.weekday,
+                )
+            )
+            new_fv = PatientFixedVisit(
+                patient_id=body.patient_id,
+                mode=fv_mode,
+                weekday=body.weekday,
+                start_time=body.start_time,
+                duration_min=body.duration_min,
+            )
+            db.add(new_fv)
+            await db.flush()
+
+        # ----- 3) 1 トランザクション commit -----
+        await db.commit()
+
+        await db.refresh(new_visit)
+        if new_fv is not None:
+            await db.refresh(new_fv)
+
+    except HTTPException:
+        await db.rollback()
+        raise
+    except Exception:
+        await db.rollback()
+        raise
+
+    visit_read = VisitV2Read.model_validate(new_visit)
+    fixed_visit_read = (
+        PatientFixedVisitV2Read.model_validate(new_fv) if new_fv is not None else None
+    )
+
+    return PlaceAndFixResponse(visit=visit_read, fixed_visit=fixed_visit_read)
 
 
 __all__ = ["router"]

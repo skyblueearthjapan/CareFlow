@@ -61,9 +61,10 @@ async def _make_office_and_staff(
     db,
     *,
     n_staff: int = 2,
+    office_name: str = "稲毛事業所",
 ) -> tuple[Office, list[Staff]]:
     """1 office + N staff を作成し、月曜稼働で StaffShift を入れる."""
-    office = Office(name="稲毛事業所", lat=35.6383, lng=140.1041)
+    office = Office(name=office_name, lat=35.6383, lng=140.1041)
     db.add(office)
     await db.flush()
 
@@ -99,13 +100,15 @@ async def _make_patient(db, *, code: str) -> Patient:
     return p
 
 
-async def _make_course(db, *, weekday: int, code: str) -> Course:
+async def _make_course(db, *, weekday: int, code: str, office_id: UUID) -> Course:
+    """W15-BE-FIXPATTERN: courses.office_id NOT NULL のため office_id 必須."""
     c = Course(
         iso_year=TEST_ISO_YEAR,
         iso_week=TEST_ISO_WEEK,
         weekday=weekday,
         code=code,
         course_status=COURSE_STATUS_COURSE_FIXED,
+        office_id=office_id,
     )
     db.add(c)
     await db.flush()
@@ -146,10 +149,10 @@ async def _make_visit(
 @pytest.mark.asyncio
 async def test_persist_single_staff_inserts_one_assignment_row(db) -> None:
     """1 名体制 (required_staff_count=1) のとき 1 visit に対して 1 行."""
-    _, staffs = await _make_office_and_staff(db, n_staff=1)
+    office, staffs = await _make_office_and_staff(db, n_staff=1)
     s1 = staffs[0]
 
-    course = await _make_course(db, weekday=0, code="A")
+    course = await _make_course(db, weekday=0, code="A", office_id=office.id)
     patient = await _make_patient(db, code="P1")
     visit = await _make_visit(
         db,
@@ -201,12 +204,12 @@ async def test_persist_single_staff_inserts_one_assignment_row(db) -> None:
 @pytest.mark.asyncio
 async def test_persist_two_person_inserts_primary_and_secondary(db) -> None:
     """2 名体制では同一 group 内の各 visit に primary + secondary の 2 行."""
-    _, staffs = await _make_office_and_staff(db, n_staff=2)
+    office, staffs = await _make_office_and_staff(db, n_staff=2)
     s1, s2 = staffs[0], staffs[1]
 
     # 2 名体制: 別々の course (A, B) に 1 visit ずつ + 同じ visit_group_id
-    course_a = await _make_course(db, weekday=0, code="A")
-    course_b = await _make_course(db, weekday=0, code="B")
+    course_a = await _make_course(db, weekday=0, code="A", office_id=office.id)
+    course_b = await _make_course(db, weekday=0, code="B", office_id=office.id)
     patient = await _make_patient(db, code="P2")
 
     group_id = uuid.uuid4()
@@ -286,10 +289,10 @@ async def test_persist_is_idempotent_overwrites_existing_rows(db) -> None:
     2 回目: staff_id=s2 (= 担当者変更)
     → 行数 1, staff_id=s2 (上書きされている)
     """
-    _, staffs = await _make_office_and_staff(db, n_staff=2)
+    office, staffs = await _make_office_and_staff(db, n_staff=2)
     s1, s2 = staffs[0], staffs[1]
 
-    course = await _make_course(db, weekday=0, code="A")
+    course = await _make_course(db, weekday=0, code="A", office_id=office.id)
     patient = await _make_patient(db, code="P3")
     visit = await _make_visit(
         db,
@@ -360,10 +363,10 @@ async def test_persist_is_idempotent_overwrites_existing_rows(db) -> None:
 async def test_persist_no_visits_is_noop_for_assignments_table(db) -> None:
     """course 配下の planned visits が 0 件のとき visit_staff_assignments
     に行が増えない (course の course_status は更新される)."""
-    _, staffs = await _make_office_and_staff(db, n_staff=1)
+    office, staffs = await _make_office_and_staff(db, n_staff=1)
     s1 = staffs[0]
 
-    course = await _make_course(db, weekday=0, code="A")
+    course = await _make_course(db, weekday=0, code="A", office_id=office.id)
     # visits は作らない
     await db.commit()
 
@@ -414,10 +417,10 @@ async def test_persist_empty_assignments_is_noop(db) -> None:
 @pytest.mark.asyncio
 async def test_persist_skips_non_planned_visits(db) -> None:
     """status != 'planned' の visit には visit_staff_assignment を作らない."""
-    _, staffs = await _make_office_and_staff(db, n_staff=1)
+    office, staffs = await _make_office_and_staff(db, n_staff=1)
     s1 = staffs[0]
 
-    course = await _make_course(db, weekday=0, code="A")
+    course = await _make_course(db, weekday=0, code="A", office_id=office.id)
     patient = await _make_patient(db, code="P4")
 
     # planned な visit

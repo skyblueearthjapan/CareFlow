@@ -49,11 +49,19 @@ class CourseV2Base(BaseModel):
         default=None,
         description="Layer 3 で決定する担当スタッフ (§3.6.4)",
     )
+    # W15-BE-FIXPATTERN (Phase 2 / migration 0020):
+    # courses.office_id を NOT NULL 化したことに伴い、Create でも必須化する。
+    # 既存データは無く、Phase 1 で導入した NULLABLE はテンプレ運用を含めても
+    # 全件 NOT NULL に揃える方針。
+    office_id: UUID = Field(description="所属拠点 (§4.5 / W15-BE-FIXPATTERN)")
     note: str | None = None
 
 
 class CourseV2Create(CourseV2Base):
-    """POST /api/v1/courses リクエスト (W2-BE4)."""
+    """POST /api/v1/courses リクエスト (W2-BE4 / W15-BE-FIXPATTERN).
+
+    ``office_id`` は W15-BE-FIXPATTERN (migration 0020) より必須フィールド。
+    """
 
 
 class CourseV2Update(BaseModel):

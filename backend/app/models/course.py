@@ -98,14 +98,14 @@ class Course(Base, TimestampMixin):
         nullable=True,
     )
 
-    # W15-BE1: 拠点 (office) 参照.
-    # 設計仕様書では NOT NULL を志向するが、既存 v1〜v14 の courses 行 / テスト /
-    # endpoint (CourseCreate に office_id 未含) との互換性のため、現段階では
-    # NULLABLE で導入する。Phase 2 以降で全行に値が入った後 NOT NULL 化を検討。
-    office_id: Mapped[uuid.UUID | None] = mapped_column(
+    # W15-BE1 → W15-BE-FIXPATTERN (Phase 2): 拠点 (office) 参照.
+    # Phase 1 (migration 0019) では既存テスト互換のため NULLABLE で導入したが、
+    # Phase 2 (migration 0020) で NOT NULL 化した。設計仕様 §4.5 に準拠。
+    # 実データが無いため backfill は不要 (stub のみ)。
+    office_id: Mapped[uuid.UUID] = mapped_column(
         PG_UUID(as_uuid=True),
         ForeignKey("offices.id", ondelete="RESTRICT"),
-        nullable=True,
+        nullable=False,
     )
 
     course_fixed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
