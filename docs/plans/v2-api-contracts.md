@@ -908,7 +908,7 @@ PatientStatusUpdatePayload {
 | 概要 | コーステンプレート新規作成 |
 | 担当チケット | W15-BE1 |
 | Request body | `CourseTemplateCreate` |
-| Response 200 | `CourseTemplateRead` |
+| Response 201 Created | `CourseTemplateRead` |
 | RBAC | Admin / Manager |
 | エラー | `(office_id, label)` 重複 → 409 Conflict |
 
