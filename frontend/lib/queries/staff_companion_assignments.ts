@@ -17,6 +17,7 @@ import {
 } from '@tanstack/react-query';
 import { useSession } from 'next-auth/react';
 
+import { ApiError } from '@/lib/api-client';
 import { fetcher } from '@/lib/api/fetcher';
 import type {
   PairRole,
@@ -87,9 +88,14 @@ export function useStaffCompanionAssignments({
           accessToken,
           refreshToken,
         });
-      } catch {
-        // BE endpoint may not exist yet — graceful degradation
-        return [];
+      } catch (err: unknown) {
+        // Reviewer feedback (W15-F1): only swallow 404 (endpoint absent on
+        // older BE deployments). Any other error — 401 (auth), 403 (RBAC),
+        // 422 (param validation), 5xx (server) — must propagate so TanStack
+        // Query surfaces it via onError / isError, instead of silently
+        // showing an empty companion list.
+        if (err instanceof ApiError && err.status === 404) return [];
+        throw err;
       }
     },
     enabled: isAuthenticated && !!courseTemplateId && enabled,

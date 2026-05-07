@@ -622,11 +622,16 @@ function CourseTemplateRowGroup(props: CourseTemplateRowGroupProps) {
   );
   const patchPairRole = usePatchCompanionAssignmentPairRole();
 
-  // 月曜 (weekday=0) の補佐を代表として表示 (主担当と同じ簡易実装)
-  const mondayCompanion = useMemo(
-    () => companionAssignments.find((a) => a.weekday === 0) ?? null,
-    [companionAssignments],
-  );
+  // 月曜 (weekday=0) の補佐を代表として表示 (主担当と同じ簡易実装).
+  // TODO (Phase 6+): 曜日別の companion を独立表示する。現状は月曜が無い場合
+  // 他曜日の補佐があっても見えなくなる弱点があるため、最初に存在する補佐を
+  // フォールバックで使う簡易対策を行いつつ、本格対応は曜日列に組み込む。
+  const mondayCompanion = useMemo(() => {
+    const monday = companionAssignments.find((a) => a.weekday === 0);
+    if (monday) return monday;
+    // Fallback: 月曜が無くても何らかの補佐を表示できるよう先頭を採用
+    return companionAssignments[0] ?? null;
+  }, [companionAssignments]);
 
   // 当該テンプレートのコース行は 1 行内に HOUR_SLOTS を縦積みする。
   // (column: 行ラベル + 曜日列、行: HOUR_SLOTS)
