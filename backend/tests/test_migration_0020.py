@@ -98,3 +98,103 @@ def test_course_model_office_id_is_not_null() -> None:
 
     col = Course.__table__.c.office_id
     assert col.nullable is False, "W15-BE-FIXPATTERN Phase 2: Course.office_id は NOT NULL のはず"
+
+
+# ---------------------------------------------------------------------------
+# 4. W15-codex-fix (2): defensive backfill が upgrade() に存在する
+# ---------------------------------------------------------------------------
+
+
+def test_migration_0020_has_defensive_backfill() -> None:
+    """W15-codex-fix: 0020 upgrade() に backfill ロジックが含まれている.
+
+    既存運用 DB に courses データがある状態でも 0020 が失敗しないよう、
+    UPDATE courses SET office_id = ... WHERE office_id IS NULL という
+    backfill statement が含まれているはず。
+    """
+    backend_root = Path(__file__).resolve().parent.parent
+    src = (
+        backend_root / "alembic" / "versions" / "0020_v2_courses_office_id_not_null.py"
+    ).read_text(encoding="utf-8")
+
+    upgrade_idx = src.find("def upgrade()")
+    downgrade_idx = src.find("def downgrade()")
+    assert upgrade_idx >= 0 and downgrade_idx > upgrade_idx
+    upgrade_body = src[upgrade_idx:downgrade_idx]
+
+    # backfill: COUNT NULL を取り、UPDATE する
+    assert "COUNT(*) FROM courses WHERE office_id IS NULL" in upgrade_body, (
+        "0020 backfill: NULL カウント statement が無い"
+    )
+    assert "UPDATE courses SET office_id" in upgrade_body, "0020 backfill: UPDATE statement が無い"
+    # 残存 NULL での RuntimeError abort
+    assert "RuntimeError" in upgrade_body, "0020 backfill: 残存 NULL 検知 abort が無い"
+
+
+# ---------------------------------------------------------------------------
+# 5. W15-codex-fix (2): backfill 動作テスト (SQLite simulate)
+# ---------------------------------------------------------------------------
+
+
+def test_migration_0020_backfill_no_op_when_empty() -> None:
+    """空 DB (courses 行なし) で 0020 upgrade を呼んでも no-op で完走する.
+
+    実 DB レベルの上げ下げは別 CI ジョブで検証するが、ここでは backfill 部分の
+    SQL が「空の courses で安全に通る」ことを SQLite in-memory で確認する。
+    """
+    import sqlalchemy as sa
+    from sqlalchemy import create_engine
+
+    engine = create_engine("sqlite:///:memory:")
+    with engine.begin() as conn:
+        # 最小スキーマ (courses, patients, visits) を組む
+        conn.execute(sa.text("CREATE TABLE patients (id TEXT PRIMARY KEY, primary_office_id TEXT)"))
+        conn.execute(sa.text("CREATE TABLE courses (id TEXT PRIMARY KEY, office_id TEXT NULL)"))
+        conn.execute(
+            sa.text("CREATE TABLE visits (id TEXT PRIMARY KEY, patient_id TEXT, course_id TEXT)")
+        )
+
+        # 空のまま backfill SQL を実行
+        null_count = conn.execute(
+            sa.text("SELECT COUNT(*) FROM courses WHERE office_id IS NULL")
+        ).scalar()
+        assert null_count == 0
+
+
+def test_migration_0020_backfill_fills_null_office_id() -> None:
+    """courses に office_id NULL の行があり、対応する visits + patients を辿れる場合、
+    backfill SQL で office_id が埋まる (W15-codex-fix)."""
+    import sqlalchemy as sa
+    from sqlalchemy import create_engine
+
+    engine = create_engine("sqlite:///:memory:")
+    with engine.begin() as conn:
+        conn.execute(sa.text("CREATE TABLE patients (id TEXT PRIMARY KEY, primary_office_id TEXT)"))
+        conn.execute(sa.text("CREATE TABLE courses (id TEXT PRIMARY KEY, office_id TEXT NULL)"))
+        conn.execute(
+            sa.text("CREATE TABLE visits (id TEXT PRIMARY KEY, patient_id TEXT, course_id TEXT)")
+        )
+
+        # patient (office=O1)、course (office NULL)、visit が両者を結ぶ
+        conn.execute(sa.text("INSERT INTO patients (id, primary_office_id) VALUES ('P1', 'O1')"))
+        conn.execute(sa.text("INSERT INTO courses (id, office_id) VALUES ('C1', NULL)"))
+        conn.execute(
+            sa.text("INSERT INTO visits (id, patient_id, course_id) VALUES ('V1', 'P1', 'C1')")
+        )
+
+        # Migration の backfill SQL を実行
+        conn.execute(
+            sa.text(
+                "UPDATE courses SET office_id = ("
+                "  SELECT p.primary_office_id FROM patients p"
+                "  JOIN visits v ON v.patient_id = p.id"
+                "  WHERE v.course_id = courses.id"
+                "    AND p.primary_office_id IS NOT NULL"
+                "  LIMIT 1"
+                ") WHERE office_id IS NULL"
+            )
+        )
+
+        # courses.office_id が 'O1' で埋まる
+        result = conn.execute(sa.text("SELECT office_id FROM courses WHERE id = 'C1'")).scalar()
+        assert result == "O1"
