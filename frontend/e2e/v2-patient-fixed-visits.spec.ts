@@ -5,7 +5,9 @@
  *   1. admin が患者編集画面で固定枠 (通常) を保存できる
  *   2. admin が当該週の visits を固定枠に取込できる (from-week)
  *   3. スケジュール画面で D&D 後に (a)/(b) ダイアログが出る (通常週)
+ *      ※ Wave 15 D-1 で ScheduleChangeDialog 削除済 → test.skip
  *   4. 特別週の場合は専用ラベルが ScheduleChangeDialog 内に表示される
+ *      ※ Wave 15 D-1 で ScheduleChangeDialog 削除済 → test.skip
  *   5. admin が全患者一括固定化を実行できる
  *   6. staff には一括固定化ボタンが表示されない (RBAC)
  *
@@ -24,6 +26,8 @@
  *   - 各 test は独立 (loginAs で状態リセット)。
  *   - Phase 4 コンポーネント (ScheduleChangeDialog / BulkFixToPatternButton) が
  *     未統合の環境では test.skip で握りつぶし、CI safety を保つ。
+ *   - [Wave 15 D-1] ScheduleChangeDialog は統合 1 画面化に伴い削除。
+ *     Scenario 3 / 3b は明示的に skip (ダイアログレスフローは W15 spec でカバー)。
  */
 import { type Page } from '@playwright/test';
 
@@ -281,6 +285,13 @@ test.describe('v2 patient fixed-visits (W9-E2E Phase 5b)', () => {
     page,
     loginAs,
   }) => {
+    // Wave 15 D-1 で ScheduleChangeDialog 削除済。
+    // ダイアログレスフローは v2-w15-schedule-unified.spec.ts (Test 1/3) でカバー。
+    test.skip(
+      true,
+      '[Wave 15 D-1] ScheduleChangeDialog 削除済のため skip。代替: v2-w15-schedule-unified.spec.ts',
+    );
+
     test.slow();
 
     // ---- 1. ログイン → /schedule ----------------------------------------
@@ -365,6 +376,13 @@ test.describe('v2 patient fixed-visits (W9-E2E Phase 5b)', () => {
   // ───────────────────────────────────────────────────────────────────────
 
   test('特別週の場合は専用ラベルが表示される', async ({ page, loginAs }) => {
+    // Wave 15 D-1 で ScheduleChangeDialog 削除済。
+    // ダイアログレスフローは v2-w15-schedule-unified.spec.ts でカバー。
+    test.skip(
+      true,
+      '[Wave 15 D-1] ScheduleChangeDialog 削除済のため skip。代替: v2-w15-schedule-unified.spec.ts',
+    );
+
     test.slow();
 
     // ---- 1. ログイン → /schedule ----------------------------------------
