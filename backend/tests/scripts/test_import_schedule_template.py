@@ -445,3 +445,106 @@ class TestFindPatient:
 
         assert len(summary.unmatched) >= 1
         assert len(summary.matched) == 0
+
+
+# ---------------------------------------------------------------------------
+# テスト 7: 都賀拠点未登録時 SystemExit(1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apply_raises_system_exit_when_office_missing(tmp_path: Path) -> None:
+    """--apply 時に拠点が DB に未登録なら SystemExit(1) を raise する。"""
+    xlsx_path = _make_fixture_xlsx(tmp_path)
+
+    async def mock_scalars_no_office(stmt):  # noqa: ANN001
+        mock_result = MagicMock()
+        # offices / patients / course_templates すべて None を返す
+        mock_result.first = MagicMock(return_value=None)
+        mock_result.all = MagicMock(return_value=[])
+        return mock_result
+
+    mock_session = AsyncMock()
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+    mock_session.scalars = AsyncMock(side_effect=mock_scalars_no_office)
+    mock_session.flush = AsyncMock()
+    mock_session.commit = AsyncMock()
+    mock_session.rollback = AsyncMock()
+    mock_session.add = MagicMock()
+
+    mock_factory = MagicMock(return_value=mock_session)
+
+    with (
+        patch("import_schedule_template.get_session_factory", return_value=mock_factory),
+        patch("import_schedule_template.dispose_engine", new_callable=AsyncMock),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        await run_import(xlsx_path, apply=True)
+
+    assert exc_info.value.code == 1
+
+
+# ---------------------------------------------------------------------------
+# テスト 8: PFV upsert で論理削除列なし → deleted_at フィルタ不要を確認
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pfv_upsert_without_deleted_at_filter(tmp_path: Path) -> None:
+    """PatientFixedVisit に deleted_at 列が存在しないため、
+    upsert SELECT は deleted_at IS NULL フィルタなしで正常に動作する。"""
+    xlsx_path = _make_fixture_xlsx(tmp_path)
+
+    mock_office = MagicMock()
+    mock_office.id = uuid.uuid4()
+
+    mock_patient = MagicMock()
+    mock_patient.id = uuid.uuid4()
+    mock_patient.name = "田中太郎"
+    mock_patient.address = "千葉県千葉市稲毛区園生町1-1"
+
+    # 既存 PFV (active) を返す mock → "update" パスに入る
+    mock_pfv = MagicMock()
+    mock_pfv.start_time = None  # 差異を作って changed=True にする
+
+    async def mock_scalars(stmt):  # noqa: ANN001
+        mock_result = MagicMock()
+        stmt_str = str(stmt)
+        if "offices" in stmt_str:
+            mock_result.first = MagicMock(return_value=mock_office)
+            mock_result.all = MagicMock(return_value=[mock_office])
+        elif "course_templates" in stmt_str:
+            mock_result.first = MagicMock(return_value=None)
+            mock_result.all = MagicMock(return_value=[])
+        elif "patients" in stmt_str:
+            mock_result.first = MagicMock(return_value=mock_patient)
+            mock_result.all = MagicMock(return_value=[mock_patient])
+        elif "patient_fixed_visits" in stmt_str:
+            # 既存 PFV を返す → "update" パス
+            mock_result.first = MagicMock(return_value=mock_pfv)
+            mock_result.all = MagicMock(return_value=[mock_pfv])
+        else:
+            mock_result.first = MagicMock(return_value=None)
+            mock_result.all = MagicMock(return_value=[])
+        return mock_result
+
+    mock_session = AsyncMock()
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+    mock_session.scalars = AsyncMock(side_effect=mock_scalars)
+    mock_session.flush = AsyncMock()
+    mock_session.commit = AsyncMock()
+    mock_session.rollback = AsyncMock()
+    mock_session.add = MagicMock()
+
+    mock_factory = MagicMock(return_value=mock_session)
+
+    with (
+        patch("import_schedule_template.get_session_factory", return_value=mock_factory),
+        patch("import_schedule_template.dispose_engine", new_callable=AsyncMock),
+    ):
+        summary = await run_import(xlsx_path, apply=False)
+
+    # dry-run でもマッチが起きていること (PFV は update パス)
+    assert summary.pfv_update >= 1

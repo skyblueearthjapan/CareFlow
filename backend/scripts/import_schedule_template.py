@@ -98,7 +98,6 @@ _DAY_COLUMNS = [
     (26, 27, 28, 29, 30),  # 土曜日
 ]
 WEEKDAY_INDEX = {0: "mon", 1: "tue", 2: "wed", 3: "thu", 4: "fri", 5: "sat"}
-WEEKDAY_INT = {0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5}  # Mon=0 … Sat=5
 
 # 拠点判定用キーワード (住所の区名)
 _OFFICE1_DISTRICTS = frozenset(["稲毛区", "花見川区", "美浜区"])
@@ -470,13 +469,15 @@ async def _get_or_create_office(
         logger.warning("拠点「%s」が DB に存在しません (--dry-run のため INSERT しません)", name)
         return None
 
-    # 都賀拠点が未登録の場合は新規作成する
-    # NOTE: 本番適用前に手動確認推奨 (address/code 等は後から更新可能)
-    logger.warning("拠点「%s」が DB に未登録のため新規 INSERT します", name)
-    new_office = Office(name=name)
-    session.add(new_office)
-    await session.flush()
-    return new_office
+    # 拠点が未登録の場合は自動 INSERT せずに終了する。
+    # 自動 INSERT した拠点は address/lat/lng が NULL となり、
+    # アロケーションエンジンが座標を必要とする際に失敗するため、事前登録を強制する。
+    print(
+        f"[ERROR] 拠点「{name}」が offices テーブルに未登録です。\n"
+        f"        offices テーブルに「{name}」を事前登録してから再実行してください。",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
 
 
 async def _upsert_course_template(
@@ -556,8 +557,8 @@ async def _find_patient(
                 return p
         return patients[0]  # 絞り込めなければ先頭
 
-    # 2. スペースを除去した name で再検索
-    name_compact = name.replace("　", " ").replace("　", " ").strip()
+    # 2. スペースを除去した name で再検索 (全角・半角スペース両方を除去)
+    name_compact = name.replace("　", "").replace(" ", "")
     if name_compact != name:
         stmt2 = select(Patient).where(
             Patient.name == name_compact,
@@ -596,6 +597,9 @@ async def _upsert_patient_fixed_visit(
     apply: bool,
 ) -> tuple[str, bool]:
     """PatientFixedVisit を upsert し ('new'|'update', changed) を返す。"""
+    # NOTE: PatientFixedVisit モデルに deleted_at 列は存在しないため、
+    # deleted_at IS NULL フィルタは省略している。
+    # 論理削除が将来追加された場合は .deleted_at.is_(None) を追加すること。
     stmt = select(PatientFixedVisit).where(
         PatientFixedVisit.patient_id == patient_id,
         PatientFixedVisit.mode == "normal",
@@ -649,7 +653,7 @@ async def run_import(
             if office is None:
                 # dry-run で拠点未登録 → スキップ
                 summary.errors.append(
-                    f"拠点「{office_name}」が DB に未登録。--apply で実行すると新規 INSERT されます。"
+                    f"拠点「{office_name}」が DB に未登録。offices テーブルに事前登録してから --apply で再実行してください。"
                 )
                 summary.office_infos.append(
                     (office_name, None, [b.label for b in section.course_blocks])
