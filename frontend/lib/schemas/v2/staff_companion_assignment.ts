@@ -16,6 +16,11 @@ import { z } from 'zod';
 export const STAFF_COMPANION_PARTS = ['am', 'pm', 'full'] as const;
 export type StaffCompanionPart = (typeof STAFF_COMPANION_PARTS)[number];
 
+// W15 P1: ペアロール (主担当 / 補佐). null は未設定.
+export const PAIR_ROLE_VALUES = ['primary', 'support'] as const;
+export const pairRoleSchema = z.enum(PAIR_ROLE_VALUES);
+export type PairRole = (typeof PAIR_ROLE_VALUES)[number];
+
 // ---------------------------------------------------------------------------
 // Base / Read schemas
 // ---------------------------------------------------------------------------
@@ -24,6 +29,7 @@ export const staffCompanionAssignmentV2BaseSchema = z.object({
   weekday: z.number().int().min(0).max(6),
   part: z.enum(STAFF_COMPANION_PARTS),
   companion_staff_id: z.string().uuid(),
+  pair_role: pairRoleSchema.nullable().optional(),
 });
 
 export type StaffCompanionAssignmentV2Base = z.infer<typeof staffCompanionAssignmentV2BaseSchema>;
