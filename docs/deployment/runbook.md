@@ -645,6 +645,111 @@ docker network inspect playwrighttest1_default | grep carelink-backend
 
 ---
 
+---
+
+## Wave 15 デプロイ補足
+
+> Wave 15 (スケジュール大改修) のデプロイ時は、以下の追加手順を Phase E〜F の間に実施すること。
+
+### W15-E1: migration 0019 + 0020 の sequential 適用
+
+Phase E の `alembic upgrade head` を実行すると、0019 → 0020 の順序で自動適用される。
+2 つのマイグレーションは依存チェーン (`down_revision`) により順序が保証されている。
+
+```bash
+# Phase E と同じコマンドで 0019 + 0020 が連続適用される
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env run --rm backend alembic upgrade head
+
+# head 確認 (単一 head であることを検証)
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env run --rm backend alembic heads
+# 期待: 1 行のみ。例: `0020_v2_courses_office_id_not_null (head)`
+
+# 適用確認: 新設テーブルの存在チェック
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env exec postgres \
+  psql -U carelink -d carelink -c "\dt course_templates acceptance_calendar"
+```
+
+### W15-E2: 都賀拠点の事前登録 (import スクリプト実行前の必須要件)
+
+`import_schedule_template.py` および `import_acceptance_calendar.py` は、対象拠点が
+`offices` テーブルに未登録の場合 **`SystemExit(1)` で強制終了**する。
+
+Phase 7 (本番 VPS 上での取込スクリプト実行) より前に、都賀拠点を登録すること。
+
+```bash
+# 拠点登録確認
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env exec postgres \
+  psql -U carelink -d carelink -c "SELECT id, name FROM offices WHERE deleted_at IS NULL;"
+# 都賀拠点 (name に '都賀' が含まれる行) が存在しなければ事前登録が必要。
+
+# 事前登録コマンド例 (管理 API 経由または直接 INSERT)
+# POST /api/v1/offices で admin 権限のトークンを使用して登録するか、
+# seed スクリプト (backend/scripts/seed_offices_v2.py) を参照すること。
+```
+
+### W15-E3: 取込スクリプト実行 (Phase 7)
+
+本番 VPS 上で以下の手順で実行する。必ず `--dry-run` で内容を確認してから `--apply` を実行すること。
+
+**スケジュール枠組み取込 (course_templates + patient_fixed_visits)**
+
+```bash
+# VPS 上 (backend コンテナ内)
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env \
+  exec backend python -m scripts.import_schedule_template \
+  --xlsx /opt/carelink/data/スケジュール手動.xlsx --dry-run
+
+# 内容確認後、apply 実行
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env \
+  exec backend python -m scripts.import_schedule_template \
+  --xlsx /opt/carelink/data/スケジュール手動.xlsx --apply
+```
+
+**受入カレンダー取込 (acceptance_calendar)**
+
+```bash
+# VPS 上 (backend コンテナ内)
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env \
+  exec backend python -m scripts.import_acceptance_calendar \
+  --xlsx /opt/carelink/data/スケジュール手動.xlsx --dry-run
+
+# 内容確認後、apply 実行
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env \
+  exec backend python -m scripts.import_acceptance_calendar \
+  --xlsx /opt/carelink/data/スケジュール手動.xlsx --apply
+```
+
+**成功条件**
+
+```bash
+# course_templates に行が入っていること
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env exec postgres \
+  psql -U carelink -d carelink -c "SELECT count(*) FROM course_templates WHERE deleted_at IS NULL;"
+
+# acceptance_calendar に行が入っていること
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env exec postgres \
+  psql -U carelink -d carelink -c "SELECT count(*) FROM acceptance_calendar;"
+```
+
+### W15 Rollback
+
+Wave 15 の migration rollback は以下の順序で実行する:
+
+```bash
+# 0020 を downgrade (courses.office_id を NULLABLE に戻す)
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env run --rm backend \
+  alembic downgrade 0019_v2_w15_be1_foundation
+
+# 0019 を downgrade (course_templates / acceptance_calendar / pair_role を削除)
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env run --rm backend \
+  alembic downgrade 0018_v2_staff_companion
+```
+
+> **警告**: 0019 downgrade は `course_templates` / `acceptance_calendar` テーブルを DROP する。
+> 取込スクリプトで投入したデータも消えるため、rollback 前にバックアップを取得すること。
+
+---
+
 ## 既知の前提と制限
 
 - frontend は Next.js 15 の standalone 出力 + pnpm multi-stage Dockerfile で本番ビルド (`frontend/Dockerfile`)。`pnpm-lock.yaml` が未 commit のため初回 build は `--no-frozen-lockfile` フォールバックパスを通る。安定運用前に lockfile を commit すること

@@ -478,10 +478,16 @@
 ### 8.6 `POST /api/v1/schedule/fix-or-pattern`（Phase 2）
 
 > D&D ダイアログの (a)/(b) 選択に対応するエンドポイント（§3.5.8 参照）。
+>
+> **Wave 15 変更 (2026-05-08)**: 本エンドポイントの責務を **「既存 visit の時刻変更専用」** に明確化した。
+> 保留プールからの初配置（visit が DB に未存在）は `POST /api/v1/schedule/place-and-fix`（§17）を使用すること。
+> 本エンドポイントの `visit_id` は Pydantic `UUID` 型のため空文字列を渡すと 422 となる（= 設計通り）。
+> これにより Wave 9 以前の「`visit_id=""` で 422」バグの根本原因に対する恒久対策が完了した。
+> `ScheduleChangeDialog` の廃止により、本エンドポイントの呼び出し経路はスタッフ差替・既存時刻変更に限定される。
 
 | 項目 | 内容 |
 |---|---|
-| 概要 | スケジュール変更を「今週のみ」または「固定枠変更」のいずれかのモードで適用 |
+| 概要 | **既存 visit の時刻変更**（今週のみ / 固定枠変更）— 新規配置は `place-and-fix` を使用 |
 | 担当チケット | W9-BE2 |
 | Request body | `FixOrPatternRequest`（下記参照） |
 | Response 200 | `FixOrPatternResponse`（下記参照） |
@@ -880,6 +886,182 @@ PatientStatusUpdatePayload {
 
 ---
 
+## 15. Course Templates API（W15-BE1）
+
+> Wave 15 追記（2026-05-08）。コーステンプレートを拠点単位で永続管理するエンドポイント群。
+> 設計仕様書 §15.3.2 に対応する。
+
+### 15.1 `GET /api/v1/course-templates`
+
+| 項目 | 内容 |
+|---|---|
+| 概要 | 指定拠点のコーステンプレート一覧取得 |
+| 担当チケット | W15-BE1 |
+| Query | `office_id` (UUID, 必須) |
+| Response 200 | `list[CourseTemplateRead]` |
+| RBAC | Admin / Manager / Staff |
+
+### 15.2 `POST /api/v1/course-templates`
+
+| 項目 | 内容 |
+|---|---|
+| 概要 | コーステンプレート新規作成 |
+| 担当チケット | W15-BE1 |
+| Request body | `CourseTemplateCreate` |
+| Response 201 Created | `CourseTemplateRead` |
+| RBAC | Admin / Manager |
+| エラー | `(office_id, label)` 重複 → 409 Conflict |
+
+**リクエスト例**
+
+```jsonc
+{
+  "office_id":    "<UUID>",
+  "label":        "A",
+  "capacity_mon": 6,
+  "capacity_tue": 6,
+  "capacity_wed": 5,
+  "capacity_thu": 6,
+  "capacity_fri": 6,
+  "capacity_sat": 0,
+  "capacity_sun": 0,
+  "notes":        "稲毛コースA"
+}
+```
+
+### 15.3 `PATCH /api/v1/course-templates/{id}`
+
+| 項目 | 内容 |
+|---|---|
+| 概要 | コーステンプレート部分更新 |
+| 担当チケット | W15-BE1 |
+| Request body | `CourseTemplateUpdate` (全フィールド任意) |
+| Response 200 | `CourseTemplateRead` |
+| RBAC | Admin / Manager |
+| エラー | 存在しない / 論理削除済み → 404 |
+
+### 15.4 `DELETE /api/v1/course-templates/{id}`
+
+| 項目 | 内容 |
+|---|---|
+| 概要 | コーステンプレート論理削除 |
+| 担当チケット | W15-BE1 |
+| Response 204 | No Content |
+| RBAC | Admin のみ |
+
+---
+
+## 16. Acceptance Calendar API（W15-BE1）
+
+> Wave 15 追記（2026-05-08）。拠点ごとの受入目安カレンダー管理エンドポイント。
+> 設計仕様書 §15.3.3 に対応する。
+
+### 16.1 `GET /api/v1/acceptance-calendar`
+
+| 項目 | 内容 |
+|---|---|
+| 概要 | 指定拠点の全エントリを weekday + time_slot 昇順で取得 |
+| 担当チケット | W15-BE1 |
+| Query | `office_id` (UUID, 必須) |
+| Response 200 | `list[AcceptanceCalendarRead]` |
+| RBAC | Admin / Manager / Staff |
+
+### 16.2 `PUT /api/v1/acceptance-calendar`
+
+| 項目 | 内容 |
+|---|---|
+| 概要 | 受入カレンダー bulk upsert（全削除 → 全 INSERT、1 TX） |
+| 担当チケット | W15-BE1 |
+| Request body | `AcceptanceCalendarBulkUpsert` |
+| Response 200 | `list[AcceptanceCalendarRead]` |
+| RBAC | Admin / Manager |
+| 冪等性 | 同一 `office_id` に対して複数回呼んでも安全 |
+| バリデーション | 同一 `(weekday, time_slot)` 重複 → 422 |
+
+**`AcceptanceCalendarBulkUpsert` リクエスト例**
+
+```jsonc
+{
+  "office_id": "<UUID>",
+  "entries": [
+    { "weekday": 0, "time_slot": "09:00", "status": "available" },
+    { "weekday": 0, "time_slot": "10:00", "status": "consult",     "notes": "要相談" },
+    { "weekday": 0, "time_slot": "11:00", "status": "unavailable" }
+  ]
+}
+```
+
+`status` 値域: `available` / `consult` / `unavailable`
+
+---
+
+## 17. place-and-fix API（W15-BE-FIXPATTERN）
+
+> Wave 15 追記（2026-05-08）。保留プールから初配置時に visit 作成 + 固定枠 upsert を 1 TX で行う新規エンドポイント。
+> 設計仕様書 §15.3.1 に対応する。
+
+### 17.1 `POST /api/v1/schedule/place-and-fix`
+
+| 項目 | 内容 |
+|---|---|
+| 概要 | 新規 visit 作成 + 固定枠 upsert (ドロップ即固定枠化) |
+| 担当チケット | W15-BE-FIXPATTERN |
+| Request body | `PlaceAndFixRequest`（下記参照） |
+| Response 200 | `PlaceAndFixResponse`（下記参照） |
+| RBAC | Admin / Manager のみ |
+| トランザクション | visit 作成 + patient_fixed_visits upsert を 1 TX で commit |
+
+#### `PlaceAndFixRequest`
+
+```jsonc
+{
+  "patient_id":   "<UUID>",
+  "iso_year":     2026,
+  "iso_week":     20,
+  "weekday":      0,           // 0=Mon..6=Sun
+  "start_time":   "09:00",    // HH:MM
+  "duration_min": 60,
+  "staff_count":  1,           // 1 or 2
+  "fix_pattern":  true         // false = 今週のみ (patient_fixed_visits を作らない)
+}
+```
+
+#### `PlaceAndFixResponse`
+
+```jsonc
+{
+  "visit":       VisitV2Read,
+  "fixed_visit": PatientFixedVisitV2Read | null  // fix_pattern=false または特殊ケースで null
+}
+```
+
+#### 処理フロー
+
+1. `patient_id` で患者存在チェック (404 if not found)
+2. `(iso_year, iso_week, weekday)` から `visit_date` を算出
+3. `duration_min` から `end_time` を算出 (24:00 越えは 422)
+4. `Visit` を新規 INSERT (`status='planned'`, `source='manual'`, `required_staff_count=staff_count`)
+5. `fix_pattern=True` のとき:
+   - `_is_special_week_active(patient, iso_year, iso_week)` で `mode` を判定 (`'special'` / `'normal'`)
+   - 同一 `(patient_id, mode, weekday)` の既存行を DELETE → INSERT (upsert)
+6. 全処理を 1 TX で commit
+
+#### エラーコード
+
+| 状態 | HTTP | 詳細 |
+|---|---|---|
+| 患者が存在しない / 論理削除済み | 404 | "Patient not found" |
+| ISO 週が不正 | 422 | "invalid ISO week: year=... week=..." |
+| start_time + duration_min ≥ 24:00 | 422 | "start_time + duration_min exceeds 24:00" |
+
+#### 422 恒久対策との関係
+
+Wave 9 以前、FE は保留プールからの初配置時に `visit_id=""` を `fix-or-pattern` に渡していた。
+`fix-or-pattern` の `visit_id` は Pydantic `UUID` 型のため空文字列で 422 になるバグがあった。
+`place-and-fix` は `visit_id` フィールドを持たない設計のため、このエラーパスが構造的に消滅する。
+
+---
+
 ## 14. 受入基準
 
 - [x] patients / staff / offices / courses / visits / schedule / pending_requests / ai のすべてに新規 / 変更エンドポイントが列挙されている
@@ -897,3 +1079,18 @@ PatientStatusUpdatePayload {
 - [x] W14: §13.3 に `StaffStatusUpdatePayload` schema が定義されている
 - [x] W14: §13.4 に `PatientStatusUpdatePayload` schema が定義されている
 - [x] W14: applier ハンドラ + Gemini プロンプト + AI capabilities (FE) が連動していること（W14-BE / W14-FE で実装）
+- [x] W15: `POST /schedule/place-and-fix`（§17）が追加されている（フラット payload、トランザクション挙動、レスポンス、RBAC）
+- [x] W15: `GET/POST/PATCH/DELETE /course-templates`（§15）が追加されている（CRUD、RBAC、409 仕様）
+- [x] W15: `GET/PUT /acceptance-calendar`（§16）が追加されている（bulk upsert、冪等性、RBAC）
+- [x] W15: §8.6 `fix-or-pattern` に「既存 visit の時刻変更専用」と 422 恒久対策のコメントが明記されている
+
+---
+
+## Changelog
+
+| 日付 | バージョン | 内容 |
+|---|---|---|
+| 2026-05-06 | v1.0 | Wave 0-B 出力。patients / staff / offices / courses / visits / schedule / pending_requests / ai を網羅 |
+| 2026-05-06 | v1.1 | Wave 10: Staff Companion API（§12）追加。is_trainee 追加、mentor_id 廃止 |
+| 2026-05-06 | v1.2 | Wave 11: StaffMentorPayload（§13.2）追加。Wave 14: StaffStatusUpdatePayload（§13.3）/ PatientStatusUpdatePayload（§13.4）追加 |
+| 2026-05-08 | v1.3 | Wave 15: スケジュール大改修 — course_templates (§15) / acceptance-calendar (§16) / place-and-fix (§17) / fix-or-pattern 役割明確化 (§8.6) |

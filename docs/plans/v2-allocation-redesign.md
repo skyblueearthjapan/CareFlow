@@ -1320,3 +1320,342 @@ cost(weekday, course, staff) =
 | 2026-05-06 | v1.0 | Wave 9 Phase 5a 追記。§3.6.8「固定枠 (週間訪問パターン)」ライフサイクル + Layer 1 hybrid 化を新規追加。§4.1b「patient_fixed_visits テーブル」スキーマ DDL・制約・設計方針を追加（Alembic 0017）。§3.5.8「スケジュール変更ダイアログ (a)/(b) モード」を §3.5 体系に追記（固定枠対応 D&D ダイアログ仕様） |
 | 2026-05-06 | v1.1 | Wave 10 Phase 6a 追記。§4.2.x「`is_trainee` + `staff_companion_assignments` DDL」新設（Alembic 0018）。旧 `mentor_id` / `mentor_assignments` を廃止。§3.6.x「同行スタッフの Layer 3 連携」（companion 自動付与・時刻判定・2名体制との独立性）を追加。§3.5.x「スタッフ編集ページの保存単位 + sticky bar UI」を追加。スタッフマスタ集計を消す 7 項目に更新 |
 | 2026-05-06 | v1.2 | Wave 14: 患者・スタッフ状態変更の AI 操作を追加 (§3.5.7, §3.5.11) — 英語キーを実装値 (on_leave / admitted / pending / cancelled) に整合 |
+| 2026-05-08 | v1.3 | Wave 15: スケジュール大改修 — course_templates / acceptance_calendar / place-and-fix / 1 画面化 (§15) |
+
+---
+
+## 15. Wave 15: スケジュール大改修
+
+### 15.1 概要
+
+Wave 15 はスケジュール画面を全面リライトし、コーステンプレートの永続化・受入目安レイヤー・ドロップ即固定枠化を 1 画面で完結させる大改修。
+
+| 方針 | 内容 |
+|---|---|
+| 1 画面化 | `/schedule` を course × 曜日マトリクス形式に全面リライト |
+| コーステンプレート永続化 | `course_templates` テーブルに拠点ごとのコース定義を保持 |
+| ドロップ即固定枠化 | D&D でスロットに落とした瞬間に `place-and-fix` 経由で固定枠を作成。`ScheduleChangeDialog` (今週のみ/固定枠変更の 2 択) は廃止 |
+| 受入目安レイヤー | `acceptance_calendar` に基づく背景色+バッジ表示を ON/OFF 切替可能 |
+| 補佐ペア UI | `pair_role` (主 ★ / 補佐 ☆) を編集できる `PairRoleEditor` を新設 |
+
+---
+
+### 15.2 データモデル変更
+
+#### 15.2.1 `course_templates` (新設 — Alembic 0019)
+
+コース枠組みを拠点単位で永続管理するテーブル。Wave 15 以前は DB にコース定義がなく、毎週ゼロから course 行を作成していた。
+
+```sql
+CREATE TABLE course_templates (
+    id          UUID PRIMARY KEY,
+    office_id   UUID NOT NULL REFERENCES offices(id) ON DELETE CASCADE,
+    label       VARCHAR(8) NOT NULL,                   -- コース名 "A"〜"E" 等
+    capacity_mon  INTEGER NOT NULL DEFAULT 0 CHECK (capacity_mon BETWEEN 0 AND 50),
+    capacity_tue  INTEGER NOT NULL DEFAULT 0 CHECK (capacity_tue BETWEEN 0 AND 50),
+    capacity_wed  INTEGER NOT NULL DEFAULT 0 CHECK (capacity_wed BETWEEN 0 AND 50),
+    capacity_thu  INTEGER NOT NULL DEFAULT 0 CHECK (capacity_thu BETWEEN 0 AND 50),
+    capacity_fri  INTEGER NOT NULL DEFAULT 0 CHECK (capacity_fri BETWEEN 0 AND 50),
+    capacity_sat  INTEGER NOT NULL DEFAULT 0 CHECK (capacity_sat BETWEEN 0 AND 50),
+    capacity_sun  INTEGER NOT NULL DEFAULT 0 CHECK (capacity_sun BETWEEN 0 AND 50),
+    notes       TEXT,
+    deleted_at  TIMESTAMPTZ,                           -- 論理削除
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (office_id, label)
+);
+```
+
+#### 15.2.2 `courses` 拡張 (Alembic 0019 + 0020)
+
+| カラム | 変更 |
+|---|---|
+| `template_id` | UUID NULLABLE → `course_templates.id` ON DELETE SET NULL (0019 で追加) |
+| `office_id`   | UUID NULLABLE → `offices.id` ON DELETE RESTRICT (0019 で NULLABLE 追加、0020 で NOT NULL 化) |
+
+**migration 0020 の背景**: 0019 では既存テストの互換維持のため NULLABLE で導入し、0020 (Wave 15 Phase 2) で NOT NULL 化。実データが存在しないため backfill 不要。
+
+#### 15.2.3 `acceptance_calendar` (新設 — Alembic 0019)
+
+拠点ごとの受入目安カレンダー。UX レイヤーとして `/schedule` 画面に背景色バッジで表示される。
+
+```sql
+CREATE TABLE acceptance_calendar (
+    id          UUID PRIMARY KEY,
+    office_id   UUID NOT NULL REFERENCES offices(id) ON DELETE CASCADE,
+    weekday     SMALLINT NOT NULL CHECK (weekday >= 0 AND weekday <= 6),  -- 0=月..6=日
+    time_slot   TIME NOT NULL,
+    status      VARCHAR(16) NOT NULL CHECK (status IN ('available','consult','unavailable')),
+    notes       TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (office_id, weekday, time_slot)
+);
+```
+
+#### 15.2.4 `staff_companion_assignments.pair_role` (Alembic 0019)
+
+同行ペアの役割を表すカラムを追加。
+
+```sql
+ALTER TABLE staff_companion_assignments
+    ADD COLUMN pair_role VARCHAR(16) CHECK (pair_role IS NULL OR pair_role IN ('primary','support'));
+```
+
+| 値 | 意味 |
+|---|---|
+| `NULL`      | 役割未設定 (Wave 10 以前の行との互換) |
+| `'primary'` | 主担当 (★) |
+| `'support'` | 補佐 (☆) |
+
+---
+
+### 15.3 API 仕様
+
+#### 15.3.1 `POST /api/v1/schedule/place-and-fix` (新規 — W15-BE-FIXPATTERN)
+
+> 保留プールから初配置、または新規 visit 作成と同時に固定枠を作成するエンドポイント。
+> Wave 15 の主フロー。
+
+| 項目 | 内容 |
+|---|---|
+| 概要 | 新規 visit を作成し、`fix_pattern=true` のとき `patient_fixed_visits` を upsert |
+| RBAC | Admin / Manager のみ |
+| トランザクション | visit 作成 + fixed_visit upsert を 1 TX で commit |
+
+**リクエスト**
+
+```jsonc
+{
+  "patient_id":   "<UUID>",
+  "iso_year":     2026,
+  "iso_week":     20,
+  "weekday":      0,          // 0=Mon..6=Sun
+  "start_time":   "09:00",   // HH:MM
+  "duration_min": 60,
+  "staff_count":  1,          // 1 or 2
+  "fix_pattern":  true        // false = 今週のみ (固定枠を作らない)
+}
+```
+
+**レスポンス 200**
+
+```jsonc
+{
+  "visit":       VisitV2Read,
+  "fixed_visit": PatientFixedVisitV2Read | null  // fix_pattern=false のとき null
+}
+```
+
+**エラー**
+
+| 状態 | HTTP | 詳細 |
+|---|---|---|
+| 患者が存在しない | 404 | "Patient not found" |
+| ISO 週が不正 | 422 | "invalid ISO week: year=... week=..." |
+| start_time + duration_min が 24:00 を超える | 422 | "start_time + duration_min exceeds 24:00" |
+
+**422 恒久対策との関係**
+
+Wave 9 以前は保留プールからの初配置時に `visit_id=""` を `fix-or-pattern` に渡すと Pydantic UUID バリデーションで 422 になるバグがあった。`place-and-fix` は `visit_id` フィールドを持たない設計のため、このバグは構造的に解消される。
+
+#### 15.3.2 `GET/POST/PATCH/DELETE /api/v1/course-templates` (新規 — W15-BE1)
+
+| メソッド | 概要 | RBAC |
+|---|---|---|
+| `GET /api/v1/course-templates?office_id=<UUID>` | 指定拠点のテンプレート一覧 | Admin / Manager / Staff |
+| `POST /api/v1/course-templates` | テンプレート新規作成 | Admin / Manager |
+| `PATCH /api/v1/course-templates/{id}` | テンプレート部分更新 | Admin / Manager |
+| `DELETE /api/v1/course-templates/{id}` | 論理削除 | Admin のみ |
+
+**重複 (office_id, label) は 409 Conflict。**
+
+**POST リクエスト例**
+
+```jsonc
+{
+  "office_id":    "<UUID>",
+  "label":        "A",
+  "capacity_mon": 6,
+  "capacity_tue": 6,
+  "capacity_wed": 5,
+  "capacity_thu": 6,
+  "capacity_fri": 6,
+  "capacity_sat": 0,
+  "capacity_sun": 0,
+  "notes":        "稲毛コースA"
+}
+```
+
+#### 15.3.3 `GET/PUT /api/v1/acceptance-calendar` (新規 — W15-BE1)
+
+| メソッド | 概要 | RBAC |
+|---|---|---|
+| `GET /api/v1/acceptance-calendar?office_id=<UUID>` | 指定拠点の全エントリ (weekday + time_slot 昇順) | Admin / Manager / Staff |
+| `PUT /api/v1/acceptance-calendar` | bulk upsert (全削除 → 全 INSERT、1 TX) | Admin / Manager |
+
+**PUT リクエスト例**
+
+```jsonc
+{
+  "office_id": "<UUID>",
+  "entries": [
+    { "weekday": 0, "time_slot": "09:00", "status": "available" },
+    { "weekday": 0, "time_slot": "10:00", "status": "consult" },
+    { "weekday": 0, "time_slot": "11:00", "status": "unavailable" }
+  ]
+}
+```
+
+同一 `(weekday, time_slot)` の重複は 422。PUT は冪等 (同じ office_id に対して複数回呼んでも安全)。
+
+#### 15.3.4 既存 `POST /api/v1/schedule/fix-or-pattern` の役割明確化
+
+Wave 15 にて本エンドポイントの責務を **「既存 visit の時刻変更専用」** に明確化した。
+
+| 用途 | 使うエンドポイント |
+|---|---|
+| 保留プールから初配置 (visit が DB に未存在) | `POST /schedule/place-and-fix` (新規) |
+| 既存 visit の時刻変更 (今週のみ / 固定枠変更) | `POST /schedule/fix-or-pattern` (変更なし) |
+
+`fix-or-pattern` の `visit_id` は Pydantic `UUID` 型で必須。空文字列を渡すと FastAPI バリデーションが 422 を返す (= 設計通り)。
+
+---
+
+### 15.4 UX 仕様 (フロントエンド)
+
+#### 15.4.1 `/schedule` 全面リライト — `ScheduleUnifiedView`
+
+| 旧コンポーネント (廃止) | 新コンポーネント / 仕様 |
+|---|---|
+| `ScheduleGridV2` | `ScheduleUnifiedView` (course × 曜日マトリクス、1 画面) |
+| `ScheduleChangeDialog` | 廃止。ドロップ即固定枠化 (`place-and-fix` 経由) に統合 |
+| `CourseProposal` | 廃止 (course_templates から生成) |
+| `StaffAssignButton` | `StaffSwapDropdown` (ドロップダウン差替 UI) |
+| `CourseRow` / `TimeSlotCell` | `ScheduleUnifiedView` 内部に統合 |
+| `FixButton` | 廃止 (ドロップ操作が即固定枠化) |
+
+#### 15.4.2 受入目安レイヤー — `AcceptanceLayer`
+
+- `acceptance_calendar` のデータを背景色でセルに重ねて表示
+- `status` ごとの色: `available` = 緑系、`consult` = 黄系、`unavailable` = 赤系
+- ツールバーのトグルで ON/OFF 切替可能
+
+#### 15.4.3 ドロップ即固定枠化
+
+- 保留プールのカードをマトリクスのセルにドロップ → `POST /schedule/place-and-fix` を即呼出
+- `fix_pattern=true` がデフォルト (固定枠を自動作成)
+- `ScheduleChangeDialog` は廃止のため「今週のみ」モードは `fix_pattern=false` をフロントで選択
+
+#### 15.4.4 スタッフ差替 — `StaffSwapDropdown`
+
+- スタッフセルのクリックでドロップダウンを表示
+- 候補スタッフ一覧から選択するだけで `PATCH /api/v1/visits/{id}` を呼出し差替完了
+
+#### 15.4.5 補佐ペア UI — `PairRoleEditor`
+
+- 同行スタッフの `pair_role` を主 ★ / 補佐 ☆ のアイコンで切替
+- `PUT /api/v1/staff/{staff_id}/companion-assignments` 経由で保存
+
+---
+
+### 15.5 Excel 取込スクリプト
+
+Wave 15 では以下の 2 スクリプトを追加した。いずれも `--dry-run` / `--apply` の明示が必須。
+
+#### 15.5.1 `backend/scripts/import_schedule_template.py`
+
+Excel の「スケジュール枠組み（仮）」シートをパースし、`course_templates` と `patient_fixed_visits` を upsert する。
+
+| 引数 | 説明 |
+|---|---|
+| `--xlsx PATH` | 対象 Excel ファイルパス |
+| `--dry-run`   | DB 書き込みなし (内容確認のみ) |
+| `--apply`     | 実際に upsert を実行 |
+
+**事前条件**: 対象拠点 (都賀など) が `offices` テーブルに登録済みであること。未登録の場合は `SystemExit(1)` で強制終了する。
+
+#### 15.5.2 `backend/scripts/import_acceptance_calendar.py`
+
+Excel の「受け入れカレンダー」シートをパースし、`acceptance_calendar` テーブルへ bulk upsert する。
+
+| 引数 | 説明 |
+|---|---|
+| `--xlsx PATH` | 対象 Excel ファイルパス |
+| `--dry-run`   | DB 書き込みなし (内容確認のみ) |
+| `--apply`     | 実際に upsert を実行 |
+
+シート構造: 稲毛ブロック (Row 2-20) + 都賀ブロック (Row 22-40)。`○`→`available`、`△`→`consult`、`×`/`定休日`→`unavailable`。
+
+---
+
+### 15.6 既存 422 バグの恒久対応
+
+| 根本原因 | Wave 9 での暫定対応 | Wave 15 での恒久対応 |
+|---|---|---|
+| 保留プールから初配置時、FE が `visit_id=""` を `fix-or-pattern` に渡す → Pydantic UUID バリデーション 422 | なし (バグのまま) | `place-and-fix` を新設。`visit_id` フィールドが存在しないため、このエラーパス自体が消滅 |
+| `ScheduleChangeDialog` の呼び出し経路 | なし | `ScheduleChangeDialog` を廃止。呼び出し経路自体が消滅 |
+
+---
+
+### 15.7 削除されたコンポーネント一覧
+
+#### フロントエンド (旧コンポーネント)
+
+| コンポーネント | 廃止理由 |
+|---|---|
+| `ScheduleGridV2` | `ScheduleUnifiedView` に統合 |
+| `ScheduleChangeDialog` | ドロップ即固定枠化により不要 |
+| `CourseProposal` | course_templates から生成に変更 |
+| `StaffAssignButton` | `StaffSwapDropdown` に刷新 |
+| `CourseRow` | `ScheduleUnifiedView` に統合 |
+| `TimeSlotCell` | `ScheduleUnifiedView` に統合 |
+| `FixButton` | ドロップ操作が即固定枠化のため不要 |
+
+#### バックエンド (縮小・役割変更)
+
+| エンドポイント | 変更内容 |
+|---|---|
+| `POST /api/v1/schedule/fix-or-pattern` | 「既存 visit の時刻変更専用」に役割を明確化 (削除ではなく縮小) |
+
+---
+
+### 15.8 ER 図 (Wave 15 追加分)
+
+```mermaid
+erDiagram
+    offices ||--o{ course_templates : "has"
+    offices ||--o{ acceptance_calendar : "has"
+    course_templates ||--o{ courses : "template_id (nullable)"
+    offices ||--o{ courses : "office_id (NOT NULL from 0020)"
+    staff_companion_assignments {
+        uuid id PK
+        uuid trainee_staff_id FK
+        int weekday
+        string part
+        uuid companion_staff_id FK
+        string pair_role "NULL | primary | support"
+    }
+    course_templates {
+        uuid id PK
+        uuid office_id FK
+        string label
+        int capacity_mon
+        int capacity_tue
+        int capacity_wed
+        int capacity_thu
+        int capacity_fri
+        int capacity_sat
+        int capacity_sun
+        text notes
+        timestamptz deleted_at
+    }
+    acceptance_calendar {
+        uuid id PK
+        uuid office_id FK
+        smallint weekday
+        time time_slot
+        string status "available|consult|unavailable"
+        text notes
+    }
+```
