@@ -343,8 +343,8 @@ describe('ScheduleUnifiedView', () => {
     expect(screen.getByTestId('schedule-unified-view')).toBeInTheDocument();
   });
 
-  it('6. ドロップで usePlaceAndFix.mutateAsync が呼ばれる', async () => {
-    mockPlaceAndFix.mockResolvedValue({ results: [] });
+  it('6. ドロップで usePlaceAndFix.mutateAsync がフラット payload で呼ばれる', async () => {
+    mockPlaceAndFix.mockResolvedValue({ visit: {}, fixed_visit: null });
     setupHooks({
       templates: [
         {
@@ -390,10 +390,11 @@ describe('ScheduleUnifiedView', () => {
     });
     expect(mockPlaceAndFix).toHaveBeenCalledOnce();
     const arg = mockPlaceAndFix.mock.calls[0][0];
-    expect(arg.entries[0].patient_id).toBe('22222222-2222-2222-2222-222222222222');
-    expect(arg.entries[0].course_template_id).toBe('11111111-1111-1111-1111-111111111111');
-    expect(arg.entries[0].weekday).toBe(0);
-    expect(arg.entries[0].start_time).toBe('09:00');
+    expect(arg.patient_id).toBe('22222222-2222-2222-2222-222222222222');
+    expect(arg.weekday).toBe(0);
+    expect(arg.start_time).toBe('09:00');
+    expect(arg.duration_min).toBe(60);
+    expect(arg.fix_pattern).toBe(true);
   });
 
   it('8. 同一患者が同曜日に複数時間帯の visit を持つときも 1 件としてカウント (重複なし)', () => {
@@ -451,7 +452,7 @@ describe('ScheduleUnifiedView', () => {
   });
 
   it('7. canEdit=false のドロップは何もせず place-and-fix を呼ばない', async () => {
-    mockPlaceAndFix.mockResolvedValue({ results: [] });
+    mockPlaceAndFix.mockResolvedValue({ visit: {}, fixed_visit: null });
     setupHooks({
       templates: [
         {

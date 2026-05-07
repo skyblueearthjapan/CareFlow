@@ -438,20 +438,16 @@ export function ScheduleUnifiedView({
     try {
       const patient = patientById.get(patientId);
       const wp = (patient?.weekly_pattern ?? null) as { service_minutes?: number } | null;
-      const serviceMinutes = Math.max(15, Number(wp?.service_minutes ?? 60));
+      const durationMin = Math.max(1, Number(wp?.service_minutes ?? 60));
       await placeAndFixMut.mutateAsync({
+        patient_id: patientId,
         iso_year: isoYear,
         iso_week: isoWeek,
-        entries: [
-          {
-            patient_id: patientId,
-            course_template_id: cell.courseTemplateId,
-            weekday: cell.weekday,
-            start_time: cell.time,
-            service_minutes: serviceMinutes,
-            staff_count: 1,
-          },
-        ],
+        weekday: cell.weekday,
+        start_time: cell.time,
+        duration_min: durationMin,
+        staff_count: 1,
+        fix_pattern: true,
       });
       toast.success(`${patient?.name ?? patientId} を ${cell.time} に固定枠化しました`);
     } catch (err) {
