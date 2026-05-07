@@ -48,11 +48,24 @@ async function mockPlaceAndFix(
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
-        patient_id: patientId,
-        patient_name: patientName,
-        weekday: body['weekday'] ?? 1,
-        start_time: body['start_time'] ?? '10:00:00',
-        fix_pattern: true,
+        visit: {
+          id: 'mock-visit-uuid',
+          patient_id: patientId,
+          visit_date: '2026-05-05',
+          start_time: '10:00:00',
+          duration_min: 60,
+          status: 'planned',
+          source: 'manual',
+          required_staff_count: 1,
+        },
+        fixed_visit: {
+          id: 'mock-fv-uuid',
+          patient_id: patientId,
+          mode: 'normal',
+          weekday: body['weekday'] ?? 1,
+          start_time: '10:00:00',
+          duration_min: 60,
+        },
       }),
     });
   });
@@ -240,10 +253,17 @@ test.describe('v2 Wave 15 スケジュール画面 (統合 1 画面) — W15 Pha
     const capturedReq = await placeAndFixPromise;
     const body = capturedReq.postDataJSON() as Record<string, unknown>;
 
-    // payload に必須フィールドが含まれることを assert
-    expect(body, 'payload に patient_id が含まれる').toHaveProperty('patient_id');
+    // payload に必須フィールドが含まれることを assert (PlaceAndFixRequest 全 8 フィールド)
+    expect(body['patient_id'], 'patient_id が存在する').toBeDefined();
+    expect(body['iso_year'], 'iso_year=2026').toBe(2026);
+    expect(body['iso_week'] as number, 'iso_week が正の整数').toBeGreaterThan(0);
     expect(body['weekday'], 'weekday=1 (火曜)').toBe(1);
-    expect(body['start_time'], 'start_time=10:00:00').toBe('10:00:00');
+    expect(String(body['start_time']), 'start_time が 10:00 または 10:00:00').toMatch(
+      /^10:00(:00)?$/,
+    );
+    expect(body['duration_min'] as number, 'duration_min が 0 より大きい').toBeGreaterThan(0);
+    expect(body['duration_min'] as number, 'duration_min が 480 以下').toBeLessThanOrEqual(480);
+    expect([1, 2], 'staff_count が 1 または 2').toContain(body['staff_count']);
     expect(body['fix_pattern'], 'fix_pattern=true').toBe(true);
 
     // モックから取得した lastBody でも検証

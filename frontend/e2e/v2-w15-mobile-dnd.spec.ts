@@ -77,7 +77,7 @@ async function simulateTouchDrag(
 ): Promise<void> {
   await page.evaluate(
     ({ from: f, to: t, holdMs: delay }) => {
-      return new Promise<void>((resolve) => {
+      return new Promise<void>((resolve, reject) => {
         const dispatch = (el: Element, type: string, x: number, y: number) => {
           const touch = new Touch({
             identifier: Date.now(),
@@ -100,7 +100,7 @@ async function simulateTouchDrag(
 
         const fromEl = document.elementFromPoint(f.x, f.y);
         if (!fromEl) {
-          resolve();
+          reject(new Error('simulateTouchDrag: fromEl not found'));
           return;
         }
 
