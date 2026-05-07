@@ -90,6 +90,24 @@ class Course(Base, TimestampMixin):
         nullable=True,
     )
 
+    # W15-BE1: 永続コーステンプレート (course_templates) への参照.
+    # 週次インスタンスの源泉テンプレートを辿る用途。テンプレ削除時は SET NULL。
+    template_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("course_templates.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    # W15-BE1: 拠点 (office) 参照.
+    # 設計仕様書では NOT NULL を志向するが、既存 v1〜v14 の courses 行 / テスト /
+    # endpoint (CourseCreate に office_id 未含) との互換性のため、現段階では
+    # NULLABLE で導入する。Phase 2 以降で全行に値が入った後 NOT NULL 化を検討。
+    office_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("offices.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+
     course_fixed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     staff_assigned_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -126,4 +144,8 @@ class Course(Base, TimestampMixin):
         Index("ix_courses_year_week", "iso_year", "iso_week"),
         # 担当スタッフ別の一覧 (Layer 3 のローテ集計で使う)
         Index("ix_courses_assigned_staff", "assigned_staff_id"),
+        # W15-BE1: 拠点別の一覧フィルタ用
+        Index("ix_courses_office", "office_id"),
+        # W15-BE1: テンプレートからの逆引き用
+        Index("ix_courses_template", "template_id"),
     )
