@@ -1,7 +1,13 @@
 /**
  * v2 schedule fix → weekly_pattern propagation — Wave 6 W6-E2E (2/4).
  *
- * Path:
+ * 注意 (Wave 15 以降 / W15-codex-fix (6)):
+ *   ScheduleGridV2 (時刻×曜日 旧 UI) は Wave 15 で ScheduleUnifiedView
+ *   (コーステンプレート × 曜日 マトリクス) に置換済。本 spec は旧 UI 環境
+ *   での回帰用に保持される。Wave 15 主フロー (place-and-fix によるドロップ
+ *   即固定枠化) の E2E は ``v2-w15-schedule-unified.spec.ts`` を参照。
+ *
+ * Path (旧 UI 想定):
  *   Admin login → /schedule (ScheduleGridV2)
  *     → 患者カードを保留プールから時間スロット (例: 月曜 09:00) にドラッグ
  *     → 「固定」ボタンで POST /api/v1/schedule/fix
@@ -14,7 +20,7 @@
  *   docs/plans/v2-implementation-plan.md §7 W6-E2E (2)
  *   docs/plans/v2-allocation-redesign.md §3.6.2 / §3.6.6
  *
- * 注意:
+ * 旧 UI 環境向け注意:
  *   ScheduleGridV2 は data-testid を持たないため、locator は role / role tab /
  *   構造的セレクタ (grid 内のセル) で組み立てる。dnd-kit の挙動を Playwright
  *   の `dragTo` で再現するため、活性化距離 (PointerSensor.distance=6px) を

@@ -1,7 +1,15 @@
 /**
  * v2 course generation → adjust → fixation — Wave 6 W6-E2E (3/4).
  *
- * Path:
+ * 注意 (Wave 15 以降 / W15-codex-fix (6)):
+ *   Wave 15 で **CourseProposal / ScheduleGridV2 (時刻×曜日 旧 UI)** は
+ *   `ScheduleUnifiedView` (コーステンプレート × 曜日 マトリクス) に置換された。
+ *   この spec が前提とする「コース案を生成」「コース固定」ボタンは現行 UI に
+ *   存在しないため、本 spec は通常実行で **skip** される (= 旧 UI の隔離
+ *   環境でのみ実行される回帰用)。Wave 15 主フローの E2E は
+ *   ``v2-w15-schedule-unified.spec.ts`` を参照のこと。
+ *
+ * Path (旧 UI 想定):
  *   Admin login → /schedule (CourseProposal が表示されている画面)
  *     → 「コース案を生成」(POST /api/v1/courses/generate)
  *     → A/B/C/D の 4 行が表示される
@@ -15,10 +23,8 @@
  *   docs/plans/v2-allocation-redesign.md §3.6.3
  *   docs/plans/v2-api-contracts.md §4.4 / §4.5
  *
- * 注意: CourseProposal が現状 /schedule 画面に直接 mount されていない
- * 場合、本 spec は CourseProposal 側で見える要素 (「コース案を生成」ボタン /
- * 「コース固定」ボタン) を画面内検索し、見つからなければ skip して
- * spec 失敗にしない (Wave 4 が完了していない隔離環境を想定).
+ * skip 動作: 「コース案を生成」ボタンが画面に居なければ test.skip する。
+ * Wave 15 以降は本 spec が常に skip 状態になる想定。
  */
 import { type Page } from '@playwright/test';
 
@@ -75,13 +81,14 @@ test.describe('v2 course generation & fixation (W6-E2E #3)', () => {
     await page.goto('/schedule');
     await expect(page.getByRole('heading', { name: 'スケジュール' })).toBeVisible();
 
-    // CourseProposal が画面内に居ない (Wave 4 未統合 / 別 page で mount 等) と
-    // spec が一切評価できないので skip する.
+    // W15-codex-fix (6): CourseProposal は Wave 15 で ScheduleUnifiedView に
+    // 置換済。「コース案を生成」ボタンが画面に居なければ skip する (= 旧 UI
+    // 隔離環境のみで動く)。Wave 15 主フロー E2E は v2-w15-schedule-unified.spec.ts。
     const generateBtn = await findGenerateButton(page);
     const generateVisible = await generateBtn.isVisible({ timeout: 5_000 }).catch(() => false);
     test.skip(
       !generateVisible,
-      'CourseProposal が /schedule に統合されていない. 別ルートでの mount を確認するまで skip.',
+      'CourseProposal は Wave 15 で ScheduleUnifiedView に置換済. 旧 UI 環境のみ実行.',
     );
 
     // ---- 2. 「コース案を生成」ボタンを押す -------------------------------
