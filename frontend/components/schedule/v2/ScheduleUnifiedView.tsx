@@ -450,6 +450,10 @@ export function ScheduleUnifiedView({
       const durationMin = Math.max(1, Number(wp?.service_minutes ?? 60));
       await placeAndFixMut.mutateAsync({
         patient_id: patientId,
+        // W15-codex-fix (1): ドロップ先の course_template_id を必ず送る.
+        // BE 側で週次 Course を find/create し Visit.course_id に紐付けるため、
+        // これが無いと配置直後に画面から患者カードが消える (主導線破綻)。
+        course_template_id: cell.courseTemplateId,
         iso_year: isoYear,
         iso_week: isoWeek,
         weekday: cell.weekday,

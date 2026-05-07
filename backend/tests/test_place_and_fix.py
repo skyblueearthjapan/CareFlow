@@ -27,6 +27,9 @@ from sqlalchemy import select
 
 from app.core.security import create_access_token, hash_password
 from app.models import Patient, Staff, User, Visit
+from app.models.course import Course
+from app.models.course_template import CourseTemplate
+from app.models.office import Office
 from app.models.patient_fixed_visit import PatientFixedVisit
 
 # 共通テスト週: ISO 2026-W19 (月曜 = 2026-05-04)
@@ -80,6 +83,34 @@ async def _make_staff(db, name: str = "スタッフ") -> Staff:
     return s
 
 
+async def _make_office(db, name: str = "事業所A") -> Office:
+    office = Office(name=name)
+    db.add(office)
+    await db.commit()
+    await db.refresh(office)
+    return office
+
+
+async def _make_template(db, office_id, label: str = "A") -> CourseTemplate:
+    """W15-codex-fix: place-and-fix は course_template_id 必須なので
+    テスト helper でテンプレートを作る."""
+    tpl = CourseTemplate(
+        office_id=office_id,
+        label=label,
+        capacity_mon=6,
+        capacity_tue=6,
+        capacity_wed=6,
+        capacity_thu=6,
+        capacity_fri=6,
+        capacity_sat=6,
+        capacity_sun=0,
+    )
+    db.add(tpl)
+    await db.commit()
+    await db.refresh(tpl)
+    return tpl
+
+
 def _bearer(user: User) -> dict[str, str]:
     token = create_access_token(subject=user.id, role=user.role, staff_id=user.staff_id)
     return {"Authorization": f"Bearer {token}"}
@@ -88,6 +119,7 @@ def _bearer(user: User) -> dict[str, str]:
 def _payload(
     patient_id,
     *,
+    course_template_id=None,
     iso_year: int = TEST_ISO_YEAR,
     iso_week: int = TEST_ISO_WEEK,
     weekday: int = 0,
@@ -98,6 +130,9 @@ def _payload(
 ) -> dict:
     return {
         "patient_id": str(patient_id),
+        # W15-codex-fix (1): course_template_id 必須化. 呼出側は明示指定するか、
+        # uuid4() を渡す (= BE 側で 404 を期待するケース)。
+        "course_template_id": str(course_template_id if course_template_id else uuid4()),
         "iso_year": iso_year,
         "iso_week": iso_week,
         "weekday": weekday,
@@ -118,11 +153,19 @@ async def test_place_and_fix_creates_visit_and_fixed_visit(client, db) -> None:
     """fix_pattern=True (default): visit + fixed_visit が両方作成される."""
     admin = await _make_user(db, "paf-1-admin@example.com", "admin")
     patient = await _make_patient(db, "PAF-001")
+    office = await _make_office(db, "事業所PAF1")
+    tpl = await _make_template(db, office.id, label="A")
 
     res = await client.post(
         "/api/v1/schedule/place-and-fix",
         headers=_bearer(admin),
-        json=_payload(patient.id, weekday=0, start_time="10:00:00", duration_min=45),
+        json=_payload(
+            patient.id,
+            course_template_id=tpl.id,
+            weekday=0,
+            start_time="10:00:00",
+            duration_min=45,
+        ),
     )
     assert res.status_code == 200, res.text
     data = res.json()
@@ -136,6 +179,8 @@ async def test_place_and_fix_creates_visit_and_fixed_visit(client, db) -> None:
     assert data["visit"]["status"] == "planned"
     assert data["visit"]["source"] == "manual"
     assert data["visit"]["required_staff_count"] == 1
+    # W15-codex-fix (1): visit.course_id が template から派生した course に紐付く
+    assert data["visit"]["course_id"] is not None
 
     # fixed_visit
     assert data["fixed_visit"] is not None
@@ -146,6 +191,23 @@ async def test_place_and_fix_creates_visit_and_fixed_visit(client, db) -> None:
     # DB 確認
     visits = (await db.scalars(select(Visit).where(Visit.patient_id == patient.id))).all()
     assert len(visits) == 1
+    assert visits[0].course_id is not None
+
+    # courses 行が template から派生して 1 件作成される
+    courses = (
+        await db.scalars(
+            select(Course).where(
+                Course.template_id == tpl.id,
+                Course.iso_year == TEST_ISO_YEAR,
+                Course.iso_week == TEST_ISO_WEEK,
+                Course.weekday == 0,
+            )
+        )
+    ).all()
+    assert len(courses) == 1
+    assert courses[0].office_id == office.id
+    assert courses[0].code == "A"
+    assert visits[0].course_id == courses[0].id
 
     fvs = (
         await db.scalars(
@@ -167,11 +229,19 @@ async def test_place_and_fix_without_pattern_creates_visit_only(client, db) -> N
     """fix_pattern=False: visit のみ作成、patient_fixed_visits は触らない."""
     admin = await _make_user(db, "paf-2-admin@example.com", "admin")
     patient = await _make_patient(db, "PAF-002")
+    office = await _make_office(db, "事業所PAF2")
+    tpl = await _make_template(db, office.id, label="A")
 
     res = await client.post(
         "/api/v1/schedule/place-and-fix",
         headers=_bearer(admin),
-        json=_payload(patient.id, weekday=1, start_time="11:00:00", fix_pattern=False),
+        json=_payload(
+            patient.id,
+            course_template_id=tpl.id,
+            weekday=1,
+            start_time="11:00:00",
+            fix_pattern=False,
+        ),
     )
     assert res.status_code == 200, res.text
     data = res.json()
@@ -249,12 +319,20 @@ async def test_place_and_fix_upserts_existing_fixed_visit(client, db) -> None:
     が DELETE→INSERT で 1 行のまま、最新の値で更新される."""
     admin = await _make_user(db, "paf-6-admin@example.com", "admin")
     patient = await _make_patient(db, "PAF-006")
+    office = await _make_office(db, "事業所PAF6")
+    tpl = await _make_template(db, office.id, label="A")
 
     # 1 回目
     r1 = await client.post(
         "/api/v1/schedule/place-and-fix",
         headers=_bearer(admin),
-        json=_payload(patient.id, weekday=2, start_time="09:00:00", duration_min=30),
+        json=_payload(
+            patient.id,
+            course_template_id=tpl.id,
+            weekday=2,
+            start_time="09:00:00",
+            duration_min=30,
+        ),
     )
     assert r1.status_code == 200, r1.text
     assert r1.json()["fixed_visit"]["duration_min"] == 30
@@ -263,7 +341,13 @@ async def test_place_and_fix_upserts_existing_fixed_visit(client, db) -> None:
     r2 = await client.post(
         "/api/v1/schedule/place-and-fix",
         headers=_bearer(admin),
-        json=_payload(patient.id, weekday=2, start_time="14:00:00", duration_min=60),
+        json=_payload(
+            patient.id,
+            course_template_id=tpl.id,
+            weekday=2,
+            start_time="14:00:00",
+            duration_min=60,
+        ),
     )
     assert r2.status_code == 200, r2.text
     body2 = r2.json()
@@ -299,12 +383,15 @@ async def test_place_and_fix_iso_week_53(client, db) -> None:
     """2026 は 53 週まで存在する → iso_week=53 でも 200."""
     admin = await _make_user(db, "paf-7-admin@example.com", "admin")
     patient = await _make_patient(db, "PAF-007")
+    office = await _make_office(db, "事業所PAF7")
+    tpl = await _make_template(db, office.id, label="A")
 
     res = await client.post(
         "/api/v1/schedule/place-and-fix",
         headers=_bearer(admin),
         json=_payload(
             patient.id,
+            course_template_id=tpl.id,
             iso_year=2026,
             iso_week=53,
             weekday=0,
@@ -331,11 +418,19 @@ async def test_place_and_fix_special_mode(client, db) -> None:
         "PAF-008",
         special_week_active=[{"iso_year": TEST_ISO_YEAR, "iso_week": TEST_ISO_WEEK}],
     )
+    office = await _make_office(db, "事業所PAF8")
+    tpl = await _make_template(db, office.id, label="A")
 
     res = await client.post(
         "/api/v1/schedule/place-and-fix",
         headers=_bearer(admin),
-        json=_payload(patient.id, weekday=3, start_time="13:00:00", duration_min=30),
+        json=_payload(
+            patient.id,
+            course_template_id=tpl.id,
+            weekday=3,
+            start_time="13:00:00",
+            duration_min=30,
+        ),
     )
     assert res.status_code == 200, res.text
     data = res.json()
@@ -422,3 +517,80 @@ async def test_place_and_fix_invalid_iso_week_returns_422(client, db) -> None:
         json=_payload(patient.id, iso_year=2025, iso_week=53),
     )
     assert res.status_code == 422, res.text
+
+
+# ---------------------------------------------------------------------------
+# 13. W15-codex-fix (1): 不明な course_template_id → 404
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_place_and_fix_unknown_template_returns_404(client, db) -> None:
+    """course_template_id が存在しない場合は 404 (W15-codex-fix)."""
+    admin = await _make_user(db, "paf-13-admin@example.com", "admin")
+    patient = await _make_patient(db, "PAF-013")
+    res = await client.post(
+        "/api/v1/schedule/place-and-fix",
+        headers=_bearer(admin),
+        json=_payload(patient.id, course_template_id=uuid4()),
+    )
+    assert res.status_code == 404, res.text
+
+
+# ---------------------------------------------------------------------------
+# 14. W15-codex-fix (1): 同 (template, week, weekday) を 2 回 call → course は 1 行
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_place_and_fix_reuses_existing_course(client, db) -> None:
+    """同じ (template_id, iso_year, iso_week, weekday) で 2 回 call すると、
+    courses 行は 1 件のまま再利用され、複数 visit が同じ course_id を持つ
+    (W15-codex-fix)."""
+    admin = await _make_user(db, "paf-14-admin@example.com", "admin")
+    p1 = await _make_patient(db, "PAF-014a")
+    p2 = await _make_patient(db, "PAF-014b")
+    office = await _make_office(db, "事業所PAF14")
+    tpl = await _make_template(db, office.id, label="A")
+
+    r1 = await client.post(
+        "/api/v1/schedule/place-and-fix",
+        headers=_bearer(admin),
+        json=_payload(
+            p1.id,
+            course_template_id=tpl.id,
+            weekday=0,
+            start_time="09:00:00",
+        ),
+    )
+    assert r1.status_code == 200
+    course_id_1 = r1.json()["visit"]["course_id"]
+
+    r2 = await client.post(
+        "/api/v1/schedule/place-and-fix",
+        headers=_bearer(admin),
+        json=_payload(
+            p2.id,
+            course_template_id=tpl.id,
+            weekday=0,
+            start_time="10:00:00",
+        ),
+    )
+    assert r2.status_code == 200
+    course_id_2 = r2.json()["visit"]["course_id"]
+
+    # 同じ (template, week, weekday) なので course_id は一致 (再利用)
+    assert course_id_1 == course_id_2
+
+    # courses 行は 1 件のみ
+    courses = (
+        await db.scalars(
+            select(Course).where(
+                Course.template_id == tpl.id,
+                Course.iso_year == TEST_ISO_YEAR,
+                Course.iso_week == TEST_ISO_WEEK,
+                Course.weekday == 0,
+            )
+        )
+    ).all()
+    assert len(courses) == 1

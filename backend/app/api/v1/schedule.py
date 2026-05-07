@@ -36,6 +36,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, select
 
 from app.core.deps import DbDep, require_role
+from app.models.course import COURSE_STATUS_PROPOSED, Course
+from app.models.course_template import CourseTemplate
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.user import User
@@ -419,6 +421,17 @@ class PlaceAndFixRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     patient_id: UUID
+    # W15-codex-fix (1): ドロップ先のコーステンプレート ID (FE 側のセル =
+    # course_template × weekday × HH:MM に紐付く). 必須化することで Visit.course_id
+    # を確実に埋めて、ScheduleUnifiedView の cellOccupants 計算 (course_id 経由
+    # で template にマップ) で「配置直後に画面から消える」主導線破綻を防ぐ。
+    course_template_id: UUID = Field(
+        description=(
+            "ドロップ先の course_templates.id (W15-codex-fix). "
+            "BE 側で (template_id, iso_year, iso_week, weekday) に対応する "
+            "courses 行を find/create し、Visit.course_id に紐付ける。"
+        ),
+    )
     iso_year: int = Field(ge=2000, le=2100)
     iso_week: int = Field(ge=1, le=53)
     weekday: int = Field(ge=0, le=6, description="0=Mon..6=Sun")
@@ -441,6 +454,88 @@ class PlaceAndFixResponse(BaseModel):
 
     visit: VisitV2Read
     fixed_visit: PatientFixedVisitV2Read | None = None
+
+
+# ---------------------------------------------------------------------------
+# helper: course (週次インスタンス) の find / create (W15-codex-fix)
+# ---------------------------------------------------------------------------
+
+
+async def _get_or_create_course_for_template_week(
+    db,
+    *,
+    course_template_id: UUID,
+    iso_year: int,
+    iso_week: int,
+    weekday: int,
+) -> Course:
+    """``course_template_id`` × (iso_year, iso_week, weekday) に対応する Course
+    を取得、無ければ作成する (W15-codex-fix).
+
+    place-and-fix のドロップフローでは「FE のセル = course_template × weekday」
+    に対し ``visits.course_id`` を紐付ける必要がある。週次インスタンス
+    (``courses`` テーブル) は Layer 2 で生成されるが、Wave 15 のドラッグドロップ
+    は Layer 2 を経由しないため、本 helper で必要に応じて proposed 状態の
+    Course を生成して紐付ける。
+
+    解決順序:
+        1. (template_id, iso_year, iso_week, weekday) で SELECT
+        2. 無ければ INSERT
+            - code        = template.label (1 文字へ正規化; 不一致は 'M')
+            - course_status = 'proposed'
+            - office_id   = template.office_id
+            - template_id = course_template_id
+
+    NOTE: 既存の ``courses`` UNIQUE 制約 (iso_year, iso_week, weekday, code) は
+    Wave 15-codex-fix (migration 0021) で office_id を含めた拡張に切り替わる
+    予定。本 helper はそれ以前の単純 SELECT で動作する。
+    """
+    # template を取得 (office_id / label の参照のため). 削除済みは 422 相当だが、
+    # place-and-fix は HTTPException で扱うので呼出側の except で捕捉される。
+    template = await db.scalar(
+        select(CourseTemplate).where(
+            CourseTemplate.id == course_template_id,
+            CourseTemplate.deleted_at.is_(None),
+        )
+    )
+    if template is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="CourseTemplate not found",
+        )
+
+    # 既存 Course を SELECT
+    course = await db.scalar(
+        select(Course).where(
+            Course.template_id == course_template_id,
+            Course.iso_year == iso_year,
+            Course.iso_week == iso_week,
+            Course.weekday == weekday,
+            Course.deleted_at.is_(None),
+        )
+    )
+    if course is not None:
+        return course
+
+    # 無ければ INSERT.
+    # code は template.label (8 文字までの可変長) の先頭 1 文字を使うが、
+    # courses.code CHECK 制約 ('A','B','C','D','M') を満たさない場合は 'M'
+    # (マネージャー枠 = オーバーフロー) に丸める。
+    label_first = (template.label or "").strip()[:1].upper()
+    code = label_first if label_first in ("A", "B", "C", "D", "M") else "M"
+
+    course = Course(
+        iso_year=iso_year,
+        iso_week=iso_week,
+        weekday=weekday,
+        code=code,
+        course_status=COURSE_STATUS_PROPOSED,
+        template_id=course_template_id,
+        office_id=template.office_id,
+    )
+    db.add(course)
+    await db.flush()
+    return course
 
 
 # ---------------------------------------------------------------------------
@@ -513,6 +608,19 @@ async def place_and_fix(
                 detail="Patient not found",
             )
 
+        # ----- 1a) Course (週次インスタンス) の find/create (W15-codex-fix) -----
+        # FE のセル = course_template × weekday に対応する週次 Course を確保し、
+        # Visit.course_id に紐付ける。これがないと cellOccupants 計算 (course_id
+        # 経由で template にマップ) に visit が乗らず、配置直後にカードが画面から
+        # 消える主導線破綻を起こす。
+        course = await _get_or_create_course_for_template_week(
+            db,
+            course_template_id=body.course_template_id,
+            iso_year=body.iso_year,
+            iso_week=body.iso_week,
+            weekday=body.weekday,
+        )
+
         # ----- 1) visits に新規行を作成 -----
         new_visit = Visit(
             patient_id=body.patient_id,
@@ -523,6 +631,7 @@ async def place_and_fix(
             status="planned",
             source="manual",
             required_staff_count=body.staff_count,
+            course_id=course.id,
         )
         db.add(new_visit)
         await db.flush()

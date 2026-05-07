@@ -1015,16 +1015,22 @@ PatientStatusUpdatePayload {
 
 ```jsonc
 {
-  "patient_id":   "<UUID>",
-  "iso_year":     2026,
-  "iso_week":     20,
-  "weekday":      0,           // 0=Mon..6=Sun
-  "start_time":   "09:00",    // HH:MM
-  "duration_min": 60,
-  "staff_count":  1,           // 1 or 2
-  "fix_pattern":  true         // false = 今週のみ (patient_fixed_visits を作らない)
+  "patient_id":         "<UUID>",
+  "course_template_id": "<UUID>",  // W15-codex-fix (1): ドロップ先のコーステンプレート (必須)
+  "iso_year":           2026,
+  "iso_week":           20,
+  "weekday":            0,           // 0=Mon..6=Sun
+  "start_time":         "09:00",    // HH:MM
+  "duration_min":       60,
+  "staff_count":        1,           // 1 or 2
+  "fix_pattern":        true         // false = 今週のみ (patient_fixed_visits を作らない)
 }
 ```
+
+> **W15-codex-fix (1)**: `course_template_id` は必須。BE は
+> `(course_template_id, iso_year, iso_week, weekday)` で `courses` 行を find/create
+> し、新規 `Visit.course_id` に紐付ける。これがないと FE 側で配置直後に
+> 患者カードが画面から消える主導線破綻が起きる。
 
 #### `PlaceAndFixResponse`
 
@@ -1040,17 +1046,24 @@ PatientStatusUpdatePayload {
 1. `patient_id` で患者存在チェック (404 if not found)
 2. `(iso_year, iso_week, weekday)` から `visit_date` を算出
 3. `duration_min` から `end_time` を算出 (24:00 越えは 422)
-4. `Visit` を新規 INSERT (`status='planned'`, `source='manual'`, `required_staff_count=staff_count`)
-5. `fix_pattern=True` のとき:
+4. **W15-codex-fix (1)**: `course_template_id` から週次 `courses` 行を find/create
+   - `(template_id, iso_year, iso_week, weekday)` で SELECT → 無ければ INSERT
+     (`code = template.label` または `'M'` フォールバック、`course_status='proposed'`、
+     `office_id = template.office_id`)
+   - course_template_id が存在しない場合は 404
+5. `Visit` を新規 INSERT (`status='planned'`, `source='manual'`,
+   `required_staff_count=staff_count`, `course_id` = (4) で確保した course)
+6. `fix_pattern=True` のとき:
    - `_is_special_week_active(patient, iso_year, iso_week)` で `mode` を判定 (`'special'` / `'normal'`)
    - 同一 `(patient_id, mode, weekday)` の既存行を DELETE → INSERT (upsert)
-6. 全処理を 1 TX で commit
+7. 全処理を 1 TX で commit
 
 #### エラーコード
 
 | 状態 | HTTP | 詳細 |
 |---|---|---|
 | 患者が存在しない / 論理削除済み | 404 | "Patient not found" |
+| course_template が存在しない / 論理削除済み | 404 | "CourseTemplate not found" |
 | ISO 週が不正 | 422 | "invalid ISO week: year=... week=..." |
 | start_time + duration_min ≥ 24:00 | 422 | "start_time + duration_min exceeds 24:00" |
 
@@ -1094,3 +1107,4 @@ Wave 9 以前、FE は保留プールからの初配置時に `visit_id=""` を 
 | 2026-05-06 | v1.1 | Wave 10: Staff Companion API（§12）追加。is_trainee 追加、mentor_id 廃止 |
 | 2026-05-06 | v1.2 | Wave 11: StaffMentorPayload（§13.2）追加。Wave 14: StaffStatusUpdatePayload（§13.3）/ PatientStatusUpdatePayload（§13.4）追加 |
 | 2026-05-08 | v1.3 | Wave 15: スケジュール大改修 — course_templates (§15) / acceptance-calendar (§16) / place-and-fix (§17) / fix-or-pattern 役割明確化 (§8.6) |
+| 2026-05-08 | v1.3.1 | W15-codex-fix: place-and-fix に `course_template_id` 必須化 (§17) — Visit.course_id 紐付けで主導線破綻を解消 |
