@@ -29,7 +29,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
-    UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -64,7 +64,19 @@ class CourseTemplate(Base, TimestampMixin):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
-        UniqueConstraint("office_id", "label", name="uq_course_templates_office_label"),
+        # W15-codex-fix (3): 論理削除を考慮した partial UNIQUE INDEX.
+        # PostgreSQL では deleted_at IS NULL のみを UNIQUE 対象にする partial
+        # index になる (= 論理削除済み label を再活性化可能)。SQLite (テスト)
+        # では partial WHERE が無視されてフル UNIQUE INDEX として動作する。
+        # migration 0021 が production 側のインデックスを担保する。
+        Index(
+            "uq_course_templates_office_label_active",
+            "office_id",
+            "label",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+            sqlite_where=text("deleted_at IS NULL"),
+        ),
         CheckConstraint(
             "capacity_mon BETWEEN 0 AND 50",
             name="ck_course_templates_capacity_mon",

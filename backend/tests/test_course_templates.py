@@ -173,6 +173,45 @@ async def test_create_course_template_duplicate_returns_409(client, db) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 4b. W15-codex-fix (3): 論理削除後の同一 label 再作成が許可される
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_recreate_course_template_after_soft_delete(client, db) -> None:
+    """論理削除済みの (office_id, label) と同じラベルで再作成できる
+    (partial UNIQUE INDEX が deleted_at IS NULL のみを対象にする)."""
+    admin = await _make_user(db, "ct-recreate@example.com", "admin")
+    office = await _make_office(db, "事業所recreate")
+
+    # 1. 作成
+    r1 = await client.post(
+        "/api/v1/course-templates",
+        headers=_bearer(admin),
+        json=_basic_payload(office.id, label="A"),
+    )
+    assert r1.status_code == 201, r1.text
+    tpl_id = r1.json()["id"]
+
+    # 2. 論理削除
+    r_del = await client.delete(
+        f"/api/v1/course-templates/{tpl_id}",
+        headers=_bearer(admin),
+    )
+    assert r_del.status_code == 204, r_del.text
+
+    # 3. 同じ (office_id, label='A') で再作成 → 201 (partial UNIQUE 効果)
+    r2 = await client.post(
+        "/api/v1/course-templates",
+        headers=_bearer(admin),
+        json=_basic_payload(office.id, label="A"),
+    )
+    assert r2.status_code == 201, r2.text
+    new_id = r2.json()["id"]
+    assert new_id != tpl_id, "削除済みとは別 ID で新規作成される"
+
+
+# ---------------------------------------------------------------------------
 # 5. POST office_id 不正 → 422
 # ---------------------------------------------------------------------------
 

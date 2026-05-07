@@ -237,6 +237,29 @@ async def test_courses_create_different_weekday_same_code_ok(client, db) -> None
     assert b.status_code == 201, b.text
 
 
+@pytest.mark.asyncio
+async def test_courses_create_same_key_different_office_ok(client, db) -> None:
+    """W15-codex-fix (4): UNIQUE が office スコープになり、別拠点なら同 (year, week,
+    weekday, code) で共存できる."""
+    admin = await _make_user(db, "c-uniq3-admin@example.com", "admin")
+    office_a = await _make_office(db, "事業所-uniq3a")
+    office_b = await _make_office(db, "事業所-uniq3b")
+
+    r1 = await client.post(
+        "/api/v1/courses",
+        headers=_bearer(admin),
+        json=_course_payload(office_a.id, iso_week=32, weekday=0, code="A"),
+    )
+    assert r1.status_code == 201, r1.text
+    r2 = await client.post(
+        "/api/v1/courses",
+        headers=_bearer(admin),
+        json=_course_payload(office_b.id, iso_week=32, weekday=0, code="A"),
+    )
+    # office が違えば 201 (旧仕様だと 409)
+    assert r2.status_code == 201, r2.text
+
+
 # ---------------------------------------------------------------------------
 # 3. CHECK 制約 / バリデーション
 # ---------------------------------------------------------------------------
