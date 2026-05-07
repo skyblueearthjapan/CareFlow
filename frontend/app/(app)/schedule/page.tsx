@@ -1,45 +1,47 @@
 'use client';
 
 /**
- * /schedule — スケジュール v2 (W7-FE2: Must-fix #7).
+ * /schedule — Wave 15 統合スケジュール画面 (W15-FE D-1).
  *
- * 3 タブ構成で L1→L2→L3 の v2 フロー全体を 1 画面に統合。
+ * 旧 3 タブ構成 (Pool 配置 / コース提案 / スタッフ割付) を **完全に置換** し、
+ * 「コース × 曜日マトリクス」の 1 画面で全フローを操作できる統合 UI に変更。
  *
- *   Tab ①: Pool / 15-min Grid (ScheduleGridV2 + PendingRequestPanel)
- *   Tab ②: コース提案 (CourseProposal — Layer 2)
- *   Tab ③: スタッフ割付 (CourseProposal + StaffAssignButton — Layer 3)
+ * レイアウト:
+ *   ┌──────────────────────────────────────────────────────────────┐
+ *   │ ヘッダー                                                       │
+ *   │  週切替 | 拠点フィルタ | レイヤースイッチ | 一括固定化       │
+ *   ├──────────┬───────────────────────────────────────────────────┤
+ *   │          │ ScheduleUnifiedView (コース × 曜日)                │
+ *   │ プール    │  - 受入目安レイヤー (背景色 + バッジ)              │
+ *   │ (左)     │  - 満枠超過警告 (バッジ)                          │
+ *   │          │  - スタッフ差替 dropdown                          │
+ *   └──────────┴───────────────────────────────────────────────────┘
  *
- * 進行ステップ:
- *   - Pool 確定済 (patients に weekly_pattern entries あり) → Tab ② のボタン有効
- *   - コース確定済 (course_fixed な Course が存在) → Tab ③ のボタン有効
+ * 要件 (Wave 15 設計サマリ):
+ *   - メイン軸: コーステンプレート × 曜日 (大改修案)
+ *   - 受入目安: ヘッダーチェックで ON/OFF (デフォルト OFF)
+ *   - 満枠超過: バッジのみ・モーダル無し (admin が自由に増やせる)
+ *   - ドロップ即固定枠化: place-and-fix 1 トランザクション
+ *   - 旧タブ構成は完全削除
  *
  * RBAC:
- *   - admin / manager: 全タブ操作可
- *   - staff: ① 閲覧のみ (各 canEdit=false を渡す)
- *
- * 週 state はここで一元管理し、各タブコンポーネントへ isoYear/isoWeek を
- * props として渡すことで、タブ切替時に再 fetch が発生しない (React Query の
- * 同一 queryKey によるキャッシュ共有)。
+ *   - admin / manager: 全操作可
+ *   - staff: 閲覧のみ
  */
-
 import { useMemo, useState } from 'react';
-import { CheckCircle2, Circle } from 'lucide-react';
 import { useSession } from 'next-auth/react';
 
-import { PendingRequestPanel } from '@/components/schedule/v2/PendingRequestPanel';
-import { ScheduleGridV2 } from '@/components/schedule/v2/ScheduleGridV2';
-import { CourseProposal } from '@/components/schedule/v2/CourseProposal';
 import { BulkFixToPatternButton } from '@/components/schedule/v2/BulkFixToPatternButton';
+import { ScheduleUnifiedView } from '@/components/schedule/v2/ScheduleUnifiedView';
 import { WeekSelector, toWeekStart } from '@/components/schedule/WeekSelector';
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { useCourses } from '@/lib/queries/courses';
-import { usePatients } from '@/lib/queries/patients';
+import { Card } from '@/components/ui/card';
+import { Checkbox } from '@/components/ui/checkbox';
+import { useOffices } from '@/lib/queries/offices';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────
 
-/** Date → ISO year/week (ISO 8601). */
 function toIsoYearWeek(d: Date): { isoYear: number; isoWeek: number } {
   const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
   const day = date.getUTCDay() || 7;
@@ -51,31 +53,6 @@ function toIsoYearWeek(d: Date): { isoYear: number; isoWeek: number } {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Progress step indicator
-// ─────────────────────────────────────────────────────────────────────────
-
-interface StepProps {
-  done: boolean;
-  label: string;
-  stepNumber: number;
-}
-
-function Step({ done, label, stepNumber }: StepProps) {
-  return (
-    <div className="flex items-center gap-1.5 text-xs">
-      {done ? (
-        <CheckCircle2 className="h-4 w-4 shrink-0 text-success" aria-hidden />
-      ) : (
-        <Circle className="h-4 w-4 shrink-0 text-text-muted" aria-hidden />
-      )}
-      <span className={'font-medium ' + (done ? 'text-success' : 'text-text-muted')}>
-        {stepNumber}. {label}
-      </span>
-    </div>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────
 // Page
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -84,124 +61,88 @@ export default function SchedulePage() {
   const role = session?.user?.role ?? 'staff';
   const canEdit = role === 'admin' || role === 'manager';
 
-  // 週 state — ScheduleGridV2 の内部 state と独立して管理し、
-  // 週切替を全タブで共有する。ScheduleGridV2 自体も内部で weekStart を
-  // 管理しているが、CourseProposal へ同じ週を渡すためにここでも持つ。
+  // 週 state (controlled).
   const [weekStart, setWeekStart] = useState<Date>(() => toWeekStart(new Date()));
   const { isoYear, isoWeek } = useMemo(() => toIsoYearWeek(weekStart), [weekStart]);
 
-  // ─────── Step 1 判定: Pool 確定済 (週訪問パターン登録済の患者あり) ───────
-  // 患者マスタを参照して「1 件でも weekly_pattern が登録された患者が居れば確定済」と見なす。
-  // WeeklyPattern は frequency_per_week / preferred_weekdays を持つので、それを判定材料とする。
-  // 厳密な Layer 1 状態は BE に無いため UI 上の近似判定。
-  const patientsQuery = usePatients({ limit: 500 });
-  const step1Done = useMemo(() => {
-    const patients = patientsQuery.data?.items ?? [];
-    return patients.some((p) => {
-      const wp = p.weekly_pattern as
-        | { frequency_per_week?: unknown; preferred_weekdays?: unknown }
-        | null
-        | undefined;
-      if (!wp || typeof wp !== 'object') return false;
-      const freq = typeof wp.frequency_per_week === 'number' ? wp.frequency_per_week : 0;
-      const days = Array.isArray(wp.preferred_weekdays) ? wp.preferred_weekdays.length : 0;
-      return freq > 0 && days > 0;
-    });
-  }, [patientsQuery.data]);
+  // 拠点フィルタ. null = 全拠点.
+  const [officeId, setOfficeId] = useState<string | null>(null);
+  const officesQuery = useOffices({ limit: 50 });
 
-  // ─────── Step 2 判定: コース確定済 (当該週に course_fixed な Course が存在) ───────
-  const coursesQuery = useCourses({
-    iso_year: isoYear,
-    iso_week: isoWeek,
-    course_status: 'course_fixed',
-    limit: 10,
-  });
-  const step2Done = useMemo(() => (coursesQuery.data ?? []).length > 0, [coursesQuery.data]);
-
-  // ─────── Step 3 判定: スタッフ割付済 (当該週に staff_assigned な Course が存在) ───────
-  const coursesAssignedQuery = useCourses({
-    iso_year: isoYear,
-    iso_week: isoWeek,
-    course_status: 'staff_assigned',
-    limit: 10,
-  });
-  const step3Done = useMemo(
-    () => (coursesAssignedQuery.data ?? []).length > 0,
-    [coursesAssignedQuery.data],
-  );
+  // レイヤー切替 (デフォルト: 受入目安 OFF, 警告 ON).
+  const [showAcceptance, setShowAcceptance] = useState(false);
+  const [showWarning, setShowWarning] = useState(true);
 
   const isoWeekLabel = `${isoYear}-W${String(isoWeek).padStart(2, '0')}`;
 
   return (
-    <section className="space-y-4">
-      <header>
+    <section className="space-y-3" data-testid="schedule-page-unified">
+      <header className="space-y-1">
         <h1 className="font-serif text-2xl font-bold text-text-primary">スケジュール</h1>
         <p className="text-sm text-text-secondary">
-          L1 (Pool 配置) → L2 (コース提案・確定) → L3 (スタッフ割付) の v2 フローを 1
-          画面で操作できます。
+          コース × 曜日マトリクスで週次スケジュールを 1 画面操作できます。
         </p>
       </header>
 
-      {/* 進行ステップ表示 + 一括固定化ボタン */}
-      <div className="flex flex-wrap items-center justify-between gap-4 rounded-lg border border-border-default bg-bg-muted px-4 py-2">
-        <div className="flex flex-wrap items-center gap-4">
-          <span className="text-xs font-semibold text-text-muted">{isoWeekLabel}</span>
-          <Step done={step1Done} label="Pool 確定" stepNumber={1} />
-          <Step done={step2Done} label="コース確定" stepNumber={2} />
-          <Step done={step3Done} label="スタッフ割付済" stepNumber={3} />
+      {/* ヘッダーバー: 週切替 + 拠点フィルタ + レイヤースイッチ + 一括固定化 */}
+      <Card className="flex flex-wrap items-center justify-between gap-3 p-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <WeekSelector weekStart={weekStart} onChange={setWeekStart} />
+          <span className="tnum text-xs text-text-muted">{isoWeekLabel}</span>
         </div>
-        <BulkFixToPatternButton canEdit={canEdit} isoYear={isoYear} isoWeek={isoWeek} />
-      </div>
 
-      {/* 3 タブ */}
-      <Tabs defaultValue="pool" className="w-full">
-        <TabsList className="mb-2">
-          <TabsTrigger value="pool">
-            {step1Done ? '① Pool / 15-min Grid ✓' : '① Pool / 15-min Grid'}
-          </TabsTrigger>
-          <TabsTrigger value="course">{step2Done ? '② コース提案 ✓' : '② コース提案'}</TabsTrigger>
-          <TabsTrigger value="staff">
-            {step3Done ? '③ スタッフ割付 ✓' : '③ スタッフ割付'}
-          </TabsTrigger>
-        </TabsList>
+        <div className="flex flex-wrap items-center gap-3">
+          {/* 拠点フィルタ */}
+          <label className="flex items-center gap-1 text-xs text-text-secondary">
+            拠点
+            <select
+              value={officeId ?? ''}
+              onChange={(e) => setOfficeId(e.target.value === '' ? null : e.target.value)}
+              className="rounded border border-border-default bg-bg-base px-1.5 py-1 text-xs"
+              aria-label="拠点フィルタ"
+            >
+              <option value="">全拠点</option>
+              {officesQuery.allOffices.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.name}
+                </option>
+              ))}
+            </select>
+          </label>
 
-        {/* ─── Tab ①: Pool / 15-min Grid ─── */}
-        <TabsContent value="pool">
-          <ScheduleGridV2
-            canEdit={canEdit}
-            showPendingPanel
-            pendingPanelSlot={<PendingRequestPanel />}
-            weekStart={weekStart}
-            onWeekChange={setWeekStart}
-          />
-        </TabsContent>
-
-        {/* ─── Tab ②: コース提案 (Layer 2) ─── */}
-        <TabsContent value="course">
-          <div className="mb-3">
-            <WeekSelector weekStart={weekStart} onChange={setWeekStart} />
+          {/* レイヤースイッチ */}
+          <div className="flex items-center gap-3 rounded border border-border-default bg-bg-muted px-2 py-1">
+            <label className="flex items-center gap-1.5 text-xs text-text-secondary">
+              <Checkbox
+                checked={showAcceptance}
+                onCheckedChange={(v) => setShowAcceptance(v === true)}
+                aria-label="受入目安レイヤー"
+              />
+              <span>受入目安</span>
+            </label>
+            <label className="flex items-center gap-1.5 text-xs text-text-secondary">
+              <Checkbox
+                checked={showWarning}
+                onCheckedChange={(v) => setShowWarning(v === true)}
+                aria-label="満枠超過警告レイヤー"
+              />
+              <span>警告</span>
+            </label>
           </div>
-          {!step1Done && canEdit ? (
-            <p className="mb-3 text-sm text-text-muted">
-              先に <strong>① Pool / 15-min Grid</strong> タブで週レイアウトを固定してください。
-            </p>
-          ) : null}
-          <CourseProposal isoYear={isoYear} isoWeek={isoWeek} canEdit={canEdit && step1Done} />
-        </TabsContent>
 
-        {/* ─── Tab ③: スタッフ割付 (Layer 3) ─── */}
-        <TabsContent value="staff">
-          <div className="mb-3">
-            <WeekSelector weekStart={weekStart} onChange={setWeekStart} />
-          </div>
-          {!step2Done && canEdit ? (
-            <p className="mb-3 text-sm text-text-muted">
-              先に <strong>② コース提案</strong> タブでコース構成を確定してください。
-            </p>
-          ) : null}
-          <CourseProposal isoYear={isoYear} isoWeek={isoWeek} canEdit={canEdit && step2Done} />
-        </TabsContent>
-      </Tabs>
+          <BulkFixToPatternButton canEdit={canEdit} isoYear={isoYear} isoWeek={isoWeek} />
+        </div>
+      </Card>
+
+      {/* メイン: ScheduleUnifiedView */}
+      <ScheduleUnifiedView
+        weekStart={weekStart}
+        onWeekChange={setWeekStart}
+        officeId={officeId}
+        canEdit={canEdit}
+        showAcceptanceLayer={showAcceptance}
+        showWarningLayer={showWarning}
+      />
     </section>
   );
 }

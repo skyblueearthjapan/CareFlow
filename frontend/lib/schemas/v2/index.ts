@@ -31,3 +31,7 @@ export * from './visit';
 export * from './pending_request';
 export * from './patient_fixed_visit';
 export * from './staff_companion_assignment';
+// W15-FE (Wave 15 Phase 3): unified schedule UI
+export * from './course_template';
+export * from './acceptance';
+export * from './place_and_fix';
