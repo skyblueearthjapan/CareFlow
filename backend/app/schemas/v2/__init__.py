@@ -19,12 +19,24 @@
 
 from __future__ import annotations
 
+from app.schemas.v2.acceptance import (
+    AcceptanceCalendarBulkUpsert,
+    AcceptanceCalendarEntry,
+    AcceptanceCalendarRead,
+    AcceptanceStatus,
+)
 from app.schemas.v2.course import (
     CourseCodeV2,
     CourseV2Base,
     CourseV2Create,
     CourseV2Read,
     CourseV2Update,
+)
+from app.schemas.v2.course_template import (
+    CourseTemplateBase,
+    CourseTemplateCreate,
+    CourseTemplateRead,
+    CourseTemplateUpdate,
 )
 from app.schemas.v2.enums import (
     AiContextType,
@@ -95,10 +107,19 @@ from app.schemas.v2.visit import (
 )
 
 __all__ = [
+    # acceptance calendar (W15-BE1)
+    "AcceptanceCalendarBulkUpsert",
+    "AcceptanceCalendarEntry",
+    "AcceptanceCalendarRead",
+    "AcceptanceStatus",
     # enums
     "AiContextType",
     "CourseCodeV2",
     "CourseStatus",
+    "CourseTemplateBase",
+    "CourseTemplateCreate",
+    "CourseTemplateRead",
+    "CourseTemplateUpdate",
     "RequestScope",
     "RequestStatus",
     "RequestType",

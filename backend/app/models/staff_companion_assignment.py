@@ -46,6 +46,13 @@ class StaffCompanionAssignment(Base, TimestampMixin):
         nullable=False,
     )
 
+    # W15-BE1: 主担当 (primary) / 補佐 (support) のロール区分。NULL は未設定運用。
+    pair_role: Mapped[str | None] = mapped_column(
+        String(16),
+        nullable=True,
+        comment="'primary' (主担当) / 'support' (補佐) / NULL",
+    )
+
     # Relationships
     trainee: Mapped[Staff] = relationship(  # type: ignore[name-defined]  # noqa: F821
         "Staff",
@@ -68,6 +75,10 @@ class StaffCompanionAssignment(Base, TimestampMixin):
         CheckConstraint("weekday BETWEEN 0 AND 6", name="ck_sca_weekday"),
         CheckConstraint("part IN ('am','pm','full')", name="ck_sca_part"),
         CheckConstraint("trainee_staff_id != companion_staff_id", name="ck_sca_self_companion"),
+        CheckConstraint(
+            "pair_role IS NULL OR pair_role IN ('primary','support')",
+            name="ck_sca_pair_role",
+        ),
         Index("ix_sca_trainee", "trainee_staff_id"),
         Index("ix_sca_companion", "companion_staff_id"),
     )

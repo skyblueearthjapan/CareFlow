@@ -4,11 +4,13 @@ Importing this package registers all tables on `Base.metadata` so that
 Alembic autogenerate can see them.
 """
 
+from app.models.acceptance_calendar import AcceptanceCalendar
 from app.models.ai_interpret_log import AiInterpretLog
 from app.models.audit_log import AuditLog
 from app.models.city import City
 from app.models.correction_sheet import CorrectionSheet, CorrectionSheetItem
 from app.models.course import Course
+from app.models.course_template import CourseTemplate
 from app.models.geocoding_cache import GeocodingCache
 from app.models.kaipoke_job import KaipokeJob, KaipokeJobItem
 from app.models.notification import Notification
@@ -32,12 +34,14 @@ from app.models.visit_photo import VisitPhoto
 from app.models.visit_staff_assignment import VisitStaffAssignment
 
 __all__ = [
+    "AcceptanceCalendar",
     "AiInterpretLog",
     "AuditLog",
     "City",
     "CorrectionSheet",
     "CorrectionSheetItem",
     "Course",
+    "CourseTemplate",
     "GeocodingCache",
     "KaipokeJob",
     "KaipokeJobItem",

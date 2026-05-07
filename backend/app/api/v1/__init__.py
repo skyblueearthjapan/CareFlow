@@ -3,12 +3,14 @@
 from fastapi import APIRouter
 
 from app.api.v1 import (
+    acceptance_calendar,
     admin,
     ai,
     allocate,
     audit_logs,
     auth,
     cities,
+    course_templates,
     courses,
     dashboard,
     diff,
@@ -60,6 +62,14 @@ api_router.include_router(visit_photos.router, prefix="/visits", tags=["visit-ph
 api_router.include_router(visits.router, prefix="/visits", tags=["visits"])
 # W2-BE4: Course CRUD (generate / fix / assign-staff は Wave 4 で追加).
 api_router.include_router(courses.router, prefix="/courses", tags=["courses"])
+# W15-BE1: 永続コーステンプレート CRUD.
+api_router.include_router(
+    course_templates.router, prefix="/course-templates", tags=["course-templates"]
+)
+# W15-BE1: 受入カレンダー (拠点単位の bulk upsert).
+api_router.include_router(
+    acceptance_calendar.router, prefix="/acceptance-calendar", tags=["acceptance-calendar"]
+)
 api_router.include_router(offices.router, prefix="/offices", tags=["offices"])
 api_router.include_router(cities.router, prefix="/cities", tags=["cities"])
 api_router.include_router(diff.router, prefix="/diff", tags=["diff"])
