@@ -31,6 +31,8 @@ from import_acceptance_calendar import (  # noqa: E402  # type: ignore[import]
     _parse_status,
     _parse_time_slot,
     _resolve_office,
+    _upsert_block,
+    import_acceptance_calendar,
     parse_sheet,
 )
 
@@ -285,3 +287,105 @@ def test_parse_sheet_missing_sheet(tmp_path: Path) -> None:
     wb.save(bad_xlsx)
     with pytest.raises(KeyError):
         parse_sheet(bad_xlsx)
+
+
+# ---------------------------------------------------------------------------
+# 9. 冪等性: 2 回 upsert しても件数が変わらない
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_upsert_block_idempotent(tmp_path: Path, db) -> None:
+    """同一 payload を 2 回 upsert しても acceptance_calendar の件数が変わらない."""
+    from sqlalchemy import func, select
+
+    from app.models.acceptance_calendar import AcceptanceCalendar
+    from app.models.office import Office
+
+    # Seed one office
+    office = Office(name="稲毛ステーション")
+    db.add(office)
+    await db.commit()
+    await db.refresh(office)
+
+    xlsx = _build_fixture_xlsx(tmp_path)
+    blocks = parse_sheet(xlsx)
+    inamo_block = blocks[0]
+
+    # 1 回目
+    counters1: dict[str, int] = {"new": 0, "update": 0}
+    await _upsert_block(db, office, inamo_block, counters1)
+    await db.commit()
+
+    count_after_first = await db.scalar(select(func.count()).select_from(AcceptanceCalendar))
+
+    # 2 回目 (同一 payload)
+    counters2: dict[str, int] = {"new": 0, "update": 0}
+    await _upsert_block(db, office, inamo_block, counters2)
+    await db.commit()
+
+    count_after_second = await db.scalar(select(func.count()).select_from(AcceptanceCalendar))
+
+    assert count_after_first == count_after_second, (
+        f"Idempotency violated: {count_after_first} → {count_after_second}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 10. 不正 status: 未知シンボルは None を返す
+# ---------------------------------------------------------------------------
+
+
+def test_parse_status_unknown_symbol() -> None:
+    """未知のシンボルは None を返す (skip 扱い)."""
+    assert _parse_status("UNKNOWN") is None
+    assert _parse_status("?") is None
+
+
+# ---------------------------------------------------------------------------
+# 11. apply 統合テスト: xlsx → import_acceptance_calendar で期待件数 INSERT
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_import_acceptance_calendar_apply_full(tmp_path: Path, db) -> None:
+    """xlsx → import_acceptance_calendar(apply=True) で acceptance_calendar 行が期待件数 INSERT."""
+    from sqlalchemy import func, select
+
+    from app.models.acceptance_calendar import AcceptanceCalendar
+    from app.models.office import Office
+
+    # Seed both offices
+    inamo_office = Office(name="稲毛ステーション")
+    tsuga_office = Office(name="都賀ステーション")
+    db.add(inamo_office)
+    db.add(tsuga_office)
+    await db.commit()
+
+    # Patch get_session_factory to return a factory that yields our test `db`
+    from contextlib import asynccontextmanager
+    from unittest.mock import MagicMock, patch
+
+    import app.db.session as _db_session
+
+    @asynccontextmanager
+    async def _fake_factory():
+        yield db
+
+    fake_factory_callable = MagicMock(return_value=_fake_factory())
+
+    xlsx = _build_fixture_xlsx(tmp_path)
+
+    # Parse expected counts before apply so we can assert exact numbers
+    blocks = parse_sheet(xlsx)
+    expected_inamo = len(blocks[0].entries)
+    expected_tsuga = len(blocks[1].entries)
+    expected_total = expected_inamo + expected_tsuga
+
+    with patch.object(_db_session, "get_session_factory", return_value=fake_factory_callable):
+        await import_acceptance_calendar(xlsx, dry_run=False)
+
+    total = await db.scalar(select(func.count()).select_from(AcceptanceCalendar))
+    assert total == expected_total, (
+        f"Expected {expected_total} acceptance_calendar rows, got {total}"
+    )

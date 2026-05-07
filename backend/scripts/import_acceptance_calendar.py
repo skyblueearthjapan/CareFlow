@@ -12,14 +12,19 @@ acceptance_calendar テーブルへ bulk upsert する。
   ブロック 2 (都賀拠点): Row 22-40 (同構造)
 
 Usage:
-    python -m scripts.import_acceptance_calendar --xlsx PATH [--dry-run | --apply]
+    python -m scripts.import_acceptance_calendar --xlsx PATH --dry-run
     python -m scripts.import_acceptance_calendar --xlsx PATH --apply
+
+Note:
+    ``--dry-run`` または ``--apply`` のいずれか必須。
+    デフォルト指定なし時はエラー終了 (誤 apply 防止のため明示要求)。
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import re
 import sys
 import uuid
@@ -28,7 +33,7 @@ from datetime import time
 from pathlib import Path
 from typing import Any
 
-import openpyxl
+logger = logging.getLogger(__name__)
 
 # ── sys.path: allow `python -m scripts.…` or direct `python scripts/….py` ──
 _SCRIPTS_DIR = Path(__file__).resolve().parent
@@ -37,6 +42,7 @@ for _p in (_SCRIPTS_DIR, _BACKEND_ROOT):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
+import openpyxl  # noqa: E402
 from sqlalchemy import delete, select  # noqa: E402
 
 from app.db.session import dispose_engine, get_session_factory  # noqa: E402
@@ -79,6 +85,7 @@ _BLOCK_SPECS = [
         "data_rows": list(range(4, 19, 2)),  # 4,6,8,10,12,14,16,18
         "office_like": "稲毛",
         "area_label": "稲毛区・花見川区・美浜区",
+        "area_keyword": "稲毛",
     },
     {
         "title_row": 22,
@@ -86,6 +93,7 @@ _BLOCK_SPECS = [
         "data_rows": list(range(24, 39, 2)),  # 24,26,28,30,32,34,36,38
         "office_like": "都賀",
         "area_label": "中央区・若葉区",
+        "area_keyword": "中央",
     },
 ]
 
@@ -175,6 +183,17 @@ def parse_sheet(xlsx_path: Path) -> list[BlockResult]:
     for spec in _BLOCK_SPECS:
         entries: list[ParsedEntry] = []
         counts: dict[str, int] = {"available": 0, "consult": 0, "unavailable": 0}
+
+        # Validate title row to catch silent mis-parse (e.g. sheet layout changed)
+        title_row = rows_by_num.get(spec["title_row"], ())
+        title_value = title_row[1] if len(title_row) > 1 else None
+        if title_value and spec["area_keyword"] not in str(title_value):
+            logger.warning(
+                "Block %s title mismatch: '%s' does not contain '%s'",
+                spec["label"] if "label" in spec else spec["office_like"],
+                title_value,
+                spec["area_keyword"],
+            )
 
         for data_row_num in spec["data_rows"]:
             row = rows_by_num.get(data_row_num, ())
@@ -368,9 +387,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--xlsx", type=Path, required=True, help="path to source xlsx file")
     mode = p.add_mutually_exclusive_group()
     mode.add_argument(
-        "--dry-run", action="store_true", help="パース結果を表示するのみ (DB 更新なし)"
+        "--dry-run",
+        action="store_true",
+        help="パース結果を表示するのみ (DB 更新なし)。--dry-run または --apply は必須",
     )
-    mode.add_argument("--apply", action="store_true", help="DB に書き込む")
+    mode.add_argument(
+        "--apply",
+        action="store_true",
+        help="DB に書き込む。--dry-run または --apply は必須 (デフォルト指定なし時はエラー終了)",
+    )
     return p
 
 
