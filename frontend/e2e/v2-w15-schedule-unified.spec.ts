@@ -78,7 +78,8 @@ async function mockPlaceAndFix(
  * キャパシティ config エンドポイントもモックする。
  */
 async function mockAcceptanceCalendar(page: Page): Promise<void> {
-  await page.route('**/api/v1/acceptance_calendar**', async (route: Route) => {
+  // W15-codex-fix (5): 実 API は kebab-case (/acceptance-calendar)
+  await page.route('**/api/v1/acceptance-calendar**', async (route: Route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -127,12 +128,13 @@ async function mockCourseStaffPatch(
     if (route.request().method() === 'PATCH') {
       const body = route.request().postDataJSON() as Record<string, unknown>;
       lastBody = body;
+      // W15-codex-fix (5): フィールド名は assigned_staff_id (BE と整合)
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
           id: courseId,
-          staff_id: body['staff_id'] ?? 'staff-002',
+          assigned_staff_id: body['assigned_staff_id'] ?? 'staff-002',
           staff_name: '山田 次郎',
         }),
       });
@@ -151,7 +153,8 @@ async function mockCourseStaffPatch(
           {
             id: courseId,
             name: 'コース A',
-            staff_id: 'staff-001',
+            // W15-codex-fix (5): BE のレスポンスフィールドは assigned_staff_id
+            assigned_staff_id: 'staff-001',
             staff_name: '田中 一郎',
             weekday: 1,
           },
@@ -559,15 +562,17 @@ test.describe('v2 Wave 15 スケジュール画面 (統合 1 画面) — W15 Pha
     await targetStaffOption.click();
 
     // ---- 8. PATCH /api/v1/courses/{id} が呼ばれることを確認 ----------------
+    // W15-codex-fix (5): 実 API のフィールド名は assigned_staff_id (BE
+    // CourseV2Update / FE StaffSwapDropdown が共に assigned_staff_id を使う)
     const patchReq = await patchPromise;
     const body = patchReq.postDataJSON() as Record<string, unknown>;
-    expect(body, 'payload に staff_id が含まれる').toHaveProperty('staff_id');
-    expect(body['staff_id'], 'staff_id=staff-002').toBe('staff-002');
+    expect(body, 'payload に assigned_staff_id が含まれる').toHaveProperty('assigned_staff_id');
+    expect(body['assigned_staff_id'], 'assigned_staff_id=staff-002').toBe('staff-002');
 
     // モックから取得した lastBody でも確認
     const lastBody = getLastBody();
     if (lastBody !== null) {
-      expect(lastBody['staff_id']).toBe('staff-002');
+      expect(lastBody['assigned_staff_id']).toBe('staff-002');
     }
 
     // ---- 9. アバターが選択スタッフ (山田 次郎) の表示に変わる ---------------
