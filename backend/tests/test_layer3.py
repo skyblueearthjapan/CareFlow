@@ -514,6 +514,7 @@ async def _seed_one_day_fixed_courses(db) -> dict[str, UUID]:
             weekday=int(c["weekday"]),
             code=c["course_code"],
             course_status=COURSE_STATUS_COURSE_FIXED,
+            office_id=inage.id,  # W15-BE-FIXPATTERN: courses.office_id NOT NULL
         )
         db.add(course)
         await db.flush()
@@ -678,6 +679,7 @@ async def test_assign_staff_skips_proposed_courses(client, db) -> None:
         weekday=0,
         code="A",
         course_status="proposed",
+        office_id=inage.id,  # W15-BE-FIXPATTERN: courses.office_id NOT NULL
     )
     db.add(course_proposed)
     await db.commit()
@@ -848,6 +850,7 @@ async def _w10_setup_trainee_and_companion(
         weekday=0,
         code="A",
         course_status=COURSE_STATUS_COURSE_FIXED,
+        office_id=office.id,  # W15-BE-FIXPATTERN: courses.office_id NOT NULL
     )
     db.add(course)
     await db.flush()
@@ -1130,6 +1133,7 @@ async def test_w10_trainee_plus_required_two_no_duplicate(db) -> None:
         weekday=1,
         code="A",
         course_status=COURSE_STATUS_COURSE_FIXED,
+        office_id=office.id,  # W15-BE-FIXPATTERN: courses.office_id NOT NULL
     )
     course_b = Course(
         iso_year=TEST_ISO_YEAR,
@@ -1137,6 +1141,7 @@ async def test_w10_trainee_plus_required_two_no_duplicate(db) -> None:
         weekday=1,
         code="B",
         course_status=COURSE_STATUS_COURSE_FIXED,
+        office_id=office.id,  # W15-BE-FIXPATTERN
     )
     db.add_all([course_a, course_b])
     await db.flush()

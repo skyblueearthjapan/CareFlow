@@ -6,12 +6,12 @@
 
 from __future__ import annotations
 
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
 from app.core.security import create_access_token, hash_password
-from app.models import Course, User
+from app.models import Course, Office, User
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -30,19 +30,29 @@ async def _make_user(db, email: str, role: str) -> User:
     return user
 
 
+async def _make_office(db, name: str = "テスト事業所") -> Office:
+    """W15-BE-FIXPATTERN: courses.office_id NOT NULL 化に伴うヘルパー."""
+    office = Office(name=name)
+    db.add(office)
+    await db.commit()
+    await db.refresh(office)
+    return office
+
+
 def _bearer(user: User) -> dict[str, str]:
     token = create_access_token(subject=user.id, role=user.role, staff_id=user.staff_id)
     return {"Authorization": f"Bearer {token}"}
 
 
-def _course_payload(**overrides) -> dict:
-    """Minimal valid CourseV2Create payload."""
+def _course_payload(office_id: UUID, **overrides) -> dict:
+    """Minimal valid CourseV2Create payload (W15-BE-FIXPATTERN: office_id 必須)."""
     base = {
         "iso_year": 2026,
         "iso_week": 20,
         "weekday": 0,  # Monday
         "code": "A",
         "course_status": "proposed",
+        "office_id": str(office_id),
     }
     base.update(overrides)
     return base
@@ -56,10 +66,11 @@ def _course_payload(**overrides) -> dict:
 @pytest.mark.asyncio
 async def test_courses_create_returns_201(client, db) -> None:
     admin = await _make_user(db, "c-create-admin@example.com", "admin")
+    office = await _make_office(db, "事業所-create")
     res = await client.post(
         "/api/v1/courses",
         headers=_bearer(admin),
-        json=_course_payload(),
+        json=_course_payload(office.id),
     )
     assert res.status_code == 201, res.text
     body = res.json()
@@ -71,16 +82,18 @@ async def test_courses_create_returns_201(client, db) -> None:
     assert body["course_fixed_at"] is None
     assert body["staff_assigned_at"] is None
     assert body["assigned_staff_id"] is None
+    assert body["office_id"] == str(office.id)
     assert "id" in body
 
 
 @pytest.mark.asyncio
 async def test_courses_get_detail_returns_200(client, db) -> None:
     admin = await _make_user(db, "c-get-admin@example.com", "admin")
+    office = await _make_office(db, "事業所-get")
     create = await client.post(
         "/api/v1/courses",
         headers=_bearer(admin),
-        json=_course_payload(weekday=2, code="B"),
+        json=_course_payload(office.id, weekday=2, code="B"),
     )
     assert create.status_code == 201, create.text
     cid = create.json()["id"]
@@ -103,12 +116,13 @@ async def test_courses_get_unknown_returns_404(client, db) -> None:
 @pytest.mark.asyncio
 async def test_courses_list_returns_array(client, db) -> None:
     admin = await _make_user(db, "c-list-admin@example.com", "admin")
+    office = await _make_office(db, "事業所-list")
     # 2 件作成
     for code in ("A", "B"):
         res = await client.post(
             "/api/v1/courses",
             headers=_bearer(admin),
-            json=_course_payload(weekday=3, code=code),
+            json=_course_payload(office.id, weekday=3, code=code),
         )
         assert res.status_code == 201, res.text
 
@@ -123,16 +137,17 @@ async def test_courses_list_returns_array(client, db) -> None:
 @pytest.mark.asyncio
 async def test_courses_list_filters_by_year_week_weekday(client, db) -> None:
     admin = await _make_user(db, "c-list-f-admin@example.com", "admin")
+    office = await _make_office(db, "事業所-list-f")
     # 2 件: 別週
     await client.post(
         "/api/v1/courses",
         headers=_bearer(admin),
-        json=_course_payload(iso_week=21, weekday=1, code="A"),
+        json=_course_payload(office.id, iso_week=21, weekday=1, code="A"),
     )
     await client.post(
         "/api/v1/courses",
         headers=_bearer(admin),
-        json=_course_payload(iso_week=22, weekday=1, code="A"),
+        json=_course_payload(office.id, iso_week=22, weekday=1, code="A"),
     )
 
     res = await client.get(
@@ -147,10 +162,11 @@ async def test_courses_list_filters_by_year_week_weekday(client, db) -> None:
 @pytest.mark.asyncio
 async def test_courses_patch_updates_status(client, db) -> None:
     admin = await _make_user(db, "c-patch-admin@example.com", "admin")
+    office = await _make_office(db, "事業所-patch")
     create = await client.post(
         "/api/v1/courses",
         headers=_bearer(admin),
-        json=_course_payload(weekday=4, code="C"),
+        json=_course_payload(office.id, weekday=4, code="C"),
     )
     assert create.status_code == 201, create.text
     cid = create.json()["id"]
@@ -169,10 +185,11 @@ async def test_courses_patch_updates_status(client, db) -> None:
 @pytest.mark.asyncio
 async def test_courses_delete_admin_returns_204(client, db) -> None:
     admin = await _make_user(db, "c-del-admin@example.com", "admin")
+    office = await _make_office(db, "事業所-del")
     create = await client.post(
         "/api/v1/courses",
         headers=_bearer(admin),
-        json=_course_payload(weekday=5, code="D"),
+        json=_course_payload(office.id, weekday=5, code="D"),
     )
     assert create.status_code == 201, create.text
     cid = create.json()["id"]
@@ -192,7 +209,8 @@ async def test_courses_delete_admin_returns_204(client, db) -> None:
 @pytest.mark.asyncio
 async def test_courses_create_duplicate_returns_409(client, db) -> None:
     admin = await _make_user(db, "c-uniq-admin@example.com", "admin")
-    payload = _course_payload(iso_year=2026, iso_week=30, weekday=0, code="A")
+    office = await _make_office(db, "事業所-uniq")
+    payload = _course_payload(office.id, iso_year=2026, iso_week=30, weekday=0, code="A")
     first = await client.post("/api/v1/courses", headers=_bearer(admin), json=payload)
     assert first.status_code == 201, first.text
 
@@ -204,16 +222,17 @@ async def test_courses_create_duplicate_returns_409(client, db) -> None:
 async def test_courses_create_different_weekday_same_code_ok(client, db) -> None:
     """同じ (year, week, code) でも weekday が違えば許可される."""
     admin = await _make_user(db, "c-uniq2-admin@example.com", "admin")
+    office = await _make_office(db, "事業所-uniq2")
     a = await client.post(
         "/api/v1/courses",
         headers=_bearer(admin),
-        json=_course_payload(iso_week=31, weekday=0, code="A"),
+        json=_course_payload(office.id, iso_week=31, weekday=0, code="A"),
     )
     assert a.status_code == 201, a.text
     b = await client.post(
         "/api/v1/courses",
         headers=_bearer(admin),
-        json=_course_payload(iso_week=31, weekday=1, code="A"),
+        json=_course_payload(office.id, iso_week=31, weekday=1, code="A"),
     )
     assert b.status_code == 201, b.text
 
@@ -227,10 +246,11 @@ async def test_courses_create_different_weekday_same_code_ok(client, db) -> None
 async def test_courses_create_invalid_code_returns_422(client, db) -> None:
     """A/B/C/D/M 以外の code は 422 (Pydantic 側で弾かれる)."""
     admin = await _make_user(db, "c-bad-admin@example.com", "admin")
+    office = await _make_office(db, "事業所-bad")
     res = await client.post(
         "/api/v1/courses",
         headers=_bearer(admin),
-        json=_course_payload(code="X"),
+        json=_course_payload(office.id, code="X"),
     )
     assert res.status_code == 422, res.text
 
@@ -238,10 +258,11 @@ async def test_courses_create_invalid_code_returns_422(client, db) -> None:
 @pytest.mark.asyncio
 async def test_courses_create_invalid_status_returns_422(client, db) -> None:
     admin = await _make_user(db, "c-bad2-admin@example.com", "admin")
+    office = await _make_office(db, "事業所-bad2")
     res = await client.post(
         "/api/v1/courses",
         headers=_bearer(admin),
-        json=_course_payload(course_status="invalid_status"),
+        json=_course_payload(office.id, course_status="invalid_status"),
     )
     assert res.status_code == 422, res.text
 
@@ -249,11 +270,28 @@ async def test_courses_create_invalid_status_returns_422(client, db) -> None:
 @pytest.mark.asyncio
 async def test_courses_create_weekday_out_of_range_returns_422(client, db) -> None:
     admin = await _make_user(db, "c-bad3-admin@example.com", "admin")
+    office = await _make_office(db, "事業所-bad3")
     res = await client.post(
         "/api/v1/courses",
         headers=_bearer(admin),
-        json=_course_payload(weekday=7),
+        json=_course_payload(office.id, weekday=7),
     )
+    assert res.status_code == 422, res.text
+
+
+@pytest.mark.asyncio
+async def test_courses_create_without_office_id_returns_422(client, db) -> None:
+    """W15-BE-FIXPATTERN: office_id 必須化のバリデーション確認."""
+    admin = await _make_user(db, "c-no-office-admin@example.com", "admin")
+    payload = {
+        "iso_year": 2026,
+        "iso_week": 20,
+        "weekday": 0,
+        "code": "A",
+        "course_status": "proposed",
+        # office_id 欠落
+    }
+    res = await client.post("/api/v1/courses", headers=_bearer(admin), json=payload)
     assert res.status_code == 422, res.text
 
 
@@ -271,10 +309,11 @@ async def test_courses_list_no_token_returns_401(client) -> None:
 @pytest.mark.asyncio
 async def test_courses_create_staff_returns_403(client, db) -> None:
     staff = await _make_user(db, "c-staff@example.com", "staff")
+    office = await _make_office(db, "事業所-staff")
     res = await client.post(
         "/api/v1/courses",
         headers=_bearer(staff),
-        json=_course_payload(),
+        json=_course_payload(office.id),
     )
     assert res.status_code == 403, res.text
 
@@ -291,10 +330,11 @@ async def test_courses_delete_manager_returns_403(client, db) -> None:
     """DELETE は admin のみ. manager は 403."""
     admin = await _make_user(db, "c-d-admin@example.com", "admin")
     manager = await _make_user(db, "c-d-mgr@example.com", "manager")
+    office = await _make_office(db, "事業所-del-mgr")
     create = await client.post(
         "/api/v1/courses",
         headers=_bearer(admin),
-        json=_course_payload(weekday=6, code="M"),
+        json=_course_payload(office.id, weekday=6, code="M"),
     )
     assert create.status_code == 201, create.text
     cid = create.json()["id"]
@@ -310,8 +350,19 @@ async def test_courses_delete_manager_returns_403(client, db) -> None:
 
 @pytest.mark.asyncio
 async def test_course_orm_round_trip(db) -> None:
-    """ORM 経由で Course を作成・取得できる (timestamps が埋まる)."""
-    course = Course(iso_year=2026, iso_week=15, weekday=2, code="C")
+    """ORM 経由で Course を作成・取得できる (timestamps が埋まる).
+
+    W15-BE-FIXPATTERN: ``office_id`` を NOT NULL 化したため、
+    必ず Office を先に作成して FK を埋める必要がある。
+    """
+    office = await _make_office(db, "事業所-orm")
+    course = Course(
+        iso_year=2026,
+        iso_week=15,
+        weekday=2,
+        code="C",
+        office_id=office.id,
+    )
     db.add(course)
     await db.commit()
     await db.refresh(course)
@@ -321,3 +372,4 @@ async def test_course_orm_round_trip(db) -> None:
     assert course.created_at is not None
     assert course.updated_at is not None
     assert course.deleted_at is None
+    assert course.office_id == office.id
