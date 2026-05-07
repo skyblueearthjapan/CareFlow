@@ -280,6 +280,16 @@ async def create_course(
     # そのまま ORM へ流し込む。CourseStatus enum -> str.
     data = payload.model_dump(mode="json")
     # CourseStatus は v2 schema では enum (StrEnum). model_dump(mode='json') で str に。
+    # UUID 列は model_dump(mode='json') が str 化するため、ORM 列が期待する UUID
+    # オブジェクトへ戻す (W15-BE-FIXPATTERN: office_id を NOT NULL 化したことに伴う対応)。
+    for uuid_field in ("office_id", "assigned_staff_id"):
+        val = data.get(uuid_field)
+        if isinstance(val, str):
+            try:
+                data[uuid_field] = UUID(val)
+            except (ValueError, TypeError):
+                # Pydantic で弾けるはずだが念のため None 化 (FK 違反で 422 経由)
+                data[uuid_field] = None
     course = Course(**data)
     db.add(course)
     await _commit_or_409(db)
