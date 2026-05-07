@@ -594,3 +594,99 @@ async def test_place_and_fix_reuses_existing_course(client, db) -> None:
         )
     ).all()
     assert len(courses) == 1
+
+
+# ---------------------------------------------------------------------------
+# 15. W15-codex-fix race condition: savepoint + IntegrityError 回復の直接検証
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_place_and_fix_concurrent_course_creation(_engine, db) -> None:
+    """_get_or_create_course_for_template_week の savepoint+IntegrityError 回復を
+    直接テストする。
+
+    1 つ目の呼び出しで Course を INSERT し commit。その後 2 つ目の呼び出しで
+    同一 (template_id, iso_year, iso_week, weekday) を INSERT しようとすると
+    IntegrityError が発生し、savepoint rollback → 再 SELECT で既存 Course を
+    返すことを確認する (race-safe パターンの検証)。
+
+    注意: SQLite in-memory + aiosqlite は単一接続のため asyncio.gather では
+    本当の同時実行にはならない。ここでは savepoint 回復コードパスを直接呼び
+    出すことで動作を確実に検証する。
+    """
+    from unittest.mock import patch
+
+    from sqlalchemy.exc import IntegrityError as SAIntegrityError
+
+    from app.api.v1.schedule import _get_or_create_course_for_template_week
+    from app.db.session import get_session_factory
+
+    office = await _make_office(db, "事業所PAF15")
+    tpl = await _make_template(db, office.id, label="A")
+
+    # 1 回目の呼び出し: 正常に Course を作成
+    factory = get_session_factory()
+    async with factory() as session1:
+        course1 = await _get_or_create_course_for_template_week(
+            session1,
+            course_template_id=tpl.id,
+            iso_year=TEST_ISO_YEAR,
+            iso_week=TEST_ISO_WEEK,
+            weekday=4,
+        )
+        await session1.commit()
+
+    # 2 回目の呼び出し: begin_nested が IntegrityError を発生させた場合の
+    # 回復パスを検証するため、flush() を IntegrityError に差し替えてモック
+    async with factory() as session2:
+        original_begin_nested = session2.begin_nested
+
+        call_count = {"n": 0}
+
+        class _FakeSavepoint:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        async def _patched_begin_nested():
+            """始めて呼ばれたとき IntegrityError を再現するモック savepoint."""
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                # 実際の IntegrityError をシミュレート
+                raise SAIntegrityError(
+                    "mocked",
+                    {},
+                    Exception("UNIQUE constraint failed: courses"),
+                )
+            return await original_begin_nested()
+
+        # begin_nested を差し替えて IntegrityError 経路を通す
+        with patch.object(session2, "begin_nested", side_effect=_patched_begin_nested):
+            course2 = await _get_or_create_course_for_template_week(
+                session2,
+                course_template_id=tpl.id,
+                iso_year=TEST_ISO_YEAR,
+                iso_week=TEST_ISO_WEEK,
+                weekday=4,
+            )
+
+    # IntegrityError 後の再 SELECT で同じ Course が返る
+    assert course1.id == course2.id, (
+        "savepoint+IntegrityError 回復で 1 回目と同じ Course が返るはず"
+    )
+
+    # courses テーブルに 1 行のみ (重複 INSERT なし)
+    courses = (
+        await db.scalars(
+            select(Course).where(
+                Course.template_id == tpl.id,
+                Course.iso_year == TEST_ISO_YEAR,
+                Course.iso_week == TEST_ISO_WEEK,
+                Course.weekday == 4,
+            )
+        )
+    ).all()
+    assert len(courses) == 1

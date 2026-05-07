@@ -34,6 +34,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, select
+from sqlalchemy.exc import IntegrityError
 
 from app.core.deps import DbDep, require_role
 from app.models.course import COURSE_STATUS_PROPOSED, Course
@@ -504,7 +505,7 @@ async def _get_or_create_course_for_template_week(
             detail="CourseTemplate not found",
         )
 
-    # 既存 Course を SELECT
+    # 既存 Course を SELECT (1st try)
     course = await db.scalar(
         select(Course).where(
             Course.template_id == course_template_id,
@@ -517,25 +518,41 @@ async def _get_or_create_course_for_template_week(
     if course is not None:
         return course
 
-    # 無ければ INSERT.
+    # 無ければ INSERT を savepoint 内で試みる (race-safe).
     # code は template.label (8 文字までの可変長) の先頭 1 文字を使うが、
     # courses.code CHECK 制約 ('A','B','C','D','M') を満たさない場合は 'M'
     # (マネージャー枠 = オーバーフロー) に丸める。
     label_first = (template.label or "").strip()[:1].upper()
     code = label_first if label_first in ("A", "B", "C", "D", "M") else "M"
 
-    course = Course(
-        iso_year=iso_year,
-        iso_week=iso_week,
-        weekday=weekday,
-        code=code,
-        course_status=COURSE_STATUS_PROPOSED,
-        template_id=course_template_id,
-        office_id=template.office_id,
-    )
-    db.add(course)
-    await db.flush()
-    return course
+    try:
+        async with db.begin_nested():  # savepoint — PostgreSQL/SQLite 両対応
+            new_course = Course(
+                iso_year=iso_year,
+                iso_week=iso_week,
+                weekday=weekday,
+                code=code,
+                course_status=COURSE_STATUS_PROPOSED,
+                template_id=course_template_id,
+                office_id=template.office_id,
+            )
+            db.add(new_course)
+            await db.flush()
+        return new_course
+    except IntegrityError:
+        # 別トランザクションが同時に INSERT — savepoint のみ rollback して再 SELECT
+        course = await db.scalar(
+            select(Course).where(
+                Course.template_id == course_template_id,
+                Course.iso_year == iso_year,
+                Course.iso_week == iso_week,
+                Course.weekday == weekday,
+                Course.deleted_at.is_(None),
+            )
+        )
+        if course is None:
+            raise  # 想定外の IntegrityError — 上位へ再送出
+        return course
 
 
 # ---------------------------------------------------------------------------

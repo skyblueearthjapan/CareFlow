@@ -16,8 +16,8 @@ Create Date: 2026-05-08
 対策:
 * PostgreSQL: ``WHERE deleted_at IS NULL`` の partial UNIQUE INDEX に切替
   (削除済み行は UNIQUE の対象外になる)
-* SQLite: partial INDEX 不可 (= テスト環境のみ) なのでフル UNIQUE のまま
-  (production の挙動は PostgreSQL に合わせる)
+* SQLite: 3.8.0+ は partial INDEX をサポートするため、同一 SQL で対応可能
+  (ORM 側の ``sqlite_where`` と整合させる)
 
 ### (4) courses UNIQUE が office 非スコープ問題
 
@@ -33,7 +33,7 @@ Create Date: 2026-05-08
 ## SQLite 互換
 
 * batch_alter_table を使った drop + create で SQLite でも安全に走る
-* partial INDEX は PostgreSQL のみ。SQLite では従来の UNIQUE を残す。
+* SQLite 3.8.0+ は partial INDEX をサポートするため、PostgreSQL と同一 SQL を使用する。
 
 ## downgrade
 
@@ -45,7 +45,6 @@ from __future__ import annotations
 
 from typing import Sequence, Union
 
-import sqlalchemy as sa
 
 from alembic import op
 
@@ -73,20 +72,21 @@ def upgrade() -> None:
 
     if is_pg:
         # partial UNIQUE: 論理削除済み行は UNIQUE の対象外
-        op.create_index(
-            "uq_course_templates_office_label_active",
-            "course_templates",
-            ["office_id", "label"],
-            unique=True,
-            postgresql_where=sa.text("deleted_at IS NULL"),
+        op.execute(
+            """
+            CREATE UNIQUE INDEX uq_course_templates_office_label_active
+            ON course_templates (office_id, label)
+            WHERE deleted_at IS NULL
+            """
         )
     else:
-        # SQLite: partial INDEX 不可。フル UNIQUE INDEX で代替。
-        op.create_index(
-            "uq_course_templates_office_label_active",
-            "course_templates",
-            ["office_id", "label"],
-            unique=True,
+        # SQLite 3.8.0+ は partial UNIQUE INDEX をサポートする
+        op.execute(
+            """
+            CREATE UNIQUE INDEX uq_course_templates_office_label_active
+            ON course_templates (office_id, label)
+            WHERE deleted_at IS NULL
+            """
         )
 
     # ----------------------------------------------------------------------
