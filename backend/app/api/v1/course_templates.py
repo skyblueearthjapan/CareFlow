@@ -15,6 +15,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import func as sa_func
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -180,8 +181,6 @@ async def delete_course_template(
     _user: Annotated[User, Depends(require_role("admin"))],
 ) -> None:
     """論理削除. 既に削除済みは 404."""
-    from sqlalchemy import func as sa_func
-
     tpl = await _get_template_or_404(db, template_id)
     tpl.deleted_at = sa_func.now()
     await db.commit()

@@ -17,6 +17,9 @@ from pydantic import BaseModel, ConfigDict, Field
 # 同行パート
 StaffCompanionPart = Literal["am", "pm", "full"]
 
+# ペアロール (主担当 / 補佐)
+PairRole = Literal["primary", "support"]
+
 
 class StaffCompanionAssignmentV2Base(BaseModel):
     """同行スタッフ割当 基底スキーマ."""
@@ -26,6 +29,9 @@ class StaffCompanionAssignmentV2Base(BaseModel):
     weekday: int = Field(ge=0, le=6, description="曜日 (0=月 ... 6=日)")
     part: StaffCompanionPart = Field(description="午前 (am) / 午後 (pm) / 終日 (full)")
     companion_staff_id: UUID = Field(description="同行スタッフの staff.id")
+    pair_role: PairRole | None = Field(
+        default=None, description="主担当 (primary) / 補佐 (support) / None"
+    )
 
 
 class StaffCompanionAssignmentV2Read(StaffCompanionAssignmentV2Base):

@@ -470,3 +470,72 @@ async def test_put_companion_assignments_rollback_on_unique_violation(client, db
     )
     assert get_res.status_code == 200, get_res.text
     assert get_res.json() == []
+
+
+# ---------------------------------------------------------------------------
+# 17. pair_role フィールドが Read レスポンスに含まれる (W15-BE1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_read_schema_contains_pair_role(client, db) -> None:
+    """GET レスポンスに pair_role フィールドが含まれ、デフォルト None が返る."""
+    admin = await _make_user(db, "sc-pairrole-admin@example.com", "admin")
+    trainee = await _make_staff(db, "新人PR", is_trainee=True)
+    companion = await _make_staff(db, "先輩PR")
+
+    import uuid
+
+    db.add(
+        StaffCompanionAssignment(
+            id=uuid.uuid4(),
+            trainee_staff_id=trainee.id,
+            weekday=0,
+            part="am",
+            companion_staff_id=companion.id,
+            pair_role=None,
+        )
+    )
+    await db.commit()
+
+    res = await client.get(
+        f"/api/v1/staff/{trainee.id}/companion-assignments",
+        headers=_bearer(admin),
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert len(body) == 1
+    # pair_role キーが存在し、値は None (未設定)
+    assert "pair_role" in body[0]
+    assert body[0]["pair_role"] is None
+
+
+@pytest.mark.asyncio
+async def test_read_schema_pair_role_primary(client, db) -> None:
+    """pair_role='primary' が DB に設定されていると Read でそのまま返る."""
+    admin = await _make_user(db, "sc-pairrole2-admin@example.com", "admin")
+    trainee = await _make_staff(db, "新人PR2", is_trainee=True)
+    companion = await _make_staff(db, "先輩PR2")
+
+    import uuid
+
+    db.add(
+        StaffCompanionAssignment(
+            id=uuid.uuid4(),
+            trainee_staff_id=trainee.id,
+            weekday=1,
+            part="pm",
+            companion_staff_id=companion.id,
+            pair_role="primary",
+        )
+    )
+    await db.commit()
+
+    res = await client.get(
+        f"/api/v1/staff/{trainee.id}/companion-assignments",
+        headers=_bearer(admin),
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert len(body) == 1
+    assert body[0]["pair_role"] == "primary"
