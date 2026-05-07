@@ -1,7 +1,13 @@
 /**
  * v2 staff rotation across 4 weeks — Wave 6 W6-E2E (4/4).
  *
- * Path:
+ * 注意 (Wave 15 以降 / W15-codex-fix (6)):
+ *   CourseProposal は Wave 15 で ScheduleUnifiedView に置換済。本 spec は
+ *   旧 UI が居る隔離環境で StaffAssignButton を使うパスを検証する。
+ *   現行 UI では該当ボタンが存在しないため、画面検出に失敗した時点で
+ *   skip される (= 旧 UI 環境のみ実行)。
+ *
+ * Path (旧 UI 想定):
  *   Admin login → /schedule (CourseProposal が見えている画面)
  *     → 4 週連続でスタッフ割付実行 (POST /api/v1/courses/assign-staff)
  *     → 各週の AssignStaffResponse.assignments を蓄積

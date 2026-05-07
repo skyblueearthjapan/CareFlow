@@ -50,7 +50,9 @@ const STATUS_BADGE: Record<string, string> = {
  */
 async function setupAcceptanceMocks(page: Page): Promise<void> {
   // 受入カレンダーモック
-  await page.route('**/api/v1/acceptance_calendar**', async (route: Route) => {
+  // W15-codex-fix (5): 実 API は kebab-case (/acceptance-calendar). underscore
+  // 表記の旧パスをモックしても本物のリクエストにマッチしないため kebab に統一。
+  await page.route('**/api/v1/acceptance-calendar**', async (route: Route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -132,7 +134,8 @@ test.describe('v2 Wave 15 受入カレンダー表示 read-only — W15 Phase 5 
     // (page.waitForRequest を使って、トグル後に acceptance_calendar が呼ばれたことを検証)
     // ※ トグル前後で API が呼ばれていれば合格
     const calendarApiCalled = await page
-      .waitForRequest((req) => req.url().includes('acceptance_calendar'), { timeout: 5_000 })
+      // W15-codex-fix (5): 実 API は kebab-case (/acceptance-calendar)
+      .waitForRequest((req) => req.url().includes('acceptance-calendar'), { timeout: 5_000 })
       .then(() => true)
       .catch(() => {
         // トグルより前に既に呼ばれていた可能性があるため、バッジの表示で代替確認

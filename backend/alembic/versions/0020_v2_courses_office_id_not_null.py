@@ -44,26 +44,57 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     """``courses.office_id`` を NOT NULL に変更する.
 
-    実データが入っている運用環境を想定したコメントを残す:
+    W15-codex-fix (2): defensive backfill を実装する。
+    本来 Wave 15 Phase 1 完了時点では courses は空だが、Phase 1 リリース後に
+    courses 行が積まれた状態で 0020 をデプロイしようとすると NOT NULL 化が
+    失敗するため、事前に backfill を試みる。
 
-    実装時点では courses 全行が空である前提のため backfill は不要。
-    もし将来テーブルにデータが入った状態で 0020 を再走させる場合は、
-    NOT NULL 化に先立ち以下のような backfill を行うこと:
-
-        # bind = op.get_bind()
-        # if bind.execute(sa.text("SELECT count(*) FROM courses")).scalar() > 0:
-        #     bind.execute(sa.text(
-        #         "UPDATE courses SET office_id = ("
-        #         "  SELECT primary_office_id FROM patients"
-        #         "  JOIN visits v ON v.patient_id = patients.id"
-        #         "  WHERE v.course_id = courses.id"
-        #         "  LIMIT 1"
-        #         ") WHERE office_id IS NULL"
-        #     ))
+    backfill 戦略 (空テーブルなら no-op):
+        1. courses で office_id IS NULL の件数を取得
+        2. 0 件なら何もしない (高速パス)
+        3. >0 件なら visits → patients を辿って primary_office_id で埋める
+            UPDATE courses SET office_id = (
+                SELECT p.primary_office_id FROM patients p
+                JOIN visits v ON v.patient_id = p.id
+                WHERE v.course_id = courses.id
+                  AND p.primary_office_id IS NOT NULL
+                LIMIT 1
+            ) WHERE office_id IS NULL
+        4. それでも残った NULL があれば RuntimeError で abort
     """
     bind = op.get_bind()
     is_pg = bind.dialect.name == "postgresql"
     uuid_type = postgresql.UUID(as_uuid=True) if is_pg else sa.String(length=36)
+
+    # ---- W15-codex-fix (2): defensive backfill -----------------------------
+    null_count_row = bind.execute(
+        sa.text("SELECT COUNT(*) FROM courses WHERE office_id IS NULL")
+    ).scalar()
+    null_count = int(null_count_row or 0)
+
+    if null_count > 0:
+        # visits → patients.primary_office_id 経由で推論
+        bind.execute(
+            sa.text(
+                "UPDATE courses SET office_id = ("
+                "  SELECT p.primary_office_id FROM patients p"
+                "  JOIN visits v ON v.patient_id = p.id"
+                "  WHERE v.course_id = courses.id"
+                "    AND p.primary_office_id IS NOT NULL"
+                "  LIMIT 1"
+                ") WHERE office_id IS NULL"
+            )
+        )
+        remaining_row = bind.execute(
+            sa.text("SELECT COUNT(*) FROM courses WHERE office_id IS NULL")
+        ).scalar()
+        remaining = int(remaining_row or 0)
+        if remaining > 0:
+            raise RuntimeError(
+                f"Cannot upgrade migration 0020: {remaining} courses rows have "
+                "NULL office_id and no patient.primary_office_id could be inferred. "
+                "Backfill office_id manually before re-running."
+            )
 
     with op.batch_alter_table("courses") as batch:
         batch.alter_column(

@@ -15,6 +15,10 @@ import { patientFixedVisitV2ReadSchema } from './patient_fixed_visit';
 
 export const placeAndFixRequestSchema = z.object({
   patient_id: z.string().uuid(),
+  // W15-codex-fix (1): ドロップ先の course_template_id (BE 必須).
+  // BE は (course_template_id, iso_year, iso_week, weekday) で週次 Course を
+  // find/create し、Visit.course_id に紐付けて画面表示を維持する。
+  course_template_id: z.string().uuid(),
   iso_year: z.number().int(),
   iso_week: z.number().int().min(1).max(53),
   weekday: z.number().int().min(0).max(6),

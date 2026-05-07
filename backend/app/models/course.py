@@ -117,13 +117,16 @@ class Course(Base, TimestampMixin):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
-        # (iso_year, iso_week, weekday, code) UNIQUE — §4.5
+        # W15-codex-fix (4): UNIQUE に office_id を含めて拠点スコープ化.
+        # 旧 (iso_year, iso_week, weekday, code) UNIQUE は migration 0021 で
+        # drop し、(iso_year, iso_week, weekday, code, office_id) に再構築。
         UniqueConstraint(
             "iso_year",
             "iso_week",
             "weekday",
             "code",
-            name="uq_courses_year_week_weekday_code",
+            "office_id",
+            name="uq_courses_year_week_weekday_code_office",
         ),
         # コース記号は A/B/C/D/M のみ (§3.6.5)
         CheckConstraint(
