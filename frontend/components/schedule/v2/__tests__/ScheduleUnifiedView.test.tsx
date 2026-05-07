@@ -396,6 +396,60 @@ describe('ScheduleUnifiedView', () => {
     expect(arg.entries[0].start_time).toBe('09:00');
   });
 
+  it('8. 同一患者が同曜日に複数時間帯の visit を持つときも 1 件としてカウント (重複なし)', () => {
+    // capacity_mon = 1 のテンプレートに田中さんが月曜 10:00 と 14:00 の 2 visit を持つ。
+    // 重複カウントなら occupancy=2 > capacity=1 で警告バッジが出るが、
+    // uniq 集計なら occupancy=1 = capacity=1 で警告バッジは出ない。
+    setupHooks({
+      templates: [
+        {
+          id: 'tpl-cap1',
+          office_id: 'office-1',
+          label: 'A',
+          capacity_mon: 1,
+          capacity_tue: 6,
+          capacity_wed: 6,
+          capacity_thu: 6,
+          capacity_fri: 6,
+          capacity_sat: 6,
+          capacity_sun: 0,
+          notes: null,
+          created_at: '',
+          updated_at: '',
+        },
+      ],
+      courses: [{ id: 'course-mon', weekday: 0, code: 'A', assigned_staff_id: null }],
+      visits: [
+        // 田中さん: 月曜 10:00
+        {
+          patient_id: 'p-tanaka',
+          course_id: 'course-mon',
+          start_time: '10:00',
+          visit_date: '2026-05-04',
+        },
+        // 田中さん: 月曜 14:00 (同一患者の 2 件目)
+        {
+          patient_id: 'p-tanaka',
+          course_id: 'course-mon',
+          start_time: '14:00',
+          visit_date: '2026-05-04',
+        },
+      ],
+      patients: [{ id: 'p-tanaka', name: '田中太郎', kana: null, status: 'active' }],
+    });
+    render(
+      <ScheduleUnifiedView
+        weekStart={monday(2026, 5, 4)}
+        officeId={null}
+        canEdit={true}
+        showAcceptanceLayer={false}
+        showWarningLayer={true}
+      />,
+    );
+    // uniq 集計なら occupancy=1 = capacity=1 → 警告バッジは出ない
+    expect(screen.queryByTestId('alert-icon')).not.toBeInTheDocument();
+  });
+
   it('7. canEdit=false のドロップは何もせず place-and-fix を呼ばない', async () => {
     mockPlaceAndFix.mockResolvedValue({ results: [] });
     setupHooks({

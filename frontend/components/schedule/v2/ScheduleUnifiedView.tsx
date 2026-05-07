@@ -29,7 +29,7 @@
  *   - canEdit (RBAC)
  *   - showAcceptanceLayer / showWarningLayer (レイヤー切替)
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   DndContext,
   DragOverlay,
@@ -106,7 +106,8 @@ function parseCellId(
 ): { courseTemplateId: string; weekday: number; time: string } | null {
   if (!id.startsWith('cell:')) return null;
   const rest = id.slice('cell:'.length);
-  // course_template_id (UUID = 36 chars) : weekday (1 char) : HH:MM
+  // コロン区切りで templateId / weekday / time を分離する。
+  // UUID はハイフン区切り (コロン無し) なので ':' split で安全に分割できる。
   const parts = rest.split(':');
   if (parts.length < 4) return null;
   const courseTemplateId = parts[0]!;
@@ -392,17 +393,26 @@ export function ScheduleUnifiedView({
     return m;
   }, [weekVisits, courses, templateByLabel, patientById]);
 
-  // (course_template_id, weekday) → 占有合計件数 (満枠判定用)
+  // (course_template_id, weekday) → ユニーク患者数 (満枠判定用)
+  // cellOccupants はセル単位 (template:weekday:hour) なので同一患者が同曜日の
+  // 複数時間帯に visit を持つ場合に重複カウントが生じる。
+  // weekVisits を直接集計し患者 uniq 数を取ることで重複を解消する。
   const dayOccupancyByTemplateDay = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const arr of cellOccupants.values()) {
-      if (arr.length === 0) continue;
-      const first = arr[0]!;
-      const key = `${first.courseTemplateId}:${first.weekday}`;
-      m.set(key, (m.get(key) ?? 0) + arr.length);
+    // key: 'templateId:weekday' → Set<patient_id>
+    const patientSets = new Map<string, Set<string>>();
+    for (const v of weekVisits) {
+      const course = courses.find((c) => c.id === v.course_id);
+      if (!course) continue;
+      const template = templateByLabel.get(course.code);
+      if (!template) continue;
+      const key = `${template.id}:${course.weekday}`;
+      if (!patientSets.has(key)) patientSets.set(key, new Set());
+      patientSets.get(key)!.add(v.patient_id);
     }
-    return m;
-  }, [cellOccupants]);
+    const counts = new Map<string, number>();
+    for (const [k, s] of patientSets) counts.set(k, s.size);
+    return counts;
+  }, [weekVisits, courses, templateByLabel]);
 
   // ─── DnD ─────────────────────────────────────────────────────────
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
@@ -454,12 +464,6 @@ export function ScheduleUnifiedView({
       toast.error(`配置に失敗しました: ${msg}`);
     }
   };
-
-  // ─── Effects ─────────────────────────────────────────────────────
-  useEffect(() => {
-    // 週切替時の再 fetch は TanStack Query が queryKey に week を含めて自動化済
-    // (ここは将来の hook 用意にとっておく)
-  }, [isoYear, isoWeek]);
 
   // ─── Render ──────────────────────────────────────────────────────
   if (officesQuery.isLoading || templatesQuery.isLoading) {
