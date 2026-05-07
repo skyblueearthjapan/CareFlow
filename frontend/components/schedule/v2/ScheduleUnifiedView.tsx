@@ -34,6 +34,7 @@ import {
   DndContext,
   DragOverlay,
   PointerSensor,
+  TouchSensor,
   useDroppable,
   useSensor,
   useSensors,
@@ -56,6 +57,10 @@ import { useOffices } from '@/lib/queries/offices';
 import { usePatients } from '@/lib/queries/patients';
 import { usePlaceAndFix } from '@/lib/queries/place_and_fix';
 import { useStaffList } from '@/lib/queries/staff';
+import {
+  usePatchCompanionAssignmentPairRole,
+  useStaffCompanionAssignments,
+} from '@/lib/queries/staff_companion_assignments';
 import { useVisits } from '@/lib/queries/visits';
 import {
   buildAcceptanceLookup,
@@ -67,6 +72,7 @@ import type { PatientRead } from '@/lib/schemas/patient';
 import { cn } from '@/lib/utils';
 
 import { AcceptanceBadge, AcceptanceLegend, acceptanceCellClass } from './AcceptanceLayer';
+import { PairRoleEditor } from './PairRoleEditor';
 import { PatientCard } from './PatientCard';
 import { PoolPanel } from './PoolPanel';
 import { StaffSwapDropdown } from './StaffSwapDropdown';
@@ -305,7 +311,7 @@ export function ScheduleUnifiedView({
   //  実装は Wave 15 後続フェーズで対応。
   const primaryOfficeId = displayOffices[0]?.id ?? null;
   const templatesQuery = useCourseTemplates({ office_id: primaryOfficeId });
-  const templates = templatesQuery.data ?? [];
+  const templates = useMemo(() => templatesQuery.data ?? [], [templatesQuery.data]);
 
   // ─── Acceptance calendar ────────────────────────────────────────────
   const acceptanceQuery = useAcceptanceCalendar({
@@ -321,10 +327,10 @@ export function ScheduleUnifiedView({
   const weekStartStr = format(weekStart, 'yyyy-MM-dd');
   const weekEndStr = format(addDays(weekStart, 6), 'yyyy-MM-dd');
   const visitsQuery = useVisits({ week_start: weekStartStr, week_end: weekEndStr });
-  const weekVisits = visitsQuery.data?.items ?? [];
+  const weekVisits = useMemo(() => visitsQuery.data?.items ?? [], [visitsQuery.data]);
 
   const coursesQuery = useCourses({ iso_year: isoYear, iso_week: isoWeek, limit: 200 });
-  const courses = coursesQuery.data ?? [];
+  const courses = useMemo(() => coursesQuery.data ?? [], [coursesQuery.data]);
 
   // (weekday, code) → courseId を引く逆引き表
   const courseIdByDayCode = useMemo(() => {
@@ -415,7 +421,10 @@ export function ScheduleUnifiedView({
   }, [weekVisits, courses, templateByLabel]);
 
   // ─── DnD ─────────────────────────────────────────────────────────
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 5 } }),
+  );
   const [activePatientId, setActivePatientId] = useState<string | null>(null);
   const placeAndFixMut = usePlaceAndFix();
 
@@ -527,6 +536,8 @@ export function ScheduleUnifiedView({
                   showAcceptance={showAcceptanceLayer}
                   showWarning={showWarningLayer}
                   dayOccupancyByTemplateDay={dayOccupancyByTemplateDay}
+                  isoYear={isoYear}
+                  isoWeek={isoWeek}
                 />
               );
             })}
@@ -576,6 +587,8 @@ interface CourseTemplateRowGroupProps {
   showAcceptance: boolean;
   showWarning: boolean;
   dayOccupancyByTemplateDay: Map<string, number>;
+  isoYear: number;
+  isoWeek: number;
 }
 
 function CourseTemplateRowGroup(props: CourseTemplateRowGroupProps) {
@@ -591,9 +604,29 @@ function CourseTemplateRowGroup(props: CourseTemplateRowGroupProps) {
     showAcceptance,
     showWarning,
     dayOccupancyByTemplateDay,
+    isoYear,
+    isoWeek,
   } = props;
   const [collapsed, setCollapsed] = useState(false);
   const safeStaffList = staffList ?? [];
+
+  // ── 補佐割当 (当コーステンプレート×当週) ──────────────────────────
+  const companionAssignmentsQuery = useStaffCompanionAssignments({
+    courseTemplateId: template.id,
+    isoYear,
+    isoWeek,
+  });
+  const companionAssignments = useMemo(
+    () => companionAssignmentsQuery.data ?? [],
+    [companionAssignmentsQuery.data],
+  );
+  const patchPairRole = usePatchCompanionAssignmentPairRole();
+
+  // 月曜 (weekday=0) の補佐を代表として表示 (主担当と同じ簡易実装)
+  const mondayCompanion = useMemo(
+    () => companionAssignments.find((a) => a.weekday === 0) ?? null,
+    [companionAssignments],
+  );
 
   // 当該テンプレートのコース行は 1 行内に HOUR_SLOTS を縦積みする。
   // (column: 行ラベル + 曜日列、行: HOUR_SLOTS)
@@ -636,6 +669,36 @@ function CourseTemplateRowGroup(props: CourseTemplateRowGroupProps) {
                 />
               );
             })()}
+            {/* 補佐担当: 補佐割当 + pair_role トグル */}
+            <div
+              className="flex items-center gap-0.5"
+              data-testid={`companion-cell-${template.id}`}
+            >
+              <StaffSwapDropdown
+                courseId={null}
+                currentStaffId={mondayCompanion?.companion_staff_id ?? null}
+                staffList={safeStaffList}
+                canEdit={canEdit}
+                variant="compact"
+                iconPrefix="☆"
+              />
+              {mondayCompanion ? (
+                <PairRoleEditor
+                  value={mondayCompanion.pair_role ?? null}
+                  canEdit={canEdit}
+                  onChange={(next) => {
+                    void patchPairRole.mutateAsync({
+                      id: mondayCompanion.id,
+                      pair_role: next,
+                      courseTemplateId: template.id,
+                      isoYear,
+                      isoWeek,
+                    });
+                  }}
+                  size="compact"
+                />
+              ) : null}
+            </div>
           </div>
         ) : null}
       </div>

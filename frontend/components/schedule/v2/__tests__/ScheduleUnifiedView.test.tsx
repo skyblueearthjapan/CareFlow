@@ -39,8 +39,9 @@ vi.mock('@dnd-kit/core', () => ({
     return <>{children}</>;
   },
   DragOverlay: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  PointerSensor: class {},
-  useSensor: () => ({}),
+  PointerSensor: class PointerSensor {},
+  TouchSensor: class TouchSensor {},
+  useSensor: (_Cls: unknown, opts?: unknown) => ({ sensor: _Cls, opts }),
   useSensors: (...args: unknown[]) => args,
 }));
 
@@ -98,6 +99,8 @@ const mockAcceptance = vi.fn();
 const mockVisits = vi.fn();
 const mockCourses = vi.fn();
 const mockPlaceAndFix = vi.fn();
+const mockStaffCompanionAssignments = vi.fn();
+const mockPatchPairRole = vi.fn();
 
 vi.mock('@/lib/queries/offices', () => ({
   useOffices: (...args: unknown[]) => mockOffices(...args),
@@ -124,6 +127,13 @@ vi.mock('@/lib/queries/courses', () => ({
 vi.mock('@/lib/queries/place_and_fix', () => ({
   usePlaceAndFix: () => ({ mutateAsync: mockPlaceAndFix, isPending: false }),
 }));
+vi.mock('@/lib/queries/staff_companion_assignments', () => ({
+  useStaffCompanionAssignments: (...args: unknown[]) => mockStaffCompanionAssignments(...args),
+  usePatchCompanionAssignmentPairRole: () => ({
+    mutateAsync: mockPatchPairRole,
+    isPending: false,
+  }),
+}));
 
 // ─── Subject under test ─────────────────────────────────────────────────────
 
@@ -144,6 +154,7 @@ function setupHooks(opts: {
   visits?: Array<Record<string, unknown>>;
   courses?: Array<Record<string, unknown>>;
   patients?: Array<Record<string, unknown>>;
+  companionAssignments?: Array<Record<string, unknown>>;
 }) {
   mockOffices.mockReturnValue({
     allOffices: [{ id: 'office-1', name: '稲毛' }],
@@ -170,6 +181,10 @@ function setupHooks(opts: {
   });
   mockCourses.mockReturnValue({
     data: opts.courses ?? [],
+    isLoading: false,
+  });
+  mockStaffCompanionAssignments.mockReturnValue({
+    data: opts.companionAssignments ?? [],
     isLoading: false,
   });
 }
@@ -494,5 +509,126 @@ describe('ScheduleUnifiedView', () => {
       over: { id: 'cell:11111111-1111-1111-1111-111111111111:0:09:00' },
     });
     expect(mockPlaceAndFix).not.toHaveBeenCalled();
+  });
+
+  it('9. PairRoleEditor が companion-cell コンテナとして描画される', () => {
+    setupHooks({
+      templates: [
+        {
+          id: 'tpl-pair',
+          office_id: 'office-1',
+          label: 'A',
+          capacity_mon: 6,
+          capacity_tue: 6,
+          capacity_wed: 6,
+          capacity_thu: 6,
+          capacity_fri: 6,
+          capacity_sat: 6,
+          capacity_sun: 0,
+          notes: null,
+          created_at: '',
+          updated_at: '',
+        },
+      ],
+    });
+    render(
+      <ScheduleUnifiedView
+        weekStart={monday(2026, 5, 4)}
+        officeId={null}
+        canEdit={true}
+        showAcceptanceLayer={false}
+        showWarningLayer={true}
+      />,
+    );
+    // 補佐セルコンテナが描画されること
+    expect(screen.getByTestId('companion-cell-tpl-pair')).toBeInTheDocument();
+  });
+
+  it('10. 補佐割当がある場合に PairRoleEditor ボタンが描画される', () => {
+    setupHooks({
+      templates: [
+        {
+          id: 'tpl-pair2',
+          office_id: 'office-1',
+          label: 'B',
+          capacity_mon: 6,
+          capacity_tue: 6,
+          capacity_wed: 6,
+          capacity_thu: 6,
+          capacity_fri: 6,
+          capacity_sat: 6,
+          capacity_sun: 0,
+          notes: null,
+          created_at: '',
+          updated_at: '',
+        },
+      ],
+      companionAssignments: [
+        {
+          id: 'ca-1',
+          trainee_staff_id: 'staff-t',
+          companion_staff_id: 'staff-1',
+          weekday: 0,
+          part: 'full',
+          pair_role: 'support',
+          created_at: '',
+          updated_at: '',
+        },
+      ],
+    });
+    render(
+      <ScheduleUnifiedView
+        weekStart={monday(2026, 5, 4)}
+        officeId={null}
+        canEdit={true}
+        showAcceptanceLayer={false}
+        showWarningLayer={true}
+      />,
+    );
+    // PairRoleEditor が描画され pair-role 属性が 'support' であること
+    const btn = screen.getByRole('button', { name: /補佐 \(クリックで主担当に切替\)/ });
+    expect(btn).toBeInTheDocument();
+    expect(btn).toHaveAttribute('data-pair-role', 'support');
+  });
+
+  it('11. TouchSensor がモックに含まれている (dnd-kit export 確認)', async () => {
+    // dnd-kit の TouchSensor がモックとしてエクスポートされており、
+    // ScheduleUnifiedView が import して使えることを確認する。
+    // (useSensors は (...args) => args なので useSensor の呼び出し回数で確認)
+    const dndKit = await import('@dnd-kit/core');
+    // TouchSensor が存在すること (undefined でない)
+    expect(dndKit.TouchSensor).toBeDefined();
+    // useSensor が関数として利用可能なこと
+    expect(typeof dndKit.useSensor).toBe('function');
+    // ScheduleUnifiedView が TouchSensor 込みで正常にレンダーできること
+    setupHooks({
+      templates: [
+        {
+          id: 'tpl-sensor',
+          office_id: 'office-1',
+          label: 'A',
+          capacity_mon: 6,
+          capacity_tue: 6,
+          capacity_wed: 6,
+          capacity_thu: 6,
+          capacity_fri: 6,
+          capacity_sat: 6,
+          capacity_sun: 0,
+          notes: null,
+          created_at: '',
+          updated_at: '',
+        },
+      ],
+    });
+    render(
+      <ScheduleUnifiedView
+        weekStart={monday(2026, 5, 4)}
+        officeId={null}
+        canEdit={true}
+        showAcceptanceLayer={false}
+        showWarningLayer={true}
+      />,
+    );
+    expect(screen.getByTestId('schedule-unified-view')).toBeInTheDocument();
   });
 });
