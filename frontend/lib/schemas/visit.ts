@@ -12,10 +12,7 @@ import { z } from 'zod';
 /** HH:MM or HH:MM:SS (24h) — backend stores `time`. */
 const timeStringSchema = z
   .string()
-  .regex(
-    /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/,
-    '時刻は HH:MM 形式で入力してください',
-  );
+  .regex(/^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/, '時刻は HH:MM 形式で入力してください');
 
 /** ISO date string (yyyy-MM-dd). */
 const dateStringSchema = z
@@ -23,12 +20,7 @@ const dateStringSchema = z
   .regex(/^\d{4}-\d{2}-\d{2}$/, '日付は yyyy-MM-dd 形式で入力してください');
 
 export const VISIT_TYPE_VALUES = ['regular', 'spot', 'event'] as const;
-export const VISIT_STATUS_VALUES = [
-  'planned',
-  'confirmed',
-  'done',
-  'cancelled',
-] as const;
+export const VISIT_STATUS_VALUES = ['planned', 'confirmed', 'done', 'cancelled'] as const;
 export const VISIT_SOURCE_VALUES = ['manual', 'allocate', 'kaipoke'] as const;
 
 export const visitBaseSchema = z.object({
@@ -71,6 +63,8 @@ export const visitReadSchema = visitBaseSchema.extend({
   /** Server-side denormalized join (see backend `_serialize_visit`). */
   patient_name: z.string().nullable().optional(),
   staff_name: z.string().nullable().optional(),
+  /** v2 Layer 2: コース紐付け (Wave 4 以降, BE `visits.course_id`). */
+  course_id: z.string().uuid().nullable().optional(),
 });
 
 export type VisitCreate = z.infer<typeof visitCreateSchema>;
