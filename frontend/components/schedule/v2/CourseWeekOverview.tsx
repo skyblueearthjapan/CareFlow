@@ -30,6 +30,8 @@ export interface WeekOverviewVisit {
   weekday: number;
   /** 紐づく course_template_id. CourseDayTablePanel で逆引きして埋める。 */
   course_template_id: string;
+  /** 開始時刻 ('HH:MM' or 'HH:MM:SS' or null). */
+  start_time: string | null;
 }
 
 export interface CourseWeekOverviewProps {
@@ -49,7 +51,7 @@ export function CourseWeekOverview({
   visits,
   onJumpToDay,
 }: CourseWeekOverviewProps) {
-  // (template_id, weekday) → visits[]
+  // (template_id, weekday) → visits[] (start_time 昇順)
   const cellMap = React.useMemo(() => {
     const m = new Map<string, WeekOverviewVisit[]>();
     for (const v of visits) {
@@ -57,6 +59,12 @@ export function CourseWeekOverview({
       const arr = m.get(key) ?? [];
       arr.push(v);
       m.set(key, arr);
+    }
+    for (const [key, arr] of m.entries()) {
+      m.set(
+        key,
+        [...arr].sort((a, b) => (a.start_time ?? '').localeCompare(b.start_time ?? '')),
+      );
     }
     return m;
   }, [visits]);
@@ -162,7 +170,9 @@ export function CourseWeekOverview({
                                   title={v.patient_name ?? v.patient_id}
                                   data-testid={`course-week-overview-name-${v.id}`}
                                 >
-                                  {v.patient_name ?? v.patient_id}
+                                  {v.start_time
+                                    ? `${v.start_time.slice(0, 5)} ${v.patient_name ?? v.patient_id}`
+                                    : (v.patient_name ?? v.patient_id)}
                                 </li>
                               ))}
                               {list.length > 5 ? (
