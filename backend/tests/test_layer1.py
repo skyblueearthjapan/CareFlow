@@ -786,3 +786,126 @@ async def test_layer1_hybrid_mixed_patients_in_same_week(db) -> None:
     # 患者 B: pattern (Fri)
     assert p_b.id in by_patient
     assert by_patient[p_b.id].weekday == 4  # Fri
+
+
+# ---------------------------------------------------------------------------
+# W22 Phase A-5: pfv.course_template_id 優先 / NULL フォールバック
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_layer1_pfv_course_template_id_takes_priority(db) -> None:
+    """pfv.course_template_id が NULL でなければ、その template が優先採用される (W22).
+
+    - 拠点に A (label='A') と B (label='B') の 2 つの template がある
+    - 通常フォールバックは label 順で 'A' を選ぶが、pfv で B を明示指定すると
+      visit.course_id は B 由来の course を指す。
+    """
+    from app.models.course import Course
+    from app.models.course_template import CourseTemplate
+    from app.models.office import Office
+
+    expander = Layer1Expander()
+
+    # 拠点 + 2 つの template
+    office = Office(name="事業所W22-A")
+    db.add(office)
+    await db.commit()
+    await db.refresh(office)
+
+    tpl_a = CourseTemplate(office_id=office.id, label="A")
+    tpl_b = CourseTemplate(office_id=office.id, label="B")
+    db.add_all([tpl_a, tpl_b])
+    await db.commit()
+    await db.refresh(tpl_a)
+    await db.refresh(tpl_b)
+
+    # 患者は primary_office_id を office に設定
+    patient = await _make_patient(db, code="L1-W22-A")
+    patient.primary_office_id = office.id
+    await db.commit()
+    await db.refresh(patient)
+
+    # pfv に course_template_id=tpl_b.id を明示指定
+    fv = PatientFixedVisit(
+        patient_id=patient.id,
+        mode="normal",
+        weekday=0,  # Mon
+        start_time=time(9, 0),
+        duration_min=60,
+        course_template_id=tpl_b.id,
+    )
+    db.add(fv)
+    await db.commit()
+
+    result = await expander.expand_week(db, iso_year=TEST_ISO_YEAR, iso_week=TEST_ISO_WEEK)
+    await db.commit()
+
+    assert result.visits_created_count == 1
+    vc = result.visits_created[0]
+    assert vc.course_id is not None, "visit.course_id がセットされるはず"
+
+    # 生成された course は tpl_b に紐付いている (= 優先指定が効いている)
+    course = await db.scalar(select(Course).where(Course.id == vc.course_id))
+    assert course is not None
+    assert course.template_id == tpl_b.id, (
+        f"course.template_id は tpl_b ({tpl_b.id}) のはず, got {course.template_id}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_layer1_pfv_null_course_template_id_falls_back_to_office(db) -> None:
+    """pfv.course_template_id が NULL の場合、office フォールバック (A 系列優先) で解決する (W22).
+
+    - 拠点に A と B の template
+    - pfv は course_template_id=NULL
+    - フォールバックで A (label 順で先頭) が選ばれる
+    """
+    from app.models.course import Course
+    from app.models.course_template import CourseTemplate
+    from app.models.office import Office
+
+    expander = Layer1Expander()
+
+    office = Office(name="事業所W22-B")
+    db.add(office)
+    await db.commit()
+    await db.refresh(office)
+
+    tpl_a = CourseTemplate(office_id=office.id, label="A")
+    tpl_b = CourseTemplate(office_id=office.id, label="B")
+    db.add_all([tpl_a, tpl_b])
+    await db.commit()
+    await db.refresh(tpl_a)
+    await db.refresh(tpl_b)
+
+    patient = await _make_patient(db, code="L1-W22-B")
+    patient.primary_office_id = office.id
+    await db.commit()
+    await db.refresh(patient)
+
+    # pfv に course_template_id を指定せず NULL のまま
+    fv = PatientFixedVisit(
+        patient_id=patient.id,
+        mode="normal",
+        weekday=2,  # Wed
+        start_time=time(10, 0),
+        duration_min=60,
+        course_template_id=None,
+    )
+    db.add(fv)
+    await db.commit()
+
+    result = await expander.expand_week(db, iso_year=TEST_ISO_YEAR, iso_week=TEST_ISO_WEEK)
+    await db.commit()
+
+    assert result.visits_created_count == 1
+    vc = result.visits_created[0]
+    assert vc.course_id is not None
+
+    # フォールバックで A が選ばれる
+    course = await db.scalar(select(Course).where(Course.id == vc.course_id))
+    assert course is not None
+    assert course.template_id == tpl_a.id, (
+        f"NULL フォールバックでは A (label 順で先頭) が選ばれるはず, got {course.template_id}"
+    )

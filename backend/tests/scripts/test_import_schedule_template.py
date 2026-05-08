@@ -706,3 +706,97 @@ async def test_resolve_office_not_found_apply_raises(tmp_path: Path) -> None:
         await _resolve_office_for_section(mock_session, "main", apply=True)
 
     assert exc_info.value.code == 1
+
+
+# ---------------------------------------------------------------------------
+# W22 Phase A-6: 取込時に pfv.course_template_id が保存される
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apply_saves_course_template_id_on_pfv(tmp_path: Path) -> None:
+    """W22: 取込 (apply) 時に PatientFixedVisit インスタンスに course_template_id
+    が紐付けられる (= 各 block のコーステンプレート ID が保存される)。
+
+    block ごとの新規 CourseTemplate (= ct_obj) と各 patient の新規
+    PatientFixedVisit (= pfv) が session.add に渡されるので、その call_args から
+    pfv.course_template_id が ct.id と一致することを確認する。
+
+    NOTE: モック session.flush では SQLAlchemy default=uuid.uuid4 が発火しない
+    ため、flush の side_effect で id を手動付与してから後続の pfv が参照できる
+    ようにする。
+    """
+    from app.models.course_template import CourseTemplate
+    from app.models.patient_fixed_visit import PatientFixedVisit
+
+    xlsx_path = _make_fixture_xlsx(tmp_path)
+
+    mock_office = _make_office_mock("本店(稲毛)")
+
+    mock_patient = MagicMock()
+    mock_patient.id = uuid.uuid4()
+    mock_patient.name = "田中太郎"
+    mock_patient.address = "千葉県千葉市稲毛区園生町1-1"
+
+    async def mock_scalars(stmt):  # noqa: ANN001
+        mock_result = MagicMock()
+        stmt_str = str(stmt)
+        if "offices" in stmt_str:
+            mock_result.first = MagicMock(return_value=mock_office)
+            mock_result.all = MagicMock(return_value=[mock_office])
+        elif "course_templates" in stmt_str:
+            mock_result.first = MagicMock(return_value=None)
+            mock_result.all = MagicMock(return_value=[])
+        elif "patients" in stmt_str:
+            mock_result.first = MagicMock(return_value=mock_patient)
+            mock_result.all = MagicMock(return_value=[mock_patient])
+        elif "patient_fixed_visits" in stmt_str:
+            mock_result.first = MagicMock(return_value=None)
+            mock_result.all = MagicMock(return_value=[])
+        else:
+            mock_result.first = MagicMock(return_value=None)
+            mock_result.all = MagicMock(return_value=[])
+        return mock_result
+
+    # session.add の引数を保存しつつ、新規 CourseTemplate に id を手動付与する
+    added_objects: list = []
+
+    def fake_add(obj):  # noqa: ANN001, ANN202
+        if isinstance(obj, CourseTemplate) and obj.id is None:
+            obj.id = uuid.uuid4()
+        added_objects.append(obj)
+
+    mock_session = AsyncMock()
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+    mock_session.scalars = AsyncMock(side_effect=mock_scalars)
+    mock_session.flush = AsyncMock()
+    mock_session.commit = AsyncMock()
+    mock_session.rollback = AsyncMock()
+    mock_session.add = MagicMock(side_effect=fake_add)
+
+    mock_factory = MagicMock(return_value=mock_session)
+
+    with (
+        patch("import_schedule_template.get_session_factory", return_value=mock_factory),
+        patch("import_schedule_template.dispose_engine", new_callable=AsyncMock),
+    ):
+        summary = await run_import(xlsx_path, apply=True)
+
+    # apply 成功
+    mock_session.commit.assert_called_once()
+    assert summary.ct_new == 1
+
+    cts = [o for o in added_objects if isinstance(o, CourseTemplate)]
+    pfvs = [o for o in added_objects if isinstance(o, PatientFixedVisit)]
+
+    assert len(cts) == 1, f"CourseTemplate 1 件追加されるはず, got {len(cts)}"
+    assert len(pfvs) >= 1, f"PFV が 1 件以上追加されるはず, got {len(pfvs)}"
+
+    # 全 pfv の course_template_id が当該 ct.id と一致する
+    ct_id = cts[0].id
+    assert ct_id is not None
+    for pfv in pfvs:
+        assert pfv.course_template_id == ct_id, (
+            f"PFV.course_template_id は {ct_id} のはず, got {pfv.course_template_id}"
+        )

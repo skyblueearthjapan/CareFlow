@@ -969,3 +969,74 @@ async def test_place_and_fix_null_primary_office_skips_check(client, db) -> None
     )
     # primary_office_id が None なら check が skip され通常通り成功
     assert res.status_code == 200, res.text
+
+
+# ---------------------------------------------------------------------------
+# W22 Phase A-4: place-and-fix で pfv.course_template_id を保存
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_place_and_fix_saves_course_template_id_on_pfv(client, db) -> None:
+    """fix_pattern=True で place-and-fix を呼ぶと、
+    patient_fixed_visits.course_template_id に course_template_id が保存される (W22)."""
+    admin = await _make_user(db, "paf-w22-1@example.com", "admin")
+    patient = await _make_patient(db, "PAF-W22-1")
+    office = await _make_office(db, "事業所W22-1")
+    tpl = await _make_template(db, office.id, label="A")
+
+    res = await client.post(
+        "/api/v1/schedule/place-and-fix",
+        headers=_bearer(admin),
+        json=_payload(
+            patient.id,
+            course_template_id=tpl.id,
+            weekday=0,
+            start_time="09:00:00",
+            duration_min=30,
+            fix_pattern=True,
+        ),
+    )
+    assert res.status_code == 200, res.text
+
+    # DB: pfv に course_template_id が保存されている
+    fvs = (
+        await db.scalars(
+            select(PatientFixedVisit).where(PatientFixedVisit.patient_id == patient.id)
+        )
+    ).all()
+    assert len(fvs) == 1
+    assert fvs[0].course_template_id == tpl.id, (
+        f"pfv.course_template_id は {tpl.id} のはず, got {fvs[0].course_template_id}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_place_and_fix_no_pattern_does_not_save_course_template_id(client, db) -> None:
+    """fix_pattern=False では pfv が作られないので course_template_id 保存もない (W22)."""
+    admin = await _make_user(db, "paf-w22-2@example.com", "admin")
+    patient = await _make_patient(db, "PAF-W22-2")
+    office = await _make_office(db, "事業所W22-2")
+    tpl = await _make_template(db, office.id, label="A")
+
+    res = await client.post(
+        "/api/v1/schedule/place-and-fix",
+        headers=_bearer(admin),
+        json=_payload(
+            patient.id,
+            course_template_id=tpl.id,
+            weekday=1,
+            start_time="10:00:00",
+            duration_min=30,
+            fix_pattern=False,
+        ),
+    )
+    assert res.status_code == 200, res.text
+
+    # pfv は作成されない
+    fvs = (
+        await db.scalars(
+            select(PatientFixedVisit).where(PatientFixedVisit.patient_id == patient.id)
+        )
+    ).all()
+    assert len(fvs) == 0
