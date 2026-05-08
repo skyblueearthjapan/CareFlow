@@ -153,10 +153,11 @@ def test_solve_no_events_dict_keeps_legacy_behavior() -> None:
 
 
 def test_solve_event_adjacent_no_overlap() -> None:
-    """event が visit 終了時刻ピッタリで終わる場合は重複扱いしない (半開区間).
+    """event が visit 開始より BUFFER_MINUTES(15 分) 超前に終わる場合は除外しない.
 
-    visit: 09:00-10:00. event: 08:00-09:00 (= 終了時刻と開始時刻が一致).
-    半開区間 [start, end) で重ならないため staff は除外されない.
+    W33 バッファ制約: event 終了 → visit 開始 が 15 分超の場合は除外対象外。
+    visit: 09:00-10:00. event: 07:00-08:30 (= visit 開始 30 分前に終了).
+    バッファ 15 分を加味しても 08:30+15min=08:45 < 09:00 なので除外されない.
     """
     s1 = _staff("S1")
     course_a = _course("A", weekday=0, start=time(9, 0), end=time(10, 0))
@@ -165,8 +166,8 @@ def test_solve_event_adjacent_no_overlap() -> None:
         s1.staff_id: [
             _event(
                 s1.staff_id,
-                datetime.combine(W27_WEEK_MONDAY, time(8, 0)),
-                datetime.combine(W27_WEEK_MONDAY, time(9, 0)),
+                datetime.combine(W27_WEEK_MONDAY, time(7, 0)),
+                datetime.combine(W27_WEEK_MONDAY, time(8, 30)),
             )
         ]
     }
@@ -180,7 +181,7 @@ def test_solve_event_adjacent_no_overlap() -> None:
     )
     assert len(result.assignments) == 1
     assert result.assignments[0].staff_id == s1.staff_id, (
-        "隣接 (重ならない) event で誤って除外された"
+        "バッファ超過 (30 分余裕) の event で誤って除外された"
     )
 
 

@@ -105,6 +105,11 @@ HUNGARIAN_INFINITY: float = 1.0e12
 # 浮動小数のまま処理するので未使用。残しておくと後々 numpy 化のヒントになる。
 COST_SCALE: int = 10_000
 
+# W33: 移動・準備のためのバッファ (分)。event 終了後 / visit 開始前に
+# BUFFER_MINUTES 分未満の余裕しかない場合はハード除外する。
+# 運用要件に応じて変更可 (例: 10 分 / 30 分)。
+BUFFER_MINUTES: int = 15  # 移動・準備の余裕 (Wave 33)
+
 
 # ---------------------------------------------------------------------------
 # Errors
@@ -229,6 +234,49 @@ def _has_event_overlap(
             ev_start = _strip_tz(event.starts_at)
             ev_end = _strip_tz(event.ends_at)
             if ev_start < visit_end_dt and ev_end > visit_start_dt:
+                return True
+    return False
+
+
+def _has_event_overlap_with_buffer(
+    *,
+    staff_id: UUID,
+    course: CourseAssignmentTarget,
+    weekday: int,
+    events_by_staff: dict[UUID, list[StaffEvent]],
+    week_monday: date_cls,
+) -> bool:
+    """``staff`` の event が visit 時間帯と **バッファ込みで** 重なるなら True.
+
+    W33 追加: ``BUFFER_MINUTES`` 分のバッファを event 両端に付与した拡張区間と
+    visit 時間帯との重複を判定する。
+
+    例: event 14:00-14:30, visit 14:45 開始
+        → event_end_buffered = 14:30 + 15 分 = 14:45
+        → 半開区間で 14:45 > 14:45 は False → ギリギリ OK (= 16 分以上の余裕なし)
+        ※ visit 14:46 開始ならセーフ (event_end_buffered 14:45 < 14:46)
+
+    「15:00-15:30 event + 15:30 visit」のような詰め込みを防止する。
+
+    重なり判定 (半開区間、バッファ込み):
+        ``event_start_buffered < visit_end AND event_end_buffered > visit_start``
+    """
+    events = events_by_staff.get(staff_id)
+    if not events:
+        return False
+    if not course.visits:
+        return False
+    target_date = week_monday + timedelta(days=weekday)
+    buf = timedelta(minutes=BUFFER_MINUTES)
+    for visit in course.visits:
+        visit_start_dt = datetime.combine(target_date, visit.start_time)
+        visit_end_dt = datetime.combine(target_date, visit.end_time)
+        for event in events:
+            ev_start = _strip_tz(event.starts_at)
+            ev_end = _strip_tz(event.ends_at)
+            ev_start_buffered = ev_start - buf
+            ev_end_buffered = ev_end + buf
+            if ev_start_buffered < visit_end_dt and ev_end_buffered > visit_start_dt:
                 return True
     return False
 
@@ -671,15 +719,15 @@ class Layer3Assigner:
     ) -> float:
         """単一セル (course, staff) のコストを返す.
 
-        コスト関数 (§5.4 + W16 拡張 + W27 Phase A 拡張):
+        コスト関数 (§5.4 + W16 拡張 + W27 Phase A 拡張 + W33 バッファ拡張):
             cost = α * distance
                  + β * rotation_penalty
                  + γ * gender
                  + δ * work_day
                  + W16: 前日同コース penalty
-                 + W27: event 時間帯重複 (ハード除外)
+                 + W27/W33: event 時間帯重複 + BUFFER_MINUTES バッファ (ハード除外)
 
-        γ / δ / W27 はハード制約なので INF 相当 (= ``HUNGARIAN_INFINITY``).
+        γ / δ / W27/W33 はハード制約なので INF 相当 (= ``HUNGARIAN_INFINITY``).
         """
         if prev_day_pairs is None:
             prev_day_pairs = set()
@@ -699,11 +747,12 @@ class Layer3Assigner:
                 if restriction != staff.sex:
                     return HUNGARIAN_INFINITY
 
-        # ---------- W27 Phase A: StaffEvent 時間帯重複 (ハード制約) ----------
-        # event 時間帯と course 内 visit 時間帯が重なる場合は当該 staff を
-        # 当該 course から除外する (研修・会議中に visit 不可のため).
+        # ---------- W27/W33: StaffEvent 時間帯重複 + バッファ (ハード制約) ----------
+        # W27: event 時間帯と course 内 visit 時間帯が重なる場合は除外。
+        # W33: BUFFER_MINUTES 分のバッファを加味した拡張区間で判定。
+        #      「15:00-15:30 event + 15:30 visit」のような無茶な詰め込みを防止。
         if events_by_staff and week_monday is not None and course.visits:
-            if _has_event_overlap(
+            if _has_event_overlap_with_buffer(
                 staff_id=staff.staff_id,
                 course=course,
                 weekday=weekday,
