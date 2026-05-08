@@ -10,11 +10,17 @@
  * `ScheduleGridV2` が drop 先を判定する。位置情報 (現在どこに配置されているか
  * = `placementId | null`) は親が保持し、本コンポーネントは表示と +1 ボタン
  * UI のみを担当する。
+ *
+ * Wave 20: プールカードに名前・希望時間・条件バッジを表示。
+ *   - 名前 (太字)
+ *   - 希望時間 (formatPreferredTimeLabel + service_minutes)
+ *   - バッジ: 女性のみ / 男性のみ / 複数 / 新規 (before_start)
  */
 import { useDraggable } from '@dnd-kit/core';
 import { CSS } from '@dnd-kit/utilities';
 import { Plus, User, Users, X } from 'lucide-react';
 
+import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 
 export interface PatientCardData {
@@ -28,6 +34,26 @@ export interface PatientCardData {
    * `caption` の下に小さく表示する。
    */
   preferredTimeLabel?: string | null;
+  /**
+   * Wave 20: サービス時間 (分). 希望時間ラベルに併記する。
+   * 例: preferredTimeLabel="10:00 (固定)" + serviceMinutes=30 → "10:00 (固定) / 30分"
+   */
+  serviceMinutes?: number | null;
+  /**
+   * Wave 20: 性別制限.
+   * 'female_only' → 「女性のみ」バッジ, 'male_only' → 「男性のみ」バッジ.
+   */
+  sexRestriction?: 'female_only' | 'male_only' | null;
+  /**
+   * Wave 20: 2 名体制での訪問が必要かどうか.
+   * true → 「複数」バッジ.
+   */
+  requiresMultipleStaff?: boolean | null;
+  /**
+   * Wave 20: 患者ステータス.
+   * 'before_start' → 「新規」バッジ.
+   */
+  patientStatus?: string | null;
 }
 
 export interface PatientCardProps {
@@ -80,12 +106,26 @@ export function PatientCard({
 
   const isPlaced = staffCount !== undefined;
 
+  // Wave 20: バッジ表示フラグ
+  const femaleOnly = patient.sexRestriction === 'female_only';
+  const maleOnly = patient.sexRestriction === 'male_only';
+  const multi = patient.requiresMultipleStaff === true;
+  const isNew = patient.patientStatus === 'before_start';
+  const hasBadges = femaleOnly || maleOnly || multi || isNew;
+
+  // Wave 20: 希望時間 + サービス時間の組み立て
+  const timeText = patient.preferredTimeLabel
+    ? patient.serviceMinutes
+      ? `${patient.preferredTimeLabel} / ${patient.serviceMinutes}分`
+      : patient.preferredTimeLabel
+    : null;
+
   return (
     <div
       ref={setNodeRef}
       style={style}
       className={cn(
-        'group flex items-center justify-between gap-1 rounded border px-2 py-1 text-xs',
+        'group flex items-start justify-between gap-1 rounded border px-2 py-1 text-xs',
         'select-none touch-none',
         isPlaced
           ? 'border-brand-primary/40 bg-brand-primary/5 text-text-primary'
@@ -95,7 +135,7 @@ export function PatientCard({
       {...listeners}
       {...attributes}
     >
-      <div className="flex min-w-0 flex-1 flex-col gap-0">
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <div className="flex items-center gap-1">
           {staffCount === 2 ? (
             <Users className="h-3 w-3 shrink-0 text-brand-primary" aria-hidden />
@@ -107,14 +147,58 @@ export function PatientCard({
             <span className="truncate text-text-muted">({patient.caption})</span>
           ) : null}
         </div>
-        {/* Wave 18 Phase B-4: 希望時間 (プールカード) */}
-        {patient.preferredTimeLabel && !compact ? (
+        {/* Wave 18 Phase B-4 / Wave 20: 希望時間 + サービス時間 (プールカード) */}
+        {timeText && !compact ? (
           <span
             className="tnum truncate pl-4 text-[10px] text-text-muted"
             data-testid={`patient-card-preferred-time-${patient.id}`}
           >
-            {patient.preferredTimeLabel}
+            {timeText}
           </span>
+        ) : null}
+        {/* Wave 20: 条件バッジ */}
+        {hasBadges && !compact ? (
+          <div
+            className="flex flex-wrap gap-1 pl-4"
+            data-testid={`patient-card-badges-${patient.id}`}
+          >
+            {femaleOnly && (
+              <Badge
+                variant="warning"
+                className="h-4 px-1 text-[10px]"
+                data-testid={`patient-card-badge-female-only-${patient.id}`}
+              >
+                女性のみ
+              </Badge>
+            )}
+            {maleOnly && (
+              <Badge
+                variant="warning"
+                className="h-4 px-1 text-[10px]"
+                data-testid={`patient-card-badge-male-only-${patient.id}`}
+              >
+                男性のみ
+              </Badge>
+            )}
+            {multi && (
+              <Badge
+                variant="info"
+                className="h-4 px-1 text-[10px]"
+                data-testid={`patient-card-badge-multi-${patient.id}`}
+              >
+                複数
+              </Badge>
+            )}
+            {isNew && (
+              <Badge
+                variant="default"
+                className="h-4 px-1 text-[10px]"
+                data-testid={`patient-card-badge-new-${patient.id}`}
+              >
+                新規
+              </Badge>
+            )}
+          </div>
         ) : null}
       </div>
 

@@ -857,6 +857,14 @@ export function CourseDayTablePanel({
                       name: p.name,
                       caption: p.kana ?? undefined,
                       preferredTimeLabel: formatPreferredTimeLabel(wp),
+                      serviceMinutes: wp.service_minutes ?? undefined,
+                      sexRestriction:
+                        (p.sex_restriction as 'female_only' | 'male_only' | null | undefined) ??
+                        null,
+                      requiresMultipleStaff:
+                        (p as { requires_multiple_staff?: boolean | null })
+                          .requires_multiple_staff ?? null,
+                      patientStatus: p.status ?? null,
                     }}
                     disabled={!canEdit}
                   />
