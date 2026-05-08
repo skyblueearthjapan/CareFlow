@@ -190,6 +190,8 @@ async def put_fixed_visits(
                 weekday=item.weekday,
                 start_time=item.start_time,
                 duration_min=item.duration_min,
+                # W22 Phase A: course_template_id (任意) を保存. 未指定なら NULL.
+                course_template_id=item.course_template_id,
             )
         )
     await _commit_or_409(db)
