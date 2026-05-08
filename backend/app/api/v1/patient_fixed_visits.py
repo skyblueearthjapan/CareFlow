@@ -122,7 +122,8 @@ async def _commit_or_409(db: AsyncSession) -> None:
         if "unique" in msg or "duplicate" in msg:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Conflict: duplicate (patient_id, mode, weekday)",
+                # W37 Phase 1: UNIQUE は (patient_id, mode, weekday, slot_index).
+                detail="Conflict: duplicate (patient_id, mode, weekday, slot_index)",
             ) from exc
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -154,7 +155,11 @@ async def get_fixed_visits(
     stmt = (
         select(PatientFixedVisit)
         .where(PatientFixedVisit.patient_id == patient_id)
-        .order_by(PatientFixedVisit.mode, PatientFixedVisit.weekday)
+        .order_by(
+            PatientFixedVisit.mode,
+            PatientFixedVisit.weekday,
+            PatientFixedVisit.slot_index,
+        )
     )
     if mode is not None:
         stmt = stmt.where(PatientFixedVisit.mode == mode)
@@ -193,6 +198,8 @@ async def put_fixed_visits(
                 duration_min=item.duration_min,
                 # W22 Phase A: course_template_id (任意) を保存. 未指定なら NULL.
                 course_template_id=item.course_template_id,
+                # W37 Phase 1: slot_index (default 0) を反映. 1 名体制では常に 0.
+                slot_index=item.slot_index,
             )
         )
     await _commit_or_409(db)
@@ -204,7 +211,7 @@ async def put_fixed_visits(
                 PatientFixedVisit.patient_id == patient_id,
                 PatientFixedVisit.mode == body.mode,
             )
-            .order_by(PatientFixedVisit.weekday)
+            .order_by(PatientFixedVisit.weekday, PatientFixedVisit.slot_index)
         )
     ).all()
     return [PatientFixedVisitV2Read.model_validate(r) for r in rows]
@@ -458,7 +465,7 @@ async def from_week(
                 PatientFixedVisit.patient_id == patient_id,
                 PatientFixedVisit.mode == effective_mode,
             )
-            .order_by(PatientFixedVisit.weekday)
+            .order_by(PatientFixedVisit.weekday, PatientFixedVisit.slot_index)
         )
     ).all()
     return [PatientFixedVisitV2Read.model_validate(r) for r in rows]
