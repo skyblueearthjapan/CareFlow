@@ -793,6 +793,9 @@ async def place_and_fix(
                 weekday=body.weekday,
                 start_time=body.start_time,
                 duration_min=body.duration_min,
+                # W22 Phase A: place-and-fix で受けた course_template_id を保存し、
+                # 翌週以降の Layer 1 でこのテンプレートが優先される (コース継承).
+                course_template_id=body.course_template_id,
             )
             db.add(new_fv)
             await db.flush()
