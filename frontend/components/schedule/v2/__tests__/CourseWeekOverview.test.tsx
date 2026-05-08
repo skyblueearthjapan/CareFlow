@@ -118,7 +118,7 @@ describe('CourseWeekOverview (B-6)', () => {
       />,
     );
     const badge = screen.getByTestId('course-week-overview-capacity-tpl-A-0');
-    expect(badge).toHaveTextContent('2/4');
+    expect(badge).toHaveTextContent('2 名 / 上限 4');
     // 患者氏名が描画される
     expect(screen.getByTestId('course-week-overview-name-v-1')).toHaveTextContent('田中');
     expect(screen.getByTestId('course-week-overview-name-v-2')).toHaveTextContent('佐藤');
