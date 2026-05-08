@@ -179,9 +179,14 @@ describe('CourseWeekOverview event エントリ表示 (Wave 28 B-2)', () => {
     expect(screen.queryByTestId('course-week-overview-event-event-1')).not.toBeInTheDocument();
   });
 
-  it('5. event のラベルは "HH:MM-HH:MM イベント種別" 形式で表示される', () => {
+  it('5. event のラベルは "種別: タイトル HH:MM-HH:MM" 形式で表示される (Wave 30)', () => {
     const tpl = makeTemplate('tpl-A', 'A', 'o1');
-    const event = makeEvent({ start_time: '14:00', end_time: '16:00', type: '研修' });
+    const event = makeEvent({
+      start_time: '14:00',
+      end_time: '16:00',
+      type: '研修',
+      title: '接遇マナー',
+    });
     const staffEventsByStaff = new Map([['staff-1', [event]]]);
     const assignedStaffByTemplateWeekday = new Map([['tpl-A:0', 'staff-1']]);
 
@@ -197,6 +202,6 @@ describe('CourseWeekOverview event エントリ表示 (Wave 28 B-2)', () => {
     );
 
     const el = screen.getByTestId('course-week-overview-event-event-1');
-    expect(el).toHaveTextContent('14:00-16:00 研修');
+    expect(el).toHaveTextContent('研修: 接遇マナー 14:00-16:00');
   });
 });

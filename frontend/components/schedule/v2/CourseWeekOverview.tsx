@@ -18,7 +18,7 @@ import { Card } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 import { capacityForWeekday, type CourseTemplateRead } from '@/lib/schemas/v2/course_template';
 import type { EventRead } from '@/lib/schemas/staff-events';
-import { eventTypeLabel, getStaffEventsForWeekday } from './CourseDayTable';
+import { formatEventLabel, getStaffEventsForWeekday } from './CourseDayTable';
 
 const WEEKDAYS = [0, 1, 2, 3, 4, 5] as const;
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土'] as const;
@@ -171,7 +171,7 @@ export function CourseWeekOverview({
                       kind: 'event' as const,
                       id: e.id,
                       time: e.start_time,
-                      label: `${e.start_time}-${e.end_time} ${eventTypeLabel(e.type)}`,
+                      label: formatEventLabel(e),
                     })),
                   ].sort((a, b) => (a.time ?? '').localeCompare(b.time ?? ''));
 

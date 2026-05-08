@@ -158,6 +158,21 @@ export function eventTypeLabel(type: string): string {
   return EVENT_TYPE_LABEL[type] ?? type;
 }
 
+/**
+ * Wave 30: EventRead を「種別: タイトル HH:MM-HH:MM」または「種別 HH:MM-HH:MM」形式に整形。
+ * title が存在する場合は「種別: タイトル 開始-終了」、ない場合は「種別 開始-終了」。
+ */
+export function formatEventLabel(e: {
+  type: string;
+  title?: string | null;
+  start_time: string;
+  end_time: string;
+}): string {
+  const type = eventTypeLabel(e.type);
+  const time = `${e.start_time}-${e.end_time}`;
+  return e.title ? `${type}: ${e.title} ${time}` : `${type} ${time}`;
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Wave 27 Phase B: Event conflict helpers
 // ─────────────────────────────────────────────────────────────────────────
@@ -431,14 +446,12 @@ function CourseTimeRow({
                 <div
                   className="text-[10px] text-yellow-800 bg-yellow-100 px-1 rounded ring-1 ring-yellow-300 truncate"
                   data-testid="event-slot-row"
-                  title={eventsAtSlot
-                    .map((e) => `${eventTypeLabel(e.type)} ${e.start_time}-${e.end_time}`)
-                    .join(', ')}
+                  title={eventsAtSlot.map((e) => formatEventLabel(e)).join(', ')}
                 >
                   {eventsAtSlot.map((e, i) => (
                     <span key={e.id}>
                       {i > 0 ? ', ' : ''}
-                      {eventTypeLabel(e.type)} {e.start_time}-{e.end_time}
+                      {formatEventLabel(e)}
                     </span>
                   ))}
                 </div>
@@ -478,14 +491,12 @@ function CourseTimeRow({
                   <div
                     className="text-[10px] text-yellow-800 bg-yellow-100 px-1 rounded ring-1 ring-yellow-300 truncate"
                     data-testid="event-slot-row"
-                    title={eventsAtSlot
-                      .map((e) => `${eventTypeLabel(e.type)} ${e.start_time}-${e.end_time}`)
-                      .join(', ')}
+                    title={eventsAtSlot.map((e) => formatEventLabel(e)).join(', ')}
                   >
                     {eventsAtSlot.map((e, i) => (
                       <span key={e.id}>
                         {i > 0 ? ', ' : ''}
-                        {eventTypeLabel(e.type)} {e.start_time}-{e.end_time}
+                        {formatEventLabel(e)}
                       </span>
                     ))}
                   </div>
