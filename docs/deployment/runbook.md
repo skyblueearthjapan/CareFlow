@@ -552,6 +552,47 @@ docker logs -f carelink-backend 2>&1 | grep -E "500|place.and.fix|IntegrityError
 - [ ] プールカードが希望曜日別グループで表示される
 - [ ] 配置済み visit のドラッグ移動が 500 なく動作する
 
+### W18-4. visit→セル移動の運用注意 (Codex-fix 重大-2)
+
+Wave 18 の B-5 配置移動 (既に配置済みの visit を別セルへドラッグして
+weekday を変更する操作) は **2 段階フロー** で実装されている:
+
+1. `DELETE /api/v1/visits/{visit_id}?cascade_fixed_visit=true`
+   旧 visit を soft-delete し、同時に `(patient_id, 旧 weekday)` の
+   `patient_fixed_visits` (mode='normal' / 'special' 両方) を物理削除する。
+2. `POST /api/v1/schedule/place-and-fix`
+   新 weekday / 新時刻に visit + `patient_fixed_visits` を upsert する。
+
+**運用時の注意:**
+
+- `cascade_fixed_visit=true` は **B-5 配置移動フローでのみ** 自動的に立つ
+  (FE: `CourseDayTablePanel.handleDragEnd` の visit→cell ブランチ)。
+  プールへの戻し / 純削除では cascade は **立たない** ので、固定枠は保持される。
+- 本フローは現状 (Wave 18) **非 atomic**: step 1 成功 / step 2 失敗時は
+  FE が元位置への place-and-fix で復元を試みる (Codex-fix 中-1 で導入)。
+  復元も失敗した場合は toast で警告し、運用者に手動再配置を促す。
+- **Wave 19 atomic 化** で `PATCH /api/v1/visits/{id}` (move) endpoint を
+  追加し、1 トランザクションで `(visit + patient_fixed_visit)` を旧 → 新
+  に書き換える設計に切り替える予定。これにより中間失敗時の rollback
+  リカバリーは BE 側で完結する。
+
+**操作後の確認方法:**
+
+```bash
+# 翌週展開で旧 weekday と新 weekday の両方に二重 visit が生成されないことを確認
+docker exec carelink-postgres psql -U carelink -d carelink -c "
+  SELECT patient_id, mode, weekday, start_time
+    FROM patient_fixed_visits
+   WHERE patient_id = '<対象患者UUID>'
+   ORDER BY mode, weekday;
+"
+# → 旧 weekday の行が消え、新 weekday の行のみ残っていれば OK
+```
+
+異常 (旧 weekday が残っている / 新旧両方残っている) を発見した場合は、
+本番 DB を直接 UPDATE する前に **対応する開発者に相談** すること。
+Layer 1 expander が次週展開時に二重 visit を作るバグの兆候。
+
 ---
 
 ## Phase 5: 監視・バックアップ自動化 (Wave 5-B)
