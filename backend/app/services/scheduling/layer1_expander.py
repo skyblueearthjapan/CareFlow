@@ -43,14 +43,16 @@ from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.course import COURSE_STATUS_PROPOSED, Course
+from app.models.course import COURSE_STATUS_COURSE_FIXED, COURSE_STATUS_PROPOSED, Course
 from app.models.course_template import CourseTemplate
+from app.models.office import Office
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
+from app.models.staff import Staff
 from app.models.visit import Visit
 
 logger = logging.getLogger(__name__)
@@ -336,6 +338,131 @@ async def _get_or_create_course_for_template_week_l1(
         return course
 
 
+def _get_capacity_for_weekday(ct: CourseTemplate, weekday: int) -> int:
+    """``CourseTemplate`` の曜日別 capacity を返す.
+
+    weekday: 0=Mon, 1=Tue, 2=Wed, 3=Thu, 4=Fri, 5=Sat, 6=Sun
+    """
+    caps = (
+        ct.capacity_mon,
+        ct.capacity_tue,
+        ct.capacity_wed,
+        ct.capacity_thu,
+        ct.capacity_fri,
+        ct.capacity_sat,
+        ct.capacity_sun,
+    )
+    if 0 <= weekday <= 6:
+        return caps[weekday]
+    return 0
+
+
+async def _ensure_manager_courses_for_week(
+    db: AsyncSession,
+    iso_year: int,
+    iso_week: int,
+    office_id: UUID | None = None,
+) -> int:
+    """manager 在籍 office の M template について、毎週 course インスタンスを全曜日 (capacity > 0) で確保する.
+
+    - office_id 指定時はその拠点のみ対象 (None なら全 office)
+    - M / M2 / M3 ... すべての M 系ラベルを対象とする
+    - capacity > 0 の曜日のみ生成 (capacity=0 はスキップ)
+    - 既存 course あれば touch しない (冪等)
+    - 生成 course の status は 'course_fixed' (Layer 3 で staff_assigned に昇格)
+
+    Returns:
+        新規生成した course の件数
+    """
+    # 1. 対象 office を取得
+    offices_q = select(Office).where(Office.deleted_at.is_(None))
+    if office_id is not None:
+        offices_q = offices_q.where(Office.id == office_id)
+    offices = list(await db.scalars(offices_q))
+
+    created = 0
+    for office in offices:
+        # 2. manager 在籍チェック
+        has_manager = await db.scalar(
+            select(func.count(Staff.id)).where(
+                Staff.primary_office_id == office.id,
+                Staff.role == "manager",
+                Staff.status == "active",
+                Staff.deleted_at.is_(None),
+            )
+        )
+        if not has_manager:
+            continue
+
+        # 3. 当該 office の M 系 template を取得
+        m_templates = list(
+            await db.scalars(
+                select(CourseTemplate).where(
+                    CourseTemplate.office_id == office.id,
+                    CourseTemplate.label.startswith("M"),
+                    CourseTemplate.deleted_at.is_(None),
+                )
+            )
+        )
+        if not m_templates:
+            continue
+
+        # 4. 各 M template × 各曜日 (capacity > 0) で course を find/create
+        for ct in m_templates:
+            code = _normalize_course_code(ct.label)
+            for weekday in range(7):
+                cap = _get_capacity_for_weekday(ct, weekday)
+                if cap == 0:
+                    continue
+
+                # find (already exists?)
+                existing = await db.scalar(
+                    select(Course).where(
+                        Course.template_id == ct.id,
+                        Course.iso_year == iso_year,
+                        Course.iso_week == iso_week,
+                        Course.weekday == weekday,
+                        Course.deleted_at.is_(None),
+                    )
+                )
+                if existing is not None:
+                    continue
+
+                # create (savepoint で race-safe)
+                try:
+                    async with db.begin_nested():
+                        new_course = Course(
+                            iso_year=iso_year,
+                            iso_week=iso_week,
+                            weekday=weekday,
+                            code=code,
+                            course_status=COURSE_STATUS_COURSE_FIXED,
+                            template_id=ct.id,
+                            office_id=office.id,
+                        )
+                        db.add(new_course)
+                        await db.flush()
+                    created += 1
+                    logger.info(
+                        "Layer1: created M course office=%s template=%s weekday=%d year=%d week=%d",
+                        office.id,
+                        ct.id,
+                        weekday,
+                        iso_year,
+                        iso_week,
+                    )
+                except IntegrityError:
+                    # 競合: 既に別トランザクションが作成済み → 冪等で無視
+                    logger.debug(
+                        "Layer1: M course already exists (race) office=%s template=%s weekday=%d",
+                        office.id,
+                        ct.id,
+                        weekday,
+                    )
+
+    return created
+
+
 def _has_confirmed_entries(pattern: dict | None) -> bool:
     """確定パターン (entries に少なくとも 1 件の有効な weekday) を持つか.
 
@@ -485,6 +612,9 @@ class Layer1Expander:
         result.patients_processed = len(patients)
 
         if not patients:
+            # 患者ゼロでも manager 用 M course は生成が必要なため早期 return しない
+            await _ensure_manager_courses_for_week(db, iso_year, iso_week, office_id=office_id)
+            await db.flush()
             return result
 
         # ----- 既存の自動生成 visit を当該週で削除 (冪等性) -----
@@ -512,6 +642,12 @@ class Layer1Expander:
                 template_cache=template_cache,
             )
             result.visits_created.extend(created)
+
+        # ----- manager 用 M course を毎週全曜日 (capacity > 0) で確保 -----
+        # patient_fixed_visit 展開後に呼ぶ (visit 紐付けに影響しない)。
+        # manager 在籍 office の M template について冪等に course を find/create する。
+        # Layer 3 がこれらの course に manager を割り当てる前提。
+        await _ensure_manager_courses_for_week(db, iso_year, iso_week, office_id=office_id)
 
         # 確定 (commit は呼び出し側)
         await db.flush()
@@ -923,4 +1059,5 @@ __all__ = [
     "Layer1Result",
     "PoolEntry",
     "VisitCreated",
+    "_ensure_manager_courses_for_week",
 ]
