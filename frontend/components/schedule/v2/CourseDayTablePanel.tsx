@@ -366,7 +366,8 @@ export function CourseDayTablePanel({
       // visit_date → weekday (Mon=0..)
       let wd: number | null = null;
       if (v.visit_date) {
-        const d = new Date(v.visit_date);
+        // visit_date は 'YYYY-MM-DD' 文字列。ローカル時刻として解釈するため明示。
+        const d = new Date(v.visit_date + 'T00:00:00');
         wd = (d.getDay() + 6) % 7;
       } else {
         // course_id 経由で逆引き
@@ -479,13 +480,18 @@ export function CourseDayTablePanel({
         // 無いので簡易判定。誤検知低リスク。厳密判定は Wave 19 で BE PATCH 化時に)。
         const visitWeekday = v.visit_date
           ? // visit_date (yyyy-MM-dd) → weekStart からのオフセット (0=Mon..)
+            // T00:00:00 を付与してローカル時刻として解釈し、UTCとの境界ズレを防ぐ。
             (() => {
-              const d = new Date(v.visit_date);
+              const d = new Date(v.visit_date + 'T00:00:00');
               const dow = (d.getDay() + 6) % 7; // Mon=0
               return dow;
             })()
           : null;
         const sameSlot = v.start_time != null && floorToCourseSlot(v.start_time) === cell.time;
+        // TODO(Wave 19): noop 判定に course_template_id を含めて、同一曜日・同一時刻でも
+        // 異なるコース間のドロップは move として扱う。現状 (Wave 18) は delete+place-and-fix
+        // の 2 段階のため、course_template_id を含めると不要な delete が走る可能性があり、
+        // PATCH /api/v1/visits/{id} (atomic 化) と組合わせて Wave 19 で対応予定。
         if (sameSlot && visitWeekday === cell.weekday) {
           return;
         }

@@ -402,7 +402,9 @@ export function formatPreferredTimeLabel(wp: WeeklyPattern | null | undefined): 
   const tt = wp.time_type;
   if (tt === '固定') {
     if (start) return `${start} (固定)`;
-    return '固定';
+    // 時刻未入力の固定: 中途半端なラベル '固定' を表示しないため null を返す。
+    // PatientCard 側で null の場合は時間表示を省略する。
+    return null;
   }
   if (tt === '時間帯') {
     if (start && end) return `${start}〜${end} (時間帯)`;

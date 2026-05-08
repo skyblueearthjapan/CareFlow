@@ -81,7 +81,7 @@ export function CourseWeekOverview({
     );
   }
 
-  // 列幅: 行ヘッダ (cource label) 144px + 各曜日 minmax(120px, 1fr).
+  // 列幅: 行ヘッダ (course label) 144px + 各曜日 minmax(120px, 1fr).
   const gridCols = `144px repeat(${WEEKDAYS.length}, minmax(120px, 1fr))`;
 
   return (
