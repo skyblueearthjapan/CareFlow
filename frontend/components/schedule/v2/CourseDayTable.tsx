@@ -173,6 +173,24 @@ export function formatEventLabel(e: {
   return e.title ? `${type}: ${e.title} ${time}` : `${type} ${time}`;
 }
 
+/**
+ * Wave 31: CourseWeekOverview の 2 行表示用ヘルパー。
+ * 1 行目: 種別 + タイトル (例: "研修: 接遇マナー")
+ * 2 行目: 時刻範囲 (例: "14:00-16:00")
+ */
+export function formatEventLabelLines(e: {
+  type: string;
+  title?: string | null;
+  start_time: string;
+  end_time: string;
+}): { title: string; time: string } {
+  const type = eventTypeLabel(e.type);
+  return {
+    title: e.title ? `${type}: ${e.title}` : type,
+    time: `${e.start_time}-${e.end_time}`,
+  };
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Wave 27 Phase B: Event conflict helpers
 // ─────────────────────────────────────────────────────────────────────────
