@@ -570,8 +570,9 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
     // 両 occupant の氏名/住所が独立要素として描画される
     expect(screen.getByTestId('course-occupant-name-v-1')).toHaveTextContent('鈴木 一郎');
     expect(screen.getByTestId('course-occupant-name-v-2')).toHaveTextContent('佐藤 次郎');
-    // 同一スロットに 2 件 → 「複数」表示が出る
-    expect(screen.getAllByText('複数').length).toBeGreaterThan(0);
+    // Wave 23: 同一スロットに 2 件でも requires_multiple_staff=false なら occupant の「複数」バッジは出ない
+    expect(screen.getByTestId('course-occupant-multi-v-1').textContent).toBe('');
+    expect(screen.getByTestId('course-occupant-multi-v-2').textContent).toBe('');
   });
 
   it('13. patient.requires_multiple_staff=true の単独 visit で「複数」が出る (B-1)', () => {
@@ -685,7 +686,7 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
     expect(multiCell.textContent).toBe('');
   });
 
-  it('14. patient.sex_restriction が 「条件」列に template.notes と統合表示される (B-2)', () => {
+  it('14. patient.sex_restriction のみが「条件」列に表示される (Wave 23 是正)', () => {
     setupHooks({
       templates: [
         {
@@ -693,7 +694,7 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
           office_id: 'office-honten',
           label: 'A',
           ...baseTpl,
-          notes: '駐車場あり',
+          notes: '男性のみ', // template.notes は条件列に出ない
         },
       ],
       courses: [
@@ -745,10 +746,140 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
       />,
     );
     const cond = screen.getByTestId('course-occupant-condition-v-1');
+    // patient.sex_restriction が表示される
     expect(cond.textContent).toContain('女性のみ');
-    expect(cond.textContent).toContain('駐車場あり');
-    // セパレータ ' / ' で結合される
-    expect(cond.textContent).toContain('/');
+    // template.notes は条件列に出ない
+    expect(cond.textContent).not.toContain('男性のみ');
+    // セパレータ '/' は出ない (単一値のみ)
+    expect(cond.textContent).not.toContain('/');
+  });
+
+  it('14b. course_template.notes があっても条件列に出ない (Wave 23)', () => {
+    setupHooks({
+      templates: [
+        {
+          id: 'tpl-A',
+          office_id: 'office-honten',
+          label: 'A',
+          ...baseTpl,
+          notes: '男性のみ',
+        },
+      ],
+      courses: [
+        {
+          id: 'course-1',
+          iso_year: 2026,
+          iso_week: 19,
+          weekday: 0,
+          code: 'A',
+          office_id: 'office-honten',
+          assigned_staff_id: null,
+          course_status: 'course_fixed',
+          deleted_at: null,
+        },
+      ],
+      visits: [
+        {
+          id: 'v-1',
+          patient_id: 'p-1',
+          patient_name: '田中 太郎',
+          visit_date: '2026-05-04',
+          start_time: '09:30:00',
+          primary_staff_id: null,
+          course_id: 'course-1',
+          required_staff_count: 1,
+          type: 'regular',
+          status: 'planned',
+          source: 'allocate',
+          end_time: '10:00:00',
+        },
+      ],
+      patients: [
+        {
+          id: 'p-1',
+          name: '田中 太郎',
+          kana: null,
+          status: 'active',
+          address: '千葉県千葉市',
+          // sex_restriction なし → 条件列は空
+        },
+      ],
+    });
+    render(
+      <CourseDayTablePanel
+        weekStart={monday(2026, 5, 4)}
+        officeId={null}
+        canEdit={true}
+        showAcceptanceLayer={false}
+      />,
+    );
+    const cond = screen.getByTestId('course-occupant-condition-v-1');
+    // template.notes='男性のみ' でも出ない
+    expect(cond.textContent).not.toContain('男性のみ');
+    expect(cond.textContent).toBe('');
+  });
+
+  it('14c. patient.sex_restriction=null なら条件列が空 (Wave 23)', () => {
+    setupHooks({
+      templates: [
+        {
+          id: 'tpl-A',
+          office_id: 'office-honten',
+          label: 'A',
+          ...baseTpl,
+          notes: null,
+        },
+      ],
+      courses: [
+        {
+          id: 'course-1',
+          iso_year: 2026,
+          iso_week: 19,
+          weekday: 0,
+          code: 'A',
+          office_id: 'office-honten',
+          assigned_staff_id: null,
+          course_status: 'course_fixed',
+          deleted_at: null,
+        },
+      ],
+      visits: [
+        {
+          id: 'v-1',
+          patient_id: 'p-1',
+          patient_name: '山田 花子',
+          visit_date: '2026-05-04',
+          start_time: '09:30:00',
+          primary_staff_id: null,
+          course_id: 'course-1',
+          required_staff_count: 1,
+          type: 'regular',
+          status: 'planned',
+          source: 'allocate',
+          end_time: '10:00:00',
+        },
+      ],
+      patients: [
+        {
+          id: 'p-1',
+          name: '山田 花子',
+          kana: null,
+          status: 'active',
+          address: '千葉県千葉市',
+          sex_restriction: null,
+        },
+      ],
+    });
+    render(
+      <CourseDayTablePanel
+        weekStart={monday(2026, 5, 4)}
+        officeId={null}
+        canEdit={true}
+        showAcceptanceLayer={false}
+      />,
+    );
+    const cond = screen.getByTestId('course-occupant-condition-v-1');
+    expect(cond.textContent).toBe('');
   });
 
   it('15. 配置済み visit をプールにドロップすると DELETE /visits/{id} が呼ばれる (B-5)', async () => {
