@@ -516,8 +516,14 @@ async def _upsert_course_template(
     block: CourseBlock,
     *,
     apply: bool,
-) -> tuple[str, bool]:
-    """CourseTemplate を upsert し ('new'|'update', changed) を返す。"""
+) -> tuple[str, bool, CourseTemplate | None]:
+    """CourseTemplate を upsert し ('new'|'update', changed, template) を返す。
+
+    W22 Phase A: 取込済みの ``CourseTemplate`` を呼び出し側に返し、
+    後段で ``patient_fixed_visits.course_template_id`` を埋めるために使用する。
+    dry-run 時 / 既存なし時は ``None`` を返す可能性がある (apply=True の
+    新規作成では INSERT 直後の row を返す)。
+    """
     stmt = select(CourseTemplate).where(
         CourseTemplate.office_id == office_id,
         CourseTemplate.label == block.label,
@@ -543,7 +549,9 @@ async def _upsert_course_template(
             )
             session.add(ct)
             await session.flush()
-        return "new", True
+            return "new", True, ct
+        # dry-run: template は INSERT されないため None を返す.
+        return "new", True, None
 
     # UPDATE
     changed = False
@@ -562,7 +570,7 @@ async def _upsert_course_template(
             if apply:
                 setattr(existing, attr, val)
 
-    return "update", changed
+    return "update", changed, existing
 
 
 async def _find_patient(
@@ -625,8 +633,13 @@ async def _upsert_patient_fixed_visit(
     start_time: time,
     *,
     apply: bool,
+    course_template_id: object | None = None,
 ) -> tuple[str, bool]:
-    """PatientFixedVisit を upsert し ('new'|'update', changed) を返す。"""
+    """PatientFixedVisit を upsert し ('new'|'update', changed) を返す。
+
+    W22 Phase A: ``course_template_id`` (Excel のコースセクションに対応する
+    course_templates.id) を保存する。``None`` の場合は既存値を変更しない。
+    """
     # NOTE: PatientFixedVisit モデルに deleted_at 列は存在しないため、
     # deleted_at IS NULL フィルタは省略している。
     # 論理削除が将来追加された場合は .deleted_at.is_(None) を追加すること。
@@ -646,12 +659,18 @@ async def _upsert_patient_fixed_visit(
                 weekday=weekday_idx,
                 start_time=start_time,
                 duration_min=DEFAULT_DURATION_MIN,
+                course_template_id=course_template_id,
             )
             session.add(pfv)
             await session.flush()
         return "new", True
 
     changed = existing.start_time != start_time
+    # W22 Phase A: course_template_id が指定されており既存値と異なれば差分扱い.
+    if course_template_id is not None and existing.course_template_id != course_template_id:
+        changed = True
+        if apply:
+            existing.course_template_id = course_template_id
     if changed and apply:
         existing.start_time = start_time
     return "update", changed
@@ -702,11 +721,19 @@ async def run_import(
 
             for block in section.course_blocks:
                 # --- CourseTemplate upsert ---
-                ct_status, _ = await _upsert_course_template(session, office_id, block, apply=apply)
+                ct_status, _, ct_obj = await _upsert_course_template(
+                    session, office_id, block, apply=apply
+                )
                 if ct_status == "new":
                     summary.ct_new += 1
                 else:
                     summary.ct_update += 1
+
+                # W22 Phase A: 当該 block の course_template.id を取得.
+                # apply=True かつ既存 / 新規 CT があれば id を渡す。
+                # apply=False (dry-run) で既存なし時は ct_obj=None なので、
+                # course_template_id は付かない (= 旧挙動と等価).
+                ct_id = ct_obj.id if ct_obj is not None else None
 
                 # --- PatientFixedVisit upsert ---
                 for slot in block.visits:
@@ -739,6 +766,7 @@ async def run_import(
                         slot.weekday_idx,
                         slot.start_time,
                         apply=apply,
+                        course_template_id=ct_id,
                     )
                     summary.matched.append(
                         MatchedVisit(
