@@ -230,7 +230,7 @@ export function CourseDayTable({
         <div
           className="grid border-t border-border-default text-[11px]"
           style={{
-            gridTemplateColumns: '64px minmax(140px, 1.4fr) minmax(180px, 2fr) 56px 80px',
+            gridTemplateColumns: '60px minmax(140px, 1fr) minmax(200px, 2fr) 70px 100px',
           }}
         >
           {/* 列ヘッダー */}

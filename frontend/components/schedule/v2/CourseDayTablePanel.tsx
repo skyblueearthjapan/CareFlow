@@ -760,96 +760,111 @@ export function CourseDayTablePanel({
           </div>
         </Card>
 
-        {/* Wave 18 Phase B-6: 「週」タブ選択時は CourseWeekOverview を表示 */}
-        {activeTab === 'week' ? (
-          <div
-            id="course-week-overview-panel"
-            role="tabpanel"
-            aria-labelledby="course-day-tab-week"
-            data-testid="course-week-overview-panel"
-          >
-            <CourseWeekOverview
-              templates={templates}
-              officeNameById={officeNameById}
-              visits={overviewVisits}
-              onJumpToDay={(wd) => setActiveTab(wd)}
-            />
-          </div>
-        ) : (
-          /* メイン: 当該曜日のコーステーブル N 個 */
-          <div
-            id={`course-day-panel-${activeWeekday}`}
-            role="tabpanel"
-            aria-labelledby={`course-day-tab-${activeWeekday}`}
-            className="space-y-3"
-            data-testid="course-day-table-list"
-          >
-            {courseTablesForActiveDay.length === 0 ? (
-              <Card className="p-4 text-sm text-text-muted">
-                {WEEKDAY_LABELS[activeWeekday]}曜日の表示対象コースがありません。 拠点マスタの
-                コーステンプレート (定員) を確認してください。
-              </Card>
+        {/* Wave 19: 2 ペイン レイアウト — メイン (1fr) + プール (320px固定 sticky) */}
+        <div
+          className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_320px]"
+          data-testid="course-day-two-pane"
+        >
+          {/* 左ペイン: コーステーブル群 */}
+          <div className="space-y-3 min-w-0">
+            {/* Wave 18 Phase B-6: 「週」タブ選択時は CourseWeekOverview を表示 */}
+            {activeTab === 'week' ? (
+              <div
+                id="course-week-overview-panel"
+                role="tabpanel"
+                aria-labelledby="course-day-tab-week"
+                data-testid="course-week-overview-panel"
+              >
+                <CourseWeekOverview
+                  templates={templates}
+                  officeNameById={officeNameById}
+                  visits={overviewVisits}
+                  onJumpToDay={(wd) => setActiveTab(wd)}
+                />
+              </div>
             ) : (
-              courseTablesForActiveDay.map(({ template, officeName }) => {
-                const course = findCourseForTemplate({
-                  template,
-                  weekday: activeWeekday,
-                  isoYear,
-                  isoWeek,
-                  courses,
-                });
-                const visits = course ? (visitsByCourse.get(course.id) ?? []) : [];
-                const staffOptions = staffByOffice.get(template.office_id) ?? [];
+              /* メイン: 当該曜日のコーステーブル N 個 */
+              <div
+                id={`course-day-panel-${activeWeekday}`}
+                role="tabpanel"
+                aria-labelledby={`course-day-tab-${activeWeekday}`}
+                className="space-y-3"
+                data-testid="course-day-table-list"
+              >
+                {courseTablesForActiveDay.length === 0 ? (
+                  <Card className="p-4 text-sm text-text-muted">
+                    {WEEKDAY_LABELS[activeWeekday]}曜日の表示対象コースがありません。 拠点マスタの
+                    コーステンプレート (定員) を確認してください。
+                  </Card>
+                ) : (
+                  courseTablesForActiveDay.map(({ template, officeName }) => {
+                    const course = findCourseForTemplate({
+                      template,
+                      weekday: activeWeekday,
+                      isoYear,
+                      isoWeek,
+                      courses,
+                    });
+                    const visits = course ? (visitsByCourse.get(course.id) ?? []) : [];
+                    const staffOptions = staffByOffice.get(template.office_id) ?? [];
+                    return (
+                      <CourseDayTable
+                        key={`${template.id}:${activeWeekday}`}
+                        weekday={activeWeekday}
+                        template={template}
+                        course={course}
+                        officeName={officeName}
+                        visits={visits}
+                        staffOptions={staffOptions}
+                        canEdit={canEdit}
+                        isStaffMutating={updateCourseMut.isPending}
+                        onChangeAssignedStaff={(staffId) => {
+                          if (!course) {
+                            toast.warning(
+                              '先に「週を生成」を押してコースを作成してから担当を設定してください',
+                            );
+                            return;
+                          }
+                          void handleChangeAssignedStaff(course.id, staffId);
+                        }}
+                      />
+                    );
+                  })
+                )}
+              </div>
+            )}
+
+            {/* 受入目安レイヤー凡例 (任意) */}
+            {showAcceptanceLayer ? <AcceptanceLegend /> : null}
+          </div>
+
+          {/* 右ペイン: 保留プール (sticky で追従) */}
+          <aside
+            className="sticky top-4 self-start max-h-[calc(100vh-2rem)] overflow-y-auto"
+            data-testid="course-day-pool-pane"
+          >
+            {/* 保留プール (Wave 18 Phase B-3: 希望曜日別グループ + B-4: 希望時間表示) */}
+            <PoolGroupedByWeekday
+              patients={poolPatients}
+              disabled={!canEdit}
+              renderCard={(p) => {
+                const wp = coerceWeeklyPattern(p.weekly_pattern);
                 return (
-                  <CourseDayTable
-                    key={`${template.id}:${activeWeekday}`}
-                    weekday={activeWeekday}
-                    template={template}
-                    course={course}
-                    officeName={officeName}
-                    visits={visits}
-                    staffOptions={staffOptions}
-                    canEdit={canEdit}
-                    isStaffMutating={updateCourseMut.isPending}
-                    onChangeAssignedStaff={(staffId) => {
-                      if (!course) {
-                        toast.warning(
-                          '先に「週を生成」を押してコースを作成してから担当を設定してください',
-                        );
-                        return;
-                      }
-                      void handleChangeAssignedStaff(course.id, staffId);
+                  <PatientCard
+                    draggableId={patientDraggableId(p.id)}
+                    patient={{
+                      id: p.id,
+                      name: p.name,
+                      caption: p.kana ?? undefined,
+                      preferredTimeLabel: formatPreferredTimeLabel(wp),
                     }}
+                    disabled={!canEdit}
                   />
                 );
-              })
-            )}
-          </div>
-        )}
-
-        {/* 受入目安レイヤー凡例 (任意) */}
-        {showAcceptanceLayer ? <AcceptanceLegend /> : null}
-
-        {/* 保留プール (Wave 18 Phase B-3: 希望曜日別グループ + B-4: 希望時間表示) */}
-        <PoolGroupedByWeekday
-          patients={poolPatients}
-          disabled={!canEdit}
-          renderCard={(p) => {
-            const wp = coerceWeeklyPattern(p.weekly_pattern);
-            return (
-              <PatientCard
-                draggableId={patientDraggableId(p.id)}
-                patient={{
-                  id: p.id,
-                  name: p.name,
-                  caption: p.kana ?? undefined,
-                  preferredTimeLabel: formatPreferredTimeLabel(wp),
-                }}
-                disabled={!canEdit}
-              />
-            );
-          }}
-        />
+              }}
+            />
+          </aside>
+        </div>
 
         <DragOverlay>
           {activePatientId ? (
