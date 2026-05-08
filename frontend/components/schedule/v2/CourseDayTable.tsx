@@ -230,7 +230,7 @@ export function CourseDayTable({
         <div
           className="grid border-t border-border-default text-[11px]"
           style={{
-            gridTemplateColumns: '60px minmax(140px, 1fr) minmax(200px, 2fr) 70px 100px',
+            gridTemplateColumns: '60px minmax(80px, 0.6fr) minmax(120px, 1fr) 70px 100px',
           }}
         >
           {/* 列ヘッダー */}
@@ -256,7 +256,6 @@ export function CourseDayTable({
               key={time}
               weekday={weekday}
               templateId={template.id}
-              templateNotes={template.notes ?? null}
               time={time}
               occupants={occupants.get(time) ?? []}
               canEdit={canEdit}
@@ -275,20 +274,12 @@ export function CourseDayTable({
 interface CourseTimeRowProps {
   weekday: number;
   templateId: string;
-  templateNotes: string | null;
   time: string;
   occupants: CourseGridVisit[];
   canEdit: boolean;
 }
 
-function CourseTimeRow({
-  weekday,
-  templateId,
-  templateNotes,
-  time,
-  occupants,
-  canEdit,
-}: CourseTimeRowProps) {
+function CourseTimeRow({ weekday, templateId, time, occupants, canEdit }: CourseTimeRowProps) {
   const droppableId = courseDayCellDroppableId(weekday, templateId, time);
   const { isOver, setNodeRef } = useDroppable({
     id: droppableId,
@@ -298,9 +289,6 @@ function CourseTimeRow({
 
   // 30 分境界 (HH:00 / HH:30) は時刻ラベル強調. それ以外は薄く.
   const showLabel = time.endsWith(':00') || time.endsWith(':30');
-  // Wave 18 Phase B-1: 「複数」= 患者マスタの requires_multiple_staff フラグ.
-  // 同一スロットに 2 件以上 visit がある重なりは「複数」扱いを継続 (時刻枠の表現)。
-  const sameSlotMulti = occupants.length >= 2;
 
   return (
     <>
@@ -336,9 +324,7 @@ function CourseTimeRow({
             <div className="border-r border-border-default/40 px-1 py-0.5 text-[11px] leading-tight text-text-primary truncate" />
             <div className="border-r border-border-default/40 px-1 py-0.5 text-[10px] leading-tight text-text-secondary truncate" />
             <div className="border-r border-border-default/40 px-1 py-0.5 text-center text-[10px] leading-tight text-text-secondary" />
-            <div className="px-1 py-0.5 text-[10px] leading-tight text-text-secondary truncate">
-              {templateNotes ?? ''}
-            </div>
+            <div className="px-1 py-0.5 text-[10px] leading-tight text-text-secondary truncate" />
           </>
         ) : (
           // ── 1 件以上: 各 occupant を縦積みで列ごとに描画 ────────────
@@ -369,9 +355,9 @@ function CourseTimeRow({
             <div className="border-r border-border-default/40 px-1 py-0.5 text-center text-[10px] leading-tight text-text-secondary">
               <div className="flex flex-col gap-0.5">
                 {occupants.map((o) => {
-                  // Wave 18 Phase B-1: 患者マスタの requires_multiple_staff を真値.
-                  // 同一スロット重なりは引き続き 「複数」扱い。
-                  const isMulti = o.patient_requires_multiple_staff || sameSlotMulti;
+                  // Wave 23: 「複数」= patient.requires_multiple_staff のみ。
+                  // sameSlotMulti (同一スロット 2 件以上) は判定から除外。
+                  const isMulti = o.patient_requires_multiple_staff === true;
                   return (
                     <div
                       key={`multi-${o.id}`}
@@ -385,13 +371,11 @@ function CourseTimeRow({
               </div>
             </div>
             <div className="px-1 py-0.5 text-[10px] leading-tight text-text-secondary">
-              {/* Wave 18 Phase B-2: 「条件」= patient.sex_restriction + template.notes */}
               <div className="flex flex-col gap-0.5">
                 {occupants.map((o) => {
-                  const parts = [o.patient_sex_restriction_label, templateNotes].filter(
-                    (s): s is string => !!s && s.trim() !== '',
-                  );
-                  const text = parts.join(' / ');
+                  // Wave 23: 「条件」= patient.sex_restriction のみ。
+                  // template.notes は条件列に表示しない。
+                  const text = o.patient_sex_restriction_label ?? '';
                   return (
                     <div
                       key={`cond-${o.id}`}
