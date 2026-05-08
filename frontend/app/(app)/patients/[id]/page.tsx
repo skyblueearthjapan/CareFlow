@@ -40,6 +40,7 @@ import {
   type PatientRead,
   type WeekdayKey,
 } from '@/lib/schemas/patient';
+import { PatientFixedVisitsPanel } from '../_components/PatientFixedVisitsPanel';
 
 export default function PatientDetailPage() {
   const params = useParams<{ id: string }>();
@@ -174,6 +175,7 @@ export default function PatientDetailPage() {
             return [
               ['性別制限', sexResNorm ? SEX_RESTRICTION_LABEL[sexResNorm] : 'なし'],
               ['特別週パターン', data.special_weekly_pattern ? '有効' : '--'],
+              ['2 名体制必須', data.requires_multiple_staff ? 'はい' : 'いいえ'],
             ];
           })()}
         />
@@ -183,6 +185,12 @@ export default function PatientDetailPage() {
         <h2 className="font-serif text-lg font-bold text-text-primary">週間訪問パターン</h2>
         <WeeklyPatternView raw={data.weekly_pattern} />
       </Card>
+
+      <PatientFixedVisitsPanel
+        patientId={data.id}
+        primaryOfficeId={data.primary_office_id ?? null}
+        readOnly={true}
+      />
 
       <Card className="p-5 space-y-3">
         <h2 className="font-serif text-lg font-bold text-text-primary">備考</h2>
