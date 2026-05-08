@@ -63,6 +63,7 @@ _BACKEND_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_BACKEND_ROOT))
 
 from sqlalchemy import select  # noqa: E402
+from sqlalchemy.exc import IntegrityError  # noqa: E402
 
 from app.db.session import dispose_engine, get_session_factory  # noqa: E402
 from app.models.course import Course  # noqa: E402
@@ -154,46 +155,84 @@ async def _scan_mismatches() -> list[_Mismatch]:
     return found
 
 
-async def _apply_fix(mismatch: _Mismatch) -> tuple[bool, str]:
-    """1 件の不整合行を UPDATE する.
+async def _apply_all_fixes(mismatches: list[_Mismatch], report: _Report) -> None:
+    """全不整合を 1 トランザクションで UPDATE する (W18 Codex-fix 中-3).
 
-    Returns:
-        (success, message)
-        success=True  : UPDATE 完了
-        success=False : スキップ (UNIQUE 衝突 / その他 IntegrityError)
+    旧実装は 1 行ごとに ``await session.commit()`` を発行しており、
+        - 連続 commit のオーバーヘッド
+        - 事前 SELECT (collision check) と UPDATE の間で TOCTOU で
+          UNIQUE 衝突 → script crash → 残りが未処理
+    という運用課題があった。
+
+    新実装:
+        - 全 fix を 1 セッション (= 1 TX) で savepoint nested に walk
+        - 各 UPDATE 前に collision SELECT で事前検出 → skip
+        - SELECT で抜け落ちた race も savepoint 内 IntegrityError で catch
+          → savepoint rollback + skip (継続)
+        - 最後に 1 commit
+
+    報告 (``report``):
+        - ``fixed``: UPDATE 成功件数
+        - ``skipped_collision``: UNIQUE 衝突 (事前 SELECT or IntegrityError) で
+          スキップした件数
     """
-    # SQLAlchemy の UUID カラムへの bind には UUID オブジェクトが必要.
-    # _Mismatch はシリアライズ容易性のため str を保持しているのでここで戻す。
-    course_uuid = uuid.UUID(mismatch.course_id)
-    office_uuid = uuid.UUID(mismatch.office_id)
-
     factory = get_session_factory()
     async with factory() as session:
-        # まず desired_code 側に既に行が無いか確認 (UNIQUE 衝突の事前検出).
-        collision = await session.scalar(
-            select(Course.id).where(
-                Course.iso_year == mismatch.iso_year,
-                Course.iso_week == mismatch.iso_week,
-                Course.weekday == mismatch.weekday,
-                Course.code == mismatch.desired_code,
-                Course.office_id == office_uuid,
-                Course.deleted_at.is_(None),
-            )
-        )
-        if collision is not None and str(collision) != mismatch.course_id:
-            return False, (
-                f"collision: another course already exists at "
-                f"(office={mismatch.office_id}, code={mismatch.desired_code}, "
-                f"y={mismatch.iso_year}, w={mismatch.iso_week}, wd={mismatch.weekday}) "
-                f"id={collision}"
-            )
+        for mismatch in mismatches:
+            course_uuid = uuid.UUID(mismatch.course_id)
+            office_uuid = uuid.UUID(mismatch.office_id)
 
-        course = await session.get(Course, course_uuid)
-        if course is None:
-            return False, "row disappeared between scan and apply"
-        course.code = mismatch.desired_code
+            # 事前 collision SELECT (同一 TX 内の最新ビュー).
+            collision = await session.scalar(
+                select(Course.id).where(
+                    Course.iso_year == mismatch.iso_year,
+                    Course.iso_week == mismatch.iso_week,
+                    Course.weekday == mismatch.weekday,
+                    Course.code == mismatch.desired_code,
+                    Course.office_id == office_uuid,
+                    Course.deleted_at.is_(None),
+                )
+            )
+            if collision is not None and str(collision) != mismatch.course_id:
+                report.skipped_collision += 1
+                print(
+                    f"  skipped course_id={mismatch.course_id} "
+                    f"({mismatch.current_code!r} -> {mismatch.desired_code!r}): "
+                    f"collision: another course already exists at "
+                    f"(office={mismatch.office_id}, code={mismatch.desired_code}, "
+                    f"y={mismatch.iso_year}, w={mismatch.iso_week}, "
+                    f"wd={mismatch.weekday}) id={collision}"
+                )
+                continue
+
+            course = await session.get(Course, course_uuid)
+            if course is None:
+                report.skipped_collision += 1
+                print(
+                    f"  skipped course_id={mismatch.course_id}: "
+                    f"row disappeared between scan and apply"
+                )
+                continue
+
+            # savepoint で UPDATE 試行 → IntegrityError は catch して継続.
+            try:
+                async with session.begin_nested():
+                    course.code = mismatch.desired_code
+                    await session.flush()
+            except IntegrityError as exc:
+                report.skipped_collision += 1
+                print(
+                    f"  skipped course_id={mismatch.course_id} "
+                    f"({mismatch.current_code!r} -> {mismatch.desired_code!r}): "
+                    f"IntegrityError on UPDATE (likely race): {exc.__class__.__name__}"
+                )
+                continue
+
+            report.fixed += 1
+            print(f"  fixed course_id={mismatch.course_id}: ok")
+
+        # 最後に 1 commit (失敗 savepoint は既に rollback 済み).
         await session.commit()
-        return True, "ok"
 
 
 async def _main(*, apply: bool) -> int:
@@ -223,18 +262,8 @@ async def _main(*, apply: bool) -> int:
             return 0
 
         print()
-        print("applying fixes...")
-        for m in mismatches:
-            ok, msg = await _apply_fix(m)
-            if ok:
-                report.fixed += 1
-                print(f"  fixed course_id={m.course_id}: {msg}")
-            else:
-                report.skipped_collision += 1
-                print(
-                    f"  skipped course_id={m.course_id} "
-                    f"({m.current_code!r} -> {m.desired_code!r}): {msg}"
-                )
+        print("applying fixes (single transaction, savepoint per row)...")
+        await _apply_all_fixes(mismatches, report)
     finally:
         await dispose_engine()
 
