@@ -47,7 +47,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import openpyxl
 
@@ -452,29 +452,59 @@ def infer_office_name(section: OfficeSection) -> str:
 # ---------------------------------------------------------------------------
 
 
-async def _get_or_create_office(
+async def _resolve_office_for_section(
     session: Any,
-    name: str,
+    section_kind: Literal["main", "tsuga"],
     *,
     apply: bool,
 ) -> object:
-    """拠点を name で検索し、なければ INSERT (--apply 時のみ) して返す。"""
-    stmt = select(Office).where(Office.name == name, Office.deleted_at.is_(None))
-    result = await session.scalars(stmt)
-    office = result.first()
-    if office is not None:
-        return office
+    """セクションキーから offices を解決する.
 
+    main (宮野木): name に「稲毛」「宮野木」「本店」のいずれかを含む
+    tsuga (都賀): name に「都賀」を含む
+
+    複数パターンを順に試行し、最初にヒットした office を採用する。
+    apply=True 時に未登録なら具体的なパターンを示して SystemExit(1) を raise する。
+    """
+    if section_kind == "main":
+        patterns = ["%稲毛%", "%宮野木%", "%本店%"]
+        section_label = "宮野木 (main)"
+    elif section_kind == "tsuga":
+        patterns = ["%都賀%"]
+        section_label = "都賀 (tsuga)"
+    else:
+        return None
+
+    for pattern in patterns:
+        result = await session.scalars(
+            select(Office)
+            .where(
+                Office.name.ilike(pattern),
+                Office.deleted_at.is_(None),
+            )
+            .order_by(Office.created_at.asc())
+        )
+        office = result.first()
+        if office is not None:
+            return office
+
+    # 未登録
+    patterns_str = " / ".join(f"「{p}」" for p in patterns)
     if not apply:
-        logger.warning("拠点「%s」が DB に存在しません (--dry-run のため INSERT しません)", name)
+        logger.warning(
+            "拠点 %s が DB に存在しません (検索 pattern: %s) (--dry-run のため INSERT しません)",
+            section_label,
+            patterns_str,
+        )
         return None
 
     # 拠点が未登録の場合は自動 INSERT せずに終了する。
     # 自動 INSERT した拠点は address/lat/lng が NULL となり、
     # アロケーションエンジンが座標を必要とする際に失敗するため、事前登録を強制する。
     print(
-        f"[ERROR] 拠点「{name}」が offices テーブルに未登録です。\n"
-        f"        offices テーブルに「{name}」を事前登録してから再実行してください。",
+        f"[ERROR] 拠点 {section_label} が offices テーブルに未登録です。\n"
+        f"        {patterns_str} のいずれかを name に含む office を"
+        f" offices テーブルに事前登録してから再実行してください。",
         file=sys.stderr,
     )
     raise SystemExit(1)
@@ -649,11 +679,17 @@ async def run_import(
         for section in sections:
             office_name = infer_office_name(section)
 
-            office = await _get_or_create_office(session, office_name, apply=apply)
+            section_kind: Literal["main", "tsuga"] = "tsuga" if office_name == "都賀" else "main"
+            office = await _resolve_office_for_section(session, section_kind, apply=apply)
             if office is None:
                 # dry-run で拠点未登録 → スキップ
+                if section_kind == "main":
+                    patterns_hint = "%稲毛% / %宮野木% / %本店%"
+                else:
+                    patterns_hint = "%都賀%"
                 summary.errors.append(
-                    f"拠点「{office_name}」が DB に未登録。offices テーブルに事前登録してから --apply で再実行してください。"
+                    f"拠点「{office_name}」が DB に未登録 (検索 pattern: {patterns_hint})。"
+                    f"offices テーブルに事前登録してから --apply で再実行してください。"
                 )
                 summary.office_infos.append(
                     (office_name, None, [b.label for b in section.course_blocks])

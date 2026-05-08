@@ -7,6 +7,7 @@
 4. dry-run mode: DB 書き込み 0 件
 5. apply mode: 期待件数 INSERT (mock DB)
 6. パース補助関数
+7. office 検索: 実 DB スタイル (本店(稲毛) / 都賀支店) + 旧互換 (宮野木センター) を検出
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from import_schedule_template import (  # noqa: E402
     OfficeSection,
     _parse_cap,
     _parse_time,
+    _resolve_office_for_section,
     infer_office_name,
     parse_sheet,
     run_import,
@@ -112,6 +114,14 @@ def _make_fixture_xlsx(tmp_path: Path) -> Path:
     xlsx_path = tmp_path / "fixture_schedule.xlsx"
     wb.save(str(xlsx_path))
     return xlsx_path
+
+
+def _make_office_mock(name: str) -> MagicMock:
+    """名前付き office mock を生成する。"""
+    m = MagicMock()
+    m.id = uuid.uuid4()
+    m.name = name
+    return m
 
 
 # ---------------------------------------------------------------------------
@@ -286,12 +296,13 @@ async def test_dry_run_no_db_writes(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_apply_mode_inserts(tmp_path: Path) -> None:
-    """apply モードで拠点/CT は INSERT され、患者突合成功なら PFV も INSERT される。"""
+    """apply モードで拠点/CT は INSERT され、患者突合成功なら PFV も INSERT される。
+    フィクスチャ拠点: 本店(稲毛) (実 DB スタイル)
+    """
     xlsx_path = _make_fixture_xlsx(tmp_path)
 
-    # 拠点 mock
-    mock_office = MagicMock()
-    mock_office.id = uuid.uuid4()
+    # 拠点 mock: 実 DB スタイル「本店(稲毛)」
+    mock_office = _make_office_mock("本店(稲毛)")
 
     # 患者 mock (名前に関係なく返す)
     mock_patient = MagicMock()
@@ -305,9 +316,6 @@ async def test_apply_mode_inserts(tmp_path: Path) -> None:
         nonlocal call_count
         call_count += 1
         mock_result = MagicMock()
-        # 1回目: office検索 → office返す
-        # 2回目以降: CT検索 → None (新規INSERT), PFV検索 → None (新規INSERT)
-        # 患者検索 → patient返す
         stmt_str = str(stmt)
         if "offices" in stmt_str:
             mock_result.first = MagicMock(return_value=mock_office)
@@ -357,7 +365,9 @@ class TestFindPatient:
 
     @pytest.mark.asyncio
     async def test_name_exact_match(self, tmp_path: Path) -> None:
-        """name 完全一致で患者が見つかる場合、突合成功になる。"""
+        """name 完全一致で患者が見つかる場合、突合成功になる。
+        フィクスチャ拠点: 本店(稲毛) (実 DB スタイル)
+        """
         xlsx_path = _make_fixture_xlsx(tmp_path)
 
         mock_patient = MagicMock()
@@ -365,12 +375,13 @@ class TestFindPatient:
         mock_patient.name = "田中太郎"
         mock_patient.address = "千葉県千葉市稲毛区園生町1-1"
 
+        # 実 DB スタイル「本店(稲毛)」
+        mock_office = _make_office_mock("本店(稲毛)")
+
         async def mock_scalars(stmt):  # noqa: ANN001
             mock_result = MagicMock()
             stmt_str = str(stmt)
             if "offices" in stmt_str:
-                mock_office = MagicMock()
-                mock_office.id = uuid.uuid4()
                 mock_result.first = MagicMock(return_value=mock_office)
                 mock_result.all = MagicMock(return_value=[mock_office])
             elif "course_templates" in stmt_str:
@@ -406,15 +417,17 @@ class TestFindPatient:
 
     @pytest.mark.asyncio
     async def test_no_match_unmatched_list(self, tmp_path: Path) -> None:
-        """患者が見つからない場合、unmatched リストに追加される。"""
+        """患者が見つからない場合、unmatched リストに追加される。
+        フィクスチャ拠点: 本店(稲毛) (実 DB スタイル)
+        """
         xlsx_path = _make_fixture_xlsx(tmp_path)
+
+        mock_office = _make_office_mock("本店(稲毛)")
 
         async def mock_scalars(stmt):  # noqa: ANN001
             mock_result = MagicMock()
             stmt_str = str(stmt)
             if "offices" in stmt_str:
-                mock_office = MagicMock()
-                mock_office.id = uuid.uuid4()
                 mock_result.first = MagicMock(return_value=mock_office)
                 mock_result.all = MagicMock(return_value=[mock_office])
             elif "course_templates" in stmt_str:
@@ -448,13 +461,13 @@ class TestFindPatient:
 
 
 # ---------------------------------------------------------------------------
-# テスト 7: 都賀拠点未登録時 SystemExit(1)
+# テスト 7: 全 offices 未登録時 SystemExit(1)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_apply_raises_system_exit_when_office_missing(tmp_path: Path) -> None:
-    """--apply 時に拠点が DB に未登録なら SystemExit(1) を raise する。"""
+    """--apply 時に offices テーブルが全件未登録なら SystemExit(1) を raise する。"""
     xlsx_path = _make_fixture_xlsx(tmp_path)
 
     async def mock_scalars_no_office(stmt):  # noqa: ANN001
@@ -493,11 +506,12 @@ async def test_apply_raises_system_exit_when_office_missing(tmp_path: Path) -> N
 @pytest.mark.asyncio
 async def test_pfv_upsert_without_deleted_at_filter(tmp_path: Path) -> None:
     """PatientFixedVisit に deleted_at 列が存在しないため、
-    upsert SELECT は deleted_at IS NULL フィルタなしで正常に動作する。"""
+    upsert SELECT は deleted_at IS NULL フィルタなしで正常に動作する。
+    フィクスチャ拠点: 本店(稲毛) (実 DB スタイル)
+    """
     xlsx_path = _make_fixture_xlsx(tmp_path)
 
-    mock_office = MagicMock()
-    mock_office.id = uuid.uuid4()
+    mock_office = _make_office_mock("本店(稲毛)")
 
     mock_patient = MagicMock()
     mock_patient.id = uuid.uuid4()
@@ -548,3 +562,147 @@ async def test_pfv_upsert_without_deleted_at_filter(tmp_path: Path) -> None:
 
     # dry-run でもマッチが起きていること (PFV は update パス)
     assert summary.pfv_update >= 1
+
+
+# ---------------------------------------------------------------------------
+# テスト 9: _resolve_office_for_section — 実 DB スタイル名で検出
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_office_main_honten_inagehama(tmp_path: Path) -> None:
+    """「本店(稲毛)」が最初の pattern (%稲毛%) でヒットする (main セクション)。
+
+    _resolve_office_for_section は patterns を順に試行し、1 回目の scalars 呼び出し
+    (= %稲毛% pattern) で office を返すとそれを採用する。
+    """
+    mock_office = _make_office_mock("本店(稲毛)")
+
+    # 1 回目の呼び出しで office を返す = %稲毛% pattern にヒット
+    call_count = 0
+
+    async def mock_scalars(stmt):  # noqa: ANN001
+        nonlocal call_count
+        call_count += 1
+        mock_result = MagicMock()
+        if call_count == 1:
+            mock_result.first = MagicMock(return_value=mock_office)
+        else:
+            mock_result.first = MagicMock(return_value=None)
+        return mock_result
+
+    mock_session = AsyncMock()
+    mock_session.scalars = AsyncMock(side_effect=mock_scalars)
+
+    result = await _resolve_office_for_section(mock_session, "main", apply=False)
+    assert result is mock_office
+    # 1 回目でヒットしたので scalars は 1 回だけ呼ばれる
+    assert call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_resolve_office_tsuga_shiten(tmp_path: Path) -> None:
+    """「都賀支店」が唯一の pattern (%都賀%) でヒットする (tsuga セクション)。"""
+    mock_office = _make_office_mock("都賀支店")
+
+    async def mock_scalars(stmt):  # noqa: ANN001
+        mock_result = MagicMock()
+        mock_result.first = MagicMock(return_value=mock_office)
+        return mock_result
+
+    mock_session = AsyncMock()
+    mock_session.scalars = AsyncMock(side_effect=mock_scalars)
+
+    result = await _resolve_office_for_section(mock_session, "tsuga", apply=False)
+    assert result is mock_office
+
+
+# ---------------------------------------------------------------------------
+# テスト 10: _resolve_office_for_section — 旧互換名でも検出
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_office_main_miyanokie_center(tmp_path: Path) -> None:
+    """「宮野木センター」が 2 番目の pattern (%宮野木%) でヒットする (互換性確認)。
+
+    1 回目 (%稲毛%) は None → 2 回目 (%宮野木%) でヒットするシナリオ。
+    """
+    mock_office = _make_office_mock("宮野木センター")
+
+    call_count = 0
+
+    async def mock_scalars(stmt):  # noqa: ANN001
+        nonlocal call_count
+        call_count += 1
+        mock_result = MagicMock()
+        # 1 回目 (%稲毛%) はヒットなし、2 回目 (%宮野木%) でヒット
+        if call_count == 2:
+            mock_result.first = MagicMock(return_value=mock_office)
+        else:
+            mock_result.first = MagicMock(return_value=None)
+        return mock_result
+
+    mock_session = AsyncMock()
+    mock_session.scalars = AsyncMock(side_effect=mock_scalars)
+
+    result = await _resolve_office_for_section(mock_session, "main", apply=False)
+    assert result is mock_office
+    # 2 回目でヒットしたので scalars は 2 回呼ばれる
+    assert call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_resolve_office_main_tsuga_center(tmp_path: Path) -> None:
+    """「都賀センター」が %都賀% pattern でヒットする (互換性確認)。"""
+    mock_office = _make_office_mock("都賀センター")
+
+    async def mock_scalars(stmt):  # noqa: ANN001
+        mock_result = MagicMock()
+        mock_result.first = MagicMock(return_value=mock_office)
+        return mock_result
+
+    mock_session = AsyncMock()
+    mock_session.scalars = AsyncMock(side_effect=mock_scalars)
+
+    result = await _resolve_office_for_section(mock_session, "tsuga", apply=False)
+    assert result is mock_office
+
+
+# ---------------------------------------------------------------------------
+# テスト 11: _resolve_office_for_section — 全 pattern 未登録時の挙動
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_office_not_found_dry_run(tmp_path: Path) -> None:
+    """dry-run で全 pattern 未登録の場合は None を返す (SystemExit しない)。"""
+
+    async def mock_scalars(stmt):  # noqa: ANN001
+        mock_result = MagicMock()
+        mock_result.first = MagicMock(return_value=None)
+        return mock_result
+
+    mock_session = AsyncMock()
+    mock_session.scalars = AsyncMock(side_effect=mock_scalars)
+
+    result = await _resolve_office_for_section(mock_session, "main", apply=False)
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_office_not_found_apply_raises(tmp_path: Path) -> None:
+    """--apply 時に全 pattern 未登録なら SystemExit(1) を raise する。"""
+
+    async def mock_scalars(stmt):  # noqa: ANN001
+        mock_result = MagicMock()
+        mock_result.first = MagicMock(return_value=None)
+        return mock_result
+
+    mock_session = AsyncMock()
+    mock_session.scalars = AsyncMock(side_effect=mock_scalars)
+
+    with pytest.raises(SystemExit) as exc_info:
+        await _resolve_office_for_section(mock_session, "main", apply=True)
+
+    assert exc_info.value.code == 1
