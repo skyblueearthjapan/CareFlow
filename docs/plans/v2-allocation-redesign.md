@@ -1322,6 +1322,7 @@ cost(weekday, course, staff) =
 | 2026-05-06 | v1.2 | Wave 14: 患者・スタッフ状態変更の AI 操作を追加 (§3.5.7, §3.5.11) — 英語キーを実装値 (on_leave / admitted / pending / cancelled) に整合 |
 | 2026-05-08 | v1.3 | Wave 15: スケジュール大改修 — course_templates / acceptance_calendar / place-and-fix / 1 画面化 (§15) |
 | 2026-05-08 | v1.4 | Wave 16: スタッフ別テーブル UI + Layer 3 ローテーション + generate-and-assign (§16) |
+| 2026-05-08 | v1.5 | Wave 17: (曜日×コース) ペアテーブル UI + 2 ボタン分離 (§17) |
 
 ---
 
@@ -1845,3 +1846,79 @@ staff 登録 / 更新 / 削除
 | `ScheduleUnifiedView` | `StaffWeekTablePanel` + `StaffTimeGrid` に全面置換 |
 | `StaffSwapDropdown` | スタッフ別テーブル UI では不要（新 UX で代替） |
 | `PairRoleEditor` | Wave 16 UI 刷新に伴い削除 |
+
+---
+
+## 17. Wave 17: (曜日×コース) ペアテーブル UI + 2 ボタン分離
+
+### 17.1 概要
+
+Wave 16 で導入した「スタッフ別テーブル」UI を全面廃止し、
+**「曜日タブ × コース別テーブル」** 構造に再設計する。
+
+Wave 16 の `StaffWeekTablePanel` / `StaffTimeGrid` は
+スタッフを縦軸にとっており「今日どのコースで誰が何時に動くか」が
+一目で把握しにくかった。Wave 17 では Excel 運用と完全に一致する
+**(曜日, コース) ペアテーブル**形式に切り替え、現場スタッフが
+紙の予定表と 1:1 で照合できる UI を実現する。
+
+バックエンドは `generate-and-assign` を引き続き維持しつつ、
+**Layer 1 単独**（`generate-week-only`）と **Layer 3 単独**（`assign-staff-only`）の
+2 エンドポイントを新設し、UI 上の 2 ボタンがそれぞれ独立して呼び出せる形にした。
+
+### 17.2 Excel 完全準拠の表形式
+
+| 仕様項目 | 内容 |
+|---|---|
+| 曜日タブ | 月・火・水・木・金・土 の 6 タブ（日曜は非表示） |
+| コース単位 | タブ内に各コース（A / B / … / M）のテーブルを縦に並べる |
+| 時刻行 | **9:30〜18:00 の 15 分刻み、合計 35 行** |
+| 列構成 | **5 列**: 時間帯 / 氏名 / 住所 / 複数 / 条件 |
+| ヘッダ形式 | `{office}-{label} ({capacity})` 例: `稲毛-A (6)` |
+| 担当 dropdown | 各テーブルのヘッダ行に独立配置。`PATCH /courses/{id}` で staff を更新 |
+
+コンポーネント構成:
+
+```
+CourseDayTablePanel           (曜日タブ + 全コース管理)
+  └─ CourseDayTable           (コース 1 件分のテーブル)
+       ├─ ヘッダ: {office}-{label} ({capacity}) + 担当 dropdown
+       └─ 行: 9:30, 9:45, 10:00 … 18:00 (35 行)
+            列: 時間帯 / 氏名 / 住所 / 複数 / 条件
+```
+
+### 17.3 「週を生成」「自動割付」の 2 ボタン分離
+
+Wave 17 では 1 ボタン（`generate-and-assign`）を **2 ボタンに分離** した。
+
+| ボタン | 呼び出し先 | 動作 |
+|---|---|---|
+| **週を生成** | `POST /api/v1/schedule/generate-week-only` | Layer 1 のみ: `weekly_pattern` から visits を展開。staff は未割当のまま |
+| **自動割付** | `POST /api/v1/schedule/assign-staff-only` | Layer 3 のみ: 既存 visits を保持したまま staff 割付を実行 |
+
+**運用上の段階的フロー**:
+
+1. 管理者が「週を生成」を押す → visits が曜日・時刻に展開され、コース別テーブルで内容確認が可能になる
+2. 必要に応じて手動で訪問を調整（drag & drop / 担当 dropdown）
+3. 「自動割付」を押す → Layer 3 が staff を割付。担当者名がテーブルに表示される
+
+この 2 段階フローにより、自動割付前に人間が内容を検査できる運用を確立する。
+Wave 16 以前の `generate-and-assign`（1 ボタン）は **deprecated** となるが、
+後方互換のためエンドポイント自体は維持する（§17.4 参照）。
+
+### 17.4 削除コンポーネント (Wave 16 からの引継ぎ廃止)
+
+Wave 17 で完全削除されたコンポーネント・フック:
+
+| 項目 | 種別 | 廃止理由 |
+|---|---|---|
+| `StaffWeekTablePanel` | FE コンポーネント | (曜日×コース) ペアテーブルに置換 |
+| `StaffTimeGrid` | FE コンポーネント | 同上 |
+| `useGenerateAndAssign` hook | FE hook | 2 ボタン分離により不要。`useGenerateWeek` / `useAssignStaffOnly` に分割 |
+
+### 17.5 新規フック (Wave 17 追加)
+
+| フック名 | 呼び出し先 | 役割 |
+|---|---|---|
+| `useGenerateWeek` | `POST /api/v1/schedule/generate-week-only` | 週を生成ボタンの mutation を管理 |
+| `useAssignStaffOnly` | `POST /api/v1/schedule/assign-staff-only` | 自動割付ボタンの mutation を管理 |

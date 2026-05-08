@@ -542,3 +542,4 @@ Agent({
 | 2026-05-05 | v0.2 | Codex レビュー反映。(1) Wave 0-C を 11 種の必須型へ強化 (2) W2-BE4 に visit 関連を追加 (3) W2-BE5 に PendingRequestApplier を追加 (4) W3 に schedule/fix BE チケット新設 (5) Wave 5 を FE10 sequential 先行 → FE11/12/13 並行に変更し AiInputModal 衝突解消 (6) ファイル単位所有に統一（ディレクトリグロブ禁止） (7) Layer 2/3 acceptance を fixture 名・seed 付きで検証可能化 (8) 並行マトリクスを正しいチケット数（30 件合計）に訂正 (9) DB rollback リスクを expand-contract で補強 (10) MVP 前提（Q1/Q3/Q4/Q5）を残課題で確定済みとマーク |
 | 2026-05-08 | v0.3 | Wave 15 実装完了。スケジュール大改修: course_templates / acceptance_calendar (Alembic 0019+0020) / place-and-fix endpoint / ScheduleUnifiedView / 取込スクリプト 2 本 |
 | 2026-05-08 | v0.4 | Wave 16 実装完了。スタッフ別テーブル UI (StaffWeekTablePanel) / Layer 3 曜日別ローテーション + 固定制約 / generate-and-assign endpoint / M course_template seed (Alembic 0022) / manager_course_sync |
+| 2026-05-08 | v0.5 | Wave 17 実装完了。(曜日×コース) ペアテーブル UI (CourseDayTablePanel) / generate-week-only + assign-staff-only endpoint / StaffWeekTablePanel・StaffTimeGrid 削除 / 2 ボタン分離 |
