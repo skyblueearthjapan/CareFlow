@@ -533,11 +533,11 @@ async def _get_or_create_course_for_template_week(
         return course
 
     # 無ければ INSERT を savepoint 内で試みる (race-safe).
-    # code は template.label (8 文字までの可変長) の先頭 1 文字を使うが、
-    # courses.code CHECK 制約 ('A','B','C','D','M') を満たさない場合は 'M'
-    # (マネージャー枠 = オーバーフロー) に丸める。
+    # code は template.label の先頭 1 文字を使い、courses.code CHECK 制約
+    # ('A','B','C','D','E','M' — W16 codex fix 中 2 / migration 0023 で 'E' 追加) を
+    # 満たさない場合は 'M' (マネージャー枠 = オーバーフロー) に丸める。
     label_first = (template.label or "").strip()[:1].upper()
-    code = label_first if label_first in ("A", "B", "C", "D", "M") else "M"
+    code = label_first if label_first in ("A", "B", "C", "D", "E", "M") else "M"
 
     try:
         async with db.begin_nested():  # savepoint — PostgreSQL/SQLite 両対応
