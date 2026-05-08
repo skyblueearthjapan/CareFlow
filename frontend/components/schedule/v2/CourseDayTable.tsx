@@ -17,7 +17,7 @@
  *   - 親 (CourseDayTablePanel) が DragEnd を受け取り place-and-fix を呼ぶ。
  */
 import { useMemo } from 'react';
-import { useDroppable } from '@dnd-kit/core';
+import { useDraggable, useDroppable } from '@dnd-kit/core';
 
 import { cn } from '@/lib/utils';
 import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
@@ -61,6 +61,19 @@ export function courseDayCellDroppableId(
   time: string,
 ): string {
   return `course-day-cell:${weekday}:${courseTemplateId}:${time}`;
+}
+
+/**
+ * Wave 18 Phase B-5: 配置済み visit の draggable id.
+ * 親 (CourseDayTablePanel) は `parseVisitDraggableId` で visit 移動を識別する。
+ */
+export function visitDraggableId(visitId: string): string {
+  return `visit:${visitId}`;
+}
+
+export function parseVisitDraggableId(id: string): string | null {
+  if (!id.startsWith('visit:')) return null;
+  return id.slice('visit:'.length);
 }
 
 /**
@@ -335,14 +348,12 @@ function CourseTimeRow({
             <div className="border-r border-border-default/40 px-1 py-0.5 text-[11px] leading-tight text-text-primary">
               <div className="flex flex-col gap-0.5">
                 {occupants.map((o) => (
-                  <div
+                  <OccupantNameDraggable
                     key={`name-${o.id}`}
-                    className="truncate"
-                    data-testid={`course-occupant-name-${o.id}`}
-                    title={o.patient_name ?? o.patient_id}
-                  >
-                    {o.patient_name ?? o.patient_id}
-                  </div>
+                    visitId={o.id}
+                    label={o.patient_name ?? o.patient_id}
+                    canEdit={canEdit}
+                  />
                 ))}
               </div>
             </div>
@@ -398,6 +409,52 @@ function CourseTimeRow({
         )}
       </div>
     </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Sub-components — Wave 18 Phase B-5: 配置済み visit を draggable に
+// ─────────────────────────────────────────────────────────────────────────
+
+interface OccupantNameDraggableProps {
+  visitId: string;
+  label: string;
+  canEdit: boolean;
+}
+
+/**
+ * 配置済み visit の氏名セル (drag handle).
+ *
+ * - draggableId = `visit:${visitId}` で親が「visit 移動」を識別。
+ * - canEdit=false (staff) のときは draggable 無効化。
+ * - dragging 中は半透明 + cursor-grabbing。
+ *
+ * ドロップ先 (course-day-cell:* / pool) は親 onDragEnd で分岐し、
+ * delete + place-and-fix の 2 段階で実装する (Wave 19 で atomic 化予定)。
+ */
+function OccupantNameDraggable({ visitId, label, canEdit }: OccupantNameDraggableProps) {
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+    id: visitDraggableId(visitId),
+    disabled: !canEdit,
+    data: { kind: 'placed-visit', visitId },
+  });
+
+  return (
+    <div
+      ref={setNodeRef}
+      data-testid={`course-occupant-name-${visitId}`}
+      data-draggable-visit-id={visitId}
+      title={label}
+      {...listeners}
+      {...attributes}
+      className={cn(
+        'truncate select-none touch-none',
+        canEdit ? 'cursor-grab active:cursor-grabbing' : '',
+        isDragging ? 'opacity-40' : '',
+      )}
+    >
+      {label}
+    </div>
   );
 }
 

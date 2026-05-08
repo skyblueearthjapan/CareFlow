@@ -143,6 +143,7 @@ const mockPlaceAndFix = vi.fn();
 const mockGenerateWeek = vi.fn();
 const mockAssignStaffOnly = vi.fn();
 const mockUpdateCourse = vi.fn();
+const mockDeleteVisit = vi.fn();
 
 vi.mock('@tanstack/react-query', async (importOriginal) => {
   // eslint-disable-next-line @typescript-eslint/consistent-type-imports
@@ -169,6 +170,7 @@ vi.mock('@/lib/queries/staff', () => ({
 }));
 vi.mock('@/lib/queries/visits', () => ({
   useVisits: (...args: unknown[]) => mockVisits(...args),
+  useDeleteVisit: () => ({ mutateAsync: mockDeleteVisit, isPending: false }),
 }));
 vi.mock('@/lib/queries/courses', () => ({
   useCourses: (...args: unknown[]) => mockCourses(...args),
@@ -747,6 +749,231 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
     expect(cond.textContent).toContain('駐車場あり');
     // セパレータ ' / ' で結合される
     expect(cond.textContent).toContain('/');
+  });
+
+  it('15. 配置済み visit をプールにドロップすると DELETE /visits/{id} が呼ばれる (B-5)', async () => {
+    mockDeleteVisit.mockResolvedValue(undefined);
+    setupHooks({
+      templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
+      courses: [
+        {
+          id: 'course-1',
+          iso_year: 2026,
+          iso_week: 19,
+          weekday: 0,
+          code: 'A',
+          office_id: 'office-honten',
+          assigned_staff_id: null,
+          course_status: 'course_fixed',
+          deleted_at: null,
+        },
+      ],
+      visits: [
+        {
+          id: 'v-1',
+          patient_id: 'p-1',
+          patient_name: '田中 太郎',
+          visit_date: '2026-05-04',
+          start_time: '10:00:00',
+          primary_staff_id: null,
+          course_id: 'course-1',
+          required_staff_count: 1,
+          type: 'regular',
+          status: 'planned',
+          source: 'allocate',
+          end_time: '10:30:00',
+        },
+      ],
+      patients: [{ id: 'p-1', name: '田中 太郎', kana: null, status: 'active', address: '' }],
+    });
+    render(
+      <CourseDayTablePanel
+        weekStart={monday(2026, 5, 4)}
+        officeId="office-honten"
+        canEdit={true}
+        showAcceptanceLayer={false}
+      />,
+    );
+    expect(dndState.capturedHandlers.onDragEnd).toBeDefined();
+    await dndState.capturedHandlers.onDragEnd!({
+      active: { id: 'visit:v-1' },
+      over: { id: 'pool' },
+    });
+    expect(mockDeleteVisit).toHaveBeenCalledOnce();
+    expect(mockDeleteVisit.mock.calls[0][0]).toBe('v-1');
+    // place-and-fix は呼ばれていない
+    expect(mockPlaceAndFix).not.toHaveBeenCalled();
+  });
+
+  it('16. 配置済み visit を別セルにドロップすると delete + place-and-fix が連続で呼ばれる (B-5)', async () => {
+    mockDeleteVisit.mockResolvedValue(undefined);
+    mockPlaceAndFix.mockResolvedValue({ visit: {}, fixed_visit: null });
+    setupHooks({
+      templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
+      courses: [
+        {
+          id: 'course-1',
+          iso_year: 2026,
+          iso_week: 19,
+          weekday: 0,
+          code: 'A',
+          office_id: 'office-honten',
+          assigned_staff_id: null,
+          course_status: 'course_fixed',
+          deleted_at: null,
+        },
+      ],
+      visits: [
+        {
+          id: 'v-1',
+          patient_id: 'p-1',
+          patient_name: '田中 太郎',
+          visit_date: '2026-05-04',
+          start_time: '10:00:00',
+          primary_staff_id: null,
+          course_id: 'course-1',
+          required_staff_count: 1,
+          type: 'regular',
+          status: 'planned',
+          source: 'allocate',
+          end_time: '10:30:00',
+        },
+      ],
+      patients: [
+        {
+          id: 'p-1',
+          name: '田中 太郎',
+          kana: null,
+          status: 'active',
+          address: '',
+          weekly_pattern: { service_minutes: 30 },
+        },
+      ],
+    });
+    render(
+      <CourseDayTablePanel
+        weekStart={monday(2026, 5, 4)}
+        officeId="office-honten"
+        canEdit={true}
+        showAcceptanceLayer={false}
+      />,
+    );
+    await dndState.capturedHandlers.onDragEnd!({
+      active: { id: 'visit:v-1' },
+      over: { id: 'course-day-cell:1:tpl-A:11:00' }, // 火曜 11:00 へ移動
+    });
+    expect(mockDeleteVisit).toHaveBeenCalledOnce();
+    expect(mockDeleteVisit.mock.calls[0][0]).toBe('v-1');
+    expect(mockPlaceAndFix).toHaveBeenCalledOnce();
+    const placeArg = mockPlaceAndFix.mock.calls[0][0];
+    expect(placeArg.patient_id).toBe('p-1');
+    expect(placeArg.course_template_id).toBe('tpl-A');
+    expect(placeArg.weekday).toBe(1);
+    expect(placeArg.start_time).toBe('11:00');
+    expect(placeArg.duration_min).toBe(30);
+  });
+
+  it('17. 同一セル (同 weekday + 同 slot) へドロップは noop (B-5)', async () => {
+    mockDeleteVisit.mockResolvedValue(undefined);
+    mockPlaceAndFix.mockResolvedValue({ visit: {}, fixed_visit: null });
+    setupHooks({
+      templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
+      courses: [
+        {
+          id: 'course-1',
+          iso_year: 2026,
+          iso_week: 19,
+          weekday: 0,
+          code: 'A',
+          office_id: 'office-honten',
+          assigned_staff_id: null,
+          course_status: 'course_fixed',
+          deleted_at: null,
+        },
+      ],
+      visits: [
+        {
+          id: 'v-1',
+          patient_id: 'p-1',
+          patient_name: '田中 太郎',
+          visit_date: '2026-05-04', // Mon (weekday=0)
+          start_time: '10:00:00',
+          primary_staff_id: null,
+          course_id: 'course-1',
+          required_staff_count: 1,
+          type: 'regular',
+          status: 'planned',
+          source: 'allocate',
+          end_time: '10:30:00',
+        },
+      ],
+      patients: [{ id: 'p-1', name: '田中 太郎', kana: null, status: 'active', address: '' }],
+    });
+    render(
+      <CourseDayTablePanel
+        weekStart={monday(2026, 5, 4)}
+        officeId="office-honten"
+        canEdit={true}
+        showAcceptanceLayer={false}
+      />,
+    );
+    await dndState.capturedHandlers.onDragEnd!({
+      active: { id: 'visit:v-1' },
+      over: { id: 'course-day-cell:0:tpl-A:10:00' }, // 同じ Mon 10:00
+    });
+    expect(mockDeleteVisit).not.toHaveBeenCalled();
+    expect(mockPlaceAndFix).not.toHaveBeenCalled();
+  });
+
+  it('18. canEdit=false で visit ドラッグしても何も呼ばれず警告 (B-5)', async () => {
+    setupHooks({
+      templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
+      courses: [
+        {
+          id: 'course-1',
+          iso_year: 2026,
+          iso_week: 19,
+          weekday: 0,
+          code: 'A',
+          office_id: 'office-honten',
+          assigned_staff_id: null,
+          course_status: 'course_fixed',
+          deleted_at: null,
+        },
+      ],
+      visits: [
+        {
+          id: 'v-1',
+          patient_id: 'p-1',
+          patient_name: '田中',
+          visit_date: '2026-05-04',
+          start_time: '10:00:00',
+          primary_staff_id: null,
+          course_id: 'course-1',
+          required_staff_count: 1,
+          type: 'regular',
+          status: 'planned',
+          source: 'allocate',
+          end_time: '10:30:00',
+        },
+      ],
+      patients: [{ id: 'p-1', name: '田中', kana: null, status: 'active', address: '' }],
+    });
+    render(
+      <CourseDayTablePanel
+        weekStart={monday(2026, 5, 4)}
+        officeId="office-honten"
+        canEdit={false}
+        showAcceptanceLayer={false}
+      />,
+    );
+    await dndState.capturedHandlers.onDragEnd!({
+      active: { id: 'visit:v-1' },
+      over: { id: 'pool' },
+    });
+    expect(mockDeleteVisit).not.toHaveBeenCalled();
+    expect(mockPlaceAndFix).not.toHaveBeenCalled();
+    expect(mockToast.warning).toHaveBeenCalledWith('編集権限がありません');
   });
 
   it('11. 担当 dropdown を変更すると useUpdateCourse が assigned_staff_id 付きで呼ばれる', async () => {
