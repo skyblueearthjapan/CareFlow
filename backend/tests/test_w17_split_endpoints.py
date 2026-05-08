@@ -455,6 +455,19 @@ async def test_generate_week_only_extra_field_returns_422(client, db) -> None:
     assert res.status_code == 422
 
 
+@pytest.mark.asyncio
+async def test_assign_staff_only_invalid_iso_week_returns_422(client, db) -> None:
+    """assign-staff-only でも iso_week=99 等の不正値で 422 を返す."""
+    admin = await _make_user(db, "w17-422-as2@example.com", "admin")
+
+    res = await client.post(
+        "/api/v1/schedule/assign-staff-only",
+        headers=_bearer(admin),
+        json={"iso_year": TEST_ISO_YEAR, "iso_week": 99},
+    )
+    assert res.status_code == 422
+
+
 # ---------------------------------------------------------------------------
 # 9) staff_assigned コース保護: assign-staff-only は staff_assigned を上書きしない
 # ---------------------------------------------------------------------------

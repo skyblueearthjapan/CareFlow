@@ -33,7 +33,7 @@ HTTP 層。
 
 from __future__ import annotations
 
-from datetime import UTC, date, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -840,9 +840,8 @@ async def generate_and_assign(
         if payload.office_id is not None:
             promote_where.append(Course.office_id == payload.office_id)
         proposed_courses = list((await db.scalars(select(Course).where(*promote_where))).all())
-        from datetime import datetime as _dt
 
-        now_utc = _dt.now(UTC)
+        now_utc = datetime.now(UTC)
         for c in proposed_courses:
             c.course_status = COURSE_STATUS_COURSE_FIXED
             c.course_fixed_at = now_utc
@@ -1039,9 +1038,8 @@ async def generate_week_only(
         raise
 
     visits_created_count = l1_result.visits_created_count
-    # courses_touched: Layer 1 が展開した visits の数と等しいコース数を報告する。
-    # VisitCreated は course_id フィールドを持たないため、visits 件数を代理値として使用。
-    courses_touched = visits_created_count
+    # courses_touched: Layer 1 が展開した visits から一意な course_id の数を算出する。
+    courses_touched = len(set(v.course_id for v in l1_result.visits_created if v.course_id))
 
     return GenerateWeekOnlyResponse(
         iso_year=payload.iso_year,
@@ -1126,9 +1124,7 @@ async def assign_staff_only(
             promote_where.append(Course.office_id == payload.office_id)
         proposed_courses = list((await db.scalars(select(Course).where(*promote_where))).all())
 
-        from datetime import datetime as _dt
-
-        now_utc = _dt.now(UTC)
+        now_utc = datetime.now(UTC)
         for c in proposed_courses:
             c.course_status = COURSE_STATUS_COURSE_FIXED
             c.course_fixed_at = now_utc

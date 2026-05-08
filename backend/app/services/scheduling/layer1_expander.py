@@ -361,6 +361,7 @@ class VisitCreated(BaseModel):
 
     visit_id: UUID
     patient_id: UUID
+    course_id: UUID | None = None
     weekday: int
     visit_date: date
     start_time: str  # "HH:MM"
@@ -702,6 +703,7 @@ class Layer1Expander:
                     VisitCreated(
                         visit_id=visit.id,
                         patient_id=patient.id,
+                        course_id=course_id,
                         weekday=weekday,
                         visit_date=visit_date,
                         start_time=start_t.strftime("%H:%M"),
@@ -862,6 +864,7 @@ class Layer1Expander:
                     VisitCreated(
                         visit_id=visit.id,
                         patient_id=patient.id,
+                        course_id=course_id,
                         weekday=weekday,
                         visit_date=visit_date,
                         start_time=start_t.strftime("%H:%M"),
