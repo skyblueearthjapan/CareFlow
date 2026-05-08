@@ -19,6 +19,7 @@
  */
 import { useMutation, useQueryClient, type UseMutationResult } from '@tanstack/react-query';
 import { useSession } from 'next-auth/react';
+import { toast } from 'sonner';
 import { z } from 'zod';
 
 import { fetcher } from '@/lib/api/fetcher';
@@ -37,11 +38,28 @@ export const assignStaffOnlyRequestSchema = z.object({
 
 export type AssignStaffOnlyRequest = z.infer<typeof assignStaffOnlyRequestSchema>;
 
+// ---------------------------------------------------------------------------
+// Warning schema — Wave 27 Phase B: event conflict warnings from BE
+// ---------------------------------------------------------------------------
+
+export const assignWarningSchema = z.object({
+  staff_id: z.string().uuid(),
+  staff_name: z.string().nullable().optional(),
+  event_id: z.string().uuid(),
+  event_type: z.string(),
+  visit_id: z.string().uuid(),
+  visit_start_time: z.string(),
+  message: z.string(),
+});
+
+export type AssignWarning = z.infer<typeof assignWarningSchema>;
+
 export const assignStaffOnlyResponseSchema = z.object({
   iso_year: z.number().int(),
   iso_week: z.number().int(),
   courses_assigned: z.number().int().nonnegative(),
   message: z.string(),
+  warnings: z.array(assignWarningSchema).default([]),
 });
 
 export type AssignStaffOnlyResponse = z.infer<typeof assignStaffOnlyResponseSchema>;
@@ -87,11 +105,19 @@ export function useAssignStaffOnly(): UseMutationResult<
         refreshToken,
       });
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
       // courses は assigned_staff_id が変わるので必ず再取得
       void qc.invalidateQueries({ queryKey: ['courses'] });
       // visits は primary_staff_id が同期される可能性
       void qc.invalidateQueries({ queryKey: ['visits'] });
+      // Wave 27 Phase B-4: event conflict warnings をトーストで通知
+      if (data.warnings && data.warnings.length > 0) {
+        for (const w of data.warnings) {
+          toast.warning(
+            `${w.staff_name ?? w.staff_id} は ${w.event_type} 予定。${w.visit_start_time} の訪問と重複`,
+          );
+        }
+      }
     },
   });
 }
