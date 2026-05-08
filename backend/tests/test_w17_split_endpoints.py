@@ -257,7 +257,16 @@ async def test_generate_week_only_idempotent(client, db) -> None:
     )
     assert res1.status_code == 200
     visits1_count = res1.json()["visits_created"]
-    ids1 = {v.id for v in (await db.scalars(select(Visit).where(Visit.source == "auto"))).all()}
+    # W34: Layer1 が auto 行を物理 delete から soft-delete に変更したため、
+    # active な (deleted_at IS NULL) auto visits だけを比較する。
+    ids1 = {
+        v.id
+        for v in (
+            await db.scalars(
+                select(Visit).where(Visit.source == "auto", Visit.deleted_at.is_(None))
+            )
+        ).all()
+    }
 
     # 2 回目
     res2 = await client.post(
@@ -269,7 +278,14 @@ async def test_generate_week_only_idempotent(client, db) -> None:
     visits2_count = res2.json()["visits_created"]
     assert visits2_count == visits1_count  # 同じ件数
 
-    ids2 = {v.id for v in (await db.scalars(select(Visit).where(Visit.source == "auto"))).all()}
+    ids2 = {
+        v.id
+        for v in (
+            await db.scalars(
+                select(Visit).where(Visit.source == "auto", Visit.deleted_at.is_(None))
+            )
+        ).all()
+    }
     assert ids1.isdisjoint(ids2), "2 回目の実行で visits が削除→再生成されるはず"
 
 

@@ -909,3 +909,91 @@ async def test_layer1_pfv_null_course_template_id_falls_back_to_office(db) -> No
     assert course.template_id == tpl_a.id, (
         f"NULL フォールバックでは A (label 順で先頭) が選ばれるはず, got {course.template_id}"
     )
+
+
+# ---------------------------------------------------------------------------
+# W34: auto 削除を物理→論理に切替えた挙動の検証
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_w34_auto_visits_are_soft_deleted_on_re_run(db) -> None:
+    """W34: 冪等再実行時, 旧 auto 行は **物理削除されず deleted_at で論理削除** される.
+
+    ``visit_staff_assignments`` の参照や監査ログの整合性を保つため,
+    Layer1 は auto 行を物理 delete でなく soft-delete する.
+    """
+    expander = Layer1Expander()
+    pattern = _pattern(_entry("Mon", "09:00", "10:00"))
+    patient = await _make_patient(db, code="L1-W34-A", weekly_pattern=pattern)
+
+    # 1 回目
+    result1 = await expander.expand_week(db, iso_year=TEST_ISO_YEAR, iso_week=TEST_ISO_WEEK)
+    await db.commit()
+    assert result1.visits_created_count == 1
+    first_visit_id = result1.visits_created[0].visit_id
+
+    # 2 回目: 旧 auto は soft-delete されるはず
+    result2 = await expander.expand_week(db, iso_year=TEST_ISO_YEAR, iso_week=TEST_ISO_WEEK)
+    await db.commit()
+    assert result2.visits_created_count == 1
+    second_visit_id = result2.visits_created[0].visit_id
+    assert first_visit_id != second_visit_id
+
+    # 全 visit を確認 (deleted_at フィルタなし)
+    all_rows = list(await db.scalars(select(Visit).where(Visit.patient_id == patient.id)))
+    # 2 行存在: 1 つは deleted_at NOT NULL (旧), 1 つは active (新)
+    assert len(all_rows) == 2, (
+        f"物理削除されず 2 行残るはず (1 soft-deleted + 1 active), got {len(all_rows)}"
+    )
+    active = [v for v in all_rows if v.deleted_at is None]
+    deleted = [v for v in all_rows if v.deleted_at is not None]
+    assert len(active) == 1
+    assert len(deleted) == 1
+    assert active[0].id == second_visit_id
+    assert deleted[0].id == first_visit_id
+
+
+@pytest.mark.asyncio
+async def test_w34_manual_visits_never_touched_by_layer1(db) -> None:
+    """W34: source != 'auto' な visit は WHERE で除外され, deleted_at が NULL のままを保つ.
+
+    手動配置 (manual / kaipoke / ai) は Layer1 が再実行されても絶対に
+    deleted_at = now で書き換えられない (人手入力の保護).
+    """
+    expander = Layer1Expander()
+    patient = await _make_patient(
+        db,
+        code="L1-W34-B",
+        weekly_pattern=_pattern(_entry("Mon", "09:00", "10:00")),
+    )
+
+    # 同 (date, start_time) で source=manual な行を事前投入 (重複は無視; W34 で
+    # 重複ガードは migration 0026 が担うが, このテストは Layer1 の保護動作の
+    # 単体検証なので別 start_time にしておく)
+    manual_visit = Visit(
+        patient_id=patient.id,
+        visit_date=TEST_WEEK_MONDAY,
+        start_time=time(11, 30),  # auto と被らない
+        end_time=time(12, 0),
+        type="regular",
+        status=VISIT_STATUS_PLANNED,
+        source="manual",
+        required_staff_count=1,
+    )
+    db.add(manual_visit)
+    await db.commit()
+    await db.refresh(manual_visit)
+    manual_id = manual_visit.id
+
+    # Layer1 を 2 回叩いて auto 削除を発動させる
+    await expander.expand_week(db, iso_year=TEST_ISO_YEAR, iso_week=TEST_ISO_WEEK)
+    await db.commit()
+    await expander.expand_week(db, iso_year=TEST_ISO_YEAR, iso_week=TEST_ISO_WEEK)
+    await db.commit()
+
+    # manual 行は deleted_at NULL のまま
+    survived = await db.scalar(select(Visit).where(Visit.id == manual_id))
+    assert survived is not None
+    assert survived.deleted_at is None, "manual 行に deleted_at が立つのは異常"
+    assert survived.source == "manual"
