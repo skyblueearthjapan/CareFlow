@@ -124,6 +124,7 @@ export default function EditPatientPage() {
       <PatientFixedVisitsPanel
         patientId={id}
         weeklyPattern={patient.weekly_pattern as WeeklyPattern | null | undefined}
+        primaryOfficeId={patient.primary_office_id}
       />
 
       <EditPageStickyBar

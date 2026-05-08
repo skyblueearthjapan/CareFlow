@@ -5,6 +5,10 @@
  * および `docs/plans/v2-api-contracts.md` §8 / §9 に基づく型定義。
  *
  * Backend `backend/app/schemas/v2/patient_fixed_visit.py` と完全一致させる。
+ *
+ * W22: course_template_id (UUID | null) を追加。
+ *   BE Wave 22 (feat/v2-w22-pfv-course) で migration 0025 として追加された列。
+ *   並列実装のため型契約を先行ミラー。BE 完成後に再同期する。
  */
 import { z } from 'zod';
 
@@ -15,6 +19,8 @@ export const patientFixedVisitV2BaseSchema = z.object({
   weekday: z.number().int().min(0).max(6),
   start_time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/, 'HH:MM 形式'),
   duration_min: z.number().int().min(1).max(480).default(30),
+  /** W22: コーステンプレート ID (UUID | null). null = 未指定 (Layer 1 フォールバック). */
+  course_template_id: z.string().uuid().nullable().optional(),
 });
 
 export const patientFixedVisitV2ReadSchema = patientFixedVisitV2BaseSchema.extend({

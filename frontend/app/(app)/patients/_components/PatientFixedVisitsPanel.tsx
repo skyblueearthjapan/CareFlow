@@ -1,11 +1,14 @@
 /**
- * PatientFixedVisitsPanel (W9-FE1 Phase 3)
+ * PatientFixedVisitsPanel (W9-FE1 Phase 3 / W22 拡張)
  *
  * 患者編集画面に「週間訪問パターン (固定枠)」セクションを提供するコンポーネント。
  *
  * 仕様:
  * - タブで normal / special を切替
- * - 各曜日: チェックボックス + start_time picker + duration_min select
+ * - 各曜日: チェックボックス + start_time picker + duration_min select + course select (W22)
+ * - course select: 患者の primary_office_id に紐付く course_templates を取得
+ *   - options: 「{label}」 (例: 「A」) + "未指定" option (NULL = Layer 1 フォールバック)
+ *   - primary_office_id が null の患者は "未指定" のみ表示
  * - 「希望から自動生成」: patient.weekly_pattern を読みフォーム初期値に反映
  * - 「現スケから取込」: POST /from-week (Phase 2 連携)
  * - 「リセット」: DELETE (確認ダイアログあり)
@@ -37,6 +40,7 @@ import {
   useDeleteFixedVisits,
   useApplyFromWeek,
 } from '@/lib/queries/patient_fixed_visits';
+import { useCourseTemplates } from '@/lib/queries/course_templates';
 import {
   patientFixedVisitsBulkPutSchema,
   PATIENT_FIXED_VISIT_MODES,
@@ -44,6 +48,7 @@ import {
   type PatientFixedVisitV2Base,
   type PatientFixedVisitV2Read,
 } from '@/lib/schemas/v2/patient_fixed_visit';
+import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
 import type { WeeklyPattern } from '@/lib/schemas/patient';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -78,6 +83,8 @@ interface DayRow {
   enabled: boolean;
   start_time: string;
   duration_min: number;
+  /** W22: コーステンプレート ID (null = 未指定) */
+  course_template_id: string | null;
 }
 
 type DayRows = Record<number, DayRow>;
@@ -87,7 +94,7 @@ type DayRows = Record<number, DayRow>;
 function emptyDayRows(): DayRows {
   const rows: DayRows = {};
   for (let i = 0; i < 7; i++) {
-    rows[i] = { enabled: false, start_time: '09:00', duration_min: 30 };
+    rows[i] = { enabled: false, start_time: '09:00', duration_min: 30, course_template_id: null };
   }
   return rows;
 }
@@ -101,6 +108,7 @@ function readsToDayRows(reads: PatientFixedVisitV2Read[]): DayRows {
         enabled: true,
         start_time: r.start_time.slice(0, 5),
         duration_min: r.duration_min,
+        course_template_id: r.course_template_id ?? null,
       };
     }
   }
@@ -114,6 +122,7 @@ function dayRowsToItems(rows: DayRows): PatientFixedVisitV2Base[] {
       weekday: Number(weekday),
       start_time: row.start_time,
       duration_min: row.duration_min,
+      course_template_id: row.course_template_id ?? null,
     }));
 }
 
@@ -158,6 +167,7 @@ function weeklyPatternToDayRows(pattern: WeeklyPattern | null | undefined): DayR
         enabled: true,
         start_time: startTime,
         duration_min: Math.max(1, Math.min(480, duration)),
+        course_template_id: null,
       };
     }
   }
@@ -171,18 +181,30 @@ interface WeekGridProps {
   onChange: (rows: DayRows) => void;
   disabled?: boolean;
   errors: Record<number, string>;
+  /** W22: 当該患者の拠点に紐付く course_templates (空配列 = office 未設定) */
+  courseTemplates: CourseTemplateRead[];
 }
 
-function WeekGrid({ rows, onChange, disabled, errors }: WeekGridProps) {
+function WeekGrid({ rows, onChange, disabled, errors, courseTemplates }: WeekGridProps) {
   const update = (weekday: number, patch: Partial<DayRow>) => {
-    const current = rows[weekday] ?? { enabled: false, start_time: '09:00', duration_min: 30 };
+    const current = rows[weekday] ?? {
+      enabled: false,
+      start_time: '09:00',
+      duration_min: 30,
+      course_template_id: null,
+    };
     onChange({ ...rows, [weekday]: { ...current, ...patch } as DayRow });
   };
 
   return (
     <div className="space-y-2">
       {[0, 1, 2, 3, 4, 5, 6].map((wd) => {
-        const row = rows[wd] ?? { enabled: false, start_time: '09:00', duration_min: 30 };
+        const row = rows[wd] ?? {
+          enabled: false,
+          start_time: '09:00',
+          duration_min: 30,
+          course_template_id: null,
+        };
         return (
           <div
             key={wd}
@@ -230,6 +252,22 @@ function WeekGrid({ rows, onChange, disabled, errors }: WeekGridProps) {
                     ))}
                   </select>
                 </div>
+                <div className="flex items-center gap-1">
+                  <select
+                    value={row.course_template_id ?? ''}
+                    onChange={(e) => update(wd, { course_template_id: e.target.value || null })}
+                    disabled={disabled}
+                    className="h-8 rounded border border-border-default bg-bg-base px-2 text-sm text-text-primary focus:outline-none focus:border-brand-primary"
+                    aria-label={`${WEEKDAY_LABELS[wd]} コース`}
+                  >
+                    <option value="">未指定</option>
+                    {courseTemplates.map((tpl) => (
+                      <option key={tpl.id} value={tpl.id}>
+                        {tpl.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
                 {errors[wd] ? <span className="text-xs text-error">{errors[wd]}</span> : null}
               </>
             ) : (
@@ -249,9 +287,11 @@ interface ModePanelProps {
   mode: PatientFixedVisitMode;
   weeklyPattern?: WeeklyPattern | null;
   readonly?: boolean;
+  /** W22: 当該患者の拠点に紐付く course_templates */
+  courseTemplates: CourseTemplateRead[];
 }
 
-function ModePanel({ patientId, mode, weeklyPattern, readonly }: ModePanelProps) {
+function ModePanel({ patientId, mode, weeklyPattern, readonly, courseTemplates }: ModePanelProps) {
   const { data: reads = [], isLoading } = useFixedVisits(patientId, mode);
   const updateMut = useUpdateFixedVisits(patientId);
   const deleteMut = useDeleteFixedVisits(patientId);
@@ -365,6 +405,7 @@ function ModePanel({ patientId, mode, weeklyPattern, readonly }: ModePanelProps)
           onChange={setRows}
           disabled={readonly || isBusy}
           errors={fieldErrors}
+          courseTemplates={courseTemplates}
         />
       )}
 
@@ -447,15 +488,27 @@ export interface PatientFixedVisitsPanelProps {
   patientId: string;
   /** 患者の週間訪問希望パターン (希望から自動生成 ボタンで使用) */
   weeklyPattern?: WeeklyPattern | null;
+  /**
+   * W22: 患者の primary_office_id。
+   * 拠点に紐付く course_templates を取得するために使用。
+   * null の場合はコース選択肢が空 (未指定のみ)。
+   */
+  primaryOfficeId?: string | null;
 }
 
 export function PatientFixedVisitsPanel({
   patientId,
   weeklyPattern,
+  primaryOfficeId,
 }: PatientFixedVisitsPanelProps) {
   const { data: session } = useSession();
   const role = session?.user?.role;
   const readonly = role !== 'admin' && role !== 'manager';
+
+  // W22: 拠点の course_templates を取得
+  const { data: courseTemplates = [] } = useCourseTemplates({
+    office_id: primaryOfficeId ?? null,
+  });
 
   return (
     <Card className="p-5 space-y-4">
@@ -484,6 +537,7 @@ export function PatientFixedVisitsPanel({
               mode={m}
               weeklyPattern={weeklyPattern}
               readonly={readonly}
+              courseTemplates={courseTemplates}
             />
           </TabsContent>
         ))}
