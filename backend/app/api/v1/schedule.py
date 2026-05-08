@@ -795,11 +795,16 @@ async def generate_and_assign(
         # Layer 3 は course_status='course_fixed' のコースしか対象にしない.
         # 「週を生成」連動フローでは Layer 2 を経由しないため、
         # 当該週 (+ optional office) の proposed コースを course_fixed へ昇格する.
+        #
+        # 保護: staff_assigned コース (admin が手動割付済み) は昇格対象から明示除外する.
+        # promote_where の COURSE_STATUS_PROPOSED 絞り込みにより staff_assigned コースは
+        # course_fixed へ戻されず、Layer 3 の SELECT (course_fixed のみ) でも対象外となる.
+        # これにより再実行しても admin 手動割付が巻き戻ることはない.
         promote_where = [
             Course.iso_year == payload.iso_year,
             Course.iso_week == payload.iso_week,
             Course.deleted_at.is_(None),
-            Course.course_status == COURSE_STATUS_PROPOSED,
+            Course.course_status == COURSE_STATUS_PROPOSED,  # staff_assigned は触れない
         ]
         if payload.office_id is not None:
             promote_where.append(Course.office_id == payload.office_id)
@@ -813,7 +818,10 @@ async def generate_and_assign(
         if proposed_courses:
             await db.flush()
 
-        # ----- 3) Layer 3 (= staff 割付) -----
+        # ----- 3) Layer 3 (= staff 割付) — staff_assigned コース保護 -----
+        # Layer3Assigner._load_course_targets は course_status='course_fixed' のみ SELECT する.
+        # staff_assigned コースは上記 promote_where で昇格対象に含まれず、かつ Layer 3 の
+        # SELECT でも除外されるため、再実行で admin 手動割付が上書きされることはない.
         l3_result = await assigner.assign(
             db,
             iso_year=payload.iso_year,

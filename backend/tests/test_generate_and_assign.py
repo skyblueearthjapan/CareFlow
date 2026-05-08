@@ -18,7 +18,7 @@ from sqlalchemy import select
 
 from app.core.security import create_access_token, hash_password
 from app.models import Course, Office, Patient, Staff, StaffShift, User, Visit
-from app.models.course import COURSE_STATUS_PROPOSED
+from app.models.course import COURSE_STATUS_PROPOSED, COURSE_STATUS_STAFF_ASSIGNED
 from app.models.patient_fixed_visit import PatientFixedVisit
 
 # ISO week 22 of 2026 — Monday = 2026-05-25.
@@ -345,3 +345,71 @@ async def test_generate_and_assign_invalid_iso_week_year_combo_returns_422(clien
         json={"iso_year": 2027, "iso_week": 53},
     )
     assert res.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# 8) staff_assigned コース保護 (Reviewer 中程度 #2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_generate_and_assign_preserves_staff_assigned_courses(client, db) -> None:
+    """admin が手動で staff_assigned にしたコースは generate-and-assign で巻き戻らない.
+
+    シナリオ:
+      1. 1 回目 generate-and-assign → proposed → course_fixed → staff_assigned に昇格
+      2. 特定のコースを DB で staff_assigned (手動割付) に設定し、assigned_staff_id を固定
+      3. 2 回目 generate-and-assign → staff_assigned コースの status / assigned_staff_id が
+         変わっていないことを確認
+    """
+    admin = await _make_user(db, "ga-sa@example.com", "admin")
+    seeds = await _seed_office_staff_courses(db)
+    staff_list = seeds["staff"]
+
+    # 1 回目: generate-and-assign (proposed → course_fixed → staff_assigned)
+    res1 = await client.post(
+        "/api/v1/schedule/generate-and-assign",
+        headers=_bearer(admin),
+        json={"iso_year": TEST_ISO_YEAR, "iso_week": TEST_ISO_WEEK},
+    )
+    assert res1.status_code == 200, res1.text
+
+    # DB をリフレッシュして最初のコース (A) の状態を確認
+    await db.commit()
+    refreshed = (
+        await db.scalars(
+            select(Course).where(
+                Course.iso_year == TEST_ISO_YEAR,
+                Course.iso_week == TEST_ISO_WEEK,
+                Course.code == "A",
+            )
+        )
+    ).first()
+    assert refreshed is not None
+
+    # 手動で staff_assigned に設定 (admin 手動割付を模擬)
+    manual_staff_id = staff_list[0].id
+    refreshed.course_status = COURSE_STATUS_STAFF_ASSIGNED
+    refreshed.assigned_staff_id = manual_staff_id
+    await db.commit()
+
+    protected_course_id = refreshed.id
+
+    # 2 回目: generate-and-assign を再実行
+    res2 = await client.post(
+        "/api/v1/schedule/generate-and-assign",
+        headers=_bearer(admin),
+        json={"iso_year": TEST_ISO_YEAR, "iso_week": TEST_ISO_WEEK},
+    )
+    assert res2.status_code == 200, res2.text
+
+    # DB を再取得して staff_assigned コースが保護されているか確認
+    await db.commit()
+    after = (await db.scalars(select(Course).where(Course.id == protected_course_id))).first()
+    assert after is not None
+    assert after.course_status == COURSE_STATUS_STAFF_ASSIGNED, (
+        f"staff_assigned コースが再実行で {after.course_status} に変更された"
+    )
+    assert after.assigned_staff_id == manual_staff_id, (
+        f"手動割付 staff_id {manual_staff_id} が {after.assigned_staff_id} に上書きされた"
+    )

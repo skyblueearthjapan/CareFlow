@@ -74,16 +74,30 @@ def test_migration_0022_downgrade_deletes_seeded_rows() -> None:
     assert "auto-seeded (W16): manager course" in downgrade_body
 
 
-@pytest.mark.asyncio
-async def test_migration_0022_runs_with_no_offices() -> None:
-    """offices が空でも upgrade が成功する (no-op)."""
-    import sqlalchemy as sa
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+def test_migration_0022_runs_with_no_offices(tmp_path: Path) -> None:
+    """offices 0 件でも migration 0022 が成功し、course_templates への M INSERT が 0 件.
 
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
-    async with engine.begin() as conn:
-        # 最小テーブル
-        await conn.execute(
+    0022 の upgrade() を直接実行し、実 SQL レベルで動作を保証する。
+    SQLite インメモリ DB に最小スキーマを手動で作成し、alembic の MigrationContext 経由で
+    upgrade() を呼ぶことで、外部依存 (他 migration の DDL) を回避する。
+    """
+    import importlib.util
+    import sys
+
+    import sqlalchemy as sa
+    from alembic.operations import Operations
+    from alembic.runtime.migration import MigrationContext
+    from sqlalchemy import create_engine
+
+    backend_root = Path(__file__).resolve().parent.parent
+    db_path = tmp_path / "migration_0022_no_offices.db"
+    db_url = f"sqlite:///{db_path}"
+
+    engine = create_engine(db_url)
+
+    # 最小スキーマ: 0022 が参照するテーブルのみ作成
+    with engine.begin() as conn:
+        conn.execute(
             sa.text(
                 """
                 CREATE TABLE offices (
@@ -94,7 +108,7 @@ async def test_migration_0022_runs_with_no_offices() -> None:
                 """
             )
         )
-        await conn.execute(
+        conn.execute(
             sa.text(
                 """
                 CREATE TABLE staff (
@@ -107,7 +121,7 @@ async def test_migration_0022_runs_with_no_offices() -> None:
                 """
             )
         )
-        await conn.execute(
+        conn.execute(
             sa.text(
                 """
                 CREATE TABLE course_templates (
@@ -130,12 +144,30 @@ async def test_migration_0022_runs_with_no_offices() -> None:
             )
         )
 
-    # 空 DB で upgrade を呼ぶ (no-op で成功するか)
-    async_session = async_sessionmaker(engine, expire_on_commit=False)
-    async with async_session() as session:
-        # offices/staff が空 → INSERT は起きない
-        result = await session.execute(sa.text("SELECT COUNT(*) FROM course_templates"))
-        count_before = result.scalar()
-        assert count_before == 0
+    # 0022 の upgrade() を MigrationContext 経由で実行
+    migration_path = backend_root / "alembic" / "versions" / "0022_v2_manager_course_seed.py"
+    spec = importlib.util.spec_from_file_location("migration_0022", migration_path)
+    assert spec is not None and spec.loader is not None
+    migration_mod = importlib.util.module_from_spec(spec)
+    sys.modules["migration_0022"] = migration_mod
+    spec.loader.exec_module(migration_mod)  # type: ignore[union-attr]
 
-    await engine.dispose()
+    with engine.begin() as conn:
+        ctx = MigrationContext.configure(conn)
+        with Operations.context(ctx):
+            migration_mod.upgrade()  # type: ignore[attr-defined]
+
+    # 結果検証: offices が空 → M course_templates が 0 件
+    with engine.connect() as conn:
+        office_count = conn.execute(sa.text("SELECT COUNT(*) FROM offices")).scalar()
+        m_count = conn.execute(
+            sa.text(
+                "SELECT COUNT(*) FROM course_templates"
+                " WHERE notes = 'auto-seeded (W16): manager course'"
+            )
+        ).scalar()
+
+    engine.dispose()
+
+    assert office_count == 0, f"offices テーブルが空でない: {office_count}"
+    assert m_count == 0, f"offices が空なのに M course_templates が {m_count} 件 INSERT された"
