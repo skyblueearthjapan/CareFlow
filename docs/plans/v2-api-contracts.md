@@ -1075,6 +1075,78 @@ Wave 9 以前、FE は保留プールからの初配置時に `visit_id=""` を 
 
 ---
 
+## 18. generate-and-assign API（W16-BE）
+
+> Wave 16 追記（2026-05-08）。Layer 1（visits 展開）と Layer 3（スタッフ割付）を
+> 1 トランザクションで連動実行するエンドポイント。
+> 設計仕様書 §16.3.1 に対応する。
+
+### 18.1 `POST /api/v1/schedule/generate-and-assign`
+
+| 項目 | 内容 |
+|---|---|
+| 概要 | 指定週の visits を Layer 1 で展開し、Layer 3 でスタッフを割付 |
+| 担当チケット | W16-BE |
+| Request body | `GenerateAndAssignRequest` |
+| Response 200 | `GenerateAndAssignResponse` |
+| RBAC | Admin / Manager のみ |
+| トランザクション | 既存 visits 全削除 → visits 再展開 → Layer 3 割付 を 1 TX |
+| staff_assigned 保護 | `course_status='staff_assigned'` のコースは削除対象から除外し割付を保持 |
+
+**`GenerateAndAssignRequest` フィールド**
+
+| フィールド | 型 | 必須 | 説明 |
+|---|---|---|---|
+| `iso_year` | integer | Yes | ISO 年 (例: 2026) |
+| `iso_week` | integer | Yes | ISO 週番号 1-53 |
+| `office_id` | UUID | No | 省略時は全拠点を対象 |
+
+**リクエスト例**
+
+```jsonc
+{
+  "iso_year": 2026,
+  "iso_week": 20,
+  "office_id": "<UUID>"
+}
+```
+
+**レスポンス 200 例**
+
+```jsonc
+{
+  "visits_created":   42,
+  "courses_assigned": 18,
+  "message":          "Layer 1 + Layer 3 completed"
+}
+```
+
+**エラーコード**
+
+| 状態 | HTTP | 詳細 |
+|---|---|---|
+| ISO 週が不正 | 422 | "invalid ISO week: year=... week=..." |
+| office_id が存在しない | 404 | "Office not found" |
+| Layer 3 割付で解が得られない | 422 | "No feasible assignment for week=..." |
+
+---
+
+### 18.2 M label 自動同期 (`course_templates` §15 補足)
+
+Wave 16 では staff CRUD 時に `manager_course_sync` サービスを呼び出し、
+M ラベルの `course_templates` 行をマネージャー数と同期する。
+
+| イベント | 処理 |
+|---|---|
+| staff 新規作成 (is_manager=True) | 対象拠点に label=`"M"` の course_template を INSERT |
+| staff 更新で is_manager が True → False | 対象拠点の label=`"M"` course_template を論理削除 |
+| staff 更新で is_manager が False → True | 対象拠点に label=`"M"` の course_template を INSERT |
+| staff 削除 (is_manager=True) | 対象拠点の label=`"M"` course_template を論理削除 |
+
+統合経路: `POST/PATCH/DELETE /api/v1/staff` および `PendingRequestApplier`（AI 経由申請）の両方で発火。
+
+---
+
 ## 14. 受入基準
 
 - [x] patients / staff / offices / courses / visits / schedule / pending_requests / ai のすべてに新規 / 変更エンドポイントが列挙されている
@@ -1096,6 +1168,8 @@ Wave 9 以前、FE は保留プールからの初配置時に `visit_id=""` を 
 - [x] W15: `GET/POST/PATCH/DELETE /course-templates`（§15）が追加されている（CRUD、RBAC、409 仕様）
 - [x] W15: `GET/PUT /acceptance-calendar`（§16）が追加されている（bulk upsert、冪等性、RBAC）
 - [x] W15: §8.6 `fix-or-pattern` に「既存 visit の時刻変更専用」と 422 恒久対策のコメントが明記されている
+- [x] W16: `POST /schedule/generate-and-assign`（§18）が追加されている（フラット payload、Layer 1+3 連動、staff_assigned 保護、エラーコード）
+- [x] W16: §15 course_templates に M label 自動同期の補足が明記されている
 
 ---
 
@@ -1108,3 +1182,4 @@ Wave 9 以前、FE は保留プールからの初配置時に `visit_id=""` を 
 | 2026-05-06 | v1.2 | Wave 11: StaffMentorPayload（§13.2）追加。Wave 14: StaffStatusUpdatePayload（§13.3）/ PatientStatusUpdatePayload（§13.4）追加 |
 | 2026-05-08 | v1.3 | Wave 15: スケジュール大改修 — course_templates (§15) / acceptance-calendar (§16) / place-and-fix (§17) / fix-or-pattern 役割明確化 (§8.6) |
 | 2026-05-08 | v1.3.1 | W15-codex-fix: place-and-fix に `course_template_id` 必須化 (§17) — Visit.course_id 紐付けで主導線破綻を解消 |
+| 2026-05-08 | v1.4 | Wave 16: generate-and-assign (§18) / M label 自動同期補足 (§15) |
