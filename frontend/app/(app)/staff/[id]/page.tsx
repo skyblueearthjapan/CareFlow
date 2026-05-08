@@ -208,6 +208,7 @@ function BasicInfoCard({ staff }: { staff: StaffRead }) {
           <Row label="性別" value={sexLabel(staff.sex)} />
           <Row label="役割" value={roleLabel(staff.role)} />
           <Row label="状態" value={statusLabel(staff.status)} />
+          <Row label="新人フラグ" value={staff.is_trainee ? '新人 (同行スタッフ要)' : '通常'} />
           <Row label="主拠点" value={staff.primary_office_id ?? '--'} />
           <Row label="登録日時" value={formatDate(staff.created_at)} />
           {staff.note && (

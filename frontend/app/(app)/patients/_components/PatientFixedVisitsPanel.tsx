@@ -494,16 +494,23 @@ export interface PatientFixedVisitsPanelProps {
    * null の場合はコース選択肢が空 (未指定のみ)。
    */
   primaryOfficeId?: string | null;
+  /**
+   * W26: true のとき強制的に読み取り専用モードにする。
+   * 患者詳細ページからの埋め込みで使用。
+   * セッションロールによる readonly 判定を上書きする。
+   */
+  readOnly?: boolean;
 }
 
 export function PatientFixedVisitsPanel({
   patientId,
   weeklyPattern,
   primaryOfficeId,
+  readOnly,
 }: PatientFixedVisitsPanelProps) {
   const { data: session } = useSession();
   const role = session?.user?.role;
-  const readonly = role !== 'admin' && role !== 'manager';
+  const readonly = readOnly === true || (role !== 'admin' && role !== 'manager');
 
   // W22: 拠点の course_templates を取得
   const { data: courseTemplates = [] } = useCourseTemplates({

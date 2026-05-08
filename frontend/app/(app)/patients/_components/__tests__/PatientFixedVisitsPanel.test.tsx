@@ -404,4 +404,27 @@ describe('PatientFixedVisitsPanel', () => {
     const options = Array.from((courseSelect as HTMLSelectElement).options).map((o) => o.text);
     expect(options).toEqual(['未指定']);
   });
+
+  // ─── W26: readOnly prop tests ──────────────────────────────────────────────
+
+  it('12. (W26) readOnly=true → チェックボックスが disabled になる', () => {
+    // admin role でも readOnly=true なら disabled
+    setupMocks({ role: 'admin', reads: [] });
+
+    render(<PatientFixedVisitsPanel patientId={PATIENT_ID} readOnly={true} />);
+
+    const checkboxes = screen.getAllByRole('checkbox');
+    checkboxes.forEach((cb) => {
+      expect(cb).toBeDisabled();
+    });
+  });
+
+  it('13. (W26) readOnly=true → 「保存」ボタンが非表示', () => {
+    // admin role でも readOnly=true なら保存ボタンなし
+    setupMocks({ role: 'admin', reads: [] });
+
+    render(<PatientFixedVisitsPanel patientId={PATIENT_ID} readOnly={true} />);
+
+    expect(screen.queryByRole('button', { name: '保存' })).not.toBeInTheDocument();
+  });
 });
