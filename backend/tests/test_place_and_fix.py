@@ -861,3 +861,111 @@ async def test_place_and_fix_helper_falls_back_to_unique_key_on_integrity_error(
             )
         ).all()
     assert len(courses) == 1, f"helper が 2nd SELECT で既存行を再利用するはず, got {len(courses)}"
+
+
+# ---------------------------------------------------------------------------
+# W18 Codex-fix 中-4: クロス-office チェック
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_place_and_fix_cross_office_returns_422(client, db) -> None:
+    """patient.primary_office_id と course_template.office_id が一致しない
+    ドロップは 422 を返す (W18 Codex-fix 中-4)."""
+    admin = await _make_user(db, "paf-cross-1@example.com", "admin")
+    office_a = await _make_office(db, "事業所A-cross")
+    office_b = await _make_office(db, "事業所B-cross")
+
+    # patient は office_a に紐付く
+    patient = Patient(
+        code="PAF-CROSS-1",
+        name="患者cross1",
+        status="active",
+        primary_office_id=office_a.id,
+    )
+    db.add(patient)
+    await db.commit()
+    await db.refresh(patient)
+
+    # template は office_b
+    tpl_b = await _make_template(db, office_b.id, label="A")
+
+    res = await client.post(
+        "/api/v1/schedule/place-and-fix",
+        headers=_bearer(admin),
+        json=_payload(
+            patient.id,
+            course_template_id=tpl_b.id,
+            weekday=0,
+            start_time="09:00:00",
+            duration_min=30,
+        ),
+    )
+    assert res.status_code == 422, res.text
+    assert "primary_office_id" in res.text or "cross-office" in res.text
+
+
+@pytest.mark.asyncio
+async def test_place_and_fix_same_office_succeeds(client, db) -> None:
+    """patient.primary_office_id と course_template.office_id が一致するときは
+    通常通り 200 を返す (中-4 のリグレッション防止)."""
+    admin = await _make_user(db, "paf-cross-2@example.com", "admin")
+    office = await _make_office(db, "事業所同一")
+
+    patient = Patient(
+        code="PAF-CROSS-2",
+        name="患者cross2",
+        status="active",
+        primary_office_id=office.id,
+    )
+    db.add(patient)
+    await db.commit()
+    await db.refresh(patient)
+
+    tpl = await _make_template(db, office.id, label="A")
+
+    res = await client.post(
+        "/api/v1/schedule/place-and-fix",
+        headers=_bearer(admin),
+        json=_payload(
+            patient.id,
+            course_template_id=tpl.id,
+            weekday=0,
+            start_time="09:00:00",
+            duration_min=30,
+        ),
+    )
+    assert res.status_code == 200, res.text
+
+
+@pytest.mark.asyncio
+async def test_place_and_fix_null_primary_office_skips_check(client, db) -> None:
+    """patient.primary_office_id が NULL の場合はチェック対象外 (中-4: 任意設定運用)."""
+    admin = await _make_user(db, "paf-cross-3@example.com", "admin")
+    office = await _make_office(db, "事業所null")
+
+    # primary_office_id 未設定 (NULL)
+    patient = Patient(
+        code="PAF-CROSS-3",
+        name="患者cross3",
+        status="active",
+    )
+    db.add(patient)
+    await db.commit()
+    await db.refresh(patient)
+
+    tpl = await _make_template(db, office.id, label="A")
+
+    res = await client.post(
+        "/api/v1/schedule/place-and-fix",
+        headers=_bearer(admin),
+        json=_payload(
+            patient.id,
+            course_template_id=tpl.id,
+            weekday=0,
+            start_time="09:00:00",
+            duration_min=30,
+        ),
+    )
+    # primary_office_id が None なら check が skip され通常通り成功
+    assert res.status_code == 200, res.text

@@ -83,9 +83,7 @@ function buildListUrl(params: {
 }
 
 /** GET /api/v1/visits — list (week range pushed down to backend). */
-export function useVisits(
-  params: UseVisitsParams = {},
-): UseQueryResult<UseVisitsResult, Error> {
+export function useVisits(params: UseVisitsParams = {}): UseQueryResult<UseVisitsResult, Error> {
   const { data: session, status } = useSession();
   const { accessToken, refreshToken } = authPair(session);
 
@@ -94,7 +92,7 @@ export function useVisits(
   // Staff role users only ever see their own visits — backend already
   // enforces this, but mirroring it client-side keeps the cache key honest.
   const effectiveStaffId =
-    role === 'staff' ? sessionStaffId ?? '__none__' : params.staff_id ?? null;
+    role === 'staff' ? (sessionStaffId ?? '__none__') : (params.staff_id ?? null);
 
   const { week_start, week_end, patient_id } = params;
 
@@ -113,15 +111,12 @@ export function useVisits(
       // Staff role: the backend already narrows to the caller; we pass the
       // explicit staff_id only for admin/manager. The "__none__" sentinel is
       // never sent over the wire.
-      const wireStaffId =
-        role === 'staff' ? null : effectiveStaffId ?? null;
+      const wireStaffId = role === 'staff' ? null : (effectiveStaffId ?? null);
       const all = await fetcher<VisitRead[]>(
         buildListUrl({ week_start, week_end, staff_id: wireStaffId }),
         { accessToken, refreshToken },
       );
-      const filtered = patient_id
-        ? all.filter((v) => v.patient_id === patient_id)
-        : all;
+      const filtered = patient_id ? all.filter((v) => v.patient_id === patient_id) : all;
       // Truncation reflects the raw backend window; if the page hit the cap,
       // the week may be incomplete regardless of the patient filter.
       const truncated = all.length === VISIT_LIST_HARD_CAP;
@@ -151,21 +146,17 @@ export function useUnassignedVisits(
   const { week_start, week_end } = params;
 
   return useQuery<UseVisitsResult, Error>({
-    queryKey: [
-      ...VISITS_KEY,
-      'unassigned',
-      { week_start, week_end, role, sessionStaffId },
-    ],
+    queryKey: [...VISITS_KEY, 'unassigned', { week_start, week_end, role, sessionStaffId }],
     enabled: status === 'authenticated',
     queryFn: async () => {
       // Staff w/o staffId would 403; mirror the safe empty state.
       if (role === 'staff' && !sessionStaffId) {
         return { items: [], truncated: false };
       }
-      const all = await fetcher<VisitRead[]>(
-        buildListUrl({ week_start, week_end }),
-        { accessToken, refreshToken },
-      );
+      const all = await fetcher<VisitRead[]>(buildListUrl({ week_start, week_end }), {
+        accessToken,
+        refreshToken,
+      });
       const filtered = all.filter((v) => !v.primary_staff_id);
       const truncated = all.length === VISIT_LIST_HARD_CAP;
       return { items: filtered, truncated };
@@ -174,9 +165,7 @@ export function useUnassignedVisits(
 }
 
 /** GET /api/v1/visits/{id} — single record. */
-export function useVisit(
-  id: string | null | undefined,
-): UseQueryResult<VisitRead, Error> {
+export function useVisit(id: string | null | undefined): UseQueryResult<VisitRead, Error> {
   const { data: session, status } = useSession();
   const { accessToken, refreshToken } = authPair(session);
   const normalizedId = id ?? '__none__';
@@ -246,15 +235,40 @@ export function useUpdateVisit(): UseMutationResult<VisitRead, Error, UpdateVari
   });
 }
 
-/** DELETE /api/v1/visits/{id} — soft-delete (admin only). */
-export function useDeleteVisit(): UseMutationResult<void, Error, string> {
+/**
+ * DELETE /api/v1/visits/{id} — soft-delete (admin / manager).
+ *
+ * Wave 18 Codex-fix 重大-1: RBAC が admin / manager に拡張された (manager も
+ * B-5 配置移動を行うため)。
+ *
+ * Wave 18 Codex-fix 重大-2: ``cascade_fixed_visit=true`` を指定すると、当該
+ * visit の (patient_id, weekday) に紐付く ``patient_fixed_visits`` も同時に
+ * 物理削除される。B-5 配置移動 (delete + place-and-fix) で旧曜日の固定枠が
+ * 残って翌週以降 Layer 1 が二重展開するバグを防ぐ。プールへの戻し / 純削除
+ * では cascade=false (default) のままで、固定枠は保持される。
+ */
+export interface DeleteVisitVariables {
+  id: string;
+  /**
+   * True: 同 (patient_id, weekday) の patient_fixed_visits も同時削除
+   * (B-5 配置移動でのみ true を立てる).
+   * デフォルト false (= 固定枠は残す).
+   */
+  cascadeFixedVisit?: boolean;
+}
+
+export function useDeleteVisit(): UseMutationResult<void, Error, DeleteVisitVariables | string> {
   const qc = useQueryClient();
   const { data: session } = useSession();
   const { accessToken, refreshToken } = authPair(session);
 
-  return useMutation<void, Error, string>({
-    mutationFn: async (id) => {
-      await fetcher<void>(`${VISITS_BASE}/${id}`, {
+  return useMutation<void, Error, DeleteVisitVariables | string>({
+    mutationFn: async (input) => {
+      // 後方互換: 旧呼出 (id を string でそのまま渡す) も受ける.
+      const { id, cascadeFixedVisit } =
+        typeof input === 'string' ? { id: input, cascadeFixedVisit: false } : input;
+      const qs = cascadeFixedVisit ? '?cascade_fixed_visit=true' : '';
+      await fetcher<void>(`${VISITS_BASE}/${id}${qs}`, {
         method: 'DELETE',
         accessToken,
         refreshToken,

@@ -33,6 +33,7 @@ HTTP 層。
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Annotated, Literal
 from uuid import UUID
@@ -77,6 +78,8 @@ from app.services.scheduling.layer3_assignment import (
     Layer3Assigner,
     Layer3AssignmentError,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -570,6 +573,21 @@ async def _get_or_create_course_for_template_week(
         # 不整合が自動で解消されていく (但し本番の根治は cleanup script
         # ``scripts/cleanup_w16_course_code_mismatch.py`` で行う).
         if course.template_id != course_template_id:
+            # W18 Codex-fix 中-5: 自動補正は不整合行の存在を示すサイン。
+            # 本番でも追える形で warn ログに残す。cleanup script で抜本対応する目印。
+            logger.warning(
+                "course.template_id auto-correction: course_id=%s old_template=%s "
+                "new_template=%s (via 2nd SELECT: office=%s code=%s year=%s "
+                "week=%s weekday=%s)",
+                course.id,
+                course.template_id,
+                course_template_id,
+                template.office_id,
+                code,
+                iso_year,
+                iso_week,
+                weekday,
+            )
             course.template_id = course_template_id
             await db.flush()
         return course
@@ -608,6 +626,21 @@ async def _get_or_create_course_for_template_week(
             raise  # 想定外の IntegrityError — 上位へ再送出
         # 拾えた既存行の template_id が未設定 / 別の template を指していた場合は補正.
         if course.template_id != course_template_id:
+            # W18 Codex-fix 中-5: INSERT 衝突 → 既存行引き継ぎ時の補正。
+            # 同時 INSERT race か旧 helper bug の残骸。warn で運用観測可能化。
+            logger.warning(
+                "course.template_id auto-correction (post-IntegrityError): "
+                "course_id=%s old_template=%s new_template=%s "
+                "(via UNIQUE-key SELECT: office=%s code=%s year=%s week=%s weekday=%s)",
+                course.id,
+                course.template_id,
+                course_template_id,
+                template.office_id,
+                code,
+                iso_year,
+                iso_week,
+                weekday,
+            )
             course.template_id = course_template_id
             await db.flush()
         return course
@@ -682,6 +715,35 @@ async def place_and_fix(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Patient not found",
             )
+
+        # ----- W18 Codex-fix 中-4: クロス-office チェック -----
+        # patient.primary_office_id と course_template.office_id が一致しない
+        # ドロップは UI 上の運用ミスである可能性が高い (例: 拠点 A 患者が
+        # 拠点 B のコーステーブルに誤投下)。BE 側で 422 を返してデータ整合性を
+        # 守る。primary_office_id が NULL の患者は対象外 (任意設定運用)。
+        # CourseTemplate を 1 度だけ SELECT してから helper にも引き継ぐ
+        # (helper 内の SELECT と二度引きしないようにしたいが、helper 側が
+        # すでに self-contained なので素直にこの位置で SELECT する)。
+        if patient.primary_office_id is not None:
+            template_for_office = await db.scalar(
+                select(CourseTemplate).where(
+                    CourseTemplate.id == body.course_template_id,
+                    CourseTemplate.deleted_at.is_(None),
+                )
+            )
+            if template_for_office is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="CourseTemplate not found",
+                )
+            if template_for_office.office_id != patient.primary_office_id:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=(
+                        "patient.primary_office_id と course_template.office_id "
+                        "が一致しません (cross-office drop is not allowed)"
+                    ),
+                )
 
         # ----- 1a) Course (週次インスタンス) の find/create (W15-codex-fix) -----
         # FE のセル = course_template × weekday に対応する週次 Course を確保し、

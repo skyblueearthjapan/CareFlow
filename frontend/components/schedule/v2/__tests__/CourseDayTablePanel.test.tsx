@@ -800,7 +800,12 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
       over: { id: 'pool' },
     });
     expect(mockDeleteVisit).toHaveBeenCalledOnce();
-    expect(mockDeleteVisit.mock.calls[0][0]).toBe('v-1');
+    // W18 Codex-fix 重大-2: useDeleteVisit は { id, cascadeFixedVisit } を受ける
+    // 形に変わった。プールへの戻しは cascade=false (固定枠は保持).
+    expect(mockDeleteVisit.mock.calls[0][0]).toEqual({
+      id: 'v-1',
+      cascadeFixedVisit: false,
+    });
     // place-and-fix は呼ばれていない
     expect(mockPlaceAndFix).not.toHaveBeenCalled();
   });
@@ -863,7 +868,11 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
       over: { id: 'course-day-cell:1:tpl-A:11:00' }, // 火曜 11:00 へ移動
     });
     expect(mockDeleteVisit).toHaveBeenCalledOnce();
-    expect(mockDeleteVisit.mock.calls[0][0]).toBe('v-1');
+    // W18 Codex-fix 重大-2: B-5 配置移動は cascade=true で旧曜日の固定枠も削除
+    expect(mockDeleteVisit.mock.calls[0][0]).toEqual({
+      id: 'v-1',
+      cascadeFixedVisit: true,
+    });
     expect(mockPlaceAndFix).toHaveBeenCalledOnce();
     const placeArg = mockPlaceAndFix.mock.calls[0][0];
     expect(placeArg.patient_id).toBe('p-1');
