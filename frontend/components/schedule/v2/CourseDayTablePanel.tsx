@@ -50,7 +50,7 @@ import { addDays } from '@/components/schedule/WeekSelector';
 import { ApiError } from '@/lib/api-client';
 import { fetcher } from '@/lib/api/fetcher';
 import { useCourses, useUpdateCourse, type CourseV2Read } from '@/lib/queries/courses';
-import { useGenerateWeek } from '@/lib/queries/generate_week';
+import { useGenerateWeekOnly } from '@/lib/queries/generate_week';
 import { useAssignStaffOnly } from '@/lib/queries/assign_staff_only';
 import { useOffices } from '@/lib/queries/offices';
 import { usePatients } from '@/lib/queries/patients';
@@ -276,7 +276,9 @@ export function CourseDayTablePanel({
         patient_id: v.patient_id,
         patient_name: patient?.name ?? v.patient_name ?? null,
         patient_address: patient?.address ?? null,
-        required_staff_count: 1, // VisitRead (v1 schema) では未定義のため既定 1
+        // BE `_serialize_visit` が常に返す (default 1, 2 名体制で 2)。
+        // 古い payload で欠落しても 1 にフォールバックする。
+        required_staff_count: (v.required_staff_count ?? 1) as 1 | 2,
         start_slot: slot,
       });
       m.set(cid, arr);
@@ -355,7 +357,7 @@ export function CourseDayTablePanel({
   };
 
   // ─── 「週を生成」 (Layer 1) / 「自動割付」 (Layer 3) ────────────
-  const generateWeekMut = useGenerateWeek();
+  const generateWeekMut = useGenerateWeekOnly();
   const assignStaffOnlyMut = useAssignStaffOnly();
 
   const handleGenerateWeek = async () => {
