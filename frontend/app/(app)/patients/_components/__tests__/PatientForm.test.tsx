@@ -91,14 +91,20 @@ vi.mock('@/components/ui/checkbox', () => ({
   Checkbox: ({
     checked,
     onCheckedChange,
+    ...rest
   }: {
     checked?: boolean;
     onCheckedChange?: (v: boolean) => void;
+    [key: string]: unknown;
   }) => (
     <input
       type="checkbox"
       checked={checked}
       onChange={(e) => onCheckedChange?.(e.target.checked)}
+      // W18 Codex-fix 軽-1: data-testid / aria-label など、追加 props を
+      // 透過させて requires-multiple-staff-checkbox を testing-library から
+      // 拾えるようにする。
+      {...rest}
     />
   ),
 }));
@@ -248,6 +254,82 @@ describe('PatientForm — W12-FE 住所→拠点自動判定', () => {
     // OfficeCombobox の値は空のまま
     const combobox = screen.getByTestId('office-combobox') as HTMLSelectElement;
     expect(combobox.value).toBe('');
+  });
+
+  // ─── Wave 18 Codex-fix 軽-1: requires_multiple_staff checkbox round-trip ───
+  // BE migration 0024 で追加された患者単位の「2 名同行必須」フラグが
+  // PatientForm から正しく送られているかを担保する。
+
+  it('6. requires_multiple_staff: 既定 false でレンダーされる', async () => {
+    setupMocks();
+
+    render(<PatientForm onSubmit={vi.fn()} />);
+
+    const checkbox = screen.getByTestId('requires-multiple-staff-checkbox') as HTMLInputElement;
+    expect(checkbox).toBeInTheDocument();
+    expect(checkbox.checked).toBe(false);
+  });
+
+  it('7. requires_multiple_staff: toggle で onChange が反応する', async () => {
+    setupMocks();
+
+    render(<PatientForm onSubmit={vi.fn()} />);
+
+    const checkbox = screen.getByTestId('requires-multiple-staff-checkbox') as HTMLInputElement;
+    expect(checkbox.checked).toBe(false);
+
+    act(() => {
+      fireEvent.click(checkbox);
+    });
+
+    expect(checkbox.checked).toBe(true);
+
+    // 再 toggle で false に戻る
+    act(() => {
+      fireEvent.click(checkbox);
+    });
+    expect(checkbox.checked).toBe(false);
+  });
+
+  it('8. requires_multiple_staff: form submit ペイロードに含まれる', async () => {
+    setupMocks();
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+
+    render(<PatientForm onSubmit={onSubmit} />);
+
+    // 必須フィールド (code / name) を入力する
+    // Field コンポーネントは label の中に span (* マーカー含む) を入れているため、
+    // テキスト一致は完全一致ではなく部分一致 (regex) で安全に取る。
+    const codeInput = screen.getByLabelText(/患者コード/) as HTMLInputElement;
+    const nameInput = screen.getByLabelText(/氏名/) as HTMLInputElement;
+    act(() => {
+      fireEvent.change(codeInput, { target: { value: 'P-9999' } });
+      fireEvent.change(nameInput, { target: { value: 'テスト患者' } });
+    });
+
+    // checkbox をチェック
+    const checkbox = screen.getByTestId('requires-multiple-staff-checkbox') as HTMLInputElement;
+    act(() => {
+      fireEvent.click(checkbox);
+    });
+    expect(checkbox.checked).toBe(true);
+
+    // submit
+    const submitBtn = screen.getByRole('button', { name: '保存' });
+    await act(async () => {
+      fireEvent.click(submitBtn);
+    });
+    // RHF の async validation を flush
+    await flushDebounceAndMutation(0);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(onSubmit).toHaveBeenCalled();
+    const submittedValues = onSubmit.mock.calls[0]?.[0] as
+      | { requires_multiple_staff?: boolean }
+      | undefined;
+    expect(submittedValues?.requires_multiple_staff).toBe(true);
   });
 
   it('5. ユーザー手動選択後は住所変更で auto-set されない', async () => {
