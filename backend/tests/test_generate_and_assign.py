@@ -190,8 +190,10 @@ async def test_generate_and_assign_idempotent(client, db) -> None:
     assert res1.status_code == 200
     visits1 = res1.json()["visits_created"]
 
-    # 1 回目の visits の id を記録
-    rows1 = (await db.scalars(select(Visit).where(Visit.source == "auto"))).all()
+    # 1 回目の visits の id を記録 (W34: soft-delete 後の active のみ)
+    rows1 = (
+        await db.scalars(select(Visit).where(Visit.source == "auto", Visit.deleted_at.is_(None)))
+    ).all()
     ids1 = {v.id for v in rows1}
 
     # 2 回目
@@ -205,7 +207,9 @@ async def test_generate_and_assign_idempotent(client, db) -> None:
     assert visits2 == visits1  # 同じ件数
 
     # 2 回目の visits は別 ID (= 削除→再生成)
-    rows2 = (await db.scalars(select(Visit).where(Visit.source == "auto"))).all()
+    rows2 = (
+        await db.scalars(select(Visit).where(Visit.source == "auto", Visit.deleted_at.is_(None)))
+    ).all()
     ids2 = {v.id for v in rows2}
     assert ids1.isdisjoint(ids2), "visits should have been recreated"
 

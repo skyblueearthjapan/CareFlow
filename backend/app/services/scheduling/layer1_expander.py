@@ -38,12 +38,12 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass, field
-from datetime import date, time
+from datetime import UTC, date, datetime, time
 from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -891,21 +891,37 @@ class Layer1Expander:
         week_monday: date,
         patient_ids: list[UUID],
     ) -> None:
-        """当該週の auto 生成 visit を削除 (冪等性のため)。
+        """当該週の auto 生成 visit を **論理削除** (冪等性のため).
 
-        completed / cancelled / source != auto は保護対象なので残す。
-        soft-delete (deleted_at) は行わず物理削除する: Layer 1 が再生成
-        するたびに古い auto 行が積み上がるのを防ぐため。
+        W34: 物理 delete から **論理削除 (deleted_at = now())** に切替.
+            - 監査ログ / visit_staff_assignments の整合性を保つ
+            - 万一の誤判定でも ``deleted_at = NULL`` で復旧可能
+            - migration 0026 (visits partial UNIQUE WHERE deleted_at IS NULL)
+              が再生成行と衝突しないため、論理削除で UNIQUE は逃れる
+
+        WHERE 句は **AND** 連鎖で確実に絞り込む:
+            - patient_id IN (...) (拠点スコープ)
+            - week_monday <= visit_date <= week_sunday (当該週)
+            - source = 'auto' (人手入力 / kaipoke 等を保護)
+            - status = 'planned' (completed / in_progress / cancelled を保護)
+            - deleted_at IS NULL (既に論理削除された行は二重更新しない)
+
+        bulk UPDATE を 1 文で発行し ORM ローダー経由のレース問題を避ける.
+        ``synchronize_session=False`` を指定しないと SQLAlchemy が二段
+        SELECT を発行するため明示する.
         """
         if not patient_ids:
             return
         week_sunday = date.fromordinal(week_monday.toordinal() + 6)
+        now = datetime.now(UTC)
 
-        # 削除対象 = 週内 + source=auto + status=planned のみ。
+        # bulk UPDATE: 該当行の deleted_at を一括更新.
+        # 削除対象 = 週内 + source=auto + status=planned + deleted_at IS NULL.
         # status in (completed/cancelled/in_progress) と source != auto は
-        # 履歴・人手入力の保護対象。
-        rows = await db.scalars(
-            select(Visit).where(
+        # 履歴・人手入力の保護対象なので絶対に触らない.
+        await db.execute(
+            update(Visit)
+            .where(
                 Visit.patient_id.in_(patient_ids),
                 Visit.visit_date >= week_monday,
                 Visit.visit_date <= week_sunday,
@@ -913,9 +929,9 @@ class Layer1Expander:
                 Visit.status == LAYER1_VISIT_STATUS,
                 Visit.deleted_at.is_(None),
             )
+            .values(deleted_at=now)
+            .execution_options(synchronize_session=False),
         )
-        for visit in rows.all():
-            await db.delete(visit)
         # flush は呼び出し側 (expand_week 末尾) でまとめて
 
     async def _expand_entries_to_visits(
