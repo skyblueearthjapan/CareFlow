@@ -460,6 +460,100 @@ curl -fsS http://127.0.0.1:18001/api/v1/healthz
 
 ---
 
+## Wave 18 デプロイ補足手順
+
+> Wave 18 を本番 VPS (`root@72.60.211.213`) に反映する際の追加手順。
+> 通常の `git pull` → `docker compose up -d --build` → `alembic upgrade head` に加え、
+> **cleanup script の手動実行** が必須。
+
+### W18-1. migration 0024 適用
+
+migration 0024 (`patients.requires_multiple_staff boolean DEFAULT false`) は
+`alembic upgrade head` で自動適用される。特別な操作は不要。
+
+```bash
+# 通常の upgrade 手順（Phase E と同一）
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env \
+    run --rm backend alembic upgrade head
+
+# 単一 head を確認
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env \
+    run --rm backend alembic heads
+```
+
+成功条件: `alembic heads` が 1 行を返し、`patients` テーブルに `requires_multiple_staff` 列が存在すること。
+
+```bash
+# 列の存在確認
+docker exec carelink-postgres psql -U carelink -d carelink \
+    -c "\d patients" | grep requires_multiple_staff
+```
+
+### W18-2. cleanup script 実行（本番手動必須）
+
+Wave 16 デプロイ時の `E→M 丸め` バグにより `course.code != course_template.label` の
+不整合行が本番 DB に残存している可能性がある。place-and-fix の 500 バグ恒久対策と
+組み合わせて、本番環境でのみ手動実行が必要。
+
+**Step 1: dry-run で対象行を確認（DB 変更なし）**
+
+```bash
+docker exec carelink-backend python scripts/cleanup_w16_course_code_mismatch.py
+```
+
+出力例:
+```
+[DRY-RUN] 対象件数: 3 行
+  id=<uuid1> code=E -> label=M
+  id=<uuid2> code=E -> label=M
+  id=<uuid3> code=E -> label=M
+変更を適用するには --apply フラグを付けて再実行してください。
+```
+
+対象 0 行の場合: cleanup 不要。Step 2 は不要。
+
+**Step 2: 実 UPDATE 実行**
+
+```bash
+docker exec carelink-backend python scripts/cleanup_w16_course_code_mismatch.py --apply
+```
+
+成功条件: exit 0 + 対象行が 0 件になることを dry-run で再確認。
+
+```bash
+# 再 dry-run で 0 件を確認
+docker exec carelink-backend python scripts/cleanup_w16_course_code_mismatch.py
+```
+
+**exit 1 の場合（collision 残存）**:
+
+1. dry-run 出力で collision 行の `id` / `code` / `label` を確認する
+2. DBA が個別行を `UPDATE courses SET code = '<label>' WHERE id = '<id>';` で手動修正
+3. cleanup script を再実行して exit 0 を確認
+
+### W18-3. place-and-fix 500 バグ修正の確認
+
+本番で drag & drop（visit の時間スロットへのドロップ）を実行し、
+`POST /api/v1/schedule/place-and-fix` が 500 を返さないことを確認する。
+
+```bash
+# backend ログをリアルタイム監視しながら操作
+docker logs -f carelink-backend 2>&1 | grep -E "500|place.and.fix|IntegrityError"
+```
+
+正常動作: ログに IntegrityError が記録されず、ドロップが即座に反映される。
+
+### W18 完了チェックリスト
+
+- [ ] `alembic heads` が単一 head を返す
+- [ ] `patients` テーブルに `requires_multiple_staff` 列が存在する
+- [ ] cleanup script dry-run で対象 0 件（または --apply 後に 0 件）
+- [ ] `/schedule` 画面でプール「週」タブが表示される
+- [ ] プールカードが希望曜日別グループで表示される
+- [ ] 配置済み visit のドラッグ移動が 500 なく動作する
+
+---
+
 ## Phase 5: 監視・バックアップ自動化 (Wave 5-B)
 
 > **前提条件**: Phase H 通過 (本番疎通 OK)、root SSH、`webhook` URL (Slack/Discord) を払い出し済み (5-5 の通知用、未設定でも noop で動作)
