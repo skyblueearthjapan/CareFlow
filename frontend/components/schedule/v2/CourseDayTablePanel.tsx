@@ -56,6 +56,7 @@ import { useOffices } from '@/lib/queries/offices';
 import { usePatients } from '@/lib/queries/patients';
 import { usePlaceAndFix } from '@/lib/queries/place_and_fix';
 import { useStaffList } from '@/lib/queries/staff';
+import { buildStaffEventsMap, useWeekStaffEvents } from '@/lib/queries/staff-events';
 import { useDeleteVisit, useVisits } from '@/lib/queries/visits';
 import { capacityForWeekday, type CourseTemplateRead } from '@/lib/schemas/v2/course_template';
 import {
@@ -270,6 +271,19 @@ export function CourseDayTablePanel({
     }
     return m;
   }, [allStaff]);
+
+  // ─── Wave 27 Phase B-1: 当週全スタッフの events バッチ取得 ─────────────
+  const allStaffIds = useMemo(() => allStaff.map((s) => s.id), [allStaff]);
+  const weekStartDate = useMemo(() => weekStart, [weekStart]);
+  const weekEndDate = useMemo(() => addDays(weekStart, 6), [weekStart]);
+  const { data: staffEventsData } = useWeekStaffEvents(allStaffIds, weekStartDate, weekEndDate);
+
+  /** staffId → EventRead[] のルックアップ Map */
+  const staffEventsByStaff = useMemo(
+    () => buildStaffEventsMap(allStaffIds, staffEventsData),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [allStaffIds.join(','), staffEventsData],
+  );
 
   // ─── 表示するコース一覧: 「拠点 × テンプレート」を活性曜日 capacity > 0 でフィルタ ──
   const courseTablesForActiveDay = useMemo(() => {
@@ -817,6 +831,7 @@ export function CourseDayTablePanel({
                         officeName={officeName}
                         visits={visits}
                         staffOptions={staffOptions}
+                        staffEventsByStaff={staffEventsByStaff}
                         canEdit={canEdit}
                         isStaffMutating={updateCourseMut.isPending}
                         onChangeAssignedStaff={(staffId) => {

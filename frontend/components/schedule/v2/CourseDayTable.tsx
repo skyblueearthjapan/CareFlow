@@ -24,6 +24,7 @@ import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
 import { capacityForWeekday, capacityKeyForWeekday } from '@/lib/schemas/v2/course_template';
 import type { CourseV2Read } from '@/lib/queries/courses';
 import type { StaffRead } from '@/lib/schemas/staff';
+import type { EventRead } from '@/lib/schemas/staff-events';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Constants — 時刻軸 (B-2 / Excel 完全準拠)
@@ -132,6 +133,47 @@ export interface CourseGridVisit {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// Wave 27 Phase B: Event conflict helpers
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * 指定スタッフが当該曜日に event を持つ場合、そのラベル文字列を返す。
+ * 複数 event がある場合は最初の 1 件のみ使用。
+ * weekday: 0=Mon, 1=Tue, ..., 5=Sat (JS getDay: 0=Sun, 1=Mon → 変換必要)
+ */
+export function getStaffEventsForWeekday(
+  staffId: string,
+  weekday: number,
+  staffEventsByStaff: Map<string, EventRead[]>,
+  weekDayDate?: Date,
+): EventRead[] {
+  const events = staffEventsByStaff.get(staffId) ?? [];
+  return events.filter((ev) => {
+    const evDate = new Date(ev.date + 'T00:00:00');
+    // weekday: 0=Mon → JS getDay: 1; 5=Sat → 6; 6=Sun → 0
+    const jsDay = (weekday + 1) % 7;
+    // If we have the actual date, match exactly. Otherwise match by weekday.
+    if (weekDayDate) {
+      return ev.date === weekDayDate.toISOString().slice(0, 10);
+    }
+    return evDate.getDay() === jsDay;
+  });
+}
+
+/**
+ * visit の start_time と event の start_time/end_time の重複チェック。
+ * visit の start_slot (HH:MM) が event の時間帯内に入るかどうか判定。
+ */
+export function hasEventConflict(visitStartSlot: string, events: EventRead[]): EventRead | null {
+  for (const ev of events) {
+    if (visitStartSlot >= ev.start_time && visitStartSlot < ev.end_time) {
+      return ev;
+    }
+  }
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // Component
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -145,6 +187,11 @@ export interface CourseDayTableProps {
   visits: CourseGridVisit[];
   /** 拠点に属する active staff (担当 dropdown 用). */
   staffOptions: StaffRead[];
+  /**
+   * Wave 27 Phase B-2/B-3: staffId → EventRead[] のマップ。
+   * 担当 dropdown の option に event ラベルを付与し、セル level の warning バッジを出す。
+   */
+  staffEventsByStaff?: Map<string, EventRead[]>;
   canEdit: boolean;
   /** 担当 dropdown 変更時のハンドラ. course が null のときは null 渡し (新規 case). */
   onChangeAssignedStaff: (staffId: string | null) => void;
@@ -159,10 +206,12 @@ export function CourseDayTable({
   officeName,
   visits,
   staffOptions,
+  staffEventsByStaff,
   canEdit,
   onChangeAssignedStaff,
   isStaffMutating,
 }: CourseDayTableProps) {
+  const eventsMap = staffEventsByStaff ?? new Map<string, EventRead[]>();
   // visits を slot ("HH:MM") → CourseGridVisit[] にバケット化.
   const occupants = useMemo(() => {
     const m = new Map<string, CourseGridVisit[]>();
@@ -216,11 +265,16 @@ export function CourseDayTable({
             }
           >
             <option value="">未割当</option>
-            {staffOptions.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
-            ))}
+            {staffOptions.map((s) => {
+              const dayEvents = getStaffEventsForWeekday(s.id, weekday, eventsMap);
+              const ev = dayEvents[0];
+              const label = ev ? `${s.name} [${ev.type} ${ev.start_time}-${ev.end_time}]` : s.name;
+              return (
+                <option key={s.id} value={s.id}>
+                  {label}
+                </option>
+              );
+            })}
           </select>
         </label>
       </div>
@@ -259,6 +313,8 @@ export function CourseDayTable({
               time={time}
               occupants={occupants.get(time) ?? []}
               canEdit={canEdit}
+              assignedStaffId={assignedStaffId}
+              staffEventsByStaff={eventsMap}
             />
           ))}
         </div>
@@ -277,9 +333,27 @@ interface CourseTimeRowProps {
   time: string;
   occupants: CourseGridVisit[];
   canEdit: boolean;
+  /** Wave 27 Phase B-3: 担当スタッフ ID (course.assigned_staff_id). */
+  assignedStaffId?: string | null;
+  /** Wave 27 Phase B-3: staffId → EventRead[] のマップ. */
+  staffEventsByStaff?: Map<string, EventRead[]>;
 }
 
-function CourseTimeRow({ weekday, templateId, time, occupants, canEdit }: CourseTimeRowProps) {
+function CourseTimeRow({
+  weekday,
+  templateId,
+  time,
+  occupants,
+  canEdit,
+  assignedStaffId,
+  staffEventsByStaff,
+}: CourseTimeRowProps) {
+  // Wave 27 Phase B-3: 担当スタッフがこのスロット時間帯にイベントを持つか判定
+  const eventsMap = staffEventsByStaff ?? new Map<string, EventRead[]>();
+  const conflictingEvent =
+    assignedStaffId && occupants.length > 0
+      ? hasEventConflict(time, getStaffEventsForWeekday(assignedStaffId, weekday, eventsMap))
+      : null;
   const droppableId = courseDayCellDroppableId(weekday, templateId, time);
   const { isOver, setNodeRef } = useDroppable({
     id: droppableId,
@@ -341,6 +415,16 @@ function CourseTimeRow({ weekday, templateId, time, occupants, canEdit }: Course
                     canEdit={canEdit}
                   />
                 ))}
+                {/* Wave 27 Phase B-3: 担当スタッフのイベント重複 warning バッジ */}
+                {conflictingEvent ? (
+                  <span
+                    className="inline-flex items-center gap-0.5 rounded bg-yellow-100 px-1 py-0.5 text-[10px] font-semibold text-yellow-800 ring-1 ring-yellow-300"
+                    data-testid="event-conflict-badge"
+                    title={`担当者: ${conflictingEvent.type} ${conflictingEvent.start_time}-${conflictingEvent.end_time}`}
+                  >
+                    ⚠ 担当不可
+                  </span>
+                ) : null}
               </div>
             </div>
             <div className="border-r border-border-default/40 px-1 py-0.5 text-[10px] leading-tight text-text-secondary">
