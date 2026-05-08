@@ -131,11 +131,25 @@ vi.mock('@/lib/utils', () => ({
 const mockOffices = vi.fn();
 const mockPatients = vi.fn();
 const mockStaffList = vi.fn();
-const mockTemplates = vi.fn();
+const mockUseQueries = vi.fn();
 const mockVisits = vi.fn();
 const mockCourses = vi.fn();
 const mockPlaceAndFix = vi.fn();
 const mockGenerateAndAssign = vi.fn();
+
+vi.mock('@tanstack/react-query', async (importOriginal) => {
+  // eslint-disable-next-line @typescript-eslint/consistent-type-imports
+  type TanstackQuery = typeof import('@tanstack/react-query');
+  const actual = await importOriginal<TanstackQuery>();
+  return {
+    ...actual,
+    useQueries: (...args: unknown[]) => mockUseQueries(...args),
+  };
+});
+
+vi.mock('@/lib/api/fetcher', () => ({
+  fetcher: vi.fn(),
+}));
 
 vi.mock('@/lib/queries/offices', () => ({
   useOffices: (...args: unknown[]) => mockOffices(...args),
@@ -145,9 +159,6 @@ vi.mock('@/lib/queries/patients', () => ({
 }));
 vi.mock('@/lib/queries/staff', () => ({
   useStaffList: (...args: unknown[]) => mockStaffList(...args),
-}));
-vi.mock('@/lib/queries/course_templates', () => ({
-  useCourseTemplates: (...args: unknown[]) => mockTemplates(...args),
 }));
 vi.mock('@/lib/queries/visits', () => ({
   useVisits: (...args: unknown[]) => mockVisits(...args),
@@ -196,10 +207,8 @@ function setupHooks(opts: SetupOpts = {}) {
     data: opts.staff ?? [],
     isLoading: false,
   });
-  mockTemplates.mockReturnValue({
-    data: opts.templates ?? [],
-    isLoading: false,
-  });
+  // useQueries は配列を返す。テンプレートデータは 1 クエリにまとめて返す。
+  mockUseQueries.mockReturnValue([{ data: opts.templates ?? [], isLoading: false }]);
   mockVisits.mockReturnValue({
     data: { items: opts.visits ?? [], truncated: false },
     isLoading: false,
@@ -612,6 +621,163 @@ describe('StaffWeekTablePanel (Wave 16 Phase B)', () => {
       over: { id: 'staff-cell:11111111-1111-1111-1111-111111111111:0:09:00' },
     });
     expect(mockPlaceAndFix).not.toHaveBeenCalled();
+  });
+
+  it('11. 全拠点モードで本店・都賀両スタッフへのドロップが正しく逆引きできる', async () => {
+    mockPlaceAndFix.mockResolvedValue({ visit: {}, fixed_visit: null });
+
+    // 本店と都賀の 2 拠点テンプレートを useQueries で返す
+    mockUseQueries.mockReturnValue([
+      {
+        data: [
+          {
+            id: 'tpl-A-honten',
+            office_id: 'office-honten',
+            label: 'A',
+            capacity_mon: 6,
+            capacity_tue: 6,
+            capacity_wed: 6,
+            capacity_thu: 6,
+            capacity_fri: 6,
+            capacity_sat: 6,
+            capacity_sun: 0,
+            notes: null,
+            created_at: '',
+            updated_at: '',
+          },
+        ],
+        isLoading: false,
+      },
+      {
+        data: [
+          {
+            id: 'tpl-B-tsuga',
+            office_id: 'office-tsuga',
+            label: 'B',
+            capacity_mon: 5,
+            capacity_tue: 5,
+            capacity_wed: 5,
+            capacity_thu: 5,
+            capacity_fri: 5,
+            capacity_sat: 5,
+            capacity_sun: 0,
+            notes: null,
+            created_at: '',
+            updated_at: '',
+          },
+        ],
+        isLoading: false,
+      },
+    ]);
+
+    mockOffices.mockReturnValue({
+      allOffices: [
+        { id: 'office-honten', name: '本店' },
+        { id: 'office-tsuga', name: '都賀' },
+      ],
+      isLoading: false,
+    });
+    mockPatients.mockReturnValue({
+      data: {
+        items: [
+          {
+            id: 'patient-1',
+            name: '山田 太郎',
+            kana: null,
+            status: 'active',
+            weekly_pattern: { service_minutes: 60 },
+          },
+          {
+            id: 'patient-2',
+            name: '佐藤 花子',
+            kana: null,
+            status: 'active',
+            weekly_pattern: { service_minutes: 30 },
+          },
+        ],
+      },
+      isLoading: false,
+    });
+    mockStaffList.mockReturnValue({
+      data: [
+        {
+          id: 'staff-honten',
+          name: '田中 一郎',
+          kana: 'タナカイチロウ',
+          status: 'active',
+          role: 'staff',
+          primary_office_id: 'office-honten',
+          is_trainee: false,
+        },
+        {
+          id: 'staff-tsuga',
+          name: '関谷 二郎',
+          kana: 'セキヤジロウ',
+          status: 'active',
+          role: 'staff',
+          primary_office_id: 'office-tsuga',
+          is_trainee: false,
+        },
+      ],
+      isLoading: false,
+    });
+    mockVisits.mockReturnValue({ data: { items: [], truncated: false }, isLoading: false });
+    mockCourses.mockReturnValue({
+      data: [
+        // 本店スタッフ: 月曜 A コース
+        {
+          id: 'course-honten-1',
+          iso_year: 2026,
+          iso_week: 19,
+          weekday: 0,
+          code: 'A',
+          office_id: 'office-honten',
+          assigned_staff_id: 'staff-honten',
+          course_status: 'staff_assigned',
+          deleted_at: null,
+        },
+        // 都賀スタッフ: 月曜 B コース
+        {
+          id: 'course-tsuga-1',
+          iso_year: 2026,
+          iso_week: 19,
+          weekday: 0,
+          code: 'B',
+          office_id: 'office-tsuga',
+          assigned_staff_id: 'staff-tsuga',
+          course_status: 'staff_assigned',
+          deleted_at: null,
+        },
+      ],
+      isLoading: false,
+    });
+
+    render(
+      <StaffWeekTablePanel
+        weekStart={monday(2026, 5, 4)}
+        officeId={null}
+        canEdit={true}
+        showAcceptanceLayer={false}
+      />,
+    );
+
+    // 本店スタッフ (田中) へのドロップ → tpl-A-honten が使われる
+    await dndState.capturedHandlers.onDragEnd!({
+      active: { id: 'pool-patient:patient-1' },
+      over: { id: 'staff-cell:staff-honten:0:09:00' },
+    });
+    expect(mockPlaceAndFix).toHaveBeenCalledOnce();
+    expect(mockPlaceAndFix.mock.calls[0][0].course_template_id).toBe('tpl-A-honten');
+
+    mockPlaceAndFix.mockClear();
+
+    // 都賀スタッフ (関谷) へのドロップ → tpl-B-tsuga が使われる
+    await dndState.capturedHandlers.onDragEnd!({
+      active: { id: 'pool-patient:patient-2' },
+      over: { id: 'staff-cell:staff-tsuga:0:10:00' },
+    });
+    expect(mockPlaceAndFix).toHaveBeenCalledOnce();
+    expect(mockPlaceAndFix.mock.calls[0][0].course_template_id).toBe('tpl-B-tsuga');
   });
 });
 

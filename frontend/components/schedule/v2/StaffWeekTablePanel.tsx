@@ -38,6 +38,8 @@ import {
   type DragEndEvent,
   type DragStartEvent,
 } from '@dnd-kit/core';
+import { useQueries } from '@tanstack/react-query';
+import { useSession } from 'next-auth/react';
 import { format } from 'date-fns';
 import { Loader2, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
@@ -47,8 +49,8 @@ import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { addDays } from '@/components/schedule/WeekSelector';
 import { ApiError } from '@/lib/api-client';
+import { fetcher } from '@/lib/api/fetcher';
 import { useCourses, type CourseV2Read } from '@/lib/queries/courses';
-import { useCourseTemplates } from '@/lib/queries/course_templates';
 import { useGenerateAndAssign } from '@/lib/queries/generate_and_assign';
 import { useOffices } from '@/lib/queries/offices';
 import { usePatients } from '@/lib/queries/patients';
@@ -204,11 +206,10 @@ export function StaffWeekTablePanel({
     });
   }, [allStaff, officeId]);
 
-  // ─── Course templates (全表示拠点ぶん) ────────────────────────────
-  // Course → Template の逆引きには office_id 別のテンプレートが必要なので、
-  // 表示対象拠点ごとに並列取得する。useCourseTemplates は単一 office_id 用なので
-  // ここでは「全拠点モードでも displayStaff の primary_office_id 集合分だけ」
-  // 取得する。多数 office があるケースは MVP では想定しないため簡易実装。
+  // ─── Course templates (全表示拠点を並列 fetch) ─────────────────────
+  // 全拠点モード (officeId=null) 時、複数拠点のスタッフが混在するため
+  // useQueries で全 office_id 並列クエリし、結果を結合する。
+  // (旧実装は officeIdsToFetch[0] の 1 拠点のみ → 2 拠点目以降ドロップ全滅)
   const officeIdsToFetch = useMemo(() => {
     if (officeId) return [officeId];
     const set = new Set<string>();
@@ -218,11 +219,27 @@ export function StaffWeekTablePanel({
     return Array.from(set);
   }, [officeId, displayStaff]);
 
-  // 単一 useCourseTemplates 呼び出しを 1 office に絞る MVP 実装. 全拠点モード時は
-  // 先頭拠点のみテンプレート取得し、複数拠点合算が必要な場合は別 wave で対応.
-  const primaryOfficeId = officeIdsToFetch[0] ?? null;
-  const templatesQuery = useCourseTemplates({ office_id: primaryOfficeId });
-  const templates = useMemo(() => templatesQuery.data ?? [], [templatesQuery.data]);
+  const { data: session, status: sessionStatus } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+
+  const templatesQueries = useQueries({
+    queries: officeIdsToFetch.map((oid) => ({
+      queryKey: ['course-templates', 'list', oid],
+      enabled: sessionStatus === 'authenticated' && Boolean(oid),
+      queryFn: () =>
+        fetcher<CourseTemplateRead[]>(
+          `/api/v1/course-templates?office_id=${encodeURIComponent(oid)}`,
+          { accessToken, refreshToken },
+        ),
+    })),
+  });
+
+  const templates = useMemo(
+    () => templatesQueries.flatMap((q) => q.data ?? []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [templatesQueries],
+  );
 
   // ─── Patients (プール + 氏名解決) ─────────────────────────────────
   const patientsQuery = usePatients({ limit: 500 });
