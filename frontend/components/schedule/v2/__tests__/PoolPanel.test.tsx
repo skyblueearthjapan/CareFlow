@@ -1,9 +1,13 @@
 /**
- * PoolPanel — Wave 18 Phase B-3 / B-4 テスト.
+ * PoolPanel — Wave 18 Phase B-3 / B-4 + W37 Phase 3-B テスト.
  *
  * - poolGroupKey / poolGroupLabel pure-function unit tests (B-3)
  * - PoolGroupedByWeekday: 希望曜日別グループ化 + 希望なしは末尾 (B-3)
  * - formatPreferredTimeLabel: WeeklyPattern → ラベル変換 (B-4)
+ * - parsePoolDraggableId / buildPoolDraggableId helper (W37 Phase 3-B)
+ * - 複数スタッフ対応患者は slot 0/1 の 2 カードに分かれる (W37 Phase 3-B)
+ * - 片 slot 配置済みなら未配置 slot のカードのみ残る (W37 Phase 3-B)
+ * - グループヘッダに「内 2 名対応 N 名」サブカウントが出る (W37 Phase 3-B)
  */
 import * as React from 'react';
 import { describe, it, expect, vi } from 'vitest';
@@ -31,7 +35,13 @@ vi.mock('@/lib/utils', () => ({
       .join(' '),
 }));
 
-import { PoolGroupedByWeekday, poolGroupKey, poolGroupLabel } from '../PoolPanel';
+import {
+  PoolGroupedByWeekday,
+  poolGroupKey,
+  poolGroupLabel,
+  buildPoolDraggableId,
+  parsePoolDraggableId,
+} from '../PoolPanel';
 import { formatPreferredTimeLabel, emptyWeeklyPattern } from '@/lib/schemas/patient';
 import type { PatientRead } from '@/lib/schemas/patient';
 
@@ -158,5 +168,256 @@ describe('PoolGroupedByWeekday (B-3)', () => {
   it('プールが空ならプレースホルダー文を表示', () => {
     render(<PoolGroupedByWeekday patients={[]} renderCard={() => <span />} />);
     expect(screen.getByText(/プールは空です/)).toBeInTheDocument();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// W37 Phase 3-B: parsePoolDraggableId / buildPoolDraggableId
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('buildPoolDraggableId / parsePoolDraggableId (W37 Phase 3-B)', () => {
+  it('slotIndex 未指定 → 旧形式 "pool-patient:{id}"', () => {
+    expect(buildPoolDraggableId('p1')).toBe('pool-patient:p1');
+    expect(buildPoolDraggableId('p1', null)).toBe('pool-patient:p1');
+    expect(buildPoolDraggableId('p1', undefined)).toBe('pool-patient:p1');
+  });
+
+  it('slotIndex=0/1 → 新形式 "pool-patient:{id}:slot:0|1"', () => {
+    expect(buildPoolDraggableId('p1', 0)).toBe('pool-patient:p1:slot:0');
+    expect(buildPoolDraggableId('p1', 1)).toBe('pool-patient:p1:slot:1');
+  });
+
+  it('旧形式 "pool-patient:p1" → slotIndex=null (後方互換)', () => {
+    expect(parsePoolDraggableId('pool-patient:p1')).toEqual({
+      patientId: 'p1',
+      slotIndex: null,
+    });
+  });
+
+  it('UUID も含む旧形式 → slotIndex=null', () => {
+    expect(parsePoolDraggableId('pool-patient:99999999-9999-9999-9999-999999999999')).toEqual({
+      patientId: '99999999-9999-9999-9999-999999999999',
+      slotIndex: null,
+    });
+  });
+
+  it('新形式 "pool-patient:p1:slot:0" → slotIndex=0', () => {
+    expect(parsePoolDraggableId('pool-patient:p1:slot:0')).toEqual({
+      patientId: 'p1',
+      slotIndex: 0,
+    });
+  });
+
+  it('新形式 "pool-patient:p1:slot:1" → slotIndex=1', () => {
+    expect(parsePoolDraggableId('pool-patient:p1:slot:1')).toEqual({
+      patientId: 'p1',
+      slotIndex: 1,
+    });
+  });
+
+  it('UUID + slot サフィックス → 正しく分解', () => {
+    expect(
+      parsePoolDraggableId('pool-patient:99999999-9999-9999-9999-999999999999:slot:1'),
+    ).toEqual({
+      patientId: '99999999-9999-9999-9999-999999999999',
+      slotIndex: 1,
+    });
+  });
+
+  it('プレフィックス不一致 (e.g. visit:xxx) → null', () => {
+    expect(parsePoolDraggableId('visit:abc')).toBeNull();
+    expect(parsePoolDraggableId('something-else')).toBeNull();
+    expect(parsePoolDraggableId('')).toBeNull();
+  });
+
+  it('round-trip: build → parse で同じ patient/slot を得る', () => {
+    for (const pid of ['p1', 'abc-def', '12345']) {
+      for (const slot of [null, 0, 1] as const) {
+        const built = buildPoolDraggableId(pid, slot);
+        const parsed = parsePoolDraggableId(built);
+        expect(parsed).toEqual({ patientId: pid, slotIndex: slot });
+      }
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// W37 Phase 3-B: PoolGroupedByWeekday の 2 カード化挙動
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('PoolGroupedByWeekday — multi-staff 2 cards (W37 Phase 3-B)', () => {
+  function makeMultiPatient(
+    id: string,
+    name: string,
+    requiresMulti: boolean,
+    preferredWeekdays: string[] = ['Mon'],
+  ): PatientRead {
+    return {
+      id,
+      code: id,
+      name,
+      kana: null,
+      sex: null,
+      status: 'active',
+      insurance: null,
+      address: null,
+      lat: null,
+      lng: null,
+      primary_office_id: null,
+      sex_restriction: null,
+      requires_multiple_staff: requiresMulti,
+      note: null,
+      weekly_pattern: { preferred_weekdays: preferredWeekdays },
+      special_weekly_pattern: null,
+      special_week_active: [],
+      created_at: '',
+      updated_at: '',
+      deleted_at: null,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any;
+  }
+
+  /**
+   * テスト用 renderCard.
+   * draggableId と slotIndex を data-* で露出して assertion しやすくする。
+   */
+  function renderCardForTest(
+    p: PatientRead,
+    slotInfo: { slotIndex: 0 | 1 | null; partnerAssigned: boolean },
+  ) {
+    const id = buildPoolDraggableId(p.id, slotInfo.slotIndex);
+    return (
+      <div
+        data-testid={`card-${id}`}
+        data-patient-id={p.id}
+        data-slot-index={slotInfo.slotIndex === null ? '' : String(slotInfo.slotIndex)}
+        data-partner-assigned={slotInfo.partnerAssigned ? '1' : '0'}
+      >
+        {p.name}
+        {slotInfo.slotIndex === 0 ? '①' : slotInfo.slotIndex === 1 ? '②' : ''}
+      </div>
+    );
+  }
+
+  it('通常患者 (requires_multiple_staff=false) → 1 カードのみ描画 (regression)', () => {
+    const p = makeMultiPatient('p-norm', '田中', false);
+    render(<PoolGroupedByWeekday patients={[p]} renderCard={renderCardForTest} />);
+
+    // 旧形式 ID で 1 枚のみ
+    expect(screen.getByTestId('card-pool-patient:p-norm')).toBeInTheDocument();
+    expect(screen.queryByTestId('card-pool-patient:p-norm:slot:0')).toBeNull();
+    expect(screen.queryByTestId('card-pool-patient:p-norm:slot:1')).toBeNull();
+  });
+
+  it('複数スタッフ対応患者 → ① と ② の 2 カードが描画される', () => {
+    const p = makeMultiPatient('p-multi', '鈴木', true);
+    render(<PoolGroupedByWeekday patients={[p]} renderCard={renderCardForTest} />);
+
+    expect(screen.getByTestId('card-pool-patient:p-multi:slot:0')).toBeInTheDocument();
+    expect(screen.getByTestId('card-pool-patient:p-multi:slot:1')).toBeInTheDocument();
+    // 旧形式 ID は使われない
+    expect(screen.queryByTestId('card-pool-patient:p-multi')).toBeNull();
+  });
+
+  it('slot 0 のみ配置済み → プールに ② のみ残り、partnerAssigned=true', () => {
+    const p = makeMultiPatient('p-multi', '鈴木', true);
+    const assigned = new Map<string, Set<0 | 1>>([['p-multi', new Set<0 | 1>([0])]]);
+    render(
+      <PoolGroupedByWeekday
+        patients={[p]}
+        renderCard={renderCardForTest}
+        assignedSlotsByPatient={assigned}
+      />,
+    );
+
+    expect(screen.queryByTestId('card-pool-patient:p-multi:slot:0')).toBeNull();
+    const remaining = screen.getByTestId('card-pool-patient:p-multi:slot:1');
+    expect(remaining).toBeInTheDocument();
+    expect(remaining.getAttribute('data-partner-assigned')).toBe('1');
+  });
+
+  it('slot 1 のみ配置済み → プールに ① のみ残り、partnerAssigned=true', () => {
+    const p = makeMultiPatient('p-multi', '鈴木', true);
+    const assigned = new Map<string, Set<0 | 1>>([['p-multi', new Set<0 | 1>([1])]]);
+    render(
+      <PoolGroupedByWeekday
+        patients={[p]}
+        renderCard={renderCardForTest}
+        assignedSlotsByPatient={assigned}
+      />,
+    );
+
+    const remaining = screen.getByTestId('card-pool-patient:p-multi:slot:0');
+    expect(remaining).toBeInTheDocument();
+    expect(remaining.getAttribute('data-partner-assigned')).toBe('1');
+    expect(screen.queryByTestId('card-pool-patient:p-multi:slot:1')).toBeNull();
+  });
+
+  it('両方配置済み → プールから完全に消える (0 カード)', () => {
+    const p = makeMultiPatient('p-multi', '鈴木', true);
+    const assigned = new Map<string, Set<0 | 1>>([['p-multi', new Set<0 | 1>([0, 1])]]);
+    render(
+      <PoolGroupedByWeekday
+        patients={[p]}
+        renderCard={renderCardForTest}
+        assignedSlotsByPatient={assigned}
+      />,
+    );
+
+    expect(screen.queryByTestId('card-pool-patient:p-multi:slot:0')).toBeNull();
+    expect(screen.queryByTestId('card-pool-patient:p-multi:slot:1')).toBeNull();
+    expect(screen.queryByTestId('card-pool-patient:p-multi')).toBeNull();
+  });
+
+  it('assignedSlotsByPatient 未指定 (undefined) → 全 slot 未配置として 2 カード描画', () => {
+    const p = makeMultiPatient('p-multi', '鈴木', true);
+    render(<PoolGroupedByWeekday patients={[p]} renderCard={renderCardForTest} />);
+    expect(screen.getByTestId('card-pool-patient:p-multi:slot:0')).toBeInTheDocument();
+    expect(screen.getByTestId('card-pool-patient:p-multi:slot:1')).toBeInTheDocument();
+  });
+
+  it('partnerAssigned は通常患者 (slotIndex=null) では常に false', () => {
+    const p = makeMultiPatient('p-norm', '田中', false);
+    // 仮にマップに何かあっても通常患者には影響しない
+    const assigned = new Map<string, Set<0 | 1>>([['p-norm', new Set<0 | 1>([0])]]);
+    render(
+      <PoolGroupedByWeekday
+        patients={[p]}
+        renderCard={renderCardForTest}
+        assignedSlotsByPatient={assigned}
+      />,
+    );
+    const card = screen.getByTestId('card-pool-patient:p-norm');
+    expect(card.getAttribute('data-partner-assigned')).toBe('0');
+  });
+
+  it('グループヘッダに "内 2 名対応 N 名" サブカウントが描画される', () => {
+    const patients: PatientRead[] = [
+      makeMultiPatient('p1', '田中', false, ['Mon']),
+      makeMultiPatient('p2', '佐藤', true, ['Mon']), // multi
+      makeMultiPatient('p3', '鈴木', true, ['Mon']), // multi
+      makeMultiPatient('p4', '山田', false, ['Tue']),
+    ];
+    render(<PoolGroupedByWeekday patients={patients} renderCard={renderCardForTest} />);
+
+    // Mon グループ: multi 2 名のサブカウント
+    const monSub = screen.getByTestId('pool-group-multi-subcount-Mon');
+    expect(monSub.textContent).toContain('内 2名対応 2 名');
+
+    // Tue グループ: multi 0 名 → サブカウントなし
+    expect(screen.queryByTestId('pool-group-multi-subcount-Tue')).toBeNull();
+  });
+
+  it('複数の multi 患者が同じグループにいても、それぞれ ①/② の 2 カードずつ描画される', () => {
+    const patients: PatientRead[] = [
+      makeMultiPatient('p2', '佐藤', true, ['Mon']),
+      makeMultiPatient('p3', '鈴木', true, ['Mon']),
+    ];
+    render(<PoolGroupedByWeekday patients={patients} renderCard={renderCardForTest} />);
+
+    expect(screen.getByTestId('card-pool-patient:p2:slot:0')).toBeInTheDocument();
+    expect(screen.getByTestId('card-pool-patient:p2:slot:1')).toBeInTheDocument();
+    expect(screen.getByTestId('card-pool-patient:p3:slot:0')).toBeInTheDocument();
+    expect(screen.getByTestId('card-pool-patient:p3:slot:1')).toBeInTheDocument();
   });
 });

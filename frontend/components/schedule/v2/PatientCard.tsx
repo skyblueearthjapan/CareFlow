@@ -54,6 +54,19 @@ export interface PatientCardData {
    * 'before_start' → 「新規」バッジ.
    */
   patientStatus?: string | null;
+  /**
+   * W37 Phase 3-B: 複数スタッフ対応患者の slot index (0 or 1).
+   * - `null` / `undefined`: 通常 1 名体制 (= 既存挙動)。
+   * - `0`: スロット ① (右上に「①」バッジ + 左ボーダー強調)。
+   * - `1`: スロット ② (右上に「②」バッジ + 左ボーダー強調)。
+   * `requiresMultipleStaff` が true でも `slotIndex` 未指定なら badge 非表示。
+   */
+  slotIndex?: 0 | 1 | null;
+  /**
+   * W37 Phase 3-B: 相方スロットが既に配置済みかどうか.
+   * true のとき「① 配置済み」/「② 配置済み」バッジ (相手スロット番号) を追加表示。
+   */
+  partnerAssigned?: boolean | null;
 }
 
 export interface PatientCardProps {
@@ -113,6 +126,15 @@ export function PatientCard({
   const isNew = patient.patientStatus === 'before_start';
   const hasBadges = femaleOnly || maleOnly || multi || isNew;
 
+  // W37 Phase 3-B: 複数スタッフ対応のスロット表示
+  // slotIndex が 0/1 のときのみ ①/② バッジ + 左ボーダー強調を出す。
+  const slotIndex = patient.slotIndex;
+  const isMultiSlotCard = slotIndex === 0 || slotIndex === 1;
+  const slotMark = slotIndex === 0 ? '①' : slotIndex === 1 ? '②' : null;
+  const partnerSlotMark = slotIndex === 0 ? '②' : slotIndex === 1 ? '①' : null;
+  const partnerAssigned = patient.partnerAssigned === true;
+  const slotTooltip = isMultiSlotCard ? `2 名体制 (slot ${(slotIndex as 0 | 1) + 1}/2)` : undefined;
+
   // Wave 20: 希望時間 + サービス時間の組み立て
   const timeText = patient.preferredTimeLabel
     ? patient.serviceMinutes
@@ -124,12 +146,17 @@ export function PatientCard({
     <div
       ref={setNodeRef}
       style={style}
+      title={slotTooltip}
+      data-slot-index={isMultiSlotCard ? slotIndex : undefined}
+      data-testid={isMultiSlotCard ? `patient-card-slot-${slotIndex}-${patient.id}` : undefined}
       className={cn(
         'group flex items-start justify-between gap-1 rounded border px-2 py-1 text-xs',
         'select-none touch-none',
         isPlaced
           ? 'border-brand-primary/40 bg-brand-primary/5 text-text-primary'
           : 'border-border-default bg-bg-base text-text-primary hover:bg-bg-muted',
+        // W37 Phase 3-B: 2 名体制カードはペアで同色の左ボーダーを強調表示
+        isMultiSlotCard && 'border-l-4 border-l-brand-primary',
         disabled ? 'cursor-not-allowed opacity-60' : 'cursor-grab active:cursor-grabbing',
       )}
       {...listeners}
@@ -143,6 +170,16 @@ export function PatientCard({
             <User className="h-3 w-3 shrink-0 text-text-muted" aria-hidden />
           )}
           <span className="truncate font-medium">{patient.name}</span>
+          {/* W37 Phase 3-B: スロット番号 (①/②) を氏名直後に表示 */}
+          {slotMark ? (
+            <span
+              className="shrink-0 text-brand-primary"
+              data-testid={`patient-card-slot-mark-${patient.id}`}
+              aria-label={`スロット ${(slotIndex as 0 | 1) + 1}`}
+            >
+              {slotMark}
+            </span>
+          ) : null}
           {patient.caption && !compact ? (
             <span className="truncate text-text-muted">({patient.caption})</span>
           ) : null}
@@ -198,6 +235,22 @@ export function PatientCard({
                 新規
               </Badge>
             )}
+          </div>
+        ) : null}
+        {/*
+          W37 Phase 3-B: 相方スロットが既に配置済みであることを示すバッジ.
+          - 自身が slot 1 の残カードなら「① 配置済み」を表示。
+          - 自身が slot 0 の残カードなら「② 配置済み」を表示。
+          - compact 表示でも見せたいので別 row で出す。
+        */}
+        {isMultiSlotCard && partnerAssigned && partnerSlotMark ? (
+          <div
+            className="flex flex-wrap gap-1 pl-4"
+            data-testid={`patient-card-partner-assigned-${patient.id}`}
+          >
+            <Badge variant="info" className="h-4 px-1 text-[10px]">
+              {partnerSlotMark} 配置済み
+            </Badge>
           </div>
         ) : null}
       </div>

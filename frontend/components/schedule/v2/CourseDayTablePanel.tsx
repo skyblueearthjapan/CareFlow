@@ -77,7 +77,12 @@ import {
 } from './CourseDayTable';
 import { CourseWeekOverview, type WeekOverviewVisit } from './CourseWeekOverview';
 import { PatientCard } from './PatientCard';
-import { POOL_DROPPABLE_ID, PoolGroupedByWeekday } from './PoolPanel';
+import {
+  POOL_DROPPABLE_ID,
+  PoolGroupedByWeekday,
+  buildPoolDraggableId,
+  parsePoolDraggableId,
+} from './PoolPanel';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Constants
@@ -89,15 +94,18 @@ const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土'] as const;
 
 // ─────────────────────────────────────────────────────────────────────────
 // dnd-kit helpers (プール用 draggable id)
+//
+// W37 Phase 3-B: slot 番号付き id (`pool-patient:{id}:slot:0|1`) も解釈する.
+// 構築は `buildPoolDraggableId(id, slot)` (PoolPanel から re-export)、
+// 解析は `parsePoolDraggableId` を経由して旧形式と新形式を統一する。
+// `parsePatientDraggableId` は patient_id だけが欲しい既存の drag end handler
+// 用に薄いラッパとして残す (slot 情報は handleDragEnd で活用する Phase 3-C
+// で `parsePoolDraggableId` を直接呼ぶ想定)。
 // ─────────────────────────────────────────────────────────────────────────
 
-function patientDraggableId(patientId: string): string {
-  return `pool-patient:${patientId}`;
-}
-
 function parsePatientDraggableId(id: string): string | null {
-  if (!id.startsWith('pool-patient:')) return null;
-  return id.slice('pool-patient:'.length);
+  const parsed = parsePoolDraggableId(id);
+  return parsed ? parsed.patientId : null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -901,15 +909,23 @@ export function CourseDayTablePanel({
             className="sticky top-4 self-start max-h-[calc(100vh-2rem)] overflow-y-auto"
             data-testid="course-day-pool-pane"
           >
-            {/* 保留プール (Wave 18 Phase B-3: 希望曜日別グループ + B-4: 希望時間表示) */}
+            {/*
+              保留プール
+              - Wave 18 Phase B-3: 希望曜日別グループ
+              - Wave 18 Phase B-4: 希望時間表示
+              - W37 Phase 3-B: 複数スタッフ対応患者は slotInfo に応じて
+                slot 0 / slot 1 の 2 カードを描画。draggableId に slot を含む。
+                `assignedSlotsByPatient` は Phase 3-C で weekVisits から構築する
+                (現時点は未指定 = 全 slot 未配置扱いで両カード表示)。
+            */}
             <PoolGroupedByWeekday
               patients={poolPatients}
               disabled={!canEdit}
-              renderCard={(p) => {
+              renderCard={(p, slotInfo) => {
                 const wp = coerceWeeklyPattern(p.weekly_pattern);
                 return (
                   <PatientCard
-                    draggableId={patientDraggableId(p.id)}
+                    draggableId={buildPoolDraggableId(p.id, slotInfo.slotIndex)}
                     patient={{
                       id: p.id,
                       name: p.name,
@@ -923,6 +939,8 @@ export function CourseDayTablePanel({
                         (p as { requires_multiple_staff?: boolean | null })
                           .requires_multiple_staff ?? null,
                       patientStatus: p.status ?? null,
+                      slotIndex: slotInfo.slotIndex,
+                      partnerAssigned: slotInfo.partnerAssigned,
                     }}
                     disabled={!canEdit}
                   />
