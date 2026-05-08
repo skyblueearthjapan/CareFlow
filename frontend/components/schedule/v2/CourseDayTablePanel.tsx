@@ -60,6 +60,8 @@ import { useVisits } from '@/lib/queries/visits';
 import { capacityForWeekday, type CourseTemplateRead } from '@/lib/schemas/v2/course_template';
 import {
   SEX_RESTRICTION_LABEL,
+  coerceWeeklyPattern,
+  formatPreferredTimeLabel,
   normalizePatientSexRestriction,
   type PatientRead,
 } from '@/lib/schemas/patient';
@@ -72,7 +74,7 @@ import {
   type CourseGridVisit,
 } from './CourseDayTable';
 import { PatientCard } from './PatientCard';
-import { PoolPanel } from './PoolPanel';
+import { PoolGroupedByWeekday } from './PoolPanel';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Constants
@@ -590,17 +592,26 @@ export function CourseDayTablePanel({
         {/* 受入目安レイヤー凡例 (任意) */}
         {showAcceptanceLayer ? <AcceptanceLegend /> : null}
 
-        {/* 保留プール */}
-        <PoolPanel count={poolPatients.length} disabled={!canEdit}>
-          {poolPatients.map((p) => (
-            <PatientCard
-              key={p.id}
-              draggableId={patientDraggableId(p.id)}
-              patient={{ id: p.id, name: p.name, caption: p.kana ?? undefined }}
-              disabled={!canEdit}
-            />
-          ))}
-        </PoolPanel>
+        {/* 保留プール (Wave 18 Phase B-3: 希望曜日別グループ + B-4: 希望時間表示) */}
+        <PoolGroupedByWeekday
+          patients={poolPatients}
+          disabled={!canEdit}
+          renderCard={(p) => {
+            const wp = coerceWeeklyPattern(p.weekly_pattern);
+            return (
+              <PatientCard
+                draggableId={patientDraggableId(p.id)}
+                patient={{
+                  id: p.id,
+                  name: p.name,
+                  caption: p.kana ?? undefined,
+                  preferredTimeLabel: formatPreferredTimeLabel(wp),
+                }}
+                disabled={!canEdit}
+              />
+            );
+          }}
+        />
 
         <DragOverlay>
           {activePatientId ? (

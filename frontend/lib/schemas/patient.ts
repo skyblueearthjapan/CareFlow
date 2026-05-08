@@ -388,6 +388,34 @@ export const emptyPatientFormValues: PatientFormValues = {
 };
 
 /**
+ * Wave 18 Phase B-4: WeeklyPattern を 「プールカード表示用の希望時間ラベル」に
+ * 整形する。
+ *   - time_type='固定' で preferred_start のみ → "09:30 (固定)"
+ *   - time_type='時間帯' で 両端あり → "09:30〜10:00 (時間帯)"
+ *   - time_type='午前' / '午後' / '終日' → そのままラベル化 (時刻なし → 'なし' を返さない)
+ *   - 何も無い → null
+ */
+export function formatPreferredTimeLabel(wp: WeeklyPattern | null | undefined): string | null {
+  if (!wp) return null;
+  const start = wp.preferred_start ?? null;
+  const end = wp.preferred_end ?? null;
+  const tt = wp.time_type;
+  if (tt === '固定') {
+    if (start) return `${start} (固定)`;
+    return '固定';
+  }
+  if (tt === '時間帯') {
+    if (start && end) return `${start}〜${end} (時間帯)`;
+    if (start) return `${start}〜 (時間帯)`;
+    return '時間帯';
+  }
+  if (tt === '午前' || tt === '午後' || tt === '終日') {
+    return tt;
+  }
+  return null;
+}
+
+/**
  * Coerce an arbitrary JSONB blob (from server) into a structured
  * `WeeklyPattern`. Unknown / missing keys fall back to `emptyWeeklyPattern`
  * defaults so the editor always has a valid shape to bind to.
