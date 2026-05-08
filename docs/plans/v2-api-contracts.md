@@ -58,6 +58,12 @@
 - 削除: `age`, `ng_time_start`, `ng_time_end`, `required_staff_count`, `area`, `ng_staff_ids`, `preferred_staff_ids`, `specified_type`, `continuous_request`（10 項目）
 - 追加: `weekly_pattern.staff_count`, `special_weekly_pattern`, `special_week_active`
 
+**Wave 18 追加フィールド (`PatientV2Create`)**:
+
+| フィールド | 型 | デフォルト | 説明 |
+|---|---|---|---|
+| `requires_multiple_staff` | `bool` | `false` | 複数スタッフ必須フラグ（2 名体制が必要な患者） |
+
 ### 1.2 `PATCH /api/v1/patients/{id}`
 
 | 項目 | 内容 |
@@ -67,12 +73,24 @@
 | Response 200 | `PatientV2Read` |
 | RBAC | Admin / Manager |
 
+**Wave 18 追加フィールド (`PatientV2Update`)**:
+
+| フィールド | 型 | 説明 |
+|---|---|---|
+| `requires_multiple_staff` | `bool \| None` | 複数スタッフ必須フラグ。`None` の場合は更新しない |
+
 ### 1.3 `GET /api/v1/patients/{id}`
 
 | 項目 | 内容 |
 |---|---|
 | Response 200 | `PatientV2Read` |
 | RBAC | Admin / Manager / Staff（自分が担当する患者のみ） |
+
+**Wave 18 追加フィールド (`PatientV2Read`)**:
+
+| フィールド | 型 | 説明 |
+|---|---|---|
+| `requires_multiple_staff` | `bool` | 複数スタッフ必須フラグ |
 
 ### 1.4 `GET /api/v1/patients`
 
@@ -1319,3 +1337,4 @@ UI 上の「週を生成」ボタンは `generate-week-only` を、「自動割�
 | 2026-05-08 | v1.3.1 | W15-codex-fix: place-and-fix に `course_template_id` 必須化 (§17) — Visit.course_id 紐付けで主導線破綻を解消 |
 | 2026-05-08 | v1.4 | Wave 16: generate-and-assign (§18) / M label 自動同期補足 (§15) |
 | 2026-05-08 | v1.5 | Wave 17: generate-week-only (§19) / assign-staff-only (§20) / generate-and-assign deprecated 注記 (§21) |
+| 2026-05-08 | v1.6 | Wave 18: `PatientV2Read/Create/Update` に `requires_multiple_staff: bool` 追加 (§1.1–1.3) |

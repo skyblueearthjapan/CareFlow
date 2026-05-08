@@ -1323,6 +1323,7 @@ cost(weekday, course, staff) =
 | 2026-05-08 | v1.3 | Wave 15: スケジュール大改修 — course_templates / acceptance_calendar / place-and-fix / 1 画面化 (§15) |
 | 2026-05-08 | v1.4 | Wave 16: スタッフ別テーブル UI + Layer 3 ローテーション + generate-and-assign (§16) |
 | 2026-05-08 | v1.5 | Wave 17: (曜日×コース) ペアテーブル UI + 2 ボタン分離 (§17) |
+| 2026-05-08 | v1.6 | Wave 18: 患者要件拡張 (requires_multiple_staff) + プール改善 + 配置移動 + 週間ビュー + place-and-fix バグ恒久対策 (§18) |
 
 ---
 
@@ -1922,3 +1923,152 @@ Wave 17 で完全削除されたコンポーネント・フック:
 |---|---|---|
 | `useGenerateWeek` | `POST /api/v1/schedule/generate-week-only` | 週を生成ボタンの mutation を管理 |
 | `useAssignStaffOnly` | `POST /api/v1/schedule/assign-staff-only` | 自動割付ボタンの mutation を管理 |
+
+---
+
+## 18. Wave 18: 患者要件拡張 + プール改善 + 配置移動 + 週間ビュー
+
+### 18.1 概要
+
+Wave 18 は 5 つの独立した改善を 1 リリースにまとめた。
+
+| テーマ | 内容 |
+|---|---|
+| 患者要件拡張 | `patients.requires_multiple_staff` boolean フラグ追加（migration 0024）+ 患者編集ページ UI 対応 |
+| 「複数」「条件」列再定義 | 「複数」列を `visit.required_staff_count` 由来 → `patient.requires_multiple_staff` 由来に変更。「条件」列に `patient.sex_restriction` を統合表示 |
+| プール改善 | 希望曜日別グループ (`PoolGroupedByWeekday`)、希望時間表示 (`formatPreferredTimeLabel`) |
+| 配置済み visit 移動 | 配置済み visit に `useDraggable` を付与。delete + place-and-fix 2 段階フォールバックで移動を実現 |
+| 週間一覧ビュー | `CourseWeekOverview` コンポーネントで全曜日 × 全コースを 1 ペインに表示する「週」タブを追加 |
+| place-and-fix バグ恒久対策 | 500 エラーの根本原因 (`_get_or_create_course_for_template_week` の SELECT 競合) を解消 + Wave 16 残骸の cleanup script |
+
+### 18.2 データモデル変更
+
+#### migration 0024: `patients.requires_multiple_staff`
+
+```sql
+ALTER TABLE patients
+    ADD COLUMN requires_multiple_staff BOOLEAN NOT NULL DEFAULT FALSE;
+```
+
+| 項目 | 内容 |
+|---|---|
+| 型 | `bool` |
+| デフォルト | `false` |
+| 意味 | 複数スタッフ必須フラグ。`true` の場合、当該患者への訪問は 2 名体制が必要 |
+| UI | 患者編集ページに checkbox として追加 |
+
+#### `sex_restriction` 既存フィールドの活用（変更なし）
+
+`patients.sex_restriction`（`female_only` / `male_only` / `none`）は既存フィールドをそのまま利用する。
+Wave 18 での変更は「条件」列への表示統合のみ。
+
+#### ORM/スキーマ更新
+
+- `backend/app/models/patient.py`: `Patient.requires_multiple_staff = Column(Boolean, default=False)`
+- `backend/app/schemas/v2/patients.py`: `PatientV2Read` / `PatientV2Create` / `PatientV2Update` に `requires_multiple_staff: bool` 追加
+
+### 18.3 place-and-fix 500 バグの恒久対策
+
+#### 根本原因
+
+`_get_or_create_course_for_template_week` helper が `template_id` のみで SELECT していたため、
+INSERT 競合（IntegrityError）後に再 SELECT で行が見つからないケースが発生していた。
+
+#### 修正内容
+
+| 対策 | 詳細 |
+|---|---|
+| SELECT 強化 (1st) | `template_id` で SELECT |
+| SELECT 強化 (2nd) | 1st miss 時に `office_id + code + year + week + weekday` の UNIQUE key で fallback SELECT |
+| IntegrityError catch | INSERT 競合時に `IntegrityError` を補足し、2nd SELECT で既存行を取得 |
+| 再 SELECT | catch 後に 2nd SELECT を再実行し確実に行を返す |
+
+#### Wave 16 デプロイ残骸の cleanup script
+
+Wave 16 デプロイ時の `E→M 丸め` バグにより `course.code != course_template.label` の不整合行が
+本番 DB に残存している。本番環境では手動実行が必須（§18.3.1 参照）。
+
+```
+backend/scripts/cleanup_w16_course_code_mismatch.py
+```
+
+#### 18.3.1 cleanup script 実行手順（本番 VPS 手動）
+
+```bash
+# dry-run: 対象行と変更内容を確認（DB 変更なし）
+docker exec carelink-backend python scripts/cleanup_w16_course_code_mismatch.py
+
+# 実 UPDATE: 不整合行を修正
+docker exec carelink-backend python scripts/cleanup_w16_course_code_mismatch.py --apply
+```
+
+**exit 1 の場合**: collision が残存している。dry-run 出力を確認し、
+`course_template.label` と `course.code` の不整合行を手動で特定の上、DBA が個別対応する。
+
+### 18.4 UX 仕様
+
+#### プール: 希望曜日別グループ
+
+| コンポーネント | 役割 |
+|---|---|
+| `PoolGroupedByWeekday` | 未配置患者カードを `patient.weekly_pattern.preferred_weekdays` でグループ分けして表示 |
+
+曜日グループは月→火→水→木→金→土の順。曜日指定なし患者は「未指定」グループに集約。
+
+#### プールカード: 希望時間表示
+
+`formatPreferredTimeLabel(preferred_start, preferred_end, time_type)` ヘルパーが
+`preferred_start ~ preferred_end` の時刻範囲と `time_type`（午前 / 午後 / 終日）を統合表示する。
+
+#### 配置済み visit 移動
+
+配置済みの visit カードに `useDraggable` を付与し、別の時刻スロットまたはプールへのドロップを可能にした。
+
+移動フロー（2 段階フォールバック）:
+
+```
+1. 移動先スロットへの place-and-fix を試行（atomic）
+2. 失敗時: 元 visit を DELETE → 移動先に place-and-fix を再試行
+```
+
+> **既知の制約 (B-5)**: delete + place-and-fix の 2 ステップは atomic ではない。
+> partial failure 時に孤立 visit が発生する可能性がある。Wave 19 で BE に PATCH
+> エンドポイントを追加して atomic 化する予定（§18.6 参照）。
+
+#### 週間一覧ビュー
+
+| コンポーネント | 役割 |
+|---|---|
+| `CourseWeekOverview` | 全曜日 × 全コースを 1 ペインに表示する週間一覧 |
+
+スケジュール画面のタブに「週」を追加。既存「曜日」タブ (`CourseDayTablePanel`) と独立して切り替え可能。
+
+### 18.5 「複数」「条件」列の再定義
+
+Wave 17 までの定義:
+
+| 列 | 由来 |
+|---|---|
+| 複数 | `visit.required_staff_count >= 2` |
+| 条件 | `course_template.notes` のみ |
+
+Wave 18 以降の定義:
+
+| 列 | 由来 |
+|---|---|
+| 複数 | `patient.requires_multiple_staff == true` |
+| 条件 | `patient.sex_restriction`（女性のみ / 男性のみ）+ `course_template.notes` を統合表示 |
+
+`sex_restriction` の表示ラベル:
+
+| 値 | 表示 |
+|---|---|
+| `female_only` | 女性のみ |
+| `male_only` | 男性のみ |
+| `none` | （空欄） |
+
+### 18.6 既知の制約
+
+| ID | 制約 | 対応 Wave |
+|---|---|---|
+| B-5 | 配置済み visit 移動が atomic でない（delete + place-and-fix の 2 ステップ） | Wave 19: BE に PATCH エンドポイント追加 |
