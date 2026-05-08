@@ -1186,11 +1186,17 @@ M ラベルの `course_templates` 行をマネージャー数と同期する。
 
 ```jsonc
 {
-  "visits_created": 42,
-  "pool_count":      3,
-  "message":         "Layer 1 completed. Staff unassigned."
+  "iso_year":        2026,
+  "iso_week":        20,
+  "visits_created":  42,
+  "courses_touched": 6,
+  "message":         "Generated 42 visits (staff not yet assigned) for ISO 2026-W20"
 }
 ```
+
+> 実装は `backend/app/api/v1/schedule.py` の `GenerateWeekOnlyResponse`
+> （`extra="forbid"`）を正本とする。`pool_count` フィールドは存在しない
+> （Wave 17 Phase A 実装で削除済）。
 
 **エラーコード**
 
@@ -1241,10 +1247,15 @@ M ラベルの `course_templates` 行をマネージャー数と同期する。
 
 ```jsonc
 {
+  "iso_year":         2026,
+  "iso_week":         20,
   "courses_assigned": 18,
-  "message":          "Layer 3 completed."
+  "message":          "Assigned staff to 18 courses for ISO 2026-W20"
 }
 ```
+
+> 実装は `backend/app/api/v1/schedule.py` の `AssignStaffOnlyResponse`
+> （`extra="forbid"`）を正本とする。
 
 **エラーコード**
 

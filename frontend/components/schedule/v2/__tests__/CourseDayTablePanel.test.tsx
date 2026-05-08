@@ -6,14 +6,16 @@
  *   2. active コーステンプレート 2 個でテーブルが 2 個描画される
  *   3. canEdit=true で「週を生成」「自動割付」ボタンが両方描画される
  *   4. canEdit=false で両ボタンが非表示
- *   5. 「週を生成」をクリックすると useGenerateWeek.mutateAsync が呼ばれる
+ *   5. 「週を生成」をクリックすると useGenerateWeekOnly.mutateAsync が呼ばれる
  *   6. 「自動割付」をクリックすると useAssignStaffOnly.mutateAsync が呼ばれる
  *   7. 時刻軸が 9:30〜18:00 / 15min / 35 行で描画される
  *   8. 月〜土の 6 つの曜日タブが描画される (日曜なし)
  *   9. visit が当該コース・スロットに描画される (start_time → 15min 切り下げ)
  *  10. ドロップで place-and-fix が course_template_id 付きで呼ばれる
  *  11. 担当 dropdown を変更すると useUpdateCourse が assigned_staff_id 付きで呼ばれる
- *  12. findCourseForTemplate の純関数テスト (label → code 解決)
+ *  12. 同一スロットに複数 visit がある場合、氏名が縦積みで全件描画される
+ *  13. required_staff_count >= 2 の単独 visit で「複数」表示が出る
+ *  +.  findCourseForTemplate の純関数テスト (label → code 解決)
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
@@ -177,6 +179,7 @@ vi.mock('@/lib/queries/place_and_fix', () => ({
 }));
 vi.mock('@/lib/queries/generate_week', () => ({
   useGenerateWeek: () => ({ mutateAsync: mockGenerateWeek, isPending: false }),
+  useGenerateWeekOnly: () => ({ mutateAsync: mockGenerateWeek, isPending: false }),
 }));
 vi.mock('@/lib/queries/assign_staff_only', () => ({
   useAssignStaffOnly: () => ({ mutateAsync: mockAssignStaffOnly, isPending: false }),
@@ -310,11 +313,12 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
     expect(screen.queryByTestId('assign-staff-only-button')).not.toBeInTheDocument();
   });
 
-  it('5. 「週を生成」をクリックすると useGenerateWeek.mutateAsync が呼ばれる', async () => {
+  it('5. 「週を生成」をクリックすると useGenerateWeekOnly.mutateAsync が呼ばれる', async () => {
     mockGenerateWeek.mockResolvedValue({
       iso_year: 2026,
       iso_week: 19,
       visits_created: 12,
+      courses_touched: 3,
       message: 'ok',
     });
     setupHooks({ templates: [] });
@@ -488,6 +492,137 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
     expect(arg.start_time).toBe('09:30');
     expect(arg.duration_min).toBe(45);
     expect(arg.fix_pattern).toBe(true);
+  });
+
+  it('12. 同一スロットに 2 件 visit がある場合は氏名が縦積みで両方描画される', () => {
+    setupHooks({
+      templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
+      courses: [
+        {
+          id: 'course-1',
+          iso_year: 2026,
+          iso_week: 19,
+          weekday: 0,
+          code: 'A',
+          office_id: 'office-honten',
+          assigned_staff_id: null,
+          course_status: 'course_fixed',
+          deleted_at: null,
+        },
+      ],
+      visits: [
+        {
+          id: 'v-1',
+          patient_id: 'p-1',
+          patient_name: '鈴木 一郎',
+          visit_date: '2026-05-04',
+          start_time: '09:30:00',
+          primary_staff_id: null,
+          course_id: 'course-1',
+          required_staff_count: 1,
+          type: 'regular',
+          status: 'planned',
+          source: 'allocate',
+          end_time: '10:00:00',
+        },
+        {
+          id: 'v-2',
+          patient_id: 'p-2',
+          patient_name: '佐藤 次郎',
+          visit_date: '2026-05-04',
+          start_time: '09:32:00', // 同じく 09:30 スロット
+          primary_staff_id: null,
+          course_id: 'course-1',
+          required_staff_count: 1,
+          type: 'regular',
+          status: 'planned',
+          source: 'allocate',
+          end_time: '10:00:00',
+        },
+      ],
+      patients: [
+        {
+          id: 'p-1',
+          name: '鈴木 一郎',
+          kana: null,
+          status: 'active',
+          address: '千葉県千葉市',
+        },
+        {
+          id: 'p-2',
+          name: '佐藤 次郎',
+          kana: null,
+          status: 'active',
+          address: '千葉県船橋市',
+        },
+      ],
+    });
+    render(
+      <CourseDayTablePanel
+        weekStart={monday(2026, 5, 4)}
+        officeId={null}
+        canEdit={true}
+        showAcceptanceLayer={false}
+      />,
+    );
+    // 両 occupant の氏名/住所が独立要素として描画される
+    expect(screen.getByTestId('course-occupant-name-v-1')).toHaveTextContent('鈴木 一郎');
+    expect(screen.getByTestId('course-occupant-name-v-2')).toHaveTextContent('佐藤 次郎');
+    // 同一スロットに 2 件 → 「複数」表示が出る
+    expect(screen.getAllByText('複数').length).toBeGreaterThan(0);
+  });
+
+  it('13. required_staff_count=2 (2 名体制) の単独 visit でも「複数」が出る', () => {
+    setupHooks({
+      templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
+      courses: [
+        {
+          id: 'course-1',
+          iso_year: 2026,
+          iso_week: 19,
+          weekday: 0,
+          code: 'A',
+          office_id: 'office-honten',
+          assigned_staff_id: null,
+          course_status: 'course_fixed',
+          deleted_at: null,
+        },
+      ],
+      visits: [
+        {
+          id: 'v-1',
+          patient_id: 'p-1',
+          patient_name: '鈴木 一郎',
+          visit_date: '2026-05-04',
+          start_time: '09:30:00',
+          primary_staff_id: null,
+          course_id: 'course-1',
+          required_staff_count: 2, // ← 2 名体制
+          type: 'regular',
+          status: 'planned',
+          source: 'allocate',
+          end_time: '10:30:00',
+        },
+      ],
+      patients: [
+        {
+          id: 'p-1',
+          name: '鈴木 一郎',
+          kana: null,
+          status: 'active',
+          address: '千葉県千葉市',
+        },
+      ],
+    });
+    render(
+      <CourseDayTablePanel
+        weekStart={monday(2026, 5, 4)}
+        officeId={null}
+        canEdit={true}
+        showAcceptanceLayer={false}
+      />,
+    );
+    expect(screen.getAllByText('複数').length).toBeGreaterThan(0);
   });
 
   it('11. 担当 dropdown を変更すると useUpdateCourse が assigned_staff_id 付きで呼ばれる', async () => {

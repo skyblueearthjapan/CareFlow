@@ -6,7 +6,7 @@
  * POST /api/v1/schedule/assign-staff-only
  *
  * 当該週の course (course_fixed) に対してスタッフ自動割付を実行する。
- * Layer 1 (visits 再構築) は事前に `useGenerateWeek` で済ませてある前提。
+ * Layer 1 (visits 再構築) は事前に `useGenerateWeekOnly` で済ませてある前提。
  *
  * Wave 16 までの `generate-and-assign` (1 ボタン) を分離したうちの後半。
  * UI は「週を生成」「自動割付」の 2 ボタンに分かれている (Excel 準拠)。

@@ -95,7 +95,11 @@ export interface CourseGridVisit {
   patient_id: string;
   patient_name: string | null;
   patient_address: string | null;
-  /** required_staff_count >= 2 で「複数」表示. */
+  /**
+   * required_staff_count >= 2 で「複数」列に "複数" 表示.
+   * BE `_serialize_visit` から渡る (default 1)。
+   * 同一スロットに 2 件以上 visit が並ぶ場合も `CourseTimeRow` で「複数」扱い。
+   */
   required_staff_count: number;
   /** "HH:MM" (15 分境界に切り下げ済み). */
   start_slot: string;
@@ -268,13 +272,9 @@ function CourseTimeRow({
 
   // 30 分境界 (HH:00 / HH:30) は時刻ラベル強調. それ以外は薄く.
   const showLabel = time.endsWith(':00') || time.endsWith(':30');
-  const isMulti = occupants.some((o) => (o.required_staff_count ?? 1) >= 2);
-  const firstName =
-    occupants
-      .map((o) => o.patient_name ?? o.patient_id)
-      .filter(Boolean)
-      .join('・') || '';
-  const firstAddress = occupants.find((o) => o.patient_address)?.patient_address ?? '';
+  // 同一スロットに 2 件以上 visit がある場合は「複数」(staff 2 名体制ではなく重なり) として扱う。
+  // 単独 visit では required_staff_count >= 2 (2 名体制) でも「複数」表示。
+  const sameSlotMulti = occupants.length >= 2;
 
   return (
     <>
@@ -297,24 +297,68 @@ function CourseTimeRow({
         data-weekday={weekday}
         data-time={time}
         data-course-template-id={templateId}
+        data-occupant-count={occupants.length}
         className={cn(
           'col-span-4 grid grid-cols-subgrid border-t border-border-default/40 transition-colors',
           isOver && canEdit ? 'bg-brand-primary/10 ring-1 ring-brand-primary ring-inset' : '',
         )}
         style={{ gridColumn: 'span 4 / span 4' }}
       >
-        <div className="border-r border-border-default/40 px-1 py-0.5 text-[11px] leading-tight text-text-primary truncate">
-          {firstName}
-        </div>
-        <div className="border-r border-border-default/40 px-1 py-0.5 text-[10px] leading-tight text-text-secondary truncate">
-          {firstAddress}
-        </div>
-        <div className="border-r border-border-default/40 px-1 py-0.5 text-center text-[10px] leading-tight text-text-secondary">
-          {isMulti ? '複数' : ''}
-        </div>
-        <div className="px-1 py-0.5 text-[10px] leading-tight text-text-secondary truncate">
-          {templateNotes ?? ''}
-        </div>
+        {occupants.length === 0 ? (
+          // ── 空セル: 4 列を空のまま描画 (droppable hit-area 維持) ─────
+          <>
+            <div className="border-r border-border-default/40 px-1 py-0.5 text-[11px] leading-tight text-text-primary truncate" />
+            <div className="border-r border-border-default/40 px-1 py-0.5 text-[10px] leading-tight text-text-secondary truncate" />
+            <div className="border-r border-border-default/40 px-1 py-0.5 text-center text-[10px] leading-tight text-text-secondary" />
+            <div className="px-1 py-0.5 text-[10px] leading-tight text-text-secondary truncate">
+              {templateNotes ?? ''}
+            </div>
+          </>
+        ) : (
+          // ── 1 件以上: 各 occupant を縦積みで列ごとに描画 ────────────
+          // 同一スロットに 2 件以上の visit がある場合、氏名 / 住所 / 複数 を
+          // visit ごとに改行ベースで縦積みする (Excel の「複数同時」表現に追従)。
+          <>
+            <div className="border-r border-border-default/40 px-1 py-0.5 text-[11px] leading-tight text-text-primary">
+              <div className="flex flex-col gap-0.5">
+                {occupants.map((o) => (
+                  <div
+                    key={`name-${o.id}`}
+                    className="truncate"
+                    data-testid={`course-occupant-name-${o.id}`}
+                    title={o.patient_name ?? o.patient_id}
+                  >
+                    {o.patient_name ?? o.patient_id}
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="border-r border-border-default/40 px-1 py-0.5 text-[10px] leading-tight text-text-secondary">
+              <div className="flex flex-col gap-0.5">
+                {occupants.map((o) => (
+                  <div key={`addr-${o.id}`} className="truncate" title={o.patient_address ?? ''}>
+                    {o.patient_address ?? ''}
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="border-r border-border-default/40 px-1 py-0.5 text-center text-[10px] leading-tight text-text-secondary">
+              <div className="flex flex-col gap-0.5">
+                {occupants.map((o) => {
+                  const isMulti = (o.required_staff_count ?? 1) >= 2 || sameSlotMulti;
+                  return (
+                    <div key={`multi-${o.id}`} aria-hidden={!isMulti}>
+                      {isMulti ? '複数' : ''}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="px-1 py-0.5 text-[10px] leading-tight text-text-secondary truncate">
+              {templateNotes ?? ''}
+            </div>
+          </>
+        )}
       </div>
     </>
   );

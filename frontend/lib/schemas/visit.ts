@@ -65,6 +65,16 @@ export const visitReadSchema = visitBaseSchema.extend({
   staff_name: z.string().nullable().optional(),
   /** v2 Layer 2: コース紐付け (Wave 4 以降, BE `visits.course_id`). */
   course_id: z.string().uuid().nullable().optional(),
+  /**
+   * v2 §3.3 / §4.5: 必要スタッフ数 (1=通常, 2=2 名体制).
+   * BE `_serialize_visit` が常に返す (default 1)。FE では「複数」列の判定に使う。
+   */
+  required_staff_count: z
+    .union([z.literal(1), z.literal(2)])
+    .default(1)
+    .optional(),
+  /** v2 §3.3: 2 名体制の visit グルーピングキー. 通常は null. */
+  visit_group_id: z.string().uuid().nullable().optional(),
 });
 
 export type VisitCreate = z.infer<typeof visitCreateSchema>;
