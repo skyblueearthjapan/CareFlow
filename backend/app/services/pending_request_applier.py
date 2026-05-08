@@ -50,6 +50,7 @@ from app.models.staff import Staff, StaffEvent, StaffWeeklyOverride
 from app.models.staff_companion_assignment import StaffCompanionAssignment
 from app.models.visit import VISIT_STATUS_CANCELLED, Visit
 from app.schemas.v2.enums import RequestScope, RequestStatus, RequestType
+from app.services.manager_course_sync import sync_manager_course_templates
 
 
 class PendingRequestApplyError(Exception):
@@ -388,6 +389,10 @@ async def _apply_staff_create(db: AsyncSession, request: PendingRequest, payload
     db.add(row)
     await db.flush()
 
+    # W16-A-4: manager 新規追加 → 当該拠点の M 系 course_templates を自動同期
+    if row.role == "manager" and row.primary_office_id is not None:
+        await sync_manager_course_templates(db, office_id=row.primary_office_id)
+
 
 async def _apply_patient_create(
     db: AsyncSession, request: PendingRequest, payload: _Payload
@@ -632,8 +637,14 @@ async def _apply_staff_status_update(
             f"staff_status_update: staff {staff_id} not found",
             http_status=404,
         )
+    prev_status = staff.status
     staff.status = new_status
     await db.flush()
+
+    # W16-A-4: manager の active <-> 非 active 切替で M course_templates を sync
+    if staff.role == "manager" and staff.primary_office_id is not None:
+        if prev_status != new_status and (prev_status == "active" or new_status == "active"):
+            await sync_manager_course_templates(db, office_id=staff.primary_office_id)
 
 
 async def _apply_patient_status_update(

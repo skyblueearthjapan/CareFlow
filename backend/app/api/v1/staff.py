@@ -24,6 +24,7 @@ from app.core.deps import CurrentActiveUser, DbDep, require_role
 from app.models.staff import Staff
 from app.models.user import User
 from app.schemas.staff import StaffCreate, StaffRead, StaffUpdate
+from app.services.manager_course_sync import sync_manager_course_templates
 
 router = APIRouter()
 
@@ -104,6 +105,12 @@ async def create_staff(
 ) -> Staff:
     staff = Staff(**payload.model_dump())
     db.add(staff)
+    await db.flush()
+
+    # W16-A-4: manager の追加 → 当該拠点の M 系 course_templates を自動同期
+    if staff.role == "manager" and staff.primary_office_id is not None:
+        await sync_manager_course_templates(db, office_id=staff.primary_office_id)
+
     await _commit_or_409(db)
     await db.refresh(staff)
     return staff
@@ -120,8 +127,29 @@ async def update_staff(
     if staff is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
 
+    # W16-A-4: 旧拠点 / 旧 role / 旧 status を保持 (manager 同期判定のため)
+    prev_office_id = staff.primary_office_id
+    prev_role = staff.role
+    prev_status = staff.status
+
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(staff, field, value)
+    await db.flush()
+
+    # W16-A-4: manager 関連の状態変化に応じて M course_templates を sync
+    role_changed = prev_role != staff.role
+    status_changed = prev_status != staff.status
+    office_changed = prev_office_id != staff.primary_office_id
+    is_or_was_manager = prev_role == "manager" or staff.role == "manager"
+    if is_or_was_manager and (role_changed or status_changed or office_changed):
+        sync_targets: set[UUID] = set()
+        if prev_office_id is not None and prev_role == "manager":
+            sync_targets.add(prev_office_id)
+        if staff.primary_office_id is not None and staff.role == "manager":
+            sync_targets.add(staff.primary_office_id)
+        for office_id in sync_targets:
+            await sync_manager_course_templates(db, office_id=office_id)
+
     await _commit_or_409(db)
     await db.refresh(staff)
     return staff
@@ -140,6 +168,14 @@ async def delete_staff(
     staff = await db.scalar(select(Staff).where(Staff.id == staff_id, Staff.deleted_at.is_(None)))
     if staff is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    # W16-A-4: 退職対象の拠点を後で sync するため事前に保存
+    sync_office_id = staff.primary_office_id if staff.role == "manager" else None
     staff.deleted_at = func.now()
+    await db.flush()
+
+    # W16-A-4: manager の削除 → 当該拠点の M 系 course_templates を自動同期
+    if sync_office_id is not None:
+        await sync_manager_course_templates(db, office_id=sync_office_id)
+
     await db.commit()
     return None
