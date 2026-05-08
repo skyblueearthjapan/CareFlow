@@ -17,6 +17,8 @@ import * as React from 'react';
 import { Card } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 import { capacityForWeekday, type CourseTemplateRead } from '@/lib/schemas/v2/course_template';
+import type { EventRead } from '@/lib/schemas/staff-events';
+import { eventTypeLabel, getStaffEventsForWeekday } from './CourseDayTable';
 
 const WEEKDAYS = [0, 1, 2, 3, 4, 5] as const;
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土'] as const;
@@ -43,6 +45,16 @@ export interface CourseWeekOverviewProps {
   visits: WeekOverviewVisit[];
   /** ヘッダーセルクリック時に呼ばれる (親が `activeWeekday` を切替). */
   onJumpToDay: (weekday: number) => void;
+  /**
+   * Wave 28 Phase B-2/B-3: staffId → EventRead[] のマップ。
+   * (template_id, weekday) ごとの担当スタッフ ID との組み合わせで event を表示する。
+   */
+  staffEventsByStaff?: Map<string, EventRead[]>;
+  /**
+   * Wave 28 Phase B-2: (template_id, weekday) → assigned_staff_id のルックアップ。
+   * CourseWeekOverview は course 行を直接持たないため、親から変換済みで渡す。
+   */
+  assignedStaffByTemplateWeekday?: Map<string, string>;
 }
 
 export function CourseWeekOverview({
@@ -50,6 +62,8 @@ export function CourseWeekOverview({
   officeNameById,
   visits,
   onJumpToDay,
+  staffEventsByStaff,
+  assignedStaffByTemplateWeekday,
 }: CourseWeekOverviewProps) {
   // (template_id, weekday) → visits[] (start_time 昇順)
   const cellMap = React.useMemo(() => {
@@ -130,7 +144,37 @@ export function CourseWeekOverview({
                 </div>
                 {WEEKDAYS.map((wd) => {
                   const cap = capacityForWeekday(tpl, wd);
-                  const list = cellMap.get(`${tpl.id}:${wd}`) ?? [];
+                  const visitList = cellMap.get(`${tpl.id}:${wd}`) ?? [];
+
+                  // Wave 28 Phase B-2: 担当スタッフの event をマージ
+                  const eventsMap = staffEventsByStaff ?? new Map<string, EventRead[]>();
+                  const assignedStaffId =
+                    assignedStaffByTemplateWeekday?.get(`${tpl.id}:${wd}`) ?? null;
+                  const staffDayEvents = assignedStaffId
+                    ? getStaffEventsForWeekday(assignedStaffId, wd, eventsMap)
+                    : [];
+
+                  // visit + event を時刻順でマージ
+                  type OverviewItem =
+                    | { kind: 'visit'; id: string; time: string | null; label: string }
+                    | { kind: 'event'; id: string; time: string; label: string };
+                  const items: OverviewItem[] = [
+                    ...visitList.map((v) => ({
+                      kind: 'visit' as const,
+                      id: v.id,
+                      time: v.start_time,
+                      label: v.start_time
+                        ? `${v.start_time.slice(0, 5)} ${v.patient_name ?? v.patient_id}`
+                        : (v.patient_name ?? v.patient_id),
+                    })),
+                    ...staffDayEvents.map((e) => ({
+                      kind: 'event' as const,
+                      id: e.id,
+                      time: e.start_time,
+                      label: `${e.start_time}-${e.end_time} ${eventTypeLabel(e.type)}`,
+                    })),
+                  ].sort((a, b) => (a.time ?? '').localeCompare(b.time ?? ''));
+
                   return (
                     <div
                       key={`c-${tpl.id}-${wd}`}
@@ -140,7 +184,7 @@ export function CourseWeekOverview({
                       )}
                       data-testid={`course-week-overview-cell-${tpl.id}-${wd}`}
                       data-capacity={cap}
-                      data-occupant-count={list.length}
+                      data-occupant-count={visitList.length}
                     >
                       {cap === 0 ? (
                         <span className="text-[10px] text-text-muted">休</span>
@@ -150,34 +194,43 @@ export function CourseWeekOverview({
                             <span
                               className={cn(
                                 'rounded px-1 text-[10px] tnum',
-                                list.length >= cap
+                                visitList.length >= cap
                                   ? 'bg-warning/20 text-warning'
                                   : 'bg-bg-muted text-text-muted',
                               )}
                               data-testid={`course-week-overview-capacity-${tpl.id}-${wd}`}
                             >
-                              {list.length}/{cap}
+                              {visitList.length}/{cap}
                             </span>
                           </div>
-                          {list.length === 0 ? (
+                          {items.length === 0 ? (
                             <span className="text-[10px] text-text-muted">—</span>
                           ) : (
                             <ul className="space-y-0.5">
-                              {list.slice(0, 5).map((v) => (
-                                <li
-                                  key={v.id}
-                                  className="truncate text-[10px] text-text-primary"
-                                  title={v.patient_name ?? v.patient_id}
-                                  data-testid={`course-week-overview-name-${v.id}`}
-                                >
-                                  {v.start_time
-                                    ? `${v.start_time.slice(0, 5)} ${v.patient_name ?? v.patient_id}`
-                                    : (v.patient_name ?? v.patient_id)}
-                                </li>
-                              ))}
-                              {list.length > 5 ? (
+                              {items.slice(0, 7).map((item) =>
+                                item.kind === 'visit' ? (
+                                  <li
+                                    key={item.id}
+                                    className="truncate text-[10px] text-text-primary"
+                                    title={item.label}
+                                    data-testid={`course-week-overview-name-${item.id}`}
+                                  >
+                                    {item.label}
+                                  </li>
+                                ) : (
+                                  <li
+                                    key={item.id}
+                                    className="truncate text-[10px] text-yellow-700"
+                                    title={item.label}
+                                    data-testid={`course-week-overview-event-${item.id}`}
+                                  >
+                                    {item.label}
+                                  </li>
+                                ),
+                              )}
+                              {visitList.length > 7 ? (
                                 <li className="text-[10px] text-text-muted">
-                                  …他 {list.length - 5} 名
+                                  …他 {visitList.length - 7} 名
                                 </li>
                               ) : null}
                             </ul>

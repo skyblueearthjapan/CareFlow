@@ -133,6 +133,32 @@ export interface CourseGridVisit {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// Wave 28: event_type → 日本語ラベル変換
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * DB の event type 文字列 (または EventRead.type) を日本語ラベルに変換。
+ * EventRead.type は既に日本語 ('研修' / 'イベント') の場合はそのまま返す。
+ */
+export const EVENT_TYPE_LABEL: Record<string, string> = {
+  training: '研修',
+  meeting: '会議',
+  event: 'イベント',
+  errand: '役所同行',
+  interview: '初回面談',
+  office: '事務',
+  other: 'その他',
+  // 既存の日本語 type (EventRead.type) もパスルックアップで対応
+  研修: '研修',
+  イベント: 'イベント',
+};
+
+/** EventRead.type (日本語 or DB snake_case) を日本語ラベルに変換するヘルパー。 */
+export function eventTypeLabel(type: string): string {
+  return EVENT_TYPE_LABEL[type] ?? type;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // Wave 27 Phase B: Event conflict helpers
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -350,10 +376,14 @@ function CourseTimeRow({
 }: CourseTimeRowProps) {
   // Wave 27 Phase B-3: 担当スタッフがこのスロット時間帯にイベントを持つか判定
   const eventsMap = staffEventsByStaff ?? new Map<string, EventRead[]>();
+  const staffDayEvents = assignedStaffId
+    ? getStaffEventsForWeekday(assignedStaffId, weekday, eventsMap)
+    : [];
   const conflictingEvent =
-    assignedStaffId && occupants.length > 0
-      ? hasEventConflict(time, getStaffEventsForWeekday(assignedStaffId, weekday, eventsMap))
-      : null;
+    assignedStaffId && occupants.length > 0 ? hasEventConflict(time, staffDayEvents) : null;
+
+  // Wave 28 Phase B-1: このスロット (15分) にかかる event を抽出 (visit の有無に関わらず表示)
+  const eventsAtSlot = staffDayEvents.filter((e) => time >= e.start_time && time < e.end_time);
   const droppableId = courseDayCellDroppableId(weekday, templateId, time);
   const { isOver, setNodeRef } = useDroppable({
     id: droppableId,
@@ -394,8 +424,26 @@ function CourseTimeRow({
       >
         {occupants.length === 0 ? (
           // ── 空セル: 4 列を空のまま描画 (droppable hit-area 維持) ─────
+          // Wave 28 B-1: 担当スタッフの event があれば氏名列に表示
           <>
-            <div className="border-r border-border-default/40 px-1 py-0.5 text-[11px] leading-tight text-text-primary truncate" />
+            <div className="border-r border-border-default/40 px-1 py-0.5 text-[11px] leading-tight text-text-primary truncate">
+              {eventsAtSlot.length > 0 ? (
+                <div
+                  className="text-[10px] text-yellow-800 bg-yellow-100 px-1 rounded ring-1 ring-yellow-300 truncate"
+                  data-testid="event-slot-row"
+                  title={eventsAtSlot
+                    .map((e) => `${eventTypeLabel(e.type)} ${e.start_time}-${e.end_time}`)
+                    .join(', ')}
+                >
+                  {eventsAtSlot.map((e, i) => (
+                    <span key={e.id}>
+                      {i > 0 ? ', ' : ''}
+                      {eventTypeLabel(e.type)} {e.start_time}-{e.end_time}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+            </div>
             <div className="border-r border-border-default/40 px-1 py-0.5 text-[10px] leading-tight text-text-secondary truncate" />
             <div className="border-r border-border-default/40 px-1 py-0.5 text-center text-[10px] leading-tight text-text-secondary" />
             <div className="px-1 py-0.5 text-[10px] leading-tight text-text-secondary truncate" />
@@ -424,6 +472,23 @@ function CourseTimeRow({
                   >
                     ⚠ 担当不可
                   </span>
+                ) : null}
+                {/* Wave 28 B-1: 担当スタッフのイベント行 (visit と並んで表示) */}
+                {eventsAtSlot.length > 0 ? (
+                  <div
+                    className="text-[10px] text-yellow-800 bg-yellow-100 px-1 rounded ring-1 ring-yellow-300 truncate"
+                    data-testid="event-slot-row"
+                    title={eventsAtSlot
+                      .map((e) => `${eventTypeLabel(e.type)} ${e.start_time}-${e.end_time}`)
+                      .join(', ')}
+                  >
+                    {eventsAtSlot.map((e, i) => (
+                      <span key={e.id}>
+                        {i > 0 ? ', ' : ''}
+                        {eventTypeLabel(e.type)} {e.start_time}-{e.end_time}
+                      </span>
+                    ))}
+                  </div>
                 ) : null}
               </div>
             </div>
