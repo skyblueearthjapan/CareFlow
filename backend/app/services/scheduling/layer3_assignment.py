@@ -312,6 +312,23 @@ class Layer3Assigner:
             db, iso_year=iso_year, iso_week=iso_week, office_id=office_id
         )
 
+        # ---------- 4b. Bug #2 fix (W25): staff_assigned コースを保護 ----------
+        # assign-staff-only 再実行時に、既に staff_assigned 状態のコースの担当スタッフが
+        # 別コースのハンガリアンに巻き込まれて重複割付される問題を防ぐ。
+        # staff_assigned コースを fixed_staff_by_course に追加することで、
+        # Layer 3 内の既存「固定スタッフ除外」ロジックが自動適用される。
+        already_assigned_stmt = select(Course).where(
+            Course.iso_year == iso_year,
+            Course.iso_week == iso_week,
+            Course.deleted_at.is_(None),
+            Course.course_status == COURSE_STATUS_STAFF_ASSIGNED,
+            Course.assigned_staff_id.isnot(None),
+        )
+        already_assigned_courses = list((await db.scalars(already_assigned_stmt)).all())
+        for c in already_assigned_courses:
+            if c.id not in fixed_staff_by_course and c.assigned_staff_id is not None:
+                fixed_staff_by_course[c.id] = c.assigned_staff_id
+
         # ---------- 5. 計算 ----------
         result = self.solve(
             course_targets,
@@ -373,7 +390,8 @@ class Layer3Assigner:
         # 固定割当先となる staff_id 集合 (= manager を除外しない対象)
         fixed_staff_ids: set[UUID] = set(fixed_staff_by_course.values())
 
-        # マネージャー除外 (§3.6.4) — ただし fixed 対象スタッフは保持
+        # マネージャー除外 (§3.6.4) — ただし fixed 割当対象の manager は保持
+        # (fixed 経路で M コースへの lookup に使用するため eligible_staff に残す必要がある)
         eligible_staff = [
             s for s in staff_pool if s.role != "manager" or s.staff_id in fixed_staff_ids
         ]
@@ -488,9 +506,18 @@ class Layer3Assigner:
             )
             fixed_courses.append(course)
 
-        # 固定で取られたスタッフは free のマッチング対象から除外
+        # 固定で取られたスタッフは free のマッチング対象から除外。
+        # Bug #1 fix (W25): result に含まれる staff だけでなく、fixed_staff_by_course の
+        # 全 staff_id を除外する。当該曜日に勤務しない manager は fixed 経路で skip され
+        # result に含まれないが、eligible_staff には残っているため free_staff に混入し
+        # ハンガリアンで E 等のコースに重複割付される問題を修正。
+        all_fixed_staff_ids: set[UUID] = set(fixed_staff_by_course.values())
         fixed_assigned_staff_ids: set[UUID] = {a.staff_id for a in result}
-        free_staff = [s for s in staff_pool if s.staff_id not in fixed_assigned_staff_ids]
+        free_staff = [
+            s
+            for s in staff_pool
+            if s.staff_id not in fixed_assigned_staff_ids and s.staff_id not in all_fixed_staff_ids
+        ]
 
         if not free_courses or not free_staff:
             return result
