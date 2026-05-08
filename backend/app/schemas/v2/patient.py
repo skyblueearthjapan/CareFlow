@@ -193,6 +193,15 @@ class PatientV2Base(BaseModel):
         default=None,
         description="ハード制約 (§4.1 / §5.4)",
     )
+    # W18 Phase A: 複数スタッフ同行必須フラグ (§4.1 / §5.4).
+    # 患者単位の独立フラグ。weekly_pattern.entries[].staff_count とは別軸。
+    requires_multiple_staff: bool = Field(
+        default=False,
+        description=(
+            "TRUE で常に 2 名体制が必要な患者. weekly_pattern.staff_count とは独立した "
+            "患者単位フラグ (§4.1 / §5.4)."
+        ),
+    )
 
     # 週間訪問パターン (§4.1 核)
     weekly_pattern: WeeklyPatternV2 | None = Field(
@@ -239,6 +248,8 @@ class PatientV2Update(BaseModel):
     insurance: InsuranceV2 | None = None
     primary_office_id: UUID | None = None
     sex_restriction: SexRestrictionV2 | None = None
+    # W18 Phase A: 患者単位の複数スタッフ必須フラグ. None=未指定 (PATCH 時に touch しない)
+    requires_multiple_staff: bool | None = None
     weekly_pattern: WeeklyPatternV2 | None = None
     special_weekly_pattern: WeeklyPatternV2 | None = None
     special_week_active: list[SpecialWeekRefV2] | None = None

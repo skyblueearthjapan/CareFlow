@@ -370,3 +370,117 @@ async def test_patch_special_week_active_to_empty(client, db) -> None:
     assert res.status_code == 200, res.text
     body = res.json()
     assert body.get("special_week_active") in ([], None)
+
+
+# ---------------------------------------------------------------------------
+# 10) W18 Phase A: requires_multiple_staff の round-trip (default=False)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_patient_v2_requires_multiple_staff_defaults_false(client, db) -> None:
+    """POST 時に requires_multiple_staff を省略すると False がセットされる."""
+    admin = await _make_user(db, "v2-rms-default-admin@example.com", "admin")
+    res = await client.post(
+        "/api/v1/patients",
+        headers=_bearer(admin),
+        json=_v2_payload(code="P-V2-RMS-DEF"),
+    )
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["requires_multiple_staff"] is False
+
+
+@pytest.mark.asyncio
+async def test_create_patient_v2_requires_multiple_staff_true_persists(client, db) -> None:
+    """POST で requires_multiple_staff=True を送ると保存され、GET でも True が返る."""
+    admin = await _make_user(db, "v2-rms-true-admin@example.com", "admin")
+    res = await client.post(
+        "/api/v1/patients",
+        headers=_bearer(admin),
+        json=_v2_payload(code="P-V2-RMS-TRUE", requires_multiple_staff=True),
+    )
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["requires_multiple_staff"] is True
+    pid = body["id"]
+
+    follow = await client.get(f"/api/v1/patients/{pid}", headers=_bearer(admin))
+    assert follow.status_code == 200, follow.text
+    assert follow.json()["requires_multiple_staff"] is True
+
+
+@pytest.mark.asyncio
+async def test_patch_patient_v2_requires_multiple_staff_toggle(client, db) -> None:
+    """PATCH で requires_multiple_staff を False → True → False に切り替えられる."""
+    admin = await _make_user(db, "v2-rms-patch-admin@example.com", "admin")
+    create = await client.post(
+        "/api/v1/patients",
+        headers=_bearer(admin),
+        json=_v2_payload(code="P-V2-RMS-PATCH"),
+    )
+    assert create.status_code == 201, create.text
+    pid = create.json()["id"]
+    assert create.json()["requires_multiple_staff"] is False
+
+    # False → True
+    r1 = await client.patch(
+        f"/api/v1/patients/{pid}",
+        headers=_bearer(admin),
+        json={"requires_multiple_staff": True},
+    )
+    assert r1.status_code == 200, r1.text
+    assert r1.json()["requires_multiple_staff"] is True
+
+    # 他フィールドだけ更新しても requires_multiple_staff は維持される (PATCH partial)
+    r2 = await client.patch(
+        f"/api/v1/patients/{pid}",
+        headers=_bearer(admin),
+        json={"note": "更新"},
+    )
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["requires_multiple_staff"] is True
+    assert r2.json()["note"] == "更新"
+
+    # True → False
+    r3 = await client.patch(
+        f"/api/v1/patients/{pid}",
+        headers=_bearer(admin),
+        json={"requires_multiple_staff": False},
+    )
+    assert r3.status_code == 200, r3.text
+    assert r3.json()["requires_multiple_staff"] is False
+
+
+@pytest.mark.asyncio
+async def test_list_patient_v2_includes_requires_multiple_staff(client, db) -> None:
+    """GET 一覧に requires_multiple_staff が含まれる (FE が一覧から制約を判定する用).
+
+    POST 経由で 2 件登録し、一覧で各 patient の requires_multiple_staff が
+    シリアライズされていることを検証する (POST 経由なら special_week_active が
+    既定空 list で安定する)。
+    """
+    admin = await _make_user(db, "v2-rms-list-admin@example.com", "admin")
+
+    # 2 件作成 (片方 True / 片方 False で両方シリアライズされることを確認)
+    r1 = await client.post(
+        "/api/v1/patients",
+        headers=_bearer(admin),
+        json=_v2_payload(code="P-V2-RMS-LIST-T", requires_multiple_staff=True),
+    )
+    assert r1.status_code == 201, r1.text
+    r2 = await client.post(
+        "/api/v1/patients",
+        headers=_bearer(admin),
+        json=_v2_payload(code="P-V2-RMS-LIST-F", requires_multiple_staff=False),
+    )
+    assert r2.status_code == 201, r2.text
+
+    res = await client.get("/api/v1/patients", headers=_bearer(admin))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    by_code = {item["code"]: item for item in body}
+    assert "P-V2-RMS-LIST-T" in by_code
+    assert by_code["P-V2-RMS-LIST-T"]["requires_multiple_staff"] is True
+    assert "P-V2-RMS-LIST-F" in by_code
+    assert by_code["P-V2-RMS-LIST-F"]["requires_multiple_staff"] is False

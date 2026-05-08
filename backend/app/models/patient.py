@@ -29,8 +29,10 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
+import sqlalchemy as sa
 from sqlalchemy import (
     JSON,
+    Boolean,
     DateTime,
     ForeignKey,
     Index,
@@ -74,6 +76,17 @@ class Patient(Base, TimestampMixin):
     )
 
     sex_restriction: Mapped[str | None] = mapped_column(String(8), nullable=True)
+
+    # W18 Phase A-1: 複数スタッフ同行を必須とする患者フラグ (§4.1 / §5.4).
+    # weekly_pattern.entries[].staff_count では曜日別の細粒度設定だが、
+    # 患者単位で常に 2 名必須という独立した運用要件に対応する物理列。
+    # migration 0024 で追加。
+    requires_multiple_staff: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=sa.false(),
+    )
 
     # 通常パターン (§3.4 / §4.1). 既存。``staff_count`` キーは v2 schema 側で扱う。
     weekly_pattern: Mapped[dict | None] = mapped_column(JSONBish, nullable=True)
