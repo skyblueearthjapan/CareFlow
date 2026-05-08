@@ -221,6 +221,23 @@ export const patientBaseSchema = z.object({
     .optional()
     .transform((v) => (v === '' || v === undefined ? undefined : v)),
   sex_restriction: optionalEnum(SEX_RESTRICTION_OPTIONS),
+  /**
+   * 2 名体制 (複数スタッフ) での訪問が必要な患者かどうか (Wave 18 Phase 0+A).
+   *
+   * BE migration 0024 で追加される `patients.requires_multiple_staff` を
+   * フロント側で先行ミラー。FE は schema/UI を先に出し、BE 完成後の整合確認で
+   * 値の往復を保証する。未対応 BE では空 (undefined) として扱い、PATCH 時にも
+   * `dropUndefined` で除外されるため安全。
+   */
+  requires_multiple_staff: z
+    .union([z.boolean(), z.literal('true'), z.literal('false'), z.literal('')])
+    .optional()
+    .transform((v) => {
+      if (v === undefined || v === '') return undefined;
+      if (v === true || v === 'true') return true;
+      if (v === false || v === 'false') return false;
+      return undefined;
+    }),
   note: optionalNullableString,
   weekly_pattern: z.record(z.unknown()).nullish(),
   special_weekly_pattern: z.record(z.unknown()).nullish(),
@@ -268,6 +285,16 @@ export const patientUpdateSchema = z.object({
     .optional()
     .transform((v) => (v === '' || v === undefined ? undefined : v)),
   sex_restriction: optionalEnum(SEX_RESTRICTION_OPTIONS),
+  /** Wave 18: 2 名体制での訪問が必要かどうか. PATCH 時のみ送信. */
+  requires_multiple_staff: z
+    .union([z.boolean(), z.literal('true'), z.literal('false'), z.literal('')])
+    .optional()
+    .transform((v) => {
+      if (v === undefined || v === '') return undefined;
+      if (v === true || v === 'true') return true;
+      if (v === false || v === 'false') return false;
+      return undefined;
+    }),
   note: optionalNullableString,
   weekly_pattern: z.record(z.unknown()).nullish(),
   special_weekly_pattern: z.record(z.unknown()).nullish(),
@@ -305,10 +332,13 @@ export const patientFormSchema = patientBaseSchema
     weekly_pattern: true,
     special_weekly_pattern: true,
     special_week_active: true,
+    requires_multiple_staff: true,
   })
   .extend({
     weekly_pattern: z.record(z.unknown()).optional(),
     special_week: z.boolean().optional().default(false),
+    /** Wave 18: フォームでは plain boolean でバインド。送信時に PATCH 経由で BE に渡す。 */
+    requires_multiple_staff: z.boolean().optional().default(false),
   });
 
 export type PatientCreate = z.infer<typeof patientCreateSchema>;
@@ -332,6 +362,8 @@ export type PatientFormValues = {
   lng: string;
   primary_office_id: string;
   sex_restriction: '' | (typeof SEX_RESTRICTION_OPTIONS)[number];
+  /** Wave 18: 2 名体制必須フラグ (checkbox)。boolean に正規化。 */
+  requires_multiple_staff: boolean;
   note: string;
   weekly_pattern: WeeklyPattern;
   special_week: boolean;
@@ -349,6 +381,7 @@ export const emptyPatientFormValues: PatientFormValues = {
   lng: '',
   primary_office_id: '',
   sex_restriction: '',
+  requires_multiple_staff: false,
   note: '',
   weekly_pattern: emptyWeeklyPattern,
   special_week: false,
@@ -434,6 +467,8 @@ export function patientReadToFormValues(p: PatientRead): PatientFormValues {
       (normalizePatientSexRestriction(
         p.sex_restriction as string | null | undefined,
       ) as PatientFormValues['sex_restriction']) ?? '',
+    requires_multiple_staff:
+      (p as { requires_multiple_staff?: boolean | null }).requires_multiple_staff === true,
     note: p.note ?? '',
     weekly_pattern: coerceWeeklyPattern(p.weekly_pattern),
     special_week: !!p.special_weekly_pattern,
