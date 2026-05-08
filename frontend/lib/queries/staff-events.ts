@@ -15,6 +15,7 @@
 
 import {
   useMutation,
+  useQueries,
   useQuery,
   useQueryClient,
   type UseMutationResult,
@@ -79,10 +80,58 @@ export function useStaffEvents(
   });
 }
 
+/**
+ * Wave 27 Phase B-1: 週単位で複数 staff の events を並列バッチ取得する hook.
+ *
+ * 戻り値は `staffId` の順番に対応した EventRead[][] (空配列でフォールバック)。
+ * `staffEventsByStaff` Map に変換して担当 dropdown / セル警告で利用する。
+ */
+export function useWeekStaffEvents(
+  staffIds: string[],
+  weekStart: Date,
+  weekEnd: Date,
+): { data: EventRead[][]; isLoading: boolean } {
+  const { data: session, status } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+
+  const fromStr = weekStart.toISOString().slice(0, 10);
+  const toStr = weekEnd.toISOString().slice(0, 10);
+
+  const results = useQueries({
+    queries: staffIds.map((id) => ({
+      queryKey: [...STAFF_EVENTS_KEY, id, fromStr, toStr] as const,
+      enabled: status === 'authenticated' && !!id,
+      queryFn: () =>
+        fetcher<EventRead[]>(buildListUrl(id, { from: fromStr, to: toStr }), {
+          accessToken,
+          refreshToken,
+        }),
+    })),
+  });
+
+  const data = results.map((r) => r.data ?? []);
+  const isLoading = results.some((r) => r.isLoading);
+
+  return { data, isLoading };
+}
+
+/**
+ * Wave 27 Phase B-1 helper: `useWeekStaffEvents` の結果を `staffId → EventRead[]` の
+ * Map に変換する。
+ */
+export function buildStaffEventsMap(
+  staffIds: string[],
+  events: EventRead[][],
+): Map<string, EventRead[]> {
+  const m = new Map<string, EventRead[]>();
+  staffIds.forEach((id, i) => {
+    m.set(id, events[i] ?? []);
+  });
+  return m;
+}
+
 /** POST .../events — create. */
-export function useCreateEvent(
-  staffId: string,
-): UseMutationResult<EventRead, Error, EventCreate> {
+export function useCreateEvent(staffId: string): UseMutationResult<EventRead, Error, EventCreate> {
   const qc = useQueryClient();
   const { data: session } = useSession();
   const { accessToken, refreshToken } = authPair(session);
