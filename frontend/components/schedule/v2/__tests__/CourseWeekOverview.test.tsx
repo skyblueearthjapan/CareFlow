@@ -98,6 +98,7 @@ describe('CourseWeekOverview (B-6)', () => {
         patient_name: '田中',
         weekday: 0,
         course_template_id: 'tpl-A',
+        start_time: null,
       },
       {
         id: 'v-2',
@@ -105,6 +106,7 @@ describe('CourseWeekOverview (B-6)', () => {
         patient_name: '佐藤',
         weekday: 0,
         course_template_id: 'tpl-A',
+        start_time: null,
       },
     ];
     render(
@@ -151,5 +153,53 @@ describe('CourseWeekOverview (B-6)', () => {
     );
     fireEvent.click(screen.getByTestId('course-week-overview-header-3')); // 木
     expect(onJumpToDay).toHaveBeenCalledWith(3);
+  });
+
+  it('start_time 付き visit が "HH:MM 氏名" 形式で表示される', () => {
+    const tpl = makeTemplate('tpl-A', 'A', 'o1');
+    const visits: WeekOverviewVisit[] = [
+      {
+        id: 'v-t1',
+        patient_id: 'p-t1',
+        patient_name: '山田',
+        weekday: 1,
+        course_template_id: 'tpl-A',
+        start_time: '09:30:00',
+      },
+    ];
+    render(
+      <CourseWeekOverview
+        templates={[tpl]}
+        officeNameById={new Map([['o1', '本店']])}
+        visits={visits}
+        onJumpToDay={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('course-week-overview-name-v-t1')).toHaveTextContent('09:30 山田');
+  });
+
+  it('start_time が null の visit は氏名のみ表示', () => {
+    const tpl = makeTemplate('tpl-A', 'A', 'o1');
+    const visits: WeekOverviewVisit[] = [
+      {
+        id: 'v-t2',
+        patient_id: 'p-t2',
+        patient_name: '鈴木',
+        weekday: 2,
+        course_template_id: 'tpl-A',
+        start_time: null,
+      },
+    ];
+    render(
+      <CourseWeekOverview
+        templates={[tpl]}
+        officeNameById={new Map([['o1', '本店']])}
+        visits={visits}
+        onJumpToDay={vi.fn()}
+      />,
+    );
+    const el = screen.getByTestId('course-week-overview-name-v-t2');
+    expect(el).toHaveTextContent('鈴木');
+    expect(el).not.toHaveTextContent(':');
   });
 });

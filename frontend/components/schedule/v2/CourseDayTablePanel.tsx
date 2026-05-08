@@ -395,6 +395,7 @@ export function CourseDayTablePanel({
         patient_name: patient?.name ?? v.patient_name ?? null,
         weekday: wd,
         course_template_id: templateId,
+        start_time: v.start_time ?? null,
       });
     }
     return out;
