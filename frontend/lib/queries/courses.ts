@@ -58,7 +58,12 @@ export type CourseCodeV2 = 'A' | 'B' | 'C' | 'D' | 'M';
 /** BE `app/schemas/v2/enums.py::CourseStatus`. */
 export type CourseStatusV2 = 'proposed' | 'course_fixed' | 'staff_assigned';
 
-/** GET /api/v1/courses[/{id}] レスポンス (CourseV2Read). */
+/** GET /api/v1/courses[/{id}] レスポンス (CourseV2Read).
+ *
+ * BE `app/schemas/v2/course.py::CourseV2Read` と同期。
+ *  - W15-BE-FIXPATTERN (migration 0020) で `office_id` が必須化された。
+ *  - W16 Phase B の course_template 逆引きで `office_id` を参照する。
+ */
 export interface CourseV2Read {
   id: string;
   iso_year: number;
@@ -68,6 +73,8 @@ export interface CourseV2Read {
   code: CourseCodeV2;
   course_status: CourseStatusV2;
   assigned_staff_id: string | null;
+  /** 所属拠点 (W15-BE-FIXPATTERN 以降必須). */
+  office_id: string;
   note: string | null;
   course_fixed_at: string | null;
   staff_assigned_at: string | null;
@@ -76,12 +83,20 @@ export interface CourseV2Read {
   deleted_at: string | null;
 }
 
-/** POST /api/v1/courses リクエスト (CourseV2Create). */
+/** POST /api/v1/courses リクエスト (CourseV2Create).
+ *
+ * BE 仕様 (`app/schemas/v2/course.py`) では `office_id` は W15-BE-FIXPATTERN
+ * (migration 0020) より必須化されているが、Wave 16 Phase B 時点では FE 側に
+ * `office_id` 引数を取らない legacy 呼出 (`useFixCourses` 内) が残っており、
+ * 型を完全 strict にすると当面コンパイルが落ちるため optional のままに
+ * している。後続 Wave で legacy 呼出を整理した上で必須化する。
+ */
 export interface CourseV2Create {
   iso_year: number;
   iso_week: number;
   weekday: number;
   code: CourseCodeV2;
+  office_id?: string;
   course_status?: CourseStatusV2;
   assigned_staff_id?: string | null;
   note?: string | null;
