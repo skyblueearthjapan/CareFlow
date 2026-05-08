@@ -207,7 +207,8 @@ describe('PatientFixedVisitsPanel', () => {
     expect(noVisitElements).toHaveLength(5);
   });
 
-  it('5. staff role → 閲覧のみ (フィールドが disabled)', () => {
+  it('5. staff role → 閲覧のみ (ReadOnlyWeekGrid 表示 + 保存ボタンなし)', () => {
+    // W37 Phase 3-D: readonly 時は ReadOnlyWeekGrid に切り替わるためチェックボックスなし.
     setupMocks({ role: 'staff', reads: [] });
 
     render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
@@ -215,11 +216,8 @@ describe('PatientFixedVisitsPanel', () => {
     // 「閲覧のみ」バッジが表示される
     expect(screen.getByText('閲覧のみ')).toBeInTheDocument();
 
-    // チェックボックスが disabled
-    const checkboxes = screen.getAllByRole('checkbox');
-    checkboxes.forEach((cb) => {
-      expect(cb).toBeDisabled();
-    });
+    // ReadOnlyWeekGrid が表示されチェックボックスなし
+    expect(screen.queryAllByRole('checkbox')).toHaveLength(0);
 
     // 保存ボタンが存在しない
     expect(screen.queryByRole('button', { name: '保存' })).not.toBeInTheDocument();
@@ -411,16 +409,18 @@ describe('PatientFixedVisitsPanel', () => {
 
   // ─── W26: readOnly prop tests ──────────────────────────────────────────────
 
-  it('12. (W26) readOnly=true → チェックボックスが disabled になる', () => {
-    // admin role でも readOnly=true なら disabled
+  it('12. (W26) readOnly=true → ReadOnlyWeekGrid が表示され、チェックボックスなし', () => {
+    // W37 Phase 3-D: readOnly=true の場合は ReadOnlyWeekGrid (テキスト表示) に切り替わる.
+    // チェックボックスは表示されない.
     setupMocks({ role: 'admin', reads: [] });
 
     render(<PatientFixedVisitsPanel patientId={PATIENT_ID} readOnly={true} />);
 
-    const checkboxes = screen.getAllByRole('checkbox');
-    checkboxes.forEach((cb) => {
-      expect(cb).toBeDisabled();
-    });
+    // チェックボックスなし
+    expect(screen.queryAllByRole('checkbox')).toHaveLength(0);
+    // 「訪問なし」テキストが 7 つ表示される (ReadOnlyWeekGrid の各行)
+    const noVisits = screen.getAllByText('訪問なし');
+    expect(noVisits).toHaveLength(7);
   });
 
   it('13. (W26) readOnly=true → 「保存」ボタンが非表示', () => {
