@@ -56,8 +56,10 @@ COURSE_STATUS_COURSE_FIXED: str = "course_fixed"
 COURSE_STATUS_STAFF_ASSIGNED: str = "staff_assigned"
 
 # course code 値 (§3.6.5).
-# A/B/C/D = 通常コース, M = マネージャー枠 (4 コース外)
-COURSE_CODE_VALUES: tuple[str, ...] = ("A", "B", "C", "D", "M")
+# A/B/C/D/E = 通常コース, M = マネージャー枠 (通常コース外)
+# W16 codex fix (中 2): 'E' を CHECK 制約に追加 (本店 A-E ラベルの正常受け入れ).
+# migration 0023 が production 側の CHECK 制約を担保する。
+COURSE_CODE_VALUES: tuple[str, ...] = ("A", "B", "C", "D", "E", "M")
 
 
 class Course(Base, TimestampMixin):
@@ -128,9 +130,12 @@ class Course(Base, TimestampMixin):
             "office_id",
             name="uq_courses_year_week_weekday_code_office",
         ),
-        # コース記号は A/B/C/D/M のみ (§3.6.5)
+        # コース記号は A/B/C/D/E/M のみ (§3.6.5).
+        # W16 codex fix (中 2): 本店 A-E ラベルを正常受け入れするため 'E' を追加.
+        # migration 0023 で旧 CHECK ('A','B','C','D','M') を drop し新 CHECK
+        # ('A','B','C','D','E','M') に再構築する。
         CheckConstraint(
-            "code IN ('A', 'B', 'C', 'D', 'M')",
+            "code IN ('A', 'B', 'C', 'D', 'E', 'M')",
             name="ck_courses_code_v2",
         ),
         # 状態は 3 値のみ (§4.5)

@@ -34,6 +34,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -43,11 +44,16 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.course import COURSE_STATUS_PROPOSED, Course
+from app.models.course_template import CourseTemplate
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.visit import Visit
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants & helpers
@@ -225,6 +231,106 @@ def _frequency_per_week(pattern: dict | None) -> int | None:
     return None
 
 
+async def _resolve_default_template_for_office(
+    db: AsyncSession, *, office_id: UUID
+) -> CourseTemplate | None:
+    """``office_id`` の course_template の中から「最初の 1 件」を返す.
+
+    W16 codex fix (重大 1): Layer 1 で patient → course_template を選ぶ簡易戦略.
+    将来 wave で patient ↔ course_template の最適マッチング (capacity / 地理 / etc.)
+    を実装するが、現段階では各 patient を「当該 office の最初のテンプレート」
+    に集約する。"M" などのマネージャー枠は除外。
+
+    NOTE (TODO): ラベル先頭文字 ('A' < 'B' < 'C' < ...) でソートして A 系列を
+    優先する。E までは A〜E の 1 文字テンプレ、'M' / 'M2' / ... は管理職枠なので除外する。
+    """
+    rows = (
+        await db.scalars(
+            select(CourseTemplate)
+            .where(
+                CourseTemplate.office_id == office_id,
+                CourseTemplate.deleted_at.is_(None),
+            )
+            .order_by(CourseTemplate.label, CourseTemplate.created_at)
+        )
+    ).all()
+    for tpl in rows:
+        label = (tpl.label or "").strip().upper()
+        if not label or label.startswith("M"):
+            continue
+        return tpl
+    # M しか無いケース (本店等で manager seed のみ) は最初の 1 件を返す
+    return rows[0] if rows else None
+
+
+def _normalize_course_code(label: str | None) -> str:
+    """``course_template.label`` を ``courses.code`` (CHECK 制約) に正規化.
+
+    W16 codex fix (中 2): CHECK ('A','B','C','D','E','M') に拡張済 (migration 0023).
+    label 先頭 1 文字を大文字化し、許容集合外なら 'M' (オーバーフロー枠) に丸める。
+    """
+    first = (label or "").strip()[:1].upper()
+    if first in ("A", "B", "C", "D", "E", "M"):
+        return first
+    return "M"
+
+
+async def _get_or_create_course_for_template_week_l1(
+    db: AsyncSession,
+    *,
+    template: CourseTemplate,
+    iso_year: int,
+    iso_week: int,
+    weekday: int,
+) -> Course:
+    """``template`` × (iso_year, iso_week, weekday) に対応する Course を取得 / 作成.
+
+    W16 codex fix (重大 1): Layer 1 で visit に course_id を確実に紐付けるため
+    の helper. 既存の ``schedule.py::_get_or_create_course_for_template_week``
+    と同じ意味だが、HTTP 層に依存せずサービス層で完結させる。
+    """
+    course = await db.scalar(
+        select(Course).where(
+            Course.template_id == template.id,
+            Course.iso_year == iso_year,
+            Course.iso_week == iso_week,
+            Course.weekday == weekday,
+            Course.deleted_at.is_(None),
+        )
+    )
+    if course is not None:
+        return course
+
+    code = _normalize_course_code(template.label)
+    try:
+        async with db.begin_nested():  # savepoint — race-safe
+            new_course = Course(
+                iso_year=iso_year,
+                iso_week=iso_week,
+                weekday=weekday,
+                code=code,
+                course_status=COURSE_STATUS_PROPOSED,
+                template_id=template.id,
+                office_id=template.office_id,
+            )
+            db.add(new_course)
+            await db.flush()
+        return new_course
+    except IntegrityError:
+        course = await db.scalar(
+            select(Course).where(
+                Course.template_id == template.id,
+                Course.iso_year == iso_year,
+                Course.iso_week == iso_week,
+                Course.weekday == weekday,
+                Course.deleted_at.is_(None),
+            )
+        )
+        if course is None:
+            raise
+        return course
+
+
 def _has_confirmed_entries(pattern: dict | None) -> bool:
     """確定パターン (entries に少なくとも 1 件の有効な weekday) を持つか.
 
@@ -325,6 +431,7 @@ class Layer1Expander:
         db: AsyncSession,
         iso_year: int,
         iso_week: int,
+        office_id: UUID | None = None,
     ) -> Layer1Result:
         """指定週の visits を全 active 患者から展開する.
 
@@ -332,6 +439,9 @@ class Layer1Expander:
             db: 共有 SQLAlchemy セッション (commit/rollback は呼び出し側)。
             iso_year: ISO 年 (例 2026)。
             iso_week: ISO 週 (1〜53)。
+            office_id: W16 codex fix (重大 2) — 指定時は patient.primary_office_id
+                がこの拠点と一致する患者のみを展開し、削除も同患者の範囲に絞る。
+                None の場合は全 active 患者を対象 (旧挙動).
 
         Returns:
             Layer1Result: 生成された visits + 保留プール + サマリ。
@@ -355,14 +465,15 @@ class Layer1Expander:
 
         result = Layer1Result(iso_year=iso_year, iso_week=iso_week)
 
-        # ----- 全 active 患者を取得 -----
+        # ----- active 患者を取得 (W16 codex fix 重大 2: office_id でスコープ) -----
+        patient_where = [
+            Patient.status == "active",
+            Patient.deleted_at.is_(None),
+        ]
+        if office_id is not None:
+            patient_where.append(Patient.primary_office_id == office_id)
         patients_rows = await db.scalars(
-            select(Patient)
-            .where(
-                Patient.status == "active",
-                Patient.deleted_at.is_(None),
-            )
-            .order_by(Patient.code)
+            select(Patient).where(*patient_where).order_by(Patient.code)
         )
         patients = list(patients_rows.all())
         result.patients_processed = len(patients)
@@ -372,9 +483,16 @@ class Layer1Expander:
 
         # ----- 既存の自動生成 visit を当該週で削除 (冪等性) -----
         # status=completed / cancelled / source != auto は保護対象なので除外。
+        # W16 codex fix 重大 2: office_id 指定時は patients も既に絞り込まれているため、
+        # 削除スコープも自動的に当該拠点の patient だけになる (別拠点の visit は触らない)。
         await self._delete_existing_auto_visits(
             db, week_monday=week_monday, patient_ids=[p.id for p in patients]
         )
+
+        # ----- 拠点ごとの default template を resolve するキャッシュ -----
+        # patient ごとに primary_office_id を見て、その拠点の最初の course_template を選ぶ。
+        # 同一拠点を何度も照会する無駄を避けるためメモ化する。
+        template_cache: dict[UUID, CourseTemplate | None] = {}
 
         # ----- 各患者を展開 -----
         for patient in patients:
@@ -385,12 +503,36 @@ class Layer1Expander:
                 iso_week=iso_week,
                 week_monday=week_monday,
                 result=result,
+                template_cache=template_cache,
             )
             result.visits_created.extend(created)
 
         # 確定 (commit は呼び出し側)
         await db.flush()
         return result
+
+    async def _resolve_template_for_patient(
+        self,
+        db: AsyncSession,
+        *,
+        patient: Patient,
+        template_cache: dict[UUID, CourseTemplate | None],
+    ) -> CourseTemplate | None:
+        """patient の primary_office_id から default template を解決 (memoized)."""
+        office_id = patient.primary_office_id
+        if office_id is None:
+            return None
+        if office_id in template_cache:
+            return template_cache[office_id]
+        template = await _resolve_default_template_for_office(db, office_id=office_id)
+        template_cache[office_id] = template
+        if template is None:
+            logger.warning(
+                "Layer1: no course_template found for office %s (patient %s) — visit.course_id=NULL",
+                office_id,
+                patient.id,
+            )
+        return template
 
     # ------------------------------------------------------------------ #
     # private helpers
@@ -405,12 +547,22 @@ class Layer1Expander:
         iso_week: int,
         week_monday: date,
         result: Layer1Result,
+        template_cache: dict[UUID, CourseTemplate | None] | None = None,
     ) -> list[VisitCreated]:
         """1 患者を固定枠 / 希望パターンどちらかで展開する (hybrid).
 
         has_fixed_visits=True の場合は patient_fixed_visits から直接生成し、
         False の場合は従来の weekly_pattern (希望) ベースで生成する。
         """
+        if template_cache is None:
+            template_cache = {}
+
+        # 当該 patient の default template を解決 (W16 codex fix 重大 1)。
+        # primary_office_id 未設定 / 拠点に template 無しの場合は None。
+        template = await self._resolve_template_for_patient(
+            db, patient=patient, template_cache=template_cache
+        )
+
         # mode 判定: special_week_active に当該週が含まれるかどうか
         is_special = _is_special_week_active(patient, iso_year, iso_week)
         mode = "special" if is_special else "normal"
@@ -432,6 +584,9 @@ class Layer1Expander:
                 fixed_entries=fixed_entries,
                 week_monday=week_monday,
                 special_applied=is_special,
+                template=template,
+                iso_year=iso_year,
+                iso_week=iso_week,
             )
 
         # 従来: 希望パターン (weekly_pattern) ベース
@@ -458,6 +613,9 @@ class Layer1Expander:
             entries=entries,
             week_monday=week_monday,
             special_applied=special_applied,
+            template=template,
+            iso_year=iso_year,
+            iso_week=iso_week,
         )
 
     async def _expand_fixed_visits_to_visits(
@@ -468,10 +626,15 @@ class Layer1Expander:
         fixed_entries: list[dict],
         week_monday: date,
         special_applied: bool,
+        template: CourseTemplate | None = None,
+        iso_year: int | None = None,
+        iso_week: int | None = None,
     ) -> list[VisitCreated]:
         """固定枠エントリ (patient_fixed_visits 由来) から visits を INSERT する.
 
-        course_id は NULL (Layer 2 でセット)。
+        W16 codex fix (重大 1): ``template`` が渡された場合は (template, year, week, weekday)
+        の Course を find/create して visit.course_id を埋める。template=None の場合
+        (=patient.primary_office_id 未設定) のみ NULL のまま (旧挙動).
         required_staff_count は patients.required_staff_count を流用する。
         """
         created: list[VisitCreated] = []
@@ -498,6 +661,18 @@ class Layer1Expander:
 
             visit_date = date.fromordinal(week_monday.toordinal() + weekday)
 
+            # W16 codex fix (重大 1): course_id を決定
+            course_id: UUID | None = None
+            if template is not None and iso_year is not None and iso_week is not None:
+                course = await _get_or_create_course_for_template_week_l1(
+                    db,
+                    template=template,
+                    iso_year=iso_year,
+                    iso_week=iso_week,
+                    weekday=weekday,
+                )
+                course_id = course.id
+
             visit_group_id: UUID | None = None
             if staff_count == 2:
                 visit_group_id = uuid.uuid4()
@@ -512,7 +687,7 @@ class Layer1Expander:
                     status=LAYER1_VISIT_STATUS,
                     source=LAYER1_VISIT_SOURCE,
                     required_staff_count=staff_count,
-                    course_id=None,
+                    course_id=course_id,
                     visit_group_id=visit_group_id,
                     note=(
                         "Layer1: fixed pattern (special_week)"
@@ -580,8 +755,14 @@ class Layer1Expander:
         entries: list[dict],
         week_monday: date,
         special_applied: bool,
+        template: CourseTemplate | None = None,
+        iso_year: int | None = None,
+        iso_week: int | None = None,
     ) -> list[VisitCreated]:
         """1 患者の entries を visits に展開して INSERT する.
+
+        W16 codex fix (重大 1): ``template`` が渡された場合は (template, year, week, weekday)
+        の Course を find/create して visit.course_id を埋める。
 
         2 名体制 (staff_count=2) のときは ``visit_group_id`` を共有する 2 行を
         INSERT する (§3.3 / §4.5)。Layer 3 (W4-BE9) が後から
@@ -638,6 +819,18 @@ class Layer1Expander:
 
             visit_date = date.fromordinal(week_monday.toordinal() + weekday)
 
+            # W16 codex fix (重大 1): course_id を決定
+            course_id: UUID | None = None
+            if template is not None and iso_year is not None and iso_week is not None:
+                course = await _get_or_create_course_for_template_week_l1(
+                    db,
+                    template=template,
+                    iso_year=iso_year,
+                    iso_week=iso_week,
+                    weekday=weekday,
+                )
+                course_id = course.id
+
             # 2 名体制は同じ visit_group_id を持つ visit を 2 行 (§3.3)
             visit_group_id: UUID | None = None
             if staff_count == 2:
@@ -653,6 +846,7 @@ class Layer1Expander:
                     status=LAYER1_VISIT_STATUS,
                     source=LAYER1_VISIT_SOURCE,
                     required_staff_count=staff_count,
+                    course_id=course_id,
                     visit_group_id=visit_group_id,
                     note=(
                         f"Layer1: {time_type} pattern (special_week)"

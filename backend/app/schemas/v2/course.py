@@ -25,8 +25,9 @@ from app.schemas.v2.enums import CourseStatus
 
 # コース記号 (§3.6.5):
 #   A〜D = 通常コース (4 つ、稼働スタッフ数に応じる)
+#   E = 拡張コース (Wave 16 migration 0023 で追加)
 #   M = マネージャー枠 (4 コース外のオーバーフロー専用)
-CourseCodeV2 = Literal["A", "B", "C", "D", "M"]
+CourseCodeV2 = Literal["A", "B", "C", "D", "E", "M"]
 
 
 class CourseV2Base(BaseModel):
@@ -40,7 +41,7 @@ class CourseV2Base(BaseModel):
     iso_year: int = Field(ge=2000, le=2100, description="ISO 年")
     iso_week: int = Field(ge=1, le=53, description="ISO 週")
     weekday: int = Field(ge=0, le=6, description="曜日 (0=月, 6=日)")
-    code: CourseCodeV2 = Field(description="A/B/C/D/M (§3.6.5)")
+    code: CourseCodeV2 = Field(description="A/B/C/D/E/M (§3.6.5)")
     course_status: CourseStatus = Field(
         default=CourseStatus.PROPOSED,
         description="proposed → course_fixed → staff_assigned (§4.5)",

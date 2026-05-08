@@ -45,6 +45,7 @@ from app.models.course import (
     Course,
 )
 from app.models.course_template import CourseTemplate
+from app.models.office import Office
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.user import User
@@ -532,11 +533,11 @@ async def _get_or_create_course_for_template_week(
         return course
 
     # 無ければ INSERT を savepoint 内で試みる (race-safe).
-    # code は template.label (8 文字までの可変長) の先頭 1 文字を使うが、
-    # courses.code CHECK 制約 ('A','B','C','D','M') を満たさない場合は 'M'
-    # (マネージャー枠 = オーバーフロー) に丸める。
+    # code は template.label の先頭 1 文字を使い、courses.code CHECK 制約
+    # ('A','B','C','D','E','M' — W16 codex fix 中 2 / migration 0023 で 'E' 追加) を
+    # 満たさない場合は 'M' (マネージャー枠 = オーバーフロー) に丸める。
     label_first = (template.label or "").strip()[:1].upper()
-    code = label_first if label_first in ("A", "B", "C", "D", "M") else "M"
+    code = label_first if label_first in ("A", "B", "C", "D", "E", "M") else "M"
 
     try:
         async with db.begin_nested():  # savepoint — PostgreSQL/SQLite 両対応
@@ -780,15 +781,37 @@ async def generate_and_assign(
             detail=f"invalid ISO week: year={payload.iso_year} week={payload.iso_week}",
         ) from exc
 
+    # ----- W16 codex fix (中 1): office_id 指定時は存在確認 (404 if not found) -----
+    # 不存在の office_id を渡されても処理が黙って no-op になるのを防ぐため、
+    # 早期に 404 を返す。論理削除済み office も存在しない扱い。
+    if payload.office_id is not None:
+        office = await db.scalar(
+            select(Office).where(
+                Office.id == payload.office_id,
+                Office.deleted_at.is_(None),
+            )
+        )
+        if office is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Office not found: {payload.office_id}",
+            )
+
     expander = Layer1Expander()
     assigner = Layer3Assigner()
 
     try:
         # ----- 1) Layer 1 (= 既存 auto visit 削除 → 再生成) -----
         # Layer1Expander.expand_week が当該週の auto-visit 削除と再生成の双方を
-        # 担当する (W4-BE7). 追加のクリア処理は不要.
+        # 担当する (W4-BE7).
+        # W16 codex fix (重大 2): office_id を Layer 1 にも渡し、対象 patient を
+        # primary_office_id 一致でフィルタする。これがないと別拠点の visit が
+        # 巻き込まれて削除・再生成され、別拠点のデータが破壊される。
         l1_result = await expander.expand_week(
-            db, iso_year=payload.iso_year, iso_week=payload.iso_week
+            db,
+            iso_year=payload.iso_year,
+            iso_week=payload.iso_week,
+            office_id=payload.office_id,
         )
 
         # ----- 2) proposed -> course_fixed への自動昇格 (W16-BE3) -----
