@@ -84,6 +84,7 @@ import {
   buildPoolDraggableId,
   parsePoolDraggableId,
 } from './PoolPanel';
+import type { SlotIndex } from '@/lib/schemas/v2/patient_fixed_visit';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Constants
@@ -443,10 +444,10 @@ export function CourseDayTablePanel({
   //     → slot 0 のみ埋まり (slot 1 が未配置 = 「複数 ① のみ」表示の対象)
   // PoolGroupedByWeekday 側 (Phase 3-B) で「①/② どちらが空きか」表示するために使う。
   const assignedSlotsByPatient = useMemo(() => {
-    const m = new Map<string, Set<number>>();
+    const m = new Map<string, Set<SlotIndex>>();
     for (const v of weekVisits) {
       const gid = (v as { visit_group_id?: string | null }).visit_group_id ?? null;
-      const set = m.get(v.patient_id) ?? new Set<number>();
+      const set = m.get(v.patient_id) ?? new Set<SlotIndex>();
       if (gid) {
         // visit_group_id 持ち → group 内の 2 visit でそれぞれ slot 0/1 を埋める。
         // FE では visitsByGroupId 内の sort 順 (id 昇順) で 0/1 を割当て。
@@ -463,16 +464,24 @@ export function CourseDayTablePanel({
   }, [weekVisits, visitsByGroupId]);
 
   // ─── Pool patients (当週いずれの visit にも未配置な active 患者) ─
+  // W37 Phase 3-B/3-C: requires_multiple_staff=true 患者は slot 単位で配置判定する
+  // ため、ここでは「visit が 1 件でも存在する」だけで除外せず、PoolGroupedByWeekday
+  // 側で assignedSlotsByPatient (slot 0/1) を見て両方埋まっていればカード 0 枚に
+  // 丸める。通常患者 (フラグ OFF) は従来どおり 1 件配置で pool から除外。
   const placedPatientIds = useMemo(() => {
     const s = new Set<string>();
+    const multiStaffIds = new Set(
+      allPatients
+        .filter((p) => (p as { requires_multiple_staff?: boolean | null }).requires_multiple_staff)
+        .map((p) => p.id),
+    );
     for (const v of weekVisits) {
-      if (v.visit_date) {
-        // 該当週の visit を持つ患者は 1 度でも配置されているので除外
+      if (v.visit_date && !multiStaffIds.has(v.patient_id)) {
         s.add(v.patient_id);
       }
     }
     return s;
-  }, [weekVisits]);
+  }, [weekVisits, allPatients]);
 
   const poolPatients = useMemo(
     () =>
@@ -1118,14 +1127,14 @@ export function CourseDayTablePanel({
               保留プール
               - Wave 18 Phase B-3: 希望曜日別グループ
               - Wave 18 Phase B-4: 希望時間表示
-              - W37 Phase 3-B: 複数スタッフ対応患者は slotInfo に応じて
-                slot 0 / slot 1 の 2 カードを描画。draggableId に slot を含む。
-                `assignedSlotsByPatient` は Phase 3-C で weekVisits から構築する
-                (現時点は未指定 = 全 slot 未配置扱いで両カード表示)。
+              - W37 Phase 3-B + 3-C: 複数スタッフ対応患者は assignedSlotsByPatient
+                に応じて slot 0 / slot 1 の片方のみ未配置のカードを残す。
+                draggableId に slot を含む。
             */}
             <PoolGroupedByWeekday
               patients={poolPatients}
               disabled={!canEdit}
+              assignedSlotsByPatient={assignedSlotsByPatient}
               renderCard={(p, slotInfo) => {
                 const wp = coerceWeeklyPattern(p.weekly_pattern);
                 return (
