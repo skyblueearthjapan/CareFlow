@@ -18,6 +18,7 @@ import { Card } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 import { capacityForWeekday, type CourseTemplateRead } from '@/lib/schemas/v2/course_template';
 import type { EventRead } from '@/lib/schemas/staff-events';
+import type { StaffRead } from '@/lib/schemas/staff';
 import { formatEventLabelLines, getStaffEventsForWeekday } from './CourseDayTable';
 
 const WEEKDAYS = [0, 1, 2, 3, 4, 5] as const;
@@ -55,6 +56,11 @@ export interface CourseWeekOverviewProps {
    * CourseWeekOverview は course 行を直接持たないため、親から変換済みで渡す。
    */
   assignedStaffByTemplateWeekday?: Map<string, string>;
+  /**
+   * Wave 32: staff_id → StaffRead のルックアップ。
+   * 各セル冒頭に「担当: ○○」を表示するために使用する。
+   */
+  staffMap?: Map<string, StaffRead>;
 }
 
 export function CourseWeekOverview({
@@ -64,6 +70,7 @@ export function CourseWeekOverview({
   onJumpToDay,
   staffEventsByStaff,
   assignedStaffByTemplateWeekday,
+  staffMap,
 }: CourseWeekOverviewProps) {
   // (template_id, weekday) → visits[] (start_time 昇順)
   const cellMap = React.useMemo(() => {
@@ -154,6 +161,11 @@ export function CourseWeekOverview({
                     ? getStaffEventsForWeekday(assignedStaffId, wd, eventsMap)
                     : [];
 
+                  // Wave 32: 担当スタッフ名
+                  const assignedStaffName = assignedStaffId
+                    ? (staffMap?.get(assignedStaffId)?.name ?? null)
+                    : null;
+
                   // visit + event を時刻順でマージ
                   type OverviewItem =
                     | { kind: 'visit'; id: string; time: string | null; label: string }
@@ -200,6 +212,13 @@ export function CourseWeekOverview({
                         <span className="text-[10px] text-text-muted">休</span>
                       ) : (
                         <>
+                          {/* Wave 32: 担当スタッフ名 */}
+                          <div
+                            className="text-[10px] font-semibold text-text-secondary border-b border-border-default/40 pb-0.5 mb-0.5 truncate"
+                            data-testid={`course-week-overview-staff-${tpl.id}-${wd}`}
+                          >
+                            {assignedStaffName ? `担当: ${assignedStaffName}` : '担当: 未割当'}
+                          </div>
                           <div className="mb-0.5 flex items-center justify-between">
                             <span
                               className={cn(
@@ -210,7 +229,7 @@ export function CourseWeekOverview({
                               )}
                               data-testid={`course-week-overview-capacity-${tpl.id}-${wd}`}
                             >
-                              {visitList.length}/{cap}
+                              {visitList.length} 名 / 上限 {cap}
                             </span>
                           </div>
                           {items.length === 0 ? (

@@ -421,6 +421,13 @@ export function CourseDayTablePanel({
     return m;
   }, [offices]);
 
+  // ─── Wave 32: staffId → StaffRead マップ (CourseWeekOverview 担当名表示用) ──
+  const staffMap = useMemo(() => {
+    const m = new Map<string, (typeof allStaff)[number]>();
+    for (const s of allStaff) m.set(s.id, s);
+    return m;
+  }, [allStaff]);
+
   // ─── Wave 28 Phase B-3: (template_id, weekday) → assigned_staff_id マップ ──
   // CourseWeekOverview で担当スタッフ別 event を表示するために必要。
   const assignedStaffByTemplateWeekday = useMemo(() => {
@@ -815,6 +822,7 @@ export function CourseDayTablePanel({
                   onJumpToDay={(wd) => setActiveTab(wd)}
                   staffEventsByStaff={staffEventsByStaff}
                   assignedStaffByTemplateWeekday={assignedStaffByTemplateWeekday}
+                  staffMap={staffMap}
                 />
               </div>
             ) : (
