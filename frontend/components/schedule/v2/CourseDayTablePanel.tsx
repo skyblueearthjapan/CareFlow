@@ -617,6 +617,17 @@ export function CourseDayTablePanel({
     }
   };
 
+  // ─── Wave 36: visit × ボタン削除ハンドラ ────────────────────────
+  const handleDeleteVisit = async (visitId: string, patientName: string) => {
+    if (!window.confirm(`${patientName} の訪問を削除しますか？\n(固定枠は保持されます)`)) return;
+    try {
+      await deleteVisitMut.mutateAsync({ id: visitId, cascadeFixedVisit: false });
+      toast.success(`${patientName} の訪問を削除しました`);
+    } catch (err) {
+      toast.error(`削除に失敗: ${formatErr(err)}`);
+    }
+  };
+
   // ─── 「週を生成」 (Layer 1) / 「自動割付」 (Layer 3) ────────────
   const generateWeekMut = useGenerateWeekOnly();
   const assignStaffOnlyMut = useAssignStaffOnly();
@@ -870,6 +881,9 @@ export function CourseDayTablePanel({
                             return;
                           }
                           void handleChangeAssignedStaff(course.id, staffId);
+                        }}
+                        onDeleteVisit={(visitId, patientName) => {
+                          void handleDeleteVisit(visitId, patientName);
                         }}
                       />
                     );
