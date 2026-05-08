@@ -665,14 +665,19 @@ async def _upsert_patient_fixed_visit(
             await session.flush()
         return "new", True
 
-    changed = existing.start_time != start_time
+    start_time_changed = existing.start_time != start_time
     # W22 Phase A: course_template_id が指定されており既存値と異なれば差分扱い.
-    if course_template_id is not None and existing.course_template_id != course_template_id:
-        changed = True
-        if apply:
+    ct_changed = (
+        course_template_id is not None and existing.course_template_id != course_template_id
+    )
+
+    if apply:
+        if start_time_changed:
+            existing.start_time = start_time
+        if ct_changed:
             existing.course_template_id = course_template_id
-    if changed and apply:
-        existing.start_time = start_time
+
+    changed = start_time_changed or ct_changed
     return "update", changed
 
 

@@ -30,6 +30,9 @@ from sqlalchemy import select
 
 from app.core.security import create_access_token, hash_password
 from app.models import Patient, Staff, User, Visit
+from app.models.course import Course
+from app.models.course_template import CourseTemplate
+from app.models.office import Office
 from app.models.patient_fixed_visit import PatientFixedVisit
 
 # テスト週: ISO 2026-W19 (月曜 = 2026-05-04)
@@ -593,3 +596,148 @@ async def test_fix_or_pattern_viewer_forbidden(client, db) -> None:
         },
     )
     assert res.status_code == 403, res.text
+
+
+# ---------------------------------------------------------------------------
+# (中-1) fix-or-pattern: pattern_change で course_template_id が引き継がれる
+# ---------------------------------------------------------------------------
+
+
+async def _make_office(db, name: str = "事業所X") -> Office:
+    office = Office(name=name)
+    db.add(office)
+    await db.commit()
+    await db.refresh(office)
+    return office
+
+
+async def _make_course_template(db, office_id, label: str = "A") -> CourseTemplate:
+    tpl = CourseTemplate(
+        office_id=office_id,
+        label=label,
+        capacity_mon=6,
+        capacity_tue=6,
+        capacity_wed=6,
+        capacity_thu=6,
+        capacity_fri=6,
+        capacity_sat=6,
+        capacity_sun=0,
+    )
+    db.add(tpl)
+    await db.commit()
+    await db.refresh(tpl)
+    return tpl
+
+
+@pytest.mark.asyncio
+async def test_fix_or_pattern_preserves_course_template_id(client, db) -> None:
+    """pattern_change 後も旧 pfv.course_template_id が新 pfv に引き継がれること."""
+    admin = await _make_user(db, "fop-ct-admin@example.com", "admin")
+    patient = await _make_patient(db, "FOP-CT-001")
+
+    # course_template を用意
+    office = await _make_office(db, "CT-事業所")
+    tpl = await _make_course_template(db, office.id, label="Z")
+
+    # 月曜 (weekday=0) に visit を作成
+    v = await _make_visit(
+        db, patient=patient, visit_date=TEST_WEEK_MONDAY, start="09:00", end="10:00"
+    )
+
+    # 既存 pfv を作成 (weekday=0, course_template_id=tpl.id)
+    existing_fv = PatientFixedVisit(
+        patient_id=patient.id,
+        mode="normal",
+        weekday=0,
+        start_time=time(9, 0),
+        duration_min=60,
+        course_template_id=tpl.id,
+    )
+    db.add(existing_fv)
+    await db.commit()
+
+    # pattern_change で weekday を 0→2 (Wed) に変更
+    res = await client.post(
+        "/api/v1/schedule/fix-or-pattern",
+        headers=_bearer(admin),
+        json={
+            "mode": "pattern_change",
+            "visit_id": str(v.id),
+            "new_weekday": 2,
+            "new_start_time": "14:00",
+            "new_duration_min": 60,
+            "iso_year": TEST_ISO_YEAR,
+            "iso_week": TEST_ISO_WEEK,
+        },
+    )
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["updated_fixed_visit"] is not None
+    assert data["updated_fixed_visit"]["weekday"] == 2
+
+    # DB 確認: 新 pfv (weekday=2) に course_template_id が引き継がれていること
+    new_fv_row = await db.scalar(
+        select(PatientFixedVisit).where(
+            PatientFixedVisit.patient_id == patient.id,
+            PatientFixedVisit.mode == "normal",
+            PatientFixedVisit.weekday == 2,
+        )
+    )
+    assert new_fv_row is not None
+    assert new_fv_row.course_template_id == tpl.id
+
+
+# ---------------------------------------------------------------------------
+# (中-2) from-week: visit.course_id → pfv.course_template_id の逆引きが動く
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_from_week_saves_course_template_id(client, db) -> None:
+    """from-week で visit.course_id 経由の course_template_id が pfv に保存されること."""
+    admin = await _make_user(db, "fw-ct-admin@example.com", "admin")
+    patient = await _make_patient(db, "FW-CT-001")
+
+    # Course / CourseTemplate を用意
+    office = await _make_office(db, "FW-事業所")
+    tpl = await _make_course_template(db, office.id, label="W")
+    course = Course(
+        iso_year=TEST_ISO_YEAR,
+        iso_week=TEST_ISO_WEEK,
+        weekday=0,
+        code="A",
+        office_id=office.id,
+        template_id=tpl.id,
+    )
+    db.add(course)
+    await db.commit()
+    await db.refresh(course)
+
+    # visit に course_id を紐付け
+    v = await _make_visit(
+        db, patient=patient, visit_date=TEST_WEEK_MONDAY, start="09:00", end="10:00"
+    )
+    v.course_id = course.id
+    db.add(v)
+    await db.commit()
+
+    res = await client.post(
+        f"/api/v1/patients/{patient.id}/fixed-visits/from-week"
+        f"?iso_year={TEST_ISO_YEAR}&iso_week={TEST_ISO_WEEK}",
+        headers=_bearer(admin),
+    )
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert len(data) == 1
+    assert data[0]["course_template_id"] == str(tpl.id)
+
+    # DB 確認
+    pfv_row = await db.scalar(
+        select(PatientFixedVisit).where(
+            PatientFixedVisit.patient_id == patient.id,
+            PatientFixedVisit.mode == "normal",
+            PatientFixedVisit.weekday == 0,
+        )
+    )
+    assert pfv_row is not None
+    assert pfv_row.course_template_id == tpl.id

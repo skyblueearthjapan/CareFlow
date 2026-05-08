@@ -28,6 +28,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import CurrentActiveUser, DbDep, require_role
+from app.models.course import Course
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.user import User
@@ -320,6 +321,12 @@ async def from_week_bulk(
             )
             if duration_min <= 0:
                 duration_min = 30
+            # W22: visit.course_id → course.template_id を逆引きして course_template_id を保存
+            visit_course_template_id = None
+            if v.course_id is not None:
+                course = await db.scalar(select(Course).where(Course.id == v.course_id))
+                if course is not None:
+                    visit_course_template_id = course.template_id
             db.add(
                 PatientFixedVisit(
                     patient_id=patient.id,
@@ -327,6 +334,7 @@ async def from_week_bulk(
                     weekday=wd,
                     start_time=v.start_time,
                     duration_min=duration_min,
+                    course_template_id=visit_course_template_id,
                 )
             )
 
@@ -423,6 +431,12 @@ async def from_week(
         )
         if duration_min <= 0:
             duration_min = 30
+        # W22: visit.course_id → course.template_id を逆引きして course_template_id を保存
+        visit_course_template_id = None
+        if v.course_id is not None:
+            course = await db.scalar(select(Course).where(Course.id == v.course_id))
+            if course is not None:
+                visit_course_template_id = course.template_id
         db.add(
             PatientFixedVisit(
                 patient_id=patient_id,
@@ -430,6 +444,7 @@ async def from_week(
                 weekday=wd,
                 start_time=v.start_time,
                 duration_min=duration_min,
+                course_template_id=visit_course_template_id,
             )
         )
 
