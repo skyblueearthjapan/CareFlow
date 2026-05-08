@@ -282,14 +282,13 @@ export function CourseDayTable({
     return m;
   }, [visits]);
 
-  const capacity = capacityForWeekday(template, weekday);
   const capKey = capacityKeyForWeekday(weekday);
   // capacity が 0 の曜日 (例: 日曜) は描画しない (親が事前に判定するが念のため)
   if (!capKey) return null;
 
   const headerLabel = officeName
-    ? `${officeName}-${template.label} コース (${capacity})`
-    : `${template.label} コース (${capacity})`;
+    ? `${officeName}-${template.label} コース (6)`
+    : `${template.label} コース (6)`;
 
   const assignedStaffId = course?.assigned_staff_id ?? null;
   const courseExists = course != null;

@@ -229,7 +229,7 @@ export function CourseWeekOverview({
                               )}
                               data-testid={`course-week-overview-capacity-${tpl.id}-${wd}`}
                             >
-                              {visitList.length} 名 / 上限 {cap}
+                              {visitList.length} 名 / 上限 6
                             </span>
                           </div>
                           {items.length === 0 ? (
