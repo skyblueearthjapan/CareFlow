@@ -44,7 +44,7 @@ import logging
 import math
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from datetime import date as date_cls
 from datetime import time as time_cls
 from typing import Any
@@ -61,7 +61,7 @@ from app.models.course import (
 )
 from app.models.office import Office
 from app.models.patient import Patient
-from app.models.staff import Staff, StaffShift, StaffWeeklyOverride
+from app.models.staff import Staff, StaffEvent, StaffShift, StaffWeeklyOverride
 from app.models.staff_companion_assignment import StaffCompanionAssignment
 from app.models.visit import VISIT_STATUS_PLANNED, Visit
 from app.models.visit_staff_assignment import VisitStaffAssignment
@@ -138,6 +138,14 @@ class StaffInfo:
     is_trainee: bool = False  # W10-BE2: 新人フラグ
 
 
+@dataclass(frozen=True)
+class VisitTimeSlot:
+    """W27 — Layer 3 で event 重複判定に使う visit 時間帯."""
+
+    start_time: time_cls
+    end_time: time_cls
+
+
 @dataclass
 class CourseAssignmentTarget:
     """1 つの (weekday × course) を 1 行と見立てた assignment 対象."""
@@ -150,6 +158,9 @@ class CourseAssignmentTarget:
     # 患者の性別制限の集合 (例: {"female"} は女性スタッフのみ受け入れ可)
     gender_restrictions: frozenset[str]
     patient_ids: list[UUID] = field(default_factory=list)
+    # W27: コース所属 visit の時間帯 (start_time, end_time) の一覧.
+    # StaffEvent との重複判定に用いる. 空リストのときは event 除外を skip.
+    visits: list[VisitTimeSlot] = field(default_factory=list)
 
 
 class StaffAssignment(BaseModel):
@@ -170,6 +181,56 @@ class Layer3Result:
     assignments: list[StaffAssignment] = field(default_factory=list)
     rotation_score: float = 0.0  # ローテ分散度 (低いほど分散している)
     total_distance_km: float = 0.0
+
+
+# ---------------------------------------------------------------------------
+# W27 Phase A: StaffEvent overlap helpers
+# ---------------------------------------------------------------------------
+
+
+def _strip_tz(dt: datetime) -> datetime:
+    """tz-aware と naive の datetime を一律 naive (壁時計) に揃える.
+
+    ``StaffEvent.starts_at`` / ``ends_at`` は DB 上 ``DateTime(timezone=True)``
+    だが、 ``app.api.v1.staff_events._combine`` は naive を INSERT する。
+    SQLAlchemy + SQLite では naive がそのまま戻るが、PostgreSQL 経由では
+    UTC tz が付与されるため、両方に対応するため tz を剥がして比較する。
+    visit 側は ``datetime.combine(visit_date, time)`` で naive として作るので
+    比較相手も naive に揃えた方が安全 (= naive 同士なら DB 種別に依らず
+    壁時計比較で一致する).
+    """
+    if dt.tzinfo is not None:
+        return dt.replace(tzinfo=None)
+    return dt
+
+
+def _has_event_overlap(
+    *,
+    staff_id: UUID,
+    course: CourseAssignmentTarget,
+    weekday: int,
+    events_by_staff: dict[UUID, list[StaffEvent]],
+    week_monday: date_cls,
+) -> bool:
+    """``staff`` の event がそのコースの visits 時間帯と 1 件でも重なるなら True.
+
+    重なり判定 (半開区間): ``event.starts_at < visit_end AND event.ends_at > visit_start``
+    """
+    events = events_by_staff.get(staff_id)
+    if not events:
+        return False
+    if not course.visits:
+        return False
+    target_date = week_monday + timedelta(days=weekday)
+    for visit in course.visits:
+        visit_start_dt = datetime.combine(target_date, visit.start_time)
+        visit_end_dt = datetime.combine(target_date, visit.end_time)
+        for event in events:
+            ev_start = _strip_tz(event.starts_at)
+            ev_end = _strip_tz(event.ends_at)
+            if ev_start < visit_end_dt and ev_end > visit_start_dt:
+                return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -329,12 +390,22 @@ class Layer3Assigner:
             if c.id not in fixed_staff_by_course and c.assigned_staff_id is not None:
                 fixed_staff_by_course[c.id] = c.assigned_staff_id
 
+        # ---------- 4c. W27 Phase A: StaffEvent 取得 (event 時間帯で重なる
+        #               staff×course をハード除外するため) ----------
+        events_by_staff = await self._load_staff_events(
+            db,
+            staff_ids=[s.staff_id for s in staff_pool],
+            week_monday=week_monday,
+        )
+
         # ---------- 5. 計算 ----------
         result = self.solve(
             course_targets,
             staff_pool,
             history=history,
             fixed_staff_by_course=fixed_staff_by_course,
+            events_by_staff=events_by_staff,
+            week_monday=week_monday,
         )
 
         # ---------- 6. DB 反映 ----------
@@ -355,6 +426,8 @@ class Layer3Assigner:
         history: list[tuple[int, str, UUID]] | None = None,
         fixed_staff_by_course: dict[UUID, UUID] | None = None,
         same_course_prev_day_penalty: bool = True,
+        events_by_staff: dict[UUID, list[StaffEvent]] | None = None,
+        week_monday: date_cls | None = None,
     ) -> Layer3Result:
         """純粋関数版エントリポイント (テスト / fixture 評価で直接使う).
 
@@ -370,6 +443,13 @@ class Layer3Assigner:
             same_course_prev_day_penalty: W16 — True のとき、同一スタッフが
                 前日と同じ course_code を担当することにペナルティを付与する
                 (= 同患者連続回避).
+            events_by_staff: W27 Phase A — ``staff_id -> [StaffEvent, ...]``.
+                event 時間帯と course 内 visit 時間帯が重なる staff は
+                当該 course から **ハード除外** される (HUNGARIAN_INFINITY).
+                ``None`` または空辞書 = event 除外無し (regression 互換).
+            week_monday: W27 Phase A — 当該 ISO 週の月曜日 (date).
+                ``events_by_staff`` 利用時に必須。weekday から実日付を
+                算出して event 時間帯と比較する。
 
         Returns:
             Layer3Result.
@@ -386,6 +466,8 @@ class Layer3Assigner:
             history = []
         if fixed_staff_by_course is None:
             fixed_staff_by_course = {}
+        if events_by_staff is None:
+            events_by_staff = {}
 
         # 固定割当先となる staff_id 集合 (= manager を除外しない対象)
         fixed_staff_ids: set[UUID] = set(fixed_staff_by_course.values())
@@ -419,6 +501,8 @@ class Layer3Assigner:
                 history=history,
                 fixed_staff_by_course=fixed_staff_by_course,
                 prev_day_pairs=prev_day_pairs if same_course_prev_day_penalty else set(),
+                events_by_staff=events_by_staff,
+                week_monday=week_monday,
             )
             for a in day_assignments:
                 all_assignments.append(a)
@@ -460,6 +544,8 @@ class Layer3Assigner:
         history: list[tuple[int, str, UUID]],
         fixed_staff_by_course: dict[UUID, UUID] | None = None,
         prev_day_pairs: set[tuple[str, UUID]] | None = None,
+        events_by_staff: dict[UUID, list[StaffEvent]] | None = None,
+        week_monday: date_cls | None = None,
     ) -> list[StaffAssignment]:
         """1 曜日内で (course × staff) のハンガリアンを解く.
 
@@ -473,6 +559,9 @@ class Layer3Assigner:
                 は他の course への割当からも除外する.
             prev_day_pairs: W16 — 前日の (course_code, staff_id) 集合.
                 同一ペアの再選択にペナルティを付与する (= 同患者連続回避).
+            events_by_staff: W27 Phase A — staff_id -> [StaffEvent, ...].
+            week_monday: W27 Phase A — 当該週月曜日 (visit 時刻と event の
+                重複判定に必要).
         """
         if not day_courses or not staff_pool:
             return []
@@ -480,6 +569,8 @@ class Layer3Assigner:
             fixed_staff_by_course = {}
         if prev_day_pairs is None:
             prev_day_pairs = set()
+        if events_by_staff is None:
+            events_by_staff = {}
 
         # ----- W16: 固定割当を先に剥がす -----
         result: list[StaffAssignment] = []
@@ -537,6 +628,8 @@ class Layer3Assigner:
                     staff=staff,
                     history=history,
                     prev_day_pairs=prev_day_pairs,
+                    events_by_staff=events_by_staff,
+                    week_monday=week_monday,
                 )
         # ダミー行 (i >= n_courses): 全列コスト 0  → 「未割当の course/staff」を吸収
         # ダミー列 (j >= n_staff): 全行コスト 0
@@ -573,20 +666,25 @@ class Layer3Assigner:
         staff: StaffInfo,
         history: list[tuple[int, str, UUID]],
         prev_day_pairs: set[tuple[str, UUID]] | None = None,
+        events_by_staff: dict[UUID, list[StaffEvent]] | None = None,
+        week_monday: date_cls | None = None,
     ) -> float:
         """単一セル (course, staff) のコストを返す.
 
-        コスト関数 (§5.4 + W16 拡張):
+        コスト関数 (§5.4 + W16 拡張 + W27 Phase A 拡張):
             cost = α * distance
                  + β * rotation_penalty
                  + γ * gender
                  + δ * work_day
                  + W16: 前日同コース penalty
+                 + W27: event 時間帯重複 (ハード除外)
 
-        γ / δ はハード制約なので INF 相当 (= ``HUNGARIAN_INFINITY``).
+        γ / δ / W27 はハード制約なので INF 相当 (= ``HUNGARIAN_INFINITY``).
         """
         if prev_day_pairs is None:
             prev_day_pairs = set()
+        if events_by_staff is None:
+            events_by_staff = {}
 
         # ---------- δ: 勤務曜日違反 (ハード制約) ----------
         if weekday not in staff.work_days:
@@ -600,6 +698,19 @@ class Layer3Assigner:
             for restriction in course.gender_restrictions:
                 if restriction != staff.sex:
                     return HUNGARIAN_INFINITY
+
+        # ---------- W27 Phase A: StaffEvent 時間帯重複 (ハード制約) ----------
+        # event 時間帯と course 内 visit 時間帯が重なる場合は当該 staff を
+        # 当該 course から除外する (研修・会議中に visit 不可のため).
+        if events_by_staff and week_monday is not None and course.visits:
+            if _has_event_overlap(
+                staff_id=staff.staff_id,
+                course=course,
+                weekday=weekday,
+                events_by_staff=events_by_staff,
+                week_monday=week_monday,
+            ):
+                return HUNGARIAN_INFINITY
 
         # ---------- Q3 ハイブリッド: 直近 1 週は強制除外 ----------
         for weeks_ago, course_code, staff_id in history:
@@ -747,6 +858,18 @@ class Layer3Assigner:
                 if p.sex_restriction:
                     restrictions.add(p.sex_restriction)
 
+            # W27 Phase A: コース所属 visit の時間帯一覧 (event 重複判定用)
+            visit_stmt = select(Visit).where(
+                Visit.course_id == course.id,
+                Visit.status == VISIT_STATUS_PLANNED,
+                Visit.deleted_at.is_(None),
+            )
+            course_visit_rows = list((await db.scalars(visit_stmt)).all())
+            visit_slots = [
+                VisitTimeSlot(start_time=v.start_time, end_time=v.end_time)
+                for v in course_visit_rows
+            ]
+
             targets.append(
                 CourseAssignmentTarget(
                     course_id=course.id,
@@ -756,6 +879,7 @@ class Layer3Assigner:
                     centroid_lng=centroid_lng,
                     gender_restrictions=frozenset(restrictions),
                     patient_ids=[p.id for p in patients],
+                    visits=visit_slots,
                 )
             )
         return targets
@@ -933,6 +1057,40 @@ class Layer3Assigner:
                     is_trainee=staff.is_trainee,
                 )
             )
+        return result
+
+    async def _load_staff_events(
+        self,
+        db: AsyncSession,
+        *,
+        staff_ids: list[UUID],
+        week_monday: date_cls,
+    ) -> dict[UUID, list[StaffEvent]]:
+        """W27 Phase A: 当該週 (月曜〜日曜) に存在する StaffEvent を staff 別に取得.
+
+        重なり判定の正確性のため、event 区間が週末をまたぐケースも拾えるよう、
+        ``starts_at < (week_sunday+1)`` かつ ``ends_at >= week_monday`` で SELECT する.
+
+        ``staff_ids`` が空のときは空 dict を返す.
+        """
+        if not staff_ids:
+            return {}
+        week_sunday_plus1 = week_monday + timedelta(days=7)
+        # naive datetime で比較する (DB 側 tz の有無に依らず動作させるため
+        # SQLAlchemy が tz を付与/剥離するハンドリングに任せる).
+        # SQLite (テスト) と PostgreSQL (本番) いずれも naive 値を渡せば
+        # column type に合わせた比較に変換される.
+        range_start = datetime.combine(week_monday, time_cls(0, 0))
+        range_end = datetime.combine(week_sunday_plus1, time_cls(0, 0))
+        stmt = select(StaffEvent).where(
+            StaffEvent.staff_id.in_(staff_ids),
+            StaffEvent.starts_at < range_end,
+            StaffEvent.ends_at >= range_start,
+        )
+        rows = list((await db.scalars(stmt)).all())
+        result: dict[UUID, list[StaffEvent]] = {}
+        for ev in rows:
+            result.setdefault(ev.staff_id, []).append(ev)
         return result
 
     async def _build_fixed_assignments(
@@ -1477,6 +1635,7 @@ __all__ = [
     "ROTATION_HISTORY_WEEKS",
     "StaffAssignment",
     "StaffInfo",
+    "VisitTimeSlot",
     "course_target_from_fixture_dict",
     "history_from_fixture_list",
     "hungarian_min_cost",

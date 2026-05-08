@@ -53,8 +53,9 @@ from app.models.course_template import CourseTemplate
 from app.models.office import Office
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
+from app.models.staff import Staff, StaffEvent
 from app.models.user import User
-from app.models.visit import Visit
+from app.models.visit import VISIT_STATUS_PLANNED, Visit
 from app.schemas.v2.patient_fixed_visit import PatientFixedVisitMode, PatientFixedVisitV2Read
 from app.schemas.v2.visit import VisitV2Read
 from app.services.schedule_fix_service import (
@@ -1065,6 +1066,25 @@ class AssignStaffOnlyRequest(BaseModel):
     )
 
 
+class AssignStaffWarning(BaseModel):
+    """W27 Phase A: assign-staff-only で検出された event×visit 重複の警告.
+
+    Layer 3 のハード除外でほぼ抑止されるが、固定割当 (manager / 都賀) や
+    既に staff_assigned 状態だったコース (再実行時保護) が event と重なる
+    ケースは残るため、API レスポンスで管理者に通知する。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    staff_id: UUID
+    staff_name: str | None = None
+    event_id: UUID
+    event_type: str
+    visit_id: UUID
+    visit_start_time: time
+    message: str
+
+
 class AssignStaffOnlyResponse(BaseModel):
     """``POST /api/v1/schedule/assign-staff-only`` のレスポンス (W17-BE-A2)."""
 
@@ -1074,6 +1094,8 @@ class AssignStaffOnlyResponse(BaseModel):
     iso_week: int
     courses_assigned: int
     message: str
+    # W27 Phase A: event 時間帯と既存 visit (assigned_staff) の重複警告
+    warnings: list[AssignStaffWarning] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -1256,6 +1278,14 @@ async def assign_staff_only(
             office_id=payload.office_id,
         )
 
+        # ----- W27 Phase A: event × visit 重複の warnings 収集 -----
+        warnings = await _collect_event_visit_warnings(
+            db,
+            iso_year=payload.iso_year,
+            iso_week=payload.iso_week,
+            office_id=payload.office_id,
+        )
+
         await db.commit()
     except Layer3AssignmentError as exc:
         await db.rollback()
@@ -1278,7 +1308,116 @@ async def assign_staff_only(
             f"for ISO {payload.iso_year}-W{payload.iso_week}"
             + (f" (office {payload.office_id})" if payload.office_id else "")
         ),
+        warnings=warnings,
     )
+
+
+# ---------------------------------------------------------------------------
+# W27 Phase A: event × visit 重複検出 (warnings 用)
+# ---------------------------------------------------------------------------
+
+
+def _strip_tz_naive(dt: datetime) -> datetime:
+    """tz-aware/naive どちらでも naive (壁時計) に揃える (PostgreSQL/SQLite 両対応)."""
+    if dt.tzinfo is not None:
+        return dt.replace(tzinfo=None)
+    return dt
+
+
+async def _collect_event_visit_warnings(
+    db,
+    *,
+    iso_year: int,
+    iso_week: int,
+    office_id: UUID | None,
+) -> list[AssignStaffWarning]:
+    """assign-staff-only 完了後、event 時間帯と visit 時間帯の重複を検出する.
+
+    Layer 3 のハード除外で大部分は事前抑止されるが、以下のケースで重複が
+    残り得るため、管理者向けに warnings を返す:
+        - 固定割当 (manager / 都賀 staff) が event と重なるケース
+        - 既に ``course_status='staff_assigned'`` だったコースの保護スタッフ
+          (再実行で上書きされず、event があっても剥がされない)
+    """
+    try:
+        week_monday = date.fromisocalendar(iso_year, iso_week, 1)
+    except ValueError:
+        return []
+    week_sunday_plus1 = week_monday + timedelta(days=7)
+
+    # 当該週の visits を course 経由で staff 紐付けして取得.
+    # Visit は iso_year/iso_week カラムを持たないため、visit_date で範囲指定.
+    visit_stmt = (
+        select(Visit, Course, Staff)
+        .join(Course, Course.id == Visit.course_id)
+        .outerjoin(Staff, Staff.id == Course.assigned_staff_id)
+        .where(
+            Visit.deleted_at.is_(None),
+            Visit.status == VISIT_STATUS_PLANNED,
+            Visit.visit_date >= week_monday,
+            Visit.visit_date < week_sunday_plus1,
+            Course.assigned_staff_id.isnot(None),
+        )
+    )
+    if office_id is not None:
+        visit_stmt = visit_stmt.where(Course.office_id == office_id)
+    rows = (await db.execute(visit_stmt)).all()
+    if not rows:
+        return []
+
+    # 関係 staff_id 集合
+    staff_ids = {course.assigned_staff_id for _, course, _ in rows if course.assigned_staff_id}
+    if not staff_ids:
+        return []
+
+    # 当該週の StaffEvent を一括取得
+    range_start = datetime.combine(week_monday, time(0, 0))
+    range_end = datetime.combine(week_sunday_plus1, time(0, 0))
+    event_stmt = select(StaffEvent).where(
+        StaffEvent.staff_id.in_(list(staff_ids)),
+        StaffEvent.starts_at < range_end,
+        StaffEvent.ends_at >= range_start,
+    )
+    events_rows = list((await db.scalars(event_stmt)).all())
+    if not events_rows:
+        return []
+    events_by_staff: dict[UUID, list[StaffEvent]] = {}
+    for ev in events_rows:
+        events_by_staff.setdefault(ev.staff_id, []).append(ev)
+
+    warnings: list[AssignStaffWarning] = []
+    for visit, course, staff in rows:
+        sid = course.assigned_staff_id
+        if sid is None:
+            continue
+        events = events_by_staff.get(sid)
+        if not events:
+            continue
+        visit_start_dt = datetime.combine(visit.visit_date, visit.start_time)
+        visit_end_dt = datetime.combine(visit.visit_date, visit.end_time)
+        staff_name = staff.name if staff is not None else None
+        for ev in events:
+            ev_start = _strip_tz_naive(ev.starts_at)
+            ev_end = _strip_tz_naive(ev.ends_at)
+            if ev_start < visit_end_dt and ev_end > visit_start_dt:
+                warnings.append(
+                    AssignStaffWarning(
+                        staff_id=sid,
+                        staff_name=staff_name,
+                        event_id=ev.id,
+                        event_type=ev.event_type,
+                        visit_id=visit.id,
+                        visit_start_time=visit.start_time,
+                        message=(
+                            f"{staff_name or sid} は "
+                            f"{ev_start.isoformat()}〜{ev_end.isoformat()} に "
+                            f"{ev.event_type} 予定。"
+                            f"{visit.visit_date.isoformat()} {visit.start_time.isoformat()} "
+                            f"の visit と重複"
+                        ),
+                    )
+                )
+    return warnings
 
 
 # Suppress F401 for LAYER1_VISIT_SOURCE (kept for documentation / future use)
