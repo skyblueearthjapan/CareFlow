@@ -572,7 +572,7 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
     expect(screen.getAllByText('複数').length).toBeGreaterThan(0);
   });
 
-  it('13. required_staff_count=2 (2 名体制) の単独 visit でも「複数」が出る', () => {
+  it('13. patient.requires_multiple_staff=true の単独 visit で「複数」が出る (B-1)', () => {
     setupHooks({
       templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
       courses: [
@@ -597,7 +597,8 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
           start_time: '09:30:00',
           primary_staff_id: null,
           course_id: 'course-1',
-          required_staff_count: 2, // ← 2 名体制
+          // Wave 18: 旧 visit.required_staff_count の値は表示には影響しない
+          required_staff_count: 1,
           type: 'regular',
           status: 'planned',
           source: 'allocate',
@@ -611,6 +612,7 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
           kana: null,
           status: 'active',
           address: '千葉県千葉市',
+          requires_multiple_staff: true, // ← Wave 18 patient マスタ由来
         },
       ],
     });
@@ -623,6 +625,128 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
       />,
     );
     expect(screen.getAllByText('複数').length).toBeGreaterThan(0);
+  });
+
+  it('13b. patient.requires_multiple_staff=false (旧: visit.required_staff_count=2 のみ) では「複数」が出ない', () => {
+    setupHooks({
+      templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
+      courses: [
+        {
+          id: 'course-1',
+          iso_year: 2026,
+          iso_week: 19,
+          weekday: 0,
+          code: 'A',
+          office_id: 'office-honten',
+          assigned_staff_id: null,
+          course_status: 'course_fixed',
+          deleted_at: null,
+        },
+      ],
+      visits: [
+        {
+          id: 'v-1',
+          patient_id: 'p-1',
+          patient_name: '鈴木 一郎',
+          visit_date: '2026-05-04',
+          start_time: '09:30:00',
+          primary_staff_id: null,
+          course_id: 'course-1',
+          required_staff_count: 2, // 旧フィールド: 表示には影響しない
+          type: 'regular',
+          status: 'planned',
+          source: 'allocate',
+          end_time: '10:30:00',
+        },
+      ],
+      patients: [
+        {
+          id: 'p-1',
+          name: '鈴木 一郎',
+          kana: null,
+          status: 'active',
+          address: '千葉県千葉市',
+          // requires_multiple_staff 指定なし = false 相当
+        },
+      ],
+    });
+    render(
+      <CourseDayTablePanel
+        weekStart={monday(2026, 5, 4)}
+        officeId={null}
+        canEdit={true}
+        showAcceptanceLayer={false}
+      />,
+    );
+    // 「複数」が表示されないことを確認 (occupant-multi セルが空)
+    const multiCell = screen.getByTestId('course-occupant-multi-v-1');
+    expect(multiCell.textContent).toBe('');
+  });
+
+  it('14. patient.sex_restriction が 「条件」列に template.notes と統合表示される (B-2)', () => {
+    setupHooks({
+      templates: [
+        {
+          id: 'tpl-A',
+          office_id: 'office-honten',
+          label: 'A',
+          ...baseTpl,
+          notes: '駐車場あり',
+        },
+      ],
+      courses: [
+        {
+          id: 'course-1',
+          iso_year: 2026,
+          iso_week: 19,
+          weekday: 0,
+          code: 'A',
+          office_id: 'office-honten',
+          assigned_staff_id: null,
+          course_status: 'course_fixed',
+          deleted_at: null,
+        },
+      ],
+      visits: [
+        {
+          id: 'v-1',
+          patient_id: 'p-1',
+          patient_name: '鈴木 花子',
+          visit_date: '2026-05-04',
+          start_time: '09:30:00',
+          primary_staff_id: null,
+          course_id: 'course-1',
+          required_staff_count: 1,
+          type: 'regular',
+          status: 'planned',
+          source: 'allocate',
+          end_time: '10:00:00',
+        },
+      ],
+      patients: [
+        {
+          id: 'p-1',
+          name: '鈴木 花子',
+          kana: null,
+          status: 'active',
+          address: '千葉県千葉市',
+          sex_restriction: 'female_only',
+        },
+      ],
+    });
+    render(
+      <CourseDayTablePanel
+        weekStart={monday(2026, 5, 4)}
+        officeId={null}
+        canEdit={true}
+        showAcceptanceLayer={false}
+      />,
+    );
+    const cond = screen.getByTestId('course-occupant-condition-v-1');
+    expect(cond.textContent).toContain('女性のみ');
+    expect(cond.textContent).toContain('駐車場あり');
+    // セパレータ ' / ' で結合される
+    expect(cond.textContent).toContain('/');
   });
 
   it('11. 担当 dropdown を変更すると useUpdateCourse が assigned_staff_id 付きで呼ばれる', async () => {

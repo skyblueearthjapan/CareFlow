@@ -96,9 +96,22 @@ export interface CourseGridVisit {
   patient_name: string | null;
   patient_address: string | null;
   /**
-   * required_staff_count >= 2 で「複数」列に "複数" 表示.
-   * BE `_serialize_visit` から渡る (default 1)。
-   * 同一スロットに 2 件以上 visit が並ぶ場合も `CourseTimeRow` で「複数」扱い。
+   * Wave 18 Phase B-1: 「複数」表示は **患者マスタ** の
+   * `patient.requires_multiple_staff` を真値とする (visit.required_staff_count
+   * から離脱)。同一スロットに 2 件以上 visit が並ぶ場合も `CourseTimeRow` で
+   * 「複数」扱い (重なり = 同時刻 2 件処理) は維持する。
+   */
+  patient_requires_multiple_staff: boolean;
+  /**
+   * Wave 18 Phase B-2: 「条件」列に **患者マスタ** の `sex_restriction`
+   * (女性のみ / 男性のみ) を template.notes と統合表示するため事前正規化済み
+   * のラベル (例: '女性のみ' / null)。
+   */
+  patient_sex_restriction_label: string | null;
+  /**
+   * 旧フィールド (互換のため残す。Wave 18 以前の挙動: required_staff_count >= 2
+   * を「複数」と扱っていた)。直近のテストやログ確認用に残置するが、表示判定からは
+   * 除外する。
    */
   required_staff_count: number;
   /** "HH:MM" (15 分境界に切り下げ済み). */
@@ -272,8 +285,8 @@ function CourseTimeRow({
 
   // 30 分境界 (HH:00 / HH:30) は時刻ラベル強調. それ以外は薄く.
   const showLabel = time.endsWith(':00') || time.endsWith(':30');
-  // 同一スロットに 2 件以上 visit がある場合は「複数」(staff 2 名体制ではなく重なり) として扱う。
-  // 単独 visit では required_staff_count >= 2 (2 名体制) でも「複数」表示。
+  // Wave 18 Phase B-1: 「複数」= 患者マスタの requires_multiple_staff フラグ.
+  // 同一スロットに 2 件以上 visit がある重なりは「複数」扱いを継続 (時刻枠の表現)。
   const sameSlotMulti = occupants.length >= 2;
 
   return (
@@ -316,7 +329,7 @@ function CourseTimeRow({
           </>
         ) : (
           // ── 1 件以上: 各 occupant を縦積みで列ごとに描画 ────────────
-          // 同一スロットに 2 件以上の visit がある場合、氏名 / 住所 / 複数 を
+          // 同一スロットに 2 件以上の visit がある場合、氏名 / 住所 / 複数 / 条件 を
           // visit ごとに改行ベースで縦積みする (Excel の「複数同時」表現に追従)。
           <>
             <div className="border-r border-border-default/40 px-1 py-0.5 text-[11px] leading-tight text-text-primary">
@@ -345,17 +358,41 @@ function CourseTimeRow({
             <div className="border-r border-border-default/40 px-1 py-0.5 text-center text-[10px] leading-tight text-text-secondary">
               <div className="flex flex-col gap-0.5">
                 {occupants.map((o) => {
-                  const isMulti = (o.required_staff_count ?? 1) >= 2 || sameSlotMulti;
+                  // Wave 18 Phase B-1: 患者マスタの requires_multiple_staff を真値.
+                  // 同一スロット重なりは引き続き 「複数」扱い。
+                  const isMulti = o.patient_requires_multiple_staff || sameSlotMulti;
                   return (
-                    <div key={`multi-${o.id}`} aria-hidden={!isMulti}>
+                    <div
+                      key={`multi-${o.id}`}
+                      aria-hidden={!isMulti}
+                      data-testid={`course-occupant-multi-${o.id}`}
+                    >
                       {isMulti ? '複数' : ''}
                     </div>
                   );
                 })}
               </div>
             </div>
-            <div className="px-1 py-0.5 text-[10px] leading-tight text-text-secondary truncate">
-              {templateNotes ?? ''}
+            <div className="px-1 py-0.5 text-[10px] leading-tight text-text-secondary">
+              {/* Wave 18 Phase B-2: 「条件」= patient.sex_restriction + template.notes */}
+              <div className="flex flex-col gap-0.5">
+                {occupants.map((o) => {
+                  const parts = [o.patient_sex_restriction_label, templateNotes].filter(
+                    (s): s is string => !!s && s.trim() !== '',
+                  );
+                  const text = parts.join(' / ');
+                  return (
+                    <div
+                      key={`cond-${o.id}`}
+                      className="truncate"
+                      title={text}
+                      data-testid={`course-occupant-condition-${o.id}`}
+                    >
+                      {text}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           </>
         )}

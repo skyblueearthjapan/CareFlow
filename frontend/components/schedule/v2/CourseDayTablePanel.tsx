@@ -58,7 +58,11 @@ import { usePlaceAndFix } from '@/lib/queries/place_and_fix';
 import { useStaffList } from '@/lib/queries/staff';
 import { useVisits } from '@/lib/queries/visits';
 import { capacityForWeekday, type CourseTemplateRead } from '@/lib/schemas/v2/course_template';
-import type { PatientRead } from '@/lib/schemas/patient';
+import {
+  SEX_RESTRICTION_LABEL,
+  normalizePatientSexRestriction,
+  type PatientRead,
+} from '@/lib/schemas/patient';
 
 import { AcceptanceLegend } from './AcceptanceLayer';
 import {
@@ -270,14 +274,25 @@ export function CourseDayTablePanel({
       const slot = floorToCourseSlot(v.start_time ?? '');
       if (!slot) continue;
       const patient = patientById.get(v.patient_id);
+      // Wave 18 Phase B-1: 患者マスタ由来の `requires_multiple_staff` を読む。
+      // BE Phase 0+A 完成前は欠落可。安全に false にフォールバック。
+      const requiresMulti =
+        (patient as { requires_multiple_staff?: boolean | null } | undefined)
+          ?.requires_multiple_staff === true;
+      // Wave 18 Phase B-2: 「条件」表示の sex_restriction ラベル。
+      const sexRestrict = normalizePatientSexRestriction(
+        patient?.sex_restriction as string | null | undefined,
+      );
+      const sexLabel = sexRestrict ? SEX_RESTRICTION_LABEL[sexRestrict] : null;
       const arr = m.get(cid) ?? [];
       arr.push({
         id: v.id,
         patient_id: v.patient_id,
         patient_name: patient?.name ?? v.patient_name ?? null,
         patient_address: patient?.address ?? null,
-        // BE `_serialize_visit` が常に返す (default 1, 2 名体制で 2)。
-        // 古い payload で欠落しても 1 にフォールバックする。
+        patient_requires_multiple_staff: requiresMulti,
+        patient_sex_restriction_label: sexLabel,
+        // 旧フィールド (互換のため保持). 表示判定からは除外.
         required_staff_count: (v.required_staff_count ?? 1) as 1 | 2,
         start_slot: slot,
       });
