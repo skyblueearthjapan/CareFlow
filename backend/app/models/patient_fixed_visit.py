@@ -1,12 +1,14 @@
-"""PatientFixedVisit ORM model (W9-BE1).
+"""PatientFixedVisit ORM model (W9-BE1 / W37 Phase 1).
 
 週間訪問パターン (固定枠) を表す行単位テーブル。
 スケジュール確定後に book-back され、翌週以降は固定枠から visits を自動生成する。
 
 設計上の制約:
   - mode: 'normal' (通常週) / 'special' (特別週)
-  - 同一 (patient_id, mode, weekday) は 1 行のみ (UNIQUE 制約)
-  - 1 日複数訪問なし; 2 名体制は patients.required_staff_count で対応
+  - 同一 (patient_id, mode, weekday, slot_index) は 1 行のみ (UNIQUE 制約)
+  - W37 Phase 1: 複数スタッフ対応患者は同曜日・同時刻に 2 コース固定するため、
+    slot_index 0/1 の 2 スロットを持てるよう拡張 (既存行は slot_index=0 として扱う)。
+  - 1 日複数訪問なし (1 patient × 1 weekday × 1 mode で max 2 行 = slot 0/1)
   - 指名スタッフなし (ローテ前提)
 """
 
@@ -52,6 +54,16 @@ class PatientFixedVisit(Base):
     start_time: Mapped[time] = mapped_column(Time, nullable=False)
     duration_min: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
 
+    # W37 Phase 1: 複数スタッフ対応患者向けに同曜日・同時刻 2 コース固定を許容するための
+    # スロットインデックス. 0 or 1 (CHECK で範囲拘束).
+    # 既存行は migration 0027 で default 0 に正規化される (案 P).
+    slot_index: Mapped[int] = mapped_column(
+        SmallInteger,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+
     # W22 Phase A: 固定枠が属するコーステンプレート ID.
     #   - NULL の場合は Layer 1 の office フォールバックで解決する (後方互換).
     #   - course_template が削除された場合は SET NULL (固定枠は残るが course は外れる).
@@ -74,11 +86,13 @@ class PatientFixedVisit(Base):
     )
 
     __table_args__ = (
+        # W37 Phase 1: 旧 UNIQUE (patient_id, mode, weekday) を slot_index 込みに拡張.
         UniqueConstraint(
             "patient_id",
             "mode",
             "weekday",
-            name="uq_pfv_patient_mode_weekday",
+            "slot_index",
+            name="uq_pfv_patient_mode_weekday_slot",
         ),
         CheckConstraint(
             "mode IN ('normal','special')",
@@ -91,5 +105,9 @@ class PatientFixedVisit(Base):
         CheckConstraint(
             "duration_min > 0 AND duration_min <= 480",
             name="ck_pfv_duration",
+        ),
+        CheckConstraint(
+            "slot_index >= 0 AND slot_index <= 1",
+            name="ck_pfv_slot_index",
         ),
     )

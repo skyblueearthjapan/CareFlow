@@ -1,7 +1,10 @@
-"""Pydantic schemas for patient_fixed_visits (W9-BE1).
+"""Pydantic schemas for patient_fixed_visits (W9-BE1 / W37 Phase 1).
 
 週間訪問パターン (固定枠) の入力・出力型定義。
 フロントエンド zod schema と完全一致を目指す。
+
+W37 Phase 1: 複数スタッフ対応患者は同曜日・同時刻に 2 コース固定するため
+slot_index (0/1) を導入。1 名体制では default 0 のみ使う。
 """
 
 from __future__ import annotations
@@ -31,6 +34,17 @@ class PatientFixedVisitV2Base(BaseModel):
             "未指定なら Layer 1 の office フォールバックで解決される。"
         ),
     )
+    # W37 Phase 1: 同曜日・同時刻に 2 コース固定するためのスロット番号.
+    # 1 名体制 (既存) では 0 のみ. 複数スタッフ対応では 0/1 の 2 行を持つ.
+    slot_index: int = Field(
+        default=0,
+        ge=0,
+        le=1,
+        description=(
+            "同 patient × 同 mode × 同 weekday の中のスロット番号 (0 or 1). "
+            "1 名体制では 0 のみ. 複数スタッフ対応 (W37) で 0/1 の 2 行を持つ."
+        ),
+    )
 
 
 class PatientFixedVisitV2Read(PatientFixedVisitV2Base):
@@ -48,7 +62,9 @@ class PatientFixedVisitV2Read(PatientFixedVisitV2Base):
 class PatientFixedVisitsBulkPut(BaseModel):
     """PUT /patients/{id}/fixed-visits の一括上書きリクエスト body.
 
-    items 内で weekday が重複している場合は 422 を返す。
+    items 内で (weekday, slot_index) が重複している場合は 422 を返す。
+    W37 Phase 1: 1 名体制では従来どおり weekday ごとに 1 件のみ (slot_index=0).
+                 複数スタッフ対応では同 weekday に slot_index 0/1 の 2 件まで許容.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -56,13 +72,14 @@ class PatientFixedVisitsBulkPut(BaseModel):
     mode: PatientFixedVisitMode
     items: list[PatientFixedVisitV2Base] = Field(
         default_factory=list,
-        max_length=7,
-        description="0〜7 件 (7 曜日分)。weekday 重複は不可。",
+        # W37 Phase 1: 7 曜日 × slot 0/1 = 最大 14 件.
+        max_length=14,
+        description=("0〜14 件 (7 曜日 × slot 0/1)。(weekday, slot_index) 重複は不可。"),
     )
 
     @model_validator(mode="after")
-    def _no_duplicate_weekdays(self) -> PatientFixedVisitsBulkPut:
-        weekdays = [item.weekday for item in self.items]
-        if len(weekdays) != len(set(weekdays)):
-            raise ValueError("items に weekday の重複があります")
+    def _no_duplicate_weekday_slot(self) -> PatientFixedVisitsBulkPut:
+        keys = [(item.weekday, item.slot_index) for item in self.items]
+        if len(keys) != len(set(keys)):
+            raise ValueError("items に (weekday, slot_index) の重複があります")
         return self

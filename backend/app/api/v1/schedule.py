@@ -356,11 +356,13 @@ async def fix_or_pattern(
             old_weekday = visit.visit_date.weekday()
 
             # 削除対象 pfv の course_template_id を先に取得して引継ぎ
+            # W37 Phase 1: slot_index=0 のみを対象 (1 visit 配置の既存挙動を維持).
             old_fv = await db.scalar(
                 select(PatientFixedVisit).where(
                     PatientFixedVisit.patient_id == patient_id,
                     PatientFixedVisit.mode == fv_mode,
                     PatientFixedVisit.weekday == old_weekday,
+                    PatientFixedVisit.slot_index == 0,
                 )
             )
             preserved_ct_id = old_fv.course_template_id if old_fv is not None else None
@@ -370,6 +372,7 @@ async def fix_or_pattern(
                     PatientFixedVisit.patient_id == patient_id,
                     PatientFixedVisit.mode == fv_mode,
                     PatientFixedVisit.weekday == old_weekday,
+                    PatientFixedVisit.slot_index == 0,
                 )
             )
             # new_weekday の既存行も削除 (upsert)
@@ -378,6 +381,7 @@ async def fix_or_pattern(
                     PatientFixedVisit.patient_id == patient_id,
                     PatientFixedVisit.mode == fv_mode,
                     PatientFixedVisit.weekday == body.new_weekday,
+                    PatientFixedVisit.slot_index == 0,
                 )
             )
 
@@ -388,6 +392,8 @@ async def fix_or_pattern(
                 start_time=body.new_start_time,
                 duration_min=body.new_duration_min,
                 course_template_id=preserved_ct_id,  # W22: 旧 pfv の course_template_id を引継ぎ
+                # W37 Phase 1: 1 visit 配置の挙動を維持するため slot_index=0 を明示.
+                slot_index=0,
             )
             db.add(new_fv)
             await db.flush()
@@ -792,12 +798,14 @@ async def place_and_fix(
             is_special = _is_special_week_active(patient, body.iso_year, body.iso_week)
             fv_mode: PatientFixedVisitMode = "special" if is_special else "normal"
 
-            # 同一 (patient_id, mode, weekday) を DELETE して INSERT (upsert)
+            # 同一 (patient_id, mode, weekday, slot_index=0) を DELETE して INSERT (upsert)
+            # W37 Phase 1: slot_index=0 のみ対象. slot_index=1 (Phase 2 で導入) は触らない.
             await db.execute(
                 delete(PatientFixedVisit).where(
                     PatientFixedVisit.patient_id == body.patient_id,
                     PatientFixedVisit.mode == fv_mode,
                     PatientFixedVisit.weekday == body.weekday,
+                    PatientFixedVisit.slot_index == 0,
                 )
             )
             new_fv = PatientFixedVisit(
@@ -809,6 +817,8 @@ async def place_and_fix(
                 # W22 Phase A: place-and-fix で受けた course_template_id を保存し、
                 # 翌週以降の Layer 1 でこのテンプレートが優先される (コース継承).
                 course_template_id=body.course_template_id,
+                # W37 Phase 1: 1 visit 配置の挙動を維持するため slot_index=0.
+                slot_index=0,
             )
             db.add(new_fv)
             await db.flush()
