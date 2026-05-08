@@ -248,6 +248,87 @@ function weeklyPatternToDayRows(pattern: WeeklyPattern | null | undefined): DayR
   return rows;
 }
 
+// ─── Sub-component: ReadOnlyWeekGrid ─────────────────────────────────────────
+
+/**
+ * W37 Phase 3-D: 読み取り専用の週間訪問パターン表示。
+ *
+ * - フォーム要素 (select / checkbox) の代わりにテキストラベルで表示。
+ * - requires_multiple_staff=true の場合は「コース 1: A」「コース 2: B」を併記。
+ *   slot_index=1 の行が存在しない (course_template_id_2 が null) 場合は
+ *   「コース 2: 未設定」を警告色で表示。
+ * - requires_multiple_staff=false の場合は「コース: A」のみ表示 (従来通り)。
+ */
+interface ReadOnlyWeekGridProps {
+  rows: DayRows;
+  /** W22: 当該患者の拠点に紐付く course_templates (ラベル解決に使用) */
+  courseTemplates: CourseTemplateRead[];
+  /** W37 Phase 3-D: 複数スタッフ対応患者かどうか。true でコース 2 列を表示 */
+  requiresMultipleStaff: boolean;
+}
+
+function ReadOnlyWeekGrid({ rows, courseTemplates, requiresMultipleStaff }: ReadOnlyWeekGridProps) {
+  /** course_template_id → label の逆引きマップ */
+  const labelMap = React.useMemo(() => {
+    const m: Record<string, string> = {};
+    for (const tpl of courseTemplates) {
+      m[tpl.id] = tpl.label;
+    }
+    return m;
+  }, [courseTemplates]);
+
+  const courseLabel = (id: string | null): string => (id ? (labelMap[id] ?? id) : '--');
+
+  return (
+    <div className="space-y-1">
+      {[0, 1, 2, 3, 4, 5, 6].map((wd) => {
+        const row = rows[wd] ?? emptyDayRow();
+        return (
+          <div
+            key={wd}
+            className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md border border-border-default px-3 py-2 text-sm"
+            data-testid={`ro-row-${wd}`}
+          >
+            <span className="w-5 shrink-0 text-center font-medium text-text-secondary">
+              {WEEKDAY_LABELS[wd]}
+            </span>
+            {row.enabled ? (
+              <>
+                <span className="text-text-primary tnum">{row.start_time}</span>
+                <span className="text-text-muted">{row.duration_min} 分</span>
+                {requiresMultipleStaff ? (
+                  <>
+                    <span className="text-text-primary" data-testid={`ro-course1-${wd}`}>
+                      コース 1: {courseLabel(row.course_template_id)}
+                    </span>
+                    {row.course_template_id_2 ? (
+                      <span className="text-text-primary" data-testid={`ro-course2-${wd}`}>
+                        コース 2: {courseLabel(row.course_template_id_2)}
+                      </span>
+                    ) : (
+                      <span className="text-warning" data-testid={`ro-course2-missing-${wd}`}>
+                        コース 2: 未設定
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  <span className="text-text-primary" data-testid={`ro-course-${wd}`}>
+                    コース: {courseLabel(row.course_template_id)}
+                  </span>
+                )}
+              </>
+            ) : (
+              <span className="text-xs text-text-muted" data-testid={`ro-no-visit-${wd}`}>
+                訪問なし
+              </span>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ─── Sub-component: WeekGrid ─────────────────────────────────────────────────
 
 interface WeekGridProps {
@@ -567,11 +648,18 @@ function ModePanel({
 
       {isLoading ? (
         <p className="text-sm text-text-muted">読み込み中...</p>
+      ) : readonly ? (
+        // W37 Phase 3-D: 詳細画面など読み取り専用時はテキスト表示コンポーネントを使用
+        <ReadOnlyWeekGrid
+          rows={rows}
+          courseTemplates={courseTemplates}
+          requiresMultipleStaff={requiresMultipleStaff}
+        />
       ) : (
         <WeekGrid
           rows={rows}
           onChange={setRows}
-          disabled={readonly || isBusy}
+          disabled={isBusy}
           // W37 Phase 3-A: ライブのコース重複エラー (rowErrors) と
           // 保存時の zod エラー (fieldErrors) をマージしてユーザに即時表示する.
           // fieldErrors を後置きすることで保存時の重複エラーが優先される.
