@@ -131,6 +131,29 @@ export interface CourseGridVisit {
   required_staff_count: number;
   /** "HH:MM" (15 分境界に切り下げ済み). */
   start_slot: string;
+  /**
+   * Wave 37 Phase 3-C: 2 名体制の visit_group_id (BE Phase 2-A で付与).
+   * - null  → 単独 visit (= 1 名体制 or 2 名体制 patient で slot 1 が未配置の片割れ)
+   * - UUID → 同じ visit_group_id を持つペアが BE 上に存在 (slot 0/1 共有)
+   */
+  visit_group_id?: string | null;
+  /**
+   * Wave 37 Phase 3-C: ①/② バッジ用 slot 番号 (1 or 2).
+   * 親が同 visit_group_id 内の 2 visit を sort し、先頭=1 / 後尾=2 を割当てる。
+   * visit_group_id=null のときは undefined。
+   */
+  group_slot_label?: 1 | 2;
+  /**
+   * Wave 37 Phase 3-C: 同 visit_group_id 内の partner visit の表示ラベル (tooltip 用).
+   * 例: "佐藤 花子 ② (本店-B コース)"
+   */
+  partner_label?: string | null;
+  /**
+   * Wave 37 Phase 3-C: patient.requires_multiple_staff=true なのに同 visit_group_id
+   * の partner が存在しない (= slot 1 が未配置) ときに true。
+   * 「複数 ① のみ」と警告色で表示する。
+   */
+  partner_missing?: boolean;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -503,6 +526,8 @@ function CourseTimeRow({
                     label={o.patient_name ?? o.patient_id}
                     canEdit={canEdit}
                     onDeleteVisit={onDeleteVisit}
+                    groupSlotLabel={o.group_slot_label}
+                    partnerLabel={o.partner_label ?? null}
                   />
                 ))}
                 {/* Wave 27 Phase B-3: 担当スタッフのイベント重複 warning バッジ */}
@@ -547,13 +572,27 @@ function CourseTimeRow({
                   // Wave 23: 「複数」= patient.requires_multiple_staff のみ。
                   // sameSlotMulti (同一スロット 2 件以上) は判定から除外。
                   const isMulti = o.patient_requires_multiple_staff === true;
+                  // Wave 37 Phase 3-C:
+                  //   - visit_group_id 持ち + group_slot_label あり → "複数 ①" / "複数 ②"
+                  //   - patient.requires_multiple_staff=true なのに partner 不在 (partner_missing=true)
+                  //     → "複数 ① のみ" を text-warning で表示
+                  let label: string = isMulti ? '複数' : '';
+                  let warning = false;
+                  if (isMulti && o.group_slot_label) {
+                    label = `複数 ${o.group_slot_label === 1 ? '①' : '②'}`;
+                  } else if (isMulti && o.partner_missing) {
+                    label = '複数 ① のみ';
+                    warning = true;
+                  }
                   return (
                     <div
                       key={`multi-${o.id}`}
                       aria-hidden={!isMulti}
                       data-testid={`course-occupant-multi-${o.id}`}
+                      className={warning ? 'text-warning font-semibold' : ''}
+                      title={o.partner_label ?? undefined}
                     >
-                      {isMulti ? '複数' : ''}
+                      {label}
                     </div>
                   );
                 })}
@@ -595,6 +634,10 @@ interface OccupantNameDraggableProps {
   canEdit: boolean;
   /** Wave 36: visit × ボタンクリックハンドラ. canEdit=true のときのみ表示. */
   onDeleteVisit?: (visitId: string, patientName: string) => void;
+  /** Wave 37 Phase 3-C: 2 名体制 ① / ② バッジ (visit_group_id 内の slot 番号). */
+  groupSlotLabel?: 1 | 2;
+  /** Wave 37 Phase 3-C: ペア相手の表示用ラベル (tooltip 用). */
+  partnerLabel?: string | null;
 }
 
 /**
@@ -606,18 +649,27 @@ interface OccupantNameDraggableProps {
  *
  * ドロップ先 (course-day-cell:* / pool) は親 onDragEnd で分岐し、
  * delete + place-and-fix の 2 段階で実装する (Wave 19 で atomic 化予定)。
+ *
+ * Wave 37 Phase 3-C:
+ *   - groupSlotLabel が指定されたら患者名右に "①" / "②" バッジを付与する。
+ *   - partnerLabel が指定されたら tooltip (title) に "ペア: ..." を表示する。
  */
 function OccupantNameDraggable({
   visitId,
   label,
   canEdit,
   onDeleteVisit,
+  groupSlotLabel,
+  partnerLabel,
 }: OccupantNameDraggableProps) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: visitDraggableId(visitId),
     disabled: !canEdit,
     data: { kind: 'placed-visit', visitId },
   });
+
+  const tooltip = partnerLabel ? `${label} (ペア: ${partnerLabel})` : label;
+  const badge = groupSlotLabel === 1 ? '①' : groupSlotLabel === 2 ? '②' : null;
 
   return (
     <div
@@ -630,7 +682,8 @@ function OccupantNameDraggable({
         ref={setNodeRef}
         data-testid={`course-occupant-name-${visitId}`}
         data-draggable-visit-id={visitId}
-        title={label}
+        data-visit-group-slot={groupSlotLabel ?? ''}
+        title={tooltip}
         {...listeners}
         {...attributes}
         className={cn(
@@ -639,6 +692,15 @@ function OccupantNameDraggable({
         )}
       >
         {label}
+        {badge ? (
+          <span
+            className="ml-1 inline-flex items-center text-[10px] font-semibold text-brand-primary"
+            data-testid={`course-occupant-group-badge-${visitId}`}
+            aria-label={`スロット ${groupSlotLabel}`}
+          >
+            {badge}
+          </span>
+        ) : null}
       </div>
       {canEdit && onDeleteVisit && (
         <button
