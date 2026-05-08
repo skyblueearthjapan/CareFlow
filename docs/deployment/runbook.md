@@ -763,3 +763,91 @@ docker compose -f docs/deployment/docker-compose.production.yml --env-file .env 
   `docs/deployment/docker-compose.production.yml` の `networks.kaipoke.name`
   を更新する
 - secret 値はすべて VPS 上で生成し、Git/Slack/メールに残さない
+
+---
+
+---
+
+## Wave 16 デプロイ補足
+
+> Wave 16 (スタッフ別テーブル UI + Layer 3 ローテーション) のデプロイ時は、
+> 以下の追加手順を Phase E〜F の間に実施すること。
+
+### W16-E1: migration 0022 適用
+
+Phase E の `alembic upgrade head` を実行すると 0022 が自動適用される。
+0022 は各拠点マネージャー数分の M ラベル course_template を seed する。
+
+```bash
+# Phase E と同じコマンドで 0022 が適用される
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env run --rm backend alembic upgrade head
+
+# head 確認 (単一 head であることを検証)
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env run --rm backend alembic heads
+# 期待: 1 行のみ。例: `0022_v2_w16_m_course_seed (head)`
+
+# M テンプレートが生成されたことを確認
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env exec postgres \
+  psql -U carelink -d carelink -c "SELECT office_id, label, capacity_mon FROM course_templates WHERE label = 'M' AND deleted_at IS NULL;"
+```
+
+### W16-E2: バックエンド rebuild
+
+Layer 3 改修（`layer3_assignment.py`）+ 新 endpoint（`generate-and-assign`）+
+`manager_course_sync` サービスを含む backend イメージを再ビルド・再起動する。
+
+```bash
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env build backend
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env up -d backend
+```
+
+### W16-E3: フロントエンド rebuild
+
+`StaffWeekTablePanel` + `StaffTimeGrid` を含む frontend イメージを再ビルド・再起動する。
+
+```bash
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env build frontend
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env up -d frontend
+```
+
+### W16-E4: 動作確認
+
+```bash
+# 「週を生成」ボタン (admin / manager ログイン) → Layer 1 + Layer 3 連動が完了すること
+# visits_created > 0 かつ courses_assigned > 0 のレスポンスを確認
+
+# generate-and-assign エンドポイントに直接 curl でも確認可
+curl -s -X POST https://carelink.kaipoke-api.net/api/v1/schedule/generate-and-assign \
+  -H "Authorization: Bearer <TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"iso_year":2026,"iso_week":20}' | python3 -m json.tool
+```
+
+**成功条件**
+
+```bash
+# visits が展開されていること
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env exec postgres \
+  psql -U carelink -d carelink -c "SELECT count(*) FROM visits WHERE deleted_at IS NULL;"
+
+# courses に staff が割り付けられていること (staff_assigned)
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env exec postgres \
+  psql -U carelink -d carelink -c "SELECT count(*) FROM courses WHERE course_status = 'staff_assigned';"
+```
+
+### W16 Rollback
+
+Wave 16 の migration rollback は以下の手順で実行する:
+
+```bash
+# 0022 を downgrade (M course_template seed を削除)
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env run --rm backend \
+  alembic downgrade 0021_v2_w15_be1_foundation
+
+# 旧 backend・frontend イメージで再起動 (Wave 15 タグに戻す)
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env up -d
+```
+
+> **警告**: 0022 downgrade は M ラベルの `course_templates` 行を削除する。
+> すでに `generate-and-assign` で割付済みの courses が参照している場合は
+> rollback 前に影響範囲を確認すること。

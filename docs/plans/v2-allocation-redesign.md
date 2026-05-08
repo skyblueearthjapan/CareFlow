@@ -1321,6 +1321,7 @@ cost(weekday, course, staff) =
 | 2026-05-06 | v1.1 | Wave 10 Phase 6a 追記。§4.2.x「`is_trainee` + `staff_companion_assignments` DDL」新設（Alembic 0018）。旧 `mentor_id` / `mentor_assignments` を廃止。§3.6.x「同行スタッフの Layer 3 連携」（companion 自動付与・時刻判定・2名体制との独立性）を追加。§3.5.x「スタッフ編集ページの保存単位 + sticky bar UI」を追加。スタッフマスタ集計を消す 7 項目に更新 |
 | 2026-05-06 | v1.2 | Wave 14: 患者・スタッフ状態変更の AI 操作を追加 (§3.5.7, §3.5.11) — 英語キーを実装値 (on_leave / admitted / pending / cancelled) に整合 |
 | 2026-05-08 | v1.3 | Wave 15: スケジュール大改修 — course_templates / acceptance_calendar / place-and-fix / 1 画面化 (§15) |
+| 2026-05-08 | v1.4 | Wave 16: スタッフ別テーブル UI + Layer 3 ローテーション + generate-and-assign (§16) |
 
 ---
 
@@ -1659,3 +1660,188 @@ erDiagram
         text notes
     }
 ```
+
+---
+
+## 16. Wave 16: スタッフ別テーブル UI + Layer 3 ローテーション
+
+### 16.1 概要
+
+Wave 16 は `/schedule` 画面の UI 構造を **コース行 → スタッフ別テーブル** へ全面刷新し、
+Layer 3 のスタッフ割付に曜日別ローテーションと固定制約を導入した。
+「週を生成」ボタン 1 回で Layer 1（visits 展開）と Layer 3（スタッフ割付）が連動して実行される。
+
+| 方針 | 内容 |
+|---|---|
+| UI 構造刷新 | 旧コース×曜日マトリクス (`ScheduleUnifiedView`) を廃止し、スタッフ 1 人 1 テーブルを縦並びに表示 |
+| 自動ローテーション | Layer 3 がハンガリアン法で曜日別コースを自動割付（同患者連続回避ペナルティ付き） |
+| 固定制約 | マネージャー → M コース固定、都賀スタッフ → 都賀コース固定、本店スタッフ → A-E ローテ |
+| 一括生成 | `POST /schedule/generate-and-assign` が Layer 1 + Layer 3 を 1 TX で実行 |
+| staff_assigned 保護 | 再実行しても手動で確定済みのコース (course_status='staff_assigned') は上書きしない |
+
+---
+
+### 16.2 データモデル変更
+
+#### 16.2.1 migration 0022: M label course_template seed
+
+各拠点のマネージャー数に応じた M ラベルのコーステンプレートを seed する。
+
+| 項目 | 値 |
+|---|---|
+| label | `"M"` |
+| capacity | 月7 / 火7 / 水7 / 木7 / 金7 / 土5 |
+| 対象 | 各拠点のマネージャー (is_manager=True) 1 名につき 1 行 |
+
+#### 16.2.2 `manager_course_sync` サービス
+
+スタッフ CRUD 時に M コーステンプレートを自動同期するサービス。
+
+ファイル: `backend/app/services/manager_course_sync.py`
+
+| トリガー | 処理 |
+|---|---|
+| staff 新規作成 (is_manager=True) | 対象拠点に M course_template を INSERT |
+| staff 更新で is_manager=True → False | 対象拠点の M course_template を論理削除 |
+| staff 更新で is_manager=False → True | 対象拠点に M course_template を INSERT |
+| staff 削除 (is_manager=True) | 対象拠点の M course_template を論理削除 |
+
+統合先: `backend/app/api/v1/staff.py` + `backend/app/services/pending_request_applier.py`
+
+---
+
+### 16.3 API 仕様
+
+#### 16.3.1 `POST /api/v1/schedule/generate-and-assign` (新規 — W16-BE)
+
+1 トランザクションで Layer 1（visits 展開）と Layer 3（スタッフ割付）を連動実行するエンドポイント。
+
+| 項目 | 内容 |
+|---|---|
+| 概要 | 指定週の visits を Layer 1 で展開し、Layer 3 で staff を割付 |
+| RBAC | Admin / Manager のみ |
+| トランザクション | 既存 visits 全削除 → visits 再展開 → Layer 3 割付 を 1 TX で commit |
+| staff_assigned 保護 | `course_status='staff_assigned'` のコースは削除対象から除外し、割付を保持 |
+
+**リクエスト**
+
+```jsonc
+{
+  "iso_year": 2026,
+  "iso_week": 20,
+  "office_id": "<UUID>"   // 省略時は全拠点を対象
+}
+```
+
+**レスポンス 200**
+
+```jsonc
+{
+  "visits_created":   42,
+  "courses_assigned": 18,
+  "message":          "Layer 1 + Layer 3 completed"
+}
+```
+
+**エラーコード**
+
+| 状態 | HTTP | 詳細 |
+|---|---|---|
+| ISO 週が不正 | 422 | "invalid ISO week: year=... week=..." |
+| office_id が存在しない | 404 | "Office not found" |
+| Layer 3 割付で解が得られない | 422 | "No feasible assignment for week=..." |
+
+---
+
+### 16.4 UX 仕様 (フロントエンド)
+
+#### 16.4.1 `StaffWeekTablePanel` + `StaffTimeGrid`
+
+`/schedule` 画面を旧 `ScheduleUnifiedView`（コース×曜日マトリクス）から
+**スタッフ別テーブル（縦並び）** に全面置換。
+
+| 仕様 | 内容 |
+|---|---|
+| テーブル単位 | active 全スタッフ 1 人 1 テーブル |
+| 行 | 9:00〜19:00 の 15 分刻み（41 行） |
+| 列 | 月〜土（6 列） |
+| サイズ | 全テーブル同一サイズ・同一フォーマット |
+| 並び | 縦スクロールで全スタッフを一覧 |
+
+コンポーネント構成:
+
+```
+StaffWeekTablePanel
+  └─ StaffTimeGrid (スタッフ 1 名分のテーブル)
+       ├─ 行: 9:00, 9:15, 9:30 … 19:00
+       └─ 列: Mon, Tue, Wed, Thu, Fri, Sat
+```
+
+#### 16.4.2 「週を生成」ボタン
+
+- ヘッダーに配置
+- admin / manager のみ表示・クリック可能
+- クリック → `POST /schedule/generate-and-assign` を呼出し、完了後にテーブルを再取得
+
+#### 16.4.3 ドロップ → place-and-fix (course_template_id 自動解決)
+
+- 患者カードをスタッフテーブルのセルにドロップ
+- FE は `staff × weekday` の逆引きで `course_template_id` を自動解決
+- 全拠点の course_templates を `useQueries` で並列 fetch して逆引きマップを構築
+
+---
+
+### 16.5 Layer 3 改修
+
+ファイル: `backend/app/services/scheduling/layer3_assignment.py`
+
+#### 16.5.1 曜日別ローテーション
+
+| 変更前 | 変更後 |
+|---|---|
+| 週単位で 1 回ハンガリアン | 月〜土それぞれでハンガリアン（6 回） |
+
+各曜日で独立したコスト行列を構築し、その日の visits × staff でハンガリアン法を実行。
+
+#### 16.5.2 固定制約
+
+| 制約 | 内容 |
+|---|---|
+| マネージャー → M コース固定 | `is_manager=True` のスタッフは当日の M コース 1 本のみを割当対象とする |
+| 都賀スタッフ → 都賀コース固定 | `office.name` が「都賀」のスタッフは都賀拠点コースのみに割当 |
+| 本店スタッフ → A-E ローテ | 稲毛本店スタッフは A〜E コースをローテーション対象とする |
+
+#### 16.5.3 同患者連続回避ペナルティ
+
+前日に同じコースで訪問した患者が再び同コースに割当されるとき、コスト行列に高コスト（ペナルティ）を加算する。
+
+| 対象 | コスト |
+|---|---|
+| 前日同コース | +1000（高コスト） |
+| 前日別コース | +0（ペナルティなし） |
+
+---
+
+### 16.6 staff CRUD hook — M コース自動同期
+
+スタッフの登録・更新・削除が発生するたびに `manager_course_sync` を呼び出す。
+この hook は `staff.py`（直接 CRUD）と `pending_request_applier.py`（AI 経由申請）の
+両方に統合されており、いずれの経路でも M コーステンプレートが自動同期される。
+
+```
+staff 登録 / 更新 / 削除
+  ├─ staff.py (API 直接)          → manager_course_sync.sync(db, staff)
+  └─ pending_request_applier.py   → manager_course_sync.sync(db, staff)
+```
+
+---
+
+### 16.7 削除されたコンポーネント一覧
+
+#### フロントエンド (Wave 16 で廃止)
+
+| コンポーネント | 廃止理由 |
+|---|---|
+| `ScheduleUnifiedView` | `StaffWeekTablePanel` + `StaffTimeGrid` に全面置換 |
+| `StaffSwapDropdown` | スタッフ別テーブル UI では不要（新 UX で代替） |
+| `PairRoleEditor` | Wave 16 UI 刷新に伴い削除 |
