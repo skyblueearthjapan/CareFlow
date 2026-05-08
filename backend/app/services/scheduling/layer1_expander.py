@@ -43,7 +43,7 @@ from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, tuple_, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -760,6 +760,30 @@ class Layer1Expander:
             iso_week=iso_week,
         )
 
+    async def _fetch_manual_conflict_keys(
+        self,
+        db: AsyncSession,
+        *,
+        candidate_keys: list[tuple[UUID, date, time]],
+    ) -> set[tuple[UUID, date, time]]:
+        """INSERT 候補の (patient_id, visit_date, start_time) のうち、
+        既存の non-auto (manual 等) かつ active (deleted_at IS NULL) な visit と
+        衝突するキーを返す。
+
+        返却セットに含まれるキーは auto INSERT を skip する (manual を尊重)。
+        """
+        if not candidate_keys:
+            return set()
+
+        rows = await db.execute(
+            select(Visit.patient_id, Visit.visit_date, Visit.start_time).where(
+                Visit.deleted_at.is_(None),
+                Visit.source != LAYER1_VISIT_SOURCE,  # manual / ai / import 等
+                tuple_(Visit.patient_id, Visit.visit_date, Visit.start_time).in_(candidate_keys),
+            )
+        )
+        return {(row.patient_id, row.visit_date, row.start_time) for row in rows}
+
     async def _expand_fixed_visits_to_visits(
         self,
         db: AsyncSession,
@@ -797,6 +821,18 @@ class Layer1Expander:
         # SELECT しないようメモ化). Key=template_id, Value=CourseTemplate or None.
         per_entry_template_cache: dict[UUID, CourseTemplate | None] = {}
 
+        # W35: INSERT 前に既存 manual (active) との衝突キーを一括 SELECT して除外する。
+        # fixed_entries の全候補キーを計算してから 1 回の SELECT で衝突を確認する。
+        candidate_keys_for_conflict: list[tuple[UUID, date, time]] = []
+        for fe in fixed_entries:
+            wd = fe["weekday"]
+            st: time = fe["_start_time"]
+            vd = date.fromordinal(week_monday.toordinal() + wd)
+            candidate_keys_for_conflict.append((patient.id, vd, st))
+        manual_conflict_keys = await self._fetch_manual_conflict_keys(
+            db, candidate_keys=candidate_keys_for_conflict
+        )
+
         for fe in fixed_entries:
             weekday: int = fe["weekday"]
             if weekday in seen_weekdays:
@@ -811,6 +847,17 @@ class Layer1Expander:
             end_t = time(end_minutes // 60, end_minutes % 60)
 
             visit_date = date.fromordinal(week_monday.toordinal() + weekday)
+
+            # W35: 既存 manual visit との衝突があれば auto INSERT をスキップ
+            if (patient.id, visit_date, start_t) in manual_conflict_keys:
+                logger.warning(
+                    "Layer1: skipped auto visit (fixed) due to conflict with existing manual visit"
+                    " patient=%s visit_date=%s start_time=%s",
+                    patient.id,
+                    visit_date,
+                    start_t,
+                )
+                continue
 
             # ----- W22 Phase A: 採用する template を決定 -----
             # 1st: pfv.course_template_id (明示指定) があればそれを優先
@@ -960,6 +1007,22 @@ class Layer1Expander:
         # 同一週内の (weekday, start_time) 重複をフィルタ
         seen_slots: set[tuple[int, str]] = set()
 
+        # W35: INSERT 前に既存 manual (active) との衝突キーを一括 SELECT して除外する。
+        # entries の全候補キーを事前に計算してから 1 回の SELECT で衝突を確認する。
+        candidate_keys_entries: list[tuple[UUID, date, time]] = []
+        for entry in entries:
+            wd = _resolve_weekday(entry.get("weekday"))
+            if wd is None:
+                continue
+            st = _parse_hhmm(entry.get("preferred_start"))
+            if st is None:
+                continue
+            vd = date.fromordinal(week_monday.toordinal() + wd)
+            candidate_keys_entries.append((patient.id, vd, st))
+        manual_conflict_keys_entries = await self._fetch_manual_conflict_keys(
+            db, candidate_keys=candidate_keys_entries
+        )
+
         for entry in entries:
             weekday = _resolve_weekday(entry.get("weekday"))
             if weekday is None:
@@ -1005,6 +1068,17 @@ class Layer1Expander:
                 staff_count = 1
 
             visit_date = date.fromordinal(week_monday.toordinal() + weekday)
+
+            # W35: 既存 manual visit との衝突があれば auto INSERT をスキップ
+            if (patient.id, visit_date, start_t) in manual_conflict_keys_entries:
+                logger.warning(
+                    "Layer1: skipped auto visit (pattern) due to conflict with existing manual visit"
+                    " patient=%s visit_date=%s start_time=%s",
+                    patient.id,
+                    visit_date,
+                    start_t,
+                )
+                continue
 
             # W16 codex fix (重大 1): course_id を決定
             course_id: UUID | None = None
