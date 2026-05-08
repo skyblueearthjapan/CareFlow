@@ -421,6 +421,24 @@ export function CourseDayTablePanel({
     return m;
   }, [offices]);
 
+  // ─── Wave 28 Phase B-3: (template_id, weekday) → assigned_staff_id マップ ──
+  // CourseWeekOverview で担当スタッフ別 event を表示するために必要。
+  const assignedStaffByTemplateWeekday = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const c of courses) {
+      if (!c.assigned_staff_id) continue;
+      const tpl = templates.find(
+        (t) =>
+          t.office_id === c.office_id &&
+          (t.label || '').trim().slice(0, 1).toUpperCase() === String(c.code).toUpperCase(),
+      );
+      if (tpl) {
+        m.set(`${tpl.id}:${c.weekday}`, c.assigned_staff_id);
+      }
+    }
+    return m;
+  }, [courses, templates]);
+
   // ─── DnD ──────────────────────────────────────────────────────────
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -795,6 +813,8 @@ export function CourseDayTablePanel({
                   officeNameById={officeNameById}
                   visits={overviewVisits}
                   onJumpToDay={(wd) => setActiveTab(wd)}
+                  staffEventsByStaff={staffEventsByStaff}
+                  assignedStaffByTemplateWeekday={assignedStaffByTemplateWeekday}
                 />
               </div>
             ) : (
