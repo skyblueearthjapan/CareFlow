@@ -851,3 +851,84 @@ docker compose -f docs/deployment/docker-compose.production.yml --env-file .env 
 > **警告**: 0022 downgrade は M ラベルの `course_templates` 行を削除する。
 > すでに `generate-and-assign` で割付済みの courses が参照している場合は
 > rollback 前に影響範囲を確認すること。
+
+---
+
+## Wave 17 デプロイ手順
+
+> Wave 17 変更点:
+> - BE: 新エンドポイント 2 件（`generate-week-only` / `assign-staff-only`）を追加
+> - FE: `StaffWeekTablePanel` / `StaffTimeGrid` を削除し `CourseDayTablePanel` に置換
+>   ヘッダーバーのボタンを「週を生成」「自動割付」に 2 分割
+>
+> **migration 追加なし**（Wave 17 は純粋な API 追加 + FE 刷新のため DB スキーマ変更なし）
+
+### W17-E1: バックエンド rebuild（新エンドポイント 2 件）
+
+`generate-week-only` と `assign-staff-only` を含む backend イメージを再ビルド・再起動する。
+
+```bash
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env build backend
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env up -d backend
+```
+
+再起動後に新エンドポイントが応答することを確認する:
+
+```bash
+# 404 でなく 422（リクエストボディ不正）が返れば routing は正常
+curl -s -o /dev/null -w "%{http_code}" \
+  -X POST https://carelink.kaipoke-api.net/api/v1/schedule/generate-week-only \
+  -H "Content-Type: application/json" -d '{}'
+# 期待値: 422
+
+curl -s -o /dev/null -w "%{http_code}" \
+  -X POST https://carelink.kaipoke-api.net/api/v1/schedule/assign-staff-only \
+  -H "Content-Type: application/json" -d '{}'
+# 期待値: 422
+```
+
+### W17-E2: フロントエンド rebuild（CourseDayTablePanel）
+
+`CourseDayTablePanel` を含む frontend イメージを再ビルド・再起動する。
+
+```bash
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env build frontend
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env up -d frontend
+```
+
+### W17-E3: 動作確認
+
+admin / manager アカウントでログインし、以下を順番に確認する。
+
+1. `/schedule` 画面に **曜日タブ（月〜土）** が表示されること
+2. 各タブ内に **コース別テーブル**（9:30〜18:00 / 35 行 / 5 列）が縦並びで表示されること
+3. ヘッダーバーに **「週を生成」「自動割付」の 2 ボタン** が並んで表示されること
+4. 「週を生成」を押下 → visits が展開されコースに患者名が表示されること（staff は未割当のまま）
+5. 「自動割付」を押下 → 担当スタッフ名がテーブルに表示されること
+
+```bash
+# curl でエンドポイント動作を確認（TOKEN は実際の Bearer トークンに差し替え）
+curl -s -X POST https://carelink.kaipoke-api.net/api/v1/schedule/generate-week-only \
+  -H "Authorization: Bearer <TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"iso_year":2026,"iso_week":20}' | python3 -m json.tool
+# 期待: visits_created > 0, pool_count >= 0
+
+curl -s -X POST https://carelink.kaipoke-api.net/api/v1/schedule/assign-staff-only \
+  -H "Authorization: Bearer <TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"iso_year":2026,"iso_week":20}' | python3 -m json.tool
+# 期待: courses_assigned > 0
+```
+
+### W17 Rollback
+
+Wave 17 は DB migration がないため rollback は backend / frontend イメージを Wave 16 タグに戻すだけでよい。
+
+```bash
+# Wave 16 タグのイメージで再起動
+docker compose -f docs/deployment/docker-compose.production.yml --env-file .env up -d
+```
+
+> `generate-week-only` / `assign-staff-only` エンドポイントは Wave 17 backend にのみ存在するため、
+> rollback 後はこれらの呼び出しが 404 になる。FE も同時に Wave 16 に戻すこと。

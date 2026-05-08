@@ -1147,6 +1147,127 @@ M ラベルの `course_templates` 行をマネージャー数と同期する。
 
 ---
 
+## 19. generate-week-only API（W17-BE）
+
+> Wave 17 追記（2026-05-08）。Layer 1 のみを実行し、staff 未割当のまま visits を展開する
+> 軽量エンドポイント。2 ボタン分離（§20 `assign-staff-only` と組み合わせる）の片翼。
+> 設計仕様書 §17.3 に対応する。
+
+### 19.1 `POST /api/v1/schedule/generate-week-only`
+
+| 項目 | 内容 |
+|---|---|
+| 概要 | `weekly_pattern` から visits を展開（Layer 1 のみ）。staff は未割当のまま |
+| 担当チケット | W17-BE |
+| Request body | `GenerateWeekOnlyRequest` |
+| Response 200 | `GenerateWeekOnlyResponse` |
+| RBAC | Admin / Manager のみ |
+| 冪等性 | 同一 (iso_year, iso_week) で再実行すると当該週の auto-visit のみ削除して再生成。`completed` / `cancelled` / `source != "auto"` の visit は保護される |
+
+**`GenerateWeekOnlyRequest` フィールド**
+
+| フィールド | 型 | 必須 | 説明 |
+|---|---|---|---|
+| `iso_year` | integer | Yes | ISO 年 (例: 2026) |
+| `iso_week` | integer | Yes | ISO 週番号 1-53 |
+| `office_id` | UUID | No | 省略時は全拠点を対象 |
+
+**リクエスト例**
+
+```jsonc
+{
+  "iso_year": 2026,
+  "iso_week": 20,
+  "office_id": "<UUID>"
+}
+```
+
+**レスポンス 200 例**
+
+```jsonc
+{
+  "visits_created": 42,
+  "pool_count":      3,
+  "message":         "Layer 1 completed. Staff unassigned."
+}
+```
+
+**エラーコード**
+
+| 状態 | HTTP | 詳細 |
+|---|---|---|
+| ISO 週が不正 | 422 | "invalid ISO week: year=... week=..." |
+| office_id が存在しない | 404 | "Office not found" |
+
+---
+
+## 20. assign-staff-only API（W17-BE）
+
+> Wave 17 追記（2026-05-08）。既存 visits を保持したまま Layer 3（staff 割付）のみを実行する
+> エンドポイント。`generate-week-only`（§19）で visits を展開した後に呼ぶ想定。
+> 設計仕様書 §17.3 に対応する。
+
+### 20.1 `POST /api/v1/schedule/assign-staff-only`
+
+| 項目 | 内容 |
+|---|---|
+| 概要 | 既存 visits を保持したまま Layer 3 で staff 割付のみを実行 |
+| 担当チケット | W17-BE |
+| Request body | `AssignStaffOnlyRequest` |
+| Response 200 | `AssignStaffOnlyResponse` |
+| RBAC | Admin / Manager のみ |
+| visits 保持 | 既存 visits は削除しない。割付のみ上書き |
+| staff_assigned 保護 | `course_status='staff_assigned'` のコースは再割付対象から除外 |
+
+**`AssignStaffOnlyRequest` フィールド**
+
+| フィールド | 型 | 必須 | 説明 |
+|---|---|---|---|
+| `iso_year` | integer | Yes | ISO 年 (例: 2026) |
+| `iso_week` | integer | Yes | ISO 週番号 1-53 |
+| `office_id` | UUID | No | 省略時は全拠点を対象 |
+
+**リクエスト例**
+
+```jsonc
+{
+  "iso_year": 2026,
+  "iso_week": 20,
+  "office_id": "<UUID>"
+}
+```
+
+**レスポンス 200 例**
+
+```jsonc
+{
+  "courses_assigned": 18,
+  "message":          "Layer 3 completed."
+}
+```
+
+**エラーコード**
+
+| 状態 | HTTP | 詳細 |
+|---|---|---|
+| ISO 週が不正 | 422 | "invalid ISO week: year=... week=..." |
+| office_id が存在しない | 404 | "Office not found" |
+| Layer 3 割付で解が得られない | 422 | "No feasible assignment for week=..." |
+
+---
+
+## 21. generate-and-assign API（W16-BE）— Deprecated since Wave 17
+
+> **Deprecated since Wave 17**: 本エンドポイントは Wave 17 以降 **非推奨**。
+> 新規実装では `generate-week-only`（§19）+ `assign-staff-only`（§20）を使用すること。
+> 後方互換のためエンドポイント自体は維持する。
+
+旧 §18 の内容は変更なし。エンドポイントは引き続き動作するが、
+UI 上の「週を生成」ボタンは `generate-week-only` を、「自動割付」ボタンは
+`assign-staff-only` を呼び出すよう切り替え済み。
+
+---
+
 ## 14. 受入基準
 
 - [x] patients / staff / offices / courses / visits / schedule / pending_requests / ai のすべてに新規 / 変更エンドポイントが列挙されている
@@ -1170,6 +1291,9 @@ M ラベルの `course_templates` 行をマネージャー数と同期する。
 - [x] W15: §8.6 `fix-or-pattern` に「既存 visit の時刻変更専用」と 422 恒久対策のコメントが明記されている
 - [x] W16: `POST /schedule/generate-and-assign`（§18）が追加されている（フラット payload、Layer 1+3 連動、staff_assigned 保護、エラーコード）
 - [x] W16: §15 course_templates に M label 自動同期の補足が明記されている
+- [x] W17: `POST /schedule/generate-week-only`（§19）が追加されている（Layer 1 のみ、staff 未割当維持、冪等性、エラーコード）
+- [x] W17: `POST /schedule/assign-staff-only`（§20）が追加されている（Layer 3 のみ、visits 保持、staff_assigned 保護、エラーコード）
+- [x] W17: `generate-and-assign`（§21）に "Deprecated since Wave 17" 注記が明記されている
 
 ---
 
@@ -1183,3 +1307,4 @@ M ラベルの `course_templates` 行をマネージャー数と同期する。
 | 2026-05-08 | v1.3 | Wave 15: スケジュール大改修 — course_templates (§15) / acceptance-calendar (§16) / place-and-fix (§17) / fix-or-pattern 役割明確化 (§8.6) |
 | 2026-05-08 | v1.3.1 | W15-codex-fix: place-and-fix に `course_template_id` 必須化 (§17) — Visit.course_id 紐付けで主導線破綻を解消 |
 | 2026-05-08 | v1.4 | Wave 16: generate-and-assign (§18) / M label 自動同期補足 (§15) |
+| 2026-05-08 | v1.5 | Wave 17: generate-week-only (§19) / assign-staff-only (§20) / generate-and-assign deprecated 注記 (§21) |
