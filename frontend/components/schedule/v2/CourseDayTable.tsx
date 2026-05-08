@@ -18,6 +18,7 @@
  */
 import { useMemo } from 'react';
 import { useDraggable, useDroppable } from '@dnd-kit/core';
+import { X } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
@@ -256,6 +257,11 @@ export interface CourseDayTableProps {
   onChangeAssignedStaff: (staffId: string | null) => void;
   /** dropdown が pending 中 (PATCH /courses/{id} 中) は disabled に. */
   isStaffMutating: boolean;
+  /**
+   * Wave 36: visit の × ボタンクリック時のハンドラ.
+   * canEdit=true のときのみ表示される。
+   */
+  onDeleteVisit?: (visitId: string, patientName: string) => void;
 }
 
 export function CourseDayTable({
@@ -269,6 +275,7 @@ export function CourseDayTable({
   canEdit,
   onChangeAssignedStaff,
   isStaffMutating,
+  onDeleteVisit,
 }: CourseDayTableProps) {
   const eventsMap = staffEventsByStaff ?? new Map<string, EventRead[]>();
   // visits を slot ("HH:MM") → CourseGridVisit[] にバケット化.
@@ -373,6 +380,7 @@ export function CourseDayTable({
               canEdit={canEdit}
               assignedStaffId={assignedStaffId}
               staffEventsByStaff={eventsMap}
+              onDeleteVisit={onDeleteVisit}
             />
           ))}
         </div>
@@ -395,6 +403,8 @@ interface CourseTimeRowProps {
   assignedStaffId?: string | null;
   /** Wave 27 Phase B-3: staffId → EventRead[] のマップ. */
   staffEventsByStaff?: Map<string, EventRead[]>;
+  /** Wave 36: visit × ボタンクリックハンドラ. */
+  onDeleteVisit?: (visitId: string, patientName: string) => void;
 }
 
 function CourseTimeRow({
@@ -405,6 +415,7 @@ function CourseTimeRow({
   canEdit,
   assignedStaffId,
   staffEventsByStaff,
+  onDeleteVisit,
 }: CourseTimeRowProps) {
   // Wave 27 Phase B-3: 担当スタッフがこのスロット時間帯にイベントを持つか判定
   const eventsMap = staffEventsByStaff ?? new Map<string, EventRead[]>();
@@ -491,6 +502,7 @@ function CourseTimeRow({
                     visitId={o.id}
                     label={o.patient_name ?? o.patient_id}
                     canEdit={canEdit}
+                    onDeleteVisit={onDeleteVisit}
                   />
                 ))}
                 {/* Wave 27 Phase B-3: 担当スタッフのイベント重複 warning バッジ */}
@@ -581,6 +593,8 @@ interface OccupantNameDraggableProps {
   visitId: string;
   label: string;
   canEdit: boolean;
+  /** Wave 36: visit × ボタンクリックハンドラ. canEdit=true のときのみ表示. */
+  onDeleteVisit?: (visitId: string, patientName: string) => void;
 }
 
 /**
@@ -593,7 +607,12 @@ interface OccupantNameDraggableProps {
  * ドロップ先 (course-day-cell:* / pool) は親 onDragEnd で分岐し、
  * delete + place-and-fix の 2 段階で実装する (Wave 19 で atomic 化予定)。
  */
-function OccupantNameDraggable({ visitId, label, canEdit }: OccupantNameDraggableProps) {
+function OccupantNameDraggable({
+  visitId,
+  label,
+  canEdit,
+  onDeleteVisit,
+}: OccupantNameDraggableProps) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: visitDraggableId(visitId),
     disabled: !canEdit,
@@ -602,19 +621,40 @@ function OccupantNameDraggable({ visitId, label, canEdit }: OccupantNameDraggabl
 
   return (
     <div
-      ref={setNodeRef}
-      data-testid={`course-occupant-name-${visitId}`}
-      data-draggable-visit-id={visitId}
-      title={label}
-      {...listeners}
-      {...attributes}
       className={cn(
-        'truncate select-none touch-none',
-        canEdit ? 'cursor-grab active:cursor-grabbing' : '',
+        'group flex items-center justify-between gap-0.5',
         isDragging ? 'opacity-40' : '',
       )}
     >
-      {label}
+      <div
+        ref={setNodeRef}
+        data-testid={`course-occupant-name-${visitId}`}
+        data-draggable-visit-id={visitId}
+        title={label}
+        {...listeners}
+        {...attributes}
+        className={cn(
+          'truncate select-none touch-none flex-1',
+          canEdit ? 'cursor-grab active:cursor-grabbing' : '',
+        )}
+      >
+        {label}
+      </div>
+      {canEdit && onDeleteVisit && (
+        <button
+          type="button"
+          className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 hover:bg-red-100 rounded flex-shrink-0"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDeleteVisit(visitId, label);
+          }}
+          aria-label={`${label} の訪問を削除`}
+          title="この訪問を削除"
+          data-testid={`delete-visit-btn-${visitId}`}
+        >
+          <X className="h-3 w-3 text-red-500" />
+        </button>
+      )}
     </div>
   );
 }
