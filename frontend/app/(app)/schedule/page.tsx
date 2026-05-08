@@ -1,19 +1,21 @@
 'use client';
 
 /**
- * /schedule — Wave 16 Phase B スタッフ別週次スケジュール画面.
+ * /schedule — Wave 17 Phase B: (曜日 × コース) テーブル N 個構造.
  *
- * Wave 15 の「コース×曜日マトリクス」(ScheduleUnifiedView) を完全に置換し、
- * 「スタッフ別テーブル N 個縦並び」構造に刷新した。
+ * Wave 16 の「スタッフ × 時刻 × 曜日」(StaffWeekTablePanel) を完全に置換し、
+ * Excel スケジュール枠組みに完全準拠した「曜日タブ + コーステーブル N 個」
+ * 構造に刷新した。
  *
  * レイアウト:
  *   ┌──────────────────────────────────────────────────────────────┐
  *   │ ヘッダー                                                       │
  *   │  週切替 | 拠点フィルタ | 受入目安レイヤー | 一括固定化         │
  *   ├──────────────────────────────────────────────────────────────┤
- *   │ StaffWeekTablePanel                                          │
- *   │  - 「週を生成」ボタン (admin/manager only)                     │
- *   │  - スタッフ別テーブル N 個 (時刻×曜日 9:00-19:00 / 15min)      │
+ *   │ CourseDayTablePanel                                          │
+ *   │  - 曜日タブ [月][火][水][木][金][土]                           │
+ *   │  - 「週を生成」 + 「自動割付」 (admin/manager only)             │
+ *   │  - 当該曜日のコーステーブル N 個 (5 列 × 35 行 / 9:30-18:00)    │
  *   │  - 保留プール (DnD ドロップで place-and-fix)                  │
  *   └──────────────────────────────────────────────────────────────┘
  *
@@ -25,7 +27,7 @@ import { useMemo, useState } from 'react';
 import { useSession } from 'next-auth/react';
 
 import { BulkFixToPatternButton } from '@/components/schedule/v2/BulkFixToPatternButton';
-import { StaffWeekTablePanel } from '@/components/schedule/v2/StaffWeekTablePanel';
+import { CourseDayTablePanel } from '@/components/schedule/v2/CourseDayTablePanel';
 import { WeekSelector, toWeekStart } from '@/components/schedule/WeekSelector';
 import { Card } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -68,11 +70,11 @@ export default function SchedulePage() {
   const isoWeekLabel = `${isoYear}-W${String(isoWeek).padStart(2, '0')}`;
 
   return (
-    <section className="space-y-3" data-testid="schedule-page-staff-week">
+    <section className="space-y-3" data-testid="schedule-page-course-day">
       <header className="space-y-1">
         <h1 className="font-serif text-2xl font-bold text-text-primary">スケジュール</h1>
         <p className="text-sm text-text-secondary">
-          スタッフ別の週次タイムテーブルで配置と固定枠化を 1 画面で操作できます。
+          (曜日 × コース) テーブルで週次スケジュールを管理します。
         </p>
       </header>
 
@@ -116,8 +118,8 @@ export default function SchedulePage() {
         </div>
       </Card>
 
-      {/* メイン: StaffWeekTablePanel */}
-      <StaffWeekTablePanel
+      {/* メイン: CourseDayTablePanel */}
+      <CourseDayTablePanel
         weekStart={weekStart}
         officeId={officeId}
         canEdit={canEdit}
