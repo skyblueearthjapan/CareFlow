@@ -1054,6 +1054,37 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
     expect(arg.id).toBe('course-1');
     expect(arg.patch.assigned_staff_id).toBe('staff-1');
   });
+
+  // ─── Wave 19: 2 ペイン レイアウト ────────────────────────────────────────
+
+  it('W19-1. 2 ペイン構造でレンダーされる (course-day-two-pane が存在)', () => {
+    setupHooks({ templates: [] });
+    render(
+      <CourseDayTablePanel
+        weekStart={monday(2026, 5, 4)}
+        officeId={null}
+        canEdit={true}
+        showAcceptanceLayer={false}
+      />,
+    );
+    expect(screen.getByTestId('course-day-two-pane')).toBeInTheDocument();
+  });
+
+  it('W19-2. プールが右ペイン (course-day-pool-pane) に表示される', () => {
+    setupHooks({ templates: [] });
+    render(
+      <CourseDayTablePanel
+        weekStart={monday(2026, 5, 4)}
+        officeId={null}
+        canEdit={true}
+        showAcceptanceLayer={false}
+      />,
+    );
+    const poolPane = screen.getByTestId('course-day-pool-pane');
+    expect(poolPane).toBeInTheDocument();
+    // プールコンポーネントが右ペイン内に含まれる
+    expect(poolPane.querySelector('[data-testid="pool-grouped-by-weekday"]')).toBeInTheDocument();
+  });
 });
 
 // ─── pure helper unit tests ─────────────────────────────────────────────────
