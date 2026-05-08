@@ -1,21 +1,23 @@
-"""Schedule endpoints (W3-BE-FIX / W4-BE7 / W9-BE2 / W15-BE-FIXPATTERN).
+"""Schedule endpoints (W3-BE-FIX / W4-BE7 / W9-BE2 / W15-BE-FIXPATTERN / W16-BE3).
 
 設計仕様書 ``docs/plans/v2-allocation-redesign.md`` v0.9 §3.6.2 (Layer 1
 時間配置) と API 契約 ``docs/plans/v2-api-contracts.md`` §6 に対応する
 HTTP 層。
 
 実装エンドポイント:
-    - POST /api/v1/schedule/fix             (W3-BE-FIX): 週レイアウト確定
-    - POST /api/v1/schedule/generate-week   (W4-BE7): Layer 1 アルゴリズム
-    - POST /api/v1/schedule/fix-or-pattern  (W9-BE2): **既存 visit の時刻変更**
-    - POST /api/v1/schedule/place-and-fix   (W15-BE-FIXPATTERN): ドロップ即固定枠化
+    - POST /api/v1/schedule/fix                  (W3-BE-FIX): 週レイアウト確定
+    - POST /api/v1/schedule/generate-week        (W4-BE7): Layer 1 アルゴリズム
+    - POST /api/v1/schedule/fix-or-pattern       (W9-BE2): **既存 visit の時刻変更**
+    - POST /api/v1/schedule/place-and-fix        (W15-BE-FIXPATTERN): ドロップ即固定枠化
+    - POST /api/v1/schedule/generate-and-assign  (W16-BE3): 週生成 + Layer 3 一括実行
 
 ## RBAC (API 契約 §6)
 
-- POST /schedule/fix             — admin / manager のみ (staff は 403)
-- POST /schedule/generate-week   — admin / manager のみ (staff は 403)
-- POST /schedule/fix-or-pattern  — admin / manager のみ (staff は 403)
-- POST /schedule/place-and-fix   — admin / manager のみ (staff は 403)
+- POST /schedule/fix                  — admin / manager のみ (staff は 403)
+- POST /schedule/generate-week        — admin / manager のみ (staff は 403)
+- POST /schedule/fix-or-pattern       — admin / manager のみ (staff は 403)
+- POST /schedule/place-and-fix        — admin / manager のみ (staff は 403)
+- POST /schedule/generate-and-assign  — admin / manager のみ (staff は 403)
 
 ## トランザクション
 
@@ -27,7 +29,7 @@ HTTP 層。
 
 from __future__ import annotations
 
-from datetime import date, time, timedelta
+from datetime import UTC, date, time, timedelta
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -37,7 +39,11 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 
 from app.core.deps import DbDep, require_role
-from app.models.course import COURSE_STATUS_PROPOSED, Course
+from app.models.course import (
+    COURSE_STATUS_COURSE_FIXED,
+    COURSE_STATUS_PROPOSED,
+    Course,
+)
 from app.models.course_template import CourseTemplate
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
@@ -58,7 +64,14 @@ from app.services.scheduling import (
     PoolEntry,
     VisitCreated,
 )
-from app.services.scheduling.layer1_expander import _is_special_week_active
+from app.services.scheduling.layer1_expander import (
+    LAYER1_VISIT_SOURCE,
+    _is_special_week_active,
+)
+from app.services.scheduling.layer3_assignment import (
+    Layer3Assigner,
+    Layer3AssignmentError,
+)
 
 router = APIRouter()
 
@@ -697,6 +710,157 @@ async def place_and_fix(
     )
 
     return PlaceAndFixResponse(visit=visit_read, fixed_visit=fixed_visit_read)
+
+
+# ---------------------------------------------------------------------------
+# /generate-and-assign Request / Response schemas (W16-BE3)
+# ---------------------------------------------------------------------------
+
+
+class GenerateAndAssignRequest(BaseModel):
+    """``POST /api/v1/schedule/generate-and-assign`` のリクエストボディ (W16-BE3).
+
+    Wave 16: スタッフ別テーブル UI から「週を生成」連動で叩く。
+    1 トランザクションで:
+      1. 当該週の auto-source visit を全削除
+      2. Layer 1 (= /generate-week 相当) を実行し visits を再生成
+      3. Layer 3 (= /assign-staff 相当) を実行し courses.assigned_staff_id を確定
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    iso_year: int = Field(ge=2000, le=2100)
+    iso_week: int = Field(ge=1, le=53)
+    office_id: UUID | None = Field(
+        default=None,
+        description="対象拠点 (None=全拠点合算で実行).",
+    )
+
+
+class GenerateAndAssignResponse(BaseModel):
+    """``POST /api/v1/schedule/generate-and-assign`` のレスポンス (W16-BE3)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    iso_year: int
+    iso_week: int
+    visits_created: int
+    courses_assigned: int
+    message: str
+
+
+@router.post(
+    "/generate-and-assign",
+    response_model=GenerateAndAssignResponse,
+    status_code=status.HTTP_200_OK,
+    summary="W16-BE3: 週生成 + Layer 3 一括実行",
+)
+async def generate_and_assign(
+    payload: GenerateAndAssignRequest,
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+) -> GenerateAndAssignResponse:
+    """Layer 1 (visit 展開) と Layer 3 (staff 割付) を 1 TX で連続実行する.
+
+    冪等性:
+        - 当該週の ``source='auto'`` visit は全て削除されてから再生成される
+        - Layer 3 は既存 ``courses.assigned_staff_id`` を上書き
+        - エラー時は全 rollback で partial state を残さない
+
+    制約:
+        - RBAC: admin / manager only
+        - office_id が指定された場合は当該拠点のコースのみ Layer 3 対象
+    """
+    # ----- ISO 週バリデーション (Layer 1 でも行うが先行 422 のため) -----
+    try:
+        date.fromisocalendar(payload.iso_year, payload.iso_week, 1)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"invalid ISO week: year={payload.iso_year} week={payload.iso_week}",
+        ) from exc
+
+    expander = Layer1Expander()
+    assigner = Layer3Assigner()
+
+    try:
+        # ----- 1) Layer 1 (= 既存 auto visit 削除 → 再生成) -----
+        # Layer1Expander.expand_week が当該週の auto-visit 削除と再生成の双方を
+        # 担当する (W4-BE7). 追加のクリア処理は不要.
+        l1_result = await expander.expand_week(
+            db, iso_year=payload.iso_year, iso_week=payload.iso_week
+        )
+
+        # ----- 2) proposed -> course_fixed への自動昇格 (W16-BE3) -----
+        # Layer 3 は course_status='course_fixed' のコースしか対象にしない.
+        # 「週を生成」連動フローでは Layer 2 を経由しないため、
+        # 当該週 (+ optional office) の proposed コースを course_fixed へ昇格する.
+        #
+        # 保護: staff_assigned コース (admin が手動割付済み) は昇格対象から明示除外する.
+        # promote_where の COURSE_STATUS_PROPOSED 絞り込みにより staff_assigned コースは
+        # course_fixed へ戻されず、Layer 3 の SELECT (course_fixed のみ) でも対象外となる.
+        # これにより再実行しても admin 手動割付が巻き戻ることはない.
+        promote_where = [
+            Course.iso_year == payload.iso_year,
+            Course.iso_week == payload.iso_week,
+            Course.deleted_at.is_(None),
+            Course.course_status == COURSE_STATUS_PROPOSED,  # staff_assigned は触れない
+        ]
+        if payload.office_id is not None:
+            promote_where.append(Course.office_id == payload.office_id)
+        proposed_courses = list((await db.scalars(select(Course).where(*promote_where))).all())
+        from datetime import datetime as _dt
+
+        now_utc = _dt.now(UTC)
+        for c in proposed_courses:
+            c.course_status = COURSE_STATUS_COURSE_FIXED
+            c.course_fixed_at = now_utc
+        if proposed_courses:
+            await db.flush()
+
+        # ----- 3) Layer 3 (= staff 割付) — staff_assigned コース保護 -----
+        # Layer3Assigner._load_course_targets は course_status='course_fixed' のみ SELECT する.
+        # staff_assigned コースは上記 promote_where で昇格対象に含まれず、かつ Layer 3 の
+        # SELECT でも除外されるため、再実行で admin 手動割付が上書きされることはない.
+        l3_result = await assigner.assign(
+            db,
+            iso_year=payload.iso_year,
+            iso_week=payload.iso_week,
+            office_id=payload.office_id,
+        )
+
+        await db.commit()
+    except Layer1ExpandError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=exc.http_status, detail=str(exc)) from exc
+    except Layer3AssignmentError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=exc.http_status, detail=str(exc)) from exc
+    except HTTPException:
+        await db.rollback()
+        raise
+    except Exception:
+        await db.rollback()
+        raise
+
+    visits_created_count = l1_result.visits_created_count
+    courses_assigned = len(l3_result.assignments)
+
+    return GenerateAndAssignResponse(
+        iso_year=payload.iso_year,
+        iso_week=payload.iso_week,
+        visits_created=visits_created_count,
+        courses_assigned=courses_assigned,
+        message=(
+            f"Generated {visits_created_count} visits and assigned "
+            f"{courses_assigned} courses for ISO {payload.iso_year}-W{payload.iso_week}"
+            + (f" (office {payload.office_id})" if payload.office_id else "")
+        ),
+    )
+
+
+# Suppress F401 for LAYER1_VISIT_SOURCE (kept for documentation / future use)
+_ = LAYER1_VISIT_SOURCE
 
 
 __all__ = ["router"]

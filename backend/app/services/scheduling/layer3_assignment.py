@@ -92,6 +92,11 @@ ROTATION_HISTORY_WEEKS: int = 4
 # Q3 ハイブリッド: 直近 EXCLUSION_WEEKS 週の担当者は強制除外
 ROTATION_EXCLUSION_WEEKS: int = 1
 
+# W16: 前日と同じコースを同一スタッフが担当した場合のペナルティ
+# 距離 km 換算で十分大きい (=実用上ほぼ強制回避) ようにする。
+# ハード INF にしないのは「他に勤務可能なスタッフが居ない」場合の救済のため。
+COST_W16_PREV_DAY_SAME_COURSE: float = 100.0
+
 # ハンガリアン法でダミー行/列に使う「実質的に無限大」のコスト。
 # math.inf は加算で扱いにくいので有限大の値を使う。
 HUNGARIAN_INFINITY: float = 1.0e12
@@ -257,6 +262,7 @@ class Layer3Assigner:
         *,
         iso_year: int,
         iso_week: int,
+        office_id: UUID | None = None,
     ) -> Layer3Result:
         """指定週の確定済みコースに対しスタッフを割り付ける.
 
@@ -264,6 +270,7 @@ class Layer3Assigner:
             db: 共有 SQLAlchemy セッション.
             iso_year: ISO 年.
             iso_week: ISO 週 (1-53).
+            office_id: W16 — 対象拠点 (None=全拠点合算).
 
         Returns:
             Layer3Result: 割当結果 + ローテーションスコア + 総距離.
@@ -283,7 +290,9 @@ class Layer3Assigner:
             ) from exc
 
         # ---------- 1. 確定済みコース取得 (course_fixed) ----------
-        course_targets = await self._load_course_targets(db, iso_year=iso_year, iso_week=iso_week)
+        course_targets = await self._load_course_targets(
+            db, iso_year=iso_year, iso_week=iso_week, office_id=office_id
+        )
 
         # ---------- 2. 稼働スタッフ取得 ----------
         staff_pool = await self._load_active_staff(
@@ -298,10 +307,20 @@ class Layer3Assigner:
             history_weeks=ROTATION_HISTORY_WEEKS,
         )
 
-        # ---------- 4. 計算 ----------
-        result = self.solve(course_targets, staff_pool, history=history)
+        # ---------- 4. W16 固定割当 (manager -> M / 都賀 staff -> 都賀 A) ----------
+        fixed_staff_by_course = await self._build_fixed_assignments(
+            db, iso_year=iso_year, iso_week=iso_week, office_id=office_id
+        )
 
-        # ---------- 5. DB 反映 ----------
+        # ---------- 5. 計算 ----------
+        result = self.solve(
+            course_targets,
+            staff_pool,
+            history=history,
+            fixed_staff_by_course=fixed_staff_by_course,
+        )
+
+        # ---------- 6. DB 反映 ----------
         trainee_ids = frozenset(s.staff_id for s in staff_pool if s.is_trainee)
         await self._persist(db, result.assignments, trainee_staff_ids=trainee_ids)
 
@@ -317,6 +336,8 @@ class Layer3Assigner:
         staff_pool: list[StaffInfo],
         *,
         history: list[tuple[int, str, UUID]] | None = None,
+        fixed_staff_by_course: dict[UUID, UUID] | None = None,
+        same_course_prev_day_penalty: bool = True,
     ) -> Layer3Result:
         """純粋関数版エントリポイント (テスト / fixture 評価で直接使う).
 
@@ -325,19 +346,37 @@ class Layer3Assigner:
             staff_pool: 稼働スタッフのリスト.
             history: ``[(weeks_ago, course_code, staff_id), ...]`` の履歴.
                 ``weeks_ago`` は当該週からの距離 (1 = 直近 1 週前).
+            fixed_staff_by_course: W16 — 事前固定割当 (course_id -> staff_id).
+                指定された course はマッチングを skip し直接当該 staff を割当て、
+                かつ当該 staff はその曜日の他の course から除外される.
+                典型例: 川名(manager) -> M / 関谷 -> 都賀 A.
+            same_course_prev_day_penalty: W16 — True のとき、同一スタッフが
+                前日と同じ course_code を担当することにペナルティを付与する
+                (= 同患者連続回避).
 
         Returns:
             Layer3Result.
 
         Notes:
-            - マネージャー (role='manager') は staff_pool から自動除外.
+            - マネージャー (role='manager') は **fixed_staff_by_course で割当
+              対象外でない限り** staff_pool から自動除外する.
+              W16 では manager を M コースに固定割当する用途のため、
+              fixed 経由で割り当てられた manager は許容する.
             - 各曜日ごとに独立にハンガリアン法を適用 (1 スタッフ 1 日 1 コース原則).
+            - W16: 曜日順 (Mon -> Sat) に解き、前日割当を後続曜日へ伝搬する.
         """
         if history is None:
             history = []
+        if fixed_staff_by_course is None:
+            fixed_staff_by_course = {}
 
-        # マネージャー除外 (§3.6.4)
-        eligible_staff = [s for s in staff_pool if s.role != "manager"]
+        # 固定割当先となる staff_id 集合 (= manager を除外しない対象)
+        fixed_staff_ids: set[UUID] = set(fixed_staff_by_course.values())
+
+        # マネージャー除外 (§3.6.4) — ただし fixed 対象スタッフは保持
+        eligible_staff = [
+            s for s in staff_pool if s.role != "manager" or s.staff_id in fixed_staff_ids
+        ]
 
         # 曜日でグルーピング
         by_weekday: dict[int, list[CourseAssignmentTarget]] = {}
@@ -347,7 +386,12 @@ class Layer3Assigner:
         all_assignments: list[StaffAssignment] = []
         total_distance = 0.0
 
+        # W16: 「前日同コースペナルティ」用. (course_code, staff_id) を直前曜日
+        # の割当から構築する.
+        prev_day_pairs: set[tuple[str, UUID]] = set()
+
         # 各曜日ごとに独立して解く (= 1 スタッフ 1 日 1 コース制約は曜日内で閉じる)
+        # W16: 曜日順 (Mon -> Sat) に解き、前日割当を後続曜日へ伝搬する.
         for weekday in sorted(by_weekday.keys()):
             day_courses = by_weekday[weekday]
             day_assignments = self._solve_one_day(
@@ -355,6 +399,8 @@ class Layer3Assigner:
                 day_courses=day_courses,
                 staff_pool=eligible_staff,
                 history=history,
+                fixed_staff_by_course=fixed_staff_by_course,
+                prev_day_pairs=prev_day_pairs if same_course_prev_day_penalty else set(),
             )
             for a in day_assignments:
                 all_assignments.append(a)
@@ -363,10 +409,18 @@ class Layer3Assigner:
                 staff = next(s for s in eligible_staff if s.staff_id == a.staff_id)
                 total_distance += self._distance_km(course, staff)
 
-        # ローテーション分散度 (Gini)
+            # 当日割当を「前日割当」として次曜日へ受け渡し
+            prev_day_pairs = {(a.course_code, a.staff_id) for a in day_assignments}
+
+        # ローテーション分散度 (Gini) — fixed 割当は分散度計算対象外
+        # (固定スタッフはローテーション対象ではないため)
+        rotatable_assignments = [a for a in all_assignments if a.staff_id not in fixed_staff_ids]
+        rotatable_staff_count = max(
+            1, len([s for s in eligible_staff if s.staff_id not in fixed_staff_ids])
+        )
         rotation_score = self._gini_index(
-            [a.staff_id for a in all_assignments],
-            staff_count=max(1, len(eligible_staff)),
+            [a.staff_id for a in rotatable_assignments],
+            staff_count=rotatable_staff_count,
         )
 
         return Layer3Result(
@@ -386,25 +440,76 @@ class Layer3Assigner:
         day_courses: list[CourseAssignmentTarget],
         staff_pool: list[StaffInfo],
         history: list[tuple[int, str, UUID]],
+        fixed_staff_by_course: dict[UUID, UUID] | None = None,
+        prev_day_pairs: set[tuple[str, UUID]] | None = None,
     ) -> list[StaffAssignment]:
-        """1 曜日内で (course × staff) のハンガリアンを解く."""
+        """1 曜日内で (course × staff) のハンガリアンを解く.
+
+        Args:
+            weekday: 0=Mon..6=Sun.
+            day_courses: 当該曜日の course list.
+            staff_pool: 稼働スタッフ.
+            history: ローテーション履歴.
+            fixed_staff_by_course: W16 — 事前固定割当 (course_id -> staff_id).
+                対象 course はマッチング対象外とし結果に直接含める. 当該 staff
+                は他の course への割当からも除外する.
+            prev_day_pairs: W16 — 前日の (course_code, staff_id) 集合.
+                同一ペアの再選択にペナルティを付与する (= 同患者連続回避).
+        """
         if not day_courses or not staff_pool:
             return []
+        if fixed_staff_by_course is None:
+            fixed_staff_by_course = {}
+        if prev_day_pairs is None:
+            prev_day_pairs = set()
 
-        n_courses = len(day_courses)
-        n_staff = len(staff_pool)
+        # ----- W16: 固定割当を先に剥がす -----
+        result: list[StaffAssignment] = []
+        fixed_courses: list[CourseAssignmentTarget] = []
+        free_courses: list[CourseAssignmentTarget] = []
+        for course in day_courses:
+            staff_id = fixed_staff_by_course.get(course.course_id)
+            if staff_id is None:
+                free_courses.append(course)
+                continue
+            # 当該 staff が当日の staff_pool に存在しなければ skip (work_days 違反など)
+            staff = next((s for s in staff_pool if s.staff_id == staff_id), None)
+            if staff is None or weekday not in staff.work_days:
+                # 固定スタッフが当日勤務でない → 当該コースは未割当のまま
+                fixed_courses.append(course)
+                continue
+            result.append(
+                StaffAssignment(
+                    weekday=weekday,
+                    course_code=course.course_code,
+                    course_id=course.course_id,
+                    staff_id=staff.staff_id,
+                )
+            )
+            fixed_courses.append(course)
+
+        # 固定で取られたスタッフは free のマッチング対象から除外
+        fixed_assigned_staff_ids: set[UUID] = {a.staff_id for a in result}
+        free_staff = [s for s in staff_pool if s.staff_id not in fixed_assigned_staff_ids]
+
+        if not free_courses or not free_staff:
+            return result
+
+        n_courses = len(free_courses)
+        n_staff = len(free_staff)
         n = max(n_courses, n_staff)  # 正方化
 
         # cost[i][j] = (course i, staff j) のコスト. ダミー行/列は 0.0 で埋める.
         cost: list[list[float]] = [[0.0] * n for _ in range(n)]
 
-        for i, course in enumerate(day_courses):
-            for j, staff in enumerate(staff_pool):
+        for i, course in enumerate(free_courses):
+            for j, staff in enumerate(free_staff):
                 cost[i][j] = self._cost_single_cell(
                     weekday=weekday,
                     course=course,
                     staff=staff,
                     history=history,
+                    prev_day_pairs=prev_day_pairs,
                 )
         # ダミー行 (i >= n_courses): 全列コスト 0  → 「未割当の course/staff」を吸収
         # ダミー列 (j >= n_staff): 全行コスト 0
@@ -413,7 +518,6 @@ class Layer3Assigner:
         assignment = hungarian_min_cost(cost)
 
         # 結果フィルタリング: 実コース × 実スタッフかつ INF 未満のもののみ採用
-        result: list[StaffAssignment] = []
         for i in range(n_courses):
             j = assignment[i]
             if j < 0 or j >= n_staff:
@@ -421,8 +525,8 @@ class Layer3Assigner:
             if cost[i][j] >= HUNGARIAN_INFINITY:
                 # ハード制約違反のセル — 割当不能
                 continue
-            course = day_courses[i]
-            staff = staff_pool[j]
+            course = free_courses[i]
+            staff = free_staff[j]
             result.append(
                 StaffAssignment(
                     weekday=weekday,
@@ -441,14 +545,22 @@ class Layer3Assigner:
         course: CourseAssignmentTarget,
         staff: StaffInfo,
         history: list[tuple[int, str, UUID]],
+        prev_day_pairs: set[tuple[str, UUID]] | None = None,
     ) -> float:
         """単一セル (course, staff) のコストを返す.
 
-        コスト関数 (§5.4):
-            cost = α * distance + β * rotation_penalty + γ * gender + δ * work_day
+        コスト関数 (§5.4 + W16 拡張):
+            cost = α * distance
+                 + β * rotation_penalty
+                 + γ * gender
+                 + δ * work_day
+                 + W16: 前日同コース penalty
 
         γ / δ はハード制約なので INF 相当 (= ``HUNGARIAN_INFINITY``).
         """
+        if prev_day_pairs is None:
+            prev_day_pairs = set()
+
         # ---------- δ: 勤務曜日違反 (ハード制約) ----------
         if weekday not in staff.work_days:
             return HUNGARIAN_INFINITY
@@ -488,7 +600,16 @@ class Layer3Assigner:
                 weight = 1.0 / max(1, weeks_ago)
                 rotation_count += weight
 
-        return COST_ALPHA_DISTANCE * distance + COST_BETA_ROTATION * rotation_count
+        # ---------- W16: 前日同コースペナルティ (ソフト) ----------
+        # 前日と同じ (course_code, staff_id) を選ぶと大きなコストを足す.
+        # ハード INF にしないのは「他に勤務可能なスタッフが居ない」場合の救済のため.
+        prev_day_penalty = 0.0
+        if (course.course_code, staff.staff_id) in prev_day_pairs:
+            prev_day_penalty = COST_W16_PREV_DAY_SAME_COURSE
+
+        return (
+            COST_ALPHA_DISTANCE * distance + COST_BETA_ROTATION * rotation_count + prev_day_penalty
+        )
 
     def _distance_km(self, course: CourseAssignmentTarget, staff: StaffInfo) -> float:
         """主拠点 → コース重心の Haversine 距離 (km).
@@ -545,23 +666,31 @@ class Layer3Assigner:
         *,
         iso_year: int,
         iso_week: int,
+        office_id: UUID | None = None,
+        include_manager_courses: bool = True,
     ) -> list[CourseAssignmentTarget]:
         """確定済みコース (course_status='course_fixed') をロードして対象に変換.
 
         各コースの重心は所属する visits の患者 lat/lng の平均で算出。
         性別制限はコース内全患者の sex_restriction 集合。
+
+        Args:
+            office_id: 指定時は当該拠点のコースに絞る (W16).
+            include_manager_courses: W16 — True のとき code='M' も対象に含める
+                (manager 固定割当のため). False で旧挙動 (M を除外).
         """
-        stmt = (
-            select(Course)
-            .where(
-                Course.iso_year == iso_year,
-                Course.iso_week == iso_week,
-                Course.deleted_at.is_(None),
-                Course.course_status == COURSE_STATUS_COURSE_FIXED,
-                Course.code != "M",  # マネージャー枠は対象外 (§3.6.5)
-            )
-            .order_by(Course.weekday, Course.code)
-        )
+        where_clauses = [
+            Course.iso_year == iso_year,
+            Course.iso_week == iso_week,
+            Course.deleted_at.is_(None),
+            Course.course_status == COURSE_STATUS_COURSE_FIXED,
+        ]
+        if not include_manager_courses:
+            where_clauses.append(Course.code != "M")  # マネージャー枠は対象外 (§3.6.5)
+        if office_id is not None:
+            where_clauses.append(Course.office_id == office_id)
+
+        stmt = select(Course).where(*where_clauses).order_by(Course.weekday, Course.code)
         courses = (await db.scalars(stmt)).all()
 
         targets: list[CourseAssignmentTarget] = []
@@ -777,6 +906,120 @@ class Layer3Assigner:
                     is_trainee=staff.is_trainee,
                 )
             )
+        return result
+
+    async def _build_fixed_assignments(
+        self,
+        db: AsyncSession,
+        *,
+        iso_year: int,
+        iso_week: int,
+        office_id: UUID | None = None,
+    ) -> dict[UUID, UUID]:
+        """W16: 固定割当 (manager -> M / 都賀 staff -> 都賀 A) を構築する.
+
+        ロジック:
+        1. role='manager' かつ status='active' の各スタッフ
+           → そのスタッフの primary_office で M / M2 / .. の course (course_fixed)
+              に当該スタッフを 1:1 で割り当てる
+           → ラベル並びは M < M2 < M3 < ... の順 (= staff.code 昇順 + manager 順)
+        2. 拠点名に '都賀' を含む office の active staff (role='staff')
+           → 当該 office の code='A' course にスタッフを 1 名固定
+              (複数人居る場合は staff.code 昇順で先頭の 1 名)
+
+        Returns:
+            ``{course_id: staff_id}`` の dict.
+        """
+        result: dict[UUID, UUID] = {}
+
+        # ---------- 対象拠点を取得 ----------
+        office_stmt = select(Office).where(Office.deleted_at.is_(None))
+        if office_id is not None:
+            office_stmt = office_stmt.where(Office.id == office_id)
+        offices = list((await db.scalars(office_stmt)).all())
+        offices_by_id: dict[UUID, Office] = {o.id: o for o in offices}
+
+        # ---------- 1) manager 固定割当 ----------
+        for office in offices:
+            mgr_stmt = (
+                select(Staff)
+                .where(
+                    Staff.status == "active",
+                    Staff.role == "manager",
+                    Staff.deleted_at.is_(None),
+                    Staff.primary_office_id == office.id,
+                )
+                .order_by(Staff.code.asc().nulls_last(), Staff.created_at.asc())
+            )
+            managers = list((await db.scalars(mgr_stmt)).all())
+
+            # M / M2 / .. の course (course_fixed) を取得
+            mgr_course_stmt = (
+                select(Course)
+                .where(
+                    Course.iso_year == iso_year,
+                    Course.iso_week == iso_week,
+                    Course.deleted_at.is_(None),
+                    Course.course_status == COURSE_STATUS_COURSE_FIXED,
+                    Course.office_id == office.id,
+                    Course.code == "M",
+                )
+                .order_by(Course.weekday)
+            )
+            mgr_courses = list((await db.scalars(mgr_course_stmt)).all())
+
+            # NOTE: code 列は ('A','B','C','D','M') CHECK 制約があるため
+            # 複数 manager の場合も全て code='M' で運用される (W16 想定 N=1).
+            # 同 (year, week, weekday) 内に M course が複数あればラベル順に
+            # 1 manager ずつ割当てる.
+            # 曜日ごとに (course_id) のリストを構築
+            by_weekday: dict[int, list[Course]] = {}
+            for c in mgr_courses:
+                by_weekday.setdefault(c.weekday, []).append(c)
+            for _weekday, day_courses in by_weekday.items():
+                for idx, course in enumerate(day_courses):
+                    if idx >= len(managers):
+                        break
+                    result[course.id] = managers[idx].id
+
+        # ---------- 2) 都賀 staff 固定割当 ----------
+        for office in offices:
+            if "都賀" not in (office.name or ""):
+                continue
+            tsuga_stmt = (
+                select(Staff)
+                .where(
+                    Staff.status == "active",
+                    Staff.role == "staff",
+                    Staff.deleted_at.is_(None),
+                    Staff.primary_office_id == office.id,
+                )
+                .order_by(Staff.code.asc().nulls_last(), Staff.created_at.asc())
+            )
+            tsuga_staff = list((await db.scalars(tsuga_stmt)).all())
+            if not tsuga_staff:
+                continue
+            primary_staff = tsuga_staff[0]
+
+            tsuga_course_stmt = (
+                select(Course)
+                .where(
+                    Course.iso_year == iso_year,
+                    Course.iso_week == iso_week,
+                    Course.deleted_at.is_(None),
+                    Course.course_status == COURSE_STATUS_COURSE_FIXED,
+                    Course.office_id == office.id,
+                    Course.code == "A",
+                )
+                .order_by(Course.weekday)
+            )
+            tsuga_courses = list((await db.scalars(tsuga_course_stmt)).all())
+            for course in tsuga_courses:
+                result[course.id] = primary_staff.id
+
+        # offices_by_id は将来拡張用 (mypy 警告抑止のため軽く参照)
+        del offices_by_id
+
         return result
 
     async def _load_rotation_history(
