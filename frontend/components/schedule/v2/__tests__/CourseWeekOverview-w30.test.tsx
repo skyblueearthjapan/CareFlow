@@ -1,9 +1,10 @@
 /**
  * Wave 30: CourseWeekOverview の event ラベルに title を含む表示テスト.
+ * Wave 31 更新: event は 2 行構造 (1 行目: 種別+title, 2 行目: 時刻) で表示される。
  *
  * カバーするシナリオ:
- *   1. title ありの event は "種別: タイトル HH:MM-HH:MM" 形式で表示される
- *   2. title なし (空文字) の event は "種別 HH:MM-HH:MM" 形式で表示される
+ *   1. title ありの event は 1 行目 "種別: タイトル"、2 行目 "HH:MM-HH:MM" で表示される
+ *   2. title なし (空文字) の event は 1 行目 "種別"、2 行目 "HH:MM-HH:MM" で表示される
  */
 import * as React from 'react';
 import { describe, it, expect, vi } from 'vitest';
@@ -67,7 +68,7 @@ const makeEvent = (overrides: Partial<EventRead> = {}): EventRead => ({
 });
 
 describe('CourseWeekOverview event ラベルに title 表示 (Wave 30)', () => {
-  it('1. title ありの event は "種別: タイトル HH:MM-HH:MM" 形式で表示される', () => {
+  it('1. title ありの event は 1 行目 "種別: タイトル"、2 行目 "HH:MM-HH:MM" で表示される', () => {
     const tpl = makeTemplate('tpl-A', 'A', 'o1');
     const event = makeEvent({ title: '接遇マナー' });
     const staffEventsByStaff = new Map([['staff-1', [event]]]);
@@ -85,10 +86,13 @@ describe('CourseWeekOverview event ラベルに title 表示 (Wave 30)', () => {
     );
 
     const el = screen.getByTestId('course-week-overview-event-event-w30');
-    expect(el).toHaveTextContent('研修: 接遇マナー 14:00-16:00');
+    // Wave 31: 2 行構造 — 1 行目に種別+タイトル、2 行目に時刻
+    const divs = el.querySelectorAll('div');
+    expect(divs[0]).toHaveTextContent('研修: 接遇マナー');
+    expect(divs[1]).toHaveTextContent('14:00-16:00');
   });
 
-  it('2. title なし (空文字) の event は "種別 HH:MM-HH:MM" 形式で表示される', () => {
+  it('2. title なし (空文字) の event は 1 行目 "種別"、2 行目 "HH:MM-HH:MM" で表示される', () => {
     const tpl = makeTemplate('tpl-A', 'A', 'o1');
     const event = makeEvent({ title: '' });
     const staffEventsByStaff = new Map([['staff-1', [event]]]);
@@ -106,7 +110,10 @@ describe('CourseWeekOverview event ラベルに title 表示 (Wave 30)', () => {
     );
 
     const el = screen.getByTestId('course-week-overview-event-event-w30');
-    expect(el).toHaveTextContent('研修 14:00-16:00');
-    expect(el).not.toHaveTextContent('研修:');
+    // Wave 31: 2 行構造 — title なしは種別のみ
+    const divs = el.querySelectorAll('div');
+    expect(divs[0]).toHaveTextContent('研修');
+    expect(divs[0]).not.toHaveTextContent('研修:');
+    expect(divs[1]).toHaveTextContent('14:00-16:00');
   });
 });

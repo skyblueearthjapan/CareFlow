@@ -18,7 +18,7 @@ import { Card } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 import { capacityForWeekday, type CourseTemplateRead } from '@/lib/schemas/v2/course_template';
 import type { EventRead } from '@/lib/schemas/staff-events';
-import { formatEventLabel, getStaffEventsForWeekday } from './CourseDayTable';
+import { formatEventLabelLines, getStaffEventsForWeekday } from './CourseDayTable';
 
 const WEEKDAYS = [0, 1, 2, 3, 4, 5] as const;
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土'] as const;
@@ -157,7 +157,13 @@ export function CourseWeekOverview({
                   // visit + event を時刻順でマージ
                   type OverviewItem =
                     | { kind: 'visit'; id: string; time: string | null; label: string }
-                    | { kind: 'event'; id: string; time: string; label: string };
+                    | {
+                        kind: 'event';
+                        id: string;
+                        time: string;
+                        titleLine: string;
+                        timeLine: string;
+                      };
                   const items: OverviewItem[] = [
                     ...visitList.map((v) => ({
                       kind: 'visit' as const,
@@ -167,12 +173,16 @@ export function CourseWeekOverview({
                         ? `${v.start_time.slice(0, 5)} ${v.patient_name ?? v.patient_id}`
                         : (v.patient_name ?? v.patient_id),
                     })),
-                    ...staffDayEvents.map((e) => ({
-                      kind: 'event' as const,
-                      id: e.id,
-                      time: e.start_time,
-                      label: formatEventLabel(e),
-                    })),
+                    ...staffDayEvents.map((e) => {
+                      const lines = formatEventLabelLines(e);
+                      return {
+                        kind: 'event' as const,
+                        id: e.id,
+                        time: e.start_time,
+                        titleLine: lines.title,
+                        timeLine: lines.time,
+                      };
+                    }),
                   ].sort((a, b) => (a.time ?? '').localeCompare(b.time ?? ''));
 
                   return (
@@ -220,11 +230,12 @@ export function CourseWeekOverview({
                                 ) : (
                                   <li
                                     key={item.id}
-                                    className="truncate text-[10px] text-yellow-700"
-                                    title={item.label}
+                                    className="text-[10px] leading-tight text-yellow-700"
+                                    title={`${item.titleLine} ${item.timeLine}`}
                                     data-testid={`course-week-overview-event-${item.id}`}
                                   >
-                                    {item.label}
+                                    <div className="truncate">{item.titleLine}</div>
+                                    <div className="text-text-muted">{item.timeLine}</div>
                                   </li>
                                 ),
                               )}

@@ -202,6 +202,101 @@ describe('CourseWeekOverview event エントリ表示 (Wave 28 B-2)', () => {
     );
 
     const el = screen.getByTestId('course-week-overview-event-event-1');
-    expect(el).toHaveTextContent('研修: 接遇マナー 14:00-16:00');
+    // Wave 31: 2 行構造 — 1 行目に種別+タイトル、2 行目に時刻
+    const divs = el.querySelectorAll('div');
+    expect(divs[0]).toHaveTextContent('研修: 接遇マナー');
+    expect(divs[1]).toHaveTextContent('14:00-16:00');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Wave 31: CourseWeekOverview event 2 行表示テスト
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('CourseWeekOverview event 2 行表示 (Wave 31)', () => {
+  it('6. title あり event の 1 行目に "研修: 接遇マナー"、2 行目に "14:00-16:00" が表示される', () => {
+    const tpl = makeTemplate('tpl-B', 'B', 'o1');
+    const event = makeEvent({
+      id: 'ev-w31-title',
+      start_time: '14:00',
+      end_time: '16:00',
+      type: '研修',
+      title: '接遇マナー',
+    });
+    const staffEventsByStaff = new Map([['staff-1', [event]]]);
+    const assignedStaffByTemplateWeekday = new Map([['tpl-B:0', 'staff-1']]);
+
+    render(
+      <CourseWeekOverview
+        templates={[tpl]}
+        officeNameById={new Map([['o1', '本店']])}
+        visits={[]}
+        onJumpToDay={vi.fn()}
+        staffEventsByStaff={staffEventsByStaff}
+        assignedStaffByTemplateWeekday={assignedStaffByTemplateWeekday}
+      />,
+    );
+
+    const el = screen.getByTestId('course-week-overview-event-ev-w31-title');
+    const divs = el.querySelectorAll('div');
+    expect(divs[0]).toHaveTextContent('研修: 接遇マナー');
+    expect(divs[1]).toHaveTextContent('14:00-16:00');
+  });
+
+  it('7. title なし event の 1 行目に "研修"、2 行目に "14:00-16:00" が表示される', () => {
+    const tpl = makeTemplate('tpl-C', 'C', 'o1');
+    const event = makeEvent({
+      id: 'ev-w31-notitle',
+      start_time: '14:00',
+      end_time: '16:00',
+      type: '研修',
+      title: '',
+    });
+    const staffEventsByStaff = new Map([['staff-1', [event]]]);
+    const assignedStaffByTemplateWeekday = new Map([['tpl-C:0', 'staff-1']]);
+
+    render(
+      <CourseWeekOverview
+        templates={[tpl]}
+        officeNameById={new Map([['o1', '本店']])}
+        visits={[]}
+        onJumpToDay={vi.fn()}
+        staffEventsByStaff={staffEventsByStaff}
+        assignedStaffByTemplateWeekday={assignedStaffByTemplateWeekday}
+      />,
+    );
+
+    const el = screen.getByTestId('course-week-overview-event-ev-w31-notitle');
+    const divs = el.querySelectorAll('div');
+    expect(divs[0]).toHaveTextContent('研修');
+    expect(divs[1]).toHaveTextContent('14:00-16:00');
+  });
+
+  it('8. visit 表示は 2 行構造にならず 1 行のまま維持される', () => {
+    const tpl = makeTemplate('tpl-D', 'D', 'o1');
+    const visits: WeekOverviewVisit[] = [
+      {
+        id: 'v-w31',
+        patient_id: 'p-1',
+        patient_name: '山田',
+        weekday: 0,
+        course_template_id: 'tpl-D',
+        start_time: '10:00',
+      },
+    ];
+
+    render(
+      <CourseWeekOverview
+        templates={[tpl]}
+        officeNameById={new Map([['o1', '本店']])}
+        visits={visits}
+        onJumpToDay={vi.fn()}
+      />,
+    );
+
+    const el = screen.getByTestId('course-week-overview-name-v-w31');
+    // visit li は div 子要素を持たない (1 行テキストのまま)
+    expect(el.querySelectorAll('div').length).toBe(0);
+    expect(el).toHaveTextContent('10:00 山田');
   });
 });
