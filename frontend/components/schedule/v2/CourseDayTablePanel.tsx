@@ -212,11 +212,24 @@ export function CourseDayTablePanel({
     })),
   });
 
-  const templates = useMemo<CourseTemplateRead[]>(
-    () => templatesQueries.flatMap((q) => q.data ?? []).filter((t) => !t.deleted_at),
+  // Wave 18 Codex-fix 中-2: ``templatesQueries`` は ``useQueries`` が毎回新しい
+  // 配列インスタンスを返すため、そのまま deps に置くと毎レンダーで useMemo が
+  // 再評価され、結果として ``templates`` の参照が安定しない (= 下流の
+  // ``courseTablesForActiveDay`` 等のキャッシュも壊れる)。
+  //
+  // データ識別子 (dataUpdatedAt + status) を join した stable key を deps に
+  // することで、各 query の状態が変わったときだけ再計算するようにする。
+  // ``q.data`` は TanStack Query が refetch ごとに新しい参照を返すため、
+  // dataUpdatedAt のほうが安定 dep として正しい。
+  const templatesDepKey = templatesQueries.map((q) => `${q.dataUpdatedAt}:${q.status}`).join(',');
+  const templates = useMemo<CourseTemplateRead[]>(() => {
+    return templatesQueries.flatMap((q) => q.data ?? []).filter((t) => !t.deleted_at);
+    // ESLint exhaustive-deps を満たしつつ stable identity を維持するため、
+    // ``templatesQueries`` ではなく派生 stable key (``templatesDepKey``) を deps に置く。
+    // ``templatesQueries`` 自体は毎レンダー新インスタンスだが、中身が同じ
+    // (= 同 dataUpdatedAt / status) なら計算結果も同じなので問題ない。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [templatesQueries],
-  );
+  }, [templatesDepKey]);
 
   // ─── Patients (プール + 氏名 / 住所解決) ──────────────────────────
   const patientsQuery = usePatients({ limit: 500 });
@@ -463,10 +476,10 @@ export function CourseDayTablePanel({
       const v = visitById.get(visitId);
       if (!v) return;
 
-      // visit → プール: delete のみ
+      // visit → プール: delete のみ (cascade=false; 固定枠は保持)
       if (isPoolDrop) {
         try {
-          await deleteVisitMut.mutateAsync(visitId);
+          await deleteVisitMut.mutateAsync({ id: visitId, cascadeFixedVisit: false });
           toast.success(`${v.patient_name ?? v.patient_id} をプールに戻しました`);
         } catch (err) {
           toast.error(`プールへの戻しに失敗しました: ${formatErr(err)}`);
@@ -498,24 +511,66 @@ export function CourseDayTablePanel({
         const patient = patientById.get(v.patient_id);
         const wp = (patient?.weekly_pattern ?? null) as { service_minutes?: number } | null;
         const durationMin = Math.max(1, Number(wp?.service_minutes ?? 60));
+
+        // Wave 18 Codex-fix 中-1 + 重大-2: 中間失敗時の rollback リカバリー.
+        // 元位置 (旧 visit の weekday + start_time) を退避しておき、step 2 失敗時に
+        // 元セルへ place-and-fix し直す (= delete されたユーザーデータの復元試行).
+        const originalWeekday = visitWeekday;
+        const originalStartTime = v.start_time != null ? floorToCourseSlot(v.start_time) : null;
+        // 元 visit の course_template_id は visit に無いので、courseTemplateByCourseId
+        // から逆引き。逆引きできない (course_id 無し) ケースでは復元を試みず
+        // ユーザーに手動再配置を促す。
+        const originalCourseTemplateId = v.course_id
+          ? (courseTemplateByCourseId.get(v.course_id) ?? null)
+          : null;
+
         try {
-          // 1) 既存 visit を削除
-          await deleteVisitMut.mutateAsync(visitId);
+          // 1) 既存 visit を削除 (重大-2: cascade=true で旧曜日の固定枠も削除)
+          await deleteVisitMut.mutateAsync({ id: visitId, cascadeFixedVisit: true });
           // 2) 新セルに place-and-fix
-          await placeAndFixMut.mutateAsync({
-            patient_id: v.patient_id,
-            course_template_id: cell.courseTemplateId,
-            iso_year: isoYear,
-            iso_week: isoWeek,
-            weekday: cell.weekday,
-            start_time: cell.time,
-            duration_min: durationMin,
-            staff_count: 1,
-            fix_pattern: true,
-          });
-          toast.success(`${patient?.name ?? v.patient_id} を ${cell.time} に移動しました`);
-        } catch (err) {
-          toast.error(`移動に失敗しました: ${formatErr(err)}`);
+          try {
+            await placeAndFixMut.mutateAsync({
+              patient_id: v.patient_id,
+              course_template_id: cell.courseTemplateId,
+              iso_year: isoYear,
+              iso_week: isoWeek,
+              weekday: cell.weekday,
+              start_time: cell.time,
+              duration_min: durationMin,
+              staff_count: 1,
+              fix_pattern: true,
+            });
+            toast.success(`${patient?.name ?? v.patient_id} を ${cell.time} に移動しました`);
+          } catch (e2) {
+            // step 2 失敗 → 元セルへの復元を試みる (中-1 リカバリー)
+            if (originalCourseTemplateId && originalWeekday != null && originalStartTime) {
+              try {
+                await placeAndFixMut.mutateAsync({
+                  patient_id: v.patient_id,
+                  course_template_id: originalCourseTemplateId,
+                  iso_year: isoYear,
+                  iso_week: isoWeek,
+                  weekday: originalWeekday,
+                  start_time: originalStartTime,
+                  duration_min: durationMin,
+                  staff_count: 1,
+                  fix_pattern: true,
+                });
+                toast.warning(
+                  `移動先で失敗、元の位置 (${originalStartTime}) に復元しました: ${formatErr(e2)}`,
+                );
+              } catch (e3) {
+                toast.error(`移動も復元も失敗しました。手動で再配置してください: ${formatErr(e3)}`);
+              }
+            } else {
+              toast.error(
+                `移動に失敗しました。元位置情報が取得できないため復元できません。手動で再配置してください: ${formatErr(e2)}`,
+              );
+            }
+          }
+        } catch (e1) {
+          // step 1 (delete) 失敗 → ユーザーデータは無傷
+          toast.error(`元 visit の削除に失敗しました: ${formatErr(e1)}`);
         }
         return;
       }
