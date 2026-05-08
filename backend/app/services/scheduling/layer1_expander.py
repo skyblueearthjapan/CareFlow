@@ -154,7 +154,8 @@ async def _expand_patient_fixed_visits(
 
     Returns:
         list of dicts compatible with ``_entries_from_pattern`` output,
-        each having: weekday (int), start_time (time), service_minutes (int).
+        each having: weekday (int), start_time (time), service_minutes (int),
+        course_template_id (UUID | None).
     """
     rows = (
         await db.scalars(
@@ -172,6 +173,10 @@ async def _expand_patient_fixed_visits(
                 "weekday": fv.weekday,
                 "_start_time": fv.start_time,  # already a time object
                 "service_minutes": fv.duration_min,
+                # W22 Phase A: 各固定枠に紐付くコーステンプレート ID (NULL 可).
+                # Layer 1 はこれが NULL でなければ優先採用、NULL なら office
+                # フォールバックを使う。
+                "course_template_id": fv.course_template_id,
             }
         )
     return entries
@@ -637,6 +642,11 @@ class Layer1Expander:
         の Course を find/create して visit.course_id を埋める。template=None の場合
         (=patient.primary_office_id 未設定) のみ NULL のまま (旧挙動).
         required_staff_count は patients.required_staff_count を流用する。
+
+        W22 Phase A: 各固定枠 ``fe['course_template_id']`` が NULL でなければ
+        その template を最優先で採用する (= ドラッグドロップで明示指定された
+        コースを翌週以降も継承する)。NULL なら patient.primary_office_id ベースの
+        フォールバック ``template`` を使う。
         """
         created: list[VisitCreated] = []
 
@@ -646,6 +656,10 @@ class Layer1Expander:
             staff_count = 1
 
         seen_weekdays: set[int] = set()
+
+        # entry-specific template の照会キャッシュ (同 template_id を何度も
+        # SELECT しないようメモ化). Key=template_id, Value=CourseTemplate or None.
+        per_entry_template_cache: dict[UUID, CourseTemplate | None] = {}
 
         for fe in fixed_entries:
             weekday: int = fe["weekday"]
@@ -662,12 +676,31 @@ class Layer1Expander:
 
             visit_date = date.fromordinal(week_monday.toordinal() + weekday)
 
+            # ----- W22 Phase A: 採用する template を決定 -----
+            # 1st: pfv.course_template_id (明示指定) があればそれを優先
+            # 2nd: フォールバック (patient.primary_office_id ベース)
+            entry_template: CourseTemplate | None = template
+            entry_ct_id: UUID | None = fe.get("course_template_id")
+            if entry_ct_id is not None:
+                if entry_ct_id in per_entry_template_cache:
+                    cached = per_entry_template_cache[entry_ct_id]
+                else:
+                    cached = await db.scalar(
+                        select(CourseTemplate).where(
+                            CourseTemplate.id == entry_ct_id,
+                            CourseTemplate.deleted_at.is_(None),
+                        )
+                    )
+                    per_entry_template_cache[entry_ct_id] = cached
+                if cached is not None:
+                    entry_template = cached
+
             # W16 codex fix (重大 1): course_id を決定
             course_id: UUID | None = None
-            if template is not None and iso_year is not None and iso_week is not None:
+            if entry_template is not None and iso_year is not None and iso_week is not None:
                 course = await _get_or_create_course_for_template_week_l1(
                     db,
-                    template=template,
+                    template=entry_template,
                     iso_year=iso_year,
                     iso_week=iso_week,
                     weekday=weekday,

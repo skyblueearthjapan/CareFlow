@@ -52,6 +52,15 @@ class PatientFixedVisit(Base):
     start_time: Mapped[time] = mapped_column(Time, nullable=False)
     duration_min: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
 
+    # W22 Phase A: 固定枠が属するコーステンプレート ID.
+    #   - NULL の場合は Layer 1 の office フォールバックで解決する (後方互換).
+    #   - course_template が削除された場合は SET NULL (固定枠は残るが course は外れる).
+    course_template_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("course_templates.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

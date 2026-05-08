@@ -353,6 +353,17 @@ async def fix_or_pattern(
 
             # 古い weekday (もし存在するなら削除してから upsert)
             old_weekday = visit.visit_date.weekday()
+
+            # 削除対象 pfv の course_template_id を先に取得して引継ぎ
+            old_fv = await db.scalar(
+                select(PatientFixedVisit).where(
+                    PatientFixedVisit.patient_id == patient_id,
+                    PatientFixedVisit.mode == fv_mode,
+                    PatientFixedVisit.weekday == old_weekday,
+                )
+            )
+            preserved_ct_id = old_fv.course_template_id if old_fv is not None else None
+
             await db.execute(
                 delete(PatientFixedVisit).where(
                     PatientFixedVisit.patient_id == patient_id,
@@ -375,6 +386,7 @@ async def fix_or_pattern(
                 weekday=body.new_weekday,
                 start_time=body.new_start_time,
                 duration_min=body.new_duration_min,
+                course_template_id=preserved_ct_id,  # W22: 旧 pfv の course_template_id を引継ぎ
             )
             db.add(new_fv)
             await db.flush()
@@ -793,6 +805,9 @@ async def place_and_fix(
                 weekday=body.weekday,
                 start_time=body.start_time,
                 duration_min=body.duration_min,
+                # W22 Phase A: place-and-fix で受けた course_template_id を保存し、
+                # 翌週以降の Layer 1 でこのテンプレートが優先される (コース継承).
+                course_template_id=body.course_template_id,
             )
             db.add(new_fv)
             await db.flush()
