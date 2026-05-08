@@ -1,28 +1,21 @@
 'use client';
 
 /**
- * /schedule — Wave 15 統合スケジュール画面 (W15-FE D-1).
+ * /schedule — Wave 16 Phase B スタッフ別週次スケジュール画面.
  *
- * 旧 3 タブ構成 (Pool 配置 / コース提案 / スタッフ割付) を **完全に置換** し、
- * 「コース × 曜日マトリクス」の 1 画面で全フローを操作できる統合 UI に変更。
+ * Wave 15 の「コース×曜日マトリクス」(ScheduleUnifiedView) を完全に置換し、
+ * 「スタッフ別テーブル N 個縦並び」構造に刷新した。
  *
  * レイアウト:
  *   ┌──────────────────────────────────────────────────────────────┐
  *   │ ヘッダー                                                       │
- *   │  週切替 | 拠点フィルタ | レイヤースイッチ | 一括固定化       │
- *   ├──────────┬───────────────────────────────────────────────────┤
- *   │          │ ScheduleUnifiedView (コース × 曜日)                │
- *   │ プール    │  - 受入目安レイヤー (背景色 + バッジ)              │
- *   │ (左)     │  - 満枠超過警告 (バッジ)                          │
- *   │          │  - スタッフ差替 dropdown                          │
- *   └──────────┴───────────────────────────────────────────────────┘
- *
- * 要件 (Wave 15 設計サマリ):
- *   - メイン軸: コーステンプレート × 曜日 (大改修案)
- *   - 受入目安: ヘッダーチェックで ON/OFF (デフォルト OFF)
- *   - 満枠超過: バッジのみ・モーダル無し (admin が自由に増やせる)
- *   - ドロップ即固定枠化: place-and-fix 1 トランザクション
- *   - 旧タブ構成は完全削除
+ *   │  週切替 | 拠点フィルタ | 受入目安レイヤー | 一括固定化         │
+ *   ├──────────────────────────────────────────────────────────────┤
+ *   │ StaffWeekTablePanel                                          │
+ *   │  - 「週を生成」ボタン (admin/manager only)                     │
+ *   │  - スタッフ別テーブル N 個 (時刻×曜日 9:00-19:00 / 15min)      │
+ *   │  - 保留プール (DnD ドロップで place-and-fix)                  │
+ *   └──────────────────────────────────────────────────────────────┘
  *
  * RBAC:
  *   - admin / manager: 全操作可
@@ -32,7 +25,7 @@ import { useMemo, useState } from 'react';
 import { useSession } from 'next-auth/react';
 
 import { BulkFixToPatternButton } from '@/components/schedule/v2/BulkFixToPatternButton';
-import { ScheduleUnifiedView } from '@/components/schedule/v2/ScheduleUnifiedView';
+import { StaffWeekTablePanel } from '@/components/schedule/v2/StaffWeekTablePanel';
 import { WeekSelector, toWeekStart } from '@/components/schedule/WeekSelector';
 import { Card } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -61,7 +54,7 @@ export default function SchedulePage() {
   const role = session?.user?.role ?? 'staff';
   const canEdit = role === 'admin' || role === 'manager';
 
-  // 週 state (controlled).
+  // 週 state.
   const [weekStart, setWeekStart] = useState<Date>(() => toWeekStart(new Date()));
   const { isoYear, isoWeek } = useMemo(() => toIsoYearWeek(weekStart), [weekStart]);
 
@@ -69,22 +62,21 @@ export default function SchedulePage() {
   const [officeId, setOfficeId] = useState<string | null>(null);
   const officesQuery = useOffices({ limit: 50 });
 
-  // レイヤー切替 (デフォルト: 受入目安 OFF, 警告 ON).
+  // 受入目安レイヤー (フッター凡例 ON/OFF; 表示のみ.)
   const [showAcceptance, setShowAcceptance] = useState(false);
-  const [showWarning, setShowWarning] = useState(true);
 
   const isoWeekLabel = `${isoYear}-W${String(isoWeek).padStart(2, '0')}`;
 
   return (
-    <section className="space-y-3" data-testid="schedule-page-unified">
+    <section className="space-y-3" data-testid="schedule-page-staff-week">
       <header className="space-y-1">
         <h1 className="font-serif text-2xl font-bold text-text-primary">スケジュール</h1>
         <p className="text-sm text-text-secondary">
-          コース × 曜日マトリクスで週次スケジュールを 1 画面操作できます。
+          スタッフ別の週次タイムテーブルで配置と固定枠化を 1 画面で操作できます。
         </p>
       </header>
 
-      {/* ヘッダーバー: 週切替 + 拠点フィルタ + レイヤースイッチ + 一括固定化 */}
+      {/* ヘッダーバー: 週切替 + 拠点フィルタ + 受入目安レイヤー + 一括固定化 */}
       <Card className="flex flex-wrap items-center justify-between gap-3 p-3">
         <div className="flex flex-wrap items-center gap-3">
           <WeekSelector weekStart={weekStart} onChange={setWeekStart} />
@@ -110,38 +102,26 @@ export default function SchedulePage() {
             </select>
           </label>
 
-          {/* レイヤースイッチ */}
-          <div className="flex items-center gap-3 rounded border border-border-default bg-bg-muted px-2 py-1">
-            <label className="flex items-center gap-1.5 text-xs text-text-secondary">
-              <Checkbox
-                checked={showAcceptance}
-                onCheckedChange={(v) => setShowAcceptance(v === true)}
-                aria-label="受入目安レイヤー"
-              />
-              <span>受入目安</span>
-            </label>
-            <label className="flex items-center gap-1.5 text-xs text-text-secondary">
-              <Checkbox
-                checked={showWarning}
-                onCheckedChange={(v) => setShowWarning(v === true)}
-                aria-label="満枠超過警告レイヤー"
-              />
-              <span>警告</span>
-            </label>
-          </div>
+          {/* 受入目安レイヤー (凡例フッター) */}
+          <label className="flex items-center gap-1.5 rounded border border-border-default bg-bg-muted px-2 py-1 text-xs text-text-secondary">
+            <Checkbox
+              checked={showAcceptance}
+              onCheckedChange={(v) => setShowAcceptance(v === true)}
+              aria-label="受入目安凡例"
+            />
+            <span>受入目安</span>
+          </label>
 
           <BulkFixToPatternButton canEdit={canEdit} isoYear={isoYear} isoWeek={isoWeek} />
         </div>
       </Card>
 
-      {/* メイン: ScheduleUnifiedView */}
-      <ScheduleUnifiedView
+      {/* メイン: StaffWeekTablePanel */}
+      <StaffWeekTablePanel
         weekStart={weekStart}
-        onWeekChange={setWeekStart}
         officeId={officeId}
         canEdit={canEdit}
         showAcceptanceLayer={showAcceptance}
-        showWarningLayer={showWarning}
       />
     </section>
   );
