@@ -1,4 +1,4 @@
-"""Schedule endpoints (W3-BE-FIX / W4-BE7 / W9-BE2 / W15-BE-FIXPATTERN / W16-BE3).
+"""Schedule endpoints (W3-BE-FIX / W4-BE7 / W9-BE2 / W15-BE-FIXPATTERN / W16-BE3 / W17-BE-A).
 
 設計仕様書 ``docs/plans/v2-allocation-redesign.md`` v0.9 §3.6.2 (Layer 1
 時間配置) と API 契約 ``docs/plans/v2-api-contracts.md`` §6 に対応する
@@ -9,7 +9,9 @@ HTTP 層。
     - POST /api/v1/schedule/generate-week        (W4-BE7): Layer 1 アルゴリズム
     - POST /api/v1/schedule/fix-or-pattern       (W9-BE2): **既存 visit の時刻変更**
     - POST /api/v1/schedule/place-and-fix        (W15-BE-FIXPATTERN): ドロップ即固定枠化
-    - POST /api/v1/schedule/generate-and-assign  (W16-BE3): 週生成 + Layer 3 一括実行
+    - POST /api/v1/schedule/generate-and-assign  (W16-BE3): 週生成 + Layer 3 一括実行 [Deprecated since W17]
+    - POST /api/v1/schedule/generate-week-only   (W17-BE-A1): Layer 1 のみ (staff 未割当)
+    - POST /api/v1/schedule/assign-staff-only    (W17-BE-A2): Layer 3 のみ (staff 割付)
 
 ## RBAC (API 契約 §6)
 
@@ -18,6 +20,8 @@ HTTP 層。
 - POST /schedule/fix-or-pattern       — admin / manager のみ (staff は 403)
 - POST /schedule/place-and-fix        — admin / manager のみ (staff は 403)
 - POST /schedule/generate-and-assign  — admin / manager のみ (staff は 403)
+- POST /schedule/generate-week-only   — admin / manager のみ (staff は 403)
+- POST /schedule/assign-staff-only    — admin / manager のみ (staff は 403)
 
 ## トランザクション
 
@@ -29,7 +33,7 @@ HTTP 層。
 
 from __future__ import annotations
 
-from datetime import UTC, date, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -763,6 +767,10 @@ async def generate_and_assign(
 ) -> GenerateAndAssignResponse:
     """Layer 1 (visit 展開) と Layer 3 (staff 割付) を 1 TX で連続実行する.
 
+    Deprecated since Wave 17: Use ``POST /generate-week-only`` + ``POST /assign-staff-only``
+    instead for staged operation (confirm visits before assigning staff).
+    This endpoint is preserved for backward compatibility.
+
     冪等性:
         - 当該週の ``source='auto'`` visit は全て削除されてから再生成される
         - Layer 3 は既存 ``courses.assigned_staff_id`` を上書き
@@ -832,9 +840,8 @@ async def generate_and_assign(
         if payload.office_id is not None:
             promote_where.append(Course.office_id == payload.office_id)
         proposed_courses = list((await db.scalars(select(Course).where(*promote_where))).all())
-        from datetime import datetime as _dt
 
-        now_utc = _dt.now(UTC)
+        now_utc = datetime.now(UTC)
         for c in proposed_courses:
             c.course_status = COURSE_STATUS_COURSE_FIXED
             c.course_fixed_at = now_utc
@@ -877,6 +884,281 @@ async def generate_and_assign(
         message=(
             f"Generated {visits_created_count} visits and assigned "
             f"{courses_assigned} courses for ISO {payload.iso_year}-W{payload.iso_week}"
+            + (f" (office {payload.office_id})" if payload.office_id else "")
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# /generate-week-only Request / Response schemas (W17-BE-A1)
+# ---------------------------------------------------------------------------
+
+
+class GenerateWeekOnlyRequest(BaseModel):
+    """``POST /api/v1/schedule/generate-week-only`` のリクエストボディ (W17-BE-A1).
+
+    Wave 17: 管理者が「週を生成」ボタンで Layer 1 のみ実行する。
+    visits を展開してスタッフは未割当のままテーブルに並べる。
+    内容を確認してから ``POST /assign-staff-only`` で staff 割付。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    iso_year: int = Field(ge=2000, le=2100)
+    iso_week: int = Field(ge=1, le=53)
+    office_id: UUID | None = Field(
+        default=None,
+        description="対象拠点 (None=全拠点合算で実行).",
+    )
+
+
+class GenerateWeekOnlyResponse(BaseModel):
+    """``POST /api/v1/schedule/generate-week-only`` のレスポンス (W17-BE-A1)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    iso_year: int
+    iso_week: int
+    visits_created: int
+    courses_touched: int
+    message: str
+
+
+# ---------------------------------------------------------------------------
+# /assign-staff-only Request / Response schemas (W17-BE-A2)
+# ---------------------------------------------------------------------------
+
+
+class AssignStaffOnlyRequest(BaseModel):
+    """``POST /api/v1/schedule/assign-staff-only`` のリクエストボディ (W17-BE-A2).
+
+    Wave 17: 管理者が「自動割付」ボタンで Layer 3 のみ実行する。
+    既存 visits を保持しつつ courses に staff を曜日別ローテで割付する。
+    ``course_status='proposed'`` のコースを ``'course_fixed'`` へ昇格してから
+    Layer 3 を実行する。``'staff_assigned'`` コースは保護される。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    iso_year: int = Field(ge=2000, le=2100)
+    iso_week: int = Field(ge=1, le=53)
+    office_id: UUID | None = Field(
+        default=None,
+        description="対象拠点 (None=全拠点合算で実行).",
+    )
+
+
+class AssignStaffOnlyResponse(BaseModel):
+    """``POST /api/v1/schedule/assign-staff-only`` のレスポンス (W17-BE-A2)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    iso_year: int
+    iso_week: int
+    courses_assigned: int
+    message: str
+
+
+# ---------------------------------------------------------------------------
+# Endpoint: /generate-week-only (W17-BE-A1)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/generate-week-only",
+    response_model=GenerateWeekOnlyResponse,
+    status_code=status.HTTP_200_OK,
+    summary="W17-BE-A1: Layer 1 のみ — visit 展開 (staff 未割当)",
+)
+async def generate_week_only(
+    payload: GenerateWeekOnlyRequest,
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+) -> GenerateWeekOnlyResponse:
+    """Layer 1 のみ実行し visits を展開する。staff 割付は行わない (W17-BE-A1).
+
+    Wave 17 の 3 段階運用:
+        1. ``POST /generate-week-only``  — 本 endpoint (Layer 1 のみ)
+        2. 管理者が内容を確認
+        3. ``POST /assign-staff-only``   — Layer 3 のみ
+
+    冪等性:
+        - 当該週の ``source='auto'`` visit は全て削除されてから再生成される
+        - ``courses.assigned_staff_id`` は変更しない
+        - エラー時は全 rollback
+
+    制約:
+        - RBAC: admin / manager only
+        - office_id が指定された場合は当該拠点の患者のみ Layer 1 対象
+        - office_id 不存在時は 404
+    """
+    # ----- ISO 週バリデーション (Layer 1 でも行うが先行 422 のため) -----
+    try:
+        date.fromisocalendar(payload.iso_year, payload.iso_week, 1)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"invalid ISO week: year={payload.iso_year} week={payload.iso_week}",
+        ) from exc
+
+    # ----- office_id 指定時は存在確認 (404 if not found) -----
+    if payload.office_id is not None:
+        office = await db.scalar(
+            select(Office).where(
+                Office.id == payload.office_id,
+                Office.deleted_at.is_(None),
+            )
+        )
+        if office is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Office not found: {payload.office_id}",
+            )
+
+    expander = Layer1Expander()
+
+    try:
+        # ----- Layer 1 のみ (visit 展開; staff 割付は行わない) -----
+        l1_result = await expander.expand_week(
+            db,
+            iso_year=payload.iso_year,
+            iso_week=payload.iso_week,
+            office_id=payload.office_id,
+        )
+
+        await db.commit()
+    except Layer1ExpandError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=exc.http_status, detail=str(exc)) from exc
+    except HTTPException:
+        await db.rollback()
+        raise
+    except Exception:
+        await db.rollback()
+        raise
+
+    visits_created_count = l1_result.visits_created_count
+    # courses_touched: Layer 1 が展開した visits から一意な course_id の数を算出する。
+    courses_touched = len(set(v.course_id for v in l1_result.visits_created if v.course_id))
+
+    return GenerateWeekOnlyResponse(
+        iso_year=payload.iso_year,
+        iso_week=payload.iso_week,
+        visits_created=visits_created_count,
+        courses_touched=courses_touched,
+        message=(
+            f"Generated {visits_created_count} visits (staff not yet assigned) "
+            f"for ISO {payload.iso_year}-W{payload.iso_week}"
+            + (f" (office {payload.office_id})" if payload.office_id else "")
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Endpoint: /assign-staff-only (W17-BE-A2)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/assign-staff-only",
+    response_model=AssignStaffOnlyResponse,
+    status_code=status.HTTP_200_OK,
+    summary="W17-BE-A2: Layer 3 のみ — 既存 visits 保持で staff 割付",
+)
+async def assign_staff_only(
+    payload: AssignStaffOnlyRequest,
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+) -> AssignStaffOnlyResponse:
+    """Layer 3 のみ実行し既存 visits を保持したまま courses に staff を割付する (W17-BE-A2).
+
+    Wave 17 の 3 段階運用:
+        1. ``POST /generate-week-only``  — Layer 1 のみ
+        2. 管理者が内容を確認
+        3. ``POST /assign-staff-only``   — 本 endpoint (Layer 3 のみ)
+
+    冪等性:
+        - ``course_status='proposed'`` のコースを ``'course_fixed'`` へ昇格する
+        - ``'staff_assigned'`` コースは昇格対象から除外され Layer 3 でも保護される
+        - 再実行で admin 手動割付が巻き戻ることはない
+
+    制約:
+        - RBAC: admin / manager only
+        - office_id が指定された場合は当該拠点のコースのみ Layer 3 対象
+        - office_id 不存在時は 404
+    """
+    # ----- ISO 週バリデーション -----
+    try:
+        date.fromisocalendar(payload.iso_year, payload.iso_week, 1)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"invalid ISO week: year={payload.iso_year} week={payload.iso_week}",
+        ) from exc
+
+    # ----- office_id 指定時は存在確認 (404 if not found) -----
+    if payload.office_id is not None:
+        office = await db.scalar(
+            select(Office).where(
+                Office.id == payload.office_id,
+                Office.deleted_at.is_(None),
+            )
+        )
+        if office is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Office not found: {payload.office_id}",
+            )
+
+    assigner = Layer3Assigner()
+
+    try:
+        # ----- proposed -> course_fixed への昇格 (staff_assigned コース保護) -----
+        promote_where = [
+            Course.iso_year == payload.iso_year,
+            Course.iso_week == payload.iso_week,
+            Course.deleted_at.is_(None),
+            Course.course_status == COURSE_STATUS_PROPOSED,
+        ]
+        if payload.office_id is not None:
+            promote_where.append(Course.office_id == payload.office_id)
+        proposed_courses = list((await db.scalars(select(Course).where(*promote_where))).all())
+
+        now_utc = datetime.now(UTC)
+        for c in proposed_courses:
+            c.course_status = COURSE_STATUS_COURSE_FIXED
+            c.course_fixed_at = now_utc
+        if proposed_courses:
+            await db.flush()
+
+        # ----- Layer 3 のみ (staff 割付) -----
+        l3_result = await assigner.assign(
+            db,
+            iso_year=payload.iso_year,
+            iso_week=payload.iso_week,
+            office_id=payload.office_id,
+        )
+
+        await db.commit()
+    except Layer3AssignmentError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=exc.http_status, detail=str(exc)) from exc
+    except HTTPException:
+        await db.rollback()
+        raise
+    except Exception:
+        await db.rollback()
+        raise
+
+    courses_assigned = len(l3_result.assignments)
+
+    return AssignStaffOnlyResponse(
+        iso_year=payload.iso_year,
+        iso_week=payload.iso_week,
+        courses_assigned=courses_assigned,
+        message=(
+            f"Assigned staff to {courses_assigned} courses "
+            f"for ISO {payload.iso_year}-W{payload.iso_week}"
             + (f" (office {payload.office_id})" if payload.office_id else "")
         ),
     )

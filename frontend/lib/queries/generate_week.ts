@@ -3,7 +3,7 @@
 /**
  * useGenerateWeek — Wave 17 Phase B-3 (Layer 1 のみ).
  *
- * POST /api/v1/schedule/generate-week
+ * POST /api/v1/schedule/generate-week-only  (W17-A の generate-week-only endpoint を呼ぶ)
  *
  * 1 トランザクションで:
  *   1. 当該週の auto-source visit を全削除
@@ -26,7 +26,7 @@ import { z } from 'zod';
 
 import { fetcher } from '@/lib/api/fetcher';
 
-const GENERATE_WEEK_PATH = '/api/v1/schedule/generate-week';
+const GENERATE_WEEK_PATH = '/api/v1/schedule/generate-week-only';
 
 // ---------------------------------------------------------------------------
 // Zod schemas — BE GenerateWeekRequest / Response とミラー
@@ -61,7 +61,7 @@ function authPair(session: ReturnType<typeof useSession>['data']) {
 }
 
 /**
- * POST /api/v1/schedule/generate-week — Layer 1 のみを実行する mutation.
+ * POST /api/v1/schedule/generate-week-only — Layer 1 のみを実行する mutation.
  *
  * 呼出側 (CourseDayTablePanel) は
  *   - admin / manager のときのみ「週を生成」ボタンを描画
