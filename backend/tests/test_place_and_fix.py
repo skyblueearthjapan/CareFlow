@@ -690,3 +690,174 @@ async def test_place_and_fix_concurrent_course_creation(_engine, db) -> None:
         )
     ).all()
     assert len(courses) == 1
+
+
+# ---------------------------------------------------------------------------
+# 16. W18 Phase 0-b: 既存の不整合 course (template-E, code='M') と UNIQUE 衝突しない
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_place_and_fix_recovers_from_w16_code_label_mismatch(client, db) -> None:
+    """W18 Phase 0-b 回帰テスト: Wave 16 デプロイ時の "E→M 丸め" バグで残った
+    不整合 course (template-E, code='M') がある状態で、本店-M template から
+    place-and-fix を呼ぶと UNIQUE 衝突せず 200 を返す。
+
+    本番 (2026-W18) で発生した症状:
+      asyncpg.UniqueViolationError: duplicate key value violates unique
+      constraint "uq_courses_year_week_weekday_code_office"
+      DETAIL: Key (iso_year, iso_week, weekday, code, office_id)=
+              (2026, 19, 0, M, <office>) already exists.
+
+    再現シナリオ:
+      1. 本店 (office) に course_template tpl_e (label='E') と tpl_m (label='M')
+      2. 既に courses に (template_id=tpl_e.id, code='M', y=2026, w=19, wd=0)
+         の不整合行が入っている (W16 残骸)
+      3. tpl_m を course_template_id に place-and-fix を call すると、
+         helper の 1st SELECT (template_id=tpl_m) は miss、 2nd SELECT
+         (office, code='M', ...) で既存の不整合行を拾い、
+         template_id を tpl_m に書き換えて return する。500 にならない。
+    """
+    from app.models.course import COURSE_STATUS_PROPOSED
+
+    admin = await _make_user(db, "paf-16-admin@example.com", "admin")
+    patient = await _make_patient(db, "PAF-016")
+    office = await _make_office(db, "事業所PAF16")
+    tpl_e = await _make_template(db, office.id, label="E")
+    tpl_m = await _make_template(db, office.id, label="M")
+
+    # W16 残骸を直接 INSERT: template-E から派生したが code='M' で保存された不整合行.
+    bad_course = Course(
+        iso_year=TEST_ISO_YEAR,
+        iso_week=TEST_ISO_WEEK,
+        weekday=0,
+        code="M",
+        course_status=COURSE_STATUS_PROPOSED,
+        template_id=tpl_e.id,
+        office_id=office.id,
+    )
+    db.add(bad_course)
+    await db.commit()
+    await db.refresh(bad_course)
+    bad_course_id = bad_course.id
+
+    # tpl_m (label='M') で place-and-fix を call. helper は UNIQUE key で既存行を
+    # 拾い、template_id を tpl_m に書き換えて return するため 200 を返す。
+    res = await client.post(
+        "/api/v1/schedule/place-and-fix",
+        headers=_bearer(admin),
+        json=_payload(
+            patient.id,
+            course_template_id=tpl_m.id,
+            weekday=0,
+            start_time="09:00:00",
+            duration_min=45,
+        ),
+    )
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["visit"]["course_id"] == str(bad_course_id), (
+        "既存の (office, code='M', wd=0) row を再利用するはず"
+    )
+
+    # courses 行は依然 1 件のみ (新規 INSERT は発生していない).
+    # 別セッションで確認 — API が別 transaction で commit 済みなので、
+    # test session の identity-map をバイパスする目的で fresh session を作る.
+    from app.db.session import get_session_factory
+
+    factory = get_session_factory()
+    async with factory() as verify_session:
+        courses = (
+            await verify_session.scalars(
+                select(Course).where(
+                    Course.office_id == office.id,
+                    Course.iso_year == TEST_ISO_YEAR,
+                    Course.iso_week == TEST_ISO_WEEK,
+                    Course.weekday == 0,
+                    Course.code == "M",
+                )
+            )
+        ).all()
+    assert len(courses) == 1, f"expected 1 course but got {len(courses)}"
+    # template_id が tpl_m に補正されている
+    assert courses[0].template_id == tpl_m.id, (
+        "不整合 course の template_id は呼び出し側 (tpl_m) に補正されるはず"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 17. W18 Phase 0-b: UNIQUE 衝突 fallback で IntegrityError 回路も既存行を拾う
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_place_and_fix_helper_falls_back_to_unique_key_on_integrity_error(
+    _engine, db
+) -> None:
+    """Phase 0-b: helper の 2nd SELECT (UNIQUE key 引き) で既存行を拾う経路と、
+    IntegrityError catch 後の再 SELECT が UNIQUE key で実行されることを検証.
+
+    シナリオ: 既存の不整合行 (template=tpl_e, code='M') が courses にある状態で
+    tpl_m (label='M') から helper を呼ぶ。1st SELECT (template_id=tpl_m) は
+    miss、2nd SELECT (office_id, code='M', ...) で既存行が見つかり、
+    template_id を tpl_m に補正して return する。
+    """
+    from app.api.v1.schedule import _get_or_create_course_for_template_week
+    from app.db.session import get_session_factory
+    from app.models.course import COURSE_STATUS_PROPOSED
+
+    office = await _make_office(db, "事業所PAF17")
+    tpl_e = await _make_template(db, office.id, label="E")
+    tpl_m = await _make_template(db, office.id, label="M")
+
+    # 既存の不整合行 (template=tpl_e, code='M') を直接 INSERT.
+    factory = get_session_factory()
+    async with factory() as session_seed:
+        bad = Course(
+            iso_year=TEST_ISO_YEAR,
+            iso_week=TEST_ISO_WEEK,
+            weekday=2,
+            code="M",
+            course_status=COURSE_STATUS_PROPOSED,
+            template_id=tpl_e.id,
+            office_id=office.id,
+        )
+        session_seed.add(bad)
+        await session_seed.commit()
+        bad_id = bad.id
+
+    # helper を tpl_m (label='M') で呼ぶ. 2nd SELECT (UNIQUE key) で既存行を拾うはず.
+    async with factory() as session1:
+        course = await _get_or_create_course_for_template_week(
+            session1,
+            course_template_id=tpl_m.id,
+            iso_year=TEST_ISO_YEAR,
+            iso_week=TEST_ISO_WEEK,
+            weekday=2,
+        )
+        await session1.commit()
+
+    assert course.id == bad_id, "2nd SELECT で既存の不整合行が拾えるはず"
+
+    # template_id が tpl_m に補正されている (別セッションで verify)
+    async with factory() as verify_session:
+        verify_course = await verify_session.get(Course, bad_id)
+        assert verify_course is not None
+        assert verify_course.template_id == tpl_m.id, (
+            "2nd SELECT 経由で template_id が呼出側 (tpl_m) に補正されるはず"
+        )
+
+    # courses は (office, code='M', wd=2) について 1 件のみ (新規 INSERT 無し)
+    async with factory() as verify_session2:
+        courses = (
+            await verify_session2.scalars(
+                select(Course).where(
+                    Course.office_id == office.id,
+                    Course.iso_year == TEST_ISO_YEAR,
+                    Course.iso_week == TEST_ISO_WEEK,
+                    Course.weekday == 2,
+                    Course.code == "M",
+                )
+            )
+        ).all()
+    assert len(courses) == 1, f"helper が 2nd SELECT で既存行を再利用するはず, got {len(courses)}"

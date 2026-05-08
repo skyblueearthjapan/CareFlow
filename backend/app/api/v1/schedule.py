@@ -497,17 +497,27 @@ async def _get_or_create_course_for_template_week(
     は Layer 2 を経由しないため、本 helper で必要に応じて proposed 状態の
     Course を生成して紐付ける。
 
-    解決順序:
-        1. (template_id, iso_year, iso_week, weekday) で SELECT
-        2. 無ければ INSERT
+    解決順序 (W18 Phase 0-b でフォールバック SELECT を追加):
+        1. (template_id, iso_year, iso_week, weekday) で SELECT (1st try)
+        2. miss なら (office_id, code, iso_year, iso_week, weekday) で SELECT
+           — UNIQUE 制約 ``uq_courses_year_week_weekday_code_office`` と同じ
+             find key にすることで、INSERT 前に確実に既存行を検出する。
+             template_id が NULL / 別 template に紐付いている既存行がある
+             ケース (W16 デプロイ時の helper bug 残骸) も拾える。
+        3. 既存行が見つかった場合は ``template_id`` を補正して return
+           (race-safe: 別 TX で先行 INSERT された行を引き継ぐ)。
+        4. 無ければ INSERT を savepoint 内で試みる (race-safe).
             - code        = template.label (1 文字へ正規化; 不一致は 'M')
             - course_status = 'proposed'
             - office_id   = template.office_id
             - template_id = course_template_id
+        5. INSERT が IntegrityError になったら、もう一度 (office_id, code,
+           year, week, weekday) で SELECT して引き継ぐ (UNIQUE 衝突回復).
 
-    NOTE: 既存の ``courses`` UNIQUE 制約 (iso_year, iso_week, weekday, code) は
-    Wave 15-codex-fix (migration 0021) で office_id を含めた拡張に切り替わる
-    予定。本 helper はそれ以前の単純 SELECT で動作する。
+    UNIQUE 制約は ``(iso_year, iso_week, weekday, code, office_id)`` の
+    5-tuple なので、step 1 の (template_id, ...) だけでは衝突を事前検出できない
+    (例: ``code`` が同じだが ``template_id`` が NULL/別の course が既に
+    入っているケース)。step 2 / 5 はその穴埋め。
     """
     # template を取得 (office_id / label の参照のため). 削除済みは 422 相当だが、
     # place-and-fix は HTTPException で扱うので呼出側の except で捕捉される。
@@ -523,7 +533,13 @@ async def _get_or_create_course_for_template_week(
             detail="CourseTemplate not found",
         )
 
-    # 既存 Course を SELECT (1st try)
+    # code は template.label の先頭 1 文字を使い、courses.code CHECK 制約
+    # ('A','B','C','D','E','M' — W16 codex fix 中 2 / migration 0023 で 'E' 追加) を
+    # 満たさない場合は 'M' (マネージャー枠 = オーバーフロー) に丸める。
+    label_first = (template.label or "").strip()[:1].upper()
+    code = label_first if label_first in ("A", "B", "C", "D", "E", "M") else "M"
+
+    # 1st try: (template_id, iso_year, iso_week, weekday) で SELECT.
     course = await db.scalar(
         select(Course).where(
             Course.template_id == course_template_id,
@@ -536,13 +552,29 @@ async def _get_or_create_course_for_template_week(
     if course is not None:
         return course
 
-    # 無ければ INSERT を savepoint 内で試みる (race-safe).
-    # code は template.label の先頭 1 文字を使い、courses.code CHECK 制約
-    # ('A','B','C','D','E','M' — W16 codex fix 中 2 / migration 0023 で 'E' 追加) を
-    # 満たさない場合は 'M' (マネージャー枠 = オーバーフロー) に丸める。
-    label_first = (template.label or "").strip()[:1].upper()
-    code = label_first if label_first in ("A", "B", "C", "D", "E", "M") else "M"
+    # 2nd try (W18 Phase 0-b): UNIQUE 制約と同じ key で SELECT.
+    # template_id が NULL / 別 template の course が既にある場合を拾う。
+    course = await db.scalar(
+        select(Course).where(
+            Course.office_id == template.office_id,
+            Course.code == code,
+            Course.iso_year == iso_year,
+            Course.iso_week == iso_week,
+            Course.weekday == weekday,
+            Course.deleted_at.is_(None),
+        )
+    )
+    if course is not None:
+        # template_id が未設定 / 別の template を指していた場合は補正する.
+        # これにより 1st SELECT 経路でも次回以降ヒットするようになり、
+        # 不整合が自動で解消されていく (但し本番の根治は cleanup script
+        # ``scripts/cleanup_w16_course_code_mismatch.py`` で行う).
+        if course.template_id != course_template_id:
+            course.template_id = course_template_id
+            await db.flush()
+        return course
 
+    # 無ければ INSERT を savepoint 内で試みる (race-safe).
     try:
         async with db.begin_nested():  # savepoint — PostgreSQL/SQLite 両対応
             new_course = Course(
@@ -558,10 +590,14 @@ async def _get_or_create_course_for_template_week(
             await db.flush()
         return new_course
     except IntegrityError:
-        # 別トランザクションが同時に INSERT — savepoint のみ rollback して再 SELECT
+        # 別トランザクションが同時に INSERT、または既存の不整合 row との UNIQUE
+        # 衝突 (W18 Phase 0). savepoint のみ rollback して UNIQUE key で再 SELECT。
+        # 1st SELECT (template_id) では拾えない不整合行も、UNIQUE key (office_id,
+        # code, year, week, weekday) で必ず見つかる。
         course = await db.scalar(
             select(Course).where(
-                Course.template_id == course_template_id,
+                Course.office_id == template.office_id,
+                Course.code == code,
                 Course.iso_year == iso_year,
                 Course.iso_week == iso_week,
                 Course.weekday == weekday,
@@ -570,6 +606,10 @@ async def _get_or_create_course_for_template_week(
         )
         if course is None:
             raise  # 想定外の IntegrityError — 上位へ再送出
+        # 拾えた既存行の template_id が未設定 / 別の template を指していた場合は補正.
+        if course.template_id != course_template_id:
+            course.template_id = course_template_id
+            await db.flush()
         return course
 
 
