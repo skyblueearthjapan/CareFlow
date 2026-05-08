@@ -52,8 +52,8 @@ const COURSES_KEY = ['courses'] as const;
 // Types — CourseV2Read 系 (BE schema と同期)
 // ─────────────────────────────────────────────────────────────────────────
 
-/** §3.6.5: A〜D = 通常コース 4 つ + M = マネージャー枠. */
-export type CourseCodeV2 = 'A' | 'B' | 'C' | 'D' | 'M';
+/** §3.6.5: A〜D = 通常コース 4 つ + E = 拡張コース (W16) + M = マネージャー枠. */
+export type CourseCodeV2 = 'A' | 'B' | 'C' | 'D' | 'E' | 'M';
 
 /** BE `app/schemas/v2/enums.py::CourseStatus`. */
 export type CourseStatusV2 = 'proposed' | 'course_fixed' | 'staff_assigned';

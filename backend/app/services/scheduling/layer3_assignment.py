@@ -968,7 +968,7 @@ class Layer3Assigner:
             )
             mgr_courses = list((await db.scalars(mgr_course_stmt)).all())
 
-            # NOTE: code 列は ('A','B','C','D','M') CHECK 制約があるため
+            # NOTE: code 列は ('A','B','C','D','E','M') CHECK 制約があるため
             # 複数 manager の場合も全て code='M' で運用される (W16 想定 N=1).
             # 同 (year, week, weekday) 内に M course が複数あればラベル順に
             # 1 manager ずつ割当てる.

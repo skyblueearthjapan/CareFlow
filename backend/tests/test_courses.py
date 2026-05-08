@@ -396,3 +396,45 @@ async def test_course_orm_round_trip(db) -> None:
     assert course.updated_at is not None
     assert course.deleted_at is None
     assert course.office_id == office.id
+
+
+# ---------------------------------------------------------------------------
+# 6. Wave 16 退行ガード: code='E' round-trip
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_course_code_e_round_trip(client, db) -> None:
+    """code='E' で Course を作成し GET でも 'E' のまま返ることを確認。
+
+    Wave 16 codex-fix で migration 0023 + Pydantic Literal 拡張を整合させた
+    退行ガード。ResponseValidationError 500 および Zod parse 失敗が再発しない
+    ことを保証する。
+    """
+    admin = await _make_user(db, "c-e-admin@example.com", "admin")
+    office = await _make_office(db, "事業所-e")
+
+    # POST /api/v1/courses with code='E' → 201
+    create_res = await client.post(
+        "/api/v1/courses",
+        headers=_bearer(admin),
+        json=_course_payload(office.id, iso_week=40, weekday=0, code="E"),
+    )
+    assert create_res.status_code == 201, create_res.text
+    body = create_res.json()
+    assert body["code"] == "E"
+    cid = body["id"]
+
+    # GET /api/v1/courses/{id} → 200, code='E' のまま返る
+    get_res = await client.get(f"/api/v1/courses/{cid}", headers=_bearer(admin))
+    assert get_res.status_code == 200, get_res.text
+    assert get_res.json()["code"] == "E"
+
+    # GET /api/v1/courses?iso_year=2026&iso_week=40 → リストに code='E' が含まれる
+    list_res = await client.get(
+        "/api/v1/courses?iso_year=2026&iso_week=40",
+        headers=_bearer(admin),
+    )
+    assert list_res.status_code == 200, list_res.text
+    codes = {item["code"] for item in list_res.json()}
+    assert "E" in codes

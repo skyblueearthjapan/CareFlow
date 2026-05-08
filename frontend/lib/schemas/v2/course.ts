@@ -20,9 +20,10 @@ import { courseStatusEnum } from './enums';
 /**
  * コース記号 (§3.6.5):
  *   A〜D = 通常コース (4 つ、稼働スタッフ数に応じる)
+ *   E = 拡張コース (Wave 16 migration 0023 で追加)
  *   M = マネージャー枠 (4 コース外のオーバーフロー専用)
  */
-export const COURSE_CODE_V2_VALUES = ['A', 'B', 'C', 'D', 'M'] as const;
+export const COURSE_CODE_V2_VALUES = ['A', 'B', 'C', 'D', 'E', 'M'] as const;
 export const courseCodeV2Enum = z.enum(COURSE_CODE_V2_VALUES);
 export type CourseCodeV2 = z.infer<typeof courseCodeV2Enum>;
 
