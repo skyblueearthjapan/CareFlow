@@ -997,3 +997,167 @@ async def test_w34_manual_visits_never_touched_by_layer1(db) -> None:
     assert survived is not None
     assert survived.deleted_at is None, "manual 行に deleted_at が立つのは異常"
     assert survived.source == "manual"
+
+
+# ---------------------------------------------------------------------------
+# W35: Layer 1 auto INSERT で既存 manual との衝突を回避
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_w35_auto_skipped_when_manual_exists_same_key(db) -> None:
+    """W35: 同 (patient_id, visit_date, start_time) に manual visit が存在する場合、
+    Layer 1 は auto INSERT を skip し、manual を尊重する。
+
+    weekly_pattern ベースの展開で検証する。
+    """
+    expander = Layer1Expander()
+    patient = await _make_patient(
+        db,
+        code="L1-W35-A",
+        weekly_pattern=_pattern(_entry("Wed", "10:30", "11:30")),
+    )
+
+    # 同キー (Wed 10:30) に manual visit を事前投入 (石塚さんシナリオ)
+    manual_visit = Visit(
+        patient_id=patient.id,
+        visit_date=date(2026, 5, 6),  # Week 19 の水曜
+        start_time=time(10, 30),
+        end_time=time(11, 30),
+        type="regular",
+        status=VISIT_STATUS_PLANNED,
+        source="manual",
+        required_staff_count=1,
+        note="手動登録",
+    )
+    db.add(manual_visit)
+    await db.commit()
+    await db.refresh(manual_visit)
+    manual_id = manual_visit.id
+
+    result = await expander.expand_week(db, iso_year=TEST_ISO_YEAR, iso_week=TEST_ISO_WEEK)
+    await db.commit()
+
+    # auto INSERT がスキップされるため visits_created は 0
+    assert result.visits_created_count == 0, (
+        f"manual と衝突する auto は生成されないはず, got {result.visits_created_count}"
+    )
+
+    # manual visit は残っている (削除されない)
+    survived = await db.scalar(
+        select(Visit).where(Visit.id == manual_id, Visit.deleted_at.is_(None))
+    )
+    assert survived is not None
+    assert survived.source == "manual"
+
+    # DB 上の active visit は manual 1 件のみ (auto が追加されていない)
+    active_rows = list(
+        await db.scalars(
+            select(Visit).where(
+                Visit.patient_id == patient.id,
+                Visit.deleted_at.is_(None),
+            )
+        )
+    )
+    assert len(active_rows) == 1
+    assert active_rows[0].source == "manual"
+
+
+@pytest.mark.asyncio
+async def test_w35_auto_skipped_when_manual_exists_fixed_pattern(db) -> None:
+    """W35: patient_fixed_visits ベースの展開でも同キーの manual があれば skip される."""
+    expander = Layer1Expander()
+    patient = await _make_patient(db, code="L1-W35-B")
+
+    # fixed visit: Wed 10:30
+    fv = PatientFixedVisit(
+        patient_id=patient.id,
+        mode="normal",
+        weekday=2,  # Wed
+        start_time=time(10, 30),
+        duration_min=60,
+    )
+    db.add(fv)
+
+    # 同キーに manual visit を投入
+    manual_visit = Visit(
+        patient_id=patient.id,
+        visit_date=date(2026, 5, 6),  # Week 19 の水曜
+        start_time=time(10, 30),
+        end_time=time(11, 30),
+        type="regular",
+        status=VISIT_STATUS_PLANNED,
+        source="manual",
+        required_staff_count=1,
+    )
+    db.add(manual_visit)
+    await db.commit()
+    await db.refresh(manual_visit)
+    manual_id = manual_visit.id
+
+    result = await expander.expand_week(db, iso_year=TEST_ISO_YEAR, iso_week=TEST_ISO_WEEK)
+    await db.commit()
+
+    # auto が skip されること
+    assert result.visits_created_count == 0, (
+        f"fixed パターンでも manual と衝突する auto は skip されるはず, got {result.visits_created_count}"
+    )
+
+    # manual は生存
+    survived = await db.scalar(
+        select(Visit).where(Visit.id == manual_id, Visit.deleted_at.is_(None))
+    )
+    assert survived is not None
+    assert survived.source == "manual"
+
+
+@pytest.mark.asyncio
+async def test_w35_no_manual_conflict_auto_inserted_normally(db) -> None:
+    """W35: 同キーの manual visit が存在しない場合、auto INSERT は通常通り行われる."""
+    expander = Layer1Expander()
+    patient = await _make_patient(
+        db,
+        code="L1-W35-C",
+        weekly_pattern=_pattern(
+            _entry("Mon", "09:00", "10:00"),
+            _entry("Wed", "10:30", "11:30"),
+        ),
+    )
+
+    # Wed 10:30 には manual があるが Mon 09:00 には無い
+    manual_visit = Visit(
+        patient_id=patient.id,
+        visit_date=date(2026, 5, 6),  # Wed
+        start_time=time(10, 30),
+        end_time=time(11, 30),
+        type="regular",
+        status=VISIT_STATUS_PLANNED,
+        source="manual",
+        required_staff_count=1,
+    )
+    db.add(manual_visit)
+    await db.commit()
+
+    result = await expander.expand_week(db, iso_year=TEST_ISO_YEAR, iso_week=TEST_ISO_WEEK)
+    await db.commit()
+
+    # Wed は skip, Mon は auto INSERT → 1 件のみ生成
+    assert result.visits_created_count == 1, (
+        f"Mon (衝突なし) は auto 生成, Wed (manual 衝突) は skip のはず, got {result.visits_created_count}"
+    )
+    vc = result.visits_created[0]
+    assert vc.weekday == 0  # Mon
+    assert vc.start_time == "09:00"
+
+    # DB: active が 2 件 (Mon auto + Wed manual)
+    active_rows = list(
+        await db.scalars(
+            select(Visit).where(
+                Visit.patient_id == patient.id,
+                Visit.deleted_at.is_(None),
+            )
+        )
+    )
+    assert len(active_rows) == 2
+    sources = sorted(v.source for v in active_rows)
+    assert sources == ["auto", "manual"]
