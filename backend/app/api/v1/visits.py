@@ -301,25 +301,56 @@ async def delete_visit(
             ),
         ),
     ] = False,
+    cascade_partner: Annotated[
+        bool,
+        Query(
+            description=(
+                "True (default): 同 visit_group_id を持つペア visit "
+                "(2 名体制対応の partner visit) も同時に soft-delete する "
+                "(W37 Phase 2-A)。False: 当該 visit のみ片方削除する."
+            ),
+        ),
+    ] = True,
 ) -> None:
-    """visit を soft-delete する (W18: RBAC を admin / manager に拡張).
+    """visit を soft-delete する.
 
-    重大-2 (W18 Codex-fix): ``cascade_fixed_visit=true`` のとき、当該 visit の
+    W18 Codex-fix 重大-1: RBAC を admin / manager に拡張.
+    W18 Codex-fix 重大-2: ``cascade_fixed_visit=true`` のとき、当該 visit の
     ``(patient_id, visit_date.weekday())`` に紐付く ``patient_fixed_visits``
-    (mode='normal' / 'special' 両方) を **物理削除** する。これにより B-5
-    配置移動 (delete + place-and-fix) を運用可能にし、翌週以降 Layer 1
-    expander が旧曜日 + 新曜日の両方で再展開する二重訪問バグを防ぐ。
+    (mode='normal' / 'special' 両方) を **物理削除** する.
 
-    本 cascade は B-5 移動フローのみが立てる想定で、デフォルトは False
-    (= 既存挙動: visit のみ soft-delete; 固定枠は残す)。
+    W37 Phase 2-A: ``cascade_partner=true`` (default) のとき、当該 visit と
+    同じ ``visit_group_id`` を持つ partner visit (2 名体制ペア) も同時に
+    soft-delete する. 「2 名はペアで削除」が標準フロー. 入力ミスで片方だけ
+    消したいケースは ``cascade_partner=false`` で対応.
+
+    両 cascade は併用可能 (cascade_fixed_visit=true & cascade_partner=true で
+    ペアの visit + 共通 weekday の固定枠 normal/special を全て削除).
     """
     visit = await db.scalar(select(Visit).where(Visit.id == visit_id, Visit.deleted_at.is_(None)))
     if visit is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
 
-    # cascade: visit の (patient_id, weekday) に紐付く固定枠を物理削除する。
+    # ----- W37 Phase 2-A: partner visit の同時 soft-delete -----
+    # visit_group_id が NULL の場合 (1 名体制) は cascade_partner の値に依らず
+    # no-op (partner はそもそも存在しない).
+    partner_visits: list[Visit] = []
+    if cascade_partner and visit.visit_group_id is not None:
+        partner_rows = (
+            await db.scalars(
+                select(Visit).where(
+                    Visit.visit_group_id == visit.visit_group_id,
+                    Visit.id != visit.id,
+                    Visit.deleted_at.is_(None),
+                )
+            )
+        ).all()
+        partner_visits = list(partner_rows)
+
+    # cascade_fixed_visit: visit の (patient_id, weekday) に紐付く固定枠を物理削除.
     # mode='normal' と 'special' の両方を対象にする (どちらが残っていても
-    # 翌週展開で二重訪問になり得るため)。
+    # 翌週展開で二重訪問になり得るため). slot_index 0/1 も全て削除される
+    # (W37 Phase 2-A: 2 名体制患者の partner も含めた全 slot を一掃).
     if cascade_fixed_visit:
         old_weekday = visit.visit_date.weekday()
         await db.execute(
@@ -329,7 +360,11 @@ async def delete_visit(
             )
         )
 
+    # 当該 visit を soft-delete.
     visit.deleted_at = func.now()
+    # partner visits も soft-delete (W37 Phase 2-A).
+    for pv in partner_visits:
+        pv.deleted_at = func.now()
     await db.commit()
     return None
 
