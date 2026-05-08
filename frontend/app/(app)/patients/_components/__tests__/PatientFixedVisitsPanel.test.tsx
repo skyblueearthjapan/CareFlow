@@ -166,7 +166,11 @@ describe('PatientFixedVisitsPanel', () => {
 
     expect(result.success).toBe(false);
     if (!result.success) {
-      const dupIssue = result.error.issues.find((i) => i.message === '同じ曜日が重複しています');
+      // W37 Phase 3-A: メッセージは「同じ曜日・スロットが重複しています」に変更.
+      // (weekday, slot_index) ペアで重複検出する.
+      const dupIssue = result.error.issues.find((i) =>
+        i.message.includes('同じ曜日・スロットが重複'),
+      );
       expect(dupIssue).toBeDefined();
     }
   });
@@ -426,5 +430,294 @@ describe('PatientFixedVisitsPanel', () => {
     render(<PatientFixedVisitsPanel patientId={PATIENT_ID} readOnly={true} />);
 
     expect(screen.queryByRole('button', { name: '保存' })).not.toBeInTheDocument();
+  });
+
+  // ─── W37 Phase 3-A: requires_multiple_staff (slot 0/1) tests ───────────────
+
+  it('14. (W37) requiresMultipleStaff=true: コース 2 セレクタが enabled', async () => {
+    setupMocks({ reads: [], courseTemplates: COURSE_TEMPLATES });
+
+    render(
+      <PatientFixedVisitsPanel
+        patientId={PATIENT_ID}
+        primaryOfficeId={OFFICE_ID}
+        requiresMultipleStaff={true}
+      />,
+    );
+
+    // 月曜を ON にする
+    const checkboxes = screen.getAllByRole('checkbox');
+    await userEvent.click(checkboxes[0]);
+
+    const course1 = screen.getByLabelText('月 コース 1') as HTMLSelectElement;
+    const course2 = screen.getByLabelText('月 コース 2') as HTMLSelectElement;
+
+    expect(course1).toBeInTheDocument();
+    expect(course2).toBeInTheDocument();
+    expect(course2).not.toBeDisabled();
+  });
+
+  it('15. (W37) requiresMultipleStaff=false: コース 2 セレクタが disabled', async () => {
+    setupMocks({ reads: [], courseTemplates: COURSE_TEMPLATES });
+
+    render(
+      <PatientFixedVisitsPanel
+        patientId={PATIENT_ID}
+        primaryOfficeId={OFFICE_ID}
+        requiresMultipleStaff={false}
+      />,
+    );
+
+    // 月曜を ON にする
+    const checkboxes = screen.getAllByRole('checkbox');
+    await userEvent.click(checkboxes[0]);
+
+    // フラグ OFF: aria-label は "月 コース" (コース 1 ラベルではない単一コース表記)
+    expect(screen.getByLabelText('月 コース')).toBeInTheDocument();
+    const course2 = screen.getByLabelText('月 コース 2') as HTMLSelectElement;
+    expect(course2).toBeDisabled();
+  });
+
+  it('16. (W37) コース 1 と コース 2 が同一 → エラー表示で保存ブロック', async () => {
+    const updateFn = vi.fn().mockResolvedValue([]);
+    setupMocks({ reads: [], updateFn, courseTemplates: COURSE_TEMPLATES });
+
+    render(
+      <PatientFixedVisitsPanel
+        patientId={PATIENT_ID}
+        primaryOfficeId={OFFICE_ID}
+        requiresMultipleStaff={true}
+      />,
+    );
+
+    // 月曜を ON にして 同じ UUID をコース 1 / 2 に設定
+    const checkboxes = screen.getAllByRole('checkbox');
+    await userEvent.click(checkboxes[0]);
+
+    const course1 = screen.getByLabelText('月 コース 1');
+    const course2 = screen.getByLabelText('月 コース 2');
+    fireEvent.change(course1, { target: { value: 'aaaaaaaa-0000-0000-0000-000000000001' } });
+    fireEvent.change(course2, { target: { value: 'aaaaaaaa-0000-0000-0000-000000000001' } });
+
+    // エラーメッセージが表示される (UI 行内)
+    await waitFor(() => {
+      expect(screen.getByText('異なるコースを選択してください')).toBeInTheDocument();
+    });
+
+    // 保存ボタンを押しても updateFn は呼ばれない
+    const saveBtn = screen.getByRole('button', { name: '保存' });
+    await userEvent.click(saveBtn);
+
+    expect(updateFn).not.toHaveBeenCalled();
+  });
+
+  it('17. (W37) コース 2 空のまま保存 → 警告は出るが保存自体は通る (slot_index=0 のみ送信)', async () => {
+    const updateFn = vi.fn().mockResolvedValue([]);
+    setupMocks({ reads: [], updateFn, courseTemplates: COURSE_TEMPLATES });
+
+    render(
+      <PatientFixedVisitsPanel
+        patientId={PATIENT_ID}
+        primaryOfficeId={OFFICE_ID}
+        requiresMultipleStaff={true}
+      />,
+    );
+
+    // 月曜を ON にして コース 1 のみ設定 (コース 2 は空のまま)
+    const checkboxes = screen.getAllByRole('checkbox');
+    await userEvent.click(checkboxes[0]);
+
+    const course1 = screen.getByLabelText('月 コース 1');
+    fireEvent.change(course1, { target: { value: 'aaaaaaaa-0000-0000-0000-000000000001' } });
+
+    // 警告が表示される
+    await waitFor(() => {
+      expect(screen.getByText('2 名対応の片方未設定')).toBeInTheDocument();
+    });
+
+    // 保存ボタンクリック → 通る
+    const saveBtn = screen.getByRole('button', { name: '保存' });
+    await userEvent.click(saveBtn);
+
+    await waitFor(() => {
+      expect(updateFn).toHaveBeenCalledTimes(1);
+    });
+
+    const call = updateFn.mock.calls[0][0] as {
+      mode: string;
+      items: { weekday: number; slot_index: number; course_template_id: string | null }[];
+    };
+    // 寛容モード: slot_index=0 の 1 件のみ送る
+    expect(call.items).toHaveLength(1);
+    expect(call.items[0].slot_index).toBe(0);
+    expect(call.items[0].course_template_id).toBe('aaaaaaaa-0000-0000-0000-000000000001');
+  });
+
+  it('18. (W37) コース 1/2 両方設定 → bulk PUT で slot_index 0/1 のペアが送られる', async () => {
+    const updateFn = vi.fn().mockResolvedValue([]);
+    setupMocks({ reads: [], updateFn, courseTemplates: COURSE_TEMPLATES });
+
+    render(
+      <PatientFixedVisitsPanel
+        patientId={PATIENT_ID}
+        primaryOfficeId={OFFICE_ID}
+        requiresMultipleStaff={true}
+      />,
+    );
+
+    // 月曜を ON
+    const checkboxes = screen.getAllByRole('checkbox');
+    await userEvent.click(checkboxes[0]);
+
+    // コース 1 = A, コース 2 = B を選択
+    const course1 = screen.getByLabelText('月 コース 1');
+    const course2 = screen.getByLabelText('月 コース 2');
+    fireEvent.change(course1, { target: { value: 'aaaaaaaa-0000-0000-0000-000000000001' } });
+    fireEvent.change(course2, { target: { value: 'bbbbbbbb-0000-0000-0000-000000000002' } });
+
+    // 保存
+    const saveBtn = screen.getByRole('button', { name: '保存' });
+    await userEvent.click(saveBtn);
+
+    await waitFor(() => {
+      expect(updateFn).toHaveBeenCalledTimes(1);
+    });
+
+    const call = updateFn.mock.calls[0][0] as {
+      mode: string;
+      items: {
+        weekday: number;
+        slot_index: number;
+        course_template_id: string | null;
+        start_time: string;
+        duration_min: number;
+      }[];
+    };
+    expect(call.items).toHaveLength(2);
+
+    // slot 0 (course A)
+    const slot0 = call.items.find((it) => it.slot_index === 0);
+    expect(slot0).toBeDefined();
+    expect(slot0?.weekday).toBe(0);
+    expect(slot0?.course_template_id).toBe('aaaaaaaa-0000-0000-0000-000000000001');
+
+    // slot 1 (course B)
+    const slot1 = call.items.find((it) => it.slot_index === 1);
+    expect(slot1).toBeDefined();
+    expect(slot1?.weekday).toBe(0);
+    expect(slot1?.course_template_id).toBe('bbbbbbbb-0000-0000-0000-000000000002');
+
+    // start_time / duration_min は slot 0/1 で共通
+    expect(slot0?.start_time).toBe(slot1?.start_time);
+    expect(slot0?.duration_min).toBe(slot1?.duration_min);
+  });
+
+  it('19. (W37) requiresMultipleStaff=false でも slot_index=0 が payload に含まれる (regression)', async () => {
+    const updateFn = vi.fn().mockResolvedValue([]);
+    setupMocks({ reads: [], updateFn, courseTemplates: COURSE_TEMPLATES });
+
+    render(
+      <PatientFixedVisitsPanel
+        patientId={PATIENT_ID}
+        primaryOfficeId={OFFICE_ID}
+        requiresMultipleStaff={false}
+      />,
+    );
+
+    // 月曜を ON してコースのみ設定
+    const checkboxes = screen.getAllByRole('checkbox');
+    await userEvent.click(checkboxes[0]);
+
+    // 保存
+    const saveBtn = screen.getByRole('button', { name: '保存' });
+    await userEvent.click(saveBtn);
+
+    await waitFor(() => {
+      expect(updateFn).toHaveBeenCalledTimes(1);
+    });
+
+    const call = updateFn.mock.calls[0][0] as {
+      mode: string;
+      items: { weekday: number; slot_index: number }[];
+    };
+    expect(call.items).toHaveLength(1);
+    expect(call.items[0].slot_index).toBe(0);
+  });
+
+  it('20. (W37) サーバーから slot 0/1 のペアが返る → コース 1/2 dropdown に反映', async () => {
+    setupMocks({
+      reads: [
+        {
+          id: 'read-0001',
+          patient_id: PATIENT_ID,
+          weekday: 0,
+          start_time: '09:00',
+          duration_min: 30,
+          mode: 'normal',
+          course_template_id: 'aaaaaaaa-0000-0000-0000-000000000001',
+          slot_index: 0,
+          created_at: '2026-01-01T00:00:00',
+          updated_at: '2026-01-01T00:00:00',
+        },
+        {
+          id: 'read-0002',
+          patient_id: PATIENT_ID,
+          weekday: 0,
+          start_time: '09:00',
+          duration_min: 30,
+          mode: 'normal',
+          course_template_id: 'bbbbbbbb-0000-0000-0000-000000000002',
+          slot_index: 1,
+          created_at: '2026-01-01T00:00:00',
+          updated_at: '2026-01-01T00:00:00',
+        },
+      ],
+      courseTemplates: COURSE_TEMPLATES,
+    });
+
+    render(
+      <PatientFixedVisitsPanel
+        patientId={PATIENT_ID}
+        primaryOfficeId={OFFICE_ID}
+        requiresMultipleStaff={true}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('月 コース 1')).toBeInTheDocument();
+    });
+
+    const course1 = screen.getByLabelText('月 コース 1') as HTMLSelectElement;
+    const course2 = screen.getByLabelText('月 コース 2') as HTMLSelectElement;
+    expect(course1.value).toBe('aaaaaaaa-0000-0000-0000-000000000001');
+    expect(course2.value).toBe('bbbbbbbb-0000-0000-0000-000000000002');
+  });
+
+  it('21. (W37) ヘルプテキスト: requiresMultipleStaff=true で表示, false で非表示', () => {
+    setupMocks({ reads: [], courseTemplates: COURSE_TEMPLATES });
+
+    const { rerender } = render(
+      <PatientFixedVisitsPanel
+        patientId={PATIENT_ID}
+        primaryOfficeId={OFFICE_ID}
+        requiresMultipleStaff={true}
+      />,
+    );
+
+    // フラグ ON: ヘルプ表示
+    expect(screen.getAllByText(/2 名体制/).length).toBeGreaterThan(0);
+
+    rerender(
+      <PatientFixedVisitsPanel
+        patientId={PATIENT_ID}
+        primaryOfficeId={OFFICE_ID}
+        requiresMultipleStaff={false}
+      />,
+    );
+
+    // フラグ OFF: ヘルプテキスト本文 (「同時刻に異なるコースを 2 つ設定する必要があります。」) は無い
+    expect(
+      screen.queryByText(/同時刻に異なるコースを 2 つ設定する必要があります/),
+    ).not.toBeInTheDocument();
   });
 });

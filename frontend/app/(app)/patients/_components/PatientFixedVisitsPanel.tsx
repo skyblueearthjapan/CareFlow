@@ -1,5 +1,5 @@
 /**
- * PatientFixedVisitsPanel (W9-FE1 Phase 3 / W22 拡張)
+ * PatientFixedVisitsPanel (W9-FE1 Phase 3 / W22 拡張 / W37 Phase 3-A).
  *
  * 患者編集画面に「週間訪問パターン (固定枠)」セクションを提供するコンポーネント。
  *
@@ -15,12 +15,20 @@
  * - 「保存」: PUT (zod 検証 → 422 detail 表示)
  * - staff role は読み取り専用 (フィールド disable)
  * - admin/manager は編集可
+ *
+ * W37 Phase 3-A:
+ * - `requiresMultipleStaff=true` の患者では「コース 1 (slot 0)」と「コース 2 (slot 1)」を
+ *   並列表示し、bulk PUT に slot_index 0/1 のペアを送る。
+ * - フラグ OFF 患者は従来どおり 1 セレクタのみ (slot_index=0)。
+ * - コース 2 が空のままでも保存は通す (Layer 1 が寛容モードで処理する; 警告のみ表示)。
+ * - コース 1 と コース 2 が同一の場合は保存ブロック (FE バリデーションで弾く)。
  */
 'use client';
 
 import * as React from 'react';
 import { useSession } from 'next-auth/react';
 
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -78,52 +86,117 @@ const DURATION_OPTIONS = [15, 30, 45, 60, 90, 120, 150, 180, 240, 300, 360, 480]
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-/** フォーム内部で使う 1 曜日行の状態 */
+/**
+ * フォーム内部で使う 1 曜日行の状態。
+ *
+ * W37 Phase 3-A:
+ *   - course_template_id   : コース 1 (slot_index=0) 用
+ *   - course_template_id_2 : コース 2 (slot_index=1) 用 (requires_multiple_staff=true のみ使用)
+ *
+ * 開始時刻 / 所要時間は slot 0/1 で共通 (BE 仕様: 同曜日・同時刻・同 duration の 2 行).
+ */
 interface DayRow {
   enabled: boolean;
   start_time: string;
   duration_min: number;
-  /** W22: コーステンプレート ID (null = 未指定) */
+  /** W22: コーステンプレート ID (null = 未指定). slot_index=0 用. */
   course_template_id: string | null;
+  /** W37 Phase 3-A: コース 2 (slot_index=1) 用. requires_multiple_staff=true でのみ有効. */
+  course_template_id_2: string | null;
 }
 
 type DayRows = Record<number, DayRow>;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+function emptyDayRow(): DayRow {
+  return {
+    enabled: false,
+    start_time: '09:00',
+    duration_min: 30,
+    course_template_id: null,
+    course_template_id_2: null,
+  };
+}
+
 function emptyDayRows(): DayRows {
   const rows: DayRows = {};
   for (let i = 0; i < 7; i++) {
-    rows[i] = { enabled: false, start_time: '09:00', duration_min: 30, course_template_id: null };
+    rows[i] = emptyDayRow();
   }
   return rows;
 }
 
+/**
+ * BE が返した PatientFixedVisitV2Read[] を曜日 × slot で 1 行にマージする。
+ *
+ * W37: slot_index=0 → course_template_id, slot_index=1 → course_template_id_2.
+ * start_time / duration_min は slot 0 を優先し、slot 0 が無ければ slot 1 を使う。
+ */
 function readsToDayRows(reads: PatientFixedVisitV2Read[]): DayRows {
   const rows = emptyDayRows();
   for (const r of reads) {
-    if (r.weekday >= 0 && r.weekday <= 6) {
-      // start_time は HH:MM:SS の場合もあるので先頭 5 文字に切り詰める
+    if (r.weekday < 0 || r.weekday > 6) continue;
+    const slot = r.slot_index ?? 0;
+    const current = rows[r.weekday] ?? emptyDayRow();
+    // start_time は HH:MM:SS の場合もあるので先頭 5 文字に切り詰める
+    const startTime = r.start_time.slice(0, 5);
+    if (slot === 0) {
       rows[r.weekday] = {
+        ...current,
         enabled: true,
-        start_time: r.start_time.slice(0, 5),
+        start_time: startTime,
         duration_min: r.duration_min,
         course_template_id: r.course_template_id ?? null,
+      };
+    } else {
+      // slot 1: enabled は slot 0 のフラグを尊重 (slot 0 が無い場合は slot 1 で起こす)
+      rows[r.weekday] = {
+        ...current,
+        enabled: true,
+        // slot 0 が後から上書きしてくれるが、slot 1 だけのケース対応
+        start_time: current.enabled ? current.start_time : startTime,
+        duration_min: current.enabled ? current.duration_min : r.duration_min,
+        course_template_id_2: r.course_template_id ?? null,
       };
     }
   }
   return rows;
 }
 
-function dayRowsToItems(rows: DayRows): PatientFixedVisitV2Base[] {
-  return Object.entries(rows)
-    .filter(([, row]) => row.enabled)
-    .map(([weekday, row]) => ({
-      weekday: Number(weekday),
+/**
+ * DayRows を bulk PUT items に変換する。
+ *
+ * W37 Phase 3-A:
+ *   - requires_multiple_staff=false: 各曜日 1 行 (slot_index=0)
+ *   - requires_multiple_staff=true : 各曜日 1 行 (slot_index=0) + course_template_id_2 がある
+ *     場合のみ slot_index=1 の行を追加 (寛容モード: 片方未設定でも保存は通す)
+ */
+function dayRowsToItems(rows: DayRows, requiresMultipleStaff: boolean): PatientFixedVisitV2Base[] {
+  const items: PatientFixedVisitV2Base[] = [];
+  for (const [weekdayStr, row] of Object.entries(rows)) {
+    if (!row.enabled) continue;
+    const weekday = Number(weekdayStr);
+    // slot 0 は常に送る
+    items.push({
+      weekday,
       start_time: row.start_time,
       duration_min: row.duration_min,
       course_template_id: row.course_template_id ?? null,
-    }));
+      slot_index: 0,
+    });
+    // slot 1 は requires_multiple_staff=true かつ course_template_id_2 が設定済みの場合のみ送る
+    if (requiresMultipleStaff && row.course_template_id_2) {
+      items.push({
+        weekday,
+        start_time: row.start_time,
+        duration_min: row.duration_min,
+        course_template_id: row.course_template_id_2,
+        slot_index: 1,
+      });
+    }
+  }
+  return items;
 }
 
 /** 患者の weekly_pattern (希望パターン) から DayRows を生成する */
@@ -168,6 +241,7 @@ function weeklyPatternToDayRows(pattern: WeeklyPattern | null | undefined): DayR
         start_time: startTime,
         duration_min: Math.max(1, Math.min(480, duration)),
         course_template_id: null,
+        course_template_id_2: null,
       };
     }
   }
@@ -181,34 +255,35 @@ interface WeekGridProps {
   onChange: (rows: DayRows) => void;
   disabled?: boolean;
   errors: Record<number, string>;
+  warnings: Record<number, string>;
   /** W22: 当該患者の拠点に紐付く course_templates (空配列 = office 未設定) */
   courseTemplates: CourseTemplateRead[];
+  /** W37 Phase 3-A: 複数スタッフ対応患者かどうか. true で コース 2 セレクタを enable */
+  requiresMultipleStaff: boolean;
 }
 
-function WeekGrid({ rows, onChange, disabled, errors, courseTemplates }: WeekGridProps) {
+function WeekGrid({
+  rows,
+  onChange,
+  disabled,
+  errors,
+  warnings,
+  courseTemplates,
+  requiresMultipleStaff,
+}: WeekGridProps) {
   const update = (weekday: number, patch: Partial<DayRow>) => {
-    const current = rows[weekday] ?? {
-      enabled: false,
-      start_time: '09:00',
-      duration_min: 30,
-      course_template_id: null,
-    };
+    const current = rows[weekday] ?? emptyDayRow();
     onChange({ ...rows, [weekday]: { ...current, ...patch } as DayRow });
   };
 
   return (
     <div className="space-y-2">
       {[0, 1, 2, 3, 4, 5, 6].map((wd) => {
-        const row = rows[wd] ?? {
-          enabled: false,
-          start_time: '09:00',
-          duration_min: 30,
-          course_template_id: null,
-        };
+        const row = rows[wd] ?? emptyDayRow();
         return (
           <div
             key={wd}
-            className="flex items-center gap-3 rounded-md border border-border-default px-3 py-2"
+            className="flex flex-wrap items-center gap-3 rounded-md border border-border-default px-3 py-2"
           >
             <span className="w-5 text-center text-sm font-medium text-text-secondary">
               {WEEKDAY_LABELS[wd]}
@@ -252,13 +327,18 @@ function WeekGrid({ rows, onChange, disabled, errors, courseTemplates }: WeekGri
                     ))}
                   </select>
                 </div>
+                {/* W37 Phase 3-A: コース 1 (slot_index=0) */}
                 <div className="flex items-center gap-1">
                   <select
                     value={row.course_template_id ?? ''}
                     onChange={(e) => update(wd, { course_template_id: e.target.value || null })}
                     disabled={disabled}
                     className="h-8 rounded border border-border-default bg-bg-base px-2 text-sm text-text-primary focus:outline-none focus:border-brand-primary"
-                    aria-label={`${WEEKDAY_LABELS[wd]} コース`}
+                    aria-label={
+                      requiresMultipleStaff
+                        ? `${WEEKDAY_LABELS[wd]} コース 1`
+                        : `${WEEKDAY_LABELS[wd]} コース`
+                    }
                   >
                     <option value="">未指定</option>
                     {courseTemplates.map((tpl) => (
@@ -267,8 +347,41 @@ function WeekGrid({ rows, onChange, disabled, errors, courseTemplates }: WeekGri
                       </option>
                     ))}
                   </select>
+                  {requiresMultipleStaff ? (
+                    <span className="text-xs text-text-muted">コース 1</span>
+                  ) : null}
+                </div>
+                {/* W37 Phase 3-A: コース 2 (slot_index=1) — フラグ ON でのみ active */}
+                <div className="flex items-center gap-1">
+                  <select
+                    value={row.course_template_id_2 ?? ''}
+                    onChange={(e) => update(wd, { course_template_id_2: e.target.value || null })}
+                    disabled={disabled || !requiresMultipleStaff}
+                    className="h-8 rounded border border-border-default bg-bg-base px-2 text-sm text-text-primary focus:outline-none focus:border-brand-primary disabled:opacity-50"
+                    aria-label={`${WEEKDAY_LABELS[wd]} コース 2`}
+                    title={requiresMultipleStaff ? undefined : '複数対応 OFF のため不要'}
+                  >
+                    <option value="">
+                      {requiresMultipleStaff ? '未指定' : '複数対応 OFF のため不要'}
+                    </option>
+                    {requiresMultipleStaff
+                      ? courseTemplates.map((tpl) => (
+                          <option key={tpl.id} value={tpl.id}>
+                            {tpl.label}
+                          </option>
+                        ))
+                      : null}
+                  </select>
+                  {requiresMultipleStaff ? (
+                    <span className="text-xs text-text-muted">コース 2</span>
+                  ) : null}
                 </div>
                 {errors[wd] ? <span className="text-xs text-error">{errors[wd]}</span> : null}
+                {!errors[wd] && warnings[wd] ? (
+                  <span className="text-xs text-warning" data-testid={`row-warning-${wd}`}>
+                    {warnings[wd]}
+                  </span>
+                ) : null}
               </>
             ) : (
               <span className="text-xs text-text-muted">訪問なし</span>
@@ -289,9 +402,18 @@ interface ModePanelProps {
   readonly?: boolean;
   /** W22: 当該患者の拠点に紐付く course_templates */
   courseTemplates: CourseTemplateRead[];
+  /** W37 Phase 3-A: 複数スタッフ対応患者かどうか */
+  requiresMultipleStaff: boolean;
 }
 
-function ModePanel({ patientId, mode, weeklyPattern, readonly, courseTemplates }: ModePanelProps) {
+function ModePanel({
+  patientId,
+  mode,
+  weeklyPattern,
+  readonly,
+  courseTemplates,
+  requiresMultipleStaff,
+}: ModePanelProps) {
   const { data: reads = [], isLoading } = useFixedVisits(patientId, mode);
   const updateMut = useUpdateFixedVisits(patientId);
   const deleteMut = useDeleteFixedVisits(patientId);
@@ -310,6 +432,33 @@ function ModePanel({ patientId, mode, weeklyPattern, readonly, courseTemplates }
       setFormError(null);
     }
   }, [reads, isLoading]);
+
+  // ── W37 Phase 3-A: クライアント側バリデーション ─────────────────────────
+  // コース 1 と コース 2 が同一 → エラー (保存ブロック)
+  // コース 2 が空のまま → 警告 (保存は通す: Layer 1 寛容モード)
+  const { rowErrors, rowWarnings } = React.useMemo(() => {
+    const errs: Record<number, string> = {};
+    const warns: Record<number, string> = {};
+    if (!requiresMultipleStaff) return { rowErrors: errs, rowWarnings: warns };
+    for (const [wdStr, row] of Object.entries(rows)) {
+      const wd = Number(wdStr);
+      if (!row.enabled) continue;
+      // 同一コース選択エラー (両方が同一の UUID 文字列)
+      if (
+        row.course_template_id &&
+        row.course_template_id_2 &&
+        row.course_template_id === row.course_template_id_2
+      ) {
+        errs[wd] = '異なるコースを選択してください';
+        continue;
+      }
+      // 片方未設定の警告
+      if (!row.course_template_id_2) {
+        warns[wd] = '2 名対応の片方未設定';
+      }
+    }
+    return { rowErrors: errs, rowWarnings: warns };
+  }, [rows, requiresMultipleStaff]);
 
   // ── 希望から自動生成 ──────────────────────────────────────────────────
   const handleAutoFill = () => {
@@ -346,7 +495,14 @@ function ModePanel({ patientId, mode, weeklyPattern, readonly, courseTemplates }
     setFieldErrors({});
     setFormError(null);
 
-    const items = dayRowsToItems(rows);
+    // W37 Phase 3-A: 同一コースエラーがあれば保存ブロック
+    if (Object.keys(rowErrors).length > 0) {
+      setFieldErrors(rowErrors);
+      setFormError('入力エラーがあります。コース 1 と コース 2 は異なるコースを選択してください。');
+      return;
+    }
+
+    const items = dayRowsToItems(rows, requiresMultipleStaff);
     const result = patientFixedVisitsBulkPutSchema.safeParse({ mode, items });
 
     if (!result.success) {
@@ -397,6 +553,18 @@ function ModePanel({ patientId, mode, weeklyPattern, readonly, courseTemplates }
 
   return (
     <div className="space-y-4">
+      {/* W37 Phase 3-A: フラグ ON 時のみヘルプ表示 */}
+      {requiresMultipleStaff && !readonly ? (
+        <Alert>
+          <AlertTitle>2 名体制 (複数スタッフ対応) 患者です</AlertTitle>
+          <AlertDescription>
+            同時刻に異なるコースを 2 つ設定する必要があります。 「コース 1」と「コース
+            2」を別々に選択してください。 片方のみの場合は割当ロジック (Layer 1)
+            が片方のみで補完しますが、 運用上は両方設定することを推奨します。
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
       {isLoading ? (
         <p className="text-sm text-text-muted">読み込み中...</p>
       ) : (
@@ -404,8 +572,13 @@ function ModePanel({ patientId, mode, weeklyPattern, readonly, courseTemplates }
           rows={rows}
           onChange={setRows}
           disabled={readonly || isBusy}
-          errors={fieldErrors}
+          // W37 Phase 3-A: ライブのコース重複エラー (rowErrors) と
+          // 保存時の zod エラー (fieldErrors) をマージしてユーザに即時表示する.
+          // fieldErrors を後置きすることで保存時の重複エラーが優先される.
+          errors={{ ...rowErrors, ...fieldErrors }}
+          warnings={rowWarnings}
           courseTemplates={courseTemplates}
+          requiresMultipleStaff={requiresMultipleStaff}
         />
       )}
 
@@ -500,6 +673,13 @@ export interface PatientFixedVisitsPanelProps {
    * セッションロールによる readonly 判定を上書きする。
    */
   readOnly?: boolean;
+  /**
+   * W37 Phase 3-A: 患者の `requires_multiple_staff` フラグ.
+   * true でコース 2 (slot_index=1) セレクタが enable になり、
+   * 保存時に slot 0/1 のペアを送る (片方のみでも寛容モードで保存可能).
+   * false の場合は従来どおり 1 セレクタ (slot_index=0) のみ.
+   */
+  requiresMultipleStaff?: boolean;
 }
 
 export function PatientFixedVisitsPanel({
@@ -507,6 +687,7 @@ export function PatientFixedVisitsPanel({
   weeklyPattern,
   primaryOfficeId,
   readOnly,
+  requiresMultipleStaff = false,
 }: PatientFixedVisitsPanelProps) {
   const { data: session } = useSession();
   const role = session?.user?.role;
@@ -545,6 +726,7 @@ export function PatientFixedVisitsPanel({
               weeklyPattern={weeklyPattern}
               readonly={readonly}
               courseTemplates={courseTemplates}
+              requiresMultipleStaff={requiresMultipleStaff}
             />
           </TabsContent>
         ))}
