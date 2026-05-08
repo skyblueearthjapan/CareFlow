@@ -976,6 +976,29 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
     expect(mockToast.warning).toHaveBeenCalledWith('編集権限がありません');
   });
 
+  it('19. 「週」タブが描画され、選択すると CourseWeekOverview ペインに切替 (B-6)', () => {
+    setupHooks({
+      templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
+    });
+    render(
+      <CourseDayTablePanel
+        weekStart={monday(2026, 5, 4)}
+        officeId={null}
+        canEdit={true}
+        showAcceptanceLayer={false}
+      />,
+    );
+    // 「週」タブが存在
+    const weekTab = screen.getByTestId('course-day-tab-week');
+    expect(weekTab).toBeInTheDocument();
+    // 初期状態 (月曜): day-list が表示
+    expect(screen.getByTestId('course-day-table-list')).toBeInTheDocument();
+    // 「週」タブをクリック → week-overview-panel が表示
+    fireEvent.click(weekTab);
+    expect(screen.getByTestId('course-week-overview-panel')).toBeInTheDocument();
+    expect(screen.queryByTestId('course-day-table-list')).not.toBeInTheDocument();
+  });
+
   it('11. 担当 dropdown を変更すると useUpdateCourse が assigned_staff_id 付きで呼ばれる', async () => {
     mockUpdateCourse.mockResolvedValue({});
     setupHooks({

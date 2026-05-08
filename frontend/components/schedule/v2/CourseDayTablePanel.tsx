@@ -74,6 +74,7 @@ import {
   parseVisitDraggableId,
   type CourseGridVisit,
 } from './CourseDayTable';
+import { CourseWeekOverview, type WeekOverviewVisit } from './CourseWeekOverview';
 import { PatientCard } from './PatientCard';
 import { POOL_DROPPABLE_ID, PoolGroupedByWeekday } from './PoolPanel';
 
@@ -176,8 +177,9 @@ export function CourseDayTablePanel({
 }: CourseDayTablePanelProps) {
   const { isoYear, isoWeek } = useMemo(() => toIsoYearWeek(weekStart), [weekStart]);
 
-  // ─── 曜日タブ state ────────────────────────────────────────────────
-  const [activeWeekday, setActiveWeekday] = useState<number>(0);
+  // ─── 曜日タブ state (Wave 18 Phase B-6: 'week' = 週間ビュー) ─────
+  const [activeTab, setActiveTab] = useState<number | 'week'>(0);
+  const activeWeekday = typeof activeTab === 'number' ? activeTab : 0;
 
   // ─── Master data ────────────────────────────────────────────────────
   const officesQuery = useOffices({ limit: 50 });
@@ -338,6 +340,57 @@ export function CourseDayTablePanel({
     for (const v of weekVisits) m.set(v.id, v);
     return m;
   }, [weekVisits]);
+
+  // ─── Wave 18 Phase B-6: 週間ビュー用 visits (template × weekday に解決) ──
+  const courseTemplateByCourseId = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const c of courses) {
+      // course.code (大文字 1 文字) と template.label の頭文字を office_id + 大文字一致で結ぶ
+      const tpl = templates.find(
+        (t) =>
+          t.office_id === c.office_id &&
+          (t.label || '').trim().slice(0, 1).toUpperCase() === String(c.code).toUpperCase(),
+      );
+      if (tpl) m.set(c.id, tpl.id);
+    }
+    return m;
+  }, [courses, templates]);
+
+  const overviewVisits = useMemo<WeekOverviewVisit[]>(() => {
+    const out: WeekOverviewVisit[] = [];
+    for (const v of weekVisits) {
+      const cid = v.course_id ?? null;
+      if (!cid) continue;
+      const templateId = courseTemplateByCourseId.get(cid);
+      if (!templateId) continue;
+      // visit_date → weekday (Mon=0..)
+      let wd: number | null = null;
+      if (v.visit_date) {
+        const d = new Date(v.visit_date);
+        wd = (d.getDay() + 6) % 7;
+      } else {
+        // course_id 経由で逆引き
+        const c = courses.find((cc) => cc.id === cid);
+        wd = c?.weekday ?? null;
+      }
+      if (wd == null || wd < 0 || wd > 5) continue;
+      const patient = patientById.get(v.patient_id);
+      out.push({
+        id: v.id,
+        patient_id: v.patient_id,
+        patient_name: patient?.name ?? v.patient_name ?? null,
+        weekday: wd,
+        course_template_id: templateId,
+      });
+    }
+    return out;
+  }, [weekVisits, courseTemplateByCourseId, courses, patientById]);
+
+  const officeNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const o of offices) m.set(o.id, o.name);
+    return m;
+  }, [offices]);
 
   // ─── DnD ──────────────────────────────────────────────────────────
   const sensors = useSensors(
@@ -565,7 +618,7 @@ export function CourseDayTablePanel({
               data-testid="course-day-tabs"
             >
               {DISPLAY_WEEKDAYS.map((wd) => {
-                const selected = activeWeekday === wd;
+                const selected = activeTab === wd;
                 return (
                   <button
                     key={wd}
@@ -573,7 +626,7 @@ export function CourseDayTablePanel({
                     role="tab"
                     aria-selected={selected}
                     aria-controls={`course-day-panel-${wd}`}
-                    onClick={() => setActiveWeekday(wd)}
+                    onClick={() => setActiveTab(wd)}
                     data-testid={`course-day-tab-${wd}`}
                     className={`rounded border px-3 py-1 text-xs font-semibold ${
                       selected
@@ -588,6 +641,23 @@ export function CourseDayTablePanel({
                   </button>
                 );
               })}
+              {/* Wave 18 Phase B-6: 「週」タブ */}
+              <button
+                key="week"
+                type="button"
+                role="tab"
+                aria-selected={activeTab === 'week'}
+                aria-controls="course-week-overview-panel"
+                onClick={() => setActiveTab('week')}
+                data-testid="course-day-tab-week"
+                className={`rounded border px-3 py-1 text-xs font-semibold ${
+                  activeTab === 'week'
+                    ? 'border-brand-primary bg-brand-primary text-white'
+                    : 'border-border-default bg-bg-base text-text-secondary hover:bg-bg-muted'
+                }`}
+              >
+                週
+              </button>
             </div>
 
             <div className="flex items-center gap-2">
@@ -629,55 +699,72 @@ export function CourseDayTablePanel({
           </div>
         </Card>
 
-        {/* メイン: 当該曜日のコーステーブル N 個 */}
-        <div
-          id={`course-day-panel-${activeWeekday}`}
-          role="tabpanel"
-          aria-labelledby={`course-day-tab-${activeWeekday}`}
-          className="space-y-3"
-          data-testid="course-day-table-list"
-        >
-          {courseTablesForActiveDay.length === 0 ? (
-            <Card className="p-4 text-sm text-text-muted">
-              {WEEKDAY_LABELS[activeWeekday]}曜日の表示対象コースがありません。 拠点マスタの
-              コーステンプレート (定員) を確認してください。
-            </Card>
-          ) : (
-            courseTablesForActiveDay.map(({ template, officeName }) => {
-              const course = findCourseForTemplate({
-                template,
-                weekday: activeWeekday,
-                isoYear,
-                isoWeek,
-                courses,
-              });
-              const visits = course ? (visitsByCourse.get(course.id) ?? []) : [];
-              const staffOptions = staffByOffice.get(template.office_id) ?? [];
-              return (
-                <CourseDayTable
-                  key={`${template.id}:${activeWeekday}`}
-                  weekday={activeWeekday}
-                  template={template}
-                  course={course}
-                  officeName={officeName}
-                  visits={visits}
-                  staffOptions={staffOptions}
-                  canEdit={canEdit}
-                  isStaffMutating={updateCourseMut.isPending}
-                  onChangeAssignedStaff={(staffId) => {
-                    if (!course) {
-                      toast.warning(
-                        '先に「週を生成」を押してコースを作成してから担当を設定してください',
-                      );
-                      return;
-                    }
-                    void handleChangeAssignedStaff(course.id, staffId);
-                  }}
-                />
-              );
-            })
-          )}
-        </div>
+        {/* Wave 18 Phase B-6: 「週」タブ選択時は CourseWeekOverview を表示 */}
+        {activeTab === 'week' ? (
+          <div
+            id="course-week-overview-panel"
+            role="tabpanel"
+            aria-labelledby="course-day-tab-week"
+            data-testid="course-week-overview-panel"
+          >
+            <CourseWeekOverview
+              templates={templates}
+              officeNameById={officeNameById}
+              visits={overviewVisits}
+              onJumpToDay={(wd) => setActiveTab(wd)}
+            />
+          </div>
+        ) : (
+          /* メイン: 当該曜日のコーステーブル N 個 */
+          <div
+            id={`course-day-panel-${activeWeekday}`}
+            role="tabpanel"
+            aria-labelledby={`course-day-tab-${activeWeekday}`}
+            className="space-y-3"
+            data-testid="course-day-table-list"
+          >
+            {courseTablesForActiveDay.length === 0 ? (
+              <Card className="p-4 text-sm text-text-muted">
+                {WEEKDAY_LABELS[activeWeekday]}曜日の表示対象コースがありません。 拠点マスタの
+                コーステンプレート (定員) を確認してください。
+              </Card>
+            ) : (
+              courseTablesForActiveDay.map(({ template, officeName }) => {
+                const course = findCourseForTemplate({
+                  template,
+                  weekday: activeWeekday,
+                  isoYear,
+                  isoWeek,
+                  courses,
+                });
+                const visits = course ? (visitsByCourse.get(course.id) ?? []) : [];
+                const staffOptions = staffByOffice.get(template.office_id) ?? [];
+                return (
+                  <CourseDayTable
+                    key={`${template.id}:${activeWeekday}`}
+                    weekday={activeWeekday}
+                    template={template}
+                    course={course}
+                    officeName={officeName}
+                    visits={visits}
+                    staffOptions={staffOptions}
+                    canEdit={canEdit}
+                    isStaffMutating={updateCourseMut.isPending}
+                    onChangeAssignedStaff={(staffId) => {
+                      if (!course) {
+                        toast.warning(
+                          '先に「週を生成」を押してコースを作成してから担当を設定してください',
+                        );
+                        return;
+                      }
+                      void handleChangeAssignedStaff(course.id, staffId);
+                    }}
+                  />
+                );
+              })
+            )}
+          </div>
+        )}
 
         {/* 受入目安レイヤー凡例 (任意) */}
         {showAcceptanceLayer ? <AcceptanceLegend /> : null}
