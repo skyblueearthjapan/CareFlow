@@ -56,19 +56,27 @@ import { useOffices } from '@/lib/queries/offices';
 import { usePatients } from '@/lib/queries/patients';
 import { usePlaceAndFix } from '@/lib/queries/place_and_fix';
 import { useStaffList } from '@/lib/queries/staff';
-import { useVisits } from '@/lib/queries/visits';
+import { useDeleteVisit, useVisits } from '@/lib/queries/visits';
 import { capacityForWeekday, type CourseTemplateRead } from '@/lib/schemas/v2/course_template';
-import type { PatientRead } from '@/lib/schemas/patient';
+import {
+  SEX_RESTRICTION_LABEL,
+  coerceWeeklyPattern,
+  formatPreferredTimeLabel,
+  normalizePatientSexRestriction,
+  type PatientRead,
+} from '@/lib/schemas/patient';
 
 import { AcceptanceLegend } from './AcceptanceLayer';
 import {
   CourseDayTable,
   floorToCourseSlot,
   parseCourseDayCellId,
+  parseVisitDraggableId,
   type CourseGridVisit,
 } from './CourseDayTable';
+import { CourseWeekOverview, type WeekOverviewVisit } from './CourseWeekOverview';
 import { PatientCard } from './PatientCard';
-import { PoolPanel } from './PoolPanel';
+import { POOL_DROPPABLE_ID, PoolGroupedByWeekday } from './PoolPanel';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Constants
@@ -89,6 +97,16 @@ function patientDraggableId(patientId: string): string {
 function parsePatientDraggableId(id: string): string | null {
   if (!id.startsWith('pool-patient:')) return null;
   return id.slice('pool-patient:'.length);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Error helpers
+// ─────────────────────────────────────────────────────────────────────────
+
+function formatErr(err: unknown): string {
+  if (err instanceof ApiError) return `${err.status} ${err.message}`;
+  if (err instanceof Error) return err.message;
+  return '不明なエラー';
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -159,8 +177,9 @@ export function CourseDayTablePanel({
 }: CourseDayTablePanelProps) {
   const { isoYear, isoWeek } = useMemo(() => toIsoYearWeek(weekStart), [weekStart]);
 
-  // ─── 曜日タブ state ────────────────────────────────────────────────
-  const [activeWeekday, setActiveWeekday] = useState<number>(0);
+  // ─── 曜日タブ state (Wave 18 Phase B-6: 'week' = 週間ビュー) ─────
+  const [activeTab, setActiveTab] = useState<number | 'week'>(0);
+  const activeWeekday = typeof activeTab === 'number' ? activeTab : 0;
 
   // ─── Master data ────────────────────────────────────────────────────
   const officesQuery = useOffices({ limit: 50 });
@@ -270,14 +289,25 @@ export function CourseDayTablePanel({
       const slot = floorToCourseSlot(v.start_time ?? '');
       if (!slot) continue;
       const patient = patientById.get(v.patient_id);
+      // Wave 18 Phase B-1: 患者マスタ由来の `requires_multiple_staff` を読む。
+      // BE Phase 0+A 完成前は欠落可。安全に false にフォールバック。
+      const requiresMulti =
+        (patient as { requires_multiple_staff?: boolean | null } | undefined)
+          ?.requires_multiple_staff === true;
+      // Wave 18 Phase B-2: 「条件」表示の sex_restriction ラベル。
+      const sexRestrict = normalizePatientSexRestriction(
+        patient?.sex_restriction as string | null | undefined,
+      );
+      const sexLabel = sexRestrict ? SEX_RESTRICTION_LABEL[sexRestrict] : null;
       const arr = m.get(cid) ?? [];
       arr.push({
         id: v.id,
         patient_id: v.patient_id,
         patient_name: patient?.name ?? v.patient_name ?? null,
         patient_address: patient?.address ?? null,
-        // BE `_serialize_visit` が常に返す (default 1, 2 名体制で 2)。
-        // 古い payload で欠落しても 1 にフォールバックする。
+        patient_requires_multiple_staff: requiresMulti,
+        patient_sex_restriction_label: sexLabel,
+        // 旧フィールド (互換のため保持). 表示判定からは除外.
         required_staff_count: (v.required_staff_count ?? 1) as 1 | 2,
         start_slot: slot,
       });
@@ -304,55 +334,191 @@ export function CourseDayTablePanel({
     [allPatients, placedPatientIds],
   );
 
+  // ─── visit lookup (Wave 18 Phase B-5: 配置済みドラッグ用) ──────────
+  const visitById = useMemo(() => {
+    const m = new Map<string, (typeof weekVisits)[number]>();
+    for (const v of weekVisits) m.set(v.id, v);
+    return m;
+  }, [weekVisits]);
+
+  // ─── Wave 18 Phase B-6: 週間ビュー用 visits (template × weekday に解決) ──
+  const courseTemplateByCourseId = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const c of courses) {
+      // course.code (大文字 1 文字) と template.label の頭文字を office_id + 大文字一致で結ぶ
+      const tpl = templates.find(
+        (t) =>
+          t.office_id === c.office_id &&
+          (t.label || '').trim().slice(0, 1).toUpperCase() === String(c.code).toUpperCase(),
+      );
+      if (tpl) m.set(c.id, tpl.id);
+    }
+    return m;
+  }, [courses, templates]);
+
+  const overviewVisits = useMemo<WeekOverviewVisit[]>(() => {
+    const out: WeekOverviewVisit[] = [];
+    for (const v of weekVisits) {
+      const cid = v.course_id ?? null;
+      if (!cid) continue;
+      const templateId = courseTemplateByCourseId.get(cid);
+      if (!templateId) continue;
+      // visit_date → weekday (Mon=0..)
+      let wd: number | null = null;
+      if (v.visit_date) {
+        // visit_date は 'YYYY-MM-DD' 文字列。ローカル時刻として解釈するため明示。
+        const d = new Date(v.visit_date + 'T00:00:00');
+        wd = (d.getDay() + 6) % 7;
+      } else {
+        // course_id 経由で逆引き
+        const c = courses.find((cc) => cc.id === cid);
+        wd = c?.weekday ?? null;
+      }
+      if (wd == null || wd < 0 || wd > 5) continue;
+      const patient = patientById.get(v.patient_id);
+      out.push({
+        id: v.id,
+        patient_id: v.patient_id,
+        patient_name: patient?.name ?? v.patient_name ?? null,
+        weekday: wd,
+        course_template_id: templateId,
+      });
+    }
+    return out;
+  }, [weekVisits, courseTemplateByCourseId, courses, patientById]);
+
+  const officeNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const o of offices) m.set(o.id, o.name);
+    return m;
+  }, [offices]);
+
   // ─── DnD ──────────────────────────────────────────────────────────
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 5 } }),
   );
   const [activePatientId, setActivePatientId] = useState<string | null>(null);
+  const [activeVisitId, setActiveVisitId] = useState<string | null>(null);
   const placeAndFixMut = usePlaceAndFix();
+  const deleteVisitMut = useDeleteVisit();
 
   const handleDragStart = (e: DragStartEvent) => {
-    setActivePatientId(parsePatientDraggableId(String(e.active.id)));
+    const id = String(e.active.id);
+    setActivePatientId(parsePatientDraggableId(id));
+    setActiveVisitId(parseVisitDraggableId(id));
   };
 
+  /**
+   * Wave 18 Phase B-5:
+   *   - pool-patient → cell:   既存の place-and-fix を呼ぶ。
+   *   - visit → cell:           移動 = delete + place-and-fix の 2 段階で代替実装
+   *                             (atomic 化は Wave 19 BE PATCH で対応)。
+   *   - visit → pool:           visit を delete (= プールに戻る)。
+   */
   const handleDragEnd = async (e: DragEndEvent) => {
     setActivePatientId(null);
+    setActiveVisitId(null);
     const { active, over } = e;
     if (!over) return;
-    const patientId = parsePatientDraggableId(String(active.id));
-    if (!patientId) return;
-    const cell = parseCourseDayCellId(String(over.id));
-    if (!cell) return;
+    const activeId = String(active.id);
+    const overId = String(over.id);
+
     if (!canEdit) {
       toast.warning('編集権限がありません');
       return;
     }
 
-    try {
-      const patient = patientById.get(patientId);
-      const wp = (patient?.weekly_pattern ?? null) as { service_minutes?: number } | null;
-      const durationMin = Math.max(1, Number(wp?.service_minutes ?? 60));
-      await placeAndFixMut.mutateAsync({
-        patient_id: patientId,
-        course_template_id: cell.courseTemplateId,
-        iso_year: isoYear,
-        iso_week: isoWeek,
-        weekday: cell.weekday,
-        start_time: cell.time,
-        duration_min: durationMin,
-        staff_count: 1,
-        fix_pattern: true,
-      });
-      toast.success(`${patient?.name ?? patientId} を ${cell.time} に固定枠化しました`);
-    } catch (err) {
-      const msg =
-        err instanceof ApiError
-          ? `${err.status} ${err.message}`
-          : err instanceof Error
-            ? err.message
-            : '不明なエラー';
-      toast.error(`配置に失敗しました: ${msg}`);
+    const patientId = parsePatientDraggableId(activeId);
+    const visitId = parseVisitDraggableId(activeId);
+    const cell = parseCourseDayCellId(overId);
+    const isPoolDrop = overId === POOL_DROPPABLE_ID;
+
+    // ─── プール患者 → セル (既存挙動: place-and-fix) ───────────────
+    if (patientId && cell) {
+      try {
+        const patient = patientById.get(patientId);
+        const wp = (patient?.weekly_pattern ?? null) as { service_minutes?: number } | null;
+        const durationMin = Math.max(1, Number(wp?.service_minutes ?? 60));
+        await placeAndFixMut.mutateAsync({
+          patient_id: patientId,
+          course_template_id: cell.courseTemplateId,
+          iso_year: isoYear,
+          iso_week: isoWeek,
+          weekday: cell.weekday,
+          start_time: cell.time,
+          duration_min: durationMin,
+          staff_count: 1,
+          fix_pattern: true,
+        });
+        toast.success(`${patient?.name ?? patientId} を ${cell.time} に固定枠化しました`);
+      } catch (err) {
+        toast.error(`配置に失敗しました: ${formatErr(err)}`);
+      }
+      return;
+    }
+
+    // ─── 配置済み visit ドラッグ ─────────────────────────────────
+    if (visitId) {
+      const v = visitById.get(visitId);
+      if (!v) return;
+
+      // visit → プール: delete のみ
+      if (isPoolDrop) {
+        try {
+          await deleteVisitMut.mutateAsync(visitId);
+          toast.success(`${v.patient_name ?? v.patient_id} をプールに戻しました`);
+        } catch (err) {
+          toast.error(`プールへの戻しに失敗しました: ${formatErr(err)}`);
+        }
+        return;
+      }
+
+      // visit → セル: 移動 (delete + place-and-fix). 同一セルへの移動は noop。
+      if (cell) {
+        // 同一 weekday + 同一 slot の場合は noop (course_template_id は visit に
+        // 無いので簡易判定。誤検知低リスク。厳密判定は Wave 19 で BE PATCH 化時に)。
+        const visitWeekday = v.visit_date
+          ? // visit_date (yyyy-MM-dd) → weekStart からのオフセット (0=Mon..)
+            // T00:00:00 を付与してローカル時刻として解釈し、UTCとの境界ズレを防ぐ。
+            (() => {
+              const d = new Date(v.visit_date + 'T00:00:00');
+              const dow = (d.getDay() + 6) % 7; // Mon=0
+              return dow;
+            })()
+          : null;
+        const sameSlot = v.start_time != null && floorToCourseSlot(v.start_time) === cell.time;
+        // TODO(Wave 19): noop 判定に course_template_id を含めて、同一曜日・同一時刻でも
+        // 異なるコース間のドロップは move として扱う。現状 (Wave 18) は delete+place-and-fix
+        // の 2 段階のため、course_template_id を含めると不要な delete が走る可能性があり、
+        // PATCH /api/v1/visits/{id} (atomic 化) と組合わせて Wave 19 で対応予定。
+        if (sameSlot && visitWeekday === cell.weekday) {
+          return;
+        }
+        const patient = patientById.get(v.patient_id);
+        const wp = (patient?.weekly_pattern ?? null) as { service_minutes?: number } | null;
+        const durationMin = Math.max(1, Number(wp?.service_minutes ?? 60));
+        try {
+          // 1) 既存 visit を削除
+          await deleteVisitMut.mutateAsync(visitId);
+          // 2) 新セルに place-and-fix
+          await placeAndFixMut.mutateAsync({
+            patient_id: v.patient_id,
+            course_template_id: cell.courseTemplateId,
+            iso_year: isoYear,
+            iso_week: isoWeek,
+            weekday: cell.weekday,
+            start_time: cell.time,
+            duration_min: durationMin,
+            staff_count: 1,
+            fix_pattern: true,
+          });
+          toast.success(`${patient?.name ?? v.patient_id} を ${cell.time} に移動しました`);
+        } catch (err) {
+          toast.error(`移動に失敗しました: ${formatErr(err)}`);
+        }
+        return;
+      }
     }
   };
 
@@ -458,7 +624,7 @@ export function CourseDayTablePanel({
               data-testid="course-day-tabs"
             >
               {DISPLAY_WEEKDAYS.map((wd) => {
-                const selected = activeWeekday === wd;
+                const selected = activeTab === wd;
                 return (
                   <button
                     key={wd}
@@ -466,7 +632,7 @@ export function CourseDayTablePanel({
                     role="tab"
                     aria-selected={selected}
                     aria-controls={`course-day-panel-${wd}`}
-                    onClick={() => setActiveWeekday(wd)}
+                    onClick={() => setActiveTab(wd)}
                     data-testid={`course-day-tab-${wd}`}
                     className={`rounded border px-3 py-1 text-xs font-semibold ${
                       selected
@@ -481,6 +647,23 @@ export function CourseDayTablePanel({
                   </button>
                 );
               })}
+              {/* Wave 18 Phase B-6: 「週」タブ */}
+              <button
+                key="week"
+                type="button"
+                role="tab"
+                aria-selected={activeTab === 'week'}
+                aria-controls="course-week-overview-panel"
+                onClick={() => setActiveTab('week')}
+                data-testid="course-day-tab-week"
+                className={`rounded border px-3 py-1 text-xs font-semibold ${
+                  activeTab === 'week'
+                    ? 'border-brand-primary bg-brand-primary text-white'
+                    : 'border-border-default bg-bg-base text-text-secondary hover:bg-bg-muted'
+                }`}
+              >
+                週
+              </button>
             </div>
 
             <div className="flex items-center gap-2">
@@ -522,70 +705,96 @@ export function CourseDayTablePanel({
           </div>
         </Card>
 
-        {/* メイン: 当該曜日のコーステーブル N 個 */}
-        <div
-          id={`course-day-panel-${activeWeekday}`}
-          role="tabpanel"
-          aria-labelledby={`course-day-tab-${activeWeekday}`}
-          className="space-y-3"
-          data-testid="course-day-table-list"
-        >
-          {courseTablesForActiveDay.length === 0 ? (
-            <Card className="p-4 text-sm text-text-muted">
-              {WEEKDAY_LABELS[activeWeekday]}曜日の表示対象コースがありません。 拠点マスタの
-              コーステンプレート (定員) を確認してください。
-            </Card>
-          ) : (
-            courseTablesForActiveDay.map(({ template, officeName }) => {
-              const course = findCourseForTemplate({
-                template,
-                weekday: activeWeekday,
-                isoYear,
-                isoWeek,
-                courses,
-              });
-              const visits = course ? (visitsByCourse.get(course.id) ?? []) : [];
-              const staffOptions = staffByOffice.get(template.office_id) ?? [];
-              return (
-                <CourseDayTable
-                  key={`${template.id}:${activeWeekday}`}
-                  weekday={activeWeekday}
-                  template={template}
-                  course={course}
-                  officeName={officeName}
-                  visits={visits}
-                  staffOptions={staffOptions}
-                  canEdit={canEdit}
-                  isStaffMutating={updateCourseMut.isPending}
-                  onChangeAssignedStaff={(staffId) => {
-                    if (!course) {
-                      toast.warning(
-                        '先に「週を生成」を押してコースを作成してから担当を設定してください',
-                      );
-                      return;
-                    }
-                    void handleChangeAssignedStaff(course.id, staffId);
-                  }}
-                />
-              );
-            })
-          )}
-        </div>
+        {/* Wave 18 Phase B-6: 「週」タブ選択時は CourseWeekOverview を表示 */}
+        {activeTab === 'week' ? (
+          <div
+            id="course-week-overview-panel"
+            role="tabpanel"
+            aria-labelledby="course-day-tab-week"
+            data-testid="course-week-overview-panel"
+          >
+            <CourseWeekOverview
+              templates={templates}
+              officeNameById={officeNameById}
+              visits={overviewVisits}
+              onJumpToDay={(wd) => setActiveTab(wd)}
+            />
+          </div>
+        ) : (
+          /* メイン: 当該曜日のコーステーブル N 個 */
+          <div
+            id={`course-day-panel-${activeWeekday}`}
+            role="tabpanel"
+            aria-labelledby={`course-day-tab-${activeWeekday}`}
+            className="space-y-3"
+            data-testid="course-day-table-list"
+          >
+            {courseTablesForActiveDay.length === 0 ? (
+              <Card className="p-4 text-sm text-text-muted">
+                {WEEKDAY_LABELS[activeWeekday]}曜日の表示対象コースがありません。 拠点マスタの
+                コーステンプレート (定員) を確認してください。
+              </Card>
+            ) : (
+              courseTablesForActiveDay.map(({ template, officeName }) => {
+                const course = findCourseForTemplate({
+                  template,
+                  weekday: activeWeekday,
+                  isoYear,
+                  isoWeek,
+                  courses,
+                });
+                const visits = course ? (visitsByCourse.get(course.id) ?? []) : [];
+                const staffOptions = staffByOffice.get(template.office_id) ?? [];
+                return (
+                  <CourseDayTable
+                    key={`${template.id}:${activeWeekday}`}
+                    weekday={activeWeekday}
+                    template={template}
+                    course={course}
+                    officeName={officeName}
+                    visits={visits}
+                    staffOptions={staffOptions}
+                    canEdit={canEdit}
+                    isStaffMutating={updateCourseMut.isPending}
+                    onChangeAssignedStaff={(staffId) => {
+                      if (!course) {
+                        toast.warning(
+                          '先に「週を生成」を押してコースを作成してから担当を設定してください',
+                        );
+                        return;
+                      }
+                      void handleChangeAssignedStaff(course.id, staffId);
+                    }}
+                  />
+                );
+              })
+            )}
+          </div>
+        )}
 
         {/* 受入目安レイヤー凡例 (任意) */}
         {showAcceptanceLayer ? <AcceptanceLegend /> : null}
 
-        {/* 保留プール */}
-        <PoolPanel count={poolPatients.length} disabled={!canEdit}>
-          {poolPatients.map((p) => (
-            <PatientCard
-              key={p.id}
-              draggableId={patientDraggableId(p.id)}
-              patient={{ id: p.id, name: p.name, caption: p.kana ?? undefined }}
-              disabled={!canEdit}
-            />
-          ))}
-        </PoolPanel>
+        {/* 保留プール (Wave 18 Phase B-3: 希望曜日別グループ + B-4: 希望時間表示) */}
+        <PoolGroupedByWeekday
+          patients={poolPatients}
+          disabled={!canEdit}
+          renderCard={(p) => {
+            const wp = coerceWeeklyPattern(p.weekly_pattern);
+            return (
+              <PatientCard
+                draggableId={patientDraggableId(p.id)}
+                patient={{
+                  id: p.id,
+                  name: p.name,
+                  caption: p.kana ?? undefined,
+                  preferredTimeLabel: formatPreferredTimeLabel(wp),
+                }}
+                disabled={!canEdit}
+              />
+            );
+          }}
+        />
 
         <DragOverlay>
           {activePatientId ? (
@@ -593,6 +802,19 @@ export function CourseDayTablePanel({
               {patientById.get(activePatientId)?.name ?? activePatientId}
             </div>
           ) : null}
+          {activeVisitId
+            ? (() => {
+                const v = visitById.get(activeVisitId);
+                const name = v
+                  ? (patientById.get(v.patient_id)?.name ?? v.patient_name ?? v.patient_id)
+                  : activeVisitId;
+                return (
+                  <div className="rounded border border-warning bg-warning/10 px-2 py-1 text-xs shadow-lg">
+                    {name} <span className="text-text-muted">(移動)</span>
+                  </div>
+                );
+              })()
+            : null}
         </DragOverlay>
       </section>
     </DndContext>

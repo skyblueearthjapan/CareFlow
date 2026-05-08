@@ -22,6 +22,12 @@ export interface PatientCardData {
   name: string;
   /** 表示用の追加メタ (kana / 保険など). 任意. */
   caption?: string | null;
+  /**
+   * Wave 18 Phase B-4: プールカードに表示する希望時間.
+   * 例: "10:00 (固定)" / "09:30〜10:00 (時間帯)" / "午前". 任意.
+   * `caption` の下に小さく表示する。
+   */
+  preferredTimeLabel?: string | null;
 }
 
 export interface PatientCardProps {
@@ -89,15 +95,26 @@ export function PatientCard({
       {...listeners}
       {...attributes}
     >
-      <div className="flex min-w-0 flex-1 items-center gap-1">
-        {staffCount === 2 ? (
-          <Users className="h-3 w-3 shrink-0 text-brand-primary" aria-hidden />
-        ) : (
-          <User className="h-3 w-3 shrink-0 text-text-muted" aria-hidden />
-        )}
-        <span className="truncate font-medium">{patient.name}</span>
-        {patient.caption && !compact ? (
-          <span className="truncate text-text-muted">({patient.caption})</span>
+      <div className="flex min-w-0 flex-1 flex-col gap-0">
+        <div className="flex items-center gap-1">
+          {staffCount === 2 ? (
+            <Users className="h-3 w-3 shrink-0 text-brand-primary" aria-hidden />
+          ) : (
+            <User className="h-3 w-3 shrink-0 text-text-muted" aria-hidden />
+          )}
+          <span className="truncate font-medium">{patient.name}</span>
+          {patient.caption && !compact ? (
+            <span className="truncate text-text-muted">({patient.caption})</span>
+          ) : null}
+        </div>
+        {/* Wave 18 Phase B-4: 希望時間 (プールカード) */}
+        {patient.preferredTimeLabel && !compact ? (
+          <span
+            className="tnum truncate pl-4 text-[10px] text-text-muted"
+            data-testid={`patient-card-preferred-time-${patient.id}`}
+          >
+            {patient.preferredTimeLabel}
+          </span>
         ) : null}
       </div>
 

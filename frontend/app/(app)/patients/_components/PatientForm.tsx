@@ -288,6 +288,32 @@ export function PatientForm({
               ]}
             />
           </Field>
+          {/* Wave 18 Phase B-7: 2 名体制必須フラグ */}
+          <Field
+            label="複数スタッフでの訪問が必要"
+            error={errors.requires_multiple_staff?.message}
+            hint="2 名以上での訪問が必要な場合にチェック"
+          >
+            <Controller
+              control={control}
+              name="requires_multiple_staff"
+              render={({ field }) => (
+                <label
+                  className="inline-flex items-center gap-2 text-sm text-text-secondary"
+                  data-testid="requires-multiple-staff-label"
+                >
+                  <Checkbox
+                    checked={!!field.value}
+                    onCheckedChange={(c) => field.onChange(c === true)}
+                    disabled={submitting}
+                    aria-label="2 名以上での訪問が必要"
+                    data-testid="requires-multiple-staff-checkbox"
+                  />
+                  2 名以上での訪問が必要
+                </label>
+              )}
+            />
+          </Field>
         </div>
       </Card>
 
