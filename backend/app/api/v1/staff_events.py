@@ -31,17 +31,13 @@ def _combine(d: date, hhmm: str) -> datetime:
 
 def _check_read_access(user: User, staff_id: UUID) -> None:
     if user.role not in {"admin", "manager", "staff"}:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role"
-        )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
     if user.role == "staff" and user.staff_id != staff_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
 
 
 async def _ensure_staff_exists(db, staff_id: UUID) -> Staff:
-    staff = await db.scalar(
-        select(Staff).where(Staff.id == staff_id, Staff.deleted_at.is_(None))
-    )
+    staff = await db.scalar(select(Staff).where(Staff.id == staff_id, Staff.deleted_at.is_(None)))
     if staff is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     return staff
@@ -123,6 +119,13 @@ async def update_event(
     db: DbDep,
     _user: Annotated[User, Depends(require_role("admin", "manager"))],
 ) -> StaffEvent:
+    """Update event (Wave 39: ``new_staff_id`` で別 staff への付け替えに対応).
+
+    URL の ``staff_id`` は「現在の所有者」, body の ``new_staff_id`` (任意) で
+    付け替え先を指定する. 同一トランザクション内で date/start_time/end_time
+    と一緒に更新可能. 衝突チェック (= new_staff_id の同時間帯に他 event 重複)
+    は本 API では弾かない (FE 側で rollback 判定する W39 案 K の方針と整合).
+    """
     row = await db.scalar(
         select(StaffEvent).where(
             StaffEvent.id == event_id,
@@ -133,6 +136,12 @@ async def update_event(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
 
     data = payload.model_dump(exclude_unset=True)
+
+    # Wave 39: new_staff_id が指定されたら付け替え先 staff の存在を確認する.
+    new_staff_id = data.pop("new_staff_id", None)
+    if new_staff_id is not None and new_staff_id != row.staff_id:
+        await _ensure_staff_exists(db, new_staff_id)
+        row.staff_id = new_staff_id
 
     # Compute new wall-clock anchor (date + times) when any of those three
     # fields is supplied. We re-derive both starts_at/ends_at consistently

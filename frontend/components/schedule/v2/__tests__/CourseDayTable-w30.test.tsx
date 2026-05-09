@@ -142,23 +142,44 @@ function renderTable(
   );
 }
 
-describe('CourseDayTable event-slot-row に title 表示 (Wave 30)', () => {
-  it('3. event-slot-row に title が含まれる形式で表示される', () => {
+describe('CourseDayTable event-block (rowSpan 1 ブロック) に title 表示 (Wave 30 → Wave 39 更新)', () => {
+  // Wave 39: per-slot `event-slot-row` を廃止し、start_time 行に rowSpan で
+  // 1 ブロック (`event-block-{id}`) として描画するよう変更. テストも更新.
+  it('3. event-block に "種別: タイトル" 形式 (1 行目) と時刻 (2 行目) が表示される', () => {
     renderTable({
-      eventOverrides: { title: '接遇マナー', type: '研修', start_time: '10:00', end_time: '12:00' },
+      eventOverrides: {
+        id: 'event-1',
+        title: '接遇マナー',
+        type: '研修',
+        start_time: '10:00',
+        end_time: '12:00',
+      },
     });
-    const rows = screen.getAllByTestId('event-slot-row');
-    expect(rows.length).toBeGreaterThan(0);
-    expect(rows[0]).toHaveTextContent('研修: 接遇マナー 10:00-12:00');
+    const block = screen.getByTestId('event-block-event-1');
+    // 1 ブロックのみ (= rowSpan で 1 件) — 重複描画なし
+    expect(screen.getAllByTestId('event-block-event-1').length).toBe(1);
+    expect(block).toHaveTextContent('研修: 接遇マナー');
+    expect(block).toHaveTextContent('10:00-12:00');
+    // 2 時間 (10:00-12:00) → rowSpan = ceil(120/15) = 8
+    expect(block.getAttribute('data-event-row-span')).toBe('8');
+    expect(block.getAttribute('data-event-start-time')).toBe('10:00');
   });
 
-  it('4. title なし (空文字) の event は "種別 HH:MM-HH:MM" 形式で表示される', () => {
+  it('4. title なし (空文字) の event ブロックは "種別" のみ + 時刻 で表示される', () => {
     renderTable({
-      eventOverrides: { title: '', type: '研修', start_time: '10:00', end_time: '12:00' },
+      eventOverrides: {
+        id: 'event-1',
+        title: '',
+        type: '研修',
+        start_time: '10:00',
+        end_time: '12:00',
+      },
     });
-    const rows = screen.getAllByTestId('event-slot-row');
-    expect(rows.length).toBeGreaterThan(0);
-    expect(rows[0]).toHaveTextContent('研修 10:00-12:00');
-    expect(rows[0]).not.toHaveTextContent('研修:');
+    const block = screen.getByTestId('event-block-event-1');
+    // 1 行目 = 種別ラベル, 2 行目 = 時刻
+    expect(block).toHaveTextContent('研修');
+    expect(block).toHaveTextContent('10:00-12:00');
+    // title 区切り (':') が無い
+    expect(block.textContent ?? '').not.toContain('研修:');
   });
 });

@@ -17,8 +17,8 @@ Writes additionally accept legacy English `event_type` codes via the
 
 from __future__ import annotations
 
-from datetime import date as _Date
-from datetime import datetime, time, timezone
+from datetime import UTC, datetime, time
+from datetime import date as _Date  # noqa: N812 (project-local alias)
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
@@ -107,14 +107,20 @@ class EventCreate(BaseModel):
         return _validate_hhmm(v)
 
     @model_validator(mode="after")
-    def _check_range(self) -> "EventCreate":
+    def _check_range(self) -> EventCreate:
         if self.start_time >= self.end_time:
             raise ValueError("start_time must be < end_time")
         return self
 
 
 class EventUpdate(BaseModel):
-    """Frontend-shaped partial update — every field optional."""
+    """Frontend-shaped partial update — every field optional.
+
+    Wave 39: ``new_staff_id`` を追加. 指定された場合は event を別 staff に
+    付け替える (= D&D で担当者を変更する). URL の ``staff_id`` は「現在の
+    staff_id」, body の ``new_staff_id`` で移動先を表す. 同一トランザクション
+    内で start_time/end_time/date と一緒に更新される.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -124,6 +130,8 @@ class EventUpdate(BaseModel):
     end_time: str | None = None
     type: str | None = Field(default=None, min_length=1, max_length=32)
     note: str | None = Field(default=None, max_length=500)
+    # Wave 39: D&D で event を別スタッフに付け替えるための optional フィールド.
+    new_staff_id: UUID | None = None
 
     @field_validator("type")
     @classmethod
@@ -142,11 +150,18 @@ class EventUpdate(BaseModel):
 
 
 class EventRead(BaseModel):
-    """Response contract aligned with Frontend zod `eventReadSchema`."""
+    """Response contract aligned with Frontend zod `eventReadSchema`.
+
+    Wave 39: ``staff_id`` を追加. FE で D&D 経由の付け替え時に「元の staff_id」を
+    PATCH URL に組み立てるために必要. 既存の Frontend zod は `staff_id` を
+    optional として扱うため互換.
+    """
 
     model_config = ConfigDict(from_attributes=True, extra="ignore")
 
     id: UUID
+    # Wave 39: 担当スタッフ ID (D&D 移動時の URL 構築 + 衝突チェックに使用).
+    staff_id: UUID
     date: _Date
     title: str
     start_time: str
@@ -171,9 +186,9 @@ class EventRead(BaseModel):
         # event (Frontend doesn't ship a tz offset). For tz-aware values we
         # convert to UTC then drop the tz so the components are stable.
         if isinstance(starts_at, datetime) and starts_at.tzinfo is not None:
-            starts_at = starts_at.astimezone(timezone.utc).replace(tzinfo=None)
+            starts_at = starts_at.astimezone(UTC).replace(tzinfo=None)
         if isinstance(ends_at, datetime) and ends_at.tzinfo is not None:
-            ends_at = ends_at.astimezone(timezone.utc).replace(tzinfo=None)
+            ends_at = ends_at.astimezone(UTC).replace(tzinfo=None)
 
         title = getattr(data, "title", None)
         # Frontend zod requires `title: string` (not nullable). Coerce
@@ -183,7 +198,8 @@ class EventRead(BaseModel):
             title = ""
 
         return {
-            "id": getattr(data, "id"),
+            "id": data.id,
+            "staff_id": data.staff_id,
             "date": starts_at.date(),
             "title": title,
             "start_time": starts_at.strftime(_HHMM_RE_TIME),

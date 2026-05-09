@@ -56,7 +56,12 @@ import { useOffices } from '@/lib/queries/offices';
 import { usePatients } from '@/lib/queries/patients';
 import { usePlaceAndFix } from '@/lib/queries/place_and_fix';
 import { useStaffList } from '@/lib/queries/staff';
-import { buildStaffEventsMap, useWeekStaffEvents } from '@/lib/queries/staff-events';
+import {
+  buildStaffEventsMap,
+  useUpdateEventForDrag,
+  useWeekStaffEvents,
+} from '@/lib/queries/staff-events';
+import type { EventRead } from '@/lib/schemas/staff-events';
 import { useDeleteVisit, useVisits } from '@/lib/queries/visits';
 import { capacityForWeekday, type CourseTemplateRead } from '@/lib/schemas/v2/course_template';
 import {
@@ -72,7 +77,9 @@ import {
   CourseDayTable,
   floorToCourseSlot,
   parseCourseDayCellId,
+  parseEventDraggableId,
   parseVisitDraggableId,
+  toMinutes,
   type CourseGridVisit,
   type PartnerLocation,
 } from './CourseDayTable';
@@ -119,6 +126,14 @@ function formatErr(err: unknown): string {
   if (err instanceof ApiError) return `${err.status} ${err.message}`;
   if (err instanceof Error) return err.message;
   return '不明なエラー';
+}
+
+/** Wave 39: 通算分 (= H*60+M) → "HH:MM". 範囲外チェックはしない (clamp は呼出側). */
+function formatHHMM(totalMinutes: number): string {
+  const m = Math.max(0, totalMinutes);
+  const hh = Math.floor(m / 60);
+  const mm = m % 60;
+  return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -295,6 +310,23 @@ export function CourseDayTablePanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [allStaffIds.join(','), staffEventsData],
   );
+
+  /**
+   * Wave 39: 全スタッフ events を「event_id → {event, staffId}」にフラット化.
+   * D&D で event をドロップした際:
+   *   - drop 先 cell の course.assigned_staff_id を「移動先 staff_id」として PATCH
+   *   - 元 staff_id (= URL パラメータ) は eventById から逆引きする
+   *   - 衝突チェック (案 K) も同 Map を走査して判定する
+   */
+  const eventById = useMemo(() => {
+    const m = new Map<string, { event: EventRead; staffId: string }>();
+    for (const [staffId, events] of staffEventsByStaff.entries()) {
+      for (const ev of events) {
+        m.set(ev.id, { event: ev, staffId });
+      }
+    }
+    return m;
+  }, [staffEventsByStaff]);
 
   // ─── 表示するコース一覧: 「拠点 × テンプレート」を活性曜日 capacity > 0 でフィルタ ──
   const courseTablesForActiveDay = useMemo(() => {
@@ -727,6 +759,8 @@ export function CourseDayTablePanel({
   const [activeVisitId, setActiveVisitId] = useState<string | null>(null);
   const placeAndFixMut = usePlaceAndFix();
   const deleteVisitMut = useDeleteVisit();
+  // Wave 39: D&D で event を移動 (時刻スライド + 担当者変更) するための mutation.
+  const updateEventDragMut = useUpdateEventForDrag();
 
   // ─── Wave 37 Phase 3-C: 相方コース選択ダイアログの state ───────────────
   // requires_multiple_staff=true の患者を D&D したときにダイアログを表示する。
@@ -778,8 +812,113 @@ export function CourseDayTablePanel({
 
     const patientId = parsePatientDraggableId(activeId);
     const visitId = parseVisitDraggableId(activeId);
+    const eventId = parseEventDraggableId(activeId);
     const cell = parseCourseDayCellId(overId);
     const isPoolDrop = overId === POOL_DROPPABLE_ID;
+
+    // ─── Wave 39: スタッフイベント drop (時刻スライド + 担当者変更) ───
+    // 案 X (同曜日内のみ) + 案 Q (drop 先 course の assigned_staff_id を新所有者に)
+    // + 案 K (衝突時 rollback / 移動禁止) を実装する。
+    if (eventId && cell) {
+      const eventEntry = eventById.get(eventId);
+      if (!eventEntry) {
+        toast.error('対象のイベントが見つかりません');
+        return;
+      }
+      const { event: ev, staffId: currentStaffId } = eventEntry;
+
+      // 案 X: drop 先 cell の weekday と event 日付の曜日が一致しない → 拒否
+      const evDate = new Date(ev.date + 'T00:00:00');
+      const evWeekday = (evDate.getDay() + 6) % 7; // Mon=0
+      if (evWeekday !== cell.weekday) {
+        toast.warning('別の曜日への移動はできません (同じ曜日内でのみスライド可能)');
+        return;
+      }
+
+      // 案 Q: drop 先 course の assigned_staff_id を取得
+      const targetTemplate = templates.find((t) => t.id === cell.courseTemplateId);
+      const targetCourse = targetTemplate
+        ? findCourseForTemplate({
+            template: targetTemplate,
+            weekday: cell.weekday,
+            isoYear,
+            isoWeek,
+            courses,
+          })
+        : null;
+      if (!targetCourse) {
+        toast.warning('drop 先のコースが見つかりません (先に「週を生成」してください)');
+        return;
+      }
+      const newStaffId = targetCourse.assigned_staff_id ?? null;
+      if (!newStaffId) {
+        toast.warning('drop 先コースに担当が未割当です。担当を設定してから移動してください');
+        return;
+      }
+
+      // duration を維持して新 start/end を計算
+      const oldStartMin = toMinutes(ev.start_time);
+      const oldEndMin = toMinutes(ev.end_time);
+      const newStartMin = toMinutes(cell.time);
+      if (oldStartMin == null || oldEndMin == null || newStartMin == null) {
+        toast.error('時刻の解析に失敗しました');
+        return;
+      }
+      const durationMin = oldEndMin - oldStartMin;
+      const newEndMin = newStartMin + durationMin;
+      const newStart = formatHHMM(newStartMin);
+      const newEnd = formatHHMM(newEndMin);
+
+      // 案 K: 衝突チェック
+      //  - 同 staff (newStaffId) の他 events で時間帯重複 → reject
+      //  - 同 staff 担当の visit (= courses で newStaffId が assigned されている
+      //    course に紐づく visit) で時間帯重複 → reject
+      const newStaffEvents = staffEventsByStaff.get(newStaffId) ?? [];
+      const sameDateEvents = newStaffEvents.filter((e) => e.id !== ev.id && e.date === ev.date);
+      const hasEventOverlap = sameDateEvents.some((e) => {
+        const oS = toMinutes(e.start_time) ?? 0;
+        const oE = toMinutes(e.end_time) ?? 0;
+        return newStartMin < oE && oS < newEndMin;
+      });
+      if (hasEventOverlap) {
+        toast.warning('移動先のスタッフは同時間帯に他のイベントがあります');
+        return;
+      }
+
+      // 担当 staff = newStaffId の courses → それらの visits の時間帯と重複チェック
+      const newStaffCourseIds = new Set(
+        courses.filter((c) => c.assigned_staff_id === newStaffId).map((c) => c.id),
+      );
+      const hasVisitOverlap = weekVisits.some((v) => {
+        if (!v.visit_date || v.visit_date !== ev.date) return false;
+        if (!v.course_id || !newStaffCourseIds.has(v.course_id)) return false;
+        const vsMin = v.start_time ? toMinutes(v.start_time) : null;
+        const veMin = v.end_time ? toMinutes(v.end_time) : null;
+        if (vsMin == null || veMin == null) return false;
+        return newStartMin < veMin && vsMin < newEndMin;
+      });
+      if (hasVisitOverlap) {
+        toast.warning('移動先のスタッフは同時間帯に訪問予定があります');
+        return;
+      }
+
+      // PATCH: new_staff_id (担当変更) + start_time/end_time (時刻スライド), date は据置.
+      try {
+        await updateEventDragMut.mutateAsync({
+          staffId: currentStaffId,
+          eventId,
+          payload: {
+            start_time: newStart,
+            end_time: newEnd,
+            ...(newStaffId !== currentStaffId ? { new_staff_id: newStaffId } : {}),
+          },
+        });
+        toast.success(`イベントを ${newStart} に移動しました`);
+      } catch (err) {
+        toast.error(`イベントの移動に失敗しました: ${formatErr(err)}`);
+      }
+      return;
+    }
 
     // ─── プール患者 → セル ─────────────────────────────────────────
     // Wave 37 Phase 3-C: patient.requires_multiple_staff=true なら相方コース

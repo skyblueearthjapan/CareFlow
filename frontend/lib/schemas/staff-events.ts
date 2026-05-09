@@ -20,9 +20,7 @@ export type EventType = z.infer<typeof eventTypeSchema>;
 const dateSchema = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, '日付は YYYY-MM-DD 形式で入力してください');
-const timeSchema = z
-  .string()
-  .regex(/^\d{2}:\d{2}$/, '時刻は HH:MM 形式で入力してください');
+const timeSchema = z.string().regex(/^\d{2}:\d{2}$/, '時刻は HH:MM 形式で入力してください');
 
 const titleSchema = z
   .string()
@@ -51,6 +49,12 @@ export const eventUpdateSchema = z
     end_time: timeSchema.optional(),
     type: eventTypeSchema.optional(),
     note: z.string().max(500).optional().nullable(),
+    /**
+     * Wave 39: D&D で event を別 staff に付け替えるための任意フィールド.
+     * BE 側 ``EventUpdate.new_staff_id`` (UUID) と一致.
+     * URL の staff_id は「現在の所有者」, body の new_staff_id で移動先を指す.
+     */
+    new_staff_id: z.string().uuid().optional(),
   })
   .refine(
     (v) => {
@@ -65,6 +69,12 @@ export const eventUpdateSchema = z
 
 export const eventReadSchema = z.object({
   id: z.string().uuid(),
+  /**
+   * Wave 39: 担当スタッフ ID. D&D 移動時の URL 構築 + クライアント側衝突
+   * チェックに使う. 旧来の API クライアントが staff_id 無し (古い BE) を
+   * 受け取る互換のため optional として扱う.
+   */
+  staff_id: z.string().uuid().optional(),
   date: dateSchema,
   title: z.string(),
   start_time: timeSchema,
