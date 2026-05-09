@@ -132,6 +132,126 @@ async def _commit_or_409(db: AsyncSession) -> None:
 
 
 # ---------------------------------------------------------------------------
+# W37 hotfix C-1: helpers — multi-staff (slot 0/1) 対応の visit→PFV 取込
+# ---------------------------------------------------------------------------
+
+
+def _group_visits_by_weekday(visit_rows) -> dict[int, list]:
+    """visits を weekday (0=Mon..6=Sun) 単位でグルーピング."""
+    by_wd: dict[int, list] = {}
+    for v in visit_rows:
+        wd = v.visit_date.weekday()
+        by_wd.setdefault(wd, []).append(v)
+    return by_wd
+
+
+def _is_valid_multi_staff_pair(visits: list, *, requires_multi: bool) -> bool:
+    """同一 weekday に 2 visit が並んだとき multi-staff のペアとして妥当か.
+
+    妥当条件:
+      - patient.requires_multiple_staff = True
+      - 2 visit がともに同じ visit_group_id を持つ (= ペア)
+    """
+    if not requires_multi:
+        return False
+    if len(visits) != 2:
+        return False
+    group_ids = {v.visit_group_id for v in visits}
+    if None in group_ids:
+        return False
+    return len(group_ids) == 1
+
+
+def _invalid_weekdays(visit_rows, *, requires_multi: bool) -> list[int]:
+    """409 対象となる「異常な重複 weekday」リストを返す.
+
+    1 visit / 0 visit は OK. 2 visit はペアとして妥当 (上記) なら OK.
+    3+ visit は常に NG. 2 visit でペア条件不成立なら NG.
+    """
+    bad: list[int] = []
+    for wd, visits in _group_visits_by_weekday(visit_rows).items():
+        if len(visits) <= 1:
+            continue
+        if _is_valid_multi_staff_pair(visits, requires_multi=requires_multi):
+            continue
+        bad.append(wd)
+    return sorted(bad)
+
+
+def _weekday_groups_are_valid(visit_rows, *, requires_multi: bool) -> bool:
+    """bulk 経路の判定: 異常重複が 1 件でもあれば False (= 当該患者 skip)."""
+    return not _invalid_weekdays(visit_rows, requires_multi=requires_multi)
+
+
+async def _insert_pfv_from_visits(
+    db: AsyncSession,
+    *,
+    patient: Patient,
+    mode: str,
+    visit_rows,
+) -> None:
+    """visits を PatientFixedVisit に書き戻す (slot_index を決定論的に割当).
+
+    - 単独 visit (1 件) → slot_index=0 で 1 行 INSERT (regression 維持).
+    - multi-staff ペア (2 件 + visit_group_id 共有 + requires_multiple_staff=true) →
+      visit.id 昇順で sort して slot 0/1 を決定論的に割当てて 2 行 INSERT.
+    - その他 (異常重複) は呼び出し前段で弾かれている前提.
+
+    NOTE: course_template_id 順での sort も検討したが、course_id が NULL の visit が
+          混じる場合に不安定になるため id 昇順を採用 (FE 側の visitsByGroupId と同一基準).
+    """
+    requires_multi = bool(patient.requires_multiple_staff)
+    by_wd = _group_visits_by_weekday(visit_rows)
+
+    for wd in sorted(by_wd.keys()):
+        visits = by_wd[wd]
+
+        if len(visits) == 2 and _is_valid_multi_staff_pair(visits, requires_multi=requires_multi):
+            # multi-staff ペア: visit.id 昇順で slot 0/1 を割当 (決定論).
+            sorted_pair = sorted(visits, key=lambda v: str(v.id))
+            for slot_idx, v in enumerate(sorted_pair):
+                await _add_one_pfv(db, patient=patient, mode=mode, visit=v, slot_index=slot_idx)
+        else:
+            # 1 visit (通常パターン) — slot_index=0 で 1 行
+            v = visits[0]
+            await _add_one_pfv(db, patient=patient, mode=mode, visit=v, slot_index=0)
+
+
+async def _add_one_pfv(
+    db: AsyncSession,
+    *,
+    patient: Patient,
+    mode: str,
+    visit,
+    slot_index: int,
+) -> None:
+    """visit から 1 行の PatientFixedVisit を組み立てて add する."""
+    duration_min = int(
+        (visit.end_time.hour * 60 + visit.end_time.minute)
+        - (visit.start_time.hour * 60 + visit.start_time.minute)
+    )
+    if duration_min <= 0:
+        duration_min = 30
+    # W22: visit.course_id → course.template_id を逆引き
+    visit_course_template_id = None
+    if visit.course_id is not None:
+        course = await db.scalar(select(Course).where(Course.id == visit.course_id))
+        if course is not None:
+            visit_course_template_id = course.template_id
+    db.add(
+        PatientFixedVisit(
+            patient_id=patient.id,
+            mode=mode,
+            weekday=visit.visit_date.weekday(),
+            start_time=visit.start_time,
+            duration_min=duration_min,
+            course_template_id=visit_course_template_id,
+            slot_index=slot_index,
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
 # endpoints
 # ---------------------------------------------------------------------------
 
@@ -301,14 +421,12 @@ async def from_week_bulk(
             )
         ).all()
 
-        # weekday 重複チェック
-        weekday_counts: dict[int, int] = {}
-        for v in visit_rows:
-            wd = v.visit_date.weekday()
-            weekday_counts[wd] = weekday_counts.get(wd, 0) + 1
-        dup_weekdays = [wd for wd, cnt in weekday_counts.items() if cnt > 1]
-        if dup_weekdays:
-            # 一括処理ではエラーをスキップして次患者へ (bulk は best-effort)
+        # W37 hotfix C-1: weekday 重複チェック (multi-staff 対応).
+        # 同一 weekday 2 件かつ visit_group_id 共有 + patient.requires_multiple_staff=true
+        # の場合は許容 (slot 0/1 ペアとして扱う). それ以外の重複は bulk では当該患者だけ skip.
+        if not _weekday_groups_are_valid(
+            visit_rows, requires_multi=patient.requires_multiple_staff
+        ):
             continue
 
         # 既存削除
@@ -319,31 +437,13 @@ async def from_week_bulk(
             )
         )
 
-        # INSERT
-        for v in visit_rows:
-            wd = v.visit_date.weekday()
-            duration_min = int(
-                (v.end_time.hour * 60 + v.end_time.minute)
-                - (v.start_time.hour * 60 + v.start_time.minute)
-            )
-            if duration_min <= 0:
-                duration_min = 30
-            # W22: visit.course_id → course.template_id を逆引きして course_template_id を保存
-            visit_course_template_id = None
-            if v.course_id is not None:
-                course = await db.scalar(select(Course).where(Course.id == v.course_id))
-                if course is not None:
-                    visit_course_template_id = course.template_id
-            db.add(
-                PatientFixedVisit(
-                    patient_id=patient.id,
-                    mode=effective_mode,
-                    weekday=wd,
-                    start_time=v.start_time,
-                    duration_min=duration_min,
-                    course_template_id=visit_course_template_id,
-                )
-            )
+        # INSERT (C-1: multi-staff slot 0/1 対応)
+        await _insert_pfv_from_visits(
+            db,
+            patient=patient,
+            mode=effective_mode,
+            visit_rows=visit_rows,
+        )
 
         updated_patient_ids.append(patient.id)
 
@@ -410,16 +510,17 @@ async def from_week(
         )
     ).all()
 
-    # 同一 weekday 重複チェック → 409
-    weekday_counts: dict[int, int] = {}
-    for v in visit_rows:
-        wd = v.visit_date.weekday()
-        weekday_counts[wd] = weekday_counts.get(wd, 0) + 1
-    dup_weekdays = [wd for wd, cnt in weekday_counts.items() if cnt > 1]
-    if dup_weekdays:
+    # W37 hotfix C-1: 同一 weekday 重複チェック (multi-staff 対応).
+    # 同一 weekday に 2 件 + visit_group_id 共有 + patient.requires_multiple_staff=true なら
+    # slot 0/1 ペアとして許容. それ以外の重複は従来通り 409.
+    invalid_weekdays = _invalid_weekdays(visit_rows, requires_multi=patient.requires_multiple_staff)
+    if invalid_weekdays:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Duplicate visits on weekday(s) {dup_weekdays} for patient {patient_id}",
+            detail=(
+                f"Duplicate visits on weekday(s) {invalid_weekdays} for patient {patient_id} "
+                "(multi-staff requires exactly 2 visits sharing visit_group_id)"
+            ),
         )
 
     # 1 TX: 既存削除 → INSERT
@@ -430,30 +531,13 @@ async def from_week(
         )
     )
 
-    for v in visit_rows:
-        wd = v.visit_date.weekday()
-        duration_min = int(
-            (v.end_time.hour * 60 + v.end_time.minute)
-            - (v.start_time.hour * 60 + v.start_time.minute)
-        )
-        if duration_min <= 0:
-            duration_min = 30
-        # W22: visit.course_id → course.template_id を逆引きして course_template_id を保存
-        visit_course_template_id = None
-        if v.course_id is not None:
-            course = await db.scalar(select(Course).where(Course.id == v.course_id))
-            if course is not None:
-                visit_course_template_id = course.template_id
-        db.add(
-            PatientFixedVisit(
-                patient_id=patient_id,
-                mode=effective_mode,
-                weekday=wd,
-                start_time=v.start_time,
-                duration_min=duration_min,
-                course_template_id=visit_course_template_id,
-            )
-        )
+    # INSERT (C-1: multi-staff slot 0/1 対応)
+    await _insert_pfv_from_visits(
+        db,
+        patient=patient,
+        mode=effective_mode,
+        visit_rows=visit_rows,
+    )
 
     await _commit_or_409(db)
 
