@@ -141,6 +141,18 @@ export interface PoolCardSlotInfo {
    * renderCard へ渡す。通常患者 / 両方未配置 → false。
    */
   partnerAssigned: boolean;
+  /**
+   * Wave 38: 相方が別セルに配置済みのとき、そのセル位置 + 時刻を結合した文字列.
+   * 例: "本店-A 15:00".
+   *
+   * - `partnerAssigned=true` かつ親が cellLabel + time を解決できた場合のみ非 null.
+   * - 相方が pool に残っているケース (両 slot 未配置 / orphan) では null.
+   * - 通常患者では常に null.
+   *
+   * Phase 3-B 時点では PoolPanel 自体は値を計算せず `renderCard` 経由で素通しする.
+   * 実際の解決は親 (CourseDayTablePanel) の `partnerLocationByPatientSlot` で行う.
+   */
+  partnerLocationLabel?: string | null;
 }
 
 export interface PoolGroupedByWeekdayProps {
@@ -173,6 +185,19 @@ export interface PoolGroupedByWeekdayProps {
    * 側に weekVisits → assignedSlotsByPatient の構築ロジックを実装する。
    */
   assignedSlotsByPatient?: Map<string, Set<SlotIndex>>;
+  /**
+   * Wave 38: 「相方の現在地ラベル」マップ (key = `${patient_id}:${slotIndex}`).
+   *
+   * 値 = "本店-A 15:00" のような結合文字列. プールに残っている slot の
+   * `slotInfo.partnerLocationLabel` として renderCard に素通しされる.
+   *
+   * - 未指定 / 該当キーなし → `partnerLocationLabel = null` (= 相方も pool に残存).
+   * - キーあり → `partnerLocationLabel = 値` (= 相方が別セルに配置済み).
+   *
+   * 親 (CourseDayTablePanel) が weekVisits + courses + templates + offices から
+   * 解決して渡す。通常患者 (requires_multiple_staff=false) のキーは含めない.
+   */
+  partnerLocationByPatientSlot?: Map<string, string>;
 }
 
 /**
@@ -233,6 +258,7 @@ export function PoolGroupedByWeekday({
   renderCard,
   disabled = false,
   assignedSlotsByPatient,
+  partnerLocationByPatientSlot,
 }: PoolGroupedByWeekdayProps) {
   const { isOver, setNodeRef } = useDroppable({
     id: POOL_DROPPABLE_ID,
@@ -314,13 +340,32 @@ export function PoolGroupedByWeekday({
                     {items.map((p) => {
                       const assigned = assignedSlotsByPatient?.get(p.id);
                       const slots = computeCardSlots(p, assigned);
-                      return slots.map((info) => (
-                        <React.Fragment
-                          key={info.slotIndex === null ? p.id : `${p.id}:slot:${info.slotIndex}`}
-                        >
-                          {renderCard(p, info)}
-                        </React.Fragment>
-                      ));
+                      return slots.map((info) => {
+                        // Wave 38: 相方が別セルに配置済みなら、対応する label を注入する.
+                        // info.slotIndex はこのカード自身のスロット = pool に残っている側.
+                        // 相方は (1 - slotIndex) なので、partnerAssigned=true のときに
+                        // partnerLocationByPatientSlot["{p.id}:{相方slot}"] を引く.
+                        let partnerLocationLabel: string | null = null;
+                        if (
+                          info.partnerAssigned &&
+                          (info.slotIndex === 0 || info.slotIndex === 1)
+                        ) {
+                          const partnerSlot = info.slotIndex === 0 ? 1 : 0;
+                          partnerLocationLabel =
+                            partnerLocationByPatientSlot?.get(`${p.id}:${partnerSlot}`) ?? null;
+                        }
+                        const enrichedInfo: PoolCardSlotInfo = {
+                          ...info,
+                          partnerLocationLabel,
+                        };
+                        return (
+                          <React.Fragment
+                            key={info.slotIndex === null ? p.id : `${p.id}:slot:${info.slotIndex}`}
+                          >
+                            {renderCard(p, enrichedInfo)}
+                          </React.Fragment>
+                        );
+                      });
                     })}
                   </div>
                 </details>

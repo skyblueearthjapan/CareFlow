@@ -41,6 +41,7 @@ import {
   poolGroupLabel,
   buildPoolDraggableId,
   parsePoolDraggableId,
+  type PoolCardSlotInfo,
 } from '../PoolPanel';
 import { formatPreferredTimeLabel, emptyWeeklyPattern } from '@/lib/schemas/patient';
 import type { PatientRead } from '@/lib/schemas/patient';
@@ -419,5 +420,138 @@ describe('PoolGroupedByWeekday — multi-staff 2 cards (W37 Phase 3-B)', () => {
     expect(screen.getByTestId('card-pool-patient:p2:slot:1')).toBeInTheDocument();
     expect(screen.getByTestId('card-pool-patient:p3:slot:0')).toBeInTheDocument();
     expect(screen.getByTestId('card-pool-patient:p3:slot:1')).toBeInTheDocument();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Wave 38: PoolGroupedByWeekday の partnerLocationByPatientSlot 注入
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('PoolGroupedByWeekday — partnerLocationLabel 注入 (Wave 38)', () => {
+  function makeMultiPatient(
+    id: string,
+    name: string,
+    requiresMulti: boolean,
+    preferredWeekdays: string[] = ['Mon'],
+  ): PatientRead {
+    return {
+      id,
+      code: id,
+      name,
+      kana: null,
+      sex: null,
+      status: 'active',
+      insurance: null,
+      address: null,
+      lat: null,
+      lng: null,
+      primary_office_id: null,
+      sex_restriction: null,
+      requires_multiple_staff: requiresMulti,
+      note: null,
+      weekly_pattern: { preferred_weekdays: preferredWeekdays },
+      special_weekly_pattern: null,
+      special_week_active: [],
+      created_at: '',
+      updated_at: '',
+      deleted_at: null,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any;
+  }
+
+  function renderCardCapture(p: PatientRead, info: PoolCardSlotInfo) {
+    const id = buildPoolDraggableId(p.id, info.slotIndex);
+    return (
+      <div
+        data-testid={`card-${id}`}
+        data-patient-id={p.id}
+        data-slot-index={info.slotIndex === null ? '' : String(info.slotIndex)}
+        data-partner-assigned={info.partnerAssigned ? '1' : '0'}
+        data-partner-location-label={info.partnerLocationLabel ?? ''}
+      >
+        {p.name}
+      </div>
+    );
+  }
+
+  it('slot 0 配置済み → 残カード (slot 1) に partnerLocationLabel="本店-A 10:00"', () => {
+    const p = makeMultiPatient('p-multi', '鈴木', true);
+    const assigned = new Map<string, Set<0 | 1>>([['p-multi', new Set<0 | 1>([0])]]);
+    // 相方 (slot 0) の location を渡す
+    const partnerLocations = new Map<string, string>([['p-multi:0', '本店-A 10:00']]);
+    render(
+      <PoolGroupedByWeekday
+        patients={[p]}
+        renderCard={renderCardCapture}
+        assignedSlotsByPatient={assigned}
+        partnerLocationByPatientSlot={partnerLocations}
+      />,
+    );
+    const remaining = screen.getByTestId('card-pool-patient:p-multi:slot:1');
+    expect(remaining.getAttribute('data-partner-location-label')).toBe('本店-A 10:00');
+  });
+
+  it('slot 1 配置済み → 残カード (slot 0) に partnerLocationLabel="都賀-B 14:00"', () => {
+    const p = makeMultiPatient('p-multi', '鈴木', true);
+    const assigned = new Map<string, Set<0 | 1>>([['p-multi', new Set<0 | 1>([1])]]);
+    const partnerLocations = new Map<string, string>([['p-multi:1', '都賀-B 14:00']]);
+    render(
+      <PoolGroupedByWeekday
+        patients={[p]}
+        renderCard={renderCardCapture}
+        assignedSlotsByPatient={assigned}
+        partnerLocationByPatientSlot={partnerLocations}
+      />,
+    );
+    const remaining = screen.getByTestId('card-pool-patient:p-multi:slot:0');
+    expect(remaining.getAttribute('data-partner-location-label')).toBe('都賀-B 14:00');
+  });
+
+  it('partnerLocationByPatientSlot 未指定 → label は null/空', () => {
+    const p = makeMultiPatient('p-multi', '鈴木', true);
+    const assigned = new Map<string, Set<0 | 1>>([['p-multi', new Set<0 | 1>([0])]]);
+    render(
+      <PoolGroupedByWeekday
+        patients={[p]}
+        renderCard={renderCardCapture}
+        assignedSlotsByPatient={assigned}
+      />,
+    );
+    const remaining = screen.getByTestId('card-pool-patient:p-multi:slot:1');
+    expect(remaining.getAttribute('data-partner-location-label')).toBe('');
+  });
+
+  it('partnerAssigned=false (両方未配置) → partnerLocationLabel は null/空', () => {
+    const p = makeMultiPatient('p-multi', '鈴木', true);
+    // assigned なし = 両方未配置
+    const partnerLocations = new Map<string, string>([
+      ['p-multi:0', 'should-not-leak'],
+      ['p-multi:1', 'should-not-leak'],
+    ]);
+    render(
+      <PoolGroupedByWeekday
+        patients={[p]}
+        renderCard={renderCardCapture}
+        partnerLocationByPatientSlot={partnerLocations}
+      />,
+    );
+    const slot0 = screen.getByTestId('card-pool-patient:p-multi:slot:0');
+    const slot1 = screen.getByTestId('card-pool-patient:p-multi:slot:1');
+    expect(slot0.getAttribute('data-partner-location-label')).toBe('');
+    expect(slot1.getAttribute('data-partner-location-label')).toBe('');
+  });
+
+  it('通常患者 (multi=false) → partnerLocationLabel は常に null/空 (regression)', () => {
+    const p = makeMultiPatient('p-norm', '田中', false);
+    const partnerLocations = new Map<string, string>([['p-norm:0', 'leak-canary']]);
+    render(
+      <PoolGroupedByWeekday
+        patients={[p]}
+        renderCard={renderCardCapture}
+        partnerLocationByPatientSlot={partnerLocations}
+      />,
+    );
+    const card = screen.getByTestId('card-pool-patient:p-norm');
+    expect(card.getAttribute('data-partner-location-label')).toBe('');
   });
 });

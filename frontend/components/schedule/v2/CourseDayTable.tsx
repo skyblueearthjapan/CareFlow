@@ -104,6 +104,17 @@ export function parseCourseDayCellId(id: string): {
 // Types — 1 行分の表示用 visit データ
 // ─────────────────────────────────────────────────────────────────────────
 
+/**
+ * Wave 38: 2 名体制患者の「相方の現在地」.
+ * - `kind: 'pool'`: 相方がプールに残っている (= 未配置 / orphan)
+ * - `kind: 'cell'`: 相方が別セルに配置済み. cellLabel + time を表示する.
+ *
+ * 用途:
+ *   - スケジュール側 (CourseDayTable): visit セル下部に「相方: ...」注記を出す.
+ *   - プール側 (PatientCard): 残カードに「① 配置済み: 本店-A 15:00」を出す.
+ */
+export type PartnerLocation = { kind: 'pool' } | { kind: 'cell'; cellLabel: string; time: string };
+
 /** CourseDayTable の 1 セル分の visit 表示用データ. */
 export interface CourseGridVisit {
   id: string;
@@ -154,6 +165,16 @@ export interface CourseGridVisit {
    * 「複数 ① のみ」と警告色で表示する。
    */
   partner_missing?: boolean;
+  /**
+   * Wave 38: 相方の現在地 (= 別セル / プール).
+   * - `{ kind: 'cell', cellLabel: '本店-A', time: '15:00' }` → 相方が別セルに配置済み.
+   *    セル下部に "相方: 本店-A 15:00" を text-text-muted の小さな文字で表示する.
+   * - `{ kind: 'pool' }` → 相方がプールに残存. "相方: プール" + 警告色.
+   * - `null` / `undefined` → 相方表示なし (= 通常患者 or visit_group なし系).
+   *
+   * 通常患者 (requires_multiple_staff=false) では常に null. 左ボーダー強調も付かない.
+   */
+  partner_location?: PartnerLocation | null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -528,6 +549,8 @@ function CourseTimeRow({
                     onDeleteVisit={onDeleteVisit}
                     groupSlotLabel={o.group_slot_label}
                     partnerLabel={o.partner_label ?? null}
+                    partnerLocation={o.partner_location ?? null}
+                    isMultiStaff={o.patient_requires_multiple_staff}
                   />
                 ))}
                 {/* Wave 27 Phase B-3: 担当スタッフのイベント重複 warning バッジ */}
@@ -638,6 +661,19 @@ interface OccupantNameDraggableProps {
   groupSlotLabel?: 1 | 2;
   /** Wave 37 Phase 3-C: ペア相手の表示用ラベル (tooltip 用). */
   partnerLabel?: string | null;
+  /**
+   * Wave 38: 相方の現在地 (= 別セル / プール).
+   * - `{kind:'cell',cellLabel,time}` → "相方: {cellLabel} {time}" を text-text-muted で表示.
+   * - `{kind:'pool'}` → "相方: プール" を警告色で表示.
+   * - `null` → 注記行なし.
+   */
+  partnerLocation?: PartnerLocation | null;
+  /**
+   * Wave 38: 当該 visit の患者が requires_multiple_staff=true かどうか.
+   * true のときのみ左ボーダー (border-l-4 border-brand-primary/60) を付ける.
+   * 通常患者の visit セルは見た目を変えない (regression).
+   */
+  isMultiStaff?: boolean;
 }
 
 /**
@@ -661,6 +697,8 @@ function OccupantNameDraggable({
   onDeleteVisit,
   groupSlotLabel,
   partnerLabel,
+  partnerLocation,
+  isMultiStaff,
 }: OccupantNameDraggableProps) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: visitDraggableId(visitId),
@@ -668,37 +706,79 @@ function OccupantNameDraggable({
     data: { kind: 'placed-visit', visitId },
   });
 
-  const tooltip = partnerLabel ? `${label} (ペア: ${partnerLabel})` : label;
+  // Wave 38: tooltip に相方の現在地も追加 (cellLabel + time 文字列を結合).
+  const partnerLocationText = partnerLocation
+    ? partnerLocation.kind === 'cell'
+      ? `${partnerLocation.cellLabel} ${partnerLocation.time}`
+      : 'プール'
+    : null;
+  const tooltip = partnerLabel
+    ? partnerLocationText
+      ? `${label} (ペア: ${partnerLabel} / 相方: ${partnerLocationText})`
+      : `${label} (ペア: ${partnerLabel})`
+    : partnerLocationText
+      ? `${label} (相方: ${partnerLocationText})`
+      : label;
   const badge = groupSlotLabel === 1 ? '①' : groupSlotLabel === 2 ? '②' : null;
+
+  // Wave 38: 2 名体制患者の visit セルは左ボーダーで控えめに強調.
+  // 通常患者 (isMultiStaff=false / undefined) は完全に regression (= 既存挙動).
+  const showPartnerRow = partnerLocation != null;
+  const partnerRowWarning = partnerLocation?.kind === 'pool';
 
   return (
     <div
       className={cn(
-        'group flex items-center justify-between gap-0.5',
+        'group flex items-start justify-between gap-0.5',
+        // Wave 38: 2 名体制 visit のみ左ボーダー (controlled by isMultiStaff フラグ).
+        isMultiStaff ? 'border-l-4 border-brand-primary/60 pl-1' : '',
         isDragging ? 'opacity-40' : '',
       )}
+      data-multi-staff={isMultiStaff ? 'true' : undefined}
     >
-      <div
-        ref={setNodeRef}
-        data-testid={`course-occupant-name-${visitId}`}
-        data-draggable-visit-id={visitId}
-        data-visit-group-slot={groupSlotLabel ?? ''}
-        title={tooltip}
-        {...listeners}
-        {...attributes}
-        className={cn(
-          'truncate select-none touch-none flex-1',
-          canEdit ? 'cursor-grab active:cursor-grabbing' : '',
-        )}
-      >
-        {label}
-        {badge ? (
+      <div className="flex min-w-0 flex-1 flex-col gap-0">
+        <div
+          ref={setNodeRef}
+          data-testid={`course-occupant-name-${visitId}`}
+          data-draggable-visit-id={visitId}
+          data-visit-group-slot={groupSlotLabel ?? ''}
+          title={tooltip}
+          {...listeners}
+          {...attributes}
+          className={cn(
+            'truncate select-none touch-none',
+            canEdit ? 'cursor-grab active:cursor-grabbing' : '',
+          )}
+        >
+          {label}
+          {badge ? (
+            <span
+              className="ml-1 inline-flex items-center text-[10px] font-semibold text-brand-primary"
+              data-testid={`course-occupant-group-badge-${visitId}`}
+              aria-label={`スロット ${groupSlotLabel}`}
+            >
+              {badge}
+            </span>
+          ) : null}
+        </div>
+        {/*
+          Wave 38: 相方の現在地を控えめに併記.
+          - cell: text-text-muted の text-[10px]
+          - pool: text-warning (警告色) の text-[10px]
+        */}
+        {showPartnerRow && partnerLocation ? (
           <span
-            className="ml-1 inline-flex items-center text-[10px] font-semibold text-brand-primary"
-            data-testid={`course-occupant-group-badge-${visitId}`}
-            aria-label={`スロット ${groupSlotLabel}`}
+            className={cn(
+              'truncate text-[10px] leading-tight',
+              partnerRowWarning ? 'text-warning' : 'text-text-muted',
+            )}
+            data-testid={`course-occupant-partner-location-${visitId}`}
+            data-partner-location-kind={partnerLocation.kind}
+            title={partnerLocationText ?? undefined}
           >
-            {badge}
+            {partnerLocation.kind === 'cell'
+              ? `相方: ${partnerLocation.cellLabel} ${partnerLocation.time}`
+              : '相方: プール'}
           </span>
         ) : null}
       </div>
