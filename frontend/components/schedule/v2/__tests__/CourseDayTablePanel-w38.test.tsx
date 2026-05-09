@@ -212,6 +212,13 @@ vi.mock('@/lib/queries/generate_week', () => ({
 vi.mock('@/lib/queries/assign_staff_only', () => ({
   useAssignStaffOnly: () => ({ mutateAsync: mockAssignStaffOnly, isPending: false }),
 }));
+// Wave 39: staff-events モック (W39 で useUpdateEventForDrag が追加されたため必須).
+const mockUpdateEventDrag = vi.fn();
+vi.mock('@/lib/queries/staff-events', () => ({
+  useWeekStaffEvents: () => ({ data: [], isLoading: false }),
+  buildStaffEventsMap: () => new Map(),
+  useUpdateEventForDrag: () => ({ mutateAsync: mockUpdateEventDrag, isPending: false }),
+}));
 
 import { CourseDayTablePanel } from '../CourseDayTablePanel';
 

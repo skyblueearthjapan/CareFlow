@@ -219,6 +219,43 @@ export function useUpdateEvent(
   });
 }
 
+/**
+ * Wave 39: D&D 用の「動的 staffId 指定」mutation hook.
+ *
+ * 既存の `useUpdateEvent(staffId)` は staffId をフックの引数に固定するため、
+ * 複数 staff の event を一括ハンドルする D&D 経由の呼び出しに不向き。
+ * 本フックは `staffId` を mutate variables 側で渡し、move (= staff 付け替え)
+ * を含む任意の event 更新を扱えるようにする。
+ *
+ * Optimistic update は staffId が変わる D&D move のとき rollback 復元の
+ * 整合性が取りにくい (= 元 staff から消える + 新 staff に出現する 2 段階)
+ * ため簡略化し、success / settled で `staff/events` 全体を invalidate する。
+ */
+export function useUpdateEventForDrag(): UseMutationResult<
+  EventRead,
+  Error,
+  { staffId: string; eventId: string; payload: EventUpdate }
+> {
+  const qc = useQueryClient();
+  const { data: session } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+
+  return useMutation<EventRead, Error, { staffId: string; eventId: string; payload: EventUpdate }>({
+    mutationFn: async ({ staffId, eventId, payload }) => {
+      const parsed = eventUpdateSchema.parse(payload);
+      return fetcher<EventRead>(`${staffEventsBase(staffId)}/${eventId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(parsed),
+        accessToken,
+        refreshToken,
+      });
+    },
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: STAFF_EVENTS_KEY });
+    },
+  });
+}
+
 /** DELETE .../events/{event_id} — soft-removal (optimistic). */
 export function useDeleteEvent(
   staffId: string,
