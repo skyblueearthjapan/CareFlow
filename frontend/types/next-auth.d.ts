@@ -7,6 +7,7 @@ declare module 'next-auth' {
       id: string;
       role: AppRole;
       staffId?: string | null;
+      mustChangePassword?: boolean;
     } & DefaultSession['user'];
     accessToken?: string;
     refreshToken?: string;
@@ -15,6 +16,7 @@ declare module 'next-auth' {
   interface User {
     role: AppRole;
     staffId?: string | null;
+    mustChangePassword?: boolean;
     accessToken: string;
     refreshToken: string;
   }
@@ -24,6 +26,7 @@ declare module 'next-auth/jwt' {
   interface JWT {
     role?: AppRole;
     staffId?: string | null;
+    mustChangePassword?: boolean;
     accessToken?: string;
     refreshToken?: string;
   }

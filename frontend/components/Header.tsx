@@ -9,6 +9,7 @@ import {
   Check,
   Heart,
   HelpCircle,
+  KeyRound,
   LogOut,
   Menu,
   ScrollText,
@@ -238,6 +239,17 @@ function UserMenuButton() {
               )}
             </div>
             <div className="p-2">
+              <Button
+                type="button"
+                variant="ghost"
+                className="w-full justify-start text-sm"
+                asChild
+              >
+                <Link href="/settings/password" onClick={() => setOpen(false)}>
+                  <KeyRound className="mr-2 h-4 w-4" strokeWidth={1.75} />
+                  パスワード変更
+                </Link>
+              </Button>
               <Button
                 type="button"
                 variant="ghost"

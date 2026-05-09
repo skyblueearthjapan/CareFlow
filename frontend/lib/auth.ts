@@ -19,6 +19,9 @@ const loginResponseSchema = z.object({
     name: z.string().optional(),
     role: z.enum(['admin', 'manager', 'staff']),
     staff_id: z.string().nullable().optional(),
+    // Wave 40: BE LoginResponse now carries this flag. Defaults to false to
+    // stay tolerant of older builds while a redeploy rolls out.
+    must_change_password: z.boolean().optional().default(false),
   }),
   tokens: z.object({
     access_token: z.string().min(1),
@@ -62,6 +65,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
             name: user.name ?? user.email.split('@')[0] ?? 'user',
             role: user.role,
             staffId: user.staff_id ?? null,
+            mustChangePassword: user.must_change_password,
             accessToken: tokens.access_token,
             refreshToken: tokens.refresh_token,
           };
@@ -72,14 +76,26 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     }),
   ],
   callbacks: {
-    async jwt({ token, user }) {
+    async jwt({ token, user, trigger, session: updateSession }) {
       if (user) {
         token.role = user.role;
         token.staffId = user.staffId ?? null;
+        token.mustChangePassword = user.mustChangePassword ?? false;
         token.accessToken = user.accessToken;
         token.refreshToken = user.refreshToken;
         if (user.id) {
           token.sub = user.id;
+        }
+      }
+      // Wave 40: after a successful self-service password change the FE calls
+      // `update({ mustChangePassword: false })` which lands here as a `update`
+      // trigger. We trust the FE to clear the flag without round-tripping the
+      // BE because the BE already wrote false to the DB; the next /me lookup
+      // would corroborate.
+      if (trigger === 'update' && updateSession && typeof updateSession === 'object') {
+        const next = (updateSession as { mustChangePassword?: boolean }).mustChangePassword;
+        if (typeof next === 'boolean') {
+          token.mustChangePassword = next;
         }
       }
       return token;
@@ -88,6 +104,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       if (session.user) {
         session.user.role = (token.role as AppRole | undefined) ?? 'staff';
         session.user.staffId = (token.staffId as string | null | undefined) ?? null;
+        session.user.mustChangePassword =
+          (token.mustChangePassword as boolean | undefined) ?? false;
         if (token.sub) {
           session.user.id = token.sub;
         }
