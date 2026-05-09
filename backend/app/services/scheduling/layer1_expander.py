@@ -157,7 +157,11 @@ async def _expand_patient_fixed_visits(
     Returns:
         list of dicts compatible with ``_entries_from_pattern`` output,
         each having: weekday (int), start_time (time), service_minutes (int),
-        course_template_id (UUID | None).
+        course_template_id (UUID | None), slot_index (int 0/1).
+
+    W37 Phase 2-B: ``slot_index`` を entry に含めて返す. 上位ロジック
+    (``_expand_fixed_visits_to_visits``) が ``requires_multiple_staff`` に応じて
+    slot 0/1 をどう扱うかを決める.
     """
     rows = (
         await db.scalars(
@@ -179,6 +183,10 @@ async def _expand_patient_fixed_visits(
                 # Layer 1 はこれが NULL でなければ優先採用、NULL なら office
                 # フォールバックを使う。
                 "course_template_id": fv.course_template_id,
+                # W37 Phase 1: slot_index 0/1 (default 0).
+                # Phase 2-B: 複数スタッフ対応患者 (requires_multiple_staff=True)
+                # では slot 0 と slot 1 の両方を読んで 2 visit に展開する.
+                "slot_index": getattr(fv, "slot_index", 0) or 0,
             }
         )
     return entries
@@ -513,6 +521,22 @@ class PoolEntry(BaseModel):
     frequency_per_week: int | None = None
 
 
+class UnplacedMultiStaffEntry(BaseModel):
+    """W37 hotfix C-2: multi-staff 患者で slot 0/1 のうち片方のみ設定 →
+    visit を生成せず保留扱いにした 1 件のレコード.
+
+    管理者が「どの患者・曜日が片側不備で生成されなかったか」を一目で把握し、
+    UI から PFV 編集に誘導するための情報. レスポンスの warnings として返す.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    patient_id: UUID
+    patient_name: str
+    weekday: int  # 0=Mon..6=Sun
+    reason: str  # "missing_slot_1" or "missing_slot_0"
+
+
 @dataclass
 class Layer1Result:
     """Layer 1 の総合出力. HTTP layer がレスポンス schema に詰め直す."""
@@ -523,6 +547,8 @@ class Layer1Result:
     pool: list[PoolEntry] = field(default_factory=list)
     patients_processed: int = 0
     special_week_applied_count: int = 0
+    # W37 hotfix C-2: multi-staff 片側欠けの保留リスト.
+    unplaced_multi_staff_patients: list[UnplacedMultiStaffEntry] = field(default_factory=list)
 
     @property
     def visits_created_count(self) -> int:
@@ -729,6 +755,7 @@ class Layer1Expander:
                 template=template,
                 iso_year=iso_year,
                 iso_week=iso_week,
+                result=result,
             )
 
         # 従来: 希望パターン (weekly_pattern) ベース
@@ -795,52 +822,161 @@ class Layer1Expander:
         template: CourseTemplate | None = None,
         iso_year: int | None = None,
         iso_week: int | None = None,
+        result: Layer1Result | None = None,
     ) -> list[VisitCreated]:
         """固定枠エントリ (patient_fixed_visits 由来) から visits を INSERT する.
 
         W16 codex fix (重大 1): ``template`` が渡された場合は (template, year, week, weekday)
         の Course を find/create して visit.course_id を埋める。template=None の場合
         (=patient.primary_office_id 未設定) のみ NULL のまま (旧挙動).
-        required_staff_count は patients.required_staff_count を流用する。
 
         W22 Phase A: 各固定枠 ``fe['course_template_id']`` が NULL でなければ
         その template を最優先で採用する (= ドラッグドロップで明示指定された
         コースを翌週以降も継承する)。NULL なら patient.primary_office_id ベースの
         フォールバック ``template`` を使う。
+
+        W37 Phase 2-B: ``patient.requires_multiple_staff`` の値で挙動を分岐する.
+
+        - ``requires_multiple_staff = False`` (既存挙動):
+            slot_index=0 の PFV のみ使用し、weekday ごとに 1 visit 生成.
+            slot_index=1 行が誤って残っていても無視する.
+            ``required_staff_count = 1``.
+
+        - ``requires_multiple_staff = True``:
+            slot_index=0 / slot_index=1 を **同 weekday** で組み合わせて 2 visit
+            INSERT する. 各 visit は同一 (patient_id, visit_date, start_time,
+            end_time) だが **異なる course_id** を持ち、同一 ``visit_group_id``
+            で連結される (Layer 3 の 2 名体制判定用).
+
+            slot 1 が欠けている場合は警告ログを出し、slot 0 のみで 1 visit
+            生成 (案 X 違反だが Layer 1 は寛容. ユーザーが UI で補完するまで
+            動作可能). slot 0 が欠けて slot 1 のみあるという異常ケースも
+            警告して slot 1 のみ 1 visit 生成.
+
+            manual visit との衝突 (W35): 同 (patient, date, start_time) の
+            manual がある場合は 2 visit 共にスキップ (片方だけ残すと整合崩壊).
         """
         created: list[VisitCreated] = []
 
-        # required_staff_count: patients テーブルにカラムが存在する場合のみ使用
-        staff_count = getattr(patient, "required_staff_count", 1) or 1
-        if staff_count not in (1, 2):
-            staff_count = 1
-
-        seen_weekdays: set[int] = set()
+        requires_multi = bool(getattr(patient, "requires_multiple_staff", False))
+        # 既存の required_staff_count フィールド (なければ 1) を 1/2 に正規化.
+        # Phase 2-B では requires_multiple_staff が真なら 2, それ以外は 1 とする.
+        staff_count = 2 if requires_multi else 1
 
         # entry-specific template の照会キャッシュ (同 template_id を何度も
         # SELECT しないようメモ化). Key=template_id, Value=CourseTemplate or None.
         per_entry_template_cache: dict[UUID, CourseTemplate | None] = {}
 
-        # W35: INSERT 前に既存 manual (active) との衝突キーを一括 SELECT して除外する。
-        # fixed_entries の全候補キーを計算してから 1 回の SELECT で衝突を確認する。
-        candidate_keys_for_conflict: list[tuple[UUID, date, time]] = []
+        # ----- (1) weekday ごとに slot_index 0/1 をグルーピング -----
+        # Phase 1 で UNIQUE (patient_id, mode, weekday, slot_index) なので
+        # 同一 (weekday, slot_index) は最大 1 行. 重複が混入していても
+        # 最初の 1 行を採用する.
+        slots_by_weekday: dict[int, dict[int, dict]] = {}
         for fe in fixed_entries:
-            wd = fe["weekday"]
-            st: time = fe["_start_time"]
+            wd = fe.get("weekday")
+            if not isinstance(wd, int) or not (0 <= wd <= 6):
+                continue
+            slot_idx = fe.get("slot_index", 0) or 0
+            if slot_idx not in (0, 1):
+                # 想定外 (CHECK で防がれる) → スキップ
+                continue
+            if requires_multi:
+                # 複数スタッフ対応: slot 0/1 両方を採用候補にする.
+                day_slots = slots_by_weekday.setdefault(wd, {})
+                day_slots.setdefault(slot_idx, fe)
+            else:
+                # 単独スタッフ: slot_index=0 行のみ採用. slot=1 行は無視.
+                if slot_idx != 0:
+                    continue
+                day_slots = slots_by_weekday.setdefault(wd, {})
+                day_slots.setdefault(0, fe)
+
+        # ----- (2) manual conflict 用の候補キー収集 -----
+        # 各 weekday × その day の "primary slot" の (start_time) を 1 つ計算.
+        # 2 visit 体制でも 2 visit は同一 start_time なのでキーは weekday に対して
+        # 1 つで十分.
+        candidate_keys_for_conflict: list[tuple[UUID, date, time]] = []
+        for wd, day_slots in slots_by_weekday.items():
+            # primary slot を選ぶ: slot 0 を優先, 無ければ slot 1.
+            primary_fe = day_slots.get(0) or day_slots.get(1)
+            if primary_fe is None:
+                continue
+            st: time = primary_fe["_start_time"]
             vd = date.fromordinal(week_monday.toordinal() + wd)
             candidate_keys_for_conflict.append((patient.id, vd, st))
         manual_conflict_keys = await self._fetch_manual_conflict_keys(
             db, candidate_keys=candidate_keys_for_conflict
         )
 
-        for fe in fixed_entries:
-            weekday: int = fe["weekday"]
-            if weekday in seen_weekdays:
-                continue
-            seen_weekdays.add(weekday)
+        # ----- (3) weekday ごとに展開 -----
+        for weekday in sorted(slots_by_weekday.keys()):
+            day_slots = slots_by_weekday[weekday]
 
-            start_t: time = fe["_start_time"]
-            service_min: int = fe["service_minutes"]
+            slot0 = day_slots.get(0)
+            slot1 = day_slots.get(1)
+
+            # 採用する slot のリストを決定する.
+            # - 単独スタッフ: slot0 のみ
+            # - 複数スタッフ: slot0 + slot1 (両方あれば 2 visit)
+            #   片方欠けは警告 + 1 visit
+            slots_to_use: list[dict] = []
+            if requires_multi:
+                if slot0 is not None and slot1 is not None:
+                    slots_to_use = [slot0, slot1]
+                elif slot0 is not None and slot1 is None:
+                    # W37 hotfix C-2: silent 1-staff 化を廃止. visit を生成せず
+                    # 「保留プール送り (unplaced_multi_staff)」として管理者に通知する.
+                    logger.warning(
+                        "Layer1: requires_multiple_staff=True patient %s has only slot 0 on"
+                        " weekday=%d (slot 1 missing) — skipping visit generation; user must"
+                        " complete the second slot via UI before 2-staff scheduling.",
+                        patient.id,
+                        weekday,
+                    )
+                    if result is not None:
+                        result.unplaced_multi_staff_patients.append(
+                            UnplacedMultiStaffEntry(
+                                patient_id=patient.id,
+                                patient_name=patient.name,
+                                weekday=weekday,
+                                reason="missing_slot_1",
+                            )
+                        )
+                    continue
+                elif slot1 is not None and slot0 is None:
+                    # W37 hotfix C-2: 異常ケース (slot 0 が欠けて slot 1 のみ存在) も
+                    # 同様に visit 生成をスキップして保留扱い.
+                    logger.warning(
+                        "Layer1: requires_multiple_staff=True patient %s has only slot 1 on"
+                        " weekday=%d (slot 0 missing) — skipping visit generation; user should"
+                        " reorganize slots via UI.",
+                        patient.id,
+                        weekday,
+                    )
+                    if result is not None:
+                        result.unplaced_multi_staff_patients.append(
+                            UnplacedMultiStaffEntry(
+                                patient_id=patient.id,
+                                patient_name=patient.name,
+                                weekday=weekday,
+                                reason="missing_slot_0",
+                            )
+                        )
+                    continue
+                else:
+                    continue  # 両 slot とも無し → 何もしない
+            else:
+                if slot0 is None:
+                    continue
+                slots_to_use = [slot0]
+
+            # ----- 時刻 / 期間 の計算 (primary slot をベースに).
+            # Phase 2-B 仕様: 2 visit は同一 (start_time, end_time) を持つことが前提.
+            # slot 0 と slot 1 で start_time / duration が異なる場合は slot 0 を
+            # 優先採用する (運用上は両 slot 同時刻のはずだが、データ不整合への保険).
+            primary = slots_to_use[0]
+            start_t: time = primary["_start_time"]
+            service_min: int = primary["service_minutes"]
             end_minutes = start_t.hour * 60 + start_t.minute + service_min
             if end_minutes >= 24 * 60:
                 continue
@@ -848,53 +984,97 @@ class Layer1Expander:
 
             visit_date = date.fromordinal(week_monday.toordinal() + weekday)
 
-            # W35: 既存 manual visit との衝突があれば auto INSERT をスキップ
+            # W35: 既存 manual visit との衝突があれば auto INSERT を **2 visit 共に** スキップ.
+            # 片方だけスキップは整合崩壊のため禁止 (W37 Phase 2-B 要件 A-(4)).
             if (patient.id, visit_date, start_t) in manual_conflict_keys:
                 logger.warning(
-                    "Layer1: skipped auto visit (fixed) due to conflict with existing manual visit"
-                    " patient=%s visit_date=%s start_time=%s",
+                    "Layer1: skipped auto visit (fixed) due to conflict with existing manual"
+                    " visit patient=%s visit_date=%s start_time=%s slots=%d",
                     patient.id,
                     visit_date,
                     start_t,
+                    len(slots_to_use),
                 )
                 continue
 
-            # ----- W22 Phase A: 採用する template を決定 -----
-            # 1st: pfv.course_template_id (明示指定) があればそれを優先
-            # 2nd: フォールバック (patient.primary_office_id ベース)
-            entry_template: CourseTemplate | None = template
-            entry_ct_id: UUID | None = fe.get("course_template_id")
-            if entry_ct_id is not None:
-                if entry_ct_id in per_entry_template_cache:
-                    cached = per_entry_template_cache[entry_ct_id]
-                else:
-                    cached = await db.scalar(
-                        select(CourseTemplate).where(
-                            CourseTemplate.id == entry_ct_id,
-                            CourseTemplate.deleted_at.is_(None),
+            # ----- W37 Phase 2-B: manager template + requires_multiple_staff の妥当性チェック -----
+            # manager (M-prefix) は通常 1 人で全コース回す想定のため、複数スタッフ対応とは
+            # 概念的に競合する. データ整合性のため警告のみ出す (動作はそのまま続行).
+            if requires_multi:
+                for fe in slots_to_use:
+                    fe_ct_id = fe.get("course_template_id")
+                    if fe_ct_id is None:
+                        continue
+                    if fe_ct_id in per_entry_template_cache:
+                        ct = per_entry_template_cache[fe_ct_id]
+                    else:
+                        ct = await db.scalar(
+                            select(CourseTemplate).where(
+                                CourseTemplate.id == fe_ct_id,
+                                CourseTemplate.deleted_at.is_(None),
+                            )
                         )
+                        per_entry_template_cache[fe_ct_id] = ct
+                    if ct is not None:
+                        label = (ct.label or "").strip().upper()
+                        if label.startswith("M"):
+                            logger.warning(
+                                "Layer1: requires_multiple_staff=True patient %s is mapped"
+                                " to a manager-prefix course template (label=%s). manager は"
+                                " 通常 1 人カバーのため、複数スタッフ運用と概念競合する可能性"
+                                " あり. weekday=%d slot_index=%d",
+                                patient.id,
+                                ct.label,
+                                weekday,
+                                fe.get("slot_index", 0),
+                            )
+
+            # ----- 各 slot の course_id を解決 (slot ごとに独立) -----
+            slot_course_ids: list[UUID | None] = []
+            for fe in slots_to_use:
+                # 1st: pfv.course_template_id (明示指定) があればそれを優先
+                # 2nd: フォールバック (patient.primary_office_id ベース)
+                entry_template: CourseTemplate | None = template
+                entry_ct_id: UUID | None = fe.get("course_template_id")
+                if entry_ct_id is not None:
+                    if entry_ct_id in per_entry_template_cache:
+                        cached = per_entry_template_cache[entry_ct_id]
+                    else:
+                        cached = await db.scalar(
+                            select(CourseTemplate).where(
+                                CourseTemplate.id == entry_ct_id,
+                                CourseTemplate.deleted_at.is_(None),
+                            )
+                        )
+                        per_entry_template_cache[entry_ct_id] = cached
+                    if cached is not None:
+                        entry_template = cached
+
+                course_id: UUID | None = None
+                if entry_template is not None and iso_year is not None and iso_week is not None:
+                    course = await _get_or_create_course_for_template_week_l1(
+                        db,
+                        template=entry_template,
+                        iso_year=iso_year,
+                        iso_week=iso_week,
+                        weekday=weekday,
                     )
-                    per_entry_template_cache[entry_ct_id] = cached
-                if cached is not None:
-                    entry_template = cached
+                    course_id = course.id
+                slot_course_ids.append(course_id)
 
-            # W16 codex fix (重大 1): course_id を決定
-            course_id: UUID | None = None
-            if entry_template is not None and iso_year is not None and iso_week is not None:
-                course = await _get_or_create_course_for_template_week_l1(
-                    db,
-                    template=entry_template,
-                    iso_year=iso_year,
-                    iso_week=iso_week,
-                    weekday=weekday,
-                )
-                course_id = course.id
-
+            # ----- 2 visit 体制なら visit_group_id を共有 -----
+            num_visits = len(slots_to_use)
             visit_group_id: UUID | None = None
-            if staff_count == 2:
-                visit_group_id = uuid.uuid4()
+            if requires_multi and num_visits >= 1:
+                # 警告経路 (片方欠け = 1 visit) でも visit_group_id を割り当てるかは
+                # 議論の余地があるが, 1 visit のみの場合は group_id 不要 (Layer 3 で
+                # required_staff_count == 2 だけでも 2 名体制と判定されうるが
+                # partner が存在しないので結局 1 名割当になる).
+                # → Phase 2-B 設計指針: 2 visit 揃ったときのみ group_id 共有.
+                if num_visits == 2:
+                    visit_group_id = uuid.uuid4()
 
-            for _slot_idx in range(staff_count):
+            for _fe, course_id in zip(slots_to_use, slot_course_ids, strict=True):
                 visit = Visit(
                     patient_id=patient.id,
                     visit_date=visit_date,
@@ -1148,6 +1328,7 @@ __all__ = [
     "Layer1Expander",
     "Layer1Result",
     "PoolEntry",
+    "UnplacedMultiStaffEntry",
     "VisitCreated",
     "_ensure_manager_courses_for_week",
 ]

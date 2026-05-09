@@ -34,12 +34,13 @@ HTTP 層。
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 
@@ -73,6 +74,7 @@ from app.services.scheduling import (
 )
 from app.services.scheduling.layer1_expander import (
     LAYER1_VISIT_SOURCE,
+    UnplacedMultiStaffEntry,
     _is_special_week_active,
 )
 from app.services.scheduling.layer3_assignment import (
@@ -155,6 +157,11 @@ class GenerateWeekResponse(BaseModel):
     visits_created: list[VisitCreated]
     pool: list[PoolEntry]
     summary: GenerateWeekSummary
+    # W37 hotfix C-2: multi-staff 患者で slot 0/1 のうち片方のみ設定された
+    # 行は visit を生成せず保留扱いにする (silent 1-staff 化を廃止). この
+    # リストは管理者向けに「どの患者・曜日が片側不備で生成されなかったか」を
+    # 通知するために返す.
+    unplaced_multi_staff_patients: list[UnplacedMultiStaffEntry] = []
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +248,8 @@ async def generate_week(
             pool_count=result.pool_count,
             special_week_applied_count=result.special_week_applied_count,
         ),
+        # W37 hotfix C-2: multi-staff 片側欠けの保留リスト
+        unplaced_multi_staff_patients=result.unplaced_multi_staff_patients,
     )
 
 
@@ -356,11 +365,13 @@ async def fix_or_pattern(
             old_weekday = visit.visit_date.weekday()
 
             # 削除対象 pfv の course_template_id を先に取得して引継ぎ
+            # W37 Phase 1: slot_index=0 のみを対象 (1 visit 配置の既存挙動を維持).
             old_fv = await db.scalar(
                 select(PatientFixedVisit).where(
                     PatientFixedVisit.patient_id == patient_id,
                     PatientFixedVisit.mode == fv_mode,
                     PatientFixedVisit.weekday == old_weekday,
+                    PatientFixedVisit.slot_index == 0,
                 )
             )
             preserved_ct_id = old_fv.course_template_id if old_fv is not None else None
@@ -370,6 +381,7 @@ async def fix_or_pattern(
                     PatientFixedVisit.patient_id == patient_id,
                     PatientFixedVisit.mode == fv_mode,
                     PatientFixedVisit.weekday == old_weekday,
+                    PatientFixedVisit.slot_index == 0,
                 )
             )
             # new_weekday の既存行も削除 (upsert)
@@ -378,6 +390,7 @@ async def fix_or_pattern(
                     PatientFixedVisit.patient_id == patient_id,
                     PatientFixedVisit.mode == fv_mode,
                     PatientFixedVisit.weekday == body.new_weekday,
+                    PatientFixedVisit.slot_index == 0,
                 )
             )
 
@@ -388,6 +401,8 @@ async def fix_or_pattern(
                 start_time=body.new_start_time,
                 duration_min=body.new_duration_min,
                 course_template_id=preserved_ct_id,  # W22: 旧 pfv の course_template_id を引継ぎ
+                # W37 Phase 1: 1 visit 配置の挙動を維持するため slot_index=0 を明示.
+                slot_index=0,
             )
             db.add(new_fv)
             await db.flush()
@@ -443,29 +458,55 @@ class PlaceAndFixRequest(BaseModel):
           endpoint を呼ぶ (visit_id を送らない)
         - 既存 visit の時刻変更は ``/fix-or-pattern`` を継続使用
 
+    W37 Phase 2-A: 複数スタッフ対応.
+        - ``staff_count == 2`` (または ``patient.requires_multiple_staff``)
+          のとき、同 patient × 同 visit_date × 同 start_time に
+          ``visit_group_id`` を共有する 2 つの visit を作成する.
+        - リクエスト形式は ``course_template_ids: list[UUID]`` (推奨) で
+          2 つの異なる course_template を受ける. 後方互換として旧形式
+          ``course_template_id: UUID`` も受け付ける (= staff_count=1 と同等).
+
     挙動:
-        1. ``visits`` に新規行を作成 (1 トランザクション内)
+        1. ``visits`` に 1 または 2 行を作成 (1 トランザクション内)
            - patient_id, visit_date = ISO 週から計算, status='planned',
              source='manual'
+           - staff_count=2 の場合は ``visit_group_id = uuid4()`` を 2 visit で共有
         2. ``fix_pattern=True`` のとき: ``patient_fixed_visits`` を upsert
+           - staff_count=1: slot_index=0 の 1 行
+           - staff_count=2: slot_index=0/1 の 2 行 (各 course_template を持つ)
            - mode は ``_is_special_week_active(patient, iso_year, iso_week)``
              で判定 ('special' / 'normal')
-        3. 1 トランザクション (``db.commit()`` 1 回)
+        3. 1 トランザクション (``db.commit()`` 1 回). 失敗時は全 rollback.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     patient_id: UUID
-    # W15-codex-fix (1): ドロップ先のコーステンプレート ID (FE 側のセル =
-    # course_template × weekday × HH:MM に紐付く). 必須化することで Visit.course_id
-    # を確実に埋めて、ScheduleUnifiedView の cellOccupants 計算 (course_id 経由
-    # で template にマップ) で「配置直後に画面から消える」主導線破綻を防ぐ。
-    course_template_id: UUID = Field(
+    # W15-codex-fix (1) → W37 Phase 2-A 拡張:
+    #   - 後方互換: 旧形式 ``course_template_id`` (単一 UUID) を引き続き受ける.
+    #     これは staff_count=1 と同等扱い (slot_index=0 のみ).
+    #   - 推奨: ``course_template_ids`` (list[UUID]; 1 or 2 件).
+    #     staff_count に整合する件数を渡す。staff_count=2 なら 2 件必須で
+    #     かつ 2 件が異なる UUID であること (同一は 400).
+    # 2 つを同時送信した場合は 400.
+    course_template_id: UUID | None = Field(
+        default=None,
         description=(
-            "ドロップ先の course_templates.id (W15-codex-fix). "
-            "BE 側で (template_id, iso_year, iso_week, weekday) に対応する "
-            "courses 行を find/create し、Visit.course_id に紐付ける。"
+            "ドロップ先の course_templates.id (旧形式; W15-codex-fix). "
+            "後方互換のため staff_count=1 のみ。staff_count=2 のときは "
+            "course_template_ids を使うこと。"
         ),
+    )
+    course_template_ids: list[UUID] | None = Field(
+        default=None,
+        description=(
+            "ドロップ先の course_templates.id 配列 (W37 Phase 2-A; 推奨). "
+            "1 件 = 1 名体制 (slot_index=0 のみ), 2 件 = 2 名体制 "
+            "(slot_index=0/1 の 2 visit を visit_group_id 共有で作成). "
+            "件数は staff_count と一致しなければならない."
+        ),
+        min_length=1,
+        max_length=2,
     )
     iso_year: int = Field(ge=2000, le=2100)
     iso_week: int = Field(ge=1, le=53)
@@ -481,14 +522,81 @@ class PlaceAndFixRequest(BaseModel):
         ),
     )
 
+    @model_validator(mode="after")
+    def _validate_course_templates_shape(self) -> PlaceAndFixRequest:
+        """``course_template_id`` / ``course_template_ids`` の形状を検証する.
+
+        ルール (W37 Phase 2-A):
+          - 両方同時指定は 400 相当 (= 422; pydantic ValueError).
+          - どちらも未指定は 400 相当.
+          - ``course_template_ids`` の件数は staff_count と一致.
+          - staff_count=2 のとき 2 件が異なる UUID であること (同一は 400).
+        """
+        has_single = self.course_template_id is not None
+        has_list = self.course_template_ids is not None
+
+        if has_single and has_list:
+            raise ValueError("course_template_id と course_template_ids は同時に指定できません")
+        if not has_single and not has_list:
+            raise ValueError(
+                "course_template_id または course_template_ids のいずれかを指定してください"
+            )
+
+        # 旧形式 (course_template_id) は staff_count=1 のみ許容.
+        if has_single and self.staff_count != 1:
+            raise ValueError(
+                "course_template_id (旧形式) は staff_count=1 のみ. "
+                "staff_count=2 のときは course_template_ids を使ってください"
+            )
+
+        # 新形式: 件数 == staff_count を要求.
+        if has_list:
+            assert self.course_template_ids is not None  # for type-narrowing
+            if len(self.course_template_ids) != self.staff_count:
+                raise ValueError(
+                    f"course_template_ids の件数 ({len(self.course_template_ids)}) "
+                    f"が staff_count ({self.staff_count}) と一致しません"
+                )
+            if self.staff_count == 2 and len(set(self.course_template_ids)) != 2:
+                raise ValueError(
+                    "staff_count=2 では course_template_ids は 2 つの異なる UUID "
+                    "である必要があります (同一コース 2 visit は不可)"
+                )
+
+        return self
+
+    def resolved_template_ids(self) -> list[UUID]:
+        """旧形式 / 新形式を吸収して course_template_id 配列を返す.
+
+        Returns:
+            staff_count == 1 → 1 要素の list, staff_count == 2 → 2 要素の list.
+        """
+        if self.course_template_ids is not None:
+            return list(self.course_template_ids)
+        assert self.course_template_id is not None  # validator で保証
+        return [self.course_template_id]
+
 
 class PlaceAndFixResponse(BaseModel):
-    """``POST /api/v1/schedule/place-and-fix`` のレスポンス."""
+    """``POST /api/v1/schedule/place-and-fix`` のレスポンス.
+
+    W37 Phase 2-A:
+        staff_count=2 のときは ``visits`` / ``fixed_visits`` がそれぞれ 2 件返る.
+        後方互換のため、staff_count=1 (旧挙動) では従来どおり ``visit`` /
+        ``fixed_visit`` 単数フィールドにも 1 件目を入れる.
+    """
 
     model_config = ConfigDict(from_attributes=True)
 
+    # 後方互換 (staff_count=1 の従来クライアント向け; 1 visit / 1 fixed_visit を入れる).
+    # staff_count=2 のときも 1 件目を入れる. None には絶対にならない (visit は必ず作る).
     visit: VisitV2Read
     fixed_visit: PatientFixedVisitV2Read | None = None
+    # W37 Phase 2-A: 複数スタッフ対応で配列形式も追加 (Phase 3 FE で使用).
+    visits: list[VisitV2Read] = Field(default_factory=list)
+    fixed_visits: list[PatientFixedVisitV2Read] = Field(default_factory=list)
+    # 2 名体制で共有される visit_group_id (staff_count=1 のときは None).
+    visit_group_id: UUID | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -668,7 +776,7 @@ async def _get_or_create_course_for_template_week(
     "/place-and-fix",
     response_model=PlaceAndFixResponse,
     status_code=status.HTTP_200_OK,
-    summary="ドロップ即固定枠化 (W15-BE-FIXPATTERN)",
+    summary="ドロップ即固定枠化 (W15-BE-FIXPATTERN / W37 Phase 2-A multi-staff)",
 )
 async def place_and_fix(
     body: PlaceAndFixRequest,
@@ -680,20 +788,31 @@ async def place_and_fix(
     Wave 15 主フロー: ScheduleChangeDialog (今週のみ / 固定枠変更) を廃止し、
     ドロップ即固定枠化に統一。「今週のみ」運用は ``fix_pattern=False`` で表現。
 
+    W37 Phase 2-A: 複数スタッフ対応 (2 名体制).
+        - staff_count=2 (または patient.requires_multiple_staff=True) の場合
+          2 visit + 2 fixed_visit を visit_group_id 共有で作成する.
+        - course_template_ids[0] / [1] が異なる course_template_id を持つ.
+        - 2 つの visit は (patient_id, visit_date, start_time) が同じだが、
+          異なる course_id (= 異なる course_template から派生) と
+          共通 visit_group_id を持つ. partial UNIQUE
+          ``uq_visits_pds_group_active`` (visit_group_id 込み) により共存可能.
+
     挙動:
         1. patient 存在チェック (404 if not found)
         2. ISO (iso_year, iso_week) の月曜 + weekday から visit_date を算出
         3. duration_min から end_time を算出 (24:00 越えは 422)
-        4. ``Visit`` 作成 (status='planned', source='manual',
-           required_staff_count=staff_count)
+        4. ``Visit`` を staff_count 件作成 (status='planned', source='manual',
+           required_staff_count=staff_count, visit_group_id 共有)
         5. ``fix_pattern=True`` のとき:
            - special_week_active 判定で mode を決定
-           - 同一 (patient_id, mode, weekday) の既存行を DELETE → INSERT
-             (upsert) して固定枠を更新
-        6. 1 トランザクションで commit。例外時は rollback。
+           - 同一 (patient_id, mode, weekday, slot_index) の既存行を DELETE
+             → INSERT (upsert) して固定枠を更新
+           - staff_count=2 では slot_index=0 / 1 を 2 行 INSERT
+        6. 1 トランザクションで commit。例外時は全 rollback (片方だけ残らない)。
 
     Returns:
-        ``{"visit": VisitV2Read, "fixed_visit": PatientFixedVisitV2Read | None}``
+        後方互換: ``visit`` / ``fixed_visit`` (1 件目を入れる) と、
+        新形式: ``visits`` / ``fixed_visits`` (配列) と ``visit_group_id``.
     """
     # ----- 入力検証 (Pydantic で済まない範囲) -----
     try:
@@ -715,6 +834,8 @@ async def place_and_fix(
         )
     end_time = time(end_minutes // 60, end_minutes % 60)
 
+    template_ids = body.resolved_template_ids()
+
     try:
         # ----- patient 取得 (存在チェック) -----
         patient = await db.scalar(
@@ -729,96 +850,143 @@ async def place_and_fix(
                 detail="Patient not found",
             )
 
-        # ----- W18 Codex-fix 中-4: クロス-office チェック -----
-        # patient.primary_office_id と course_template.office_id が一致しない
-        # ドロップは UI 上の運用ミスである可能性が高い (例: 拠点 A 患者が
-        # 拠点 B のコーステーブルに誤投下)。BE 側で 422 を返してデータ整合性を
-        # 守る。primary_office_id が NULL の患者は対象外 (任意設定運用)。
-        # CourseTemplate を 1 度だけ SELECT してから helper にも引き継ぐ
-        # (helper 内の SELECT と二度引きしないようにしたいが、helper 側が
-        # すでに self-contained なので素直にこの位置で SELECT する)。
-        if patient.primary_office_id is not None:
-            template_for_office = await db.scalar(
+        # ----- W37 Phase 2-A: requires_multiple_staff フラグとの整合チェック (案 X) -----
+        # 「requires_multiple_staff=True フラグ ON → 2 コース必須」(BE 側で守る).
+        # FE はフラグ ON 患者には staff_count=2 を送る前提だが、誤って 1 で来た
+        # ときに BE が止めることでデータ不整合 (1 コース固定枠化で翌週 1 名展開)
+        # を防ぐ.
+        if patient.requires_multiple_staff and body.staff_count != 2:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    "patient.requires_multiple_staff=true の患者は staff_count=2 "
+                    "で配置する必要があります"
+                ),
+            )
+
+        # ----- W18 Codex-fix 中-4: クロス-office チェック (全 template に対して) -----
+        # patient.primary_office_id と各 course_template.office_id が全て一致する
+        # 必要がある. 1 つでも違えば 422.
+        # primary_office_id が NULL の患者は対象外 (任意設定運用).
+        templates_by_id: dict[UUID, CourseTemplate] = {}
+        for tpl_id in template_ids:
+            tpl = await db.scalar(
                 select(CourseTemplate).where(
-                    CourseTemplate.id == body.course_template_id,
+                    CourseTemplate.id == tpl_id,
                     CourseTemplate.deleted_at.is_(None),
                 )
             )
-            if template_for_office is None:
+            if tpl is None:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    detail="CourseTemplate not found",
+                    detail=f"CourseTemplate not found: {tpl_id}",
                 )
-            if template_for_office.office_id != patient.primary_office_id:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail=(
-                        "patient.primary_office_id と course_template.office_id "
-                        "が一致しません (cross-office drop is not allowed)"
-                    ),
-                )
+            templates_by_id[tpl_id] = tpl
+
+        if patient.primary_office_id is not None:
+            for tpl_id, tpl in templates_by_id.items():
+                if tpl.office_id != patient.primary_office_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail=(
+                            "patient.primary_office_id と course_template.office_id "
+                            f"が一致しません (template={tpl_id}, "
+                            "cross-office drop is not allowed)"
+                        ),
+                    )
+
+        # ----- W37 Phase 2-A: staff_count=2 のとき既存 slot_index=1 行と衝突しないか先行チェック -----
+        # 既存に slot_index=1 がある状態で「新たに staff_count=2 で別 weekday/time に
+        # 配置」しようとした場合、本 endpoint は当該 (mode, weekday) の slot 0/1 を
+        # DELETE→INSERT で upsert するので問題ない (上書き). ただし
+        # 念のためテストで動作を担保する目的の早期検出用に明示の検出はここでは
+        # 行わない (upsert で吸収). 過不足整合性は単体テストで担保する.
 
         # ----- 1a) Course (週次インスタンス) の find/create (W15-codex-fix) -----
         # FE のセル = course_template × weekday に対応する週次 Course を確保し、
-        # Visit.course_id に紐付ける。これがないと cellOccupants 計算 (course_id
-        # 経由で template にマップ) に visit が乗らず、配置直後にカードが画面から
-        # 消える主導線破綻を起こす。
-        course = await _get_or_create_course_for_template_week(
-            db,
-            course_template_id=body.course_template_id,
-            iso_year=body.iso_year,
-            iso_week=body.iso_week,
-            weekday=body.weekday,
-        )
+        # Visit.course_id に紐付ける. staff_count=2 では 2 つの異なる template から
+        # 2 つの異なる Course を確保する.
+        courses: list[Course] = []
+        for tpl_id in template_ids:
+            c = await _get_or_create_course_for_template_week(
+                db,
+                course_template_id=tpl_id,
+                iso_year=body.iso_year,
+                iso_week=body.iso_week,
+                weekday=body.weekday,
+            )
+            courses.append(c)
 
-        # ----- 1) visits に新規行を作成 -----
-        new_visit = Visit(
-            patient_id=body.patient_id,
-            visit_date=visit_date,
-            start_time=body.start_time,
-            end_time=end_time,
-            type="regular",
-            status="planned",
-            source="manual",
-            required_staff_count=body.staff_count,
-            course_id=course.id,
-        )
-        db.add(new_visit)
+        # ----- 1) visits に新規行を作成 (staff_count 件; 共通 visit_group_id) -----
+        # W37 Phase 2-A: 2 名体制では visit_group_id を共有することで partial UNIQUE
+        # uq_visits_pds_group_active (visit_group_id 込み) を通過させる.
+        # 1 名体制 (旧挙動) では visit_group_id=None.
+        shared_visit_group_id: UUID | None = uuid.uuid4() if body.staff_count == 2 else None
+        new_visits: list[Visit] = []
+        for course in courses:
+            v = Visit(
+                patient_id=body.patient_id,
+                visit_date=visit_date,
+                start_time=body.start_time,
+                end_time=end_time,
+                type="regular",
+                status="planned",
+                source="manual",
+                required_staff_count=body.staff_count,
+                course_id=course.id,
+                visit_group_id=shared_visit_group_id,
+            )
+            db.add(v)
+            new_visits.append(v)
         await db.flush()
 
         # ----- 2) fix_pattern=True のとき patient_fixed_visits を upsert -----
-        new_fv: PatientFixedVisit | None = None
+        new_fvs: list[PatientFixedVisit] = []
         if body.fix_pattern:
             is_special = _is_special_week_active(patient, body.iso_year, body.iso_week)
             fv_mode: PatientFixedVisitMode = "special" if is_special else "normal"
 
-            # 同一 (patient_id, mode, weekday) を DELETE して INSERT (upsert)
+            # 同一 (patient_id, mode, weekday) の既存 slot 0/1 を全て DELETE して
+            # INSERT (upsert). staff_count=1 のときは slot_index=0 のみ. ただし
+            # 「以前 staff_count=2 で配置 → 今回 staff_count=1 で再配置」のケースを
+            # 考慮し、staff_count=1 でも slot_index=1 行が残っていると整合性が崩れる
+            # (= 1 名体制患者なのに固定枠 2 件)。本 endpoint では「現在の staff_count
+            # に対応する slot_index 範囲」のみ DELETE し、不要 slot は触らない方針:
+            #   - staff_count=1 → slot_index=0 のみ DELETE (Phase 1 互換挙動を維持).
+            #   - staff_count=2 → slot_index=0 と 1 を DELETE.
+            slot_targets = list(range(body.staff_count))  # [0] or [0, 1]
             await db.execute(
                 delete(PatientFixedVisit).where(
                     PatientFixedVisit.patient_id == body.patient_id,
                     PatientFixedVisit.mode == fv_mode,
                     PatientFixedVisit.weekday == body.weekday,
+                    PatientFixedVisit.slot_index.in_(slot_targets),
                 )
             )
-            new_fv = PatientFixedVisit(
-                patient_id=body.patient_id,
-                mode=fv_mode,
-                weekday=body.weekday,
-                start_time=body.start_time,
-                duration_min=body.duration_min,
-                # W22 Phase A: place-and-fix で受けた course_template_id を保存し、
-                # 翌週以降の Layer 1 でこのテンプレートが優先される (コース継承).
-                course_template_id=body.course_template_id,
-            )
-            db.add(new_fv)
+            for slot_idx, tpl_id in enumerate(template_ids):
+                fv = PatientFixedVisit(
+                    patient_id=body.patient_id,
+                    mode=fv_mode,
+                    weekday=body.weekday,
+                    start_time=body.start_time,
+                    duration_min=body.duration_min,
+                    # W22 Phase A: course_template_id を保存し、翌週以降の Layer 1
+                    # でこのテンプレートが優先される (コース継承).
+                    course_template_id=tpl_id,
+                    # W37 Phase 2-A: slot_index は 0 から順番に割り当てる.
+                    slot_index=slot_idx,
+                )
+                db.add(fv)
+                new_fvs.append(fv)
             await db.flush()
 
         # ----- 3) 1 トランザクション commit -----
         await db.commit()
 
-        await db.refresh(new_visit)
-        if new_fv is not None:
-            await db.refresh(new_fv)
+        for v in new_visits:
+            await db.refresh(v)
+        for fv in new_fvs:
+            await db.refresh(fv)
 
     except HTTPException:
         await db.rollback()
@@ -827,12 +995,18 @@ async def place_and_fix(
         await db.rollback()
         raise
 
-    visit_read = VisitV2Read.model_validate(new_visit)
-    fixed_visit_read = (
-        PatientFixedVisitV2Read.model_validate(new_fv) if new_fv is not None else None
-    )
+    visits_read = [VisitV2Read.model_validate(v) for v in new_visits]
+    fixed_visits_read = [PatientFixedVisitV2Read.model_validate(fv) for fv in new_fvs]
 
-    return PlaceAndFixResponse(visit=visit_read, fixed_visit=fixed_visit_read)
+    return PlaceAndFixResponse(
+        # 後方互換: 1 件目をスカラフィールドにも入れる.
+        visit=visits_read[0],
+        fixed_visit=fixed_visits_read[0] if fixed_visits_read else None,
+        # 新形式: 配列.
+        visits=visits_read,
+        fixed_visits=fixed_visits_read,
+        visit_group_id=shared_visit_group_id,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1040,6 +1214,8 @@ class GenerateWeekOnlyResponse(BaseModel):
     visits_created: int
     courses_touched: int
     message: str
+    # W37 hotfix C-2: multi-staff 片側欠けで visit 生成をスキップした保留リスト.
+    unplaced_multi_staff_patients: list[UnplacedMultiStaffEntry] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -1190,6 +1366,8 @@ async def generate_week_only(
             f"for ISO {payload.iso_year}-W{payload.iso_week}"
             + (f" (office {payload.office_id})" if payload.office_id else "")
         ),
+        # W37 hotfix C-2: multi-staff 片側欠けの保留リスト
+        unplaced_multi_staff_patients=l1_result.unplaced_multi_staff_patients,
     )
 
 

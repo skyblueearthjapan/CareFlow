@@ -98,11 +98,22 @@ export default function PatientDetailPage() {
             {data.name}
             <span className="ml-2 text-sm text-text-secondary tnum">({data.code})</span>
           </h1>
-          {data.deleted_at ? (
-            <span className="inline-block rounded bg-error/10 px-2 py-0.5 text-xs text-error">
-              削除済 ({data.deleted_at})
-            </span>
-          ) : null}
+          <div className="flex flex-wrap items-center gap-2">
+            {data.deleted_at ? (
+              <span className="inline-block rounded bg-error/10 px-2 py-0.5 text-xs text-error">
+                削除済 ({data.deleted_at})
+              </span>
+            ) : null}
+            {/* W37 Phase 3-D: 複数スタッフ対応バッジ */}
+            {data.requires_multiple_staff ? (
+              <span
+                className="inline-block rounded bg-brand-primary/10 px-2 py-0.5 text-xs font-medium text-brand-primary"
+                data-testid="badge-multiple-staff"
+              >
+                2 名対応
+              </span>
+            ) : null}
+          </div>
         </div>
         <div className="flex gap-2">
           {canEdit && !data.deleted_at ? (
@@ -190,6 +201,7 @@ export default function PatientDetailPage() {
         patientId={data.id}
         primaryOfficeId={data.primary_office_id ?? null}
         readOnly={true}
+        requiresMultipleStaff={data.requires_multiple_staff === true}
       />
 
       <Card className="p-5 space-y-3">

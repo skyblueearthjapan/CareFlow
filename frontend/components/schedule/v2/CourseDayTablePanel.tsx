@@ -76,8 +76,15 @@ import {
   type CourseGridVisit,
 } from './CourseDayTable';
 import { CourseWeekOverview, type WeekOverviewVisit } from './CourseWeekOverview';
+import { PartnerCourseDialog } from './PartnerCourseDialog';
 import { PatientCard } from './PatientCard';
-import { POOL_DROPPABLE_ID, PoolGroupedByWeekday } from './PoolPanel';
+import {
+  POOL_DROPPABLE_ID,
+  PoolGroupedByWeekday,
+  buildPoolDraggableId,
+  parsePoolDraggableId,
+} from './PoolPanel';
+import type { SlotIndex } from '@/lib/schemas/v2/patient_fixed_visit';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Constants
@@ -89,15 +96,18 @@ const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土'] as const;
 
 // ─────────────────────────────────────────────────────────────────────────
 // dnd-kit helpers (プール用 draggable id)
+//
+// W37 Phase 3-B: slot 番号付き id (`pool-patient:{id}:slot:0|1`) も解釈する.
+// 構築は `buildPoolDraggableId(id, slot)` (PoolPanel から re-export)、
+// 解析は `parsePoolDraggableId` を経由して旧形式と新形式を統一する。
+// `parsePatientDraggableId` は patient_id だけが欲しい既存の drag end handler
+// 用に薄いラッパとして残す (slot 情報は handleDragEnd で活用する Phase 3-C
+// で `parsePoolDraggableId` を直接呼ぶ想定)。
 // ─────────────────────────────────────────────────────────────────────────
 
-function patientDraggableId(patientId: string): string {
-  return `pool-patient:${patientId}`;
-}
-
 function parsePatientDraggableId(id: string): string | null {
-  if (!id.startsWith('pool-patient:')) return null;
-  return id.slice('pool-patient:'.length);
+  const parsed = parsePoolDraggableId(id);
+  return parsed ? parsed.patientId : null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -306,6 +316,66 @@ export function CourseDayTablePanel({
     return list;
   }, [templates, offices, activeWeekday]);
 
+  // ─── Wave 18 Phase B-6 / Wave 37 P3-C: course_id → course_template_id の逆引き ──
+  // (元 line 467 から移設: visitsByCourse / partner ラベル解決から参照されるため上に移動)
+  const courseTemplateByCourseId = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const c of courses) {
+      // course.code (大文字 1 文字) と template.label の頭文字を office_id + 大文字一致で結ぶ
+      const tpl = templates.find(
+        (t) =>
+          t.office_id === c.office_id &&
+          (t.label || '').trim().slice(0, 1).toUpperCase() === String(c.code).toUpperCase(),
+      );
+      if (tpl) m.set(c.id, tpl.id);
+    }
+    return m;
+  }, [courses, templates]);
+
+  // ─── Wave 37 Phase 3-C / W37 hotfix M-3: course_id → course.code (A/B/C..) マップ ──
+  // 同 group 内 visit を course.code 文字順で sort して slot 0/1 を決定論的に割当てる
+  // (id 文字列順だと UUID 辞書順となりユーザーの「コース 1=A, 2=B」選択順と無関係に
+  // ①/② が入れ替わるため). visit_group_id を持たない visit や course_id=null の
+  // 場合はキーが取れず後段でフォールバック.
+  const courseCodeByCourseId = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const c of courses) {
+      m.set(c.id, String(c.code ?? ''));
+    }
+    return m;
+  }, [courses]);
+
+  // ─── Wave 37 Phase 3-C: visit_group_id → 同 group 内 visit[] のマップ ──
+  // 同じ visit_group_id を持つ 2 visit が BE Phase 2-A で作成される (slot 0/1)。
+  // W37 hotfix M-3: 各 group 内は course.code (A/B/C..) 順で sort.
+  // course.code 同値 / 取得不能なら visit.id 昇順でフォールバック (決定論を維持).
+  const visitsByGroupId = useMemo(() => {
+    const m = new Map<string, typeof weekVisits>();
+    for (const v of weekVisits) {
+      const gid = (v as { visit_group_id?: string | null }).visit_group_id ?? null;
+      if (!gid) continue;
+      const arr = m.get(gid) ?? [];
+      arr.push(v);
+      m.set(gid, arr);
+    }
+    const codeOf = (v: (typeof weekVisits)[number]): string => {
+      const cid = v.course_id ?? null;
+      return cid ? (courseCodeByCourseId.get(cid) ?? '') : '';
+    };
+    for (const [k, arr] of m.entries()) {
+      m.set(
+        k,
+        [...arr].sort((a, b) => {
+          const ca = codeOf(a);
+          const cb = codeOf(b);
+          if (ca !== cb) return ca.localeCompare(cb);
+          return a.id.localeCompare(b.id);
+        }),
+      );
+    }
+    return m;
+  }, [weekVisits, courseCodeByCourseId]);
+
   // ─── visits を (course_id, slot) → CourseGridVisit[] にバケット化 ──
   // course_id 経由で template に逆引きする (BE Layer 1 が visits.course_id を埋める前提)。
   const visitsByCourse = useMemo(() => {
@@ -326,6 +396,47 @@ export function CourseDayTablePanel({
         patient?.sex_restriction as string | null | undefined,
       );
       const sexLabel = sexRestrict ? SEX_RESTRICTION_LABEL[sexRestrict] : null;
+
+      // Wave 37 Phase 3-C: visit_group_id 経由で slot 番号 (1/2) と partner ラベルを解決
+      const groupId = (v as { visit_group_id?: string | null }).visit_group_id ?? null;
+      let groupSlotLabel: 1 | 2 | undefined = undefined;
+      let partnerLabel: string | null = null;
+      let partnerMissing = false;
+      if (groupId) {
+        const groupVisits = visitsByGroupId.get(groupId) ?? [];
+        if (groupVisits.length === 2) {
+          const idx = groupVisits.findIndex((gv) => gv.id === v.id);
+          groupSlotLabel = (idx === 0 ? 1 : 2) as 1 | 2;
+          const partner = groupVisits[idx === 0 ? 1 : 0];
+          if (partner) {
+            const partnerPatient = patientById.get(partner.patient_id);
+            const pname = partnerPatient?.name ?? partner.patient_name ?? partner.patient_id;
+            const partnerCid = partner.course_id ?? null;
+            const partnerTplId = partnerCid
+              ? (courseTemplateByCourseId.get(partnerCid) ?? null)
+              : null;
+            const partnerTpl = partnerTplId ? templates.find((t) => t.id === partnerTplId) : null;
+            const partnerOffice = partnerTpl
+              ? (offices.find((o) => o.id === partnerTpl.office_id)?.name ?? '')
+              : '';
+            const partnerCourseLabel = partnerTpl
+              ? `${partnerOffice ? partnerOffice + '-' : ''}${partnerTpl.label} コース`
+              : '';
+            const partnerSlotMark = idx === 0 ? '②' : '①';
+            partnerLabel = partnerCourseLabel
+              ? `${pname} ${partnerSlotMark} (${partnerCourseLabel})`
+              : `${pname} ${partnerSlotMark}`;
+          }
+        } else if (groupVisits.length === 1) {
+          // group 内に 1 件しかない異常系 (BE で 2 件作成される前提が崩れた場合)
+          groupSlotLabel = 1;
+          partnerMissing = requiresMulti;
+        }
+      } else if (requiresMulti) {
+        // 2 名体制患者なのに visit_group_id が無い = slot 1 が未配置の片割れ
+        partnerMissing = true;
+      }
+
       const arr = m.get(cid) ?? [];
       arr.push({
         id: v.id,
@@ -337,23 +448,61 @@ export function CourseDayTablePanel({
         // 旧フィールド (互換のため保持). 表示判定からは除外.
         required_staff_count: (v.required_staff_count ?? 1) as 1 | 2,
         start_slot: slot,
+        visit_group_id: groupId,
+        group_slot_label: groupSlotLabel,
+        partner_label: partnerLabel,
+        partner_missing: partnerMissing,
       });
       m.set(cid, arr);
     }
     return m;
-  }, [weekVisits, patientById]);
+  }, [weekVisits, patientById, visitsByGroupId, courseTemplateByCourseId, templates, offices]);
+
+  // ─── Wave 37 Phase 3-C: 患者ごとの「配置済み slot」マップ ───────────────
+  //   - visit_group_id 持ち visit (= ペア配置済) → slot 0 / slot 1 の両方を埋める
+  //   - 単独 visit (visit_group_id=null) → slot 0 のみ埋める
+  //   - patient.requires_multiple_staff=true で visit が 1 件だけ + group_id なし
+  //     → slot 0 のみ埋まり (slot 1 が未配置 = 「複数 ① のみ」表示の対象)
+  // PoolGroupedByWeekday 側 (Phase 3-B) で「①/② どちらが空きか」表示するために使う。
+  const assignedSlotsByPatient = useMemo(() => {
+    const m = new Map<string, Set<SlotIndex>>();
+    for (const v of weekVisits) {
+      const gid = (v as { visit_group_id?: string | null }).visit_group_id ?? null;
+      const set = m.get(v.patient_id) ?? new Set<SlotIndex>();
+      if (gid) {
+        // visit_group_id 持ち → group 内の 2 visit でそれぞれ slot 0/1 を埋める。
+        // FE では visitsByGroupId 内の sort 順 (id 昇順) で 0/1 を割当て。
+        const groupVisits = visitsByGroupId.get(gid) ?? [];
+        const idx = groupVisits.findIndex((gv) => gv.id === v.id);
+        set.add(idx === 1 ? 1 : 0);
+      } else {
+        // 単独 visit は slot 0 を埋める (2 名体制の片割れ初期配置)。
+        set.add(0);
+      }
+      m.set(v.patient_id, set);
+    }
+    return m;
+  }, [weekVisits, visitsByGroupId]);
 
   // ─── Pool patients (当週いずれの visit にも未配置な active 患者) ─
+  // W37 Phase 3-B/3-C: requires_multiple_staff=true 患者は slot 単位で配置判定する
+  // ため、ここでは「visit が 1 件でも存在する」だけで除外せず、PoolGroupedByWeekday
+  // 側で assignedSlotsByPatient (slot 0/1) を見て両方埋まっていればカード 0 枚に
+  // 丸める。通常患者 (フラグ OFF) は従来どおり 1 件配置で pool から除外。
   const placedPatientIds = useMemo(() => {
     const s = new Set<string>();
+    const multiStaffIds = new Set(
+      allPatients
+        .filter((p) => (p as { requires_multiple_staff?: boolean | null }).requires_multiple_staff)
+        .map((p) => p.id),
+    );
     for (const v of weekVisits) {
-      if (v.visit_date) {
-        // 該当週の visit を持つ患者は 1 度でも配置されているので除外
+      if (v.visit_date && !multiStaffIds.has(v.patient_id)) {
         s.add(v.patient_id);
       }
     }
     return s;
-  }, [weekVisits]);
+  }, [weekVisits, allPatients]);
 
   const poolPatients = useMemo(
     () =>
@@ -369,20 +518,7 @@ export function CourseDayTablePanel({
   }, [weekVisits]);
 
   // ─── Wave 18 Phase B-6: 週間ビュー用 visits (template × weekday に解決) ──
-  const courseTemplateByCourseId = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const c of courses) {
-      // course.code (大文字 1 文字) と template.label の頭文字を office_id + 大文字一致で結ぶ
-      const tpl = templates.find(
-        (t) =>
-          t.office_id === c.office_id &&
-          (t.label || '').trim().slice(0, 1).toUpperCase() === String(c.code).toUpperCase(),
-      );
-      if (tpl) m.set(c.id, tpl.id);
-    }
-    return m;
-  }, [courses, templates]);
-
+  // courseTemplateByCourseId は上 (visitsByCourse 直前) に移設済み.
   const overviewVisits = useMemo<WeekOverviewVisit[]>(() => {
     const out: WeekOverviewVisit[] = [];
     for (const v of weekVisits) {
@@ -456,6 +592,28 @@ export function CourseDayTablePanel({
   const placeAndFixMut = usePlaceAndFix();
   const deleteVisitMut = useDeleteVisit();
 
+  // ─── Wave 37 Phase 3-C: 相方コース選択ダイアログの state ───────────────
+  // requires_multiple_staff=true の患者を D&D したときにダイアログを表示する。
+  // 確定後に staff_count=2 + course_template_ids: [primary, secondary] で
+  // place-and-fix を呼ぶ。キャンセル時は何もしない (drop 取り消し)。
+  const [partnerDialogState, setPartnerDialogState] = useState<{
+    open: boolean;
+    patientId: string;
+    primaryTemplate: CourseTemplateRead;
+    candidateTemplates: CourseTemplateRead[];
+    primaryOfficeName: string;
+    weekday: number;
+    time: string;
+    durationMin: number;
+    contextLabel: string;
+  } | null>(null);
+
+  const closePartnerDialog = () => {
+    setPartnerDialogState((prev) => (prev ? { ...prev, open: false } : null));
+    // 完全クリアは少し遅延 (animation 終了後)。実害は無いため即座でも可。
+    setTimeout(() => setPartnerDialogState(null), 200);
+  };
+
   const handleDragStart = (e: DragStartEvent) => {
     const id = String(e.active.id);
     setActivePatientId(parsePatientDraggableId(id));
@@ -487,12 +645,50 @@ export function CourseDayTablePanel({
     const cell = parseCourseDayCellId(overId);
     const isPoolDrop = overId === POOL_DROPPABLE_ID;
 
-    // ─── プール患者 → セル (既存挙動: place-and-fix) ───────────────
+    // ─── プール患者 → セル ─────────────────────────────────────────
+    // Wave 37 Phase 3-C: patient.requires_multiple_staff=true なら相方コース
+    //   選択ダイアログを開き、確定後に staff_count=2 で place-and-fix を呼ぶ。
+    //   従来通常患者 (false) は staff_count=1 + course_template_id (旧形式) で呼ぶ。
     if (patientId && cell) {
+      const patient = patientById.get(patientId);
+      const wp = (patient?.weekly_pattern ?? null) as { service_minutes?: number } | null;
+      const durationMin = Math.max(1, Number(wp?.service_minutes ?? 60));
+      const requiresMulti =
+        (patient as { requires_multiple_staff?: boolean | null } | undefined)
+          ?.requires_multiple_staff === true;
+
+      if (requiresMulti) {
+        // 2 名体制: 相方コース選択ダイアログを表示
+        const primaryTemplate = templates.find((t) => t.id === cell.courseTemplateId);
+        if (!primaryTemplate) {
+          toast.error('drop 先のコーステンプレートが見つかりません');
+          return;
+        }
+        // 候補: 同じ office_id + 当該 weekday に capacity > 0 + primary を除外
+        const candidates = templates.filter(
+          (t) =>
+            t.id !== primaryTemplate.id &&
+            t.office_id === primaryTemplate.office_id &&
+            capacityForWeekday(t, cell.weekday) > 0,
+        );
+        const officeName = offices.find((o) => o.id === primaryTemplate.office_id)?.name ?? '';
+        const wdLabel = ['月', '火', '水', '木', '金', '土', '日'][cell.weekday] ?? '';
+        setPartnerDialogState({
+          open: true,
+          patientId,
+          primaryTemplate,
+          candidateTemplates: candidates,
+          primaryOfficeName: officeName,
+          weekday: cell.weekday,
+          time: cell.time,
+          durationMin,
+          contextLabel: `${wdLabel} ${cell.time}`,
+        });
+        return;
+      }
+
+      // 通常患者 (1 名体制): 従来挙動 = staff_count=1 + course_template_id (旧形式)
       try {
-        const patient = patientById.get(patientId);
-        const wp = (patient?.weekly_pattern ?? null) as { service_minutes?: number } | null;
-        const durationMin = Math.max(1, Number(wp?.service_minutes ?? 60));
         await placeAndFixMut.mutateAsync({
           patient_id: patientId,
           course_template_id: cell.courseTemplateId,
@@ -515,6 +711,19 @@ export function CourseDayTablePanel({
     if (visitId) {
       const v = visitById.get(visitId);
       if (!v) return;
+
+      // Wave 37 Phase 3-C / W37 hotfix M-1: visit_group_id 持ち visit (= 2 名体制ペア) の
+      // D&D 操作 (セル間 move + プール戻し両方) は禁止. プール戻しは BE
+      // useDeleteVisit の default cascade_partner=true でペア両方が削除されてしまい、
+      // 意図せず 2 visit を消すため. partner との連動移動は将来 Wave 対応.
+      // 本フェーズは × ボタン削除 → 再配置の手順をユーザに案内する.
+      const visitGroupId = (v as { visit_group_id?: string | null }).visit_group_id ?? null;
+      if (visitGroupId) {
+        toast.warning(
+          '2 名体制 (ペア配置済) の visit はプールへ戻せません / 別セルへ移動できません。× ボタンで一括削除してから再配置してください。',
+        );
+        return;
+      }
 
       // visit → プール: delete のみ (cascade=false; 固定枠は保持)
       if (isPoolDrop) {
@@ -614,6 +823,34 @@ export function CourseDayTablePanel({
         }
         return;
       }
+    }
+  };
+
+  // ─── Wave 37 Phase 3-C: 相方コース確定ハンドラ ─────────────────────
+  // ダイアログで 2 つ目の course_template_id を確定したら、staff_count=2 で
+  // place-and-fix を呼び出す。BE Phase 2-A が 2 visit を visit_group_id 共有で作成。
+  const handlePartnerConfirm = async (secondaryTemplateId: string) => {
+    const ds = partnerDialogState;
+    if (!ds) return;
+    closePartnerDialog();
+    const patient = patientById.get(ds.patientId);
+    try {
+      await placeAndFixMut.mutateAsync({
+        patient_id: ds.patientId,
+        // Wave 37 Phase 3-C: 新形式 (course_template_ids) を使う。
+        // course_template_id (旧) は省略 (両方指定すると Zod superRefine でエラー).
+        course_template_ids: [ds.primaryTemplate.id, secondaryTemplateId],
+        iso_year: isoYear,
+        iso_week: isoWeek,
+        weekday: ds.weekday,
+        start_time: ds.time,
+        duration_min: ds.durationMin,
+        staff_count: 2,
+        fix_pattern: true,
+      });
+      toast.success(`${patient?.name ?? ds.patientId} を ${ds.time} に 2 名体制で固定枠化しました`);
+    } catch (err) {
+      toast.error(`2 名体制配置に失敗しました: ${formatErr(err)}`);
     }
   };
 
@@ -900,16 +1137,32 @@ export function CourseDayTablePanel({
           <aside
             className="sticky top-4 self-start max-h-[calc(100vh-2rem)] overflow-y-auto"
             data-testid="course-day-pool-pane"
+            // Wave 37 Phase 3-C: 配置済み slot マップを serialize してテスト・debug 用に露出.
+            // 形式: "patientId:slot,...,patientId:slot"
+            // Phase 3-B が PoolGroupedByWeekday に assignedSlotsByPatient prop を
+            // 追加し次第、ここで { p.id → Set } マップを直接 prop で渡すように切替える。
+            data-assigned-slots={Array.from(assignedSlotsByPatient.entries())
+              .flatMap(([pid, slots]) => Array.from(slots).map((s) => `${pid}:${s}`))
+              .sort()
+              .join(',')}
           >
-            {/* 保留プール (Wave 18 Phase B-3: 希望曜日別グループ + B-4: 希望時間表示) */}
+            {/*
+              保留プール
+              - Wave 18 Phase B-3: 希望曜日別グループ
+              - Wave 18 Phase B-4: 希望時間表示
+              - W37 Phase 3-B + 3-C: 複数スタッフ対応患者は assignedSlotsByPatient
+                に応じて slot 0 / slot 1 の片方のみ未配置のカードを残す。
+                draggableId に slot を含む。
+            */}
             <PoolGroupedByWeekday
               patients={poolPatients}
               disabled={!canEdit}
-              renderCard={(p) => {
+              assignedSlotsByPatient={assignedSlotsByPatient}
+              renderCard={(p, slotInfo) => {
                 const wp = coerceWeeklyPattern(p.weekly_pattern);
                 return (
                   <PatientCard
-                    draggableId={patientDraggableId(p.id)}
+                    draggableId={buildPoolDraggableId(p.id, slotInfo.slotIndex)}
                     patient={{
                       id: p.id,
                       name: p.name,
@@ -923,6 +1176,8 @@ export function CourseDayTablePanel({
                         (p as { requires_multiple_staff?: boolean | null })
                           .requires_multiple_staff ?? null,
                       patientStatus: p.status ?? null,
+                      slotIndex: slotInfo.slotIndex,
+                      partnerAssigned: slotInfo.partnerAssigned,
                     }}
                     disabled={!canEdit}
                   />
@@ -952,6 +1207,19 @@ export function CourseDayTablePanel({
               })()
             : null}
         </DragOverlay>
+
+        {/* Wave 37 Phase 3-C: 相方コース選択ダイアログ */}
+        {partnerDialogState ? (
+          <PartnerCourseDialog
+            open={partnerDialogState.open}
+            primaryTemplate={partnerDialogState.primaryTemplate}
+            candidateTemplates={partnerDialogState.candidateTemplates}
+            primaryOfficeName={partnerDialogState.primaryOfficeName}
+            contextLabel={partnerDialogState.contextLabel}
+            onConfirm={(secondaryId) => void handlePartnerConfirm(secondaryId)}
+            onCancel={() => closePartnerDialog()}
+          />
+        ) : null}
       </section>
     </DndContext>
   );

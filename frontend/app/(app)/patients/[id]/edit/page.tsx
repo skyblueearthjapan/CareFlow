@@ -125,6 +125,7 @@ export default function EditPatientPage() {
         patientId={id}
         weeklyPattern={patient.weekly_pattern as WeeklyPattern | null | undefined}
         primaryOfficeId={patient.primary_office_id}
+        requiresMultipleStaff={patient.requires_multiple_staff === true}
       />
 
       <EditPageStickyBar
