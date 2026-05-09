@@ -22,7 +22,7 @@ import { X } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
-import { capacityForWeekday, capacityKeyForWeekday } from '@/lib/schemas/v2/course_template';
+import { capacityKeyForWeekday } from '@/lib/schemas/v2/course_template';
 import type { CourseV2Read } from '@/lib/queries/courses';
 import type { StaffRead } from '@/lib/schemas/staff';
 import type { EventRead } from '@/lib/schemas/staff-events';
@@ -76,6 +76,20 @@ export function visitDraggableId(visitId: string): string {
 export function parseVisitDraggableId(id: string): string | null {
   if (!id.startsWith('visit:')) return null;
   return id.slice('visit:'.length);
+}
+
+/**
+ * Wave 39: スタッフイベントの draggable id.
+ * D&D で時刻スライド + 担当者変更を行うため、event ブロックも draggable にする。
+ * 親 (CourseDayTablePanel) は `parseEventDraggableId` で event 移動を識別する。
+ */
+export function eventDraggableId(eventId: string): string {
+  return `event:${eventId}`;
+}
+
+export function parseEventDraggableId(id: string): string | null {
+  if (!id.startsWith('event:')) return null;
+  return id.slice('event:'.length);
 }
 
 /**
@@ -321,7 +335,6 @@ export function CourseDayTable({
   isStaffMutating,
   onDeleteVisit,
 }: CourseDayTableProps) {
-  const eventsMap = staffEventsByStaff ?? new Map<string, EventRead[]>();
   // visits を slot ("HH:MM") → CourseGridVisit[] にバケット化.
   const occupants = useMemo(() => {
     const m = new Map<string, CourseGridVisit[]>();
@@ -333,6 +346,51 @@ export function CourseDayTable({
     return m;
   }, [visits]);
 
+  // Wave 27/39: staffEventsByStaff (default {}) は親が指す Map をそのまま使う.
+  // useMemo で安定化することで下流の useMemo deps が毎レンダー再計算しない.
+  const eventsMap = useMemo(
+    () => staffEventsByStaff ?? new Map<string, EventRead[]>(),
+    [staffEventsByStaff],
+  );
+
+  const assignedStaffId = course?.assigned_staff_id ?? null;
+  const courseExists = course != null;
+
+  // ── Wave 39: 担当スタッフの当日イベントを「start_slot 行に 1 ブロック」表示するため
+  // start_slot → events[] のマップを構築する。各 event は rowSpan で複数行に span。
+  const assignedStaffDayEvents = useMemo(
+    () => (assignedStaffId ? getStaffEventsForWeekday(assignedStaffId, weekday, eventsMap) : []),
+    [assignedStaffId, weekday, eventsMap],
+  );
+
+  /**
+   * Wave 39: event の (rowIndex, rowSpan) を計算する.
+   * - rowIndex: TIME_SLOTS の index (0-based) — start_time が 15 分境界に
+   *   一致しない場合は floor で切り下げ.
+   * - rowSpan: ceil((endMin - flooredStartMin) / 15) — 終了時刻が境界外でも
+   *   1 セル分はカバーする.
+   * - 範囲外 (event が table 表示範囲外) のものはスキップ.
+   */
+  const eventBlocks = useMemo(() => {
+    type EventBlock = { event: EventRead; rowIndex: number; rowSpan: number };
+    const blocks: EventBlock[] = [];
+    for (const ev of assignedStaffDayEvents) {
+      const start = floorToCourseSlot(ev.start_time);
+      if (!start) continue;
+      const rowIndex = TIME_SLOTS.indexOf(start);
+      if (rowIndex < 0) continue;
+      const startMin = toMinutes(ev.start_time);
+      const endMin = toMinutes(ev.end_time);
+      if (startMin == null || endMin == null) continue;
+      const startFlooredMin = toMinutes(start) ?? startMin;
+      const span = Math.max(1, Math.ceil((endMin - startFlooredMin) / TIME_SLOT_MINUTES));
+      // テーブル末尾を超える span は table 末尾までクリップ.
+      const clamped = Math.min(span, TIME_SLOTS.length - rowIndex);
+      blocks.push({ event: ev, rowIndex, rowSpan: clamped });
+    }
+    return blocks;
+  }, [assignedStaffDayEvents]);
+
   const capKey = capacityKeyForWeekday(weekday);
   // capacity が 0 の曜日 (例: 日曜) は描画しない (親が事前に判定するが念のため)
   if (!capKey) return null;
@@ -340,9 +398,6 @@ export function CourseDayTable({
   const headerLabel = officeName
     ? `${officeName}-${template.label} コース (6)`
     : `${template.label} コース (6)`;
-
-  const assignedStaffId = course?.assigned_staff_id ?? null;
-  const courseExists = course != null;
 
   return (
     <section
@@ -427,6 +482,24 @@ export function CourseDayTable({
               onDeleteVisit={onDeleteVisit}
             />
           ))}
+
+          {/*
+            Wave 39: スタッフイベントの 1 ブロック表示 (rowSpan).
+            - grid-row: ${rowIndex + 2} / span ${rowSpan} で複数 15min 行をまとめて 1 ブロック化.
+            - grid-column: 2 / span 4 (時間帯列を除く 4 列分) でデータ領域に重ねる.
+            - draggable=true (event:{id}) で時刻スライド + 担当者変更を可能にする.
+            - pointer-events-none を付けない (= drag 可能, ただし下層 cell の droppable 判定を
+              妨げないよう visit 配置時のクリック要件は無いので問題なし).
+          */}
+          {eventBlocks.map(({ event: ev, rowIndex, rowSpan }) => (
+            <CourseEventBlock
+              key={`event-block-${ev.id}`}
+              event={ev}
+              rowIndex={rowIndex}
+              rowSpan={rowSpan}
+              canEdit={canEdit}
+            />
+          ))}
         </div>
       </div>
     </section>
@@ -462,6 +535,8 @@ function CourseTimeRow({
   onDeleteVisit,
 }: CourseTimeRowProps) {
   // Wave 27 Phase B-3: 担当スタッフがこのスロット時間帯にイベントを持つか判定
+  // (visit と event の重複時の ⚠ バッジ用に残す。Wave 39 で event の本文表示は
+  // 親側 `eventBlocks` (rowSpan 1 ブロック) に統合した).
   const eventsMap = staffEventsByStaff ?? new Map<string, EventRead[]>();
   const staffDayEvents = assignedStaffId
     ? getStaffEventsForWeekday(assignedStaffId, weekday, eventsMap)
@@ -469,8 +544,6 @@ function CourseTimeRow({
   const conflictingEvent =
     assignedStaffId && occupants.length > 0 ? hasEventConflict(time, staffDayEvents) : null;
 
-  // Wave 28 Phase B-1: このスロット (15分) にかかる event を抽出 (visit の有無に関わらず表示)
-  const eventsAtSlot = staffDayEvents.filter((e) => time >= e.start_time && time < e.end_time);
   const droppableId = courseDayCellDroppableId(weekday, templateId, time);
   const { isOver, setNodeRef } = useDroppable({
     id: droppableId,
@@ -511,24 +584,10 @@ function CourseTimeRow({
       >
         {occupants.length === 0 ? (
           // ── 空セル: 4 列を空のまま描画 (droppable hit-area 維持) ─────
-          // Wave 28 B-1: 担当スタッフの event があれば氏名列に表示
+          // Wave 39: 担当スタッフの event は親側 `eventBlocks` (rowSpan 1 ブロック) で
+          //   描画するためここでは出さない。空セルは droppable のみ。
           <>
-            <div className="border-r border-border-default/40 px-1 py-0.5 text-[11px] leading-tight text-text-primary truncate">
-              {eventsAtSlot.length > 0 ? (
-                <div
-                  className="text-[10px] text-yellow-800 bg-yellow-100 px-1 rounded ring-1 ring-yellow-300 truncate"
-                  data-testid="event-slot-row"
-                  title={eventsAtSlot.map((e) => formatEventLabel(e)).join(', ')}
-                >
-                  {eventsAtSlot.map((e, i) => (
-                    <span key={e.id}>
-                      {i > 0 ? ', ' : ''}
-                      {formatEventLabel(e)}
-                    </span>
-                  ))}
-                </div>
-              ) : null}
-            </div>
+            <div className="border-r border-border-default/40 px-1 py-0.5 text-[11px] leading-tight text-text-primary truncate" />
             <div className="border-r border-border-default/40 px-1 py-0.5 text-[10px] leading-tight text-text-secondary truncate" />
             <div className="border-r border-border-default/40 px-1 py-0.5 text-center text-[10px] leading-tight text-text-secondary" />
             <div className="px-1 py-0.5 text-[10px] leading-tight text-text-secondary truncate" />
@@ -553,7 +612,9 @@ function CourseTimeRow({
                     isMultiStaff={o.patient_requires_multiple_staff}
                   />
                 ))}
-                {/* Wave 27 Phase B-3: 担当スタッフのイベント重複 warning バッジ */}
+                {/* Wave 27 Phase B-3: 担当スタッフのイベント重複 warning バッジ
+                    (Wave 39 でイベント本文は親側 rowSpan ブロックに統合したが、
+                    visit と event 重複の警告は visit 行に残す). */}
                 {conflictingEvent ? (
                   <span
                     className="inline-flex items-center gap-0.5 rounded bg-yellow-100 px-1 py-0.5 text-[10px] font-semibold text-yellow-800 ring-1 ring-yellow-300"
@@ -562,21 +623,6 @@ function CourseTimeRow({
                   >
                     ⚠ 担当不可
                   </span>
-                ) : null}
-                {/* Wave 28 B-1: 担当スタッフのイベント行 (visit と並んで表示) */}
-                {eventsAtSlot.length > 0 ? (
-                  <div
-                    className="text-[10px] text-yellow-800 bg-yellow-100 px-1 rounded ring-1 ring-yellow-300 truncate"
-                    data-testid="event-slot-row"
-                    title={eventsAtSlot.map((e) => formatEventLabel(e)).join(', ')}
-                  >
-                    {eventsAtSlot.map((e, i) => (
-                      <span key={e.id}>
-                        {i > 0 ? ', ' : ''}
-                        {formatEventLabel(e)}
-                      </span>
-                    ))}
-                  </div>
                 ) : null}
               </div>
             </div>
@@ -802,8 +848,71 @@ function OccupantNameDraggable({
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// Wave 39: スタッフイベントの 1 ブロック表示 (rowSpan + draggable)
+// ─────────────────────────────────────────────────────────────────────────
+
+interface CourseEventBlockProps {
+  event: EventRead;
+  /** TIME_SLOTS 上の 0-based 開始 row index. */
+  rowIndex: number;
+  /** 何 row 分 span するか (= ceil((endMin - flooredStartMin) / 15)). */
+  rowSpan: number;
+  canEdit: boolean;
+}
+
+/**
+ * 1 件のスタッフイベントを「rowSpan で複数行を 1 ブロック」表示するコンポーネント.
+ *
+ * - grid-row: ${rowIndex + 2} / span ${rowSpan} で時間帯セルに重ねる.
+ *   (column header が +1 行を占有するので +2 オフセット).
+ * - grid-column: 2 / span 4 で時間列を除いた 4 列分を覆う.
+ * - draggable id = `event:${event.id}` で親 panel が D&D を識別する.
+ * - 配色: 半透明イエロー背景 + 左ボーダー強調 (event.type ごとに色変えは将来 Wave で).
+ */
+function CourseEventBlock({ event, rowIndex, rowSpan, canEdit }: CourseEventBlockProps) {
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+    id: eventDraggableId(event.id),
+    disabled: !canEdit,
+    data: { kind: 'staff-event', eventId: event.id },
+  });
+
+  const labelLines = formatEventLabelLines(event);
+  return (
+    <div
+      ref={setNodeRef}
+      data-testid={`event-block-${event.id}`}
+      data-event-id={event.id}
+      data-event-row-span={rowSpan}
+      data-event-start-time={event.start_time}
+      title={`${labelLines.title} ${labelLines.time}`}
+      style={{
+        gridRow: `${rowIndex + 2} / span ${rowSpan}`,
+        gridColumn: '2 / span 4',
+      }}
+      className={cn(
+        'z-10 m-px flex flex-col gap-0.5 overflow-hidden rounded border-l-4 border-yellow-500 bg-yellow-50/80 px-1.5 py-0.5 text-[11px] leading-tight text-yellow-900 shadow-sm ring-1 ring-yellow-300',
+        canEdit ? 'cursor-grab active:cursor-grabbing select-none touch-none' : '',
+        isDragging ? 'opacity-50 ring-2 ring-yellow-500' : '',
+      )}
+      {...(canEdit ? listeners : {})}
+      {...(canEdit ? attributes : {})}
+    >
+      <span className="truncate font-semibold">{labelLines.title}</span>
+      <span className="truncate text-[10px] text-yellow-800">{labelLines.time}</span>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────
+
+/** "HH:MM[:SS]" → 通算分 (= H*60+M). 不正な入力は null. (Wave 39 helper) */
+export function toMinutes(rawTime: string): number | null {
+  const m = /^([01]\d|2[0-3]):([0-5]\d)/.exec(rawTime);
+  if (!m) return null;
+  return Number(m[1]) * 60 + Number(m[2]);
+}
 
 /** "HH:MM[:SS]" → 15 分境界に切り下げた "HH:MM". 範囲外 (9:30 未満 / 18:00 超) は null. */
 export function floorToCourseSlot(rawTime: string): string | null {

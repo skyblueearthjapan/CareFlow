@@ -143,17 +143,21 @@ function renderTable(
   );
 }
 
-describe('CourseDayTable セル内 event 表示 (Wave 28 B-1)', () => {
-  it('5. 空スロット (visits なし) にスタッフの event があれば event-slot-row が描画される', () => {
+describe('CourseDayTable セル内 event 表示 (Wave 28 B-1 → Wave 39 更新)', () => {
+  // Wave 39: 各スロット個別の `event-slot-row` を廃止し、start_time 行に
+  //   rowSpan で 1 ブロック (`event-block-{id}`) を描画する形式に変更.
+  it('5. 空スロット (visits なし) にスタッフの event があれば event-block (1 件) が描画される', () => {
     renderTable();
-    // 10:00〜12:00 の event → 10:00, 10:15, 10:30, 10:45, 11:00, 11:15, 11:30, 11:45 の各スロットに表示
-    const rows = screen.getAllByTestId('event-slot-row');
-    expect(rows.length).toBeGreaterThan(0);
-    expect(rows[0]).toHaveTextContent('研修');
-    expect(rows[0]).toHaveTextContent('10:00-12:00');
+    // 10:00〜12:00 (2h) の event → 1 ブロックのみ (rowSpan=8)
+    const block = screen.getByTestId('event-block-event-1');
+    expect(block).toHaveTextContent('研修');
+    expect(block).toHaveTextContent('10:00-12:00');
+    expect(block.getAttribute('data-event-row-span')).toBe('8');
+    // 旧 event-slot-row は廃止
+    expect(screen.queryAllByTestId('event-slot-row').length).toBe(0);
   });
 
-  it('6. visit があるスロットにも event-slot-row が描画される', () => {
+  it('6. visit があるスロットでも event-block は別レイヤーとして描画される', () => {
     renderTable({
       visits: [
         {
@@ -168,12 +172,14 @@ describe('CourseDayTable セル内 event 表示 (Wave 28 B-1)', () => {
         },
       ],
     });
+    // visit 行は描画される
     expect(screen.getByTestId('course-occupant-name-v-1')).toBeInTheDocument();
-    expect(screen.getAllByTestId('event-slot-row').length).toBeGreaterThan(0);
+    // event ブロックも描画される (別レイヤー)
+    expect(screen.getByTestId('event-block-event-1')).toBeInTheDocument();
   });
 
-  it('7. 担当スタッフ未設定の場合は event-slot-row が描画されない', () => {
+  it('7. 担当スタッフ未設定の場合は event-block が描画されない', () => {
     renderTable({ assignedStaffId: null });
-    expect(screen.queryByTestId('event-slot-row')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('event-block-event-1')).not.toBeInTheDocument();
   });
 });
