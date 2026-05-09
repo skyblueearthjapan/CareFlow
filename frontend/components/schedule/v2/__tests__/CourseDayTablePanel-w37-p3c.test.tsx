@@ -868,4 +868,68 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
     // 警告色クラス (text-warning) が付与される
     expect(multiCell.className).toContain('text-warning');
   });
+
+  // ─── W37 hotfix M-1: visit_group_id 持ち visit を pool drop しても block ───
+  it('M1. visit_group_id 持ちの visit を pool ドロップ → toast 警告で阻止 (delete 呼ばれない)', async () => {
+    setupHooks({
+      templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
+      courses: [
+        {
+          id: 'course-1',
+          iso_year: 2026,
+          iso_week: 19,
+          weekday: 0,
+          code: 'A',
+          office_id: 'office-honten',
+          assigned_staff_id: null,
+          course_status: 'course_fixed',
+          deleted_at: null,
+        },
+      ],
+      visits: [
+        {
+          id: 'v-pair-1',
+          patient_id: PATIENT_UUID,
+          patient_name: '田中 太郎',
+          visit_date: '2026-05-04',
+          start_time: '10:00:00',
+          primary_staff_id: null,
+          course_id: 'course-1',
+          required_staff_count: 2,
+          visit_group_id: 'grp-1',
+          type: 'regular',
+          status: 'planned',
+          source: 'allocate',
+          end_time: '11:00:00',
+        },
+      ],
+      patients: [
+        {
+          id: PATIENT_UUID,
+          name: '田中 太郎',
+          kana: null,
+          status: 'active',
+          requires_multiple_staff: true,
+        },
+      ],
+    });
+    render(
+      <CourseDayTablePanel
+        weekStart={monday(2026, 5, 4)}
+        officeId="office-honten"
+        canEdit={true}
+        showAcceptanceLayer={false}
+      />,
+    );
+    // pool drop (over.id === 'pool')
+    await dndState.capturedHandlers.onDragEnd!({
+      active: { id: 'visit:v-pair-1' },
+      over: { id: 'pool' },
+    });
+    // toast.warning が呼ばれて止まる
+    expect(mockToast.warning).toHaveBeenCalled();
+    expect(mockToast.warning.mock.calls[0][0]).toMatch(/プール|ペア配置/);
+    // delete は呼ばれない (= partner が誤って削除されない)
+    expect(mockDeleteVisit).not.toHaveBeenCalled();
+  });
 });

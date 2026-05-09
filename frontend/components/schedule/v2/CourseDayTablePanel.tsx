@@ -691,13 +691,15 @@ export function CourseDayTablePanel({
       const v = visitById.get(visitId);
       if (!v) return;
 
-      // Wave 37 Phase 3-C: visit_group_id 持ち visit (= 2 名体制ペア) の D&D 移動は禁止。
-      // partner visit との連動移動は将来 Wave 対応。本フェーズは × ボタン削除 →
-      // 再配置の手順をユーザに案内する。
+      // Wave 37 Phase 3-C / W37 hotfix M-1: visit_group_id 持ち visit (= 2 名体制ペア) の
+      // D&D 操作 (セル間 move + プール戻し両方) は禁止. プール戻しは BE
+      // useDeleteVisit の default cascade_partner=true でペア両方が削除されてしまい、
+      // 意図せず 2 visit を消すため. partner との連動移動は将来 Wave 対応.
+      // 本フェーズは × ボタン削除 → 再配置の手順をユーザに案内する.
       const visitGroupId = (v as { visit_group_id?: string | null }).visit_group_id ?? null;
-      if (visitGroupId && cell) {
+      if (visitGroupId) {
         toast.warning(
-          '2 名体制 (ペア配置済) の visit は D&D 移動できません。× ボタンで一旦削除してから再配置してください。',
+          '2 名体制 (ペア配置済) の visit はプールへ戻せません / 別セルへ移動できません。× ボタンで一括削除してから再配置してください。',
         );
         return;
       }
