@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 from datetime import date, time
+from uuid import UUID
 
 import pytest
 from sqlalchemy import select
@@ -741,3 +742,300 @@ async def test_from_week_saves_course_template_id(client, db) -> None:
     )
     assert pfv_row is not None
     assert pfv_row.course_template_id == tpl.id
+
+
+# ---------------------------------------------------------------------------
+# W37 hotfix C-1: from-week / from-week-bulk multi-staff (slot 0/1) サポート
+# ---------------------------------------------------------------------------
+
+
+async def _make_multi_staff_patient(db, code: str) -> Patient:
+    """requires_multiple_staff=True の患者を作る."""
+    p = Patient(
+        code=code,
+        name=f"複数{code}",
+        status="active",
+        requires_multiple_staff=True,
+    )
+    db.add(p)
+    await db.commit()
+    await db.refresh(p)
+    return p
+
+
+async def _make_paired_visits(
+    db,
+    *,
+    patient: Patient,
+    visit_date: date,
+    start: str = "09:00",
+    end: str = "10:00",
+    course_a_id: UUID | None = None,
+    course_b_id: UUID | None = None,
+) -> tuple[Visit, Visit]:
+    """同時刻 + 同 visit_group_id のペア (multi-staff) を作る."""
+    import uuid as _uuid
+
+    sh, sm = (int(x) for x in start.split(":"))
+    eh, em = (int(x) for x in end.split(":"))
+    grp = _uuid.uuid4()
+    v1 = Visit(
+        patient_id=patient.id,
+        visit_date=visit_date,
+        start_time=time(sh, sm),
+        end_time=time(eh, em),
+        type="regular",
+        status="planned",
+        source="auto",
+        required_staff_count=2,
+        visit_group_id=grp,
+        course_id=course_a_id,
+    )
+    v2 = Visit(
+        patient_id=patient.id,
+        visit_date=visit_date,
+        start_time=time(sh, sm),
+        end_time=time(eh, em),
+        type="regular",
+        status="planned",
+        source="auto",
+        required_staff_count=2,
+        visit_group_id=grp,
+        course_id=course_b_id,
+    )
+    db.add_all([v1, v2])
+    await db.commit()
+    await db.refresh(v1)
+    await db.refresh(v2)
+    return v1, v2
+
+
+@pytest.mark.asyncio
+async def test_from_week_multi_staff_pair_creates_two_pfv(client, db) -> None:
+    """W37 hotfix C-1: requires_multiple_staff=true 患者の from-week で
+    同 visit_group_id のペア → slot 0/1 の 2 PFV が作成される."""
+    admin = await _make_user(db, "fw-multi-1-admin@example.com", "admin")
+    patient = await _make_multi_staff_patient(db, "FW-MS-001")
+
+    # 2 visit (同時刻 + 同 visit_group_id) を作成 — slot 0/1 ペア相当
+    await _make_paired_visits(db, patient=patient, visit_date=TEST_WEEK_MONDAY)
+
+    res = await client.post(
+        f"/api/v1/patients/{patient.id}/fixed-visits/from-week"
+        f"?iso_year={TEST_ISO_YEAR}&iso_week={TEST_ISO_WEEK}",
+        headers=_bearer(admin),
+    )
+    assert res.status_code == 200, res.text
+    data = res.json()
+    # 2 行返る (slot 0/1)
+    assert len(data) == 2
+    slots = sorted([r["slot_index"] for r in data])
+    assert slots == [0, 1]
+    assert all(r["weekday"] == 0 for r in data)
+    assert all(r["start_time"].startswith("09:00") for r in data)
+
+    # DB 確認: 2 行 + slot 0/1
+    rows = (
+        await db.scalars(
+            select(PatientFixedVisit)
+            .where(PatientFixedVisit.patient_id == patient.id)
+            .order_by(PatientFixedVisit.slot_index)
+        )
+    ).all()
+    assert len(rows) == 2
+    assert [r.slot_index for r in rows] == [0, 1]
+
+
+@pytest.mark.asyncio
+async def test_from_week_multi_staff_pair_preserves_course_template_per_slot(client, db) -> None:
+    """slot 0/1 で異なる course を持つペア → それぞれ正しい course_template_id が
+    pfv に書き戻される (visit.id 昇順 sort で決定論)."""
+    admin = await _make_user(db, "fw-multi-2-admin@example.com", "admin")
+    patient = await _make_multi_staff_patient(db, "FW-MS-002")
+
+    office = await _make_office(db, "FW-MS-事業所")
+    tpl_a = await _make_course_template(db, office.id, label="A")
+    tpl_b = await _make_course_template(db, office.id, label="B")
+    course_a = Course(
+        iso_year=TEST_ISO_YEAR,
+        iso_week=TEST_ISO_WEEK,
+        weekday=0,
+        code="A",
+        office_id=office.id,
+        template_id=tpl_a.id,
+    )
+    course_b = Course(
+        iso_year=TEST_ISO_YEAR,
+        iso_week=TEST_ISO_WEEK,
+        weekday=0,
+        code="B",
+        office_id=office.id,
+        template_id=tpl_b.id,
+    )
+    db.add_all([course_a, course_b])
+    await db.commit()
+    await db.refresh(course_a)
+    await db.refresh(course_b)
+
+    v1, v2 = await _make_paired_visits(
+        db,
+        patient=patient,
+        visit_date=TEST_WEEK_MONDAY,
+        course_a_id=course_a.id,
+        course_b_id=course_b.id,
+    )
+
+    res = await client.post(
+        f"/api/v1/patients/{patient.id}/fixed-visits/from-week"
+        f"?iso_year={TEST_ISO_YEAR}&iso_week={TEST_ISO_WEEK}",
+        headers=_bearer(admin),
+    )
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert len(data) == 2
+
+    # visit.id 昇順で slot 0/1 が割り当てられる (決定論)
+    sorted_pair = sorted([v1, v2], key=lambda x: str(x.id))
+    expected_slot0_course = course_a.id if sorted_pair[0].course_id == course_a.id else course_b.id
+    expected_slot1_course = course_a.id if sorted_pair[1].course_id == course_a.id else course_b.id
+    expected_slot0_tpl = tpl_a.id if expected_slot0_course == course_a.id else tpl_b.id
+    expected_slot1_tpl = tpl_a.id if expected_slot1_course == course_a.id else tpl_b.id
+
+    by_slot = {r["slot_index"]: r for r in data}
+    assert by_slot[0]["course_template_id"] == str(expected_slot0_tpl)
+    assert by_slot[1]["course_template_id"] == str(expected_slot1_tpl)
+
+
+@pytest.mark.asyncio
+async def test_from_week_single_staff_with_two_visits_same_weekday_409(client, db) -> None:
+    """C-1 regression: requires_multiple_staff=False で同 weekday に 2 visit → 409 (異常)."""
+    admin = await _make_user(db, "fw-multi-3-admin@example.com", "admin")
+    patient = await _make_patient(db, "FW-MS-003")  # 通常患者
+
+    # 異なる時刻に 2 visit (multi-staff ではない)
+    await _make_visit(db, patient=patient, visit_date=TEST_WEEK_MONDAY, start="09:00", end="10:00")
+    await _make_visit(db, patient=patient, visit_date=TEST_WEEK_MONDAY, start="14:00", end="15:00")
+
+    res = await client.post(
+        f"/api/v1/patients/{patient.id}/fixed-visits/from-week"
+        f"?iso_year={TEST_ISO_YEAR}&iso_week={TEST_ISO_WEEK}",
+        headers=_bearer(admin),
+    )
+    assert res.status_code == 409, res.text
+
+
+@pytest.mark.asyncio
+async def test_from_week_multi_staff_three_visits_same_weekday_409(client, db) -> None:
+    """C-1 regression: requires_multiple_staff=True でも 3+ visit は 409."""
+    admin = await _make_user(db, "fw-multi-4-admin@example.com", "admin")
+    patient = await _make_multi_staff_patient(db, "FW-MS-004")
+
+    # ペア 2 件 + 余計な 1 件 = 計 3 件
+    await _make_paired_visits(db, patient=patient, visit_date=TEST_WEEK_MONDAY)
+    await _make_visit(db, patient=patient, visit_date=TEST_WEEK_MONDAY, start="14:00", end="15:00")
+
+    res = await client.post(
+        f"/api/v1/patients/{patient.id}/fixed-visits/from-week"
+        f"?iso_year={TEST_ISO_YEAR}&iso_week={TEST_ISO_WEEK}",
+        headers=_bearer(admin),
+    )
+    assert res.status_code == 409, res.text
+
+
+@pytest.mark.asyncio
+async def test_from_week_multi_staff_two_visits_different_groups_409(client, db) -> None:
+    """C-1 regression: requires_multiple_staff=True でも visit_group_id が一致しない
+    2 visit は 409 (= ペアではない)."""
+    import uuid as _uuid
+
+    admin = await _make_user(db, "fw-multi-5-admin@example.com", "admin")
+    patient = await _make_multi_staff_patient(db, "FW-MS-005")
+
+    # 2 visit ともに visit_group_id を持つが、別 group
+    v1 = Visit(
+        patient_id=patient.id,
+        visit_date=TEST_WEEK_MONDAY,
+        start_time=time(9, 0),
+        end_time=time(10, 0),
+        type="regular",
+        status="planned",
+        source="auto",
+        required_staff_count=2,
+        visit_group_id=_uuid.uuid4(),
+    )
+    v2 = Visit(
+        patient_id=patient.id,
+        visit_date=TEST_WEEK_MONDAY,
+        start_time=time(11, 0),
+        end_time=time(12, 0),
+        type="regular",
+        status="planned",
+        source="auto",
+        required_staff_count=2,
+        visit_group_id=_uuid.uuid4(),  # 別 group
+    )
+    db.add_all([v1, v2])
+    await db.commit()
+
+    res = await client.post(
+        f"/api/v1/patients/{patient.id}/fixed-visits/from-week"
+        f"?iso_year={TEST_ISO_YEAR}&iso_week={TEST_ISO_WEEK}",
+        headers=_bearer(admin),
+    )
+    assert res.status_code == 409, res.text
+
+
+@pytest.mark.asyncio
+async def test_from_week_bulk_multi_staff_pair_creates_two_pfv(client, db) -> None:
+    """C-1: from-week-bulk でも multi-staff ペア → 2 PFV が作成される."""
+    admin = await _make_user(db, "fwb-multi-1-admin@example.com", "admin")
+    patient = await _make_multi_staff_patient(db, "FWB-MS-001")
+
+    await _make_paired_visits(db, patient=patient, visit_date=TEST_WEEK_MONDAY)
+
+    res = await client.post(
+        f"/api/v1/patients/fixed-visits/from-week-bulk"
+        f"?iso_year={TEST_ISO_YEAR}&iso_week={TEST_ISO_WEEK}",
+        headers=_bearer(admin),
+    )
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert str(patient.id) in data["patients"]
+
+    # DB 確認: 2 行 + slot 0/1
+    rows = (
+        await db.scalars(
+            select(PatientFixedVisit)
+            .where(PatientFixedVisit.patient_id == patient.id)
+            .order_by(PatientFixedVisit.slot_index)
+        )
+    ).all()
+    assert len(rows) == 2
+    assert [r.slot_index for r in rows] == [0, 1]
+
+
+@pytest.mark.asyncio
+async def test_from_week_bulk_skips_invalid_duplicate(client, db) -> None:
+    """C-1: bulk では 3+ visit / 異常重複は当該患者だけ silent skip (他患者は処理続行)."""
+    admin = await _make_user(db, "fwb-multi-2-admin@example.com", "admin")
+
+    # patient1: 通常患者 + 1 visit (= 正常処理される)
+    p1 = await _make_patient(db, "FWB-MS-OK")
+    await _make_visit(db, patient=p1, visit_date=TEST_WEEK_MONDAY, start="09:00", end="10:00")
+
+    # patient2: 通常患者 + 同 weekday 2 visit (= skip される)
+    p2 = await _make_patient(db, "FWB-MS-NG")
+    await _make_visit(db, patient=p2, visit_date=TEST_WEEK_MONDAY, start="09:00", end="10:00")
+    await _make_visit(db, patient=p2, visit_date=TEST_WEEK_MONDAY, start="14:00", end="15:00")
+
+    res = await client.post(
+        f"/api/v1/patients/fixed-visits/from-week-bulk"
+        f"?iso_year={TEST_ISO_YEAR}&iso_week={TEST_ISO_WEEK}",
+        headers=_bearer(admin),
+    )
+    assert res.status_code == 200, res.text
+    data = res.json()
+    # p1 は処理される
+    assert str(p1.id) in data["patients"]
+    # p2 は skip される
+    assert str(p2.id) not in data["patients"]

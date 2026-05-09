@@ -332,10 +332,23 @@ export function CourseDayTablePanel({
     return m;
   }, [courses, templates]);
 
+  // ─── Wave 37 Phase 3-C / W37 hotfix M-3: course_id → course.code (A/B/C..) マップ ──
+  // 同 group 内 visit を course.code 文字順で sort して slot 0/1 を決定論的に割当てる
+  // (id 文字列順だと UUID 辞書順となりユーザーの「コース 1=A, 2=B」選択順と無関係に
+  // ①/② が入れ替わるため). visit_group_id を持たない visit や course_id=null の
+  // 場合はキーが取れず後段でフォールバック.
+  const courseCodeByCourseId = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const c of courses) {
+      m.set(c.id, String(c.code ?? ''));
+    }
+    return m;
+  }, [courses]);
+
   // ─── Wave 37 Phase 3-C: visit_group_id → 同 group 内 visit[] のマップ ──
   // 同じ visit_group_id を持つ 2 visit が BE Phase 2-A で作成される (slot 0/1)。
-  // BE は slot_index を visit に保持しないため、FE 側で「id 文字列の昇順で 1/2」と
-  // 決定的に割り振る。これにより同じ group_id でも常に同じ slot 番号が振られる。
+  // W37 hotfix M-3: 各 group 内は course.code (A/B/C..) 順で sort.
+  // course.code 同値 / 取得不能なら visit.id 昇順でフォールバック (決定論を維持).
   const visitsByGroupId = useMemo(() => {
     const m = new Map<string, typeof weekVisits>();
     for (const v of weekVisits) {
@@ -345,15 +358,23 @@ export function CourseDayTablePanel({
       arr.push(v);
       m.set(gid, arr);
     }
-    // 各 group 内を id 昇順で sort (slot 1/2 の決定論)
+    const codeOf = (v: (typeof weekVisits)[number]): string => {
+      const cid = v.course_id ?? null;
+      return cid ? (courseCodeByCourseId.get(cid) ?? '') : '';
+    };
     for (const [k, arr] of m.entries()) {
       m.set(
         k,
-        [...arr].sort((a, b) => a.id.localeCompare(b.id)),
+        [...arr].sort((a, b) => {
+          const ca = codeOf(a);
+          const cb = codeOf(b);
+          if (ca !== cb) return ca.localeCompare(cb);
+          return a.id.localeCompare(b.id);
+        }),
       );
     }
     return m;
-  }, [weekVisits]);
+  }, [weekVisits, courseCodeByCourseId]);
 
   // ─── visits を (course_id, slot) → CourseGridVisit[] にバケット化 ──
   // course_id 経由で template に逆引きする (BE Layer 1 が visits.course_id を埋める前提)。
@@ -691,13 +712,15 @@ export function CourseDayTablePanel({
       const v = visitById.get(visitId);
       if (!v) return;
 
-      // Wave 37 Phase 3-C: visit_group_id 持ち visit (= 2 名体制ペア) の D&D 移動は禁止。
-      // partner visit との連動移動は将来 Wave 対応。本フェーズは × ボタン削除 →
-      // 再配置の手順をユーザに案内する。
+      // Wave 37 Phase 3-C / W37 hotfix M-1: visit_group_id 持ち visit (= 2 名体制ペア) の
+      // D&D 操作 (セル間 move + プール戻し両方) は禁止. プール戻しは BE
+      // useDeleteVisit の default cascade_partner=true でペア両方が削除されてしまい、
+      // 意図せず 2 visit を消すため. partner との連動移動は将来 Wave 対応.
+      // 本フェーズは × ボタン削除 → 再配置の手順をユーザに案内する.
       const visitGroupId = (v as { visit_group_id?: string | null }).visit_group_id ?? null;
-      if (visitGroupId && cell) {
+      if (visitGroupId) {
         toast.warning(
-          '2 名体制 (ペア配置済) の visit は D&D 移動できません。× ボタンで一旦削除してから再配置してください。',
+          '2 名体制 (ペア配置済) の visit はプールへ戻せません / 別セルへ移動できません。× ボタンで一括削除してから再配置してください。',
         );
         return;
       }

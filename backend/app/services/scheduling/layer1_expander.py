@@ -521,6 +521,22 @@ class PoolEntry(BaseModel):
     frequency_per_week: int | None = None
 
 
+class UnplacedMultiStaffEntry(BaseModel):
+    """W37 hotfix C-2: multi-staff 患者で slot 0/1 のうち片方のみ設定 →
+    visit を生成せず保留扱いにした 1 件のレコード.
+
+    管理者が「どの患者・曜日が片側不備で生成されなかったか」を一目で把握し、
+    UI から PFV 編集に誘導するための情報. レスポンスの warnings として返す.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    patient_id: UUID
+    patient_name: str
+    weekday: int  # 0=Mon..6=Sun
+    reason: str  # "missing_slot_1" or "missing_slot_0"
+
+
 @dataclass
 class Layer1Result:
     """Layer 1 の総合出力. HTTP layer がレスポンス schema に詰め直す."""
@@ -531,6 +547,8 @@ class Layer1Result:
     pool: list[PoolEntry] = field(default_factory=list)
     patients_processed: int = 0
     special_week_applied_count: int = 0
+    # W37 hotfix C-2: multi-staff 片側欠けの保留リスト.
+    unplaced_multi_staff_patients: list[UnplacedMultiStaffEntry] = field(default_factory=list)
 
     @property
     def visits_created_count(self) -> int:
@@ -737,6 +755,7 @@ class Layer1Expander:
                 template=template,
                 iso_year=iso_year,
                 iso_week=iso_week,
+                result=result,
             )
 
         # 従来: 希望パターン (weekly_pattern) ベース
@@ -803,6 +822,7 @@ class Layer1Expander:
         template: CourseTemplate | None = None,
         iso_year: int | None = None,
         iso_week: int | None = None,
+        result: Layer1Result | None = None,
     ) -> list[VisitCreated]:
         """固定枠エントリ (patient_fixed_visits 由来) から visits を INSERT する.
 
@@ -904,25 +924,45 @@ class Layer1Expander:
                 if slot0 is not None and slot1 is not None:
                     slots_to_use = [slot0, slot1]
                 elif slot0 is not None and slot1 is None:
-                    slots_to_use = [slot0]
+                    # W37 hotfix C-2: silent 1-staff 化を廃止. visit を生成せず
+                    # 「保留プール送り (unplaced_multi_staff)」として管理者に通知する.
                     logger.warning(
                         "Layer1: requires_multiple_staff=True patient %s has only slot 0 on"
-                        " weekday=%d (slot 1 missing). Generating 1 visit only — user must"
-                        " complete the second slot via UI for 2-staff scheduling.",
+                        " weekday=%d (slot 1 missing) — skipping visit generation; user must"
+                        " complete the second slot via UI before 2-staff scheduling.",
                         patient.id,
                         weekday,
                     )
+                    if result is not None:
+                        result.unplaced_multi_staff_patients.append(
+                            UnplacedMultiStaffEntry(
+                                patient_id=patient.id,
+                                patient_name=patient.name,
+                                weekday=weekday,
+                                reason="missing_slot_1",
+                            )
+                        )
+                    continue
                 elif slot1 is not None and slot0 is None:
-                    # 異常ケース: slot 0 が欠けて slot 1 のみ存在 (UI 経由の通常運用では
-                    # 起こり得ないが、データ移行や手動 SQL の事故で起こり得る).
-                    slots_to_use = [slot1]
+                    # W37 hotfix C-2: 異常ケース (slot 0 が欠けて slot 1 のみ存在) も
+                    # 同様に visit 生成をスキップして保留扱い.
                     logger.warning(
                         "Layer1: requires_multiple_staff=True patient %s has only slot 1 on"
-                        " weekday=%d (slot 0 missing). Generating 1 visit only using slot 1"
-                        " — user should reorganize slots via UI.",
+                        " weekday=%d (slot 0 missing) — skipping visit generation; user should"
+                        " reorganize slots via UI.",
                         patient.id,
                         weekday,
                     )
+                    if result is not None:
+                        result.unplaced_multi_staff_patients.append(
+                            UnplacedMultiStaffEntry(
+                                patient_id=patient.id,
+                                patient_name=patient.name,
+                                weekday=weekday,
+                                reason="missing_slot_0",
+                            )
+                        )
+                    continue
                 else:
                     continue  # 両 slot とも無し → 何もしない
             else:
@@ -1288,6 +1328,7 @@ __all__ = [
     "Layer1Expander",
     "Layer1Result",
     "PoolEntry",
+    "UnplacedMultiStaffEntry",
     "VisitCreated",
     "_ensure_manager_courses_for_week",
 ]

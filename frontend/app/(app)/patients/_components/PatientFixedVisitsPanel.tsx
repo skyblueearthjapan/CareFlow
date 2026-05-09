@@ -167,31 +167,48 @@ function readsToDayRows(reads: PatientFixedVisitV2Read[]): DayRows {
 /**
  * DayRows を bulk PUT items に変換する。
  *
- * W37 Phase 3-A:
+ * W37 Phase 3-A / W37 hotfix M-4:
  *   - requires_multiple_staff=false: 各曜日 1 行 (slot_index=0)
- *   - requires_multiple_staff=true : 各曜日 1 行 (slot_index=0) + course_template_id_2 がある
- *     場合のみ slot_index=1 の行を追加 (寛容モード: 片方未設定でも保存は通す)
+ *   - requires_multiple_staff=true :
+ *       (a) コース 1 / コース 2 両方設定 → slot 0/1 の 2 行
+ *       (b) コース 1 のみ設定           → slot 0 のみ 1 行 (寛容モード)
+ *       (c) コース 1 空 + コース 2 のみ → コース 2 を slot 0 に "格上げ" して 1 行
+ *           (= 旧 BE で slot 0=NULL のまま保存され、Layer 1 が office フォールバック
+ *           template で意図しない visit を生成する事故を防ぐ)
+ *       (d) 両方空                       → slot 0 のみ (course_template_id=null) 1 行
+ *           (= Layer 1 寛容モード経路; C-2 修正で「片側のみ → 保留扱い」になる)
  */
 function dayRowsToItems(rows: DayRows, requiresMultipleStaff: boolean): PatientFixedVisitV2Base[] {
   const items: PatientFixedVisitV2Base[] = [];
   for (const [weekdayStr, row] of Object.entries(rows)) {
     if (!row.enabled) continue;
     const weekday = Number(weekdayStr);
-    // slot 0 は常に送る
+
+    // W37 hotfix M-4: コース 1 空 + コース 2 のみ設定の場合、コース 2 を slot 0 に格上げ
+    const slot0Course = row.course_template_id ?? null;
+    const slot1Course = requiresMultipleStaff ? (row.course_template_id_2 ?? null) : null;
+    const promote = requiresMultipleStaff && !slot0Course && !!slot1Course;
+
+    const effectiveSlot0Course = promote ? slot1Course : slot0Course;
+
     items.push({
       weekday,
       start_time: row.start_time,
       duration_min: row.duration_min,
-      course_template_id: row.course_template_id ?? null,
+      course_template_id: effectiveSlot0Course,
       slot_index: 0,
     });
-    // slot 1 は requires_multiple_staff=true かつ course_template_id_2 が設定済みの場合のみ送る
-    if (requiresMultipleStaff && row.course_template_id_2) {
+
+    // slot 1 は requires_multiple_staff=true かつ
+    //   - promote=false (= コース 1 が設定済) かつ
+    //   - course_template_id_2 が設定済み
+    // のときのみ送る. promote 経路では slot 1 を送らない (1 行のみ).
+    if (requiresMultipleStaff && !promote && slot1Course) {
       items.push({
         weekday,
         start_time: row.start_time,
         duration_min: row.duration_min,
-        course_template_id: row.course_template_id_2,
+        course_template_id: slot1Course,
         slot_index: 1,
       });
     }
@@ -514,9 +531,12 @@ function ModePanel({
     }
   }, [reads, isLoading]);
 
-  // ── W37 Phase 3-A: クライアント側バリデーション ─────────────────────────
+  // ── W37 Phase 3-A / hotfix M-4: クライアント側バリデーション ─────────────
   // コース 1 と コース 2 が同一 → エラー (保存ブロック)
-  // コース 2 が空のまま → 警告 (保存は通す: Layer 1 寛容モード)
+  // コース 1 / コース 2 のどちらかが空 → 警告 (保存は通す: Layer 1 寛容モード)
+  //   - コース 1 空 + コース 2 のみの場合は M-4 修正で「コース 2 を slot 0 に格上げ」
+  //     して 1 行送信されるが、ユーザーには「2 名運用には片方が未設定」と気付かせるため
+  //     警告は維持する (C-2 修正により Layer 1 で保留扱いになるため運用上も無害).
   const { rowErrors, rowWarnings } = React.useMemo(() => {
     const errs: Record<number, string> = {};
     const warns: Record<number, string> = {};
@@ -533,8 +553,8 @@ function ModePanel({
         errs[wd] = '異なるコースを選択してください';
         continue;
       }
-      // 片方未設定の警告
-      if (!row.course_template_id_2) {
+      // 片方未設定の警告 (どちらが欠けていても 1 行送信になり 2 名運用が成立しない)
+      if (!row.course_template_id || !row.course_template_id_2) {
         warns[wd] = '2 名対応の片方未設定';
       }
     }

@@ -720,4 +720,69 @@ describe('PatientFixedVisitsPanel', () => {
       screen.queryByText(/同時刻に異なるコースを 2 つ設定する必要があります/),
     ).not.toBeInTheDocument();
   });
+
+  // ─── W37 hotfix M-4: コース 1 空 + コース 2 のみ → コース 2 を slot 0 に格上げ ─
+  it('M4. (W37) コース 1 空 + コース 2 のみ設定 → コース 2 を slot 0 に格上げ (1 行のみ送信)', async () => {
+    const updateFn = vi.fn().mockResolvedValue([]);
+    setupMocks({ reads: [], updateFn, courseTemplates: COURSE_TEMPLATES });
+
+    render(
+      <PatientFixedVisitsPanel
+        patientId={PATIENT_ID}
+        primaryOfficeId={OFFICE_ID}
+        requiresMultipleStaff={true}
+      />,
+    );
+
+    // 月曜を ON
+    const checkboxes = screen.getAllByRole('checkbox');
+    await userEvent.click(checkboxes[0]);
+
+    // コース 1 は空のまま, コース 2 = B のみ選択
+    const course2 = screen.getByLabelText('月 コース 2');
+    fireEvent.change(course2, { target: { value: 'bbbbbbbb-0000-0000-0000-000000000002' } });
+
+    // 保存
+    const saveBtn = screen.getByRole('button', { name: '保存' });
+    await userEvent.click(saveBtn);
+
+    await waitFor(() => {
+      expect(updateFn).toHaveBeenCalledTimes(1);
+    });
+
+    const call = updateFn.mock.calls[0][0] as {
+      mode: string;
+      items: { weekday: number; slot_index: number; course_template_id: string | null }[];
+    };
+
+    // 1 行のみ送信 (= slot 0=NULL + slot 1=B の 2 行送信ではない)
+    expect(call.items).toHaveLength(1);
+    expect(call.items[0].slot_index).toBe(0);
+    // コース 2 (B) が slot 0 に格上げされている
+    expect(call.items[0].course_template_id).toBe('bbbbbbbb-0000-0000-0000-000000000002');
+    expect(call.items[0].weekday).toBe(0);
+  });
+
+  it('M4-warn. (W37) コース 1 空 + コース 2 のみ → 警告 「2 名対応の片方未設定」 表示は維持', async () => {
+    setupMocks({ reads: [], courseTemplates: COURSE_TEMPLATES });
+
+    render(
+      <PatientFixedVisitsPanel
+        patientId={PATIENT_ID}
+        primaryOfficeId={OFFICE_ID}
+        requiresMultipleStaff={true}
+      />,
+    );
+
+    // 月曜を ON
+    const checkboxes = screen.getAllByRole('checkbox');
+    await userEvent.click(checkboxes[0]);
+
+    // コース 1 は空, コース 2 = B のみ
+    const course2 = screen.getByLabelText('月 コース 2');
+    fireEvent.change(course2, { target: { value: 'bbbbbbbb-0000-0000-0000-000000000002' } });
+
+    // 警告が表示される
+    expect(await screen.findByTestId('row-warning-0')).toHaveTextContent('2 名対応の片方未設定');
+  });
 });
