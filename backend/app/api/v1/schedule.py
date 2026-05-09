@@ -74,6 +74,7 @@ from app.services.scheduling import (
 )
 from app.services.scheduling.layer1_expander import (
     LAYER1_VISIT_SOURCE,
+    UnplacedMultiStaffEntry,
     _is_special_week_active,
 )
 from app.services.scheduling.layer3_assignment import (
@@ -156,6 +157,11 @@ class GenerateWeekResponse(BaseModel):
     visits_created: list[VisitCreated]
     pool: list[PoolEntry]
     summary: GenerateWeekSummary
+    # W37 hotfix C-2: multi-staff 患者で slot 0/1 のうち片方のみ設定された
+    # 行は visit を生成せず保留扱いにする (silent 1-staff 化を廃止). この
+    # リストは管理者向けに「どの患者・曜日が片側不備で生成されなかったか」を
+    # 通知するために返す.
+    unplaced_multi_staff_patients: list[UnplacedMultiStaffEntry] = []
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +248,8 @@ async def generate_week(
             pool_count=result.pool_count,
             special_week_applied_count=result.special_week_applied_count,
         ),
+        # W37 hotfix C-2: multi-staff 片側欠けの保留リスト
+        unplaced_multi_staff_patients=result.unplaced_multi_staff_patients,
     )
 
 
@@ -1206,6 +1214,8 @@ class GenerateWeekOnlyResponse(BaseModel):
     visits_created: int
     courses_touched: int
     message: str
+    # W37 hotfix C-2: multi-staff 片側欠けで visit 生成をスキップした保留リスト.
+    unplaced_multi_staff_patients: list[UnplacedMultiStaffEntry] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -1356,6 +1366,8 @@ async def generate_week_only(
             f"for ISO {payload.iso_year}-W{payload.iso_week}"
             + (f" (office {payload.office_id})" if payload.office_id else "")
         ),
+        # W37 hotfix C-2: multi-staff 片側欠けの保留リスト
+        unplaced_multi_staff_patients=l1_result.unplaced_multi_staff_patients,
     )
 
 

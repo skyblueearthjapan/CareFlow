@@ -186,8 +186,13 @@ async def test_multi_staff_both_slots_have_distinct_course_ids(db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_multi_staff_only_slot0_generates_one_visit_with_warning(db, caplog) -> None:
-    """slot 0 のみあり slot 1 欠け → 1 visit のみ生成 + 警告ログ."""
+async def test_multi_staff_only_slot0_skips_visit_and_records_unplaced(db, caplog) -> None:
+    """W37 hotfix C-2: slot 0 のみあり slot 1 欠け → visit 生成スキップ +
+    unplaced_multi_staff_patients に記録 + 警告ログ.
+
+    旧挙動: 1 visit を required_staff_count=2 で生成 (silent 1-staff 化).
+    新挙動: visit 生成せず保留扱い (Layer 3 で誤って 1 名運用化されないため).
+    """
     import logging
 
     expander = Layer1Expander()
@@ -209,18 +214,23 @@ async def test_multi_staff_only_slot0_generates_one_visit_with_warning(db, caplo
         result = await expander.expand_week(db, iso_year=TEST_ISO_YEAR, iso_week=TEST_ISO_WEEK)
         await db.commit()
 
-    assert result.visits_created_count == 1
+    # visit は 0 件 (= 保留扱い)
+    assert result.visits_created_count == 0
     rows = list(
         await db.scalars(
             select(Visit).where(Visit.patient_id == patient.id, Visit.deleted_at.is_(None))
         )
     )
-    assert len(rows) == 1
-    # required_staff_count は 2 (フラグに従う)
-    assert rows[0].required_staff_count == 2
-    # visit_group_id は None (1 visit しかないので group は不要)
-    assert rows[0].visit_group_id is None
+    assert len(rows) == 0
 
+    # unplaced_multi_staff_patients に該当行が含まれる
+    assert len(result.unplaced_multi_staff_patients) == 1
+    entry = result.unplaced_multi_staff_patients[0]
+    assert entry.patient_id == patient.id
+    assert entry.weekday == 0
+    assert entry.reason == "missing_slot_1"
+
+    # 警告ログが出る
     warning_logs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
     assert any("slot 1 missing" in m for m in warning_logs), (
         f"slot 1 missing 警告が出るはず, got {warning_logs}"
@@ -228,8 +238,9 @@ async def test_multi_staff_only_slot0_generates_one_visit_with_warning(db, caplo
 
 
 @pytest.mark.asyncio
-async def test_multi_staff_only_slot1_generates_one_visit_with_warning(db, caplog) -> None:
-    """異常データ: slot 0 が無く slot 1 のみあり → 1 visit + 警告."""
+async def test_multi_staff_only_slot1_skips_visit_and_records_unplaced(db, caplog) -> None:
+    """W37 hotfix C-2: slot 0 が無く slot 1 のみ → visit 生成スキップ +
+    unplaced_multi_staff_patients に記録 + 警告ログ."""
     import logging
 
     expander = Layer1Expander()
@@ -251,14 +262,22 @@ async def test_multi_staff_only_slot1_generates_one_visit_with_warning(db, caplo
         result = await expander.expand_week(db, iso_year=TEST_ISO_YEAR, iso_week=TEST_ISO_WEEK)
         await db.commit()
 
-    assert result.visits_created_count == 1
+    # visit は 0 件
+    assert result.visits_created_count == 0
     rows = list(
         await db.scalars(
             select(Visit).where(Visit.patient_id == patient.id, Visit.deleted_at.is_(None))
         )
     )
-    assert len(rows) == 1
-    assert rows[0].weekday() == 4 if False else rows[0].visit_date.weekday() == 4
+    assert len(rows) == 0
+
+    # unplaced 記録
+    assert len(result.unplaced_multi_staff_patients) == 1
+    entry = result.unplaced_multi_staff_patients[0]
+    assert entry.patient_id == patient.id
+    assert entry.weekday == 4
+    assert entry.reason == "missing_slot_0"
+
     warning_logs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
     assert any("slot 0 missing" in m for m in warning_logs), (
         f"slot 0 missing 警告が出るはず, got {warning_logs}"
