@@ -74,6 +74,7 @@ import {
   parseCourseDayCellId,
   parseVisitDraggableId,
   type CourseGridVisit,
+  type PartnerLocation,
 } from './CourseDayTable';
 import { CourseWeekOverview, type WeekOverviewVisit } from './CourseWeekOverview';
 import { PartnerCourseDialog } from './PartnerCourseDialog';
@@ -376,6 +377,121 @@ export function CourseDayTablePanel({
     return m;
   }, [weekVisits, courseCodeByCourseId]);
 
+  // ─── Wave 38: 「相方の現在地」マップ ─────────────────────────────────
+  //
+  // 目的:
+  //   - スケジュール側 visit セルに「相方: 本店-B 10:00」を併記する.
+  //   - プール側残カードに「① 配置済み: 本店-A 15:00」を併記する.
+  //
+  // 構築ロジック:
+  //   1) visit_group_id 持ち visit (= ペア両方が配置済み) について、
+  //      「自身 → 相方の cellLabel + time」の対応を作る.
+  //      → partnerLocationByVisit: Map<visit_id, PartnerLocation>
+  //      → 相方が visit_group_id 経由で確実に取れるので kind:'cell' のみ.
+  //
+  //   2) patient.requires_multiple_staff=true で片方のみ配置済みの場合、
+  //      pool 残側スロットから見て「相方 = 配置済み slot の cellLabel + time」
+  //      を引けるようにする.
+  //      → partnerLocationByPatientSlot: Map<`${patientId}:${slotIndex}`, label>
+  //      → key の slotIndex は **配置済み側** (= プール側残カードから見ると
+  //         partnerSlot, PoolPanel 側で `1 - 残カードslot` で引く).
+  //
+  // 注意:
+  //   - 通常患者 (requires_multiple_staff=false) はこのマップに入れない.
+  //   - course/template/office が解決できない (course_id=null 等) はスキップ.
+  const courseById = useMemo(() => {
+    const m = new Map<string, (typeof courses)[number]>();
+    for (const c of courses) m.set(c.id, c);
+    return m;
+  }, [courses]);
+
+  const officesById = useMemo(() => {
+    const m = new Map<string, (typeof offices)[number]>();
+    for (const o of offices) m.set(o.id, o);
+    return m;
+  }, [offices]);
+
+  const templateById = useMemo(() => {
+    const m = new Map<string, CourseTemplateRead>();
+    for (const t of templates) m.set(t.id, t);
+    return m;
+  }, [templates]);
+
+  /**
+   * 1 visit から「セル位置」(cellLabel + time) を導出する Wave 38 ヘルパー.
+   * 例: → `{cellLabel: '本店-A', time: '15:00'}` / 解決不能なら null.
+   */
+  const resolveCellLocationForVisit = (
+    v: (typeof weekVisits)[number],
+  ): { cellLabel: string; time: string } | null => {
+    const cid = v.course_id ?? null;
+    if (!cid) return null;
+    const c = courseById.get(cid);
+    if (!c) return null;
+    const tplId = courseTemplateByCourseId.get(cid);
+    const tpl = tplId ? templateById.get(tplId) : null;
+    if (!tpl) return null;
+    const officeName = officesById.get(tpl.office_id)?.name ?? '';
+    const cellLabel = officeName ? `${officeName}-${tpl.label}` : (tpl.label ?? '');
+    const startSlot = floorToCourseSlot(v.start_time ?? '');
+    if (!startSlot) return null;
+    return { cellLabel, time: startSlot };
+  };
+
+  /** visit_id → PartnerLocation (= 相方が別セルに配置済み). */
+  const partnerLocationByVisit = useMemo(() => {
+    const m = new Map<string, PartnerLocation>();
+    for (const v of weekVisits) {
+      const gid = (v as { visit_group_id?: string | null }).visit_group_id ?? null;
+      if (!gid) continue;
+      const groupVisits = visitsByGroupId.get(gid) ?? [];
+      if (groupVisits.length !== 2) continue;
+      const partner = groupVisits.find((gv) => gv.id !== v.id);
+      if (!partner) continue;
+      const loc = resolveCellLocationForVisit(partner);
+      if (!loc) continue;
+      m.set(v.id, { kind: 'cell', cellLabel: loc.cellLabel, time: loc.time });
+    }
+    return m;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    weekVisits,
+    visitsByGroupId,
+    courseById,
+    templateById,
+    officesById,
+    courseTemplateByCourseId,
+  ]);
+
+  /**
+   * `${patientId}:${slotIndex}` → cellLabel+time 文字列マップ.
+   * - key の slotIndex は配置済み側 (= プール側残カードから見ると相方).
+   * - 用途: PoolGroupedByWeekday に渡し、partnerAssigned=true の残カードに併記する.
+   */
+  const partnerLocationByPatientSlot = useMemo(() => {
+    const m = new Map<string, string>();
+    // multi-staff patient で「配置済み visit が 1 件のみ + visit_group_id なし」を抽出.
+    // → その visit の cellLabel + time を `${patientId}:${assignedSlot}` で登録.
+    // assignedSlotsByPatient の構築ロジック上、visit_group_id なしの単独 visit は
+    // 必ず slot 0 を埋める (assignedSlotsByPatient 構築 line ~480 参照).
+    const multiStaffPatientIds = new Set(
+      allPatients
+        .filter((p) => (p as { requires_multiple_staff?: boolean | null }).requires_multiple_staff)
+        .map((p) => p.id),
+    );
+    for (const v of weekVisits) {
+      if (!multiStaffPatientIds.has(v.patient_id)) continue;
+      const gid = (v as { visit_group_id?: string | null }).visit_group_id ?? null;
+      if (gid) continue; // group 持ちは partnerLocationByVisit 側で処理 (= 両方配置済み)
+      // 単独 visit = 片側のみ配置. assignedSlotsByPatient と同様に slot 0 とみなす.
+      const loc = resolveCellLocationForVisit(v);
+      if (!loc) continue;
+      m.set(`${v.patient_id}:0`, `${loc.cellLabel} ${loc.time}`);
+    }
+    return m;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [weekVisits, allPatients, courseById, templateById, officesById, courseTemplateByCourseId]);
+
   // ─── visits を (course_id, slot) → CourseGridVisit[] にバケット化 ──
   // course_id 経由で template に逆引きする (BE Layer 1 が visits.course_id を埋める前提)。
   const visitsByCourse = useMemo(() => {
@@ -437,6 +553,17 @@ export function CourseDayTablePanel({
         partnerMissing = true;
       }
 
+      // Wave 38: 相方の現在地を導出.
+      //  - visit_group_id 持ち → partnerLocationByVisit から cell 情報を引く.
+      //  - requires_multiple_staff=true で group なし (orphan = partner pool) → kind:'pool'.
+      //  - 通常患者 / multi だが既に上記両方のケースに該当しない → null.
+      let partnerLocation: PartnerLocation | null = null;
+      if (groupId) {
+        partnerLocation = partnerLocationByVisit.get(v.id) ?? null;
+      } else if (requiresMulti) {
+        partnerLocation = { kind: 'pool' };
+      }
+
       const arr = m.get(cid) ?? [];
       arr.push({
         id: v.id,
@@ -452,11 +579,20 @@ export function CourseDayTablePanel({
         group_slot_label: groupSlotLabel,
         partner_label: partnerLabel,
         partner_missing: partnerMissing,
+        partner_location: partnerLocation,
       });
       m.set(cid, arr);
     }
     return m;
-  }, [weekVisits, patientById, visitsByGroupId, courseTemplateByCourseId, templates, offices]);
+  }, [
+    weekVisits,
+    patientById,
+    visitsByGroupId,
+    courseTemplateByCourseId,
+    templates,
+    offices,
+    partnerLocationByVisit,
+  ]);
 
   // ─── Wave 37 Phase 3-C: 患者ごとの「配置済み slot」マップ ───────────────
   //   - visit_group_id 持ち visit (= ペア配置済) → slot 0 / slot 1 の両方を埋める
@@ -1158,6 +1294,7 @@ export function CourseDayTablePanel({
               patients={poolPatients}
               disabled={!canEdit}
               assignedSlotsByPatient={assignedSlotsByPatient}
+              partnerLocationByPatientSlot={partnerLocationByPatientSlot}
               renderCard={(p, slotInfo) => {
                 const wp = coerceWeeklyPattern(p.weekly_pattern);
                 return (
@@ -1178,6 +1315,8 @@ export function CourseDayTablePanel({
                       patientStatus: p.status ?? null,
                       slotIndex: slotInfo.slotIndex,
                       partnerAssigned: slotInfo.partnerAssigned,
+                      // Wave 38: 相方の現在地ラベル ("本店-A 15:00" など) を素通しする.
+                      partnerLocationLabel: slotInfo.partnerLocationLabel ?? null,
                     }}
                     disabled={!canEdit}
                   />

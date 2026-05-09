@@ -67,6 +67,15 @@ export interface PatientCardData {
    * true のとき「① 配置済み」/「② 配置済み」バッジ (相手スロット番号) を追加表示。
    */
   partnerAssigned?: boolean | null;
+  /**
+   * Wave 38: 相方の現在地ラベル (例: "本店-A 15:00").
+   *
+   * - `partnerAssigned=true` でかつこの label が指定されたとき、
+   *   "① 配置済み: 本店-A 15:00" のように配置済み行に併記する.
+   * - `partnerAssigned=true` だが label が null のときはバッジのみ (= 既存挙動).
+   * - 通常患者では常に null / 無視される.
+   */
+  partnerLocationLabel?: string | null;
 }
 
 export interface PatientCardProps {
@@ -238,19 +247,30 @@ export function PatientCard({
           </div>
         ) : null}
         {/*
-          W37 Phase 3-B: 相方スロットが既に配置済みであることを示すバッジ.
+          W37 Phase 3-B / Wave 38: 相方スロットが既に配置済みであることを示すバッジ.
           - 自身が slot 1 の残カードなら「① 配置済み」を表示。
           - 自身が slot 0 の残カードなら「② 配置済み」を表示。
           - compact 表示でも見せたいので別 row で出す。
+          - Wave 38: partnerLocationLabel が指定されたら "{slotMark} 配置済み: {label}"
+            の形でセル位置 + 時刻も併記する (例: "① 配置済み: 本店-A 15:00")。
         */}
         {isMultiSlotCard && partnerAssigned && partnerSlotMark ? (
           <div
-            className="flex flex-wrap gap-1 pl-4"
+            className="flex flex-wrap items-center gap-1 pl-4"
             data-testid={`patient-card-partner-assigned-${patient.id}`}
           >
             <Badge variant="info" className="h-4 px-1 text-[10px]">
               {partnerSlotMark} 配置済み
             </Badge>
+            {patient.partnerLocationLabel ? (
+              <span
+                className="truncate text-[10px] text-text-muted"
+                data-testid={`patient-card-partner-location-${patient.id}`}
+                title={patient.partnerLocationLabel}
+              >
+                {patient.partnerLocationLabel}
+              </span>
+            ) : null}
           </div>
         ) : null}
       </div>

@@ -200,3 +200,63 @@ describe('PatientCard — Wave 20 (名前・希望時間・条件バッジ)', ()
     expect(mockSetNodeRef).toHaveBeenCalled();
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// Wave 38: 相方の現在地ラベル併記 (PatientCard プール側)
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('PatientCard — Wave 38 (相方の現在地併記)', () => {
+  it('partnerAssigned=true + partnerLocationLabel あり → "本店-A 10:00" がバッジ横に表示される', () => {
+    renderCard({
+      slotIndex: 1,
+      partnerAssigned: true,
+      partnerLocationLabel: '本店-A 10:00',
+    });
+    // バッジ "① 配置済み" が描画される
+    const row = screen.getByTestId('patient-card-partner-assigned-test-patient-1');
+    expect(row).toBeInTheDocument();
+    // 位置ラベルも併記される
+    const loc = screen.getByTestId('patient-card-partner-location-test-patient-1');
+    expect(loc).toBeInTheDocument();
+    expect(loc.textContent).toBe('本店-A 10:00');
+    expect(loc.className).toContain('text-text-muted');
+  });
+
+  it('partnerAssigned=true + partnerLocationLabel=null → バッジのみ (位置ラベルは出ない)', () => {
+    renderCard({
+      slotIndex: 0,
+      partnerAssigned: true,
+      partnerLocationLabel: null,
+    });
+    // バッジは存在
+    expect(screen.getByTestId('patient-card-partner-assigned-test-patient-1')).toBeInTheDocument();
+    // 位置ラベルは出ない
+    expect(
+      screen.queryByTestId('patient-card-partner-location-test-patient-1'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('partnerAssigned=false → バッジも位置ラベルも出ない (両 slot 未配置)', () => {
+    renderCard({
+      slotIndex: 0,
+      partnerAssigned: false,
+      partnerLocationLabel: '本店-A 10:00', // 渡しても無視される
+    });
+    expect(
+      screen.queryByTestId('patient-card-partner-assigned-test-patient-1'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId('patient-card-partner-location-test-patient-1'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('通常患者 (slotIndex 未指定) → partnerLocationLabel は無視 (regression)', () => {
+    renderCard({
+      partnerAssigned: true,
+      partnerLocationLabel: 'leak-canary',
+    });
+    expect(
+      screen.queryByTestId('patient-card-partner-location-test-patient-1'),
+    ).not.toBeInTheDocument();
+  });
+});
