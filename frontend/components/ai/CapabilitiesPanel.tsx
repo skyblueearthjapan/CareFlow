@@ -113,7 +113,7 @@ function CapabilityItem({ capability }: { capability: AiCapability }) {
   return (
     <li className="text-text-secondary">
       <span className="text-text-primary">{capability.label}</span>
-      <span className="ml-1 text-text-muted">— {capability.example}</span>
+      <span className="ml-1 whitespace-pre-line text-text-muted">— {capability.example}</span>
     </li>
   );
 }

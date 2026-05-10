@@ -137,7 +137,7 @@ export default function AiHelpPage() {
                   {items.map((cap) => (
                     <li key={cap.id} className="text-sm">
                       <p className="font-medium text-text-primary">{cap.label}</p>
-                      <p className="mt-0.5 text-xs text-text-secondary">
+                      <p className="mt-0.5 whitespace-pre-line text-xs text-text-secondary">
                         例: <span className="text-text-primary">{cap.example}</span>
                       </p>
                     </li>
