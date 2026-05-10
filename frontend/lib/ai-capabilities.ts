@@ -57,13 +57,17 @@ export const AI_CAPABILITIES: AiCapability[] = [
     id: 'patient_create',
     category: 'master',
     label: '患者の新規登録',
-    example: '「田中さんを新規登録、月水金 10時から訪問」',
+    example:
+      '「田中花子さん、住所〇〇市××1-2-3、電話090-1234-5678、月水金10時から訪問で新規登録」' +
+      '\n※ 短く「田中さんを新規登録」だけでも OK — 住所・電話などは後で補完モーダルで聞かれます。',
   },
   {
     id: 'staff_create',
     category: 'master',
     label: 'スタッフの新規登録',
-    example: '「看護師の佐藤さんを新規登録」',
+    example:
+      '「看護師の佐藤花子さんを△△拠点で新規登録、月〜金勤務」' +
+      '\n※ 短く「佐藤さんを新規登録」だけでも OK — 拠点・勤務曜日などは後で補完モーダルで聞かれます。',
   },
   {
     id: 'staff_status_update',
