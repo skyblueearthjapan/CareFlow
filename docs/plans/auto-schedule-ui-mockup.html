@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>CareFlow 自動算出 UI モックアップ</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: 'Hiragino Kaku Gothic ProN', 'Yu Gothic', 'Meiryo', sans-serif; }
+  .badge-new { background: #dcfce7; color: #166534; }
+  .badge-change { background: #fef3c7; color: #92400e; }
+  .badge-delete { background: #fee2e2; color: #991b1b; }
+  .badge-same { background: #f3f4f6; color: #6b7280; }
+  .kpi-improved { color: #16a34a; }
+  .kpi-worsened { color: #dc2626; }
+  .modal { display: none; }
+  .modal.active { display: flex; }
+  .phase-step { transition: all 0.4s ease; }
+  .phase-active { background: #dbeafe; border-color: #3b82f6; }
+  .phase-done { background: #d1fae5; border-color: #10b981; }
+  .progress-bar { transition: width 0.6s ease; }
+  .clickable-visit { cursor: pointer; transition: background-color 0.15s; }
+  .clickable-visit:hover { background: #eff6ff; }
+  .diff-mark { font-size: 0.7rem; padding: 2px 6px; border-radius: 4px; font-weight: 600; }
+</style>
+</head>
+<body class="bg-slate-100 min-h-screen">
+
+<!-- ===== Header ===== -->
+<header class="bg-white border-b border-slate-200 px-6 py-3 sticky top-0 z-10">
+  <div class="flex items-center justify-between max-w-7xl mx-auto">
+    <h1 class="text-lg font-bold text-slate-800">📅 CareFlow スケジュール (モックアップ)</h1>
+    <div class="flex gap-2 items-center">
+      <span class="text-sm text-slate-500">2026-W21 / 稲毛拠点</span>
+      <button onclick="openTriggerModal()"
+              class="bg-blue-600 hover:bg-blue-700 text-white text-sm px-4 py-2 rounded-md font-medium shadow-sm">
+        ⚙ 自動算出
+      </button>
+    </div>
+  </div>
+</header>
+
+<!-- ===== Main: 通常のスケジュール画面 (簡易) ===== -->
+<main class="max-w-7xl mx-auto p-6">
+  <div class="bg-white rounded-lg shadow p-4">
+    <p class="text-slate-600 text-sm">
+      ※ これは <strong>自動算出 UI のモックアップ</strong>です。上の「自動算出」ボタンを押してフローを開始してください。
+    </p>
+    <p class="text-slate-500 text-xs mt-1">
+      設計仕様: <code>docs/plans/auto-schedule-v1.md</code> (v0.4)
+    </p>
+  </div>
+
+  <!-- 簡易スケジュール表示 (背景的に) -->
+  <div class="mt-4 bg-white rounded-lg shadow p-4">
+    <div class="flex gap-2 border-b border-slate-200 mb-3">
+      <button class="px-3 py-2 text-sm font-medium border-b-2 border-blue-600 text-blue-600">月</button>
+      <button class="px-3 py-2 text-sm font-medium text-slate-500">火</button>
+      <button class="px-3 py-2 text-sm font-medium text-slate-500">水</button>
+      <button class="px-3 py-2 text-sm font-medium text-slate-500">木</button>
+      <button class="px-3 py-2 text-sm font-medium text-slate-500">金</button>
+      <button class="px-3 py-2 text-sm font-medium text-slate-500">土</button>
+    </div>
+    <div class="grid grid-cols-3 gap-3">
+      <div class="border border-slate-200 rounded p-3">
+        <h3 class="font-bold text-sm text-slate-700 mb-2">A コース</h3>
+        <ul class="text-xs space-y-1 text-slate-600">
+          <li>09:30 槇・河野</li>
+          <li>10:00 青栁あい (川名)</li>
+          <li>11:00 木村駿 (川名)</li>
+          <li>13:00 <span class="text-slate-400">(空き)</span></li>
+          <li>15:30 唐鎌美穂 (川名)</li>
+        </ul>
+      </div>
+      <div class="border border-slate-200 rounded p-3">
+        <h3 class="font-bold text-sm text-slate-700 mb-2">B コース</h3>
+        <ul class="text-xs space-y-1 text-slate-600">
+          <li>09:30 前川双子 (熊澤)</li>
+          <li>10:30 藤田・渡辺 (熊澤)</li>
+          <li>13:00 田中妙子 (熊澤)</li>
+          <li>14:30 <span class="text-slate-400">(空き)</span></li>
+        </ul>
+      </div>
+      <div class="border border-slate-200 rounded p-3">
+        <h3 class="font-bold text-sm text-slate-700 mb-2">C コース (都賀)</h3>
+        <ul class="text-xs space-y-1 text-slate-600">
+          <li>09:30 海寳俊子 (関谷)</li>
+          <li>11:00 橘佐枝子 (関谷)</li>
+          <li>13:00 小湊愛莉 (関谷)</li>
+          <li>15:00 髙山夏織 (関谷)</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</main>
+
+<!-- =============================================== -->
+<!-- ===== モーダル 1: 算出トリガー画面 (§8.1) ===== -->
+<!-- =============================================== -->
+<div id="triggerModal" class="modal fixed inset-0 bg-black bg-opacity-50 z-30 items-center justify-center">
+  <div class="bg-white rounded-lg shadow-xl max-w-lg w-full mx-4">
+    <div class="border-b border-slate-200 px-6 py-4 flex justify-between items-center">
+      <h2 class="text-lg font-bold text-slate-800">📅 スケジュール 自動算出</h2>
+      <button onclick="closeTriggerModal()" class="text-slate-400 hover:text-slate-600">✕</button>
+    </div>
+    <div class="px-6 py-4 space-y-4">
+      <!-- 対象週 -->
+      <div>
+        <label class="text-sm font-medium text-slate-700 block mb-1">対象週</label>
+        <select class="w-full border border-slate-300 rounded px-3 py-2 text-sm">
+          <option>2026-W21 (5/18 〜 5/24)</option>
+          <option>2026-W22 (5/25 〜 5/31)</option>
+        </select>
+      </div>
+
+      <!-- 対象拠点 -->
+      <div>
+        <label class="text-sm font-medium text-slate-700 block mb-1">対象拠点</label>
+        <div class="flex gap-3">
+          <label class="flex items-center text-sm"><input type="checkbox" checked class="mr-2"> 稲毛</label>
+          <label class="flex items-center text-sm"><input type="checkbox" checked class="mr-2"> 都賀</label>
+        </div>
+      </div>
+
+      <!-- モード選択 -->
+      <div>
+        <label class="text-sm font-medium text-slate-700 block mb-1">算出モード</label>
+        <div class="space-y-2">
+          <label class="flex items-start text-sm border border-blue-200 bg-blue-50 rounded p-3 cursor-pointer">
+            <input type="radio" name="mode" checked class="mt-1 mr-2">
+            <div>
+              <div class="font-medium text-blue-800">モード 1: 差分追加</div>
+              <div class="text-xs text-blue-700 mt-1">固定枠を尊重し、プール患者 (固定枠未登録の active 患者) を空き時間に差込み</div>
+            </div>
+          </label>
+          <label class="flex items-start text-sm border border-slate-200 rounded p-3 cursor-pointer hover:bg-slate-50">
+            <input type="radio" name="mode" class="mt-1 mr-2">
+            <div>
+              <div class="font-medium text-slate-800">モード 2: 全面最適化</div>
+              <div class="text-xs text-slate-600 mt-1">全 active 患者でゼロから最適化、固定枠は参考バッファに退避</div>
+            </div>
+          </label>
+        </div>
+      </div>
+
+      <!-- 算出パラメータ -->
+      <div class="border-t border-slate-200 pt-3">
+        <label class="text-sm font-medium text-slate-700 block mb-2">算出パラメータ</label>
+        <div class="space-y-2 text-xs text-slate-600">
+          <div class="flex justify-between"><span>距離計算:</span><span class="font-mono">Haversine (25 km/h)</span></div>
+          <div class="flex justify-between items-center">
+            <span>ローテーション強度:</span>
+            <input type="range" min="0" max="100" value="60" class="w-32">
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="border-t border-slate-200 px-6 py-3 flex justify-end gap-2">
+      <button onclick="closeTriggerModal()" class="px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded">キャンセル</button>
+      <button onclick="startCalculation()" class="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded font-medium">▶ 自動算出を実行</button>
+    </div>
+  </div>
+</div>
+
+<!-- =============================================== -->
+<!-- ===== モーダル 2: 進捗表示 (§8.2) =============== -->
+<!-- =============================================== -->
+<div id="progressModal" class="modal fixed inset-0 bg-black bg-opacity-50 z-30 items-center justify-center">
+  <div class="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
+    <div class="border-b border-slate-200 px-6 py-4">
+      <h2 class="text-lg font-bold text-slate-800">⚙ 自動算出中...</h2>
+      <p class="text-xs text-slate-500 mt-1" id="progressDetail">Phase 計算を開始しています</p>
+    </div>
+    <div class="px-6 py-4 space-y-2">
+      <div id="phase1" class="phase-step border border-slate-200 rounded p-3 flex items-center gap-3">
+        <div class="w-6 h-6 rounded-full bg-slate-200 flex items-center justify-center text-xs phase-icon">1</div>
+        <div class="flex-1">
+          <div class="text-sm font-medium text-slate-700">Phase 1: 固定枠集約</div>
+          <div class="text-xs text-slate-500 phase-result">-</div>
+        </div>
+      </div>
+      <div id="phase2" class="phase-step border border-slate-200 rounded p-3 flex items-center gap-3">
+        <div class="w-6 h-6 rounded-full bg-slate-200 flex items-center justify-center text-xs phase-icon">2</div>
+        <div class="flex-1">
+          <div class="text-sm font-medium text-slate-700">Phase 2: 新規枠探索 (プール差込み)</div>
+          <div class="text-xs text-slate-500 phase-result">-</div>
+        </div>
+      </div>
+      <div id="phase3" class="phase-step border border-slate-200 rounded p-3 flex items-center gap-3">
+        <div class="w-6 h-6 rounded-full bg-slate-200 flex items-center justify-center text-xs phase-icon">3</div>
+        <div class="flex-1">
+          <div class="text-sm font-medium text-slate-700">Phase 3: コース割当 (距離最適化)</div>
+          <div class="text-xs text-slate-500 phase-result">-</div>
+        </div>
+      </div>
+      <div id="phase4" class="phase-step border border-slate-200 rounded p-3 flex items-center gap-3">
+        <div class="w-6 h-6 rounded-full bg-slate-200 flex items-center justify-center text-xs phase-icon">4</div>
+        <div class="flex-1">
+          <div class="text-sm font-medium text-slate-700">Phase 4: スタッフローテーション</div>
+          <div class="text-xs text-slate-500 phase-result">-</div>
+        </div>
+      </div>
+      <div id="phase5" class="phase-step border border-slate-200 rounded p-3 flex items-center gap-3">
+        <div class="w-6 h-6 rounded-full bg-slate-200 flex items-center justify-center text-xs phase-icon">5</div>
+        <div class="flex-1">
+          <div class="text-sm font-medium text-slate-700">Phase 5: コース内ルート順</div>
+          <div class="text-xs text-slate-500 phase-result">-</div>
+        </div>
+      </div>
+    </div>
+    <div class="border-t border-slate-200 px-6 py-3 flex justify-end">
+      <button onclick="cancelCalculation()" class="px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded">中止</button>
+    </div>
+  </div>
+</div>
+
+<!-- =============================================== -->
+<!-- ===== モーダル 3: Before/After 並列 (§8.3) ==== -->
+<!-- =============================================== -->
+<div id="resultModal" class="modal fixed inset-0 bg-black bg-opacity-50 z-30 items-start justify-center overflow-y-auto py-8">
+  <div class="bg-white rounded-lg shadow-xl max-w-6xl w-full mx-4">
+    <div class="border-b border-slate-200 px-6 py-4 flex justify-between items-center sticky top-0 bg-white z-10">
+      <div>
+        <h2 class="text-lg font-bold text-slate-800">📊 自動算出 結果</h2>
+        <p class="text-xs text-slate-500 mt-1">稲毛拠点・2026-W21 / 5/18(月) - 5/24(土)</p>
+      </div>
+      <div class="flex gap-2">
+        <button onclick="discardResult()" class="px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded">破棄</button>
+        <button onclick="adoptResult()" class="px-4 py-2 text-sm bg-green-600 hover:bg-green-700 text-white rounded font-medium">✔ 採用</button>
+      </div>
+    </div>
+
+    <div class="px-6 py-5 space-y-5">
+      <!-- KPI バー -->
+      <section>
+        <h3 class="text-sm font-bold text-slate-700 mb-2">📈 サマリー (Before → After)</h3>
+        <div class="grid grid-cols-5 gap-2">
+          <div class="border border-slate-200 rounded p-3 text-center">
+            <div class="text-xs text-slate-500">移動距離</div>
+            <div class="text-base mt-1"><span class="text-slate-400 line-through text-sm">142</span> <span class="font-bold">→ 118</span></div>
+            <div class="text-xs kpi-improved font-bold mt-1">🔻 -17% ⭐</div>
+            <div class="text-xs text-slate-400 mt-0.5">km</div>
+          </div>
+          <div class="border border-slate-200 rounded p-3 text-center">
+            <div class="text-xs text-slate-500">スタッフ偏差</div>
+            <div class="text-base mt-1"><span class="text-slate-400 line-through text-sm">4.2</span> <span class="font-bold">→ 2.1</span></div>
+            <div class="text-xs kpi-improved font-bold mt-1">⭐ 件</div>
+          </div>
+          <div class="border border-slate-200 rounded p-3 text-center">
+            <div class="text-xs text-slate-500">ローテ連続</div>
+            <div class="text-base mt-1"><span class="text-slate-400 line-through text-sm">3</span> <span class="font-bold">→ 0</span></div>
+            <div class="text-xs kpi-improved font-bold mt-1">⭐</div>
+          </div>
+          <div class="border border-slate-200 rounded p-3 text-center">
+            <div class="text-xs text-slate-500">受入× 違反</div>
+            <div class="text-base mt-1"><span class="text-slate-400 line-through text-sm">1</span> <span class="font-bold">→ 0</span></div>
+            <div class="text-xs kpi-improved font-bold mt-1">⭐</div>
+          </div>
+          <div class="border border-slate-200 rounded p-3 text-center bg-amber-50">
+            <div class="text-xs text-slate-500">改善スコア</div>
+            <div class="text-base mt-1"><span class="font-bold text-amber-700">+12.4</span></div>
+            <div class="text-xs text-amber-700 font-bold mt-1">pt</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- AI 要約 -->
+      <section>
+        <h3 class="text-sm font-bold text-slate-700 mb-2">💡 主な変更点 (AI 要約)</h3>
+        <div class="bg-blue-50 border border-blue-200 rounded p-4 space-y-2 text-sm">
+          <div class="flex items-start">
+            <span class="text-blue-600 mr-2">・</span>
+            <div>
+              <strong>朝倉美夢様</strong> を新規追加 (月 13:00, A コース、担当: 川名)
+            </div>
+          </div>
+          <div class="flex items-start">
+            <span class="text-blue-600 mr-2">・</span>
+            <div>
+              <strong>木村駿様</strong> の時間を 11:00 → 10:30 に変更
+              <div class="text-xs text-blue-700 mt-0.5">→ これで A コース月曜が「宮野木エリア集約」となり -8km</div>
+            </div>
+          </div>
+          <div class="flex items-start">
+            <span class="text-blue-600 mr-2">・</span>
+            <div>
+              <strong>青栁あい様</strong> の月曜担当を「川名 → 熊澤」に変更
+              <div class="text-xs text-blue-700 mt-0.5">→ 前週月も川名担当だったため、連続を回避</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 警告 -->
+      <section class="bg-amber-50 border border-amber-300 rounded p-3 text-sm">
+        <strong class="text-amber-800">⚠ 警告:</strong> マネージャー補充必要 (月曜午後の B コース、訪問件数 7 > 上限 6)
+      </section>
+
+      <!-- スケジュール詳細 -->
+      <section>
+        <h3 class="text-sm font-bold text-slate-700 mb-2">📋 スケジュール詳細 (月曜・A コース)</h3>
+        <div class="grid grid-cols-2 gap-3">
+          <!-- BEFORE -->
+          <div>
+            <div class="text-xs font-bold text-slate-500 mb-1 px-2">BEFORE</div>
+            <table class="w-full text-xs border border-slate-200 bg-white">
+              <thead class="bg-slate-50">
+                <tr><th class="px-2 py-1 text-left">時刻</th><th class="px-2 py-1 text-left">患者</th><th class="px-2 py-1 text-left">担当</th></tr>
+              </thead>
+              <tbody>
+                <tr class="border-t border-slate-100"><td class="px-2 py-1">09:30</td><td class="px-2 py-1">槇・河野</td><td class="px-2 py-1">川名</td></tr>
+                <tr class="border-t border-slate-100"><td class="px-2 py-1">10:00</td><td class="px-2 py-1">青栁あい</td><td class="px-2 py-1">川名</td></tr>
+                <tr class="border-t border-slate-100"><td class="px-2 py-1">11:00</td><td class="px-2 py-1">木村駿</td><td class="px-2 py-1">川名</td></tr>
+                <tr class="border-t border-slate-100"><td class="px-2 py-1 text-slate-400">13:00</td><td class="px-2 py-1 text-slate-400" colspan="2">(空き)</td></tr>
+                <tr class="border-t border-slate-100"><td class="px-2 py-1">15:30</td><td class="px-2 py-1">唐鎌美穂</td><td class="px-2 py-1">川名</td></tr>
+                <tr class="border-t border-slate-100 bg-slate-50 font-mono"><td class="px-2 py-1" colspan="3">距離: 36 km</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <!-- AFTER -->
+          <div>
+            <div class="text-xs font-bold text-green-700 mb-1 px-2">AFTER (採用候補)</div>
+            <table class="w-full text-xs border border-green-300 bg-white">
+              <thead class="bg-green-50">
+                <tr><th class="px-2 py-1 text-left">時刻</th><th class="px-2 py-1 text-left">患者</th><th class="px-2 py-1 text-left">担当</th><th class="px-2 py-1">変更</th></tr>
+              </thead>
+              <tbody>
+                <tr class="border-t border-slate-100"><td class="px-2 py-1">09:30</td><td class="px-2 py-1">槇・河野</td><td class="px-2 py-1">熊澤</td><td class="px-2 py-1"><span class="diff-mark badge-change">担当</span></td></tr>
+                <tr class="border-t border-slate-100 clickable-visit" onclick="openJustification('青栁あい', '10:00', '川名→熊澤')"><td class="px-2 py-1">10:00</td><td class="px-2 py-1">青栁あい</td><td class="px-2 py-1">熊澤</td><td class="px-2 py-1"><span class="diff-mark badge-change">担当</span></td></tr>
+                <tr class="border-t border-slate-100 clickable-visit" onclick="openJustification('木村駿', '10:30', '時刻変更 11:00→10:30')"><td class="px-2 py-1 font-bold">10:30</td><td class="px-2 py-1">木村駿</td><td class="px-2 py-1">熊澤</td><td class="px-2 py-1"><span class="diff-mark badge-change">時刻</span></td></tr>
+                <tr class="border-t border-slate-100 bg-green-50 clickable-visit" onclick="openJustification('朝倉美夢', '13:00', '新規追加')"><td class="px-2 py-1 font-bold">13:00</td><td class="px-2 py-1 font-bold">朝倉美夢</td><td class="px-2 py-1">川名</td><td class="px-2 py-1"><span class="diff-mark badge-new">➕ 新規</span></td></tr>
+                <tr class="border-t border-slate-100"><td class="px-2 py-1">15:30</td><td class="px-2 py-1">唐鎌美穂</td><td class="px-2 py-1">熊澤</td><td class="px-2 py-1"><span class="diff-mark badge-change">担当</span></td></tr>
+                <tr class="border-t border-slate-100 bg-green-50 font-mono"><td class="px-2 py-1" colspan="4">距離: 24 km <span class="kpi-improved font-bold">(-12km)</span></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <p class="text-xs text-slate-500 mt-2">💡 各 visit をクリックすると「決定の理由」が表示されます</p>
+      </section>
+
+      <!-- B コース・C コース は折りたたみ -->
+      <details class="bg-slate-50 rounded p-3 text-sm">
+        <summary class="font-medium text-slate-700 cursor-pointer">▼ B コース・C コース・他曜日 (折りたたみ)</summary>
+        <p class="text-xs text-slate-500 mt-2">B コース月曜の変更: 藤田・渡辺様の時刻変更、田中妙子様の担当変更 (詳細省略)</p>
+      </details>
+    </div>
+  </div>
+</div>
+
+<!-- =============================================== -->
+<!-- ===== モーダル 4: Visit Justification (§8.3.1) ==== -->
+<!-- =============================================== -->
+<div id="justificationModal" class="modal fixed inset-0 bg-black bg-opacity-50 z-40 items-center justify-center">
+  <div class="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
+    <div class="border-b border-slate-200 px-5 py-3 flex justify-between items-center">
+      <h3 class="text-sm font-bold text-slate-800" id="justifyTitle">朝倉美夢様 (月 13:00, A コース)</h3>
+      <button onclick="closeJustification()" class="text-slate-400 hover:text-slate-600">✕</button>
+    </div>
+    <div class="px-5 py-4 text-sm space-y-3">
+      <div>
+        <div class="text-xs font-bold text-slate-500">▸ コース選択理由</div>
+        <div class="text-slate-700 mt-0.5">A コース (移動 8km vs B 案 18km)</div>
+      </div>
+      <div>
+        <div class="text-xs font-bold text-slate-500">▸ 時刻選択理由</div>
+        <div class="text-slate-700 mt-0.5">13:00 (希望「午後」内、前後の visit と距離最小)</div>
+      </div>
+      <div>
+        <div class="text-xs font-bold text-slate-500">▸ 担当選択理由</div>
+        <div class="text-slate-700 mt-0.5">川名 (S001)</div>
+        <div class="text-xs text-slate-500 mt-0.5">他候補: 熊澤 (S002)。理由: 朝倉様は初対応のためベテラン優先。熊澤は同日が満枠</div>
+      </div>
+      <div>
+        <div class="text-xs font-bold text-slate-500">▸ 制約遵守</div>
+        <div class="text-slate-700 mt-0.5 space-y-0.5 text-xs">
+          <div>✅ 受入カレンダー: ○</div>
+          <div>✅ 性別制限: なし</div>
+          <div>✅ 同住所ペアリング: なし</div>
+          <div>✅ ローテ連続: 回避済</div>
+        </div>
+      </div>
+    </div>
+    <div class="border-t border-slate-200 px-5 py-3 flex justify-end">
+      <button onclick="closeJustification()" class="px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-100 rounded">閉じる</button>
+    </div>
+  </div>
+</div>
+
+<!-- =============================================== -->
+<!-- ===== モーダル 5: 採用確定トースト ============== -->
+<!-- =============================================== -->
+<div id="adoptToast" class="modal fixed inset-0 bg-black bg-opacity-50 z-50 items-center justify-center">
+  <div class="bg-white rounded-lg shadow-xl max-w-md w-full mx-4 p-6 text-center">
+    <div class="text-5xl mb-3">✅</div>
+    <h3 class="text-lg font-bold text-slate-800 mb-2">採用しました</h3>
+    <p class="text-sm text-slate-600">
+      提案された 5 件の変更が反映されました。<br>
+      新固定枠として保存されました。
+    </p>
+    <div class="mt-4 text-xs text-slate-500 space-y-0.5 text-left bg-slate-50 p-3 rounded">
+      <div>・visits: 1 件新規 + 4 件更新</div>
+      <div>・visit_staff_assignments: 5 件更新</div>
+      <div>・patient_fixed_visits: 1 件新規追加</div>
+      <div>・courses.status: proposed → course_fixed → staff_assigned</div>
+    </div>
+    <button onclick="closeAdoptToast()" class="mt-4 px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded font-medium">閉じる</button>
+  </div>
+</div>
+
+<script>
+const phases = [
+  { id: 'phase1', name: 'Phase 1: 固定枠集約', result: '✔ 152 件', duration: 800 },
+  { id: 'phase2', name: 'Phase 2: 新規枠探索', result: '✔ +5 件追加', duration: 1200 },
+  { id: 'phase3', name: 'Phase 3: コース割当', result: '✔ 3 コースに配置', duration: 1500 },
+  { id: 'phase4', name: 'Phase 4: スタッフローテ', result: '✔ ローテ達成 100%', duration: 1000 },
+  { id: 'phase5', name: 'Phase 5: コース内ルート', result: '✔ 平均 -8% 距離削減', duration: 700 },
+];
+
+function openTriggerModal() {
+  document.getElementById('triggerModal').classList.add('active');
+}
+function closeTriggerModal() {
+  document.getElementById('triggerModal').classList.remove('active');
+}
+
+async function startCalculation() {
+  closeTriggerModal();
+  // reset phases
+  phases.forEach(p => {
+    const el = document.getElementById(p.id);
+    el.classList.remove('phase-active', 'phase-done');
+    el.querySelector('.phase-icon').textContent = p.id.replace('phase', '');
+    el.querySelector('.phase-icon').className = 'w-6 h-6 rounded-full bg-slate-200 flex items-center justify-center text-xs phase-icon';
+    el.querySelector('.phase-result').textContent = '-';
+  });
+
+  document.getElementById('progressModal').classList.add('active');
+  document.getElementById('progressDetail').textContent = '初期化中...';
+
+  for (let i = 0; i < phases.length; i++) {
+    const p = phases[i];
+    const el = document.getElementById(p.id);
+    el.classList.add('phase-active');
+    el.querySelector('.phase-icon').textContent = '⚙';
+    document.getElementById('progressDetail').textContent = `${p.name} を実行中...`;
+    await new Promise(r => setTimeout(r, p.duration));
+    el.classList.remove('phase-active');
+    el.classList.add('phase-done');
+    el.querySelector('.phase-icon').textContent = '✓';
+    el.querySelector('.phase-icon').className = 'w-6 h-6 rounded-full bg-green-500 text-white flex items-center justify-center text-xs phase-icon';
+    el.querySelector('.phase-result').textContent = p.result;
+  }
+  document.getElementById('progressDetail').textContent = '✔ 算出完了';
+
+  await new Promise(r => setTimeout(r, 500));
+  document.getElementById('progressModal').classList.remove('active');
+  document.getElementById('resultModal').classList.add('active');
+}
+
+function cancelCalculation() {
+  document.getElementById('progressModal').classList.remove('active');
+}
+
+function openJustification(name, time, change) {
+  const titleMap = {
+    '朝倉美夢': '朝倉美夢様 (月 13:00, A コース, 担当: 川名)',
+    '青栁あい': '青栁あい様 (月 10:00, A コース, 担当: 熊澤)',
+    '木村駿': '木村駿様 (月 10:30, A コース, 担当: 熊澤)',
+  };
+  document.getElementById('justifyTitle').textContent = titleMap[name] || `${name}様 (月 ${time})`;
+  document.getElementById('justificationModal').classList.add('active');
+}
+
+function closeJustification() {
+  document.getElementById('justificationModal').classList.remove('active');
+}
+
+function adoptResult() {
+  document.getElementById('resultModal').classList.remove('active');
+  document.getElementById('adoptToast').classList.add('active');
+}
+
+function closeAdoptToast() {
+  document.getElementById('adoptToast').classList.remove('active');
+}
+
+function discardResult() {
+  if (confirm('提案された変更を破棄してよろしいですか？')) {
+    document.getElementById('resultModal').classList.remove('active');
+  }
+}
+
+// ESC キーで閉じる
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    document.querySelectorAll('.modal.active').forEach(m => m.classList.remove('active'));
+  }
+});
+</script>
+</body>
+</html>
