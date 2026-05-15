@@ -575,12 +575,22 @@ async def _upsert_course_template(
     return "update", changed, existing
 
 
+# 漢字違い (読み同じ) でフリガナ列も無いケースの明示エイリアス。
+# シート「氏名」表記 → patient.name (DB に存在する正式表記).
+# 2026-05-15 imaizumi 確認済みの個別マッピング。
+# 追加が必要になったらここに足す (シート側で表記揃える方が望ましい)。
+_NAME_ALIASES: dict[str, str] = {
+    "川上もえぎ": "川上　萌黄",  # P021
+    "久松由香里": "久松　由伽里",  # P051
+}
+
+
 async def _find_patient(
     session: Any,
     name: str,
     address: str | None,
 ) -> Patient | None:
-    """患者を氏名+住所で検索 (name完全一致 → kana一致 → 住所部分一致)。"""
+    """患者を氏名+住所で検索 (name完全一致 → エイリアス → 空白除去 → 住所部分一致)。"""
     # 1. name 完全一致
     stmt = select(Patient).where(
         Patient.name == name,
@@ -597,7 +607,18 @@ async def _find_patient(
                 return p
         return patients[0]  # 絞り込めなければ先頭
 
-    # 2. スペースを除去した name で再検索 (全角・半角スペース両方を除去)
+    # 1.5. 明示エイリアス (漢字違いの個別対応)
+    aliased = _NAME_ALIASES.get(name)
+    if aliased:
+        stmt_alias = select(Patient).where(
+            Patient.name == aliased,
+            Patient.deleted_at.is_(None),
+        )
+        p_alias = (await session.scalars(stmt_alias)).first()
+        if p_alias:
+            return p_alias
+
+    # 2. シート側スペースを除去した name で再検索
     name_compact = name.replace("　", "").replace(" ", "")
     if name_compact != name:
         stmt2 = select(Patient).where(
@@ -608,6 +629,16 @@ async def _find_patient(
         p2 = result2.first()
         if p2:
             return p2
+
+    # 2.5. DB 側 name の空白を除去した形がシート name と一致
+    #      (「遠藤孝子」 ←→ DB「遠藤　孝子」のような姓名スペース無しフル表記の救済)
+    stmt_db_compact = select(Patient).where(
+        Patient.deleted_at.is_(None),
+        sa.func.replace(sa.func.replace(Patient.name, "　", ""), " ", "") == name,
+    )
+    p_dc = (await session.scalars(stmt_db_compact)).first()
+    if p_dc:
+        return p_dc
 
     # 3. 住所部分一致 (address が十分に長い場合のみ)
     if address and len(address) >= 10:
