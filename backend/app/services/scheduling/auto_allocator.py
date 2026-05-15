@@ -53,7 +53,7 @@ import statistics
 import uuid
 from collections import Counter
 from dataclasses import dataclass
-from datetime import date, time
+from datetime import UTC, date, datetime, time
 from typing import Any, Literal
 from uuid import UUID
 
@@ -1310,6 +1310,56 @@ async def _persist_courses_visits_and_assignments(
     await db.flush()
     for key, course in courses_by_key.items():
         course_id_by_key[key] = course.id
+
+    # ----- W41 v1.0 hotfix: 同 (patient_id, visit_date, start_time, visit_group_id) の
+    # 既存 active visits を pre-cleanup として soft-delete する.
+    # visits テーブルの partial UNIQUE INDEX `uq_visits_pds_group_active`
+    # (patient_id, visit_date, start_time, COALESCE(visit_group_id, '00000000-...'::uuid))
+    # WHERE deleted_at IS NULL があり、Layer 1 等が事前に作成した active visits
+    # (source='auto' 等) と auto_allocator が INSERT する新規 visits (source='auto_alloc')
+    # が同 patient × date × time で衝突する. auto-allocator は「自動算出は既存
+    # スケジュールを上書き候補とする」セマンティクスなので、INSERT 前に既存
+    # active visits を soft-delete してから INSERT する.
+    zero_uuid = uuid.UUID("00000000-0000-0000-0000-000000000000")
+    target_keys: set[tuple[UUID, date, time, UUID]] = set()
+    for gv in keys.values():
+        for v in gv:
+            v_date = date.fromordinal(week_monday.toordinal() + v.weekday)
+            # auto_allocator は required_staff_count=1 固定なので visit_group_id は常に NULL.
+            target_keys.add((v.patient_id, v_date, v.start_time, zero_uuid))
+
+    if target_keys:
+        patient_ids_set = {k[0] for k in target_keys}
+        dates_set = {k[1] for k in target_keys}
+        times_set = {k[2] for k in target_keys}
+        existing_visits = (
+            await db.scalars(
+                select(Visit).where(
+                    Visit.patient_id.in_(patient_ids_set),
+                    Visit.visit_date.in_(dates_set),
+                    Visit.start_time.in_(times_set),
+                    Visit.deleted_at.is_(None),
+                )
+            )
+        ).all()
+        now = datetime.now(tz=UTC)
+        soft_deleted_count = 0
+        for ev in existing_visits:
+            ev_vgid_key = ev.visit_group_id if ev.visit_group_id is not None else zero_uuid
+            if (ev.patient_id, ev.visit_date, ev.start_time, ev_vgid_key) in target_keys:
+                ev.deleted_at = now
+                soft_deleted_count += 1
+        if soft_deleted_count > 0:
+            warnings.append(
+                f"既存の active visits {soft_deleted_count} 件を上書き候補として soft-delete しました"
+            )
+            logger.info(
+                "auto_allocate: soft-deleted %d existing visits before insert (batch=%s)",
+                soft_deleted_count,
+                proposal_batch_id,
+            )
+            # soft-delete を flush してから新規 INSERT (UNIQUE 衝突回避)
+            await db.flush()
 
     # ----- Visit を INSERT (course_id を紐付け) -----
     visits_to_persist: list[tuple[ProposedVisit, Visit]] = []
