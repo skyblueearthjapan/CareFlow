@@ -34,8 +34,12 @@ class AutoAllocateRequest(BaseModel):
 
     iso_year: int = Field(ge=2020, le=2100)
     iso_week: int = Field(ge=1, le=53)
-    # H3 (W41 v1.0 cross-review): 異常な巨大リクエストを防ぐため最大 50 拠点に制限.
-    office_ids: list[uuid.UUID] = Field(default_factory=list, max_length=50)
+    # H3 (W41 v1.0 cross-review): 異常な巨大リクエストを防ぐため上限を設ける.
+    # H4 (W41 v1.0 cross-review): フロント側 useOffices({limit:100}) と整合させ、
+    # かつ拠点未選択 → 空配列送信 (= Backend 側で全拠点扱い) で実質無制限に
+    # できるよう max_length を 200 に拡大. 空配列は ``auto_allocator`` 側で
+    # DB から active office を全件ロードして補完する契約.
+    office_ids: list[uuid.UUID] = Field(default_factory=list, max_length=200)
     mode: Literal["mode_1", "mode_2"] = "mode_1"
 
 

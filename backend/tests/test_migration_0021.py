@@ -82,18 +82,31 @@ def test_migration_0021_upgrade_contents() -> None:
 
 
 def test_course_model_unique_includes_office_id() -> None:
-    """W15-codex-fix (4): Course UNIQUE が office_id を含む."""
-    from sqlalchemy import UniqueConstraint
+    """W15-codex-fix (4) + W41 v1.0: Course UNIQUE が office_id を含む.
 
+    migration 0030 で旧 ``UniqueConstraint`` から partial UNIQUE INDEX
+    (``WHERE course_status != 'proposed'``) に切り替えたため、本テストでは
+    Index 側で同一カラム集合が宣言されていることを検証する.
+    """
     from app.models.course import Course
 
-    uniques = [c for c in Course.__table__.constraints if isinstance(c, UniqueConstraint)]
-    assert any(
-        c.name == "uq_courses_year_week_weekday_code_office"
-        and {col.name for col in c.columns}
-        == {"iso_year", "iso_week", "weekday", "code", "office_id"}
-        for c in uniques
-    ), "Course UNIQUE は (iso_year, iso_week, weekday, code, office_id) のはず"
+    indexes = list(Course.__table__.indexes)
+    matching = [
+        i
+        for i in indexes
+        if i.name == "uq_courses_year_week_weekday_code_office_finalized" and i.unique is True
+    ]
+    assert len(matching) == 1, (
+        "partial UNIQUE INDEX uq_courses_year_week_weekday_code_office_finalized が見つからない"
+    )
+    idx = matching[0]
+    assert {col.name for col in idx.columns} == {
+        "iso_year",
+        "iso_week",
+        "weekday",
+        "code",
+        "office_id",
+    }, "Course partial UNIQUE INDEX のカラム集合が想定外"
 
 
 def test_course_template_model_has_partial_unique_index() -> None:

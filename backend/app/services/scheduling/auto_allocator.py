@@ -68,6 +68,7 @@ from app.models.course import (
     Course,
 )
 from app.models.course_template import CourseTemplate
+from app.models.office import Office
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.staff import Staff
@@ -408,6 +409,82 @@ async def _collect_fixed_visits(
 
 
 # ---------------------------------------------------------------------------
+# Mode 2 KPI before: 既存 active visits ロード (H3 cross-review)
+# ---------------------------------------------------------------------------
+
+
+async def _build_before_visits_from_existing(
+    db: AsyncSession,
+    *,
+    patients_by_id: dict[UUID, Patient],
+    week_monday: date,
+) -> list[ProposedVisit]:
+    """Mode 2 専用: 対象週内の既存 active visits を ``ProposedVisit`` 配列に変換する.
+
+    H3 (W41 v1.0 cross-review): Mode 2 の before は PFV 由来ではなく、当該週の
+    ``visits`` (``deleted_at IS NULL``) を実データとして読み出して構築する.
+
+    * 患者 (active かつ対象 office) ごとに対象週 (月〜日) の visits を取得
+    * 各 visit を ``ProposedVisit`` (source_kind="existing") として返す
+    * 紐付く ``VisitStaffAssignment`` から ``assigned_staff_id`` を埋める
+      (staff_load_stddev の before 算出用)
+    * 既存 visits が無い患者は単に before に存在しないだけ (KPI 計算では skip).
+    """
+    if not patients_by_id:
+        return []
+
+    week_sunday = date.fromordinal(week_monday.toordinal() + 6)
+    patient_ids = list(patients_by_id.keys())
+    rows = await db.scalars(
+        select(Visit).where(
+            Visit.patient_id.in_(patient_ids),
+            Visit.deleted_at.is_(None),
+            Visit.visit_date >= week_monday,
+            Visit.visit_date <= week_sunday,
+        )
+    )
+    existing = list(rows.all())
+    if not existing:
+        return []
+
+    # staff 割当を取得 (KPI staff_load_stddev_before 用)
+    vsa_rows = await db.scalars(
+        select(VisitStaffAssignment).where(
+            VisitStaffAssignment.visit_id.in_([v.id for v in existing])
+        )
+    )
+    staff_by_visit_id: dict[UUID, UUID] = {a.visit_id: a.staff_id for a in vsa_rows.all()}
+
+    out: list[ProposedVisit] = []
+    for v in existing:
+        patient = patients_by_id.get(v.patient_id)
+        if patient is None or patient.lat is None or patient.lng is None:
+            continue
+        if patient.primary_office_id is None:
+            continue
+        weekday = v.visit_date.weekday()
+        # duration を end_time - start_time から算出 (PFV 換算)
+        start_min = v.start_time.hour * 60 + v.start_time.minute
+        end_min = v.end_time.hour * 60 + v.end_time.minute
+        duration_min = max(1, end_min - start_min)
+        out.append(
+            ProposedVisit(
+                patient_id=v.patient_id,
+                weekday=weekday,
+                start_time=v.start_time,
+                end_time=v.end_time,
+                service_minutes=duration_min,
+                lat=float(patient.lat),
+                lng=float(patient.lng),
+                source_kind="existing",
+                office_id=patient.primary_office_id,
+                assigned_staff_id=staff_by_visit_id.get(v.id),
+            )
+        )
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Phase 2: プール患者の差し込み (Mode 1)
 # ---------------------------------------------------------------------------
 
@@ -518,6 +595,128 @@ def _insert_pool_patients_mode1(
             if not filtered:
                 warnings.append(
                     f"pool patient {patient.code} weekday={wd} start={st.strftime('%H:%M')}"
+                    " blocked by acceptance_calendar (unavailable)"
+                )
+                continue
+            end_t = _add_minutes(st, sm)
+            if end_t <= st:
+                continue
+            new_visits.append(
+                ProposedVisit(
+                    patient_id=patient.id,
+                    weekday=wd,
+                    start_time=st,
+                    end_time=end_t,
+                    service_minutes=sm,
+                    lat=float(patient.lat),
+                    lng=float(patient.lng),
+                    source_kind="pool",
+                    office_id=office_id,
+                )
+            )
+    return new_visits
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 (Mode 2): 全面最適化 — 全 active 患者からスロット生成
+# ---------------------------------------------------------------------------
+
+
+async def _build_fixed_visit_fallback_prefs(
+    db: AsyncSession,
+    *,
+    patient_ids: list[UUID],
+) -> dict[UUID, list[tuple[int, time, int]]]:
+    """``patient_fixed_visits`` (mode='normal', slot_index=0) を
+    (weekday, start_time, duration_min) のリストに変換した dict.
+
+    Mode 2 で ``weekly_pattern`` が空の患者向けに使うフォールバック.
+    """
+    if not patient_ids:
+        return {}
+    rows = await db.scalars(
+        select(PatientFixedVisit).where(
+            PatientFixedVisit.patient_id.in_(patient_ids),
+            PatientFixedVisit.mode == "normal",
+            PatientFixedVisit.slot_index == 0,
+        )
+    )
+    by_patient: dict[UUID, list[tuple[int, time, int]]] = {}
+    for pfv in rows.all():
+        by_patient.setdefault(pfv.patient_id, []).append(
+            (pfv.weekday, pfv.start_time, pfv.duration_min)
+        )
+    return by_patient
+
+
+def _insert_all_patients_mode2(
+    *,
+    patients_by_id: dict[UUID, Patient],
+    fixed_fallback_prefs: dict[UUID, list[tuple[int, time, int]]],
+    unavailable_slots: dict[tuple[UUID, int], set[time]],
+    warnings: list[str],
+) -> list[ProposedVisit]:
+    """Phase 2 (Mode 2): 全 active 患者からスロット候補を生成する.
+
+    Mode 2 (auto-schedule-v1 §3 Phase 2 / モード 2 全面最適化):
+      * 入力: 全 active 患者 (固定枠の有無に依らない)
+      * ``weekly_pattern`` から候補スロットを生成
+      * 既存 ``patient_fixed_visits`` は **参考バッファ** として
+        ``weekly_pattern`` が空の場合のフォールバックに使う
+      * 既存固定枠は提案結果に含まれない (採用時に置換される)
+      * 出力: 全患者の希望スロットを ProposedVisit (source_kind='pool') として返す
+
+    Mode 1 との違い:
+      * patients_with_fixed を除外しない (= 全 active 患者を対象)
+      * weekly_pattern が空でも PFV から fallback で候補生成
+
+    H2 (W41 v1.0 cross-review): 旧実装は lat/lng/office_id が欠損している患者を
+    silent skip していたため、ユーザーが「Mode 2 = 全 active 対象」のはずなのに
+    座標未設定の患者が結果に現れない問題があった. 現実装は skip を warnings に
+    記録する.
+    """
+    new_visits: list[ProposedVisit] = []
+    targets: list[Patient] = []
+    for p in patients_by_id.values():
+        # H2 (W41 v1.0 cross-review): silent skip ではなく warnings に追加.
+        if p.primary_office_id is None:
+            warnings.append(f"mode_2 patient {p.code} (id={p.id}) は拠点未設定のためスキップ")
+            continue
+        if p.lat is None or p.lng is None:
+            warnings.append(f"mode_2 patient {p.code} (id={p.id}) は座標未設定のためスキップ")
+            continue
+        targets.append(p)
+
+    for patient in targets:
+        prefs = _extract_pool_preferences(patient)
+        if not prefs:
+            # フォールバック: PFV から (weekday, start, duration) を取り出す
+            fb = fixed_fallback_prefs.get(patient.id)
+            if fb:
+                prefs = fb
+                logger.debug(
+                    "auto_allocate mode_2: patient %s using PFV fallback (%d entries)",
+                    patient.code,
+                    len(fb),
+                )
+            else:
+                warnings.append(
+                    f"mode_2 patient {patient.code} (id={patient.id}) has no weekly_pattern"
+                    " entries and no patient_fixed_visits; skipped"
+                )
+                continue
+        office_id = patient.primary_office_id
+        assert office_id is not None  # type narrow
+        for wd, st, sm in prefs:
+            filtered = _filter_h5_acceptance_calendar(
+                [st],
+                office_id=office_id,
+                weekday=wd,
+                unavailable_slots=unavailable_slots,
+            )
+            if not filtered:
+                warnings.append(
+                    f"mode_2 patient {patient.code} weekday={wd} start={st.strftime('%H:%M')}"
                     " blocked by acceptance_calendar (unavailable)"
                 )
                 continue
@@ -1203,7 +1402,7 @@ async def auto_allocate(
         iso_year: ISO 年 (例 2026).
         iso_week: ISO 週 (1-53).
         office_ids: 対象拠点リスト (空なら早期 return).
-        mode: "mode_1" のみサポート. "mode_2" は NotImplementedError.
+        mode: "mode_1" (既存固定枠維持 + 新規最適化) / "mode_2" (全面最適化) 両方サポート済み.
 
     Returns:
         {
@@ -1214,21 +1413,12 @@ async def auto_allocate(
             "warnings": [str, ...],
         }
     """
-    if mode == "mode_2":
-        raise NotImplementedError("mode_2 is scheduled for v1.1 (auto-schedule §3 Phase 3a)")
-    if mode != "mode_1":
+    if mode not in ("mode_1", "mode_2"):
         raise ValueError(f"unsupported mode: {mode!r}")
     if iso_year < 2000 or iso_year > 2100:
         raise ValueError(f"iso_year out of range: {iso_year}")
     if iso_week < 1 or iso_week > 53:
         raise ValueError(f"iso_week out of range: {iso_week}")
-    if not office_ids:
-        return {
-            "proposal_batch_id": uuid.uuid4(),
-            "proposals": [],
-            "kpi": calc_kpis([], []),
-            "warnings": ["no office_ids provided"],
-        }
 
     try:
         week_monday = date.fromisocalendar(iso_year, iso_week, 1)
@@ -1237,6 +1427,23 @@ async def auto_allocate(
 
     proposal_batch_id = uuid.uuid4()
     warnings: list[str] = []
+
+    # ----- H4 (W41 v1.0 cross-review): 空 office_ids = "全拠点を対象" -----
+    # フロントが拠点未選択時に空配列を送る契約 (max_length 上限を回避し、
+    # かつ「全拠点」の意味を明示化するため). 空なら DB から active office を
+    # 全件ロードする. 1 件も無ければ早期 return.
+    if not office_ids:
+        all_office_rows = await session.scalars(
+            select(Office.id).where(Office.deleted_at.is_(None))
+        )
+        office_ids = list(all_office_rows.all())
+        if not office_ids:
+            return {
+                "proposal_batch_id": proposal_batch_id,
+                "proposals": [],
+                "kpi": calc_kpis([], []),
+                "warnings": ["対象拠点が登録されていません"],
+            }
 
     # ----- H4 (W41 v1.0 cross-review): observability — 入口ログ -----
     logger.info(
@@ -1248,11 +1455,15 @@ async def auto_allocate(
         mode,
     )
 
-    # ----- C1 (W41 v1.0 cross-review): 確定済み (status != proposed) Course があれば 409 相当 -----
-    # 既に course_fixed / staff_assigned に遷移した Course が残っていると、後段の Course
-    # INSERT で UNIQUE(iso_year, iso_week, weekday, code, office_id) に違反するため、
-    # 早期に ValueError を上げて API 層で 409 Conflict に変換する.
-    finalized_existing = await session.scalars(
+    # ----- W41 v1.0 feedback: 確定済み (status != proposed) Course は「上書き候補」 -----
+    # 旧仕様では 409 Conflict を返していたが、ユーザーは「週生成 → 自動割付」で
+    # 全 Course が staff_assigned になった状態で再算出したいケースが多数。
+    # migration 0030 で UNIQUE を partial UNIQUE INDEX
+    # (WHERE course_status != 'proposed') に切り替えたため、新規 proposed Course は
+    # 既存 finalized Course と (year, week, weekday, code, office) を共有しても
+    # 制約違反にならない。
+    # 採用 (apply) 時に既存 finalized を soft-delete する契約 (schedule.py 側).
+    finalized_existing_rows = await session.scalars(
         select(Course.id).where(
             Course.iso_year == iso_year,
             Course.iso_week == iso_week,
@@ -1261,10 +1472,16 @@ async def auto_allocate(
             Course.deleted_at.is_(None),
         )
     )
-    if finalized_existing.first() is not None:
-        raise ValueError(
-            f"既に確定済みのコースが存在します (status != proposed)。"
-            f"対象週 {iso_year}-W{iso_week:02d}, office_ids={office_ids}"
+    finalized_existing_ids = list(finalized_existing_rows.all())
+    if finalized_existing_ids:
+        warnings.append(
+            f"既存の確定済みコース {len(finalized_existing_ids)} 件を上書き候補とします"
+            " (採用時に soft-delete されます)"
+        )
+        logger.info(
+            "auto_allocate: batch=%s found %d finalized course(s) to overwrite",
+            proposal_batch_id,
+            len(finalized_existing_ids),
         )
 
     # ----- H1 (review): 同一 (iso_year, iso_week, office) の既存 proposed batch を invalidate -----
@@ -1316,11 +1533,49 @@ async def auto_allocate(
     # ----- M2: 患者一括ロード (Phase 1/2/4 で使い回す) -----
     patients_by_id = await _load_patients_by_offices(session, office_ids=office_ids)
 
+    # ----- H2 (W41 v1.0 cross-review): Mode 2 = "全 active 患者対象" の整合性 -----
+    # _load_patients_by_offices は ``primary_office_id IN (office_ids)`` で
+    # フィルタするため、active だが office_id が NULL の患者は silent に
+    # 取りこぼされる. Mode 2 では「全 active 対象」が UI 上の契約なので、
+    # 漏れた患者を明示的に warnings へ追加する.
+    if mode == "mode_2":
+        orphan_rows = await session.scalars(
+            select(Patient).where(
+                Patient.status == "active",
+                Patient.deleted_at.is_(None),
+                Patient.primary_office_id.is_(None),
+            )
+        )
+        for orphan in orphan_rows.all():
+            warnings.append(
+                f"mode_2 patient {orphan.code} (id={orphan.id}) は拠点未設定のためスキップ"
+            )
+
     # ----- Phase 1: 固定枠集約 -----
-    fixed_visits, patients_with_fixed = await _collect_fixed_visits(
-        session, patients_by_id=patients_by_id
-    )
-    before_visits = list(fixed_visits)
+    # Mode 1: 既存 PFV を保持しつつプール患者を差し込む.
+    # Mode 2: 既存 PFV は参考バッファとして退避し、全 active 患者を再配置する
+    #         → Phase 1 の fixed_visits は空 (= 提案には含めない). 既存 PFV
+    #         自体は採用時に置換されるため、ここでは生成しない.
+    if mode == "mode_2":
+        fixed_visits: list[ProposedVisit] = []
+        patients_with_fixed: set[UUID] = set()
+        # H3 (W41 v1.0 cross-review): Mode 2 では before を「全 active 患者の
+        # 既存 visits (deleted_at IS NULL かつ対象週内)」から構築する.
+        # 旧実装は PFV 由来のみで before を作っていたため、weekly_pattern のみ
+        # で after に入る患者が before に存在せず、距離改善率 (distance_reduction_pct)
+        # が無意味化していた. 新実装は同 (iso_year, iso_week) のすべての既存
+        # active visits を before として扱うことで、after との差分が実体ある
+        # 「全面最適化による変化」を表す.
+        before_visits = await _build_before_visits_from_existing(
+            session,
+            patients_by_id=patients_by_id,
+            week_monday=week_monday,
+        )
+    else:
+        fixed_visits, patients_with_fixed = await _collect_fixed_visits(
+            session, patients_by_id=patients_by_id
+        )
+        before_visits = list(fixed_visits)
 
     # ----- H2 (W41 v1.0 cross-review): KPI before の staff_load_stddev を
     # 既存 visit_staff_assignments から populate して意味のある値にする.
@@ -1373,14 +1628,27 @@ async def auto_allocate(
         len(patients_with_fixed),
     )
 
-    # ----- Phase 2 (Mode 1): プール患者の差し込み -----
+    # ----- Phase 2: プール患者 (Mode 1) / 全患者 (Mode 2) のスロット生成 -----
     unavailable_slots = await _load_unavailable_slots(session, office_ids=office_ids)
-    pool_visits = _insert_pool_patients_mode1(
-        patients_by_id=patients_by_id,
-        patients_with_fixed=patients_with_fixed,
-        unavailable_slots=unavailable_slots,
-        warnings=warnings,
-    )
+    if mode == "mode_2":
+        # Mode 2: weekly_pattern が空な患者向けに PFV を fallback にする.
+        fixed_fallback_prefs = await _build_fixed_visit_fallback_prefs(
+            session,
+            patient_ids=list(patients_by_id.keys()),
+        )
+        pool_visits = _insert_all_patients_mode2(
+            patients_by_id=patients_by_id,
+            fixed_fallback_prefs=fixed_fallback_prefs,
+            unavailable_slots=unavailable_slots,
+            warnings=warnings,
+        )
+    else:
+        pool_visits = _insert_pool_patients_mode1(
+            patients_by_id=patients_by_id,
+            patients_with_fixed=patients_with_fixed,
+            unavailable_slots=unavailable_slots,
+            warnings=warnings,
+        )
 
     all_visits = fixed_visits + pool_visits
     logger.info(

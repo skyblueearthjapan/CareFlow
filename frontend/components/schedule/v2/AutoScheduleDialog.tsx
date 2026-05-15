@@ -56,7 +56,7 @@ const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'] as cons
 
 const MODE_LABELS: Record<AutoAllocateMode, string> = {
   mode_1: 'Mode 1: 既存固定枠維持 + 新規最適化',
-  mode_2: 'Mode 2: 全体再最適化 (v1.0 未対応)',
+  mode_2: 'Mode 2: 全面最適化',
 };
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -77,9 +77,26 @@ export interface AutoScheduleDialogProps {
 // ─────────────────────────────────────────────────────────────────────────
 
 function formatErr(err: unknown): string {
-  if (err instanceof ApiError) return `${err.status} ${err.message}`;
+  if (err instanceof ApiError) return err.message;
   if (err instanceof Error) return err.message;
   return '不明なエラー';
+}
+
+/** ISO 8601 週番号から "YYYY年M月D日(曜)の週" 形式に変換する。 */
+function formatWeekLabel(isoYear: number, isoWeek: number): string {
+  // ISO 8601: 1月4日は必ず第1週に含まれる。
+  const jan4 = new Date(Date.UTC(isoYear, 0, 4));
+  const jan4Day = jan4.getUTCDay() || 7; // 0=日 を 7 に正規化
+  const monday = new Date(jan4);
+  monday.setUTCDate(jan4.getUTCDate() - jan4Day + 1 + (isoWeek - 1) * 7);
+  const m = monday.getUTCMonth() + 1;
+  const d = monday.getUTCDate();
+  const weekdays = ['日', '月', '火', '水', '木', '金', '土'];
+  const wd = weekdays[monday.getUTCDay()];
+  // H2 (review): ISO 2026-W01 は実際には 2025-12-29 (月) スタートなので、
+  // 引数の isoYear ではなく monday の暦上の年を表示しないと "2026年12月29日(月)" と
+  // 誤表示される. 必ず monday.getUTCFullYear() を使う.
+  return `${monday.getUTCFullYear()}年${m}月${d}日(${wd})の週`;
 }
 
 function formatNumber(n: number, fractionDigits = 1): string {
@@ -102,7 +119,10 @@ export function AutoScheduleDialog({
   isoWeek,
   defaultOfficeId,
 }: AutoScheduleDialogProps) {
-  const officesQuery = useOffices({ limit: 100 });
+  // H4 (W41 v1.0 cross-review): Backend schema max_length=200 と整合させ、
+  // かつ「拠点未選択 = 空配列送信 → Backend が全拠点扱い」の契約を保つため
+  // フロント側の取得 limit も 200 に揃える.
+  const officesQuery = useOffices({ limit: 200 });
   const offices = officesQuery.allOffices;
 
   const autoAllocateMut = useAutoAllocate();
@@ -158,11 +178,17 @@ export function AutoScheduleDialog({
   };
 
   const handleAllocate = async () => {
+    // H4 (W41 v1.0 cross-review): 未選択 (空) の場合は **空配列** を送信し、
+    // Backend 側で「空 = 全拠点」と解釈させる. これにより useOffices の
+    // limit 制約を回避できる (旧仕様は offices.map で全拠点 ID を送ろうとして
+    // limit:100 を超える環境で漏れていた). 拠点が選択されていれば selected の
+    // みを送信する.
+    const officeIdsToSend = Array.from(selectedOfficeIds);
     try {
       await autoAllocateMut.mutateAsync({
         iso_year: isoYear,
         iso_week: isoWeek,
-        office_ids: Array.from(selectedOfficeIds),
+        office_ids: officeIdsToSend,
         mode,
       });
     } catch (err) {
@@ -200,7 +226,7 @@ export function AutoScheduleDialog({
     }
   };
 
-  const isoWeekLabel = `${isoYear}-W${String(isoWeek).padStart(2, '0')}`;
+  const isoWeekLabel = formatWeekLabel(isoYear, isoWeek);
 
   return (
     <Dialog
@@ -241,13 +267,12 @@ export function AutoScheduleDialog({
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="mode_1">{MODE_LABELS.mode_1}</SelectItem>
-                  <SelectItem value="mode_2" disabled>
-                    {MODE_LABELS.mode_2}
-                  </SelectItem>
+                  <SelectItem value="mode_2">{MODE_LABELS.mode_2}</SelectItem>
                 </SelectContent>
               </Select>
               <p className="text-xs text-text-muted">
-                Mode 2 は v1.1 以降で対応予定。現状は Mode 1 のみ実行可能です。
+                Mode 1: 既存の固定枠を維持しながら新規 visit を最適配置します。Mode 2:
+                全体を一から再最適化します。
               </p>
             </div>
 
@@ -433,7 +458,7 @@ export function AutoScheduleDialog({
               <Button
                 type="button"
                 onClick={handleAllocate}
-                disabled={isAllocating || mode === 'mode_2'}
+                disabled={isAllocating || officesQuery.isLoading}
                 data-testid="auto-allocate-run-button"
               >
                 {isAllocating ? (

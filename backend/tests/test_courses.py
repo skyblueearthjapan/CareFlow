@@ -208,14 +208,82 @@ async def test_courses_delete_admin_returns_204(client, db) -> None:
 
 @pytest.mark.asyncio
 async def test_courses_create_duplicate_returns_409(client, db) -> None:
+    """W41 v1.0 feedback / cross-review C1: UNIQUE は partial
+    (``WHERE course_status != 'proposed' AND deleted_at IS NULL``) になったため、
+    確定済み (course_fixed / staff_assigned) かつ未 soft-delete 同士の
+    (year, week, weekday, code, office) 重複のみが 409 になる.
+    proposed 同士は再算出で共存できる仕様 (migration 0030 → 0031)."""
     admin = await _make_user(db, "c-uniq-admin@example.com", "admin")
     office = await _make_office(db, "事業所-uniq")
-    payload = _course_payload(office.id, iso_year=2026, iso_week=30, weekday=0, code="A")
+    # course_fixed 同士の重複は 409 のまま (partial UNIQUE 範囲内)
+    payload = _course_payload(
+        office.id,
+        iso_year=2026,
+        iso_week=30,
+        weekday=0,
+        code="A",
+        course_status="course_fixed",
+    )
     first = await client.post("/api/v1/courses", headers=_bearer(admin), json=payload)
     assert first.status_code == 201, first.text
 
     duplicate = await client.post("/api/v1/courses", headers=_bearer(admin), json=payload)
     assert duplicate.status_code == 409, duplicate.text
+
+
+@pytest.mark.asyncio
+async def test_courses_create_duplicate_proposed_ok(client, db) -> None:
+    """W41 v1.0 feedback: proposed 同士は partial UNIQUE の対象外なので
+    (year, week, weekday, code, office) が一致しても 201 で共存できる."""
+    admin = await _make_user(db, "c-uniq-prop-admin@example.com", "admin")
+    office = await _make_office(db, "事業所-uniq-prop")
+    payload = _course_payload(
+        office.id,
+        iso_year=2026,
+        iso_week=33,
+        weekday=0,
+        code="A",
+        course_status="proposed",
+    )
+    first = await client.post("/api/v1/courses", headers=_bearer(admin), json=payload)
+    assert first.status_code == 201, first.text
+    second = await client.post("/api/v1/courses", headers=_bearer(admin), json=payload)
+    # partial UNIQUE のため proposed 同士は 201 (共存可)
+    assert second.status_code == 201, second.text
+
+
+@pytest.mark.asyncio
+async def test_courses_create_after_soft_delete_finalized_ok(client, db) -> None:
+    """W41 v1.0 cross-review C1 (migration 0031): partial UNIQUE INDEX に
+    ``deleted_at IS NULL`` 条件が追加されたため、soft-delete 済みの
+    finalized Course は新規 finalized Course と (year, week, weekday, code,
+    office) を共有しても UNIQUE 違反にならない.
+
+    これは ``apply_proposal`` で既存 finalized を soft-delete してから
+    proposed を staff_assigned に昇格させる契約を支える挙動.
+    """
+    admin = await _make_user(db, "c-uniq-softdel-admin@example.com", "admin")
+    office = await _make_office(db, "事業所-uniq-softdel")
+    payload = _course_payload(
+        office.id,
+        iso_year=2026,
+        iso_week=34,
+        weekday=0,
+        code="A",
+        course_status="course_fixed",
+    )
+    first = await client.post("/api/v1/courses", headers=_bearer(admin), json=payload)
+    assert first.status_code == 201, first.text
+    first_id = first.json()["id"]
+
+    # soft-delete (DELETE は admin のみ; 204 を返す)
+    del_res = await client.delete(f"/api/v1/courses/{first_id}", headers=_bearer(admin))
+    assert del_res.status_code == 204, del_res.text
+
+    # 同じキーで新規 finalized を作成できる (partial UNIQUE INDEX が
+    # deleted_at IS NULL を考慮するため UNIQUE 違反にならない).
+    second = await client.post("/api/v1/courses", headers=_bearer(admin), json=payload)
+    assert second.status_code == 201, second.text
 
 
 @pytest.mark.asyncio

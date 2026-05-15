@@ -43,7 +43,7 @@ from sqlalchemy import (
     SmallInteger,
     String,
     Text,
-    UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
@@ -131,16 +131,31 @@ class Course(Base, TimestampMixin):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
-        # W15-codex-fix (4): UNIQUE に office_id を含めて拠点スコープ化.
+        # W15-codex-fix (4) + W41 v1.0 feedback + W41 v1.0 cross-review C1:
+        # UNIQUE は確定済み (status != 'proposed') かつ未 soft-delete
+        # (deleted_at IS NULL) の Course にだけ適用する partial UNIQUE INDEX
+        # として運用する.
+        #
         # 旧 (iso_year, iso_week, weekday, code) UNIQUE は migration 0021 で
-        # drop し、(iso_year, iso_week, weekday, code, office_id) に再構築。
-        UniqueConstraint(
+        # drop し、0021 で (iso_year, iso_week, weekday, code, office_id) に拡張、
+        # さらに migration 0030 で status を含む partial UNIQUE INDEX に切替、
+        # migration 0031 で ``deleted_at IS NULL`` 条件を追加 (apply で soft-delete
+        # された旧 finalized が新 finalized と衝突する問題に対応).
+        #
+        # これにより再算出時に proposed Course が既存 finalized Course と
+        # (year, week, weekday, code, office) を共有でき、UI 上の「再算出」
+        # 操作 (= 既存確定済みを上書き候補として保持しつつ新提案を生成) が
+        # 可能になる. 採用 (apply) 時に既存 finalized を soft-delete する契約.
+        Index(
+            "uq_courses_year_week_weekday_code_office_finalized",
             "iso_year",
             "iso_week",
             "weekday",
             "code",
             "office_id",
-            name="uq_courses_year_week_weekday_code_office",
+            unique=True,
+            postgresql_where=text("course_status != 'proposed' AND deleted_at IS NULL"),
+            sqlite_where=text("course_status != 'proposed' AND deleted_at IS NULL"),
         ),
         # コース記号は A/B/C/D/E/M のみ (§3.6.5).
         # W16 codex fix (中 2): 本店 A-E ラベルを正常受け入れするため 'E' を追加.

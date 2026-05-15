@@ -41,7 +41,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 
 from app.core.deps import DbDep, require_role
@@ -1646,8 +1646,8 @@ async def auto_allocate_endpoint(
     auto_allocator は ``await db.flush()`` のみ呼ぶ契約のため、本 endpoint が
     1 リクエスト = 1 トランザクションで commit / rollback する.
 
-    mode='mode_2' は v1.1 で実装予定 (現在は service 層が NotImplementedError
-    を送出するため 501 で返す).
+    mode='mode_1' / 'mode_2' の両方をサポート済み. 将来 mode_3 等が追加された
+    場合は service 層が NotImplementedError を送出し、本 endpoint が 501 で返す.
     """
     try:
         result = await auto_allocate_service(
@@ -1659,16 +1659,17 @@ async def auto_allocate_endpoint(
         )
         await db.commit()
     except NotImplementedError as exc:
+        # Defensive: future modes that aren't implemented (e.g. mode_3) — 現状の
+        # mode_1 / mode_2 はサポート済みのためここには到達しないが、catch を残す.
         await db.rollback()
         raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(exc)) from exc
     except ValueError as exc:
         await db.rollback()
-        # C1 (W41 v1.0 cross-review): 既に確定済みの Course が残っているケースは
-        # ユーザに再算出が不可能であることを伝える 409 Conflict として扱う.
-        msg = str(exc)
-        if "確定済み" in msg:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=msg) from exc
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg) from exc
+        # W41 v1.0 feedback: 確定済み Course が残っているケースは 409 ではなく
+        # 「上書き候補」として扱い、再算出を許可する (auto_allocator 側で
+        # warnings に追加). ここに来る ValueError は本当に bad request
+        # (例: 不正な iso_week / mode) のみ.
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except Exception:
         await db.rollback()
         raise
@@ -1781,6 +1782,81 @@ async def apply_proposal(
                 ),
             )
 
+        # ----- W41 v1.0 feedback: 上書き対象の既存 finalized Course を soft-delete -----
+        # 採用しようとしている proposed Course と (iso_year, iso_week, weekday, code,
+        # office_id) が一致する別 Course (= course_fixed / staff_assigned で残っている
+        # 旧確定済み) を soft-delete してから昇格させる. migration 0030 で partial
+        # UNIQUE INDEX に切り替えたため、proposed と finalized が共存できるが、
+        # ここで proposed を finalized に遷移させる前に旧 finalized を退場させないと
+        # partial UNIQUE 違反になる.
+        finalized_keys = {
+            (c.iso_year, c.iso_week, c.weekday, c.code, c.office_id) for c in locked_courses
+        }
+        overwritten_course_ids: list[UUID] = []
+        if finalized_keys:
+            # 同じキーで既に finalized 状態の Course を取得 (= 上書き対象)
+            existing_finalized_rows = await db.scalars(
+                select(Course)
+                .where(
+                    Course.iso_year.in_({k[0] for k in finalized_keys}),
+                    Course.iso_week.in_({k[1] for k in finalized_keys}),
+                    Course.weekday.in_({k[2] for k in finalized_keys}),
+                    Course.code.in_({k[3] for k in finalized_keys}),
+                    Course.office_id.in_({k[4] for k in finalized_keys}),
+                    Course.course_status.in_(
+                        (COURSE_STATUS_COURSE_FIXED, COURSE_STATUS_STAFF_ASSIGNED)
+                    ),
+                    Course.deleted_at.is_(None),
+                    # 上書き対象は (iso_year, iso_week, weekday, code, office_id) が一致
+                    # かつ proposal_batch_id が今回 apply 対象と異なる Course.
+                    # C1 (review): SQL の NULL != value は NULL (= falsy) なので、
+                    # proposal_batch_id IS NULL の Course (CRUD endpoint で手動作成された
+                    # 既存 finalized course) が silent に除外され partial UNIQUE 違反に
+                    # なる. or_(..., IS NULL) で明示的に拾う.
+                    or_(
+                        Course.proposal_batch_id != proposal_batch_id,
+                        Course.proposal_batch_id.is_(None),
+                    ),
+                )
+                .with_for_update()
+            )
+            existing_finalized = [
+                c
+                for c in existing_finalized_rows.all()
+                if (c.iso_year, c.iso_week, c.weekday, c.code, c.office_id) in finalized_keys
+            ]
+            if existing_finalized:
+                overwritten_course_ids = [c.id for c in existing_finalized]
+                # 関連 visit_staff_assignments を物理削除 (deleted_at 持たないため)
+                await db.execute(
+                    delete(VisitStaffAssignment).where(
+                        VisitStaffAssignment.visit_id.in_(
+                            select(Visit.id).where(
+                                Visit.course_id.in_(overwritten_course_ids),
+                                Visit.deleted_at.is_(None),
+                            )
+                        )
+                    )
+                )
+                # 関連 visits を soft-delete
+                await db.execute(
+                    Visit.__table__.update()
+                    .where(
+                        Visit.course_id.in_(overwritten_course_ids),
+                        Visit.deleted_at.is_(None),
+                    )
+                    .values(deleted_at=now)
+                )
+                # Course を soft-delete
+                for c in existing_finalized:
+                    c.deleted_at = now
+                logger.info(
+                    "apply_proposal: batch=%s soft-deleted %d overwritten course(s)",
+                    proposal_batch_id,
+                    len(existing_finalized),
+                )
+                await db.flush()
+
         # ----- course_status 遷移 (proposed → course_fixed → staff_assigned) -----
         course_ids = [c.id for c in locked_courses]
         # H4 (review): course_id → template_id map を構築し、PFV INSERT/UPDATE 時に
@@ -1876,6 +1952,22 @@ async def apply_proposal(
     except HTTPException:
         await db.rollback()
         raise
+    except IntegrityError as exc:
+        # H1 (W41 v1.0 cross-review): 並行 apply の race condition.
+        # 別 batch が同 (year, week, weekday, code, office) を同時に finalized 昇格
+        # させた場合、partial UNIQUE INDEX 違反 (23505) になるため 409 に変換する.
+        # 旧 finalized の soft-delete + 新規 finalized 昇格は同一 TX 内で実施するが、
+        # 別 TX が同時に同キーを finalized 化するとここで初めて検出される.
+        await db.rollback()
+        logger.warning(
+            "apply_proposal: integrity error (likely concurrent apply): batch=%s err=%s",
+            proposal_batch_id,
+            exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="他のユーザーが同時に同じ週を採用しています。もう一度実行してください。",
+        ) from exc
     except Exception:
         await db.rollback()
         raise
