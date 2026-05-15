@@ -42,6 +42,9 @@ htmlcov/
 # Sample data (大規模・参考用)
 Sampledata/
 
+# Master import CSV (PII: 患者・スタッフ実名)
+backend/data/import/
+
 # Database
 *.sqlite
 *.db
