@@ -25,6 +25,14 @@ from app.schemas.v2.acceptance import (
     AcceptanceCalendarRead,
     AcceptanceStatus,
 )
+from app.schemas.v2.auto_allocate import (
+    AutoAllocateRequest,
+    AutoAllocateResponse,
+    KpiResponse,
+    ProposalApplyResponse,
+    ProposalDiscardResponse,
+    ProposedCourseSummary,
+)
 from app.schemas.v2.course import (
     CourseCodeV2,
     CourseV2Base,
@@ -112,6 +120,13 @@ __all__ = [
     "AcceptanceCalendarEntry",
     "AcceptanceCalendarRead",
     "AcceptanceStatus",
+    # auto-allocate (W41 v1.0)
+    "AutoAllocateRequest",
+    "AutoAllocateResponse",
+    "KpiResponse",
+    "ProposalApplyResponse",
+    "ProposalDiscardResponse",
+    "ProposedCourseSummary",
     # enums
     "AiContextType",
     "CourseCodeV2",

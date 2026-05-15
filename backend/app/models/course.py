@@ -35,6 +35,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    JSON,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -44,10 +45,14 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin
+
+# Cross-dialect JSONB: PostgreSQL gets native JSONB, SQLite (tests) gets JSON.
+JSONBish = JSONB().with_variant(JSON(), "sqlite")
 
 # course_status 値 (§4.5).
 # DB 物理型は String(16). Pydantic / API レイヤで CourseStatus enum バリデートする。
@@ -115,6 +120,13 @@ class Course(Base, TimestampMixin):
         DateTime(timezone=True), nullable=True
     )
 
+    # W41 Phase 0: 自動算出提案バッチ識別子 / 決定ログ (auto-schedule v1.0)
+    proposal_batch_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        nullable=True,
+    )
+    decision_log: Mapped[dict | None] = mapped_column(JSONBish, nullable=True)
+
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -156,4 +168,6 @@ class Course(Base, TimestampMixin):
         Index("ix_courses_office", "office_id"),
         # W15-BE1: テンプレートからの逆引き用
         Index("ix_courses_template", "template_id"),
+        # W41 Phase 0: バッチ別 + ステータス複合フィルタ用
+        Index("ix_courses_proposal_batch_status", "proposal_batch_id", "course_status"),
     )

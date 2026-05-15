@@ -404,7 +404,7 @@ class Layer3Assigner:
         )
 
         # ---------- 2. 稼働スタッフ取得 ----------
-        staff_pool = await self._load_active_staff(
+        staff_pool = await self.load_active_staff(
             db, iso_year=iso_year, iso_week=iso_week, week_monday=week_monday
         )
 
@@ -1030,7 +1030,7 @@ class Layer3Assigner:
 
         return None
 
-    async def _load_active_staff(
+    async def load_active_staff(
         self,
         db: AsyncSession,
         *,
@@ -1039,6 +1039,9 @@ class Layer3Assigner:
         week_monday: date_cls,
     ) -> list[StaffInfo]:
         """稼働スタッフ + 主拠点座標 + 勤務曜日 を取得.
+
+        H2 (review) で ``_load_active_staff`` から public 化 (W41).
+        auto_allocator が直接呼び出して staff_pool を構築できる.
 
         - ``Staff.status='active'`` のみ
         - ``StaffShift`` から ``is_on=True`` の曜日集合を構築

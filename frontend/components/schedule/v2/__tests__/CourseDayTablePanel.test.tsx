@@ -84,6 +84,7 @@ vi.mock('lucide-react', () => ({
   Loader2: () => <span data-testid="loader" />,
   RefreshCw: () => <span data-testid="refresh-icon" />,
   UserCheck: () => <span data-testid="user-check-icon" />,
+  Sparkles: () => <span data-testid="sparkles-icon" />,
 }));
 
 vi.mock('@/components/ui/card', () => ({
@@ -185,6 +186,32 @@ vi.mock('@/lib/queries/generate_week', () => ({
 }));
 vi.mock('@/lib/queries/assign_staff_only', () => ({
   useAssignStaffOnly: () => ({ mutateAsync: mockAssignStaffOnly, isPending: false }),
+}));
+// Wave 41 Phase 5: auto_schedule モック (useMutation を直接呼ぶため QueryClient が無いと
+// テスト環境で例外になる。ボタンを叩かないテストでは noop で十分).
+vi.mock('@/lib/queries/auto_schedule', () => ({
+  useAutoAllocate: () => ({
+    mutateAsync: vi.fn(),
+    reset: vi.fn(),
+    isPending: false,
+    data: undefined,
+    error: null,
+    isSuccess: false,
+  }),
+  useApplyProposal: () => ({
+    mutateAsync: vi.fn(),
+    reset: vi.fn(),
+    isPending: false,
+    error: null,
+    isSuccess: false,
+  }),
+  useDiscardProposal: () => ({
+    mutateAsync: vi.fn(),
+    reset: vi.fn(),
+    isPending: false,
+    error: null,
+    isSuccess: false,
+  }),
 }));
 // Wave 39: staff-events モック (W39 で useUpdateEventForDrag が追加されたため必須).
 const mockUpdateEventDrag = vi.fn();

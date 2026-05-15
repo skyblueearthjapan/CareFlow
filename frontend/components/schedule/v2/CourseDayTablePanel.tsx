@@ -40,7 +40,7 @@ import {
 import { useQueries } from '@tanstack/react-query';
 import { useSession } from 'next-auth/react';
 import { format } from 'date-fns';
-import { Loader2, RefreshCw, UserCheck } from 'lucide-react';
+import { Loader2, RefreshCw, Sparkles, UserCheck } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { Button } from '@/components/ui/button';
@@ -73,6 +73,7 @@ import {
 } from '@/lib/schemas/patient';
 
 import { AcceptanceLegend } from './AcceptanceLayer';
+import { AutoScheduleDialog } from './AutoScheduleDialog';
 import {
   CourseDayTable,
   floorToCourseSlot,
@@ -1144,6 +1145,9 @@ export function CourseDayTablePanel({
   const generateWeekMut = useGenerateWeekOnly();
   const assignStaffOnlyMut = useAssignStaffOnly();
 
+  // ─── Wave 41 Phase 5: 自動算出ダイアログの open state ─────────────
+  const [autoScheduleOpen, setAutoScheduleOpen] = useState(false);
+
   const handleGenerateWeek = async () => {
     if (!canEdit) {
       toast.warning('編集権限がありません');
@@ -1316,6 +1320,18 @@ export function CourseDayTablePanel({
                       <UserCheck className="mr-1 h-4 w-4" aria-hidden />
                     )}
                     自動割付
+                  </Button>
+                  {/* Wave 41 Phase 5: 自動算出ボタン (MVP) */}
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setAutoScheduleOpen(true)}
+                    disabled={generateWeekMut.isPending || assignStaffOnlyMut.isPending}
+                    data-testid="auto-schedule-button"
+                  >
+                    <Sparkles className="mr-1 h-4 w-4" aria-hidden />
+                    自動算出
                   </Button>
                 </>
               ) : null}
@@ -1498,6 +1514,15 @@ export function CourseDayTablePanel({
             onCancel={() => closePartnerDialog()}
           />
         ) : null}
+
+        {/* Wave 41 Phase 5: 自動スケジュール算出ダイアログ */}
+        <AutoScheduleDialog
+          open={autoScheduleOpen}
+          onClose={() => setAutoScheduleOpen(false)}
+          isoYear={isoYear}
+          isoWeek={isoWeek}
+          defaultOfficeId={officeId}
+        />
       </section>
     </DndContext>
   );

@@ -182,7 +182,7 @@ class Layer2ClusterError(Exception):
 # ---------------------------------------------------------------------------
 
 
-def _kmeans(
+def run_kmeans(
     points: list[tuple[float, float]],
     k: int,
     *,
@@ -191,6 +191,9 @@ def _kmeans(
     n_init: int = KMEANS_N_INIT,
 ) -> list[int]:
     """K-means クラスタリング (Lloyd 法).
+
+    H3 (review) で ``_kmeans`` から public 化 (W41).
+    auto_allocator など外部モジュールから直接利用可能.
 
     Returns:
         各 point に対するクラスタ ID (0..k-1) の配列。
@@ -364,7 +367,7 @@ class Layer2Clusterer:
 
         # ----- Step 1: K-means 初期分割 -----
         points = [(v.lat, v.lng) for v in visits]
-        labels = _kmeans(points, staff_count, random_state=random_state)
+        labels = run_kmeans(points, staff_count, random_state=random_state)
 
         # クラスタ -> visits リスト
         clusters: list[list[Layer2VisitInput]] = [[] for _ in range(staff_count)]
@@ -791,4 +794,5 @@ __all__ = [
     "from_fixture_dicts",
     "haversine_km",
     "naive_round_robin",
+    "run_kmeans",
 ]
