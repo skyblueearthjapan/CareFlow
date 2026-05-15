@@ -43,6 +43,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import re
 import sys
 from dataclasses import dataclass, field
 from datetime import time
@@ -50,6 +51,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import openpyxl
+import sqlalchemy as sa
 
 # ---------------------------------------------------------------------------
 # sys.path 設定
@@ -626,6 +628,127 @@ def _addr_match(db_addr: str, sheet_addr: str) -> bool:
     return db_addr[:20] == sheet_addr[:20]
 
 
+# シート「氏名」セルの複合表記分割パターン
+# 例: 「槇・河野」「藤田、渡辺」「川上,親子」を ["槇","河野"] / ["藤田","渡辺"] / ["川上","親子"] に分割
+_COMPOUND_SEP_RE = re.compile(r"[・、,]")
+
+# 末尾 suffix: 「○○親子」「○○双子」 → 苗字単独に正規化
+_GROUP_SUFFIX_RE = re.compile(r"(親子|双子|兄弟|姉妹|姉弟|兄妹|夫妻|夫婦)$")
+
+
+def _split_compound_name(name: str) -> tuple[list[str], bool]:
+    """シート上の氏名表記を patient.name の苗字相当 token に分解。
+
+    Returns:
+        (tokens, expand_to_all_with_same_surname)
+        - tokens: 分解された苗字相当の token 一覧
+        - expand_to_all_with_same_surname: True なら「同苗字+同住所」の全 patient
+          に展開する (「○○親子」「○○双子」のような表記が含まれる場合)
+    """
+    raw_parts = [p.strip() for p in _COMPOUND_SEP_RE.split(name) if p.strip()]
+    tokens: list[str] = []
+    expand = False
+    for part in raw_parts:
+        m = _GROUP_SUFFIX_RE.search(part)
+        if m:
+            expand = True
+            stripped = _GROUP_SUFFIX_RE.sub("", part).strip()
+            if stripped:
+                tokens.append(stripped)
+        else:
+            tokens.append(part)
+    return tokens, expand
+
+
+async def _find_patients_by_surname(
+    session: Any,
+    surname: str,
+    sheet_address: str | None,
+) -> list[Patient]:
+    """苗字 (氏名の先頭トークン) 一致で patient 候補を取得し、住所で絞り込む。
+
+    patient.name は「青栁　あい」のように姓と名の間に全角/半角スペースが入る
+    前提。surname がそれらの先頭トークンと一致するレコードを返す。
+    """
+    stmt = select(Patient).where(
+        Patient.deleted_at.is_(None),
+        sa.or_(
+            Patient.name.startswith(surname + "　"),  # 全角スペース
+            Patient.name.startswith(surname + " "),
+            Patient.name == surname,  # 苗字単独 (まれ)
+        ),
+    )
+    candidates = list((await session.scalars(stmt)).all())
+    if len(candidates) <= 1 or not sheet_address:
+        return candidates
+
+    # 住所部分一致で絞り込み (シート住所は施設略称「よりより宮野木」等の場合あり)
+    narrowed: list[Patient] = []
+    for p in candidates:
+        if p.address and _addr_overlap(p.address, sheet_address):
+            narrowed.append(p)
+    return narrowed if narrowed else candidates
+
+
+def _addr_overlap(db_addr: str, sheet_addr: str) -> bool:
+    """db_addr と sheet_addr の重なりがあるか緩めに判定。
+
+    施設略称 (「よりより宮野木」「グループホームCOCOL」等) と DB 上のフル住所を
+    マッチさせるため、`sheet_addr` から非ノイズ文字 4 文字以上の部分文字列が
+    db_addr に含まれるかでチェック。
+    """
+    if not sheet_addr:
+        return False
+    s = sheet_addr.strip()
+    if len(s) >= 4 and s in db_addr:
+        return True
+    # 4-gram 一致をいくつか拾えるか
+    grams_db = {db_addr[i : i + 4] for i in range(len(db_addr) - 3)} if len(db_addr) >= 4 else set()
+    hits = sum(1 for i in range(max(0, len(s) - 3)) if s[i : i + 4] in grams_db)
+    return hits >= 2
+
+
+async def _find_patients_multi(
+    session: Any,
+    name: str,
+    address: str | None,
+) -> list[Patient]:
+    """複合表記対応の patient 探索。
+
+    1) まず単一 patient とみなして既存 `_find_patient` を試行
+    2) ヒットしなければ複合表記として分割し、各 token を苗字検索
+    3) 「○○親子」等の suffix がある場合は同苗字+同住所の全 patient に展開
+    """
+    single = await _find_patient(session, name, address)
+    if single is not None:
+        return [single]
+
+    tokens, expand = _split_compound_name(name)
+    if not tokens:
+        return []
+
+    if expand and len(tokens) == 1:
+        # 「遠藤親子」「前川双子」のようなケース。住所マッチで複数 patient 取得
+        return await _find_patients_by_surname(session, tokens[0], address)
+
+    if len(tokens) == 1:
+        # 苗字単独 (「園田」のみ等)。住所マッチで絞った 1 名想定
+        return await _find_patients_by_surname(session, tokens[0], address)
+
+    # 複合表記 (例: 「槇・河野」「藤田・渡辺」)
+    collected: list[Patient] = []
+    seen_ids: set[Any] = set()
+    for token in tokens:
+        cands = await _find_patients_by_surname(session, token, address)
+        if not cands:
+            continue
+        chosen = cands[0]  # 住所絞り込み済の先頭を採用
+        if chosen.id not in seen_ids:
+            collected.append(chosen)
+            seen_ids.add(chosen.id)
+    return collected
+
+
 async def _upsert_patient_fixed_visit(
     session: Any,
     patient_id: object,
@@ -750,8 +873,8 @@ async def run_import(
                     if slot.condition:
                         summary.condition_notes.append(f"{slot.name}: {slot.condition}")
 
-                    patient = await _find_patient(session, slot.name, slot.address)
-                    if patient is None:
+                    patients = await _find_patients_multi(session, slot.name, slot.address)
+                    if not patients:
                         summary.unmatched.append(
                             UnmatchedVisit(
                                 name=slot.name,
@@ -765,28 +888,29 @@ async def run_import(
                         )
                         continue
 
-                    pfv_status, _ = await _upsert_patient_fixed_visit(
-                        session,
-                        patient.id,
-                        slot.weekday_idx,
-                        slot.start_time,
-                        apply=apply,
-                        course_template_id=ct_id,
-                    )
-                    summary.matched.append(
-                        MatchedVisit(
-                            patient_id=patient.id,
-                            patient_name=patient.name,
-                            weekday_idx=slot.weekday_idx,
-                            start_time=slot.start_time,
-                            label=block.label,
-                            office_hint=section.office_hint,
+                    for patient in patients:
+                        pfv_status, _ = await _upsert_patient_fixed_visit(
+                            session,
+                            patient.id,
+                            slot.weekday_idx,
+                            slot.start_time,
+                            apply=apply,
+                            course_template_id=ct_id,
                         )
-                    )
-                    if pfv_status == "new":
-                        summary.pfv_new += 1
-                    else:
-                        summary.pfv_update += 1
+                        summary.matched.append(
+                            MatchedVisit(
+                                patient_id=patient.id,
+                                patient_name=patient.name,
+                                weekday_idx=slot.weekday_idx,
+                                start_time=slot.start_time,
+                                label=block.label,
+                                office_hint=section.office_hint,
+                            )
+                        )
+                        if pfv_status == "new":
+                            summary.pfv_new += 1
+                        else:
+                            summary.pfv_update += 1
 
         if apply:
             await session.commit()
