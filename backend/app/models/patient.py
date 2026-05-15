@@ -75,7 +75,7 @@ class Patient(Base, TimestampMixin):
         nullable=True,
     )
 
-    sex_restriction: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    sex_restriction: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     # W18 Phase A-1: 複数スタッフ同行を必須とする患者フラグ (§4.1 / §5.4).
     # weekly_pattern.entries[].staff_count では曜日別の細粒度設定だが、
