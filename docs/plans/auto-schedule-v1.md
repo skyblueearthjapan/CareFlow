@@ -1,6 +1,6 @@
-# CareFlow スケジュール自動算出ロジック 設計仕様書 v0.3
+# CareFlow スケジュール自動算出ロジック 設計仕様書 v0.4
 
-> **Status**: ドラフト v0.3 (モード 1 のプール定義明確化、実装着手前)
+> **Status**: ドラフト v0.4 (critic 指摘反映、Course status ベース修正、実装着手前)
 > **起稿日**: 2026-05-15 / **最終更新**: 2026-05-15
 > **対象**: 訪問看護スケジュールの「自動算出」ロジックの詳細設計
 > **関連**:
@@ -411,32 +411,47 @@ visit セルクリック時に表示。4 観点で構造化:
 
 ## 10. データ書込仕様
 
-### 10.1 算出結果の保存先
+### 10.1 算出結果の保存先 (v0.4: Course.status ベースに修正)
 
-| データ | 保存先 | status |
+`visits.status` は **v1 から既存の `planned/in_progress/completed/cancelled`** のみ。
+「提案 → 採用」の状態管理は **`courses.status`** で表現する (既存スキーマ準拠)。
+
+| データ | 保存先 | status / フィールド |
 |---|---|---|
-| 提案 visits | `visits` | `proposed` |
-| 採用後の visits | `visits` | `course_fixed` → `staff_assigned` |
-| 提案スタッフ割当 | `visit_staff_assignments` | (採用後にコミット) |
-| 採用後の固定枠 | `patient_fixed_visits` | (mode='normal') |
+| 提案された course | `courses` (新規 row) | `status='proposed'` |
+| 採用された course | `courses` (status 遷移) | `status='proposed' → 'course_fixed' → 'staff_assigned'` |
+| 提案 visits | `visits` (course にぶら下がる) | `status='planned'`、`course_id` は新規 course を参照 |
+| 提案 staff 割当 | `visit_staff_assignments` | (採用後コミット、提案段階では空欄も可) |
+| 採用後の固定枠保存 | `patient_fixed_visits` | (mode='normal'、course_template_id は採用 course の template_id) |
+| 提案バッチ識別 | `courses.proposal_batch_id` (新規列 or 既存 `id` を batch_id 兼用) | 1 回の auto-allocate 実行を識別、race condition 対策 |
 
-### 10.2 採用フロー (Atomic Transaction)
+### 10.2 採用フロー (Atomic Transaction, Course status ベース)
 ```
-1. user clicks 採用ボタン
+1. user clicks 採用ボタン (proposal_batch_id を渡す)
 2. BEGIN transaction
-3. visits.status='proposed' → 'course_fixed' (採用された visit のみ)
-4. visit_staff_assignments を INSERT
-5. patient_fixed_visits を UPSERT (新固定枠)
-6. (decision log を proposal_decisions テーブル等に永続化 - 監査用)
-7. COMMIT
+3. SELECT ... WHERE proposal_batch_id=X FOR UPDATE (concurrent 採用防止)
+4. courses.status='proposed' → 'course_fixed' (該当 batch のみ)
+5. visit_staff_assignments を INSERT (P4 で決まった割当)
+6. courses.status='course_fixed' → 'staff_assigned'
+7. patient_fixed_visits を UPSERT (新固定枠を保存)
+8. (decision log を proposal_decisions テーブルに永続化、監査用)
+9. COMMIT
 ```
 
 ### 10.3 破棄フロー
 ```
-1. user clicks 破棄ボタン
-2. DELETE FROM visits WHERE status='proposed' AND created_at > 提案開始時刻
-3. 関連 decision log もクリーンアップ
+1. user clicks 破棄ボタン (proposal_batch_id を渡す)
+2. DELETE FROM visits WHERE course_id IN (
+    SELECT id FROM courses WHERE proposal_batch_id=X AND status='proposed'
+   )
+3. DELETE FROM courses WHERE proposal_batch_id=X AND status='proposed'
+4. 関連 decision log もクリーンアップ
 ```
+
+### 10.4 Race Condition 対策
+- 同時に複数の auto-allocate が走った場合、後発は **既存 proposed batch を invalidate** してから新規生成
+- 採用時は `FOR UPDATE` ロックで他の採用と排他
+- proposed visits の生存期間: 採用も破棄もされず 24h 経過したら自動破棄 (cron)
 
 ---
 
@@ -479,6 +494,7 @@ visit セルクリック時に表示。4 観点で構造化:
 | v0.1 | 2026-05-15 | imaizumi + Claude | 議論初版起稿 |
 | v0.2 | 2026-05-15 | imaizumi + Claude | 「説明可能な提案」(§9) を追加。KPI ダッシュボード / AI 自然文要約 / 個別 Justification ポップアップを仕様化。決定ログの記録方式も追加 |
 | v0.3 | 2026-05-15 | imaizumi + Claude | モード 1 (差分追加) の「差し込み対象プール」を明示定義: `status='active' AND patient_fixed_visits 行無し` の自動抽出。Phase 2 の処理を両モードで明確化 |
+| v0.4 | 2026-05-15 | imaizumi + Claude | **critic レビュー反映**: visit.status='proposed' は誤りで、`courses.status='proposed'` を使う仕様に修正。proposal_batch_id 概念、Race Condition 対策、Atomic Transaction の手順を §10 で詳細化 |
 
 ---
 
