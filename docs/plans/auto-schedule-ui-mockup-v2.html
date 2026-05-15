@@ -1,0 +1,840 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>CareFlow スケジュール (現状 UI + 自動算出機能 組込モック)</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: 'Hiragino Kaku Gothic ProN', 'Yu Gothic', 'Meiryo', sans-serif; background: #f8fafc; }
+  /* CareFlow デザイントークン近似 */
+  :root {
+    --bg-base: #ffffff;
+    --bg-muted: #f1f5f9;
+    --border-default: #cbd5e1;
+    --text-primary: #0f172a;
+    --text-secondary: #475569;
+    --text-muted: #94a3b8;
+    --brand-primary: #2563eb;
+    --warning: #d97706;
+  }
+  .tnum { font-variant-numeric: tabular-nums; }
+  .modal { display: none; }
+  .modal.active { display: flex; }
+  .clickable-cell { cursor: pointer; transition: background-color 0.15s; }
+  .clickable-cell:hover { background: rgba(37, 99, 235, 0.05); }
+  .phase-step { transition: all 0.4s ease; }
+  .phase-active { background: #dbeafe; border-color: #3b82f6 !important; }
+  .phase-done { background: #d1fae5; border-color: #10b981 !important; }
+  /* 受入目安レイヤー */
+  .accept-ok    { background: rgba(34,197,94,0.06); }
+  .accept-consult { background: rgba(245,158,11,0.10); }
+  .accept-ng    { background: rgba(239,68,68,0.08); }
+  /* 差分表示 */
+  .diff-new    { background: rgba(34,197,94,0.12); border-left: 3px solid #16a34a; }
+  .diff-change { background: rgba(245,158,11,0.10); border-left: 3px solid #d97706; }
+  .diff-delete { background: rgba(239,68,68,0.10); border-left: 3px solid #dc2626; text-decoration: line-through; opacity: 0.6; }
+  .badge { font-size: 0.65rem; padding: 1px 5px; border-radius: 3px; font-weight: 600; display: inline-block; }
+</style>
+</head>
+<body class="min-h-screen">
+
+<!-- =========================================================== -->
+<!-- ======   現状アプリの /schedule 画面 再現        =========== -->
+<!-- =========================================================== -->
+
+<div class="max-w-[1400px] mx-auto p-4 space-y-3">
+
+  <!-- ========== ページタイトル ========== -->
+  <header class="space-y-1">
+    <h1 class="font-serif text-2xl font-bold text-slate-900">スケジュール</h1>
+    <p class="text-sm text-slate-600">(曜日 × コース) テーブルで週次スケジュールを管理します。</p>
+  </header>
+
+  <!-- ========== ヘッダーバー (Card) ========== -->
+  <div class="bg-white rounded border border-slate-300 p-3 flex flex-wrap items-center justify-between gap-3 shadow-sm">
+    <!-- 左: WeekSelector + ISO-Week ラベル -->
+    <div class="flex flex-wrap items-center gap-3">
+      <div class="flex items-center gap-1">
+        <button class="border border-slate-300 rounded px-2 py-1 text-xs hover:bg-slate-100">◀ 前週</button>
+        <span class="text-sm tnum px-2">5/18(月) - 5/24(土)</span>
+        <button class="border border-slate-300 rounded px-2 py-1 text-xs hover:bg-slate-100">次週 ▶</button>
+      </div>
+      <span class="tnum text-xs text-slate-500">2026-W21</span>
+    </div>
+
+    <!-- 右: フィルタ＆ボタン群 -->
+    <div class="flex flex-wrap items-center gap-2">
+      <label class="flex items-center gap-1 text-xs text-slate-600">
+        拠点
+        <select class="rounded border border-slate-300 bg-white px-1.5 py-1 text-xs">
+          <option>全拠点</option>
+          <option>稲毛 (本店)</option>
+          <option>都賀</option>
+        </select>
+      </label>
+      <label class="flex items-center gap-1.5 rounded border border-slate-300 bg-slate-100 px-2 py-1 text-xs text-slate-600">
+        <input id="acceptToggle" type="checkbox" onchange="toggleAcceptLayer()">
+        受入目安
+      </label>
+      <button class="border border-slate-300 rounded px-3 py-1 text-xs hover:bg-slate-100">一括固定化</button>
+    </div>
+  </div>
+
+  <!-- ========== CourseDayTablePanel ========== -->
+  <div class="bg-white rounded border border-slate-300 p-3 shadow-sm">
+
+    <!-- 曜日タブバー -->
+    <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+      <!-- 左: 曜日タブ -->
+      <div role="tablist" class="flex gap-1">
+        <button class="rounded border border-blue-600 bg-blue-600 text-white px-3 py-1 text-xs font-semibold">
+          月 <span class="text-[10px] opacity-80 tnum">5/18</span>
+        </button>
+        <button class="rounded border border-slate-300 bg-white text-slate-600 hover:bg-slate-100 px-3 py-1 text-xs font-semibold">
+          火 <span class="text-[10px] opacity-80 tnum">5/19</span>
+        </button>
+        <button class="rounded border border-slate-300 bg-white text-slate-600 hover:bg-slate-100 px-3 py-1 text-xs font-semibold">
+          水 <span class="text-[10px] opacity-80 tnum">5/20</span>
+        </button>
+        <button class="rounded border border-slate-300 bg-white text-slate-600 hover:bg-slate-100 px-3 py-1 text-xs font-semibold">
+          木 <span class="text-[10px] opacity-80 tnum">5/21</span>
+        </button>
+        <button class="rounded border border-slate-300 bg-white text-slate-600 hover:bg-slate-100 px-3 py-1 text-xs font-semibold">
+          金 <span class="text-[10px] opacity-80 tnum">5/22</span>
+        </button>
+        <button class="rounded border border-slate-300 bg-white text-slate-600 hover:bg-slate-100 px-3 py-1 text-xs font-semibold">
+          土 <span class="text-[10px] opacity-80 tnum">5/23</span>
+        </button>
+        <button class="rounded border border-slate-300 bg-white text-slate-600 hover:bg-slate-100 px-3 py-1 text-xs font-semibold ml-1">
+          週
+        </button>
+      </div>
+
+      <!-- 右: 操作ボタン -->
+      <div class="flex items-center gap-2">
+        <button class="border border-slate-300 rounded px-2.5 py-1 text-xs hover:bg-slate-100 flex items-center gap-1">
+          🔄 週を生成
+        </button>
+        <button class="border border-slate-300 rounded px-2.5 py-1 text-xs hover:bg-slate-100 flex items-center gap-1">
+          👥 自動割付
+        </button>
+        <!-- ★ 新規追加: 自動算出ボタン ★ -->
+        <button onclick="openTriggerModal()"
+                class="border-2 border-blue-600 bg-blue-600 text-white rounded px-3 py-1 text-xs font-semibold hover:bg-blue-700 flex items-center gap-1 shadow-sm">
+          ✨ 自動算出
+        </button>
+      </div>
+    </div>
+
+    <!-- 2 ペインレイアウト -->
+    <div class="grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-4">
+
+      <!-- ========== 左: メイン領域 (コーステーブル群) ========== -->
+      <div class="space-y-3 min-w-0">
+
+        <!-- ===== 本店-A コース ===== -->
+        <section class="overflow-hidden rounded border border-slate-300">
+          <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-300 bg-slate-100 px-3 py-2">
+            <span class="text-sm font-semibold text-slate-900">本店-A コース (6)</span>
+            <label class="flex items-center gap-1 text-[11px] text-slate-600">
+              <span>👤 担当:</span>
+              <select class="rounded border border-slate-300 bg-white px-1.5 py-0.5 text-xs">
+                <option>川名 千恵</option>
+                <option>熊澤 妙子</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="overflow-x-auto">
+            <div class="grid border-t border-slate-300 text-[11px]" style="grid-template-columns: 60px minmax(80px,0.6fr) minmax(120px,1fr) 70px 100px">
+              <!-- ヘッダー行 -->
+              <div class="border-b border-r border-slate-300 bg-slate-100 px-1.5 py-1 text-[10px] font-semibold text-slate-500">時間帯</div>
+              <div class="border-b border-r border-slate-300 bg-slate-100 px-1.5 py-1 text-[10px] font-semibold text-slate-500">氏名</div>
+              <div class="border-b border-r border-slate-300 bg-slate-100 px-1.5 py-1 text-[10px] font-semibold text-slate-500">住所</div>
+              <div class="border-b border-r border-slate-300 bg-slate-100 px-1.5 py-1 text-[10px] font-semibold text-slate-500 text-center">複数</div>
+              <div class="border-b border-slate-300 bg-slate-100 px-1.5 py-1 text-[10px] font-semibold text-slate-500">条件</div>
+
+              <!-- データ行 (15 分刻みで主要時刻だけ表示、空きセルは省略) -->
+              <!-- 09:30 -->
+              <div class="border-r border-t border-slate-300 bg-slate-50 px-1.5 py-1 text-right tnum text-[10px] font-semibold text-slate-600">09:30</div>
+              <div class="col-span-4 grid grid-cols-subgrid border-t border-slate-300/40 schedule-row">
+                <div class="border-r border-slate-300/40 px-1 py-0.5 text-[11px]">槇・河野</div>
+                <div class="border-r border-slate-300/40 px-1 py-0.5 text-[10px] truncate" title="千葉県千葉市稲毛区宮野木台4-25-40">よりより宮野木</div>
+                <div class="border-r border-slate-300/40 px-1 py-0.5 text-center text-[10px]">複数</div>
+                <div class="px-1 py-0.5 text-[10px]">-</div>
+              </div>
+
+              <!-- 09:45 (空) -->
+              <div class="border-r border-t border-slate-300 px-1.5 py-0.5 text-right tnum text-[10px] text-slate-400">09:45</div>
+              <div class="col-span-4 grid grid-cols-subgrid border-t border-slate-300/40 h-[18px]"></div>
+
+              <!-- 10:00 -->
+              <div class="border-r border-t border-slate-300 bg-slate-50 px-1.5 py-1 text-right tnum text-[10px] font-semibold text-slate-600">10:00</div>
+              <div class="col-span-4 grid grid-cols-subgrid border-t border-slate-300/40">
+                <div class="border-r border-slate-300/40 px-1 py-0.5 text-[11px]">青栁 あい</div>
+                <div class="border-r border-slate-300/40 px-1 py-0.5 text-[10px] truncate" title="千葉県千葉市稲毛区小中台町746-1">稲毛区小中台町</div>
+                <div class="border-r border-slate-300/40 px-1 py-0.5 text-center text-[10px]">-</div>
+                <div class="px-1 py-0.5 text-[10px]">女性のみ</div>
+              </div>
+
+              <!-- 10:15 -->
+              <div class="border-r border-t border-slate-300 px-1.5 py-0.5 text-right tnum text-[10px] text-slate-400">10:15</div>
+              <div class="col-span-4 grid grid-cols-subgrid border-t border-slate-300/40 h-[18px]"></div>
+
+              <!-- 10:30 -->
+              <div class="border-r border-t border-slate-300 bg-slate-50 px-1.5 py-1 text-right tnum text-[10px] font-semibold text-slate-600">10:30</div>
+              <div class="col-span-4 grid grid-cols-subgrid border-t border-slate-300/40 h-[18px]"></div>
+
+              <!-- 10:45 -->
+              <div class="border-r border-t border-slate-300 px-1.5 py-0.5 text-right tnum text-[10px] text-slate-400">10:45</div>
+              <div class="col-span-4 grid grid-cols-subgrid border-t border-slate-300/40 h-[18px]"></div>
+
+              <!-- 11:00 -->
+              <div class="border-r border-t border-slate-300 bg-slate-50 px-1.5 py-1 text-right tnum text-[10px] font-semibold text-slate-600">11:00</div>
+              <div class="col-span-4 grid grid-cols-subgrid border-t border-slate-300/40">
+                <div class="border-r border-slate-300/40 px-1 py-0.5 text-[11px]">木村 駿</div>
+                <div class="border-r border-slate-300/40 px-1 py-0.5 text-[10px] truncate" title="千葉県千葉市稲毛区宮野木町969">稲毛区宮野木町</div>
+                <div class="border-r border-slate-300/40 px-1 py-0.5 text-center text-[10px]">-</div>
+                <div class="px-1 py-0.5 text-[10px]">-</div>
+              </div>
+
+              <!-- 中略表示 -->
+              <div class="col-span-5 bg-slate-50 px-2 py-1 text-center text-[10px] text-slate-400 border-t border-slate-300/40 italic">
+                ⋯ 11:15 - 12:45 (空き) ⋯
+              </div>
+
+              <!-- 13:00 (空き = ココが Before/After で変わる箇所) -->
+              <div class="border-r border-t border-slate-300 bg-slate-50 px-1.5 py-1 text-right tnum text-[10px] font-semibold text-slate-600">13:00</div>
+              <div class="col-span-4 grid grid-cols-subgrid border-t border-slate-300/40">
+                <div class="border-r border-slate-300/40 px-1 py-0.5 text-[11px] text-slate-400 italic">(空き)</div>
+                <div class="border-r border-slate-300/40 px-1 py-0.5"></div>
+                <div class="border-r border-slate-300/40 px-1 py-0.5"></div>
+                <div class="px-1 py-0.5"></div>
+              </div>
+
+              <div class="col-span-5 bg-slate-50 px-2 py-1 text-center text-[10px] text-slate-400 border-t border-slate-300/40 italic">
+                ⋯ 13:15 - 15:15 (空き) ⋯
+              </div>
+
+              <!-- 15:30 -->
+              <div class="border-r border-t border-slate-300 bg-slate-50 px-1.5 py-1 text-right tnum text-[10px] font-semibold text-slate-600">15:30</div>
+              <div class="col-span-4 grid grid-cols-subgrid border-t border-slate-300/40">
+                <div class="border-r border-slate-300/40 px-1 py-0.5 text-[11px]">唐鎌 美穂</div>
+                <div class="border-r border-slate-300/40 px-1 py-0.5 text-[10px] truncate">花見川区宮野木台</div>
+                <div class="border-r border-slate-300/40 px-1 py-0.5 text-center text-[10px]">-</div>
+                <div class="px-1 py-0.5 text-[10px]">-</div>
+              </div>
+
+              <div class="col-span-5 bg-slate-50 px-2 py-1 text-center text-[10px] text-slate-400 border-t border-slate-300/40 italic">
+                ⋯ 16:00 - 18:00 ⋯
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ===== 本店-B コース ===== -->
+        <section class="overflow-hidden rounded border border-slate-300">
+          <div class="flex items-center justify-between border-b border-slate-300 bg-slate-100 px-3 py-2">
+            <span class="text-sm font-semibold text-slate-900">本店-B コース (6)</span>
+            <label class="flex items-center gap-1 text-[11px] text-slate-600">
+              <span>👤 担当:</span>
+              <select class="rounded border border-slate-300 bg-white px-1.5 py-0.5 text-xs">
+                <option>熊澤 妙子</option>
+              </select>
+            </label>
+          </div>
+          <div class="px-3 py-2 text-xs text-slate-500 italic">
+            (詳細省略・同じ 5 列 × 35 行構造です)
+          </div>
+        </section>
+
+        <!-- ===== 都賀-C コース ===== -->
+        <section class="overflow-hidden rounded border border-slate-300">
+          <div class="flex items-center justify-between border-b border-slate-300 bg-slate-100 px-3 py-2">
+            <span class="text-sm font-semibold text-slate-900">都賀-C コース (6)</span>
+            <label class="flex items-center gap-1 text-[11px] text-slate-600">
+              <span>👤 担当:</span>
+              <select class="rounded border border-slate-300 bg-white px-1.5 py-0.5 text-xs">
+                <option>関谷 公佑</option>
+              </select>
+            </label>
+          </div>
+          <div class="px-3 py-2 text-xs text-slate-500 italic">
+            (詳細省略)
+          </div>
+        </section>
+
+        <!-- 受入目安 凡例 (toggle で表示切替) -->
+        <div id="acceptLegend" class="hidden text-[11px] text-slate-600 bg-slate-50 border border-slate-200 rounded p-2 flex flex-wrap gap-3">
+          <span><span class="badge accept-ok">○</span> 受入可</span>
+          <span><span class="badge accept-consult">△</span> 要相談</span>
+          <span><span class="badge accept-ng">×</span> 受入不可</span>
+        </div>
+      </div>
+
+      <!-- ========== 右: プールパネル (sticky) ========== -->
+      <aside class="bg-white border border-slate-300 rounded p-3 sticky top-4 self-start max-h-[calc(100vh-2rem)] overflow-y-auto">
+        <div class="text-sm font-semibold text-slate-900 mb-2 flex items-center justify-between">
+          <span>プール</span>
+          <span class="text-[10px] font-normal text-slate-500">未割当 5 名</span>
+        </div>
+
+        <!-- 月・水・金 希望 -->
+        <div class="mb-3">
+          <div class="text-[10px] font-semibold text-slate-500 mb-1 px-1">月・水・金 希望</div>
+          <div class="space-y-1">
+            <div class="border border-slate-200 rounded px-2 py-1.5 hover:bg-slate-50 cursor-grab">
+              <div class="font-semibold text-xs text-slate-900">朝倉 美夢</div>
+              <div class="text-[10px] text-slate-500">アサクラ ミユ</div>
+              <div class="text-[9px] text-slate-500 mt-0.5">午後希望 / 35分</div>
+              <div class="flex gap-0.5 mt-0.5">
+                <span class="badge bg-green-100 text-green-800">新規</span>
+              </div>
+            </div>
+            <div class="border border-slate-200 rounded px-2 py-1.5 hover:bg-slate-50 cursor-grab">
+              <div class="font-semibold text-xs text-slate-900">河野 天歩</div>
+              <div class="text-[10px] text-slate-500">コウノ アマネ</div>
+              <div class="text-[9px] text-slate-500 mt-0.5">午前希望 / 30分</div>
+              <div class="flex gap-0.5 mt-0.5">
+                <span class="badge bg-green-100 text-green-800">新規</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 火・木 希望 -->
+        <div class="mb-3">
+          <div class="text-[10px] font-semibold text-slate-500 mb-1 px-1">火・木 希望</div>
+          <div class="space-y-1">
+            <div class="border border-slate-200 rounded px-2 py-1.5 hover:bg-slate-50 cursor-grab">
+              <div class="font-semibold text-xs text-slate-900">岡村 敏子</div>
+              <div class="text-[10px] text-slate-500">オカムラ トシコ</div>
+              <div class="text-[9px] text-slate-500 mt-0.5">時間帯 13:00-17:30 / 35分</div>
+              <div class="flex gap-0.5 mt-0.5">
+                <span class="badge bg-pink-100 text-pink-800">女性のみ</span>
+                <span class="badge bg-green-100 text-green-800">新規</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 希望なし -->
+        <div>
+          <div class="text-[10px] font-semibold text-slate-500 mb-1 px-1">希望なし</div>
+          <div class="border border-slate-200 rounded px-2 py-1.5 hover:bg-slate-50 cursor-grab">
+            <div class="font-semibold text-xs text-slate-900">中尾 要太</div>
+            <div class="text-[10px] text-slate-500">ナカオ ヨウタ</div>
+            <div class="flex gap-0.5 mt-0.5">
+              <span class="badge bg-green-100 text-green-800">新規</span>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+    </div>
+  </div>
+</div>
+
+
+<!-- =========================================================== -->
+<!-- ======   ① 算出トリガーモーダル                  =========== -->
+<!-- =========================================================== -->
+<div id="triggerModal" class="modal fixed inset-0 bg-black bg-opacity-50 z-30 items-center justify-center">
+  <div class="bg-white rounded-lg shadow-xl max-w-lg w-full mx-4">
+    <div class="border-b border-slate-200 px-6 py-4 flex justify-between items-center">
+      <h2 class="text-lg font-bold text-slate-800">✨ スケジュール 自動算出</h2>
+      <button onclick="closeTriggerModal()" class="text-slate-400 hover:text-slate-600">✕</button>
+    </div>
+    <div class="px-6 py-4 space-y-4">
+      <div>
+        <label class="text-sm font-medium text-slate-700 block mb-1">対象週</label>
+        <select class="w-full border border-slate-300 rounded px-3 py-2 text-sm">
+          <option>2026-W21 (5/18 〜 5/24)</option>
+          <option>2026-W22 (5/25 〜 5/31)</option>
+        </select>
+      </div>
+      <div>
+        <label class="text-sm font-medium text-slate-700 block mb-1">対象拠点</label>
+        <div class="flex gap-3">
+          <label class="flex items-center text-sm"><input type="checkbox" checked class="mr-2"> 稲毛</label>
+          <label class="flex items-center text-sm"><input type="checkbox" checked class="mr-2"> 都賀</label>
+        </div>
+      </div>
+      <div>
+        <label class="text-sm font-medium text-slate-700 block mb-1">算出モード</label>
+        <div class="space-y-2">
+          <label class="flex items-start text-sm border border-blue-300 bg-blue-50 rounded p-3 cursor-pointer">
+            <input type="radio" name="mode" checked class="mt-1 mr-2">
+            <div>
+              <div class="font-medium text-blue-800">モード 1: 差分追加</div>
+              <div class="text-xs text-blue-700 mt-1">既存固定枠を尊重し、プール患者を空き時間に差込み</div>
+            </div>
+          </label>
+          <label class="flex items-start text-sm border border-slate-200 rounded p-3 cursor-pointer hover:bg-slate-50">
+            <input type="radio" name="mode" class="mt-1 mr-2">
+            <div>
+              <div class="font-medium text-slate-800">モード 2: 全面最適化</div>
+              <div class="text-xs text-slate-600 mt-1">全 active 患者でゼロから最適化</div>
+            </div>
+          </label>
+        </div>
+      </div>
+      <div class="border-t border-slate-200 pt-3">
+        <label class="text-sm font-medium text-slate-700 block mb-2">算出パラメータ</label>
+        <div class="space-y-2 text-xs text-slate-600">
+          <div class="flex justify-between"><span>距離計算:</span><span class="font-mono">Haversine (25 km/h)</span></div>
+          <div class="flex justify-between items-center">
+            <span>ローテーション強度:</span>
+            <input type="range" min="0" max="100" value="60" class="w-32">
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="border-t border-slate-200 px-6 py-3 flex justify-end gap-2">
+      <button onclick="closeTriggerModal()" class="px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded">キャンセル</button>
+      <button onclick="startCalculation()" class="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded font-medium">▶ 自動算出を実行</button>
+    </div>
+  </div>
+</div>
+
+<!-- =========================================================== -->
+<!-- ======   ② 進捗表示モーダル                      =========== -->
+<!-- =========================================================== -->
+<div id="progressModal" class="modal fixed inset-0 bg-black bg-opacity-50 z-30 items-center justify-center">
+  <div class="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
+    <div class="border-b border-slate-200 px-6 py-4">
+      <h2 class="text-lg font-bold text-slate-800">⚙ 自動算出中...</h2>
+      <p class="text-xs text-slate-500 mt-1" id="progressDetail">Phase 計算を開始しています</p>
+    </div>
+    <div class="px-6 py-4 space-y-2">
+      <div id="phase1" class="phase-step border border-slate-200 rounded p-3 flex items-center gap-3">
+        <div class="w-6 h-6 rounded-full bg-slate-200 flex items-center justify-center text-xs phase-icon">1</div>
+        <div class="flex-1">
+          <div class="text-sm font-medium text-slate-700">Phase 1: 固定枠集約</div>
+          <div class="text-xs text-slate-500 phase-result">-</div>
+        </div>
+      </div>
+      <div id="phase2" class="phase-step border border-slate-200 rounded p-3 flex items-center gap-3">
+        <div class="w-6 h-6 rounded-full bg-slate-200 flex items-center justify-center text-xs phase-icon">2</div>
+        <div class="flex-1">
+          <div class="text-sm font-medium text-slate-700">Phase 2: 新規枠探索 (プール差込)</div>
+          <div class="text-xs text-slate-500 phase-result">-</div>
+        </div>
+      </div>
+      <div id="phase3" class="phase-step border border-slate-200 rounded p-3 flex items-center gap-3">
+        <div class="w-6 h-6 rounded-full bg-slate-200 flex items-center justify-center text-xs phase-icon">3</div>
+        <div class="flex-1">
+          <div class="text-sm font-medium text-slate-700">Phase 3: コース割当 (距離最適化)</div>
+          <div class="text-xs text-slate-500 phase-result">-</div>
+        </div>
+      </div>
+      <div id="phase4" class="phase-step border border-slate-200 rounded p-3 flex items-center gap-3">
+        <div class="w-6 h-6 rounded-full bg-slate-200 flex items-center justify-center text-xs phase-icon">4</div>
+        <div class="flex-1">
+          <div class="text-sm font-medium text-slate-700">Phase 4: スタッフローテーション</div>
+          <div class="text-xs text-slate-500 phase-result">-</div>
+        </div>
+      </div>
+      <div id="phase5" class="phase-step border border-slate-200 rounded p-3 flex items-center gap-3">
+        <div class="w-6 h-6 rounded-full bg-slate-200 flex items-center justify-center text-xs phase-icon">5</div>
+        <div class="flex-1">
+          <div class="text-sm font-medium text-slate-700">Phase 5: コース内ルート順</div>
+          <div class="text-xs text-slate-500 phase-result">-</div>
+        </div>
+      </div>
+    </div>
+    <div class="border-t border-slate-200 px-6 py-3 flex justify-end">
+      <button onclick="cancelCalculation()" class="px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded">中止</button>
+    </div>
+  </div>
+</div>
+
+<!-- =========================================================== -->
+<!-- ======   ③ Before/After 結果モーダル (実 UI 風) =========== -->
+<!-- =========================================================== -->
+<div id="resultModal" class="modal fixed inset-0 bg-black bg-opacity-50 z-30 items-start justify-center overflow-y-auto py-6">
+  <div class="bg-white rounded-lg shadow-xl max-w-7xl w-full mx-4">
+    <div class="border-b border-slate-200 px-6 py-4 flex justify-between items-center sticky top-0 bg-white z-10">
+      <div>
+        <h2 class="text-lg font-bold text-slate-800">📊 自動算出 結果 — Before / After 比較</h2>
+        <p class="text-xs text-slate-500 mt-1">稲毛拠点・2026-W21 / 月曜 (5/18) 表示中</p>
+      </div>
+      <div class="flex gap-2">
+        <button onclick="discardResult()" class="px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded border border-slate-300">破棄</button>
+        <button onclick="adoptResult()" class="px-4 py-2 text-sm bg-green-600 hover:bg-green-700 text-white rounded font-medium">✔ 採用</button>
+      </div>
+    </div>
+
+    <div class="px-6 py-4 space-y-4">
+      <!-- KPI バー -->
+      <section>
+        <h3 class="text-sm font-bold text-slate-700 mb-2">📈 サマリー (Before → After)</h3>
+        <div class="grid grid-cols-5 gap-2">
+          <div class="border border-slate-200 rounded p-2 text-center">
+            <div class="text-[10px] text-slate-500">移動距離</div>
+            <div class="text-sm mt-1"><span class="text-slate-400 line-through text-xs">142</span> <span class="font-bold">→ 118</span></div>
+            <div class="text-[10px] text-green-600 font-bold mt-0.5">🔻 -17% ⭐</div>
+            <div class="text-[10px] text-slate-400">km</div>
+          </div>
+          <div class="border border-slate-200 rounded p-2 text-center">
+            <div class="text-[10px] text-slate-500">スタッフ偏差</div>
+            <div class="text-sm mt-1"><span class="text-slate-400 line-through text-xs">4.2</span> <span class="font-bold">→ 2.1</span></div>
+            <div class="text-[10px] text-green-600 font-bold mt-0.5">⭐ 件</div>
+          </div>
+          <div class="border border-slate-200 rounded p-2 text-center">
+            <div class="text-[10px] text-slate-500">ローテ連続</div>
+            <div class="text-sm mt-1"><span class="text-slate-400 line-through text-xs">3</span> <span class="font-bold">→ 0</span></div>
+            <div class="text-[10px] text-green-600 font-bold mt-0.5">⭐</div>
+          </div>
+          <div class="border border-slate-200 rounded p-2 text-center">
+            <div class="text-[10px] text-slate-500">受入× 違反</div>
+            <div class="text-sm mt-1"><span class="text-slate-400 line-through text-xs">1</span> <span class="font-bold">→ 0</span></div>
+            <div class="text-[10px] text-green-600 font-bold mt-0.5">⭐</div>
+          </div>
+          <div class="border border-amber-300 bg-amber-50 rounded p-2 text-center">
+            <div class="text-[10px] text-slate-500">改善スコア</div>
+            <div class="text-sm mt-1"><span class="font-bold text-amber-700">+12.4</span></div>
+            <div class="text-[10px] text-amber-700 font-bold mt-0.5">pt</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- AI 要約 -->
+      <section>
+        <h3 class="text-sm font-bold text-slate-700 mb-2">💡 主な変更点 (AI 要約)</h3>
+        <div class="bg-blue-50 border border-blue-200 rounded p-3 space-y-1.5 text-sm">
+          <div class="flex items-start"><span class="text-blue-600 mr-2">・</span><div><strong>朝倉 美夢様</strong> を新規追加 (月 13:00, A コース, 川名)</div></div>
+          <div class="flex items-start"><span class="text-blue-600 mr-2">・</span><div><strong>木村 駿様</strong> の時刻を 11:00 → 10:30 に変更<div class="text-xs text-blue-700 mt-0.5">→ A コース月曜の宮野木エリア集約で -8km</div></div></div>
+          <div class="flex items-start"><span class="text-blue-600 mr-2">・</span><div><strong>青栁 あい様</strong> の月曜担当を 川名 → 熊澤<div class="text-xs text-blue-700 mt-0.5">→ 前週月も川名担当だったため、連続を回避</div></div></div>
+        </div>
+      </section>
+
+      <!-- 実 UI 風 Before/After 並列 -->
+      <section>
+        <h3 class="text-sm font-bold text-slate-700 mb-2">📋 スケジュール詳細 — 本店-A コース (月 5/18)</h3>
+        <p class="text-[11px] text-slate-500 mb-2">💡 行をクリックすると「決定の理由」を表示</p>
+
+        <div class="grid grid-cols-2 gap-3">
+          <!-- ============== BEFORE: 実 UI 風 ============== -->
+          <div>
+            <div class="text-xs font-bold text-slate-500 mb-1 px-2">BEFORE (現在の固定枠)</div>
+            <section class="overflow-hidden rounded border border-slate-300">
+              <div class="border-b border-slate-300 bg-slate-100 px-3 py-1.5 flex justify-between items-center">
+                <span class="text-xs font-semibold text-slate-900">本店-A コース (6)</span>
+                <span class="text-[10px] text-slate-600">👤 川名</span>
+              </div>
+              <div class="grid text-[11px]" style="grid-template-columns: 50px minmax(70px,0.6fr) minmax(100px,1fr) 50px 70px">
+                <div class="border-b border-r border-slate-300 bg-slate-100 px-1 py-0.5 text-[9px] font-semibold text-slate-500">時刻</div>
+                <div class="border-b border-r border-slate-300 bg-slate-100 px-1 py-0.5 text-[9px] font-semibold text-slate-500">氏名</div>
+                <div class="border-b border-r border-slate-300 bg-slate-100 px-1 py-0.5 text-[9px] font-semibold text-slate-500">住所</div>
+                <div class="border-b border-r border-slate-300 bg-slate-100 px-1 py-0.5 text-[9px] font-semibold text-slate-500 text-center">複数</div>
+                <div class="border-b border-slate-300 bg-slate-100 px-1 py-0.5 text-[9px] font-semibold text-slate-500">条件</div>
+
+                <div class="border-r border-t border-slate-300 bg-slate-50 px-1 py-0.5 text-right tnum text-[10px] font-semibold">09:30</div>
+                <div class="col-span-4 grid grid-cols-subgrid border-t border-slate-300/40">
+                  <div class="border-r border-slate-300/40 px-1 py-0.5">槇・河野</div>
+                  <div class="border-r border-slate-300/40 px-1 py-0.5 text-[10px] truncate">よりより宮野木</div>
+                  <div class="border-r border-slate-300/40 px-1 py-0.5 text-center text-[10px]">複</div>
+                  <div class="px-1 py-0.5 text-[10px]">-</div>
+                </div>
+
+                <div class="border-r border-t border-slate-300 bg-slate-50 px-1 py-0.5 text-right tnum text-[10px] font-semibold">10:00</div>
+                <div class="col-span-4 grid grid-cols-subgrid border-t border-slate-300/40">
+                  <div class="border-r border-slate-300/40 px-1 py-0.5">青栁 あい</div>
+                  <div class="border-r border-slate-300/40 px-1 py-0.5 text-[10px] truncate">稲毛区小中台町</div>
+                  <div class="border-r border-slate-300/40 px-1 py-0.5 text-center text-[10px]">-</div>
+                  <div class="px-1 py-0.5 text-[10px]">女性のみ</div>
+                </div>
+
+                <div class="border-r border-t border-slate-300 bg-slate-50 px-1 py-0.5 text-right tnum text-[10px] font-semibold">11:00</div>
+                <div class="col-span-4 grid grid-cols-subgrid border-t border-slate-300/40">
+                  <div class="border-r border-slate-300/40 px-1 py-0.5">木村 駿</div>
+                  <div class="border-r border-slate-300/40 px-1 py-0.5 text-[10px] truncate">稲毛区宮野木町</div>
+                  <div class="border-r border-slate-300/40 px-1 py-0.5 text-center text-[10px]">-</div>
+                  <div class="px-1 py-0.5 text-[10px]">-</div>
+                </div>
+
+                <div class="border-r border-t border-slate-300 px-1 py-0.5 text-right tnum text-[10px] text-slate-400">13:00</div>
+                <div class="col-span-4 grid grid-cols-subgrid border-t border-slate-300/40">
+                  <div class="border-r border-slate-300/40 px-1 py-0.5 text-slate-400 italic">(空き)</div>
+                  <div class="border-r border-slate-300/40 px-1 py-0.5"></div>
+                  <div class="border-r border-slate-300/40 px-1 py-0.5"></div>
+                  <div class="px-1 py-0.5"></div>
+                </div>
+
+                <div class="border-r border-t border-slate-300 bg-slate-50 px-1 py-0.5 text-right tnum text-[10px] font-semibold">15:30</div>
+                <div class="col-span-4 grid grid-cols-subgrid border-t border-slate-300/40">
+                  <div class="border-r border-slate-300/40 px-1 py-0.5">唐鎌 美穂</div>
+                  <div class="border-r border-slate-300/40 px-1 py-0.5 text-[10px] truncate">花見川区宮野木台</div>
+                  <div class="border-r border-slate-300/40 px-1 py-0.5 text-center text-[10px]">-</div>
+                  <div class="px-1 py-0.5 text-[10px]">-</div>
+                </div>
+
+                <div class="col-span-5 bg-slate-50 px-2 py-1 text-center text-[9px] text-slate-400 border-t border-slate-300/40 italic">距離合計: 36 km</div>
+              </div>
+            </section>
+          </div>
+
+          <!-- ============== AFTER: 実 UI 風 + 差分マーク ============== -->
+          <div>
+            <div class="text-xs font-bold text-green-700 mb-1 px-2">AFTER (採用候補)</div>
+            <section class="overflow-hidden rounded border border-green-300">
+              <div class="border-b border-green-300 bg-green-50 px-3 py-1.5 flex justify-between items-center">
+                <span class="text-xs font-semibold text-slate-900">本店-A コース (6)</span>
+                <span class="text-[10px] text-slate-600">👤 熊澤 <span class="badge bg-amber-100 text-amber-800 ml-1">変更</span></span>
+              </div>
+              <div class="grid text-[11px]" style="grid-template-columns: 50px minmax(70px,0.6fr) minmax(100px,1fr) 50px 70px">
+                <div class="border-b border-r border-slate-300 bg-slate-100 px-1 py-0.5 text-[9px] font-semibold text-slate-500">時刻</div>
+                <div class="border-b border-r border-slate-300 bg-slate-100 px-1 py-0.5 text-[9px] font-semibold text-slate-500">氏名</div>
+                <div class="border-b border-r border-slate-300 bg-slate-100 px-1 py-0.5 text-[9px] font-semibold text-slate-500">住所</div>
+                <div class="border-b border-r border-slate-300 bg-slate-100 px-1 py-0.5 text-[9px] font-semibold text-slate-500 text-center">複数</div>
+                <div class="border-b border-slate-300 bg-slate-100 px-1 py-0.5 text-[9px] font-semibold text-slate-500">差分</div>
+
+                <div class="border-r border-t border-slate-300 bg-slate-50 px-1 py-0.5 text-right tnum text-[10px] font-semibold">09:30</div>
+                <div class="col-span-4 grid grid-cols-subgrid border-t border-slate-300/40">
+                  <div class="border-r border-slate-300/40 px-1 py-0.5">槇・河野</div>
+                  <div class="border-r border-slate-300/40 px-1 py-0.5 text-[10px] truncate">よりより宮野木</div>
+                  <div class="border-r border-slate-300/40 px-1 py-0.5 text-center text-[10px]">複</div>
+                  <div class="px-1 py-0.5 text-[10px] text-slate-400">-</div>
+                </div>
+
+                <div class="border-r border-t border-slate-300 bg-slate-50 px-1 py-0.5 text-right tnum text-[10px] font-semibold">10:00</div>
+                <div class="col-span-4 grid grid-cols-subgrid border-t border-slate-300/40 clickable-cell" onclick="openJustification('青栁あい')">
+                  <div class="border-r border-slate-300/40 px-1 py-0.5">青栁 あい</div>
+                  <div class="border-r border-slate-300/40 px-1 py-0.5 text-[10px] truncate">稲毛区小中台町</div>
+                  <div class="border-r border-slate-300/40 px-1 py-0.5 text-center text-[10px]">-</div>
+                  <div class="px-1 py-0.5 text-[10px]"><span class="badge bg-amber-100 text-amber-800">担当</span></div>
+                </div>
+
+                <div class="border-r border-t border-slate-300 bg-slate-50 px-1 py-0.5 text-right tnum text-[10px] font-semibold">10:30</div>
+                <div class="col-span-4 grid grid-cols-subgrid border-t border-slate-300/40 clickable-cell diff-change" onclick="openJustification('木村駿')">
+                  <div class="border-r border-slate-300/40 px-1 py-0.5">木村 駿</div>
+                  <div class="border-r border-slate-300/40 px-1 py-0.5 text-[10px] truncate">稲毛区宮野木町</div>
+                  <div class="border-r border-slate-300/40 px-1 py-0.5 text-center text-[10px]">-</div>
+                  <div class="px-1 py-0.5 text-[10px]"><span class="badge bg-amber-100 text-amber-800">時刻</span></div>
+                </div>
+
+                <div class="border-r border-t border-slate-300 bg-slate-50 px-1 py-0.5 text-right tnum text-[10px] font-semibold">13:00</div>
+                <div class="col-span-4 grid grid-cols-subgrid border-t border-slate-300/40 clickable-cell diff-new" onclick="openJustification('朝倉美夢')">
+                  <div class="border-r border-slate-300/40 px-1 py-0.5 font-bold">朝倉 美夢</div>
+                  <div class="border-r border-slate-300/40 px-1 py-0.5 text-[10px] truncate">花見川区花園町</div>
+                  <div class="border-r border-slate-300/40 px-1 py-0.5 text-center text-[10px]">-</div>
+                  <div class="px-1 py-0.5 text-[10px]"><span class="badge bg-green-100 text-green-800">➕ 新規</span></div>
+                </div>
+
+                <div class="border-r border-t border-slate-300 bg-slate-50 px-1 py-0.5 text-right tnum text-[10px] font-semibold">15:30</div>
+                <div class="col-span-4 grid grid-cols-subgrid border-t border-slate-300/40">
+                  <div class="border-r border-slate-300/40 px-1 py-0.5">唐鎌 美穂</div>
+                  <div class="border-r border-slate-300/40 px-1 py-0.5 text-[10px] truncate">花見川区宮野木台</div>
+                  <div class="border-r border-slate-300/40 px-1 py-0.5 text-center text-[10px]">-</div>
+                  <div class="px-1 py-0.5 text-[10px] text-slate-400">-</div>
+                </div>
+
+                <div class="col-span-5 bg-green-50 px-2 py-1 text-center text-[9px] text-green-700 border-t border-slate-300/40 italic font-semibold">距離合計: 24 km (-12 km)</div>
+              </div>
+            </section>
+          </div>
+        </div>
+      </section>
+
+      <details class="bg-slate-50 rounded p-3 text-sm">
+        <summary class="font-medium text-slate-700 cursor-pointer">▼ B コース・C コース・他曜日 (折りたたみ)</summary>
+        <p class="text-xs text-slate-500 mt-2">B コース月曜: 藤田・渡辺様の時刻変更、田中妙子様の担当変更</p>
+      </details>
+
+      <section class="bg-amber-50 border border-amber-300 rounded p-3 text-sm">
+        <strong class="text-amber-800">⚠ 警告:</strong> マネージャー補充必要 (月曜午後の B コース、訪問件数 7 > 上限 6)
+      </section>
+    </div>
+  </div>
+</div>
+
+<!-- =========================================================== -->
+<!-- ======   ④ Visit Justification ポップアップ     =========== -->
+<!-- =========================================================== -->
+<div id="justificationModal" class="modal fixed inset-0 bg-black bg-opacity-50 z-40 items-center justify-center">
+  <div class="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
+    <div class="border-b border-slate-200 px-5 py-3 flex justify-between items-center">
+      <h3 class="text-sm font-bold text-slate-800" id="justifyTitle">朝倉 美夢様 (月 13:00, A コース)</h3>
+      <button onclick="closeJustification()" class="text-slate-400 hover:text-slate-600">✕</button>
+    </div>
+    <div class="px-5 py-4 text-sm space-y-3" id="justifyBody">
+      <div>
+        <div class="text-xs font-bold text-slate-500">▸ コース選択理由</div>
+        <div class="text-slate-700 mt-0.5">A コース (移動 8km vs B 案 18km)</div>
+      </div>
+      <div>
+        <div class="text-xs font-bold text-slate-500">▸ 時刻選択理由</div>
+        <div class="text-slate-700 mt-0.5">13:00 (希望「午後」内、前後の visit と距離最小)</div>
+      </div>
+      <div>
+        <div class="text-xs font-bold text-slate-500">▸ 担当選択理由</div>
+        <div class="text-slate-700 mt-0.5">川名 (S001)</div>
+        <div class="text-xs text-slate-500 mt-0.5">他候補: 熊澤 (S002)。理由: 朝倉様は初対応のためベテラン優先。熊澤は同日が満枠</div>
+      </div>
+      <div>
+        <div class="text-xs font-bold text-slate-500">▸ 制約遵守</div>
+        <div class="text-slate-700 mt-0.5 space-y-0.5 text-xs">
+          <div>✅ 受入カレンダー: ○</div>
+          <div>✅ 性別制限: なし</div>
+          <div>✅ 同住所ペアリング: なし</div>
+          <div>✅ ローテ連続: 回避済</div>
+        </div>
+      </div>
+    </div>
+    <div class="border-t border-slate-200 px-5 py-3 flex justify-end">
+      <button onclick="closeJustification()" class="px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-100 rounded">閉じる</button>
+    </div>
+  </div>
+</div>
+
+<!-- =========================================================== -->
+<!-- ======   ⑤ 採用確定トースト                      =========== -->
+<!-- =========================================================== -->
+<div id="adoptToast" class="modal fixed inset-0 bg-black bg-opacity-50 z-50 items-center justify-center">
+  <div class="bg-white rounded-lg shadow-xl max-w-md w-full mx-4 p-6 text-center">
+    <div class="text-5xl mb-3">✅</div>
+    <h3 class="text-lg font-bold text-slate-800 mb-2">採用しました</h3>
+    <p class="text-sm text-slate-600">提案された 5 件の変更が反映されました。<br>新固定枠として保存されました。</p>
+    <div class="mt-4 text-xs text-slate-500 space-y-0.5 text-left bg-slate-50 p-3 rounded">
+      <div>・visits: 1 件新規 + 4 件更新</div>
+      <div>・visit_staff_assignments: 5 件更新</div>
+      <div>・patient_fixed_visits: 1 件新規追加</div>
+      <div>・courses.status: proposed → course_fixed → staff_assigned</div>
+    </div>
+    <button onclick="closeAdoptToast()" class="mt-4 px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded font-medium">閉じる</button>
+  </div>
+</div>
+
+<script>
+const phases = [
+  { id: 'phase1', name: 'Phase 1: 固定枠集約', result: '✔ 152 件', duration: 800 },
+  { id: 'phase2', name: 'Phase 2: 新規枠探索', result: '✔ +5 件追加', duration: 1200 },
+  { id: 'phase3', name: 'Phase 3: コース割当', result: '✔ 3 コースに配置', duration: 1500 },
+  { id: 'phase4', name: 'Phase 4: スタッフローテ', result: '✔ ローテ達成 100%', duration: 1000 },
+  { id: 'phase5', name: 'Phase 5: コース内ルート', result: '✔ 平均 -8% 距離削減', duration: 700 },
+];
+
+const justificationData = {
+  '朝倉美夢': {
+    title: '朝倉 美夢様 (月 13:00, A コース, 担当: 川名)',
+    course: 'A コース (移動 8km vs B 案 18km)',
+    time: '13:00 (希望「午後」内、前後の visit と距離最小)',
+    staff: '川名 (S001)',
+    staffReason: '他候補: 熊澤 (S002)。朝倉様は初対応のためベテラン優先。熊澤は同日が満枠',
+  },
+  '青栁あい': {
+    title: '青栁 あい様 (月 10:00, A コース, 担当: 熊澤)',
+    course: 'A コース (変更なし)',
+    time: '10:00 (変更なし、患者希望時刻)',
+    staff: '熊澤 (S002)',
+    staffReason: '他候補: 川名 (S001)。前週月曜が川名担当だったため、ローテーションで熊澤に変更',
+  },
+  '木村駿': {
+    title: '木村 駿様 (月 10:30, A コース, 担当: 熊澤)',
+    course: 'A コース (変更なし)',
+    time: '10:30 (元 11:00 → 30 分繰上げ)',
+    staff: '熊澤 (S002)',
+    staffReason: 'A コース月曜の宮野木エリア集約のため、青栁様の直後に配置。距離 -8km',
+  },
+};
+
+function openTriggerModal() { document.getElementById('triggerModal').classList.add('active'); }
+function closeTriggerModal() { document.getElementById('triggerModal').classList.remove('active'); }
+
+async function startCalculation() {
+  closeTriggerModal();
+  phases.forEach(p => {
+    const el = document.getElementById(p.id);
+    el.classList.remove('phase-active', 'phase-done');
+    el.querySelector('.phase-icon').textContent = p.id.replace('phase', '');
+    el.querySelector('.phase-icon').className = 'w-6 h-6 rounded-full bg-slate-200 flex items-center justify-center text-xs phase-icon';
+    el.querySelector('.phase-result').textContent = '-';
+  });
+  document.getElementById('progressModal').classList.add('active');
+  document.getElementById('progressDetail').textContent = '初期化中...';
+
+  for (const p of phases) {
+    const el = document.getElementById(p.id);
+    el.classList.add('phase-active');
+    el.querySelector('.phase-icon').textContent = '⚙';
+    document.getElementById('progressDetail').textContent = `${p.name} を実行中...`;
+    await new Promise(r => setTimeout(r, p.duration));
+    el.classList.remove('phase-active');
+    el.classList.add('phase-done');
+    el.querySelector('.phase-icon').textContent = '✓';
+    el.querySelector('.phase-icon').className = 'w-6 h-6 rounded-full bg-green-500 text-white flex items-center justify-center text-xs phase-icon';
+    el.querySelector('.phase-result').textContent = p.result;
+  }
+  document.getElementById('progressDetail').textContent = '✔ 算出完了';
+  await new Promise(r => setTimeout(r, 500));
+  document.getElementById('progressModal').classList.remove('active');
+  document.getElementById('resultModal').classList.add('active');
+}
+
+function cancelCalculation() { document.getElementById('progressModal').classList.remove('active'); }
+
+function openJustification(key) {
+  const d = justificationData[key];
+  if (!d) return;
+  document.getElementById('justifyTitle').textContent = d.title;
+  document.getElementById('justifyBody').innerHTML = `
+    <div><div class="text-xs font-bold text-slate-500">▸ コース選択理由</div><div class="text-slate-700 mt-0.5">${d.course}</div></div>
+    <div><div class="text-xs font-bold text-slate-500">▸ 時刻選択理由</div><div class="text-slate-700 mt-0.5">${d.time}</div></div>
+    <div>
+      <div class="text-xs font-bold text-slate-500">▸ 担当選択理由</div>
+      <div class="text-slate-700 mt-0.5">${d.staff}</div>
+      <div class="text-xs text-slate-500 mt-0.5">${d.staffReason}</div>
+    </div>
+    <div>
+      <div class="text-xs font-bold text-slate-500">▸ 制約遵守</div>
+      <div class="text-slate-700 mt-0.5 space-y-0.5 text-xs">
+        <div>✅ 受入カレンダー: ○</div>
+        <div>✅ 性別制限: 該当なし or 遵守</div>
+        <div>✅ 同住所ペアリング: なし</div>
+        <div>✅ ローテ連続: 回避済</div>
+      </div>
+    </div>
+  `;
+  document.getElementById('justificationModal').classList.add('active');
+}
+function closeJustification() { document.getElementById('justificationModal').classList.remove('active'); }
+
+function adoptResult() {
+  document.getElementById('resultModal').classList.remove('active');
+  document.getElementById('adoptToast').classList.add('active');
+}
+function closeAdoptToast() { document.getElementById('adoptToast').classList.remove('active'); }
+
+function discardResult() {
+  if (confirm('提案された変更を破棄してよろしいですか？')) {
+    document.getElementById('resultModal').classList.remove('active');
+  }
+}
+
+function toggleAcceptLayer() {
+  const legend = document.getElementById('acceptLegend');
+  if (document.getElementById('acceptToggle').checked) {
+    legend.classList.remove('hidden');
+    legend.classList.add('flex');
+    document.querySelectorAll('.schedule-row').forEach((row, i) => {
+      if (i % 3 === 0) row.classList.add('accept-ok');
+      else if (i % 3 === 1) row.classList.add('accept-consult');
+      else row.classList.add('accept-ng');
+    });
+  } else {
+    legend.classList.add('hidden');
+    legend.classList.remove('flex');
+    document.querySelectorAll('.schedule-row').forEach(row => {
+      row.classList.remove('accept-ok', 'accept-consult', 'accept-ng');
+    });
+  }
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') document.querySelectorAll('.modal.active').forEach(m => m.classList.remove('active'));
+});
+</script>
+</body>
+</html>
