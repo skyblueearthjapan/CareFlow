@@ -15,8 +15,10 @@ export interface VisitArrowProps {
 }
 
 export function VisitArrow({ distanceKm }: VisitArrowProps) {
+  const reactId = React.useId();
   if (distanceKm === null || distanceKm === undefined) return null;
   const km = Math.round(distanceKm * 10) / 10;
+  const markerId = `visit-arrow-head-${reactId.replace(/:/g, '')}`;
   return (
     <div
       className="my-0.5 flex h-7 items-center gap-1 pl-3 text-[10px] text-text-secondary"
@@ -27,7 +29,7 @@ export function VisitArrow({ distanceKm }: VisitArrowProps) {
       <svg width="32" height="28" viewBox="0 0 32 28" className="flex-shrink-0">
         <defs>
           <marker
-            id="visit-arrow-head"
+            id={markerId}
             viewBox="0 0 10 10"
             refX="8"
             refY="5"
@@ -44,7 +46,7 @@ export function VisitArrow({ distanceKm }: VisitArrowProps) {
           stroke="#94a3b8"
           strokeWidth="1.5"
           fill="none"
-          markerEnd="url(#visit-arrow-head)"
+          markerEnd={`url(#${markerId})`}
         />
       </svg>
       <span className="tnum">{km}km</span>

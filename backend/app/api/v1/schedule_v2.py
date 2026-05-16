@@ -37,7 +37,7 @@ from app.models.office import Office
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.user import User
-from app.models.visit import Visit
+from app.models.visit import VISIT_STATUS_PLANNED, Visit
 from app.schemas.v2.auto_schedule_v2 import (
     AutoScheduleV2ApplyIndividualRequest,
     AutoScheduleV2ApplyIndividualResponse,
@@ -919,14 +919,6 @@ async def update_fixed_time_master_endpoint(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="new_end は new_start より後にしてください",
             )
-    # H10: 12:00-13:00 の昼休憩重複を弾く (start..end のどちらかが昼休憩に重なる).
-    eff_end = end_t or start_t
-    if start_t < LUNCH_END and eff_end > LUNCH_START:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="H10 違反: 昼休憩 12:00-13:00 に重なる時間は指定できません",
-        )
-
     try:
         # 患者存在チェック + 行ロック
         patient_row = await db.scalar(
@@ -962,6 +954,20 @@ async def update_fixed_time_master_endpoint(
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"duration_min が範囲外です (computed={duration_min})",
+            )
+
+        # H10: 12:00-13:00 の昼休憩重複を弾く. end_t 未指定時は duration_min から算出.
+        if end_t is not None:
+            actual_end_t = end_t
+        else:
+            end_total = start_t.hour * 60 + start_t.minute + duration_min
+            if end_total >= 24 * 60:
+                end_total = 23 * 60 + 59
+            actual_end_t = time_cls(end_total // 60, end_total % 60)
+        if start_t < LUNCH_END and actual_end_t > LUNCH_START:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="H10 違反: 昼休憩 12:00-13:00 に重なる時間は指定できません",
             )
 
         if pfv_row is None:
@@ -1072,6 +1078,15 @@ async def update_fixed_time_week_only_endpoint(
                 detail=(
                     "この visit は自動算出由来ではないため週限定変更できません "
                     f"(source={visit_row.source!r})."
+                ),
+            )
+        # status: planned のみ許可 (進行中/完了済み visit を保護)
+        if visit_row.status != VISIT_STATUS_PLANNED:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "この visit は計画状態ではないため変更できません "
+                    f"(status={visit_row.status!r})."
                 ),
             )
         # H10: 12:00-13:00 と重複してはならない

@@ -1305,3 +1305,85 @@ def test_consolidate_same_address_time_emits_v2warning() -> None:
     assert w.current_time
     assert w.suggested_time
     assert w.time_type == "固定"
+
+
+# ---------------------------------------------------------------------------
+# W41 v2 拡張 (post-review regression tests)
+#   - update-fixed-time-week-only が status='in_progress'/'completed' を拒否
+#   - update-fixed-time-master の H10 が new_end 省略時にも duration_min から判定
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad_status", ["in_progress", "completed", "cancelled"])
+@pytest.mark.asyncio
+async def test_update_fixed_time_week_only_rejects_non_planned_status(
+    client, db, bad_status: str
+) -> None:
+    """status が planned 以外の visit は 409 で拒否 (進行中/完了/キャンセル保護)."""
+    from datetime import date
+
+    from app.models.visit import Visit
+
+    admin = await _make_user(db, email=f"v2-ufw-st-{bad_status}@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    p = await _seed_patient(db, office=office, code=f"UFW-ST-{bad_status[:3].upper()}")
+    visit = Visit(
+        patient_id=p.id,
+        visit_date=date(2026, 5, 11),
+        start_time=time(10, 0),
+        end_time=time(10, 30),
+        type="regular",
+        status=bad_status,
+        source="auto_alloc_v2w",
+        required_staff_count=1,
+    )
+    db.add(visit)
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/update-fixed-time-week-only",
+        headers=_bearer(admin),
+        json={
+            "visit_id": str(visit.id),
+            "new_start": "11:00",
+            "new_end": "11:30",
+        },
+    )
+    assert res.status_code == 409, res.text
+    assert "計画状態ではない" in res.text
+
+
+@pytest.mark.asyncio
+async def test_update_fixed_time_master_h10_lunch_overlap_via_duration(client, db) -> None:
+    """new_end 省略時でも duration_min から計算した end が昼休憩に重なれば 422.
+
+    既存 PFV の duration=60min, new_start=11:30 → end=12:30 (12:00-13:00 重複) → 422.
+    """
+    from app.models.patient_fixed_visit import PatientFixedVisit
+
+    admin = await _make_user(db, email="v2-ufm-h10dur@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    p = await _seed_patient(db, office=office, code="UFM-H10DUR")
+    pfv = PatientFixedVisit(
+        patient_id=p.id,
+        mode="normal",
+        weekday=0,
+        start_time=time(10, 0),
+        duration_min=60,  # ← 既存 duration
+        slot_index=0,
+    )
+    db.add(pfv)
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/update-fixed-time-master",
+        headers=_bearer(admin),
+        json={
+            "patient_id": str(p.id),
+            "weekday": 0,
+            "new_start": "11:30",  # 11:30 + 60min = 12:30 が昼休憩に重複
+            # new_end は故意に省略
+        },
+    )
+    assert res.status_code == 422, res.text
+    assert "H10" in res.text or "昼休憩" in res.text
