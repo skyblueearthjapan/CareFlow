@@ -485,6 +485,7 @@ async def full_optimize_endpoint(
             iso_week=payload.iso_week,
             office_ids=list(payload.office_ids),
             mode="full_optimize",
+            pending_edits=list(payload.pending_edits),
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -765,6 +766,7 @@ async def apply_week_only_endpoint(
             iso_week=payload.iso_week,
             office_ids=list(payload.office_ids),
             patient_visit_plans=patient_visit_plans,
+            pending_edits=list(payload.pending_edits),
         )
         await db.commit()
     except ValueError as exc:

@@ -4,11 +4,11 @@
  * FixedTimeEditModal — W41 v2 拡張 (警告アクション).
  *
  * 同住所集約警告などの actionable 警告に対し、以下の 2 経路で時間を変更する:
- *   (a) 患者マスター更新 (永続): POST /v2/update-fixed-time-master
- *   (b) 今週限定変更:           POST /v2/update-fixed-time-week-only
+ *   (a) 患者マスター更新 (永続):       POST /v2/update-fixed-time-master
+ *   (b) 今週限定変更 (保留に追加):     親 (FullOptimizeDialog) の pendingEdits 配列へ追加.
+ *                                       再算出時に backend へ ``pending_edits`` で送る.
  *
- * (b) は対象 visit_id が必要 (apply-week-only 適用後に DB に visit が入って
- * 初めて使える経路). 提案算出直後は (a) のみ選択可.
+ * (b) は visit_id 不要 (提案段階での「保留変更リスト」追加が責務).
  */
 import * as React from 'react';
 import { Loader2 } from 'lucide-react';
@@ -25,11 +25,8 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import {
-  useUpdateFixedTimeMasterMutation,
-  useUpdateFixedTimeWeekOnlyMutation,
-} from '@/lib/queries/autoScheduleV2';
-import type { V2Warning } from '@/lib/schemas/v2/autoScheduleV2';
+import { useUpdateFixedTimeMasterMutation } from '@/lib/queries/autoScheduleV2';
+import type { PendingFixedTimeEdit, V2Warning } from '@/lib/schemas/v2/autoScheduleV2';
 
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'] as const;
 
@@ -49,16 +46,26 @@ function formatErr(err: unknown): string {
 export interface FixedTimeEditModalProps {
   open: boolean;
   onClose: () => void;
+  /** マスター更新 (PFV / weekly_pattern) 完了時のコールバック (永続). */
   onSuccess: () => void;
+  /** 今週限定変更 (保留に追加) のコールバック.
+   *  指定された場合 (b) ラジオが有効になり、確定時に API は呼ばず親に edit を通知する.
+   */
+  onPendingEdit?: (edit: PendingFixedTimeEdit) => void;
   /** クリックされた警告 (patient_id / weekday / current_time 等を持つ). */
   warning: V2Warning;
 }
 
 type Mode = 'master' | 'week_only';
 
-export function FixedTimeEditModal({ open, onClose, onSuccess, warning }: FixedTimeEditModalProps) {
+export function FixedTimeEditModal({
+  open,
+  onClose,
+  onSuccess,
+  onPendingEdit,
+  warning,
+}: FixedTimeEditModalProps) {
   const masterMut = useUpdateFixedTimeMasterMutation();
-  const weekOnlyMut = useUpdateFixedTimeWeekOnlyMutation();
 
   // 初期値: 集約したかった時刻があれば、そちらを優先 (UX: ユーザーは「集約したい」が動機).
   const initialStart = trimSeconds(warning.suggested_time ?? warning.current_time ?? '09:30');
@@ -74,8 +81,9 @@ export function FixedTimeEditModal({ open, onClose, onSuccess, warning }: FixedT
   const initialEnd = trimSeconds(warning.preferred_end ?? '') || computeDefaultEnd(initialStart);
   const initialTimeType = (warning.time_type ?? '固定') as (typeof TIME_TYPE_OPTIONS)[number];
 
-  // visit_id 不在のときは master のみ選択可.
-  const canWeekOnly = !!warning.visit_id;
+  // W41 v2 拡張: 今週限定変更は親 (FullOptimizeDialog) の pendingEdits 配列へ追加する経路.
+  // 親が onPendingEdit を渡している場合のみ (b) を有効化する.
+  const canWeekOnly = typeof onPendingEdit === 'function';
   const [mode, setMode] = React.useState<Mode>('master');
   const [newStart, setNewStart] = React.useState(initialStart);
   const [newEnd, setNewEnd] = React.useState(initialEnd);
@@ -85,14 +93,14 @@ export function FixedTimeEditModal({ open, onClose, onSuccess, warning }: FixedT
   // open 時にフォームをリセット.
   React.useEffect(() => {
     if (!open) return;
-    setMode(canWeekOnly ? 'master' : 'master');
+    setMode('master');
     setNewStart(initialStart);
     setNewEnd(initialEnd);
     setNewTimeType(initialTimeType);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, warning.patient_id, warning.weekday, warning.visit_id]);
 
-  const busy = masterMut.isPending || weekOnlyMut.isPending;
+  const busy = masterMut.isPending;
 
   const handleConfirm = async () => {
     if (busy) return;
@@ -110,20 +118,28 @@ export function FixedTimeEditModal({ open, onClose, onSuccess, warning }: FixedT
           new_time_type: newTimeType,
         });
         toast.success('固定時間マスターを更新しました');
+        onSuccess();
+        onClose();
       } else {
-        if (!warning.visit_id) {
-          toast.error('visit_id がないため週限定変更できません');
+        // (b) 今週限定: API を叩かず、親の pendingEdits 配列へ追加する.
+        if (!onPendingEdit) {
+          toast.error('今週限定変更は現在のコンテキストで利用できません');
           return;
         }
-        await weekOnlyMut.mutateAsync({
-          visit_id: warning.visit_id,
+        if (!warning.patient_id || warning.weekday === null || warning.weekday === undefined) {
+          toast.error('patient_id / weekday が不足しています');
+          return;
+        }
+        onPendingEdit({
+          patient_id: warning.patient_id,
+          weekday: warning.weekday,
           new_start: newStart,
           new_end: newEnd || null,
+          new_time_type: newTimeType,
         });
-        toast.success('今週限定で visit を更新しました');
+        toast.success('今週限定変更を保留に追加しました');
+        onClose();
       }
-      onSuccess();
-      onClose();
     } catch (err) {
       toast.error(`更新に失敗しました: ${formatErr(err)}`);
     }
@@ -193,8 +209,8 @@ export function FixedTimeEditModal({ open, onClose, onSuccess, warning }: FixedT
                   data-testid="fixed-time-edit-mode-week-only"
                 />
                 <span>
-                  (b) 今週限定で変更する
-                  {canWeekOnly ? '' : ' (※提案中の visit にはこのオプション無効)'}
+                  (b) 今週限定で変更する (再実行で反映、マスターは変えない)
+                  {canWeekOnly ? '' : ' (※このコンテキストでは無効)'}
                 </span>
               </label>
             </div>
@@ -223,26 +239,22 @@ export function FixedTimeEditModal({ open, onClose, onSuccess, warning }: FixedT
             </div>
           </div>
 
-          {mode === 'master' ? (
-            <div>
-              <Label className="text-xs">時刻種別</Label>
-              <select
-                value={newTimeType}
-                onChange={(e) =>
-                  setNewTimeType(e.target.value as (typeof TIME_TYPE_OPTIONS)[number])
-                }
-                disabled={busy}
-                className="block w-full rounded border border-border-default bg-bg-default px-2 py-1 text-xs"
-                data-testid="fixed-time-edit-time-type"
-              >
-                {TIME_TYPE_OPTIONS.map((t) => (
-                  <option key={t} value={t}>
-                    {t}
-                  </option>
-                ))}
-              </select>
-            </div>
-          ) : null}
+          <div>
+            <Label className="text-xs">時刻種別</Label>
+            <select
+              value={newTimeType}
+              onChange={(e) => setNewTimeType(e.target.value as (typeof TIME_TYPE_OPTIONS)[number])}
+              disabled={busy}
+              className="block w-full rounded border border-border-default bg-bg-default px-2 py-1 text-xs"
+              data-testid="fixed-time-edit-time-type"
+            >
+              {TIME_TYPE_OPTIONS.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
 
         <DialogFooter>
@@ -264,7 +276,7 @@ export function FixedTimeEditModal({ open, onClose, onSuccess, warning }: FixedT
             data-testid="fixed-time-edit-confirm"
           >
             {busy ? <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden /> : null}
-            変更を確定
+            {mode === 'master' ? 'マスター更新' : '保留に追加'}
           </Button>
         </DialogFooter>
       </DialogContent>

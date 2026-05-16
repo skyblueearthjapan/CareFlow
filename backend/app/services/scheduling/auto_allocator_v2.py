@@ -579,6 +579,149 @@ def _extract_fixed_visits_for_patient(
 
 
 # ---------------------------------------------------------------------------
+# W41 v2 拡張 (今週限定オーバーレイ): pending_edits を (patient_id, weekday) → 編集
+# Map に変換し、PFV / weekly_pattern を「読み込み時だけ」上書きする.
+# DB / SQLAlchemy セッションには絶対に触らない.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PendingEditOverlay:
+    """1 件の今週限定オーバーレイ.
+
+    Fields:
+        patient_id / weekday: 対象キー.
+        new_start: ``time`` 形式の開始時刻.
+        new_end: ``time`` 形式の終了時刻 (任意).
+        new_time_type: "固定" / "時間帯" / "午前" / "午後" / "終日" / None.
+        new_start_str / new_end_str: UI 表示用に元の "HH:MM[:SS]" 文字列も保持.
+    """
+
+    patient_id: UUID
+    weekday: int
+    new_start: time
+    new_end: time | None
+    new_time_type: str | None
+    new_start_str: str
+    new_end_str: str | None
+
+
+def _build_pending_edit_overlay(
+    pending_edits: list[Any] | None,
+    *,
+    warnings: list[V2Warning] | None = None,
+) -> dict[tuple[UUID, int], PendingEditOverlay]:
+    """``pending_edits: list[PendingFixedTimeEdit | dict]`` を
+    ``{(patient_id, weekday): PendingEditOverlay}`` に変換する.
+
+    同じ (patient_id, weekday) が複数あれば **最後のもの** で上書きする
+    (UI 仕様: 最新編集を採用).
+
+    時刻文字列のパース失敗や weekday 範囲外は warnings に記録してスキップ.
+    """
+    overlay: dict[tuple[UUID, int], PendingEditOverlay] = {}
+    if not pending_edits:
+        return overlay
+    for raw in pending_edits:
+        # Pydantic model または dict のどちらでも受け取れるように.
+        if hasattr(raw, "model_dump"):
+            data = raw.model_dump()
+        elif isinstance(raw, dict):
+            data = raw
+        else:
+            continue
+        pid_raw = data.get("patient_id")
+        if isinstance(pid_raw, UUID):
+            patient_id = pid_raw
+        else:
+            try:
+                patient_id = UUID(str(pid_raw))
+            except (ValueError, AttributeError):
+                continue
+        wd = data.get("weekday")
+        if not isinstance(wd, int) or not (0 <= wd <= 6):
+            continue
+        st = _parse_hhmm(data.get("new_start"))
+        if st is None:
+            if warnings is not None:
+                warnings.append(
+                    V2Warning(
+                        type="general",
+                        message=(
+                            f"今週限定変更: new_start のパースに失敗したためスキップ "
+                            f"(patient_id={patient_id}, weekday={wd}, value={data.get('new_start')!r})"
+                        ),
+                        actionable=False,
+                        patient_id=patient_id,
+                        weekday=wd,
+                    )
+                )
+            continue
+        end_raw = data.get("new_end")
+        et: time | None = None
+        if end_raw is not None and end_raw != "":
+            et = _parse_hhmm(end_raw)
+            if et is None:
+                if warnings is not None:
+                    warnings.append(
+                        V2Warning(
+                            type="general",
+                            message=(
+                                f"今週限定変更: new_end のパースに失敗したため new_end を無視 "
+                                f"(patient_id={patient_id}, weekday={wd}, value={end_raw!r})"
+                            ),
+                            actionable=False,
+                            patient_id=patient_id,
+                            weekday=wd,
+                        )
+                    )
+        new_tt = data.get("new_time_type")
+        if not isinstance(new_tt, str) or new_tt == "":
+            new_tt = None
+        overlay[(patient_id, wd)] = PendingEditOverlay(
+            patient_id=patient_id,
+            weekday=wd,
+            new_start=st,
+            new_end=et,
+            new_time_type=new_tt,
+            new_start_str=data.get("new_start")
+            if isinstance(data.get("new_start"), str)
+            else _fmt_hhmm(st),
+            new_end_str=end_raw if isinstance(end_raw, str) and et is not None else None,
+        )
+    return overlay
+
+
+def _compute_overlay_duration(
+    overlay: PendingEditOverlay,
+    *,
+    existing_duration: int,
+) -> int:
+    """オーバーレイ 1 件の duration_min を確定する.
+
+    Rules:
+        - time_type='固定' or None: new_end があれば new_end - new_start を実訪問時間とみなす.
+          無ければ existing_duration を保持.
+        - time_type='時間帯' / '午前' / '午後' / '終日': new_start..new_end は希望レンジで
+          あって実訪問時間ではないため、existing_duration を保持する (= マスター更新と同じ方針).
+    """
+    is_range_type = overlay.new_time_type in ("時間帯", "午前", "午後", "終日")
+    if is_range_type:
+        return existing_duration
+    if overlay.new_end is not None:
+        dur = (overlay.new_end.hour * 60 + overlay.new_end.minute) - (
+            overlay.new_start.hour * 60 + overlay.new_start.minute
+        )
+        if dur > 0:
+            # W41 v2 cross-review (M-Codex-3): 上限 8 時間 (480 分) 超は異常値.
+            # V2VisitPlan.duration_min も Field(ge=1, le=480) で 480 を上限としている.
+            if dur > 480:
+                return existing_duration
+            return dur
+    return existing_duration
+
+
+# ---------------------------------------------------------------------------
 # Stage 1+2: プール → V2Visit 展開
 # ---------------------------------------------------------------------------
 
@@ -588,12 +731,18 @@ def build_visits_for_pool(
     *,
     fixed_by_patient: dict[UUID, list[PatientFixedVisit]] | None = None,
     use_fixed_as_source: bool = False,
+    pending_overlay: dict[tuple[UUID, int], PendingEditOverlay] | None = None,
 ) -> list[V2Visit]:
     """段階 1〜2 中間: 各患者の希望を V2Visit に展開する.
 
     ``use_fixed_as_source=True`` の場合は ``fixed_by_patient`` を優先し、
     weekly_pattern より固定枠のスケジュールを使う (機能 D の再生成).
+
+    ``pending_overlay`` が渡された場合、(patient_id, weekday) が一致する希望時刻を
+    オーバーレイ値で上書きする (DB は変更しない). Patient.weekly_pattern オブジェクト
+    自体には触らない.
     """
+    overlay = pending_overlay or {}
     visits: list[V2Visit] = []
     for patient in patients:
         if patient.lat is None or patient.lng is None or patient.primary_office_id is None:
@@ -608,17 +757,30 @@ def build_visits_for_pool(
             if entries_fixed:
                 used_fixed = True
                 for wd, st, sm in entries_fixed:
-                    end_t = _add_minutes(st, sm)
-                    am_pm = determine_am_pm(time_type="固定", preferred_start=st)
+                    ov = overlay.get((patient.id, wd))
+                    if ov is not None:
+                        st_eff = ov.new_start
+                        sm_eff = _compute_overlay_duration(ov, existing_duration=sm)
+                        tt_eff = ov.new_time_type or "固定"
+                        ps_eff = ov.new_start_str
+                        pe_eff = ov.new_end_str
+                    else:
+                        st_eff = st
+                        sm_eff = sm
+                        tt_eff = "固定"
+                        ps_eff = _fmt_hhmm(st)
+                        pe_eff = None
+                    end_t = _add_minutes(st_eff, sm_eff)
+                    am_pm = determine_am_pm(time_type=tt_eff, preferred_start=st_eff)
                     visits.append(
                         V2Visit(
                             patient_id=patient.id,
                             patient_name=patient.name,
                             patient_code=patient.code,
                             weekday=wd,
-                            start_time=st,
+                            start_time=st_eff,
                             end_time=end_t,
-                            service_minutes=sm,
+                            service_minutes=sm_eff,
                             lat=float(patient.lat),
                             lng=float(patient.lng),
                             office_id=patient.primary_office_id,
@@ -626,26 +788,39 @@ def build_visits_for_pool(
                             source_kind="fixed",
                             address=addr,
                             area_label=area,
-                            time_type="固定",
-                            preferred_start=_fmt_hhmm(st),
-                            preferred_end=None,
+                            time_type=tt_eff,
+                            preferred_start=ps_eff,
+                            preferred_end=pe_eff,
                             sex_restriction=sex_r,
                         )
                     )
         if not used_fixed:
             entries = _extract_weekly_entries(patient)
             for wd, st, sm, tt, ps_str, pe_str in entries:
-                end_t = _add_minutes(st, sm)
-                am_pm = determine_am_pm(time_type=tt, preferred_start=st)
+                ov = overlay.get((patient.id, wd))
+                if ov is not None:
+                    st_eff = ov.new_start
+                    sm_eff = _compute_overlay_duration(ov, existing_duration=sm)
+                    tt_eff = ov.new_time_type or tt
+                    ps_eff = ov.new_start_str
+                    pe_eff = ov.new_end_str if ov.new_end_str is not None else pe_str
+                else:
+                    st_eff = st
+                    sm_eff = sm
+                    tt_eff = tt
+                    ps_eff = ps_str
+                    pe_eff = pe_str
+                end_t = _add_minutes(st_eff, sm_eff)
+                am_pm = determine_am_pm(time_type=tt_eff, preferred_start=st_eff)
                 visits.append(
                     V2Visit(
                         patient_id=patient.id,
                         patient_name=patient.name,
                         patient_code=patient.code,
                         weekday=wd,
-                        start_time=st,
+                        start_time=st_eff,
                         end_time=end_t,
-                        service_minutes=sm,
+                        service_minutes=sm_eff,
                         lat=float(patient.lat),
                         lng=float(patient.lng),
                         office_id=patient.primary_office_id,
@@ -653,10 +828,10 @@ def build_visits_for_pool(
                         source_kind="pool",
                         address=addr,
                         area_label=area,
-                        time_type=tt,
+                        time_type=tt_eff,
                         sex_restriction=sex_r,
-                        preferred_start=ps_str,
-                        preferred_end=pe_str,
+                        preferred_start=ps_eff,
+                        preferred_end=pe_eff,
                     )
                 )
     return visits
@@ -1501,8 +1676,15 @@ async def _load_before_visits_from_pfv(
     db: AsyncSession,
     *,
     patients_by_id: dict[UUID, Patient],
+    pending_overlay: dict[tuple[UUID, int], PendingEditOverlay] | None = None,
+    warnings: list[V2Warning] | None = None,
 ) -> list[V2Visit]:
-    """Before スナップショット: 既存 patient_fixed_visits (mode='normal') から構築."""
+    """Before スナップショット: 既存 patient_fixed_visits (mode='normal') から構築.
+
+    ``pending_overlay`` が渡された場合は、PFV 値を Python オブジェクトレベルで上書きする
+    (DB / SQLAlchemy セッションには触らない). マスターは絶対に変更しない.
+    overlay に該当するキーがあるのに PFV が見つからない場合は warning に記録.
+    """
     if not patients_by_id:
         return []
     pfv_rows = (
@@ -1528,6 +1710,9 @@ async def _load_before_visits_from_pfv(
         for ct in ct_rows.all():
             ct_label_by_id[ct.id] = ct.label
 
+    pending_overlay = pending_overlay or {}
+    pfv_keys_seen: set[tuple[UUID, int]] = set()
+
     out: list[V2Visit] = []
     for pfv in pfv_rows:
         patient = patients_by_id.get(pfv.patient_id)
@@ -1535,21 +1720,40 @@ async def _load_before_visits_from_pfv(
             continue
         if patient.primary_office_id is None:
             continue
-        end_t = _add_minutes(pfv.start_time, pfv.duration_min)
-        am_pm = "am" if pfv.start_time.hour < NOON_HOUR else "pm"
+        overlay_key = (pfv.patient_id, pfv.weekday)
+        pfv_keys_seen.add(overlay_key)
+        overlay = pending_overlay.get(overlay_key)
+        # overlay の new_start_time / duration_min を採用 (PFV モデルは書き換えない)
+        if overlay is not None:
+            start_time_v = overlay.new_start
+            duration_v = _compute_overlay_duration(overlay, existing_duration=pfv.duration_min)
+        else:
+            start_time_v = pfv.start_time
+            duration_v = pfv.duration_min
+        end_t = _add_minutes(start_time_v, duration_v)
+        am_pm = "am" if start_time_v.hour < NOON_HOUR else "pm"
         course_code = ct_label_by_id.get(pfv.course_template_id) if pfv.course_template_id else None
         addr = patient.address
-        tt = _extract_time_type_for_weekday(patient, pfv.weekday)
-        ps_str, pe_str = _extract_preferred_window_for_weekday(patient, pfv.weekday)
+        # time_type / preferred_start / preferred_end も overlay を優先する.
+        if overlay is not None:
+            tt = overlay.new_time_type or _extract_time_type_for_weekday(patient, pfv.weekday)
+            ps_str = overlay.new_start_str
+            pe_str = (
+                overlay.new_end_str
+                or _extract_preferred_window_for_weekday(patient, pfv.weekday)[1]
+            )
+        else:
+            tt = _extract_time_type_for_weekday(patient, pfv.weekday)
+            ps_str, pe_str = _extract_preferred_window_for_weekday(patient, pfv.weekday)
         out.append(
             V2Visit(
                 patient_id=patient.id,
                 patient_name=patient.name,
                 patient_code=patient.code,
                 weekday=pfv.weekday,
-                start_time=pfv.start_time,
+                start_time=start_time_v,
                 end_time=end_t,
-                service_minutes=pfv.duration_min,
+                service_minutes=duration_v,
                 lat=float(patient.lat),
                 lng=float(patient.lng),
                 office_id=patient.primary_office_id,
@@ -1564,6 +1768,27 @@ async def _load_before_visits_from_pfv(
                 preferred_end=pe_str,
             )
         )
+
+    # overlay に該当するが PFV が見つからない (= 新規患者 or 別曜日) は warning.
+    if warnings is not None:
+        for key in pending_overlay.keys():
+            if key not in pfv_keys_seen:
+                patient = patients_by_id.get(key[0])
+                pname = patient.name if patient is not None else None
+                warnings.append(
+                    V2Warning(
+                        type="general",
+                        message=(
+                            f"今週限定変更: (patient_id={key[0]}, weekday={key[1]}) に対応する "
+                            f"固定枠が存在しないためオーバーレイをスキップしました"
+                        ),
+                        actionable=False,
+                        patient_id=key[0],
+                        patient_name=pname,
+                        weekday=key[1],
+                    )
+                )
+
     return out
 
 
@@ -1633,13 +1858,19 @@ async def run_v2_pipeline(
     iso_week: int,
     office_ids: list[UUID],
     mode: Literal["diff_add", "full_optimize"],
+    pending_edits: list[Any] | None = None,
 ) -> dict[str, Any]:
     """5 段階を順に実行する.
+
+    Args:
+        pending_edits: ``list[PendingFixedTimeEdit | dict]``. 与えられた場合、
+            PFV / weekly_pattern を読み込み時のみ一時オーバーレイする (DB は変更しない).
+            (patient_id, weekday) が重複する場合は **最後のもの** を採用.
 
     Returns:
         {
             "proposal_batch_id": UUID,
-            "before_visits": [V2Visit, ...],   # 既存 PFV 由来
+            "before_visits": [V2Visit, ...],   # 既存 PFV 由来 (overlay 適用済)
             "after_visits":  [V2Visit, ...],   # 提案結果 (course_code 確定済)
             "pool_visits":   [V2Visit, ...],   # 機能 A のときのみ非空
             "warnings": [...],
@@ -1697,8 +1928,18 @@ async def run_v2_pipeline(
         # full_optimize: 全 active 患者
         pool_patients = list(patients_by_id.values())
 
+    # W41 v2 拡張 (今週限定オーバーレイ): pending_edits を (patient_id, weekday) → Overlay の
+    # マップに変換. PFV / weekly_pattern の読み込み時に Python オブジェクトレベルで上書きする.
+    # DB / SQLAlchemy セッションには触らない.
+    pending_overlay = _build_pending_edit_overlay(pending_edits, warnings=warnings)
+
     # Before スナップショット
-    before_visits = await _load_before_visits_from_pfv(db, patients_by_id=patients_by_id)
+    before_visits = await _load_before_visits_from_pfv(
+        db,
+        patients_by_id=patients_by_id,
+        pending_overlay=pending_overlay,
+        warnings=warnings,
+    )
 
     # Stage 1+2 中間: pool_patients を V2Visit に展開
     # W41 v2 (警告日本語化): 緯度経度 / 拠点 未設定の患者を明示的に warning に出す.
@@ -1723,7 +1964,7 @@ async def run_v2_pipeline(
                     patient_name=_p.name,
                 )
             )
-    pool_visits = build_visits_for_pool(pool_patients)
+    pool_visits = build_visits_for_pool(pool_patients, pending_overlay=pending_overlay)
 
     # H5 + H10: 受入カレンダー × + 昼休憩を除外
     # Mode 2 (full_optimize) は H5 をスキップ — 受入カレンダー × は既存スケジュール
@@ -2056,6 +2297,7 @@ async def apply_week_only(
     iso_week: int,
     office_ids: list[UUID],
     patient_visit_plans: list[dict[str, Any]],
+    pending_edits: list[Any] | None = None,
 ) -> dict[str, Any]:
     """全面最適化結果を visits のみに反映 (patient_fixed_visits は更新しない).
 
@@ -2070,6 +2312,11 @@ async def apply_week_only(
         patient_visit_plans: ``[{"patient_id": UUID, "visit_plans": list[dict]}, ...]``.
             各 visit_plans 要素は ``weekday, start_time, end_time, duration_min,
             course_code, office_id, am_pm, assigned_staff_id?`` を持つ.
+        pending_edits: 今週限定オーバーレイ. ``patient_visit_plans`` の各 visit_plan を
+            ``(patient_id, weekday)`` キーで上書きする (新時刻 / 終了時刻 / duration).
+            通常 FE 側は ``patient_visit_plans`` に既にオーバーレイを反映済みで送ってくるが、
+            念のため backend 側でも再適用する (defensive). 同じキーが重複する場合は
+            **最後のもの** を採用.
 
     Returns:
         ``{visits_created, visits_soft_deleted, courses_created,
@@ -2140,6 +2387,11 @@ async def apply_week_only(
             soft_deleted_count += 1
         await db.flush()
 
+    # W41 v2 拡張 (今週限定オーバーレイ): pending_edits を defensive に再適用.
+    # FE 側は通常 patient_visit_plans に既にオーバーレイを反映済みで送ってくるが、
+    # backend 側でも (patient_id, weekday) ベースで上書きする.
+    apply_overlay = _build_pending_edit_overlay(pending_edits)
+
     # 2-3) visit_plans を visits に変換して INSERT (course 解決込み)
     course_cache: dict[tuple[UUID, int, str], Course] = {}
     courses_created_counter: list[int] = [0]
@@ -2188,6 +2440,30 @@ async def apply_week_only(
                 continue
             if not isinstance(dur, int) or dur <= 0:
                 dur = 30
+            # W41 v2 拡張: 今週限定オーバーレイの再適用 (defensive).
+            ov = apply_overlay.get((patient_id, wd))
+            if ov is not None:
+                st = ov.new_start
+                dur = _compute_overlay_duration(ov, existing_duration=dur)
+                if ov.new_end is not None and ov.new_time_type not in (
+                    "時間帯",
+                    "午前",
+                    "午後",
+                    "終日",
+                ):
+                    et = ov.new_end
+                else:
+                    et = _add_minutes(st, dur)
+                # Overlay 適用後の end_time > start_time 再検証.
+                # クライアントが new_end <= new_start な pending_edit を送っても
+                # 不正な visit (end <= start) を DB に insert しないためのガード.
+                if et <= st:
+                    warnings.append(
+                        f"patient_id={patient_id}: {_weekday_jp(wd)} overlay 適用後の "
+                        f"end_time ({_fmt_hhmm(et)}) <= start_time ({_fmt_hhmm(st)}) "
+                        "のためスキップ"
+                    )
+                    continue
             # H10: 昼休憩枠と重なる visit はスキップ
             if _is_in_lunch_break(st, et):
                 warnings.append(

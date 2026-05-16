@@ -1424,3 +1424,563 @@ async def test_update_fixed_time_master_h10_lunch_overlap_via_duration(client, d
     )
     assert res.status_code == 422, res.text
     assert "H10" in res.text or "昼休憩" in res.text
+
+
+# ---------------------------------------------------------------------------
+# W41 v2 拡張 (今週限定オーバーレイ / pending_edits)
+# /full-optimize と /apply-week-only が pending_edits を受けて PFV を上書きせず
+# 一時的に反映する.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_full_optimize_empty_pending_edits_is_backward_compatible(client, db) -> None:
+    """pending_edits が空でも従来通り動く (後方互換)."""
+    admin = await _make_user(db, email="v2-pe-empty@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    p1 = await _seed_patient(db, office=office, code="PE-EMP1", lat=35.65, lng=140.10)
+    db.add(
+        PatientFixedVisit(
+            patient_id=p1.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(10, 0),
+            duration_min=30,
+            slot_index=0,
+        )
+    )
+    await db.commit()
+
+    # pending_edits 未指定でも 200
+    res1 = await client.post(
+        "/api/v1/schedule/v2/full-optimize",
+        headers=_bearer(admin),
+        json={"iso_year": 2026, "iso_week": 20, "office_ids": [str(office.id)]},
+    )
+    assert res1.status_code == 200, res1.text
+
+    # 空配列を明示しても 200
+    res2 = await client.post(
+        "/api/v1/schedule/v2/full-optimize",
+        headers=_bearer(admin),
+        json={
+            "iso_year": 2026,
+            "iso_week": 20,
+            "office_ids": [str(office.id)],
+            "pending_edits": [],
+        },
+    )
+    assert res2.status_code == 200, res2.text
+
+
+@pytest.mark.asyncio
+async def test_full_optimize_pending_edits_overlay_reflected_in_before_after(client, db) -> None:
+    """pending_edits で固定時間を上書きすると Before/After に反映される."""
+    admin = await _make_user(db, email="v2-pe-overlay@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    p = await _seed_patient(db, office=office, code="PE-OV1", lat=35.65, lng=140.10)
+    db.add(
+        PatientFixedVisit(
+            patient_id=p.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(10, 0),
+            duration_min=30,
+            slot_index=0,
+        )
+    )
+    await db.commit()
+    # W41 v2 cross-review (M-Codex-3): API 呼び出し前に weekly_pattern を保持して
+    # マスター不変を後で assert する.
+    original_weekly_pattern = dict(p.weekly_pattern) if p.weekly_pattern else None
+
+    res = await client.post(
+        "/api/v1/schedule/v2/full-optimize",
+        headers=_bearer(admin),
+        json={
+            "iso_year": 2026,
+            "iso_week": 20,
+            "office_ids": [str(office.id)],
+            "pending_edits": [
+                {
+                    "patient_id": str(p.id),
+                    "weekday": 0,
+                    "new_start": "11:00",
+                    "new_end": "11:30",
+                    "new_time_type": "固定",
+                }
+            ],
+        },
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    # week_proposals[weekday=0].before.courses[*].visits に対象 visit が出てくる.
+    mon = next((w for w in body["week_proposals"] if w["weekday"] == 0), None)
+    assert mon is not None
+    found = False
+    for course in mon["before"]["courses"]:
+        for v in course["visits"]:
+            if v["patient_id"] == str(p.id):
+                # オーバーレイの 11:00 になっている (PFV 元値 10:00 ではない)
+                assert v["start_time"].startswith("11:00")
+                found = True
+    assert found, "対象患者の visit が Before に見つからない"
+
+    # PFV (マスター) は変更されていない
+    refreshed_pfv = await db.scalar(
+        select(PatientFixedVisit).where(
+            PatientFixedVisit.patient_id == p.id, PatientFixedVisit.weekday == 0
+        )
+    )
+    assert refreshed_pfv is not None
+    assert refreshed_pfv.start_time == time(10, 0)
+    assert refreshed_pfv.duration_min == 30
+
+    # W41 v2 cross-review (M-Codex-3): patients.weekly_pattern (JSON) も
+    # pending_edits によって変更されないこと (マスター不変原則).
+    await db.refresh(p)
+    assert p.weekly_pattern == original_weekly_pattern
+
+
+@pytest.mark.asyncio
+async def test_full_optimize_pending_edits_range_type_preserves_duration(client, db) -> None:
+    """pending_edits の time_type='時間帯' は duration_min を保持する."""
+    admin = await _make_user(db, email="v2-pe-range@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    p = await _seed_patient(db, office=office, code="PE-RNG1", lat=35.65, lng=140.10)
+    db.add(
+        PatientFixedVisit(
+            patient_id=p.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(10, 0),
+            duration_min=45,  # ← 既存 duration を保持することを検証
+            slot_index=0,
+        )
+    )
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/full-optimize",
+        headers=_bearer(admin),
+        json={
+            "iso_year": 2026,
+            "iso_week": 20,
+            "office_ids": [str(office.id)],
+            "pending_edits": [
+                {
+                    "patient_id": str(p.id),
+                    "weekday": 0,
+                    "new_start": "13:30",
+                    "new_end": "15:00",  # range なので 90 分にはならない
+                    "new_time_type": "時間帯",
+                }
+            ],
+        },
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    mon = next((w for w in body["week_proposals"] if w["weekday"] == 0), None)
+    assert mon is not None
+    found_dur: int | None = None
+    for course in mon["before"]["courses"]:
+        for v in course["visits"]:
+            if v["patient_id"] == str(p.id):
+                found_dur = v["duration_min"]
+    assert found_dur == 45, f"time_type=時間帯 のとき duration は保持されるべき (実際: {found_dur})"
+
+
+@pytest.mark.asyncio
+async def test_full_optimize_pending_edits_fixed_type_recomputes_duration(client, db) -> None:
+    """pending_edits の time_type='固定' は new_end-new_start で duration_min を再計算."""
+    admin = await _make_user(db, email="v2-pe-fixed@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    p = await _seed_patient(db, office=office, code="PE-FIX1", lat=35.65, lng=140.10)
+    db.add(
+        PatientFixedVisit(
+            patient_id=p.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(10, 0),
+            duration_min=30,  # ← 元値
+            slot_index=0,
+        )
+    )
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/full-optimize",
+        headers=_bearer(admin),
+        json={
+            "iso_year": 2026,
+            "iso_week": 20,
+            "office_ids": [str(office.id)],
+            "pending_edits": [
+                {
+                    "patient_id": str(p.id),
+                    "weekday": 0,
+                    "new_start": "14:00",
+                    "new_end": "14:45",  # 45 分
+                    "new_time_type": "固定",
+                }
+            ],
+        },
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    mon = next((w for w in body["week_proposals"] if w["weekday"] == 0), None)
+    assert mon is not None
+    found_dur: int | None = None
+    for course in mon["before"]["courses"]:
+        for v in course["visits"]:
+            if v["patient_id"] == str(p.id):
+                found_dur = v["duration_min"]
+                assert v["start_time"].startswith("14:00")
+    assert found_dur == 45, f"time_type=固定 のとき new_end-new_start で再計算 (実際: {found_dur})"
+
+
+@pytest.mark.asyncio
+async def test_apply_week_only_with_pending_edits_overrides_visit_start(client, db) -> None:
+    """apply-week-only で pending_edits 反映 → visits.start_time が新値, PFV は元値のまま."""
+    from datetime import date
+
+    from app.models.visit import Visit
+
+    admin = await _make_user(db, email="v2-pe-aw@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    p = await _seed_patient(db, office=office, code="PE-AW1", lat=35.65, lng=140.10)
+    pfv = PatientFixedVisit(
+        patient_id=p.id,
+        mode="normal",
+        weekday=0,
+        start_time=time(10, 0),
+        duration_min=30,
+        slot_index=0,
+    )
+    db.add(pfv)
+    await db.commit()
+
+    # 元 visit_plan は 10:00 (PFV) のままだが pending_edits で 11:00 に上書き
+    res = await client.post(
+        "/api/v1/schedule/v2/apply-week-only",
+        headers=_bearer(admin),
+        json={
+            "iso_year": 2026,
+            "iso_week": 20,
+            "office_ids": [str(office.id)],
+            "visit_plans_per_patient": [
+                {
+                    "patient_id": str(p.id),
+                    "visit_plans": [
+                        {
+                            "weekday": 0,
+                            "start_time": "10:00",
+                            "end_time": "10:30",
+                            "duration_min": 30,
+                            "course_code": "A",
+                            "office_id": str(office.id),
+                            "am_pm": "am",
+                        }
+                    ],
+                }
+            ],
+            "pending_edits": [
+                {
+                    "patient_id": str(p.id),
+                    "weekday": 0,
+                    "new_start": "11:00",
+                    "new_end": "11:30",
+                    "new_time_type": "固定",
+                }
+            ],
+            "confirm": True,
+        },
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["visits_created"] >= 1
+
+    # 作られた visit は 11:00 開始
+    week_visits = (
+        await db.scalars(
+            select(Visit).where(
+                Visit.patient_id == p.id,
+                Visit.visit_date == date(2026, 5, 11),  # Mon W20
+                Visit.source == "auto_alloc_v2w",
+                Visit.deleted_at.is_(None),
+            )
+        )
+    ).all()
+    assert len(week_visits) == 1
+    assert week_visits[0].start_time == time(11, 0)
+
+    # PFV は元値のまま
+    refreshed_pfv = await db.scalar(select(PatientFixedVisit).where(PatientFixedVisit.id == pfv.id))
+    assert refreshed_pfv is not None
+    assert refreshed_pfv.start_time == time(10, 0)
+    assert refreshed_pfv.duration_min == 30
+
+
+@pytest.mark.asyncio
+async def test_apply_week_only_pending_edits_invalid_end_before_start_skips(client, db) -> None:
+    """W41 v2 cross-review (M-Codex-3): pending_edits の new_end <= new_start で
+
+    visit が作成されず warning が出ること. クライアントが不正な range を送っても
+    end_time < start_time な不正 visit が DB に挿入されないことを担保する.
+    """
+    from datetime import date
+
+    from app.models.visit import Visit
+
+    admin = await _make_user(db, email="v2-pe-aw-invalid@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    p = await _seed_patient(db, office=office, code="PE-AW-INV", lat=35.65, lng=140.10)
+    db.add(
+        PatientFixedVisit(
+            patient_id=p.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(10, 0),
+            duration_min=30,
+            slot_index=0,
+        )
+    )
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/apply-week-only",
+        headers=_bearer(admin),
+        json={
+            "iso_year": 2026,
+            "iso_week": 20,
+            "office_ids": [str(office.id)],
+            "visit_plans_per_patient": [
+                {
+                    "patient_id": str(p.id),
+                    "visit_plans": [
+                        {
+                            "weekday": 0,
+                            "start_time": "10:00",
+                            "end_time": "10:30",
+                            "duration_min": 30,
+                            "course_code": "A",
+                            "office_id": str(office.id),
+                            "am_pm": "am",
+                        }
+                    ],
+                }
+            ],
+            # new_end (13:00) <= new_start (14:00) な不正 range を送る
+            "pending_edits": [
+                {
+                    "patient_id": str(p.id),
+                    "weekday": 0,
+                    "new_start": "14:00",
+                    "new_end": "13:00",
+                    "new_time_type": "固定",
+                }
+            ],
+            "confirm": True,
+        },
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    # overlay 適用後 et<=st のためスキップ -> visits_created=0
+    assert body["visits_created"] == 0, (
+        f"overlay 適用後 et<=st の visit は作られるべきでない (visits_created={body['visits_created']})"
+    )
+    # warning に「overlay 適用後」または「end_time」「start_time」を含む文言があること
+    msgs = " | ".join(body.get("warnings", []))
+    assert "overlay" in msgs or "end_time" in msgs, f"想定 warning が見つからない: {msgs}"
+    # DB にも該当週 visit が無いこと
+    week_visits = (
+        await db.scalars(
+            select(Visit).where(
+                Visit.patient_id == p.id,
+                Visit.visit_date == date(2026, 5, 11),  # Mon W20
+                Visit.source == "auto_alloc_v2w",
+                Visit.deleted_at.is_(None),
+            )
+        )
+    ).all()
+    assert len(week_visits) == 0
+
+
+@pytest.mark.asyncio
+async def test_full_optimize_pending_edits_unknown_pfv_emits_warning(client, db) -> None:
+    """存在しない PFV (patient_id+weekday の組合せが無い) の pending_edit は warning + 無視."""
+    admin = await _make_user(db, email="v2-pe-noexist@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    p = await _seed_patient(db, office=office, code="PE-NX1", lat=35.65, lng=140.10)
+    # PFV を **作らない** (新規 patient と同じ状態)
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/full-optimize",
+        headers=_bearer(admin),
+        json={
+            "iso_year": 2026,
+            "iso_week": 20,
+            "office_ids": [str(office.id)],
+            "pending_edits": [
+                {
+                    "patient_id": str(p.id),
+                    "weekday": 0,
+                    "new_start": "11:00",
+                    "new_end": "11:30",
+                    "new_time_type": "固定",
+                }
+            ],
+        },
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    # warning に「固定枠が存在しないため」または「pending」「今週限定」っぽい文言が含まれる
+    msgs = " | ".join(w.get("message", "") for w in body.get("warnings", []))
+    assert (
+        "固定枠が存在しない" in msgs
+        or "今週限定" in msgs
+        or "pending" in msgs.lower()
+        or "PFV" in msgs
+    ), f"想定 warning が見つからない: {msgs}"
+
+
+@pytest.mark.asyncio
+async def test_full_optimize_pending_edits_duplicate_key_uses_last(client, db) -> None:
+    """pending_edits が同じ (patient_id, weekday) を複数持つ場合は **最後のもの** を採用."""
+    admin = await _make_user(db, email="v2-pe-dup@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    p = await _seed_patient(db, office=office, code="PE-DUP1", lat=35.65, lng=140.10)
+    db.add(
+        PatientFixedVisit(
+            patient_id=p.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(10, 0),
+            duration_min=30,
+            slot_index=0,
+        )
+    )
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/full-optimize",
+        headers=_bearer(admin),
+        json={
+            "iso_year": 2026,
+            "iso_week": 20,
+            "office_ids": [str(office.id)],
+            "pending_edits": [
+                {
+                    "patient_id": str(p.id),
+                    "weekday": 0,
+                    "new_start": "11:00",
+                    "new_end": "11:30",
+                    "new_time_type": "固定",
+                },
+                {
+                    "patient_id": str(p.id),
+                    "weekday": 0,
+                    "new_start": "13:30",
+                    "new_end": "14:00",
+                    "new_time_type": "固定",
+                },
+            ],
+        },
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    mon = next((w for w in body["week_proposals"] if w["weekday"] == 0), None)
+    assert mon is not None
+    found_start: str | None = None
+    for course in mon["before"]["courses"]:
+        for v in course["visits"]:
+            if v["patient_id"] == str(p.id):
+                found_start = v["start_time"]
+    assert found_start is not None
+    # 最後のもの 13:30 が採用される
+    assert found_start.startswith("13:30"), (
+        f"最後の pending_edit を採用するべき (実際: {found_start})"
+    )
+
+
+@pytest.mark.asyncio
+async def test_full_optimize_idempotent_after_apply_week_only(client, db) -> None:
+    """apply-week-only 後に /full-optimize を呼ぶと PFV は元のままで提案も元に戻る."""
+    admin = await _make_user(db, email="v2-pe-idem@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    p = await _seed_patient(db, office=office, code="PE-IDEM1", lat=35.65, lng=140.10)
+    pfv = PatientFixedVisit(
+        patient_id=p.id,
+        mode="normal",
+        weekday=0,
+        start_time=time(10, 0),
+        duration_min=30,
+        slot_index=0,
+    )
+    db.add(pfv)
+    await db.commit()
+
+    # 1) apply-week-only で pending_edits を反映 (visits に 11:00 を作る)
+    res_apply = await client.post(
+        "/api/v1/schedule/v2/apply-week-only",
+        headers=_bearer(admin),
+        json={
+            "iso_year": 2026,
+            "iso_week": 20,
+            "office_ids": [str(office.id)],
+            "visit_plans_per_patient": [
+                {
+                    "patient_id": str(p.id),
+                    "visit_plans": [
+                        {
+                            "weekday": 0,
+                            "start_time": "11:00",
+                            "end_time": "11:30",
+                            "duration_min": 30,
+                            "course_code": "A",
+                            "office_id": str(office.id),
+                            "am_pm": "am",
+                        }
+                    ],
+                }
+            ],
+            "pending_edits": [
+                {
+                    "patient_id": str(p.id),
+                    "weekday": 0,
+                    "new_start": "11:00",
+                    "new_end": "11:30",
+                    "new_time_type": "固定",
+                }
+            ],
+            "confirm": True,
+        },
+    )
+    assert res_apply.status_code == 200, res_apply.text
+
+    # 2) 再度 /full-optimize を pending_edits なしで呼ぶ → PFV の 10:00 が反映される
+    res_fo = await client.post(
+        "/api/v1/schedule/v2/full-optimize",
+        headers=_bearer(admin),
+        json={"iso_year": 2026, "iso_week": 20, "office_ids": [str(office.id)]},
+    )
+    assert res_fo.status_code == 200, res_fo.text
+    body = res_fo.json()
+    mon = next((w for w in body["week_proposals"] if w["weekday"] == 0), None)
+    assert mon is not None
+    found_start: str | None = None
+    for course in mon["before"]["courses"]:
+        for v in course["visits"]:
+            if v["patient_id"] == str(p.id):
+                found_start = v["start_time"]
+    assert found_start is not None
+    # pending_edits なしで再算出すれば、PFV 元値の 10:00 に戻る
+    assert found_start.startswith("10:00"), (
+        f"再算出時 pending_edits なしなら PFV 元値 10:00 に戻るべき (実際: {found_start})"
+    )
+
+    # PFV (マスター) も変更されていない
+    refreshed_pfv = await db.scalar(select(PatientFixedVisit).where(PatientFixedVisit.id == pfv.id))
+    assert refreshed_pfv is not None
+    assert refreshed_pfv.start_time == time(10, 0)

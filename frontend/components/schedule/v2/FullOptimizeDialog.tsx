@@ -38,6 +38,7 @@ import {
 import type {
   FullOptimizeResponse,
   IndividualProposal,
+  PendingFixedTimeEdit,
   V2CourseSummary,
   V2VisitForUI,
   V2VisitPlan,
@@ -141,6 +142,9 @@ export function FullOptimizeDialog({
   const [editingWarning, setEditingWarning] = React.useState<V2Warning | null>(null);
   const [editedWarningCount, setEditedWarningCount] = React.useState(0);
   const [editedWarningKeys, setEditedWarningKeys] = React.useState<Set<string>>(new Set());
+  // W41 v2 拡張 (今週限定変更): 保留中の pending_edits リスト.
+  // (b) 今週限定 を選んだ場合は API を叩かず、ここに溜めて再算出時に backend へ送る.
+  const [pendingEdits, setPendingEdits] = React.useState<PendingFixedTimeEdit[]>([]);
   // W41 v2 拡張 (1週間 B/A グリッド): デフォルト非表示でパフォーマンス確保.
 
   // open のたびにリセット + 再計算.
@@ -156,6 +160,7 @@ export function FullOptimizeDialog({
     setEditingWarning(null);
     setEditedWarningCount(0);
     setEditedWarningKeys(new Set());
+    setPendingEdits([]);
     fetchMut.reset();
     applyMut.reset();
     applyWeekOnlyMut.reset();
@@ -165,6 +170,7 @@ export function FullOptimizeDialog({
           iso_year: isoYear,
           iso_week: isoWeek,
           office_ids: officeId ? [officeId] : [],
+          pending_edits: [],
         });
         setResult(res);
         setStage('reviewing-summary');
@@ -200,6 +206,8 @@ export function FullOptimizeDialog({
         iso_year: isoYear,
         iso_week: isoWeek,
         office_ids: officeId ? [officeId] : [],
+        // W41 v2 拡張: 保留中の今週限定変更を含めて再算出
+        pending_edits: pendingEdits,
       });
       setResult(res);
       setStage('reviewing-summary');
@@ -208,7 +216,7 @@ export function FullOptimizeDialog({
       toast.error(`全面最適化に失敗しました: ${formatErr(err)}`);
       setStage('idle');
     }
-  }, [fetchMut, isoYear, isoWeek, officeId]);
+  }, [fetchMut, isoYear, isoWeek, officeId, pendingEdits]);
 
   const handleClose = () => {
     if (isBusy) return;
@@ -262,6 +270,8 @@ export function FullOptimizeDialog({
           patient_id: p.patient_id,
           visit_plans: p.proposed_pfv,
         })),
+        // W41 v2 拡張: 保留中の今週限定変更も backend 側で再適用 (defensive).
+        pending_edits: pendingEdits,
         confirm: true,
       });
       toast.success(`${res.visits_created} 件の visits を反映しました (固定枠は変更なし)`);
@@ -451,15 +461,19 @@ export function FullOptimizeDialog({
                 />
               ) : null}
 
-              {/* W41 v2 拡張: 再実行誘導バナー (修正済み件数 > 0 のとき). */}
-              {editedWarningCount > 0 ? (
+              {/* W41 v2 拡張: 再実行誘導バナー (修正済み件数 > 0 のとき).
+                  count = マスター更新 (editedWarningCount) + 今週限定保留 (pendingEdits.length). */}
+              {editedWarningCount + pendingEdits.length > 0 ? (
                 <div
                   className="mt-2 rounded border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900"
                   data-testid="full-optimize-reallocate-banner"
                 >
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <span>
-                      ✏️ 固定時間を {editedWarningCount} 件修正しました。
+                      ✏️ 固定時間を {editedWarningCount + pendingEdits.length} 件修正しました。
+                      {pendingEdits.length > 0
+                        ? ` (うち今週限定: ${pendingEdits.length} 件)`
+                        : ''}{' '}
                       整合性確保のため全面最適化の再実行を推奨します。
                     </span>
                     <Button
@@ -668,6 +682,24 @@ export function FullOptimizeDialog({
                 return next;
               });
               setEditedWarningCount((n) => n + 1);
+            }
+            setEditingWarning(null);
+          }}
+          onPendingEdit={(edit) => {
+            // 同じ (patient_id, weekday) があれば置き換え、無ければ追加.
+            setPendingEdits((prev) => {
+              const filtered = prev.filter(
+                (e) => !(e.patient_id === edit.patient_id && e.weekday === edit.weekday),
+              );
+              return [...filtered, edit];
+            });
+            if (editingWarning) {
+              const k = warningKey(editingWarning);
+              setEditedWarningKeys((prev) => {
+                const next = new Set(prev);
+                next.add(k);
+                return next;
+              });
             }
             setEditingWarning(null);
           }}

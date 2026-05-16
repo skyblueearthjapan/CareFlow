@@ -204,6 +204,40 @@ class V2BeforeAfterSummary(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# PendingFixedTimeEdit (W41 v2 拡張: 今週限定オーバーレイ)
+#
+# /full-optimize や /apply-week-only に渡すと、その算出/適用処理だけで
+# PFV を一時的に上書きしたかのように振る舞う. マスター (PFV / weekly_pattern)
+# は変更しない. FE 側「保留変更リスト」に対応.
+# ---------------------------------------------------------------------------
+
+
+class PendingFixedTimeEdit(BaseModel):
+    """提案段階での一時的な固定時間上書き (今週限定変更).
+
+    /full-optimize や /apply-week-only に渡すと、その算出/適用処理だけで
+    PFV を一時的に上書きしたかのように振る舞う. マスター (PFV) は変更しない.
+
+    Fields:
+        patient_id: 対象患者.
+        weekday: 0=月..6=日.
+        new_start: "HH:MM" 形式の開始時刻 (オーバーレイ後の preferred_start / PFV.start_time).
+        new_end: "HH:MM" 形式の終了時刻. None なら既存 duration_min を保持.
+        new_time_type: "固定" | "時間帯" | "午前" | "午後" | "終日" | None.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    patient_id: uuid.UUID
+    weekday: int = Field(ge=0, le=6)
+    # W41 v2 cross-review (M-Codex-3): pattern で "HH:MM" のみを許容し、API 境界で reject.
+    # _parse_hhmm が len != 2 (HH:MM:SS など) を silent reject していた問題を防ぐ.
+    new_start: str = Field(..., pattern=r"^\d{1,2}:\d{2}$")
+    new_end: str | None = Field(default=None, pattern=r"^\d{1,2}:\d{2}$")
+    new_time_type: Literal["固定", "時間帯", "午前", "午後", "終日"] | None = None
+
+
+# ---------------------------------------------------------------------------
 # 1) /diff-add (機能 A)
 # ---------------------------------------------------------------------------
 
@@ -262,6 +296,9 @@ class AutoScheduleV2FullOptimizeRequest(BaseModel):
     iso_year: int = Field(ge=2020, le=2100)
     iso_week: int = Field(ge=1, le=53)
     office_ids: list[uuid.UUID] = Field(default_factory=list, max_length=200)
+    # W41 v2 拡張 (今週限定オーバーレイ): PFV / weekly_pattern を一時的に上書きして再算出.
+    # マスターは変更しないため、本フィールドは本算出の中でのみ作用する.
+    pending_edits: list[PendingFixedTimeEdit] = Field(default_factory=list, max_length=500)
 
 
 class V2IndividualProposal(BaseModel):
@@ -417,6 +454,10 @@ class AutoScheduleV2ApplyWeekOnlyRequest(BaseModel):
     iso_week: int = Field(ge=1, le=53)
     office_ids: list[uuid.UUID] = Field(default_factory=list, max_length=200)
     visit_plans_per_patient: list[V2PatientVisitPlans] = Field(default_factory=list)
+    # W41 v2 拡張 (今週限定オーバーレイ): 一括反映時に保留変更を visit_plans に
+    # 反映するためのオーバーレイ. 通常は visit_plans_per_patient 自体に既に
+    # 反映済みだが、再算出時のメタ情報として保持できる.
+    pending_edits: list[PendingFixedTimeEdit] = Field(default_factory=list, max_length=500)
     confirm: Literal[True] = Field(
         default=True,
         description="必ず true を指定すること (UI 側で確認ダイアログ後に True 固定送信)",
@@ -453,8 +494,9 @@ class UpdateFixedTimeMasterRequest(BaseModel):
 
     patient_id: uuid.UUID
     weekday: int = Field(ge=0, le=6)
-    new_start: str = Field(min_length=4, max_length=8)  # "HH:MM" or "HH:MM:SS"
-    new_end: str | None = Field(default=None, max_length=8)
+    # W41 v2 cross-review (M-Codex-3): pattern で "HH:MM" のみを許容し、API 境界で reject.
+    new_start: str = Field(..., pattern=r"^\d{1,2}:\d{2}$")
+    new_end: str | None = Field(default=None, pattern=r"^\d{1,2}:\d{2}$")
     new_time_type: Literal["固定", "時間帯", "午前", "午後", "終日"] | None = None
 
 
@@ -477,8 +519,9 @@ class UpdateFixedTimeWeekOnlyRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     visit_id: uuid.UUID
-    new_start: str = Field(min_length=4, max_length=8)
-    new_end: str | None = Field(default=None, max_length=8)
+    # W41 v2 cross-review (M-Codex-3): pattern で "HH:MM" のみを許容し、API 境界で reject.
+    new_start: str = Field(..., pattern=r"^\d{1,2}:\d{2}$")
+    new_end: str | None = Field(default=None, pattern=r"^\d{1,2}:\d{2}$")
 
 
 class UpdateFixedTimeWeekOnlyResponse(BaseModel):
@@ -505,6 +548,7 @@ __all__ = [
     "UpdateFixedTimeMasterResponse",
     "UpdateFixedTimeWeekOnlyRequest",
     "UpdateFixedTimeWeekOnlyResponse",
+    "PendingFixedTimeEdit",
     "V2BeforeAfterSummary",
     "V2CourseContainer",
     "V2CourseSummary",

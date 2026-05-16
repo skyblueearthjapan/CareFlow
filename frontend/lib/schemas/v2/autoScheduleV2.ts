@@ -216,10 +216,25 @@ export type DiffAddResponse = z.infer<typeof diffAddResponseSchema>;
 // 機能 B: 全面最適化 (POST /full-optimize)
 // ---------------------------------------------------------------------------
 
+// W41 v2 拡張 (今週限定オーバーレイ): 提案算出時に PFV を一時的に上書きするための
+// 保留変更. /full-optimize と /apply-week-only に渡せる. マスター (PFV) は変更しない.
+export const pendingFixedTimeEditSchema = z.object({
+  patient_id: z.string().uuid(),
+  weekday: z.number().int().min(0).max(6),
+  new_start: z.string(),
+  new_end: z.string().nullable().default(null),
+  // W41 v2 cross-review (M-Codex-3): backend Literal と一致させる.
+  // string のままでは UI ロジックの誤った値を silent に通してしまうため enum 化.
+  new_time_type: z.enum(['固定', '時間帯', '午前', '午後', '終日']).nullable().default(null),
+});
+export type PendingFixedTimeEdit = z.infer<typeof pendingFixedTimeEditSchema>;
+
 export const fullOptimizeRequestSchema = z.object({
   iso_year: z.number().int().min(2020).max(2100),
   iso_week: z.number().int().min(1).max(53),
   office_ids: z.array(z.string().uuid()).default([]),
+  // W41 v2 拡張: 今週限定オーバーレイ. 空配列で従来通り.
+  pending_edits: z.array(pendingFixedTimeEditSchema).default([]),
 });
 export type FullOptimizeRequest = z.infer<typeof fullOptimizeRequestSchema>;
 
@@ -331,6 +346,9 @@ export const applyWeekOnlyRequestSchema = z.object({
   iso_week: z.number().int().min(1).max(53),
   office_ids: z.array(z.string().uuid()).default([]),
   visit_plans_per_patient: z.array(v2PatientVisitPlansSchema).default([]),
+  // W41 v2 拡張 (今週限定オーバーレイ): visit_plans に既に反映済みでも、念のため
+  // backend 側でも (patient_id, weekday) ベースで再適用される.
+  pending_edits: z.array(pendingFixedTimeEditSchema).default([]),
   /** UI 側の確認ダイアログを経由したことを示すマーカー (BE は Literal[True]). */
   confirm: z.literal(true).default(true),
 });
