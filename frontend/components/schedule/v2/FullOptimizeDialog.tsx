@@ -58,11 +58,6 @@ import { formatDelta, formatErr, trimSeconds } from './_autoScheduleUtils';
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'] as const;
 const DISPLAY_WEEKDAYS = [0, 1, 2, 3, 4, 5] as const;
 
-function formatNumber(n: number | undefined, frac = 1): string {
-  if (n === undefined || !Number.isFinite(n)) return '—';
-  return n.toFixed(frac);
-}
-
 function fmtWd(weekday: number): string {
   return WEEKDAY_LABELS[weekday] ?? `?${weekday}`;
 }
@@ -144,7 +139,6 @@ export function FullOptimizeDialog({
   const [editedWarningCount, setEditedWarningCount] = React.useState(0);
   const [editedWarningKeys, setEditedWarningKeys] = React.useState<Set<string>>(new Set());
   // W41 v2 拡張 (1週間 B/A グリッド): デフォルト非表示でパフォーマンス確保.
-  const [showWeeklyGrid, setShowWeeklyGrid] = React.useState(false);
 
   // open のたびにリセット + 再計算.
   React.useEffect(() => {
@@ -159,7 +153,6 @@ export function FullOptimizeDialog({
     setEditingWarning(null);
     setEditedWarningCount(0);
     setEditedWarningKeys(new Set());
-    setShowWeeklyGrid(false);
     fetchMut.reset();
     applyMut.reset();
     applyWeekOnlyMut.reset();
@@ -406,21 +399,8 @@ export function FullOptimizeDialog({
             {/* W41 v2 (Mode 2 UI 拡張): 割当状況バナー */}
             <AssignmentSummaryBanner result={result} />
 
-            {/* KPI バー */}
-            <section
-              className="grid grid-cols-2 gap-2 sm:grid-cols-4"
-              data-testid="full-optimize-kpi"
-            >
-              <div className="rounded border border-border-default p-2">
-                <div className="text-[10px] text-text-muted">移動距離 (km)</div>
-                <div className="tnum text-sm font-semibold text-text-primary">
-                  {formatNumber(result.kpi_overall.total_distance_km_before)} →{' '}
-                  {formatNumber(result.kpi_overall.total_distance_km_after)}
-                </div>
-                <div className="tnum text-[10px] text-text-muted">
-                  削減 {formatNumber(result.kpi_overall.distance_reduction_pct, 1)}%
-                </div>
-              </div>
+            {/* KPI バー (全体距離 B/A は曜日別 B/A 内で表示するため除外) */}
+            <section className="grid grid-cols-3 gap-2" data-testid="full-optimize-kpi">
               <div className="rounded border border-border-default p-2">
                 <div className="text-[10px] text-text-muted">コース数</div>
                 <div className="tnum text-sm font-semibold text-text-primary">
@@ -442,65 +422,48 @@ export function FullOptimizeDialog({
               </div>
             </section>
 
-            {/* 警告 (W41 v2 拡張: 曜日タブ + actionable ボタン) */}
-            {result.warnings.length > 0 ? (
-              <WarningSection
-                warnings={result.warnings}
-                editedKeys={editedWarningKeys}
-                onActionClick={(w) => setEditingWarning(w)}
-              />
-            ) : null}
-
-            {/* W41 v2 拡張: 再実行誘導バナー (修正済み件数 > 0 のとき). */}
-            {editedWarningCount > 0 ? (
-              <div
-                className="rounded border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900"
-                data-testid="full-optimize-reallocate-banner"
-              >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span>
-                    ✏️ 固定時間を {editedWarningCount} 件修正しました。
-                    整合性確保のため全面最適化の再実行を推奨します。
-                  </span>
-                  <Button
-                    type="button"
-                    size="sm"
-                    onClick={() => {
-                      void handleReallocate();
-                    }}
-                    disabled={isBusy}
-                    data-testid="full-optimize-reallocate-button"
-                  >
-                    <RefreshCw className="mr-1 h-3.5 w-3.5" aria-hidden />
-                    全面最適化を再実行
-                  </Button>
-                </div>
-              </div>
-            ) : null}
-
-            {/* W41 v2 拡張: 1 週間スケジュール Before/After グリッド (折り畳み). */}
-            <div className="rounded border border-border-default">
-              <button
-                type="button"
-                className="flex w-full items-center justify-between bg-bg-muted px-2 py-1.5 text-xs font-semibold text-text-primary hover:bg-bg-muted/70"
-                onClick={() => setShowWeeklyGrid((v) => !v)}
-                data-testid="full-optimize-weekly-grid-toggle"
-                aria-expanded={showWeeklyGrid}
-              >
-                <span>
-                  {showWeeklyGrid ? '▼' : '▶'} 1 週間スケジュールの詳細を表示 (Before / After +
-                  訪問間距離)
-                </span>
-                <span className="text-text-muted text-[10px]">
-                  {result.week_proposals.length} 曜日分
-                </span>
-              </button>
-              {showWeeklyGrid ? <WeeklyBeforeAfterGrid proposals={result.week_proposals} /> : null}
-            </div>
-
-            {/* 曜日タブ Before/After */}
+            {/* W41 v2 拡張: 警告 + 曜日タブ + Before/After を 1 つの Tabs で連動.
+                順序は「警告 → 曜日タブ → Before/After」 (ユーザー希望)
+                警告は currentTab に応じて該当曜日 (+ 曜日不問) のみ表示. */}
             <Tabs value={activeTab} onValueChange={setActiveTab}>
-              <TabsList className="flex w-full flex-wrap gap-1 bg-bg-muted">
+              {result.warnings.length > 0 ? (
+                <WarningSection
+                  warnings={result.warnings}
+                  editedKeys={editedWarningKeys}
+                  onActionClick={(w) => setEditingWarning(w)}
+                  currentTab={activeTab}
+                />
+              ) : null}
+
+              {/* W41 v2 拡張: 再実行誘導バナー (修正済み件数 > 0 のとき). */}
+              {editedWarningCount > 0 ? (
+                <div
+                  className="mt-2 rounded border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900"
+                  data-testid="full-optimize-reallocate-banner"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span>
+                      ✏️ 固定時間を {editedWarningCount} 件修正しました。
+                      整合性確保のため全面最適化の再実行を推奨します。
+                    </span>
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={() => {
+                        void handleReallocate();
+                      }}
+                      disabled={isBusy}
+                      data-testid="full-optimize-reallocate-button"
+                    >
+                      <RefreshCw className="mr-1 h-3.5 w-3.5" aria-hidden />
+                      全面最適化を再実行
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
+
+              {/* 曜日タブ (警告と Before/After の間に配置) */}
+              <TabsList className="mt-3 flex w-full flex-wrap gap-1 bg-bg-muted">
                 {DISPLAY_WEEKDAYS.map((wd) => (
                   <TabsTrigger key={wd} value={String(wd)} data-testid={`full-optimize-tab-${wd}`}>
                     {WEEKDAY_LABELS[wd]}
@@ -718,191 +681,78 @@ function WarningSection({
   warnings,
   editedKeys,
   onActionClick,
+  currentTab,
 }: {
   warnings: V2Warning[];
   editedKeys: Set<string>;
   onActionClick: (w: V2Warning) => void;
+  /** 親の曜日タブ state ('0'-'6' or 'all'). 曜日連動表示に使用. */
+  currentTab: string;
 }) {
-  // weekday=null は「曜日不問」, それ以外は 0..6 に振り分け.
-  const grouped = React.useMemo(() => {
-    const m = new Map<number | 'none', V2Warning[]>();
-    for (const w of warnings) {
-      const k = w.weekday === null || w.weekday === undefined ? 'none' : w.weekday;
-      if (!m.has(k)) m.set(k, []);
-      m.get(k)!.push(w);
-    }
-    return m;
-  }, [warnings]);
+  // currentTab に応じて表示する警告を絞り込み.
+  //  - '0'-'6': 該当曜日 + weekday=null (曜日不問) を表示
+  //  - 'all'  : 全警告を表示
+  const visibleWarnings = React.useMemo(() => {
+    if (currentTab === 'all') return warnings;
+    const wd = Number.parseInt(currentTab, 10);
+    if (Number.isNaN(wd)) return warnings;
+    return warnings.filter(
+      (w) => w.weekday === wd || w.weekday === null || w.weekday === undefined,
+    );
+  }, [warnings, currentTab]);
 
-  // 該当タブ (該当警告がある曜日のみ表示) を順序 0..6, none で並べる.
-  const tabKeys: Array<number | 'none'> = [];
-  for (const wd of [0, 1, 2, 3, 4, 5, 6] as const) {
-    if (grouped.has(wd)) tabKeys.push(wd);
-  }
-  if (grouped.has('none')) tabKeys.push('none');
-
-  const initial = String(tabKeys[0] ?? 'none');
-  const [tab, setTab] = React.useState<string>(initial);
-  React.useEffect(() => {
-    // 警告が再構築されたらタブをリセット.
-    setTab(String(tabKeys[0] ?? 'none'));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [warnings.length]);
+  // 表示ラベル (どの曜日の警告を見ているか)
+  const scopeLabel =
+    currentTab === 'all'
+      ? '全体'
+      : `${WEEKDAY_LABELS[Number.parseInt(currentTab, 10)] ?? '?'}曜日 + 曜日不問`;
 
   return (
     <Alert variant="warning" data-testid="full-optimize-warning-section">
-      <AlertTitle className="text-xs">警告 ({warnings.length} 件)</AlertTitle>
+      <AlertTitle className="flex items-center justify-between text-xs">
+        <span>
+          警告 ({visibleWarnings.length} / {warnings.length} 件)
+        </span>
+        <span className="text-[10px] font-normal text-text-secondary">表示中: {scopeLabel}</span>
+      </AlertTitle>
       <AlertDescription>
-        <Tabs value={tab} onValueChange={setTab}>
-          <TabsList className="flex w-full flex-wrap gap-1 bg-bg-muted">
-            {tabKeys.map((k) => {
-              const label = k === 'none' ? '曜日不問' : WEEKDAY_LABELS[k as number];
-              const count = grouped.get(k)?.length ?? 0;
+        {visibleWarnings.length === 0 ? (
+          <div className="py-2 text-center text-[11px] text-text-muted">
+            ({scopeLabel} の警告はありません)
+          </div>
+        ) : (
+          <ul className="ml-0 list-none space-y-1 text-xs">
+            {visibleWarnings.map((w, i) => {
+              const edited = editedKeys.has(warningKey(w));
               return (
-                <TabsTrigger
-                  key={String(k)}
-                  value={String(k)}
-                  data-testid={`full-optimize-warning-tab-${k}`}
-                  className="text-[10px]"
+                <li
+                  key={`${i}-${w.message.slice(0, 12)}`}
+                  className="flex flex-wrap items-center gap-2"
                 >
-                  {label} ({count})
-                </TabsTrigger>
+                  <span className="flex-1">{w.message}</span>
+                  {edited ? (
+                    <Badge variant="outline" className="text-[10px] text-emerald-700">
+                      ✓ 修正済み
+                    </Badge>
+                  ) : w.actionable ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => onActionClick(w)}
+                      className="h-6 text-[10px]"
+                      data-testid="full-optimize-warning-action"
+                    >
+                      ⏰ 固定時間を変更
+                    </Button>
+                  ) : null}
+                </li>
               );
             })}
-          </TabsList>
-          {tabKeys.map((k) => {
-            const items = grouped.get(k) ?? [];
-            return (
-              <TabsContent
-                key={String(k)}
-                value={String(k)}
-                data-testid={`full-optimize-warning-panel-${k}`}
-              >
-                <ul className="ml-0 list-none space-y-1 text-xs">
-                  {items.map((w, i) => {
-                    const edited = editedKeys.has(warningKey(w));
-                    return (
-                      <li
-                        key={`${i}-${w.message.slice(0, 12)}`}
-                        className="flex flex-wrap items-center gap-2"
-                      >
-                        <span className="flex-1">{w.message}</span>
-                        {edited ? (
-                          <Badge variant="outline" className="text-[10px] text-emerald-700">
-                            ✓ 修正済み
-                          </Badge>
-                        ) : w.actionable ? (
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="outline"
-                            onClick={() => onActionClick(w)}
-                            className="h-6 text-[10px]"
-                            data-testid="full-optimize-warning-action"
-                          >
-                            ⏰ 固定時間を変更
-                          </Button>
-                        ) : null}
-                      </li>
-                    );
-                  })}
-                </ul>
-              </TabsContent>
-            );
-          })}
-        </Tabs>
+          </ul>
+        )}
       </AlertDescription>
     </Alert>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────
-// W41 v2 拡張: 1 週間スケジュール Before/After グリッド
-//   - デフォルト折り畳み (showWeeklyGrid=false) でパフォーマンス確保.
-//   - 展開後は曜日ごとに Before / After を 2 カラムで縦並び.
-//   - 各 visit カード間に VisitArrow (曲線矢印 + 距離) を表示.
-// ─────────────────────────────────────────────────────────────────────────
-
-function WeeklyBeforeAfterGrid({ proposals }: { proposals: V2WeekdayBeforeAfter[] }) {
-  // 重い処理になりうるので useMemo で安定化.
-  const sortedProposals = React.useMemo(
-    () => [...proposals].sort((a, b) => a.weekday - b.weekday),
-    [proposals],
-  );
-  return (
-    <div className="space-y-3 p-2" data-testid="full-optimize-weekly-grid">
-      {sortedProposals.map((wp) => {
-        if (wp.before.courses.length === 0 && wp.after.courses.length === 0) return null;
-        return (
-          <div key={wp.weekday} className="rounded border border-border-default p-2">
-            <div className="mb-1 text-xs font-semibold text-text-primary">
-              {WEEKDAY_LABELS[wp.weekday] ?? '?'}曜日
-            </div>
-            <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-              <WeeklyCourseList title="Before" courses={wp.before.courses} tone="muted" />
-              <WeeklyCourseList title="After" courses={wp.after.courses} tone="primary" />
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function WeeklyCourseList({
-  title,
-  courses,
-  tone,
-}: {
-  title: string;
-  courses: V2CourseSummary[];
-  tone: 'muted' | 'primary';
-}) {
-  const headerCls =
-    tone === 'primary'
-      ? 'border-brand-primary/40 bg-brand-primary/5 text-brand-primary'
-      : 'border-border-default bg-bg-muted text-text-muted';
-  return (
-    <div className="overflow-hidden rounded border border-border-default">
-      <div
-        className={`flex items-center justify-between border-b px-2 py-1 text-[11px] font-semibold ${headerCls}`}
-      >
-        <span>{title}</span>
-        <span className="tnum text-text-secondary">{courses.length} コース</span>
-      </div>
-      {courses.length === 0 ? (
-        <div className="py-3 text-center text-[10px] text-text-muted">(コースなし)</div>
-      ) : (
-        <ul className="space-y-1.5 p-2">
-          {courses.map((c) => (
-            <li key={`${c.office_id}-${c.code}-${c.assigned_staff_id ?? 'none'}`}>
-              <div className="text-[11px] font-semibold text-text-primary">
-                {c.office_name ?? '不明'} {c.code} コース
-                <span className="ml-1 text-[10px] text-text-muted">
-                  ({c.visits_count}件 / {c.distance_km.toFixed(1)}km)
-                </span>
-              </div>
-              <ul className="mt-0.5 space-y-0">
-                {c.visits.map((v, i) => (
-                  <React.Fragment key={`${v.patient_id}-${i}`}>
-                    <li className="flex flex-wrap items-center gap-1 rounded border border-border-default bg-bg-default px-1.5 py-0.5 text-[10px]">
-                      <span className="tnum text-text-muted">{trimSeconds(v.start_time)}</span>
-                      <span className="text-text-primary">{v.patient_name}</span>
-                      {v.area_label ? (
-                        <span className="rounded bg-brand-primary/10 px-1 text-[9px] text-brand-primary">
-                          {v.area_label}
-                        </span>
-                      ) : null}
-                    </li>
-                    <VisitArrow distanceKm={v.distance_to_next_km} />
-                  </React.Fragment>
-                ))}
-              </ul>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
   );
 }
 
@@ -1133,6 +983,9 @@ function CourseListColumn({
                         {v.sex_restriction === 'male_only' ? (
                           <span className="text-[9px] text-blue-600">👨 男性のみ</span>
                         ) : null}
+                        {/* W41 v2 (訪問間距離 行内右端版): 次の patient までの距離.
+                            行と行の間に挟まず、各行の右端にコンパクトに表示. */}
+                        <VisitArrow distanceKm={v.distance_to_next_km} />
                       </li>
                     );
                   })}
@@ -1150,11 +1003,19 @@ function CourseListColumn({
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// AllWeekSummary — 「全体」タブの中身 (曜日ごとの距離変化を縦並び一覧)
+// AllWeekSummary — 「全体」タブ: 曜日別サマリー表 (距離 / 訪問数の差分一覧)
+//
+// 曜日ごとに Before/After の距離と訪問数を表形式で俯瞰. コース分けは見せず、
+// 「どの曜日でどれだけ距離が削減されたか」「訪問数が変わったか」だけを
+// 見せる. 詳細は各曜日タブで確認する.
 // ─────────────────────────────────────────────────────────────────────────
 
 function AllWeekSummary({ proposals }: { proposals: V2WeekdayBeforeAfter[] }) {
-  if (proposals.length === 0) {
+  const sorted = React.useMemo(
+    () => [...proposals].sort((a, b) => a.weekday - b.weekday),
+    [proposals],
+  );
+  if (sorted.length === 0) {
     return <div className="py-4 text-center text-xs text-text-muted">提案がありません</div>;
   }
   return (
@@ -1171,12 +1032,12 @@ function AllWeekSummary({ proposals }: { proposals: V2WeekdayBeforeAfter[] }) {
           </tr>
         </thead>
         <tbody>
-          {proposals.map((p) => {
+          {sorted.map((p) => {
             const b = totalsFor(p.before.courses);
             const a = totalsFor(p.after.courses);
             return (
               <tr key={p.weekday} className="border-t border-border-default">
-                <td className="px-2 py-1">{fmtWd(p.weekday)}</td>
+                <td className="px-2 py-1">{fmtWd(p.weekday)}曜日</td>
                 <td className="tnum px-2 py-1 text-right">{b.distance.toFixed(1)}</td>
                 <td className="tnum px-2 py-1 text-right">{a.distance.toFixed(1)}</td>
                 <td className="tnum px-2 py-1 text-right">
