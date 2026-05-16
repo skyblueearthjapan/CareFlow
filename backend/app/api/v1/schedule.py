@@ -41,14 +41,13 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 
 from app.core.deps import DbDep, require_role
 from app.models.course import (
     COURSE_STATUS_COURSE_FIXED,
     COURSE_STATUS_PROPOSED,
-    COURSE_STATUS_STAFF_ASSIGNED,
     Course,
 )
 from app.models.course_template import CourseTemplate
@@ -58,14 +57,11 @@ from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.staff import Staff, StaffEvent
 from app.models.user import User
 from app.models.visit import VISIT_STATUS_PLANNED, Visit
-from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.schemas.v2.auto_allocate import (
     AutoAllocateRequest,
     AutoAllocateResponse,
-    KpiResponse,
     ProposalApplyResponse,
     ProposalDiscardResponse,
-    ProposedCourseSummary,
 )
 from app.schemas.v2.patient_fixed_visit import PatientFixedVisitMode, PatientFixedVisitV2Read
 from app.schemas.v2.visit import VisitV2Read
@@ -82,7 +78,6 @@ from app.services.scheduling import (
     PoolEntry,
     VisitCreated,
 )
-from app.services.scheduling.auto_allocator import auto_allocate as auto_allocate_service
 from app.services.scheduling.layer1_expander import (
     LAYER1_VISIT_SOURCE,
     UnplacedMultiStaffEntry,
@@ -1637,86 +1632,25 @@ _ = LAYER1_VISIT_SOURCE
     summary="W41: 週次自動算出 (proposal を生成・KPI を返却)",
 )
 async def auto_allocate_endpoint(
-    payload: AutoAllocateRequest,
-    db: DbDep,
+    payload: AutoAllocateRequest,  # noqa: ARG001 — payload は schema validation のため受け取る
+    db: DbDep,  # noqa: ARG001
     _user: Annotated[User, Depends(require_role("admin", "manager"))],
 ) -> AutoAllocateResponse:
     """指定週・拠点に対し自動算出を実行し、proposed course / visit を永続化する.
 
-    auto_allocator は ``await db.flush()`` のみ呼ぶ契約のため、本 endpoint が
-    1 リクエスト = 1 トランザクションで commit / rollback する.
-
-    mode='mode_1' / 'mode_2' の両方をサポート済み. 将来 mode_3 等が追加された
-    場合は service 層が NotImplementedError を送出し、本 endpoint が 501 で返す.
+    **REMOVED (W41 v2 final cross-review H-Codex-3)**: 410 Gone を返す.
+    本 endpoint の v1 ロジック (A コース集中) は v2 で完全に置き換えられた.
+    使用先:
+      - ``POST /api/v1/schedule/v2/diff-add`` (差分追加; read-only 提案)
+      - ``POST /api/v1/schedule/v2/full-optimize`` (全面最適化; read-only 提案)
+      - ``POST /api/v1/schedule/v2/apply-individual`` (1 件採用)
     """
-    try:
-        result = await auto_allocate_service(
-            db,
-            iso_year=payload.iso_year,
-            iso_week=payload.iso_week,
-            office_ids=list(payload.office_ids),
-            mode=payload.mode,
-        )
-        await db.commit()
-    except NotImplementedError as exc:
-        # Defensive: future modes that aren't implemented (e.g. mode_3) — 現状の
-        # mode_1 / mode_2 はサポート済みのためここには到達しないが、catch を残す.
-        await db.rollback()
-        raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(exc)) from exc
-    except ValueError as exc:
-        await db.rollback()
-        # W41 v1.0 feedback: 確定済み Course が残っているケースは 409 ではなく
-        # 「上書き候補」として扱い、再算出を許可する (auto_allocator 側で
-        # warnings に追加). ここに来る ValueError は本当に bad request
-        # (例: 不正な iso_week / mode) のみ.
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    except Exception:
-        await db.rollback()
-        raise
-
-    # M2 (review): proposals に含まれる staff の name を join して埋める.
-    proposals_raw = list(result.get("proposals", []))
-    staff_id_set = {
-        prop["assigned_staff_id"]
-        for prop in proposals_raw
-        if prop.get("assigned_staff_id") is not None
-    }
-    staff_name_by_id: dict[UUID, str] = {}
-    if staff_id_set:
-        staff_rows = (await db.scalars(select(Staff).where(Staff.id.in_(list(staff_id_set))))).all()
-        staff_name_by_id = {s.id: s.name for s in staff_rows}
-
-    proposals_out: list[ProposedCourseSummary] = []
-    for prop in proposals_raw:
-        staff_id = prop.get("assigned_staff_id")
-        proposals_out.append(
-            ProposedCourseSummary(
-                course_id=prop["course_id"],
-                office_id=prop["office_id"],
-                weekday=prop["weekday"],
-                code=prop["code"],
-                assigned_staff_id=staff_id,
-                assigned_staff_name=staff_name_by_id.get(staff_id) if staff_id else None,
-                visits_count=len(prop.get("patient_ids", [])),
-            )
-        )
-
-    kpi_dict = result.get("kpi", {})
-    kpi_out = KpiResponse(
-        total_distance_km_before=float(kpi_dict.get("total_distance_km_before", 0.0)),
-        total_distance_km_after=float(kpi_dict.get("total_distance_km_after", 0.0)),
-        distance_reduction_pct=float(kpi_dict.get("distance_reduction_pct", 0.0)),
-        staff_load_stddev_before=float(kpi_dict.get("staff_load_stddev_before", 0.0)),
-        staff_load_stddev_after=float(kpi_dict.get("staff_load_stddev_after", 0.0)),
-        h_violations=dict(kpi_dict.get("h_violations", {})),
-        improvement_score=float(kpi_dict.get("improvement_score", 0.0)),
-    )
-
-    return AutoAllocateResponse(
-        proposal_batch_id=result["proposal_batch_id"],
-        proposals=proposals_out,
-        kpi=kpi_out,
-        warnings=list(result.get("warnings", [])),
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail=(
+            "v1 endpoint is removed. Use POST /api/v1/schedule/v2/diff-add or "
+            "POST /api/v1/schedule/v2/full-optimize (W41 v2.0)"
+        ),
     )
 
 
@@ -1727,257 +1661,19 @@ async def auto_allocate_endpoint(
     summary="W41: 提案バッチを採用 (proposed → staff_assigned + 固定枠 UPSERT)",
 )
 async def apply_proposal(
-    proposal_batch_id: UUID,
-    db: DbDep,
+    proposal_batch_id: UUID,  # noqa: ARG001
+    db: DbDep,  # noqa: ARG001
     _user: Annotated[User, Depends(require_role("admin", "manager"))],
 ) -> ProposalApplyResponse:
     """提案バッチを採用し、course_status を ``staff_assigned`` まで進める.
 
-    手順 (atomic / 1 TX):
-      1. ``SELECT ... FROM courses WHERE proposal_batch_id = X
-         AND course_status = 'proposed' FOR UPDATE``
-         で対象 course を行ロック.
-      2. course_status を ``proposed → course_fixed → staff_assigned`` に遷移
-         (course_fixed_at / staff_assigned_at も併せて設定).
-      3. 各 visit に対応する ``patient_fixed_visits`` を UPSERT
-         (mode='normal', slot_index=0 を採用; 採用された固定枠を翌週以降に
-         book-back するため).
-      4. commit.
-
-    エラー:
-      - batch_id に紐付く proposed course が 1 件もなければ 404.
-      - 既に採用済み (course_status != 'proposed' の行が存在) なら 409.
+    **REMOVED (W41 v2 final cross-review H-Codex-3)**: 410 Gone を返す.
+    使用先: ``POST /api/v1/schedule/v2/apply-individual`` (W41 v2.0 では
+    1 件ずつ採用が基本; 一括採用は廃止).
     """
-    now = datetime.now(UTC)
-
-    try:
-        # ----- 行ロック取得 (PG では FOR UPDATE, SQLite では no-op) -----
-        locked_courses = list(
-            (
-                await db.scalars(
-                    select(Course)
-                    .where(
-                        Course.proposal_batch_id == proposal_batch_id,
-                        Course.deleted_at.is_(None),
-                    )
-                    .with_for_update()
-                )
-            ).all()
-        )
-
-        if not locked_courses:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"proposal_batch_id={proposal_batch_id} not found",
-            )
-
-        # 既に採用済み (proposed 以外) があれば 409
-        non_proposed = [c for c in locked_courses if c.course_status != COURSE_STATUS_PROPOSED]
-        if non_proposed:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=(
-                    f"proposal_batch_id={proposal_batch_id} contains "
-                    f"{len(non_proposed)} course(s) already advanced beyond 'proposed'"
-                ),
-            )
-
-        # ----- W41 v1.0 feedback: 上書き対象の既存 finalized Course を soft-delete -----
-        # 採用しようとしている proposed Course と (iso_year, iso_week, weekday, code,
-        # office_id) が一致する別 Course (= course_fixed / staff_assigned で残っている
-        # 旧確定済み) を soft-delete してから昇格させる. migration 0030 で partial
-        # UNIQUE INDEX に切り替えたため、proposed と finalized が共存できるが、
-        # ここで proposed を finalized に遷移させる前に旧 finalized を退場させないと
-        # partial UNIQUE 違反になる.
-        finalized_keys = {
-            (c.iso_year, c.iso_week, c.weekday, c.code, c.office_id) for c in locked_courses
-        }
-        overwritten_course_ids: list[UUID] = []
-        if finalized_keys:
-            # 同じキーで既に finalized 状態の Course を取得 (= 上書き対象)
-            existing_finalized_rows = await db.scalars(
-                select(Course)
-                .where(
-                    Course.iso_year.in_({k[0] for k in finalized_keys}),
-                    Course.iso_week.in_({k[1] for k in finalized_keys}),
-                    Course.weekday.in_({k[2] for k in finalized_keys}),
-                    Course.code.in_({k[3] for k in finalized_keys}),
-                    Course.office_id.in_({k[4] for k in finalized_keys}),
-                    Course.course_status.in_(
-                        (COURSE_STATUS_COURSE_FIXED, COURSE_STATUS_STAFF_ASSIGNED)
-                    ),
-                    Course.deleted_at.is_(None),
-                    # 上書き対象は (iso_year, iso_week, weekday, code, office_id) が一致
-                    # かつ proposal_batch_id が今回 apply 対象と異なる Course.
-                    # C1 (review): SQL の NULL != value は NULL (= falsy) なので、
-                    # proposal_batch_id IS NULL の Course (CRUD endpoint で手動作成された
-                    # 既存 finalized course) が silent に除外され partial UNIQUE 違反に
-                    # なる. or_(..., IS NULL) で明示的に拾う.
-                    or_(
-                        Course.proposal_batch_id != proposal_batch_id,
-                        Course.proposal_batch_id.is_(None),
-                    ),
-                )
-                .with_for_update()
-            )
-            existing_finalized = [
-                c
-                for c in existing_finalized_rows.all()
-                if (c.iso_year, c.iso_week, c.weekday, c.code, c.office_id) in finalized_keys
-            ]
-            if existing_finalized:
-                overwritten_course_ids = [c.id for c in existing_finalized]
-                # 関連 visit_staff_assignments を物理削除 (deleted_at 持たないため)
-                await db.execute(
-                    delete(VisitStaffAssignment).where(
-                        VisitStaffAssignment.visit_id.in_(
-                            select(Visit.id).where(
-                                Visit.course_id.in_(overwritten_course_ids),
-                                Visit.deleted_at.is_(None),
-                            )
-                        )
-                    )
-                )
-                # 関連 visits を soft-delete
-                await db.execute(
-                    Visit.__table__.update()
-                    .where(
-                        Visit.course_id.in_(overwritten_course_ids),
-                        Visit.deleted_at.is_(None),
-                    )
-                    .values(deleted_at=now)
-                )
-                # Course を soft-delete
-                for c in existing_finalized:
-                    c.deleted_at = now
-                logger.info(
-                    "apply_proposal: batch=%s soft-deleted %d overwritten course(s)",
-                    proposal_batch_id,
-                    len(existing_finalized),
-                )
-                await db.flush()
-
-        # ----- course_status 遷移 (proposed → course_fixed → staff_assigned) -----
-        course_ids = [c.id for c in locked_courses]
-        # H4 (review): course_id → template_id map を構築し、PFV INSERT/UPDATE 時に
-        # course_template_id を伝搬する.
-        template_id_by_course: dict[UUID, UUID | None] = {
-            c.id: c.template_id for c in locked_courses
-        }
-        for course in locked_courses:
-            course.course_status = COURSE_STATUS_STAFF_ASSIGNED
-            course.course_fixed_at = now
-            course.staff_assigned_at = now
-
-        # ----- 紐付く visits を取得 -----
-        visits = list(
-            (
-                await db.scalars(
-                    select(Visit).where(
-                        Visit.course_id.in_(course_ids),
-                        Visit.deleted_at.is_(None),
-                    )
-                )
-            ).all()
-        )
-
-        # ----- H3 (review): N+1 解消のため patient_fixed_visits を一括ロード -----
-        patient_ids = list({visit.patient_id for visit in visits})
-        pfv_map: dict[tuple[UUID, int], PatientFixedVisit] = {}
-        if patient_ids:
-            existing_pfvs = (
-                await db.scalars(
-                    select(PatientFixedVisit).where(
-                        PatientFixedVisit.patient_id.in_(patient_ids),
-                        PatientFixedVisit.mode == "normal",
-                        PatientFixedVisit.slot_index == 0,
-                    )
-                )
-            ).all()
-            pfv_map = {(p.patient_id, p.weekday): p for p in existing_pfvs}
-
-        # ----- patient_fixed_visits を UPSERT -----
-        # 採用された固定枠は (patient_id, mode='normal', weekday, slot_index=0)
-        # を一意キーに UPSERT する (W37 Phase 1 互換: 1 visit/weekday は slot_index=0).
-        upsert_count = 0
-        for visit in visits:
-            weekday = visit.visit_date.weekday()
-            # duration_min は visit.end_time - visit.start_time から算出
-            start_min = visit.start_time.hour * 60 + visit.start_time.minute
-            end_min = visit.end_time.hour * 60 + visit.end_time.minute
-            duration_min = max(1, end_min - start_min)
-
-            # H4 (review): 対応する course の template_id を引き継ぐ.
-            course_template_id = (
-                template_id_by_course.get(visit.course_id) if visit.course_id else None
-            )
-
-            # H3 (review): ループ内 SELECT を避け、事前ロード済 dict から参照.
-            existing = pfv_map.get((visit.patient_id, weekday))
-            if existing is None:
-                new_pfv = PatientFixedVisit(
-                    patient_id=visit.patient_id,
-                    mode="normal",
-                    weekday=weekday,
-                    start_time=visit.start_time,
-                    duration_min=duration_min,
-                    slot_index=0,
-                    course_template_id=course_template_id,
-                )
-                db.add(new_pfv)
-                # 同 batch 内で同一 (patient, weekday) が複数 visits に出る場合に
-                # 重複 INSERT を防止するため map に登録.
-                pfv_map[(visit.patient_id, weekday)] = new_pfv
-            else:
-                existing.start_time = visit.start_time
-                existing.duration_min = duration_min
-                existing.course_template_id = course_template_id
-            upsert_count += 1
-
-        # ----- C2 (review): staff_assignments_committed は **既に auto_allocate で
-        # INSERT 済**の visit_staff_assignments 件数を返す (apply で再投入はしない).
-        # SELECT COUNT(*) FROM visit_staff_assignments WHERE visit_id IN (visits).
-        if visits:
-            visit_ids = [v.id for v in visits]
-            staff_assigned_count_raw = await db.scalar(
-                select(func.count())
-                .select_from(VisitStaffAssignment)
-                .where(VisitStaffAssignment.visit_id.in_(visit_ids))
-            )
-            staff_assigned_count = int(staff_assigned_count_raw or 0)
-        else:
-            staff_assigned_count = 0
-
-        await db.commit()
-    except HTTPException:
-        await db.rollback()
-        raise
-    except IntegrityError as exc:
-        # H1 (W41 v1.0 cross-review): 並行 apply の race condition.
-        # 別 batch が同 (year, week, weekday, code, office) を同時に finalized 昇格
-        # させた場合、partial UNIQUE INDEX 違反 (23505) になるため 409 に変換する.
-        # 旧 finalized の soft-delete + 新規 finalized 昇格は同一 TX 内で実施するが、
-        # 別 TX が同時に同キーを finalized 化するとここで初めて検出される.
-        await db.rollback()
-        logger.warning(
-            "apply_proposal: integrity error (likely concurrent apply): batch=%s err=%s",
-            proposal_batch_id,
-            exc,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="他のユーザーが同時に同じ週を採用しています。もう一度実行してください。",
-        ) from exc
-    except Exception:
-        await db.rollback()
-        raise
-
-    return ProposalApplyResponse(
-        proposal_batch_id=proposal_batch_id,
-        courses_committed=len(locked_courses),
-        visits_committed=len(visits),
-        staff_assignments_committed=staff_assigned_count,
-        course_ids=course_ids,
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail=("v1 endpoint is removed. Use POST /api/v1/schedule/v2/apply-individual (W41 v2.0)"),
     )
 
 
@@ -1988,82 +1684,20 @@ async def apply_proposal(
     summary="W41: 提案バッチを破棄 (proposed course + 紐付く visits を削除)",
 )
 async def discard_proposal(
-    proposal_batch_id: UUID,
-    db: DbDep,
+    proposal_batch_id: UUID,  # noqa: ARG001
+    db: DbDep,  # noqa: ARG001
     _user: Annotated[User, Depends(require_role("admin", "manager"))],
 ) -> ProposalDiscardResponse:
     """提案バッチに紐付く未採用 (proposed) course と visits を物理削除する.
 
-    手順 (atomic / 1 TX):
-      1. ``SELECT id FROM courses WHERE proposal_batch_id = X
-         AND course_status = 'proposed'`` で対象 course id を取得.
-      2. ``DELETE FROM visits WHERE course_id IN (...)``.
-      3. ``DELETE FROM courses WHERE proposal_batch_id = X
-         AND course_status = 'proposed'``.
-      4. commit.
-
-    既に採用済み (status != 'proposed') の行は対象外 (削除しない).
-    proposed が 0 件の場合も 200 で 0 件削除を返す (冪等性のため 404 にしない).
+    **REMOVED (W41 v2 final cross-review H-Codex-3)**: 410 Gone を返す.
+    v2 では提案を DB に永続化しないため、本 endpoint は不要.
     """
-    try:
-        # 対象 course id を先に取得 (delete から RETURNING を取らないため)
-        # H2 (review): FOR UPDATE で行ロックを取り、並行 apply/discard を防止する.
-        course_ids = list(
-            (
-                await db.scalars(
-                    select(Course.id)
-                    .where(
-                        Course.proposal_batch_id == proposal_batch_id,
-                        Course.course_status == COURSE_STATUS_PROPOSED,
-                        Course.deleted_at.is_(None),
-                    )
-                    .with_for_update()
-                )
-            ).all()
-        )
-
-        visits_deleted = 0
-        if course_ids:
-            # C1 (review): SQLite 互換性のため visit_staff_assignments を明示削除してから
-            # visits を消す. PG の ON DELETE CASCADE では暗黙削除されるが、テストで使う
-            # SQLite では cascade が効かないため明示的な DELETE が必要.
-            await db.execute(
-                delete(VisitStaffAssignment).where(
-                    VisitStaffAssignment.visit_id.in_(
-                        select(Visit.id).where(
-                            Visit.course_id.in_(course_ids),
-                            Visit.deleted_at.is_(None),
-                        )
-                    )
-                )
-            )
-            visit_del_result = await db.execute(
-                delete(Visit).where(
-                    Visit.course_id.in_(course_ids),
-                    Visit.deleted_at.is_(None),
-                )
-            )
-            visits_deleted = int(visit_del_result.rowcount or 0)  # type: ignore[attr-defined]
-
-        # M4 (review): deleted_at filter を追加し soft-deleted course を二重削除しない.
-        course_del_result = await db.execute(
-            delete(Course).where(
-                Course.proposal_batch_id == proposal_batch_id,
-                Course.course_status == COURSE_STATUS_PROPOSED,
-                Course.deleted_at.is_(None),
-            )
-        )
-        courses_deleted = int(course_del_result.rowcount or 0)  # type: ignore[attr-defined]
-
-        await db.commit()
-    except Exception:
-        await db.rollback()
-        raise
-
-    return ProposalDiscardResponse(
-        proposal_batch_id=proposal_batch_id,
-        courses_deleted=courses_deleted,
-        visits_deleted=visits_deleted,
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail=(
+            "v1 endpoint is removed. v2 では提案を DB に永続化しないため discard 操作は不要です."
+        ),
     )
 
 

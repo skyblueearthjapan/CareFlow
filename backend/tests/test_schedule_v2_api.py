@@ -1,0 +1,464 @@
+"""Tests for /api/v1/schedule/v2/* endpoints (Wave 41 v2.0).
+
+設計仕様書: ``docs/plans/auto-schedule-v2.md`` (v0.2)
+"""
+
+from __future__ import annotations
+
+from datetime import time
+from typing import Any
+
+import pytest
+from sqlalchemy import select
+
+from app.core.security import create_access_token, hash_password
+from app.models import Office, Patient, User
+from app.models.patient_fixed_visit import PatientFixedVisit
+from app.models.staff import Staff, StaffShift
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+async def _make_user(db, *, email: str, role: str) -> User:
+    user = User(
+        email=email,
+        password_hash=hash_password("does-not-matter"),
+        role=role,
+    )
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+
+def _bearer(user: User) -> dict[str, str]:
+    token = create_access_token(subject=user.id, role=user.role, staff_id=user.staff_id)
+    return {"Authorization": f"Bearer {token}"}
+
+
+async def _seed_office_with_staff(db) -> tuple[Office, Staff]:
+    office = Office(name="v2-api-office")
+    db.add(office)
+    await db.flush()
+    s = Staff(
+        name="v2-api-staff",
+        role="staff",
+        is_trainee=False,
+        primary_office_id=office.id,
+    )
+    db.add(s)
+    await db.flush()
+    # Mon-Fri 稼働
+    for wd in range(5):
+        db.add(StaffShift(staff_id=s.id, weekday=wd, is_on=True))
+    await db.commit()
+    return office, s
+
+
+async def _seed_patient(
+    db,
+    *,
+    office: Office,
+    code: str,
+    lat: float = 35.65,
+    lng: float = 140.10,
+    weekly_pattern: dict[str, Any] | None = None,
+) -> Patient:
+    p = Patient(
+        code=code,
+        name=f"P-{code}",
+        status="active",
+        lat=lat,
+        lng=lng,
+        primary_office_id=office.id,
+        weekly_pattern=weekly_pattern
+        or {
+            "preferred_weekdays": ["Mon"],
+            "preferred_start": "10:00",
+            "service_minutes": 30,
+            "time_type": "固定",
+        },
+    )
+    db.add(p)
+    await db.commit()
+    await db.refresh(p)
+    return p
+
+
+# ---------------------------------------------------------------------------
+# /v2/diff-add
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_diff_add_returns_pool_proposals(client, db) -> None:
+    admin = await _make_user(db, email="v2-da-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    # 固定枠ありの患者 (pool 対象外)
+    p_fixed = await _seed_patient(db, office=office, code="DA-F1")
+    db.add(
+        PatientFixedVisit(
+            patient_id=p_fixed.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(10, 0),
+            duration_min=30,
+            slot_index=0,
+        )
+    )
+    # 固定枠なしの患者 (pool 対象)
+    await _seed_patient(db, office=office, code="DA-P1", lat=35.66, lng=140.11)
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/diff-add",
+        headers=_bearer(admin),
+        json={
+            "iso_year": 2026,
+            "iso_week": 20,
+            "office_ids": [str(office.id)],
+        },
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert "proposal_batch_id" in body
+    assert "proposals" in body
+    pool_codes = {p["patient_code"] for p in body["proposals"]}
+    assert "DA-P1" in pool_codes
+    assert "DA-F1" not in pool_codes
+
+
+@pytest.mark.asyncio
+async def test_diff_add_rejects_staff_role(client, db) -> None:
+    staff_user = await _make_user(db, email="v2-da-staff@example.com", role="staff")
+    res = await client.post(
+        "/api/v1/schedule/v2/diff-add",
+        headers=_bearer(staff_user),
+        json={"iso_year": 2026, "iso_week": 20, "office_ids": []},
+    )
+    assert res.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_diff_add_rejects_no_auth(client, db) -> None:
+    res = await client.post(
+        "/api/v1/schedule/v2/diff-add",
+        json={"iso_year": 2026, "iso_week": 20, "office_ids": []},
+    )
+    assert res.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_diff_add_rejects_bad_iso_year(client, db) -> None:
+    admin = await _make_user(db, email="v2-da-bad@example.com", role="admin")
+    res = await client.post(
+        "/api/v1/schedule/v2/diff-add",
+        headers=_bearer(admin),
+        json={"iso_year": 1990, "iso_week": 20, "office_ids": []},
+    )
+    assert res.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# /v2/full-optimize
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_full_optimize_returns_week_proposals(client, db) -> None:
+    admin = await _make_user(db, email="v2-fo-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    p1 = await _seed_patient(db, office=office, code="FO-1", lat=35.65, lng=140.10)
+    await _seed_patient(db, office=office, code="FO-2", lat=35.66, lng=140.11)
+    db.add(
+        PatientFixedVisit(
+            patient_id=p1.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(10, 0),
+            duration_min=30,
+            slot_index=0,
+        )
+    )
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/full-optimize",
+        headers=_bearer(admin),
+        json={"iso_year": 2026, "iso_week": 20, "office_ids": [str(office.id)]},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert "week_proposals" in body
+    # week_proposals は 7 曜日分
+    assert len(body["week_proposals"]) == 7
+    assert "kpi_overall" in body
+    # H10 違反件数キー
+    assert "H10" in body["kpi_overall"]["h_violations"]
+
+
+# ---------------------------------------------------------------------------
+# /v2/apply-individual
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apply_individual_creates_pfv(client, db) -> None:
+    admin = await _make_user(db, email="v2-ap-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    p = await _seed_patient(db, office=office, code="AP-1")
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/apply-individual",
+        headers=_bearer(admin),
+        json={
+            "patient_id": str(p.id),
+            "confirm": True,
+            "visit_plans": [
+                {
+                    "weekday": 0,
+                    "start_time": "10:00",
+                    "end_time": "10:30",
+                    "duration_min": 30,
+                    "course_code": "A",
+                    "office_id": str(office.id),
+                    "am_pm": "am",
+                }
+            ],
+        },
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["applied"] is True
+    assert body["idempotent"] is False
+    assert len(body["fixed_visit_ids"]) == 1
+
+    # DB 状態を確認
+    pfv_rows = (
+        await db.scalars(select(PatientFixedVisit).where(PatientFixedVisit.patient_id == p.id))
+    ).all()
+    assert len(pfv_rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_apply_individual_is_idempotent(client, db) -> None:
+    admin = await _make_user(db, email="v2-id-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    p = await _seed_patient(db, office=office, code="ID-1")
+    await db.commit()
+
+    plans = [
+        {
+            "weekday": 1,
+            "start_time": "09:30",
+            "end_time": "10:00",
+            "duration_min": 30,
+            "course_code": "A",
+            "office_id": str(office.id),
+            "am_pm": "am",
+        }
+    ]
+    res1 = await client.post(
+        "/api/v1/schedule/v2/apply-individual",
+        headers=_bearer(admin),
+        json={"patient_id": str(p.id), "confirm": True, "visit_plans": plans},
+    )
+    assert res1.status_code == 200
+    res2 = await client.post(
+        "/api/v1/schedule/v2/apply-individual",
+        headers=_bearer(admin),
+        json={"patient_id": str(p.id), "confirm": True, "visit_plans": plans},
+    )
+    assert res2.status_code == 200
+    assert res2.json()["idempotent"] is True
+
+
+@pytest.mark.asyncio
+async def test_apply_individual_rejects_no_confirm(client, db) -> None:
+    admin = await _make_user(db, email="v2-nc-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    p = await _seed_patient(db, office=office, code="NC-1")
+    await db.commit()
+    res = await client.post(
+        "/api/v1/schedule/v2/apply-individual",
+        headers=_bearer(admin),
+        json={
+            "patient_id": str(p.id),
+            "confirm": False,
+            "visit_plans": [
+                {
+                    "weekday": 0,
+                    "start_time": "10:00",
+                    "end_time": "10:30",
+                    "duration_min": 30,
+                    "course_code": "A",
+                    "office_id": str(office.id),
+                    "am_pm": "am",
+                }
+            ],
+        },
+    )
+    assert res.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_apply_individual_rejects_empty_plans(client, db) -> None:
+    admin = await _make_user(db, email="v2-ep-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    p = await _seed_patient(db, office=office, code="EP-1")
+    await db.commit()
+    res = await client.post(
+        "/api/v1/schedule/v2/apply-individual",
+        headers=_bearer(admin),
+        json={
+            "patient_id": str(p.id),
+            "confirm": True,
+            "visit_plans": [],
+        },
+    )
+    assert res.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_apply_individual_rejects_lunch_break_visit(client, db) -> None:
+    """H-Codex-2 regression: 昼休憩 12:00-13:00 と重なる visit_plan は 422."""
+    admin = await _make_user(db, email="v2-h10-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    p = await _seed_patient(db, office=office, code="H10-1")
+    await db.commit()
+    res = await client.post(
+        "/api/v1/schedule/v2/apply-individual",
+        headers=_bearer(admin),
+        json={
+            "patient_id": str(p.id),
+            "confirm": True,
+            "visit_plans": [
+                {
+                    "weekday": 0,
+                    "start_time": "12:15",  # 昼休憩 12:00-13:00 と重なる
+                    "end_time": "12:45",
+                    "duration_min": 30,
+                    "course_code": "A",
+                    "office_id": str(office.id),
+                    "am_pm": "pm",
+                }
+            ],
+        },
+    )
+    assert res.status_code == 422, res.text
+    assert "H10" in res.text
+
+
+# ---------------------------------------------------------------------------
+# /v2/reset-to-fixed
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reset_to_fixed_regenerates_visits(client, db) -> None:
+    """対象週の visits が patient_fixed_visits から再生成される."""
+    from datetime import date
+
+    from app.models.visit import VISIT_STATUS_PLANNED, Visit
+
+    admin = await _make_user(db, email="v2-rs-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    p = await _seed_patient(db, office=office, code="RS-1")
+    db.add(
+        PatientFixedVisit(
+            patient_id=p.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(10, 0),
+            duration_min=30,
+            slot_index=0,
+        )
+    )
+    # 既存 visit (この週の月曜の関係無い枠) — reset で soft-delete される.
+    # W41 v2 final cross-review (C-Codex-2): source="manual" は保護対象なので、
+    # 削除を確認するため自動生成 source="auto_alloc" を使う.
+    existing = Visit(
+        patient_id=p.id,
+        visit_date=date(2026, 5, 11),  # Mon W20
+        start_time=time(14, 0),
+        end_time=time(15, 0),
+        type="regular",
+        status=VISIT_STATUS_PLANNED,
+        source="auto_alloc",
+        required_staff_count=1,
+    )
+    db.add(existing)
+    await db.commit()
+    existing_id = existing.id
+
+    res = await client.post(
+        "/api/v1/schedule/v2/reset-to-fixed",
+        headers=_bearer(admin),
+        json={"iso_year": 2026, "iso_week": 20, "office_ids": [str(office.id)]},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["visits_regenerated"] >= 1
+    assert body["visits_soft_deleted"] >= 1
+
+    # 既存 visit は soft-delete
+    refreshed = await db.scalar(select(Visit).where(Visit.id == existing_id))
+    assert refreshed is not None
+    assert refreshed.deleted_at is not None
+
+
+@pytest.mark.asyncio
+async def test_reset_to_fixed_rejects_staff(client, db) -> None:
+    staff_user = await _make_user(db, email="v2-rs-staff@example.com", role="staff")
+    res = await client.post(
+        "/api/v1/schedule/v2/reset-to-fixed",
+        headers=_bearer(staff_user),
+        json={"iso_year": 2026, "iso_week": 20, "office_ids": []},
+    )
+    assert res.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# H-Codex-3: v1 endpoints return 410 Gone
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_v1_auto_allocate_returns_410(client, db) -> None:
+    """H-Codex-3 regression: /api/v1/schedule/auto-allocate は 410 Gone."""
+    admin = await _make_user(db, email="v1-aa-admin@example.com", role="admin")
+    res = await client.post(
+        "/api/v1/schedule/auto-allocate",
+        headers=_bearer(admin),
+        json={"iso_year": 2026, "iso_week": 20, "office_ids": [], "mode": "mode_1"},
+    )
+    assert res.status_code == 410, res.text
+
+
+@pytest.mark.asyncio
+async def test_v1_proposal_apply_returns_410(client, db) -> None:
+    """H-Codex-3 regression: /api/v1/schedule/proposal/{id}/apply は 410 Gone."""
+    import uuid as _uuid
+
+    admin = await _make_user(db, email="v1-pa-admin@example.com", role="admin")
+    res = await client.post(
+        f"/api/v1/schedule/proposal/{_uuid.uuid4()}/apply",
+        headers=_bearer(admin),
+    )
+    assert res.status_code == 410, res.text
+
+
+@pytest.mark.asyncio
+async def test_v1_proposal_discard_returns_410(client, db) -> None:
+    """H-Codex-3 regression: /api/v1/schedule/proposal/{id}/discard は 410 Gone."""
+    import uuid as _uuid
+
+    admin = await _make_user(db, email="v1-pd-admin@example.com", role="admin")
+    res = await client.post(
+        f"/api/v1/schedule/proposal/{_uuid.uuid4()}/discard",
+        headers=_bearer(admin),
+    )
+    assert res.status_code == 410, res.text

@@ -23,6 +23,7 @@ from app.api.v1 import (
     patients,
     pending_requests,
     schedule,
+    schedule_v2,
     shift_requests,
     staff,
     staff_companion,
@@ -101,5 +102,9 @@ api_router.include_router(
 # W3-BE-FIX: POST /schedule/fix (週レイアウト → patients.weekly_pattern).
 # W4-BE7 で /schedule/generate-week が同じ router に追加される予定。
 api_router.include_router(schedule.router, prefix="/schedule", tags=["schedule"])
+# W41 v2.0: auto-schedule v2 (差分追加 / 全面最適化 / 個別採用 / 固定枠に戻す).
+# v1 (``/schedule/auto-allocate`` 等) は schedule.router にそのまま残し、UI 完成後の
+# 別 PR で削除する.
+api_router.include_router(schedule_v2.router, prefix="/schedule", tags=["schedule-v2"])
 
 __all__ = ["api_router"]

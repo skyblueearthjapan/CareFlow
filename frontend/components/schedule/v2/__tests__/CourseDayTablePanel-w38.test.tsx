@@ -79,7 +79,9 @@ vi.mock('lucide-react', () => ({
   Loader2: () => <span data-testid="loader" />,
   RefreshCw: () => <span data-testid="refresh-icon" />,
   UserCheck: () => <span data-testid="user-check-icon" />,
-  Sparkles: () => <span data-testid="sparkles-icon" />,
+  Pin: () => <span data-testid="pin-icon" />,
+  ArrowRight: () => <span />,
+  CheckCircle2: () => <span />,
 }));
 
 vi.mock('@/components/ui/card', () => ({
@@ -213,9 +215,9 @@ vi.mock('@/lib/queries/generate_week', () => ({
 vi.mock('@/lib/queries/assign_staff_only', () => ({
   useAssignStaffOnly: () => ({ mutateAsync: mockAssignStaffOnly, isPending: false }),
 }));
-// Wave 41 Phase 5: auto_schedule モック (useMutation を直接呼ぶため必須).
-vi.mock('@/lib/queries/auto_schedule', () => ({
-  useAutoAllocate: () => ({
+// Wave 41 v2: autoScheduleV2 モック (useMutation を直接呼ぶため必須).
+vi.mock('@/lib/queries/autoScheduleV2', () => ({
+  useDiffAddProposalsMutation: () => ({
     mutateAsync: vi.fn(),
     reset: vi.fn(),
     isPending: false,
@@ -223,14 +225,22 @@ vi.mock('@/lib/queries/auto_schedule', () => ({
     error: null,
     isSuccess: false,
   }),
-  useApplyProposal: () => ({
+  useFullOptimizeMutation: () => ({
+    mutateAsync: vi.fn(),
+    reset: vi.fn(),
+    isPending: false,
+    data: undefined,
+    error: null,
+    isSuccess: false,
+  }),
+  useApplyIndividualMutation: () => ({
     mutateAsync: vi.fn(),
     reset: vi.fn(),
     isPending: false,
     error: null,
     isSuccess: false,
   }),
-  useDiscardProposal: () => ({
+  useResetToFixedMutation: () => ({
     mutateAsync: vi.fn(),
     reset: vi.fn(),
     isPending: false,

@@ -40,7 +40,7 @@ import {
 import { useQueries } from '@tanstack/react-query';
 import { useSession } from 'next-auth/react';
 import { format } from 'date-fns';
-import { Loader2, RefreshCw, Sparkles, UserCheck } from 'lucide-react';
+import { Loader2, Plus, RefreshCw, UserCheck } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { Button } from '@/components/ui/button';
@@ -73,7 +73,9 @@ import {
 } from '@/lib/schemas/patient';
 
 import { AcceptanceLegend } from './AcceptanceLayer';
-import { AutoScheduleDialog } from './AutoScheduleDialog';
+import { DiffAddDialog } from './DiffAddDialog';
+import { FullOptimizeDialog } from './FullOptimizeDialog';
+import { ResetToFixedButton } from './ResetToFixedButton';
 import {
   CourseDayTable,
   floorToCourseSlot,
@@ -1145,8 +1147,9 @@ export function CourseDayTablePanel({
   const generateWeekMut = useGenerateWeekOnly();
   const assignStaffOnlyMut = useAssignStaffOnly();
 
-  // ─── Wave 41 Phase 5: 自動算出ダイアログの open state ─────────────
-  const [autoScheduleOpen, setAutoScheduleOpen] = useState(false);
+  // ─── Wave 41 v2: 差分追加 / 全面最適化 ダイアログの open state ───
+  const [diffAddOpen, setDiffAddOpen] = useState(false);
+  const [fullOptimizeOpen, setFullOptimizeOpen] = useState(false);
 
   const handleGenerateWeek = async () => {
     if (!canEdit) {
@@ -1321,18 +1324,47 @@ export function CourseDayTablePanel({
                     )}
                     自動割付
                   </Button>
-                  {/* Wave 41 Phase 5: 自動算出ボタン (MVP) */}
+
+                  {/* Wave 41 v2: 縦線で旧 (週生成/自動割付) と新 (差分追加/全面最適化/固定枠に戻す) を区切る */}
+                  <span
+                    aria-hidden
+                    className="mx-1 h-5 w-px bg-border-default"
+                    data-testid="course-day-button-divider"
+                  />
+
+                  {/* Wave 41 v2 § 13.6: 差分追加 (機能 A) */}
                   <Button
                     type="button"
                     size="sm"
                     variant="outline"
-                    onClick={() => setAutoScheduleOpen(true)}
+                    onClick={() => setDiffAddOpen(true)}
                     disabled={generateWeekMut.isPending || assignStaffOnlyMut.isPending}
-                    data-testid="auto-schedule-button"
+                    data-testid="diff-add-button"
                   >
-                    <Sparkles className="mr-1 h-4 w-4" aria-hidden />
-                    自動算出
+                    <Plus className="mr-1 h-4 w-4" aria-hidden />
+                    差分追加
                   </Button>
+
+                  {/* Wave 41 v2 § 13.6: 全面最適化 (機能 B) */}
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setFullOptimizeOpen(true)}
+                    disabled={generateWeekMut.isPending || assignStaffOnlyMut.isPending}
+                    data-testid="full-optimize-button"
+                  >
+                    <RefreshCw className="mr-1 h-4 w-4" aria-hidden />
+                    全面最適化
+                  </Button>
+
+                  {/* Wave 41 v2 § 13.6: 固定枠に戻す (機能 D) */}
+                  <ResetToFixedButton
+                    isoYear={isoYear}
+                    isoWeek={isoWeek}
+                    officeId={officeId}
+                    disabled={generateWeekMut.isPending || assignStaffOnlyMut.isPending}
+                  />
                 </>
               ) : null}
             </div>
@@ -1515,13 +1547,22 @@ export function CourseDayTablePanel({
           />
         ) : null}
 
-        {/* Wave 41 Phase 5: 自動スケジュール算出ダイアログ */}
-        <AutoScheduleDialog
-          open={autoScheduleOpen}
-          onClose={() => setAutoScheduleOpen(false)}
+        {/* Wave 41 v2 § 3 / §13.5.1: 差分追加ダイアログ */}
+        <DiffAddDialog
+          open={diffAddOpen}
+          onClose={() => setDiffAddOpen(false)}
           isoYear={isoYear}
           isoWeek={isoWeek}
-          defaultOfficeId={officeId}
+          officeId={officeId}
+        />
+
+        {/* Wave 41 v2 § 4 / §13.5.2: 全面最適化ダイアログ */}
+        <FullOptimizeDialog
+          open={fullOptimizeOpen}
+          onClose={() => setFullOptimizeOpen(false)}
+          isoYear={isoYear}
+          isoWeek={isoWeek}
+          officeId={officeId}
         />
       </section>
     </DndContext>
