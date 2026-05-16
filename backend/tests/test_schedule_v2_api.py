@@ -768,3 +768,94 @@ async def test_full_optimize_response_includes_office_name(client, db) -> None:
             assert c["office_name"] == office.name
             seen_office_name = True
     assert seen_office_name, "少なくとも 1 つの after course に office_name が含まれるべき"
+
+
+# ---------------------------------------------------------------------------
+# W41 v2 — H2 視覚化: same_address_group_id 割当
+# ---------------------------------------------------------------------------
+
+
+def test_assign_same_address_groups_two_visits_get_id() -> None:
+    """同 (office, weekday, start_time, address_bucket) で 2 名 → 共通 group_id."""
+    import uuid as _uuid
+    from datetime import time as _time
+
+    from app.api.v1.schedule_v2 import _assign_same_address_groups
+    from app.services.scheduling.auto_allocator_v2 import V2Visit
+
+    office_id = _uuid.uuid4()
+    common: dict[str, Any] = {
+        "patient_code": None,
+        "weekday": 0,
+        "start_time": _time(9, 30),
+        "end_time": _time(10, 0),
+        "service_minutes": 30,
+        "office_id": office_id,
+        "am_pm": "am",
+        "source_kind": "pool",
+    }
+    v1 = V2Visit(patient_id=_uuid.uuid4(), patient_name="A", lat=35.65, lng=140.10, **common)
+    v2 = V2Visit(patient_id=_uuid.uuid4(), patient_name="B", lat=35.65, lng=140.10, **common)
+    mapping = _assign_same_address_groups([v1, v2])
+    # 2 件とも同じ group_id が振られる
+    key1 = (v1.patient_id, v1.weekday, v1.start_time)
+    key2 = (v2.patient_id, v2.weekday, v2.start_time)
+    assert key1 in mapping
+    assert key2 in mapping
+    assert mapping[key1] == mapping[key2]
+    assert mapping[key1].startswith("sa_")
+
+
+def test_assign_same_address_groups_solo_visit_no_id() -> None:
+    """単独 visit には group_id は付かない (None 扱い → mapping に key なし)."""
+    import uuid as _uuid
+    from datetime import time as _time
+
+    from app.api.v1.schedule_v2 import _assign_same_address_groups
+    from app.services.scheduling.auto_allocator_v2 import V2Visit
+
+    v = V2Visit(
+        patient_id=_uuid.uuid4(),
+        patient_name="solo",
+        patient_code=None,
+        weekday=0,
+        start_time=_time(9, 30),
+        end_time=_time(10, 0),
+        service_minutes=30,
+        lat=35.65,
+        lng=140.10,
+        office_id=_uuid.uuid4(),
+        am_pm="am",
+        source_kind="pool",
+    )
+    mapping = _assign_same_address_groups([v])
+    assert mapping == {}
+
+
+def test_group_visits_into_courses_sets_same_address_group_id() -> None:
+    """_group_visits_into_courses が同住所 visit に same_address_group_id を埋める."""
+    import uuid as _uuid
+    from datetime import time as _time
+
+    from app.api.v1.schedule_v2 import _group_visits_into_courses
+    from app.services.scheduling.auto_allocator_v2 import V2Visit
+
+    office_id = _uuid.uuid4()
+    common: dict[str, Any] = {
+        "patient_code": None,
+        "weekday": 0,
+        "start_time": _time(9, 30),
+        "end_time": _time(10, 0),
+        "service_minutes": 30,
+        "office_id": office_id,
+        "am_pm": "am",
+        "source_kind": "pool",
+        "course_code": "A",
+    }
+    v1 = V2Visit(patient_id=_uuid.uuid4(), patient_name="A", lat=35.65, lng=140.10, **common)
+    v2 = V2Visit(patient_id=_uuid.uuid4(), patient_name="B", lat=35.65, lng=140.10, **common)
+    courses = _group_visits_into_courses([v1, v2])
+    assert len(courses) == 1
+    visits_ui = courses[0].visits
+    assert all(vu.same_address_group_id is not None for vu in visits_ui)
+    assert visits_ui[0].same_address_group_id == visits_ui[1].same_address_group_id

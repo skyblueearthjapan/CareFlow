@@ -73,6 +73,9 @@ class V2VisitForUI(BaseModel):
     area_label: str | None = None  # 例: "宮野木", "幕張本郷"
     time_type: str | None = None  # 例: "午前", "午後", "終日", "固定", "時間帯"
     sex_restriction: str | None = None  # "female_only", "male_only", None
+    # W41 v2 (H2 視覚化): 同住所グループ id. UI で「📍 同住所 (N 名)」連結表示用.
+    # 同 (office, weekday, start_time, address_bucket) で 2 名以上なら共通 id.
+    same_address_group_id: str | None = None
 
 
 class V2CourseSummary(BaseModel):

@@ -141,6 +141,9 @@ class V2Visit:
     # sex_restriction="female_only"/"male_only"/None.
     time_type: str | None = None
     sex_restriction: str | None = None
+    # W41 v2 (H2 視覚化): 同住所グループ id. UI で「📍 同住所 (N 名)」表示用.
+    # API レスポンス構築時に _assign_same_address_groups で割当てる.
+    same_address_group_id: str | None = None
 
 
 @dataclass
@@ -683,6 +686,108 @@ def _enforce_h2_same_address(sets: list[V2Set], warnings: list[str]) -> None:
             # None を除去
             for s in sets:
                 s.visits = [v for v in s.visits if v is not None]
+
+
+def _enforce_h2_split_overflow(
+    sets: list[V2Set],
+    warnings: list[str],
+) -> None:
+    """H2 強化: 同住所 3 名以上を強制的に別 set へ分散する.
+
+    既存 ``_enforce_h2_same_address`` の補完として呼ぶ. 同 ``(office, weekday,
+    am_pm, address_bucket)`` で 3 名以上を検出したら, 3 件目以降を同
+    ``(office, weekday, am_pm)`` 内の容量に余裕がある別 set に移動する.
+
+    移動先候補条件:
+      - 同 (office, weekday, am_pm) 内の別 set
+      - 移動後の set サイズが ``MAX_PATIENTS_PER_SET`` 以下
+      - 移動先に同住所がまだ 2 件未満
+    移動先が見つからない場合は warning に詳細記録 (移動できなかった旨明示).
+    """
+    from collections import defaultdict
+
+    # (office_id, weekday, am_pm, address_bucket) → [(si, vi)] 集計
+    groups: dict[
+        tuple[UUID, int, Literal["am", "pm", "any"], tuple[float, float]],
+        list[tuple[int, int]],
+    ] = defaultdict(list)
+    for si, st in enumerate(sets):
+        for vi, v in enumerate(st.visits):
+            if v is None or v.lat is None or v.lng is None:
+                continue
+            key = (v.office_id, v.weekday, v.am_pm, _address_bucket(v.lat, v.lng))
+            groups[key].append((si, vi))
+
+    for key, locs in groups.items():
+        if len(locs) < 3:
+            continue
+        # set ごとに 2 件まで OK、超過分を移動候補リストに
+        same_set_count: dict[int, int] = defaultdict(int)
+        for si, _vi in locs:
+            same_set_count[si] += 1
+
+        overflow: list[tuple[int, int]] = []
+        for si, vi in locs:
+            if same_set_count[si] > 2:
+                overflow.append((si, vi))
+                same_set_count[si] -= 1
+
+        # 移動先候補: 同 (office, weekday, am_pm) で容量余裕 & 同住所 2 件未満
+        for src_si, src_vi in overflow:
+            visit_to_move = sets[src_si].visits[src_vi]
+            if visit_to_move is None:
+                continue
+            target_si: int | None = None
+            for ti, t_set in enumerate(sets):
+                if ti == src_si:
+                    continue
+                # 同 (office, weekday, am_pm) か?
+                first_v = next((v for v in t_set.visits if v is not None), None)
+                if first_v is None:
+                    continue
+                if (
+                    first_v.office_id != visit_to_move.office_id
+                    or first_v.weekday != visit_to_move.weekday
+                    or first_v.am_pm != visit_to_move.am_pm
+                ):
+                    continue
+                # 容量
+                valid_count = sum(1 for v in t_set.visits if v is not None)
+                if valid_count >= MAX_PATIENTS_PER_SET:
+                    continue
+                # 同住所が既に 2 件以上いない
+                same_in_target = sum(
+                    1
+                    for v in t_set.visits
+                    if v is not None
+                    and v.lat is not None
+                    and v.lng is not None
+                    and _address_bucket(v.lat, v.lng) == key[3]
+                )
+                if same_in_target >= 2:
+                    continue
+                target_si = ti
+                break
+
+            if target_si is not None:
+                sets[target_si].visits.append(visit_to_move)
+                # 後でフィルタ. 既存 `_enforce_h2_same_address` と同じパターン.
+                sets[src_si].visits[src_vi] = None  # type: ignore[call-overload]
+                warnings.append(
+                    f"H2: 同住所 3 名以上検出 → 1 名を別 set に分散移動 "
+                    f"(office={visit_to_move.office_id}, wd={visit_to_move.weekday}, "
+                    f"address≈({key[3][0]:.4f},{key[3][1]:.4f}))"
+                )
+            else:
+                warnings.append(
+                    f"H2: 同住所 3 名以上、移動先 set 見つからず "
+                    f"(patient={visit_to_move.patient_code or visit_to_move.patient_name}, "
+                    f"address≈({key[3][0]:.4f},{key[3][1]:.4f}))"
+                )
+
+    # None を除去
+    for s in sets:
+        s.visits = [v for v in s.visits if v is not None]
 
 
 # ---------------------------------------------------------------------------
@@ -1235,6 +1340,8 @@ async def run_v2_pipeline(
     for key, bucket in buckets.items():
         sets = cluster_by_distance_greedy(bucket.visits)
         _enforce_h2_same_address(sets, warnings)
+        # W41 v2 (H2 強化): 同住所 3 名以上を別 set に強制分散
+        _enforce_h2_split_overflow(sets, warnings)
         sets_by_bucket[key] = sets
 
     # Stage 4: コース数制約

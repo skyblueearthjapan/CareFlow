@@ -64,6 +64,8 @@ export const v2VisitForUiSchema = z.object({
   // W41 v2 (Mode 2 Before/After 表示拡張): time_type と sex_restriction バッジ.
   time_type: z.string().nullable().default(null),
   sex_restriction: z.string().nullable().default(null),
+  // W41 v2 (H2 視覚化): 同住所グループ id (2 名以上のとき同 id, 単独は null).
+  same_address_group_id: z.string().nullable().default(null),
 });
 export type V2VisitForUI = z.infer<typeof v2VisitForUiSchema>;
 

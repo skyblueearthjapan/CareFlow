@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import time as time_cls
 from typing import Annotated
 from uuid import UUID
 
@@ -61,6 +62,7 @@ from app.services.scheduling.auto_allocator_v2 import (
     LUNCH_END,
     LUNCH_START,
     V2Visit,
+    _address_bucket,
     apply_individual_proposal,
     apply_week_only,
     calc_h_violations,
@@ -93,7 +95,11 @@ def _v2visit_to_plan(v: V2Visit) -> V2VisitPlan:
     )
 
 
-def _v2visit_to_ui(v: V2Visit) -> V2VisitForUI:
+def _v2visit_to_ui(
+    v: V2Visit,
+    *,
+    same_address_group_id: str | None = None,
+) -> V2VisitForUI:
     """1 visit を UI 表示用の ``V2VisitForUI`` に変換.
 
     W41 v2 final cross-review (M-Codex-2): 旧 ``_v2visit_to_dict`` は untyped dict
@@ -103,6 +109,8 @@ def _v2visit_to_ui(v: V2Visit) -> V2VisitForUI:
     そのまま流す (auto_allocator_v2 が build 時に Patient.address から抽出済).
 
     W41 v2 (Mode 2 Before/After 表示拡張): ``time_type`` / ``sex_restriction`` も流す.
+
+    W41 v2 (H2 視覚化): ``same_address_group_id`` を引数で受け取り埋める.
     """
     return V2VisitForUI(
         patient_id=v.patient_id,
@@ -116,7 +124,41 @@ def _v2visit_to_ui(v: V2Visit) -> V2VisitForUI:
         area_label=v.area_label,
         time_type=v.time_type,
         sex_restriction=v.sex_restriction,
+        same_address_group_id=same_address_group_id,
     )
+
+
+def _assign_same_address_groups(
+    visits: list[V2Visit],
+) -> dict[tuple[UUID, int, time_cls], str]:
+    """同 (office, weekday, start_time, address_bucket) で 2 名以上の場合に group_id を割当.
+
+    W41 v2 (H2 視覚化): UI で「📍 同住所 (N 名)」を表示するための group_id を計算する.
+    Returns:
+        ``{(patient_id, weekday, start_time): group_id_str}`` の辞書.
+        該当しない visit はキーに含まれない.
+    """
+    from collections import defaultdict
+
+    bucket_to_visits: dict[tuple[UUID, int, time_cls, tuple[float, float]], list[V2Visit]] = (
+        defaultdict(list)
+    )
+    for v in visits:
+        if v.lat is None or v.lng is None:
+            continue
+        bucket = _address_bucket(v.lat, v.lng)
+        key = (v.office_id, v.weekday, v.start_time, bucket)
+        bucket_to_visits[key].append(v)
+
+    group_id_by_key: dict[tuple[UUID, int, time_cls], str] = {}
+    for key, vs in bucket_to_visits.items():
+        if len(vs) >= 2:
+            office_id, wd, st, (lat_b, lng_b) = key
+            gid = f"sa_{office_id}_{wd}_{st.strftime('%H%M')}_{lat_b:.4f}_{lng_b:.4f}"
+            for v in vs:
+                visit_key = (v.patient_id, wd, st)
+                group_id_by_key[visit_key] = gid
+    return group_id_by_key
 
 
 def _build_kpi_overall(
@@ -182,7 +224,13 @@ def _group_visits_into_courses(
         - 戻り値を (office_name, code) で ABC 順ソート.
           本店 A → B → ... → M, 続いて 都賀 A → ... を保証する.
           office_name が未取得な場合は str(office_id) で安定ソートする.
+
+    W41 v2 (H2 視覚化): ``same_address_group_id`` を visits 全体で計算し
+    `_v2visit_to_ui` に流して UI 側で連結表示できるようにする.
     """
+    # 同住所グループ id を全 visits でまず計算 (course 越境を許容)
+    group_id_by_key = _assign_same_address_groups(visits)
+
     groups: dict[tuple[UUID, int, str | None], list[V2Visit]] = {}
     for v in visits:
         groups.setdefault((v.office_id, v.weekday, v.course_code), []).append(v)
@@ -198,7 +246,15 @@ def _group_visits_into_courses(
                 code=code or "M",
                 office_id=office_id,
                 office_name=office_name,
-                visits=[_v2visit_to_ui(v) for v in sv],
+                visits=[
+                    _v2visit_to_ui(
+                        v,
+                        same_address_group_id=group_id_by_key.get(
+                            (v.patient_id, v.weekday, v.start_time)
+                        ),
+                    )
+                    for v in sv
+                ],
                 distance_km=round(dist, 4),
                 visits_count=len(sv),
                 assigned_staff_id=sv[0].assigned_staff_id,

@@ -885,6 +885,65 @@ def test_enforce_h2_same_address_handles_none_visits_in_target() -> None:
 
 
 # ---------------------------------------------------------------------------
+# W41 v2 — H2 split overflow: 3 名以上同住所を別 set に強制分散
+# ---------------------------------------------------------------------------
+
+
+def test_enforce_h2_split_overflow_distributes_three_same_address() -> None:
+    """H2 強化: 同住所 3 名を 1 set に集めたあとで, 1 名が別 set に分散される.
+
+    入力: set1=[A同住所, B同住所, C同住所], set2=[D 余裕あり, 別住所]
+    期待: set1 が 2 名 (同住所 2 名上限), 1 名が set2 へ移動.
+    """
+    from app.services.scheduling.auto_allocator_v2 import V2Set, _enforce_h2_split_overflow
+
+    office = uuid.uuid4()
+    v_a = _make_visit(lat=35.650, lng=140.100, patient_name="A", office_id=office)
+    v_b = _make_visit(lat=35.650, lng=140.100, patient_name="B", office_id=office)
+    v_c = _make_visit(lat=35.650, lng=140.100, patient_name="C", office_id=office)
+    v_d = _make_visit(lat=35.660, lng=140.110, patient_name="D", office_id=office)
+    sets = [V2Set(visits=[v_a, v_b, v_c]), V2Set(visits=[v_d])]
+    warnings: list[str] = []
+    _enforce_h2_split_overflow(sets, warnings)
+
+    # 同住所 3 名 → 2 + 1 になる
+    assert len(sets[0].visits) == 2
+    assert len(sets[1].visits) == 2
+    assert any("3 名以上検出" in w for w in warnings)
+
+
+def test_enforce_h2_split_overflow_no_target_emits_warning() -> None:
+    """H2 強化: 移動先 set が無い (全 set 満員) 場合, 警告に「移動先見つからず」を出す."""
+    from app.services.scheduling.auto_allocator_v2 import V2Set, _enforce_h2_split_overflow
+
+    office = uuid.uuid4()
+    v_a = _make_visit(lat=35.650, lng=140.100, patient_name="A", office_id=office)
+    v_b = _make_visit(lat=35.650, lng=140.100, patient_name="B", office_id=office)
+    v_c = _make_visit(lat=35.650, lng=140.100, patient_name="C", office_id=office)
+    # set2 は別 (office, weekday, am_pm) なので移動先候補にならない
+    v_other = _make_visit(lat=35.700, lng=140.150, patient_name="X", office_id=uuid.uuid4())
+    sets = [V2Set(visits=[v_a, v_b, v_c]), V2Set(visits=[v_other])]
+    warnings: list[str] = []
+    _enforce_h2_split_overflow(sets, warnings)
+
+    # 移動先がないので 1 件は overflow → 警告
+    assert any("移動先 set 見つからず" in w for w in warnings)
+
+
+def test_enforce_h2_split_overflow_no_op_for_two_same_address() -> None:
+    """H2 強化: 同住所 2 名なら何もしない (規定通り 1 set に 2 名収納)."""
+    from app.services.scheduling.auto_allocator_v2 import V2Set, _enforce_h2_split_overflow
+
+    v_a = _make_visit(lat=35.650, lng=140.100, patient_name="A")
+    v_b = _make_visit(lat=35.650, lng=140.100, patient_name="B")
+    sets = [V2Set(visits=[v_a, v_b])]
+    warnings: list[str] = []
+    _enforce_h2_split_overflow(sets, warnings)
+    assert len(sets[0].visits) == 2
+    assert warnings == []
+
+
+# ---------------------------------------------------------------------------
 # H4 — staff_count == 0 のとき course_code='M' + 警告
 # ---------------------------------------------------------------------------
 

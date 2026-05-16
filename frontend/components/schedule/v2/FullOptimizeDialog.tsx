@@ -44,6 +44,8 @@ import type {
   V2WeekdayBeforeAfter,
 } from '@/lib/schemas/v2/autoScheduleV2';
 
+import { cn } from '@/lib/utils';
+
 import { formatDelta, formatErr, trimSeconds } from './_autoScheduleUtils';
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -732,35 +734,69 @@ function CourseListColumn({
               </div>
               {c.visits.length > 0 ? (
                 <ul className="mt-1 space-y-0.5">
-                  {c.visits.slice(0, 8).map((v: V2VisitForUI, i) => (
-                    <li key={i} className="flex flex-wrap items-center gap-1 text-[10px]">
-                      <span className="tnum text-text-muted">{trimSeconds(v.start_time)}</span>
-                      <span className="text-text-primary">{v.patient_name}</span>
-                      {v.area_label ? (
-                        <span className="rounded bg-brand-primary/10 px-1 text-[9px] text-brand-primary">
-                          {v.area_label}
-                        </span>
-                      ) : null}
-                      {v.address ? (
-                        <span
-                          className="text-[9px] text-text-muted"
-                          title={v.address}
-                          aria-label={`住所 ${v.address}`}
-                        >
-                          {v.address.length > 18 ? `${v.address.slice(0, 18)}…` : v.address}
-                        </span>
-                      ) : null}
-                      {v.time_type ? (
-                        <span className="text-[9px] text-text-secondary">🕐 {v.time_type}</span>
-                      ) : null}
-                      {v.sex_restriction === 'female_only' ? (
-                        <span className="text-[9px] text-pink-600">👩 女性のみ</span>
-                      ) : null}
-                      {v.sex_restriction === 'male_only' ? (
-                        <span className="text-[9px] text-blue-600">👨 男性のみ</span>
-                      ) : null}
-                    </li>
-                  ))}
+                  {c.visits.slice(0, 8).map((v: V2VisitForUI, i, arr) => {
+                    // W41 v2 (H2 視覚化): 同住所グループの連続表示
+                    const prev = arr[i - 1];
+                    const next = arr[i + 1];
+                    const inGroup = !!v.same_address_group_id;
+                    const sameAsPrev =
+                      inGroup && prev?.same_address_group_id === v.same_address_group_id;
+                    const sameAsNext =
+                      inGroup && next?.same_address_group_id === v.same_address_group_id;
+                    const isGroupStart = inGroup && !sameAsPrev;
+                    const isGroupEnd = inGroup && !sameAsNext;
+                    // グループ先頭で患者数を計算 (slice 前の c.visits 全体を参照)
+                    let groupSize = 0;
+                    if (isGroupStart) {
+                      for (const fullV of c.visits) {
+                        if (fullV.same_address_group_id === v.same_address_group_id) {
+                          groupSize += 1;
+                        }
+                      }
+                    }
+                    return (
+                      <li
+                        key={i}
+                        className={cn(
+                          'flex flex-wrap items-center gap-1 text-[10px]',
+                          inGroup && 'border-l-2 border-yellow-400 bg-yellow-50/60 pl-2',
+                          isGroupStart && 'pt-1 mt-1',
+                          isGroupEnd && 'pb-1 mb-1',
+                        )}
+                      >
+                        {isGroupStart && groupSize >= 2 ? (
+                          <span className="w-full text-[9px] font-semibold text-yellow-700">
+                            📍 同住所グループ ({groupSize} 名)
+                          </span>
+                        ) : null}
+                        <span className="tnum text-text-muted">{trimSeconds(v.start_time)}</span>
+                        <span className="text-text-primary">{v.patient_name}</span>
+                        {v.area_label ? (
+                          <span className="rounded bg-brand-primary/10 px-1 text-[9px] text-brand-primary">
+                            {v.area_label}
+                          </span>
+                        ) : null}
+                        {v.address ? (
+                          <span
+                            className="text-[9px] text-text-muted"
+                            title={v.address}
+                            aria-label={`住所 ${v.address}`}
+                          >
+                            {v.address.length > 18 ? `${v.address.slice(0, 18)}…` : v.address}
+                          </span>
+                        ) : null}
+                        {v.time_type ? (
+                          <span className="text-[9px] text-text-secondary">🕐 {v.time_type}</span>
+                        ) : null}
+                        {v.sex_restriction === 'female_only' ? (
+                          <span className="text-[9px] text-pink-600">👩 女性のみ</span>
+                        ) : null}
+                        {v.sex_restriction === 'male_only' ? (
+                          <span className="text-[9px] text-blue-600">👨 男性のみ</span>
+                        ) : null}
+                      </li>
+                    );
+                  })}
                   {c.visits.length > 8 ? (
                     <li className="text-[10px] text-text-muted">…他 {c.visits.length - 8} 件</li>
                   ) : null}
