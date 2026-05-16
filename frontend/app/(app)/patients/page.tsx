@@ -27,6 +27,7 @@ import {
 } from '@/lib/schemas/patient';
 import { usePatients } from '@/lib/queries/patients';
 import { useOffices } from '@/lib/queries/offices';
+import { PatientsExcelButtons } from '@/components/patients/PatientsExcelButtons';
 
 const PAGE_SIZE = 20;
 
@@ -84,11 +85,14 @@ export default function PatientsPage() {
             {total > 0 ? `全 ${total} 件` : '登録済み患者を一覧表示します'}
           </p>
         </div>
-        {canCreate ? (
-          <Button asChild>
-            <Link href="/patients/new">+ 新規登録</Link>
-          </Button>
-        ) : null}
+        <div className="flex items-center gap-2">
+          {canCreate ? <PatientsExcelButtons /> : null}
+          {canCreate ? (
+            <Button asChild>
+              <Link href="/patients/new">+ 新規登録</Link>
+            </Button>
+          ) : null}
+        </div>
       </header>
 
       <Card className="p-4">

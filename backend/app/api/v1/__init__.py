@@ -21,6 +21,7 @@ from app.api.v1 import (
     offices,
     patient_fixed_visits,
     patients,
+    patients_excel,
     pending_requests,
     schedule,
     schedule_v2,
@@ -39,6 +40,14 @@ api_router = APIRouter()
 api_router.include_router(health.router)
 api_router.include_router(auth.router)
 api_router.include_router(admin.router)
+# W41+ patient master Excel import / export. Must be registered BEFORE
+# patients.router so /patients/import-export/* paths are matched before the
+# /patients/{patient_id} catch-all.
+api_router.include_router(
+    patients_excel.router,
+    prefix="/patients/import-export",
+    tags=["patients-excel"],
+)
 api_router.include_router(patients.router, prefix="/patients", tags=["patients"])
 # W9-BE1: patient fixed-visit pattern sub-resource.
 # Must be included BEFORE patients.router catch-all routes.

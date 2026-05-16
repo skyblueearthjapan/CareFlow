@@ -1,0 +1,274 @@
+"""Excel 出力 (テンプレート / 全件エクスポート).
+
+openpyxl で 2 シート構成のワークブックを組み立てる:
+
+  1. 患者マスタシート
+  2. 固定訪問スケジュールシート (PFV)
+
+呼び出し側 (API endpoint) は ``build_workbook`` の戻り値である ``Workbook``
+を ``save`` するか ``BytesIO`` にダンプしてレスポンスする.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from datetime import time
+from io import BytesIO
+from uuid import UUID
+
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl.worksheet.worksheet import Worksheet
+
+from app.models.course_template import CourseTemplate
+from app.models.office import Office
+from app.models.patient import Patient
+from app.models.patient_fixed_visit import PatientFixedVisit
+from app.services.patient_excel.schema import (
+    HEADER_FILL_COLOR,
+    HEADER_FONT_COLOR,
+    ID_COLUMN_FILL_COLOR,
+    PATIENT_COL_INDEX,
+    PATIENT_COLUMNS,
+    PFV_COL_INDEX,
+    PFV_COLUMNS,
+    SHEET_PATIENTS,
+    SHEET_PFV,
+    WEEKDAY_INT_TO_LABEL,
+)
+
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+
+
+def _set_header_row(ws: Worksheet, columns: list[dict[str, object]]) -> None:
+    """1 行目にヘッダーを書き、太字 + 背景色 + freeze を設定."""
+    header_font = Font(bold=True, color=HEADER_FONT_COLOR)
+    header_fill = PatternFill("solid", fgColor=HEADER_FILL_COLOR)
+    center = Alignment(horizontal="center", vertical="center")
+    for col_idx, col_def in enumerate(columns, start=1):
+        cell = ws.cell(row=1, column=col_idx, value=str(col_def["header"]))
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = center
+        width = col_def.get("width", 14)
+        ws.column_dimensions[get_column_letter(col_idx)].width = int(width)  # type: ignore[arg-type]
+    ws.freeze_panes = "A2"
+
+
+def _attach_dropdowns(
+    ws: Worksheet,
+    columns: list[dict[str, object]],
+    *,
+    max_data_rows: int = 1000,
+) -> None:
+    """各列の dropdown を ``max_data_rows`` 行分まで設定."""
+    last_row = 1 + max_data_rows  # ヘッダー行を除外
+    for col_idx, col_def in enumerate(columns, start=1):
+        dropdown = col_def.get("dropdown")
+        if dropdown is None:
+            continue
+        # openpyxl の DataValidation list 値は "値1,値2,..." をダブルクォートで囲む.
+        # 値内にカンマが含まれない前提 (今回は全て安全な値).
+        formula = '"' + ",".join(str(v) for v in dropdown) + '"'  # type: ignore[arg-type]
+        dv = DataValidation(type="list", formula1=formula, allow_blank=True)
+        dv.error = "リストにない値です"
+        dv.errorTitle = "入力エラー"
+        col_letter = get_column_letter(col_idx)
+        dv.add(f"{col_letter}2:{col_letter}{last_row}")
+        ws.add_data_validation(dv)
+
+
+def _shade_id_column_data_rows(
+    ws: Worksheet,
+    col_key: str,
+    columns: list[dict[str, object]],
+    *,
+    data_row_count: int,
+) -> None:
+    """patient_id 列の **データ行のみ** を薄いグレー背景でハイライト.
+
+    無条件で固定行数 (例: 1000) を塗ると ``ws.max_row`` が 1000 を返してしまい、
+    テンプレート判定 (空 = max_row==1) ができなくなる。データ行が 0 件のときは
+    何もしない。
+    """
+    if data_row_count <= 0:
+        return
+    target_index = None
+    for i, col_def in enumerate(columns, start=1):
+        if col_def["key"] == col_key:
+            target_index = i
+            break
+    if target_index is None:
+        return
+    fill = PatternFill("solid", fgColor=ID_COLUMN_FILL_COLOR)
+    col_letter = get_column_letter(target_index)
+    for row in range(2, 2 + data_row_count):
+        ws[f"{col_letter}{row}"].fill = fill
+
+
+def _write_patient_row(
+    ws: Worksheet,
+    row_idx: int,
+    patient: Patient,
+    *,
+    office_code_by_id: dict[UUID, str],
+) -> None:
+    """1 行分の患者データを書き込む.
+
+    primary_office_id → 拠点コード (INAGE/TSUGA) の lookup は呼び出し側で構築済みの
+    ``office_code_by_id`` を使う.
+    """
+    code = ""
+    if patient.primary_office_id is not None:
+        code = office_code_by_id.get(patient.primary_office_id, "")
+    values: dict[str, object | None] = {
+        "patient_id": str(patient.id),
+        "patient_code": patient.code,
+        "name": patient.name,
+        "kana": patient.kana,
+        "sex": patient.sex,
+        "status": patient.status,
+        "insurance": patient.insurance,
+        "address": patient.address,
+        # Numeric → 文字列化を避けて数値のまま書く. None はそのまま空セル.
+        "lat": float(patient.lat) if patient.lat is not None else None,
+        "lng": float(patient.lng) if patient.lng is not None else None,
+        "office_code": code or None,
+        "sex_restriction": patient.sex_restriction,
+        "note": patient.note,
+        "delete_flag": None,
+    }
+    for col_key, col_idx in PATIENT_COL_INDEX.items():
+        ws.cell(row=row_idx, column=col_idx + 1, value=values.get(col_key))
+
+
+def _hhmm(t: time | None) -> str | None:
+    if t is None:
+        return None
+    return f"{t.hour:02d}:{t.minute:02d}"
+
+
+def _end_time(start: time, duration_min: int) -> str:
+    total = start.hour * 60 + start.minute + duration_min
+    h = (total // 60) % 24
+    m = total % 60
+    return f"{h:02d}:{m:02d}"
+
+
+def _write_pfv_row(
+    ws: Worksheet,
+    row_idx: int,
+    pfv: PatientFixedVisit,
+    *,
+    patient_lookup: dict[UUID, Patient],
+    course_template_label_by_id: dict[UUID, str],
+) -> None:
+    p = patient_lookup.get(pfv.patient_id)
+    code_label = ""
+    if pfv.course_template_id is not None:
+        code_label = course_template_label_by_id.get(pfv.course_template_id, "")
+    start_hhmm = _hhmm(pfv.start_time) or ""
+    end_hhmm = _end_time(pfv.start_time, pfv.duration_min) if pfv.start_time else ""
+    values: dict[str, object | None] = {
+        "patient_id": str(pfv.patient_id),
+        "patient_code": p.code if p else None,
+        "patient_name": p.name if p else None,
+        "weekday": WEEKDAY_INT_TO_LABEL.get(pfv.weekday),
+        "slot_index": pfv.slot_index,
+        "mode": pfv.mode,
+        # time_type は patient.weekly_pattern から導く (該当エントリが無ければ空)
+        "time_type": _resolve_time_type(p, pfv.weekday) if p else None,
+        "start_time": start_hhmm,
+        "end_time": end_hhmm,
+        "duration_min": pfv.duration_min,
+        "course_template_code": code_label or None,
+        "delete_flag": None,
+    }
+    for col_key, col_idx in PFV_COL_INDEX.items():
+        ws.cell(row=row_idx, column=col_idx + 1, value=values.get(col_key))
+
+
+def _resolve_time_type(patient: Patient, weekday: int) -> str | None:
+    """patient.weekly_pattern.entries[].weekday と一致するエントリの time_type を返す.
+
+    weekly_pattern が辞書で entries が無い場合は patient.weekly_pattern.time_type を返す.
+    どちらも無い場合は ``None``.
+    """
+    wp = patient.weekly_pattern
+    if not isinstance(wp, dict):
+        return None
+    short = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")[weekday]
+    entries = wp.get("entries") or []
+    if isinstance(entries, list):
+        for entry in entries:
+            if isinstance(entry, dict) and entry.get("weekday") == short:
+                tt = entry.get("time_type")
+                if isinstance(tt, str):
+                    return tt
+    tt_root = wp.get("time_type")
+    return tt_root if isinstance(tt_root, str) else None
+
+
+# ---------------------------------------------------------------------------
+# public entrypoints
+# ---------------------------------------------------------------------------
+
+
+def build_workbook(
+    *,
+    patients: Sequence[Patient],
+    pfvs: Sequence[PatientFixedVisit],
+    offices: Sequence[Office],
+    course_templates: Sequence[CourseTemplate],
+) -> Workbook:
+    """テンプレート + データ込みのワークブックを構築する.
+
+    ``patients`` を空 list で呼べばテンプレート (ヘッダー + dropdown のみ) になる.
+    """
+    wb = Workbook()
+    # default のシートを 1 枚目として使う
+    ws_p: Worksheet = wb.active  # type: ignore[assignment]
+    ws_p.title = SHEET_PATIENTS
+
+    _set_header_row(ws_p, PATIENT_COLUMNS)
+    _attach_dropdowns(ws_p, PATIENT_COLUMNS)
+
+    office_code_by_id: dict[UUID, str] = {
+        office.id: (office.code or "")
+        for office in offices
+        if office.code  # コード未設定の拠点はスキップ
+    }
+    for i, patient in enumerate(patients, start=2):
+        _write_patient_row(ws_p, i, patient, office_code_by_id=office_code_by_id)
+    _shade_id_column_data_rows(ws_p, "patient_id", PATIENT_COLUMNS, data_row_count=len(patients))
+
+    # PFV シート
+    ws_f: Worksheet = wb.create_sheet(title=SHEET_PFV)
+    _set_header_row(ws_f, PFV_COLUMNS)
+    _attach_dropdowns(ws_f, PFV_COLUMNS)
+
+    patient_lookup: dict[UUID, Patient] = {p.id: p for p in patients}
+    course_template_label_by_id: dict[UUID, str] = {
+        ct.id: ct.label for ct in course_templates if ct.label
+    }
+    for i, pfv in enumerate(pfvs, start=2):
+        _write_pfv_row(
+            ws_f,
+            i,
+            pfv,
+            patient_lookup=patient_lookup,
+            course_template_label_by_id=course_template_label_by_id,
+        )
+    _shade_id_column_data_rows(ws_f, "patient_id", PFV_COLUMNS, data_row_count=len(pfvs))
+
+    return wb
+
+
+def workbook_to_bytes(wb: Workbook) -> bytes:
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
