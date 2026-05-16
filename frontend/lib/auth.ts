@@ -77,12 +77,20 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   ],
   callbacks: {
     async jwt({ token, user, trigger, session: updateSession }) {
+      // Early-exit: if refresh already failed, do not retry on every request.
+      if (token.error === 'RefreshAccessTokenError') {
+        return token;
+      }
+
       if (user) {
         token.role = user.role;
         token.staffId = user.staffId ?? null;
         token.mustChangePassword = user.mustChangePassword ?? false;
         token.accessToken = user.accessToken;
         token.refreshToken = user.refreshToken;
+        // Record when the access token expires (backend issues 1-hour tokens).
+        token.accessTokenExpires = Date.now() + 55 * 60 * 1000;
+        token.error = undefined;
         if (user.id) {
           token.sub = user.id;
         }
@@ -98,6 +106,44 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           token.mustChangePassword = next;
         }
       }
+
+      // Auto-refresh: if the access token is still valid, pass through as-is.
+      const expires = token.accessTokenExpires as number | undefined;
+      if (expires && Date.now() < expires) {
+        return token;
+      }
+
+      // Access token has expired (or no expiry recorded) — attempt refresh.
+      if (token.refreshToken) {
+        try {
+          const res = await fetch(`${env.BACKEND_API_BASE_URL}/api/v1/auth/refresh`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ refresh_token: token.refreshToken }),
+            cache: 'no-store',
+          });
+          if (res.ok) {
+            const data = (await res.json()) as {
+              access_token?: string;
+              refresh_token?: string;
+            };
+            if (data.access_token && data.refresh_token) {
+              return {
+                ...token,
+                accessToken: data.access_token,
+                refreshToken: data.refresh_token,
+                accessTokenExpires: Date.now() + 55 * 60 * 1000,
+                error: undefined,
+              };
+            }
+          }
+        } catch (err) {
+          console.error('[NextAuth] Token refresh failed:', err);
+        }
+        // Refresh failed — signal the client to re-authenticate.
+        return { ...token, error: 'RefreshAccessTokenError' };
+      }
+
       return token;
     },
     async session({ session, token }) {
@@ -112,6 +158,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       }
       session.accessToken = token.accessToken as string | undefined;
       session.refreshToken = token.refreshToken as string | undefined;
+      session.error = token.error as string | undefined;
       return session;
     },
   },

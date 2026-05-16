@@ -7,6 +7,7 @@ import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
 
 import { getQueryClient } from '@/lib/query-client';
 import { Toaster } from '@/components/ui/sonner';
+import { SessionErrorGuard } from '@/components/SessionErrorGuard';
 
 interface ProvidersProps {
   children: React.ReactNode;
@@ -19,13 +20,15 @@ export function Providers({ children }: ProvidersProps) {
 
   return (
     <SessionProvider>
-      <QueryClientProvider client={queryClient}>
-        {children}
-        {process.env.NODE_ENV === 'development' && (
-          <ReactQueryDevtools initialIsOpen={false} buttonPosition="bottom-left" />
-        )}
-        <Toaster />
-      </QueryClientProvider>
+      <SessionErrorGuard>
+        <QueryClientProvider client={queryClient}>
+          {children}
+          {process.env.NODE_ENV === 'development' && (
+            <ReactQueryDevtools initialIsOpen={false} buttonPosition="bottom-left" />
+          )}
+          <Toaster />
+        </QueryClientProvider>
+      </SessionErrorGuard>
     </SessionProvider>
   );
 }

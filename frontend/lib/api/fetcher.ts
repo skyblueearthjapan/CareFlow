@@ -40,7 +40,9 @@ export interface FetcherOptions extends RequestInit {
   _retried?: boolean;
 }
 
-async function refreshAccessToken(refreshToken: string): Promise<string | null> {
+async function refreshAccessToken(
+  refreshToken: string,
+): Promise<{ accessToken: string; refreshToken: string } | null> {
   try {
     const res = await fetch(`${resolveBaseUrl()}/api/v1/auth/refresh`, {
       method: 'POST',
@@ -49,8 +51,11 @@ async function refreshAccessToken(refreshToken: string): Promise<string | null> 
       cache: 'no-store',
     });
     if (!res.ok) return null;
-    const body = (await res.json()) as { access_token?: string };
-    return typeof body.access_token === 'string' ? body.access_token : null;
+    const body = (await res.json()) as { access_token?: string; refresh_token?: string };
+    if (typeof body.access_token === 'string' && typeof body.refresh_token === 'string') {
+      return { accessToken: body.access_token, refreshToken: body.refresh_token };
+    }
+    return null;
   } catch {
     return null;
   }
@@ -72,13 +77,13 @@ export async function fetcher<T = unknown>(
   const res = await fetch(url, { ...init, headers: h, cache: init.cache ?? 'no-store' });
 
   if (res.status === 401 && !_retried && refreshToken) {
-    const newToken = await refreshAccessToken(refreshToken);
-    if (newToken) {
+    const tokens = await refreshAccessToken(refreshToken);
+    if (tokens) {
       return fetcher<T>(path, {
         ...init,
         headers,
-        accessToken: newToken,
-        refreshToken,
+        accessToken: tokens.accessToken,
+        refreshToken: tokens.refreshToken,
         _retried: true,
       });
     }
