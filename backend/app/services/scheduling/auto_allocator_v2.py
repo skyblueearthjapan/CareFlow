@@ -130,6 +130,49 @@ def _fmt_hhmm(t: time) -> str:
 # ---------------------------------------------------------------------------
 
 
+# W41 v2 拡張 (構造化警告): 警告の type / actionable / 関連 patient / 提案時刻などを
+# 構造化して返す. UI 側で曜日タブに振り分け + 「⏰ 固定時間を変更」アクションを
+# 出すために使う.
+V2WarningType = Literal[
+    "same_address_consolidation",
+    "course_capacity",
+    "course_long_distance",
+    "course_count",
+    "acceptance_blocked",
+    "general",
+]
+
+
+@dataclass
+class V2Warning:
+    """構造化された警告 1 件分.
+
+    Fields:
+        type: 警告種別 ("same_address_consolidation" など)
+        weekday: 関連曜日 (0=月..6=日) / 曜日不問は None
+        message: 既存の日本語メッセージ (UI で表示)
+        actionable: True なら UI で「固定時間を変更」ボタンを出す
+        patient_id / patient_name: 関連患者 (任意)
+        visit_id: 該当の提案 visit ID (週限定変更 API で使用)
+        current_time / suggested_time: "HH:MM" 文字列 (集約したかった時刻 vs 現状)
+        time_type: "固定" / "時間帯" / "午前" / "午後" / "終日" / None
+        preferred_start / preferred_end: 患者の希望時間帯 (HH:MM 文字列)
+    """
+
+    type: V2WarningType
+    message: str
+    weekday: int | None = None
+    actionable: bool = False
+    patient_id: UUID | None = None
+    patient_name: str | None = None
+    visit_id: UUID | None = None
+    current_time: str | None = None
+    suggested_time: str | None = None
+    time_type: str | None = None
+    preferred_start: str | None = None
+    preferred_end: str | None = None
+
+
 @dataclass
 class V2Visit:
     """1 件の提案 visit (in-memory, 段階 1〜5 を貫通する中間表現)."""
@@ -170,6 +213,10 @@ class V2Visit:
     # ``time_type='時間帯'`` のとき範囲 (start-end), ``'固定'`` のとき開始時刻のみ.
     preferred_start: str | None = None
     preferred_end: str | None = None
+    # W41 v2 拡張 (訪問間距離): 同コース内で次の patient までの直線距離 (km).
+    # コース内 start_time 昇順で隣接ペアの Haversine 距離を計算し、最後の visit は None.
+    # `_assign_distance_to_next` (api/v1/schedule_v2.py) で書き込まれる.
+    distance_to_next_km: float | None = None
 
 
 @dataclass
@@ -759,7 +806,7 @@ def _can_move_to_time(visit: V2Visit, target_time: time) -> bool:
 
 def _consolidate_same_address_time(
     visits: list[V2Visit],
-    warnings: list[str],
+    warnings: list[V2Warning],
 ) -> None:
     """W41 v2 (同住所同時刻集約 ソフト制約):
     同住所 (= 同 ``(office, weekday, address_bucket)``) の patient 群が
@@ -825,12 +872,26 @@ def _consolidate_same_address_time(
                 else:
                     reason = "時間制約により集約不可"
                 warnings.append(
-                    f"同住所集約: {name} 様: {wd_jp} は {_fmt_hhmm(v.start_time)} のまま "
-                    f"({_fmt_hhmm(target_time)} へ集約したかったが {reason})"
+                    V2Warning(
+                        type="same_address_consolidation",
+                        message=(
+                            f"同住所集約: {name} 様: {wd_jp} は {_fmt_hhmm(v.start_time)} のまま "
+                            f"({_fmt_hhmm(target_time)} へ集約したかったが {reason})"
+                        ),
+                        weekday=v.weekday,
+                        actionable=True,
+                        patient_id=v.patient_id,
+                        patient_name=v.patient_name,
+                        current_time=_fmt_hhmm(v.start_time),
+                        suggested_time=_fmt_hhmm(target_time),
+                        time_type=v.time_type,
+                        preferred_start=v.preferred_start,
+                        preferred_end=v.preferred_end,
+                    )
                 )
 
 
-def _enforce_h2_same_address(sets: list[V2Set], warnings: list[str]) -> None:
+def _enforce_h2_same_address(sets: list[V2Set], warnings: list[V2Warning]) -> None:
     """H2: 同住所 visits は同セット, ただし 1 セット 2 人まで.
 
     distance_greedy で多くは満たされるが、距離が近接しているのに別セットに
@@ -863,8 +924,14 @@ def _enforce_h2_same_address(sets: list[V2Set], warnings: list[str]) -> None:
             )
             if same_addr_in_target >= 2:
                 warnings.append(
-                    f"H2 同住所制約: 同住所 ({key[0]:.4f},{key[1]:.4f}) に 3 名以上 "
-                    f"検出 — 3 名目以降は別コースのまま残置"
+                    V2Warning(
+                        type="general",
+                        message=(
+                            f"H2 同住所制約: 同住所 ({key[0]:.4f},{key[1]:.4f}) に 3 名以上 "
+                            f"検出 — 3 名目以降は別コースのまま残置"
+                        ),
+                        actionable=False,
+                    )
                 )
                 continue
             # 移動
@@ -880,7 +947,7 @@ def _enforce_h2_same_address(sets: list[V2Set], warnings: list[str]) -> None:
 
 def _enforce_h2_split_overflow(
     sets: list[V2Set],
-    warnings: list[str],
+    warnings: list[V2Warning],
 ) -> None:
     """H2 強化: 同住所 3 名以上を強制的に別 set へ分散する.
 
@@ -966,12 +1033,32 @@ def _enforce_h2_split_overflow(
                 wd_jp = _weekday_jp(visit_to_move.weekday)
                 name = visit_to_move.patient_name or (visit_to_move.patient_code or "不明")
                 warnings.append(
-                    f"H2 同住所制約: 同住所 3 名以上検出 → 1 名を他コースに分散 ({wd_jp} {name} 様)"
+                    V2Warning(
+                        type="general",
+                        message=(
+                            f"H2 同住所制約: 同住所 3 名以上検出 → 1 名を他コースに分散 "
+                            f"({wd_jp} {name} 様)"
+                        ),
+                        weekday=visit_to_move.weekday,
+                        actionable=False,
+                        patient_id=visit_to_move.patient_id,
+                        patient_name=visit_to_move.patient_name,
+                    )
                 )
             else:
                 name = visit_to_move.patient_name or (visit_to_move.patient_code or "不明")
                 warnings.append(
-                    f"H2 同住所制約: 同住所 3 名以上だが他コースに移動先なし (patient: {name} 様)"
+                    V2Warning(
+                        type="general",
+                        message=(
+                            f"H2 同住所制約: 同住所 3 名以上だが他コースに移動先なし "
+                            f"(patient: {name} 様)"
+                        ),
+                        weekday=visit_to_move.weekday,
+                        actionable=False,
+                        patient_id=visit_to_move.patient_id,
+                        patient_name=visit_to_move.patient_name,
+                    )
                 )
 
     # None を除去
@@ -1047,7 +1134,7 @@ def enforce_course_count_constraint(
     sets_by_bucket: dict[tuple[UUID, int, Literal["am", "pm"]], list[V2Set]],
     *,
     staff_count_by_weekday: dict[tuple[UUID, int], int],
-    warnings: list[str],
+    warnings: list[V2Warning],
     office_name_by_id: dict[UUID, str] | None = None,
 ) -> dict[tuple[UUID, int, Literal["am", "pm"]], list[V2Set]]:
     """段階 4: バケットのセット数がコース数 (= スタッフ数) を超えた場合に警告.
@@ -1064,15 +1151,29 @@ def enforce_course_count_constraint(
         ap_jp = _am_pm_jp(am_pm)
         if n == 0:
             warnings.append(
-                f"{wd_jp} {office_name} {ap_jp}: スタッフ不在のため "
-                f"{len(sets)} グループを配置不可 (マネージャー補充候補)"
+                V2Warning(
+                    type="course_capacity",
+                    message=(
+                        f"{wd_jp} {office_name} {ap_jp}: スタッフ不在のため "
+                        f"{len(sets)} グループを配置不可 (マネージャー補充候補)"
+                    ),
+                    weekday=weekday,
+                    actionable=False,
+                )
             )
             continue
         if len(sets) > n:
             warnings.append(
-                f"{wd_jp} {office_name} {ap_jp}: "
-                f"{len(sets)} グループ必要だが対応可能スタッフ {n} 名 "
-                f"(マネージャー補充候補 {len(sets) - n} 件)"
+                V2Warning(
+                    type="course_capacity",
+                    message=(
+                        f"{wd_jp} {office_name} {ap_jp}: "
+                        f"{len(sets)} グループ必要だが対応可能スタッフ {n} 名 "
+                        f"(マネージャー補充候補 {len(sets) - n} 件)"
+                    ),
+                    weekday=weekday,
+                    actionable=False,
+                )
             )
     return sets_by_bucket
 
@@ -1099,7 +1200,7 @@ def combine_am_pm_sets(
     pm_sets: list[V2Set],
     *,
     staff_count: int,
-    warnings: list[str],
+    warnings: list[V2Warning],
     office_name_by_id: dict[UUID, str] | None = None,
 ) -> list[tuple[V2Set | None, V2Set | None]]:
     """段階 5: 各スタッフ 1 日 = 午前セット + 午後セットを組み合わせる.
@@ -1118,9 +1219,23 @@ def combine_am_pm_sets(
     #     呼び出し側 (run_v2_pipeline) で course_code="M" (manager-required) を
     #     付与する. ここでは早期に警告を出して UX を明示する.
     if staff_count == 0 and (am_sets or pm_sets):
+        # 代表的な weekday を am/pm セットから拾う (警告に曜日を埋める)
+        sample_wd: int | None = None
+        for s in am_sets + pm_sets:
+            if s.visits:
+                sample_wd = s.visits[0].weekday
+                break
         warnings.append(
-            f"勤務可能スタッフ 0 名: 午前 {len(am_sets)} グループ / "
-            f"午後 {len(pm_sets)} グループ はマネージャー補充が必要 (course_code='M')"
+            V2Warning(
+                type="course_count",
+                message=(
+                    f"勤務可能スタッフ 0 名: 午前 {len(am_sets)} グループ / "
+                    f"午後 {len(pm_sets)} グループ はマネージャー補充が必要 "
+                    f"(course_code='M')"
+                ),
+                weekday=sample_wd,
+                actionable=False,
+            )
         )
 
     # H9: コース容量 6 名以内 (午前 + 午後合計)
@@ -1154,9 +1269,21 @@ def combine_am_pm_sets(
         am_chosen = am_remaining.pop(best_i)
         pm_chosen = pm_remaining.pop(best_j)
         if best_d > 5.0:
+            # 警告に曜日を埋める (am_chosen から拾う)
+            sample_v_d: V2Visit | None = None
+            for vv in am_chosen.visits + pm_chosen.visits:
+                sample_v_d = vv
+                break
             warnings.append(
-                f"1 コース内 午前→午後 の移動距離 {best_d:.1f}km "
-                f"(推奨 5km 以内、移動時間に余裕を持たせる必要)"
+                V2Warning(
+                    type="course_long_distance",
+                    message=(
+                        f"1 コース内 午前→午後 の移動距離 {best_d:.1f}km "
+                        f"(推奨 5km 以内、移動時間に余裕を持たせる必要)"
+                    ),
+                    weekday=sample_v_d.weekday if sample_v_d is not None else None,
+                    actionable=False,
+                )
             )
         courses.append((am_chosen, pm_chosen))
 
@@ -1183,14 +1310,27 @@ def combine_am_pm_sets(
             )
             wd_jp = _weekday_jp(sample_v.weekday)
             warnings.append(
-                f"{wd_jp} 拠点 {office_name}: 必要コース数 {len(courses)} > "
-                f"対応可能スタッフ {staff_count} 名 "
-                f"(マネージャー補充候補 {len(courses) - staff_count} 件)"
+                V2Warning(
+                    type="course_count",
+                    message=(
+                        f"{wd_jp} 拠点 {office_name}: 必要コース数 {len(courses)} > "
+                        f"対応可能スタッフ {staff_count} 名 "
+                        f"(マネージャー補充候補 {len(courses) - staff_count} 件)"
+                    ),
+                    weekday=sample_v.weekday,
+                    actionable=False,
+                )
             )
         else:
             warnings.append(
-                f"必要コース数 {len(courses)} > 対応可能スタッフ {staff_count} 名 "
-                f"(マネージャー補充候補 {len(courses) - staff_count} 件)"
+                V2Warning(
+                    type="course_count",
+                    message=(
+                        f"必要コース数 {len(courses)} > 対応可能スタッフ {staff_count} 名 "
+                        f"(マネージャー補充候補 {len(courses) - staff_count} 件)"
+                    ),
+                    actionable=False,
+                )
             )
     return courses
 
@@ -1224,7 +1364,7 @@ def _filter_unavailable_and_lunch(
     visits: list[V2Visit],
     *,
     unavailable_slots: dict[tuple[UUID, int], set[time]],
-    warnings: list[str],
+    warnings: list[V2Warning],
     skip_acceptance: bool = False,
 ) -> list[V2Visit]:
     """H5 + H10: 受入 × 時刻 + 昼休憩枠を除外.
@@ -1243,16 +1383,39 @@ def _filter_unavailable_and_lunch(
                 code = v.patient_code or "-"
                 name = v.patient_name or "-"
                 warnings.append(
-                    f"{code} {name} 様: {_weekday_jp(v.weekday)} "
-                    f"{_fmt_hhmm(v.start_time)} は受入カレンダーで「×」設定のため配置不可"
+                    V2Warning(
+                        type="acceptance_blocked",
+                        message=(
+                            f"{code} {name} 様: {_weekday_jp(v.weekday)} "
+                            f"{_fmt_hhmm(v.start_time)} は受入カレンダーで「×」設定のため配置不可"
+                        ),
+                        weekday=v.weekday,
+                        actionable=False,
+                        patient_id=v.patient_id,
+                        patient_name=v.patient_name,
+                        current_time=_fmt_hhmm(v.start_time),
+                        time_type=v.time_type,
+                        preferred_start=v.preferred_start,
+                        preferred_end=v.preferred_end,
+                    )
                 )
                 continue
         if _is_in_lunch_break(v.start_time, v.end_time):
             code = v.patient_code or "-"
             name = v.patient_name or "-"
             warnings.append(
-                f"{code} {name} 様: {_weekday_jp(v.weekday)} "
-                f"{_fmt_hhmm(v.start_time)} は昼休憩 (12:00-13:00) に重なるため配置不可"
+                V2Warning(
+                    type="general",
+                    message=(
+                        f"{code} {name} 様: {_weekday_jp(v.weekday)} "
+                        f"{_fmt_hhmm(v.start_time)} は昼休憩 (12:00-13:00) に重なるため配置不可"
+                    ),
+                    weekday=v.weekday,
+                    actionable=False,
+                    patient_id=v.patient_id,
+                    patient_name=v.patient_name,
+                    current_time=_fmt_hhmm(v.start_time),
+                )
             )
             continue
         out.append(v)
@@ -1412,7 +1575,7 @@ async def _load_before_visits_from_pfv(
 def _identify_unassigned_patients(
     pool_patients: list[Patient],
     after_visits: list[V2Visit],
-    warnings: list[str],
+    warnings: list[V2Warning],
 ) -> list[dict[str, Any]]:
     """Mode 2 (full_optimize) で after_visits に出てこなかった患者と理由を抽出する.
 
@@ -1433,17 +1596,19 @@ def _identify_unassigned_patients(
             reason = "拠点未設定 (primary_office_id が None)"
         else:
             for w in warnings:
-                if p.code and p.code in w:
-                    if "受入カレンダー" in w:
+                # V2Warning と互換: message を文字列として扱う
+                msg = w.message
+                if p.code and p.code in msg:
+                    if "受入カレンダー" in msg:
                         reason = "受入カレンダー× (希望時間が受入不可)"
-                    elif "昼休憩" in w or "H10" in w:
+                    elif "昼休憩" in msg or "H10" in msg:
                         reason = "希望時間が昼休憩 (12:00-13:00) と重複"
-                    elif "緯度経度" in w or "座標" in w:
+                    elif "緯度経度" in msg or "座標" in msg:
                         reason = "座標未設定"
-                    elif "拠点" in w:
+                    elif "拠点" in msg:
                         reason = "拠点未設定"
                     else:
-                        reason = w[:120]
+                        reason = msg[:120]
                     break
         out.append(
             {
@@ -1489,7 +1654,7 @@ async def run_v2_pipeline(
     if mode not in ("diff_add", "full_optimize"):
         raise ValueError(f"unsupported mode: {mode!r}")
 
-    warnings: list[str] = []
+    warnings: list[V2Warning] = []
     proposal_batch_id = uuid.uuid4()
 
     # 拠点未指定 = 全拠点
@@ -1502,7 +1667,13 @@ async def run_v2_pipeline(
                 "before_visits": [],
                 "after_visits": [],
                 "pool_visits": [],
-                "warnings": ["対象拠点が登録されていません"],
+                "warnings": [
+                    V2Warning(
+                        type="general",
+                        message="対象拠点が登録されていません",
+                        actionable=False,
+                    )
+                ],
                 "staff_count_by_weekday": {},
                 "unassigned_patients": [],
             }
@@ -1533,9 +1704,25 @@ async def run_v2_pipeline(
     # W41 v2 (警告日本語化): 緯度経度 / 拠点 未設定の患者を明示的に warning に出す.
     for _p in pool_patients:
         if _p.lat is None or _p.lng is None:
-            warnings.append(f"{_p.name} 様: 緯度経度が未登録のためスケジュール対象外")
+            warnings.append(
+                V2Warning(
+                    type="general",
+                    message=f"{_p.name} 様: 緯度経度が未登録のためスケジュール対象外",
+                    actionable=False,
+                    patient_id=_p.id,
+                    patient_name=_p.name,
+                )
+            )
         elif _p.primary_office_id is None:
-            warnings.append(f"{_p.name} 様: 拠点が未設定のためスケジュール対象外")
+            warnings.append(
+                V2Warning(
+                    type="general",
+                    message=f"{_p.name} 様: 拠点が未設定のためスケジュール対象外",
+                    actionable=False,
+                    patient_id=_p.id,
+                    patient_name=_p.name,
+                )
+            )
     pool_visits = build_visits_for_pool(pool_patients)
 
     # H5 + H10: 受入カレンダー × + 昼休憩を除外

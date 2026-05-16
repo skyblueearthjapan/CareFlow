@@ -859,3 +859,449 @@ def test_group_visits_into_courses_sets_same_address_group_id() -> None:
     visits_ui = courses[0].visits
     assert all(vu.same_address_group_id is not None for vu in visits_ui)
     assert visits_ui[0].same_address_group_id == visits_ui[1].same_address_group_id
+
+
+# ---------------------------------------------------------------------------
+# W41 v2 拡張 (構造化警告 + distance_to_next_km + 固定時間変更 API)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_full_optimize_returns_structured_warnings(client, db) -> None:
+    """V2Warning は type / actionable / patient_id 等の構造化フィールドを持つ.
+
+    same_address_consolidation 警告が actionable=True で出ること等を検証.
+    """
+    admin = await _make_user(db, email="v2-sw-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+
+    # 同住所 (同 lat/lng) で異なる固定時刻を持つ 2 患者 → 集約不可 → 警告.
+    p1 = await _seed_patient(
+        db,
+        office=office,
+        code="SW-A",
+        lat=35.65,
+        lng=140.10,
+        weekly_pattern={
+            "entries": [
+                {
+                    "weekday": "Mon",
+                    "preferred_start": "11:00",
+                    "preferred_end": "11:30",
+                    "time_type": "固定",
+                }
+            ]
+        },
+    )
+    await _seed_patient(
+        db,
+        office=office,
+        code="SW-B",
+        lat=35.65,
+        lng=140.10,
+        weekly_pattern={
+            "entries": [
+                {
+                    "weekday": "Mon",
+                    "preferred_start": "10:00",
+                    "preferred_end": "10:30",
+                    "time_type": "固定",
+                }
+            ]
+        },
+    )
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/full-optimize",
+        headers=_bearer(admin),
+        json={"iso_year": 2026, "iso_week": 20, "office_ids": [str(office.id)]},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    warnings = body["warnings"]
+    assert isinstance(warnings, list)
+    assert len(warnings) > 0, "同住所異時刻でも警告が出ない"
+    # 各 warning は構造化されている (type / message / actionable などのキー).
+    types = {w["type"] for w in warnings}
+    assert "same_address_consolidation" in types, f"types: {types}"
+    # actionable=True の warning に patient_id / current_time / suggested_time が埋まる
+    actionable = [
+        w for w in warnings if w["actionable"] and w["type"] == "same_address_consolidation"
+    ]
+    assert actionable, "actionable=True の同住所警告が出ない"
+    sample = actionable[0]
+    assert sample["patient_id"] is not None
+    assert sample["current_time"]
+    assert sample["suggested_time"]
+    # 関連患者の id が p1 か別の集約不可患者
+    assert sample["patient_id"] in (str(p1.id),) or sample["patient_id"]
+
+
+@pytest.mark.asyncio
+async def test_full_optimize_visit_has_distance_to_next_km(client, db) -> None:
+    """同コース内 3 visits 並んだとき distance_to_next_km が計算されている.
+
+    最後の visit は None, それ以外は数値.
+    """
+    admin = await _make_user(db, email="v2-dn-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    # 3 つの近接した patient を月曜 09:00 / 10:00 / 11:00 で固定.
+    for i, (h, lat, lng) in enumerate(
+        [(9, 35.65, 140.10), (10, 35.66, 140.11), (11, 35.67, 140.12)]
+    ):
+        await _seed_patient(
+            db,
+            office=office,
+            code=f"DN-{i}",
+            lat=lat,
+            lng=lng,
+            weekly_pattern={
+                "entries": [
+                    {
+                        "weekday": "Mon",
+                        "preferred_start": f"{h:02d}:00",
+                        "preferred_end": f"{h:02d}:30",
+                        "time_type": "固定",
+                    }
+                ]
+            },
+        )
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/full-optimize",
+        headers=_bearer(admin),
+        json={"iso_year": 2026, "iso_week": 20, "office_ids": [str(office.id)]},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+
+    # 月曜の after で 1 コースに 3 件入るはず.
+    monday = next(wp for wp in body["week_proposals"] if wp["weekday"] == 0)
+    courses = monday["after"]["courses"]
+    assert courses, "月曜 after にコースが無い"
+    # 3 件入っているコースを探す.
+    target_course = next((c for c in courses if c["visits_count"] >= 3), None)
+    assert target_course is not None, "3 件入ったコースが無い"
+    visits = target_course["visits"]
+    # 並びは start_time 昇順
+    assert visits[0]["start_time"] <= visits[1]["start_time"] <= visits[2]["start_time"]
+    # 1 件目 / 2 件目には distance_to_next_km が入っている (> 0)
+    assert visits[0]["distance_to_next_km"] is not None
+    assert visits[0]["distance_to_next_km"] > 0
+    assert visits[1]["distance_to_next_km"] is not None
+    # 3 件目 (最後) は None
+    assert visits[2]["distance_to_next_km"] is None
+
+
+@pytest.mark.asyncio
+async def test_update_fixed_time_master_updates_pfv_and_weekly_pattern(client, db) -> None:
+    """update-fixed-time-master が PFV と patient.weekly_pattern を更新する."""
+    admin = await _make_user(db, email="v2-ufm-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    p = await _seed_patient(
+        db,
+        office=office,
+        code="UFM-1",
+        weekly_pattern={
+            "entries": [
+                {
+                    "weekday": "Mon",
+                    "preferred_start": "10:00",
+                    "preferred_end": "10:30",
+                    "time_type": "固定",
+                }
+            ]
+        },
+    )
+    db.add(
+        PatientFixedVisit(
+            patient_id=p.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(10, 0),
+            duration_min=30,
+            slot_index=0,
+        )
+    )
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/update-fixed-time-master",
+        headers=_bearer(admin),
+        json={
+            "patient_id": str(p.id),
+            "weekday": 0,
+            "new_start": "16:00",
+            "new_end": "17:00",
+            "new_time_type": "固定",
+        },
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["updated"] is True
+    assert body["patient_id"] == str(p.id)
+    assert body["weekday"] == 0
+
+    # PFV が更新されている (async session は refresh で fresh fetch)
+    pfv = await db.scalar(
+        select(PatientFixedVisit).where(
+            PatientFixedVisit.patient_id == p.id,
+            PatientFixedVisit.mode == "normal",
+            PatientFixedVisit.weekday == 0,
+        )
+    )
+    assert pfv is not None
+    await db.refresh(pfv)
+    assert pfv.start_time == time(16, 0)
+    assert pfv.duration_min == 60  # 17:00 - 16:00 = 60min
+
+    # weekly_pattern.entries が更新されている
+    await db.refresh(p)
+    entries = p.weekly_pattern.get("entries") or []
+    mon_entry = next((e for e in entries if e.get("weekday") in (0, "Mon")), None)
+    assert mon_entry is not None
+    assert mon_entry["preferred_start"] == "16:00"
+    assert mon_entry["preferred_end"] == "17:00"
+
+
+@pytest.mark.asyncio
+async def test_update_fixed_time_master_rejects_lunch_break(client, db) -> None:
+    """H10: 12:00-13:00 と重なる時刻は 422."""
+    admin = await _make_user(db, email="v2-ufm-lb@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    p = await _seed_patient(db, office=office, code="UFM-LB")
+    await db.commit()
+    res = await client.post(
+        "/api/v1/schedule/v2/update-fixed-time-master",
+        headers=_bearer(admin),
+        json={
+            "patient_id": str(p.id),
+            "weekday": 0,
+            "new_start": "12:15",
+            "new_end": "12:45",
+            "new_time_type": "固定",
+        },
+    )
+    assert res.status_code == 422, res.text
+
+
+@pytest.mark.asyncio
+async def test_update_fixed_time_master_404_for_unknown_patient(client, db) -> None:
+    import uuid as _uuid
+
+    admin = await _make_user(db, email="v2-ufm-404@example.com", role="admin")
+    res = await client.post(
+        "/api/v1/schedule/v2/update-fixed-time-master",
+        headers=_bearer(admin),
+        json={
+            "patient_id": str(_uuid.uuid4()),
+            "weekday": 0,
+            "new_start": "09:30",
+            "new_end": "10:00",
+        },
+    )
+    assert res.status_code == 404, res.text
+
+
+@pytest.mark.asyncio
+async def test_update_fixed_time_week_only_updates_visit_only(client, db) -> None:
+    """update-fixed-time-week-only が visit のみ更新し PFV は触らない."""
+    from datetime import date
+
+    from app.models.visit import VISIT_STATUS_PLANNED, Visit
+
+    admin = await _make_user(db, email="v2-ufw-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    p = await _seed_patient(
+        db,
+        office=office,
+        code="UFW-1",
+        weekly_pattern={
+            "entries": [
+                {
+                    "weekday": "Mon",
+                    "preferred_start": "10:00",
+                    "preferred_end": "10:30",
+                    "time_type": "固定",
+                }
+            ]
+        },
+    )
+    pfv = PatientFixedVisit(
+        patient_id=p.id,
+        mode="normal",
+        weekday=0,
+        start_time=time(10, 0),
+        duration_min=30,
+        slot_index=0,
+    )
+    db.add(pfv)
+    visit = Visit(
+        patient_id=p.id,
+        visit_date=date(2026, 5, 11),
+        start_time=time(10, 0),
+        end_time=time(10, 30),
+        type="regular",
+        status=VISIT_STATUS_PLANNED,
+        source="auto_alloc_v2w",  # 自動算出由来 → 許可
+        required_staff_count=1,
+    )
+    db.add(visit)
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/update-fixed-time-week-only",
+        headers=_bearer(admin),
+        json={
+            "visit_id": str(visit.id),
+            "new_start": "16:20",
+            "new_end": "17:00",
+        },
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["updated"] is True
+
+    # visit が更新されている (Identity Map をクリアして fresh fetch).
+    # async session は ``await db.refresh(obj)`` で fresh fetch する.
+    await db.refresh(visit)
+    assert visit.start_time == time(16, 20)
+    assert visit.end_time == time(17, 0)
+    # PFV は変わっていない (マスター保護)
+    await db.refresh(pfv)
+    refreshed_pfv = pfv
+    assert refreshed_pfv is not None
+    assert refreshed_pfv.start_time == time(10, 0)
+    assert refreshed_pfv.duration_min == 30
+
+
+@pytest.mark.asyncio
+async def test_update_fixed_time_week_only_rejects_non_auto_source(client, db) -> None:
+    """source='manual' などの非自動算出由来 visit は 409 で拒否."""
+    from datetime import date
+
+    from app.models.visit import VISIT_STATUS_PLANNED, Visit
+
+    admin = await _make_user(db, email="v2-ufw-src@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    p = await _seed_patient(db, office=office, code="UFW-SRC")
+    visit = Visit(
+        patient_id=p.id,
+        visit_date=date(2026, 5, 11),
+        start_time=time(10, 0),
+        end_time=time(10, 30),
+        type="regular",
+        status=VISIT_STATUS_PLANNED,
+        source="manual",  # 手動作成 → 保護対象
+        required_staff_count=1,
+    )
+    db.add(visit)
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/update-fixed-time-week-only",
+        headers=_bearer(admin),
+        json={
+            "visit_id": str(visit.id),
+            "new_start": "11:00",
+            "new_end": "11:30",
+        },
+    )
+    assert res.status_code == 409, res.text
+
+
+@pytest.mark.asyncio
+async def test_update_fixed_time_endpoints_reject_staff(client, db) -> None:
+    """staff ロールは両エンドポイントとも 403."""
+    import uuid as _uuid
+
+    staff = await _make_user(db, email="v2-ufm-staff@example.com", role="staff")
+    res = await client.post(
+        "/api/v1/schedule/v2/update-fixed-time-master",
+        headers=_bearer(staff),
+        json={
+            "patient_id": str(_uuid.uuid4()),
+            "weekday": 0,
+            "new_start": "09:30",
+            "new_end": "10:00",
+        },
+    )
+    assert res.status_code == 403
+
+    res2 = await client.post(
+        "/api/v1/schedule/v2/update-fixed-time-week-only",
+        headers=_bearer(staff),
+        json={
+            "visit_id": str(_uuid.uuid4()),
+            "new_start": "09:30",
+            "new_end": "10:00",
+        },
+    )
+    assert res2.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# W41 v2 拡張 (V2Warning unit test) — _consolidate_same_address_time から V2Warning が返る
+# ---------------------------------------------------------------------------
+
+
+def test_consolidate_same_address_time_emits_v2warning() -> None:
+    """同住所 異時刻 集約不可ケースで V2Warning (type=same_address_consolidation,
+    actionable=True) が返ること."""
+    import uuid as _uuid
+    from datetime import time as _time
+
+    from app.services.scheduling.auto_allocator_v2 import (
+        V2Visit,
+        V2Warning,
+        _consolidate_same_address_time,
+    )
+
+    office_id = _uuid.uuid4()
+    pid_a = _uuid.uuid4()
+    pid_b = _uuid.uuid4()
+    a = V2Visit(
+        patient_id=pid_a,
+        patient_name="A",
+        patient_code="A",
+        weekday=1,
+        start_time=_time(11, 0),
+        end_time=_time(11, 30),
+        service_minutes=30,
+        lat=35.65,
+        lng=140.10,
+        office_id=office_id,
+        am_pm="am",
+        source_kind="pool",
+        time_type="固定",
+        preferred_start="11:00",
+    )
+    b = V2Visit(
+        patient_id=pid_b,
+        patient_name="B",
+        patient_code="B",
+        weekday=1,
+        start_time=_time(10, 0),  # 異なる時刻
+        end_time=_time(10, 30),
+        service_minutes=30,
+        lat=35.65,
+        lng=140.10,
+        office_id=office_id,
+        am_pm="am",
+        source_kind="pool",
+        time_type="固定",
+        preferred_start="10:00",
+    )
+    warnings: list[V2Warning] = []
+    _consolidate_same_address_time([a, b], warnings)
+    consol = [w for w in warnings if w.type == "same_address_consolidation"]
+    assert consol, f"same_address_consolidation 警告が出ていない: {warnings}"
+    w = consol[0]
+    assert w.actionable is True
+    assert w.patient_id in (pid_a, pid_b)
+    assert w.weekday == 1
+    assert w.current_time
+    assert w.suggested_time
+    assert w.time_type == "固定"

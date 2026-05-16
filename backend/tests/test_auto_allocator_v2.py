@@ -20,6 +20,7 @@ from app.services.scheduling.auto_allocator_v2 import (
     MAX_PATIENTS_PER_COURSE,
     MAX_PATIENTS_PER_SET,
     V2Visit,
+    V2Warning,
     apply_individual_proposal,
     build_visits_for_pool,
     calc_h_violations,
@@ -184,7 +185,7 @@ def test_combine_am_pm_pairs_closest() -> None:
     am2 = V2Set(visits=[_make_visit(lat=35.80, lng=140.30)])
     pm1 = V2Set(visits=[_make_visit(lat=35.651, lng=140.101)])  # near am1
     pm2 = V2Set(visits=[_make_visit(lat=35.801, lng=140.301)])  # near am2
-    warnings: list[str] = []
+    warnings: list[V2Warning] = []
     courses = combine_am_pm_sets([am1, am2], [pm1, pm2], staff_count=2, warnings=warnings)
     assert len(courses) == 2
     # 各ペアは近場同士になる
@@ -202,7 +203,7 @@ def test_combine_am_pm_respects_capacity() -> None:
     am2 = V2Set(visits=[_make_visit(lat=35.66, lng=140.11) for _ in range(3)])
     pm1 = V2Set(visits=[_make_visit(lat=35.65, lng=140.10) for _ in range(3)])
     pm2 = V2Set(visits=[_make_visit(lat=35.66, lng=140.11) for _ in range(2)])
-    warnings: list[str] = []
+    warnings: list[V2Warning] = []
     courses = combine_am_pm_sets([am1, am2], [pm1, pm2], staff_count=2, warnings=warnings)
     # 各コースの合計 visits 数は 6 以下
     for am, pm in courses:
@@ -215,7 +216,7 @@ def test_combine_am_pm_single_side_only() -> None:
     from app.services.scheduling.auto_allocator_v2 import V2Set
 
     am1 = V2Set(visits=[_make_visit(lat=35.65, lng=140.10)])
-    warnings: list[str] = []
+    warnings: list[V2Warning] = []
     courses = combine_am_pm_sets([am1], [], staff_count=1, warnings=warnings)
     assert len(courses) == 1
     assert courses[0][0] is am1
@@ -357,7 +358,7 @@ def test_filter_skip_acceptance_in_mode2() -> None:
     lunch_visit.end_time = time(13, 30)
 
     unavailable = {(office_id, 0): {time(10, 0)}}
-    warnings: list[str] = []
+    warnings: list[V2Warning] = []
 
     # skip_acceptance=True → blocked_visit も残る (受入 × 無視)
     filtered = _filter_unavailable_and_lunch(
@@ -372,11 +373,13 @@ def test_filter_skip_acceptance_in_mode2() -> None:
     assert "LUNCH" not in codes, "skip_acceptance=True でも H10 昼休憩は除外されるべき"
 
     # acceptance_calendar 由来の warning は出ていない
-    assert not any("受入カレンダー" in w for w in warnings), (
+    assert not any("受入カレンダー" in w.message for w in warnings), (
         f"skip_acceptance=True なのに 受入カレンダー warning が出ている: {warnings}"
     )
     # 昼休憩 warning は出ている (日本語化済)
-    assert any("昼休憩" in w for w in warnings), f"H10 昼休憩 warning が出ていない: {warnings}"
+    assert any("昼休憩" in w.message for w in warnings), (
+        f"H10 昼休憩 warning が出ていない: {warnings}"
+    )
 
 
 def test_filter_acceptance_enforced_in_mode1_default() -> None:
@@ -391,7 +394,7 @@ def test_filter_acceptance_enforced_in_mode1_default() -> None:
         lat=35.65, lng=140.10, office_id=office_id, start_h=14, start_m=0, patient_name="OK"
     )
     unavailable = {(office_id, 0): {time(10, 0)}}
-    warnings: list[str] = []
+    warnings: list[V2Warning] = []
 
     filtered = _filter_unavailable_and_lunch(
         [blocked_visit, ok_visit],
@@ -401,7 +404,7 @@ def test_filter_acceptance_enforced_in_mode1_default() -> None:
     codes = {v.patient_code for v in filtered}
     assert "X" not in codes, "Mode 1 (default) では acceptance × visit は除外されるべき"
     assert "OK" in codes
-    assert any("受入カレンダー" in w for w in warnings)
+    assert any("受入カレンダー" in w.message for w in warnings)
 
 
 # ---------------------------------------------------------------------------
@@ -875,11 +878,11 @@ def test_enforce_h2_same_address_handles_none_visits_in_target() -> None:
     v2 = _make_visit(lat=35.650, lng=140.100, patient_name="B")
     v3 = _make_visit(lat=35.650, lng=140.100, patient_name="C")
     sets = [V2Set(visits=[v1]), V2Set(visits=[v2]), V2Set(visits=[v3])]
-    warnings: list[str] = []
+    warnings: list[V2Warning] = []
     # 例外を投げずに完走すれば OK
     _enforce_h2_same_address(sets, warnings)
     # 1 つ以上のセットに 2 件まで集約され, 3 件目は警告として残る
-    assert any("3+ visits" in w for w in warnings) or all(len(s.visits) <= 2 for s in sets)
+    assert any("3+ visits" in w.message for w in warnings) or all(len(s.visits) <= 2 for s in sets)
 
 
 # ---------------------------------------------------------------------------
@@ -901,13 +904,13 @@ def test_enforce_h2_split_overflow_distributes_three_same_address() -> None:
     v_c = _make_visit(lat=35.650, lng=140.100, patient_name="C", office_id=office)
     v_d = _make_visit(lat=35.660, lng=140.110, patient_name="D", office_id=office)
     sets = [V2Set(visits=[v_a, v_b, v_c]), V2Set(visits=[v_d])]
-    warnings: list[str] = []
+    warnings: list[V2Warning] = []
     _enforce_h2_split_overflow(sets, warnings)
 
     # 同住所 3 名 → 2 + 1 になる
     assert len(sets[0].visits) == 2
     assert len(sets[1].visits) == 2
-    assert any("3 名以上検出" in w for w in warnings)
+    assert any("3 名以上検出" in w.message for w in warnings)
 
 
 def test_enforce_h2_split_overflow_no_target_emits_warning() -> None:
@@ -921,11 +924,11 @@ def test_enforce_h2_split_overflow_no_target_emits_warning() -> None:
     # set2 は別 (office, weekday, am_pm) なので移動先候補にならない
     v_other = _make_visit(lat=35.700, lng=140.150, patient_name="X", office_id=uuid.uuid4())
     sets = [V2Set(visits=[v_a, v_b, v_c]), V2Set(visits=[v_other])]
-    warnings: list[str] = []
+    warnings: list[V2Warning] = []
     _enforce_h2_split_overflow(sets, warnings)
 
     # 移動先がないので 1 件は overflow → 警告 (日本語化済)
-    assert any("移動先なし" in w for w in warnings)
+    assert any("移動先なし" in w.message for w in warnings)
 
 
 def test_enforce_h2_split_overflow_no_op_for_two_same_address() -> None:
@@ -935,7 +938,7 @@ def test_enforce_h2_split_overflow_no_op_for_two_same_address() -> None:
     v_a = _make_visit(lat=35.650, lng=140.100, patient_name="A")
     v_b = _make_visit(lat=35.650, lng=140.100, patient_name="B")
     sets = [V2Set(visits=[v_a, v_b])]
-    warnings: list[str] = []
+    warnings: list[V2Warning] = []
     _enforce_h2_split_overflow(sets, warnings)
     assert len(sets[0].visits) == 2
     assert warnings == []
@@ -951,9 +954,9 @@ def test_combine_am_pm_zero_staff_emits_warning() -> None:
     from app.services.scheduling.auto_allocator_v2 import V2Set, combine_am_pm_sets
 
     am1 = V2Set(visits=[_make_visit(lat=35.65, lng=140.10)])
-    warnings: list[str] = []
+    warnings: list[V2Warning] = []
     combine_am_pm_sets([am1], [], staff_count=0, warnings=warnings)
-    assert any("スタッフ 0 名" in w for w in warnings)
+    assert any("スタッフ 0 名" in w.message for w in warnings)
 
 
 @pytest.mark.asyncio
@@ -1500,7 +1503,7 @@ def test_consolidate_same_address_time_groups_to_majority() -> None:
         lat=35.65, lng=140.10, office_id=office_id, start_h=10, start_m=0, patient_name="C"
     )
     c.time_type = "終日"
-    warnings: list[str] = []
+    warnings: list[V2Warning] = []
     _consolidate_same_address_time([a, b, c], warnings)
 
     # 10:00 が多数派 (2 件) なので B も 10:00 に集約される
@@ -1508,7 +1511,7 @@ def test_consolidate_same_address_time_groups_to_majority() -> None:
         f"B should be consolidated to 10:00 but stayed at {b.start_time}"
     )
     # 集約成功なので warning は出ない
-    assert not any("同住所集約" in w for w in warnings), (
+    assert not any("同住所集約" in w.message for w in warnings), (
         f"集約成功時に warning が出ている: {warnings}"
     )
 
@@ -1549,7 +1552,7 @@ def test_consolidate_same_address_time_skips_when_fixed_or_out_of_window() -> No
     d.preferred_start = "09:00"
     d.preferred_end = "10:30"
 
-    warnings: list[str] = []
+    warnings: list[V2Warning] = []
     _consolidate_same_address_time([a, b, c, d], warnings)
 
     # C: 動かせない (固定) → start_time は元のまま
@@ -1557,15 +1560,15 @@ def test_consolidate_same_address_time_skips_when_fixed_or_out_of_window() -> No
     # D: 範囲外なので動かない
     assert d.start_time == time(9, 30), f"D should remain at 9:30 (範囲外), got {d.start_time}"
     # warnings は最低 2 件 (C と D)
-    consolidation_warnings = [w for w in warnings if "同住所集約" in w]
+    consolidation_warnings = [w for w in warnings if "同住所集約" in w.message]
     assert len(consolidation_warnings) >= 2, (
         f"固定 / 時間帯外 で 2 件以上の warning が出るはずだが: {consolidation_warnings}"
     )
     # 固定 / 時間帯 の理由がそれぞれ含まれる
-    assert any("固定" in w for w in consolidation_warnings), (
+    assert any("固定" in w.message for w in consolidation_warnings), (
         f"固定 reason が含まれない: {consolidation_warnings}"
     )
-    assert any("時間帯" in w for w in consolidation_warnings), (
+    assert any("時間帯" in w.message for w in consolidation_warnings), (
         f"時間帯 reason が含まれない: {consolidation_warnings}"
     )
 
@@ -1592,21 +1595,21 @@ def test_warnings_are_in_japanese() -> None:
     )
     lunch_v.end_time = time(13, 30)
     unavailable = {(office_id, 0): {time(10, 0)}}
-    warnings_a: list[str] = []
+    warnings_a: list[V2Warning] = []
     _filter_unavailable_and_lunch(
         [blocked_v, lunch_v], unavailable_slots=unavailable, warnings=warnings_a
     )
-    assert any("受入カレンダー" in w and "配置不可" in w for w in warnings_a), (
+    assert any("受入カレンダー" in w.message and "配置不可" in w.message for w in warnings_a), (
         f"日本語化された受入× warning が無い: {warnings_a}"
     )
-    assert any("昼休憩" in w and "配置不可" in w for w in warnings_a), (
+    assert any("昼休憩" in w.message and "配置不可" in w.message for w in warnings_a), (
         f"日本語化された昼休憩 warning が無い: {warnings_a}"
     )
     # 旧英語表現が混入していないこと
     for w in warnings_a:
-        assert "blocked by acceptance_calendar" not in w, f"旧英語表現が残存: {w}"
-        assert "lunch break" not in w, f"旧英語表現が残存: {w}"
-        assert "weekday=" not in w, f"weekday=N 表記が残存: {w}"
+        assert "blocked by acceptance_calendar" not in w.message, f"旧英語表現が残存: {w}"
+        assert "lunch break" not in w.message, f"旧英語表現が残存: {w}"
+        assert "weekday=" not in w.message, f"weekday=N 表記が残存: {w}"
 
     # 2) 同住所集約 — 動かせない warning
     a = _make_visit(
@@ -1624,11 +1627,13 @@ def test_warnings_are_in_japanese() -> None:
     )
     c.time_type = "固定"
     c.preferred_start = "10:00"
-    warnings_b: list[str] = []
+    warnings_b: list[V2Warning] = []
     _consolidate_same_address_time([a, b, c], warnings_b)
-    assert any("同住所集約" in w for w in warnings_b), f"同住所集約 warning が無い: {warnings_b}"
+    assert any("同住所集約" in w.message for w in warnings_b), (
+        f"同住所集約 warning が無い: {warnings_b}"
+    )
     # 月曜 (weekday=0) 表記が日本語に
-    assert any("月曜" in w for w in warnings_b), f"曜日が日本語化されていない: {warnings_b}"
+    assert any("月曜" in w.message for w in warnings_b), f"曜日が日本語化されていない: {warnings_b}"
 
 
 def test_v2visit_has_preferred_window_fields() -> None:

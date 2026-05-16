@@ -302,7 +302,7 @@ function ProposalPopup({ proposal, isApplying, onCancel, onApply }: ProposalPopu
             <AlertDescription>
               <ul className="ml-4 list-disc space-y-0.5 text-xs">
                 {proposal.warnings.map((w, i) => (
-                  <li key={i}>{w}</li>
+                  <li key={i}>{w.message}</li>
                 ))}
               </ul>
             </AlertDescription>

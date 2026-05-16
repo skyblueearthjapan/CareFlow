@@ -30,6 +30,10 @@ import {
   fullOptimizeResponseSchema,
   resetToFixedRequestSchema,
   resetToFixedResponseSchema,
+  updateFixedTimeMasterRequestSchema,
+  updateFixedTimeMasterResponseSchema,
+  updateFixedTimeWeekOnlyRequestSchema,
+  updateFixedTimeWeekOnlyResponseSchema,
   type ApplyIndividualRequest,
   type ApplyIndividualResponse,
   type ApplyWeekOnlyRequest,
@@ -40,6 +44,10 @@ import {
   type FullOptimizeResponse,
   type ResetToFixedRequest,
   type ResetToFixedResponse,
+  type UpdateFixedTimeMasterRequest,
+  type UpdateFixedTimeMasterResponse,
+  type UpdateFixedTimeWeekOnlyRequest,
+  type UpdateFixedTimeWeekOnlyResponse,
 } from '@/lib/schemas/v2/autoScheduleV2';
 
 const DIFF_ADD_PATH = '/api/v1/schedule/v2/diff-add';
@@ -47,6 +55,8 @@ const FULL_OPTIMIZE_PATH = '/api/v1/schedule/v2/full-optimize';
 const APPLY_INDIVIDUAL_PATH = '/api/v1/schedule/v2/apply-individual';
 const RESET_TO_FIXED_PATH = '/api/v1/schedule/v2/reset-to-fixed';
 const APPLY_WEEK_ONLY_PATH = '/api/v1/schedule/v2/apply-week-only';
+const UPDATE_FIXED_TIME_MASTER_PATH = '/api/v1/schedule/v2/update-fixed-time-master';
+const UPDATE_FIXED_TIME_WEEK_ONLY_PATH = '/api/v1/schedule/v2/update-fixed-time-week-only';
 
 function authPair(session: ReturnType<typeof useSession>['data']) {
   return {
@@ -213,6 +223,72 @@ export function useApplyWeekOnlyMutation(): UseMutationResult<
       void qc.invalidateQueries({ queryKey: ['visits'] });
       void qc.invalidateQueries({ queryKey: ['courses'] });
       // patient-fixed-visits は触らないので invalidate しない.
+    },
+  });
+}
+
+/**
+ * POST /api/v1/schedule/v2/update-fixed-time-master — 固定時間マスター更新.
+ *
+ * 同住所集約警告の「マスター更新」アクションから呼ぶ. patient_fixed_visits の
+ * start_time / duration_min と patients.weekly_pattern.entries[weekday] の
+ * preferred_start / preferred_end / time_type を更新する (永続).
+ */
+export function useUpdateFixedTimeMasterMutation(): UseMutationResult<
+  UpdateFixedTimeMasterResponse,
+  Error,
+  UpdateFixedTimeMasterRequest
+> {
+  const qc = useQueryClient();
+  const { data: session } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+
+  return useMutation<UpdateFixedTimeMasterResponse, Error, UpdateFixedTimeMasterRequest>({
+    mutationFn: async (raw) => {
+      const payload = updateFixedTimeMasterRequestSchema.parse(raw);
+      const result = await fetcher<unknown>(UPDATE_FIXED_TIME_MASTER_PATH, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+        accessToken,
+        refreshToken,
+      });
+      return updateFixedTimeMasterResponseSchema.parse(result);
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['patient-fixed-visits'] });
+      void qc.invalidateQueries({ queryKey: ['patients'] });
+    },
+  });
+}
+
+/**
+ * POST /api/v1/schedule/v2/update-fixed-time-week-only — 今週限定の時刻変更.
+ *
+ * apply-week-only 適用後に DB に入った visit 1 件の start_time / end_time を
+ * 上書きする. 自動算出由来 (source='auto_alloc_v2*') の visit のみ許可.
+ */
+export function useUpdateFixedTimeWeekOnlyMutation(): UseMutationResult<
+  UpdateFixedTimeWeekOnlyResponse,
+  Error,
+  UpdateFixedTimeWeekOnlyRequest
+> {
+  const qc = useQueryClient();
+  const { data: session } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+
+  return useMutation<UpdateFixedTimeWeekOnlyResponse, Error, UpdateFixedTimeWeekOnlyRequest>({
+    mutationFn: async (raw) => {
+      const payload = updateFixedTimeWeekOnlyRequestSchema.parse(raw);
+      const result = await fetcher<unknown>(UPDATE_FIXED_TIME_WEEK_ONLY_PATH, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+        accessToken,
+        refreshToken,
+      });
+      return updateFixedTimeWeekOnlyResponseSchema.parse(result);
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['visits'] });
     },
   });
 }

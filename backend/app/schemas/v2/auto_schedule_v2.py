@@ -29,6 +29,43 @@ from pydantic import BaseModel, ConfigDict, Field
 
 AmPmV2 = Literal["am", "pm", "any"]
 
+# W41 v2 拡張 (構造化警告): UI で曜日タブ振り分け + 「⏰ 固定時間を変更」アクション
+# を出すために warning を type / patient_id / suggested_time 等で構造化する.
+V2WarningTypeOut = Literal[
+    "same_address_consolidation",
+    "course_capacity",
+    "course_long_distance",
+    "course_count",
+    "acceptance_blocked",
+    "general",
+]
+
+
+class V2WarningOut(BaseModel):
+    """構造化警告 (Backend ``auto_allocator_v2.V2Warning`` と 1:1 対応).
+
+    UI 側 (``FullOptimizeDialog``):
+        - ``weekday`` でタブを振り分け (None → 「曜日不問」タブ).
+        - ``actionable=True`` の警告に「⏰ 固定時間を変更」ボタンを出す.
+        - ``patient_id`` / ``current_time`` / ``suggested_time`` / ``time_type``
+          をモーダル初期値に流す.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: V2WarningTypeOut
+    message: str
+    weekday: int | None = None
+    actionable: bool = False
+    patient_id: uuid.UUID | None = None
+    patient_name: str | None = None
+    visit_id: uuid.UUID | None = None
+    current_time: str | None = None
+    suggested_time: str | None = None
+    time_type: str | None = None
+    preferred_start: str | None = None
+    preferred_end: str | None = None
+
 
 class V2VisitPlan(BaseModel):
     """提案の単位 (1 件の訪問予定; weekday × start_time × course)."""
@@ -80,6 +117,13 @@ class V2VisitForUI(BaseModel):
     # time_type='時間帯' のとき範囲 (start-end), '固定' のとき開始時刻を保持.
     preferred_start: str | None = None
     preferred_end: str | None = None
+    # W41 v2 拡張 (訪問間距離): 同コース内で次の patient までの直線距離 (km).
+    # コース内 start_time 昇順で隣接ペアの Haversine 距離を計算. 最後の visit は null.
+    # UI で「↘ 1.2km」のような曲線矢印 + 距離ラベル表示に使う.
+    distance_to_next_km: float | None = None
+    # W41 v2 拡張 (週限定変更): 提案中 visit の ID. apply-week-only 後に DB に
+    # 入った visit を「今週限定」変更する際の識別子. 提案算出直後は null.
+    visit_id: uuid.UUID | None = None
 
 
 class V2CourseSummary(BaseModel):
@@ -191,7 +235,7 @@ class V2DiffAddProposal(BaseModel):
     before_summary: V2BeforeAfterSummary = Field(default_factory=V2BeforeAfterSummary)
     after_summary: V2BeforeAfterSummary = Field(default_factory=V2BeforeAfterSummary)
     delta: V2ProposalDelta = Field(default_factory=V2ProposalDelta)
-    warnings: list[str] = Field(default_factory=list)
+    warnings: list[V2WarningOut] = Field(default_factory=list)
 
 
 class AutoScheduleV2DiffAddResponse(BaseModel):
@@ -202,7 +246,7 @@ class AutoScheduleV2DiffAddResponse(BaseModel):
     proposal_batch_id: uuid.UUID
     proposals: list[V2DiffAddProposal] = Field(default_factory=list)
     kpi_overall: V2KpiOverall = Field(default_factory=V2KpiOverall)
-    warnings: list[str] = Field(default_factory=list)
+    warnings: list[V2WarningOut] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +276,7 @@ class V2IndividualProposal(BaseModel):
     current_pfv: list[V2VisitPlan] = Field(default_factory=list)
     proposed_pfv: list[V2VisitPlan] = Field(default_factory=list)
     delta: V2ProposalDelta = Field(default_factory=V2ProposalDelta)
-    warnings: list[str] = Field(default_factory=list)
+    warnings: list[V2WarningOut] = Field(default_factory=list)
 
 
 class UnassignedPatient(BaseModel):
@@ -259,7 +303,7 @@ class AutoScheduleV2FullOptimizeResponse(BaseModel):
     week_proposals: list[V2WeekdayBeforeAfter] = Field(default_factory=list)
     individual_proposals: list[V2IndividualProposal] = Field(default_factory=list)
     kpi_overall: V2KpiOverall = Field(default_factory=V2KpiOverall)
-    warnings: list[str] = Field(default_factory=list)
+    warnings: list[V2WarningOut] = Field(default_factory=list)
     # W41 v2 (Mode 2 UI 拡張): pool に入れたが after_visits に出てこなかった患者.
     # Mode 2 (full_optimize) のときのみ非空, Mode 1 (diff_add) では参照しない.
     unassigned_patients: list[UnassignedPatient] = Field(default_factory=list)
@@ -393,6 +437,57 @@ class AutoScheduleV2ApplyWeekOnlyResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+# ---------------------------------------------------------------------------
+# 6) /update-fixed-time-master  (W41 v2 拡張: 警告アクション)
+# ---------------------------------------------------------------------------
+
+
+class UpdateFixedTimeMasterRequest(BaseModel):
+    """``POST /api/v1/schedule/v2/update-fixed-time-master`` request.
+
+    patient_fixed_visits (永続マスター) と patient.weekly_pattern の preferred_*
+    を一括更新する. 同住所集約警告の「マスター更新」アクションから呼ぶ.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    patient_id: uuid.UUID
+    weekday: int = Field(ge=0, le=6)
+    new_start: str = Field(min_length=4, max_length=8)  # "HH:MM" or "HH:MM:SS"
+    new_end: str | None = Field(default=None, max_length=8)
+    new_time_type: Literal["固定", "時間帯", "午前", "午後", "終日"] | None = None
+
+
+class UpdateFixedTimeMasterResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    updated: bool
+    patient_id: uuid.UUID
+    weekday: int
+
+
+class UpdateFixedTimeWeekOnlyRequest(BaseModel):
+    """``POST /api/v1/schedule/v2/update-fixed-time-week-only`` request.
+
+    apply-week-only で DB に入った visit 1 件の start_time / end_time を上書き.
+    マスター (PFV / weekly_pattern) は変更しない. 対象 visit は ``source`` が
+    ``auto_alloc_v2*`` 系 (自動算出由来) のみ許可する.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    visit_id: uuid.UUID
+    new_start: str = Field(min_length=4, max_length=8)
+    new_end: str | None = Field(default=None, max_length=8)
+
+
+class UpdateFixedTimeWeekOnlyResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    updated: bool
+    visit_id: uuid.UUID
+
+
 __all__ = [
     "AmPmV2",
     "AutoScheduleV2ApplyIndividualRequest",
@@ -405,6 +500,11 @@ __all__ = [
     "AutoScheduleV2FullOptimizeResponse",
     "AutoScheduleV2ResetToFixedRequest",
     "AutoScheduleV2ResetToFixedResponse",
+    "UnassignedPatient",
+    "UpdateFixedTimeMasterRequest",
+    "UpdateFixedTimeMasterResponse",
+    "UpdateFixedTimeWeekOnlyRequest",
+    "UpdateFixedTimeWeekOnlyResponse",
     "V2BeforeAfterSummary",
     "V2CourseContainer",
     "V2CourseSummary",
@@ -415,6 +515,7 @@ __all__ = [
     "V2ProposalDelta",
     "V2VisitForUI",
     "V2VisitPlan",
+    "V2WarningOut",
+    "V2WarningTypeOut",
     "V2WeekdayBeforeAfter",
-    "UnassignedPatient",
 ]

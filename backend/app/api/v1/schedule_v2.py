@@ -34,7 +34,10 @@ from sqlalchemy.exc import IntegrityError
 
 from app.core.deps import DbDep, require_role
 from app.models.office import Office
+from app.models.patient import Patient
+from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.user import User
+from app.models.visit import Visit
 from app.schemas.v2.auto_schedule_v2 import (
     AutoScheduleV2ApplyIndividualRequest,
     AutoScheduleV2ApplyIndividualResponse,
@@ -47,6 +50,10 @@ from app.schemas.v2.auto_schedule_v2 import (
     AutoScheduleV2ResetToFixedRequest,
     AutoScheduleV2ResetToFixedResponse,
     UnassignedPatient,
+    UpdateFixedTimeMasterRequest,
+    UpdateFixedTimeMasterResponse,
+    UpdateFixedTimeWeekOnlyRequest,
+    UpdateFixedTimeWeekOnlyResponse,
     V2BeforeAfterSummary,
     V2CourseContainer,
     V2CourseSummary,
@@ -56,12 +63,14 @@ from app.schemas.v2.auto_schedule_v2 import (
     V2ProposalDelta,
     V2VisitForUI,
     V2VisitPlan,
+    V2WarningOut,
     V2WeekdayBeforeAfter,
 )
 from app.services.scheduling.auto_allocator_v2 import (
     LUNCH_END,
     LUNCH_START,
     V2Visit,
+    V2Warning,
     _address_bucket,
     apply_individual_proposal,
     apply_week_only,
@@ -92,6 +101,24 @@ def _v2visit_to_plan(v: V2Visit) -> V2VisitPlan:
         office_id=v.office_id,
         am_pm=v.am_pm,
         assigned_staff_id=v.assigned_staff_id,
+    )
+
+
+def _warning_to_out(w: V2Warning) -> V2WarningOut:
+    """``V2Warning`` (dataclass) を Pydantic ``V2WarningOut`` に変換."""
+    return V2WarningOut(
+        type=w.type,
+        message=w.message,
+        weekday=w.weekday,
+        actionable=w.actionable,
+        patient_id=w.patient_id,
+        patient_name=w.patient_name,
+        visit_id=w.visit_id,
+        current_time=w.current_time,
+        suggested_time=w.suggested_time,
+        time_type=w.time_type,
+        preferred_start=w.preferred_start,
+        preferred_end=w.preferred_end,
     )
 
 
@@ -127,6 +154,7 @@ def _v2visit_to_ui(
         same_address_group_id=same_address_group_id,
         preferred_start=v.preferred_start,
         preferred_end=v.preferred_end,
+        distance_to_next_km=v.distance_to_next_km,
     )
 
 
@@ -167,7 +195,7 @@ def _build_kpi_overall(
     before: list[V2Visit],
     after: list[V2Visit],
     *,
-    warnings: list[str],
+    warnings: list[V2Warning],
 ) -> V2KpiOverall:
     bd = calc_total_distance(before)
     ad = calc_total_distance(after)
@@ -178,7 +206,9 @@ def _build_kpi_overall(
     # W41 v2 (警告日本語化): warning に「マネージャー補充候補」が出る = 容量/コース超過.
     # 旧表現 "超過" / "exceeds" を後方互換で残す.
     overflows = sum(
-        1 for w in warnings if "マネージャー補充候補" in w or "超過" in w or "exceeds" in w
+        1
+        for w in warnings
+        if "マネージャー補充候補" in w.message or "超過" in w.message or "exceeds" in w.message
     )
     return V2KpiOverall(
         total_distance_km_before=round(bd, 4),
@@ -246,6 +276,12 @@ def _group_visits_into_courses(
         dist = 0.0
         for i in range(1, len(sv)):
             dist += haversine_km(sv[i - 1].lat, sv[i - 1].lng, sv[i].lat, sv[i].lng)
+        # W41 v2 拡張 (訪問間距離): 隣接ペアの距離を各 visit に書き込む.
+        # 最後の visit (sv[-1]) は None のまま.
+        for i in range(len(sv) - 1):
+            sv[i].distance_to_next_km = round(
+                haversine_km(sv[i].lat, sv[i].lng, sv[i + 1].lat, sv[i + 1].lng), 4
+            )
         office_name = (office_name_by_id or {}).get(office_id)
         out.append(
             V2CourseSummary(
@@ -358,7 +394,7 @@ async def diff_add_endpoint(
     before_visits: list[V2Visit] = result["before_visits"]
     after_visits: list[V2Visit] = result["after_visits"]
     pool_visits: list[V2Visit] = result["pool_visits"]
-    warnings: list[str] = result["warnings"]
+    warnings: list[V2Warning] = result["warnings"]
 
     # プール患者ごとに 1 つの proposal を作る
     by_pid: dict[UUID, list[V2Visit]] = {}
@@ -418,7 +454,7 @@ async def diff_add_endpoint(
         proposal_batch_id=result["proposal_batch_id"],
         proposals=proposals,
         kpi_overall=kpi,
-        warnings=warnings,
+        warnings=[_warning_to_out(w) for w in warnings],
     )
 
 
@@ -455,7 +491,7 @@ async def full_optimize_endpoint(
 
     before_visits: list[V2Visit] = result["before_visits"]
     after_visits: list[V2Visit] = result["after_visits"]
-    warnings: list[str] = result["warnings"]
+    warnings: list[V2Warning] = result["warnings"]
 
     # W41 v2 (Mode 2 Before/After 表示拡張): UI ヘッダーで「拠点名 + コース名」
     # 表記するため、Before/After に含まれる office_id 集合を 1 度だけ name に解決.
@@ -487,7 +523,7 @@ async def full_optimize_endpoint(
         week_proposals=week_proposals,
         individual_proposals=individual,
         kpi_overall=kpi,
-        warnings=warnings,
+        warnings=[_warning_to_out(w) for w in warnings],
         unassigned_patients=unassigned,
     )
 
@@ -760,6 +796,323 @@ async def apply_week_only_endpoint(
         visit_staff_assignments_created=int(result.get("visit_staff_assignments_created", 0)),
         warnings=list(result.get("warnings", [])),
     )
+
+
+# ---------------------------------------------------------------------------
+# 6) POST /schedule/v2/update-fixed-time-master (W41 v2 拡張: 警告アクション)
+# ---------------------------------------------------------------------------
+
+
+def _parse_hhmm_loose(value: str) -> time_cls | None:
+    """ "HH:MM" or "HH:MM:SS" を ``time`` に変換. 失敗時は None."""
+    parts = value.split(":")
+    if len(parts) < 2 or len(parts) > 3:
+        return None
+    try:
+        h = int(parts[0])
+        m = int(parts[1])
+        s = int(parts[2]) if len(parts) == 3 else 0
+    except ValueError:
+        return None
+    if not (0 <= h <= 23 and 0 <= m <= 59 and 0 <= s <= 59):
+        return None
+    return time_cls(h, m, s)
+
+
+_TIME_TYPE_TO_AM_PM: dict[str, str] = {
+    "午前": "am",
+    "午後": "pm",
+    "終日": "any",
+}
+
+
+def _update_weekly_pattern_entry(
+    pattern: dict[str, object] | None,
+    *,
+    weekday: int,
+    new_start: str,
+    new_end: str | None,
+    new_time_type: str | None,
+) -> dict[str, object]:
+    """``patient.weekly_pattern`` の entries[weekday] を更新する.
+
+    リスト形式 (entries) を優先. entries が無い場合は新規に構築する.
+    weekday は int (0=月..6=日) で書き込む.
+    """
+    pat: dict[str, object] = dict(pattern) if isinstance(pattern, dict) else {}
+    entries_raw = pat.get("entries")
+    entries: list[dict[str, object]]
+    if isinstance(entries_raw, list):
+        entries = [dict(e) if isinstance(e, dict) else {} for e in entries_raw]
+    else:
+        entries = []
+
+    weekday_codes = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri", 5: "Sat", 6: "Sun"}
+    target_code = weekday_codes.get(weekday)
+
+    target_index: int | None = None
+    for i, e in enumerate(entries):
+        ew = e.get("weekday")
+        if ew == weekday or ew == target_code:
+            target_index = i
+            break
+
+    new_entry: dict[str, object] = {"weekday": weekday, "preferred_start": new_start}
+    if new_end:
+        new_entry["preferred_end"] = new_end
+    if new_time_type:
+        new_entry["time_type"] = new_time_type
+
+    if target_index is not None:
+        existing = entries[target_index]
+        existing["preferred_start"] = new_start
+        if new_end:
+            existing["preferred_end"] = new_end
+        elif "preferred_end" in existing and not new_end:
+            # new_end=None は末端の上書きしないという意図. 既存値は触らない.
+            pass
+        if new_time_type:
+            existing["time_type"] = new_time_type
+        entries[target_index] = existing
+    else:
+        entries.append(new_entry)
+
+    pat["entries"] = entries
+    return pat
+
+
+@router.post(
+    "/v2/update-fixed-time-master",
+    response_model=UpdateFixedTimeMasterResponse,
+    status_code=status.HTTP_200_OK,
+    summary="W41 v2 拡張: 患者の固定時間マスター (PFV + weekly_pattern) を更新",
+)
+async def update_fixed_time_master_endpoint(
+    payload: UpdateFixedTimeMasterRequest,
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+) -> UpdateFixedTimeMasterResponse:
+    """同住所集約警告の「マスター更新」アクション用エンドポイント.
+
+    対象:
+      - ``patient_fixed_visits (mode='normal', slot_index=0)`` の start_time / duration_min
+      - ``patient.weekly_pattern.entries[weekday]`` の preferred_start / preferred_end / time_type
+
+    PFV が無い場合は新規 INSERT, ある場合は UPDATE.
+    """
+    start_t = _parse_hhmm_loose(payload.new_start)
+    if start_t is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"new_start は HH:MM 形式が必要 (received: {payload.new_start!r})",
+        )
+    end_t: time_cls | None = None
+    if payload.new_end:
+        end_t = _parse_hhmm_loose(payload.new_end)
+        if end_t is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"new_end は HH:MM 形式が必要 (received: {payload.new_end!r})",
+            )
+        if end_t <= start_t:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="new_end は new_start より後にしてください",
+            )
+    # H10: 12:00-13:00 の昼休憩重複を弾く (start..end のどちらかが昼休憩に重なる).
+    eff_end = end_t or start_t
+    if start_t < LUNCH_END and eff_end > LUNCH_START:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="H10 違反: 昼休憩 12:00-13:00 に重なる時間は指定できません",
+        )
+
+    try:
+        # 患者存在チェック + 行ロック
+        patient_row = await db.scalar(
+            select(Patient)
+            .where(Patient.id == payload.patient_id, Patient.deleted_at.is_(None))
+            .with_for_update()
+        )
+        if patient_row is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"patient_id={payload.patient_id} が見つかりません",
+            )
+
+        # PFV の取得 (FOR UPDATE) — 無い場合は新規 INSERT
+        pfv_row = await db.scalar(
+            select(PatientFixedVisit)
+            .where(
+                PatientFixedVisit.patient_id == payload.patient_id,
+                PatientFixedVisit.mode == "normal",
+                PatientFixedVisit.weekday == payload.weekday,
+                PatientFixedVisit.slot_index == 0,
+            )
+            .with_for_update()
+        )
+        # duration_min は new_end - new_start から導出 (end が無ければ既存値 or 30)
+        if end_t is not None:
+            duration_min = (end_t.hour * 60 + end_t.minute) - (start_t.hour * 60 + start_t.minute)
+        elif pfv_row is not None:
+            duration_min = pfv_row.duration_min
+        else:
+            duration_min = 30
+        if duration_min <= 0 or duration_min > 480:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"duration_min が範囲外です (computed={duration_min})",
+            )
+
+        if pfv_row is None:
+            pfv_row = PatientFixedVisit(
+                patient_id=payload.patient_id,
+                mode="normal",
+                weekday=payload.weekday,
+                start_time=start_t,
+                duration_min=duration_min,
+                slot_index=0,
+            )
+            db.add(pfv_row)
+        else:
+            pfv_row.start_time = start_t
+            pfv_row.duration_min = duration_min
+
+        # patient.weekly_pattern も更新
+        patient_row.weekly_pattern = _update_weekly_pattern_entry(
+            patient_row.weekly_pattern if isinstance(patient_row.weekly_pattern, dict) else None,
+            weekday=payload.weekday,
+            new_start=payload.new_start,
+            new_end=payload.new_end,
+            new_time_type=payload.new_time_type,
+        )
+        await db.flush()
+        await db.commit()
+    except HTTPException:
+        await db.rollback()
+        raise
+    except IntegrityError as exc:
+        await db.rollback()
+        logger.warning("update_fixed_time_master: integrity error: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="他のユーザーが同じ固定枠を更新中です。もう一度実行してください。",
+        ) from exc
+    except Exception:
+        await db.rollback()
+        raise
+
+    return UpdateFixedTimeMasterResponse(
+        updated=True,
+        patient_id=payload.patient_id,
+        weekday=payload.weekday,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 7) POST /schedule/v2/update-fixed-time-week-only (W41 v2 拡張)
+# ---------------------------------------------------------------------------
+
+# update-fixed-time-week-only は自動算出由来の visit のみ許可する.
+# 手動作成 / インポート系の visit を保護するため source プレフィックスで判定.
+_WEEK_ONLY_ALLOWED_SOURCE_PREFIX: str = "auto_alloc_v2"
+
+
+@router.post(
+    "/v2/update-fixed-time-week-only",
+    response_model=UpdateFixedTimeWeekOnlyResponse,
+    status_code=status.HTTP_200_OK,
+    summary="W41 v2 拡張: 提案中 visit の時刻を 1 件だけ上書き (マスターは触らない)",
+)
+async def update_fixed_time_week_only_endpoint(
+    payload: UpdateFixedTimeWeekOnlyRequest,
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+) -> UpdateFixedTimeWeekOnlyResponse:
+    """提案中 visit の start_time / end_time を 1 件だけ上書きする.
+
+    対象 visit は ``source`` が ``auto_alloc_v2*`` で始まり、``status='planned'``
+    かつ ``deleted_at IS NULL`` であること. 本番運用 visits を変更しないための保護.
+    """
+    start_t = _parse_hhmm_loose(payload.new_start)
+    if start_t is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"new_start は HH:MM 形式が必要 (received: {payload.new_start!r})",
+        )
+    end_t: time_cls | None = None
+    if payload.new_end:
+        end_t = _parse_hhmm_loose(payload.new_end)
+        if end_t is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"new_end は HH:MM 形式が必要 (received: {payload.new_end!r})",
+            )
+        if end_t <= start_t:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="new_end は new_start より後にしてください",
+            )
+
+    try:
+        visit_row = await db.scalar(
+            select(Visit)
+            .where(Visit.id == payload.visit_id, Visit.deleted_at.is_(None))
+            .with_for_update()
+        )
+        if visit_row is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"visit_id={payload.visit_id} が見つかりません",
+            )
+        # source: auto_alloc_v2 系のみ許可 (本番運用 visit を保護)
+        if not visit_row.source.startswith(_WEEK_ONLY_ALLOWED_SOURCE_PREFIX):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "この visit は自動算出由来ではないため週限定変更できません "
+                    f"(source={visit_row.source!r})."
+                ),
+            )
+        # H10: 12:00-13:00 と重複してはならない
+        effective_end = end_t or visit_row.end_time
+        if start_t < LUNCH_END and effective_end > LUNCH_START:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="H10 違反: 昼休憩 12:00-13:00 に重なる時間は指定できません",
+            )
+        # 旧 start から duration を計算 (end_t 未指定時は duration を保つ).
+        prev_start = visit_row.start_time
+        prev_end = visit_row.end_time
+        prev_duration_min = (prev_end.hour * 60 + prev_end.minute) - (
+            prev_start.hour * 60 + prev_start.minute
+        )
+        visit_row.start_time = start_t
+        if end_t is not None:
+            visit_row.end_time = end_t
+        elif prev_duration_min > 0:
+            # 元の duration を保ったまま start_time だけずらす.
+            new_end_total = start_t.hour * 60 + start_t.minute + prev_duration_min
+            if new_end_total >= 24 * 60:
+                new_end_total = 23 * 60 + 59
+            visit_row.end_time = time_cls(new_end_total // 60, new_end_total % 60)
+        await db.flush()
+        await db.commit()
+    except HTTPException:
+        await db.rollback()
+        raise
+    except IntegrityError as exc:
+        await db.rollback()
+        logger.warning("update_fixed_time_week_only: integrity error: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="他のユーザーが同じ visit を更新中です。もう一度実行してください。",
+        ) from exc
+    except Exception:
+        await db.rollback()
+        raise
+
+    return UpdateFixedTimeWeekOnlyResponse(updated=True, visit_id=payload.visit_id)
 
 
 __all__ = ["router"]

@@ -30,6 +30,37 @@ const amPmSchema = z.enum(['am', 'pm', 'any']);
 export type AmPmV2 = z.infer<typeof amPmSchema>;
 
 // ---------------------------------------------------------------------------
+// W41 v2 拡張 (構造化警告): UI で曜日タブ振り分け + 「⏰ 固定時間を変更」アクション.
+// Backend ``V2WarningOut`` と 1:1 対応.
+// ---------------------------------------------------------------------------
+
+export const v2WarningTypeSchema = z.enum([
+  'same_address_consolidation',
+  'course_capacity',
+  'course_long_distance',
+  'course_count',
+  'acceptance_blocked',
+  'general',
+]);
+export type V2WarningType = z.infer<typeof v2WarningTypeSchema>;
+
+export const v2WarningSchema = z.object({
+  type: v2WarningTypeSchema,
+  message: z.string(),
+  weekday: z.number().int().min(0).max(6).nullable().default(null),
+  actionable: z.boolean().default(false),
+  patient_id: z.string().uuid().nullable().default(null),
+  patient_name: z.string().nullable().default(null),
+  visit_id: z.string().uuid().nullable().default(null),
+  current_time: z.string().nullable().default(null),
+  suggested_time: z.string().nullable().default(null),
+  time_type: z.string().nullable().default(null),
+  preferred_start: z.string().nullable().default(null),
+  preferred_end: z.string().nullable().default(null),
+});
+export type V2Warning = z.infer<typeof v2WarningSchema>;
+
+// ---------------------------------------------------------------------------
 // 提案 visit (Backend V2VisitPlan と一致)
 // ---------------------------------------------------------------------------
 
@@ -70,6 +101,12 @@ export const v2VisitForUiSchema = z.object({
   // time_type='時間帯' のとき範囲 (start-end), '固定' のとき開始時刻のみ保持.
   preferred_start: z.string().nullable().default(null),
   preferred_end: z.string().nullable().default(null),
+  // W41 v2 拡張 (訪問間距離): 同コース内で次の patient までの直線距離 (km).
+  // コース内 start_time 昇順で隣接ペアの Haversine 距離. 最後の visit は null.
+  distance_to_next_km: z.number().nullable().default(null),
+  // W41 v2 拡張 (週限定変更): 提案中 visit の ID. apply-week-only 後に DB に
+  // 入った visit を「今週限定」変更する際の識別子. 提案算出直後は null.
+  visit_id: z.string().uuid().nullable().default(null),
 });
 export type V2VisitForUI = z.infer<typeof v2VisitForUiSchema>;
 
@@ -163,7 +200,7 @@ export const diffAddProposalSchema = z.object({
   before_summary: v2BeforeAfterSummarySchema,
   after_summary: v2BeforeAfterSummarySchema,
   delta: v2ProposalDeltaSchema,
-  warnings: z.array(z.string()).default([]),
+  warnings: z.array(v2WarningSchema).default([]),
 });
 export type DiffAddProposal = z.infer<typeof diffAddProposalSchema>;
 
@@ -171,7 +208,7 @@ export const diffAddResponseSchema = z.object({
   proposal_batch_id: z.string().uuid(),
   proposals: z.array(diffAddProposalSchema).default([]),
   kpi_overall: v2KpiOverallSchema,
-  warnings: z.array(z.string()).default([]),
+  warnings: z.array(v2WarningSchema).default([]),
 });
 export type DiffAddResponse = z.infer<typeof diffAddResponseSchema>;
 
@@ -194,7 +231,7 @@ export const individualProposalSchema = z.object({
   current_pfv: z.array(v2VisitPlanSchema).default([]),
   proposed_pfv: z.array(v2VisitPlanSchema).default([]),
   delta: v2ProposalDeltaSchema,
-  warnings: z.array(z.string()).default([]),
+  warnings: z.array(v2WarningSchema).default([]),
 });
 export type IndividualProposal = z.infer<typeof individualProposalSchema>;
 
@@ -216,7 +253,7 @@ export const fullOptimizeResponseSchema = z.object({
   week_proposals: z.array(v2WeekdayBeforeAfterSchema).default([]),
   individual_proposals: z.array(individualProposalSchema).default([]),
   kpi_overall: v2KpiOverallSchema,
-  warnings: z.array(z.string()).default([]),
+  warnings: z.array(v2WarningSchema).default([]),
   // W41 v2 (Mode 2 UI 拡張): pool に入れたが after_visits に出てこなかった患者.
   unassigned_patients: z.array(unassignedPatientSchema).default([]),
 });
@@ -309,3 +346,38 @@ export const applyWeekOnlyResponseSchema = z.object({
   warnings: z.array(z.string()).default([]),
 });
 export type ApplyWeekOnlyResponse = z.infer<typeof applyWeekOnlyResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// W41 v2 拡張: 固定時間変更 (警告アクションから呼ぶ)
+// ---------------------------------------------------------------------------
+
+const hhmmSchema = z.string().regex(/^\d{1,2}:\d{2}(:\d{2})?$/, '時刻は HH:MM 形式');
+
+export const updateFixedTimeMasterRequestSchema = z.object({
+  patient_id: z.string().uuid(),
+  weekday: weekdaySchema,
+  new_start: hhmmSchema,
+  new_end: hhmmSchema.nullable().optional(),
+  new_time_type: z.enum(['固定', '時間帯', '午前', '午後', '終日']).nullable().optional(),
+});
+export type UpdateFixedTimeMasterRequest = z.infer<typeof updateFixedTimeMasterRequestSchema>;
+
+export const updateFixedTimeMasterResponseSchema = z.object({
+  updated: z.boolean(),
+  patient_id: z.string().uuid(),
+  weekday: weekdaySchema,
+});
+export type UpdateFixedTimeMasterResponse = z.infer<typeof updateFixedTimeMasterResponseSchema>;
+
+export const updateFixedTimeWeekOnlyRequestSchema = z.object({
+  visit_id: z.string().uuid(),
+  new_start: hhmmSchema,
+  new_end: hhmmSchema.nullable().optional(),
+});
+export type UpdateFixedTimeWeekOnlyRequest = z.infer<typeof updateFixedTimeWeekOnlyRequestSchema>;
+
+export const updateFixedTimeWeekOnlyResponseSchema = z.object({
+  updated: z.boolean(),
+  visit_id: z.string().uuid(),
+});
+export type UpdateFixedTimeWeekOnlyResponse = z.infer<typeof updateFixedTimeWeekOnlyResponseSchema>;
