@@ -5,12 +5,12 @@
  *
  * 仕様書: ``docs/plans/auto-schedule-v2.md`` v0.2 §4, §7, §13.5.2
  *
- * フロー:
- *   1. 開くと POST /full-optimize で全 active 患者の再構築提案を算出 (時間かかる, spinner)
- *   2. KPI バー + 曜日タブ Before/After 並列表示 (week_proposals)
- *   3. 「個別調整」ボタン → 患者ごと Before/After ポップアップを順に表示 (individual_proposals)
- *   4. 1 件ずつ採用 → 当該患者の patient_fixed_visits 更新 (apply-individual)
- *   5. 「すべて見終わる」で閉じる
+ * フロー (2 段階):
+ *   1. 開くと POST /full-optimize で全 active 患者の再構築提案を算出 (spinner)
+ *   2. 結果サマリー画面 (reviewing-summary): KPI バー + 曜日タブ Before/After
+ *   3. 大枠判断: 「変更しない (閉じる)」 or 「個別に確認していく →」
+ *   4. 個別調整モード (individual-review): 患者ごと Before/After ポップアップ
+ *   5. 全件確認で completed → ダイアログ閉じる
  *
  * 一括採用ボタンは設けない (Q2 確定).
  */
@@ -59,6 +59,17 @@ function fmtWd(weekday: number): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// State machine
+// ─────────────────────────────────────────────────────────────────────────
+
+type DialogStage =
+  | 'idle' // 初期
+  | 'allocating' // /full-optimize 実行中
+  | 'reviewing-summary' // 結果サマリー閲覧中 (大枠判断前)
+  | 'individual-review' // 個別調整モード (1 件ずつ確認)
+  | 'completed'; // 全件確認終了 or 中断
+
+// ─────────────────────────────────────────────────────────────────────────
 // Props
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -84,24 +95,25 @@ export function FullOptimizeDialog({
   const fetchMut = useFullOptimizeMutation();
   const applyMut = useApplyIndividualMutation();
 
+  const [stage, setStage] = React.useState<DialogStage>('idle');
   const [result, setResult] = React.useState<FullOptimizeResponse | null>(null);
   const [activeTab, setActiveTab] = React.useState<string>('0'); // weekday string
-  // 個別調整モード関連.
-  const [individualMode, setIndividualMode] = React.useState(false);
   const [activePatient, setActivePatient] = React.useState<IndividualProposal | null>(null);
   // 患者 ID → 採用/却下 のローカル状態.
   const [appliedPatientIds, setAppliedPatientIds] = React.useState<Set<string>>(new Set());
   const [rejectedPatientIds, setRejectedPatientIds] = React.useState<Set<string>>(new Set());
+  const [skippedPatientIds, setSkippedPatientIds] = React.useState<Set<string>>(new Set());
 
   // open のたびにリセット + 再計算.
   React.useEffect(() => {
     if (!open) return;
+    setStage('allocating');
     setResult(null);
     setActiveTab('0');
-    setIndividualMode(false);
     setActivePatient(null);
     setAppliedPatientIds(new Set());
     setRejectedPatientIds(new Set());
+    setSkippedPatientIds(new Set());
     fetchMut.reset();
     applyMut.reset();
     void (async () => {
@@ -112,8 +124,10 @@ export function FullOptimizeDialog({
           office_ids: officeId ? [officeId] : [],
         });
         setResult(res);
+        setStage('reviewing-summary');
       } catch (err) {
         toast.error(`全面最適化に失敗しました: ${formatErr(err)}`);
+        setStage('idle');
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -128,11 +142,39 @@ export function FullOptimizeDialog({
     onClose();
   };
 
+  /** 結果サマリー画面から個別調整モードへ移行 */
+  const handleStartIndividualReview = () => {
+    if (!result) return;
+    const first = result.individual_proposals[0];
+    if (!first) {
+      toast.info('調整可能な患者がありません');
+      return;
+    }
+    setActivePatient(first);
+    setStage('individual-review');
+  };
+
   const weekProposalByWeekday = React.useMemo(() => {
     const map = new Map<number, V2WeekdayBeforeAfter>();
     if (result) for (const w of result.week_proposals) map.set(w.weekday, w);
     return map;
   }, [result]);
+
+  const handleAllDone = React.useCallback(() => {
+    setStage('completed');
+    toast.success('すべての患者の確認が完了しました');
+    onClose();
+  }, [onClose]);
+
+  const remainingPatients = React.useMemo(() => {
+    if (!result) return [];
+    return result.individual_proposals.filter(
+      (p) =>
+        !appliedPatientIds.has(p.patient_id) &&
+        !rejectedPatientIds.has(p.patient_id) &&
+        !skippedPatientIds.has(p.patient_id),
+    );
+  }, [result, appliedPatientIds, rejectedPatientIds, skippedPatientIds]);
 
   const handleApplyPatient = async (p: IndividualProposal) => {
     if (!result) return;
@@ -150,10 +192,7 @@ export function FullOptimizeDialog({
       // 次の患者へ進む
       const next = remainingPatients.find((x) => x.patient_id !== p.patient_id);
       setActivePatient(next ?? null);
-      if (!next) {
-        setIndividualMode(false);
-        toast.success('すべての患者の確認が完了しました');
-      }
+      if (!next) handleAllDone();
     } catch (err) {
       toast.error(`採用に失敗しました: ${formatErr(err)}`);
     }
@@ -164,18 +203,25 @@ export function FullOptimizeDialog({
     // 次の患者へ進む
     const next = remainingPatients.find((x) => x.patient_id !== p.patient_id);
     setActivePatient(next ?? null);
-    if (!next) {
-      setIndividualMode(false);
-      toast.success('すべての患者の確認が完了しました');
-    }
+    if (!next) handleAllDone();
   };
 
-  const remainingPatients = React.useMemo(() => {
-    if (!result) return [];
-    return result.individual_proposals.filter(
-      (p) => !appliedPatientIds.has(p.patient_id) && !rejectedPatientIds.has(p.patient_id),
+  const handleSkipPatient = (p: IndividualProposal) => {
+    setSkippedPatientIds((prev) => new Set(prev).add(p.patient_id));
+    const next = remainingPatients.find((x) => x.patient_id !== p.patient_id);
+    setActivePatient(next ?? null);
+    if (!next) handleAllDone();
+  };
+
+  // 個別調整モードで現在の患者インデックスを計算 (進捗表示用)
+  const totalPatients = result?.individual_proposals.length ?? 0;
+  const currentIndex = React.useMemo(() => {
+    if (!activePatient || totalPatients === 0) return 0;
+    const idx = (result?.individual_proposals ?? []).findIndex(
+      (p) => p.patient_id === activePatient.patient_id,
     );
-  }, [result, appliedPatientIds, rejectedPatientIds]);
+    return idx >= 0 ? idx + 1 : 0;
+  }, [activePatient, result, totalPatients]);
 
   // ─── Render ──────────────────────────────────────────────────────
   return (
@@ -188,10 +234,16 @@ export function FullOptimizeDialog({
           <DialogTitle className="flex items-center gap-2">
             <RefreshCw className="h-5 w-5 text-brand-primary" aria-hidden />
             全面最適化 - 週単位の再構築提案
+            {stage === 'individual-review' ? (
+              <Badge variant="secondary" className="ml-2 text-[10px]">
+                {totalPatients} 件中 {currentIndex} 件目
+              </Badge>
+            ) : null}
           </DialogTitle>
           <DialogDescription>
-            全 active 患者で固定枠を再算出し、移動距離・偏差を改善する提案を生成します。 採用は 1
-            患者ずつ確認します (一括採用は不可)。
+            {stage === 'individual-review'
+              ? '患者一人ひとりの変更を確認してください。採用・却下・スキップを選んでください。'
+              : '全 active 患者で固定枠を再算出し、移動距離・偏差を改善する提案を生成します。採用は 1 患者ずつ確認します (一括採用は不可)。'}
           </DialogDescription>
         </DialogHeader>
 
@@ -204,17 +256,18 @@ export function FullOptimizeDialog({
         ) : null}
 
         {/* ローディング (spinner) */}
-        {isLoading || !result ? (
-          isLoading ? (
-            <div
-              className="flex flex-col items-center justify-center gap-2 py-12 text-sm text-text-muted"
-              data-testid="full-optimize-loading"
-            >
-              <Loader2 className="h-6 w-6 animate-spin" aria-hidden />全 active 患者で再構築中…
-              (時間がかかる場合があります)
-            </div>
-          ) : null
-        ) : (
+        {stage === 'allocating' ? (
+          <div
+            className="flex flex-col items-center justify-center gap-2 py-12 text-sm text-text-muted"
+            data-testid="full-optimize-loading"
+          >
+            <Loader2 className="h-6 w-6 animate-spin" aria-hidden />全 active 患者で再構築中…
+            (時間がかかる場合があります)
+          </div>
+        ) : null}
+
+        {/* 結果サマリー (reviewing-summary) */}
+        {(stage === 'reviewing-summary' || stage === 'individual-review') && result ? (
           <div className="space-y-3 py-2" data-testid="full-optimize-result">
             {/* KPI バー */}
             <section
@@ -303,44 +356,84 @@ export function FullOptimizeDialog({
               </TabsContent>
             </Tabs>
           </div>
-        )}
+        ) : null}
 
-        <DialogFooter className="flex-col gap-2 sm:flex-row">
-          <Button type="button" variant="outline" onClick={handleClose} disabled={isBusy}>
-            すべて見終わる
-          </Button>
-          <Button
-            type="button"
-            onClick={() => {
-              setIndividualMode(true);
-              const next = remainingPatients[0];
-              setActivePatient(next ?? null);
-              if (!next) toast.info('調整可能な患者がありません');
-            }}
-            disabled={isBusy || !result || result.individual_proposals.length === 0}
-            data-testid="full-optimize-individual-button"
+        {/* フッター: ステージ別アクションボタン */}
+        {stage === 'reviewing-summary' ? (
+          /* ── 大枠判断フッター ── */
+          <div
+            className="mt-4 rounded-lg border border-border-default bg-bg-muted p-4"
+            data-testid="full-optimize-decision-panel"
           >
-            <Users className="mr-1 h-4 w-4" aria-hidden />
-            個別調整 ({remainingPatients.length} 件)
-          </Button>
-        </DialogFooter>
+            <p className="mb-3 text-sm font-semibold text-text-primary">
+              この提案で固定枠を変更しますか？
+            </p>
+            <p className="mb-4 text-xs text-text-muted">
+              「個別に確認していく」を選ぶと、患者一人ひとりの変更を確認できます。
+            </p>
+            <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+              <Button
+                type="button"
+                variant="outline"
+                size="lg"
+                onClick={handleClose}
+                disabled={isBusy}
+                data-testid="full-optimize-decline-button"
+                aria-label="変更しないでダイアログを閉じる"
+              >
+                <X className="mr-2 h-4 w-4" aria-hidden />
+                変更しない (閉じる)
+              </Button>
+              <Button
+                type="button"
+                size="lg"
+                onClick={handleStartIndividualReview}
+                disabled={isBusy || !result || result.individual_proposals.length === 0}
+                data-testid="full-optimize-individual-button"
+                aria-label="個別に患者を確認していく"
+              >
+                <Users className="mr-2 h-4 w-4" aria-hidden />
+                個別に確認していく ({remainingPatients.length} 件)
+                <ArrowRight className="ml-2 h-4 w-4" aria-hidden />
+              </Button>
+            </div>
+          </div>
+        ) : stage === 'individual-review' ? (
+          /* ── 個別調整モード中フッター (中断ボタン) ── */
+          <DialogFooter className="flex-col gap-2 sm:flex-row">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={handleClose}
+              disabled={isBusy}
+              data-testid="full-optimize-abort-button"
+              aria-label="個別調整を中断して閉じる"
+            >
+              <X className="mr-1 h-4 w-4" aria-hidden />
+              中断して閉じる
+            </Button>
+          </DialogFooter>
+        ) : stage === 'allocating' ? null : (
+          /* ── idle / completed 時のフォールバック閉じるボタン ── */
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={handleClose}>
+              閉じる
+            </Button>
+          </DialogFooter>
+        )}
       </DialogContent>
 
       {/* 個別調整: 患者ごと Before/After ポップアップ */}
-      {individualMode && activePatient ? (
+      {stage === 'individual-review' && activePatient ? (
         <IndividualPatientPopup
           proposal={activePatient}
           isApplying={isApplying}
+          totalPatients={totalPatients}
+          currentIndex={currentIndex}
           onApply={() => handleApplyPatient(activePatient)}
           onReject={() => handleRejectPatient(activePatient)}
-          onNext={() => {
-            const next = remainingPatients.find((p) => p.patient_id !== activePatient.patient_id);
-            setActivePatient(next ?? null);
-            if (!next) {
-              setIndividualMode(false);
-              toast.success('すべての患者の確認が完了しました');
-            }
-          }}
+          onNext={() => handleSkipPatient(activePatient)}
+          onAbort={handleClose}
           remaining={remainingPatients.length}
         />
       ) : null}
@@ -513,9 +606,12 @@ interface IndividualPatientPopupProps {
   proposal: IndividualProposal;
   isApplying: boolean;
   remaining: number;
+  totalPatients: number;
+  currentIndex: number;
   onApply: () => void;
   onReject: () => void;
   onNext: () => void;
+  onAbort: () => void;
 }
 
 function VisitPlanList({
@@ -556,13 +652,16 @@ function IndividualPatientPopup({
   proposal,
   isApplying,
   remaining,
+  totalPatients,
+  currentIndex,
   onApply,
   onReject,
   onNext,
+  onAbort,
 }: IndividualPatientPopupProps) {
   const proposedSummary = proposal.proposed_pfv[0];
   return (
-    <Dialog open onOpenChange={(o) => (!o ? onNext() : undefined)}>
+    <Dialog open onOpenChange={(o) => (!o ? onAbort() : undefined)}>
       <DialogContent
         className="max-w-md"
         data-testid={`full-optimize-popup-${proposal.patient_id}`}
@@ -571,7 +670,7 @@ function IndividualPatientPopup({
           <DialogTitle className="text-base">
             {proposal.patient_name} 様
             <Badge variant="secondary" className="ml-2 text-[10px]">
-              残り {remaining} 件
+              {totalPatients} 件中 {currentIndex} 件目 (残り {remaining} 件)
             </Badge>
           </DialogTitle>
           <DialogDescription>
@@ -611,40 +710,58 @@ function IndividualPatientPopup({
           </Alert>
         ) : null}
 
-        <DialogFooter className="gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            onClick={onReject}
-            disabled={isApplying}
-            data-testid="full-optimize-popup-reject"
-          >
-            <X className="mr-1 h-4 w-4" aria-hidden />
-            却下
-          </Button>
+        <DialogFooter className="flex-wrap gap-2">
           <Button
             type="button"
             variant="ghost"
-            onClick={onNext}
+            size="sm"
+            onClick={onAbort}
             disabled={isApplying}
-            data-testid="full-optimize-popup-next"
+            data-testid="full-optimize-popup-abort"
+            aria-label="個別調整を中断して閉じる"
+            className="text-text-muted"
           >
-            <ArrowRight className="mr-1 h-4 w-4" aria-hidden />
-            スキップ
+            <X className="mr-1 h-4 w-4" aria-hidden />
+            中断して閉じる
           </Button>
-          <Button
-            type="button"
-            onClick={onApply}
-            disabled={isApplying || proposal.proposed_pfv.length === 0}
-            data-testid="full-optimize-popup-apply"
-          >
-            {isApplying ? (
-              <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
-            ) : (
-              <CheckCircle2 className="mr-1 h-4 w-4" aria-hidden />
-            )}
-            この患者を採用
-          </Button>
+          <div className="flex gap-2 sm:ml-auto">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={onReject}
+              disabled={isApplying}
+              data-testid="full-optimize-popup-reject"
+              aria-label="この患者の変更を却下して次へ"
+            >
+              <X className="mr-1 h-4 w-4" aria-hidden />
+              この患者は変更しない
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={onNext}
+              disabled={isApplying}
+              data-testid="full-optimize-popup-next"
+              aria-label="この患者をスキップして次へ"
+            >
+              <ArrowRight className="mr-1 h-4 w-4" aria-hidden />
+              スキップ
+            </Button>
+            <Button
+              type="button"
+              onClick={onApply}
+              disabled={isApplying || proposal.proposed_pfv.length === 0}
+              data-testid="full-optimize-popup-apply"
+              aria-label="この患者の変更を採用して次へ"
+            >
+              {isApplying ? (
+                <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
+              ) : (
+                <CheckCircle2 className="mr-1 h-4 w-4" aria-hidden />
+              )}
+              この患者は変更する
+            </Button>
+          </div>
         </DialogFooter>
       </DialogContent>
     </Dialog>
