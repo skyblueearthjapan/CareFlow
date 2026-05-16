@@ -438,9 +438,6 @@ export function FullOptimizeDialog({
               </div>
             </section>
 
-            {/* 曜日別サマリー表 (上部固定): どの曜日でどれだけ距離が削減されたか */}
-            <WeekdaySummaryTable proposals={result.week_proposals} />
-
             {/* W41 v2 拡張: 警告 + 曜日タブ + Before/After を 1 つの Tabs で連動.
                 順序は「警告 → 曜日タブ → Before/After」 (ユーザー希望)
                 警告は currentTab に応じて該当曜日 (+ 曜日不問) のみ表示. */}
@@ -1099,6 +1096,8 @@ function AllWeekSummary({ proposals }: { proposals: V2WeekdayBeforeAfter[] }) {
   }
   return (
     <div className="space-y-3" data-testid="full-optimize-all-summary">
+      {/* 曜日別サマリー表 (「全体」タブ内のみ表示) */}
+      <WeekdaySummaryTable proposals={proposals} />
       <ProposalWeekCalendar proposals={proposals} side="before" staffNameById={staffNameById} />
       <ProposalWeekCalendar proposals={proposals} side="after" staffNameById={staffNameById} />
     </div>
