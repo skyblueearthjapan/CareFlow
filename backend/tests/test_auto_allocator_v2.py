@@ -328,6 +328,85 @@ def test_calc_h_violations_h10_lunch_overlap() -> None:
 
 
 # ---------------------------------------------------------------------------
+# _filter_unavailable_and_lunch — skip_acceptance (Mode 2 用)
+# ---------------------------------------------------------------------------
+
+
+def test_filter_skip_acceptance_in_mode2() -> None:
+    """Mode 2 (skip_acceptance=True) では acceptance × でも visits が残る.
+
+    昼休憩 (H10) は両モードで常に enforce される.
+    受入カレンダー × は既存スケジュール枠の混雑度を表すため、全面再配置時には
+    制約として意味を持たない (バグ修正: 58 active 患者 dropped 問題).
+    """
+    from app.services.scheduling.auto_allocator_v2 import _filter_unavailable_and_lunch
+
+    office_id = uuid.uuid4()
+    # 受入カレンダー × に該当する時刻 (10:00) の visit
+    blocked_visit = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=10, start_m=0, patient_name="X"
+    )
+    # 通常時刻の visit
+    ok_visit = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=14, start_m=0, patient_name="OK"
+    )
+    # 昼休憩 (12:30) の visit — 両モードで除外されるべき
+    lunch_visit = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=12, start_m=30, patient_name="LUNCH"
+    )
+    lunch_visit.end_time = time(13, 30)
+
+    unavailable = {(office_id, 0): {time(10, 0)}}
+    warnings: list[str] = []
+
+    # skip_acceptance=True → blocked_visit も残る (受入 × 無視)
+    filtered = _filter_unavailable_and_lunch(
+        [blocked_visit, ok_visit, lunch_visit],
+        unavailable_slots=unavailable,
+        warnings=warnings,
+        skip_acceptance=True,
+    )
+    codes = {v.patient_code for v in filtered}
+    assert "X" in codes, "skip_acceptance=True なら acceptance × visit が残るはず"
+    assert "OK" in codes
+    assert "LUNCH" not in codes, "skip_acceptance=True でも H10 昼休憩は除外されるべき"
+
+    # acceptance_calendar 由来の warning は出ていない
+    assert not any("blocked by acceptance_calendar" in w for w in warnings), (
+        f"skip_acceptance=True なのに acceptance_calendar warning が出ている: {warnings}"
+    )
+    # 昼休憩 warning は出ている
+    assert any("lunch break" in w for w in warnings), (
+        f"H10 lunch break warning が出ていない: {warnings}"
+    )
+
+
+def test_filter_acceptance_enforced_in_mode1_default() -> None:
+    """Mode 1 (デフォルト skip_acceptance=False) では acceptance × visit は除外."""
+    from app.services.scheduling.auto_allocator_v2 import _filter_unavailable_and_lunch
+
+    office_id = uuid.uuid4()
+    blocked_visit = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=10, start_m=0, patient_name="X"
+    )
+    ok_visit = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=14, start_m=0, patient_name="OK"
+    )
+    unavailable = {(office_id, 0): {time(10, 0)}}
+    warnings: list[str] = []
+
+    filtered = _filter_unavailable_and_lunch(
+        [blocked_visit, ok_visit],
+        unavailable_slots=unavailable,
+        warnings=warnings,
+    )
+    codes = {v.patient_code for v in filtered}
+    assert "X" not in codes, "Mode 1 (default) では acceptance × visit は除外されるべき"
+    assert "OK" in codes
+    assert any("blocked by acceptance_calendar" in w for w in warnings)
+
+
+# ---------------------------------------------------------------------------
 # End-to-end pipeline
 # ---------------------------------------------------------------------------
 

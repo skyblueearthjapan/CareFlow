@@ -20,7 +20,10 @@ v1 (``auto_allocator.py``) との違い:
     - H2: 同住所ペアリング (最大 2 人) — _enforce_h2_same_address
     - H3: 同住所連続性 — グリーディが自然に satisfy
     - H4: 全訪問同スタッフ禁止 — 段階 5 後に対応
-    - H5: 受入カレンダー × 回避 — _filter_unavailable_slots
+    - H5: 受入カレンダー × 回避 — _filter_unavailable_and_lunch
+          (Mode 1 / diff_add では enforce; Mode 2 / full_optimize では無視.
+           受入カレンダー × は既存スケジュール枠の混雑度を表す動的データであり、
+           既存固定枠ごと再配置する全面最適化では制約として意味を持たないため.)
     - H6: 実出勤枠遵守 — _count_active_staff_per_weekday
     - H7: 性別制限遵守 — 採用時に呼び出し側で check (本サービスは候補までで止める)
     - H8: 新人単独訪問禁止 — is_trainee=false のみカウント
@@ -807,17 +810,26 @@ def _filter_unavailable_and_lunch(
     *,
     unavailable_slots: dict[tuple[UUID, int], set[time]],
     warnings: list[str],
+    skip_acceptance: bool = False,
 ) -> list[V2Visit]:
-    """H5 + H10: 受入 × 時刻 + 昼休憩枠を除外."""
+    """H5 + H10: 受入 × 時刻 + 昼休憩枠を除外.
+
+    Args:
+        skip_acceptance: True なら H5 (acceptance_calendar ×) フィルタをスキップ.
+            Mode 2 (full_optimize) で使用. 受入カレンダー × は既存スケジュールの
+            混雑度を表す動的データであり、既存固定枠ごと再配置する全面最適化では
+            制約として意味を持たないため. 昼休憩 (H10) は常に enforce.
+    """
     out: list[V2Visit] = []
     for v in visits:
-        blocked = unavailable_slots.get((v.office_id, v.weekday), set())
-        if v.start_time in blocked:
-            warnings.append(
-                f"patient {v.patient_code} weekday={v.weekday} {v.start_time}"
-                f" blocked by acceptance_calendar"
-            )
-            continue
+        if not skip_acceptance:
+            blocked = unavailable_slots.get((v.office_id, v.weekday), set())
+            if v.start_time in blocked:
+                warnings.append(
+                    f"patient {v.patient_code} weekday={v.weekday} {v.start_time}"
+                    f" blocked by acceptance_calendar"
+                )
+                continue
         if _is_in_lunch_break(v.start_time, v.end_time):
             warnings.append(
                 f"patient {v.patient_code} weekday={v.weekday} {v.start_time}-{v.end_time}"
@@ -1015,9 +1027,16 @@ async def run_v2_pipeline(
     pool_visits = build_visits_for_pool(pool_patients)
 
     # H5 + H10: 受入カレンダー × + 昼休憩を除外
+    # Mode 2 (full_optimize) は H5 をスキップ — 受入カレンダー × は既存スケジュール
+    # 枠の混雑度を表すため、全面再配置時には制約として意味を持たない. H10 (昼休憩)
+    # は両モードとも常に enforce.
     unavailable = await _load_unavailable_slots(db, office_ids=office_ids)
+    skip_acceptance = mode == "full_optimize"
     pool_visits = _filter_unavailable_and_lunch(
-        pool_visits, unavailable_slots=unavailable, warnings=warnings
+        pool_visits,
+        unavailable_slots=unavailable,
+        warnings=warnings,
+        skip_acceptance=skip_acceptance,
     )
 
     # 機能 A: pool_visits 単独で配置 (既存 PFV はそのまま)
