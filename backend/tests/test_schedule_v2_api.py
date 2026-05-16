@@ -1354,6 +1354,43 @@ async def test_update_fixed_time_week_only_rejects_non_planned_status(
 
 
 @pytest.mark.asyncio
+async def test_update_fixed_time_master_h10_skipped_for_range_type(client, db) -> None:
+    """time_type='時間帯' の場合、希望レンジが昼休憩を跨いでも H10 はスキップ.
+
+    new_start=09:30, new_end=17:30, time_type='時間帯' は希望範囲指定であって
+    実訪問時間ではないため、H10 (12:00-13:00 重複) を適用しない. 200 OK.
+    """
+    from app.models.patient_fixed_visit import PatientFixedVisit
+
+    admin = await _make_user(db, email="v2-ufm-rng@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    p = await _seed_patient(db, office=office, code="UFM-RNG")
+    pfv = PatientFixedVisit(
+        patient_id=p.id,
+        mode="normal",
+        weekday=2,
+        start_time=time(10, 0),
+        duration_min=30,
+        slot_index=0,
+    )
+    db.add(pfv)
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/update-fixed-time-master",
+        headers=_bearer(admin),
+        json={
+            "patient_id": str(p.id),
+            "weekday": 2,
+            "new_start": "09:30",
+            "new_end": "17:30",
+            "new_time_type": "時間帯",
+        },
+    )
+    assert res.status_code == 200, res.text
+
+
+@pytest.mark.asyncio
 async def test_update_fixed_time_master_h10_lunch_overlap_via_duration(client, db) -> None:
     """new_end 省略時でも duration_min から計算した end が昼休憩に重なれば 422.
 

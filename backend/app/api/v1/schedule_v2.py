@@ -943,8 +943,14 @@ async def update_fixed_time_master_endpoint(
             )
             .with_for_update()
         )
-        # duration_min は new_end - new_start から導出 (end が無ければ既存値 or 30)
-        if end_t is not None:
+        # duration_min の算出.
+        #   - time_type='固定' (またはレンジなし): new_end - new_start を実訪問時間とみなす
+        #   - time_type='時間帯' / '午前' / '午後' / '終日': new_start..new_end は希望レンジで
+        #     あって実訪問時間ではないため、既存 duration を保持する (無ければ 30 分).
+        is_range_type = payload.new_time_type in ("時間帯", "午前", "午後", "終日")
+        if is_range_type:
+            duration_min = pfv_row.duration_min if pfv_row is not None else 30
+        elif end_t is not None:
             duration_min = (end_t.hour * 60 + end_t.minute) - (start_t.hour * 60 + start_t.minute)
         elif pfv_row is not None:
             duration_min = pfv_row.duration_min
@@ -956,19 +962,22 @@ async def update_fixed_time_master_endpoint(
                 detail=f"duration_min が範囲外です (computed={duration_min})",
             )
 
-        # H10: 12:00-13:00 の昼休憩重複を弾く. end_t 未指定時は duration_min から算出.
-        if end_t is not None:
-            actual_end_t = end_t
-        else:
-            end_total = start_t.hour * 60 + start_t.minute + duration_min
-            if end_total >= 24 * 60:
-                end_total = 23 * 60 + 59
-            actual_end_t = time_cls(end_total // 60, end_total % 60)
-        if start_t < LUNCH_END and actual_end_t > LUNCH_START:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="H10 違反: 昼休憩 12:00-13:00 に重なる時間は指定できません",
-            )
+        # H10: 12:00-13:00 の昼休憩重複を弾く.
+        # time_type='時間帯' などレンジ指定の場合、new_start..new_end は希望範囲であって
+        # 実訪問時間ではないので H10 をスキップする (実訪問は duration_min 分のどこかで行う).
+        if not is_range_type:
+            if end_t is not None:
+                actual_end_t = end_t
+            else:
+                end_total = start_t.hour * 60 + start_t.minute + duration_min
+                if end_total >= 24 * 60:
+                    end_total = 23 * 60 + 59
+                actual_end_t = time_cls(end_total // 60, end_total % 60)
+            if start_t < LUNCH_END and actual_end_t > LUNCH_START:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="H10 違反: 昼休憩 12:00-13:00 に重なる時間は指定できません",
+                )
 
         if pfv_row is None:
             pfv_row = PatientFixedVisit(

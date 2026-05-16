@@ -3,15 +3,15 @@
 /**
  * ProposalWeekCalendar — W41 v2 「全体」タブ用 週カレンダー Before/After.
  *
- * `/schedule` の「週」ビュー風に スタッフ行 × 曜日列 で提案結果を俯瞰する.
+ * `/schedule` の「週」ビュー風に **コース行 × 曜日列** で提案結果を俯瞰する.
  * 1 つの side ('before' | 'after') を 1 グリッドとして描画し、呼び出し側で
  * Before/After を縦に積む.
  *
- * 行軸: assigned_staff_id がある course の担当スタッフ + 「未アサイン」.
- *       Before は固定枠ベースで assigned_staff_id が無いことが多いので
- *       基本「未アサイン」行に集約される.
+ * 行軸: 「拠点 + コース」(例: 稲毛 A コース). スタッフ未アサインでも
+ *       コース割当は完了しているため、コース粒度で俯瞰する.
+ *       各コースに担当スタッフ名がある場合は行ラベルに併記.
  * 列軸: 月〜土 (DISPLAY_WEEKDAYS).
- * セル: その日に当該スタッフが訪問する patient のチップ (時刻 + 名前).
+ * セル: その日に当該コースで訪問される patient のチップ (時刻 + 名前).
  */
 import * as React from 'react';
 
@@ -27,61 +27,69 @@ import { trimSeconds } from './_autoScheduleUtils';
 const DISPLAY_WEEKDAYS = [0, 1, 2, 3, 4, 5] as const;
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土'] as const;
 
-const UNASSIGNED_KEY = '__UNASSIGNED__';
-
 interface ProposalWeekCalendarProps {
   proposals: V2WeekdayBeforeAfter[];
   side: 'before' | 'after';
-  /** staff_id -> 表示名. 無ければ短縮 UUID にフォールバック. */
+  /** staff_id -> 表示名. 担当スタッフ名を行ラベルに併記するために使用. */
   staffNameById: Map<string, string>;
 }
 
-interface CellVisit {
-  visit: V2VisitForUI;
-  courseCode: string;
+interface CourseRow {
+  /** 行の安定 key. */
+  key: string;
   officeName: string;
+  code: string;
+  /** 表示名: "稲毛 Aコース". */
+  label: string;
+  /** weekday -> visits */
+  byWeekday: Map<number, V2VisitForUI[]>;
+  /** weekday -> 担当 staff id set (複数曜日で別スタッフが担当する場合もある). */
+  staffIdsByWeekday: Map<number, Set<string>>;
 }
 
-/** (staff_id key, weekday) -> visit リスト の二重 map を構築. */
-function buildCellMap(
-  proposals: V2WeekdayBeforeAfter[],
-  side: 'before' | 'after',
-): { rows: string[]; cells: Map<string, Map<number, CellVisit[]>> } {
-  const cells = new Map<string, Map<number, CellVisit[]>>();
-  const rowSet = new Set<string>();
+/** 拠点+コード 単位でコースを集約し、行リストを構築. */
+function buildCourseRows(proposals: V2WeekdayBeforeAfter[], side: 'before' | 'after'): CourseRow[] {
+  const rows = new Map<string, CourseRow>();
 
   for (const wp of proposals) {
     const courses: V2CourseSummary[] = (side === 'before' ? wp.before : wp.after).courses;
     for (const c of courses) {
-      const key = c.assigned_staff_id ?? UNASSIGNED_KEY;
-      rowSet.add(key);
-      if (!cells.has(key)) cells.set(key, new Map());
-      const byWd = cells.get(key)!;
-      if (!byWd.has(wp.weekday)) byWd.set(wp.weekday, []);
-      const bucket = byWd.get(wp.weekday)!;
-      for (const v of c.visits) {
-        bucket.push({
-          visit: v,
-          courseCode: c.code,
-          officeName: c.office_name ?? '不明',
+      const officeName = c.office_name ?? '不明';
+      const key = `${officeName}|${c.code}`;
+      if (!rows.has(key)) {
+        rows.set(key, {
+          key,
+          officeName,
+          code: c.code,
+          label: `${officeName} ${c.code}コース`,
+          byWeekday: new Map(),
+          staffIdsByWeekday: new Map(),
         });
+      }
+      const row = rows.get(key)!;
+      if (!row.byWeekday.has(wp.weekday)) row.byWeekday.set(wp.weekday, []);
+      row.byWeekday.get(wp.weekday)!.push(...c.visits);
+      if (c.assigned_staff_id) {
+        if (!row.staffIdsByWeekday.has(wp.weekday)) {
+          row.staffIdsByWeekday.set(wp.weekday, new Set());
+        }
+        row.staffIdsByWeekday.get(wp.weekday)!.add(c.assigned_staff_id);
       }
     }
   }
 
   // 各セルを start_time で昇順ソート.
-  for (const byWd of cells.values()) {
-    for (const list of byWd.values()) {
-      list.sort((a, b) => a.visit.start_time.localeCompare(b.visit.start_time));
+  for (const row of rows.values()) {
+    for (const list of row.byWeekday.values()) {
+      list.sort((a, b) => a.start_time.localeCompare(b.start_time));
     }
   }
 
-  return { rows: Array.from(rowSet), cells };
-}
-
-function shortenUuid(uuid: string): string {
-  // UUID は表示用に最初 8 文字だけにする (UUID 全長は読みにくい).
-  return uuid.slice(0, 8);
+  // 行のソート: (拠点名, コード) で安定化.
+  return Array.from(rows.values()).sort((a, b) => {
+    if (a.officeName !== b.officeName) return a.officeName.localeCompare(b.officeName);
+    return a.code.localeCompare(b.code);
+  });
 }
 
 export function ProposalWeekCalendar({
@@ -89,18 +97,7 @@ export function ProposalWeekCalendar({
   side,
   staffNameById,
 }: ProposalWeekCalendarProps) {
-  const { rows, cells } = React.useMemo(() => buildCellMap(proposals, side), [proposals, side]);
-
-  // 行のソート: 未アサインを最後、それ以外は staff 名で.
-  const sortedRows = React.useMemo(() => {
-    const named = rows.filter((r) => r !== UNASSIGNED_KEY);
-    named.sort((a, b) => {
-      const na = staffNameById.get(a) ?? a;
-      const nb = staffNameById.get(b) ?? b;
-      return na.localeCompare(nb);
-    });
-    return rows.includes(UNASSIGNED_KEY) ? [...named, UNASSIGNED_KEY] : named;
-  }, [rows, staffNameById]);
+  const rows = React.useMemo(() => buildCourseRows(proposals, side), [proposals, side]);
 
   const sideHeaderCls =
     side === 'after'
@@ -120,7 +117,7 @@ export function ProposalWeekCalendar({
           <thead>
             <tr className="bg-bg-muted text-text-muted">
               <th className="sticky left-0 z-10 border-b border-r border-border-default bg-bg-muted px-2 py-1 text-left">
-                スタッフ
+                コース
               </th>
               {DISPLAY_WEEKDAYS.map((wd) => (
                 <th key={wd} className="border-b border-border-default px-1 py-1 text-center">
@@ -130,7 +127,7 @@ export function ProposalWeekCalendar({
             </tr>
           </thead>
           <tbody>
-            {sortedRows.length === 0 ? (
+            {rows.length === 0 ? (
               <tr>
                 <td
                   colSpan={DISPLAY_WEEKDAYS.length + 1}
@@ -140,46 +137,48 @@ export function ProposalWeekCalendar({
                 </td>
               </tr>
             ) : (
-              sortedRows.map((rowKey) => {
-                const name =
-                  rowKey === UNASSIGNED_KEY
-                    ? '未アサイン'
-                    : (staffNameById.get(rowKey) ?? shortenUuid(rowKey));
-                const byWd = cells.get(rowKey) ?? new Map();
+              rows.map((row) => {
                 return (
-                  <tr key={rowKey} className="border-b border-border-default last:border-b-0">
-                    <td
-                      className={cn(
-                        'sticky left-0 z-10 border-r border-border-default bg-bg-default px-2 py-1 align-top text-[10px] font-semibold',
-                        rowKey === UNASSIGNED_KEY ? 'text-text-muted italic' : 'text-text-primary',
-                      )}
-                    >
-                      {name}
+                  <tr key={row.key} className="border-b border-border-default last:border-b-0">
+                    <td className="sticky left-0 z-10 border-r border-border-default bg-bg-default px-2 py-1 align-top">
+                      <div className="text-[10px] font-semibold text-text-primary">{row.label}</div>
                     </td>
                     {DISPLAY_WEEKDAYS.map((wd) => {
-                      const items = byWd.get(wd) ?? [];
+                      const visits = row.byWeekday.get(wd) ?? [];
+                      const staffIds = row.staffIdsByWeekday.get(wd);
+                      const staffNames = staffIds
+                        ? Array.from(staffIds)
+                            .map((id) => staffNameById.get(id))
+                            .filter((s): s is string => !!s)
+                        : [];
                       return (
                         <td
                           key={wd}
                           className="min-w-[88px] border-r border-border-default px-1 py-1 align-top last:border-r-0"
                         >
-                          {items.length === 0 ? (
+                          {visits.length === 0 ? (
                             <span className="text-[9px] text-text-muted">—</span>
                           ) : (
-                            <ul className="space-y-0.5">
-                              {items.map((it: CellVisit, i: number) => (
-                                <li
-                                  key={`${it.visit.patient_id}-${i}`}
-                                  className="flex flex-wrap items-center gap-0.5 rounded bg-bg-muted/60 px-1 py-0.5 leading-tight"
-                                  title={`${it.officeName} ${it.courseCode}コース`}
-                                >
-                                  <span className="tnum text-text-muted">
-                                    {trimSeconds(it.visit.start_time)}
-                                  </span>
-                                  <span className="text-text-primary">{it.visit.patient_name}</span>
-                                </li>
-                              ))}
-                            </ul>
+                            <>
+                              {staffNames.length > 0 ? (
+                                <div className="mb-0.5 text-[8px] text-brand-primary">
+                                  👤 {staffNames.join(', ')}
+                                </div>
+                              ) : null}
+                              <ul className="space-y-0.5">
+                                {visits.map((v: V2VisitForUI, i: number) => (
+                                  <li
+                                    key={`${v.patient_id}-${i}`}
+                                    className="flex flex-wrap items-center gap-0.5 rounded bg-bg-muted/60 px-1 py-0.5 leading-tight"
+                                  >
+                                    <span className="tnum text-text-muted">
+                                      {trimSeconds(v.start_time)}
+                                    </span>
+                                    <span className="text-text-primary">{v.patient_name}</span>
+                                  </li>
+                                ))}
+                              </ul>
+                            </>
                           )}
                         </td>
                       );

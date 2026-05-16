@@ -402,8 +402,21 @@ export function FullOptimizeDialog({
             {/* W41 v2 (Mode 2 UI 拡張): 割当状況バナー */}
             <AssignmentSummaryBanner result={result} />
 
-            {/* KPI バー (全体距離 B/A は曜日別 B/A 内で表示するため除外) */}
-            <section className="grid grid-cols-3 gap-2" data-testid="full-optimize-kpi">
+            {/* KPI バー (移動距離 / コース数 / 容量超過 / 警告) */}
+            <section
+              className="grid grid-cols-2 gap-2 sm:grid-cols-4"
+              data-testid="full-optimize-kpi"
+            >
+              <div className="rounded border border-border-default p-2">
+                <div className="text-[10px] text-text-muted">移動距離 (km)</div>
+                <div className="tnum text-sm font-semibold text-text-primary">
+                  {(result.kpi_overall.total_distance_km_before ?? 0).toFixed(1)} →{' '}
+                  {(result.kpi_overall.total_distance_km_after ?? 0).toFixed(1)}
+                </div>
+                <div className="tnum text-[10px] text-text-muted">
+                  削減 {(result.kpi_overall.distance_reduction_pct ?? 0).toFixed(1)}%
+                </div>
+              </div>
               <div className="rounded border border-border-default p-2">
                 <div className="text-[10px] text-text-muted">コース数</div>
                 <div className="tnum text-sm font-semibold text-text-primary">
@@ -424,6 +437,9 @@ export function FullOptimizeDialog({
                 </div>
               </div>
             </section>
+
+            {/* 曜日別サマリー表 (上部固定): どの曜日でどれだけ距離が削減されたか */}
+            <WeekdaySummaryTable proposals={result.week_proposals} />
 
             {/* W41 v2 拡張: 警告 + 曜日タブ + Before/After を 1 つの Tabs で連動.
                 順序は「警告 → 曜日タブ → Before/After」 (ユーザー希望)
@@ -1006,12 +1022,65 @@ function CourseListColumn({
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// AllWeekSummary — 「全体」タブ: スタッフ × 曜日 週カレンダー Before/After (縦積み)
+// WeekdaySummaryTable — 上部固定: 曜日別 距離 / 訪問数 サマリー表
 //
-// `/schedule` の「週」ビュー風に、スタッフ行 × 曜日列 (月〜土) で提案結果を
+// 「どの曜日でどれだけ距離が削減されたか」「訪問数の Before/After」を
+// 一覧表で俯瞰. ユーザー希望により全面最適化結果の上部に常時表示.
+// ─────────────────────────────────────────────────────────────────────────
+
+function WeekdaySummaryTable({ proposals }: { proposals: V2WeekdayBeforeAfter[] }) {
+  const sorted = React.useMemo(
+    () => [...proposals].sort((a, b) => a.weekday - b.weekday),
+    [proposals],
+  );
+  if (sorted.length === 0) return null;
+  return (
+    <div
+      className="overflow-x-auto rounded border border-border-default"
+      data-testid="full-optimize-weekday-summary"
+    >
+      <table className="w-full text-xs">
+        <thead className="bg-bg-muted text-[10px] text-text-muted">
+          <tr>
+            <th className="px-2 py-1 text-left">曜日</th>
+            <th className="px-2 py-1 text-right">Before km</th>
+            <th className="px-2 py-1 text-right">After km</th>
+            <th className="px-2 py-1 text-right">距離 Δ</th>
+            <th className="px-2 py-1 text-right">訪問 Before</th>
+            <th className="px-2 py-1 text-right">訪問 After</th>
+          </tr>
+        </thead>
+        <tbody>
+          {sorted.map((p) => {
+            const b = totalsFor(p.before.courses);
+            const a = totalsFor(p.after.courses);
+            return (
+              <tr key={p.weekday} className="border-t border-border-default">
+                <td className="px-2 py-1">{fmtWd(p.weekday)}曜日</td>
+                <td className="tnum px-2 py-1 text-right">{b.distance.toFixed(1)}</td>
+                <td className="tnum px-2 py-1 text-right">{a.distance.toFixed(1)}</td>
+                <td className="tnum px-2 py-1 text-right">
+                  {formatDelta(a.distance - b.distance)}
+                </td>
+                <td className="tnum px-2 py-1 text-right">{b.visits}</td>
+                <td className="tnum px-2 py-1 text-right">{a.visits}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// AllWeekSummary — 「全体」タブ: コース × 曜日 週カレンダー Before/After (縦積み)
+//
+// `/schedule` の「週」ビュー風に、コース行 × 曜日列 (月〜土) で提案結果を
 // 俯瞰する. Before/After を縦に並べて差を比較しやすくする.
-// Before は固定枠ベースで assigned_staff_id が無いケースが多く、その場合は
-// 「未アサイン」行に集約される.
+// 行軸は「拠点 + コードコース」(例: 稲毛 A コース) ── スタッフ未アサインでも
+// コース割当は完了しているため、コース粒度で俯瞰する.
+// 各コースに担当スタッフ名がある場合は行ラベルに併記.
 // ─────────────────────────────────────────────────────────────────────────
 
 function AllWeekSummary({ proposals }: { proposals: V2WeekdayBeforeAfter[] }) {
