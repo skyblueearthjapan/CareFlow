@@ -28,9 +28,11 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.core.deps import DbDep, require_role
+from app.models.office import Office
 from app.models.user import User
 from app.schemas.v2.auto_schedule_v2 import (
     AutoScheduleV2ApplyIndividualRequest,
@@ -99,6 +101,8 @@ def _v2visit_to_ui(v: V2Visit) -> V2VisitForUI:
 
     W41 v2 (Mode 2 UI 拡張): ``V2Visit.address`` / ``V2Visit.area_label`` を
     そのまま流す (auto_allocator_v2 が build 時に Patient.address から抽出済).
+
+    W41 v2 (Mode 2 Before/After 表示拡張): ``time_type`` / ``sex_restriction`` も流す.
     """
     return V2VisitForUI(
         patient_id=v.patient_id,
@@ -110,6 +114,8 @@ def _v2visit_to_ui(v: V2Visit) -> V2VisitForUI:
         am_pm=v.am_pm,
         address=v.address,
         area_label=v.area_label,
+        time_type=v.time_type,
+        sex_restriction=v.sex_restriction,
     )
 
 
@@ -138,15 +144,22 @@ def _build_kpi_overall(
 
 
 def _build_weekday_before_after(
-    before: list[V2Visit], after: list[V2Visit]
+    before: list[V2Visit],
+    after: list[V2Visit],
+    *,
+    office_name_by_id: dict[UUID, str] | None = None,
 ) -> list[V2WeekdayBeforeAfter]:
-    """機能 B: 曜日ごとに Before / After の courses 構造を返す."""
+    """機能 B: 曜日ごとに Before / After の courses 構造を返す.
+
+    W41 v2 (Mode 2 Before/After 表示拡張): ``office_name_by_id`` を受け取り
+    各コースに ``office_name`` をセット + (office_name, code) で ABC 順ソート.
+    """
     out: list[V2WeekdayBeforeAfter] = []
     for wd in range(7):
         before_wd = [v for v in before if v.weekday == wd]
         after_wd = [v for v in after if v.weekday == wd]
-        before_courses = _group_visits_into_courses(before_wd)
-        after_courses = _group_visits_into_courses(after_wd)
+        before_courses = _group_visits_into_courses(before_wd, office_name_by_id=office_name_by_id)
+        after_courses = _group_visits_into_courses(after_wd, office_name_by_id=office_name_by_id)
         out.append(
             V2WeekdayBeforeAfter(
                 weekday=wd,
@@ -157,8 +170,19 @@ def _build_weekday_before_after(
     return out
 
 
-def _group_visits_into_courses(visits: list[V2Visit]) -> list[V2CourseSummary]:
-    """同 (office_id, weekday, course_code) を 1 コースとして集約."""
+def _group_visits_into_courses(
+    visits: list[V2Visit],
+    *,
+    office_name_by_id: dict[UUID, str] | None = None,
+) -> list[V2CourseSummary]:
+    """同 (office_id, weekday, course_code) を 1 コースとして集約.
+
+    W41 v2 (Mode 2 Before/After 表示拡張):
+        - ``office_name`` を ``office_name_by_id`` から引いて埋める.
+        - 戻り値を (office_name, code) で ABC 順ソート.
+          本店 A → B → ... → M, 続いて 都賀 A → ... を保証する.
+          office_name が未取得な場合は str(office_id) で安定ソートする.
+    """
     groups: dict[tuple[UUID, int, str | None], list[V2Visit]] = {}
     for v in visits:
         groups.setdefault((v.office_id, v.weekday, v.course_code), []).append(v)
@@ -168,17 +192,28 @@ def _group_visits_into_courses(visits: list[V2Visit]) -> list[V2CourseSummary]:
         dist = 0.0
         for i in range(1, len(sv)):
             dist += haversine_km(sv[i - 1].lat, sv[i - 1].lng, sv[i].lat, sv[i].lng)
+        office_name = (office_name_by_id or {}).get(office_id)
         out.append(
             V2CourseSummary(
                 code=code or "M",
                 office_id=office_id,
+                office_name=office_name,
                 visits=[_v2visit_to_ui(v) for v in sv],
                 distance_km=round(dist, 4),
                 visits_count=len(sv),
                 assigned_staff_id=sv[0].assigned_staff_id,
             )
         )
+    out.sort(key=lambda c: (c.office_name or str(c.office_id), c.code or "Z"))
     return out
+
+
+async def _load_office_name_map(db: DbDep, office_ids: set[UUID]) -> dict[UUID, str]:
+    """W41 v2 (Mode 2 Before/After 表示拡張): UI ヘッダー用 office.name の lookup を作る."""
+    if not office_ids:
+        return {}
+    rows = await db.scalars(select(Office).where(Office.id.in_(office_ids)))
+    return {o.id: o.name for o in rows.all()}
 
 
 def _build_individual_proposals(
@@ -360,7 +395,16 @@ async def full_optimize_endpoint(
     after_visits: list[V2Visit] = result["after_visits"]
     warnings: list[str] = result["warnings"]
 
-    week_proposals = _build_weekday_before_after(before_visits, after_visits)
+    # W41 v2 (Mode 2 Before/After 表示拡張): UI ヘッダーで「拠点名 + コース名」
+    # 表記するため、Before/After に含まれる office_id 集合を 1 度だけ name に解決.
+    office_ids_in_use: set[UUID] = {v.office_id for v in before_visits} | {
+        v.office_id for v in after_visits
+    }
+    office_name_by_id = await _load_office_name_map(db, office_ids_in_use)
+
+    week_proposals = _build_weekday_before_after(
+        before_visits, after_visits, office_name_by_id=office_name_by_id
+    )
     individual = _build_individual_proposals(before_visits, after_visits)
     kpi = _build_kpi_overall(before_visits, after_visits, warnings=warnings)
 

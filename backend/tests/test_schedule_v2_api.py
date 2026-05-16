@@ -661,3 +661,110 @@ async def test_v1_proposal_discard_returns_410(client, db) -> None:
         headers=_bearer(admin),
     )
     assert res.status_code == 410, res.text
+
+
+# ---------------------------------------------------------------------------
+# W41 v2 (Mode 2 Before/After 表示拡張) — _group_visits_into_courses の挙動
+# ---------------------------------------------------------------------------
+
+
+def test_group_visits_into_courses_sorts_abc_by_office() -> None:
+    """同曜日内で (office_name, code) ABC 順にソートされる."""
+    import uuid as _uuid
+    from datetime import time as _time
+
+    from app.api.v1.schedule_v2 import _group_visits_into_courses
+    from app.services.scheduling.auto_allocator_v2 import V2Visit
+
+    office_a = _uuid.uuid4()
+    office_b = _uuid.uuid4()
+    office_names = {office_a: "本店(稲毛)", office_b: "都賀支店"}
+
+    def _mk(office_id, code, start_h):
+        return V2Visit(
+            patient_id=_uuid.uuid4(),
+            patient_name=f"p-{code}-{start_h}",
+            patient_code=None,
+            weekday=0,
+            start_time=_time(start_h, 0),
+            end_time=_time(start_h + 1, 0),
+            service_minutes=30,
+            lat=35.65,
+            lng=140.10,
+            office_id=office_id,
+            am_pm="am",
+            source_kind="pool",
+            course_code=code,
+        )
+
+    visits = [
+        _mk(office_b, "A", 9),
+        _mk(office_a, "C", 9),
+        _mk(office_a, "A", 9),
+        _mk(office_a, "B", 9),
+    ]
+    courses = _group_visits_into_courses(visits, office_name_by_id=office_names)
+    # 本店(稲毛) A → B → C, then 都賀支店 A
+    assert [(c.office_name, c.code) for c in courses] == [
+        ("本店(稲毛)", "A"),
+        ("本店(稲毛)", "B"),
+        ("本店(稲毛)", "C"),
+        ("都賀支店", "A"),
+    ]
+
+
+def test_group_visits_into_courses_sets_office_name() -> None:
+    """office_name_by_id から V2CourseSummary.office_name がセットされる."""
+    import uuid as _uuid
+    from datetime import time as _time
+
+    from app.api.v1.schedule_v2 import _group_visits_into_courses
+    from app.services.scheduling.auto_allocator_v2 import V2Visit
+
+    office_id = _uuid.uuid4()
+    v = V2Visit(
+        patient_id=_uuid.uuid4(),
+        patient_name="x",
+        patient_code=None,
+        weekday=0,
+        start_time=_time(9, 0),
+        end_time=_time(10, 0),
+        service_minutes=30,
+        lat=35.65,
+        lng=140.10,
+        office_id=office_id,
+        am_pm="am",
+        source_kind="pool",
+        course_code="A",
+        time_type="午前",
+        sex_restriction="female_only",
+    )
+    courses = _group_visits_into_courses([v], office_name_by_id={office_id: "本店(稲毛)"})
+    assert len(courses) == 1
+    assert courses[0].office_name == "本店(稲毛)"
+    # visit にも time_type / sex_restriction が流れる
+    assert courses[0].visits[0].time_type == "午前"
+    assert courses[0].visits[0].sex_restriction == "female_only"
+
+
+@pytest.mark.asyncio
+async def test_full_optimize_response_includes_office_name(client, db) -> None:
+    """/full-optimize レスポンスの course に office_name が含まれる."""
+    admin = await _make_user(db, email="v2-foon-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    await _seed_patient(db, office=office, code="FOON-1", lat=35.65, lng=140.10)
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/full-optimize",
+        headers=_bearer(admin),
+        json={"iso_year": 2026, "iso_week": 20, "office_ids": [str(office.id)]},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    seen_office_name = False
+    for wp in body["week_proposals"]:
+        for c in wp["after"]["courses"]:
+            assert c["office_name"] == office.name
+            seen_office_name = True
+    assert seen_office_name, "少なくとも 1 つの after course に office_name が含まれるべき"

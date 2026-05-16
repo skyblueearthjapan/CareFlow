@@ -54,6 +54,10 @@ class V2VisitForUI(BaseModel):
     W41 v2 (Mode 2 UI 拡張): ``address`` + ``area_label`` を追加.
     住所文字列と「○○」(町レベル) のエリアラベルを Before/After カードに
     表示してエリア偏在を見える化する.
+
+    W41 v2 (Mode 2 Before/After 表示拡張):
+    ``time_type`` (例: "午前"/"午後"/"終日"/"固定"/"時間帯") と
+    ``sex_restriction`` (例: "female_only"/"male_only"/None) を UI バッジ用に追加.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -67,18 +71,24 @@ class V2VisitForUI(BaseModel):
     am_pm: AmPmV2
     address: str | None = None
     area_label: str | None = None  # 例: "宮野木", "幕張本郷"
+    time_type: str | None = None  # 例: "午前", "午後", "終日", "固定", "時間帯"
+    sex_restriction: str | None = None  # "female_only", "male_only", None
 
 
 class V2CourseSummary(BaseModel):
     """Before/After で表示する 1 コース (=1 曜日 × 1 スタッフ枠) のサマリ.
 
     Note: weekday は V2WeekdayBeforeAfter が保持するので重複を避けて削除.
+
+    W41 v2 (Mode 2 Before/After 表示拡張): ``office_name`` を追加.
+    UI ヘッダーで「本店(稲毛) A コース」のように拠点名 + コース名のフル表記.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     code: str
     office_id: uuid.UUID
+    office_name: str | None = None
     assigned_staff_id: uuid.UUID | None = None
     visits: list[V2VisitForUI] = Field(default_factory=list)
     distance_km: float = 0.0

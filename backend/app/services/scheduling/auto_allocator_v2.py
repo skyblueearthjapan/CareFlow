@@ -135,6 +135,12 @@ class V2Visit:
     # Patient.address から build 時に流し込み, UI でエリア偏在を可視化する.
     address: str | None = None
     area_label: str | None = None
+    # W41 v2 (Mode 2 UI 拡張 / Before/After 表示拡張):
+    # patient.weekly_pattern.entries[].time_type と patient.sex_restriction を
+    # UI に持ち回す. 例: time_type="午前"/"午後"/"終日"/"固定"/"時間帯",
+    # sex_restriction="female_only"/"male_only"/None.
+    time_type: str | None = None
+    sex_restriction: str | None = None
 
 
 @dataclass
@@ -395,6 +401,38 @@ def _extract_weekly_entries(
     return out
 
 
+_WEEKDAY_INT_TO_CODE: dict[int, str] = {v: k for k, v in _WEEKDAY_CODE_TO_INT.items()}
+
+
+def _weekday_int_to_code(weekday: int) -> str | None:
+    return _WEEKDAY_INT_TO_CODE.get(weekday)
+
+
+def _extract_time_type_for_weekday(patient: Patient, weekday: int) -> str | None:
+    """W41 v2 (Mode 2 UI 拡張 / Before/After):
+    patient.weekly_pattern.entries[weekday] の time_type を取り出す.
+
+    entries 形式 (リスト) を優先し、サマリ形式の base time_type にフォールバック.
+    どちらにも無ければ None.
+    """
+    pattern = patient.weekly_pattern
+    if not isinstance(pattern, dict):
+        return None
+    base_tt = pattern.get("time_type")
+    base_tt_s = base_tt if isinstance(base_tt, str) else None
+    entries = pattern.get("entries")
+    if isinstance(entries, list):
+        wd_code = _weekday_int_to_code(weekday)
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            entry_wd = entry.get("weekday")
+            if entry_wd == wd_code or entry_wd == weekday:
+                tt = entry.get("time_type") or base_tt_s
+                return tt if isinstance(tt, str) else None
+    return base_tt_s
+
+
 def _extract_fixed_visits_for_patient(
     fixed_rows: list[PatientFixedVisit],
 ) -> list[tuple[int, time, int]]:
@@ -429,6 +467,7 @@ def build_visits_for_pool(
             continue
         addr = patient.address
         area = _extract_area_label(addr)
+        sex_r = patient.sex_restriction
         used_fixed = False
         if use_fixed_as_source and fixed_by_patient is not None:
             fixed_rows = fixed_by_patient.get(patient.id) or []
@@ -454,6 +493,8 @@ def build_visits_for_pool(
                             source_kind="fixed",
                             address=addr,
                             area_label=area,
+                            time_type="固定",
+                            sex_restriction=sex_r,
                         )
                     )
         if not used_fixed:
@@ -477,6 +518,8 @@ def build_visits_for_pool(
                         source_kind="pool",
                         address=addr,
                         area_label=area,
+                        time_type=tt,
+                        sex_restriction=sex_r,
                     )
                 )
     return visits
@@ -1007,6 +1050,7 @@ async def _load_before_visits_from_pfv(
         am_pm = "am" if pfv.start_time.hour < NOON_HOUR else "pm"
         course_code = ct_label_by_id.get(pfv.course_template_id) if pfv.course_template_id else None
         addr = patient.address
+        tt = _extract_time_type_for_weekday(patient, pfv.weekday)
         out.append(
             V2Visit(
                 patient_id=patient.id,
@@ -1024,6 +1068,8 @@ async def _load_before_visits_from_pfv(
                 source_kind="fixed",
                 address=addr,
                 area_label=_extract_area_label(addr),
+                time_type=tt,
+                sex_restriction=patient.sex_restriction,
             )
         )
     return out

@@ -691,6 +691,18 @@ function CourseListColumn({
     tone === 'primary'
       ? 'border-brand-primary/40 bg-brand-primary/5 text-brand-primary'
       : 'border-border-default bg-bg-muted text-text-muted';
+  // W41 v2 (Mode 2 Before/After 表示拡張): Backend がソート済みでも
+  // (拠点名, コード) で安全に再ソート (順序の安定性確保).
+  const sortedCourses = React.useMemo(
+    () =>
+      [...courses].sort((a, b) => {
+        const ofA = a.office_name ?? a.office_id;
+        const ofB = b.office_name ?? b.office_id;
+        if (ofA !== ofB) return ofA.localeCompare(ofB);
+        return (a.code ?? 'Z').localeCompare(b.code ?? 'Z');
+      }),
+    [courses],
+  );
   return (
     <div className="overflow-hidden rounded border border-border-default">
       <div
@@ -701,14 +713,19 @@ function CourseListColumn({
           {total.visits}件 / {total.distance.toFixed(1)}km
         </span>
       </div>
-      {courses.length === 0 ? (
+      {sortedCourses.length === 0 ? (
         <div className="py-4 text-center text-[11px] text-text-muted">(コースなし)</div>
       ) : (
         <ul className="divide-y divide-border-default">
-          {courses.map((c) => (
-            <li key={`${c.code}-${c.assigned_staff_id ?? 'none'}`} className="px-2 py-1.5">
+          {sortedCourses.map((c) => (
+            <li
+              key={`${c.office_id}-${c.code}-${c.assigned_staff_id ?? 'none'}`}
+              className="px-2 py-1.5"
+            >
               <div className="flex items-center justify-between text-[11px]">
-                <span className="font-semibold text-text-primary">{c.code} コース</span>
+                <span className="font-semibold text-text-primary">
+                  {c.office_name ?? '不明'} {c.code} コース
+                </span>
                 <span className="tnum text-text-muted">
                   {c.visits_count}件 / {c.distance_km.toFixed(1)}km
                 </span>
@@ -732,6 +749,15 @@ function CourseListColumn({
                         >
                           {v.address.length > 18 ? `${v.address.slice(0, 18)}…` : v.address}
                         </span>
+                      ) : null}
+                      {v.time_type ? (
+                        <span className="text-[9px] text-text-secondary">🕐 {v.time_type}</span>
+                      ) : null}
+                      {v.sex_restriction === 'female_only' ? (
+                        <span className="text-[9px] text-pink-600">👩 女性のみ</span>
+                      ) : null}
+                      {v.sex_restriction === 'male_only' ? (
+                        <span className="text-[9px] text-blue-600">👨 男性のみ</span>
                       ) : null}
                     </li>
                   ))}

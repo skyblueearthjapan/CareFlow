@@ -1297,3 +1297,120 @@ def test_build_visits_for_pool_no_address_returns_none_area() -> None:
     assert len(visits) == 1
     assert visits[0].address is None
     assert visits[0].area_label is None
+
+
+# ---------------------------------------------------------------------------
+# W41 v2 (Mode 2 Before/After 表示拡張) — V2Visit.time_type / .sex_restriction
+# ---------------------------------------------------------------------------
+
+
+def test_build_visits_for_pool_extracts_time_type_from_entries() -> None:
+    """weekly_pattern.entries[].time_type が V2Visit.time_type にコピーされる."""
+    office_id = uuid.uuid4()
+    p = Patient(
+        id=uuid.uuid4(),
+        code="TT1",
+        name="time_type test",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        primary_office_id=office_id,
+        weekly_pattern={
+            "entries": [
+                {"weekday": "Mon", "preferred_start": "10:00", "time_type": "午前"},
+                {"weekday": "Wed", "preferred_start": "14:00", "time_type": "午後"},
+            ]
+        },
+    )
+    visits = build_visits_for_pool([p])
+    assert len(visits) == 2
+    by_wd = {v.weekday: v for v in visits}
+    assert by_wd[0].time_type == "午前"
+    assert by_wd[2].time_type == "午後"
+
+
+def test_build_visits_for_pool_summary_form_uses_base_time_type() -> None:
+    """サマリ形式 (preferred_weekdays + time_type) も time_type を持つ."""
+    office_id = uuid.uuid4()
+    p = Patient(
+        id=uuid.uuid4(),
+        code="TT2",
+        name="time_type summary",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        primary_office_id=office_id,
+        weekly_pattern={
+            "preferred_weekdays": ["Mon"],
+            "preferred_start": "10:00",
+            "time_type": "固定",
+        },
+    )
+    visits = build_visits_for_pool([p])
+    assert len(visits) == 1
+    assert visits[0].time_type == "固定"
+
+
+def test_build_visits_for_pool_propagates_sex_restriction() -> None:
+    """patient.sex_restriction が V2Visit.sex_restriction に流れる."""
+    office_id = uuid.uuid4()
+    p = Patient(
+        id=uuid.uuid4(),
+        code="SR1",
+        name="female only",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        primary_office_id=office_id,
+        sex_restriction="female_only",
+        weekly_pattern={
+            "preferred_weekdays": ["Mon"],
+            "preferred_start": "10:00",
+            "time_type": "固定",
+        },
+    )
+    visits = build_visits_for_pool([p])
+    assert len(visits) == 1
+    assert visits[0].sex_restriction == "female_only"
+
+
+@pytest.mark.asyncio
+async def test_load_before_visits_sets_time_type_and_sex_restriction(db) -> None:
+    """_load_before_visits_from_pfv が time_type / sex_restriction をセットする."""
+    from app.services.scheduling.auto_allocator_v2 import _load_before_visits_from_pfv
+
+    office = Office(name="tt-before-office")
+    db.add(office)
+    await db.flush()
+
+    patient = Patient(
+        id=uuid.uuid4(),
+        code="TTBA",
+        name="Before patient w/ tt",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        primary_office_id=office.id,
+        sex_restriction="male_only",
+        weekly_pattern={
+            "entries": [{"weekday": "Mon", "preferred_start": "10:00", "time_type": "午前"}]
+        },
+    )
+    db.add(patient)
+    await db.flush()
+
+    pfv = PatientFixedVisit(
+        patient_id=patient.id,
+        mode="normal",
+        weekday=0,
+        start_time=time(10, 0),
+        duration_min=30,
+        slot_index=0,
+    )
+    db.add(pfv)
+    await db.commit()
+
+    visits = await _load_before_visits_from_pfv(db, patients_by_id={patient.id: patient})
+    assert len(visits) == 1
+    assert visits[0].time_type == "午前"
+    assert visits[0].sex_restriction == "male_only"

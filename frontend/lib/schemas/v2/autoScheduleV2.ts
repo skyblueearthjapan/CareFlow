@@ -61,6 +61,9 @@ export const v2VisitForUiSchema = z.object({
   // Before/After カードでエリア偏在を可視化する.
   address: z.string().nullable().default(null),
   area_label: z.string().nullable().default(null),
+  // W41 v2 (Mode 2 Before/After 表示拡張): time_type と sex_restriction バッジ.
+  time_type: z.string().nullable().default(null),
+  sex_restriction: z.string().nullable().default(null),
 });
 export type V2VisitForUI = z.infer<typeof v2VisitForUiSchema>;
 
@@ -73,6 +76,8 @@ export type V2VisitForUI = z.infer<typeof v2VisitForUiSchema>;
 export const v2CourseSummarySchema = z.object({
   code: z.string(),
   office_id: z.string().uuid(),
+  // W41 v2 (Mode 2 Before/After 表示拡張): UI ヘッダーで「拠点名 + コース名」.
+  office_name: z.string().nullable().default(null),
   assigned_staff_id: z.string().uuid().nullable(),
   /** visits は型付き V2VisitForUI の配列 (Backend 改修に追従). */
   visits: z.array(v2VisitForUiSchema).default([]),
