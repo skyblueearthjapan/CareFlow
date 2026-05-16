@@ -923,15 +923,31 @@ async def _load_before_visits_from_pfv(
     """Before スナップショット: 既存 patient_fixed_visits (mode='normal') から構築."""
     if not patients_by_id:
         return []
-    pfv_rows = await db.scalars(
-        select(PatientFixedVisit).where(
-            PatientFixedVisit.patient_id.in_(list(patients_by_id.keys())),
-            PatientFixedVisit.mode == "normal",
-            PatientFixedVisit.slot_index == 0,
+    pfv_rows = (
+        await db.scalars(
+            select(PatientFixedVisit).where(
+                PatientFixedVisit.patient_id.in_(list(patients_by_id.keys())),
+                PatientFixedVisit.mode == "normal",
+                PatientFixedVisit.slot_index == 0,
+            )
         )
-    )
+    ).all()
+
+    # course_template_id → CourseTemplate.label の map を事前構築 (N+1 回避)
+    ct_ids = {pfv.course_template_id for pfv in pfv_rows if pfv.course_template_id is not None}
+    ct_label_by_id: dict[UUID, str] = {}
+    if ct_ids:
+        ct_rows = await db.scalars(
+            select(CourseTemplate).where(
+                CourseTemplate.id.in_(ct_ids),
+                CourseTemplate.deleted_at.is_(None),
+            )
+        )
+        for ct in ct_rows.all():
+            ct_label_by_id[ct.id] = ct.label
+
     out: list[V2Visit] = []
-    for pfv in pfv_rows.all():
+    for pfv in pfv_rows:
         patient = patients_by_id.get(pfv.patient_id)
         if patient is None or patient.lat is None or patient.lng is None:
             continue
@@ -939,6 +955,7 @@ async def _load_before_visits_from_pfv(
             continue
         end_t = _add_minutes(pfv.start_time, pfv.duration_min)
         am_pm = "am" if pfv.start_time.hour < NOON_HOUR else "pm"
+        course_code = ct_label_by_id.get(pfv.course_template_id) if pfv.course_template_id else None
         out.append(
             V2Visit(
                 patient_id=patient.id,
@@ -952,6 +969,7 @@ async def _load_before_visits_from_pfv(
                 lng=float(patient.lng),
                 office_id=patient.primary_office_id,
                 am_pm=am_pm,  # type: ignore[arg-type]
+                course_code=course_code,  # PFV.course_template_id 由来
                 source_kind="fixed",
             )
         )

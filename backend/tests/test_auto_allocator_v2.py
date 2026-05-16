@@ -407,6 +407,58 @@ def test_filter_acceptance_enforced_in_mode1_default() -> None:
 
 
 # ---------------------------------------------------------------------------
+# _load_before_visits_from_pfv — course_code が PFV.course_template_id 由来になる
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_load_before_visits_course_code_from_course_template(db) -> None:
+    """PFV に course_template_id が設定されていれば V2Visit.course_code = CourseTemplate.label."""
+    from app.models.course_template import CourseTemplate
+    from app.services.scheduling.auto_allocator_v2 import _load_before_visits_from_pfv
+
+    office = Office(name="before-test-office")
+    db.add(office)
+    await db.flush()
+
+    ct = CourseTemplate(office_id=office.id, label="A")
+    db.add(ct)
+    await db.flush()
+
+    patient = Patient(
+        id=uuid.uuid4(),
+        code="PTEST",
+        name="Before Test Patient",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        primary_office_id=office.id,
+        weekly_pattern={},
+    )
+    db.add(patient)
+    await db.flush()
+
+    pfv = PatientFixedVisit(
+        patient_id=patient.id,
+        mode="normal",
+        weekday=0,
+        start_time=time(10, 0),
+        duration_min=30,
+        slot_index=0,
+        course_template_id=ct.id,
+    )
+    db.add(pfv)
+    await db.commit()
+
+    visits = await _load_before_visits_from_pfv(db, patients_by_id={patient.id: patient})
+
+    assert len(visits) == 1, f"expected 1 visit, got {len(visits)}"
+    assert visits[0].course_code == "A", (
+        f"course_code は CourseTemplate.label='A' になるはずだが '{visits[0].course_code}' だった"
+    )
+
+
+# ---------------------------------------------------------------------------
 # End-to-end pipeline
 # ---------------------------------------------------------------------------
 
