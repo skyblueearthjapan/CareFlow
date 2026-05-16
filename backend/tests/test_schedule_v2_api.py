@@ -490,13 +490,13 @@ async def test_apply_week_only_creates_visits_without_touching_pfv(client, db) -
     assert refreshed_pfv.start_time == existing_pfv_start_before
     assert refreshed_pfv.duration_min == existing_pfv_duration_before
 
-    # 新規 visit が source="auto_alloc_week_only" で作成されている
+    # 新規 visit が source="auto_alloc_v2w" で作成されている
     week_visits = (
         await db.scalars(
             select(Visit).where(
                 Visit.patient_id == p.id,
                 Visit.visit_date == date(2026, 5, 12),  # Tue W20
-                Visit.source == "auto_alloc_week_only",
+                Visit.source == "auto_alloc_v2w",
                 Visit.deleted_at.is_(None),
             )
         )

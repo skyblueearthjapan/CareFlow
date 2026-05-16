@@ -1106,7 +1106,7 @@ _RESET_DELETABLE_SOURCES: tuple[str, ...] = (
     "auto",
     "auto_alloc",
     "auto_alloc_v2",
-    "auto_alloc_week_only",
+    "auto_alloc_v2w",
     "pfv",
     "fixed",
     "reset_v2",
@@ -1323,7 +1323,7 @@ async def apply_week_only(
       1. 対象週・対象拠点の active visits を soft-delete
          (uq_visits_pds_group_active 衝突回避; W41 v2 reset と同じ source/status 保護)
       2. 必要な courses を確保 (既存利用 or 新規作成 staff_assigned)
-      3. visits を INSERT (course_id 紐付け, source="auto_alloc_week_only")
+      3. visits を INSERT (course_id 紐付け, source="auto_alloc_v2w")
       4. assigned_staff_id がある visit_plan は visit_staff_assignments を INSERT
 
     Args:
@@ -1484,7 +1484,7 @@ async def apply_week_only(
                 end_time=et,
                 type="regular",
                 status="planned",
-                source="auto_alloc_week_only",
+                source="auto_alloc_v2w",
                 required_staff_count=1,
                 course_id=(course.id if course is not None else None),
                 note=f"apply_week_only_v2 iso_year={iso_year} iso_week={iso_week}",
