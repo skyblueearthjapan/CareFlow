@@ -57,6 +57,10 @@ export const v2VisitForUiSchema = z.object({
   end_time: timeStringSchema,
   duration_min: z.number().int().min(1).max(480),
   am_pm: amPmSchema,
+  // W41 v2 (Mode 2 UI 拡張): 住所文字列 + 町レベルのエリアラベル.
+  // Before/After カードでエリア偏在を可視化する.
+  address: z.string().nullable().default(null),
+  area_label: z.string().nullable().default(null),
 });
 export type V2VisitForUI = z.infer<typeof v2VisitForUiSchema>;
 
@@ -183,12 +187,27 @@ export const individualProposalSchema = z.object({
 });
 export type IndividualProposal = z.infer<typeof individualProposalSchema>;
 
+// ---------------------------------------------------------------------------
+// W41 v2 (Mode 2 UI 拡張): 未割当患者 — 全面最適化で after_visits に
+// 入らなかった患者と理由
+// ---------------------------------------------------------------------------
+
+export const unassignedPatientSchema = z.object({
+  patient_id: z.string().uuid(),
+  patient_name: z.string(),
+  patient_code: z.string().nullable().default(null),
+  reason: z.string(),
+});
+export type UnassignedPatient = z.infer<typeof unassignedPatientSchema>;
+
 export const fullOptimizeResponseSchema = z.object({
   proposal_batch_id: z.string().uuid(),
   week_proposals: z.array(v2WeekdayBeforeAfterSchema).default([]),
   individual_proposals: z.array(individualProposalSchema).default([]),
   kpi_overall: v2KpiOverallSchema,
   warnings: z.array(z.string()).default([]),
+  // W41 v2 (Mode 2 UI 拡張): pool に入れたが after_visits に出てこなかった患者.
+  unassigned_patients: z.array(unassignedPatientSchema).default([]),
 });
 export type FullOptimizeResponse = z.infer<typeof fullOptimizeResponseSchema>;
 

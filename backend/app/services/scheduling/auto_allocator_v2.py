@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import uuid
 from collections import Counter
 from dataclasses import dataclass, field, replace
@@ -130,6 +131,10 @@ class V2Visit:
     course_code: str | None = None
     # 段階 5 後に判明する担当スタッフ.
     assigned_staff_id: UUID | None = None
+    # W41 v2 (Mode 2 UI 拡張): 住所文字列 + エリアラベル (町レベル).
+    # Patient.address から build 時に流し込み, UI でエリア偏在を可視化する.
+    address: str | None = None
+    area_label: str | None = None
 
 
 @dataclass
@@ -180,6 +185,45 @@ def _address_bucket(lat: float, lng: float) -> tuple[float, float]:
     lat_b = round(lat / SAME_ADDRESS_TOLERANCE) * SAME_ADDRESS_TOLERANCE
     lng_b = round(lng / SAME_ADDRESS_TOLERANCE) * SAME_ADDRESS_TOLERANCE
     return (lat_b, lng_b)
+
+
+# ---------------------------------------------------------------------------
+# Area label extraction (W41 v2 Mode 2 UI 拡張)
+# ---------------------------------------------------------------------------
+
+# 千葉県千葉市XX区YY... — 区が含まれる住所
+_AREA_PATTERN_WITH_WARD = re.compile(r"千葉県?千葉市?(?P<ward>[^区]+区)(?P<town>[^0-9０-９\s\-]+)")
+# 千葉県四街道市XX... — 区が無い市住所
+_AREA_PATTERN_CITY_ONLY = re.compile(r"(?P<city>[^市県\s]+市)(?P<town>[^0-9０-９\s\-]+)")
+# 末尾の「町」「丁目」「番地」等を除去するための正規表現.
+_TOWN_TRAILING_RE = re.compile(r"(町|丁目|番地|番).*$")
+
+
+def _extract_area_label(address: str | None) -> str | None:
+    """住所文字列から「町」レベルのエリアラベルを抽出する.
+
+    例:
+      "千葉県千葉市稲毛区宮野木町818-2"       → "宮野木"
+      "千葉県千葉市花見川区幕張本郷3-21-29"   → "幕張本郷"
+      "千葉県千葉市美浜区磯辺4-175棟402"       → "磯辺"
+      "千葉県四街道市大日27-18"                → "大日"
+      None / 空文字                            → None
+
+    取得できない場合は None を返す.
+    """
+    if not address:
+        return None
+    m = _AREA_PATTERN_WITH_WARD.search(address)
+    if m:
+        town = m.group("town")
+        stripped = _TOWN_TRAILING_RE.sub("", town)
+        return stripped or town[:6]
+    m2 = _AREA_PATTERN_CITY_ONLY.search(address)
+    if m2:
+        town = m2.group("town")
+        stripped = _TOWN_TRAILING_RE.sub("", town)
+        return stripped or town[:8]
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -383,6 +427,8 @@ def build_visits_for_pool(
     for patient in patients:
         if patient.lat is None or patient.lng is None or patient.primary_office_id is None:
             continue
+        addr = patient.address
+        area = _extract_area_label(addr)
         used_fixed = False
         if use_fixed_as_source and fixed_by_patient is not None:
             fixed_rows = fixed_by_patient.get(patient.id) or []
@@ -406,6 +452,8 @@ def build_visits_for_pool(
                             office_id=patient.primary_office_id,
                             am_pm=am_pm,
                             source_kind="fixed",
+                            address=addr,
+                            area_label=area,
                         )
                     )
         if not used_fixed:
@@ -427,6 +475,8 @@ def build_visits_for_pool(
                         office_id=patient.primary_office_id,
                         am_pm=am_pm,
                         source_kind="pool",
+                        address=addr,
+                        area_label=area,
                     )
                 )
     return visits
@@ -956,6 +1006,7 @@ async def _load_before_visits_from_pfv(
         end_t = _add_minutes(pfv.start_time, pfv.duration_min)
         am_pm = "am" if pfv.start_time.hour < NOON_HOUR else "pm"
         course_code = ct_label_by_id.get(pfv.course_template_id) if pfv.course_template_id else None
+        addr = patient.address
         out.append(
             V2Visit(
                 patient_id=patient.id,
@@ -971,7 +1022,61 @@ async def _load_before_visits_from_pfv(
                 am_pm=am_pm,  # type: ignore[arg-type]
                 course_code=course_code,  # PFV.course_template_id 由来
                 source_kind="fixed",
+                address=addr,
+                area_label=_extract_area_label(addr),
             )
+        )
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Unassigned patients identification (W41 v2 Mode 2 UI 拡張)
+# ---------------------------------------------------------------------------
+
+
+def _identify_unassigned_patients(
+    pool_patients: list[Patient],
+    after_visits: list[V2Visit],
+    warnings: list[str],
+) -> list[dict[str, Any]]:
+    """Mode 2 (full_optimize) で after_visits に出てこなかった患者と理由を抽出する.
+
+    Returns:
+        ``[{"patient_id": UUID, "patient_name": str, "patient_code": str | None,
+        "reason": str}, ...]``
+    """
+    after_pids = {v.patient_id for v in after_visits}
+    out: list[dict[str, Any]] = []
+    for p in pool_patients:
+        if p.id in after_pids:
+            continue
+        # 主要理由を決定: 最初に該当する warning から推測.
+        reason = "原因不明 (受入カレンダー× / 容量超過 / 座標未設定 のいずれか)"
+        if p.lat is None or p.lng is None:
+            reason = "座標未設定 (住所のジオコーディングが未完了)"
+        elif p.primary_office_id is None:
+            reason = "拠点未設定 (primary_office_id が None)"
+        else:
+            for w in warnings:
+                if p.code and p.code in w:
+                    if "acceptance_calendar" in w:
+                        reason = "受入カレンダー× (希望時間が受入不可)"
+                    elif "lunch break" in w or "H10" in w:
+                        reason = "希望時間が昼休憩 (12:00-13:00) と重複"
+                    elif "座標" in w:
+                        reason = "座標未設定"
+                    elif "拠点" in w:
+                        reason = "拠点未設定"
+                    else:
+                        reason = w[:120]
+                    break
+        out.append(
+            {
+                "patient_id": p.id,
+                "patient_name": p.name,
+                "patient_code": p.code,
+                "reason": reason,
+            }
         )
     return out
 
@@ -999,6 +1104,7 @@ async def run_v2_pipeline(
             "pool_visits":   [V2Visit, ...],   # 機能 A のときのみ非空
             "warnings": [...],
             "staff_count_by_weekday": {...},
+            "unassigned_patients": [...]  # Mode 2 のみ非空; UI 表示用.
         }
     """
     if iso_year < 2000 or iso_year > 2100:
@@ -1023,6 +1129,7 @@ async def run_v2_pipeline(
                 "pool_visits": [],
                 "warnings": ["対象拠点が登録されていません"],
                 "staff_count_by_weekday": {},
+                "unassigned_patients": [],
             }
 
     # Stage 1: プール作成
@@ -1119,6 +1226,16 @@ async def run_v2_pipeline(
             for v in pm_set.visits if pm_set else []:
                 v.course_code = code
 
+    # W41 v2 (Mode 2 UI 拡張): 未割当患者リストを抽出.
+    # full_optimize モードのときのみ意味を持つ (after_visits = pool_visits 由来).
+    # diff_add モードでは after_visits に before 由来 visit も含まれるため、
+    # pool_patients (= 固定枠なし患者) のうち after に出ない者は依然として未割当扱い.
+    unassigned = _identify_unassigned_patients(
+        pool_patients=pool_patients,
+        after_visits=after_visits,
+        warnings=warnings,
+    )
+
     return {
         "proposal_batch_id": proposal_batch_id,
         "before_visits": before_visits,
@@ -1126,6 +1243,7 @@ async def run_v2_pipeline(
         "pool_visits": pool_visits,
         "warnings": warnings,
         "staff_count_by_weekday": staff_count_by_weekday,
+        "unassigned_patients": unassigned,
     }
 
 

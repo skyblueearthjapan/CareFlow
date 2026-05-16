@@ -43,6 +43,7 @@ from app.schemas.v2.auto_schedule_v2 import (
     AutoScheduleV2FullOptimizeResponse,
     AutoScheduleV2ResetToFixedRequest,
     AutoScheduleV2ResetToFixedResponse,
+    UnassignedPatient,
     V2BeforeAfterSummary,
     V2CourseContainer,
     V2CourseSummary,
@@ -95,6 +96,9 @@ def _v2visit_to_ui(v: V2Visit) -> V2VisitForUI:
 
     W41 v2 final cross-review (M-Codex-2): 旧 ``_v2visit_to_dict`` は untyped dict
     を返していたが、``V2CourseContainer`` を型付き化したため Pydantic model を返す.
+
+    W41 v2 (Mode 2 UI 拡張): ``V2Visit.address`` / ``V2Visit.area_label`` を
+    そのまま流す (auto_allocator_v2 が build 時に Patient.address から抽出済).
     """
     return V2VisitForUI(
         patient_id=v.patient_id,
@@ -104,6 +108,8 @@ def _v2visit_to_ui(v: V2Visit) -> V2VisitForUI:
         end_time=v.end_time.strftime("%H:%M"),
         duration_min=v.service_minutes,
         am_pm=v.am_pm,
+        address=v.address,
+        area_label=v.area_label,
     )
 
 
@@ -358,12 +364,25 @@ async def full_optimize_endpoint(
     individual = _build_individual_proposals(before_visits, after_visits)
     kpi = _build_kpi_overall(before_visits, after_visits, warnings=warnings)
 
+    # W41 v2 (Mode 2 UI 拡張): pool に入れたが after_visits に出てこなかった患者.
+    unassigned_raw = result.get("unassigned_patients", []) or []
+    unassigned = [
+        UnassignedPatient(
+            patient_id=u["patient_id"],
+            patient_name=u["patient_name"],
+            patient_code=u.get("patient_code"),
+            reason=u["reason"],
+        )
+        for u in unassigned_raw
+    ]
+
     return AutoScheduleV2FullOptimizeResponse(
         proposal_batch_id=result["proposal_batch_id"],
         week_proposals=week_proposals,
         individual_proposals=individual,
         kpi_overall=kpi,
         warnings=warnings,
+        unassigned_patients=unassigned,
     )
 
 

@@ -1111,3 +1111,189 @@ async def test_reset_visits_to_fixed_preserves_manual_and_completed(db) -> None:
     assert autoplanned.deleted_at is not None, (
         "source='auto_alloc' + status='planned' は削除されるべき"
     )
+
+
+# ---------------------------------------------------------------------------
+# W41 v2 (Mode 2 UI 拡張) — _extract_area_label
+# ---------------------------------------------------------------------------
+
+
+def test_extract_area_label_chiba_inage_ward() -> None:
+    """千葉県千葉市稲毛区宮野木町818-2 → '宮野木'."""
+    from app.services.scheduling.auto_allocator_v2 import _extract_area_label
+
+    assert _extract_area_label("千葉県千葉市稲毛区宮野木町818-2") == "宮野木"
+
+
+def test_extract_area_label_chiba_hanamigawa_ward() -> None:
+    """千葉県千葉市花見川区幕張本郷3-21-29 → '幕張本郷'."""
+    from app.services.scheduling.auto_allocator_v2 import _extract_area_label
+
+    assert _extract_area_label("千葉県千葉市花見川区幕張本郷3-21-29") == "幕張本郷"
+
+
+def test_extract_area_label_chiba_mihama_ward() -> None:
+    """千葉県千葉市美浜区磯辺4-175棟402 → '磯辺'."""
+    from app.services.scheduling.auto_allocator_v2 import _extract_area_label
+
+    assert _extract_area_label("千葉県千葉市美浜区磯辺4-175棟402") == "磯辺"
+
+
+def test_extract_area_label_yotsukaido_city() -> None:
+    """区が無い住所: 千葉県四街道市大日27-18 → '大日'."""
+    from app.services.scheduling.auto_allocator_v2 import _extract_area_label
+
+    assert _extract_area_label("千葉県四街道市大日27-18") == "大日"
+
+
+def test_extract_area_label_none_and_empty() -> None:
+    from app.services.scheduling.auto_allocator_v2 import _extract_area_label
+
+    assert _extract_area_label(None) is None
+    assert _extract_area_label("") is None
+
+
+def test_extract_area_label_unparseable_returns_none() -> None:
+    """住所として解釈できない文字列は None を返す.
+
+    現状の正規表現は千葉県/千葉市/△△市スコープなので、他都道府県や
+    そもそも住所形式でない文字列は None になる仕様 (CareFlow 千葉拠点想定).
+    """
+    from app.services.scheduling.auto_allocator_v2 import _extract_area_label
+
+    # 完全に住所形式でない場合
+    assert _extract_area_label("住所未登録") is None
+    # 千葉市 / 〇〇市の形式でない場合 (本サービスは千葉エリア前提のため None で OK)
+    assert _extract_area_label("東京都新宿区西新宿2-8-1") is None
+
+
+# ---------------------------------------------------------------------------
+# W41 v2 (Mode 2 UI 拡張) — run_v2_pipeline returns unassigned_patients
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_v2_pipeline_returns_unassigned_for_no_coordinates(db) -> None:
+    """座標未設定の患者は unassigned に出る (Mode 2)."""
+    office = Office(name="unassign-office")
+    db.add(office)
+    await db.flush()
+
+    # 座標あり (割当成功する)
+    p_ok = Patient(
+        code="POK",
+        name="座標あり",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        primary_office_id=office.id,
+        weekly_pattern={
+            "preferred_weekdays": ["Mon"],
+            "preferred_start": "10:00",
+            "time_type": "固定",
+        },
+    )
+    # 座標なし (build_visits_for_pool で skip され、after_visits に出ない)
+    p_nogeo = Patient(
+        code="PNG",
+        name="座標なし",
+        status="active",
+        lat=None,
+        lng=None,
+        primary_office_id=office.id,
+        weekly_pattern={
+            "preferred_weekdays": ["Mon"],
+            "preferred_start": "10:30",
+            "time_type": "固定",
+        },
+    )
+    db.add_all([p_ok, p_nogeo])
+    await db.flush()
+    s = Staff(name="staff1", role="staff", is_trainee=False, primary_office_id=office.id)
+    db.add(s)
+    await db.flush()
+    db.add(StaffShift(staff_id=s.id, weekday=0, is_on=True))
+    await db.commit()
+
+    result = await run_v2_pipeline(
+        db,
+        iso_year=2026,
+        iso_week=20,
+        office_ids=[office.id],
+        mode="full_optimize",
+    )
+    unassigned = result["unassigned_patients"]
+    codes = {u["patient_code"] for u in unassigned}
+    assert "PNG" in codes, f"座標なし患者 PNG が unassigned に含まれていない: {codes}"
+    assert "POK" not in codes, "座標あり患者 POK は unassigned に含まれないはず"
+    # reason には座標未設定が出る
+    png = next(u for u in unassigned if u["patient_code"] == "PNG")
+    assert "座標" in png["reason"], f"理由が座標未設定でない: {png['reason']}"
+
+
+@pytest.mark.asyncio
+async def test_run_v2_pipeline_no_offices_returns_empty_unassigned(db) -> None:
+    """対象拠点なしの早期 return でも unassigned_patients が dict キーとして存在."""
+    result = await run_v2_pipeline(
+        db,
+        iso_year=2026,
+        iso_week=20,
+        office_ids=[],
+        mode="full_optimize",
+    )
+    # office なし → 早期 return path
+    assert "unassigned_patients" in result
+    assert result["unassigned_patients"] == []
+
+
+# ---------------------------------------------------------------------------
+# W41 v2 (Mode 2 UI 拡張) — V2Visit.address / .area_label が build 時にセットされる
+# ---------------------------------------------------------------------------
+
+
+def test_build_visits_for_pool_sets_address_and_area_label() -> None:
+    """Patient.address があれば V2Visit.address + area_label がセットされる."""
+    office_id = uuid.uuid4()
+    p = Patient(
+        id=uuid.uuid4(),
+        code="ADDR1",
+        name="住所あり",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        address="千葉県千葉市稲毛区宮野木町818-2",
+        primary_office_id=office_id,
+        weekly_pattern={
+            "preferred_weekdays": ["Mon"],
+            "preferred_start": "10:00",
+            "time_type": "固定",
+        },
+    )
+    visits = build_visits_for_pool([p])
+    assert len(visits) == 1
+    assert visits[0].address == "千葉県千葉市稲毛区宮野木町818-2"
+    assert visits[0].area_label == "宮野木"
+
+
+def test_build_visits_for_pool_no_address_returns_none_area() -> None:
+    """Patient.address が None なら V2Visit.area_label も None."""
+    office_id = uuid.uuid4()
+    p = Patient(
+        id=uuid.uuid4(),
+        code="NOADDR",
+        name="住所なし",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        address=None,
+        primary_office_id=office_id,
+        weekly_pattern={
+            "preferred_weekdays": ["Mon"],
+            "preferred_start": "10:00",
+            "time_type": "固定",
+        },
+    )
+    visits = build_visits_for_pool([p])
+    assert len(visits) == 1
+    assert visits[0].address is None
+    assert visits[0].area_label is None

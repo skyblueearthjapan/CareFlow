@@ -50,6 +50,10 @@ class V2VisitForUI(BaseModel):
 
     Frontend ``frontend/lib/schemas/v2/autoScheduleV2.ts`` の
     ``v2VisitForUiSchema`` と完全一致させる.
+
+    W41 v2 (Mode 2 UI 拡張): ``address`` + ``area_label`` を追加.
+    住所文字列と「○○」(町レベル) のエリアラベルを Before/After カードに
+    表示してエリア偏在を見える化する.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -61,6 +65,8 @@ class V2VisitForUI(BaseModel):
     end_time: str
     duration_min: int = Field(ge=1, le=480)
     am_pm: AmPmV2
+    address: str | None = None
+    area_label: str | None = None  # 例: "宮野木", "幕張本郷"
 
 
 class V2CourseSummary(BaseModel):
@@ -212,6 +218,21 @@ class V2IndividualProposal(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class UnassignedPatient(BaseModel):
+    """W41 v2 (Mode 2 UI 拡張): 全面最適化で割当不可だった患者 1 件分.
+
+    Mode 2 (``full_optimize``) で pool に入れたが after_visits に出てこなかった
+    患者を抽出して、UI で「未割当」セクションに表示する.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    patient_id: uuid.UUID
+    patient_name: str
+    patient_code: str | None = None
+    reason: str  # 例: "受入カレンダー× (希望時間が受入不可)", "拠点未設定"
+
+
 class AutoScheduleV2FullOptimizeResponse(BaseModel):
     """``POST /api/v1/schedule/v2/full-optimize`` response."""
 
@@ -222,6 +243,9 @@ class AutoScheduleV2FullOptimizeResponse(BaseModel):
     individual_proposals: list[V2IndividualProposal] = Field(default_factory=list)
     kpi_overall: V2KpiOverall = Field(default_factory=V2KpiOverall)
     warnings: list[str] = Field(default_factory=list)
+    # W41 v2 (Mode 2 UI 拡張): pool に入れたが after_visits に出てこなかった患者.
+    # Mode 2 (full_optimize) のときのみ非空, Mode 1 (diff_add) では参照しない.
+    unassigned_patients: list[UnassignedPatient] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -375,4 +399,5 @@ __all__ = [
     "V2VisitForUI",
     "V2VisitPlan",
     "V2WeekdayBeforeAfter",
+    "UnassignedPatient",
 ]

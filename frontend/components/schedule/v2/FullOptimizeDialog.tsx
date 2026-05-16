@@ -330,6 +330,14 @@ export function FullOptimizeDialog({
           stage === 'week-only-applying') &&
         result ? (
           <div className="space-y-3 py-2" data-testid="full-optimize-result">
+            {/* W41 v2 (Mode 2 UI 拡張): グループ化基準の説明 */}
+            <div className="text-[10px] text-text-muted" data-testid="full-optimize-grouping-info">
+              ℹ️ グループ化基準: 最近接 2-3 名を 1 セット / コース容量 6 名/コース
+            </div>
+
+            {/* W41 v2 (Mode 2 UI 拡張): 割当状況バナー */}
+            <AssignmentSummaryBanner result={result} />
+
             {/* KPI バー */}
             <section
               className="grid grid-cols-2 gap-2 sm:grid-cols-4"
@@ -561,6 +569,59 @@ export function FullOptimizeDialog({
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// AssignmentSummaryBanner — W41 v2 (Mode 2 UI 拡張)
+//
+// 全 active 患者のうち、何名が割当できて何名が未割当かをバナー表示.
+// 未割当 0 → 緑バナー / 未割当あり → アンバーバナー (詳細展開可).
+// ─────────────────────────────────────────────────────────────────────────
+
+function AssignmentSummaryBanner({ result }: { result: FullOptimizeResponse }) {
+  // 割当済み患者: after に少なくとも 1 visit ある = 個別提案 / week_proposals.after に出る.
+  const assignedSet = new Set<string>();
+  for (const wp of result.week_proposals) {
+    for (const c of wp.after.courses) {
+      for (const v of c.visits) {
+        assignedSet.add(v.patient_id);
+      }
+    }
+  }
+  const unassignedCount = result.unassigned_patients.length;
+  const assignedCount = assignedSet.size;
+  const totalCount = assignedCount + unassignedCount;
+
+  if (unassignedCount === 0) {
+    return (
+      <div
+        className="rounded border border-emerald-300 bg-emerald-50 p-3 text-sm text-emerald-800"
+        data-testid="full-optimize-assignment-banner-ok"
+      >
+        ✅ 全 {totalCount} 名の患者を割当できました
+      </div>
+    );
+  }
+  return (
+    <div
+      className="rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900"
+      data-testid="full-optimize-assignment-banner-warn"
+    >
+      ⚠️ {totalCount} 名中 {assignedCount} 名割当 / {unassignedCount} 名がプール残
+      <details className="mt-2">
+        <summary className="cursor-pointer text-xs">▼ 未割当患者の詳細</summary>
+        <ul className="mt-2 space-y-1 text-xs" data-testid="full-optimize-unassigned-list">
+          {result.unassigned_patients.map((p) => (
+            <li key={p.patient_id}>
+              ・<span className="font-semibold">{p.patient_code ?? '—'}</span> {p.patient_name}
+              {' — 理由: '}
+              <span className="text-amber-700">{p.reason}</span>
+            </li>
+          ))}
+        </ul>
+      </details>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // BeforeAfterWeekPanel — 曜日タブの中身 (Before / After を 2 列で並べる)
 //
 // Backend は ``before/after = { courses: V2CourseSummary[] }`` で渡してくる.
@@ -655,9 +716,23 @@ function CourseListColumn({
               {c.visits.length > 0 ? (
                 <ul className="mt-1 space-y-0.5">
                   {c.visits.slice(0, 8).map((v: V2VisitForUI, i) => (
-                    <li key={i} className="flex items-center gap-1.5 text-[10px]">
+                    <li key={i} className="flex flex-wrap items-center gap-1 text-[10px]">
                       <span className="tnum text-text-muted">{trimSeconds(v.start_time)}</span>
                       <span className="text-text-primary">{v.patient_name}</span>
+                      {v.area_label ? (
+                        <span className="rounded bg-brand-primary/10 px-1 text-[9px] text-brand-primary">
+                          {v.area_label}
+                        </span>
+                      ) : null}
+                      {v.address ? (
+                        <span
+                          className="text-[9px] text-text-muted"
+                          title={v.address}
+                          aria-label={`住所 ${v.address}`}
+                        >
+                          {v.address.length > 18 ? `${v.address.slice(0, 18)}…` : v.address}
+                        </span>
+                      ) : null}
                     </li>
                   ))}
                   {c.visits.length > 8 ? (
