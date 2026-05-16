@@ -64,6 +64,30 @@ function fmtWd(weekday: number): string {
   return WEEKDAY_LABELS[weekday] ?? `?${weekday}`;
 }
 
+/**
+ * W41 v2 (UI 時間詳細表示): time_type バッジを preferred_start/end と合わせて整形.
+ *
+ * - 時間帯 (preferred_start/end あり): "🕐 時間帯 (09:00-10:30)"
+ * - 固定 (preferred_start あり): "🕐 固定 (10:00)"
+ * - 午前: "🕐 午前 (~12:00)"
+ * - 午後: "🕐 午後 (13:00~)"
+ * - 終日: "🕐 終日"
+ * - その他 (string): "🕐 {time_type}"
+ * - null / undefined: null (バッジ非表示)
+ */
+function formatTimeCondition(v: V2VisitForUI): string | null {
+  if (v.time_type === '時間帯' && v.preferred_start && v.preferred_end) {
+    return `🕐 時間帯 (${trimSeconds(v.preferred_start)}-${trimSeconds(v.preferred_end)})`;
+  }
+  if (v.time_type === '固定' && v.preferred_start) {
+    return `🕐 固定 (${trimSeconds(v.preferred_start)})`;
+  }
+  if (v.time_type === '午前') return '🕐 午前 (~12:00)';
+  if (v.time_type === '午後') return '🕐 午後 (13:00~)';
+  if (v.time_type === '終日') return '🕐 終日';
+  return v.time_type ? `🕐 ${v.time_type}` : null;
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // State machine
 // ─────────────────────────────────────────────────────────────────────────
@@ -785,9 +809,12 @@ function CourseListColumn({
                             {v.address.length > 18 ? `${v.address.slice(0, 18)}…` : v.address}
                           </span>
                         ) : null}
-                        {v.time_type ? (
-                          <span className="text-[9px] text-text-secondary">🕐 {v.time_type}</span>
-                        ) : null}
+                        {(() => {
+                          const label = formatTimeCondition(v);
+                          return label ? (
+                            <span className="text-[9px] text-text-secondary">{label}</span>
+                          ) : null;
+                        })()}
                         {v.sex_restriction === 'female_only' ? (
                           <span className="text-[9px] text-pink-600">👩 女性のみ</span>
                         ) : null}

@@ -66,6 +66,10 @@ export const v2VisitForUiSchema = z.object({
   sex_restriction: z.string().nullable().default(null),
   // W41 v2 (H2 視覚化): 同住所グループ id (2 名以上のとき同 id, 単独は null).
   same_address_group_id: z.string().nullable().default(null),
+  // W41 v2 (UI 時間詳細表示): 希望時間帯 (HH:MM 文字列).
+  // time_type='時間帯' のとき範囲 (start-end), '固定' のとき開始時刻のみ保持.
+  preferred_start: z.string().nullable().default(null),
+  preferred_end: z.string().nullable().default(null),
 });
 export type V2VisitForUI = z.infer<typeof v2VisitForUiSchema>;
 

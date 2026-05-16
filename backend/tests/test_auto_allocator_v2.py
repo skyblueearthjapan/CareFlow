@@ -372,13 +372,11 @@ def test_filter_skip_acceptance_in_mode2() -> None:
     assert "LUNCH" not in codes, "skip_acceptance=True でも H10 昼休憩は除外されるべき"
 
     # acceptance_calendar 由来の warning は出ていない
-    assert not any("blocked by acceptance_calendar" in w for w in warnings), (
-        f"skip_acceptance=True なのに acceptance_calendar warning が出ている: {warnings}"
+    assert not any("受入カレンダー" in w for w in warnings), (
+        f"skip_acceptance=True なのに 受入カレンダー warning が出ている: {warnings}"
     )
-    # 昼休憩 warning は出ている
-    assert any("lunch break" in w for w in warnings), (
-        f"H10 lunch break warning が出ていない: {warnings}"
-    )
+    # 昼休憩 warning は出ている (日本語化済)
+    assert any("昼休憩" in w for w in warnings), f"H10 昼休憩 warning が出ていない: {warnings}"
 
 
 def test_filter_acceptance_enforced_in_mode1_default() -> None:
@@ -403,7 +401,7 @@ def test_filter_acceptance_enforced_in_mode1_default() -> None:
     codes = {v.patient_code for v in filtered}
     assert "X" not in codes, "Mode 1 (default) では acceptance × visit は除外されるべき"
     assert "OK" in codes
-    assert any("blocked by acceptance_calendar" in w for w in warnings)
+    assert any("受入カレンダー" in w for w in warnings)
 
 
 # ---------------------------------------------------------------------------
@@ -926,8 +924,8 @@ def test_enforce_h2_split_overflow_no_target_emits_warning() -> None:
     warnings: list[str] = []
     _enforce_h2_split_overflow(sets, warnings)
 
-    # 移動先がないので 1 件は overflow → 警告
-    assert any("移動先 set 見つからず" in w for w in warnings)
+    # 移動先がないので 1 件は overflow → 警告 (日本語化済)
+    assert any("移動先なし" in w for w in warnings)
 
 
 def test_enforce_h2_split_overflow_no_op_for_two_same_address() -> None:
@@ -1473,3 +1471,194 @@ async def test_load_before_visits_sets_time_type_and_sex_restriction(db) -> None
     assert len(visits) == 1
     assert visits[0].time_type == "午前"
     assert visits[0].sex_restriction == "male_only"
+
+
+# ---------------------------------------------------------------------------
+# W41 v2 (同住所同時刻集約 ソフト制約) — _consolidate_same_address_time
+# ---------------------------------------------------------------------------
+
+
+def test_consolidate_same_address_time_groups_to_majority() -> None:
+    """同住所 2 名が異なる start_time にいる場合、最多 (mode) に集約される.
+
+    A: 10:00 (終日), B: 11:00 (終日) → 同住所同曜日.
+    両者 1 回ずつでタイ → タイブレークで早い時刻 (10:00) に集約される.
+    """
+    from app.services.scheduling.auto_allocator_v2 import _consolidate_same_address_time
+
+    office_id = uuid.uuid4()
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=10, start_m=0, patient_name="A"
+    )
+    a.time_type = "終日"
+    b = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=11, start_m=0, patient_name="B"
+    )
+    b.time_type = "終日"
+    # 第三者 C を同住所同 start_time (10:00) に置き、10:00 が多数派となる構図.
+    c = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=10, start_m=0, patient_name="C"
+    )
+    c.time_type = "終日"
+    warnings: list[str] = []
+    _consolidate_same_address_time([a, b, c], warnings)
+
+    # 10:00 が多数派 (2 件) なので B も 10:00 に集約される
+    assert b.start_time == time(10, 0), (
+        f"B should be consolidated to 10:00 but stayed at {b.start_time}"
+    )
+    # 集約成功なので warning は出ない
+    assert not any("同住所集約" in w for w in warnings), (
+        f"集約成功時に warning が出ている: {warnings}"
+    )
+
+
+def test_consolidate_same_address_time_skips_when_fixed_or_out_of_window() -> None:
+    """time_type='固定' は集約不可、'時間帯' で範囲外も集約不可. それぞれ warning が出る.
+
+    A, B (= majority 11:00 fixed)、C (固定 10:00) → C は動かせない → warning.
+    D (時間帯 09:00-10:30) → 11:00 は範囲外 → 動かせない → warning.
+    """
+    from app.services.scheduling.auto_allocator_v2 import _consolidate_same_address_time
+
+    office_id = uuid.uuid4()
+    # majority は 11:00 — 2 件にして mode を確定させる
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=11, start_m=0, patient_name="A"
+    )
+    a.time_type = "固定"
+    a.preferred_start = "11:00"
+    b = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=11, start_m=0, patient_name="B"
+    )
+    b.time_type = "固定"
+    b.preferred_start = "11:00"
+
+    # C: 固定 10:00 — 動かせない
+    c = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=10, start_m=0, patient_name="C"
+    )
+    c.time_type = "固定"
+    c.preferred_start = "10:00"
+
+    # D: 時間帯 09:00-10:30 — 11:00 は範囲外 → 動かせない
+    d = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=30, patient_name="D"
+    )
+    d.time_type = "時間帯"
+    d.preferred_start = "09:00"
+    d.preferred_end = "10:30"
+
+    warnings: list[str] = []
+    _consolidate_same_address_time([a, b, c, d], warnings)
+
+    # C: 動かせない (固定) → start_time は元のまま
+    assert c.start_time == time(10, 0), f"C should remain at 10:00 (固定), got {c.start_time}"
+    # D: 範囲外なので動かない
+    assert d.start_time == time(9, 30), f"D should remain at 9:30 (範囲外), got {d.start_time}"
+    # warnings は最低 2 件 (C と D)
+    consolidation_warnings = [w for w in warnings if "同住所集約" in w]
+    assert len(consolidation_warnings) >= 2, (
+        f"固定 / 時間帯外 で 2 件以上の warning が出るはずだが: {consolidation_warnings}"
+    )
+    # 固定 / 時間帯 の理由がそれぞれ含まれる
+    assert any("固定" in w for w in consolidation_warnings), (
+        f"固定 reason が含まれない: {consolidation_warnings}"
+    )
+    assert any("時間帯" in w for w in consolidation_warnings), (
+        f"時間帯 reason が含まれない: {consolidation_warnings}"
+    )
+
+
+def test_warnings_are_in_japanese() -> None:
+    """W41 v2: warning メッセージが日本語化されていること (受入×, 昼休憩, 同住所).
+
+    旧 "blocked by acceptance_calendar" / "lunch break" / "exceeds" などの
+    英語混じり表現が出ないことを substring で検証する.
+    """
+    from app.services.scheduling.auto_allocator_v2 import (
+        _consolidate_same_address_time,
+        _filter_unavailable_and_lunch,
+    )
+
+    office_id = uuid.uuid4()
+
+    # 1) acceptance × + 昼休憩 (Mode 1)
+    blocked_v = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=10, start_m=0, patient_name="B1"
+    )
+    lunch_v = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=12, start_m=30, patient_name="L1"
+    )
+    lunch_v.end_time = time(13, 30)
+    unavailable = {(office_id, 0): {time(10, 0)}}
+    warnings_a: list[str] = []
+    _filter_unavailable_and_lunch(
+        [blocked_v, lunch_v], unavailable_slots=unavailable, warnings=warnings_a
+    )
+    assert any("受入カレンダー" in w and "配置不可" in w for w in warnings_a), (
+        f"日本語化された受入× warning が無い: {warnings_a}"
+    )
+    assert any("昼休憩" in w and "配置不可" in w for w in warnings_a), (
+        f"日本語化された昼休憩 warning が無い: {warnings_a}"
+    )
+    # 旧英語表現が混入していないこと
+    for w in warnings_a:
+        assert "blocked by acceptance_calendar" not in w, f"旧英語表現が残存: {w}"
+        assert "lunch break" not in w, f"旧英語表現が残存: {w}"
+        assert "weekday=" not in w, f"weekday=N 表記が残存: {w}"
+
+    # 2) 同住所集約 — 動かせない warning
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=11, start_m=0, patient_name="A"
+    )
+    a.time_type = "固定"
+    a.preferred_start = "11:00"
+    b = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=11, start_m=0, patient_name="B"
+    )
+    b.time_type = "固定"
+    b.preferred_start = "11:00"
+    c = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=10, start_m=0, patient_name="C"
+    )
+    c.time_type = "固定"
+    c.preferred_start = "10:00"
+    warnings_b: list[str] = []
+    _consolidate_same_address_time([a, b, c], warnings_b)
+    assert any("同住所集約" in w for w in warnings_b), f"同住所集約 warning が無い: {warnings_b}"
+    # 月曜 (weekday=0) 表記が日本語に
+    assert any("月曜" in w for w in warnings_b), f"曜日が日本語化されていない: {warnings_b}"
+
+
+def test_v2visit_has_preferred_window_fields() -> None:
+    """W41 v2: V2Visit に preferred_start / preferred_end フィールドがある.
+
+    weekly_pattern.entries[].preferred_end も build 時に流れる.
+    """
+    office_id = uuid.uuid4()
+    p = Patient(
+        id=uuid.uuid4(),
+        code="PRE1",
+        name="window patient",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        primary_office_id=office_id,
+        weekly_pattern={
+            "entries": [
+                {
+                    "weekday": "Mon",
+                    "preferred_start": "09:00",
+                    "preferred_end": "10:30",
+                    "time_type": "時間帯",
+                }
+            ]
+        },
+    )
+    visits = build_visits_for_pool([p])
+    assert len(visits) == 1
+    v = visits[0]
+    assert v.preferred_start == "09:00"
+    assert v.preferred_end == "10:30"
+    assert v.time_type == "時間帯"

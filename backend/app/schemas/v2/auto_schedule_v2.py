@@ -76,6 +76,10 @@ class V2VisitForUI(BaseModel):
     # W41 v2 (H2 視覚化): 同住所グループ id. UI で「📍 同住所 (N 名)」連結表示用.
     # 同 (office, weekday, start_time, address_bucket) で 2 名以上なら共通 id.
     same_address_group_id: str | None = None
+    # W41 v2 (UI 時間詳細表示): 患者の希望時間帯 (HH:MM 文字列).
+    # time_type='時間帯' のとき範囲 (start-end), '固定' のとき開始時刻を保持.
+    preferred_start: str | None = None
+    preferred_end: str | None = None
 
 
 class V2CourseSummary(BaseModel):

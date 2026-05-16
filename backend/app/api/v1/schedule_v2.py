@@ -125,6 +125,8 @@ def _v2visit_to_ui(
         time_type=v.time_type,
         sex_restriction=v.sex_restriction,
         same_address_group_id=same_address_group_id,
+        preferred_start=v.preferred_start,
+        preferred_end=v.preferred_end,
     )
 
 
@@ -173,7 +175,11 @@ def _build_kpi_overall(
     courses_before = len({(v.office_id, v.weekday, v.course_code) for v in before if v.course_code})
     courses_after = len({(v.office_id, v.weekday, v.course_code) for v in after if v.course_code})
     h_viol = calc_h_violations(after)
-    overflows = sum(1 for w in warnings if "超過" in w or "exceeds" in w)
+    # W41 v2 (警告日本語化): warning に「マネージャー補充候補」が出る = 容量/コース超過.
+    # 旧表現 "超過" / "exceeds" を後方互換で残す.
+    overflows = sum(
+        1 for w in warnings if "マネージャー補充候補" in w or "超過" in w or "exceeds" in w
+    )
     return V2KpiOverall(
         total_distance_km_before=round(bd, 4),
         total_distance_km_after=round(ad, 4),
