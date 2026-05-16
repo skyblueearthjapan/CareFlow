@@ -47,7 +47,10 @@ import type {
 
 import { cn } from '@/lib/utils';
 
+import { useStaffList } from '@/lib/queries/staff';
+
 import { FixedTimeEditModal } from './FixedTimeEditModal';
+import { ProposalWeekCalendar } from './ProposalWeekCalendar';
 import { VisitArrow } from './VisitArrow';
 import { formatDelta, formatErr, trimSeconds } from './_autoScheduleUtils';
 
@@ -1003,53 +1006,32 @@ function CourseListColumn({
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// AllWeekSummary — 「全体」タブ: 曜日別サマリー表 (距離 / 訪問数の差分一覧)
+// AllWeekSummary — 「全体」タブ: スタッフ × 曜日 週カレンダー Before/After (縦積み)
 //
-// 曜日ごとに Before/After の距離と訪問数を表形式で俯瞰. コース分けは見せず、
-// 「どの曜日でどれだけ距離が削減されたか」「訪問数が変わったか」だけを
-// 見せる. 詳細は各曜日タブで確認する.
+// `/schedule` の「週」ビュー風に、スタッフ行 × 曜日列 (月〜土) で提案結果を
+// 俯瞰する. Before/After を縦に並べて差を比較しやすくする.
+// Before は固定枠ベースで assigned_staff_id が無いケースが多く、その場合は
+// 「未アサイン」行に集約される.
 // ─────────────────────────────────────────────────────────────────────────
 
 function AllWeekSummary({ proposals }: { proposals: V2WeekdayBeforeAfter[] }) {
-  const sorted = React.useMemo(
-    () => [...proposals].sort((a, b) => a.weekday - b.weekday),
-    [proposals],
-  );
-  if (sorted.length === 0) {
+  // staff_id → 表示名 (氏名) を staff master から構築.
+  const staffQuery = useStaffList({ limit: 500 });
+  const staffNameById = React.useMemo(() => {
+    const m = new Map<string, string>();
+    for (const s of staffQuery.data ?? []) {
+      m.set(s.id, s.name);
+    }
+    return m;
+  }, [staffQuery.data]);
+
+  if (proposals.length === 0) {
     return <div className="py-4 text-center text-xs text-text-muted">提案がありません</div>;
   }
   return (
-    <div className="overflow-x-auto" data-testid="full-optimize-all-summary">
-      <table className="w-full text-xs">
-        <thead className="bg-bg-muted text-[10px] text-text-muted">
-          <tr>
-            <th className="px-2 py-1 text-left">曜日</th>
-            <th className="px-2 py-1 text-right">Before km</th>
-            <th className="px-2 py-1 text-right">After km</th>
-            <th className="px-2 py-1 text-right">距離 Δ</th>
-            <th className="px-2 py-1 text-right">訪問 Before</th>
-            <th className="px-2 py-1 text-right">訪問 After</th>
-          </tr>
-        </thead>
-        <tbody>
-          {sorted.map((p) => {
-            const b = totalsFor(p.before.courses);
-            const a = totalsFor(p.after.courses);
-            return (
-              <tr key={p.weekday} className="border-t border-border-default">
-                <td className="px-2 py-1">{fmtWd(p.weekday)}曜日</td>
-                <td className="tnum px-2 py-1 text-right">{b.distance.toFixed(1)}</td>
-                <td className="tnum px-2 py-1 text-right">{a.distance.toFixed(1)}</td>
-                <td className="tnum px-2 py-1 text-right">
-                  {formatDelta(a.distance - b.distance)}
-                </td>
-                <td className="tnum px-2 py-1 text-right">{b.visits}</td>
-                <td className="tnum px-2 py-1 text-right">{a.visits}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+    <div className="space-y-3" data-testid="full-optimize-all-summary">
+      <ProposalWeekCalendar proposals={proposals} side="before" staffNameById={staffNameById} />
+      <ProposalWeekCalendar proposals={proposals} side="after" staffNameById={staffNameById} />
     </div>
   );
 }
