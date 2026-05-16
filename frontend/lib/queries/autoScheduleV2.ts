@@ -22,6 +22,8 @@ import { fetcher } from '@/lib/api/fetcher';
 import {
   applyIndividualRequestSchema,
   applyIndividualResponseSchema,
+  applyWeekOnlyRequestSchema,
+  applyWeekOnlyResponseSchema,
   diffAddRequestSchema,
   diffAddResponseSchema,
   fullOptimizeRequestSchema,
@@ -30,6 +32,8 @@ import {
   resetToFixedResponseSchema,
   type ApplyIndividualRequest,
   type ApplyIndividualResponse,
+  type ApplyWeekOnlyRequest,
+  type ApplyWeekOnlyResponse,
   type DiffAddRequest,
   type DiffAddResponse,
   type FullOptimizeRequest,
@@ -42,6 +46,7 @@ const DIFF_ADD_PATH = '/api/v1/schedule/v2/diff-add';
 const FULL_OPTIMIZE_PATH = '/api/v1/schedule/v2/full-optimize';
 const APPLY_INDIVIDUAL_PATH = '/api/v1/schedule/v2/apply-individual';
 const RESET_TO_FIXED_PATH = '/api/v1/schedule/v2/reset-to-fixed';
+const APPLY_WEEK_ONLY_PATH = '/api/v1/schedule/v2/apply-week-only';
 
 function authPair(session: ReturnType<typeof useSession>['data']) {
   return {
@@ -173,6 +178,41 @@ export function useResetToFixedMutation(): UseMutationResult<
       void qc.invalidateQueries({ queryKey: ['visits'] });
       void qc.invalidateQueries({ queryKey: ['courses'] });
       void qc.invalidateQueries({ queryKey: ['patient-fixed-visits'] });
+    },
+  });
+}
+
+/**
+ * POST /api/v1/schedule/v2/apply-week-only — この週だけ反映 (固定枠は変更しない).
+ *
+ * 全面最適化の提案を visits のみへ反映する慎重モード. patient_fixed_visits は
+ * 触らないので翌週からは元の固定枠ベースのスケジュールに戻る.
+ * visits / courses cache のみ invalidate (固定枠は除外).
+ */
+export function useApplyWeekOnlyMutation(): UseMutationResult<
+  ApplyWeekOnlyResponse,
+  Error,
+  ApplyWeekOnlyRequest
+> {
+  const qc = useQueryClient();
+  const { data: session } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+
+  return useMutation<ApplyWeekOnlyResponse, Error, ApplyWeekOnlyRequest>({
+    mutationFn: async (raw) => {
+      const payload = applyWeekOnlyRequestSchema.parse(raw);
+      const result = await fetcher<unknown>(APPLY_WEEK_ONLY_PATH, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+        accessToken,
+        refreshToken,
+      });
+      return applyWeekOnlyResponseSchema.parse(result);
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['visits'] });
+      void qc.invalidateQueries({ queryKey: ['courses'] });
+      // patient-fixed-visits は触らないので invalidate しない.
     },
   });
 }

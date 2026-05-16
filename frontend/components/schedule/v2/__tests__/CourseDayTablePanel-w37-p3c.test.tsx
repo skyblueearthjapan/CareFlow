@@ -253,6 +253,13 @@ vi.mock('@/lib/queries/autoScheduleV2', () => ({
     error: null,
     isSuccess: false,
   }),
+  useApplyWeekOnlyMutation: () => ({
+    mutateAsync: vi.fn(),
+    reset: vi.fn(),
+    isPending: false,
+    error: null,
+    isSuccess: false,
+  }),
 }));
 // Wave 39: staff-events モック (W39 で useUpdateEventForDrag が追加されたため必須).
 const mockUpdateEventDrag = vi.fn();

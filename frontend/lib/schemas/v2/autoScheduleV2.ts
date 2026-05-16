@@ -245,3 +245,37 @@ export const resetToFixedResponseSchema = z.object({
   warnings: z.array(z.string()).default([]),
 });
 export type ResetToFixedResponse = z.infer<typeof resetToFixedResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// この週だけ反映 (POST /apply-week-only)
+//
+// 全面最適化結果を **その週の visits だけ** に反映する慎重モード.
+// patient_fixed_visits は更新しないので、翌週からは元の固定枠ベースに戻る.
+// ---------------------------------------------------------------------------
+
+export const v2PatientVisitPlansSchema = z.object({
+  patient_id: z.string().uuid(),
+  visit_plans: z.array(v2VisitPlanSchema).default([]),
+});
+export type V2PatientVisitPlans = z.infer<typeof v2PatientVisitPlansSchema>;
+
+export const applyWeekOnlyRequestSchema = z.object({
+  iso_year: z.number().int().min(2020).max(2100),
+  iso_week: z.number().int().min(1).max(53),
+  office_ids: z.array(z.string().uuid()).default([]),
+  visit_plans_per_patient: z.array(v2PatientVisitPlansSchema).default([]),
+  /** UI 側の確認ダイアログを経由したことを示すマーカー (BE は Literal[True]). */
+  confirm: z.literal(true).default(true),
+});
+export type ApplyWeekOnlyRequest = z.infer<typeof applyWeekOnlyRequestSchema>;
+
+export const applyWeekOnlyResponseSchema = z.object({
+  iso_year: z.number().int(),
+  iso_week: z.number().int(),
+  visits_created: z.number().int().nonnegative(),
+  visits_soft_deleted: z.number().int().nonnegative(),
+  courses_created: z.number().int().nonnegative(),
+  visit_staff_assignments_created: z.number().int().nonnegative(),
+  warnings: z.array(z.string()).default([]),
+});
+export type ApplyWeekOnlyResponse = z.infer<typeof applyWeekOnlyResponseSchema>;

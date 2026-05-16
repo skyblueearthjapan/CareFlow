@@ -35,6 +35,8 @@ from app.models.user import User
 from app.schemas.v2.auto_schedule_v2 import (
     AutoScheduleV2ApplyIndividualRequest,
     AutoScheduleV2ApplyIndividualResponse,
+    AutoScheduleV2ApplyWeekOnlyRequest,
+    AutoScheduleV2ApplyWeekOnlyResponse,
     AutoScheduleV2DiffAddRequest,
     AutoScheduleV2DiffAddResponse,
     AutoScheduleV2FullOptimizeRequest,
@@ -57,6 +59,7 @@ from app.services.scheduling.auto_allocator_v2 import (
     LUNCH_START,
     V2Visit,
     apply_individual_proposal,
+    apply_week_only,
     calc_h_violations,
     calc_total_distance,
     haversine_km,
@@ -528,6 +531,108 @@ async def reset_to_fixed_endpoint(
         visits_regenerated=int(result.get("visits_regenerated", 0)),
         visits_soft_deleted=int(result.get("visits_soft_deleted", 0)),
         courses_used=int(result.get("courses_used", 0)),
+        warnings=list(result.get("warnings", [])),
+    )
+
+
+# ---------------------------------------------------------------------------
+# 5) POST /schedule/v2/apply-week-only (この週だけ反映)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/v2/apply-week-only",
+    response_model=AutoScheduleV2ApplyWeekOnlyResponse,
+    status_code=status.HTTP_200_OK,
+    summary="W41 v2: 全面最適化結果をその週の visits だけに反映 (固定枠は変更しない)",
+)
+async def apply_week_only_endpoint(
+    payload: AutoScheduleV2ApplyWeekOnlyRequest,
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+) -> AutoScheduleV2ApplyWeekOnlyResponse:
+    """全面最適化提案を visits のみへ反映する慎重モード.
+
+    - ``patient_fixed_visits`` は **更新しない**
+    - 来週からは元の固定枠ベースのスケジュールに戻る
+    - 対象週の active visits は soft-delete してから INSERT (uq_visits 衝突回避)
+    """
+    if payload.confirm is not True:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="confirm=true must be set explicitly",
+        )
+    if not payload.visit_plans_per_patient:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="visit_plans_per_patient must not be empty",
+        )
+
+    # H10 を境界で再検証 (apply-individual と同じ防衛深度).
+    for pi, pvp in enumerate(payload.visit_plans_per_patient):
+        for vi, vp in enumerate(pvp.visit_plans):
+            if vp.start_time < LUNCH_END and vp.end_time > LUNCH_START:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=(
+                        f"visit_plans_per_patient[{pi}].visit_plans[{vi}]: "
+                        f"H10 違反 — 昼休憩 12:00-13:00 に重なる visit は不可 "
+                        f"(start={vp.start_time}, end={vp.end_time})"
+                    ),
+                )
+            if vp.end_time <= vp.start_time:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=(
+                        f"visit_plans_per_patient[{pi}].visit_plans[{vi}]: "
+                        f"end_time は start_time より後にしてください "
+                        f"(start={vp.start_time}, end={vp.end_time})"
+                    ),
+                )
+
+    patient_visit_plans = [
+        {
+            "patient_id": pvp.patient_id,
+            "visit_plans": [vp.model_dump() for vp in pvp.visit_plans],
+        }
+        for pvp in payload.visit_plans_per_patient
+    ]
+    try:
+        result = await apply_week_only(
+            db,
+            iso_year=payload.iso_year,
+            iso_week=payload.iso_week,
+            office_ids=list(payload.office_ids),
+            patient_visit_plans=patient_visit_plans,
+        )
+        await db.commit()
+    except ValueError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except IntegrityError as exc:
+        await db.rollback()
+        logger.warning(
+            "apply_week_only: integrity error (likely concurrent apply): "
+            "iso_year=%s iso_week=%s err=%s",
+            payload.iso_year,
+            payload.iso_week,
+            exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="他のユーザーが同じ週を処理中です。もう一度実行してください。",
+        ) from exc
+    except Exception:
+        await db.rollback()
+        raise
+
+    return AutoScheduleV2ApplyWeekOnlyResponse(
+        iso_year=payload.iso_year,
+        iso_week=payload.iso_week,
+        visits_created=int(result.get("visits_created", 0)),
+        visits_soft_deleted=int(result.get("visits_soft_deleted", 0)),
+        courses_created=int(result.get("courses_created", 0)),
+        visit_staff_assignments_created=int(result.get("visit_staff_assignments_created", 0)),
         warnings=list(result.get("warnings", [])),
     )
 

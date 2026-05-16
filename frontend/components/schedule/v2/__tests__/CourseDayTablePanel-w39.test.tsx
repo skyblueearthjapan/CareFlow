@@ -248,6 +248,13 @@ vi.mock('@/lib/queries/autoScheduleV2', () => ({
     error: null,
     isSuccess: false,
   }),
+  useApplyWeekOnlyMutation: () => ({
+    mutateAsync: vi.fn(),
+    reset: vi.fn(),
+    isPending: false,
+    error: null,
+    isSuccess: false,
+  }),
 }));
 vi.mock('@/lib/queries/staff-events', () => ({
   useWeekStaffEvents: () => ({ data: [], isLoading: false }),

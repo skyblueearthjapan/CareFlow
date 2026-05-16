@@ -302,10 +302,62 @@ class AutoScheduleV2ResetToFixedResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+# ---------------------------------------------------------------------------
+# 5) /apply-week-only (この週だけ反映)
+#
+# 全面最適化の結果を **その週の visits だけ** に反映する慎重モード.
+# patient_fixed_visits は更新しないので、来週からは元の固定枠ベースに戻る.
+# ---------------------------------------------------------------------------
+
+
+class V2PatientVisitPlans(BaseModel):
+    """``apply-week-only`` で 1 患者分の採用 visit 計画."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    patient_id: uuid.UUID
+    visit_plans: list[V2VisitPlan] = Field(default_factory=list)
+
+
+class AutoScheduleV2ApplyWeekOnlyRequest(BaseModel):
+    """``POST /api/v1/schedule/v2/apply-week-only`` request.
+
+    全面最適化の結果を visits のみに反映する.
+    patient_fixed_visits は更新しない (来週からは元の固定枠に戻る).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    iso_year: int = Field(ge=2020, le=2100)
+    iso_week: int = Field(ge=1, le=53)
+    office_ids: list[uuid.UUID] = Field(default_factory=list, max_length=200)
+    visit_plans_per_patient: list[V2PatientVisitPlans] = Field(default_factory=list)
+    confirm: Literal[True] = Field(
+        default=True,
+        description="必ず true を指定すること (UI 側で確認ダイアログ後に True 固定送信)",
+    )
+
+
+class AutoScheduleV2ApplyWeekOnlyResponse(BaseModel):
+    """``POST /api/v1/schedule/v2/apply-week-only`` response."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    iso_year: int = Field(ge=2020, le=2100)
+    iso_week: int = Field(ge=1, le=53)
+    visits_created: int = Field(ge=0)
+    visits_soft_deleted: int = Field(ge=0)
+    courses_created: int = Field(ge=0)
+    visit_staff_assignments_created: int = Field(ge=0)
+    warnings: list[str] = Field(default_factory=list)
+
+
 __all__ = [
     "AmPmV2",
     "AutoScheduleV2ApplyIndividualRequest",
     "AutoScheduleV2ApplyIndividualResponse",
+    "AutoScheduleV2ApplyWeekOnlyRequest",
+    "AutoScheduleV2ApplyWeekOnlyResponse",
     "AutoScheduleV2DiffAddRequest",
     "AutoScheduleV2DiffAddResponse",
     "AutoScheduleV2FullOptimizeRequest",
@@ -318,6 +370,7 @@ __all__ = [
     "V2DiffAddProposal",
     "V2IndividualProposal",
     "V2KpiOverall",
+    "V2PatientVisitPlans",
     "V2ProposalDelta",
     "V2VisitForUI",
     "V2VisitPlan",

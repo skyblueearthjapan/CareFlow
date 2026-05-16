@@ -1106,6 +1106,7 @@ _RESET_DELETABLE_SOURCES: tuple[str, ...] = (
     "auto",
     "auto_alloc",
     "auto_alloc_v2",
+    "auto_alloc_week_only",
     "pfv",
     "fixed",
     "reset_v2",
@@ -1228,6 +1229,296 @@ async def _resolve_course_for_pfv(
 
     course_cache[cache_key] = course
     return course
+
+
+async def _resolve_course_for_code(
+    db: AsyncSession,
+    *,
+    office_id: UUID,
+    iso_year: int,
+    iso_week: int,
+    weekday: int,
+    code: str,
+    course_cache: dict[tuple[UUID, int, str], Course],
+    courses_created_counter: list[int],
+    warnings: list[str],
+) -> Course | None:
+    """``(office_id, weekday, code)`` から Course を解決 (無ければ新規作成).
+
+    ``_resolve_course_for_pfv`` から派生. PFV ではなく visit_plan の
+    ``course_code`` を直接受け取る ``apply_week_only`` 用ヘルパー.
+
+    解決順序:
+        1. (office_id, code, iso_year, iso_week, weekday) で既存 Course を探す
+        2. 無ければ拠点の最初の有効 template を template_id にして新規 INSERT
+        3. course_cache でメモ化 (同 (office_id, weekday, code) は 1 回だけ DB 引き)
+
+    ``courses_created_counter`` は新規作成件数を呼び出し側へ返すためのワンスロット
+    int list (mutate して使う).
+    """
+    cache_key = (office_id, weekday, code)
+    cached = course_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    # 1st try: UNIQUE 制約と同じ key (office_id, code, year, week, weekday)
+    course = await db.scalar(
+        select(Course).where(
+            Course.office_id == office_id,
+            Course.code == code,
+            Course.iso_year == iso_year,
+            Course.iso_week == iso_week,
+            Course.weekday == weekday,
+            Course.deleted_at.is_(None),
+        )
+    )
+    if course is not None:
+        course_cache[cache_key] = course
+        return course
+
+    # 拠点の最初の有効 template を使う
+    template = await db.scalar(
+        select(CourseTemplate)
+        .where(
+            CourseTemplate.office_id == office_id,
+            CourseTemplate.deleted_at.is_(None),
+        )
+        .order_by(CourseTemplate.label)
+        .limit(1)
+    )
+    if template is None:
+        warnings.append(
+            f"office_id={office_id} に有効な course_template が無いため "
+            f"course_id を解決できません (weekday={weekday} code={code})"
+        )
+        return None
+
+    course = Course(
+        iso_year=iso_year,
+        iso_week=iso_week,
+        weekday=weekday,
+        code=code,
+        course_status=COURSE_STATUS_STAFF_ASSIGNED,
+        template_id=template.id,
+        office_id=office_id,
+    )
+    db.add(course)
+    await db.flush()
+    course_cache[cache_key] = course
+    courses_created_counter[0] += 1
+    return course
+
+
+async def apply_week_only(
+    db: AsyncSession,
+    *,
+    iso_year: int,
+    iso_week: int,
+    office_ids: list[UUID],
+    patient_visit_plans: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """全面最適化結果を visits のみに反映 (patient_fixed_visits は更新しない).
+
+    Atomic flow:
+      1. 対象週・対象拠点の active visits を soft-delete
+         (uq_visits_pds_group_active 衝突回避; W41 v2 reset と同じ source/status 保護)
+      2. 必要な courses を確保 (既存利用 or 新規作成 staff_assigned)
+      3. visits を INSERT (course_id 紐付け, source="auto_alloc_week_only")
+      4. assigned_staff_id がある visit_plan は visit_staff_assignments を INSERT
+
+    Args:
+        patient_visit_plans: ``[{"patient_id": UUID, "visit_plans": list[dict]}, ...]``.
+            各 visit_plans 要素は ``weekday, start_time, end_time, duration_min,
+            course_code, office_id, am_pm, assigned_staff_id?`` を持つ.
+
+    Returns:
+        ``{visits_created, visits_soft_deleted, courses_created,
+           visit_staff_assignments_created, warnings}``.
+
+    本関数は ``await db.flush()`` のみ呼ぶ. commit / rollback は呼び出し側.
+    """
+    if iso_year < 2000 or iso_year > 2100:
+        raise ValueError(f"iso_year out of range: {iso_year}")
+    if iso_week < 1 or iso_week > 53:
+        raise ValueError(f"iso_week out of range: {iso_week}")
+
+    warnings: list[str] = []
+    try:
+        week_monday = date.fromisocalendar(iso_year, iso_week, 1)
+    except ValueError as exc:
+        raise ValueError(f"invalid ISO week: year={iso_year} week={iso_week}") from exc
+
+    # 全拠点指定対応
+    if not office_ids:
+        rows = await db.scalars(select(Office.id).where(Office.deleted_at.is_(None)))
+        office_ids = list(rows.all())
+        if not office_ids:
+            return {
+                "visits_created": 0,
+                "visits_soft_deleted": 0,
+                "courses_created": 0,
+                "visit_staff_assignments_created": 0,
+                "warnings": ["対象拠点が登録されていません"],
+            }
+
+    patients_by_id = await _load_active_patients(db, office_ids=office_ids)
+    patient_ids = list(patients_by_id.keys())
+
+    # 1) 対象週の active visits を soft-delete (reset と同じ source/status 保護方針).
+    from datetime import UTC as _UTC  # noqa: N814
+    from datetime import datetime as _dt
+
+    visits_to_delete: list[Visit] = []
+    if patient_ids:
+        week_sunday = date.fromordinal(week_monday.toordinal() + 6)
+        stmt = (
+            select(Visit)
+            .where(
+                Visit.patient_id.in_(patient_ids),
+                Visit.deleted_at.is_(None),
+                Visit.visit_date >= week_monday,
+                Visit.visit_date <= week_sunday,
+                Visit.status.in_(_RESET_DELETABLE_STATUSES),
+                Visit.source.in_(_RESET_DELETABLE_SOURCES),
+            )
+            .with_for_update()
+        )
+        rows = await db.scalars(stmt)
+        visits_to_delete = list(rows.all())  # type: ignore[arg-type]
+
+    now = _dt.now(tz=_UTC)
+    soft_deleted_count = 0
+    if visits_to_delete:
+        visit_ids = [v.id for v in visits_to_delete]
+        from sqlalchemy import delete as sa_delete
+
+        await db.execute(
+            sa_delete(VisitStaffAssignment).where(VisitStaffAssignment.visit_id.in_(visit_ids))
+        )
+        for v in visits_to_delete:
+            v.deleted_at = now
+            soft_deleted_count += 1
+        await db.flush()
+
+    # 2-3) visit_plans を visits に変換して INSERT (course 解決込み)
+    course_cache: dict[tuple[UUID, int, str], Course] = {}
+    courses_created_counter: list[int] = [0]
+    inserted_visits = 0
+    new_visits_with_staff: list[tuple[Visit, UUID]] = []
+
+    for entry in patient_visit_plans:
+        patient_id_raw = entry.get("patient_id")
+        if patient_id_raw is None:
+            continue
+        # UUID へ正規化 (FastAPI 経由なら既に UUID だが防御的).
+        if isinstance(patient_id_raw, UUID):
+            patient_id = patient_id_raw
+        else:
+            try:
+                patient_id = UUID(str(patient_id_raw))
+            except (ValueError, AttributeError):
+                continue
+        patient = patients_by_id.get(patient_id)
+        if patient is None:
+            warnings.append(f"patient_id={patient_id} は対象拠点の active 患者では無いためスキップ")
+            continue
+        visit_plans_raw = entry.get("visit_plans") or []
+        for plan in visit_plans_raw:
+            wd = plan.get("weekday")
+            st = plan.get("start_time")
+            et = plan.get("end_time")
+            dur = plan.get("duration_min")
+            code = plan.get("course_code") or "M"
+            office_id_raw = plan.get("office_id")
+            if not isinstance(wd, int) or not (0 <= wd <= 6):
+                continue
+            if isinstance(st, str):
+                parsed_st = _parse_hhmm(st)
+                if parsed_st is None:
+                    continue
+                st = parsed_st
+            if isinstance(et, str):
+                parsed_et = _parse_hhmm(et)
+                if parsed_et is None:
+                    continue
+                et = parsed_et
+            if not isinstance(st, time) or not isinstance(et, time):
+                continue
+            if et <= st:
+                continue
+            if not isinstance(dur, int) or dur <= 0:
+                dur = 30
+            # H10: 昼休憩枠と重なる visit はスキップ
+            if _is_in_lunch_break(st, et):
+                warnings.append(
+                    f"patient_id={patient_id} weekday={wd} {st}-{et} "
+                    f"overlaps lunch break (H10) — skipped"
+                )
+                continue
+            if isinstance(office_id_raw, UUID):
+                office_id = office_id_raw
+            else:
+                try:
+                    office_id = UUID(str(office_id_raw))
+                except (ValueError, AttributeError):
+                    # office_id が無ければ patient.primary_office_id にフォールバック
+                    if patient.primary_office_id is None:
+                        continue
+                    office_id = patient.primary_office_id
+            visit_date = date.fromordinal(week_monday.toordinal() + wd)
+            course = await _resolve_course_for_code(
+                db,
+                office_id=office_id,
+                iso_year=iso_year,
+                iso_week=iso_week,
+                weekday=wd,
+                code=str(code),
+                course_cache=course_cache,
+                courses_created_counter=courses_created_counter,
+                warnings=warnings,
+            )
+            new_visit = Visit(
+                patient_id=patient.id,
+                visit_date=visit_date,
+                start_time=st,
+                end_time=et,
+                type="regular",
+                status="planned",
+                source="auto_alloc_week_only",
+                required_staff_count=1,
+                course_id=(course.id if course is not None else None),
+                note=f"apply_week_only_v2 iso_year={iso_year} iso_week={iso_week}",
+            )
+            db.add(new_visit)
+            inserted_visits += 1
+            staff_raw = plan.get("assigned_staff_id")
+            if staff_raw is not None:
+                if isinstance(staff_raw, UUID):
+                    staff_id = staff_raw
+                else:
+                    try:
+                        staff_id = UUID(str(staff_raw))
+                    except (ValueError, AttributeError):
+                        staff_id = None  # type: ignore[assignment]
+                if staff_id is not None:
+                    new_visits_with_staff.append((new_visit, staff_id))
+
+    await db.flush()
+
+    # 4) visit_staff_assignments を一括 INSERT
+    assignments_created = 0
+    for visit, sid in new_visits_with_staff:
+        db.add(VisitStaffAssignment(visit_id=visit.id, staff_id=sid))
+        assignments_created += 1
+    await db.flush()
+
+    return {
+        "visits_created": inserted_visits,
+        "visits_soft_deleted": soft_deleted_count,
+        "courses_created": courses_created_counter[0],
+        "visit_staff_assignments_created": assignments_created,
+        "warnings": warnings,
+    }
 
 
 async def reset_visits_to_fixed(
@@ -1578,6 +1869,7 @@ __all__ = [
     "V2Set",
     "V2Visit",
     "apply_individual_proposal",
+    "apply_week_only",
     "build_visits_for_pool",
     "calc_h_violations",
     "calc_total_distance",

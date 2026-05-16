@@ -15,7 +15,7 @@
  * 一括採用ボタンは設けない (Q2 確定).
  */
 import * as React from 'react';
-import { ArrowRight, CheckCircle2, Loader2, RefreshCw, Users, X } from 'lucide-react';
+import { ArrowRight, CalendarRange, CheckCircle2, Loader2, Pin, RefreshCw, X } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -30,7 +30,11 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { useApplyIndividualMutation, useFullOptimizeMutation } from '@/lib/queries/autoScheduleV2';
+import {
+  useApplyIndividualMutation,
+  useApplyWeekOnlyMutation,
+  useFullOptimizeMutation,
+} from '@/lib/queries/autoScheduleV2';
 import type {
   FullOptimizeResponse,
   IndividualProposal,
@@ -66,6 +70,8 @@ type DialogStage =
   | 'idle' // 初期
   | 'allocating' // /full-optimize 実行中
   | 'reviewing-summary' // 結果サマリー閲覧中 (大枠判断前)
+  | 'week-only-confirm' // 「この週だけ試す」確認ダイアログ表示中
+  | 'week-only-applying' // /apply-week-only 実行中
   | 'individual-review' // 個別調整モード (1 件ずつ確認)
   | 'completed'; // 全件確認終了 or 中断
 
@@ -94,6 +100,7 @@ export function FullOptimizeDialog({
 }: FullOptimizeDialogProps) {
   const fetchMut = useFullOptimizeMutation();
   const applyMut = useApplyIndividualMutation();
+  const applyWeekOnlyMut = useApplyWeekOnlyMutation();
 
   const [stage, setStage] = React.useState<DialogStage>('idle');
   const [result, setResult] = React.useState<FullOptimizeResponse | null>(null);
@@ -116,6 +123,7 @@ export function FullOptimizeDialog({
     setSkippedPatientIds(new Set());
     fetchMut.reset();
     applyMut.reset();
+    applyWeekOnlyMut.reset();
     void (async () => {
       try {
         const res = await fetchMut.mutateAsync({
@@ -135,7 +143,8 @@ export function FullOptimizeDialog({
 
   const isLoading = fetchMut.isPending;
   const isApplying = applyMut.isPending;
-  const isBusy = isLoading || isApplying;
+  const isApplyingWeekOnly = applyWeekOnlyMut.isPending;
+  const isBusy = isLoading || isApplying || isApplyingWeekOnly;
 
   const handleClose = () => {
     if (isBusy) return;
@@ -152,6 +161,52 @@ export function FullOptimizeDialog({
     }
     setActivePatient(first);
     setStage('individual-review');
+  };
+
+  /** 「この週だけ試す」ボタン押下 → 確認ダイアログを表示 */
+  const handleRequestWeekOnly = () => {
+    if (!result) return;
+    if (result.individual_proposals.length === 0) {
+      toast.info('反映可能な患者がいません');
+      return;
+    }
+    setStage('week-only-confirm');
+  };
+
+  /** 「この週だけ試す」確認ダイアログのキャンセル */
+  const handleCancelWeekOnly = () => {
+    if (isApplyingWeekOnly) return;
+    setStage('reviewing-summary');
+  };
+
+  /** 「この週だけ試す」確認ダイアログの OK → API 呼出 → 完了 */
+  const handleConfirmWeekOnly = async () => {
+    if (!result) return;
+    const proposals = result.individual_proposals;
+    if (proposals.length === 0) {
+      toast.info('反映可能な患者がいません');
+      setStage('reviewing-summary');
+      return;
+    }
+    setStage('week-only-applying');
+    try {
+      const res = await applyWeekOnlyMut.mutateAsync({
+        iso_year: isoYear,
+        iso_week: isoWeek,
+        office_ids: officeId ? [officeId] : [],
+        visit_plans_per_patient: proposals.map((p) => ({
+          patient_id: p.patient_id,
+          visit_plans: p.proposed_pfv,
+        })),
+        confirm: true,
+      });
+      toast.success(`${res.visits_created} 件の visits を反映しました (固定枠は変更なし)`);
+      setStage('completed');
+      onClose();
+    } catch (err) {
+      toast.error(`一括反映に失敗しました: ${formatErr(err)}`);
+      setStage('reviewing-summary');
+    }
   };
 
   const weekProposalByWeekday = React.useMemo(() => {
@@ -243,7 +298,9 @@ export function FullOptimizeDialog({
           <DialogDescription>
             {stage === 'individual-review'
               ? '患者一人ひとりの変更を確認してください。採用・却下・スキップを選んでください。'
-              : '全 active 患者で固定枠を再算出し、移動距離・偏差を改善する提案を生成します。採用は 1 患者ずつ確認します (一括採用は不可)。'}
+              : stage === 'week-only-confirm' || stage === 'week-only-applying'
+                ? 'この週の visits だけに反映します。患者マスタの固定枠は変更されません。'
+                : '全 active 患者で固定枠を再算出し、移動距離・偏差を改善する提案を生成します。「この週だけ試す」を選ぶと固定枠を変更せず一括反映できます。'}
           </DialogDescription>
         </DialogHeader>
 
@@ -266,8 +323,12 @@ export function FullOptimizeDialog({
           </div>
         ) : null}
 
-        {/* 結果サマリー (reviewing-summary) */}
-        {(stage === 'reviewing-summary' || stage === 'individual-review') && result ? (
+        {/* 結果サマリー (reviewing-summary / individual-review / week-only-*) */}
+        {(stage === 'reviewing-summary' ||
+          stage === 'individual-review' ||
+          stage === 'week-only-confirm' ||
+          stage === 'week-only-applying') &&
+        result ? (
           <div className="space-y-3 py-2" data-testid="full-optimize-result">
             {/* KPI バー */}
             <section
@@ -360,18 +421,17 @@ export function FullOptimizeDialog({
 
         {/* フッター: ステージ別アクションボタン */}
         {stage === 'reviewing-summary' ? (
-          /* ── 大枠判断フッター ── */
+          /* ── 大枠判断フッター (3 ボタン構成) ── */
           <div
             className="mt-4 rounded-lg border border-border-default bg-bg-muted p-4"
             data-testid="full-optimize-decision-panel"
           >
-            <p className="mb-3 text-sm font-semibold text-text-primary">
-              この提案で固定枠を変更しますか？
-            </p>
+            <p className="mb-3 text-sm font-semibold text-text-primary">この提案を採用しますか？</p>
             <p className="mb-4 text-xs text-text-muted">
-              「個別に確認していく」を選ぶと、患者一人ひとりの変更を確認できます。
+              「この週だけ試す」を選ぶと固定枠は変更せず、その週の予定だけを一括で反映します。
+              「固定枠を更新する」を選ぶと、患者ごとに固定枠の更新を確認できます。
             </p>
-            <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+            <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-end">
               <Button
                 type="button"
                 variant="outline"
@@ -386,15 +446,74 @@ export function FullOptimizeDialog({
               </Button>
               <Button
                 type="button"
+                variant="outline"
+                size="lg"
+                onClick={handleRequestWeekOnly}
+                disabled={isBusy || !result || result.individual_proposals.length === 0}
+                data-testid="full-optimize-week-only-button"
+                aria-label="この週だけ試す (固定枠は変更しない)"
+                className="border-brand-primary/40 text-brand-primary hover:bg-brand-primary/5"
+              >
+                <CalendarRange className="mr-2 h-4 w-4" aria-hidden />
+                この週だけ試す ({result?.individual_proposals.length ?? 0} 件)
+              </Button>
+              <Button
+                type="button"
                 size="lg"
                 onClick={handleStartIndividualReview}
                 disabled={isBusy || !result || result.individual_proposals.length === 0}
                 data-testid="full-optimize-individual-button"
-                aria-label="個別に患者を確認していく"
+                aria-label="固定枠を更新する (個別に確認していく)"
               >
-                <Users className="mr-2 h-4 w-4" aria-hidden />
-                個別に確認していく ({remainingPatients.length} 件)
+                <Pin className="mr-2 h-4 w-4" aria-hidden />
+                固定枠を更新する ({remainingPatients.length} 件)
                 <ArrowRight className="ml-2 h-4 w-4" aria-hidden />
+              </Button>
+            </div>
+          </div>
+        ) : stage === 'week-only-confirm' || stage === 'week-only-applying' ? (
+          /* ── 「この週だけ試す」確認/実行中フッター ── */
+          <div
+            className="mt-4 rounded-lg border border-brand-primary/40 bg-brand-primary/5 p-4"
+            data-testid="full-optimize-week-only-confirm-panel"
+          >
+            <p className="mb-2 text-sm font-semibold text-text-primary">
+              この週のスケジュールを一括反映しますか？
+            </p>
+            <p className="mb-4 text-xs text-text-muted">
+              対象週の visits を提案内容で一括上書きします。
+              <span className="font-semibold text-text-primary">
+                患者マスタの固定枠 (patient_fixed_visits) は変更しません。
+              </span>
+              来週からは元の固定枠ベースのスケジュールに戻ります。よろしいですか？
+            </p>
+            <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handleCancelWeekOnly}
+                disabled={isApplyingWeekOnly}
+                data-testid="full-optimize-week-only-cancel"
+                aria-label="一括反映をキャンセル"
+              >
+                <X className="mr-1 h-4 w-4" aria-hidden />
+                キャンセル
+              </Button>
+              <Button
+                type="button"
+                onClick={() => {
+                  void handleConfirmWeekOnly();
+                }}
+                disabled={isApplyingWeekOnly}
+                data-testid="full-optimize-week-only-confirm"
+                aria-label="この週のスケジュールを一括反映する"
+              >
+                {isApplyingWeekOnly ? (
+                  <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
+                ) : (
+                  <CalendarRange className="mr-1 h-4 w-4" aria-hidden />
+                )}
+                この週だけ反映する
               </Button>
             </div>
           </div>
@@ -663,10 +782,10 @@ function IndividualPatientPopup({
   return (
     <Dialog open onOpenChange={(o) => (!o ? onAbort() : undefined)}>
       <DialogContent
-        className="max-w-md"
+        className="flex max-h-[90vh] max-w-md flex-col"
         data-testid={`full-optimize-popup-${proposal.patient_id}`}
       >
-        <DialogHeader>
+        <DialogHeader className="flex-none">
           <DialogTitle className="text-base">
             {proposal.patient_name} 様
             <Badge variant="secondary" className="ml-2 text-[10px]">
@@ -680,37 +799,39 @@ function IndividualPatientPopup({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="grid grid-cols-2 gap-2">
-          <VisitPlanList title="Before" plans={proposal.current_pfv} tone="muted" />
-          <VisitPlanList title="After" plans={proposal.proposed_pfv} tone="primary" />
+        <div className="flex-1 overflow-y-auto px-1 py-2 space-y-2">
+          <div className="grid grid-cols-2 gap-2">
+            <VisitPlanList title="Before" plans={proposal.current_pfv} tone="muted" />
+            <VisitPlanList title="After" plans={proposal.proposed_pfv} tone="primary" />
+          </div>
+
+          <div className="rounded border border-border-default p-2 text-xs">
+            <div className="font-semibold text-text-primary">影響</div>
+            <ul className="ml-4 mt-1 list-disc space-y-0.5 text-text-secondary">
+              <li>距離: {formatDelta(proposal.delta.distance_km)}</li>
+              {proposal.delta.capacity ? <li>容量: {proposal.delta.capacity}</li> : null}
+              <li>
+                訪問数: {proposal.delta.course_visits_count_before} →{' '}
+                {proposal.delta.course_visits_count_after}
+              </li>
+            </ul>
+          </div>
+
+          {proposal.warnings.length > 0 ? (
+            <Alert variant="warning">
+              <AlertTitle className="text-xs">警告</AlertTitle>
+              <AlertDescription>
+                <ul className="ml-4 list-disc space-y-0.5 text-xs">
+                  {proposal.warnings.map((w, i) => (
+                    <li key={i}>{w}</li>
+                  ))}
+                </ul>
+              </AlertDescription>
+            </Alert>
+          ) : null}
         </div>
 
-        <div className="rounded border border-border-default p-2 text-xs">
-          <div className="font-semibold text-text-primary">影響</div>
-          <ul className="ml-4 mt-1 list-disc space-y-0.5 text-text-secondary">
-            <li>距離: {formatDelta(proposal.delta.distance_km)}</li>
-            {proposal.delta.capacity ? <li>容量: {proposal.delta.capacity}</li> : null}
-            <li>
-              訪問数: {proposal.delta.course_visits_count_before} →{' '}
-              {proposal.delta.course_visits_count_after}
-            </li>
-          </ul>
-        </div>
-
-        {proposal.warnings.length > 0 ? (
-          <Alert variant="warning">
-            <AlertTitle className="text-xs">警告</AlertTitle>
-            <AlertDescription>
-              <ul className="ml-4 list-disc space-y-0.5 text-xs">
-                {proposal.warnings.map((w, i) => (
-                  <li key={i}>{w}</li>
-                ))}
-              </ul>
-            </AlertDescription>
-          </Alert>
-        ) : null}
-
-        <DialogFooter className="flex-wrap gap-2">
+        <DialogFooter className="flex-none flex-wrap gap-2 border-t pt-3">
           <Button
             type="button"
             variant="ghost"

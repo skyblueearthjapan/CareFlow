@@ -422,6 +422,205 @@ async def test_reset_to_fixed_rejects_staff(client, db) -> None:
 
 
 # ---------------------------------------------------------------------------
+# /v2/apply-week-only (この週だけ反映)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apply_week_only_creates_visits_without_touching_pfv(client, db) -> None:
+    """apply-week-only は visits を作成し、patient_fixed_visits は変更しない."""
+    from datetime import date
+
+    from app.models.visit import Visit
+
+    admin = await _make_user(db, email="v2-wo-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    p = await _seed_patient(db, office=office, code="WO-1")
+    # 既存 PFV (apply-week-only でも変更されないことを後で検証)
+    existing_pfv = PatientFixedVisit(
+        patient_id=p.id,
+        mode="normal",
+        weekday=0,
+        start_time=time(10, 0),
+        duration_min=30,
+        slot_index=0,
+    )
+    db.add(existing_pfv)
+    await db.commit()
+    existing_pfv_start_before = existing_pfv.start_time
+    existing_pfv_duration_before = existing_pfv.duration_min
+
+    res = await client.post(
+        "/api/v1/schedule/v2/apply-week-only",
+        headers=_bearer(admin),
+        json={
+            "iso_year": 2026,
+            "iso_week": 20,
+            "office_ids": [str(office.id)],
+            "visit_plans_per_patient": [
+                {
+                    "patient_id": str(p.id),
+                    "visit_plans": [
+                        {
+                            "weekday": 1,  # 火曜 (PFV と違う曜日にして visit を作る)
+                            "start_time": "14:30",
+                            "end_time": "15:00",
+                            "duration_min": 30,
+                            "course_code": "A",
+                            "office_id": str(office.id),
+                            "am_pm": "pm",
+                        }
+                    ],
+                }
+            ],
+            "confirm": True,
+        },
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["iso_year"] == 2026
+    assert body["iso_week"] == 20
+    assert body["visits_created"] >= 1
+
+    # PFV は変更されていない
+    refreshed_pfv = await db.scalar(
+        select(PatientFixedVisit).where(PatientFixedVisit.id == existing_pfv.id)
+    )
+    assert refreshed_pfv is not None
+    assert refreshed_pfv.start_time == existing_pfv_start_before
+    assert refreshed_pfv.duration_min == existing_pfv_duration_before
+
+    # 新規 visit が source="auto_alloc_week_only" で作成されている
+    week_visits = (
+        await db.scalars(
+            select(Visit).where(
+                Visit.patient_id == p.id,
+                Visit.visit_date == date(2026, 5, 12),  # Tue W20
+                Visit.source == "auto_alloc_week_only",
+                Visit.deleted_at.is_(None),
+            )
+        )
+    ).all()
+    assert len(week_visits) == 1
+    assert week_visits[0].start_time == time(14, 30)
+
+
+@pytest.mark.asyncio
+async def test_apply_week_only_rejects_no_confirm(client, db) -> None:
+    """confirm=False は 400 (Literal[True] schema 検証 → 422 のところを endpoint で 400)."""
+    admin = await _make_user(db, email="v2-wonc-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    p = await _seed_patient(db, office=office, code="WONC-1")
+    await db.commit()
+    res = await client.post(
+        "/api/v1/schedule/v2/apply-week-only",
+        headers=_bearer(admin),
+        json={
+            "iso_year": 2026,
+            "iso_week": 20,
+            "office_ids": [str(office.id)],
+            "visit_plans_per_patient": [
+                {
+                    "patient_id": str(p.id),
+                    "visit_plans": [
+                        {
+                            "weekday": 0,
+                            "start_time": "10:00",
+                            "end_time": "10:30",
+                            "duration_min": 30,
+                            "course_code": "A",
+                            "office_id": str(office.id),
+                            "am_pm": "am",
+                        }
+                    ],
+                }
+            ],
+            "confirm": False,
+        },
+    )
+    # Pydantic Literal[True] が False を弾くので 422 (FastAPI validation).
+    assert res.status_code in (400, 422), res.text
+
+
+@pytest.mark.asyncio
+async def test_apply_week_only_soft_deletes_existing_visits(client, db) -> None:
+    """対象週の既存 active visits は soft-delete されてから INSERT される."""
+    from datetime import date
+
+    from app.models.visit import VISIT_STATUS_PLANNED, Visit
+
+    admin = await _make_user(db, email="v2-wosd-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    p = await _seed_patient(db, office=office, code="WOSD-1")
+    existing = Visit(
+        patient_id=p.id,
+        visit_date=date(2026, 5, 11),  # Mon W20
+        start_time=time(9, 30),
+        end_time=time(10, 0),
+        type="regular",
+        status=VISIT_STATUS_PLANNED,
+        source="auto_alloc",
+        required_staff_count=1,
+    )
+    db.add(existing)
+    await db.commit()
+    existing_id = existing.id
+
+    res = await client.post(
+        "/api/v1/schedule/v2/apply-week-only",
+        headers=_bearer(admin),
+        json={
+            "iso_year": 2026,
+            "iso_week": 20,
+            "office_ids": [str(office.id)],
+            "visit_plans_per_patient": [
+                {
+                    "patient_id": str(p.id),
+                    "visit_plans": [
+                        {
+                            "weekday": 0,
+                            "start_time": "11:00",
+                            "end_time": "11:30",
+                            "duration_min": 30,
+                            "course_code": "A",
+                            "office_id": str(office.id),
+                            "am_pm": "am",
+                        }
+                    ],
+                }
+            ],
+            "confirm": True,
+        },
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["visits_soft_deleted"] >= 1
+    assert body["visits_created"] >= 1
+
+    refreshed = await db.scalar(select(Visit).where(Visit.id == existing_id))
+    assert refreshed is not None
+    assert refreshed.deleted_at is not None
+
+
+@pytest.mark.asyncio
+async def test_apply_week_only_rejects_staff(client, db) -> None:
+    """staff ロールは 403."""
+    staff_user = await _make_user(db, email="v2-wo-staff@example.com", role="staff")
+    res = await client.post(
+        "/api/v1/schedule/v2/apply-week-only",
+        headers=_bearer(staff_user),
+        json={
+            "iso_year": 2026,
+            "iso_week": 20,
+            "office_ids": [],
+            "visit_plans_per_patient": [],
+            "confirm": True,
+        },
+    )
+    assert res.status_code == 403
+
+
+# ---------------------------------------------------------------------------
 # H-Codex-3: v1 endpoints return 410 Gone
 # ---------------------------------------------------------------------------
 
