@@ -184,6 +184,25 @@ async def _load_patient_codes(db: AsyncSession) -> set[str]:
     return {r[0] for r in rows}
 
 
+async def _load_deleted_patients_by_code(db: AsyncSession) -> dict[str, Patient]:
+    """soft-deleted 患者の code → Patient マップ (resurrection 用).
+
+    DB は ``code`` 列に UNIQUE 制約があるため、同じ code を再 INSERT すると
+    UniqueViolation で 409 になる。新規候補行 (patient_id 空 + patient_code 入り) が
+    DB に soft-deleted で存在する code なら、INSERT ではなく
+    既存行の deleted_at を NULL に戻して内容を上書きする (= 復活).
+    """
+    rows = (
+        await db.scalars(
+            select(Patient).where(
+                Patient.deleted_at.is_not(None),
+                Patient.code.is_not(None),
+            )
+        )
+    ).all()
+    return {p.code: p for p in rows}
+
+
 async def _load_pfvs_by_key(
     db: AsyncSession,
     alive_patient_ids: set[UUID],
@@ -213,6 +232,7 @@ def _parse_patient_row(
     *,
     existing_patients: dict[UUID, Patient],
     existing_patients_by_code: dict[str, Patient],
+    deleted_patients_by_code: dict[str, Patient],
     offices_by_code: dict[str, Office],
     existing_codes: set[str],
     already_seen_codes: set[str],
@@ -458,6 +478,79 @@ def _parse_patient_row(
                 None,
             )
         already_seen_codes.add(patient_code)  # type: ignore[arg-type]
+
+        # ---- resurrection 判定 ----
+        # DB に同じ code が soft-deleted で残っていれば INSERT すると UNIQUE 制約違反.
+        # 新規 INSERT ではなく既存行の deleted_at を NULL に戻して内容を上書きする.
+        # patient.id は元の UUID をそのまま使う (再発番しない) ため、外部参照
+        # (audit 等) の継続性が保たれる. PFV / shifts は patient soft-delete 時に
+        # cascade で物理削除済みなので、resurrection 時点での残骸処理は不要.
+        resurrect_target = deleted_patients_by_code.get(patient_code)
+        if resurrect_target is not None:
+            resurrect_id = resurrect_target.id
+            old_deleted_at = resurrect_target.deleted_at
+            updates: dict[str, Any] = {}
+            changes_for_view: list[PatientExcelChange] = []
+            # 復活 = deleted_at を NULL に戻す
+            changes_for_view.append(
+                PatientExcelChange(
+                    field="deleted_at",
+                    old_value=_serializable(old_deleted_at),
+                    new_value=None,
+                )
+            )
+            # patient_code は必ず一致 (lookup key) なので changes に出さない.
+            # 他フィールド: 「空セル = 旧値維持」(update と同じ挙動).
+            field_map_resurrect: dict[str, str] = {
+                "name": "name",
+                "kana": "kana",
+                "sex": "sex",
+                "status": "status",
+                "insurance": "insurance",
+                "address": "address",
+                "lat": "lat",
+                "lng": "lng",
+                "primary_office_id": "primary_office_id",
+                "sex_restriction": "sex_restriction",
+                "note": "note",
+            }
+            for parsed_key, orm_attr in field_map_resurrect.items():
+                v = parsed.get(parsed_key)
+                if v is None:
+                    continue  # 空セル = 旧値維持
+                tag, val = v if isinstance(v, tuple) else ("SET", v)
+                new_val: Any = None if tag == "CLEAR" else val
+                old_val = getattr(resurrect_target, orm_attr, None)
+                if old_val is not None and isinstance(new_val, float):
+                    try:
+                        if float(old_val) == float(new_val):
+                            continue
+                    except (TypeError, ValueError):
+                        pass
+                if old_val == new_val:
+                    continue
+                changes_for_view.append(
+                    PatientExcelChange(
+                        field=orm_attr,
+                        old_value=_serializable(old_val),
+                        new_value=_serializable(new_val),
+                    )
+                )
+                updates[orm_attr] = new_val
+            return (
+                PatientExcelImportRow(
+                    row_number=row_number,
+                    patient_id=resurrect_id,
+                    patient_code=patient_code,
+                    operation="update",
+                    changes=changes_for_view,
+                ),
+                {
+                    "_op": "resurrect",
+                    "_patient_id": resurrect_id,
+                    "_updates": updates,
+                },
+            )
 
         # 仮 UUID をここで発番する。PFV シート側で patient_code 経由でこの新規患者を
         # 参照できるよう、apply_changes は同じ UUID で Patient を INSERT する。
@@ -1154,6 +1247,8 @@ async def parse_and_diff(
     existing_patients_by_code: dict[str, Patient] = {
         p.code: p for p in existing_patients.values() if p.code
     }
+    # resurrection 用: soft-deleted な patient_code → Patient.
+    deleted_patients_by_code = await _load_deleted_patients_by_code(db)
 
     # ---- 患者シート ----
     ws_p = wb[SHEET_PATIENTS]
@@ -1169,6 +1264,7 @@ async def parse_and_diff(
             row,
             existing_patients=existing_patients,
             existing_patients_by_code=existing_patients_by_code,
+            deleted_patients_by_code=deleted_patients_by_code,
             offices_by_code=offices_by_code,
             existing_codes=existing_codes,
             already_seen_codes=already_seen_codes,
@@ -1199,6 +1295,23 @@ async def parse_and_diff(
             patient_id=new_id,
             code=new_code,
             primary_office_id=op.get("primary_office_id"),
+        )
+    # resurrection 対象患者も PFV から code リンクで参照できるようにする.
+    # primary_office_id は更新後の値があればそれを、無ければ既存 (旧) 値を使う.
+    deleted_by_id: dict[UUID, Patient] = {p.id: p for p in deleted_patients_by_code.values()}
+    for op in patient_ops:
+        if op.get("_op") != "resurrect":
+            continue
+        resurrect_pid: UUID = op["_patient_id"]
+        original = deleted_by_id.get(resurrect_pid)
+        if original is None or not original.code:
+            continue
+        updated_office = op["_updates"].get("primary_office_id", original.primary_office_id)
+        patient_code_to_id[original.code] = resurrect_pid
+        pending_new_patients[resurrect_pid] = _PendingNewPatient(
+            patient_id=resurrect_pid,
+            code=original.code,
+            primary_office_id=updated_office,
         )
 
     # ---- PFV シート ----
@@ -1266,7 +1379,8 @@ async def apply_changes(
     として既に skip されているので、ここでは触れない.
     SQLAlchemy 例外は呼び出し側にバブルアップする (rollback は呼び出し側で実施).
     """
-    # 1) Patient: new → insert / update → 既存行を更新 / delete → soft delete
+    # 1) Patient: new → insert / update → 既存行を更新 / delete → soft delete /
+    #    resurrect → deleted_at=NULL に戻して内容上書き
     patients_by_id: dict[UUID, Patient] = {}
     for op in patient_ops:
         op_type = op.get("_op")
@@ -1274,6 +1388,16 @@ async def apply_changes(
             data = {k: v for k, v in op.items() if not k.startswith("_")}
             new_patient = Patient(**data)
             db.add(new_patient)
+        elif op_type == "resurrect":
+            pid = op["_patient_id"]
+            if pid not in patients_by_id:
+                patients_by_id[pid] = await db.get(Patient, pid)
+            patient = patients_by_id[pid]
+            if patient is None:
+                continue
+            patient.deleted_at = None
+            for k, v in op["_updates"].items():
+                setattr(patient, k, v)
         elif op_type == "update":
             pid = op["_patient_id"]
             if pid not in patients_by_id:

@@ -24,7 +24,7 @@ Coverage map (spec §6):
 
 from __future__ import annotations
 
-from datetime import time
+from datetime import UTC, datetime, time
 from io import BytesIO
 from uuid import uuid4
 
@@ -1351,3 +1351,109 @@ async def test_import_delete_with_both_id_and_code_blank_errors(client, db) -> N
     assert body["summary"]["patients_error"] == 1
     msg = body["patient_rows"][0]["error_message"]
     assert "patient_id" in msg and "patient_code" in msg
+
+
+# 34) resurrection: soft-deleted patient_code を Excel で再 import すると復活する
+@pytest.mark.asyncio
+async def test_resurrection_via_code_for_soft_deleted_patient(client, db) -> None:
+    """ユーザー運用フロー: UI で削除 (soft delete) → 同じ code を Excel で再 import.
+
+    soft-deleted 行があるまま INSERT すると UNIQUE 制約違反で 409 になるため、
+    importer は INSERT ではなく既存行の deleted_at=NULL + 内容更新で復活させる.
+    """
+    admin = await _make_user(db, "im-resurrect@example.com", "admin")
+    patient = await _make_patient(
+        db,
+        code="P-RES-001",
+        name="削除前の名前",
+        sex="male",
+        status="active",
+        address="千葉市稲毛区old",
+    )
+    # 直接 soft delete (UI からの削除を再現)
+    patient.deleted_at = datetime.now(UTC)
+    await db.commit()
+
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                # patient_id 空 + 同じ code で再 import (新規行のつもりで書く)
+                "patient_code": "P-RES-001",
+                "name": "復活後の名前",
+                "sex": "female",
+                "status": "active",
+                "address": "千葉市稲毛区new",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["transaction_applied"] is True
+    # 設計判断: 復活も UI 上は update として表示 (operation="update").
+    assert body["summary"]["patients_update"] == 1
+    assert body["summary"]["patients_new"] == 0
+    assert body["summary"]["patients_error"] == 0
+    row = body["patient_rows"][0]
+    assert row["operation"] == "update"
+    assert row["patient_code"] == "P-RES-001"
+    # changes に deleted_at: <old> → null が出ている (= 復活の証跡).
+    fields = {c["field"]: c for c in row["changes"]}
+    assert "deleted_at" in fields, f"changes に deleted_at が無い: {row['changes']}"
+    assert fields["deleted_at"]["new_value"] is None
+    assert fields["deleted_at"]["old_value"] is not None
+    # 内容更新も diff されている.
+    assert "name" in fields and fields["name"]["new_value"] == "復活後の名前"
+    assert "sex" in fields and fields["sex"]["new_value"] == "female"
+    assert "address" in fields and fields["address"]["new_value"] == "千葉市稲毛区new"
+
+    # DB: deleted_at=NULL に戻り、内容も更新されている.
+    await db.refresh(patient)
+    assert patient.deleted_at is None
+    assert patient.name == "復活後の名前"
+    assert patient.sex == "female"
+    assert patient.address == "千葉市稲毛区new"
+
+
+# 35) resurrection: 復活時に patient の id が再発番されないこと (UUID 継続性)
+@pytest.mark.asyncio
+async def test_resurrection_preserves_id(client, db) -> None:
+    """復活時に id は元のまま (新しい UUID は発番されない).
+
+    これにより audit log 等の外部参照が断絶しない.
+    """
+    admin = await _make_user(db, "im-resurrect-id@example.com", "admin")
+    patient = await _make_patient(db, code="P-RES-ID", name="UUID 継続テスト")
+    original_id = patient.id
+    patient.deleted_at = datetime.now(UTC)
+    await db.commit()
+
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                "patient_code": "P-RES-ID",
+                "name": "復活した",
+                "sex": "male",
+                "status": "active",
+                "address": "addr",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["transaction_applied"] is True
+    row = body["patient_rows"][0]
+    assert row["operation"] == "update"
+    # 返却された patient_id が元の id と同じ.
+    assert row["patient_id"] == str(original_id)
+
+    # DB 確認: 元の id がそのまま生きている (= 同じ行が復活した).
+    await db.refresh(patient)
+    assert patient.id == original_id
+    assert patient.deleted_at is None
+    assert patient.code == "P-RES-ID"
+    # 同じ code を持つ他レコードが新規作成されていないこと.
+    rows = (await db.scalars(select(Patient).where(Patient.code == "P-RES-ID"))).all()
+    assert len(rows) == 1
+    assert rows[0].id == original_id

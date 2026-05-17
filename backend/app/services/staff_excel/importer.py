@@ -162,6 +162,25 @@ async def _load_staff_codes(db: AsyncSession) -> set[str]:
     return {r[0] for r in rows}
 
 
+async def _load_deleted_staff_by_code(db: AsyncSession) -> dict[str, Staff]:
+    """soft-deleted スタッフの code → Staff マップ (resurrection 用).
+
+    DB は ``code`` 列に UNIQUE 制約があるため、同じ code を再 INSERT すると
+    UniqueViolation で 409 になる。新規候補行 (staff_id 空 + staff_code 入り) が
+    DB に soft-deleted で存在する code なら、INSERT ではなく既存行の
+    deleted_at を NULL に戻して内容を上書きする (= 復活).
+    """
+    rows = (
+        await db.scalars(
+            select(Staff).where(
+                Staff.deleted_at.is_not(None),
+                Staff.code.is_not(None),
+            )
+        )
+    ).all()
+    return {s.code: s for s in rows}
+
+
 async def _load_shifts_by_key(
     db: AsyncSession,
     alive_staff_ids: set[UUID],
@@ -189,10 +208,12 @@ def _parse_staff_row(
     *,
     existing_staff: dict[UUID, Staff],
     existing_staff_by_code: dict[str, Staff],
+    deleted_staff_by_code: dict[str, Staff],
     offices_by_code: dict[str, Office],
     existing_codes: set[str],
     already_seen_codes: set[str],
     new_code_to_uuid: dict[str, UUID],
+    resurrect_code_to_uuid: dict[str, UUID],
 ) -> tuple[StaffExcelImportRow, dict[str, Any] | None]:
     """1 行を差分行に変換する.
 
@@ -418,6 +439,69 @@ def _parse_staff_row(
             )
         already_seen_codes.add(staff_code)  # type: ignore[arg-type]
 
+        # ---- resurrection 判定 ----
+        # DB に同じ code が soft-deleted で残っていれば INSERT すると UNIQUE 制約違反.
+        # 新規 INSERT ではなく既存行の deleted_at を NULL に戻して内容を上書きする.
+        # staff.id は元の UUID をそのまま使う (再発番しない). shifts は staff
+        # soft-delete 時に cascade で物理削除済みなので、resurrection 時点での
+        # 残骸処理は不要.
+        resurrect_target = deleted_staff_by_code.get(staff_code)
+        if resurrect_target is not None:
+            resurrect_id = resurrect_target.id
+            old_deleted_at = resurrect_target.deleted_at
+            updates: dict[str, Any] = {}
+            changes_for_view: list[StaffExcelChange] = []
+            changes_for_view.append(
+                StaffExcelChange(
+                    field="deleted_at",
+                    old_value=_serializable(old_deleted_at),
+                    new_value=None,
+                )
+            )
+            field_map_resurrect: dict[str, str] = {
+                "name": "name",
+                "kana": "kana",
+                "sex": "sex",
+                "status": "status",
+                "role": "role",
+                "primary_office_id": "primary_office_id",
+                "is_trainee": "is_trainee",
+                "note": "note",
+            }
+            for parsed_key, orm_attr in field_map_resurrect.items():
+                v = parsed.get(parsed_key)
+                if v is None:
+                    continue  # 空セル = 旧値維持
+                tag, val = v if isinstance(v, tuple) else ("SET", v)
+                new_val: Any = None if tag == "CLEAR" else val
+                old_val = getattr(resurrect_target, orm_attr, None)
+                if old_val == new_val:
+                    continue
+                changes_for_view.append(
+                    StaffExcelChange(
+                        field=orm_attr,
+                        old_value=_serializable(old_val),
+                        new_value=_serializable(new_val),
+                    )
+                )
+                updates[orm_attr] = new_val
+            # shift シートが staff_code で参照できるよう、復活 UUID を登録.
+            resurrect_code_to_uuid[staff_code] = resurrect_id
+            return (
+                StaffExcelImportRow(
+                    row_number=row_number,
+                    staff_id=resurrect_id,
+                    staff_code=staff_code,
+                    operation="update",
+                    changes=changes_for_view,
+                ),
+                {
+                    "_op": "resurrect",
+                    "_staff_id": resurrect_id,
+                    "_updates": updates,
+                },
+            )
+
         # 仮 UUID を発番 (apply 時にそのまま id 列として INSERT).
         # shift シート側で staff_code 経由で参照されたら同じ UUID を使う.
         new_uuid = uuid.uuid4()
@@ -576,6 +660,7 @@ def _parse_shift_row(
     pending_new_keys: set[tuple[UUID, int]],
     new_code_to_uuid: dict[str, UUID],
     existing_code_to_id: dict[str, UUID],
+    resurrect_staff_ids: set[UUID] | None = None,
 ) -> tuple[ShiftExcelImportRow, dict[str, Any] | None]:
     cells: dict[str, Any] = {}
     for col_key, idx in SHIFT_COL_INDEX.items():
@@ -636,9 +721,12 @@ def _parse_shift_row(
             )
 
     # staff_id が new_code_to_uuid 由来の場合、existing_staff には居ない (apply 時に作る).
+    # resurrect_staff_ids も同様 (soft-deleted のため _load_staff_by_id では拾わない).
     is_pending_new_staff = staff_id in {v for v in new_code_to_uuid.values()}
-    staff_obj: Staff | None = existing_staff.get(staff_id) if not is_pending_new_staff else None
-    if staff_obj is None and not is_pending_new_staff:
+    is_resurrect_staff = (resurrect_staff_ids is not None) and (staff_id in resurrect_staff_ids)
+    is_pending = is_pending_new_staff or is_resurrect_staff
+    staff_obj: Staff | None = existing_staff.get(staff_id) if not is_pending else None
+    if staff_obj is None and not is_pending:
         return (
             ShiftExcelImportRow(
                 row_number=row_number,
@@ -929,6 +1017,8 @@ async def parse_and_diff(
     existing_staff_by_code: dict[str, Staff] = {
         s.code: s for s in existing_staff.values() if s.code
     }
+    # resurrection 用: soft-deleted な staff_code → Staff.
+    deleted_staff_by_code = await _load_deleted_staff_by_code(db)
 
     # ---- スタッフシート ----
     ws_s = wb[SHEET_STAFF]
@@ -937,6 +1027,8 @@ async def parse_and_diff(
     already_seen_codes: set[str] = set()
     # 新規 staff の code → 仮 UUID マップ. shift シート側の code リンクに使う.
     new_code_to_uuid: dict[str, UUID] = {}
+    # 復活 staff の code → 既存 UUID マップ. shift シート側の code リンクに使う.
+    resurrect_code_to_uuid: dict[str, UUID] = {}
     # row_number は 1-indexed; ヘッダーが 1 行目, データは 2 行目から.
     for r_idx, row in enumerate(ws_s.iter_rows(min_row=2, values_only=True), start=2):
         if _row_is_empty(row):
@@ -946,14 +1038,23 @@ async def parse_and_diff(
             row,
             existing_staff=existing_staff,
             existing_staff_by_code=existing_staff_by_code,
+            deleted_staff_by_code=deleted_staff_by_code,
             offices_by_code=offices_by_code,
             existing_codes=existing_codes,
             already_seen_codes=already_seen_codes,
             new_code_to_uuid=new_code_to_uuid,
+            resurrect_code_to_uuid=resurrect_code_to_uuid,
         )
         staff_rows.append(diff_row)
         if op is not None:
             staff_ops.append(op)
+
+    # 復活 staff も shift シートから code リンクで参照できるよう、既存 code → id
+    # マップに追加する (resurrect 行で更新済み staff の UUID は既存値そのまま).
+    existing_code_to_id_with_resurrect: dict[str, UUID] = {
+        **existing_code_to_id,
+        **resurrect_code_to_uuid,
+    }
 
     # ---- 勤務シフトシート ----
     ws_f = wb[SHEET_SHIFT]
@@ -970,7 +1071,8 @@ async def parse_and_diff(
             existing_shifts=existing_shifts,
             pending_new_keys=pending_new_keys,
             new_code_to_uuid=new_code_to_uuid,
-            existing_code_to_id=existing_code_to_id,
+            existing_code_to_id=existing_code_to_id_with_resurrect,
+            resurrect_staff_ids=set(resurrect_code_to_uuid.values()),
         )
         shift_rows.append(diff_row)
         if op is not None:
@@ -1019,7 +1121,8 @@ async def apply_changes(
     として既に skip されているので、ここでは触れない.
     SQLAlchemy 例外は呼び出し側にバブルアップする (rollback は呼び出し側で実施).
     """
-    # 1) Staff: new → insert / update → 既存行を更新 / delete → soft delete + 関連 shift 物理削除
+    # 1) Staff: new → insert / update → 既存行を更新 / delete → soft delete + 関連 shift 物理削除 /
+    #    resurrect → deleted_at=NULL に戻して内容上書き
     staff_by_id: dict[UUID, Staff] = {}
     for op in staff_ops:
         op_type = op.get("_op")
@@ -1027,6 +1130,16 @@ async def apply_changes(
             data = {k: v for k, v in op.items() if not k.startswith("_")}
             new_staff = Staff(**data)
             db.add(new_staff)
+        elif op_type == "resurrect":
+            sid = op["_staff_id"]
+            if sid not in staff_by_id:
+                staff_by_id[sid] = await db.get(Staff, sid)
+            staff_obj = staff_by_id[sid]
+            if staff_obj is None:
+                continue
+            staff_obj.deleted_at = None
+            for k, v in op["_updates"].items():
+                setattr(staff_obj, k, v)
         elif op_type == "update":
             sid = op["_staff_id"]
             if sid not in staff_by_id:

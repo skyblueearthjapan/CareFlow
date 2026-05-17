@@ -28,7 +28,7 @@ Coverage map (spec §7):
 
 from __future__ import annotations
 
-from datetime import time
+from datetime import UTC, datetime, time
 from io import BytesIO
 from uuid import uuid4
 
@@ -1188,3 +1188,88 @@ async def test_import_delete_with_both_id_and_code_blank_errors(client, db) -> N
     assert body["summary"]["staff_error"] == 1
     msg = body["staff_rows"][0]["error_message"]
     assert "staff_id" in msg and "staff_code" in msg
+
+
+# 33) resurrection: soft-deleted staff_code を Excel で再 import すると復活する
+@pytest.mark.asyncio
+async def test_resurrection_via_code_for_soft_deleted_staff(client, db) -> None:
+    """UI で削除 (soft delete) → 同じ code を Excel で再 import.
+
+    soft-deleted 行があるまま INSERT すると UNIQUE 制約違反で 409 になるため、
+    importer は INSERT ではなく既存行の deleted_at=NULL + 内容更新で復活させる.
+    """
+    admin = await _make_user(db, "stx-resurrect@example.com", "admin")
+    staff = await _make_staff(
+        db, code="S-RES-001", name="削除前の名前", status="active", role="staff"
+    )
+    staff.deleted_at = datetime.now(UTC)
+    await db.commit()
+
+    content = _build_workbook_bytes(
+        staff_rows=[
+            {
+                "staff_code": "S-RES-001",
+                "name": "復活後の名前",
+                "status": "active",
+                "role": "manager",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["transaction_applied"] is True
+    assert body["summary"]["staff_update"] == 1
+    assert body["summary"]["staff_new"] == 0
+    assert body["summary"]["staff_error"] == 0
+    row = body["staff_rows"][0]
+    assert row["operation"] == "update"
+    assert row["staff_code"] == "S-RES-001"
+    fields = {c["field"]: c for c in row["changes"]}
+    assert "deleted_at" in fields, f"changes に deleted_at が無い: {row['changes']}"
+    assert fields["deleted_at"]["new_value"] is None
+    assert fields["deleted_at"]["old_value"] is not None
+    assert "name" in fields and fields["name"]["new_value"] == "復活後の名前"
+    assert "role" in fields and fields["role"]["new_value"] == "manager"
+
+    await db.refresh(staff)
+    assert staff.deleted_at is None
+    assert staff.name == "復活後の名前"
+    assert staff.role == "manager"
+
+
+# 34) resurrection: 復活時に staff の id が再発番されないこと (UUID 継続性)
+@pytest.mark.asyncio
+async def test_resurrection_preserves_id(client, db) -> None:
+    """復活時に id は元のまま (新しい UUID は発番されない)."""
+    admin = await _make_user(db, "stx-resurrect-id@example.com", "admin")
+    staff = await _make_staff(db, code="S-RES-ID", name="UUID 継続テスト")
+    original_id = staff.id
+    staff.deleted_at = datetime.now(UTC)
+    await db.commit()
+
+    content = _build_workbook_bytes(
+        staff_rows=[
+            {
+                "staff_code": "S-RES-ID",
+                "name": "復活した",
+                "status": "active",
+                "role": "staff",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["transaction_applied"] is True
+    row = body["staff_rows"][0]
+    assert row["operation"] == "update"
+    assert row["staff_id"] == str(original_id)
+
+    await db.refresh(staff)
+    assert staff.id == original_id
+    assert staff.deleted_at is None
+    assert staff.code == "S-RES-ID"
+    rows = (await db.scalars(select(Staff).where(Staff.code == "S-RES-ID"))).all()
+    assert len(rows) == 1
+    assert rows[0].id == original_id
