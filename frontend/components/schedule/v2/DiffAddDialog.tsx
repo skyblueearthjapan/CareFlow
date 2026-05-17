@@ -17,7 +17,15 @@
  * RBAC: 呼出側 (CourseDayTablePanel) で admin/manager ガード済み.
  */
 import * as React from 'react';
-import { ArrowRight, CheckCircle2, Loader2, Plus, X } from 'lucide-react';
+import {
+  ArrowRight,
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  Loader2,
+  Plus,
+  X,
+} from 'lucide-react';
 import { toast } from 'sonner';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -37,6 +45,7 @@ import {
 } from '@/lib/queries/autoScheduleV2';
 import type { DiffAddProposal } from '@/lib/schemas/v2/autoScheduleV2';
 
+import { DiffAddProposalTimeline } from './DiffAddProposalTimeline';
 import { formatDelta, formatErr, trimSeconds } from './_autoScheduleUtils';
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -77,6 +86,9 @@ export function DiffAddDialog({ open, onClose, isoYear, isoWeek, officeId }: Dif
   const [activeProposal, setActiveProposal] = React.useState<DiffAddProposal | null>(null);
   // 採用済み件数 (UI 表示用).
   const [appliedCount, setAppliedCount] = React.useState(0);
+  // タイムライン展開中の proposal_id (1 件のみ展開可: 折り畳み挙動).
+  // 候補が多いケースでも一覧の把握を優先し、複数同時展開はしない.
+  const [expandedProposalId, setExpandedProposalId] = React.useState<string | null>(null);
 
   // open のたびに state リセット + 候補取得.
   React.useEffect(() => {
@@ -84,6 +96,7 @@ export function DiffAddDialog({ open, onClose, isoYear, isoWeek, officeId }: Dif
     setProposals([]);
     setActiveProposal(null);
     setAppliedCount(0);
+    setExpandedProposalId(null);
     fetchMut.reset();
     applyMut.reset();
     void (async () => {
@@ -142,7 +155,7 @@ export function DiffAddDialog({ open, onClose, isoYear, isoWeek, officeId }: Dif
       }}
     >
       <DialogContent
-        className="max-h-[90vh] max-w-2xl overflow-y-auto"
+        className="max-h-[90vh] max-w-3xl overflow-y-auto"
         data-testid="diff-add-dialog"
       >
         <DialogHeader>
@@ -151,8 +164,9 @@ export function DiffAddDialog({ open, onClose, isoYear, isoWeek, officeId }: Dif
             差分追加 - プール患者の候補
           </DialogTitle>
           <DialogDescription>
-            固定枠未登録の患者をプール抽出し、既存スケジュールの隙間に最適配置します。 1 件ずつ
-            Before/After を確認して採用してください (一括採用は不可)。
+            固定枠未登録の患者をプール抽出し、既存スケジュールの隙間に最適配置します。 行を
+            クリックすると対象コースの 1 日タイムライン (= 既存訪問の流れ + 挿入位置) を
+            確認できます。 「採用」は Before/After ポップアップから 1 件ずつ実行してください。
           </DialogDescription>
         </DialogHeader>
 
@@ -196,32 +210,77 @@ export function DiffAddDialog({ open, onClose, isoYear, isoWeek, officeId }: Dif
               </div>
             ) : (
               <ul className="divide-y divide-border-default rounded border border-border-default">
-                {proposals.map((p) => (
-                  <li key={p.proposal_id}>
-                    <button
-                      type="button"
-                      onClick={() => setActiveProposal(p)}
-                      data-testid={`diff-add-item-${p.proposal_id}`}
-                      className="flex w-full items-center justify-between px-3 py-2 text-left text-sm hover:bg-bg-muted focus:bg-bg-muted focus:outline-none"
-                    >
-                      <div className="flex flex-col">
-                        <span className="font-medium text-text-primary">{p.patient_name}</span>
-                        <span className="text-xs text-text-muted">{formatSuggestedLine(p)}</span>
+                {proposals.map((p) => {
+                  const isExpanded = expandedProposalId === p.proposal_id;
+                  return (
+                    <li key={p.proposal_id}>
+                      <div
+                        className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm"
+                        data-testid={`diff-add-item-${p.proposal_id}`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setExpandedProposalId((cur) =>
+                              cur === p.proposal_id ? null : p.proposal_id,
+                            )
+                          }
+                          aria-expanded={isExpanded}
+                          aria-label={`${p.patient_name} のタイムラインを${isExpanded ? '閉じる' : '開く'}`}
+                          data-testid={`diff-add-item-${p.proposal_id}-toggle`}
+                          className="flex flex-1 items-center gap-2 rounded hover:bg-bg-muted focus:bg-bg-muted focus:outline-none"
+                        >
+                          {isExpanded ? (
+                            <ChevronDown className="h-4 w-4 text-text-muted" aria-hidden />
+                          ) : (
+                            <ChevronRight className="h-4 w-4 text-text-muted" aria-hidden />
+                          )}
+                          <div className="flex min-w-0 flex-col">
+                            <span className="truncate font-medium text-text-primary">
+                              {p.patient_name}
+                            </span>
+                            <span className="truncate text-xs text-text-muted">
+                              {formatSuggestedLine(p)}
+                            </span>
+                          </div>
+                        </button>
+                        <div className="flex shrink-0 items-center gap-2">
+                          {p.warnings.length > 0 ? (
+                            <Badge variant="destructive" className="text-[10px]">
+                              警告 {p.warnings.length}
+                            </Badge>
+                          ) : null}
+                          <span className="tnum text-[11px] text-text-muted">
+                            {formatDelta(p.delta.distance_km)}
+                          </span>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() => setActiveProposal(p)}
+                            data-testid={`diff-add-item-${p.proposal_id}-apply`}
+                            className="h-7 px-2 text-xs"
+                          >
+                            採用へ
+                            <ArrowRight className="ml-1 h-3 w-3" aria-hidden />
+                          </Button>
+                        </div>
                       </div>
-                      <div className="flex items-center gap-2">
-                        {p.warnings.length > 0 ? (
-                          <Badge variant="destructive" className="text-[10px]">
-                            警告 {p.warnings.length}
-                          </Badge>
-                        ) : null}
-                        <span className="tnum text-[11px] text-text-muted">
-                          {formatDelta(p.delta.distance_km)}
-                        </span>
-                        <ArrowRight className="h-4 w-4 text-text-muted" aria-hidden />
-                      </div>
-                    </button>
-                  </li>
-                ))}
+                      {isExpanded ? (
+                        <div className="overflow-x-auto border-t border-border-default bg-bg-muted/20">
+                          <DiffAddProposalTimeline
+                            proposal={p}
+                            isoYear={isoYear}
+                            isoWeek={isoWeek}
+                            visits={
+                              p.suggested_visits.length > 0 ? p.suggested_visits : [p.suggested]
+                            }
+                          />
+                        </div>
+                      ) : null}
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </div>

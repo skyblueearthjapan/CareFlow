@@ -41,6 +41,11 @@ V2WarningTypeOut = Literal[
     # two_staff_shortage を course_long_distance / course_count から切り出す.
     "travel_time_shortage",
     "two_staff_shortage",
+    # W41 v2 (クロスレビュー修正): diff_add の衝突回避警告
+    # (既存 PFV × pool 重複 + pool 内同患者同曜日重複).
+    "diff_add_conflict",
+    # CareFlow Wave Next 2 cross-review [H2]: staff_shifts 未投入の data-health 警告.
+    "data_health_staff_shifts_missing",
     "general",
 ]
 

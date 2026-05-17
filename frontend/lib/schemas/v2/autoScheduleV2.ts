@@ -45,6 +45,11 @@ export const v2WarningTypeSchema = z.enum([
   // - two_staff_shortage   : 二人組訪問必須だがスタッフ < 2 名.
   'travel_time_shortage',
   'two_staff_shortage',
+  // W41 v2 (クロスレビュー修正): diff_add で既存固定枠 / pool 内の重複により
+  // スキップされた visit (Frontend では「重複スキップ」タブで分類).
+  'diff_add_conflict',
+  // CareFlow Wave Next 2 cross-review [H2]: staff_shifts 未投入の data-health 警告.
+  'data_health_staff_shifts_missing',
   'general',
 ]);
 export type V2WarningType = z.infer<typeof v2WarningTypeSchema>;

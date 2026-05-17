@@ -41,7 +41,7 @@ import logging
 import math
 import re
 import uuid
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field, replace
 from datetime import date, time
 from typing import Any, Literal
@@ -82,6 +82,22 @@ TRAVEL_SPEED_KMH: float = 20.0
 # の所要時間上限 (分). 9:00-12:00 + 13:00-18:00 = 8 時間 = 480 分.
 COURSE_MAX_MINUTES: int = 480
 
+# 訪問間バッファー (書類記入・移動準備・次患者対応準備等の余裕時間).
+# 全面最適化 (mode="full_optimize") と差分追加 (mode="diff_add") の両方で
+# ``_apply_travel_time_to_courses`` 内の earliest_start 計算と
+# ``calc_course_total_minutes`` のコース容量計算に加算される.
+#
+# **同住所バケット判定 (バッファー 0 の条件)**:
+#     ``_address_bucket`` (= ``SAME_ADDRESS_TOLERANCE = 0.001`` ≒ 緯度経度 100m 角)
+#     で同一バケットに入る lat/lng のペア = 同住所扱い.
+#     同一施設 (= マンション・グループホーム等) 内の連続 2 名訪問だけでなく、
+#     **約 100m 以内の近接住所** も同住所扱いになる. これらの遷移では
+#     「移動なし = 記入も次室への移動準備も最小限」とみなしバッファー 0 で
+#     そのまま続行する.
+#
+# 異住所への遷移ではバッファー (15 分) を加算する.
+VISIT_BUFFER_MINUTES: int = 15
+
 # H2: 同住所判定の許容誤差 (緯度経度の絶対差 ≒ 100m).
 SAME_ADDRESS_TOLERANCE: float = 0.001
 
@@ -101,6 +117,22 @@ PM_BLOCK_END: time = time(18, 0)
 # Course code (午前/午後同一スタッフが担当) — 1 拠点で最大 5 スタッフ.
 _COURSE_CODES: tuple[str, ...] = ("A", "B", "C", "D", "E")
 _COURSE_CODES_MAX: int = len(_COURSE_CODES)
+
+# CareFlow Wave Next 2 cross-review [H1]: M overflow を 1 つの巨大コースに
+# 集約せず M / M2 / M3 ... に分散する. これにより
+# ``_apply_travel_time_to_courses`` / ``_check_course_capacity_minutes`` /
+# capacity 判定 (MAX_PATIENTS_PER_COURSE=6) が overflow set ごとに独立して効く.
+# 上限は 0022 の seed (M..M9) に合わせる.
+_M_OVERFLOW_CODES: tuple[str, ...] = ("M", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9")
+_M_OVERFLOW_CODES_MAX: int = len(_M_OVERFLOW_CODES)
+
+
+def _is_m_course_code(code: str | None) -> bool:
+    """``code`` が M overflow code ("M", "M2", ... "M9") のいずれかなら True."""
+    if code is None:
+        return False
+    return code in _M_OVERFLOW_CODES
+
 
 _WEEKDAY_CODE_TO_INT: dict[str, int] = {
     "Mon": 0,
@@ -155,6 +187,13 @@ V2WarningType = Literal[
     # course_long_distance は累積 30 分超 (= 長距離コース) 用途のみに残す.
     "travel_time_shortage",
     "two_staff_shortage",
+    # W41 v2 (クロスレビュー修正): diff_add の衝突回避警告を一般 ("general") から
+    # 切り出す. 既存 PFV 由来 visit と pool visit の (patient_id, weekday) 重複、
+    # および pool 内同 (patient_id, weekday) 重複の 2 ケースで使用.
+    "diff_add_conflict",
+    # CareFlow Wave Next 2 cross-review [H2]: staff_shifts が未投入で
+    # active staff いるのに staff_count=0 になる data-health 警告.
+    "data_health_staff_shifts_missing",
     "general",
 ]
 
@@ -1346,6 +1385,79 @@ async def count_active_staff_per_weekday(
     return dict(counter)
 
 
+async def _emit_staff_shifts_data_health_warning(
+    db: AsyncSession,
+    *,
+    office_ids: list[UUID],
+    warnings: list[V2Warning],
+    office_name_by_id: dict[UUID, str] | None = None,
+) -> None:
+    """CareFlow Wave Next 2 cross-review [H2]: staff_shifts 未投入時の警告.
+
+    active staff (role='staff', not trainee, status='active') が居るのに
+    StaffShift.is_on=True の行が **拠点全体で 0 件** の場合、
+    ``load_staff_shifts_from_sheet.py`` が未実行な data-health 問題の可能性が
+    高い. apply は block しないが、強い warning として運用者に伝える.
+
+    (休業日と区別できないため、判定は「拠点単位で is_on=True が全曜日 0」のみ.
+    一部曜日だけ 0 のケースは正規な休業日として false-positive を避ける.)
+    """
+    if not office_ids:
+        return
+    # 拠点ごとに active staff 数 + is_on=True shift 数を集計.
+    staff_rows = await db.scalars(
+        select(Staff).where(
+            Staff.status == "active",
+            Staff.deleted_at.is_(None),
+            Staff.role == "staff",
+            Staff.is_trainee.is_(False),
+            Staff.primary_office_id.in_(office_ids),
+        )
+    )
+    staff_list = list(staff_rows.all())
+    if not staff_list:
+        return  # active staff いない拠点は false-positive を避ける.
+    staff_ids_by_office: dict[UUID, list[UUID]] = {}
+    for s in staff_list:
+        if s.primary_office_id is None:
+            continue
+        staff_ids_by_office.setdefault(s.primary_office_id, []).append(s.id)
+    if not staff_ids_by_office:
+        return
+    all_staff_ids = [sid for sids in staff_ids_by_office.values() for sid in sids]
+    shifts_rows = await db.scalars(
+        select(StaffShift).where(
+            StaffShift.staff_id.in_(all_staff_ids),
+            StaffShift.is_on.is_(True),
+        )
+    )
+    on_shift_count_by_office: dict[UUID, int] = {}
+    staff_office: dict[UUID, UUID] = {
+        s.id: s.primary_office_id for s in staff_list if s.primary_office_id is not None
+    }
+    for sh in shifts_rows.all():
+        oid = staff_office.get(sh.staff_id)
+        if oid is None:
+            continue
+        on_shift_count_by_office[oid] = on_shift_count_by_office.get(oid, 0) + 1
+    for oid, staff_ids in staff_ids_by_office.items():
+        if on_shift_count_by_office.get(oid, 0) == 0:
+            office_name = (office_name_by_id or {}).get(oid) or str(oid)
+            warnings.append(
+                V2Warning(
+                    type="data_health_staff_shifts_missing",
+                    message=(
+                        f"{office_name}: active スタッフ {len(staff_ids)} 名いますが "
+                        "全曜日で staff_shifts (出勤フラグ) が未登録です. "
+                        "(load_staff_shifts_from_sheet.py 未実行の可能性). "
+                        "このままだと全 set が M (マネージャー枠) に流れます."
+                    ),
+                    weekday=None,
+                    actionable=True,
+                )
+            )
+
+
 def enforce_course_count_constraint(
     sets_by_bucket: dict[tuple[UUID, int, Literal["am", "pm"]], list[V2Set]],
     *,
@@ -1359,6 +1471,14 @@ def enforce_course_count_constraint(
     マネージャー候補としてそのまま残し、警告に追加する.
 
     W41 v2 (警告日本語化): weekday は日本語, office は名前で表示する.
+
+    CareFlow Wave Next 2 cross-review [M1]: warning は raw staff_count ではなく
+    ``effective_max = min(staff_count, _COURSE_CODES_MAX)`` を基準にする.
+    Stage 5 の code 割り振りは ``A/B/C/D/E`` (= 上限 5) でしか通常コードを発行
+    しないため、staff_count=6 / 必要セット 6 のときに 5 set 通常 + 1 set M に
+    なる事実を warning が反映していなかった (= 「6=6 なので M 0 件」と誤表示).
+    また ``staff_count > _COURSE_CODES_MAX`` のときは余剰スタッフがいて
+    cap が効くことを別途案内する.
     """
     for (office_id, weekday, am_pm), sets in sets_by_bucket.items():
         n = staff_count_by_weekday.get((office_id, weekday), 0)
@@ -1378,14 +1498,31 @@ def enforce_course_count_constraint(
                 )
             )
             continue
-        if len(sets) > n:
+        # 通常コードは A/B/C/D/E (= _COURSE_CODES_MAX 個) までしか発行されない.
+        # staff_count > _COURSE_CODES_MAX のときも余剰は M に流れる旨を案内する.
+        if n > _COURSE_CODES_MAX:
+            warnings.append(
+                V2Warning(
+                    type="course_count",
+                    message=(
+                        f"{wd_jp} {office_name} {ap_jp}: "
+                        f"出勤スタッフ {n} 名いますがコース数上限 {_COURSE_CODES_MAX} "
+                        "のため余剰スタッフはマネージャー枠 (M) に流れます"
+                    ),
+                    weekday=weekday,
+                    actionable=True,
+                )
+            )
+        effective_max = min(n, _COURSE_CODES_MAX)
+        if len(sets) > effective_max:
             warnings.append(
                 V2Warning(
                     type="course_capacity",
                     message=(
                         f"{wd_jp} {office_name} {ap_jp}: "
-                        f"{len(sets)} グループ必要だが対応可能スタッフ {n} 名 "
-                        f"(マネージャー補充候補 {len(sets) - n} 件)"
+                        f"{len(sets)} グループ必要だが対応可能コース数 {effective_max} "
+                        f"(対応可能スタッフ {n} 名, コース上限 {_COURSE_CODES_MAX}) "
+                        f"(マネージャー補充候補 {len(sets) - effective_max} 件)"
                     ),
                     weekday=weekday,
                     actionable=False,
@@ -1462,9 +1599,8 @@ def combine_am_pm_sets(
     pm_remaining = list(pm_sets)
 
     while am_remaining and pm_remaining:
-        if len(courses) >= staff_count and staff_count > 0:
-            # スタッフ数を超えた分はマネージャー枠 (警告は段階 4 で出済)
-            pass
+        # 注: スタッフ数を超えた分は後段 (run_v2_pipeline Stage 5) で M / M2 / M3
+        # にコード割り当てされる. ここではセット数を維持して全ペアを生成する.
         # 最も近い am/pm ペアを greedy に取り出す
         best_i, best_j = 0, 0
         best_d = float("inf")
@@ -1557,15 +1693,23 @@ def combine_am_pm_sets(
 
 
 def calc_course_total_minutes(visits: list[V2Visit]) -> int:
-    """コース内訪問の合計所要時間 (分) = visit duration + 隣接移動時間.
+    """コース内訪問の合計所要時間 (分) = visit duration + 隣接移動時間 + バッファー.
 
     W41 v2 拡張 (コース容量 duration 化): ``len(visits)`` だけでは長時間訪問や
-    長距離移動を含むコースを過小評価するため、duration + Haversine 移動時間で
-    計算する.
+    長距離移動を含むコースを過小評価するため、duration + Haversine 移動時間 +
+    訪問間バッファー で計算する.
+
+    HIGH #1 (Codex クロスレビュー): ``_apply_travel_time_to_courses`` は
+    earliest_start 計算時に ``VISIT_BUFFER_MINUTES`` (= 15 分) を加算するため、
+    実 timeline は ``sum(duration) + sum(travel)`` より長くなる.
+    本関数も同じ補正を入れないと容量判定 (480 分) が漏れる
+    (例: 6 visit 異住所連続 = 5 × 15 = 75 分の差).
 
     Notes:
         - ``visits`` は同コース (同 ``(office_id, weekday, course_code)``) 内.
-        - 同住所 (= ``_address_bucket`` 一致) は移動時間 0 分.
+        - 同住所 (= ``_address_bucket`` 一致) は **移動時間 0 + バッファー 0**.
+          (同アパート/施設内の連続訪問は記入・次室移動が最小限のため.)
+        - 異住所への遷移は ``travel_min + VISIT_BUFFER_MINUTES`` を加算.
         - 二人組訪問 ``requires_multiple_staff=True`` の duration はそのまま 1 回分
           (時間軸上の所要時間はスタッフ数に依存しない).
     """
@@ -1576,10 +1720,12 @@ def calc_course_total_minutes(visits: list[V2Visit]) -> int:
     for i in range(1, len(sv)):
         prev = sv[i - 1]
         cur = sv[i]
-        # 同住所は移動時間 0
+        # 同住所は移動時間 0 + バッファー 0
         if _address_bucket(prev.lat, prev.lng) == _address_bucket(cur.lat, cur.lng):
             continue
-        total += haversine_minutes(haversine_km(prev.lat, prev.lng, cur.lat, cur.lng))
+        travel_min = haversine_minutes(haversine_km(prev.lat, prev.lng, cur.lat, cur.lng))
+        # _apply_travel_time_to_courses と同じく異住所はバッファー加算.
+        total += travel_min + VISIT_BUFFER_MINUTES
     return total
 
 
@@ -1643,15 +1789,17 @@ def _apply_travel_time_to_courses(
         for i in range(1, len(sv)):
             prev = sv[i - 1]
             cur = sv[i]
-            # 同住所は移動 0
+            # 同住所は移動 0 (バッファーも不要 — 同アパート内の連続訪問は次室移動が最小限).
             if _address_bucket(prev.lat, prev.lng) == _address_bucket(cur.lat, cur.lng):
                 travel_min = 0
+                buffer_min = 0
             else:
                 travel_min = haversine_minutes(haversine_km(prev.lat, prev.lng, cur.lat, cur.lng))
+                buffer_min = VISIT_BUFFER_MINUTES
             cumulative_travel_min += travel_min
 
             desired_start = cur.start_time
-            earliest_start = _add_minutes(prev.end_time, travel_min)
+            earliest_start = _add_minutes(prev.end_time, travel_min + buffer_min)
 
             tt = cur.time_type
             actual_start: time
@@ -1672,8 +1820,9 @@ def _apply_travel_time_to_courses(
                                 f"{office_name} {course_code} {wd_jp}: "
                                 f"{prev_name} 様 ({_fmt_hhmm(prev.end_time)} 終了) → "
                                 f"{cur_name} 様 ({_fmt_hhmm(desired_start)} 固定開始) への "
-                                f"移動時間 {travel_min} 分が {shortage} 分不足 "
-                                "(固定時刻のため繰り下げ不可)"
+                                f"必要 {travel_min + buffer_min} 分 "
+                                f"(移動 {travel_min} 分 + バッファー {buffer_min} 分) が "
+                                f"{shortage} 分不足 (固定時刻のため繰り下げ不可)"
                             ),
                             weekday=weekday,
                             actionable=True,
@@ -2355,6 +2504,150 @@ def _identify_unassigned_patients(
 
 
 # ---------------------------------------------------------------------------
+# Conflict avoidance — diff_add で既存 visit と時間重複する pool visit を除外
+# ---------------------------------------------------------------------------
+
+
+def _filter_conflicting_pool_visits(
+    existing: list[V2Visit],
+    pool: list[V2Visit],
+    warnings: list[V2Warning],
+) -> list[V2Visit]:
+    """diff_add: 既存 visit と時間重複する pool visit を除外し warning を出す.
+
+    既存 visit (= filtered_before, 主に PFV 由来の固定枠) と新規 pool visit
+    が同 ``(patient_id, weekday)`` で時間帯重複する場合、その pool visit を
+    取り除いて warning に記録する.
+
+    重複判定:
+        ``start_time < other.end_time AND end_time > other.start_time``
+        (= 半開区間 [start, end) で 1 分でも被ったら重複)
+        ``end_time == other.start_time`` (touching) は重複扱いしない.
+
+    Scope (HIGH #2 クロスレビュー指摘):
+        判定は ``(patient_id, weekday)`` 粒度. 現状の ``run_v2_pipeline`` は
+        ``_load_patients_with_fixed`` が **patient_id 粒度** (PFV を 1 行でも
+        持つ患者は全曜日 pool 外) のため、本 helper が実 pipeline で発火する
+        ケースは限定的. ただし以下を予防的にカバーする:
+          1. 将来 ``pool_patients`` の判定を patient+weekday 粒度に拡張した場合
+          2. ``pending_edits`` overlay 等で同 patient_id × 同 weekday の visit が
+             before / pool 両方に出現する非典型シナリオ
+
+        異なる患者間の衝突 (= スタッフ二重予約) は ``_apply_travel_time_to_courses``
+        とコース容量 check が間接的にカバーするため、本 helper の対象外.
+        pool 内の同 (patient_id, weekday) 重複は ``_filter_pool_internal_conflicts``
+        で別途検出する.
+
+    Returns:
+        ``pool`` のうち衝突しなかった V2Visit のみのリスト.
+    """
+    if not existing or not pool:
+        return list(pool)
+
+    existing_by_pid_wd: dict[tuple[UUID, int], list[V2Visit]] = defaultdict(list)
+    for v in existing:
+        existing_by_pid_wd[(v.patient_id, v.weekday)].append(v)
+
+    kept: list[V2Visit] = []
+    for pv in pool:
+        conflicts = existing_by_pid_wd.get((pv.patient_id, pv.weekday), [])
+        conflict_ex: V2Visit | None = None
+        for ex in conflicts:
+            if pv.start_time < ex.end_time and pv.end_time > ex.start_time:
+                conflict_ex = ex
+                break
+        if conflict_ex is None:
+            kept.append(pv)
+            continue
+
+        name = pv.patient_name or (pv.patient_code or "不明")
+        warnings.append(
+            V2Warning(
+                type="diff_add_conflict",
+                message=(
+                    f"{name} 様: {_weekday_jp(pv.weekday)} "
+                    f"{_fmt_hhmm(pv.start_time)}-{_fmt_hhmm(pv.end_time)} は既存訪問 "
+                    f"({_fmt_hhmm(conflict_ex.start_time)}-{_fmt_hhmm(conflict_ex.end_time)}) "
+                    "と重複のためスキップ"
+                ),
+                weekday=pv.weekday,
+                actionable=True,
+                patient_id=pv.patient_id,
+                patient_name=pv.patient_name,
+            )
+        )
+    return kept
+
+
+def _filter_pool_internal_conflicts(
+    pool: list[V2Visit],
+    warnings: list[V2Warning],
+) -> list[V2Visit]:
+    """pool 内で同 ``(patient_id, weekday)`` で時間重複する visit を間引く.
+
+    HIGH #2 (Codex クロスレビュー) + Opus MEDIUM #1:
+        ``patient.weekly_pattern.entries`` に同曜日 2 件以上の entry がある場合、
+        ``build_visits_for_pool`` がその数だけ pool visit を生成する.
+        ``_filter_conflicting_pool_visits`` は existing × pool の重複しか見ないため、
+        pool 同士の重複は別途検出する必要がある.
+
+    重複判定:
+        ``_filter_conflicting_pool_visits`` と同じ半開区間 [start, end).
+        ``end_time == other.start_time`` (touching) は重複扱いしない.
+
+    Strategy:
+        同 ``(patient_id, weekday)`` グループ内で ``start_time`` 昇順に並べ、
+        最初の visit を keep / 以降は前の keep 済 visit と重複する場合のみ除外.
+        (= 重複した 2 件のうち先頭時刻のものを優先採用)
+
+    Returns:
+        ``pool`` のうち衝突しなかった V2Visit のみのリスト.
+    """
+    if not pool:
+        return list(pool)
+
+    grouped: dict[tuple[UUID, int], list[V2Visit]] = defaultdict(list)
+    for v in pool:
+        grouped[(v.patient_id, v.weekday)].append(v)
+
+    dropped_ids: set[int] = set()  # id(v) で同一性判定
+    for group in grouped.values():
+        if len(group) < 2:
+            continue
+        sorted_g = sorted(group, key=lambda v: v.start_time)
+        kept_in_group: list[V2Visit] = [sorted_g[0]]
+        for pv in sorted_g[1:]:
+            conflict_with: V2Visit | None = None
+            for kv in kept_in_group:
+                if pv.start_time < kv.end_time and pv.end_time > kv.start_time:
+                    conflict_with = kv
+                    break
+            if conflict_with is None:
+                kept_in_group.append(pv)
+                continue
+
+            dropped_ids.add(id(pv))
+            name = pv.patient_name or (pv.patient_code or "不明")
+            warnings.append(
+                V2Warning(
+                    type="diff_add_conflict",
+                    message=(
+                        f"{name} 様: {_weekday_jp(pv.weekday)} "
+                        f"{_fmt_hhmm(pv.start_time)}-{_fmt_hhmm(pv.end_time)} は同患者の別提案 "
+                        f"({_fmt_hhmm(conflict_with.start_time)}-{_fmt_hhmm(conflict_with.end_time)}) "
+                        "と重複のためスキップ"
+                    ),
+                    weekday=pv.weekday,
+                    actionable=True,
+                    patient_id=pv.patient_id,
+                    patient_name=pv.patient_name,
+                )
+            )
+
+    return [v for v in pool if id(v) not in dropped_ids]
+
+
+# ---------------------------------------------------------------------------
 # Main pipeline — runs all 5 stages
 # ---------------------------------------------------------------------------
 
@@ -2500,6 +2793,12 @@ async def run_v2_pipeline(
         filtered_before = _filter_unavailable_and_lunch(
             before_copies, unavailable_slots=unavailable, warnings=warnings
         )
+        # 既存 visit (filtered_before) と時間重複する pool visit を除外.
+        # 同 (patient_id, weekday) で時間帯が被るものを取り除き、warning を出す.
+        pool_visits = _filter_conflicting_pool_visits(filtered_before, pool_visits, warnings)
+        # pool 内の同 (patient_id, weekday) 重複も検出
+        # (weekly_pattern.entries が同曜日 2 件以上ある稀ケース対策).
+        pool_visits = _filter_pool_internal_conflicts(pool_visits, warnings)
         after_visits = filtered_before + list(pool_visits)
     else:
         after_visits = list(pool_visits)
@@ -2524,6 +2823,14 @@ async def run_v2_pipeline(
     # Stage 4: コース数制約
     staff_count_by_weekday = await count_active_staff_per_weekday(
         db, office_ids=office_ids, iso_year=iso_year, iso_week=iso_week
+    )
+    # CareFlow Wave Next 2 cross-review [H2]: staff_shifts 未投入で staff_count=0
+    # になる data-health 警告 (active staff いるのに全曜日で shift 未登録).
+    await _emit_staff_shifts_data_health_warning(
+        db,
+        office_ids=office_ids,
+        warnings=warnings,
+        office_name_by_id=office_name_by_id,
     )
     enforce_course_count_constraint(
         sets_by_bucket,
@@ -2551,11 +2858,37 @@ async def run_v2_pipeline(
         # course_code を割り振る (A/B/C/D/E).
         # H4: staff_count == 0 のときは全コースを "M" (manager-required) にする.
         #     A/B/... を出すと UI 上「採用可能」と誤認させるため.
+        #
+        # W41 v2.6 (動的コース絞り込み): 通常コース A/B/C/D/E の発行上限を
+        # ``staff_count`` (= role='staff' の当該曜日出勤人数) で動的に絞る.
+        # 例: 拠点 X の月曜出勤スタッフ 4 名なら A/B/C/D の 4 コースまで、
+        # 5 番目以降のセットは M (マネージャー補充枠) に押し付ける.
+        # _COURSE_CODES_MAX (=5) は配列範囲ガードとして残す.
+        #
+        # CareFlow Wave Next 2 cross-review [H1]: overflow set を全て "M" に
+        # 集約すると ``_apply_travel_time_to_courses`` / ``_check_course_capacity_minutes``
+        # / H9 capacity 判定が ``(office, weekday, code)`` で grouping するため
+        # 6 患者 × N set = 6N 患者を 1 ルートとして扱ってしまう. M / M2 / M3 ...
+        # に index を付けて分散することで、各 overflow set が独立した物理ルートと
+        # して計算される. 上限 (_M_OVERFLOW_CODES_MAX = 9) を超えたら最後の "M9"
+        # に丸める (現実的には 9 を超えるケースは無いが安全装置).
+        normal_course_limit = min(staff_count, _COURSE_CODES_MAX)
+        m_overflow_idx = 0
         for idx, (am_set, pm_set) in enumerate(combined):
             if staff_count == 0:
-                code = "M"
-            elif idx >= _COURSE_CODES_MAX:
-                code = "M"  # スタッフ数を超えた分はマネージャー枠
+                # スタッフ 0 でも複数 set あれば M / M2 / M3 ... に分散
+                if m_overflow_idx < _M_OVERFLOW_CODES_MAX:
+                    code = _M_OVERFLOW_CODES[m_overflow_idx]
+                else:
+                    code = _M_OVERFLOW_CODES[-1]
+                m_overflow_idx += 1
+            elif idx >= normal_course_limit:
+                # スタッフ数を超えた分はマネージャー枠 (M / M2 / M3 ...)
+                if m_overflow_idx < _M_OVERFLOW_CODES_MAX:
+                    code = _M_OVERFLOW_CODES[m_overflow_idx]
+                else:
+                    code = _M_OVERFLOW_CODES[-1]
+                m_overflow_idx += 1
             else:
                 code = _COURSE_CODES[idx]
             for v in am_set.visits if am_set else []:
@@ -2764,8 +3097,19 @@ async def _resolve_course_for_code(
 
     解決順序:
         1. (office_id, code, iso_year, iso_week, weekday) で既存 Course を探す
-        2. 無ければ拠点の最初の有効 template を template_id にして新規 INSERT
+        2. 無ければ ``code`` に一致する template を選んで template_id を確定し新規 INSERT
         3. course_cache でメモ化 (同 (office_id, weekday, code) は 1 回だけ DB 引き)
+
+    CareFlow Wave Next 2 cross-review [C1]: 旧実装は「拠点の最初の有効 template」
+    を無条件に template_id に充てており、``code="M"`` でも A や B template を
+    指してしまう不整合 (FE は template.label と code を照合するため UI 上に
+    出ない) が発生していた. 本実装では:
+        - ``code`` が ``A/B/C/D/E`` の通常 code → ``label`` 先頭文字一致 (大文字)
+          の template を選択
+        - ``code`` が ``M / M2 / M3...`` (M overflow) → 完全一致 label → "M" label
+          → 先頭 'M' label の順で template を選択
+        - template が見つからなければ ``warnings`` に明示的に追記し ``None``
+          を返す (= 呼び出し側で Course 作成失敗を検知可能)
 
     ``courses_created_counter`` は新規作成件数を呼び出し側へ返すためのワンスロット
     int list (mutate して使う).
@@ -2790,18 +3134,48 @@ async def _resolve_course_for_code(
         course_cache[cache_key] = course
         return course
 
-    # 拠点の最初の有効 template を使う
-    template = await db.scalar(
-        select(CourseTemplate)
-        .where(
-            CourseTemplate.office_id == office_id,
-            CourseTemplate.deleted_at.is_(None),
+    # CareFlow Wave Next 2 cross-review [C1]: code に一致する template を明示選択.
+    # 旧実装の「先頭 template (label 昇順)」では code="M" でも A/B template を
+    # 引いてしまい FE 表示と Course.template_id が不整合になっていた.
+    code_first = code[:1].upper()
+    templates = (
+        await db.scalars(
+            select(CourseTemplate)
+            .where(
+                CourseTemplate.office_id == office_id,
+                CourseTemplate.deleted_at.is_(None),
+            )
+            .order_by(CourseTemplate.label)
         )
-        .order_by(CourseTemplate.label)
-        .limit(1)
-    )
+    ).all()
+
+    template: CourseTemplate | None = None
+    if _is_m_course_code(code):
+        # M / M2 / M3 ... の場合: 完全一致 label → "M" label → 先頭 'M' label の順.
+        exact = next((t for t in templates if (t.label or "").strip().upper() == code), None)
+        if exact is not None:
+            template = exact
+        else:
+            base_m = next((t for t in templates if (t.label or "").strip().upper() == "M"), None)
+            if base_m is not None:
+                template = base_m
+            else:
+                template = next(
+                    (t for t in templates if (t.label or "").strip()[:1].upper() == "M"),
+                    None,
+                )
+    else:
+        # 通常 code (A/B/C/D/E): label 先頭文字一致.
+        template = next(
+            (t for t in templates if (t.label or "").strip()[:1].upper() == code_first),
+            None,
+        )
+
     if template is None:
-        warnings.append(f"コース解決不可 ({_weekday_jp(weekday)} {code} コース)")
+        warnings.append(
+            f"コース解決不可 ({_weekday_jp(weekday)} {code} コース): "
+            f"拠点に code={code!r} に対応する template が見つかりません"
+        )
         return None
 
     course = Course(
