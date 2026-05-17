@@ -27,7 +27,9 @@ from app.schemas.v2.enums import CourseStatus
 #   A〜D = 通常コース (4 つ、稼働スタッフ数に応じる)
 #   E = 拡張コース (Wave 16 migration 0023 で追加)
 #   M = マネージャー枠 (4 コース外のオーバーフロー専用)
-CourseCodeV2 = Literal["A", "B", "C", "D", "E", "M"]
+#   M2..M9 = M overflow 分散 (Wave Next 2 migration 0034 で追加、
+#            manager 数を超えない範囲で発番)
+CourseCodeV2 = Literal["A", "B", "C", "D", "E", "M", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9"]
 
 
 class CourseV2Base(BaseModel):
