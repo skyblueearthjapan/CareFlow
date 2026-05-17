@@ -634,6 +634,22 @@ export function FullOptimizeDialog({
               </div>
             </section>
 
+            {/* W41 v2.9: 一括 固定時間変更セクション (時間変更ありの患者のみ表示).
+                ユーザー要望により警告セクションの上に配置 (Tabs の前). */}
+            {stage === 'reviewing-summary' && bulkChangedProposals.length > 0 ? (
+              <BulkFixedTimeChangeSection
+                proposals={bulkChangedProposals}
+                selectedIds={bulkSelectedIds}
+                applyMode={bulkApplyMode}
+                onTogglePatient={handleToggleBulkPatient}
+                onToggleAll={handleToggleAllBulkPatients}
+                onChangeMode={setBulkApplyMode}
+                onRequestApply={handleRequestBulkApply}
+                appliedPatientIds={appliedPatientIds}
+                isBusy={isBusy}
+              />
+            ) : null}
+
             {/* W41 v2 拡張: 警告 + 曜日タブ + Before/After を 1 つの Tabs で連動.
                 順序は「警告 → 曜日タブ → Before/After」 (ユーザー希望)
                 警告は currentTab に応じて該当曜日 (+ 曜日不問) のみ表示. */}
@@ -713,21 +729,6 @@ export function FullOptimizeDialog({
                 <AllWeekSummary proposals={result.week_proposals} />
               </TabsContent>
             </Tabs>
-
-            {/* W41 v2 拡張: 一括 固定時間変更セクション (時間変更ありの患者のみ表示) */}
-            {stage === 'reviewing-summary' && bulkChangedProposals.length > 0 ? (
-              <BulkFixedTimeChangeSection
-                proposals={bulkChangedProposals}
-                selectedIds={bulkSelectedIds}
-                applyMode={bulkApplyMode}
-                onTogglePatient={handleToggleBulkPatient}
-                onToggleAll={handleToggleAllBulkPatients}
-                onChangeMode={setBulkApplyMode}
-                onRequestApply={handleRequestBulkApply}
-                appliedPatientIds={appliedPatientIds}
-                isBusy={isBusy}
-              />
-            ) : null}
           </div>
         ) : null}
 
