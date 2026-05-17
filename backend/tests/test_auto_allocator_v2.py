@@ -534,7 +534,9 @@ async def test_run_v2_pipeline_diff_add_returns_pool_only(db) -> None:
     )
     pool_codes = {v.patient_code for v in result["pool_visits"]}
     assert "POOL" in pool_codes
-    assert "FIXED" not in pool_codes
+    # hotfix#3 (W41 v2.8): orphan 救済 — PFV あるが今週 visit ない患者は
+    # pool に含まれる (PFV ベース展開).
+    assert "FIXED" in pool_codes
 
 
 @pytest.mark.asyncio

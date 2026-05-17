@@ -3224,7 +3224,16 @@ async def run_v2_pipeline(
     # H3: H5/H10 フィルタは after に流す before 由来 visit にも適用する.
     #     before_visits 自身 (KPI 用の参照) はフィルタしない.
     if mode == "diff_add":
-        before_copies = [replace(v) for v in before_visits]
+        # W41 v2.8 hotfix#4: orphan patient (PFV あるが今週 visit ない) は
+        # before_visits にも PFV 由来として既に含まれている. それを filtered_before
+        # にそのまま流すと _filter_conflicting_pool_visits で「自分自身との衝突」
+        # 判定が出て pool から除外される. 結果として候補に出ない.
+        # 解決: orphan patient の visit は filtered_before から除外し、
+        # pool 経由でのみ after に流入させる.
+        orphan_patient_ids: set[UUID] = {p.id for p in pool_patients_orphan_fixed}
+        before_copies = [
+            replace(v) for v in before_visits if v.patient_id not in orphan_patient_ids
+        ]
         filtered_before = _filter_unavailable_and_lunch(
             before_copies, unavailable_slots=unavailable, warnings=warnings
         )
