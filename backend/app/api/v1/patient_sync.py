@@ -46,6 +46,12 @@ from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.user import User
 from app.models.visit import Visit
 from app.schemas.v2.patient_sync import (
+    BulkApplyWeekOnlyVisitChangesRequest,
+    BulkApplyWeekOnlyVisitChangesResponse,
+    BulkSyncWeekToFixedItem,
+    BulkSyncWeekToFixedRequest,
+    BulkSyncWeekToFixedResponse,
+    BulkWeekOnlyChangeOutcome,
     SyncChangeEntry,
     SyncPfvSnapshot,
     SyncWeekToFixedRequest,
@@ -122,6 +128,197 @@ def _is_transient_db_error(exc: OperationalError) -> bool:
     if isinstance(sqlstate, str) and sqlstate in _TRANSIENT_DB_SQLSTATES:
         return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# Shared core: compute & apply a single patient's week→PFV sync.
+#
+# 既存の単発エンドポイントと bulk エンドポイントの両方から呼び出される.
+# 呼び出し側で flush / commit / rollback を制御する (本関数は flush も呼ばない).
+# ---------------------------------------------------------------------------
+
+
+async def _compute_sync_diff_for_patient(
+    *,
+    db,
+    patient: Patient,
+    iso_year: int,
+    iso_week: int,
+    lock_pfv: bool,
+) -> tuple[
+    list[SyncChangeEntry],
+    list[SyncPfvSnapshot],
+    SyncWeekToFixedSummary,
+    dict[int, PatientFixedVisit],
+]:
+    """1 患者分の sync diff を計算する (DB は変更しない).
+
+    Returns:
+        (changes, untouched_existing, summary, existing_by_wd)
+        existing_by_wd は呼び出し側が apply 時に update 操作で参照するため返す.
+    """
+    week_monday = date.fromisocalendar(iso_year, iso_week, 1)
+    week_sunday = date.fromordinal(week_monday.toordinal() + 6)
+
+    requires_multi = bool(getattr(patient, "requires_multiple_staff", False))
+
+    visit_rows = (
+        await db.scalars(
+            select(Visit)
+            .where(
+                Visit.patient_id == patient.id,
+                Visit.deleted_at.is_(None),
+                Visit.visit_date >= week_monday,
+                Visit.visit_date <= week_sunday,
+            )
+            .order_by(Visit.visit_date, Visit.start_time)
+        )
+    ).all()
+
+    # course_id → CourseTemplate.id を 1 度に解決 (N+1 回避; soft-deleted course は除外).
+    course_ids = {v.course_id for v in visit_rows if v.course_id is not None}
+    course_template_by_course: dict[UUID, UUID | None] = {}
+    if course_ids:
+        from app.models.course import Course
+
+        course_rows = (
+            await db.scalars(
+                select(Course).where(Course.id.in_(course_ids), Course.deleted_at.is_(None))
+            )
+        ).all()
+        course_template_by_course = {c.id: c.template_id for c in course_rows}
+
+    pfv_stmt = select(PatientFixedVisit).where(
+        PatientFixedVisit.patient_id == patient.id,
+        PatientFixedVisit.mode == "normal",
+        PatientFixedVisit.slot_index == 0,
+    )
+    if lock_pfv:
+        pfv_stmt = pfv_stmt.with_for_update()
+    existing_rows = (await db.scalars(pfv_stmt)).all()
+    existing_by_wd: dict[int, PatientFixedVisit] = {p.weekday: p for p in existing_rows}
+
+    visits_by_wd: dict[int, list[Visit]] = {}
+    for v in visit_rows:
+        visits_by_wd.setdefault(v.visit_date.weekday(), []).append(v)
+
+    proposed_by_wd: dict[int, SyncPfvSnapshot] = {}
+    skipped_by_wd: dict[int, str] = {}
+
+    for wd, visits in visits_by_wd.items():
+        if requires_multi and len(visits) >= 2:
+            skipped_by_wd[wd] = _REASON_MULTI_STAFF
+            continue
+        v = visits[0]
+        dur = _calc_duration_min(v.start_time, v.end_time)
+        ct_id: UUID | None
+        if v.course_id is not None and v.course_id in course_template_by_course:
+            ct_id = course_template_by_course[v.course_id]
+        else:
+            existing = existing_by_wd.get(wd)
+            ct_id = existing.course_template_id if existing is not None else None
+        proposed_by_wd[wd] = _snapshot_from_visit(
+            weekday=wd,
+            start_time=v.start_time,
+            duration_min=dur,
+            course_template_id=ct_id,
+        )
+
+    changes: list[SyncChangeEntry] = []
+    pfv_inserted = 0
+    pfv_updated = 0
+    pfv_unchanged = 0
+    pfv_skipped = 0
+
+    for wd in sorted(skipped_by_wd.keys()):
+        changes.append(
+            SyncChangeEntry(
+                weekday=wd,
+                operation="skipped",
+                old=(_snapshot_from_pfv(existing_by_wd[wd]) if wd in existing_by_wd else None),
+                new=None,
+                reason=skipped_by_wd[wd],
+            )
+        )
+        pfv_skipped += 1
+
+    for wd, new_snap in sorted(proposed_by_wd.items()):
+        ex = existing_by_wd.get(wd)
+        if ex is None:
+            changes.append(SyncChangeEntry(weekday=wd, operation="insert", old=None, new=new_snap))
+            pfv_inserted += 1
+            continue
+        if _is_unchanged(ex, new_snap):
+            changes.append(
+                SyncChangeEntry(
+                    weekday=wd,
+                    operation="unchanged",
+                    old=_snapshot_from_pfv(ex),
+                    new=new_snap,
+                )
+            )
+            pfv_unchanged += 1
+            continue
+        changes.append(
+            SyncChangeEntry(
+                weekday=wd,
+                operation="update",
+                old=_snapshot_from_pfv(ex),
+                new=new_snap,
+            )
+        )
+        pfv_updated += 1
+
+    touched_weekdays = {c.weekday for c in changes}
+    untouched_existing: list[SyncPfvSnapshot] = [
+        _snapshot_from_pfv(ex)
+        for wd, ex in sorted(existing_by_wd.items())
+        if wd not in touched_weekdays
+    ]
+
+    summary = SyncWeekToFixedSummary(
+        pfv_inserted=pfv_inserted,
+        pfv_updated=pfv_updated,
+        pfv_unchanged=pfv_unchanged,
+        pfv_skipped=pfv_skipped,
+    )
+    return changes, untouched_existing, summary, existing_by_wd
+
+
+def _apply_sync_changes(
+    *,
+    db,
+    patient_id: UUID,
+    changes: list[SyncChangeEntry],
+    existing_by_wd: dict[int, PatientFixedVisit],
+    now: datetime,
+) -> None:
+    """sync diff の changes を実 PFV に反映する (insert / update のみ).
+
+    flush / commit は呼び出し側で制御する.
+    """
+    for change in changes:
+        if change.operation in ("unchanged", "skipped"):
+            continue
+        if change.new is None:
+            continue
+        if change.operation == "insert":
+            new_pfv = PatientFixedVisit(
+                patient_id=patient_id,
+                mode="normal",
+                weekday=change.new.weekday,
+                start_time=change.new.start_time,
+                duration_min=change.new.duration_min,
+                slot_index=0,
+                course_template_id=change.new.course_template_id,
+            )
+            db.add(new_pfv)
+        elif change.operation == "update":
+            ex = existing_by_wd[change.new.weekday]
+            ex.start_time = change.new.start_time
+            ex.duration_min = change.new.duration_min
+            ex.course_template_id = change.new.course_template_id
+            ex.updated_at = now
 
 
 # ---------------------------------------------------------------------------
@@ -392,6 +589,384 @@ async def sync_week_visits_to_fixed_endpoint(
         changes=changes,
         untouched_existing=untouched_existing,
         transaction_applied=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /patients/bulk-sync-week-to-fixed (永続: PFV を 1 TX で複数 patient 反映)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/bulk-sync-week-to-fixed",
+    response_model=BulkSyncWeekToFixedResponse,
+    status_code=status.HTTP_200_OK,
+    summary="複数患者の今週 visits → 固定枠 (PFV) を 1 TX で一括反映",
+)
+async def bulk_sync_week_visits_to_fixed_endpoint(
+    payload: BulkSyncWeekToFixedRequest,
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+) -> BulkSyncWeekToFixedResponse:
+    """``sync_week_visits_to_fixed`` を複数 patient に対し 1 transaction で実行.
+
+    atomic 性: 1 患者でも DB エラー (IntegrityError 等) が発生したら全 rollback.
+    存在しない patient_id は ``results[].error`` に "not_found" を記録するが
+    全体は失敗扱いにしない (部分成功を許容; ただし dry_run=False でも全成功
+    した patient のみ commit される).
+    """
+    try:
+        week_monday = date.fromisocalendar(payload.iso_year, payload.iso_week, 1)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(f"invalid ISO week: year={payload.iso_year} week={payload.iso_week}"),
+        ) from exc
+    # week_sunday は _compute_sync_diff_for_patient 内部で算出するため、ここでは
+    # validation 目的でのみ呼ぶ (= week_monday の存在を担保).
+    _ = week_monday
+
+    unique_ids: list[UUID] = []
+    seen: set[UUID] = set()
+    for pid in payload.patient_ids:
+        if pid in seen:
+            continue
+        seen.add(pid)
+        unique_ids.append(pid)
+
+    # 一度に全 patient を取得 (N+1 回避).
+    patient_rows = (
+        await db.scalars(
+            select(Patient).where(Patient.id.in_(unique_ids), Patient.deleted_at.is_(None))
+        )
+    ).all()
+    patients_by_id: dict[UUID, Patient] = {p.id: p for p in patient_rows}
+
+    results: list[BulkSyncWeekToFixedItem] = []
+    total_inserted = 0
+    total_updated = 0
+    total_unchanged = 0
+    total_skipped = 0
+    errors: list[str] = []
+
+    now = datetime.now(tz=UTC)
+    try:
+        for pid in unique_ids:
+            patient = patients_by_id.get(pid)
+            if patient is None:
+                results.append(
+                    BulkSyncWeekToFixedItem(
+                        patient_id=pid,
+                        summary=SyncWeekToFixedSummary(
+                            pfv_inserted=0,
+                            pfv_updated=0,
+                            pfv_unchanged=0,
+                            pfv_skipped=0,
+                        ),
+                        changes=[],
+                        untouched_existing=[],
+                        transaction_applied=False,
+                        error="not_found",
+                    )
+                )
+                continue
+
+            (
+                changes,
+                untouched_existing,
+                summary,
+                existing_by_wd,
+            ) = await _compute_sync_diff_for_patient(
+                db=db,
+                patient=patient,
+                iso_year=payload.iso_year,
+                iso_week=payload.iso_week,
+                lock_pfv=not payload.dry_run,
+            )
+
+            if not payload.dry_run:
+                _apply_sync_changes(
+                    db=db,
+                    patient_id=patient.id,
+                    changes=changes,
+                    existing_by_wd=existing_by_wd,
+                    now=now,
+                )
+
+            results.append(
+                BulkSyncWeekToFixedItem(
+                    patient_id=patient.id,
+                    summary=summary,
+                    changes=changes,
+                    untouched_existing=untouched_existing,
+                    transaction_applied=(not payload.dry_run),
+                    error=None,
+                )
+            )
+            total_inserted += summary.pfv_inserted
+            total_updated += summary.pfv_updated
+            total_unchanged += summary.pfv_unchanged
+            total_skipped += summary.pfv_skipped
+
+        if not payload.dry_run:
+            await db.flush()
+            await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        logger.warning(
+            "bulk_sync_week_visits_to_fixed: integrity error: ids=%s err=%s",
+            unique_ids,
+            exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="他のユーザーが同じ患者の固定枠を更新中です。もう一度実行してください。",
+        ) from exc
+    except OperationalError as exc:
+        await db.rollback()
+        if _is_transient_db_error(exc):
+            logger.warning(
+                "bulk_sync_week_visits_to_fixed: transient DB lock conflict: err=%s",
+                exc,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="DB が混雑しています、再度お試しください",
+            ) from exc
+        raise
+    except HTTPException:
+        await db.rollback()
+        raise
+    except Exception:
+        await db.rollback()
+        raise
+
+    return BulkSyncWeekToFixedResponse(
+        iso_year=payload.iso_year,
+        iso_week=payload.iso_week,
+        results=results,
+        total_inserted=total_inserted,
+        total_updated=total_updated,
+        total_unchanged=total_unchanged,
+        total_skipped=total_skipped,
+        errors=errors,
+        transaction_applied=(not payload.dry_run),
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /patients/bulk-apply-week-only-visit-changes (週限定: visit のみ update; PFV 不変)
+# ---------------------------------------------------------------------------
+
+
+# 週限定 update を許可する visit.source (本番運用 visit を保護するため).
+# patient_sync の bulk 反映は manual / 自動算出 v1 / v2 由来の visit のみ対象.
+_WEEK_ONLY_BULK_ALLOWED_SOURCES = frozenset(
+    {"manual", "auto_alloc_v1", "auto_alloc_v2", "auto_alloc_v2w"}
+)
+
+
+@router.post(
+    "/bulk-apply-week-only-visit-changes",
+    response_model=BulkApplyWeekOnlyVisitChangesResponse,
+    status_code=status.HTTP_200_OK,
+    summary="今週の visits のみを (patient, weekday) 単位で一括 update (PFV 不変)",
+)
+async def bulk_apply_week_only_visit_changes_endpoint(
+    payload: BulkApplyWeekOnlyVisitChangesRequest,
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+) -> BulkApplyWeekOnlyVisitChangesResponse:
+    """指定週の active visits を (patient, weekday) 単位で update する.
+
+    - PFV は **一切変更しない** (= 「今週だけイレギュラー対応」モード).
+    - 当該 weekday に active visit が無い場合は skipped (insert は新規 course 解決等が
+      不要な簡易 UI 向け; INSERT は将来必要になったら別 endpoint で対応).
+    - 1 TX 単位 atomic. 1 件でも DB エラーなら全 rollback.
+    - 同 weekday に visit が複数ある場合は最早 start_time の 1 件を update.
+    """
+    try:
+        week_monday = date.fromisocalendar(payload.iso_year, payload.iso_week, 1)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(f"invalid ISO week: year={payload.iso_year} week={payload.iso_week}"),
+        ) from exc
+    week_sunday = date.fromordinal(week_monday.toordinal() + 6)
+
+    # (patient_id, weekday) 重複は最後の指定を採用.
+    by_key: dict[tuple[UUID, int], object] = {}
+    for ch in payload.patient_visit_changes:
+        by_key[(ch.patient_id, ch.weekday)] = ch
+
+    # 対象 patient_id を 1 度に取得し、active のみ通す.
+    patient_ids = list({k[0] for k in by_key})
+    patient_rows = (
+        await db.scalars(
+            select(Patient).where(Patient.id.in_(patient_ids), Patient.deleted_at.is_(None))
+        )
+    ).all()
+    patients_by_id = {p.id: p for p in patient_rows}
+
+    # 当該週の active visit を 1 度に取得.
+    pfv_lock = not payload.dry_run
+    visit_stmt = select(Visit).where(
+        Visit.patient_id.in_(patient_ids),
+        Visit.deleted_at.is_(None),
+        Visit.visit_date >= week_monday,
+        Visit.visit_date <= week_sunday,
+    )
+    if pfv_lock:
+        visit_stmt = visit_stmt.with_for_update()
+    visit_rows = (await db.scalars(visit_stmt)).all()
+
+    visits_by_key: dict[tuple[UUID, int], list[Visit]] = {}
+    for v in visit_rows:
+        key = (v.patient_id, v.visit_date.weekday())
+        visits_by_key.setdefault(key, []).append(v)
+    # 各 key の visit を start_time 昇順に整列.
+    for vs in visits_by_key.values():
+        vs.sort(key=lambda x: (x.visit_date, x.start_time))
+
+    outcomes: list[BulkWeekOnlyChangeOutcome] = []
+    total_inserted = 0
+    total_updated = 0
+    total_unchanged = 0
+    total_skipped = 0
+    errors: list[str] = []
+    now = datetime.now(tz=UTC)
+
+    try:
+        for (pid, wd), ch in by_key.items():
+            patient = patients_by_id.get(pid)
+            if patient is None:
+                outcomes.append(
+                    BulkWeekOnlyChangeOutcome(
+                        patient_id=pid,
+                        weekday=wd,
+                        operation="skipped",
+                        reason="patient_not_found",
+                    )
+                )
+                total_skipped += 1
+                continue
+
+            visits = visits_by_key.get((pid, wd), [])
+            if not visits:
+                outcomes.append(
+                    BulkWeekOnlyChangeOutcome(
+                        patient_id=pid,
+                        weekday=wd,
+                        operation="skipped",
+                        reason="no_active_visit",
+                    )
+                )
+                total_skipped += 1
+                continue
+
+            target_visit = visits[0]
+            if target_visit.source not in _WEEK_ONLY_BULK_ALLOWED_SOURCES:
+                outcomes.append(
+                    BulkWeekOnlyChangeOutcome(
+                        patient_id=pid,
+                        weekday=wd,
+                        operation="skipped",
+                        visit_id=target_visit.id,
+                        reason=f"source_not_allowed:{target_visit.source}",
+                    )
+                )
+                total_skipped += 1
+                continue
+
+            # 比較: start_time / duration_min が一致なら unchanged.
+            old_start = target_visit.start_time
+            old_end = target_visit.end_time
+            old_dur = _calc_duration_min(old_start, old_end)
+            new_start = ch.start_time  # type: ignore[attr-defined]
+            new_dur = int(ch.duration_min)  # type: ignore[attr-defined]
+            if old_start == new_start and old_dur == new_dur:
+                outcomes.append(
+                    BulkWeekOnlyChangeOutcome(
+                        patient_id=pid,
+                        weekday=wd,
+                        operation="unchanged",
+                        old_start_time=old_start,
+                        new_start_time=new_start,
+                        old_duration_min=old_dur,
+                        new_duration_min=new_dur,
+                        visit_id=target_visit.id,
+                    )
+                )
+                total_unchanged += 1
+                continue
+
+            # update: start_time / end_time を上書き. PFV は一切触らない.
+            new_end_total = new_start.hour * 60 + new_start.minute + new_dur
+            if new_end_total >= 24 * 60:
+                new_end_total = 23 * 60 + 59
+            new_end = time_cls(new_end_total // 60, new_end_total % 60)
+
+            if not payload.dry_run:
+                target_visit.start_time = new_start
+                target_visit.end_time = new_end
+                target_visit.updated_at = now
+
+            outcomes.append(
+                BulkWeekOnlyChangeOutcome(
+                    patient_id=pid,
+                    weekday=wd,
+                    operation="update",
+                    old_start_time=old_start,
+                    new_start_time=new_start,
+                    old_duration_min=old_dur,
+                    new_duration_min=new_dur,
+                    visit_id=target_visit.id,
+                )
+            )
+            total_updated += 1
+
+        if not payload.dry_run:
+            await db.flush()
+            await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        logger.warning(
+            "bulk_apply_week_only_visit_changes: integrity error: err=%s",
+            exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="他のユーザーが同じ visit を更新中です。もう一度実行してください。",
+        ) from exc
+    except OperationalError as exc:
+        await db.rollback()
+        if _is_transient_db_error(exc):
+            logger.warning(
+                "bulk_apply_week_only_visit_changes: transient DB lock conflict: err=%s",
+                exc,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="DB が混雑しています、再度お試しください",
+            ) from exc
+        raise
+    except HTTPException:
+        await db.rollback()
+        raise
+    except Exception:
+        await db.rollback()
+        raise
+
+    return BulkApplyWeekOnlyVisitChangesResponse(
+        iso_year=payload.iso_year,
+        iso_week=payload.iso_week,
+        outcomes=outcomes,
+        total_inserted=total_inserted,
+        total_updated=total_updated,
+        total_unchanged=total_unchanged,
+        total_skipped=total_skipped,
+        errors=errors,
+        transaction_applied=(not payload.dry_run),
     )
 
 

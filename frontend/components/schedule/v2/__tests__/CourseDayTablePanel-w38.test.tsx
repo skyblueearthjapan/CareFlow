@@ -323,6 +323,30 @@ const baseTpl = {
 const PATIENT_MULTI = '11111111-1111-1111-1111-111111111111';
 const PATIENT_NORMAL = '22222222-2222-2222-2222-222222222222';
 
+vi.mock('@/lib/api/patientSync', () => ({
+  useBulkSyncWeekToFixedMutation: () => ({
+    mutateAsync: vi.fn(),
+    reset: vi.fn(),
+    isPending: false,
+    error: null,
+    isSuccess: false,
+  }),
+  useBulkApplyWeekOnlyVisitChangesMutation: () => ({
+    mutateAsync: vi.fn(),
+    reset: vi.fn(),
+    isPending: false,
+    error: null,
+    isSuccess: false,
+  }),
+  useSyncWeekVisitsToFixedMutation: () => ({
+    mutateAsync: vi.fn(),
+    reset: vi.fn(),
+    isPending: false,
+    error: null,
+    isSuccess: false,
+  }),
+}));
+
 describe('CourseDayTablePanel — Wave 38 「相方の現在地」可視化', () => {
   beforeEach(() => {
     vi.clearAllMocks();

@@ -26,6 +26,8 @@ const { mockToast, mocks } = vi.hoisted(() => ({
     fullOptimizeMutateAsync: vi.fn(),
     applyWeekOnlyMutateAsync: vi.fn(),
     applyIndividualMutateAsync: vi.fn(),
+    bulkSyncMutateAsync: vi.fn(),
+    bulkWeekOnlyMutateAsync: vi.fn(),
   },
 }));
 
@@ -35,6 +37,7 @@ vi.mock('lucide-react', () => ({
   ArrowRight: () => <span />,
   CalendarRange: () => <span />,
   CheckCircle2: () => <span />,
+  ListChecks: () => <span />,
   Loader2: () => <span data-testid="loader" />,
   Pin: () => <span />,
   RefreshCw: () => <span />,
@@ -124,6 +127,23 @@ vi.mock('@/lib/queries/autoScheduleV2', () => ({
   }),
   useApplyWeekOnlyMutation: () => ({
     mutateAsync: mocks.applyWeekOnlyMutateAsync,
+    reset: vi.fn(),
+    isPending: false,
+    error: null,
+    isSuccess: false,
+  }),
+}));
+
+vi.mock('@/lib/api/patientSync', () => ({
+  useBulkSyncWeekToFixedMutation: () => ({
+    mutateAsync: mocks.bulkSyncMutateAsync,
+    reset: vi.fn(),
+    isPending: false,
+    error: null,
+    isSuccess: false,
+  }),
+  useBulkApplyWeekOnlyVisitChangesMutation: () => ({
+    mutateAsync: mocks.bulkWeekOnlyMutateAsync,
     reset: vi.fn(),
     isPending: false,
     error: null,
@@ -471,5 +491,246 @@ describe('FullOptimizeDialog — P4 unassigned 二段階確認', () => {
     expect(screen.queryByTestId('full-optimize-unassigned-ack-dialog')).toBeNull();
     // API が直接呼ばれる
     expect(mocks.applyWeekOnlyMutateAsync).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ─── 一括 固定時間変更セクション (W41 v2 拡張) ────────────────────────────
+
+describe('FullOptimizeDialog — 一括 固定時間変更セクション', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('時間変更ありの patient がいるとセクションが描画される', async () => {
+    const res = makeResponse({
+      assignedPatientIds: ['p1', 'p2'],
+      unassignedPatientIds: [],
+    });
+    mocks.fullOptimizeMutateAsync.mockResolvedValue(res);
+
+    render(
+      <FullOptimizeDialog
+        open
+        onClose={vi.fn()}
+        isoYear={2026}
+        isoWeek={20}
+        officeId={OFFICE_ID}
+      />,
+    );
+
+    const section = await screen.findByTestId('full-optimize-bulk-section');
+    expect(section).toBeInTheDocument();
+    // 患者リストが描画されている (2 名)
+    expect(screen.queryByTestId(`full-optimize-bulk-row-${uuid('p1')}`)).toBeInTheDocument();
+    expect(screen.queryByTestId(`full-optimize-bulk-row-${uuid('p2')}`)).toBeInTheDocument();
+  });
+
+  it('「すべて選択」ですべての患者にチェックが入る', async () => {
+    const res = makeResponse({
+      assignedPatientIds: ['p1', 'p2'],
+      unassignedPatientIds: [],
+    });
+    mocks.fullOptimizeMutateAsync.mockResolvedValue(res);
+
+    render(
+      <FullOptimizeDialog
+        open
+        onClose={vi.fn()}
+        isoYear={2026}
+        isoWeek={20}
+        officeId={OFFICE_ID}
+      />,
+    );
+
+    await screen.findByTestId('full-optimize-bulk-section');
+
+    // 初期状態では未選択
+    const cb1 = screen.getByTestId(`full-optimize-bulk-checkbox-${uuid('p1')}`) as HTMLInputElement;
+    const cb2 = screen.getByTestId(`full-optimize-bulk-checkbox-${uuid('p2')}`) as HTMLInputElement;
+    expect(cb1.checked).toBe(false);
+    expect(cb2.checked).toBe(false);
+
+    // 「すべて選択」を click
+    fireEvent.click(screen.getByTestId('full-optimize-bulk-toggle-all'));
+    expect(cb1.checked).toBe(true);
+    expect(cb2.checked).toBe(true);
+
+    // もう一度 click すると「すべて解除」
+    fireEvent.click(screen.getByTestId('full-optimize-bulk-toggle-all'));
+    expect(cb1.checked).toBe(false);
+    expect(cb2.checked).toBe(false);
+  });
+
+  it('永続モード + 一括反映で bulkSyncMutateAsync が呼ばれる', async () => {
+    const res = makeResponse({
+      assignedPatientIds: ['p1', 'p2'],
+      unassignedPatientIds: [],
+    });
+    mocks.fullOptimizeMutateAsync.mockResolvedValue(res);
+    mocks.bulkSyncMutateAsync.mockResolvedValue({
+      iso_year: 2026,
+      iso_week: 20,
+      results: [
+        { patient_id: uuid('p1'), summary: {}, transaction_applied: true, error: null },
+        { patient_id: uuid('p2'), summary: {}, transaction_applied: true, error: null },
+      ],
+      total_inserted: 2,
+      total_updated: 0,
+      total_unchanged: 0,
+      total_skipped: 0,
+      errors: [],
+      transaction_applied: true,
+    });
+
+    render(
+      <FullOptimizeDialog
+        open
+        onClose={vi.fn()}
+        isoYear={2026}
+        isoWeek={20}
+        officeId={OFFICE_ID}
+      />,
+    );
+
+    await screen.findByTestId('full-optimize-bulk-section');
+
+    // すべて選択
+    fireEvent.click(screen.getByTestId('full-optimize-bulk-toggle-all'));
+
+    // 永続モード (デフォルト) が選択されていることを確認
+    const radioPermanent = screen.getByTestId(
+      'full-optimize-bulk-mode-permanent',
+    ) as HTMLInputElement;
+    expect(radioPermanent.checked).toBe(true);
+
+    // 一括反映ボタン押下 → 確認ダイアログ
+    fireEvent.click(screen.getByTestId('full-optimize-bulk-apply-button'));
+    const dialog = await screen.findByTestId('full-optimize-bulk-confirm-dialog');
+    expect(dialog).toBeInTheDocument();
+    // 永続モードのメッセージ
+    expect(dialog.textContent).toMatch(/固定枠/);
+
+    // 確認 dialog の「一括反映」 click
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('full-optimize-bulk-confirm-proceed'));
+    });
+
+    // bulk sync API が呼ばれる
+    expect(mocks.bulkSyncMutateAsync).toHaveBeenCalledTimes(1);
+    const call = mocks.bulkSyncMutateAsync.mock.calls[0]![0];
+    expect(call.dry_run).toBe(false);
+    expect(call.patient_ids).toHaveLength(2);
+    expect(call.iso_year).toBe(2026);
+    expect(call.iso_week).toBe(20);
+
+    // 週限定の API は呼ばれていない
+    expect(mocks.bulkWeekOnlyMutateAsync).not.toHaveBeenCalled();
+  });
+
+  it('週限定モード + 一括反映で bulkWeekOnlyMutateAsync が呼ばれる', async () => {
+    const res = makeResponse({
+      assignedPatientIds: ['p1'],
+      unassignedPatientIds: [],
+    });
+    mocks.fullOptimizeMutateAsync.mockResolvedValue(res);
+    mocks.bulkWeekOnlyMutateAsync.mockResolvedValue({
+      iso_year: 2026,
+      iso_week: 20,
+      outcomes: [],
+      total_inserted: 0,
+      total_updated: 1,
+      total_unchanged: 0,
+      total_skipped: 0,
+      errors: [],
+      transaction_applied: true,
+    });
+
+    render(
+      <FullOptimizeDialog
+        open
+        onClose={vi.fn()}
+        isoYear={2026}
+        isoWeek={20}
+        officeId={OFFICE_ID}
+      />,
+    );
+
+    await screen.findByTestId('full-optimize-bulk-section');
+
+    // 「週限定」モードへ切替
+    fireEvent.click(screen.getByTestId('full-optimize-bulk-mode-week-only'));
+    // すべて選択
+    fireEvent.click(screen.getByTestId('full-optimize-bulk-toggle-all'));
+    // 一括反映ボタン → 確認 dialog
+    fireEvent.click(screen.getByTestId('full-optimize-bulk-apply-button'));
+    const dialog = await screen.findByTestId('full-optimize-bulk-confirm-dialog');
+    // 週限定モードのメッセージ
+    expect(dialog.textContent).toMatch(/今週/);
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('full-optimize-bulk-confirm-proceed'));
+    });
+
+    // 週限定 API が呼ばれる + 永続は呼ばれない
+    expect(mocks.bulkWeekOnlyMutateAsync).toHaveBeenCalledTimes(1);
+    expect(mocks.bulkSyncMutateAsync).not.toHaveBeenCalled();
+    const call = mocks.bulkWeekOnlyMutateAsync.mock.calls[0]![0];
+    expect(call.dry_run).toBe(false);
+    expect(call.patient_visit_changes).toHaveLength(1);
+    expect(call.patient_visit_changes[0].patient_id).toBe(uuid('p1'));
+    expect(call.patient_visit_changes[0].weekday).toBe(0);
+  });
+
+  it('確認 dialog のキャンセルで API は呼ばれない', async () => {
+    const res = makeResponse({
+      assignedPatientIds: ['p1'],
+      unassignedPatientIds: [],
+    });
+    mocks.fullOptimizeMutateAsync.mockResolvedValue(res);
+
+    render(
+      <FullOptimizeDialog
+        open
+        onClose={vi.fn()}
+        isoYear={2026}
+        isoWeek={20}
+        officeId={OFFICE_ID}
+      />,
+    );
+
+    await screen.findByTestId('full-optimize-bulk-section');
+    fireEvent.click(screen.getByTestId('full-optimize-bulk-toggle-all'));
+    fireEvent.click(screen.getByTestId('full-optimize-bulk-apply-button'));
+    await screen.findByTestId('full-optimize-bulk-confirm-dialog');
+
+    // キャンセル click
+    fireEvent.click(screen.getByTestId('full-optimize-bulk-confirm-cancel'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('full-optimize-bulk-confirm-dialog')).toBeNull();
+    });
+
+    expect(mocks.bulkSyncMutateAsync).not.toHaveBeenCalled();
+    expect(mocks.bulkWeekOnlyMutateAsync).not.toHaveBeenCalled();
+  });
+
+  it('時間変更ありの patient がいないときセクションは描画されない', async () => {
+    // proposed_pfv なし → isProposalTimeChanged は false (どちらも空)
+    const res = makeResponse({ assignedPatientIds: [], unassignedPatientIds: [] });
+    // 1 件追加 (proposed_pfv 空 + current_pfv 空 → 時間変更なし)
+    res.individual_proposals.push(makeProposal(uuid('nochange'), false));
+    mocks.fullOptimizeMutateAsync.mockResolvedValue(res);
+
+    render(
+      <FullOptimizeDialog
+        open
+        onClose={vi.fn()}
+        isoYear={2026}
+        isoWeek={20}
+        officeId={OFFICE_ID}
+      />,
+    );
+
+    await screen.findByTestId('full-optimize-decision-panel');
+    expect(screen.queryByTestId('full-optimize-bulk-section')).toBeNull();
   });
 });

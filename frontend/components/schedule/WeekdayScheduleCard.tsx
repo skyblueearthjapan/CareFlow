@@ -68,6 +68,11 @@ export interface VisitListItem {
    * 指定があれば formatDuration で日本語化して表示する.
    */
   duration_min?: number | null;
+  /**
+   * CareFlow #101 FE: 当該 visit に紐づく警告 (主に travel_time_shortage).
+   * 非空のとき visit セルを赤枠ハイライト + tooltip (message) を表示する.
+   */
+  warnings?: Array<{ type?: string | null; message?: string | null } | null> | null;
 }
 
 /** 1 コース分のサマリ. */
@@ -374,12 +379,20 @@ function PairMemberRow({
   onPatientClick,
   weekView,
 }: PairMemberRowProps) {
+  // CareFlow #101 FE: warning ありの visit は赤枠ハイライト + tooltip 表示.
+  const warningInfo = collectVisitWarningInfo(visit);
   return (
     <li
-      className="flex flex-wrap items-center gap-1 py-0.5 text-[10px]"
+      className={cn(
+        'flex flex-wrap items-center gap-1 py-0.5 text-[10px]',
+        warningInfo.hasWarning ? 'rounded border border-red-500 bg-red-50/40 px-1' : '',
+      )}
       data-testid={testIdPrefix ? `${testIdPrefix}-visit-${visit.key}` : undefined}
       data-same-address-group-id={visit.same_address_group_id ?? undefined}
       data-pair-member="true"
+      data-visit-warning={warningInfo.hasWarning ? 'true' : undefined}
+      title={warningInfo.tooltip ?? undefined}
+      aria-label={warningInfo.tooltip ?? undefined}
     >
       <VisitRowContent
         visit={visit}
@@ -406,15 +419,52 @@ interface VisitRowProps {
 }
 
 function VisitRow({ visit, testIdPrefix, onPatientClick, weekView }: VisitRowProps) {
+  // CareFlow #101 FE: warning ありの visit は赤枠ハイライト + tooltip 表示.
+  const warningInfo = collectVisitWarningInfo(visit);
   return (
     <li
-      className="flex flex-wrap items-center gap-1 text-[10px]"
+      className={cn(
+        'flex flex-wrap items-center gap-1 text-[10px]',
+        warningInfo.hasWarning ? 'rounded border border-red-500 bg-red-50/40 px-1' : '',
+      )}
       data-testid={testIdPrefix ? `${testIdPrefix}-visit-${visit.key}` : undefined}
       data-same-address-group-id={visit.same_address_group_id ?? undefined}
+      data-visit-warning={warningInfo.hasWarning ? 'true' : undefined}
+      title={warningInfo.tooltip ?? undefined}
+      aria-label={warningInfo.tooltip ?? undefined}
     >
       <VisitRowContent visit={visit} onPatientClick={onPatientClick} weekView={weekView} />
     </li>
   );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// CareFlow #101 FE — warning helpers (赤枠 + tooltip 表示用)
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * 1 visit に紐づく warning から、UI 表示用の `hasWarning` + `tooltip` を抽出する.
+ *
+ * - visit.warnings が空 / 未定義 → `{ hasWarning: false, tooltip: null }`
+ * - 非空 → message を改行で連結したものを tooltip に, hasWarning=true
+ *
+ * title 属性 (= ホバー時 tooltip) + aria-label を同じ文字列にして
+ * coarse pointer (touch) でも tap で表示できるようにする.
+ */
+function collectVisitWarningInfo(visit: VisitListItem): {
+  hasWarning: boolean;
+  tooltip: string | null;
+} {
+  const ws = visit.warnings ?? null;
+  if (!ws || ws.length === 0) return { hasWarning: false, tooltip: null };
+  const msgs: string[] = [];
+  for (const w of ws) {
+    if (!w) continue;
+    const m = w.message;
+    if (typeof m === 'string' && m.length > 0) msgs.push(m);
+  }
+  if (msgs.length === 0) return { hasWarning: false, tooltip: null };
+  return { hasWarning: true, tooltip: msgs.join('\n') };
 }
 
 // ─────────────────────────────────────────────────────────────────────────

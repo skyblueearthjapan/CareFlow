@@ -335,6 +335,30 @@ const PATIENT_UUID_2 = '88888888-8888-8888-8888-888888888888';
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
+vi.mock('@/lib/api/patientSync', () => ({
+  useBulkSyncWeekToFixedMutation: () => ({
+    mutateAsync: vi.fn(),
+    reset: vi.fn(),
+    isPending: false,
+    error: null,
+    isSuccess: false,
+  }),
+  useBulkApplyWeekOnlyVisitChangesMutation: () => ({
+    mutateAsync: vi.fn(),
+    reset: vi.fn(),
+    isPending: false,
+    error: null,
+    isSuccess: false,
+  }),
+  useSyncWeekVisitsToFixedMutation: () => ({
+    mutateAsync: vi.fn(),
+    reset: vi.fn(),
+    isPending: false,
+    error: null,
+    isSuccess: false,
+  }),
+}));
+
 describe('CourseDayTablePanel — W37 Phase 3-C', () => {
   beforeEach(() => {
     vi.clearAllMocks();

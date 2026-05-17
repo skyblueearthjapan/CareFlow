@@ -14,8 +14,16 @@ import { useSession } from 'next-auth/react';
 import { fetcher } from '@/lib/api/fetcher';
 import { FIXED_VISITS_KEY } from '@/lib/queries/patient_fixed_visits';
 import {
+  bulkApplyWeekOnlyVisitChangesRequestSchema,
+  bulkApplyWeekOnlyVisitChangesResponseSchema,
+  bulkSyncWeekToFixedRequestSchema,
+  bulkSyncWeekToFixedResponseSchema,
   syncWeekToFixedRequestSchema,
   syncWeekToFixedResponseSchema,
+  type BulkApplyWeekOnlyVisitChangesRequest,
+  type BulkApplyWeekOnlyVisitChangesResponse,
+  type BulkSyncWeekToFixedRequest,
+  type BulkSyncWeekToFixedResponse,
   type SyncWeekToFixedRequest,
   type SyncWeekToFixedResponse,
 } from '@/lib/schemas/patientSync';
@@ -65,6 +73,82 @@ export function useSyncWeekVisitsToFixedMutation(
       if (res.transaction_applied && patientId) {
         void qc.invalidateQueries({ queryKey: FIXED_VISITS_KEY(patientId) });
         void qc.invalidateQueries({ queryKey: FIXED_VISITS_KEY(patientId, 'normal') });
+      }
+    },
+  });
+}
+
+const BULK_SYNC_PATH = '/api/v1/patients/bulk-sync-week-to-fixed';
+const BULK_WEEK_ONLY_PATH = '/api/v1/patients/bulk-apply-week-only-visit-changes';
+
+/**
+ * POST /api/v1/patients/bulk-sync-week-to-fixed
+ *
+ * 複数患者の今週 visits を patient_fixed_visits に 1 TX で一括反映 (永続).
+ * apply 成功時は visits / courses / 全 patient_fixed_visits キャッシュを invalidate.
+ */
+export function useBulkSyncWeekToFixedMutation(): UseMutationResult<
+  BulkSyncWeekToFixedResponse,
+  Error,
+  BulkSyncWeekToFixedRequest
+> {
+  const qc = useQueryClient();
+  const { data: session } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+
+  return useMutation<BulkSyncWeekToFixedResponse, Error, BulkSyncWeekToFixedRequest>({
+    mutationFn: async (raw) => {
+      const payload = bulkSyncWeekToFixedRequestSchema.parse(raw);
+      const result = await fetcher<unknown>(BULK_SYNC_PATH, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+        accessToken,
+        refreshToken,
+      });
+      return bulkSyncWeekToFixedResponseSchema.parse(result);
+    },
+    onSuccess: (res) => {
+      if (res.transaction_applied) {
+        void qc.invalidateQueries({ queryKey: ['patient-fixed-visits'] });
+        void qc.invalidateQueries({ queryKey: ['patients'] });
+      }
+    },
+  });
+}
+
+/**
+ * POST /api/v1/patients/bulk-apply-week-only-visit-changes
+ *
+ * 今週の visits だけを (patient, weekday) 単位で update (PFV 不変; 週限定).
+ * apply 成功時は visits キャッシュのみ invalidate (PFV は不変なので除外).
+ */
+export function useBulkApplyWeekOnlyVisitChangesMutation(): UseMutationResult<
+  BulkApplyWeekOnlyVisitChangesResponse,
+  Error,
+  BulkApplyWeekOnlyVisitChangesRequest
+> {
+  const qc = useQueryClient();
+  const { data: session } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+
+  return useMutation<
+    BulkApplyWeekOnlyVisitChangesResponse,
+    Error,
+    BulkApplyWeekOnlyVisitChangesRequest
+  >({
+    mutationFn: async (raw) => {
+      const payload = bulkApplyWeekOnlyVisitChangesRequestSchema.parse(raw);
+      const result = await fetcher<unknown>(BULK_WEEK_ONLY_PATH, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+        accessToken,
+        refreshToken,
+      });
+      return bulkApplyWeekOnlyVisitChangesResponseSchema.parse(result);
+    },
+    onSuccess: (res) => {
+      if (res.transaction_applied) {
+        void qc.invalidateQueries({ queryKey: ['visits'] });
       }
     },
   });

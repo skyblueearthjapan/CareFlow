@@ -15,7 +15,16 @@
  * 一括採用ボタンは設けない (Q2 確定).
  */
 import * as React from 'react';
-import { ArrowRight, CalendarRange, CheckCircle2, Loader2, Pin, RefreshCw, X } from 'lucide-react';
+import {
+  ArrowRight,
+  CalendarRange,
+  CheckCircle2,
+  ListChecks,
+  Loader2,
+  Pin,
+  RefreshCw,
+  X,
+} from 'lucide-react';
 import { toast } from 'sonner';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -30,6 +39,10 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import {
+  useBulkApplyWeekOnlyVisitChangesMutation,
+  useBulkSyncWeekToFixedMutation,
+} from '@/lib/api/patientSync';
 import {
   useApplyIndividualMutation,
   useApplyWeekOnlyMutation,
@@ -86,6 +99,25 @@ function fmtUnassignedReason(reason: UnassignedReason): string {
 
 // formatTimeCondition は 2026-W20 で WeekdayScheduleCard に統合 (DRY 化).
 
+/**
+ * IndividualProposal の current_pfv と proposed_pfv を比較して
+ * 「時間に変更がある」かを判定する (一括 固定時間変更セクションの対象抽出).
+ *
+ * 比較キー: (weekday, start_time, duration_min) のセット (course_code は対象外).
+ * 件数が異なる or 任意の entry が異なれば true.
+ */
+export function isProposalTimeChanged(p: IndividualProposal): boolean {
+  const cur = p.current_pfv;
+  const prop = p.proposed_pfv;
+  if (cur.length !== prop.length) return true;
+  const key = (vp: V2VisitPlan) => `${vp.weekday}|${vp.start_time}|${vp.duration_min}`;
+  const curKeys = new Set(cur.map(key));
+  for (const vp of prop) {
+    if (!curKeys.has(key(vp))) return true;
+  }
+  return false;
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // State machine
 // ─────────────────────────────────────────────────────────────────────────
@@ -126,6 +158,9 @@ export function FullOptimizeDialog({
   const fetchMut = useFullOptimizeMutation();
   const applyMut = useApplyIndividualMutation();
   const applyWeekOnlyMut = useApplyWeekOnlyMutation();
+  // W41 v2 拡張: 一括 固定時間変更 (永続 / 週限定 の 2 mode).
+  const bulkSyncMut = useBulkSyncWeekToFixedMutation();
+  const bulkWeekOnlyMut = useBulkApplyWeekOnlyVisitChangesMutation();
 
   const [stage, setStage] = React.useState<DialogStage>('idle');
   const [result, setResult] = React.useState<FullOptimizeResponse | null>(null);
@@ -142,6 +177,10 @@ export function FullOptimizeDialog({
   // W41 v2 拡張 (今週限定変更): 保留中の pending_edits リスト.
   // (b) 今週限定 を選んだ場合は API を叩かず、ここに溜めて再算出時に backend へ送る.
   const [pendingEdits, setPendingEdits] = React.useState<PendingFixedTimeEdit[]>([]);
+  // W41 v2 拡張 (一括 固定時間変更): 選択された patient_id + 適用モード + 確認ダイアログ.
+  const [bulkSelectedIds, setBulkSelectedIds] = React.useState<Set<string>>(new Set());
+  const [bulkApplyMode, setBulkApplyMode] = React.useState<'permanent' | 'week_only'>('permanent');
+  const [bulkConfirmOpen, setBulkConfirmOpen] = React.useState(false);
   // W41 v2 拡張 (1週間 B/A グリッド): デフォルト非表示でパフォーマンス確保.
 
   // open のたびにリセット + 再計算.
@@ -158,9 +197,14 @@ export function FullOptimizeDialog({
     setEditedWarningCount(0);
     setEditedWarningKeys(new Set());
     setPendingEdits([]);
+    setBulkSelectedIds(new Set());
+    setBulkApplyMode('permanent');
+    setBulkConfirmOpen(false);
     fetchMut.reset();
     applyMut.reset();
     applyWeekOnlyMut.reset();
+    bulkSyncMut.reset();
+    bulkWeekOnlyMut.reset();
     void (async () => {
       try {
         const res = await fetchMut.mutateAsync({
@@ -182,7 +226,8 @@ export function FullOptimizeDialog({
   const isLoading = fetchMut.isPending;
   const isApplying = applyMut.isPending;
   const isApplyingWeekOnly = applyWeekOnlyMut.isPending;
-  const isBusy = isLoading || isApplying || isApplyingWeekOnly;
+  const isBulkApplying = bulkSyncMut.isPending || bulkWeekOnlyMut.isPending;
+  const isBusy = isLoading || isApplying || isApplyingWeekOnly || isBulkApplying;
 
   /**
    * 再実行: 警告アクションで固定時間を修正した後、全面最適化を再算出する.
@@ -375,6 +420,111 @@ export function FullOptimizeDialog({
     if (!next) handleAllDone();
   };
 
+  // ─── 一括 固定時間変更 (永続 / 週限定) ───────────────────────────────
+  // current_pfv と proposed_pfv の差分がある patient のみ対象 (= 「時間変更が提案された患者」).
+  const bulkChangedProposals = React.useMemo<IndividualProposal[]>(() => {
+    if (!result) return [];
+    return result.individual_proposals.filter((p) => isProposalTimeChanged(p));
+  }, [result]);
+
+  const handleToggleBulkPatient = React.useCallback((pid: string) => {
+    setBulkSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(pid)) next.delete(pid);
+      else next.add(pid);
+      return next;
+    });
+  }, []);
+
+  const handleToggleAllBulkPatients = React.useCallback(() => {
+    setBulkSelectedIds((prev) => {
+      if (prev.size === bulkChangedProposals.length) return new Set();
+      return new Set(bulkChangedProposals.map((p) => p.patient_id));
+    });
+  }, [bulkChangedProposals]);
+
+  const handleRequestBulkApply = React.useCallback(() => {
+    if (bulkSelectedIds.size === 0) {
+      toast.info('対象患者を 1 名以上選択してください');
+      return;
+    }
+    setBulkConfirmOpen(true);
+  }, [bulkSelectedIds.size]);
+
+  const handleCancelBulkConfirm = React.useCallback(() => {
+    if (isBulkApplying) return;
+    setBulkConfirmOpen(false);
+  }, [isBulkApplying]);
+
+  const handleConfirmBulkApply = React.useCallback(async () => {
+    if (!result) return;
+    const selected = bulkChangedProposals.filter((p) => bulkSelectedIds.has(p.patient_id));
+    if (selected.length === 0) {
+      toast.info('対象患者を 1 名以上選択してください');
+      setBulkConfirmOpen(false);
+      return;
+    }
+    try {
+      if (bulkApplyMode === 'permanent') {
+        const res = await bulkSyncMut.mutateAsync({
+          patient_ids: selected.map((p) => p.patient_id),
+          iso_year: isoYear,
+          iso_week: isoWeek,
+          dry_run: false,
+        });
+        const okCount = res.results.filter((r) => r.error == null).length;
+        const failCount = res.results.length - okCount;
+        toast.success(
+          `固定枠を ${okCount} 名分一括反映しました` +
+            (failCount > 0 ? ` (失敗: ${failCount} 名)` : ''),
+        );
+      } else {
+        // week_only: 各 patient の proposed_pfv 全 entry を visit 変更にマッピング.
+        const changes = selected.flatMap((p) =>
+          p.proposed_pfv.map((vp) => ({
+            patient_id: p.patient_id,
+            weekday: vp.weekday,
+            start_time: vp.start_time,
+            duration_min: vp.duration_min,
+          })),
+        );
+        if (changes.length === 0) {
+          toast.info('反映可能な変更がありません');
+          setBulkConfirmOpen(false);
+          return;
+        }
+        const res = await bulkWeekOnlyMut.mutateAsync({
+          patient_visit_changes: changes,
+          iso_year: isoYear,
+          iso_week: isoWeek,
+          dry_run: false,
+        });
+        toast.success(
+          `今週 visits を一括反映しました (update: ${res.total_updated} / skipped: ${res.total_skipped})`,
+        );
+      }
+      // 反映済みは選択解除 (二重 click 防止) + applied マーク
+      setAppliedPatientIds((prev) => {
+        const next = new Set(prev);
+        for (const p of selected) next.add(p.patient_id);
+        return next;
+      });
+      setBulkSelectedIds(new Set());
+      setBulkConfirmOpen(false);
+    } catch (err) {
+      toast.error(`一括反映に失敗しました: ${formatErr(err)}`);
+    }
+  }, [
+    result,
+    bulkChangedProposals,
+    bulkSelectedIds,
+    bulkApplyMode,
+    bulkSyncMut,
+    bulkWeekOnlyMut,
+    isoYear,
+    isoWeek,
+  ]);
+
   // 個別調整モードで現在の患者インデックスを計算 (進捗表示用)
   const totalPatients = result?.individual_proposals.length ?? 0;
   const currentIndex = React.useMemo(() => {
@@ -563,6 +713,21 @@ export function FullOptimizeDialog({
                 <AllWeekSummary proposals={result.week_proposals} />
               </TabsContent>
             </Tabs>
+
+            {/* W41 v2 拡張: 一括 固定時間変更セクション (時間変更ありの患者のみ表示) */}
+            {stage === 'reviewing-summary' && bulkChangedProposals.length > 0 ? (
+              <BulkFixedTimeChangeSection
+                proposals={bulkChangedProposals}
+                selectedIds={bulkSelectedIds}
+                applyMode={bulkApplyMode}
+                onTogglePatient={handleToggleBulkPatient}
+                onToggleAll={handleToggleAllBulkPatients}
+                onChangeMode={setBulkApplyMode}
+                onRequestApply={handleRequestBulkApply}
+                appliedPatientIds={appliedPatientIds}
+                isBusy={isBusy}
+              />
+            ) : null}
           </div>
         ) : null}
 
@@ -754,6 +919,19 @@ export function FullOptimizeDialog({
             setEditingWarning(null);
           }}
           warning={editingWarning}
+        />
+      ) : null}
+
+      {/* W41 v2 拡張: 一括 固定時間変更 確認ダイアログ. */}
+      {bulkConfirmOpen ? (
+        <BulkFixedTimeConfirmDialog
+          count={bulkSelectedIds.size}
+          applyMode={bulkApplyMode}
+          isApplying={isBulkApplying}
+          onCancel={handleCancelBulkConfirm}
+          onProceed={() => {
+            void handleConfirmBulkApply();
+          }}
         />
       ) : null}
     </Dialog>
@@ -1023,6 +1201,7 @@ function toCourseListItems(courses: V2CourseSummary[]): CourseListItem[] {
     summary: `${c.visits_count}件 / ${c.distance_km.toFixed(1)}km`,
     visits: c.visits.map((v: V2VisitForUI, i) => ({
       key: `${c.office_id}-${c.code}-${i}-${v.patient_id}`,
+      patient_id: v.patient_id,
       start_time: v.start_time,
       patient_name: v.patient_name,
       address: v.address,
@@ -1033,6 +1212,9 @@ function toCourseListItems(courses: V2CourseSummary[]): CourseListItem[] {
       sex_restriction: v.sex_restriction,
       same_address_group_id: v.same_address_group_id,
       distance_to_next_km: v.distance_to_next_km,
+      // CareFlow #101 FE: BE から渡された warnings (travel_time_shortage 等) を
+      // 共通 VisitListItem に流す. 非空なら赤枠 + tooltip (message) 表示.
+      warnings: v.warnings,
     })),
   }));
 }
@@ -1380,6 +1562,285 @@ export function UnassignedAckDialog({
               <CalendarRange className="mr-1 h-4 w-4" aria-hidden />
             )}
             未割当を理解して続行
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// BulkFixedTimeChangeSection — W41 v2 拡張: 一括 固定時間変更 セクション.
+//
+// 時間変更が提案された患者 (current_pfv ≠ proposed_pfv) のリストを表示し、
+// チェックボックスで選択 + 適用モード (永続 / 週限定) を選び、1 回の操作で
+// 複数患者の固定時間を一括反映する.
+// ─────────────────────────────────────────────────────────────────────────
+
+interface BulkFixedTimeChangeSectionProps {
+  proposals: IndividualProposal[];
+  selectedIds: Set<string>;
+  applyMode: 'permanent' | 'week_only';
+  appliedPatientIds: Set<string>;
+  isBusy: boolean;
+  onTogglePatient: (patientId: string) => void;
+  onToggleAll: () => void;
+  onChangeMode: (mode: 'permanent' | 'week_only') => void;
+  onRequestApply: () => void;
+}
+
+function BulkFixedTimeChangeSection({
+  proposals,
+  selectedIds,
+  applyMode,
+  appliedPatientIds,
+  isBusy,
+  onTogglePatient,
+  onToggleAll,
+  onChangeMode,
+  onRequestApply,
+}: BulkFixedTimeChangeSectionProps) {
+  const allSelected = selectedIds.size === proposals.length && proposals.length > 0;
+  return (
+    <section
+      className="mt-4 rounded-lg border border-border-default bg-bg-base p-4"
+      data-testid="full-optimize-bulk-section"
+    >
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <h3 className="flex items-center gap-2 text-sm font-semibold text-text-primary">
+          <ListChecks className="h-4 w-4 text-brand-primary" aria-hidden />
+          一括 固定時間変更 ({proposals.length} 件)
+        </h3>
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={onToggleAll}
+            disabled={isBusy}
+            data-testid="full-optimize-bulk-toggle-all"
+          >
+            {allSelected ? 'すべて解除' : 'すべて選択'}
+          </Button>
+        </div>
+      </div>
+
+      {/* 適用モード ラジオ */}
+      <fieldset className="mb-3 space-y-2 rounded border border-border-default bg-bg-muted p-3 text-xs">
+        <legend className="px-1 text-[10px] font-semibold uppercase text-text-muted">
+          適用モード
+        </legend>
+        <label className="flex items-start gap-2">
+          <input
+            type="radio"
+            name="bulk-apply-mode"
+            value="permanent"
+            checked={applyMode === 'permanent'}
+            onChange={() => onChangeMode('permanent')}
+            disabled={isBusy}
+            data-testid="full-optimize-bulk-mode-permanent"
+            className="mt-0.5"
+          />
+          <span>
+            <span className="font-semibold text-text-primary">固定枠も変更 (永続)</span>
+            <span className="ml-1 text-text-muted">
+              — 患者マスタの固定枠 (PFV) を更新し、毎週この時間になる
+            </span>
+          </span>
+        </label>
+        <label className="flex items-start gap-2">
+          <input
+            type="radio"
+            name="bulk-apply-mode"
+            value="week_only"
+            checked={applyMode === 'week_only'}
+            onChange={() => onChangeMode('week_only')}
+            disabled={isBusy}
+            data-testid="full-optimize-bulk-mode-week-only"
+            className="mt-0.5"
+          />
+          <span>
+            <span className="font-semibold text-text-primary">この週だけイレギュラー対応</span>
+            <span className="ml-1 text-text-muted">
+              — 今週の visits だけを更新し、固定枠 (PFV) は変更しない
+            </span>
+          </span>
+        </label>
+      </fieldset>
+
+      {/* 患者リスト */}
+      <ul className="mb-3 max-h-72 space-y-1 overflow-y-auto rounded border border-border-default text-xs">
+        {proposals.map((p) => {
+          const checked = selectedIds.has(p.patient_id);
+          const applied = appliedPatientIds.has(p.patient_id);
+          return (
+            <li
+              key={p.patient_id}
+              className="flex items-start gap-2 border-b border-border-default px-2 py-1.5 last:border-b-0"
+              data-testid={`full-optimize-bulk-row-${p.patient_id}`}
+            >
+              <input
+                type="checkbox"
+                checked={checked}
+                disabled={isBusy || applied}
+                onChange={() => onTogglePatient(p.patient_id)}
+                className="mt-1"
+                aria-label={`${p.patient_name} を選択`}
+                data-testid={`full-optimize-bulk-checkbox-${p.patient_id}`}
+              />
+              <div className="flex-1 min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-semibold text-text-primary">{p.patient_name}</span>
+                  {p.patient_code ? (
+                    <span className="text-[10px] text-text-muted">[{p.patient_code}]</span>
+                  ) : null}
+                  {applied ? (
+                    <Badge variant="outline" className="text-[10px] text-emerald-700">
+                      ✓ 反映済み
+                    </Badge>
+                  ) : null}
+                </div>
+                <BulkProposalDiffList current={p.current_pfv} proposed={p.proposed_pfv} />
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+
+      <div className="flex justify-end">
+        <Button
+          type="button"
+          onClick={onRequestApply}
+          disabled={isBusy || selectedIds.size === 0}
+          data-testid="full-optimize-bulk-apply-button"
+        >
+          {isBusy ? (
+            <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
+          ) : (
+            <CheckCircle2 className="mr-1 h-4 w-4" aria-hidden />
+          )}
+          選択した {selectedIds.size} 件を一括反映
+        </Button>
+      </div>
+    </section>
+  );
+}
+
+/** 1 患者分の current → proposed 時刻 diff を曜日順に並べる. */
+function BulkProposalDiffList({
+  current,
+  proposed,
+}: {
+  current: V2VisitPlan[];
+  proposed: V2VisitPlan[];
+}) {
+  // weekday ごとに current / proposed をマップして diff を構築.
+  const curByWd = new Map<number, V2VisitPlan>();
+  for (const vp of current) curByWd.set(vp.weekday, vp);
+  const propByWd = new Map<number, V2VisitPlan>();
+  for (const vp of proposed) propByWd.set(vp.weekday, vp);
+  const allWds = Array.from(new Set([...curByWd.keys(), ...propByWd.keys()])).sort((a, b) => a - b);
+  return (
+    <ul className="mt-0.5 ml-0 list-none space-y-0.5 text-[11px] text-text-secondary">
+      {allWds.map((wd) => {
+        const cur = curByWd.get(wd);
+        const prop = propByWd.get(wd);
+        const curStr = cur ? `${trimSeconds(cur.start_time)} (${cur.duration_min}分)` : '(なし)';
+        const propStr = prop
+          ? `${trimSeconds(prop.start_time)} (${prop.duration_min}分)`
+          : '(削除)';
+        return (
+          <li
+            key={wd}
+            className="tnum flex flex-wrap items-center gap-1"
+            data-testid={`full-optimize-bulk-diff-${wd}`}
+          >
+            <span className="w-6 text-text-muted">{fmtWd(wd)}</span>
+            <span className="text-text-muted">{curStr}</span>
+            <ArrowRight className="h-3 w-3 text-text-muted" aria-hidden />
+            <span className="font-semibold text-text-primary">{propStr}</span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// BulkFixedTimeConfirmDialog — 一括反映の最終確認ダイアログ
+// ─────────────────────────────────────────────────────────────────────────
+
+interface BulkFixedTimeConfirmDialogProps {
+  count: number;
+  applyMode: 'permanent' | 'week_only';
+  isApplying: boolean;
+  onCancel: () => void;
+  onProceed: () => void;
+}
+
+export function BulkFixedTimeConfirmDialog({
+  count,
+  applyMode,
+  isApplying,
+  onCancel,
+  onProceed,
+}: BulkFixedTimeConfirmDialogProps) {
+  return (
+    <Dialog
+      open
+      onOpenChange={(o) => {
+        if (!o && !isApplying) onCancel();
+      }}
+    >
+      <DialogContent className="max-w-md" data-testid="full-optimize-bulk-confirm-dialog">
+        <DialogHeader>
+          <DialogTitle className="text-base">
+            {applyMode === 'permanent'
+              ? '固定枠を一括更新しますか？'
+              : '今週の visits を一括変更しますか？'}
+          </DialogTitle>
+          <DialogDescription>
+            {applyMode === 'permanent' ? (
+              <>
+                {count} 名の患者の <strong>固定枠 (patient_fixed_visits)</strong>{' '}
+                を提案内容で更新します。
+                来週以降もこの時間が継続するため、影響範囲をご確認ください。
+              </>
+            ) : (
+              <>
+                {count} 名の患者の <strong>今週の visits のみ</strong> を更新します。
+                <strong>固定枠 (PFV) は変更されません</strong> のでイレギュラー対応に最適です。
+              </>
+            )}
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter className="flex-col gap-2 sm:flex-row sm:justify-end">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={onCancel}
+            disabled={isApplying}
+            data-testid="full-optimize-bulk-confirm-cancel"
+            aria-label="一括反映をキャンセル"
+          >
+            <X className="mr-1 h-4 w-4" aria-hidden />
+            キャンセル
+          </Button>
+          <Button
+            type="button"
+            onClick={onProceed}
+            disabled={isApplying}
+            data-testid="full-optimize-bulk-confirm-proceed"
+            aria-label={
+              applyMode === 'permanent' ? '固定枠を一括更新する' : '今週の visits を一括変更する'
+            }
+          >
+            {isApplying ? (
+              <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
+            ) : (
+              <CheckCircle2 className="mr-1 h-4 w-4" aria-hidden />
+            )}
+            {count} 件を一括反映する
           </Button>
         </DialogFooter>
       </DialogContent>

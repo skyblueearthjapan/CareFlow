@@ -121,6 +121,10 @@ export const v2VisitForUiSchema = z.object({
   // W41 v2 拡張 (週限定変更): 提案中 visit の ID. apply-week-only 後に DB に
   // 入った visit を「今週限定」変更する際の識別子. 提案算出直後は null.
   visit_id: z.string().uuid().nullable().default(null),
+  // CareFlow #101 FE: 当該 visit に紐づく warning (travel_time_shortage 等).
+  // 非空なら UI 側で赤枠ハイライト + ツールチップ (message) を表示する.
+  // BE 側 _v2visit_to_ui で weekday + patient_id + type フィルタした上で渡される.
+  warnings: z.array(v2WarningSchema).default([]),
 });
 export type V2VisitForUI = z.infer<typeof v2VisitForUiSchema>;
 

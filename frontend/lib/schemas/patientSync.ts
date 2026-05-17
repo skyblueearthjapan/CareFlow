@@ -87,3 +87,96 @@ export const syncWeekToFixedResponseSchema = z.object({
   transaction_applied: z.boolean(),
 });
 export type SyncWeekToFixedResponse = z.infer<typeof syncWeekToFixedResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Bulk endpoints (FullOptimizeDialog 一括 固定時間変更 用)
+// ---------------------------------------------------------------------------
+
+/** POST /api/v1/patients/bulk-sync-week-to-fixed のリクエスト. */
+export const bulkSyncWeekToFixedRequestSchema = z.object({
+  patient_ids: z.array(z.string().uuid()).min(1).max(500),
+  iso_year: z.number().int().min(2000).max(2100),
+  iso_week: z.number().int().min(1).max(53),
+  dry_run: z.boolean().default(true),
+});
+export type BulkSyncWeekToFixedRequest = z.infer<typeof bulkSyncWeekToFixedRequestSchema>;
+
+/** 1 patient 分の bulk sync 結果. */
+export const bulkSyncWeekToFixedItemSchema = z.object({
+  patient_id: z.string().uuid(),
+  summary: syncWeekToFixedSummarySchema,
+  changes: z.array(syncChangeEntrySchema).default([]),
+  untouched_existing: z.array(syncPfvSnapshotSchema).default([]),
+  transaction_applied: z.boolean(),
+  /** 個別 patient の失敗理由 (404 など). 成功時は null. */
+  error: z.string().nullable().optional(),
+});
+export type BulkSyncWeekToFixedItem = z.infer<typeof bulkSyncWeekToFixedItemSchema>;
+
+/** POST /api/v1/patients/bulk-sync-week-to-fixed のレスポンス. */
+export const bulkSyncWeekToFixedResponseSchema = z.object({
+  iso_year: z.number().int(),
+  iso_week: z.number().int(),
+  results: z.array(bulkSyncWeekToFixedItemSchema).default([]),
+  total_inserted: z.number().int().min(0).default(0),
+  total_updated: z.number().int().min(0).default(0),
+  total_unchanged: z.number().int().min(0).default(0),
+  total_skipped: z.number().int().min(0).default(0),
+  errors: z.array(z.string()).default([]),
+  transaction_applied: z.boolean(),
+});
+export type BulkSyncWeekToFixedResponse = z.infer<typeof bulkSyncWeekToFixedResponseSchema>;
+
+/** 1 件の (patient, weekday) に対する週限定変更. */
+export const bulkWeekOnlyPatientVisitChangeSchema = z.object({
+  patient_id: z.string().uuid(),
+  weekday: weekdaySchema,
+  start_time: timeStringSchema,
+  duration_min: z.number().int().min(1).max(480),
+  course_template_id: z.string().uuid().nullable().optional(),
+});
+export type BulkWeekOnlyPatientVisitChange = z.infer<typeof bulkWeekOnlyPatientVisitChangeSchema>;
+
+/** POST /api/v1/patients/bulk-apply-week-only-visit-changes のリクエスト. */
+export const bulkApplyWeekOnlyVisitChangesRequestSchema = z.object({
+  patient_visit_changes: z.array(bulkWeekOnlyPatientVisitChangeSchema).min(1).max(1000),
+  iso_year: z.number().int().min(2000).max(2100),
+  iso_week: z.number().int().min(1).max(53),
+  dry_run: z.boolean().default(true),
+});
+export type BulkApplyWeekOnlyVisitChangesRequest = z.infer<
+  typeof bulkApplyWeekOnlyVisitChangesRequestSchema
+>;
+
+export const BULK_WEEK_ONLY_OPERATIONS = ['insert', 'update', 'unchanged', 'skipped'] as const;
+export type BulkWeekOnlyOperation = (typeof BULK_WEEK_ONLY_OPERATIONS)[number];
+
+/** 1 件の (patient, weekday) 適用結果. */
+export const bulkWeekOnlyChangeOutcomeSchema = z.object({
+  patient_id: z.string().uuid(),
+  weekday: weekdaySchema,
+  operation: z.enum(BULK_WEEK_ONLY_OPERATIONS),
+  old_start_time: timeStringSchema.nullable().optional(),
+  new_start_time: timeStringSchema.nullable().optional(),
+  old_duration_min: z.number().int().nullable().optional(),
+  new_duration_min: z.number().int().nullable().optional(),
+  visit_id: z.string().uuid().nullable().optional(),
+  reason: z.string().nullable().optional(),
+});
+export type BulkWeekOnlyChangeOutcome = z.infer<typeof bulkWeekOnlyChangeOutcomeSchema>;
+
+/** POST /api/v1/patients/bulk-apply-week-only-visit-changes のレスポンス. */
+export const bulkApplyWeekOnlyVisitChangesResponseSchema = z.object({
+  iso_year: z.number().int(),
+  iso_week: z.number().int(),
+  outcomes: z.array(bulkWeekOnlyChangeOutcomeSchema).default([]),
+  total_inserted: z.number().int().min(0).default(0),
+  total_updated: z.number().int().min(0).default(0),
+  total_unchanged: z.number().int().min(0).default(0),
+  total_skipped: z.number().int().min(0).default(0),
+  errors: z.array(z.string()).default([]),
+  transaction_applied: z.boolean(),
+});
+export type BulkApplyWeekOnlyVisitChangesResponse = z.infer<
+  typeof bulkApplyWeekOnlyVisitChangesResponseSchema
+>;

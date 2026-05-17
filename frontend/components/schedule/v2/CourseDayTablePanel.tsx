@@ -1646,7 +1646,7 @@ export function CourseDayTablePanel({
                           : 'bg-bg-base px-2 py-1 text-text-secondary hover:bg-bg-muted'
                       }
                     >
-                      リスト (Before/After 形式)
+                      リスト (詳細)
                     </button>
                   </div>
                 </div>

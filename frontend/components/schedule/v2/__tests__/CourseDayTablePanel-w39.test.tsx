@@ -381,6 +381,30 @@ function defaultSetupForEventDrag(opts: { eventsByStaff?: Map<string, unknown[]>
   });
 }
 
+vi.mock('@/lib/api/patientSync', () => ({
+  useBulkSyncWeekToFixedMutation: () => ({
+    mutateAsync: vi.fn(),
+    reset: vi.fn(),
+    isPending: false,
+    error: null,
+    isSuccess: false,
+  }),
+  useBulkApplyWeekOnlyVisitChangesMutation: () => ({
+    mutateAsync: vi.fn(),
+    reset: vi.fn(),
+    isPending: false,
+    error: null,
+    isSuccess: false,
+  }),
+  useSyncWeekVisitsToFixedMutation: () => ({
+    mutateAsync: vi.fn(),
+    reset: vi.fn(),
+    isPending: false,
+    error: null,
+    isSuccess: false,
+  }),
+}));
+
 describe('CourseDayTablePanel — Wave 39 event D&D', () => {
   beforeEach(() => {
     vi.clearAllMocks();
