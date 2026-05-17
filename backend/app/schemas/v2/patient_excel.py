@@ -87,3 +87,52 @@ class PatientExcelImportResponse(BaseModel):
             "dry_run=False で有効な op が 0 件 (全 error or 全 noop) なら False."
         )
     )
+
+
+# ---------------------------------------------------------------------------
+# 完全置換 (バックアップ復元) 用 schema
+# ---------------------------------------------------------------------------
+
+
+class PatientExcelReplaceAllSummary(BaseModel):
+    """完全置換インポートの集計 (UI で件数バッジ表示用).
+
+    通常 import の summary とは別 schema. PFV は全件再投入する仕様なので
+    update 概念は無く、"replace" として件数を返す.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    patients_to_create: int = 0
+    patients_to_update: int = 0
+    patients_to_soft_delete: int = 0  # Excel に無い既存 (alive) 患者
+    patients_error: int = 0
+    pfv_to_replace: int = 0  # 全件物理削除する既存 PFV の件数
+    pfv_to_create: int = 0  # Excel から再投入する PFV の件数
+    pfv_error: int = 0
+
+
+class PatientExcelReplaceAllResponse(BaseModel):
+    """POST /api/v1/patients/import-export/replace-all のレスポンス."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    summary: PatientExcelReplaceAllSummary
+    patient_rows: list[PatientExcelImportRow]
+    pfv_rows: list[PfvExcelImportRow]
+    transaction_applied: bool = Field(
+        description=(
+            "True なら DB に反映済 (atomic). "
+            "dry_run=True のときは常に False. "
+            "dry_run=False で error が 1 件もなく成功した場合のみ True. "
+            "通常 import と違い、error 1 件でも全 rollback されるため True/False "
+            "は all-or-nothing."
+        )
+    )
+    patients_to_soft_delete_preview: list[dict] = Field(
+        default_factory=list,
+        description=(
+            "Excel に無い既存 (alive) 患者の一覧 (UI プレビュー表示用). "
+            "各要素は {patient_id, patient_code, name} を含む."
+        ),
+    )

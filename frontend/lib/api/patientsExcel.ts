@@ -7,7 +7,9 @@
 import { ApiError } from '@/lib/api-client';
 import {
   patientExcelImportResponseSchema,
+  patientExcelReplaceAllResponseSchema,
   type PatientExcelImportResponse,
+  type PatientExcelReplaceAllResponse,
 } from '@/lib/schemas/patientExcel';
 
 function resolveBaseUrl(): string {
@@ -105,6 +107,51 @@ export async function importPatientsExcel(
   }
 
   return patientExcelImportResponseSchema.parse(raw);
+}
+
+/**
+ * Upload an xlsx file for the *complete replacement* (backup restore) flow.
+ * POST /api/v1/patients/import-export/replace-all?dry_run=...
+ *
+ * admin のみ. 通常 import との違い:
+ *   - Excel に無い既存患者は soft delete される
+ *   - 空セルは NULL で上書きされる
+ *   - 既存 PFV は全件物理削除 → Excel から再投入
+ *   - atomic: error 1 件で全 rollback (422 を返す)
+ */
+export async function replaceAllPatientsExcel(
+  opts: AuthOpts & { file: File; dryRun: boolean },
+): Promise<PatientExcelReplaceAllResponse> {
+  const url =
+    `${resolveBaseUrl()}/api/v1/patients/import-export/replace-all` +
+    `?dry_run=${opts.dryRun ? 'true' : 'false'}`;
+  const formData = new FormData();
+  formData.append('file', opts.file);
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${opts.accessToken}` },
+    body: formData,
+    cache: 'no-store',
+  });
+
+  const text = await res.text();
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    raw = text;
+  }
+
+  if (!res.ok) {
+    throw new ApiError(
+      `API ${res.status} ${res.statusText} (/api/v1/patients/import-export/replace-all)`,
+      res.status,
+      raw,
+    );
+  }
+
+  return patientExcelReplaceAllResponseSchema.parse(raw);
 }
 
 /** Trigger a browser file download from a Blob. */

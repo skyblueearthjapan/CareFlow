@@ -28,6 +28,7 @@ import {
 import { usePatients } from '@/lib/queries/patients';
 import { useOffices } from '@/lib/queries/offices';
 import { PatientsExcelButtons } from '@/components/patients/PatientsExcelButtons';
+import { PatientsReplaceAllButton } from '@/components/patients/PatientsReplaceAllButton';
 
 const PAGE_SIZE = 20;
 
@@ -35,6 +36,7 @@ export default function PatientsPage() {
   const { data: session } = useSession();
   const role = session?.user?.role;
   const canCreate = role === 'admin' || role === 'manager';
+  const isAdmin = role === 'admin';
 
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
@@ -87,6 +89,7 @@ export default function PatientsPage() {
         </div>
         <div className="flex items-center gap-2">
           {canCreate ? <PatientsExcelButtons /> : null}
+          {isAdmin ? <PatientsReplaceAllButton /> : null}
           {canCreate ? (
             <Button asChild>
               <Link href="/patients/new">+ 新規登録</Link>

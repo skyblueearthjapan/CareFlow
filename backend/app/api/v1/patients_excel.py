@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import Response
@@ -27,9 +28,14 @@ from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.user import User
 from app.schemas.v2.patient_excel import (
     PatientExcelImportResponse,
+    PatientExcelReplaceAllResponse,
 )
 from app.services.patient_excel.exporter import build_workbook, workbook_to_bytes
 from app.services.patient_excel.importer import apply_changes, parse_and_diff
+from app.services.patient_excel.replace_all import (
+    apply_replace_all,
+    parse_and_diff_replace_all,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -219,4 +225,111 @@ async def import_excel(
         patient_rows=patient_rows,
         pfv_rows=pfv_rows,
         transaction_applied=transaction_applied,
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /replace-all — 完全置換 (バックアップ復元) (admin のみ)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/replace-all",
+    response_model=PatientExcelReplaceAllResponse,
+    summary="患者マスタの完全置換インポート (admin のみ / atomic transaction)",
+)
+async def replace_all_endpoint(
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin"))],
+    file: UploadFile = File(..., description="Excel ファイル (.xlsx)"),
+    dry_run: bool = True,
+) -> PatientExcelReplaceAllResponse:
+    """完全置換インポート (バックアップ復元).
+
+    通常 import との違い:
+      - Excel に無い既存 alive 患者は **soft delete** (関連 PFV は物理削除).
+      - 空セルは NULL で上書き (現在値維持ではなく).
+      - 既存 PFV を全件物理削除してから Excel 通りに再投入.
+      - **atomic**: error 1 件でも全 rollback (partial commit ではない).
+      - RBAC: admin のみ (manager 不可).
+    """
+    content = await file.read()
+    if not content:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="アップロードされたファイルが空です",
+        )
+    if len(content) > MAX_UPLOAD_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=(f"ファイルサイズが上限 ({MAX_UPLOAD_SIZE // 1024 // 1024}MB) を超えています"),
+        )
+
+    try:
+        (
+            patient_rows,
+            pfv_rows,
+            summary,
+            patient_ops,
+            pfv_ops,
+            patients_to_soft_delete_preview,
+        ) = await parse_and_diff_replace_all(db, file_bytes=content)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Excel ファイルのパースに失敗しました: {exc}",
+        ) from exc
+    except Exception as exc:  # noqa: BLE001 — openpyxl が多様な例外を投げる
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Excel ファイルの読み込みに失敗しました: {type(exc).__name__}: {exc}",
+        ) from exc
+
+    transaction_applied = False
+    if not dry_run:
+        # atomic: error 1 件でもあれば全 rollback (commit せず 422 を返す).
+        if summary.patients_error > 0 or summary.pfv_error > 0:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"エラー行があるため完全置換を中止しました "
+                    f"(patients_error={summary.patients_error}, "
+                    f"pfv_error={summary.pfv_error})"
+                ),
+            )
+        patient_ids_to_soft_delete = [
+            UUID(p["patient_id"]) for p in patients_to_soft_delete_preview
+        ]
+        try:
+            await apply_replace_all(
+                db,
+                patient_ops=patient_ops,
+                pfv_ops=pfv_ops,
+                patient_ids_to_soft_delete=patient_ids_to_soft_delete,
+            )
+            await db.commit()
+            transaction_applied = True
+        except IntegrityError as exc:
+            await db.rollback()
+            logger.warning("patients_excel replace_all IntegrityError: %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "データ整合性エラーが発生しました "
+                    "(patient_code 重複や同時更新の可能性)。再試行してください。"
+                ),
+            ) from exc
+        except Exception as exc:  # noqa: BLE001
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"DB 反映時にエラーが発生しました: {type(exc).__name__}: {exc}",
+            ) from exc
+
+    return PatientExcelReplaceAllResponse(
+        summary=summary,
+        patient_rows=patient_rows,
+        pfv_rows=pfv_rows,
+        transaction_applied=transaction_applied,
+        patients_to_soft_delete_preview=patients_to_soft_delete_preview,
     )

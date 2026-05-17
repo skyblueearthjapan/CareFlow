@@ -48,3 +48,34 @@ export const staffExcelImportResponseSchema = z.object({
 export type StaffExcelImportResponse = z.infer<typeof staffExcelImportResponseSchema>;
 export type StaffExcelImportRow = z.infer<typeof staffExcelImportRowSchema>;
 export type ShiftExcelImportRow = z.infer<typeof shiftExcelImportRowSchema>;
+
+// ---------------------------------------------------------------------------
+// 完全置換 (バックアップ復元) 用 schema
+// ---------------------------------------------------------------------------
+
+export const staffExcelReplaceAllSummarySchema = z.object({
+  staff_to_create: z.number().int().default(0),
+  staff_to_update: z.number().int().default(0),
+  staff_to_soft_delete: z.number().int().default(0),
+  staff_error: z.number().int().default(0),
+  shift_to_replace: z.number().int().default(0),
+  shift_to_create: z.number().int().default(0),
+  shift_error: z.number().int().default(0),
+});
+
+export const staffSoftDeletePreviewSchema = z.object({
+  staff_id: z.string(),
+  staff_code: z.string().nullable(),
+  name: z.string(),
+});
+
+export const staffExcelReplaceAllResponseSchema = z.object({
+  summary: staffExcelReplaceAllSummarySchema,
+  staff_rows: z.array(staffExcelImportRowSchema),
+  shift_rows: z.array(shiftExcelImportRowSchema),
+  transaction_applied: z.boolean(),
+  staff_to_soft_delete_preview: z.array(staffSoftDeletePreviewSchema).default([]),
+});
+
+export type StaffExcelReplaceAllResponse = z.infer<typeof staffExcelReplaceAllResponseSchema>;
+export type StaffSoftDeletePreview = z.infer<typeof staffSoftDeletePreviewSchema>;

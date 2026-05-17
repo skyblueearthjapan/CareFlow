@@ -16,6 +16,7 @@ import { useMemo, useState } from 'react';
 import { Plus, Search } from 'lucide-react';
 
 import { StaffExcelButtons } from '@/components/staff/StaffExcelButtons';
+import { StaffReplaceAllButton } from '@/components/staff/StaffReplaceAllButton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -49,6 +50,7 @@ export default function StaffPage() {
   const { data: session } = useSession();
   const role = session?.user?.role;
   const canCreate = role === 'admin' || role === 'manager';
+  const isAdmin = role === 'admin';
 
   const [search, setSearch] = useState('');
   const [sexFilter, setSexFilter] = useState<SexFilter>('all');
@@ -115,6 +117,7 @@ export default function StaffPage() {
         </div>
         <div className="flex items-center gap-2">
           {canCreate && <StaffExcelButtons />}
+          {isAdmin && <StaffReplaceAllButton />}
           {canCreate && (
             <Button asChild>
               <Link href="/staff/new">
