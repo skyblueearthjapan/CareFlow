@@ -132,7 +132,7 @@ function visitDateToWeekday(visitDate: string): number {
 // 比較用の正規化レコード
 // ---------------------------------------------------------------------------
 
-interface WeekdayCell {
+export interface WeekdayCell {
   weekday: number;
   start_time: string; // "HH:MM"
   end_time: string | null;
@@ -140,7 +140,7 @@ interface WeekdayCell {
   course_template_id: string | null;
 }
 
-function pfvToCell(pfv: PatientFixedVisitV2Read): WeekdayCell {
+export function pfvToCell(pfv: PatientFixedVisitV2Read): WeekdayCell {
   return {
     weekday: pfv.weekday,
     start_time: trimSeconds(pfv.start_time),
@@ -150,7 +150,7 @@ function pfvToCell(pfv: PatientFixedVisitV2Read): WeekdayCell {
   };
 }
 
-function visitToCell(v: VisitRead): WeekdayCell {
+export function visitToCell(v: VisitRead): WeekdayCell {
   const start = trimSeconds(v.start_time);
   const end = trimSeconds(v.end_time);
   return {
@@ -166,7 +166,7 @@ function visitToCell(v: VisitRead): WeekdayCell {
  * 曜日ごとに 1 件 (最早 start_time) を採用したマップに変換.
  * BE 側 sync endpoint と同じ採用ルール.
  */
-function groupByWeekday(cells: WeekdayCell[]): Map<number, WeekdayCell> {
+export function groupByWeekday(cells: WeekdayCell[]): Map<number, WeekdayCell> {
   const out = new Map<number, WeekdayCell>();
   const sorted = [...cells].sort((a, b) => a.start_time.localeCompare(b.start_time));
   for (const c of sorted) {
@@ -175,7 +175,7 @@ function groupByWeekday(cells: WeekdayCell[]): Map<number, WeekdayCell> {
   return out;
 }
 
-interface DiffEntry {
+export interface DiffEntry {
   weekday: number;
   fixed: WeekdayCell | null;
   week: WeekdayCell | null;
@@ -183,7 +183,16 @@ interface DiffEntry {
   differs: boolean;
 }
 
-function buildDiff(
+/**
+ * 2026-W20 後期 D: 重複判定ヘルパー.
+ * - `differs=false` かつ `fixed` / `week` の両方が非 null = 同一エントリ.
+ * - 右カラム描画時はこのフラグで「今は固定枠が使われています」表示に切替える.
+ */
+export function isDuplicateEntry(entry: DiffEntry): boolean {
+  return !entry.differs && entry.fixed != null && entry.week != null;
+}
+
+export function buildDiff(
   fixedByWd: Map<number, WeekdayCell>,
   weekByWd: Map<number, WeekdayCell>,
 ): DiffEntry[] {
@@ -420,7 +429,9 @@ export function PatientScheduleDetailDialog({
               </dl>
             </section>
 
-            {/* (2) 固定枠 vs 今週 */}
+            {/* (2) 固定枠 vs 今週 — 2026-W20 後期 D: 常に横並び (左=固定枠 / 右=今週).
+                重複行 (同一の weekday+start_time+duration_min+course_template_id) は
+                1 つの merged 行に集約し「今は固定枠が使われています」と注記する. */}
             <section className="rounded border border-border-default p-3">
               <div className="mb-2 flex items-center justify-between">
                 <h3 className="text-sm font-semibold text-text-primary">
@@ -436,51 +447,60 @@ export function PatientScheduleDetailDialog({
                 <div className="py-3 text-center text-xs text-text-muted">
                   この週には固定枠も今週 visit もありません。
                 </div>
-              ) : !anyDiffers ? (
-                // 全曜日同一 → 固定枠だけ表示
-                <ul className="divide-y divide-border-default text-xs">
-                  {diff.map((d) => (
-                    <li key={`same-${d.weekday}`} className="flex items-center gap-3 px-2 py-1.5">
-                      <span className="tnum w-8 font-semibold text-text-primary">
-                        {WEEKDAY_LABELS[d.weekday]}
-                      </span>
-                      <span className="tnum text-text-primary">{summarizeCell(d.fixed)}</span>
-                    </li>
-                  ))}
-                </ul>
               ) : (
-                // 差異あり → 並列表示
                 <div className="grid grid-cols-[2rem_1fr_1fr] text-xs">
                   <div />
-                  <div className="border-b border-border-default px-2 py-1 font-semibold text-text-muted">
+                  <div
+                    className="border-b border-border-default px-2 py-1 font-semibold text-text-muted"
+                    data-testid="patient-schedule-col-header-fixed"
+                  >
                     固定枠 (PFV)
                   </div>
-                  <div className="border-b border-border-default px-2 py-1 font-semibold text-brand-primary">
+                  <div
+                    className="border-b border-border-default px-2 py-1 font-semibold text-brand-primary"
+                    data-testid="patient-schedule-col-header-week"
+                  >
                     今週 ({isoWeekLabel})
                   </div>
-                  {diff.map((d) => (
-                    <React.Fragment key={`row-${d.weekday}`}>
-                      <div className="border-b border-border-default/60 px-2 py-1 font-semibold text-text-primary tnum">
-                        {WEEKDAY_LABELS[d.weekday]}
-                      </div>
-                      <div
-                        className={`border-b border-border-default/60 px-2 py-1 tnum ${
-                          d.differs ? 'text-text-muted' : 'text-text-primary'
-                        }`}
-                        data-testid={`patient-schedule-fixed-cell-${d.weekday}`}
-                      >
-                        {summarizeCell(d.fixed)}
-                      </div>
-                      <div
-                        className={`border-b border-border-default/60 px-2 py-1 tnum ${
-                          d.differs ? 'font-semibold text-warning' : 'text-text-primary'
-                        }`}
-                        data-testid={`patient-schedule-week-cell-${d.weekday}`}
-                      >
-                        {summarizeCell(d.week)}
-                      </div>
-                    </React.Fragment>
-                  ))}
+                  {diff.map((d) => {
+                    // 重複抑制: differs=false かつ 両方非 null のとき = 同一エントリ.
+                    // 横並びに同じ値を 2 個並べる代わりに、左カラムに 1 個 + 右カラムに
+                    // 「今は固定枠が使われています」と表示し視覚ノイズを減らす.
+                    const isDuplicate = isDuplicateEntry(d);
+                    return (
+                      <React.Fragment key={`row-${d.weekday}`}>
+                        <div className="border-b border-border-default/60 px-2 py-1 font-semibold text-text-primary tnum">
+                          {WEEKDAY_LABELS[d.weekday]}
+                        </div>
+                        <div
+                          className={`border-b border-border-default/60 px-2 py-1 tnum ${
+                            d.differs ? 'text-text-muted' : 'text-text-primary'
+                          }`}
+                          data-testid={`patient-schedule-fixed-cell-${d.weekday}`}
+                        >
+                          {summarizeCell(d.fixed)}
+                        </div>
+                        {isDuplicate ? (
+                          <div
+                            className="border-b border-border-default/60 px-2 py-1 text-[11px] text-success"
+                            data-testid={`patient-schedule-week-cell-${d.weekday}`}
+                            data-duplicate="true"
+                          >
+                            今は固定枠が使われています
+                          </div>
+                        ) : (
+                          <div
+                            className={`border-b border-border-default/60 px-2 py-1 tnum ${
+                              d.differs ? 'font-semibold text-warning' : 'text-text-primary'
+                            }`}
+                            data-testid={`patient-schedule-week-cell-${d.weekday}`}
+                          >
+                            {summarizeCell(d.week)}
+                          </div>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
                 </div>
               )}
             </section>

@@ -1342,6 +1342,14 @@ export function CourseDayTablePanel({
             }
           | null
           | undefined;
+        // 2026-W20 後期: 実動時間 = visit.end_time - visit.start_time (分).
+        // visitById から元 VisitRead を引いて HH:MM → 分計算する.
+        // 失敗時は null (UI 側で表示スキップ).
+        const fullVisit = visitById.get(cv.id) ?? null;
+        const startMin = fullVisit?.start_time ? toMinutes(fullVisit.start_time) : null;
+        const endMin = fullVisit?.end_time ? toMinutes(fullVisit.end_time) : null;
+        const durationMin =
+          startMin != null && endMin != null && endMin > startMin ? endMin - startMin : null;
         return {
           key: cv.id,
           patient_id: cv.patient_id,
@@ -1357,6 +1365,7 @@ export function CourseDayTablePanel({
             null,
           same_address_group_id: buildSameAddressKey(lat, lng),
           distance_to_next_km: distance,
+          duration_min: durationMin,
         };
       });
 
@@ -1377,6 +1386,7 @@ export function CourseDayTablePanel({
     courses,
     visitsByCourse,
     patientById,
+    visitById,
   ]);
 
   // ─── Render ──────────────────────────────────────────────────────

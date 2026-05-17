@@ -118,7 +118,8 @@ describe('CourseWeekOverview (B-6)', () => {
       />,
     );
     const badge = screen.getByTestId('course-week-overview-capacity-tpl-A-0');
-    expect(badge).toHaveTextContent('2 名 / 上限 4');
+    // W32 fix (37eb867): 上限ラベルは UI 上 "上限 6" 固定表示.
+    expect(badge).toHaveTextContent('2 名 / 上限 6');
     // 患者氏名が描画される
     expect(screen.getByTestId('course-week-overview-name-v-1')).toHaveTextContent('田中');
     expect(screen.getByTestId('course-week-overview-name-v-2')).toHaveTextContent('佐藤');
@@ -177,8 +178,9 @@ describe('CourseWeekOverview (B-6)', () => {
     );
     const el = screen.getByTestId('course-week-overview-name-v-t1');
     expect(el).toHaveTextContent('山田');
-    // 2026-W20: 週ビューは患者名のみ。時刻は併記しない (同住所ペアリングのみに絞る方針).
-    expect(el).not.toHaveTextContent('09:30');
+    // 2026-W20 後期: 週ビューは「氏名 + 開始時刻」を表示する仕様に更新.
+    //   (旧仕様: 時刻は併記しなかった. ペアリング囲み + 時刻併記で情報密度を再評価.)
+    expect(el).toHaveTextContent('09:30');
   });
 
   it('start_time が null の visit は氏名のみ表示', () => {

@@ -297,8 +297,8 @@ describe('CourseWeekOverview event 2 行表示 (Wave 31)', () => {
     const el = screen.getByTestId('course-week-overview-name-v-w31');
     // visit li は div 子要素を持たない (1 行テキストのまま)
     expect(el.querySelectorAll('div').length).toBe(0);
-    // 2026-W20: 週ビューは患者名のみ表示 (時刻は省略).
+    // 2026-W20 後期: 週ビューは「氏名 + 開始時刻」表示 (時刻は省略しない仕様に更新).
     expect(el).toHaveTextContent('山田');
-    expect(el).not.toHaveTextContent('10:00');
+    expect(el).toHaveTextContent('10:00');
   });
 });

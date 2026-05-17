@@ -1,26 +1,32 @@
 'use client';
 
 /**
- * WeekdayScheduleCard — 共通コンポーネント (2026-W20):
+ * WeekdayScheduleCard — 共通コンポーネント (2026-W20, 改修):
  * 曜日 × コース の visit 一覧を Before/After 方式で描画する共通コンポーネント。
  *
  * 用途:
  *   - FullOptimizeDialog の `CourseListColumn` (Before / After 2 ペイン)
  *   - /schedule の 月-土タブの「リスト表示モード」 (Before/After 形式統一)
  *
- * 統一する情報 (4 項目, ユーザー要件):
- *   (a) 個別条件: time_type + preferred_start/end (例: "🕐 固定 (10:00)")
- *   (b) 同住所セット (ペアリング): same_address_group_id で同 id を黄色枠 + 📍
- *   (c) 次の目的地までの距離: 行右端に `{km}km` 表示 (VisitArrow)
- *   (d) 住所詳細: 18 文字省略 + title 属性に full address
+ * 統一する情報 (ユーザー要件 / 2026-W20 後期):
+ *   (1) 患者名 (クリック可能)
+ *   (2) 開始時刻 (HH:MM, 全モード共通)
+ *   (3) 実動時間 (formatDuration. weekView=true のときは省略)
+ *   (4) 住所詳細 (ペア囲み内では「同住所」ヘッダーに集約)
+ *   (5) 個別条件: time_type + sex_restriction
+ *   (6) 次の目的地までの距離 (VisitArrow)
  *
- * DRY:
- *   旧 `BeforeAfterWeekPanel.CourseListColumn` の inline 描画を本コンポーネントに
- *   集約。/schedule のリスト表示モードも同じ視覚言語で出力する。
+ * 2026-W20 後期改修ポイント:
+ *   - 同 `same_address_group_id` の連続 visit を **1 つの大きな囲み** に統合する
+ *     (旧: 1 人ずつ枠線で個別に囲まれ「2 ペア 4 人」が 4 個の枠に見えていた問題)
+ *   - 3 名以上の同 group_id は最初の 2 名のみペア表示 + 残りは単独表示
+ *     (BE H2 enforce 漏れケースの視覚化)
+ *   - 週ビュー (weekView=true) は最小情報のみ (氏名 + 時刻 + ペアリング囲み)
  */
 import * as React from 'react';
 
 import { cn } from '@/lib/utils';
+import { formatDuration } from '@/lib/format/duration';
 import { VisitArrow } from './v2/VisitArrow';
 import { trimSeconds } from './v2/_autoScheduleUtils';
 
@@ -57,6 +63,11 @@ export interface VisitListItem {
   same_address_group_id?: string | null;
   /** 次の visit までの直線距離 (km). null = 最後尾. */
   distance_to_next_km?: number | null;
+  /**
+   * 実動時間 (分). end_time - start_time, または PFV.duration_min.
+   * 指定があれば formatDuration で日本語化して表示する.
+   */
+  duration_min?: number | null;
 }
 
 /** 1 コース分のサマリ. */
@@ -90,6 +101,14 @@ export interface WeekdayScheduleCardProps {
    * 指定なし or visit に `patient_id` が無い場合は通常の text 表示.
    */
   onPatientClick?: (patientId: string) => void;
+  /**
+   * 2026-W20 後期: 週ビュー用 (= 情報を最小限に絞る) フラグ.
+   * true:
+   *   - 実動時間 / 個別条件 / 距離 / 住所詳細 を非表示
+   *   - 氏名 + 開始時刻 + ペアリング囲みのみ
+   * false (default): フル表示 (Before/After と同等).
+   */
+  weekView?: boolean;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -114,6 +133,61 @@ function formatTimeCondition(v: VisitListItem): string | null {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// Cluster helper — 2026-W20 後期: ペア囲みを 1 つに統合
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * `clusterVisits` 出力の各要素.
+ *
+ * - `pair`: 連続する同 `same_address_group_id` の 2 件 (= 同住所ペア).
+ * - `single`: それ以外の単独 visit (group_id なし / 1 件しかない group_id /
+ *   3 名以上のうち 3 番目以降).
+ *
+ * 並び順は入力 visits の順序を維持する (連続性が前提なので呼び出し側で
+ * start_time 等にソート済み).
+ */
+export type ClusterItem =
+  | { kind: 'pair'; visits: VisitListItem[]; groupId: string }
+  | { kind: 'single'; visit: VisitListItem };
+
+/**
+ * 連続する同 `same_address_group_id` を「2 名ペア」として 1 つの cluster に
+ * 集約する. 3 名以上の同 group_id は最初の 2 名のみペア化し、残りは single
+ * として後続に並べる (BE H2 enforce 漏れケースの視覚化).
+ *
+ * 注意:
+ *   - 「連続」のみペア化. 同 group_id でも他 visit を挟んで離れている場合は
+ *     single 扱い (入力の sort が壊れていれば視覚的にも別物として描画される).
+ *   - group_id=null/undefined / 空文字 は常に single.
+ *
+ * @example
+ *   in: [A(g1), B(g1), C(g2), D(g2), E(null)]
+ *   out: [pair(A,B,g1), pair(C,D,g2), single(E)]
+ *
+ * @example
+ *   in: [A(g1), B(g1), C(g1)]  // 3 名同住所 = H2 enforce 漏れ
+ *   out: [pair(A,B,g1), single(C)]
+ */
+export function clusterVisits(visits: VisitListItem[]): ClusterItem[] {
+  const out: ClusterItem[] = [];
+  let i = 0;
+  while (i < visits.length) {
+    const v = visits[i]!;
+    const gid = v.same_address_group_id ?? null;
+    if (gid && i + 1 < visits.length && visits[i + 1]!.same_address_group_id === gid) {
+      // 同 group_id の連続 2 件 → pair として cluster 化.
+      out.push({ kind: 'pair', visits: [v, visits[i + 1]!], groupId: gid });
+      i += 2;
+    } else {
+      // 単独 visit (group_id なし or 連続しない or 3 名以上の残り).
+      out.push({ kind: 'single', visit: v });
+      i += 1;
+    }
+  }
+  return out;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // Component
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -125,6 +199,7 @@ export function WeekdayScheduleCard({
   maxVisitsPerCourse,
   testIdPrefix,
   onPatientClick,
+  weekView = false,
 }: WeekdayScheduleCardProps) {
   const headerCls =
     tone === 'primary'
@@ -152,6 +227,7 @@ export function WeekdayScheduleCard({
               maxVisits={maxVisitsPerCourse}
               testIdPrefix={testIdPrefix}
               onPatientClick={onPatientClick}
+              weekView={weekView}
             />
           ))}
         </ul>
@@ -165,30 +241,55 @@ interface CourseRowProps {
   maxVisits?: number;
   testIdPrefix?: string;
   onPatientClick?: (patientId: string) => void;
+  weekView: boolean;
 }
 
-function CourseRow({ course, maxVisits, testIdPrefix, onPatientClick }: CourseRowProps) {
+function CourseRow({ course, maxVisits, testIdPrefix, onPatientClick, weekView }: CourseRowProps) {
+  // 「最大 N 件」制限は visit 単位で先に slice して、その後に cluster 化する.
+  // (pair の片割れだけが切れる事態を避けるため、ペア跨ぎは clusterVisits 後に
+  //  pair 数を維持したまま描画される — overflow 件数のみ patient 単位で計算).
   const sliced = maxVisits && maxVisits > 0 ? course.visits.slice(0, maxVisits) : course.visits;
   const overflowCount = course.visits.length - sliced.length;
+  const clusters = React.useMemo(() => clusterVisits(sliced), [sliced]);
+
   return (
     <li className="px-2 py-1.5">
       <div className="flex items-center justify-between text-[11px]">
         <span className="font-semibold text-text-primary">{course.title}</span>
         {course.summary ? <span className="tnum text-text-muted">{course.summary}</span> : null}
       </div>
-      {sliced.length > 0 ? (
+      {clusters.length > 0 ? (
         <ul className="mt-1 space-y-0.5">
-          {sliced.map((v, i, arr) => (
-            <VisitRow
-              key={v.key}
-              visit={v}
-              prev={arr[i - 1] ?? null}
-              next={arr[i + 1] ?? null}
-              fullVisits={course.visits}
-              testIdPrefix={testIdPrefix}
-              onPatientClick={onPatientClick}
-            />
-          ))}
+          {clusters.map((cluster, ci) => {
+            if (cluster.kind === 'single') {
+              const v = cluster.visit;
+              return (
+                <VisitRow
+                  key={v.key}
+                  visit={v}
+                  testIdPrefix={testIdPrefix}
+                  onPatientClick={onPatientClick}
+                  weekView={weekView}
+                />
+              );
+            }
+            // pair cluster — 2 名を 1 つの囲みで wrap する.
+            // pair の最後尾 visit から次のペア外 visit (= sliced 配列の次要素)
+            // への distance を表示するため、sliced 中の位置を解決する.
+            const lastVisitInPair = cluster.visits[cluster.visits.length - 1]!;
+            const pairLastIdx = sliced.indexOf(lastVisitInPair);
+            const nextAfterPair = pairLastIdx >= 0 ? (sliced[pairLastIdx + 1] ?? null) : null;
+            return (
+              <PairCluster
+                key={`pair-${cluster.groupId}-${ci}`}
+                cluster={cluster}
+                nextAfterPair={nextAfterPair}
+                testIdPrefix={testIdPrefix}
+                onPatientClick={onPatientClick}
+                weekView={weekView}
+              />
+            );
+          })}
           {overflowCount > 0 ? (
             <li className="text-[10px] text-text-muted">…他 {overflowCount} 件</li>
           ) : null}
@@ -198,51 +299,154 @@ function CourseRow({ course, maxVisits, testIdPrefix, onPatientClick }: CourseRo
   );
 }
 
-interface VisitRowProps {
-  visit: VisitListItem;
-  prev: VisitListItem | null;
-  next: VisitListItem | null;
-  /** 同住所グループサイズ計算用に slice 前の全 visit を渡す. */
-  fullVisits: VisitListItem[];
+// ─────────────────────────────────────────────────────────────────────────
+// PairCluster — 同住所ペアを 1 つの囲みで描画
+// ─────────────────────────────────────────────────────────────────────────
+
+interface PairClusterProps {
+  cluster: { kind: 'pair'; visits: VisitListItem[]; groupId: string };
+  /** ペアの最後尾 visit の「次の patient」 (= 距離計算用. ペア外の visit). */
+  nextAfterPair: VisitListItem | null;
   testIdPrefix?: string;
   onPatientClick?: (patientId: string) => void;
+  weekView: boolean;
 }
 
-function VisitRow({ visit, prev, next, fullVisits, testIdPrefix, onPatientClick }: VisitRowProps) {
-  const inGroup = !!visit.same_address_group_id;
-  const sameAsPrev = inGroup && prev?.same_address_group_id === visit.same_address_group_id;
-  const sameAsNext = inGroup && next?.same_address_group_id === visit.same_address_group_id;
-  const isGroupStart = inGroup && !sameAsPrev;
-  const isGroupEnd = inGroup && !sameAsNext;
-
-  // グループ先頭で患者数を計算 (slice 前の全 visit を参照).
-  let groupSize = 0;
-  if (isGroupStart) {
-    for (const fv of fullVisits) {
-      if (fv.same_address_group_id === visit.same_address_group_id) {
-        groupSize += 1;
-      }
-    }
-  }
-
-  const timeCondition = formatTimeCondition(visit);
-
+function PairCluster({
+  cluster,
+  nextAfterPair,
+  testIdPrefix,
+  onPatientClick,
+  weekView,
+}: PairClusterProps) {
+  const { visits, groupId } = cluster;
   return (
     <li
-      className={cn(
-        'flex flex-wrap items-center gap-1 text-[10px]',
-        inGroup && 'border-l-2 border-yellow-400 bg-yellow-50/60 pl-2',
-        isGroupStart && 'pt-1 mt-1',
-        isGroupEnd && 'pb-1 mb-1',
-      )}
+      className={cn('rounded-md border-2 border-yellow-400 bg-yellow-50/60', 'my-1 px-2 py-2')}
+      data-testid={testIdPrefix ? `${testIdPrefix}-pair-cluster-${groupId}` : undefined}
+      data-same-address-group-id={groupId}
+      data-pair-size={visits.length}
+    >
+      <div className="mb-1 text-[10px] font-semibold text-yellow-700">
+        📍 同住所 ({visits.length} 名)
+      </div>
+      <ul className="divide-y divide-yellow-200/70">
+        {visits.map((v, i) => {
+          // ペア内 i=0..N-2 → 「次のペアメンバー」は同住所 (= 0km) なので距離は出さない.
+          //   isLastInPair=false → suppressDistance=true.
+          // ペア内 i=N-1 (最後) → 次のペア外要素 (nextAfterPair) があれば距離を出す.
+          //   isLastInPair=true & nextAfterPair!=null → distance を表示.
+          const isLastInPair = i === visits.length - 1;
+          const suppressDistance = !isLastInPair || nextAfterPair == null;
+          return (
+            <PairMemberRow
+              key={v.key}
+              visit={v}
+              suppressDistance={suppressDistance}
+              testIdPrefix={testIdPrefix}
+              onPatientClick={onPatientClick}
+              weekView={weekView}
+            />
+          );
+        })}
+      </ul>
+    </li>
+  );
+}
+
+interface PairMemberRowProps {
+  visit: VisitListItem;
+  /** ペア内距離 (= 同住所 0km) を省略する場合 true. */
+  suppressDistance: boolean;
+  testIdPrefix?: string;
+  onPatientClick?: (patientId: string) => void;
+  weekView: boolean;
+}
+
+/**
+ * ペア囲みの中身 (1 patient 1 行). 構造は VisitRow とほぼ同じだが、囲み枠を
+ * 親 PairCluster に委譲しているので個別の border は付けない.
+ */
+function PairMemberRow({
+  visit,
+  suppressDistance,
+  testIdPrefix,
+  onPatientClick,
+  weekView,
+}: PairMemberRowProps) {
+  return (
+    <li
+      className="flex flex-wrap items-center gap-1 py-0.5 text-[10px]"
+      data-testid={testIdPrefix ? `${testIdPrefix}-visit-${visit.key}` : undefined}
+      data-same-address-group-id={visit.same_address_group_id ?? undefined}
+      data-pair-member="true"
+    >
+      <VisitRowContent
+        visit={visit}
+        onPatientClick={onPatientClick}
+        weekView={weekView}
+        // ペア内の住所詳細はヘッダー「📍 同住所」に集約するため省略.
+        suppressAddress
+        // ペア内距離 (= 同住所なので 0km) は親側 (PairCluster) が決定する.
+        suppressDistance={suppressDistance}
+      />
+    </li>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// VisitRow — 単独 visit (= ペア外) の 1 行描画
+// ─────────────────────────────────────────────────────────────────────────
+
+interface VisitRowProps {
+  visit: VisitListItem;
+  testIdPrefix?: string;
+  onPatientClick?: (patientId: string) => void;
+  weekView: boolean;
+}
+
+function VisitRow({ visit, testIdPrefix, onPatientClick, weekView }: VisitRowProps) {
+  return (
+    <li
+      className="flex flex-wrap items-center gap-1 text-[10px]"
       data-testid={testIdPrefix ? `${testIdPrefix}-visit-${visit.key}` : undefined}
       data-same-address-group-id={visit.same_address_group_id ?? undefined}
     >
-      {isGroupStart && groupSize >= 2 ? (
-        <span className="w-full text-[9px] font-semibold text-yellow-700">
-          📍 同住所グループ ({groupSize} 名)
-        </span>
-      ) : null}
+      <VisitRowContent visit={visit} onPatientClick={onPatientClick} weekView={weekView} />
+    </li>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// VisitRowContent — visit 1 件の内容描画 (single / pair 共通)
+// ─────────────────────────────────────────────────────────────────────────
+
+interface VisitRowContentProps {
+  visit: VisitListItem;
+  onPatientClick?: (patientId: string) => void;
+  weekView: boolean;
+  /** ペアヘッダーに住所集約済みなら true → 個別行の住所詳細を省略. */
+  suppressAddress?: boolean;
+  /** ペア内距離 (0km) を省略する場合 true. */
+  suppressDistance?: boolean;
+}
+
+function VisitRowContent({
+  visit,
+  onPatientClick,
+  weekView,
+  suppressAddress,
+  suppressDistance,
+}: VisitRowContentProps) {
+  const timeCondition = weekView ? null : formatTimeCondition(visit);
+  const showAddress = !weekView && !suppressAddress;
+  const showDuration =
+    !weekView && typeof visit.duration_min === 'number' && visit.duration_min > 0;
+  const showSexRestriction = !weekView;
+  const showDistance = !weekView && !suppressDistance;
+
+  return (
+    <>
       <span className="tnum text-text-muted">{trimSeconds(visit.start_time)}</span>
       {onPatientClick && visit.patient_id ? (
         <button
@@ -259,12 +463,21 @@ function VisitRow({ visit, prev, next, fullVisits, testIdPrefix, onPatientClick 
       ) : (
         <span className="text-text-primary">{visit.patient_name}</span>
       )}
-      {visit.area_label ? (
+      {showDuration ? (
+        <span
+          className="text-[9px] text-text-secondary tnum"
+          data-testid="visit-duration"
+          aria-label={`実動時間 ${formatDuration(visit.duration_min!)}`}
+        >
+          ⏱ {formatDuration(visit.duration_min!)}
+        </span>
+      ) : null}
+      {visit.area_label && !weekView ? (
         <span className="rounded bg-brand-primary/10 px-1 text-[9px] text-brand-primary">
           {visit.area_label}
         </span>
       ) : null}
-      {visit.address ? (
+      {showAddress && visit.address ? (
         <span
           className="text-[9px] text-text-muted"
           title={visit.address}
@@ -276,15 +489,15 @@ function VisitRow({ visit, prev, next, fullVisits, testIdPrefix, onPatientClick 
       {timeCondition ? (
         <span className="text-[9px] text-text-secondary">{timeCondition}</span>
       ) : null}
-      {visit.sex_restriction === 'female_only' ? (
+      {showSexRestriction && visit.sex_restriction === 'female_only' ? (
         <span className="text-[9px] text-pink-600">👩 女性のみ</span>
       ) : null}
-      {visit.sex_restriction === 'male_only' ? (
+      {showSexRestriction && visit.sex_restriction === 'male_only' ? (
         <span className="text-[9px] text-blue-600">👨 男性のみ</span>
       ) : null}
       {/* 次の patient までの距離 (= VisitArrow). null なら描画しない. */}
-      <VisitArrow distanceKm={visit.distance_to_next_km ?? null} />
-    </li>
+      {showDistance ? <VisitArrow distanceKm={visit.distance_to_next_km ?? null} /> : null}
+    </>
   );
 }
 

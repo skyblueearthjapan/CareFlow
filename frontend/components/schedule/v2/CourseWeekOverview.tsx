@@ -201,7 +201,8 @@ export function CourseWeekOverview({
                   }
 
                   // visit + event を時刻順でマージ
-                  // 2026-W20: visit ラベルは患者名のみ (時刻は省略).
+                  // 2026-W20 後期: visit にはペア cluster 情報 (groupKey) を持たせ、
+                  //   連続する同 groupKey を 1 つの「📍 同住所」囲みで包む.
                   type OverviewItem =
                     | {
                         kind: 'visit';
@@ -209,7 +210,11 @@ export function CourseWeekOverview({
                         patient_id: string;
                         time: string | null;
                         label: string;
-                        sameAddressGroup: boolean;
+                        /**
+                         * 同住所グループキー (lat/lng bucket). cell 内に同 key が 2 件以上
+                         * 存在する visit にだけ非 null. pair 囲み判定で連続性チェックに使う.
+                         */
+                        groupKey: string | null;
                       }
                     | {
                         kind: 'event';
@@ -228,7 +233,7 @@ export function CourseWeekOverview({
                         patient_id: v.patient_id,
                         time: v.start_time,
                         label: v.patient_name ?? v.patient_id,
-                        sameAddressGroup: inGroup,
+                        groupKey: inGroup ? k : null,
                       };
                     }),
                     ...staffDayEvents.map((e) => {
@@ -243,12 +248,58 @@ export function CourseWeekOverview({
                     }),
                   ].sort((a, b) => (a.time ?? '').localeCompare(b.time ?? ''));
 
+                  // 2026-W20 後期: 連続する同 groupKey の visit を pair cluster に集約.
+                  //   - event 要素は cluster を跨がない (= 分割点になる).
+                  //   - 同 groupKey でも 1 件しかない / 不連続 → single.
+                  //   - 3 名以上の同 groupKey → 先頭 2 名のみペア、残りは single (BE H2 漏れ視覚化).
+                  type OverviewCluster =
+                    | {
+                        kind: 'pair';
+                        groupKey: string;
+                        visits: Extract<OverviewItem, { kind: 'visit' }>[];
+                      }
+                    | { kind: 'single'; item: OverviewItem };
+                  const clusters: OverviewCluster[] = [];
+                  {
+                    let j = 0;
+                    while (j < items.length) {
+                      const cur = items[j]!;
+                      if (
+                        cur.kind === 'visit' &&
+                        cur.groupKey &&
+                        j + 1 < items.length &&
+                        items[j + 1]!.kind === 'visit' &&
+                        (items[j + 1] as Extract<OverviewItem, { kind: 'visit' }>).groupKey ===
+                          cur.groupKey
+                      ) {
+                        clusters.push({
+                          kind: 'pair',
+                          groupKey: cur.groupKey,
+                          visits: [cur, items[j + 1] as Extract<OverviewItem, { kind: 'visit' }>],
+                        });
+                        j += 2;
+                      } else {
+                        clusters.push({ kind: 'single', item: cur });
+                        j += 1;
+                      }
+                    }
+                  }
+
                   // 2026-W20: 縦幅切替.
-                  //  - compact: 既存どおり 7 件で切る (「+N 名」).
+                  //  - compact: 既存どおり 7 件 (item 数 = patient + event) で切る.
                   //  - full   : slice せず全件 (overflow-y-auto / max-h でスクロール可).
+                  // 切断は cluster 単位ではなく item 単位 (累積 item 数で truncate).
                   const COMPACT_LIMIT = 7;
-                  const visibleItems =
-                    displayMode === 'full' ? items : items.slice(0, COMPACT_LIMIT);
+                  const visibleClusters: OverviewCluster[] = [];
+                  let itemsShown = 0;
+                  for (const c of clusters) {
+                    const size = c.kind === 'pair' ? c.visits.length : 1;
+                    if (displayMode !== 'full' && itemsShown + size > COMPACT_LIMIT) {
+                      break;
+                    }
+                    visibleClusters.push(c);
+                    itemsShown += size;
+                  }
                   const overflowVisits =
                     displayMode === 'full' ? 0 : Math.max(0, visitList.length - COMPACT_LIMIT);
 
@@ -298,55 +349,101 @@ export function CourseWeekOverview({
                                 displayMode === 'full' && 'max-h-[480px] overflow-y-auto',
                               )}
                             >
-                              {visibleItems.map((item) =>
-                                item.kind === 'visit' ? (
+                              {visibleClusters.map((cluster, ci) => {
+                                if (cluster.kind === 'single') {
+                                  const item = cluster.item;
+                                  return item.kind === 'visit' ? (
+                                    <li
+                                      key={item.id}
+                                      className="truncate text-[10px] text-text-primary"
+                                      title={item.label}
+                                      data-testid={`course-week-overview-name-${item.id}`}
+                                    >
+                                      {/*
+                                        2026-W20 後期 C: 週ビューは情報を最小限に絞る.
+                                        表示: 患者名 (click 可) + 開始時刻のみ.
+                                        非表示: 実動時間 / time_type / sex_restriction / 距離 / 住所詳細.
+                                      */}
+                                      {item.time ? (
+                                        <span className="mr-1 tnum text-text-muted">
+                                          {item.time.slice(0, 5)}
+                                        </span>
+                                      ) : null}
+                                      {onPatientClick ? (
+                                        <button
+                                          type="button"
+                                          className="underline-offset-2 hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            onPatientClick(item.patient_id);
+                                          }}
+                                          aria-label={`${item.label} の詳細を開く`}
+                                        >
+                                          {item.label}
+                                        </button>
+                                      ) : (
+                                        item.label
+                                      )}
+                                    </li>
+                                  ) : (
+                                    <li
+                                      key={item.id}
+                                      className="text-[10px] leading-tight text-yellow-700"
+                                      title={`${item.titleLine} ${item.timeLine}`}
+                                      data-testid={`course-week-overview-event-${item.id}`}
+                                    >
+                                      <div className="truncate">{item.titleLine}</div>
+                                      <div className="text-text-muted">{item.timeLine}</div>
+                                    </li>
+                                  );
+                                }
+                                // pair cluster — 2 名を 1 つの黄色囲みで wrap.
+                                return (
                                   <li
-                                    key={item.id}
-                                    className={cn(
-                                      'truncate text-[10px] text-text-primary',
-                                      // 2026-W20: 同住所ペアを黄色背景 + 📍 で強調.
-                                      item.sameAddressGroup &&
-                                        'rounded bg-yellow-50/80 px-1 ring-1 ring-yellow-300',
-                                    )}
-                                    title={item.label}
-                                    data-testid={`course-week-overview-name-${item.id}`}
-                                    data-same-address-group={
-                                      item.sameAddressGroup ? 'true' : undefined
-                                    }
+                                    key={`pair-${cluster.groupKey}-${ci}`}
+                                    className="rounded-md border-2 border-yellow-400 bg-yellow-50/60 px-1 py-1"
+                                    data-testid={`course-week-overview-pair-${cluster.groupKey}`}
+                                    data-same-address-group-key={cluster.groupKey}
+                                    data-pair-size={cluster.visits.length}
                                   >
-                                    {item.sameAddressGroup ? (
-                                      <span aria-hidden className="mr-0.5 text-yellow-700">
-                                        📍
-                                      </span>
-                                    ) : null}
-                                    {onPatientClick ? (
-                                      <button
-                                        type="button"
-                                        className="underline-offset-2 hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          onPatientClick(item.patient_id);
-                                        }}
-                                        aria-label={`${item.label} の詳細を開く`}
-                                      >
-                                        {item.label}
-                                      </button>
-                                    ) : (
-                                      item.label
-                                    )}
+                                    <div className="mb-0.5 text-[9px] font-semibold text-yellow-700">
+                                      📍 同住所 ({cluster.visits.length} 名)
+                                    </div>
+                                    <ul className="divide-y divide-yellow-200/70">
+                                      {cluster.visits.map((v) => (
+                                        <li
+                                          key={v.id}
+                                          className="truncate py-0.5 text-[10px] text-text-primary"
+                                          title={v.label}
+                                          data-testid={`course-week-overview-name-${v.id}`}
+                                          data-same-address-group="true"
+                                        >
+                                          {v.time ? (
+                                            <span className="mr-1 tnum text-text-muted">
+                                              {v.time.slice(0, 5)}
+                                            </span>
+                                          ) : null}
+                                          {onPatientClick ? (
+                                            <button
+                                              type="button"
+                                              className="underline-offset-2 hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary"
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                onPatientClick(v.patient_id);
+                                              }}
+                                              aria-label={`${v.label} の詳細を開く`}
+                                            >
+                                              {v.label}
+                                            </button>
+                                          ) : (
+                                            v.label
+                                          )}
+                                        </li>
+                                      ))}
+                                    </ul>
                                   </li>
-                                ) : (
-                                  <li
-                                    key={item.id}
-                                    className="text-[10px] leading-tight text-yellow-700"
-                                    title={`${item.titleLine} ${item.timeLine}`}
-                                    data-testid={`course-week-overview-event-${item.id}`}
-                                  >
-                                    <div className="truncate">{item.titleLine}</div>
-                                    <div className="text-text-muted">{item.timeLine}</div>
-                                  </li>
-                                ),
-                              )}
+                                );
+                              })}
                               {overflowVisits > 0 ? (
                                 <li className="text-[10px] text-text-muted">
                                   …他 {overflowVisits} 名
