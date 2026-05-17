@@ -46,13 +46,11 @@ import type {
   V2WeekdayBeforeAfter,
 } from '@/lib/schemas/v2/autoScheduleV2';
 
-import { cn } from '@/lib/utils';
-
 import { useStaffList } from '@/lib/queries/staff';
 
+import { WeekdayScheduleCard, type CourseListItem } from '../WeekdayScheduleCard';
 import { FixedTimeEditModal } from './FixedTimeEditModal';
 import { ProposalWeekCalendar } from './ProposalWeekCalendar';
-import { VisitArrow } from './VisitArrow';
 import { formatDelta, formatErr, trimSeconds } from './_autoScheduleUtils';
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -66,29 +64,7 @@ function fmtWd(weekday: number): string {
   return WEEKDAY_LABELS[weekday] ?? `?${weekday}`;
 }
 
-/**
- * W41 v2 (UI 時間詳細表示): time_type バッジを preferred_start/end と合わせて整形.
- *
- * - 時間帯 (preferred_start/end あり): "🕐 時間帯 (09:00-10:30)"
- * - 固定 (preferred_start あり): "🕐 固定 (10:00)"
- * - 午前: "🕐 午前 (~12:00)"
- * - 午後: "🕐 午後 (13:00~)"
- * - 終日: "🕐 終日"
- * - その他 (string): "🕐 {time_type}"
- * - null / undefined: null (バッジ非表示)
- */
-function formatTimeCondition(v: V2VisitForUI): string | null {
-  if (v.time_type === '時間帯' && v.preferred_start && v.preferred_end) {
-    return `🕐 時間帯 (${trimSeconds(v.preferred_start)}-${trimSeconds(v.preferred_end)})`;
-  }
-  if (v.time_type === '固定' && v.preferred_start) {
-    return `🕐 固定 (${trimSeconds(v.preferred_start)})`;
-  }
-  if (v.time_type === '午前') return '🕐 午前 (~12:00)';
-  if (v.time_type === '午後') return '🕐 午後 (13:00~)';
-  if (v.time_type === '終日') return '🕐 終日';
-  return v.time_type ? `🕐 ${v.time_type}` : null;
-}
+// formatTimeCondition は 2026-W20 で WeekdayScheduleCard に統合 (DRY 化).
 
 // ─────────────────────────────────────────────────────────────────────────
 // State machine
@@ -912,6 +888,37 @@ function BeforeAfterWeekPanel({
   );
 }
 
+/**
+ * V2CourseSummary[] → 共通 CourseListItem[] への adapter.
+ * 表示順 (office_name, code) のソートはここで一度行う.
+ */
+function toCourseListItems(courses: V2CourseSummary[]): CourseListItem[] {
+  const sorted = [...courses].sort((a, b) => {
+    const ofA = a.office_name ?? a.office_id;
+    const ofB = b.office_name ?? b.office_id;
+    if (ofA !== ofB) return ofA.localeCompare(ofB);
+    return (a.code ?? 'Z').localeCompare(b.code ?? 'Z');
+  });
+  return sorted.map((c) => ({
+    key: `${c.office_id}-${c.code}-${c.assigned_staff_id ?? 'none'}`,
+    title: `${c.office_name ?? '不明'} ${c.code} コース`,
+    summary: `${c.visits_count}件 / ${c.distance_km.toFixed(1)}km`,
+    visits: c.visits.map((v: V2VisitForUI, i) => ({
+      key: `${c.office_id}-${c.code}-${i}-${v.patient_id}`,
+      start_time: v.start_time,
+      patient_name: v.patient_name,
+      address: v.address,
+      area_label: v.area_label,
+      time_type: v.time_type,
+      preferred_start: v.preferred_start,
+      preferred_end: v.preferred_end,
+      sex_restriction: v.sex_restriction,
+      same_address_group_id: v.same_address_group_id,
+      distance_to_next_km: v.distance_to_next_km,
+    })),
+  }));
+}
+
 function CourseListColumn({
   title,
   courses,
@@ -923,130 +930,15 @@ function CourseListColumn({
   total: { distance: number; visits: number };
   tone: 'muted' | 'primary';
 }) {
-  const headerCls =
-    tone === 'primary'
-      ? 'border-brand-primary/40 bg-brand-primary/5 text-brand-primary'
-      : 'border-border-default bg-bg-muted text-text-muted';
-  // W41 v2 (Mode 2 Before/After 表示拡張): Backend がソート済みでも
-  // (拠点名, コード) で安全に再ソート (順序の安定性確保).
-  const sortedCourses = React.useMemo(
-    () =>
-      [...courses].sort((a, b) => {
-        const ofA = a.office_name ?? a.office_id;
-        const ofB = b.office_name ?? b.office_id;
-        if (ofA !== ofB) return ofA.localeCompare(ofB);
-        return (a.code ?? 'Z').localeCompare(b.code ?? 'Z');
-      }),
-    [courses],
-  );
+  const items = React.useMemo(() => toCourseListItems(courses), [courses]);
   return (
-    <div className="overflow-hidden rounded border border-border-default">
-      <div
-        className={`flex items-center justify-between border-b px-2 py-1 text-[11px] font-semibold ${headerCls}`}
-      >
-        <span>{title}</span>
-        <span className="tnum text-text-secondary">
-          {total.visits}件 / {total.distance.toFixed(1)}km
-        </span>
-      </div>
-      {sortedCourses.length === 0 ? (
-        <div className="py-4 text-center text-[11px] text-text-muted">(コースなし)</div>
-      ) : (
-        <ul className="divide-y divide-border-default">
-          {sortedCourses.map((c) => (
-            <li
-              key={`${c.office_id}-${c.code}-${c.assigned_staff_id ?? 'none'}`}
-              className="px-2 py-1.5"
-            >
-              <div className="flex items-center justify-between text-[11px]">
-                <span className="font-semibold text-text-primary">
-                  {c.office_name ?? '不明'} {c.code} コース
-                </span>
-                <span className="tnum text-text-muted">
-                  {c.visits_count}件 / {c.distance_km.toFixed(1)}km
-                </span>
-              </div>
-              {c.visits.length > 0 ? (
-                <ul className="mt-1 space-y-0.5">
-                  {c.visits.slice(0, 8).map((v: V2VisitForUI, i, arr) => {
-                    // W41 v2 (H2 視覚化): 同住所グループの連続表示
-                    const prev = arr[i - 1];
-                    const next = arr[i + 1];
-                    const inGroup = !!v.same_address_group_id;
-                    const sameAsPrev =
-                      inGroup && prev?.same_address_group_id === v.same_address_group_id;
-                    const sameAsNext =
-                      inGroup && next?.same_address_group_id === v.same_address_group_id;
-                    const isGroupStart = inGroup && !sameAsPrev;
-                    const isGroupEnd = inGroup && !sameAsNext;
-                    // グループ先頭で患者数を計算 (slice 前の c.visits 全体を参照)
-                    let groupSize = 0;
-                    if (isGroupStart) {
-                      for (const fullV of c.visits) {
-                        if (fullV.same_address_group_id === v.same_address_group_id) {
-                          groupSize += 1;
-                        }
-                      }
-                    }
-                    return (
-                      <li
-                        key={i}
-                        className={cn(
-                          'flex flex-wrap items-center gap-1 text-[10px]',
-                          inGroup && 'border-l-2 border-yellow-400 bg-yellow-50/60 pl-2',
-                          isGroupStart && 'pt-1 mt-1',
-                          isGroupEnd && 'pb-1 mb-1',
-                        )}
-                      >
-                        {isGroupStart && groupSize >= 2 ? (
-                          <span className="w-full text-[9px] font-semibold text-yellow-700">
-                            📍 同住所グループ ({groupSize} 名)
-                          </span>
-                        ) : null}
-                        <span className="tnum text-text-muted">{trimSeconds(v.start_time)}</span>
-                        <span className="text-text-primary">{v.patient_name}</span>
-                        {v.area_label ? (
-                          <span className="rounded bg-brand-primary/10 px-1 text-[9px] text-brand-primary">
-                            {v.area_label}
-                          </span>
-                        ) : null}
-                        {v.address ? (
-                          <span
-                            className="text-[9px] text-text-muted"
-                            title={v.address}
-                            aria-label={`住所 ${v.address}`}
-                          >
-                            {v.address.length > 18 ? `${v.address.slice(0, 18)}…` : v.address}
-                          </span>
-                        ) : null}
-                        {(() => {
-                          const label = formatTimeCondition(v);
-                          return label ? (
-                            <span className="text-[9px] text-text-secondary">{label}</span>
-                          ) : null;
-                        })()}
-                        {v.sex_restriction === 'female_only' ? (
-                          <span className="text-[9px] text-pink-600">👩 女性のみ</span>
-                        ) : null}
-                        {v.sex_restriction === 'male_only' ? (
-                          <span className="text-[9px] text-blue-600">👨 男性のみ</span>
-                        ) : null}
-                        {/* W41 v2 (訪問間距離 行内右端版): 次の patient までの距離.
-                            行と行の間に挟まず、各行の右端にコンパクトに表示. */}
-                        <VisitArrow distanceKm={v.distance_to_next_km} />
-                      </li>
-                    );
-                  })}
-                  {c.visits.length > 8 ? (
-                    <li className="text-[10px] text-text-muted">…他 {c.visits.length - 8} 件</li>
-                  ) : null}
-                </ul>
-              ) : null}
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
+    <WeekdayScheduleCard
+      title={title}
+      totalSummary={`${total.visits}件 / ${total.distance.toFixed(1)}km`}
+      tone={tone}
+      courses={items}
+      maxVisitsPerCourse={8}
+    />
   );
 }
 

@@ -40,6 +40,11 @@ export const v2WarningTypeSchema = z.enum([
   'course_long_distance',
   'course_count',
   'acceptance_blocked',
+  // W41 v2 拡張 (警告 type の分離): UI 分類のため細分化.
+  // - travel_time_shortage : 移動時間で希望時刻に間に合わない or 昼休憩バンプ.
+  // - two_staff_shortage   : 二人組訪問必須だがスタッフ < 2 名.
+  'travel_time_shortage',
+  'two_staff_shortage',
   'general',
 ]);
 export type V2WarningType = z.infer<typeof v2WarningTypeSchema>;

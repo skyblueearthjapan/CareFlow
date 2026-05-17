@@ -1667,3 +1667,568 @@ def test_v2visit_has_preferred_window_fields() -> None:
     assert v.preferred_start == "09:00"
     assert v.preferred_end == "10:30"
     assert v.time_type == "時間帯"
+
+
+# ---------------------------------------------------------------------------
+# W41 v2 拡張 — 移動時間の time 化 + 二人組訪問 + コース容量 duration 化
+# ---------------------------------------------------------------------------
+
+
+def test_haversine_minutes_zero_distance_returns_zero() -> None:
+    """W41 v2: 0km / 負値 (= 同住所) は移動 0 分."""
+    from app.services.scheduling.auto_allocator_v2 import haversine_minutes
+
+    assert haversine_minutes(0.0) == 0
+    assert haversine_minutes(-1.0) == 0
+
+
+def test_haversine_minutes_5km_at_20kmh() -> None:
+    """W41 v2: 5km は 20km/h で 15 分."""
+    from app.services.scheduling.auto_allocator_v2 import haversine_minutes
+
+    assert haversine_minutes(5.0) == 15
+
+
+def test_haversine_minutes_minimum_one_minute() -> None:
+    """W41 v2: 0 < distance < 1 分相当 でも切上げ 1 分."""
+    from app.services.scheduling.auto_allocator_v2 import haversine_minutes
+
+    # 0.1 km / 20 km/h * 60 = 0.3 分 → 切上げ 1 分
+    assert haversine_minutes(0.1) == 1
+
+
+def test_haversine_minutes_same_address_via_haversine_km() -> None:
+    """W41 v2: 同住所 (lat/lng 一致) は haversine_km=0 → 0 分."""
+    from app.services.scheduling.auto_allocator_v2 import haversine_km, haversine_minutes
+
+    d = haversine_km(35.65, 140.10, 35.65, 140.10)
+    assert haversine_minutes(d) == 0
+
+
+def test_dynamic_start_time_respects_travel_for_terminal_type() -> None:
+    """W41 v2: 終日 visit は前訪問の end_time + 移動時間に押し下げられる.
+
+    Setup: コース A 月曜:
+      - P-A 09:00-09:30 (固定)
+      - P-B 09:00 希望だが 3km 離れた終日 → 09:30 + 9 分 = 09:39 に押し下げ
+    """
+    from app.services.scheduling.auto_allocator_v2 import _apply_travel_time_to_courses
+
+    office_id = uuid.uuid4()
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=0, patient_name="A"
+    )
+    a.end_time = time(9, 30)
+    a.service_minutes = 30
+    a.course_code = "A"
+    a.time_type = "固定"
+    # 3km 離れた P-B (35.65, 140.10) → (35.65, 140.133)
+    # 直線距離 ~3km, 移動 9 分 (3/20*60 ≒ 9)
+    b = _make_visit(
+        lat=35.65, lng=140.133, office_id=office_id, start_h=9, start_m=0, patient_name="B"
+    )
+    b.end_time = time(10, 0)
+    b.service_minutes = 60
+    b.course_code = "A"
+    b.time_type = "終日"
+
+    warnings: list[V2Warning] = []
+    _apply_travel_time_to_courses([a, b], warnings=warnings)
+
+    # B の start_time は 09:00 ではなく、09:30 (prev.end) + ~9 分 = 09:39 近辺
+    assert b.start_time > time(9, 0), f"B should be pushed later than 09:00, got {b.start_time}"
+    assert b.start_time >= time(9, 30), f"B should be >= prev.end_time 09:30, got {b.start_time}"
+    # end_time も service_minutes だけ後ろにずれる
+    expected_end_min = (b.start_time.hour * 60 + b.start_time.minute) + b.service_minutes
+    assert b.end_time.hour * 60 + b.end_time.minute == expected_end_min
+
+
+def test_fixed_time_warning_when_travel_insufficient() -> None:
+    """W41 v2: 固定時刻が移動時間で間に合わない → warning が出るが時刻は動かさない."""
+    from app.services.scheduling.auto_allocator_v2 import _apply_travel_time_to_courses
+
+    office_id = uuid.uuid4()
+    # P-A 11:00-11:30 終了, P-B 11:00 固定 (= 移動時間 確保 不可能, 5km 離れて 15 分)
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=11, start_m=0, patient_name="A"
+    )
+    a.end_time = time(11, 30)
+    a.service_minutes = 30
+    a.course_code = "A"
+    a.time_type = "固定"
+    # 5km 離れた location, でも b は 11:00 固定希望
+    b = _make_visit(
+        lat=35.65, lng=140.155, office_id=office_id, start_h=11, start_m=0, patient_name="B"
+    )
+    b.end_time = time(11, 30)
+    b.service_minutes = 30
+    b.course_code = "A"
+    b.time_type = "固定"
+    b.preferred_start = "11:00"
+
+    warnings: list[V2Warning] = []
+    _apply_travel_time_to_courses([a, b], warnings=warnings)
+
+    # 固定時刻は動かさない
+    assert b.start_time == time(11, 0)
+    # 不足 warning が出る (move 不可)
+    assert any(
+        "固定時刻のため繰り下げ不可" in w.message or "固定開始" in w.message for w in warnings
+    ), f"固定時刻不足 warning が出ていない: {warnings}"
+
+
+def test_same_address_zero_travel_no_pushback() -> None:
+    """W41 v2: 同住所の連続 visit は移動 0 分 (押し下げ最小限)."""
+    from app.services.scheduling.auto_allocator_v2 import _apply_travel_time_to_courses
+
+    office_id = uuid.uuid4()
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=0, patient_name="A"
+    )
+    a.end_time = time(9, 30)
+    a.service_minutes = 30
+    a.course_code = "A"
+    a.time_type = "固定"
+    # 同住所 (= same address bucket) で 09:30 希望
+    b = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=30, patient_name="B"
+    )
+    b.end_time = time(10, 0)
+    b.service_minutes = 30
+    b.course_code = "A"
+    b.time_type = "終日"
+
+    warnings: list[V2Warning] = []
+    _apply_travel_time_to_courses([a, b], warnings=warnings)
+
+    # 同住所なので移動 0 分 → 09:30 ぴったり開始 (prev.end_time = 09:30)
+    assert b.start_time == time(9, 30), f"同住所 → 移動 0 分のはず, got {b.start_time}"
+    # 長距離 warning も出ない (cumulative_travel_min = 0)
+    assert not any("連続移動時間合計" in w.message for w in warnings), (
+        f"同住所コースに長距離 warning は出ないはず: {warnings}"
+    )
+
+
+def test_two_staff_flag_flows_through_build_visits() -> None:
+    """W41 v2: requires_multiple_staff=True patient → V2Visit.requires_multiple_staff=True."""
+    office_id = uuid.uuid4()
+    p = Patient(
+        id=uuid.uuid4(),
+        code="TWO",
+        name="二人組必須",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        primary_office_id=office_id,
+        requires_multiple_staff=True,
+        weekly_pattern={
+            "preferred_weekdays": ["Mon"],
+            "preferred_start": "10:00",
+            "time_type": "固定",
+        },
+    )
+    visits = build_visits_for_pool([p])
+    assert len(visits) == 1
+    assert visits[0].requires_multiple_staff is True
+
+
+def test_two_staff_visit_warns_insufficient_staff() -> None:
+    """W41 v2: 二人組必要だがスタッフ 1 名 → warning."""
+    from app.services.scheduling.auto_allocator_v2 import _check_two_staff_availability
+
+    office_id = uuid.uuid4()
+    v = _make_visit(lat=35.65, lng=140.10, office_id=office_id, patient_name="TWO")
+    v.requires_multiple_staff = True
+    v.weekday = 0  # 月曜
+
+    # スタッフ 1 名のみ
+    staff_count = {(office_id, 0): 1}
+    warnings: list[V2Warning] = []
+    _check_two_staff_availability([v], staff_count_by_weekday=staff_count, warnings=warnings)
+
+    assert any("二人組訪問必須" in w.message for w in warnings), (
+        f"二人組必須 warning が出ていない: {warnings}"
+    )
+
+
+def test_two_staff_visit_no_warn_when_two_staff_available() -> None:
+    """W41 v2: スタッフ 2 名以上いれば二人組訪問でも warning なし."""
+    from app.services.scheduling.auto_allocator_v2 import _check_two_staff_availability
+
+    office_id = uuid.uuid4()
+    v = _make_visit(lat=35.65, lng=140.10, office_id=office_id, patient_name="TWO")
+    v.requires_multiple_staff = True
+    v.weekday = 0
+
+    staff_count = {(office_id, 0): 2}
+    warnings: list[V2Warning] = []
+    _check_two_staff_availability([v], staff_count_by_weekday=staff_count, warnings=warnings)
+    assert not any("二人組訪問必須" in w.message for w in warnings)
+
+
+def test_course_capacity_minutes_warns_over_480() -> None:
+    """W41 v2: コース総所要時間 (duration + 移動) > 480 分 → warning."""
+    from app.services.scheduling.auto_allocator_v2 import _check_course_capacity_minutes
+
+    office_id = uuid.uuid4()
+    visits: list[V2Visit] = []
+    # 6 患者 × 60 分 × 5km 間移動 (15 分 × 5 ペア = 75 分) = 360 + 75 = 435 分 (480 未満)
+    # 6 患者 × 90 分 + 移動 75 分 = 540 + 75 = 615 分 (480 超)
+    for i in range(6):
+        v = _make_visit(
+            lat=35.65 + i * 0.05,  # ~5km 刻みで離す
+            lng=140.10,
+            office_id=office_id,
+            start_h=9 + i,
+            start_m=0,
+            patient_name=f"P{i}",
+        )
+        v.end_time = time(10 + i, 30)
+        v.service_minutes = 90
+        v.course_code = "A"
+        v.weekday = 0
+        visits.append(v)
+
+    warnings: list[V2Warning] = []
+    _check_course_capacity_minutes(visits, warnings=warnings)
+    assert any("コース総所要時間" in w.message for w in warnings), (
+        f"480 分超過 warning が出ていない: {warnings}"
+    )
+
+
+def test_course_capacity_minutes_no_warn_under_480() -> None:
+    """W41 v2: 容量未満なら warning なし."""
+    from app.services.scheduling.auto_allocator_v2 import _check_course_capacity_minutes
+
+    office_id = uuid.uuid4()
+    v = _make_visit(lat=35.65, lng=140.10, office_id=office_id, patient_name="P1")
+    v.service_minutes = 60
+    v.course_code = "A"
+    v.weekday = 0
+
+    warnings: list[V2Warning] = []
+    _check_course_capacity_minutes([v], warnings=warnings)
+    assert not any("コース総所要時間" in w.message for w in warnings)
+
+
+def test_calc_course_total_minutes_includes_travel() -> None:
+    """W41 v2: calc_course_total_minutes = sum(duration) + 隣接 Haversine 移動."""
+    from app.services.scheduling.auto_allocator_v2 import calc_course_total_minutes
+
+    office_id = uuid.uuid4()
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=0, patient_name="A"
+    )
+    a.service_minutes = 30
+    a.course_code = "A"
+    # 3km 離れた B
+    b = _make_visit(
+        lat=35.65, lng=140.133, office_id=office_id, start_h=10, start_m=0, patient_name="B"
+    )
+    b.service_minutes = 30
+    b.course_code = "A"
+
+    total = calc_course_total_minutes([a, b])
+    # duration 30 + 30 = 60, 移動 ~9 分 → ~69 分
+    assert 60 < total < 80, f"expected ~69 min, got {total}"
+
+
+def test_two_staff_does_not_double_count_visits_in_capacity() -> None:
+    """W41 v2: 二人組訪問は patient 数 1 として扱う (容量で 2 件分にカウントしない).
+
+    requires_multiple_staff=True の visit を 1 件追加してもコース総所要時間は
+    service_minutes そのまま (= 1 visit duration) で計算される.
+    """
+    from app.services.scheduling.auto_allocator_v2 import calc_course_total_minutes
+
+    office_id = uuid.uuid4()
+    v = _make_visit(lat=35.65, lng=140.10, office_id=office_id, patient_name="TWO")
+    v.requires_multiple_staff = True
+    v.service_minutes = 60
+    v.course_code = "A"
+
+    # 1 visit のみのコース = duration 60 分 + 移動 0 分 = 60 分.
+    # 二人組であっても 120 分にはならない (時間軸は 60 分のまま).
+    total = calc_course_total_minutes([v])
+    assert total == 60, f"二人組 visit を 2 倍カウントしてはいけない: got {total}"
+
+
+# ---------------------------------------------------------------------------
+# W41 v2 拡張 (クロスレビュー指摘修正): CRITICAL #1, HIGH #1/#2, MEDIUM #1
+# ---------------------------------------------------------------------------
+
+
+def test_dynamic_start_time_lunch_break_skip() -> None:
+    """CRITICAL #1: 移動時間で 12:00-13:00 を跨ぐ場合は 13:00 にバンプされる.
+
+    Setup: コース A 月曜:
+      - P-A 11:00-11:30 (固定)
+      - P-B 11:40 希望だが 終日 → earliest = 11:30+移動 ≈ 12:00-12:10
+        昼休憩重複 → 13:00 にバンプ + warning.
+    """
+    from app.services.scheduling.auto_allocator_v2 import _apply_travel_time_to_courses
+
+    office_id = uuid.uuid4()
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=11, start_m=0, patient_name="A"
+    )
+    a.end_time = time(11, 30)
+    a.service_minutes = 30
+    a.course_code = "A"
+    a.time_type = "固定"
+
+    # ~3km 離れた終日 visit
+    b = _make_visit(
+        lat=35.65, lng=140.133, office_id=office_id, start_h=11, start_m=40, patient_name="B"
+    )
+    b.end_time = time(12, 10)
+    b.service_minutes = 30
+    b.course_code = "A"
+    b.time_type = "終日"
+
+    warnings: list[V2Warning] = []
+    _apply_travel_time_to_courses([a, b], warnings=warnings)
+
+    # B は昼休憩重複のため 13:00 にバンプ.
+    assert b.start_time == time(13, 0), f"昼休憩バンプ後は 13:00 のはず, got {b.start_time}"
+    assert b.end_time == time(13, 30), f"end_time も追従するはず, got {b.end_time}"
+    assert any(
+        w.type == "travel_time_shortage"
+        and "昼休憩" in w.message
+        and "13:00 に繰り下げ" in w.message
+        for w in warnings
+    ), f"昼休憩バンプ warning が無い: {warnings}"
+
+
+def test_am_branch_pushed_to_pm_when_over_12() -> None:
+    """HIGH #1: 午前希望 visit が earliest >= 12:00 になった場合、
+    13:00 (午後扱い) にバンプされる + actionable warning が出る.
+
+    Setup:
+      - P-A 11:30-12:00 (固定, 12:00 終了)
+      - P-B 11:45 午前希望 (A の後にソートされる位置) だが 5km 離れて
+        移動 ~15 分 → earliest = 12:00 + 15 分 = 12:15 → 13:00 にバンプ.
+    """
+    from app.services.scheduling.auto_allocator_v2 import _apply_travel_time_to_courses
+
+    office_id = uuid.uuid4()
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=11, start_m=30, patient_name="A"
+    )
+    a.end_time = time(12, 0)
+    a.service_minutes = 30
+    a.course_code = "A"
+    a.time_type = "固定"
+
+    # 5km 離れた午前希望 (desired_start は A 後で sort 順を担保, earliest 12:15)
+    b = _make_visit(
+        lat=35.65, lng=140.155, office_id=office_id, start_h=11, start_m=45, patient_name="B"
+    )
+    b.end_time = time(12, 15)
+    b.service_minutes = 30
+    b.course_code = "A"
+    b.time_type = "午前"
+
+    warnings: list[V2Warning] = []
+    _apply_travel_time_to_courses([a, b], warnings=warnings)
+
+    # 午前希望が 12:00 超のため 13:00 (午後) にバンプされる.
+    assert b.start_time == time(13, 0), (
+        f"午前希望が 12:00 超なら 13:00 にバンプされるはず, got {b.start_time}"
+    )
+    assert any(
+        w.type == "travel_time_shortage"
+        and "午前希望" in w.message
+        and ("13:00" in w.message or "午後" in w.message)
+        and w.actionable is True
+        for w in warnings
+    ), f"午前→午後バンプ warning が無い (or actionable=False): {warnings}"
+
+
+def test_jikan_window_clamp_uses_earliest_not_window_upper() -> None:
+    """HIGH #2: 時間帯 visit が window_upper を超過した場合、window_upper では
+    なく earliest_start を採用する (infeasible timeline を防ぐ).
+
+    Setup:
+      - P-A 10:00-10:30 (固定)
+      - P-B 時間帯 09:00-10:00 希望 (Stage 5 が初期 10:30 を割り当てた状況)
+        → earliest = 10:30 + 9 分 ≒ 10:39 → window_upper (10:00) より後、
+        旧 logic だと 10:00 にクランプ (A と衝突), 新 logic は 10:39 採用.
+    """
+    from app.services.scheduling.auto_allocator_v2 import _apply_travel_time_to_courses
+
+    office_id = uuid.uuid4()
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=10, start_m=0, patient_name="A"
+    )
+    a.end_time = time(10, 30)
+    a.service_minutes = 30
+    a.course_code = "A"
+    a.time_type = "固定"
+
+    # A の後にソートされるよう desired_start を 10:30 に置く
+    # (initial start; travel logic が改めて window 検証).
+    b = _make_visit(
+        lat=35.65, lng=140.133, office_id=office_id, start_h=10, start_m=30, patient_name="B"
+    )
+    b.end_time = time(11, 30)
+    b.service_minutes = 60
+    b.course_code = "A"
+    b.time_type = "時間帯"
+    b.preferred_start = "09:00"
+    b.preferred_end = "10:00"
+
+    warnings: list[V2Warning] = []
+    _apply_travel_time_to_courses([a, b], warnings=warnings)
+
+    # earliest_start = 10:30 + 9 分 ≒ 10:39, window_upper = 10:00.
+    # 旧 logic: clamp to 10:00 → A (10:00-10:30) と重複 (infeasible).
+    # 新 logic: earliest 採用 → 10:39 開始 (window 外だが timeline 正しい).
+    assert b.start_time > a.end_time, (
+        f"B は A 終了後にあるべき (infeasible timeline 防止), "
+        f"got A.end={a.end_time}, B.start={b.start_time}"
+    )
+    assert b.start_time >= time(10, 39), (
+        f"earliest_start 採用なので 10:39 以降のはず, got {b.start_time}"
+    )
+    assert any(
+        w.type == "travel_time_shortage" and "希望時間帯" in w.message and "超過" in w.message
+        for w in warnings
+    ), f"時間帯超過 warning が travel_time_shortage で出ていない: {warnings}"
+
+
+def test_warning_types_correctly_split() -> None:
+    """MEDIUM #1: travel_time_shortage / course_long_distance / two_staff_shortage
+    が別 type として出力されること.
+
+    - 移動時間不足 (固定) → travel_time_shortage
+    - 累積 30 分超 → course_long_distance
+    - 二人組必須 + スタッフ不足 → two_staff_shortage
+    """
+    from app.services.scheduling.auto_allocator_v2 import (
+        _apply_travel_time_to_courses,
+        _check_two_staff_availability,
+    )
+
+    office_id = uuid.uuid4()
+
+    # 1) 固定 + 移動時間不足 → travel_time_shortage
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=11, start_m=0, patient_name="A"
+    )
+    a.end_time = time(11, 30)
+    a.service_minutes = 30
+    a.course_code = "A"
+    a.time_type = "固定"
+    b = _make_visit(
+        lat=35.65, lng=140.155, office_id=office_id, start_h=11, start_m=0, patient_name="B"
+    )
+    b.end_time = time(11, 30)
+    b.service_minutes = 30
+    b.course_code = "A"
+    b.time_type = "固定"
+    b.preferred_start = "11:00"
+    warnings: list[V2Warning] = []
+    _apply_travel_time_to_courses([a, b], warnings=warnings)
+    types_seen = {w.type for w in warnings}
+    assert "travel_time_shortage" in types_seen, (
+        f"固定不足は travel_time_shortage であるべき: {warnings}"
+    )
+
+    # 2) 累積 30 分超のコース → course_long_distance
+    office2 = uuid.uuid4()
+    visits_long: list[V2Visit] = []
+    # 大きく離れた 5 訪問 (隣接 ~12km × 4 = ~144 分 cumulative)
+    for i, lng_off in enumerate([0.0, 0.12, 0.24, 0.36, 0.48]):
+        v = _make_visit(
+            lat=35.65,
+            lng=140.10 + lng_off,
+            office_id=office2,
+            start_h=9 + i,
+            start_m=0,
+            patient_name=f"L{i}",
+        )
+        v.end_time = time(9 + i, 30)
+        v.service_minutes = 30
+        v.course_code = "A"
+        v.time_type = "終日"
+        visits_long.append(v)
+    warnings2: list[V2Warning] = []
+    _apply_travel_time_to_courses(visits_long, warnings=warnings2)
+    long_warns = [w for w in warnings2 if w.type == "course_long_distance"]
+    assert any("連続移動時間合計" in w.message for w in long_warns), (
+        f"累積 30 分超は course_long_distance 単独であるべき: {warnings2}"
+    )
+
+    # 3) 二人組必須 + スタッフ 1 名 → two_staff_shortage
+    office3 = uuid.uuid4()
+    v_two = _make_visit(lat=35.65, lng=140.10, office_id=office3, patient_name="TWO")
+    v_two.requires_multiple_staff = True
+    v_two.weekday = 0
+    warnings3: list[V2Warning] = []
+    _check_two_staff_availability(
+        [v_two], staff_count_by_weekday={(office3, 0): 1}, warnings=warnings3
+    )
+    assert all(w.type == "two_staff_shortage" for w in warnings3), (
+        f"二人組不足は two_staff_shortage 単独であるべき: {warnings3}"
+    )
+    # 旧 course_count に紛れ込んでいないこと.
+    assert not any(w.type == "course_count" for w in warnings3), (
+        f"two_staff は course_count を使ってはいけない: {warnings3}"
+    )
+
+
+def test_chain_pushback_three_visits() -> None:
+    """W41 v2: 3+ visit で移動時間がカスケード押し下げされる (chain effect).
+
+    Setup: コース A 月曜 終日 visits:
+      - P-A 09:00-09:30 (固定)
+      - P-B 09:00 希望、A から 3km (移動 9 分)
+      - P-C 09:00 希望、B から 3km (移動 9 分)
+
+    期待: A 09:00-09:30 → B 09:39-10:09 → C 10:18-10:48.
+    押し下げ計算は max(desired, prev.end + travel).
+    """
+    from app.services.scheduling.auto_allocator_v2 import _apply_travel_time_to_courses
+
+    office_id = uuid.uuid4()
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=0, patient_name="A"
+    )
+    a.end_time = time(9, 30)
+    a.service_minutes = 30
+    a.course_code = "A"
+    a.time_type = "固定"
+
+    b = _make_visit(
+        lat=35.65, lng=140.133, office_id=office_id, start_h=9, start_m=0, patient_name="B"
+    )
+    b.end_time = time(9, 30)
+    b.service_minutes = 30
+    b.course_code = "A"
+    b.time_type = "終日"
+
+    c = _make_visit(
+        lat=35.65, lng=140.166, office_id=office_id, start_h=9, start_m=0, patient_name="C"
+    )
+    c.end_time = time(9, 30)
+    c.service_minutes = 30
+    c.course_code = "A"
+    c.time_type = "終日"
+
+    warnings: list[V2Warning] = []
+    _apply_travel_time_to_courses([a, b, c], warnings=warnings)
+
+    # A は固定で動かない.
+    assert a.start_time == time(9, 0)
+    # B は A 終了 (09:30) + 移動 ~9 分 = 09:39 以降.
+    b_min = b.start_time.hour * 60 + b.start_time.minute
+    assert 9 * 60 + 35 <= b_min <= 9 * 60 + 45, f"B は 09:35-09:45 のはず, got {b.start_time}"
+    # C は B 終了 + 移動 ~9 分 → さらに後ろ.
+    c_min = c.start_time.hour * 60 + c.start_time.minute
+    assert c_min > b_min + b.service_minutes - 1, (
+        f"C は B 終了 ({b.end_time}) 以降のはず, got {c.start_time}"
+    )
+    # C end_time も連動.
+    expected_end = c_min + c.service_minutes
+    assert c.end_time.hour * 60 + c.end_time.minute == expected_end

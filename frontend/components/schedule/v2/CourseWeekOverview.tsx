@@ -61,6 +61,19 @@ export interface CourseWeekOverviewProps {
    * 各セル冒頭に「担当: ○○」を表示するために使用する。
    */
   staffMap?: Map<string, StaffRead>;
+  /**
+   * 2026-W20: patient_id → 同住所バケット key の Map (lat/lng を 0.001 桁で
+   * round した文字列). 同じ key の visit を黄色背景 + 📍 で強調する.
+   * null = lat/lng 未登録 (グルーピング対象外).
+   * 親 (CourseDayTablePanel) で patients から構築して渡す.
+   */
+  sameAddressKeyByPatientId?: Map<string, string | null>;
+  /**
+   * 2026-W20: 縦幅切替モード.
+   * - 'compact' (既存挙動 / default): 1 セル 7 件で省略し「+N 名」表示.
+   * - 'full': 省略せず全件表示 (overflow-y 自動).
+   */
+  displayMode?: 'compact' | 'full';
 }
 
 export function CourseWeekOverview({
@@ -71,6 +84,8 @@ export function CourseWeekOverview({
   staffEventsByStaff,
   assignedStaffByTemplateWeekday,
   staffMap,
+  sameAddressKeyByPatientId,
+  displayMode = 'compact',
 }: CourseWeekOverviewProps) {
   // (template_id, weekday) → visits[] (start_time 昇順)
   const cellMap = React.useMemo(() => {
@@ -166,9 +181,28 @@ export function CourseWeekOverview({
                     ? (staffMap?.get(assignedStaffId)?.name ?? null)
                     : null;
 
+                  // 2026-W20: cell 内で同住所グルーピングを判定する.
+                  //   - 同 cell 内に同じ sameAddressKey を持つ visit が 2 件以上 → 黄色背景.
+                  //   - sameAddressKey は patient_id → lat/lng bucket map (親が構築).
+                  const sameAddressKeyCountInCell = new Map<string, number>();
+                  if (sameAddressKeyByPatientId) {
+                    for (const v of visitList) {
+                      const k = sameAddressKeyByPatientId.get(v.patient_id) ?? null;
+                      if (!k) continue;
+                      sameAddressKeyCountInCell.set(k, (sameAddressKeyCountInCell.get(k) ?? 0) + 1);
+                    }
+                  }
+
                   // visit + event を時刻順でマージ
+                  // 2026-W20: visit ラベルは患者名のみ (時刻は省略).
                   type OverviewItem =
-                    | { kind: 'visit'; id: string; time: string | null; label: string }
+                    | {
+                        kind: 'visit';
+                        id: string;
+                        time: string | null;
+                        label: string;
+                        sameAddressGroup: boolean;
+                      }
                     | {
                         kind: 'event';
                         id: string;
@@ -177,14 +211,17 @@ export function CourseWeekOverview({
                         timeLine: string;
                       };
                   const items: OverviewItem[] = [
-                    ...visitList.map((v) => ({
-                      kind: 'visit' as const,
-                      id: v.id,
-                      time: v.start_time,
-                      label: v.start_time
-                        ? `${v.start_time.slice(0, 5)} ${v.patient_name ?? v.patient_id}`
-                        : (v.patient_name ?? v.patient_id),
-                    })),
+                    ...visitList.map((v) => {
+                      const k = sameAddressKeyByPatientId?.get(v.patient_id) ?? null;
+                      const inGroup = k != null && (sameAddressKeyCountInCell.get(k) ?? 0) >= 2;
+                      return {
+                        kind: 'visit' as const,
+                        id: v.id,
+                        time: v.start_time,
+                        label: v.patient_name ?? v.patient_id,
+                        sameAddressGroup: inGroup,
+                      };
+                    }),
                     ...staffDayEvents.map((e) => {
                       const lines = formatEventLabelLines(e);
                       return {
@@ -197,6 +234,15 @@ export function CourseWeekOverview({
                     }),
                   ].sort((a, b) => (a.time ?? '').localeCompare(b.time ?? ''));
 
+                  // 2026-W20: 縦幅切替.
+                  //  - compact: 既存どおり 7 件で切る (「+N 名」).
+                  //  - full   : slice せず全件 (overflow-y-auto / max-h でスクロール可).
+                  const COMPACT_LIMIT = 7;
+                  const visibleItems =
+                    displayMode === 'full' ? items : items.slice(0, COMPACT_LIMIT);
+                  const overflowVisits =
+                    displayMode === 'full' ? 0 : Math.max(0, visitList.length - COMPACT_LIMIT);
+
                   return (
                     <div
                       key={`c-${tpl.id}-${wd}`}
@@ -207,6 +253,7 @@ export function CourseWeekOverview({
                       data-testid={`course-week-overview-cell-${tpl.id}-${wd}`}
                       data-capacity={cap}
                       data-occupant-count={visitList.length}
+                      data-display-mode={displayMode}
                     >
                       {cap === 0 ? (
                         <span className="text-[10px] text-text-muted">休</span>
@@ -235,15 +282,34 @@ export function CourseWeekOverview({
                           {items.length === 0 ? (
                             <span className="text-[10px] text-text-muted">—</span>
                           ) : (
-                            <ul className="space-y-0.5">
-                              {items.slice(0, 7).map((item) =>
+                            <ul
+                              className={cn(
+                                'space-y-0.5',
+                                // full モード時のみ overflow を許可.
+                                displayMode === 'full' && 'max-h-[480px] overflow-y-auto',
+                              )}
+                            >
+                              {visibleItems.map((item) =>
                                 item.kind === 'visit' ? (
                                   <li
                                     key={item.id}
-                                    className="truncate text-[10px] text-text-primary"
+                                    className={cn(
+                                      'truncate text-[10px] text-text-primary',
+                                      // 2026-W20: 同住所ペアを黄色背景 + 📍 で強調.
+                                      item.sameAddressGroup &&
+                                        'rounded bg-yellow-50/80 px-1 ring-1 ring-yellow-300',
+                                    )}
                                     title={item.label}
                                     data-testid={`course-week-overview-name-${item.id}`}
+                                    data-same-address-group={
+                                      item.sameAddressGroup ? 'true' : undefined
+                                    }
                                   >
+                                    {item.sameAddressGroup ? (
+                                      <span aria-hidden className="mr-0.5 text-yellow-700">
+                                        📍
+                                      </span>
+                                    ) : null}
                                     {item.label}
                                   </li>
                                 ) : (
@@ -258,9 +324,9 @@ export function CourseWeekOverview({
                                   </li>
                                 ),
                               )}
-                              {visitList.length > 7 ? (
+                              {overflowVisits > 0 ? (
                                 <li className="text-[10px] text-text-muted">
-                                  …他 {visitList.length - 7} 名
+                                  …他 {overflowVisits} 名
                                 </li>
                               ) : null}
                             </ul>

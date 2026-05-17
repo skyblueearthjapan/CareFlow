@@ -72,6 +72,13 @@ import {
   type PatientRead,
 } from '@/lib/schemas/patient';
 
+import {
+  WeekdayScheduleCard,
+  buildSameAddressKey,
+  haversineKm,
+  type CourseListItem as ScheduleCourseListItem,
+  type VisitListItem as ScheduleVisitListItem,
+} from '../WeekdayScheduleCard';
 import { AcceptanceLegend } from './AcceptanceLayer';
 import { DiffAddDialog } from './DiffAddDialog';
 import { FullOptimizeDialog } from './FullOptimizeDialog';
@@ -210,6 +217,16 @@ export function CourseDayTablePanel({
   // ─── 曜日タブ state (Wave 18 Phase B-6: 'week' = 週間ビュー) ─────
   const [activeTab, setActiveTab] = useState<number | 'week'>(0);
   const activeWeekday = typeof activeTab === 'number' ? activeTab : 0;
+
+  // ─── 2026-W20: 週ビューの縦幅切替モード ───────────────────────
+  // compact = 既存挙動 (1 セル 7 件で省略 + 「+N 名」).
+  // full    = 全員表示 (overflow-y で長くスクロール).
+  const [weekDisplayMode, setWeekDisplayMode] = useState<'compact' | 'full'>('compact');
+
+  // ─── 2026-W20: 月-土タブの表示モード ─────────────────────────
+  // table = Excel 形式時刻グリッド (既存挙動 / DnD 編集可能).
+  // list  = Before/After 形式 (時刻順 visit リスト / 視覚言語統一・閲覧専用).
+  const [weekdayViewMode, setWeekdayViewMode] = useState<'table' | 'list'>('table');
 
   // ─── Master data ────────────────────────────────────────────────────
   const officesQuery = useOffices({ limit: 50 });
@@ -728,6 +745,19 @@ export function CourseDayTablePanel({
     return m;
   }, [offices]);
 
+  // 2026-W20: patient_id → 同住所バケット key (lat/lng を 0.001 桁で round).
+  // 週ビュー (CourseWeekOverview) で同住所ペアを強調表示するために使う.
+  // tolerance 0.001 ≒ 100m. lat/lng なし患者は null.
+  const sameAddressKeyByPatientId = useMemo(() => {
+    const m = new Map<string, string | null>();
+    for (const p of allPatients) {
+      const lat = (p as { lat?: number | null }).lat ?? null;
+      const lng = (p as { lng?: number | null }).lng ?? null;
+      m.set(p.id, buildSameAddressKey(lat, lng));
+    }
+    return m;
+  }, [allPatients]);
+
   // ─── Wave 32: staffId → StaffRead マップ (CourseWeekOverview 担当名表示用) ──
   const staffMap = useMemo(() => {
     const m = new Map<string, (typeof allStaff)[number]>();
@@ -1222,6 +1252,89 @@ export function CourseDayTablePanel({
     }
   };
 
+  // ─── 2026-W20: 月-土タブ「リスト表示」用 — Before/After 形式の CourseListItem[] ──
+  // 視覚言語を全面最適化の Before/After と統一. 当該曜日に対応するコース群を
+  // course_template ベースで時刻昇順に並べた visit リストへ変換する.
+  //   - patient.address / weekly_pattern (time_type / preferred_*) / sex_restriction を素直に展開.
+  //   - lat/lng で same_address_group_id (= bucket key) を導出.
+  //   - 連続する visit の Haversine 距離を distance_to_next_km にセット.
+  const weekdayListCourses = useMemo<ScheduleCourseListItem[]>(() => {
+    if (weekdayViewMode !== 'list') return [];
+    const out: ScheduleCourseListItem[] = [];
+    for (const { template, officeName } of courseTablesForActiveDay) {
+      const course = findCourseForTemplate({
+        template,
+        weekday: activeWeekday,
+        isoYear,
+        isoWeek,
+        courses,
+      });
+      const courseVisits = course ? (visitsByCourse.get(course.id) ?? []) : [];
+      // start_time 昇順 (CourseGridVisit.start_slot は HH:MM, 同 slot は visit.id 安定).
+      const sorted = [...courseVisits].sort((a, b) => {
+        if (a.start_slot !== b.start_slot) return a.start_slot.localeCompare(b.start_slot);
+        return a.id.localeCompare(b.id);
+      });
+
+      // visit ごとに lat/lng を取得して連続距離 (haversine) を算出.
+      const visitsWithCoords = sorted.map((cv) => {
+        const p = patientById.get(cv.patient_id);
+        const lat = (p as { lat?: number | null } | undefined)?.lat ?? null;
+        const lng = (p as { lng?: number | null } | undefined)?.lng ?? null;
+        return { cv, patient: p, lat, lng };
+      });
+
+      const visits: ScheduleVisitListItem[] = visitsWithCoords.map((row, i, arr) => {
+        const { cv, patient, lat, lng } = row;
+        const next = arr[i + 1];
+        let distance: number | null = null;
+        if (next && lat != null && lng != null && next.lat != null && next.lng != null) {
+          distance = haversineKm({ lat, lng }, { lat: next.lat, lng: next.lng });
+        }
+        const wp = patient?.weekly_pattern as
+          | {
+              time_type?: string | null;
+              preferred_start?: string | null;
+              preferred_end?: string | null;
+            }
+          | null
+          | undefined;
+        return {
+          key: cv.id,
+          start_time: cv.start_slot,
+          patient_name: cv.patient_name ?? cv.patient_id,
+          address: cv.patient_address ?? null,
+          area_label: null,
+          time_type: wp?.time_type ?? null,
+          preferred_start: wp?.preferred_start ?? null,
+          preferred_end: wp?.preferred_end ?? null,
+          sex_restriction:
+            normalizePatientSexRestriction(patient?.sex_restriction as string | null | undefined) ??
+            null,
+          same_address_group_id: buildSameAddressKey(lat, lng),
+          distance_to_next_km: distance,
+        };
+      });
+
+      out.push({
+        key: `${template.id}:${activeWeekday}`,
+        title: `${officeName ? `${officeName} ` : ''}${template.label} コース`,
+        summary: `${visits.length}件`,
+        visits,
+      });
+    }
+    return out;
+  }, [
+    weekdayViewMode,
+    courseTablesForActiveDay,
+    activeWeekday,
+    isoYear,
+    isoWeek,
+    courses,
+    visitsByCourse,
+    patientById,
+  ]);
+
   // ─── Render ──────────────────────────────────────────────────────
   if (officesQuery.isLoading || staffListQuery.isLoading) {
     return (
@@ -1385,7 +1498,46 @@ export function CourseDayTablePanel({
                 role="tabpanel"
                 aria-labelledby="course-day-tab-week"
                 data-testid="course-week-overview-panel"
+                className="space-y-2"
               >
+                {/* 2026-W20: 縦幅切替トグル (コンパクト ⇄ 全員表示). */}
+                <div
+                  className="flex justify-end"
+                  data-testid="course-week-overview-display-mode-toolbar"
+                >
+                  <div
+                    role="group"
+                    aria-label="週ビュー 縦幅切替"
+                    className="inline-flex overflow-hidden rounded border border-border-default text-xs"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setWeekDisplayMode('compact')}
+                      aria-pressed={weekDisplayMode === 'compact'}
+                      data-testid="course-week-overview-mode-compact"
+                      className={
+                        weekDisplayMode === 'compact'
+                          ? 'bg-brand-primary px-2 py-1 text-white'
+                          : 'bg-bg-base px-2 py-1 text-text-secondary hover:bg-bg-muted'
+                      }
+                    >
+                      コンパクト
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setWeekDisplayMode('full')}
+                      aria-pressed={weekDisplayMode === 'full'}
+                      data-testid="course-week-overview-mode-full"
+                      className={
+                        weekDisplayMode === 'full'
+                          ? 'bg-brand-primary px-2 py-1 text-white'
+                          : 'bg-bg-base px-2 py-1 text-text-secondary hover:bg-bg-muted'
+                      }
+                    >
+                      全員表示
+                    </button>
+                  </div>
+                </div>
                 <CourseWeekOverview
                   templates={templates}
                   officeNameById={officeNameById}
@@ -1394,6 +1546,8 @@ export function CourseDayTablePanel({
                   staffEventsByStaff={staffEventsByStaff}
                   assignedStaffByTemplateWeekday={assignedStaffByTemplateWeekday}
                   staffMap={staffMap}
+                  sameAddressKeyByPatientId={sameAddressKeyByPatientId}
+                  displayMode={weekDisplayMode}
                 />
               </div>
             ) : (
@@ -1405,11 +1559,62 @@ export function CourseDayTablePanel({
                 className="space-y-3"
                 data-testid="course-day-table-list"
               >
+                {/* 2026-W20: 月-土タブ表示モード切替 (テーブル ⇄ リスト).
+                    リストは全面最適化 Before/After と同じ視覚言語で出力 (DRY). */}
+                <div className="flex justify-end" data-testid="course-day-view-mode-toolbar">
+                  <div
+                    role="group"
+                    aria-label="月-土タブ 表示モード切替"
+                    className="inline-flex overflow-hidden rounded border border-border-default text-xs"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setWeekdayViewMode('table')}
+                      aria-pressed={weekdayViewMode === 'table'}
+                      data-testid="course-day-mode-table"
+                      className={
+                        weekdayViewMode === 'table'
+                          ? 'bg-brand-primary px-2 py-1 text-white'
+                          : 'bg-bg-base px-2 py-1 text-text-secondary hover:bg-bg-muted'
+                      }
+                    >
+                      テーブル
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setWeekdayViewMode('list')}
+                      aria-pressed={weekdayViewMode === 'list'}
+                      data-testid="course-day-mode-list"
+                      className={
+                        weekdayViewMode === 'list'
+                          ? 'bg-brand-primary px-2 py-1 text-white'
+                          : 'bg-bg-base px-2 py-1 text-text-secondary hover:bg-bg-muted'
+                      }
+                    >
+                      リスト (Before/After 形式)
+                    </button>
+                  </div>
+                </div>
+
                 {courseTablesForActiveDay.length === 0 ? (
                   <Card className="p-4 text-sm text-text-muted">
                     {WEEKDAY_LABELS[activeWeekday]}曜日の表示対象コースがありません。 拠点マスタの
                     コーステンプレート (定員) を確認してください。
                   </Card>
+                ) : weekdayViewMode === 'list' ? (
+                  /* 2026-W20: Before/After 形式の閲覧専用リスト. */
+                  <div data-testid="course-day-list-view">
+                    <WeekdayScheduleCard
+                      title={`${WEEKDAY_LABELS[activeWeekday]}曜日 コース一覧`}
+                      totalSummary={`${weekdayListCourses.reduce(
+                        (n, c) => n + c.visits.length,
+                        0,
+                      )}件`}
+                      tone="muted"
+                      courses={weekdayListCourses}
+                      testIdPrefix={`course-day-list-${activeWeekday}`}
+                    />
+                  </div>
                 ) : (
                   courseTablesForActiveDay.map(({ template, officeName }) => {
                     const course = findCourseForTemplate({

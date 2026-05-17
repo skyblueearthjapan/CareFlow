@@ -155,7 +155,7 @@ describe('CourseWeekOverview (B-6)', () => {
     expect(onJumpToDay).toHaveBeenCalledWith(3);
   });
 
-  it('start_time 付き visit が "HH:MM 氏名" 形式で表示される', () => {
+  it('start_time 付き visit でも 2026-W20 以降は患者名のみ表示 (時刻は省略)', () => {
     const tpl = makeTemplate('tpl-A', 'A', 'o1');
     const visits: WeekOverviewVisit[] = [
       {
@@ -175,7 +175,10 @@ describe('CourseWeekOverview (B-6)', () => {
         onJumpToDay={vi.fn()}
       />,
     );
-    expect(screen.getByTestId('course-week-overview-name-v-t1')).toHaveTextContent('09:30 山田');
+    const el = screen.getByTestId('course-week-overview-name-v-t1');
+    expect(el).toHaveTextContent('山田');
+    // 2026-W20: 週ビューは患者名のみ。時刻は併記しない (同住所ペアリングのみに絞る方針).
+    expect(el).not.toHaveTextContent('09:30');
   });
 
   it('start_time が null の visit は氏名のみ表示', () => {

@@ -37,6 +37,10 @@ V2WarningTypeOut = Literal[
     "course_long_distance",
     "course_count",
     "acceptance_blocked",
+    # W41 v2 拡張 (警告 type の分離): UI 分類のため travel_time_shortage /
+    # two_staff_shortage を course_long_distance / course_count から切り出す.
+    "travel_time_shortage",
+    "two_staff_shortage",
     "general",
 ]
 

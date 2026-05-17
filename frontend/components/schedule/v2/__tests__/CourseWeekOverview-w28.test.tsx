@@ -272,7 +272,7 @@ describe('CourseWeekOverview event 2 行表示 (Wave 31)', () => {
     expect(divs[1]).toHaveTextContent('14:00-16:00');
   });
 
-  it('8. visit 表示は 2 行構造にならず 1 行のまま維持される', () => {
+  it('8. visit 表示は 2 行構造にならず 1 行のまま維持される (2026-W20: 名前のみ)', () => {
     const tpl = makeTemplate('tpl-D', 'D', 'o1');
     const visits: WeekOverviewVisit[] = [
       {
@@ -297,6 +297,8 @@ describe('CourseWeekOverview event 2 行表示 (Wave 31)', () => {
     const el = screen.getByTestId('course-week-overview-name-v-w31');
     // visit li は div 子要素を持たない (1 行テキストのまま)
     expect(el.querySelectorAll('div').length).toBe(0);
-    expect(el).toHaveTextContent('10:00 山田');
+    // 2026-W20: 週ビューは患者名のみ表示 (時刻は省略).
+    expect(el).toHaveTextContent('山田');
+    expect(el).not.toHaveTextContent('10:00');
   });
 });

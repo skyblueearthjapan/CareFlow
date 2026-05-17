@@ -73,6 +73,15 @@ MAX_PATIENTS_PER_COURSE: int = 6
 # 1 セット (= バケット内の距離クラスタ) 上限人数.
 MAX_PATIENTS_PER_SET: int = 3
 
+# W41 v2 拡張 (移動時間の time 化): Haversine 距離を時間 (分) に変換するための
+# 平均速度. 都市部の安全側仮定 (信号・混雑考慮). 直線距離 × 60 / 速度 (km/h)
+# で分換算する.
+TRAVEL_SPEED_KMH: float = 20.0
+
+# W41 v2 拡張 (コース容量 duration 化): 1 コース (1 スタッフ × 1 日, 昼休憩除く)
+# の所要時間上限 (分). 9:00-12:00 + 13:00-18:00 = 8 時間 = 480 分.
+COURSE_MAX_MINUTES: int = 480
+
 # H2: 同住所判定の許容誤差 (緯度経度の絶対差 ≒ 100m).
 SAME_ADDRESS_TOLERANCE: float = 0.001
 
@@ -139,6 +148,13 @@ V2WarningType = Literal[
     "course_long_distance",
     "course_count",
     "acceptance_blocked",
+    # W41 v2 拡張 (警告 type の分離): UI 分類のため細分化.
+    # - travel_time_shortage: 固定時刻 / 時間帯 / 午前 / 午後 visit が
+    #   前 visit からの移動時間で希望時刻に間に合わない or 昼休憩重複でバンプ.
+    # - two_staff_shortage : 二人組訪問必須だが (office, weekday) スタッフ < 2 名.
+    # course_long_distance は累積 30 分超 (= 長距離コース) 用途のみに残す.
+    "travel_time_shortage",
+    "two_staff_shortage",
     "general",
 ]
 
@@ -217,6 +233,12 @@ class V2Visit:
     # コース内 start_time 昇順で隣接ペアの Haversine 距離を計算し、最後の visit は None.
     # `_assign_distance_to_next` (api/v1/schedule_v2.py) で書き込まれる.
     distance_to_next_km: float | None = None
+    # W41 v2 拡張 (二人組訪問): Patient.requires_multiple_staff を per-visit に流す.
+    # True のとき、この visit は **同時刻** に **スタッフ 2 名** が同行する運用.
+    # (同住所複数 patient は 1 スタッフが連続して回る "concurrent visits" であり、
+    # こちらは 1 patient × 2 staff の "co-visit" で別概念. コース容量計算でも
+    # patient 数としては 1 件としてカウントする.)
+    requires_multiple_staff: bool = False
 
 
 @dataclass
@@ -260,6 +282,20 @@ def haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     a = math.sin(dphi / 2.0) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2.0) ** 2
     c = 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
     return r_km * c
+
+
+def haversine_minutes(distance_km: float) -> int:
+    """W41 v2 拡張 (移動時間の time 化): 直線距離 (km) から移動時間 (分) を概算する.
+
+    Rules:
+        - ``distance_km <= 0`` (同住所 / 数値誤差): 0 分
+        - それ以外: ``distance_km / TRAVEL_SPEED_KMH * 60`` を整数丸めし、最低 1 分.
+
+    都市部の安全側仮定として ``TRAVEL_SPEED_KMH = 20`` km/h (信号・混雑考慮).
+    """
+    if distance_km <= 0:
+        return 0
+    return max(1, int(round(distance_km / TRAVEL_SPEED_KMH * 60)))
 
 
 def _address_bucket(lat: float, lng: float) -> tuple[float, float]:
@@ -750,6 +786,9 @@ def build_visits_for_pool(
         addr = patient.address
         area = _extract_area_label(addr)
         sex_r = patient.sex_restriction
+        # W41 v2 拡張 (二人組訪問): patient.requires_multiple_staff を per-visit に
+        # 流す. 旧 DB 状態 (フィールド存在しない場合) は False にフォールバック.
+        req_multi = bool(getattr(patient, "requires_multiple_staff", False) or False)
         used_fixed = False
         if use_fixed_as_source and fixed_by_patient is not None:
             fixed_rows = fixed_by_patient.get(patient.id) or []
@@ -792,6 +831,7 @@ def build_visits_for_pool(
                             preferred_start=ps_eff,
                             preferred_end=pe_eff,
                             sex_restriction=sex_r,
+                            requires_multiple_staff=req_multi,
                         )
                     )
         if not used_fixed:
@@ -832,6 +872,7 @@ def build_visits_for_pool(
                         sex_restriction=sex_r,
                         preferred_start=ps_eff,
                         preferred_end=pe_eff,
+                        requires_multiple_staff=req_multi,
                     )
                 )
     return visits
@@ -1511,6 +1552,469 @@ def combine_am_pm_sets(
 
 
 # ---------------------------------------------------------------------------
+# W41 v2 拡張: 移動時間の time 化 + コース容量 duration 化
+# ---------------------------------------------------------------------------
+
+
+def calc_course_total_minutes(visits: list[V2Visit]) -> int:
+    """コース内訪問の合計所要時間 (分) = visit duration + 隣接移動時間.
+
+    W41 v2 拡張 (コース容量 duration 化): ``len(visits)`` だけでは長時間訪問や
+    長距離移動を含むコースを過小評価するため、duration + Haversine 移動時間で
+    計算する.
+
+    Notes:
+        - ``visits`` は同コース (同 ``(office_id, weekday, course_code)``) 内.
+        - 同住所 (= ``_address_bucket`` 一致) は移動時間 0 分.
+        - 二人組訪問 ``requires_multiple_staff=True`` の duration はそのまま 1 回分
+          (時間軸上の所要時間はスタッフ数に依存しない).
+    """
+    if not visits:
+        return 0
+    sv = sorted(visits, key=lambda v: v.start_time)
+    total = sum(int(v.service_minutes) for v in sv)
+    for i in range(1, len(sv)):
+        prev = sv[i - 1]
+        cur = sv[i]
+        # 同住所は移動時間 0
+        if _address_bucket(prev.lat, prev.lng) == _address_bucket(cur.lat, cur.lng):
+            continue
+        total += haversine_minutes(haversine_km(prev.lat, prev.lng, cur.lat, cur.lng))
+    return total
+
+
+def _apply_travel_time_to_courses(
+    visits: list[V2Visit],
+    *,
+    warnings: list[V2Warning],
+    office_name_by_id: dict[UUID, str] | None = None,
+) -> None:
+    """W41 v2 拡張 (動的 start_time): 同コース連続訪問に移動時間を反映する.
+
+    Algorithm:
+        1. ``(office_id, weekday, course_code)`` ごとに visits を集計
+        2. 各コース内で ``start_time`` 昇順にソートし、隣接ペアの移動時間を計算
+        3. 各 visit の ``actual_start = max(desired_start, prev_end + travel_min)``
+           を ``time_type`` ごとに分岐して決定:
+             - "固定": **必ず固定時刻** を使う. 移動時間が不足するなら warning.
+             - "時間帯": ``preferred_start ≤ actual ≤ preferred_end`` 内なら earliest
+               を採用. 範囲超過なら **earliest を採用** + warning (window_upper に
+               クランプすると infeasible timeline になるため).
+             - "午前": ``AM_BLOCK_END`` (12:00) 未満で earliest を採用.
+               12:00 以降になる場合は ``LUNCH_END`` (13:00) にバンプ可能なら
+               午後扱いで配置, 不可なら earliest 維持 + warning.
+             - "午後": ``PM_BLOCK_END`` 以前で earliest を採用 (>=13:00 制約).
+               18:00 超なら earliest 維持 + actionable warning.
+             - "終日" / None: 営業時間内なら制約なく earliest を採用.
+        4. 各 visit の actual_start が確定したら **昼休憩 (12:00-13:00) との重なりを
+           再検証** (CRITICAL #1): 重なる場合は ``time_type`` に応じて 13:00 にバンプ
+           or warning を出す. (_filter_unavailable_and_lunch は既に実行済みのため
+           ここで再チェックしないと H10 が破られる可能性がある.)
+        5. 30 分以上の移動が連続するコースは長距離 warning を別途出す
+           (``course_long_distance``).
+
+    In-place: visits の ``start_time`` / ``end_time`` を書き換える.
+
+    Notes:
+        ``course_code`` が None の visit はスキップ (Stage 5 がコース割当てを
+        行わなかったもの, 例: スタッフ不在). 同住所連続は移動 0 分.
+
+        warning type は **travel_time_shortage** (移動時間で時刻調整) と
+        **course_long_distance** (累積 30 分超) を分けて出力する.
+    """
+    # 1) コードごとに集計
+    groups: dict[tuple[UUID, int, str | None], list[V2Visit]] = {}
+    for v in visits:
+        if v.course_code is None:
+            continue
+        groups.setdefault((v.office_id, v.weekday, v.course_code), []).append(v)
+
+    lunch_start_min = LUNCH_START.hour * 60 + LUNCH_START.minute  # 720
+    lunch_end_min = LUNCH_END.hour * 60 + LUNCH_END.minute  # 780
+    pm_block_end_min = PM_BLOCK_END.hour * 60 + PM_BLOCK_END.minute  # 1080
+
+    for (office_id, weekday, course_code), gv in groups.items():
+        if len(gv) < 2:
+            continue
+        sv = sorted(gv, key=lambda x: x.start_time)
+        cumulative_travel_min = 0
+        wd_jp = _weekday_jp(weekday)
+        office_name = (office_name_by_id or {}).get(office_id) or str(office_id)
+        for i in range(1, len(sv)):
+            prev = sv[i - 1]
+            cur = sv[i]
+            # 同住所は移動 0
+            if _address_bucket(prev.lat, prev.lng) == _address_bucket(cur.lat, cur.lng):
+                travel_min = 0
+            else:
+                travel_min = haversine_minutes(haversine_km(prev.lat, prev.lng, cur.lat, cur.lng))
+            cumulative_travel_min += travel_min
+
+            desired_start = cur.start_time
+            earliest_start = _add_minutes(prev.end_time, travel_min)
+
+            tt = cur.time_type
+            actual_start: time
+            cur_name = cur.patient_name or (cur.patient_code or "不明")
+            prev_name = prev.patient_name or (prev.patient_code or "不明")
+
+            if tt == "固定":
+                # 固定は時刻を動かさない. 移動時間が不足する場合は warning.
+                actual_start = desired_start
+                if earliest_start > desired_start:
+                    shortage = (earliest_start.hour * 60 + earliest_start.minute) - (
+                        desired_start.hour * 60 + desired_start.minute
+                    )
+                    warnings.append(
+                        V2Warning(
+                            type="travel_time_shortage",
+                            message=(
+                                f"{office_name} {course_code} {wd_jp}: "
+                                f"{prev_name} 様 ({_fmt_hhmm(prev.end_time)} 終了) → "
+                                f"{cur_name} 様 ({_fmt_hhmm(desired_start)} 固定開始) への "
+                                f"移動時間 {travel_min} 分が {shortage} 分不足 "
+                                "(固定時刻のため繰り下げ不可)"
+                            ),
+                            weekday=weekday,
+                            actionable=True,
+                            patient_id=cur.patient_id,
+                            patient_name=cur.patient_name,
+                            current_time=_fmt_hhmm(desired_start),
+                            suggested_time=_fmt_hhmm(earliest_start),
+                            time_type=tt,
+                            preferred_start=cur.preferred_start,
+                            preferred_end=cur.preferred_end,
+                        )
+                    )
+            elif tt == "時間帯":
+                ps = _parse_hhmm(cur.preferred_start)
+                pe = _parse_hhmm(cur.preferred_end)
+                window_lower = ps if ps is not None else desired_start
+                window_upper = pe if pe is not None else PM_BLOCK_END
+                candidate = max(desired_start, earliest_start, window_lower)
+                if candidate > window_upper:
+                    # HIGH #2: 範囲超過: window_upper にクランプすると
+                    # earliest_start > window_upper のため physically infeasible.
+                    # earliest_start を採用 + 警告 (時間帯外で開始) し、
+                    # 後続 visit に正しいタイムラインを伝播させる.
+                    actual_start = earliest_start
+                    overage_min = (earliest_start.hour * 60 + earliest_start.minute) - (
+                        window_upper.hour * 60 + window_upper.minute
+                    )
+                    warnings.append(
+                        V2Warning(
+                            type="travel_time_shortage",
+                            message=(
+                                f"{office_name} {course_code} {wd_jp}: {cur_name} 様 の "
+                                f"希望時間帯 ({cur.preferred_start or '-'}-{cur.preferred_end or '-'}) "
+                                f"を移動時間で超過、{_fmt_hhmm(earliest_start)} 開始 "
+                                f"(約 {overage_min} 分遅れ)"
+                            ),
+                            weekday=weekday,
+                            actionable=True,
+                            patient_id=cur.patient_id,
+                            patient_name=cur.patient_name,
+                            current_time=_fmt_hhmm(actual_start),
+                            suggested_time=_fmt_hhmm(earliest_start),
+                            time_type=tt,
+                            preferred_start=cur.preferred_start,
+                            preferred_end=cur.preferred_end,
+                        )
+                    )
+                else:
+                    actual_start = candidate
+            elif tt == "午前":
+                # HIGH #1: 午前 (AM_BLOCK_END=12:00 未満) の制約内で earliest を取る.
+                # 12:00 を超える場合は LUNCH_END (13:00) にバンプ (午後扱い) を試す.
+                # それでも収まらない (18:00 超) なら earliest 維持 + warning.
+                candidate = max(desired_start, earliest_start)
+                if candidate >= AM_BLOCK_END:
+                    bumped = LUNCH_END  # 13:00
+                    bumped_end_min = bumped.hour * 60 + bumped.minute + cur.service_minutes
+                    if bumped_end_min <= pm_block_end_min:
+                        # 13:00 開始 + service が 18:00 内 → 午後にバンプ.
+                        actual_start = bumped
+                        warnings.append(
+                            V2Warning(
+                                type="travel_time_shortage",
+                                message=(
+                                    f"{office_name} {course_code} {wd_jp}: "
+                                    f"{cur_name} 様 (午前希望) が移動時間で "
+                                    f"earliest {_fmt_hhmm(earliest_start)} で 12:00 超過、"
+                                    "13:00 (午後) に繰り下げ"
+                                ),
+                                weekday=weekday,
+                                actionable=True,
+                                patient_id=cur.patient_id,
+                                patient_name=cur.patient_name,
+                                current_time=_fmt_hhmm(bumped),
+                                suggested_time=_fmt_hhmm(bumped),
+                                time_type=tt,
+                                preferred_start=cur.preferred_start,
+                                preferred_end=cur.preferred_end,
+                            )
+                        )
+                    else:
+                        # 18:00 超えで配置不可 → earliest 維持 + 警告 (運用者要確認).
+                        actual_start = candidate
+                        warnings.append(
+                            V2Warning(
+                                type="travel_time_shortage",
+                                message=(
+                                    f"{office_name} {course_code} {wd_jp}: "
+                                    f"{cur_name} 様 (午前希望) が earliest "
+                                    f"{_fmt_hhmm(earliest_start)} で 12:00 を超過、"
+                                    "13:00 にバンプしても 18:00 を超えるため配置不可"
+                                ),
+                                weekday=weekday,
+                                actionable=True,
+                                patient_id=cur.patient_id,
+                                patient_name=cur.patient_name,
+                                current_time=_fmt_hhmm(actual_start),
+                                time_type=tt,
+                                preferred_start=cur.preferred_start,
+                                preferred_end=cur.preferred_end,
+                            )
+                        )
+                else:
+                    actual_start = candidate
+            elif tt == "午後":
+                # 午後 (>= 13:00) の制約内で earliest を取る. 13:00 未満なら 13:00 に揃える.
+                # earliest + service が 18:00 超えなら earliest 維持 + actionable warning.
+                pm_start = PM_BLOCK_START
+                candidate = max(desired_start, earliest_start, pm_start)
+                candidate_end_min = candidate.hour * 60 + candidate.minute + cur.service_minutes
+                if candidate_end_min > pm_block_end_min:
+                    # 18:00 超: 動かさず警告のみ. 後段で重複検出/UI 対応.
+                    actual_start = candidate
+                    warnings.append(
+                        V2Warning(
+                            type="travel_time_shortage",
+                            message=(
+                                f"{office_name} {course_code} {wd_jp}: "
+                                f"{cur_name} 様 (午後希望) が earliest "
+                                f"{_fmt_hhmm(earliest_start)} で "
+                                f"{_fmt_hhmm(PM_BLOCK_END)} を超過 "
+                                "(運用者要確認)"
+                            ),
+                            weekday=weekday,
+                            actionable=True,
+                            patient_id=cur.patient_id,
+                            patient_name=cur.patient_name,
+                            current_time=_fmt_hhmm(actual_start),
+                            time_type=tt,
+                            preferred_start=cur.preferred_start,
+                            preferred_end=cur.preferred_end,
+                        )
+                    )
+                else:
+                    actual_start = candidate
+            else:
+                # "終日" / None / 不明: 営業時間内なら earliest を採用.
+                actual_start = max(desired_start, earliest_start)
+
+            # CRITICAL #1: 昼休憩 (12:00-13:00) 再検証.
+            # _filter_unavailable_and_lunch は既に実行済みのため、
+            # 動的調整後に lunch break と重なるかを再チェックする.
+            actual_start_min = actual_start.hour * 60 + actual_start.minute
+            actual_end_min = actual_start_min + cur.service_minutes
+            if actual_start_min < lunch_end_min and actual_end_min > lunch_start_min:
+                if tt == "固定":
+                    # 固定時刻は動かさない: 警告のみ.
+                    warnings.append(
+                        V2Warning(
+                            type="travel_time_shortage",
+                            message=(
+                                f"{office_name} {course_code} {wd_jp}: "
+                                f"{cur_name} 様 (固定 {_fmt_hhmm(actual_start)}) が "
+                                "昼休憩 12:00-13:00 に重なる "
+                                "(固定時刻のため動かせず — 運用者要確認)"
+                            ),
+                            weekday=weekday,
+                            actionable=True,
+                            patient_id=cur.patient_id,
+                            patient_name=cur.patient_name,
+                            current_time=_fmt_hhmm(actual_start),
+                            time_type=tt,
+                            preferred_start=cur.preferred_start,
+                            preferred_end=cur.preferred_end,
+                        )
+                    )
+                else:
+                    # 固定以外: 13:00 にバンプして再評価.
+                    bumped_start_min = lunch_end_min  # 13:00
+                    bumped_end_min_v = bumped_start_min + cur.service_minutes
+                    can_bump = True
+                    # time_type 別に bump 可否を判定.
+                    if tt == "午前":
+                        # 午前希望を 13:00 にバンプ — 18:00 内なら可.
+                        can_bump = bumped_end_min_v <= pm_block_end_min
+                    elif tt == "時間帯":
+                        # 時間帯 window 内 (= window_upper 以下) なら可.
+                        pe_v = _parse_hhmm(cur.preferred_end)
+                        window_upper_v = pe_v if pe_v is not None else PM_BLOCK_END
+                        window_upper_min = window_upper_v.hour * 60 + window_upper_v.minute
+                        can_bump = bumped_start_min <= window_upper_min
+                    elif tt == "午後":
+                        # 午後 visit が 12-13 に被るのは earliest < 13:00 のとき.
+                        # 13:00 バンプ + service が 18:00 内なら OK.
+                        can_bump = bumped_end_min_v <= pm_block_end_min
+                    else:
+                        # 終日 / None: 18:00 内ならバンプ.
+                        can_bump = bumped_end_min_v <= pm_block_end_min
+
+                    if can_bump:
+                        actual_start = LUNCH_END
+                        warnings.append(
+                            V2Warning(
+                                type="travel_time_shortage",
+                                message=(
+                                    f"{office_name} {course_code} {wd_jp}: "
+                                    f"{cur_name} 様 が移動時間で昼休憩 12:00-13:00 に "
+                                    "重なるため 13:00 に繰り下げ"
+                                ),
+                                weekday=weekday,
+                                actionable=False,
+                                patient_id=cur.patient_id,
+                                patient_name=cur.patient_name,
+                                current_time=_fmt_hhmm(actual_start),
+                                suggested_time=_fmt_hhmm(actual_start),
+                                time_type=tt,
+                                preferred_start=cur.preferred_start,
+                                preferred_end=cur.preferred_end,
+                            )
+                        )
+                    else:
+                        # バンプ不可: 動かさず actionable warning.
+                        warnings.append(
+                            V2Warning(
+                                type="travel_time_shortage",
+                                message=(
+                                    f"{office_name} {course_code} {wd_jp}: "
+                                    f"{cur_name} 様 が移動時間で昼休憩 12:00-13:00 に "
+                                    f"重なる (time_type={tt or '不明'}, "
+                                    "13:00 バンプも不可)"
+                                ),
+                                weekday=weekday,
+                                actionable=True,
+                                patient_id=cur.patient_id,
+                                patient_name=cur.patient_name,
+                                current_time=_fmt_hhmm(actual_start),
+                                time_type=tt,
+                                preferred_start=cur.preferred_start,
+                                preferred_end=cur.preferred_end,
+                            )
+                        )
+
+            cur.start_time = actual_start
+            cur.end_time = _add_minutes(actual_start, cur.service_minutes)
+
+        # コース全体で連続移動が 30 分超なら長距離コース warning.
+        if cumulative_travel_min > 30:
+            warnings.append(
+                V2Warning(
+                    type="course_long_distance",
+                    message=(
+                        f"{office_name} {course_code} コース {wd_jp}: "
+                        f"連続移動時間合計 {cumulative_travel_min} 分 (30 分超 — "
+                        "長距離コースとして要注意)"
+                    ),
+                    weekday=weekday,
+                    actionable=False,
+                )
+            )
+
+
+def _check_course_capacity_minutes(
+    visits: list[V2Visit],
+    *,
+    warnings: list[V2Warning],
+    office_name_by_id: dict[UUID, str] | None = None,
+) -> None:
+    """W41 v2 拡張 (コース容量 duration 化): コース総所要時間が ``COURSE_MAX_MINUTES``
+    (= 480 分 = 8 時間, 昼休憩除く) を超えていれば warning を追加する.
+
+    既存の人数制約 (``MAX_PATIENTS_PER_COURSE=6``) と併用する独立 check.
+    人数 ≤ 6 でも duration が長すぎるコースを検出する.
+
+    TODO(future): コース再分配 (visits を他コースに移送) は次回 iteration.
+    現状は ``actionable=True`` で UI 通知し、運用者の手動介入を促す.
+    """
+    groups: dict[tuple[UUID, int, str | None], list[V2Visit]] = {}
+    for v in visits:
+        if v.course_code is None:
+            continue
+        groups.setdefault((v.office_id, v.weekday, v.course_code), []).append(v)
+
+    for (office_id, weekday, course_code), gv in groups.items():
+        total_min = calc_course_total_minutes(gv)
+        if total_min > COURSE_MAX_MINUTES:
+            office_name = (office_name_by_id or {}).get(office_id) or str(office_id)
+            wd_jp = _weekday_jp(weekday)
+            warnings.append(
+                V2Warning(
+                    type="course_capacity",
+                    message=(
+                        f"{office_name} {course_code} コース {wd_jp}: "
+                        f"コース総所要時間 {total_min} 分 > 上限 {COURSE_MAX_MINUTES} 分 "
+                        "(訪問時間 + 移動時間合計)"
+                    ),
+                    weekday=weekday,
+                    # HIGH #3: 自動再分配は未実装 — 運用者の手動再分配を促すため
+                    # actionable=True にする (UI で「コース変更」アクションを出す).
+                    actionable=True,
+                )
+            )
+
+
+def _check_two_staff_availability(
+    visits: list[V2Visit],
+    *,
+    staff_count_by_weekday: dict[tuple[UUID, int], int],
+    warnings: list[V2Warning],
+    office_name_by_id: dict[UUID, str] | None = None,
+) -> None:
+    """W41 v2 拡張 (二人組訪問): ``requires_multiple_staff=True`` の visit に
+    対し、同 (office_id, weekday) の対応可能スタッフが 2 名以上いるか check する.
+
+    スタッフ枠が 2 名未満なら、当該 visit ごとに warning を追加する.
+    実際の visit_staff_assignments への 2 行登録は ``apply_*`` (DB 書き込み)
+    側の責務. 本サービスは提案段階の整合性チェックに留める.
+
+    Scope (MEDIUM #2):
+        現状の判定は (office_id, weekday) 粒度の first-pass heuristic.
+        スタッフが午前/午後どちらに対応可能か等の時間帯までは未考慮.
+
+        TODO(future): スタッフの shift 時間帯まで考慮した可用性 check に拡張
+        (visit.start_time が staff_shift の勤務時間内かを 2 名分突き合わせ).
+    """
+    if not any(v.requires_multiple_staff for v in visits):
+        return
+    for v in visits:
+        if not v.requires_multiple_staff:
+            continue
+        n_staff = staff_count_by_weekday.get((v.office_id, v.weekday), 0)
+        if n_staff < 2:
+            office_name = (office_name_by_id or {}).get(v.office_id) or str(v.office_id)
+            wd_jp = _weekday_jp(v.weekday)
+            name = v.patient_name or (v.patient_code or "不明")
+            warnings.append(
+                V2Warning(
+                    # MEDIUM #1: 二人組訪問は専用 type に分離 (UI 分類のため).
+                    type="two_staff_shortage",
+                    message=(
+                        f"{office_name} {wd_jp}: {name} 様 は二人組訪問必須だが "
+                        f"対応可能スタッフ {n_staff} 名 (2 名必要)"
+                    ),
+                    weekday=v.weekday,
+                    actionable=True,
+                    patient_id=v.patient_id,
+                    patient_name=v.patient_name,
+                )
+            )
+
+
+# ---------------------------------------------------------------------------
 # Acceptance calendar (H5)
 # ---------------------------------------------------------------------------
 
@@ -1766,6 +2270,10 @@ async def _load_before_visits_from_pfv(
                 sex_restriction=patient.sex_restriction,
                 preferred_start=ps_str,
                 preferred_end=pe_str,
+                # W41 v2 拡張 (二人組訪問): patient.requires_multiple_staff を流す.
+                requires_multiple_staff=bool(
+                    getattr(patient, "requires_multiple_staff", False) or False
+                ),
             )
         )
 
@@ -2054,6 +2562,28 @@ async def run_v2_pipeline(
                 v.course_code = code
             for v in pm_set.visits if pm_set else []:
                 v.course_code = code
+
+    # W41 v2 拡張 (移動時間の time 化): コース内連続訪問に対し、移動時間を
+    # start_time に反映する. course_code 確定後に呼ぶ. time_type ごとに
+    # 挙動分岐 (固定/時間帯/午前/午後/終日) し、不整合は warning に出す.
+    _apply_travel_time_to_courses(
+        after_visits, warnings=warnings, office_name_by_id=office_name_by_id
+    )
+
+    # W41 v2 拡張 (コース容量 duration 化): 既存の人数制約 (MAX_PATIENTS_PER_COURSE=6)
+    # と独立して、コース総所要時間 (visit duration + 移動時間) が 480 分を超えていないか check.
+    _check_course_capacity_minutes(
+        after_visits, warnings=warnings, office_name_by_id=office_name_by_id
+    )
+
+    # W41 v2 拡張 (二人組訪問): requires_multiple_staff=True 患者の visit に
+    # 対し、同 (office, weekday) の対応可能スタッフが 2 名以上いるか check.
+    _check_two_staff_availability(
+        after_visits,
+        staff_count_by_weekday=staff_count_by_weekday,
+        warnings=warnings,
+        office_name_by_id=office_name_by_id,
+    )
 
     # W41 v2 (Mode 2 UI 拡張): 未割当患者リストを抽出.
     # full_optimize モードのときのみ意味を持つ (after_visits = pool_visits 由来).
@@ -2873,6 +3403,7 @@ async def apply_individual_proposal(
 __all__ = [
     "AM_BLOCK_END",
     "AM_BLOCK_START",
+    "COURSE_MAX_MINUTES",
     "LUNCH_END",
     "LUNCH_START",
     "MAX_PATIENTS_PER_COURSE",
@@ -2881,6 +3412,7 @@ __all__ = [
     "PM_BLOCK_END",
     "PM_BLOCK_START",
     "SAME_ADDRESS_TOLERANCE",
+    "TRAVEL_SPEED_KMH",
     "V2Bucket",
     "V2Set",
     "V2Visit",
@@ -2888,6 +3420,7 @@ __all__ = [
     "apply_individual_proposal",
     "apply_week_only",
     "build_visits_for_pool",
+    "calc_course_total_minutes",
     "calc_h_violations",
     "calc_total_distance",
     "cluster_by_distance_greedy",
@@ -2896,6 +3429,7 @@ __all__ = [
     "determine_am_pm",
     "enforce_course_count_constraint",
     "haversine_km",
+    "haversine_minutes",
     "reset_visits_to_fixed",
     "run_v2_pipeline",
     "split_into_buckets",
