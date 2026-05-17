@@ -78,5 +78,11 @@ class StaffExcelImportResponse(BaseModel):
     staff_rows: list[StaffExcelImportRow]
     shift_rows: list[ShiftExcelImportRow]
     transaction_applied: bool = Field(
-        description="True なら DB に反映済 (dry_run=False かつ error 0 件)."
+        description=(
+            "True なら DB に反映済 (partial commit). "
+            "dry_run=True のときは常に False. "
+            "dry_run=False で有効な op が 1 件以上あれば True "
+            "(error 行は skip され、それ以外が 1 transaction で commit される). "
+            "dry_run=False で有効な op が 0 件 (全 error or 全 noop) なら False."
+        )
     )

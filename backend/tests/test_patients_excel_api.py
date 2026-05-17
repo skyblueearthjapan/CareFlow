@@ -11,13 +11,15 @@ Coverage map (spec §6):
   8.  import dry_run: バリデーションエラー (UUID 不正、enum 違反、必須欠落)
   9.  import dry_run: DB は変更されない
   10. import apply: 新規 + 更新 + 削除が 1 transaction で反映
-  11. import apply: エラー 1 件あったら全部 rollback
+  11. import apply: partial commit — error 行は skip、有効行のみ反映
   12. import apply: PFV の物理削除
   13. import apply: course_template_code → course_template_id 解決
   14. import apply: 拠点コード → primary_office_id 解決
-  15. import apply: patient_code 重複で error
+  15. import apply: patient_code 重複で error (skip され、有効行のみ反映)
   16. RBAC: staff は 403
   17. template ダウンロード: 1 行のみ (ヘッダー)
+  27. import apply: 全件 error → transaction_applied=False、DB 変更なし
+  28. import apply: pfv_error 1 件 + patient_new 2 件 → patient は反映、pfv は skip
 """
 
 from __future__ import annotations
@@ -502,9 +504,10 @@ async def test_import_apply_mixed_operations(client, db) -> None:
     assert by_code["P-AP-DEL"].deleted_at is not None  # soft delete
 
 
-# 11) apply: error 1 件あったら rollback
+# 11) apply: partial commit — error 行は skip、有効行のみ反映
 @pytest.mark.asyncio
-async def test_import_apply_rollback_on_error(client, db) -> None:
+async def test_import_apply_partial_commit_skips_error_rows(client, db) -> None:
+    """error 1 件 + 正常 update 1 件 → 正常 update は commit、error 行は skip."""
     admin = await _make_user(db, "im-rb@example.com", "admin")
     p_upd = await _make_patient(db, code="P-RB-UPD", name="旧")
     p_upd_id = p_upd.id  # expire_all 前に id を確保 (lazy-load 回避)
@@ -530,13 +533,18 @@ async def test_import_apply_rollback_on_error(client, db) -> None:
     )
     res = await _upload(client, admin, content=content, dry_run=False)
     body = res.json()
-    assert body["transaction_applied"] is False
+    # 有効な op (update 1) があるので transaction は commit される.
+    assert body["transaction_applied"] is True
     assert body["summary"]["patients_error"] == 1
+    assert body["summary"]["patients_update"] == 1
 
-    # P-RB-UPD は更新されていない
+    # P-RB-UPD は更新されているはず (partial commit).
     db.expire_all()
     refreshed = await db.get(Patient, p_upd_id)
-    assert refreshed.name == "旧"
+    assert refreshed.name == "正常な更新"
+    # P-RB-ERR は skip されているので DB に存在しない.
+    err_row = await db.scalar(select(Patient).where(Patient.code == "P-RB-ERR"))
+    assert err_row is None
 
 
 # 12) apply: PFV の物理削除
@@ -644,7 +652,7 @@ async def test_import_apply_resolves_office_code(client, db) -> None:
     assert rows[0].primary_office_id == office_id
 
 
-# 15) apply: patient_code 重複 → error
+# 15) apply: patient_code 重複 → error 行は skip (有効 op が他に無ければ TX 非実行)
 @pytest.mark.asyncio
 async def test_import_apply_duplicate_code_errors(client, db) -> None:
     admin = await _make_user(db, "im-dup@example.com", "admin")
@@ -663,6 +671,7 @@ async def test_import_apply_duplicate_code_errors(client, db) -> None:
     )
     res = await _upload(client, admin, content=content, dry_run=False)
     body = res.json()
+    # 唯一の行が error なので有効 op = 0 → transaction_applied=False.
     assert body["transaction_applied"] is False
     assert body["summary"]["patients_error"] == 1
     assert "P-DUP-001" in body["patient_rows"][0]["error_message"]
@@ -1063,3 +1072,165 @@ async def test_pfv_id_and_code_consistent_ok(client, db) -> None:
         )
     ).all()
     assert len(rows) == 1
+
+
+# 27) partial commit: error 1 件 + new 2 件 → new 2 件のみ DB に反映
+@pytest.mark.asyncio
+async def test_import_apply_partial_commit_new_rows_with_one_error(client, db) -> None:
+    """error 1 件 + new 2 件 で apply → DB に new 2 件のみ反映、error 1 件は skip."""
+    admin = await _make_user(db, "im-partial-mix@example.com", "admin")
+
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                "patient_code": "P-PC-OK-1",
+                "name": "正常 1",
+                "sex": "male",
+                "status": "active",
+                "address": "addr1",
+            },
+            {
+                "patient_code": "P-PC-ERR",
+                "name": "エラー (enum 違反)",
+                "sex": "INVALID",
+                "status": "active",
+                "address": "addr-err",
+            },
+            {
+                "patient_code": "P-PC-OK-2",
+                "name": "正常 2",
+                "sex": "female",
+                "status": "active",
+                "address": "addr2",
+            },
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["transaction_applied"] is True
+    assert body["summary"]["patients_new"] == 2
+    assert body["summary"]["patients_error"] == 1
+
+    # DB: 正常 2 件のみ反映 (error 行は skip)
+    db.expire_all()
+    rows = (
+        await db.scalars(
+            select(Patient).where(Patient.code.in_(["P-PC-OK-1", "P-PC-ERR", "P-PC-OK-2"]))
+        )
+    ).all()
+    codes = sorted(p.code for p in rows)
+    assert codes == ["P-PC-OK-1", "P-PC-OK-2"]
+
+
+# 28) partial commit: 全件 error → transaction_applied=False、DB 変更なし
+@pytest.mark.asyncio
+async def test_import_apply_all_errors_no_commit(client, db) -> None:
+    admin = await _make_user(db, "im-partial-allerr@example.com", "admin")
+    before_count = len((await db.scalars(select(Patient))).all())
+
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                "patient_code": "P-ALL-ERR-1",
+                "name": "エラー 1",
+                "sex": "INVALID",
+                "status": "active",
+                "address": "addr",
+            },
+            {
+                "patient_code": "P-ALL-ERR-2",
+                "name": "エラー 2",
+                "sex": "male",
+                "status": "INVALID_STATUS",
+                "address": "addr",
+            },
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    # 有効 op = 0 件 → 非 commit.
+    assert body["transaction_applied"] is False
+    assert body["summary"]["patients_error"] == 2
+
+    # DB は変更なし.
+    db.expire_all()
+    after_count = len((await db.scalars(select(Patient))).all())
+    assert after_count == before_count
+
+
+# 29) partial commit: pfv_error 1 件 + patient_new 2 件 → patient 反映、pfv は正常分のみ反映
+@pytest.mark.asyncio
+async def test_import_apply_partial_commit_mixed_patient_and_pfv_errors(client, db) -> None:
+    """patient シートに正常 new 2 件、pfv シートに error 1 件 + 正常 new 1 件.
+    → patient 2 件 + pfv 1 件 が commit される (pfv error 1 件は skip)."""
+    admin = await _make_user(db, "im-partial-pfv@example.com", "admin")
+
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                "patient_code": "P-MIX-A",
+                "name": "患者 A",
+                "sex": "male",
+                "status": "active",
+                "address": "addr-a",
+            },
+            {
+                "patient_code": "P-MIX-B",
+                "name": "患者 B",
+                "sex": "female",
+                "status": "active",
+                "address": "addr-b",
+            },
+        ],
+        pfv_rows=[
+            {
+                # 正常 pfv 行 (患者 A 紐付け via code)
+                "patient_code": "P-MIX-A",
+                "weekday": "月",
+                "slot_index": 0,
+                "mode": "normal",
+                "time_type": "固定",
+                "start_time": "09:00",
+                "duration_min": 30,
+            },
+            {
+                # error 行: weekday の値が候補外
+                "patient_code": "P-MIX-B",
+                "weekday": "INVALID_DAY",
+                "slot_index": 0,
+                "mode": "normal",
+                "time_type": "固定",
+                "start_time": "10:00",
+            },
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["transaction_applied"] is True
+    assert body["summary"]["patients_new"] == 2
+    assert body["summary"]["pfv_new"] == 1
+    assert body["summary"]["pfv_error"] == 1
+
+    db.expire_all()
+    # 患者 2 件はどちらも DB にいる.
+    patient_rows = (
+        await db.scalars(select(Patient).where(Patient.code.in_(["P-MIX-A", "P-MIX-B"])))
+    ).all()
+    assert {p.code for p in patient_rows} == {"P-MIX-A", "P-MIX-B"}
+    by_code = {p.code: p for p in patient_rows}
+    # 患者 A の PFV のみ DB に存在 (患者 B の error 行は skip).
+    pfvs_a = (
+        await db.scalars(
+            select(PatientFixedVisit).where(PatientFixedVisit.patient_id == by_code["P-MIX-A"].id)
+        )
+    ).all()
+    assert len(pfvs_a) == 1
+    pfvs_b = (
+        await db.scalars(
+            select(PatientFixedVisit).where(PatientFixedVisit.patient_id == by_code["P-MIX-B"].id)
+        )
+    ).all()
+    assert pfvs_b == []

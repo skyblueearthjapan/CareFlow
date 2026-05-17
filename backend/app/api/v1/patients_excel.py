@@ -180,8 +180,11 @@ async def import_excel(
 
     transaction_applied = False
     if not dry_run:
-        # error が 1 件でもあれば atomic に reject.
-        if summary.patients_error > 0 or summary.pfv_error > 0:
+        # partial commit: error 行は skip、有効な op (new/update/delete) のみ apply.
+        # patient_ops / pfv_ops は parse_and_diff の段階で error 行を除外済み
+        # (error は op=None を返すので *_ops に積まれない).
+        # 有効な op が 0 件 (全 error or 全 noop) の場合は commit せず False を返す.
+        if not patient_ops and not pfv_ops:
             return PatientExcelImportResponse(
                 summary=summary,
                 patient_rows=patient_rows,

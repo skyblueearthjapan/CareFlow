@@ -114,6 +114,11 @@ function StaffTabPanel({ rows, tab }: { rows: StaffExcelImportRow[]; tab: StaffT
   }
   return (
     <div className="space-y-2">
+      {tab === 'error' ? (
+        <p className="rounded-md border border-error/40 bg-error/5 p-2 text-xs text-error">
+          ⚠️ これらの行は反映されません (skip)。Excel を修正して再度インポートしてください。
+        </p>
+      ) : null}
       {filtered.map((r) => (
         <StaffRowCard key={r.row_number} row={r} />
       ))}
@@ -157,9 +162,8 @@ export function StaffImportPreviewModal({
   if (!preview) return null;
 
   const { summary, staff_rows, shift_rows } = preview;
-  const hasError = summary.staff_error > 0 || summary.shift_error > 0;
 
-  // shift-only な変更 (スタッフは変更なし、勤務シフトだけ変更) も apply 対象に含める.
+  // partial commit: error 行は skip (反映されない). 有効行 (new/update/delete) のみ反映.
   const applyCount =
     summary.staff_new +
     summary.staff_update +
@@ -167,6 +171,11 @@ export function StaffImportPreviewModal({
     summary.shift_new +
     summary.shift_update +
     summary.shift_delete;
+  const errorCount = summary.staff_error + summary.shift_error;
+  const applyButtonLabel =
+    errorCount > 0
+      ? `✅ 反映可能な ${applyCount} 件のみ反映する (エラー ${errorCount} 件は skip)`
+      : `✅ ${applyCount} 件を反映する`;
 
   const shiftActive = shift_rows.filter((r) => r.operation !== 'noop').length;
 
@@ -279,15 +288,9 @@ export function StaffImportPreviewModal({
           <Button variant="outline" onClick={onClose} disabled={isApplying}>
             キャンセル
           </Button>
-          {hasError ? (
-            <Button variant="outline" disabled>
-              ⚠️ エラーがあるため反映不可
-            </Button>
-          ) : (
-            <Button onClick={onApply} disabled={isApplying || applyCount === 0}>
-              {isApplying ? '反映中...' : `✅ ${applyCount} 件を反映する`}
-            </Button>
-          )}
+          <Button onClick={onApply} disabled={isApplying || applyCount === 0}>
+            {isApplying ? '反映中...' : applyButtonLabel}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

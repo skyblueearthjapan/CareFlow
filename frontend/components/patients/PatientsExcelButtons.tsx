@@ -130,12 +130,14 @@ export function PatientsExcelButtons() {
         summary.pfv_update +
         summary.pfv_delete
       : 0;
+    const errorCount = summary ? summary.patients_error + summary.pfv_error : 0;
     const confirmMsg =
       `患者マスタに ${totalCount} 件の変更を反映します。\n` +
       `(新規: 患者 ${summary?.patients_new ?? 0} + PFV ${summary?.pfv_new ?? 0})\n` +
       `(更新: 患者 ${summary?.patients_update ?? 0} + PFV ${summary?.pfv_update ?? 0})\n` +
-      `(削除: 患者 ${summary?.patients_delete ?? 0} + PFV ${summary?.pfv_delete ?? 0})\n\n` +
-      `この操作は取り消せません。続行しますか？`;
+      `(削除: 患者 ${summary?.patients_delete ?? 0} + PFV ${summary?.pfv_delete ?? 0})\n` +
+      (errorCount > 0 ? `(エラー ${errorCount} 件は skip します)\n` : '') +
+      `\nこの操作は取り消せません。続行しますか？`;
     if (typeof window !== 'undefined' && !window.confirm(confirmMsg)) return;
 
     applyingRef.current = true;
@@ -147,7 +149,11 @@ export function PatientsExcelButtons() {
         accessToken,
         refreshToken,
       });
-      toast.success('患者マスタを更新しました');
+      toast.success(
+        errorCount > 0
+          ? `患者マスタを更新しました (${totalCount} 件反映、エラー ${errorCount} 件 skip)`
+          : `患者マスタを更新しました (${totalCount} 件反映)`,
+      );
       setPreviewOpen(false);
       setPreviewData(null);
       previewRef.current = null;

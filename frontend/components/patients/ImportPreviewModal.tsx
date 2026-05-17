@@ -115,6 +115,11 @@ function PatientTabPanel({ rows, tab }: { rows: PatientExcelImportRow[]; tab: Pa
   }
   return (
     <div className="space-y-2">
+      {tab === 'error' ? (
+        <p className="rounded-md border border-error/40 bg-error/5 p-2 text-xs text-error">
+          ⚠️ これらの行は反映されません (skip)。Excel を修正して再度インポートしてください。
+        </p>
+      ) : null}
       {filtered.map((r) => (
         <PatientRowCard key={r.row_number} row={r} />
       ))}
@@ -158,9 +163,8 @@ export function ImportPreviewModal({
   if (!preview) return null;
 
   const { summary, patient_rows, pfv_rows } = preview;
-  const hasError = summary.patients_error > 0 || summary.pfv_error > 0;
 
-  // PFV-only な変更 (患者は変更なし、固定枠だけ変更) も apply 対象に含める.
+  // partial commit: error 行は skip (反映されない). 有効行 (new/update/delete) のみ反映.
   const applyCount =
     summary.patients_new +
     summary.patients_update +
@@ -168,6 +172,11 @@ export function ImportPreviewModal({
     summary.pfv_new +
     summary.pfv_update +
     summary.pfv_delete;
+  const errorCount = summary.patients_error + summary.pfv_error;
+  const applyButtonLabel =
+    errorCount > 0
+      ? `✅ 反映可能な ${applyCount} 件のみ反映する (エラー ${errorCount} 件は skip)`
+      : `✅ ${applyCount} 件を反映する`;
 
   const pfvActive = pfv_rows.filter((r) => r.operation !== 'noop').length;
 
@@ -280,15 +289,9 @@ export function ImportPreviewModal({
           <Button variant="outline" onClick={onClose} disabled={isApplying}>
             キャンセル
           </Button>
-          {hasError ? (
-            <Button variant="outline" disabled>
-              ⚠️ エラーがあるため反映不可
-            </Button>
-          ) : (
-            <Button onClick={onApply} disabled={isApplying || applyCount === 0}>
-              {isApplying ? '反映中...' : `✅ ${applyCount} 件を反映する`}
-            </Button>
-          )}
+          <Button onClick={onApply} disabled={isApplying || applyCount === 0}>
+            {isApplying ? '反映中...' : applyButtonLabel}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

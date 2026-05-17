@@ -11,6 +11,7 @@ import {
   Heart,
   Building2,
   Plug,
+  ScrollText,
   Inbox,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -26,11 +27,19 @@ const NAV_ITEMS = [
   { href: '/staff', label: 'スタッフ', icon: UserCircle2 },
   { href: '/offices', label: '拠点', icon: Building2 },
   { href: '/integrations', label: '連携', icon: Plug, adminOnly: true },
-  { href: '/admin/pending-requests', label: 'モバイル申請', icon: Inbox, adminOnly: true },
-  // 監査ログ (admin) / AIヘルプ (全員) は上部ヘッダーのアイコンボタン群に残置 (Header.tsx 参照)。
+  { href: '/admin/pending-requests', label: '申請履歴', icon: Inbox, adminOnly: true },
+  // Wave 4-F: admin audit logs (admin role only). User management was moved
+  // to the header rightmost button so admins can reach it from any screen.
+  {
+    href: '/admin/audit-logs',
+    label: '監査ログ',
+    icon: ScrollText,
+    adminOnly: true,
+    strictAdmin: true,
+  },
   // 特別訪問週間 は患者マスタの設定として取り込む方針となったため、
   // 独立したサイドバー項目は削除（v2 設計 §3.4 参照）。
-  // /special-weeks 配下のページ・API は W6-MIG2 で削除済。
+  // /special-weeks 配下のページ自体は v2 実装時にデプリケート予定。
 ] as const;
 
 export function Sidebar({ collapsed }: SidebarProps) {

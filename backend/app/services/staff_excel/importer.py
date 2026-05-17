@@ -5,8 +5,9 @@
     プレビュー (dry_run=True) でも apply (dry_run=False) でも事前にこの関数で
     差分計算する.
   * ``apply_changes`` — ``parse_and_diff`` の戻り値を受け取り、DB に書き戻す.
-    1 transaction で INSERT / UPDATE / DELETE をまとめて実行. 差分の中に
-    error が 1 件でもあれば反映しないでロールバックする (atomic).
+    1 transaction で INSERT / UPDATE / DELETE をまとめて実行 (partial commit).
+    error 行は ``parse_and_diff`` の時点で ``op=None`` として除外されているので
+    ``apply_changes`` には積まれず、自動的に skip される.
 
 差分の表現:
   * ``StaffExcelImportRow`` — staff sheet の 1 行に対応.
@@ -978,9 +979,11 @@ async def apply_changes(
     staff_ops: list[dict[str, Any]],
     shift_ops: list[dict[str, Any]],
 ) -> None:
-    """差分を DB に反映する.
+    """差分を DB に反映する (partial commit).
 
-    呼び出し側で「error 0 件」を保証してから呼ぶこと.
+    ``staff_ops`` / ``shift_ops`` は ``parse_and_diff`` の時点で error 行が除外
+    された有効な op (new / update / delete) のみを含む. error 行は ``op=None``
+    として既に skip されているので、ここでは触れない.
     SQLAlchemy 例外は呼び出し側にバブルアップする (rollback は呼び出し側で実施).
     """
     # 1) Staff: new → insert / update → 既存行を更新 / delete → soft delete + 関連 shift 物理削除

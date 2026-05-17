@@ -23,7 +23,7 @@ import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, Pencil, Plus } from 'lucide-react';
+import { ArrowLeft, Pencil, Plus, Trash2 } from 'lucide-react';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -41,7 +41,7 @@ import { useStaffEvents } from '@/lib/queries/staff-events';
 import { useStaffOverrides, type OverrideRange } from '@/lib/queries/staff-overrides';
 import { useStaffShifts } from '@/lib/queries/staff-shifts';
 import { useDeleteCompanionAssignments } from '@/lib/queries/staff_companion';
-import { useStaff, useUpdateStaff } from '@/lib/queries/staff';
+import { useDeleteStaff, useStaff, useUpdateStaff } from '@/lib/queries/staff';
 import type { OverrideRead } from '@/lib/schemas/staff-overrides';
 import {
   STAFF_ROLE_VALUES,
@@ -60,6 +60,7 @@ import {
 import type { StaffShiftItem } from '@/lib/schemas/staff-shifts';
 import type { EventRead } from '@/lib/schemas/staff-events';
 
+import { DeleteConfirmModal } from '../../_components/DeleteConfirmModal';
 import { StaffCompanionPanel } from '../../_components/StaffCompanionPanel';
 import { StaffFormFields, type StaffFormState } from '../../_components/StaffFormFields';
 import { EventAddDialog } from '../_components/EventAddDialog';
@@ -131,6 +132,7 @@ export default function StaffEditPage() {
   const { data: session, status } = useSession();
   const sessionRole = session?.user?.role;
   const isPrivileged = sessionRole === 'admin' || sessionRole === 'manager';
+  const canDelete = sessionRole === 'admin';
   const denied = status === 'authenticated' && !isPrivileged;
 
   useEffect(() => {
@@ -143,6 +145,23 @@ export default function StaffEditPage() {
 
   const [form, setForm] = useState<StaffFormState | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
+
+  // 削除確認ダイアログ
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+
+  const del = useDeleteStaff();
+
+  const handleDelete = async () => {
+    if (!data?.id) return;
+    try {
+      await del.mutateAsync(data.id);
+      toast.success('スタッフを削除しました');
+      setDeleteConfirmOpen(false);
+      router.push('/staff');
+    } catch (e) {
+      toast.error(`削除に失敗しました: ${e instanceof Error ? e.message : '不明なエラー'}`);
+    }
+  };
 
   // is_trainee OFF 確認ダイアログ
   const [traineeOffConfirmOpen, setTraineeOffConfirmOpen] = useState(false);
@@ -238,7 +257,7 @@ export default function StaffEditPage() {
 
   return (
     <section className="space-y-6">
-      <header className="flex items-center gap-3">
+      <header className="flex flex-wrap items-center gap-3">
         <Button asChild variant="ghost" size="sm">
           <Link href={`/staff/${id}`}>
             <ArrowLeft className="h-4 w-4" />
@@ -248,6 +267,18 @@ export default function StaffEditPage() {
         <h1 className="font-serif text-2xl font-bold text-text-primary">
           スタッフ編集 — {data?.name}
         </h1>
+        {canDelete && !data?.deleted_at ? (
+          <Button
+            variant="destructive"
+            size="sm"
+            className="ml-auto"
+            onClick={() => setDeleteConfirmOpen(true)}
+            disabled={del.isPending}
+          >
+            <Trash2 className="h-4 w-4" />
+            削除
+          </Button>
+        ) : null}
       </header>
 
       {update.isError && (
@@ -301,6 +332,18 @@ export default function StaffEditPage() {
 
       {/* ⑤ 同行スタッフ割付 (is_trainee=true 時のみ) */}
       {form.is_trainee && <StaffCompanionPanel staffId={id} />}
+
+      {/* 削除確認ダイアログ */}
+      {data && (
+        <DeleteConfirmModal
+          open={deleteConfirmOpen}
+          title="スタッフを削除しますか？"
+          description={`${data.name} を削除すると一覧から外れます。論理削除のため後で復元可能です。`}
+          confirming={del.isPending}
+          onCancel={() => setDeleteConfirmOpen(false)}
+          onConfirm={() => void handleDelete()}
+        />
+      )}
 
       {/* is_trainee OFF 確認ダイアログ */}
       <Dialog open={traineeOffConfirmOpen} onOpenChange={setTraineeOffConfirmOpen}>

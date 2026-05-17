@@ -132,12 +132,14 @@ export function StaffExcelButtons() {
         summary.shift_update +
         summary.shift_delete
       : 0;
+    const errorCount = summary ? summary.staff_error + summary.shift_error : 0;
     const confirmMsg =
       `スタッフマスタに ${totalCount} 件の変更を反映します。\n` +
       `(新規: スタッフ ${summary?.staff_new ?? 0} + 勤務シフト ${summary?.shift_new ?? 0})\n` +
       `(更新: スタッフ ${summary?.staff_update ?? 0} + 勤務シフト ${summary?.shift_update ?? 0})\n` +
-      `(削除: スタッフ ${summary?.staff_delete ?? 0} + 勤務シフト ${summary?.shift_delete ?? 0})\n\n` +
-      `この操作は取り消せません。続行しますか？`;
+      `(削除: スタッフ ${summary?.staff_delete ?? 0} + 勤務シフト ${summary?.shift_delete ?? 0})\n` +
+      (errorCount > 0 ? `(エラー ${errorCount} 件は skip します)\n` : '') +
+      `\nこの操作は取り消せません。続行しますか？`;
     if (typeof window !== 'undefined' && !window.confirm(confirmMsg)) return;
 
     applyingRef.current = true;
@@ -149,7 +151,11 @@ export function StaffExcelButtons() {
         accessToken,
         refreshToken,
       });
-      toast.success('スタッフマスタを更新しました');
+      toast.success(
+        errorCount > 0
+          ? `スタッフマスタを更新しました (${totalCount} 件反映、エラー ${errorCount} 件 skip)`
+          : `スタッフマスタを更新しました (${totalCount} 件反映)`,
+      );
       setPreviewOpen(false);
       setPreviewData(null);
       previewRef.current = null;

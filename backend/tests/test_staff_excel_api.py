@@ -11,10 +11,10 @@ Coverage map (spec §7):
   8.  import dry_run: バリデーションエラー (UUID 不正、enum 違反、必須欠落)
   9.  import dry_run: DB は変更されない
   10. import apply: 新規 + 更新 + 削除が 1 transaction で反映
-  11. import apply: エラー 1 件あったら全部 rollback
+  11. import apply: partial commit — error 行は skip、有効行のみ反映
   12. import apply: staff soft-delete で関連 shift も物理削除
   13. import apply: 拠点コード → primary_office_id 解決
-  14. import apply: staff_code 重複で error
+  14. import apply: staff_code 重複で error (skip、有効行のみ反映)
   15. RBAC: staff は 403 (3 endpoints すべて)
   16. RBAC: manager OK
   17. template ダウンロード: 1 行のみ
@@ -22,6 +22,8 @@ Coverage map (spec §7):
   19. shift update via composite key (staff_id, weekday)
   20. shift: 新規スタッフ + その shifts を staff_code リンクで登録 (UUID 不要)
   21. shift: is_on=FALSE のとき start/end 不要で noop / delete
+  27. import apply: 全件 error → transaction_applied=False、DB 変更なし
+  28. import apply: shift_error 1 件 + staff_new 2 件 → staff は反映、shift は正常分のみ反映
 """
 
 from __future__ import annotations
@@ -480,9 +482,10 @@ async def test_import_apply_mixed_operations(client, db) -> None:
     assert by_code["S-AP-DEL"].deleted_at is not None  # soft delete
 
 
-# 11) apply: error 1 件あったら rollback
+# 11) apply: partial commit — error 行は skip、有効行のみ反映
 @pytest.mark.asyncio
-async def test_import_apply_rollback_on_error(client, db) -> None:
+async def test_import_apply_partial_commit_skips_error_rows(client, db) -> None:
+    """error 1 件 + 正常 update 1 件 → 正常 update は commit、error 行は skip."""
     admin = await _make_user(db, "stx-rb@example.com", "admin")
     s_upd = await _make_staff(db, code="S-RB-UPD", name="旧")
     s_upd_id = s_upd.id
@@ -507,12 +510,18 @@ async def test_import_apply_rollback_on_error(client, db) -> None:
     )
     res = await _upload(client, admin, content=content, dry_run=False)
     body = res.json()
-    assert body["transaction_applied"] is False
+    # 有効な op (update 1) があるので transaction は commit される.
+    assert body["transaction_applied"] is True
     assert body["summary"]["staff_error"] == 1
+    assert body["summary"]["staff_update"] == 1
 
+    # S-RB-UPD は更新されているはず (partial commit).
     db.expire_all()
     refreshed = await db.get(Staff, s_upd_id)
-    assert refreshed.name == "旧"
+    assert refreshed.name == "正常な更新"
+    # S-RB-ERR は skip されているので DB に存在しない.
+    err_row = await db.scalar(select(Staff).where(Staff.code == "S-RB-ERR"))
+    assert err_row is None
 
 
 # 12) apply: staff soft-delete で関連 shift も物理削除
@@ -579,7 +588,7 @@ async def test_import_apply_resolves_office_code(client, db) -> None:
     assert rows[0].primary_office_id == office_id
 
 
-# 14) apply: staff_code 重複 → error
+# 14) apply: staff_code 重複 → error 行は skip (有効 op が他に無ければ TX 非実行)
 @pytest.mark.asyncio
 async def test_import_apply_duplicate_code_errors(client, db) -> None:
     admin = await _make_user(db, "stx-dup@example.com", "admin")
@@ -597,6 +606,7 @@ async def test_import_apply_duplicate_code_errors(client, db) -> None:
     )
     res = await _upload(client, admin, content=content, dry_run=False)
     body = res.json()
+    # 唯一の行が error なので有効 op = 0 → transaction_applied=False.
     assert body["transaction_applied"] is False
     assert body["summary"]["staff_error"] == 1
     assert "S-DUP-001" in body["staff_rows"][0]["error_message"]
@@ -957,3 +967,153 @@ async def test_db_unique_constraint_on_staff_code(db) -> None:
     with pytest.raises(IntegrityError):
         await db.commit()
     await db.rollback()
+
+
+# 27) partial commit: error 1 件 + new 2 件 → new 2 件のみ DB に反映
+@pytest.mark.asyncio
+async def test_import_apply_partial_commit_new_rows_with_one_error(client, db) -> None:
+    """error 1 件 + new 2 件 で apply → DB に new 2 件のみ反映、error 1 件は skip."""
+    admin = await _make_user(db, "stx-partial-mix@example.com", "admin")
+
+    content = _build_workbook_bytes(
+        staff_rows=[
+            {
+                "staff_code": "S-PC-OK-1",
+                "name": "正常 1",
+                "status": "active",
+                "role": "staff",
+            },
+            {
+                "staff_code": "S-PC-ERR",
+                "name": "エラー (enum 違反)",
+                "sex": "INVALID",
+                "status": "active",
+                "role": "staff",
+            },
+            {
+                "staff_code": "S-PC-OK-2",
+                "name": "正常 2",
+                "status": "active",
+                "role": "staff",
+            },
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["transaction_applied"] is True
+    assert body["summary"]["staff_new"] == 2
+    assert body["summary"]["staff_error"] == 1
+
+    # DB: 正常 2 件のみ反映 (error 行は skip)
+    db.expire_all()
+    rows = (
+        await db.scalars(
+            select(Staff).where(Staff.code.in_(["S-PC-OK-1", "S-PC-ERR", "S-PC-OK-2"]))
+        )
+    ).all()
+    codes = sorted(s.code for s in rows)
+    assert codes == ["S-PC-OK-1", "S-PC-OK-2"]
+
+
+# 28) partial commit: 全件 error → transaction_applied=False、DB 変更なし
+@pytest.mark.asyncio
+async def test_import_apply_all_errors_no_commit(client, db) -> None:
+    admin = await _make_user(db, "stx-partial-allerr@example.com", "admin")
+    before_count = len((await db.scalars(select(Staff))).all())
+
+    content = _build_workbook_bytes(
+        staff_rows=[
+            {
+                "staff_code": "S-ALL-ERR-1",
+                "name": "エラー 1",
+                "sex": "INVALID",
+                "status": "active",
+                "role": "staff",
+            },
+            {
+                "staff_code": "S-ALL-ERR-2",
+                "name": "エラー 2",
+                "status": "INVALID_STATUS",
+                "role": "staff",
+            },
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    # 有効 op = 0 件 → 非 commit.
+    assert body["transaction_applied"] is False
+    assert body["summary"]["staff_error"] == 2
+
+    # DB は変更なし.
+    db.expire_all()
+    after_count = len((await db.scalars(select(Staff))).all())
+    assert after_count == before_count
+
+
+# 29) partial commit: shift_error 1 件 + staff_new 2 件 → staff 反映、shift は正常分のみ反映
+@pytest.mark.asyncio
+async def test_import_apply_partial_commit_mixed_staff_and_shift_errors(client, db) -> None:
+    """staff シートに正常 new 2 件、shift シートに error 1 件 + 正常 new 1 件.
+    → staff 2 件 + shift 1 件 が commit される (shift error 1 件は skip)."""
+    admin = await _make_user(db, "stx-partial-shift@example.com", "admin")
+
+    content = _build_workbook_bytes(
+        staff_rows=[
+            {
+                "staff_code": "S-MIX-A",
+                "name": "スタッフ A",
+                "status": "active",
+                "role": "staff",
+            },
+            {
+                "staff_code": "S-MIX-B",
+                "name": "スタッフ B",
+                "status": "active",
+                "role": "staff",
+            },
+        ],
+        shift_rows=[
+            {
+                # 正常 shift 行 (スタッフ A 紐付け via code)
+                "staff_code": "S-MIX-A",
+                "weekday": "月",
+                "is_on": "TRUE",
+                "start_time": "09:00",
+                "end_time": "18:00",
+            },
+            {
+                # error 行: weekday の値が候補外
+                "staff_code": "S-MIX-B",
+                "weekday": "INVALID_DAY",
+                "is_on": "TRUE",
+                "start_time": "10:00",
+                "end_time": "19:00",
+            },
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["transaction_applied"] is True
+    assert body["summary"]["staff_new"] == 2
+    assert body["summary"]["shift_new"] == 1
+    assert body["summary"]["shift_error"] == 1
+
+    db.expire_all()
+    # スタッフ 2 件はどちらも DB にいる.
+    staff_rows = (
+        await db.scalars(select(Staff).where(Staff.code.in_(["S-MIX-A", "S-MIX-B"])))
+    ).all()
+    assert {s.code for s in staff_rows} == {"S-MIX-A", "S-MIX-B"}
+    by_code = {s.code: s for s in staff_rows}
+    # スタッフ A の shift のみ DB に存在 (スタッフ B の error 行は skip).
+    shifts_a = (
+        await db.scalars(select(StaffShift).where(StaffShift.staff_id == by_code["S-MIX-A"].id))
+    ).all()
+    assert len(shifts_a) == 1
+    shifts_b = (
+        await db.scalars(select(StaffShift).where(StaffShift.staff_id == by_code["S-MIX-B"].id))
+    ).all()
+    assert shifts_b == []
