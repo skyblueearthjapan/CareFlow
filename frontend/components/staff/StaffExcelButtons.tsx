@@ -1,0 +1,222 @@
+'use client';
+
+import { useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { useSession } from 'next-auth/react';
+import { toast } from 'sonner';
+
+import { Button } from '@/components/ui/button';
+import {
+  downloadStaffExcel,
+  downloadStaffExcelTemplate,
+  importStaffExcel,
+  triggerBlobDownload,
+} from '@/lib/api/staffExcel';
+import type { StaffExcelImportResponse } from '@/lib/schemas/staffExcel';
+import { StaffImportPreviewModal } from './StaffImportPreviewModal';
+
+const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10 MB
+
+export function StaffExcelButtons() {
+  const { data: session } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+  const queryClient = useQueryClient();
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isExporting, setIsExporting] = useState(false);
+  const [isTemplating, setIsTemplating] = useState(false);
+  const [isPreviewing, setIsPreviewing] = useState(false);
+  const [isApplying, setIsApplying] = useState(false);
+  // double-click 防止用. setState は async なので useRef で sync ガード.
+  const applyingRef = useRef(false);
+
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewData, setPreviewData] = useState<StaffExcelImportResponse | null>(null);
+  // Keep a ref to the file so we can re-submit it for the actual apply.
+  const pendingFileRef = useRef<File | null>(null);
+  // Latest preview data for the confirm message (state は async なため ref で保持).
+  const previewRef = useRef<StaffExcelImportResponse | null>(null);
+
+  // ─── export ─────────────────────────────────────────────────────────────
+
+  async function handleExport() {
+    if (!accessToken) return;
+    setIsExporting(true);
+    try {
+      const blob = await downloadStaffExcel({ accessToken, refreshToken });
+      const date = new Date().toISOString().slice(0, 10);
+      triggerBlobDownload(blob, `staff_master_${date}.xlsx`);
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : 'スタッフマスタのエクスポートに失敗しました',
+      );
+    } finally {
+      setIsExporting(false);
+    }
+  }
+
+  // ─── template ────────────────────────────────────────────────────────────
+
+  async function handleTemplate() {
+    if (!accessToken) return;
+    setIsTemplating(true);
+    try {
+      const blob = await downloadStaffExcelTemplate({ accessToken, refreshToken });
+      triggerBlobDownload(blob, 'staff_template.xlsx');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'テンプレートのダウンロードに失敗しました');
+    } finally {
+      setIsTemplating(false);
+    }
+  }
+
+  // ─── import (file select → preview) ─────────────────────────────────────
+
+  function handleImportClick() {
+    fileInputRef.current?.click();
+  }
+
+  async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    // Reset input so the same file can be re-selected.
+    e.target.value = '';
+    if (!file) return;
+
+    if (!file.name.toLowerCase().endsWith('.xlsx')) {
+      toast.error('Excel ファイル (.xlsx) を選択してください');
+      return;
+    }
+    if (file.size > MAX_FILE_SIZE_BYTES) {
+      toast.error('ファイルサイズが大きすぎます (最大 10MB)');
+      return;
+    }
+    if (!accessToken) return;
+
+    pendingFileRef.current = file;
+    setIsPreviewing(true);
+    try {
+      const result = await importStaffExcel({
+        file,
+        dryRun: true,
+        accessToken,
+        refreshToken,
+      });
+      setPreviewData(result);
+      previewRef.current = result;
+      setPreviewOpen(true);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'インポートのプレビューに失敗しました');
+      pendingFileRef.current = null;
+      previewRef.current = null;
+    } finally {
+      setIsPreviewing(false);
+    }
+  }
+
+  // ─── apply ───────────────────────────────────────────────────────────────
+
+  async function handleApply() {
+    const file = pendingFileRef.current;
+    if (!file || !accessToken) return;
+    if (applyingRef.current) return; // double-click guard (sync)
+
+    // 二段階確認: 件数を user に提示してから反映する.
+    const preview = previewRef.current;
+    const summary = preview?.summary;
+    const totalCount = summary
+      ? summary.staff_new +
+        summary.staff_update +
+        summary.staff_delete +
+        summary.shift_new +
+        summary.shift_update +
+        summary.shift_delete
+      : 0;
+    const confirmMsg =
+      `スタッフマスタに ${totalCount} 件の変更を反映します。\n` +
+      `(新規: スタッフ ${summary?.staff_new ?? 0} + 勤務シフト ${summary?.shift_new ?? 0})\n` +
+      `(更新: スタッフ ${summary?.staff_update ?? 0} + 勤務シフト ${summary?.shift_update ?? 0})\n` +
+      `(削除: スタッフ ${summary?.staff_delete ?? 0} + 勤務シフト ${summary?.shift_delete ?? 0})\n\n` +
+      `この操作は取り消せません。続行しますか？`;
+    if (typeof window !== 'undefined' && !window.confirm(confirmMsg)) return;
+
+    applyingRef.current = true;
+    setIsApplying(true);
+    try {
+      await importStaffExcel({
+        file,
+        dryRun: false,
+        accessToken,
+        refreshToken,
+      });
+      toast.success('スタッフマスタを更新しました');
+      setPreviewOpen(false);
+      setPreviewData(null);
+      previewRef.current = null;
+      pendingFileRef.current = null;
+      // staff リスト + 関連 queries を invalidate.
+      void queryClient.invalidateQueries({ queryKey: ['staff'] });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '反映に失敗しました');
+    } finally {
+      applyingRef.current = false;
+      setIsApplying(false);
+    }
+  }
+
+  function handleClose() {
+    if (isApplying) return;
+    setPreviewOpen(false);
+    setPreviewData(null);
+    previewRef.current = null;
+    pendingFileRef.current = null;
+  }
+
+  return (
+    <>
+      {/* Hidden file input */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        className="hidden"
+        onChange={handleFileChange}
+      />
+
+      <div className="flex items-center gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleExport}
+          disabled={isExporting || !accessToken}
+        >
+          {isExporting ? 'エクスポート中...' : '📥 Excel エクスポート'}
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleTemplate}
+          disabled={isTemplating || !accessToken}
+        >
+          {isTemplating ? 'ダウンロード中...' : '📋 テンプレート'}
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleImportClick}
+          disabled={isPreviewing || !accessToken}
+        >
+          {isPreviewing ? 'プレビュー中...' : '📤 Excel インポート'}
+        </Button>
+      </div>
+
+      <StaffImportPreviewModal
+        open={previewOpen}
+        preview={previewData}
+        isApplying={isApplying}
+        onApply={handleApply}
+        onClose={handleClose}
+      />
+    </>
+  );
+}

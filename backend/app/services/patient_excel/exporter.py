@@ -17,6 +17,7 @@ from io import BytesIO
 from uuid import UUID
 
 from openpyxl import Workbook
+from openpyxl.comments import Comment
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
@@ -27,13 +28,17 @@ from app.models.office import Office
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
 from app.services.patient_excel.schema import (
+    COMMENT_AUTHOR,
     HEADER_FILL_COLOR,
     HEADER_FONT_COLOR,
     ID_COLUMN_FILL_COLOR,
+    ID_COLUMN_FONT_COLOR,
     PATIENT_COL_INDEX,
     PATIENT_COLUMNS,
+    PATIENT_ID_COMMENT_TEXT,
     PFV_COL_INDEX,
     PFV_COLUMNS,
+    PFV_PATIENT_ID_COMMENT_TEXT,
     SHEET_PATIENTS,
     SHEET_PFV,
     WEEKDAY_INT_TO_LABEL,
@@ -82,6 +87,14 @@ def _attach_dropdowns(
         ws.add_data_validation(dv)
 
 
+def _column_index(col_key: str, columns: list[dict[str, object]]) -> int | None:
+    """1-indexed のカラム位置を返す (見つからなければ None)."""
+    for i, col_def in enumerate(columns, start=1):
+        if col_def["key"] == col_key:
+            return i
+    return None
+
+
 def _shade_id_column_data_rows(
     ws: Worksheet,
     col_key: str,
@@ -89,7 +102,10 @@ def _shade_id_column_data_rows(
     *,
     data_row_count: int,
 ) -> None:
-    """patient_id 列の **データ行のみ** を薄いグレー背景でハイライト.
+    """patient_id 列の **データ行のみ** に「触らない雰囲気」装飾を適用.
+
+    薄いグレー背景 + イタリック + やや薄い色のフォントで、ユーザーに
+    「ここは編集不要 (新規登録時は空欄)」を視覚的に伝える。
 
     無条件で固定行数 (例: 1000) を塗ると ``ws.max_row`` が 1000 を返してしまい、
     テンプレート判定 (空 = max_row==1) ができなくなる。データ行が 0 件のときは
@@ -97,17 +113,36 @@ def _shade_id_column_data_rows(
     """
     if data_row_count <= 0:
         return
-    target_index = None
-    for i, col_def in enumerate(columns, start=1):
-        if col_def["key"] == col_key:
-            target_index = i
-            break
+    target_index = _column_index(col_key, columns)
     if target_index is None:
         return
     fill = PatternFill("solid", fgColor=ID_COLUMN_FILL_COLOR)
+    font = Font(italic=True, color=ID_COLUMN_FONT_COLOR)
     col_letter = get_column_letter(target_index)
     for row in range(2, 2 + data_row_count):
-        ws[f"{col_letter}{row}"].fill = fill
+        cell = ws[f"{col_letter}{row}"]
+        cell.fill = fill
+        cell.font = font
+
+
+def _attach_header_comment(
+    ws: Worksheet,
+    col_key: str,
+    columns: list[dict[str, object]],
+    *,
+    text: str,
+) -> None:
+    """ヘッダー (1 行目) の指定カラムにコメント (ホバーで表示) を付ける."""
+    target_index = _column_index(col_key, columns)
+    if target_index is None:
+        return
+    col_letter = get_column_letter(target_index)
+    cell = ws[f"{col_letter}1"]
+    # openpyxl の Comment(text, author) は幅/高さを明示しないとデフォルトが小さい
+    comment = Comment(text, COMMENT_AUTHOR)
+    comment.width = 280
+    comment.height = 80
+    cell.comment = comment
 
 
 def _write_patient_row(
@@ -236,6 +271,7 @@ def build_workbook(
 
     _set_header_row(ws_p, PATIENT_COLUMNS)
     _attach_dropdowns(ws_p, PATIENT_COLUMNS)
+    _attach_header_comment(ws_p, "patient_id", PATIENT_COLUMNS, text=PATIENT_ID_COMMENT_TEXT)
 
     office_code_by_id: dict[UUID, str] = {
         office.id: (office.code or "")
@@ -250,6 +286,7 @@ def build_workbook(
     ws_f: Worksheet = wb.create_sheet(title=SHEET_PFV)
     _set_header_row(ws_f, PFV_COLUMNS)
     _attach_dropdowns(ws_f, PFV_COLUMNS)
+    _attach_header_comment(ws_f, "patient_id", PFV_COLUMNS, text=PFV_PATIENT_ID_COMMENT_TEXT)
 
     patient_lookup: dict[UUID, Patient] = {p.id: p for p in patients}
     course_template_label_by_id: dict[UUID, str] = {

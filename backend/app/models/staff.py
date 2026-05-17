@@ -25,6 +25,7 @@ from sqlalchemy import (
     Text,
     Time,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -83,7 +84,22 @@ class Staff(Base, TimestampMixin):
         cascade="save-update, merge",
     )
 
-    __table_args__ = (Index("ix_staff_status_office", "status", "primary_office_id"),)
+    __table_args__ = (
+        Index("ix_staff_status_office", "status", "primary_office_id"),
+        # W41 後続 cross-review HIGH#3: concurrent import で staff.code 重複が
+        # silent に通る race を防ぐ partial UNIQUE INDEX. PostgreSQL では
+        # ``deleted_at IS NULL AND code IS NOT NULL`` のみを対象にする
+        # (soft-delete 済み / code NULL は除外). SQLite (テスト) でも
+        # 同条件の partial UNIQUE が貼られる (SQLite 3.8+ サポート).
+        # migration 0032_staff_code_unique_partial が production 側を担保する.
+        Index(
+            "ix_staff_code_unique_alive",
+            "code",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL AND code IS NOT NULL"),
+            sqlite_where=text("deleted_at IS NULL AND code IS NOT NULL"),
+        ),
+    )
 
 
 class StaffSecondaryOffice(Base):

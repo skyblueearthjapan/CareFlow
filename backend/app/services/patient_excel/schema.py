@@ -79,7 +79,7 @@ SHEET_PFV: Final = "固定訪問スケジュール"
 # key は内部識別子. header は実際の Excel ヘッダー文字列.
 # dropdown_values が None でない場合、その列に DataValidation (list) を設定.
 PATIENT_COLUMNS: Final[list[dict[str, object]]] = [
-    {"key": "patient_id", "header": "patient_id", "width": 38, "dropdown": None},
+    {"key": "patient_id", "header": "patient_id (※新規時は空欄)", "width": 38, "dropdown": None},
     {"key": "patient_code", "header": "patient_code", "width": 14, "dropdown": None},
     {"key": "name", "header": "患者名", "width": 18, "dropdown": None},
     {"key": "kana", "header": "フリガナ", "width": 18, "dropdown": None},
@@ -120,7 +120,12 @@ PATIENT_REQUIRED_ON_NEW: Final[tuple[str, ...]] = (
 # ---------------------------------------------------------------------------
 
 PFV_COLUMNS: Final[list[dict[str, object]]] = [
-    {"key": "patient_id", "header": "patient_id", "width": 38, "dropdown": None},
+    {
+        "key": "patient_id",
+        "header": "patient_id (※新規時は空欄、code 入力可)",
+        "width": 42,
+        "dropdown": None,
+    },
     {"key": "patient_code", "header": "patient_code", "width": 14, "dropdown": None},
     {"key": "patient_name", "header": "患者名", "width": 18, "dropdown": None},
     {"key": "weekday", "header": "曜日", "width": 8, "dropdown": WEEKDAY_LABELS},
@@ -158,3 +163,15 @@ PFV_REQUIRED: Final[tuple[str, ...]] = (
 HEADER_FILL_COLOR: Final = "FF4472C4"  # 濃い青
 HEADER_FONT_COLOR: Final = "FFFFFFFF"  # 白
 ID_COLUMN_FILL_COLOR: Final = "FFEEEEEE"  # 薄いグレー (参照用 patient_id 列)
+ID_COLUMN_FONT_COLOR: Final = "FF666666"  # 中間グレー (新規時に触らない雰囲気)
+
+# patient_id 列のヘッダーセルに添えるコメント (新規登録時のガイダンス)。
+PATIENT_ID_COMMENT_TEXT: Final = (
+    "新規登録時はこの列を空欄のままにしてください。\nシステムが自動的に UUID を発番します。"
+)
+PFV_PATIENT_ID_COMMENT_TEXT: Final = (
+    "新規患者の PFV を登録する場合: この列を空欄にし、"
+    "patient_code 列に患者コードを入力してください。\n"
+    "同 import 内の新規患者と自動で紐付きます。"
+)
+COMMENT_AUTHOR: Final = "システム"

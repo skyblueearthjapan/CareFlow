@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, time
 from io import BytesIO
 from typing import Any
@@ -427,7 +428,15 @@ def _parse_patient_row(
             )
         already_seen_codes.add(patient_code)  # type: ignore[arg-type]
 
-        new_dict: dict[str, Any] = {"_op": "new", "code": patient_code}
+        # 仮 UUID をここで発番する。PFV シート側で patient_code 経由でこの新規患者を
+        # 参照できるよう、apply_changes は同じ UUID で Patient を INSERT する。
+        new_patient_id = uuid.uuid4()
+        new_dict: dict[str, Any] = {
+            "_op": "new",
+            "_new_patient_id": new_patient_id,
+            "id": new_patient_id,
+            "code": patient_code,
+        }
         # 必須以外も含めて値をフラット化.
         for k, v in parsed.items():
             if k in ("code",):
@@ -442,12 +451,12 @@ def _parse_patient_row(
         changes_for_view = [
             PatientExcelChange(field=k, old_value=None, new_value=new_dict[k])
             for k in sorted(new_dict.keys())
-            if not k.startswith("_") and k != "code"
+            if not k.startswith("_") and k not in ("code", "id")
         ]
         return (
             PatientExcelImportRow(
                 row_number=row_number,
-                patient_id=None,
+                patient_id=new_patient_id,
                 patient_code=patient_code,
                 operation="new",
                 changes=changes_for_view,
@@ -576,11 +585,34 @@ def _serializable(value: Any) -> Any:
 # ---------------------------------------------------------------------------
 
 
+class _PendingNewPatient:
+    """同 import 内で新規追加される患者の最小限の代理オブジェクト。
+
+    PFV 行のパーサーが ``patient.code`` / ``patient.primary_office_id`` を参照する
+    ため、Patient ORM と同じ属性面を持つ軽量オブジェクトを差し込む。
+    """
+
+    __slots__ = ("id", "code", "primary_office_id")
+
+    def __init__(
+        self,
+        *,
+        patient_id: UUID,
+        code: str,
+        primary_office_id: UUID | None,
+    ) -> None:
+        self.id = patient_id
+        self.code = code
+        self.primary_office_id = primary_office_id
+
+
 def _parse_pfv_row(
     row_number: int,
     row: tuple[Any, ...],
     *,
     existing_patients: dict[UUID, Patient],
+    pending_new_patients: dict[UUID, _PendingNewPatient],
+    patient_code_to_id: dict[str, UUID],
     course_templates: dict[tuple[UUID, str], CourseTemplate],
     existing_pfvs: dict[tuple[UUID, str, int, int], PatientFixedVisit],
     pending_new_keys: set[tuple[UUID, str, int, int]],
@@ -590,9 +622,10 @@ def _parse_pfv_row(
         cells[col_key] = row[idx] if idx < len(row) else None
 
     raw_id = cells["patient_id"]
+    raw_code = cells["patient_code"]
     raw_delete = cells["delete_flag"]
 
-    # patient_id 必須
+    # patient_id (任意; 空なら patient_code で解決を試みる)
     try:
         patient_id = _read_uuid(raw_id)
     except ValueError:
@@ -605,27 +638,73 @@ def _parse_pfv_row(
             ),
             None,
         )
+
+    patient_code = _read_str(raw_code)
+
+    # patient_id 空 → patient_code で解決
     if patient_id is None:
-        return (
-            PfvExcelImportRow(
-                row_number=row_number,
-                patient_id=None,
-                operation="error",
-                error_message="patient_id が空です (PFV 行には必須)",
-            ),
-            None,
-        )
+        if patient_code is None:
+            return (
+                PfvExcelImportRow(
+                    row_number=row_number,
+                    patient_id=None,
+                    patient_code=None,
+                    operation="error",
+                    error_message="patient_id または patient_code が必須です",
+                ),
+                None,
+            )
+        resolved_id = patient_code_to_id.get(patient_code)
+        if resolved_id is None:
+            return (
+                PfvExcelImportRow(
+                    row_number=row_number,
+                    patient_id=None,
+                    patient_code=patient_code,
+                    operation="error",
+                    error_message=(
+                        f"patient_code が DB にも import 内にも存在しません: {patient_code!r}"
+                    ),
+                ),
+                None,
+            )
+        patient_id = resolved_id
+    elif patient_code is not None:
+        # 両方記入されている → 整合性チェック。患者を取り違えてデータ破壊する事故を防ぐ.
+        expected_id_from_code = patient_code_to_id.get(patient_code)
+        if expected_id_from_code is not None and expected_id_from_code != patient_id:
+            return (
+                PfvExcelImportRow(
+                    row_number=row_number,
+                    patient_id=patient_id,
+                    patient_code=patient_code,
+                    operation="error",
+                    error_message=(
+                        f"patient_id と patient_code が異なる患者を指しています "
+                        f"(id={patient_id}, code={patient_code} → 期待 id={expected_id_from_code})"
+                    ),
+                ),
+                None,
+            )
+
+    # 既存患者 → ORM patient を取得 / 新規候補 → pseudo patient を組み立て
     patient = existing_patients.get(patient_id)
     if patient is None:
-        return (
-            PfvExcelImportRow(
-                row_number=row_number,
-                patient_id=patient_id,
-                operation="error",
-                error_message=f"patient_id が DB に存在しません: {patient_id}",
-            ),
-            None,
-        )
+        pending = pending_new_patients.get(patient_id)
+        if pending is None:
+            return (
+                PfvExcelImportRow(
+                    row_number=row_number,
+                    patient_id=patient_id,
+                    patient_code=patient_code,
+                    operation="error",
+                    error_message=f"patient_id が DB に存在しません: {patient_id}",
+                ),
+                None,
+            )
+        # 同 import 内で新規追加される患者。Patient ORM はまだ無いので
+        # _parse_pfv_row 内で使う最小限の属性を pseudo オブジェクトで賄う。
+        patient = pending  # type: ignore[assignment]
 
     # weekday / slot_index / mode
     raw_weekday = cells["weekday"]
@@ -1055,9 +1134,29 @@ async def parse_and_diff(
         if op is not None:
             patient_ops.append(op)
 
-    # apply の prediction として「new で追加される patient_id 候補」も existing_patients
-    # に登録しておきたいが、id はまだ採番されていない. PFV 行が新規患者を参照することは
-    # 通常無いので (Excel で id 列が空)、ここはスキップ.
+    # PFV シートが patient_code 経由で新規患者をリンクできるよう、
+    # patient_code → patient_id の lookup を構築する。新規患者は
+    # _parse_patient_row が ``_new_patient_id`` (uuid.uuid4()) を発番済み。
+    pending_new_patients: dict[UUID, _PendingNewPatient] = {}
+    patient_code_to_id: dict[str, UUID] = {}
+    # 既存患者 (alive) は code → id を載せる
+    for existing in existing_patients.values():
+        if existing.code:
+            patient_code_to_id[existing.code] = existing.id
+    # 同 import 内の新規患者は仮 UUID を載せる
+    for op in patient_ops:
+        if op.get("_op") != "new":
+            continue
+        new_id: UUID | None = op.get("_new_patient_id")
+        new_code: str | None = op.get("code")
+        if new_id is None or new_code is None:
+            continue
+        patient_code_to_id[new_code] = new_id
+        pending_new_patients[new_id] = _PendingNewPatient(
+            patient_id=new_id,
+            code=new_code,
+            primary_office_id=op.get("primary_office_id"),
+        )
 
     # ---- PFV シート ----
     ws_f = wb[SHEET_PFV]
@@ -1071,6 +1170,8 @@ async def parse_and_diff(
             r_idx,
             row,
             existing_patients=existing_patients,
+            pending_new_patients=pending_new_patients,
+            patient_code_to_id=patient_code_to_id,
             course_templates=course_templates,
             existing_pfvs=existing_pfvs,
             pending_new_keys=pending_new_keys,

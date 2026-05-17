@@ -30,6 +30,7 @@ from app.api.v1 import (
     staff_companion,
     staff_companion_assignments,
     staff_events,
+    staff_excel,
     staff_overrides,
     staff_shifts,
     visit_photos,
@@ -57,6 +58,14 @@ api_router.include_router(
 # Sub-resource routers MUST be included BEFORE staff.router so that the more
 # specific paths (/staff/{id}/shifts etc.) are matched before the generic
 # /staff/{id} catch-all in staff.router.
+# Staff master Excel import / export. Must be registered BEFORE staff.router so
+# that /staff/import-export/* paths are matched before the /staff/{staff_id}
+# catch-all (mirrors patients_excel.router placement).
+api_router.include_router(
+    staff_excel.router,
+    prefix="/staff/import-export",
+    tags=["staff-excel"],
+)
 # W10-BE1: companion-candidates must be registered BEFORE /{staff_id} sub-resource
 # routes to avoid UUID path collision on /staff/companion-candidates.
 api_router.include_router(staff_companion.router, prefix="/staff", tags=["staff-companion"])

@@ -852,3 +852,214 @@ async def test_unknown_patient_id_errors(client, db) -> None:
     body = res.json()
     assert body["summary"]["patients_error"] == 1
     assert "存在" in body["patient_rows"][0]["error_message"]
+
+
+# 21) PFV patient_code リンク (新規患者 + その PFV を 1 回の import で登録)
+@pytest.mark.asyncio
+async def test_pfv_links_to_new_patient_via_code(client, db) -> None:
+    """新規患者 (patient_id 空) + 同 import 内の PFV を patient_code でリンクできる."""
+    admin = await _make_user(db, "im-pfvlink-new@example.com", "admin")
+
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                "patient_code": "P-LINK-NEW",
+                "name": "リンク新規",
+                "sex": "male",
+                "status": "active",
+                "address": "千葉市稲毛区xxx",
+            }
+        ],
+        pfv_rows=[
+            {
+                # patient_id 空 + patient_code で参照
+                "patient_code": "P-LINK-NEW",
+                "weekday": "月",
+                "slot_index": 0,
+                "mode": "normal",
+                "time_type": "固定",
+                "start_time": "09:00",
+                "duration_min": 30,
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["transaction_applied"] is True
+    assert body["summary"]["patients_new"] == 1
+    assert body["summary"]["pfv_new"] == 1
+    assert body["summary"]["patients_error"] == 0
+    assert body["summary"]["pfv_error"] == 0
+
+    # DB に新規患者 + 紐付いた PFV が 1 件あること
+    db.expire_all()
+    patient_rows = (await db.scalars(select(Patient).where(Patient.code == "P-LINK-NEW"))).all()
+    assert len(patient_rows) == 1
+    patient = patient_rows[0]
+    pfv_rows = (
+        await db.scalars(
+            select(PatientFixedVisit).where(PatientFixedVisit.patient_id == patient.id)
+        )
+    ).all()
+    assert len(pfv_rows) == 1
+    assert pfv_rows[0].weekday == 0
+    assert pfv_rows[0].duration_min == 30
+
+
+# 22) PFV patient_code が import 内にも DB にも無い → error
+@pytest.mark.asyncio
+async def test_pfv_code_lookup_unknown_errors(client, db) -> None:
+    admin = await _make_user(db, "im-pfvlink-miss@example.com", "admin")
+    content = _build_workbook_bytes(
+        pfv_rows=[
+            {
+                # patient_id 空 + 同 import 内にも DB にも無い code
+                "patient_code": "P-MISS-XYZ",
+                "weekday": "月",
+                "slot_index": 0,
+                "mode": "normal",
+                "time_type": "固定",
+                "start_time": "09:00",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=True)
+    body = res.json()
+    assert body["summary"]["pfv_error"] == 1
+    row = body["pfv_rows"][0]
+    assert row["operation"] == "error"
+    assert "P-MISS-XYZ" in row["error_message"]
+
+
+# 23) 既存患者の PFV を patient_id 空 + patient_code で参照しても OK
+@pytest.mark.asyncio
+async def test_pfv_code_lookup_existing_patient_ok(client, db) -> None:
+    admin = await _make_user(db, "im-pfvlink-exist@example.com", "admin")
+    patient = await _make_patient(db, code="P-LINK-EXIST", name="既存患者")
+    patient_id = patient.id
+
+    content = _build_workbook_bytes(
+        pfv_rows=[
+            {
+                # patient_id 空 + 既存 code で参照
+                "patient_code": "P-LINK-EXIST",
+                "weekday": "火",
+                "slot_index": 0,
+                "mode": "normal",
+                "time_type": "固定",
+                "start_time": "10:00",
+                "duration_min": 45,
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["transaction_applied"] is True
+    assert body["summary"]["pfv_new"] == 1
+    assert body["summary"]["pfv_error"] == 0
+
+    db.expire_all()
+    rows = (
+        await db.scalars(
+            select(PatientFixedVisit).where(PatientFixedVisit.patient_id == patient_id)
+        )
+    ).all()
+    assert len(rows) == 1
+    assert rows[0].weekday == 1
+
+
+# 24) PFV の patient_id 空 + patient_code も空 → error
+@pytest.mark.asyncio
+async def test_pfv_both_id_and_code_blank_errors(client, db) -> None:
+    admin = await _make_user(db, "im-pfvlink-blank@example.com", "admin")
+    content = _build_workbook_bytes(
+        pfv_rows=[
+            {
+                # patient_id も patient_code も空
+                "weekday": "月",
+                "slot_index": 0,
+                "mode": "normal",
+                "time_type": "固定",
+                "start_time": "09:00",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=True)
+    body = res.json()
+    assert body["summary"]["pfv_error"] == 1
+    row = body["pfv_rows"][0]
+    assert row["operation"] == "error"
+    msg = row["error_message"]
+    assert "patient_id" in msg and "patient_code" in msg and "必須" in msg
+
+
+# 25) HIGH#1 regression: PFV で patient_id と patient_code が異なる患者を指している場合 error
+@pytest.mark.asyncio
+async def test_pfv_id_and_code_mismatch_errors(client, db) -> None:
+    """両者が異なる患者を指していても silent に id を優先して code を無視するのは
+    データ破壊リスクなので明示的に error にする."""
+    admin = await _make_user(db, "im-pfv-mismatch@example.com", "admin")
+    patient_a = await _make_patient(db, code="P-MIS-A", name="患者A")
+    patient_b = await _make_patient(db, code="P-MIS-B", name="患者B")
+    patient_a_id = patient_a.id
+
+    content = _build_workbook_bytes(
+        pfv_rows=[
+            {
+                # id=A, code=B (異なる患者) → error
+                "patient_id": str(patient_a_id),
+                "patient_code": patient_b.code,
+                "weekday": "月",
+                "slot_index": 0,
+                "mode": "normal",
+                "time_type": "固定",
+                "start_time": "09:00",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=True)
+    body = res.json()
+    assert body["summary"]["pfv_error"] == 1
+    row = body["pfv_rows"][0]
+    assert row["operation"] == "error"
+    msg = row["error_message"]
+    assert "patient_id" in msg and "patient_code" in msg
+    assert "P-MIS-B" in msg
+
+
+# 26) HIGH#1 regression: PFV で patient_id と patient_code が一致していれば正常処理
+@pytest.mark.asyncio
+async def test_pfv_id_and_code_consistent_ok(client, db) -> None:
+    admin = await _make_user(db, "im-pfv-consistent@example.com", "admin")
+    patient = await _make_patient(db, code="P-CONS-OK", name="一致患者")
+    patient_id = patient.id
+
+    content = _build_workbook_bytes(
+        pfv_rows=[
+            {
+                # id=A, code=A (同じ患者) → 正常
+                "patient_id": str(patient_id),
+                "patient_code": "P-CONS-OK",
+                "weekday": "月",
+                "slot_index": 0,
+                "mode": "normal",
+                "time_type": "固定",
+                "start_time": "09:00",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    body = res.json()
+    assert body["transaction_applied"] is True
+    assert body["summary"]["pfv_new"] == 1
+    assert body["summary"]["pfv_error"] == 0
+
+    db.expire_all()
+    rows = (
+        await db.scalars(
+            select(PatientFixedVisit).where(PatientFixedVisit.patient_id == patient_id)
+        )
+    ).all()
+    assert len(rows) == 1

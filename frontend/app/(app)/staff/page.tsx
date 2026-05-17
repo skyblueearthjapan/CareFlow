@@ -15,6 +15,7 @@ import { useSession } from 'next-auth/react';
 import { useMemo, useState } from 'react';
 import { Plus, Search } from 'lucide-react';
 
+import { StaffExcelButtons } from '@/components/staff/StaffExcelButtons';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -112,14 +113,17 @@ export default function StaffPage() {
             登録済み {allRows.length} 名 / 表示 {filtered.length} 名
           </p>
         </div>
-        {canCreate && (
-          <Button asChild>
-            <Link href="/staff/new">
-              <Plus className="h-4 w-4" />
-              新規スタッフ
-            </Link>
-          </Button>
-        )}
+        <div className="flex items-center gap-2">
+          {canCreate && <StaffExcelButtons />}
+          {canCreate && (
+            <Button asChild>
+              <Link href="/staff/new">
+                <Plus className="h-4 w-4" />
+                新規スタッフ
+              </Link>
+            </Button>
+          )}
+        </div>
       </header>
 
       {allRows.length >= STAFF_LIMIT && (
