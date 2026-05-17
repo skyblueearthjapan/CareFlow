@@ -3095,8 +3095,40 @@ async def run_v2_pipeline(
     )
 
     if mode == "diff_add":
-        # プール = active かつ固定枠無し
-        pool_patients = [p for p in patients_by_id.values() if p.id not in patients_with_fixed]
+        # プール = active かつ (固定枠無し OR 今週 visit が DB に無い)
+        #
+        # W41 v2.8 hotfix (孤児 patient 救済): 旧仕様では「PFV 無し」のみが pool
+        # に入ったため、PFV 有るが今週 visit が apply_week_only でドロップした /
+        # auto_allocate で uncoursed になった patient は差分追加の候補にも入らず
+        # 完全に孤児状態になっていた (例: P060). 「今週 active visit が無い」
+        # patient も pool に含めることで、差分追加から再配置可能にする.
+        from datetime import date as _date_cls
+
+        try:
+            week_monday = _date_cls.fromisocalendar(iso_year, iso_week, 1)
+            week_sunday = _date_cls.fromisocalendar(iso_year, iso_week, 7)
+        except ValueError:
+            week_monday = None
+            week_sunday = None
+
+        patients_with_week_visit: set[UUID] = set()
+        if week_monday is not None and week_sunday is not None:
+            visit_rows = await db.scalars(
+                select(Visit.patient_id)
+                .where(
+                    Visit.patient_id.in_(list(patients_by_id.keys())),
+                    Visit.visit_date.between(week_monday, week_sunday),
+                    Visit.deleted_at.is_(None),
+                )
+                .distinct()
+            )
+            patients_with_week_visit = {pid for pid in visit_rows.all() if pid is not None}
+
+        pool_patients = [
+            p
+            for p in patients_by_id.values()
+            if p.id not in patients_with_fixed or p.id not in patients_with_week_visit
+        ]
     else:
         # full_optimize: 全 active 患者
         pool_patients = list(patients_by_id.values())
