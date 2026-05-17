@@ -127,7 +127,9 @@ async def test_diff_add_returns_pool_proposals(client, db) -> None:
     assert "proposals" in body
     pool_codes = {p["patient_code"] for p in body["proposals"]}
     assert "DA-P1" in pool_codes
-    assert "DA-F1" not in pool_codes
+    # hotfix#3 (W41 v2.8): orphan 救済 — PFV あるが今週 visit ない患者も
+    # pool に含まれる (PFV ベース展開).
+    assert "DA-F1" in pool_codes
 
 
 @pytest.mark.asyncio

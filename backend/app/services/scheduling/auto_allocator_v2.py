@@ -98,6 +98,13 @@ COURSE_MAX_MINUTES: int = 480
 # 異住所への遷移ではバッファー (15 分) を加算する.
 VISIT_BUFFER_MINUTES: int = 15
 
+# 物理不可能配置の判定閾値 (分).
+# 固定時刻 visit が前 visit + 移動 + バッファーで earliest_start に間に合わない場合、
+# 不足が ``SHORTAGE_THRESHOLD_MIN`` 分以上なら「物理的に不可能」として配置を拒否し
+# (course_code を None にして) unassigned に流す. 未満なら従来通り警告のみで配置.
+# 5 分未満の微小不足は運用 (前 visit の早期終了 等) で吸収可能とみなす.
+SHORTAGE_THRESHOLD_MIN: int = 5
+
 # H2: 同住所判定の許容誤差 (緯度経度の絶対差 ≒ 100m).
 SAME_ADDRESS_TOLERANCE: float = 0.001
 
@@ -841,6 +848,7 @@ def build_visits_for_pool(
     fixed_by_patient: dict[UUID, list[PatientFixedVisit]] | None = None,
     use_fixed_as_source: bool = False,
     pending_overlay: dict[tuple[UUID, int], PendingEditOverlay] | None = None,
+    course_code_by_template_id: dict[UUID, str] | None = None,
 ) -> list[V2Visit]:
     """段階 1〜2 中間: 各患者の希望を V2Visit に展開する.
 
@@ -850,6 +858,12 @@ def build_visits_for_pool(
     ``pending_overlay`` が渡された場合、(patient_id, weekday) が一致する希望時刻を
     オーバーレイ値で上書きする (DB は変更しない). Patient.weekly_pattern オブジェクト
     自体には触らない.
+
+    CareFlow #102 Fix A: ``course_code_by_template_id`` が渡された場合、
+    fixed source 分岐で ``PatientFixedVisit.course_template_id`` から
+    course label (例 "B") を引いて V2Visit.course_code に埋める. これにより
+    orphan PFV (= 旧版で常に course_code=None だった visit) が後段 Stage 5 の
+    機械的付番で別 course に上書きされず、PFV で指定された course を尊重できる.
     """
     overlay = pending_overlay or {}
     visits: list[V2Visit] = []
@@ -865,6 +879,16 @@ def build_visits_for_pool(
         used_fixed = False
         if use_fixed_as_source and fixed_by_patient is not None:
             fixed_rows = fixed_by_patient.get(patient.id) or []
+            # CareFlow #102 Fix A: weekday -> course_code map を patient ごとに構築.
+            # 同 patient で複数曜日に異なる course_template_id が指定されている
+            # ケースを尊重するため (実運用ではほぼ単一だが、データ的に許容される).
+            wd_to_course_code: dict[int, str] = {}
+            if course_code_by_template_id:
+                for _row in fixed_rows:
+                    if _row.course_template_id is not None:
+                        _label = course_code_by_template_id.get(_row.course_template_id)
+                        if _label is not None:
+                            wd_to_course_code[_row.weekday] = _label
             entries_fixed = _extract_fixed_visits_for_patient(fixed_rows)
             if entries_fixed:
                 used_fixed = True
@@ -884,6 +908,11 @@ def build_visits_for_pool(
                         pe_eff = None
                     end_t = _add_minutes(st_eff, sm_eff)
                     am_pm = determine_am_pm(time_type=tt_eff, preferred_start=st_eff)
+                    # CareFlow #102 Fix A: PFV.course_template_id から引いた
+                    # course_code を埋める. Stage 5 (#102 Fix B) はこの既存
+                    # course_code を尊重するため、orphan PFV visit は PFV で
+                    # 指定された course にそのまま配置される.
+                    cc_eff = wd_to_course_code.get(wd)
                     visits.append(
                         V2Visit(
                             patient_id=patient.id,
@@ -898,6 +927,7 @@ def build_visits_for_pool(
                             office_id=patient.primary_office_id,
                             am_pm=am_pm,
                             source_kind="fixed",
+                            course_code=cc_eff,
                             address=addr,
                             area_label=area,
                             time_type=tt_eff,
@@ -2025,7 +2055,7 @@ def _apply_travel_time_to_courses(
     *,
     warnings: list[V2Warning],
     office_name_by_id: dict[UUID, str] | None = None,
-) -> None:
+) -> set[int]:
     """W41 v2 拡張 (動的 start_time): 同コース連続訪問に移動時間を反映する.
 
     Algorithm:
@@ -2033,7 +2063,14 @@ def _apply_travel_time_to_courses(
         2. 各コース内で ``start_time`` 昇順にソートし、隣接ペアの移動時間を計算
         3. 各 visit の ``actual_start = max(desired_start, prev_end + travel_min)``
            を ``time_type`` ごとに分岐して決定:
-             - "固定": **必ず固定時刻** を使う. 移動時間が不足するなら warning.
+             - "固定": 移動時間が不足する場合、不足量で分岐する.
+                 * ``shortage < SHORTAGE_THRESHOLD_MIN`` (= 5 分未満): 微小不足は
+                   運用で吸収可能とみなし、warning だけ出して固定時刻に配置.
+                 * ``shortage >= SHORTAGE_THRESHOLD_MIN``: 物理的に配置不可と判定し
+                   ``course_code = None`` に書き換え、戻り値 ``set[int]`` (id(v))
+                   に visit を含めて呼び出し側に通知する. 呼び出し側はこの ID 集合を
+                   使って ``after_visits`` から取り除き ``unassigned_patients`` に
+                   流す (理由は ``fixed_time_conflict``).
              - "時間帯": ``preferred_start ≤ actual ≤ preferred_end`` 内なら earliest
                を採用. 範囲超過なら **earliest を採用** + warning (window_upper に
                クランプすると infeasible timeline になるため).
@@ -2052,6 +2089,12 @@ def _apply_travel_time_to_courses(
 
     In-place: visits の ``start_time`` / ``end_time`` を書き換える.
 
+    Returns:
+        物理不可能と判定して ``course_code = None`` にした visit の ``id(v)`` 集合.
+        呼び出し側はこの集合を使って ``after_visits`` から除去すること
+        (除去しないと ``_identify_unassigned_patients`` の after_pids 判定に
+        引っかからず未割当扱いされない).
+
     Notes:
         ``course_code`` が None の visit はスキップ (Stage 5 がコース割当てを
         行わなかったもの, 例: スタッフ不在). 同住所連続は移動 0 分.
@@ -2069,6 +2112,10 @@ def _apply_travel_time_to_courses(
     lunch_start_min = LUNCH_START.hour * 60 + LUNCH_START.minute  # 720
     lunch_end_min = LUNCH_END.hour * 60 + LUNCH_END.minute  # 780
     pm_block_end_min = PM_BLOCK_END.hour * 60 + PM_BLOCK_END.minute  # 1080
+
+    # 物理不可能配置として course から外した visit の id(v) 集合.
+    # 呼び出し側 (run_v2_pipeline) が after_visits からの除去に使う.
+    unassigned_visit_ids: set[int] = set()
 
     for (office_id, weekday, course_code), gv in groups.items():
         if len(gv) < 2:
@@ -2102,36 +2149,83 @@ def _apply_travel_time_to_courses(
             prev_name = prev.patient_name or (prev.patient_code or "不明")
 
             if tt == "固定":
-                # 固定は時刻を動かさない. 移動時間が不足する場合は warning.
+                # 固定は時刻を動かさない. 移動時間が不足する場合は不足量で分岐.
+                #   * shortage < SHORTAGE_THRESHOLD_MIN (= 5 分未満): 微小不足は
+                #     運用 (前 visit の早期終了) で吸収可能とみなし、warning だけ
+                #     出して固定時刻に配置する.
+                #   * shortage >= SHORTAGE_THRESHOLD_MIN: 物理的に配置不可と判定し
+                #     ``course_code = None`` に書き換え、戻り値 ``set[int]`` に
+                #     id(v) を追加して呼び出し側へ通知する. 呼び出し側はこの集合
+                #     を使って ``after_visits`` から除去し ``unassigned_patients``
+                #     (reason=fixed_time_conflict) へ流す.
                 actual_start = desired_start
                 if earliest_start > desired_start:
                     shortage = (earliest_start.hour * 60 + earliest_start.minute) - (
                         desired_start.hour * 60 + desired_start.minute
                     )
-                    warnings.append(
-                        V2Warning(
-                            type="travel_time_shortage",
-                            message=(
-                                f"{office_name} {course_code} {wd_jp}: "
-                                f"{prev_name} 様 ({_fmt_hhmm(prev.end_time)} 終了) → "
-                                f"{cur_name} 様 ({_fmt_hhmm(desired_start)} 固定開始) への "
-                                f"必要 {travel_min + buffer_min} 分 "
-                                f"(移動 {travel_min} 分 + バッファー {buffer_min} 分) が "
-                                f"{shortage} 分不足 (固定時刻のため繰り下げ不可)"
-                            ),
-                            weekday=weekday,
-                            actionable=True,
-                            patient_id=cur.patient_id,
-                            patient_name=cur.patient_name,
-                            current_time=_fmt_hhmm(desired_start),
-                            suggested_time=_fmt_hhmm(earliest_start),
-                            time_type=tt,
-                            preferred_start=cur.preferred_start,
-                            preferred_end=cur.preferred_end,
-                            # P2: 固定時刻衝突 — fixed_time_conflict にマップされる.
-                            affected_patient_ids=[cur.patient_id],
+                    if shortage >= SHORTAGE_THRESHOLD_MIN:
+                        # 物理不可能 → コースから外す + 未割当通知集合に追加.
+                        cur.course_code = None
+                        unassigned_visit_ids.add(id(cur))
+                        warnings.append(
+                            V2Warning(
+                                type="travel_time_shortage",
+                                message=(
+                                    f"{office_name} {course_code} {wd_jp}: "
+                                    f"{prev_name} 様 ({_fmt_hhmm(prev.end_time)} 終了) → "
+                                    f"{cur_name} 様 ({_fmt_hhmm(desired_start)} 固定開始) "
+                                    f"への必要 {travel_min + buffer_min} 分 "
+                                    f"(移動 {travel_min} 分 + バッファー {buffer_min} 分) "
+                                    f"が {shortage} 分不足 — 物理的に配置不可のため "
+                                    "未割当に移動 (固定時刻の見直し要)"
+                                ),
+                                weekday=weekday,
+                                actionable=True,
+                                patient_id=cur.patient_id,
+                                patient_name=cur.patient_name,
+                                current_time=_fmt_hhmm(desired_start),
+                                suggested_time=_fmt_hhmm(earliest_start),
+                                time_type=tt,
+                                preferred_start=cur.preferred_start,
+                                preferred_end=cur.preferred_end,
+                                # P2: 固定時刻衝突 — fixed_time_conflict にマップ.
+                                affected_patient_ids=[cur.patient_id],
+                            )
                         )
-                    )
+                        # 物理不可能 visit は course 上でこれ以上後続に影響させない.
+                        # 後続 pair (i+1) は cur をスキップして prev=prev のまま回したい
+                        # が、ループ構造を大きく崩さないため cur.end_time も
+                        # actual_start (= desired_start) ベースで残し、警告のみで進める.
+                        # (後続が cur.end_time をベースに earliest を計算すると
+                        # 削除済 visit の影響が残るが、cur 自身は後段で
+                        # ``after_visits`` から除去されるため UI には出ない.)
+                    else:
+                        warnings.append(
+                            V2Warning(
+                                type="travel_time_shortage",
+                                message=(
+                                    f"{office_name} {course_code} {wd_jp}: "
+                                    f"{prev_name} 様 ({_fmt_hhmm(prev.end_time)} 終了) → "
+                                    f"{cur_name} 様 ({_fmt_hhmm(desired_start)} 固定開始) "
+                                    f"への必要 {travel_min + buffer_min} 分 "
+                                    f"(移動 {travel_min} 分 + バッファー {buffer_min} 分) "
+                                    f"が {shortage} 分不足 "
+                                    f"(< {SHORTAGE_THRESHOLD_MIN} 分は許容: "
+                                    "固定時刻のまま配置)"
+                                ),
+                                weekday=weekday,
+                                actionable=True,
+                                patient_id=cur.patient_id,
+                                patient_name=cur.patient_name,
+                                current_time=_fmt_hhmm(desired_start),
+                                suggested_time=_fmt_hhmm(earliest_start),
+                                time_type=tt,
+                                preferred_start=cur.preferred_start,
+                                preferred_end=cur.preferred_end,
+                                # P2: 固定時刻衝突 — fixed_time_conflict にマップ.
+                                affected_patient_ids=[cur.patient_id],
+                            )
+                        )
             elif tt == "時間帯":
                 ps = _parse_hhmm(cur.preferred_start)
                 pe = _parse_hhmm(cur.preferred_end)
@@ -2379,6 +2473,8 @@ def _apply_travel_time_to_courses(
                     affected_patient_ids=ld_pids,
                 )
             )
+
+    return unassigned_visit_ids
 
 
 def _check_course_capacity_minutes(
@@ -3194,11 +3290,31 @@ async def run_v2_pipeline(
     # full_optimize 時は従来通り weekly_pattern ベース 1 本.
     pool_visits = build_visits_for_pool(pool_patients_no_fixed, pending_overlay=pending_overlay)
     if mode == "diff_add" and pool_patients_orphan_fixed and orphan_fixed_by_patient:
+        # CareFlow #102 Fix A: orphan PFV の course_template_id -> course label
+        # map を事前構築 (N+1 回避). build_visits_for_pool が PFV.course_template_id
+        # から V2Visit.course_code を埋められるようにする.
+        orphan_template_ids: set[UUID] = {
+            pfv.course_template_id
+            for _pfvs in orphan_fixed_by_patient.values()
+            for pfv in _pfvs
+            if pfv.course_template_id is not None
+        }
+        orphan_course_code_by_template_id: dict[UUID, str] = {}
+        if orphan_template_ids:
+            ct_rows = await db.scalars(
+                select(CourseTemplate).where(
+                    CourseTemplate.id.in_(orphan_template_ids),
+                    CourseTemplate.deleted_at.is_(None),
+                )
+            )
+            for ct in ct_rows.all():
+                orphan_course_code_by_template_id[ct.id] = ct.label
         pool_visits_orphan = build_visits_for_pool(
             pool_patients_orphan_fixed,
             fixed_by_patient=orphan_fixed_by_patient,
             use_fixed_as_source=True,
             pending_overlay=pending_overlay,
+            course_code_by_template_id=orphan_course_code_by_template_id,
         )
         pool_visits = pool_visits + pool_visits_orphan
 
@@ -3343,7 +3459,52 @@ async def run_v2_pipeline(
         m_overflow_idx = 0
         for idx, (am_set, pm_set) in enumerate(combined):
             code: str | None
-            if idx < normal_course_limit:
+            # CareFlow #102 Fix B: am_set / pm_set 内に既に course_code が
+            # 埋まっている visit (= orphan PFV の build_visits_for_pool 時に
+            # PFV.course_template_id から復元) があれば、その course_code を
+            # 尊重して上書きを避ける. 異なる existing コードが混在した場合は
+            # alphabetical 先頭を採用 + warning を出す.
+            existing_codes: set[str] = set()
+            for v in am_set.visits if am_set else []:
+                if v.course_code is not None:
+                    existing_codes.add(v.course_code)
+            for v in pm_set.visits if pm_set else []:
+                if v.course_code is not None:
+                    existing_codes.add(v.course_code)
+            if existing_codes:
+                if len(existing_codes) == 1:
+                    code = next(iter(existing_codes))
+                else:
+                    # 異なる既存コードが混在 → alphabetical で先頭を採用.
+                    code = sorted(existing_codes)[0]
+                    warnings.append(
+                        V2Warning(
+                            type="general",
+                            message=(
+                                f"{wd_jp} {office_name}: 異なる固定コース "
+                                f"({sorted(existing_codes)}) が同一 set に混在 — "
+                                f"先頭 ({code}) を採用 (clustering で混ざった可能性 — "
+                                "PFV course 配置を見直してください)"
+                            ),
+                            weekday=weekday,
+                            actionable=True,
+                            affected_patient_ids=list(
+                                {
+                                    v.patient_id
+                                    for v in (
+                                        (am_set.visits if am_set else [])
+                                        + (pm_set.visits if pm_set else [])
+                                    )
+                                    if v.course_code is not None
+                                }
+                            ),
+                        )
+                    )
+                # 既存コードを採用したので、idx ベース順位は m_overflow に
+                # 影響させない (空きがある場合は idx ベース付番は次の set で
+                # 再開). 既存コードが M 系の場合は m_overflow_idx を進める方が
+                # 自然だが、ここでは「既存尊重 = 上書き禁止」のみを保証する.
+            elif idx < normal_course_limit:
                 code = _COURSE_CODES[idx]
             elif m_overflow_idx < m_overflow_limit:
                 # マネージャー数まで M / M2 / ... 発番
@@ -3393,9 +3554,16 @@ async def run_v2_pipeline(
     # W41 v2 拡張 (移動時間の time 化): コース内連続訪問に対し、移動時間を
     # start_time に反映する. course_code 確定後に呼ぶ. time_type ごとに
     # 挙動分岐 (固定/時間帯/午前/午後/終日) し、不整合は warning に出す.
-    _apply_travel_time_to_courses(
+    #
+    # CareFlow #101: 固定 visit が shortage>=SHORTAGE_THRESHOLD_MIN の場合は
+    # ``course_code=None`` + 戻り値 set に id(v) が入る. 既存の
+    # ``unassigned_visit_ids`` (Stage 5 overflow) と union し、まとめて
+    # ``after_visits`` から除去する.
+    travel_unassigned_ids = _apply_travel_time_to_courses(
         after_visits, warnings=warnings, office_name_by_id=office_name_by_id
     )
+    if travel_unassigned_ids:
+        after_visits = [v for v in after_visits if id(v) not in travel_unassigned_ids]
 
     # W41 v2 拡張 (コース容量 duration 化): 既存の人数制約 (MAX_PATIENTS_PER_COURSE=6)
     # と独立して、コース総所要時間 (visit duration + 移動時間) が 480 分を超えていないか check.

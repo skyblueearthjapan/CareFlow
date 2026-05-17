@@ -130,6 +130,7 @@ def _v2visit_to_ui(
     v: V2Visit,
     *,
     same_address_group_id: str | None = None,
+    warnings: list[V2WarningOut] | None = None,
 ) -> V2VisitForUI:
     """1 visit を UI 表示用の ``V2VisitForUI`` に変換.
 
@@ -142,6 +143,10 @@ def _v2visit_to_ui(
     W41 v2 (Mode 2 Before/After 表示拡張): ``time_type`` / ``sex_restriction`` も流す.
 
     W41 v2 (H2 視覚化): ``same_address_group_id`` を引数で受け取り埋める.
+
+    CareFlow #101 FE: ``warnings`` (V2WarningOut のリスト) を受け取り、UI 側で
+    赤枠ハイライト + ツールチップ表示の元データを埋める. 呼び出し側
+    (``_group_visits_into_courses``) が当該 visit に紐づく warning を抽出する.
     """
     return V2VisitForUI(
         patient_id=v.patient_id,
@@ -159,6 +164,7 @@ def _v2visit_to_ui(
         preferred_start=v.preferred_start,
         preferred_end=v.preferred_end,
         distance_to_next_km=v.distance_to_next_km,
+        warnings=list(warnings or []),
     )
 
 
@@ -239,18 +245,28 @@ def _build_weekday_before_after(
     after: list[V2Visit],
     *,
     office_name_by_id: dict[UUID, str] | None = None,
+    warnings: list[V2WarningOut] | None = None,
 ) -> list[V2WeekdayBeforeAfter]:
     """機能 B: 曜日ごとに Before / After の courses 構造を返す.
 
     W41 v2 (Mode 2 Before/After 表示拡張): ``office_name_by_id`` を受け取り
     各コースに ``office_name`` をセット + (office_name, code) で ABC 順ソート.
+
+    CareFlow #101 FE: ``warnings`` を受け取り、各 visit に紐づくものを抽出して
+    ``V2VisitForUI.warnings`` に流す.
     """
     out: list[V2WeekdayBeforeAfter] = []
     for wd in range(7):
         before_wd = [v for v in before if v.weekday == wd]
         after_wd = [v for v in after if v.weekday == wd]
-        before_courses = _group_visits_into_courses(before_wd, office_name_by_id=office_name_by_id)
-        after_courses = _group_visits_into_courses(after_wd, office_name_by_id=office_name_by_id)
+        # 当該 weekday の warning のみ抽出 (None=曜日不問 warning も含める).
+        wd_warnings = [w for w in (warnings or []) if w.weekday is None or w.weekday == wd]
+        before_courses = _group_visits_into_courses(
+            before_wd, office_name_by_id=office_name_by_id, warnings=wd_warnings
+        )
+        after_courses = _group_visits_into_courses(
+            after_wd, office_name_by_id=office_name_by_id, warnings=wd_warnings
+        )
         out.append(
             V2WeekdayBeforeAfter(
                 weekday=wd,
@@ -261,10 +277,40 @@ def _build_weekday_before_after(
     return out
 
 
+def _warnings_for_visit(
+    v: V2Visit,
+    warnings: list[V2WarningOut] | None,
+) -> list[V2WarningOut]:
+    """CareFlow #101 FE: 当該 visit に紐づく warning を抽出.
+
+    抽出条件 (いずれかを満たす):
+      - ``w.weekday`` が visit.weekday と一致 + ``v.patient_id`` が
+        ``w.affected_patient_ids`` に含まれる + ``w.type == 'travel_time_shortage'``
+      - ``w.weekday is None`` (曜日不問) で ``patient_id`` 一致
+
+    現状は travel_time_shortage のみ (#101 の赤枠用) に限定する.
+    将来 two_staff_shortage 等を追加する場合は type 条件を緩める.
+    """
+    if not warnings:
+        return []
+    out: list[V2WarningOut] = []
+    for w in warnings:
+        # weekday 一致 (None は不問として全 weekday に流す).
+        if w.weekday is not None and w.weekday != v.weekday:
+            continue
+        # 現状 #101 では travel_time_shortage に限定.
+        if w.type != "travel_time_shortage":
+            continue
+        if v.patient_id in (w.affected_patient_ids or []):
+            out.append(w)
+    return out
+
+
 def _group_visits_into_courses(
     visits: list[V2Visit],
     *,
     office_name_by_id: dict[UUID, str] | None = None,
+    warnings: list[V2WarningOut] | None = None,
 ) -> list[V2CourseSummary]:
     """同 (office_id, weekday, course_code) を 1 コースとして集約.
 
@@ -276,6 +322,9 @@ def _group_visits_into_courses(
 
     W41 v2 (H2 視覚化): ``same_address_group_id`` を visits 全体で計算し
     `_v2visit_to_ui` に流して UI 側で連結表示できるようにする.
+
+    CareFlow #101 FE: ``warnings`` を受け取り、各 visit に紐づくものを抽出して
+    ``V2VisitForUI.warnings`` に流す (赤枠ハイライト用).
     """
     # 同住所グループ id を全 visits でまず計算 (course 越境を許容)
     group_id_by_key = _assign_same_address_groups(visits)
@@ -307,6 +356,7 @@ def _group_visits_into_courses(
                         same_address_group_id=group_id_by_key.get(
                             (v.patient_id, v.weekday, v.start_time)
                         ),
+                        warnings=_warnings_for_visit(v, warnings),
                     )
                     for v in sv
                 ],
@@ -514,8 +564,15 @@ async def full_optimize_endpoint(
     }
     office_name_by_id = await _load_office_name_map(db, office_ids_in_use)
 
+    # CareFlow #101 FE: warnings を V2WarningOut に変換して
+    # _build_weekday_before_after に渡し、各 visit に紐づくものを赤枠表示用に
+    # V2VisitForUI.warnings へ流す.
+    warnings_out = [_warning_to_out(w) for w in warnings]
     week_proposals = _build_weekday_before_after(
-        before_visits, after_visits, office_name_by_id=office_name_by_id
+        before_visits,
+        after_visits,
+        office_name_by_id=office_name_by_id,
+        warnings=warnings_out,
     )
     individual = _build_individual_proposals(before_visits, after_visits)
     kpi = _build_kpi_overall(before_visits, after_visits, warnings=warnings)
@@ -540,7 +597,7 @@ async def full_optimize_endpoint(
         week_proposals=week_proposals,
         individual_proposals=individual,
         kpi_overall=kpi,
-        warnings=[_warning_to_out(w) for w in warnings],
+        warnings=warnings_out,
         unassigned_patients=unassigned,
     )
 

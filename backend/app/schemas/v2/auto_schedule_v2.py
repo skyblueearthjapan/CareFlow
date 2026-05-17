@@ -140,6 +140,11 @@ class V2VisitForUI(BaseModel):
     # W41 v2 拡張 (週限定変更): 提案中 visit の ID. apply-week-only 後に DB に
     # 入った visit を「今週限定」変更する際の識別子. 提案算出直後は null.
     visit_id: uuid.UUID | None = None
+    # CareFlow #101 FE: この visit に紐づく warning (主に travel_time_shortage).
+    # UI 側で赤枠ハイライト + ツールチップ表示に使う.
+    # BE 側 _v2visit_to_ui で affected_patient_ids に self.patient_id を含む +
+    # weekday 一致 + travel_time_shortage type のものを抽出して渡す.
+    warnings: list[V2WarningOut] = Field(default_factory=list)
 
 
 class V2CourseSummary(BaseModel):

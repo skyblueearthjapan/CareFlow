@@ -2153,8 +2153,17 @@ def test_dynamic_start_time_respects_travel_for_terminal_type() -> None:
 
 
 def test_fixed_time_warning_when_travel_insufficient() -> None:
-    """W41 v2: 固定時刻が移動時間で間に合わない → warning が出るが時刻は動かさない."""
-    from app.services.scheduling.auto_allocator_v2 import _apply_travel_time_to_courses
+    """W41 v2 / CareFlow #101: 固定時刻が移動時間で大きく (>=5 分) 不足する場合は
+    物理不可能と判定し、course_code=None + 戻り値 set にその visit の id(v) を
+    追加して呼び出し側に通知する.
+
+    本テストは shortage が大きい (15 分以上) ケースを検証するため、
+    新仕様では b.course_code=None になる. start_time 自体は不変.
+    """
+    from app.services.scheduling.auto_allocator_v2 import (
+        SHORTAGE_THRESHOLD_MIN,
+        _apply_travel_time_to_courses,
+    )
 
     office_id = uuid.uuid4()
     # P-A 11:00-11:30 終了, P-B 11:00 固定 (= 移動時間 確保 不可能, 5km 離れて 15 分)
@@ -2176,14 +2185,30 @@ def test_fixed_time_warning_when_travel_insufficient() -> None:
     b.preferred_start = "11:00"
 
     warnings: list[V2Warning] = []
-    _apply_travel_time_to_courses([a, b], warnings=warnings)
+    unassigned_ids = _apply_travel_time_to_courses([a, b], warnings=warnings)
 
-    # 固定時刻は動かさない
+    # 固定時刻自体は動かさない (= start_time 不変)
     assert b.start_time == time(11, 0)
-    # 不足 warning が出る (move 不可)
-    assert any(
-        "固定時刻のため繰り下げ不可" in w.message or "固定開始" in w.message for w in warnings
-    ), f"固定時刻不足 warning が出ていない: {warnings}"
+    # shortage は SHORTAGE_THRESHOLD_MIN (=5) 以上 → 物理不可能扱い.
+    assert SHORTAGE_THRESHOLD_MIN <= 5  # 安全装置 (定数を緩めた場合に気づくため)
+    assert id(b) in unassigned_ids, (
+        f"shortage >= {SHORTAGE_THRESHOLD_MIN} の固定 visit は unassigned_ids "
+        f"に含まれるべき: {unassigned_ids}"
+    )
+    assert b.course_code is None, (
+        f"shortage >= {SHORTAGE_THRESHOLD_MIN} の固定 visit は course_code=None "
+        f"に書き換わるべき: course_code={b.course_code}"
+    )
+    # 物理不可能 warning が travel_time_shortage type で affected_patient_ids に
+    # b.patient_id を含む形で出ている (fixed_time_conflict reason マッピング用).
+    matching = [
+        w
+        for w in warnings
+        if w.type == "travel_time_shortage"
+        and b.patient_id in (w.affected_patient_ids or [])
+        and "物理的に配置不可" in w.message
+    ]
+    assert matching, f"物理不可能 warning が出ていない: {warnings}"
 
 
 def test_same_address_zero_travel_no_pushback() -> None:
