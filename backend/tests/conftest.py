@@ -10,12 +10,14 @@ import asyncio
 import os
 from collections.abc import AsyncIterator, Iterator
 
-# Force test settings BEFORE importing app modules so pydantic-settings picks
-# them up at first construction.
-os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
-os.environ.setdefault("JWT_SECRET", "test-secret-key-which-is-32-chars-long!")
-os.environ.setdefault("APP_ENV", "test")
-os.environ.setdefault("CORS_ORIGINS", "http://localhost:3000")
+# IMPORTANT (W41 v2.5 / 2026-05-17 事故再発防止):
+# 本番 DATABASE_URL が container env に存在しても、tests では絶対に sqlite を強制する。
+# setdefault では本番 URL が優先され、Base.metadata.drop_all が本番 DB を破壊する事故が
+# 過去 2 回発生した。強制代入で上書きする。
+os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
+os.environ["JWT_SECRET"] = "test-secret-key-which-is-32-chars-long!"
+os.environ["APP_ENV"] = "test"
+os.environ["CORS_ORIGINS"] = "http://localhost:3000"
 
 import pytest  # noqa: E402
 import pytest_asyncio  # noqa: E402
@@ -38,6 +40,18 @@ def event_loop() -> Iterator[asyncio.AbstractEventLoop]:
 @pytest_asyncio.fixture(scope="function")
 async def _engine():
     """Build a fresh in-memory SQLite engine + create all tables."""
+    # SAFETY (W41 v2.5 / 2026-05-17): 本番事故防止ガード。
+    # APP_ENV != "test" の場合は create_all / drop_all を絶対に実行しない。
+    # これにより、conftest が想定外に本番 container で動いても DB 破壊を防ぐ。
+    # (過去 2 回の本番 DB 全消失事故に基づく二重安全装置)
+    settings = get_settings()
+    if settings.app_env != "test":
+        raise RuntimeError(
+            f"Refusing to create test engine: APP_ENV={settings.app_env!r} != 'test'. "
+            "This is a production safety check (2 prior DB-loss incidents). "
+            "Do NOT run pytest inside the production container."
+        )
+
     # Refresh the cached settings so DATABASE_URL env var takes effect.
     get_settings.cache_clear()
     db_session.reset_engine()
@@ -80,7 +94,7 @@ async def client(_engine):
 
 
 @pytest_asyncio.fixture(scope="function")
-async def test_user(db) -> "User":
+async def test_user(db) -> User:
     """Insert a baseline user (admin/secret-pass-01) and return it."""
     from app.models import User
 
