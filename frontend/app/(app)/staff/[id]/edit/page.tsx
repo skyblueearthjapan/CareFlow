@@ -22,7 +22,7 @@
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, Pencil, Plus, Trash2 } from 'lucide-react';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -37,11 +37,12 @@ import {
 } from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/sonner';
+import { RecordNavigator, type NavigatorRecord } from '@/components/RecordNavigator';
 import { useStaffEvents } from '@/lib/queries/staff-events';
 import { useStaffOverrides, type OverrideRange } from '@/lib/queries/staff-overrides';
 import { useStaffShifts } from '@/lib/queries/staff-shifts';
 import { useDeleteCompanionAssignments } from '@/lib/queries/staff_companion';
-import { useDeleteStaff, useStaff, useUpdateStaff } from '@/lib/queries/staff';
+import { useDeleteStaff, useStaff, useStaffList, useUpdateStaff } from '@/lib/queries/staff';
 import type { OverrideRead } from '@/lib/schemas/staff-overrides';
 import {
   STAFF_ROLE_VALUES,
@@ -142,8 +143,20 @@ export default function StaffEditPage() {
   }, [denied, id, router]);
 
   const { data, isLoading, isError, error } = useStaff(id);
+  const { data: staffList } = useStaffList({ limit: 500 });
+  const navRecords = useMemo<NavigatorRecord[]>(
+    () =>
+      (staffList ?? []).map((s) => ({
+        id: s.id,
+        code: s.code ?? null,
+        name: s.name,
+        kana: s.kana,
+      })),
+    [staffList],
+  );
 
   const [form, setForm] = useState<StaffFormState | null>(null);
+  const [isFormDirty, setIsFormDirty] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   // 削除確認ダイアログ
@@ -172,14 +185,23 @@ export default function StaffEditPage() {
   useEffect(() => {
     if (data && form === null) {
       setForm(fromStaff(data));
+      setIsFormDirty(false);
     }
   }, [data, form]);
 
   const update = useUpdateStaff({
     onSuccess: () => {
       toast.success('スタッフ情報を保存しました');
+      setIsFormDirty(false);
     },
   });
+
+  const handleBeforeNavigate = useCallback(() => {
+    if (!isFormDirty) return true;
+    return window.confirm(
+      '未保存の変更があります。移動するとこれらの変更は失われます。続行しますか？',
+    );
+  }, [isFormDirty]);
 
   if (!id) return null;
 
@@ -267,6 +289,15 @@ export default function StaffEditPage() {
         <h1 className="font-serif text-2xl font-bold text-text-primary">
           スタッフ編集 — {data?.name}
         </h1>
+        {navRecords.length > 0 && id && (
+          <RecordNavigator
+            currentId={id}
+            records={navRecords}
+            hrefTemplate="/staff/{id}/edit"
+            entityLabel="スタッフ"
+            onBeforeNavigate={handleBeforeNavigate}
+          />
+        )}
         {canDelete && !data?.deleted_at ? (
           <Button
             variant="destructive"
@@ -300,7 +331,10 @@ export default function StaffEditPage() {
             <StaffFormFields
               form={form}
               errors={errors}
-              onChange={setForm}
+              onChange={(next) => {
+                setForm(next);
+                setIsFormDirty(true);
+              }}
               sexOptions={STAFF_SEX_VALUES.map((v) => ({ value: v, label: sexLabel(v) }))}
               roleOptions={STAFF_ROLE_VALUES.map((v) => ({ value: v, label: roleLabel(v) }))}
               statusOptions={STAFF_STATUS_VALUES.map((v) => ({

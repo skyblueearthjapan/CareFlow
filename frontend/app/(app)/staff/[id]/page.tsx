@@ -24,10 +24,11 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
+import { RecordNavigator, type NavigatorRecord } from '@/components/RecordNavigator';
 import { useStaffEvents } from '@/lib/queries/staff-events';
 import { useStaffOverrides, type OverrideRange } from '@/lib/queries/staff-overrides';
 import { useStaffShifts } from '@/lib/queries/staff-shifts';
-import { useDeleteStaff, useStaff } from '@/lib/queries/staff';
+import { useDeleteStaff, useStaff, useStaffList } from '@/lib/queries/staff';
 import type { OverrideRead } from '@/lib/schemas/staff-overrides';
 import {
   WEEKDAY_LABELS,
@@ -74,6 +75,17 @@ export default function StaffDetailPage() {
   const [confirmOpen, setConfirmOpen] = useState(false);
 
   const { data, isLoading, isError, error } = useStaff(id);
+  const { data: staffList } = useStaffList({ limit: 500 });
+  const navRecords = useMemo<NavigatorRecord[]>(
+    () =>
+      (staffList ?? []).map((s) => ({
+        id: s.id,
+        code: s.code ?? null,
+        name: s.name,
+        kana: s.kana,
+      })),
+    [staffList],
+  );
 
   const del = useDeleteStaff({
     onSuccess: () => {
@@ -144,6 +156,14 @@ export default function StaffDetailPage() {
         <span className="rounded bg-bg-muted px-2 py-1 text-xs text-text-secondary">
           {statusLabel(data.status)}
         </span>
+        {navRecords.length > 0 && (
+          <RecordNavigator
+            currentId={data.id}
+            records={navRecords}
+            hrefTemplate="/staff/{id}"
+            entityLabel="スタッフ"
+          />
+        )}
         <div className="ml-auto flex gap-2">
           {canEdit && (
             <Button asChild variant="outline" size="sm">

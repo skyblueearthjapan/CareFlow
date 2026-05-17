@@ -10,7 +10,7 @@
 
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
-import { useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { useSession } from 'next-auth/react';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -26,7 +26,13 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/sonner';
 import { EditPageStickyBar } from '@/components/EditPageStickyBar';
-import { useDeletePatient, usePatient, useUpdatePatient } from '@/lib/queries/patients';
+import { RecordNavigator, type NavigatorRecord } from '@/components/RecordNavigator';
+import {
+  useDeletePatient,
+  usePatient,
+  usePatients,
+  useUpdatePatient,
+} from '@/lib/queries/patients';
 import {
   patientReadToFormValues,
   type PatientFormValues,
@@ -46,6 +52,17 @@ export default function EditPatientPage() {
   const canDelete = role === 'admin';
 
   const { data: patient, isLoading, isError, error } = usePatient(id);
+  const { data: patientsList } = usePatients({ limit: 500 });
+  const navRecords = useMemo<NavigatorRecord[]>(
+    () =>
+      (patientsList?.items ?? []).map((p) => ({
+        id: p.id,
+        code: p.code,
+        name: p.name,
+        kana: p.kana,
+      })),
+    [patientsList],
+  );
   const initialFormValues = useMemo(
     () => (patient ? patientReadToFormValues(patient) : undefined),
     [patient],
@@ -58,6 +75,13 @@ export default function EditPatientPage() {
   // sticky bar 用: フォームの isDirty 状態と外部操作ハンドル
   const [isFormDirty, setIsFormDirty] = useState(false);
   const formHandleRef = useRef<PatientFormHandle>(null);
+
+  const handleBeforeNavigate = useCallback(() => {
+    if (!isFormDirty) return true;
+    return window.confirm(
+      '未保存の変更があります。移動するとこれらの変更は失われます。続行しますか？',
+    );
+  }, [isFormDirty]);
 
   const handleDelete = async () => {
     try {
@@ -132,9 +156,19 @@ export default function EditPatientPage() {
             </span>
           </h1>
         </div>
+        {navRecords.length > 0 && (
+          <RecordNavigator
+            currentId={id}
+            records={navRecords}
+            hrefTemplate="/patients/{id}/edit"
+            entityLabel="患者"
+            onBeforeNavigate={handleBeforeNavigate}
+          />
+        )}
         {canDelete && !patient.deleted_at ? (
           <Button
             variant="destructive"
+            className="ml-auto"
             onClick={() => setDeleteConfirmOpen(true)}
             disabled={deleteMutation.isPending}
           >

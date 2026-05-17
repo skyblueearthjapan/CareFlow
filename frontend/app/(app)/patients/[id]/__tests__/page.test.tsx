@@ -36,6 +36,7 @@ vi.mock('next-auth/react', () => ({
 // ─── Mock patient query hooks ─────────────────────────────────────────────────
 vi.mock('@/lib/queries/patients', () => ({
   usePatient: vi.fn(),
+  usePatients: vi.fn(),
   useDeletePatient: vi.fn(),
 }));
 
@@ -61,7 +62,7 @@ vi.mock('@/components/ui/sonner', () => ({
 }));
 
 import { useSession } from 'next-auth/react';
-import { usePatient, useDeletePatient } from '@/lib/queries/patients';
+import { usePatient, usePatients, useDeletePatient } from '@/lib/queries/patients';
 import {
   useFixedVisits,
   useUpdateFixedVisits,
@@ -156,7 +157,11 @@ function setupMocks(
     status: 'authenticated',
   });
 
-  (usePatient as Mock).mockReturnValue(makeQueryResult(makePatient(opts.patientOverrides ?? {})));
+  const patientRecord = makePatient(opts.patientOverrides ?? {});
+  (usePatient as Mock).mockReturnValue(makeQueryResult(patientRecord));
+  (usePatients as Mock).mockReturnValue(
+    makeQueryResult({ items: [patientRecord], total: 1, page: 1, limit: 500, truncated: false }),
+  );
   (useDeletePatient as Mock).mockReturnValue(makeMutation());
 
   (useFixedVisits as Mock).mockReturnValue(makeQueryResult(opts.fixedVisitReads ?? []));

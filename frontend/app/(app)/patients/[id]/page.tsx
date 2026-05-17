@@ -8,7 +8,7 @@
 
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useSession } from 'next-auth/react';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -24,7 +24,8 @@ import {
 } from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/sonner';
-import { useDeletePatient, usePatient } from '@/lib/queries/patients';
+import { RecordNavigator, type NavigatorRecord } from '@/components/RecordNavigator';
+import { useDeletePatient, usePatient, usePatients } from '@/lib/queries/patients';
 import {
   INSURANCE_LABEL,
   SEX_LABEL,
@@ -52,8 +53,20 @@ export default function PatientDetailPage() {
   const canDelete = role === 'admin';
 
   const { data, isLoading, isError, error } = usePatient(id);
+  const { data: patientsList } = usePatients({ limit: 500 });
   const deleteMutation = useDeletePatient();
   const [confirmOpen, setConfirmOpen] = useState(false);
+
+  const navRecords = useMemo<NavigatorRecord[]>(
+    () =>
+      (patientsList?.items ?? []).map((p) => ({
+        id: p.id,
+        code: p.code,
+        name: p.name,
+        kana: p.kana,
+      })),
+    [patientsList],
+  );
 
   if (isLoading) {
     return (
@@ -115,7 +128,16 @@ export default function PatientDetailPage() {
             ) : null}
           </div>
         </div>
-        <div className="flex gap-2">
+        {navRecords.length > 0 && (
+          <RecordNavigator
+            currentId={id}
+            records={navRecords}
+            hrefTemplate="/patients/{id}"
+            entityLabel="患者"
+            truncated={patientsList?.truncated}
+          />
+        )}
+        <div className="ml-auto flex gap-2">
           {canEdit && !data.deleted_at ? (
             <Button asChild variant="outline">
               <Link href={`/patients/${id}/edit`}>編集</Link>
