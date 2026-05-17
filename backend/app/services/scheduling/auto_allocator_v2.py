@@ -3094,16 +3094,17 @@ async def run_v2_pipeline(
         db, patient_ids=list(patients_by_id.keys())
     )
 
-    if mode == "diff_add":
-        # プール = active かつ (固定枠無し OR 今週 visit が DB に無い)
-        #
-        # W41 v2.8 hotfix (孤児 patient 救済): 旧仕様では「PFV 無し」のみが pool
-        # に入ったため、PFV 有るが今週 visit が apply_week_only でドロップした /
-        # auto_allocate で uncoursed になった patient は差分追加の候補にも入らず
-        # 完全に孤児状態になっていた (例: P060). 「今週 active visit が無い」
-        # patient も pool に含めることで、差分追加から再配置可能にする.
-        from datetime import date as _date_cls
+    # W41 v2.8 hotfix#3 (孤児 patient 救済の完全版):
+    # 旧仕様では diff_add 時 pool_patients = 「PFV 無し」のみ → P060 のように
+    # PFV あるが weekly_pattern=null + 今週 visit ない patient は完全孤児に.
+    # hotfix#2 で pool_patients に「PFV あるが今週 visit 無し」を含めたが、
+    # build_visits_for_pool は weekly_pattern ベースなので weekly_pattern=null
+    # では visit が 0 件 → pool_visits に出ない → 候補に出ない問題が残った.
+    # 本 hotfix では「PFV ある孤児 patient」は **PFV ベースで visit 展開** する.
+    from datetime import date as _date_cls
 
+    orphan_fixed_by_patient: dict[UUID, list[PatientFixedVisit]] = {}
+    if mode == "diff_add":
         try:
             week_monday = _date_cls.fromisocalendar(iso_year, iso_week, 1)
             week_sunday = _date_cls.fromisocalendar(iso_year, iso_week, 7)
@@ -3124,14 +3125,34 @@ async def run_v2_pipeline(
             )
             patients_with_week_visit = {pid for pid in visit_rows.all() if pid is not None}
 
-        pool_patients = [
+        # 通常 pool (PFV 無し): weekly_pattern ベース展開
+        pool_patients_no_fixed = [
+            p for p in patients_by_id.values() if p.id not in patients_with_fixed
+        ]
+        # 孤児 pool (PFV あり + 今週 visit 無し): PFV ベース展開
+        pool_patients_orphan_fixed = [
             p
             for p in patients_by_id.values()
-            if p.id not in patients_with_fixed or p.id not in patients_with_week_visit
+            if p.id in patients_with_fixed and p.id not in patients_with_week_visit
         ]
+        pool_patients = pool_patients_no_fixed + pool_patients_orphan_fixed
+
+        # 孤児 patient の PFV を取得 (PFV ベース展開用)
+        # PatientFixedVisit は soft-delete を持たない (固定枠は物理削除)
+        if pool_patients_orphan_fixed:
+            orphan_pfv_rows = await db.scalars(
+                select(PatientFixedVisit).where(
+                    PatientFixedVisit.patient_id.in_([p.id for p in pool_patients_orphan_fixed]),
+                    PatientFixedVisit.mode == "normal",
+                )
+            )
+            for pfv in orphan_pfv_rows.all():
+                orphan_fixed_by_patient.setdefault(pfv.patient_id, []).append(pfv)
     else:
         # full_optimize: 全 active 患者
         pool_patients = list(patients_by_id.values())
+        pool_patients_no_fixed = pool_patients
+        pool_patients_orphan_fixed = []
 
     # W41 v2 拡張 (今週限定オーバーレイ): pending_edits を (patient_id, weekday) → Overlay の
     # マップに変換. PFV / weekly_pattern の読み込み時に Python オブジェクトレベルで上書きする.
@@ -3169,7 +3190,17 @@ async def run_v2_pipeline(
                     patient_name=_p.name,
                 )
             )
-    pool_visits = build_visits_for_pool(pool_patients, pending_overlay=pending_overlay)
+    # diff_add 時は通常 pool (weekly_pattern ベース) + 孤児 pool (PFV ベース) を統合.
+    # full_optimize 時は従来通り weekly_pattern ベース 1 本.
+    pool_visits = build_visits_for_pool(pool_patients_no_fixed, pending_overlay=pending_overlay)
+    if mode == "diff_add" and pool_patients_orphan_fixed and orphan_fixed_by_patient:
+        pool_visits_orphan = build_visits_for_pool(
+            pool_patients_orphan_fixed,
+            fixed_by_patient=orphan_fixed_by_patient,
+            use_fixed_as_source=True,
+            pending_overlay=pending_overlay,
+        )
+        pool_visits = pool_visits + pool_visits_orphan
 
     # H5 + H10: 受入カレンダー × + 昼休憩を除外
     # Mode 2 (full_optimize) は H5 をスキップ — 受入カレンダー × は既存スケジュール
