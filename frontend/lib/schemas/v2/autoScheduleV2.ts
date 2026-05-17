@@ -67,6 +67,10 @@ export const v2WarningSchema = z.object({
   time_type: z.string().nullable().default(null),
   preferred_start: z.string().nullable().default(null),
   preferred_end: z.string().nullable().default(null),
+  // P2 (構造化照合): この警告に影響を受ける patient_id 一覧.
+  // 例: 容量超過コース内の全患者、マネージャー不足で未割当の全患者.
+  // 旧 BE response にはこのフィールドが無いので default([]) で互換性確保.
+  affected_patient_ids: z.array(z.string().uuid()).default([]),
 });
 export type V2Warning = z.infer<typeof v2WarningSchema>;
 
@@ -265,11 +269,41 @@ export type IndividualProposal = z.infer<typeof individualProposalSchema>;
 // 入らなかった患者と理由
 // ---------------------------------------------------------------------------
 
+// P2 (構造化照合): 未割当理由 enum. Backend ``UnassignedReasonOut`` と 1:1.
+export const unassignedReasonSchema = z.enum([
+  'no_coordinates',
+  'no_primary_office',
+  'acceptance_calendar',
+  'course_capacity',
+  'course_overflow',
+  'manager_short',
+  'same_address_split',
+  'fixed_time_conflict',
+  'lunch_break',
+  'unknown',
+]);
+export type UnassignedReason = z.infer<typeof unassignedReasonSchema>;
+
+// P2: 未割当が確定した stage.
+export const unassignedStageSchema = z.enum([
+  'stage3_set',
+  'stage4_capacity',
+  'stage5_course',
+  'apply',
+  'general',
+]);
+export type UnassignedStage = z.infer<typeof unassignedStageSchema>;
+
 export const unassignedPatientSchema = z.object({
   patient_id: z.string().uuid(),
   patient_name: z.string(),
   patient_code: z.string().nullable().default(null),
-  reason: z.string(),
+  // P2: enum に切替え (旧: 自由記述 str). 主要パターンを 10 種に集約.
+  reason: unassignedReasonSchema,
+  // P2: 詳細 message (自由記述補足). UI で reason + reason_detail を表示する.
+  reason_detail: z.string().nullable().default(null),
+  // P2: どの stage で未割当確定したか.
+  dropped_at_stage: unassignedStageSchema.nullable().default(null),
 });
 export type UnassignedPatient = z.infer<typeof unassignedPatientSchema>;
 

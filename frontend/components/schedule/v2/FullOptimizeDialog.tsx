@@ -39,6 +39,7 @@ import type {
   FullOptimizeResponse,
   IndividualProposal,
   PendingFixedTimeEdit,
+  UnassignedReason,
   V2CourseSummary,
   V2VisitForUI,
   V2VisitPlan,
@@ -64,6 +65,25 @@ function fmtWd(weekday: number): string {
   return WEEKDAY_LABELS[weekday] ?? `?${weekday}`;
 }
 
+// P2: UnassignedReason enum を日本語ラベルへ変換 (UI 表示用).
+// Backend ``UnassignedReasonOut`` と 1:1.
+const UNASSIGNED_REASON_LABELS: Record<UnassignedReason, string> = {
+  no_coordinates: '座標未設定 (住所のジオコーディングが未完了)',
+  no_primary_office: '拠点未設定 (primary_office_id が None)',
+  acceptance_calendar: '受入カレンダー× (希望時間が受入不可)',
+  course_capacity: 'コース容量超過 (480 分 or 6 名)',
+  course_overflow: 'コース数超過 (スタッフ数を超過)',
+  manager_short: 'マネージャー不足 (M course 不足)',
+  same_address_split: '同住所 3 名以上で配置先なし',
+  fixed_time_conflict: '固定時刻衝突 / 希望時間外',
+  lunch_break: '昼休憩 (12:00-13:00) と重複',
+  unknown: '原因不明',
+};
+
+function fmtUnassignedReason(reason: UnassignedReason): string {
+  return UNASSIGNED_REASON_LABELS[reason] ?? reason;
+}
+
 // formatTimeCondition は 2026-W20 で WeekdayScheduleCard に統合 (DRY 化).
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -75,6 +95,7 @@ type DialogStage =
   | 'allocating' // /full-optimize 実行中
   | 'reviewing-summary' // 結果サマリー閲覧中 (大枠判断前)
   | 'week-only-confirm' // 「この週だけ試す」確認ダイアログ表示中
+  | 'week-only-unassigned-ack' // unassigned > 0 のときの二段階目確認 (本質バグ早期検知 UX)
   | 'week-only-applying' // /apply-week-only 実行中
   | 'individual-review' // 個別調整モード (1 件ずつ確認)
   | 'completed'; // 全件確認終了 or 中断
@@ -227,8 +248,44 @@ export function FullOptimizeDialog({
     setStage('reviewing-summary');
   };
 
-  /** 「この週だけ試す」確認ダイアログの OK → API 呼出 → 完了 */
+  /**
+   * 「この週だけ試す」確認ダイアログの OK ボタン.
+   * - unassigned_patients.length > 0 のときは **二段階目** の確認ダイアログを表示し、
+   *   旧 visit が削除されたまま新規 visit が作られない可能性 (P1 本質バグ) を明示する.
+   * - unassigned === 0 のときは従来通り即 apply.
+   */
   const handleConfirmWeekOnly = async () => {
+    if (!result) return;
+    if (result.individual_proposals.length === 0) {
+      toast.info('反映可能な患者がいません');
+      setStage('reviewing-summary');
+      return;
+    }
+    if (result.unassigned_patients.length > 0) {
+      setStage('week-only-unassigned-ack');
+      return;
+    }
+    await runApplyWeekOnly();
+  };
+
+  /**
+   * 二段階目確認のキャンセル (apply はせず、1 段目の確認画面に戻す).
+   */
+  const handleCancelUnassignedAck = () => {
+    if (isApplyingWeekOnly) return;
+    setStage('week-only-confirm');
+  };
+
+  /**
+   * 二段階目確認の続行 (未割当を理解した上で apply).
+   */
+  const handleProceedDespiteUnassigned = async () => {
+    if (!result) return;
+    await runApplyWeekOnly();
+  };
+
+  /** 実際の /apply-week-only API 呼出 (二段階確認後 or unassigned=0 のときのみ実行). */
+  const runApplyWeekOnly = async () => {
     if (!result) return;
     const proposals = result.individual_proposals;
     if (proposals.length === 0) {
@@ -348,7 +405,9 @@ export function FullOptimizeDialog({
           <DialogDescription>
             {stage === 'individual-review'
               ? '患者一人ひとりの変更を確認してください。採用・却下・スキップを選んでください。'
-              : stage === 'week-only-confirm' || stage === 'week-only-applying'
+              : stage === 'week-only-confirm' ||
+                  stage === 'week-only-unassigned-ack' ||
+                  stage === 'week-only-applying'
                 ? 'この週の visits だけに反映します。患者マスタの固定枠は変更されません。'
                 : '全 active 患者で固定枠を再算出し、移動距離・偏差を改善する提案を生成します。「この週だけ試す」を選ぶと固定枠を変更せず一括反映できます。'}
           </DialogDescription>
@@ -377,6 +436,7 @@ export function FullOptimizeDialog({
         {(stage === 'reviewing-summary' ||
           stage === 'individual-review' ||
           stage === 'week-only-confirm' ||
+          stage === 'week-only-unassigned-ack' ||
           stage === 'week-only-applying') &&
         result ? (
           <div className="space-y-3 py-2" data-testid="full-optimize-result">
@@ -558,7 +618,9 @@ export function FullOptimizeDialog({
               </Button>
             </div>
           </div>
-        ) : stage === 'week-only-confirm' || stage === 'week-only-applying' ? (
+        ) : stage === 'week-only-confirm' ||
+          stage === 'week-only-unassigned-ack' ||
+          stage === 'week-only-applying' ? (
           /* ── 「この週だけ試す」確認/実行中フッター ── */
           <div
             className="mt-4 rounded-lg border border-brand-primary/40 bg-brand-primary/5 p-4"
@@ -641,6 +703,18 @@ export function FullOptimizeDialog({
           onNext={() => handleSkipPatient(activePatient)}
           onAbort={handleClose}
           remaining={remainingPatients.length}
+        />
+      ) : null}
+
+      {/* P4: unassigned > 0 のときの二段階目確認ダイアログ (本質バグ早期検知 UX). */}
+      {stage === 'week-only-unassigned-ack' && result ? (
+        <UnassignedAckDialog
+          unassignedCount={result.unassigned_patients.length}
+          isApplying={isApplyingWeekOnly}
+          onCancel={handleCancelUnassignedAck}
+          onProceed={() => {
+            void handleProceedDespiteUnassigned();
+          }}
         />
       ) : null}
 
@@ -787,6 +861,24 @@ function WarningSection({
 // 未割当 0 → 緑バナー / 未割当あり → アンバーバナー (詳細展開可).
 // ─────────────────────────────────────────────────────────────────────────
 
+/**
+ * apply 時に DB に INSERT される unique patient 数を計算する.
+ *
+ * `apply_week_only` は `individual_proposals` のうち `proposed_pfv` が
+ * 1 件以上ある patient_id 単位で `visit_plans_per_patient` を組み立てる
+ * (FullOptimizeDialog.runApplyWeekOnly() 参照). よって INSERT 対象は
+ * unique patient_id 数 = 「proposed_pfv 非空の個別提案数」と一致する.
+ */
+export function countWillBeInserted(result: FullOptimizeResponse): number {
+  const set = new Set<string>();
+  for (const p of result.individual_proposals) {
+    if (p.proposed_pfv.length > 0) {
+      set.add(p.patient_id);
+    }
+  }
+  return set.size;
+}
+
 function AssignmentSummaryBanner({ result }: { result: FullOptimizeResponse }) {
   // 割当済み患者: after に少なくとも 1 visit ある = 個別提案 / week_proposals.after に出る.
   const assignedSet = new Set<string>();
@@ -800,6 +892,8 @@ function AssignmentSummaryBanner({ result }: { result: FullOptimizeResponse }) {
   const unassignedCount = result.unassigned_patients.length;
   const assignedCount = assignedSet.size;
   const totalCount = assignedCount + unassignedCount;
+  // P3: apply 時に DB に INSERT される unique patient 数 (本質バグ早期検知 UX).
+  const willBeInsertedCount = countWillBeInserted(result);
 
   if (unassignedCount === 0) {
     return (
@@ -807,7 +901,13 @@ function AssignmentSummaryBanner({ result }: { result: FullOptimizeResponse }) {
         className="rounded border border-emerald-300 bg-emerald-50 p-3 text-sm text-emerald-800"
         data-testid="full-optimize-assignment-banner-ok"
       >
-        ✅ 全 {totalCount} 名の患者を割当できました
+        <div>✅ 全 {totalCount} 名の患者を割当できました</div>
+        <div
+          className="mt-1 text-xs text-emerald-700"
+          data-testid="full-optimize-will-be-inserted-count"
+        >
+          apply 時に DB に INSERT される patient 数: {willBeInsertedCount} 名
+        </div>
       </div>
     );
   }
@@ -816,7 +916,22 @@ function AssignmentSummaryBanner({ result }: { result: FullOptimizeResponse }) {
       className="rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900"
       data-testid="full-optimize-assignment-banner-warn"
     >
-      ⚠️ {totalCount} 名中 {assignedCount} 名割当 / {unassignedCount} 名がプール残
+      <div>
+        ⚠️ {totalCount} 名中 {assignedCount} 名割当 / {unassignedCount} 名がプール残
+      </div>
+      {/* P3: apply 時に DB に INSERT される patient 数 (本質バグ早期検知 UX). */}
+      <div
+        className="mt-1 rounded border border-amber-400 bg-amber-100 p-2 text-xs text-amber-900"
+        data-testid="full-optimize-will-be-inserted-warn"
+      >
+        <div className="font-semibold" data-testid="full-optimize-will-be-inserted-count">
+          ⚠️ apply 時に DB に INSERT される patient 数: {willBeInsertedCount} 名
+        </div>
+        <div className="mt-1 leading-snug">
+          {unassignedCount} 名の患者が未割当のため、apply 後に旧 visit が削除されたまま新規 visit
+          が作成されない可能性があります。詳細はプール残リストをご確認ください。
+        </div>
+      </div>
       <details className="mt-2">
         <summary className="cursor-pointer text-xs">▼ 未割当患者の詳細</summary>
         <ul className="mt-2 space-y-1 text-xs" data-testid="full-optimize-unassigned-list">
@@ -824,7 +939,10 @@ function AssignmentSummaryBanner({ result }: { result: FullOptimizeResponse }) {
             <li key={p.patient_id}>
               ・<span className="font-semibold">{p.patient_code ?? '—'}</span> {p.patient_name}
               {' — 理由: '}
-              <span className="text-amber-700">{p.reason}</span>
+              <span className="text-amber-700">{fmtUnassignedReason(p.reason)}</span>
+              {p.reason_detail ? (
+                <span className="text-amber-600 ml-1">({p.reason_detail})</span>
+              ) : null}
             </li>
           ))}
         </ul>
@@ -1194,6 +1312,75 @@ function IndividualPatientPopup({
               この患者は変更する
             </Button>
           </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// UnassignedAckDialog — P4: unassigned > 0 のときの二段階目確認ダイアログ
+//
+// 本質バグ (apply_week_only が active 全員の旧 visit を soft-delete するが
+// INSERT は visit_plans_per_patient 分のみ → unassigned 患者の visit が消える)
+// の早期検知 UX. apply を実行する前にユーザーへリスクを明示的に確認させる.
+// ─────────────────────────────────────────────────────────────────────────
+
+interface UnassignedAckDialogProps {
+  unassignedCount: number;
+  isApplying: boolean;
+  onCancel: () => void;
+  onProceed: () => void;
+}
+
+export function UnassignedAckDialog({
+  unassignedCount,
+  isApplying,
+  onCancel,
+  onProceed,
+}: UnassignedAckDialogProps) {
+  return (
+    <Dialog
+      open
+      onOpenChange={(o) => {
+        if (!o && !isApplying) onCancel();
+      }}
+    >
+      <DialogContent className="max-w-md" data-testid="full-optimize-unassigned-ack-dialog">
+        <DialogHeader>
+          <DialogTitle className="text-base text-amber-900">⚠️ 未割当患者がいます</DialogTitle>
+          <DialogDescription>
+            {unassignedCount} 名の患者が未割当です。 このまま採用すると該当患者の旧 visit
+            が削除されたまま新規 visit が作成されません。続行しますか？
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter className="flex-col gap-2 sm:flex-row sm:justify-end">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={onCancel}
+            disabled={isApplying}
+            data-testid="full-optimize-unassigned-ack-cancel"
+            aria-label="未割当確認をキャンセル"
+          >
+            <X className="mr-1 h-4 w-4" aria-hidden />
+            キャンセル
+          </Button>
+          <Button
+            type="button"
+            onClick={onProceed}
+            disabled={isApplying}
+            data-testid="full-optimize-unassigned-ack-proceed"
+            aria-label="未割当を理解して続行"
+            className="bg-amber-600 text-white hover:bg-amber-700"
+          >
+            {isApplying ? (
+              <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
+            ) : (
+              <CalendarRange className="mr-1 h-4 w-4" aria-hidden />
+            )}
+            未割当を理解して続行
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
