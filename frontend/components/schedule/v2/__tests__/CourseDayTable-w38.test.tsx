@@ -37,6 +37,7 @@ vi.mock('@/lib/utils', () => ({
 
 vi.mock('lucide-react', () => ({
   X: (props: React.SVGProps<SVGSVGElement>) => <svg data-testid="x-icon" {...props} />,
+  Info: (props: React.SVGProps<SVGSVGElement>) => <svg data-testid="info-icon" {...props} />,
 }));
 
 import { CourseDayTable } from '../CourseDayTable';

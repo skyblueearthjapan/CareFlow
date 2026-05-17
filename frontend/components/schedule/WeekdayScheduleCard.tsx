@@ -35,6 +35,11 @@ import { trimSeconds } from './v2/_autoScheduleUtils';
 export interface VisitListItem {
   /** ユニーク key (visit_id or patient_id+slot 等). */
   key: string;
+  /**
+   * 患者 ID. 指定があり、かつカード側に `onPatientClick` が渡されている場合のみ
+   * 患者名がクリック可能になり、患者詳細ダイアログを開ける。
+   */
+  patient_id?: string | null;
   /** "HH:MM" or "HH:MM:SS". 表示時は trimSeconds 適用. */
   start_time: string;
   patient_name: string;
@@ -79,6 +84,12 @@ export interface WeekdayScheduleCardProps {
   maxVisitsPerCourse?: number;
   /** カードに付与する testid prefix. */
   testIdPrefix?: string;
+  /**
+   * 患者名クリック時のハンドラ. 指定された行のみ患者名が button になり、
+   * クリックで親側 (例: /schedule の PatientScheduleDetailDialog) を開く。
+   * 指定なし or visit に `patient_id` が無い場合は通常の text 表示.
+   */
+  onPatientClick?: (patientId: string) => void;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -113,6 +124,7 @@ export function WeekdayScheduleCard({
   courses,
   maxVisitsPerCourse,
   testIdPrefix,
+  onPatientClick,
 }: WeekdayScheduleCardProps) {
   const headerCls =
     tone === 'primary'
@@ -139,6 +151,7 @@ export function WeekdayScheduleCard({
               course={c}
               maxVisits={maxVisitsPerCourse}
               testIdPrefix={testIdPrefix}
+              onPatientClick={onPatientClick}
             />
           ))}
         </ul>
@@ -151,9 +164,10 @@ interface CourseRowProps {
   course: CourseListItem;
   maxVisits?: number;
   testIdPrefix?: string;
+  onPatientClick?: (patientId: string) => void;
 }
 
-function CourseRow({ course, maxVisits, testIdPrefix }: CourseRowProps) {
+function CourseRow({ course, maxVisits, testIdPrefix, onPatientClick }: CourseRowProps) {
   const sliced = maxVisits && maxVisits > 0 ? course.visits.slice(0, maxVisits) : course.visits;
   const overflowCount = course.visits.length - sliced.length;
   return (
@@ -172,6 +186,7 @@ function CourseRow({ course, maxVisits, testIdPrefix }: CourseRowProps) {
               next={arr[i + 1] ?? null}
               fullVisits={course.visits}
               testIdPrefix={testIdPrefix}
+              onPatientClick={onPatientClick}
             />
           ))}
           {overflowCount > 0 ? (
@@ -190,9 +205,10 @@ interface VisitRowProps {
   /** 同住所グループサイズ計算用に slice 前の全 visit を渡す. */
   fullVisits: VisitListItem[];
   testIdPrefix?: string;
+  onPatientClick?: (patientId: string) => void;
 }
 
-function VisitRow({ visit, prev, next, fullVisits, testIdPrefix }: VisitRowProps) {
+function VisitRow({ visit, prev, next, fullVisits, testIdPrefix, onPatientClick }: VisitRowProps) {
   const inGroup = !!visit.same_address_group_id;
   const sameAsPrev = inGroup && prev?.same_address_group_id === visit.same_address_group_id;
   const sameAsNext = inGroup && next?.same_address_group_id === visit.same_address_group_id;
@@ -228,7 +244,21 @@ function VisitRow({ visit, prev, next, fullVisits, testIdPrefix }: VisitRowProps
         </span>
       ) : null}
       <span className="tnum text-text-muted">{trimSeconds(visit.start_time)}</span>
-      <span className="text-text-primary">{visit.patient_name}</span>
+      {onPatientClick && visit.patient_id ? (
+        <button
+          type="button"
+          className="text-text-primary underline-offset-2 hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary"
+          onClick={(e) => {
+            e.stopPropagation();
+            onPatientClick(visit.patient_id!);
+          }}
+          aria-label={`${visit.patient_name} の詳細を開く`}
+        >
+          {visit.patient_name}
+        </button>
+      ) : (
+        <span className="text-text-primary">{visit.patient_name}</span>
+      )}
       {visit.area_label ? (
         <span className="rounded bg-brand-primary/10 px-1 text-[9px] text-brand-primary">
           {visit.area_label}

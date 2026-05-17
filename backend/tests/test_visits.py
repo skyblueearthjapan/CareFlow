@@ -270,3 +270,54 @@ async def test_visits_delete_without_cascade_keeps_pfv(client, db) -> None:
     assert len(rows) == 1
     assert rows[0].mode == "normal"
     assert rows[0].weekday == 2
+
+
+# ---------------------------------------------------------------------------
+# Wave Next 1 H3: GET /visits の patient_id クエリパラメータ
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_visits_list_filter_by_patient_id(client, db) -> None:
+    """Wave Next 1 H3: ``GET /api/v1/visits?patient_id=...`` で当該患者の
+    visit のみが返る. 既存挙動 (patient_id 未指定 → 全件) は保たれる.
+    """
+    admin = await _make_user(db, "v-h3-admin@example.com", "admin")
+    p1 = Patient(code="V-H3-P1", name="P1")
+    p2 = Patient(code="V-H3-P2", name="P2")
+    db.add_all([p1, p2])
+    await db.commit()
+    await db.refresh(p1)
+    await db.refresh(p2)
+
+    # 2 患者 × 各 1 件の visit (同週).
+    v1 = Visit(
+        patient_id=p1.id,
+        visit_date=date(2026, 5, 11),
+        start_time=time(9, 0),
+        end_time=time(9, 30),
+        type="regular",
+    )
+    v2 = Visit(
+        patient_id=p2.id,
+        visit_date=date(2026, 5, 11),
+        start_time=time(10, 0),
+        end_time=time(10, 30),
+        type="regular",
+    )
+    db.add_all([v1, v2])
+    await db.commit()
+
+    # patient_id 未指定 → 両方返る (= 後方互換).
+    res_all = await client.get("/api/v1/visits", headers=_bearer(admin))
+    assert res_all.status_code == 200, res_all.text
+    body_all = res_all.json()
+    pids_all = {row["patient_id"] for row in body_all}
+    assert str(p1.id) in pids_all and str(p2.id) in pids_all
+
+    # patient_id=p1 → p1 のみ.
+    res_one = await client.get(f"/api/v1/visits?patient_id={p1.id}", headers=_bearer(admin))
+    assert res_one.status_code == 200, res_one.text
+    body_one = res_one.json()
+    assert len(body_one) == 1
+    assert body_one[0]["patient_id"] == str(p1.id)

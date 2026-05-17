@@ -64,3 +64,8 @@ logs/
 # OS-specific temp
 *.tmp
 .tmp/
+
+# OMC (oh-my-claudecode) orchestration artifacts — local-only
+.omc/
+backend/.omc/
+frontend/.omc/

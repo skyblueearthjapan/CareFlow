@@ -72,6 +72,7 @@ function buildListUrl(params: {
   week_start?: string;
   week_end?: string;
   staff_id?: string | null;
+  patient_id?: string | null;
 }): string {
   const qs = new URLSearchParams();
   qs.set('limit', String(VISIT_LIST_HARD_CAP));
@@ -79,6 +80,7 @@ function buildListUrl(params: {
   if (params.week_start) qs.set('week_start', params.week_start);
   if (params.week_end) qs.set('week_end', params.week_end);
   if (params.staff_id) qs.set('staff_id', params.staff_id);
+  if (params.patient_id) qs.set('patient_id', params.patient_id);
   return `${VISITS_BASE}?${qs.toString()}`;
 }
 
@@ -112,15 +114,21 @@ export function useVisits(params: UseVisitsParams = {}): UseQueryResult<UseVisit
       // explicit staff_id only for admin/manager. The "__none__" sentinel is
       // never sent over the wire.
       const wireStaffId = role === 'staff' ? null : (effectiveStaffId ?? null);
-      const all = await fetcher<VisitRead[]>(
-        buildListUrl({ week_start, week_end, staff_id: wireStaffId }),
+      // Wave Next 1 H3: patient_id をクライアント側 filter ではなく BE 側で
+      // 絞り込む. これにより 500 件 hard cap に達するケースでも当該患者の
+      // visit を取りこぼさない. 既存呼び出し (patient_id 未指定) は全件取得の
+      // 後方互換動作のまま.
+      const items = await fetcher<VisitRead[]>(
+        buildListUrl({
+          week_start,
+          week_end,
+          staff_id: wireStaffId,
+          patient_id: patient_id ?? null,
+        }),
         { accessToken, refreshToken },
       );
-      const filtered = patient_id ? all.filter((v) => v.patient_id === patient_id) : all;
-      // Truncation reflects the raw backend window; if the page hit the cap,
-      // the week may be incomplete regardless of the patient filter.
-      const truncated = all.length === VISIT_LIST_HARD_CAP;
-      return { items: filtered, truncated };
+      const truncated = items.length === VISIT_LIST_HARD_CAP;
+      return { items, truncated };
     },
   });
 }

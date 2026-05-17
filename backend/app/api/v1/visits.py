@@ -117,6 +117,15 @@ async def list_visits(
         UUID | None,
         Query(description="Filter to visits in this course (W2-BE4)"),
     ] = None,
+    patient_id: Annotated[
+        UUID | None,
+        Query(
+            description=(
+                "Filter to visits for a single patient. Wave Next 1 H3: "
+                "PatientScheduleDetailDialog で当該患者の今週分のみ取得する用途."
+            ),
+        ),
+    ] = None,
 ) -> list[dict]:
     if user.role not in {"admin", "manager", "staff"}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
@@ -146,6 +155,8 @@ async def list_visits(
         stmt = stmt.where(Visit.visit_date <= week_end)
     if course_id is not None:
         stmt = stmt.where(Visit.course_id == course_id)
+    if patient_id is not None:
+        stmt = stmt.where(Visit.patient_id == patient_id)
     stmt = stmt.order_by(Visit.visit_date, Visit.start_time).limit(limit).offset(offset)
     rows = (await db.scalars(stmt)).all()
     # Bulk-load assignments for the listed visits in a single query

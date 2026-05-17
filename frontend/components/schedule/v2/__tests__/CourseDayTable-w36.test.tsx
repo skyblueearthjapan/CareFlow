@@ -34,9 +34,10 @@ vi.mock('@/lib/utils', () => ({
       .join(' '),
 }));
 
-// lucide-react X アイコンを軽量スタブ化
+// lucide-react X / Info アイコンを軽量スタブ化
 vi.mock('lucide-react', () => ({
   X: (props: React.SVGProps<SVGSVGElement>) => <svg data-testid="x-icon" {...props} />,
+  Info: (props: React.SVGProps<SVGSVGElement>) => <svg data-testid="info-icon" {...props} />,
 }));
 
 import { CourseDayTable } from '../CourseDayTable';

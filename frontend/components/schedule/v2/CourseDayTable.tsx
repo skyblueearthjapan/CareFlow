@@ -18,7 +18,7 @@
  */
 import { useMemo } from 'react';
 import { useDraggable, useDroppable } from '@dnd-kit/core';
-import { X } from 'lucide-react';
+import { Info, X } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
@@ -320,6 +320,12 @@ export interface CourseDayTableProps {
    * canEdit=true のときのみ表示される。
    */
   onDeleteVisit?: (visitId: string, patientName: string) => void;
+  /**
+   * 患者氏名横の info アイコン (🔍) クリック時のハンドラ.
+   * 患者の固定枠 vs 今週 visits を比較する PatientScheduleDetailDialog を開く用途.
+   * canEdit に依らず常に表示する (閲覧専用ロールでも詳細は見たい).
+   */
+  onPatientClick?: (patientId: string) => void;
 }
 
 export function CourseDayTable({
@@ -334,6 +340,7 @@ export function CourseDayTable({
   onChangeAssignedStaff,
   isStaffMutating,
   onDeleteVisit,
+  onPatientClick,
 }: CourseDayTableProps) {
   // visits を slot ("HH:MM") → CourseGridVisit[] にバケット化.
   const occupants = useMemo(() => {
@@ -480,6 +487,7 @@ export function CourseDayTable({
               assignedStaffId={assignedStaffId}
               staffEventsByStaff={eventsMap}
               onDeleteVisit={onDeleteVisit}
+              onPatientClick={onPatientClick}
             />
           ))}
 
@@ -522,6 +530,8 @@ interface CourseTimeRowProps {
   staffEventsByStaff?: Map<string, EventRead[]>;
   /** Wave 36: visit × ボタンクリックハンドラ. */
   onDeleteVisit?: (visitId: string, patientName: string) => void;
+  /** 患者氏名横の info アイコンクリックハンドラ. */
+  onPatientClick?: (patientId: string) => void;
 }
 
 function CourseTimeRow({
@@ -533,6 +543,7 @@ function CourseTimeRow({
   assignedStaffId,
   staffEventsByStaff,
   onDeleteVisit,
+  onPatientClick,
 }: CourseTimeRowProps) {
   // Wave 27 Phase B-3: 担当スタッフがこのスロット時間帯にイベントを持つか判定
   // (visit と event の重複時の ⚠ バッジ用に残す。Wave 39 で event の本文表示は
@@ -603,9 +614,11 @@ function CourseTimeRow({
                   <OccupantNameDraggable
                     key={`name-${o.id}`}
                     visitId={o.id}
+                    patientId={o.patient_id}
                     label={o.patient_name ?? o.patient_id}
                     canEdit={canEdit}
                     onDeleteVisit={onDeleteVisit}
+                    onPatientClick={onPatientClick}
                     groupSlotLabel={o.group_slot_label}
                     partnerLabel={o.partner_label ?? null}
                     partnerLocation={o.partner_location ?? null}
@@ -699,10 +712,14 @@ function CourseTimeRow({
 
 interface OccupantNameDraggableProps {
   visitId: string;
+  /** 患者ID. onPatientClick で詳細ダイアログを開く起点として使用. */
+  patientId?: string | null;
   label: string;
   canEdit: boolean;
   /** Wave 36: visit × ボタンクリックハンドラ. canEdit=true のときのみ表示. */
   onDeleteVisit?: (visitId: string, patientName: string) => void;
+  /** 患者詳細 (固定枠 vs 今週) ダイアログを開くハンドラ. canEdit に依らず表示. */
+  onPatientClick?: (patientId: string) => void;
   /** Wave 37 Phase 3-C: 2 名体制 ① / ② バッジ (visit_group_id 内の slot 番号). */
   groupSlotLabel?: 1 | 2;
   /** Wave 37 Phase 3-C: ペア相手の表示用ラベル (tooltip 用). */
@@ -738,9 +755,11 @@ interface OccupantNameDraggableProps {
  */
 function OccupantNameDraggable({
   visitId,
+  patientId,
   label,
   canEdit,
   onDeleteVisit,
+  onPatientClick,
   groupSlotLabel,
   partnerLabel,
   partnerLocation,
@@ -828,6 +847,27 @@ function OccupantNameDraggable({
           </span>
         ) : null}
       </div>
+      {onPatientClick && patientId && (
+        <button
+          type="button"
+          // Wave Next 1 L1: タッチデバイス (coarse pointer = hover 不能) では
+          // hover で出現せず操作不能だったため常時表示.
+          className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity p-0.5 hover:bg-bg-muted rounded flex-shrink-0"
+          onClick={(e) => {
+            e.stopPropagation();
+            onPatientClick(patientId);
+          }}
+          onPointerDown={(e) => {
+            // dnd-kit の pointer activation 抑止 (drag 開始させずクリック先行).
+            e.stopPropagation();
+          }}
+          aria-label={`${label} の固定枠と今週スケジュールを比較`}
+          title="患者の固定枠と今週スケジュールを比較"
+          data-testid={`patient-detail-btn-${visitId}`}
+        >
+          <Info className="h-3 w-3 text-brand-primary" />
+        </button>
+      )}
       {canEdit && onDeleteVisit && (
         <button
           type="button"

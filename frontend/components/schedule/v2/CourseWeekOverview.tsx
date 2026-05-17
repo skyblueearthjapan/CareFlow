@@ -74,6 +74,12 @@ export interface CourseWeekOverviewProps {
    * - 'full': 省略せず全件表示 (overflow-y 自動).
    */
   displayMode?: 'compact' | 'full';
+  /**
+   * 患者氏名クリック時のハンドラ (患者詳細ダイアログを開く).
+   * 指定された場合のみ氏名が button になる。閲覧専用ロールでも詳細は見たいので
+   * canEdit に依らない。
+   */
+  onPatientClick?: (patientId: string) => void;
 }
 
 export function CourseWeekOverview({
@@ -86,6 +92,7 @@ export function CourseWeekOverview({
   staffMap,
   sameAddressKeyByPatientId,
   displayMode = 'compact',
+  onPatientClick,
 }: CourseWeekOverviewProps) {
   // (template_id, weekday) → visits[] (start_time 昇順)
   const cellMap = React.useMemo(() => {
@@ -199,6 +206,7 @@ export function CourseWeekOverview({
                     | {
                         kind: 'visit';
                         id: string;
+                        patient_id: string;
                         time: string | null;
                         label: string;
                         sameAddressGroup: boolean;
@@ -217,6 +225,7 @@ export function CourseWeekOverview({
                       return {
                         kind: 'visit' as const,
                         id: v.id,
+                        patient_id: v.patient_id,
                         time: v.start_time,
                         label: v.patient_name ?? v.patient_id,
                         sameAddressGroup: inGroup,
@@ -310,7 +319,21 @@ export function CourseWeekOverview({
                                         📍
                                       </span>
                                     ) : null}
-                                    {item.label}
+                                    {onPatientClick ? (
+                                      <button
+                                        type="button"
+                                        className="underline-offset-2 hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          onPatientClick(item.patient_id);
+                                        }}
+                                        aria-label={`${item.label} の詳細を開く`}
+                                      >
+                                        {item.label}
+                                      </button>
+                                    ) : (
+                                      item.label
+                                    )}
                                   </li>
                                 ) : (
                                   <li

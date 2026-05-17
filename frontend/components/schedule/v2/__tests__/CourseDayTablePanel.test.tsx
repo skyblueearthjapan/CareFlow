@@ -75,6 +75,7 @@ vi.mock('lucide-react', () => ({
   ChevronRight: () => <span />,
   Inbox: () => <span />,
   AlertTriangle: () => <span />,
+  Info: () => <span />,
   User: () => <span />,
   Users: () => <span />,
   X: () => <span />,

@@ -26,7 +26,7 @@
  *   - admin / manager: 編集可 (ドロップ + 週生成 + 自動割付 + 担当変更)
  *   - staff: 閲覧のみ
  */
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import {
   DndContext,
   DragOverlay,
@@ -96,6 +96,7 @@ import {
 import { CourseWeekOverview, type WeekOverviewVisit } from './CourseWeekOverview';
 import { PartnerCourseDialog } from './PartnerCourseDialog';
 import { PatientCard } from './PatientCard';
+import { PatientScheduleDetailDialog } from './PatientScheduleDetailDialog';
 import {
   POOL_DROPPABLE_ID,
   PoolGroupedByWeekday,
@@ -166,7 +167,15 @@ function toIsoYearWeek(d: Date): { isoYear: number; isoWeek: number } {
 
 /**
  * (course_template, weekday, isoYear, isoWeek) に対応する週次コース行を引く。
- * 一致条件: office_id 一致 + course.code が template.label の頭文字大文字と一致.
+ *
+ * 一致条件 (CareFlow Wave Next 2 [H1] 対応):
+ *   1. exact match: template.label (大文字) === course.code (大文字)
+ *      → 例: label='A' & code='A', label='M' & code='M', label='M2' & code='M2'
+ *   2. M overflow fallback: course.code が M-prefix (M2..M9) かつ
+ *      template.label === 'M' の場合 (専用 M2/M3 template が同 office に
+ *      seed されていなくても 'M' template に表示できるようにする).
+ *   3. legacy 1-char match: code が 1 文字 (A-E, M) で template.label の
+ *      先頭 1 文字と一致 (旧運用との後方互換: label='Aコース' → code='A').
  */
 export function findCourseForTemplate(args: {
   template: CourseTemplateRead;
@@ -176,16 +185,24 @@ export function findCourseForTemplate(args: {
   courses: CourseV2Read[];
 }): CourseV2Read | null {
   const { template, weekday, isoYear, isoWeek, courses } = args;
-  const expectedCode = (template.label || '').trim().slice(0, 1).toUpperCase();
-  const found = courses.find(
-    (c) =>
-      c.office_id === template.office_id &&
-      c.iso_year === isoYear &&
-      c.iso_week === isoWeek &&
-      c.weekday === weekday &&
-      String(c.code).toUpperCase() === expectedCode &&
-      !c.deleted_at,
-  );
+  const labelUp = (template.label || '').trim().toUpperCase();
+  const labelFirst = labelUp.slice(0, 1);
+  const found = courses.find((c) => {
+    if (c.office_id !== template.office_id) return false;
+    if (c.iso_year !== isoYear || c.iso_week !== isoWeek || c.weekday !== weekday) return false;
+    if (c.deleted_at) return false;
+    const codeUp = String(c.code).toUpperCase();
+    // 1) exact match
+    if (codeUp === labelUp) return true;
+    // 2) M overflow fallback: code='M2'/'M3' などで template.label='M' に流す.
+    //    (M2/M3 専用 template があるならそちらが exact match で先に拾われる.)
+    if (labelUp === 'M' && /^M\d+$/.test(codeUp)) {
+      return true;
+    }
+    // 3) legacy 1-char fallback (label='Aコース' → code='A' 等)
+    if (codeUp.length === 1 && codeUp === labelFirst) return true;
+    return false;
+  });
   return found ?? null;
 }
 
@@ -371,15 +388,35 @@ export function CourseDayTablePanel({
 
   // ─── Wave 18 Phase B-6 / Wave 37 P3-C: course_id → course_template_id の逆引き ──
   // (元 line 467 から移設: visitsByCourse / partner ラベル解決から参照されるため上に移動)
+  //
+  // CareFlow Wave Next 2 [H1]: M overflow (M2..M9) を考慮した照合.
+  // findCourseForTemplate と同じ規則:
+  //   1) exact match (label 大文字 === code 大文字)
+  //   2) M overflow fallback (code が M2..M9, label が 'M')
+  //   3) legacy 1-char fallback (code 長さ 1 で label 先頭文字一致)
   const courseTemplateByCourseId = useMemo(() => {
     const m = new Map<string, string>();
     for (const c of courses) {
-      // course.code (大文字 1 文字) と template.label の頭文字を office_id + 大文字一致で結ぶ
-      const tpl = templates.find(
-        (t) =>
-          t.office_id === c.office_id &&
-          (t.label || '').trim().slice(0, 1).toUpperCase() === String(c.code).toUpperCase(),
-      );
+      const codeUp = String(c.code).toUpperCase();
+      const tpl =
+        // 1) exact label match を最優先
+        templates.find(
+          (t) => t.office_id === c.office_id && (t.label || '').trim().toUpperCase() === codeUp,
+        ) ??
+        // 2) M overflow (M2..M9) → 'M' template fallback
+        (/^M\d+$/.test(codeUp)
+          ? templates.find(
+              (t) => t.office_id === c.office_id && (t.label || '').trim().toUpperCase() === 'M',
+            )
+          : undefined) ??
+        // 3) legacy 1-char fallback
+        (codeUp.length === 1
+          ? templates.find(
+              (t) =>
+                t.office_id === c.office_id &&
+                (t.label || '').trim().slice(0, 1).toUpperCase() === codeUp,
+            )
+          : undefined);
       if (tpl) m.set(c.id, tpl.id);
     }
     return m;
@@ -1181,6 +1218,12 @@ export function CourseDayTablePanel({
   const [diffAddOpen, setDiffAddOpen] = useState(false);
   const [fullOptimizeOpen, setFullOptimizeOpen] = useState(false);
 
+  // ─── 患者スケジュール詳細ダイアログ (固定枠 vs 今週 + 個別反映) ───
+  const [patientDetailId, setPatientDetailId] = useState<string | null>(null);
+  // Wave Next 1 H5: useMemo は値メモ化用途. ハンドラは useCallback が正解.
+  const handleOpenPatientDetail = useCallback((pid: string) => setPatientDetailId(pid), []);
+  const handleClosePatientDetail = useCallback(() => setPatientDetailId(null), []);
+
   const handleGenerateWeek = async () => {
     if (!canEdit) {
       toast.warning('編集権限がありません');
@@ -1301,6 +1344,7 @@ export function CourseDayTablePanel({
           | undefined;
         return {
           key: cv.id,
+          patient_id: cv.patient_id,
           start_time: cv.start_slot,
           patient_name: cv.patient_name ?? cv.patient_id,
           address: cv.patient_address ?? null,
@@ -1548,6 +1592,7 @@ export function CourseDayTablePanel({
                   staffMap={staffMap}
                   sameAddressKeyByPatientId={sameAddressKeyByPatientId}
                   displayMode={weekDisplayMode}
+                  onPatientClick={handleOpenPatientDetail}
                 />
               </div>
             ) : (
@@ -1613,6 +1658,7 @@ export function CourseDayTablePanel({
                       tone="muted"
                       courses={weekdayListCourses}
                       testIdPrefix={`course-day-list-${activeWeekday}`}
+                      onPatientClick={handleOpenPatientDetail}
                     />
                   </div>
                 ) : (
@@ -1650,6 +1696,7 @@ export function CourseDayTablePanel({
                         onDeleteVisit={(visitId, patientName) => {
                           void handleDeleteVisit(visitId, patientName);
                         }}
+                        onPatientClick={handleOpenPatientDetail}
                       />
                     );
                   })
@@ -1769,6 +1816,19 @@ export function CourseDayTablePanel({
           isoWeek={isoWeek}
           officeId={officeId}
         />
+
+        {/* 患者スケジュール詳細 (固定枠 vs 今週 + 個別反映)
+            条件付きレンダリングで unmount を保証 (hooks の lazy 起動). */}
+        {patientDetailId !== null ? (
+          <PatientScheduleDetailDialog
+            patientId={patientDetailId}
+            open
+            onClose={handleClosePatientDetail}
+            isoYear={isoYear}
+            isoWeek={isoWeek}
+            canEdit={canEdit}
+          />
+        ) : null}
       </section>
     </DndContext>
   );

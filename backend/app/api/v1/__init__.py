@@ -20,6 +20,7 @@ from app.api.v1 import (
     notifications,
     offices,
     patient_fixed_visits,
+    patient_sync,
     patients,
     patients_excel,
     pending_requests,
@@ -55,6 +56,9 @@ api_router.include_router(patients.router, prefix="/patients", tags=["patients"]
 api_router.include_router(
     patient_fixed_visits.router, prefix="/patients", tags=["patient-fixed-visits"]
 )
+# 今週 visits → 固定枠 (PFV) 個別反映 sub-resource.
+# POST /patients/{patient_id}/sync-week-visits-to-fixed
+api_router.include_router(patient_sync.router, prefix="/patients", tags=["patient-sync"])
 # Sub-resource routers MUST be included BEFORE staff.router so that the more
 # specific paths (/staff/{id}/shifts etc.) are matched before the generic
 # /staff/{id} catch-all in staff.router.
