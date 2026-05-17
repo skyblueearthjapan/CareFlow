@@ -1234,3 +1234,120 @@ async def test_import_apply_partial_commit_mixed_patient_and_pfv_errors(client, 
         )
     ).all()
     assert pfvs_b == []
+
+
+# 30) regression (bug 1): 新規 patient INSERT 時に special_week_active が NULL ではなく
+#     [] になり、GET /api/v1/patients の Pydantic レスポンス schema を通る.
+@pytest.mark.asyncio
+async def test_import_apply_new_patient_special_week_active_defaults_to_empty_list(
+    client, db
+) -> None:
+    """Excel import で新規追加した patient の special_week_active が NULL のままだと
+    /api/v1/patients が ``Input should be a valid list`` で 500 になる回帰を防ぐ.
+
+    importer は通常の POST /patients ルートを通らず ORM INSERT を直接行うため、
+    Pydantic の default_factory に頼れない. importer 側で必ず [] を埋める必要がある.
+    """
+    admin = await _make_user(db, "im-swa@example.com", "admin")
+    # bearer headers は expire_all 前に capture しておく (expire_all 後に
+    # admin.id を触ると async greenlet 越しの lazy load が走って fail する).
+    headers = _bearer(admin)
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                "patient_code": "P-SWA-001",
+                "name": "swa新規",
+                "sex": "male",
+                "status": "active",
+                "address": "addr",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    assert res.json()["transaction_applied"] is True
+
+    # DB から直接取得して default を確認.
+    db.expire_all()
+    patient = await db.scalar(select(Patient).where(Patient.code == "P-SWA-001"))
+    assert patient is not None
+    assert patient.special_week_active == []  # NULL ではなく []
+
+    # API ラウンドトリップ (回帰の本丸 — Pydantic validation を通ること)
+    res = await client.get("/api/v1/patients", headers=headers)
+    assert res.status_code == 200, res.text
+    items = res.json()
+    by_code = {p["code"]: p for p in items}
+    assert "P-SWA-001" in by_code
+    assert by_code["P-SWA-001"]["special_week_active"] == []
+
+
+# 31) bug 2: patient_id 空 + patient_code = 既存患者 + <DELETE> で削除成功
+@pytest.mark.asyncio
+async def test_import_apply_delete_via_patient_code_only(client, db) -> None:
+    """ユーザーが手で「削除したい code + <DELETE>」だけ書いた Excel でも削除できる."""
+    admin = await _make_user(db, "im-delcode@example.com", "admin")
+    patient = await _make_patient(db, code="P-DELCODE-001", name="code削除")
+    patient_id = patient.id
+
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                # patient_id 空 + patient_code のみ + <DELETE>
+                "patient_code": "P-DELCODE-001",
+                "delete_flag": "<DELETE>",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["transaction_applied"] is True
+    assert body["summary"]["patients_delete"] == 1
+    row = body["patient_rows"][0]
+    assert row["operation"] == "delete"
+    assert row["patient_code"] == "P-DELCODE-001"
+
+    db.expire_all()
+    refreshed = await db.get(Patient, patient_id)
+    assert refreshed is not None
+    assert refreshed.deleted_at is not None  # soft delete されている
+
+
+# 32) bug 2: patient_id 空 + 存在しない patient_code + <DELETE> は idempotent noop
+@pytest.mark.asyncio
+async def test_import_delete_via_unknown_patient_code_is_noop(client, db) -> None:
+    """既に削除済み (or そもそも居ない) code を <DELETE> しても error にせず noop."""
+    admin = await _make_user(db, "im-delnoop@example.com", "admin")
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                "patient_code": "P-DELNOOP-XYZ",
+                "delete_flag": "<DELETE>",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=True)
+    body = res.json()
+    assert body["summary"]["patients_noop"] == 1
+    assert body["summary"]["patients_error"] == 0
+    assert body["patient_rows"][0]["operation"] == "noop"
+
+
+# 33) bug 2: patient_id 空 + patient_code 空 + <DELETE> は error
+@pytest.mark.asyncio
+async def test_import_delete_with_both_id_and_code_blank_errors(client, db) -> None:
+    admin = await _make_user(db, "im-delblank@example.com", "admin")
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                # 両方空
+                "delete_flag": "<DELETE>",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=True)
+    body = res.json()
+    assert body["summary"]["patients_error"] == 1
+    msg = body["patient_rows"][0]["error_message"]
+    assert "patient_id" in msg and "patient_code" in msg

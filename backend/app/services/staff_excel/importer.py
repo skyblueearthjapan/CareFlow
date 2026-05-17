@@ -188,6 +188,7 @@ def _parse_staff_row(
     row: tuple[Any, ...],
     *,
     existing_staff: dict[UUID, Staff],
+    existing_staff_by_code: dict[str, Staff],
     offices_by_code: dict[str, Office],
     existing_codes: set[str],
     already_seen_codes: set[str],
@@ -242,25 +243,52 @@ def _parse_staff_row(
 
     # 削除フラグ
     if is_magic_delete(raw_delete):
-        if existing_obj is None:
+        # 1) staff_id があれば既存通り (上で resolution 済み)
+        if existing_obj is not None:
             return (
                 StaffExcelImportRow(
                     row_number=row_number,
-                    staff_id=staff_id,
-                    staff_code=staff_code,
-                    operation="error",
-                    error_message="削除フラグが指定されましたが staff_id がありません",
+                    staff_id=existing_obj.id,
+                    staff_code=existing_obj.code,
+                    operation="delete",
                 ),
-                None,
+                {"_staff_id": existing_obj.id, "_op": "delete"},
             )
+        # 2) staff_id 空でも staff_code があれば code で解決
+        if staff_code is not None:
+            resolved = existing_staff_by_code.get(staff_code)
+            if resolved is None:
+                # 該当 code が DB に居ない → idempotent な noop 扱い (再 import で
+                # error にしないため). export → 1 行削除 → 再 import のようなケースを
+                # 想定。
+                return (
+                    StaffExcelImportRow(
+                        row_number=row_number,
+                        staff_id=None,
+                        staff_code=staff_code,
+                        operation="noop",
+                    ),
+                    None,
+                )
+            return (
+                StaffExcelImportRow(
+                    row_number=row_number,
+                    staff_id=resolved.id,
+                    staff_code=resolved.code,
+                    operation="delete",
+                ),
+                {"_staff_id": resolved.id, "_op": "delete"},
+            )
+        # 3) 両方空 → error
         return (
             StaffExcelImportRow(
                 row_number=row_number,
-                staff_id=existing_obj.id,
-                staff_code=existing_obj.code,
-                operation="delete",
+                staff_id=None,
+                staff_code=None,
+                operation="error",
+                error_message=("削除フラグが指定されましたが staff_id / staff_code がありません"),
             ),
-            {"_staff_id": existing_obj.id, "_op": "delete"},
+            None,
         )
 
     # 各列をパース.
@@ -897,6 +925,10 @@ async def parse_and_diff(
 
     # alive staff の code → id (shift シート側で code リンクに使う)
     existing_code_to_id: dict[str, UUID] = {s.code: s.id for s in existing_staff.values() if s.code}
+    # alive staff の code → Staff (削除パスで staff_code リンク削除に使う)
+    existing_staff_by_code: dict[str, Staff] = {
+        s.code: s for s in existing_staff.values() if s.code
+    }
 
     # ---- スタッフシート ----
     ws_s = wb[SHEET_STAFF]
@@ -913,6 +945,7 @@ async def parse_and_diff(
             r_idx,
             row,
             existing_staff=existing_staff,
+            existing_staff_by_code=existing_staff_by_code,
             offices_by_code=offices_by_code,
             existing_codes=existing_codes,
             already_seen_codes=already_seen_codes,

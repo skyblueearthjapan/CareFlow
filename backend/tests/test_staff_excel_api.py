@@ -1117,3 +1117,74 @@ async def test_import_apply_partial_commit_mixed_staff_and_shift_errors(client, 
         await db.scalars(select(StaffShift).where(StaffShift.staff_id == by_code["S-MIX-B"].id))
     ).all()
     assert shifts_b == []
+
+
+# 30) bug 2: staff_id 空 + staff_code = 既存スタッフ + <DELETE> で削除成功
+@pytest.mark.asyncio
+async def test_import_apply_delete_via_staff_code_only(client, db) -> None:
+    """ユーザーが手で「削除したい code + <DELETE>」だけ書いた Excel でも削除できる."""
+    admin = await _make_user(db, "stx-delcode@example.com", "admin")
+    staff = await _make_staff(db, code="S-DELCODE-001", name="code削除")
+    staff_id = staff.id
+
+    content = _build_workbook_bytes(
+        staff_rows=[
+            {
+                # staff_id 空 + staff_code のみ + <DELETE>
+                "staff_code": "S-DELCODE-001",
+                "delete_flag": "<DELETE>",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["transaction_applied"] is True
+    assert body["summary"]["staff_delete"] == 1
+    row = body["staff_rows"][0]
+    assert row["operation"] == "delete"
+    assert row["staff_code"] == "S-DELCODE-001"
+
+    db.expire_all()
+    refreshed = await db.get(Staff, staff_id)
+    assert refreshed is not None
+    assert refreshed.deleted_at is not None  # soft delete されている
+
+
+# 31) bug 2: staff_id 空 + 存在しない staff_code + <DELETE> は idempotent noop
+@pytest.mark.asyncio
+async def test_import_delete_via_unknown_staff_code_is_noop(client, db) -> None:
+    """既に削除済み (or そもそも居ない) code を <DELETE> しても error にせず noop."""
+    admin = await _make_user(db, "stx-delnoop@example.com", "admin")
+    content = _build_workbook_bytes(
+        staff_rows=[
+            {
+                "staff_code": "S-DELNOOP-XYZ",
+                "delete_flag": "<DELETE>",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=True)
+    body = res.json()
+    assert body["summary"]["staff_noop"] == 1
+    assert body["summary"]["staff_error"] == 0
+    assert body["staff_rows"][0]["operation"] == "noop"
+
+
+# 32) bug 2: staff_id 空 + staff_code 空 + <DELETE> は error
+@pytest.mark.asyncio
+async def test_import_delete_with_both_id_and_code_blank_errors(client, db) -> None:
+    admin = await _make_user(db, "stx-delblank@example.com", "admin")
+    content = _build_workbook_bytes(
+        staff_rows=[
+            {
+                # 両方空
+                "delete_flag": "<DELETE>",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=True)
+    body = res.json()
+    assert body["summary"]["staff_error"] == 1
+    msg = body["staff_rows"][0]["error_message"]
+    assert "staff_id" in msg and "staff_code" in msg

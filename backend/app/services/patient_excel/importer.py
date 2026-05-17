@@ -212,6 +212,7 @@ def _parse_patient_row(
     row: tuple[Any, ...],
     *,
     existing_patients: dict[UUID, Patient],
+    existing_patients_by_code: dict[str, Patient],
     offices_by_code: dict[str, Office],
     existing_codes: set[str],
     already_seen_codes: set[str],
@@ -265,25 +266,54 @@ def _parse_patient_row(
 
     # 削除フラグ
     if is_magic_delete(raw_delete):
-        if existing_patient is None:
+        # 1) patient_id があれば既存通り (上で resolution 済み)
+        if existing_patient is not None:
             return (
                 PatientExcelImportRow(
                     row_number=row_number,
-                    patient_id=patient_id,
-                    patient_code=patient_code,
-                    operation="error",
-                    error_message="削除フラグが指定されましたが patient_id がありません",
+                    patient_id=existing_patient.id,
+                    patient_code=existing_patient.code,
+                    operation="delete",
                 ),
-                None,
+                {"_patient_id": existing_patient.id, "_op": "delete"},
             )
+        # 2) patient_id 空でも patient_code があれば code で解決
+        if patient_code is not None:
+            resolved = existing_patients_by_code.get(patient_code)
+            if resolved is None:
+                # 該当 code が DB に居ない → idempotent な noop 扱い (再 import で
+                # error にしないため). export → 1 行削除 → 再 import のようなケースを
+                # 想定。
+                return (
+                    PatientExcelImportRow(
+                        row_number=row_number,
+                        patient_id=None,
+                        patient_code=patient_code,
+                        operation="noop",
+                    ),
+                    None,
+                )
+            return (
+                PatientExcelImportRow(
+                    row_number=row_number,
+                    patient_id=resolved.id,
+                    patient_code=resolved.code,
+                    operation="delete",
+                ),
+                {"_patient_id": resolved.id, "_op": "delete"},
+            )
+        # 3) 両方空 → error
         return (
             PatientExcelImportRow(
                 row_number=row_number,
-                patient_id=existing_patient.id,
-                patient_code=existing_patient.code,
-                operation="delete",
+                patient_id=None,
+                patient_code=None,
+                operation="error",
+                error_message=(
+                    "削除フラグが指定されましたが patient_id / patient_code がありません"
+                ),
             ),
-            {"_patient_id": existing_patient.id, "_op": "delete"},
+            None,
         )
 
     # 各列をパース.
@@ -437,6 +467,12 @@ def _parse_patient_row(
             "_new_patient_id": new_patient_id,
             "id": new_patient_id,
             "code": patient_code,
+            # API レスポンス schema (PatientV2Read.special_week_active: list[dict] = [])
+            # は NOT NULL の list を要求する。DB DEFAULT は NULL なので、INSERT 時に
+            # 明示的に [] を埋めないと GET /api/v1/patients が Pydantic validation で
+            # 500 になる。Excel importer は通常の POST /patients を通らずに直接 ORM
+            # INSERT するので、ここで明示的に補完する必要がある。
+            "special_week_active": [],
         }
         # 必須以外も含めて値をフラット化.
         for k, v in parsed.items():
@@ -1113,6 +1149,11 @@ async def parse_and_diff(
     offices_by_code = await _load_offices_by_code(db)
     course_templates = await _load_course_templates_by_label(db)
     existing_pfvs = await _load_pfvs_by_key(db, set(existing_patients.keys()))
+    # 削除パスで patient_code → Patient を解決するため (patient_id 列が空でも
+    # patient_code リンクで削除できるようにする).
+    existing_patients_by_code: dict[str, Patient] = {
+        p.code: p for p in existing_patients.values() if p.code
+    }
 
     # ---- 患者シート ----
     ws_p = wb[SHEET_PATIENTS]
@@ -1127,6 +1168,7 @@ async def parse_and_diff(
             r_idx,
             row,
             existing_patients=existing_patients,
+            existing_patients_by_code=existing_patients_by_code,
             offices_by_code=offices_by_code,
             existing_codes=existing_codes,
             already_seen_codes=already_seen_codes,
