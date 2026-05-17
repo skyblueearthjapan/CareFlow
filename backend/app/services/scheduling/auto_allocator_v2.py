@@ -198,6 +198,33 @@ V2WarningType = Literal[
 ]
 
 
+# P2: 未割当患者の構造化理由 (UI 分類 + 詳細表示用).
+# 「原因不明 (受入カレンダー× / 容量超過 / 座標未設定 のいずれか)」のような曖昧文言を
+# 撤去し、warning.affected_patient_ids との照合で patient_id 単位で確定させる.
+UnassignedReason = Literal[
+    "no_coordinates",  # 座標未設定 (lat/lng=None)
+    "no_primary_office",  # 拠点未設定 (primary_office_id=None)
+    "acceptance_calendar",  # 受入カレンダー × で拒否
+    "course_capacity",  # コース容量超過 (480 分 or 6 名)
+    "course_overflow",  # コース数超過 (Stage 5 で未割当)
+    "manager_short",  # マネージャー不足 (M course 不足)
+    "same_address_split",  # 同住所 3 名以上で別 set へ動かしたが配置できず
+    "fixed_time_conflict",  # 固定時刻衝突 (travel_time_shortage 等)
+    "lunch_break",  # 昼休憩 (12:00-13:00) と重なるため除外
+    "unknown",  # 上記いずれにも一致しない fallback
+]
+
+
+# P2: 未割当が確定した stage. UI で「どの段階で外れたか」を案内するため.
+UnassignedStage = Literal[
+    "stage3_set",  # 距離クラスタリングで除外
+    "stage4_capacity",  # コース容量制約 (Stage 4 / _check_course_capacity_minutes)
+    "stage5_course",  # コース数 / マネージャー不足 (Stage 5)
+    "apply",  # apply 段階で除外
+    "general",  # 一般 (座標未設定など stage 前段)
+]
+
+
 @dataclass
 class V2Warning:
     """構造化された警告 1 件分.
@@ -207,7 +234,11 @@ class V2Warning:
         weekday: 関連曜日 (0=月..6=日) / 曜日不問は None
         message: 既存の日本語メッセージ (UI で表示)
         actionable: True なら UI で「固定時間を変更」ボタンを出す
-        patient_id / patient_name: 関連患者 (任意)
+        patient_id / patient_name: 関連患者 (任意 — 主にメイン患者 1 名)
+        affected_patient_ids: P2 追加 — 警告に影響を受ける patient_id のリスト
+            (例: 容量超過コース内の全 patient, マネージャー不足で未割当の全 patient).
+            ``_identify_unassigned_patients`` が text 含み判定ではなく
+            ``patient_id in w.affected_patient_ids`` で堅牢に照合するために使う.
         visit_id: 該当の提案 visit ID (週限定変更 API で使用)
         current_time / suggested_time: "HH:MM" 文字列 (集約したかった時刻 vs 現状)
         time_type: "固定" / "時間帯" / "午前" / "午後" / "終日" / None
@@ -226,6 +257,9 @@ class V2Warning:
     time_type: str | None = None
     preferred_start: str | None = None
     preferred_end: str | None = None
+    # P2 追加: 構造化照合用. _identify_unassigned_patients で text 含み判定の
+    # 代わりに patient_id 集合で照合する. 既存 emit 箇所は徐々に埋めていく.
+    affected_patient_ids: list[UUID] = field(default_factory=list)
 
 
 @dataclass
@@ -1142,6 +1176,8 @@ def _consolidate_same_address_time(
                         time_type=v.time_type,
                         preferred_start=v.preferred_start,
                         preferred_end=v.preferred_end,
+                        # P2: 単一 patient warning でも affected_patient_ids を埋める.
+                        affected_patient_ids=[v.patient_id],
                     )
                 )
 
@@ -1385,6 +1421,74 @@ async def count_active_staff_per_weekday(
     return dict(counter)
 
 
+async def count_active_managers_per_weekday(
+    db: AsyncSession,
+    *,
+    office_ids: list[UUID],
+    iso_year: int,
+    iso_week: int,
+) -> dict[tuple[UUID, int], int]:
+    """(office_id × weekday) ごとの稼働可能マネージャー数を返す.
+
+    対象: role='manager', is_trainee=False, status='active', deleted_at IS NULL,
+    primary_office_id in office_ids, かつ StaffShift.is_on=True (当該曜日).
+    weekly override で off になっていれば除外.
+
+    CareFlow Wave Next 3: M course (= マネージャー枠) の発行数を当該曜日の
+    出勤マネージャー数で動的に絞るために使用する.「マネージャー 1 名に対して
+    1 つのコースのみ」ルールの実装. 超過セットは ``run_v2_pipeline`` Stage 5
+    で ``unassigned_patients`` に流す.
+
+    ``count_active_staff_per_weekday`` と全く同じシグネチャ / 動作だが
+    ``Staff.role`` が ``'manager'`` か ``'staff'`` かだけが違う.
+    """
+    if not office_ids:
+        return {}
+    staff_rows = await db.scalars(
+        select(Staff).where(
+            Staff.status == "active",
+            Staff.deleted_at.is_(None),
+            Staff.role == "manager",
+            Staff.is_trainee.is_(False),
+            Staff.primary_office_id.in_(office_ids),
+        )
+    )
+    staff_list = list(staff_rows.all())
+    if not staff_list:
+        return {}
+    staff_ids = [s.id for s in staff_list]
+    shifts_rows = await db.scalars(
+        select(StaffShift).where(
+            StaffShift.staff_id.in_(staff_ids),
+            StaffShift.is_on.is_(True),
+        )
+    )
+    shifts_by_staff: dict[UUID, set[int]] = {}
+    for sh in shifts_rows.all():
+        shifts_by_staff.setdefault(sh.staff_id, set()).add(sh.weekday)
+    # 当該週の off override を取得
+    overrides_rows = await db.scalars(
+        select(StaffWeeklyOverride).where(
+            StaffWeeklyOverride.staff_id.in_(staff_ids),
+            StaffWeeklyOverride.iso_year == iso_year,
+            StaffWeeklyOverride.iso_week == iso_week,
+            StaffWeeklyOverride.override_type == "off",
+        )
+    )
+    off_overrides: set[tuple[UUID, int]] = {
+        (ov.staff_id, ov.weekday) for ov in overrides_rows.all()
+    }
+    counter: Counter[tuple[UUID, int]] = Counter()
+    for s in staff_list:
+        if s.primary_office_id is None:
+            continue
+        for wd in shifts_by_staff.get(s.id, set()):
+            if (s.id, wd) in off_overrides:
+                continue
+            counter[(s.primary_office_id, wd)] += 1
+    return dict(counter)
+
+
 async def _emit_staff_shifts_data_health_warning(
     db: AsyncSession,
     *,
@@ -1485,6 +1589,8 @@ def enforce_course_count_constraint(
         office_name = (office_name_by_id or {}).get(office_id) or str(office_id)
         wd_jp = _weekday_jp(weekday)
         ap_jp = _am_pm_jp(am_pm)
+        # P2: 全 set 内 patient_id (影響受ける可能性のある patient).
+        all_pids = list({v.patient_id for s in sets for v in s.visits})
         if n == 0:
             warnings.append(
                 V2Warning(
@@ -1495,6 +1601,7 @@ def enforce_course_count_constraint(
                     ),
                     weekday=weekday,
                     actionable=False,
+                    affected_patient_ids=all_pids,
                 )
             )
             continue
@@ -1515,6 +1622,9 @@ def enforce_course_count_constraint(
             )
         effective_max = min(n, _COURSE_CODES_MAX)
         if len(sets) > effective_max:
+            # P2: 効率超過分の set 内 patient_id (set 末尾から overflow 順).
+            overflow_sets = sets[effective_max:]
+            overflow_pids = list({v.patient_id for s in overflow_sets for v in s.visits})
             warnings.append(
                 V2Warning(
                     type="course_capacity",
@@ -1526,6 +1636,7 @@ def enforce_course_count_constraint(
                     ),
                     weekday=weekday,
                     actionable=False,
+                    affected_patient_ids=overflow_pids,
                 )
             )
     return sets_by_bucket
@@ -1578,6 +1689,10 @@ def combine_am_pm_sets(
             if s.visits:
                 sample_wd = s.visits[0].weekday
                 break
+        # P2: 全 set 内 patient_id (マネージャー補充候補となる patient).
+        affected_pids_zero_staff = list(
+            {v.patient_id for s in (am_sets + pm_sets) for v in s.visits}
+        )
         warnings.append(
             V2Warning(
                 type="course_count",
@@ -1588,6 +1703,7 @@ def combine_am_pm_sets(
                 ),
                 weekday=sample_wd,
                 actionable=False,
+                affected_patient_ids=affected_pids_zero_staff,
             )
         )
 
@@ -1656,6 +1772,18 @@ def combine_am_pm_sets(
             if pm_c is not None and pm_c.visits:
                 sample_v = pm_c.visits[0]
                 break
+        # P2: 超過分 (= 末尾の course から staff_count を超えた分) の patient_id.
+        overflow_courses = courses[staff_count:]
+        overflow_pids: list[UUID] = []
+        seen_pids: set[UUID] = set()
+        for am_c, pm_c in overflow_courses:
+            for s in (am_c, pm_c):
+                if s is None:
+                    continue
+                for v in s.visits:
+                    if v.patient_id not in seen_pids:
+                        seen_pids.add(v.patient_id)
+                        overflow_pids.append(v.patient_id)
         if sample_v is not None:
             office_name = (office_name_by_id or {}).get(sample_v.office_id) or str(
                 sample_v.office_id
@@ -1671,6 +1799,7 @@ def combine_am_pm_sets(
                     ),
                     weekday=sample_v.weekday,
                     actionable=False,
+                    affected_patient_ids=overflow_pids,
                 )
             )
         else:
@@ -1682,6 +1811,7 @@ def combine_am_pm_sets(
                         f"(マネージャー補充候補 {len(courses) - staff_count} 件)"
                     ),
                     actionable=False,
+                    affected_patient_ids=overflow_pids,
                 )
             )
     return courses
@@ -1727,6 +1857,167 @@ def calc_course_total_minutes(visits: list[V2Visit]) -> int:
         # _apply_travel_time_to_courses と同じく異住所はバッファー加算.
         total += travel_min + VISIT_BUFFER_MINUTES
     return total
+
+
+def _reorder_same_address_consecutive(
+    visits: list[V2Visit],
+    *,
+    warnings: list[V2Warning] | None = None,
+) -> list[V2Visit]:
+    """同住所ペアを連続位置 (配列上で隣接) に並べ替える.
+
+    **ユーザー要望 (最重要)**: 同住所患者は必ず連番に配置する. 間に別住所患者が
+    挟まると同住所メリット (移動 0 + バッファー 0) が消えるため、
+    ``_apply_travel_time_to_courses`` で start_time 順にソートした直後に
+    本関数を呼んで同住所連番を強制する.
+
+    Algorithm:
+        1. 入力は ``start_time`` 昇順を想定 (順序は基本的に維持).
+        2. ``lat`` / ``lng`` が None の visit は対象外 (元の位置を維持).
+        3. 同住所バケットごとに位置をグルーピング.
+        4. 同住所が 2 件かつ既に隣接していない場合のみ並べ替え:
+           - 両者非固定: 後ろ側の visit を、前側の visit の隣 (直後) に移動.
+           - 一方が固定 (``time_type='固定'``) で他方が非固定:
+             非固定側を固定側の隣に寄せる. 固定側の元の位置 (= 配列インデックス)
+             は不変. 非固定側を固定側の元 start_time に対し前後関係を維持して挿入.
+           - 両者固定: 並べ替え不可 (start_time が動かせず、位置を入れ替えると
+             配列順 = 時刻順 不整合になる). そのまま放置.
+        5. 同住所 3 件以上が同一コース内に残っている場合: 2 件のみペア化し
+           3 件目以降は warning を出す (``H2 enforce`` で別コース化済みの想定).
+
+    Returns:
+        並べ替え後の新しい list. 入力 list の要素順は変更しない
+        (shallow copy を返す). 要素 (V2Visit) インスタンス自体は同一
+        (同じオブジェクトを参照する shallow copy).
+
+    Notes:
+        - 並べ替え後に ``start_time`` 単調性が一時的に崩れる可能性があるが、
+          ``_apply_travel_time_to_courses`` が後段で earliest_start を再計算する
+          ため OK (例: [A 9:00, B 9:30 同住所, C 9:15] → リオーダーで
+          [A 9:00, B 9:30, C 9:15] になっても、後段で C を 9:30→10:00 等に調整).
+        - 固定時刻 patient の ``start_time`` は不変 (既存仕様).
+          ただし配列位置は同住所相手と隣接するよう調整可能.
+
+    Side effects on other visits' times (intentional — ユーザー方針):
+        同住所連番を最優先するため、間に挟まれた / 隣接した別住所 visit や
+        非固定 first の start_time が後段 (``_apply_travel_time_to_courses``)
+        で動くことを **明示的に許容** している.
+
+        - 同住所ペア (固定 first + 非固定 second) + 間に別住所 visit:
+          例 input ``[A 09:00 固定 addr1, C 09:15 addr2, B 11:00 非固定 addr1]``
+          → reorder 後 ``[A, B, C]``. 後段で C の earliest が
+          ``B.end + travel + buffer`` まで押し下げられる場合がある.
+          (= reorder で挟まれた別住所 visit が後段で押し下げられる場合がある.)
+        - 同住所ペア (非固定 first + 固定 second) + 間に別住所 visit:
+          例 input ``[A 09:00 非固定 addr1, C 09:15 addr2, B 10:00 固定 addr1]``
+          → reorder 後 ``[C, A, B]``. 後段で A (非固定 first) の earliest が
+          ``C.end + travel + buffer`` (= ~10:00) まで繰り下げられる場合がある.
+          (= 非固定 first の start_time が後段で繰り下げられる可能性がある.
+          本来 09:00 で配置できた visit が同住所優先のため遅延される.)
+
+        これらは「同住所メリット (移動 0 + バッファー 0) を確保するためなら
+        他 visit の時刻が動くのは許容」とのユーザー方針に基づく仕様であり、
+        バグではない. behavior pin テスト
+        (``test_same_address_pair_pushes_back_subsequent_other_address_visit``,
+        ``test_same_address_pair_non_fixed_first_with_fixed_second_can_push_first_later``)
+        で動作を固定している.
+    """
+    if not visits or len(visits) < 2:
+        return list(visits)
+
+    # 同住所バケットごとに index を収集 (lat/lng=None は除外).
+    address_to_indices: dict[tuple[float, float], list[int]] = {}
+    for i, v in enumerate(visits):
+        if v.lat is None or v.lng is None:
+            continue
+        key = _address_bucket(v.lat, v.lng)
+        address_to_indices.setdefault(key, []).append(i)
+
+    # 並べ替え対象 (address_bucket, [indices]) のみ抽出.
+    # 既に隣接していたら skip.
+    result = list(visits)
+    for _addr_key, indices in address_to_indices.items():
+        if len(indices) < 2:
+            continue
+
+        # current_indices を毎回再計算 (前のループで result を組み替えた可能性).
+        current_indices = [
+            i
+            for i, v in enumerate(result)
+            if (
+                v.lat is not None
+                and v.lng is not None
+                and _address_bucket(v.lat, v.lng) == _addr_key
+            )
+        ]
+        if len(current_indices) < 2:
+            continue
+
+        # M1: warning 発火は current_indices 再計算後に判定する (reorder 後の
+        # 実際の同住所件数で判断). 3+ は H2 enforce で別コース化されている想定だが、
+        # 残っていたら 2 件のみペア化 + warning. sample は reorder 後の先頭 visit.
+        if len(current_indices) >= 3 and warnings is not None:
+            sample = result[current_indices[0]]
+            name = sample.patient_name or (sample.patient_code or "不明")
+            # L1: warning メッセージに曜日 + course_code (+ 可能なら address) を含める
+            # (UI 識別性向上). V2Visit.address があれば併記, なければ最低限の lat/lng.
+            weekday_label = (
+                _weekday_jp(sample.weekday) if sample.weekday is not None else "曜日不明"
+            )
+            course_label = sample.course_code or "?"
+            address_suffix = (
+                f"{sample.address} ({_addr_key[0]:.4f},{_addr_key[1]:.4f})"
+                if sample.address
+                else f"({_addr_key[0]:.4f},{_addr_key[1]:.4f})"
+            )
+            warnings.append(
+                V2Warning(
+                    type="general",
+                    message=(
+                        f"H2 同住所連番: {weekday_label}・コース {course_label} の "
+                        f"同住所 {address_suffix} に 3 名以上が同コース内に残存 — "
+                        f"2 名のみ連番化 "
+                        f"(該当 patient 例: {name} 様, manual review needed)"
+                    ),
+                    weekday=sample.weekday,
+                    actionable=False,
+                    patient_id=sample.patient_id,
+                    patient_name=sample.patient_name,
+                )
+            )
+
+        first_idx = current_indices[0]
+        second_idx = current_indices[1]
+        if second_idx - first_idx == 1:
+            continue  # 既に隣接
+
+        first = result[first_idx]
+        second = result[second_idx]
+        first_fixed = first.time_type == "固定"
+        second_fixed = second.time_type == "固定"
+
+        if first_fixed and second_fixed:
+            # 両者固定: 配列位置を動かすと start_time 単調性が崩れたまま
+            # earliest 計算に影響. 動かさない (隣接していないことを許容).
+            continue
+
+        # second を first の直後に移動するのが基本.
+        # ただし second が固定 / first が非固定なら、first を second の直前に
+        # 移動する (= 固定側を動かさない).
+        if second_fixed and not first_fixed:
+            # 非固定 first を固定 second の直前に移動.
+            # pop first, then insert at (second_idx - 1) since first removed shifted.
+            v_to_move = result.pop(first_idx)
+            insert_at = second_idx - 1  # 元 second_idx の位置 (= 直前).
+            result.insert(insert_at, v_to_move)
+        else:
+            # first が固定 (second 非固定) または両者非固定:
+            # second を first の直後 (first_idx + 1) に移動.
+            v_to_move = result.pop(second_idx)
+            insert_at = first_idx + 1
+            result.insert(insert_at, v_to_move)
+
+    return result
 
 
 def _apply_travel_time_to_courses(
@@ -1783,6 +2074,10 @@ def _apply_travel_time_to_courses(
         if len(gv) < 2:
             continue
         sv = sorted(gv, key=lambda x: x.start_time)
+        # 同住所連番強制 (ユーザー要望 最重要): 同住所ペアは配列上で必ず隣接させる.
+        # 間に別住所が挟まると同住所メリット (移動 0 + バッファー 0) が消えるため、
+        # earliest_start 再計算の前にリオーダーする.
+        sv = _reorder_same_address_consecutive(sv, warnings=warnings)
         cumulative_travel_min = 0
         wd_jp = _weekday_jp(weekday)
         office_name = (office_name_by_id or {}).get(office_id) or str(office_id)
@@ -1833,6 +2128,8 @@ def _apply_travel_time_to_courses(
                             time_type=tt,
                             preferred_start=cur.preferred_start,
                             preferred_end=cur.preferred_end,
+                            # P2: 固定時刻衝突 — fixed_time_conflict にマップされる.
+                            affected_patient_ids=[cur.patient_id],
                         )
                     )
             elif tt == "時間帯":
@@ -1868,6 +2165,7 @@ def _apply_travel_time_to_courses(
                             time_type=tt,
                             preferred_start=cur.preferred_start,
                             preferred_end=cur.preferred_end,
+                            affected_patient_ids=[cur.patient_id],
                         )
                     )
                 else:
@@ -1901,6 +2199,7 @@ def _apply_travel_time_to_courses(
                                 time_type=tt,
                                 preferred_start=cur.preferred_start,
                                 preferred_end=cur.preferred_end,
+                                affected_patient_ids=[cur.patient_id],
                             )
                         )
                     else:
@@ -1923,6 +2222,7 @@ def _apply_travel_time_to_courses(
                                 time_type=tt,
                                 preferred_start=cur.preferred_start,
                                 preferred_end=cur.preferred_end,
+                                affected_patient_ids=[cur.patient_id],
                             )
                         )
                 else:
@@ -1954,6 +2254,7 @@ def _apply_travel_time_to_courses(
                             time_type=tt,
                             preferred_start=cur.preferred_start,
                             preferred_end=cur.preferred_end,
+                            affected_patient_ids=[cur.patient_id],
                         )
                     )
                 else:
@@ -1987,6 +2288,7 @@ def _apply_travel_time_to_courses(
                             time_type=tt,
                             preferred_start=cur.preferred_start,
                             preferred_end=cur.preferred_end,
+                            affected_patient_ids=[cur.patient_id],
                         )
                     )
                 else:
@@ -2031,6 +2333,7 @@ def _apply_travel_time_to_courses(
                                 time_type=tt,
                                 preferred_start=cur.preferred_start,
                                 preferred_end=cur.preferred_end,
+                                affected_patient_ids=[cur.patient_id],
                             )
                         )
                     else:
@@ -2052,6 +2355,7 @@ def _apply_travel_time_to_courses(
                                 time_type=tt,
                                 preferred_start=cur.preferred_start,
                                 preferred_end=cur.preferred_end,
+                                affected_patient_ids=[cur.patient_id],
                             )
                         )
 
@@ -2060,6 +2364,8 @@ def _apply_travel_time_to_courses(
 
         # コース全体で連続移動が 30 分超なら長距離コース warning.
         if cumulative_travel_min > 30:
+            # P2: コース内全 patient_id (長距離コースは全員に影響).
+            ld_pids = list({v.patient_id for v in sv})
             warnings.append(
                 V2Warning(
                     type="course_long_distance",
@@ -2070,6 +2376,7 @@ def _apply_travel_time_to_courses(
                     ),
                     weekday=weekday,
                     actionable=False,
+                    affected_patient_ids=ld_pids,
                 )
             )
 
@@ -2100,6 +2407,8 @@ def _check_course_capacity_minutes(
         if total_min > COURSE_MAX_MINUTES:
             office_name = (office_name_by_id or {}).get(office_id) or str(office_id)
             wd_jp = _weekday_jp(weekday)
+            # P2: コース内全 patient_id (容量超過コースは全員に影響可能性).
+            affected_pids = list({v.patient_id for v in gv})
             warnings.append(
                 V2Warning(
                     type="course_capacity",
@@ -2112,6 +2421,7 @@ def _check_course_capacity_minutes(
                     # HIGH #3: 自動再分配は未実装 — 運用者の手動再分配を促すため
                     # actionable=True にする (UI で「コース変更」アクションを出す).
                     actionable=True,
+                    affected_patient_ids=affected_pids,
                 )
             )
 
@@ -2159,6 +2469,9 @@ def _check_two_staff_availability(
                     actionable=True,
                     patient_id=v.patient_id,
                     patient_name=v.patient_name,
+                    # P2: 単一 patient warning でも affected_patient_ids を埋めて
+                    # _identify_unassigned_patients が一貫した検索ロジックで照合できるようにする.
+                    affected_patient_ids=[v.patient_id],
                 )
             )
 
@@ -2454,6 +2767,43 @@ async def _load_before_visits_from_pfv(
 # ---------------------------------------------------------------------------
 
 
+def _classify_warning_reason(
+    warning: V2Warning,
+) -> tuple[UnassignedReason, UnassignedStage] | None:
+    """P2: 1 件の warning から (reason, stage) を分類する.
+
+    マネージャー不足 / 容量超過 / コース超過 / 昼休憩 / 受入カレンダー / 固定時刻衝突 に
+    対応. 一致しない warning は None を返す (呼び出し側で他 warning を試す).
+    """
+    msg = warning.message
+    wtype = warning.type
+    # マネージャー不足 (M course 不足) 判定: course_capacity type で
+    # "manager 不足" を含むメッセージ. Stage 5 で emit される.
+    if wtype == "course_capacity" and "manager 不足" in msg:
+        return ("manager_short", "stage5_course")
+    # コース容量 (480 分 / 6 名超過 / マネージャー補充候補).
+    if wtype == "course_capacity":
+        return ("course_capacity", "stage4_capacity")
+    # コース数超過 (Stage 5 で staff_count を超えるコース).
+    if wtype == "course_count":
+        return ("course_overflow", "stage5_course")
+    # 受入カレンダー × (acceptance_blocked) — H5.
+    if wtype == "acceptance_blocked":
+        return ("acceptance_calendar", "general")
+    # 固定時刻衝突 / 時間帯外 / 昼休憩重複 etc.
+    if wtype == "travel_time_shortage":
+        if "昼休憩" in msg:
+            return ("lunch_break", "general")
+        return ("fixed_time_conflict", "general")
+    # 一般 warning の中で「昼休憩」"H10" 含む → lunch_break.
+    if wtype == "general" and ("昼休憩" in msg or "H10" in msg):
+        return ("lunch_break", "general")
+    # H2 同住所 3 名以上で別 set に動かしたが配置先なし.
+    if wtype == "general" and "同住所" in msg:
+        return ("same_address_split", "stage3_set")
+    return None
+
+
 def _identify_unassigned_patients(
     pool_patients: list[Patient],
     after_visits: list[V2Visit],
@@ -2461,43 +2811,65 @@ def _identify_unassigned_patients(
 ) -> list[dict[str, Any]]:
     """Mode 2 (full_optimize) で after_visits に出てこなかった患者と理由を抽出する.
 
+    P2: text 含み判定を撤去し、warning.affected_patient_ids での patient_id 照合に
+    切り替えた. fallback で patient.code を message に含む warning も探すが、
+    最終 fallback は ``reason="unknown"`` で固定 (旧「原因不明 (...のいずれか)」
+    のような曖昧文言は撤去).
+
     Returns:
         ``[{"patient_id": UUID, "patient_name": str, "patient_code": str | None,
-        "reason": str}, ...]``
+        "reason": UnassignedReason, "reason_detail": str | None,
+        "dropped_at_stage": UnassignedStage | None}, ...]``
     """
     after_pids = {v.patient_id for v in after_visits}
     out: list[dict[str, Any]] = []
     for p in pool_patients:
         if p.id in after_pids:
             continue
-        # 主要理由を決定: 最初に該当する warning から推測.
-        reason = "原因不明 (受入カレンダー× / 容量超過 / 座標未設定 のいずれか)"
+        reason: UnassignedReason
+        stage: UnassignedStage | None
+        reason_detail: str | None = None
+        # Stage 前段 (build_visits_for_pool で skip される) の判定を優先する.
+        # build_visits_for_pool は lat/lng/primary_office_id のいずれかが None なら skip.
         if p.lat is None or p.lng is None:
-            reason = "座標未設定 (住所のジオコーディングが未完了)"
+            reason = "no_coordinates"
+            stage = "general"
+            reason_detail = "住所のジオコーディングが未完了 (lat/lng が None)"
         elif p.primary_office_id is None:
-            reason = "拠点未設定 (primary_office_id が None)"
+            reason = "no_primary_office"
+            stage = "general"
+            reason_detail = "primary_office_id が None"
         else:
+            reason = "unknown"
+            stage = None
+            # P2: warning.affected_patient_ids での照合を最優先.
+            matched_by_id = False
             for w in warnings:
-                # V2Warning と互換: message を文字列として扱う
-                msg = w.message
-                if p.code and p.code in msg:
-                    if "受入カレンダー" in msg:
-                        reason = "受入カレンダー× (希望時間が受入不可)"
-                    elif "昼休憩" in msg or "H10" in msg:
-                        reason = "希望時間が昼休憩 (12:00-13:00) と重複"
-                    elif "緯度経度" in msg or "座標" in msg:
-                        reason = "座標未設定"
-                    elif "拠点" in msg:
-                        reason = "拠点未設定"
-                    else:
-                        reason = msg[:120]
-                    break
+                if p.id in (w.affected_patient_ids or []):
+                    classified = _classify_warning_reason(w)
+                    if classified is not None:
+                        reason, stage = classified
+                        reason_detail = w.message[:200] if w.message else None
+                        matched_by_id = True
+                        break
+            # 後方互換 fallback: affected_patient_ids が未埋めの古い warning や
+            # 単一 patient warning (patient_id フィールドだけ) を探す.
+            if not matched_by_id:
+                for w in warnings:
+                    if w.patient_id == p.id:
+                        classified = _classify_warning_reason(w)
+                        if classified is not None:
+                            reason, stage = classified
+                            reason_detail = w.message[:200] if w.message else None
+                            break
         out.append(
             {
                 "patient_id": p.id,
                 "patient_name": p.name,
                 "patient_code": p.code,
                 "reason": reason,
+                "reason_detail": reason_detail,
+                "dropped_at_stage": stage,
             }
         )
     return out
@@ -2839,15 +3211,30 @@ async def run_v2_pipeline(
         office_name_by_id=office_name_by_id,
     )
 
+    # CareFlow Wave Next 3: 当該曜日の出勤マネージャー数を取得.
+    # M / M2 / M3 ... overflow code の発行数をマネージャー数で動的に絞り、
+    # 超過セットの patient は ``unassigned_patients`` に流す
+    # (「マネージャー 1 名に対して 1 コース」ルールの実装).
+    manager_count_by_weekday = await count_active_managers_per_weekday(
+        db, office_ids=office_ids, iso_year=iso_year, iso_week=iso_week
+    )
+
     # Stage 5: 午前 ↔ 午後 組み合わせ + course_code 割当
     # (office_id, weekday) ごとに am と pm の sets を組み合わせる
     by_office_weekday: dict[tuple[UUID, int], dict[str, list[V2Set]]] = {}
     for (office_id, weekday, am_pm), sets in sets_by_bucket.items():
         by_office_weekday.setdefault((office_id, weekday), {"am": [], "pm": []})[am_pm] = sets
+
+    # CareFlow Wave Next 3: マネージャー不足で course code を発行できなかった
+    # visit を集める. これらは ``after_visits`` から取り除いて
+    # ``_identify_unassigned_patients`` で未割当患者として扱う.
+    unassigned_visit_ids: set[int] = set()
+
     for (office_id, weekday), am_pm_sets in by_office_weekday.items():
         am_sets = am_pm_sets.get("am") or []
         pm_sets = am_pm_sets.get("pm") or []
         staff_count = staff_count_by_weekday.get((office_id, weekday), 0)
+        manager_count = manager_count_by_weekday.get((office_id, weekday), 0)
         combined = combine_am_pm_sets(
             am_sets,
             pm_sets,
@@ -2870,31 +3257,66 @@ async def run_v2_pipeline(
         # / H9 capacity 判定が ``(office, weekday, code)`` で grouping するため
         # 6 患者 × N set = 6N 患者を 1 ルートとして扱ってしまう. M / M2 / M3 ...
         # に index を付けて分散することで、各 overflow set が独立した物理ルートと
-        # して計算される. 上限 (_M_OVERFLOW_CODES_MAX = 9) を超えたら最後の "M9"
-        # に丸める (現実的には 9 を超えるケースは無いが安全装置).
+        # して計算される.
+        #
+        # CareFlow Wave Next 3 (M course manager 制限): M / M2 / ... の発行は
+        # 「マネージャー 1 名に対して 1 コース」ルールにより、当該曜日の出勤
+        # マネージャー数 (``manager_count``) で制限する. それも超えた set の
+        # visit は course_code を割り当てず ``after_visits`` から取り除き、
+        # ``unassigned_patients`` に流す.
         normal_course_limit = min(staff_count, _COURSE_CODES_MAX)
+        m_overflow_limit = min(manager_count, _M_OVERFLOW_CODES_MAX)
+        office_name = (office_name_by_id or {}).get(office_id) or str(office_id)
+        wd_jp = _weekday_jp(weekday)
         m_overflow_idx = 0
         for idx, (am_set, pm_set) in enumerate(combined):
-            if staff_count == 0:
-                # スタッフ 0 でも複数 set あれば M / M2 / M3 ... に分散
-                if m_overflow_idx < _M_OVERFLOW_CODES_MAX:
-                    code = _M_OVERFLOW_CODES[m_overflow_idx]
-                else:
-                    code = _M_OVERFLOW_CODES[-1]
-                m_overflow_idx += 1
-            elif idx >= normal_course_limit:
-                # スタッフ数を超えた分はマネージャー枠 (M / M2 / M3 ...)
-                if m_overflow_idx < _M_OVERFLOW_CODES_MAX:
-                    code = _M_OVERFLOW_CODES[m_overflow_idx]
-                else:
-                    code = _M_OVERFLOW_CODES[-1]
+            code: str | None
+            if idx < normal_course_limit:
+                code = _COURSE_CODES[idx]
+            elif m_overflow_idx < m_overflow_limit:
+                # マネージャー数まで M / M2 / ... 発番
+                code = _M_OVERFLOW_CODES[m_overflow_idx]
                 m_overflow_idx += 1
             else:
-                code = _COURSE_CODES[idx]
+                # スタッフ + マネージャー数を超過 → 未割当
+                code = None
+                affected_visits: list[V2Visit] = []
+                if am_set is not None:
+                    affected_visits.extend(am_set.visits)
+                if pm_set is not None:
+                    affected_visits.extend(pm_set.visits)
+                affected_patient_ids_overflow = list({v.patient_id for v in affected_visits})
+                affected_patient_count = len(affected_patient_ids_overflow)
+                for v in affected_visits:
+                    unassigned_visit_ids.add(id(v))
+                warnings.append(
+                    V2Warning(
+                        type="course_capacity",
+                        message=(
+                            f"{wd_jp} {office_name}: 通常コース {normal_course_limit} + "
+                            f"M (マネージャー枠) {m_overflow_limit} を超えるセットがあり、"
+                            f"{affected_patient_count} 名の患者が未割当 "
+                            "(manager 不足のため). マネージャー補充 or 曜日変更を検討してください."
+                        ),
+                        weekday=weekday,
+                        actionable=True,
+                        # P2: 未割当 patient_id を構造化照合用に格納.
+                        # メッセージに "manager 不足" を含むので reason="manager_short" に
+                        # マップされる.
+                        affected_patient_ids=affected_patient_ids_overflow,
+                    )
+                )
+                continue
             for v in am_set.visits if am_set else []:
                 v.course_code = code
             for v in pm_set.visits if pm_set else []:
                 v.course_code = code
+
+    # マネージャー不足で未割当になった visit を after_visits から取り除く.
+    # _identify_unassigned_patients は after_visits.patient_id にいない pool patient を
+    # 未割当扱いするため、ここで物理的に取り除く必要がある.
+    if unassigned_visit_ids:
+        after_visits = [v for v in after_visits if id(v) not in unassigned_visit_ids]
 
     # W41 v2 拡張 (移動時間の time 化): コース内連続訪問に対し、移動時間を
     # start_time に反映する. course_code 確定後に呼ぶ. time_type ごとに
@@ -3255,17 +3677,42 @@ async def apply_week_only(
     patients_by_id = await _load_active_patients(db, office_ids=office_ids)
     patient_ids = list(patients_by_id.keys())
 
+    # P1 (本質バグ修正): DELETE 対象を FE から渡された patient_visit_plans に含まれる
+    # patient_id のみに限定する. 旧実装は active 全患者の旧 visit を soft-delete し、
+    # INSERT は patient_visit_plans 分のみだったため、unassigned 患者の旧 visit が
+    # 「消失 + 新規 INSERT なし」状態になっていた (= 14 名分の visit が消える事故).
+    #
+    # 修正: visit_plans に含まれる patient のみ DELETE 対象とし、unassigned patient の
+    # 旧 visit は保護する. 「旧予定 + 新提案」が混在する状態を許容するため、
+    # 別途 warning を出して運用者に通知する.
+    plan_patient_ids_set: set[UUID] = set()
+    for entry in patient_visit_plans:
+        pid_raw = entry.get("patient_id")
+        if pid_raw is None:
+            continue
+        if isinstance(pid_raw, UUID):
+            plan_patient_ids_set.add(pid_raw)
+        else:
+            try:
+                plan_patient_ids_set.add(UUID(str(pid_raw)))
+            except (ValueError, AttributeError):
+                continue
+    plan_patient_ids = list(plan_patient_ids_set)
+
     # 1) 対象週の active visits を soft-delete (reset と同じ source/status 保護方針).
     from datetime import UTC as _UTC  # noqa: N814
     from datetime import datetime as _dt
 
     visits_to_delete: list[Visit] = []
-    if patient_ids:
+    if plan_patient_ids:
         week_sunday = date.fromordinal(week_monday.toordinal() + 6)
         stmt = (
             select(Visit)
             .where(
-                Visit.patient_id.in_(patient_ids),
+                # P1: DELETE 対象を plan_patient_ids に限定. 旧実装は patient_ids
+                # (= active 全員) を指定していたため、unassigned 患者の visit も
+                # 一緒に soft-delete される本質バグがあった.
+                Visit.patient_id.in_(plan_patient_ids),
                 Visit.deleted_at.is_(None),
                 Visit.visit_date >= week_monday,
                 Visit.visit_date <= week_sunday,
@@ -3290,6 +3737,40 @@ async def apply_week_only(
             v.deleted_at = now
             soft_deleted_count += 1
         await db.flush()
+
+    # P1: unassigned 患者 (= active だが visit_plans に含まれない) の旧 visit が
+    # 保護されたことを warning に出す. 「旧予定 + 新提案」混在状態を明示し、
+    # 運用者が必要に応じて手動で旧 visit を整理できるようにする.
+    unassigned_patient_ids = [pid for pid in patient_ids if pid not in plan_patient_ids_set]
+    if unassigned_patient_ids:
+        week_sunday_chk = date.fromordinal(week_monday.toordinal() + 6)
+        preserved_rows = await db.scalars(
+            select(Visit).where(
+                Visit.patient_id.in_(unassigned_patient_ids),
+                Visit.deleted_at.is_(None),
+                Visit.visit_date >= week_monday,
+                Visit.visit_date <= week_sunday_chk,
+                Visit.status.in_(_RESET_DELETABLE_STATUSES),
+                Visit.source.in_(_RESET_DELETABLE_SOURCES),
+            )
+        )
+        preserved_visits = list(preserved_rows.all())
+        if preserved_visits:
+            preserved_pids = {v.patient_id for v in preserved_visits}
+            preserved_names = sorted(
+                patients_by_id[pid].name
+                for pid in preserved_pids
+                if pid in patients_by_id and patients_by_id[pid].name
+            )
+            sample_names = "、".join(preserved_names[:5])
+            extra_count = len(preserved_names) - 5
+            extra_suffix = f" 他 {extra_count} 名" if extra_count > 0 else ""
+            warnings.append(
+                f"未割当 {len(preserved_pids)} 名 ({sample_names}{extra_suffix}) の旧 visit "
+                f"{len(preserved_visits)} 件を保持しました "
+                "(visit_plans に含まれなかったため、削除せず維持). "
+                "必要に応じて手動で整理してください."
+            )
 
     # W41 v2 拡張 (今週限定オーバーレイ): pending_edits を defensive に再適用.
     # FE 側は通常 patient_visit_plans に既にオーバーレイを反映済みで送ってくるが、

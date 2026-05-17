@@ -621,6 +621,246 @@ async def test_apply_week_only_rejects_staff(client, db) -> None:
 
 
 # ---------------------------------------------------------------------------
+# P1: apply_week_only DELETE 限定 (本質バグ修正)
+# - unassigned 患者の旧 visit を保護する
+# - visit_plans に含まれる patient のみ DELETE 対象
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apply_week_only_preserves_unassigned_patient_old_visits(client, db) -> None:
+    """P1: visit_plans に含まれない unassigned 患者の旧 visit は保護される (本質バグ修正)."""
+    from datetime import date
+
+    from app.models.visit import VISIT_STATUS_PLANNED, Visit
+
+    admin = await _make_user(db, email="v2-p1-pres-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    # 2 名の active 患者: 1 名は visit_plans に含まれる, もう 1 名は unassigned.
+    p_assigned = await _seed_patient(db, office=office, code="P1-AS")
+    p_unassigned = await _seed_patient(db, office=office, code="P1-UN")
+
+    # 両者に旧 visit を仕込む (auto_alloc 由来 = DELETE 対象 source).
+    old_assigned = Visit(
+        patient_id=p_assigned.id,
+        visit_date=date(2026, 5, 11),  # Mon W20
+        start_time=time(9, 30),
+        end_time=time(10, 0),
+        type="regular",
+        status=VISIT_STATUS_PLANNED,
+        source="auto_alloc",
+        required_staff_count=1,
+    )
+    old_unassigned = Visit(
+        patient_id=p_unassigned.id,
+        visit_date=date(2026, 5, 11),
+        start_time=time(11, 0),
+        end_time=time(11, 30),
+        type="regular",
+        status=VISIT_STATUS_PLANNED,
+        source="auto_alloc",
+        required_staff_count=1,
+    )
+    db.add_all([old_assigned, old_unassigned])
+    await db.commit()
+    old_unassigned_id = old_unassigned.id
+
+    # apply: assigned のみ visit_plans に含める. unassigned は含めない.
+    res = await client.post(
+        "/api/v1/schedule/v2/apply-week-only",
+        headers=_bearer(admin),
+        json={
+            "iso_year": 2026,
+            "iso_week": 20,
+            "office_ids": [str(office.id)],
+            "visit_plans_per_patient": [
+                {
+                    "patient_id": str(p_assigned.id),
+                    "visit_plans": [
+                        {
+                            "weekday": 0,
+                            "start_time": "14:30",
+                            "end_time": "15:00",
+                            "duration_min": 30,
+                            "course_code": "A",
+                            "office_id": str(office.id),
+                            "am_pm": "pm",
+                        }
+                    ],
+                }
+            ],
+            "confirm": True,
+        },
+    )
+    assert res.status_code == 200, res.text
+
+    # P1 検証: unassigned 患者の旧 visit が保護されている (deleted_at is None).
+    preserved = await db.scalar(select(Visit).where(Visit.id == old_unassigned_id))
+    assert preserved is not None
+    assert preserved.deleted_at is None, (
+        "P1 本質バグ: unassigned 患者の旧 visit が誤って soft-delete されている"
+    )
+
+
+@pytest.mark.asyncio
+async def test_apply_week_only_replaces_only_assigned_patient_visits(client, db) -> None:
+    """P1: visit_plans に含まれる patient のみ旧 visit が削除され、新 visit が INSERT される."""
+    from datetime import date
+
+    from app.models.visit import VISIT_STATUS_PLANNED, Visit
+
+    admin = await _make_user(db, email="v2-p1-repl-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    p_assigned = await _seed_patient(db, office=office, code="P1-REPL-AS")
+    p_unassigned = await _seed_patient(db, office=office, code="P1-REPL-UN")
+    old_assigned = Visit(
+        patient_id=p_assigned.id,
+        visit_date=date(2026, 5, 11),
+        start_time=time(9, 30),
+        end_time=time(10, 0),
+        type="regular",
+        status=VISIT_STATUS_PLANNED,
+        source="auto_alloc",
+        required_staff_count=1,
+    )
+    old_unassigned = Visit(
+        patient_id=p_unassigned.id,
+        visit_date=date(2026, 5, 11),
+        start_time=time(11, 0),
+        end_time=time(11, 30),
+        type="regular",
+        status=VISIT_STATUS_PLANNED,
+        source="auto_alloc",
+        required_staff_count=1,
+    )
+    db.add_all([old_assigned, old_unassigned])
+    await db.commit()
+    old_assigned_id = old_assigned.id
+
+    res = await client.post(
+        "/api/v1/schedule/v2/apply-week-only",
+        headers=_bearer(admin),
+        json={
+            "iso_year": 2026,
+            "iso_week": 20,
+            "office_ids": [str(office.id)],
+            "visit_plans_per_patient": [
+                {
+                    "patient_id": str(p_assigned.id),
+                    "visit_plans": [
+                        {
+                            "weekday": 0,
+                            "start_time": "14:30",
+                            "end_time": "15:00",
+                            "duration_min": 30,
+                            "course_code": "A",
+                            "office_id": str(office.id),
+                            "am_pm": "pm",
+                        }
+                    ],
+                }
+            ],
+            "confirm": True,
+        },
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    # assigned 患者の旧 visit のみ soft-delete されている (1 件).
+    assert body["visits_soft_deleted"] == 1
+    assert body["visits_created"] >= 1
+
+    # 検証: assigned 旧 visit は deleted_at セット済み, unassigned 旧 visit は active のまま.
+    refreshed_assigned = await db.scalar(select(Visit).where(Visit.id == old_assigned_id))
+    assert refreshed_assigned is not None
+    assert refreshed_assigned.deleted_at is not None
+
+    # 新規 visit は assigned 患者のみに INSERT される (unassigned には新規無し).
+    assigned_new = (
+        await db.scalars(
+            select(Visit).where(
+                Visit.patient_id == p_assigned.id,
+                Visit.source == "auto_alloc_v2w",
+                Visit.deleted_at.is_(None),
+            )
+        )
+    ).all()
+    assert len(assigned_new) == 1
+
+    unassigned_new = (
+        await db.scalars(
+            select(Visit).where(
+                Visit.patient_id == p_unassigned.id,
+                Visit.source == "auto_alloc_v2w",
+                Visit.deleted_at.is_(None),
+            )
+        )
+    ).all()
+    assert len(unassigned_new) == 0
+
+
+@pytest.mark.asyncio
+async def test_apply_week_only_emits_warning_when_unassigned_old_visits_preserved(
+    client, db
+) -> None:
+    """P1: unassigned 患者の旧 visit を保護した旨を warning に出す."""
+    from datetime import date
+
+    from app.models.visit import VISIT_STATUS_PLANNED, Visit
+
+    admin = await _make_user(db, email="v2-p1-warn-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    p_assigned = await _seed_patient(db, office=office, code="P1-WARN-AS")
+    p_unassigned = await _seed_patient(db, office=office, code="P1-WARN-UN")
+    db.add(
+        Visit(
+            patient_id=p_unassigned.id,
+            visit_date=date(2026, 5, 11),
+            start_time=time(11, 0),
+            end_time=time(11, 30),
+            type="regular",
+            status=VISIT_STATUS_PLANNED,
+            source="auto_alloc",
+            required_staff_count=1,
+        )
+    )
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/apply-week-only",
+        headers=_bearer(admin),
+        json={
+            "iso_year": 2026,
+            "iso_week": 20,
+            "office_ids": [str(office.id)],
+            "visit_plans_per_patient": [
+                {
+                    "patient_id": str(p_assigned.id),
+                    "visit_plans": [
+                        {
+                            "weekday": 0,
+                            "start_time": "14:30",
+                            "end_time": "15:00",
+                            "duration_min": 30,
+                            "course_code": "A",
+                            "office_id": str(office.id),
+                            "am_pm": "pm",
+                        }
+                    ],
+                }
+            ],
+            "confirm": True,
+        },
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    # P1: 「未割当 ... 旧 visit ... 件を保持しました」warning が出ていること.
+    warnings = body["warnings"]
+    assert any("未割当" in w and "保持" in w for w in warnings), (
+        f"P1 unassigned 旧 visit 保護 warning が見つからない: {warnings}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # H-Codex-3: v1 endpoints return 410 Gone
 # ---------------------------------------------------------------------------
 
@@ -830,6 +1070,82 @@ def test_assign_same_address_groups_solo_visit_no_id() -> None:
     )
     mapping = _assign_same_address_groups([v])
     assert mapping == {}
+
+
+def test_assign_same_address_groups_different_start_time_still_grouped() -> None:
+    """W41 v2.8: 同住所同 weekday なら start_time が違っても group_id 付与.
+
+    旧仕様では key に start_time が含まれていたため、実動時間や移動時間で
+    09:00 / 09:30 のように連番にズレるとペア囲みが消えていた。本テストで
+    時刻ズレでも group_id が付与されることを担保する。FE 側で「sort 順の
+    隣接判定」により連番のときだけ実際に囲みが描画される。
+    """
+    import uuid as _uuid
+    from datetime import time as _time
+
+    from app.api.v1.schedule_v2 import _assign_same_address_groups
+    from app.services.scheduling.auto_allocator_v2 import V2Visit
+
+    office_id = _uuid.uuid4()
+    common: dict[str, Any] = {
+        "patient_code": None,
+        "weekday": 0,
+        "service_minutes": 30,
+        "office_id": office_id,
+        "am_pm": "am",
+        "source_kind": "pool",
+    }
+    # 09:00-09:30 患者 A → 09:30-10:00 患者 B (同住所、実動時間で連番にズレ)
+    v1 = V2Visit(
+        patient_id=_uuid.uuid4(),
+        patient_name="A",
+        lat=35.65,
+        lng=140.10,
+        start_time=_time(9, 0),
+        end_time=_time(9, 30),
+        **common,
+    )
+    v2 = V2Visit(
+        patient_id=_uuid.uuid4(),
+        patient_name="B",
+        lat=35.65,
+        lng=140.10,
+        start_time=_time(9, 30),
+        end_time=_time(10, 0),
+        **common,
+    )
+    mapping = _assign_same_address_groups([v1, v2])
+    key1 = (v1.patient_id, v1.weekday, v1.start_time)
+    key2 = (v2.patient_id, v2.weekday, v2.start_time)
+    assert key1 in mapping, "同住所同 weekday なら start_time 違っても group_id 付与"
+    assert key2 in mapping
+    assert mapping[key1] == mapping[key2], "同じ住所バケットなら同 group_id"
+
+
+def test_assign_same_address_groups_different_address_no_group() -> None:
+    """異住所同 start_time なら group_id 付与なし (既存仕様維持)."""
+    import uuid as _uuid
+    from datetime import time as _time
+
+    from app.api.v1.schedule_v2 import _assign_same_address_groups
+    from app.services.scheduling.auto_allocator_v2 import V2Visit
+
+    office_id = _uuid.uuid4()
+    common: dict[str, Any] = {
+        "patient_code": None,
+        "weekday": 0,
+        "start_time": _time(9, 30),
+        "end_time": _time(10, 0),
+        "service_minutes": 30,
+        "office_id": office_id,
+        "am_pm": "am",
+        "source_kind": "pool",
+    }
+    # 0.005 ≒ 500 m 離れた別住所 (tolerance 0.001 を超過)
+    v1 = V2Visit(patient_id=_uuid.uuid4(), patient_name="A", lat=35.650, lng=140.100, **common)
+    v2 = V2Visit(patient_id=_uuid.uuid4(), patient_name="B", lat=35.655, lng=140.105, **common)
+    mapping = _assign_same_address_groups([v1, v2])
+    assert mapping == {}, "異住所なら group_id 付与なし"
 
 
 def test_group_visits_into_courses_sets_same_address_group_id() -> None:

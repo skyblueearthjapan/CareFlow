@@ -58,6 +58,10 @@ class V2WarningOut(BaseModel):
         - ``actionable=True`` の警告に「⏰ 固定時間を変更」ボタンを出す.
         - ``patient_id`` / ``current_time`` / ``suggested_time`` / ``time_type``
           をモーダル初期値に流す.
+
+    P2 (構造化照合): ``affected_patient_ids`` で「この警告に影響を受ける患者」
+    を構造化リストで持つ. ``unassigned_patients[].reason`` の判定に text 含み
+    でなく patient_id 照合を使うためのフィールド.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -74,6 +78,9 @@ class V2WarningOut(BaseModel):
     time_type: str | None = None
     preferred_start: str | None = None
     preferred_end: str | None = None
+    # P2: この警告が影響を与える patient_id 一覧 (例: 容量超過コース内の全患者,
+    # マネージャー不足で未割当の全患者). UI で patient ハイライト等に使う.
+    affected_patient_ids: list[uuid.UUID] = Field(default_factory=list)
 
 
 class V2VisitPlan(BaseModel):
@@ -325,11 +332,41 @@ class V2IndividualProposal(BaseModel):
     warnings: list[V2WarningOut] = Field(default_factory=list)
 
 
+# P2: 未割当理由の構造化 enum. Backend ``auto_allocator_v2.UnassignedReason`` と 1:1.
+# UI 分類タブ / ハイライト用. text 含み判定 (旧 "原因不明 (...のいずれか)") は撤去.
+UnassignedReasonOut = Literal[
+    "no_coordinates",
+    "no_primary_office",
+    "acceptance_calendar",
+    "course_capacity",
+    "course_overflow",
+    "manager_short",
+    "same_address_split",
+    "fixed_time_conflict",
+    "lunch_break",
+    "unknown",
+]
+
+# P2: stage = 未割当が確定した処理段階. UI で「stage4 容量超過」「stage5 マネージャー不足」
+# のような表示に使う.
+UnassignedStageOut = Literal[
+    "stage3_set",
+    "stage4_capacity",
+    "stage5_course",
+    "apply",
+    "general",
+]
+
+
 class UnassignedPatient(BaseModel):
     """W41 v2 (Mode 2 UI 拡張): 全面最適化で割当不可だった患者 1 件分.
 
     Mode 2 (``full_optimize``) で pool に入れたが after_visits に出てこなかった
     患者を抽出して、UI で「未割当」セクションに表示する.
+
+    P2 (構造化照合): ``reason`` を enum (``UnassignedReasonOut``) に切替え、
+    ``dropped_at_stage`` で stage を明示し、``reason_detail`` に message を残す.
+    旧 ``reason`` は自由記述だったため UI フィルタが効かなかった.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -337,7 +374,12 @@ class UnassignedPatient(BaseModel):
     patient_id: uuid.UUID
     patient_name: str
     patient_code: str | None = None
-    reason: str  # 例: "受入カレンダー× (希望時間が受入不可)", "拠点未設定"
+    # P2: enum に変更 (旧: 自由記述 str). 旧 reason の主要パターンを 10 種に集約.
+    reason: UnassignedReasonOut
+    # P2: 原因 message (text). reason だけで足りない詳細を UI で表示するため.
+    reason_detail: str | None = None
+    # P2: どの stage で未割当が確定したか.
+    dropped_at_stage: UnassignedStageOut | None = None
 
 
 class AutoScheduleV2FullOptimizeResponse(BaseModel):
@@ -553,6 +595,8 @@ __all__ = [
     "AutoScheduleV2ResetToFixedRequest",
     "AutoScheduleV2ResetToFixedResponse",
     "UnassignedPatient",
+    "UnassignedReasonOut",
+    "UnassignedStageOut",
     "UpdateFixedTimeMasterRequest",
     "UpdateFixedTimeMasterResponse",
     "UpdateFixedTimeWeekOnlyRequest",

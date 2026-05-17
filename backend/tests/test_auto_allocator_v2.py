@@ -967,11 +967,25 @@ def test_combine_am_pm_zero_staff_emits_warning() -> None:
 
 @pytest.mark.asyncio
 async def test_run_v2_pipeline_zero_staff_assigns_course_code_m(db) -> None:
-    """H4: staff_count=0 のとき after_visits.course_code は 'M' になる."""
+    """H4: staff_count=0 のとき after_visits.course_code は 'M' になる.
+
+    CareFlow Wave Next 3: M course はマネージャー数で動的制限されるため、
+    M を発番させるにはマネージャー 1 名以上の出勤が必要.
+    """
     office = Office(name="h4-zero-staff")
     db.add(office)
     await db.flush()
-    # スタッフを登録しない (= staff_count=0)
+    # スタッフ (role='staff') は登録しない (= staff_count=0) が、
+    # M course を発番させるためマネージャー 1 名を出勤させる.
+    mgr = Staff(
+        name="h4-mgr",
+        role="manager",
+        is_trainee=False,
+        primary_office_id=office.id,
+    )
+    db.add(mgr)
+    await db.flush()
+    db.add(StaffShift(staff_id=mgr.id, weekday=0, is_on=True))
     p = Patient(
         code="H4P",
         name="h4-patient",
@@ -1057,6 +1071,18 @@ async def test_run_v2_pipeline_caps_normal_courses_at_staff_count(db) -> None:
         db.add(s)
         await db.flush()
         db.add(StaffShift(staff_id=s.id, weekday=0, is_on=True))
+    # CareFlow Wave Next 3: M course はマネージャー数で動的制限されるので、
+    # 超過セットが M overflow に流れるためにマネージャー 2 名を出勤させる.
+    for i in range(2):
+        m = Staff(
+            name=f"cap-mgr-{i}",
+            role="manager",
+            is_trainee=False,
+            primary_office_id=office.id,
+        )
+        db.add(m)
+        await db.flush()
+        db.add(StaffShift(staff_id=m.id, weekday=0, is_on=True))
     # 8 患者: 各々 >5km 離れた地点 (0.2deg ~ 22km) で別クラスタになるよう配置.
     # 8 患者 → 4 ペアセット → staff_count=3 で 3 set 通常 + 1 set M.
     for i in range(8):
@@ -1116,6 +1142,19 @@ async def test_run_v2_pipeline_dynamic_course_count_per_weekday(db) -> None:
         db.add(StaffShift(staff_id=s.id, weekday=0, is_on=True))  # 月曜
         if i < 3:  # 4 人目だけ土曜休み
             db.add(StaffShift(staff_id=s.id, weekday=5, is_on=True))  # 土曜
+    # CareFlow Wave Next 3: M course はマネージャー数で動的制限されるので、
+    # 超過セットが M overflow に流れるためマネージャー 2 名 (両曜日出勤) を追加.
+    for i in range(2):
+        m = Staff(
+            name=f"wd-mgr-{i}",
+            role="manager",
+            is_trainee=False,
+            primary_office_id=office.id,
+        )
+        db.add(m)
+        await db.flush()
+        db.add(StaffShift(staff_id=m.id, weekday=0, is_on=True))
+        db.add(StaffShift(staff_id=m.id, weekday=5, is_on=True))
     # 月曜 / 土曜 それぞれ overflow が発生するよう、>5km 離れた 10 患者 × 各曜日 配置
     # (10 patient → 5 ペアセット, 月曜 staff_count=4 / 土曜 staff_count=3 で overflow を保証)
     for i in range(10):
@@ -1251,6 +1290,18 @@ async def test_run_v2_pipeline_overflow_pushed_to_m_course(db) -> None:
     db.add(s)
     await db.flush()
     db.add(StaffShift(staff_id=s.id, weekday=0, is_on=True))
+    # CareFlow Wave Next 3: M course はマネージャー数で動的制限されるので、
+    # 超過セットが M overflow に流れるためにマネージャー 2 名を出勤させる.
+    for i in range(2):
+        m = Staff(
+            name=f"ov-mgr-{i}",
+            role="manager",
+            is_trainee=False,
+            primary_office_id=office.id,
+        )
+        db.add(m)
+        await db.flush()
+        db.add(StaffShift(staff_id=m.id, weekday=0, is_on=True))
     for i in range(6):
         db.add(
             _make_patient(
@@ -1641,9 +1692,10 @@ async def test_run_v2_pipeline_returns_unassigned_for_no_coordinates(db) -> None
     codes = {u["patient_code"] for u in unassigned}
     assert "PNG" in codes, f"座標なし患者 PNG が unassigned に含まれていない: {codes}"
     assert "POK" not in codes, "座標あり患者 POK は unassigned に含まれないはず"
-    # reason には座標未設定が出る
+    # P2: reason は enum で "no_coordinates"
     png = next(u for u in unassigned if u["patient_code"] == "PNG")
-    assert "座標" in png["reason"], f"理由が座標未設定でない: {png['reason']}"
+    assert png["reason"] == "no_coordinates", f"理由が no_coordinates でない: {png['reason']}"
+    assert png["dropped_at_stage"] == "general"
 
 
 @pytest.mark.asyncio
@@ -2162,6 +2214,597 @@ def test_same_address_zero_travel_no_pushback() -> None:
     assert not any("連続移動時間合計" in w.message for w in warnings), (
         f"同住所コースに長距離 warning は出ないはず: {warnings}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 同住所連番強制 (_reorder_same_address_consecutive)
+# ユーザー要望 (最重要): 同住所患者は配列上で必ず隣接する.
+# ---------------------------------------------------------------------------
+
+
+def test_same_address_pair_is_consecutive_in_course() -> None:
+    """同住所 2 名は ``_apply_travel_time_to_courses`` 後に必ず配列上隣接する.
+
+    Setup: コース A 月曜:
+      - A 09:00 (lat=35.65, lng=140.10) 終日
+      - B 09:30 同住所 (lat=35.65, lng=140.10) 終日
+    入力時点で隣接しているが、リオーダー後も隣接していること.
+    """
+    from app.services.scheduling.auto_allocator_v2 import (
+        _address_bucket,
+        _apply_travel_time_to_courses,
+    )
+
+    office_id = uuid.uuid4()
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=0, patient_name="A"
+    )
+    a.end_time = time(9, 30)
+    a.service_minutes = 30
+    a.course_code = "A"
+    a.time_type = "終日"
+    b = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=30, patient_name="B"
+    )
+    b.end_time = time(10, 0)
+    b.service_minutes = 30
+    b.course_code = "A"
+    b.time_type = "終日"
+
+    warnings: list[V2Warning] = []
+    visits = [a, b]
+    _apply_travel_time_to_courses(visits, warnings=warnings)
+
+    # A と B は同住所 → start_time 順 (A 09:00 / B 09:30) で隣接.
+    # _apply_travel_time_to_courses 内で再ソート + リオーダーされるが、
+    # 元々 2 件しかないので配列上必然的に隣接.
+    a_bucket = _address_bucket(a.lat, a.lng)
+    b_bucket = _address_bucket(b.lat, b.lng)
+    assert a_bucket == b_bucket, "テスト前提: A と B は同住所"
+    # B の start_time は同住所なので押し下げなし (09:30 ぴったり).
+    assert b.start_time == time(9, 30)
+
+
+def test_same_address_pair_consecutive_with_other_patient_between() -> None:
+    """同住所ペアの間に別住所 visit が挟まる入力でもリオーダー後は隣接する.
+
+    Setup (input): [A 09:00 (addr1), C 09:15 (addr2), B 09:30 (addr1)]
+      - A と B が同住所だが、間に C が挟まる.
+    リオーダー後: 同住所 (A, B) は隣接 (= [A, B, C] か [A, C, B] のうち、
+      A,B が配列上隣接する形). 本実装では「後ろの B を A の直後に移動」=
+      [A, B, C] になる.
+    """
+    from app.services.scheduling.auto_allocator_v2 import _reorder_same_address_consecutive
+
+    office_id = uuid.uuid4()
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=0, patient_name="A"
+    )
+    a.end_time = time(9, 30)
+    a.service_minutes = 30
+    a.course_code = "A"
+    a.time_type = "終日"
+    # 別住所 C (経度を 0.05 ずらす = 約 5km 離れる)
+    c = _make_visit(
+        lat=35.65, lng=140.15, office_id=office_id, start_h=9, start_m=15, patient_name="C"
+    )
+    c.end_time = time(9, 45)
+    c.service_minutes = 30
+    c.course_code = "A"
+    c.time_type = "終日"
+    # 同住所 B (A と同じ lat/lng)
+    b = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=30, patient_name="B"
+    )
+    b.end_time = time(10, 0)
+    b.service_minutes = 30
+    b.course_code = "A"
+    b.time_type = "終日"
+
+    # 入力: [A, C, B] (start_time 昇順そのまま)
+    visits = [a, c, b]
+    warnings: list[V2Warning] = []
+    reordered = _reorder_same_address_consecutive(visits, warnings=warnings)
+
+    # A と B のインデックスが隣接 (差 = 1) になる.
+    a_idx = reordered.index(a)
+    b_idx = reordered.index(b)
+    assert abs(a_idx - b_idx) == 1, (
+        f"A と B は同住所だが隣接していない: order={[v.patient_name for v in reordered]}"
+    )
+    # 3 件中 2 件のペアなので 3 件 warning は出ない.
+    assert not any("3 名以上が同コース内に残存" in w.message for w in warnings), (
+        f"2 名ペアで 3+ warning が出ている: {warnings}"
+    )
+
+
+def test_same_address_pair_with_fixed_time_stays_adjacent() -> None:
+    """固定時刻 patient と非固定 patient が同住所ペア → リオーダー後も連番.
+
+    Setup (input): [固定 A 10:00 (addr1), C 10:30 (addr2), 非固定 B 11:00 (addr1)]
+      - A は time_type='固定' で位置 / 時刻ともに動かしたくない.
+      - B は同住所だが非固定. C は別住所.
+    期待: 非固定 B を固定 A の直後に移動 → [A, B, C].
+      A の start_time (10:00) は不変. B の配列位置のみ調整.
+    """
+    from app.services.scheduling.auto_allocator_v2 import _reorder_same_address_consecutive
+
+    office_id = uuid.uuid4()
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=10, start_m=0, patient_name="A"
+    )
+    a.end_time = time(10, 30)
+    a.service_minutes = 30
+    a.course_code = "A"
+    a.time_type = "固定"
+    a.preferred_start = "10:00"
+    c = _make_visit(
+        lat=35.65, lng=140.15, office_id=office_id, start_h=10, start_m=30, patient_name="C"
+    )
+    c.end_time = time(11, 0)
+    c.service_minutes = 30
+    c.course_code = "A"
+    c.time_type = "終日"
+    b = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=11, start_m=0, patient_name="B"
+    )
+    b.end_time = time(11, 30)
+    b.service_minutes = 30
+    b.course_code = "A"
+    b.time_type = "終日"
+
+    visits = [a, c, b]
+    warnings: list[V2Warning] = []
+    reordered = _reorder_same_address_consecutive(visits, warnings=warnings)
+
+    # A と B が隣接していること.
+    a_idx = reordered.index(a)
+    b_idx = reordered.index(b)
+    assert abs(a_idx - b_idx) == 1, (
+        f"固定 A と非固定 B (同住所) が隣接していない: order={[v.patient_name for v in reordered]}"
+    )
+    # 固定 A の start_time は不変.
+    assert a.start_time == time(10, 0), f"固定 A の start_time が動いた: {a.start_time}"
+
+
+def test_three_different_addresses_unchanged() -> None:
+    """異住所ばかり (同住所ペアが存在しない) なら並び順は不変 (regression 防止)."""
+    from app.services.scheduling.auto_allocator_v2 import _reorder_same_address_consecutive
+
+    office_id = uuid.uuid4()
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=0, patient_name="A"
+    )
+    a.course_code = "A"
+    a.time_type = "終日"
+    # 5km 離れた B (35.65, 140.15)
+    b = _make_visit(
+        lat=35.65, lng=140.15, office_id=office_id, start_h=9, start_m=30, patient_name="B"
+    )
+    b.course_code = "A"
+    b.time_type = "終日"
+    # さらに 5km 離れた C (35.70, 140.20)
+    c = _make_visit(
+        lat=35.70, lng=140.20, office_id=office_id, start_h=10, start_m=0, patient_name="C"
+    )
+    c.course_code = "A"
+    c.time_type = "終日"
+
+    visits = [a, b, c]
+    warnings: list[V2Warning] = []
+    reordered = _reorder_same_address_consecutive(visits, warnings=warnings)
+
+    # 並び順は不変
+    assert [v.patient_name for v in reordered] == ["A", "B", "C"], (
+        f"異住所のみでも順序が変わった: {[v.patient_name for v in reordered]}"
+    )
+    # warning も出ない
+    assert not warnings, f"異住所のみで warning が出ている: {warnings}"
+
+
+def test_same_address_pair_in_multi_course_preserved_per_course() -> None:
+    """複数コース時、各コース内で独立に同住所連番強制される.
+
+    Setup:
+      コース A 月曜: [A 09:00 (addr1), C 09:15 (addr2), B 09:30 (addr1)] → リオーダー後 A, B 隣接
+      コース B 月曜: [D 10:00 (addr3), E 10:30 (addr4)] → 異住所のみ、不変
+    """
+    from app.services.scheduling.auto_allocator_v2 import (
+        _address_bucket,
+        _apply_travel_time_to_courses,
+    )
+
+    office_id = uuid.uuid4()
+    # コース A
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=0, patient_name="A"
+    )
+    a.end_time = time(9, 30)
+    a.service_minutes = 30
+    a.course_code = "A"
+    a.time_type = "終日"
+    c = _make_visit(
+        lat=35.65, lng=140.15, office_id=office_id, start_h=9, start_m=15, patient_name="C"
+    )
+    c.end_time = time(9, 45)
+    c.service_minutes = 30
+    c.course_code = "A"
+    c.time_type = "終日"
+    b = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=30, patient_name="B"
+    )
+    b.end_time = time(10, 0)
+    b.service_minutes = 30
+    b.course_code = "A"
+    b.time_type = "終日"
+
+    # コース B (異住所のみ)
+    d = _make_visit(
+        lat=35.70, lng=140.20, office_id=office_id, start_h=10, start_m=0, patient_name="D"
+    )
+    d.end_time = time(10, 30)
+    d.service_minutes = 30
+    d.course_code = "B"
+    d.time_type = "終日"
+    e = _make_visit(
+        lat=35.75, lng=140.25, office_id=office_id, start_h=10, start_m=30, patient_name="E"
+    )
+    e.end_time = time(11, 0)
+    e.service_minutes = 30
+    e.course_code = "B"
+    e.time_type = "終日"
+
+    visits = [a, c, b, d, e]
+    warnings: list[V2Warning] = []
+    _apply_travel_time_to_courses(visits, warnings=warnings)
+
+    # コース A: A と B が同住所 → 隣接した start_time (移動 0 で連続) を持つ.
+    # _apply_travel_time_to_courses 内でリオーダー後 [A, B, C] になる.
+    # B は同住所なので 09:30 ぴったり開始 (押し下げなし).
+    # C は B 末尾 (10:00) から異住所移動 + バッファーで押し下げ.
+    a_bucket = _address_bucket(a.lat, a.lng)
+    b_bucket = _address_bucket(b.lat, b.lng)
+    assert a_bucket == b_bucket, "テスト前提: A,B 同住所"
+    # B の start_time = A の end_time (09:30) で同住所連続: 押し下げなし.
+    assert b.start_time == time(9, 30), (
+        f"コース A の同住所 B が 09:30 (= A 末尾) で連続していない: {b.start_time}"
+    )
+    # コース B: D と E は異住所のみ.
+    # 5km 移動 + バッファー 15 分 → 10:30 desired vs (10:30 + travel + 15)
+    # 11:00 以降に押し下げ.
+    assert d.start_time == time(10, 0), f"D は固定 start のはず: {d.start_time}"
+    # E の正確な押し下げ値はテストの主眼ではない. 元の 10:30 より遅れていれば OK.
+    assert e.start_time > time(10, 30) or e.start_time == time(10, 30), (
+        f"E は異住所移動で 10:30 以降のはず: {e.start_time}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 同住所連番 — Opus reviewer 指摘の behavior pin / regression テスト
+# (HIGH 2 件 = 仕様意図通りの副作用を明示固定 + MEDIUM カバレッジ補完)
+# ---------------------------------------------------------------------------
+
+
+def test_same_address_pair_pushes_back_subsequent_other_address_visit() -> None:
+    """HIGH #1 behavior pin: 同住所ペア (固定 first + 非固定 second) の間に挟まれた
+    別住所 visit が、reorder 後に後段の earliest 計算で押し下げられることを許容する.
+
+    ユーザー方針: 同住所連番が最重要 → 他患者の時刻が動くのは許容.
+
+    Setup (input, start_time 昇順):
+      [A 09:00 固定 (addr1), C 09:15 終日 (addr2), B 11:00 非固定 終日 (addr1)]
+
+    Expected after reorder:
+      順序は [A, B, C] (B が A の直後に移動 = 同住所連番). 後段の
+      ``_apply_travel_time_to_courses`` で C の earliest が
+      B.end + travel + buffer まで押し下げられる (本来 09:15 だったものが
+      ~11:45 以降に遅延 = 同住所連番優先のための副作用).
+    """
+    from app.services.scheduling.auto_allocator_v2 import (
+        _address_bucket,
+        _apply_travel_time_to_courses,
+        _reorder_same_address_consecutive,
+    )
+
+    office_id = uuid.uuid4()
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=0, patient_name="A"
+    )
+    a.end_time = time(9, 30)
+    a.service_minutes = 30
+    a.course_code = "A"
+    a.time_type = "固定"
+    a.preferred_start = "09:00"
+    c = _make_visit(
+        lat=35.65, lng=140.15, office_id=office_id, start_h=9, start_m=15, patient_name="C"
+    )
+    c.end_time = time(9, 45)
+    c.service_minutes = 30
+    c.course_code = "A"
+    c.time_type = "終日"
+    b = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=11, start_m=0, patient_name="B"
+    )
+    b.end_time = time(11, 30)
+    b.service_minutes = 30
+    b.course_code = "A"
+    b.time_type = "終日"
+
+    visits = [a, c, b]
+    warnings: list[V2Warning] = []
+    reordered = _reorder_same_address_consecutive(visits, warnings=warnings)
+
+    # 順序 [A, B, C] になっている (B を A の直後に挿入).
+    order = [v.patient_name for v in reordered]
+    assert order == ["A", "B", "C"], f"reorder 後の順序が期待値と異なる: {order}"
+    a_idx = reordered.index(a)
+    b_idx = reordered.index(b)
+    assert abs(a_idx - b_idx) == 1, "A,B (同住所) が隣接していない"
+
+    # 後段の travel 計算を走らせる → C は B.end + travel + buffer まで押し下げ.
+    travel_warnings: list[V2Warning] = []
+    _apply_travel_time_to_courses(reordered, warnings=travel_warnings)
+
+    a_bucket = _address_bucket(a.lat, a.lng)
+    b_bucket = _address_bucket(b.lat, b.lng)
+    c_bucket = _address_bucket(c.lat, c.lng)
+    assert a_bucket == b_bucket and a_bucket != c_bucket, "テスト前提: A,B 同住所 / C 異住所"
+
+    # 固定 A: 09:00 不変.
+    assert a.start_time == time(9, 0), f"固定 A は不変のはず: {a.start_time}"
+    # 非固定 B (終日): desired_start=11:00 が earliest_start (=A.end 09:30) より
+    # 大きいので max を取って 11:00 維持. (本来同住所連番なら 09:30 に詰めたいが、
+    # `_apply_travel_time_to_courses` の `max(desired, earliest)` セマンティクス上
+    # 11:00 で維持されるのが現状仕様 — desired_start を前倒しする機能はない.)
+    assert b.start_time == time(11, 0), f"非固定 B は desired 11:00 を維持するはず: {b.start_time}"
+    # C: 本来 09:15 入力だったが、reorder で B の後ろに回ったため
+    # B.end (11:30) + travel + buffer まで押し下げ → 元 09:15 から大きく遅延.
+    # これは同住所連番を優先したことによる副作用 (= 仕様意図通り、ユーザー許容).
+    assert c.start_time > time(9, 15), (
+        f"C は同住所連番優先により後段で押し下げられるはず (許容): {c.start_time}"
+    )
+    assert c.start_time >= time(11, 30), (
+        f"C は B.end (11:30) 以降に押し下げられるはず: {c.start_time}"
+    )
+
+
+def test_same_address_pair_non_fixed_first_with_fixed_second_can_push_first_later() -> None:
+    """HIGH #2 behavior pin: 非固定 first + 固定 second 同住所、間に別住所
+    → 非固定 first の start_time が後段で繰り下げられる可能性を許容する.
+
+    ユーザー方針: 同住所連番が最重要 → 非固定 first 時刻が動くのは許容.
+
+    Setup (input, start_time 昇順):
+      [A 09:00 非固定 終日 (addr1), C 09:15 終日 (addr2), B 10:00 固定 (addr1)]
+
+    Expected after reorder:
+      順序は [C, A, B] (A を B の直前に移動 = 固定 B 不変). 後段で A の
+      earliest が C.end + travel + buffer (~10:00 付近) まで繰り下げられる.
+      本来 09:00 で配置できた A が同住所優先のため遅延される.
+    """
+    from app.services.scheduling.auto_allocator_v2 import (
+        _address_bucket,
+        _apply_travel_time_to_courses,
+        _reorder_same_address_consecutive,
+    )
+
+    office_id = uuid.uuid4()
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=0, patient_name="A"
+    )
+    a.end_time = time(9, 30)
+    a.service_minutes = 30
+    a.course_code = "A"
+    a.time_type = "終日"
+    c = _make_visit(
+        lat=35.65, lng=140.15, office_id=office_id, start_h=9, start_m=15, patient_name="C"
+    )
+    c.end_time = time(9, 45)
+    c.service_minutes = 30
+    c.course_code = "A"
+    c.time_type = "終日"
+    b = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=10, start_m=0, patient_name="B"
+    )
+    b.end_time = time(10, 30)
+    b.service_minutes = 30
+    b.course_code = "A"
+    b.time_type = "固定"
+    b.preferred_start = "10:00"
+
+    visits = [a, c, b]
+    warnings: list[V2Warning] = []
+    reordered = _reorder_same_address_consecutive(visits, warnings=warnings)
+
+    # 順序: [C, A, B] (A を B の直前に移動 = 固定 B 不変).
+    order = [v.patient_name for v in reordered]
+    assert order == ["C", "A", "B"], f"reorder 後の順序が期待値と異なる: {order}"
+    a_idx = reordered.index(a)
+    b_idx = reordered.index(b)
+    assert abs(a_idx - b_idx) == 1, "A (非固定), B (固定) 同住所が隣接していない"
+
+    # 後段の travel 計算を走らせる.
+    travel_warnings: list[V2Warning] = []
+    _apply_travel_time_to_courses(reordered, warnings=travel_warnings)
+
+    a_bucket = _address_bucket(a.lat, a.lng)
+    b_bucket = _address_bucket(b.lat, b.lng)
+    c_bucket = _address_bucket(c.lat, c.lng)
+    assert a_bucket == b_bucket and a_bucket != c_bucket, "テスト前提: A,B 同住所 / C 異住所"
+
+    # 固定 B: 10:00 不変.
+    assert b.start_time == time(10, 0), f"固定 B は不変のはず: {b.start_time}"
+    # 非固定 first A: reorder により C の後ろに回ったため、本来 09:00 で
+    # 配置できたが、後段で C.end + travel + buffer まで繰り下げ (= 09:00 より遅延).
+    assert a.start_time > time(9, 0), (
+        f"非固定 A は同住所連番優先のため後段で繰り下げられるはず (許容): {a.start_time}"
+    )
+
+
+def test_reorder_skips_lat_lng_none_visits() -> None:
+    """M3 (a): lat/lng=None 混在 → None の visit は skip され、配列順を維持.
+
+    `_reorder_same_address_consecutive` の Algorithm step 2 (lat/lng None は対象外)
+    の挙動検証.
+    """
+    from app.services.scheduling.auto_allocator_v2 import _reorder_same_address_consecutive
+
+    office_id = uuid.uuid4()
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=0, patient_name="A"
+    )
+    a.course_code = "A"
+    a.time_type = "終日"
+    # lat/lng=None の visit (測位失敗想定).
+    x = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=30, patient_name="X"
+    )
+    x.lat = None  # type: ignore[assignment]
+    x.lng = None  # type: ignore[assignment]
+    x.course_code = "A"
+    x.time_type = "終日"
+    # 別住所 visit (B).
+    b = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=10, start_m=0, patient_name="B"
+    )
+    b.course_code = "A"
+    b.time_type = "終日"
+
+    visits = [a, x, b]
+    warnings: list[V2Warning] = []
+    reordered = _reorder_same_address_consecutive(visits, warnings=warnings)
+
+    # A と B は同住所だが、間の X (lat/lng=None) は skip 対象なので
+    # A,B のグルーピング上は X を無視. ただし配列上の reorder は B を A の直後に
+    # 移動するため、最終順序は [A, B, X] (X は末尾に押し出される).
+    order = [v.patient_name for v in reordered]
+    assert order == ["A", "B", "X"], f"reorder 後の順序が期待値と異なる: {order}"
+    # X (lat/lng None) は同住所判定対象外なので warning 影響しない.
+    assert not any("3 名以上が同コース内に残存" in w.message for w in warnings)
+
+
+def test_reorder_three_plus_emits_warning_with_message_substring() -> None:
+    """M3 (b): 同住所 3+ 残存時の warning 内容 (type=general + 「3 名以上」
+    + 「manual review」を含む) を pin する.
+    """
+    from app.services.scheduling.auto_allocator_v2 import _reorder_same_address_consecutive
+
+    office_id = uuid.uuid4()
+    # 同住所 3 件 + 別住所 1 件 (間に挟む).
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=0, patient_name="A"
+    )
+    a.course_code = "A"
+    a.time_type = "終日"
+    c = _make_visit(
+        lat=35.65, lng=140.15, office_id=office_id, start_h=9, start_m=15, patient_name="C"
+    )
+    c.course_code = "A"
+    c.time_type = "終日"
+    b = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=30, patient_name="B"
+    )
+    b.course_code = "A"
+    b.time_type = "終日"
+    d = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=10, start_m=0, patient_name="D"
+    )
+    d.course_code = "A"
+    d.time_type = "終日"
+
+    visits = [a, c, b, d]
+    warnings: list[V2Warning] = []
+    _reorder_same_address_consecutive(visits, warnings=warnings)
+
+    same_addr_warnings = [w for w in warnings if "3 名以上が同コース内に残存" in w.message]
+    assert len(same_addr_warnings) >= 1, f"3+ 同住所 warning が出ていない: {warnings}"
+    w0 = same_addr_warnings[0]
+    assert w0.type == "general", f"warning type は 'general' のはず: {w0.type}"
+    assert "3 名以上" in w0.message
+    assert "manual review" in w0.message
+    # L1: weekday + course_code がメッセージに含まれる.
+    assert "月曜" in w0.message, f"曜日 (月曜) がメッセージにない: {w0.message}"
+    assert "コース A" in w0.message, f"course_code がメッセージにない: {w0.message}"
+
+
+def test_reorder_both_fixed_same_address_unchanged() -> None:
+    """M3 (c): 両者固定 (time_type='固定') 同住所異時刻 → 配列順不変 + warning なし.
+
+    両者固定の場合、start_time が動かせず位置を入れ替えると配列順=時刻順 不整合に
+    なるため、隣接していなくても並べ替えない (= 仕様).
+    """
+    from app.services.scheduling.auto_allocator_v2 import _reorder_same_address_consecutive
+
+    office_id = uuid.uuid4()
+    # 同住所だが両者 time_type='固定' で時刻が異なる. 間に別住所が挟まる.
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=0, patient_name="A"
+    )
+    a.course_code = "A"
+    a.time_type = "固定"
+    a.preferred_start = "09:00"
+    c = _make_visit(
+        lat=35.65, lng=140.15, office_id=office_id, start_h=10, start_m=0, patient_name="C"
+    )
+    c.course_code = "A"
+    c.time_type = "終日"
+    b = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=11, start_m=0, patient_name="B"
+    )
+    b.course_code = "A"
+    b.time_type = "固定"
+    b.preferred_start = "11:00"
+
+    visits = [a, c, b]
+    warnings: list[V2Warning] = []
+    reordered = _reorder_same_address_consecutive(visits, warnings=warnings)
+
+    # 配列順は不変 (両者固定 → 動かさない).
+    order = [v.patient_name for v in reordered]
+    assert order == ["A", "C", "B"], f"両者固定なのに reorder された: {order}"
+    # 3 件のうち 2 件が同住所だが、3 名以上 warning は出ない (= 同住所件数 2 件).
+    assert not any("3 名以上が同コース内に残存" in w.message for w in warnings), (
+        f"2 件ペアで 3+ warning が出ている: {warnings}"
+    )
+
+
+def test_reorder_does_not_mutate_input_list() -> None:
+    """M3 (e): `_reorder_same_address_consecutive` は入力 list を mutate しない
+    (shallow copy を返す = 純粋関数).
+    """
+    from app.services.scheduling.auto_allocator_v2 import _reorder_same_address_consecutive
+
+    office_id = uuid.uuid4()
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=0, patient_name="A"
+    )
+    a.course_code = "A"
+    a.time_type = "終日"
+    c = _make_visit(
+        lat=35.65, lng=140.15, office_id=office_id, start_h=9, start_m=15, patient_name="C"
+    )
+    c.course_code = "A"
+    c.time_type = "終日"
+    b = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=30, patient_name="B"
+    )
+    b.course_code = "A"
+    b.time_type = "終日"
+
+    visits = [a, c, b]
+    original_copy = visits.copy()  # 要素順を pin する shallow copy.
+
+    reordered = _reorder_same_address_consecutive(visits, warnings=[])
+
+    # 入力 list の要素順は不変 (mutate されていない).
+    assert visits == original_copy, "入力 visits の要素順が mutate された"
+    assert [v.patient_name for v in visits] == ["A", "C", "B"]
+    # 返り値は別オブジェクト (shallow copy).
+    assert reordered is not visits
+    # 要素 (V2Visit) インスタンス自体は同一 (shallow copy なので同じオブジェクトを参照).
+    assert reordered[reordered.index(a)] is a
+    assert reordered[reordered.index(b)] is b
+    assert reordered[reordered.index(c)] is c
 
 
 def test_two_staff_flag_flows_through_build_visits() -> None:
@@ -3098,7 +3741,11 @@ async def test_resolve_course_for_code_m2_exact_match_preferred(db) -> None:
 
 @pytest.mark.asyncio
 async def test_overflow_generates_m_m2_m3(db) -> None:
-    """[H1]: staff=1, 6 set → A 1 set + M / M2 / M3 / M4 / M5 の分散."""
+    """[H1]: staff=1, manager=5, 6 set → A 1 set + M / M2 / M3 / M4 / M5 の分散.
+
+    CareFlow Wave Next 3: M overflow はマネージャー数で動的制限される.
+    本テストはマネージャー 5 名出勤の前提なので 5 つの M overflow が出る.
+    """
     office = Office(name="m-overflow-distribute-office")
     db.add(office)
     await db.flush()
@@ -3106,6 +3753,18 @@ async def test_overflow_generates_m_m2_m3(db) -> None:
     db.add(s)
     await db.flush()
     db.add(StaffShift(staff_id=s.id, weekday=0, is_on=True))
+    # CareFlow Wave Next 3: M course はマネージャー数で動的絞り込みされるので
+    # H1 テストの分散挙動を確認するためマネージャー 5 名を月曜出勤させる.
+    for i in range(5):
+        m = Staff(
+            name=f"dist-mgr-{i}",
+            role="manager",
+            is_trainee=False,
+            primary_office_id=office.id,
+        )
+        db.add(m)
+        await db.flush()
+        db.add(StaffShift(staff_id=m.id, weekday=0, is_on=True))
 
     # 12 患者を >5km 離れた地点 (0.2 deg ~ 22km) に配置 → cluster_by_distance_greedy で
     # 6 ペアセット程度を生成. staff_count=1 → A 1 set + 残り 5 set が M overflow.
@@ -3245,6 +3904,284 @@ def test_m_courses_not_aggregated_in_capacity_check() -> None:
     dist_violations = calc_h_violations(distributed)
     assert dist_violations["H9"] == 0, (
         f"4+3 visit を M/M2 に分散すれば H9 違反なし: {dist_violations}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# CareFlow Wave Next 3 — M course マネージャー制限
+# (M / M2 / ... 発行数を当該曜日の出勤マネージャー数で動的に絞り、
+#  超過セットは unassigned_patients に流す)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_m_course_limited_to_manager_count(db) -> None:
+    """[CWN3]: staff=1, manager=1, 余剰 set=1 → M 1 つだけ発行 (M2 は出ない).
+
+    Wave Next 2 までの挙動: staff=1, 4 patient (2 set) → A 1 set + M 1 set + M2 1 set ...
+    Wave Next 3 修正後: マネージャー 1 名なら M overflow は 1 つまで.
+    """
+    office = Office(name="mgr-limit-1-office")
+    db.add(office)
+    await db.flush()
+    s = Staff(name="mgr-limit-staff", role="staff", is_trainee=False, primary_office_id=office.id)
+    db.add(s)
+    await db.flush()
+    db.add(StaffShift(staff_id=s.id, weekday=0, is_on=True))
+    mgr = Staff(
+        name="mgr-limit-mgr",
+        role="manager",
+        is_trainee=False,
+        primary_office_id=office.id,
+    )
+    db.add(mgr)
+    await db.flush()
+    db.add(StaffShift(staff_id=mgr.id, weekday=0, is_on=True))
+
+    # 4 患者 → 2 ペアセット. staff_count=1 で 1 set = A, 余剰 1 set = M (mgr_count=1).
+    for i in range(4):
+        db.add(
+            _make_patient(
+                code=f"ML{i}",
+                office_id=office.id,
+                lat=35.65 + i * 0.2,
+                lng=140.10 + i * 0.2,
+                preferred_start="10:00",
+            )
+        )
+    await db.commit()
+
+    result = await run_v2_pipeline(
+        db,
+        iso_year=2026,
+        iso_week=20,
+        office_ids=[office.id],
+        mode="full_optimize",
+    )
+    codes_used = {v.course_code for v in result["after_visits"]}
+    overflow_codes_used = codes_used & _M_OVERFLOW_CODES
+    # マネージャー 1 名なので M 1 つのみ (M2 は絶対出ない)
+    assert overflow_codes_used <= {"M"}, (
+        f"manager=1 なら M overflow は 'M' のみのはず: got {overflow_codes_used}"
+    )
+    assert "M2" not in codes_used, f"manager=1 なのに 'M2' が発行された: {codes_used}"
+
+
+@pytest.mark.asyncio
+async def test_no_m_course_when_no_manager(db) -> None:
+    """[CWN3]: manager=0, 余剰 set あり → M も発行されず、超過 patient は unassigned に流れる."""
+    office = Office(name="no-mgr-office")
+    db.add(office)
+    await db.flush()
+    s = Staff(name="no-mgr-staff", role="staff", is_trainee=False, primary_office_id=office.id)
+    db.add(s)
+    await db.flush()
+    db.add(StaffShift(staff_id=s.id, weekday=0, is_on=True))
+
+    # 4 患者 → 2 ペアセット. staff_count=1 で 1 set = A, 余剰 1 set → 未割当
+    # (mgr_count=0 のため M も発行されない).
+    for i in range(4):
+        db.add(
+            _make_patient(
+                code=f"NM{i}",
+                office_id=office.id,
+                lat=35.65 + i * 0.2,
+                lng=140.10 + i * 0.2,
+                preferred_start="10:00",
+            )
+        )
+    await db.commit()
+
+    result = await run_v2_pipeline(
+        db,
+        iso_year=2026,
+        iso_week=20,
+        office_ids=[office.id],
+        mode="full_optimize",
+    )
+    codes_used = {v.course_code for v in result["after_visits"]}
+    overflow_codes_used = codes_used & _M_OVERFLOW_CODES
+    assert not overflow_codes_used, (
+        f"manager=0 なら M overflow は一切出ないはず: got {overflow_codes_used}"
+    )
+    # 超過 patient (2 名) が unassigned_patients に出る
+    unassigned = result["unassigned_patients"]
+    unassigned_codes = {u["patient_code"] for u in unassigned}
+    assert len(unassigned) >= 2, (
+        f"manager=0, 余剰 set=1 → 少なくとも 2 名が未割当のはず: {unassigned}"
+    )
+    # NM プレフィックスの患者 (= overflow set の対象) が unassigned に含まれる
+    assert any(c and c.startswith("NM") for c in unassigned_codes), (
+        f"NM 患者が unassigned に含まれていない: {unassigned_codes}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_excess_sets_beyond_manager_go_to_unassigned(db) -> None:
+    """[CWN3]: staff=1, manager=1, 余剰 set=3 → M 1 set + 残り 2 set の patient が unassigned."""
+    office = Office(name="excess-mgr-office")
+    db.add(office)
+    await db.flush()
+    s = Staff(name="ex-staff", role="staff", is_trainee=False, primary_office_id=office.id)
+    db.add(s)
+    await db.flush()
+    db.add(StaffShift(staff_id=s.id, weekday=0, is_on=True))
+    mgr = Staff(name="ex-mgr", role="manager", is_trainee=False, primary_office_id=office.id)
+    db.add(mgr)
+    await db.flush()
+    db.add(StaffShift(staff_id=mgr.id, weekday=0, is_on=True))
+
+    # 8 患者 → 4 ペアセット. staff=1 → A 1 set + M 1 set (mgr=1) + 2 set 未割当.
+    for i in range(8):
+        db.add(
+            _make_patient(
+                code=f"EX{i}",
+                office_id=office.id,
+                lat=35.65 + i * 0.2,
+                lng=140.10 + i * 0.2,
+                preferred_start="10:00",
+            )
+        )
+    await db.commit()
+
+    result = await run_v2_pipeline(
+        db,
+        iso_year=2026,
+        iso_week=20,
+        office_ids=[office.id],
+        mode="full_optimize",
+    )
+    codes_used = {v.course_code for v in result["after_visits"]}
+    overflow_codes_used = codes_used & _M_OVERFLOW_CODES
+    # M 1 つのみ (mgr=1 上限)
+    assert overflow_codes_used == {"M"}, (
+        f"mgr=1 なら 'M' のみ発行されるはず: got {overflow_codes_used}"
+    )
+    # 未割当: 2 set × 2 patient = 4 名以上
+    unassigned = result["unassigned_patients"]
+    unassigned_codes = {u["patient_code"] for u in unassigned}
+    assert len(unassigned) >= 4, (
+        f"余剰 set=3, mgr=1 なら 2 set 分 (4 名以上) 未割当のはず: {unassigned}"
+    )
+    # EX プレフィックスの患者が複数 unassigned に含まれる
+    ex_unassigned = {c for c in unassigned_codes if c and c.startswith("EX")}
+    assert len(ex_unassigned) >= 4, f"EX 患者が 4 名以上 unassigned のはず: {ex_unassigned}"
+
+
+@pytest.mark.asyncio
+async def test_manager_per_weekday_dynamic(db) -> None:
+    """[CWN3]: 土曜 mgr=0 でも平日 mgr=1 なら正しく動的判定される.
+
+    月曜: staff=1 + mgr=1 → A + M (余剰 1 set OK)
+    土曜: staff=1 + mgr=0 → A のみ, 余剰 set は unassigned
+    """
+    office = Office(name="weekday-mgr-dynamic-office")
+    db.add(office)
+    await db.flush()
+    # スタッフ 1 名: 月曜 + 土曜出勤
+    s = Staff(name="wd-mgr-staff", role="staff", is_trainee=False, primary_office_id=office.id)
+    db.add(s)
+    await db.flush()
+    db.add(StaffShift(staff_id=s.id, weekday=0, is_on=True))  # Mon
+    db.add(StaffShift(staff_id=s.id, weekday=5, is_on=True))  # Sat
+    # マネージャー: 月曜のみ出勤 (土曜は休み)
+    mgr = Staff(
+        name="wd-mgr-only-mon",
+        role="manager",
+        is_trainee=False,
+        primary_office_id=office.id,
+    )
+    db.add(mgr)
+    await db.flush()
+    db.add(StaffShift(staff_id=mgr.id, weekday=0, is_on=True))
+
+    # 月曜患者 4 名 (2 set) + 土曜患者 4 名 (2 set)
+    for i in range(4):
+        db.add(
+            _make_patient(
+                code=f"WMON{i}",
+                office_id=office.id,
+                lat=35.65 + i * 0.2,
+                lng=140.10 + i * 0.2,
+                preferred_start="10:00",
+                weekdays=["Mon"],
+            )
+        )
+        db.add(
+            _make_patient(
+                code=f"WSAT{i}",
+                office_id=office.id,
+                lat=35.65 + i * 0.2,
+                lng=140.10 + i * 0.2,
+                preferred_start="10:00",
+                weekdays=["Sat"],
+            )
+        )
+    await db.commit()
+
+    result = await run_v2_pipeline(
+        db,
+        iso_year=2026,
+        iso_week=20,
+        office_ids=[office.id],
+        mode="full_optimize",
+    )
+    # weekday → set(course_code)
+    by_weekday: dict[int, set[str]] = {}
+    for v in result["after_visits"]:
+        by_weekday.setdefault(v.weekday, set()).add(v.course_code)
+    mon_codes = by_weekday.get(0, set())
+    sat_codes = by_weekday.get(5, set())
+    # 月曜: M 1 つ出ているはず (mgr=1)
+    assert mon_codes & _M_OVERFLOW_CODES, (
+        f"月曜 mgr=1 なので M overflow が出るはず: mon_codes={mon_codes}"
+    )
+    # 土曜: M overflow は一切出ないはず (mgr=0)
+    assert not (sat_codes & _M_OVERFLOW_CODES), (
+        f"土曜 mgr=0 なので M overflow は出ないはず: sat_codes={sat_codes}"
+    )
+    # 土曜の余剰 set patient は unassigned に流れる
+    unassigned_codes = {u["patient_code"] for u in result["unassigned_patients"]}
+    sat_unassigned = {c for c in unassigned_codes if c and c.startswith("WSAT")}
+    assert sat_unassigned, (
+        f"土曜の余剰 set 患者が unassigned に流れるはず: unassigned={unassigned_codes}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_warning_emitted_for_manager_short_overflow(db) -> None:
+    """[CWN3]: マネージャー不足で超過セットが出たとき warning に「manager 不足」「未割当」が出る."""
+    office = Office(name="mgr-warn-office")
+    db.add(office)
+    await db.flush()
+    s = Staff(name="warn-staff", role="staff", is_trainee=False, primary_office_id=office.id)
+    db.add(s)
+    await db.flush()
+    db.add(StaffShift(staff_id=s.id, weekday=0, is_on=True))
+    # mgr=0 で超過セットを発生させる
+    for i in range(4):
+        db.add(
+            _make_patient(
+                code=f"WRN{i}",
+                office_id=office.id,
+                lat=35.65 + i * 0.2,
+                lng=140.10 + i * 0.2,
+                preferred_start="10:00",
+            )
+        )
+    await db.commit()
+
+    result = await run_v2_pipeline(
+        db,
+        iso_year=2026,
+        iso_week=20,
+        office_ids=[office.id],
+        mode="full_optimize",
+    )
+    # warning に「manager 不足」「未割当」のメッセージが含まれる
+    msgs = [w.message for w in result["warnings"]]
+    assert any("manager 不足" in m and "未割当" in m for m in msgs), (
+        f"manager 不足 warning が出るはず: warnings={msgs}"
     )
 
 
@@ -3414,4 +4351,172 @@ def test_enforce_course_count_uses_effective_max_for_warning() -> None:
     assert overflow_msgs, (
         f"6 set / staff=6 でも effective_max=5 のため overflow warning が出るはず: "
         f"got {[w.message for w in warnings]}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# P2: _identify_unassigned_patients structured reason + V2Warning.affected_patient_ids
+# ---------------------------------------------------------------------------
+
+
+def test_identify_unassigned_patient_with_no_coordinates() -> None:
+    """P2: 座標未設定の患者は reason='no_coordinates'."""
+    from app.services.scheduling.auto_allocator_v2 import _identify_unassigned_patients
+
+    pid = uuid.uuid4()
+    p = Patient(
+        id=pid,
+        code="NC-1",
+        name="no-coord",
+        status="active",
+        lat=None,
+        lng=None,
+        primary_office_id=uuid.uuid4(),
+    )
+    result = _identify_unassigned_patients(pool_patients=[p], after_visits=[], warnings=[])
+    assert len(result) == 1
+    assert result[0]["reason"] == "no_coordinates"
+    assert result[0]["dropped_at_stage"] == "general"
+    assert result[0]["reason_detail"] is not None
+    assert "ジオコーディング" in result[0]["reason_detail"]
+
+
+def test_identify_unassigned_patient_with_manager_short_warning() -> None:
+    """P2: warning.affected_patient_ids に含まれ "manager 不足" 含む → reason='manager_short'."""
+    from app.services.scheduling.auto_allocator_v2 import _identify_unassigned_patients
+
+    pid = uuid.uuid4()
+    p = Patient(
+        id=pid,
+        code="MS-1",
+        name="mgr-short",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        primary_office_id=uuid.uuid4(),
+    )
+    w = V2Warning(
+        type="course_capacity",
+        message="月曜 拠点 X: 通常コース 1 + M (マネージャー枠) 1 を超えるセットがあり、2 名の患者が未割当 (manager 不足のため).",
+        weekday=0,
+        actionable=True,
+        affected_patient_ids=[pid],
+    )
+    result = _identify_unassigned_patients(pool_patients=[p], after_visits=[], warnings=[w])
+    assert len(result) == 1
+    assert result[0]["reason"] == "manager_short"
+    assert result[0]["dropped_at_stage"] == "stage5_course"
+
+
+def test_identify_unassigned_patient_course_capacity_via_warning() -> None:
+    """P2: 容量超過 warning (course_capacity, message に manager 不足含まず) → reason='course_capacity'."""
+    from app.services.scheduling.auto_allocator_v2 import _identify_unassigned_patients
+
+    pid = uuid.uuid4()
+    p = Patient(
+        id=pid,
+        code="CC-1",
+        name="capacity-over",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        primary_office_id=uuid.uuid4(),
+    )
+    w = V2Warning(
+        type="course_capacity",
+        message="拠点 X A コース 月曜: コース総所要時間 500 分 > 上限 480 分",
+        weekday=0,
+        actionable=True,
+        affected_patient_ids=[pid],
+    )
+    result = _identify_unassigned_patients(pool_patients=[p], after_visits=[], warnings=[w])
+    assert result[0]["reason"] == "course_capacity"
+    assert result[0]["dropped_at_stage"] == "stage4_capacity"
+
+
+def test_identify_unassigned_patient_unknown_when_no_match() -> None:
+    """P2: どの warning にも一致しなければ reason='unknown' (旧曖昧文言は撤去)."""
+    from app.services.scheduling.auto_allocator_v2 import _identify_unassigned_patients
+
+    pid = uuid.uuid4()
+    p = Patient(
+        id=pid,
+        code="UK-1",
+        name="unknown",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        primary_office_id=uuid.uuid4(),
+    )
+    result = _identify_unassigned_patients(pool_patients=[p], after_visits=[], warnings=[])
+    assert result[0]["reason"] == "unknown"
+    # 旧 "原因不明 (...のいずれか)" のような自由記述文言が出ていないこと.
+    assert result[0]["reason_detail"] is None
+
+
+def test_identify_unassigned_patient_acceptance_calendar_via_warning() -> None:
+    """P2: acceptance_blocked warning → reason='acceptance_calendar'."""
+    from app.services.scheduling.auto_allocator_v2 import _identify_unassigned_patients
+
+    pid = uuid.uuid4()
+    p = Patient(
+        id=pid,
+        code="AC-1",
+        name="acc-blocked",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        primary_office_id=uuid.uuid4(),
+    )
+    w = V2Warning(
+        type="acceptance_blocked",
+        message="AC-1 acc-blocked 様: 月曜 10:00 は受入カレンダーで「×」設定のため配置不可",
+        weekday=0,
+        actionable=False,
+        patient_id=pid,
+        affected_patient_ids=[pid],
+    )
+    result = _identify_unassigned_patients(pool_patients=[p], after_visits=[], warnings=[w])
+    assert result[0]["reason"] == "acceptance_calendar"
+    assert result[0]["dropped_at_stage"] == "general"
+
+
+def test_v2warning_has_affected_patient_ids_field() -> None:
+    """P2: V2Warning に affected_patient_ids フィールドが追加されていること."""
+    pid = uuid.uuid4()
+    w = V2Warning(
+        type="course_capacity",
+        message="test",
+        affected_patient_ids=[pid],
+    )
+    assert w.affected_patient_ids == [pid]
+    # default は空リスト.
+    w2 = V2Warning(type="general", message="test2")
+    assert w2.affected_patient_ids == []
+
+
+def test_enforce_course_count_constraint_emits_affected_patient_ids() -> None:
+    """P2: enforce_course_count_constraint の overflow warning に affected_patient_ids が埋まる."""
+    from app.services.scheduling.auto_allocator_v2 import V2Set, enforce_course_count_constraint
+
+    office_id = uuid.uuid4()
+    weekday = 0
+    # 6 set 作る (各 set に 1 visit = 1 patient). staff_count=1 → effective_max=1, overflow 5 set.
+    visits = [_make_visit(lat=35.65 + i * 0.01, lng=140.10, office_id=office_id) for i in range(6)]
+    sets = [V2Set(visits=[v]) for v in visits]
+    warnings: list[V2Warning] = []
+    enforce_course_count_constraint(
+        {(office_id, weekday, "am"): sets},
+        staff_count_by_weekday={(office_id, weekday): 1},
+        warnings=warnings,
+        office_name_by_id={office_id: "test-office"},
+    )
+    overflow_w = [w for w in warnings if "マネージャー補充候補" in w.message]
+    assert overflow_w
+    # overflow set (= 末尾 5 set) の patient_id が affected_patient_ids に入っている.
+    expected_pids = {v.patient_id for v in visits[1:]}  # 末尾 5 visit
+    actual_pids = set(overflow_w[0].affected_patient_ids)
+    assert actual_pids == expected_pids, (
+        f"overflow warning の affected_patient_ids が末尾 5 visit の patient_id と一致しない: "
+        f"expected {expected_pids}, got {actual_pids}"
     )

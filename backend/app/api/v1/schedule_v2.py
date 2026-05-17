@@ -105,7 +105,10 @@ def _v2visit_to_plan(v: V2Visit) -> V2VisitPlan:
 
 
 def _warning_to_out(w: V2Warning) -> V2WarningOut:
-    """``V2Warning`` (dataclass) を Pydantic ``V2WarningOut`` に変換."""
+    """``V2Warning`` (dataclass) を Pydantic ``V2WarningOut`` に変換.
+
+    P2: ``affected_patient_ids`` を伝播.
+    """
     return V2WarningOut(
         type=w.type,
         message=w.message,
@@ -119,6 +122,7 @@ def _warning_to_out(w: V2Warning) -> V2WarningOut:
         time_type=w.time_type,
         preferred_start=w.preferred_start,
         preferred_end=w.preferred_end,
+        affected_patient_ids=list(w.affected_patient_ids or []),
     )
 
 
@@ -161,32 +165,41 @@ def _v2visit_to_ui(
 def _assign_same_address_groups(
     visits: list[V2Visit],
 ) -> dict[tuple[UUID, int, time_cls], str]:
-    """同 (office, weekday, start_time, address_bucket) で 2 名以上の場合に group_id を割当.
+    """同 (office, weekday, address_bucket) で 2 名以上の場合に group_id を割当.
 
     W41 v2 (H2 視覚化): UI で「📍 同住所 (N 名)」を表示するための group_id を計算する.
+
+    W41 v2.8 (実動時間入力でペア囲み消失問題の修正):
+        旧仕様では key に ``start_time`` を含めていたため、実動時間/移動時間で
+        09:00 / 09:30 のように時刻が連番にズレた瞬間に同住所判定から外れ、
+        UI のペア囲みが消えていた。本修正で key から ``start_time`` を除き、
+        ``(office, weekday, address_bucket)`` で同住所を判定する。
+        「連番として隣り合うペアのみ囲む」というユーザー意図は FE 側の隣接判定
+        (``prev/next.same_address_group_id`` 一致) で担保されるため、
+        ここでは時刻条件を緩めるだけで充分。間に別住所訪問が挟まれば自然に
+        FE 側で囲みが切れる (= 連番ペアでない場合は表示されない)。
+
     Returns:
         ``{(patient_id, weekday, start_time): group_id_str}`` の辞書.
         該当しない visit はキーに含まれない.
     """
     from collections import defaultdict
 
-    bucket_to_visits: dict[tuple[UUID, int, time_cls, tuple[float, float]], list[V2Visit]] = (
-        defaultdict(list)
-    )
+    bucket_to_visits: dict[tuple[UUID, int, tuple[float, float]], list[V2Visit]] = defaultdict(list)
     for v in visits:
         if v.lat is None or v.lng is None:
             continue
         bucket = _address_bucket(v.lat, v.lng)
-        key = (v.office_id, v.weekday, v.start_time, bucket)
+        key = (v.office_id, v.weekday, bucket)
         bucket_to_visits[key].append(v)
 
     group_id_by_key: dict[tuple[UUID, int, time_cls], str] = {}
     for key, vs in bucket_to_visits.items():
         if len(vs) >= 2:
-            office_id, wd, st, (lat_b, lng_b) = key
-            gid = f"sa_{office_id}_{wd}_{st.strftime('%H%M')}_{lat_b:.4f}_{lng_b:.4f}"
+            office_id, wd, (lat_b, lng_b) = key
+            gid = f"sa_{office_id}_{wd}_{lat_b:.4f}_{lng_b:.4f}"
             for v in vs:
-                visit_key = (v.patient_id, wd, st)
+                visit_key = (v.patient_id, wd, v.start_time)
                 group_id_by_key[visit_key] = gid
     return group_id_by_key
 
@@ -508,6 +521,7 @@ async def full_optimize_endpoint(
     kpi = _build_kpi_overall(before_visits, after_visits, warnings=warnings)
 
     # W41 v2 (Mode 2 UI 拡張): pool に入れたが after_visits に出てこなかった患者.
+    # P2: reason / reason_detail / dropped_at_stage を構造化フィールドとして渡す.
     unassigned_raw = result.get("unassigned_patients", []) or []
     unassigned = [
         UnassignedPatient(
@@ -515,6 +529,8 @@ async def full_optimize_endpoint(
             patient_name=u["patient_name"],
             patient_code=u.get("patient_code"),
             reason=u["reason"],
+            reason_detail=u.get("reason_detail"),
+            dropped_at_stage=u.get("dropped_at_stage"),
         )
         for u in unassigned_raw
     ]
