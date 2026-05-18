@@ -62,6 +62,12 @@ WEEKDAY_INT_TO_LABEL: Final[dict[int, str]] = {
 }
 
 TIME_TYPE_VALUES: Final[tuple[str, ...]] = ("固定", "時間帯", "午前", "午後", "終日")
+# Export / import 時に time_type を解決できない (patient.weekly_pattern にエントリ無し /
+# 空セル) の場合に fallback として使うデフォルト値。
+# "時間帯" は一般的な訪問形態を表す中立な値で、後から UI で個別に変更できる。
+# round-trip 運用 (export → そのまま import) で「time_type が空です」エラーを
+# 出さないために必要 (E-4 改修).
+DEFAULT_TIME_TYPE: Final[str] = "時間帯"
 COURSE_TEMPLATE_CODES: Final[tuple[str, ...]] = ("A", "B", "C", "D", "E", "M")
 PFV_MODE_VALUES: Final[tuple[str, ...]] = ("normal", "special")
 

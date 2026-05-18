@@ -22,6 +22,7 @@ from sqlalchemy import select
 
 from app.core.security import create_access_token, hash_password
 from app.models import (
+    CourseTemplate,
     Office,
     Patient,
     PatientFixedVisit,
@@ -74,14 +75,24 @@ async def _make_patient(db, **overrides) -> Patient:
     return p
 
 
-async def _make_pfv(db, *, patient_id, weekday: int = 0, slot_index: int = 0):
+async def _make_pfv(
+    db,
+    *,
+    patient_id,
+    weekday: int = 0,
+    slot_index: int = 0,
+    course_template_id=None,
+    start_time=time(9, 0),
+    duration_min: int = 30,
+):
     pfv = PatientFixedVisit(
         patient_id=patient_id,
         mode="normal",
         weekday=weekday,
         slot_index=slot_index,
-        start_time=time(9, 0),
-        duration_min=30,
+        start_time=start_time,
+        duration_min=duration_min,
+        course_template_id=course_template_id,
     )
     db.add(pfv)
     await db.commit()
@@ -538,3 +549,173 @@ async def test_replace_all_required_field_null_in_update_row_errors(client, db) 
     p_after = await db.get(Patient, patient_id)
     assert p_after is not None
     assert p_after.name == "既存患者"  # rollback 確認
+
+
+# ---------------------------------------------------------------------------
+# E-4 parity: replace_all.py も importer.py と同じく以下を吸収する.
+#   - time_type が空セル → DEFAULT_TIME_TYPE で吸収 (error にしない)
+#   - course_template_code が拠点不在 → course_template_id=None で保存
+#   - round-trip (export → そのまま replace-all import) で error 0 件
+# 並列構成: test_patients_excel_api.py の対応する E-4 テストを参照.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_replace_all_accepts_empty_time_type_with_default(client, db) -> None:
+    """time_type 空セルは default で吸収され error にならない (E-4 parity)."""
+    admin = await _make_user(db, "ra-e4-tt@example.com", "admin")
+    patient = await _make_patient(db, code="P-RA-E4-TT", name="time_type空でも OK")
+    patient_id = patient.id
+
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                "patient_id": str(patient_id),
+                "patient_code": "P-RA-E4-TT",
+                "name": "time_type空でも OK",
+                "sex": "male",
+                "status": "active",
+                "address": "千葉市稲毛区test",
+            }
+        ],
+        pfv_rows=[
+            {
+                "patient_id": str(patient_id),
+                "weekday": "月",
+                "slot_index": 0,
+                "mode": "normal",
+                # time_type を意図的に省略.
+                "start_time": "09:00",
+                "duration_min": 30,
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["transaction_applied"] is True
+    assert body["summary"]["pfv_to_create"] == 1
+    assert body["summary"]["pfv_error"] == 0
+
+    db.expire_all()
+    rows = (
+        await db.scalars(
+            select(PatientFixedVisit).where(PatientFixedVisit.patient_id == patient_id)
+        )
+    ).all()
+    assert len(rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_replace_all_fallback_for_unknown_course_template_code(client, db) -> None:
+    """course_template_code が患者拠点に存在しない場合、error にならず
+    course_template_id=None で取り込む (E-4 parity)."""
+    admin = await _make_user(db, "ra-e4-ct@example.com", "admin")
+    office = await _make_office(db, code="INAGE", name="稲毛")
+    patient = await _make_patient(
+        db,
+        code="P-RA-E4-CTU",
+        name="unknown ct",
+        primary_office_id=office.id,
+    )
+    patient_id = patient.id
+
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                "patient_id": str(patient_id),
+                "patient_code": "P-RA-E4-CTU",
+                "name": "unknown ct",
+                "sex": "male",
+                "status": "active",
+                "address": "千葉市稲毛区test",
+                "office_code": "INAGE",
+            }
+        ],
+        pfv_rows=[
+            {
+                "patient_id": str(patient_id),
+                "weekday": "月",
+                "slot_index": 0,
+                "mode": "normal",
+                "time_type": "固定",
+                "start_time": "09:00",
+                "duration_min": 30,
+                "course_template_code": "D",  # 拠点に存在しない
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["transaction_applied"] is True
+    assert body["summary"]["pfv_to_create"] == 1
+    assert body["summary"]["pfv_error"] == 0
+
+    db.expire_all()
+    rows = (
+        await db.scalars(
+            select(PatientFixedVisit).where(PatientFixedVisit.patient_id == patient_id)
+        )
+    ).all()
+    assert len(rows) == 1
+    assert rows[0].course_template_id is None  # 拠点不在 code は剥がされる
+
+
+@pytest.mark.asyncio
+async def test_replace_all_export_then_import_round_trip_completes_without_errors(
+    client, db
+) -> None:
+    """export → そのまま replace-all import で error 0 件 (E-4 parity).
+
+    replace_all は import (差分パス) と違い「全 PFV を物理削除して Excel から
+    再投入」する仕様なので、round-trip 結果は全 PFV が pfv_to_create に倒れる.
+    cross-office template は同じく空欄に倒される (= silent loss だが運用上許容).
+    """
+    admin = await _make_user(db, "ra-e4-roundtrip@example.com", "admin")
+    office_a = await _make_office(db, code="INAGE", name="稲毛")
+    office_b = await _make_office(db, code="TSUGA", name="都賀")
+    template_a = CourseTemplate(office_id=office_a.id, label="M")
+    template_b = CourseTemplate(office_id=office_b.id, label="C")
+    db.add_all([template_a, template_b])
+    await db.commit()
+    await db.refresh(template_a)
+    await db.refresh(template_b)
+
+    patient_a = await _make_patient(
+        db, code="P-RA-RT-A", name="患者A", primary_office_id=office_a.id
+    )
+    patient_b = await _make_patient(
+        db, code="P-RA-RT-B", name="患者B", primary_office_id=office_a.id
+    )
+    # 患者 A: weekly_pattern エントリ無し (time_type 解決不能だが PFV には影響しない).
+    patient_a.weekly_pattern = None
+    await db.commit()
+    # PFV-A: same-office template
+    await _make_pfv(db, patient_id=patient_a.id, weekday=0, course_template_id=template_a.id)
+    # PFV-B: 患者 B (拠点 INAGE) に対する PFV だが template_b (拠点 TSUGA) を指す
+    # クロスオフィス参照. export で course_template_code が空欄に倒れ、replace-all
+    # で再投入時に course_template_id=None になる (silent loss).
+    await _make_pfv(db, patient_id=patient_b.id, weekday=2, course_template_id=template_b.id)
+
+    # export
+    export_res = await client.get(
+        "/api/v1/patients/import-export/export",
+        headers=_bearer(admin),
+    )
+    assert export_res.status_code == 200
+    exported_bytes = export_res.content
+
+    # そのまま replace-all (dry_run=True で計上のみ).
+    res = await _upload(client, admin, content=exported_bytes, dry_run=True)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    summary = body["summary"]
+    # round-trip では error 0 件 (E-4 で吸収済).
+    assert summary["patients_error"] == 0, body
+    assert summary["pfv_error"] == 0, body
+    # Excel に居る 2 名は削除対象にならない.
+    assert summary["patients_to_soft_delete"] == 0, body
+    # PFV は全件再投入される. 既存 2 件 / 再投入 2 件.
+    assert summary["pfv_to_replace"] == 2, body
+    assert summary["pfv_to_create"] == 2, body

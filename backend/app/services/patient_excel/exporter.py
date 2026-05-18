@@ -29,6 +29,7 @@ from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
 from app.services.patient_excel.schema import (
     COMMENT_AUTHOR,
+    DEFAULT_TIME_TYPE,
     HEADER_FILL_COLOR,
     HEADER_FONT_COLOR,
     ID_COLUMN_FILL_COLOR,
@@ -200,14 +201,29 @@ def _write_pfv_row(
     pfv: PatientFixedVisit,
     *,
     patient_lookup: dict[UUID, Patient],
-    course_template_label_by_id: dict[UUID, str],
+    course_template_by_id: dict[UUID, CourseTemplate],
 ) -> None:
     p = patient_lookup.get(pfv.patient_id)
-    code_label = ""
+    # course_template_code は患者の primary_office に存在する CourseTemplate のラベルのみ
+    # 書き出す。クロスオフィス参照 (PFV.course_template が患者拠点に存在しない
+    # template を指している場合) は round-trip import で
+    # 「course_template_code が患者拠点に存在しません」エラーになるため、
+    # その場合は空欄として書き出す (バックアップ運用での再 import を 0 エラーで通すため).
+    code_label: str | None = None
     if pfv.course_template_id is not None:
-        code_label = course_template_label_by_id.get(pfv.course_template_id, "")
+        ct = course_template_by_id.get(pfv.course_template_id)
+        if ct is not None and ct.label:
+            # 患者拠点と template 拠点が一致 → ラベルを書き出す.
+            # 不一致 (データ不整合) → 空欄. import 時に course_template_id=None で
+            # 取り込まれる (PFV 自体は保持される).
+            if p is not None and p.primary_office_id == ct.office_id:
+                code_label = ct.label
     start_hhmm = _hhmm(pfv.start_time) or ""
     end_hhmm = _end_time(pfv.start_time, pfv.duration_min) if pfv.start_time else ""
+    # time_type は patient.weekly_pattern から導く。該当エントリが無い場合は
+    # default "時間帯" を書き出す (空セルだと import 時に「time_type が空です」
+    # エラーになるため. round-trip 運用で 0 エラーを担保).
+    resolved_tt = _resolve_time_type(p, pfv.weekday) if p else None
     values: dict[str, object | None] = {
         "patient_id": str(pfv.patient_id),
         "patient_code": p.code if p else None,
@@ -215,12 +231,11 @@ def _write_pfv_row(
         "weekday": WEEKDAY_INT_TO_LABEL.get(pfv.weekday),
         "slot_index": pfv.slot_index,
         "mode": pfv.mode,
-        # time_type は patient.weekly_pattern から導く (該当エントリが無ければ空)
-        "time_type": _resolve_time_type(p, pfv.weekday) if p else None,
+        "time_type": resolved_tt or DEFAULT_TIME_TYPE,
         "start_time": start_hhmm,
         "end_time": end_hhmm,
         "duration_min": pfv.duration_min,
-        "course_template_code": code_label or None,
+        "course_template_code": code_label,
         "delete_flag": None,
     }
     for col_key, col_idx in PFV_COL_INDEX.items():
@@ -289,16 +304,17 @@ def build_workbook(
     _attach_header_comment(ws_f, "patient_id", PFV_COLUMNS, text=PFV_PATIENT_ID_COMMENT_TEXT)
 
     patient_lookup: dict[UUID, Patient] = {p.id: p for p in patients}
-    course_template_label_by_id: dict[UUID, str] = {
-        ct.id: ct.label for ct in course_templates if ct.label
-    }
+    # PFV の course_template_id → CourseTemplate (office_id 付き) の lookup。
+    # _write_pfv_row 内で「patient.primary_office と template.office_id が一致するか」を
+    # 確認し、不一致 (クロスオフィス参照) なら label を書き出さない。
+    course_template_by_id: dict[UUID, CourseTemplate] = {ct.id: ct for ct in course_templates}
     for i, pfv in enumerate(pfvs, start=2):
         _write_pfv_row(
             ws_f,
             i,
             pfv,
             patient_lookup=patient_lookup,
-            course_template_label_by_id=course_template_label_by_id,
+            course_template_by_id=course_template_by_id,
         )
     _shade_id_column_data_rows(ws_f, "patient_id", PFV_COLUMNS, data_row_count=len(pfvs))
 

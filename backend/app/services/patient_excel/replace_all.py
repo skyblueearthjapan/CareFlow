@@ -36,6 +36,7 @@ from app.schemas.v2.patient_excel import (
     PfvExcelImportRow,
 )
 from app.services.patient_excel.schema import (
+    DEFAULT_TIME_TYPE,
     INSURANCE_VALUES,
     PATIENT_COL_INDEX,
     PFV_COL_INDEX,
@@ -688,34 +689,26 @@ def _parse_pfv_row_replace(
     key = (patient_id, mode, weekday, slot_index)
 
     # time_type
+    # E-4: 空セルは default で吸収 (round-trip 運用 0 エラー). 詳細は importer.py の
+    # 同 block コメント参照.
     raw_tt = cells["time_type"]
     if _is_blank(raw_tt):
-        return (
-            PfvExcelImportRow(
-                row_number=row_number,
-                patient_id=patient_id,
-                patient_code=patient.code,
-                weekday=weekday,
-                slot_index=slot_index,
-                operation="error",
-                error_message="time_type が空です",
-            ),
-            None,
-        )
-    time_type = _read_str(raw_tt)
-    if time_type not in TIME_TYPE_VALUES:
-        return (
-            PfvExcelImportRow(
-                row_number=row_number,
-                patient_id=patient_id,
-                patient_code=patient.code,
-                weekday=weekday,
-                slot_index=slot_index,
-                operation="error",
-                error_message=f"time_type の値が候補外: {time_type!r}",
-            ),
-            None,
-        )
+        time_type: str | None = DEFAULT_TIME_TYPE
+    else:
+        time_type = _read_str(raw_tt)
+        if time_type not in TIME_TYPE_VALUES:
+            return (
+                PfvExcelImportRow(
+                    row_number=row_number,
+                    patient_id=patient_id,
+                    patient_code=patient.code,
+                    weekday=weekday,
+                    slot_index=slot_index,
+                    operation="error",
+                    error_message=f"time_type の値が候補外: {time_type!r}",
+                ),
+                None,
+            )
 
     # start_time
     try:
@@ -804,41 +797,17 @@ def _parse_pfv_row_replace(
         )
 
     # course_template_code
+    # E-4: 「拠点に存在しない code」は error にせず course_template_id=None として
+    # 取り込み、PFV 自体は保持する (round-trip / バックアップ運用優先).
+    # importer.py の同 block コメント参照.
     raw_ct = cells["course_template_code"]
     course_template_id: UUID | None = None
     if not _is_blank(raw_ct):
         ct_label = _read_str(raw_ct)
-        if patient.primary_office_id is None:
-            return (
-                PfvExcelImportRow(
-                    row_number=row_number,
-                    patient_id=patient_id,
-                    patient_code=patient.code,
-                    weekday=weekday,
-                    slot_index=slot_index,
-                    operation="error",
-                    error_message=(
-                        f"course_template_code {ct_label!r} 指定だが患者の "
-                        "primary_office_id が未設定です"
-                    ),
-                ),
-                None,
-            )
-        ct = course_templates.get((patient.primary_office_id, ct_label or ""))
-        if ct is None:
-            return (
-                PfvExcelImportRow(
-                    row_number=row_number,
-                    patient_id=patient_id,
-                    patient_code=patient.code,
-                    weekday=weekday,
-                    slot_index=slot_index,
-                    operation="error",
-                    error_message=(f"course_template_code が患者拠点に存在しません: {ct_label!r}"),
-                ),
-                None,
-            )
-        course_template_id = ct.id
+        if patient.primary_office_id is not None:
+            ct = course_templates.get((patient.primary_office_id, ct_label or ""))
+            if ct is not None:
+                course_template_id = ct.id
 
     if key in pending_new_keys:
         return (

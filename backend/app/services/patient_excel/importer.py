@@ -38,6 +38,7 @@ from app.schemas.v2.patient_excel import (
     PfvExcelImportRow,
 )
 from app.services.patient_excel.schema import (
+    DEFAULT_TIME_TYPE,
     INSURANCE_VALUES,
     PATIENT_COL_INDEX,
     PFV_COL_INDEX,
@@ -945,34 +946,28 @@ def _parse_pfv_row(
         )
 
     # time_type
+    # 空セルは default ("時間帯") で吸収する (E-4: round-trip 運用で 0 エラーを担保).
+    # patient.weekly_pattern にエントリが無いと export 時に空で出てくるため、
+    # 単に default で埋めて success 扱いする。time_type は PFV テーブルに保存先が
+    # 無いため (importer.py 1178-1181 の note 参照) UI 用の参考情報のみ。
     raw_tt = cells["time_type"]
     if _is_blank(raw_tt):
-        return (
-            PfvExcelImportRow(
-                row_number=row_number,
-                patient_id=patient_id,
-                patient_code=patient.code,
-                weekday=weekday,
-                slot_index=slot_index,
-                operation="error",
-                error_message="time_type が空です",
-            ),
-            None,
-        )
-    time_type = _read_str(raw_tt)
-    if time_type not in TIME_TYPE_VALUES:
-        return (
-            PfvExcelImportRow(
-                row_number=row_number,
-                patient_id=patient_id,
-                patient_code=patient.code,
-                weekday=weekday,
-                slot_index=slot_index,
-                operation="error",
-                error_message=f"time_type の値が候補外: {time_type!r}",
-            ),
-            None,
-        )
+        time_type: str | None = DEFAULT_TIME_TYPE
+    else:
+        time_type = _read_str(raw_tt)
+        if time_type not in TIME_TYPE_VALUES:
+            return (
+                PfvExcelImportRow(
+                    row_number=row_number,
+                    patient_id=patient_id,
+                    patient_code=patient.code,
+                    weekday=weekday,
+                    slot_index=slot_index,
+                    operation="error",
+                    error_message=f"time_type の値が候補外: {time_type!r}",
+                ),
+                None,
+            )
 
     # start_time
     try:
@@ -1061,41 +1056,21 @@ def _parse_pfv_row(
         )
 
     # course_template_code → course_template_id
+    # E-4: 「拠点に存在しない code」は error にせず course_template_id=None として
+    # 取り込み、PFV 自体は保持する (round-trip / バックアップ運用優先).
+    # patient.primary_office 未設定 or template が当該拠点に居ない場合のいずれも
+    # 「ベストエフォートで PFV を保存し、course_template は剥がす」挙動.
     raw_ct = cells["course_template_code"]
     course_template_id: UUID | None = None
     if not _is_blank(raw_ct):
         ct_label = _read_str(raw_ct)
-        if patient.primary_office_id is None:
-            return (
-                PfvExcelImportRow(
-                    row_number=row_number,
-                    patient_id=patient_id,
-                    patient_code=patient.code,
-                    weekday=weekday,
-                    slot_index=slot_index,
-                    operation="error",
-                    error_message=(
-                        f"course_template_code {ct_label!r} 指定だが患者の primary_office_id "
-                        "が未設定です"
-                    ),
-                ),
-                None,
-            )
-        ct = course_templates.get((patient.primary_office_id, ct_label or ""))
-        if ct is None:
-            return (
-                PfvExcelImportRow(
-                    row_number=row_number,
-                    patient_id=patient_id,
-                    patient_code=patient.code,
-                    weekday=weekday,
-                    slot_index=slot_index,
-                    operation="error",
-                    error_message=(f"course_template_code が患者拠点に存在しません: {ct_label!r}"),
-                ),
-                None,
-            )
-        course_template_id = ct.id
+        if patient.primary_office_id is not None:
+            ct = course_templates.get((patient.primary_office_id, ct_label or ""))
+            if ct is not None:
+                course_template_id = ct.id
+        # 解決できなかった場合は course_template_id を None のまま継続 (info 扱い).
+        # round-trip 運用で多発するため warning ログは出さない (importer 全体で
+        # logger を持っていない設計も合わせる).
 
     # ---- ファイル内 (patient_id, mode, weekday, slot_index) 重複検査 ----
     if key in pending_new_keys:
