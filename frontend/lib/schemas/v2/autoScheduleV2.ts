@@ -53,9 +53,40 @@ export const v2WarningTypeSchema = z.enum([
   // CareFlow Fix E: 同 (office, weekday, course) で異住所同時刻 2 名を検出し、
   // 後者を auto shift (固定でも例外) で時刻調整したことを通知する info warning.
   'auto_time_shift_for_conflict',
+  // Wave 4 (Phase C): 固定/時間帯 patient の希望時刻からの大乖離 warning.
+  // 30 分超で emit (60 分超は unassigned + UnassignedReason=care_alarm_exceeded).
+  'care_alarm_deviation',
   'general',
 ]);
 export type V2WarningType = z.infer<typeof v2WarningTypeSchema>;
+
+// Wave 4 (Phase C): V2WarningOut の集約カテゴリ (11 種 type → 6 カテゴリ).
+// Backend ``V2WarningCategoryOut`` と 1:1 対応.
+//   - time_deviation : travel_time_shortage + care_alarm_deviation
+//   - capacity       : course_capacity + course_count + course_long_distance + two_staff_shortage
+//   - acceptance     : acceptance_blocked
+//   - data_quality   : data_health_staff_shifts_missing
+//   - placement_info : same_address_consolidation + auto_time_shift_for_conflict
+//   - conflict       : diff_add_conflict + general
+export const v2WarningCategorySchema = z.enum([
+  'time_deviation',
+  'capacity',
+  'acceptance',
+  'data_quality',
+  'placement_info',
+  'conflict',
+]);
+export type V2WarningCategory = z.infer<typeof v2WarningCategorySchema>;
+
+// Wave 4 (Phase C): V2WarningCategory の日本語ラベル. UI 全体で共有 (DRY).
+export const V2_WARNING_CATEGORY_LABEL_JA: Record<V2WarningCategory, string> = {
+  time_deviation: '時刻乖離',
+  capacity: '容量超過',
+  acceptance: '受入拒否',
+  data_quality: 'データ品質',
+  placement_info: '配置情報',
+  conflict: '衝突',
+};
 
 export const v2WarningSchema = z.object({
   type: v2WarningTypeSchema,
@@ -74,6 +105,10 @@ export const v2WarningSchema = z.object({
   // 例: 容量超過コース内の全患者、マネージャー不足で未割当の全患者.
   // 旧 BE response にはこのフィールドが無いので default([]) で互換性確保.
   affected_patient_ids: z.array(z.string().uuid()).default([]),
+  // Wave 4 (Phase C): 警告 type 集約カテゴリ (11 種 type を 6 カテゴリに集約).
+  // BE 側 ``V2WarningOut.category`` は default="conflict" だが常に serialize される
+  // ため FE 側でも必須にしてスキーマ厳密一致を維持する.
+  category: v2WarningCategorySchema,
 });
 export type V2Warning = z.infer<typeof v2WarningSchema>;
 
@@ -288,6 +323,9 @@ export const unassignedReasonSchema = z.enum([
   'same_address_split',
   'fixed_time_conflict',
   'lunch_break',
+  // Wave 4 (Phase C): 希望時刻から CARE_ALARM_UNASSIGNED_THRESHOLD_MIN (=60) 分超
+  // で配置された固定/時間帯 patient. ケアアラーム閾値超過のため未割当扱い.
+  'care_alarm_exceeded',
   'unknown',
 ]);
 export type UnassignedReason = z.infer<typeof unassignedReasonSchema>;

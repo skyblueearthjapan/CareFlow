@@ -57,8 +57,11 @@ import type {
   V2VisitForUI,
   V2VisitPlan,
   V2Warning,
+  V2WarningCategory,
+  V2WarningType,
   V2WeekdayBeforeAfter,
 } from '@/lib/schemas/v2/autoScheduleV2';
+import { V2_WARNING_CATEGORY_LABEL_JA } from '@/lib/schemas/v2/autoScheduleV2';
 
 import { useStaffList } from '@/lib/queries/staff';
 
@@ -91,12 +94,43 @@ const UNASSIGNED_REASON_LABELS: Record<UnassignedReason, string> = {
   same_address_split: '同住所 3 名以上で配置先なし',
   fixed_time_conflict: '固定時刻衝突 / 希望時間外',
   lunch_break: '昼休憩 (12:00-13:00) と重複',
+  // Wave 4 (Phase C): 希望時刻から 60 分超で配置されたケアアラーム閾値超過.
+  care_alarm_exceeded: 'ケアアラーム閾値超過 (60 分超乖離)',
   unknown: '原因不明',
 };
 
 function fmtUnassignedReason(reason: UnassignedReason): string {
   return UNASSIGNED_REASON_LABELS[reason] ?? reason;
 }
+
+// Wave 4 (Phase C): 警告 type の日本語ラベル (UI 表示用).
+// Backend ``V2WarningTypeOut`` と 1:1.
+const V2_WARNING_TYPE_LABEL_JA: Record<V2WarningType, string> = {
+  same_address_consolidation: '同住所集約',
+  course_capacity: 'コース容量超過',
+  course_long_distance: 'コース長距離',
+  course_count: 'コース数超過',
+  acceptance_blocked: '受入拒否',
+  travel_time_shortage: '移動時間不足',
+  two_staff_shortage: '二人組スタッフ不足',
+  diff_add_conflict: '差分追加衝突',
+  data_health_staff_shifts_missing: 'スタッフシフト未投入',
+  auto_time_shift_for_conflict: '自動時刻シフト',
+  care_alarm_deviation: 'ケアアラーム閾値 (30-60 分乖離)',
+  general: 'その他',
+};
+
+// Wave 4 (Phase C): 警告 category 日本語ラベルは autoScheduleV2.ts (DRY) からインポート.
+
+// Wave 4 (Phase C): 警告サマリーで使う固定表示順序 (件数 0 でも常時表示).
+const V2_WARNING_CATEGORY_ORDER: readonly V2WarningCategory[] = [
+  'time_deviation',
+  'capacity',
+  'acceptance',
+  'data_quality',
+  'placement_info',
+  'conflict',
+] as const;
 
 // formatTimeCondition は 2026-W20 で WeekdayScheduleCard に統合 (DRY 化).
 
@@ -1112,6 +1146,23 @@ function WarningSection({
       ? '全体'
       : `${WEEKDAY_LABELS[Number.parseInt(currentTab, 10)] ?? '?'}曜日 + 曜日不問`;
 
+  // Wave 4 (Phase C): category 別件数サマリー (全 warnings 対象; 曜日 filter 前).
+  // BE スキーマ確定により warnings[].category は必須.
+  const categoryCounts = React.useMemo(() => {
+    const counts: Record<V2WarningCategory, number> = {
+      time_deviation: 0,
+      capacity: 0,
+      acceptance: 0,
+      data_quality: 0,
+      placement_info: 0,
+      conflict: 0,
+    };
+    for (const w of warnings) {
+      counts[w.category] = (counts[w.category] ?? 0) + 1;
+    }
+    return counts;
+  }, [warnings]);
+
   return (
     <Alert variant="warning" data-testid="full-optimize-warning-section">
       <AlertTitle className="flex items-center justify-between text-xs">
@@ -1120,6 +1171,25 @@ function WarningSection({
         </span>
         <span className="text-[10px] font-normal text-text-secondary">表示中: {scopeLabel}</span>
       </AlertTitle>
+      {/* Wave 4 (Phase C): category 別件数サマリー (全件対象; 曜日 filter とは独立). */}
+      {warnings.length > 0 ? (
+        <div
+          className="mb-1 flex flex-wrap gap-1 text-[10px] text-text-secondary"
+          data-testid="full-optimize-warning-category-summary"
+        >
+          {V2_WARNING_CATEGORY_ORDER.map((cat) => (
+            <span
+              key={cat}
+              className={`rounded border border-border-default px-1.5 py-0.5 ${
+                categoryCounts[cat] > 0 ? 'bg-bg-muted' : 'opacity-60'
+              }`}
+              data-testid={`full-optimize-warning-category-count-${cat}`}
+            >
+              {V2_WARNING_CATEGORY_LABEL_JA[cat]}: {categoryCounts[cat]} 件
+            </span>
+          ))}
+        </div>
+      ) : null}
       <AlertDescription>
         {visibleWarnings.length === 0 ? (
           <div className="py-2 text-center text-[11px] text-text-muted">
@@ -1136,6 +1206,15 @@ function WarningSection({
                   className={`flex flex-wrap items-center gap-2 ${applied ? 'opacity-50' : ''}`}
                   data-testid={applied ? 'full-optimize-warning-applied' : undefined}
                 >
+                  {/* Wave 4 (Phase C): category バッジ (常時表示). title に type 日本語. */}
+                  <Badge
+                    variant="outline"
+                    className="text-[10px] text-text-secondary"
+                    data-testid={`full-optimize-warning-category-badge-${w.category}`}
+                    title={V2_WARNING_TYPE_LABEL_JA[w.type] ?? w.type}
+                  >
+                    {V2_WARNING_CATEGORY_LABEL_JA[w.category]}
+                  </Badge>
                   <span className="flex-1">{w.message}</span>
                   {applied ? (
                     <Badge variant="outline" className="text-[10px] text-emerald-700">

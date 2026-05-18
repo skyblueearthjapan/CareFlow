@@ -44,6 +44,7 @@ import {
   useDiffAddProposalsMutation,
 } from '@/lib/queries/autoScheduleV2';
 import type { DiffAddProposal } from '@/lib/schemas/v2/autoScheduleV2';
+import { V2_WARNING_CATEGORY_LABEL_JA } from '@/lib/schemas/v2/autoScheduleV2';
 
 import { DiffAddProposalTimeline } from './DiffAddProposalTimeline';
 import { formatDelta, formatErr, trimSeconds } from './_autoScheduleUtils';
@@ -359,9 +360,19 @@ function ProposalPopup({ proposal, isApplying, onCancel, onApply }: ProposalPopu
           <Alert variant="warning">
             <AlertTitle className="text-xs">警告</AlertTitle>
             <AlertDescription>
-              <ul className="ml-4 list-disc space-y-0.5 text-xs">
+              <ul className="ml-0 list-none space-y-1 text-xs">
                 {proposal.warnings.map((w, i) => (
-                  <li key={i}>{w.message}</li>
+                  <li key={i} className="flex flex-wrap items-center gap-1">
+                    {/* Wave 4 (Phase C): category バッジ. */}
+                    <Badge
+                      variant="outline"
+                      className="text-[10px] text-text-secondary"
+                      data-testid={`diff-add-warning-category-badge-${w.category}`}
+                    >
+                      {V2_WARNING_CATEGORY_LABEL_JA[w.category]}
+                    </Badge>
+                    <span>{w.message}</span>
+                  </li>
                 ))}
               </ul>
             </AlertDescription>
