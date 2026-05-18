@@ -866,11 +866,19 @@ class Layer3Assigner:
             include_manager_courses: W16 — True のとき code='M' も対象に含める
                 (manager 固定割当のため). False で旧挙動 (M を除外).
         """
+        # CareFlow バグ修正 (Layer 3 staff_assigned 拾い漏れ): assign-staff-only
+        # で ``course_status='course_fixed'`` のみ処理対象にしていたため、
+        # auto_allocator_v2 由来の ``'staff_assigned'`` コースが完全スルー
+        # されていた (= 自動割付ボタン押下で 15/112 件のみ割付される本質バグ).
+        # ``COURSE_STATUS_STAFF_ASSIGNED`` も対象に含めることで再割付/再評価を
+        # 正しく実行する. 既存 assigned_staff_id の保護は ``run`` 内
+        # ``already_assigned_stmt`` (line 429-) が ``fixed_staff_by_course`` に
+        # 追加し、Layer 3 内「固定スタッフ除外」ロジックで担保する (W25 fix).
         where_clauses = [
             Course.iso_year == iso_year,
             Course.iso_week == iso_week,
             Course.deleted_at.is_(None),
-            Course.course_status == COURSE_STATUS_COURSE_FIXED,
+            Course.course_status.in_([COURSE_STATUS_COURSE_FIXED, COURSE_STATUS_STAFF_ASSIGNED]),
         ]
         if not include_manager_courses:
             where_clauses.append(Course.code != "M")  # マネージャー枠は対象外 (§3.6.5)

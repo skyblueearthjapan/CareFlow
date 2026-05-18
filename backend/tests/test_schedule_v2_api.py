@@ -623,6 +623,116 @@ async def test_apply_week_only_rejects_staff(client, db) -> None:
 
 
 # ---------------------------------------------------------------------------
+# CareFlow バグ修正 (apply_week_only 境界検証):
+#   同 (office_id, weekday, course_code, start_time) で異 patient_id が
+#   複数あれば 422 (same_time_conflict) で適用拒否. 重複なしなら 200.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apply_week_only_rejects_same_time_conflict(client, db) -> None:
+    """同コース同時刻に異 patient_id が混在する場合は 422 (same_time_conflict)."""
+    admin = await _make_user(db, email="v2-conflict-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    p1 = await _seed_patient(db, office=office, code="CONF-1")
+    p2 = await _seed_patient(db, office=office, code="CONF-2")
+    await db.commit()
+
+    # 同 (office, weekday=0, course_code='A', start=09:00) に 2 患者を投入
+    plan = {
+        "weekday": 0,
+        "start_time": "09:00",
+        "end_time": "09:30",
+        "duration_min": 30,
+        "course_code": "A",
+        "office_id": str(office.id),
+        "am_pm": "am",
+    }
+    res = await client.post(
+        "/api/v1/schedule/v2/apply-week-only",
+        headers=_bearer(admin),
+        json={
+            "iso_year": 2026,
+            "iso_week": 20,
+            "office_ids": [str(office.id)],
+            "visit_plans_per_patient": [
+                {"patient_id": str(p1.id), "visit_plans": [plan]},
+                {"patient_id": str(p2.id), "visit_plans": [plan]},
+            ],
+            "confirm": True,
+        },
+    )
+    assert res.status_code == 422, res.text
+    body = res.json()
+    detail = body.get("detail")
+    assert isinstance(detail, dict), f"detail should be dict, got: {detail!r}"
+    assert detail.get("code") == "same_time_conflict"
+    assert "同コース同時刻衝突" in detail.get("message", "")
+    conflicts = detail.get("conflicts") or []
+    assert len(conflicts) >= 1
+    first = conflicts[0]
+    assert first["office_id"] == str(office.id)
+    assert first["weekday"] == 0
+    assert first["course_code"] == "A"
+    assert first["start_time"] == "09:00"
+    # patient_a / patient_b は p1 / p2 のいずれか
+    pids = {first["patient_a"], first["patient_b"]}
+    assert pids == {str(p1.id), str(p2.id)}
+
+
+@pytest.mark.asyncio
+async def test_apply_week_only_allows_unique_times(client, db) -> None:
+    """同コースでも start_time が異なれば衝突しない → 200."""
+    admin = await _make_user(db, email="v2-uniq-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    p1 = await _seed_patient(db, office=office, code="UNIQ-1")
+    p2 = await _seed_patient(db, office=office, code="UNIQ-2")
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/apply-week-only",
+        headers=_bearer(admin),
+        json={
+            "iso_year": 2026,
+            "iso_week": 20,
+            "office_ids": [str(office.id)],
+            "visit_plans_per_patient": [
+                {
+                    "patient_id": str(p1.id),
+                    "visit_plans": [
+                        {
+                            "weekday": 0,
+                            "start_time": "09:00",
+                            "end_time": "09:30",
+                            "duration_min": 30,
+                            "course_code": "A",
+                            "office_id": str(office.id),
+                            "am_pm": "am",
+                        }
+                    ],
+                },
+                {
+                    "patient_id": str(p2.id),
+                    "visit_plans": [
+                        {
+                            "weekday": 0,
+                            "start_time": "09:30",  # 別時刻
+                            "end_time": "10:00",
+                            "duration_min": 30,
+                            "course_code": "A",
+                            "office_id": str(office.id),
+                            "am_pm": "am",
+                        }
+                    ],
+                },
+            ],
+            "confirm": True,
+        },
+    )
+    assert res.status_code == 200, res.text
+
+
+# ---------------------------------------------------------------------------
 # P1: apply_week_only DELETE 限定 (本質バグ修正)
 # - unassigned 患者の旧 visit を保護する
 # - visit_plans に含まれる patient のみ DELETE 対象

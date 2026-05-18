@@ -141,6 +141,39 @@ def _is_m_course_code(code: str | None) -> bool:
     return code in _M_OVERFLOW_CODES
 
 
+def _find_next_available_code(
+    assigned: set[str],
+    *,
+    normal_max: int,
+    m_max: int,
+) -> str | None:
+    """assigned に含まれない未使用 course_code を返す.
+
+    優先順位: A/B/C/D/E (normal_max 個まで) → M/M2.../M9 (m_max 個まで) → None.
+
+    CareFlow バグ修正 (#102 Fix B 漏れ): Stage 5 で **異なる set が同じ
+    course_code を持つ** ことを防ぐためのヘルパー. 既存固定コース
+    (``existing_codes``) を尊重する際に他 set と衝突したら、ここで次の空き
+    コードへフォールバックする.
+
+    Args:
+        assigned: 当該 (office_id, weekday) で既に割り当て済みの code 集合.
+        normal_max: 通常コース (A-E) の発行上限 (= ``staff_count`` 上限).
+        m_max: M overflow (M/M2/.../M9) の発行上限 (= ``manager_count`` 上限).
+
+    Returns:
+        次に発行可能な code. すべて埋まっていれば None (= 未割当扱い).
+    """
+    for c in _COURSE_CODES[:normal_max]:
+        if c not in assigned:
+            return c
+    for i in range(min(m_max, _M_OVERFLOW_CODES_MAX)):
+        c = _M_OVERFLOW_CODES[i]
+        if c not in assigned:
+            return c
+    return None
+
+
 _WEEKDAY_CODE_TO_INT: dict[str, int] = {
     "Mon": 0,
     "Tue": 1,
@@ -3531,6 +3564,12 @@ async def run_v2_pipeline(
         office_name = (office_name_by_id or {}).get(office_id) or str(office_id)
         wd_jp = _weekday_jp(weekday)
         m_overflow_idx = 0
+        # CareFlow バグ修正 (#102 Fix B 漏れ): 当該 (office_id, weekday) で
+        # 既に発行済みの code を追跡する. 既存固定コース (existing_codes) を
+        # 採用する際、他 set と衝突したら fallback して別コードに変更する.
+        # これにより「同 (office, weekday, course_code, start_time) で異住所
+        # 2 名同時刻配置」を防ぐ.
+        assigned_codes: set[str] = set()
         for idx, (am_set, pm_set) in enumerate(combined):
             code: str | None
             # CareFlow #102 Fix B: am_set / pm_set 内に既に course_code が
@@ -3547,17 +3586,17 @@ async def run_v2_pipeline(
                     existing_codes.add(v.course_code)
             if existing_codes:
                 if len(existing_codes) == 1:
-                    code = next(iter(existing_codes))
+                    candidate = next(iter(existing_codes))
                 else:
                     # 異なる既存コードが混在 → alphabetical で先頭を採用.
-                    code = sorted(existing_codes)[0]
+                    candidate = sorted(existing_codes)[0]
                     warnings.append(
                         V2Warning(
                             type="general",
                             message=(
                                 f"{wd_jp} {office_name}: 異なる固定コース "
                                 f"({sorted(existing_codes)}) が同一 set に混在 — "
-                                f"先頭 ({code}) を採用 (clustering で混ざった可能性 — "
+                                f"先頭 ({candidate}) を採用 (clustering で混ざった可能性 — "
                                 "PFV course 配置を見直してください)"
                             ),
                             weekday=weekday,
@@ -3574,46 +3613,137 @@ async def run_v2_pipeline(
                             ),
                         )
                     )
+                # CareFlow バグ修正 (#102 Fix B 漏れ): existing_codes 採用時に
+                # 他 set と衝突する場合は fallback で別コードに変更する.
+                # これを怠ると 2 set が同じ course_code で同時刻配置され、
+                # FE に「同コース同時刻 2 名」が降りる本質バグになる.
+                if candidate in assigned_codes:
+                    affected_patient_ids_conflict = list(
+                        {
+                            v.patient_id
+                            for v in (
+                                (am_set.visits if am_set else [])
+                                + (pm_set.visits if pm_set else [])
+                            )
+                        }
+                    )
+                    fallback = _find_next_available_code(
+                        assigned_codes,
+                        normal_max=normal_course_limit,
+                        m_max=m_overflow_limit,
+                    )
+                    if fallback is None:
+                        # 空きコードがない → 未割当扱い
+                        affected_visits_nocode: list[V2Visit] = []
+                        if am_set is not None:
+                            affected_visits_nocode.extend(am_set.visits)
+                        if pm_set is not None:
+                            affected_visits_nocode.extend(pm_set.visits)
+                        for v in affected_visits_nocode:
+                            v.course_code = None
+                            unassigned_visit_ids.add(id(v))
+                        warnings.append(
+                            V2Warning(
+                                type="course_capacity",
+                                message=(
+                                    f"{wd_jp} {office_name}: 既存固定コース "
+                                    f"{candidate} が他 set で既に使用中、かつ "
+                                    "代替コードに空きがないため "
+                                    f"{len(affected_patient_ids_conflict)} 名の "
+                                    "患者が未割当 (course code 不足)."
+                                ),
+                                weekday=weekday,
+                                actionable=True,
+                                affected_patient_ids=affected_patient_ids_conflict,
+                            )
+                        )
+                        continue
+                    warnings.append(
+                        V2Warning(
+                            type="general",
+                            message=(
+                                f"{wd_jp} {office_name}: 既存固定コース "
+                                f"{candidate} が他 set で既に使用中、"
+                                f"別コード ({fallback}) に変更"
+                            ),
+                            weekday=weekday,
+                            actionable=True,
+                            affected_patient_ids=affected_patient_ids_conflict,
+                        )
+                    )
+                    code = fallback
+                    # fallback が M 系なら m_overflow_idx を消費したと記録する
+                    if _is_m_course_code(fallback):
+                        try:
+                            new_idx = _M_OVERFLOW_CODES.index(fallback) + 1
+                            if new_idx > m_overflow_idx:
+                                m_overflow_idx = new_idx
+                        except ValueError:
+                            pass
+                else:
+                    code = candidate
                 # 既存コードを採用したので、idx ベース順位は m_overflow に
                 # 影響させない (空きがある場合は idx ベース付番は次の set で
                 # 再開). 既存コードが M 系の場合は m_overflow_idx を進める方が
                 # 自然だが、ここでは「既存尊重 = 上書き禁止」のみを保証する.
-            elif idx < normal_course_limit:
+            elif idx < normal_course_limit and _COURSE_CODES[idx] not in assigned_codes:
                 code = _COURSE_CODES[idx]
-            elif m_overflow_idx < m_overflow_limit:
+            elif m_overflow_idx < m_overflow_limit and (
+                _M_OVERFLOW_CODES[m_overflow_idx] not in assigned_codes
+            ):
                 # マネージャー数まで M / M2 / ... 発番
                 code = _M_OVERFLOW_CODES[m_overflow_idx]
                 m_overflow_idx += 1
             else:
-                # スタッフ + マネージャー数を超過 → 未割当
-                code = None
-                affected_visits: list[V2Visit] = []
-                if am_set is not None:
-                    affected_visits.extend(am_set.visits)
-                if pm_set is not None:
-                    affected_visits.extend(pm_set.visits)
-                affected_patient_ids_overflow = list({v.patient_id for v in affected_visits})
-                affected_patient_count = len(affected_patient_ids_overflow)
-                for v in affected_visits:
-                    unassigned_visit_ids.add(id(v))
-                warnings.append(
-                    V2Warning(
-                        type="course_capacity",
-                        message=(
-                            f"{wd_jp} {office_name}: 通常コース {normal_course_limit} + "
-                            f"M (マネージャー枠) {m_overflow_limit} を超えるセットがあり、"
-                            f"{affected_patient_count} 名の患者が未割当 "
-                            "(manager 不足のため). マネージャー補充 or 曜日変更を検討してください."
-                        ),
-                        weekday=weekday,
-                        actionable=True,
-                        # P2: 未割当 patient_id を構造化照合用に格納.
-                        # メッセージに "manager 不足" を含むので reason="manager_short" に
-                        # マップされる.
-                        affected_patient_ids=affected_patient_ids_overflow,
-                    )
+                # idx ベース付番が assigned_codes と衝突 or 上限超過 →
+                # 残った空きコードへ fallback. それも無ければ未割当.
+                fallback_default = _find_next_available_code(
+                    assigned_codes,
+                    normal_max=normal_course_limit,
+                    m_max=m_overflow_limit,
                 )
-                continue
+                if fallback_default is not None:
+                    code = fallback_default
+                    if _is_m_course_code(fallback_default):
+                        try:
+                            new_idx = _M_OVERFLOW_CODES.index(fallback_default) + 1
+                            if new_idx > m_overflow_idx:
+                                m_overflow_idx = new_idx
+                        except ValueError:
+                            pass
+                else:
+                    # スタッフ + マネージャー数を超過 → 未割当
+                    code = None
+                    affected_visits: list[V2Visit] = []
+                    if am_set is not None:
+                        affected_visits.extend(am_set.visits)
+                    if pm_set is not None:
+                        affected_visits.extend(pm_set.visits)
+                    affected_patient_ids_overflow = list({v.patient_id for v in affected_visits})
+                    affected_patient_count = len(affected_patient_ids_overflow)
+                    for v in affected_visits:
+                        unassigned_visit_ids.add(id(v))
+                    warnings.append(
+                        V2Warning(
+                            type="course_capacity",
+                            message=(
+                                f"{wd_jp} {office_name}: 通常コース "
+                                f"{normal_course_limit} + M (マネージャー枠) "
+                                f"{m_overflow_limit} を超えるセットがあり、"
+                                f"{affected_patient_count} 名の患者が未割当 "
+                                "(manager 不足のため). マネージャー補充 or "
+                                "曜日変更を検討してください."
+                            ),
+                            weekday=weekday,
+                            actionable=True,
+                            # P2: 未割当 patient_id を構造化照合用に格納.
+                            # メッセージに "manager 不足" を含むので
+                            # reason="manager_short" にマップされる.
+                            affected_patient_ids=affected_patient_ids_overflow,
+                        )
+                    )
+                    continue
+            assigned_codes.add(code)
             for v in am_set.visits if am_set else []:
                 v.course_code = code
             for v in pm_set.visits if pm_set else []:

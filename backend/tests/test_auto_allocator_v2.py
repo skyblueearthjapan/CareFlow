@@ -4790,3 +4790,254 @@ def test_classify_warning_reason_diff_add_conflict() -> None:
     reason, stage = classified
     assert reason == "fixed_time_conflict"
     assert stage == "general"
+
+
+# ---------------------------------------------------------------------------
+# CareFlow バグ修正 (Stage 5 code 重複防止):
+#   #102 Fix B 漏れで「同 (office, weekday, course_code, start_time) に異住所
+#   2 名同時刻配置」になっていた本質バグの再発防止テスト.
+# ---------------------------------------------------------------------------
+
+
+def test_find_next_available_code_returns_first_unused_normal() -> None:
+    """``_find_next_available_code``: 未使用の通常コードを優先で返す."""
+    from app.services.scheduling.auto_allocator_v2 import _find_next_available_code
+
+    # A だけ assigned → B を返す
+    code = _find_next_available_code({"A"}, normal_max=5, m_max=2)
+    assert code == "B"
+
+
+def test_find_next_available_code_falls_back_to_m_overflow() -> None:
+    """``_find_next_available_code``: 通常上限を使い切ったら M overflow へ."""
+    from app.services.scheduling.auto_allocator_v2 import _find_next_available_code
+
+    # 通常 normal_max=2 (A/B のみ), 両方 assigned → M (M overflow) へ
+    code = _find_next_available_code({"A", "B"}, normal_max=2, m_max=2)
+    assert code == "M"
+
+    # M も使用済み → M2
+    code2 = _find_next_available_code({"A", "B", "M"}, normal_max=2, m_max=2)
+    assert code2 == "M2"
+
+
+def test_find_next_available_code_returns_none_when_full() -> None:
+    """``_find_next_available_code``: 全コード使用済みで None."""
+    from app.services.scheduling.auto_allocator_v2 import _find_next_available_code
+
+    # normal_max=1 + m_max=1, A と M assigned → None
+    code = _find_next_available_code({"A", "M"}, normal_max=1, m_max=1)
+    assert code is None
+
+
+@pytest.mark.asyncio
+async def test_stage5_assigned_codes_prevents_duplicate(db) -> None:
+    """Stage 5: 異なる 2 set が同じ既存 course_code (例 'A') を持つ場合、
+    後発 set は別コードに fallback される (同 course_code 2 set 配置を防ぐ).
+    """
+    from app.models.course_template import CourseTemplate
+
+    office = Office(name="stage5-dup-office")
+    db.add(office)
+    await db.flush()
+    # CourseTemplate 'A' を用意
+    template_a = CourseTemplate(office_id=office.id, label="A")
+    db.add(template_a)
+    await db.flush()
+
+    # 月曜出勤スタッフ 2 名 → normal_course_limit=2 (A/B 発行可能)
+    for i in range(2):
+        s = Staff(
+            name=f"s5-dup-staff-{i}",
+            role="staff",
+            is_trainee=False,
+            primary_office_id=office.id,
+        )
+        db.add(s)
+        await db.flush()
+        db.add(StaffShift(staff_id=s.id, weekday=0, is_on=True))
+
+    # **遠く離れた 2 ペア (計 4 患者)**, 全員が PFV.course_template_id=template_a.
+    # cluster_by_distance_greedy で 2 set (近場ペア × 2) に分かれ、
+    # Stage 5 で existing_codes={'A'} が 2 set 両方に出る → 衝突回避 fallback で
+    # 2 set 目は別コード (B など) になる.
+    # NOTE: orphan PFV パス (weekly_pattern=None) を通すことで PFV.course_template_id
+    # 由来の course_code='A' が build 時に V2Visit に埋め込まれ、Stage 5 の
+    # ``existing_codes`` 分岐に入る (= #102 Fix B の衝突パスを再現).
+    p1 = Patient(
+        code="S5DUP1",
+        name="s5dup1",
+        status="active",
+        lat=35.650,
+        lng=140.100,
+        primary_office_id=office.id,
+    )
+    p2 = Patient(
+        code="S5DUP2",
+        name="s5dup2",
+        status="active",
+        lat=35.651,  # p1 と < 0.2km
+        lng=140.101,
+        primary_office_id=office.id,
+    )
+    p3 = Patient(
+        code="S5DUP3",
+        name="s5dup3",
+        status="active",
+        lat=35.850,  # > 20km from p1/p2
+        lng=140.300,
+        primary_office_id=office.id,
+    )
+    p4 = Patient(
+        code="S5DUP4",
+        name="s5dup4",
+        status="active",
+        lat=35.851,  # p3 と < 0.2km
+        lng=140.301,
+        primary_office_id=office.id,
+    )
+    db.add_all([p1, p2, p3, p4])
+    await db.flush()
+    for pid, st in (
+        (p1.id, time(9, 30)),
+        (p2.id, time(10, 30)),
+        (p3.id, time(9, 30)),
+        (p4.id, time(10, 30)),
+    ):
+        db.add(
+            PatientFixedVisit(
+                patient_id=pid,
+                mode="normal",
+                weekday=0,
+                start_time=st,
+                duration_min=30,
+                slot_index=0,
+                course_template_id=template_a.id,
+            )
+        )
+    await db.commit()
+
+    result = await run_v2_pipeline(
+        db,
+        iso_year=2026,
+        iso_week=20,
+        office_ids=[office.id],
+        mode="full_optimize",
+    )
+    # 各 patient の course_code を集計
+    code_by_patient: dict[UUID, set[str | None]] = {}
+    for v in result["after_visits"]:
+        code_by_patient.setdefault(v.patient_id, set()).add(v.course_code)
+    # 4 patient 全員が after_visits に存在する (= pipeline で drop されていない).
+    for pid, label in ((p1.id, "p1"), (p2.id, "p2"), (p3.id, "p3"), (p4.id, "p4")):
+        assert code_by_patient.get(pid), (
+            f"{label} が after_visits に存在しない: "
+            f"warnings={[w.message for w in result['warnings']]}"
+        )
+    # 近場ペア (p1, p2) と 遠ペア (p3, p4) が **異なる course_code** に
+    # 割り当てられていれば衝突回避 fallback が機能している.
+    set12_codes = code_by_patient[p1.id] | code_by_patient[p2.id]
+    set34_codes = code_by_patient[p3.id] | code_by_patient[p4.id]
+    assert set12_codes & set34_codes == set(), (
+        f"異 set の course_code が同一: set(p1,p2)={set12_codes}, "
+        f"set(p3,p4)={set34_codes} (Stage 5 #102 Fix B 漏れの再発)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_stage5_fallback_warning_emitted_on_code_conflict(db) -> None:
+    """Stage 5: existing_codes 衝突で fallback したら warning が出る (general)."""
+    from app.models.course_template import CourseTemplate
+
+    office = Office(name="stage5-warn-office")
+    db.add(office)
+    await db.flush()
+    template_a = CourseTemplate(office_id=office.id, label="A")
+    db.add(template_a)
+    await db.flush()
+
+    # スタッフ 2 名出勤
+    for i in range(2):
+        s = Staff(
+            name=f"s5-warn-staff-{i}",
+            role="staff",
+            is_trainee=False,
+            primary_office_id=office.id,
+        )
+        db.add(s)
+        await db.flush()
+        db.add(StaffShift(staff_id=s.id, weekday=0, is_on=True))
+
+    # 近場 2 ペア (計 4 患者)、全員が PFV → CourseTemplate 'A' を指す.
+    # → 2 set が同じ existing_codes={'A'} を持つ → 衝突 fallback で warning が出る.
+    # NOTE: orphan PFV パス (weekly_pattern=None) を通して existing_codes 分岐を再現.
+    p1 = Patient(
+        code="S5W1",
+        name="s5w1",
+        status="active",
+        lat=35.650,
+        lng=140.100,
+        primary_office_id=office.id,
+    )
+    p2 = Patient(
+        code="S5W2",
+        name="s5w2",
+        status="active",
+        lat=35.651,
+        lng=140.101,
+        primary_office_id=office.id,
+    )
+    p3 = Patient(
+        code="S5W3",
+        name="s5w3",
+        status="active",
+        lat=35.850,
+        lng=140.300,
+        primary_office_id=office.id,
+    )
+    p4 = Patient(
+        code="S5W4",
+        name="s5w4",
+        status="active",
+        lat=35.851,
+        lng=140.301,
+        primary_office_id=office.id,
+    )
+    db.add_all([p1, p2, p3, p4])
+    await db.flush()
+    for pid, st in (
+        (p1.id, time(9, 30)),
+        (p2.id, time(10, 30)),
+        (p3.id, time(9, 30)),
+        (p4.id, time(10, 30)),
+    ):
+        db.add(
+            PatientFixedVisit(
+                patient_id=pid,
+                mode="normal",
+                weekday=0,
+                start_time=st,
+                duration_min=30,
+                slot_index=0,
+                course_template_id=template_a.id,
+            )
+        )
+    await db.commit()
+
+    result = await run_v2_pipeline(
+        db,
+        iso_year=2026,
+        iso_week=20,
+        office_ids=[office.id],
+        mode="full_optimize",
+    )
+    warnings = result["warnings"]
+    fallback_msgs = [
+        w
+        for w in warnings
+        if w.type == "general" and "他 set で既に使用中" in w.message and "別コード" in w.message
+    ]
+    assert fallback_msgs, (
+        f"existing code 衝突 fallback の general warning が出ていない: "
+        f"warnings={[w.message for w in warnings]}"
+    )

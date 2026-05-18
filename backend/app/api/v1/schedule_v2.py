@@ -825,6 +825,46 @@ async def apply_week_only_endpoint(
                     ),
                 )
 
+    # CareFlow バグ修正 (apply_week_only 境界検証): 同 (office_id, weekday,
+    # course_code, start_time) で **異 patient_id** の visit_plan が複数あれば、
+    # それは「同コース同時刻に異住所 2 名配置」の本質バグなので適用を拒否する.
+    # ``auto_allocator_v2`` の Stage 5 (#102 Fix B 漏れ) で発生する可能性があり、
+    # FE 側でも防げないため境界 (API endpoint) で再検証する.
+    seen_slots: dict[tuple[UUID, int, str, str], UUID] = {}
+    conflicts: list[dict[str, str | int | None]] = []
+    for pvp in payload.visit_plans_per_patient:
+        for vp in pvp.visit_plans:
+            slot_key = (
+                vp.office_id,
+                vp.weekday,
+                vp.course_code or "M",
+                vp.start_time.isoformat(timespec="minutes"),
+            )
+            first_pid = seen_slots.get(slot_key)
+            if first_pid is None:
+                seen_slots[slot_key] = pvp.patient_id
+            elif first_pid != pvp.patient_id:
+                conflicts.append(
+                    {
+                        "office_id": str(vp.office_id),
+                        "weekday": vp.weekday,
+                        "course_code": vp.course_code,
+                        "start_time": vp.start_time.isoformat(timespec="minutes"),
+                        "patient_a": str(first_pid),
+                        "patient_b": str(pvp.patient_id),
+                    }
+                )
+
+    if conflicts:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "same_time_conflict",
+                "message": (f"{len(conflicts)} 件の同コース同時刻衝突を検出、適用拒否"),
+                "conflicts": conflicts[:10],  # 最初の 10 件のみ返却
+            },
+        )
+
     patient_visit_plans = [
         {
             "patient_id": pvp.patient_id,

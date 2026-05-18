@@ -1223,3 +1223,174 @@ async def test_w10_trainee_plus_required_two_no_duplicate(db) -> None:
     # 重複なし
     assert len(rows_a) == len(staff_ids_a), "重複が発生している"
     assert len(rows_a) == 3, f"3 名体制になっていない: {len(rows_a)} 行"
+
+
+# ---------------------------------------------------------------------------
+# CareFlow バグ修正 (Layer 3 staff_assigned 拾い漏れ):
+#   auto_allocator_v2 由来の course_status='staff_assigned' コースも
+#   _load_course_targets で処理対象に含まれる (= 自動割付ボタンで 15/112 件
+#   のみ割付になる本質バグの再発防止).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_layer3_load_course_targets_includes_staff_assigned(db) -> None:
+    """``_load_course_targets`` が ``course_fixed`` だけでなく ``staff_assigned``
+    コースも返す (= assign-staff-only 再実行で staff_assigned コースを再評価)."""
+    inage = Office(name="L3-SA 拠点", lat=35.6383, lng=140.1041)
+    db.add(inage)
+    await db.flush()
+
+    s_assigned = Staff(
+        code="L3SA-S0",
+        name="L3SA assigned",
+        sex="female",
+        role="staff",
+        status="active",
+        primary_office_id=inage.id,
+    )
+    db.add(s_assigned)
+    await db.flush()
+
+    # patient + visit (course 紐付け要)
+    p_fixed = Patient(code="L3SA-PF", name="patient-fixed", status="active")
+    p_assigned = Patient(code="L3SA-PA", name="patient-assigned", status="active")
+    db.add_all([p_fixed, p_assigned])
+    await db.flush()
+
+    # course_fixed コース
+    c_fixed = Course(
+        iso_year=TEST_ISO_YEAR,
+        iso_week=TEST_ISO_WEEK,
+        weekday=0,
+        code="A",
+        course_status=COURSE_STATUS_COURSE_FIXED,
+        office_id=inage.id,
+    )
+    # staff_assigned コース (本来は Layer 3 拾い漏れの対象)
+    c_staff_assigned = Course(
+        iso_year=TEST_ISO_YEAR,
+        iso_week=TEST_ISO_WEEK,
+        weekday=0,
+        code="B",
+        course_status=COURSE_STATUS_STAFF_ASSIGNED,
+        assigned_staff_id=s_assigned.id,
+        office_id=inage.id,
+    )
+    db.add_all([c_fixed, c_staff_assigned])
+    await db.flush()
+
+    # 各 course に visit を 1 件ずつ紐付け
+    v_fixed = Visit(
+        patient_id=p_fixed.id,
+        course_id=c_fixed.id,
+        visit_date=TEST_WEEK_MONDAY,
+        start_time=time(9, 0),
+        end_time=time(9, 30),
+        type="regular",
+        status=VISIT_STATUS_PLANNED,
+        source="auto",
+        required_staff_count=1,
+    )
+    v_assigned = Visit(
+        patient_id=p_assigned.id,
+        course_id=c_staff_assigned.id,
+        visit_date=TEST_WEEK_MONDAY,
+        start_time=time(10, 0),
+        end_time=time(10, 30),
+        type="regular",
+        status=VISIT_STATUS_PLANNED,
+        source="auto_alloc_v2",
+        required_staff_count=1,
+    )
+    db.add_all([v_fixed, v_assigned])
+    await db.commit()
+
+    assigner = Layer3Assigner()
+    targets = await assigner._load_course_targets(
+        db, iso_year=TEST_ISO_YEAR, iso_week=TEST_ISO_WEEK, office_id=inage.id
+    )
+    codes = {t.course_code for t in targets}
+    assert "A" in codes, f"course_fixed の 'A' が targets に無い: {codes}"
+    assert "B" in codes, (
+        f"staff_assigned の 'B' が targets に無い "
+        "(=auto_allocator_v2 由来コースが拾い漏れる本質バグの再発): "
+        f"{codes}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_layer3_assign_does_not_reassign_staff_assigned_course(db) -> None:
+    """``Layer3Assigner.assign``: staff_assigned コースを処理対象に含めても、
+    既存 ``assigned_staff_id`` は ``run`` 内 ``already_assigned_stmt`` で
+    ``fixed_staff_by_course`` に追加されるので副作用が出ない (W25 fix)."""
+    from sqlalchemy import select as _select
+
+    inage = Office(name="L3-NoSideEffect 拠点", lat=35.6383, lng=140.1041)
+    db.add(inage)
+    await db.flush()
+
+    s_locked = Staff(
+        code="L3NS-S0",
+        name="L3NS locked staff",
+        sex="female",
+        role="staff",
+        status="active",
+        primary_office_id=inage.id,
+    )
+    s_other = Staff(
+        code="L3NS-S1",
+        name="L3NS other staff",
+        sex="female",
+        role="staff",
+        status="active",
+        primary_office_id=inage.id,
+    )
+    db.add_all([s_locked, s_other])
+    await db.flush()
+    for wd in range(7):
+        db.add(StaffShift(staff_id=s_locked.id, weekday=wd, is_on=True))
+        db.add(StaffShift(staff_id=s_other.id, weekday=wd, is_on=True))
+
+    p_locked = Patient(code="L3NS-P1", name="patient-locked", status="active")
+    db.add(p_locked)
+    await db.flush()
+
+    c_locked = Course(
+        iso_year=TEST_ISO_YEAR,
+        iso_week=TEST_ISO_WEEK,
+        weekday=0,
+        code="A",
+        course_status=COURSE_STATUS_STAFF_ASSIGNED,
+        assigned_staff_id=s_locked.id,
+        office_id=inage.id,
+    )
+    db.add(c_locked)
+    await db.flush()
+    db.add(
+        Visit(
+            patient_id=p_locked.id,
+            course_id=c_locked.id,
+            visit_date=TEST_WEEK_MONDAY,
+            start_time=time(9, 0),
+            end_time=time(9, 30),
+            type="regular",
+            status=VISIT_STATUS_PLANNED,
+            source="auto_alloc_v2",
+            required_staff_count=1,
+        )
+    )
+    await db.commit()
+
+    assigner = Layer3Assigner()
+    await assigner.assign(db, iso_year=TEST_ISO_YEAR, iso_week=TEST_ISO_WEEK, office_id=inage.id)
+    await db.commit()
+
+    refreshed = await db.scalar(_select(Course).where(Course.id == c_locked.id))
+    assert refreshed is not None
+    # 既存 assigned_staff_id は不変 (W25 fix で保護)
+    assert refreshed.assigned_staff_id == s_locked.id, (
+        f"既存 staff_assigned コースの assigned_staff_id が変更された "
+        f"(W25 fix の副作用): expected={s_locked.id}, got={refreshed.assigned_staff_id}"
+    )
+    assert refreshed.course_status == COURSE_STATUS_STAFF_ASSIGNED
