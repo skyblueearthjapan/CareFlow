@@ -123,18 +123,29 @@ export interface WeekdayScheduleCardProps {
 /**
  * time_type バッジを preferred_start/end と合わせて整形.
  * FullOptimizeDialog 内の同名関数と完全互換 (移植元).
+ *
+ * CareFlow #UX-2026W21: リストとテーブル双方で語彙統一するため、
+ * primitive 引数 ({time_type, preferred_start, preferred_end}) を受け取る
+ * 汎用シグネチャに変更した. CourseDayTable.tsx もこの関数を import する.
+ *
+ * 戻り値: 🕐 prefix 付き文字列 (例: '🕐 時間帯 (09:30-10:00)') / null
  */
-function formatTimeCondition(v: VisitListItem): string | null {
-  if (v.time_type === '時間帯' && v.preferred_start && v.preferred_end) {
-    return `🕐 時間帯 (${trimSeconds(v.preferred_start)}-${trimSeconds(v.preferred_end)})`;
+export function formatTimeCondition(args: {
+  time_type?: string | null;
+  preferred_start?: string | null;
+  preferred_end?: string | null;
+}): string | null {
+  const { time_type, preferred_start, preferred_end } = args;
+  if (time_type === '時間帯' && preferred_start && preferred_end) {
+    return `🕐 時間帯 (${trimSeconds(preferred_start)}-${trimSeconds(preferred_end)})`;
   }
-  if (v.time_type === '固定' && v.preferred_start) {
-    return `🕐 固定 (${trimSeconds(v.preferred_start)})`;
+  if (time_type === '固定' && preferred_start) {
+    return `🕐 固定 (${trimSeconds(preferred_start)})`;
   }
-  if (v.time_type === '午前') return '🕐 午前 (~12:00)';
-  if (v.time_type === '午後') return '🕐 午後 (13:00~)';
-  if (v.time_type === '終日') return '🕐 終日';
-  return v.time_type ? `🕐 ${v.time_type}` : null;
+  if (time_type === '午前') return '🕐 午前 (~12:00)';
+  if (time_type === '午後') return '🕐 午後 (13:00~)';
+  if (time_type === '終日') return '🕐 終日';
+  return time_type ? `🕐 ${time_type}` : null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -486,7 +497,13 @@ function VisitRowContent({
   weekView,
   suppressDistance,
 }: VisitRowContentProps) {
-  const timeCondition = weekView ? null : formatTimeCondition(visit);
+  const timeCondition = weekView
+    ? null
+    : formatTimeCondition({
+        time_type: visit.time_type,
+        preferred_start: visit.preferred_start,
+        preferred_end: visit.preferred_end,
+      });
   const showAddress = !weekView;
   const showDuration =
     !weekView && typeof visit.duration_min === 'number' && visit.duration_min > 0;

@@ -881,11 +881,15 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
     const badge2 = screen.getByTestId('course-occupant-group-badge-zzzz-pair');
     expect(badge1.textContent).toBe('①');
     expect(badge2.textContent).toBe('②');
-    // 「複数」列も "複数 ①" / "複数 ②" 表示
+    // CareFlow #UX-2026W21: 「複数」列はアイコン (👥) 表記 + title/aria-label に ①/② を持つ.
     const multi1 = screen.getByTestId('course-occupant-multi-aaaa-pair');
-    expect(multi1.textContent).toBe('複数 ①');
+    expect(multi1.textContent).toBe('👥');
+    expect(multi1.getAttribute('data-multi-staff')).toBe('true');
+    expect(multi1.getAttribute('title')).toContain('①');
     const multi2 = screen.getByTestId('course-occupant-multi-zzzz-pair');
-    expect(multi2.textContent).toBe('複数 ②');
+    expect(multi2.textContent).toBe('👥');
+    expect(multi2.getAttribute('data-multi-staff')).toBe('true');
+    expect(multi2.getAttribute('title')).toContain('②');
   });
 
   it('P3C-9. requires_multiple_staff=true で partner 不在 (group_id なし) → 「複数 ① のみ」 + 警告色', () => {
@@ -939,7 +943,11 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
       />,
     );
     const multiCell = screen.getByTestId('course-occupant-multi-v-orphan');
-    expect(multiCell.textContent).toBe('複数 ① のみ');
+    // CareFlow #UX-2026W21: 「複数」列は印 (👥) + data-attribute + title 表記.
+    expect(multiCell.textContent).toContain('👥');
+    expect(multiCell.getAttribute('data-multi-staff')).toBe('true');
+    expect(multiCell.getAttribute('data-partner-missing')).toBe('true');
+    expect(multiCell.getAttribute('title')).toContain('複数 ① のみ');
     // 警告色クラス (text-warning) が付与される
     expect(multiCell.className).toContain('text-warning');
   });
@@ -1032,11 +1040,13 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
     expect(badgeZ.textContent).toBe('①');
     const badgeA = screen.getByTestId('course-occupant-group-badge-aaaa-pair');
     expect(badgeA.textContent).toBe('②');
-    // 「複数」列も同様
+    // 「複数」列も同様 (CareFlow #UX-2026W21: 印 + title で slot 識別).
     const multiZ = screen.getByTestId('course-occupant-multi-zzzz-pair');
-    expect(multiZ.textContent).toBe('複数 ①');
+    expect(multiZ.textContent).toContain('👥');
+    expect(multiZ.getAttribute('title')).toContain('複数訪問 ①');
     const multiA = screen.getByTestId('course-occupant-multi-aaaa-pair');
-    expect(multiA.textContent).toBe('複数 ②');
+    expect(multiA.textContent).toContain('👥');
+    expect(multiA.getAttribute('title')).toContain('複数訪問 ②');
   });
 
   // ─── W37 hotfix M-1: visit_group_id 持ち visit を pool drop しても block ───

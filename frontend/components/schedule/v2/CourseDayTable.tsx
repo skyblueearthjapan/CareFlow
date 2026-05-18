@@ -3,16 +3,19 @@
 /**
  * CourseDayTable — Wave 17 Phase B-2: 1 つの (曜日 × コース) テーブル.
  *
- * Excel スケジュール枠組みに完全準拠した 5 列構成:
+ * CareFlow #UX-2026W21: リスト表示と語彙統一するため 5 → 3 列構成に縮約:
  *   - 時間帯 (固定): 09:30, 09:45, ... 18:00 の 35 行 (15 分刻み)
- *   - 氏名 / 住所 / 複数 / 条件
+ *   - 複数: 👥 アイコン (`patient_requires_multiple_staff=true` 時のみ)
+ *   - 患者情報: 氏名 (drag handle) / 住所 / 🕐 時刻条件 / 👩/👨 性別制限 を
+ *               縦積み. リスト `WeekdayScheduleCard.VisitRowContent` と
+ *               同じ語彙 (共通 `formatTimeCondition` を import).
  *
  * ヘッダー:
  *   - 「{office}-{label} コース ({capacity})」
  *   - 担当スタッフ dropdown (admin/manager only)
  *
  * dnd-kit:
- *   - 各行の 4 つの「データ列セル」全体が 1 つの droppable.
+ *   - 各行の 2 つの「データ列セル」(複数 / 患者情報) 全体が 1 つの droppable.
  *   - id = `course-day-cell:${weekday}:${course_template_id}:${HH:MM}`
  *   - 親 (CourseDayTablePanel) が DragEnd を受け取り place-and-fix を呼ぶ。
  */
@@ -26,6 +29,7 @@ import { capacityKeyForWeekday } from '@/lib/schemas/v2/course_template';
 import type { CourseV2Read } from '@/lib/queries/courses';
 import type { StaffRead } from '@/lib/schemas/staff';
 import type { EventRead } from '@/lib/schemas/staff-events';
+import { formatTimeCondition } from '@/components/schedule/WeekdayScheduleCard';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Constants — 時刻軸 (B-2 / Excel 完全準拠)
@@ -303,47 +307,14 @@ export function hasEventConflict(visitStartSlot: string, events: EventRead[]): E
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Phase E-1: 「条件」列に表示する患者条件 (time_type / preferred_*) を整形.
-// WeekdayScheduleCard 内の `formatTimeCondition` と表現を揃え、リスト表示と
-// テーブル表示で同じ語彙 (例: "固定 (09:30)" / "時間帯 (09:30-10:00)") を出す.
+// CareFlow #UX-2026W21: 「患者情報」列の time_type 表示は
+// `WeekdayScheduleCard` 由来の共通 `formatTimeCondition` を直接 import する.
+// 旧 `formatPatientTimeCondition` は語彙不一致 (🕐 prefix なし / '(~12:00)' 補足なし)
+// だったため、共通関数のエイリアスとして残置 (後方互換 — 既存呼出箇所はゼロ).
 // ─────────────────────────────────────────────────────────────────────────
 
-/** 'HH:MM:SS' / 'HH:MM' → 'HH:MM'. null/undefined はそのまま. */
-function trimToHHMM(t: string | null | undefined): string | null {
-  if (!t) return null;
-  return t.length >= 5 ? t.slice(0, 5) : t;
-}
-
-/**
- * 「条件」列に表示する time_type ラベルを整形 (患者リストや患者詳細ページの表現と統一).
- * 例:
- *   - time_type='固定' & preferred_start='09:30' → '固定 (09:30)'
- *   - time_type='時間帯' & start/end → '時間帯 (09:30-10:00)'
- *   - time_type='午前' → '午前'
- *   - すべて null → null
- */
-export function formatPatientTimeCondition(args: {
-  time_type?: string | null;
-  preferred_start?: string | null;
-  preferred_end?: string | null;
-}): string | null {
-  const tt = args.time_type ?? null;
-  if (!tt) return null;
-  const start = trimToHHMM(args.preferred_start);
-  const end = trimToHHMM(args.preferred_end);
-  if (tt === '固定') {
-    return start ? `固定 (${start})` : '固定';
-  }
-  if (tt === '時間帯') {
-    if (start && end) return `時間帯 (${start}-${end})`;
-    if (start) return `時間帯 (${start}-)`;
-    return '時間帯';
-  }
-  if (tt === '午前' || tt === '午後' || tt === '終日') {
-    return tt;
-  }
-  return tt;
-}
+/** @deprecated `formatTimeCondition` (WeekdayScheduleCard 経由) を直接使ってください. */
+export const formatPatientTimeCondition = formatTimeCondition;
 
 // ─────────────────────────────────────────────────────────────────────────
 // Component
@@ -504,29 +475,29 @@ export function CourseDayTable({
         </label>
       </div>
 
-      {/* 5 列テーブル: 時間帯 / 氏名 / 住所 / 複数 / 条件 */}
+      {/*
+        3 列テーブル (CareFlow #UX-2026W21):
+          - 時間帯 (固定)
+          - 複数 (👥 icon を中央表示)
+          - 患者情報 (氏名 / 住所 / 時刻条件 / 性別制限 を縦積み — リスト
+                    `WeekdayScheduleCard` の `VisitRowContent` と語彙統一)
+      */}
       <div className="overflow-x-auto">
         <div
           className="grid border-t border-border-default text-[11px]"
           style={{
-            gridTemplateColumns: '60px minmax(80px, 0.6fr) minmax(120px, 1fr) 70px 100px',
+            gridTemplateColumns: '60px 48px minmax(180px, 1fr)',
           }}
         >
           {/* 列ヘッダー */}
           <div className="border-b border-r border-border-default bg-bg-muted px-1.5 py-1 text-[10px] font-semibold text-text-muted">
             時間帯
           </div>
-          <div className="border-b border-r border-border-default bg-bg-muted px-1.5 py-1 text-[10px] font-semibold text-text-muted">
-            氏名
-          </div>
-          <div className="border-b border-r border-border-default bg-bg-muted px-1.5 py-1 text-[10px] font-semibold text-text-muted">
-            住所
-          </div>
           <div className="border-b border-r border-border-default bg-bg-muted px-1.5 py-1 text-center text-[10px] font-semibold text-text-muted">
             複数
           </div>
           <div className="border-b border-border-default bg-bg-muted px-1.5 py-1 text-[10px] font-semibold text-text-muted">
-            条件
+            患者情報
           </div>
 
           {/* 35 行 */}
@@ -548,7 +519,7 @@ export function CourseDayTable({
           {/*
             Wave 39: スタッフイベントの 1 ブロック表示 (rowSpan).
             - grid-row: ${rowIndex + 2} / span ${rowSpan} で複数 15min 行をまとめて 1 ブロック化.
-            - grid-column: 2 / span 4 (時間帯列を除く 4 列分) でデータ領域に重ねる.
+            - grid-column: 2 / span 2 (時間帯列を除く 2 列分: 複数 / 患者情報) に重ねる.
             - draggable=true (event:{id}) で時刻スライド + 担当者変更を可能にする.
             - pointer-events-none を付けない (= drag 可能, ただし下層 cell の droppable 判定を
               妨げないよう visit 配置時のクリック要件は無いので問題なし).
@@ -633,7 +604,12 @@ function CourseTimeRow({
         {time}
       </div>
 
-      {/* 氏名 / 住所 / 複数 / 条件 — まとめて 1 つの droppable で囲む */}
+      {/*
+        複数 / 患者情報 — まとめて 1 つの droppable で囲む.
+        CareFlow #UX-2026W21: 5 列 (氏名/住所/複数/条件) → 2 列 (複数/患者情報) に縮約.
+        患者情報セルは リスト `WeekdayScheduleCard.VisitRowContent` の語彙 (氏名 + 住所
+        + 🕐 時刻条件 + 👩/👨 性別制限) に揃える.
+      */}
       <div
         ref={setNodeRef}
         data-droppable={droppableId}
@@ -642,49 +618,87 @@ function CourseTimeRow({
         data-course-template-id={templateId}
         data-occupant-count={occupants.length}
         className={cn(
-          'col-span-4 grid grid-cols-subgrid border-t border-border-default/40 transition-colors',
+          'col-span-2 grid grid-cols-subgrid border-t border-border-default/40 transition-colors',
           isOver && canEdit ? 'bg-brand-primary/10 ring-1 ring-brand-primary ring-inset' : '',
         )}
-        style={{ gridColumn: 'span 4 / span 4' }}
+        style={{ gridColumn: 'span 2 / span 2' }}
       >
         {occupants.length === 0 ? (
-          // ── 空セル: 4 列を空のまま描画 (droppable hit-area 維持) ─────
+          // ── 空セル: 2 列を空のまま描画 (droppable hit-area 維持) ─────
           // Wave 39: 担当スタッフの event は親側 `eventBlocks` (rowSpan 1 ブロック) で
           //   描画するためここでは出さない。空セルは droppable のみ。
           <>
-            <div className="border-r border-border-default/40 px-1 py-0.5 text-[11px] leading-tight text-text-primary truncate" />
-            <div className="border-r border-border-default/40 px-1 py-0.5 text-[10px] leading-tight text-text-secondary truncate" />
             <div className="border-r border-border-default/40 px-1 py-0.5 text-center text-[10px] leading-tight text-text-secondary" />
             <div className="px-1 py-0.5 text-[10px] leading-tight text-text-secondary truncate" />
           </>
         ) : (
-          // ── 1 件以上: 各 occupant を縦積みで列ごとに描画 ────────────
-          // 同一スロットに 2 件以上の visit がある場合、氏名 / 住所 / 複数 / 条件 を
-          // visit ごとに改行ベースで縦積みする (Excel の「複数同時」表現に追従)。
+          // ── 1 件以上: 複数列 + 患者情報列 ────────────────────────────
+          // 同一スロットに 2 件以上の visit がある場合、各列を visit ごとに縦積み.
           <>
-            <div className="border-r border-border-default/40 px-1 py-0.5 text-[11px] leading-tight text-text-primary">
+            {/* 複数列: 👥 アイコンのみ (true) or 空 (false) */}
+            <div className="border-r border-border-default/40 px-1 py-0.5 text-center text-[10px] leading-tight text-text-secondary">
               <div className="flex flex-col gap-0.5">
+                {occupants.map((o) => {
+                  // Wave 23: 「複数」= patient.requires_multiple_staff のみ.
+                  // CareFlow #UX-2026W21: 文字列ラベルからアイコン (👥) 表記へ変更.
+                  // - 通常複数 (group_slot=1/2) → 👥
+                  // - partner_missing (= 片割れのみ未配置) → ⚠ 警告色付き 👥
+                  // - 単独 visit (multi=false) → 空セル
+                  const isMulti = o.patient_requires_multiple_staff === true;
+                  if (!isMulti) {
+                    return (
+                      <div
+                        key={`multi-${o.id}`}
+                        data-testid={`course-occupant-multi-${o.id}`}
+                        aria-hidden="true"
+                      />
+                    );
+                  }
+                  // tooltip / aria-label: partner 情報を読み上げ可能に.
+                  const slotTxt = o.group_slot_label
+                    ? ` ${o.group_slot_label === 1 ? '①' : '②'}`
+                    : '';
+                  const baseTitle = o.partner_missing
+                    ? `複数 ① のみ (相方未配置)`
+                    : `複数訪問${slotTxt}`;
+                  const title = o.partner_label
+                    ? `${baseTitle} — ペア: ${o.partner_label}`
+                    : baseTitle;
+                  const warning = o.partner_missing === true;
+                  return (
+                    <div
+                      key={`multi-${o.id}`}
+                      data-testid={`course-occupant-multi-${o.id}`}
+                      data-multi-staff="true"
+                      data-partner-missing={warning ? 'true' : undefined}
+                      title={title}
+                      aria-label={title}
+                      className={warning ? 'text-warning font-semibold' : ''}
+                    >
+                      <span aria-hidden="true">👥</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+            {/* 患者情報列: 氏名 / 住所 / 🕐 時刻条件 / 👩/👨 性別制限 を縦積み.
+                リスト `WeekdayScheduleCard.VisitRowContent` と語彙統一. */}
+            <div className="px-1 py-0.5 text-[11px] leading-tight text-text-primary">
+              <div className="flex flex-col gap-1">
                 {occupants.map((o) => (
-                  <OccupantNameDraggable
-                    key={`name-${o.id}`}
-                    visitId={o.id}
-                    patientId={o.patient_id}
-                    label={o.patient_name ?? o.patient_id}
+                  <OccupantPatientInfo
+                    key={`info-${o.id}`}
+                    visit={o}
                     canEdit={canEdit}
                     onDeleteVisit={onDeleteVisit}
                     onPatientClick={onPatientClick}
-                    groupSlotLabel={o.group_slot_label}
-                    partnerLabel={o.partner_label ?? null}
-                    partnerLocation={o.partner_location ?? null}
-                    isMultiStaff={o.patient_requires_multiple_staff}
                   />
                 ))}
-                {/* Wave 27 Phase B-3: 担当スタッフのイベント重複 warning バッジ
-                    (Wave 39 でイベント本文は親側 rowSpan ブロックに統合したが、
-                    visit と event 重複の警告は visit 行に残す). */}
+                {/* Wave 27 Phase B-3: 担当スタッフのイベント重複 warning バッジ.
+                    visit と event 重複の警告は visit 行に残す. */}
                 {conflictingEvent ? (
                   <span
-                    className="inline-flex items-center gap-0.5 rounded bg-yellow-100 px-1 py-0.5 text-[10px] font-semibold text-yellow-800 ring-1 ring-yellow-300"
+                    className="inline-flex w-fit items-center gap-0.5 rounded bg-yellow-100 px-1 py-0.5 text-[10px] font-semibold text-yellow-800 ring-1 ring-yellow-300"
                     data-testid="event-conflict-badge"
                     title={`担当者: ${conflictingEvent.type} ${conflictingEvent.start_time}-${conflictingEvent.end_time}`}
                   >
@@ -693,85 +707,84 @@ function CourseTimeRow({
                 ) : null}
               </div>
             </div>
-            <div className="border-r border-border-default/40 px-1 py-0.5 text-[10px] leading-tight text-text-secondary">
-              <div className="flex flex-col gap-0.5">
-                {occupants.map((o) => (
-                  <div key={`addr-${o.id}`} className="truncate" title={o.patient_address ?? ''}>
-                    {o.patient_address ?? ''}
-                  </div>
-                ))}
-              </div>
-            </div>
-            <div className="border-r border-border-default/40 px-1 py-0.5 text-center text-[10px] leading-tight text-text-secondary">
-              <div className="flex flex-col gap-0.5">
-                {occupants.map((o) => {
-                  // Wave 23: 「複数」= patient.requires_multiple_staff のみ。
-                  // sameSlotMulti (同一スロット 2 件以上) は判定から除外。
-                  const isMulti = o.patient_requires_multiple_staff === true;
-                  // Wave 37 Phase 3-C:
-                  //   - visit_group_id 持ち + group_slot_label あり → "複数 ①" / "複数 ②"
-                  //   - patient.requires_multiple_staff=true なのに partner 不在 (partner_missing=true)
-                  //     → "複数 ① のみ" を text-warning で表示
-                  let label: string = isMulti ? '複数' : '';
-                  let warning = false;
-                  if (isMulti && o.group_slot_label) {
-                    label = `複数 ${o.group_slot_label === 1 ? '①' : '②'}`;
-                  } else if (isMulti && o.partner_missing) {
-                    label = '複数 ① のみ';
-                    warning = true;
-                  }
-                  return (
-                    <div
-                      key={`multi-${o.id}`}
-                      aria-hidden={!isMulti}
-                      data-testid={`course-occupant-multi-${o.id}`}
-                      className={warning ? 'text-warning font-semibold' : ''}
-                      title={o.partner_label ?? undefined}
-                    >
-                      {label}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-            <div className="px-1 py-0.5 text-[10px] leading-tight text-text-secondary">
-              <div className="flex flex-col gap-0.5">
-                {occupants.map((o) => {
-                  // Phase E-1: 「条件」= time_type + 性別制限 + 複数 を統合表示
-                  // (患者リストや患者詳細ページと同じ語彙). 各要素は空行で区切らず
-                  // 縦積みで載せる. 全て空なら空文字描画 (= 既存挙動).
-                  const timeText = formatPatientTimeCondition({
-                    time_type: o.patient_time_type,
-                    preferred_start: o.patient_preferred_start,
-                    preferred_end: o.patient_preferred_end,
-                  });
-                  const sexText = o.patient_sex_restriction_label ?? null;
-                  const multiText = o.patient_requires_multiple_staff ? '複数' : null;
-                  const lines = [timeText, sexText, multiText].filter(
-                    (s): s is string => typeof s === 'string' && s.length > 0,
-                  );
-                  const tooltip = lines.join(' / ');
-                  return (
-                    <div
-                      key={`cond-${o.id}`}
-                      className="flex flex-wrap gap-x-1 gap-y-0"
-                      title={tooltip}
-                      data-testid={`course-occupant-condition-${o.id}`}
-                    >
-                      {lines.map((line, li) => (
-                        <span key={li} className="truncate">
-                          {line}
-                        </span>
-                      ))}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
           </>
         )}
       </div>
     </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// OccupantPatientInfo — CareFlow #UX-2026W21
+// リスト `WeekdayScheduleCard.VisitRowContent` 寄せの 1 visit ぶん「患者情報」.
+// 氏名 (draggable + 詳細/削除ボタン) / 住所 / 🕐 時刻条件 / 👩/👨 性別制限 を縦積み.
+// ─────────────────────────────────────────────────────────────────────────
+
+interface OccupantPatientInfoProps {
+  visit: CourseGridVisit;
+  canEdit: boolean;
+  onDeleteVisit?: (visitId: string, patientName: string) => void;
+  onPatientClick?: (patientId: string) => void;
+}
+
+function OccupantPatientInfo({
+  visit,
+  canEdit,
+  onDeleteVisit,
+  onPatientClick,
+}: OccupantPatientInfoProps) {
+  const timeCondition = formatTimeCondition({
+    time_type: visit.patient_time_type,
+    preferred_start: visit.patient_preferred_start,
+    preferred_end: visit.patient_preferred_end,
+  });
+  const sexText = visit.patient_sex_restriction_label ?? null;
+  // `course-occupant-condition-*` testid を空セルでも維持する (テスト互換).
+  const condTooltip = [timeCondition, sexText]
+    .filter((s): s is string => typeof s === 'string' && s.length > 0)
+    .join(' / ');
+
+  return (
+    <div className="flex flex-col gap-0">
+      {/* 氏名行 — drag handle + 詳細 / 削除ボタン */}
+      <OccupantNameDraggable
+        visitId={visit.id}
+        patientId={visit.patient_id}
+        label={visit.patient_name ?? visit.patient_id}
+        canEdit={canEdit}
+        onDeleteVisit={onDeleteVisit}
+        onPatientClick={onPatientClick}
+        groupSlotLabel={visit.group_slot_label}
+        partnerLabel={visit.partner_label ?? null}
+        partnerLocation={visit.partner_location ?? null}
+        isMultiStaff={visit.patient_requires_multiple_staff}
+      />
+      {/* 住所 — リスト同様に長い場合は 18 文字で切り詰め (title に full address) */}
+      {visit.patient_address ? (
+        <div
+          className="truncate text-[10px] text-text-muted"
+          title={visit.patient_address}
+          data-testid={`course-occupant-address-${visit.id}`}
+        >
+          {visit.patient_address}
+        </div>
+      ) : null}
+      {/* 時刻条件 + 性別制限 — `course-occupant-condition-${id}` testid を維持 */}
+      <div
+        className="flex flex-wrap gap-x-1 gap-y-0 text-[10px] text-text-secondary"
+        data-testid={`course-occupant-condition-${visit.id}`}
+        title={condTooltip || undefined}
+      >
+        {timeCondition ? <span className="truncate">{timeCondition}</span> : null}
+        {sexText === '女性のみ' ? (
+          <span className="truncate text-pink-600">👩 {sexText}</span>
+        ) : sexText === '男性のみ' ? (
+          <span className="truncate text-blue-600">👨 {sexText}</span>
+        ) : sexText ? (
+          <span className="truncate">{sexText}</span>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
@@ -974,7 +987,7 @@ interface CourseEventBlockProps {
  *
  * - grid-row: ${rowIndex + 2} / span ${rowSpan} で時間帯セルに重ねる.
  *   (column header が +1 行を占有するので +2 オフセット).
- * - grid-column: 2 / span 4 で時間列を除いた 4 列分を覆う.
+ * - grid-column: 2 / span 2 で時間列を除いた 2 列分 (複数 / 患者情報) を覆う.
  * - draggable id = `event:${event.id}` で親 panel が D&D を識別する.
  * - 配色: 半透明イエロー背景 + 左ボーダー強調 (event.type ごとに色変えは将来 Wave で).
  */
@@ -996,7 +1009,7 @@ function CourseEventBlock({ event, rowIndex, rowSpan, canEdit }: CourseEventBloc
       title={`${labelLines.title} ${labelLines.time}`}
       style={{
         gridRow: `${rowIndex + 2} / span ${rowSpan}`,
-        gridColumn: '2 / span 4',
+        gridColumn: '2 / span 2',
       }}
       className={cn(
         'z-10 m-px flex flex-col gap-0.5 overflow-hidden rounded border-l-4 border-yellow-500 bg-yellow-50/80 px-1.5 py-0.5 text-[11px] leading-tight text-yellow-900 shadow-sm ring-1 ring-yellow-300',
