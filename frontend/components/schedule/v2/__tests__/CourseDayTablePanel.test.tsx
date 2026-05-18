@@ -532,7 +532,8 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
       />,
     );
     expect(screen.getAllByText('鈴木 一郎').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('千葉県千葉市').length).toBeGreaterThan(0);
+    // CareFlow #UX-2026W21: 住所は '📍 千葉県千葉市' 形式で表示されるため部分一致.
+    expect(screen.getAllByText(/千葉県千葉市/).length).toBeGreaterThan(0);
   });
 
   it('10. ドロップで place-and-fix が course_template_id 付きで呼ばれる', async () => {

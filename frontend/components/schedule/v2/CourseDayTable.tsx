@@ -746,8 +746,10 @@ function OccupantPatientInfo({
     .join(' / ');
 
   return (
-    <div className="flex flex-col gap-0">
-      {/* 氏名行 — drag handle + 詳細 / 削除ボタン */}
+    // CareFlow #UX-2026W21 fix: 氏名 + 住所 + 条件 を 1 行に横並び (リスト VisitRowContent と統一).
+    // 相方注記等の追加情報は OccupantNameDraggable 内部で別行表示される.
+    <div className="flex flex-row flex-wrap items-baseline gap-x-2 gap-y-0 min-w-0">
+      {/* 氏名 — drag handle + 詳細 / 削除ボタン */}
       <OccupantNameDraggable
         visitId={visit.id}
         patientId={visit.patient_id}
@@ -760,19 +762,19 @@ function OccupantPatientInfo({
         partnerLocation={visit.partner_location ?? null}
         isMultiStaff={visit.patient_requires_multiple_staff}
       />
-      {/* 住所 — リスト同様に長い場合は 18 文字で切り詰め (title に full address) */}
+      {/* 住所 — 📍 prefix + truncate + title で full address */}
       {visit.patient_address ? (
-        <div
+        <span
           className="truncate text-[10px] text-text-muted"
           title={visit.patient_address}
           data-testid={`course-occupant-address-${visit.id}`}
         >
-          {visit.patient_address}
-        </div>
+          📍 {visit.patient_address}
+        </span>
       ) : null}
       {/* 時刻条件 + 性別制限 — `course-occupant-condition-${id}` testid を維持 */}
-      <div
-        className="flex flex-wrap gap-x-1 gap-y-0 text-[10px] text-text-secondary"
+      <span
+        className="inline-flex flex-row gap-x-1 truncate text-[10px] text-text-secondary"
         data-testid={`course-occupant-condition-${visit.id}`}
         title={condTooltip || undefined}
       >
@@ -784,7 +786,7 @@ function OccupantPatientInfo({
         ) : sexText ? (
           <span className="truncate">{sexText}</span>
         ) : null}
-      </div>
+      </span>
     </div>
   );
 }
