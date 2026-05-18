@@ -760,9 +760,12 @@ async def bulk_sync_week_visits_to_fixed_endpoint(
 
 
 # 週限定 update を許可する visit.source (本番運用 visit を保護するため).
-# patient_sync の bulk 反映は manual / 自動算出 v1 / v2 由来の visit のみ対象.
+# patient_sync の bulk 反映は manual / 自動算出 v1 / v2 / reset-to-fixed 由来の
+# visit のみ対象. 外部連携 (kaipoke 等) の visit は対象外。
+# W41 v2.10 fix: reset_v2 (固定枠リセット由来) を whitelist に追加。
+# これがないと「固定枠に戻す」直後の bulk 反映が全件 skipped になる重大バグ。
 _WEEK_ONLY_BULK_ALLOWED_SOURCES = frozenset(
-    {"manual", "auto_alloc_v1", "auto_alloc_v2", "auto_alloc_v2w"}
+    {"manual", "auto_alloc_v1", "auto_alloc_v2", "auto_alloc_v2w", "reset_v2"}
 )
 
 
