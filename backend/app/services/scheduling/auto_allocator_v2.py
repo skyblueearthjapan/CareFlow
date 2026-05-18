@@ -4911,12 +4911,11 @@ async def reset_visits_to_fixed(
     )
     pfv_list = list(pfv_rows.all())
 
-    # Fix D3 (CareFlow #103): PFV 自体に異住所同時刻衝突がないか検証.
-    # ここで弾かないと、衝突状態のまま visit が 2 件再生成され
-    # 「異住所 2 名同時刻訪問」になる. PFV データ自体の不整合なので
-    # マスター修正を促すために 422 で reset を拒否する.
-    # 同住所ペア (家族・施設) は許容.
-    # 検査用に office_id を補う proxy にラップする (PFV モデルには office_id がない).
+    # CareFlow #112 hotfix: Fix D3 の reset-to-fixed での 422 拒否を撤去.
+    # PFV に異住所同時刻ペアが残っている既存 DB を救済するため、reset 自体は
+    # 実行し、後段で「全面最適化」を実行すると Fix E (_auto_shift_same_time_conflicts)
+    # が自動シフトで解消する想定のフロー.
+    # 検出のみ行って warning ログを残す (例外は raise しない).
     @dataclass(frozen=True)
     class _PfvWithOffice:
         patient_id: UUID
@@ -4939,7 +4938,17 @@ async def reset_visits_to_fixed(
         )
     pfv_conflicts = _detect_cross_address_time_conflicts(pfv_items, patients_by_id)
     if pfv_conflicts:
-        raise CrossAddressTimeConflictError(pfv_conflicts)
+        # 422 で拒否せず、warning として情報を残し reset 続行.
+        # 後段の「全面最適化」で Fix E が自動シフトを適用する.
+        import logging
+
+        _log = logging.getLogger(__name__)
+        _log.warning(
+            "reset_visits_to_fixed: PFV に異住所同時刻ペア %d 件検出. "
+            "reset 続行し全面最適化で自動シフト想定 (conflicts=%s)",
+            len(pfv_conflicts),
+            pfv_conflicts[:5],
+        )
 
     # 3) スタッフ割当はローテーション: (office_id, weekday) ごとに staff_pool を構築
     # staff list を (office_id, weekday) ごとに取得

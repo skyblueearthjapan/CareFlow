@@ -2534,14 +2534,14 @@ async def test_apply_individual_allows_same_address_same_time(client, db) -> Non
 
 
 @pytest.mark.asyncio
-async def test_reset_to_fixed_rejects_when_pfv_has_cross_address_conflict(client, db) -> None:
-    """Fix D3: PFV に異住所同時刻ペアがあれば 422 (reset を拒否)."""
+async def test_reset_to_fixed_allows_pfv_cross_address_conflict_with_warning(client, db) -> None:
+    """CareFlow #112 hotfix: PFV に異住所同時刻ペアがあっても reset は実行する
+    (422 拒否は撤去、後段の全面最適化で Fix E が自動シフトする想定)."""
     admin = await _make_user(db, email="v2-d3-rej-admin@example.com", role="admin")
     office, _ = await _seed_office_with_staff(db)
     p1 = await _seed_patient(db, office=office, code="D3-1", lat=35.65, lng=140.10)
     p2 = await _seed_patient(db, office=office, code="D3-2", lat=35.65, lng=140.20)
     # 異住所な 2 患者を同 weekday + 同 start_time + course_template_id=NULL で固定枠登録.
-    # course_template_id が同じ (= 両方 None) で住所が違うので衝突する.
     db.add(
         PatientFixedVisit(
             patient_id=p1.id,
@@ -2571,16 +2571,8 @@ async def test_reset_to_fixed_rejects_when_pfv_has_cross_address_conflict(client
         headers=_bearer(admin),
         json={"iso_year": 2026, "iso_week": 20, "office_ids": [str(office.id)], "confirm": True},
     )
-    assert res.status_code == 422, res.text
-    body = res.json()
-    detail = body.get("detail")
-    assert isinstance(detail, dict), f"detail should be dict, got: {detail!r}"
-    assert detail.get("code") == "same_time_conflict_with_other_patient"
-    conflicts = detail.get("conflicts") or []
-    assert len(conflicts) >= 1
-    pids = set(conflicts[0]["patient_ids"])
-    assert str(p1.id) in pids
-    assert str(p2.id) in pids
+    # hotfix: 422 拒否を撤去、reset は成功する (log warning のみ)
+    assert res.status_code == 200, res.text
 
 
 @pytest.mark.asyncio
