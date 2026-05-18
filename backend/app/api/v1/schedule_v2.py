@@ -873,11 +873,14 @@ async def apply_week_only_endpoint(
                     ),
                 )
 
-    # CareFlow バグ修正 (apply_week_only 境界検証): 同 (office_id, weekday,
-    # course_code, start_time) で **異 patient_id** の visit_plan が複数あれば、
-    # それは「同コース同時刻に異住所 2 名配置」の本質バグなので適用を拒否する.
-    # ``auto_allocator_v2`` の Stage 5 (#102 Fix B 漏れ) で発生する可能性があり、
-    # FE 側でも防げないため境界 (API endpoint) で再検証する.
+    # CareFlow バグ検出 (apply_week_only 境界検証): 同 (office_id, weekday,
+    # course_code, start_time) で **異 patient_id** の visit_plan が複数あれば
+    # 「同コース同時刻に異住所 2 名配置」を検出する.
+    #
+    # CareFlow #112 hotfix (2026-05-18): 422 拒否すると Fix E (auto_shift) で
+    # 解消しきれないケースで apply が永久に詰まる. ユーザー impact が大きいため
+    # warning ログのみ残し apply は続行する. 後段で全面最適化を再実行すれば
+    # Fix E が再度シフトを試みる想定.
     seen_slots: dict[tuple[UUID, int, str, str], UUID] = {}
     conflicts: list[dict[str, str | int | None]] = []
     for pvp in payload.visit_plans_per_patient:
@@ -904,13 +907,15 @@ async def apply_week_only_endpoint(
                 )
 
     if conflicts:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={
-                "code": "same_time_conflict",
-                "message": (f"{len(conflicts)} 件の同コース同時刻衝突を検出、適用拒否"),
-                "conflicts": conflicts[:10],  # 最初の 10 件のみ返却
-            },
+        # 拒否せず warning log のみ. apply は続行.
+        import logging
+
+        _log = logging.getLogger(__name__)
+        _log.warning(
+            "apply_week_only: %d 件の同コース同時刻衝突を検出 (apply 続行、Fix E "
+            "再実行で解消想定): %s",
+            len(conflicts),
+            conflicts[:5],
         )
 
     patient_visit_plans = [

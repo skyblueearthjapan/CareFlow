@@ -630,8 +630,9 @@ async def test_apply_week_only_rejects_staff(client, db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_apply_week_only_rejects_same_time_conflict(client, db) -> None:
-    """同コース同時刻に異 patient_id が混在する場合は 422 (same_time_conflict)."""
+async def test_apply_week_only_allows_same_time_conflict_with_warning(client, db) -> None:
+    """CareFlow #112 hotfix: 同コース同時刻に異 patient_id が混在する場合でも
+    apply は続行 (warning log のみ). 422 拒否を撤去."""
     admin = await _make_user(db, email="v2-conflict-admin@example.com", role="admin")
     office, _ = await _seed_office_with_staff(db)
     p1 = await _seed_patient(db, office=office, code="CONF-1")
@@ -662,22 +663,8 @@ async def test_apply_week_only_rejects_same_time_conflict(client, db) -> None:
             "confirm": True,
         },
     )
-    assert res.status_code == 422, res.text
-    body = res.json()
-    detail = body.get("detail")
-    assert isinstance(detail, dict), f"detail should be dict, got: {detail!r}"
-    assert detail.get("code") == "same_time_conflict"
-    assert "同コース同時刻衝突" in detail.get("message", "")
-    conflicts = detail.get("conflicts") or []
-    assert len(conflicts) >= 1
-    first = conflicts[0]
-    assert first["office_id"] == str(office.id)
-    assert first["weekday"] == 0
-    assert first["course_code"] == "A"
-    assert first["start_time"] == "09:00"
-    # patient_a / patient_b は p1 / p2 のいずれか
-    pids = {first["patient_a"], first["patient_b"]}
-    assert pids == {str(p1.id), str(p2.id)}
+    # hotfix: 422 撤去、200 で続行
+    assert res.status_code == 200, res.text
 
 
 @pytest.mark.asyncio
