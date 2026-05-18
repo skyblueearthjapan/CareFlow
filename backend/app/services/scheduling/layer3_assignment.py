@@ -40,6 +40,7 @@ MVP 前提 (Q3=ハイブリッド, §5.4 / 受入基準):
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 from collections import Counter
@@ -109,6 +110,25 @@ COST_SCALE: int = 10_000
 # BUFFER_MINUTES 分未満の余裕しかない場合はハード除外する。
 # 運用要件に応じて変更可 (例: 10 分 / 30 分)。
 BUFFER_MINUTES: int = 15  # 移動・準備の余裕 (Wave 33)
+
+# ---------------------------------------------------------------------------
+# Wave 5 (NEW): patient ベースの連続割付防止 + 週跨ぎ重複回避 + 決定的ランダム
+# ---------------------------------------------------------------------------
+
+# 同一 patient × 前日 visit が同一 staff だった場合のソフトペナルティ.
+# ハード INF にしないのは「他に勤務可能なスタッフが居ない」場合の救済のため.
+COST_W5_PATIENT_PREV_DAY: float = 1000.0
+
+# 同一 patient × 前々日 visit が同一 staff だった場合のソフトペナルティ.
+COST_W5_PATIENT_PREV2_DAY: float = 200.0
+
+# 月曜のみ — 前週金/土の visit が同 staff だった場合のソフトペナルティ.
+COST_W5_PATIENT_WEEK_CROSSOVER: float = 800.0
+
+# 決定的ランダム加算の上限値. cost に [0.0, COST_W5_ROTATION_MAX) を加算して
+# ローテーション (= 同じ patient に常に同じ staff が当たる現象) を回避する.
+# 距離 km 換算で 0-10 km 程度の振れ幅を持たせる.
+COST_W5_ROTATION_MAX: float = 10.0
 
 
 # ---------------------------------------------------------------------------
@@ -282,6 +302,42 @@ def _has_event_overlap_with_buffer(
 
 
 # ---------------------------------------------------------------------------
+# Wave 5: deterministic randomness for rotation scoring
+# ---------------------------------------------------------------------------
+
+
+def _deterministic_random(
+    *,
+    iso_year: int,
+    iso_week: int,
+    patient_id: UUID | None,
+    staff_id: UUID,
+) -> float:
+    """``[0.0, COST_W5_ROTATION_MAX)`` の決定的擬似乱数を返す.
+
+    Wave 5: 同じ patient に常に同じ staff が当たる現象 (= ローテーション固定化) を
+    避けるため、cost 行列に小さなランダム加算を入れる。完全乱数だと再現性がなく
+    テストできないので、``(iso_year, iso_week, patient_id, staff_id)`` を seed と
+    した SHA-256 ベースの decision を採用する.
+
+    - 同じ (year, week, patient, staff) なら何度呼んでも同じ値
+    - 週が変われば異なる値 → 週次でローテーションが回る
+    - patient × staff の組合せでも一意な値 → ペア固有の偏りが出ない
+
+    ``patient_id`` が None の場合は (例えば fixture / 空コース) staff_id のみで計算する.
+    """
+    parts: list[str] = [str(iso_year), str(iso_week), str(staff_id)]
+    if patient_id is not None:
+        parts.append(str(patient_id))
+    seed = "|".join(parts).encode("utf-8")
+    digest = hashlib.sha256(seed).digest()
+    # 上位 8 byte を 64bit 整数化 → [0, 1) の小数 → COST_W5_ROTATION_MAX 倍
+    value = int.from_bytes(digest[:8], "big")
+    fraction = value / float(1 << 64)
+    return fraction * COST_W5_ROTATION_MAX
+
+
+# ---------------------------------------------------------------------------
 # Hungarian algorithm (square matrix)
 # ---------------------------------------------------------------------------
 
@@ -446,6 +502,13 @@ class Layer3Assigner:
             week_monday=week_monday,
         )
 
+        # ---------- 4d. Wave 5: patient × staff 履歴 (前日 / 前々日 / 前週金土) ----------
+        (
+            patient_prev_day_history,
+            patient_prev2_day_history,
+            patient_prev_week_fri_sat_history,
+        ) = await self._load_patient_visit_history(db, week_monday=week_monday)
+
         # ---------- 5. 計算 ----------
         result = self.solve(
             course_targets,
@@ -454,6 +517,11 @@ class Layer3Assigner:
             fixed_staff_by_course=fixed_staff_by_course,
             events_by_staff=events_by_staff,
             week_monday=week_monday,
+            iso_year=iso_year,
+            iso_week=iso_week,
+            patient_prev_day_history=patient_prev_day_history,
+            patient_prev2_day_history=patient_prev2_day_history,
+            patient_prev_week_fri_sat_history=patient_prev_week_fri_sat_history,
         )
 
         # ---------- 6. DB 反映 ----------
@@ -476,6 +544,11 @@ class Layer3Assigner:
         same_course_prev_day_penalty: bool = True,
         events_by_staff: dict[UUID, list[StaffEvent]] | None = None,
         week_monday: date_cls | None = None,
+        iso_year: int | None = None,
+        iso_week: int | None = None,
+        patient_prev_day_history: dict[tuple[int, UUID], set[UUID]] | None = None,
+        patient_prev2_day_history: dict[tuple[int, UUID], set[UUID]] | None = None,
+        patient_prev_week_fri_sat_history: dict[UUID, set[UUID]] | None = None,
     ) -> Layer3Result:
         """純粋関数版エントリポイント (テスト / fixture 評価で直接使う).
 
@@ -498,6 +571,18 @@ class Layer3Assigner:
             week_monday: W27 Phase A — 当該 ISO 週の月曜日 (date).
                 ``events_by_staff`` 利用時に必須。weekday から実日付を
                 算出して event 時間帯と比較する。
+            iso_year: Wave 5 — ローテーション seed 用 ISO 年.
+                ``None`` のとき rotation score の加算を skip.
+            iso_week: Wave 5 — ローテーション seed 用 ISO 週 (1-53).
+            patient_prev_day_history: Wave 5 — 前日 (当該 weekday - 1) の visit に
+                同 patient で割当てられていた staff を ``(weekday, patient_id) -> {staff_id}``
+                で渡す. weekday は **判定対象の今週** の曜日 (= 例: 火曜のセル評価では
+                weekday=1 を渡し、前日=月曜の staff 集合を取得する).
+            patient_prev2_day_history: Wave 5 — 前々日 (当該 weekday - 2) の同 patient
+                ``staff_id`` 集合. None で penalty 無し.
+            patient_prev_week_fri_sat_history: Wave 5 — 前週の金/土の同 patient ``staff_id``
+                集合 (``patient_id -> {staff_id}``). 月曜 (weekday=0) のセル評価時にのみ
+                参照される.
 
         Returns:
             Layer3Result.
@@ -516,6 +601,12 @@ class Layer3Assigner:
             fixed_staff_by_course = {}
         if events_by_staff is None:
             events_by_staff = {}
+        if patient_prev_day_history is None:
+            patient_prev_day_history = {}
+        if patient_prev2_day_history is None:
+            patient_prev2_day_history = {}
+        if patient_prev_week_fri_sat_history is None:
+            patient_prev_week_fri_sat_history = {}
 
         # 固定割当先となる staff_id 集合 (= manager を除外しない対象)
         fixed_staff_ids: set[UUID] = set(fixed_staff_by_course.values())
@@ -538,6 +629,16 @@ class Layer3Assigner:
         # の割当から構築する.
         prev_day_pairs: set[tuple[str, UUID]] = set()
 
+        # Wave 5: 当該週内の当日割当を patient レベルで「前日 / 前々日」マップに
+        # 伝搬する. ループ内で書き換えるため、呼び出し側から渡された辞書を
+        # 破壊しないようコピーを保持する.
+        working_prev_day: dict[tuple[int, UUID], set[UUID]] = {
+            k: set(v) for k, v in patient_prev_day_history.items()
+        }
+        working_prev2_day: dict[tuple[int, UUID], set[UUID]] = {
+            k: set(v) for k, v in patient_prev2_day_history.items()
+        }
+
         # 各曜日ごとに独立して解く (= 1 スタッフ 1 日 1 コース制約は曜日内で閉じる)
         # W16: 曜日順 (Mon -> Sat) に解き、前日割当を後続曜日へ伝搬する.
         for weekday in sorted(by_weekday.keys()):
@@ -551,6 +652,11 @@ class Layer3Assigner:
                 prev_day_pairs=prev_day_pairs if same_course_prev_day_penalty else set(),
                 events_by_staff=events_by_staff,
                 week_monday=week_monday,
+                iso_year=iso_year,
+                iso_week=iso_week,
+                patient_prev_day_history=working_prev_day,
+                patient_prev2_day_history=working_prev2_day,
+                patient_prev_week_fri_sat_history=patient_prev_week_fri_sat_history,
             )
             for a in day_assignments:
                 all_assignments.append(a)
@@ -561,6 +667,18 @@ class Layer3Assigner:
 
             # 当日割当を「前日割当」として次曜日へ受け渡し
             prev_day_pairs = {(a.course_code, a.staff_id) for a in day_assignments}
+
+            # Wave 5: 当日 (weekday=W) 割当の patient × staff を、次々曜日 (W+1) の
+            # 「前日マップ」と (W+2) の「前々日マップ」に追加する.
+            next_wd = weekday + 1
+            next2_wd = weekday + 2
+            for a in day_assignments:
+                course = next(c for c in day_courses if c.course_id == a.course_id)
+                for pid in course.patient_ids:
+                    if next_wd <= 6:
+                        working_prev_day.setdefault((next_wd, pid), set()).add(a.staff_id)
+                    if next2_wd <= 6:
+                        working_prev2_day.setdefault((next2_wd, pid), set()).add(a.staff_id)
 
         # ローテーション分散度 (Gini) — fixed 割当は分散度計算対象外
         # (固定スタッフはローテーション対象ではないため)
@@ -594,6 +712,11 @@ class Layer3Assigner:
         prev_day_pairs: set[tuple[str, UUID]] | None = None,
         events_by_staff: dict[UUID, list[StaffEvent]] | None = None,
         week_monday: date_cls | None = None,
+        iso_year: int | None = None,
+        iso_week: int | None = None,
+        patient_prev_day_history: dict[tuple[int, UUID], set[UUID]] | None = None,
+        patient_prev2_day_history: dict[tuple[int, UUID], set[UUID]] | None = None,
+        patient_prev_week_fri_sat_history: dict[UUID, set[UUID]] | None = None,
     ) -> list[StaffAssignment]:
         """1 曜日内で (course × staff) のハンガリアンを解く.
 
@@ -619,6 +742,12 @@ class Layer3Assigner:
             prev_day_pairs = set()
         if events_by_staff is None:
             events_by_staff = {}
+        if patient_prev_day_history is None:
+            patient_prev_day_history = {}
+        if patient_prev2_day_history is None:
+            patient_prev2_day_history = {}
+        if patient_prev_week_fri_sat_history is None:
+            patient_prev_week_fri_sat_history = {}
 
         # ----- W16: 固定割当を先に剥がす -----
         result: list[StaffAssignment] = []
@@ -678,6 +807,11 @@ class Layer3Assigner:
                     prev_day_pairs=prev_day_pairs,
                     events_by_staff=events_by_staff,
                     week_monday=week_monday,
+                    iso_year=iso_year,
+                    iso_week=iso_week,
+                    patient_prev_day_history=patient_prev_day_history,
+                    patient_prev2_day_history=patient_prev2_day_history,
+                    patient_prev_week_fri_sat_history=patient_prev_week_fri_sat_history,
                 )
         # ダミー行 (i >= n_courses): 全列コスト 0  → 「未割当の course/staff」を吸収
         # ダミー列 (j >= n_staff): 全行コスト 0
@@ -716,23 +850,39 @@ class Layer3Assigner:
         prev_day_pairs: set[tuple[str, UUID]] | None = None,
         events_by_staff: dict[UUID, list[StaffEvent]] | None = None,
         week_monday: date_cls | None = None,
+        iso_year: int | None = None,
+        iso_week: int | None = None,
+        patient_prev_day_history: dict[tuple[int, UUID], set[UUID]] | None = None,
+        patient_prev2_day_history: dict[tuple[int, UUID], set[UUID]] | None = None,
+        patient_prev_week_fri_sat_history: dict[UUID, set[UUID]] | None = None,
     ) -> float:
         """単一セル (course, staff) のコストを返す.
 
-        コスト関数 (§5.4 + W16 拡張 + W27 Phase A 拡張 + W33 バッファ拡張):
+        コスト関数 (§5.4 + W16 拡張 + W27 Phase A 拡張 + W33 バッファ拡張 + Wave 5 拡張):
             cost = α * distance
                  + β * rotation_penalty
                  + γ * gender
                  + δ * work_day
                  + W16: 前日同コース penalty
                  + W27/W33: event 時間帯重複 + BUFFER_MINUTES バッファ (ハード除外)
+                 + Wave 5: patient × 前日 same staff penalty (+1000)
+                 + Wave 5: patient × 前々日 same staff penalty (+200)
+                 + Wave 5: 月曜のみ patient × 前週金/土 same staff penalty (+800)
+                 + Wave 5: deterministic random rotation score (0 .. COST_W5_ROTATION_MAX)
 
         γ / δ / W27/W33 はハード制約なので INF 相当 (= ``HUNGARIAN_INFINITY``).
+        Wave 5 ペナルティはすべてソフト (= INF ではなく加算).
         """
         if prev_day_pairs is None:
             prev_day_pairs = set()
         if events_by_staff is None:
             events_by_staff = {}
+        if patient_prev_day_history is None:
+            patient_prev_day_history = {}
+        if patient_prev2_day_history is None:
+            patient_prev2_day_history = {}
+        if patient_prev_week_fri_sat_history is None:
+            patient_prev_week_fri_sat_history = {}
 
         # ---------- δ: 勤務曜日違反 (ハード制約) ----------
         if weekday not in staff.work_days:
@@ -794,8 +944,48 @@ class Layer3Assigner:
         if (course.course_code, staff.staff_id) in prev_day_pairs:
             prev_day_penalty = COST_W16_PREV_DAY_SAME_COURSE
 
+        # ---------- Wave 5: patient ベース連続割付 / 週跨ぎ重複 / ローテ ----------
+        # course.patient_ids にある各患者について、その患者の前日 (前々日 / 前週金土) に
+        # 同じ staff が割当てられていた場合にペナルティを加える。
+        # 1 コースに複数患者がいる場合は **最大ペナルティを採用** する
+        # (= 1 人でも該当すれば回避したい). 合算だと複数患者で過剰にコストが膨らみ
+        # ハード除外と区別がつかなくなるため。
+        wave5_patient_penalty = 0.0
+        for pid in course.patient_ids:
+            cell_penalty = 0.0
+            prev_day_set = patient_prev_day_history.get((weekday, pid))
+            if prev_day_set is not None and staff.staff_id in prev_day_set:
+                cell_penalty = max(cell_penalty, COST_W5_PATIENT_PREV_DAY)
+            prev2_day_set = patient_prev2_day_history.get((weekday, pid))
+            if prev2_day_set is not None and staff.staff_id in prev2_day_set:
+                cell_penalty = max(cell_penalty, COST_W5_PATIENT_PREV2_DAY)
+            if weekday == 0:  # 月曜のみ前週金/土チェック
+                prev_week_set = patient_prev_week_fri_sat_history.get(pid)
+                if prev_week_set is not None and staff.staff_id in prev_week_set:
+                    cell_penalty = max(cell_penalty, COST_W5_PATIENT_WEEK_CROSSOVER)
+            wave5_patient_penalty = max(wave5_patient_penalty, cell_penalty)
+
+        # ---------- Wave 5: 決定的ランダム rotation score ----------
+        # 同じ patient に常に同じ staff が当たる現象を避ける。
+        # 1 コース内で代表 patient (= min(patient_ids)) を seed に使う.
+        # patient_ids が空のときは course_code を hash 化したダミー値を seed にする.
+        # Wave 5 fix: DB 取得順依存を避けるため min() で決定的に最小 UUID を選ぶ.
+        rotation_random = 0.0
+        if iso_year is not None and iso_week is not None:
+            seed_patient = min(course.patient_ids) if course.patient_ids else None
+            rotation_random = _deterministic_random(
+                iso_year=iso_year,
+                iso_week=iso_week,
+                patient_id=seed_patient,
+                staff_id=staff.staff_id,
+            )
+
         return (
-            COST_ALPHA_DISTANCE * distance + COST_BETA_ROTATION * rotation_count + prev_day_penalty
+            COST_ALPHA_DISTANCE * distance
+            + COST_BETA_ROTATION * rotation_count
+            + prev_day_penalty
+            + wave5_patient_penalty
+            + rotation_random
         )
 
     def _distance_km(self, course: CourseAssignmentTarget, staff: StaffInfo) -> float:
@@ -1118,6 +1308,93 @@ class Layer3Assigner:
                 )
             )
         return result
+
+    async def _load_patient_visit_history(
+        self,
+        db: AsyncSession,
+        *,
+        week_monday: date_cls,
+    ) -> tuple[
+        dict[tuple[int, UUID], set[UUID]],
+        dict[tuple[int, UUID], set[UUID]],
+        dict[UUID, set[UUID]],
+    ]:
+        """Wave 5: patient × staff の最近履歴を 3 種類のマップで返す.
+
+        当該週の月曜日 ``week_monday`` を起点に、前週月曜から当該週日曜までの
+        ``visit_staff_assignments`` を ``Visit`` と JOIN して取得する。
+
+        Returns:
+            ``(prev_day_map, prev2_day_map, prev_week_fri_sat_map)``
+
+            - ``prev_day_map``: ``(weekday, patient_id) -> {staff_id, ...}``
+              当該週 weekday W のセル評価で「前日 (weekday W-1) の同 patient」
+              として参照する集合. **当該週内の履歴** から構築する。
+              W=0 (月曜) には前日エントリは入らない (前日は前週日曜だが本仕様では未使用).
+            - ``prev2_day_map``: ``(weekday, patient_id) -> {staff_id, ...}``
+              前々日 (weekday W-2) 用. W=0, W=1 には前々日エントリは入らない.
+            - ``prev_week_fri_sat_map``: ``patient_id -> {staff_id, ...}``
+              前週金 (weekday=4) と前週土 (weekday=5) の同 patient staff の和集合.
+              月曜セル評価でのみ参照される.
+
+        Notes:
+            - ``visit_staff_assignments`` テーブルから staff_id を取得する
+              (= v2 正規の割当テーブル). visit.primary_staff_id は対象外.
+            - planned / completed どちらでも参照する
+              (= 既に staff_assigned 状態の当該週 visit も含める).
+            - Wave 5 fix (re-run swing 回避): visit.course_id を介して
+              ``Course.course_status == 'staff_assigned'`` のコースのみに限定する.
+              これにより、前回 Layer 3 実行の残骸 VSA が再実行で history として
+              作用して staff 選択が振れる現象を防ぐ. course_fixed (= 未確定) の
+              VSA は履歴対象外.
+        """
+        prev_week_monday = week_monday - timedelta(days=7)
+        this_week_sunday_plus1 = week_monday + timedelta(days=7)
+
+        stmt = (
+            select(
+                Visit.patient_id,
+                Visit.visit_date,
+                VisitStaffAssignment.staff_id,
+            )
+            .join(VisitStaffAssignment, VisitStaffAssignment.visit_id == Visit.id)
+            .join(Course, Course.id == Visit.course_id)
+            .where(
+                Visit.visit_date >= prev_week_monday,
+                Visit.visit_date < this_week_sunday_plus1,
+                Visit.deleted_at.is_(None),
+                Course.course_status == COURSE_STATUS_STAFF_ASSIGNED,
+            )
+        )
+        rows = (await db.execute(stmt)).all()
+
+        prev_day_map: dict[tuple[int, UUID], set[UUID]] = {}
+        prev2_day_map: dict[tuple[int, UUID], set[UUID]] = {}
+        prev_week_fri_sat_map: dict[UUID, set[UUID]] = {}
+
+        for patient_id, visit_date, staff_id in rows:
+            if patient_id is None or staff_id is None or visit_date is None:
+                continue
+            # 当該週内ならば weekday を直接利用. 前週ならば fri/sat だけ拾う.
+            delta_days = (visit_date - week_monday).days
+            if 0 <= delta_days <= 6:
+                # 当該週内
+                wd = visit_date.weekday()
+                # 前日候補: wd+1 のセル評価から見れば「前日」エントリになる
+                next_wd = wd + 1
+                if next_wd <= 6:
+                    prev_day_map.setdefault((next_wd, patient_id), set()).add(staff_id)
+                # 前々日候補: wd+2 のセル評価から見れば「前々日」エントリ
+                next2_wd = wd + 2
+                if next2_wd <= 6:
+                    prev2_day_map.setdefault((next2_wd, patient_id), set()).add(staff_id)
+            elif -7 <= delta_days < 0:
+                # 前週内
+                wd = visit_date.weekday()
+                if wd in (4, 5):  # 前週金 (4) または 土 (5)
+                    prev_week_fri_sat_map.setdefault(patient_id, set()).add(staff_id)
+
+        return prev_day_map, prev2_day_map, prev_week_fri_sat_map
 
     async def _load_staff_events(
         self,
@@ -1686,6 +1963,10 @@ def history_from_fixture_list(
 __all__ = [
     "COST_ALPHA_DISTANCE",
     "COST_BETA_ROTATION",
+    "COST_W5_PATIENT_PREV2_DAY",
+    "COST_W5_PATIENT_PREV_DAY",
+    "COST_W5_PATIENT_WEEK_CROSSOVER",
+    "COST_W5_ROTATION_MAX",
     "CourseAssignmentTarget",
     "HUNGARIAN_INFINITY",
     "Layer3AssignmentError",
@@ -1696,6 +1977,7 @@ __all__ = [
     "StaffAssignment",
     "StaffInfo",
     "VisitTimeSlot",
+    "_deterministic_random",
     "course_target_from_fixture_dict",
     "history_from_fixture_list",
     "hungarian_min_cost",
