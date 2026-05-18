@@ -50,6 +50,9 @@ export const v2WarningTypeSchema = z.enum([
   'diff_add_conflict',
   // CareFlow Wave Next 2 cross-review [H2]: staff_shifts 未投入の data-health 警告.
   'data_health_staff_shifts_missing',
+  // CareFlow Fix E: 同 (office, weekday, course) で異住所同時刻 2 名を検出し、
+  // 後者を auto shift (固定でも例外) で時刻調整したことを通知する info warning.
+  'auto_time_shift_for_conflict',
   'general',
 ]);
 export type V2WarningType = z.infer<typeof v2WarningTypeSchema>;
