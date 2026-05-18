@@ -327,13 +327,15 @@ async def test_apply_individual_rejects_empty_plans(client, db) -> None:
 
 @pytest.mark.asyncio
 async def test_apply_individual_rejects_visit_in_unavoidable_lunch(client, db) -> None:
-    """Phase B: 動的 lunch (11:30-13:30 内 45 分) を取れない visit_plan は 422.
+    """Phase B + Phase E-3 改修 (2): 動的 lunch (11:30-13:30 内 30 分) を取れない
+    visit_plan は 422.
 
-    旧仕様 (H-Codex-2) では 12:00-13:00 と重なる全 visit を 422 拒否していたが、
-    Wave 3 で lunch がコース別動的になったため、API 境界も ``_is_in_lunch_break``
-    (= AM 側 11:30-12:15 lunch / PM 側 12:30-13:30 lunch のどちらでも回避不可)
-    で判定する. ``12:10-12:50`` は AM 側 (lunch_end <= visit_start = 12:10 不可) も
-    PM 側 (lunch_start >= visit_end = 12:50 不可) も成立しないため 422.
+    旧仕様 (H-Codex-2) では 12:00-13:00 と重なる全 visit を 422 拒否していた.
+    Phase E-3 で lunch fallback が 30 分まで緩和されたため、API 境界も
+    ``_is_in_lunch_break`` (= AM 側 11:30-12:00 / PM 側 13:00-13:30 のどちらでも
+    回避不可 = start<12:00 かつ end>13:00) で判定する.
+    ``11:50-13:10`` は AM 側 (visit_start=11:50 < 12:00 不可) も
+    PM 側 (visit_end=13:10 > 13:00 不可) も成立しないため 422.
     """
     admin = await _make_user(db, email="v2-h10-admin@example.com", role="admin")
     office, _ = await _seed_office_with_staff(db)
@@ -348,9 +350,9 @@ async def test_apply_individual_rejects_visit_in_unavoidable_lunch(client, db) -
             "visit_plans": [
                 {
                     "weekday": 0,
-                    "start_time": "12:10",  # 動的 lunch (11:30-13:30 内 45 分) どこにも置けない
-                    "end_time": "12:50",
-                    "duration_min": 40,
+                    "start_time": "11:50",  # 動的 lunch (11:30-13:30 内 30 分) どこにも置けない
+                    "end_time": "13:10",
+                    "duration_min": 80,
                     "course_code": "A",
                     "office_id": str(office.id),
                     "am_pm": "pm",
@@ -1626,10 +1628,11 @@ async def test_update_fixed_time_master_updates_pfv_and_weekly_pattern(client, d
 
 @pytest.mark.asyncio
 async def test_update_fixed_time_master_rejects_lunch_break(client, db) -> None:
-    """Phase B: 動的 lunch (11:30-13:30 内 45 分) を取れない時刻は 422.
+    """Phase B + Phase E-3 改修 (2): 動的 lunch (11:30-13:30 内 30 分) を取れない
+    時刻は 422.
 
-    旧仕様の 12:15-12:45 は AM 側 lunch 11:30-12:15 で回避可になったため、
-    回避不可能な 12:10-12:50 で 422 を確認する.
+    Phase E-3 で lunch fallback が 30 分まで緩和されたため、回避不能な区間は
+    start<12:00 かつ end>13:00 になる. 11:50-13:10 で 422 を確認する.
     """
     admin = await _make_user(db, email="v2-ufm-lb@example.com", role="admin")
     office, _ = await _seed_office_with_staff(db)
@@ -1641,8 +1644,8 @@ async def test_update_fixed_time_master_rejects_lunch_break(client, db) -> None:
         json={
             "patient_id": str(p.id),
             "weekday": 0,
-            "new_start": "12:10",
-            "new_end": "12:50",
+            "new_start": "11:50",
+            "new_end": "13:10",
             "new_time_type": "固定",
         },
     )
@@ -1956,9 +1959,9 @@ async def test_update_fixed_time_master_h10_skipped_for_range_type(client, db) -
 async def test_update_fixed_time_master_h10_lunch_overlap_via_duration(client, db) -> None:
     """new_end 省略時でも duration_min から計算した end が動的昼休憩に重なれば 422.
 
-    Phase B 修正: 旧仕様 (11:30-12:30 で 422) は新仕様だと PM 側 lunch 12:30+ で
-    回避可になるため通る. 動的 lunch のどこにも置けない 11:45-12:45 (= 60 分,
-    AM 側 12:15+ 不可 / PM 側 12:30 以下 不可) で 422 を確認する.
+    Phase B + Phase E-3 改修 (2): lunch fallback が 30 分まで緩和されたため、
+    動的 lunch のどこにも置けない区間は start<12:00 かつ end>13:00.
+    11:50 + 80 分 = 13:10 で 422 を確認する (AM 側 12:00 不可 / PM 側 13:00 以下 不可).
     """
     from app.models.patient_fixed_visit import PatientFixedVisit
 
@@ -1970,7 +1973,7 @@ async def test_update_fixed_time_master_h10_lunch_overlap_via_duration(client, d
         mode="normal",
         weekday=0,
         start_time=time(10, 0),
-        duration_min=60,  # ← 既存 duration
+        duration_min=80,  # ← 既存 duration (Phase E-3: 30 分 lunch 不可避 80 分幅)
         slot_index=0,
     )
     db.add(pfv)
@@ -1982,7 +1985,7 @@ async def test_update_fixed_time_master_h10_lunch_overlap_via_duration(client, d
         json={
             "patient_id": str(p.id),
             "weekday": 0,
-            "new_start": "11:45",  # 11:45 + 60min = 12:45 → 動的 lunch どこにも置けない
+            "new_start": "11:50",  # 11:50 + 80min = 13:10 → 30 分 lunch どこにも置けない
             # new_end は故意に省略
         },
     )
@@ -3104,10 +3107,11 @@ async def test_apply_week_only_same_address_pair_aligned_to_same_start(client, d
     assert all(v.start_time == time(9, 0) for v in visits), (
         f"Wave 2: 同住所ペアは同 start_time のはず, got {[v.start_time for v in visits]}"
     )
-    # 1 名は end=09:30 (A), もう 1 名は end=10:00 (B / 合算占有). 順不同.
+    # Phase E-3 改修 (3): 1 名は end=09:30 (A), もう 1 名は end=10:30
+    # (B / max(60, 90) = 90 分占有). 順不同.
     ends = sorted(v.end_time for v in visits)
-    assert ends == [time(9, 30), time(10, 0)], (
-        f"Wave 2: end_time に 09:30 と 10:00 が含まれるはず: {ends}"
+    assert ends == [time(9, 30), time(10, 30)], (
+        f"Phase E-3: end_time に 09:30 と 10:30 (90 分占有) が含まれるはず: {ends}"
     )
 
 
@@ -3272,10 +3276,11 @@ async def test_reset_to_fixed_same_address_pair_both_flex_aligned(client, db) ->
     assert all(v.start_time == time(9, 0) for v in visits), (
         f"Wave 2: 同住所ペアは同 start_time のはず, got {[v.start_time for v in visits]}"
     )
-    # 1 名は end=09:30 (A), もう 1 名は end=10:00 (B / 合算占有). 順不同.
+    # Phase E-3 改修 (3): 1 名は end=09:30 (A), もう 1 名は end=10:30
+    # (B / max(60, 90) = 90 分占有). 順不同.
     ends = sorted(v.end_time for v in visits)
-    assert ends == [time(9, 30), time(10, 0)], (
-        f"Wave 2: end_time に 09:30 と 10:00 が含まれるはず: {ends}"
+    assert ends == [time(9, 30), time(10, 30)], (
+        f"Phase E-3: end_time に 09:30 と 10:30 (90 分占有) が含まれるはず: {ends}"
     )
 
 

@@ -160,8 +160,19 @@ LUNCH_LATEST_START: time = time(12, 30)
 LUNCH_LATEST_END: time = time(13, 30)
 LUNCH_DURATION_PREFERRED: int = 60
 LUNCH_DURATION_FALLBACK: int = 45
+# Phase E-3 改修 (2): フレキシブルランチ 3 段階 fallback.
+# 「11:30-13:30 の 2 時間枠内のどこかで必ず 45-60 分の休憩を確保。最悪、なんとなく
+# スペース確保」(User 確定仕様) のため、60 分 → 45 分 → 30 分 の 3 段階で空きを探す.
+# 30 分 fallback が採用された場合は ``compute_lunch_window`` が warning を出す.
+LUNCH_DURATION_MIN: int = 30
 # 候補刻み (5 分): 11:30, 11:35, ..., 12:30.
 LUNCH_CANDIDATE_STEP_MIN: int = 5
+
+# Phase E-3 改修 (3): 同住所ペアの最低占有 (分).
+# 同住所ペアは「最大 2 名」で揃え + ペア合算 duration で占有させるが、
+# 合算が 90 分未満 (= 35+35=70, 30+30=60, etc.) でも最低 90 分占有を確保する.
+# User 確定仕様: ``max(service 合計, 90)``.
+SAME_ADDRESS_PAIR_MIN_OCCUPANCY: int = 90
 
 # API 境界 / 仮定値で使う「標準昼休憩枠」(動的計算が走らないステージ用).
 LUNCH_DEFAULT_START: time = time(12, 0)
@@ -366,6 +377,10 @@ UnassignedReason = Literal[
     "course_overflow",  # コース数超過 (Stage 5 で未割当)
     "manager_short",  # マネージャー不足 (M course 不足)
     "same_address_split",  # 同住所 3 名以上で別 set へ動かしたが配置できず
+    # Phase E-3 改修 (4): 同住所 3 名以上が _align_same_address_pair_to_same_time
+    # に到達した時 (= H2 enforce で別 set へ動かしきれなかった残存) に 3 名目以降を
+    # 自動別コース化のため unassigned に流す.
+    "same_address_three_or_more",
     "fixed_time_conflict",  # 固定時刻衝突 (travel_time_shortage 等)
     "lunch_break",  # 昼休憩 (12:00-13:00) と重なるため除外
     # Wave 4 (Phase C): 希望時刻から CARE_ALARM_UNASSIGNED_THRESHOLD_MIN (=60) 分超で
@@ -912,23 +927,32 @@ def determine_am_pm(
 def _is_in_lunch_break(start: time, end: time) -> bool:
     """H10: visit が「動的 lunch window (11:30-13:30)」と物理的に重なるか判定.
 
+    Phase E-3 改修 (2): フレキシブルランチ 3 段階 fallback (60→45→30 分) に
+    合わせて緩和. ``LUNCH_DURATION_MIN`` (= 30 分) の最低 lunch でも避けられない
+    場合のみ True を返す.
+
     Wave 3 で lunch がコース別動的になったため、コース確定前ステージ (Stage 1〜2)
-    や API 境界では「visit が **どの 45 分 lunch 配置でも避けられない区間** に
+    や API 境界では「visit が **どの最小 30 分 lunch 配置でも避けられない区間** に
     入っているか」を判定する.
 
-    Lunch 配置の制約 (#WAVE3 仕様):
-        - ``lunch_start`` ∈ [11:30, 12:30]
-        - ``lunch_end`` ∈ [12:15, 13:30]
-        - ``lunch_end - lunch_start`` ∈ [45 分, 60 分]
+    Lunch 配置の制約 (Phase E-3 仕様):
+        - ``lunch_start`` ∈ [11:30, 13:00]  (= LUNCH_LATEST_END - LUNCH_DURATION_MIN)
+        - ``lunch_end`` ∈ [12:00, 13:30]    (= LUNCH_EARLIEST_START + LUNCH_DURATION_MIN)
+        - ``lunch_end - lunch_start`` ∈ [30 分, 60 分]
 
     Lunch が visit と重ならないためには以下のいずれか:
-        - **AM 側回避**: lunch_end ≤ visit_start. これが成立する最小 lunch は
-          ``11:30-12:15`` (45 分) なので ``visit_start ≥ 12:15`` が必要.
-        - **PM 側回避**: lunch_start ≥ visit_end. これが成立する最大 lunch_start は
-          ``12:30`` なので ``visit_end ≤ 12:30`` が必要.
+        - **AM 側回避**: lunch_end ≤ visit_start. 最小 30 分 lunch (11:30-12:00) で
+          成立するには ``visit_start ≥ 12:00`` が必要.
+        - **PM 側回避**: lunch_start ≥ visit_end. PM 側 30 分 lunch (13:00-13:30) で
+          成立するには ``visit_end ≤ 13:00`` が必要.
 
-    上記いずれも成立しない (= ``visit_start < 12:15`` かつ ``visit_end > 12:30``)
+    上記いずれも成立しない (= ``visit_start < 12:00`` かつ ``visit_end > 13:00``)
     場合に True (= 物理的に lunch を取れない) を返す.
+
+    例 (Phase E-3 で挙動が変わる代表例):
+        - 12:00-12:35 (35 分 visit, 12:00 開始): AM 側回避可 (start=12:00) → False.
+          旧仕様では True (= 拒否) だった.
+        - 12:10-12:45: AM 側 start=12:10 < 12:00 NG, PM 側 end=12:45 > 13:00 NG → True.
 
     早期 escape:
         - ``end <= 11:30`` (visit が lunch window より前): False
@@ -938,15 +962,15 @@ def _is_in_lunch_break(start: time, end: time) -> bool:
         return False
     if start >= LUNCH_LATEST_END:
         return False
-    # AM-side 回避 (lunch 11:30-12:15 → visit start >= 12:15) or
-    # PM-side 回避 (lunch 12:30-... → visit end <= 12:30).
-    am_avoidable_visit_start = _add_minutes(LUNCH_EARLIEST_START, LUNCH_DURATION_FALLBACK)  # 12:15
-    pm_avoidable_visit_end = LUNCH_LATEST_START  # 12:30
+    # AM 側回避: 11:30-12:00 (30 分 lunch) → visit_start >= 12:00 で OK.
+    # PM 側回避: 13:00-13:30 (30 分 lunch) → visit_end <= 13:00 で OK.
+    am_avoidable_visit_start = _add_minutes(LUNCH_EARLIEST_START, LUNCH_DURATION_MIN)  # 12:00
+    pm_avoidable_visit_end = _add_minutes(LUNCH_LATEST_END, -LUNCH_DURATION_MIN)  # 13:00
     if start >= am_avoidable_visit_start:
-        # AM 側 lunch (11:30-12:15) で重複回避可.
+        # AM 側 lunch (11:30-12:00 30 分) で重複回避可.
         return False
     if end <= pm_avoidable_visit_end:
-        # PM 側 lunch (12:30-...) で重複回避可.
+        # PM 側 lunch (13:00-13:30 30 分) で重複回避可.
         return False
     return True
 
@@ -973,24 +997,28 @@ def compute_lunch_window(
 ) -> tuple[time, time] | None:
     """Wave 3 (#WAVE3): コース内 visit リストから最適 lunch slot を動的に決定する.
 
+    Phase E-3 改修 (2): フレキシブルランチ 3 段階 fallback (60→45→30 分).
+    「11:30-13:30 の 2 時間枠内のどこかで必ず 45-60 分の休憩を確保。最悪、
+    なんとなくスペース確保」(User 確定仕様) のため、60 分が取れなければ 45 分、
+    45 分も取れなければ 30 分の最終 fallback を試す. 30 分採用時は warning 発火.
+
     Algorithm:
       1. visit を ``start_time`` 昇順 sort し、占有区間 [start, end) のリストを作る.
       2. 候補 ``lunch_start`` を ``LUNCH_EARLIEST_START`` (11:30) から
          ``LUNCH_LATEST_START`` (12:30) まで ``LUNCH_CANDIDATE_STEP_MIN``
          (5 分) 刻みで走査する.
-      3. 各候補で
-           - 60 分連続空き (= ``LUNCH_DURATION_PREFERRED``) が確保できるかをチェック.
-           - 取れない場合は 45 分連続空き (= ``LUNCH_DURATION_FALLBACK``) を試す.
-      4. 60 分が取れる候補が **複数ある** 場合は、12:00 中心に最も近い start を選ぶ
-         (= ``|start_min - noon_min|`` が最小; 同値時は 12:00 以前を優先).
-      5. 60 分がどの候補でも取れない場合は、45 分が取れる候補のうち
-         12:00 中心に最も近いものを選ぶ.
-      6. すべての候補で 45 分も取れなければ ``None`` を返し、必要なら warning を出す.
+      3. 各候補で 60→45→30 分の順に空きをチェックし、見つかった duration の
+         best 候補として保持する.
+      4. 60 分が取れる候補があれば 12:00 中心に最も近いものを採用.
+         無ければ 45 分 best、それも無ければ 30 分 best.
+      5. すべての候補で 30 分も取れなければ ``None`` を返し warning を出す.
+      6. 30 分 fallback 採用時は「30 分しか取れないコース」運用者通知の warning を出す.
 
     Args:
         visits_in_course: 同じコース (= 1 staff × 1 day) に属する visit のリスト.
-        warnings: None 時は warning を出さない. リスト渡しなら 45 分も取れない
-            場合に ``V2Warning(type="general")`` を append する.
+        warnings: None 時は warning を出さない. リスト渡しなら
+            30 分も取れない場合 + 30 分 fallback 採用時に ``V2Warning(type="general")``
+            を append する.
         weekday: warning メッセージ用 (0=月..6=日 / -1 なら省略).
         course_code: warning メッセージ用 (None 可).
         office_name: warning メッセージ用 (空文字可).
@@ -1012,6 +1040,10 @@ def compute_lunch_window(
     earliest_min = _time_to_min(LUNCH_EARLIEST_START)  # 11:30 = 690
     latest_start_min = _time_to_min(LUNCH_LATEST_START)  # 12:30 = 750
     latest_end_min = _time_to_min(LUNCH_LATEST_END)  # 13:30 = 810
+    # Phase E-3 改修 (2): 30 分 fallback では cand_start を 13:00 (=
+    # LUNCH_LATEST_END - LUNCH_DURATION_MIN) まで広げて探索する.
+    # 30 分 lunch を 13:00-13:30 に配置するケース (= PM 側ギリギリ) を許容するため.
+    latest_start_min_30 = latest_end_min - LUNCH_DURATION_MIN  # 13:00 = 780
     noon_min = NOON_HOUR * 60  # 12:00 = 720
 
     def _has_free_window(slot_start: int, slot_end: int) -> bool:
@@ -1028,40 +1060,78 @@ def compute_lunch_window(
     best_60_dist: int = 10**9
     best_45: tuple[int, int] | None = None
     best_45_dist: int = 10**9
+    best_30: tuple[int, int] | None = None
+    best_30_dist: int = 10**9
 
-    for cand_start in range(earliest_min, latest_start_min + 1, LUNCH_CANDIDATE_STEP_MIN):
+    # Phase E-3 改修 (2): 3 段階 fallback. 各 cand_start で 60→45→30 を順に試す.
+    # 60 が取れた候補で 45/30 は試さない (= 60 優先). 60 が取れない候補のみ 45 を試し、
+    # 45 も取れなければ 30 を試す.
+    # cand_start の上限は duration ごとに異なる:
+    #   - 60 分 lunch: cand_start <= 12:30 (= LUNCH_LATEST_START) で end <= 13:30.
+    #   - 45 分 lunch: cand_start <= 12:45 (= LUNCH_LATEST_END - 45).
+    #   - 30 分 lunch: cand_start <= 13:00 (= LUNCH_LATEST_END - 30).
+    # 統一して latest_start_min_30 (= 13:00) まで走査する.
+    for cand_start in range(earliest_min, latest_start_min_30 + 1, LUNCH_CANDIDATE_STEP_MIN):
         end_60 = cand_start + LUNCH_DURATION_PREFERRED
-        if end_60 <= latest_end_min and _has_free_window(cand_start, end_60):
+        if (
+            cand_start <= latest_start_min
+            and end_60 <= latest_end_min
+            and _has_free_window(cand_start, end_60)
+        ):
             dist = abs(cand_start - noon_min)
-            # Tie-break (同 dist の場合): より早い start (= cand_start が小さい方)
-            # を採用する. 例: 11:55 と 12:05 はどちらも 12:00 から ±5 分で同 dist だが
-            # 11:55 を採用する (= 早い lunch 開始). ループは ``range`` で
-            # cand_start 昇順に走査するため、初回に見つかった候補が既に「より早い」.
-            # 本 `cand_start < best_60[0]` 条件は念のための防衛コードで、現状の
-            # 走査順では発火しない (= dead branch).
             if dist < best_60_dist or (
                 dist == best_60_dist and best_60 is not None and cand_start < best_60[0]
             ):
                 best_60 = (cand_start, end_60)
                 best_60_dist = dist
             continue
-        # 60 分が取れない候補に対してのみ 45 分を試す.
         end_45 = cand_start + LUNCH_DURATION_FALLBACK
         if end_45 <= latest_end_min and _has_free_window(cand_start, end_45):
             dist = abs(cand_start - noon_min)
-            # Tie-break: 60 分と同様、より早い start を採用 (= 11:55 vs 12:05 なら 11:55).
             if dist < best_45_dist or (
                 dist == best_45_dist and best_45 is not None and cand_start < best_45[0]
             ):
                 best_45 = (cand_start, end_45)
                 best_45_dist = dist
+            continue
+        # 45 分も取れない候補のみ 30 分 (= LUNCH_DURATION_MIN) を試す.
+        end_30 = cand_start + LUNCH_DURATION_MIN
+        if end_30 <= latest_end_min and _has_free_window(cand_start, end_30):
+            dist = abs(cand_start - noon_min)
+            if dist < best_30_dist or (
+                dist == best_30_dist and best_30 is not None and cand_start < best_30[0]
+            ):
+                best_30 = (cand_start, end_30)
+                best_30_dist = dist
 
     if best_60 is not None:
         return (_min_to_time(best_60[0]), _min_to_time(best_60[1]))
     if best_45 is not None:
         return (_min_to_time(best_45[0]), _min_to_time(best_45[1]))
+    if best_30 is not None:
+        # Phase E-3 改修 (2): 30 分 fallback 採用時は warning 発火.
+        # 「45 分も取れず 30 分しか確保できないコース」を運用者に通知する.
+        if warnings is not None:
+            wd_jp = _weekday_jp(weekday) if weekday >= 0 else ""
+            prefix = " ".join(filter(None, [office_name, course_code or "", wd_jp])).strip()
+            if prefix:
+                prefix = f"{prefix}: "
+            warnings.append(
+                V2Warning(
+                    type="general",
+                    message=(
+                        f"{prefix}スケジュールが密集しているため "
+                        f"昼休憩を {LUNCH_DURATION_MIN} 分しか確保できません "
+                        f"({_fmt_hhmm(_min_to_time(best_30[0]))}-"
+                        f"{_fmt_hhmm(_min_to_time(best_30[1]))}; 運用者要確認)"
+                    ),
+                    weekday=weekday if weekday >= 0 else None,
+                    actionable=True,
+                )
+            )
+        return (_min_to_time(best_30[0]), _min_to_time(best_30[1]))
 
-    # 45 分も取れない: warning + None.
+    # 30 分も取れない: warning + None.
     if warnings is not None:
         wd_jp = _weekday_jp(weekday) if weekday >= 0 else ""
         prefix = " ".join(filter(None, [office_name, course_code or "", wd_jp])).strip()
@@ -1072,7 +1142,7 @@ def compute_lunch_window(
                 type="general",
                 message=(
                     f"{prefix}スケジュールが密集しているため "
-                    f"昼休憩 (最低 {LUNCH_DURATION_FALLBACK} 分) を確保できません "
+                    f"昼休憩 (最低 {LUNCH_DURATION_MIN} 分) を確保できません "
                     "(運用者要確認)"
                 ),
                 weekday=weekday if weekday >= 0 else None,
@@ -1167,7 +1237,10 @@ def _extract_weekly_entries(
             sm = entry.get("service_minutes")
             if not isinstance(sm, int) or sm <= 0:
                 sm_value = pattern.get("service_minutes")
-                sm = int(sm_value) if isinstance(sm_value, int) and sm_value > 0 else 30
+                # Phase E-3 改修 (1): デフォルト service_minutes を 30 → 35 に変更.
+                # 患者マスタに service_minutes が未設定の場合、新規追加患者でも 35 分
+                # 訪問が標準となる. 既存 DB レコードの 30 分は別途 bulk update SQL で対応.
+                sm = int(sm_value) if isinstance(sm_value, int) and sm_value > 0 else 35
             if st is None:
                 # 時刻なしでも午前/午後判定はできるが、提案では仮 9:30 開始にする.
                 st = AM_BLOCK_START
@@ -1189,7 +1262,8 @@ def _extract_weekly_entries(
     base_pe_raw = pattern.get("preferred_end")
     base_start = _parse_hhmm(base_ps_raw)
     base_sm_raw = pattern.get("service_minutes")
-    base_sm = int(base_sm_raw) if isinstance(base_sm_raw, int) and base_sm_raw > 0 else 30
+    # Phase E-3 改修 (1): デフォルト service_minutes を 30 → 35 に変更 (サマリ形式).
+    base_sm = int(base_sm_raw) if isinstance(base_sm_raw, int) and base_sm_raw > 0 else 35
     if isinstance(weekdays_raw, list):
         for wd_raw in weekdays_raw:
             wd = _resolve_weekday(wd_raw)
@@ -2490,7 +2564,41 @@ def calc_course_total_minutes(visits: list[V2Visit]) -> int:
     if not visits:
         return 0
     sv = sorted(visits, key=lambda v: v.start_time)
-    total = sum(int(v.service_minutes) for v in sv)
+    # Phase E-3 改修 (3): 同住所ペア (隣接 same_address) の service 合計が
+    # ``SAME_ADDRESS_PAIR_MIN_OCCUPANCY`` (= 90) 未満なら 90 分に底上げして total に積む.
+    # これで容量上限 480 分判定が ``_align_same_address_pair_to_same_time`` の実占有
+    # (= max(a+b, 90)) と整合し、過小評価による容量オーバー漏れを解消する.
+    #
+    # 走査: sv は start_time 昇順. 隣接 same_address な (i-1, i) ペアを 1 つ進むごとに
+    # 検出し、ペア外の visit は service_minutes そのまま、ペアの 2 件は合算占有を採用.
+    # 3 名以上同住所同コースは「先頭 2 名のみペア化、3 名目以降は single」(
+    # ``_align_same_address_pair_to_same_time`` 仕様) と整合させるため、ペア確定後は
+    # ``i += 2`` で進める.
+    total = 0
+    n = len(sv)
+    i = 0
+    while i < n:
+        cur = sv[i]
+        if i + 1 < n:
+            nxt = sv[i + 1]
+            if (
+                cur.lat is not None
+                and cur.lng is not None
+                and nxt.lat is not None
+                and nxt.lng is not None
+                and _address_bucket(cur.lat, cur.lng) == _address_bucket(nxt.lat, nxt.lng)
+                and cur.patient_id != nxt.patient_id
+            ):
+                pair_occupancy = max(
+                    int(cur.service_minutes) + int(nxt.service_minutes),
+                    SAME_ADDRESS_PAIR_MIN_OCCUPANCY,
+                )
+                total += pair_occupancy
+                i += 2
+                continue
+        total += int(cur.service_minutes)
+        i += 1
+
     for i in range(1, len(sv)):
         prev = sv[i - 1]
         cur = sv[i]
@@ -2878,8 +2986,10 @@ def _align_same_address_pair_to_same_time(
     weekday: int,
     course_code: str | None,
     office_name: str,
+    unassigned_visit_ids: set[int] | None = None,
 ) -> list[V2Visit]:
-    """Wave 2 (#115): 同住所ペアを **同 start_time** に揃え + duration を倍占有させる.
+    """Wave 2 (#115) + Phase E-3 改修 (4): 同住所ペアを **同 start_time** に揃え +
+    duration を ``max(service 合計, SAME_ADDRESS_PAIR_MIN_OCCUPANCY=90)`` 占有させる.
 
     ``_apply_travel_time_to_courses`` 内、``_reorder_same_address_consecutive`` で
     同住所連番が確定し、``_auto_shift_same_time_conflicts`` で異住所同時刻が解消
@@ -2941,6 +3051,76 @@ def _align_same_address_pair_to_same_time(
         return sv
 
     wd_jp = _weekday_jp(weekday)
+
+    # Phase E-3 改修 (4): 同住所 3 名以上の自動別コース化.
+    # H2 enforce (_enforce_h2_same_address / _enforce_h2_split_overflow) で
+    # 同 (office, weekday, am_pm) 内の別 set に分散しきれなかった残存 3 名以降を
+    # ここで unassigned に流す. 「auto_allocator で自動別コース化 + warning」
+    # (User 確定仕様).
+    #
+    # 選定基準 (deterministic; Layer 3 Wave 5 と整合):
+    #   1. 固定時刻 patient は守る (= 残す).
+    #   2. 残りは preferred_start (= 希望時刻) 昇順 で評価し、2 名目までを残す.
+    #   3. 3 名目以降 (= preferred_start が遅い側 or patient_id deterministic tie-break)
+    #      を unassigned に流す.
+    if unassigned_visit_ids is not None:
+        # 同住所バケットごとに同コース内の visits を集約.
+        addr_groups: dict[tuple[float, float], list[V2Visit]] = {}
+        for v in sv:
+            if v.lat is None or v.lng is None or v.course_code is None:
+                continue
+            key = _address_bucket(v.lat, v.lng)
+            addr_groups.setdefault(key, []).append(v)
+        for addr_key, group in addr_groups.items():
+            if len(group) < 3:
+                continue
+
+            # 固定時刻を最優先で残し、残りは preferred_start (なければ start_time)
+            # 昇順 → patient_id 文字列で tie-break (deterministic) で並べる.
+            def _sort_key(v: V2Visit) -> tuple[int, str, str]:
+                # 0 = 固定 (絶対残す), 1 = それ以外
+                fixed_rank = 0 if v.time_type == "固定" else 1
+                ps = _parse_hhmm(v.preferred_start)
+                ps_str = _fmt_hhmm(ps) if ps is not None else _fmt_hhmm(v.start_time)
+                return (fixed_rank, ps_str, str(v.patient_id))
+
+            sorted_group = sorted(group, key=_sort_key)
+            # 先頭 2 名は残す. 3 名目以降を unassigned に流す.
+            for excess in sorted_group[2:]:
+                # 固定時刻 patient は守る (= 動かさない). 残り 3 名すべてが固定の
+                # ケースでは sorted_group[:2] に固定が 2 名入って残り 1 名 (固定) を
+                # unassigned に出すことになるが、これは「固定時刻同住所 3 名以上」
+                # という運用上稀なケースで manual review 必須.
+                # User 確定仕様で「3 名重なる場合は別コース/別時間にずらす」のため
+                # 固定 3 名でも warning + 配置維持ではなく unassigned に流す.
+                excess.course_code = None
+                unassigned_visit_ids.add(id(excess))
+                excess_name = excess.patient_name or (excess.patient_code or "不明")
+                warnings.append(
+                    V2Warning(
+                        type="general",
+                        message=(
+                            f"{office_name} {course_code or '?'} コース {wd_jp}: "
+                            f"3 名以上の同住所患者 ({excess_name} 様 ほか, "
+                            f"住所バケット {addr_key[0]:.4f},{addr_key[1]:.4f}) を "
+                            "別コース移動推奨 — 3 名目以降を未割当に移動 "
+                            "(同住所は最大 2 名でペア化)"
+                        ),
+                        weekday=weekday,
+                        actionable=True,
+                        patient_id=excess.patient_id,
+                        patient_name=excess.patient_name,
+                        affected_patient_ids=[excess.patient_id],
+                    )
+                )
+            # 残した 2 名以外を sv から除外する (in-place モディファイ; 後続のペア走査が
+            # 通常通り進む).
+        # sv 自体から course_code=None になった excess visit を除く (返り値 list は
+        # 同じインスタンスを保持しつつ in-place で更新するため、外側 list を編集).
+        sv[:] = [v for v in sv if v.course_code is not None]
+        if len(sv) < 2:
+            return sv
+
     # 「同住所連番」前提なので隣接走査でペアを拾う.
     # 既に処理済みの index は skip (3 連続ケースで 2 名目以降を二重処理しないため).
     i = 0
@@ -3047,23 +3227,28 @@ def _align_same_address_pair_to_same_time(
             _check_window(b, aligned_start)
 
         # 揃え確定: A.start = B.start = aligned_start, A.end = aligned + A.service.
-        # B.end = aligned + A.service + B.service (= ペア合算).
+        # B.end = aligned + max(A.service + B.service, SAME_ADDRESS_PAIR_MIN_OCCUPANCY).
         a.start_time = aligned_start
         a.end_time = _add_minutes(aligned_start, a.service_minutes)
         b.start_time = aligned_start
-        # Wave 2: ペア合算 duration で B.end を占有させる. 次 visit の
-        # earliest_start = b.end_time + travel + buffer なので自動で 60 分占有が
-        # 伝播する.
-        b.end_time = _add_minutes(aligned_start, a.service_minutes + b.service_minutes)
+        # Phase E-3 改修 (3): 同住所ペアの最低占有を 90 分に引き上げ.
+        # User 確定仕様 = ``max(service 合計, 90)``. 例:
+        #   - service 35+35=70 分 → 90 分占有 (ペア間スイッチ + 説明補助等の余裕)
+        #   - service 50+50=100 分 → 100 分占有 (合計を採用)
+        # 次 visit の earliest_start = b.end_time + travel + buffer なので
+        # 自動で 90 分占有が伝播する.
+        pair_occupancy = max(a.service_minutes + b.service_minutes, SAME_ADDRESS_PAIR_MIN_OCCUPANCY)
+        b.end_time = _add_minutes(aligned_start, pair_occupancy)
 
         # lunch 跨ぎ判定 (Wave 3 #WAVE3: lunch コース別動的化).
         # ここでは同住所ペア align 直後 (= compute_lunch_window 前) なので、
         # 「ペアが lunch を取れる余地を残しているか」を ``_is_in_lunch_break``
-        # (= 11:30-13:30 の最広範囲で 45 分 lunch も避けられない区間判定) で
+        # (= 11:30-13:30 の最広範囲で 30 分 lunch も避けられない区間判定) で
         # ざっくり警告する.
         pair_start_t = aligned_start
-        pair_end_t = _add_minutes(aligned_start, a.service_minutes + b.service_minutes)
-        if _is_in_lunch_break(pair_start_t, pair_end_t):
+        pair_end_t = _add_minutes(aligned_start, pair_occupancy)
+        pair_blocks_lunch_physically = _is_in_lunch_break(pair_start_t, pair_end_t)
+        if pair_blocks_lunch_physically:
             a_name = a.patient_name or (a.patient_code or "不明")
             b_name = b.patient_name or (b.patient_code or "不明")
             warnings.append(
@@ -3072,8 +3257,8 @@ def _align_same_address_pair_to_same_time(
                     message=(
                         f"{office_name} {course_code or '?'} コース {wd_jp}: "
                         f"同住所ペア {a_name} 様 + {b_name} 様 "
-                        f"({_fmt_hhmm(aligned_start)} 合計 "
-                        f"{a.service_minutes + b.service_minutes} 分) が "
+                        f"({_fmt_hhmm(aligned_start)} 占有 "
+                        f"{pair_occupancy} 分) が "
                         "昼休憩 (11:30-13:30 の動的枠) と重なります"
                     ),
                     weekday=weekday,
@@ -3083,6 +3268,46 @@ def _align_same_address_pair_to_same_time(
                     affected_patient_ids=[a.patient_id, b.patient_id],
                 )
             )
+        else:
+            # Wave 5 (Phase E-3 HIGH cleanup): 同住所ペアが lunch window
+            # [11:30, 13:30] と重なるが ``_is_in_lunch_break`` では False
+            # (= AM/PM どちらかに 30 分 lunch を寄せれば回避可能) のケースでも、
+            # ``LUNCH_DURATION_FALLBACK`` (= 45 分) 以上の連続空きを残せないと
+            # ``compute_lunch_window`` 側で 30 分 fallback warning が出る.
+            # その diagnostic として「同住所ペアが原因」を明示する warning を
+            # 別途 emit する. 物理占有不可能 (上記 if 側) と重複しないよう
+            # else 分岐に置く. User 確定仕様 = 45-60 分の lunch 確保.
+            pair_start_min_local = _time_to_min(pair_start_t)
+            pair_end_min_local = _time_to_min(pair_end_t)
+            lunch_start_min_local = _time_to_min(LUNCH_EARLIEST_START)  # 11:30
+            lunch_end_min_local = _time_to_min(LUNCH_LATEST_END)  # 13:30
+            overlap_start = max(pair_start_min_local, lunch_start_min_local)
+            overlap_end = min(pair_end_min_local, lunch_end_min_local)
+            if overlap_start < overlap_end:
+                am_remaining = max(0, pair_start_min_local - lunch_start_min_local)
+                pm_remaining = max(0, lunch_end_min_local - pair_end_min_local)
+                max_continuous = max(am_remaining, pm_remaining)
+                if max_continuous < LUNCH_DURATION_FALLBACK:
+                    a_name = a.patient_name or (a.patient_code or "不明")
+                    b_name = b.patient_name or (b.patient_code or "不明")
+                    warnings.append(
+                        V2Warning(
+                            type="same_address_consolidation",
+                            message=(
+                                f"{office_name} {course_code or '?'} コース {wd_jp}: "
+                                f"同住所ペア ({a_name} 様 + {b_name} 様) が "
+                                f"{_fmt_hhmm(pair_start_t)}-{_fmt_hhmm(pair_end_t)} の "
+                                f"{pair_occupancy} 分枠で lunch window を圧迫し、"
+                                f"{LUNCH_DURATION_FALLBACK} 分以上の昼休憩が確保できません "
+                                f"(残空き最大 {max_continuous} 分)"
+                            ),
+                            weekday=weekday,
+                            actionable=True,
+                            patient_id=b.patient_id,
+                            patient_name=b.patient_name,
+                            affected_patient_ids=[a.patient_id, b.patient_id],
+                        )
+                    )
 
         # 3 名連続同住所は H2 enforce 想定だが残存ケースに備えて、
         # ペア化済みの a/b は再走査しないよう i += 2 で進める.
@@ -3331,7 +3556,9 @@ def _apply_travel_time_to_courses(
             weekday=weekday,
             warnings=warnings,
         )
-        # Wave 2 (#115): 同住所ペアを同 start_time + 倍 duration 占有に揃える.
+        # Wave 2 (#115) + Phase E-3 改修 (3)(4): 同住所ペアを同 start_time + 90 分
+        # 占有 (= max(service 合計, 90)) に揃える. 同コース内 3 名以上は 3 名目以降を
+        # unassigned に流す (auto_allocator 自動別コース化).
         # 距離最適化シフト (異住所) の後、earliest_start 再計算の前に呼ぶ.
         sv = _align_same_address_pair_to_same_time(
             sv,
@@ -3339,6 +3566,7 @@ def _apply_travel_time_to_courses(
             weekday=weekday,
             course_code=course_code,
             office_name=office_name,
+            unassigned_visit_ids=unassigned_visit_ids,
         )
 
         # Wave 3 (#WAVE3): このコース用の lunch slot を動的決定する.
@@ -4373,6 +4601,16 @@ def _classify_warning_reason(
     # 一般 warning の中で「昼休憩」"H10" 含む → lunch_break.
     if wtype == "general" and ("昼休憩" in msg or "H10" in msg):
         return ("lunch_break", "general")
+    # Phase E-3 改修 (4): 同住所 3 名以上を _align_same_address_pair_to_same_time で
+    # 自動別コース化した時のメッセージ ("3 名以上の同住所患者を別コース移動推奨" 含む).
+    # H2 enforce で逃しきれなかった残存 3 名目以降に対し emit される.
+    if (
+        wtype == "general"
+        and "同住所" in msg
+        and ("3 名以上" in msg or "3名以上" in msg)
+        and "別コース" in msg
+    ):
+        return ("same_address_three_or_more", "stage3_set")
     # H2 同住所 3 名以上で別 set に動かしたが配置先なし.
     if wtype == "general" and "同住所" in msg:
         return ("same_address_split", "stage3_set")
