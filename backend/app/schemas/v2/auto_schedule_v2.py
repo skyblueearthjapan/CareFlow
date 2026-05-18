@@ -46,6 +46,9 @@ V2WarningTypeOut = Literal[
     "diff_add_conflict",
     # CareFlow Wave Next 2 cross-review [H2]: staff_shifts 未投入の data-health 警告.
     "data_health_staff_shifts_missing",
+    # Fix E (CareFlow): 同コース異住所同時刻 2 名以上が発生した場合に
+    # 後者の時刻を自動シフトする際の通知. severity 的には "info" 相当.
+    "auto_time_shift_for_conflict",
     "general",
 ]
 

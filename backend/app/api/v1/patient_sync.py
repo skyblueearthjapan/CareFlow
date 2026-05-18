@@ -58,6 +58,7 @@ from app.schemas.v2.patient_sync import (
     SyncWeekToFixedResponse,
     SyncWeekToFixedSummary,
 )
+from app.services.scheduling.auto_allocator_v2 import _address_bucket
 
 logger = logging.getLogger(__name__)
 
@@ -831,6 +832,41 @@ async def bulk_apply_week_only_visit_changes_endpoint(
     for vs in visits_by_key.values():
         vs.sort(key=lambda x: (x.visit_date, x.start_time))
 
+    # Fix D4 (CareFlow #103): 異住所同時刻衝突を境界検証するため、
+    # 当該週の **他患者** active visit も読み込み、(visit_date, course_id,
+    # start_time) → [Visit] の index を構築する. payload の patient_id 以外も
+    # 含まれる点に注意 (= 1 患者だけ update して衝突が起きるケースを検出).
+    # course_id が NULL の visit は「コース未割当」扱いで除外 (= 衝突判定の対象外).
+    other_visits_stmt = select(Visit).where(
+        Visit.deleted_at.is_(None),
+        Visit.visit_date >= week_monday,
+        Visit.visit_date <= week_sunday,
+        Visit.course_id.is_not(None),
+    )
+    other_visit_rows = (await db.scalars(other_visits_stmt)).all()
+    # patient_id → Patient 辞書 (住所判定用). payload 外の patient も含める.
+    all_visit_patient_ids = list({v.patient_id for v in other_visit_rows})
+    if all_visit_patient_ids:
+        more_patient_rows = (
+            await db.scalars(
+                select(Patient).where(
+                    Patient.id.in_(all_visit_patient_ids),
+                    Patient.deleted_at.is_(None),
+                )
+            )
+        ).all()
+        for p in more_patient_rows:
+            if p.id not in patients_by_id:
+                patients_by_id[p.id] = p
+
+    # (visit_date, course_id, start_time) で他患者 visit を引ける index.
+    visits_by_slot: dict[tuple[date, UUID, time_cls], list[Visit]] = {}
+    for v in other_visit_rows:
+        if v.course_id is None:
+            continue
+        slot_key = (v.visit_date, v.course_id, v.start_time)
+        visits_by_slot.setdefault(slot_key, []).append(v)
+
     outcomes: list[BulkWeekOnlyChangeOutcome] = []
     total_inserted = 0
     total_updated = 0
@@ -903,6 +939,69 @@ async def bulk_apply_week_only_visit_changes_endpoint(
                 total_unchanged += 1
                 continue
 
+            # Fix D4 (CareFlow #103): 当該 update が異住所同時刻衝突を引き起こすかを検証.
+            # 同 (visit_date, course_id, new_start_time) で他 patient_id の active visit が
+            # 存在し、かつ住所バケット (= ``_address_bucket``) が異なるなら、本件のみ
+            # skip + reason='same_time_conflict_other_patient' で記録 (atomic 維持).
+            # 同住所ペア (家族・施設) は許容 (= 既存挙動).
+            # course_id が None の visit はコース未割当のため衝突対象外.
+            same_time_conflict = False
+            conflict_other_pids: list[UUID] = []
+            if target_visit.course_id is not None:
+                same_slot_visits = visits_by_slot.get(
+                    (target_visit.visit_date, target_visit.course_id, new_start),
+                    [],
+                )
+                this_patient = patient
+                this_bucket: tuple[float, float] | None = None
+                if (
+                    this_patient is not None
+                    and this_patient.lat is not None
+                    and this_patient.lng is not None
+                ):
+                    this_bucket = _address_bucket(float(this_patient.lat), float(this_patient.lng))
+                for other_v in same_slot_visits:
+                    # 自分自身 (target_visit) は除外.
+                    if other_v.id == target_visit.id:
+                        continue
+                    if other_v.patient_id == pid:
+                        continue
+                    other_p = patients_by_id.get(other_v.patient_id)
+                    if other_p is None or other_p.lat is None or other_p.lng is None:
+                        # 住所不明な相手とは衝突扱い (安全側; マスター修正を促す).
+                        same_time_conflict = True
+                        conflict_other_pids.append(other_v.patient_id)
+                        continue
+                    other_bucket = _address_bucket(float(other_p.lat), float(other_p.lng))
+                    if this_bucket is None or this_bucket != other_bucket:
+                        same_time_conflict = True
+                        conflict_other_pids.append(other_v.patient_id)
+
+            if same_time_conflict:
+                logger.warning(
+                    "bulk_apply_week_only: cross-address same-time conflict: "
+                    "patient=%s weekday=%s new_start=%s other_patients=%s",
+                    pid,
+                    wd,
+                    new_start,
+                    conflict_other_pids,
+                )
+                outcomes.append(
+                    BulkWeekOnlyChangeOutcome(
+                        patient_id=pid,
+                        weekday=wd,
+                        operation="skipped",
+                        old_start_time=old_start,
+                        new_start_time=new_start,
+                        old_duration_min=old_dur,
+                        new_duration_min=new_dur,
+                        visit_id=target_visit.id,
+                        reason="same_time_conflict_other_patient",
+                    )
+                )
+                total_skipped += 1
+                continue
+
             # update: start_time / end_time を上書き. PFV は一切触らない.
             new_end_total = new_start.hour * 60 + new_start.minute + new_dur
             if new_end_total >= 24 * 60:
@@ -913,6 +1012,16 @@ async def bulk_apply_week_only_visit_changes_endpoint(
                 target_visit.start_time = new_start
                 target_visit.end_time = new_end
                 target_visit.updated_at = now
+                # Fix D4: 更新後の slot index を反映 (連続適用で次の候補が
+                # 同じ slot を狙うケースを正しく検出するため).
+                old_slot = (target_visit.visit_date, target_visit.course_id, old_start)
+                new_slot = (target_visit.visit_date, target_visit.course_id, new_start)
+                if old_slot in visits_by_slot:
+                    visits_by_slot[old_slot] = [
+                        v for v in visits_by_slot[old_slot] if v.id != target_visit.id
+                    ]
+                if target_visit.course_id is not None:
+                    visits_by_slot.setdefault(new_slot, []).append(target_visit)
 
             outcomes.append(
                 BulkWeekOnlyChangeOutcome(

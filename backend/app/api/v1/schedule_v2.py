@@ -69,6 +69,7 @@ from app.schemas.v2.auto_schedule_v2 import (
 from app.services.scheduling.auto_allocator_v2 import (
     LUNCH_END,
     LUNCH_START,
+    CrossAddressTimeConflictError,
     V2Visit,
     V2Warning,
     _address_bucket,
@@ -674,6 +675,27 @@ async def apply_individual_endpoint(
     except HTTPException:
         await db.rollback()
         raise
+    except CrossAddressTimeConflictError as exc:
+        # Fix D2 (CareFlow #103): 同コース同時刻に異住所 patient が混在.
+        # 同住所ペア (家族・施設) は許容しているので、本エラーは
+        # 「物理的に不可能な配置 (2 名同時刻別住所)」を表す.
+        await db.rollback()
+        logger.warning(
+            "apply_individual: cross-address same-time conflict: patient=%s conflicts=%d",
+            payload.patient_id,
+            len(exc.conflicts),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "same_time_conflict_with_other_patient",
+                "message": (
+                    f"{len(exc.conflicts)} 件の異住所同時刻衝突を検出, 採用拒否. "
+                    "他患者の固定枠と同コース同時刻で別住所の配置になります。"
+                ),
+                "conflicts": exc.conflicts[:10],
+            },
+        ) from exc
     except IntegrityError as exc:
         # H-Codex-1 (W41 v2 final cross-review): 既存 PFV が無い患者では
         # ``with_for_update()`` が 0 行ロックになり、同時初回 apply が
@@ -743,6 +765,32 @@ async def reset_to_fixed_endpoint(
     except ValueError as exc:
         await db.rollback()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except CrossAddressTimeConflictError as exc:
+        # Fix D3 (CareFlow #103): PFV (master) 自体に異住所同時刻衝突がある場合は
+        # reset で visit を再生成すると「2 名同時刻別住所訪問」が確定するため拒否する.
+        # 同住所ペア (家族・施設) は許容しているので、本エラーは master 不整合.
+        # ユーザーには「該当 patient の PFV 修正 (= /v2/apply-individual で時刻ずらし)」
+        # を促す.
+        await db.rollback()
+        logger.warning(
+            "reset_to_fixed: cross-address same-time conflict in PFV: "
+            "iso_year=%s iso_week=%s conflicts=%d",
+            payload.iso_year,
+            payload.iso_week,
+            len(exc.conflicts),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "same_time_conflict_with_other_patient",
+                "message": (
+                    f"{len(exc.conflicts)} 件の異住所同時刻衝突を検出, リセット拒否. "
+                    "patient_fixed_visits に同コース同時刻で別住所の組合せが存在します。"
+                    "該当患者の固定枠を修正してください。"
+                ),
+                "conflicts": exc.conflicts[:10],
+            },
+        ) from exc
     except IntegrityError as exc:
         # C-Claude-1 (W41 v2 final cross-review): with_for_update() でも 0 行ロック
         # の race は防げないため、UNIQUE 違反等の IntegrityError は 409 へ.

@@ -236,6 +236,11 @@ V2WarningType = Literal[
     # CareFlow Wave Next 2 cross-review [H2]: staff_shifts が未投入で
     # active staff いるのに staff_count=0 になる data-health 警告.
     "data_health_staff_shifts_missing",
+    # Fix E (CareFlow): 同コース異住所同時刻 2 名以上が発生した場合に、
+    # 後者の時刻を「前者の end + travel + buffer (8 分) → 5 分刻み切り上げ」で
+    # 自動シフトする際の通知. 固定時刻 visit でも例外的に時刻を動かす.
+    # severity 的には "info" 相当 (運用者通知; actionable=False で自動解決済み).
+    "auto_time_shift_for_conflict",
     "general",
 ]
 
@@ -419,6 +424,167 @@ def _address_bucket(lat: float, lng: float) -> tuple[float, float]:
     lat_b = round(lat / SAME_ADDRESS_TOLERANCE) * SAME_ADDRESS_TOLERANCE
     lng_b = round(lng / SAME_ADDRESS_TOLERANCE) * SAME_ADDRESS_TOLERANCE
     return (lat_b, lng_b)
+
+
+# ---------------------------------------------------------------------------
+# Fix D (CareFlow #103): 異住所同時刻 2 名配置の境界防御
+#
+# 経路:
+#   1. apply_individual_proposal — 1 患者の PFV を提案で更新する際、
+#      同 (office, weekday, course_template, start_time) で異 patient の
+#      既存 PFV と衝突しないかを検査する.
+#   2. reset_visits_to_fixed — PFV から visit を再生成する前に、
+#      PFV 自体に異住所同時刻衝突が無いかを検査する (= マスター不整合の検出).
+#   3. bulk_apply_week_only_visit_changes — visit の start_time を上書きする
+#      際、同 (visit_date, course_id, start_time) で異 patient の active visit と
+#      異住所で衝突しないかを検査する.
+#
+# 同住所ペア (家族・施設) は許容する: 既存運用データの大半が
+# 「同じ施設の 2 名を同時刻で訪問」する正当なペアリングであるため、
+# 純粋な (時間 + コース) 一致だけで弾くと既存データが軒並み 422 になる.
+# このため _address_bucket (100m 角) で住所バケットを取り、
+# 同バケット (1 種) のみなら OK / 異バケット (2 種以上) なら conflict と判定する.
+# ---------------------------------------------------------------------------
+
+
+class CrossAddressTimeConflictError(Exception):
+    """同コース同時刻に **異住所** で 2 名以上配置される衝突を検出した時のエラー.
+
+    呼び出し側 (endpoint) で catch して 422 + 構造化 detail に変換する.
+
+    Attributes:
+        conflicts: 衝突詳細のリスト. 各要素は ``office_id`` (str), ``weekday`` (int),
+            ``start_time`` (str), ``patient_ids`` (list[str]) を持つ.
+    """
+
+    def __init__(self, conflicts: list[dict[str, Any]]) -> None:
+        self.conflicts = conflicts
+        super().__init__(f"{len(conflicts)} 件の異住所同時刻衝突を検出 (cross-address same-time)")
+
+
+def _detect_cross_address_time_conflicts(
+    items: list[Any],
+    patients_by_id: dict[UUID, Patient],
+    *,
+    office_id_getter: Any = None,
+    course_key_getter: Any = None,
+    weekday_getter: Any = None,
+    start_time_getter: Any = None,
+    patient_id_getter: Any = None,
+) -> list[dict[str, Any]]:
+    """同 (office, weekday, course_key, start_time) で異住所な複数 patient を検出する.
+
+    本 helper は ``PatientFixedVisit`` / ``Visit`` / V2VisitPlan dict などの
+    異なる「時間枠を持つレコード」を共通インターフェースで検査する.
+
+    Args:
+        items: 検査対象のレコードリスト.
+        patients_by_id: ``patient_id → Patient`` の辞書 (lat/lng 解決用).
+        office_id_getter: ``item → UUID | None`` を返す callable. 既定は
+            ``getattr(item, 'office_id', None)``. None を返した場合は
+            patient.primary_office_id にフォールバックする.
+        course_key_getter: ``item → Hashable`` を返す callable. 既定は
+            ``course_template_id`` 属性 (= PatientFixedVisit / Visit ともに使える).
+        weekday_getter: ``item → int`` を返す callable. 既定は ``weekday`` 属性.
+        start_time_getter: ``item → time | str`` を返す callable. 既定は
+            ``start_time`` 属性.
+        patient_id_getter: ``item → UUID`` を返す callable. 既定は ``patient_id`` 属性.
+
+    Returns:
+        衝突 dict のリスト. 衝突なしなら空リスト. 各 dict は:
+          ``office_id`` (str), ``weekday`` (int), ``course_key`` (str | None),
+          ``start_time`` (str), ``patient_ids`` (list[str]).
+
+    Notes:
+        - 同住所 (= ``_address_bucket`` で同じバケットに入る) ペアは衝突としない.
+        - lat / lng が None の patient は座標不明扱いで「住所不明」バケットに
+          まとめる. 同じ「住所不明」患者だけのグループは衝突なし.
+        - patient_id 重複 (= 同一患者が同枠に複数枠) は呼び出し側で別途検出する.
+    """
+
+    def _default_office(item: Any) -> UUID | None:
+        return getattr(item, "office_id", None)
+
+    def _default_course(item: Any) -> Any:
+        return getattr(item, "course_template_id", None)
+
+    def _default_weekday(item: Any) -> int:
+        return int(item.weekday)
+
+    def _default_start(item: Any) -> Any:
+        return item.start_time
+
+    def _default_patient_id(item: Any) -> UUID:
+        return item.patient_id
+
+    off_fn = office_id_getter or _default_office
+    course_fn = course_key_getter or _default_course
+    wd_fn = weekday_getter or _default_weekday
+    st_fn = start_time_getter or _default_start
+    pid_fn = patient_id_getter or _default_patient_id
+
+    by_key: dict[tuple[Any, int, Any, Any], list[Any]] = defaultdict(list)
+    for it in items:
+        try:
+            pid = pid_fn(it)
+            wd = wd_fn(it)
+            st = st_fn(it)
+        except (AttributeError, TypeError, ValueError):
+            continue
+        patient = patients_by_id.get(pid)
+        # office_id は item から優先, 無ければ patient.primary_office_id.
+        office_id = off_fn(it)
+        if office_id is None and patient is not None:
+            office_id = patient.primary_office_id
+        if office_id is None:
+            continue
+        course_k = course_fn(it)
+        by_key[(office_id, wd, course_k, st)].append(it)
+
+    conflicts: list[dict[str, Any]] = []
+    for (office_id, wd, course_k, st), bucket in by_key.items():
+        # 異 patient_id が 2 つ以上含まれるかを確認.
+        pids: set[UUID] = set()
+        for it in bucket:
+            try:
+                pids.add(pid_fn(it))
+            except (AttributeError, TypeError):
+                continue
+        if len(pids) < 2:
+            continue
+        # 異住所判定: 各 patient の lat/lng を _address_bucket でまとめ、
+        # 2 種類以上ならば conflict.
+        addr_buckets: set[Any] = set()
+        for pid in pids:
+            p = patients_by_id.get(pid)
+            if p is None or p.lat is None or p.lng is None:
+                # 座標不明は「unknown」バケットでまとめる. lat/lng 欠落 patient だけが
+                # 同居する場合は False positive を避けるため衝突扱いしない.
+                addr_buckets.add(("unknown", pid))
+                continue
+            addr_buckets.add(_address_bucket(float(p.lat), float(p.lng)))
+        # 「同住所だけ」(= バケット 1 個 / もしくは unknown 1 個) なら OK.
+        # 「異住所」(= 実バケット 2 種以上、または 実バケット + unknown 混在で
+        # 計 2 種以上) のみ conflict.
+        # unknown はマーカー付きで個別カウントしているので len ≥ 2 で住所違い判定.
+        if len(addr_buckets) < 2:
+            continue
+        start_str = st.isoformat(timespec="minutes") if isinstance(st, time) else str(st)
+        course_repr: str | None
+        if course_k is None:
+            course_repr = None
+        else:
+            course_repr = str(course_k)
+        conflicts.append(
+            {
+                "office_id": str(office_id),
+                "weekday": int(wd),
+                "course_key": course_repr,
+                "start_time": start_str,
+                "patient_ids": sorted(str(p) for p in pids),
+            }
+        )
+    return conflicts
 
 
 # ---------------------------------------------------------------------------
@@ -2132,6 +2298,213 @@ def _reorder_same_address_consecutive(
     return result
 
 
+def _auto_shift_same_time_conflicts(
+    sv: list[V2Visit],
+    *,
+    office_name: str,
+    course_code: str | None,
+    weekday: int,
+    warnings: list[V2Warning],
+) -> list[V2Visit]:
+    """Fix E (CareFlow): 同コース内の異住所同時刻 2 名以上を自動シフトする.
+
+    ``_apply_travel_time_to_courses`` の各 ``(office, weekday, course_code)`` グループ
+    内で ``start_time`` 順にソートした直後に呼び出す. 同じ ``start_time`` を持つ
+    隣接 visit が **異住所** (``_address_bucket`` 比較) の場合:
+
+    1. 順序決定 (距離最適化):
+       前後 visit ``P`` (= sv[i-1] if exists) と ``Q`` (= sv[j+1] if exists) に対して、
+       ペア順 ``[P, A, B, Q]`` と ``[P, B, A, Q]`` の総距離を比較し、最小の方を採用.
+       (``dist(A,B)`` は両ケース共通なので、実質 ``dist(P,A)+dist(B,Q)`` vs
+       ``dist(P,B)+dist(A,Q)`` の比較になる. P or Q が無い場合は片側のみ比較.)
+
+    2. 後 patient の時刻シフト:
+       - ``actual_start = max(desired, prev.end + travel + VISIT_BUFFER_MINUTES)``
+       - 5 分刻み切り上げを適用 (``_round_up_to_5min``)
+       - ``time_type='固定'`` でも **例外的に時刻を動かす** (= 同時刻配置回避優先).
+       - ``end_time`` も ``service_minutes`` だけ後ろにずらす.
+       - 後段の lunch / PM 制約検証は ``_apply_travel_time_to_courses`` 本体に任せる
+         (cur.start_time が動いた後の earliest_start ベースで再評価される).
+
+    3. 3 名以上同時刻:
+       同 start_time を持つ visit が 3 名以上連続する場合は、距離最適化で並び順を
+       決めた上で **順次** シフト (2 番目を 1 番目の後ろ、3 番目を 2 番目の後ろ).
+       3 名同住所のケースは ``_reorder_same_address_consecutive`` 内 H2 enforce や
+       Fix A (Stage 5 重複防止) の責務であり、本関数では「異住所成分が混じる場合のみ」
+       シフトする (= 同住所のみは travel=0+buffer=0 で既存処理に任せる).
+
+    4. warning emit:
+       ``auto_time_shift_for_conflict`` type で「{B name} 様を {new_start} に変更」
+       を出す. ``affected_patient_ids`` にシフトされた patient ID を入れる.
+       severity 的には info 相当なので ``actionable=False``.
+
+    5. 同住所同時刻 (家族・施設):
+       ``_address_bucket`` 一致なら travel=0+buffer=0 で既存仕様通り同時刻維持
+       (本関数では何もしない).
+
+    Args:
+        sv: 1 コース内の ``start_time`` 昇順 + 同住所連番リオーダー済み visit list.
+        office_name: warning メッセージ用 (拠点名).
+        course_code: warning メッセージ用 (コース code; None 可).
+        weekday: warning の weekday フィールド.
+        warnings: 共有 warnings list (in-place append).
+
+    Returns:
+        並べ替え (距離最適化) 済み visit list.
+        各 visit の ``start_time`` / ``end_time`` は in-place で書き換わる.
+
+    Notes:
+        - 同 ``patient_id`` が同時刻になることは通常ありえない (1 patient 1 visit)
+          が、念のため同 patient_id ペアはスキップする.
+        - ``_reorder_same_address_consecutive`` の同住所連番強制を破壊しない:
+          同住所 visit は ``_address_bucket`` が一致するので「異住所衝突」判定から
+          除外される → 並び順を変えない.
+        - 本関数は ``_apply_travel_time_to_courses`` 本体の earliest_start 再計算の
+          **前段** で同時刻を解消することで、固定時刻でも shortage>=5 で物理不可能
+          判定にされる前に「時刻自体を動かす」ルートを通す.
+    """
+    if len(sv) < 2:
+        return sv
+
+    def _dist(p: V2Visit | None, q: V2Visit | None) -> float:
+        """2 visit 間の Haversine 距離 (km). 片方 None なら 0 (邪魔しない)."""
+        if p is None or q is None:
+            return 0.0
+        if p.lat is None or p.lng is None or q.lat is None or q.lng is None:
+            return 0.0
+        return haversine_km(p.lat, p.lng, q.lat, q.lng)
+
+    def _same_addr(p: V2Visit, q: V2Visit) -> bool:
+        if p.lat is None or p.lng is None or q.lat is None or q.lng is None:
+            return False
+        return _address_bucket(p.lat, p.lng) == _address_bucket(q.lat, q.lng)
+
+    wd_jp = _weekday_jp(weekday)
+    result: list[V2Visit] = list(sv)
+    i = 0
+    while i < len(result) - 1:
+        # 同 start_time を持つ連続区間 [i, j] を見つける.
+        j = i
+        while j + 1 < len(result) and result[j + 1].start_time == result[i].start_time:
+            j += 1
+        if j == i:
+            i += 1
+            continue
+        # 区間 [i, j] に 2 名以上同時刻が存在.
+        # 「異住所成分が混じるか」を判定: 区間内の少なくとも 1 ペアが異住所なら処理対象.
+        segment = result[i : j + 1]
+        has_diff_addr = False
+        for a in range(len(segment)):
+            for b in range(a + 1, len(segment)):
+                if not _same_addr(segment[a], segment[b]):
+                    has_diff_addr = True
+                    break
+            if has_diff_addr:
+                break
+        if not has_diff_addr:
+            # 全員同住所同時刻: 家族・施設想定で既存仕様通り維持.
+            i = j + 1
+            continue
+
+        # 2 名ケース (j == i + 1): 距離最適化で順序判定.
+        # 3 名以上ケース: 区間内で順次貪欲に「P (prev) と Q (next) に対し
+        # 最も近い visit を順次選ぶ」順序を決める (= insertion of best-first).
+        prev_visit = result[i - 1] if i - 1 >= 0 else None
+        next_visit = result[j + 1] if j + 1 < len(result) else None
+
+        if len(segment) == 2:
+            a_v, b_v = segment[0], segment[1]
+            # 順序 [P, A, B, Q] vs [P, B, A, Q]:
+            #   共通項: dist(A,B), 残り = dist(P,A) + dist(B,Q) vs dist(P,B) + dist(A,Q).
+            cost_ab = _dist(prev_visit, a_v) + _dist(b_v, next_visit)
+            cost_ba = _dist(prev_visit, b_v) + _dist(a_v, next_visit)
+            if cost_ba < cost_ab:
+                ordered = [b_v, a_v]
+            else:
+                ordered = [a_v, b_v]
+        else:
+            # 3 名以上: 貪欲. prev から始まり、各ステップで未配置の中から
+            # 「直前 visit からの距離 + (最後の場合のみ) next visit までの距離」
+            # が最小のものを選ぶ. 計算量は len(segment) <= 6 程度を想定 (1 コース上限).
+            remaining = list(segment)
+            ordered = []
+            current = prev_visit
+            while remaining:
+                if len(remaining) == 1:
+                    ordered.append(remaining.pop())
+                    break
+                best_idx = 0
+                best_cost = float("inf")
+                for k, cand in enumerate(remaining):
+                    # 残りが cand 含めて len(remaining) 件のとき、
+                    # cand を選んだら残り len(remaining)-1 件.
+                    # last in segment なら next_visit との距離も加味.
+                    cost = _dist(current, cand)
+                    if len(remaining) == 1:
+                        cost += _dist(cand, next_visit)
+                    if cost < best_cost:
+                        best_cost = cost
+                        best_idx = k
+                chosen = remaining.pop(best_idx)
+                ordered.append(chosen)
+                current = chosen
+
+        # 配列を入れ替え.
+        result[i : j + 1] = ordered
+
+        # シフト: ordered[0] は元の start_time のまま (= 先頭).
+        # ordered[1:] を順次 prev.end + travel + buffer → 5 分刻み切り上げで配置.
+        for k in range(1, len(ordered)):
+            prev = ordered[k - 1]
+            cur = ordered[k]
+            desired = cur.start_time
+            if _same_addr(prev, cur):
+                travel_min = 0
+                buffer_min = 0
+            else:
+                travel_min = haversine_minutes(haversine_km(prev.lat, prev.lng, cur.lat, cur.lng))
+                buffer_min = VISIT_BUFFER_MINUTES
+            earliest = _add_minutes(prev.end_time, travel_min + buffer_min)
+            # 5 分刻み切り上げ (固定でも例外的に動かすため一律適用).
+            new_start = _round_up_to_5min(earliest)
+            if new_start == cur.start_time:
+                # 既に earliest 以降に置かれている (= シフト不要).
+                continue
+            old_start = cur.start_time
+            cur.start_time = new_start
+            cur.end_time = _add_minutes(new_start, cur.service_minutes)
+
+            # warning emit.
+            prev_name = prev.patient_name or (prev.patient_code or "不明")
+            cur_name = cur.patient_name or (cur.patient_code or "不明")
+            warnings.append(
+                V2Warning(
+                    type="auto_time_shift_for_conflict",
+                    message=(
+                        f"{office_name} {course_code or '?'} コース {wd_jp}: "
+                        f"{prev_name} 様 ({_fmt_hhmm(desired)}) と "
+                        f"{cur_name} 様 ({_fmt_hhmm(old_start)}) の同時刻衝突を"
+                        f"自動調整、{cur_name} 様を {_fmt_hhmm(new_start)} に変更"
+                    ),
+                    weekday=weekday,
+                    actionable=False,
+                    patient_id=cur.patient_id,
+                    patient_name=cur.patient_name,
+                    current_time=_fmt_hhmm(new_start),
+                    suggested_time=_fmt_hhmm(new_start),
+                    time_type=cur.time_type,
+                    preferred_start=cur.preferred_start,
+                    preferred_end=cur.preferred_end,
+                    affected_patient_ids=[cur.patient_id],
+                )
+            )
+
+        # 区間処理後、シフトで end_time が動いた末尾の次に進む.
+        i = j + 1
+
+    return result
+
+
 def _apply_travel_time_to_courses(
     visits: list[V2Visit],
     *,
@@ -2207,9 +2580,22 @@ def _apply_travel_time_to_courses(
         # 間に別住所が挟まると同住所メリット (移動 0 + バッファー 0) が消えるため、
         # earliest_start 再計算の前にリオーダーする.
         sv = _reorder_same_address_consecutive(sv, warnings=warnings)
-        cumulative_travel_min = 0
         wd_jp = _weekday_jp(weekday)
         office_name = (office_name_by_id or {}).get(office_id) or str(office_id)
+        # Fix E (CareFlow): 異住所同時刻 2 名以上の自動シフト + 距離最適化.
+        # 同コース内で同 start_time の visit が異住所で 2 名以上見つかったら、
+        # 順序を距離最適化で決めた上で後者の時刻を強制シフトする
+        # (固定時刻でも例外的に動かす). 同住所同時刻ペア (家族・施設) は不変.
+        # 同住所連番強制の直後 + earliest_start 再計算の直前で呼ぶことで、
+        # シフト後の時刻に対し lunch / PM / shortage 判定が正しく走る.
+        sv = _auto_shift_same_time_conflicts(
+            sv,
+            office_name=office_name,
+            course_code=course_code,
+            weekday=weekday,
+            warnings=warnings,
+        )
+        cumulative_travel_min = 0
         for i in range(1, len(sv)):
             prev = sv[i - 1]
             cur = sv[i]
@@ -4525,6 +4911,36 @@ async def reset_visits_to_fixed(
     )
     pfv_list = list(pfv_rows.all())
 
+    # Fix D3 (CareFlow #103): PFV 自体に異住所同時刻衝突がないか検証.
+    # ここで弾かないと、衝突状態のまま visit が 2 件再生成され
+    # 「異住所 2 名同時刻訪問」になる. PFV データ自体の不整合なので
+    # マスター修正を促すために 422 で reset を拒否する.
+    # 同住所ペア (家族・施設) は許容.
+    # 検査用に office_id を補う proxy にラップする (PFV モデルには office_id がない).
+    @dataclass(frozen=True)
+    class _PfvWithOffice:
+        patient_id: UUID
+        weekday: int
+        start_time: time
+        course_template_id: UUID | None
+        office_id: UUID | None
+
+    pfv_items: list[_PfvWithOffice] = []
+    for pfv in pfv_list:
+        p = patients_by_id.get(pfv.patient_id)
+        pfv_items.append(
+            _PfvWithOffice(
+                patient_id=pfv.patient_id,
+                weekday=pfv.weekday,
+                start_time=pfv.start_time,
+                course_template_id=pfv.course_template_id,
+                office_id=(p.primary_office_id if p is not None else None),
+            )
+        )
+    pfv_conflicts = _detect_cross_address_time_conflicts(pfv_items, patients_by_id)
+    if pfv_conflicts:
+        raise CrossAddressTimeConflictError(pfv_conflicts)
+
     # 3) スタッフ割当はローテーション: (office_id, weekday) ごとに staff_pool を構築
     # staff list を (office_id, weekday) ごとに取得
     staff_rows = await db.scalars(
@@ -4725,6 +5141,94 @@ async def apply_individual_proposal(
             "warnings": warnings,
         }
 
+    # Fix D2 (CareFlow #103): 異住所同時刻衝突を境界で検出して 422 で拒否する.
+    # 同一拠点の他患者の既存 PFV と (weekday, start_time, course_template_id)
+    # が一致 + 異住所なら CrossAddressTimeConflictError を上げる.
+    # 同住所ペア (家族・施設) は許容. course_template_id が一致しない場合は別コース
+    # 扱いで衝突対象外 (= 物理的に別スタッフが訪問するため OK).
+    target_patient = await db.scalar(select(Patient).where(Patient.id == patient_id))
+    if target_patient is not None and target_patient.primary_office_id is not None:
+        # 同一拠点の他患者 PFV (mode='normal', slot_index=0) を取得.
+        other_pfv_rows = await db.scalars(
+            select(PatientFixedVisit)
+            .join(Patient, Patient.id == PatientFixedVisit.patient_id)
+            .where(
+                PatientFixedVisit.mode == "normal",
+                PatientFixedVisit.slot_index == 0,
+                PatientFixedVisit.patient_id != patient_id,
+                Patient.primary_office_id == target_patient.primary_office_id,
+                Patient.deleted_at.is_(None),
+                Patient.status == "active",
+            )
+        )
+        other_pfv_list = list(other_pfv_rows.all())
+        # patients_by_id: 提案中 patient + 他 patient を全部含める.
+        patients_by_id: dict[UUID, Patient] = {target_patient.id: target_patient}
+        if other_pfv_list:
+            other_patient_ids = list({p.patient_id for p in other_pfv_list})
+            other_patients = (
+                await db.scalars(select(Patient).where(Patient.id.in_(other_patient_ids)))
+            ).all()
+            for p in other_patients:
+                patients_by_id[p.id] = p
+
+        # 提案 PFV を擬似アイテムにラップ (まだ DB に無いため).
+        @dataclass(frozen=True)
+        class _ProposedPfv:
+            patient_id: UUID
+            weekday: int
+            start_time: time
+            course_template_id: UUID | None
+            office_id: UUID
+
+        # 提案側の course_template_id: 既存 PFV から継承 (なければ None).
+        proposed_items: list[_ProposedPfv] = []
+        for wd, (st, _dur) in proposed_by_wd.items():
+            ex = existing_by_wd.get(wd)
+            ct_id = ex.course_template_id if ex is not None else None
+            proposed_items.append(
+                _ProposedPfv(
+                    patient_id=patient_id,
+                    weekday=wd,
+                    start_time=st,
+                    course_template_id=ct_id,
+                    office_id=target_patient.primary_office_id,
+                )
+            )
+
+        # 他患者 PFV を office_id 付きにラップ (Patient.primary_office_id を解決).
+        @dataclass(frozen=True)
+        class _ExistingPfvProxy:
+            patient_id: UUID
+            weekday: int
+            start_time: time
+            course_template_id: UUID | None
+            office_id: UUID | None
+
+        other_items: list[_ExistingPfvProxy] = []
+        for op in other_pfv_list:
+            p = patients_by_id.get(op.patient_id)
+            other_items.append(
+                _ExistingPfvProxy(
+                    patient_id=op.patient_id,
+                    weekday=op.weekday,
+                    start_time=op.start_time,
+                    course_template_id=op.course_template_id,
+                    office_id=(p.primary_office_id if p is not None else None),
+                )
+            )
+
+        conflicts = _detect_cross_address_time_conflicts(
+            [*proposed_items, *other_items],
+            patients_by_id,
+        )
+        # 提案 patient が関与する conflict のみ採用 (他患者同士の既存衝突は
+        # 本 endpoint の責務外 — 別途 reset-to-fixed 等で検出される).
+        target_pid_str = str(patient_id)
+        relevant = [c for c in conflicts if target_pid_str in c["patient_ids"]]
+        if relevant:
+            raise CrossAddressTimeConflictError(relevant)
+
     # 差分適用: 既存 PFV (mode='normal', slot_index=0) を提案にあわせて UPSERT
     fixed_visit_ids: list[UUID] = []
     # 削除対象: 既存 wd が提案に無い
@@ -4773,10 +5277,14 @@ __all__ = [
     "PM_BLOCK_START",
     "SAME_ADDRESS_TOLERANCE",
     "TRAVEL_SPEED_KMH",
+    "CrossAddressTimeConflictError",
     "V2Bucket",
     "V2Set",
     "V2Visit",
+    "_address_bucket",
+    "_auto_shift_same_time_conflicts",
     "_consolidate_same_address_time",
+    "_detect_cross_address_time_conflicts",
     "apply_individual_proposal",
     "apply_week_only",
     "build_visits_for_pool",

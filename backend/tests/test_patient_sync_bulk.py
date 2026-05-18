@@ -50,8 +50,23 @@ def _bearer(user: User) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-async def _make_patient(db, code: str) -> Patient:
-    p = Patient(code=code, name=f"P-{code}", status="active", special_week_active=[])
+async def _make_patient(
+    db,
+    code: str,
+    *,
+    lat: float | None = None,
+    lng: float | None = None,
+    primary_office_id=None,
+) -> Patient:
+    p = Patient(
+        code=code,
+        name=f"P-{code}",
+        status="active",
+        special_week_active=[],
+        lat=lat,
+        lng=lng,
+        primary_office_id=primary_office_id,
+    )
     db.add(p)
     await db.commit()
     await db.refresh(p)
@@ -536,3 +551,196 @@ async def test_bulk_week_only_unchanged(client, db) -> None:
     assert body["total_unchanged"] == 1
     assert body["total_updated"] == 0
     assert body["outcomes"][0]["operation"] == "unchanged"
+
+
+# ---------------------------------------------------------------------------
+# Fix D4 (CareFlow #103): bulk week-only で異住所同時刻衝突を skip
+#
+# - 同 (visit_date, course_id, new_start_time) で他 patient の active visit が
+#   存在し、住所バケットが異なる場合は当該 1 件のみ skip
+#   (atomic 維持; reason='same_time_conflict_other_patient').
+# - 同住所ペア (家族・施設) は update を許容.
+# ---------------------------------------------------------------------------
+
+
+async def _make_course(
+    db,
+    *,
+    office_id,
+    weekday: int,
+    code: str = "A",
+):
+    """Test-only Course factory (status='course_fixed', soft-delete なし)."""
+    from app.models.course import COURSE_STATUS_COURSE_FIXED, Course
+
+    course = Course(
+        iso_year=ISO_YEAR,
+        iso_week=ISO_WEEK,
+        weekday=weekday,
+        code=code,
+        course_status=COURSE_STATUS_COURSE_FIXED,
+        office_id=office_id,
+    )
+    db.add(course)
+    await db.commit()
+    await db.refresh(course)
+    return course
+
+
+async def _make_office(db, *, name: str = "fixd-office"):
+    from app.models.office import Office
+
+    o = Office(name=name)
+    db.add(o)
+    await db.commit()
+    await db.refresh(o)
+    return o
+
+
+@pytest.mark.asyncio
+async def test_bulk_week_only_skips_cross_address_time_conflict(client, db) -> None:
+    """Fix D4: 同 (visit_date, course_id, new_start) で異住所な他 patient visit がある
+    場合、当該 update は skip + reason='same_time_conflict_other_patient'.
+    """
+    admin = await _make_user(db, email="bulk-d4-skip-admin@example.com", role="admin")
+    office = await _make_office(db, name="fixd4-skip-office")
+    course = await _make_course(db, office_id=office.id, weekday=0, code="A")
+
+    # 異住所な 2 患者. p_self を 11:00 に update しようとすると, p_other (異住所) が
+    # 同 course + 11:00 にいるため衝突.
+    p_self = await _make_patient(
+        db, code="D4-SELF", lat=35.65, lng=140.10, primary_office_id=office.id
+    )
+    p_other = await _make_patient(
+        db, code="D4-OTHER", lat=35.65, lng=140.20, primary_office_id=office.id
+    )
+    # 自分の visit (Mon 09:00 → 11:00 に変更しようとする)
+    v_self = Visit(
+        patient_id=p_self.id,
+        visit_date=MON,
+        start_time=time(9, 0),
+        end_time=time(9, 30),
+        type="regular",
+        status="planned",
+        source="manual",
+        required_staff_count=1,
+        course_id=course.id,
+    )
+    db.add(v_self)
+    # 他 patient の visit (Mon 11:00; 異住所)
+    v_other = Visit(
+        patient_id=p_other.id,
+        visit_date=MON,
+        start_time=time(11, 0),
+        end_time=time(11, 30),
+        type="regular",
+        status="planned",
+        source="manual",
+        required_staff_count=1,
+        course_id=course.id,
+    )
+    db.add(v_other)
+    await db.commit()
+    v_self_id = v_self.id
+    v_self_old_start = v_self.start_time
+
+    res = await client.post(
+        "/api/v1/patients/bulk-apply-week-only-visit-changes",
+        headers=_bearer(admin),
+        json={
+            "patient_visit_changes": [
+                {
+                    "patient_id": str(p_self.id),
+                    "weekday": 0,
+                    "start_time": "11:00",
+                    "duration_min": 30,
+                },
+            ],
+            "iso_year": ISO_YEAR,
+            "iso_week": ISO_WEEK,
+            "dry_run": False,
+        },
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["total_skipped"] == 1
+    assert body["total_updated"] == 0
+    outcome = body["outcomes"][0]
+    assert outcome["operation"] == "skipped"
+    assert outcome["reason"] == "same_time_conflict_other_patient"
+    assert outcome["visit_id"] == str(v_self_id)
+
+    # DB 反映なし: v_self の start_time が変わっていない.
+    await db.refresh(v_self)
+    assert v_self.start_time == v_self_old_start
+
+
+@pytest.mark.asyncio
+async def test_bulk_week_only_allows_same_address_same_time(client, db) -> None:
+    """Fix D4: 同住所な他 patient visit と被ってもペアリング扱いで update を許容."""
+    admin = await _make_user(db, email="bulk-d4-allow-admin@example.com", role="admin")
+    office = await _make_office(db, name="fixd4-allow-office")
+    course = await _make_course(db, office_id=office.id, weekday=0, code="A")
+
+    # 同住所な 2 患者 (lat/lng 一致 → 同 bucket).
+    p_self = await _make_patient(
+        db, code="D4-SA-SELF", lat=35.65, lng=140.10, primary_office_id=office.id
+    )
+    p_other = await _make_patient(
+        db, code="D4-SA-OTHER", lat=35.65, lng=140.10, primary_office_id=office.id
+    )
+    v_self = Visit(
+        patient_id=p_self.id,
+        visit_date=MON,
+        start_time=time(9, 0),
+        end_time=time(9, 30),
+        type="regular",
+        status="planned",
+        source="manual",
+        required_staff_count=1,
+        course_id=course.id,
+    )
+    db.add(v_self)
+    v_other = Visit(
+        patient_id=p_other.id,
+        visit_date=MON,
+        start_time=time(11, 0),
+        end_time=time(11, 30),
+        type="regular",
+        status="planned",
+        source="manual",
+        required_staff_count=1,
+        course_id=course.id,
+    )
+    db.add(v_other)
+    await db.commit()
+    v_self_id = v_self.id
+
+    res = await client.post(
+        "/api/v1/patients/bulk-apply-week-only-visit-changes",
+        headers=_bearer(admin),
+        json={
+            "patient_visit_changes": [
+                {
+                    "patient_id": str(p_self.id),
+                    "weekday": 0,
+                    "start_time": "11:00",
+                    "duration_min": 30,
+                },
+            ],
+            "iso_year": ISO_YEAR,
+            "iso_week": ISO_WEEK,
+            "dry_run": False,
+        },
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["total_updated"] == 1
+    assert body["total_skipped"] == 0
+    outcome = body["outcomes"][0]
+    assert outcome["operation"] == "update"
+    assert outcome["visit_id"] == str(v_self_id)
+
+    # DB 反映: v_self.start_time が 11:00 に更新.
+    await db.refresh(v_self)
+    assert v_self.start_time == time(11, 0)

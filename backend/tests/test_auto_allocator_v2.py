@@ -2153,12 +2153,13 @@ def test_dynamic_start_time_respects_travel_for_terminal_type() -> None:
 
 
 def test_fixed_time_warning_when_travel_insufficient() -> None:
-    """W41 v2 / CareFlow #101: 固定時刻が移動時間で大きく (>=5 分) 不足する場合は
-    物理不可能と判定し、course_code=None + 戻り値 set にその visit の id(v) を
-    追加して呼び出し側に通知する.
+    """W41 v2 / CareFlow #101 + Fix E: 固定時刻 2 名が **異なる時刻** で移動時間が
+    >=5 分不足する場合は物理不可能 → ``course_code=None`` + 戻り値 set.
 
-    本テストは shortage が大きい (15 分以上) ケースを検証するため、
-    新仕様では b.course_code=None になる. start_time 自体は不変.
+    Fix E (同時刻 + 異住所) は別 path (auto_time_shift_for_conflict) で処理されるため、
+    本テストでは B の start_time をずらして「同時刻」ではなく「shortage>=5」の純粋ケース
+    を作る. A 11:00-11:30 固定 → B 11:30 固定 (5km 離れ travel 15 分 + buffer 8 分 =
+    23 分必要 / 残り 0 分 → shortage 23 分 → 物理不可能).
     """
     from app.services.scheduling.auto_allocator_v2 import (
         SHORTAGE_THRESHOLD_MIN,
@@ -2166,7 +2167,7 @@ def test_fixed_time_warning_when_travel_insufficient() -> None:
     )
 
     office_id = uuid.uuid4()
-    # P-A 11:00-11:30 終了, P-B 11:00 固定 (= 移動時間 確保 不可能, 5km 離れて 15 分)
+    # P-A 11:00-11:30 終了, P-B 11:30 固定 (= prev.end と同時刻スタート希望, 5km 離れて travel 不可能)
     a = _make_visit(
         lat=35.65, lng=140.10, office_id=office_id, start_h=11, start_m=0, patient_name="A"
     )
@@ -2174,21 +2175,21 @@ def test_fixed_time_warning_when_travel_insufficient() -> None:
     a.service_minutes = 30
     a.course_code = "A"
     a.time_type = "固定"
-    # 5km 離れた location, でも b は 11:00 固定希望
+    # 5km 離れた location, B は 11:30 固定希望 (prev.end と同じ瞬間 → travel 0 分残)
     b = _make_visit(
-        lat=35.65, lng=140.155, office_id=office_id, start_h=11, start_m=0, patient_name="B"
+        lat=35.65, lng=140.155, office_id=office_id, start_h=11, start_m=30, patient_name="B"
     )
-    b.end_time = time(11, 30)
+    b.end_time = time(12, 0)
     b.service_minutes = 30
     b.course_code = "A"
     b.time_type = "固定"
-    b.preferred_start = "11:00"
+    b.preferred_start = "11:30"
 
     warnings: list[V2Warning] = []
     unassigned_ids = _apply_travel_time_to_courses([a, b], warnings=warnings)
 
-    # 固定時刻自体は動かさない (= start_time 不変)
-    assert b.start_time == time(11, 0)
+    # 固定時刻自体は動かさない (= start_time 不変). Fix E は同時刻でないため発動しない.
+    assert b.start_time == time(11, 30)
     # shortage は SHORTAGE_THRESHOLD_MIN (=5) 以上 → 物理不可能扱い.
     assert SHORTAGE_THRESHOLD_MIN <= 5  # 安全装置 (定数を緩めた場合に気づくため)
     assert id(b) in unassigned_ids, (
@@ -2832,6 +2833,294 @@ def test_reorder_does_not_mutate_input_list() -> None:
     assert reordered[reordered.index(a)] is a
     assert reordered[reordered.index(b)] is b
     assert reordered[reordered.index(c)] is c
+
+
+# ---------------------------------------------------------------------------
+# Fix E (CareFlow): 異住所同時刻 2 名以上の自動時刻シフト + 距離最適化.
+# `_auto_shift_same_time_conflicts` (+ `_apply_travel_time_to_courses` 経由).
+# ---------------------------------------------------------------------------
+
+
+def test_two_fixed_same_time_different_address_auto_shift() -> None:
+    """Fix E: 異住所同時刻 2 名 (両者固定) → 後者を自動シフト.
+
+    Setup: コース A 月曜:
+      - A 15:00 固定 (lat=35.65, lng=140.10), service 30 分 → end 15:30
+      - B 15:00 固定 (lat=35.65, lng=140.155) 異住所 (~5km)
+    Expected:
+      - A は 15:00 のまま (= 先頭).
+      - B は prev.end(15:30) + travel(15 分) + buffer(8 分) = 15:53 → 5 分切り上げ = 15:55.
+      - course_code は両者とも 'A' のまま (= unassigned に流されない).
+      - warning: type='auto_time_shift_for_conflict', affected_patient_ids=[B].
+    """
+    from app.services.scheduling.auto_allocator_v2 import _apply_travel_time_to_courses
+
+    office_id = uuid.uuid4()
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=15, start_m=0, patient_name="A"
+    )
+    a.end_time = time(15, 30)
+    a.service_minutes = 30
+    a.course_code = "A"
+    a.time_type = "固定"
+    a.preferred_start = "15:00"
+    b = _make_visit(
+        lat=35.65, lng=140.155, office_id=office_id, start_h=15, start_m=0, patient_name="B"
+    )
+    b.end_time = time(15, 30)
+    b.service_minutes = 30
+    b.course_code = "A"
+    b.time_type = "固定"
+    b.preferred_start = "15:00"
+
+    warnings: list[V2Warning] = []
+    unassigned = _apply_travel_time_to_courses([a, b], warnings=warnings)
+
+    # A は不変.
+    assert a.start_time == time(15, 0)
+    # B は 15:55 (15:30 + 15 + 8 = 15:53 → 5 分切り上げ).
+    assert b.start_time == time(15, 55), f"B start_time が想定外: {b.start_time}"
+    assert b.end_time == time(16, 25), f"B end_time が想定外: {b.end_time}"
+    # Fix E 経由で auto-shift され、unassigned には流れない.
+    assert id(b) not in unassigned, "Fix E でシフトされたはず, unassigned に流れている"
+    assert b.course_code == "A", f"course_code が外れている: {b.course_code}"
+    # warning: auto_time_shift_for_conflict が出ている.
+    auto_shifts = [w for w in warnings if w.type == "auto_time_shift_for_conflict"]
+    assert auto_shifts, f"auto_time_shift_for_conflict warning が出ていない: {warnings}"
+    w0 = auto_shifts[0]
+    assert b.patient_id in (w0.affected_patient_ids or [])
+    assert "同時刻衝突" in w0.message
+    assert "15:55" in w0.message
+
+
+def test_same_time_pair_distance_optimal_ordering() -> None:
+    """Fix E: 順序決定が距離最適化に従う.
+
+    Setup: コース A 月曜 4 件 ([P, A, B, Q]):
+      - P 14:00 (lat=35.65, lng=140.10), end 14:30
+      - A 15:00 固定 (lat=35.65, lng=140.20) — P から遠い (~9km)
+      - B 15:00 固定 (lat=35.65, lng=140.11) — P から近い (~1km)
+      - Q 17:00 (lat=35.65, lng=140.21) — A に近い
+    順序最適化: [P, B, A, Q] の方が短い (B が P に近く、A が Q に近い).
+    Expected: 配列上 B が A の前. B は 14:30+travel+buffer で確定、A は B.end+...
+    """
+    from app.services.scheduling.auto_allocator_v2 import _apply_travel_time_to_courses
+
+    office_id = uuid.uuid4()
+    p = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=14, start_m=0, patient_name="P"
+    )
+    p.end_time = time(14, 30)
+    p.service_minutes = 30
+    p.course_code = "A"
+    p.time_type = "固定"
+    a = _make_visit(
+        lat=35.65, lng=140.20, office_id=office_id, start_h=15, start_m=0, patient_name="A"
+    )
+    a.end_time = time(15, 30)
+    a.service_minutes = 30
+    a.course_code = "A"
+    a.time_type = "固定"
+    b = _make_visit(
+        lat=35.65, lng=140.11, office_id=office_id, start_h=15, start_m=0, patient_name="B"
+    )
+    b.end_time = time(15, 30)
+    b.service_minutes = 30
+    b.course_code = "A"
+    b.time_type = "固定"
+    q = _make_visit(
+        lat=35.65, lng=140.21, office_id=office_id, start_h=17, start_m=0, patient_name="Q"
+    )
+    q.end_time = time(17, 30)
+    q.service_minutes = 30
+    q.course_code = "A"
+    q.time_type = "固定"
+
+    warnings: list[V2Warning] = []
+    _apply_travel_time_to_courses([p, a, b, q], warnings=warnings)
+
+    # P は 14:00 不変, Q は元々 17:00 で十分余裕がある (時刻不変).
+    assert p.start_time == time(14, 0)
+    # 距離最適化: B (P に近い) が先 → A (Q に近い) が後.
+    # B start_time は 14:30 + travel(~3 分) + buffer(8) = 14:41 → 5 分切り上げ = 14:45.
+    # A start_time は B.end(15:15) + travel(~27 分) + buffer(8) = 15:50 → 15:50 (既に 5 分刻み).
+    # B が A より早い時刻に配置されることを確認 (距離最適化の証).
+    assert b.start_time < a.start_time, (
+        f"距離最適化で B が先になるはず: B={b.start_time}, A={a.start_time}"
+    )
+    # B は 14:30 (P.end) + 何分か上を確認.
+    assert b.start_time >= time(14, 30)
+
+
+def test_three_fixed_same_time_sequential_shift() -> None:
+    """Fix E: 3 名異住所同時刻 → 順次シフト.
+
+    Setup: コース A 月曜 3 件 (全て 15:00 固定, 異住所):
+      - A 15:00 固定 (lat=35.65, lng=140.10), service 30 分
+      - B 15:00 固定 (lat=35.65, lng=140.11), service 30 分 (~1km)
+      - C 15:00 固定 (lat=35.65, lng=140.13), service 30 分 (~3km)
+    Expected: 順次後ろにシフト.
+      - 先頭 (距離最適化で決まる) は 15:00.
+      - 2 番目は 15:30 + travel + buffer → 5 分切り上げ.
+      - 3 番目は 2 番目の end + travel + buffer → 5 分切り上げ.
+    """
+    from app.services.scheduling.auto_allocator_v2 import _apply_travel_time_to_courses
+
+    office_id = uuid.uuid4()
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=15, start_m=0, patient_name="A"
+    )
+    a.end_time = time(15, 30)
+    a.service_minutes = 30
+    a.course_code = "A"
+    a.time_type = "固定"
+    b = _make_visit(
+        lat=35.65, lng=140.11, office_id=office_id, start_h=15, start_m=0, patient_name="B"
+    )
+    b.end_time = time(15, 30)
+    b.service_minutes = 30
+    b.course_code = "A"
+    b.time_type = "固定"
+    c = _make_visit(
+        lat=35.65, lng=140.13, office_id=office_id, start_h=15, start_m=0, patient_name="C"
+    )
+    c.end_time = time(15, 30)
+    c.service_minutes = 30
+    c.course_code = "A"
+    c.time_type = "固定"
+
+    warnings: list[V2Warning] = []
+    _apply_travel_time_to_courses([a, b, c], warnings=warnings)
+
+    # 3 名の start_time を昇順で取得.
+    starts = sorted([a.start_time, b.start_time, c.start_time])
+    # 先頭は 15:00 (= シフトされない).
+    assert starts[0] == time(15, 0)
+    # 2 番目と 3 番目は順次後ろ. 全て異なる時刻.
+    assert starts[0] < starts[1] < starts[2], f"3 名が順次シフトされていない: {starts}"
+    # 全員 course_code='A' のまま (= unassigned に流れない).
+    assert a.course_code == "A"
+    assert b.course_code == "A"
+    assert c.course_code == "A"
+    # auto_time_shift_for_conflict warning が 2 件 (= 2 番目 + 3 番目分) 出ている.
+    auto_shifts = [w for w in warnings if w.type == "auto_time_shift_for_conflict"]
+    assert len(auto_shifts) >= 2, f"3 名シフトで warning が 2 件以上出るべき: {len(auto_shifts)}"
+
+
+def test_two_same_address_same_time_unchanged() -> None:
+    """Fix E: 同住所同時刻ペア (家族・施設) は不変 (= 既存仕様維持).
+
+    Setup: 同住所同時刻 (lat=35.65, lng=140.10 両者).
+    Expected:
+      - 両者 start_time 15:00 不変 (= travel 0 + buffer 0 で既存仕様維持).
+      - auto_time_shift_for_conflict warning も出ない.
+    """
+    from app.services.scheduling.auto_allocator_v2 import _apply_travel_time_to_courses
+
+    office_id = uuid.uuid4()
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=15, start_m=0, patient_name="A"
+    )
+    a.end_time = time(15, 30)
+    a.service_minutes = 30
+    a.course_code = "A"
+    a.time_type = "固定"
+    b = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=15, start_m=0, patient_name="B"
+    )
+    b.end_time = time(15, 30)
+    b.service_minutes = 30
+    b.course_code = "A"
+    b.time_type = "固定"
+
+    warnings: list[V2Warning] = []
+    _apply_travel_time_to_courses([a, b], warnings=warnings)
+
+    # 両者 15:00 不変 (= 同住所同時刻は既存仕様で許容).
+    assert a.start_time == time(15, 0)
+    assert b.start_time == time(15, 0)
+    # auto_time_shift warning は出ない (同住所のため Fix E が処理しない).
+    auto_shifts = [w for w in warnings if w.type == "auto_time_shift_for_conflict"]
+    assert not auto_shifts, f"同住所同時刻で auto_time_shift が出ている: {warnings}"
+
+
+def test_auto_shift_warning_emitted() -> None:
+    """Fix E: 自動シフトの warning に affected_patient_ids が入る.
+
+    setup と挙動は test_two_fixed_same_time_different_address_auto_shift と同じだが、
+    本テストは warning の構造 (type / affected_patient_ids / message 内容) を
+    重点的に検証.
+    """
+    from app.services.scheduling.auto_allocator_v2 import _apply_travel_time_to_courses
+
+    office_id = uuid.uuid4()
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=15, start_m=0, patient_name="A"
+    )
+    a.end_time = time(15, 30)
+    a.service_minutes = 30
+    a.course_code = "A"
+    a.time_type = "固定"
+    b = _make_visit(
+        lat=35.65, lng=140.155, office_id=office_id, start_h=15, start_m=0, patient_name="B"
+    )
+    b.end_time = time(15, 30)
+    b.service_minutes = 30
+    b.course_code = "A"
+    b.time_type = "固定"
+
+    warnings: list[V2Warning] = []
+    _apply_travel_time_to_courses([a, b], warnings=warnings)
+
+    auto_shifts = [w for w in warnings if w.type == "auto_time_shift_for_conflict"]
+    assert len(auto_shifts) == 1, f"auto_time_shift warning が 1 件出るべき: {warnings}"
+    w0 = auto_shifts[0]
+    # affected_patient_ids にシフトされた B が入っている.
+    assert b.patient_id in (w0.affected_patient_ids or [])
+    # message に「自動調整」「同時刻衝突」「変更」を含む.
+    assert "同時刻衝突" in w0.message
+    assert "自動調整" in w0.message
+    # weekday が伝播されている.
+    assert w0.weekday == 0  # 月曜
+    # actionable=False (= 自動解決済みで運用者通知のみ).
+    assert w0.actionable is False
+    # patient_id が B 本人.
+    assert w0.patient_id == b.patient_id
+
+
+def test_auto_shift_respects_5min_rounding() -> None:
+    """Fix E: シフト後の時刻が 5 分刻みに切り上げられる.
+
+    Setup: A 09:00-09:30 固定 + B 09:00 固定 (異住所 ~2km).
+    travel 2/20*60 ≒ 6 分 → earliest = 09:30 + 6 + 8 = 09:44.
+    5 分切り上げ → 09:45.
+    """
+    from app.services.scheduling.auto_allocator_v2 import _apply_travel_time_to_courses
+
+    office_id = uuid.uuid4()
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=0, patient_name="A"
+    )
+    a.end_time = time(9, 30)
+    a.service_minutes = 30
+    a.course_code = "A"
+    a.time_type = "固定"
+    # ~2km (経度 0.022 ≒ 緯度方向の 2km 換算: 1 度 ≒ 111km, 0.022 ≒ 2.4km).
+    b = _make_visit(
+        lat=35.65, lng=140.122, office_id=office_id, start_h=9, start_m=0, patient_name="B"
+    )
+    b.end_time = time(9, 30)
+    b.service_minutes = 30
+    b.course_code = "A"
+    b.time_type = "固定"
+
+    warnings: list[V2Warning] = []
+    _apply_travel_time_to_courses([a, b], warnings=warnings)
+
+    # シフト後の B start_time は 5 分刻み.
+    assert b.start_time.minute % 5 == 0, f"B start_time が 5 分刻みでない: {b.start_time}"
+    # A の end (09:30) より後ろ.
+    assert b.start_time > time(9, 30)
 
 
 def test_two_staff_flag_flows_through_build_visits() -> None:

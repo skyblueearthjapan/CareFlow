@@ -2412,3 +2412,230 @@ async def test_full_optimize_idempotent_after_apply_week_only(client, db) -> Non
     refreshed_pfv = await db.scalar(select(PatientFixedVisit).where(PatientFixedVisit.id == pfv.id))
     assert refreshed_pfv is not None
     assert refreshed_pfv.start_time == time(10, 0)
+
+
+# ---------------------------------------------------------------------------
+# Fix D (CareFlow #103): 異住所同時刻 2 名配置の境界検証
+#
+# Fix D2 (apply_individual):
+#   - 異住所ペアは 422 same_time_conflict_with_other_patient
+#   - 同住所ペアは 200 (家族・施設の正当なペアリングなので通す)
+#
+# Fix D3 (reset_to_fixed):
+#   - PFV に異住所同時刻ペアがあれば 422
+#   - PFV が同住所ペアのみなら 200
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apply_individual_rejects_cross_address_same_time(client, db) -> None:
+    """Fix D2: 異住所な他患者と同時刻に被ったら 422 (same_time_conflict_with_other_patient)."""
+    admin = await _make_user(db, email="v2-d2-rej-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    # 既存 patient (異住所; bucket 違いを確保するため lng を +0.01 ずらす).
+    other = await _seed_patient(db, office=office, code="D2-OTHER", lat=35.65, lng=140.20)
+    db.add(
+        PatientFixedVisit(
+            patient_id=other.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(10, 0),
+            duration_min=30,
+            slot_index=0,
+            course_template_id=None,
+        )
+    )
+    # 採用しようとする patient (異住所).
+    target = await _seed_patient(db, office=office, code="D2-TARGET", lat=35.65, lng=140.10)
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/apply-individual",
+        headers=_bearer(admin),
+        json={
+            "patient_id": str(target.id),
+            "confirm": True,
+            "visit_plans": [
+                {
+                    "weekday": 0,
+                    "start_time": "10:00",
+                    "end_time": "10:30",
+                    "duration_min": 30,
+                    "course_code": "A",
+                    "office_id": str(office.id),
+                    "am_pm": "am",
+                }
+            ],
+        },
+    )
+    assert res.status_code == 422, res.text
+    body = res.json()
+    detail = body.get("detail")
+    assert isinstance(detail, dict), f"detail should be dict, got: {detail!r}"
+    assert detail.get("code") == "same_time_conflict_with_other_patient"
+    conflicts = detail.get("conflicts") or []
+    assert len(conflicts) >= 1
+    # patient_ids に target + other が含まれる.
+    first = conflicts[0]
+    pids = set(first["patient_ids"])
+    assert str(target.id) in pids
+    assert str(other.id) in pids
+
+
+@pytest.mark.asyncio
+async def test_apply_individual_allows_same_address_same_time(client, db) -> None:
+    """Fix D2: 同住所な他患者と同時刻なら 200 (家族・施設ペアは許容)."""
+    admin = await _make_user(db, email="v2-d2-allow-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    # 既存 patient (同住所; lat/lng が SAME_ADDRESS_TOLERANCE 内).
+    other = await _seed_patient(db, office=office, code="D2-SA-OTHER", lat=35.65, lng=140.10)
+    db.add(
+        PatientFixedVisit(
+            patient_id=other.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(10, 0),
+            duration_min=30,
+            slot_index=0,
+            course_template_id=None,
+        )
+    )
+    # 採用しようとする patient (同住所; lat/lng が一致 → 同 bucket).
+    target = await _seed_patient(db, office=office, code="D2-SA-TARGET", lat=35.65, lng=140.10)
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/apply-individual",
+        headers=_bearer(admin),
+        json={
+            "patient_id": str(target.id),
+            "confirm": True,
+            "visit_plans": [
+                {
+                    "weekday": 0,
+                    "start_time": "10:00",
+                    "end_time": "10:30",
+                    "duration_min": 30,
+                    "course_code": "A",
+                    "office_id": str(office.id),
+                    "am_pm": "am",
+                }
+            ],
+        },
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["applied"] is True
+    # PFV が作成されている
+    pfv_rows = (
+        await db.scalars(select(PatientFixedVisit).where(PatientFixedVisit.patient_id == target.id))
+    ).all()
+    assert len(pfv_rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_reset_to_fixed_rejects_when_pfv_has_cross_address_conflict(client, db) -> None:
+    """Fix D3: PFV に異住所同時刻ペアがあれば 422 (reset を拒否)."""
+    admin = await _make_user(db, email="v2-d3-rej-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    p1 = await _seed_patient(db, office=office, code="D3-1", lat=35.65, lng=140.10)
+    p2 = await _seed_patient(db, office=office, code="D3-2", lat=35.65, lng=140.20)
+    # 異住所な 2 患者を同 weekday + 同 start_time + course_template_id=NULL で固定枠登録.
+    # course_template_id が同じ (= 両方 None) で住所が違うので衝突する.
+    db.add(
+        PatientFixedVisit(
+            patient_id=p1.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(10, 0),
+            duration_min=30,
+            slot_index=0,
+            course_template_id=None,
+        )
+    )
+    db.add(
+        PatientFixedVisit(
+            patient_id=p2.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(10, 0),
+            duration_min=30,
+            slot_index=0,
+            course_template_id=None,
+        )
+    )
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/reset-to-fixed",
+        headers=_bearer(admin),
+        json={"iso_year": 2026, "iso_week": 20, "office_ids": [str(office.id)], "confirm": True},
+    )
+    assert res.status_code == 422, res.text
+    body = res.json()
+    detail = body.get("detail")
+    assert isinstance(detail, dict), f"detail should be dict, got: {detail!r}"
+    assert detail.get("code") == "same_time_conflict_with_other_patient"
+    conflicts = detail.get("conflicts") or []
+    assert len(conflicts) >= 1
+    pids = set(conflicts[0]["patient_ids"])
+    assert str(p1.id) in pids
+    assert str(p2.id) in pids
+
+
+@pytest.mark.asyncio
+async def test_reset_to_fixed_succeeds_when_only_same_address_pairs(client, db) -> None:
+    """Fix D3: PFV が同住所ペアのみなら 200 (家族・施設のペアリングは許容)."""
+    from datetime import date
+
+    from app.models.visit import Visit
+
+    admin = await _make_user(db, email="v2-d3-allow-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    # 同住所な 2 患者を同 weekday + 同 start_time + course_template_id=NULL で固定枠登録.
+    # 住所が同じ (lat/lng 完全一致) なら衝突しない.
+    p1 = await _seed_patient(db, office=office, code="D3-SA-1", lat=35.65, lng=140.10)
+    p2 = await _seed_patient(db, office=office, code="D3-SA-2", lat=35.65, lng=140.10)
+    db.add(
+        PatientFixedVisit(
+            patient_id=p1.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(10, 0),
+            duration_min=30,
+            slot_index=0,
+            course_template_id=None,
+        )
+    )
+    db.add(
+        PatientFixedVisit(
+            patient_id=p2.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(10, 0),
+            duration_min=30,
+            slot_index=0,
+            course_template_id=None,
+        )
+    )
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/reset-to-fixed",
+        headers=_bearer(admin),
+        json={"iso_year": 2026, "iso_week": 20, "office_ids": [str(office.id)], "confirm": True},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    # 2 visit (= 2 patient × 1 weekday) 再生成される.
+    assert body["visits_regenerated"] >= 2
+    # 月曜の visit が両方とも作成されている.
+    visits = (
+        await db.scalars(
+            select(Visit).where(
+                Visit.visit_date == date(2026, 5, 11),
+                Visit.deleted_at.is_(None),
+            )
+        )
+    ).all()
+    assert len(visits) >= 2
