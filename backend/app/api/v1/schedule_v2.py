@@ -67,12 +67,22 @@ from app.schemas.v2.auto_schedule_v2 import (
     V2WeekdayBeforeAfter,
 )
 from app.services.scheduling.auto_allocator_v2 import (
-    LUNCH_END,
-    LUNCH_START,
+    # Wave 3 (#WAVE3): API 境界の H10 (lunch overlap) ガードは
+    # ``_is_in_lunch_break`` (= 動的 lunch 11:30-13:30 のどの 45 分配置でも
+    # 避けられない visit か?) で判定する. service 層 (compute_lunch_window) が
+    # コース別に lunch を 11:30-12:15 / 12:30-13:30 等にずらすことで合法になる
+    # visit (例: 12:15-12:45 = AM 側 11:30-12:15 lunch なら衝突しない) は
+    # API 境界で 422 reject せず service 層に通す. ``LUNCH_DEFAULT_START`` /
+    # ``LUNCH_DEFAULT_END`` (= 12:00 / 13:00) は apply_week_only の #113 hotfix
+    # logger で利用するメッセージ用途と、duration ベース判定 (新仕様未対応箇所)
+    # のフォールバックに残置.
+    LUNCH_DEFAULT_END,
+    LUNCH_DEFAULT_START,
     CrossAddressTimeConflictError,
     V2Visit,
     V2Warning,
     _address_bucket,
+    _is_in_lunch_break,
     apply_individual_proposal,
     apply_week_only,
     calc_h_violations,
@@ -622,6 +632,14 @@ async def apply_individual_endpoint(
     """機能 A/B 共通: 1 患者の固定枠 (patient_fixed_visits) を提案で更新する.
 
     idempotent: 同じ提案を 2 度送っても安全 (no-op + idempotent=true).
+
+    注意: 本 endpoint は「45 分 lunch が物理的に取れる」visit を通すが、
+    当該コース内で実際に lunch slot を取れるかは次回 full-optimization の
+    ``_filter_unavailable_and_lunch`` + ``compute_lunch_window`` で初めて確定する.
+    = apply 直後に PFV は 12:15-12:45 で保存されるが、次回再算出時に
+    同コース 11:30-12:15 が他 visit で占有されていれば unassigned になり得る.
+    UX 影響: 「採用したのに翌週消えた」というユーザー混乱が起こり得る.
+    緩和策: FE 側で「採用後 即 full-optimize」フローを推奨済 (1ca5bba commit).
     """
     if not payload.confirm:
         raise HTTPException(
@@ -642,17 +660,26 @@ async def apply_individual_endpoint(
     # W41 v2 final cross-review (H-Codex-2): apply 境界での最低限の再検証.
     # クライアントが偽の visit_plans を送る攻撃に対して明らかな違反を弾く.
     # service 層は信頼境界の内側なので weekday / duration_min / start_time の
-    # 範囲は Pydantic schema が既に担保しているが、H10 (昼休憩 12:00-13:00 内禁止)
+    # 範囲は Pydantic schema が既に担保しているが、H10 (昼休憩 重複禁止)
     # は schema にエンコードされていないためここで明示的にチェックする.
+    #
+    # Wave 3 (#WAVE3) Phase B 修正: 旧仕様の固定 12:00-13:00 ガードでは、
+    # service 層 (compute_lunch_window) が動的に lunch=11:30-12:15 等にずらせば
+    # 合法になる visit (例: 12:15-12:45) も 422 で reject されてしまい、
+    # apply 経路が詰まっていた. ``_is_in_lunch_break`` (= 動的 lunch 11:30-13:30
+    # のどの 45 分配置でも避けられない時間帯か?) を使って「物理的に不可能」な
+    # visit のみ reject する.
     for idx, vp in enumerate(payload.visit_plans):
-        # H10: 12:00-13:00 の昼休憩枠に visit を入れない.
-        # visit 区間 [start_time, end_time) が [12:00, 13:00) と重なる場合は弾く.
-        if vp.start_time < LUNCH_END and vp.end_time > LUNCH_START:
+        # H10: 動的 lunch (11:30-13:30, 45-60 分) のどの配置でも避けられない
+        # visit を弾く. 例: 12:15-12:45 は AM 側 11:30-12:15 lunch なら合法 → 通す.
+        # 例: 12:10-12:50 は AM/PM どちらの避け方でも 45 分 lunch を確保できない → 422.
+        if _is_in_lunch_break(vp.start_time, vp.end_time):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=(
-                    f"visit_plans[{idx}]: H10 違反 — 昼休憩 12:00-13:00 に重なる "
-                    f"visit は不可 (start={vp.start_time}, end={vp.end_time})"
+                    f"visit_plans[{idx}]: H10 違反 — 動的昼休憩 (11:30-13:30 内 45 分) を "
+                    f"どこにも確保できない visit は不可 "
+                    f"(start={vp.start_time}, end={vp.end_time})"
                 ),
             )
         # end_time > start_time (Pydantic では検証されない 0 / 負時間ガード)
@@ -676,12 +703,13 @@ async def apply_individual_endpoint(
         await db.rollback()
         raise
     except CrossAddressTimeConflictError as exc:
-        # Fix D2 (CareFlow #103): 同コース同時刻に異住所 patient が混在.
-        # 同住所ペア (家族・施設) は許容しているので、本エラーは
-        # 「物理的に不可能な配置 (2 名同時刻別住所)」を表す.
+        # Wave 1 (#115) で意味変更: 本エラーは「データ不備で auto_shift 不能」
+        # な配置を示す (= 座標 None patient 混在 / office 未解決).
+        # 通常の異住所同時刻ペアは Wave 1 の auto_shift が解消するため 422 にしない.
         await db.rollback()
         logger.warning(
-            "apply_individual: cross-address same-time conflict: patient=%s conflicts=%d",
+            "apply_individual: unresolvable same-time conflict (missing coord): "
+            "patient=%s conflicts=%d",
             payload.patient_id,
             len(exc.conflicts),
         )
@@ -690,8 +718,9 @@ async def apply_individual_endpoint(
             detail={
                 "code": "same_time_conflict_with_other_patient",
                 "message": (
-                    f"{len(exc.conflicts)} 件の異住所同時刻衝突を検出, 採用拒否. "
-                    "他患者の固定枠と同コース同時刻で別住所の配置になります。"
+                    f"{len(exc.conflicts)} 件の解消不能な同時刻衝突を検出, 採用拒否. "
+                    "対象 patient の座標 (lat/lng) または primary_office が未設定の "
+                    "ため自動シフトで解消できません。患者マスタを修正してください。"
                 ),
                 "conflicts": exc.conflicts[:10],
             },
@@ -765,15 +794,23 @@ async def reset_to_fixed_endpoint(
     except ValueError as exc:
         await db.rollback()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    except CrossAddressTimeConflictError as exc:
-        # Fix D3 (CareFlow #103): PFV (master) 自体に異住所同時刻衝突がある場合は
-        # reset で visit を再生成すると「2 名同時刻別住所訪問」が確定するため拒否する.
-        # 同住所ペア (家族・施設) は許容しているので、本エラーは master 不整合.
-        # ユーザーには「該当 patient の PFV 修正 (= /v2/apply-individual で時刻ずらし)」
-        # を促す.
+    except CrossAddressTimeConflictError as exc:  # pragma: no cover
+        # Wave 1 (#115) で意味変更: 本エラーは「データ不備で auto_shift 不能」
+        # な配置を示す. 通常の異住所同時刻ペアは Wave 1 の auto_shift が解消する.
+        #
+        # 現状到達不能: ``reset_visits_to_fixed`` (auto_allocator_v2.py) は内部で
+        # ``_detect_cross_address_time_conflicts`` を呼ぶものの、結果は
+        # **warning log のみ** で raise しない (= 続行する). よって本 except は
+        # 現行コードパス上では捕捉対象なし (= dead code, coverage tool に明示).
+        # 残してある理由:
+        #   - 将来 reset 経路で「データ不備 → reset 拒否」に方針変更する可能性に備えた
+        #     防御 (Phase A reviewer LOW #1).
+        #   - 他 4 経路 (full-optimize / apply-proposal 等) と例外型を統一しておくと
+        #     上位レイヤの HTTPException マッピングが簡潔.
+        # 万一 raise された場合は念のため 422 で返す.
         await db.rollback()
         logger.warning(
-            "reset_to_fixed: cross-address same-time conflict in PFV: "
+            "reset_to_fixed: unresolvable same-time conflict (missing coord): "
             "iso_year=%s iso_week=%s conflicts=%d",
             payload.iso_year,
             payload.iso_week,
@@ -784,9 +821,9 @@ async def reset_to_fixed_endpoint(
             detail={
                 "code": "same_time_conflict_with_other_patient",
                 "message": (
-                    f"{len(exc.conflicts)} 件の異住所同時刻衝突を検出, リセット拒否. "
-                    "patient_fixed_visits に同コース同時刻で別住所の組合せが存在します。"
-                    "該当患者の固定枠を修正してください。"
+                    f"{len(exc.conflicts)} 件の解消不能な同時刻衝突を検出, リセット拒否. "
+                    "対象 patient の座標 (lat/lng) または primary_office が未設定で "
+                    "自動シフトが行えません。患者マスタを修正してください。"
                 ),
                 "conflicts": exc.conflicts[:10],
             },
@@ -852,14 +889,20 @@ async def apply_week_only_endpoint(
         )
 
     # H10 を境界で再検証 (apply-individual と同じ防衛深度).
-    # CareFlow #113 hotfix: H10 違反 (昼休憩 12:00-13:00 重複) も 422 拒否を撤去し
+    # CareFlow #113 hotfix: H10 違反 (動的昼休憩 11:30-13:30 重複) も 422 拒否を撤去し
     # warning log のみで続行. Fix E の auto_shift で意図せず lunch にずれた visit
     # を apply できないと業務詰まり. 後段で全面最適化を再実行すれば Fix E + lunch
     # bump で解消する想定. end_time <= start_time は論理的に不正なので 422 維持.
+    #
+    # Wave 3 (#WAVE3) Phase B 修正: 旧仕様の固定 12:00-13:00 判定では、
+    # service 層 (compute_lunch_window) が動的に lunch=11:30-12:15 等にずらせば
+    # 合法になる visit (例: 12:15-12:45) も警告対象になっていた. 他 endpoint と
+    # 統一して ``_is_in_lunch_break`` (= 動的 lunch 11:30-13:30 のどの 45 分配置でも
+    # 避けられない visit か?) で判定する.
     lunch_violations: list[str] = []
     for pi, pvp in enumerate(payload.visit_plans_per_patient):
         for vi, vp in enumerate(pvp.visit_plans):
-            if vp.start_time < LUNCH_END and vp.end_time > LUNCH_START:
+            if _is_in_lunch_break(vp.start_time, vp.end_time):
                 lunch_violations.append(
                     f"patient[{pi}].visit[{vi}] start={vp.start_time} end={vp.end_time}"
                 )
@@ -874,7 +917,10 @@ async def apply_week_only_endpoint(
                 )
     if lunch_violations:
         logger.warning(
-            "apply_week_only: H10 violations (lunch 12-13 overlap) detected, apply 続行: %s",
+            "apply_week_only: H10 violations (lunch dynamic 11:30-13:30 overlap; "
+            "static reference %s-%s) detected, apply 続行: %s",
+            LUNCH_DEFAULT_START,
+            LUNCH_DEFAULT_END,
             lunch_violations[:5],
         )
 
@@ -1134,9 +1180,14 @@ async def update_fixed_time_master_endpoint(
                 detail=f"duration_min が範囲外です (computed={duration_min})",
             )
 
-        # H10: 12:00-13:00 の昼休憩重複を弾く.
+        # H10: 動的昼休憩 (11:30-13:30 内 45-60 分) を確保できない時刻を弾く.
         # time_type='時間帯' などレンジ指定の場合、new_start..new_end は希望範囲であって
         # 実訪問時間ではないので H10 をスキップする (実訪問は duration_min 分のどこかで行う).
+        #
+        # Wave 3 (#WAVE3) Phase B 修正: 旧仕様の固定 12:00-13:00 ガードを
+        # ``_is_in_lunch_break`` (動的 lunch 11:30-13:30 のどの配置でも避けられない
+        # 時間帯か?) に置き換えた. 例: 12:15-12:45 は AM 側 11:30-12:15 lunch なら
+        # 合法 → 通す. 12:10-12:50 はどう取っても 45 分 lunch を確保できない → 422.
         if not is_range_type:
             if end_t is not None:
                 actual_end_t = end_t
@@ -1145,10 +1196,13 @@ async def update_fixed_time_master_endpoint(
                 if end_total >= 24 * 60:
                     end_total = 23 * 60 + 59
                 actual_end_t = time_cls(end_total // 60, end_total % 60)
-            if start_t < LUNCH_END and actual_end_t > LUNCH_START:
+            if _is_in_lunch_break(start_t, actual_end_t):
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="H10 違反: 昼休憩 12:00-13:00 に重なる時間は指定できません",
+                    detail=(
+                        "H10 違反: 動的昼休憩 (11:30-13:30 内 45 分) を確保できない "
+                        "時間は指定できません"
+                    ),
                 )
 
         if pfv_row is None:
@@ -1270,12 +1324,18 @@ async def update_fixed_time_week_only_endpoint(
                     f"(status={visit_row.status!r})."
                 ),
             )
-        # H10: 12:00-13:00 と重複してはならない
+        # H10: 動的昼休憩 (11:30-13:30 内 45-60 分) を確保できない時刻は弾く.
+        # Wave 3 (#WAVE3) Phase B 修正: 旧仕様の固定 12:00-13:00 ガードを
+        # ``_is_in_lunch_break`` (動的 lunch のどの配置でも避けられない時間帯か?)
+        # に置き換えた. 例: 12:15-12:45 は AM 側 11:30-12:15 lunch なら合法 → 通す.
         effective_end = end_t or visit_row.end_time
-        if start_t < LUNCH_END and effective_end > LUNCH_START:
+        if _is_in_lunch_break(start_t, effective_end):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="H10 違反: 昼休憩 12:00-13:00 に重なる時間は指定できません",
+                detail=(
+                    "H10 違反: 動的昼休憩 (11:30-13:30 内 45 分) を確保できない "
+                    "時間は指定できません"
+                ),
             )
         # 旧 start から duration を計算 (end_t 未指定時は duration を保つ).
         prev_start = visit_row.start_time

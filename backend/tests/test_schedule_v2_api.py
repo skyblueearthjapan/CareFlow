@@ -325,8 +325,15 @@ async def test_apply_individual_rejects_empty_plans(client, db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_apply_individual_rejects_lunch_break_visit(client, db) -> None:
-    """H-Codex-2 regression: 昼休憩 12:00-13:00 と重なる visit_plan は 422."""
+async def test_apply_individual_rejects_visit_in_unavoidable_lunch(client, db) -> None:
+    """Phase B: 動的 lunch (11:30-13:30 内 45 分) を取れない visit_plan は 422.
+
+    旧仕様 (H-Codex-2) では 12:00-13:00 と重なる全 visit を 422 拒否していたが、
+    Wave 3 で lunch がコース別動的になったため、API 境界も ``_is_in_lunch_break``
+    (= AM 側 11:30-12:15 lunch / PM 側 12:30-13:30 lunch のどちらでも回避不可)
+    で判定する. ``12:10-12:50`` は AM 側 (lunch_end <= visit_start = 12:10 不可) も
+    PM 側 (lunch_start >= visit_end = 12:50 不可) も成立しないため 422.
+    """
     admin = await _make_user(db, email="v2-h10-admin@example.com", role="admin")
     office, _ = await _seed_office_with_staff(db)
     p = await _seed_patient(db, office=office, code="H10-1")
@@ -340,9 +347,9 @@ async def test_apply_individual_rejects_lunch_break_visit(client, db) -> None:
             "visit_plans": [
                 {
                     "weekday": 0,
-                    "start_time": "12:15",  # 昼休憩 12:00-13:00 と重なる
-                    "end_time": "12:45",
-                    "duration_min": 30,
+                    "start_time": "12:10",  # 動的 lunch (11:30-13:30 内 45 分) どこにも置けない
+                    "end_time": "12:50",
+                    "duration_min": 40,
                     "course_code": "A",
                     "office_id": str(office.id),
                     "am_pm": "pm",
@@ -352,6 +359,39 @@ async def test_apply_individual_rejects_lunch_break_visit(client, db) -> None:
     )
     assert res.status_code == 422, res.text
     assert "H10" in res.text
+
+
+@pytest.mark.asyncio
+async def test_apply_individual_allows_visit_in_dynamic_lunch_avoidable_slot(client, db) -> None:
+    """Phase B HIGH 修正: 動的 lunch で回避できる 12:15-12:45 visit は 200.
+
+    旧仕様では 12:00-13:00 と重なるため 422 だったが、新仕様では AM 側 lunch
+    11:30-12:15 (45 分) を取れば衝突しない → service 層に通す.
+    """
+    admin = await _make_user(db, email="v2-h10-allow-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    p = await _seed_patient(db, office=office, code="H10-ALLOW")
+    await db.commit()
+    res = await client.post(
+        "/api/v1/schedule/v2/apply-individual",
+        headers=_bearer(admin),
+        json={
+            "patient_id": str(p.id),
+            "confirm": True,
+            "visit_plans": [
+                {
+                    "weekday": 0,
+                    "start_time": "12:15",  # AM 側 lunch 11:30-12:15 で回避可
+                    "end_time": "12:45",
+                    "duration_min": 30,
+                    "course_code": "A",
+                    "office_id": str(office.id),
+                    "am_pm": "pm",
+                }
+            ],
+        },
+    )
+    assert res.status_code == 200, res.text
 
 
 # ---------------------------------------------------------------------------
@@ -421,6 +461,72 @@ async def test_reset_to_fixed_rejects_staff(client, db) -> None:
         json={"iso_year": 2026, "iso_week": 20, "office_ids": []},
     )
     assert res.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# CareFlow 本番バグ修正 (Option A): /v2/reset-to-fixed が保護 visit と PFV INSERT の
+# unique key 衝突を 200 + warning で逃がす (= 409 IntegrityError にしない).
+# 本番事象: reset_to_fixed が duplicate key value violates unique constraint
+# "uq_visits_pds_group_active" で 409 を返していたため、保護対象 visit との衝突は
+# 事前検知して skip するよう変更.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reset_to_fixed_returns_200_with_warnings_when_protected_visit_exists(
+    client, db
+) -> None:
+    """status='completed' な既存 visit があっても reset は 200 + warning で続行."""
+    from datetime import date
+
+    from app.models.visit import VISIT_STATUS_COMPLETED, Visit
+
+    admin = await _make_user(db, email="v2-rs-protect-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    p = await _seed_patient(db, office=office, code="RS-PROTECT-1")
+    # PFV: Mon 12:00 30 分.
+    db.add(
+        PatientFixedVisit(
+            patient_id=p.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(12, 0),
+            duration_min=30,
+            slot_index=0,
+        )
+    )
+    # 既存 completed visit (保護対象, 同 patient × Mon × 12:00 で PFV と key 衝突).
+    protected = Visit(
+        patient_id=p.id,
+        visit_date=date(2026, 5, 11),  # Mon W20
+        start_time=time(12, 0),
+        end_time=time(12, 30),
+        type="regular",
+        status=VISIT_STATUS_COMPLETED,
+        source="auto_alloc",
+        required_staff_count=1,
+    )
+    db.add(protected)
+    await db.commit()
+    protected_id = protected.id
+
+    res = await client.post(
+        "/api/v1/schedule/v2/reset-to-fixed",
+        headers=_bearer(admin),
+        json={"iso_year": 2026, "iso_week": 20, "office_ids": [str(office.id)]},
+    )
+    # 修正前: 409 (IntegrityError). 修正後: 200 + skip warning.
+    assert res.status_code == 200, res.text
+    body = res.json()
+    warnings = body.get("warnings", [])
+    assert any("衝突するため再生成スキップ" in w for w in warnings), (
+        f"skip warning が含まれていない: {warnings!r}"
+    )
+
+    # 既存 completed visit は維持されている.
+    refreshed = await db.scalar(select(Visit).where(Visit.id == protected_id))
+    assert refreshed is not None
+    assert refreshed.deleted_at is None
 
 
 # ---------------------------------------------------------------------------
@@ -1483,7 +1589,11 @@ async def test_update_fixed_time_master_updates_pfv_and_weekly_pattern(client, d
 
 @pytest.mark.asyncio
 async def test_update_fixed_time_master_rejects_lunch_break(client, db) -> None:
-    """H10: 12:00-13:00 と重なる時刻は 422."""
+    """Phase B: 動的 lunch (11:30-13:30 内 45 分) を取れない時刻は 422.
+
+    旧仕様の 12:15-12:45 は AM 側 lunch 11:30-12:15 で回避可になったため、
+    回避不可能な 12:10-12:50 で 422 を確認する.
+    """
     admin = await _make_user(db, email="v2-ufm-lb@example.com", role="admin")
     office, _ = await _seed_office_with_staff(db)
     p = await _seed_patient(db, office=office, code="UFM-LB")
@@ -1494,8 +1604,8 @@ async def test_update_fixed_time_master_rejects_lunch_break(client, db) -> None:
         json={
             "patient_id": str(p.id),
             "weekday": 0,
-            "new_start": "12:15",
-            "new_end": "12:45",
+            "new_start": "12:10",
+            "new_end": "12:50",
             "new_time_type": "固定",
         },
     )
@@ -1807,9 +1917,11 @@ async def test_update_fixed_time_master_h10_skipped_for_range_type(client, db) -
 
 @pytest.mark.asyncio
 async def test_update_fixed_time_master_h10_lunch_overlap_via_duration(client, db) -> None:
-    """new_end 省略時でも duration_min から計算した end が昼休憩に重なれば 422.
+    """new_end 省略時でも duration_min から計算した end が動的昼休憩に重なれば 422.
 
-    既存 PFV の duration=60min, new_start=11:30 → end=12:30 (12:00-13:00 重複) → 422.
+    Phase B 修正: 旧仕様 (11:30-12:30 で 422) は新仕様だと PM 側 lunch 12:30+ で
+    回避可になるため通る. 動的 lunch のどこにも置けない 11:45-12:45 (= 60 分,
+    AM 側 12:15+ 不可 / PM 側 12:30 以下 不可) で 422 を確認する.
     """
     from app.models.patient_fixed_visit import PatientFixedVisit
 
@@ -1833,7 +1945,7 @@ async def test_update_fixed_time_master_h10_lunch_overlap_via_duration(client, d
         json={
             "patient_id": str(p.id),
             "weekday": 0,
-            "new_start": "11:30",  # 11:30 + 60min = 12:30 が昼休憩に重複
+            "new_start": "11:45",  # 11:45 + 60min = 12:45 → 動的 lunch どこにも置けない
             # new_end は故意に省略
         },
     )
@@ -2402,25 +2514,28 @@ async def test_full_optimize_idempotent_after_apply_week_only(client, db) -> Non
 
 
 # ---------------------------------------------------------------------------
-# Fix D (CareFlow #103): 異住所同時刻 2 名配置の境界検証
+# Wave 1 #115 (旧 Fix D / CareFlow #103): 同時刻 2 名配置の境界検証.
 #
-# Fix D2 (apply_individual):
-#   - 異住所ペアは 422 same_time_conflict_with_other_patient
-#   - 同住所ペアは 200 (家族・施設の正当なペアリングなので通す)
-#
-# Fix D3 (reset_to_fixed):
-#   - PFV に異住所同時刻ペアがあれば 422
-#   - PFV が同住所ペアのみなら 200
+# 旧仕様 (撤去): 異住所同時刻ペアは 422 で拒否.
+# Wave 1 後 (本実装): 通常の異住所同時刻ペアは ``apply_travel_corrections`` の
+#   auto_shift で解消するため 422 にしない. 「物理不可能 (= 座標 None / office
+#   未解決で auto_shift 不能)」のみ 422 拒否を維持.
+# 同住所ペアは Wave 2 の `_align_same_address_pair_to_same_time` で同 start_time
+#   + 合算 60 分占有として正しく扱われる.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_apply_individual_rejects_cross_address_same_time(client, db) -> None:
-    """Fix D2: 異住所な他患者と同時刻に被ったら 422 (same_time_conflict_with_other_patient)."""
-    admin = await _make_user(db, email="v2-d2-rej-admin@example.com", role="admin")
+async def test_apply_individual_allows_cross_address_same_time_with_auto_shift(client, db) -> None:
+    """Wave 1: 異住所同時刻でも両者座標があれば 200 (後段の auto_shift で解消).
+
+    旧 Fix D2 は 422 拒否だったが、Wave 1 で auto_shift が解消するので
+    PFV 適用境界では拒否しない (= 後で full optimization 実行時にシフト).
+    """
+    admin = await _make_user(db, email="v2-w1-allow-admin@example.com", role="admin")
     office, _ = await _seed_office_with_staff(db)
     # 既存 patient (異住所; bucket 違いを確保するため lng を +0.01 ずらす).
-    other = await _seed_patient(db, office=office, code="D2-OTHER", lat=35.65, lng=140.20)
+    other = await _seed_patient(db, office=office, code="W1-OTHER", lat=35.65, lng=140.20)
     db.add(
         PatientFixedVisit(
             patient_id=other.id,
@@ -2432,9 +2547,70 @@ async def test_apply_individual_rejects_cross_address_same_time(client, db) -> N
             course_template_id=None,
         )
     )
-    # 採用しようとする patient (異住所).
-    target = await _seed_patient(db, office=office, code="D2-TARGET", lat=35.65, lng=140.10)
+    # 採用しようとする patient (異住所, 座標あり).
+    target = await _seed_patient(db, office=office, code="W1-TARGET", lat=35.65, lng=140.10)
     await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/apply-individual",
+        headers=_bearer(admin),
+        json={
+            "patient_id": str(target.id),
+            "confirm": True,
+            "visit_plans": [
+                {
+                    "weekday": 0,
+                    "start_time": "10:00",
+                    "end_time": "10:30",
+                    "duration_min": 30,
+                    "course_code": "A",
+                    "office_id": str(office.id),
+                    "am_pm": "am",
+                }
+            ],
+        },
+    )
+    # Wave 1: 両者座標ありなら auto_shift で解消可能なので 200.
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["applied"] is True
+
+
+@pytest.mark.asyncio
+async def test_apply_individual_rejects_when_target_missing_coordinates(client, db) -> None:
+    """Wave 1: 採用 patient の座標が None なら auto_shift 不能 → 422."""
+    admin = await _make_user(db, email="v2-w1-missing-coord-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    other = await _seed_patient(db, office=office, code="W1-COORD-OTHER", lat=35.65, lng=140.20)
+    db.add(
+        PatientFixedVisit(
+            patient_id=other.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(10, 0),
+            duration_min=30,
+            slot_index=0,
+            course_template_id=None,
+        )
+    )
+    # 座標が None な採用 target — auto_shift 不能ケース.
+    target = Patient(
+        code="W1-COORD-TARGET",
+        name="P-NoCoord",
+        status="active",
+        lat=None,
+        lng=None,
+        primary_office_id=office.id,
+        weekly_pattern={
+            "preferred_weekdays": ["Mon"],
+            "preferred_start": "10:00",
+            "service_minutes": 30,
+            "time_type": "固定",
+        },
+    )
+    db.add(target)
+    await db.commit()
+    await db.refresh(target)
 
     res = await client.post(
         "/api/v1/schedule/v2/apply-individual",
@@ -2460,13 +2636,6 @@ async def test_apply_individual_rejects_cross_address_same_time(client, db) -> N
     detail = body.get("detail")
     assert isinstance(detail, dict), f"detail should be dict, got: {detail!r}"
     assert detail.get("code") == "same_time_conflict_with_other_patient"
-    conflicts = detail.get("conflicts") or []
-    assert len(conflicts) >= 1
-    # patient_ids に target + other が含まれる.
-    first = conflicts[0]
-    pids = set(first["patient_ids"])
-    assert str(target.id) in pids
-    assert str(other.id) in pids
 
 
 @pytest.mark.asyncio
@@ -2618,3 +2787,456 @@ async def test_reset_to_fixed_succeeds_when_only_same_address_pairs(client, db) 
         )
     ).all()
     assert len(visits) >= 2
+
+
+# ---------------------------------------------------------------------------
+# Wave 1 (#115) 統合テスト: apply_travel_corrections が 4 経路で動くこと.
+#
+# 検証ポイント:
+#   1. apply_week_only: visit_plans に異住所同時刻 → auto_shift で別時刻に解消されて INSERT.
+#   2. reset_visits_to_fixed: PFV に異住所同時刻 → auto_shift で別時刻に解消されて INSERT.
+#   3. apply_individual_proposal: 異住所同時刻でも 200 (PFV はそのまま、別途
+#      全面最適化で auto_shift).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apply_week_only_auto_shifts_cross_address_same_time_pair(client, db) -> None:
+    """Wave 1: apply_week_only 経路で異住所同時刻が auto_shift で解消 → DB に同時刻 visit が残らない."""
+    from datetime import date
+
+    from app.models.visit import Visit
+
+    admin = await _make_user(db, email="v2-w1-aw-aw-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    # 異住所な 2 患者 (lng で 0.05 ずらす).
+    p1 = await _seed_patient(db, office=office, code="W1-AW-1", lat=35.65, lng=140.10)
+    p2 = await _seed_patient(db, office=office, code="W1-AW-2", lat=35.65, lng=140.15)
+    await db.commit()
+
+    plan_at_10 = {
+        "weekday": 0,
+        "start_time": "10:00",
+        "end_time": "10:30",
+        "duration_min": 30,
+        "course_code": "A",
+        "office_id": str(office.id),
+        "am_pm": "am",
+    }
+    res = await client.post(
+        "/api/v1/schedule/v2/apply-week-only",
+        headers=_bearer(admin),
+        json={
+            "iso_year": 2026,
+            "iso_week": 20,
+            "office_ids": [str(office.id)],
+            "visit_plans_per_patient": [
+                {"patient_id": str(p1.id), "visit_plans": [plan_at_10]},
+                {"patient_id": str(p2.id), "visit_plans": [plan_at_10]},
+            ],
+            "confirm": True,
+        },
+    )
+    assert res.status_code == 200, res.text
+
+    # DB に残る visit を確認: 同 (visit_date, course_id, start_time) で 2 件残ったらバグ.
+    visits = list(
+        (
+            await db.scalars(
+                select(Visit).where(
+                    Visit.visit_date == date(2026, 5, 11),
+                    Visit.deleted_at.is_(None),
+                    Visit.source == "auto_alloc_v2w",
+                )
+            )
+        ).all()
+    )
+    # 2 患者分の visit が INSERT されている.
+    assert len(visits) == 2, f"2 visits expected, got {len(visits)}: {visits}"
+    # 2 visit の start_time は **異なる** (= auto_shift で解消).
+    starts = sorted(v.start_time for v in visits)
+    assert starts[0] != starts[1], (
+        f"Wave 1: auto_shift で異住所同時刻が解消されているはず, got starts={starts}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_reset_to_fixed_auto_shifts_cross_address_same_time_pair(client, db) -> None:
+    """Wave 1: reset_visits_to_fixed 経路で異住所同時刻 PFV → auto_shift で別時刻に解消されて INSERT."""
+    from datetime import date
+
+    from app.models.visit import Visit
+
+    admin = await _make_user(db, email="v2-w1-reset-shift-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    p1 = await _seed_patient(db, office=office, code="W1-RS-1", lat=35.65, lng=140.10)
+    p2 = await _seed_patient(db, office=office, code="W1-RS-2", lat=35.65, lng=140.15)
+    db.add(
+        PatientFixedVisit(
+            patient_id=p1.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(10, 0),
+            duration_min=30,
+            slot_index=0,
+            course_template_id=None,
+        )
+    )
+    db.add(
+        PatientFixedVisit(
+            patient_id=p2.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(10, 0),
+            duration_min=30,
+            slot_index=0,
+            course_template_id=None,
+        )
+    )
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/reset-to-fixed",
+        headers=_bearer(admin),
+        json={"iso_year": 2026, "iso_week": 20, "office_ids": [str(office.id)], "confirm": True},
+    )
+    assert res.status_code == 200, res.text
+
+    visits = list(
+        (
+            await db.scalars(
+                select(Visit).where(
+                    Visit.visit_date == date(2026, 5, 11),
+                    Visit.deleted_at.is_(None),
+                    Visit.source == "reset_v2",
+                )
+            )
+        ).all()
+    )
+    # 両 patient とも INSERT されているはず (auto_shift で解消).
+    assert len(visits) == 2, f"2 visits expected, got {len(visits)}: {visits}"
+    starts = sorted(v.start_time for v in visits)
+    # auto_shift で 2 visit の時刻が分かれる.
+    assert starts[0] != starts[1], (
+        f"Wave 1: reset 経路でも auto_shift が効くはず, got starts={starts}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_apply_individual_allows_cross_address_same_time_via_wave1(client, db) -> None:
+    """Wave 1: apply_individual_proposal 経路で異住所同時刻 (両者座標あり) → 200.
+
+    旧仕様は 422 拒否だったが、後段の auto_shift で解消するため拒否しない.
+    """
+    admin = await _make_user(db, email="v2-w1-ind-allow-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    # 既存 patient (異住所).
+    other = await _seed_patient(db, office=office, code="W1-IND-OTHER", lat=35.65, lng=140.20)
+    db.add(
+        PatientFixedVisit(
+            patient_id=other.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(11, 0),
+            duration_min=30,
+            slot_index=0,
+            course_template_id=None,
+        )
+    )
+    target = await _seed_patient(db, office=office, code="W1-IND-TARGET", lat=35.65, lng=140.10)
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/apply-individual",
+        headers=_bearer(admin),
+        json={
+            "patient_id": str(target.id),
+            "confirm": True,
+            "visit_plans": [
+                {
+                    "weekday": 0,
+                    "start_time": "11:00",
+                    "end_time": "11:30",
+                    "duration_min": 30,
+                    "course_code": "A",
+                    "office_id": str(office.id),
+                    "am_pm": "am",
+                }
+            ],
+        },
+    )
+    # Wave 1: 両者座標ありなので 200.
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["applied"] is True
+    pfv_rows = (
+        await db.scalars(select(PatientFixedVisit).where(PatientFixedVisit.patient_id == target.id))
+    ).all()
+    assert len(pfv_rows) == 1
+
+
+# ---------------------------------------------------------------------------
+# Wave 2 (#115) 統合テスト: 同住所ペアが apply_week_only 経路で同 start_time +
+# 倍 duration 占有として INSERT されること.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apply_week_only_same_address_pair_aligned_to_same_start(client, db) -> None:
+    """Wave 2: 同住所 2 名を apply_week_only に投入 → DB に同 start_time + 合算占有 visit."""
+    from datetime import date
+
+    from app.models.visit import Visit
+
+    admin = await _make_user(db, email="v2-w2-pair-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    # 完全同住所 (lat/lng 一致 = 同 bucket) + 両者「時間帯」(= 非固定 / Wave 2 で揃え可能).
+    flex_pattern = {
+        "preferred_weekdays": ["Mon"],
+        "preferred_start": "09:00",
+        "preferred_end": "11:00",
+        "service_minutes": 30,
+        "time_type": "時間帯",
+    }
+    p1 = await _seed_patient(
+        db,
+        office=office,
+        code="W2-PAIR-1",
+        lat=35.65,
+        lng=140.10,
+        weekly_pattern=flex_pattern,
+    )
+    p2 = await _seed_patient(
+        db,
+        office=office,
+        code="W2-PAIR-2",
+        lat=35.65,
+        lng=140.10,
+        weekly_pattern=flex_pattern,
+    )
+    await db.commit()
+
+    plan_p1 = {
+        "weekday": 0,
+        "start_time": "09:00",
+        "end_time": "09:30",
+        "duration_min": 30,
+        "course_code": "A",
+        "office_id": str(office.id),
+        "am_pm": "am",
+    }
+    plan_p2 = {
+        "weekday": 0,
+        "start_time": "09:30",
+        "end_time": "10:00",
+        "duration_min": 30,
+        "course_code": "A",
+        "office_id": str(office.id),
+        "am_pm": "am",
+    }
+    res = await client.post(
+        "/api/v1/schedule/v2/apply-week-only",
+        headers=_bearer(admin),
+        json={
+            "iso_year": 2026,
+            "iso_week": 20,
+            "office_ids": [str(office.id)],
+            "visit_plans_per_patient": [
+                {"patient_id": str(p1.id), "visit_plans": [plan_p1]},
+                {"patient_id": str(p2.id), "visit_plans": [plan_p2]},
+            ],
+            "confirm": True,
+        },
+    )
+    assert res.status_code == 200, res.text
+
+    visits = sorted(
+        (
+            await db.scalars(
+                select(Visit).where(
+                    Visit.visit_date == date(2026, 5, 11),
+                    Visit.deleted_at.is_(None),
+                    Visit.source == "auto_alloc_v2w",
+                )
+            )
+        ).all(),
+        key=lambda v: (v.start_time, str(v.patient_id)),
+    )
+    assert len(visits) == 2, f"2 visits expected, got {len(visits)}"
+    # 両者 09:00 揃え (= sort 後の先頭 plan_p1 の時刻).
+    assert all(v.start_time == time(9, 0) for v in visits), (
+        f"Wave 2: 同住所ペアは同 start_time のはず, got {[v.start_time for v in visits]}"
+    )
+    # 1 名は end=09:30 (A), もう 1 名は end=10:00 (B / 合算占有). 順不同.
+    ends = sorted(v.end_time for v in visits)
+    assert ends == [time(9, 30), time(10, 0)], (
+        f"Wave 2: end_time に 09:30 と 10:00 が含まれるはず: {ends}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_reset_to_fixed_same_address_pair_aligned_to_same_start(client, db) -> None:
+    """Wave 2: 同住所 2 名の PFV を reset → DB に同 start_time + 合算占有 visit."""
+    from datetime import date
+
+    from app.models.visit import Visit
+
+    admin = await _make_user(db, email="v2-w2-reset-pair-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    p1 = await _seed_patient(db, office=office, code="W2-RS-PAIR-1", lat=35.65, lng=140.10)
+    p2 = await _seed_patient(db, office=office, code="W2-RS-PAIR-2", lat=35.65, lng=140.10)
+    db.add(
+        PatientFixedVisit(
+            patient_id=p1.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(9, 0),
+            duration_min=30,
+            slot_index=0,
+            course_template_id=None,
+        )
+    )
+    db.add(
+        PatientFixedVisit(
+            patient_id=p2.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(9, 30),
+            duration_min=30,
+            slot_index=0,
+            course_template_id=None,
+        )
+    )
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/reset-to-fixed",
+        headers=_bearer(admin),
+        json={"iso_year": 2026, "iso_week": 20, "office_ids": [str(office.id)], "confirm": True},
+    )
+    assert res.status_code == 200, res.text
+
+    visits = sorted(
+        (
+            await db.scalars(
+                select(Visit).where(
+                    Visit.visit_date == date(2026, 5, 11),
+                    Visit.deleted_at.is_(None),
+                    Visit.source == "reset_v2",
+                )
+            )
+        ).all(),
+        key=lambda v: (v.start_time, str(v.patient_id)),
+    )
+    assert len(visits) == 2
+    # PFV は "固定" として扱われる. 両者 9:00 / 9:30 の時刻不一致な「固定」だと
+    # Wave 2 は warning を出して揃えない. しかし時刻揃え前に
+    # _auto_shift_same_time_conflicts や earliest 再計算が走り、最終的に
+    # 「同住所連番強制 + same-address travel=0 + buffer=0」で
+    # 順次配置されるため 9:00 → 9:30 もしくは 9:00 → 9:00 になる.
+    # ここでは少なくとも「同住所ペアが両方 INSERT されている」「両者 9:00 台」を確認.
+    assert all(v.start_time.hour == 9 for v in visits)
+
+
+@pytest.mark.asyncio
+async def test_reset_to_fixed_same_address_pair_both_flex_aligned(client, db) -> None:
+    """Wave 2 (Phase A reviewer LOW #2): 両者「時間帯」(= 非固定) の同住所ペアを
+    reset 経路で投入した場合、_align_same_address_pair_to_same_time が走り
+    DB に **同 start_time + 2 人目 end が合算 60 分占有** の visit が INSERT される.
+
+    既存の ``test_reset_to_fixed_same_address_pair_aligned_to_same_start`` は
+    両者 PFV (= "固定") のため Wave 2 仕様で「揃えず warning」となり、align 本体
+    (start_time 揃え + B.end 60 分占有) を実 endpoint 経由でロックできていない.
+    本テストは weekly_pattern.time_type='時間帯' で両者非固定とし、Wave 2 align の
+    核心動作を reset 経路で固定する.
+    """
+    from datetime import date
+
+    from app.models.visit import Visit
+
+    admin = await _make_user(db, email="v2-w2-reset-pair-flex-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    # 両者「時間帯」 (= 非固定). preferred_start=09:00, preferred_end=12:00.
+    flex_pattern = {
+        "preferred_weekdays": ["Mon"],
+        "preferred_start": "09:00",
+        "preferred_end": "12:00",
+        "service_minutes": 30,
+        "time_type": "時間帯",
+    }
+    p1 = await _seed_patient(
+        db,
+        office=office,
+        code="W2-RS-PAIR-FLEX-1",
+        lat=35.65,
+        lng=140.10,
+        weekly_pattern=flex_pattern,
+    )
+    p2 = await _seed_patient(
+        db,
+        office=office,
+        code="W2-RS-PAIR-FLEX-2",
+        lat=35.65,
+        lng=140.10,
+        weekly_pattern=flex_pattern,
+    )
+    # PFV は reset 経路の起点として必須 (time_type は patient.weekly_pattern 側から
+    # 取得されるため "時間帯" 扱いされる).
+    db.add(
+        PatientFixedVisit(
+            patient_id=p1.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(9, 0),
+            duration_min=30,
+            slot_index=0,
+            course_template_id=None,
+        )
+    )
+    db.add(
+        PatientFixedVisit(
+            patient_id=p2.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(9, 0),
+            duration_min=30,
+            slot_index=0,
+            course_template_id=None,
+        )
+    )
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/reset-to-fixed",
+        headers=_bearer(admin),
+        json={
+            "iso_year": 2026,
+            "iso_week": 20,
+            "office_ids": [str(office.id)],
+            "confirm": True,
+        },
+    )
+    assert res.status_code == 200, res.text
+
+    visits = sorted(
+        (
+            await db.scalars(
+                select(Visit).where(
+                    Visit.visit_date == date(2026, 5, 11),
+                    Visit.deleted_at.is_(None),
+                    Visit.source == "reset_v2",
+                )
+            )
+        ).all(),
+        key=lambda v: (v.start_time, v.end_time, str(v.patient_id)),
+    )
+    assert len(visits) == 2, f"2 visits expected, got {len(visits)}"
+    # Wave 2 align: 両者 09:00 揃え (= 早い方 A の時刻 / preferred_start も 09:00).
+    assert all(v.start_time == time(9, 0) for v in visits), (
+        f"Wave 2: 同住所ペアは同 start_time のはず, got {[v.start_time for v in visits]}"
+    )
+    # 1 名は end=09:30 (A), もう 1 名は end=10:00 (B / 合算占有). 順不同.
+    ends = sorted(v.end_time for v in visits)
+    assert ends == [time(9, 30), time(10, 0)], (
+        f"Wave 2: end_time に 09:30 と 10:00 が含まれるはず: {ends}"
+    )

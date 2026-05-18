@@ -23,6 +23,7 @@ from app.services.scheduling.auto_allocator_v2 import (
     V2Visit,
     V2Warning,
     apply_individual_proposal,
+    apply_travel_corrections,
     build_visits_for_pool,
     calc_h_violations,
     calc_total_distance,
@@ -326,12 +327,25 @@ def test_calc_h_violations_h9_overflow() -> None:
 
 
 def test_calc_h_violations_h10_lunch_overlap() -> None:
-    """12:30 start の visit は H10 違反."""
+    """Wave 3 (#WAVE3): 「物理的に lunch を取れない」visit は H10 違反.
+
+    新仕様では lunch は 11:30-13:30 内で 45-60 分動的配置. 12:00-13:00 visit は
+    AM 側 (11:30-12:15) も PM 側 (12:30-13:30) lunch も取れないため H10=1.
+    """
+    v = _make_visit(lat=35.65, lng=140.10, start_h=12, start_m=0)
+    v.end_time = time(13, 0)
+    v.course_code = "A"
+    violations = calc_h_violations([v])
+    assert violations["H10"] == 1
+
+
+def test_calc_h_violations_h10_no_violation_when_avoidable() -> None:
+    """Wave 3 (#WAVE3): 12:30 start の visit は AM 側 lunch 11:30-12:30 で避けられる → H10=0."""
     v = _make_visit(lat=35.65, lng=140.10, start_h=12, start_m=30)
     v.end_time = time(13, 30)
     v.course_code = "A"
     violations = calc_h_violations([v])
-    assert violations["H10"] == 1
+    assert violations["H10"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -342,7 +356,9 @@ def test_calc_h_violations_h10_lunch_overlap() -> None:
 def test_filter_skip_acceptance_in_mode2() -> None:
     """Mode 2 (skip_acceptance=True) では acceptance × でも visits が残る.
 
-    昼休憩 (H10) は両モードで常に enforce される.
+    昼休憩 (H10) は両モードで常に enforce される. Wave 3 (#WAVE3) では
+    lunch は 11:30-13:30 動的だが、12:00-13:00 visit のような「どの 45 分
+    lunch を置いても避けられない」visit は引き続き弾かれる.
     受入カレンダー × は既存スケジュール枠の混雑度を表すため、全面再配置時には
     制約として意味を持たない (バグ修正: 58 active 患者 dropped 問題).
     """
@@ -357,11 +373,12 @@ def test_filter_skip_acceptance_in_mode2() -> None:
     ok_visit = _make_visit(
         lat=35.65, lng=140.10, office_id=office_id, start_h=14, start_m=0, patient_name="OK"
     )
-    # 昼休憩 (12:30) の visit — 両モードで除外されるべき
+    # 昼休憩 ど真ん中 (12:00-13:00) の visit — 動的 lunch でも避けられない.
     lunch_visit = _make_visit(
-        lat=35.65, lng=140.10, office_id=office_id, start_h=12, start_m=30, patient_name="LUNCH"
+        lat=35.65, lng=140.10, office_id=office_id, start_h=12, start_m=0, patient_name="LUNCH"
     )
-    lunch_visit.end_time = time(13, 30)
+    lunch_visit.end_time = time(13, 0)
+    lunch_visit.service_minutes = 60
 
     unavailable = {(office_id, 0): {time(10, 0)}}
     warnings: list[V2Warning] = []
@@ -376,7 +393,9 @@ def test_filter_skip_acceptance_in_mode2() -> None:
     codes = {v.patient_code for v in filtered}
     assert "X" in codes, "skip_acceptance=True なら acceptance × visit が残るはず"
     assert "OK" in codes
-    assert "LUNCH" not in codes, "skip_acceptance=True でも H10 昼休憩は除外されるべき"
+    assert "LUNCH" not in codes, (
+        "skip_acceptance=True でも H10 (動的 lunch 不可避) visit は除外されるべき"
+    )
 
     # acceptance_calendar 由来の warning は出ていない
     assert not any("受入カレンダー" in w.message for w in warnings), (
@@ -1582,6 +1601,267 @@ async def test_reset_visits_to_fixed_preserves_manual_and_completed(db) -> None:
 
 
 # ---------------------------------------------------------------------------
+# CareFlow 本番バグ修正 (Option A): reset / apply_week_only で保護対象 active visit
+# (status not in DELETABLE / source not in DELETABLE) と PFV INSERT が同 unique key
+# で衝突する場合は INSERT skip + warning に逃がし、IntegrityError (409) を回避する.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reset_skips_when_protected_completed_visit_exists(db) -> None:
+    """status='completed' な既存 visit と PFV INSERT の unique key 衝突を
+    skip + warning で逃がす (= IntegrityError にしない)."""
+    from datetime import date
+
+    from sqlalchemy import select
+
+    from app.models.visit import VISIT_STATUS_COMPLETED, Visit
+
+    office = Office(name="rsskip1-office")
+    db.add(office)
+    await db.flush()
+    p = Patient(
+        code="RSKIP1",
+        name="rsskip1-patient",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        primary_office_id=office.id,
+    )
+    db.add(p)
+    await db.flush()
+    # PFV: Mon 12:00, 30 分.
+    db.add(
+        PatientFixedVisit(
+            patient_id=p.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(12, 0),
+            duration_min=30,
+            slot_index=0,
+        )
+    )
+    s = Staff(name="rsskip1-staff", role="staff", is_trainee=False, primary_office_id=office.id)
+    db.add(s)
+    await db.flush()
+    db.add(StaffShift(staff_id=s.id, weekday=0, is_on=True))
+    # 既存 completed visit (保護対象, soft-delete されない).
+    # 同 patient × 同 visit_date × 同 start_time × visit_group_id=NULL.
+    protected = Visit(
+        patient_id=p.id,
+        visit_date=date(2026, 5, 11),  # Mon W20
+        start_time=time(12, 0),
+        end_time=time(12, 30),
+        type="regular",
+        status=VISIT_STATUS_COMPLETED,
+        source="auto_alloc",  # source は削除候補だが status='completed' で保護される
+        required_staff_count=1,
+    )
+    db.add(protected)
+    await db.commit()
+    protected_id = protected.id
+
+    result = await reset_visits_to_fixed(db, iso_year=2026, iso_week=20, office_ids=[office.id])
+    await db.commit()
+
+    # 既存 completed は保護されている.
+    refreshed = await db.scalar(select(Visit).where(Visit.id == protected_id))
+    assert refreshed is not None
+    assert refreshed.deleted_at is None, "status='completed' は保護されるべき"
+
+    # PFV からの再生成は衝突するためスキップされ、warning に記録される.
+    warning_texts = "\n".join(result.get("warnings", []))
+    assert "衝突するため再生成スキップ" in warning_texts, (
+        f"skip warning が見当たらない: {warning_texts!r}"
+    )
+
+    # 当該 patient × Mon × 12:00 で active visit は 1 件 (= 保護された completed のみ).
+    actives = (
+        await db.scalars(
+            select(Visit).where(
+                Visit.patient_id == p.id,
+                Visit.visit_date == date(2026, 5, 11),
+                Visit.start_time == time(12, 0),
+                Visit.deleted_at.is_(None),
+            )
+        )
+    ).all()
+    assert len(actives) == 1
+    assert actives[0].id == protected_id
+
+
+@pytest.mark.asyncio
+async def test_reset_skips_when_protected_manual_source_visit_exists(db) -> None:
+    """source='manual' な既存 visit と PFV INSERT の unique key 衝突を
+    skip + warning で逃がす."""
+    from datetime import date
+
+    from sqlalchemy import select as _select
+
+    from app.models.visit import VISIT_STATUS_PLANNED, Visit
+
+    office = Office(name="rsskip2-office")
+    db.add(office)
+    await db.flush()
+    p = Patient(
+        code="RSKIP2",
+        name="rsskip2-patient",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        primary_office_id=office.id,
+    )
+    db.add(p)
+    await db.flush()
+    db.add(
+        PatientFixedVisit(
+            patient_id=p.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(12, 0),
+            duration_min=30,
+            slot_index=0,
+        )
+    )
+    s = Staff(name="rsskip2-staff", role="staff", is_trainee=False, primary_office_id=office.id)
+    db.add(s)
+    await db.flush()
+    db.add(StaffShift(staff_id=s.id, weekday=0, is_on=True))
+    # 既存 manual source visit (保護対象).
+    protected = Visit(
+        patient_id=p.id,
+        visit_date=date(2026, 5, 11),  # Mon W20
+        start_time=time(12, 0),
+        end_time=time(12, 30),
+        type="regular",
+        status=VISIT_STATUS_PLANNED,
+        source="manual",  # 保護対象 source
+        required_staff_count=1,
+    )
+    db.add(protected)
+    await db.commit()
+    protected_id = protected.id
+
+    result = await reset_visits_to_fixed(db, iso_year=2026, iso_week=20, office_ids=[office.id])
+    await db.commit()
+
+    refreshed = await db.scalar(_select(Visit).where(Visit.id == protected_id))
+    assert refreshed is not None
+    assert refreshed.deleted_at is None, "source='manual' は保護されるべき"
+
+    warning_texts = "\n".join(result.get("warnings", []))
+    assert "衝突するため再生成スキップ" in warning_texts, (
+        f"skip warning が見当たらない: {warning_texts!r}"
+    )
+
+    actives = (
+        await db.scalars(
+            _select(Visit).where(
+                Visit.patient_id == p.id,
+                Visit.visit_date == date(2026, 5, 11),
+                Visit.start_time == time(12, 0),
+                Visit.deleted_at.is_(None),
+            )
+        )
+    ).all()
+    assert len(actives) == 1
+    assert actives[0].id == protected_id
+
+
+@pytest.mark.asyncio
+async def test_apply_week_only_skips_protected_visit(db) -> None:
+    """apply_week_only: 保護対象 visit と unique key 衝突する INSERT は
+    skip + warning に逃がす."""
+    from datetime import date
+
+    from sqlalchemy import select
+
+    from app.models.visit import VISIT_STATUS_COMPLETED, Visit
+    from app.services.scheduling.auto_allocator_v2 import apply_week_only
+
+    office = Office(name="awoskip-office")
+    db.add(office)
+    await db.flush()
+    p = Patient(
+        code="AWOSKIP",
+        name="awoskip-patient",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        primary_office_id=office.id,
+    )
+    db.add(p)
+    await db.flush()
+    s = Staff(name="awoskip-staff", role="staff", is_trainee=False, primary_office_id=office.id)
+    db.add(s)
+    await db.flush()
+    db.add(StaffShift(staff_id=s.id, weekday=0, is_on=True))
+    # 既存 completed visit (保護対象).
+    protected = Visit(
+        patient_id=p.id,
+        visit_date=date(2026, 5, 11),  # Mon W20
+        start_time=time(12, 0),
+        end_time=time(12, 30),
+        type="regular",
+        status=VISIT_STATUS_COMPLETED,
+        source="auto_alloc",
+        required_staff_count=1,
+    )
+    db.add(protected)
+    await db.commit()
+    protected_id = protected.id
+
+    # visit_plans で同 patient × Mon × 12:00 を申請 → 既存と衝突 → skip 想定.
+    result = await apply_week_only(
+        db,
+        iso_year=2026,
+        iso_week=20,
+        office_ids=[office.id],
+        patient_visit_plans=[
+            {
+                "patient_id": p.id,
+                "visit_plans": [
+                    {
+                        "weekday": 0,
+                        "start_time": time(12, 0),
+                        "end_time": time(12, 30),
+                        "duration_min": 30,
+                        "course_code": "M",
+                        "office_id": office.id,
+                        "am_pm": "pm",
+                    }
+                ],
+            }
+        ],
+    )
+    await db.commit()
+
+    # 既存保護 visit は維持されている.
+    refreshed = await db.scalar(select(Visit).where(Visit.id == protected_id))
+    assert refreshed is not None
+    assert refreshed.deleted_at is None
+
+    warning_texts = "\n".join(result.get("warnings", []))
+    assert "衝突するため適用スキップ" in warning_texts, (
+        f"apply skip warning が見当たらない: {warning_texts!r}"
+    )
+
+    # 当該 (patient, date, start_time) で active visit は 1 件のみ.
+    actives = (
+        await db.scalars(
+            select(Visit).where(
+                Visit.patient_id == p.id,
+                Visit.visit_date == date(2026, 5, 11),
+                Visit.start_time == time(12, 0),
+                Visit.deleted_at.is_(None),
+            )
+        )
+    ).all()
+    assert len(actives) == 1
+    assert actives[0].id == protected_id
+
+
+# ---------------------------------------------------------------------------
 # W41 v2 (Mode 2 UI 拡張) — _extract_area_label
 # ---------------------------------------------------------------------------
 
@@ -1999,10 +2279,13 @@ def test_warnings_are_in_japanese() -> None:
     blocked_v = _make_visit(
         lat=35.65, lng=140.10, office_id=office_id, start_h=10, start_m=0, patient_name="B1"
     )
+    # Wave 3 (#WAVE3): lunch 動的化のため、動的 lunch でも避けられない
+    # 12:00-13:00 のど真ん中 visit を使う.
     lunch_v = _make_visit(
-        lat=35.65, lng=140.10, office_id=office_id, start_h=12, start_m=30, patient_name="L1"
+        lat=35.65, lng=140.10, office_id=office_id, start_h=12, start_m=0, patient_name="L1"
     )
-    lunch_v.end_time = time(13, 30)
+    lunch_v.end_time = time(13, 0)
+    lunch_v.service_minutes = 60
     unavailable = {(office_id, 0): {time(10, 0)}}
     warnings_a: list[V2Warning] = []
     _filter_unavailable_and_lunch(
@@ -2236,8 +2519,12 @@ def test_same_address_zero_travel_no_pushback() -> None:
     warnings: list[V2Warning] = []
     _apply_travel_time_to_courses([a, b], warnings=warnings)
 
-    # 同住所なので移動 0 分 → 09:30 ぴったり開始 (prev.end_time = 09:30)
-    assert b.start_time == time(9, 30), f"同住所 → 移動 0 分のはず, got {b.start_time}"
+    # Wave 2 (#115): 同住所ペアは「同 start_time + 合算 60 分占有」に揃える.
+    # A 09:00 固定 + B 終日 同住所 → 両者 09:00、A.end=09:30、B.end=10:00 (合算).
+    assert a.start_time == time(9, 0)
+    assert b.start_time == time(9, 0), f"Wave 2: 同住所 B も A と同 start: {b.start_time}"
+    assert a.end_time == time(9, 30)
+    assert b.end_time == time(10, 0), f"Wave 2: B.end は合算占有: {b.end_time}"
     # 長距離 warning も出ない (cumulative_travel_min = 0)
     assert not any("連続移動時間合計" in w.message for w in warnings), (
         f"同住所コースに長距離 warning は出ないはず: {warnings}"
@@ -2289,8 +2576,11 @@ def test_same_address_pair_is_consecutive_in_course() -> None:
     a_bucket = _address_bucket(a.lat, a.lng)
     b_bucket = _address_bucket(b.lat, b.lng)
     assert a_bucket == b_bucket, "テスト前提: A と B は同住所"
-    # B の start_time は同住所なので押し下げなし (09:30 ぴったり).
-    assert b.start_time == time(9, 30)
+    # Wave 2 (#115): 同住所ペアは ``_align_same_address_pair_to_same_time`` で
+    # B も A と同じ start_time (9:00) に揃えられ、B.end は合算 60 分占有 (10:00) になる.
+    assert a.start_time == time(9, 0), f"A 不変のはず: {a.start_time}"
+    assert b.start_time == time(9, 0), f"Wave 2 で B も A と同 start_time: {b.start_time}"
+    assert b.end_time == time(10, 0), f"Wave 2 で B.end は合算 60 分占有: {b.end_time}"
 
 
 def test_same_address_pair_consecutive_with_other_patient_between() -> None:
@@ -2486,17 +2776,17 @@ def test_same_address_pair_in_multi_course_preserved_per_course() -> None:
     warnings: list[V2Warning] = []
     _apply_travel_time_to_courses(visits, warnings=warnings)
 
-    # コース A: A と B が同住所 → 隣接した start_time (移動 0 で連続) を持つ.
-    # _apply_travel_time_to_courses 内でリオーダー後 [A, B, C] になる.
-    # B は同住所なので 09:30 ぴったり開始 (押し下げなし).
+    # コース A: A と B が同住所 → リオーダー後 [A, B, C] になる.
+    # Wave 2 (#115): 同住所ペアは ``_align_same_address_pair_to_same_time`` で
+    # 両者同 start_time + B.end_time = 合算 60 分占有になる.
+    # → A.start=B.start=09:00, A.end=09:30, B.end=10:00.
     # C は B 末尾 (10:00) から異住所移動 + バッファーで押し下げ.
     a_bucket = _address_bucket(a.lat, a.lng)
     b_bucket = _address_bucket(b.lat, b.lng)
     assert a_bucket == b_bucket, "テスト前提: A,B 同住所"
-    # B の start_time = A の end_time (09:30) で同住所連続: 押し下げなし.
-    assert b.start_time == time(9, 30), (
-        f"コース A の同住所 B が 09:30 (= A 末尾) で連続していない: {b.start_time}"
-    )
+    assert a.start_time == time(9, 0), f"A 不変: {a.start_time}"
+    assert b.start_time == time(9, 0), f"Wave 2 で B も A と同 start_time: {b.start_time}"
+    assert b.end_time == time(10, 0), f"Wave 2 で B.end は合算占有: {b.end_time}"
     # コース B: D と E は異住所のみ.
     # 5km 移動 + バッファー 8 分 → 10:30 desired vs (10:30 + travel + 8) → 5 分切り上げ.
     # 10:30 以降に押し下げ.
@@ -2522,11 +2812,11 @@ def test_same_address_pair_pushes_back_subsequent_other_address_visit() -> None:
     Setup (input, start_time 昇順):
       [A 09:00 固定 (addr1), C 09:15 終日 (addr2), B 11:00 非固定 終日 (addr1)]
 
-    Expected after reorder:
-      順序は [A, B, C] (B が A の直後に移動 = 同住所連番). 後段の
-      ``_apply_travel_time_to_courses`` で C の earliest が
-      B.end + travel + buffer まで押し下げられる (本来 09:15 だったものが
-      ~11:45 以降に遅延 = 同住所連番優先のための副作用).
+    Expected after reorder + Wave 2 align:
+      順序は [A, B, C] (B が A の直後に移動 = 同住所連番).
+      Wave 2 (#115): 同住所ペア A/B は **同 start_time** (= 固定 A の 09:00) に
+      揃えられ、B.end = 合算 60 分占有 (= 10:00) になる.
+      C は B.end (10:00) + travel + buffer まで押し下げ.
     """
     from app.services.scheduling.auto_allocator_v2 import (
         _address_bucket,
@@ -2569,7 +2859,7 @@ def test_same_address_pair_pushes_back_subsequent_other_address_visit() -> None:
     b_idx = reordered.index(b)
     assert abs(a_idx - b_idx) == 1, "A,B (同住所) が隣接していない"
 
-    # 後段の travel 計算を走らせる → C は B.end + travel + buffer まで押し下げ.
+    # 後段の travel 計算を走らせる → Wave 2 で同住所ペア A/B が揃えられる.
     travel_warnings: list[V2Warning] = []
     _apply_travel_time_to_courses(reordered, warnings=travel_warnings)
 
@@ -2580,19 +2870,14 @@ def test_same_address_pair_pushes_back_subsequent_other_address_visit() -> None:
 
     # 固定 A: 09:00 不変.
     assert a.start_time == time(9, 0), f"固定 A は不変のはず: {a.start_time}"
-    # 非固定 B (終日): desired_start=11:00 が earliest_start (=A.end 09:30) より
-    # 大きいので max を取って 11:00 維持. (本来同住所連番なら 09:30 に詰めたいが、
-    # `_apply_travel_time_to_courses` の `max(desired, earliest)` セマンティクス上
-    # 11:00 で維持されるのが現状仕様 — desired_start を前倒しする機能はない.)
-    assert b.start_time == time(11, 0), f"非固定 B は desired 11:00 を維持するはず: {b.start_time}"
+    # Wave 2: 非固定 B (終日) は同住所ペアで固定 A の 09:00 に揃えられる.
+    assert b.start_time == time(9, 0), f"Wave 2: 同住所 B は A と同 start_time: {b.start_time}"
+    # B.end = 09:00 + A.service (30) + B.service (30) = 10:00 (合算占有).
+    assert b.end_time == time(10, 0), f"Wave 2: B.end は合算占有: {b.end_time}"
     # C: 本来 09:15 入力だったが、reorder で B の後ろに回ったため
-    # B.end (11:30) + travel + buffer まで押し下げ → 元 09:15 から大きく遅延.
-    # これは同住所連番を優先したことによる副作用 (= 仕様意図通り、ユーザー許容).
-    assert c.start_time > time(9, 15), (
-        f"C は同住所連番優先により後段で押し下げられるはず (許容): {c.start_time}"
-    )
-    assert c.start_time >= time(11, 30), (
-        f"C は B.end (11:30) 以降に押し下げられるはず: {c.start_time}"
+    # B.end (10:00) + travel + buffer まで押し下げ → ~10:15 以降.
+    assert c.start_time >= time(10, 0), (
+        f"C は B.end (10:00) 以降に押し下げられるはず: {c.start_time}"
     )
 
 
@@ -3283,12 +3568,14 @@ def test_two_staff_does_not_double_count_visits_in_capacity() -> None:
 
 
 def test_dynamic_start_time_lunch_break_skip() -> None:
-    """CRITICAL #1: 移動時間で 12:00-13:00 を跨ぐ場合は 13:00 にバンプされる.
+    """Wave 3 (#WAVE3): 移動時間で動的 lunch slot を跨ぐ場合は lunch_end にバンプ.
 
     Setup: コース A 月曜:
       - P-A 11:00-11:30 (固定)
-      - P-B 11:40 希望だが 終日 → earliest = 11:30+移動 ≈ 12:00-12:10
-        昼休憩重複 → 13:00 にバンプ + warning.
+      - P-B 11:40 希望だが 終日 → earliest = 11:30+移動 ≈ 11:47-11:50
+        compute_lunch_window で B の占有 (11:40-12:10) を回避できる最善の
+        60 分 lunch は **12:10-13:10**. B は earliest 11:50, end 12:20 が
+        その lunch と重なるため 12:10 + 60 = **13:10 にバンプ**.
     """
     from app.services.scheduling.auto_allocator_v2 import _apply_travel_time_to_courses
 
@@ -3313,25 +3600,28 @@ def test_dynamic_start_time_lunch_break_skip() -> None:
     warnings: list[V2Warning] = []
     _apply_travel_time_to_courses([a, b], warnings=warnings)
 
-    # B は昼休憩重複のため 13:00 にバンプ.
-    assert b.start_time == time(13, 0), f"昼休憩バンプ後は 13:00 のはず, got {b.start_time}"
-    assert b.end_time == time(13, 30), f"end_time も追従するはず, got {b.end_time}"
+    # B は動的 lunch (12:10-13:10) 重複のため lunch_end=13:10 にバンプ.
+    assert b.start_time == time(13, 10), f"動的 lunch バンプ後は 13:10 のはず, got {b.start_time}"
+    assert b.end_time == time(13, 40), f"end_time も追従するはず, got {b.end_time}"
     assert any(
         w.type == "travel_time_shortage"
         and "昼休憩" in w.message
-        and "13:00 に繰り下げ" in w.message
+        and "13:10 に繰り下げ" in w.message
         for w in warnings
     ), f"昼休憩バンプ warning が無い: {warnings}"
 
 
 def test_am_branch_pushed_to_pm_when_over_12() -> None:
-    """HIGH #1: 午前希望 visit が earliest >= 12:00 になった場合、
-    13:00 (午後扱い) にバンプされる + actionable warning が出る.
+    """Wave 3 (#WAVE3): 午前希望 visit が earliest >= 12:00 になった場合、
+    動的 lunch_end にバンプされる + actionable warning が出る.
 
     Setup:
       - P-A 11:30-12:00 (固定, 12:00 終了)
       - P-B 11:45 午前希望 (A の後にソートされる位置) だが 5km 離れて
-        移動 ~15 分 → earliest = 12:00 + 15 分 = 12:15 → 13:00 にバンプ.
+        移動 ~15 分 → earliest ≈ 12:15.
+        compute_lunch_window で A (11:30-12:00) + B (11:45-12:15) を回避する
+        60 分 lunch は **12:15-13:15** (最も 12:00 中心).
+        AM 12:00 超で lunch_end=13:15 にバンプ.
     """
     from app.services.scheduling.auto_allocator_v2 import _apply_travel_time_to_courses
 
@@ -3356,14 +3646,14 @@ def test_am_branch_pushed_to_pm_when_over_12() -> None:
     warnings: list[V2Warning] = []
     _apply_travel_time_to_courses([a, b], warnings=warnings)
 
-    # 午前希望が 12:00 超のため 13:00 (午後) にバンプされる.
-    assert b.start_time == time(13, 0), (
-        f"午前希望が 12:00 超なら 13:00 にバンプされるはず, got {b.start_time}"
+    # 午前希望が 12:00 超のため 動的 lunch_end=13:15 (午後) にバンプされる.
+    assert b.start_time == time(13, 15), (
+        f"午前希望が 12:00 超なら lunch_end=13:15 にバンプされるはず, got {b.start_time}"
     )
     assert any(
         w.type == "travel_time_shortage"
         and "午前希望" in w.message
-        and ("13:00" in w.message or "午後" in w.message)
+        and ("13:15" in w.message or "午後" in w.message)
         and w.actionable is True
         for w in warnings
     ), f"午前→午後バンプ warning が無い (or actionable=False): {warnings}"
@@ -3437,21 +3727,26 @@ def test_warning_types_correctly_split() -> None:
     office_id = uuid.uuid4()
 
     # 1) 固定 + 移動時間不足 → travel_time_shortage
+    # Wave 3 (#WAVE3): 純粋な travel shortage (lunch 関係なし) を triggers するため
+    # 2 つの固定 visit を異住所 5km 離して **異なる start_time** で配置する
+    # (= auto_shift しない条件). A 14:00-14:30 終了 → B 14:30 固定 5km 離れ
+    # travel ~15 分 + buffer ~8 分 = 23 分必要、shortage=23 分 >= 5 分 →
+    # 物理不可能 travel_time_shortage.
     a = _make_visit(
-        lat=35.65, lng=140.10, office_id=office_id, start_h=11, start_m=0, patient_name="A"
+        lat=35.65, lng=140.10, office_id=office_id, start_h=14, start_m=0, patient_name="A"
     )
-    a.end_time = time(11, 30)
+    a.end_time = time(14, 30)
     a.service_minutes = 30
     a.course_code = "A"
     a.time_type = "固定"
     b = _make_visit(
-        lat=35.65, lng=140.155, office_id=office_id, start_h=11, start_m=0, patient_name="B"
+        lat=35.65, lng=140.155, office_id=office_id, start_h=14, start_m=30, patient_name="B"
     )
-    b.end_time = time(11, 30)
+    b.end_time = time(15, 0)
     b.service_minutes = 30
     b.course_code = "A"
     b.time_type = "固定"
-    b.preferred_start = "11:00"
+    b.preferred_start = "14:30"
     warnings: list[V2Warning] = []
     _apply_travel_time_to_courses([a, b], warnings=warnings)
     types_seen = {w.type for w in warnings}
@@ -3629,9 +3924,12 @@ def test_visit_buffer_skipped_for_same_address() -> None:
     warnings: list[V2Warning] = []
     _apply_travel_time_to_courses([a, b], warnings=warnings)
 
-    # 同住所 → 移動 0 + バッファー 0 → prev.end と同時刻でも OK.
-    assert b.start_time == time(9, 30), f"同住所はバッファーなしで 09:30 のはず, got {b.start_time}"
-    assert b.end_time == time(10, 0)
+    # Wave 2 (#115): 同住所ペアは A の start_time に揃えられる (= バッファーゼロを
+    # 超えて完全同時刻). B.end は合算占有 10:00 になる.
+    assert a.start_time == time(9, 0)
+    assert b.start_time == time(9, 0), f"Wave 2: 同住所は A と同 start_time: {b.start_time}"
+    assert a.end_time == time(9, 30)
+    assert b.end_time == time(10, 0), f"Wave 2: B.end は合算占有: {b.end_time}"
 
 
 def test_diff_add_skips_conflicting_pool_visit() -> None:
@@ -5508,16 +5806,16 @@ def test_buffer_8_min_applied_in_calc_course_total() -> None:
 
 
 def test_round_up_keeps_constraint_am_to_lunch_bump() -> None:
-    """5 分刻み切り上げで AM_BLOCK_END (12:00) を跨いだ場合、lunch 再検証で
-    13:00 にバンプされる (制約再検証の正当性).
+    """Wave 3 (#WAVE3): 5 分刻み切り上げで lunch slot を跨いだ場合、動的 lunch
+    再検証で lunch_end にバンプされる (制約再検証の正当性).
 
-    Setup:
-      - P-A 11:00-11:28 (固定)
-      - P-B 終日, 同住所 (= 移動 0 + バッファー 0)
-        earliest = 11:28 (5 分刻みでない) → 切り上げで 11:30.
-        service=30 → end=12:00 → lunch_start (12:00) 重複しない (半開).
-    別ケース: A end が 11:50, B 終日 同住所 → 11:50 → service=30 → end 12:20 →
-    lunch 重複 → 13:00 バンプ.
+    Setup (Wave 2 #115 で異住所に変更, Wave 3 で lunch 動的化):
+      - P-A 11:20-11:50 (固定 / 異住所 addr1)
+      - P-B 終日, 異住所 addr2 (= travel 数分 + バッファー 8 分)
+        earliest = 11:50 + travel + buffer → 12 時台序盤に切り上げ.
+        compute_lunch_window で B (11:50-12:20) を回避する 60 分 lunch は
+        **12:20-13:20**. B end が lunch_start (12:20) と被る → lunch_end=13:20
+        にバンプ.
     """
     from app.services.scheduling.auto_allocator_v2 import _apply_travel_time_to_courses
 
@@ -5530,9 +5828,9 @@ def test_round_up_keeps_constraint_am_to_lunch_bump() -> None:
     a.service_minutes = 30
     a.course_code = "A"
     a.time_type = "固定"
-    # 同住所 (移動 0 + バッファー 0) の終日 visit.
+    # 異住所 (= travel + buffer あり) の終日 visit. 数 km 離れる.
     b = _make_visit(
-        lat=35.65, lng=140.10, office_id=office_id, start_h=11, start_m=50, patient_name="B"
+        lat=35.65, lng=140.15, office_id=office_id, start_h=11, start_m=50, patient_name="B"
     )
     b.start_time = time(11, 50)
     b.end_time = time(12, 20)
@@ -5543,9 +5841,857 @@ def test_round_up_keeps_constraint_am_to_lunch_bump() -> None:
     warnings: list[V2Warning] = []
     _apply_travel_time_to_courses([a, b], warnings=warnings)
 
-    # B: earliest = 11:50 (5 分刻み) → そのまま. service=30 → end=12:20 →
-    # lunch 重複 (12:00-13:00) → 13:00 にバンプ.
-    assert b.start_time == time(13, 0), (
-        f"切り上げ後 lunch 重複で 13:00 にバンプされるはず: got {b.start_time}"
+    # B: earliest ≈ 12:10 → 動的 lunch 12:20-13:20 と被るため lunch_end=13:20 へ.
+    assert b.start_time == time(13, 20), (
+        f"切り上げ後 動的 lunch 重複で 13:20 にバンプされるはず: got {b.start_time}"
     )
-    assert b.end_time == time(13, 30), f"end_time も追従: got {b.end_time}"
+    assert b.end_time == time(13, 50), f"end_time も追従: got {b.end_time}"
+
+
+# ---------------------------------------------------------------------------
+# Wave 1 (#115): apply_travel_corrections public helper の単体テスト.
+#
+# `_apply_travel_time_to_courses` への薄いラッパだが、呼び出し側 (apply_week_only
+# / reset_visits_to_fixed / apply_individual_proposal) が この helper を呼ぶ前提
+# になったので「helper 単独で auto_shift + 同住所 align + 戻り値 unassigned set」
+# が出ることをここで明示的にロックする.
+# ---------------------------------------------------------------------------
+
+
+def test_apply_travel_corrections_shifts_cross_address_same_time_pair() -> None:
+    """Wave 1: 異住所同時刻ペア (両者座標あり) を helper が auto_shift する."""
+    office_id = uuid.uuid4()
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=10, start_m=0, patient_name="A"
+    )
+    a.end_time = time(10, 30)
+    a.service_minutes = 30
+    a.course_code = "A"
+    a.time_type = "固定"
+    a.preferred_start = "10:00"
+    b = _make_visit(
+        lat=35.65, lng=140.20, office_id=office_id, start_h=10, start_m=0, patient_name="B"
+    )
+    b.end_time = time(10, 30)
+    b.service_minutes = 30
+    b.course_code = "A"
+    b.time_type = "固定"
+    b.preferred_start = "10:00"
+
+    warnings: list[V2Warning] = []
+    unassigned = apply_travel_corrections([a, b], warnings=warnings)
+
+    # 両者座標がある + auto_shift で解消可能 → unassigned には流れない.
+    assert id(a) not in unassigned
+    assert id(b) not in unassigned
+    # A は 10:00 不変, B は後段にシフトされている.
+    assert a.start_time == time(10, 0)
+    assert b.start_time > time(10, 0), f"B が auto_shift されていない: {b.start_time}"
+    # warning: auto_time_shift_for_conflict が出ている.
+    auto_shifts = [w for w in warnings if w.type == "auto_time_shift_for_conflict"]
+    assert auto_shifts, f"auto_shift warning が出ていない: {warnings}"
+
+
+def test_apply_travel_corrections_is_idempotent_after_correction() -> None:
+    """Wave 1: 一度補正した visit に対し再度 helper を呼んでも no-op (= 冪等)."""
+    office_id = uuid.uuid4()
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=0, patient_name="A"
+    )
+    a.end_time = time(9, 30)
+    a.service_minutes = 30
+    a.course_code = "A"
+    a.time_type = "固定"
+    a.preferred_start = "9:00"
+    b = _make_visit(
+        lat=35.65, lng=140.11, office_id=office_id, start_h=10, start_m=0, patient_name="B"
+    )
+    b.end_time = time(10, 30)
+    b.service_minutes = 30
+    b.course_code = "A"
+    b.time_type = "時間帯"
+    b.preferred_start = "09:30"
+    b.preferred_end = "11:30"
+
+    warnings: list[V2Warning] = []
+    apply_travel_corrections([a, b], warnings=warnings)
+    first_a = (a.start_time, a.end_time)
+    first_b = (b.start_time, b.end_time)
+
+    warnings2: list[V2Warning] = []
+    apply_travel_corrections([a, b], warnings=warnings2)
+    # 2 回目呼び出しでも時刻は変わらない (冪等).
+    assert (a.start_time, a.end_time) == first_a
+    assert (b.start_time, b.end_time) == first_b
+
+
+def test_apply_travel_corrections_groups_by_office_weekday_course() -> None:
+    """Wave 1: (office, weekday, course_code) 別に処理 — 異 group は干渉しない."""
+    office_id = uuid.uuid4()
+    # 同 office × weekday × course A: 異住所同時刻ペア.
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=10, start_m=0, patient_name="A"
+    )
+    a.end_time = time(10, 30)
+    a.service_minutes = 30
+    a.course_code = "A"
+    a.time_type = "固定"
+    a.preferred_start = "10:00"
+    b = _make_visit(
+        lat=35.65, lng=140.20, office_id=office_id, start_h=10, start_m=0, patient_name="B"
+    )
+    b.end_time = time(10, 30)
+    b.service_minutes = 30
+    b.course_code = "A"
+    b.time_type = "固定"
+    b.preferred_start = "10:00"
+    # 別 course B の visit (同時刻だが別コース なので干渉しない).
+    c = _make_visit(
+        lat=35.65, lng=140.30, office_id=office_id, start_h=10, start_m=0, patient_name="C"
+    )
+    c.end_time = time(10, 30)
+    c.service_minutes = 30
+    c.course_code = "B"
+    c.time_type = "固定"
+    c.preferred_start = "10:00"
+
+    warnings: list[V2Warning] = []
+    apply_travel_corrections([a, b, c], warnings=warnings)
+
+    # 別コース C は不変 (= 干渉しない).
+    assert c.start_time == time(10, 0)
+    # A / B は course A 内で auto_shift される.
+    assert a.start_time == time(10, 0)
+    assert b.start_time > time(10, 0)
+
+
+def test_apply_travel_corrections_no_shift_for_unique_times() -> None:
+    """Wave 1: 同時刻衝突がなければ何もシフトしない."""
+    office_id = uuid.uuid4()
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=0, patient_name="A"
+    )
+    a.end_time = time(9, 30)
+    a.service_minutes = 30
+    a.course_code = "A"
+    a.time_type = "固定"
+    a.preferred_start = "9:00"
+    b = _make_visit(
+        lat=35.65, lng=140.20, office_id=office_id, start_h=11, start_m=0, patient_name="B"
+    )
+    b.end_time = time(11, 30)
+    b.service_minutes = 30
+    b.course_code = "A"
+    b.time_type = "固定"
+    b.preferred_start = "11:00"
+
+    warnings: list[V2Warning] = []
+    unassigned = apply_travel_corrections([a, b], warnings=warnings)
+
+    assert a.start_time == time(9, 0)
+    assert b.start_time == time(11, 0)
+    assert not unassigned
+
+
+# ---------------------------------------------------------------------------
+# Wave 2 (#115): 同住所ペアを **同 start_time** に揃え + duration 倍占有.
+# `_align_same_address_pair_to_same_time` を `apply_travel_corrections` 経由で検証.
+# ---------------------------------------------------------------------------
+
+
+def test_same_address_pair_aligns_to_first_start_time() -> None:
+    """Wave 2: 同住所 2 名 9:00 + 9:30 → 両者 9:00 揃え, B.end=10:00 (合算 60 分占有)."""
+    office_id = uuid.uuid4()
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=0, patient_name="A"
+    )
+    a.end_time = time(9, 30)
+    a.service_minutes = 30
+    a.course_code = "A"
+    a.time_type = "時間帯"
+    a.preferred_start = "09:00"
+    a.preferred_end = "10:00"
+    b = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=30, patient_name="B"
+    )
+    b.end_time = time(10, 0)
+    b.service_minutes = 30
+    b.course_code = "A"
+    b.time_type = "時間帯"
+    b.preferred_start = "09:00"
+    b.preferred_end = "10:00"
+
+    warnings: list[V2Warning] = []
+    apply_travel_corrections([a, b], warnings=warnings)
+
+    # 両者 9:00 揃え (= sort 後の先頭 A の時刻).
+    assert a.start_time == time(9, 0), f"A: {a.start_time}"
+    assert b.start_time == time(9, 0), f"B: {b.start_time}"
+    # A.end = 9:30 (= A.service_minutes 30 分).
+    assert a.end_time == time(9, 30), f"A end: {a.end_time}"
+    # B.end = 10:00 (= aligned_start + A.service + B.service = 60 分占有).
+    assert b.end_time == time(10, 0), f"B end (ペア合算 60 分): {b.end_time}"
+
+
+def test_same_address_pair_next_visit_earliest_uses_pair_end() -> None:
+    """Wave 2: ペアの後の visit C は earliest = B.end_time + travel + buffer."""
+    office_id = uuid.uuid4()
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=0, patient_name="A"
+    )
+    a.end_time = time(9, 30)
+    a.service_minutes = 30
+    a.course_code = "A"
+    a.time_type = "時間帯"
+    a.preferred_start = "09:00"
+    a.preferred_end = "11:00"
+    b = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=30, patient_name="B"
+    )
+    b.end_time = time(10, 0)
+    b.service_minutes = 30
+    b.course_code = "A"
+    b.time_type = "時間帯"
+    b.preferred_start = "09:00"
+    b.preferred_end = "11:00"
+    c = _make_visit(
+        lat=35.65, lng=140.105, office_id=office_id, start_h=10, start_m=0, patient_name="C"
+    )
+    # ~500m 離れた C.
+    c.end_time = time(10, 30)
+    c.service_minutes = 30
+    c.course_code = "A"
+    c.time_type = "時間帯"
+    c.preferred_start = "09:00"
+    c.preferred_end = "12:00"
+
+    warnings: list[V2Warning] = []
+    apply_travel_corrections([a, b, c], warnings=warnings)
+
+    # B.end = 10:00 (合算占有). C は 10:00 + travel + buffer 以上.
+    assert b.end_time == time(10, 0)
+    # 500m / 24km/h ≈ 1.25 分 + buffer 8 分 ≈ 10 分前後. 5 分切り上げで 10:15 〜.
+    assert c.start_time >= time(10, 10), (
+        f"C は B.end(10:00) + travel/buffer 以降のはず: {c.start_time}"
+    )
+
+
+def test_same_address_pair_both_fixed_same_time() -> None:
+    """Wave 2: 両者固定で時刻一致 → そのまま揃え, B.end は合算占有."""
+    office_id = uuid.uuid4()
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=10, start_m=0, patient_name="A"
+    )
+    a.end_time = time(10, 30)
+    a.service_minutes = 30
+    a.course_code = "A"
+    a.time_type = "固定"
+    a.preferred_start = "10:00"
+    b = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=10, start_m=0, patient_name="B"
+    )
+    b.end_time = time(10, 30)
+    b.service_minutes = 30
+    b.course_code = "A"
+    b.time_type = "固定"
+    b.preferred_start = "10:00"
+
+    warnings: list[V2Warning] = []
+    apply_travel_corrections([a, b], warnings=warnings)
+
+    assert a.start_time == time(10, 0)
+    assert b.start_time == time(10, 0)
+    # A.end = 10:30, B.end = 11:00 (合算占有).
+    assert a.end_time == time(10, 30)
+    assert b.end_time == time(11, 0)
+
+
+def test_same_address_pair_both_fixed_different_time_emits_warning() -> None:
+    """Wave 2: 両者固定で時刻不一致 → 揃えず warning."""
+    office_id = uuid.uuid4()
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=0, patient_name="A"
+    )
+    a.end_time = time(9, 30)
+    a.service_minutes = 30
+    a.course_code = "A"
+    a.time_type = "固定"
+    a.preferred_start = "09:00"
+    b = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=10, start_m=0, patient_name="B"
+    )
+    b.end_time = time(10, 30)
+    b.service_minutes = 30
+    b.course_code = "A"
+    b.time_type = "固定"
+    b.preferred_start = "10:00"
+
+    warnings: list[V2Warning] = []
+    apply_travel_corrections([a, b], warnings=warnings)
+
+    # 同住所両固定で時刻不一致 → 揃えず warning. start_time は原値のまま.
+    # ただし earliest_start 計算で B は A.end + travel(=0) + buffer に押される
+    # 可能性がある (同住所なので travel ~0, buffer ~0). この場合 B も 9:30 開始. 仕様上.
+    # Wave 2 の眼目は「警告が出る」かどうか.
+    pair_warns = [
+        w for w in warnings if "両者固定で時刻不一致" in w.message or "揃えられません" in w.message
+    ]
+    assert pair_warns, f"両固定不一致 warning が出ていない: {[w.message for w in warnings]}"
+
+
+def test_same_address_pair_one_fixed_one_flex_aligns_to_fixed_time() -> None:
+    """Wave 2: 片方固定 + 片方時間帯 → 固定側の時刻に揃える."""
+    office_id = uuid.uuid4()
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=10, start_m=0, patient_name="A"
+    )
+    a.end_time = time(10, 30)
+    a.service_minutes = 30
+    a.course_code = "A"
+    a.time_type = "固定"
+    a.preferred_start = "10:00"
+    b = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=11, start_m=0, patient_name="B"
+    )
+    b.end_time = time(11, 30)
+    b.service_minutes = 30
+    b.course_code = "A"
+    b.time_type = "時間帯"
+    b.preferred_start = "09:00"
+    b.preferred_end = "12:00"
+
+    warnings: list[V2Warning] = []
+    apply_travel_corrections([a, b], warnings=warnings)
+
+    # 固定 A (10:00) に揃える → B も 10:00.
+    assert a.start_time == time(10, 0)
+    assert b.start_time == time(10, 0)
+    # B.end = 11:00 (= 10:00 + A.service 30 + B.service 30 = 60 分合算).
+    assert b.end_time == time(11, 0)
+
+
+def test_same_address_pair_both_flex_aligns_to_first() -> None:
+    """Wave 2: 両者非固定 → sort 済 先頭 A の時刻に揃える."""
+    office_id = uuid.uuid4()
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=30, patient_name="A"
+    )
+    a.end_time = time(10, 0)
+    a.service_minutes = 30
+    a.course_code = "A"
+    a.time_type = "時間帯"
+    a.preferred_start = "09:00"
+    a.preferred_end = "11:00"
+    b = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=10, start_m=30, patient_name="B"
+    )
+    b.end_time = time(11, 0)
+    b.service_minutes = 30
+    b.course_code = "A"
+    b.time_type = "時間帯"
+    b.preferred_start = "09:00"
+    b.preferred_end = "11:00"
+
+    warnings: list[V2Warning] = []
+    apply_travel_corrections([a, b], warnings=warnings)
+
+    # 先頭 A (9:30) に揃える.
+    assert a.start_time == time(9, 30)
+    assert b.start_time == time(9, 30)
+    assert b.end_time == time(10, 30)  # 9:30 + 30 + 30 = 10:30
+
+
+def test_same_address_three_patients_only_first_two_pair() -> None:
+    """Wave 2: 3 名同住所同コース → 先頭 2 名のみペア化、3 名目は single."""
+    office_id = uuid.uuid4()
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=0, patient_name="A"
+    )
+    a.end_time = time(9, 30)
+    a.service_minutes = 30
+    a.course_code = "A"
+    a.time_type = "時間帯"
+    a.preferred_start = "09:00"
+    a.preferred_end = "12:00"
+    b = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=30, patient_name="B"
+    )
+    b.end_time = time(10, 0)
+    b.service_minutes = 30
+    b.course_code = "A"
+    b.time_type = "時間帯"
+    b.preferred_start = "09:00"
+    b.preferred_end = "12:00"
+    c = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=10, start_m=0, patient_name="C"
+    )
+    c.end_time = time(10, 30)
+    c.service_minutes = 30
+    c.course_code = "A"
+    c.time_type = "時間帯"
+    c.preferred_start = "09:00"
+    c.preferred_end = "12:00"
+
+    warnings: list[V2Warning] = []
+    apply_travel_corrections([a, b, c], warnings=warnings)
+
+    # A / B はペア化: 両者 9:00, B.end=10:00.
+    assert a.start_time == time(9, 0)
+    assert b.start_time == time(9, 0)
+    assert b.end_time == time(10, 0)
+    # C は single としてペアの後に earliest_start で配置される.
+    # 同住所 (travel=0) + buffer=0 (same_address) なので C.earliest = B.end = 10:00.
+    assert c.start_time == time(10, 0), f"C should follow pair end: {c.start_time}"
+
+
+def test_same_address_pair_lunch_overlap_warning() -> None:
+    """Wave 2 + Wave 3 (#WAVE3): ペア合算 duration が 11:30-13:30 の動的 lunch
+    枠に対し「45 分 lunch も避けられない」区間にハマったら warning.
+
+    Setup: 11:45 + 45 + 45 = 13:15 終了 → 動的 lunch (45-60 分) を全く取れない
+    (start=11:45 < 12:15 AND end=13:15 > 12:30).
+    """
+    office_id = uuid.uuid4()
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=11, start_m=45, patient_name="A"
+    )
+    a.end_time = time(12, 30)
+    a.service_minutes = 45
+    a.course_code = "A"
+    a.time_type = "固定"
+    a.preferred_start = "11:45"
+    b = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=11, start_m=45, patient_name="B"
+    )
+    b.end_time = time(12, 30)
+    b.service_minutes = 45
+    b.course_code = "A"
+    b.time_type = "固定"
+    b.preferred_start = "11:45"
+
+    warnings: list[V2Warning] = []
+    apply_travel_corrections([a, b], warnings=warnings)
+
+    # 動的 lunch 枠 (11:30-13:30) と不可避な重なり警告が出る.
+    lunch_warns = [w for w in warnings if "昼休憩" in w.message]
+    assert lunch_warns, (
+        f"同住所ペア lunch 重複 warning が出ていない: {[w.message for w in warnings]}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Wave 3 (#WAVE3): compute_lunch_window — コース別動的 lunch 配置
+# ---------------------------------------------------------------------------
+
+
+def test_compute_lunch_window_finds_60min_slot_when_available() -> None:
+    """11:00-15:00 にコース内 visit が散在、60 分空きあり → 60 分 lunch が返る.
+
+    Setup: 9:00-10:00, 10:00-11:00, 14:00-15:00 のコース.
+    11:00-13:30 はすべて空き. 12:00 中心の 60 分 lunch = 12:00-13:00.
+    """
+    from app.services.scheduling.auto_allocator_v2 import compute_lunch_window
+
+    office_id = uuid.uuid4()
+    v1 = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=0, patient_name="A"
+    )
+    v1.end_time = time(10, 0)
+    v1.service_minutes = 60
+    v2 = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=10, start_m=0, patient_name="B"
+    )
+    v2.end_time = time(11, 0)
+    v2.service_minutes = 60
+    v3 = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=14, start_m=0, patient_name="C"
+    )
+    v3.end_time = time(15, 0)
+    v3.service_minutes = 60
+
+    lunch = compute_lunch_window([v1, v2, v3])
+    assert lunch is not None, "60 分空きあり → lunch slot が返るはず"
+    ls, le = lunch
+    # 60 分 lunch でなければ NG.
+    duration = (le.hour * 60 + le.minute) - (ls.hour * 60 + ls.minute)
+    assert duration == 60, f"60 分 lunch のはず: got {duration} 分"
+    # 12:00 中心の slot = (12:00, 13:00) が best.
+    assert ls == time(12, 0) and le == time(13, 0), (
+        f"12:00 中心の 60 分 lunch のはず: got {ls}-{le}"
+    )
+
+
+def test_compute_lunch_window_falls_back_to_45min() -> None:
+    """60 分連続空きなし、45 分はある → 45 分 lunch slot が返る.
+
+    Setup: 11:30-12:15 と 13:00-14:00 を visit が占有. 12:15-13:00 は 45 分空き
+    だが 60 分空きは取れない. compute_lunch_window は 45 分 fallback で
+    12:15-13:00 を返す.
+    """
+    from app.services.scheduling.auto_allocator_v2 import compute_lunch_window
+
+    office_id = uuid.uuid4()
+    v_pre = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=11, start_m=30, patient_name="P1"
+    )
+    v_pre.end_time = time(12, 15)
+    v_pre.service_minutes = 45
+    v_post = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=13, start_m=0, patient_name="P2"
+    )
+    v_post.end_time = time(14, 0)
+    v_post.service_minutes = 60
+
+    lunch = compute_lunch_window([v_pre, v_post])
+    assert lunch is not None, "45 分空きあり → lunch slot が返るはず"
+    ls, le = lunch
+    duration = (le.hour * 60 + le.minute) - (ls.hour * 60 + ls.minute)
+    assert duration == 45, f"45 分 fallback lunch のはず: got {duration} 分"
+    assert ls == time(12, 15) and le == time(13, 0), (
+        f"45 分 fallback slot は 12:15-13:00 のはず: got {ls}-{le}"
+    )
+
+
+def test_compute_lunch_window_returns_none_when_45min_unavailable() -> None:
+    """コース密集で 45 分も取れない → None + warning."""
+    from app.services.scheduling.auto_allocator_v2 import compute_lunch_window
+
+    office_id = uuid.uuid4()
+    # 11:30-13:30 全域をブロックする visit (= 動的 lunch を取れない).
+    v_block = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=11, start_m=30, patient_name="B"
+    )
+    v_block.end_time = time(13, 30)
+    v_block.service_minutes = 120
+
+    warnings: list[V2Warning] = []
+    lunch = compute_lunch_window(
+        [v_block], warnings=warnings, weekday=0, course_code="A", office_name="TestOffice"
+    )
+    assert lunch is None, f"45 分も取れない → None のはず: got {lunch}"
+    # warning が出ている.
+    assert any("昼休憩" in w.message and "確保できません" in w.message for w in warnings), (
+        f"lunch 確保不能 warning が出ていない: {warnings}"
+    )
+
+
+def test_compute_lunch_window_centered_near_noon() -> None:
+    """複数 60 分候補がある場合は 12:00 中心の slot 優先.
+
+    Setup: 11:30-13:30 のどこでも 60 分 lunch を取れる (visit が全くない).
+    11:30-12:30 / 11:35-12:35 / ... / 12:30-13:30 すべて 60 分連続空き.
+    一番 12:00 中心 (= |start - 12:00| 最小) の 12:00-13:00 が選ばれる.
+    """
+    from app.services.scheduling.auto_allocator_v2 import compute_lunch_window
+
+    office_id = uuid.uuid4()
+    # 朝と夕方の visit のみ (lunch range 11:30-13:30 はすべて空き).
+    v_morning = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=0, patient_name="M"
+    )
+    v_morning.end_time = time(10, 0)
+    v_morning.service_minutes = 60
+    v_evening = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=14, start_m=0, patient_name="E"
+    )
+    v_evening.end_time = time(15, 0)
+    v_evening.service_minutes = 60
+
+    lunch = compute_lunch_window([v_morning, v_evening])
+    assert lunch is not None
+    ls, le = lunch
+    assert ls == time(12, 0) and le == time(13, 0), (
+        f"12:00 中心の 60 分 lunch が選ばれるはず: got {ls}-{le}"
+    )
+
+
+def test_filter_uses_dynamic_lunch_window() -> None:
+    """Wave 3 (#WAVE3): コース別に lunch slot が違っても正しく filter する.
+
+    Setup:
+      - コース X (アンカー: 9:00-12:00 + 14:00-15:00 が占有) → lunch は
+        12:00 中心 (12:00-13:00). lunch 内に飛び込む 12:30-13:30 visit が
+        除外される.
+      - コース Y (アンカー: 9:00-10:00 + 11:30-12:30 + 14:00-15:00 が占有)
+        → lunch は 12:30-13:30 (12:30-13:30 が空き). lunch 内の 12:45 visit
+        が除外される.
+    異なるコースで lunch slot が違うことを確認.
+    """
+    from app.services.scheduling.auto_allocator_v2 import _filter_unavailable_and_lunch
+
+    office_id = uuid.uuid4()
+    # コース X (course_code="X"): 11:30-12:30 / 12:45-13:15 などの lunch 候補
+    # 領域には visit を入れず、lunch は 12:00-13:00 になる. 12:30-13:30 候補は除外.
+    x_morning = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=0, patient_name="XM"
+    )
+    x_morning.end_time = time(12, 0)
+    x_morning.service_minutes = 60
+    x_morning.course_code = "X"
+    x_evening = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=14, start_m=0, patient_name="XE"
+    )
+    x_evening.end_time = time(15, 0)
+    x_evening.service_minutes = 60
+    x_evening.course_code = "X"
+    # 候補 visit: 12:30-13:30 は lunch 12:00-13:00 と重複 (12:30-13:00 部分).
+    x_lunch_hit = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=12, start_m=30, patient_name="XL"
+    )
+    x_lunch_hit.end_time = time(13, 30)
+    x_lunch_hit.service_minutes = 60
+    x_lunch_hit.course_code = "X"
+
+    # コース Y (course_code="Y"): 11:30-12:30 占有で lunch は 12:30-13:30 強制.
+    y_morning = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=11, start_m=30, patient_name="YM"
+    )
+    y_morning.end_time = time(12, 30)
+    y_morning.service_minutes = 60
+    y_morning.course_code = "Y"
+    y_evening = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=14, start_m=0, patient_name="YE"
+    )
+    y_evening.end_time = time(15, 0)
+    y_evening.service_minutes = 60
+    y_evening.course_code = "Y"
+    # 候補 visit: 12:45-13:15 は lunch 12:30-13:30 と重複.
+    y_lunch_hit = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=12, start_m=45, patient_name="YL"
+    )
+    y_lunch_hit.end_time = time(13, 15)
+    y_lunch_hit.service_minutes = 30
+    y_lunch_hit.course_code = "Y"
+
+    warnings: list[V2Warning] = []
+    filtered = _filter_unavailable_and_lunch(
+        [x_morning, x_evening, x_lunch_hit, y_morning, y_evening, y_lunch_hit],
+        unavailable_slots={},
+        warnings=warnings,
+    )
+    codes = {v.patient_code for v in filtered}
+    # アンカー visit は全て残る、lunch 重複の 2 件は除外.
+    assert "XM" in codes and "XE" in codes and "YM" in codes and "YE" in codes
+    assert "XL" not in codes, (
+        "コース X (lunch 12:00-13:00) の 12:30 visit は lunch と重なるため除外"
+    )
+    assert "YL" not in codes, (
+        "コース Y (lunch 12:30-13:30) の 12:45 visit は lunch と重なるため除外"
+    )
+
+
+def test_apply_travel_time_uses_dynamic_lunch() -> None:
+    """Wave 3 (#WAVE3): lunch slot が「12:30-13:30」(動的) のコースで AM 希望
+    visit が AM block を超えると lunch_end=13:30 (動的) にバンプされる.
+
+    Setup:
+      - A 11:30-12:30 固定 (lunch start を 12:30 以降に押し下げる anchor).
+      - B 午前希望, 同 lat 0.155 lng 離れて 5km. earliest = 12:30+15+8 ≈ 12:53.
+      - compute_lunch_window over [A 11:30-12:30, B 11:50-12:20]:
+          ... (B が入力時点で 11:50-12:20 を占有するため lunch は 12:20 以降
+          に押される可能性あり)
+      - 本テストでは「lunch_end が動的 13:00 / 13:20 等になる」 = 固定 13:00 と
+        違うことを確認するために bumped 後の B.start_time が time(13, 0) でない
+        ケースも許容して >= 13:00 だけを検証する.
+
+    補足: Wave 3 における「lunch_end が動的に決まる」性質は本テストでは
+    AM branch bump が「LUNCH_END (旧固定 13:00) ではなく lunch_end_t (動的)」
+    を使うことを通じて担保する.
+    """
+    from app.services.scheduling.auto_allocator_v2 import _apply_travel_time_to_courses
+
+    office_id = uuid.uuid4()
+    # 異住所固定 visit (11:30-12:30) — anchor (lunch を 12:30 以降に押し下げる).
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=11, start_m=30, patient_name="A"
+    )
+    a.end_time = time(12, 30)
+    a.service_minutes = 60
+    a.course_code = "A"
+    a.time_type = "固定"
+    # 5km 離れた午前希望 visit. earliest が 12:00 超のため AM bump (動的 lunch_end へ).
+    b = _make_visit(
+        lat=35.65, lng=140.155, office_id=office_id, start_h=11, start_m=50, patient_name="B"
+    )
+    b.end_time = time(12, 20)
+    b.service_minutes = 30
+    b.course_code = "A"
+    b.time_type = "午前"
+
+    warnings: list[V2Warning] = []
+    _apply_travel_time_to_courses([a, b], warnings=warnings)
+
+    # AM bump が走り、固定 13:00 ではなく動的 lunch_end (>= 13:00) にバンプ.
+    assert b.start_time >= time(13, 0), f"AM bump が動的 lunch_end へ働くはず: got {b.start_time}"
+    # 動的 lunch メッセージ (= 12-13 旧固定でない時刻) が含まれる warning が出る.
+    assert any("午前希望" in w.message and "繰り下げ" in w.message for w in warnings), (
+        f"AM bump warning が出ていない: {[w.message for w in warnings]}"
+    )
+
+
+def test_lunch_window_within_11_30_to_13_30_range() -> None:
+    """Wave 3 (#WAVE3): lunch_start ∈ [11:30, 12:30] かつ lunch_end ∈ [12:15, 13:30]
+    の不変条件を様々な visit 配置パターンで検証する.
+    """
+    from app.services.scheduling.auto_allocator_v2 import (
+        LUNCH_DURATION_FALLBACK,
+        LUNCH_DURATION_PREFERRED,
+        LUNCH_EARLIEST_START,
+        LUNCH_LATEST_END,
+        LUNCH_LATEST_START,
+        compute_lunch_window,
+    )
+
+    office_id = uuid.uuid4()
+    earliest_end_min = (
+        LUNCH_EARLIEST_START.hour * 60 + LUNCH_EARLIEST_START.minute + LUNCH_DURATION_FALLBACK
+    )  # 12:15
+
+    # 様々なパターンを試す.
+    patterns: list[list[V2Visit]] = []
+
+    # パターン 1: 空のコース.
+    patterns.append([])
+
+    # パターン 2: 9-10 visit のみ.
+    v_morning = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=0, patient_name="M"
+    )
+    v_morning.end_time = time(10, 0)
+    v_morning.service_minutes = 60
+    patterns.append([v_morning])
+
+    # パターン 3: 11:00-11:50 + 13:00-14:00 (= lunch 12:00-13:00 が取れる).
+    v_pre = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=11, start_m=0, patient_name="P"
+    )
+    v_pre.end_time = time(11, 50)
+    v_pre.service_minutes = 50
+    v_post = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=13, start_m=0, patient_name="Q"
+    )
+    v_post.end_time = time(14, 0)
+    v_post.service_minutes = 60
+    patterns.append([v_pre, v_post])
+
+    # パターン 4: 12:30-13:30 占有 (= lunch 11:30-12:30 強制).
+    v_pm = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=12, start_m=30, patient_name="PM"
+    )
+    v_pm.end_time = time(13, 30)
+    v_pm.service_minutes = 60
+    patterns.append([v_pm])
+
+    # パターン 5: 11:30-12:30 占有 (= lunch 12:30-13:30 強制).
+    v_am = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=11, start_m=30, patient_name="AM"
+    )
+    v_am.end_time = time(12, 30)
+    v_am.service_minutes = 60
+    patterns.append([v_am])
+
+    for idx, visits in enumerate(patterns):
+        lunch = compute_lunch_window(visits)
+        if lunch is None:
+            continue  # 取れない場合は不変条件適用外.
+        ls, le = lunch
+        ls_min = ls.hour * 60 + ls.minute
+        le_min = le.hour * 60 + le.minute
+        # lunch_start ∈ [11:30, 12:30]
+        assert LUNCH_EARLIEST_START <= ls <= LUNCH_LATEST_START, (
+            f"[pattern {idx}] lunch_start ({ls}) は "
+            f"[{LUNCH_EARLIEST_START}, {LUNCH_LATEST_START}] の範囲内であるはず"
+        )
+        # lunch_end ∈ [12:15, 13:30]
+        assert (
+            earliest_end_min <= le_min <= (LUNCH_LATEST_END.hour * 60 + LUNCH_LATEST_END.minute)
+        ), f"[pattern {idx}] lunch_end ({le}) は [12:15, 13:30] の範囲内であるはず"
+        # 長さは 45-60 分.
+        assert LUNCH_DURATION_FALLBACK <= (le_min - ls_min) <= LUNCH_DURATION_PREFERRED, (
+            f"[pattern {idx}] lunch 長さは 45-60 分のはず: got {le_min - ls_min} 分"
+        )
+
+
+def test_lunch_window_none_does_not_force_default() -> None:
+    """Phase B HIGH (reviewer 2nd round): compute_lunch_window が None を返した時、
+    ``_apply_travel_time_to_courses`` は標準枠 12:00-13:00 へ強制フォールバックせず、
+    12:00-13:00 範囲の非固定 visit を bump 対象から外す.
+
+    Setup (旧実装と新実装で差分が出るよう、B を非固定 + travel time で
+    earliest_start が 12:00 超になる位置に配置):
+      - A 11:00-13:30 固定 (= 2.5 時間ブロック, 45 分も lunch を取れない).
+        → compute_lunch_window が None を返す.
+      - B 12:00 希望、非固定 (time_type="時間帯", 09:00-17:00, service 30).
+        A から少し離れた lat/lng で travel time が earliest_start を 12:00 超に
+        押し上げる構成 (AM bump branch でなく 時間帯 経路を通る).
+
+    旧実装: lunch_window=None → LUNCH_DEFAULT_START/END (12:00-13:00, =720-780) で
+      再検証. B.actual_start が 12:00-13:00 範囲内 → tt="時間帯" + window_upper
+      17:00 で can_bump=True → B.start_time = LUNCH_DEFAULT_END (13:00) にバンプ.
+    新実装: lunch_re_validate_enabled=False で再検証ブロック skip
+      → B.start_time は travel time 反映後の値 (~12:15) のまま. 13:00 にはならない.
+      compute_lunch_window が既に warning を出しているため運用者へは別経路で伝わる.
+
+    本テストは「旧 sentinel 修正前後で結果が同じ (両方とも B 不変)」だった
+    false-positive を解消する: 旧実装で 13:00 にバンプ、新実装で 13:00 にならない、
+    という挙動差をはっきり検証する.
+    """
+    from app.services.scheduling.auto_allocator_v2 import _apply_travel_time_to_courses
+
+    office_id = uuid.uuid4()
+    # A1 + A2 の 2 visit で 11:00-12:00 + 12:30-13:30 を占有 (= lunch 候補 11:30〜
+    # 12:30+45/60 のどれも overlap → compute_lunch_window=None).
+    # B (12:00-12:30 希望) は A1 と A2 の間に挟まる形.
+    a1 = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=11, start_m=0, patient_name="A1"
+    )
+    a1.end_time = time(12, 0)
+    a1.service_minutes = 60
+    a1.course_code = "A"
+    a1.time_type = "固定"
+
+    # B: 12:00 希望、非固定 (時間帯 09:00-17:00). A1 (35.65, 140.10) から
+    # 約 1.1 km 離れた位置 (35.66, 140.10) → travel ~3 分 + buffer 8 分 = 11 分.
+    # earliest_start = A1.end(12:00) + 11 = 12:11 → 5 分刻み切り上げで 12:15.
+    # 12:15-12:45 は 12:00-13:00 (旧 lunch fallback) と overlap するため、
+    # 旧実装は can_bump=True (tt=時間帯, 12:15 <= 17:00) で 13:00 にバンプしていた.
+    # 新実装は lunch_re_validate_enabled=False で skip → 12:15 のまま.
+    b = _make_visit(
+        lat=35.66, lng=140.10, office_id=office_id, start_h=12, start_m=0, patient_name="B"
+    )
+    b.end_time = time(12, 30)
+    b.service_minutes = 30
+    b.course_code = "A"
+    b.time_type = "時間帯"
+    b.preferred_start = "09:00"
+    b.preferred_end = "17:00"
+
+    a2 = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=12, start_m=30, patient_name="A2"
+    )
+    a2.end_time = time(13, 30)
+    a2.service_minutes = 60
+    a2.course_code = "A"
+    a2.time_type = "固定"
+
+    warnings: list[V2Warning] = []
+    _apply_travel_time_to_courses([a1, b, a2], warnings=warnings)
+
+    # 旧実装: A(11:00-12:00) → B (earliest=A.end+travel+buffer ~12:11 → 5min roundup 12:15
+    # → 12:15 < 13:00 AND 12:45 > 12:00 で lunch overlap → can_bump=True (時間帯, 17:00 まで)
+    # → B.start_time = lunch_end_t = LUNCH_DEFAULT_END = 13:00.
+    # 新実装: re-validation skip → B.start_time = 12:15 (travel + 5min roundup).
+    assert b.start_time != time(13, 0), (
+        f"旧実装 sentinel 修正前なら B は 13:00 にバンプされていたはず. "
+        f"新実装で 13:00 にならない (lunch=None で再検証 skip) ことを検証: "
+        f"got {b.start_time}"
+    )
+    # 具体的に、travel + 5min roundup 後の値 (12:11 → 12:15) であることを確認.
+    assert b.start_time == time(12, 15), (
+        f"B.start_time は travel + buffer + 5min roundup で 12:15 のはず: got {b.start_time}"
+    )
+    # compute_lunch_window 自身は warning を出している (45 分も取れない).
+    assert any("昼休憩" in w.message and "確保できません" in w.message for w in warnings), (
+        f"compute_lunch_window の lunch 確保不能 warning が出ていない: "
+        f"{[w.message for w in warnings]}"
+    )
