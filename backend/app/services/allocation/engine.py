@@ -19,28 +19,43 @@ Allocation pipeline:
   7. Level 3 - Route optimization via nearest-neighbor + 2-opt
   8. Fix cross-patient time overlaps for the same staff
 """
+
 from __future__ import annotations
 
-import re
 import logging
-from typing import List, Dict, Optional, Tuple, Set
+import re
 
 from .models import (
-    Patient, Staff, VisitRequest, Event, StaffChange,
-    WeeklyPattern, ConfirmedHistory, AssignmentResult, Interval
+    AssignmentResult,
+    ConfirmedHistory,
+    Event,
+    Interval,
+    Patient,
+    Staff,
+    StaffChange,
+    VisitRequest,
+    WeeklyPattern,
 )
 from .utils import (
-    EXTRA_BUFFER_MIN, ASSIGN_BUFFER_MIN,
-    calc_distance_km, dist_to_score, intervals_overlap, merge_intervals,
-    compute_gaps, intersect_gaps, get_effective_window,
-    nearest_neighbor_route, two_opt, route_length,
-    normalize_cont_pref, weekday_index, fmt_min
+    ASSIGN_BUFFER_MIN,
+    EXTRA_BUFFER_MIN,
+    calc_distance_km,
+    compute_gaps,
+    dist_to_score,
+    fmt_min,
+    get_effective_window,
+    intervals_overlap,
+    merge_intervals,
+    nearest_neighbor_route,
+    normalize_cont_pref,
+    two_opt,
+    weekday_index,
 )
 
 logger = logging.getLogger(__name__)
 
 # Regex compiled once for coupled visit ID parsing
-_COUPLED_RE = re.compile(r'^(V\d+)-(\d+)$')
+_COUPLED_RE = re.compile(r"^(V\d+)-(\d+)$")
 
 
 class AllocationEngine:
@@ -70,19 +85,19 @@ class AllocationEngine:
     # ------------------------------------------------------------------
     def __init__(
         self,
-        staff_list: List[Staff],
-        patient_map: Dict[str, Patient],
-        events: List[Event],
-        staff_changes: List[StaffChange],
-        weekly_patterns: Optional[List[WeeklyPattern]] = None,
-        confirmed_history: Optional[List[ConfirmedHistory]] = None,
+        staff_list: list[Staff],
+        patient_map: dict[str, Patient],
+        events: list[Event],
+        staff_changes: list[StaffChange],
+        weekly_patterns: list[WeeklyPattern] | None = None,
+        confirmed_history: list[ConfirmedHistory] | None = None,
         patient_changes=None,
         special_week_headers=None,
         special_week_details=None,
         mentor_pairs=None,
     ):
         self.staff_list = staff_list
-        self.staff_map: Dict[str, Staff] = {s.sid: s for s in staff_list}
+        self.staff_map: dict[str, Staff] = {s.sid: s for s in staff_list}
         self.patient_map = patient_map
         self.events = events
         self.staff_changes = staff_changes
@@ -94,36 +109,36 @@ class AllocationEngine:
         self.mentor_pairs = mentor_pairs or []
 
         # Build staff-change lookup: "staffId|dateStr" -> [StaffChange]
-        self.staff_change_map: Dict[str, List[StaffChange]] = {}
+        self.staff_change_map: dict[str, list[StaffChange]] = {}
         for sc in staff_changes:
             key = f"{sc.staff_id}|{sc.date_str}"
             self.staff_change_map.setdefault(key, []).append(sc)
 
         # Build event lookup: "staffId|dateStr" -> [Event]
-        self.event_map: Dict[str, List[Event]] = {}
+        self.event_map: dict[str, list[Event]] = {}
         for ev in events:
             key = f"{ev.staff_id}|{ev.date_str}"
             self.event_map.setdefault(key, []).append(ev)
 
         # Build rotation history: pid -> [ConfirmedHistory]
-        self.rotation_history: Dict[str, List[ConfirmedHistory]] = {}
+        self.rotation_history: dict[str, list[ConfirmedHistory]] = {}
         for ch in self.confirmed_history:
             self.rotation_history.setdefault(ch.pid, []).append(ch)
 
         # ---- Mutable state (reset on every allocate() call) ----
-        self.results: List[AssignmentResult] = []
-        self.unassigned: List[dict] = []
-        self.assign_count: Dict[str, int] = {}          # "staffId|dateStr" -> count
-        self.staff_day_visits: Dict[str, List[int]] = {}  # "staffId|dateStr" -> [result idx]
-        self.pid_date_staff: Dict[str, Set[str]] = {}     # "pid|dateStr" -> {staffId}
-        self.last_assigned_by_patient: Dict[str, str] = {}  # pid -> staffId (dynamic)
+        self.results: list[AssignmentResult] = []
+        self.unassigned: list[dict] = []
+        self.assign_count: dict[str, int] = {}  # "staffId|dateStr" -> count
+        self.staff_day_visits: dict[str, list[int]] = {}  # "staffId|dateStr" -> [result idx]
+        self.pid_date_staff: dict[str, set[str]] = {}  # "pid|dateStr" -> {staffId}
+        self.last_assigned_by_patient: dict[str, str] = {}  # pid -> staffId (dynamic)
         # Level1用: 結果indexからリクエスト制約情報を引くマップ
-        self._request_constraints: Dict[int, Dict] = {}  # result_idx -> {ng_staff_ids, sex_limit}
+        self._request_constraints: dict[int, dict] = {}  # result_idx -> {ng_staff_ids, sex_limit}
 
     # ==================================================================
     # Public entry point
     # ==================================================================
-    def allocate(self, requests: List[VisitRequest]) -> dict:
+    def allocate(self, requests: list[VisitRequest]) -> dict:
         """Run the full allocation pipeline.
 
         Args:
@@ -154,28 +169,28 @@ class AllocationEngine:
 
         best_results = None
         best_unassigned_list = None
-        best_unassigned_count = float('inf')
+        best_unassigned_count = float("inf")
         best_request_constraints = None
         best_coupled_debug = {}
         best_day_shift_failures = []
         # Bug fix (C-4): also snapshot internal state maps so that any
         # post-allocate consumer that calls back into the engine sees the
         # state corresponding to the *best* trial, not the last trial.
-        best_assign_count: Optional[Dict[str, int]] = None
-        best_staff_day_visits: Optional[Dict[str, List[int]]] = None
-        best_pid_date_staff: Optional[Dict[str, Set[str]]] = None
-        best_last_assigned_by_patient: Optional[Dict[str, str]] = None
+        best_assign_count: dict[str, int] | None = None
+        best_staff_day_visits: dict[str, list[int]] | None = None
+        best_pid_date_staff: dict[str, set[str]] | None = None
+        best_last_assigned_by_patient: dict[str, str] | None = None
 
         for trial_idx, ordering in enumerate(orderings):
             self._reset_state()
             self._run_pipeline(ordering, active_requests)
 
-            unassigned_count = sum(
-                1 for r in self.results if not r.staff_id and not r.is_event
-            )
+            unassigned_count = sum(1 for r in self.results if not r.staff_id and not r.is_event)
             logger.info(
                 "Trial %d/%d: %d unassigned",
-                trial_idx + 1, len(orderings), unassigned_count,
+                trial_idx + 1,
+                len(orderings),
+                unassigned_count,
             )
 
             if unassigned_count < best_unassigned_count:
@@ -183,20 +198,18 @@ class AllocationEngine:
                 best_results = list(self.results)
                 best_unassigned_list = list(self.unassigned)
                 best_request_constraints = dict(self._request_constraints)
-                best_coupled_debug = getattr(self, '_coupled_debug', {})
-                best_day_shift_failures = getattr(self, '_day_shift_failures', [])
+                best_coupled_debug = getattr(self, "_coupled_debug", {})
+                best_day_shift_failures = getattr(self, "_day_shift_failures", [])
                 # C-4: snapshot of all state maps tied to best_results
                 best_assign_count = dict(self.assign_count)
-                best_staff_day_visits = {
-                    k: list(v) for k, v in self.staff_day_visits.items()
-                }
-                best_pid_date_staff = {
-                    k: set(v) for k, v in self.pid_date_staff.items()
-                }
+                best_staff_day_visits = {k: list(v) for k, v in self.staff_day_visits.items()}
+                best_pid_date_staff = {k: set(v) for k, v in self.pid_date_staff.items()}
                 best_last_assigned_by_patient = dict(self.last_assigned_by_patient)
 
                 if unassigned_count == 0:
-                    logger.info("Trial %d: perfect allocation, skipping remaining trials", trial_idx + 1)
+                    logger.info(
+                        "Trial %d: perfect allocation, skipping remaining trials", trial_idx + 1
+                    )
                     break
 
         # Restore best results
@@ -214,15 +227,14 @@ class AllocationEngine:
             self.last_assigned_by_patient = best_last_assigned_by_patient
 
         # Summary
-        assigned_count = sum(
-            1 for r in self.results if r.staff_id and not r.is_event
-        )
-        unassigned_count = sum(
-            1 for r in self.results if not r.staff_id and not r.is_event
-        )
+        assigned_count = sum(1 for r in self.results if r.staff_id and not r.is_event)
+        unassigned_count = sum(1 for r in self.results if not r.staff_id and not r.is_event)
         logger.info(
             "Allocation complete (best of %d trials): %d assigned, %d unassigned out of %d total",
-            len(orderings), assigned_count, unassigned_count, len(active_requests),
+            len(orderings),
+            assigned_count,
+            unassigned_count,
+            len(active_requests),
         )
 
         # デバッグ: 未割当の内訳
@@ -258,7 +270,9 @@ class AllocationEngine:
         }
 
     def _run_pipeline(
-        self, sorted_requests: List[VisitRequest], active_requests: List[VisitRequest],
+        self,
+        sorted_requests: list[VisitRequest],
+        active_requests: list[VisitRequest],
     ) -> None:
         """Execute the full allocation pipeline for a given request ordering."""
         # Step 1 - events
@@ -276,8 +290,7 @@ class AllocationEngine:
 
         # Step 5 - Level 1: 全スタッフ再挿入
         unassigned_indices = [
-            i for i, r in enumerate(self.results)
-            if not r.staff_id and not r.is_event
+            i for i, r in enumerate(self.results) if not r.staff_id and not r.is_event
         ]
         if unassigned_indices:
             self._level1_reinsertion(unassigned_indices)
@@ -285,8 +298,7 @@ class AllocationEngine:
 
         # Step 6 - Ejection Chain（入替え挿入）
         remaining_unassigned = [
-            i for i, r in enumerate(self.results)
-            if not r.staff_id and not r.is_event
+            i for i, r in enumerate(self.results) if not r.staff_id and not r.is_event
         ]
         if remaining_unassigned:
             ejected = self._ejection_chain(remaining_unassigned)
@@ -295,8 +307,7 @@ class AllocationEngine:
 
         # Step 7 - 段階的制約緩和
         still_unassigned = [
-            i for i, r in enumerate(self.results)
-            if not r.staff_id and not r.is_event
+            i for i, r in enumerate(self.results) if not r.staff_id and not r.is_event
         ]
         if still_unassigned:
             relaxed = self._relaxed_reinsertion(still_unassigned)
@@ -305,8 +316,7 @@ class AllocationEngine:
 
         # Step 7.5 - 曜日シフト戦略（希望日以外への振替）
         day_shift_unassigned = [
-            i for i, r in enumerate(self.results)
-            if not r.staff_id and not r.is_event
+            i for i, r in enumerate(self.results) if not r.staff_id and not r.is_event
         ]
         if day_shift_unassigned:
             shifted = self._day_shift_strategy(day_shift_unassigned, active_requests)
@@ -330,8 +340,7 @@ class AllocationEngine:
 
         # Step 11.5 - FinalSweepで解除された訪問を救済
         post_sweep_unassigned = [
-            i for i, r in enumerate(self.results)
-            if not r.staff_id and not r.is_event
+            i for i, r in enumerate(self.results) if not r.staff_id and not r.is_event
         ]
         if post_sweep_unassigned:
             logger.info("Post-Sweep Rescue: %d visits to rescue...", len(post_sweep_unassigned))
@@ -339,30 +348,25 @@ class AllocationEngine:
             self._level1_reinsertion(post_sweep_unassigned)
             self._sync_coupled_times()
             # 残りに Ejection Chain
-            still_free = [
-                i for i in post_sweep_unassigned
-                if not self.results[i].staff_id
-            ]
+            still_free = [i for i in post_sweep_unassigned if not self.results[i].staff_id]
             if still_free:
                 self._ejection_chain(still_free)
                 self._sync_coupled_times()
             # 残りに制約緩和
-            still_free2 = [
-                i for i in post_sweep_unassigned
-                if not self.results[i].staff_id
-            ]
+            still_free2 = [i for i in post_sweep_unassigned if not self.results[i].staff_id]
             if still_free2:
                 self._relaxed_reinsertion(still_free2)
                 self._sync_coupled_times()
             rescued = sum(1 for i in post_sweep_unassigned if self.results[i].staff_id)
-            logger.info("Post-Sweep Rescue: rescued %d/%d visits", rescued, len(post_sweep_unassigned))
+            logger.info(
+                "Post-Sweep Rescue: rescued %d/%d visits", rescued, len(post_sweep_unassigned)
+            )
 
         self._enforce_coupled_atomicity(allow_partial=True)
 
         # Step 12 - 最終曜日シフト（overlap sweepで解除された訪問を救済）
         final_unassigned = [
-            i for i, r in enumerate(self.results)
-            if not r.staff_id and not r.is_event
+            i for i, r in enumerate(self.results) if not r.staff_id and not r.is_event
         ]
         if final_unassigned:
             shifted = self._day_shift_strategy(final_unassigned, active_requests)
@@ -377,29 +381,31 @@ class AllocationEngine:
 
         # Step 13 - unassignedリストを最終結果から再構築
         self.unassigned = []
-        for i, r in enumerate(self.results):
+        for i, r in enumerate(self.results):  # noqa: B007
             if not r.staff_id and not r.is_event:
                 need_staff = 1
                 slot = 1
-                m = _COUPLED_RE.match(r.visit_id or '')
+                m = _COUPLED_RE.match(r.visit_id or "")
                 if m:
                     need_staff = 2
                     slot = int(m.group(2))
-                reason = '条件を満たすスタッフなし'
-                if '最終重複チェック' in (r.note or ''):
-                    reason = '重複解消不可'
-                elif 'ペア未確保' in (r.note or ''):
-                    reason = '2名体制ペア未確保'
-                elif 'GapPack' in (r.note or ''):
-                    reason = '時間枠に空きなし'
-                self.unassigned.append({
-                    'date_str': r.date_str,
-                    'pid': r.pid,
-                    'pname': r.pname,
-                    'need_staff': need_staff,
-                    'slot': slot,
-                    'reason': reason,
-                })
+                reason = "条件を満たすスタッフなし"
+                if "最終重複チェック" in (r.note or ""):
+                    reason = "重複解消不可"
+                elif "ペア未確保" in (r.note or ""):
+                    reason = "2名体制ペア未確保"
+                elif "GapPack" in (r.note or ""):
+                    reason = "時間枠に空きなし"
+                self.unassigned.append(
+                    {
+                        "date_str": r.date_str,
+                        "pid": r.pid,
+                        "pname": r.pname,
+                        "need_staff": need_staff,
+                        "slot": slot,
+                        "reason": reason,
+                    }
+                )
 
     # ------------------------------------------------------------------
     # Internal helpers - state management
@@ -415,8 +421,11 @@ class AllocationEngine:
         self._request_constraints = {}
 
     def _register_assignment(
-        self, staff_id: str, date_str: str, result_idx: int,
-        pid: Optional[str] = None,
+        self,
+        staff_id: str,
+        date_str: str,
+        result_idx: int,
+        pid: str | None = None,
     ) -> None:
         """Update internal tracking maps after an assignment."""
         key = f"{staff_id}|{date_str}"
@@ -428,7 +437,10 @@ class AllocationEngine:
             self.last_assigned_by_patient[pid] = staff_id
 
     def _unregister_assignment(
-        self, staff_id: str, date_str: str, result_idx: int,
+        self,
+        staff_id: str,
+        date_str: str,
+        result_idx: int,
     ) -> None:
         """Remove tracking for a previously-registered assignment.
 
@@ -455,7 +467,9 @@ class AllocationEngine:
                 for other_idx in self.staff_day_visits.get(key, []):
                     if other_idx == result_idx:
                         continue
-                    other_r = self.results[other_idx] if 0 <= other_idx < len(self.results) else None
+                    other_r = (
+                        self.results[other_idx] if 0 <= other_idx < len(self.results) else None
+                    )
                     if other_r and other_r.pid == pid and other_r.date_str == date_str:
                         still_used = True
                         break
@@ -468,12 +482,14 @@ class AllocationEngine:
                 # Roll back last_assigned_by_patient if it pointed to this staff
                 if self.last_assigned_by_patient.get(pid) == staff_id:
                     # Find the most recent remaining assigned staff for the pid
-                    fallback: Optional[str] = None
+                    fallback: str | None = None
                     for other_r in self.results:
-                        if (other_r is not r
-                                and other_r.pid == pid
-                                and other_r.staff_id
-                                and not other_r.is_event):
+                        if (
+                            other_r is not r
+                            and other_r.pid == pid
+                            and other_r.staff_id
+                            and not other_r.is_event
+                        ):
                             fallback = other_r.staff_id
                     if fallback:
                         self.last_assigned_by_patient[pid] = fallback
@@ -524,16 +540,19 @@ class AllocationEngine:
     # Step 2 - Sort Requests
     # ==================================================================
     @staticmethod
-    def _sort_requests(requests: List[VisitRequest]) -> List[VisitRequest]:
+    def _sort_requests(requests: list[VisitRequest]) -> list[VisitRequest]:
         """Sort requests: date ASC, needStaff DESC, rotation first, time ASC."""
+
         def _key(r: VisitRequest) -> tuple:
             cont = normalize_cont_pref(r.cont_pref)
             rotation_priority = 0 if cont == "ローテーション優先" else 1
             return (r.date_str, -r.need_staff, rotation_priority, r.start_min or 9999)
+
         return sorted(requests, key=_key)
 
-    def _sort_requests_smart(self, requests: List[VisitRequest]) -> List[VisitRequest]:
+    def _sort_requests_smart(self, requests: list[VisitRequest]) -> list[VisitRequest]:
         """Sort by constraint tightness: hardest to place first."""
+
         def _key(r: VisitRequest) -> tuple:
             # 候補スタッフ数を事前計算（少ないほど先に処理）
             eligible = 0
@@ -548,17 +567,18 @@ class AllocationEngine:
                     continue
                 eligible += 1
             return (eligible, r.date_str, -r.need_staff, r.start_min or 9999)
+
         return sorted(requests, key=_key)
 
     # ==================================================================
     # Step 3 - Level 0 Initial Allocation
     # ==================================================================
-    def _level0_allocate(self, requests: List[VisitRequest]) -> None:
+    def _level0_allocate(self, requests: list[VisitRequest]) -> None:
         """Process each request and assign the best-scoring staff."""
         visit_counter = 0
 
         for req in requests:
-            used_staff_ids: Set[str] = set()
+            used_staff_ids: set[str] = set()
             visit_counter += 1
 
             for slot in range(1, req.need_staff + 1):
@@ -643,20 +663,24 @@ class AllocationEngine:
                         "pid": req.pid,
                         "date_str": req.date_str,
                     }
-                    self.unassigned.append({
-                        "date_str": req.date_str,
-                        "pid": req.pid,
-                        "pname": req.pname,
-                        "need_staff": req.need_staff,
-                        "slot": slot,
-                        "reason": "条件を満たすスタッフなし",
-                    })
+                    self.unassigned.append(
+                        {
+                            "date_str": req.date_str,
+                            "pid": req.pid,
+                            "pname": req.pname,
+                            "need_staff": req.need_staff,
+                            "slot": slot,
+                            "reason": "条件を満たすスタッフなし",
+                        }
+                    )
 
     # ==================================================================
     # Staff Selection
     # ==================================================================
     def _passes_hard_constraints(
-        self, staff: Staff, req: VisitRequest,
+        self,
+        staff: Staff,
+        req: VisitRequest,
     ) -> bool:
         """Check shared hard constraints used by required/same-person/regular paths.
 
@@ -692,8 +716,10 @@ class AllocationEngine:
         return True
 
     def _find_best_staff(
-        self, req: VisitRequest, used_staff_ids: Set[str],
-    ) -> Optional[Staff]:
+        self,
+        req: VisitRequest,
+        used_staff_ids: set[str],
+    ) -> Staff | None:
         """Find the best staff member for a visit request.
 
         Selection order:
@@ -712,9 +738,11 @@ class AllocationEngine:
                 staff = self.staff_map.get(sid)
                 # Bug fix (C-3): apply same hard constraints as the
                 # regular candidate path (gender / soft_cap / same-day).
-                if (staff
-                        and self._passes_hard_constraints(staff, req)
-                        and self._is_staff_available(staff, req)):
+                if (
+                    staff
+                    and self._passes_hard_constraints(staff, req)
+                    and self._is_staff_available(staff, req)
+                ):
                     return staff
             return None  # required staff unavailable
 
@@ -723,24 +751,29 @@ class AllocationEngine:
             # 1. prev_staff_idが指定されていればそれを優先
             if req.prev_staff_id:
                 staff = self.staff_map.get(req.prev_staff_id)
-                if (staff
-                        and req.prev_staff_id not in used_staff_ids
-                        and req.prev_staff_id not in req.ng_staff_ids
-                        and self._passes_hard_constraints(staff, req)
-                        and self._is_staff_available(staff, req)):
+                if (
+                    staff
+                    and req.prev_staff_id not in used_staff_ids
+                    and req.prev_staff_id not in req.ng_staff_ids
+                    and self._passes_hard_constraints(staff, req)
+                    and self._is_staff_available(staff, req)
+                ):
                     return staff
             # 2. confirmed_historyから最頻担当スタッフを検索
             history_records = self.rotation_history.get(req.pid, [])
             if history_records:
                 from collections import Counter
+
                 staff_counts = Counter(h.staff_id for h in history_records)
                 for sid, _ in staff_counts.most_common():
                     if sid in used_staff_ids or sid in req.ng_staff_ids:
                         continue
                     staff = self.staff_map.get(sid)
-                    if (staff
-                            and self._passes_hard_constraints(staff, req)
-                            and self._is_staff_available(staff, req)):
+                    if (
+                        staff
+                        and self._passes_hard_constraints(staff, req)
+                        and self._is_staff_available(staff, req)
+                    ):
                         return staff
 
         # ---- Build scored candidate list ----
@@ -759,13 +792,13 @@ class AllocationEngine:
     def _build_candidate_list(
         self,
         req: VisitRequest,
-        used_staff_ids: Set[str],
+        used_staff_ids: set[str],
         cont_pref: str,
-        dynamic_prev: Optional[str],
-    ) -> List[dict]:
+        dynamic_prev: str | None,
+    ) -> list[dict]:
         """Return a list of candidate dicts for the given request."""
         pd_key = f"{req.pid}|{req.date_str}"
-        candidates: List[dict] = []
+        candidates: list[dict] = []
 
         for staff in self.staff_list:
             if staff.sid in used_staff_ids:
@@ -801,38 +834,44 @@ class AllocationEngine:
 
             # Distance
             patient = self.patient_map.get(req.pid)
-            dist_km: Optional[float] = None
+            dist_km: float | None = None
             if patient:
                 dist_km = calc_distance_km(
-                    staff.lat, staff.lng, patient.lat, patient.lng,
+                    staff.lat,
+                    staff.lng,
+                    patient.lat,
+                    patient.lng,
                 )
 
             # How many times this staff already visited this patient this week
             patient_count = sum(
-                1 for r in self.results
+                1
+                for r in self.results
                 if r.pid == req.pid and r.staff_id == staff.sid and not r.is_event
             )
 
-            candidates.append({
-                "staff": staff,
-                "day_count": day_count,
-                "patient_count": patient_count,
-                "dist_km": dist_km,
-                "dist_score": dist_to_score(dist_km),
-                "same_patient_today": staff.sid in already_today,
-                "is_dynamic_prev": (staff.sid == dynamic_prev) if dynamic_prev else False,
-                "is_pref": 1 if staff.sid in req.specified_staff_ids else 0,
-                "rotation_rank": 0,
-            })
+            candidates.append(
+                {
+                    "staff": staff,
+                    "day_count": day_count,
+                    "patient_count": patient_count,
+                    "dist_km": dist_km,
+                    "dist_score": dist_to_score(dist_km),
+                    "same_patient_today": staff.sid in already_today,
+                    "is_dynamic_prev": (staff.sid == dynamic_prev) if dynamic_prev else False,
+                    "is_pref": 1 if staff.sid in req.specified_staff_ids else 0,
+                    "rotation_rank": 0,
+                }
+            )
 
         return candidates
 
     def _apply_rotation_ranking(
         self,
-        candidates: List[dict],
+        candidates: list[dict],
         req: VisitRequest,
-        dynamic_prev: Optional[str],
-    ) -> List[dict]:
+        dynamic_prev: str | None,
+    ) -> list[dict]:
         """Filter and rank candidates for rotation preference.
 
         Prefers staff who have not yet visited this patient this week,
@@ -892,13 +931,13 @@ class AllocationEngine:
     def _candidate_sort_key(c: dict) -> tuple:
         """Composite sort key for candidate ranking (lower is better)."""
         return (
-            -c["is_pref"],                                  # 1. preferred staff first
-            1 if c["same_patient_today"] else 0,            # 2. avoid same patient today
-            1 if c["is_dynamic_prev"] else 0,               # 3. avoid dynamic prev
-            c["patient_count"],                              # 4. fewer patient visits
-            c["rotation_rank"],                              # 5. rotation rank
-            c["day_count"],                                  # 6. fewer day assignments
-            c["dist_score"],                                 # 7. closer distance
+            -c["is_pref"],  # 1. preferred staff first
+            1 if c["same_patient_today"] else 0,  # 2. avoid same patient today
+            1 if c["is_dynamic_prev"] else 0,  # 3. avoid dynamic prev
+            c["patient_count"],  # 4. fewer patient visits
+            c["rotation_rank"],  # 5. rotation rank
+            c["day_count"],  # 6. fewer day assignments
+            c["dist_score"],  # 7. closer distance
         )
 
     # ==================================================================
@@ -940,7 +979,9 @@ class AllocationEngine:
 
         # Flexible time: check if service fits in any available gap
         eff_earliest, eff_latest = get_effective_window(
-            req.time_type, req.earliest_min, req.latest_min,
+            req.time_type,
+            req.earliest_min,
+            req.latest_min,
         )
         eff_earliest = max(eff_earliest, staff.shift_start_min, 540)
         eff_latest = min(eff_latest, staff.shift_end_min)
@@ -952,16 +993,18 @@ class AllocationEngine:
         for idx in self.staff_day_visits.get(key, []):
             r = self.results[idx]
             if r.start_min is not None and r.end_min is not None:
-                all_blocked.append(Interval(
-                    r.start_min - EXTRA_BUFFER_MIN,
-                    r.end_min + EXTRA_BUFFER_MIN,
-                ))
+                all_blocked.append(
+                    Interval(
+                        r.start_min - EXTRA_BUFFER_MIN,
+                        r.end_min + EXTRA_BUFFER_MIN,
+                    )
+                )
 
         gaps = compute_gaps(all_blocked, eff_earliest, eff_latest)
         svc = req.service_min or 30
         return any(gap.end - gap.start >= svc for gap in gaps)
 
-    def _get_blocked_intervals(self, staff_id: str, date_str: str) -> List[Interval]:
+    def _get_blocked_intervals(self, staff_id: str, date_str: str) -> list[Interval]:
         """Return merged blocked-time intervals for a staff member on a date."""
         key = f"{staff_id}|{date_str}"
         changes = self.staff_change_map.get(key, [])
@@ -972,7 +1015,7 @@ class AllocationEngine:
         shift_s = staff.shift_start_min if staff else 540
         shift_e = staff.shift_end_min if staff else 1080
 
-        intervals: List[Interval] = []
+        intervals: list[Interval] = []
         for sc in changes:
             rt = sc.restriction_type
             if rt in ("休み", "終日不可", "終日"):
@@ -985,14 +1028,22 @@ class AllocationEngine:
                 intervals.append(Interval(shift_s, sc.start_min))
             elif rt == "早退" and sc.end_min is not None:
                 intervals.append(Interval(sc.end_min, shift_e))
-            elif rt in ("時間指定", "時間指定制限") and sc.start_min is not None and sc.end_min is not None:
+            elif (
+                rt in ("時間指定", "時間指定制限")
+                and sc.start_min is not None
+                and sc.end_min is not None
+            ):
                 intervals.append(Interval(sc.start_min, sc.end_min))
 
         return merge_intervals(intervals)
 
     def _has_overlap(
-        self, staff_id: str, date_str: str, start: int, end: int,
-        exclude_indices: Optional[Set[int]] = None,
+        self,
+        staff_id: str,
+        date_str: str,
+        start: int,
+        end: int,
+        exclude_indices: set[int] | None = None,
     ) -> bool:
         """Return True if ``[start, end)`` overlaps any existing visit for the staff.
 
@@ -1014,7 +1065,7 @@ class AllocationEngine:
     # ==================================================================
     def _sync_coupled_times(self) -> None:
         """Synchronize start/end times for 2-staff paired visits."""
-        coupled_map: Dict[str, List[int]] = {}
+        coupled_map: dict[str, list[int]] = {}
         for i, r in enumerate(self.results):
             if not r.visit_id or r.is_event:
                 continue
@@ -1022,7 +1073,7 @@ class AllocationEngine:
             if m:
                 coupled_map.setdefault(m.group(1), []).append(i)
 
-        for base_id, indices in coupled_map.items():
+        for base_id, indices in coupled_map.items():  # noqa: B007
             if len(indices) != 2:
                 continue
             r1 = self.results[indices[0]]
@@ -1032,9 +1083,11 @@ class AllocationEngine:
                 continue
 
             # Already in sync
-            if (r1.start_min == r2.start_min
-                    and r1.end_min == r2.end_min
-                    and r1.start_min is not None):
+            if (
+                r1.start_min == r2.start_min
+                and r1.end_min == r2.end_min
+                and r1.start_min is not None
+            ):
                 continue
 
             svc = r1.service_min or r2.service_min or 60
@@ -1054,11 +1107,17 @@ class AllocationEngine:
 
             if target_end <= common_latest:
                 no_overlap_1 = not self._has_overlap(
-                    r1.staff_id, r1.date_str, target, target_end,
+                    r1.staff_id,
+                    r1.date_str,
+                    target,
+                    target_end,
                     exclude_indices=pair_indices,
                 )
                 no_overlap_2 = not self._has_overlap(
-                    r2.staff_id, r2.date_str, target, target_end,
+                    r2.staff_id,
+                    r2.date_str,
+                    target,
+                    target_end,
                     exclude_indices=pair_indices,
                 )
                 if no_overlap_1 and no_overlap_2:
@@ -1069,11 +1128,17 @@ class AllocationEngine:
             # Fallback: force to common earliest (重複チェック付き)
             fb_end = common_earliest + svc
             fb_ok_1 = not self._has_overlap(
-                r1.staff_id, r1.date_str, common_earliest, fb_end,
+                r1.staff_id,
+                r1.date_str,
+                common_earliest,
+                fb_end,
                 exclude_indices=pair_indices,
             )
             fb_ok_2 = not self._has_overlap(
-                r2.staff_id, r2.date_str, common_earliest, fb_end,
+                r2.staff_id,
+                r2.date_str,
+                common_earliest,
+                fb_end,
                 exclude_indices=pair_indices,
             )
             if fb_ok_1 and fb_ok_2:
@@ -1093,7 +1158,7 @@ class AllocationEngine:
     # ==================================================================
     def _gap_pack(self) -> None:
         """Pack flexible visits into the gaps between fixed anchors."""
-        groups: Dict[str, List[int]] = {}
+        groups: dict[str, list[int]] = {}
         for i, r in enumerate(self.results):
             if not r.staff_id:
                 continue
@@ -1106,8 +1171,8 @@ class AllocationEngine:
             if not staff:
                 continue
 
-            anchors: List[Tuple[int, int, int]] = []   # (idx, start, end)
-            flexes: List[int] = []
+            anchors: list[tuple[int, int, int]] = []  # (idx, start, end)
+            flexes: list[int] = []
 
             for idx in indices:
                 r = self.results[idx]
@@ -1135,7 +1200,7 @@ class AllocationEngine:
             day_end = staff.shift_end_min
 
             # Compute gaps between anchors
-            gaps: List[Interval] = []
+            gaps: list[Interval] = []
             cursor = day_start
             for _, a_start, a_end in anchors:
                 gap_end = a_start - EXTRA_BUFFER_MIN
@@ -1148,9 +1213,7 @@ class AllocationEngine:
             # Sort flexes by earliest preference, then start time
             flexes.sort(
                 key=lambda idx: (
-                    self.results[idx].earliest_min
-                    or self.results[idx].start_min
-                    or 9999
+                    self.results[idx].earliest_min or self.results[idx].start_min or 9999
                 ),
             )
 
@@ -1162,7 +1225,9 @@ class AllocationEngine:
                     continue
                 svc = r.service_min or 30
                 eff_earliest, eff_latest = get_effective_window(
-                    r.time_type, r.earliest_min, r.latest_min,
+                    r.time_type,
+                    r.earliest_min,
+                    r.latest_min,
                 )
                 eff_earliest = max(eff_earliest, day_start)
 
@@ -1182,7 +1247,10 @@ class AllocationEngine:
                         if start_cand >= gap.start and end_cand <= gap.end:
                             # 重複チェック（他の訪問との衝突を防止）
                             if self._has_overlap(
-                                staff_id, r.date_str, start_cand, end_cand,
+                                staff_id,
+                                r.date_str,
+                                start_cand,
+                                end_cand,
                                 exclude_indices={f_idx},
                             ):
                                 # この位置は使えない → カーソルを進めて同ギャップ内リトライ
@@ -1200,7 +1268,8 @@ class AllocationEngine:
 
                 if not placed:
                     logger.debug(
-                        "GapPack: visit %s could not fit, unassigning", r.visit_id,
+                        "GapPack: visit %s could not fit, unassigning",
+                        r.visit_id,
                     )
                     if r.staff_id:
                         self._unregister_assignment(r.staff_id, r.date_str, f_idx)
@@ -1211,7 +1280,7 @@ class AllocationEngine:
     # ==================================================================
     # Level 1 - Reinsertion
     # ==================================================================
-    def _level1_reinsertion(self, unassigned_indices: List[int]) -> None:
+    def _level1_reinsertion(self, unassigned_indices: list[int]) -> None:
         """Attempt to place unassigned visits with alternative staff."""
         self._enforce_coupled_atomicity()
 
@@ -1240,16 +1309,23 @@ class AllocationEngine:
                 if m:
                     base_id = m.group(1)
                     for other_r in self.results:
-                        if (other_r.visit_id and other_r.visit_id != r.visit_id
-                                and other_r.visit_id.startswith(base_id + "-")
-                                and other_r.staff_id):
+                        if (
+                            other_r.visit_id
+                            and other_r.visit_id != r.visit_id
+                            and other_r.visit_id.startswith(base_id + "-")
+                            and other_r.staff_id
+                        ):
                             ng_ids.append(other_r.staff_id)
 
-            candidates: List[Tuple[Staff, float]] = []
+            candidates: list[tuple[Staff, float]] = []
             for staff in self.staff_list:
                 if not self._is_staff_available_for_reinsertion(
-                    staff, r, ng_staff_ids=ng_ids, sex_limit=sex_lim,
-                    specified_type=spec_type, specified_staff_ids=spec_ids,
+                    staff,
+                    r,
+                    ng_staff_ids=ng_ids,
+                    sex_limit=sex_lim,
+                    specified_type=spec_type,
+                    specified_staff_ids=spec_ids,
                 ):
                     continue
                 dist = calc_distance_km(staff.lat, staff.lng, patient.lat, patient.lng)
@@ -1268,7 +1344,10 @@ class AllocationEngine:
                         continue
                     # blocked区間チェック（休み/午前休等）
                     blocked = self._get_blocked_intervals(staff.sid, r.date_str)
-                    if any(intervals_overlap(fit_start, fit_start + svc, b.start, b.end) for b in blocked):
+                    if any(
+                        intervals_overlap(fit_start, fit_start + svc, b.start, b.end)
+                        for b in blocked
+                    ):
                         continue
                     # 重複チェック
                     if self._has_overlap(staff.sid, r.date_str, fit_start, fit_start + svc):
@@ -1285,16 +1364,20 @@ class AllocationEngine:
                     r.note += f" [Level1再挿入: {staff.name}]"
                     logger.debug(
                         "Level1: reinserted visit %s -> %s at %s",
-                        r.visit_id, staff.name, fmt_min(fit_start),
+                        r.visit_id,
+                        staff.name,
+                        fmt_min(fit_start),
                     )
                     break
 
     def _is_staff_available_for_reinsertion(
-        self, staff: Staff, r: AssignmentResult,
-        ng_staff_ids: Optional[List[str]] = None,
+        self,
+        staff: Staff,
+        r: AssignmentResult,
+        ng_staff_ids: list[str] | None = None,
         sex_limit: str = "",
         specified_type: str = "",
-        specified_staff_ids: Optional[Set[str]] = None,
+        specified_staff_ids: set[str] | None = None,
     ) -> bool:
         """Quick eligibility check for Level-1 reinsertion.
 
@@ -1345,7 +1428,7 @@ class AllocationEngine:
                 return False
         return True
 
-    def _can_insert(self, staff: Staff, r: AssignmentResult) -> Optional[int]:
+    def _can_insert(self, staff: Staff, r: AssignmentResult) -> int | None:
         """Find the earliest start minute where *r* fits in *staff*'s day.
 
         Returns:
@@ -1364,11 +1447,15 @@ class AllocationEngine:
             if fixed_start >= staff.shift_start_min and fixed_end <= staff.shift_end_min:
                 if not self._has_overlap(staff.sid, r.date_str, fixed_start, fixed_end):
                     blocked = self._get_blocked_intervals(staff.sid, r.date_str)
-                    if not any(intervals_overlap(fixed_start, fixed_end, b.start, b.end) for b in blocked):
+                    if not any(
+                        intervals_overlap(fixed_start, fixed_end, b.start, b.end) for b in blocked
+                    ):
                         return fixed_start
             return None  # 固定時刻で入れなければ他の時間は試さない
         eff_earliest, eff_latest = get_effective_window(
-            r.time_type, r.earliest_min, r.latest_min,
+            r.time_type,
+            r.earliest_min,
+            r.latest_min,
         )
         eff_earliest = max(eff_earliest, staff.shift_start_min, 540)
         eff_latest = min(eff_latest, staff.shift_end_min)
@@ -1379,10 +1466,12 @@ class AllocationEngine:
         for idx in self.staff_day_visits.get(key, []):
             existing = self.results[idx]
             if existing.start_min is not None and existing.end_min is not None:
-                blocked.append(Interval(
-                    existing.start_min - EXTRA_BUFFER_MIN,
-                    existing.end_min + EXTRA_BUFFER_MIN,
-                ))
+                blocked.append(
+                    Interval(
+                        existing.start_min - EXTRA_BUFFER_MIN,
+                        existing.end_min + EXTRA_BUFFER_MIN,
+                    )
+                )
 
         gaps = compute_gaps(blocked, eff_earliest, eff_latest)
         for gap in gaps:
@@ -1398,7 +1487,7 @@ class AllocationEngine:
             allow_partial: If True, keep the assigned half with a warning.
                            If False (default), unassign both halves.
         """
-        coupled_map: Dict[str, List[int]] = {}
+        coupled_map: dict[str, list[int]] = {}
         for i, r in enumerate(self.results):
             if not r.visit_id:
                 continue
@@ -1406,7 +1495,7 @@ class AllocationEngine:
             if m:
                 coupled_map.setdefault(m.group(1), []).append(i)
 
-        for base_id, indices in coupled_map.items():
+        for base_id, indices in coupled_map.items():  # noqa: B007
             if len(indices) != 2:
                 continue
             r1 = self.results[indices[0]]
@@ -1458,7 +1547,7 @@ class AllocationEngine:
     # ==================================================================
     def _level3_route_optimize(self) -> None:
         """Reorder flexible visits using nearest-neighbor + 2-opt."""
-        groups: Dict[str, List[int]] = {}
+        groups: dict[str, list[int]] = {}
         for i, r in enumerate(self.results):
             if not r.staff_id:
                 continue
@@ -1471,8 +1560,8 @@ class AllocationEngine:
             if not staff:
                 continue
 
-            anchors: List[int] = []
-            flexes: List[int] = []
+            anchors: list[int] = []
+            flexes: list[int] = []
 
             for idx in indices:
                 r = self.results[idx]
@@ -1492,16 +1581,18 @@ class AllocationEngine:
                 continue
 
             # Build node list for the optimizer
-            nodes: List[dict] = []
+            nodes: list[dict] = []
             for idx in flexes:
                 r = self.results[idx]
                 patient = self.patient_map.get(r.pid)
-                nodes.append({
-                    "idx": idx,
-                    "lat": patient.lat if patient else None,
-                    "lng": patient.lng if patient else None,
-                    "svc_min": r.service_min or 30,
-                })
+                nodes.append(
+                    {
+                        "idx": idx,
+                        "lat": patient.lat if patient else None,
+                        "lng": patient.lng if patient else None,
+                        "svc_min": r.service_min or 30,
+                    }
+                )
 
             optimized = two_opt(nearest_neighbor_route(nodes, staff.lat, staff.lng))
 
@@ -1518,7 +1609,7 @@ class AllocationEngine:
             day_start = max(staff.shift_start_min, 540)
             day_end = staff.shift_end_min
 
-            gaps: List[Interval] = []
+            gaps: list[Interval] = []
             cursor = day_start
             for a_s, a_e in anchor_times:
                 gap_end = a_s - EXTRA_BUFFER_MIN
@@ -1557,7 +1648,7 @@ class AllocationEngine:
     # ==================================================================
     def _fix_cross_patient_overlaps(self) -> None:
         """Resolve time conflicts between different patients for the same staff."""
-        groups: Dict[str, List[int]] = {}
+        groups: dict[str, list[int]] = {}
         for i, r in enumerate(self.results):
             if not r.staff_id or r.is_event:
                 continue
@@ -1571,9 +1662,10 @@ class AllocationEngine:
                 continue
 
             sorted_idx = sorted(
-                indices, key=lambda i: self.results[i].start_min or 0,
+                indices,
+                key=lambda i: self.results[i].start_min or 0,
             )
-            placed: List[Tuple[int, int]] = []
+            placed: list[tuple[int, int]] = []
 
             for idx in sorted_idx:
                 r = self.results[idx]
@@ -1581,8 +1673,7 @@ class AllocationEngine:
                     continue
 
                 has_conflict = any(
-                    intervals_overlap(r.start_min, r.end_min, p_s, p_e)
-                    for p_s, p_e in placed
+                    intervals_overlap(r.start_min, r.end_min, p_s, p_e) for p_s, p_e in placed
                 )
 
                 if not has_conflict:
@@ -1610,7 +1701,8 @@ class AllocationEngine:
                 else:
                     logger.warning(
                         "Could not resolve overlap for visit %s on %s; unassigning",
-                        r.visit_id, r.date_str,
+                        r.visit_id,
+                        r.date_str,
                     )
                     # Bug fix (C-2): unregister before wiping staff_id so
                     # state maps (assign_count/staff_day_visits/pid_date_staff)
@@ -1625,15 +1717,14 @@ class AllocationEngine:
     # Pre-processing: patient_changes, special_week, weekly_patterns
     # ==================================================================
 
-    def _apply_patient_changes(self, requests: List[VisitRequest]) -> List[VisitRequest]:
+    def _apply_patient_changes(self, requests: list[VisitRequest]) -> list[VisitRequest]:
         """Apply patient_changes to weekly requests."""
         if not self.patient_changes:
             return requests
         result = list(requests)
         for pc in self.patient_changes:
             if pc.operation == "キャンセル":
-                result = [r for r in result
-                          if not (r.pid == pc.pid and r.date_str == pc.date_str)]
+                result = [r for r in result if not (r.pid == pc.pid and r.date_str == pc.date_str)]
                 logger.debug("PatientChange: cancelled %s on %s", pc.pid, pc.date_str)
             elif pc.operation == "追加":
                 new_req = VisitRequest(
@@ -1684,14 +1775,15 @@ class AllocationEngine:
                         r.note += f" [個別変更:{pc.operation}]"
         return result
 
-    def _apply_special_week(self, requests: List[VisitRequest]) -> List[VisitRequest]:
+    def _apply_special_week(self, requests: list[VisitRequest]) -> list[VisitRequest]:
         """Apply special_week headers/details to requests."""
         if not self.special_week_headers:
             return requests
         result = list(requests)
         for header in self.special_week_headers:
-            details = [d for d in self.special_week_details
-                       if d.special_week_id == header.special_week_id]
+            details = [
+                d for d in self.special_week_details if d.special_week_id == header.special_week_id
+            ]
             if header.mode == "REPLACE":
                 result = [r for r in result if r.pid != header.pid]
                 logger.debug("SpecialWeek REPLACE: removed requests for %s", header.pid)
@@ -1714,15 +1806,16 @@ class AllocationEngine:
                 if patient:
                     new_req.area = patient.area
                 result.append(new_req)
-            logger.debug("SpecialWeek %s: added %d details for %s",
-                         header.mode, len(details), header.pid)
+            logger.debug(
+                "SpecialWeek %s: added %d details for %s", header.mode, len(details), header.pid
+            )
         return result
 
-    def _enrich_from_patterns(self, requests: List[VisitRequest]) -> List[VisitRequest]:
+    def _enrich_from_patterns(self, requests: list[VisitRequest]) -> list[VisitRequest]:
         """Enrich requests with time window info from weekly_patterns."""
         if not self.weekly_patterns:
             return requests
-        pattern_map: Dict[str, List] = {}
+        pattern_map: dict[str, list] = {}
         for wp in self.weekly_patterns:
             key = f"{wp.pid}|{wp.day_code}"
             pattern_map.setdefault(key, []).append(wp)
@@ -1752,10 +1845,11 @@ class AllocationEngine:
         for mp in self.mentor_pairs:
             if not mp.trainee_staff_id or not mp.mentor_staff_id:
                 continue
-            mentor_visits = [r for r in self.results
-                             if r.staff_id == mp.mentor_staff_id
-                             and not r.is_event
-                             and r.start_min is not None]
+            mentor_visits = [
+                r
+                for r in self.results
+                if r.staff_id == mp.mentor_staff_id and not r.is_event and r.start_min is not None
+            ]
             if mp.start_date:
                 mentor_visits = [v for v in mentor_visits if v.date_str >= mp.start_date]
             if mp.end_date:
@@ -1765,24 +1859,28 @@ class AllocationEngine:
             elif mp.band == "午後":
                 mentor_visits = [v for v in mentor_visits if v.start_min >= 720]
             if mp.day_condition:
-                day_map = {"月": "Mon", "火": "Tue", "水": "Wed", "木": "Thu",
-                           "金": "Fri", "土": "Sat", "日": "Sun"}
+                day_map = {
+                    "月": "Mon",
+                    "火": "Tue",
+                    "水": "Wed",
+                    "木": "Thu",
+                    "金": "Fri",
+                    "土": "Sat",
+                    "日": "Sun",
+                }
                 allowed = set()
                 for ch in mp.day_condition.replace(",", "").replace("、", ""):
                     if ch in day_map:
                         allowed.add(day_map[ch])
                 if allowed:
                     mentor_visits = [v for v in mentor_visits if v.weekday in allowed]
-            trainee_times: Dict[str, List[Tuple[int, int]]] = {}
+            trainee_times: dict[str, list[tuple[int, int]]] = {}
             for r in self.results:
                 if r.staff_id == mp.trainee_staff_id and r.start_min is not None:
-                    trainee_times.setdefault(r.date_str, []).append(
-                        (r.start_min, r.end_min))
+                    trainee_times.setdefault(r.date_str, []).append((r.start_min, r.end_min))
             for mv in mentor_visits:
                 existing = trainee_times.get(mv.date_str, [])
-                has_conflict = any(
-                    mv.start_min < e and mv.end_min > s for s, e in existing
-                )
+                has_conflict = any(mv.start_min < e and mv.end_min > s for s, e in existing)
                 if has_conflict:
                     continue
                 copy = AssignmentResult(
@@ -1806,8 +1904,7 @@ class AllocationEngine:
                 if trainee_staff:
                     copy.staff_name = trainee_staff.name
                 new_results.append(copy)
-                trainee_times.setdefault(mv.date_str, []).append(
-                    (mv.start_min, mv.end_min))
+                trainee_times.setdefault(mv.date_str, []).append((mv.start_min, mv.end_min))
         self.results.extend(new_results)
         if new_results:
             logger.info("MentorPairs: %d shadowing visits added", len(new_results))
@@ -1816,7 +1913,9 @@ class AllocationEngine:
     # Day Shift Strategy (曜日シフト戦略)
     # ==================================================================
     def _day_shift_strategy(
-        self, unassigned_indices: List[int], all_requests: List[VisitRequest],
+        self,
+        unassigned_indices: list[int],
+        all_requests: list[VisitRequest],
     ) -> int:
         """Shift unassigned visits to less crowded days of the week.
 
@@ -1859,15 +1958,14 @@ class AllocationEngine:
             week_dates = sample_dates
 
         # Calculate load per date (how many visits are already assigned)
-        date_load: Dict[str, int] = {}
+        date_load: dict[str, int] = {}
         for d in sorted(week_dates):
             date_load[d] = sum(
-                1 for r in self.results
-                if r.staff_id and r.date_str == d and not r.is_event
+                1 for r in self.results if r.staff_id and r.date_str == d and not r.is_event
             )
 
         # Parse dates for weekday calculation
-        date_weekday: Dict[str, str] = {}
+        date_weekday: dict[str, str] = {}
         weekday_names = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri", 5: "Sat", 6: "Sun"}
         for d in week_dates:
             try:
@@ -1879,7 +1977,7 @@ class AllocationEngine:
 
         # Group unassigned by patient+date
         # For coupled visits, include ALL slots (even if one was assigned)
-        pid_date_unassigned: Dict[str, List[int]] = {}
+        pid_date_unassigned: dict[str, list[int]] = {}
         unassigned_set = set()
         for idx in unassigned_indices:
             r = self.results[idx]
@@ -1890,29 +1988,30 @@ class AllocationEngine:
             pid_date_unassigned.setdefault(key, []).append(idx)
 
         # Coupled partners: don't modify existing assignments for now
-        coupled_partners: Dict[str, List[int]] = {}  # empty - no partner gathering
+        coupled_partners: dict[str, list[int]] = {}  # empty - no partner gathering
 
         # Sort dates by load (least crowded first)
         sorted_dates = sorted(date_load.keys(), key=lambda d: date_load.get(d, 0))
 
-        # 曜日優先度でソート（低→中→高: 低優先度を先にシフト）
-        priority_order = {"低": 0, "中": 1, "高": 2, "": 0}
+        # 曜日優先度 (day_priority) は v2 移行時に廃止. PID 名順で安定ソート.
         sorted_groups = sorted(
             pid_date_unassigned.items(),
-            key=lambda x: priority_order.get(
-                getattr(self.patient_map.get(x[0].split("|")[0], None), "day_priority", "低"), 0
-            ),
+            key=lambda x: x[0],
         )
 
         # Debug: P041が含まれているか確認
-        p041_groups = [k for k in pid_date_unassigned.keys() if "P041" in k]
-        p064_groups = [k for k in pid_date_unassigned.keys() if "P064" in k]
+        p041_groups = [k for k in pid_date_unassigned.keys() if "P041" in k]  # noqa: F841
+        p064_groups = [k for k in pid_date_unassigned.keys() if "P064" in k]  # noqa: F841
 
         # P041のresults状態を確認
-        p041_results = [(i, r.visit_id, r.staff_id or "NONE", r.date_str, r.is_event)
-                        for i, r in enumerate(self.results) if r.pid == "P041"]
-        p041_in_unassigned = [i for i in unassigned_indices
-                              if i < len(self.results) and self.results[i].pid == "P041"]
+        p041_results = [
+            (i, r.visit_id, r.staff_id or "NONE", r.date_str, r.is_event)
+            for i, r in enumerate(self.results)
+            if r.pid == "P041"
+        ]
+        p041_in_unassigned = [
+            i for i in unassigned_indices if i < len(self.results) and self.results[i].pid == "P041"
+        ]
         self._day_shift_failures.append(
             f"GROUPS: total={len(sorted_groups)}, P041_groups={p041_groups}, "
             f"P041_results={p041_results[:6]}, P041_unassigned_idx={p041_in_unassigned}"
@@ -1944,9 +2043,7 @@ class AllocationEngine:
             spec_type = constraints.get("specified_type", "")
             spec_ids = constraints.get("specified_staff_ids", set())
 
-            self._day_shift_failures.append(
-                f"TRYING: {pid}|{orig_date} ({len(indices)} slots)"
-            )
+            self._day_shift_failures.append(f"TRYING: {pid}|{orig_date} ({len(indices)} slots)")
 
             # Try each date from least crowded
             for alt_date in sorted_dates:
@@ -1971,7 +2068,7 @@ class AllocationEngine:
                     continue
 
                 # For coupled visits, include partner slots
-                is_coupled = orig_r.is_coupled
+                is_coupled = orig_r.is_coupled  # noqa: F841
                 all_slots = list(indices)
                 partner_slots = coupled_partners.get(pd_key, [])
                 if partner_slots:
@@ -1995,8 +2092,7 @@ class AllocationEngine:
                         if sex_lim == "男性のみ" and staff.gender != "男性":
                             continue
                         # Bug fix (Codex Bug A): required-staff invariant
-                        if (spec_type == "必須" and spec_ids
-                                and staff.sid not in spec_ids):
+                        if spec_type == "必須" and spec_ids and staff.sid not in spec_ids:
                             continue
                         # C-7: area restriction in day-shift strategy too
                         if staff.areas and r.area and r.area not in staff.areas:
@@ -2034,7 +2130,9 @@ class AllocationEngine:
 
                     if not found_staff:
                         all_placed = False
-                        fail_reasons.append(f"slot {slot_idx}: no staff on {alt_date}({alt_weekday})")
+                        fail_reasons.append(
+                            f"slot {slot_idx}: no staff on {alt_date}({alt_weekday})"
+                        )
                         break
 
                 if all_placed and len(placed_staff) >= need_staff:
@@ -2072,12 +2170,20 @@ class AllocationEngine:
                             r.start_min = fit
                             r.end_min = fit + svc
                             self._register_assignment(staff.sid, alt_date, slot_idx, pid=pid)
-                            r.note += f" [曜日シフト: {date_weekday.get(orig_date, '?')}→{alt_weekday}]"
+                            r.note += (
+                                f" [曜日シフト: {date_weekday.get(orig_date, '?')}→{alt_weekday}]"
+                            )
                             resolved += 1
 
                     # Update date_load
                     date_load[alt_date] = date_load.get(alt_date, 0) + need_staff
-                    logger.info("DayShift: SUCCESS %s %s→%s (%d staff)", pid, orig_date, alt_date, need_staff)
+                    logger.info(
+                        "DayShift: SUCCESS %s %s→%s (%d staff)",
+                        pid,
+                        orig_date,
+                        alt_date,
+                        need_staff,
+                    )
                     break  # Move to next patient
             else:
                 # All dates tried, none worked
@@ -2090,23 +2196,23 @@ class AllocationEngine:
     # ==================================================================
     # Add missing coupled entries
     # ==================================================================
-    def _add_missing_coupled_entries(self, requests: List[VisitRequest]) -> None:
+    def _add_missing_coupled_entries(self, requests: list[VisitRequest]) -> None:
         """For 2-staff visits with only 1 assigned, add unassigned entry.
 
         Scans by patient+date: if need_staff=2 but only 1 result has
         staff_id set, adds an explicit unassigned placeholder.
         """
         # Build need_staff map from original requests
-        need_staff_map: Dict[str, int] = {}
+        need_staff_map: dict[str, int] = {}
         for req in requests:
             if req.need_staff >= 2:
                 key = f"{req.pid}|{req.date_str}"
                 need_staff_map[key] = req.need_staff
 
         # Count assigned and unassigned per patient+date
-        assigned_count_map: Dict[str, int] = {}
-        unassigned_coupled: Dict[str, List[AssignmentResult]] = {}
-        assigned_info: Dict[str, AssignmentResult] = {}
+        assigned_count_map: dict[str, int] = {}
+        unassigned_coupled: dict[str, list[AssignmentResult]] = {}
+        assigned_info: dict[str, AssignmentResult] = {}
         for r in self.results:
             if r.is_event or not r.is_coupled:
                 continue
@@ -2170,9 +2276,11 @@ class AllocationEngine:
 
         self._coupled_debug = {
             "need_staff_map_count": len(need_staff_map),
-            "partial_found": [(k, assigned_count_map.get(k, 0), v)
-                              for k, v in need_staff_map.items()
-                              if 0 < assigned_count_map.get(k, 0) < v],
+            "partial_found": [
+                (k, assigned_count_map.get(k, 0), v)
+                for k, v in need_staff_map.items()
+                if 0 < assigned_count_map.get(k, 0) < v
+            ],
             "added": added,
         }
         if added:
@@ -2190,12 +2298,12 @@ class AllocationEngine:
         """
         # Detect 2-staff patients from results (is_coupled flag or V###-N visit IDs)
         # This avoids relying on patient_map.need_staff which may not be set
-        need2_pid_dates: Set[str] = set()
+        need2_pid_dates: set[str] = set()
         for r in self.results:
             if r.is_event or not r.date_str:
                 continue
-            vid = r.visit_id or ''
-            if vid.startswith('EV_') or '_T_' in vid or '_P2' in vid:
+            vid = r.visit_id or ""
+            if vid.startswith("EV_") or "_T_" in vid or "_P2" in vid:
                 continue
             if r.is_coupled or _COUPLED_RE.match(vid):
                 need2_pid_dates.add(f"{r.pid}|{r.date_str}")
@@ -2205,12 +2313,12 @@ class AllocationEngine:
         logger.info("Coupled Rescue: %d patient-dates with 2-staff need", len(need2_pid_dates))
 
         # Group results by pid|date (exclude events, trainee shadows, and existing _P2)
-        pid_date_results: Dict[str, List[int]] = {}
+        pid_date_results: dict[str, list[int]] = {}
         for i, r in enumerate(self.results):
             if r.is_event or not r.date_str:
                 continue
-            vid = r.visit_id or ''
-            if vid.startswith('EV_') or '_T_' in vid or '_P2' in vid:
+            vid = r.visit_id or ""
+            if vid.startswith("EV_") or "_T_" in vid or "_P2" in vid:
                 continue
             key = f"{r.pid}|{r.date_str}"
             if key not in need2_pid_dates:
@@ -2232,9 +2340,9 @@ class AllocationEngine:
             if ref.start_min is None or ref.end_min is None:
                 continue
 
-            pid, date_str = key.split('|', 1)
+            pid, date_str = key.split("|", 1)
             # date_strがNone/空の場合はスキップ
-            if not date_str or date_str == 'None':
+            if not date_str or date_str == "None":
                 continue
 
             # Get constraints from the assigned visit
@@ -2258,8 +2366,7 @@ class AllocationEngine:
                 if sex_lim == "男性のみ" and staff.gender != "男性":
                     continue
                 # Bug fix (Codex Bug A): required-staff invariant
-                if (spec_type == "必須" and spec_ids
-                        and staff.sid not in spec_ids):
+                if spec_type == "必須" and spec_ids and staff.sid not in spec_ids:
                     continue
                 # C-7: area restriction for the 2nd-staff rescue path
                 if staff.areas and ref.area and ref.area not in staff.areas:
@@ -2283,8 +2390,9 @@ class AllocationEngine:
                 blocked = self._get_blocked_intervals(staff.sid, date_str)
                 if any(iv.start <= 0 and iv.end >= 1440 for iv in blocked):
                     continue
-                if any(intervals_overlap(ref.start_min, ref.end_min, b.start, b.end)
-                       for b in blocked):
+                if any(
+                    intervals_overlap(ref.start_min, ref.end_min, b.start, b.end) for b in blocked
+                ):
                     continue
 
                 # Overlap with existing visits
@@ -2302,7 +2410,7 @@ class AllocationEngine:
                     ua_r.staff_name = found_staff.name
                     ua_r.start_min = ref.start_min
                     ua_r.end_min = ref.end_min
-                    ua_r.note = (ua_r.note or '') + f" [2名体制救済: {found_staff.name}]"
+                    ua_r.note = (ua_r.note or "") + f" [2名体制救済: {found_staff.name}]"
                     self._register_assignment(found_staff.sid, date_str, ua_idx, pid=pid)
                 else:
                     # Create new 2nd-staff entry.
@@ -2310,12 +2418,12 @@ class AllocationEngine:
                     # 前提にしているため、`_P2` サフィックスではなく V###-N ハイフン
                     # 形式で発番する（同じ base_id で未使用のスロット番号を採番）。
 
-                    base_match = _COUPLED_RE.match(ref.visit_id or '')
+                    base_match = _COUPLED_RE.match(ref.visit_id or "")
                     if base_match:
                         base_id = base_match.group(1)
-                        used_slots: Set[int] = set()
+                        used_slots: set[int] = set()
                         for r in self.results:
-                            m = _COUPLED_RE.match(r.visit_id or '')
+                            m = _COUPLED_RE.match(r.visit_id or "")
                             if m and m.group(1) == base_id:
                                 used_slots.add(int(m.group(2)))
                         next_slot = (max(used_slots) if used_slots else 1) + 1
@@ -2358,7 +2466,7 @@ class AllocationEngine:
         (keeping the one with earlier visit_id).
         """
         # Build staff-date groups from results (not from staff_day_visits which may be stale)
-        groups: Dict[str, List[int]] = {}
+        groups: dict[str, list[int]] = {}
         for i, r in enumerate(self.results):
             if not r.staff_id or r.start_min is None or r.end_min is None:
                 continue
@@ -2366,7 +2474,7 @@ class AllocationEngine:
             groups.setdefault(key, []).append(i)
 
         fixed_count = 0
-        for key, indices in groups.items():
+        for key, indices in groups.items():  # noqa: B007
             if len(indices) <= 1:
                 continue
             # Sort by start time
@@ -2378,8 +2486,10 @@ class AllocationEngine:
                     # Overlap detected! Unassign this visit
                     logger.warning(
                         "FinalSweep: overlap detected for %s staff=%s %s-%s, unassigning",
-                        r.visit_id, r.staff_id,
-                        fmt_min(r.start_min), fmt_min(r.end_min),
+                        r.visit_id,
+                        r.staff_id,
+                        fmt_min(r.start_min),
+                        fmt_min(r.end_min),
                     )
                     # Bug fix (C-2): unregister before wiping staff_id so
                     # post-sweep rescue logic doesn't see stale staff_day_visits
@@ -2400,7 +2510,7 @@ class AllocationEngine:
     # Smart Strategy Methods
     # ==================================================================
 
-    def _generate_orderings(self, requests: List[VisitRequest]) -> List[List[VisitRequest]]:
+    def _generate_orderings(self, requests: list[VisitRequest]) -> list[list[VisitRequest]]:
         """Generate multiple request orderings for multi-trial allocation.
 
         Strategy: try different sort keys to find the ordering that
@@ -2431,6 +2541,7 @@ class AllocationEngine:
             # 固定時刻は最優先（0）、それ以外は1
             is_fixed = 0 if r.time_type == "固定" else 1
             return (is_fixed, eligible, -r.need_staff, r.date_str, r.start_min or 9999)
+
         orderings.append(sorted(requests, key=_time_slot_scarcity))
 
         # Order 4: 2名体制 + 固定時刻を絶対最優先
@@ -2440,16 +2551,18 @@ class AllocationEngine:
             coupled_priority = 0 if r.need_staff >= 2 else 1
             fixed_priority = 0 if r.time_type == "固定" else 1
             return (coupled_priority, fixed_priority, r.date_str, r.start_min or 9999)
+
         orderings.append(sorted(requests, key=_coupled_fixed_first))
 
         # Order 5: Reverse date (金→月) + need_staff desc
         def _reverse_date(r: VisitRequest) -> tuple:
             return (r.date_str, -r.need_staff, r.start_min or 9999)
+
         orderings.append(sorted(requests, key=_reverse_date, reverse=True))
 
         return orderings
 
-    def _ejection_chain(self, unassigned_indices: List[int]) -> int:
+    def _ejection_chain(self, unassigned_indices: list[int]) -> int:
         """Swap-based reinsertion: displace an assigned visit to make room.
 
         For each unassigned visit U:
@@ -2482,9 +2595,12 @@ class AllocationEngine:
                 if m:
                     base_id = m.group(1)
                     for other_r in self.results:
-                        if (other_r.visit_id and other_r.visit_id != r.visit_id
-                                and other_r.visit_id.startswith(base_id + "-")
-                                and other_r.staff_id):
+                        if (
+                            other_r.visit_id
+                            and other_r.visit_id != r.visit_id
+                            and other_r.visit_id.startswith(base_id + "-")
+                            and other_r.staff_id
+                        ):
                             ng_ids.append(other_r.staff_id)
 
             patient = self.patient_map.get(r.pid)
@@ -2495,8 +2611,12 @@ class AllocationEngine:
             placed = False
             for staff in self.staff_list:
                 if not self._is_staff_available_for_reinsertion(
-                    staff, r, ng_staff_ids=ng_ids, sex_limit=sex_lim,
-                    specified_type=spec_type, specified_staff_ids=spec_ids,
+                    staff,
+                    r,
+                    ng_staff_ids=ng_ids,
+                    sex_limit=sex_lim,
+                    specified_type=spec_type,
+                    specified_staff_ids=spec_ids,
                 ):
                     continue
                 if r.time_type == "固定" and r.earliest_min is not None:
@@ -2524,8 +2644,10 @@ class AllocationEngine:
             # --- Ejection Chain (入替え挿入) ---
             # 同日の割当済み訪問を1つずつ試す
             same_day_assigned = [
-                (ai, ar) for ai, ar in enumerate(self.results)
-                if ar.staff_id and not ar.is_event
+                (ai, ar)
+                for ai, ar in enumerate(self.results)
+                if ar.staff_id
+                and not ar.is_event
                 and ar.date_str == r.date_str
                 and not ar.is_coupled  # coupled訪問は入替え対象外
                 and ar.time_type != "固定"  # 固定時刻訪問は入替え対象外
@@ -2538,8 +2660,12 @@ class AllocationEngine:
 
                 # U をvictimのスタッフに入れられるか？
                 if not self._is_staff_available_for_reinsertion(
-                    victim_staff, r, ng_staff_ids=ng_ids, sex_limit=sex_lim,
-                    specified_type=spec_type, specified_staff_ids=spec_ids,
+                    victim_staff,
+                    r,
+                    ng_staff_ids=ng_ids,
+                    sex_limit=sex_lim,
+                    specified_type=spec_type,
+                    specified_staff_ids=spec_ids,
                 ):
                     continue
 
@@ -2567,7 +2693,9 @@ class AllocationEngine:
                     victim.staff_name = saved_name
                     victim.start_min = saved_start
                     victim.end_min = saved_end
-                    self._register_assignment(saved_staff, victim.date_str, victim_idx, pid=victim.pid)
+                    self._register_assignment(
+                        saved_staff, victim.date_str, victim_idx, pid=victim.pid
+                    )
                     continue
 
                 # U を配置
@@ -2590,7 +2718,10 @@ class AllocationEngine:
                     if alt_staff.sid == saved_staff:
                         continue
                     if not self._is_staff_available_for_reinsertion(
-                        alt_staff, victim, ng_staff_ids=v_ng, sex_limit=v_sex,
+                        alt_staff,
+                        victim,
+                        ng_staff_ids=v_ng,
+                        sex_limit=v_sex,
                         specified_type=v_spec_type,
                         specified_staff_ids=v_spec_ids,
                     ):
@@ -2598,7 +2729,9 @@ class AllocationEngine:
                     # 固定時刻のvictimは元の時刻でのみ再配置可能
                     if victim.time_type == "固定" and saved_start is not None:
                         svc_v = victim.service_min or 30
-                        if self._has_overlap(alt_staff.sid, victim.date_str, saved_start, saved_start + svc_v):
+                        if self._has_overlap(
+                            alt_staff.sid, victim.date_str, saved_start, saved_start + svc_v
+                        ):
                             continue
                         alt_fit = saved_start
                     else:
@@ -2609,7 +2742,9 @@ class AllocationEngine:
                         victim.staff_name = alt_staff.name
                         victim.start_min = alt_fit
                         victim.end_min = alt_fit + svc_v
-                        self._register_assignment(alt_staff.sid, victim.date_str, victim_idx, pid=victim.pid)
+                        self._register_assignment(
+                            alt_staff.sid, victim.date_str, victim_idx, pid=victim.pid
+                        )
                         victim.note += f" [EjectionChain移動: {alt_staff.name}]"
                         victim_placed = True
                         break
@@ -2629,12 +2764,14 @@ class AllocationEngine:
                     victim.staff_name = saved_name
                     victim.start_min = saved_start
                     victim.end_min = saved_end
-                    self._register_assignment(saved_staff, victim.date_str, victim_idx, pid=victim.pid)
+                    self._register_assignment(
+                        saved_staff, victim.date_str, victim_idx, pid=victim.pid
+                    )
                     continue
 
         return resolved
 
-    def _relaxed_reinsertion(self, unassigned_indices: List[int]) -> int:
+    def _relaxed_reinsertion(self, unassigned_indices: list[int]) -> int:
         """Final pass with progressively relaxed constraints.
 
         Relaxation levels:
@@ -2662,9 +2799,12 @@ class AllocationEngine:
                 if m:
                     base_id = m.group(1)
                     for other_r in self.results:
-                        if (other_r.visit_id and other_r.visit_id != r.visit_id
-                                and other_r.visit_id.startswith(base_id + "-")
-                                and other_r.staff_id):
+                        if (
+                            other_r.visit_id
+                            and other_r.visit_id != r.visit_id
+                            and other_r.visit_id.startswith(base_id + "-")
+                            and other_r.staff_id
+                        ):
                             ng_ids.append(other_r.staff_id)
 
             # --- Relaxation Level 1: max_per_day (no soft_cap) ---
@@ -2676,8 +2816,7 @@ class AllocationEngine:
                 if sex_lim == "男性のみ" and staff.gender != "男性":
                     continue
                 # Bug fix (Codex Bug A): required-staff invariant
-                if (spec_type == "必須" and spec_ids
-                        and staff.sid not in spec_ids):
+                if spec_type == "必須" and spec_ids and staff.sid not in spec_ids:
                     continue
                 # C-7: area restriction even in relaxed reinsertion path
                 if staff.areas and r.area and r.area not in staff.areas:
@@ -2730,8 +2869,7 @@ class AllocationEngine:
                 if sex_lim == "男性のみ" and staff.gender != "男性":
                     continue
                 # Bug fix (Codex Bug A): required-staff invariant in L2 too
-                if (spec_type == "必須" and spec_ids
-                        and staff.sid not in spec_ids):
+                if spec_type == "必須" and spec_ids and staff.sid not in spec_ids:
                     continue
                 # C-7: area restriction even when relaxing time window
                 if staff.areas and r.area and r.area not in staff.areas:

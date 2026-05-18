@@ -1,10 +1,13 @@
 """Importer normalisation tests for weekly_pattern (W3-B / Wave 5-C).
 
-Covers the W4-G helpers (``normalize_weekday_priority``, ``normalize_frequency``)
-plus the ``_norm_time_type`` / ``_norm_priority`` wrappers in
-``scripts/import_weekly_pattern.py``. These are the cells operators most
-often leave blank, so the contract of "blank → safe default, never raise"
-is asserted explicitly.
+Covers the W4-G helper ``normalize_frequency`` plus the
+``_norm_time_type`` wrapper in ``scripts/import_weekly_pattern.py``.
+These are the cells operators most often leave blank, so the contract of
+"blank → safe default, never raise" is asserted explicitly.
+
+Wave v2 移行で ``weekday_priority`` (曜日優先度) は廃止されたため、
+関連するヘルパー (``normalize_weekday_priority`` / ``_norm_priority``) も
+削除済み。
 """
 
 from __future__ import annotations
@@ -23,33 +26,12 @@ if str(_SCRIPTS_DIR) not in sys.path:
 
 from _import_utils import (  # noqa: E402
     normalize_frequency,
-    normalize_weekday_priority,
 )
 from import_weekly_pattern import (  # noqa: E402
     _hhmm,
-    _norm_priority,
     _norm_time_type,
     build_payload,
 )
-
-
-# ---------- normalize_weekday_priority ---------------------------------------
-
-
-@pytest.mark.parametrize("raw", ["高", "中", "低"])
-def test_priority_passes_through_valid(raw) -> None:
-    assert normalize_weekday_priority(raw) == raw
-
-
-@pytest.mark.parametrize(
-    "raw",
-    ["", None, "選択なし", "未設定", "PRIO_HIGH"],
-)
-def test_priority_blank_or_unknown_falls_back_to_default(raw) -> None:
-    # Default is "低"; explicit override is honoured.
-    assert normalize_weekday_priority(raw) == "低"
-    assert normalize_weekday_priority(raw, default="中") == "中"
-
 
 # ---------- normalize_frequency ---------------------------------------------
 
@@ -82,12 +64,6 @@ def test_norm_time_type_falls_back_to_jihantai() -> None:
     assert _norm_time_type("選択なし") == "時間帯"
 
 
-def test_norm_priority_uses_default_low() -> None:
-    assert _norm_priority("") == "低"
-    assert _norm_priority(None) == "低"
-    assert _norm_priority("高") == "高"
-
-
 def test_hhmm_round_trip() -> None:
     from datetime import time
 
@@ -107,23 +83,21 @@ def test_build_payload_handles_blank_pattern_columns() -> None:
         "patient_id": 0,
         "週訪問回数": 1,
         "希望曜日（複数可）": 2,
-        "曜日優先度": 3,
-        "サービス時間": 4,
-        "時間タイプ": 5,
-        "希望時間帯（開始）": 6,
-        "希望時間帯（終了）": 7,
-        "曜日NG": 8,
-        "エリア": 9,
-        "指定タイプ": 10,
-        "継続希望": 11,
-        "指定スタッフID": 12,
-        "NGスタッフID": 13,
+        "サービス時間": 3,
+        "時間タイプ": 4,
+        "希望時間帯（開始）": 5,
+        "希望時間帯（終了）": 6,
+        "曜日NG": 7,
+        "エリア": 8,
+        "指定タイプ": 9,
+        "継続希望": 10,
+        "指定スタッフID": 11,
+        "NGスタッフID": 12,
     }
     row = (
         "P001",
         "",  # 週訪問回数 → None
         "選択なし",  # 希望曜日 → []
-        "",  # 曜日優先度 → "低"
         "",  # サービス時間 → None
         "夜間",  # 時間タイプ → "時間帯" (fallback)
         "",  # preferred_start
@@ -140,7 +114,7 @@ def test_build_payload_handles_blank_pattern_columns() -> None:
     pattern = payload["weekly_pattern"]
     assert pattern["frequency_per_week"] is None
     assert pattern["preferred_weekdays"] == []
-    assert pattern["weekday_priority"] == "低"
+    assert "weekday_priority" not in pattern
     assert pattern["service_minutes"] is None
     assert pattern["time_type"] == "時間帯"
     assert pattern["preferred_start"] is None
@@ -156,17 +130,16 @@ def test_build_payload_normalises_full_width_frequency() -> None:
         "patient_id": 0,
         "週訪問回数": 1,
         "希望曜日（複数可）": 2,
-        "曜日優先度": 3,
-        "サービス時間": 4,
-        "時間タイプ": 5,
-        "希望時間帯（開始）": 6,
-        "希望時間帯（終了）": 7,
-        "曜日NG": 8,
-        "エリア": 9,
-        "指定タイプ": 10,
-        "継続希望": 11,
-        "指定スタッフID": 12,
-        "NGスタッフID": 13,
+        "サービス時間": 3,
+        "時間タイプ": 4,
+        "希望時間帯（開始）": 5,
+        "希望時間帯（終了）": 6,
+        "曜日NG": 7,
+        "エリア": 8,
+        "指定タイプ": 9,
+        "継続希望": 10,
+        "指定スタッフID": 11,
+        "NGスタッフID": 12,
     }
     # Full-width "３" should still parse as int 3 once parse_int strips the
     # non-digit suffix; this guards a real Excel paste-from-IME scenario.
@@ -174,7 +147,6 @@ def test_build_payload_normalises_full_width_frequency() -> None:
         "P002",
         "3回",
         "月、水、金",
-        "高",
         45,
         "固定",
         "09:00",
@@ -190,7 +162,7 @@ def test_build_payload_normalises_full_width_frequency() -> None:
     assert payload is not None
     assert payload["weekly_pattern"]["frequency_per_week"] == 3
     assert payload["weekly_pattern"]["preferred_weekdays"] == ["Mon", "Wed", "Fri"]
-    assert payload["weekly_pattern"]["weekday_priority"] == "高"
+    assert "weekday_priority" not in payload["weekly_pattern"]
     assert payload["weekly_pattern"]["service_minutes"] == 45
     assert payload["weekly_pattern"]["time_type"] == "固定"
     assert payload["weekly_pattern"]["preferred_start"] == "09:00"

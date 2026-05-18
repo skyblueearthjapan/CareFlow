@@ -136,9 +136,6 @@ def _build_inputs(
         weekly_count = _coerce_positive_int(wp.get("frequency_per_week"))
         if weekly_count is None or weekly_count < 0:
             weekly_count = 0
-        # weekday_priority is a domain-enum string — keep the simple "" → "低"
-        # fallback. No int-coercion needed.
-        day_priority = wp.get("weekday_priority") or "低"
 
         # W1-BE1: ng_staff_ids / preferred_staff_ids / area / specified_type /
         # continuous_request / required_staff_count are dropped at the DB
@@ -167,7 +164,6 @@ def _build_inputs(
             time_type=time_type,
             start_pref_min=_parse_hhmm(wp.get("preferred_start")),
             end_pref_min=_parse_hhmm(wp.get("preferred_end")),
-            day_priority=day_priority,
         )
 
     engine_staff: list[Staff] = []

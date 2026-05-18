@@ -13,7 +13,6 @@ def test_weekly_pattern_valid_payload_parses() -> None:
         {
             "frequency_per_week": 3,
             "preferred_weekdays": ["Mon", "Wed", "Fri"],
-            "weekday_priority": "高",
             "service_minutes": 60,
             "time_type": "時間帯",
             "preferred_start": "09:00",
@@ -33,7 +32,6 @@ def test_weekly_pattern_rejects_invalid_time_type() -> None:
             {
                 "frequency_per_week": 2,
                 "preferred_weekdays": ["Mon"],
-                "weekday_priority": "中",
                 "service_minutes": 30,
                 "time_type": "夜間",  # not in Literal[...]
                 "preferred_start": None,
@@ -49,7 +47,6 @@ def test_weekly_pattern_rejects_invalid_hhmm() -> None:
             {
                 "frequency_per_week": 1,
                 "preferred_weekdays": ["Mon"],
-                "weekday_priority": "低",
                 "service_minutes": 30,
                 "time_type": "固定",
                 "preferred_start": "9:00",  # missing leading zero -> bad HH:MM
@@ -65,7 +62,6 @@ def test_weekly_pattern_rejects_unknown_weekday() -> None:
             {
                 "frequency_per_week": 1,
                 "preferred_weekdays": ["Monday"],  # full names not allowed
-                "weekday_priority": "中",
                 "service_minutes": 30,
                 "time_type": "固定",
                 "ng_weekdays": [],
@@ -79,7 +75,6 @@ def test_weekly_pattern_allows_extra_keys_for_forward_compat() -> None:
         {
             "frequency_per_week": 1,
             "preferred_weekdays": ["Mon"],
-            "weekday_priority": "中",
             "service_minutes": 30,
             "time_type": "固定",
             "preferred_start": "09:00",
@@ -99,7 +94,6 @@ def test_patient_create_embeds_weekly_pattern() -> None:
             "weekly_pattern": {
                 "frequency_per_week": 2,
                 "preferred_weekdays": ["Tue", "Thu"],
-                "weekday_priority": "中",
                 "service_minutes": 45,
                 "time_type": "午前",
                 "preferred_start": None,
@@ -122,7 +116,6 @@ def test_patient_create_rejects_garbage_weekly_pattern() -> None:
                 "weekly_pattern": {
                     "frequency_per_week": 99,  # > 7
                     "preferred_weekdays": ["Mon"],
-                    "weekday_priority": "中",
                     "service_minutes": 30,
                     "time_type": "固定",
                     "ng_weekdays": [],
@@ -140,7 +133,6 @@ def _base_pattern(**overrides) -> dict:
     base = {
         "frequency_per_week": 1,
         "preferred_weekdays": ["Mon"],
-        "weekday_priority": "中",
         "service_minutes": 30,
         "time_type": "固定",
         "preferred_start": None,
@@ -160,9 +152,7 @@ def test_weekly_pattern_rejects_frequency_out_of_range(freq) -> None:
 
 @pytest.mark.parametrize("freq", [1, 3, 7])
 def test_weekly_pattern_accepts_frequency_inside_range(freq) -> None:
-    schema = WeeklyPatternSchema.model_validate(
-        _base_pattern(frequency_per_week=freq)
-    )
+    schema = WeeklyPatternSchema.model_validate(_base_pattern(frequency_per_week=freq))
     assert schema.frequency_per_week == freq
 
 
@@ -180,9 +170,7 @@ def test_weekly_pattern_rejects_service_minutes_out_of_range(minutes) -> None:
 
 @pytest.mark.parametrize("minutes", [0, 1, 30, 60, 300])
 def test_weekly_pattern_accepts_service_minutes_inside_range(minutes) -> None:
-    schema = WeeklyPatternSchema.model_validate(
-        _base_pattern(service_minutes=minutes)
-    )
+    schema = WeeklyPatternSchema.model_validate(_base_pattern(service_minutes=minutes))
     assert schema.service_minutes == minutes
 
 

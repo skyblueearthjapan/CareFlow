@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Iterable
 from datetime import date, datetime, time
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 # Ensure backend/ on sys.path when invoked via `python scripts/foo.py`.
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent
@@ -35,8 +36,13 @@ _SEX_MAP = {
 
 _WEEKDAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 _WEEKDAY_JP = {
-    "月": "Mon", "火": "Tue", "水": "Wed", "木": "Thu",
-    "金": "Fri", "土": "Sat", "日": "Sun",
+    "月": "Mon",
+    "火": "Tue",
+    "水": "Wed",
+    "木": "Thu",
+    "金": "Fri",
+    "土": "Sat",
+    "日": "Sun",
 }
 
 
@@ -199,24 +205,6 @@ def parse_id_list(value: Any) -> list[str]:
     return [t.strip() for t in s.replace("、", ",").split(",") if t.strip()]
 
 
-_VALID_PRIORITIES = {"高", "中", "低"}
-
-
-def normalize_weekday_priority(value: Any, *, default: str = "低") -> str:
-    """Coerce raw Excel cells to one of {高, 中, 低}.
-
-    Empty / blank / unrecognised values fall back to ``default`` (=低), so
-    callers can rely on the result always being a valid enum string. Mirrors
-    the Wave 4-G normalisation pass we run on existing rows.
-    """
-    s = clean_str(value)
-    if s is None:
-        return default
-    if s in _VALID_PRIORITIES:
-        return s
-    return default
-
-
 def normalize_frequency(value: Any) -> int | None:
     """Normalise weekly visit frequency: empty / 0 / negative / junk → None.
 
@@ -278,12 +266,16 @@ def iter_rows(xlsx_path: Path, sheet_name: str) -> tuple[dict[str, int], list[tu
         wb.close()
 
 
-def print_summary(label: str, *, created: int, updated: int, skipped: int,
-                  failed: int, errors: list[str] | None = None) -> None:
-    print(
-        f"[{label}] created={created} updated={updated} "
-        f"skipped={skipped} failed={failed}"
-    )
+def print_summary(
+    label: str,
+    *,
+    created: int,
+    updated: int,
+    skipped: int,
+    failed: int,
+    errors: list[str] | None = None,
+) -> None:
+    print(f"[{label}] created={created} updated={updated} skipped={skipped} failed={failed}")
     if errors:
         for line in errors[:20]:
             print(f"  - {line}")
@@ -300,7 +292,6 @@ __all__ = [
     "iter_rows",
     "normalize_frequency",
     "normalize_sex",
-    "normalize_weekday_priority",
     "parse_areas",
     "parse_bool",
     "parse_date",

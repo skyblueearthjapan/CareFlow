@@ -113,7 +113,6 @@ export const VISIT_FREQUENCY_LABELS: Record<(typeof VISIT_FREQUENCY_OPTIONS)[num
   monthly: '月次',
 };
 
-export const WEEKDAY_PRIORITY_OPTIONS = ['高', '中', '低'] as const;
 export const TIME_TYPE_OPTIONS = ['固定', '午前', '午後', '終日', '時間帯'] as const;
 
 export interface WeeklyPattern {
@@ -121,7 +120,6 @@ export interface WeeklyPattern {
   visit_frequency: (typeof VISIT_FREQUENCY_OPTIONS)[number] | null;
   visit_weeks: string | null;
   preferred_weekdays: WeekdayKey[];
-  weekday_priority: (typeof WEEKDAY_PRIORITY_OPTIONS)[number];
   service_minutes: number;
   time_type: (typeof TIME_TYPE_OPTIONS)[number];
   preferred_start: string | null;
@@ -134,7 +132,6 @@ export const emptyWeeklyPattern: WeeklyPattern = {
   visit_frequency: null,
   visit_weeks: null,
   preferred_weekdays: [],
-  weekday_priority: '中',
   service_minutes: 30,
   time_type: '終日',
   preferred_start: null,
@@ -441,12 +438,6 @@ export function coerceWeeklyPattern(raw: unknown): WeeklyPattern {
     ? (r.visit_frequency as (typeof VISIT_FREQUENCY_OPTIONS)[number])
     : null;
 
-  const priority = WEEKDAY_PRIORITY_OPTIONS.includes(
-    r.weekday_priority as (typeof WEEKDAY_PRIORITY_OPTIONS)[number],
-  )
-    ? (r.weekday_priority as (typeof WEEKDAY_PRIORITY_OPTIONS)[number])
-    : '中';
-
   const timeType = TIME_TYPE_OPTIONS.includes(r.time_type as (typeof TIME_TYPE_OPTIONS)[number])
     ? (r.time_type as (typeof TIME_TYPE_OPTIONS)[number])
     : '終日';
@@ -460,7 +451,6 @@ export function coerceWeeklyPattern(raw: unknown): WeeklyPattern {
     visit_frequency: visitFreq,
     visit_weeks: typeof r.visit_weeks === 'string' ? r.visit_weeks : null,
     preferred_weekdays: filterWeekdays(r.preferred_weekdays),
-    weekday_priority: priority,
     service_minutes: Number.isFinite(minutes) ? Math.min(180, Math.max(1, minutes)) : 30,
     time_type: timeType,
     preferred_start:

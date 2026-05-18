@@ -8,7 +8,6 @@ used by the WeeklyPatternEditor frontend (W3-C):
 {
   "frequency_per_week": int (1-7),
   "preferred_weekdays": ["Mon","Wed","Fri"],
-  "weekday_priority": "高|中|低",
   "service_minutes": int,
   "time_type": "固定|午前|午後|終日|時間帯",
   "preferred_start": "HH:MM" or null,
@@ -42,7 +41,6 @@ from _import_utils import (  # noqa: E402
     clean_str,
     iter_rows,
     normalize_frequency,
-    normalize_weekday_priority,
     parse_bool,
     parse_id_list,
     parse_int,
@@ -50,7 +48,6 @@ from _import_utils import (  # noqa: E402
     parse_weekdays,
     print_summary,
 )
-
 from sqlalchemy import select  # noqa: E402
 
 from app.db.session import dispose_engine, get_session_factory  # noqa: E402
@@ -66,11 +63,6 @@ def _hhmm(t: Any) -> str | None:
     if parsed is None:
         return None
     return parsed.strftime("%H:%M")
-
-
-def _norm_priority(value: Any) -> str:
-    """Wave 4-G: empty / unrecognised → '低' (default), never None."""
-    return normalize_weekday_priority(value, default="低")
 
 
 def _norm_time_type(value: Any) -> str:
@@ -116,8 +108,6 @@ def build_payload(row: tuple, idx: dict[str, int]) -> dict[str, Any] | None:
         # Wave 4-G: 0 / negative / blank → None (Optional contract).
         "frequency_per_week": normalize_frequency(cell(row, idx, "週訪問回数")),
         "preferred_weekdays": parse_weekdays(cell(row, idx, "希望曜日（複数可）")),
-        # Wave 4-G: blank / unrecognised → '低' (always a valid enum string).
-        "weekday_priority": _norm_priority(cell(row, idx, "曜日優先度")),
         "service_minutes": parse_int(cell(row, idx, "サービス時間")),
         "time_type": _norm_time_type(cell(row, idx, "時間タイプ")),
         "preferred_start": _hhmm(cell(row, idx, "希望時間帯（開始）")),
@@ -192,12 +182,8 @@ async def import_weekly_pattern(xlsx: Path, dry_run: bool) -> dict[str, int]:
             if payload["specified_type"] is not None:
                 obj.specified_type = payload["specified_type"]
             obj.continuous_request = payload["continuous_request"]
-            obj.preferred_staff_ids = [
-                code_to_uuid[c] for c in spec_codes if c in code_to_uuid
-            ]
-            obj.ng_staff_ids = [
-                code_to_uuid[c] for c in ng_codes if c in code_to_uuid
-            ]
+            obj.preferred_staff_ids = [code_to_uuid[c] for c in spec_codes if c in code_to_uuid]
+            obj.ng_staff_ids = [code_to_uuid[c] for c in ng_codes if c in code_to_uuid]
             summary["updated"] += 1
 
         await session.commit()
@@ -217,9 +203,7 @@ async def _main(xlsx: Path, dry_run: bool) -> dict[str, int]:
 
 
 def main() -> int:
-    args = build_parser(
-        "Import weekly_pattern JSONB (Sample 1 / 元データ)"
-    ).parse_args()
+    args = build_parser("Import weekly_pattern JSONB (Sample 1 / 元データ)").parse_args()
     asyncio.run(_main(args.xlsx, args.dry_run))
     return 0
 

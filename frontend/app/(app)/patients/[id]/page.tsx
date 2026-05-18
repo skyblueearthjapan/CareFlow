@@ -274,7 +274,6 @@ function WeeklyPatternView({ raw }: WeeklyPatternViewProps) {
         ['訪問頻度', visitFreq],
         ['訪問週', wp.visit_weeks ?? '--'],
         ['希望曜日', labelDays(wp.preferred_weekdays)],
-        ['曜日優先度', wp.weekday_priority],
         ['サービス時間', `${wp.service_minutes} 分`],
         ['時間タイプ', wp.time_type],
         ['希望時間', timeRange],

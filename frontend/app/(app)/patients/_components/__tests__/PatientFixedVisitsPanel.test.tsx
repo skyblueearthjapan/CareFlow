@@ -218,7 +218,6 @@ describe('PatientFixedVisitsPanel', () => {
       visit_frequency: null,
       visit_weeks: null,
       preferred_weekdays: ['Mon', 'Wed'] as const,
-      weekday_priority: '中' as const,
       service_minutes: 60,
       time_type: '固定' as const,
       preferred_start: '10:00',
