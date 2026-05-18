@@ -512,6 +512,12 @@ export function FullOptimizeDialog({
       });
       setBulkSelectedIds(new Set());
       setBulkConfirmOpen(false);
+      // W41 v2.10 (ユーザー要望): 一括反映後は整合性確保のため
+      // 即座に全面最適化を再算出する。固定枠/visit を変更したまま古いシミュレーション
+      // 結果を見ている状態を避け、新しい配置でスケジュールが矛盾しないことを保証する。
+      // permanent / week_only いずれのモードでも自動再算出する。
+      toast.info('整合性確保のため全面最適化を自動再実行します...');
+      await handleReallocate();
     } catch (err) {
       toast.error(`一括反映に失敗しました: ${formatErr(err)}`);
     }
@@ -524,6 +530,7 @@ export function FullOptimizeDialog({
     bulkWeekOnlyMut,
     isoYear,
     isoWeek,
+    handleReallocate,
   ]);
 
   // 個別調整モードで現在の患者インデックスを計算 (進捗表示用)
