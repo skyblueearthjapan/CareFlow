@@ -34,6 +34,16 @@ class PatientFixedVisitV2Base(BaseModel):
             "未指定なら Layer 1 の office フォールバックで解決される。"
         ),
     )
+    # Phase E-5 (項目 ⑥B): サブ拠点 ID (省略可).
+    # 主担当 (patient.primary_office_id) とは別にフォロー時に PFV を配置できる拠点.
+    # 指定時は course_template_id も sub_office の template を指す必要がある (API で検証).
+    sub_office_id: UUID | None = Field(
+        default=None,
+        description=(
+            "サブ拠点 ID (Phase E-5 ⑥B). 未指定なら従来どおり主担当拠点のみで動作. "
+            "指定時は course_template_id も sub_office の template を指すこと."
+        ),
+    )
     # W37 Phase 1: 同曜日・同時刻に 2 コース固定するためのスロット番号.
     # 1 名体制 (既存) では 0 のみ. 複数スタッフ対応では 0/1 の 2 行を持つ.
     slot_index: int = Field(

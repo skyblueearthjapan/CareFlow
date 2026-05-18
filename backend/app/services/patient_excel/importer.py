@@ -747,6 +747,7 @@ def _parse_pfv_row(
     course_templates: dict[tuple[UUID, str], CourseTemplate],
     existing_pfvs: dict[tuple[UUID, str, int, int], PatientFixedVisit],
     pending_new_keys: set[tuple[UUID, str, int, int]],
+    offices_by_code: dict[str, Office] | None = None,
 ) -> tuple[PfvExcelImportRow, dict[str, Any] | None]:
     cells: dict[str, Any] = {}
     for col_key, idx in PFV_COL_INDEX.items():
@@ -1055,16 +1056,38 @@ def _parse_pfv_row(
             None,
         )
 
+    # Phase E-5 (項目 ⑥B): sub_office_code → sub_office_id を先に解決.
+    # 解決できない code (拠点に存在しない) は course_template と同じく
+    # 「sub_office_id=None として PFV 自体は保持」のベストエフォート方針.
+    raw_sub_office = cells.get("sub_office_code")
+    sub_office_id: UUID | None = None
+    if not _is_blank(raw_sub_office) and offices_by_code is not None:
+        oc = _read_str(raw_sub_office)
+        if oc:
+            office = offices_by_code.get(oc)
+            if office is not None:
+                sub_office_id = office.id
+
     # course_template_code → course_template_id
     # E-4: 「拠点に存在しない code」は error にせず course_template_id=None として
     # 取り込み、PFV 自体は保持する (round-trip / バックアップ運用優先).
     # patient.primary_office 未設定 or template が当該拠点に居ない場合のいずれも
     # 「ベストエフォートで PFV を保存し、course_template は剥がす」挙動.
+    # Phase E-5: sub_office_id が指定された場合は course_template の解決先 office も
+    # sub_office を優先する (= サブ拠点の course を sub_office_id 経由で指せる).
     raw_ct = cells["course_template_code"]
     course_template_id: UUID | None = None
     if not _is_blank(raw_ct):
         ct_label = _read_str(raw_ct)
-        if patient.primary_office_id is not None:
+        # 優先順位: sub_office (Phase E-5) → primary_office (既存).
+        # sub_office で見つからない場合は primary_office にフォールバック.
+        resolved = False
+        if sub_office_id is not None:
+            ct = course_templates.get((sub_office_id, ct_label or ""))
+            if ct is not None:
+                course_template_id = ct.id
+                resolved = True
+        if not resolved and patient.primary_office_id is not None:
             ct = course_templates.get((patient.primary_office_id, ct_label or ""))
             if ct is not None:
                 course_template_id = ct.id
@@ -1101,6 +1124,8 @@ def _parse_pfv_row(
             "start_time": new_start,
             "duration_min": duration_min,
             "course_template_id": course_template_id,
+            # Phase E-5 (項目 ⑥B): サブ拠点 ID. 解決できなかった場合は None.
+            "sub_office_id": sub_office_id,
         }
         return (
             PfvExcelImportRow(
@@ -1150,6 +1175,16 @@ def _parse_pfv_row(
             )
         )
         update_dict["course_template_id"] = course_template_id
+    # Phase E-5 (項目 ⑥B): sub_office_id の差分.
+    if existing_pfv.sub_office_id != sub_office_id:
+        changes.append(
+            PatientExcelChange(
+                field="sub_office_id",
+                old_value=_serializable(existing_pfv.sub_office_id),
+                new_value=_serializable(sub_office_id),
+            )
+        )
+        update_dict["sub_office_id"] = sub_office_id
     # time_type は patients.weekly_pattern 側の情報. PFV テーブル自体には保存先が無い.
     # 仕様書「time_type → patients.weekly_pattern にも反映」は WeeklyPattern の構造
     # 上、PFV 行 1 件から単純に書き換えると他曜日の設定を壊しうるため、本実装では
@@ -1306,6 +1341,8 @@ async def parse_and_diff(
             course_templates=course_templates,
             existing_pfvs=existing_pfvs,
             pending_new_keys=pending_new_keys,
+            # Phase E-5: sub_office_code 解決用 (患者シートと共有).
+            offices_by_code=offices_by_code,
         )
         pfv_rows.append(diff_row)
         if op is not None:

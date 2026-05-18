@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, time
+from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     CheckConstraint,
@@ -29,9 +30,12 @@ from sqlalchemy import (
     func,
 )
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+
+if TYPE_CHECKING:
+    from app.models.office import Office
 
 
 class PatientFixedVisit(Base):
@@ -71,6 +75,24 @@ class PatientFixedVisit(Base):
         PG_UUID(as_uuid=True),
         ForeignKey("course_templates.id", ondelete="SET NULL"),
         nullable=True,
+    )
+
+    # Phase E-5 (項目 ⑥B): サブ拠点機能.
+    #   - 主担当拠点 (patient.primary_office_id) とは別に、フォロー時に
+    #     固定枠を配置できる拠点を指定する (任意, NULL 可).
+    #   - 自動算出本体は patient.primary_office_id のみを見るため
+    #     ``sub_office_id`` は基本ロジックに影響しない.
+    #   - diff_add の pool 展開でのみ「sub_office にも候補化」する fallback として使う.
+    #   - course_template_id と整合: API 層で「``sub_office_id`` が指定された場合、
+    #     ``course_template_id`` も sub_office の template を指す」よう検証.
+    sub_office_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("offices.id"),
+        nullable=True,
+    )
+    sub_office: Mapped[Office | None] = relationship(
+        "Office",
+        foreign_keys=[sub_office_id],
     )
 
     created_at: Mapped[datetime] = mapped_column(

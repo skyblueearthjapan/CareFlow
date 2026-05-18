@@ -1187,6 +1187,68 @@ async def _load_active_patients(
     return {p.id: p for p in rows.all()}
 
 
+async def _load_active_patients_via_sub_office(
+    db: AsyncSession,
+    *,
+    office_ids: list[UUID],
+    excluded_patient_ids: set[UUID],
+) -> tuple[dict[UUID, Patient], dict[UUID, UUID]]:
+    """Phase E-5 (項目 ⑥B): PFV.sub_office_id 経由でフォロー対象患者を引き込む.
+
+    主担当拠点 (Patient.primary_office_id) が ``office_ids`` に含まれていなくても、
+    ``PatientFixedVisit.sub_office_id`` が ``office_ids`` に含まれる patient を
+    pool 候補化するためにロードする.
+
+    Args:
+        office_ids: 対象拠点 ID リスト.
+        excluded_patient_ids: 既に ``_load_active_patients`` で取得済みの patient_id
+            集合. ここに含まれている患者は重複ロードしない (= 主担当拠点が既に
+            scope 内なので別経路で扱われる).
+
+    Returns:
+        (extra_patients, sub_office_by_patient_id) tuple.
+        - extra_patients: PFV.sub_office_id 経由でのみ scope に入る patient のマップ.
+        - sub_office_by_patient_id: 対象 patient ごとの sub_office_id (代表 1 件).
+          PFV 単位ではなく patient 単位の代表値を返す (1 patient に複数 sub_office を
+          持たせる運用は今回想定しない).
+    """
+    if not office_ids:
+        return {}, {}
+    pfv_rows = (
+        await db.execute(
+            select(PatientFixedVisit.patient_id, PatientFixedVisit.sub_office_id)
+            .where(
+                PatientFixedVisit.sub_office_id.in_(office_ids),
+                PatientFixedVisit.mode == "normal",
+            )
+            .distinct()
+        )
+    ).all()
+    if not pfv_rows:
+        return {}, {}
+    sub_office_by_patient: dict[UUID, UUID] = {}
+    for pid, sub_oid in pfv_rows:
+        if pid in excluded_patient_ids:
+            continue
+        if pid not in sub_office_by_patient:
+            sub_office_by_patient[pid] = sub_oid
+    if not sub_office_by_patient:
+        return {}, {}
+    patient_rows = await db.scalars(
+        select(Patient).where(
+            Patient.id.in_(list(sub_office_by_patient.keys())),
+            Patient.status == "active",
+            Patient.deleted_at.is_(None),
+        )
+    )
+    extras = {p.id: p for p in patient_rows.all()}
+    # 万が一 patient が active でない / deleted の場合は sub_office マップからも除外
+    sub_office_by_patient = {
+        pid: oid for pid, oid in sub_office_by_patient.items() if pid in extras
+    }
+    return extras, sub_office_by_patient
+
+
 async def _load_patients_with_fixed(
     db: AsyncSession,
     *,
@@ -1515,6 +1577,7 @@ def build_visits_for_pool(
     use_fixed_as_source: bool = False,
     pending_overlay: dict[tuple[UUID, int], PendingEditOverlay] | None = None,
     course_code_by_template_id: dict[UUID, str] | None = None,
+    sub_office_scope: set[UUID] | None = None,
 ) -> list[V2Visit]:
     """段階 1〜2 中間: 各患者の希望を V2Visit に展開する.
 
@@ -1530,8 +1593,14 @@ def build_visits_for_pool(
     course label (例 "B") を引いて V2Visit.course_code に埋める. これにより
     orphan PFV (= 旧版で常に course_code=None だった visit) が後段 Stage 5 の
     機械的付番で別 course に上書きされず、PFV で指定された course を尊重できる.
+
+    Phase E-5 (項目 ⑥B): ``sub_office_scope`` が渡された場合、fixed source 分岐で
+    PFV.sub_office_id が set 内に含まれる行は V2Visit.office_id を sub_office_id に
+    差し替える (= サブ拠点経由のフォロー配置を pool 候補化). 自動算出本体 (mode 2 /
+    full_optimize) は ``sub_office_scope=None`` で呼ぶため挙動は不変.
     """
     overlay = pending_overlay or {}
+    sub_scope = sub_office_scope or set()
     visits: list[V2Visit] = []
     for patient in patients:
         if patient.lat is None or patient.lng is None or patient.primary_office_id is None:
@@ -1555,6 +1624,14 @@ def build_visits_for_pool(
                         _label = course_code_by_template_id.get(_row.course_template_id)
                         if _label is not None:
                             wd_to_course_code[_row.weekday] = _label
+            # Phase E-5: weekday -> office_id 差し替えマップ.
+            # PFV.sub_office_id が sub_scope に含まれていれば、その weekday の
+            # V2Visit.office_id を sub_office_id に差し替える.
+            wd_to_office_id: dict[int, UUID] = {}
+            if sub_scope:
+                for _row in fixed_rows:
+                    if _row.sub_office_id is not None and _row.sub_office_id in sub_scope:
+                        wd_to_office_id[_row.weekday] = _row.sub_office_id
             entries_fixed = _extract_fixed_visits_for_patient(fixed_rows)
             if entries_fixed:
                 used_fixed = True
@@ -1579,6 +1656,8 @@ def build_visits_for_pool(
                     # course_code を尊重するため、orphan PFV visit は PFV で
                     # 指定された course にそのまま配置される.
                     cc_eff = wd_to_course_code.get(wd)
+                    # Phase E-5: sub_office_id 差し替え (該当 weekday のみ).
+                    office_id_eff = wd_to_office_id.get(wd, patient.primary_office_id)
                     visits.append(
                         V2Visit(
                             patient_id=patient.id,
@@ -1590,7 +1669,7 @@ def build_visits_for_pool(
                             service_minutes=sm_eff,
                             lat=float(patient.lat),
                             lng=float(patient.lng),
-                            office_id=patient.primary_office_id,
+                            office_id=office_id_eff,
                             am_pm=am_pm,
                             source_kind="fixed",
                             course_code=cc_eff,
@@ -4923,6 +5002,22 @@ async def run_v2_pipeline(
 
     # Stage 1: プール作成
     patients_by_id = await _load_active_patients(db, office_ids=office_ids)
+
+    # Phase E-5 (項目 ⑥B): diff_add のみ — PFV.sub_office_id 経由でフォロー対象患者を
+    # 引き込む. 主担当が他拠点でも sub_office_id が ``office_ids`` に該当するなら
+    # pool 候補化する. 自動算出本体 (full_optimize) は触らない (= 既存挙動維持).
+    sub_office_patient_ids: set[UUID] = set()
+    sub_office_scope_set: set[UUID] = set(office_ids)
+    if mode == "diff_add":
+        extra_patients, _ = await _load_active_patients_via_sub_office(
+            db,
+            office_ids=office_ids,
+            excluded_patient_ids=set(patients_by_id.keys()),
+        )
+        if extra_patients:
+            sub_office_patient_ids = set(extra_patients.keys())
+            patients_by_id.update(extra_patients)
+
     patients_with_fixed = await _load_patients_with_fixed(
         db, patient_ids=list(patients_by_id.keys())
     )
@@ -4958,20 +5053,30 @@ async def run_v2_pipeline(
             )
             patients_with_week_visit = {pid for pid in visit_rows.all() if pid is not None}
 
-        # 通常 pool (PFV 無し): weekly_pattern ベース展開
+        # 通常 pool (PFV 無し): weekly_pattern ベース展開.
+        # Phase E-5: sub_office 経由で引き込まれた患者は除外 (sub_office 用 orphan
+        # 経路で扱うため).
         pool_patients_no_fixed = [
-            p for p in patients_by_id.values() if p.id not in patients_with_fixed
+            p
+            for p in patients_by_id.values()
+            if p.id not in patients_with_fixed and p.id not in sub_office_patient_ids
         ]
-        # 孤児 pool (PFV あり + 今週 visit 無し): PFV ベース展開
+        # 孤児 pool (PFV あり + 今週 visit 無し): PFV ベース展開.
+        # Phase E-5: sub_office 経由で引き込まれた患者は無条件にここに含める
+        # (主担当 office が scope 外でも sub_office で配置候補化したいため).
         pool_patients_orphan_fixed = [
             p
             for p in patients_by_id.values()
-            if p.id in patients_with_fixed and p.id not in patients_with_week_visit
+            if (
+                p.id in patients_with_fixed
+                and (p.id in sub_office_patient_ids or p.id not in patients_with_week_visit)
+            )
         ]
         pool_patients = pool_patients_no_fixed + pool_patients_orphan_fixed
 
         # 孤児 patient の PFV を取得 (PFV ベース展開用)
-        # PatientFixedVisit は soft-delete を持たない (固定枠は物理削除)
+        # PatientFixedVisit は soft-delete を持たない (固定枠は物理削除).
+        # Phase E-5: sub_office 経由患者の PFV は sub_office_id が scope 内のもののみ.
         if pool_patients_orphan_fixed:
             orphan_pfv_rows = await db.scalars(
                 select(PatientFixedVisit).where(
@@ -4980,6 +5085,10 @@ async def run_v2_pipeline(
                 )
             )
             for pfv in orphan_pfv_rows.all():
+                if pfv.patient_id in sub_office_patient_ids:
+                    # sub_office 経由患者: PFV.sub_office_id が scope 内のもののみ採用.
+                    if pfv.sub_office_id is None or pfv.sub_office_id not in sub_office_scope_set:
+                        continue
                 orphan_fixed_by_patient.setdefault(pfv.patient_id, []).append(pfv)
     else:
         # full_optimize: 全 active 患者.
@@ -5078,6 +5187,10 @@ async def run_v2_pipeline(
             use_fixed_as_source=True,
             pending_overlay=pending_overlay,
             course_code_by_template_id=orphan_course_code_by_template_id,
+            # Phase E-5: diff_add のみ — PFV.sub_office_id が scope 内なら
+            # V2Visit.office_id を sub_office_id に差し替える. 自動算出本体
+            # (full_optimize) では sub_office_patient_ids が空 = scope set 不要.
+            sub_office_scope=sub_office_scope_set if mode == "diff_add" else None,
         )
         pool_visits = pool_visits + pool_visits_orphan
 

@@ -202,6 +202,7 @@ def _write_pfv_row(
     *,
     patient_lookup: dict[UUID, Patient],
     course_template_by_id: dict[UUID, CourseTemplate],
+    office_code_by_id: dict[UUID, str] | None = None,
 ) -> None:
     p = patient_lookup.get(pfv.patient_id)
     # course_template_code は患者の primary_office に存在する CourseTemplate のラベルのみ
@@ -224,6 +225,10 @@ def _write_pfv_row(
     # default "時間帯" を書き出す (空セルだと import 時に「time_type が空です」
     # エラーになるため. round-trip 運用で 0 エラーを担保).
     resolved_tt = _resolve_time_type(p, pfv.weekday) if p else None
+    # Phase E-5: sub_office_id → コードに変換 (lookup が無ければ空欄).
+    sub_office_code: str | None = None
+    if pfv.sub_office_id is not None and office_code_by_id is not None:
+        sub_office_code = office_code_by_id.get(pfv.sub_office_id) or None
     values: dict[str, object | None] = {
         "patient_id": str(pfv.patient_id),
         "patient_code": p.code if p else None,
@@ -236,6 +241,7 @@ def _write_pfv_row(
         "end_time": end_hhmm,
         "duration_min": pfv.duration_min,
         "course_template_code": code_label,
+        "sub_office_code": sub_office_code,
         "delete_flag": None,
     }
     for col_key, col_idx in PFV_COL_INDEX.items():
@@ -315,6 +321,8 @@ def build_workbook(
             pfv,
             patient_lookup=patient_lookup,
             course_template_by_id=course_template_by_id,
+            # Phase E-5: sub_office_id → コード解決用 (患者シートと共用).
+            office_code_by_id=office_code_by_id,
         )
     _shade_id_column_data_rows(ws_f, "patient_id", PFV_COLUMNS, data_row_count=len(pfvs))
 

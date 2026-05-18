@@ -147,6 +147,15 @@ PFV_COLUMNS: Final[list[dict[str, object]]] = [
         "width": 22,
         "dropdown": COURSE_TEMPLATE_CODES,
     },
+    # Phase E-5 (項目 ⑥B): サブ拠点コード (任意).
+    # 主担当拠点 (患者マスタの office_code) と別に、フォロー時の配置先 PFV を
+    # 1 行単位で指定するためのコード. 空欄なら従来どおり主担当のみで動作.
+    {
+        "key": "sub_office_code",
+        "header": "sub_office_code",
+        "width": 16,
+        "dropdown": OFFICE_CODE_VALUES,
+    },
     {"key": "delete_flag", "header": "(削除フラグ)", "width": 14, "dropdown": DELETE_FLAG_VALUES},
 ]
 

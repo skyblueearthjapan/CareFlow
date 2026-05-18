@@ -381,6 +381,8 @@ async def fix_or_pattern(
                 )
             )
             preserved_ct_id = old_fv.course_template_id if old_fv is not None else None
+            # Phase E-5 (項目 ⑥B): sub_office_id も引継ぎ.
+            preserved_sub_office_id = old_fv.sub_office_id if old_fv is not None else None
 
             await db.execute(
                 delete(PatientFixedVisit).where(
@@ -409,6 +411,8 @@ async def fix_or_pattern(
                 course_template_id=preserved_ct_id,  # W22: 旧 pfv の course_template_id を引継ぎ
                 # W37 Phase 1: 1 visit 配置の挙動を維持するため slot_index=0 を明示.
                 slot_index=0,
+                # Phase E-5 (項目 ⑥B): 旧 PFV の sub_office_id を引継ぎ.
+                sub_office_id=preserved_sub_office_id,
             )
             db.add(new_fv)
             await db.flush()

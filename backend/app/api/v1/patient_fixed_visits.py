@@ -29,6 +29,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import CurrentActiveUser, DbDep, require_role
 from app.models.course import Course
+from app.models.course_template import CourseTemplate
+from app.models.office import Office
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.user import User
@@ -37,6 +39,7 @@ from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.schemas.v2.patient_fixed_visit import (
     PatientFixedVisitMode,
     PatientFixedVisitsBulkPut,
+    PatientFixedVisitV2Base,
     PatientFixedVisitV2Read,
 )
 from app.services.scheduling.layer1_expander import _is_special_week_active
@@ -110,6 +113,71 @@ async def _check_read_access(db: AsyncSession, user: User, patient_id: UUID) -> 
             )
         return
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
+
+
+async def _validate_sub_office_items(
+    db: AsyncSession,
+    items: list[PatientFixedVisitV2Base],
+) -> None:
+    """Phase E-5 (項目 ⑥B): sub_office_id 関連のバリデーション.
+
+    items 内の各エントリについて以下を検証する:
+      1. ``sub_office_id`` が指定された場合、その office が DB に存在する.
+      2. ``sub_office_id`` が指定されかつ ``course_template_id`` も指定された場合、
+         course_template.office_id == sub_office_id である (= サブ拠点の course を
+         サブ拠点経由で指していること; クロスオフィス参照を禁止).
+
+    違反時は 422 を raise する.
+    """
+    # 一括ロード (N+1 回避)
+    sub_office_ids = {item.sub_office_id for item in items if item.sub_office_id is not None}
+    if not sub_office_ids:
+        return
+
+    office_rows = await db.scalars(
+        select(Office.id).where(
+            Office.id.in_(sub_office_ids),
+            Office.deleted_at.is_(None),
+        )
+    )
+    existing_office_ids = set(office_rows.all())
+
+    # course_template_id × sub_office_id の対応関係を一括 lookup する
+    ct_ids = {item.course_template_id for item in items if item.course_template_id is not None}
+    ct_office_by_id: dict[UUID, UUID] = {}
+    if ct_ids:
+        ct_rows = await db.execute(
+            select(CourseTemplate.id, CourseTemplate.office_id).where(
+                CourseTemplate.id.in_(ct_ids),
+                CourseTemplate.deleted_at.is_(None),
+            )
+        )
+        for ct_id, ct_office_id in ct_rows.all():
+            ct_office_by_id[ct_id] = ct_office_id
+
+    for item in items:
+        if item.sub_office_id is None:
+            continue
+        if item.sub_office_id not in existing_office_ids:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"sub_office_id が存在しません: {item.sub_office_id}",
+            )
+        if item.course_template_id is None:
+            continue
+        ct_office_id = ct_office_by_id.get(item.course_template_id)
+        if ct_office_id is None:
+            # course_template が存在しない (or soft-deleted) → ここでは触れない
+            # (course_template_id 側の検証は既存 FK / 他層に委ねる)
+            continue
+        if ct_office_id != item.sub_office_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"sub_office_id ({item.sub_office_id}) と course_template の office "
+                    f"({ct_office_id}) が一致しません"
+                ),
+            )
 
 
 async def _commit_or_409(db: AsyncSession) -> None:
@@ -301,6 +369,9 @@ async def put_fixed_visits(
 ) -> list[PatientFixedVisitV2Read]:
     await _ensure_patient_exists(db, patient_id)
 
+    # Phase E-5 (項目 ⑥B): sub_office_id 関連の事前検証.
+    await _validate_sub_office_items(db, body.items)
+
     # 1 TX: 当該 (patient_id, mode) を DELETE → INSERT
     await db.execute(
         delete(PatientFixedVisit).where(
@@ -320,6 +391,8 @@ async def put_fixed_visits(
                 course_template_id=item.course_template_id,
                 # W37 Phase 1: slot_index (default 0) を反映. 1 名体制では常に 0.
                 slot_index=item.slot_index,
+                # Phase E-5 (項目 ⑥B): サブ拠点 ID (任意).
+                sub_office_id=item.sub_office_id,
             )
         )
     await _commit_or_409(db)

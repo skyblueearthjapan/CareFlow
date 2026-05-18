@@ -26,7 +26,10 @@
 'use client';
 
 import * as React from 'react';
+import { useQueries } from '@tanstack/react-query';
 import { useSession } from 'next-auth/react';
+
+import { fetcher } from '@/lib/api/fetcher';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -49,6 +52,7 @@ import {
   useApplyFromWeek,
 } from '@/lib/queries/patient_fixed_visits';
 import { useCourseTemplates } from '@/lib/queries/course_templates';
+import { useOffices } from '@/lib/queries/offices';
 import {
   patientFixedVisitsBulkPutSchema,
   PATIENT_FIXED_VISIT_MODES,
@@ -57,6 +61,7 @@ import {
   type PatientFixedVisitV2Read,
 } from '@/lib/schemas/v2/patient_fixed_visit';
 import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
+import type { Office } from '@/lib/schemas/office';
 import type { WeeklyPattern } from '@/lib/schemas/patient';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -103,6 +108,11 @@ interface DayRow {
   course_template_id: string | null;
   /** W37 Phase 3-A: コース 2 (slot_index=1) 用. requires_multiple_staff=true でのみ有効. */
   course_template_id_2: string | null;
+  /**
+   * Phase E-5 (項目 ⑥B): サブ拠点 ID (null = 主担当拠点のみ).
+   * slot 0/1 共通で 1 値 (主担当 + サブ拠点の対は 1 row 単位で表現).
+   */
+  sub_office_id: string | null;
 }
 
 type DayRows = Record<number, DayRow>;
@@ -116,6 +126,7 @@ function emptyDayRow(): DayRow {
     duration_min: 30,
     course_template_id: null,
     course_template_id_2: null,
+    sub_office_id: null,
   };
 }
 
@@ -148,6 +159,9 @@ function readsToDayRows(reads: PatientFixedVisitV2Read[]): DayRows {
         start_time: startTime,
         duration_min: r.duration_min,
         course_template_id: r.course_template_id ?? null,
+        // Phase E-5: sub_office_id は slot 0 を優先 (slot 0/1 で原則一致するが、
+        // 不整合があれば slot 0 を採用).
+        sub_office_id: r.sub_office_id ?? current.sub_office_id,
       };
     } else {
       // slot 1: enabled は slot 0 のフラグを尊重 (slot 0 が無い場合は slot 1 で起こす)
@@ -158,6 +172,8 @@ function readsToDayRows(reads: PatientFixedVisitV2Read[]): DayRows {
         start_time: current.enabled ? current.start_time : startTime,
         duration_min: current.enabled ? current.duration_min : r.duration_min,
         course_template_id_2: r.course_template_id ?? null,
+        // Phase E-5: slot 0 が未設定の場合のみ slot 1 の sub_office_id を採用.
+        sub_office_id: current.sub_office_id ?? r.sub_office_id ?? null,
       };
     }
   }
@@ -197,6 +213,8 @@ function dayRowsToItems(rows: DayRows, requiresMultipleStaff: boolean): PatientF
       duration_min: row.duration_min,
       course_template_id: effectiveSlot0Course,
       slot_index: 0,
+      // Phase E-5 (項目 ⑥B): サブ拠点 ID (slot 0/1 共通).
+      sub_office_id: row.sub_office_id,
     });
 
     // slot 1 は requires_multiple_staff=true かつ
@@ -210,6 +228,8 @@ function dayRowsToItems(rows: DayRows, requiresMultipleStaff: boolean): PatientF
         duration_min: row.duration_min,
         course_template_id: slot1Course,
         slot_index: 1,
+        // Phase E-5: slot 0 と同じ sub_office を継承.
+        sub_office_id: row.sub_office_id,
       });
     }
   }
@@ -259,10 +279,24 @@ function weeklyPatternToDayRows(pattern: WeeklyPattern | null | undefined): DayR
         duration_min: Math.max(1, Math.min(480, duration)),
         course_template_id: null,
         course_template_id_2: null,
+        sub_office_id: null,
       };
     }
   }
   return rows;
+}
+
+/**
+ * Phase E-5 (項目 ⑥B): row.sub_office_id に応じた course_templates を返す.
+ * sub_office_id が未指定なら patient.primary_office_id ベースの templates をそのまま返す.
+ */
+function resolveRowCourseTemplates(
+  row: DayRow,
+  primaryCourseTemplates: CourseTemplateRead[],
+  subOfficeCourseTemplates: CourseTemplateRead[],
+): CourseTemplateRead[] {
+  if (row.sub_office_id) return subOfficeCourseTemplates;
+  return primaryCourseTemplates;
 }
 
 // ─── Sub-component: ReadOnlyWeekGrid ─────────────────────────────────────────
@@ -282,9 +316,16 @@ interface ReadOnlyWeekGridProps {
   courseTemplates: CourseTemplateRead[];
   /** W37 Phase 3-D: 複数スタッフ対応患者かどうか。true でコース 2 列を表示 */
   requiresMultipleStaff: boolean;
+  /** Phase E-5: 全 office (サブ拠点ラベル解決用). */
+  offices?: Office[];
 }
 
-function ReadOnlyWeekGrid({ rows, courseTemplates, requiresMultipleStaff }: ReadOnlyWeekGridProps) {
+function ReadOnlyWeekGrid({
+  rows,
+  courseTemplates,
+  requiresMultipleStaff,
+  offices,
+}: ReadOnlyWeekGridProps) {
   /** course_template_id → label の逆引きマップ */
   const labelMap = React.useMemo(() => {
     const m: Record<string, string> = {};
@@ -293,6 +334,15 @@ function ReadOnlyWeekGrid({ rows, courseTemplates, requiresMultipleStaff }: Read
     }
     return m;
   }, [courseTemplates]);
+
+  // Phase E-5: office_id → name の逆引きマップ.
+  const officeLabelMap = React.useMemo(() => {
+    const m: Record<string, string> = {};
+    for (const o of offices ?? []) {
+      m[o.id] = o.name;
+    }
+    return m;
+  }, [offices]);
 
   const courseLabel = (id: string | null): string => (id ? (labelMap[id] ?? id) : '--');
 
@@ -313,6 +363,15 @@ function ReadOnlyWeekGrid({ rows, courseTemplates, requiresMultipleStaff }: Read
               <>
                 <span className="text-text-primary tnum">{row.start_time}</span>
                 <span className="text-text-muted">{row.duration_min} 分</span>
+                {/* Phase E-5: サブ拠点が設定されていればバッジで明示. */}
+                {row.sub_office_id ? (
+                  <span
+                    className="rounded bg-brand-primary/10 px-1.5 py-0.5 text-xs font-medium text-brand-primary"
+                    data-testid={`ro-sub-office-${wd}`}
+                  >
+                    サブ拠点: {officeLabelMap[row.sub_office_id] ?? row.sub_office_id}
+                  </span>
+                ) : null}
                 {requiresMultipleStaff ? (
                   <>
                     <span className="text-text-primary" data-testid={`ro-course1-${wd}`}>
@@ -358,6 +417,12 @@ interface WeekGridProps {
   courseTemplates: CourseTemplateRead[];
   /** W37 Phase 3-A: 複数スタッフ対応患者かどうか. true で コース 2 セレクタを enable */
   requiresMultipleStaff: boolean;
+  /** Phase E-5: 全 office 一覧 (サブ拠点 selector 用). 主担当拠点は除外して表示. */
+  offices: Office[];
+  /** Phase E-5: 患者の主担当拠点 ID (=サブ拠点 selector で除外する office). */
+  primaryOfficeId: string | null | undefined;
+  /** Phase E-5: 各 row の sub_office_id に対応する course_templates を取得する関数. */
+  getSubOfficeCourseTemplates: (subOfficeId: string | null) => CourseTemplateRead[];
 }
 
 function WeekGrid({
@@ -368,16 +433,28 @@ function WeekGrid({
   warnings,
   courseTemplates,
   requiresMultipleStaff,
+  offices,
+  primaryOfficeId,
+  getSubOfficeCourseTemplates,
 }: WeekGridProps) {
   const update = (weekday: number, patch: Partial<DayRow>) => {
     const current = rows[weekday] ?? emptyDayRow();
     onChange({ ...rows, [weekday]: { ...current, ...patch } as DayRow });
   };
 
+  // Phase E-5: 主担当拠点以外を「サブ拠点候補」として並べる. 0 件なら selector を出さない.
+  const subOfficeCandidates = offices.filter((o) => o.id !== primaryOfficeId);
+
   return (
     <div className="space-y-2">
       {[0, 1, 2, 3, 4, 5, 6].map((wd) => {
         const row = rows[wd] ?? emptyDayRow();
+        // Phase E-5: row.sub_office_id に応じてコース選択肢を切り替える.
+        const rowCourseTemplates = resolveRowCourseTemplates(
+          row,
+          courseTemplates,
+          row.sub_office_id ? getSubOfficeCourseTemplates(row.sub_office_id) : [],
+        );
         return (
           <div
             key={wd}
@@ -425,6 +502,36 @@ function WeekGrid({
                     ))}
                   </select>
                 </div>
+                {/* Phase E-5 (項目 ⑥B): サブ拠点 selector. 主担当拠点以外の候補がある場合のみ表示. */}
+                {subOfficeCandidates.length > 0 ? (
+                  <div className="flex items-center gap-1">
+                    <select
+                      value={row.sub_office_id ?? ''}
+                      onChange={(e) => {
+                        const newSub = e.target.value || null;
+                        // サブ拠点を切り替えたら course 選択は一旦リセット
+                        // (前 office の course を別 office に流用すると 422 になるため).
+                        update(wd, {
+                          sub_office_id: newSub,
+                          course_template_id: null,
+                          course_template_id_2: null,
+                        });
+                      }}
+                      disabled={disabled}
+                      className="h-8 rounded border border-border-default bg-bg-base px-2 text-sm text-text-primary focus:outline-none focus:border-brand-primary"
+                      aria-label={`${WEEKDAY_LABELS[wd]} サブ拠点`}
+                      data-testid={`sub-office-select-${wd}`}
+                    >
+                      <option value="">主担当拠点</option>
+                      {subOfficeCandidates.map((o) => (
+                        <option key={o.id} value={o.id}>
+                          {o.name}
+                        </option>
+                      ))}
+                    </select>
+                    <span className="text-xs text-text-muted">拠点</span>
+                  </div>
+                ) : null}
                 {/* W37 Phase 3-A: コース 1 (slot_index=0) */}
                 <div className="flex items-center gap-1">
                   <select
@@ -439,7 +546,7 @@ function WeekGrid({
                     }
                   >
                     <option value="">未指定</option>
-                    {courseTemplates.map((tpl) => (
+                    {rowCourseTemplates.map((tpl) => (
                       <option key={tpl.id} value={tpl.id}>
                         {tpl.label}
                       </option>
@@ -463,7 +570,7 @@ function WeekGrid({
                       {requiresMultipleStaff ? '未指定' : '複数対応 OFF のため不要'}
                     </option>
                     {requiresMultipleStaff
-                      ? courseTemplates.map((tpl) => (
+                      ? rowCourseTemplates.map((tpl) => (
                           <option key={tpl.id} value={tpl.id}>
                             {tpl.label}
                           </option>
@@ -502,6 +609,12 @@ interface ModePanelProps {
   courseTemplates: CourseTemplateRead[];
   /** W37 Phase 3-A: 複数スタッフ対応患者かどうか */
   requiresMultipleStaff: boolean;
+  /** Phase E-5 (項目 ⑥B): 全拠点 (サブ拠点 selector 用) */
+  offices: Office[];
+  /** Phase E-5: 主担当拠点 ID */
+  primaryOfficeId: string | null | undefined;
+  /** Phase E-5: sub_office_id → course_templates の lookup */
+  getSubOfficeCourseTemplates: (subOfficeId: string | null) => CourseTemplateRead[];
 }
 
 function ModePanel({
@@ -511,6 +624,9 @@ function ModePanel({
   readonly,
   courseTemplates,
   requiresMultipleStaff,
+  offices,
+  primaryOfficeId,
+  getSubOfficeCourseTemplates,
 }: ModePanelProps) {
   const { data: reads = [], isLoading } = useFixedVisits(patientId, mode);
   const updateMut = useUpdateFixedVisits(patientId);
@@ -674,6 +790,7 @@ function ModePanel({
           rows={rows}
           courseTemplates={courseTemplates}
           requiresMultipleStaff={requiresMultipleStaff}
+          offices={offices}
         />
       ) : (
         <WeekGrid
@@ -687,6 +804,9 @@ function ModePanel({
           warnings={rowWarnings}
           courseTemplates={courseTemplates}
           requiresMultipleStaff={requiresMultipleStaff}
+          offices={offices}
+          primaryOfficeId={primaryOfficeId}
+          getSubOfficeCourseTemplates={getSubOfficeCourseTemplates}
         />
       )}
 
@@ -762,6 +882,39 @@ function ModePanel({
   );
 }
 
+/**
+ * Phase E-5 (項目 ⑥B): 複数の office_id について course_templates を並列 fetch して
+ * Map<office_id, CourseTemplateRead[]> を返す. useCourseTemplates が単一 office 用
+ * のため、サブ拠点 selector の選択肢切替で N+1 fetch を避けるために事前一括化する.
+ */
+function useSubOfficeCourseTemplatesMap(officeIds: string[]): Map<string, CourseTemplateRead[]> {
+  const { data: session, status } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+  const queries = useQueries({
+    queries: officeIds.map((oid) => ({
+      queryKey: ['course-templates', 'list', oid],
+      enabled: status === 'authenticated',
+      queryFn: () =>
+        fetcher<CourseTemplateRead[]>(
+          `/api/v1/course-templates?office_id=${encodeURIComponent(oid)}`,
+          { accessToken, refreshToken },
+        ),
+    })),
+  });
+  return React.useMemo(() => {
+    const m = new Map<string, CourseTemplateRead[]>();
+    officeIds.forEach((oid, i) => {
+      const q = queries[i];
+      m.set(oid, q?.data ?? []);
+    });
+    return m;
+    // queries は object 配列なので reference 比較. data の更新時のみ再計算したい:
+    // queries.map((q) => q.data) を deps にする.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [officeIds.join(','), queries.map((q) => q.data).join('|')]);
+}
+
 // ─── Main export ──────────────────────────────────────────────────────────────
 
 export interface PatientFixedVisitsPanelProps {
@@ -806,6 +959,26 @@ export function PatientFixedVisitsPanel({
     office_id: primaryOfficeId ?? null,
   });
 
+  // Phase E-5 (項目 ⑥B): 全拠点を一括取得 (サブ拠点 selector 用).
+  const { offices } = useOffices();
+
+  // Phase E-5: サブ拠点ごとの course_templates を on-demand fetch する.
+  // 各拠点の templates は useCourseTemplates({office_id}) で個別 cache.
+  // 実運用では拠点 2 つしかない (稲毛 / 都賀) ため、両方を unconditionally fetch しても
+  // 1 拠点分のオーバーヘッドに過ぎない. 主担当拠点とは別の各 office を一括 fetch する.
+  const subOfficeIds = React.useMemo(
+    () => offices.map((o) => o.id).filter((id) => id !== primaryOfficeId),
+    [offices, primaryOfficeId],
+  );
+  const subOfficeTemplatesById = useSubOfficeCourseTemplatesMap(subOfficeIds);
+  const getSubOfficeCourseTemplates = React.useCallback(
+    (subOfficeId: string | null): CourseTemplateRead[] => {
+      if (!subOfficeId) return [];
+      return subOfficeTemplatesById.get(subOfficeId) ?? [];
+    },
+    [subOfficeTemplatesById],
+  );
+
   return (
     <Card className="p-5 space-y-4">
       <div className="flex items-center justify-between">
@@ -835,6 +1008,9 @@ export function PatientFixedVisitsPanel({
               readonly={readonly}
               courseTemplates={courseTemplates}
               requiresMultipleStaff={requiresMultipleStaff}
+              offices={offices}
+              primaryOfficeId={primaryOfficeId ?? null}
+              getSubOfficeCourseTemplates={getSubOfficeCourseTemplates}
             />
           </TabsContent>
         ))}

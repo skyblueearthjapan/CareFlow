@@ -520,6 +520,7 @@ def _parse_pfv_row_replace(
     patient_code_to_id: dict[str, UUID],
     course_templates: dict[tuple[UUID, str], CourseTemplate],
     pending_new_keys: set[tuple[UUID, str, int, int]],
+    offices_by_code: dict[str, Office] | None = None,
 ) -> tuple[PfvExcelImportRow, dict[str, Any] | None]:
     """1 PFV 行をパース. 完全置換では update / delete は無く、new のみ.
 
@@ -796,15 +797,32 @@ def _parse_pfv_row_replace(
             None,
         )
 
+    # Phase E-5 (項目 ⑥B): sub_office_code → sub_office_id を先に解決.
+    raw_sub_office = cells.get("sub_office_code")
+    sub_office_id: UUID | None = None
+    if not _is_blank(raw_sub_office) and offices_by_code is not None:
+        oc = _read_str(raw_sub_office)
+        if oc:
+            office = offices_by_code.get(oc)
+            if office is not None:
+                sub_office_id = office.id
+
     # course_template_code
     # E-4: 「拠点に存在しない code」は error にせず course_template_id=None として
     # 取り込み、PFV 自体は保持する (round-trip / バックアップ運用優先).
     # importer.py の同 block コメント参照.
+    # Phase E-5: sub_office_id が指定された場合は sub_office を優先して解決.
     raw_ct = cells["course_template_code"]
     course_template_id: UUID | None = None
     if not _is_blank(raw_ct):
         ct_label = _read_str(raw_ct)
-        if patient.primary_office_id is not None:
+        resolved = False
+        if sub_office_id is not None:
+            ct = course_templates.get((sub_office_id, ct_label or ""))
+            if ct is not None:
+                course_template_id = ct.id
+                resolved = True
+        if not resolved and patient.primary_office_id is not None:
             ct = course_templates.get((patient.primary_office_id, ct_label or ""))
             if ct is not None:
                 course_template_id = ct.id
@@ -836,6 +854,8 @@ def _parse_pfv_row_replace(
         "start_time": new_start,
         "duration_min": duration_min,
         "course_template_id": course_template_id,
+        # Phase E-5 (項目 ⑥B): サブ拠点 ID.
+        "sub_office_id": sub_office_id,
     }
     return (
         PfvExcelImportRow(
@@ -997,6 +1017,8 @@ async def parse_and_diff_replace_all(
             patient_code_to_id=patient_code_to_id,
             course_templates=course_templates,
             pending_new_keys=pending_new_keys,
+            # Phase E-5: sub_office_code 解決用.
+            offices_by_code=offices_by_code,
         )
         pfv_rows.append(diff_row)
         if op is not None:

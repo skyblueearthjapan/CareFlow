@@ -42,10 +42,11 @@ def test_migration_0027_revision_chain(alembic_cfg: Config) -> None:
     assert rev.down_revision == "0026_v2_visits_unique_pds", (
         f"0027 の down_revision は 0026 のはず, got {rev.down_revision}"
     )
+    # Phase E-5: head は 0035 に進んでいる (新しい migration が追加されるたびに進む).
+    # 0027 ⇄ 0026 のチェーンの「down_revision」検査が本テストの本質なので、heads は
+    # 単一であることだけ確認する.
     heads = list(script.get_heads())
-    assert heads == ["0027_v2_multi_staff_slot_index"], (
-        f"alembic heads が単一 0027 であるべき, got {heads}"
-    )
+    assert len(heads) == 1, f"alembic heads は単一であるべき, got {heads}"
 
 
 def test_migration_0027_source_has_expected_ddl() -> None:

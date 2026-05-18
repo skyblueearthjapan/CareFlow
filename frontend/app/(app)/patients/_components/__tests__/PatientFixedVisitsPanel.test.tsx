@@ -37,6 +37,22 @@ vi.mock('@/lib/queries/course_templates', () => ({
   useCourseTemplates: vi.fn(),
 }));
 
+// ─── Mock offices query (Phase E-5) ───────────────────────────────────────────
+vi.mock('@/lib/queries/offices', () => ({
+  useOffices: vi.fn(),
+}));
+
+// ─── Mock @tanstack/react-query useQueries (Phase E-5) ────────────────────────
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports
+type TanstackQueryModule = typeof import('@tanstack/react-query');
+vi.mock('@tanstack/react-query', async () => {
+  const actual = await vi.importActual<TanstackQueryModule>('@tanstack/react-query');
+  return {
+    ...actual,
+    useQueries: vi.fn(),
+  };
+});
+
 // ─── Mock toast ───────────────────────────────────────────────────────────────
 vi.mock('@/components/ui/sonner', () => ({
   toast: {
@@ -46,6 +62,7 @@ vi.mock('@/components/ui/sonner', () => ({
 }));
 
 import { useSession } from 'next-auth/react';
+import { useQueries } from '@tanstack/react-query';
 import {
   useFixedVisits,
   useUpdateFixedVisits,
@@ -53,6 +70,7 @@ import {
   useApplyFromWeek,
 } from '@/lib/queries/patient_fixed_visits';
 import { useCourseTemplates } from '@/lib/queries/course_templates';
+import { useOffices } from '@/lib/queries/offices';
 import { toast } from '@/components/ui/sonner';
 
 import { PatientFixedVisitsPanel } from '../PatientFixedVisitsPanel';
@@ -85,6 +103,8 @@ function setupMocks(
     deleteFn?: Mock;
     fromWeekFn?: Mock;
     courseTemplates?: { id: string; label: string; office_id: string }[];
+    offices?: { id: string; name: string; code?: string | null }[];
+    subOfficeCourseTemplates?: { id: string; label: string; office_id: string }[];
   } = {},
 ) {
   const role = opts.role ?? 'admin';
@@ -94,6 +114,21 @@ function setupMocks(
   (useDeleteFixedVisits as Mock).mockReturnValue(makeMutation(opts.deleteFn));
   (useApplyFromWeek as Mock).mockReturnValue(makeMutation(opts.fromWeekFn));
   (useCourseTemplates as Mock).mockReturnValue(makeQueryResult(opts.courseTemplates ?? []));
+  // Phase E-5 (項目 ⑥B): useOffices と useQueries (sub-office course templates 用) を mock.
+  (useOffices as Mock).mockReturnValue({
+    offices: opts.offices ?? [],
+    allOffices: opts.offices ?? [],
+    data: opts.offices ?? [],
+    isLoading: false,
+    isError: false,
+    error: null,
+  });
+  // useQueries は queries 配列の長さに応じた配列 (data 入り) を返すスタブ.
+  // sub_office_id 単位で個別 fetch されるが、本テストでは subOfficeCourseTemplates
+  // をそのまま全 query に流す簡易 mock とする.
+  (useQueries as Mock).mockImplementation((options: { queries: { queryKey: unknown[] }[] }) =>
+    options.queries.map(() => ({ data: opts.subOfficeCourseTemplates ?? [] })),
+  );
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -784,5 +819,84 @@ describe('PatientFixedVisitsPanel', () => {
 
     // 警告が表示される
     expect(await screen.findByTestId('row-warning-0')).toHaveTextContent('2 名対応の片方未設定');
+  });
+
+  // ─── Phase E-5 (項目 ⑥B): サブ拠点 (sub_office_id) selector tests ──────────
+  describe('Phase E-5 (sub_office)', () => {
+    const INAGE_ID = '11111111-0000-0000-0000-000000000001';
+    const TSUGA_ID = '22222222-0000-0000-0000-000000000002';
+    const OFFICES = [
+      { id: INAGE_ID, name: '稲毛', code: 'INAGE' },
+      { id: TSUGA_ID, name: '都賀', code: 'TSUGA' },
+    ];
+
+    it('E5-1. 主担当拠点以外の office が複数ある場合 サブ拠点 selector が表示される', () => {
+      setupMocks({ reads: [], offices: OFFICES });
+      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} primaryOfficeId={INAGE_ID} />);
+      // 月曜 ON にしないと selector は出ない
+      const checkboxes = screen.getAllByRole('checkbox');
+      fireEvent.click(checkboxes[0]);
+      const subSelect = screen.getByTestId('sub-office-select-0');
+      // 主担当 (稲毛) を除いた候補 (都賀) のみが含まれる
+      const options = Array.from(subSelect.querySelectorAll('option')).map((o) => o.textContent);
+      expect(options).toContain('主担当拠点');
+      expect(options).toContain('都賀');
+      expect(options).not.toContain('稲毛');
+    });
+
+    it('E5-2. サブ拠点を選択して保存すると sub_office_id が payload に含まれる', async () => {
+      const updateFn = vi.fn().mockResolvedValue([]);
+      setupMocks({ reads: [], offices: OFFICES, updateFn });
+      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} primaryOfficeId={INAGE_ID} />);
+
+      // 月曜 ON
+      const checkboxes = screen.getAllByRole('checkbox');
+      await userEvent.click(checkboxes[0]);
+
+      // サブ拠点 = 都賀
+      const subSelect = screen.getByTestId('sub-office-select-0');
+      fireEvent.change(subSelect, { target: { value: TSUGA_ID } });
+
+      // 保存
+      const saveBtn = screen.getByRole('button', { name: '保存' });
+      await userEvent.click(saveBtn);
+
+      await waitFor(() => expect(updateFn).toHaveBeenCalledTimes(1));
+      const call = updateFn.mock.calls[0][0] as {
+        items: { sub_office_id?: string | null }[];
+      };
+      expect(call.items[0]?.sub_office_id).toBe(TSUGA_ID);
+    });
+
+    it('E5-3. サブ拠点未選択 (主担当拠点) で保存すると sub_office_id=null', async () => {
+      const updateFn = vi.fn().mockResolvedValue([]);
+      setupMocks({ reads: [], offices: OFFICES, updateFn });
+      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} primaryOfficeId={INAGE_ID} />);
+
+      const checkboxes = screen.getAllByRole('checkbox');
+      await userEvent.click(checkboxes[0]);
+
+      const saveBtn = screen.getByRole('button', { name: '保存' });
+      await userEvent.click(saveBtn);
+
+      await waitFor(() => expect(updateFn).toHaveBeenCalledTimes(1));
+      const call = updateFn.mock.calls[0][0] as {
+        items: { sub_office_id?: string | null }[];
+      };
+      expect(call.items[0]?.sub_office_id ?? null).toBeNull();
+    });
+
+    it('E5-4. patientFixedVisitV2BaseSchema が sub_office_id を受理する', async () => {
+      const { patientFixedVisitV2BaseSchema } = await import(
+        '@/lib/schemas/v2/patient_fixed_visit'
+      );
+      const parsed = patientFixedVisitV2BaseSchema.parse({
+        weekday: 0,
+        start_time: '09:00',
+        duration_min: 30,
+        sub_office_id: TSUGA_ID,
+      });
+      expect(parsed.sub_office_id).toBe(TSUGA_ID);
+    });
   });
 });

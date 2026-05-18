@@ -50,6 +50,13 @@ export const patientFixedVisitV2BaseSchema = z.object({
     .describe(
       '同 patient × 同 mode × 同 weekday の中のスロット番号 (0 or 1). 1 名体制では 0 のみ.',
     ),
+  /**
+   * Phase E-5 (項目 ⑥B): サブ拠点 ID.
+   * 主担当拠点 (patient.primary_office_id) とは別に、フォロー時の配置先を指定する.
+   * null/undefined = 未指定 (従来挙動). 指定時は course_template_id も sub_office の
+   * template を指す必要がある (BE 側で 422 検証).
+   */
+  sub_office_id: z.string().uuid().nullable().optional(),
 });
 
 export const patientFixedVisitV2ReadSchema = patientFixedVisitV2BaseSchema.extend({

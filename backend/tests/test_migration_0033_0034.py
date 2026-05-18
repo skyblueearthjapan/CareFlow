@@ -318,7 +318,7 @@ def test_migration_0033_and_0034_chain_to_head() -> None:
     assert rev_0034 is not None
     assert rev_0034.down_revision == "0033_v2_seed_m_template_all_offices"
 
+    # Phase E-5 で head は 0035 に進んでいる. このテストの本質は 0033→0034 のチェーン.
+    # heads が単一 (= 分岐なし) であることだけ確認する.
     heads = list(script.get_heads())
-    assert heads == ["0034_courses_code_check_m_overflow"], (
-        f"alembic heads は 0034 (単一) であるべき, got {heads}"
-    )
+    assert len(heads) == 1, f"alembic heads は単一であるべき, got {heads}"
