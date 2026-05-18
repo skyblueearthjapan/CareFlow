@@ -199,6 +199,17 @@ export function FullOptimizeDialog({
   const [bulkSelectedIds, setBulkSelectedIds] = React.useState<Set<string>>(new Set());
   const [bulkApplyMode, setBulkApplyMode] = React.useState<'permanent' | 'week_only'>('permanent');
   const [bulkConfirmOpen, setBulkConfirmOpen] = React.useState(false);
+  // W41 v2.12 (UX): 一括反映後の永続結果バナー (toast の代わりに dialog 内で表示).
+  // - 'applying': 反映 API 成功 + 自動再算出 await 中 (amber)
+  // - 'done'   : 自動再算出も完了 (green + 警告件数 diff)
+  // close ボタンで dismiss 可能. 失敗時は表示しない.
+  const [bulkResultBanner, setBulkResultBanner] = React.useState<{
+    mode: 'permanent' | 'week_only';
+    count: number;
+    status: 'applying' | 'done';
+    warningCountBefore: number;
+    warningCountAfter: number | null;
+  } | null>(null);
   // W41 v2 拡張 (1週間 B/A グリッド): デフォルト非表示でパフォーマンス確保.
 
   // open のたびにリセット + 再計算.
@@ -218,6 +229,7 @@ export function FullOptimizeDialog({
     setBulkSelectedIds(new Set());
     setBulkApplyMode('permanent');
     setBulkConfirmOpen(false);
+    setBulkResultBanner(null);
     fetchMut.reset();
     applyMut.reset();
     applyWeekOnlyMut.reset();
@@ -252,7 +264,7 @@ export function FullOptimizeDialog({
    * 同住所集約だけの自動再実行は NG (ユーザー意図の確認が必要) のため、
    * このボタンはユーザー明示 click でのみ呼ばれる.
    */
-  const handleReallocate = React.useCallback(async () => {
+  const handleReallocate = React.useCallback(async (): Promise<FullOptimizeResponse | null> => {
     setStage('allocating');
     setResult(null);
     setActivePatient(null);
@@ -272,9 +284,11 @@ export function FullOptimizeDialog({
       setResult(res);
       setStage('reviewing-summary');
       toast.success('全面最適化を再実行しました');
+      return res;
     } catch (err) {
       toast.error(`全面最適化に失敗しました: ${formatErr(err)}`);
       setStage('idle');
+      return null;
     }
   }, [fetchMut, isoYear, isoWeek, officeId, pendingEdits]);
 
@@ -570,8 +584,30 @@ export function FullOptimizeDialog({
       // W41 v2.11 (UX): 自動再算出は「実際に反映が成功した」時のみ実行.
       // (全件失敗 / skipped のみ の場合は再算出しても意味がなく、ユーザーに混乱を与えるため)
       if (appliedSuccessfully) {
-        toast.info('整合性確保のため全面最適化を自動再実行します...');
-        await handleReallocate();
+        // W41 v2.12 (UX): toast ではなく永続バナーで反映結果を表示する.
+        //   - 1 回目の一括反映で「反映 0 件」表示が出ない問題を解決.
+        //   - 自動再算出中の状態 ('applying') と完了 ('done') を分けて視認性確保.
+        const warningCountBefore = result.warnings.length;
+        setBulkResultBanner({
+          mode: bulkApplyMode,
+          count: selected.length,
+          status: 'applying',
+          warningCountBefore,
+          warningCountAfter: null,
+        });
+        const newRes = await handleReallocate();
+        // 再算出後の警告数で banner を更新 (失敗時は newRes=null → done にせず維持).
+        if (newRes) {
+          setBulkResultBanner((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  status: 'done',
+                  warningCountAfter: newRes.warnings.length,
+                }
+              : null,
+          );
+        }
       }
     } catch (err) {
       toast.error(`一括反映に失敗しました: ${formatErr(err)}`);
@@ -632,6 +668,15 @@ export function FullOptimizeDialog({
             <AlertTitle>算出に失敗しました</AlertTitle>
             <AlertDescription>{formatErr(fetchMut.error)}</AlertDescription>
           </Alert>
+        ) : null}
+
+        {/* W41 v2.12 (UX): 一括反映の結果バナー (toast の代わりに永続表示).
+            allocating 中も表示し続けることで「反映直後 → 再算出中 → 完了」を1枚で示す. */}
+        {bulkResultBanner ? (
+          <BulkApplyResultBanner
+            banner={bulkResultBanner}
+            onClose={() => setBulkResultBanner(null)}
+          />
         ) : null}
 
         {/* ローディング (spinner) */}
@@ -1656,6 +1701,92 @@ export function UnassignedAckDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// BulkApplyResultBanner — W41 v2.12 (UX): 一括反映後の永続結果バナー.
+//
+// 課題: toast はすぐ消えるため、ユーザーが「1 回目で本当に反映されたか」を
+//       確認できなかった (2 回目の一括反映でやっと「反映 0 件」表示).
+// 対策: 反映成功直後に永続バナーを表示し、再算出中 → 完了まで状態を見せる.
+//   - status='applying': amber (再算出中 spinner)
+//   - status='done'    : green (警告件数の前後比較 + 減少量)
+// dismiss: 右上 X ボタン.
+// ─────────────────────────────────────────────────────────────────────────
+
+interface BulkApplyResultBannerProps {
+  banner: {
+    mode: 'permanent' | 'week_only';
+    count: number;
+    status: 'applying' | 'done';
+    warningCountBefore: number;
+    warningCountAfter: number | null;
+  };
+  onClose: () => void;
+}
+
+export function BulkApplyResultBanner({ banner, onClose }: BulkApplyResultBannerProps) {
+  const modeLabel = banner.mode === 'permanent' ? '永続 (固定枠も更新)' : '週限定 (今週のみ)';
+  if (banner.status === 'applying') {
+    return (
+      <div
+        className="mt-2 flex items-start justify-between gap-2 rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900"
+        data-testid="bulk-apply-result-banner-applying"
+        role="status"
+        aria-live="polite"
+      >
+        <div className="flex items-start gap-2">
+          <Loader2 className="mt-0.5 h-4 w-4 animate-spin" aria-hidden />
+          <div>
+            <div className="font-semibold">
+              ✅ {banner.count} 件反映完了 ({modeLabel})
+            </div>
+            <div className="mt-0.5 text-xs">整合性確保のため全面最適化を自動再算出中です…</div>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="text-amber-700 hover:text-amber-900"
+          aria-label="バナーを閉じる"
+          data-testid="bulk-apply-result-banner-close"
+        >
+          <X className="h-4 w-4" aria-hidden />
+        </button>
+      </div>
+    );
+  }
+  // status === 'done'
+  const after = banner.warningCountAfter ?? banner.warningCountBefore;
+  const delta = banner.warningCountBefore - after;
+  const deltaLabel =
+    delta > 0 ? `▼ ${delta} 件減少` : delta < 0 ? `▲ ${-delta} 件増加` : '変化なし';
+  return (
+    <div
+      className="mt-2 flex items-start justify-between gap-2 rounded border border-emerald-300 bg-emerald-50 p-3 text-sm text-emerald-900"
+      data-testid="bulk-apply-result-banner-done"
+      role="status"
+      aria-live="polite"
+    >
+      <div>
+        <div className="font-semibold">
+          ✅ {banner.count} 件反映完了 ({modeLabel}) — 再算出済み
+        </div>
+        <div className="mt-0.5 text-xs" data-testid="bulk-apply-result-banner-warning-diff">
+          警告 {banner.warningCountBefore} 件 → {after} 件 ({deltaLabel})
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={onClose}
+        className="text-emerald-700 hover:text-emerald-900"
+        aria-label="バナーを閉じる"
+        data-testid="bulk-apply-result-banner-close"
+      >
+        <X className="h-4 w-4" aria-hidden />
+      </button>
+    </div>
   );
 }
 

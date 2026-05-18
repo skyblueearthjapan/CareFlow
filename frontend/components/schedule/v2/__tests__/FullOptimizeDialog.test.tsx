@@ -964,3 +964,221 @@ describe('FullOptimizeDialog — W41 v2.11 UX 改善', () => {
     );
   });
 });
+
+// ─── W41 v2.12 (UX): 一括反映後の永続結果バナー ─────────────────────────────
+
+describe('FullOptimizeDialog — W41 v2.12 一括反映結果バナー', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('一括反映成功後にバナーが「done」状態で表示され、警告件数 diff を含む', async () => {
+    // 初回 fetch: warnings 3 件, 再算出後 fetch: warnings 1 件
+    const initial = makeResponse({
+      assignedPatientIds: ['p1', 'p2'],
+      unassignedPatientIds: [],
+    });
+    initial.warnings = [
+      {
+        type: 'fixed_time_conflict' as const,
+        message: 'w1',
+        weekday: 0,
+        actionable: false,
+        patient_id: null,
+        patient_name: null,
+        visit_id: null,
+        current_time: null,
+        suggested_time: null,
+        time_type: null,
+        preferred_start: null,
+        preferred_end: null,
+        affected_patient_ids: [],
+      },
+      {
+        type: 'fixed_time_conflict' as const,
+        message: 'w2',
+        weekday: 0,
+        actionable: false,
+        patient_id: null,
+        patient_name: null,
+        visit_id: null,
+        current_time: null,
+        suggested_time: null,
+        time_type: null,
+        preferred_start: null,
+        preferred_end: null,
+        affected_patient_ids: [],
+      },
+      {
+        type: 'fixed_time_conflict' as const,
+        message: 'w3',
+        weekday: 0,
+        actionable: false,
+        patient_id: null,
+        patient_name: null,
+        visit_id: null,
+        current_time: null,
+        suggested_time: null,
+        time_type: null,
+        preferred_start: null,
+        preferred_end: null,
+        affected_patient_ids: [],
+      },
+    ];
+    const afterRealloc = makeResponse({
+      assignedPatientIds: ['p1', 'p2'],
+      unassignedPatientIds: [],
+    });
+    afterRealloc.warnings = [
+      {
+        type: 'fixed_time_conflict' as const,
+        message: 'w_left',
+        weekday: 0,
+        actionable: false,
+        patient_id: null,
+        patient_name: null,
+        visit_id: null,
+        current_time: null,
+        suggested_time: null,
+        time_type: null,
+        preferred_start: null,
+        preferred_end: null,
+        affected_patient_ids: [],
+      },
+    ];
+    mocks.fullOptimizeMutateAsync
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce(afterRealloc);
+    mocks.bulkSyncMutateAsync.mockResolvedValue({
+      iso_year: 2026,
+      iso_week: 20,
+      results: [{ patient_id: uuid('p1'), summary: {}, transaction_applied: true, error: null }],
+      total_inserted: 1,
+      total_updated: 0,
+      total_unchanged: 0,
+      total_skipped: 0,
+      errors: [],
+      transaction_applied: true,
+    });
+
+    render(
+      <FullOptimizeDialog
+        open
+        onClose={vi.fn()}
+        isoYear={2026}
+        isoWeek={20}
+        officeId={OFFICE_ID}
+      />,
+    );
+
+    await screen.findByTestId('full-optimize-bulk-section');
+    fireEvent.click(screen.getByTestId(`full-optimize-bulk-checkbox-${uuid('p1')}`));
+    fireEvent.click(screen.getByTestId('full-optimize-bulk-apply-button'));
+    await screen.findByTestId('full-optimize-bulk-confirm-dialog');
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('full-optimize-bulk-confirm-proceed'));
+    });
+
+    // 再算出後: 'done' バナーが描画される.
+    const doneBanner = await screen.findByTestId('bulk-apply-result-banner-done');
+    expect(doneBanner.textContent).toMatch(/1 件反映完了/);
+    expect(doneBanner.textContent).toMatch(/再算出済み/);
+    // 警告 diff: 3 件 → 1 件 (▼ 2 件減少)
+    const diff = screen.getByTestId('bulk-apply-result-banner-warning-diff');
+    expect(diff.textContent).toMatch(/3 件/);
+    expect(diff.textContent).toMatch(/1 件/);
+    expect(diff.textContent).toMatch(/▼ 2 件減少/);
+  });
+
+  it('バナーの close ボタンで dismiss できる', async () => {
+    const res = makeResponse({
+      assignedPatientIds: ['p1'],
+      unassignedPatientIds: [],
+    });
+    mocks.fullOptimizeMutateAsync.mockResolvedValue(res);
+    mocks.bulkSyncMutateAsync.mockResolvedValue({
+      iso_year: 2026,
+      iso_week: 20,
+      results: [{ patient_id: uuid('p1'), summary: {}, transaction_applied: true, error: null }],
+      total_inserted: 1,
+      total_updated: 0,
+      total_unchanged: 0,
+      total_skipped: 0,
+      errors: [],
+      transaction_applied: true,
+    });
+
+    render(
+      <FullOptimizeDialog
+        open
+        onClose={vi.fn()}
+        isoYear={2026}
+        isoWeek={20}
+        officeId={OFFICE_ID}
+      />,
+    );
+
+    await screen.findByTestId('full-optimize-bulk-section');
+    fireEvent.click(screen.getByTestId('full-optimize-bulk-toggle-all'));
+    fireEvent.click(screen.getByTestId('full-optimize-bulk-apply-button'));
+    await screen.findByTestId('full-optimize-bulk-confirm-dialog');
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('full-optimize-bulk-confirm-proceed'));
+    });
+
+    const banner = await screen.findByTestId('bulk-apply-result-banner-done');
+    expect(banner).toBeInTheDocument();
+    // close ボタン (バナー内の close は data-testid を共有)
+    fireEvent.click(screen.getByTestId('bulk-apply-result-banner-close'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('bulk-apply-result-banner-done')).toBeNull();
+      expect(screen.queryByTestId('bulk-apply-result-banner-applying')).toBeNull();
+    });
+  });
+
+  it('一括反映が全件失敗 (permanent) のときバナーは表示されない', async () => {
+    const res = makeResponse({
+      assignedPatientIds: ['p1'],
+      unassignedPatientIds: [],
+    });
+    mocks.fullOptimizeMutateAsync.mockResolvedValue(res);
+    mocks.bulkSyncMutateAsync.mockResolvedValue({
+      iso_year: 2026,
+      iso_week: 20,
+      results: [{ patient_id: uuid('p1'), summary: {}, transaction_applied: false, error: 'boom' }],
+      total_inserted: 0,
+      total_updated: 0,
+      total_unchanged: 0,
+      total_skipped: 1,
+      errors: ['boom'],
+      transaction_applied: false,
+    });
+
+    render(
+      <FullOptimizeDialog
+        open
+        onClose={vi.fn()}
+        isoYear={2026}
+        isoWeek={20}
+        officeId={OFFICE_ID}
+      />,
+    );
+
+    await screen.findByTestId('full-optimize-bulk-section');
+    fireEvent.click(screen.getByTestId('full-optimize-bulk-toggle-all'));
+    fireEvent.click(screen.getByTestId('full-optimize-bulk-apply-button'));
+    await screen.findByTestId('full-optimize-bulk-confirm-dialog');
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('full-optimize-bulk-confirm-proceed'));
+    });
+
+    // 反映 0 件 → バナーは出ない (toast.error のみ).
+    await waitFor(() => {
+      expect(mocks.bulkSyncMutateAsync).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.queryByTestId('bulk-apply-result-banner-done')).toBeNull();
+    expect(screen.queryByTestId('bulk-apply-result-banner-applying')).toBeNull();
+    // 自動再算出も走らない (initial fetch のみ)
+    expect(mocks.fullOptimizeMutateAsync).toHaveBeenCalledTimes(1);
+  });
+});
