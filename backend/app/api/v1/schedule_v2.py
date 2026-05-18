@@ -852,16 +852,16 @@ async def apply_week_only_endpoint(
         )
 
     # H10 を境界で再検証 (apply-individual と同じ防衛深度).
+    # CareFlow #113 hotfix: H10 違反 (昼休憩 12:00-13:00 重複) も 422 拒否を撤去し
+    # warning log のみで続行. Fix E の auto_shift で意図せず lunch にずれた visit
+    # を apply できないと業務詰まり. 後段で全面最適化を再実行すれば Fix E + lunch
+    # bump で解消する想定. end_time <= start_time は論理的に不正なので 422 維持.
+    lunch_violations: list[str] = []
     for pi, pvp in enumerate(payload.visit_plans_per_patient):
         for vi, vp in enumerate(pvp.visit_plans):
             if vp.start_time < LUNCH_END and vp.end_time > LUNCH_START:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail=(
-                        f"visit_plans_per_patient[{pi}].visit_plans[{vi}]: "
-                        f"H10 違反 — 昼休憩 12:00-13:00 に重なる visit は不可 "
-                        f"(start={vp.start_time}, end={vp.end_time})"
-                    ),
+                lunch_violations.append(
+                    f"patient[{pi}].visit[{vi}] start={vp.start_time} end={vp.end_time}"
                 )
             if vp.end_time <= vp.start_time:
                 raise HTTPException(
@@ -872,6 +872,11 @@ async def apply_week_only_endpoint(
                         f"(start={vp.start_time}, end={vp.end_time})"
                     ),
                 )
+    if lunch_violations:
+        logger.warning(
+            "apply_week_only: H10 violations (lunch 12-13 overlap) detected, apply 続行: %s",
+            lunch_violations[:5],
+        )
 
     # CareFlow バグ検出 (apply_week_only 境界検証): 同 (office_id, weekday,
     # course_code, start_time) で **異 patient_id** の visit_plan が複数あれば
@@ -908,13 +913,12 @@ async def apply_week_only_endpoint(
 
     if conflicts:
         # 拒否せず warning log のみ. apply は続行.
-        import logging
-
-        _log = logging.getLogger(__name__)
-        _log.warning(
-            "apply_week_only: %d 件の同コース同時刻衝突を検出 (apply 続行、Fix E "
-            "再実行で解消想定): %s",
+        # (reviewer 指摘で module-level logger に統一 + iso_year/iso_week 追加)
+        logger.warning(
+            "apply_week_only.same_time_conflict count=%d iso_year=%d iso_week=%d conflicts=%s",
             len(conflicts),
+            payload.iso_year,
+            payload.iso_week,
             conflicts[:5],
         )
 
