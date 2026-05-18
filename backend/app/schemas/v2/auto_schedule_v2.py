@@ -342,6 +342,7 @@ class V2IndividualProposal(BaseModel):
 UnassignedReasonOut = Literal[
     "no_coordinates",
     "no_primary_office",
+    "no_weekly_pattern",
     "acceptance_calendar",
     "course_capacity",
     "course_overflow",

@@ -4462,7 +4462,11 @@ def test_identify_unassigned_patient_course_capacity_via_warning() -> None:
 
 
 def test_identify_unassigned_patient_unknown_when_no_match() -> None:
-    """P2: どの warning にも一致しなければ reason='unknown' (旧曖昧文言は撤去)."""
+    """P2: どの warning にも一致しなければ reason='unknown' (旧曖昧文言は撤去).
+
+    silent drop fix (#2): weekly_pattern が dict なら no_weekly_pattern には落ちず
+    unknown に fallback する.
+    """
     from app.services.scheduling.auto_allocator_v2 import _identify_unassigned_patients
 
     pid = uuid.uuid4()
@@ -4474,6 +4478,7 @@ def test_identify_unassigned_patient_unknown_when_no_match() -> None:
         lat=35.65,
         lng=140.10,
         primary_office_id=uuid.uuid4(),
+        weekly_pattern={},
     )
     result = _identify_unassigned_patients(pool_patients=[p], after_visits=[], warnings=[])
     assert result[0]["reason"] == "unknown"
@@ -4547,3 +4552,241 @@ def test_enforce_course_count_constraint_emits_affected_patient_ids() -> None:
         f"overflow warning の affected_patient_ids が末尾 5 visit の patient_id と一致しない: "
         f"expected {expected_pids}, got {actual_pids}"
     )
+
+
+# ---------------------------------------------------------------------------
+# silent drop fix — Fix 1: full_optimize orphan PFV 救済
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_full_optimize_orphan_pfv_patient_is_placed(db) -> None:
+    """Fix 1: P060 シナリオ — weekly_pattern=null + PFV あり patient が
+    full_optimize でも PFV ベース展開され after_visits に配置される.
+
+    旧実装: full_optimize は build_visits_for_pool を weekly_pattern ベースのみで
+    呼ぶため、weekly_pattern=null + PFV ありの患者は visit が生成されず silent drop.
+    新実装: orphan PFV 救済経路 (diff_add と同じ) を full_optimize でも適用.
+    """
+    from app.models.course_template import CourseTemplate
+
+    office = Office(name="orphan-pfv-office")
+    db.add(office)
+    await db.flush()
+
+    ct = CourseTemplate(office_id=office.id, label="B")
+    db.add(ct)
+    await db.flush()
+
+    # P060 型: weekly_pattern=None + PFV あり
+    p_orphan = Patient(
+        code="P060",
+        name="orphan-pfv",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        primary_office_id=office.id,
+        weekly_pattern=None,
+    )
+    db.add(p_orphan)
+    await db.flush()
+    db.add(
+        PatientFixedVisit(
+            patient_id=p_orphan.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(10, 0),
+            duration_min=30,
+            slot_index=0,
+            course_template_id=ct.id,
+        )
+    )
+    s = Staff(name="orphan-staff", role="staff", is_trainee=False, primary_office_id=office.id)
+    db.add(s)
+    await db.flush()
+    db.add(StaffShift(staff_id=s.id, weekday=0, is_on=True))
+    await db.commit()
+
+    result = await run_v2_pipeline(
+        db,
+        iso_year=2026,
+        iso_week=20,
+        office_ids=[office.id],
+        mode="full_optimize",
+    )
+    after_pids = {v.patient_id for v in result["after_visits"]}
+    assert p_orphan.id in after_pids, (
+        f"orphan PFV patient が full_optimize の after_visits に出ていない: "
+        f"after_pids={after_pids}, pool_visits={[v.patient_code for v in result['pool_visits']]}"
+    )
+    # 未割当リストにも入っていない.
+    unassigned_pids = {u["patient_id"] for u in result["unassigned_patients"]}
+    assert p_orphan.id not in unassigned_pids, (
+        f"orphan PFV patient が未割当に出ている: {result['unassigned_patients']}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# silent drop fix — Fix 2: UnassignedReason に no_weekly_pattern
+# ---------------------------------------------------------------------------
+
+
+def test_unassigned_reason_no_weekly_pattern() -> None:
+    """Fix 2: weekly_pattern=None + PFV なし + どの warning にも一致しない →
+    reason='no_weekly_pattern'."""
+    from app.services.scheduling.auto_allocator_v2 import _identify_unassigned_patients
+
+    pid = uuid.uuid4()
+    p = Patient(
+        id=pid,
+        code="NWP-1",
+        name="no-weekly-pattern",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        primary_office_id=uuid.uuid4(),
+        weekly_pattern=None,
+    )
+    result = _identify_unassigned_patients(pool_patients=[p], after_visits=[], warnings=[])
+    assert len(result) == 1
+    assert result[0]["reason"] == "no_weekly_pattern"
+    assert result[0]["dropped_at_stage"] == "general"
+    assert result[0]["reason_detail"] is not None
+    assert "weekly_pattern" in result[0]["reason_detail"]
+
+
+# ---------------------------------------------------------------------------
+# silent drop fix — Fix 3: cluster_by_distance_greedy が重複 skip で warning
+# ---------------------------------------------------------------------------
+
+
+def test_cluster_emits_warning_on_duplicate_skip() -> None:
+    """Fix 3: 同 patient_id + 同 start_time の重複 visit を skip した時に
+    warning が emit される (warnings=[] を渡したとき).
+
+    後方互換: warnings=None (デフォルト) では warning emit されない.
+    """
+    office_id = uuid.uuid4()
+    # 同 patient_id + 同 start_time の 2 件
+    pid = uuid.uuid4()
+    v1 = V2Visit(
+        patient_id=pid,
+        patient_name="DupPatient",
+        patient_code="DUP",
+        weekday=0,
+        start_time=time(10, 0),
+        end_time=time(10, 30),
+        service_minutes=30,
+        lat=35.65,
+        lng=140.10,
+        office_id=office_id,
+        am_pm="am",
+        source_kind="pool",
+    )
+    v2 = V2Visit(
+        patient_id=pid,
+        patient_name="DupPatient",
+        patient_code="DUP",
+        weekday=0,
+        start_time=time(10, 0),
+        end_time=time(10, 30),
+        service_minutes=30,
+        lat=35.65,
+        lng=140.10,
+        office_id=office_id,
+        am_pm="am",
+        source_kind="pool",
+    )
+    warnings: list[V2Warning] = []
+    sets = cluster_by_distance_greedy([v1, v2], warnings=warnings)
+    # 1 件は skip され、残り 1 件のみ
+    total_visits = sum(len(s.visits) for s in sets)
+    assert total_visits == 1
+    # warning が 1 件出ている
+    dup_warnings = [w for w in warnings if "重複 visit" in w.message]
+    assert len(dup_warnings) == 1
+    assert dup_warnings[0].patient_id == pid
+    assert pid in dup_warnings[0].affected_patient_ids
+    assert dup_warnings[0].weekday == 0
+
+    # 後方互換: warnings=None なら emit なし (= 旧シグネチャ動作)
+    sets2 = cluster_by_distance_greedy([v1, v2])
+    assert sum(len(s.visits) for s in sets2) == 1  # skip は変わらず発生
+
+
+# ---------------------------------------------------------------------------
+# silent drop fix — Fix 4: _filter_conflicting_pool_visits / _filter_pool_internal_conflicts
+# ---------------------------------------------------------------------------
+
+
+def test_filter_conflicting_pool_visits_emits_affected_patient_ids() -> None:
+    """Fix 4: _filter_conflicting_pool_visits / _filter_pool_internal_conflicts
+    が出す warning に affected_patient_ids が埋まる (_identify_unassigned_patients
+    が patient_id 照合で reason 分類できるよう)."""
+    from app.services.scheduling.auto_allocator_v2 import (
+        _filter_conflicting_pool_visits,
+        _filter_pool_internal_conflicts,
+    )
+
+    office_id = uuid.uuid4()
+    pid = uuid.uuid4()
+
+    def _mkv(start_h: int, start_m: int = 0, end_h: int | None = None) -> V2Visit:
+        return V2Visit(
+            patient_id=pid,
+            patient_name="ConflictPatient",
+            patient_code="CFL",
+            weekday=0,
+            start_time=time(start_h, start_m),
+            end_time=time(end_h if end_h is not None else start_h + 1, start_m),
+            service_minutes=60,
+            lat=35.65,
+            lng=140.10,
+            office_id=office_id,
+            am_pm="am",
+            source_kind="pool",
+        )
+
+    # 1) _filter_conflicting_pool_visits: existing vs pool 衝突
+    existing = [_mkv(10)]  # 10:00-11:00
+    pool = [_mkv(10, 30)]  # 10:30-11:30 (overlap)
+    warnings_a: list[V2Warning] = []
+    kept = _filter_conflicting_pool_visits(existing, pool, warnings_a)
+    assert kept == []
+    assert len(warnings_a) == 1
+    assert warnings_a[0].type == "diff_add_conflict"
+    assert pid in warnings_a[0].affected_patient_ids
+
+    # 2) _filter_pool_internal_conflicts: pool 内 同 (patient, weekday) 衝突
+    pool2 = [_mkv(9), _mkv(9, 30)]  # 9:00-10:00 vs 9:30-10:30 (overlap)
+    warnings_b: list[V2Warning] = []
+    kept2 = _filter_pool_internal_conflicts(pool2, warnings_b)
+    assert len(kept2) == 1
+    assert len(warnings_b) == 1
+    assert warnings_b[0].type == "diff_add_conflict"
+    assert pid in warnings_b[0].affected_patient_ids
+
+
+# ---------------------------------------------------------------------------
+# silent drop fix — Fix 5: _classify_warning_reason に diff_add_conflict 分岐
+# ---------------------------------------------------------------------------
+
+
+def test_classify_warning_reason_diff_add_conflict() -> None:
+    """Fix 5: diff_add_conflict warning → reason='fixed_time_conflict' / stage='general'."""
+    from app.services.scheduling.auto_allocator_v2 import _classify_warning_reason
+
+    pid = uuid.uuid4()
+    w = V2Warning(
+        type="diff_add_conflict",
+        message="DUP 様: 月曜 10:00-11:00 は既存訪問 (10:00-11:00) と重複のためスキップ",
+        weekday=0,
+        actionable=True,
+        patient_id=pid,
+        affected_patient_ids=[pid],
+    )
+    classified = _classify_warning_reason(w)
+    assert classified is not None
+    reason, stage = classified
+    assert reason == "fixed_time_conflict"
+    assert stage == "general"

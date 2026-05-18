@@ -83,6 +83,7 @@ function fmtWd(weekday: number): string {
 const UNASSIGNED_REASON_LABELS: Record<UnassignedReason, string> = {
   no_coordinates: '座標未設定 (住所のジオコーディングが未完了)',
   no_primary_office: '拠点未設定 (primary_office_id が None)',
+  no_weekly_pattern: '週間希望未設定',
   acceptance_calendar: '受入カレンダー× (希望時間が受入不可)',
   course_capacity: 'コース容量超過 (480 分 or 6 名)',
   course_overflow: 'コース数超過 (スタッフ数を超過)',

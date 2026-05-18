@@ -211,6 +211,7 @@ V2WarningType = Literal[
 UnassignedReason = Literal[
     "no_coordinates",  # 座標未設定 (lat/lng=None)
     "no_primary_office",  # 拠点未設定 (primary_office_id=None)
+    "no_weekly_pattern",  # weekly_pattern 未設定 (PFV のみ / 完全未設定)
     "acceptance_calendar",  # 受入カレンダー × で拒否
     "course_capacity",  # コース容量超過 (480 分 or 6 名)
     "course_overflow",  # コース数超過 (Stage 5 で未割当)
@@ -1019,6 +1020,7 @@ def cluster_by_distance_greedy(
     visits: list[V2Visit],
     *,
     max_per_cluster: int = MAX_PATIENTS_PER_SET,
+    warnings: list[V2Warning] | None = None,
 ) -> list[V2Set]:
     """各バケット内で距離が近い 2-3 人を 1 セットにする (グリーディ).
 
@@ -1030,6 +1032,11 @@ def cluster_by_distance_greedy(
 
     H2 (同住所ペアリング 最大 2 人): 同住所の visits は 2 件までは同セットを優先,
     3 件以上は警告として呼び出し側で扱う.
+
+    silent drop fix: ``warnings`` が渡された場合、同 ``(patient_id, start_time)``
+    の重複 visit を skip する際に warning を emit する. これにより
+    ``_identify_unassigned_patients`` が patient_id 照合で reason 分類できる.
+    後方互換のため ``warnings=None`` (デフォルト) では warning emit を行わない.
     """
     sets: list[V2Set] = []
     remaining = list(visits)
@@ -1039,6 +1046,22 @@ def cluster_by_distance_greedy(
     for v in remaining:
         key = (v.patient_id, v.start_time)
         if key in seen_keys:
+            if warnings is not None:
+                name = v.patient_name or (v.patient_code or "不明")
+                warnings.append(
+                    V2Warning(
+                        type="general",
+                        message=(
+                            f"{name} 様: 同時刻 ({_fmt_hhmm(v.start_time)}) の "
+                            "重複 visit を 1 件 skip"
+                        ),
+                        actionable=False,
+                        patient_id=v.patient_id,
+                        patient_name=v.patient_name,
+                        weekday=v.weekday,
+                        affected_patient_ids=[v.patient_id],
+                    )
+                )
             continue
         seen_keys.add(key)
         unique_remaining.append(v)
@@ -2891,6 +2914,10 @@ def _classify_warning_reason(
         if "昼休憩" in msg:
             return ("lunch_break", "general")
         return ("fixed_time_conflict", "general")
+    # silent drop fix: diff_add で既存固定枠 / pool 内重複によりスキップされた visit.
+    # _filter_conflicting_pool_visits / _filter_pool_internal_conflicts が emit する.
+    if wtype == "diff_add_conflict":
+        return ("fixed_time_conflict", "general")
     # 一般 warning の中で「昼休憩」"H10" 含む → lunch_break.
     if wtype == "general" and ("昼休憩" in msg or "H10" in msg):
         return ("lunch_break", "general")
@@ -2950,6 +2977,7 @@ def _identify_unassigned_patients(
                         break
             # 後方互換 fallback: affected_patient_ids が未埋めの古い warning や
             # 単一 patient warning (patient_id フィールドだけ) を探す.
+            matched_by_patient = False
             if not matched_by_id:
                 for w in warnings:
                     if w.patient_id == p.id:
@@ -2957,7 +2985,20 @@ def _identify_unassigned_patients(
                         if classified is not None:
                             reason, stage = classified
                             reason_detail = w.message[:200] if w.message else None
+                            matched_by_patient = True
                             break
+            # silent drop fix (#2): どの warning にも一致せず reason=unknown 確定する
+            # ところで weekly_pattern 未設定 (PFV のみ等) を明示する. build_visits_for_pool
+            # は weekly_pattern が dict でない患者の visit を生成しないため、
+            # 「unknown」より具体的な理由を返せる.
+            if (
+                not matched_by_id
+                and not matched_by_patient
+                and not isinstance(p.weekly_pattern, dict)
+            ):
+                reason = "no_weekly_pattern"
+                stage = "general"
+                reason_detail = "weekly_pattern が未設定 (PFV のみ存在の可能性)"
         out.append(
             {
                 "patient_id": p.id,
@@ -3042,6 +3083,9 @@ def _filter_conflicting_pool_visits(
                 actionable=True,
                 patient_id=pv.patient_id,
                 patient_name=pv.patient_name,
+                # silent drop fix: _identify_unassigned_patients が patient_id 照合で
+                # reason 分類できるよう構造化照合用フィールドを埋める.
+                affected_patient_ids=[pv.patient_id],
             )
         )
     return kept
@@ -3109,6 +3153,9 @@ def _filter_pool_internal_conflicts(
                     actionable=True,
                     patient_id=pv.patient_id,
                     patient_name=pv.patient_name,
+                    # silent drop fix: _identify_unassigned_patients が patient_id
+                    # 照合で reason 分類できるよう構造化照合用フィールドを埋める.
+                    affected_patient_ids=[pv.patient_id],
                 )
             )
 
@@ -3245,10 +3292,33 @@ async def run_v2_pipeline(
             for pfv in orphan_pfv_rows.all():
                 orphan_fixed_by_patient.setdefault(pfv.patient_id, []).append(pfv)
     else:
-        # full_optimize: 全 active 患者
+        # full_optimize: 全 active 患者.
+        # silent drop fix (#1, 最重要・根治): orphan PFV を持つ患者 (= weekly_pattern が
+        # dict でない + PFV あり) は ``build_visits_for_pool`` が weekly_pattern ベース
+        # では visit を 0 件しか生成しない. 全面最適化でもこの種の患者を取りこぼさない
+        # よう、diff_add と同様 PFV ベース展開する経路を作る.
         pool_patients = list(patients_by_id.values())
-        pool_patients_no_fixed = pool_patients
-        pool_patients_orphan_fixed = []
+        pool_patients_no_fixed = [
+            p
+            for p in pool_patients
+            if not (p.id in patients_with_fixed and not isinstance(p.weekly_pattern, dict))
+        ]
+        pool_patients_orphan_fixed = [
+            p
+            for p in pool_patients
+            if p.id in patients_with_fixed and not isinstance(p.weekly_pattern, dict)
+        ]
+        # 孤児 patient の PFV を取得 (PFV ベース展開用)
+        # PatientFixedVisit は soft-delete を持たない (固定枠は物理削除)
+        if pool_patients_orphan_fixed:
+            orphan_pfv_rows = await db.scalars(
+                select(PatientFixedVisit).where(
+                    PatientFixedVisit.patient_id.in_([p.id for p in pool_patients_orphan_fixed]),
+                    PatientFixedVisit.mode == "normal",
+                )
+            )
+            for pfv in orphan_pfv_rows.all():
+                orphan_fixed_by_patient.setdefault(pfv.patient_id, []).append(pfv)
 
     # W41 v2 拡張 (今週限定オーバーレイ): pending_edits を (patient_id, weekday) → Overlay の
     # マップに変換. PFV / weekly_pattern の読み込み時に Python オブジェクトレベルで上書きする.
@@ -3286,10 +3356,13 @@ async def run_v2_pipeline(
                     patient_name=_p.name,
                 )
             )
-    # diff_add 時は通常 pool (weekly_pattern ベース) + 孤児 pool (PFV ベース) を統合.
-    # full_optimize 時は従来通り weekly_pattern ベース 1 本.
+    # silent drop fix (#1): 通常 pool (weekly_pattern ベース) + 孤児 pool (PFV ベース) を統合.
+    # diff_add / full_optimize の両モードで orphan PFV 患者を救済する.
+    # ``pool_patients_orphan_fixed`` の判定基準が mode によって異なる:
+    #   - diff_add     : PFV あり + 今週 visit 無し (= 孤児)
+    #   - full_optimize: PFV あり + weekly_pattern が dict でない (= 完全孤児)
     pool_visits = build_visits_for_pool(pool_patients_no_fixed, pending_overlay=pending_overlay)
-    if mode == "diff_add" and pool_patients_orphan_fixed and orphan_fixed_by_patient:
+    if pool_patients_orphan_fixed and orphan_fixed_by_patient:
         # CareFlow #102 Fix A: orphan PFV の course_template_id -> course label
         # map を事前構築 (N+1 回避). build_visits_for_pool が PFV.course_template_id
         # から V2Visit.course_code を埋められるようにする.
@@ -3374,7 +3447,8 @@ async def run_v2_pipeline(
     # Stage 3: 距離グリーディクラスタリング (バケットごと)
     sets_by_bucket: dict[tuple[UUID, int, Literal["am", "pm"]], list[V2Set]] = {}
     for key, bucket in buckets.items():
-        sets = cluster_by_distance_greedy(bucket.visits)
+        # silent drop fix: 重複 visit skip を warning に出す.
+        sets = cluster_by_distance_greedy(bucket.visits, warnings=warnings)
         _enforce_h2_same_address(sets, warnings)
         # W41 v2 (H2 強化): 同住所 3 名以上を別 set に強制分散
         _enforce_h2_split_overflow(sets, warnings)

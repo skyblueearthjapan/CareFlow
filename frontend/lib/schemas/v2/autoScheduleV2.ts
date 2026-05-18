@@ -277,6 +277,7 @@ export type IndividualProposal = z.infer<typeof individualProposalSchema>;
 export const unassignedReasonSchema = z.enum([
   'no_coordinates',
   'no_primary_office',
+  'no_weekly_pattern',
   'acceptance_calendar',
   'course_capacity',
   'course_overflow',
