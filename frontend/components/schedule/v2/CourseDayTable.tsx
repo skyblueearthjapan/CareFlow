@@ -478,26 +478,26 @@ export function CourseDayTable({
       {/*
         3 列テーブル (CareFlow #UX-2026W21):
           - 時間帯 (固定)
-          - 複数 (👥 icon を中央表示)
           - 患者情報 (氏名 / 住所 / 時刻条件 / 性別制限 を縦積み — リスト
                     `WeekdayScheduleCard` の `VisitRowContent` と語彙統一)
+          - 複数 (👥 icon を中央表示、最右に配置)
       */}
       <div className="overflow-x-auto">
         <div
           className="grid border-t border-border-default text-[11px]"
           style={{
-            gridTemplateColumns: '60px 48px minmax(180px, 1fr)',
+            gridTemplateColumns: '60px minmax(180px, 1fr) 48px',
           }}
         >
           {/* 列ヘッダー */}
           <div className="border-b border-r border-border-default bg-bg-muted px-1.5 py-1 text-[10px] font-semibold text-text-muted">
             時間帯
           </div>
-          <div className="border-b border-r border-border-default bg-bg-muted px-1.5 py-1 text-center text-[10px] font-semibold text-text-muted">
-            複数
-          </div>
-          <div className="border-b border-border-default bg-bg-muted px-1.5 py-1 text-[10px] font-semibold text-text-muted">
+          <div className="border-b border-r border-border-default bg-bg-muted px-1.5 py-1 text-[10px] font-semibold text-text-muted">
             患者情報
+          </div>
+          <div className="border-b border-border-default bg-bg-muted px-1.5 py-1 text-center text-[10px] font-semibold text-text-muted">
+            複数
           </div>
 
           {/* 35 行 */}
@@ -628,15 +628,42 @@ function CourseTimeRow({
           // Wave 39: 担当スタッフの event は親側 `eventBlocks` (rowSpan 1 ブロック) で
           //   描画するためここでは出さない。空セルは droppable のみ。
           <>
-            <div className="border-r border-border-default/40 px-1 py-0.5 text-center text-[10px] leading-tight text-text-secondary" />
-            <div className="px-1 py-0.5 text-[10px] leading-tight text-text-secondary truncate" />
+            <div className="border-r border-border-default/40 px-1 py-0.5 text-[10px] leading-tight text-text-secondary truncate" />
+            <div className="px-1 py-0.5 text-center text-[10px] leading-tight text-text-secondary" />
           </>
         ) : (
-          // ── 1 件以上: 複数列 + 患者情報列 ────────────────────────────
+          // ── 1 件以上: 患者情報列 + 複数列 ────────────────────────────
           // 同一スロットに 2 件以上の visit がある場合、各列を visit ごとに縦積み.
+          // CareFlow #UX-2026W21 fix: 「複数」列を最右に配置 (DOM 順序で制御).
           <>
-            {/* 複数列: 👥 アイコンのみ (true) or 空 (false) */}
-            <div className="border-r border-border-default/40 px-1 py-0.5 text-center text-[10px] leading-tight text-text-secondary">
+            {/* 患者情報列: 氏名 / 住所 / 🕐 時刻条件 / 👩/👨 性別制限 を縦積み.
+                リスト `WeekdayScheduleCard.VisitRowContent` と語彙統一. */}
+            <div className="border-r border-border-default/40 px-1 py-0.5 text-[11px] leading-tight text-text-primary">
+              <div className="flex flex-col gap-1">
+                {occupants.map((o) => (
+                  <OccupantPatientInfo
+                    key={`info-${o.id}`}
+                    visit={o}
+                    canEdit={canEdit}
+                    onDeleteVisit={onDeleteVisit}
+                    onPatientClick={onPatientClick}
+                  />
+                ))}
+                {/* Wave 27 Phase B-3: 担当スタッフのイベント重複 warning バッジ.
+                    visit と event 重複の警告は visit 行に残す. */}
+                {conflictingEvent ? (
+                  <span
+                    className="inline-flex w-fit items-center gap-0.5 rounded bg-yellow-100 px-1 py-0.5 text-[10px] font-semibold text-yellow-800 ring-1 ring-yellow-300"
+                    data-testid="event-conflict-badge"
+                    title={`担当者: ${conflictingEvent.type} ${conflictingEvent.start_time}-${conflictingEvent.end_time}`}
+                  >
+                    ⚠ 担当不可
+                  </span>
+                ) : null}
+              </div>
+            </div>
+            {/* 複数列: 👥 アイコンのみ (true) or 空 (false) - 最右に配置. */}
+            <div className="px-1 py-0.5 text-center text-[10px] leading-tight text-text-secondary">
               <div className="flex flex-col gap-0.5">
                 {occupants.map((o) => {
                   // Wave 23: 「複数」= patient.requires_multiple_staff のみ.
@@ -679,32 +706,6 @@ function CourseTimeRow({
                     </div>
                   );
                 })}
-              </div>
-            </div>
-            {/* 患者情報列: 氏名 / 住所 / 🕐 時刻条件 / 👩/👨 性別制限 を縦積み.
-                リスト `WeekdayScheduleCard.VisitRowContent` と語彙統一. */}
-            <div className="px-1 py-0.5 text-[11px] leading-tight text-text-primary">
-              <div className="flex flex-col gap-1">
-                {occupants.map((o) => (
-                  <OccupantPatientInfo
-                    key={`info-${o.id}`}
-                    visit={o}
-                    canEdit={canEdit}
-                    onDeleteVisit={onDeleteVisit}
-                    onPatientClick={onPatientClick}
-                  />
-                ))}
-                {/* Wave 27 Phase B-3: 担当スタッフのイベント重複 warning バッジ.
-                    visit と event 重複の警告は visit 行に残す. */}
-                {conflictingEvent ? (
-                  <span
-                    className="inline-flex w-fit items-center gap-0.5 rounded bg-yellow-100 px-1 py-0.5 text-[10px] font-semibold text-yellow-800 ring-1 ring-yellow-300"
-                    data-testid="event-conflict-badge"
-                    title={`担当者: ${conflictingEvent.type} ${conflictingEvent.start_time}-${conflictingEvent.end_time}`}
-                  >
-                    ⚠ 担当不可
-                  </span>
-                ) : null}
               </div>
             </div>
           </>
