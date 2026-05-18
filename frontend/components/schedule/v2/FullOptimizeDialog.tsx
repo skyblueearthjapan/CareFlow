@@ -101,6 +101,23 @@ function fmtUnassignedReason(reason: UnassignedReason): string {
 // formatTimeCondition は 2026-W20 で WeekdayScheduleCard に統合 (DRY 化).
 
 /**
+ * W41 v2.11 (a11y): Radix Dialog close 直後の `aria-hidden on focused element` 警告対策.
+ *
+ * ネストした Dialog を閉じるとき、close transition 中に focus が child dialog のボタンに
+ * 残ったまま親 Dialog の `aria-hidden=true` が一瞬適用され、Chromium がブロック警告を出す.
+ *
+ * 閉じる前に明示的に activeElement を blur することで focus trap を解除する.
+ * jsdom (Vitest) でも安全に動作する (document.activeElement は body fallback).
+ */
+function blurActiveElement(): void {
+  if (typeof document === 'undefined') return;
+  const el = document.activeElement;
+  if (el && el instanceof HTMLElement && typeof el.blur === 'function') {
+    el.blur();
+  }
+}
+
+/**
  * IndividualProposal の current_pfv と proposed_pfv を比較して
  * 「時間に変更がある」かを判定する (一括 固定時間変更セクションの対象抽出).
  *
@@ -319,6 +336,8 @@ export function FullOptimizeDialog({
    */
   const handleCancelUnassignedAck = () => {
     if (isApplyingWeekOnly) return;
+    // W41 v2.11 (a11y): close 前に blur して focus trap を解除 (Radix aria-hidden 警告対策).
+    blurActiveElement();
     setStage('week-only-confirm');
   };
 
@@ -423,10 +442,15 @@ export function FullOptimizeDialog({
 
   // ─── 一括 固定時間変更 (永続 / 週限定) ───────────────────────────────
   // current_pfv と proposed_pfv の差分がある patient のみ対象 (= 「時間変更が提案された患者」).
+  // W41 v2.11 (UX): 反映済み patient はリストから除外して、何が未反映か一目で分かるようにする.
+  // (自動再算出後は appliedPatientIds が clear されるため、新 result で proposed=current なら
+  //  自然に消える. ここでは応急処置として再算出前 (applied 状態) も視覚的に隠す.)
   const bulkChangedProposals = React.useMemo<IndividualProposal[]>(() => {
     if (!result) return [];
-    return result.individual_proposals.filter((p) => isProposalTimeChanged(p));
-  }, [result]);
+    return result.individual_proposals
+      .filter((p) => isProposalTimeChanged(p))
+      .filter((p) => !appliedPatientIds.has(p.patient_id));
+  }, [result, appliedPatientIds]);
 
   const handleToggleBulkPatient = React.useCallback((pid: string) => {
     setBulkSelectedIds((prev) => {
@@ -454,6 +478,10 @@ export function FullOptimizeDialog({
 
   const handleCancelBulkConfirm = React.useCallback(() => {
     if (isBulkApplying) return;
+    // W41 v2.11 (a11y): Radix Dialog close 時に focus が child dialog 内のボタンに残ると
+    // 親 Dialog の aria-hidden=true でブラウザ警告 (`aria-hidden on focused element`) が出る.
+    // 閉じる前に明示的に blur して focus trap を解除する.
+    blurActiveElement();
     setBulkConfirmOpen(false);
   }, [isBulkApplying]);
 
@@ -466,6 +494,10 @@ export function FullOptimizeDialog({
       return;
     }
     try {
+      // W41 v2.11 (UX): 反映が「実際に成功したか」を判定し、toast 文言を正確にする.
+      // permanent: okCount===0 → error / okCount>0 → success
+      // week_only: total_updated===0 && total_skipped>0 → warning / total_updated>0 → success
+      let appliedSuccessfully = false;
       if (bulkApplyMode === 'permanent') {
         const res = await bulkSyncMut.mutateAsync({
           patient_ids: selected.map((p) => p.patient_id),
@@ -475,10 +507,17 @@ export function FullOptimizeDialog({
         });
         const okCount = res.results.filter((r) => r.error == null).length;
         const failCount = res.results.length - okCount;
-        toast.success(
-          `固定枠を ${okCount} 名分一括反映しました` +
-            (failCount > 0 ? ` (失敗: ${failCount} 名)` : ''),
-        );
+        if (okCount === 0) {
+          toast.error(
+            `反映されませんでした (全件失敗: ${failCount} 名)。BE ログをご確認ください。`,
+          );
+        } else {
+          toast.success(
+            `固定枠を ${okCount} 名分一括反映しました` +
+              (failCount > 0 ? ` (失敗: ${failCount} 名)` : ''),
+          );
+          appliedSuccessfully = true;
+        }
       } else {
         // week_only: 各 patient の proposed_pfv 全 entry を visit 変更にマッピング.
         const changes = selected.flatMap((p) =>
@@ -500,9 +539,20 @@ export function FullOptimizeDialog({
           iso_week: isoWeek,
           dry_run: false,
         });
-        toast.success(
-          `今週 visits を一括反映しました (update: ${res.total_updated} / skipped: ${res.total_skipped})`,
-        );
+        if (res.total_updated === 0 && res.total_skipped > 0) {
+          toast.warning(
+            `実際の更新は 0 件 (skipped: ${res.total_skipped})。` +
+              ` 対象 visit の source が whitelist 外か、対象 visit が見つからない可能性があります。`,
+          );
+        } else if (res.total_updated > 0) {
+          toast.success(
+            `今週 visits を一括反映しました (update: ${res.total_updated} / skipped: ${res.total_skipped})`,
+          );
+          appliedSuccessfully = true;
+        } else {
+          // total_updated=0 && total_skipped=0 (changes は送ったが何も起きなかった)
+          toast.warning('反映対象の visit が見つかりませんでした。');
+        }
       }
       // 反映済みは選択解除 (二重 click 防止) + applied マーク
       setAppliedPatientIds((prev) => {
@@ -511,13 +561,18 @@ export function FullOptimizeDialog({
         return next;
       });
       setBulkSelectedIds(new Set());
+      // W41 v2.11 (a11y): close 前に blur して focus trap を解除 (Radix aria-hidden 警告対策).
+      blurActiveElement();
       setBulkConfirmOpen(false);
       // W41 v2.10 (ユーザー要望): 一括反映後は整合性確保のため
       // 即座に全面最適化を再算出する。固定枠/visit を変更したまま古いシミュレーション
       // 結果を見ている状態を避け、新しい配置でスケジュールが矛盾しないことを保証する。
-      // permanent / week_only いずれのモードでも自動再算出する。
-      toast.info('整合性確保のため全面最適化を自動再実行します...');
-      await handleReallocate();
+      // W41 v2.11 (UX): 自動再算出は「実際に反映が成功した」時のみ実行.
+      // (全件失敗 / skipped のみ の場合は再算出しても意味がなく、ユーザーに混乱を与えるため)
+      if (appliedSuccessfully) {
+        toast.info('整合性確保のため全面最適化を自動再実行します...');
+        await handleReallocate();
+      }
     } catch (err) {
       toast.error(`一括反映に失敗しました: ${formatErr(err)}`);
     }
@@ -668,6 +723,7 @@ export function FullOptimizeDialog({
                   editedKeys={editedWarningKeys}
                   onActionClick={(w) => setEditingWarning(w)}
                   currentTab={activeTab}
+                  appliedPatientIds={appliedPatientIds}
                 />
               ) : null}
 
@@ -967,12 +1023,19 @@ function WarningSection({
   editedKeys,
   onActionClick,
   currentTab,
+  appliedPatientIds = new Set(),
 }: {
   warnings: V2Warning[];
   editedKeys: Set<string>;
   onActionClick: (w: V2Warning) => void;
   /** 親の曜日タブ state ('0'-'6' or 'all'). 曜日連動表示に使用. */
   currentTab: string;
+  /**
+   * W41 v2.11 (UX): 一括反映済み patient_id 一覧.
+   * 警告の affected_patient_ids が全て applied なら「✓ 反映済み」として薄表示する.
+   * backward compatible のためデフォルト空 Set.
+   */
+  appliedPatientIds?: Set<string>;
 }) {
   // currentTab に応じて表示する警告を絞り込み.
   //  - '0'-'6': 該当曜日 + weekday=null (曜日不問) を表示
@@ -985,6 +1048,18 @@ function WarningSection({
       (w) => w.weekday === wd || w.weekday === null || w.weekday === undefined,
     );
   }, [warnings, currentTab]);
+
+  // W41 v2.11 (UX): 警告ごとに「全 affected_patient_ids が反映済みか」を判定.
+  // affected_patient_ids が空 or 1 つでも未反映があれば「未反映」扱い.
+  const isWarningApplied = React.useCallback(
+    (w: V2Warning): boolean => {
+      if (appliedPatientIds.size === 0) return false;
+      const ids = w.affected_patient_ids ?? [];
+      if (ids.length === 0) return false;
+      return ids.every((id) => appliedPatientIds.has(id));
+    },
+    [appliedPatientIds],
+  );
 
   // 表示ラベル (どの曜日の警告を見ているか)
   const scopeLabel =
@@ -1009,13 +1084,19 @@ function WarningSection({
           <ul className="ml-0 list-none space-y-1 text-xs">
             {visibleWarnings.map((w, i) => {
               const edited = editedKeys.has(warningKey(w));
+              const applied = isWarningApplied(w);
               return (
                 <li
                   key={`${i}-${w.message.slice(0, 12)}`}
-                  className="flex flex-wrap items-center gap-2"
+                  className={`flex flex-wrap items-center gap-2 ${applied ? 'opacity-50' : ''}`}
+                  data-testid={applied ? 'full-optimize-warning-applied' : undefined}
                 >
                   <span className="flex-1">{w.message}</span>
-                  {edited ? (
+                  {applied ? (
+                    <Badge variant="outline" className="text-[10px] text-emerald-700">
+                      ✓ 反映済み
+                    </Badge>
+                  ) : edited ? (
                     <Badge variant="outline" className="text-[10px] text-emerald-700">
                       ✓ 修正済み
                     </Badge>
@@ -1655,6 +1736,9 @@ function BulkFixedTimeChangeSection({
             <span className="ml-1 text-text-muted">
               — 患者マスタの固定枠 (PFV) を更新し、毎週この時間になる
             </span>
+            <span className="mt-0.5 block text-[10px] text-text-muted">
+              ※ 患者マスタの固定枠が更新されます。来週以降もこの時刻で提案されます。
+            </span>
           </span>
         </label>
         <label className="flex items-start gap-2">
@@ -1672,6 +1756,9 @@ function BulkFixedTimeChangeSection({
             <span className="font-semibold text-text-primary">この週だけイレギュラー対応</span>
             <span className="ml-1 text-text-muted">
               — 今週の visits だけを更新し、固定枠 (PFV) は変更しない
+            </span>
+            <span className="mt-0.5 block text-[10px] text-text-muted">
+              ※ 患者マスタの固定枠は変更されません。来週以降は元の時刻で提案されます。
             </span>
           </span>
         </label>
