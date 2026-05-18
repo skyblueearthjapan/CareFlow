@@ -95,8 +95,10 @@ COURSE_MAX_MINUTES: int = 480
 #     「移動なし = 記入も次室への移動準備も最小限」とみなしバッファー 0 で
 #     そのまま続行する.
 #
-# 異住所への遷移ではバッファー (15 分) を加算する.
-VISIT_BUFFER_MINUTES: int = 15
+# 異住所への遷移ではバッファー (8 分) を加算する.
+# 加えて非固定 visit の actual_start は ``_round_up_to_5min`` で 5 分刻みに切り上げる
+# (最大 4 分加算) ため、UI 上の実質バッファーは 8-12 分.
+VISIT_BUFFER_MINUTES: int = 8
 
 # 物理不可能配置の判定閾値 (分).
 # 固定時刻 visit が前 visit + 移動 + バッファーで earliest_start に間に合わない場合、
@@ -495,6 +497,30 @@ def _add_minutes(t: time, minutes: int) -> time:
     if total < 0:
         return time(0, 0)
     return time(total // 60, total % 60)
+
+
+def _round_up_to_5min(t: time) -> time:
+    """``time`` を 5 分刻みに切り上げ.
+
+    UI 上の時刻を整然と並べる + 実質バッファーを 8-12 分に揃えるため、
+    ``_apply_travel_time_to_courses`` の非固定 visit ``actual_start`` 確定後に
+    呼び出す. 固定枠 (``time_type='固定'``) は希望時刻を強制するため対象外.
+
+    例:
+        10:31 → 10:35
+        09:03 → 09:05
+        10:00 → 10:00 (既に 5 分刻み)
+        09:59 → 10:00
+        23:58 → 23:59 (24:00 を超える場合は _add_minutes と同じく 23:59 で頭打ち)
+    """
+    total_min = t.hour * 60 + t.minute
+    remainder = total_min % 5
+    if remainder == 0:
+        return time(t.hour, t.minute)
+    rounded = total_min + (5 - remainder)
+    if rounded >= 24 * 60:
+        return time(23, 59)
+    return time(rounded // 60, rounded % 60)
 
 
 # ---------------------------------------------------------------------------
@@ -1916,10 +1942,10 @@ def calc_course_total_minutes(visits: list[V2Visit]) -> int:
     訪問間バッファー で計算する.
 
     HIGH #1 (Codex クロスレビュー): ``_apply_travel_time_to_courses`` は
-    earliest_start 計算時に ``VISIT_BUFFER_MINUTES`` (= 15 分) を加算するため、
+    earliest_start 計算時に ``VISIT_BUFFER_MINUTES`` (= 8 分) を加算するため、
     実 timeline は ``sum(duration) + sum(travel)`` より長くなる.
     本関数も同じ補正を入れないと容量判定 (480 分) が漏れる
-    (例: 6 visit 異住所連続 = 5 × 15 = 75 分の差).
+    (例: 6 visit 異住所連続 = 5 × 8 = 40 分の差).
 
     Notes:
         - ``visits`` は同コース (同 ``(office_id, weekday, course_code)``) 内.
@@ -2412,6 +2438,41 @@ def _apply_travel_time_to_courses(
             else:
                 # "終日" / None / 不明: 営業時間内なら earliest を採用.
                 actual_start = max(desired_start, earliest_start)
+
+            # CareFlow v2 拡張 (5 分刻み切り上げ): 非固定 visit の actual_start を
+            # 5 分刻みに切り上げる (UI 上の時刻整列 + 実質バッファー 8-12 分).
+            # 固定枠 (``time_type='固定'``) は希望時刻を強制するため対象外.
+            # 切り上げにより AM/PM 境界 / 昼休憩 / 18:00 を超える可能性があるが、
+            # AM→12:00→13:00 バンプは直後の lunch 再検証で吸収される. 午後 18:00
+            # 超過は本ブロックで再判定して actionable warning を追加する.
+            if tt != "固定":
+                actual_start = _round_up_to_5min(actual_start)
+                if tt == "午後":
+                    rounded_end_min = (
+                        actual_start.hour * 60 + actual_start.minute + cur.service_minutes
+                    )
+                    if rounded_end_min > pm_block_end_min:
+                        warnings.append(
+                            V2Warning(
+                                type="travel_time_shortage",
+                                message=(
+                                    f"{office_name} {course_code} {wd_jp}: "
+                                    f"{cur_name} 様 (午後希望) が 5 分刻み切り上げで "
+                                    f"{_fmt_hhmm(actual_start)} 開始となり "
+                                    f"{_fmt_hhmm(PM_BLOCK_END)} を超過 "
+                                    "(運用者要確認)"
+                                ),
+                                weekday=weekday,
+                                actionable=True,
+                                patient_id=cur.patient_id,
+                                patient_name=cur.patient_name,
+                                current_time=_fmt_hhmm(actual_start),
+                                time_type=tt,
+                                preferred_start=cur.preferred_start,
+                                preferred_end=cur.preferred_end,
+                                affected_patient_ids=[cur.patient_id],
+                            )
+                        )
 
             # CRITICAL #1: 昼休憩 (12:00-13:00) 再検証.
             # _filter_unavailable_and_lunch は既に実行済みのため、

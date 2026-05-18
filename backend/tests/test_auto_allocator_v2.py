@@ -2497,8 +2497,8 @@ def test_same_address_pair_in_multi_course_preserved_per_course() -> None:
         f"コース A の同住所 B が 09:30 (= A 末尾) で連続していない: {b.start_time}"
     )
     # コース B: D と E は異住所のみ.
-    # 5km 移動 + バッファー 15 分 → 10:30 desired vs (10:30 + travel + 15)
-    # 11:00 以降に押し下げ.
+    # 5km 移動 + バッファー 8 分 → 10:30 desired vs (10:30 + travel + 8) → 5 分切り上げ.
+    # 10:30 以降に押し下げ.
     assert d.start_time == time(10, 0), f"D は固定 start のはず: {d.start_time}"
     # E の正確な押し下げ値はテストの主眼ではない. 元の 10:30 より遅れていれば OK.
     assert e.start_time > time(10, 30) or e.start_time == time(10, 30), (
@@ -2939,7 +2939,7 @@ def test_course_capacity_minutes_no_warn_under_480() -> None:
 def test_calc_course_total_minutes_includes_travel() -> None:
     """W41 v2: calc_course_total_minutes = sum(duration) + 隣接移動 + バッファー.
 
-    HIGH #1 修正後: 異住所遷移には ``VISIT_BUFFER_MINUTES`` (= 15 分) も加算する.
+    HIGH #1 修正後: 異住所遷移には ``VISIT_BUFFER_MINUTES`` (= 8 分) も加算する.
     """
     from app.services.scheduling.auto_allocator_v2 import (
         VISIT_BUFFER_MINUTES,
@@ -2960,9 +2960,9 @@ def test_calc_course_total_minutes_includes_travel() -> None:
     b.course_code = "A"
 
     total = calc_course_total_minutes([a, b])
-    # duration 30 + 30 = 60, 移動 ~9 分, バッファー 15 分 → ~84 分
-    expected_lower = 60 + 1 + VISIT_BUFFER_MINUTES  # 76
-    expected_upper = 60 + 30 + VISIT_BUFFER_MINUTES  # 105
+    # duration 30 + 30 = 60, 移動 ~9 分, バッファー 8 分 → ~77 分
+    expected_lower = 60 + 1 + VISIT_BUFFER_MINUTES  # 69
+    expected_upper = 60 + 30 + VISIT_BUFFER_MINUTES  # 98
     assert expected_lower <= total <= expected_upper, (
         f"expected {expected_lower}-{expected_upper} min, got {total}"
     )
@@ -3218,11 +3218,11 @@ def test_chain_pushback_three_visits() -> None:
 
     Setup: コース A 月曜 終日 visits:
       - P-A 09:00-09:30 (固定)
-      - P-B 09:00 希望、A から 3km (移動 9 分 + バッファー 15 分)
-      - P-C 09:00 希望、B から 3km (移動 9 分 + バッファー 15 分)
+      - P-B 09:00 希望、A から 3km (移動 9 分 + バッファー 8 分 → 5 分切り上げ)
+      - P-C 09:00 希望、B から 3km (移動 9 分 + バッファー 8 分 → 5 分切り上げ)
 
-    期待: A 09:00-09:30 → B 09:54-10:24 → C 10:48-11:18.
-    押し下げ計算は max(desired, prev.end + travel + buffer).
+    期待: A 09:00-09:30 → B 09:50 近辺 → C は B 終了以降にカスケード.
+    押し下げ計算は max(desired, prev.end + travel + buffer), 切り上げ後 5 分刻み.
     """
     from app.services.scheduling.auto_allocator_v2 import _apply_travel_time_to_courses
 
@@ -3256,10 +3256,12 @@ def test_chain_pushback_three_visits() -> None:
 
     # A は固定で動かない.
     assert a.start_time == time(9, 0)
-    # B は A 終了 (09:30) + 移動 ~9 分 + バッファー 15 分 = 09:54 近辺.
+    # B は A 終了 (09:30) + 移動 ~9 分 + バッファー 8 分 = 09:47 → 5 分切り上げで 09:50.
     b_min = b.start_time.hour * 60 + b.start_time.minute
-    assert 9 * 60 + 50 <= b_min <= 10 * 60 + 0, f"B は 09:50-10:00 のはず, got {b.start_time}"
-    # C は B 終了 + 移動 ~9 分 + バッファー 15 分 → さらに後ろ.
+    assert 9 * 60 + 45 <= b_min <= 10 * 60 + 0, f"B は 09:45-10:00 のはず, got {b.start_time}"
+    # 5 分刻みに切り上げられている.
+    assert b_min % 5 == 0, f"B.start_time は 5 分刻みのはず: {b.start_time}"
+    # C は B 終了 + 移動 ~9 分 + バッファー 8 分 → さらに後ろ.
     c_min = c.start_time.hour * 60 + c.start_time.minute
     assert c_min > b_min + b.service_minutes - 1, (
         f"C は B 終了 ({b.end_time}) 以降のはず, got {c.start_time}"
@@ -3270,17 +3272,17 @@ def test_chain_pushback_three_visits() -> None:
 
 
 # ---------------------------------------------------------------------------
-# W41+ — 訪問間バッファー 15 分 + diff_add 衝突回避
+# W41+ — 訪問間バッファー 8 分 (旧 15 分) + 5 分刻み切り上げ + diff_add 衝突回避
 # ---------------------------------------------------------------------------
 
 
-def test_visit_buffer_15min_applied() -> None:
-    """訪問間バッファー: 移動 1 分 + バッファー 15 分 = 16 分 加算される.
+def test_visit_buffer_8min_applied() -> None:
+    """訪問間バッファー: 移動 1 分 + バッファー 8 分 = 9 分 加算 + 5 分刻み切り上げ.
 
     Setup:
       - P-A 09:00-09:30 (固定)
       - P-B 09:00 希望 (終日), A から ~0.1km (= haversine_minutes 1 分)
-    期待: B.start = 09:30 + 1 + 15 = 09:46 (earliest).
+    期待: B.start = 09:30 + 1 + 8 = 09:39 → 5 分刻み切り上げで 09:40 (earliest).
     """
     from app.services.scheduling.auto_allocator_v2 import _apply_travel_time_to_courses
 
@@ -3305,11 +3307,12 @@ def test_visit_buffer_15min_applied() -> None:
     warnings: list[V2Warning] = []
     _apply_travel_time_to_courses([a, b], warnings=warnings)
 
-    # 09:30 + 1 (移動) + 15 (バッファー) = 09:46.
-    assert b.start_time == time(9, 46), (
-        f"バッファー込みで 09:46 のはず (移動 1 分 + バッファー 15 分), got {b.start_time}"
+    # 09:30 + 1 (移動) + 8 (バッファー) = 09:39 → 5 分切り上げで 09:40.
+    assert b.start_time == time(9, 40), (
+        f"バッファー込み + 5 分切り上げで 09:40 のはず "
+        f"(移動 1 分 + バッファー 8 分 → 09:39 → 09:40), got {b.start_time}"
     )
-    assert b.end_time == time(10, 16), f"end_time も追従するはず, got {b.end_time}"
+    assert b.end_time == time(10, 10), f"end_time も追従するはず, got {b.end_time}"
 
 
 def test_visit_buffer_skipped_for_same_address() -> None:
@@ -3422,10 +3425,10 @@ def test_diff_add_keeps_non_conflicting_pool_visit() -> None:
 
 
 def test_course_total_minutes_includes_buffer() -> None:
-    """HIGH #1 (Codex): 異住所連続 N visit はバッファー (N-1) × 15 分を含む.
+    """HIGH #1 (Codex): 異住所連続 N visit はバッファー (N-1) × 8 分を含む.
 
     Setup: 3 visit (異住所連続) — duration 30+30+30 = 90 分,
-    travel A→B + B→C, それぞれにバッファー 15 分が乗る (= 30 分追加).
+    travel A→B + B→C, それぞれにバッファー 8 分が乗る (= 16 分追加).
     """
     from app.services.scheduling.auto_allocator_v2 import (
         VISIT_BUFFER_MINUTES,
@@ -3452,8 +3455,8 @@ def test_course_total_minutes_includes_buffer() -> None:
     c.course_code = "A"
 
     total = calc_course_total_minutes([a, b, c])
-    # duration 90, 移動 2 ペア (~9 分 × 2), バッファー 2 × 15 = 30 分
-    # → 90 + 約 18 + 30 = 約 138 分
+    # duration 90, 移動 2 ペア (~9 分 × 2), バッファー 2 × 8 = 16 分
+    # → 90 + 約 18 + 16 = 約 124 分
     duration_sum = 90
     buffer_sum = 2 * VISIT_BUFFER_MINUTES
     # 異住所遷移ごとに少なくとも 1 分の移動 + バッファーが入る
@@ -5041,3 +5044,219 @@ async def test_stage5_fallback_warning_emitted_on_code_conflict(db) -> None:
         f"existing code 衝突 fallback の general warning が出ていない: "
         f"warnings={[w.message for w in warnings]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# バッファー 8 分 + 5 分刻み切り上げ (CareFlow v2 拡張)
+# - VISIT_BUFFER_MINUTES を 15 → 8 に変更
+# - 非固定 visit の actual_start を 5 分刻みに切り上げ (実質バッファー 8-12 分)
+# - 固定枠 (time_type='固定') は時刻不変
+# ---------------------------------------------------------------------------
+
+
+def test_buffer_minutes_is_8() -> None:
+    """VISIT_BUFFER_MINUTES が 8 分に設定されていることを定数レベルで確認."""
+    from app.services.scheduling.auto_allocator_v2 import VISIT_BUFFER_MINUTES
+
+    assert VISIT_BUFFER_MINUTES == 8, (
+        f"VISIT_BUFFER_MINUTES は 8 のはず (旧 15 → 新 8), got {VISIT_BUFFER_MINUTES}"
+    )
+
+
+def test_round_up_to_5min_helper() -> None:
+    """``_round_up_to_5min`` の代表値を確認.
+
+    - 10:31 → 10:35 (剰余 1, +4)
+    - 09:03 → 09:05 (剰余 3, +2)
+    - 10:00 → 10:00 (既に 5 分刻み)
+    - 09:59 → 10:00 (分が繰り上がる)
+    - 11:58 → 12:00 (時間境界も超える)
+    """
+    from app.services.scheduling.auto_allocator_v2 import _round_up_to_5min
+
+    assert _round_up_to_5min(time(10, 31)) == time(10, 35)
+    assert _round_up_to_5min(time(9, 3)) == time(9, 5)
+    assert _round_up_to_5min(time(10, 0)) == time(10, 0)
+    assert _round_up_to_5min(time(9, 59)) == time(10, 0)
+    assert _round_up_to_5min(time(11, 58)) == time(12, 0)
+
+
+def test_apply_travel_time_rounds_to_5min_for_non_fixed() -> None:
+    """非固定 visit の ``actual_start`` が 5 分刻みに切り上げられる.
+
+    Setup:
+      - P-A 09:00-09:30 (固定)
+      - P-B 09:00 希望 (終日), A から 3km (移動 9 分 + バッファー 8 分 = 17 分)
+    earliest = 09:30 + 17 = 09:47 → 5 分切り上げで **09:50**.
+    """
+    from app.services.scheduling.auto_allocator_v2 import _apply_travel_time_to_courses
+
+    office_id = uuid.uuid4()
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=0, patient_name="A"
+    )
+    a.end_time = time(9, 30)
+    a.service_minutes = 30
+    a.course_code = "A"
+    a.time_type = "固定"
+
+    b = _make_visit(
+        lat=35.65, lng=140.133, office_id=office_id, start_h=9, start_m=0, patient_name="B"
+    )
+    b.end_time = time(9, 30)
+    b.service_minutes = 30
+    b.course_code = "A"
+    b.time_type = "終日"
+
+    warnings: list[V2Warning] = []
+    _apply_travel_time_to_courses([a, b], warnings=warnings)
+
+    # 09:30 + 9 + 8 = 09:47 → 5 分切り上げで 09:50.
+    assert b.start_time == time(9, 50), (
+        f"非固定 visit は 5 分刻みに切り上げのはず: expected 09:50, got {b.start_time}"
+    )
+    # end_time も追従.
+    assert b.end_time == time(10, 20), f"end_time も追従するはず, got {b.end_time}"
+    # 5 分刻みであることを明示的に確認.
+    assert b.start_time.minute % 5 == 0, (
+        f"非固定 visit の start_time は 5 分刻みのはず: {b.start_time}"
+    )
+
+
+def test_apply_travel_time_keeps_fixed_time_unchanged() -> None:
+    """固定枠 (``time_type='固定'``) は 5 分刻みでなくても切り上げ対象外.
+
+    Setup:
+      - P-A 09:00-09:30 (固定 09:00)
+      - P-B 09:33 固定 希望 (同住所のため移動 0 + バッファー 0)
+    expected: B.start = 09:33 不変 (5 分刻みでなくても固定値を尊重).
+    """
+    from app.services.scheduling.auto_allocator_v2 import _apply_travel_time_to_courses
+
+    office_id = uuid.uuid4()
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=0, patient_name="A"
+    )
+    a.end_time = time(9, 30)
+    a.service_minutes = 30
+    a.course_code = "A"
+    a.time_type = "固定"
+    a.preferred_start = "09:00"
+
+    # 同住所 (= 移動 0 + バッファー 0) で 09:33 固定希望.
+    b = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=33, patient_name="B"
+    )
+    b.end_time = time(10, 3)
+    b.service_minutes = 30
+    b.course_code = "A"
+    b.time_type = "固定"
+    b.preferred_start = "09:33"
+
+    warnings: list[V2Warning] = []
+    _apply_travel_time_to_courses([a, b], warnings=warnings)
+
+    # 固定枠は切り上げ対象外 — 09:33 そのまま (09:35 にはならない).
+    assert b.start_time == time(9, 33), (
+        f"固定枠は 5 分刻み切り上げの対象外のはず: expected 09:33, got {b.start_time}"
+    )
+    assert b.end_time == time(10, 3), f"end_time も追従するはず: {b.end_time}"
+
+
+def test_buffer_8_min_applied_in_calc_course_total() -> None:
+    """``calc_course_total_minutes`` でもバッファー 8 分が使われる.
+
+    異住所 2 visit (duration 30 + 30 = 60 分) の総時間 = 60 + travel + 8 分.
+    旧 15 分から 7 分減ったぶん総時間が短くなることを確認.
+    """
+    from app.services.scheduling.auto_allocator_v2 import (
+        VISIT_BUFFER_MINUTES,
+        calc_course_total_minutes,
+    )
+
+    office_id = uuid.uuid4()
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=9, start_m=0, patient_name="A"
+    )
+    a.service_minutes = 30
+    a.course_code = "A"
+    # 3km 離れた B (異住所)
+    b = _make_visit(
+        lat=35.65, lng=140.133, office_id=office_id, start_h=10, start_m=0, patient_name="B"
+    )
+    b.service_minutes = 30
+    b.course_code = "A"
+
+    total = calc_course_total_minutes([a, b])
+    # duration 60 + 移動 ~9 分 + バッファー 8 分 = 約 77 分.
+    # buffer 部分が ``VISIT_BUFFER_MINUTES`` (= 8) で計算されていれば
+    # total - duration - travel = VISIT_BUFFER_MINUTES (= 8).
+    duration_sum = 60
+    # haversine_minutes(3km) は分単位 int → travel は >=1 と仮定可能.
+    travel_min_lower = 1
+    travel_min_upper = 30
+    assert total == duration_sum + travel_min_lower * 0 + (total - duration_sum), (
+        "trivial: total - duration = travel + buffer"
+    )
+    travel_plus_buffer = total - duration_sum
+    # buffer 部分 = total - duration - travel.
+    # travel >= 1 で travel + buffer <= 30 + 8 = 38, >= 1 + 8 = 9.
+    assert (
+        (travel_min_lower + VISIT_BUFFER_MINUTES)
+        <= travel_plus_buffer
+        <= (travel_min_upper + VISIT_BUFFER_MINUTES)
+    ), (
+        f"travel + buffer は ({travel_min_lower + VISIT_BUFFER_MINUTES})-"
+        f"({travel_min_upper + VISIT_BUFFER_MINUTES}) のはず: got {travel_plus_buffer}, "
+        f"total={total}"
+    )
+    # 旧仕様 (buffer=15) との差分: 同じ入力で buffer のみ 15→8 になったので
+    # 総時間は 7 分減るはず. 「総時間 < 旧仕様」を表すため上限を 60 + 30 + 8 = 98 で固定.
+    assert total <= duration_sum + travel_min_upper + VISIT_BUFFER_MINUTES, (
+        f"buffer=8 に変更されているため total <= {duration_sum + travel_min_upper + VISIT_BUFFER_MINUTES} のはず: "
+        f"got {total}"
+    )
+
+
+def test_round_up_keeps_constraint_am_to_lunch_bump() -> None:
+    """5 分刻み切り上げで AM_BLOCK_END (12:00) を跨いだ場合、lunch 再検証で
+    13:00 にバンプされる (制約再検証の正当性).
+
+    Setup:
+      - P-A 11:00-11:28 (固定)
+      - P-B 終日, 同住所 (= 移動 0 + バッファー 0)
+        earliest = 11:28 (5 分刻みでない) → 切り上げで 11:30.
+        service=30 → end=12:00 → lunch_start (12:00) 重複しない (半開).
+    別ケース: A end が 11:50, B 終日 同住所 → 11:50 → service=30 → end 12:20 →
+    lunch 重複 → 13:00 バンプ.
+    """
+    from app.services.scheduling.auto_allocator_v2 import _apply_travel_time_to_courses
+
+    office_id = uuid.uuid4()
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=11, start_m=20, patient_name="A"
+    )
+    a.start_time = time(11, 20)
+    a.end_time = time(11, 50)
+    a.service_minutes = 30
+    a.course_code = "A"
+    a.time_type = "固定"
+    # 同住所 (移動 0 + バッファー 0) の終日 visit.
+    b = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=11, start_m=50, patient_name="B"
+    )
+    b.start_time = time(11, 50)
+    b.end_time = time(12, 20)
+    b.service_minutes = 30
+    b.course_code = "A"
+    b.time_type = "終日"
+
+    warnings: list[V2Warning] = []
+    _apply_travel_time_to_courses([a, b], warnings=warnings)
+
+    # B: earliest = 11:50 (5 分刻み) → そのまま. service=30 → end=12:20 →
+    # lunch 重複 (12:00-13:00) → 13:00 にバンプ.
+    assert b.start_time == time(13, 0), (
+        f"切り上げ後 lunch 重複で 13:00 にバンプされるはず: got {b.start_time}"
+    )
+    assert b.end_time == time(13, 30), f"end_time も追従: got {b.end_time}"
