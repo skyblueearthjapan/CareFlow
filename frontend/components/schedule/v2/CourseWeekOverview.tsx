@@ -69,12 +69,6 @@ export interface CourseWeekOverviewProps {
    */
   sameAddressKeyByPatientId?: Map<string, string | null>;
   /**
-   * 2026-W20: 縦幅切替モード.
-   * - 'compact' (既存挙動 / default): 1 セル 7 件で省略し「+N 名」表示.
-   * - 'full': 省略せず全件表示 (overflow-y 自動).
-   */
-  displayMode?: 'compact' | 'full';
-  /**
    * 患者氏名クリック時のハンドラ (患者詳細ダイアログを開く).
    * 指定された場合のみ氏名が button になる。閲覧専用ロールでも詳細は見たいので
    * canEdit に依らない。
@@ -91,7 +85,6 @@ export function CourseWeekOverview({
   assignedStaffByTemplateWeekday,
   staffMap,
   sameAddressKeyByPatientId,
-  displayMode = 'compact',
   onPatientClick,
 }: CourseWeekOverviewProps) {
   // (template_id, weekday) → visits[] (start_time 昇順)
@@ -285,23 +278,9 @@ export function CourseWeekOverview({
                     }
                   }
 
-                  // 2026-W20: 縦幅切替.
-                  //  - compact: 既存どおり 7 件 (item 数 = patient + event) で切る.
-                  //  - full   : slice せず全件 (overflow-y-auto / max-h でスクロール可).
-                  // 切断は cluster 単位ではなく item 単位 (累積 item 数で truncate).
-                  const COMPACT_LIMIT = 7;
-                  const visibleClusters: OverviewCluster[] = [];
-                  let itemsShown = 0;
-                  for (const c of clusters) {
-                    const size = c.kind === 'pair' ? c.visits.length : 1;
-                    if (displayMode !== 'full' && itemsShown + size > COMPACT_LIMIT) {
-                      break;
-                    }
-                    visibleClusters.push(c);
-                    itemsShown += size;
-                  }
-                  const overflowVisits =
-                    displayMode === 'full' ? 0 : Math.max(0, visitList.length - COMPACT_LIMIT);
+                  // 2026-W20 改: 「全員表示」モードのみ.
+                  //   全 cluster を slice せず描画 (overflow-y-auto / max-h でスクロール可).
+                  const visibleClusters: OverviewCluster[] = clusters;
 
                   return (
                     <div
@@ -313,7 +292,6 @@ export function CourseWeekOverview({
                       data-testid={`course-week-overview-cell-${tpl.id}-${wd}`}
                       data-capacity={cap}
                       data-occupant-count={visitList.length}
-                      data-display-mode={displayMode}
                     >
                       {cap === 0 ? (
                         <span className="text-[10px] text-text-muted">休</span>
@@ -342,13 +320,7 @@ export function CourseWeekOverview({
                           {items.length === 0 ? (
                             <span className="text-[10px] text-text-muted">—</span>
                           ) : (
-                            <ul
-                              className={cn(
-                                'space-y-0.5',
-                                // full モード時のみ overflow を許可.
-                                displayMode === 'full' && 'max-h-[480px] overflow-y-auto',
-                              )}
-                            >
+                            <ul className="space-y-0.5 max-h-[480px] overflow-y-auto">
                               {visibleClusters.map((cluster, ci) => {
                                 if (cluster.kind === 'single') {
                                   const item = cluster.item;
@@ -444,11 +416,6 @@ export function CourseWeekOverview({
                                   </li>
                                 );
                               })}
-                              {overflowVisits > 0 ? (
-                                <li className="text-[10px] text-text-muted">
-                                  …他 {overflowVisits} 名
-                                </li>
-                              ) : null}
                             </ul>
                           )}
                         </>

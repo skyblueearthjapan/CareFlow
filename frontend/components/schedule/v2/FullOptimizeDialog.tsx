@@ -113,7 +113,7 @@ const V2_WARNING_TYPE_LABEL_JA: Record<V2WarningType, string> = {
   acceptance_blocked: '受入拒否',
   travel_time_shortage: '移動時間不足',
   two_staff_shortage: '二人組スタッフ不足',
-  diff_add_conflict: '差分追加衝突',
+  diff_add_conflict: 'プール投入衝突',
   data_health_staff_shifts_missing: 'スタッフシフト未投入',
   auto_time_shift_for_conflict: '自動時刻シフト',
   care_alarm_deviation: 'ケアアラーム閾値 (30-60 分乖離)',

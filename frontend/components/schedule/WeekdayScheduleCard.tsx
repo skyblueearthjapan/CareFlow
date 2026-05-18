@@ -12,7 +12,7 @@
  *   (1) 患者名 (クリック可能)
  *   (2) 開始時刻 (HH:MM, 全モード共通)
  *   (3) 実動時間 (formatDuration. weekView=true のときは省略)
- *   (4) 住所詳細 (ペア囲み内では「同住所」ヘッダーに集約)
+ *   (4) 住所詳細 (ペア囲み内でも各 visit に表示 — Phase E-1)
  *   (5) 個別条件: time_type + sex_restriction
  *   (6) 次の目的地までの距離 (VisitArrow)
  *
@@ -398,8 +398,9 @@ function PairMemberRow({
         visit={visit}
         onPatientClick={onPatientClick}
         weekView={weekView}
-        // ペア内の住所詳細はヘッダー「📍 同住所」に集約するため省略.
-        suppressAddress
+        // Phase E-1: ペア内の各 visit にも住所を表示する (ユーザー要望: 同住所ペアで
+        // 住所が見えない問題の修正). ヘッダーの「📍 同住所」ラベルはペアの可視化
+        // 用として維持しつつ、住所詳細は各カードに復活させる.
         // ペア内距離 (= 同住所なので 0km) は親側 (PairCluster) が決定する.
         suppressDistance={suppressDistance}
       />
@@ -475,8 +476,6 @@ interface VisitRowContentProps {
   visit: VisitListItem;
   onPatientClick?: (patientId: string) => void;
   weekView: boolean;
-  /** ペアヘッダーに住所集約済みなら true → 個別行の住所詳細を省略. */
-  suppressAddress?: boolean;
   /** ペア内距離 (0km) を省略する場合 true. */
   suppressDistance?: boolean;
 }
@@ -485,11 +484,10 @@ function VisitRowContent({
   visit,
   onPatientClick,
   weekView,
-  suppressAddress,
   suppressDistance,
 }: VisitRowContentProps) {
   const timeCondition = weekView ? null : formatTimeCondition(visit);
-  const showAddress = !weekView && !suppressAddress;
+  const showAddress = !weekView;
   const showDuration =
     !weekView && typeof visit.duration_min === 'number' && visit.duration_min > 0;
   const showSexRestriction = !weekView;

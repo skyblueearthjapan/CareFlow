@@ -1,10 +1,9 @@
 /**
- * CourseWeekOverview displayMode 切替テスト
- * (2026-W20 後期 /schedule UX 改修 — Task B / Task C).
+ * CourseWeekOverview 全員表示 + pair cluster + 情報絞り込みテスト
+ * (Phase E-1: コンパクトモード撤去 — 常に全員表示).
  *
- * Task B: compact (省略あり) ⇄ full (全員表示) を `displayMode` prop で切替可能.
- *   - compact: 7 件超で「…他 N 名」表示
- *   - full   : slice せず全件表示
+ * Phase E-1: `displayMode` prop は廃止. 常に「全員表示」(= 全 visit を slice せず描画).
+ *   - 8 件入力 → 全 8 件描画 (overflow ラベルなし)
  *
  * Task C: 週ビューは情報を最小限に絞る.
  *   - 患者名 (button) + 開始時刻 (HH:MM) を表示
@@ -71,29 +70,8 @@ function makeVisits(n: number, templateId: string): WeekOverviewVisit[] {
   }));
 }
 
-describe('CourseWeekOverview displayMode toggle (Task B)', () => {
-  it('compact: 8 件入力 → 7 件描画 + 「…他 1 名」表示', () => {
-    const tpl = makeTemplate('tpl-DM-A', 'A', 'o1');
-    const visits = makeVisits(8, 'tpl-DM-A');
-    render(
-      <CourseWeekOverview
-        templates={[tpl]}
-        officeNameById={new Map([['o1', '本店']])}
-        visits={visits}
-        onJumpToDay={vi.fn()}
-        displayMode="compact"
-      />,
-    );
-    // 月曜 cell に 7 件まで表示 (visit 0..6).
-    expect(screen.getByTestId('course-week-overview-name-v-0')).toBeInTheDocument();
-    expect(screen.getByTestId('course-week-overview-name-v-6')).toBeInTheDocument();
-    // 8 件目 (v-7) は省略される.
-    expect(screen.queryByTestId('course-week-overview-name-v-7')).toBeNull();
-    // overflow ラベル.
-    expect(screen.getByText(/…他 1 名/)).toBeInTheDocument();
-  });
-
-  it('full: 8 件入力 → 全件描画 + overflow ラベルなし', () => {
+describe('CourseWeekOverview 常時全員表示 (Phase E-1)', () => {
+  it('8 件入力 → 全件描画 + overflow ラベルなし', () => {
     const tpl = makeTemplate('tpl-DM-B', 'B', 'o1');
     const visits = makeVisits(8, 'tpl-DM-B');
     render(
@@ -102,7 +80,6 @@ describe('CourseWeekOverview displayMode toggle (Task B)', () => {
         officeNameById={new Map([['o1', '本店']])}
         visits={visits}
         onJumpToDay={vi.fn()}
-        displayMode="full"
       />,
     );
     // 全 8 件描画.
@@ -111,21 +88,6 @@ describe('CourseWeekOverview displayMode toggle (Task B)', () => {
     }
     // overflow ラベルなし.
     expect(screen.queryByText(/…他 \d+ 名/)).toBeNull();
-  });
-
-  it('default (= compact 相当) — 8 件で省略表示', () => {
-    const tpl = makeTemplate('tpl-DM-C', 'C', 'o1');
-    const visits = makeVisits(8, 'tpl-DM-C');
-    render(
-      <CourseWeekOverview
-        templates={[tpl]}
-        officeNameById={new Map([['o1', '本店']])}
-        visits={visits}
-        onJumpToDay={vi.fn()}
-      />,
-    );
-    expect(screen.queryByTestId('course-week-overview-name-v-7')).toBeNull();
-    expect(screen.getByText(/…他 1 名/)).toBeInTheDocument();
   });
 });
 
@@ -162,7 +124,6 @@ describe('CourseWeekOverview 週ビュー pair cluster + 情報絞り込み (Tas
         visits={visits}
         onJumpToDay={vi.fn()}
         sameAddressKeyByPatientId={sameAddressKeyByPatientId}
-        displayMode="full"
       />,
     );
     // pair-cluster 要素が描画される (data-pair-size=2).
@@ -194,7 +155,6 @@ describe('CourseWeekOverview 週ビュー pair cluster + 情報絞り込み (Tas
         officeNameById={new Map([['o1', '本店']])}
         visits={visits}
         onJumpToDay={vi.fn()}
-        displayMode="full"
       />,
     );
     const nameLi = screen.getByTestId('course-week-overview-name-v-time-1');

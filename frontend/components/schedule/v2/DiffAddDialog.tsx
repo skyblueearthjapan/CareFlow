@@ -162,7 +162,7 @@ export function DiffAddDialog({ open, onClose, isoYear, isoWeek, officeId }: Dif
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Plus className="h-5 w-5 text-brand-primary" aria-hidden />
-            差分追加 - プール患者の候補
+            プール投入 - プール患者の候補
           </DialogTitle>
           <DialogDescription>
             固定枠未登録の患者をプール抽出し、既存スケジュールの隙間に最適配置します。 行を
@@ -193,7 +193,7 @@ export function DiffAddDialog({ open, onClose, isoYear, isoWeek, officeId }: Dif
             {/* サマリ */}
             <div className="flex items-center justify-between border-b border-border-default pb-2">
               <span className="text-sm font-semibold text-text-primary">
-                差分追加 候補: {proposals.length} 件
+                プール投入 候補: {proposals.length} 件
               </span>
               {appliedCount > 0 ? (
                 <Badge variant="secondary" className="text-[10px]">

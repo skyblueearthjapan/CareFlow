@@ -154,6 +154,17 @@ export interface CourseGridVisit {
    * 除外する。
    */
   required_staff_count: number;
+  /**
+   * Phase E-1: 曜日別テーブルの「条件」列にて time_type / preferred_start /
+   * preferred_end を表示する (患者リストや患者詳細ページと統一表現).
+   * 患者マスタの `weekly_pattern.time_type` をそのまま転写.
+   * 例: '固定' / '時間帯' / '午前' / '午後' / '終日' / null.
+   */
+  patient_time_type?: string | null;
+  /** Phase E-1: '時間帯'/'固定' のときの開始時刻 'HH:MM'. なければ null. */
+  patient_preferred_start?: string | null;
+  /** Phase E-1: '時間帯' のときの終了時刻 'HH:MM'. なければ null. */
+  patient_preferred_end?: string | null;
   /** "HH:MM" (15 分境界に切り下げ済み). */
   start_slot: string;
   /**
@@ -289,6 +300,49 @@ export function hasEventConflict(visitStartSlot: string, events: EventRead[]): E
     }
   }
   return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Phase E-1: 「条件」列に表示する患者条件 (time_type / preferred_*) を整形.
+// WeekdayScheduleCard 内の `formatTimeCondition` と表現を揃え、リスト表示と
+// テーブル表示で同じ語彙 (例: "固定 (09:30)" / "時間帯 (09:30-10:00)") を出す.
+// ─────────────────────────────────────────────────────────────────────────
+
+/** 'HH:MM:SS' / 'HH:MM' → 'HH:MM'. null/undefined はそのまま. */
+function trimToHHMM(t: string | null | undefined): string | null {
+  if (!t) return null;
+  return t.length >= 5 ? t.slice(0, 5) : t;
+}
+
+/**
+ * 「条件」列に表示する time_type ラベルを整形 (患者リストや患者詳細ページの表現と統一).
+ * 例:
+ *   - time_type='固定' & preferred_start='09:30' → '固定 (09:30)'
+ *   - time_type='時間帯' & start/end → '時間帯 (09:30-10:00)'
+ *   - time_type='午前' → '午前'
+ *   - すべて null → null
+ */
+export function formatPatientTimeCondition(args: {
+  time_type?: string | null;
+  preferred_start?: string | null;
+  preferred_end?: string | null;
+}): string | null {
+  const tt = args.time_type ?? null;
+  if (!tt) return null;
+  const start = trimToHHMM(args.preferred_start);
+  const end = trimToHHMM(args.preferred_end);
+  if (tt === '固定') {
+    return start ? `固定 (${start})` : '固定';
+  }
+  if (tt === '時間帯') {
+    if (start && end) return `時間帯 (${start}-${end})`;
+    if (start) return `時間帯 (${start}-)`;
+    return '時間帯';
+  }
+  if (tt === '午前' || tt === '午後' || tt === '終日') {
+    return tt;
+  }
+  return tt;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -683,17 +737,32 @@ function CourseTimeRow({
             <div className="px-1 py-0.5 text-[10px] leading-tight text-text-secondary">
               <div className="flex flex-col gap-0.5">
                 {occupants.map((o) => {
-                  // Wave 23: 「条件」= patient.sex_restriction のみ。
-                  // template.notes は条件列に表示しない。
-                  const text = o.patient_sex_restriction_label ?? '';
+                  // Phase E-1: 「条件」= time_type + 性別制限 + 複数 を統合表示
+                  // (患者リストや患者詳細ページと同じ語彙). 各要素は空行で区切らず
+                  // 縦積みで載せる. 全て空なら空文字描画 (= 既存挙動).
+                  const timeText = formatPatientTimeCondition({
+                    time_type: o.patient_time_type,
+                    preferred_start: o.patient_preferred_start,
+                    preferred_end: o.patient_preferred_end,
+                  });
+                  const sexText = o.patient_sex_restriction_label ?? null;
+                  const multiText = o.patient_requires_multiple_staff ? '複数' : null;
+                  const lines = [timeText, sexText, multiText].filter(
+                    (s): s is string => typeof s === 'string' && s.length > 0,
+                  );
+                  const tooltip = lines.join(' / ');
                   return (
                     <div
                       key={`cond-${o.id}`}
-                      className="truncate"
-                      title={text}
+                      className="flex flex-wrap gap-x-1 gap-y-0"
+                      title={tooltip}
                       data-testid={`course-occupant-condition-${o.id}`}
                     >
-                      {text}
+                      {lines.map((line, li) => (
+                        <span key={li} className="truncate">
+                          {line}
+                        </span>
+                      ))}
                     </div>
                   );
                 })}

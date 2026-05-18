@@ -235,11 +235,6 @@ export function CourseDayTablePanel({
   const [activeTab, setActiveTab] = useState<number | 'week'>(0);
   const activeWeekday = typeof activeTab === 'number' ? activeTab : 0;
 
-  // ─── 2026-W20: 週ビューの縦幅切替モード ───────────────────────
-  // compact = 既存挙動 (1 セル 7 件で省略 + 「+N 名」).
-  // full    = 全員表示 (overflow-y で長くスクロール).
-  const [weekDisplayMode, setWeekDisplayMode] = useState<'compact' | 'full'>('compact');
-
   // ─── 2026-W20: 月-土タブの表示モード ─────────────────────────
   // table = Excel 形式時刻グリッド (既存挙動 / DnD 編集可能).
   // list  = Before/After 形式 (時刻順 visit リスト / 視覚言語統一・閲覧専用).
@@ -653,6 +648,17 @@ export function CourseDayTablePanel({
         partnerLocation = { kind: 'pool' };
       }
 
+      // Phase E-1: 「条件」列に出す time_type / preferred_start / preferred_end
+      // (患者リスト / 患者詳細ページと同じ language を曜日別テーブルにも出す).
+      const wp = patient?.weekly_pattern as
+        | {
+            time_type?: string | null;
+            preferred_start?: string | null;
+            preferred_end?: string | null;
+          }
+        | null
+        | undefined;
+
       const arr = m.get(cid) ?? [];
       arr.push({
         id: v.id,
@@ -669,6 +675,9 @@ export function CourseDayTablePanel({
         partner_label: partnerLabel,
         partner_missing: partnerMissing,
         partner_location: partnerLocation,
+        patient_time_type: wp?.time_type ?? null,
+        patient_preferred_start: wp?.preferred_start ?? null,
+        patient_preferred_end: wp?.preferred_end ?? null,
       });
       m.set(cid, arr);
     }
@@ -1499,7 +1508,9 @@ export function CourseDayTablePanel({
                     data-testid="course-day-button-divider"
                   />
 
-                  {/* Wave 41 v2 § 13.6: 差分追加 (機能 A) */}
+                  {/* Wave 41 v2 § 13.6: 差分追加 (機能 A) — Phase E-1 で UI 文言を
+                      「プール投入」にリネーム (= プールに溢れた患者をスケジュールに投入する).
+                      識別子 (testid / queryKey / API path) は維持. */}
                   <Button
                     type="button"
                     size="sm"
@@ -1509,7 +1520,7 @@ export function CourseDayTablePanel({
                     data-testid="diff-add-button"
                   >
                     <Plus className="mr-1 h-4 w-4" aria-hidden />
-                    差分追加
+                    プール投入
                   </Button>
 
                   {/* Wave 41 v2 § 13.6: 全面最適化 (機能 B) */}
@@ -1554,44 +1565,6 @@ export function CourseDayTablePanel({
                 data-testid="course-week-overview-panel"
                 className="space-y-2"
               >
-                {/* 2026-W20: 縦幅切替トグル (コンパクト ⇄ 全員表示). */}
-                <div
-                  className="flex justify-end"
-                  data-testid="course-week-overview-display-mode-toolbar"
-                >
-                  <div
-                    role="group"
-                    aria-label="週ビュー 縦幅切替"
-                    className="inline-flex overflow-hidden rounded border border-border-default text-xs"
-                  >
-                    <button
-                      type="button"
-                      onClick={() => setWeekDisplayMode('compact')}
-                      aria-pressed={weekDisplayMode === 'compact'}
-                      data-testid="course-week-overview-mode-compact"
-                      className={
-                        weekDisplayMode === 'compact'
-                          ? 'bg-brand-primary px-2 py-1 text-white'
-                          : 'bg-bg-base px-2 py-1 text-text-secondary hover:bg-bg-muted'
-                      }
-                    >
-                      コンパクト
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setWeekDisplayMode('full')}
-                      aria-pressed={weekDisplayMode === 'full'}
-                      data-testid="course-week-overview-mode-full"
-                      className={
-                        weekDisplayMode === 'full'
-                          ? 'bg-brand-primary px-2 py-1 text-white'
-                          : 'bg-bg-base px-2 py-1 text-text-secondary hover:bg-bg-muted'
-                      }
-                    >
-                      全員表示
-                    </button>
-                  </div>
-                </div>
                 <CourseWeekOverview
                   templates={templates}
                   officeNameById={officeNameById}
@@ -1601,7 +1574,6 @@ export function CourseDayTablePanel({
                   assignedStaffByTemplateWeekday={assignedStaffByTemplateWeekday}
                   staffMap={staffMap}
                   sameAddressKeyByPatientId={sameAddressKeyByPatientId}
-                  displayMode={weekDisplayMode}
                   onPatientClick={handleOpenPatientDetail}
                 />
               </div>
