@@ -46,6 +46,7 @@ import uuid
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field, replace
 from datetime import date, time
+from enum import StrEnum
 from typing import Any, Literal
 from uuid import UUID
 
@@ -107,7 +108,35 @@ VISIT_BUFFER_MINUTES: int = 8
 # 不足が ``SHORTAGE_THRESHOLD_MIN`` 分以上なら「物理的に不可能」として配置を拒否し
 # (course_code を None にして) unassigned に流す. 未満なら従来通り警告のみで配置.
 # 5 分未満の微小不足は運用 (前 visit の早期終了 等) で吸収可能とみなす.
+#
+# **Wave 4 Phase C** で「移動時間で間に合わない物理不可能判定」専用に意味を再整理.
+# 希望時刻からの「乖離 (= 配置時刻が前後にズレた幅)」は別概念で、下の
+# ``CARE_ALARM_*_THRESHOLD_MIN`` で扱う:
+#   - ``SHORTAGE_THRESHOLD_MIN`` : 「前 visit からの移動 + バッファーが間に合わず
+#       earliest_start > desired_start」となる物理不可能判定. 5 分以上の不足を拒否.
+#   - ``CARE_ALARM_WARNING_THRESHOLD_MIN`` / ``CARE_ALARM_UNASSIGNED_THRESHOLD_MIN``:
+#       移動可能なケースでも、希望時刻から大きくズレて配置された場合に warning /
+#       unassigned に流すケアアラーム閾値. 物理可否ではなくケアの観点で判定.
 SHORTAGE_THRESHOLD_MIN: int = 5
+
+# Wave 4 (Phase C): ケアアラーム閾値.
+# 固定/時間帯 patient の希望時刻からの乖離を 3 段階で扱う:
+#   - 0-CARE_ALARM_WARNING_THRESHOLD_MIN (= 30): 黙黕 shift (warning なし)
+#   - CARE_ALARM_WARNING_THRESHOLD_MIN-CARE_ALARM_UNASSIGNED_THRESHOLD_MIN (= 60):
+#       warning emit (V2WarningType="care_alarm_deviation") + 配置は維持
+#   - CARE_ALARM_UNASSIGNED_THRESHOLD_MIN 超: unassigned (course_code=None) +
+#       UnassignedReason="care_alarm_exceeded"
+# SHORTAGE_THRESHOLD_MIN (= 5) は「移動時間で間に合わない物理不可能判定」専用で
+# 意味を維持. 希望時刻からの乖離はあくまでケアの観点 (患者が想定外の時刻に来訪を
+# 受ける) で評価する別の指標.
+#
+# 適用対象 (Wave 4 Phase C 確定仕様):
+#   - ``time_type='固定'``  : ``|actual_start - preferred_start|`` で評価
+#   - ``time_type='時間帯'``: ``[preferred_start, preferred_end]`` 範囲外なら、
+#                            範囲端からの距離で評価. 範囲内なら 0 (乖離なし).
+#   - ``time_type='午前'/'午後'/'終日'`` or preferred 不在 : 対象外 (= 0).
+CARE_ALARM_WARNING_THRESHOLD_MIN: int = 30
+CARE_ALARM_UNASSIGNED_THRESHOLD_MIN: int = 60
 
 # H2: 同住所判定の許容誤差 (緯度経度の絶対差 ≒ 100m).
 SAME_ADDRESS_TOLERANCE: float = 0.001
@@ -280,8 +309,49 @@ V2WarningType = Literal[
     # 自動シフトする際の通知. 固定時刻 visit でも例外的に時刻を動かす.
     # severity 的には "info" 相当 (運用者通知; actionable=False で自動解決済み).
     "auto_time_shift_for_conflict",
+    # Wave 4 (Phase C): ケアアラーム閾値による「希望時刻からの大乖離」警告.
+    # 固定/時間帯 patient が希望時刻から 30 分超 (60 分以内) で配置された場合に
+    # emit. 60 分超は unassigned + reason="care_alarm_exceeded" として外す
+    # (= 警告でなく未割当扱い).
+    "care_alarm_deviation",
     "general",
 ]
+
+
+# Wave 4 (Phase C): 警告カテゴリ集約 (11→6 種).
+# UI 側でフィルタ / 集計を簡略化するため、既存 11 種の V2WarningType を 6 つの
+# カテゴリに束ねる. ``V2Warning.code`` (= 既存 type) は後方互換維持. UI が
+# category だけ見れば「時刻乖離系」「容量系」「データ品質系」のような大分類で
+# 振り分けられる.
+class V2WarningCategory(StrEnum):
+    """V2Warning の集約カテゴリ (Wave 4 Phase C; 11 種 type を 6 カテゴリに集約)."""
+
+    time_deviation = "time_deviation"  # travel_time_shortage + care_alarm_deviation
+    capacity = (
+        "capacity"  # course_capacity + course_count + course_long_distance + two_staff_shortage
+    )
+    acceptance = "acceptance"  # acceptance_blocked
+    data_quality = "data_quality"  # data_health_staff_shifts_missing
+    placement_info = "placement_info"  # same_address_consolidation + auto_time_shift_for_conflict
+    conflict = "conflict"  # diff_add_conflict + general
+
+
+# Wave 4 (Phase C): V2WarningType → V2WarningCategory mapping.
+# 未登録 code は ``conflict`` (= general カテゴリ) にフォールバック.
+_WARNING_CODE_TO_CATEGORY: dict[str, V2WarningCategory] = {
+    "travel_time_shortage": V2WarningCategory.time_deviation,
+    "care_alarm_deviation": V2WarningCategory.time_deviation,
+    "course_capacity": V2WarningCategory.capacity,
+    "course_count": V2WarningCategory.capacity,
+    "course_long_distance": V2WarningCategory.capacity,
+    "two_staff_shortage": V2WarningCategory.capacity,
+    "acceptance_blocked": V2WarningCategory.acceptance,
+    "data_health_staff_shifts_missing": V2WarningCategory.data_quality,
+    "same_address_consolidation": V2WarningCategory.placement_info,
+    "auto_time_shift_for_conflict": V2WarningCategory.placement_info,
+    "diff_add_conflict": V2WarningCategory.conflict,
+    "general": V2WarningCategory.conflict,
+}
 
 
 # P2: 未割当患者の構造化理由 (UI 分類 + 詳細表示用).
@@ -298,6 +368,9 @@ UnassignedReason = Literal[
     "same_address_split",  # 同住所 3 名以上で別 set へ動かしたが配置できず
     "fixed_time_conflict",  # 固定時刻衝突 (travel_time_shortage 等)
     "lunch_break",  # 昼休憩 (12:00-13:00) と重なるため除外
+    # Wave 4 (Phase C): 希望時刻から CARE_ALARM_UNASSIGNED_THRESHOLD_MIN (=60) 分超で
+    # 配置された固定/時間帯 patient. ケアアラーム閾値超過のため unassigned 扱い.
+    "care_alarm_exceeded",
     "unknown",  # 上記いずれにも一致しない fallback
 ]
 
@@ -347,6 +420,16 @@ class V2Warning:
     # P2 追加: 構造化照合用. _identify_unassigned_patients で text 含み判定の
     # 代わりに patient_id 集合で照合する. 既存 emit 箇所は徐々に埋めていく.
     affected_patient_ids: list[UUID] = field(default_factory=list)
+    # Wave 4 (Phase C): 警告 type 集約カテゴリ (6 種). ``type`` から
+    # ``_WARNING_CODE_TO_CATEGORY`` で自動解決される (__post_init__).
+    # 明示的に渡された場合はそちらを優先 (= テスト等で override 可能).
+    category: V2WarningCategory | None = None
+
+    def __post_init__(self) -> None:
+        # Wave 4 (Phase C): code (= type) から category を自動解決.
+        # 未登録 type は V2WarningCategory.conflict にフォールバック.
+        if self.category is None:
+            self.category = _WARNING_CODE_TO_CATEGORY.get(self.type, V2WarningCategory.conflict)
 
 
 @dataclass
@@ -723,6 +806,53 @@ def _add_minutes(t: time, minutes: int) -> time:
     if total < 0:
         return time(0, 0)
     return time(total // 60, total % 60)
+
+
+def _compute_preferred_time_deviation(
+    *,
+    actual_start: time,
+    time_type: str | None,
+    preferred_start: time | None,
+    preferred_end: time | None,
+) -> int:
+    """Wave 4 (Phase C): time_type=固定 / 時間帯 patient の希望時刻からの乖離 (分単位).
+
+    Rules:
+        - ``time_type='固定'``: ``|actual_start - preferred_start|``.
+        - ``time_type='時間帯'``:
+            * ``actual_start < preferred_start`` → ``preferred_start - actual_start``
+            * ``actual_start > preferred_end``   → ``actual_start - preferred_end``
+            * 範囲内 (``preferred_start <= actual_start <= preferred_end``) → 0
+        - ``time_type='午前'/'午後'/'終日'`` / None / preferred 不在 : 0 (対象外).
+
+    Args:
+        actual_start: 配置確定後の開始時刻.
+        time_type: ``V2Visit.time_type``.
+        preferred_start: 患者の希望開始時刻 (HH:MM パース後 time / None).
+        preferred_end: 患者の希望終了時刻 (HH:MM パース後 time / None).
+
+    Returns:
+        乖離分数 (常に >= 0). 対象外 / 評価不能なら 0.
+    """
+    if time_type == "固定":
+        if preferred_start is None:
+            return 0
+        actual_min = actual_start.hour * 60 + actual_start.minute
+        preferred_min = preferred_start.hour * 60 + preferred_start.minute
+        return abs(actual_min - preferred_min)
+    if time_type == "時間帯":
+        if preferred_start is None or preferred_end is None:
+            return 0
+        actual_min = actual_start.hour * 60 + actual_start.minute
+        lower_min = preferred_start.hour * 60 + preferred_start.minute
+        upper_min = preferred_end.hour * 60 + preferred_end.minute
+        if actual_min < lower_min:
+            return lower_min - actual_min
+        if actual_min > upper_min:
+            return actual_min - upper_min
+        return 0
+    # 午前 / 午後 / 終日 / None: ケアアラーム対象外.
+    return 0
 
 
 def _round_up_to_5min(t: time) -> time:
@@ -2999,6 +3129,103 @@ def apply_travel_corrections(
     )
 
 
+def _evaluate_care_alarm_for_visits(
+    visits: list[V2Visit],
+    *,
+    weekday: int,
+    course_code: str | None,
+    office_name: str,
+    warnings: list[V2Warning],
+    unassigned_visit_ids: set[int],
+) -> None:
+    """Wave 4 (Phase C): 1 コース内の visit リストに対しケアアラーム閾値判定を行う.
+
+    各 visit (time_type=固定 / 時間帯 のみ対象) について、確定した ``start_time``
+    が希望時刻からどれだけ乖離しているか (``_compute_preferred_time_deviation``)
+    を評価し、3 段階で扱う:
+        - dev <= ``CARE_ALARM_WARNING_THRESHOLD_MIN`` (= 30): silent.
+        - 30 < dev <= ``CARE_ALARM_UNASSIGNED_THRESHOLD_MIN`` (= 60):
+          warning emit (``V2WarningType="care_alarm_deviation"``), 配置は維持.
+        - dev > 60: ``course_code=None`` + ``unassigned_visit_ids`` に追加,
+          warning emit (``care_alarm_deviation``; 後段 ``_classify_warning_reason``
+          で ``UnassignedReason="care_alarm_exceeded"`` に紐づく).
+
+    既に ``course_code=None`` の visit (物理不可能で外された等) はスキップ.
+    """
+    for cur in visits:
+        if cur.course_code is None:
+            continue
+        tt = cur.time_type
+        if tt not in ("固定", "時間帯"):
+            continue
+        ps = _parse_hhmm(cur.preferred_start)
+        pe = _parse_hhmm(cur.preferred_end)
+        deviation_min = _compute_preferred_time_deviation(
+            actual_start=cur.start_time,
+            time_type=tt,
+            preferred_start=ps,
+            preferred_end=pe,
+        )
+        if deviation_min <= CARE_ALARM_WARNING_THRESHOLD_MIN:
+            continue
+        wd_jp = _weekday_jp(weekday)
+        cur_name = cur.patient_name or (cur.patient_code or "不明")
+        window_label = (
+            f"{cur.preferred_start or '-'}-{cur.preferred_end or '-'}"
+            if tt == "時間帯"
+            else (cur.preferred_start or "-")
+        )
+        if deviation_min > CARE_ALARM_UNASSIGNED_THRESHOLD_MIN:
+            # 60 分超: unassigned + reason=care_alarm_exceeded.
+            cur.course_code = None
+            unassigned_visit_ids.add(id(cur))
+            warnings.append(
+                V2Warning(
+                    type="care_alarm_deviation",
+                    message=(
+                        f"{office_name} {course_code} {wd_jp}: "
+                        f"{cur_name} 様 ({tt} 希望 {window_label}) が "
+                        f"{_fmt_hhmm(cur.start_time)} 配置で "
+                        f"{deviation_min} 分の乖離 "
+                        f"({CARE_ALARM_UNASSIGNED_THRESHOLD_MIN} 分超) — "
+                        "ケアアラーム閾値超過のため未割当に移動"
+                    ),
+                    weekday=weekday,
+                    actionable=True,
+                    patient_id=cur.patient_id,
+                    patient_name=cur.patient_name,
+                    current_time=_fmt_hhmm(cur.start_time),
+                    time_type=tt,
+                    preferred_start=cur.preferred_start,
+                    preferred_end=cur.preferred_end,
+                    affected_patient_ids=[cur.patient_id],
+                )
+            )
+        else:
+            # 30 < dev <= 60: warning + 配置維持.
+            warnings.append(
+                V2Warning(
+                    type="care_alarm_deviation",
+                    message=(
+                        f"{office_name} {course_code} {wd_jp}: "
+                        f"{cur_name} 様 ({tt} 希望 {window_label}) が "
+                        f"{_fmt_hhmm(cur.start_time)} 配置で "
+                        f"{deviation_min} 分の乖離 "
+                        f"(>{CARE_ALARM_WARNING_THRESHOLD_MIN} 分; 配置は維持)"
+                    ),
+                    weekday=weekday,
+                    actionable=True,
+                    patient_id=cur.patient_id,
+                    patient_name=cur.patient_name,
+                    current_time=_fmt_hhmm(cur.start_time),
+                    time_type=tt,
+                    preferred_start=cur.preferred_start,
+                    preferred_end=cur.preferred_end,
+                    affected_patient_ids=[cur.patient_id],
+                )
+            )
+
+
 def _apply_travel_time_to_courses(
     visits: list[V2Visit],
     *,
@@ -3071,6 +3298,18 @@ def _apply_travel_time_to_courses(
 
     for (office_id, weekday, course_code), gv in groups.items():
         if len(gv) < 2:
+            # 単独 visit のコース: travel/lunch 補正は不要だが、Wave 4 (Phase C)
+            # ケアアラーム判定だけは単独 visit にも適用する.
+            # (実運用ではほぼ発火しないが、ペア成立前の中間状態 / 1 件しか配置
+            # できない週などで起こりうる).
+            _evaluate_care_alarm_for_visits(
+                gv,
+                weekday=weekday,
+                course_code=course_code,
+                office_name=(office_name_by_id or {}).get(office_id) or str(office_id),
+                warnings=warnings,
+                unassigned_visit_ids=unassigned_visit_ids,
+            )
             continue
         sv = sorted(gv, key=lambda x: x.start_time)
         # 同住所連番強制 (ユーザー要望 最重要): 同住所ペアは配列上で必ず隣接させる.
@@ -3546,6 +3785,18 @@ def _apply_travel_time_to_courses(
 
             cur.start_time = actual_start
             cur.end_time = _add_minutes(actual_start, cur.service_minutes)
+
+        # Wave 4 (Phase C): ケアアラーム閾値 (希望時刻からの乖離) 判定.
+        # earliest_start / 5 分切り上げ / lunch バンプ等で actual_start が確定した
+        # 後、固定/時間帯 patient の希望時刻との乖離を評価する.
+        _evaluate_care_alarm_for_visits(
+            sv,
+            weekday=weekday,
+            course_code=course_code,
+            office_name=office_name,
+            warnings=warnings,
+            unassigned_visit_ids=unassigned_visit_ids,
+        )
 
         # コース全体で連続移動が 30 分超なら長距離コース warning.
         if cumulative_travel_min > 30:
@@ -4099,6 +4350,17 @@ def _classify_warning_reason(
     # 受入カレンダー × (acceptance_blocked) — H5.
     if wtype == "acceptance_blocked":
         return ("acceptance_calendar", "general")
+    # Wave 4 (Phase C): ケアアラーム閾値超過 (希望時刻から 60 分超で配置不可).
+    # ``_evaluate_care_alarm_for_visits`` が emit する ``care_alarm_deviation``
+    # warning のうち、unassigned に流したケース (message に「ケアアラーム閾値超過」
+    # を含む) のみ ``care_alarm_exceeded`` reason に紐づける.
+    # 30-60 分の「配置は維持」warning は patient が after_visits に残るため、
+    # そもそも ``_identify_unassigned_patients`` の reason 分類対象にならない.
+    if wtype == "care_alarm_deviation":
+        if "ケアアラーム閾値超過" in msg:
+            return ("care_alarm_exceeded", "general")
+        # 万一 reason 分類対象になった「配置維持」warning は fixed_time_conflict に寄せる.
+        return ("fixed_time_conflict", "general")
     # 固定時刻衝突 / 時間帯外 / 昼休憩重複 etc.
     if wtype == "travel_time_shortage":
         if "昼休憩" in msg:

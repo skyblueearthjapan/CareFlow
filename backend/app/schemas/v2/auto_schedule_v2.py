@@ -49,7 +49,22 @@ V2WarningTypeOut = Literal[
     # Fix E (CareFlow): 同コース異住所同時刻 2 名以上が発生した場合に
     # 後者の時刻を自動シフトする際の通知. severity 的には "info" 相当.
     "auto_time_shift_for_conflict",
+    # Wave 4 (Phase C): 固定/時間帯 patient の希望時刻からの大乖離 warning.
+    # 30 分超で emit (60 分超は unassigned + UnassignedReason=care_alarm_exceeded).
+    "care_alarm_deviation",
     "general",
+]
+
+
+# Wave 4 (Phase C): V2WarningOut の集約カテゴリ (11 種 type → 6 カテゴリ).
+# Backend ``auto_allocator_v2.V2WarningCategory`` と 1:1 対応.
+V2WarningCategoryOut = Literal[
+    "time_deviation",  # travel_time_shortage + care_alarm_deviation
+    "capacity",  # course_capacity + course_count + course_long_distance + two_staff_shortage
+    "acceptance",  # acceptance_blocked
+    "data_quality",  # data_health_staff_shifts_missing
+    "placement_info",  # same_address_consolidation + auto_time_shift_for_conflict
+    "conflict",  # diff_add_conflict + general
 ]
 
 
@@ -84,6 +99,9 @@ class V2WarningOut(BaseModel):
     # P2: この警告が影響を与える patient_id 一覧 (例: 容量超過コース内の全患者,
     # マネージャー不足で未割当の全患者). UI で patient ハイライト等に使う.
     affected_patient_ids: list[uuid.UUID] = Field(default_factory=list)
+    # Wave 4 (Phase C): 警告 type 集約カテゴリ (11 種 type を 6 カテゴリに集約).
+    # UI 側でフィルタ/集計を簡略化するための add-on フィールド. ``type`` は後方互換維持.
+    category: V2WarningCategoryOut = "conflict"
 
 
 class V2VisitPlan(BaseModel):
@@ -353,6 +371,9 @@ UnassignedReasonOut = Literal[
     "same_address_split",
     "fixed_time_conflict",
     "lunch_break",
+    # Wave 4 (Phase C): 希望時刻から CARE_ALARM_UNASSIGNED_THRESHOLD_MIN (=60) 分超
+    # で配置された固定/時間帯 patient. ケアアラーム閾値超過のため未割当扱い.
+    "care_alarm_exceeded",
     "unknown",
 ]
 
@@ -621,6 +642,7 @@ __all__ = [
     "V2ProposalDelta",
     "V2VisitForUI",
     "V2VisitPlan",
+    "V2WarningCategoryOut",
     "V2WarningOut",
     "V2WarningTypeOut",
     "V2WeekdayBeforeAfter",

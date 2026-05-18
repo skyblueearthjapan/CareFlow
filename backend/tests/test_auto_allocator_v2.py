@@ -5859,7 +5859,12 @@ def test_round_up_keeps_constraint_am_to_lunch_bump() -> None:
 
 
 def test_apply_travel_corrections_shifts_cross_address_same_time_pair() -> None:
-    """Wave 1: 異住所同時刻ペア (両者座標あり) を helper が auto_shift する."""
+    """Wave 1: 異住所同時刻ペア (両者座標あり) を helper が auto_shift する.
+
+    Wave 4 (Phase C) ケアアラーム閾値導入後の調整: B 側 lng を 140.155 (~5km) に
+    寄せて auto_shift 後の B.start_time が preferred_start (10:00) から 60 分以内に
+    収まるようにする (距離が遠すぎると care_alarm_exceeded で unassigned に流れる).
+    """
     office_id = uuid.uuid4()
     a = _make_visit(
         lat=35.65, lng=140.10, office_id=office_id, start_h=10, start_m=0, patient_name="A"
@@ -5870,7 +5875,7 @@ def test_apply_travel_corrections_shifts_cross_address_same_time_pair() -> None:
     a.time_type = "固定"
     a.preferred_start = "10:00"
     b = _make_visit(
-        lat=35.65, lng=140.20, office_id=office_id, start_h=10, start_m=0, patient_name="B"
+        lat=35.65, lng=140.155, office_id=office_id, start_h=10, start_m=0, patient_name="B"
     )
     b.end_time = time(10, 30)
     b.service_minutes = 30
@@ -5881,7 +5886,7 @@ def test_apply_travel_corrections_shifts_cross_address_same_time_pair() -> None:
     warnings: list[V2Warning] = []
     unassigned = apply_travel_corrections([a, b], warnings=warnings)
 
-    # 両者座標がある + auto_shift で解消可能 → unassigned には流れない.
+    # 両者座標がある + auto_shift で解消可能 (~5km, 60 分以内シフト) → unassigned に流れない.
     assert id(a) not in unassigned
     assert id(b) not in unassigned
     # A は 10:00 不変, B は後段にシフトされている.
@@ -6695,3 +6700,321 @@ def test_lunch_window_none_does_not_force_default() -> None:
         f"compute_lunch_window の lunch 確保不能 warning が出ていない: "
         f"{[w.message for w in warnings]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Wave 4 (Phase C): ケアアラーム閾値 (希望時刻からの乖離).
+# 固定/時間帯 patient に対し:
+#   - 乖離 <= 30 分: silent (warning なし)
+#   - 30 < dev <= 60 分: warning emit (care_alarm_deviation), 配置維持
+#   - dev > 60 分: unassigned + reason=care_alarm_exceeded
+# ---------------------------------------------------------------------------
+
+
+def _make_pair_for_care_alarm(
+    *,
+    a_lng: float,
+    b_lng: float,
+    b_start: tuple[int, int],
+    b_time_type: str = "固定",
+    b_preferred_start: str = "10:00",
+    b_preferred_end: str | None = None,
+) -> tuple[V2Visit, V2Visit]:
+    """ケアアラーム閾値テスト用に 2 visit のコースを組む.
+
+    A は同 (office, course) の先頭固定 visit (preceding として配置), B が判定対象.
+    A は判定対象外 (time_type=終日) にして A 由来 warning が混ざらないようにする.
+    """
+    office_id = uuid.uuid4()
+    a = _make_visit(
+        lat=35.65, lng=a_lng, office_id=office_id, start_h=9, start_m=0, patient_name="A"
+    )
+    a.end_time = time(9, 30)
+    a.service_minutes = 30
+    a.course_code = "A"
+    a.time_type = "終日"
+    b = _make_visit(
+        lat=35.65,
+        lng=b_lng,
+        office_id=office_id,
+        start_h=b_start[0],
+        start_m=b_start[1],
+        patient_name="B",
+    )
+    b.end_time = time((b_start[0] + 1) % 24, b_start[1])
+    b.service_minutes = 30
+    b.course_code = "A"
+    b.time_type = b_time_type
+    b.preferred_start = b_preferred_start
+    b.preferred_end = b_preferred_end
+    return a, b
+
+
+def test_care_alarm_deviation_below_30min_silent() -> None:
+    """固定 10:00 希望、配置 10:25 → 乖離 25 分 = silent (care_alarm_deviation なし)."""
+    from app.services.scheduling.auto_allocator_v2 import (
+        _apply_travel_time_to_courses,
+    )
+
+    a, b = _make_pair_for_care_alarm(
+        a_lng=140.10, b_lng=140.10, b_start=(10, 25), b_preferred_start="10:00"
+    )
+    # 同住所 (移動 0) なので B は b_start (10:25) のまま確定する.
+    warnings: list[V2Warning] = []
+    _apply_travel_time_to_courses([a, b], warnings=warnings)
+
+    assert b.start_time == time(10, 25), f"B start_time 想定外: {b.start_time}"
+    assert b.course_code == "A", f"B は配置維持されるはず: {b.course_code}"
+    care_alarm_ws = [w for w in warnings if w.type == "care_alarm_deviation"]
+    assert not care_alarm_ws, f"乖離 25 分は silent のはず: {[w.message for w in care_alarm_ws]}"
+
+
+def test_care_alarm_deviation_between_30_60min_emits_warning() -> None:
+    """固定 10:00 希望、配置 10:45 → 乖離 45 分 = warning emit + 配置維持."""
+    from app.services.scheduling.auto_allocator_v2 import (
+        _apply_travel_time_to_courses,
+    )
+
+    a, b = _make_pair_for_care_alarm(
+        a_lng=140.10, b_lng=140.10, b_start=(10, 45), b_preferred_start="10:00"
+    )
+    warnings: list[V2Warning] = []
+    _apply_travel_time_to_courses([a, b], warnings=warnings)
+
+    assert b.start_time == time(10, 45)
+    assert b.course_code == "A", "30-60 分の乖離は配置維持されるはず"
+    care_alarm_ws = [
+        w
+        for w in warnings
+        if w.type == "care_alarm_deviation" and b.patient_id in (w.affected_patient_ids or [])
+    ]
+    assert care_alarm_ws, f"care_alarm_deviation warning が出ていない: {warnings}"
+    # category は time_deviation に自動解決される.
+    from app.services.scheduling.auto_allocator_v2 import V2WarningCategory
+
+    assert care_alarm_ws[0].category == V2WarningCategory.time_deviation
+
+
+def test_care_alarm_deviation_exceeds_60min_unassigned() -> None:
+    """固定 10:00 希望、配置 11:30 → 乖離 90 分 = unassigned + reason=care_alarm_exceeded."""
+    from app.services.scheduling.auto_allocator_v2 import (
+        _apply_travel_time_to_courses,
+    )
+
+    a, b = _make_pair_for_care_alarm(
+        a_lng=140.10, b_lng=140.10, b_start=(11, 30), b_preferred_start="10:00"
+    )
+    warnings: list[V2Warning] = []
+    unassigned_ids = _apply_travel_time_to_courses([a, b], warnings=warnings)
+
+    assert id(b) in unassigned_ids, f"60 分超は unassigned に流れるはず: {unassigned_ids}"
+    assert b.course_code is None
+    # warning は care_alarm_deviation type で「ケアアラーム閾値超過」メッセージ.
+    matching = [
+        w
+        for w in warnings
+        if w.type == "care_alarm_deviation"
+        and b.patient_id in (w.affected_patient_ids or [])
+        and "ケアアラーム閾値超過" in w.message
+    ]
+    assert matching, f"ケアアラーム閾値超過 warning が出ていない: {warnings}"
+
+
+def test_care_alarm_time_window_outside_emits_warning() -> None:
+    """時間帯 09:00-12:00、配置 12:35 → 範囲 35 分超過 = warning emit (30-60 分帯).
+
+    ``_apply_travel_time_to_courses`` の earliest_start ロジックは時間帯 visit を
+    可能なら window 内に押し戻すため、敢えて単独 visit のコース
+    (len(gv) < 2 で earliest_start 補正 skip) を使って actual_start が 12:35 のままで
+    care_alarm 判定にかかることを検証する.
+    """
+    from app.services.scheduling.auto_allocator_v2 import (
+        _apply_travel_time_to_courses,
+    )
+
+    office_id = uuid.uuid4()
+    b = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=12, start_m=35, patient_name="B"
+    )
+    b.end_time = time(13, 5)
+    b.service_minutes = 30
+    b.course_code = "A"
+    b.time_type = "時間帯"
+    b.preferred_start = "09:00"
+    b.preferred_end = "12:00"
+
+    warnings: list[V2Warning] = []
+    _apply_travel_time_to_courses([b], warnings=warnings)
+
+    assert b.course_code == "A", "35 分超過は配置維持されるはず"
+    care_alarm_ws = [w for w in warnings if w.type == "care_alarm_deviation"]
+    assert care_alarm_ws, f"時間帯範囲外 35 分超過の warning が出ていない: {warnings}"
+
+
+def test_care_alarm_time_window_within_silent() -> None:
+    """時間帯 09:00-12:00、配置 10:30 → 範囲内 = warning なし."""
+    from app.services.scheduling.auto_allocator_v2 import (
+        _apply_travel_time_to_courses,
+    )
+
+    a, b = _make_pair_for_care_alarm(
+        a_lng=140.10,
+        b_lng=140.10,
+        b_start=(10, 30),
+        b_time_type="時間帯",
+        b_preferred_start="09:00",
+        b_preferred_end="12:00",
+    )
+    warnings: list[V2Warning] = []
+    _apply_travel_time_to_courses([a, b], warnings=warnings)
+
+    assert b.course_code == "A"
+    care_alarm_ws = [w for w in warnings if w.type == "care_alarm_deviation"]
+    assert not care_alarm_ws, (
+        f"時間帯範囲内 (10:30 ∈ [09:00, 12:00]) は silent のはず: "
+        f"{[w.message for w in care_alarm_ws]}"
+    )
+
+
+def test_care_alarm_time_type_am_excluded() -> None:
+    """time_type=午前、配置 11:55 → ケアアラーム対象外 = warning なし."""
+    from app.services.scheduling.auto_allocator_v2 import (
+        _apply_travel_time_to_courses,
+    )
+
+    a, b = _make_pair_for_care_alarm(
+        a_lng=140.10,
+        b_lng=140.10,
+        b_start=(11, 55),
+        b_time_type="午前",
+        b_preferred_start="09:00",
+    )
+    warnings: list[V2Warning] = []
+    _apply_travel_time_to_courses([a, b], warnings=warnings)
+
+    care_alarm_ws = [w for w in warnings if w.type == "care_alarm_deviation"]
+    assert not care_alarm_ws, (
+        f"午前は対象外: warning なしのはず: {[w.message for w in care_alarm_ws]}"
+    )
+
+
+def test_care_alarm_negative_deviation_treated_symmetrically() -> None:
+    """固定 10:00 希望、配置 09:25 → 35 分前倒し = warning emit (絶対値判定)."""
+    from app.services.scheduling.auto_allocator_v2 import (
+        _apply_travel_time_to_courses,
+    )
+
+    a, b = _make_pair_for_care_alarm(
+        a_lng=140.10, b_lng=140.10, b_start=(9, 25), b_preferred_start="10:00"
+    )
+    # A は 09:00 開始固定 → end 09:30. B は 09:25 開始だが同住所なので移動 0 で
+    # 09:25 のまま確定する (実際は A.end=09:30 > 09:25 で earliest 上書きされるかもしれない
+    # ため、A の start を早めにずらして競合を避ける).
+    a.start_time = time(8, 0)
+    a.end_time = time(8, 30)
+    warnings: list[V2Warning] = []
+    _apply_travel_time_to_courses([a, b], warnings=warnings)
+
+    # B は 09:25 で配置維持されるはず (同住所 + A の end は 08:30).
+    assert b.start_time == time(9, 25), f"B start_time 想定外: {b.start_time}"
+    care_alarm_ws = [w for w in warnings if w.type == "care_alarm_deviation"]
+    assert care_alarm_ws, (
+        f"35 分前倒し (絶対値) は warning emit のはず: {[w.message for w in warnings]}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Wave 4 (Phase C): 警告 type 集約 (11 種 type → 6 カテゴリ).
+# V2Warning.category が code から自動解決されること.
+# ---------------------------------------------------------------------------
+
+
+def test_v2_warning_category_auto_resolved_from_code() -> None:
+    """各 code に対し正しい category が紐づく (Wave 4 Phase C mapping)."""
+    from app.services.scheduling.auto_allocator_v2 import (
+        V2Warning,
+        V2WarningCategory,
+    )
+
+    expected: list[tuple[str, V2WarningCategory]] = [
+        ("travel_time_shortage", V2WarningCategory.time_deviation),
+        ("care_alarm_deviation", V2WarningCategory.time_deviation),
+        ("course_capacity", V2WarningCategory.capacity),
+        ("course_count", V2WarningCategory.capacity),
+        ("course_long_distance", V2WarningCategory.capacity),
+        ("two_staff_shortage", V2WarningCategory.capacity),
+        ("acceptance_blocked", V2WarningCategory.acceptance),
+        ("data_health_staff_shifts_missing", V2WarningCategory.data_quality),
+        ("same_address_consolidation", V2WarningCategory.placement_info),
+        ("auto_time_shift_for_conflict", V2WarningCategory.placement_info),
+        ("diff_add_conflict", V2WarningCategory.conflict),
+        ("general", V2WarningCategory.conflict),
+    ]
+    for code, want_cat in expected:
+        w = V2Warning(type=code, message="x")  # type: ignore[arg-type]
+        assert w.category == want_cat, f"{code} の category が想定外: {w.category}"
+
+
+def test_v2_warning_category_default_conflict() -> None:
+    """未登録 type は category=conflict に fallback する."""
+    from app.services.scheduling.auto_allocator_v2 import (
+        V2Warning,
+        V2WarningCategory,
+    )
+
+    # mypy / Literal 型を無視して未登録 code を渡す (実行時 fallback の検証).
+    w = V2Warning(type="__not_registered__", message="x")  # type: ignore[arg-type]
+    assert w.category == V2WarningCategory.conflict
+
+
+def test_v2_warning_out_serializes_category() -> None:
+    """Pydantic ``V2WarningOut`` で serialize 結果に category が含まれる."""
+    from app.api.v1.schedule_v2 import _warning_to_out
+    from app.services.scheduling.auto_allocator_v2 import V2Warning
+
+    w = V2Warning(type="care_alarm_deviation", message="test deviation")
+    out = _warning_to_out(w)
+    dumped = out.model_dump()
+    assert "category" in dumped, f"category フィールドが missing: {dumped.keys()}"
+    assert dumped["category"] == "time_deviation"
+
+
+# ---------------------------------------------------------------------------
+# Wave 4 (Phase C): unassigned 判定で care_alarm_exceeded reason が紐づく.
+# ---------------------------------------------------------------------------
+
+
+def test_identify_unassigned_patient_for_care_alarm_exceeded() -> None:
+    """``_identify_unassigned_patients`` が ``care_alarm_deviation`` warning から
+    ``care_alarm_exceeded`` reason を抽出する (60 分超 unassigned ケース)."""
+    from app.services.scheduling.auto_allocator_v2 import (
+        V2Warning,
+        _identify_unassigned_patients,
+    )
+
+    pid = uuid.uuid4()
+    pool_p = Patient(
+        id=pid,
+        code="CARE-EX-1",
+        name="P-Care",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        primary_office_id=uuid.uuid4(),
+        weekly_pattern={"time_type": "固定", "preferred_start": "10:00"},
+    )
+    warnings = [
+        V2Warning(
+            type="care_alarm_deviation",
+            message="P-Care 様 (固定 希望 10:00) が 11:30 配置で 90 分の乖離 (60 分超) — ケアアラーム閾値超過のため未割当に移動",
+            patient_id=pid,
+            affected_patient_ids=[pid],
+        )
+    ]
+    out = _identify_unassigned_patients([pool_p], [], warnings)
+    assert len(out) == 1
+    item = out[0]
+    assert item["reason"] == "care_alarm_exceeded", (
+        f"reason が care_alarm_exceeded ではない: {item}"
+    )
+    assert item["patient_id"] == pid

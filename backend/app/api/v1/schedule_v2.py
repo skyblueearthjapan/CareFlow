@@ -119,7 +119,11 @@ def _warning_to_out(w: V2Warning) -> V2WarningOut:
     """``V2Warning`` (dataclass) を Pydantic ``V2WarningOut`` に変換.
 
     P2: ``affected_patient_ids`` を伝播.
+    Wave 4 (Phase C): ``category`` (集約カテゴリ) を伝播.
     """
+    # Wave 4 (Phase C): V2Warning.__post_init__ で category は自動解決済み.
+    # Enum を string value に落としてから V2WarningCategoryOut (Literal) に渡す.
+    category_value = w.category.value if w.category is not None else "conflict"
     return V2WarningOut(
         type=w.type,
         message=w.message,
@@ -134,6 +138,7 @@ def _warning_to_out(w: V2Warning) -> V2WarningOut:
         preferred_start=w.preferred_start,
         preferred_end=w.preferred_end,
         affected_patient_ids=list(w.affected_patient_ids or []),
+        category=category_value,
     )
 
 
