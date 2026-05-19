@@ -93,7 +93,7 @@ const FIELD_LABELS_JA: Record<string, string> = {
   ng_time_end: 'NG 時間（終了）',
   area: 'エリア',
   specified_type: '指名タイプ',
-  weekly_pattern: '週間訪問パターン',
+  weekly_pattern: '希望訪問パターン',
 
   // スタッフ特有
   role: 'ロール',

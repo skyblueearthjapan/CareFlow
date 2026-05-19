@@ -172,7 +172,7 @@ export function PatientsReplaceAllButton() {
               <li>
                 Excel の空セルは <strong>NULL</strong> で上書きされます
               </li>
-              <li>固定訪問スケジュール (PFV) は全件物理削除され、Excel から再投入されます</li>
+              <li>固定訪問パターン (PFV) は全件物理削除され、Excel から再投入されます</li>
               <li>
                 通常編集ではなく <strong>バックアップ復元目的</strong> で使ってください
               </li>

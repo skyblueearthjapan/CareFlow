@@ -318,7 +318,7 @@ export function PatientForm({
       </Card>
 
       <Card className="p-5 space-y-4">
-        <h2 className="font-serif text-lg font-bold text-text-primary">週間訪問パターン</h2>
+        <h2 className="font-serif text-lg font-bold text-text-primary">希望訪問パターン</h2>
         <Controller
           control={control}
           name="weekly_pattern"

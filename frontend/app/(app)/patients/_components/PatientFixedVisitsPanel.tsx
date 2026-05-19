@@ -1,7 +1,7 @@
-/**
+﻿/**
  * PatientFixedVisitsPanel (W9-FE1 Phase 3 / W22 拡張 / W37 Phase 3-A).
  *
- * 患者編集画面に「週間訪問パターン (固定枠)」セクションを提供するコンポーネント。
+ * 患者編集画面に「固定訪問パターン」セクションを提供するコンポーネント。
  *
  * 仕様:
  * - タブで normal / special を切替
@@ -302,7 +302,7 @@ function resolveRowCourseTemplates(
 // ─── Sub-component: ReadOnlyWeekGrid ─────────────────────────────────────────
 
 /**
- * W37 Phase 3-D: 読み取り専用の週間訪問パターン表示。
+ * W37 Phase 3-D: 読み取り専用の固定訪問パターン表示。
  *
  * - フォーム要素 (select / checkbox) の代わりにテキストラベルで表示。
  * - requires_multiple_staff=true の場合は「コース 1: A」「コース 2: B」を併記。
@@ -982,9 +982,7 @@ export function PatientFixedVisitsPanel({
   return (
     <Card className="p-5 space-y-4">
       <div className="flex items-center justify-between">
-        <h2 className="font-serif text-lg font-bold text-text-primary">
-          週間訪問パターン (固定枠)
-        </h2>
+        <h2 className="font-serif text-lg font-bold text-text-primary">固定訪問パターン</h2>
         {readonly && (
           <span className="text-xs text-text-muted bg-bg-muted rounded px-2 py-0.5">閲覧のみ</span>
         )}

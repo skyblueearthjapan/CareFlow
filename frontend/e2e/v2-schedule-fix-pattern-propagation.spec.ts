@@ -1,4 +1,4 @@
-/**
+﻿/**
  * v2 schedule fix → weekly_pattern propagation — Wave 6 W6-E2E (2/4).
  *
  * 注意 (Wave 15 以降 / W15-codex-fix (6)):
@@ -155,7 +155,7 @@ test.describe('v2 schedule fix → weekly_pattern propagation (W6-E2E #2)', () =
     await detailLink.click();
 
     // 詳細画面で weekly_pattern.entries が反映されている.
-    // ページに「週間訪問パターン」セクションが存在し、月曜 / 09:00 の表示があるか確認.
+    // ページに「希望訪問パターン」セクションが存在し、月曜 / 09:00 の表示があるか確認.
     // UI のラベリングは設計フェーズなので、broad に「09:00」「月」を本文中で
     // 検出できれば OK (曜日コード "Mon" 表示も許容する).
     await expect(page.getByText(/09:00/)).toBeVisible({ timeout: 10_000 });

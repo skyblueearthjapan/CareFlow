@@ -1,4 +1,4 @@
-/**
+﻿/**
  * PatientV2 / WeeklyPatternV2 zod schemas (Wave 0-C).
  *
  * 設計仕様書 v0.9 §4.1 に基づき、v2 で残す **16 項目** のみを保持する。
@@ -90,7 +90,7 @@ const hhmmSchema = z.string().regex(hhmmRegex, '時刻は HH:MM 形式で入力�
 // WeeklyPattern (§3.3 / §4.1)
 // ─────────────────────────────────────────────────────────────────────────
 
-/** 週間訪問パターンの 1 曜日エントリ (§3.3 / §4.1). */
+/** 希望訪問パターンの 1 曜日エントリ (§3.3 / §4.1). */
 export const weeklyPatternEntryV2Schema = z
   .object({
     weekday: weekdayV2Enum.nullable().optional(),
@@ -105,7 +105,7 @@ export const weeklyPatternEntryV2Schema = z
 export type WeeklyPatternEntryV2 = z.infer<typeof weeklyPatternEntryV2Schema>;
 
 /**
- * 患者の週間訪問パターン (§4.1 / §3.3).
+ * 患者の希望訪問パターン (§4.1 / §3.3).
  *
  * JSONB として `patients.weekly_pattern` に保存される。
  * 通常パターンと特別週パターン (`special_weekly_pattern`) で同じ shape を共有。
@@ -167,7 +167,7 @@ export const patientV2BaseSchema = z.object({
   // 訪問条件 (ハード制約)
   sex_restriction: sexRestrictionV2Enum.nullable().optional(),
 
-  // 週間訪問パターン (§4.1 核)
+  // 希望訪問パターン (§4.1 核)
   weekly_pattern: weeklyPatternV2Schema.nullable().optional(),
   special_weekly_pattern: weeklyPatternV2Schema.nullable().optional(),
   special_week_active: z.array(specialWeekRefV2Schema).default([]),

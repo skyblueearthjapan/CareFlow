@@ -57,7 +57,7 @@ export function WeeklyPatternEditor({
 
   return (
     <div className="space-y-4 rounded-md border border-border-default bg-bg-base p-4">
-      <h3 className="text-sm font-semibold text-text-primary">週間訪問パターン(希望欄)</h3>
+      <h3 className="text-sm font-semibold text-text-primary">希望訪問パターン</h3>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         <Field label="週あたり訪問回数" hint="1〜7">
