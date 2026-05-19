@@ -87,7 +87,7 @@ export interface UseMyVisitsParams {
  */
 export function addDays(iso: string, days: number): string {
   const [y, m, d] = iso.split('-').map(Number);
-  const dt = new Date(y ?? 1970, (m ?? 1) - 1, (d ?? 1));
+  const dt = new Date(y ?? 1970, (m ?? 1) - 1, d ?? 1);
   dt.setDate(dt.getDate() + days);
   const yyyy = dt.getFullYear();
   const mm = String(dt.getMonth() + 1).padStart(2, '0');
@@ -96,9 +96,7 @@ export function addDays(iso: string, days: number): string {
 }
 
 /** GET /api/v1/visits → my visits, optionally filtered by date or week. */
-export function useMyVisits(
-  params: UseMyVisitsParams = {},
-): UseQueryResult<MyVisit[], Error> {
+export function useMyVisits(params: UseMyVisitsParams = {}): UseQueryResult<MyVisit[], Error> {
   const { data: session, status } = useSession();
   const { accessToken, refreshToken, staffId } = authPair(session);
 
@@ -107,8 +105,7 @@ export function useMyVisits(
   // single `date` is provided we collapse the range to that one day; when a
   // `weekStart` is provided we expand to a 7-day window. Explicit
   // `weekStartFilter` / `weekEndFilter` always win.
-  const serverWeekStart =
-    params.weekStartFilter ?? params.date ?? params.weekStart ?? null;
+  const serverWeekStart = params.weekStartFilter ?? params.date ?? params.weekStart ?? null;
   const serverWeekEnd =
     params.weekEndFilter ??
     (params.date
@@ -147,10 +144,10 @@ export function useMyVisits(
       if (serverWeekEnd) {
         qs.set('week_end', serverWeekEnd);
       }
-      const mine = await fetcher<MyVisit[]>(
-        `/api/v1/visits?${qs.toString()}`,
-        { accessToken, refreshToken },
-      );
+      const mine = await fetcher<MyVisit[]>(`/api/v1/visits?${qs.toString()}`, {
+        accessToken,
+        refreshToken,
+      });
       // Belt-and-braces client-side narrowing in case the server returns a
       // wider window than we asked for (older deployments, caching, etc.).
       if (params.date) {
@@ -158,9 +155,7 @@ export function useMyVisits(
       }
       if (params.weekStart) {
         const end = addDays(params.weekStart, 7); // exclusive
-        return mine.filter(
-          (v) => v.visit_date >= params.weekStart! && v.visit_date < end,
-        );
+        return mine.filter((v) => v.visit_date >= params.weekStart! && v.visit_date < end);
       }
       return mine;
     },
@@ -168,9 +163,7 @@ export function useMyVisits(
 }
 
 /** GET /api/v1/visits/{id} — single visit detail (auth-scoped on the server). */
-export function useMyVisit(
-  visitId: string | null | undefined,
-): UseQueryResult<MyVisit, Error> {
+export function useMyVisit(visitId: string | null | undefined): UseQueryResult<MyVisit, Error> {
   const { data: session, status } = useSession();
   const { accessToken, refreshToken } = authPair(session);
 
@@ -199,9 +192,7 @@ export interface UseMyShiftsResult {
   shifts: StaffShift[];
 }
 
-export function useMyShifts(
-  _weekday?: number,
-): UseQueryResult<UseMyShiftsResult, Error> {
+export function useMyShifts(_weekday?: number): UseQueryResult<UseMyShiftsResult, Error> {
   const { data: session, status } = useSession();
   const { accessToken, refreshToken, staffId } = authPair(session);
 
@@ -238,9 +229,7 @@ export interface CheckInPayload {
  * permanent record on 404/405/501/network errors so check-in survives page
  * navigation. Phase 5 will replace the local fallback with server sync.
  */
-export function useCheckIn(
-  visitId: string,
-): UseMutationResult<MyVisit, Error, CheckInPayload> {
+export function useCheckIn(visitId: string): UseMutationResult<MyVisit, Error, CheckInPayload> {
   const qc = useQueryClient();
   const { data: session } = useSession();
   const { accessToken, refreshToken } = authPair(session);
@@ -260,9 +249,7 @@ export function useCheckIn(
 }
 
 /** POST /api/v1/visits/{id}/checkout — see useCheckIn note. */
-export function useCheckOut(
-  visitId: string,
-): UseMutationResult<MyVisit, Error, CheckInPayload> {
+export function useCheckOut(visitId: string): UseMutationResult<MyVisit, Error, CheckInPayload> {
   const qc = useQueryClient();
   const { data: session } = useSession();
   const { accessToken, refreshToken } = authPair(session);

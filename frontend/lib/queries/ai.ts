@@ -58,15 +58,7 @@ export function useAiLogs(params: UseAiLogsParams = {}) {
   const { since, until, model, limit = 50, offset = 0 } = params;
 
   return useQuery<Paginated<AiLogRead>>({
-    queryKey: [
-      'ai',
-      'logs',
-      since ?? null,
-      until ?? null,
-      model ?? null,
-      limit,
-      offset,
-    ],
+    queryKey: ['ai', 'logs', since ?? null, until ?? null, model ?? null, limit, offset],
     queryFn: async () => {
       const usp = new URLSearchParams({
         limit: String(limit),

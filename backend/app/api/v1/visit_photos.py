@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -35,7 +35,6 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse
 from sqlalchemy import select
-from sqlalchemy.orm import selectinload
 
 from app.core.deps import CurrentActiveUser, DbDep, require_role
 from app.models.user import User
@@ -79,9 +78,7 @@ def _serialize(photo: VisitPhoto) -> dict:
 
 
 async def _load_visit_or_404(db, visit_id: uuid.UUID) -> Visit:
-    visit = await db.scalar(
-        select(Visit).where(Visit.id == visit_id, Visit.deleted_at.is_(None))
-    )
+    visit = await db.scalar(select(Visit).where(Visit.id == visit_id, Visit.deleted_at.is_(None)))
     if visit is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     return visit
@@ -90,9 +87,7 @@ async def _load_visit_or_404(db, visit_id: uuid.UUID) -> Visit:
 def _check_visit_access(user: User, visit: Visit) -> None:
     """Enforce same staff-visibility as ``visits.get_visit``."""
     if user.role not in {"admin", "manager", "staff"}:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role"
-        )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
     if user.role == "staff":
         if user.staff_id is None or user.staff_id not in {
             visit.primary_staff_id,
@@ -100,9 +95,7 @@ def _check_visit_access(user: User, visit: Visit) -> None:
             visit.mentor_staff_id,
         }:
             # Hide existence to mirror visits.py behaviour.
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="Not found"
-            )
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
 
 
 @router.get(
@@ -201,7 +194,7 @@ async def upload_visit_photo(
         size_bytes=len(contents),
         caption=caption,
         uploaded_by=user.id,
-        uploaded_at=datetime.now(timezone.utc),
+        uploaded_at=datetime.now(UTC),
     )
     db.add(row)
     try:
@@ -229,9 +222,7 @@ async def delete_visit_photo(
     _user: Annotated[User, Depends(require_role("admin", "manager"))],
 ) -> None:
     row = await db.scalar(
-        select(VisitPhoto).where(
-            VisitPhoto.id == photo_id, VisitPhoto.visit_id == visit_id
-        )
+        select(VisitPhoto).where(VisitPhoto.id == photo_id, VisitPhoto.visit_id == visit_id)
     )
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
@@ -262,9 +253,7 @@ async def download_visit_photo(
     _check_visit_access(user, visit)
 
     row = await db.scalar(
-        select(VisitPhoto).where(
-            VisitPhoto.id == photo_id, VisitPhoto.visit_id == visit_id
-        )
+        select(VisitPhoto).where(VisitPhoto.id == photo_id, VisitPhoto.visit_id == visit_id)
     )
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")

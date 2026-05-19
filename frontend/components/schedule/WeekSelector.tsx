@@ -48,33 +48,20 @@ export function WeekSelector({ weekStart, onChange }: WeekSelectorProps) {
 
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <Button
-        type="button"
-        variant="outline"
-        size="icon"
-        onClick={goPrev}
-        aria-label="前週"
-      >
+      <Button type="button" variant="outline" size="icon" onClick={goPrev} aria-label="前週">
         <ChevronLeft className="h-4 w-4" />
       </Button>
       <Button type="button" variant="outline" size="sm" onClick={goToday}>
         今週
       </Button>
-      <Button
-        type="button"
-        variant="outline"
-        size="icon"
-        onClick={goNext}
-        aria-label="次週"
-      >
+      <Button type="button" variant="outline" size="icon" onClick={goNext} aria-label="次週">
         <ChevronRight className="h-4 w-4" />
       </Button>
       <div className="min-w-[220px]">
         <DatePicker value={weekStart} onChange={handlePick} formatStr="yyyy-MM-dd" />
       </div>
       <span className="tnum text-sm text-text-secondary">
-        {format(weekStart, 'M/d', { locale: ja })} 〜{' '}
-        {format(weekEnd, 'M/d', { locale: ja })}
+        {format(weekStart, 'M/d', { locale: ja })} 〜 {format(weekEnd, 'M/d', { locale: ja })}
       </span>
     </div>
   );

@@ -33,7 +33,7 @@ self.addEventListener('install', (event) => {
       const cache = await caches.open(STATIC_CACHE);
       await cache.addAll([OFFLINE_URL]);
       await self.skipWaiting();
-    })()
+    })(),
   );
 });
 
@@ -42,12 +42,10 @@ self.addEventListener('activate', (event) => {
     (async () => {
       const keys = await caches.keys();
       await Promise.all(
-        keys
-          .filter((k) => !k.startsWith(CACHE_VERSION))
-          .map((k) => caches.delete(k))
+        keys.filter((k) => !k.startsWith(CACHE_VERSION)).map((k) => caches.delete(k)),
       );
       await self.clients.claim();
-    })()
+    })(),
   );
 });
 
@@ -73,8 +71,7 @@ self.addEventListener('fetch', (event) => {
   }
 
   const isNavigation =
-    req.mode === 'navigate' ||
-    (req.headers.get('accept') || '').includes('text/html');
+    req.mode === 'navigate' || (req.headers.get('accept') || '').includes('text/html');
 
   // Allowlisted public assets: cache-first.
   if (isCacheable(url)) {
@@ -95,7 +92,7 @@ self.addEventListener('fetch', (event) => {
           if (cached) return cached;
           throw err;
         }
-      })()
+      })(),
     );
     return;
   }
@@ -114,6 +111,6 @@ self.addEventListener('fetch', (event) => {
         }
         throw err;
       }
-    })()
+    })(),
   );
 });

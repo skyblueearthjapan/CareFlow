@@ -30,7 +30,7 @@ class StaffShiftItem(BaseModel):
         return _validate_hhmm(v)
 
     @model_validator(mode="after")
-    def _check_range(self) -> "StaffShiftItem":
+    def _check_range(self) -> StaffShiftItem:
         if self.is_on:
             if self.start_time is None or self.end_time is None:
                 # On-day with no times is allowed (treated as full-day default).
@@ -48,7 +48,7 @@ class ShiftsBulkUpdate(BaseModel):
     shifts: list[StaffShiftItem] = Field(min_length=7, max_length=7)
 
     @model_validator(mode="after")
-    def _check_unique_weekdays(self) -> "ShiftsBulkUpdate":
+    def _check_unique_weekdays(self) -> ShiftsBulkUpdate:
         seen = {item.weekday for item in self.shifts}
         if len(seen) != 7 or seen != {0, 1, 2, 3, 4, 5, 6}:
             raise ValueError("shifts must cover weekdays 0..6 exactly once")

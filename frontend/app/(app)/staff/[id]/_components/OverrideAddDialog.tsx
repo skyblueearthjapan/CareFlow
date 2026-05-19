@@ -34,15 +34,8 @@ interface OverrideAddDialogProps {
   onOpenChange: (next: boolean) => void;
 }
 
-export function OverrideAddDialog({
-  open,
-  staffId,
-  onOpenChange,
-}: OverrideAddDialogProps) {
-  const { state, setState, errors, setErrors } = useOverrideFormState(
-    emptyOverrideForm(),
-    open,
-  );
+export function OverrideAddDialog({ open, staffId, onOpenChange }: OverrideAddDialogProps) {
+  const { state, setState, errors, setErrors } = useOverrideFormState(emptyOverrideForm(), open);
 
   const mutation = useCreateOverride(staffId);
 
@@ -71,8 +64,7 @@ export function OverrideAddDialog({
         <DialogHeader>
           <DialogTitle>休み・時間変更を追加</DialogTitle>
           <DialogDescription>
-            指定日の通常シフトを上書きします。種別が「時間変更」の場合のみ
-            時刻を入力してください。
+            指定日の通常シフトを上書きします。種別が「時間変更」の場合のみ 時刻を入力してください。
           </DialogDescription>
         </DialogHeader>
 

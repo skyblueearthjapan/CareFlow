@@ -19,9 +19,7 @@ export function GeocodingCacheList() {
   return (
     <section className="space-y-4">
       <header>
-        <h2 className="font-serif text-xl font-bold text-text-primary">
-          Geocoding キャッシュ
-        </h2>
+        <h2 className="font-serif text-xl font-bold text-text-primary">Geocoding キャッシュ</h2>
         <p className="text-sm text-text-secondary">
           住所 -&gt; 緯度経度 のキャッシュ (admin のみ閲覧)
         </p>

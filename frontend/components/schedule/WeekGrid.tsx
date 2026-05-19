@@ -123,10 +123,7 @@ export function WeekGrid({
       }
     }
     for (const arr of map.values()) {
-      arr.sort(
-        (a, b) =>
-          timeToMinutes(a.visit.start_time) - timeToMinutes(b.visit.start_time),
-      );
+      arr.sort((a, b) => timeToMinutes(a.visit.start_time) - timeToMinutes(b.visit.start_time));
     }
     return map;
   }, [visits]);
@@ -193,9 +190,7 @@ export function WeekGrid({
                 >
                   <div className="flex items-baseline gap-2">
                     <span className="tnum">{format(d, 'M/d', { locale: ja })}</span>
-                    <span className="text-xs text-text-muted">
-                      ({WEEKDAY_LABELS[i]})
-                    </span>
+                    <span className="text-xs text-text-muted">({WEEKDAY_LABELS[i]})</span>
                   </div>
                 </th>
               );
@@ -232,17 +227,11 @@ export function WeekGrid({
                             key={`${e.visit.id}|${e.role}`}
                             visit={e.visit}
                             tone={
-                              flagged.has(`${key}|${e.visit.id}|${e.role}`)
-                                ? 'warning'
-                                : 'default'
+                              flagged.has(`${key}|${e.visit.id}|${e.role}`) ? 'warning' : 'default'
                             }
                             canEdit={canEditVisit}
                             onClick={onVisitClick}
-                            officeLabel={
-                              officeLabel
-                                ? officeLabel(s.primary_office_id)
-                                : null
-                            }
+                            officeLabel={officeLabel ? officeLabel(s.primary_office_id) : null}
                             roleBadge={roleBadge(e.role)}
                           />
                         ))}

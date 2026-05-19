@@ -21,11 +21,7 @@ import {
 import { useSession } from 'next-auth/react';
 
 import { fetcher } from '@/lib/api/fetcher';
-import type {
-  StaffCreate,
-  StaffRead,
-  StaffUpdate,
-} from '@/lib/schemas/staff';
+import type { StaffCreate, StaffRead, StaffUpdate } from '@/lib/schemas/staff';
 
 const STAFF_BASE = '/api/v1/staff';
 
@@ -54,10 +50,10 @@ export function useStaffList(params: UseStaffListParams = {}) {
   return useQuery<StaffRead[]>({
     queryKey: [...staffKey, 'list', { limit, offset, userId }],
     queryFn: () =>
-      fetcher<StaffRead[]>(
-        `${STAFF_BASE}?limit=${limit}&offset=${offset}`,
-        { accessToken, refreshToken },
-      ),
+      fetcher<StaffRead[]>(`${STAFF_BASE}?limit=${limit}&offset=${offset}`, {
+        accessToken,
+        refreshToken,
+      }),
     enabled: isAuthenticated,
   });
 }

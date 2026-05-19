@@ -49,12 +49,7 @@ interface OverrideFormProps {
   disabled?: boolean;
 }
 
-export function OverrideForm({
-  state,
-  onChange,
-  errors,
-  disabled,
-}: OverrideFormProps) {
+export function OverrideForm({ state, onChange, errors, disabled }: OverrideFormProps) {
   const showTime = overrideTypeUsesTime(state.type);
 
   return (
@@ -77,18 +72,14 @@ export function OverrideForm({
             required
             disabled={disabled}
           />
-          {errors.date && (
-            <p className="text-xs text-red-600">{errors.date}</p>
-          )}
+          {errors.date && <p className="text-xs text-red-600">{errors.date}</p>}
         </div>
 
         <div className="space-y-1">
           <Label htmlFor="override-type">種別</Label>
           <Select
             value={state.type}
-            onValueChange={(v) =>
-              onChange({ ...state, type: v as OverrideType })
-            }
+            onValueChange={(v) => onChange({ ...state, type: v as OverrideType })}
             disabled={disabled}
           >
             <SelectTrigger id="override-type" aria-label="種別を選択">
@@ -102,9 +93,7 @@ export function OverrideForm({
               ))}
             </SelectContent>
           </Select>
-          {errors.type && (
-            <p className="text-xs text-red-600">{errors.type}</p>
-          )}
+          {errors.type && <p className="text-xs text-red-600">{errors.type}</p>}
         </div>
       </div>
 
@@ -116,15 +105,11 @@ export function OverrideForm({
               id="override-start"
               type="time"
               value={state.start_time}
-              onChange={(e) =>
-                onChange({ ...state, start_time: e.target.value })
-              }
+              onChange={(e) => onChange({ ...state, start_time: e.target.value })}
               disabled={disabled}
               aria-label="変更後の開始時刻"
             />
-            {errors.start_time && (
-              <p className="text-xs text-red-600">{errors.start_time}</p>
-            )}
+            {errors.start_time && <p className="text-xs text-red-600">{errors.start_time}</p>}
           </div>
           <div className="space-y-1">
             <Label htmlFor="override-end">終了時刻</Label>
@@ -132,15 +117,11 @@ export function OverrideForm({
               id="override-end"
               type="time"
               value={state.end_time}
-              onChange={(e) =>
-                onChange({ ...state, end_time: e.target.value })
-              }
+              onChange={(e) => onChange({ ...state, end_time: e.target.value })}
               disabled={disabled}
               aria-label="変更後の終了時刻"
             />
-            {errors.end_time && (
-              <p className="text-xs text-red-600">{errors.end_time}</p>
-            )}
+            {errors.end_time && <p className="text-xs text-red-600">{errors.end_time}</p>}
           </div>
         </div>
       )}
@@ -177,9 +158,7 @@ export function formStateToCreate(state: OverrideFormState): OverrideCreate {
   };
 }
 
-export function validateOverrideForm(
-  state: OverrideFormState,
-): {
+export function validateOverrideForm(state: OverrideFormState): {
   ok: boolean;
   data?: OverrideCreate;
   errors: Partial<Record<keyof OverrideFormState | '_form', string>>;
@@ -203,14 +182,11 @@ export function validateOverrideForm(
 
 /** Hook helper: keep the local form state in sync when the parent passes a
  * fresh `initial` (e.g. opening the edit dialog for a different row). */
-export function useOverrideFormState(
-  initial: OverrideFormState,
-  resetSignal: unknown,
-) {
+export function useOverrideFormState(initial: OverrideFormState, resetSignal: unknown) {
   const [state, setState] = useState<OverrideFormState>(initial);
-  const [errors, setErrors] = useState<
-    Partial<Record<keyof OverrideFormState | '_form', string>>
-  >({});
+  const [errors, setErrors] = useState<Partial<Record<keyof OverrideFormState | '_form', string>>>(
+    {},
+  );
 
   // Re-seed when the dialog re-opens or the target row changes.
   useEffect(() => {
@@ -221,8 +197,5 @@ export function useOverrideFormState(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resetSignal]);
 
-  return useMemo(
-    () => ({ state, setState, errors, setErrors }),
-    [state, errors],
-  );
+  return useMemo(() => ({ state, setState, errors, setErrors }), [state, errors]);
 }

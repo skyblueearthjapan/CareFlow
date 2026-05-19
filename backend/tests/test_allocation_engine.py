@@ -9,9 +9,8 @@ Designed for pytest >= 7.x. Run from repo root::
 
     pytest backend/tests/test_allocation_engine.py -v
 """
-from __future__ import annotations
 
-from typing import List, Optional
+from __future__ import annotations
 
 import pytest
 
@@ -31,20 +30,21 @@ from app.services.diff import (
 )
 from app.services.diff.engine import _extract_day_of_month
 
-
 # ---------------------------------------------------------------------------
 # Fixture builders (small helpers, not pytest fixtures, so each test can pick
 # exactly the topology it needs without sharing state).
 # ---------------------------------------------------------------------------
 
-DAY = "2026/05/04"        # Monday
-TUE = "2026/05/05"        # Tuesday
+DAY = "2026/05/04"  # Monday
+TUE = "2026/05/05"  # Tuesday
 ALL_WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 
 def block_day_shift_for_staff(
-    staff_list: List[Staff], pid: str, sample_date: str = DAY,
-) -> List[StaffChange]:
+    staff_list: list[Staff],
+    pid: str,
+    sample_date: str = DAY,
+) -> list[StaffChange]:
     """Build StaffChange records that mark every weekday Mon-Fri as 休み for
     each staff in staff_list, EXCEPT the original sample_date.
 
@@ -54,35 +54,40 @@ def block_day_shift_for_staff(
     otherwise the engine will succeed by shifting to Tue/Wed/etc.
     """
     from datetime import datetime, timedelta
+
     parts = sample_date.split("/")
     base = datetime(int(parts[0]), int(parts[1]), int(parts[2]))
     monday = base - timedelta(days=base.weekday())
-    blocked: List[StaffChange] = []
+    blocked: list[StaffChange] = []
     for staff in staff_list:
         for offset in range(5):  # Mon-Fri
             d = monday + timedelta(days=offset)
             ds = d.strftime("%Y/%m/%d")
             if ds == sample_date:
                 continue
-            blocked.append(StaffChange(
-                staff_id=staff.sid, date_str=ds, restriction_type="休み",
-            ))
+            blocked.append(
+                StaffChange(
+                    staff_id=staff.sid,
+                    date_str=ds,
+                    restriction_type="休み",
+                )
+            )
     return blocked
 
 
 def make_staff(
     sid: str,
     *,
-    name: Optional[str] = None,
+    name: str | None = None,
     gender: str = "",
-    work_days: Optional[List[str]] = None,
-    areas: Optional[List[str]] = None,
+    work_days: list[str] | None = None,
+    areas: list[str] | None = None,
     max_per_day: int = 999,
     alloc_pref: str = "多め",  # default: soft_cap == max_per_day
     shift_start_min: int = 540,
     shift_end_min: int = 1080,
-    lat: Optional[float] = 35.0,
-    lng: Optional[float] = 139.0,
+    lat: float | None = 35.0,
+    lng: float | None = 139.0,
 ) -> Staff:
     return Staff(
         sid=sid,
@@ -102,11 +107,11 @@ def make_staff(
 def make_patient(
     pid: str,
     *,
-    name: Optional[str] = None,
+    name: str | None = None,
     area: str = "",
     sex_limit: str = "",
-    lat: Optional[float] = 35.0,
-    lng: Optional[float] = 139.0,
+    lat: float | None = 35.0,
+    lng: float | None = 139.0,
 ) -> Patient:
     return Patient(
         pid=pid,
@@ -121,22 +126,22 @@ def make_patient(
 def make_request(
     pid: str,
     *,
-    pname: Optional[str] = None,
+    pname: str | None = None,
     date_str: str = DAY,
     weekday: str = "Mon",
     area: str = "",
     need_staff: int = 1,
     time_type: str = "終日",
-    earliest_min: Optional[int] = None,
-    latest_min: Optional[int] = None,
-    start_min: Optional[int] = None,
-    end_min: Optional[int] = None,
+    earliest_min: int | None = None,
+    latest_min: int | None = None,
+    start_min: int | None = None,
+    end_min: int | None = None,
     service_min: int = 60,
     sex_limit: str = "",
     cont_pref: str = "",
-    specified_staff_ids: Optional[List[str]] = None,
+    specified_staff_ids: list[str] | None = None,
     specified_type: str = "",
-    ng_staff_ids: Optional[List[str]] = None,
+    ng_staff_ids: list[str] | None = None,
     prev_staff_id: str = "",
 ) -> VisitRequest:
     return VisitRequest(
@@ -163,11 +168,11 @@ def make_request(
 
 
 def make_engine(
-    staff: List[Staff],
-    patients: List[Patient],
+    staff: list[Staff],
+    patients: list[Patient],
     *,
-    events: Optional[List[Event]] = None,
-    staff_changes: Optional[List[StaffChange]] = None,
+    events: list[Event] | None = None,
+    staff_changes: list[StaffChange] | None = None,
 ) -> AllocationEngine:
     return AllocationEngine(
         staff_list=staff,
@@ -177,11 +182,11 @@ def make_engine(
     )
 
 
-def assigned_results(out: dict) -> List[AssignmentResult]:
+def assigned_results(out: dict) -> list[AssignmentResult]:
     return [r for r in out["results"] if r.staff_id and not r.is_event]
 
 
-def unassigned_results(out: dict) -> List[AssignmentResult]:
+def unassigned_results(out: dict) -> list[AssignmentResult]:
     return [r for r in out["results"] if not r.staff_id and not r.is_event]
 
 
@@ -217,10 +222,14 @@ def unassigned_results(out: dict) -> List[AssignmentResult]:
             lambda: (
                 [make_staff("S1", gender="男性")],
                 [make_patient("P1")],
-                [make_request(
-                    "P1", sex_limit="女性のみ",
-                    specified_staff_ids=["S1"], specified_type="必須",
-                )],
+                [
+                    make_request(
+                        "P1",
+                        sex_limit="女性のみ",
+                        specified_staff_ids=["S1"],
+                        specified_type="必須",
+                    )
+                ],
             ),
         ),
         # 4: 必須指定スタッフが soft_cap 超過（同一スタッフ・同一日上限） → reject
@@ -232,10 +241,20 @@ def unassigned_results(out: dict) -> List[AssignmentResult]:
                 [make_staff("S1", max_per_day=2, alloc_pref="均等")],
                 [make_patient("P1"), make_patient("P2")],
                 [
-                    make_request("P1", time_type="固定", start_min=540,
-                                 specified_staff_ids=["S1"], specified_type="必須"),
-                    make_request("P2", time_type="固定", start_min=720,
-                                 specified_staff_ids=["S1"], specified_type="必須"),
+                    make_request(
+                        "P1",
+                        time_type="固定",
+                        start_min=540,
+                        specified_staff_ids=["S1"],
+                        specified_type="必須",
+                    ),
+                    make_request(
+                        "P2",
+                        time_type="固定",
+                        start_min=720,
+                        specified_staff_ids=["S1"],
+                        specified_type="必須",
+                    ),
                 ],
             ),
         ),
@@ -245,8 +264,11 @@ def unassigned_results(out: dict) -> List[AssignmentResult]:
             lambda: (
                 [make_staff("S1"), make_staff("S2")],
                 [make_patient("P1")],
-                [make_request("P1", cont_pref="同じ人希望",
-                              prev_staff_id="S1", ng_staff_ids=["S1"])],
+                [
+                    make_request(
+                        "P1", cont_pref="同じ人希望", prev_staff_id="S1", ng_staff_ids=["S1"]
+                    )
+                ],
             ),
         ),
         # 6: 2名体制の片方しか居ない → 片割れは未割当に落ちる
@@ -263,8 +285,15 @@ def unassigned_results(out: dict) -> List[AssignmentResult]:
         (
             "final_sweep_no_stale_overlap",
             lambda: (
-                [make_staff("S1", shift_start_min=540, shift_end_min=720,
-                            max_per_day=99, alloc_pref="多め")],
+                [
+                    make_staff(
+                        "S1",
+                        shift_start_min=540,
+                        shift_end_min=720,
+                        max_per_day=99,
+                        alloc_pref="多め",
+                    )
+                ],
                 [make_patient(f"P{i}") for i in range(1, 5)],
                 [
                     make_request("P1", time_type="固定", start_min=540, service_min=30),
@@ -368,8 +397,14 @@ def test_c1_unregister_restores_pid_date_staff():
 
     # Manually populate one assigned result and register
     r = AssignmentResult(
-        visit_id="V001", date_str=DAY, staff_id="S1", staff_name="S1",
-        pid="P1", pname="P1", start_min=540, end_min=600,
+        visit_id="V001",
+        date_str=DAY,
+        staff_id="S1",
+        staff_name="S1",
+        pid="P1",
+        pname="P1",
+        start_min=540,
+        end_min=600,
     )
     engine.results.append(r)
     engine._register_assignment("S1", DAY, 0, pid="P1")
@@ -381,7 +416,9 @@ def test_c1_unregister_restores_pid_date_staff():
 
     engine._unregister_assignment("S1", DAY, 0)
 
-    assert pd_key not in engine.pid_date_staff or "S1" not in engine.pid_date_staff.get(pd_key, set())
+    assert pd_key not in engine.pid_date_staff or "S1" not in engine.pid_date_staff.get(
+        pd_key, set()
+    )
     assert "P1" not in engine.last_assigned_by_patient
     assert engine.assign_count[f"S1|{DAY}"] == 0
 
@@ -393,8 +430,14 @@ def test_c1_unregister_keeps_pid_when_other_visit_remains():
     # Two visits for same patient + same staff + same date
     for i, vid in enumerate(("V001", "V002")):
         r = AssignmentResult(
-            visit_id=vid, date_str=DAY, staff_id="S1", staff_name="S1",
-            pid="P1", pname="P1", start_min=540 + 90 * i, end_min=600 + 90 * i,
+            visit_id=vid,
+            date_str=DAY,
+            staff_id="S1",
+            staff_name="S1",
+            pid="P1",
+            pname="P1",
+            start_min=540 + 90 * i,
+            end_min=600 + 90 * i,
         )
         engine.results.append(r)
         engine._register_assignment("S1", DAY, i, pid="P1")
@@ -417,12 +460,24 @@ def test_c2_final_sweep_clears_stale_state():
     engine = make_engine(staff, [make_patient("P1"), make_patient("P2")])
 
     r1 = AssignmentResult(
-        visit_id="V001", date_str=DAY, staff_id="S1", staff_name="S1",
-        pid="P1", pname="P1", start_min=540, end_min=600,
+        visit_id="V001",
+        date_str=DAY,
+        staff_id="S1",
+        staff_name="S1",
+        pid="P1",
+        pname="P1",
+        start_min=540,
+        end_min=600,
     )
     r2 = AssignmentResult(
-        visit_id="V002", date_str=DAY, staff_id="S1", staff_name="S1",
-        pid="P2", pname="P2", start_min=550, end_min=610,  # overlaps r1
+        visit_id="V002",
+        date_str=DAY,
+        staff_id="S1",
+        staff_name="S1",
+        pid="P2",
+        pname="P2",
+        start_min=550,
+        end_min=610,  # overlaps r1
     )
     engine.results.extend([r1, r2])
     engine._register_assignment("S1", DAY, 0, pid="P1")
@@ -450,14 +505,30 @@ def test_c2_cross_patient_overlap_fix_unregisters_unsalvageable():
     engine = make_engine(staff, [make_patient("P1"), make_patient("P2")])
 
     r1 = AssignmentResult(
-        visit_id="V001", date_str=DAY, staff_id="S1", staff_name="S1",
-        pid="P1", pname="P1", start_min=540, end_min=600,
-        service_min=60, time_type="終日", latest_min=600,
+        visit_id="V001",
+        date_str=DAY,
+        staff_id="S1",
+        staff_name="S1",
+        pid="P1",
+        pname="P1",
+        start_min=540,
+        end_min=600,
+        service_min=60,
+        time_type="終日",
+        latest_min=600,
     )
     r2 = AssignmentResult(
-        visit_id="V002", date_str=DAY, staff_id="S1", staff_name="S1",
-        pid="P2", pname="P2", start_min=540, end_min=600,  # exact overlap
-        service_min=60, time_type="終日", latest_min=600,
+        visit_id="V002",
+        date_str=DAY,
+        staff_id="S1",
+        staff_name="S1",
+        pid="P2",
+        pname="P2",
+        start_min=540,
+        end_min=600,  # exact overlap
+        service_min=60,
+        time_type="終日",
+        latest_min=600,
     )
     engine.results.extend([r1, r2])
     engine._register_assignment("S1", DAY, 0, pid="P1")
@@ -482,8 +553,10 @@ def test_c3_required_path_respects_gender():
     staff = [make_staff("S1", gender="男性")]
     patients = [make_patient("P1")]
     req = make_request(
-        "P1", sex_limit="女性のみ",
-        specified_staff_ids=["S1"], specified_type="必須",
+        "P1",
+        sex_limit="女性のみ",
+        specified_staff_ids=["S1"],
+        specified_type="必須",
     )
     out = make_engine(staff, patients).allocate([req])
     assert len(assigned_results(out)) == 0
@@ -502,16 +575,25 @@ def test_c3_required_path_respects_soft_cap():
     # Manually mark S1 as already at soft_cap on DAY by registering a fake
     # assignment record.
     fake = AssignmentResult(
-        visit_id="VFAKE", date_str=DAY, staff_id="S1", staff_name="S1",
-        pid="P0", pname="P0", start_min=540, end_min=600,
+        visit_id="VFAKE",
+        date_str=DAY,
+        staff_id="S1",
+        staff_name="S1",
+        pid="P0",
+        pname="P0",
+        start_min=540,
+        end_min=600,
     )
     engine.results.append(fake)
     engine._register_assignment("S1", DAY, 0, pid="P0")
     # soft_cap = max_per_day - 1 = 1, so any further required-staff request
     # for S1 on DAY must be rejected by _passes_hard_constraints.
     req = make_request(
-        "P2", time_type="固定", start_min=720,
-        specified_staff_ids=["S1"], specified_type="必須",
+        "P2",
+        time_type="固定",
+        start_min=720,
+        specified_staff_ids=["S1"],
+        specified_type="必須",
     )
     chosen = engine._find_best_staff(req, used_staff_ids=set())
     assert chosen is None, "required path must respect soft_cap"
@@ -521,8 +603,10 @@ def test_c3_same_person_respects_gender():
     staff = [make_staff("S1", gender="男性"), make_staff("S2", gender="女性")]
     patients = [make_patient("P1")]
     req = make_request(
-        "P1", sex_limit="女性のみ",
-        cont_pref="同じ人希望", prev_staff_id="S1",
+        "P1",
+        sex_limit="女性のみ",
+        cont_pref="同じ人希望",
+        prev_staff_id="S1",
     )
     out = make_engine(staff, patients).allocate([req])
     # prev was S1 (男性) but sex_limit forces 女性 → must pick S2 instead
@@ -537,20 +621,27 @@ def test_c3_required_path_respects_same_patient_same_day():
     engine = make_engine(staff_list, [make_patient("P1")])
     # Pre-register S1 already serving P1 on DAY
     fake = AssignmentResult(
-        visit_id="VFAKE", date_str=DAY, staff_id="S1", staff_name="S1",
-        pid="P1", pname="P1", start_min=540, end_min=600,
+        visit_id="VFAKE",
+        date_str=DAY,
+        staff_id="S1",
+        staff_name="S1",
+        pid="P1",
+        pname="P1",
+        start_min=540,
+        end_min=600,
     )
     engine.results.append(fake)
     engine._register_assignment("S1", DAY, 0, pid="P1")
     # Now ask the required path for another P1 visit on DAY with S1 required
     req = make_request(
-        "P1", time_type="固定", start_min=720,
-        specified_staff_ids=["S1"], specified_type="必須",
+        "P1",
+        time_type="固定",
+        start_min=720,
+        specified_staff_ids=["S1"],
+        specified_type="必須",
     )
     chosen = engine._find_best_staff(req, used_staff_ids=set())
-    assert chosen is None, (
-        "required path must skip a staff already serving the patient today"
-    )
+    assert chosen is None, "required path must skip a staff already serving the patient today"
 
 
 # ===========================================================================
@@ -562,10 +653,7 @@ def test_c4_state_maps_consistent_with_results_after_allocate():
     """Post-allocate, assign_count must equal the count of assigned results."""
     staff = [make_staff(f"S{i}", max_per_day=999, alloc_pref="多め") for i in range(1, 4)]
     patients = [make_patient(f"P{i}") for i in range(1, 6)]
-    reqs = [
-        make_request(f"P{i}", date_str=DAY, weekday="Mon", service_min=30)
-        for i in range(1, 6)
-    ]
+    reqs = [make_request(f"P{i}", date_str=DAY, weekday="Mon", service_min=30) for i in range(1, 6)]
     engine = make_engine(staff, patients)
     out = engine.allocate(reqs)
 
@@ -635,8 +723,10 @@ def test_c7_areas_required_path():
     staff = [make_staff("S1", areas=["B"])]
     patients = [make_patient("P1", area="A")]
     req = make_request(
-        "P1", area="A",
-        specified_staff_ids=["S1"], specified_type="必須",
+        "P1",
+        area="A",
+        specified_staff_ids=["S1"],
+        specified_type="必須",
     )
     out = make_engine(staff, patients).allocate([req])
     assert len(assigned_results(out)) == 0
@@ -655,8 +745,17 @@ CSV_HEADER = (
 
 
 def _kaipoke_row(
-    *, staff1="A田", staff2="", date="1", weekday="月", user="P1",
-    business="医療保険", svc="訪問看護I", start="09:00", end="10:00", remarks="",
+    *,
+    staff1="A田",
+    staff2="",
+    date="1",
+    weekday="月",
+    user="P1",
+    business="医療保険",
+    svc="訪問看護I",
+    start="09:00",
+    end="10:00",
+    remarks="",
 ) -> str:
     return (
         f"{staff1},看護師,{staff2},,,,,,"  # 8 cols
@@ -671,9 +770,11 @@ def test_c9_empty_service_type_no_spurious_match():
     # Optimized: completely different patient, completely different service ("")
     opt = CSV_HEADER + _kaipoke_row(svc="", user="P2", date="3")
     corrections = compare_schedules_from_content(
-        cur, opt,
+        cur,
+        opt,
         target_users=None,
-        target_week_start=1, target_week_end=7,
+        target_week_start=1,
+        target_week_end=7,
     )
     # If C-9 were broken, "" in "訪問看護I" would force a Pass-2 svc match
     # between unrelated entries P1 vs P2, and we'd get an "edit" not delete+add.
@@ -712,11 +813,14 @@ def test_c10_extract_day_of_month(raw, expected):
 def test_c10_yyyy_mm_dd_does_not_crash_filter():
     """Week-range filter must accept yyyy/MM/dd dates without ValueError."""
     cur = CSV_HEADER + _kaipoke_row(date="2026/05/04", user="P1", svc="A")
-    opt = CSV_HEADER + _kaipoke_row(date="2026/05/04", user="P1", svc="A",
-                                    start="10:00", end="11:00")
+    opt = CSV_HEADER + _kaipoke_row(
+        date="2026/05/04", user="P1", svc="A", start="10:00", end="11:00"
+    )
     corrections = compare_schedules_from_content(
-        cur, opt,
-        target_week_start=1, target_week_end=7,
+        cur,
+        opt,
+        target_week_start=1,
+        target_week_end=7,
     )
     # 2026/05/04 → day 4 → in range [1, 7] → must include the edit
     assert any(c.action == "edit" for c in corrections)
@@ -725,11 +829,14 @@ def test_c10_yyyy_mm_dd_does_not_crash_filter():
 def test_c10_yyyy_mm_dd_out_of_range_filtered():
     """Day 10 with yyyy/MM/dd must be excluded when range is [1,7]."""
     cur = CSV_HEADER + _kaipoke_row(date="2026/05/10", user="P1", svc="A")
-    opt = CSV_HEADER + _kaipoke_row(date="2026/05/10", user="P1", svc="A",
-                                    start="10:00", end="11:00")
+    opt = CSV_HEADER + _kaipoke_row(
+        date="2026/05/10", user="P1", svc="A", start="10:00", end="11:00"
+    )
     corrections = compare_schedules_from_content(
-        cur, opt,
-        target_week_start=1, target_week_end=7,
+        cur,
+        opt,
+        target_week_start=1,
+        target_week_end=7,
     )
     # Out-of-range day 10 → filtered out → no corrections
     assert corrections == []
@@ -772,14 +879,23 @@ def test_smoke_event_blocks_staff_time():
     # 09:00 visit anywhere; the meeting on the requested DAY is the
     # specific obstacle we want to verify.
     changes = block_day_shift_for_staff(staff, "P1", DAY)
-    events = [Event(
-        event_id="E1", staff_id="S1", date_str=DAY,
-        event_type="meeting", title="Meeting",
-        start_min=540, end_min=600,
-    )]
+    events = [
+        Event(
+            event_id="E1",
+            staff_id="S1",
+            date_str=DAY,
+            event_type="meeting",
+            title="Meeting",
+            start_min=540,
+            end_min=600,
+        )
+    ]
     req = make_request("P1", time_type="固定", start_min=540, service_min=60)
     out = make_engine(
-        staff, patients, events=events, staff_changes=changes,
+        staff,
+        patients,
+        events=events,
+        staff_changes=changes,
     ).allocate([req])
     # Cannot place at 09:00 because event blocks → unassigned
     assert len(assigned_results(out)) == 0
@@ -792,8 +908,11 @@ def test_smoke_full_day_off_blocks_staff():
     changes = [
         StaffChange(staff_id="S1", date_str=d, restriction_type="休み")
         for d in (
-            "2026/05/04", "2026/05/05", "2026/05/06",
-            "2026/05/07", "2026/05/08",
+            "2026/05/04",
+            "2026/05/05",
+            "2026/05/06",
+            "2026/05/07",
+            "2026/05/08",
         )
     ]
     req = make_request("P1")
@@ -835,9 +954,7 @@ def test_smoke_workdays_block_weekday():
     # Restrict S1 to Saturdays only — DayShift skips Sat/Sun so the visit
     # cannot be moved to S1's allowed day either.
     staff = [make_staff("S1", work_days=["Sat"])]
-    out = make_engine(staff, [make_patient("P1")]).allocate(
-        [make_request("P1", weekday="Mon")]
-    )
+    out = make_engine(staff, [make_patient("P1")]).allocate([make_request("P1", weekday="Mon")])
     assert len(assigned_results(out)) == 0
 
 
@@ -845,9 +962,7 @@ def test_smoke_unassigned_has_reason():
     # Same trick as above: only Sat allowed, so DayShift (which excludes
     # weekends) cannot rescue the visit.
     staff = [make_staff("S1", work_days=["Sat"])]
-    out = make_engine(staff, [make_patient("P1")]).allocate(
-        [make_request("P1", weekday="Mon")]
-    )
+    out = make_engine(staff, [make_patient("P1")]).allocate([make_request("P1", weekday="Mon")])
     assert out["summary"]["unassigned"] == 1
     assert out["unassigned"], "unassigned list must not be empty"
     assert "reason" in out["unassigned"][0]
@@ -860,12 +975,19 @@ def test_smoke_unassigned_has_reason():
 
 def test_diff_engine_correction_dataclass_basic():
     c = Correction(
-        user_name="P1", date_from="3", date_to="3",
-        start_time_from="09:00", start_time_to="10:00",
-        end_time_from="10:00", end_time_to="11:00",
-        staff1_from="A", staff1_to="A",
-        staff2_from="", staff2_to="",
-        service_type="X", action="edit",
+        user_name="P1",
+        date_from="3",
+        date_to="3",
+        start_time_from="09:00",
+        start_time_to="10:00",
+        end_time_from="10:00",
+        end_time_to="11:00",
+        staff1_from="A",
+        staff1_to="A",
+        staff2_from="",
+        staff2_to="",
+        service_type="X",
+        action="edit",
     )
     assert c.has_time_change()
     assert not c.has_staff_change()
@@ -874,10 +996,15 @@ def test_diff_engine_correction_dataclass_basic():
 
 def test_diff_engine_schedule_entry_get_key():
     e = ScheduleEntry(
-        user_name="P1", date="3", weekday="水",
-        business_type="医療保険", service_type="X",
-        start_time="09:00", end_time="10:00",
-        staff1_name="A", staff1_type="看",
+        user_name="P1",
+        date="3",
+        weekday="水",
+        business_type="医療保険",
+        service_type="X",
+        start_time="09:00",
+        end_time="10:00",
+        staff1_name="A",
+        staff1_type="看",
     )
     assert e.get_key() == "P1|3|医療保険|X"
     assert e.is_medical_insurance()
@@ -904,7 +1031,9 @@ def test_codex_bug_a_required_constraints_persisted_for_assigned():
     staff = [make_staff("S1"), make_staff("S2")]
     patients = [make_patient("P1")]
     req = make_request(
-        "P1", specified_staff_ids=["S1"], specified_type="必須",
+        "P1",
+        specified_staff_ids=["S1"],
+        specified_type="必須",
     )
     engine = make_engine(staff, patients)
     engine.allocate([req])
@@ -924,15 +1053,22 @@ def test_codex_bug_a_level1_does_not_assign_other_staff_for_required():
     s1_changes = [
         StaffChange(staff_id="S1", date_str=d, restriction_type="休み")
         for d in (
-            "2026/05/04", "2026/05/05", "2026/05/06",
-            "2026/05/07", "2026/05/08",
+            "2026/05/04",
+            "2026/05/05",
+            "2026/05/06",
+            "2026/05/07",
+            "2026/05/08",
         )
     ]
     req = make_request(
-        "P1", specified_staff_ids=["S1"], specified_type="必須",
+        "P1",
+        specified_staff_ids=["S1"],
+        specified_type="必須",
     )
     out = make_engine(
-        staff, patients, staff_changes=s1_changes,
+        staff,
+        patients,
+        staff_changes=s1_changes,
     ).allocate([req])
     assigned = assigned_results(out)
     # Either unassigned, or (defensively) only S1 — never S2.
@@ -948,21 +1084,34 @@ def test_codex_bug_a_relaxed_reinsertion_does_not_pick_other_staff():
     """Drive the relaxed-reinsertion path directly: pre-fill engine state
     so only the relaxed-rescue loop is exercised, then assert that the
     required-staff invariant rejects every other staff."""
-    staff = [make_staff("S1", max_per_day=1, alloc_pref="均等"),
-             make_staff("S2", max_per_day=999, alloc_pref="多め")]
+    staff = [
+        make_staff("S1", max_per_day=1, alloc_pref="均等"),
+        make_staff("S2", max_per_day=999, alloc_pref="多め"),
+    ]
     engine = make_engine(staff, [make_patient("P1"), make_patient("P0")])
     # Saturate S1's soft_cap
     fake = AssignmentResult(
-        visit_id="VFAKE", date_str=DAY, staff_id="S1", staff_name="S1",
-        pid="P0", pname="P0", start_min=540, end_min=600,
+        visit_id="VFAKE",
+        date_str=DAY,
+        staff_id="S1",
+        staff_name="S1",
+        pid="P0",
+        pname="P0",
+        start_min=540,
+        end_min=600,
     )
     engine.results.append(fake)
     engine._register_assignment("S1", DAY, 0, pid="P0")
     # Insert an unassigned result for P1 with required-S1
     unassigned = AssignmentResult(
-        visit_id="V_P1", date_str=DAY, weekday="Mon",
-        pid="P1", pname="P1", area="",
-        service_min=60, time_type="終日",
+        visit_id="V_P1",
+        date_str=DAY,
+        weekday="Mon",
+        pid="P1",
+        pname="P1",
+        area="",
+        service_min=60,
+        time_type="終日",
     )
     engine.results.append(unassigned)
     engine._request_constraints[1] = {
@@ -996,23 +1145,33 @@ def test_codex_bug_b_reinsertion_rejects_same_patient_same_day_staff():
     engine = make_engine(staff_list, [make_patient("P1")])
     # Pre-register S1 already serving P1 on DAY
     fake = AssignmentResult(
-        visit_id="VFAKE", date_str=DAY, staff_id="S1", staff_name="S1",
-        pid="P1", pname="P1", start_min=540, end_min=600,
+        visit_id="VFAKE",
+        date_str=DAY,
+        staff_id="S1",
+        staff_name="S1",
+        pid="P1",
+        pname="P1",
+        start_min=540,
+        end_min=600,
     )
     engine.results.append(fake)
     engine._register_assignment("S1", DAY, 0, pid="P1")
     # An unassigned second visit for the same P1 on DAY
     r2 = AssignmentResult(
-        visit_id="V2", date_str=DAY, weekday="Mon",
-        pid="P1", pname="P1", service_min=30, time_type="終日",
+        visit_id="V2",
+        date_str=DAY,
+        weekday="Mon",
+        pid="P1",
+        pname="P1",
+        service_min=30,
+        time_type="終日",
     )
     engine.results.append(r2)
     ok = engine._is_staff_available_for_reinsertion(
-        staff_list[0], r2,
+        staff_list[0],
+        r2,
     )
-    assert ok is False, (
-        "Bug B: reinsertion accepted same staff for same pid|date pair"
-    )
+    assert ok is False, "Bug B: reinsertion accepted same staff for same pid|date pair"
 
 
 def test_codex_bug_b_relaxed_skips_same_pid_date_staff():
@@ -1023,15 +1182,26 @@ def test_codex_bug_b_relaxed_skips_same_pid_date_staff():
     engine = make_engine(staff_list, [make_patient("P1")])
     # Pre-register S1 serving P1 on DAY
     fake = AssignmentResult(
-        visit_id="VFAKE", date_str=DAY, staff_id="S1", staff_name="S1",
-        pid="P1", pname="P1", start_min=540, end_min=600,
+        visit_id="VFAKE",
+        date_str=DAY,
+        staff_id="S1",
+        staff_name="S1",
+        pid="P1",
+        pname="P1",
+        start_min=540,
+        end_min=600,
     )
     engine.results.append(fake)
     engine._register_assignment("S1", DAY, 0, pid="P1")
     # Unassigned 2nd visit for P1 on DAY → relaxed should NOT pick S1
     unassigned = AssignmentResult(
-        visit_id="V2_P1", date_str=DAY, weekday="Mon",
-        pid="P1", pname="P1", service_min=30, time_type="終日",
+        visit_id="V2_P1",
+        date_str=DAY,
+        weekday="Mon",
+        pid="P1",
+        pname="P1",
+        service_min=30,
+        time_type="終日",
     )
     engine.results.append(unassigned)
     engine._request_constraints[1] = {
@@ -1051,24 +1221,31 @@ def test_codex_bug_b_relaxed_skips_same_pid_date_staff():
 def test_codex_bug_b_full_pipeline_no_double_assignment():
     """Pipeline-level test: two P1 visits on the same day must end up on
     different staff (or one unassigned), not both on the same staff."""
-    staff = [make_staff("S1", max_per_day=999, alloc_pref="多め"),
-             make_staff("S2", max_per_day=999, alloc_pref="多め")]
+    staff = [
+        make_staff("S1", max_per_day=999, alloc_pref="多め"),
+        make_staff("S2", max_per_day=999, alloc_pref="多め"),
+    ]
     patients = [make_patient("P1")]
     reqs = [
         make_request(
-            "P1", time_type="固定", start_min=540, service_min=60,
+            "P1",
+            time_type="固定",
+            start_min=540,
+            service_min=60,
         ),
         make_request(
-            "P1", time_type="固定", start_min=720, service_min=60,
+            "P1",
+            time_type="固定",
+            start_min=720,
+            service_min=60,
         ),
     ]
     out = make_engine(staff, patients).allocate(reqs)
     # All P1 visits placed on DAY: each must land on a distinct staff
     p1_on_day = [
-        r for r in out["results"]
+        r
+        for r in out["results"]
         if r.pid == "P1" and r.date_str == DAY and r.staff_id and not r.is_event
     ]
     sids = [r.staff_id for r in p1_on_day]
-    assert len(sids) == len(set(sids)), (
-        f"Bug B: same staff serving P1 twice on {DAY}: {sids}"
-    )
+    assert len(sids) == len(set(sids)), f"Bug B: same staff serving P1 twice on {DAY}: {sids}"

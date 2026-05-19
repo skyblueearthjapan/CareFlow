@@ -14,16 +14,9 @@ import { z } from 'zod';
 const HHMM_REGEX = /^([01]\d|2[0-3]):[0-5]\d$/;
 const ISO_DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 
-const hhmmSchema = z
-  .string()
-  .regex(HHMM_REGEX, 'HH:MM 形式で入力してください');
+const hhmmSchema = z.string().regex(HHMM_REGEX, 'HH:MM 形式で入力してください');
 
-export const OVERRIDE_TYPE_VALUES = [
-  '休み',
-  '時間変更',
-  '午前休',
-  '午後休',
-] as const;
+export const OVERRIDE_TYPE_VALUES = ['休み', '時間変更', '午前休', '午後休'] as const;
 
 export const overrideTypeSchema = z.enum(OVERRIDE_TYPE_VALUES);
 export type OverrideType = z.infer<typeof overrideTypeSchema>;

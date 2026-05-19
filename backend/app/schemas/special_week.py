@@ -11,8 +11,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
-
 # ---------- SpecialWeekItem ----------
+
 
 class SpecialWeekItemBase(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -64,6 +64,7 @@ class SpecialWeekItemRead(SpecialWeekItemBase):
 
 
 # ---------- SpecialWeek ----------
+
 
 class SpecialWeekBase(BaseModel):
     model_config = ConfigDict(extra="forbid")

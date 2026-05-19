@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -16,6 +16,7 @@ _pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 # ---------- Password hashing ----------
+
 
 def hash_password(plain: str) -> str:
     """Return bcrypt hash for a plaintext password."""
@@ -32,8 +33,9 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 # ---------- JWT ----------
 
+
 def _now() -> datetime:
-    return datetime.now(tz=timezone.utc)
+    return datetime.now(tz=UTC)
 
 
 def _build_claims(

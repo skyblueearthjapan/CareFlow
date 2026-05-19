@@ -40,6 +40,7 @@ from app.schemas.v2.patient_excel import (
 from app.services.patient_excel.schema import (
     DEFAULT_TIME_TYPE,
     INSURANCE_VALUES,
+    LEGACY_SHEET_PFV,
     PATIENT_COL_INDEX,
     PFV_COL_INDEX,
     PFV_MODE_VALUES,
@@ -1396,7 +1397,16 @@ async def parse_and_diff(
 
     if SHEET_PATIENTS not in wb.sheetnames:
         raise ValueError(f"シート「{SHEET_PATIENTS}」が見つかりません")
-    if SHEET_PFV not in wb.sheetnames:
+    # 新名「固定訪問パターン」または旧名「固定訪問スケジュール」 のどちらかを受け入れる
+    # (Phase G で旧名から改名済み. 過去 export 済の xlsx も import 可能にするため fallback).
+    pfv_sheet_name = (
+        SHEET_PFV
+        if SHEET_PFV in wb.sheetnames
+        else LEGACY_SHEET_PFV
+        if LEGACY_SHEET_PFV in wb.sheetnames
+        else None
+    )
+    if pfv_sheet_name is None:
         raise ValueError(f"シート「{SHEET_PFV}」が見つかりません")
 
     existing_patients = await _load_patients_by_id(db)
@@ -1477,7 +1487,7 @@ async def parse_and_diff(
         )
 
     # ---- PFV シート ----
-    ws_f = wb[SHEET_PFV]
+    ws_f = wb[pfv_sheet_name]
     pfv_rows: list[PfvExcelImportRow] = []
     pfv_ops: list[dict[str, Any]] = []
     pending_new_keys: set[tuple[UUID, str, int, int]] = set()

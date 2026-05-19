@@ -20,11 +20,7 @@ import {
 import { useSession } from 'next-auth/react';
 
 import { fetcher } from '@/lib/api/fetcher';
-import {
-  mentorAssignSchema,
-  type MentorAssign,
-  type MentorRead,
-} from '@/lib/schemas/mentor';
+import { mentorAssignSchema, type MentorAssign, type MentorRead } from '@/lib/schemas/mentor';
 
 const MENTOR_KEY = ['staff', 'mentor'] as const;
 
@@ -40,9 +36,7 @@ function authPair(session: ReturnType<typeof useSession>['data']) {
 }
 
 /** GET .../mentor — current mentor for a staff member. */
-export function useMentor(
-  staffId: string | null | undefined,
-): UseQueryResult<MentorRead, Error> {
+export function useMentor(staffId: string | null | undefined): UseQueryResult<MentorRead, Error> {
   const { data: session, status } = useSession();
   const { accessToken, refreshToken } = authPair(session);
   const normalizedId = staffId ?? '__none__';
@@ -67,22 +61,12 @@ export function useMentor(
  */
 export function useUpdateMentor(
   staffId: string,
-): UseMutationResult<
-  MentorRead,
-  Error,
-  MentorAssign,
-  { previous: MentorRead | undefined }
-> {
+): UseMutationResult<MentorRead, Error, MentorAssign, { previous: MentorRead | undefined }> {
   const qc = useQueryClient();
   const { data: session } = useSession();
   const { accessToken, refreshToken } = authPair(session);
 
-  return useMutation<
-    MentorRead,
-    Error,
-    MentorAssign,
-    { previous: MentorRead | undefined }
-  >({
+  return useMutation<MentorRead, Error, MentorAssign, { previous: MentorRead | undefined }>({
     mutationFn: async (payload) => {
       const parsed = mentorAssignSchema.parse(payload);
       return fetcher<MentorRead>(mentorBase(staffId), {

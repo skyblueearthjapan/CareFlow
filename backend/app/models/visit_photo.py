@@ -38,10 +38,6 @@ class VisitPhoto(Base, TimestampMixin):
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
     )
-    uploaded_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
-    __table_args__ = (
-        Index("ix_visit_photos_visit_uploaded", "visit_id", "uploaded_at"),
-    )
+    __table_args__ = (Index("ix_visit_photos_visit_uploaded", "visit_id", "uploaded_at"),)

@@ -19,11 +19,11 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin
-
 
 # Allowed enum values (validated at the Pydantic layer; stored as strings).
 KAIPOKE_JOB_TYPES = ("fetch", "push")
@@ -38,20 +38,14 @@ class KaipokeJob(Base, TimestampMixin):
         PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     job_type: Mapped[str] = mapped_column(String(16), nullable=False)
-    status: Mapped[str] = mapped_column(
-        String(16), nullable=False, default="pending"
-    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
     week_start: Mapped[date] = mapped_column(Date, nullable=False)
 
     params: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     result_summary: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
-    started_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    completed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
@@ -59,7 +53,7 @@ class KaipokeJob(Base, TimestampMixin):
         nullable=True,
     )
 
-    items: Mapped[list["KaipokeJobItem"]] = relationship(
+    items: Mapped[list[KaipokeJobItem]] = relationship(
         "KaipokeJobItem",
         back_populates="job",
         cascade="all, delete-orphan",
@@ -85,16 +79,10 @@ class KaipokeJobItem(Base, TimestampMixin):
         nullable=False,
     )
     seq: Mapped[int] = mapped_column(Integer, nullable=False)
-    status: Mapped[str] = mapped_column(
-        String(16), nullable=False, default="pending"
-    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
     content: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     error_msg: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    job: Mapped["KaipokeJob"] = relationship("KaipokeJob", back_populates="items")
+    job: Mapped[KaipokeJob] = relationship("KaipokeJob", back_populates="items")
 
-    __table_args__ = (
-        UniqueConstraint(
-            "job_id", "seq", name="uq_kaipoke_job_items_job_seq"
-        ),
-    )
+    __table_args__ = (UniqueConstraint("job_id", "seq", name="uq_kaipoke_job_items_job_seq"),)

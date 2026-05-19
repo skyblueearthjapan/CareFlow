@@ -45,7 +45,7 @@ class User(Base, TimestampMixin):
         Boolean, nullable=False, default=False, server_default="false"
     )
 
-    staff: Mapped["Staff | None"] = relationship("Staff", lazy="selectin")
+    staff: Mapped[Staff | None] = relationship("Staff", lazy="selectin")
 
     def __repr__(self) -> str:  # pragma: no cover - debug repr
         return f"<User id={self.id} email={self.email} role={self.role}>"

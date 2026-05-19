@@ -13,10 +13,8 @@ const alertVariants = cva(
     variants: {
       variant: {
         default: 'border-border-default bg-bg-base text-text-primary',
-        warning:
-          'border-amber-500/50 bg-amber-50 text-amber-900 [&>svg]:text-amber-600',
-        destructive:
-          'border-error/50 bg-error/10 text-error [&>svg]:text-error',
+        warning: 'border-amber-500/50 bg-amber-50 text-amber-900 [&>svg]:text-amber-600',
+        destructive: 'border-error/50 bg-error/10 text-error [&>svg]:text-error',
       },
     },
     defaultVariants: {
@@ -31,12 +29,7 @@ export interface AlertProps
 
 export const Alert = React.forwardRef<HTMLDivElement, AlertProps>(
   ({ className, variant, ...props }, ref) => (
-    <div
-      ref={ref}
-      role="alert"
-      className={cn(alertVariants({ variant }), className)}
-      {...props}
-    />
+    <div ref={ref} role="alert" className={cn(alertVariants({ variant }), className)} {...props} />
   ),
 );
 Alert.displayName = 'Alert';

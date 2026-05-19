@@ -75,9 +75,7 @@ class Settings(BaseSettings):
         """
         app_env = (info.data.get("app_env") or "").lower()
         if app_env in {"prod", "production"} and len(value) < 32:
-            raise ValueError(
-                "JWT_SECRET must be at least 32 characters in production"
-            )
+            raise ValueError("JWT_SECRET must be at least 32 characters in production")
         return value
 
     @property

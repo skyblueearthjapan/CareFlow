@@ -66,9 +66,7 @@ async def list_audit_logs(
         count_stmt = count_stmt.where(and_(*conds))
 
     rows = (
-        await db.scalars(
-            base.order_by(AuditLog.created_at.desc()).limit(limit).offset(offset)
-        )
+        await db.scalars(base.order_by(AuditLog.created_at.desc()).limit(limit).offset(offset))
     ).all()
     total = (await db.scalar(count_stmt)) or 0
     return Paginated[AuditLogRead](

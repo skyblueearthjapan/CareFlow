@@ -23,16 +23,15 @@ Covers the critic-flagged regressions:
 
 from __future__ import annotations
 
-from datetime import date, datetime, time, timedelta, timezone
-from uuid import uuid4
+from datetime import UTC, date, datetime, time, timedelta
 
 import pytest
 
 from app.core.security import create_access_token, hash_password
 from app.models import Patient, Staff, User, Visit
 
-
 # ---------- helpers --------------------------------------------------------
+
 
 async def _make_user(db, email: str, role: str, staff_id=None) -> User:
     user = User(
@@ -116,14 +115,21 @@ async def test_kpi_admin_sees_all_visits(client, db) -> None:
     staff_a = await _make_staff(db, "Aさん")
     staff_b = await _make_staff(db, "Bさん")
     await _add_visit(
-        db, patient_id=patient.id, visit_date=today,
-        start=time(9, 0), end=time(10, 0),
+        db,
+        patient_id=patient.id,
+        visit_date=today,
+        start=time(9, 0),
+        end=time(10, 0),
         primary_staff_id=staff_a.id,
     )
     await _add_visit(
-        db, patient_id=patient.id, visit_date=today,
-        start=time(11, 0), end=time(12, 0),
-        primary_staff_id=staff_b.id, status="completed",
+        db,
+        patient_id=patient.id,
+        visit_date=today,
+        start=time(11, 0),
+        end=time(12, 0),
+        primary_staff_id=staff_b.id,
+        status="completed",
     )
 
     admin = await _make_user(db, "dash-admin@example.com", "admin")
@@ -146,33 +152,45 @@ async def test_kpi_staff_sees_only_own_across_three_slots(client, db) -> None:
 
     # Mine — primary
     await _add_visit(
-        db, patient_id=patient.id, visit_date=today,
-        start=time(9, 0), end=time(10, 0),
+        db,
+        patient_id=patient.id,
+        visit_date=today,
+        start=time(9, 0),
+        end=time(10, 0),
         primary_staff_id=me.id,
     )
     # Mine — secondary (同行)
     await _add_visit(
-        db, patient_id=patient.id, visit_date=today,
-        start=time(10, 30), end=time(11, 30),
-        primary_staff_id=other.id, secondary_staff_id=me.id,
+        db,
+        patient_id=patient.id,
+        visit_date=today,
+        start=time(10, 30),
+        end=time(11, 30),
+        primary_staff_id=other.id,
+        secondary_staff_id=me.id,
     )
     # Mine — mentor
     await _add_visit(
-        db, patient_id=patient.id, visit_date=today,
-        start=time(13, 0), end=time(14, 0),
-        primary_staff_id=other.id, mentor_staff_id=me.id,
+        db,
+        patient_id=patient.id,
+        visit_date=today,
+        start=time(13, 0),
+        end=time(14, 0),
+        primary_staff_id=other.id,
+        mentor_staff_id=me.id,
         status="completed",
     )
     # Not mine
     await _add_visit(
-        db, patient_id=patient.id, visit_date=today,
-        start=time(15, 0), end=time(16, 0),
+        db,
+        patient_id=patient.id,
+        visit_date=today,
+        start=time(15, 0),
+        end=time(16, 0),
         primary_staff_id=other.id,
     )
 
-    staff_user = await _make_user(
-        db, "dash-staff@example.com", "staff", staff_id=me.id
-    )
+    staff_user = await _make_user(db, "dash-staff@example.com", "staff", staff_id=me.id)
     res = await client.get("/api/v1/dashboard/kpi", headers=_bearer(staff_user))
 
     assert res.status_code == 200, res.text
@@ -190,8 +208,11 @@ async def test_kpi_staff_without_staff_id_returns_zeros(client, db) -> None:
     patient = await _make_patient(db, "DASH-C")
     other = await _make_staff(db, "他人")
     await _add_visit(
-        db, patient_id=patient.id, visit_date=today,
-        start=time(9, 0), end=time(10, 0),
+        db,
+        patient_id=patient.id,
+        visit_date=today,
+        start=time(9, 0),
+        end=time(10, 0),
         primary_staff_id=other.id,
     )
 
@@ -218,13 +239,19 @@ async def test_kpi_overlap_treats_adjacent_slots_as_non_overlapping(client, db) 
 
     # Two visits that share a boundary (10:00) — must NOT count as overlap.
     await _add_visit(
-        db, patient_id=patient.id, visit_date=today,
-        start=time(9, 0), end=time(10, 0),
+        db,
+        patient_id=patient.id,
+        visit_date=today,
+        start=time(9, 0),
+        end=time(10, 0),
         primary_staff_id=staff.id,
     )
     await _add_visit(
-        db, patient_id=patient.id, visit_date=today,
-        start=time(10, 0), end=time(11, 0),
+        db,
+        patient_id=patient.id,
+        visit_date=today,
+        start=time(10, 0),
+        end=time(11, 0),
         primary_staff_id=staff.id,
     )
 
@@ -243,14 +270,21 @@ async def test_kpi_overlap_excludes_cancelled(client, db) -> None:
     # 9:00-10:00 active + 9:30-10:30 cancelled. Without the filter the active
     # one would flip to overlapping; with the filter overlap=0.
     await _add_visit(
-        db, patient_id=patient.id, visit_date=today,
-        start=time(9, 0), end=time(10, 0),
+        db,
+        patient_id=patient.id,
+        visit_date=today,
+        start=time(9, 0),
+        end=time(10, 0),
         primary_staff_id=staff.id,
     )
     await _add_visit(
-        db, patient_id=patient.id, visit_date=today,
-        start=time(9, 30), end=time(10, 30),
-        primary_staff_id=staff.id, status="cancelled",
+        db,
+        patient_id=patient.id,
+        visit_date=today,
+        start=time(9, 30),
+        end=time(10, 30),
+        primary_staff_id=staff.id,
+        status="cancelled",
     )
 
     admin = await _make_user(db, "dash-admin-e@example.com", "admin")
@@ -286,15 +320,17 @@ async def test_trend_backfills_empty_days_with_zero_rows(client, db) -> None:
     # Only seed a single day in a 7-day window; the other six must be zero.
     seeded = today - timedelta(days=2)
     await _add_visit(
-        db, patient_id=patient.id, visit_date=seeded,
-        start=time(9, 0), end=time(10, 0),
-        primary_staff_id=staff.id, status="completed",
+        db,
+        patient_id=patient.id,
+        visit_date=seeded,
+        start=time(9, 0),
+        end=time(10, 0),
+        primary_staff_id=staff.id,
+        status="completed",
     )
 
     admin = await _make_user(db, "dash-admin-t@example.com", "admin")
-    res = await client.get(
-        "/api/v1/dashboard/trend?days=7", headers=_bearer(admin)
-    )
+    res = await client.get("/api/v1/dashboard/trend?days=7", headers=_bearer(admin))
     assert res.status_code == 200, res.text
     body = res.json()
 
@@ -302,9 +338,7 @@ async def test_trend_backfills_empty_days_with_zero_rows(client, db) -> None:
     assert len(body["items"]) == 7
     # Oldest → newest, contiguous.
     dates = [item["date"] for item in body["items"]]
-    expected = [
-        (today - timedelta(days=6 - i)).isoformat() for i in range(7)
-    ]
+    expected = [(today - timedelta(days=6 - i)).isoformat() for i in range(7)]
     assert dates == expected
 
     seeded_iso = seeded.isoformat()
@@ -321,18 +355,14 @@ async def test_trend_backfills_empty_days_with_zero_rows(client, db) -> None:
 @pytest.mark.asyncio
 async def test_trend_rejects_days_zero(client, db) -> None:
     admin = await _make_user(db, "dash-admin-422a@example.com", "admin")
-    res = await client.get(
-        "/api/v1/dashboard/trend?days=0", headers=_bearer(admin)
-    )
+    res = await client.get("/api/v1/dashboard/trend?days=0", headers=_bearer(admin))
     assert res.status_code == 422, res.text
 
 
 @pytest.mark.asyncio
 async def test_trend_rejects_days_above_max(client, db) -> None:
     admin = await _make_user(db, "dash-admin-422b@example.com", "admin")
-    res = await client.get(
-        "/api/v1/dashboard/trend?days=91", headers=_bearer(admin)
-    )
+    res = await client.get("/api/v1/dashboard/trend?days=91", headers=_bearer(admin))
     assert res.status_code == 422, res.text
 
 
@@ -345,7 +375,7 @@ async def test_kpi_today_is_resolved_in_jst(client, db, monkeypatch) -> None:
     visits whose `visit_date == 2026-05-05`, not 2026-05-04."""
     import app.api.v1.dashboard as dashboard_mod
 
-    frozen_utc = datetime(2026, 5, 4, 16, 0, tzinfo=timezone.utc)
+    frozen_utc = datetime(2026, 5, 4, 16, 0, tzinfo=UTC)
 
     class _FrozenDatetime(datetime):
         @classmethod
@@ -360,15 +390,22 @@ async def test_kpi_today_is_resolved_in_jst(client, db, monkeypatch) -> None:
     staff = await _make_staff(db, "TZスタッフ")
     # Visit on the JST "today" (2026-05-05) — must show up.
     await _add_visit(
-        db, patient_id=patient.id, visit_date=date(2026, 5, 5),
-        start=time(9, 0), end=time(10, 0),
+        db,
+        patient_id=patient.id,
+        visit_date=date(2026, 5, 5),
+        start=time(9, 0),
+        end=time(10, 0),
         primary_staff_id=staff.id,
     )
     # Visit on UTC "today" (2026-05-04) — must NOT show up in KPI.
     await _add_visit(
-        db, patient_id=patient.id, visit_date=date(2026, 5, 4),
-        start=time(9, 0), end=time(10, 0),
-        primary_staff_id=staff.id, status="completed",
+        db,
+        patient_id=patient.id,
+        visit_date=date(2026, 5, 4),
+        start=time(9, 0),
+        end=time(10, 0),
+        primary_staff_id=staff.id,
+        status="completed",
     )
 
     admin = await _make_user(db, "dash-tz@example.com", "admin")
@@ -392,24 +429,39 @@ async def test_kpi_week_completion_excludes_cancelled(client, db) -> None:
     staff = await _make_staff(db, "週スタッフ")
 
     await _add_visit(
-        db, patient_id=patient.id, visit_date=today,
-        start=time(9, 0), end=time(10, 0),
-        primary_staff_id=staff.id, status="completed",
+        db,
+        patient_id=patient.id,
+        visit_date=today,
+        start=time(9, 0),
+        end=time(10, 0),
+        primary_staff_id=staff.id,
+        status="completed",
     )
     await _add_visit(
-        db, patient_id=patient.id, visit_date=today,
-        start=time(11, 0), end=time(12, 0),
-        primary_staff_id=staff.id, status="completed",
+        db,
+        patient_id=patient.id,
+        visit_date=today,
+        start=time(11, 0),
+        end=time(12, 0),
+        primary_staff_id=staff.id,
+        status="completed",
     )
     await _add_visit(
-        db, patient_id=patient.id, visit_date=today,
-        start=time(13, 0), end=time(14, 0),
+        db,
+        patient_id=patient.id,
+        visit_date=today,
+        start=time(13, 0),
+        end=time(14, 0),
         primary_staff_id=staff.id,  # planned
     )
     await _add_visit(
-        db, patient_id=patient.id, visit_date=today,
-        start=time(15, 0), end=time(16, 0),
-        primary_staff_id=staff.id, status="cancelled",
+        db,
+        patient_id=patient.id,
+        visit_date=today,
+        start=time(15, 0),
+        end=time(16, 0),
+        primary_staff_id=staff.id,
+        status="cancelled",
     )
 
     admin = await _make_user(db, "dash-week@example.com", "admin")
@@ -433,36 +485,46 @@ async def test_trend_staff_sees_only_own_across_three_slots(client, db) -> None:
 
     # Mine — primary (today)
     await _add_visit(
-        db, patient_id=patient.id, visit_date=today,
-        start=time(9, 0), end=time(10, 0),
+        db,
+        patient_id=patient.id,
+        visit_date=today,
+        start=time(9, 0),
+        end=time(10, 0),
         primary_staff_id=me.id,
     )
     # Mine — secondary (yesterday) – completed
     await _add_visit(
-        db, patient_id=patient.id, visit_date=today - timedelta(days=1),
-        start=time(10, 0), end=time(11, 0),
-        primary_staff_id=other.id, secondary_staff_id=me.id,
+        db,
+        patient_id=patient.id,
+        visit_date=today - timedelta(days=1),
+        start=time(10, 0),
+        end=time(11, 0),
+        primary_staff_id=other.id,
+        secondary_staff_id=me.id,
         status="completed",
     )
     # Mine — mentor (2 days ago)
     await _add_visit(
-        db, patient_id=patient.id, visit_date=today - timedelta(days=2),
-        start=time(13, 0), end=time(14, 0),
-        primary_staff_id=other.id, mentor_staff_id=me.id,
+        db,
+        patient_id=patient.id,
+        visit_date=today - timedelta(days=2),
+        start=time(13, 0),
+        end=time(14, 0),
+        primary_staff_id=other.id,
+        mentor_staff_id=me.id,
     )
     # Not mine — must not appear
     await _add_visit(
-        db, patient_id=patient.id, visit_date=today,
-        start=time(15, 0), end=time(16, 0),
+        db,
+        patient_id=patient.id,
+        visit_date=today,
+        start=time(15, 0),
+        end=time(16, 0),
         primary_staff_id=other.id,
     )
 
-    staff_user = await _make_user(
-        db, "dash-trend-staff@example.com", "staff", staff_id=me.id
-    )
-    res = await client.get(
-        "/api/v1/dashboard/trend?days=7", headers=_bearer(staff_user)
-    )
+    staff_user = await _make_user(db, "dash-trend-staff@example.com", "staff", staff_id=me.id)
+    res = await client.get("/api/v1/dashboard/trend?days=7", headers=_bearer(staff_user))
     assert res.status_code == 200, res.text
     body = res.json()
     assert len(body["items"]) == 7
@@ -485,17 +547,16 @@ async def test_trend_staff_without_staff_id_returns_empty_series(client, db) -> 
     patient = await _make_patient(db, "DASH-T-OR")
     other = await _make_staff(db, "他人TOR")
     await _add_visit(
-        db, patient_id=patient.id, visit_date=today,
-        start=time(9, 0), end=time(10, 0),
+        db,
+        patient_id=patient.id,
+        visit_date=today,
+        start=time(9, 0),
+        end=time(10, 0),
         primary_staff_id=other.id,
     )
 
-    orphan = await _make_user(
-        db, "dash-trend-orphan@example.com", "staff", staff_id=None
-    )
-    res = await client.get(
-        "/api/v1/dashboard/trend?days=5", headers=_bearer(orphan)
-    )
+    orphan = await _make_user(db, "dash-trend-orphan@example.com", "staff", staff_id=None)
+    res = await client.get("/api/v1/dashboard/trend?days=5", headers=_bearer(orphan))
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["days"] == 5
@@ -516,20 +577,25 @@ async def test_trend_excludes_cancelled_visits(client, db) -> None:
 
     # 1 active + 1 cancelled on the same day → trend total must be 1.
     await _add_visit(
-        db, patient_id=patient.id, visit_date=today,
-        start=time(9, 0), end=time(10, 0),
+        db,
+        patient_id=patient.id,
+        visit_date=today,
+        start=time(9, 0),
+        end=time(10, 0),
         primary_staff_id=staff.id,
     )
     await _add_visit(
-        db, patient_id=patient.id, visit_date=today,
-        start=time(11, 0), end=time(12, 0),
-        primary_staff_id=staff.id, status="cancelled",
+        db,
+        patient_id=patient.id,
+        visit_date=today,
+        start=time(11, 0),
+        end=time(12, 0),
+        primary_staff_id=staff.id,
+        status="cancelled",
     )
 
     admin = await _make_user(db, "dash-trend-cxl@example.com", "admin")
-    res = await client.get(
-        "/api/v1/dashboard/trend?days=3", headers=_bearer(admin)
-    )
+    res = await client.get("/api/v1/dashboard/trend?days=3", headers=_bearer(admin))
     assert res.status_code == 200, res.text
     body = res.json()
     today_iso = today.isoformat()
@@ -544,7 +610,7 @@ async def test_trend_end_date_is_resolved_in_jst(client, db, monkeypatch) -> Non
     JST today (2026-05-05) rather than UTC today (2026-05-04)."""
     import app.api.v1.dashboard as dashboard_mod
 
-    frozen_utc = datetime(2026, 5, 4, 16, 0, tzinfo=timezone.utc)
+    frozen_utc = datetime(2026, 5, 4, 16, 0, tzinfo=UTC)
 
     class _FrozenDatetime(datetime):
         @classmethod
@@ -559,15 +625,16 @@ async def test_trend_end_date_is_resolved_in_jst(client, db, monkeypatch) -> Non
     staff = await _make_staff(db, "TトレンドTZ")
     # On JST today (5-05) — must surface in the trend window.
     await _add_visit(
-        db, patient_id=patient.id, visit_date=date(2026, 5, 5),
-        start=time(9, 0), end=time(10, 0),
+        db,
+        patient_id=patient.id,
+        visit_date=date(2026, 5, 5),
+        start=time(9, 0),
+        end=time(10, 0),
         primary_staff_id=staff.id,
     )
 
     admin = await _make_user(db, "dash-trend-tz@example.com", "admin")
-    res = await client.get(
-        "/api/v1/dashboard/trend?days=3", headers=_bearer(admin)
-    )
+    res = await client.get("/api/v1/dashboard/trend?days=3", headers=_bearer(admin))
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["end_date"] == "2026-05-05"

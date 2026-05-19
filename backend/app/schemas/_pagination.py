@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 T = TypeVar("T")
 
 
-class Paginated(BaseModel, Generic[T]):
+class Paginated(BaseModel, Generic[T]):  # noqa: UP046
     model_config = ConfigDict(extra="forbid")
 
     items: list[T] = Field(default_factory=list)

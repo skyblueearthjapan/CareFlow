@@ -4,21 +4,10 @@ import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useSession } from 'next-auth/react';
-import {
-  ArrowLeft,
-  Camera,
-  Clock,
-  MapPin,
-  Phone,
-  StickyNote,
-} from 'lucide-react';
+import { ArrowLeft, Camera, Clock, MapPin, Phone, StickyNote } from 'lucide-react';
 
 import { ApiError } from '@/lib/api-client';
-import {
-  clearCheckin,
-  loadCheckin,
-  saveCheckin,
-} from '@/lib/checkin-storage';
+import { clearCheckin, loadCheckin, saveCheckin } from '@/lib/checkin-storage';
 import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -33,10 +22,7 @@ import {
   type CheckInPayload,
   type MyVisit,
 } from '@/lib/queries/me';
-import {
-  useUploadPhoto,
-  useVisitPhotos,
-} from '@/lib/queries/visit-photos';
+import { useUploadPhoto, useVisitPhotos } from '@/lib/queries/visit-photos';
 
 function shortTime(t: string): string {
   return t.length >= 5 ? t.slice(0, 5) : t;
@@ -78,19 +64,12 @@ function getGeolocation(): Promise<{ lat?: number; lng?: number }> {
 
 function isCheckedIn(visit: MyVisit | undefined): boolean {
   if (!visit) return false;
-  return (
-    visit.status === 'in_progress' ||
-    visit.status === 'checked_in'
-  );
+  return visit.status === 'in_progress' || visit.status === 'checked_in';
 }
 
 function isCompleted(visit: MyVisit | undefined): boolean {
   if (!visit) return false;
-  return (
-    visit.status === 'done' ||
-    visit.status === 'completed' ||
-    visit.status === 'checked_out'
-  );
+  return visit.status === 'done' || visit.status === 'completed' || visit.status === 'checked_out';
 }
 
 export default function MobileVisitDetailPage() {
@@ -114,9 +93,9 @@ export default function MobileVisitDetailPage() {
   // truth again.
 
   // Seed from localStorage so a previous check-in survives navigation.
-  const [localStatus, setLocalStatus] = useState<
-    'idle' | 'checked_in' | 'checked_out'
-  >(() => (staffId && visitId ? loadCheckin(staffId, visitId)?.status ?? 'idle' : 'idle'));
+  const [localStatus, setLocalStatus] = useState<'idle' | 'checked_in' | 'checked_out'>(() =>
+    staffId && visitId ? (loadCheckin(staffId, visitId)?.status ?? 'idle') : 'idle',
+  );
 
   // When the visit id (or staff id) changes, re-seed from storage.
   const lastKeyRef = useRef(`${staffId}:${visitId}`);
@@ -125,7 +104,7 @@ export default function MobileVisitDetailPage() {
     if (lastKeyRef.current !== next) {
       lastKeyRef.current = next;
       setLocalStatus(
-        staffId && visitId ? loadCheckin(staffId, visitId)?.status ?? 'idle' : 'idle',
+        staffId && visitId ? (loadCheckin(staffId, visitId)?.status ?? 'idle') : 'idle',
       );
     }
   }, [visitId, staffId]);
@@ -232,9 +211,7 @@ export default function MobileVisitDetailPage() {
     }
   }
 
-  async function handlePhotoSelected(
-    e: React.ChangeEvent<HTMLInputElement>,
-  ) {
+  async function handlePhotoSelected(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     // Always reset the input so re-selecting the same file fires `change`.
     e.target.value = '';
@@ -297,9 +274,7 @@ export default function MobileVisitDetailPage() {
                 <p className="font-serif text-lg font-bold text-text-primary">
                   {visit.patient_name ?? '(患者名未設定)'}
                 </p>
-                <p className="text-xs text-text-muted">
-                  {visit.visit_date}
-                </p>
+                <p className="text-xs text-text-muted">{visit.visit_date}</p>
               </div>
               <Badge variant={meta.variant}>{meta.label}</Badge>
             </div>
@@ -331,28 +306,19 @@ export default function MobileVisitDetailPage() {
 
           <div className="space-y-2">
             {!effectiveCheckedIn && !effectiveCompleted && (
-              <CheckInButton
-                onClick={handleCheckIn}
-                loading={checkIn.isPending}
-              >
+              <CheckInButton onClick={handleCheckIn} loading={checkIn.isPending}>
                 チェックイン
               </CheckInButton>
             )}
             {effectiveCheckedIn && !effectiveCompleted && (
-              <CheckInButton
-                onClick={handleCheckOut}
-                loading={checkOut.isPending}
-                tone="outline"
-              >
+              <CheckInButton onClick={handleCheckOut} loading={checkOut.isPending} tone="outline">
                 チェックアウト
               </CheckInButton>
             )}
             {effectiveCompleted && (
               <Alert>
                 <AlertTitle>訪問完了</AlertTitle>
-                <AlertDescription>
-                  この訪問はチェックアウト済みです。
-                </AlertDescription>
+                <AlertDescription>この訪問はチェックアウト済みです。</AlertDescription>
               </Alert>
             )}
 
@@ -363,9 +329,7 @@ export default function MobileVisitDetailPage() {
               className="flex w-full items-center justify-center gap-2 rounded-md border border-dashed border-border-default bg-bg-base p-3 text-sm text-text-secondary hover:bg-bg-muted disabled:cursor-not-allowed disabled:opacity-60"
             >
               <Camera className="h-4 w-4" />
-              {uploadPhoto.isPending
-                ? 'アップロード中…'
-                : '写真を撮影 / 選択'}
+              {uploadPhoto.isPending ? 'アップロード中…' : '写真を撮影 / 選択'}
             </button>
             <input
               ref={fileInputRef}

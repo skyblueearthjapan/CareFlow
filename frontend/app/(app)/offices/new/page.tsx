@@ -24,11 +24,7 @@ export default function NewOfficePage() {
       </header>
 
       <Card className="p-5">
-        <OfficeForm
-          onSubmit={handleSubmit}
-          submitting={create.isPending}
-          error={create.error}
-        />
+        <OfficeForm onSubmit={handleSubmit} submitting={create.isPending} error={create.error} />
       </Card>
     </section>
   );

@@ -81,7 +81,11 @@ DELETE_FLAG_VALUES: Final[tuple[str, ...]] = (MAGIC_DELETE,)
 # ---------------------------------------------------------------------------
 
 SHEET_PATIENTS: Final = "患者マスタ"
-SHEET_PFV: Final = "固定訪問スケジュール"
+SHEET_PFV: Final = "固定訪問パターン"
+# 旧シート名 (= Phase E-7 以前の export ファイルが持っている名前).
+# importer / replace_all で wb[SHEET_PFV] が無い場合のフォールバックとして
+# wb[LEGACY_SHEET_PFV] を読みに行く. 新規 export は常に SHEET_PFV で書き出す.
+LEGACY_SHEET_PFV: Final = "固定訪問スケジュール"
 
 # 列定義: (key, header, width, dropdown_values).
 # key は内部識別子. header は実際の Excel ヘッダー文字列.
@@ -133,7 +137,7 @@ PATIENT_REQUIRED_ON_NEW: Final[tuple[str, ...]] = (
 
 
 # ---------------------------------------------------------------------------
-# シート 2: 固定訪問スケジュール (PFV)
+# シート 2: 固定訪問パターン (PFV) — 旧名「固定訪問スケジュール」
 # ---------------------------------------------------------------------------
 
 PFV_COLUMNS: Final[list[dict[str, object]]] = [
@@ -187,14 +191,14 @@ PFV_REQUIRED: Final[tuple[str, ...]] = (
 # ---------------------------------------------------------------------------
 #
 # User 指摘 (Phase E-8): patient.weekly_pattern (希望時間帯・希望曜日・週訪問
-# 回数等) が従来の Excel テンプレート (患者マスタ + 固定訪問スケジュール) に
+# 回数等) が従来の Excel テンプレート (患者マスタ + 固定訪問パターン) に
 # 含まれておらず、完全置換でも反映されない問題があった. これを解消するため
 # 「希望訪問パターン」シートを追加し、1 patient = 1 行で patient.weekly_pattern
 # を export / import 可能にする.
 #
-# 名称整理: User 視点での「週間訪問パターン (希望)」 vs 「週間訪問パターンの
-# 固定枠 (= PFV)」の紛らわしさを解消するため、本シート名を「希望訪問パターン」
-# とし、PFV は「固定訪問スケジュール」を継続使用する.
+# 名称整理: User 視点での「希望訪問パターン (= weekly_pattern)」 vs 「固定訪問
+# パターン (= PFV)」の紛らわしさを解消するため、本シート名を「希望訪問パターン」
+# とし、PFV は「固定訪問パターン」に統一する (Phase G で旧「固定訪問スケジュール」から改名).
 
 SHEET_WEEKLY: Final = "希望訪問パターン"
 

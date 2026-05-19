@@ -38,9 +38,7 @@ async def test_cities_list_admin_returns_200(client, db) -> None:
 @pytest.mark.asyncio
 async def test_cities_get_unknown_returns_404(client, db) -> None:
     admin = await _make_user(db, "c-admin2@example.com", "admin")
-    res = await client.get(
-        f"/api/v1/cities/{uuid4()}", headers=_bearer(admin)
-    )
+    res = await client.get(f"/api/v1/cities/{uuid4()}", headers=_bearer(admin))
     assert res.status_code == 404, res.text
 
 

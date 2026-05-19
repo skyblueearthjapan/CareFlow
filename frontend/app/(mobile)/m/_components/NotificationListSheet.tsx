@@ -11,21 +11,12 @@
 import { useEffect } from 'react';
 import { Bell, BellOff, Check } from 'lucide-react';
 
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogTitle,
-} from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
-import {
-  useMarkAllRead,
-  useMarkRead,
-  useNotifications,
-} from '@/lib/queries/notifications';
+import { useMarkAllRead, useMarkRead, useNotifications } from '@/lib/queries/notifications';
 import type { NotificationRead } from '@/lib/schemas/notification';
 
 interface NotificationListSheetProps {
@@ -49,13 +40,7 @@ function formatRelative(iso: string): string {
   return iso.slice(0, 10);
 }
 
-function NotificationRow({
-  item,
-  onTap,
-}: {
-  item: NotificationRead;
-  onTap: (id: string) => void;
-}) {
+function NotificationRow({ item, onTap }: { item: NotificationRead; onTap: (id: string) => void }) {
   const unread = item.read_at == null;
   return (
     <button
@@ -76,21 +61,14 @@ function NotificationRow({
         )}
       </div>
       {item.body && (
-        <p className="text-xs text-text-muted line-clamp-3 whitespace-pre-wrap">
-          {item.body}
-        </p>
+        <p className="text-xs text-text-muted line-clamp-3 whitespace-pre-wrap">{item.body}</p>
       )}
-      <span className="text-[10px] text-text-muted">
-        {formatRelative(item.created_at)}
-      </span>
+      <span className="text-[10px] text-text-muted">{formatRelative(item.created_at)}</span>
     </button>
   );
 }
 
-export function NotificationListSheet({
-  open,
-  onOpenChange,
-}: NotificationListSheetProps) {
+export function NotificationListSheet({ open, onOpenChange }: NotificationListSheetProps) {
   const { data, isLoading, isError, refetch } = useNotifications({
     limit: 50,
   });
@@ -144,11 +122,7 @@ export function NotificationListSheet({
             </div>
           )}
 
-          {isError && (
-            <p className="text-sm text-text-muted">
-              通知の取得に失敗しました。
-            </p>
-          )}
+          {isError && <p className="text-sm text-text-muted">通知の取得に失敗しました。</p>}
 
           {!isLoading && !isError && items.length === 0 && (
             <div className="flex flex-col items-center justify-center gap-2 py-8 text-text-muted">

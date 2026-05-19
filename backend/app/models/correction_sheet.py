@@ -5,7 +5,8 @@ from __future__ import annotations
 import uuid
 
 from sqlalchemy import Boolean, ForeignKey, Index, String, Text
-from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin
@@ -25,7 +26,7 @@ class CorrectionSheet(Base, TimestampMixin):
     )
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
 
-    items: Mapped[list["CorrectionSheetItem"]] = relationship(
+    items: Mapped[list[CorrectionSheetItem]] = relationship(
         "CorrectionSheetItem",
         back_populates="sheet",
         cascade="all, delete-orphan",
@@ -64,7 +65,7 @@ class CorrectionSheetItem(Base, TimestampMixin):
     include: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    sheet: Mapped["CorrectionSheet"] = relationship("CorrectionSheet", back_populates="items")
+    sheet: Mapped[CorrectionSheet] = relationship("CorrectionSheet", back_populates="items")
 
     __table_args__ = (
         Index("ix_correction_items_sheet_action", "sheet_id", "action"),

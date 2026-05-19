@@ -7,7 +7,6 @@ import pytest
 from app.core.security import create_access_token, hash_password
 from app.models import User
 
-
 CSV_HEADER = (
     "職員名1,職種1,職員名2,職種2,同行2,職員名3,職種3,同行3,"
     "事業所名,日付,曜日,利用者,業務種別,サービス内容,"
@@ -23,10 +22,7 @@ def _kaipoke_row(
     start: str = "09:00",
     end: str = "10:00",
 ) -> str:
-    return (
-        f"A田,看護師,,,,,,,"
-        f"事業所A,{date},月,{user},医療保険,{svc},{start},{end},60,\n"
-    )
+    return f"A田,看護師,,,,,,,事業所A,{date},月,{user},医療保険,{svc},{start},{end},60,\n"
 
 
 async def _make_user(db, email: str, role: str) -> User:

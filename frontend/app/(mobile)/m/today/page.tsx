@@ -13,19 +13,19 @@ function isUnvisited(v: MyVisit): boolean {
 
 export default function MobileTodayPage() {
   const today = todayIso();
-  const { data: visits, isLoading, isError, error } = useMyVisits({
+  const {
+    data: visits,
+    isLoading,
+    isError,
+    error,
+  } = useMyVisits({
     date: today,
   });
 
-  const sorted = [...(visits ?? [])].sort((a, b) =>
-    a.start_time.localeCompare(b.start_time),
-  );
+  const sorted = [...(visits ?? [])].sort((a, b) => a.start_time.localeCompare(b.start_time));
 
   return (
-    <MobileSection
-      title="今日の訪問"
-      subtitle={`${today} ・ ${sorted.length}件`}
-    >
+    <MobileSection title="今日の訪問" subtitle={`${today} ・ ${sorted.length}件`}>
       {isLoading && (
         <div className="space-y-2">
           <Skeleton className="h-20 w-full" />

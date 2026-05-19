@@ -40,8 +40,7 @@ export function Calendar({
         nav_button_next: 'absolute right-1',
         table: 'w-full border-collapse space-y-1',
         head_row: 'flex',
-        head_cell:
-          'text-text-muted rounded-md w-9 font-normal text-[0.8rem]',
+        head_cell: 'text-text-muted rounded-md w-9 font-normal text-[0.8rem]',
         row: 'flex w-full mt-2',
         cell: cn(
           'relative p-0 text-center text-sm focus-within:relative focus-within:z-20',
@@ -62,8 +61,7 @@ export function Calendar({
         day_outside:
           'day-outside text-text-muted aria-selected:bg-bg-muted/50 aria-selected:text-text-muted',
         day_disabled: 'text-text-muted opacity-50',
-        day_range_middle:
-          'aria-selected:bg-bg-muted aria-selected:text-text-primary',
+        day_range_middle: 'aria-selected:bg-bg-muted aria-selected:text-text-primary',
         day_hidden: 'invisible',
         ...classNames,
       }}

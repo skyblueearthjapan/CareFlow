@@ -23,10 +23,6 @@ export const visitPhotoReadSchema = z.object({
 export type VisitPhotoRead = z.infer<typeof visitPhotoReadSchema>;
 
 /** Allowed MIME types (Backend rejects anything else with 415). */
-export const ALLOWED_PHOTO_MIME = [
-  'image/jpeg',
-  'image/png',
-  'image/webp',
-] as const;
+export const ALLOWED_PHOTO_MIME = ['image/jpeg', 'image/png', 'image/webp'] as const;
 
 export const MAX_PHOTO_BYTES = 10 * 1024 * 1024; // 10 MiB

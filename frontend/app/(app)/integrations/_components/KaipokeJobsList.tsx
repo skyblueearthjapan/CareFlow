@@ -22,10 +22,7 @@ import {
   type KaipokeJobCreate,
   type KaipokeJobType,
 } from '@/lib/schemas/integration';
-import {
-  useCreateKaipokeJob,
-  useKaipokeJobs,
-} from '@/lib/queries/integrations';
+import { useCreateKaipokeJob, useKaipokeJobs } from '@/lib/queries/integrations';
 
 export function KaipokeJobsList() {
   const { data: session } = useSession();
@@ -84,11 +81,7 @@ export function KaipokeJobsList() {
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <label className="text-sm">
             <span className="mb-1 block text-xs text-text-secondary">週開始日 (YYYY-MM-DD)</span>
-            <Input
-              type="date"
-              value={weekStart}
-              onChange={(e) => setWeekStart(e.target.value)}
-            />
+            <Input type="date" value={weekStart} onChange={(e) => setWeekStart(e.target.value)} />
           </label>
           <label className="text-sm">
             <span className="mb-1 block text-xs text-text-secondary">ステータス</span>

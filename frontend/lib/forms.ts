@@ -20,10 +20,7 @@ export function useFormWithSchema<
 >(
   schema: TSchema,
   defaults?: DefaultValues<TInput>,
-  options?: Omit<
-    UseFormProps<TInput, unknown, z.output<TSchema>>,
-    'resolver' | 'defaultValues'
-  >,
+  options?: Omit<UseFormProps<TInput, unknown, z.output<TSchema>>, 'resolver' | 'defaultValues'>,
 ): UseFormReturn<TInput, unknown, z.output<TSchema>> {
   return useForm<TInput, unknown, z.output<TSchema>>({
     ...options,

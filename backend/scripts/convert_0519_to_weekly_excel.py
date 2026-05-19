@@ -22,7 +22,7 @@ User 確定方針:
 
 シート構成:
   1. 患者マスタ: **新規 10 名のみ** (resurrect 9 + new 1).
-  2. 固定訪問スケジュール (PFV): **空** (今回 PFV は触らない).
+  2. 固定訪問パターン (PFV): **空** (今回 PFV は触らない).
   3. 希望訪問パターン: **86 名** (= 既存 76 + 新規 10).
 
 突合: 0519 シート患者名 → DB 患者マスタ patient_code (空白除去比較).
@@ -245,7 +245,7 @@ def build_workbook(rows_0519: list[dict], name_to_code: dict[str, str]) -> Workb
         p_row += 1
     print(f"患者マスタ シート: 新規 {p_row - 2} 行")
 
-    # 固定訪問スケジュール: header のみ (空)
+    # 固定訪問パターン: header のみ (空)
     ws_f: Worksheet = wb.create_sheet(title=SHEET_PFV)
     _write_header(ws_f, PFV_COLUMNS)
     print("PFV シート: header のみ (空)")

@@ -47,16 +47,25 @@ export function useKaipokeJobs(params: UseKaipokeJobsParams = {}) {
   const { weekStart, status: jobStatus, type, limit = 50, offset = 0 } = params;
 
   return useQuery<Paginated<KaipokeJob>>({
-    queryKey: ['integrations', 'kaipoke', 'jobs', weekStart ?? null, jobStatus ?? null, type ?? null, limit, offset],
+    queryKey: [
+      'integrations',
+      'kaipoke',
+      'jobs',
+      weekStart ?? null,
+      jobStatus ?? null,
+      type ?? null,
+      limit,
+      offset,
+    ],
     queryFn: () => {
       const usp = new URLSearchParams({ limit: String(limit), offset: String(offset) });
       if (weekStart) usp.set('week_start', weekStart);
       if (jobStatus) usp.set('status', jobStatus);
       if (type) usp.set('type', type);
-      return fetcher<Paginated<KaipokeJob>>(
-        `/api/v1/integrations/kaipoke/jobs?${usp.toString()}`,
-        { accessToken, refreshToken },
-      );
+      return fetcher<Paginated<KaipokeJob>>(`/api/v1/integrations/kaipoke/jobs?${usp.toString()}`, {
+        accessToken,
+        refreshToken,
+      });
     },
     enabled: status === 'authenticated',
   });
@@ -241,10 +250,10 @@ export function useIntegrationJobs(limit = 20) {
   return useQuery<Paginated<KaipokeJob>>({
     queryKey: ['integrations', 'jobs', limit],
     queryFn: () =>
-      fetcher<Paginated<KaipokeJob>>(
-        `/api/v1/integrations/jobs?limit=${limit}`,
-        { accessToken, refreshToken },
-      ),
+      fetcher<Paginated<KaipokeJob>>(`/api/v1/integrations/jobs?limit=${limit}`, {
+        accessToken,
+        refreshToken,
+      }),
     enabled: status === 'authenticated' && session?.user?.role === 'admin',
     refetchInterval: 30_000,
   });
@@ -345,15 +354,12 @@ export function useBulkUpdateItems() {
     { sheetId: string; ids: string[]; patch: CorrectionItemUpdate }
   >({
     mutationFn: ({ sheetId, ids, patch }) =>
-      fetcher<{ updated: number }>(
-        `/api/v1/integrations/correction-sheets/${sheetId}/items/bulk`,
-        {
-          method: 'POST',
-          body: JSON.stringify({ ids, patch }),
-          accessToken,
-          refreshToken,
-        },
-      ),
+      fetcher<{ updated: number }>(`/api/v1/integrations/correction-sheets/${sheetId}/items/bulk`, {
+        method: 'POST',
+        body: JSON.stringify({ ids, patch }),
+        accessToken,
+        refreshToken,
+      }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['integrations', 'correction-items'] });
       void qc.invalidateQueries({ queryKey: ['integrations', 'correction-sheets'] });
@@ -369,16 +375,25 @@ export function useAiInterpretLogs(params: UseAiInterpretLogsParams = {}) {
   const { since, until, model, limit = 100, offset = 0 } = params;
 
   return useQuery<Paginated<AiInterpretLog>>({
-    queryKey: ['integrations', 'ai', 'logs', since ?? null, until ?? null, model ?? null, limit, offset],
+    queryKey: [
+      'integrations',
+      'ai',
+      'logs',
+      since ?? null,
+      until ?? null,
+      model ?? null,
+      limit,
+      offset,
+    ],
     queryFn: () => {
       const usp = new URLSearchParams({ limit: String(limit), offset: String(offset) });
       if (since) usp.set('since', since);
       if (until) usp.set('until', until);
       if (model) usp.set('model', model);
-      return fetcher<Paginated<AiInterpretLog>>(
-        `/api/v1/integrations/ai/logs?${usp.toString()}`,
-        { accessToken, refreshToken },
-      );
+      return fetcher<Paginated<AiInterpretLog>>(`/api/v1/integrations/ai/logs?${usp.toString()}`, {
+        accessToken,
+        refreshToken,
+      });
     },
     enabled: status === 'authenticated',
   });

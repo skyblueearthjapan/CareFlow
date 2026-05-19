@@ -39,11 +39,7 @@ import {
 } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { useDeleteEvent, useUpdateEvent } from '@/lib/queries/staff-events';
-import {
-  eventCreateSchema,
-  type EventCreate,
-  type EventRead,
-} from '@/lib/schemas/staff-events';
+import { eventCreateSchema, type EventCreate, type EventRead } from '@/lib/schemas/staff-events';
 
 import { DeleteConfirmModal } from '../../_components/DeleteConfirmModal';
 
@@ -54,12 +50,7 @@ interface EventEditDialogProps {
   onOpenChange: (open: boolean) => void;
 }
 
-export function EventEditDialog({
-  staffId,
-  event,
-  open,
-  onOpenChange,
-}: EventEditDialogProps) {
+export function EventEditDialog({ staffId, event, open, onOpenChange }: EventEditDialogProps) {
   const update = useUpdateEvent(staffId);
   const remove = useDeleteEvent(staffId);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -101,18 +92,13 @@ export function EventEditDialog({
         eventId: event.id,
         payload: {
           ...values,
-          note:
-            values.note && values.note.trim() !== ''
-              ? values.note.trim()
-              : null,
+          note: values.note && values.note.trim() !== '' ? values.note.trim() : null,
         },
       });
       toast.success('イベントを更新しました');
       onOpenChange(false);
     } catch (err) {
-      toast.error(
-        `更新に失敗しました: ${err instanceof Error ? err.message : '不明なエラー'}`,
-      );
+      toast.error(`更新に失敗しました: ${err instanceof Error ? err.message : '不明なエラー'}`);
     }
   };
 
@@ -124,9 +110,7 @@ export function EventEditDialog({
       setConfirmDelete(false);
       onOpenChange(false);
     } catch (err) {
-      toast.error(
-        `削除に失敗しました: ${err instanceof Error ? err.message : '不明なエラー'}`,
-      );
+      toast.error(`削除に失敗しました: ${err instanceof Error ? err.message : '不明なエラー'}`);
     }
   };
 
@@ -144,16 +128,11 @@ export function EventEditDialog({
         <DialogContent>
           <DialogHeader>
             <DialogTitle>研修・イベントを編集</DialogTitle>
-            <DialogDescription>
-              内容を変更するか、削除できます。
-            </DialogDescription>
+            <DialogDescription>内容を変更するか、削除できます。</DialogDescription>
           </DialogHeader>
 
           <Form {...form}>
-            <form
-              onSubmit={form.handleSubmit(onSubmit)}
-              className="grid gap-4 py-2"
-            >
+            <form onSubmit={form.handleSubmit(onSubmit)} className="grid gap-4 py-2">
               <FormField
                 control={form.control}
                 name="date"
@@ -174,10 +153,7 @@ export function EventEditDialog({
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>種別</FormLabel>
-                    <Select
-                      value={field.value}
-                      onValueChange={field.onChange}
-                    >
+                    <Select value={field.value} onValueChange={field.onChange}>
                       <FormControl>
                         <SelectTrigger aria-label="種別を選択">
                           <SelectValue />
@@ -243,11 +219,7 @@ export function EventEditDialog({
                   <FormItem>
                     <FormLabel>備考</FormLabel>
                     <FormControl>
-                      <Textarea
-                        rows={3}
-                        {...field}
-                        value={field.value ?? ''}
-                      />
+                      <Textarea rows={3} {...field} value={field.value ?? ''} />
                     </FormControl>
                     <FormMessage />
                   </FormItem>

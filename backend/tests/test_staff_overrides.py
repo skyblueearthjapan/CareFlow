@@ -151,9 +151,7 @@ async def test_overrides_delete_returns_204(client, db) -> None:
 @pytest.mark.asyncio
 async def test_overrides_post_staff_role_returns_403(client, db) -> None:
     staff = await _make_staff(db)
-    sr_user = await _make_user(
-        db, "ov-staff@example.com", "staff", staff_id=staff.id
-    )
+    sr_user = await _make_user(db, "ov-staff@example.com", "staff", staff_id=staff.id)
     res = await client.post(
         f"/api/v1/staff/{staff.id}/overrides",
         headers=_bearer(sr_user),

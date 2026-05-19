@@ -19,14 +19,14 @@ pnpm dev
 
 ## 主要スクリプト
 
-| コマンド | 用途 |
-|---|---|
-| `npm run dev` | 開発サーバ起動 |
-| `npm run build` | プロダクションビルド |
-| `npm run start` | プロダクション起動 |
-| `npm run lint` | ESLint |
-| `npm run typecheck` | `tsc --noEmit` |
-| `npm run format` | Prettier 全体整形 |
+| コマンド            | 用途                 |
+| ------------------- | -------------------- |
+| `npm run dev`       | 開発サーバ起動       |
+| `npm run build`     | プロダクションビルド |
+| `npm run start`     | プロダクション起動   |
+| `npm run lint`      | ESLint               |
+| `npm run typecheck` | `tsc --noEmit`       |
+| `npm run format`    | Prettier 全体整形    |
 
 ## ディレクトリ構成
 

@@ -42,9 +42,7 @@ test.describe('DnD performance', () => {
 
     await loginAs('admin');
     await page.goto('/schedule');
-    await expect(
-      page.getByRole('heading', { name: 'スケジュール' }),
-    ).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'スケジュール' })).toBeVisible();
 
     const chips = page.locator('[data-testid="visit-chip"]');
     const rows = page.locator('[data-testid="staff-row"]');
@@ -66,16 +64,13 @@ test.describe('DnD performance', () => {
         const delta = now - last;
         last = now;
         if (delta > 0 && delta < 1_000) {
-          const samples = (window as unknown as { __fpsSamples: number[] })
-            .__fpsSamples;
+          const samples = (window as unknown as { __fpsSamples: number[] }).__fpsSamples;
           samples.push(1_000 / delta);
           if (samples.length > 5_000) samples.shift();
         }
-        (window as unknown as { __fpsRaf: number }).__fpsRaf =
-          requestAnimationFrame(loop);
+        (window as unknown as { __fpsRaf: number }).__fpsRaf = requestAnimationFrame(loop);
       };
-      (window as unknown as { __fpsRaf: number }).__fpsRaf =
-        requestAnimationFrame(loop);
+      (window as unknown as { __fpsRaf: number }).__fpsRaf = requestAnimationFrame(loop);
       performance.mark('dnd-perf-start');
     });
 
@@ -95,11 +90,8 @@ test.describe('DnD performance', () => {
       performance.mark('dnd-perf-end');
       performance.measure('dnd-perf', 'dnd-perf-start', 'dnd-perf-end');
       const measure = performance.getEntriesByName('dnd-perf').at(-1);
-      cancelAnimationFrame(
-        (window as unknown as { __fpsRaf: number }).__fpsRaf,
-      );
-      const samples = (window as unknown as { __fpsSamples: number[] })
-        .__fpsSamples;
+      cancelAnimationFrame((window as unknown as { __fpsRaf: number }).__fpsRaf);
+      const samples = (window as unknown as { __fpsSamples: number[] }).__fpsSamples;
       const sum = samples.reduce((a, b) => a + b, 0);
       return {
         samples,
@@ -115,11 +107,7 @@ test.describe('DnD performance', () => {
       contentType: 'application/json',
     });
 
-    expect(report.averageFps, 'avg FPS').toBeGreaterThanOrEqual(
-      AVG_FPS_THRESHOLD,
-    );
-    expect(report.minFps, 'min FPS').toBeGreaterThanOrEqual(
-      MIN_FPS_THRESHOLD,
-    );
+    expect(report.averageFps, 'avg FPS').toBeGreaterThanOrEqual(AVG_FPS_THRESHOLD);
+    expect(report.minFps, 'min FPS').toBeGreaterThanOrEqual(MIN_FPS_THRESHOLD);
   });
 });

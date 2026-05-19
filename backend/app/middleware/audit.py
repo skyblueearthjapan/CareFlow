@@ -33,7 +33,8 @@ import json
 import logging
 import re
 import time
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy.exc import ProgrammingError
@@ -315,9 +316,7 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
                 if len(serialized.encode("utf-8")) > _MAX_PERSIST_BYTES:
                     body_redacted = {"_truncated": True}
                 else:
-                    body_redacted = (
-                        redacted if isinstance(redacted, dict) else {"_value": redacted}
-                    )
+                    body_redacted = redacted if isinstance(redacted, dict) else {"_value": redacted}
             except (ValueError, UnicodeDecodeError):
                 body_redacted = {"_unparseable": True}
 

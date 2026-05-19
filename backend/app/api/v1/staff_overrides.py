@@ -7,7 +7,7 @@ triple on write and back to a date on read.
 
 from __future__ import annotations
 
-from datetime import date, datetime, time
+from datetime import date, time
 from typing import Annotated
 from uuid import UUID
 
@@ -29,17 +29,13 @@ router = APIRouter()
 
 def _check_read_access(user: User, staff_id: UUID) -> None:
     if user.role not in {"admin", "manager", "staff"}:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role"
-        )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
     if user.role == "staff" and user.staff_id != staff_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
 
 
 async def _ensure_staff_exists(db, staff_id: UUID) -> Staff:
-    staff = await db.scalar(
-        select(Staff).where(Staff.id == staff_id, Staff.deleted_at.is_(None))
-    )
+    staff = await db.scalar(select(Staff).where(Staff.id == staff_id, Staff.deleted_at.is_(None)))
     if staff is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     return staff
@@ -197,11 +193,7 @@ async def update_override(
         setattr(row, _api_to_db.get(k, k), v)
 
     # Cross-field validation after merge.
-    if (
-        row.start_time is not None
-        and row.end_time is not None
-        and row.start_time >= row.end_time
-    ):
+    if row.start_time is not None and row.end_time is not None and row.start_time >= row.end_time:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="start_time must be < end_time",

@@ -25,14 +25,8 @@ export function MobileSection({
       {(title || action) && (
         <header className="flex items-start justify-between gap-3">
           <div className="space-y-1">
-            {title && (
-              <h1 className="font-serif text-xl font-bold text-text-primary">
-                {title}
-              </h1>
-            )}
-            {subtitle && (
-              <p className="text-sm text-text-secondary">{subtitle}</p>
-            )}
+            {title && <h1 className="font-serif text-xl font-bold text-text-primary">{title}</h1>}
+            {subtitle && <p className="text-sm text-text-secondary">{subtitle}</p>}
           </div>
           {action}
         </header>

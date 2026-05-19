@@ -94,7 +94,7 @@ async def download_template(
 
 @router.get(
     "/export",
-    summary="全 active 患者マスタ + 固定訪問スケジュールを Excel でダウンロード",
+    summary="全 active 患者マスタ + 固定訪問パターンを Excel でダウンロード",
     response_class=Response,
 )
 async def export_all(

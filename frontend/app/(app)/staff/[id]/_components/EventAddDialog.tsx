@@ -39,10 +39,7 @@ import {
 } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { useCreateEvent } from '@/lib/queries/staff-events';
-import {
-  eventCreateSchema,
-  type EventCreate,
-} from '@/lib/schemas/staff-events';
+import { eventCreateSchema, type EventCreate } from '@/lib/schemas/staff-events';
 
 interface EventAddDialogProps {
   staffId: string;
@@ -60,12 +57,7 @@ function todayIso(): string {
   return `${y}-${m}-${day}`;
 }
 
-export function EventAddDialog({
-  staffId,
-  open,
-  onOpenChange,
-  defaultDate,
-}: EventAddDialogProps) {
+export function EventAddDialog({ staffId, open, onOpenChange, defaultDate }: EventAddDialogProps) {
   const create = useCreateEvent(staffId);
 
   const form = useForm<EventCreate>({
@@ -100,16 +92,13 @@ export function EventAddDialog({
     try {
       const payload: EventCreate = {
         ...values,
-        note:
-          values.note && values.note.trim() !== '' ? values.note.trim() : null,
+        note: values.note && values.note.trim() !== '' ? values.note.trim() : null,
       };
       await create.mutateAsync(payload);
       toast.success('イベントを追加しました');
       onOpenChange(false);
     } catch (err) {
-      toast.error(
-        `追加に失敗しました: ${err instanceof Error ? err.message : '不明なエラー'}`,
-      );
+      toast.error(`追加に失敗しました: ${err instanceof Error ? err.message : '不明なエラー'}`);
     }
   };
 
@@ -126,16 +115,11 @@ export function EventAddDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>研修・イベントを追加</DialogTitle>
-          <DialogDescription>
-            日付・時刻・種別を入力して保存してください。
-          </DialogDescription>
+          <DialogDescription>日付・時刻・種別を入力して保存してください。</DialogDescription>
         </DialogHeader>
 
         <Form {...form}>
-          <form
-            onSubmit={form.handleSubmit(onSubmit)}
-            className="grid gap-4 py-2"
-          >
+          <form onSubmit={form.handleSubmit(onSubmit)} className="grid gap-4 py-2">
             <FormField
               control={form.control}
               name="date"
@@ -156,10 +140,7 @@ export function EventAddDialog({
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>種別</FormLabel>
-                  <Select
-                    value={field.value}
-                    onValueChange={field.onChange}
-                  >
+                  <Select value={field.value} onValueChange={field.onChange}>
                     <FormControl>
                       <SelectTrigger aria-label="種別を選択">
                         <SelectValue />
@@ -225,11 +206,7 @@ export function EventAddDialog({
                 <FormItem>
                   <FormLabel>備考</FormLabel>
                   <FormControl>
-                    <Textarea
-                      rows={3}
-                      {...field}
-                      value={field.value ?? ''}
-                    />
+                    <Textarea rows={3} {...field} value={field.value ?? ''} />
                   </FormControl>
                   <FormMessage />
                 </FormItem>

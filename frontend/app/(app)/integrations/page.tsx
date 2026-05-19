@@ -49,28 +49,26 @@ function IntegrationsPageInner() {
         </TabsList>
 
         <TabsContent value="kaipoke">
-          <Card className="p-5">
-            {tab === 'kaipoke' && <KaipokeJobsList />}
-          </Card>
+          <Card className="p-5">{tab === 'kaipoke' && <KaipokeJobsList />}</Card>
         </TabsContent>
         {isAdmin && (
           <TabsContent value="geocoding">
-            <Card className="p-5">
-              {tab === 'geocoding' && <GeocodingCacheList />}
-            </Card>
+            <Card className="p-5">{tab === 'geocoding' && <GeocodingCacheList />}</Card>
           </TabsContent>
         )}
         {isAdmin && (
           <TabsContent value="ai">
-            <Card className="p-5">
-              {tab === 'ai' && <AiLogsList />}
-            </Card>
+            <Card className="p-5">{tab === 'ai' && <AiLogsList />}</Card>
           </TabsContent>
         )}
       </Tabs>
 
       <p className="text-xs text-text-muted">
-        詳しいジョブ操作は <Link className="text-brand-primary hover:underline" href="/integrations/kaipoke">Kaipoke ジョブ画面</Link> から。
+        詳しいジョブ操作は{' '}
+        <Link className="text-brand-primary hover:underline" href="/integrations/kaipoke">
+          Kaipoke ジョブ画面
+        </Link>{' '}
+        から。
       </p>
     </section>
   );

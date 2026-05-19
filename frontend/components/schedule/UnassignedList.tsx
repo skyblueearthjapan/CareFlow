@@ -16,9 +16,7 @@ export function UnassignedList({ visits, onSelect }: UnassignedListProps) {
   return (
     <Card className="p-5">
       <div className="mb-3 flex items-center justify-between">
-        <h2 className="font-serif text-base font-semibold text-text-primary">
-          未割当
-        </h2>
+        <h2 className="font-serif text-base font-semibold text-text-primary">未割当</h2>
         <span className="text-xs text-text-muted">{visits.length} 件</span>
       </div>
       {visits.length === 0 ? (
@@ -29,8 +27,7 @@ export function UnassignedList({ visits, onSelect }: UnassignedListProps) {
             const rowContent = (
               <>
                 <span className="tnum text-text-secondary">
-                  {v.visit_date} {trimSeconds(v.start_time)}–
-                  {trimSeconds(v.end_time)}
+                  {v.visit_date} {trimSeconds(v.start_time)}–{trimSeconds(v.end_time)}
                 </span>
                 <span className="flex-1 truncate text-text-primary">
                   {v.patient_name ?? '(未設定)'}

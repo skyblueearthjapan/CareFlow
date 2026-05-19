@@ -31,9 +31,7 @@ test.describe('iOS touch-DnD', () => {
   }, testInfo) => {
     await loginAs('admin');
     await page.goto('/schedule');
-    await expect(
-      page.getByRole('heading', { name: 'スケジュール' }),
-    ).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'スケジュール' })).toBeVisible();
 
     const chip = page.locator('[data-testid="visit-chip"]').first();
     const target = page.locator('[data-testid="staff-row"]').nth(1);
@@ -45,10 +43,7 @@ test.describe('iOS touch-DnD', () => {
     test.skip(!chipBox || !targetBox, 'Bounding boxes unavailable.');
 
     // --- Case 1: short tap (100ms) → must NOT start a drag ----------------
-    await page.touchscreen.tap(
-      chipBox!.x + chipBox!.width / 2,
-      chipBox!.y + chipBox!.height / 2,
-    );
+    await page.touchscreen.tap(chipBox!.x + chipBox!.width / 2, chipBox!.y + chipBox!.height / 2);
     // The chip should still be in its original row (no reassign mutation
     // toast). We assert by absence of the success status update.
     await expect(page.getByRole('status')).not.toContainText(/反映|完了/, {
@@ -61,12 +56,7 @@ test.describe('iOS touch-DnD', () => {
     // pointer-events sequence it expects.
     await page.evaluate(
       ({ from, to, holdMs }) => {
-        const dispatch = (
-          el: Element,
-          type: string,
-          x: number,
-          y: number,
-        ) => {
+        const dispatch = (el: Element, type: string, x: number, y: number) => {
           const touch = new Touch({
             identifier: 1,
             target: el,

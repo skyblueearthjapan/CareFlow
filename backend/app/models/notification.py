@@ -34,9 +34,7 @@ class Notification(Base, TimestampMixin):
     type: Mapped[str] = mapped_column(String(32), nullable=False)
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     body: Mapped[str | None] = mapped_column(Text, nullable=True)
-    read_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         Index("ix_notifications_user_created", "user_id", "created_at"),

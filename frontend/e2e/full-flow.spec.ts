@@ -36,16 +36,23 @@ test.describe('full business flow', () => {
 
     // ---- 3. Navigate to weekly schedule ---------------------------------
     await page.goto(SCHEDULE_URL);
-    await expect(
-      page.getByRole('heading', { name: 'スケジュール' }),
-    ).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'スケジュール' })).toBeVisible();
 
     // The grid renders either the week table or an empty-state card. We
     // tolerate both; the rest of the spec only runs against the populated
     // path so empty seeds skip gracefully.
     const gridReady = await Promise.race([
-      page.getByRole('table').first().waitFor({ state: 'visible', timeout: 8_000 }).then(() => true).catch(() => false),
-      page.locator('text=対象週に訪問がありません').waitFor({ state: 'visible', timeout: 8_000 }).then(() => false).catch(() => false),
+      page
+        .getByRole('table')
+        .first()
+        .waitFor({ state: 'visible', timeout: 8_000 })
+        .then(() => true)
+        .catch(() => false),
+      page
+        .locator('text=対象週に訪問がありません')
+        .waitFor({ state: 'visible', timeout: 8_000 })
+        .then(() => false)
+        .catch(() => false),
     ]);
     test.skip(!gridReady, 'Week grid is empty for the current week — seed required for full-flow.');
 
@@ -73,16 +80,17 @@ test.describe('full business flow', () => {
     await expect(dialog).toBeVisible();
     // The dialog has a primary "実行" button; click it and wait for the
     // diff preview to appear.
-    await dialog.getByRole('button', { name: /実行|割当/ }).first().click();
+    await dialog
+      .getByRole('button', { name: /実行|割当/ })
+      .first()
+      .click();
 
     // ---- 7. Diff preview -----------------------------------------------
     await expect(page.locator('[data-testid="diff-preview"]')).toBeVisible({
       timeout: 30_000,
     });
     // Each diff row should carry an action label (added / removed / modified).
-    await expect(
-      page.locator('[data-testid="diff-row"]').first(),
-    ).toBeVisible();
+    await expect(page.locator('[data-testid="diff-row"]').first()).toBeVisible();
 
     // ---- 8. Approve -----------------------------------------------------
     await page.getByRole('button', { name: /承認|適用/ }).click();
@@ -94,9 +102,7 @@ test.describe('full business flow', () => {
 
     // ---- 9. Confirm: re-open the schedule and assert chips updated -----
     await page.reload();
-    await expect(
-      page.getByRole('heading', { name: 'スケジュール' }),
-    ).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'スケジュール' })).toBeVisible();
     await expect(page.locator('[data-testid="visit-chip"]').first()).toBeVisible();
   });
 });

@@ -18,10 +18,10 @@ Two routes:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
@@ -55,9 +55,7 @@ router = APIRouter()
 async def geocode(
     payload: GeocodeRequest,
     db: DbDep,
-    _user: Annotated[
-        User, Depends(require_role("admin", "manager", "staff"))
-    ],
+    _user: Annotated[User, Depends(require_role("admin", "manager", "staff"))],
 ) -> GeocodeResponse:
     """Cache-first geocode lookup.
 
@@ -115,7 +113,7 @@ async def geocode(
         )
 
     # Upsert: update existing row in place when force_refresh hit, else insert.
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     if cached_row is not None:
         cached_row.lat = result.lat
         cached_row.lng = result.lng
@@ -140,12 +138,10 @@ async def geocode(
         # use that row instead of bubbling a 500 to the user.
         await db.rollback()
         existing = await db.scalar(
-            select(GeocodingCache).where(
-                GeocodingCache.address_hash == addr_hash
-            )
+            select(GeocodingCache).where(GeocodingCache.address_hash == addr_hash)
         )
         if existing is None:
-            raise HTTPException(
+            raise HTTPException(  # noqa: B904
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to persist geocoding result",
             )
@@ -170,9 +166,7 @@ async def geocode(
 async def list_geocoding_cache(
     db: DbDep,
     _user: Annotated[User, Depends(require_role("admin", "manager"))],
-    q: Annotated[
-        str | None, Query(description="Substring filter on the cached address")
-    ] = None,
+    q: Annotated[str | None, Query(description="Substring filter on the cached address")] = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> Paginated[GeocodingCacheRead]:
@@ -182,18 +176,11 @@ async def list_geocoding_cache(
         base = base.where(GeocodingCache.address.ilike(f"%{q}%"))
         count_stmt = count_stmt.where(GeocodingCache.address.ilike(f"%{q}%"))
 
-    stmt = (
-        base.order_by(GeocodingCache.looked_up_at.desc())
-        .limit(limit)
-        .offset(offset)
-    )
+    stmt = base.order_by(GeocodingCache.looked_up_at.desc()).limit(limit).offset(offset)
     rows = (await db.scalars(stmt)).all()
     total = (await db.scalar(count_stmt)) or 0
     return Paginated[GeocodingCacheRead](
-        items=[
-            GeocodingCacheRead.model_validate(r, from_attributes=True)
-            for r in rows
-        ],
+        items=[GeocodingCacheRead.model_validate(r, from_attributes=True) for r in rows],
         total=int(total),
         limit=limit,
         offset=offset,

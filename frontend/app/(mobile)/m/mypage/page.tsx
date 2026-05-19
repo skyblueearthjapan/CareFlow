@@ -15,27 +15,16 @@ import { toast } from '@/components/ui/sonner';
 import { MobileSection } from '@/components/mobile/MobileSection';
 import { useUIStore } from '@/lib/stores/ui';
 import { useMyShifts } from '@/lib/queries/me';
-import {
-  useCreateShiftRequest,
-  useShiftRequests,
-} from '@/lib/queries/shift-requests';
+import { useCreateShiftRequest, useShiftRequests } from '@/lib/queries/shift-requests';
 import { roleLabel } from '@/lib/schemas/staff';
 import { clearAllCheckins } from '@/lib/checkin-storage';
 import type { AppRole } from '@/types/auth';
 
-function ProfileRow({
-  label,
-  value,
-}: {
-  label: string;
-  value: React.ReactNode;
-}) {
+function ProfileRow({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="flex items-baseline justify-between gap-3 py-2">
       <span className="text-xs text-text-muted">{label}</span>
-      <span className="text-sm text-text-primary text-right truncate">
-        {value}
-      </span>
+      <span className="text-sm text-text-primary text-right truncate">{value}</span>
     </div>
   );
 }
@@ -121,28 +110,19 @@ export default function MobileMyPage() {
             {(user?.name ?? '?').slice(0, 1)}
           </div>
           <div className="min-w-0 flex-1">
-            <p className="truncate font-medium text-text-primary">
-              {user?.name ?? '--'}
-            </p>
-            <p className="truncate text-xs text-text-muted">
-              {user?.email ?? '--'}
-            </p>
+            <p className="truncate font-medium text-text-primary">{user?.name ?? '--'}</p>
+            <p className="truncate text-xs text-text-muted">{user?.email ?? '--'}</p>
           </div>
           <Badge variant="secondary">{roleLabel(role)}</Badge>
         </div>
         <div className="mt-3 divide-y divide-border-default">
-          <ProfileRow
-            label="所属事業所"
-            value={staffName ?? (user?.staffId ? '読込中…' : '--')}
-          />
+          <ProfileRow label="所属事業所" value={staffName ?? (user?.staffId ? '読込中…' : '--')} />
           <ProfileRow label="ロール" value={roleLabel(role)} />
         </div>
       </Card>
 
       <Card className="p-4">
-        <h2 className="font-serif text-base font-bold text-text-primary">
-          シフト希望提出
-        </h2>
+        <h2 className="font-serif text-base font-bold text-text-primary">シフト希望提出</h2>
         <p className="mt-1 text-xs text-text-muted">
           翌週以降のシフト希望を入力してください。提出後は管理者が内容を確認します。
         </p>
@@ -176,16 +156,12 @@ export default function MobileMyPage() {
             placeholder="例: 月・火 終日OK / 水 午後NG"
             className="w-full resize-none rounded-md border border-border-default bg-bg-base p-2 text-sm text-text-primary placeholder:text-text-muted"
           />
-          <p className="text-right text-[10px] text-text-muted">
-            {content.length} / 2000
-          </p>
+          <p className="text-right text-[10px] text-text-muted">{content.length} / 2000</p>
         </div>
         <Button
           type="button"
           onClick={handleSubmitShiftRequest}
-          disabled={
-            !staffId || !content.trim() || createRequest.isPending
-          }
+          disabled={!staffId || !content.trim() || createRequest.isPending}
           className="mt-2 w-full"
         >
           <Send className="mr-1 h-4 w-4" />
@@ -193,9 +169,7 @@ export default function MobileMyPage() {
         </Button>
 
         <div className="mt-4 border-t border-border-default pt-3">
-          <h3 className="text-sm font-medium text-text-primary">
-            提出履歴
-          </h3>
+          <h3 className="text-sm font-medium text-text-primary">提出履歴</h3>
           {historyLoading && (
             <div className="mt-2 space-y-2">
               <Skeleton className="h-12 w-full" />
@@ -203,25 +177,18 @@ export default function MobileMyPage() {
             </div>
           )}
           {!historyLoading && history && history.length === 0 && (
-            <p className="mt-2 text-xs text-text-muted">
-              まだ提出はありません。
-            </p>
+            <p className="mt-2 text-xs text-text-muted">まだ提出はありません。</p>
           )}
           {history && history.length > 0 && (
             <ul className="mt-2 space-y-2">
               {history.map((h) => (
-                <li
-                  key={h.id}
-                  className="rounded-md border border-border-default bg-bg-base p-2"
-                >
+                <li key={h.id} className="rounded-md border border-border-default bg-bg-base p-2">
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-xs font-medium text-text-primary">
                       {h.target_month.slice(0, 7).replace('-', '/')}
                     </span>
                     <Badge
-                      variant={
-                        h.status === 'reviewed' ? 'success' : 'secondary'
-                      }
+                      variant={h.status === 'reviewed' ? 'success' : 'secondary'}
                       className="text-[10px]"
                     >
                       {h.status === 'reviewed' ? '確認済' : '提出済'}
@@ -247,9 +214,7 @@ export default function MobileMyPage() {
       </Card>
 
       <Card className="p-4 space-y-4">
-        <h2 className="font-serif text-base font-bold text-text-primary">
-          表示設定
-        </h2>
+        <h2 className="font-serif text-base font-bold text-text-primary">表示設定</h2>
         <div className="flex items-center justify-between">
           <div>
             <Label htmlFor="density-toggle" className="text-sm">
@@ -268,9 +233,7 @@ export default function MobileMyPage() {
             <Label htmlFor="sidebar-toggle" className="text-sm">
               サイドバーを畳む (PC)
             </Label>
-            <p className="text-xs text-text-muted">
-              次回のPC表示で適用されます
-            </p>
+            <p className="text-xs text-text-muted">次回のPC表示で適用されます</p>
           </div>
           <Switch
             id="sidebar-toggle"

@@ -63,9 +63,7 @@ export const KaipokeJobReadSchema = z.object({
 
 export const KaipokeJobCreateSchema = z.object({
   job_type: KaipokeJobTypeSchema,
-  week_start: z
-    .string()
-    .regex(/^\d{4}-\d{2}-\d{2}$/, 'YYYY-MM-DD で入力してください'),
+  week_start: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'YYYY-MM-DD で入力してください'),
   params: z.record(z.unknown()).default({}),
 });
 
@@ -156,12 +154,7 @@ export type ApplyRequest = z.infer<typeof ApplyRequestSchema>;
 
 // --- Wave 4-A: correction sheets / items (Phase C) -------------------------
 
-export const CORRECTION_ACTIONS = [
-  'add',
-  'delete',
-  'update',
-  'companion_change',
-] as const;
+export const CORRECTION_ACTIONS = ['add', 'delete', 'update', 'companion_change'] as const;
 
 export const CorrectionItemReadSchema = z.object({
   id: z.string().uuid(),

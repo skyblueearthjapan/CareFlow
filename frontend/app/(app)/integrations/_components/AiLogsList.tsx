@@ -56,19 +56,11 @@ export function AiLogsList() {
         <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
           <label className="text-sm">
             <span className="mb-1 block text-xs text-text-secondary">since (ISO8601)</span>
-            <Input
-              type="datetime-local"
-              value={since}
-              onChange={(e) => setSince(e.target.value)}
-            />
+            <Input type="datetime-local" value={since} onChange={(e) => setSince(e.target.value)} />
           </label>
           <label className="text-sm">
             <span className="mb-1 block text-xs text-text-secondary">until (ISO8601)</span>
-            <Input
-              type="datetime-local"
-              value={until}
-              onChange={(e) => setUntil(e.target.value)}
-            />
+            <Input type="datetime-local" value={until} onChange={(e) => setUntil(e.target.value)} />
           </label>
           <label className="text-sm">
             <span className="mb-1 block text-xs text-text-secondary">model</span>
@@ -113,19 +105,12 @@ export function AiLogsList() {
               </thead>
               <tbody>
                 {rows.map((r) => (
-                  <tr
-                    key={r.id}
-                    className="border-b border-border-default align-top last:border-0"
-                  >
+                  <tr key={r.id} className="border-b border-border-default align-top last:border-0">
                     <td className="whitespace-nowrap px-3 py-2 text-text-secondary">
                       {r.created_at}
                     </td>
                     <td className="px-3 py-2">
-                      {r.context_type ? (
-                        <Badge variant="secondary">{r.context_type}</Badge>
-                      ) : (
-                        '-'
-                      )}
+                      {r.context_type ? <Badge variant="secondary">{r.context_type}</Badge> : '-'}
                     </td>
                     <td className="px-3 py-2">{r.model}</td>
                     <td className="px-3 py-2 tnum">{r.latency_ms}ms</td>

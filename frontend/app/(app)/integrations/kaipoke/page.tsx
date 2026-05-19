@@ -52,9 +52,7 @@ export default function KaipokeIntegrationPage() {
   const loginWarn = typeof loginRemain === 'number' && loginRemain < 300;
 
   const lastError = useMemo(() => {
-    return (
-      expand.error || exportJob.error || diff.error || stop.error || null
-    );
+    return expand.error || exportJob.error || diff.error || stop.error || null;
   }, [expand.error, exportJob.error, diff.error, stop.error]);
 
   return (
@@ -62,7 +60,8 @@ export default function KaipokeIntegrationPage() {
       <header>
         <h1 className="font-serif text-2xl font-bold text-text-primary">連携センター - Kaipoke</h1>
         <p className="text-sm text-text-secondary">
-          kaipoke-api (Playwright) を経由したスケジュール展開 / エクスポート / 差分 / 適用を実行します
+          kaipoke-api (Playwright) を経由したスケジュール展開 / エクスポート / 差分 /
+          適用を実行します
         </p>
       </header>
 
@@ -73,9 +72,7 @@ export default function KaipokeIntegrationPage() {
             {statusQuery.isLoading ? (
               <Skeleton className="mt-2 h-5 w-40" />
             ) : statusQuery.isError ? (
-              <p className="text-sm text-text-warning">
-                kaipoke-api に到達できません
-              </p>
+              <p className="text-sm text-text-warning">kaipoke-api に到達できません</p>
             ) : (
               <ul className="mt-1 text-sm text-text-secondary">
                 <li>到達: {statusQuery.data?.reachable ? 'OK' : 'NG'}</li>
@@ -113,11 +110,7 @@ export default function KaipokeIntegrationPage() {
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <label className="text-sm">
             <span className="mb-1 block text-xs text-text-secondary">対象月 (YYYY-MM)</span>
-            <Input
-              type="month"
-              value={month}
-              onChange={(e) => setMonth(e.target.value)}
-            />
+            <Input type="month" value={month} onChange={(e) => setMonth(e.target.value)} />
           </label>
           {isAdmin && (
             <div className="flex flex-wrap items-end gap-2">
@@ -182,7 +175,7 @@ export default function KaipokeIntegrationPage() {
                 <tr key={job.id} className="border-b border-border-default last:border-0">
                   <td className="px-2 py-1">{job.job_type}</td>
                   <td className="px-2 py-1 text-text-secondary">
-                    {(job.params as Record<string, unknown>)?.op as string ?? '--'}
+                    {((job.params as Record<string, unknown>)?.op as string) ?? '--'}
                   </td>
                   <td className="px-2 py-1">{job.status}</td>
                   <td className="px-2 py-1 text-text-secondary">{job.created_at}</td>

@@ -61,10 +61,10 @@ export function useVisitPhotos(
     enabled: status === 'authenticated' && !!visitId,
     queryFn: () => {
       if (!visitId) throw new Error('visitId is required');
-      return fetcher<VisitPhotoRead[]>(
-        `/api/v1/visits/${visitId}/photos`,
-        { accessToken, refreshToken },
-      );
+      return fetcher<VisitPhotoRead[]>(`/api/v1/visits/${visitId}/photos`, {
+        accessToken,
+        refreshToken,
+      });
     },
   });
 }
@@ -91,18 +91,14 @@ export function useUploadPhoto(
       // Pre-validate so we surface a clean error instead of pushing a
       // 415/413 round-trip for an obvious mismatch.
       if (!ALLOWED_PHOTO_MIME.includes(file.type as never)) {
-        throw new ApiError(
-          `Unsupported MIME type: ${file.type}`,
-          415,
-          { detail: 'JPEG / PNG / WebP のみアップロード可能です' },
-        );
+        throw new ApiError(`Unsupported MIME type: ${file.type}`, 415, {
+          detail: 'JPEG / PNG / WebP のみアップロード可能です',
+        });
       }
       if (file.size > MAX_PHOTO_BYTES) {
-        throw new ApiError(
-          `File exceeds ${MAX_PHOTO_BYTES} bytes`,
-          413,
-          { detail: '10MB を超える画像はアップロードできません' },
-        );
+        throw new ApiError(`File exceeds ${MAX_PHOTO_BYTES} bytes`, 413, {
+          detail: '10MB を超える画像はアップロードできません',
+        });
       }
 
       const form = new FormData();
@@ -129,11 +125,7 @@ export function useUploadPhoto(
       const text = await res.text();
       const body = text ? safeJsonParse(text) : null;
       if (!res.ok) {
-        throw new ApiError(
-          `Upload failed: ${res.status} ${res.statusText}`,
-          res.status,
-          body,
-        );
+        throw new ApiError(`Upload failed: ${res.status} ${res.statusText}`, res.status, body);
       }
       return body as VisitPhotoRead;
     },
@@ -146,19 +138,18 @@ export function useUploadPhoto(
 }
 
 /** DELETE /api/v1/visits/{visit_id}/photos/{photo_id} (admin/manager). */
-export function useDeletePhoto(
-  visitId: string,
-): UseMutationResult<void, Error, string> {
+export function useDeletePhoto(visitId: string): UseMutationResult<void, Error, string> {
   const qc = useQueryClient();
   const { data: session } = useSession();
   const { accessToken, refreshToken } = authPair(session);
 
   return useMutation<void, Error, string>({
     mutationFn: async (photoId) => {
-      await fetcher<void>(
-        `/api/v1/visits/${visitId}/photos/${photoId}`,
-        { method: 'DELETE', accessToken, refreshToken },
-      );
+      await fetcher<void>(`/api/v1/visits/${visitId}/photos/${photoId}`, {
+        method: 'DELETE',
+        accessToken,
+        refreshToken,
+      });
     },
     onSuccess: () => {
       void qc.invalidateQueries({

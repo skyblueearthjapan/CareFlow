@@ -24,9 +24,7 @@ from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-GOOGLE_GEOCODE_URL: Final[str] = (
-    "https://maps.googleapis.com/maps/api/geocode/json"
-)
+GOOGLE_GEOCODE_URL: Final[str] = "https://maps.googleapis.com/maps/api/geocode/json"
 DEFAULT_TIMEOUT_SECONDS: Final[float] = 8.0
 
 
@@ -34,7 +32,7 @@ class GeocodingServiceError(RuntimeError):
     """Upstream Geocoding call failed in a non-retryable way."""
 
 
-class GeocodingQuotaExceeded(GeocodingServiceError):
+class GeocodingQuotaExceeded(GeocodingServiceError):  # noqa: N818
     """Google reported OVER_QUERY_LIMIT — caller should respond 503."""
 
 
@@ -86,9 +84,7 @@ async def geocode_address(
 
     key = api_key if api_key is not None else get_settings().google_maps_api_key
     if not key:
-        raise GeocodingServiceError(
-            "GOOGLE_MAPS_API_KEY is not configured on the server"
-        )
+        raise GeocodingServiceError("GOOGLE_MAPS_API_KEY is not configured on the server")
 
     params: dict[str, Any] = {
         "address": address,
@@ -116,15 +112,11 @@ async def geocode_address(
         raise GeocodingServiceError(f"network error: {exc}") from exc
 
     if response.status_code >= 500:
-        raise GeocodingServiceError(
-            f"upstream HTTP {response.status_code} from Google Geocoding"
-        )
+        raise GeocodingServiceError(f"upstream HTTP {response.status_code} from Google Geocoding")
     if response.status_code >= 400:
         # 400/403 typically mean key/billing problem — surface as 502 so the
         # operator notices in the audit trail.
-        raise GeocodingServiceError(
-            f"upstream HTTP {response.status_code} from Google Geocoding"
-        )
+        raise GeocodingServiceError(f"upstream HTTP {response.status_code} from Google Geocoding")
 
     payload: dict[str, Any] = response.json()
     status = str(payload.get("status", "UNKNOWN"))
@@ -139,9 +131,7 @@ async def geocode_address(
             lat = float(loc["lat"])
             lng = float(loc["lng"])
         except (KeyError, TypeError, ValueError) as exc:
-            raise GeocodingServiceError(
-                "Google response missing geometry.location"
-            ) from exc
+            raise GeocodingServiceError("Google response missing geometry.location") from exc
         return GeocodeResult(
             lat=lat,
             lng=lng,
@@ -154,9 +144,7 @@ async def geocode_address(
         return None
 
     if status == "OVER_QUERY_LIMIT":
-        raise GeocodingQuotaExceeded(
-            "Google Geocoding quota exceeded (OVER_QUERY_LIMIT)"
-        )
+        raise GeocodingQuotaExceeded("Google Geocoding quota exceeded (OVER_QUERY_LIMIT)")
 
     # REQUEST_DENIED, INVALID_REQUEST, UNKNOWN_ERROR, etc.
     error_message = str(payload.get("error_message") or "")

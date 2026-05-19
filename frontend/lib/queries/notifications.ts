@@ -67,30 +67,27 @@ export function useNotifications(
         limit: String(limit),
         offset: String(offset),
       });
-      return fetcher<NotificationList>(
-        `/api/v1/notifications?${qs.toString()}`,
-        { accessToken, refreshToken },
-      );
+      return fetcher<NotificationList>(`/api/v1/notifications?${qs.toString()}`, {
+        accessToken,
+        refreshToken,
+      });
     },
   });
 }
 
 /** PATCH /api/v1/notifications/{id}/read */
-export function useMarkRead(): UseMutationResult<
-  NotificationRead,
-  Error,
-  string
-> {
+export function useMarkRead(): UseMutationResult<NotificationRead, Error, string> {
   const qc = useQueryClient();
   const { data: session } = useSession();
   const { accessToken, refreshToken } = authPair(session);
 
   return useMutation<NotificationRead, Error, string>({
     mutationFn: (notificationId) =>
-      fetcher<NotificationRead>(
-        `/api/v1/notifications/${notificationId}/read`,
-        { method: 'PATCH', accessToken, refreshToken },
-      ),
+      fetcher<NotificationRead>(`/api/v1/notifications/${notificationId}/read`, {
+        method: 'PATCH',
+        accessToken,
+        refreshToken,
+      }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: NOTIFICATIONS_KEY });
     },
@@ -98,11 +95,7 @@ export function useMarkRead(): UseMutationResult<
 }
 
 /** POST /api/v1/notifications/mark-all-read */
-export function useMarkAllRead(): UseMutationResult<
-  MarkAllReadResponse,
-  Error,
-  void
-> {
+export function useMarkAllRead(): UseMutationResult<MarkAllReadResponse, Error, void> {
   const qc = useQueryClient();
   const { data: session } = useSession();
   const { accessToken, refreshToken } = authPair(session);

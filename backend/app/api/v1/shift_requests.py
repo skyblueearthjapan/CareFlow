@@ -12,7 +12,7 @@ RBAC:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Annotated
 from uuid import UUID
 
@@ -38,17 +38,13 @@ status_router = APIRouter()
 
 def _check_staff_access(user: User, staff_id: UUID) -> None:
     if user.role not in {"admin", "manager", "staff"}:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role"
-        )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
     if user.role == "staff" and user.staff_id != staff_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
 
 
 async def _ensure_staff_exists(db, staff_id: UUID) -> Staff:
-    staff = await db.scalar(
-        select(Staff).where(Staff.id == staff_id, Staff.deleted_at.is_(None))
-    )
+    staff = await db.scalar(select(Staff).where(Staff.id == staff_id, Staff.deleted_at.is_(None)))
     if staff is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     return staff
@@ -97,7 +93,7 @@ async def create_shift_request(
         staff_id=staff_id,
         target_month=payload.target_month,
         content=payload.content,
-        submitted_at=datetime.now(timezone.utc),
+        submitted_at=datetime.now(UTC),
         status="submitted",
     )
     db.add(row)
@@ -117,15 +113,13 @@ async def update_shift_request_status(
     db: DbDep,
     user: Annotated[User, Depends(require_role("admin", "manager"))],
 ) -> ShiftRequest:
-    row = await db.scalar(
-        select(ShiftRequest).where(ShiftRequest.id == request_id)
-    )
+    row = await db.scalar(select(ShiftRequest).where(ShiftRequest.id == request_id))
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     row.status = payload.status
     if payload.status == "reviewed":
         row.reviewed_by = user.id
-        row.reviewed_at = datetime.now(timezone.utc)
+        row.reviewed_at = datetime.now(UTC)
     else:
         # Re-opening to "submitted" clears the review trail.
         row.reviewed_by = None

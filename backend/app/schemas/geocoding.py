@@ -39,9 +39,7 @@ class GeocodeResponse(BaseModel):
     lng: float
     formatted_address: str | None = None
     place_id: str | None = None
-    cached: bool = Field(
-        description="True when served from GeocodingCache (no upstream call)."
-    )
+    cached: bool = Field(description="True when served from GeocodingCache (no upstream call).")
     address_hash: str = Field(description="sha256 hex digest of normalized address.")
 
 

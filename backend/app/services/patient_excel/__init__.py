@@ -1,6 +1,6 @@
 """Patient master Excel export / import service.
 
-患者マスタ + 固定訪問スケジュール (PFV) の Excel 入出力。
+患者マスタ + 固定訪問パターン (PFV) の Excel 入出力。
 
   * テンプレート / 全件エクスポート: ``exporter.build_workbook``
   * インポート (差分計算 + 反映): ``importer.parse_and_diff`` + ``importer.apply_changes``

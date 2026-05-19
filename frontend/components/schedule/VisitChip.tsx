@@ -48,8 +48,7 @@ export function VisitChip({
     tone === 'warning'
       ? 'border-error/50 bg-error/10 text-error'
       : 'border-border-default bg-bg-base text-text-primary',
-    canEdit &&
-      (tone === 'warning' ? 'hover:bg-error/15' : 'hover:bg-bg-muted'),
+    canEdit && (tone === 'warning' ? 'hover:bg-error/15' : 'hover:bg-bg-muted'),
   );
 
   const inner = (
@@ -64,19 +63,14 @@ export function VisitChip({
         </div>
       ) : null}
       {officeLabel ? (
-        <div className="truncate text-[10px] leading-tight text-text-muted">
-          {officeLabel}
-        </div>
+        <div className="truncate text-[10px] leading-tight text-text-muted">{officeLabel}</div>
       ) : null}
     </>
   );
 
   if (!canEdit) {
     return (
-      <div
-        className={className}
-        aria-label={`${start}〜${end} ${patient}`}
-      >
+      <div className={className} aria-label={`${start}〜${end} ${patient}`}>
         {inner}
       </div>
     );

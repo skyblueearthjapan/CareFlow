@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from jose import jwt
@@ -49,7 +49,7 @@ async def test_refresh_rejects_access_token(client, test_user) -> None:
 @pytest.mark.asyncio
 async def test_refresh_rejects_expired_token(client, test_user) -> None:
     settings = get_settings()
-    expired_at = datetime.now(tz=timezone.utc) - timedelta(seconds=10)
+    expired_at = datetime.now(tz=UTC) - timedelta(seconds=10)
     claims = {
         "sub": str(test_user.id),
         "role": test_user.role,
@@ -71,7 +71,7 @@ async def test_refresh_rejects_expired_token(client, test_user) -> None:
 async def test_refresh_rejects_tampered_signature(client, test_user) -> None:
     # Sign with a different key → signature verification must fail.
     settings = get_settings()
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     claims = {
         "sub": str(test_user.id),
         "role": test_user.role,
@@ -80,7 +80,9 @@ async def test_refresh_rejects_tampered_signature(client, test_user) -> None:
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(minutes=30)).timestamp()),
     }
-    tampered = jwt.encode(claims, "an-entirely-different-key-32-chars!!", algorithm=settings.jwt_algorithm)
+    tampered = jwt.encode(
+        claims, "an-entirely-different-key-32-chars!!", algorithm=settings.jwt_algorithm
+    )
 
     res = await client.post(
         "/api/v1/auth/refresh",

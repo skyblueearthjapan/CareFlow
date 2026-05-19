@@ -40,11 +40,7 @@ function formatIsoDate(d: Date): string {
   return `${yyyy}-${mm}-${dd}`;
 }
 
-export function AllocateRunDialog({
-  open,
-  weekStart,
-  onClose,
-}: AllocateRunDialogProps) {
+export function AllocateRunDialog({ open, weekStart, onClose }: AllocateRunDialogProps) {
   const mutation = useRunAllocate();
   const result: AllocateResponse | undefined = mutation.data;
   const isPending = mutation.isPending;
@@ -62,14 +58,10 @@ export function AllocateRunDialog({
       toast.success('割当を実行しました');
     } catch (err) {
       if (err instanceof ApiError && err.status === 429) {
-        toast.error(
-          '短時間に実行が集中しています。1分後に再試行してください',
-        );
+        toast.error('短時間に実行が集中しています。1分後に再試行してください');
         return;
       }
-      toast.error(
-        `割当に失敗しました: ${err instanceof Error ? err.message : '不明なエラー'}`,
-      );
+      toast.error(`割当に失敗しました: ${err instanceof Error ? err.message : '不明なエラー'}`);
     }
   };
 
@@ -131,9 +123,8 @@ export function AllocateRunDialog({
               <Alert variant="warning">
                 <AlertTitle>暫定マッピングで実行されました</AlertTitle>
                 <AlertDescription>
-                  週パターン / NGスタッフ / 緯度経度などの高度判定は無効です
-                  (Phase W1-G で完全マッピングに切替予定)。結果は参考値として
-                  ご確認ください。
+                  週パターン / NGスタッフ / 緯度経度などの高度判定は無効です (Phase W1-G
+                  で完全マッピングに切替予定)。結果は参考値として ご確認ください。
                 </AlertDescription>
               </Alert>
             ) : null}
@@ -151,12 +142,7 @@ export function AllocateRunDialog({
             </Button>
           ) : (
             <>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={handleClose}
-                disabled={isPending}
-              >
+              <Button type="button" variant="outline" onClick={handleClose} disabled={isPending}>
                 キャンセル
               </Button>
               <Button type="button" onClick={handleRun} disabled={isPending}>

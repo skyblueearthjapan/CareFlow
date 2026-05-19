@@ -3,7 +3,7 @@
 openpyxl で 2 シート構成のワークブックを組み立てる:
 
   1. 患者マスタシート
-  2. 固定訪問スケジュールシート (PFV)
+  2. 固定訪問パターンシート (PFV)
 
 呼び出し側 (API endpoint) は ``build_workbook`` の戻り値である ``Workbook``
 を ``save`` するか ``BytesIO`` にダンプしてレスポンスする.

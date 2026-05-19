@@ -67,15 +67,12 @@ export function useDashboardKpi(): UseQueryResult<DashboardKpi, Error> {
     // `staleTime: 30_000` so the cache goes stale before the timer fires —
     // each interval tick produces exactly one network request.
     refetchInterval: 60_000,
-    queryFn: () =>
-      fetcher<DashboardKpi>('/api/v1/dashboard/kpi', { accessToken, refreshToken }),
+    queryFn: () => fetcher<DashboardKpi>('/api/v1/dashboard/kpi', { accessToken, refreshToken }),
   });
 }
 
 /** GET /api/v1/dashboard/trend?days=N — daily trend, oldest → newest. */
-export function useDashboardTrend(
-  days: number = 7,
-): UseQueryResult<DashboardTrend, Error> {
+export function useDashboardTrend(days: number = 7): UseQueryResult<DashboardTrend, Error> {
   const { data: session, status } = useSession();
   const { accessToken, refreshToken } = authPair(session);
   const userId = session?.user?.id ?? null;

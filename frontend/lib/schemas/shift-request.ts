@@ -12,17 +12,11 @@ export const shiftRequestStatusSchema = z.enum(['submitted', 'reviewed']);
 
 const monthDateSchema = z
   .string()
-  .regex(
-    /^\d{4}-\d{2}-\d{2}$/,
-    '対象月は YYYY-MM-DD (月初) で送信してください',
-  );
+  .regex(/^\d{4}-\d{2}-\d{2}$/, '対象月は YYYY-MM-DD (月初) で送信してください');
 
 export const shiftRequestCreateSchema = z.object({
   target_month: monthDateSchema,
-  content: z
-    .string()
-    .min(1, '内容を入力してください')
-    .max(2000, '2000文字以内で入力してください'),
+  content: z.string().min(1, '内容を入力してください').max(2000, '2000文字以内で入力してください'),
 });
 
 export const shiftRequestStatusUpdateSchema = z.object({
@@ -42,7 +36,5 @@ export const shiftRequestReadSchema = z.object({
 
 export type ShiftRequestStatus = z.infer<typeof shiftRequestStatusSchema>;
 export type ShiftRequestCreate = z.infer<typeof shiftRequestCreateSchema>;
-export type ShiftRequestStatusUpdate = z.infer<
-  typeof shiftRequestStatusUpdateSchema
->;
+export type ShiftRequestStatusUpdate = z.infer<typeof shiftRequestStatusUpdateSchema>;
 export type ShiftRequestRead = z.infer<typeof shiftRequestReadSchema>;

@@ -18,11 +18,7 @@ import {
 import { useSession } from 'next-auth/react';
 
 import { fetcher } from '@/lib/api/fetcher';
-import type {
-  OverrideCreate,
-  OverrideRead,
-  OverrideUpdate,
-} from '@/lib/schemas/staff-overrides';
+import type { OverrideCreate, OverrideRead, OverrideUpdate } from '@/lib/schemas/staff-overrides';
 
 const STAFF_BASE = '/api/v1/staff';
 
@@ -31,13 +27,10 @@ export interface OverrideRange {
   to: string; // YYYY-MM-DD
 }
 
-export const staffOverridesKey = (
-  staffId: string,
-  range?: OverrideRange,
-) => ['staff-overrides', staffId, range ?? null] as const;
+export const staffOverridesKey = (staffId: string, range?: OverrideRange) =>
+  ['staff-overrides', staffId, range ?? null] as const;
 
-export const staffOverridesScopeKey = (staffId: string) =>
-  ['staff-overrides', staffId] as const;
+export const staffOverridesScopeKey = (staffId: string) => ['staff-overrides', staffId] as const;
 
 function useAuthTokens() {
   const { data: session, status } = useSession();
@@ -48,10 +41,7 @@ function useAuthTokens() {
   };
 }
 
-export function useStaffOverrides(
-  staffId: string | null | undefined,
-  range?: OverrideRange,
-) {
+export function useStaffOverrides(staffId: string | null | undefined, range?: OverrideRange) {
   const { accessToken, refreshToken, isAuthenticated } = useAuthTokens();
   const normalizedId = staffId ?? '__none__';
 
@@ -62,10 +52,10 @@ export function useStaffOverrides(
       const qs = range
         ? `?from=${encodeURIComponent(range.from)}&to=${encodeURIComponent(range.to)}`
         : '';
-      return fetcher<OverrideRead[]>(
-        `${STAFF_BASE}/${staffId}/overrides${qs}`,
-        { accessToken, refreshToken },
-      );
+      return fetcher<OverrideRead[]>(`${STAFF_BASE}/${staffId}/overrides${qs}`, {
+        accessToken,
+        refreshToken,
+      });
     },
     enabled: isAuthenticated && !!staffId,
   });
@@ -77,10 +67,7 @@ export function useStaffOverrides(
 
 type CreateOptions = UseMutationOptions<OverrideRead, Error, OverrideCreate>;
 
-export function useCreateOverride(
-  staffId: string,
-  options: CreateOptions = {},
-) {
+export function useCreateOverride(staffId: string, options: CreateOptions = {}) {
   const qc = useQueryClient();
   const { accessToken, refreshToken } = useAuthTokens();
 
@@ -107,10 +94,7 @@ interface UpdateVariables {
 
 type UpdateOptions = UseMutationOptions<OverrideRead, Error, UpdateVariables>;
 
-export function useUpdateOverride(
-  staffId: string,
-  options: UpdateOptions = {},
-) {
+export function useUpdateOverride(staffId: string, options: UpdateOptions = {}) {
   const qc = useQueryClient();
   const { accessToken, refreshToken } = useAuthTokens();
 
@@ -132,10 +116,7 @@ export function useUpdateOverride(
 
 type DeleteOptions = UseMutationOptions<void, Error, string>;
 
-export function useDeleteOverride(
-  staffId: string,
-  options: DeleteOptions = {},
-) {
+export function useDeleteOverride(staffId: string, options: DeleteOptions = {}) {
   const qc = useQueryClient();
   const { accessToken, refreshToken } = useAuthTokens();
 

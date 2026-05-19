@@ -58,11 +58,7 @@ function isStoredEntry(value: unknown): value is StoredEntry {
   return true;
 }
 
-export function saveCheckin(
-  staffId: string,
-  visitId: string,
-  payload: CheckinPayload,
-): void {
+export function saveCheckin(staffId: string, visitId: string, payload: CheckinPayload): void {
   if (typeof window === 'undefined') return;
   if (!staffId || !visitId) return;
   const entry: StoredEntry = {
@@ -80,10 +76,7 @@ export function saveCheckin(
   }
 }
 
-export function loadCheckin(
-  staffId: string,
-  visitId: string,
-): CheckinPayload | null {
+export function loadCheckin(staffId: string, visitId: string): CheckinPayload | null {
   if (typeof window === 'undefined') return null;
   if (!staffId || !visitId) return null;
   const key = userKey(staffId, visitId);

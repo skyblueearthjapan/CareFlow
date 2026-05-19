@@ -59,8 +59,7 @@ export function UserEditDialog({ target, onClose }: Props) {
       payload: {
         email: email !== target.email ? email : undefined,
         role: role !== target.role ? role : undefined,
-        must_change_password:
-          mustChange !== target.must_change_password ? mustChange : undefined,
+        must_change_password: mustChange !== target.must_change_password ? mustChange : undefined,
       },
     });
   };
@@ -118,9 +117,7 @@ export function UserEditDialog({ target, onClose }: Props) {
           {update.isError && (
             <Alert variant="destructive">
               <AlertDescription>
-                {update.error instanceof Error
-                  ? update.error.message
-                  : '更新に失敗しました'}
+                {update.error instanceof Error ? update.error.message : '更新に失敗しました'}
               </AlertDescription>
             </Alert>
           )}

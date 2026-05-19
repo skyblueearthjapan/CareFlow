@@ -1,6 +1,6 @@
 """Pydantic schemas for patient_fixed_visits (W9-BE1 / W37 Phase 1).
 
-週間訪問パターン (固定枠) の入力・出力型定義。
+固定訪問パターン の入力・出力型定義。
 フロントエンド zod schema と完全一致を目指す。
 
 W37 Phase 1: 複数スタッフ対応患者は同曜日・同時刻に 2 コース固定するため

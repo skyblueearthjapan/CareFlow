@@ -92,7 +92,10 @@ def stub_kaipoke():
 @pytest.mark.asyncio
 async def test_status_admin_combines_kaipoke_and_db(client, db, stub_kaipoke) -> None:
     admin = await _make_user(db, "wave4-admin@example.com", "admin")
-    stub_kaipoke.responses["status"] = {"loginRemainSec": 1200, "lastSyncAt": "2026-05-05T01:00:00Z"}
+    stub_kaipoke.responses["status"] = {
+        "loginRemainSec": 1200,
+        "lastSyncAt": "2026-05-05T01:00:00Z",
+    }
 
     res = await client.get("/api/v1/integrations/status", headers=_bearer(admin))
     assert res.status_code == 200, res.text
@@ -165,13 +168,16 @@ async def test_diff_persists_correction_sheet_and_coalesces(client, db, stub_kai
     stub_kaipoke.responses["diff"] = {
         "items": [
             # Should coalesce delete+add for same patient into companion_change.
-            {"action": "delete", "patient_id": pid, "date": "2026-05-10",
-             "before": {"k": "v"}},
-            {"action": "add", "patient_id": pid, "date": "2026-05-10",
-             "after": {"k": "v2"}},
+            {"action": "delete", "patient_id": pid, "date": "2026-05-10", "before": {"k": "v"}},
+            {"action": "add", "patient_id": pid, "date": "2026-05-10", "after": {"k": "v2"}},
             # Standalone update.
-            {"action": "update", "patient_id": pid, "date": "2026-05-12",
-             "before": {"x": 1}, "after": {"x": 2}},
+            {
+                "action": "update",
+                "patient_id": pid,
+                "date": "2026-05-12",
+                "before": {"x": 1},
+                "after": {"x": 2},
+            },
         ],
     }
 
@@ -207,8 +213,12 @@ async def test_apply_requires_selected_items(client, db, stub_kaipoke) -> None:
     # First create a sheet via diff
     stub_kaipoke.responses["diff"] = {
         "items": [
-            {"action": "update", "patient_id": "00000000-0000-0000-0000-000000000001",
-             "before": {"x": 1}, "after": {"x": 2}},
+            {
+                "action": "update",
+                "patient_id": "00000000-0000-0000-0000-000000000001",
+                "before": {"x": 1},
+                "after": {"x": 2},
+            },
         ],
     }
     diff_res = await client.post(

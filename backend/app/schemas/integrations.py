@@ -19,12 +19,8 @@ from pydantic import BaseModel, ConfigDict, Field
 # --- Kaipoke jobs ----------------------------------------------------------
 
 KaipokeJobType = Literal["fetch", "push"]
-KaipokeJobStatus = Literal[
-    "pending", "running", "completed", "failed", "cancelled"
-]
-KaipokeJobItemStatus = Literal[
-    "pending", "running", "completed", "failed", "skipped"
-]
+KaipokeJobStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
+KaipokeJobItemStatus = Literal["pending", "running", "completed", "failed", "skipped"]
 
 
 class KaipokeJobBase(BaseModel):

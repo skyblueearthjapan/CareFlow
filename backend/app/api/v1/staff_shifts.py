@@ -29,17 +29,13 @@ router = APIRouter()
 def _check_read_access(user: User, staff_id: UUID) -> None:
     """Mirror the `staff.py` IDOR pattern — staff role sees only its own row."""
     if user.role not in {"admin", "manager", "staff"}:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role"
-        )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
     if user.role == "staff" and user.staff_id != staff_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
 
 
 async def _ensure_staff_exists(db, staff_id: UUID) -> Staff:
-    staff = await db.scalar(
-        select(Staff).where(Staff.id == staff_id, Staff.deleted_at.is_(None))
-    )
+    staff = await db.scalar(select(Staff).where(Staff.id == staff_id, Staff.deleted_at.is_(None)))
     if staff is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     return staff
@@ -76,17 +72,12 @@ async def get_shifts(
 
     rows = (
         await db.scalars(
-            select(StaffShift)
-            .where(StaffShift.staff_id == staff_id)
-            .order_by(StaffShift.weekday)
+            select(StaffShift).where(StaffShift.staff_id == staff_id).order_by(StaffShift.weekday)
         )
     ).all()
     by_wd = {r.weekday: _row_to_item(r) for r in rows}
     # Backfill missing weekdays so frontend always receives 7 entries.
-    full = [
-        by_wd.get(wd, StaffShiftItem(weekday=wd, is_on=True))
-        for wd in range(7)
-    ]
+    full = [by_wd.get(wd, StaffShiftItem(weekday=wd, is_on=True)) for wd in range(7)]
     return ShiftsResponse(shifts=full)
 
 
@@ -119,9 +110,7 @@ async def put_shifts(
 
     rows = (
         await db.scalars(
-            select(StaffShift)
-            .where(StaffShift.staff_id == staff_id)
-            .order_by(StaffShift.weekday)
+            select(StaffShift).where(StaffShift.staff_id == staff_id).order_by(StaffShift.weekday)
         )
     ).all()
     return ShiftsResponse(shifts=[_row_to_item(r) for r in rows])

@@ -18,9 +18,7 @@ import { z } from 'zod';
 
 const HHMM_REGEX = /^([01]\d|2[0-3]):[0-5]\d$/;
 
-const hhmmSchema = z
-  .string()
-  .regex(HHMM_REGEX, 'HH:MM 形式で入力してください');
+const hhmmSchema = z.string().regex(HHMM_REGEX, 'HH:MM 形式で入力してください');
 
 /** Compares two HH:MM strings lexicographically (safe because zero-padded). */
 export function isStartBeforeEnd(start: string, end: string): boolean {
@@ -50,11 +48,7 @@ export const staffShiftItemSchema = z
           message: '勤務日は終了時刻が必須です',
         });
       }
-      if (
-        val.start_time &&
-        val.end_time &&
-        !isStartBeforeEnd(val.start_time, val.end_time)
-      ) {
+      if (val.start_time && val.end_time && !isStartBeforeEnd(val.start_time, val.end_time)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['end_time'],
@@ -68,9 +62,7 @@ export type StaffShiftItem = z.infer<typeof staffShiftItemSchema>;
 
 export const shiftsBulkSchema = z
   .object({
-    shifts: z
-      .array(staffShiftItemSchema)
-      .length(7, '週 7 日分の入力が必要です'),
+    shifts: z.array(staffShiftItemSchema).length(7, '週 7 日分の入力が必要です'),
   })
   .superRefine((val, ctx) => {
     const seen = new Set<number>();

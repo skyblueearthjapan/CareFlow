@@ -43,6 +43,7 @@ async def test_login_locks_after_5_failed_attempts(client, test_user) -> None:
     # check instead of getting shed at the limiter (limiter is verified
     # separately in test_login_rate_limit_returns_429).
     from app.core.rate_limit import limiter
+
     limiter.reset()
 
     # The next attempt — even with the *correct* password — must hit the lock.

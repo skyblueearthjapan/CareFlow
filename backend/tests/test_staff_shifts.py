@@ -52,9 +52,7 @@ def _full_payload() -> dict:
 async def test_shifts_get_returns_seven_rows_with_backfill(client, db) -> None:
     admin = await _make_user(db, "sh-admin1@example.com", "admin")
     staff = await _make_staff(db)
-    res = await client.get(
-        f"/api/v1/staff/{staff.id}/shifts", headers=_bearer(admin)
-    )
+    res = await client.get(f"/api/v1/staff/{staff.id}/shifts", headers=_bearer(admin))
     assert res.status_code == 200, res.text
     body = res.json()
     assert "shifts" in body
@@ -78,9 +76,7 @@ async def test_shifts_put_replaces_all_seven(client, db) -> None:
     sun = next(r for r in body["shifts"] if r["weekday"] == 6)
     assert sun["is_on"] is False
     # GET round-trip mirrors PUT
-    res2 = await client.get(
-        f"/api/v1/staff/{staff.id}/shifts", headers=_bearer(admin)
-    )
+    res2 = await client.get(f"/api/v1/staff/{staff.id}/shifts", headers=_bearer(admin))
     assert res2.status_code == 200
     assert res2.json()["shifts"][0]["start_time"] == "09:00"
 
@@ -101,9 +97,7 @@ async def test_shifts_put_rejects_less_than_seven(client, db) -> None:
 @pytest.mark.asyncio
 async def test_shifts_put_staff_role_returns_403(client, db) -> None:
     staff = await _make_staff(db)
-    sr_user = await _make_user(
-        db, "sh-staff@example.com", "staff", staff_id=staff.id
-    )
+    sr_user = await _make_user(db, "sh-staff@example.com", "staff", staff_id=staff.id)
     res = await client.put(
         f"/api/v1/staff/{staff.id}/shifts",
         headers=_bearer(sr_user),
@@ -116,10 +110,6 @@ async def test_shifts_put_staff_role_returns_403(client, db) -> None:
 async def test_shifts_get_other_staff_role_returns_404(client, db) -> None:
     s1 = await _make_staff(db, "本人")
     s2 = await _make_staff(db, "他人")
-    sr_user = await _make_user(
-        db, "sh-staff2@example.com", "staff", staff_id=s1.id
-    )
-    res = await client.get(
-        f"/api/v1/staff/{s2.id}/shifts", headers=_bearer(sr_user)
-    )
+    sr_user = await _make_user(db, "sh-staff2@example.com", "staff", staff_id=s1.id)
+    res = await client.get(f"/api/v1/staff/{s2.id}/shifts", headers=_bearer(sr_user))
     assert res.status_code == 404, res.text

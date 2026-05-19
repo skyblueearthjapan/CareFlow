@@ -81,7 +81,10 @@ export default function OfficesPage() {
                   {paged.map((o) => (
                     <tr key={o.id} className="border-b border-border-default last:border-0">
                       <td className="px-3 py-2">
-                        <Link href={`/offices/${o.id}`} className="text-brand-primary hover:underline">
+                        <Link
+                          href={`/offices/${o.id}`}
+                          className="text-brand-primary hover:underline"
+                        >
                           {o.name}
                         </Link>
                       </td>

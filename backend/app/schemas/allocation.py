@@ -23,9 +23,7 @@ class AllocateRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    week_start: date = Field(
-        ..., description="対象週の月曜日 (ISO date, yyyy-mm-dd)"
-    )
+    week_start: date = Field(..., description="対象週の月曜日 (ISO date, yyyy-mm-dd)")
     options: AllocateOptions | None = Field(
         default=None,
         description="将来の拡張用オプション (現状未使用)",

@@ -56,13 +56,15 @@ function normalize(initial: StaffShiftItem[] | undefined): StaffShiftItem[] {
   // Sort by weekday so the table is deterministic regardless of API order.
   const byWeekday = new Map<number, StaffShiftItem>();
   initial.forEach((s) => byWeekday.set(s.weekday, s));
-  return Array.from({ length: 7 }, (_, weekday) =>
-    byWeekday.get(weekday) ?? {
-      weekday,
-      is_on: false,
-      start_time: null,
-      end_time: null,
-    },
+  return Array.from(
+    { length: 7 },
+    (_, weekday) =>
+      byWeekday.get(weekday) ?? {
+        weekday,
+        is_on: false,
+        start_time: null,
+        end_time: null,
+      },
   );
 }
 
@@ -145,8 +147,8 @@ export function ShiftsEditDialog({
         <DialogHeader>
           <DialogTitle>週間シフトを編集</DialogTitle>
           <DialogDescription>
-            勤務日のスイッチをオンにし、開始 / 終了時刻 (HH:MM) を入力してください。
-            7 日分まとめて保存します。
+            勤務日のスイッチをオンにし、開始 / 終了時刻 (HH:MM) を入力してください。 7
+            日分まとめて保存します。
           </DialogDescription>
         </DialogHeader>
 
@@ -175,9 +177,7 @@ export function ShiftsEditDialog({
                     key={row.weekday}
                     className="border-b border-border-default last:border-0 align-top"
                   >
-                    <td className="px-3 py-2 font-medium">
-                      {WEEKDAY_LABELS[row.weekday]}
-                    </td>
+                    <td className="px-3 py-2 font-medium">{WEEKDAY_LABELS[row.weekday]}</td>
                     <td className="px-3 py-2">
                       <Switch
                         checked={row.is_on}
@@ -212,9 +212,7 @@ export function ShiftsEditDialog({
                         aria-label={`${FULL_WEEKDAY_LABELS[row.weekday]}の終了時刻`}
                         className="w-32"
                       />
-                      {rowError && (
-                        <p className="mt-1 text-xs text-red-600">{rowError}</p>
-                      )}
+                      {rowError && <p className="mt-1 text-xs text-red-600">{rowError}</p>}
                     </td>
                   </tr>
                 );

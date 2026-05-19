@@ -18,7 +18,7 @@ def test_normalize_nfkc_full_width_digits() -> None:
 
 def test_address_hash_is_sha256_of_normalized_utf8() -> None:
     raw = "  東京都  千代田区 "
-    expected = hashlib.sha256("東京都 千代田区".encode("utf-8")).hexdigest()
+    expected = hashlib.sha256("東京都 千代田区".encode()).hexdigest()
     assert address_hash(raw) == expected
 
 

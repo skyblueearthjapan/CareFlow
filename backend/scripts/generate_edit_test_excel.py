@@ -128,8 +128,8 @@ def edit_patients():
     ws_master.cell(r, col_status).value = new_status
     log_change("[patients] 患者マスタ", r, f"{name_r4} / ステータス", old_status, new_status)
 
-    # ---- シート2: 固定訪問スケジュール ----
-    ws_sched = wb["固定訪問スケジュール"]
+    # ---- シート2: 固定訪問パターン ----
+    ws_sched = wb["固定訪問パターン"]
     col_code_s = col_index(ws_sched, "patient_code")
     col_name_s = col_index(ws_sched, "患者名")
     col_youbi = col_index(ws_sched, "曜日")
@@ -144,7 +144,7 @@ def edit_patients():
             p001_rows.append(r)
 
     if not p001_rows:
-        print("[WARN] 固定訪問スケジュールに P001 の行が見つかりません")
+        print("[WARN] 固定訪問パターンに P001 の行が見つかりません")
     else:
         # 最初の行: 開始時刻を 30 分後ろにずらす
         first_row = p001_rows[0]
@@ -157,14 +157,14 @@ def edit_patients():
         ws_sched.cell(first_row, col_start).value = new_start
         ws_sched.cell(first_row, col_end).value = new_end
         log_change(
-            "[patients] 固定訪問スケジュール",
+            "[patients] 固定訪問パターン",
             first_row,
             f"{p001_name} {p001_youbi_first}曜 / 開始時刻",
             old_start,
             new_start,
         )
         log_change(
-            "[patients] 固定訪問スケジュール",
+            "[patients] 固定訪問パターン",
             first_row,
             f"{p001_name} {p001_youbi_first}曜 / 終了時刻",
             old_end,
@@ -178,7 +178,7 @@ def edit_patients():
         new_dur = 45
         ws_sched.cell(last_row, col_duration).value = new_dur
         log_change(
-            "[patients] 固定訪問スケジュール",
+            "[patients] 固定訪問パターン",
             last_row,
             f"{p001_name} {p001_youbi_last}曜 / duration_min",
             old_dur,
@@ -328,7 +328,7 @@ def verify():
     else:
         errors.append("Row5(非編集行) の備考が誤って変更されている")
 
-    ws_ps = wb_p["固定訪問スケジュール"]
+    ws_ps = wb_p["固定訪問パターン"]
     col_code_ps = col_index(ws_ps, "patient_code")
     col_start_ps = col_index(ws_ps, "開始時刻")
     col_dur_ps = col_index(ws_ps, "duration_min")
@@ -336,7 +336,7 @@ def verify():
     p001_rows_v = [
         r for r in range(2, ws_ps.max_row + 1) if ws_ps.cell(r, col_code_ps).value == "P001"
     ]
-    print(f"\n[patients] 固定訪問スケジュール (P001 rows: {p001_rows_v})")
+    print(f"\n[patients] 固定訪問パターン (P001 rows: {p001_rows_v})")
     if p001_rows_v:
         fr = p001_rows_v[0]
         lr = p001_rows_v[-1]

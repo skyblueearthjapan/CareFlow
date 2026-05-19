@@ -8,8 +8,9 @@ from __future__ import annotations
 
 from logging.config import fileConfig
 
-from alembic import context
 from sqlalchemy import engine_from_config, pool
+
+from alembic import context
 
 # Import models so target_metadata sees them.
 from app.core.config import get_settings  # noqa: E402
@@ -29,9 +30,8 @@ def _sync_db_url() -> str:
     sync driver, so we strip the +asyncpg / +aiosqlite suffix.
     """
     url = get_settings().database_url
-    return (
-        url.replace("postgresql+asyncpg://", "postgresql+psycopg://")
-        .replace("sqlite+aiosqlite://", "sqlite://")
+    return url.replace("postgresql+asyncpg://", "postgresql+psycopg://").replace(
+        "sqlite+aiosqlite://", "sqlite://"
     )
 
 

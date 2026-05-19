@@ -54,9 +54,7 @@ export function KpiCard({
           <Skeleton className="h-9 w-16" />
         ) : (
           <>
-            <span className="font-serif text-3xl font-bold tnum text-text-primary">
-              {value}
-            </span>
+            <span className="font-serif text-3xl font-bold tnum text-text-primary">{value}</span>
             {unit ? <span className="text-sm text-text-secondary">{unit}</span> : null}
           </>
         )}
@@ -64,9 +62,7 @@ export function KpiCard({
       {delta && !isLoading ? (
         <p className={cn('mt-1 text-xs tnum', DELTA_CLASS[deltaTone])}>{delta}</p>
       ) : null}
-      {caption && !isLoading ? (
-        <p className="mt-1 text-xs text-text-muted">{caption}</p>
-      ) : null}
+      {caption && !isLoading ? <p className="mt-1 text-xs text-text-muted">{caption}</p> : null}
     </Card>
   );
 }

@@ -67,7 +67,7 @@ def main() -> None:
     print(f"patients: {len(pid_to_meta)}")
 
     # PFV
-    ws_f = wb["固定訪問スケジュール"]
+    ws_f = wb["固定訪問パターン"]
     header_f = [c.value for c in ws_f[1]]
     h = {
         "patient_id": hidx(header_f, "patient_id"),

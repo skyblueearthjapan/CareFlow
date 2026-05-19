@@ -16,7 +16,7 @@ emit the canonical Japanese labels.
 
 from __future__ import annotations
 
-from datetime import date as _Date
+from datetime import date as _Date  # noqa: N812
 from typing import Any, Literal
 from uuid import UUID
 
@@ -96,16 +96,14 @@ class OverrideCreate(BaseModel):
         return _validate_hhmm(v)
 
     @model_validator(mode="after")
-    def _check_time_range(self) -> "OverrideCreate":
+    def _check_time_range(self) -> OverrideCreate:
         if (
             self.start_time is not None
             and self.end_time is not None
             and self.start_time >= self.end_time
         ):
             raise ValueError("start_time must be < end_time")
-        if self.type == "custom_time" and (
-            self.start_time is None or self.end_time is None
-        ):
+        if self.type == "custom_time" and (self.start_time is None or self.end_time is None):
             raise ValueError("custom_time override requires start_time and end_time")
         return self
 
@@ -186,7 +184,7 @@ class OverrideRead(BaseModel):
             end_t = end_t.strftime("%H:%M")
 
         return {
-            "id": getattr(data, "id"),
+            "id": data.id,
             "date": date_val,
             "type": _db_type_to_label(getattr(data, "override_type", "")),
             "start_time": start_t,

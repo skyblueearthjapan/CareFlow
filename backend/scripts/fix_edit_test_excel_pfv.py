@@ -1,6 +1,6 @@
 """
 fix_edit_test_excel_pfv.py
-PFV シート（固定訪問スケジュール）の不整合 11 件を補完して _FIXED.xlsx を出力する。
+PFV シート（固定訪問パターン）の不整合 11 件を補完して _FIXED.xlsx を出力する。
 
 修正内容:
   - time_type が空 → 「固定」で埋める (3 件)

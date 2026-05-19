@@ -28,7 +28,7 @@ class Office(Base, TimestampMixin):
 
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    cities: Mapped[list["OfficeCity"]] = relationship(
+    cities: Mapped[list[OfficeCity]] = relationship(
         "OfficeCity", back_populates="office", cascade="all, delete-orphan"
     )
 
@@ -59,5 +59,5 @@ class OfficeCity(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
-    office: Mapped["Office"] = relationship("Office", back_populates="cities")
-    city: Mapped["City"] = relationship("City", back_populates="offices")  # noqa: F821
+    office: Mapped[Office] = relationship("Office", back_populates="cities")
+    city: Mapped[City] = relationship("City", back_populates="offices")  # noqa: F821

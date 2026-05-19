@@ -24,9 +24,7 @@ export default function DashboardPage() {
     <section className="space-y-6">
       <header>
         <h1 className="font-serif text-2xl font-bold text-text-primary">ダッシュボード</h1>
-        <p className="mt-1 text-sm text-text-secondary">
-          本日の概要と直近 7 日間の訪問トレンド
-        </p>
+        <p className="mt-1 text-sm text-text-secondary">本日の概要と直近 7 日間の訪問トレンド</p>
       </header>
 
       {kpi.isError ? (

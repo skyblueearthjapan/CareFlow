@@ -352,7 +352,7 @@ def main() -> None:
             ]
         )
 
-    ws_f = wb.create_sheet("固定訪問スケジュール")
+    ws_f = wb.create_sheet("固定訪問パターン")
     # CareFlow PFV_COLUMNS 完全準拠 (Phase E-7 後の 13 列):
     pfv_headers = [
         "patient_id (※新規時は空欄、code 入力可)",

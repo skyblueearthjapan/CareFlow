@@ -7,7 +7,7 @@ specific month; admin/manager reviews and flips status to ``reviewed``.
 from __future__ import annotations
 
 import uuid
-from datetime import date as _Date
+from datetime import date as _Date  # noqa: N812
 from datetime import datetime
 from typing import Literal
 
@@ -35,9 +35,7 @@ class ShiftRequest(Base, TimestampMixin):
     # use a Date type with cheap ordering instead of String month-strings.
     target_month: Mapped[_Date] = mapped_column(Date, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    submitted_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     status: Mapped[ShiftRequestStatus] = mapped_column(
         String(16), nullable=False, default="submitted"
     )
@@ -46,9 +44,7 @@ class ShiftRequest(Base, TimestampMixin):
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
     )
-    reviewed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         Index("ix_shift_requests_staff_month", "staff_id", "target_month"),

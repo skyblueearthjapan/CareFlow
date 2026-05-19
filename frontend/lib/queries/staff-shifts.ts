@@ -16,15 +16,11 @@ import {
 import { useSession } from 'next-auth/react';
 
 import { fetcher } from '@/lib/api/fetcher';
-import {
-  type ShiftsResponse,
-  type StaffShiftItem,
-} from '@/lib/schemas/staff-shifts';
+import { type ShiftsResponse, type StaffShiftItem } from '@/lib/schemas/staff-shifts';
 
 const STAFF_BASE = '/api/v1/staff';
 
-export const staffShiftsKey = (staffId: string) =>
-  ['staff-shifts', staffId] as const;
+export const staffShiftsKey = (staffId: string) => ['staff-shifts', staffId] as const;
 
 function useAuthTokens() {
   const { data: session, status } = useSession();
@@ -67,10 +63,7 @@ type UpdateShiftsOptions = UseMutationOptions<
  * Bulk PUT — 7 weekday rows in one round-trip. Uses an optimistic update
  * so the dialog feels instant; on error we roll back to the snapshot.
  */
-export function useUpdateStaffShifts(
-  staffId: string,
-  options: UpdateShiftsOptions = {},
-) {
+export function useUpdateStaffShifts(staffId: string, options: UpdateShiftsOptions = {}) {
   const qc = useQueryClient();
   const { accessToken, refreshToken } = useAuthTokens();
   const key = staffShiftsKey(staffId);

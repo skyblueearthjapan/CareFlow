@@ -103,7 +103,10 @@ export function TrendChart({ data, height = 260 }: TrendChartProps) {
             axisLine={{ stroke: 'var(--border-default, #e5e7eb)' }}
             width={32}
           />
-          <Tooltip content={<ChartTooltip />} cursor={{ stroke: '#94a3b8', strokeDasharray: '3 3' }} />
+          <Tooltip
+            content={<ChartTooltip />}
+            cursor={{ stroke: '#94a3b8', strokeDasharray: '3 3' }}
+          />
           {SERIES.map((s) => (
             <Line
               key={s.key}

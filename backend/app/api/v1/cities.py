@@ -70,9 +70,7 @@ async def get_city(
     db: DbDep,
     _user: Annotated[User, Depends(require_role("admin", "manager", "staff"))],
 ) -> City:
-    city = await db.scalar(
-        select(City).where(City.id == city_id, City.deleted_at.is_(None))
-    )
+    city = await db.scalar(select(City).where(City.id == city_id, City.deleted_at.is_(None)))
     if city is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     return city
@@ -103,9 +101,7 @@ async def update_city(
     db: DbDep,
     _user: Annotated[User, Depends(require_role("admin", "manager"))],
 ) -> City:
-    city = await db.scalar(
-        select(City).where(City.id == city_id, City.deleted_at.is_(None))
-    )
+    city = await db.scalar(select(City).where(City.id == city_id, City.deleted_at.is_(None)))
     if city is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
 
@@ -126,9 +122,7 @@ async def delete_city(
     db: DbDep,
     _user: Annotated[User, Depends(require_role("admin"))],
 ) -> None:
-    city = await db.scalar(
-        select(City).where(City.id == city_id, City.deleted_at.is_(None))
-    )
+    city = await db.scalar(select(City).where(City.id == city_id, City.deleted_at.is_(None)))
     if city is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     city.deleted_at = func.now()

@@ -47,10 +47,10 @@ export function useShiftRequests(
     enabled: status === 'authenticated' && !!staffId,
     queryFn: () => {
       if (!staffId) throw new Error('staffId is required');
-      return fetcher<ShiftRequestRead[]>(
-        `/api/v1/staff/${staffId}/shift-requests`,
-        { accessToken, refreshToken },
-      );
+      return fetcher<ShiftRequestRead[]>(`/api/v1/staff/${staffId}/shift-requests`, {
+        accessToken,
+        refreshToken,
+      });
     },
   });
 }
@@ -66,15 +66,12 @@ export function useCreateShiftRequest(
   return useMutation<ShiftRequestRead, Error, ShiftRequestCreate>({
     mutationFn: async (values) => {
       const parsed = shiftRequestCreateSchema.parse(values);
-      return fetcher<ShiftRequestRead>(
-        `/api/v1/staff/${staffId}/shift-requests`,
-        {
-          method: 'POST',
-          body: JSON.stringify(parsed),
-          accessToken,
-          refreshToken,
-        },
-      );
+      return fetcher<ShiftRequestRead>(`/api/v1/staff/${staffId}/shift-requests`, {
+        method: 'POST',
+        body: JSON.stringify(parsed),
+        accessToken,
+        refreshToken,
+      });
     },
     onSuccess: () => {
       void qc.invalidateQueries({
@@ -102,15 +99,12 @@ export function useUpdateShiftRequestStatus(): UseMutationResult<
   return useMutation<ShiftRequestRead, Error, UpdateStatusVariables>({
     mutationFn: async ({ requestId, payload }) => {
       const parsed = shiftRequestStatusUpdateSchema.parse(payload);
-      return fetcher<ShiftRequestRead>(
-        `/api/v1/shift-requests/${requestId}/status`,
-        {
-          method: 'PATCH',
-          body: JSON.stringify(parsed),
-          accessToken,
-          refreshToken,
-        },
-      );
+      return fetcher<ShiftRequestRead>(`/api/v1/shift-requests/${requestId}/status`, {
+        method: 'PATCH',
+        body: JSON.stringify(parsed),
+        accessToken,
+        refreshToken,
+      });
     },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: SHIFT_REQUESTS_KEY });

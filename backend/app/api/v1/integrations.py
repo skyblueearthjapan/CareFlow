@@ -8,7 +8,7 @@ relay endpoints to the existing kaipoke-api (Flask + Playwright) so the
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -129,9 +129,7 @@ async def get_kaipoke_job(
     _user: Annotated[User, Depends(require_role("admin", "manager"))],
 ) -> KaipokeJobRead:
     job = await db.scalar(
-        select(KaipokeJob)
-        .where(KaipokeJob.id == job_id)
-        .options(selectinload(KaipokeJob.items))
+        select(KaipokeJob).where(KaipokeJob.id == job_id).options(selectinload(KaipokeJob.items))
     )
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
@@ -162,9 +160,7 @@ async def create_kaipoke_job(
     await _commit_or_409(db)
 
     refreshed = await db.scalar(
-        select(KaipokeJob)
-        .where(KaipokeJob.id == job.id)
-        .options(selectinload(KaipokeJob.items))
+        select(KaipokeJob).where(KaipokeJob.id == job.id).options(selectinload(KaipokeJob.items))
     )
     assert refreshed is not None
     return KaipokeJobRead.model_validate(refreshed, from_attributes=True)
@@ -184,7 +180,7 @@ async def cancel_kaipoke_job(
     # on rowcount to decide between 404 (no row at all) and 409 (already in a
     # terminal state). This avoids the SELECT-then-UPDATE race with the
     # background worker that promotes running -> completed.
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     stmt = (
         update(KaipokeJob)
         .where(
@@ -200,13 +196,9 @@ async def cancel_kaipoke_job(
     result = await db.execute(stmt)
     if result.rowcount == 0:
         # Distinguish 404 from 409: was the row missing or simply terminal?
-        existing = await db.scalar(
-            select(KaipokeJob.status).where(KaipokeJob.id == job_id)
-        )
+        existing = await db.scalar(select(KaipokeJob.status).where(KaipokeJob.id == job_id))
         if existing is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="Not found"
-            )
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Cannot cancel job in status '{existing}'",
@@ -215,9 +207,7 @@ async def cancel_kaipoke_job(
     await _commit_or_409(db)
 
     refreshed = await db.scalar(
-        select(KaipokeJob)
-        .where(KaipokeJob.id == job_id)
-        .options(selectinload(KaipokeJob.items))
+        select(KaipokeJob).where(KaipokeJob.id == job_id).options(selectinload(KaipokeJob.items))
     )
     assert refreshed is not None
     return KaipokeJobRead.model_validate(refreshed, from_attributes=True)
@@ -244,11 +234,7 @@ async def list_geocoding_cache(
         base = base.where(GeocodingCache.address.ilike(f"%{q}%"))
         count_stmt = count_stmt.where(GeocodingCache.address.ilike(f"%{q}%"))
 
-    stmt = (
-        base.order_by(GeocodingCache.looked_up_at.desc())
-        .limit(limit)
-        .offset(offset)
-    )
+    stmt = base.order_by(GeocodingCache.looked_up_at.desc()).limit(limit).offset(offset)
     rows = (await db.scalars(stmt)).all()
     total = (await db.scalar(count_stmt)) or 0
     return Paginated[GeocodingCacheRead](
@@ -284,7 +270,7 @@ async def _persist_job_after_kaipoke_call(
 ) -> None:
     """Mark a job as running and store the upstream jobId/payload."""
     job.status = "running"
-    job.started_at = started_at or datetime.now(timezone.utc)
+    job.started_at = started_at or datetime.now(UTC)
     summary = dict(job.result_summary or {})
     upstream_id = (
         kaipoke_response.get("jobId")
@@ -380,7 +366,7 @@ async def trigger_expand(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="kaipoke busy") from exc
     except KaipokeApiError as exc:
         job.status = "failed"
-        job.completed_at = datetime.now(timezone.utc)
+        job.completed_at = datetime.now(UTC)
         job.result_summary = {"error": str(exc), "body": exc.body}
         await _commit_or_409(db)
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
@@ -422,7 +408,7 @@ async def trigger_export(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="kaipoke busy") from exc
     except KaipokeApiError as exc:
         job.status = "failed"
-        job.completed_at = datetime.now(timezone.utc)
+        job.completed_at = datetime.now(UTC)
         job.result_summary = {"error": str(exc), "body": exc.body}
         await _commit_or_409(db)
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
@@ -464,7 +450,7 @@ async def trigger_diff(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="kaipoke busy") from exc
     except KaipokeApiError as exc:
         job.status = "failed"
-        job.completed_at = datetime.now(timezone.utc)
+        job.completed_at = datetime.now(UTC)
         job.result_summary = {"error": str(exc), "body": exc.body}
         await _commit_or_409(db)
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
@@ -485,7 +471,7 @@ async def trigger_diff(
     db.add_all(items_to_add)
 
     job.status = "completed"
-    job.completed_at = datetime.now(timezone.utc)
+    job.completed_at = datetime.now(UTC)
     job.result_summary = {
         "sheet_id": str(sheet.id),
         "summary": summary,
@@ -654,7 +640,7 @@ async def trigger_apply(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="kaipoke busy") from exc
     except KaipokeApiError as exc:
         job.status = "failed"
-        job.completed_at = datetime.now(timezone.utc)
+        job.completed_at = datetime.now(UTC)
         job.result_summary = {"error": str(exc), "body": exc.body}
         await _commit_or_409(db)
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
@@ -682,9 +668,7 @@ async def get_integration_job(
     _user: Annotated[User, Depends(require_role("admin"))],
 ) -> KaipokeJobRead:
     job = await db.scalar(
-        select(KaipokeJob)
-        .where(KaipokeJob.id == job_id)
-        .options(selectinload(KaipokeJob.items))
+        select(KaipokeJob).where(KaipokeJob.id == job_id).options(selectinload(KaipokeJob.items))
     )
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
@@ -720,13 +704,11 @@ async def stop_integration_job(
             pass
 
     job.status = "cancelled"
-    job.completed_at = datetime.now(timezone.utc)
+    job.completed_at = datetime.now(UTC)
     await _commit_or_409(db)
 
     refreshed = await db.scalar(
-        select(KaipokeJob)
-        .where(KaipokeJob.id == job_id)
-        .options(selectinload(KaipokeJob.items))
+        select(KaipokeJob).where(KaipokeJob.id == job_id).options(selectinload(KaipokeJob.items))
     )
     assert refreshed is not None
     return KaipokeJobRead.model_validate(refreshed, from_attributes=True)
@@ -841,9 +823,7 @@ async def list_correction_items(
     count_stmt = select(func.count()).select_from(CorrectionSheetItem).where(and_(*conditions))
     rows = (
         await db.scalars(
-            base.order_by(CorrectionSheetItem.created_at.asc())
-            .limit(limit)
-            .offset(offset)
+            base.order_by(CorrectionSheetItem.created_at.asc()).limit(limit).offset(offset)
         )
     ).all()
     total = (await db.scalar(count_stmt)) or 0
@@ -866,9 +846,7 @@ async def update_correction_item(
     db: DbDep,
     _user: Annotated[User, Depends(require_role("admin"))],
 ) -> CorrectionItemRead:
-    item = await db.scalar(
-        select(CorrectionSheetItem).where(CorrectionSheetItem.id == item_id)
-    )
+    item = await db.scalar(select(CorrectionSheetItem).where(CorrectionSheetItem.id == item_id))
     if item is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     if payload.include is not None:
@@ -949,11 +927,7 @@ async def list_ai_interpret_logs(
         base = base.where(and_(*conditions))
         count_stmt = count_stmt.where(and_(*conditions))
 
-    stmt = (
-        base.order_by(AiInterpretLog.created_at.desc())
-        .limit(limit)
-        .offset(offset)
-    )
+    stmt = base.order_by(AiInterpretLog.created_at.desc()).limit(limit).offset(offset)
     rows = (await db.scalars(stmt)).all()
     total = (await db.scalar(count_stmt)) or 0
     return Paginated[AiInterpretLogRead](

@@ -39,9 +39,7 @@ async def test_staff_list_admin_returns_200(client, db) -> None:
 @pytest.mark.asyncio
 async def test_staff_get_unknown_returns_404(client, db) -> None:
     admin = await _make_user(db, "s-admin2@example.com", "admin")
-    res = await client.get(
-        f"/api/v1/staff/{uuid4()}", headers=_bearer(admin)
-    )
+    res = await client.get(f"/api/v1/staff/{uuid4()}", headers=_bearer(admin))
     assert res.status_code == 404, res.text
 
 
@@ -53,9 +51,7 @@ async def test_staff_delete_staff_role_returns_403(client, db) -> None:
     await db.refresh(s)
 
     staff_user = await _make_user(db, "s-staff@example.com", "staff", staff_id=s.id)
-    res = await client.delete(
-        f"/api/v1/staff/{s.id}", headers=_bearer(staff_user)
-    )
+    res = await client.delete(f"/api/v1/staff/{s.id}", headers=_bearer(staff_user))
     assert res.status_code == 403, res.text
 
 

@@ -39,7 +39,7 @@ class PatientExcelImportRow(BaseModel):
 
 
 class PfvExcelImportRow(BaseModel):
-    """固定訪問スケジュールシートの 1 行の処理結果."""
+    """固定訪問パターンシートの 1 行の処理結果."""
 
     model_config = ConfigDict(extra="forbid")
 

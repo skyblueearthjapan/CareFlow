@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pytest
 
-
 _EXPECTED_HEADERS = {
     "x-content-type-options": "nosniff",
     "x-frame-options": "DENY",

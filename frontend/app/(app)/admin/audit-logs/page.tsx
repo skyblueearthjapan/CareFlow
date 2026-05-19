@@ -179,17 +179,13 @@ export default function AdminAuditLogsPage() {
                     key={row.id}
                     className="border-b border-border-default last:border-0 align-top hover:bg-bg-muted"
                   >
-                    <td className="px-3 py-2 tnum text-text-secondary">
-                      {row.created_at}
-                    </td>
+                    <td className="px-3 py-2 tnum text-text-secondary">{row.created_at}</td>
                     <td className="px-3 py-2 font-mono text-xs text-text-secondary">
                       {row.actor_user_id ? row.actor_user_id.slice(0, 8) : '--'}
                     </td>
                     <td className="px-3 py-2">{row.role ?? '--'}</td>
                     <td className="px-3 py-2 font-mono">{row.method ?? '--'}</td>
-                    <td className="px-3 py-2 font-mono text-xs">
-                      {row.path ?? '--'}
-                    </td>
+                    <td className="px-3 py-2 font-mono text-xs">{row.path ?? '--'}</td>
                     <td className="px-3 py-2">
                       <span
                         className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs ${statusBadgeClass(
@@ -202,9 +198,7 @@ export default function AdminAuditLogsPage() {
                     <td className="px-3 py-2 tnum text-text-secondary">
                       {row.latency_ms != null ? `${row.latency_ms}ms` : '--'}
                     </td>
-                    <td className="px-3 py-2 text-text-secondary">
-                      {row.ip_address ?? '--'}
-                    </td>
+                    <td className="px-3 py-2 text-text-secondary">{row.ip_address ?? '--'}</td>
                     <td className="px-3 py-2 max-w-[360px]">
                       {row.request_body ? (
                         <pre className="whitespace-pre-wrap break-words rounded bg-bg-muted px-2 py-1 text-xs">

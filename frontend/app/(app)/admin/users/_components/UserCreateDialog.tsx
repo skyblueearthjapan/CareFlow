@@ -76,9 +76,7 @@ export function UserCreateDialog({ open, onOpenChange }: Props) {
     <Dialog open={open} onOpenChange={handleClose}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>
-            {result ? '仮パスワードを発行しました' : '新規ユーザー作成'}
-          </DialogTitle>
+          <DialogTitle>{result ? '仮パスワードを発行しました' : '新規ユーザー作成'}</DialogTitle>
           <DialogDescription>
             {result
               ? '次のパスワードは画面を閉じると二度と表示されません。安全な経路で本人へ伝達してください。'
@@ -154,24 +152,16 @@ export function UserCreateDialog({ open, onOpenChange }: Props) {
             {create.isError && (
               <Alert variant="destructive">
                 <AlertDescription>
-                  {create.error instanceof Error
-                    ? create.error.message
-                    : '作成に失敗しました'}
+                  {create.error instanceof Error ? create.error.message : '作成に失敗しました'}
                 </AlertDescription>
               </Alert>
             )}
             <DialogFooter>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => handleClose(false)}
-              >
+              <Button type="button" variant="outline" onClick={() => handleClose(false)}>
                 キャンセル
               </Button>
               <Button type="submit" disabled={create.isPending || !email}>
-                {create.isPending && (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                )}
+                {create.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
                 作成
               </Button>
             </DialogFooter>

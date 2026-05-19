@@ -20,14 +20,8 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { toast } from '@/components/ui/sonner';
-import {
-  useDeleteOverride,
-  useUpdateOverride,
-} from '@/lib/queries/staff-overrides';
-import {
-  overrideTypeUsesTime,
-  type OverrideRead,
-} from '@/lib/schemas/staff-overrides';
+import { useDeleteOverride, useUpdateOverride } from '@/lib/queries/staff-overrides';
+import { overrideTypeUsesTime, type OverrideRead } from '@/lib/schemas/staff-overrides';
 
 import { DeleteConfirmModal } from '../../_components/DeleteConfirmModal';
 
@@ -136,12 +130,7 @@ export function OverrideEditDialog({
           </DialogHeader>
 
           <form onSubmit={handleSubmit} className="space-y-4">
-            <OverrideForm
-              state={state}
-              onChange={setState}
-              errors={errors}
-              disabled={busy}
-            />
+            <OverrideForm state={state} onChange={setState} errors={errors} disabled={busy} />
 
             <DialogFooter className="sm:justify-between">
               <Button

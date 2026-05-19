@@ -86,13 +86,17 @@ async def _wait_for_log(db, *, method: str, path_substring: str, attempts: int =
     """Poll for the audit row written by the fire-and-forget background task."""
     for _ in range(attempts):
         rows = (
-            await db.execute(
-                select(AuditLog).where(
-                    AuditLog.method == method,
-                    AuditLog.path.like(f"%{path_substring}%"),
+            (
+                await db.execute(
+                    select(AuditLog).where(
+                        AuditLog.method == method,
+                        AuditLog.path.like(f"%{path_substring}%"),
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         if rows:
             return rows[-1]
         await asyncio.sleep(0.02)
@@ -143,11 +147,7 @@ async def test_middleware_skips_get_requests(client, db) -> None:
 
     # Give the event loop a tick — no audit row should appear for the GET.
     await asyncio.sleep(0.05)
-    rows = (
-        await db.execute(
-            select(AuditLog).where(AuditLog.method == "GET")
-        )
-    ).scalars().all()
+    rows = (await db.execute(select(AuditLog).where(AuditLog.method == "GET"))).scalars().all()
     assert rows == []
 
 

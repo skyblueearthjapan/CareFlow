@@ -4,11 +4,7 @@ import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { MobileSection } from '@/components/mobile/MobileSection';
-import {
-  currentWeekStartIso,
-  useMyVisits,
-  type MyVisit,
-} from '@/lib/queries/me';
+import { currentWeekStartIso, useMyVisits, type MyVisit } from '@/lib/queries/me';
 
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'] as const;
 
@@ -42,7 +38,12 @@ function shortTime(t: string): string {
 
 export default function MobileThisWeekPage() {
   const weekStart = currentWeekStartIso();
-  const { data: visits, isLoading, isError, error } = useMyVisits({
+  const {
+    data: visits,
+    isLoading,
+    isError,
+    error,
+  } = useMyVisits({
     weekStart,
   });
 
@@ -83,10 +84,7 @@ export default function MobileThisWeekPage() {
             </header>
             <ul className="divide-y divide-border-default">
               {g.items.map((v) => (
-                <li
-                  key={v.id}
-                  className="flex items-center gap-3 py-2 text-sm"
-                >
+                <li key={v.id} className="flex items-center gap-3 py-2 text-sm">
                   <span className="font-mono tnum text-text-primary w-12 shrink-0">
                     {shortTime(v.start_time)}
                   </span>

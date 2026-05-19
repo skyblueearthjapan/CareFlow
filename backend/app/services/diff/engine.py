@@ -25,7 +25,6 @@ import logging
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -34,20 +33,20 @@ logger = logging.getLogger(__name__)
 class ScheduleEntry:
     """スケジュールエントリ（1行分のデータ）"""
 
-    user_name: str          # 利用者名
-    date: str               # 日付（"1", "3" など）
-    weekday: str            # 曜日
-    business_type: str      # 業務種別（"医療保険", "介護保険", or イベント名）
-    service_type: str       # サービス内容
-    start_time: str         # 開始時間 (HH:MM)
-    end_time: str           # 終了時間 (HH:MM)
-    staff1_name: str        # 職員1名
-    staff1_type: str        # 職員1職種
-    staff2_name: str = ""   # 職員2名
-    staff2_type: str = ""   # 職員2職種
-    staff3_name: str = ""   # 職員3名
-    staff3_type: str = ""   # 職員3職種
-    remarks: str = ""       # 備考
+    user_name: str  # 利用者名
+    date: str  # 日付（"1", "3" など）
+    weekday: str  # 曜日
+    business_type: str  # 業務種別（"医療保険", "介護保険", or イベント名）
+    service_type: str  # サービス内容
+    start_time: str  # 開始時間 (HH:MM)
+    end_time: str  # 終了時間 (HH:MM)
+    staff1_name: str  # 職員1名
+    staff1_type: str  # 職員1職種
+    staff2_name: str = ""  # 職員2名
+    staff2_type: str = ""  # 職員2職種
+    staff3_name: str = ""  # 職員3名
+    staff3_type: str = ""  # 職員3職種
+    remarks: str = ""  # 備考
 
     def get_key(self) -> str:
         """利用者+日付+業務種別+サービス種別でユニークキーを生成"""
@@ -74,32 +73,30 @@ class ScheduleEntry:
 class Correction:
     """修正1件分のデータ"""
 
-    user_name: str          # 利用者名
-    date_from: str          # 変更前の日付
-    date_to: str            # 変更後の日付
-    start_time_from: str    # 変更前の開始時間
-    start_time_to: str      # 変更後の開始時間
-    end_time_from: str      # 変更前の終了時間
-    end_time_to: str        # 変更後の終了時間
-    staff1_from: str        # 変更前の職員1
-    staff1_to: str          # 変更後の職員1
-    staff2_from: str        # 変更前の職員2
-    staff2_to: str          # 変更後の職員2（削除の場合は空文字）
-    service_type: str       # サービス内容
-    action: str             # "edit" or "delete" or "add" or "date_change"
-    business_type: str = "" # 業務種別（"医療保険", "介護保険", or イベント名）
-    remarks: str = ""       # 備考（イベント名等）
+    user_name: str  # 利用者名
+    date_from: str  # 変更前の日付
+    date_to: str  # 変更後の日付
+    start_time_from: str  # 変更前の開始時間
+    start_time_to: str  # 変更後の開始時間
+    end_time_from: str  # 変更前の終了時間
+    end_time_to: str  # 変更後の終了時間
+    staff1_from: str  # 変更前の職員1
+    staff1_to: str  # 変更後の職員1
+    staff2_from: str  # 変更前の職員2
+    staff2_to: str  # 変更後の職員2（削除の場合は空文字）
+    service_type: str  # サービス内容
+    action: str  # "edit" or "delete" or "add" or "date_change"
+    business_type: str = ""  # 業務種別（"医療保険", "介護保険", or イベント名）
+    remarks: str = ""  # 備考（イベント名等）
 
     def has_date_change(self) -> bool:
         return self.date_from != self.date_to
 
     def has_time_change(self) -> bool:
-        return (self.start_time_from != self.start_time_to or
-                self.end_time_from != self.end_time_to)
+        return self.start_time_from != self.start_time_to or self.end_time_from != self.end_time_to
 
     def has_staff_change(self) -> bool:
-        return (self.staff1_from != self.staff1_to or
-                self.staff2_from != self.staff2_to)
+        return self.staff1_from != self.staff1_to or self.staff2_from != self.staff2_to
 
     def is_medical_insurance(self) -> bool:
         """医療保険かどうか"""
@@ -118,7 +115,7 @@ class Correction:
         return self.business_type in ("医療保険", "介護保険", "")
 
 
-def _extract_day_of_month(value: str) -> Optional[int]:
+def _extract_day_of_month(value: str) -> int | None:
     """Return day-of-month (1-31) from a date string, or None on failure.
 
     Accepts plain day numbers ("1", "03"), zero-padded days, ``MM/dd``,
@@ -185,7 +182,7 @@ def read_csv_auto_encoding(file_path: str) -> list[list[str]]:
 
     for enc in encodings:
         try:
-            with open(path, "r", encoding=enc) as f:
+            with open(path, encoding=enc) as f:
                 content = f.read()
             used_encoding = enc
             break
@@ -197,7 +194,9 @@ def read_csv_auto_encoding(file_path: str) -> list[list[str]]:
 
     logger.debug(
         "ファイル読み込み: %s (encoding=%s, size=%d文字)",
-        path.name, used_encoding, len(content),
+        path.name,
+        used_encoding,
+        len(content),
     )
 
     rows: list[list[str]] = []
@@ -225,44 +224,59 @@ def _parse_kaipoke_rows(rows: list[list[str]]) -> list[ScheduleEntry]:
     # ヘッダーをスキップ
     for row in rows[1:]:
         if len(row) >= 18:
-            entries.append(ScheduleEntry(
-                staff1_name=row[0].strip(),
-                staff1_type=row[1].strip(),
-                staff2_name=row[2].strip(),
-                staff2_type=row[3].strip(),
-                staff3_name=row[5].strip(),
-                staff3_type=row[6].strip(),
-                user_name=row[11].strip(),
-                date=row[9].strip(),
-                weekday=row[10].strip(),
-                business_type=row[12].strip(),
-                service_type=row[13].strip(),
-                start_time=row[14].strip(),
-                end_time=row[15].strip(),
-                remarks=row[17].strip() if len(row) > 17 else "",
-            ))
+            entries.append(
+                ScheduleEntry(
+                    staff1_name=row[0].strip(),
+                    staff1_type=row[1].strip(),
+                    staff2_name=row[2].strip(),
+                    staff2_type=row[3].strip(),
+                    staff3_name=row[5].strip(),
+                    staff3_type=row[6].strip(),
+                    user_name=row[11].strip(),
+                    date=row[9].strip(),
+                    weekday=row[10].strip(),
+                    business_type=row[12].strip(),
+                    service_type=row[13].strip(),
+                    start_time=row[14].strip(),
+                    end_time=row[15].strip(),
+                    remarks=row[17].strip() if len(row) > 17 else "",
+                )
+            )
         else:
             skipped_rows += 1
 
     logger.debug(
         "parse_kaipoke_csv: %d件パース, %d行スキップ（列数不足）",
-        len(entries), skipped_rows,
+        len(entries),
+        skipped_rows,
     )
     if entries:
         e = entries[0]
         logger.debug(
             "  先頭エントリ: 利用者='%s', 日付='%s', 業務種別='%s', "
             "サービス='%s', 時間='%s-%s', 職員1='%s', 職員2='%s'",
-            e.user_name, e.date, e.business_type, e.service_type,
-            e.start_time, e.end_time, e.staff1_name, e.staff2_name,
+            e.user_name,
+            e.date,
+            e.business_type,
+            e.service_type,
+            e.start_time,
+            e.end_time,
+            e.staff1_name,
+            e.staff2_name,
         )
     if len(entries) > 1:
         e = entries[1]
         logger.debug(
             "  2番目エントリ: 利用者='%s', 日付='%s', 業務種別='%s', "
             "サービス='%s', 時間='%s-%s', 職員1='%s', 職員2='%s'",
-            e.user_name, e.date, e.business_type, e.service_type,
-            e.start_time, e.end_time, e.staff1_name, e.staff2_name,
+            e.user_name,
+            e.date,
+            e.business_type,
+            e.service_type,
+            e.start_time,
+            e.end_time,
+            e.staff1_name,
+            e.staff2_name,
         )
 
     return entries
@@ -292,32 +306,37 @@ def _parse_optimized_rows(rows: list[list[str]]) -> list[ScheduleEntry]:
     header = rows[0] if rows else []
     logger.debug(
         "parse_optimized_csv: ヘッダー列数=%d, header[0]='%s'",
-        len(header), header[0] if header else "N/A",
+        len(header),
+        header[0] if header else "N/A",
     )
 
     # カイポケフォーマット（18列）の場合
     if len(header) >= 18 and "職員名" in str(header[0]):
-        logger.debug("parse_optimized_csv: カイポケフォーマットとして検出 → _parse_kaipoke_rowsに委譲")
+        logger.debug(
+            "parse_optimized_csv: カイポケフォーマットとして検出 → _parse_kaipoke_rowsに委譲"
+        )
         return _parse_kaipoke_rows(rows)
 
     logger.debug("parse_optimized_csv: 簡易フォーマットとしてパース")
     # 簡易フォーマット（利用者, 日付, 曜日, サービス, 開始, 終了, 職員1, 職員2, 備考）
     for row in rows[1:]:
         if len(row) >= 6:
-            entries.append(ScheduleEntry(
-                user_name=row[0].strip(),
-                date=row[1].strip(),
-                weekday=row[2].strip() if len(row) > 2 else "",
-                business_type="",
-                service_type=row[3].strip() if len(row) > 3 else "",
-                start_time=row[4].strip() if len(row) > 4 else "",
-                end_time=row[5].strip() if len(row) > 5 else "",
-                staff1_name=row[6].strip() if len(row) > 6 else "",
-                staff1_type="",
-                staff2_name=row[7].strip() if len(row) > 7 else "",
-                staff2_type="",
-                remarks=row[8].strip() if len(row) > 8 else "",
-            ))
+            entries.append(
+                ScheduleEntry(
+                    user_name=row[0].strip(),
+                    date=row[1].strip(),
+                    weekday=row[2].strip() if len(row) > 2 else "",
+                    business_type="",
+                    service_type=row[3].strip() if len(row) > 3 else "",
+                    start_time=row[4].strip() if len(row) > 4 else "",
+                    end_time=row[5].strip() if len(row) > 5 else "",
+                    staff1_name=row[6].strip() if len(row) > 6 else "",
+                    staff1_type="",
+                    staff2_name=row[7].strip() if len(row) > 7 else "",
+                    staff2_type="",
+                    remarks=row[8].strip() if len(row) > 8 else "",
+                )
+            )
 
     logger.debug("parse_optimized_csv: %d件パース（簡易フォーマット）", len(entries))
     return entries
@@ -396,7 +415,8 @@ def _compare_entries(
         optimized_entries = [e for e in optimized_entries if e.user_name in target_users]
         logger.debug(
             "ユーザーフィルタ後: current=%d, optimized=%d",
-            len(current_entries), len(optimized_entries),
+            len(current_entries),
+            len(optimized_entries),
         )
 
     if target_week_start and target_week_end:
@@ -427,12 +447,14 @@ def _compare_entries(
         optimized_entries = [e for e in optimized_entries if in_range(e)]
         logger.debug(
             "日付フィルタ後: current=%d, optimized=%d",
-            len(current_entries), len(optimized_entries),
+            len(current_entries),
+            len(optimized_entries),
         )
     else:
         logger.debug(
             "日付フィルタなし (week_start=%s, week_end=%s)",
-            target_week_start, target_week_end,
+            target_week_start,
+            target_week_end,
         )
 
     # 現在のエントリをキーでインデックス化
@@ -468,45 +490,49 @@ def _compare_entries(
         if not user_current and user_optimized:
             # 最適化CSVにのみ存在 → 全て追加
             for opt_entry in user_optimized:
-                corrections.append(Correction(
-                    user_name=user,
-                    date_from="",
-                    date_to=opt_entry.date,
-                    start_time_from="",
-                    start_time_to=opt_entry.start_time,
-                    end_time_from="",
-                    end_time_to=opt_entry.end_time,
-                    staff1_from="",
-                    staff1_to=opt_entry.staff1_name,
-                    staff2_from="",
-                    staff2_to=opt_entry.staff2_name,
-                    service_type=opt_entry.service_type,
-                    action="add",
-                    business_type=opt_entry.business_type,
-                    remarks=opt_entry.remarks,
-                ))
+                corrections.append(
+                    Correction(
+                        user_name=user,
+                        date_from="",
+                        date_to=opt_entry.date,
+                        start_time_from="",
+                        start_time_to=opt_entry.start_time,
+                        end_time_from="",
+                        end_time_to=opt_entry.end_time,
+                        staff1_from="",
+                        staff1_to=opt_entry.staff1_name,
+                        staff2_from="",
+                        staff2_to=opt_entry.staff2_name,
+                        service_type=opt_entry.service_type,
+                        action="add",
+                        business_type=opt_entry.business_type,
+                        remarks=opt_entry.remarks,
+                    )
+                )
             continue
 
         if user_current and not user_optimized:
             # 現在CSVにのみ存在 → 全て削除
             for cur_entry in user_current:
-                corrections.append(Correction(
-                    user_name=user,
-                    date_from=cur_entry.date,
-                    date_to="",
-                    start_time_from=cur_entry.start_time,
-                    start_time_to="",
-                    end_time_from=cur_entry.end_time,
-                    end_time_to="",
-                    staff1_from=cur_entry.staff1_name,
-                    staff1_to="",
-                    staff2_from=cur_entry.staff2_name,
-                    staff2_to="",
-                    service_type=cur_entry.service_type,
-                    action="delete",
-                    business_type=cur_entry.business_type,
-                    remarks=cur_entry.remarks,
-                ))
+                corrections.append(
+                    Correction(
+                        user_name=user,
+                        date_from=cur_entry.date,
+                        date_to="",
+                        start_time_from=cur_entry.start_time,
+                        start_time_to="",
+                        end_time_from=cur_entry.end_time,
+                        end_time_to="",
+                        staff1_from=cur_entry.staff1_name,
+                        staff1_to="",
+                        staff2_from=cur_entry.staff2_name,
+                        staff2_to="",
+                        service_type=cur_entry.service_type,
+                        action="delete",
+                        business_type=cur_entry.business_type,
+                        remarks=cur_entry.remarks,
+                    )
+                )
             continue
 
         # 日付変更検出のために、全体でのマッチング状態を追跡
@@ -517,7 +543,7 @@ def _compare_entries(
         # mixed date formats (``"2026/05/04"`` vs ``"4"``) compare as the
         # same day. Without this, identical schedules emitted in different
         # date formats produced spurious ``date_change`` corrections.
-        def _date_key(s: str) -> Optional[int]:
+        def _date_key(s: str) -> int | None:
             return _extract_day_of_month(s)
 
         # まず、日付変更（3日→4日など）を検出
@@ -551,32 +577,36 @@ def _compare_entries(
                 for cur_idx, cur_entry in current_on_date:
                     if cur_idx in matched_current_local or opt_idx in matched_optimized_local:
                         continue
-                    if (cur_entry.service_type == opt_entry.service_type and
-                        cur_entry.start_time == opt_entry.start_time):
+                    if (
+                        cur_entry.service_type == opt_entry.service_type
+                        and cur_entry.start_time == opt_entry.start_time
+                    ):
                         # 差分があるかチェック
                         has_diff = (
-                            cur_entry.end_time != opt_entry.end_time or
-                            cur_entry.staff1_name != opt_entry.staff1_name or
-                            cur_entry.staff2_name != opt_entry.staff2_name
+                            cur_entry.end_time != opt_entry.end_time
+                            or cur_entry.staff1_name != opt_entry.staff1_name
+                            or cur_entry.staff2_name != opt_entry.staff2_name
                         )
                         if has_diff:
-                            corrections.append(Correction(
-                                user_name=user,
-                                date_from=cur_entry.date,
-                                date_to=opt_entry.date,
-                                start_time_from=cur_entry.start_time,
-                                start_time_to=opt_entry.start_time,
-                                end_time_from=cur_entry.end_time,
-                                end_time_to=opt_entry.end_time,
-                                staff1_from=cur_entry.staff1_name,
-                                staff1_to=opt_entry.staff1_name,
-                                staff2_from=cur_entry.staff2_name,
-                                staff2_to=opt_entry.staff2_name,
-                                service_type=cur_entry.service_type,
-                                action="edit",
-                                business_type=cur_entry.business_type,
-                                remarks=opt_entry.remarks,
-                            ))
+                            corrections.append(
+                                Correction(
+                                    user_name=user,
+                                    date_from=cur_entry.date,
+                                    date_to=opt_entry.date,
+                                    start_time_from=cur_entry.start_time,
+                                    start_time_to=opt_entry.start_time,
+                                    end_time_from=cur_entry.end_time,
+                                    end_time_to=opt_entry.end_time,
+                                    staff1_from=cur_entry.staff1_name,
+                                    staff1_to=opt_entry.staff1_name,
+                                    staff2_from=cur_entry.staff2_name,
+                                    staff2_to=opt_entry.staff2_name,
+                                    service_type=cur_entry.service_type,
+                                    action="edit",
+                                    business_type=cur_entry.business_type,
+                                    remarks=opt_entry.remarks,
+                                )
+                            )
                         matched_current_local.add(cur_idx)
                         matched_optimized_local.add(opt_idx)
                         all_matched_current.add(cur_idx)
@@ -586,7 +616,9 @@ def _compare_entries(
             if current_on_date or optimized_on_date:
                 logger.debug(
                     "  日付%s: current=%d件, optimized=%d件, Pass1マッチ: %d件",
-                    date, len(current_on_date), len(optimized_on_date),
+                    date,
+                    len(current_on_date),
+                    len(optimized_on_date),
                     len(matched_current_local),
                 )
 
@@ -613,29 +645,31 @@ def _compare_entries(
                     if svc_match:
                         # 差分があるかチェック
                         has_diff = (
-                            cur_entry.start_time != opt_entry.start_time or
-                            cur_entry.end_time != opt_entry.end_time or
-                            cur_entry.staff1_name != opt_entry.staff1_name or
-                            cur_entry.staff2_name != opt_entry.staff2_name
+                            cur_entry.start_time != opt_entry.start_time
+                            or cur_entry.end_time != opt_entry.end_time
+                            or cur_entry.staff1_name != opt_entry.staff1_name
+                            or cur_entry.staff2_name != opt_entry.staff2_name
                         )
                         if has_diff:
-                            corrections.append(Correction(
-                                user_name=user,
-                                date_from=cur_entry.date,
-                                date_to=opt_entry.date,
-                                start_time_from=cur_entry.start_time,
-                                start_time_to=opt_entry.start_time,
-                                end_time_from=cur_entry.end_time,
-                                end_time_to=opt_entry.end_time,
-                                staff1_from=cur_entry.staff1_name,
-                                staff1_to=opt_entry.staff1_name,
-                                staff2_from=cur_entry.staff2_name,
-                                staff2_to=opt_entry.staff2_name,
-                                service_type=cur_entry.service_type,
-                                action="edit",
-                                business_type=cur_entry.business_type,
-                                remarks=opt_entry.remarks,
-                            ))
+                            corrections.append(
+                                Correction(
+                                    user_name=user,
+                                    date_from=cur_entry.date,
+                                    date_to=opt_entry.date,
+                                    start_time_from=cur_entry.start_time,
+                                    start_time_to=opt_entry.start_time,
+                                    end_time_from=cur_entry.end_time,
+                                    end_time_to=opt_entry.end_time,
+                                    staff1_from=cur_entry.staff1_name,
+                                    staff1_to=opt_entry.staff1_name,
+                                    staff2_from=cur_entry.staff2_name,
+                                    staff2_to=opt_entry.staff2_name,
+                                    service_type=cur_entry.service_type,
+                                    action="edit",
+                                    business_type=cur_entry.business_type,
+                                    remarks=opt_entry.remarks,
+                                )
+                            )
                         matched_current_local.add(cur_idx)
                         matched_optimized_local.add(opt_idx)
                         all_matched_current.add(cur_idx)
@@ -643,12 +677,17 @@ def _compare_entries(
                         break
 
         # Pass 3: 日付変更の検出（異なる日付間でのマッチング）
-        unmatched_current = [(i, e) for i, e in enumerate(user_current) if i not in all_matched_current]
-        unmatched_optimized = [(i, e) for i, e in enumerate(user_optimized) if i not in all_matched_optimized]
+        unmatched_current = [
+            (i, e) for i, e in enumerate(user_current) if i not in all_matched_current
+        ]
+        unmatched_optimized = [
+            (i, e) for i, e in enumerate(user_optimized) if i not in all_matched_optimized
+        ]
 
         logger.debug(
             "Pass1+2後の未マッチ: current=%d件, optimized=%d件",
-            len(unmatched_current), len(unmatched_optimized),
+            len(unmatched_current),
+            len(unmatched_optimized),
         )
 
         for cur_idx, cur_entry in unmatched_current:
@@ -671,73 +710,86 @@ def _compare_entries(
                     # raw strings. ``"2026/05/04"`` and ``"4"`` are the same
                     # day and must NOT trigger a date_change correction.
                     if _date_key(cur_entry.date) != _date_key(opt_entry.date):
-                        corrections.append(Correction(
-                            user_name=user,
-                            date_from=cur_entry.date,
-                            date_to=opt_entry.date,
-                            start_time_from=cur_entry.start_time,
-                            start_time_to=opt_entry.start_time,
-                            end_time_from=cur_entry.end_time,
-                            end_time_to=opt_entry.end_time,
-                            staff1_from=cur_entry.staff1_name,
-                            staff1_to=opt_entry.staff1_name,
-                            staff2_from=cur_entry.staff2_name,
-                            staff2_to=opt_entry.staff2_name,
-                            service_type=cur_entry.service_type,
-                            action="date_change",
-                            business_type=cur_entry.business_type,
-                            remarks=opt_entry.remarks,
-                        ))
+                        corrections.append(
+                            Correction(
+                                user_name=user,
+                                date_from=cur_entry.date,
+                                date_to=opt_entry.date,
+                                start_time_from=cur_entry.start_time,
+                                start_time_to=opt_entry.start_time,
+                                end_time_from=cur_entry.end_time,
+                                end_time_to=opt_entry.end_time,
+                                staff1_from=cur_entry.staff1_name,
+                                staff1_to=opt_entry.staff1_name,
+                                staff2_from=cur_entry.staff2_name,
+                                staff2_to=opt_entry.staff2_name,
+                                service_type=cur_entry.service_type,
+                                action="date_change",
+                                business_type=cur_entry.business_type,
+                                remarks=opt_entry.remarks,
+                            )
+                        )
                         all_matched_current.add(cur_idx)
                         all_matched_optimized.add(opt_idx)
                         break
 
         # Pass 4: 削除の検出（currentにのみ存在するエントリ）
-        final_unmatched_current = [(i, e) for i, e in enumerate(user_current) if i not in all_matched_current]
-        final_unmatched_optimized_pre = [(i, e) for i, e in enumerate(user_optimized) if i not in all_matched_optimized]
+        final_unmatched_current = [
+            (i, e) for i, e in enumerate(user_current) if i not in all_matched_current
+        ]
+        final_unmatched_optimized_pre = [
+            (i, e) for i, e in enumerate(user_optimized) if i not in all_matched_optimized
+        ]
         logger.debug(
             "Pass3後の最終未マッチ: current=%d件 (→削除), optimized=%d件 (→追加)",
-            len(final_unmatched_current), len(final_unmatched_optimized_pre),
+            len(final_unmatched_current),
+            len(final_unmatched_optimized_pre),
         )
-        for cur_idx, cur_entry in final_unmatched_current:
-            corrections.append(Correction(
-                user_name=user,
-                date_from=cur_entry.date,
-                date_to="",  # 削除先はなし
-                start_time_from=cur_entry.start_time,
-                start_time_to="",
-                end_time_from=cur_entry.end_time,
-                end_time_to="",
-                staff1_from=cur_entry.staff1_name,
-                staff1_to="",
-                staff2_from=cur_entry.staff2_name,
-                staff2_to="",
-                service_type=cur_entry.service_type,
-                action="delete",
-                business_type=cur_entry.business_type,
-                remarks=cur_entry.remarks,
-            ))
+        for cur_idx, cur_entry in final_unmatched_current:  # noqa: B007
+            corrections.append(
+                Correction(
+                    user_name=user,
+                    date_from=cur_entry.date,
+                    date_to="",  # 削除先はなし
+                    start_time_from=cur_entry.start_time,
+                    start_time_to="",
+                    end_time_from=cur_entry.end_time,
+                    end_time_to="",
+                    staff1_from=cur_entry.staff1_name,
+                    staff1_to="",
+                    staff2_from=cur_entry.staff2_name,
+                    staff2_to="",
+                    service_type=cur_entry.service_type,
+                    action="delete",
+                    business_type=cur_entry.business_type,
+                    remarks=cur_entry.remarks,
+                )
+            )
 
         # Pass 5: 追加の検出（optimizedにのみ存在するエントリ）
-        final_unmatched_optimized = [(i, e) for i, e in enumerate(user_optimized) if i not in all_matched_optimized]
-        for opt_idx, opt_entry in final_unmatched_optimized:
-            corrections.append(Correction(
-                user_name=user,
-                date_from="",  # 追加元はなし
-                date_to=opt_entry.date,
-                start_time_from="",
-                start_time_to=opt_entry.start_time,
-                end_time_from="",
-                end_time_to=opt_entry.end_time,
-                staff1_from="",
-                staff1_to=opt_entry.staff1_name,
-                staff2_from="",
-                staff2_to=opt_entry.staff2_name,
-                service_type=opt_entry.service_type,
-                action="add",
-                business_type=opt_entry.business_type,
-                remarks=opt_entry.remarks,
-            ))
+        final_unmatched_optimized = [
+            (i, e) for i, e in enumerate(user_optimized) if i not in all_matched_optimized
+        ]
+        for opt_idx, opt_entry in final_unmatched_optimized:  # noqa: B007
+            corrections.append(
+                Correction(
+                    user_name=user,
+                    date_from="",  # 追加元はなし
+                    date_to=opt_entry.date,
+                    start_time_from="",
+                    start_time_to=opt_entry.start_time,
+                    end_time_from="",
+                    end_time_to=opt_entry.end_time,
+                    staff1_from="",
+                    staff1_to=opt_entry.staff1_name,
+                    staff2_from="",
+                    staff2_to=opt_entry.staff2_name,
+                    service_type=opt_entry.service_type,
+                    action="add",
+                    business_type=opt_entry.business_type,
+                    remarks=opt_entry.remarks,
+                )
+            )
 
     logger.debug("========== 比較結果サマリー ==========")
     logger.debug("総修正件数: %d", len(corrections))
@@ -786,25 +838,45 @@ def generate_correction_sheet(
     elif format == "csv":
         with open(path, "w", encoding="utf-8-sig", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow([
-                "利用者", "日付(前)", "日付(後)",
-                "開始時間(前)", "開始時間(後)",
-                "終了時間(前)", "終了時間(後)",
-                "職員1(前)", "職員1(後)",
-                "職員2(前)", "職員2(後)",
-                "サービス内容", "アクション",
-                "業務種別", "備考",
-            ])
+            writer.writerow(
+                [
+                    "利用者",
+                    "日付(前)",
+                    "日付(後)",
+                    "開始時間(前)",
+                    "開始時間(後)",
+                    "終了時間(前)",
+                    "終了時間(後)",
+                    "職員1(前)",
+                    "職員1(後)",
+                    "職員2(前)",
+                    "職員2(後)",
+                    "サービス内容",
+                    "アクション",
+                    "業務種別",
+                    "備考",
+                ]
+            )
             for c in corrections:
-                writer.writerow([
-                    c.user_name, c.date_from, c.date_to,
-                    c.start_time_from, c.start_time_to,
-                    c.end_time_from, c.end_time_to,
-                    c.staff1_from, c.staff1_to,
-                    c.staff2_from, c.staff2_to,
-                    c.service_type, c.action,
-                    c.business_type, c.remarks,
-                ])
+                writer.writerow(
+                    [
+                        c.user_name,
+                        c.date_from,
+                        c.date_to,
+                        c.start_time_from,
+                        c.start_time_to,
+                        c.end_time_from,
+                        c.end_time_to,
+                        c.staff1_from,
+                        c.staff1_to,
+                        c.staff2_from,
+                        c.staff2_to,
+                        c.service_type,
+                        c.action,
+                        c.business_type,
+                        c.remarks,
+                    ]
+                )
 
     # 業務種別ごとの集計
     by_business_type: dict[str, int] = {}
@@ -834,7 +906,7 @@ def load_correction_sheet(file_path: str) -> list[Correction]:
     Returns:
         list[Correction]: 修正リスト
     """
-    with open(file_path, "r", encoding="utf-8") as f:
+    with open(file_path, encoding="utf-8") as f:
         data = json.load(f)
 
     corrections: list[Correction] = []
@@ -958,14 +1030,20 @@ def validate_correction_data(corrections: list[Correction]) -> dict:
             if not c.end_time_to:
                 item_errors.append("end_time_to が未設定です")
             if not c.business_type:
-                warnings.append(f"[{i}] {c.user_name} {c.date_to}日: business_type が未設定です（デフォルト動作になります）")
+                warnings.append(
+                    f"[{i}] {c.user_name} {c.date_to}日: business_type が未設定です（デフォルト動作になります）"
+                )
             if c.is_event() and not c.remarks:
-                warnings.append(f"[{i}] {c.user_name} {c.date_to}日: イベントですが備考（イベント名）が未設定です")
+                warnings.append(
+                    f"[{i}] {c.user_name} {c.date_to}日: イベントですが備考（イベント名）が未設定です"
+                )
             if not c.is_event():
                 if not c.staff1_to:
                     warnings.append(f"[{i}] {c.user_name} {c.date_to}日: 職員1が未設定です")
                 if not c.staff2_to:
-                    warnings.append(f"[{i}] {c.user_name} {c.date_to}日: 職員2が未設定です（1人訪問）")
+                    warnings.append(
+                        f"[{i}] {c.user_name} {c.date_to}日: 職員2が未設定です（1人訪問）"
+                    )
 
         elif c.action == "date_change":
             if not c.date_from:
@@ -992,12 +1070,14 @@ def validate_correction_data(corrections: list[Correction]) -> dict:
 
         if item_errors:
             errors.extend([f"[{i}] {c.user_name}: {e}" for e in item_errors])
-            invalid_items.append({
-                "index": i,
-                "user_name": c.user_name,
-                "action": c.action,
-                "reasons": item_errors,
-            })
+            invalid_items.append(
+                {
+                    "index": i,
+                    "user_name": c.user_name,
+                    "action": c.action,
+                    "reasons": item_errors,
+                }
+            )
             by_action[c.action]["invalid"] += 1
         else:
             by_action[c.action]["valid"] += 1

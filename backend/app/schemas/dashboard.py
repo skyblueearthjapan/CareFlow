@@ -27,9 +27,7 @@ class DashboardKpiResponse(BaseModel):
             "sharing the same primary_staff. Counts each side of the overlap."
         ),
     )
-    this_week_visits: int = Field(
-        ..., ge=0, description="Total visits this ISO week (Mon–Sun)."
-    )
+    this_week_visits: int = Field(..., ge=0, description="Total visits this ISO week (Mon–Sun).")
     this_week_completion_rate: float = Field(
         ...,
         ge=0.0,

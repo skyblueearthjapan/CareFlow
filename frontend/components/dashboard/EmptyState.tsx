@@ -26,9 +26,7 @@ export function EmptyState({
       )}
     >
       <p className="font-serif text-sm font-bold text-text-secondary">{title}</p>
-      {description ? (
-        <p className="text-xs text-text-muted">{description}</p>
-      ) : null}
+      {description ? <p className="text-xs text-text-muted">{description}</p> : null}
     </div>
   );
 }

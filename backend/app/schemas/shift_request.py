@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date as _Date
+from datetime import date as _Date  # noqa: N812
 from datetime import datetime
 from typing import Literal
 from uuid import UUID

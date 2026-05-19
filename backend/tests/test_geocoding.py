@@ -31,9 +31,7 @@ async def _make_user(db, email: str, role: str) -> User:
 
 
 def _bearer(user: User) -> dict[str, str]:
-    token = create_access_token(
-        subject=user.id, role=user.role, staff_id=user.staff_id
-    )
+    token = create_access_token(subject=user.id, role=user.role, staff_id=user.staff_id)
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -71,9 +69,7 @@ async def test_geocode_cache_miss_calls_upstream_and_persists(client, db) -> Non
 
     # Row was upserted.
     row = await db.scalar(
-        select(GeocodingCache).where(
-            GeocodingCache.address_hash == body["address_hash"]
-        )
+        select(GeocodingCache).where(GeocodingCache.address_hash == body["address_hash"])
     )
     assert row is not None
 
@@ -144,9 +140,7 @@ async def test_geocode_force_refresh_overwrites_cache(client, db) -> None:
     fake.assert_awaited_once()
 
     refreshed = await db.scalar(
-        select(GeocodingCache).where(
-            GeocodingCache.address_hash == address_hash(raw)
-        )
+        select(GeocodingCache).where(GeocodingCache.address_hash == address_hash(raw))
     )
     assert refreshed is not None
     assert float(refreshed.lat) == pytest.approx(35.658)
@@ -166,13 +160,9 @@ async def test_geocode_zero_results_returns_404(client, db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_geocode_quota_exceeded_returns_503_with_retry_after(
-    client, db
-) -> None:
+async def test_geocode_quota_exceeded_returns_503_with_retry_after(client, db) -> None:
     user = await _make_user(db, "geo-q@example.com", "staff")
-    fake = AsyncMock(
-        side_effect=GeocodingQuotaExceeded("OVER_QUERY_LIMIT")
-    )
+    fake = AsyncMock(side_effect=GeocodingQuotaExceeded("OVER_QUERY_LIMIT"))
     with patch(GEOCODE_PATH, fake):
         res = await client.post(
             "/api/v1/geocode",
@@ -186,9 +176,7 @@ async def test_geocode_quota_exceeded_returns_503_with_retry_after(
 @pytest.mark.asyncio
 async def test_geocode_upstream_error_returns_502(client, db) -> None:
     user = await _make_user(db, "geo-e@example.com", "staff")
-    fake = AsyncMock(
-        side_effect=GeocodingServiceError("network error: boom")
-    )
+    fake = AsyncMock(side_effect=GeocodingServiceError("network error: boom"))
     with patch(GEOCODE_PATH, fake):
         res = await client.post(
             "/api/v1/geocode",
@@ -205,9 +193,7 @@ async def test_geocode_no_token_returns_401(client) -> None:
 
 
 @pytest.mark.asyncio
-async def test_geocode_address_hash_stable_for_equivalent_inputs(
-    client, db
-) -> None:
+async def test_geocode_address_hash_stable_for_equivalent_inputs(client, db) -> None:
     """Whitespace/full-width variants should hit the SAME cache row."""
     user = await _make_user(db, "geo-h@example.com", "staff")
     fake = AsyncMock(
@@ -249,9 +235,7 @@ async def test_geocode_address_hash_stable_for_equivalent_inputs(
 @pytest.mark.asyncio
 async def test_cache_listing_requires_admin_or_manager(client, db) -> None:
     staff_user = await _make_user(db, "geo-cs@example.com", "staff")
-    res = await client.get(
-        "/api/v1/geocoding/cache", headers=_bearer(staff_user)
-    )
+    res = await client.get("/api/v1/geocoding/cache", headers=_bearer(staff_user))
     assert res.status_code == 403, res.text
 
 
@@ -268,9 +252,7 @@ async def test_cache_listing_admin_returns_paginated_rows(client, db) -> None:
         )
     )
     await db.commit()
-    res = await client.get(
-        "/api/v1/geocoding/cache", headers=_bearer(admin)
-    )
+    res = await client.get("/api/v1/geocoding/cache", headers=_bearer(admin))
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["total"] >= 1

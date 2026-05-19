@@ -4,7 +4,7 @@
   - User: Sampledata/2026.05.19段階最新ユーザーシート/スケジュール手動 のコピー.xlsx
     シート: スケジュール枠組み（仮）
   - DB: backend/scripts/_current_db_export.xlsx (= 既存) or 再 export
-    シート: 固定訪問スケジュール
+    シート: 固定訪問パターン
 
 仕様:
   - User シートを ブロック単位 (course = A/B/C/D/E/M) で parse
@@ -181,7 +181,7 @@ def load_db_patient_codes(db_xlsx: Path) -> dict[str, str]:
 def load_db_pfv(db_xlsx: Path, code_to_name: dict[str, str]) -> list[dict]:
     """DB の PFV を (weekday_en, course, time_hhmm, patient_code, duration_min) で抽出."""
     wb = load_workbook(db_xlsx, data_only=True, read_only=True)
-    ws = wb["固定訪問スケジュール"]
+    ws = wb["固定訪問パターン"]
     header = None
     h: dict[str, int] = {}
     out: list[dict] = []
@@ -377,7 +377,7 @@ def main() -> None:
     with OUTPUT_MD.open("w", encoding="utf-8") as f:
         f.write("# Phase F-3-C: PFV diff (User 枠組み vs DB 86 名後 PFV 76 件)\n\n")
         f.write(f"- User: `{USER_XLSX.name}` シート「スケジュール枠組み（仮）」\n")
-        f.write(f"- DB: `{db_xlsx.name}` シート「固定訪問スケジュール」\n")
+        f.write(f"- DB: `{db_xlsx.name}` シート「固定訪問パターン」\n")
         f.write("- 突合キー: (patient_code, weekday, course)\n\n")
         f.write("## サマリ\n\n")
         f.write(f"- User シート抽出 (resolved): **{len(resolved)}** 件 (中点ペア split 後)\n")

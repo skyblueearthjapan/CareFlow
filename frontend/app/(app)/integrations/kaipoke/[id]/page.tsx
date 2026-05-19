@@ -67,12 +67,7 @@ export default function KaipokeJobDetailPage() {
               <Field label="作成日時" value={job.created_at} />
               <Field label="開始" value={job.started_at ?? '--'} />
               <Field label="完了" value={job.completed_at ?? '--'} />
-              <Field
-                label="パラメータ"
-                value={JSON.stringify(job.params, null, 2)}
-                wide
-                pre
-              />
+              <Field label="パラメータ" value={JSON.stringify(job.params, null, 2)} wide pre />
               <Field
                 label="結果サマリ"
                 value={job.result_summary ? JSON.stringify(job.result_summary, null, 2) : '--'}
@@ -108,7 +103,9 @@ export default function KaipokeJobDetailPage() {
                               {JSON.stringify(item.content, null, 2)}
                             </pre>
                           </td>
-                          <td className="px-3 py-2 text-text-secondary">{item.error_msg ?? '--'}</td>
+                          <td className="px-3 py-2 text-text-secondary">
+                            {item.error_msg ?? '--'}
+                          </td>
                         </tr>
                       ))}
                     </tbody>

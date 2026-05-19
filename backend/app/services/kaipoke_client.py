@@ -51,7 +51,9 @@ class KaipokeClient:
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
         client: httpx.AsyncClient | None = None,
     ) -> None:
-        self._base_url = (base_url or os.getenv("KAIPOKE_API_BASE_URL") or DEFAULT_BASE_URL).rstrip("/")
+        self._base_url = (base_url or os.getenv("KAIPOKE_API_BASE_URL") or DEFAULT_BASE_URL).rstrip(
+            "/"
+        )
         self._token = token if token is not None else os.getenv("KAIPOKE_API_TOKEN", "")
         self._timeout = timeout
         self._owns_client = client is None

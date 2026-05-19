@@ -38,25 +38,21 @@ async def test_patients_list_admin_returns_200(client, db) -> None:
 @pytest.mark.asyncio
 async def test_patients_get_unknown_returns_404(client, db) -> None:
     admin = await _make_user(db, "p-admin2@example.com", "admin")
-    res = await client.get(
-        f"/api/v1/patients/{uuid4()}", headers=_bearer(admin)
-    )
+    res = await client.get(f"/api/v1/patients/{uuid4()}", headers=_bearer(admin))
     assert res.status_code == 404, res.text
 
 
 @pytest.mark.asyncio
 async def test_patients_delete_staff_returns_403(client, db) -> None:
     # Create a real patient via admin path so the row exists.
-    admin = await _make_user(db, "p-admin3@example.com", "admin")
+    admin = await _make_user(db, "p-admin3@example.com", "admin")  # noqa: F841
     p = Patient(code="P001", name="テスト")
     db.add(p)
     await db.commit()
     await db.refresh(p)
 
     staff_user = await _make_user(db, "p-staff@example.com", "staff")
-    res = await client.delete(
-        f"/api/v1/patients/{p.id}", headers=_bearer(staff_user)
-    )
+    res = await client.delete(f"/api/v1/patients/{p.id}", headers=_bearer(staff_user))
     assert res.status_code == 403, res.text
 
 

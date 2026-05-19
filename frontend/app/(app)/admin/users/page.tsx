@@ -140,17 +140,13 @@ export default function AdminUsersPage() {
           <AlertDescription>
             <div className="space-y-2">
               <p>
-                <span className="font-medium">{resetResult.email}</span>{' '}
-                — 次回ログイン時にパスワード変更が必須となります。
+                <span className="font-medium">{resetResult.email}</span> —
+                次回ログイン時にパスワード変更が必須となります。
               </p>
               <code className="block rounded bg-bg-muted px-3 py-2 font-mono text-sm">
                 {resetResult.tempPassword}
               </code>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setResetResult(null)}
-              >
+              <Button variant="outline" size="sm" onClick={() => setResetResult(null)}>
                 閉じる
               </Button>
             </div>
@@ -201,15 +197,9 @@ export default function AdminUsersPage() {
                       <td className="px-3 py-2 text-text-secondary">
                         {u.staff_id ? `${u.staff_id.slice(0, 8)}…` : '--'}
                       </td>
+                      <td className="px-3 py-2">{u.must_change_password ? '必須' : '任意'}</td>
                       <td className="px-3 py-2">
-                        {u.must_change_password ? '必須' : '任意'}
-                      </td>
-                      <td className="px-3 py-2">
-                        {isDeleted ? (
-                          <span className="text-text-muted">削除済み</span>
-                        ) : (
-                          '有効'
-                        )}
+                        {isDeleted ? <span className="text-text-muted">削除済み</span> : '有効'}
                       </td>
                       <td className="px-3 py-2 text-right">
                         <div className="flex justify-end gap-1">
@@ -236,11 +226,7 @@ export default function AdminUsersPage() {
                             size="sm"
                             disabled={isDeleted || isSelf}
                             onClick={() => {
-                              if (
-                                window.confirm(
-                                  `${u.email} を削除します。よろしいですか？`,
-                                )
-                              ) {
+                              if (window.confirm(`${u.email} を削除します。よろしいですか？`)) {
                                 deleteUser.mutate(u.id);
                               }
                             }}
@@ -260,10 +246,7 @@ export default function AdminUsersPage() {
       </Card>
 
       <UserCreateDialog open={createOpen} onOpenChange={setCreateOpen} />
-      <UserEditDialog
-        target={editTarget}
-        onClose={() => setEditTarget(null)}
-      />
+      <UserEditDialog target={editTarget} onClose={() => setEditTarget(null)} />
     </section>
   );
 }

@@ -1,6 +1,6 @@
 """PatientFixedVisit ORM model (W9-BE1 / W37 Phase 1).
 
-週間訪問パターン (固定枠) を表す行単位テーブル。
+固定訪問パターン を表す行単位テーブル。
 スケジュール確定後に book-back され、翌週以降は固定枠から visits を自動生成する。
 
 設計上の制約:

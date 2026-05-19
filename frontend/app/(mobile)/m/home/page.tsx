@@ -36,9 +36,7 @@ function StatCard({
       {loading ? (
         <Skeleton className="mt-2 h-8 w-16" />
       ) : (
-        <p className="mt-2 font-serif text-3xl font-bold tnum text-text-primary">
-          {value}
-        </p>
+        <p className="mt-2 font-serif text-3xl font-bold tnum text-text-primary">{value}</p>
       )}
     </Card>
   );
@@ -69,22 +67,23 @@ export default function MobileHomePage() {
   // of next month (exclusive); subtract a day for an inclusive bound.
   const inclusiveMonthEnd = addDays(monthEnd, -1);
   const inclusiveWeekEnd = addDays(weekEnd, -1);
-  const rangeEnd =
-    inclusiveMonthEnd > inclusiveWeekEnd ? inclusiveMonthEnd : inclusiveWeekEnd;
+  const rangeEnd = inclusiveMonthEnd > inclusiveWeekEnd ? inclusiveMonthEnd : inclusiveWeekEnd;
 
-  const { data: allVisits, isLoading, isError, error } = useMyVisits({
+  const {
+    data: allVisits,
+    isLoading,
+    isError,
+    error,
+  } = useMyVisits({
     weekStartFilter: rangeStart,
     weekEndFilter: rangeEnd,
   });
 
   const todayCount = allVisits?.filter((v) => v.visit_date === today).length ?? 0;
   const weekCount =
-    allVisits?.filter((v) => v.visit_date >= weekStart && v.visit_date < weekEnd)
-      .length ?? 0;
+    allVisits?.filter((v) => v.visit_date >= weekStart && v.visit_date < weekEnd).length ?? 0;
   const monthCount =
-    allVisits?.filter(
-      (v) => v.visit_date >= monthStart && v.visit_date < monthEnd,
-    ).length ?? 0;
+    allVisits?.filter((v) => v.visit_date >= monthStart && v.visit_date < monthEnd).length ?? 0;
 
   // W4-D: live unread count from /api/v1/notifications (60s poll).
   const unreadCount = useUnreadNotificationCount();
@@ -102,11 +101,7 @@ export default function MobileHomePage() {
       action={
         <button
           type="button"
-          aria-label={
-            unreadCount > 0
-              ? `通知 (未読 ${unreadCount}件)`
-              : '通知'
-          }
+          aria-label={unreadCount > 0 ? `通知 (未読 ${unreadCount}件)` : '通知'}
           onClick={() => setNotifOpen(true)}
           className="relative inline-flex h-10 w-10 items-center justify-center rounded-full text-text-secondary hover:bg-bg-muted"
         >
@@ -146,9 +141,7 @@ export default function MobileHomePage() {
             <CalendarCheck className="h-5 w-5 text-brand-primary" />
             <div>
               <p className="font-medium text-text-primary">今日の訪問へ</p>
-              <p className="text-xs text-text-muted">
-                {todayCount}件の予定
-              </p>
+              <p className="text-xs text-text-muted">{todayCount}件の予定</p>
             </div>
           </div>
           <ChevronRight className="h-4 w-4 text-text-muted" />

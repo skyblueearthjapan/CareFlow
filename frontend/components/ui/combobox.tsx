@@ -6,11 +6,7 @@ import { Check, ChevronsUpDown, Search, X } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from '@/components/ui/popover';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Badge } from '@/components/ui/badge';
 
 export interface ComboboxOption {
@@ -81,10 +77,7 @@ export function Combobox(props: ComboboxProps) {
   }, []);
 
   const filter = React.useMemo(() => makeFilter(options), [options]);
-  const labelMap = React.useMemo(
-    () => new Map(options.map((o) => [o.value, o.label])),
-    [options],
-  );
+  const labelMap = React.useMemo(() => new Map(options.map((o) => [o.value, o.label])), [options]);
 
   if (props.multiple) {
     const selected = props.value ?? [];
@@ -116,32 +109,27 @@ export function Combobox(props: ComboboxProps) {
             )}
           >
             <span className="flex flex-wrap gap-1">
-              {selected.length === 0 ? (
-                placeholder
-              ) : (
-                selected.map((v) => {
-                  const label = labelMap.get(v) ?? v;
-                  return (
-                    <span
-                      key={v}
-                      className="inline-flex items-center gap-1"
-                    >
-                      <Badge variant="secondary">{label}</Badge>
-                      <button
-                        type="button"
-                        aria-label={`${label}を削除`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          remove(v);
-                        }}
-                        className="inline-flex h-4 w-4 items-center justify-center rounded-sm opacity-70 hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-brand-primary"
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
-                    </span>
-                  );
-                })
-              )}
+              {selected.length === 0
+                ? placeholder
+                : selected.map((v) => {
+                    const label = labelMap.get(v) ?? v;
+                    return (
+                      <span key={v} className="inline-flex items-center gap-1">
+                        <Badge variant="secondary">{label}</Badge>
+                        <button
+                          type="button"
+                          aria-label={`${label}を削除`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            remove(v);
+                          }}
+                          className="inline-flex h-4 w-4 items-center justify-center rounded-sm opacity-70 hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-brand-primary"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </span>
+                    );
+                  })}
             </span>
             <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
           </Button>
@@ -210,11 +198,7 @@ export function Combobox(props: ComboboxProps) {
           role="combobox"
           aria-expanded={open}
           disabled={disabled}
-          className={cn(
-            'w-full justify-between',
-            !value && 'text-text-muted',
-            className,
-          )}
+          className={cn('w-full justify-between', !value && 'text-text-muted', className)}
         >
           {selectedLabel ?? placeholder}
           <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />

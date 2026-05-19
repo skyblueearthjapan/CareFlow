@@ -2,37 +2,36 @@
 
 Ported from PlaywrightTest1/lib/allocation_utils.py (Apache License 2.0).
 """
+
 import math
-from typing import List, Optional, Tuple
 
 from app.services.allocation.models import Interval
-
 
 # ============================================================
 # Constants
 # ============================================================
-EXTRA_BUFFER_MIN = 15     # Buffer between visits in gap packing
-ASSIGN_BUFFER_MIN = 5     # Buffer within window capacity calc
+EXTRA_BUFFER_MIN = 15  # Buffer between visits in gap packing
+ASSIGN_BUFFER_MIN = 5  # Buffer within window capacity calc
 EARTH_RADIUS_KM = 6371.0  # Earth radius for Haversine
-MAX_TWO_OPT_ITER = 50     # Max 2-opt iterations
+MAX_TWO_OPT_ITER = 50  # Max 2-opt iterations
 TWO_OPT_THRESHOLD = 1e-9  # Improvement threshold for 2-opt
 
 # Default time windows by time type (in minutes from midnight)
 TIME_TYPE_DEFAULTS = {
-    "午前": (540, 720),     # 09:00 - 12:00
-    "午後": (780, 1020),    # 13:00 - 17:00
-    "終日": (540, 1080),    # 09:00 - 18:00
+    "午前": (540, 720),  # 09:00 - 12:00
+    "午後": (780, 1020),  # 13:00 - 17:00
+    "終日": (540, 1080),  # 09:00 - 18:00
 }
 DEFAULT_WINDOW = (540, 1080)  # fallback: 09:00 - 18:00
 
 # Distance scoring thresholds
 DIST_SCORE_THRESHOLDS = [
-    (2.0, 0),   # <= 2km: score 0
-    (5.0, 1),   # <= 5km: score 1
+    (2.0, 0),  # <= 2km: score 0
+    (5.0, 1),  # <= 5km: score 1
     (10.0, 2),  # <= 10km: score 2
 ]
-DIST_SCORE_FAR = 5         # > 10km
-DIST_SCORE_UNKNOWN = 99    # no coordinates
+DIST_SCORE_FAR = 5  # > 10km
+DIST_SCORE_UNKNOWN = 99  # no coordinates
 
 
 # ============================================================
@@ -43,22 +42,24 @@ def haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     to_rad = math.pi / 180.0
     d_lat = (lat2 - lat1) * to_rad
     d_lng = (lng2 - lng1) * to_rad
-    a = (math.sin(d_lat / 2) ** 2 +
-         math.cos(lat1 * to_rad) * math.cos(lat2 * to_rad) *
-         math.sin(d_lng / 2) ** 2)
+    a = (
+        math.sin(d_lat / 2) ** 2
+        + math.cos(lat1 * to_rad) * math.cos(lat2 * to_rad) * math.sin(d_lng / 2) ** 2
+    )
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return EARTH_RADIUS_KM * c
 
 
-def calc_distance_km(lat1: Optional[float], lng1: Optional[float],
-                     lat2: Optional[float], lng2: Optional[float]) -> Optional[float]:
+def calc_distance_km(
+    lat1: float | None, lng1: float | None, lat2: float | None, lng2: float | None
+) -> float | None:
     """Calculate distance, returns None if any coordinate is missing."""
     if lat1 is None or lng1 is None or lat2 is None or lng2 is None:
         return None
     return haversine_km(lat1, lng1, lat2, lng2)
 
 
-def dist_to_score(km: Optional[float]) -> int:
+def dist_to_score(km: float | None) -> int:
     """Convert distance in km to integer score."""
     if km is None:
         return DIST_SCORE_UNKNOWN
@@ -76,7 +77,7 @@ def intervals_overlap(s1: int, e1: int, s2: int, e2: int) -> bool:
     return s1 < e2 and s2 < e1
 
 
-def merge_intervals(intervals: List[Interval]) -> List[Interval]:
+def merge_intervals(intervals: list[Interval]) -> list[Interval]:
     """Sort and merge overlapping/adjacent intervals."""
     if len(intervals) <= 1:
         return list(intervals)
@@ -91,7 +92,7 @@ def merge_intervals(intervals: List[Interval]) -> List[Interval]:
     return merged
 
 
-def compute_gaps(blocked: List[Interval], window_start: int, window_end: int) -> List[Interval]:
+def compute_gaps(blocked: list[Interval], window_start: int, window_end: int) -> list[Interval]:
     """Compute free gaps in a window given blocked intervals."""
     merged = merge_intervals(blocked)
     gaps = []
@@ -105,7 +106,7 @@ def compute_gaps(blocked: List[Interval], window_start: int, window_end: int) ->
     return gaps
 
 
-def intersect_gaps(gaps1: List[Interval], gaps2: List[Interval]) -> List[Interval]:
+def intersect_gaps(gaps1: list[Interval], gaps2: list[Interval]) -> list[Interval]:
     """Find common free intervals between two gap lists."""
     result = []
     i, j = 0, 0
@@ -121,8 +122,9 @@ def intersect_gaps(gaps1: List[Interval], gaps2: List[Interval]) -> List[Interva
     return result
 
 
-def get_effective_window(time_type: str, earliest: Optional[int],
-                         latest: Optional[int]) -> Tuple[int, int]:
+def get_effective_window(
+    time_type: str, earliest: int | None, latest: int | None
+) -> tuple[int, int]:
     """Get effective time window from time_type and explicit preferences."""
     eff_earliest = earliest
     eff_latest = latest
@@ -138,8 +140,9 @@ def get_effective_window(time_type: str, earliest: Optional[int],
 # ============================================================
 # Route Optimization
 # ============================================================
-def nearest_neighbor_route(nodes: List[dict], start_lat: Optional[float] = None,
-                           start_lng: Optional[float] = None) -> List[dict]:
+def nearest_neighbor_route(
+    nodes: list[dict], start_lat: float | None = None, start_lng: float | None = None
+) -> list[dict]:
     """Greedy nearest-neighbor route construction.
 
     Each node: {"idx": int, "lat": float|None, "lng": float|None, ...}
@@ -170,20 +173,22 @@ def nearest_neighbor_route(nodes: List[dict], start_lat: Optional[float] = None,
     return route
 
 
-def route_length(nodes: List[dict]) -> float:
+def route_length(nodes: list[dict]) -> float:
     """Sum of edge distances in a route."""
     total = 0.0
     for i in range(len(nodes) - 1):
         d = calc_distance_km(
-            nodes[i].get("lat"), nodes[i].get("lng"),
-            nodes[i+1].get("lat"), nodes[i+1].get("lng")
+            nodes[i].get("lat"),
+            nodes[i].get("lng"),
+            nodes[i + 1].get("lat"),
+            nodes[i + 1].get("lng"),
         )
         if d is not None:
             total += d
     return total
 
 
-def two_opt(nodes: List[dict]) -> List[dict]:
+def two_opt(nodes: list[dict]) -> list[dict]:
     """Apply 2-opt local search to improve route."""
     if len(nodes) <= 3:
         return list(nodes)
@@ -198,7 +203,7 @@ def two_opt(nodes: List[dict]) -> List[dict]:
         improved = False
         for i in range(1, len(best) - 1):
             for k in range(i + 1, len(best)):
-                candidate = best[:i] + best[i:k+1][::-1] + best[k+1:]
+                candidate = best[:i] + best[i : k + 1][::-1] + best[k + 1 :]
                 cand_len = route_length(candidate)
                 if cand_len + TWO_OPT_THRESHOLD < best_len:
                     best = candidate
@@ -228,12 +233,27 @@ def normalize_cont_pref(raw: str) -> str:
 def normalize_weekday(raw: str) -> str:
     """Normalize weekday string to English 3-letter code."""
     mapping = {
-        "月": "Mon", "火": "Tue", "水": "Wed", "木": "Thu",
-        "金": "Fri", "土": "Sat", "日": "Sun",
-        "Mon": "Mon", "Tue": "Tue", "Wed": "Wed", "Thu": "Thu",
-        "Fri": "Fri", "Sat": "Sat", "Sun": "Sun",
-        "Monday": "Mon", "Tuesday": "Tue", "Wednesday": "Wed",
-        "Thursday": "Thu", "Friday": "Fri", "Saturday": "Sat", "Sunday": "Sun",
+        "月": "Mon",
+        "火": "Tue",
+        "水": "Wed",
+        "木": "Thu",
+        "金": "Fri",
+        "土": "Sat",
+        "日": "Sun",
+        "Mon": "Mon",
+        "Tue": "Tue",
+        "Wed": "Wed",
+        "Thu": "Thu",
+        "Fri": "Fri",
+        "Sat": "Sat",
+        "Sun": "Sun",
+        "Monday": "Mon",
+        "Tuesday": "Tue",
+        "Wednesday": "Wed",
+        "Thursday": "Thu",
+        "Friday": "Fri",
+        "Saturday": "Sat",
+        "Sunday": "Sun",
     }
     return mapping.get(raw.strip(), raw.strip())
 
@@ -244,7 +264,7 @@ def weekday_index(day_code: str) -> int:
     return idx_map.get(day_code, 0)
 
 
-def fmt_min(minutes: Optional[int]) -> str:
+def fmt_min(minutes: int | None) -> str:
     """Format minutes as HH:MM string."""
     if minutes is None:
         return "--:--"

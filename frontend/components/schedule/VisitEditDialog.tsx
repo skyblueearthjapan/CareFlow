@@ -41,13 +41,7 @@ interface VisitEditDialogProps {
   onClose: () => void;
 }
 
-export function VisitEditDialog({
-  open,
-  visit,
-  staff,
-  canDelete,
-  onClose,
-}: VisitEditDialogProps) {
+export function VisitEditDialog({ open, visit, staff, canDelete, onClose }: VisitEditDialogProps) {
   const [values, setValues] = useState<VisitFormValues>(emptyVisitFormValues);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const updateMutation = useUpdateVisit();
@@ -67,10 +61,7 @@ export function VisitEditDialog({
     label: s.name,
   }));
 
-  const handleField = <K extends keyof VisitFormValues>(
-    key: K,
-    value: VisitFormValues[K],
-  ) => {
+  const handleField = <K extends keyof VisitFormValues>(key: K, value: VisitFormValues[K]) => {
     setValues((prev) => ({ ...prev, [key]: value }));
   };
 
@@ -89,9 +80,7 @@ export function VisitEditDialog({
       toast.success('訪問を更新しました');
       onClose();
     } catch (err) {
-      toast.error(
-        `更新に失敗しました: ${err instanceof Error ? err.message : '不明なエラー'}`,
-      );
+      toast.error(`更新に失敗しました: ${err instanceof Error ? err.message : '不明なエラー'}`);
     }
   };
 
@@ -103,9 +92,7 @@ export function VisitEditDialog({
       setConfirmingDelete(false);
       onClose();
     } catch (err) {
-      toast.error(
-        `削除に失敗しました: ${err instanceof Error ? err.message : '不明なエラー'}`,
-      );
+      toast.error(`削除に失敗しました: ${err instanceof Error ? err.message : '不明なエラー'}`);
     }
   };
 
@@ -195,12 +182,7 @@ export function VisitEditDialog({
               <span />
             )}
             <div className="flex gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={onClose}
-                disabled={isBusy}
-              >
+              <Button type="button" variant="outline" onClick={onClose} disabled={isBusy}>
                 キャンセル
               </Button>
               <Button type="button" onClick={handleSubmit} disabled={isBusy}>

@@ -8,7 +8,7 @@ with the actor's user_id + a redacted body.
 from __future__ import annotations
 
 import secrets
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Annotated
 from uuid import UUID
 
@@ -101,9 +101,7 @@ async def list_users(
         count_stmt = count_stmt.where(and_(*conds))
 
     rows = (
-        await db.scalars(
-            base.order_by(User.created_at.desc()).limit(limit).offset(offset)
-        )
+        await db.scalars(base.order_by(User.created_at.desc()).limit(limit).offset(offset))
     ).all()
     total = (await db.scalar(count_stmt)) or 0
     return Paginated[AdminUserRead](
@@ -154,9 +152,7 @@ async def update_user(
     db: DbDep,
     _admin: Annotated[User, Depends(require_role("admin"))],
 ) -> AdminUserRead:
-    user = await db.scalar(
-        select(User).where(User.id == user_id, User.deleted_at.is_(None))
-    )
+    user = await db.scalar(select(User).where(User.id == user_id, User.deleted_at.is_(None)))
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
 
@@ -183,9 +179,7 @@ async def reset_password(
     db: DbDep,
     _admin: Annotated[User, Depends(require_role("admin"))],
 ) -> AdminPasswordResetResponse:
-    user = await db.scalar(
-        select(User).where(User.id == user_id, User.deleted_at.is_(None))
-    )
+    user = await db.scalar(select(User).where(User.id == user_id, User.deleted_at.is_(None)))
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     temp_password = _generate_temp_password()
@@ -212,11 +206,9 @@ async def delete_user(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="An admin cannot soft-delete their own account",
         )
-    user = await db.scalar(
-        select(User).where(User.id == user_id, User.deleted_at.is_(None))
-    )
+    user = await db.scalar(select(User).where(User.id == user_id, User.deleted_at.is_(None)))
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
-    user.deleted_at = datetime.now(tz=timezone.utc)
+    user.deleted_at = datetime.now(tz=UTC)
     await db.commit()
     return None

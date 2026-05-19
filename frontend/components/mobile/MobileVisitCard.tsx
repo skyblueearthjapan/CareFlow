@@ -40,11 +40,7 @@ interface MobileVisitCardProps {
   highlight?: boolean;
 }
 
-export function MobileVisitCard({
-  visit,
-  address,
-  highlight,
-}: MobileVisitCardProps) {
+export function MobileVisitCard({ visit, address, highlight }: MobileVisitCardProps) {
   const meta = statusMeta(visit.status);
   return (
     <Link
@@ -62,9 +58,7 @@ export function MobileVisitCard({
           <span className="font-serif text-lg font-bold tnum text-text-primary">
             {shortTime(visit.start_time)}
           </span>
-          <span className="text-[11px] text-text-muted tnum">
-            {shortTime(visit.end_time)}
-          </span>
+          <span className="text-[11px] text-text-muted tnum">{shortTime(visit.end_time)}</span>
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
@@ -79,11 +73,7 @@ export function MobileVisitCard({
               <span className="truncate">{address}</span>
             </p>
           )}
-          {visit.note && (
-            <p className="mt-1 text-xs text-text-secondary truncate">
-              {visit.note}
-            </p>
-          )}
+          {visit.note && <p className="mt-1 text-xs text-text-secondary truncate">{visit.note}</p>}
         </div>
         <ChevronRight className="h-4 w-4 shrink-0 text-text-muted" />
       </Card>

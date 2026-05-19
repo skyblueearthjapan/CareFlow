@@ -51,9 +51,7 @@ _ALLOWED_ROLES = {"admin", "manager", "staff"}
 
 def _require_dashboard_role(role: str) -> None:
     if role not in _ALLOWED_ROLES:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role"
-        )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
 
 
 def _staff_scope(stmt, role: str, staff_id: UUID | None):
@@ -165,9 +163,7 @@ async def get_kpi(db: DbDep, user: CurrentActiveUser) -> DashboardKpiResponse:
     # reflect operational visits only (consistent with today's KPI above).
     week_stmt = select(
         func.count(Visit.id).label("total"),
-        func.sum(case((Visit.status == VISIT_STATUS_COMPLETED, 1), else_=0)).label(
-            "completed"
-        ),
+        func.sum(case((Visit.status == VISIT_STATUS_COMPLETED, 1), else_=0)).label("completed"),
     ).where(
         Visit.deleted_at.is_(None),
         Visit.visit_date >= week_start,
@@ -211,12 +207,8 @@ async def get_trend(
         select(
             Visit.visit_date.label("d"),
             func.count(Visit.id).label("total"),
-            func.sum(case((Visit.status == VISIT_STATUS_COMPLETED, 1), else_=0)).label(
-                "completed"
-            ),
-            func.sum(case((Visit.primary_staff_id.is_(None), 1), else_=0)).label(
-                "unassigned"
-            ),
+            func.sum(case((Visit.status == VISIT_STATUS_COMPLETED, 1), else_=0)).label("completed"),
+            func.sum(case((Visit.primary_staff_id.is_(None), 1), else_=0)).label("unassigned"),
         )
         .where(
             Visit.deleted_at.is_(None),
@@ -234,28 +226,21 @@ async def get_trend(
     if scoped is None:
         # Staff with no linked staff_id → empty (but well-formed) series.
         items = [
-            DashboardTrendItem(
-                date=start + timedelta(days=i), total=0, completed=0, unassigned=0
-            )
+            DashboardTrendItem(date=start + timedelta(days=i), total=0, completed=0, unassigned=0)
             for i in range(days)
         ]
         return DashboardTrendResponse(items=items, days=days, start_date=start, end_date=end)
 
     rows = (await db.execute(scoped)).all()
     by_date = {
-        r.d: (int(r.total or 0), int(r.completed or 0), int(r.unassigned or 0))
-        for r in rows
+        r.d: (int(r.total or 0), int(r.completed or 0), int(r.unassigned or 0)) for r in rows
     }
     items: list[DashboardTrendItem] = []
     for i in range(days):
         d = start + timedelta(days=i)
         total, completed, unassigned = by_date.get(d, (0, 0, 0))
         items.append(
-            DashboardTrendItem(
-                date=d, total=total, completed=completed, unassigned=unassigned
-            )
+            DashboardTrendItem(date=d, total=total, completed=completed, unassigned=unassigned)
         )
 
-    return DashboardTrendResponse(
-        items=items, days=days, start_date=start, end_date=end
-    )
+    return DashboardTrendResponse(items=items, days=days, start_date=start, end_date=end)

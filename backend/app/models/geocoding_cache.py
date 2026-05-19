@@ -23,15 +23,11 @@ class GeocodingCache(Base, TimestampMixin):
     id: Mapped[uuid.UUID] = mapped_column(
         PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    address_hash: Mapped[str] = mapped_column(
-        String(64), unique=True, nullable=False
-    )
+    address_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     address: Mapped[str] = mapped_column(Text, nullable=False)
     lat: Mapped[float] = mapped_column(Numeric(10, 7), nullable=False)
     lng: Mapped[float] = mapped_column(Numeric(10, 7), nullable=False)
-    provider: Mapped[str] = mapped_column(
-        String(32), nullable=False, default="google"
-    )
+    provider: Mapped[str] = mapped_column(String(32), nullable=False, default="google")
     looked_up_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

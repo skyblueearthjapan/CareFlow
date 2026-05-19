@@ -35,8 +35,7 @@ export function MobileShell({ children }: MobileShellProps) {
           // Exact match OR a strict path-segment prefix (e.g. `/m/today/123`).
           // Avoid the loose `startsWith(href)` which would also match
           // `/m/home123` or `/m/todayspecial`.
-          const active =
-            pathname === href || pathname?.startsWith(`${href}/`);
+          const active = pathname === href || pathname?.startsWith(`${href}/`);
           return (
             <Link
               key={href}

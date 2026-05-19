@@ -53,8 +53,7 @@ interface ControlledProps extends CommonProps {
   lngFieldName?: never;
 }
 
-interface FormProps<TFieldValues extends Record<string, unknown>>
-  extends CommonProps {
+interface FormProps<TFieldValues extends Record<string, unknown>> extends CommonProps {
   mode: 'rhf';
   formMethods: UseFormReturn<TFieldValues>;
   addressFieldName: keyof TFieldValues & string;
@@ -113,11 +112,10 @@ export function AddressGeocodeField<
   const setLatValue = React.useCallback(
     (value: string) => {
       if (isRhf) {
-        formMethods!.setValue(
-          latFieldName as never,
-          value as never,
-          { shouldValidate: true, shouldDirty: true },
-        );
+        formMethods!.setValue(latFieldName as never, value as never, {
+          shouldValidate: true,
+          shouldDirty: true,
+        });
       } else {
         (props as ControlledProps).onLatChange(value);
       }
@@ -128,11 +126,10 @@ export function AddressGeocodeField<
   const setLngValue = React.useCallback(
     (value: string) => {
       if (isRhf) {
-        formMethods!.setValue(
-          lngFieldName as never,
-          value as never,
-          { shouldValidate: true, shouldDirty: true },
-        );
+        formMethods!.setValue(lngFieldName as never, value as never, {
+          shouldValidate: true,
+          shouldDirty: true,
+        });
       } else {
         (props as ControlledProps).onLngChange(value);
       }
@@ -143,11 +140,10 @@ export function AddressGeocodeField<
   const setAddressValue = React.useCallback(
     (value: string) => {
       if (isRhf) {
-        formMethods!.setValue(
-          addressFieldName as never,
-          value as never,
-          { shouldValidate: true, shouldDirty: true },
-        );
+        formMethods!.setValue(addressFieldName as never, value as never, {
+          shouldValidate: true,
+          shouldDirty: true,
+        });
       } else {
         (props as ControlledProps).onAddressChange(value);
       }
@@ -244,7 +240,7 @@ export function AddressGeocodeField<
         <button
           type="button"
           onClick={handleManualRefresh}
-          disabled={disabled || geoLoading || !(watchedAddress?.trim().length)}
+          disabled={disabled || geoLoading || !watchedAddress?.trim().length}
           className="rounded-md border border-border-default bg-bg-base px-3 py-1.5 text-xs text-text-primary hover:bg-bg-muted disabled:cursor-not-allowed disabled:opacity-50"
         >
           {geoLoading ? '取得中…' : '住所から緯度経度を再取得'}

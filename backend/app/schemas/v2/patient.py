@@ -66,7 +66,7 @@ def _validate_hhmm(value: str | None) -> str | None:
 
 
 class WeeklyPatternEntryV2(BaseModel):
-    """週間訪問パターンの 1 曜日エントリ (§3.3 / §4.1).
+    """希望訪問パターンの 1 曜日エントリ (§3.3 / §4.1).
 
     `weekly_pattern` JSONB は曜日キー → このエントリ の形を取る場合と、
     リスト形式 (`[{weekday, ...}]`) の場合の両方が運用上ありうる。
@@ -101,7 +101,7 @@ class WeeklyPatternEntryV2(BaseModel):
 
 
 class WeeklyPatternV2(BaseModel):
-    """患者の週間訪問パターン (§4.1 / §3.3).
+    """患者の希望訪問パターン (§4.1 / §3.3).
 
     JSONB として `patients.weekly_pattern` に保存される。
     通常パターンと特別週パターン (`special_weekly_pattern`) で同じ shape を共有。
@@ -203,7 +203,7 @@ class PatientV2Base(BaseModel):
         ),
     )
 
-    # 週間訪問パターン (§4.1 核)
+    # 希望訪問パターン (§4.1 核)
     weekly_pattern: WeeklyPatternV2 | None = Field(
         default=None,
         description="通常パターン (§3.4 / §4.1)",

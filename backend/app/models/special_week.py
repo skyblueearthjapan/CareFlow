@@ -9,7 +9,7 @@ REPLACE なら通常パターンを丸ごと置換する。
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, time, timezone
+from datetime import UTC, date, datetime, time
 
 from sqlalchemy import (
     Date,
@@ -52,10 +52,10 @@ class SpecialWeek(Base, TimestampMixin):
     registered_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
     )
 
-    items: Mapped[list["SpecialWeekItem"]] = relationship(
+    items: Mapped[list[SpecialWeekItem]] = relationship(
         "SpecialWeekItem",
         back_populates="special_week",
         cascade="all, delete-orphan",
@@ -89,9 +89,7 @@ class SpecialWeekItem(Base, TimestampMixin):
     visit_date: Mapped[date] = mapped_column(Date, nullable=False)
     weekday: Mapped[int] = mapped_column(SmallInteger, nullable=False)  # 0=Mon..6=Sun
     row_label: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    time_type: Mapped[str] = mapped_column(
-        String(16), nullable=False, default="時間帯"
-    )
+    time_type: Mapped[str] = mapped_column(String(16), nullable=False, default="時間帯")
     start_time: Mapped[time | None] = mapped_column(Time, nullable=True)
     end_time: Mapped[time | None] = mapped_column(Time, nullable=True)
     preferred_earliest: Mapped[time | None] = mapped_column(Time, nullable=True)
@@ -103,9 +101,7 @@ class SpecialWeekItem(Base, TimestampMixin):
     )  # merge / override / ignore
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    special_week: Mapped["SpecialWeek"] = relationship(
-        "SpecialWeek", back_populates="items"
-    )
+    special_week: Mapped[SpecialWeek] = relationship("SpecialWeek", back_populates="items")
 
     __table_args__ = (
         Index("ix_special_week_items_week_date", "special_week_id", "visit_date"),

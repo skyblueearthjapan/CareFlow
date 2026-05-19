@@ -7,7 +7,7 @@ from uuid import uuid4
 import pytest
 
 from app.core.security import create_access_token, hash_password
-from app.models import Office, User
+from app.models import User
 
 
 async def _make_user(db, email: str, role: str) -> User:
@@ -38,9 +38,7 @@ async def test_offices_list_admin_returns_200(client, db) -> None:
 @pytest.mark.asyncio
 async def test_offices_get_unknown_returns_404(client, db) -> None:
     admin = await _make_user(db, "o-admin2@example.com", "admin")
-    res = await client.get(
-        f"/api/v1/offices/{uuid4()}", headers=_bearer(admin)
-    )
+    res = await client.get(f"/api/v1/offices/{uuid4()}", headers=_bearer(admin))
     assert res.status_code == 404, res.text
 
 

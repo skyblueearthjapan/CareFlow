@@ -22,6 +22,7 @@ from app.middleware.audit import _persist_async
 @pytest.mark.asyncio
 async def test_persist_swallows_programming_error_with_schema_hint(caplog) -> None:
     """ProgrammingError → WARN with the migration hint, never raised."""
+
     async def _boom(*_a, **_kw):
         raise ProgrammingError("INSERT", {}, Exception("undefined column"))
 
@@ -38,6 +39,7 @@ async def test_persist_swallows_programming_error_with_schema_hint(caplog) -> No
 @pytest.mark.asyncio
 async def test_persist_swallows_unexpected_errors(caplog) -> None:
     """Anything else still falls through the broad except — never raised."""
+
     async def _boom(*_a, **_kw):
         raise RuntimeError("kapow")
 
@@ -45,9 +47,7 @@ async def test_persist_swallows_unexpected_errors(caplog) -> None:
         with caplog.at_level("ERROR", logger="app.middleware.audit"):
             await _persist_async({"action": "POST"})
 
-    assert any(
-        "persist failed" in rec.getMessage() for rec in caplog.records
-    )
+    assert any("persist failed" in rec.getMessage() for rec in caplog.records)
 
 
 @pytest.mark.asyncio
