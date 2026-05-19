@@ -104,6 +104,20 @@ def _read_uuid(value: Any) -> UUID | None:
     return UUID(str(value).strip())
 
 
+def _read_bool(value: Any) -> bool | None:
+    """TRUE/FALSE → bool. Phase E-7 (gap P0-1) requires_multiple_staff 用."""
+    if _is_blank(value):
+        return None
+    if isinstance(value, bool):
+        return value
+    s = str(value).strip().upper()
+    if s in ("TRUE", "1", "YES", "Y"):
+        return True
+    if s in ("FALSE", "0", "NO", "N"):
+        return False
+    raise ValueError(f"bool として読めません: {value!r}")
+
+
 def _read_hhmm(value: Any) -> str | None:
     if _is_blank(value):
         return None
@@ -275,6 +289,17 @@ def _parse_patient_row_replace(
         else:
             parsed["primary_office_id"] = office.id
 
+    # Phase E-7 (gap P0-1): requires_multiple_staff. NOT NULL bool 列.
+    # 完全置換セマンティクスでは空セル = False で確定上書き.
+    raw_req_multi = cells["requires_multiple_staff"]
+    if _is_blank(raw_req_multi):
+        parsed["requires_multiple_staff"] = False
+    else:
+        try:
+            parsed["requires_multiple_staff"] = _read_bool(raw_req_multi)
+        except ValueError as exc:
+            errors.append(f"列「requires_multiple_staff」が TRUE/FALSE ではありません: {exc}")
+
     if errors:
         return (
             PatientExcelImportRow(
@@ -316,6 +341,8 @@ def _parse_patient_row_replace(
         "lng": "lng",
         "primary_office_id": "primary_office_id",
         "sex_restriction": "sex_restriction",
+        # Phase E-7 (gap P0-1): NOT NULL bool 列. 完全置換では空セル=False.
+        "requires_multiple_staff": "requires_multiple_staff",
         "note": "note",
     }
 

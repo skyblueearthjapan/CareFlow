@@ -194,6 +194,8 @@ async def test_export_empty_db_returns_template_only(client, db) -> None:
     ws = wb[SHEET_PATIENTS]
     # ヘッダー 1 行のみ (max_row が 1 になることを許容)
     assert ws.max_row == 1
+    # Phase E-7 (gap P2): クロスオフィス warning が 0 件でも response header を返す.
+    assert res.headers.get("X-Excel-Crossoffice-Warnings-Count") == "0"
 
 
 @pytest.mark.asyncio
@@ -1762,3 +1764,149 @@ async def test_patient_export_then_import_clean_data_full_noop_round_trip(client
     assert summary["pfv_error"] == 0, body
     assert summary["pfv_update"] == 0, body
     assert summary["pfv_noop"] == 1, body
+
+
+# ---------------------------------------------------------------------------
+# Phase E-7 (gap P0-1): Patient.requires_multiple_staff Excel 往復
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_export_writes_requires_multiple_staff_true(client, db) -> None:
+    """requires_multiple_staff=True の患者を export すると列に "TRUE" が入る."""
+    admin = await _make_user(db, "ex-rms-t@example.com", "admin")
+    await _make_patient(
+        db, code="P-RMS-T", name="複数必須", status="active", requires_multiple_staff=True
+    )
+    res = await client.get("/api/v1/patients/import-export/export", headers=_bearer(admin))
+    assert res.status_code == 200
+    wb = load_workbook(BytesIO(res.content))
+    ws = wb[SHEET_PATIENTS]
+    val = ws.cell(row=2, column=PATIENT_COL_INDEX["requires_multiple_staff"] + 1).value
+    assert val == "TRUE"
+
+
+@pytest.mark.asyncio
+async def test_export_writes_requires_multiple_staff_false(client, db) -> None:
+    """requires_multiple_staff=False の患者を export すると列に "FALSE" が入る."""
+    admin = await _make_user(db, "ex-rms-f@example.com", "admin")
+    await _make_patient(
+        db, code="P-RMS-F", name="単独可", status="active", requires_multiple_staff=False
+    )
+    res = await client.get("/api/v1/patients/import-export/export", headers=_bearer(admin))
+    assert res.status_code == 200
+    wb = load_workbook(BytesIO(res.content))
+    ws = wb[SHEET_PATIENTS]
+    val = ws.cell(row=2, column=PATIENT_COL_INDEX["requires_multiple_staff"] + 1).value
+    assert val == "FALSE"
+
+
+@pytest.mark.asyncio
+async def test_import_new_patient_with_requires_multiple_staff_true(client, db) -> None:
+    """新規患者の requires_multiple_staff=TRUE が DB に保存される."""
+    admin = await _make_user(db, "im-rms-new@example.com", "admin")
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                "patient_code": "P-NEW-RMS",
+                "name": "新規複数必須",
+                "sex": "female",
+                "status": "active",
+                "address": "千葉市稲毛区",
+                "requires_multiple_staff": "TRUE",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    db.expire_all()
+    p = (await db.scalars(select(Patient).where(Patient.code == "P-NEW-RMS"))).first()
+    assert p is not None
+    assert p.requires_multiple_staff is True
+
+
+@pytest.mark.asyncio
+async def test_import_update_existing_requires_multiple_staff(client, db) -> None:
+    """既存患者の requires_multiple_staff を TRUE → FALSE に変更."""
+    admin = await _make_user(db, "im-rms-upd@example.com", "admin")
+    p = await _make_patient(
+        db, code="P-RMS-UPD", name="切替対象", status="active", requires_multiple_staff=True
+    )
+    pid = p.id
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                "patient_id": str(pid),
+                "patient_code": "P-RMS-UPD",
+                "requires_multiple_staff": "FALSE",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["summary"]["patients_update"] == 1
+    db.expire_all()
+    p_after = (await db.scalars(select(Patient).where(Patient.id == pid))).first()
+    assert p_after is not None
+    assert p_after.requires_multiple_staff is False
+
+
+@pytest.mark.asyncio
+async def test_roundtrip_requires_multiple_staff(client, db) -> None:
+    """export → import で requires_multiple_staff が保持される."""
+    admin = await _make_user(db, "rt-rms@example.com", "admin")
+    p = await _make_patient(
+        db, code="P-RT-RMS", name="往復対象", status="active", requires_multiple_staff=True
+    )
+    pid = p.id
+    # export
+    export_res = await client.get("/api/v1/patients/import-export/export", headers=_bearer(admin))
+    assert export_res.status_code == 200
+    files = {
+        "file": (
+            "export.xlsx",
+            export_res.content,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
+    # そのまま再 import
+    import_res = await client.post(
+        "/api/v1/patients/import-export/import?dry_run=false",
+        headers=_bearer(admin),
+        files=files,
+    )
+    assert import_res.status_code == 200, import_res.text
+    body = import_res.json()
+    assert body["summary"]["patients_error"] == 0
+    db.expire_all()
+    p_after = (await db.scalars(select(Patient).where(Patient.id == pid))).first()
+    assert p_after is not None
+    assert p_after.requires_multiple_staff is True  # 保持
+
+
+@pytest.mark.asyncio
+async def test_import_blank_requires_multiple_staff_preserves_existing(client, db) -> None:
+    """既存患者の更新で requires_multiple_staff を空セルにすると値が維持される (通常 import)."""
+    admin = await _make_user(db, "im-rms-blank@example.com", "admin")
+    p = await _make_patient(
+        db, code="P-RMS-BLANK", name="維持対象", status="active", requires_multiple_staff=True
+    )
+    pid = p.id
+    # name を変更するが requires_multiple_staff は空セル
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                "patient_id": str(pid),
+                "patient_code": "P-RMS-BLANK",
+                "name": "新名前",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200
+    db.expire_all()
+    p_after = (await db.scalars(select(Patient).where(Patient.id == pid))).first()
+    assert p_after is not None
+    assert p_after.name == "新名前"
+    assert p_after.requires_multiple_staff is True  # 維持された

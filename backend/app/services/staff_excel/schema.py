@@ -66,6 +66,11 @@ DELETE_FLAG_VALUES: Final[tuple[str, ...]] = (MAGIC_DELETE,)
 
 SHEET_STAFF: Final = "スタッフマスタ"
 SHEET_SHIFT: Final = "勤務シフト"
+# Phase E-7 (gap P1): StaffWeeklyOverride を扱う新シート.
+SHEET_OVERRIDE: Final = "勤務例外"
+
+# Phase E-7 (gap P1): StaffWeeklyOverride.override_type の dropdown 値.
+OVERRIDE_TYPE_VALUES: Final[tuple[str, ...]] = ("off", "custom_time")
 
 # 列定義: (key, header, width, dropdown_values).
 # key は内部識別子. header は実際の Excel ヘッダー文字列.
@@ -79,6 +84,16 @@ STAFF_COLUMNS: Final[list[dict[str, object]]] = [
     {"key": "status", "header": "ステータス", "width": 12, "dropdown": STATUS_VALUES},
     {"key": "role", "header": "ロール", "width": 12, "dropdown": ROLE_VALUES},
     {"key": "office_code", "header": "拠点コード", "width": 12, "dropdown": OFFICE_CODE_VALUES},
+    # Phase E-7 (gap P0-2): staff.secondary_offices (StaffSecondaryOffice relationship)
+    # を Excel で扱えるようにする. カンマ区切りの office.code 列挙
+    # (例: "INAGE,TSUGA"). 空セル = 関連解除 (= 完全置換). dropdown は値が複数
+    # 入る可能性があるため設定しない.
+    {
+        "key": "secondary_office_codes",
+        "header": "サブ拠点コード (カンマ区切り, 解除は <CLEAR>)",
+        "width": 32,
+        "dropdown": None,
+    },
     {"key": "is_trainee", "header": "新人フラグ", "width": 12, "dropdown": BOOL_VALUES},
     {"key": "note", "header": "備考", "width": 30, "dropdown": None},
     {"key": "delete_flag", "header": "(削除フラグ)", "width": 14, "dropdown": DELETE_FLAG_VALUES},
@@ -111,6 +126,38 @@ SHIFT_COLUMNS: Final[list[dict[str, object]]] = [
 ]
 
 SHIFT_COL_INDEX: Final[dict[str, int]] = {str(col["key"]): i for i, col in enumerate(SHIFT_COLUMNS)}
+
+
+# ---------------------------------------------------------------------------
+# シート 3: 勤務例外 (StaffWeeklyOverride) — Phase E-7 (gap P1)
+# ---------------------------------------------------------------------------
+#
+# StaffWeeklyOverride モデルの 1 行 1 レコード対応. UNIQUE key は
+# (staff_id, iso_year, iso_week, weekday). UI で「特定週の指定日 = 休み or 時間変更」
+# を表現する. Excel から往復させる事でバックアップ運用品質を担保する.
+
+OVERRIDE_COLUMNS: Final[list[dict[str, object]]] = [
+    {"key": "staff_id", "header": "staff_id", "width": 38, "dropdown": None},
+    {"key": "staff_code", "header": "staff_code", "width": 14, "dropdown": None},
+    {"key": "staff_name", "header": "staff_name", "width": 18, "dropdown": None},
+    {"key": "iso_year", "header": "iso_year", "width": 10, "dropdown": None},
+    {"key": "iso_week", "header": "iso_week", "width": 10, "dropdown": None},
+    {"key": "weekday", "header": "曜日", "width": 8, "dropdown": WEEKDAY_LABELS},
+    {
+        "key": "override_type",
+        "header": "種別",
+        "width": 14,
+        "dropdown": OVERRIDE_TYPE_VALUES,
+    },
+    {"key": "start_time", "header": "開始時刻", "width": 12, "dropdown": None},
+    {"key": "end_time", "header": "終了時刻", "width": 12, "dropdown": None},
+    {"key": "reason", "header": "理由", "width": 30, "dropdown": None},
+    {"key": "delete_flag", "header": "(削除フラグ)", "width": 14, "dropdown": DELETE_FLAG_VALUES},
+]
+
+OVERRIDE_COL_INDEX: Final[dict[str, int]] = {
+    str(col["key"]): i for i, col in enumerate(OVERRIDE_COLUMNS)
+}
 
 
 # ---------------------------------------------------------------------------

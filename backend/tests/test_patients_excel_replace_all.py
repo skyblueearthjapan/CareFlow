@@ -719,3 +719,127 @@ async def test_replace_all_export_then_import_round_trip_completes_without_error
     # PFV は全件再投入される. 既存 2 件 / 再投入 2 件.
     assert summary["pfv_to_replace"] == 2, body
     assert summary["pfv_to_create"] == 2, body
+
+
+# ---------------------------------------------------------------------------
+# Phase E-7 (gap P0-1): requires_multiple_staff replace-all 往復
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_replace_all_roundtrip_requires_multiple_staff(client, db) -> None:
+    """replace-all セマンティクスでも requires_multiple_staff が保持される."""
+    admin = await _make_user(db, "ra-rms@example.com", "admin")
+    p = await _make_patient(
+        db,
+        code="P-RA-RMS",
+        name="複数必須",
+        status="active",
+        address="千葉市稲毛区",
+        requires_multiple_staff=True,
+    )
+    pid = p.id
+    # export → そのまま replace-all で再 import
+    export_res = await client.get("/api/v1/patients/import-export/export", headers=_bearer(admin))
+    files = {
+        "file": (
+            "export.xlsx",
+            export_res.content,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
+    res = await client.post(
+        "/api/v1/patients/import-export/replace-all?dry_run=false",
+        headers=_bearer(admin),
+        files=files,
+    )
+    assert res.status_code == 200, res.text
+    db.expire_all()
+    p_after = (await db.scalars(select(Patient).where(Patient.id == pid))).first()
+    assert p_after is not None
+    assert p_after.requires_multiple_staff is True
+
+
+# ---------------------------------------------------------------------------
+# Phase E-7 (gap P2): クロスオフィス course_template warning
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_export_crossoffice_course_template_emits_warning(client, db, caplog) -> None:
+    """異なる拠点の course_template を持つ PFV を export すると logger.warning が出る."""
+    import logging as _logging
+
+    admin = await _make_user(db, "ex-co-warn@example.com", "admin")
+    office_inage = await _make_office(db, code="INAGE", name="稲毛")
+    office_tsuga = await _make_office(db, code="TSUGA", name="都賀")
+    # patient は INAGE 所属
+    p = await _make_patient(
+        db,
+        code="P-CO-WARN",
+        name="クロスオフィス対象",
+        status="active",
+        address="千葉市稲毛区",
+        primary_office_id=office_inage.id,
+    )
+    # course_template は TSUGA 拠点 → クロスオフィス参照
+    ct_tsuga = CourseTemplate(office_id=office_tsuga.id, label="X")
+    db.add(ct_tsuga)
+    await db.commit()
+    await db.refresh(ct_tsuga)
+    await _make_pfv(db, patient_id=p.id, weekday=0, course_template_id=ct_tsuga.id)
+
+    # caplog で warning を捕捉
+    with caplog.at_level(_logging.WARNING, logger="app.services.patient_excel.exporter"):
+        export_res = await client.get(
+            "/api/v1/patients/import-export/export", headers=_bearer(admin)
+        )
+    assert export_res.status_code == 200
+    # warning が 1 件以上出ていること.
+    warning_msgs = [r.message for r in caplog.records if r.levelno == _logging.WARNING]
+    assert any("クロスオフィス" in m for m in warning_msgs), warning_msgs
+    # Phase E-7 (gap P2): response header にクロスオフィス warning 件数が出る.
+    # operator が export 結果から気付けるように常に header を返す.
+    assert "X-Excel-Crossoffice-Warnings-Count" in export_res.headers
+    assert int(export_res.headers["X-Excel-Crossoffice-Warnings-Count"]) >= 1
+
+
+@pytest.mark.asyncio
+async def test_export_crossoffice_roundtrip_zero_error(client, db) -> None:
+    """クロスオフィス参照があっても round-trip 0 エラー仕様は維持される (warning のみ)."""
+    admin = await _make_user(db, "ex-co-rt@example.com", "admin")
+    office_inage = await _make_office(db, code="INAGE", name="稲毛")
+    office_tsuga = await _make_office(db, code="TSUGA", name="都賀")
+    p = await _make_patient(
+        db,
+        code="P-CO-RT",
+        name="クロスオフィス往復",
+        status="active",
+        address="千葉市稲毛区",
+        primary_office_id=office_inage.id,
+    )
+    ct_tsuga = CourseTemplate(office_id=office_tsuga.id, label="Y")
+    db.add(ct_tsuga)
+    await db.commit()
+    await db.refresh(ct_tsuga)
+    await _make_pfv(db, patient_id=p.id, weekday=0, course_template_id=ct_tsuga.id)
+
+    export_res = await client.get("/api/v1/patients/import-export/export", headers=_bearer(admin))
+    assert export_res.status_code == 200
+    files = {
+        "file": (
+            "export.xlsx",
+            export_res.content,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
+    # 通常 import で round-trip — error が 0 件であることを確認.
+    import_res = await client.post(
+        "/api/v1/patients/import-export/import?dry_run=true",
+        headers=_bearer(admin),
+        files=files,
+    )
+    assert import_res.status_code == 200, import_res.text
+    body = import_res.json()
+    assert body["summary"]["patients_error"] == 0, body
+    assert body["summary"]["pfv_error"] == 0, body

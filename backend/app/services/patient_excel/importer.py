@@ -110,6 +110,24 @@ def _read_uuid(value: Any) -> UUID | None:
     return UUID(str(value).strip())
 
 
+def _read_bool(value: Any) -> bool | None:
+    """TRUE/FALSE (case-insensitive) を bool に正規化. 失敗時は ValueError.
+
+    Phase E-7 (gap P0-1): requires_multiple_staff 用. staff_excel/importer の
+    同名関数と完全に同じ仕様.
+    """
+    if _is_blank(value):
+        return None
+    if isinstance(value, bool):
+        return value
+    s = str(value).strip().upper()
+    if s in ("TRUE", "1", "YES", "Y"):
+        return True
+    if s in ("FALSE", "0", "NO", "N"):
+        return False
+    raise ValueError(f"bool として読めません: {value!r}")
+
+
 def _read_hhmm(value: Any) -> str | None:
     """セル値を "HH:MM" 文字列として正規化. 失敗時は ValueError."""
     if _is_blank(value):
@@ -410,6 +428,21 @@ def _parse_patient_row(
         else:
             parsed["primary_office_id"] = ("SET", office.id)
 
+    # Phase E-7 (gap P0-1): requires_multiple_staff. NOT NULL bool.
+    # 空セル = 触らない (更新時) / default False (新規時). CLEAR は False と等価.
+    raw_req_multi = cells["requires_multiple_staff"]
+    if _is_blank(raw_req_multi):
+        parsed["requires_multiple_staff"] = None
+    elif is_magic_clear(raw_req_multi):
+        parsed["requires_multiple_staff"] = ("SET", False)
+    else:
+        try:
+            rm = _read_bool(raw_req_multi)
+        except ValueError as exc:
+            errors.append(f"列「requires_multiple_staff」が TRUE/FALSE ではありません: {exc}")
+        else:
+            parsed["requires_multiple_staff"] = ("SET", rm)
+
     if errors:
         return (
             PatientExcelImportRow(
@@ -513,6 +546,8 @@ def _parse_patient_row(
                 "lng": "lng",
                 "primary_office_id": "primary_office_id",
                 "sex_restriction": "sex_restriction",
+                # Phase E-7 (gap P0-1): NOT NULL bool 列.
+                "requires_multiple_staff": "requires_multiple_staff",
                 "note": "note",
             }
             for parsed_key, orm_attr in field_map_resurrect.items():
@@ -637,6 +672,8 @@ def _parse_patient_row(
         "lng": "lng",
         "primary_office_id": "primary_office_id",
         "sex_restriction": "sex_restriction",
+        # Phase E-7 (gap P0-1): NOT NULL bool 列.
+        "requires_multiple_staff": "requires_multiple_staff",
         "note": "note",
     }
     for parsed_key, orm_attr in field_map.items():

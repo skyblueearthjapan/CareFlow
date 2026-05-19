@@ -11,6 +11,7 @@ openpyxl で 2 シート構成のワークブックを組み立てる:
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from datetime import time
 from io import BytesIO
@@ -44,6 +45,8 @@ from app.services.patient_excel.schema import (
     SHEET_PFV,
     WEEKDAY_INT_TO_LABEL,
 )
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -175,6 +178,9 @@ def _write_patient_row(
         "lng": float(patient.lng) if patient.lng is not None else None,
         "office_code": code or None,
         "sex_restriction": patient.sex_restriction,
+        # Phase E-7 (gap P0-1): requires_multiple_staff を TRUE/FALSE で書き出す.
+        # NOT NULL bool 列なのでデフォルト False で必ず値が入る.
+        "requires_multiple_staff": "TRUE" if patient.requires_multiple_staff else "FALSE",
         "note": patient.note,
         "delete_flag": None,
     }
@@ -203,6 +209,7 @@ def _write_pfv_row(
     patient_lookup: dict[UUID, Patient],
     course_template_by_id: dict[UUID, CourseTemplate],
     office_code_by_id: dict[UUID, str] | None = None,
+    crossoffice_warnings: list[str] | None = None,
 ) -> None:
     p = patient_lookup.get(pfv.patient_id)
     # course_template_code は患者の primary_office に存在する CourseTemplate のラベルのみ
@@ -219,6 +226,19 @@ def _write_pfv_row(
             # 取り込まれる (PFV 自体は保持される).
             if p is not None and p.primary_office_id == ct.office_id:
                 code_label = ct.label
+            else:
+                # Phase E-7 (gap P2): クロスオフィス参照を warning として収集.
+                # サイレントに空欄化すると import で course_template binding が
+                # 喪失することに気付けないため、export 時点で warning を残す.
+                msg = (
+                    f"PFV クロスオフィス course_template 参照 (row={row_idx}): "
+                    f"patient_id={pfv.patient_id} primary_office={p.primary_office_id if p else None}, "
+                    f"template_office={ct.office_id} ({ct.label}) — Excel は空欄化, "
+                    "import で binding が喪失します"
+                )
+                logger.warning(msg)
+                if crossoffice_warnings is not None:
+                    crossoffice_warnings.append(msg)
     start_hhmm = _hhmm(pfv.start_time) or ""
     end_hhmm = _end_time(pfv.start_time, pfv.duration_min) if pfv.start_time else ""
     # time_type は patient.weekly_pattern から導く。該当エントリが無い場合は
@@ -280,10 +300,17 @@ def build_workbook(
     pfvs: Sequence[PatientFixedVisit],
     offices: Sequence[Office],
     course_templates: Sequence[CourseTemplate],
+    crossoffice_warnings_out: list[str] | None = None,
 ) -> Workbook:
     """テンプレート + データ込みのワークブックを構築する.
 
     ``patients`` を空 list で呼べばテンプレート (ヘッダー + dropdown のみ) になる.
+
+    Phase E-7 (gap P2): ``crossoffice_warnings_out`` が渡された場合、PFV のクロス
+    オフィス course_template 参照 (患者拠点と template 拠点が一致しない参照) の
+    warning メッセージを append する. 呼び出し側 (API endpoint) は件数を response
+    header (X-Excel-Crossoffice-Warnings-Count) として返し、operator が export 結果
+    から気付けるようにする.
     """
     wb = Workbook()
     # default のシートを 1 枚目として使う
@@ -314,6 +341,13 @@ def build_workbook(
     # _write_pfv_row 内で「patient.primary_office と template.office_id が一致するか」を
     # 確認し、不一致 (クロスオフィス参照) なら label を書き出さない。
     course_template_by_id: dict[UUID, CourseTemplate] = {ct.id: ct for ct in course_templates}
+    # Phase E-7 (gap P2): クロスオフィス参照 warning 収集用. build_workbook 自身は
+    # warning を返さないが、logger.warning で必ず出力される. ``crossoffice_warnings_out``
+    # を呼び出し側が渡した場合はそこにも append し、API endpoint から response header に
+    # 件数を出して operator が気付けるようにする.
+    crossoffice_warnings: list[str] = (
+        crossoffice_warnings_out if crossoffice_warnings_out is not None else []
+    )
     for i, pfv in enumerate(pfvs, start=2):
         _write_pfv_row(
             ws_f,
@@ -323,8 +357,16 @@ def build_workbook(
             course_template_by_id=course_template_by_id,
             # Phase E-5: sub_office_id → コード解決用 (患者シートと共用).
             office_code_by_id=office_code_by_id,
+            crossoffice_warnings=crossoffice_warnings,
         )
     _shade_id_column_data_rows(ws_f, "patient_id", PFV_COLUMNS, data_row_count=len(pfvs))
+
+    if crossoffice_warnings:
+        logger.warning(
+            "patient_excel export: クロスオフィス course_template 参照を %d 件 "
+            "空欄化しました. 再 import 時に course_template binding が喪失します.",
+            len(crossoffice_warnings),
+        )
 
     return wb
 

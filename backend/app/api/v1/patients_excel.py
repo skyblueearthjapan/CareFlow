@@ -124,18 +124,25 @@ async def export_all(
         await db.scalars(select(CourseTemplate).where(CourseTemplate.deleted_at.is_(None)))
     ).all()
 
+    # Phase E-7 (gap P2): クロスオフィス course_template 参照 warning を収集し、
+    # response header (X-Excel-Crossoffice-Warnings-Count) で operator が気付ける
+    # ようにする. 0 件でも常に header を返す.
+    crossoffice_warnings: list[str] = []
     wb = build_workbook(
         patients=list(patients),
         pfvs=list(pfvs),
         offices=list(offices),
         course_templates=list(course_templates),
+        crossoffice_warnings_out=crossoffice_warnings,
     )
     content = workbook_to_bytes(wb)
     ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+    headers = _attachment_headers(f"patients_master_{ts}.xlsx")
+    headers["X-Excel-Crossoffice-Warnings-Count"] = str(len(crossoffice_warnings))
     return Response(
         content=content,
         media_type=EXCEL_MIME,
-        headers=_attachment_headers(f"patients_master_{ts}.xlsx"),
+        headers=headers,
     )
 
 

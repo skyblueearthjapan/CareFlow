@@ -52,6 +52,25 @@ class ShiftExcelImportRow(BaseModel):
     error_message: str | None = Field(default=None)
 
 
+class OverrideExcelImportRow(BaseModel):
+    """Phase E-7 (gap P1): 勤務例外シートの 1 行の処理結果.
+
+    StaffWeeklyOverride 1 件に対応. UNIQUE key (staff_id, iso_year, iso_week, weekday).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    row_number: int
+    staff_id: UUID | None = Field(default=None)
+    staff_code: str | None = Field(default=None)
+    iso_year: int | None = Field(default=None)
+    iso_week: int | None = Field(default=None)
+    weekday: int | None = Field(default=None, ge=0, le=6)
+    operation: ImportOperation
+    changes: list[StaffExcelChange] = Field(default_factory=list)
+    error_message: str | None = Field(default=None)
+
+
 class StaffExcelImportSummary(BaseModel):
     """集計 (UI で件数バッジ表示用)."""
 
@@ -67,6 +86,12 @@ class StaffExcelImportSummary(BaseModel):
     shift_delete: int = 0
     shift_error: int = 0
     shift_noop: int = 0
+    # Phase E-7 (gap P1): 勤務例外シート集計.
+    override_new: int = 0
+    override_update: int = 0
+    override_delete: int = 0
+    override_error: int = 0
+    override_noop: int = 0
 
 
 class StaffExcelImportResponse(BaseModel):
@@ -77,6 +102,9 @@ class StaffExcelImportResponse(BaseModel):
     summary: StaffExcelImportSummary
     staff_rows: list[StaffExcelImportRow]
     shift_rows: list[ShiftExcelImportRow]
+    # Phase E-7 (gap P1): 勤務例外シートの per-row 結果. 古い Excel (シート未存在)
+    # でも default_factory=[] で互換性を保つ.
+    override_rows: list[OverrideExcelImportRow] = Field(default_factory=list)
     transaction_applied: bool = Field(
         description=(
             "True なら DB に反映済 (partial commit). "
@@ -105,6 +133,10 @@ class StaffExcelReplaceAllSummary(BaseModel):
     shift_to_replace: int = 0  # 全件物理削除する既存 shift の件数
     shift_to_create: int = 0  # Excel から再投入する shift の件数
     shift_error: int = 0
+    # Phase E-7 (gap P1): 勤務例外シート集計.
+    override_to_replace: int = 0
+    override_to_create: int = 0
+    override_error: int = 0
 
 
 class StaffExcelReplaceAllResponse(BaseModel):
@@ -115,6 +147,8 @@ class StaffExcelReplaceAllResponse(BaseModel):
     summary: StaffExcelReplaceAllSummary
     staff_rows: list[StaffExcelImportRow]
     shift_rows: list[ShiftExcelImportRow]
+    # Phase E-7 (gap P1): 勤務例外シート per-row 結果.
+    override_rows: list[OverrideExcelImportRow] = Field(default_factory=list)
     transaction_applied: bool = Field(
         description=(
             "True なら DB に反映済 (atomic). "

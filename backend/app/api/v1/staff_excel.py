@@ -22,7 +22,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.core.deps import DbDep, require_role
 from app.models.office import Office
-from app.models.staff import Staff, StaffShift
+from app.models.staff import Staff, StaffSecondaryOffice, StaffShift, StaffWeeklyOverride
 from app.models.user import User
 from app.schemas.v2.staff_excel import (
     StaffExcelImportResponse,
@@ -97,19 +97,51 @@ async def export_all(
     staff_list = (
         await db.scalars(select(Staff).where(Staff.deleted_at.is_(None)).order_by(Staff.code))
     ).all()
+    staff_ids = [s.id for s in staff_list]
     shifts = (
         await db.scalars(
             select(StaffShift)
-            .where(StaffShift.staff_id.in_([s.id for s in staff_list]) if staff_list else False)
+            .where(StaffShift.staff_id.in_(staff_ids) if staff_ids else False)
             .order_by(StaffShift.staff_id, StaffShift.weekday)
         )
     ).all()
     offices = (await db.scalars(select(Office).where(Office.deleted_at.is_(None)))).all()
 
+    # Phase E-7 (gap P0-2): secondary_offices を Staff.id → [Office.id] map で precompute.
+    secondary_office_ids_by_staff: dict[UUID, list[UUID]] = {}
+    if staff_ids:
+        sec_rows = (
+            await db.scalars(
+                select(StaffSecondaryOffice).where(StaffSecondaryOffice.staff_id.in_(staff_ids))
+            )
+        ).all()
+        for r in sec_rows:
+            secondary_office_ids_by_staff.setdefault(r.staff_id, []).append(r.office_id)
+
+    # Phase E-7 (gap P1): StaffWeeklyOverride を bulk load.
+    overrides: list[StaffWeeklyOverride] = []
+    if staff_ids:
+        overrides = list(
+            (
+                await db.scalars(
+                    select(StaffWeeklyOverride)
+                    .where(StaffWeeklyOverride.staff_id.in_(staff_ids))
+                    .order_by(
+                        StaffWeeklyOverride.staff_id,
+                        StaffWeeklyOverride.iso_year,
+                        StaffWeeklyOverride.iso_week,
+                        StaffWeeklyOverride.weekday,
+                    )
+                )
+            ).all()
+        )
+
     wb = build_workbook(
         staff_list=list(staff_list),
         shifts=list(shifts),
         offices=list(offices),
+        secondary_office_ids_by_staff=secondary_office_ids_by_staff,
+        overrides=overrides,
     )
     content = workbook_to_bytes(wb)
     ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
@@ -150,7 +182,15 @@ async def import_excel(
         )
 
     try:
-        staff_rows, shift_rows, summary, staff_ops, shift_ops = await parse_and_diff(
+        (
+            staff_rows,
+            shift_rows,
+            summary,
+            staff_ops,
+            shift_ops,
+            override_rows,
+            override_ops,
+        ) = await parse_and_diff(
             db,
             file_bytes=content,
         )
@@ -168,18 +208,23 @@ async def import_excel(
     transaction_applied = False
     if not dry_run:
         # partial commit: error 行は skip、有効な op (new/update/delete) のみ apply.
-        # staff_ops / shift_ops は parse_and_diff の段階で error 行を除外済み
-        # (error は op=None を返すので *_ops に積まれない).
+        # staff_ops / shift_ops / override_ops は parse_and_diff の段階で error 行を除外済み.
         # 有効な op が 0 件 (全 error or 全 noop) の場合は commit せず False を返す.
-        if not staff_ops and not shift_ops:
+        if not staff_ops and not shift_ops and not override_ops:
             return StaffExcelImportResponse(
                 summary=summary,
                 staff_rows=staff_rows,
                 shift_rows=shift_rows,
+                override_rows=override_rows,
                 transaction_applied=False,
             )
         try:
-            await apply_changes(db, staff_ops=staff_ops, shift_ops=shift_ops)
+            await apply_changes(
+                db,
+                staff_ops=staff_ops,
+                shift_ops=shift_ops,
+                override_ops=override_ops,
+            )
             await db.commit()
             transaction_applied = True
         except IntegrityError as exc:
@@ -204,6 +249,7 @@ async def import_excel(
         summary=summary,
         staff_rows=staff_rows,
         shift_rows=shift_rows,
+        override_rows=override_rows,
         transaction_applied=transaction_applied,
     )
 
@@ -253,6 +299,8 @@ async def replace_all_endpoint(
             staff_ops,
             shift_ops,
             staff_to_soft_delete_preview,
+            override_rows,
+            override_ops,
         ) = await parse_and_diff_replace_all(db, file_bytes=content)
     except ValueError as exc:
         raise HTTPException(
@@ -267,13 +315,14 @@ async def replace_all_endpoint(
 
     transaction_applied = False
     if not dry_run:
-        if summary.staff_error > 0 or summary.shift_error > 0:
+        if summary.staff_error > 0 or summary.shift_error > 0 or summary.override_error > 0:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=(
                     f"エラー行があるため完全置換を中止しました "
                     f"(staff_error={summary.staff_error}, "
-                    f"shift_error={summary.shift_error})"
+                    f"shift_error={summary.shift_error}, "
+                    f"override_error={summary.override_error})"
                 ),
             )
         staff_ids_to_soft_delete = [UUID(s["staff_id"]) for s in staff_to_soft_delete_preview]
@@ -283,6 +332,7 @@ async def replace_all_endpoint(
                 staff_ops=staff_ops,
                 shift_ops=shift_ops,
                 staff_ids_to_soft_delete=staff_ids_to_soft_delete,
+                override_ops=override_ops,
             )
             await db.commit()
             transaction_applied = True
@@ -307,6 +357,7 @@ async def replace_all_endpoint(
         summary=summary,
         staff_rows=staff_rows,
         shift_rows=shift_rows,
+        override_rows=override_rows,
         transaction_applied=transaction_applied,
         staff_to_soft_delete_preview=staff_to_soft_delete_preview,
     )

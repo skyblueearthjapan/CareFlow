@@ -470,6 +470,12 @@ async def test_import_apply_mixed_operations(client, db) -> None:
         "shift_delete": 0,
         "shift_error": 0,
         "shift_noop": 0,
+        # Phase E-7 (gap P1): 勤務例外シート集計フィールド.
+        "override_new": 0,
+        "override_update": 0,
+        "override_delete": 0,
+        "override_error": 0,
+        "override_noop": 0,
     }
 
     db.expire_all()
@@ -1273,3 +1279,636 @@ async def test_resurrection_preserves_id(client, db) -> None:
     rows = (await db.scalars(select(Staff).where(Staff.code == "S-RES-ID"))).all()
     assert len(rows) == 1
     assert rows[0].id == original_id
+
+
+# ---------------------------------------------------------------------------
+# Phase E-7 (gap P0-2): Staff.secondary_offices Excel 往復
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_export_writes_secondary_office_codes(client, db) -> None:
+    """secondary_offices を持つ staff を export すると comma-separated に出力される."""
+    from app.models import StaffSecondaryOffice
+
+    admin = await _make_user(db, "ex-sec-w@example.com", "admin")
+    o_inage = await _make_office(db, code="INAGE")
+    o_tsuga = await _make_office(db, code="TSUGA")
+    s = await _make_staff(db, code="S-SEC-W", name="サブ持ち", primary_office_id=o_inage.id)
+    db.add(StaffSecondaryOffice(staff_id=s.id, office_id=o_tsuga.id))
+    await db.commit()
+
+    res = await client.get("/api/v1/staff/import-export/export", headers=_bearer(admin))
+    assert res.status_code == 200
+    wb = load_workbook(BytesIO(res.content))
+    ws = wb[SHEET_STAFF]
+    val = ws.cell(row=2, column=STAFF_COL_INDEX["secondary_office_codes"] + 1).value
+    assert val == "TSUGA"
+
+
+@pytest.mark.asyncio
+async def test_import_new_staff_with_secondary_offices(client, db) -> None:
+    """新規 staff の secondary_office_codes をカンマ区切りで投入 → relationship が作られる."""
+    from app.models import StaffSecondaryOffice
+
+    admin = await _make_user(db, "im-sec-new@example.com", "admin")
+    o_inage = await _make_office(db, code="INAGE")
+    o_tsuga = await _make_office(db, code="TSUGA")
+    inage_id = o_inage.id
+    tsuga_id = o_tsuga.id
+
+    content = _build_workbook_bytes(
+        staff_rows=[
+            {
+                "staff_code": "S-NEW-SEC",
+                "name": "新規サブ持ち",
+                "status": "active",
+                "role": "staff",
+                "office_code": "INAGE",
+                "secondary_office_codes": "TSUGA",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    db.expire_all()
+    s = (await db.scalars(select(Staff).where(Staff.code == "S-NEW-SEC"))).first()
+    assert s is not None
+    sec_rows = (
+        await db.scalars(select(StaffSecondaryOffice).where(StaffSecondaryOffice.staff_id == s.id))
+    ).all()
+    assert {r.office_id for r in sec_rows} == {tsuga_id}
+    _ = inage_id
+
+
+@pytest.mark.asyncio
+async def test_import_unknown_secondary_office_code_warning(client, db, caplog) -> None:
+    """不明な secondary_office_codes は warning + skip (error にしない)."""
+    import logging as _logging
+
+    from app.models import StaffSecondaryOffice
+
+    admin = await _make_user(db, "im-sec-warn@example.com", "admin")
+    o_inage = await _make_office(db, code="INAGE")
+    o_tsuga = await _make_office(db, code="TSUGA")
+    inage_id = o_inage.id
+    tsuga_id = o_tsuga.id
+
+    content = _build_workbook_bytes(
+        staff_rows=[
+            {
+                "staff_code": "S-SEC-WARN",
+                "name": "不明 code 混在",
+                "status": "active",
+                "role": "staff",
+                "office_code": "INAGE",
+                # NOTEXIST は不明 code → warning + skip, TSUGA だけ relation が作られる.
+                "secondary_office_codes": "NOTEXIST,TSUGA",
+            }
+        ],
+    )
+    with caplog.at_level(_logging.WARNING, logger="app.services.staff_excel.importer"):
+        res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    # error にはなっていない
+    body = res.json()
+    assert body["summary"]["staff_error"] == 0
+    # warning は出ている
+    warnings = [r.message for r in caplog.records if r.levelno == _logging.WARNING]
+    assert any("NOTEXIST" in m for m in warnings)
+    # DB には TSUGA だけ残る
+    db.expire_all()
+    s = (await db.scalars(select(Staff).where(Staff.code == "S-SEC-WARN"))).first()
+    sec_rows = (
+        await db.scalars(select(StaffSecondaryOffice).where(StaffSecondaryOffice.staff_id == s.id))
+    ).all()
+    assert {r.office_id for r in sec_rows} == {tsuga_id}
+    _ = inage_id
+
+
+@pytest.mark.asyncio
+async def test_roundtrip_secondary_offices(client, db) -> None:
+    """export → import で secondary_offices が保持される."""
+    from app.models import StaffSecondaryOffice
+
+    admin = await _make_user(db, "rt-sec@example.com", "admin")
+    o_inage = await _make_office(db, code="INAGE")
+    o_tsuga = await _make_office(db, code="TSUGA")
+    tsuga_id = o_tsuga.id
+    s = await _make_staff(db, code="S-RT-SEC", name="往復", primary_office_id=o_inage.id)
+    sid = s.id
+    db.add(StaffSecondaryOffice(staff_id=sid, office_id=tsuga_id))
+    await db.commit()
+
+    export_res = await client.get("/api/v1/staff/import-export/export", headers=_bearer(admin))
+    files = {
+        "file": (
+            "export.xlsx",
+            export_res.content,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
+    import_res = await client.post(
+        "/api/v1/staff/import-export/import?dry_run=false",
+        headers=_bearer(admin),
+        files=files,
+    )
+    assert import_res.status_code == 200, import_res.text
+    body = import_res.json()
+    assert body["summary"]["staff_error"] == 0
+    db.expire_all()
+    sec_rows = (
+        await db.scalars(select(StaffSecondaryOffice).where(StaffSecondaryOffice.staff_id == sid))
+    ).all()
+    assert {r.office_id for r in sec_rows} == {tsuga_id}
+
+
+# ---------------------------------------------------------------------------
+# Phase E-7 (gap P1): StaffWeeklyOverride Excel シート往復
+# ---------------------------------------------------------------------------
+
+
+def _override_headers() -> list[str]:
+    from app.services.staff_excel.schema import OVERRIDE_COLUMNS
+
+    return [str(c["header"]) for c in OVERRIDE_COLUMNS]
+
+
+def _build_workbook_with_overrides(
+    *,
+    staff_rows: list[dict] | None = None,
+    shift_rows: list[dict] | None = None,
+    override_rows: list[dict] | None = None,
+) -> bytes:
+    from app.services.staff_excel.schema import OVERRIDE_COL_INDEX, SHEET_OVERRIDE
+
+    wb = Workbook()
+    ws_s = wb.active
+    ws_s.title = SHEET_STAFF
+    for col_idx, header in enumerate(_staff_headers(), start=1):
+        ws_s.cell(row=1, column=col_idx, value=header)
+    for r_idx, row_dict in enumerate(staff_rows or [], start=2):
+        for col_key, idx in STAFF_COL_INDEX.items():
+            v = row_dict.get(col_key)
+            if v is not None:
+                ws_s.cell(row=r_idx, column=idx + 1, value=v)
+    ws_f = wb.create_sheet(title=SHEET_SHIFT)
+    for col_idx, header in enumerate(_shift_headers(), start=1):
+        ws_f.cell(row=1, column=col_idx, value=header)
+    for r_idx, row_dict in enumerate(shift_rows or [], start=2):
+        for col_key, idx in SHIFT_COL_INDEX.items():
+            v = row_dict.get(col_key)
+            if v is not None:
+                ws_f.cell(row=r_idx, column=idx + 1, value=v)
+    ws_o = wb.create_sheet(title=SHEET_OVERRIDE)
+    for col_idx, header in enumerate(_override_headers(), start=1):
+        ws_o.cell(row=1, column=col_idx, value=header)
+    for r_idx, row_dict in enumerate(override_rows or [], start=2):
+        for col_key, idx in OVERRIDE_COL_INDEX.items():
+            v = row_dict.get(col_key)
+            if v is not None:
+                ws_o.cell(row=r_idx, column=idx + 1, value=v)
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_export_writes_overrides_sheet(client, db) -> None:
+    """StaffWeeklyOverride を export すると勤務例外シートに書き出される."""
+    from app.models import StaffWeeklyOverride
+    from app.services.staff_excel.schema import OVERRIDE_COL_INDEX, SHEET_OVERRIDE
+
+    admin = await _make_user(db, "ex-ov@example.com", "admin")
+    s = await _make_staff(db, code="S-OV-EX", name="例外持ち")
+    db.add(
+        StaffWeeklyOverride(
+            staff_id=s.id,
+            iso_year=2026,
+            iso_week=20,
+            weekday=2,
+            override_type="off",
+            reason="私用",
+        )
+    )
+    await db.commit()
+
+    res = await client.get("/api/v1/staff/import-export/export", headers=_bearer(admin))
+    assert res.status_code == 200
+    wb = load_workbook(BytesIO(res.content))
+    assert SHEET_OVERRIDE in wb.sheetnames
+    ws_o = wb[SHEET_OVERRIDE]
+    assert ws_o.max_row == 2  # header + 1 data row
+    val_year = ws_o.cell(row=2, column=OVERRIDE_COL_INDEX["iso_year"] + 1).value
+    val_week = ws_o.cell(row=2, column=OVERRIDE_COL_INDEX["iso_week"] + 1).value
+    val_wd = ws_o.cell(row=2, column=OVERRIDE_COL_INDEX["weekday"] + 1).value
+    val_type = ws_o.cell(row=2, column=OVERRIDE_COL_INDEX["override_type"] + 1).value
+    assert val_year == 2026
+    assert val_week == 20
+    assert val_wd == "水"
+    assert val_type == "off"
+
+
+@pytest.mark.asyncio
+async def test_import_create_override(client, db) -> None:
+    """勤務例外シートから新規 override が INSERT される."""
+    from app.models import StaffWeeklyOverride
+
+    admin = await _make_user(db, "im-ov-new@example.com", "admin")
+    s = await _make_staff(db, code="S-OV-NEW", name="新規 override")
+    sid = s.id
+
+    content = _build_workbook_with_overrides(
+        override_rows=[
+            {
+                "staff_id": str(sid),
+                "iso_year": 2026,
+                "iso_week": 21,
+                "weekday": "金",
+                "override_type": "custom_time",
+                "start_time": "10:00",
+                "end_time": "16:00",
+                "reason": "通院",
+            }
+        ],
+    )
+    files = {
+        "file": (
+            "test.xlsx",
+            content,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
+    res = await client.post(
+        "/api/v1/staff/import-export/import?dry_run=false",
+        headers=_bearer(admin),
+        files=files,
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["summary"]["override_new"] == 1
+    db.expire_all()
+    ovs = (
+        await db.scalars(select(StaffWeeklyOverride).where(StaffWeeklyOverride.staff_id == sid))
+    ).all()
+    assert len(ovs) == 1
+    assert ovs[0].iso_year == 2026
+    assert ovs[0].iso_week == 21
+    assert ovs[0].weekday == 4  # 金
+    assert ovs[0].override_type == "custom_time"
+    assert ovs[0].start_time == time(10, 0)
+    assert ovs[0].end_time == time(16, 0)
+    assert ovs[0].reason == "通院"
+
+
+@pytest.mark.asyncio
+async def test_import_update_override(client, db) -> None:
+    """既存 override の reason を更新 (UNIQUE key で UPDATE が行われる)."""
+    from app.models import StaffWeeklyOverride
+
+    admin = await _make_user(db, "im-ov-upd@example.com", "admin")
+    s = await _make_staff(db, code="S-OV-UPD", name="更新")
+    sid = s.id
+    ov = StaffWeeklyOverride(
+        staff_id=sid,
+        iso_year=2026,
+        iso_week=22,
+        weekday=0,
+        override_type="off",
+        reason="旧理由",
+    )
+    db.add(ov)
+    await db.commit()
+
+    content = _build_workbook_with_overrides(
+        override_rows=[
+            {
+                "staff_id": str(sid),
+                "iso_year": 2026,
+                "iso_week": 22,
+                "weekday": "月",
+                "override_type": "off",
+                "reason": "新理由",
+            }
+        ],
+    )
+    files = {
+        "file": (
+            "test.xlsx",
+            content,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
+    res = await client.post(
+        "/api/v1/staff/import-export/import?dry_run=false",
+        headers=_bearer(admin),
+        files=files,
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["summary"]["override_update"] == 1
+    db.expire_all()
+    ov_after = (
+        await db.scalars(select(StaffWeeklyOverride).where(StaffWeeklyOverride.staff_id == sid))
+    ).all()
+    assert len(ov_after) == 1
+    assert ov_after[0].reason == "新理由"
+
+
+@pytest.mark.asyncio
+async def test_import_delete_override(client, db) -> None:
+    """<DELETE> フラグで既存 override が物理削除される."""
+    from app.models import StaffWeeklyOverride
+
+    admin = await _make_user(db, "im-ov-del@example.com", "admin")
+    s = await _make_staff(db, code="S-OV-DEL", name="削除")
+    sid = s.id
+    ov = StaffWeeklyOverride(
+        staff_id=sid,
+        iso_year=2026,
+        iso_week=23,
+        weekday=1,
+        override_type="off",
+    )
+    db.add(ov)
+    await db.commit()
+
+    content = _build_workbook_with_overrides(
+        override_rows=[
+            {
+                "staff_id": str(sid),
+                "iso_year": 2026,
+                "iso_week": 23,
+                "weekday": "火",
+                "override_type": "off",
+                "delete_flag": "<DELETE>",
+            }
+        ],
+    )
+    files = {
+        "file": (
+            "test.xlsx",
+            content,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
+    res = await client.post(
+        "/api/v1/staff/import-export/import?dry_run=false",
+        headers=_bearer(admin),
+        files=files,
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["summary"]["override_delete"] == 1
+    db.expire_all()
+    ovs = (
+        await db.scalars(select(StaffWeeklyOverride).where(StaffWeeklyOverride.staff_id == sid))
+    ).all()
+    assert ovs == []
+
+
+@pytest.mark.asyncio
+async def test_roundtrip_overrides(client, db) -> None:
+    """export → import で override が完全保持される (round-trip 0 エラー)."""
+    from app.models import StaffWeeklyOverride
+
+    admin = await _make_user(db, "rt-ov@example.com", "admin")
+    s = await _make_staff(db, code="S-RT-OV", name="往復")
+    sid = s.id
+    db.add(
+        StaffWeeklyOverride(
+            staff_id=sid,
+            iso_year=2026,
+            iso_week=24,
+            weekday=3,
+            override_type="custom_time",
+            start_time=time(8, 30),
+            end_time=time(17, 30),
+            reason="短縮勤務",
+        )
+    )
+    await db.commit()
+
+    export_res = await client.get("/api/v1/staff/import-export/export", headers=_bearer(admin))
+    assert export_res.status_code == 200
+    files = {
+        "file": (
+            "export.xlsx",
+            export_res.content,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
+    import_res = await client.post(
+        "/api/v1/staff/import-export/import?dry_run=false",
+        headers=_bearer(admin),
+        files=files,
+    )
+    assert import_res.status_code == 200, import_res.text
+    body = import_res.json()
+    # round-trip では override は noop のみで error / new / update なし
+    assert body["summary"]["override_error"] == 0
+    assert body["summary"]["override_new"] == 0
+    db.expire_all()
+    ovs = (
+        await db.scalars(select(StaffWeeklyOverride).where(StaffWeeklyOverride.staff_id == sid))
+    ).all()
+    assert len(ovs) == 1
+    assert ovs[0].override_type == "custom_time"
+    assert ovs[0].start_time == time(8, 30)
+    assert ovs[0].reason == "短縮勤務"
+
+
+# ---------------------------------------------------------------------------
+# Phase E-7 cross-review cleanup (HIGH/MEDIUM/LOW)
+# ---------------------------------------------------------------------------
+
+
+# #3 [MEDIUM]: 旧 2 シート Excel (勤務例外シートなし) との互換性
+@pytest.mark.asyncio
+async def test_import_legacy_excel_without_override_sheet(client, db) -> None:
+    """旧 Excel ファイル (Staff + Shift 2 シートのみ、勤務例外シートなし) を import.
+
+    importer は ``SHEET_OVERRIDE not in wb.sheetnames`` のとき skip するため、
+    200 OK + override_* 全 0 + その他は通常通り処理される.
+    """
+    admin = await _make_user(db, "stx-legacy@example.com", "admin")
+    # _build_workbook_bytes は SHEET_STAFF + SHEET_SHIFT の 2 シートのみ作る
+    # (= 旧 Excel 相当). _build_workbook_with_overrides との対比で互換性を担保する.
+    content = _build_workbook_bytes(
+        staff_rows=[
+            {
+                "staff_code": "S-LEGACY-001",
+                "name": "旧 Excel 互換",
+                "status": "active",
+                "role": "staff",
+            }
+        ],
+        shift_rows=[
+            {
+                "staff_code": "S-LEGACY-001",
+                "weekday": "月",
+                "is_on": "TRUE",
+                "start_time": "09:00",
+                "end_time": "18:00",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["transaction_applied"] is True
+    assert body["summary"]["staff_new"] == 1
+    assert body["summary"]["shift_new"] == 1
+    # 勤務例外シートが無いため override_* は全て 0.
+    assert body["summary"]["override_new"] == 0
+    assert body["summary"]["override_update"] == 0
+    assert body["summary"]["override_delete"] == 0
+    assert body["summary"]["override_error"] == 0
+    assert body["summary"]["override_noop"] == 0
+
+
+# #4 [MEDIUM]: secondary_offices を <CLEAR> で解除
+@pytest.mark.asyncio
+async def test_import_secondary_offices_clear_via_marker(client, db) -> None:
+    """通常 import で secondary_office_codes 列に <CLEAR> を入れて relationship を解除."""
+    from app.models import StaffSecondaryOffice
+
+    admin = await _make_user(db, "im-sec-clr@example.com", "admin")
+    o_inage = await _make_office(db, code="INAGE")
+    o_tsuga = await _make_office(db, code="TSUGA")
+    s = await _make_staff(db, code="S-SEC-CLR", name="サブ解除", primary_office_id=o_inage.id)
+    sid = s.id
+    db.add(StaffSecondaryOffice(staff_id=sid, office_id=o_tsuga.id))
+    await db.commit()
+    # 事前確認: 1 件登録されている.
+    before = (
+        await db.scalars(select(StaffSecondaryOffice).where(StaffSecondaryOffice.staff_id == sid))
+    ).all()
+    assert len(before) == 1
+
+    content = _build_workbook_bytes(
+        staff_rows=[
+            {
+                "staff_id": str(sid),
+                "staff_code": "S-SEC-CLR",
+                "secondary_office_codes": "<CLEAR>",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["transaction_applied"] is True
+    assert body["summary"]["staff_update"] == 1
+    assert body["summary"]["staff_error"] == 0
+
+    db.expire_all()
+    after = (
+        await db.scalars(select(StaffSecondaryOffice).where(StaffSecondaryOffice.staff_id == sid))
+    ).all()
+    assert after == []
+
+
+# #6 [LOW]: 1 ファイル内で override の delete / update / new を同時実行
+@pytest.mark.asyncio
+async def test_import_override_combined_delete_update_new_in_single_file(client, db) -> None:
+    """1 ファイル内で既存 override の delete + update + 新規 add を同時実行."""
+    from app.models import StaffWeeklyOverride
+
+    admin = await _make_user(db, "im-ov-combo@example.com", "admin")
+    s = await _make_staff(db, code="S-OV-COMBO", name="複合 op")
+    sid = s.id
+    # 既存 override 2 件: 1 件は delete 対象、もう 1 件は update 対象.
+    db.add(
+        StaffWeeklyOverride(
+            staff_id=sid,
+            iso_year=2026,
+            iso_week=30,
+            weekday=0,  # 月: delete 予定
+            override_type="off",
+            reason="削除対象",
+        )
+    )
+    db.add(
+        StaffWeeklyOverride(
+            staff_id=sid,
+            iso_year=2026,
+            iso_week=30,
+            weekday=1,  # 火: update 予定
+            override_type="custom_time",
+            start_time=time(9, 0),
+            end_time=time(17, 0),
+            reason="更新前",
+        )
+    )
+    await db.commit()
+
+    content = _build_workbook_with_overrides(
+        override_rows=[
+            # delete: 月
+            {
+                "staff_id": str(sid),
+                "iso_year": 2026,
+                "iso_week": 30,
+                "weekday": "月",
+                "override_type": "off",
+                "delete_flag": "<DELETE>",
+            },
+            # update: 火 (時刻変更)
+            {
+                "staff_id": str(sid),
+                "iso_year": 2026,
+                "iso_week": 30,
+                "weekday": "火",
+                "override_type": "custom_time",
+                "start_time": "10:00",
+                "end_time": "18:00",
+                "reason": "更新後",
+            },
+            # new: 水
+            {
+                "staff_id": str(sid),
+                "iso_year": 2026,
+                "iso_week": 30,
+                "weekday": "水",
+                "override_type": "off",
+                "reason": "新規",
+            },
+        ],
+    )
+    files = {
+        "file": (
+            "test.xlsx",
+            content,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
+    res = await client.post(
+        "/api/v1/staff/import-export/import?dry_run=false",
+        headers=_bearer(admin),
+        files=files,
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["summary"]["override_delete"] == 1
+    assert body["summary"]["override_update"] == 1
+    assert body["summary"]["override_new"] == 1
+    assert body["summary"]["override_error"] == 0
+
+    db.expire_all()
+    ovs = (
+        await db.scalars(
+            select(StaffWeeklyOverride)
+            .where(StaffWeeklyOverride.staff_id == sid)
+            .order_by(StaffWeeklyOverride.weekday)
+        )
+    ).all()
+    # 月 (delete) は消えており、火 (update) + 水 (new) が残る.
+    assert len(ovs) == 2
+    weekdays = [ov.weekday for ov in ovs]
+    assert weekdays == [1, 2]
+    # 火 の中身が更新されている.
+    upd = next(ov for ov in ovs if ov.weekday == 1)
+    assert upd.start_time == time(10, 0)
+    assert upd.end_time == time(18, 0)
+    assert upd.reason == "更新後"

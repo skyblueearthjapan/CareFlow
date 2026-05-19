@@ -52,6 +52,8 @@ STATUS_VALUES: Final[tuple[str, ...]] = (
 INSURANCE_VALUES: Final[tuple[str, ...]] = ("medical", "care")
 SEX_RESTRICTION_VALUES: Final[tuple[str, ...]] = ("female_only", "male_only")
 OFFICE_CODE_VALUES: Final[tuple[str, ...]] = ("INAGE", "TSUGA")
+# Phase E-7: requires_multiple_staff (Patient W18 Phase A-1 列) を Excel で扱うため.
+BOOL_VALUES: Final[tuple[str, ...]] = ("TRUE", "FALSE")
 # 仕様書: 1〜3 だが現状の DB スキーマには列が無い (W1-BE1 で削除済み).
 # 互換のため Excel 上の dropdown 値のみ定義 (実 import では列が無いので未使用).
 
@@ -101,6 +103,15 @@ PATIENT_COLUMNS: Final[list[dict[str, object]]] = [
         "header": "性別制限",
         "width": 12,
         "dropdown": SEX_RESTRICTION_VALUES,
+    },
+    # Phase E-7 (gap P0-1): W18 Phase A-1 で追加された Patient.requires_multiple_staff
+    # を Excel 入出力で扱えるようにする. 空セル = 維持 (既存) / False (新規) の
+    # 慣習は importer / replace_all 側で実装.
+    {
+        "key": "requires_multiple_staff",
+        "header": "複数スタッフ必須",
+        "width": 16,
+        "dropdown": BOOL_VALUES,
     },
     {"key": "note", "header": "備考", "width": 30, "dropdown": None},
     {"key": "delete_flag", "header": "(削除フラグ)", "width": 14, "dropdown": DELETE_FLAG_VALUES},
