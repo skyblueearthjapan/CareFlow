@@ -1523,11 +1523,12 @@ export function CourseDayTablePanel({
                     プール投入
                   </Button>
 
-                  {/* Wave 41 v2 § 13.6: 全面最適化 (機能 B) */}
+                  {/* Wave 41 v2 § 13.6: 全面最適化 (機能 B).
+                      自動割付と同じ default (brand-primary 緑) で「再算出系の主要アクション」
+                      であることを視覚的に揃える. */}
                   <Button
                     type="button"
                     size="sm"
-                    variant="outline"
                     onClick={() => setFullOptimizeOpen(true)}
                     disabled={generateWeekMut.isPending || assignStaffOnlyMut.isPending}
                     data-testid="full-optimize-button"

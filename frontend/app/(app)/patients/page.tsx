@@ -10,6 +10,7 @@
 import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { useSession } from 'next-auth/react';
+import { Plus } from 'lucide-react';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -80,7 +81,7 @@ export default function PatientsPage() {
 
   return (
     <section className="space-y-4">
-      <header className="flex items-end justify-between gap-4">
+      <header className="flex items-start justify-between gap-4">
         <div>
           <h1 className="font-serif text-2xl font-bold text-text-primary">患者マスタ</h1>
           <p className="text-sm text-text-secondary">
@@ -92,7 +93,10 @@ export default function PatientsPage() {
           {isAdmin ? <PatientsReplaceAllButton /> : null}
           {canCreate ? (
             <Button asChild>
-              <Link href="/patients/new">+ 新規登録</Link>
+              <Link href="/patients/new">
+                <Plus className="h-4 w-4" />
+                新規登録
+              </Link>
             </Button>
           ) : null}
         </div>
