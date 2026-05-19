@@ -321,6 +321,9 @@ export const unassignedReasonSchema = z.enum([
   'course_overflow',
   'manager_short',
   'same_address_split',
+  // Phase E-3 改修 (4): 同住所 3 名以上で 3 名目以降を別コース化対象として unassigned
+  // に流す (backend auto_allocator_v2.UnassignedReason と同期).
+  'same_address_three_or_more',
   'fixed_time_conflict',
   'lunch_break',
   // Wave 4 (Phase C): 希望時刻から CARE_ALARM_UNASSIGNED_THRESHOLD_MIN (=60) 分超

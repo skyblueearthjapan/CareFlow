@@ -91,7 +91,8 @@ const UNASSIGNED_REASON_LABELS: Record<UnassignedReason, string> = {
   course_capacity: 'コース容量超過 (480 分 or 6 名)',
   course_overflow: 'コース数超過 (スタッフ数を超過)',
   manager_short: 'マネージャー不足 (M course 不足)',
-  same_address_split: '同住所 3 名以上で配置先なし',
+  same_address_split: '同住所 3 名以上で別 set へ動かしたが配置できず',
+  same_address_three_or_more: '同住所 3 名以上で 3 名目以降を別コースへ',
   fixed_time_conflict: '固定時刻衝突 / 希望時間外',
   lunch_break: '昼休憩 (12:00-13:00) と重複',
   // Wave 4 (Phase C): 希望時刻から 60 分超で配置されたケアアラーム閾値超過.
