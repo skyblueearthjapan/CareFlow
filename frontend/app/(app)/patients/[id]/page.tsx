@@ -112,7 +112,8 @@ export default function PatientDetailPage() {
 
   return (
     <section className="space-y-4">
-      <header className="flex flex-wrap items-end justify-between gap-3">
+      {/* grid 3 列 (1fr - auto - 1fr) で RecordNavigator を viewport 中央に固定. */}
+      <header className="grid grid-cols-1 items-end gap-3 lg:grid-cols-[1fr_auto_1fr]">
         <div>
           <p className="text-sm text-text-muted">
             <Link href="/patients" className="hover:underline">
@@ -140,8 +141,8 @@ export default function PatientDetailPage() {
             ) : null}
           </div>
         </div>
-        {navRecords.length > 0 && (
-          <div className="flex flex-1 justify-center">
+        <div className="flex justify-center">
+          {navRecords.length > 0 && (
             <RecordNavigator
               currentId={id}
               records={navRecords}
@@ -149,9 +150,9 @@ export default function PatientDetailPage() {
               entityLabel="患者"
               truncated={patientsList?.truncated}
             />
-          </div>
-        )}
-        <div className="flex gap-2">
+          )}
+        </div>
+        <div className="flex gap-2 lg:justify-end">
           {canEdit && !data.deleted_at ? (
             <Button asChild variant="outline">
               <Link href={`/patients/${id}/edit`}>編集</Link>

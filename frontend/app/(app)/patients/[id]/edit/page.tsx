@@ -142,7 +142,8 @@ export default function EditPatientPage() {
 
   return (
     <section className="space-y-4">
-      <header className="flex flex-wrap items-end justify-between gap-3">
+      {/* grid 3 列 (1fr - auto - 1fr) で RecordNavigator を viewport 中央に固定. */}
+      <header className="grid grid-cols-1 items-end gap-3 lg:grid-cols-[1fr_auto_1fr]">
         <div>
           <p className="text-sm text-text-muted">
             <Link href={`/patients/${id}`} className="hover:underline">
@@ -156,8 +157,8 @@ export default function EditPatientPage() {
             </span>
           </h1>
         </div>
-        {navRecords.length > 0 && (
-          <div className="flex flex-1 justify-center">
+        <div className="flex justify-center">
+          {navRecords.length > 0 && (
             <RecordNavigator
               currentId={id}
               records={navRecords}
@@ -165,18 +166,19 @@ export default function EditPatientPage() {
               entityLabel="患者"
               onBeforeNavigate={handleBeforeNavigate}
             />
-          </div>
-        )}
-        {canDelete && !patient.deleted_at ? (
-          <Button
-            variant="destructive"
-            className="ml-auto"
-            onClick={() => setDeleteConfirmOpen(true)}
-            disabled={deleteMutation.isPending}
-          >
-            削除
-          </Button>
-        ) : null}
+          )}
+        </div>
+        <div className="flex gap-2 lg:justify-end">
+          {canDelete && !patient.deleted_at ? (
+            <Button
+              variant="destructive"
+              onClick={() => setDeleteConfirmOpen(true)}
+              disabled={deleteMutation.isPending}
+            >
+              削除
+            </Button>
+          ) : null}
+        </div>
       </header>
 
       <PatientForm

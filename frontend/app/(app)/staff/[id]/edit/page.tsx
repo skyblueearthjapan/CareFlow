@@ -279,18 +279,21 @@ export default function StaffEditPage() {
 
   return (
     <section className="space-y-6">
-      <header className="flex flex-wrap items-center gap-3">
-        <Button asChild variant="ghost" size="sm">
-          <Link href={`/staff/${id}`}>
-            <ArrowLeft className="h-4 w-4" />
-            詳細へ
-          </Link>
-        </Button>
-        <h1 className="font-serif text-2xl font-bold text-text-primary">
-          スタッフ編集 — {data?.name}
-        </h1>
-        {navRecords.length > 0 && id && (
-          <div className="flex flex-1 justify-center">
+      {/* grid 3 列 (1fr - auto - 1fr) で RecordNavigator を viewport 中央に固定. */}
+      <header className="grid grid-cols-1 items-center gap-3 lg:grid-cols-[1fr_auto_1fr]">
+        <div className="flex flex-wrap items-center gap-3">
+          <Button asChild variant="ghost" size="sm">
+            <Link href={`/staff/${id}`}>
+              <ArrowLeft className="h-4 w-4" />
+              詳細へ
+            </Link>
+          </Button>
+          <h1 className="font-serif text-2xl font-bold text-text-primary">
+            スタッフ編集 — {data?.name}
+          </h1>
+        </div>
+        <div className="flex justify-center">
+          {navRecords.length > 0 && id && (
             <RecordNavigator
               currentId={id}
               records={navRecords}
@@ -298,20 +301,21 @@ export default function StaffEditPage() {
               entityLabel="スタッフ"
               onBeforeNavigate={handleBeforeNavigate}
             />
-          </div>
-        )}
-        {canDelete && !data?.deleted_at ? (
-          <Button
-            variant="destructive"
-            size="sm"
-            className="ml-auto"
-            onClick={() => setDeleteConfirmOpen(true)}
-            disabled={del.isPending}
-          >
-            <Trash2 className="h-4 w-4" />
-            削除
-          </Button>
-        ) : null}
+          )}
+        </div>
+        <div className="flex gap-2 lg:justify-end">
+          {canDelete && !data?.deleted_at ? (
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => setDeleteConfirmOpen(true)}
+              disabled={del.isPending}
+            >
+              <Trash2 className="h-4 w-4" />
+              削除
+            </Button>
+          ) : null}
+        </div>
       </header>
 
       {update.isError && (

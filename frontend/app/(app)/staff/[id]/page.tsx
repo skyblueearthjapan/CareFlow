@@ -141,33 +141,36 @@ export default function StaffDetailPage() {
 
   return (
     <section className="space-y-6">
-      <header className="flex flex-wrap items-center gap-3">
-        <Button asChild variant="ghost" size="sm">
-          <Link href="/staff">
-            <ArrowLeft className="h-4 w-4" />
-            一覧へ
-          </Link>
-        </Button>
-        <h1 className="font-serif text-2xl font-bold text-text-primary">{data.name}</h1>
-        {data.is_trainee && (
-          <span className="rounded bg-warning px-2 py-0.5 text-xs font-semibold text-warning-foreground">
-            新人
+      {/* grid 3 列 (1fr - auto - 1fr) で RecordNavigator を viewport 中央に固定. */}
+      <header className="grid grid-cols-1 items-center gap-3 lg:grid-cols-[1fr_auto_1fr]">
+        <div className="flex flex-wrap items-center gap-3">
+          <Button asChild variant="ghost" size="sm">
+            <Link href="/staff">
+              <ArrowLeft className="h-4 w-4" />
+              一覧へ
+            </Link>
+          </Button>
+          <h1 className="font-serif text-2xl font-bold text-text-primary">{data.name}</h1>
+          {data.is_trainee && (
+            <span className="rounded bg-warning px-2 py-0.5 text-xs font-semibold text-warning-foreground">
+              新人
+            </span>
+          )}
+          <span className="rounded bg-bg-muted px-2 py-1 text-xs text-text-secondary">
+            {statusLabel(data.status)}
           </span>
-        )}
-        <span className="rounded bg-bg-muted px-2 py-1 text-xs text-text-secondary">
-          {statusLabel(data.status)}
-        </span>
-        {navRecords.length > 0 && (
-          <div className="flex flex-1 justify-center">
+        </div>
+        <div className="flex justify-center">
+          {navRecords.length > 0 && (
             <RecordNavigator
               currentId={data.id}
               records={navRecords}
               hrefTemplate="/staff/{id}"
               entityLabel="スタッフ"
             />
-          </div>
-        )}
-        <div className="ml-auto flex gap-2">
+          )}
+        </div>
+        <div className="flex gap-2 lg:justify-end">
           {canEdit && (
             <Button asChild variant="outline" size="sm">
               <Link href={`/staff/${data.id}/edit`}>
