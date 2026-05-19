@@ -5,6 +5,7 @@ from fastapi import APIRouter
 from app.api.v1 import (
     acceptance_calendar,
     admin,
+    admin_geocoding,
     ai,
     allocate,
     audit_logs,
@@ -42,6 +43,8 @@ api_router = APIRouter()
 api_router.include_router(health.router)
 api_router.include_router(auth.router)
 api_router.include_router(admin.router)
+# Task #144: lat/lng 整合性 audit (定期 cron 用 admin endpoint).
+api_router.include_router(admin_geocoding.router)
 # W41+ patient master Excel import / export. Must be registered BEFORE
 # patients.router so /patients/import-export/* paths are matched before the
 # /patients/{patient_id} catch-all.
