@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from datetime import datetime, time, timedelta, timezone
+from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -35,7 +35,6 @@ from _import_utils import (  # noqa: E402
     parse_time,
     print_summary,
 )
-
 from sqlalchemy import select  # noqa: E402
 
 from app.db.session import dispose_engine, get_session_factory  # noqa: E402
@@ -65,7 +64,7 @@ def _norm_event_type(value: Any) -> str:
 
 def _combine(d, t: time | None) -> datetime:
     base = t or _DEFAULT_START
-    return datetime.combine(d, base, tzinfo=timezone.utc)
+    return datetime.combine(d, base, tzinfo=UTC)
 
 
 def build_payload(row: tuple, idx: dict[str, int]) -> dict[str, Any] | None:
@@ -75,9 +74,7 @@ def build_payload(row: tuple, idx: dict[str, int]) -> dict[str, Any] | None:
         return None
 
     start_time_v = parse_time(cell(row, idx, "開始時刻"))
-    end_time_v = parse_time(cell(row, idx, " 終了時刻 ")) or parse_time(
-        cell(row, idx, "終了時刻")
-    )
+    end_time_v = parse_time(cell(row, idx, " 終了時刻 ")) or parse_time(cell(row, idx, "終了時刻"))
     duration = parse_int(cell(row, idx, "所要時間(分)"))
 
     starts_at = _combine(visit_date, start_time_v)
@@ -88,10 +85,7 @@ def build_payload(row: tuple, idx: dict[str, int]) -> dict[str, Any] | None:
     else:
         ends_at = starts_at + timedelta(minutes=duration or _DEFAULT_DURATION_MIN)
 
-    title = (
-        clean_str(cell(row, idx, "タイトル "))
-        or clean_str(cell(row, idx, "タイトル"))
-    )
+    title = clean_str(cell(row, idx, "タイトル ")) or clean_str(cell(row, idx, "タイトル"))
 
     return {
         "_staff_code": staff_code,
@@ -99,8 +93,7 @@ def build_payload(row: tuple, idx: dict[str, int]) -> dict[str, Any] | None:
         "starts_at": starts_at,
         "ends_at": ends_at,
         "title": title,
-        "note": clean_str(cell(row, idx, "備考"))
-                or clean_str(cell(row, idx, "理由")),
+        "note": clean_str(cell(row, idx, "備考")) or clean_str(cell(row, idx, "理由")),
     }
 
 
@@ -125,8 +118,10 @@ async def import_staff_events(xlsx: Path, dry_run: bool) -> dict[str, int]:
         print(f"[staff_events] parsed={len(payloads)} from '{SHEET_NAME}'")
         if payloads:
             s = payloads[0]
-            print(f"  sample: code={s['_staff_code']} type={s['event_type']} "
-                  f"starts={s['starts_at']} ends={s['ends_at']}")
+            print(
+                f"  sample: code={s['_staff_code']} type={s['event_type']} "
+                f"starts={s['starts_at']} ends={s['ends_at']}"
+            )
         print_summary("staff_events", **summary, errors=failures)
         return summary
 
@@ -134,9 +129,7 @@ async def import_staff_events(xlsx: Path, dry_run: bool) -> dict[str, int]:
     async with factory() as session:
         codes = {p["_staff_code"] for p in payloads}
         if codes:
-            res = await session.execute(
-                select(Staff.code, Staff.id).where(Staff.code.in_(codes))
-            )
+            res = await session.execute(select(Staff.code, Staff.id).where(Staff.code.in_(codes)))
             code_to_uuid = {c: i for c, i in res.all() if c}
         else:
             code_to_uuid = {}
@@ -186,9 +179,7 @@ async def _main(xlsx: Path, dry_run: bool) -> dict[str, int]:
 
 
 def main() -> int:
-    args = build_parser(
-        "Import staff events (Sample 2 / イベントリクエスト)"
-    ).parse_args()
+    args = build_parser("Import staff events (Sample 2 / イベントリクエスト)").parse_args()
     asyncio.run(_main(args.xlsx, args.dry_run))
     return 0
 

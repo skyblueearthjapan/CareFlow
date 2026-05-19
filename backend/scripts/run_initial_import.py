@@ -25,8 +25,6 @@ if str(_SCRIPTS_DIR) not in sys.path:
 if str(_BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(_BACKEND_ROOT))
 
-from app.db.session import dispose_engine  # noqa: E402
-
 from import_patients import import_patients  # noqa: E402
 from import_special_weeks import import_special_weeks  # noqa: E402
 from import_staff import import_staff  # noqa: E402
@@ -35,11 +33,11 @@ from import_staff_overrides import import_staff_overrides  # noqa: E402
 from import_users import import_users  # noqa: E402
 from import_weekly_pattern import import_weekly_pattern  # noqa: E402
 
+from app.db.session import dispose_engine  # noqa: E402
+
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(
-        description="Run all initial Excel import stages in order"
-    )
+    p = argparse.ArgumentParser(description="Run all initial Excel import stages in order")
     p.add_argument("sample1", type=Path, help="path to Sample 1 (スケジュール手動.xlsx)")
     p.add_argument(
         "sample2",
@@ -64,31 +62,47 @@ async def _main(sample1: Path, sample2: Path, dry_run: bool) -> int:
     try:
         stages: list[tuple[str, dict[str, int]]] = []
 
-        stages.append(("patients", await _run_stage(
-            "patients", import_patients(sample1, dry_run))))
-        stages.append(("staff", await _run_stage(
-            "staff", import_staff(sample2, dry_run))))
-        stages.append(("users", await _run_stage(
-            "users", import_users(sample2, dry_run))))
-        stages.append(("weekly_pattern", await _run_stage(
-            "weekly_pattern", import_weekly_pattern(sample1, dry_run))))
-        stages.append(("special_weeks", await _run_stage(
-            "special_weeks", import_special_weeks(sample2, dry_run))))
-        stages.append(("staff_events", await _run_stage(
-            "staff_events", import_staff_events(sample2, dry_run))))
-        stages.append(("staff_overrides", await _run_stage(
-            "staff_overrides", import_staff_overrides(sample2, dry_run))))
+        stages.append(("patients", await _run_stage("patients", import_patients(sample1, dry_run))))
+        stages.append(("staff", await _run_stage("staff", import_staff(sample2, dry_run))))
+        stages.append(("users", await _run_stage("users", import_users(sample2, dry_run))))
+        stages.append(
+            (
+                "weekly_pattern",
+                await _run_stage("weekly_pattern", import_weekly_pattern(sample1, dry_run)),
+            )
+        )
+        stages.append(
+            (
+                "special_weeks",
+                await _run_stage("special_weeks", import_special_weeks(sample2, dry_run)),
+            )
+        )
+        stages.append(
+            (
+                "staff_events",
+                await _run_stage("staff_events", import_staff_events(sample2, dry_run)),
+            )
+        )
+        stages.append(
+            (
+                "staff_overrides",
+                await _run_stage("staff_overrides", import_staff_overrides(sample2, dry_run)),
+            )
+        )
 
         print("\n===== summary =====")
         print(f"{'stage':<18} {'created':>8} {'updated':>8} {'skipped':>8} {'failed':>8}")
         total = {"created": 0, "updated": 0, "skipped": 0, "failed": 0}
         for name, s in stages:
-            print(f"{name:<18} {s['created']:>8} {s['updated']:>8} "
-                  f"{s['skipped']:>8} {s['failed']:>8}")
+            print(
+                f"{name:<18} {s['created']:>8} {s['updated']:>8} {s['skipped']:>8} {s['failed']:>8}"
+            )
             for k in total:
                 total[k] += s.get(k, 0)
-        print(f"{'TOTAL':<18} {total['created']:>8} {total['updated']:>8} "
-              f"{total['skipped']:>8} {total['failed']:>8}")
+        print(
+            f"{'TOTAL':<18} {total['created']:>8} {total['updated']:>8} "
+            f"{total['skipped']:>8} {total['failed']:>8}"
+        )
         return 0 if total["failed"] == 0 else 1
     finally:
         # Dispose inside the same event loop that created asyncpg connections,

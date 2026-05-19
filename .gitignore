@@ -69,3 +69,8 @@ logs/
 .omc/
 backend/.omc/
 frontend/.omc/
+
+# backend/scripts/ のエフェメラル成果物 (DB dump / xlsx / md レポート / one-shot SQL)
+# 名前が _ で始まるものは re-runnable な中間生成物として扱う
+backend/scripts/_*
+backend/scripts/~$*

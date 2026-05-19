@@ -34,7 +34,6 @@ from _import_utils import (  # noqa: E402
     parse_int,
     print_summary,
 )
-
 from sqlalchemy import select  # noqa: E402
 
 from app.db.session import dispose_engine, get_session_factory  # noqa: E402
@@ -128,9 +127,7 @@ def build_payload(row: tuple, idx: dict[str, int]) -> dict[str, Any] | None:
 async def _resolve_staff_codes(session, codes: set[str]) -> dict[str, Any]:
     if not codes:
         return {}
-    rows = await session.execute(
-        select(Staff.code, Staff.id).where(Staff.code.in_(codes))
-    )
+    rows = await session.execute(select(Staff.code, Staff.id).where(Staff.code.in_(codes)))
     return {c: i for c, i in rows.all() if c}
 
 
@@ -156,8 +153,10 @@ async def import_patients(xlsx: Path, dry_run: bool) -> dict[str, int]:
         print(f"[patients] parsed={len(payloads)} from sheet '{SHEET_NAME}'")
         if payloads:
             sample = payloads[0]
-            print(f"  sample: code={sample['code']} name={sample['name']} "
-                  f"area={sample['area']} sex={sample['sex']}")
+            print(
+                f"  sample: code={sample['code']} name={sample['name']} "
+                f"area={sample['area']} sex={sample['sex']}"
+            )
         print_summary("patients", **summary, errors=failures)
         return summary
 
@@ -170,9 +169,7 @@ async def import_patients(xlsx: Path, dry_run: bool) -> dict[str, int]:
         code_to_uuid = await _resolve_staff_codes(session, all_codes)
 
         existing = await session.execute(
-            select(Patient).where(
-                Patient.code.in_([p["code"] for p in payloads])
-            )
+            select(Patient).where(Patient.code.in_([p["code"] for p in payloads]))
         )
         by_code = {p.code: p for p in existing.scalars()}
 
@@ -182,9 +179,7 @@ async def import_patients(xlsx: Path, dry_run: bool) -> dict[str, int]:
             payload["preferred_staff_ids"] = [
                 code_to_uuid[c] for c in spec_codes if c in code_to_uuid
             ]
-            payload["ng_staff_ids"] = [
-                code_to_uuid[c] for c in ng_codes if c in code_to_uuid
-            ]
+            payload["ng_staff_ids"] = [code_to_uuid[c] for c in ng_codes if c in code_to_uuid]
 
             obj = by_code.get(payload["code"])
             if obj is None:

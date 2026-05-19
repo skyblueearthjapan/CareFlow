@@ -70,8 +70,10 @@ async def seed(rows: list[dict[str, Any]], dry_run: bool) -> tuple[int, int]:
             return len(to_insert), skipped
 
         if to_insert:
-            stmt = pg_insert(City).values(to_insert).on_conflict_do_nothing(
-                index_elements=[City.jis_code]
+            stmt = (
+                pg_insert(City)
+                .values(to_insert)
+                .on_conflict_do_nothing(index_elements=[City.jis_code])
             )
             await session.execute(stmt)
             await session.commit()

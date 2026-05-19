@@ -31,7 +31,6 @@ from _import_utils import (  # noqa: E402
     parse_time,
     print_summary,
 )
-
 from sqlalchemy import select  # noqa: E402
 
 from app.db.session import dispose_engine, get_session_factory  # noqa: E402
@@ -100,9 +99,7 @@ async def import_staff_overrides(xlsx: Path, dry_run: bool) -> dict[str, int]:
     async with factory() as session:
         codes = {p["_staff_code"] for p in payloads}
         if codes:
-            res = await session.execute(
-                select(Staff.code, Staff.id).where(Staff.code.in_(codes))
-            )
+            res = await session.execute(select(Staff.code, Staff.id).where(Staff.code.in_(codes)))
             code_to_uuid = {c: i for c, i in res.all() if c}
         else:
             code_to_uuid = {}

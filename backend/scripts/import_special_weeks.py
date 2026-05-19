@@ -38,7 +38,6 @@ from _import_utils import (  # noqa: E402
     parse_time,
     print_summary,
 )
-
 from sqlalchemy import select  # noqa: E402
 
 from app.db.session import dispose_engine, get_session_factory  # noqa: E402
@@ -154,8 +153,10 @@ async def import_special_weeks(xlsx: Path, dry_run: bool) -> dict[str, int]:
     }
 
     if dry_run:
-        print(f"[special_weeks] headers parsed={len(header_payloads)} "
-              f"items parsed={len(item_payloads)}")
+        print(
+            f"[special_weeks] headers parsed={len(header_payloads)} "
+            f"items parsed={len(item_payloads)}"
+        )
         print_summary("special_weeks", **summary, errors=failures)
         return summary
 
@@ -221,22 +222,24 @@ async def import_special_weeks(xlsx: Path, dry_run: bool) -> dict[str, int]:
                 summary["skipped"] += 1
                 continue
             sw_id, patient_uuid = mapped
-            session.add(SpecialWeekItem(
-                special_week_id=sw_id,
-                patient_id=patient_uuid,
-                visit_date=it["visit_date"],
-                weekday=it["weekday"],
-                row_label=it["row_label"],
-                time_type=it["time_type"],
-                start_time=it["start_time"],
-                end_time=it["end_time"],
-                preferred_earliest=it["preferred_earliest"],
-                preferred_latest=it["preferred_latest"],
-                service_minutes=it["service_minutes"],
-                required_staff_count=it["required_staff_count"],
-                individual_change_handling=it["individual_change_handling"],
-                note=it["note"],
-            ))
+            session.add(
+                SpecialWeekItem(
+                    special_week_id=sw_id,
+                    patient_id=patient_uuid,
+                    visit_date=it["visit_date"],
+                    weekday=it["weekday"],
+                    row_label=it["row_label"],
+                    time_type=it["time_type"],
+                    start_time=it["start_time"],
+                    end_time=it["end_time"],
+                    preferred_earliest=it["preferred_earliest"],
+                    preferred_latest=it["preferred_latest"],
+                    service_minutes=it["service_minutes"],
+                    required_staff_count=it["required_staff_count"],
+                    individual_change_handling=it["individual_change_handling"],
+                    note=it["note"],
+                )
+            )
 
         await session.commit()
 
@@ -255,9 +258,7 @@ async def _main(xlsx: Path, dry_run: bool) -> dict[str, int]:
 
 
 def main() -> int:
-    args = build_parser(
-        "Import special weeks (Sample 2 / 特別訪問週間_ヘッダ + 明細)"
-    ).parse_args()
+    args = build_parser("Import special weeks (Sample 2 / 特別訪問週間_ヘッダ + 明細)").parse_args()
     asyncio.run(_main(args.xlsx, args.dry_run))
     return 0
 

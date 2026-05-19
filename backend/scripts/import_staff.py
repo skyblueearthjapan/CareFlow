@@ -33,7 +33,6 @@ from _import_utils import (  # noqa: E402
     parse_weekdays,
     print_summary,
 )
-
 from sqlalchemy import select  # noqa: E402
 
 from app.db.session import dispose_engine, get_session_factory  # noqa: E402
@@ -105,8 +104,10 @@ async def import_staff(xlsx: Path, dry_run: bool) -> dict[str, int]:
         print(f"[staff] parsed={len(payloads)} from sheet '{SHEET_NAME}'")
         if payloads:
             s = payloads[0]
-            print(f"  sample: code={s['code']} name={s['name']} "
-                  f"areas={s['areas']} skill={s['skill_level']}")
+            print(
+                f"  sample: code={s['code']} name={s['name']} "
+                f"areas={s['areas']} skill={s['skill_level']}"
+            )
         print_summary("staff", **summary, errors=failures)
         return summary
 
@@ -139,13 +140,15 @@ async def import_staff(xlsx: Path, dry_run: bool) -> dict[str, int]:
             )
             for wd_idx, wd_name in enumerate(_WEEKDAYS):
                 is_on = wd_name in work_days
-                session.add(StaffShift(
-                    staff_id=obj.id,
-                    weekday=wd_idx,
-                    is_on=is_on,
-                    start_time=shift_start if is_on else None,
-                    end_time=shift_end if is_on else None,
-                ))
+                session.add(
+                    StaffShift(
+                        staff_id=obj.id,
+                        weekday=wd_idx,
+                        is_on=is_on,
+                        start_time=shift_start if is_on else None,
+                        end_time=shift_end if is_on else None,
+                    )
+                )
 
         await session.commit()
 

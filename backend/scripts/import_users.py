@@ -37,7 +37,6 @@ from _import_utils import (  # noqa: E402
     parse_bool,
     print_summary,
 )
-
 from sqlalchemy import select  # noqa: E402
 
 from app.core.security import hash_password  # noqa: E402
@@ -74,8 +73,7 @@ def _generate_temp_password() -> str:
     return secrets.token_urlsafe(12)
 
 
-async def import_users(xlsx: Path, dry_run: bool,
-                       output_csv: Path | None = None) -> dict[str, int]:
+async def import_users(xlsx: Path, dry_run: bool, output_csv: Path | None = None) -> dict[str, int]:
     idx_map, rows = iter_rows(xlsx, SHEET_NAME)
     if not idx_map:
         raise RuntimeError(f"empty header row in sheet '{SHEET_NAME}'")
@@ -117,11 +115,13 @@ async def import_users(xlsx: Path, dry_run: bool,
             obj = by_email.get(email)
             if obj is None:
                 temp_pw = _generate_temp_password()
-                session.add(User(
-                    email=email,
-                    password_hash=hash_password(temp_pw),
-                    role=role,
-                ))
+                session.add(
+                    User(
+                        email=email,
+                        password_hash=hash_password(temp_pw),
+                        role=role,
+                    )
+                )
                 csv_rows.append((email, role, temp_pw))
                 summary["created"] += 1
             else:
