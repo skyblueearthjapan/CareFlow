@@ -47,6 +47,8 @@ from app.services.patient_excel.schema import (
     PFV_COLUMNS,
     SHEET_PATIENTS,
     SHEET_PFV,
+    SHEET_WEEKLY,
+    WEEKLY_COL_INDEX,
 )
 
 # ---------------------------------------------------------------------------
@@ -1910,3 +1912,130 @@ async def test_import_blank_requires_multiple_staff_preserves_existing(client, d
     assert p_after is not None
     assert p_after.name == "新名前"
     assert p_after.requires_multiple_staff is True  # 維持された
+
+
+# ---------------------------------------------------------------------------
+# Phase E-8: 希望訪問パターン (patient.weekly_pattern) Excel 対応
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_export_includes_weekly_pattern_sheet(client, db) -> None:
+    """Phase E-8: export 結果に「希望訪問パターン」シートが含まれる."""
+    admin = await _make_user(db, "e8-export@example.com", "admin")
+    p = await _make_patient(db, code="P-E8-1", name="希望あり患者")
+    p.weekly_pattern = {
+        "time_type": "時間帯",
+        "preferred_start": "09:00",
+        "preferred_end": "12:00",
+        "preferred_weekdays": ["Mon", "Wed", "Fri"],
+        "service_minutes": 35,
+        "frequency_per_week": 3,
+    }
+    await db.commit()
+    res = await client.get("/api/v1/patients/import-export/export", headers=_bearer(admin))
+    assert res.status_code == 200
+    wb = load_workbook(BytesIO(res.content))
+    assert SHEET_WEEKLY in wb.sheetnames
+    ws = wb[SHEET_WEEKLY]
+    # 1 patient → 1 行 (+ header)
+    assert ws.max_row >= 2
+    # 値を verify
+    row = next(ws.iter_rows(min_row=2, max_row=2, values_only=True))
+    code = row[WEEKLY_COL_INDEX["patient_code"]]
+    assert code == "P-E8-1"
+    assert row[WEEKLY_COL_INDEX["time_type"]] == "時間帯"
+    assert row[WEEKLY_COL_INDEX["preferred_start"]] == "09:00"
+    assert row[WEEKLY_COL_INDEX["preferred_end"]] == "12:00"
+    assert row[WEEKLY_COL_INDEX["frequency_per_week"]] == 3
+    assert row[WEEKLY_COL_INDEX["service_minutes"]] == 35
+    # 希望曜日: Mon/Wed/Fri は TRUE, 他は FALSE
+    assert row[WEEKLY_COL_INDEX["wd_mon"]] == "TRUE"
+    assert row[WEEKLY_COL_INDEX["wd_tue"]] == "FALSE"
+    assert row[WEEKLY_COL_INDEX["wd_wed"]] == "TRUE"
+    assert row[WEEKLY_COL_INDEX["wd_thu"]] == "FALSE"
+    assert row[WEEKLY_COL_INDEX["wd_fri"]] == "TRUE"
+
+
+@pytest.mark.asyncio
+async def test_import_updates_weekly_pattern(client, db) -> None:
+    """Phase E-8: 希望訪問パターン シートで patient.weekly_pattern を更新できる."""
+    admin = await _make_user(db, "e8-import@example.com", "admin")
+    p = await _make_patient(db, code="P-E8-2", name="更新対象")
+    p.weekly_pattern = None
+    await db.commit()
+    pid = p.id
+
+    # 希望訪問パターン シートを含む xlsx を build
+    wb = Workbook()
+    ws_p = wb.active
+    ws_p.title = SHEET_PATIENTS
+    ws_p.append([col["header"] for col in PATIENT_COLUMNS])
+    # 患者シート: 既存 patient_id で update なし (空 row)
+    pfv_ws = wb.create_sheet(SHEET_PFV)
+    pfv_ws.append([col["header"] for col in PFV_COLUMNS])
+    # 希望訪問パターン シート
+    from app.services.patient_excel.schema import WEEKLY_COLUMNS
+
+    ws_w = wb.create_sheet(SHEET_WEEKLY)
+    ws_w.append([col["header"] for col in WEEKLY_COLUMNS])
+    weekly_row = [None] * len(WEEKLY_COLUMNS)
+    weekly_row[WEEKLY_COL_INDEX["patient_id"]] = str(pid)
+    weekly_row[WEEKLY_COL_INDEX["patient_code"]] = "P-E8-2"
+    weekly_row[WEEKLY_COL_INDEX["patient_name"]] = "更新対象"
+    weekly_row[WEEKLY_COL_INDEX["time_type"]] = "固定"
+    weekly_row[WEEKLY_COL_INDEX["preferred_start"]] = "10:00"
+    weekly_row[WEEKLY_COL_INDEX["service_minutes"]] = 45
+    weekly_row[WEEKLY_COL_INDEX["wd_mon"]] = "TRUE"
+    weekly_row[WEEKLY_COL_INDEX["wd_wed"]] = "TRUE"
+    ws_w.append(weekly_row)
+    buf = BytesIO()
+    wb.save(buf)
+    content = buf.getvalue()
+
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    db.expire_all()
+    p_after = (await db.scalars(select(Patient).where(Patient.id == pid))).first()
+    assert p_after is not None
+    assert p_after.weekly_pattern is not None
+    assert p_after.weekly_pattern["time_type"] == "固定"
+    assert p_after.weekly_pattern["preferred_start"] == "10:00"
+    assert p_after.weekly_pattern["service_minutes"] == 45
+    assert set(p_after.weekly_pattern.get("preferred_weekdays", [])) == {"Mon", "Wed"}
+
+
+@pytest.mark.asyncio
+async def test_weekly_pattern_roundtrip(client, db) -> None:
+    """Phase E-8: export → 編集なし import で weekly_pattern が完全 noop."""
+    admin = await _make_user(db, "e8-roundtrip@example.com", "admin")
+    p = await _make_patient(db, code="P-E8-RT", name="round-trip")
+    p.weekly_pattern = {
+        "time_type": "時間帯",
+        "preferred_start": "13:00",
+        "preferred_end": "15:00",
+        "preferred_weekdays": ["Tue", "Thu"],
+        "service_minutes": 30,
+    }
+    await db.commit()
+    export_res = await client.get("/api/v1/patients/import-export/export", headers=_bearer(admin))
+    assert export_res.status_code == 200
+    files = {
+        "file": (
+            "exported.xlsx",
+            export_res.content,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
+    import_res = await client.post(
+        "/api/v1/patients/import-export/import?dry_run=true",
+        headers=_bearer(admin),
+        files=files,
+    )
+    assert import_res.status_code == 200, import_res.text
+    body = import_res.json()
+    summary = body["summary"]
+    # round-trip: clean data → 完全 noop (weekly_pattern も含む)
+    assert summary["patients_error"] == 0, body
+    assert summary["patients_update"] == 0, body
+    assert summary["patients_noop"] == 1, body

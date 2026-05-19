@@ -47,9 +47,12 @@ from app.services.patient_excel.schema import (
     SEX_VALUES,
     SHEET_PATIENTS,
     SHEET_PFV,
+    SHEET_WEEKLY,
     STATUS_VALUES,
     TIME_TYPE_VALUES,
+    VISIT_FREQUENCY_VALUES,
     WEEKDAY_LABEL_TO_INT,
+    WEEKLY_COL_INDEX,
     is_magic_clear,
     is_magic_delete,
 )
@@ -1257,6 +1260,118 @@ def _parse_pfv_row(
 # ---------------------------------------------------------------------------
 
 
+def _parse_weekly_row(
+    r_idx: int,
+    row: tuple[Any, ...],
+    *,
+    existing_patients: dict[UUID, Patient],
+    existing_patients_by_code: dict[str, Patient],
+    patient_code_to_id: dict[str, UUID],
+    pending_new_patients: dict[UUID, _PendingNewPatient],
+) -> tuple[UUID, dict[str, Any]] | None:
+    """Phase E-8: 「希望訪問パターン」シート 1 行 → (patient_id, weekly_pattern dict).
+
+    return None: 行が無効 (patient 解決失敗、または全セル空).
+
+    weekly_pattern dict 構造 (WeeklyPatternV2 schema 準拠):
+      - frequency_per_week: int | None
+      - visit_frequency: str | None (毎週/隔週/月次)
+      - visit_weeks: str | None
+      - preferred_weekdays: list[str] (Mon/Tue/.../Sun)
+      - service_minutes: int | None
+      - time_type: str | None
+      - preferred_start: str | None  (HH:MM)
+      - preferred_end: str | None    (HH:MM)
+    """
+
+    def _g(key: str) -> Any:
+        idx = WEEKLY_COL_INDEX.get(key)
+        return row[idx] if idx is not None and idx < len(row) else None
+
+    # patient 解決: patient_id → existing → patient_code → 既存 or pending_new
+    pid_raw = _g("patient_id")
+    code_raw = _g("patient_code")
+    target_pid: UUID | None = None
+
+    pid_uuid = _read_uuid(pid_raw)
+    if pid_uuid is not None:
+        if pid_uuid in existing_patients or pid_uuid in pending_new_patients:
+            target_pid = pid_uuid
+    if target_pid is None:
+        code_str = _read_str(code_raw)
+        if code_str:
+            target_pid = patient_code_to_id.get(code_str)
+
+    if target_pid is None:
+        return None  # patient 解決不可 = skip (warning は呼び出し側で必要なら出す)
+
+    # 各セルを読み出し
+    wp: dict[str, Any] = {}
+
+    # frequency_per_week (int 1-7)
+    freq = _read_int(_g("frequency_per_week"))
+    if freq is not None and 1 <= freq <= 7:
+        wp["frequency_per_week"] = freq
+
+    # visit_frequency (毎週/隔週/月次)
+    vf = _read_str(_g("visit_frequency"))
+    if vf and vf in VISIT_FREQUENCY_VALUES:
+        wp["visit_frequency"] = vf
+
+    # visit_weeks (例 "1,3")
+    vw = _read_str(_g("visit_weeks"))
+    if vw:
+        wp["visit_weeks"] = vw
+
+    # 希望曜日 (7 列、TRUE → list に追加)
+    weekday_keys = [
+        ("wd_mon", "Mon"),
+        ("wd_tue", "Tue"),
+        ("wd_wed", "Wed"),
+        ("wd_thu", "Thu"),
+        ("wd_fri", "Fri"),
+        ("wd_sat", "Sat"),
+        ("wd_sun", "Sun"),
+    ]
+    preferred_weekdays: list[str] = []
+    for col_key, wd_en in weekday_keys:
+        val = _read_bool(_g(col_key))
+        if val:  # TRUE のみ拾う (FALSE/空 = この曜日希望なし)
+            preferred_weekdays.append(wd_en)
+    # 1 つでも TRUE があれば preferred_weekdays を set.
+    # 全 FALSE / 全空 → skip (= 既存維持, round-trip 安定化のため).
+    if preferred_weekdays:
+        wp["preferred_weekdays"] = preferred_weekdays
+
+    # service_minutes
+    sm = _read_int(_g("service_minutes"))
+    if sm is not None and 0 <= sm <= 300:
+        wp["service_minutes"] = sm
+
+    # time_type
+    tt = _read_str(_g("time_type"))
+    if tt and tt in TIME_TYPE_VALUES:
+        wp["time_type"] = tt
+
+    # preferred_start / preferred_end (HH:MM)
+    ps = _read_hhmm(_g("preferred_start"))
+    if ps:
+        wp["preferred_start"] = ps
+    pe = _read_hhmm(_g("preferred_end"))
+    if pe:
+        wp["preferred_end"] = pe
+
+    # 削除フラグ: <DELETE> なら weekly_pattern = None (= clear)
+    if is_magic_delete(_g("delete_flag")):
+        return target_pid, {}  # 呼び出し側で「空 dict = clear」と解釈
+
+    # 全セル空なら skip (= 「維持」セマンティクス)
+    if not wp:
+        return None
+
+    return target_pid, wp
+
+
 async def parse_and_diff(
     db: AsyncSession,
     *,
@@ -1384,6 +1499,78 @@ async def parse_and_diff(
         pfv_rows.append(diff_row)
         if op is not None:
             pfv_ops.append(op)
+
+    # ---- 希望訪問パターン シート (Phase E-8) ----
+    # SHEET_WEEKLY は optional. 旧 Excel (E-7 以前) との後方互換のため、
+    # シート不在は silent skip.
+    if SHEET_WEEKLY in wb.sheetnames:
+        ws_w = wb[SHEET_WEEKLY]
+        # patient_id → weekly_pattern dict (空 dict = clear)
+        weekly_pattern_updates: dict[UUID, dict[str, Any] | None] = {}
+        for r_idx, row in enumerate(ws_w.iter_rows(min_row=2, values_only=True), start=2):
+            if _row_is_empty(row):
+                continue
+            result = _parse_weekly_row(
+                r_idx,
+                row,
+                existing_patients=existing_patients,
+                existing_patients_by_code=existing_patients_by_code,
+                patient_code_to_id=patient_code_to_id,
+                pending_new_patients=pending_new_patients,
+            )
+            if result is None:
+                continue
+            pid, wp = result
+            # 空 dict = clear (= weekly_pattern を None にする)
+            weekly_pattern_updates[pid] = wp if wp else None
+
+        # Merge into patient_ops (= weekly_pattern を該当 op に統合)
+        # 既存値と同じ場合は skip (= noop 維持、round-trip 安定化).
+        ops_by_pid: dict[UUID, dict[str, Any]] = {}
+        for op in patient_ops:
+            op_pid = op.get("_patient_id") or op.get("_new_patient_id")
+            if op_pid is not None:
+                ops_by_pid[op_pid] = op
+
+        for pid, wp in weekly_pattern_updates.items():
+            # 既存値との比較. 同じなら skip (= noop 維持、無駄な update 検出を防ぐ).
+            existing_patient = existing_patients.get(pid)
+            existing_wp = existing_patient.weekly_pattern if existing_patient else None
+            if existing_wp == wp:
+                continue  # 差分なし → DB 更新不要
+
+            existing_op = ops_by_pid.get(pid)
+            if existing_op is None:
+                # No existing op (= noop だった patient or weekly only update)
+                # → 新規 update op を patient_ops に追加.
+                patient_ops.append(
+                    {
+                        "_op": "update",
+                        "_patient_id": pid,
+                        "weekly_pattern": wp,
+                    }
+                )
+                # patient_rows 側の operation も "update" に上書き (noop → update)
+                for pr in patient_rows:
+                    if pr.patient_id == pid and pr.operation == "noop":
+                        pr.operation = "update"
+                        pr.changes.append(
+                            {
+                                "field": "weekly_pattern",
+                                "old": _serializable(existing_wp),
+                                "new": "(希望訪問パターン更新)",
+                            }
+                        )
+                        break
+            else:
+                op_type = existing_op.get("_op")
+                if op_type == "delete":
+                    # delete op に weekly_pattern を統合しない (削除されるため)
+                    continue
+                if op_type == "resurrect":
+                    existing_op.setdefault("_updates", {})["weekly_pattern"] = wp
+                else:  # new / update
+                    existing_op["weekly_pattern"] = wp
 
     # ---- summary ----
     summary = PatientExcelImportSummary()
