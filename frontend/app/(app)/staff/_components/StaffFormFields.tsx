@@ -118,7 +118,7 @@ export function StaffFormFields({
           />
         </Field>
 
-        <Field label="主拠点" error={errors.primary_office_id}>
+        <Field label="主担当拠点" error={errors.primary_office_id}>
           <OfficeCombobox
             value={form.primary_office_id}
             onChange={(v) => set('primary_office_id', v)}

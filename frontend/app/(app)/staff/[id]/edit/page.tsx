@@ -290,13 +290,15 @@ export default function StaffEditPage() {
           スタッフ編集 — {data?.name}
         </h1>
         {navRecords.length > 0 && id && (
-          <RecordNavigator
-            currentId={id}
-            records={navRecords}
-            hrefTemplate="/staff/{id}/edit"
-            entityLabel="スタッフ"
-            onBeforeNavigate={handleBeforeNavigate}
-          />
+          <div className="flex flex-1 justify-center">
+            <RecordNavigator
+              currentId={id}
+              records={navRecords}
+              hrefTemplate="/staff/{id}/edit"
+              entityLabel="スタッフ"
+              onBeforeNavigate={handleBeforeNavigate}
+            />
+          </div>
         )}
         {canDelete && !data?.deleted_at ? (
           <Button

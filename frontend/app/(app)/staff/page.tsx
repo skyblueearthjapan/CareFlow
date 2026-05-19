@@ -218,7 +218,7 @@ export default function StaffPage() {
                   <th className="px-3 py-2 font-medium">性別</th>
                   <th className="px-3 py-2 font-medium">役割</th>
                   <th className="px-3 py-2 font-medium">状態</th>
-                  <th className="px-3 py-2 font-medium">主拠点</th>
+                  <th className="px-3 py-2 font-medium">主担当拠点</th>
                   <th className="px-3 py-2 font-medium">操作</th>
                 </tr>
               </thead>

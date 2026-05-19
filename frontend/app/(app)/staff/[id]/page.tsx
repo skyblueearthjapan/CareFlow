@@ -29,6 +29,7 @@ import { useStaffEvents } from '@/lib/queries/staff-events';
 import { useStaffOverrides, type OverrideRange } from '@/lib/queries/staff-overrides';
 import { useStaffShifts } from '@/lib/queries/staff-shifts';
 import { useDeleteStaff, useStaff, useStaffList } from '@/lib/queries/staff';
+import { useOffices } from '@/lib/queries/offices';
 import type { OverrideRead } from '@/lib/schemas/staff-overrides';
 import {
   WEEKDAY_LABELS,
@@ -157,12 +158,14 @@ export default function StaffDetailPage() {
           {statusLabel(data.status)}
         </span>
         {navRecords.length > 0 && (
-          <RecordNavigator
-            currentId={data.id}
-            records={navRecords}
-            hrefTemplate="/staff/{id}"
-            entityLabel="スタッフ"
-          />
+          <div className="flex flex-1 justify-center">
+            <RecordNavigator
+              currentId={data.id}
+              records={navRecords}
+              hrefTemplate="/staff/{id}"
+              entityLabel="スタッフ"
+            />
+          </div>
         )}
         <div className="ml-auto flex gap-2">
           {canEdit && (
@@ -215,6 +218,17 @@ export default function StaffDetailPage() {
 }
 
 function BasicInfoCard({ staff }: { staff: StaffRead }) {
+  const { offices } = useOffices();
+  // 主担当拠点 表示用: ID → 「拠点名 (住所)」 (編集 form と同じ可読形式).
+  const primaryOfficeLabel = useMemo(() => {
+    const oid = staff.primary_office_id;
+    if (!oid) return '--';
+    const office = offices.find((o) => o.id === oid);
+    if (!office) return oid;
+    const addr = office.address?.trim();
+    return addr ? `${office.name} (${addr})` : office.name;
+  }, [staff.primary_office_id, offices]);
+
   return (
     <Card>
       <CardHeader>
@@ -229,7 +243,7 @@ function BasicInfoCard({ staff }: { staff: StaffRead }) {
           <Row label="役割" value={roleLabel(staff.role)} />
           <Row label="状態" value={statusLabel(staff.status)} />
           <Row label="新人フラグ" value={staff.is_trainee ? '新人 (同行スタッフ要)' : '通常'} />
-          <Row label="主拠点" value={staff.primary_office_id ?? '--'} />
+          <Row label="主担当拠点" value={primaryOfficeLabel} />
           <Row label="登録日時" value={formatDate(staff.created_at)} />
           {staff.note && (
             <div className="md:col-span-2">

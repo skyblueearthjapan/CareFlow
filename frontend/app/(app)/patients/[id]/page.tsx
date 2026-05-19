@@ -26,6 +26,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/sonner';
 import { RecordNavigator, type NavigatorRecord } from '@/components/RecordNavigator';
 import { useDeletePatient, usePatient, usePatients } from '@/lib/queries/patients';
+import { useOffices } from '@/lib/queries/offices';
 import {
   INSURANCE_LABEL,
   SEX_LABEL,
@@ -54,8 +55,19 @@ export default function PatientDetailPage() {
 
   const { data, isLoading, isError, error } = usePatient(id);
   const { data: patientsList } = usePatients({ limit: 500 });
+  const { offices } = useOffices();
   const deleteMutation = useDeletePatient();
   const [confirmOpen, setConfirmOpen] = useState(false);
+
+  // 主担当拠点 表示用: ID → 「拠点名 (住所)」 (UI 統一: 編集 form と同じ可読形式)
+  const primaryOfficeLabel = useMemo<string>(() => {
+    const oid = data?.primary_office_id;
+    if (!oid) return '--';
+    const office = offices.find((o) => o.id === oid);
+    if (!office) return oid;
+    const addr = office.address?.trim();
+    return addr ? `${office.name} (${addr})` : office.name;
+  }, [data?.primary_office_id, offices]);
 
   const navRecords = useMemo<NavigatorRecord[]>(
     () =>
@@ -129,15 +141,17 @@ export default function PatientDetailPage() {
           </div>
         </div>
         {navRecords.length > 0 && (
-          <RecordNavigator
-            currentId={id}
-            records={navRecords}
-            hrefTemplate="/patients/{id}"
-            entityLabel="患者"
-            truncated={patientsList?.truncated}
-          />
+          <div className="flex flex-1 justify-center">
+            <RecordNavigator
+              currentId={id}
+              records={navRecords}
+              hrefTemplate="/patients/{id}"
+              entityLabel="患者"
+              truncated={patientsList?.truncated}
+            />
+          </div>
         )}
-        <div className="ml-auto flex gap-2">
+        <div className="flex gap-2">
           {canEdit && !data.deleted_at ? (
             <Button asChild variant="outline">
               <Link href={`/patients/${id}/edit`}>編集</Link>
@@ -192,7 +206,7 @@ export default function PatientDetailPage() {
             );
             return [
               ['保険区分', insuranceNorm ? INSURANCE_LABEL[insuranceNorm] : '--'],
-              ['主担当拠点 ID', data.primary_office_id ?? '--'],
+              ['主担当拠点', primaryOfficeLabel],
             ];
           })()}
         />

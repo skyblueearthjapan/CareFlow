@@ -157,13 +157,15 @@ export default function EditPatientPage() {
           </h1>
         </div>
         {navRecords.length > 0 && (
-          <RecordNavigator
-            currentId={id}
-            records={navRecords}
-            hrefTemplate="/patients/{id}/edit"
-            entityLabel="患者"
-            onBeforeNavigate={handleBeforeNavigate}
-          />
+          <div className="flex flex-1 justify-center">
+            <RecordNavigator
+              currentId={id}
+              records={navRecords}
+              hrefTemplate="/patients/{id}/edit"
+              entityLabel="患者"
+              onBeforeNavigate={handleBeforeNavigate}
+            />
+          </div>
         )}
         {canDelete && !patient.deleted_at ? (
           <Button

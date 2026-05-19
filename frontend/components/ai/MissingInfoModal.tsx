@@ -82,7 +82,7 @@ const FIELD_LABELS_JA: Record<string, string> = {
   age: '年齢',
   status: 'ステータス',
   address: '住所',
-  primary_office_id: '主拠点',
+  primary_office_id: '主担当拠点',
   note: '備考',
 
   // 患者特有
