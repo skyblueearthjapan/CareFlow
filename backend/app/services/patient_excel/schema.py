@@ -183,6 +183,72 @@ PFV_REQUIRED: Final[tuple[str, ...]] = (
 
 
 # ---------------------------------------------------------------------------
+# Phase E-8: シート 3: 希望訪問パターン (patient.weekly_pattern JSONB)
+# ---------------------------------------------------------------------------
+#
+# User 指摘 (Phase E-8): patient.weekly_pattern (希望時間帯・希望曜日・週訪問
+# 回数等) が従来の Excel テンプレート (患者マスタ + 固定訪問スケジュール) に
+# 含まれておらず、完全置換でも反映されない問題があった. これを解消するため
+# 「希望訪問パターン」シートを追加し、1 patient = 1 行で patient.weekly_pattern
+# を export / import 可能にする.
+#
+# 名称整理: User 視点での「週間訪問パターン (希望)」 vs 「週間訪問パターンの
+# 固定枠 (= PFV)」の紛らわしさを解消するため、本シート名を「希望訪問パターン」
+# とし、PFV は「固定訪問スケジュール」を継続使用する.
+
+SHEET_WEEKLY: Final = "希望訪問パターン"
+
+VISIT_FREQUENCY_VALUES: Final[tuple[str, ...]] = ("毎週", "隔週", "月次")
+
+WEEKLY_COLUMNS: Final[list[dict[str, object]]] = [
+    {"key": "patient_id", "header": "patient_id (※新規時は空欄)", "width": 38, "dropdown": None},
+    {"key": "patient_code", "header": "patient_code", "width": 14, "dropdown": None},
+    {"key": "patient_name", "header": "患者名", "width": 18, "dropdown": None},
+    {"key": "frequency_per_week", "header": "週訪問回数", "width": 10, "dropdown": None},
+    {
+        "key": "visit_frequency",
+        "header": "訪問頻度",
+        "width": 10,
+        "dropdown": VISIT_FREQUENCY_VALUES,
+    },
+    {"key": "visit_weeks", "header": "訪問週 (例 '1,3')", "width": 12, "dropdown": None},
+    # 希望曜日 月-日 (TRUE/FALSE) — patient.weekly_pattern.preferred_weekdays から展開
+    {"key": "wd_mon", "header": "希望曜日_月", "width": 12, "dropdown": BOOL_VALUES},
+    {"key": "wd_tue", "header": "希望曜日_火", "width": 12, "dropdown": BOOL_VALUES},
+    {"key": "wd_wed", "header": "希望曜日_水", "width": 12, "dropdown": BOOL_VALUES},
+    {"key": "wd_thu", "header": "希望曜日_木", "width": 12, "dropdown": BOOL_VALUES},
+    {"key": "wd_fri", "header": "希望曜日_金", "width": 12, "dropdown": BOOL_VALUES},
+    {"key": "wd_sat", "header": "希望曜日_土", "width": 12, "dropdown": BOOL_VALUES},
+    {"key": "wd_sun", "header": "希望曜日_日", "width": 12, "dropdown": BOOL_VALUES},
+    {"key": "service_minutes", "header": "サービス時間 (分)", "width": 14, "dropdown": None},
+    {"key": "time_type", "header": "時間タイプ", "width": 12, "dropdown": TIME_TYPE_VALUES},
+    {"key": "preferred_start", "header": "希望開始時刻", "width": 12, "dropdown": None},
+    {"key": "preferred_end", "header": "希望終了時刻", "width": 12, "dropdown": None},
+    {"key": "delete_flag", "header": "(削除フラグ)", "width": 14, "dropdown": DELETE_FLAG_VALUES},
+]
+
+WEEKLY_COL_INDEX: Final[dict[str, int]] = {
+    str(col["key"]): i for i, col in enumerate(WEEKLY_COLUMNS)
+}
+
+# 必須項目: patient_id (or patient_code) — 残りは optional (空セル = 維持)
+WEEKLY_REQUIRED: Final[tuple[str, ...]] = ("patient_id",)
+
+# 7 曜日キー (英) — JSON 内では英短縮形 (Mon..Sun) を使う (v2 標準)
+WEEKDAY_EN_LIST: Final[tuple[str, ...]] = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+WEEKDAY_EXCEL_TO_EN: Final[dict[str, str]] = {
+    "wd_mon": "Mon",
+    "wd_tue": "Tue",
+    "wd_wed": "Wed",
+    "wd_thu": "Thu",
+    "wd_fri": "Fri",
+    "wd_sat": "Sat",
+    "wd_sun": "Sun",
+}
+WEEKDAY_EN_TO_EXCEL: Final[dict[str, str]] = {v: k for k, v in WEEKDAY_EXCEL_TO_EN.items()}
+
+
+# ---------------------------------------------------------------------------
 # Styling constants
 # ---------------------------------------------------------------------------
 

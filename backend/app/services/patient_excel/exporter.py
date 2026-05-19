@@ -43,7 +43,9 @@ from app.services.patient_excel.schema import (
     PFV_PATIENT_ID_COMMENT_TEXT,
     SHEET_PATIENTS,
     SHEET_PFV,
+    SHEET_WEEKLY,
     WEEKDAY_INT_TO_LABEL,
+    WEEKLY_COLUMNS,
 )
 
 logger = logging.getLogger(__name__)
@@ -268,6 +270,41 @@ def _write_pfv_row(
         ws.cell(row=row_idx, column=col_idx + 1, value=values.get(col_key))
 
 
+def _write_weekly_row(ws: Worksheet, row_idx: int, patient: Patient) -> None:
+    """Phase E-8: patient.weekly_pattern を 「希望訪問パターン」シートの 1 行に展開.
+
+    patient.weekly_pattern は JSONB で、WeeklyPatternV2 schema の dict (or None).
+    None の場合は patient_id / patient_code / patient_name のみ書き出し、他は空欄.
+    """
+    wp = patient.weekly_pattern or {}
+    if not isinstance(wp, dict):
+        wp = {}
+
+    # 希望曜日: list[str] | None → 7 bool に展開
+    pref_weekdays = wp.get("preferred_weekdays") or []
+    if not isinstance(pref_weekdays, list):
+        pref_weekdays = []
+    pref_set = {str(w) for w in pref_weekdays}
+
+    def _wd_flag(wd_en: str) -> str:
+        return "TRUE" if wd_en in pref_set else "FALSE"
+
+    ws.cell(row=row_idx, column=1, value=str(patient.id))
+    ws.cell(row=row_idx, column=2, value=patient.code or "")
+    ws.cell(row=row_idx, column=3, value=patient.name or "")
+    ws.cell(row=row_idx, column=4, value=wp.get("frequency_per_week"))
+    ws.cell(row=row_idx, column=5, value=wp.get("visit_frequency"))
+    ws.cell(row=row_idx, column=6, value=wp.get("visit_weeks"))
+    # 希望曜日 月-日 (7 列, col 7-13)
+    for i, wd_en in enumerate(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]):
+        ws.cell(row=row_idx, column=7 + i, value=_wd_flag(wd_en))
+    ws.cell(row=row_idx, column=14, value=wp.get("service_minutes"))
+    ws.cell(row=row_idx, column=15, value=wp.get("time_type"))
+    ws.cell(row=row_idx, column=16, value=wp.get("preferred_start"))
+    ws.cell(row=row_idx, column=17, value=wp.get("preferred_end"))
+    # delete_flag: col 18 (空)
+
+
 def _resolve_time_type(patient: Patient, weekday: int) -> str | None:
     """patient.weekly_pattern.entries[].weekday と一致するエントリの time_type を返す.
 
@@ -367,6 +404,16 @@ def build_workbook(
             "空欄化しました. 再 import 時に course_template binding が喪失します.",
             len(crossoffice_warnings),
         )
+
+    # Phase E-8: 希望訪問パターン シート (1 patient = 1 行).
+    # patient.weekly_pattern を読み出して書き出す.
+    ws_w: Worksheet = wb.create_sheet(title=SHEET_WEEKLY)
+    _set_header_row(ws_w, WEEKLY_COLUMNS)
+    _attach_dropdowns(ws_w, WEEKLY_COLUMNS)
+    _attach_header_comment(ws_w, "patient_id", WEEKLY_COLUMNS, text=PATIENT_ID_COMMENT_TEXT)
+    for i, patient in enumerate(patients, start=2):
+        _write_weekly_row(ws_w, i, patient)
+    _shade_id_column_data_rows(ws_w, "patient_id", WEEKLY_COLUMNS, data_row_count=len(patients))
 
     return wb
 
