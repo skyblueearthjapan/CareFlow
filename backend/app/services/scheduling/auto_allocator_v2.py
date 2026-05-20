@@ -5609,7 +5609,7 @@ async def _resolve_course_for_pfv(
     iso_year: int,
     iso_week: int,
     weekday: int,
-    course_cache: dict[tuple[UUID, int, str], Course],
+    course_cache: dict[tuple[UUID, int, int, int], Course],
     warnings: list[str],
 ) -> Course | None:
     """``patient_fixed_visit`` に対応する Course を解決 (無ければ新規作成).
@@ -5629,7 +5629,15 @@ async def _resolve_course_for_pfv(
         4. PFV.course_template_id が NULL の場合は当該拠点の最初の有効
            template を使う (warning を残す).
 
-    course_cache は同 (office_id, weekday, code) を 1 回だけ解決するためのもの.
+    Phase G-9 critical fix: course_cache の key は ``(template.id, iso_year,
+    iso_week, weekday)`` で構成する. 旧実装の ``(office_id, weekday, code)``
+    では、 同 patient.primary_office_id (= office_id) で異なる
+    course_template_id を持つ PFV (Phase G-8 で導入された「他拠点 template
+    を希望する」パターン) を区別できず、 先に処理した PFV の Course
+    が誤って後続にも返されていた. 例: INAGE 拠点患者で TSUGA-A template
+    を持つ PFV → cache_key=(INAGE, 0, 'A') に TSUGA-A Course がキャッシュ
+    → 続く INAGE-A template の PFV にも TSUGA-A Course が返り、 visit が
+    TSUGA-A コーステーブルに混入する不具合があった.
     """
     # template 解決
     template: CourseTemplate | None = None
@@ -5668,10 +5676,24 @@ async def _resolve_course_for_pfv(
     label_first = (template.label or "").strip()[:1].upper()
     code = label_first if label_first in ("A", "B", "C", "D", "E", "M") else "M"
 
-    cache_key = (office_id, weekday, code)
+    # Phase G-9 critical fix: cache_key は template.id ベース.
+    # 同 patient.primary_office_id (= office_id) で異なる template_id を持つ
+    # PFV を区別できるようにする (= INAGE patient with TSUGA-A template
+    # と INAGE patient with INAGE-A template を別 Course として返す).
+    cache_key = (template.id, iso_year, iso_week, weekday)
     cached = course_cache.get(cache_key)
     if cached is not None:
         return cached
+
+    # Phase G-9 critical fix: Course の office_id は template.office_id を
+    # 使う. 旧実装は patient.primary_office_id (= 関数引数 office_id) を
+    # 渡していたため、 INAGE 患者で TSUGA-A template を希望する PFV
+    # (Phase G-8 で導入) の場合、 office_id=INAGE + template_id=TSUGA-A
+    # の不整合 Course が作成されていた. template の office_id を使うことで
+    # Course の office と template の office を一致させ、 2nd try fallback
+    # の (office_id, code) lookup も同 template に紐づく Course だけを
+    # ヒットさせる.
+    course_office_id = template.office_id
 
     # 1st try: (template_id, year, week, weekday)
     course = await db.scalar(
@@ -5684,10 +5706,12 @@ async def _resolve_course_for_pfv(
         )
     )
     if course is None:
-        # 2nd try: UNIQUE 制約と同じ key (office_id, code, year, week, weekday)
+        # 2nd try: UNIQUE 制約と同じ key (office_id, code, year, week, weekday).
+        # template.office_id を使うことで「同 office × 同 code だが別 template」
+        # の Course を誤検出しない.
         course = await db.scalar(
             select(Course).where(
-                Course.office_id == office_id,
+                Course.office_id == course_office_id,
                 Course.code == code,
                 Course.iso_year == iso_year,
                 Course.iso_week == iso_week,
@@ -5705,7 +5729,7 @@ async def _resolve_course_for_pfv(
             code=code,
             course_status=COURSE_STATUS_STAFF_ASSIGNED,
             template_id=template.id,
-            office_id=office_id,
+            office_id=course_office_id,
         )
         db.add(course)
         await db.flush()
@@ -6510,8 +6534,10 @@ async def reset_visits_to_fixed(
     courses_used_keys: set[tuple[UUID, int, UUID]] = set()
 
     # W41 v2 final cross-review (C-Codex-1): PFV → Course を解決するための cache.
-    # 同 (office_id, weekday, code) は 1 回だけ DB 引きする.
-    course_cache: dict[tuple[UUID, int, str], Course] = {}
+    # Phase G-9 critical fix: key を (template.id, iso_year, iso_week, weekday)
+    # ベースに変更. 旧 (office_id, weekday, code) 構成では、 同 office で
+    # 異なる template_id を持つ PFV を区別できず誤キャッシュヒットが発生していた.
+    course_cache: dict[tuple[UUID, int, int, int], Course] = {}
 
     # Wave 1 (#115): PFV → V2Visit へ変換し apply_travel_corrections で時刻補正を
     # 通してから INSERT. 4 経路統合のうち reset_visits_to_fixed.
