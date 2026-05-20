@@ -797,6 +797,10 @@ export function CourseDayTablePanel({
         weekday: wd,
         course_template_id: templateId,
         start_time: v.start_time ?? null,
+        // Phase G-15: 性別制限を週ビューに渡して赤/青色付け
+        patient_sex_restriction:
+          normalizePatientSexRestriction(patient?.sex_restriction as string | null | undefined) ??
+          null,
       });
     }
     return out;

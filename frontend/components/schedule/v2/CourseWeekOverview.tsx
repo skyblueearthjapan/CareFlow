@@ -35,6 +35,11 @@ export interface WeekOverviewVisit {
   course_template_id: string;
   /** 開始時刻 ('HH:MM' or 'HH:MM:SS' or null). */
   start_time: string | null;
+  /**
+   * Phase G-15: 性別制限 ('female_only' / 'male_only' / null).
+   * 女性のみ → 患者名 赤 / 男性のみ → 青 / その他 → 標準.
+   */
+  patient_sex_restriction?: 'female_only' | 'male_only' | null;
 }
 
 export interface CourseWeekOverviewProps {
@@ -208,6 +213,8 @@ export function CourseWeekOverview({
                          * 存在する visit にだけ非 null. pair 囲み判定で連続性チェックに使う.
                          */
                         groupKey: string | null;
+                        /** Phase G-15: 性別制限. female_only=赤 / male_only=青. */
+                        sexRestriction: 'female_only' | 'male_only' | null;
                       }
                     | {
                         kind: 'event';
@@ -227,6 +234,7 @@ export function CourseWeekOverview({
                         time: v.start_time,
                         label: v.patient_name ?? v.patient_id,
                         groupKey: inGroup ? k : null,
+                        sexRestriction: v.patient_sex_restriction ?? null,
                       };
                     }),
                     ...staffDayEvents.map((e) => {
@@ -341,21 +349,31 @@ export function CourseWeekOverview({
                                           {item.time.slice(0, 5)}
                                         </span>
                                       ) : null}
-                                      {onPatientClick ? (
-                                        <button
-                                          type="button"
-                                          className="underline-offset-2 hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary"
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            onPatientClick(item.patient_id);
-                                          }}
-                                          aria-label={`${item.label} の詳細を開く`}
-                                        >
-                                          {item.label}
-                                        </button>
-                                      ) : (
-                                        item.label
-                                      )}
+                                      {(() => {
+                                        // Phase G-15: 性別制限色
+                                        const sexStyle: React.CSSProperties =
+                                          item.sexRestriction === 'female_only'
+                                            ? { color: '#dc2626', fontWeight: 600 }
+                                            : item.sexRestriction === 'male_only'
+                                              ? { color: '#2563eb', fontWeight: 600 }
+                                              : {};
+                                        return onPatientClick ? (
+                                          <button
+                                            type="button"
+                                            className="underline-offset-2 hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary"
+                                            style={sexStyle}
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              onPatientClick(item.patient_id);
+                                            }}
+                                            aria-label={`${item.label} の詳細を開く`}
+                                          >
+                                            {item.label}
+                                          </button>
+                                        ) : (
+                                          <span style={sexStyle}>{item.label}</span>
+                                        );
+                                      })()}
                                     </li>
                                   ) : (
                                     <li
@@ -395,21 +413,31 @@ export function CourseWeekOverview({
                                               {v.time.slice(0, 5)}
                                             </span>
                                           ) : null}
-                                          {onPatientClick ? (
-                                            <button
-                                              type="button"
-                                              className="underline-offset-2 hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary"
-                                              onClick={(e) => {
-                                                e.stopPropagation();
-                                                onPatientClick(v.patient_id);
-                                              }}
-                                              aria-label={`${v.label} の詳細を開く`}
-                                            >
-                                              {v.label}
-                                            </button>
-                                          ) : (
-                                            v.label
-                                          )}
+                                          {(() => {
+                                            // Phase G-15: 性別制限色 (pair cluster 内)
+                                            const sexStyle: React.CSSProperties =
+                                              v.sexRestriction === 'female_only'
+                                                ? { color: '#dc2626', fontWeight: 600 }
+                                                : v.sexRestriction === 'male_only'
+                                                  ? { color: '#2563eb', fontWeight: 600 }
+                                                  : {};
+                                            return onPatientClick ? (
+                                              <button
+                                                type="button"
+                                                className="underline-offset-2 hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary"
+                                                style={sexStyle}
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  onPatientClick(v.patient_id);
+                                                }}
+                                                aria-label={`${v.label} の詳細を開く`}
+                                              >
+                                                {v.label}
+                                              </button>
+                                            ) : (
+                                              <span style={sexStyle}>{v.label}</span>
+                                            );
+                                          })()}
                                         </li>
                                       ))}
                                     </ul>
