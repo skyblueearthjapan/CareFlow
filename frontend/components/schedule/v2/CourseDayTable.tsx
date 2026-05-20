@@ -206,11 +206,44 @@ export interface CourseGridVisit {
   partner_location?: PartnerLocation | null;
   /**
    * Phase G-6: 同住所バケット key (lat/lng を 0.001 桁で丸めた "lat:lng" 文字列).
-   * 同 start_slot 内で同じ key を持つ visit が複数あれば「同住所×同時刻ペア」と判定し、
-   * セルに枠線装飾 (ring-purple) を付ける. lat/lng なし患者は null.
-   * リスト表示 (WeekdayScheduleCard) と同じ視覚言語.
+   * 同 start_slot 内で **異なる患者** が同じ key を持つ visit を複数 (≥2) 持てば
+   * 「同住所×同時刻ペア」と判定し、 セルを黄色枠 (border-2 border-yellow-400) で
+   * 強調する. リスト表示 (WeekdayScheduleCard) と同じ視覚言語. lat/lng なし患者は
+   * null. 同一患者の 2-staff 重複 (visit_group) は除外する.
    */
   same_address_group_id?: string | null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Phase G-6: 同住所×同時刻ペア判定 (CourseTimeRow + テスト共通用)
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * 同 start_slot に集まった visit 群から「同住所×同時刻ペア」を検出する.
+ *
+ * **異なる patient_id** で **same_address_group_id** が一致する visit が 2 件以上
+ * あれば true. 同一患者の 2-staff 重複 (visit_group の主訪問+副訪問) は除外する.
+ *
+ * リスト表示 (WeekdayScheduleCard) と同じ視覚言語のため公開関数として export し、
+ * テスト + 他コンポーネントから流用可能にする.
+ */
+export function detectSameAddressPair(
+  occupants: ReadonlyArray<Pick<CourseGridVisit, 'patient_id' | 'same_address_group_id'>>,
+): boolean {
+  if (occupants.length < 2) return false;
+  const patientsByKey = new Map<string, Set<string>>();
+  for (const o of occupants) {
+    const key = o.same_address_group_id;
+    if (!key) continue;
+    let patients = patientsByKey.get(key);
+    if (!patients) {
+      patients = new Set<string>();
+      patientsByKey.set(key, patients);
+    }
+    patients.add(o.patient_id);
+    if (patients.size >= 2) return true;
+  }
+  return false;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -597,21 +630,9 @@ function CourseTimeRow({
   // 30 分境界 (HH:00 / HH:30) は時刻ラベル強調. それ以外は薄く.
   const showLabel = time.endsWith(':00') || time.endsWith(':30');
 
-  // Phase G-6: 同住所×同時刻ペア判定. 同 start_slot 内で same_address_group_id が
-  // 共通の visit が 2 件以上あれば「同住所ペア」とみなしてセルに枠線装飾を付ける.
-  // リスト表示 (WeekdayScheduleCard.clusterVisits) と同じ視覚言語.
-  const hasSameAddressPair = useMemo(() => {
-    if (occupants.length < 2) return false;
-    const seen = new Map<string, number>();
-    for (const o of occupants) {
-      const key = o.same_address_group_id;
-      if (!key) continue;
-      const next = (seen.get(key) ?? 0) + 1;
-      if (next >= 2) return true;
-      seen.set(key, next);
-    }
-    return false;
-  }, [occupants]);
+  // Phase G-6: 同住所×同時刻ペア判定 (detectSameAddressPair を共通使用).
+  // 異なる patient_id × 同 same_address_group_id × 2 件以上 で true.
+  const hasSameAddressPair = useMemo(() => detectSameAddressPair(occupants), [occupants]);
 
   return (
     <>
@@ -642,12 +663,14 @@ function CourseTimeRow({
         data-occupant-count={occupants.length}
         data-same-address-pair={hasSameAddressPair ? 'true' : undefined}
         title={hasSameAddressPair ? '同住所×同時刻ペア' : undefined}
+        aria-label={hasSameAddressPair ? '同住所×同時刻ペア' : undefined}
         className={cn(
           'col-span-2 grid grid-cols-subgrid border-t border-border-default/40 transition-colors',
           isOver && canEdit ? 'bg-brand-primary/10 ring-1 ring-brand-primary ring-inset' : '',
-          // Phase G-6: 同住所×同時刻ペアを紫枠で強調. ドロップ中の brand-primary ring と
-          // 衝突しないよう ring 系は片方のみ active になる順序.
-          !isOver && hasSameAddressPair ? 'bg-purple-50/40 ring-2 ring-purple-300 ring-inset' : '',
+          // Phase G-6: 同住所×同時刻ペアを黄色枠で強調 (リスト表示 WeekdayScheduleCard と
+          // 同じ視覚言語). ドロップ中の brand-primary ring と衝突しないよう ring 系は
+          // 片方のみ active になる順序.
+          !isOver && hasSameAddressPair ? 'bg-yellow-50/60 ring-2 ring-yellow-400 ring-inset' : '',
         )}
         style={{ gridColumn: 'span 2 / span 2' }}
       >
