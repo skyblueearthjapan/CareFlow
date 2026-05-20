@@ -6640,15 +6640,15 @@ async def reset_visits_to_fixed(
             }
         )
 
-    # Wave 1: travel corrections を適用 (auto_shift + 同住所 align + buffer + 5 分切上).
-    v2_warnings_reset: list[V2Warning] = []
-    travel_unassigned_ids_reset = apply_travel_corrections(
-        v2_visits_reset,
-        warnings=v2_warnings_reset,
-        office_name_by_id=office_name_by_id_for_corr,
-    )
-    for vw in v2_warnings_reset:
-        warnings.append(vw.message)
+    # Phase G-11: reset-to-fixed は PFV.start_time を 100% 厳守する.
+    # apply_travel_corrections (auto_shift / 異住所同時刻禁止 / 移動時間 buffer /
+    # ケアアラーム 閾値 / 物理不可能 unassigned) は、 User が手書きで決めた
+    # 「希望時刻」 を勝手に動かしてしまうため reset 時は完全スキップする.
+    # 適合性検証 (移動時間不足 etc.) は別経路 (全面最適化 / 警告パネル) で行う.
+    travel_unassigned_ids_reset: set[int] = set()
+    # office_name_by_id_for_corr は将来 同住所ペア 同時刻処理を別途呼ぶ場合に使うため
+    # 構築自体は残す (現在は未使用).
+    _ = office_name_by_id_for_corr
 
     # H1: 1 PFV ごとに await db.flush() を呼ぶと O(N) DB roundtrip になる.
     #     visits は一括で add → 1 回 flush → assignments を一括 add → 1 回 flush.
