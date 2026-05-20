@@ -6601,8 +6601,13 @@ async def reset_visits_to_fixed(
                 }
             )
             continue
-        tt_for_corr = _extract_time_type_for_weekday(patient, pfv.weekday) or "固定"
-        ps_str, pe_str = _extract_preferred_window_for_weekday(patient, pfv.weekday)
+        # Phase G-10: reset-to-fixed は PFV.start_time を厳守する.
+        # patient.weekly_pattern.time_type が "時間帯" であっても、 reset 時には
+        # PFV を固定時刻として扱い、 apply_travel_corrections が時刻 shift しないようにする.
+        # (同住所同時刻ペア / 異住所同時刻禁止 / 移動時間 + buffer は引き続き有効.)
+        tt_for_corr = "固定"
+        ps_str = _fmt_hhmm(pfv.start_time)
+        pe_str = None
         v2 = V2Visit(
             patient_id=patient.id,
             patient_name=patient.name,
@@ -6618,7 +6623,7 @@ async def reset_visits_to_fixed(
             source_kind="fixed",
             course_code=course_code_str,
             time_type=tt_for_corr,
-            preferred_start=ps_str or _fmt_hhmm(pfv.start_time),
+            preferred_start=ps_str,
             preferred_end=pe_str,
         )
         v2_visits_reset.append(v2)
