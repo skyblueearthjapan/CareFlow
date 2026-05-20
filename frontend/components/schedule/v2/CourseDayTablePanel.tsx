@@ -576,6 +576,19 @@ export function CourseDayTablePanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [weekVisits, allPatients, courseById, templateById, officesById, courseTemplateByCourseId]);
 
+  // Phase G-6: patient_id → 同住所バケット key (lat/lng を 0.001 桁で round).
+  // 曜日別テーブル (CourseDayTable) で同住所×同時刻ペア囲み (紫枠) に使う.
+  // tolerance 0.001 ≒ 100m. lat/lng なし患者は null.
+  const sameAddressKeyByPatientId = useMemo(() => {
+    const m = new Map<string, string | null>();
+    for (const p of allPatients) {
+      const lat = (p as { lat?: number | null }).lat ?? null;
+      const lng = (p as { lng?: number | null }).lng ?? null;
+      m.set(p.id, buildSameAddressKey(lat, lng));
+    }
+    return m;
+  }, [allPatients]);
+
   // ─── visits を (course_id, slot) → CourseGridVisit[] にバケット化 ──
   // course_id 経由で template に逆引きする (BE Layer 1 が visits.course_id を埋める前提)。
   const visitsByCourse = useMemo(() => {
@@ -678,6 +691,9 @@ export function CourseDayTablePanel({
         patient_time_type: wp?.time_type ?? null,
         patient_preferred_start: wp?.preferred_start ?? null,
         patient_preferred_end: wp?.preferred_end ?? null,
+        // Phase G-6: 同住所×同時刻ペア囲み用. 同 start_slot 内に同 key が複数あれば
+        // CourseDayTable 側で紫枠装飾を付ける.
+        same_address_group_id: sameAddressKeyByPatientId.get(v.patient_id) ?? null,
       });
       m.set(cid, arr);
     }
@@ -690,6 +706,7 @@ export function CourseDayTablePanel({
     templates,
     offices,
     partnerLocationByVisit,
+    sameAddressKeyByPatientId,
   ]);
 
   // ─── Wave 37 Phase 3-C: 患者ごとの「配置済み slot」マップ ───────────────
@@ -791,18 +808,9 @@ export function CourseDayTablePanel({
     return m;
   }, [offices]);
 
-  // 2026-W20: patient_id → 同住所バケット key (lat/lng を 0.001 桁で round).
-  // 週ビュー (CourseWeekOverview) で同住所ペアを強調表示するために使う.
-  // tolerance 0.001 ≒ 100m. lat/lng なし患者は null.
-  const sameAddressKeyByPatientId = useMemo(() => {
-    const m = new Map<string, string | null>();
-    for (const p of allPatients) {
-      const lat = (p as { lat?: number | null }).lat ?? null;
-      const lng = (p as { lng?: number | null }).lng ?? null;
-      m.set(p.id, buildSameAddressKey(lat, lng));
-    }
-    return m;
-  }, [allPatients]);
+  // Phase G-6: sameAddressKeyByPatientId は visitsByCourse より前に移動済み.
+  // CourseWeekOverview (週ビュー) と CourseDayTable (テーブル表示 同住所×同時刻ペア囲み)
+  // の両方で使う.
 
   // ─── Wave 32: staffId → StaffRead マップ (CourseWeekOverview 担当名表示用) ──
   const staffMap = useMemo(() => {

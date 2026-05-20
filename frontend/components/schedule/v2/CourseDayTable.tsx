@@ -204,6 +204,13 @@ export interface CourseGridVisit {
    * 通常患者 (requires_multiple_staff=false) では常に null. 左ボーダー強調も付かない.
    */
   partner_location?: PartnerLocation | null;
+  /**
+   * Phase G-6: 同住所バケット key (lat/lng を 0.001 桁で丸めた "lat:lng" 文字列).
+   * 同 start_slot 内で同じ key を持つ visit が複数あれば「同住所×同時刻ペア」と判定し、
+   * セルに枠線装飾 (ring-purple) を付ける. lat/lng なし患者は null.
+   * リスト表示 (WeekdayScheduleCard) と同じ視覚言語.
+   */
+  same_address_group_id?: string | null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -590,6 +597,22 @@ function CourseTimeRow({
   // 30 分境界 (HH:00 / HH:30) は時刻ラベル強調. それ以外は薄く.
   const showLabel = time.endsWith(':00') || time.endsWith(':30');
 
+  // Phase G-6: 同住所×同時刻ペア判定. 同 start_slot 内で same_address_group_id が
+  // 共通の visit が 2 件以上あれば「同住所ペア」とみなしてセルに枠線装飾を付ける.
+  // リスト表示 (WeekdayScheduleCard.clusterVisits) と同じ視覚言語.
+  const hasSameAddressPair = useMemo(() => {
+    if (occupants.length < 2) return false;
+    const seen = new Map<string, number>();
+    for (const o of occupants) {
+      const key = o.same_address_group_id;
+      if (!key) continue;
+      const next = (seen.get(key) ?? 0) + 1;
+      if (next >= 2) return true;
+      seen.set(key, next);
+    }
+    return false;
+  }, [occupants]);
+
   return (
     <>
       {/* 時間帯列 (固定 / 全スロットラベル表示) */}
@@ -617,9 +640,14 @@ function CourseTimeRow({
         data-time={time}
         data-course-template-id={templateId}
         data-occupant-count={occupants.length}
+        data-same-address-pair={hasSameAddressPair ? 'true' : undefined}
+        title={hasSameAddressPair ? '同住所×同時刻ペア' : undefined}
         className={cn(
           'col-span-2 grid grid-cols-subgrid border-t border-border-default/40 transition-colors',
           isOver && canEdit ? 'bg-brand-primary/10 ring-1 ring-brand-primary ring-inset' : '',
+          // Phase G-6: 同住所×同時刻ペアを紫枠で強調. ドロップ中の brand-primary ring と
+          // 衝突しないよう ring 系は片方のみ active になる順序.
+          !isOver && hasSameAddressPair ? 'bg-purple-50/40 ring-2 ring-purple-300 ring-inset' : '',
         )}
         style={{ gridColumn: 'span 2 / span 2' }}
       >
