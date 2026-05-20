@@ -514,18 +514,19 @@ function VisitRowContent({
     <>
       <span className="tnum text-text-muted">{trimSeconds(visit.start_time)}</span>
       {(() => {
-        // Phase G-15: 性別制限による患者名 色付け
-        //   female_only → 赤 / male_only → 青 / その他 → 標準 (text-text-primary)
-        const sexColorClass =
+        // Phase G-15: 性別制限による患者名 色付け (inline style で確実反映)
+        //   female_only → 赤 / male_only → 青 / その他 → 標準
+        const sexStyle: React.CSSProperties =
           visit.sex_restriction === 'female_only'
-            ? 'text-red-600'
+            ? { color: '#dc2626', fontWeight: 600 }
             : visit.sex_restriction === 'male_only'
-              ? 'text-blue-600'
-              : 'text-text-primary';
+              ? { color: '#2563eb', fontWeight: 600 }
+              : {};
         return onPatientClick && visit.patient_id ? (
           <button
             type="button"
-            className={`${sexColorClass} underline-offset-2 hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary`}
+            className="text-text-primary underline-offset-2 hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary"
+            style={sexStyle}
             onClick={(e) => {
               e.stopPropagation();
               onPatientClick(visit.patient_id!);
@@ -535,7 +536,9 @@ function VisitRowContent({
             {visit.patient_name}
           </button>
         ) : (
-          <span className={sexColorClass}>{visit.patient_name}</span>
+          <span className="text-text-primary" style={sexStyle}>
+            {visit.patient_name}
+          </span>
         );
       })()}
       {showDuration ? (

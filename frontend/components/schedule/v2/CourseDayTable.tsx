@@ -910,13 +910,13 @@ function OccupantNameDraggable({
   isMultiStaff,
   sexRestrictionLabel,
 }: OccupantNameDraggableProps) {
-  // Phase G-15: 性別制限による患者名色
-  const sexColorClass =
+  // Phase G-15: 性別制限による患者名色 (inline style で確実反映)
+  const sexStyle: React.CSSProperties =
     sexRestrictionLabel === '女性のみ'
-      ? 'text-red-600'
+      ? { color: '#dc2626', fontWeight: 600 }
       : sexRestrictionLabel === '男性のみ'
-        ? 'text-blue-600'
-        : '';
+        ? { color: '#2563eb', fontWeight: 600 }
+        : {};
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: visitDraggableId(visitId),
     disabled: !canEdit,
@@ -965,8 +965,8 @@ function OccupantNameDraggable({
           className={cn(
             'truncate select-none touch-none',
             canEdit ? 'cursor-grab active:cursor-grabbing' : '',
-            sexColorClass,
           )}
+          style={sexStyle}
         >
           {label}
           {badge ? (
