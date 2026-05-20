@@ -182,9 +182,17 @@ export function CourseWeekOverview({
                     : [];
 
                   // Wave 32: 担当スタッフ名
-                  const assignedStaffName = assignedStaffId
-                    ? (staffMap?.get(assignedStaffId)?.name ?? null)
+                  const assignedStaff = assignedStaffId
+                    ? (staffMap?.get(assignedStaffId) ?? null)
                     : null;
+                  const assignedStaffName = assignedStaff?.name ?? null;
+                  // Phase G-16: 担当スタッフ性別色 (女性=赤 / 男性=青)
+                  const staffSexStyle: React.CSSProperties =
+                    assignedStaff?.sex === 'female'
+                      ? { color: '#dc2626', fontWeight: 700 }
+                      : assignedStaff?.sex === 'male'
+                        ? { color: '#2563eb', fontWeight: 700 }
+                        : {};
 
                   // 2026-W20: cell 内で同住所グルーピングを判定する.
                   //   - 同 cell 内に同じ sameAddressKey を持つ visit が 2 件以上 → 黄色背景.
@@ -305,12 +313,21 @@ export function CourseWeekOverview({
                         <span className="text-[10px] text-text-muted">休</span>
                       ) : (
                         <>
-                          {/* Wave 32: 担当スタッフ名 */}
+                          {/* Wave 32: 担当スタッフ名 (Phase G-16: 性別色付け) */}
                           <div
-                            className="text-[10px] font-semibold text-text-secondary border-b border-border-default/40 pb-0.5 mb-0.5 truncate"
+                            className="text-[10px] border-b border-border-default/40 pb-0.5 mb-0.5 truncate"
                             data-testid={`course-week-overview-staff-${tpl.id}-${wd}`}
                           >
-                            {assignedStaffName ? `担当: ${assignedStaffName}` : '担当: 未割当'}
+                            {assignedStaffName ? (
+                              <>
+                                <span className="font-semibold text-text-secondary">担当: </span>
+                                <span style={staffSexStyle}>{assignedStaffName}</span>
+                              </>
+                            ) : (
+                              <span className="font-semibold text-text-secondary">
+                                担当: 未割当
+                              </span>
+                            )}
                           </div>
                           <div className="mb-0.5 flex items-center justify-between">
                             <span

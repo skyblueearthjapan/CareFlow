@@ -478,42 +478,56 @@ export function CourseDayTable({
       data-course-template-id={template.id}
       data-weekday={weekday}
     >
-      {/* ヘッダー: コース名 + 担当 dropdown */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border-default bg-bg-muted/40 px-3 py-2">
-        <span className="text-sm font-semibold text-text-primary">{headerLabel}</span>
-        <label className="flex items-center gap-1 text-[11px] text-text-secondary">
-          <span aria-hidden>👤</span>
-          <span>担当:</span>
-          <select
-            value={assignedStaffId ?? ''}
-            onChange={(e) => {
-              const v = e.target.value;
-              onChangeAssignedStaff(v === '' ? null : v);
-            }}
-            disabled={!canEdit || !courseExists || isStaffMutating}
-            className="rounded border border-border-default bg-bg-base px-1.5 py-0.5 text-xs disabled:cursor-not-allowed disabled:opacity-60"
-            data-testid={`course-staff-select-${weekday}-${template.id}`}
-            aria-label={`${headerLabel} の担当スタッフ`}
-            title={
-              courseExists
-                ? '担当スタッフを変更します'
-                : '「週を生成」を実行するとコースが作成され担当を変更できます'
-            }
-          >
-            <option value="">未割当</option>
-            {staffOptions.map((s) => {
-              const dayEvents = getStaffEventsForWeekday(s.id, weekday, eventsMap);
-              const ev = dayEvents[0];
-              const label = ev ? `${s.name} [${ev.type} ${ev.start_time}-${ev.end_time}]` : s.name;
-              return (
-                <option key={s.id} value={s.id}>
-                  {label}
-                </option>
-              );
-            })}
-          </select>
-        </label>
-      </div>
+      {/* ヘッダー: コース名 + 担当 dropdown (Phase G-16: 性別色付け) */}
+      {(() => {
+        const assignedStaff = staffOptions.find((s) => s.id === assignedStaffId) ?? null;
+        const staffSexStyle: React.CSSProperties =
+          assignedStaff?.sex === 'female'
+            ? { color: '#dc2626', fontWeight: 700 }
+            : assignedStaff?.sex === 'male'
+              ? { color: '#2563eb', fontWeight: 700 }
+              : {};
+        return (
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border-default bg-bg-muted/40 px-3 py-2">
+            <span className="text-sm font-semibold text-text-primary">{headerLabel}</span>
+            <label className="flex items-center gap-1 text-[11px] text-text-secondary">
+              <span aria-hidden>👤</span>
+              <span>担当:</span>
+              <select
+                value={assignedStaffId ?? ''}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  onChangeAssignedStaff(v === '' ? null : v);
+                }}
+                disabled={!canEdit || !courseExists || isStaffMutating}
+                className="rounded border border-border-default bg-bg-base px-1.5 py-0.5 text-xs disabled:cursor-not-allowed disabled:opacity-60"
+                style={staffSexStyle}
+                data-testid={`course-staff-select-${weekday}-${template.id}`}
+                aria-label={`${headerLabel} の担当スタッフ`}
+                title={
+                  courseExists
+                    ? '担当スタッフを変更します'
+                    : '「週を生成」を実行するとコースが作成され担当を変更できます'
+                }
+              >
+                <option value="">未割当</option>
+                {staffOptions.map((s) => {
+                  const dayEvents = getStaffEventsForWeekday(s.id, weekday, eventsMap);
+                  const ev = dayEvents[0];
+                  const label = ev
+                    ? `${s.name} [${ev.type} ${ev.start_time}-${ev.end_time}]`
+                    : s.name;
+                  return (
+                    <option key={s.id} value={s.id}>
+                      {label}
+                    </option>
+                  );
+                })}
+              </select>
+            </label>
+          </div>
+        );
+      })()}
 
       {/*
         3 列テーブル (CareFlow #UX-2026W21):
