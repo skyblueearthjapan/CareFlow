@@ -812,6 +812,7 @@ function OccupantPatientInfo({
         partnerLabel={visit.partner_label ?? null}
         partnerLocation={visit.partner_location ?? null}
         isMultiStaff={visit.patient_requires_multiple_staff}
+        sexRestrictionLabel={visit.patient_sex_restriction_label}
       />
       {/* 住所 — 📍 prefix + truncate + title で full address */}
       {visit.patient_address ? (
@@ -873,6 +874,13 @@ interface OccupantNameDraggableProps {
    * 通常患者の visit セルは見た目を変えない (regression).
    */
   isMultiStaff?: boolean;
+  /**
+   * Phase G-15: 性別制限ラベル ('女性のみ' / '男性のみ' / null).
+   * 女性のみ → 患者名を赤色 (text-red-600)
+   * 男性のみ → 患者名を青色 (text-blue-600)
+   * その他 → 標準 (色指定なし)
+   */
+  sexRestrictionLabel?: string | null;
 }
 
 /**
@@ -900,7 +908,15 @@ function OccupantNameDraggable({
   partnerLabel,
   partnerLocation,
   isMultiStaff,
+  sexRestrictionLabel,
 }: OccupantNameDraggableProps) {
+  // Phase G-15: 性別制限による患者名色
+  const sexColorClass =
+    sexRestrictionLabel === '女性のみ'
+      ? 'text-red-600'
+      : sexRestrictionLabel === '男性のみ'
+        ? 'text-blue-600'
+        : '';
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: visitDraggableId(visitId),
     disabled: !canEdit,
@@ -949,6 +965,7 @@ function OccupantNameDraggable({
           className={cn(
             'truncate select-none touch-none',
             canEdit ? 'cursor-grab active:cursor-grabbing' : '',
+            sexColorClass,
           )}
         >
           {label}

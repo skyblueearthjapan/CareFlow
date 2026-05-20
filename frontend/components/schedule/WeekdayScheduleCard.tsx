@@ -513,21 +513,31 @@ function VisitRowContent({
   return (
     <>
       <span className="tnum text-text-muted">{trimSeconds(visit.start_time)}</span>
-      {onPatientClick && visit.patient_id ? (
-        <button
-          type="button"
-          className="text-text-primary underline-offset-2 hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary"
-          onClick={(e) => {
-            e.stopPropagation();
-            onPatientClick(visit.patient_id!);
-          }}
-          aria-label={`${visit.patient_name} の詳細を開く`}
-        >
-          {visit.patient_name}
-        </button>
-      ) : (
-        <span className="text-text-primary">{visit.patient_name}</span>
-      )}
+      {(() => {
+        // Phase G-15: 性別制限による患者名 色付け
+        //   female_only → 赤 / male_only → 青 / その他 → 標準 (text-text-primary)
+        const sexColorClass =
+          visit.sex_restriction === 'female_only'
+            ? 'text-red-600'
+            : visit.sex_restriction === 'male_only'
+              ? 'text-blue-600'
+              : 'text-text-primary';
+        return onPatientClick && visit.patient_id ? (
+          <button
+            type="button"
+            className={`${sexColorClass} underline-offset-2 hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onPatientClick(visit.patient_id!);
+            }}
+            aria-label={`${visit.patient_name} の詳細を開く`}
+          >
+            {visit.patient_name}
+          </button>
+        ) : (
+          <span className={sexColorClass}>{visit.patient_name}</span>
+        );
+      })()}
       {showDuration ? (
         <span
           className="text-[9px] text-text-secondary tnum"
