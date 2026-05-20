@@ -2,6 +2,8 @@ import type { Config } from 'tailwindcss';
 
 const config: Config = {
   content: ['./app/**/*.{ts,tsx}', './components/**/*.{ts,tsx}', './lib/**/*.{ts,tsx}'],
+  // Phase G-15: 性別制限色 (女性=赤/男性=青) を静的解析で見落とさないよう明示
+  safelist: ['text-red-600', 'text-blue-600'],
   theme: {
     extend: {
       colors: {
