@@ -239,8 +239,12 @@ def parse_user_schedule(name_to_code: dict[str, str]) -> tuple[list[dict], list[
     """User シート「スケジュール枠組み（仮）」 を parse.
 
     戻り値: (resolved_pfv, unresolved_findings)
-      resolved_pfv: [{weekday, course, start, patient_code, name, raw_cell, is_pair}]
-      unresolved_findings: [{weekday, course, start, raw_cell, name, status}]
+      resolved_pfv: [{weekday, course, office, start, patient_code, name, raw_cell, is_pair}]
+      unresolved_findings: [{weekday, course, office, start, raw_cell, name, status}]
+
+    office は "TSUGA" / "INAGE" の 2 値.
+    block の course 行 (= weekday header の次行) の col_idx-1 セルが「都賀」なら
+    TSUGA、それ以外 (「稲毛」または数値「6.0」等) は INAGE 扱い.
     """
     wb = load_workbook(USER_XLSX, data_only=True)
     ws = wb["スケジュール枠組み（仮）"]
@@ -263,8 +267,11 @@ def parse_user_schedule(name_to_code: dict[str, str]) -> tuple[list[dict], list[
         if ri + 1 > max_row:
             break
         row2 = [ws.cell(row=ri + 1, column=ci).value for ci in range(1, ws.max_column + 1)]
-        # 各 weekday block の course を取得 (R2: col_idx は氏名列、course は col_idx 自体)
-        weekday_blocks: list[tuple[str, str, int]] = []
+        # 各 weekday block の course と office を取得.
+        # R2: col_idx には course (A/B/...), col_idx-1 には 訪問件数 (例: '6.0')
+        # または office marker ('都賀'/'稲毛') が入る.
+        # block 列レイアウト: (col_idx-1=時間帯/office, col_idx=氏名/course, col_idx+1=住所, ...)
+        weekday_blocks: list[tuple[str, str, str, int]] = []
         for col_idx, wd_jp in weekday_cells:
             wd_en = WEEKDAY_JP_TO_EN[norm(wd_jp)]
             course_val = row2[col_idx] if col_idx < len(row2) else None
@@ -275,9 +282,10 @@ def parse_user_schedule(name_to_code: dict[str, str]) -> tuple[list[dict], list[
                 # ↑ もう col_idx + 1 で取れているはず.
                 # それでも違う場合は course を空にする (= 後で skip)
                 course = ""
-            # block の data 開始列: col_idx = 「曜日」 という merge cell の先頭、
-            # 内側 column は (時間帯, 氏名, 住所, 複数, 条件) で col_idx 自体が時間帯, +1 が氏名
-            weekday_blocks.append((wd_en, course, col_idx))
+            # office marker (col_idx-1 セル) — 「都賀」のみ TSUGA、それ以外は INAGE.
+            office_marker = norm(row2[col_idx - 1]) if 0 <= col_idx - 1 < len(row2) else ""
+            office_code = "TSUGA" if office_marker == "都賀" else "INAGE"
+            weekday_blocks.append((wd_en, course, office_code, col_idx))
 
         # R3: 内側 header (skip)
         # R4 以降の data row
@@ -292,7 +300,7 @@ def parse_user_schedule(name_to_code: dict[str, str]) -> tuple[list[dict], list[
             if check_weekday:
                 break
             # 各 block 内処理
-            for wd_en, course, col_idx in weekday_blocks:
+            for wd_en, course, office_code, col_idx in weekday_blocks:
                 # R1 「月曜日」 セル col_idx は merge 内の代表列で、実際の block
                 # 内列は (時間帯, 氏名, 住所, 複数, 条件) = (col_idx-1, col_idx, col_idx+1, ...)
                 time_col = col_idx - 1
@@ -313,6 +321,7 @@ def parse_user_schedule(name_to_code: dict[str, str]) -> tuple[list[dict], list[
                             {
                                 "weekday": wd_en,
                                 "course": course,
+                                "office": office_code,
                                 "start": t_str,
                                 "patient_code": code,
                                 "name": nm,
@@ -325,6 +334,7 @@ def parse_user_schedule(name_to_code: dict[str, str]) -> tuple[list[dict], list[
                             {
                                 "weekday": wd_en,
                                 "course": course,
+                                "office": office_code,
                                 "start": t_str,
                                 "raw_cell": str(name_v).strip() if name_v else "",
                                 "name": nm,
