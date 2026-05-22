@@ -976,9 +976,21 @@ function OccupantNameDraggable({
           title={tooltip}
           {...listeners}
           {...attributes}
+          onClick={(e) => {
+            // Phase G-18: 患者名クリックで詳細ポップアップを開く
+            // (DnD は distance:6 で drag 開始するため、 通常クリックは drag 発生せず onClick が発火)
+            if (onPatientClick && patientId) {
+              e.stopPropagation();
+              onPatientClick(patientId);
+            }
+          }}
           className={cn(
             'truncate select-none touch-none',
             canEdit ? 'cursor-grab active:cursor-grabbing' : '',
+            // 詳細クリック可能なら hover で underline + pointer (drag handle と両立)
+            onPatientClick && patientId
+              ? 'hover:underline underline-offset-2 hover:cursor-pointer'
+              : '',
           )}
           style={sexStyle}
         >
