@@ -622,10 +622,14 @@ function VisitRowContent({
       {showSexRestriction && visit.sex_restriction === 'male_only' ? (
         <span className="text-[9px] text-blue-600">👨 男性のみ</span>
       ) : null}
-      {/* 次の patient までの距離 (= VisitArrow). null なら描画しない. */}
-      {showDistance ? <VisitArrow distanceKm={visit.distance_to_next_km ?? null} /> : null}
-      {/* Phase G-21: 🔒 完全固定 toggle. onTogglePin を渡された時のみ表示. */}
+      {/* Phase G-21: 🔒 完全固定 toggle. 時間条件 / 性別制限の直後に配置 (距離より前). */}
       {onTogglePin ? <PinToggleButton visit={visit} onTogglePin={onTogglePin} /> : null}
+      {/* 次の patient までの距離 (= VisitArrow). 行末右端に寄せる. */}
+      {showDistance ? (
+        <span className="ml-auto">
+          <VisitArrow distanceKm={visit.distance_to_next_km ?? null} />
+        </span>
+      ) : null}
     </>
   );
 }

@@ -921,6 +921,53 @@ function OccupantPatientInfo({
           <span className="truncate">{sexText}</span>
         ) : null}
       </span>
+      {/* Phase G-22: 🔒 完全固定 toggle — 時間条件 + 性別制限 の直後に配置 (= リスト表示と統一) */}
+      {canEdit && onTogglePin && (
+        <button
+          type="button"
+          className={cn(
+            'transition-opacity p-0.5 rounded flex-shrink-0',
+            visit.is_pinned === true
+              ? 'opacity-100 hover:bg-yellow-100'
+              : 'opacity-0 group-hover:opacity-60 [@media(hover:none)]:opacity-60 hover:opacity-100 hover:bg-yellow-50',
+            !visit.fixed_visit_id ? 'cursor-not-allowed opacity-30' : '',
+          )}
+          onClick={(e) => {
+            e.stopPropagation();
+            if (!visit.fixed_visit_id) return;
+            onTogglePin(visit.fixed_visit_id, visit.is_pinned !== true);
+          }}
+          onPointerDown={(e) => {
+            // 行 drag を抑止
+            e.stopPropagation();
+          }}
+          disabled={!visit.fixed_visit_id}
+          aria-label={
+            visit.is_pinned === true
+              ? `${visit.patient_name ?? visit.patient_id} の完全固定を解除`
+              : !visit.fixed_visit_id
+                ? `${visit.patient_name ?? visit.patient_id} は固定枠が無いため完全固定できません`
+                : `${visit.patient_name ?? visit.patient_id} を完全固定`
+          }
+          title={
+            !visit.fixed_visit_id
+              ? '先に固定枠登録が必要'
+              : visit.is_pinned === true
+                ? '完全固定を解除 (Layer 2 が再配置可能になります)'
+                : '完全固定 (Layer 2 が動かさなくなります)'
+          }
+          aria-pressed={visit.is_pinned === true}
+          data-testid={`pin-visit-btn-${visit.id}`}
+          data-pinned={visit.is_pinned === true ? 'true' : 'false'}
+          data-pfv-id={visit.fixed_visit_id ?? ''}
+        >
+          {visit.is_pinned === true ? (
+            <Lock className="h-3 w-3 text-yellow-700" />
+          ) : (
+            <Unlock className="h-3 w-3 text-text-muted" />
+          )}
+        </button>
+      )}
     </div>
   );
 }
@@ -1116,57 +1163,8 @@ function OccupantNameDraggable({
           <Info className="h-3 w-3 text-brand-primary" />
         </button>
       )}
-      {/* Phase G-21: 🔒 完全固定 toggle.
-          - fixedVisitId が無い (= weekly_pattern 由来) 場合は disabled + tooltip 表示.
-          - canEdit=false の場合は表示しない (閲覧専用ロール).
-          - isPinned=true: 常時表示 (色付き 🔒)
-          - isPinned=false: hover で出現 (薄い 🔓). タッチデバイスでは常時表示. */}
-      {canEdit && onTogglePin && (
-        <button
-          type="button"
-          className={cn(
-            'transition-opacity p-0.5 rounded flex-shrink-0',
-            isPinned
-              ? 'opacity-100 hover:bg-yellow-100'
-              : 'opacity-0 group-hover:opacity-60 [@media(hover:none)]:opacity-60 hover:opacity-100 hover:bg-yellow-50',
-            !fixedVisitId ? 'cursor-not-allowed opacity-30' : '',
-          )}
-          onClick={(e) => {
-            e.stopPropagation();
-            if (!fixedVisitId) return;
-            onTogglePin(fixedVisitId, !isPinned);
-          }}
-          onPointerDown={(e) => {
-            // Phase G-19 と同じく行 drag を抑止.
-            e.stopPropagation();
-          }}
-          disabled={!fixedVisitId}
-          aria-label={
-            isPinned
-              ? `${label} の完全固定を解除`
-              : !fixedVisitId
-                ? `${label} は固定枠が無いため完全固定できません`
-                : `${label} を完全固定`
-          }
-          title={
-            !fixedVisitId
-              ? '先に固定枠登録が必要'
-              : isPinned
-                ? '完全固定を解除 (Layer 2 が再配置可能になります)'
-                : '完全固定 (Layer 2 が動かさなくなります)'
-          }
-          aria-pressed={!!isPinned}
-          data-testid={`pin-visit-btn-${visitId}`}
-          data-pinned={isPinned ? 'true' : 'false'}
-          data-pfv-id={fixedVisitId ?? ''}
-        >
-          {isPinned ? (
-            <Lock className="h-3 w-3 text-yellow-700" />
-          ) : (
-            <Unlock className="h-3 w-3 text-text-muted" />
-          )}
-        </button>
-      )}
+      {/* Phase G-22: 🔒 toggle は OccupantPatientInfo の条件直後 (条件 + 性別制限 の直後) に移設.
+          ここでは描画しない. */}
       {canEdit && onDeleteVisit && (
         <button
           type="button"
