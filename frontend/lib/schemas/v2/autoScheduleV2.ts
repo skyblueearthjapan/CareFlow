@@ -487,6 +487,27 @@ export const updateFixedTimeWeekOnlyRequestSchema = z.object({
 });
 export type UpdateFixedTimeWeekOnlyRequest = z.infer<typeof updateFixedTimeWeekOnlyRequestSchema>;
 
+// ---------------------------------------------------------------------------
+// Phase G-17: 一斉未割当 (POST /unassign-all-staff)
+//
+// 表示中の週の全 Course 担当 + visit_staff_assignments を一括解除する.
+// BE 側: backend/app/schemas/v2/auto_schedule_v2.py の
+// AutoScheduleV2UnassignAllRequest / Response と一致.
+// ---------------------------------------------------------------------------
+
+export const unassignAllStaffRequestSchema = z.object({
+  iso_year: z.number().int().min(2020).max(2100),
+  iso_week: z.number().int().min(1).max(53),
+  office_ids: z.array(z.string().uuid()).default([]),
+});
+export type UnassignAllStaffRequest = z.infer<typeof unassignAllStaffRequestSchema>;
+
+export const unassignAllStaffResponseSchema = z.object({
+  courses_unassigned: z.number().int().nonnegative(),
+  visit_assignments_removed: z.number().int().nonnegative(),
+});
+export type UnassignAllStaffResponse = z.infer<typeof unassignAllStaffResponseSchema>;
+
 export const updateFixedTimeWeekOnlyResponseSchema = z.object({
   updated: z.boolean(),
   visit_id: z.string().uuid(),

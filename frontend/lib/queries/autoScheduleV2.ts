@@ -30,6 +30,8 @@ import {
   fullOptimizeResponseSchema,
   resetToFixedRequestSchema,
   resetToFixedResponseSchema,
+  unassignAllStaffRequestSchema,
+  unassignAllStaffResponseSchema,
   updateFixedTimeMasterRequestSchema,
   updateFixedTimeMasterResponseSchema,
   updateFixedTimeWeekOnlyRequestSchema,
@@ -44,6 +46,8 @@ import {
   type FullOptimizeResponse,
   type ResetToFixedRequest,
   type ResetToFixedResponse,
+  type UnassignAllStaffRequest,
+  type UnassignAllStaffResponse,
   type UpdateFixedTimeMasterRequest,
   type UpdateFixedTimeMasterResponse,
   type UpdateFixedTimeWeekOnlyRequest,
@@ -57,6 +61,7 @@ const RESET_TO_FIXED_PATH = '/api/v1/schedule/v2/reset-to-fixed';
 const APPLY_WEEK_ONLY_PATH = '/api/v1/schedule/v2/apply-week-only';
 const UPDATE_FIXED_TIME_MASTER_PATH = '/api/v1/schedule/v2/update-fixed-time-master';
 const UPDATE_FIXED_TIME_WEEK_ONLY_PATH = '/api/v1/schedule/v2/update-fixed-time-week-only';
+const UNASSIGN_ALL_STAFF_PATH = '/api/v1/schedule/v2/unassign-all-staff';
 
 function authPair(session: ReturnType<typeof useSession>['data']) {
   return {
@@ -289,6 +294,43 @@ export function useUpdateFixedTimeWeekOnlyMutation(): UseMutationResult<
     },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['visits'] });
+    },
+  });
+}
+
+/**
+ * POST /api/v1/schedule/v2/unassign-all-staff — Phase G-17: 一斉未割当.
+ *
+ * 表示中の週の全 Course 担当 + visit_staff_assignments を一括解除する.
+ * courses / visits 自体は残し、担当 (assigned_staff_id) と
+ * visit_staff_assignments のみを消す. RBAC: admin / manager のみ (BE 担保).
+ *
+ * onSuccess で courses / visits / visit_staff_assignments cache を invalidate.
+ */
+export function useUnassignAllStaffMutation(): UseMutationResult<
+  UnassignAllStaffResponse,
+  Error,
+  UnassignAllStaffRequest
+> {
+  const qc = useQueryClient();
+  const { data: session } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+
+  return useMutation<UnassignAllStaffResponse, Error, UnassignAllStaffRequest>({
+    mutationFn: async (raw) => {
+      const payload = unassignAllStaffRequestSchema.parse(raw);
+      const result = await fetcher<unknown>(UNASSIGN_ALL_STAFF_PATH, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+        accessToken,
+        refreshToken,
+      });
+      return unassignAllStaffResponseSchema.parse(result);
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['visits'] });
+      void qc.invalidateQueries({ queryKey: ['courses'] });
+      void qc.invalidateQueries({ queryKey: ['visit-staff-assignments'] });
     },
   });
 }

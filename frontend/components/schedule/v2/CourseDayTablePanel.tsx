@@ -83,6 +83,7 @@ import { AcceptanceLegend } from './AcceptanceLayer';
 import { DiffAddDialog } from './DiffAddDialog';
 import { FullOptimizeDialog } from './FullOptimizeDialog';
 import { ResetToFixedButton } from './ResetToFixedButton';
+import { UnassignAllStaffButton } from './UnassignAllStaffButton';
 import {
   CourseDayTable,
   floorToCourseSlot,
@@ -1551,6 +1552,15 @@ export function CourseDayTablePanel({
 
                   {/* Wave 41 v2 § 13.6: 固定枠に戻す (機能 D) */}
                   <ResetToFixedButton
+                    isoYear={isoYear}
+                    isoWeek={isoWeek}
+                    officeId={officeId}
+                    disabled={generateWeekMut.isPending || assignStaffOnlyMut.isPending}
+                  />
+
+                  {/* Phase G-17: 一斉未割当 (表示週の全 Course 担当 +
+                      visit_staff_assignments を一括解除する). */}
+                  <UnassignAllStaffButton
                     isoYear={isoYear}
                     isoWeek={isoWeek}
                     officeId={officeId}

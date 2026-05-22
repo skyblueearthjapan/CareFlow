@@ -615,6 +615,39 @@ class UpdateFixedTimeWeekOnlyResponse(BaseModel):
     visit_id: uuid.UUID
 
 
+# ---------------------------------------------------------------------------
+# 8) /unassign-all-staff (Phase G-17: 一斉未割当)
+#
+# 表示中の週に対して:
+#   - courses.assigned_staff_id を NULL にする (course 自体は残す)
+#   - visit_staff_assignments を物理 delete (visit 自体は残す)
+# admin / manager のみ.
+# ---------------------------------------------------------------------------
+
+
+class AutoScheduleV2UnassignAllRequest(BaseModel):
+    """``POST /api/v1/schedule/v2/unassign-all-staff`` request.
+
+    Phase G-17: 表示中の週の全 Course 担当 + visit_staff_assignments を
+    一括解除する. UI 側で確認ダイアログを経由してから呼び出す.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    iso_year: int = Field(ge=2020, le=2100)
+    iso_week: int = Field(ge=1, le=53)
+    office_ids: list[uuid.UUID] = Field(default_factory=list, max_length=200)
+
+
+class AutoScheduleV2UnassignAllResponse(BaseModel):
+    """``POST /api/v1/schedule/v2/unassign-all-staff`` response."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    courses_unassigned: int = Field(ge=0)
+    visit_assignments_removed: int = Field(ge=0)
+
+
 __all__ = [
     "AmPmV2",
     "AutoScheduleV2ApplyIndividualRequest",
@@ -627,6 +660,8 @@ __all__ = [
     "AutoScheduleV2FullOptimizeResponse",
     "AutoScheduleV2ResetToFixedRequest",
     "AutoScheduleV2ResetToFixedResponse",
+    "AutoScheduleV2UnassignAllRequest",
+    "AutoScheduleV2UnassignAllResponse",
     "UnassignedPatient",
     "UnassignedReasonOut",
     "UnassignedStageOut",

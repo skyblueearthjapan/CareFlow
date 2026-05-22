@@ -6937,6 +6937,106 @@ async def apply_individual_proposal(
     }
 
 
+# ---------------------------------------------------------------------------
+# Phase G-17: 表示週の全 Course 担当 + visit_staff_assignments を一括解除
+# ---------------------------------------------------------------------------
+
+
+async def unassign_all_staff_for_week(
+    db: AsyncSession,
+    *,
+    iso_year: int,
+    iso_week: int,
+    office_ids: list[UUID],
+) -> dict[str, int]:
+    """Phase G-17: 表示週の全 Course 担当 + visit_staff_assignments を一括解除.
+
+    手順:
+      1. ``courses`` WHERE iso_year/iso_week (+ office_id) の
+         ``assigned_staff_id`` を NULL にする. ``course_status`` / ``template_id``
+         等は維持し course 自体は残す.
+      2. ``visits`` WHERE visit_date が当該週 (Mon-Sun) かつ ``deleted_at IS NULL``
+         かつ patient.primary_office_id in office_ids の id を取得.
+      3. ``visit_staff_assignments`` WHERE visit_id IN (...) を物理 delete.
+
+    トランザクション内で完結する (``db.flush()`` のみ. commit は呼び出し側).
+
+    Args:
+        db: AsyncSession.
+        iso_year: ISO 年 (2020-2100).
+        iso_week: ISO 週 (1-53).
+        office_ids: 対象拠点. 空なら全 active 拠点.
+
+    Returns:
+        ``{"courses_unassigned": N, "visit_assignments_removed": M}`` の dict.
+    """
+    if iso_year < 2000 or iso_year > 2100:
+        raise ValueError(f"iso_year out of range: {iso_year}")
+    if iso_week < 1 or iso_week > 53:
+        raise ValueError(f"iso_week out of range: {iso_week}")
+
+    try:
+        week_monday = date.fromisocalendar(iso_year, iso_week, 1)
+        week_sunday = date.fromisocalendar(iso_year, iso_week, 7)
+    except ValueError as exc:
+        raise ValueError(f"invalid ISO week: year={iso_year} week={iso_week}") from exc
+
+    # 全拠点指定対応 (office_ids 空 = 全 active 拠点)
+    if not office_ids:
+        office_rows = await db.scalars(select(Office.id).where(Office.deleted_at.is_(None)))
+        office_ids = list(office_rows.all())
+        if not office_ids:
+            return {"courses_unassigned": 0, "visit_assignments_removed": 0}
+
+    # 1) courses.assigned_staff_id を NULL に
+    # course は (iso_year, iso_week, office_id) で絞る. soft-delete は除外.
+    # 既に NULL のものはカウントしない (== "実際に解除した数" を返す).
+    course_rows = await db.scalars(
+        select(Course).where(
+            Course.iso_year == iso_year,
+            Course.iso_week == iso_week,
+            Course.office_id.in_(office_ids),
+            Course.deleted_at.is_(None),
+            Course.assigned_staff_id.is_not(None),
+        )
+    )
+    courses_to_unassign = list(course_rows.all())
+    courses_unassigned = 0
+    for c in courses_to_unassign:
+        c.assigned_staff_id = None
+        courses_unassigned += 1
+
+    # 2) 当該週 (Mon-Sun) + office_ids 内の patient に紐づく visit を抽出.
+    # Visit には office_id が無いので patient.primary_office_id 経由でフィルタ.
+    visit_id_rows = await db.scalars(
+        select(Visit.id)
+        .join(Patient, Patient.id == Visit.patient_id)
+        .where(
+            Visit.visit_date >= week_monday,
+            Visit.visit_date <= week_sunday,
+            Visit.deleted_at.is_(None),
+            Patient.primary_office_id.in_(office_ids),
+        )
+    )
+    visit_ids = list(visit_id_rows.all())
+
+    # 3) visit_staff_assignments を物理 delete.
+    visit_assignments_removed = 0
+    if visit_ids:
+        from sqlalchemy import delete as sa_delete
+
+        result = await db.execute(
+            sa_delete(VisitStaffAssignment).where(VisitStaffAssignment.visit_id.in_(visit_ids))
+        )
+        visit_assignments_removed = int(result.rowcount or 0)
+
+    await db.flush()
+    return {
+        "courses_unassigned": courses_unassigned,
+        "visit_assignments_removed": visit_assignments_removed,
+    }
+
+
 __all__ = [
     "AM_BLOCK_END",
     "AM_BLOCK_START",
@@ -6984,4 +7084,5 @@ __all__ = [
     "reset_visits_to_fixed",
     "run_v2_pipeline",
     "split_into_buckets",
+    "unassign_all_staff_for_week",
 ]

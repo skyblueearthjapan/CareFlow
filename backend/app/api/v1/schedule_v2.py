@@ -33,6 +33,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.core.deps import DbDep, require_role
+from app.models.audit_log import AuditLog
 from app.models.office import Office
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
@@ -49,6 +50,8 @@ from app.schemas.v2.auto_schedule_v2 import (
     AutoScheduleV2FullOptimizeResponse,
     AutoScheduleV2ResetToFixedRequest,
     AutoScheduleV2ResetToFixedResponse,
+    AutoScheduleV2UnassignAllRequest,
+    AutoScheduleV2UnassignAllResponse,
     UnassignedPatient,
     UpdateFixedTimeMasterRequest,
     UpdateFixedTimeMasterResponse,
@@ -90,6 +93,7 @@ from app.services.scheduling.auto_allocator_v2 import (
     haversine_km,
     reset_visits_to_fixed,
     run_v2_pipeline,
+    unassign_all_staff_for_week,
 )
 
 logger = logging.getLogger(__name__)
@@ -1374,6 +1378,65 @@ async def update_fixed_time_week_only_endpoint(
         raise
 
     return UpdateFixedTimeWeekOnlyResponse(updated=True, visit_id=payload.visit_id)
+
+
+# ---------------------------------------------------------------------------
+# 8) POST /schedule/v2/unassign-all-staff (Phase G-17: 一斉未割当)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/v2/unassign-all-staff",
+    response_model=AutoScheduleV2UnassignAllResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Phase G-17: 表示中の週の全 Course 担当 + visit_staff_assignments を一括解除",
+)
+async def unassign_all_staff_endpoint(
+    payload: AutoScheduleV2UnassignAllRequest,
+    db: DbDep,
+    actor: Annotated[User, Depends(require_role("admin", "manager"))],
+) -> AutoScheduleV2UnassignAllResponse:
+    """Phase G-17: 表示中の週の全 Course 担当 + visit_staff_assignments を一括解除.
+
+    - ``courses.assigned_staff_id`` を NULL に (course 自体は残す)
+    - ``visit_staff_assignments`` を物理 delete (visit 自体は残す)
+    - audit_logs に ``action="schedule_unassign_all_staff"`` で件数を記録
+
+    RBAC: admin / manager のみ.
+    """
+    try:
+        result = await unassign_all_staff_for_week(
+            db,
+            iso_year=payload.iso_year,
+            iso_week=payload.iso_week,
+            office_ids=list(payload.office_ids),
+        )
+        # 監査ログ (件数を after に記録).
+        db.add(
+            AuditLog(
+                actor_user_id=actor.id,
+                action="schedule_unassign_all_staff",
+                target_table="courses",
+                target_id=f"{payload.iso_year}-W{payload.iso_week}",
+                before={},
+                after={
+                    "courses_unassigned": result["courses_unassigned"],
+                    "visit_assignments_removed": result["visit_assignments_removed"],
+                },
+            )
+        )
+        await db.commit()
+    except ValueError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except Exception:
+        await db.rollback()
+        raise
+
+    return AutoScheduleV2UnassignAllResponse(
+        courses_unassigned=int(result["courses_unassigned"]),
+        visit_assignments_removed=int(result["visit_assignments_removed"]),
+    )
 
 
 __all__ = ["router"]
