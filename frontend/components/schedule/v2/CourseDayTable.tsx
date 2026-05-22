@@ -810,10 +810,28 @@ function OccupantPatientInfo({
     .filter((s): s is string => typeof s === 'string' && s.length > 0)
     .join(' / ');
 
+  // Phase G-19: 行全体 (氏名 + 住所 + 条件) を drag handle にする.
+  // 名前部分の click はそのまま onClick (PointerSensor distance:6 で drag と区別).
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+    id: visitDraggableId(visit.id),
+    disabled: !canEdit,
+    data: { kind: 'placed-visit', visitId: visit.id },
+  });
+
   return (
     // CareFlow #UX-2026W21 fix: 氏名 + 住所 + 条件 を 1 行に横並び (リスト VisitRowContent と統一).
     // 相方注記等の追加情報は OccupantNameDraggable 内部で別行表示される.
-    <div className="flex flex-row flex-wrap items-baseline gap-x-2 gap-y-0 min-w-0">
+    <div
+      ref={setNodeRef}
+      {...listeners}
+      {...attributes}
+      data-row-draggable-visit-id={visit.id}
+      className={cn(
+        'flex flex-row flex-wrap items-baseline gap-x-2 gap-y-0 min-w-0 touch-none select-none',
+        canEdit ? 'cursor-grab active:cursor-grabbing' : '',
+        isDragging ? 'opacity-40' : '',
+      )}
+    >
       {/* 氏名 — drag handle + 詳細 / 削除ボタン */}
       <OccupantNameDraggable
         visitId={visit.id}
@@ -931,11 +949,8 @@ function OccupantNameDraggable({
       : sexRestrictionLabel === '男性のみ'
         ? { color: '#2563eb', fontWeight: 600 }
         : {};
-  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
-    id: visitDraggableId(visitId),
-    disabled: !canEdit,
-    data: { kind: 'placed-visit', visitId },
-  });
+  // Phase G-19: drag handle は親 OccupantPatientInfo の行全体に移動.
+  // ここでは click による詳細ポップアップ展開のみ担当.
 
   // Wave 38: tooltip に相方の現在地も追加 (cellLabel + time 文字列を結合).
   const partnerLocationText = partnerLocation
@@ -963,34 +978,26 @@ function OccupantNameDraggable({
         'group flex items-start justify-between gap-0.5',
         // Wave 38: 2 名体制 visit のみ左ボーダー (controlled by isMultiStaff フラグ).
         isMultiStaff ? 'border-l-4 border-brand-primary/60 pl-1' : '',
-        isDragging ? 'opacity-40' : '',
       )}
       data-multi-staff={isMultiStaff ? 'true' : undefined}
     >
       <div className="flex min-w-0 flex-1 flex-col gap-0">
         <div
-          ref={setNodeRef}
           data-testid={`course-occupant-name-${visitId}`}
           data-draggable-visit-id={visitId}
           data-visit-group-slot={groupSlotLabel ?? ''}
           title={tooltip}
-          {...listeners}
-          {...attributes}
           onClick={(e) => {
-            // Phase G-18: 患者名クリックで詳細ポップアップを開く
-            // (DnD は distance:6 で drag 開始するため、 通常クリックは drag 発生せず onClick が発火)
+            // Phase G-18 / G-19: 患者名クリックで詳細ポップアップを開く
+            // (drag は親 OccupantPatientInfo の行全体で担当)
             if (onPatientClick && patientId) {
               e.stopPropagation();
               onPatientClick(patientId);
             }
           }}
           className={cn(
-            'truncate select-none touch-none',
-            canEdit ? 'cursor-grab active:cursor-grabbing' : '',
-            // 詳細クリック可能なら hover で underline + pointer (drag handle と両立)
-            onPatientClick && patientId
-              ? 'hover:underline underline-offset-2 hover:cursor-pointer'
-              : '',
+            'truncate',
+            onPatientClick && patientId ? 'hover:underline underline-offset-2 cursor-pointer' : '',
           )}
           style={sexStyle}
         >
@@ -1054,6 +1061,11 @@ function OccupantNameDraggable({
           onClick={(e) => {
             e.stopPropagation();
             onDeleteVisit(visitId, label);
+          }}
+          onPointerDown={(e) => {
+            // Phase G-19: 行全体が drag handle になったため、 × ボタンクリック時の
+            // pointer down を親に伝搬させない (drag 起動防止).
+            e.stopPropagation();
           }}
           aria-label={`${label} の訪問を削除`}
           title="この訪問を削除"
