@@ -57,6 +57,12 @@ export const patientFixedVisitV2BaseSchema = z.object({
    * template を指す必要がある (BE 側で 422 検証).
    */
   sub_office_id: z.string().uuid().nullable().optional(),
+  /**
+   * Phase G-21: 「完全固定」フラグ.
+   * true のとき、自動最適化 (Layer 2) はこの PFV から生成された visit を移動・削除しない.
+   * Read 用途では BE が値を返す. Write 用途 (bulk PUT) では省略可 (BE は既存値維持 or false default).
+   */
+  is_pinned: z.boolean().optional(),
 });
 
 export const patientFixedVisitV2ReadSchema = patientFixedVisitV2BaseSchema.extend({

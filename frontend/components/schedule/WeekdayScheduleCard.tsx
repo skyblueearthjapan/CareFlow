@@ -73,6 +73,13 @@ export interface VisitListItem {
    * 非空のとき visit セルを赤枠ハイライト + tooltip (message) を表示する.
    */
   warnings?: Array<{ type?: string | null; message?: string | null } | null> | null;
+  /**
+   * Phase G-21: 当該 visit のソース PFV id.
+   * 指定があれば 🔒 toggle が enable になる. 未指定 (weekly_pattern 由来) は disabled.
+   */
+  fixed_visit_id?: string | null;
+  /** Phase G-21: PFV.is_pinned のミラー値. true で 🔒 active 表示. */
+  is_pinned?: boolean | null;
 }
 
 /** 1 コース分のサマリ. */
@@ -114,6 +121,13 @@ export interface WeekdayScheduleCardProps {
    * false (default): フル表示 (Before/After と同等).
    */
   weekView?: boolean;
+  /**
+   * Phase G-21: 🔒 完全固定 toggle ハンドラ.
+   * 指定時のみ各 visit 行に 🔒 / 🔓 ボタンが描画される.
+   * - visit.fixed_visit_id が無い場合は disabled (tooltip で説明).
+   * - canEdit による表示制御は呼び出し側 (ハンドラ未指定で完全に非表示) で行う.
+   */
+  onTogglePin?: (pfvId: string, nextPinned: boolean) => void;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -216,6 +230,7 @@ export function WeekdayScheduleCard({
   testIdPrefix,
   onPatientClick,
   weekView = false,
+  onTogglePin,
 }: WeekdayScheduleCardProps) {
   const headerCls =
     tone === 'primary'
@@ -244,6 +259,7 @@ export function WeekdayScheduleCard({
               testIdPrefix={testIdPrefix}
               onPatientClick={onPatientClick}
               weekView={weekView}
+              onTogglePin={onTogglePin}
             />
           ))}
         </ul>
@@ -258,9 +274,17 @@ interface CourseRowProps {
   testIdPrefix?: string;
   onPatientClick?: (patientId: string) => void;
   weekView: boolean;
+  onTogglePin?: (pfvId: string, nextPinned: boolean) => void;
 }
 
-function CourseRow({ course, maxVisits, testIdPrefix, onPatientClick, weekView }: CourseRowProps) {
+function CourseRow({
+  course,
+  maxVisits,
+  testIdPrefix,
+  onPatientClick,
+  weekView,
+  onTogglePin,
+}: CourseRowProps) {
   // 「最大 N 件」制限は visit 単位で先に slice して、その後に cluster 化する.
   // (pair の片割れだけが切れる事態を避けるため、ペア跨ぎは clusterVisits 後に
   //  pair 数を維持したまま描画される — overflow 件数のみ patient 単位で計算).
@@ -286,6 +310,7 @@ function CourseRow({ course, maxVisits, testIdPrefix, onPatientClick, weekView }
                   testIdPrefix={testIdPrefix}
                   onPatientClick={onPatientClick}
                   weekView={weekView}
+                  onTogglePin={onTogglePin}
                 />
               );
             }
@@ -303,6 +328,7 @@ function CourseRow({ course, maxVisits, testIdPrefix, onPatientClick, weekView }
                 testIdPrefix={testIdPrefix}
                 onPatientClick={onPatientClick}
                 weekView={weekView}
+                onTogglePin={onTogglePin}
               />
             );
           })}
@@ -326,6 +352,7 @@ interface PairClusterProps {
   testIdPrefix?: string;
   onPatientClick?: (patientId: string) => void;
   weekView: boolean;
+  onTogglePin?: (pfvId: string, nextPinned: boolean) => void;
 }
 
 function PairCluster({
@@ -334,6 +361,7 @@ function PairCluster({
   testIdPrefix,
   onPatientClick,
   weekView,
+  onTogglePin,
 }: PairClusterProps) {
   const { visits, groupId } = cluster;
   return (
@@ -362,6 +390,7 @@ function PairCluster({
               testIdPrefix={testIdPrefix}
               onPatientClick={onPatientClick}
               weekView={weekView}
+              onTogglePin={onTogglePin}
             />
           );
         })}
@@ -377,6 +406,7 @@ interface PairMemberRowProps {
   testIdPrefix?: string;
   onPatientClick?: (patientId: string) => void;
   weekView: boolean;
+  onTogglePin?: (pfvId: string, nextPinned: boolean) => void;
 }
 
 /**
@@ -389,19 +419,24 @@ function PairMemberRow({
   testIdPrefix,
   onPatientClick,
   weekView,
+  onTogglePin,
 }: PairMemberRowProps) {
   // CareFlow #101 FE: warning ありの visit は赤枠ハイライト + tooltip 表示.
   const warningInfo = collectVisitWarningInfo(visit);
+  const isPinned = visit.is_pinned === true;
   return (
     <li
       className={cn(
         'flex flex-wrap items-center gap-1 py-0.5 text-[10px]',
         warningInfo.hasWarning ? 'rounded border border-red-500 bg-red-50/40 px-1' : '',
+        // Phase G-21: 完全固定 visit は薄い黄色背景.
+        isPinned && !warningInfo.hasWarning ? 'rounded bg-yellow-50/60 px-1' : '',
       )}
       data-testid={testIdPrefix ? `${testIdPrefix}-visit-${visit.key}` : undefined}
       data-same-address-group-id={visit.same_address_group_id ?? undefined}
       data-pair-member="true"
       data-visit-warning={warningInfo.hasWarning ? 'true' : undefined}
+      data-pinned={isPinned ? 'true' : undefined}
       title={warningInfo.tooltip ?? undefined}
       aria-label={warningInfo.tooltip ?? undefined}
     >
@@ -414,6 +449,7 @@ function PairMemberRow({
         // 用として維持しつつ、住所詳細は各カードに復活させる.
         // ペア内距離 (= 同住所なので 0km) は親側 (PairCluster) が決定する.
         suppressDistance={suppressDistance}
+        onTogglePin={onTogglePin}
       />
     </li>
   );
@@ -428,24 +464,34 @@ interface VisitRowProps {
   testIdPrefix?: string;
   onPatientClick?: (patientId: string) => void;
   weekView: boolean;
+  onTogglePin?: (pfvId: string, nextPinned: boolean) => void;
 }
 
-function VisitRow({ visit, testIdPrefix, onPatientClick, weekView }: VisitRowProps) {
+function VisitRow({ visit, testIdPrefix, onPatientClick, weekView, onTogglePin }: VisitRowProps) {
   // CareFlow #101 FE: warning ありの visit は赤枠ハイライト + tooltip 表示.
   const warningInfo = collectVisitWarningInfo(visit);
+  const isPinned = visit.is_pinned === true;
   return (
     <li
       className={cn(
         'flex flex-wrap items-center gap-1 text-[10px]',
         warningInfo.hasWarning ? 'rounded border border-red-500 bg-red-50/40 px-1' : '',
+        // Phase G-21: 完全固定 visit は薄い黄色背景.
+        isPinned && !warningInfo.hasWarning ? 'rounded bg-yellow-50/60 px-1' : '',
       )}
       data-testid={testIdPrefix ? `${testIdPrefix}-visit-${visit.key}` : undefined}
       data-same-address-group-id={visit.same_address_group_id ?? undefined}
       data-visit-warning={warningInfo.hasWarning ? 'true' : undefined}
+      data-pinned={isPinned ? 'true' : undefined}
       title={warningInfo.tooltip ?? undefined}
       aria-label={warningInfo.tooltip ?? undefined}
     >
-      <VisitRowContent visit={visit} onPatientClick={onPatientClick} weekView={weekView} />
+      <VisitRowContent
+        visit={visit}
+        onPatientClick={onPatientClick}
+        weekView={weekView}
+        onTogglePin={onTogglePin}
+      />
     </li>
   );
 }
@@ -489,6 +535,8 @@ interface VisitRowContentProps {
   weekView: boolean;
   /** ペア内距離 (0km) を省略する場合 true. */
   suppressDistance?: boolean;
+  /** Phase G-21: 🔒 toggle ハンドラ. 指定時のみボタンが描画される. */
+  onTogglePin?: (pfvId: string, nextPinned: boolean) => void;
 }
 
 function VisitRowContent({
@@ -496,6 +544,7 @@ function VisitRowContent({
   onPatientClick,
   weekView,
   suppressDistance,
+  onTogglePin,
 }: VisitRowContentProps) {
   const timeCondition = weekView
     ? null
@@ -575,7 +624,70 @@ function VisitRowContent({
       ) : null}
       {/* 次の patient までの距離 (= VisitArrow). null なら描画しない. */}
       {showDistance ? <VisitArrow distanceKm={visit.distance_to_next_km ?? null} /> : null}
+      {/* Phase G-21: 🔒 完全固定 toggle. onTogglePin を渡された時のみ表示. */}
+      {onTogglePin ? <PinToggleButton visit={visit} onTogglePin={onTogglePin} /> : null}
     </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// PinToggleButton — Phase G-21
+// ─────────────────────────────────────────────────────────────────────────
+
+interface PinToggleButtonProps {
+  visit: VisitListItem;
+  onTogglePin: (pfvId: string, nextPinned: boolean) => void;
+}
+
+/**
+ * 🔒 完全固定 toggle ボタン.
+ *
+ * - visit.fixed_visit_id が無い (= weekly_pattern 由来) → disabled + tooltip 「先に固定枠登録が必要」
+ * - visit.is_pinned=true                              → 🔒 (色付き)
+ * - visit.is_pinned=false                             → 🔓 (薄表示)
+ *
+ * lucide-react を import すると bundle が増えるため、リスト表示では絵文字
+ * で十分 (CourseDayTable 側は元々 lucide を使っているので統一感は薄い).
+ */
+function PinToggleButton({ visit, onTogglePin }: PinToggleButtonProps) {
+  const isPinned = visit.is_pinned === true;
+  const pfvId = visit.fixed_visit_id ?? null;
+  const disabled = !pfvId;
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        if (!pfvId) return;
+        onTogglePin(pfvId, !isPinned);
+      }}
+      disabled={disabled}
+      aria-label={
+        isPinned
+          ? `${visit.patient_name} の完全固定を解除`
+          : disabled
+            ? `${visit.patient_name} は固定枠が無いため完全固定できません`
+            : `${visit.patient_name} を完全固定`
+      }
+      title={
+        disabled
+          ? '先に固定枠登録が必要'
+          : isPinned
+            ? '完全固定を解除'
+            : '完全固定 (Layer 2 で動かさない)'
+      }
+      aria-pressed={isPinned}
+      data-testid={`weekday-pin-btn-${visit.key}`}
+      data-pinned={isPinned ? 'true' : 'false'}
+      data-pfv-id={pfvId ?? ''}
+      className={cn(
+        'inline-flex items-center justify-center rounded px-1 py-0.5 text-[10px] leading-none',
+        isPinned ? 'text-yellow-700 hover:bg-yellow-100' : 'text-text-muted hover:bg-bg-muted',
+        disabled ? 'cursor-not-allowed opacity-30' : '',
+      )}
+    >
+      <span aria-hidden="true">{isPinned ? '🔒' : '🔓'}</span>
+    </button>
   );
 }
 

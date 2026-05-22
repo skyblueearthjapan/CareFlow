@@ -21,7 +21,7 @@
  */
 import { useMemo } from 'react';
 import { useDraggable, useDroppable } from '@dnd-kit/core';
-import { Info, X } from 'lucide-react';
+import { Info, Lock, Unlock, X } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
@@ -212,6 +212,19 @@ export interface CourseGridVisit {
    * null. 同一患者の 2-staff 重複 (visit_group) は除外する.
    */
   same_address_group_id?: string | null;
+  /**
+   * Phase G-21: 当該 visit のソース PFV id.
+   * - null/undefined : weekly_pattern 由来 (PFV が無い) → pin toggle は disabled.
+   * - UUID           : PFV に紐づく → pin toggle が有効.
+   */
+  fixed_visit_id?: string | null;
+  /**
+   * Phase G-21: PFV.is_pinned のミラー値.
+   * true: 🔒 (active) + visit セル背景を黄色で強調.
+   * false/null: 🔓 (hover で出現).
+   * fixed_visit_id が無い場合は常に false.
+   */
+  is_pinned?: boolean | null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -391,6 +404,13 @@ export interface CourseDayTableProps {
    * canEdit に依らず常に表示する (閲覧専用ロールでも詳細は見たい).
    */
   onPatientClick?: (patientId: string) => void;
+  /**
+   * Phase G-21: 🔒 完全固定 toggle ハンドラ.
+   * - visit.fixed_visit_id が無い場合は呼ばれない (button が disabled).
+   * - canEdit=false の場合は呼ばれない (button が disabled).
+   * - 親は PATCH /patients/fixed-visits/{pfv_id}/pin を発火する.
+   */
+  onTogglePin?: (pfvId: string, nextPinned: boolean) => void;
 }
 
 export function CourseDayTable({
@@ -406,6 +426,7 @@ export function CourseDayTable({
   isStaffMutating,
   onDeleteVisit,
   onPatientClick,
+  onTogglePin,
 }: CourseDayTableProps) {
   // visits を slot ("HH:MM") → CourseGridVisit[] にバケット化.
   const occupants = useMemo(() => {
@@ -567,6 +588,7 @@ export function CourseDayTable({
               staffEventsByStaff={eventsMap}
               onDeleteVisit={onDeleteVisit}
               onPatientClick={onPatientClick}
+              onTogglePin={onTogglePin}
             />
           ))}
 
@@ -611,6 +633,8 @@ interface CourseTimeRowProps {
   onDeleteVisit?: (visitId: string, patientName: string) => void;
   /** 患者氏名横の info アイコンクリックハンドラ. */
   onPatientClick?: (patientId: string) => void;
+  /** Phase G-21: 🔒 完全固定 toggle ハンドラ. */
+  onTogglePin?: (pfvId: string, nextPinned: boolean) => void;
 }
 
 function CourseTimeRow({
@@ -623,6 +647,7 @@ function CourseTimeRow({
   staffEventsByStaff,
   onDeleteVisit,
   onPatientClick,
+  onTogglePin,
 }: CourseTimeRowProps) {
   // Wave 27 Phase B-3: 担当スタッフがこのスロット時間帯にイベントを持つか判定
   // (visit と event の重複時の ⚠ バッジ用に残す。Wave 39 で event の本文表示は
@@ -647,6 +672,12 @@ function CourseTimeRow({
   // Phase G-6: 同住所×同時刻ペア判定 (detectSameAddressPair を共通使用).
   // 異なる patient_id × 同 same_address_group_id × 2 件以上 で true.
   const hasSameAddressPair = useMemo(() => detectSameAddressPair(occupants), [occupants]);
+
+  // Phase G-21: セル内に「完全固定」visit が 1 件以上含まれていれば黄色背景で強調.
+  const hasPinnedVisit = useMemo(
+    () => occupants.some((o) => o.is_pinned === true && !!o.fixed_visit_id),
+    [occupants],
+  );
 
   return (
     <>
@@ -676,6 +707,7 @@ function CourseTimeRow({
         data-course-template-id={templateId}
         data-occupant-count={occupants.length}
         data-same-address-pair={hasSameAddressPair ? 'true' : undefined}
+        data-has-pinned-visit={hasPinnedVisit ? 'true' : undefined}
         title={hasSameAddressPair ? '同住所×同時刻ペア' : undefined}
         aria-label={hasSameAddressPair ? '同住所×同時刻ペア' : undefined}
         className={cn(
@@ -685,6 +717,9 @@ function CourseTimeRow({
           // 同じ視覚言語). ドロップ中の brand-primary ring と衝突しないよう ring 系は
           // 片方のみ active になる順序.
           !isOver && hasSameAddressPair ? 'bg-yellow-50/60 ring-2 ring-yellow-400 ring-inset' : '',
+          // Phase G-21: 完全固定 visit を含むセルは薄い黄色背景で強調 (= 移動禁止の視覚化).
+          // 同住所ペアと併存するときは同住所ペアのリング表示を優先.
+          !isOver && !hasSameAddressPair && hasPinnedVisit ? 'bg-yellow-50/50' : '',
         )}
         style={{ gridColumn: 'span 2 / span 2' }}
       >
@@ -712,6 +747,7 @@ function CourseTimeRow({
                     canEdit={canEdit}
                     onDeleteVisit={onDeleteVisit}
                     onPatientClick={onPatientClick}
+                    onTogglePin={onTogglePin}
                   />
                 ))}
                 {/* Wave 27 Phase B-3: 担当スタッフのイベント重複 warning バッジ.
@@ -791,6 +827,8 @@ interface OccupantPatientInfoProps {
   canEdit: boolean;
   onDeleteVisit?: (visitId: string, patientName: string) => void;
   onPatientClick?: (patientId: string) => void;
+  /** Phase G-21: 🔒 完全固定 toggle ハンドラ. */
+  onTogglePin?: (pfvId: string, nextPinned: boolean) => void;
 }
 
 function OccupantPatientInfo({
@@ -798,6 +836,7 @@ function OccupantPatientInfo({
   canEdit,
   onDeleteVisit,
   onPatientClick,
+  onTogglePin,
 }: OccupantPatientInfoProps) {
   const timeCondition = formatTimeCondition({
     time_type: visit.patient_time_type,
@@ -812,9 +851,12 @@ function OccupantPatientInfo({
 
   // Phase G-19: 行全体 (氏名 + 住所 + 条件) を drag handle にする.
   // 名前部分の click はそのまま onClick (PointerSensor distance:6 で drag と区別).
+  // Phase G-21 final C1: pinned visit (= is_pinned=true) は D&D 経路で
+  // 動かせなくする (= 物理削除 + 再作成で is_pinned=false 化されるバイパス防止).
+  const isPinnedVisit = visit.is_pinned === true;
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: visitDraggableId(visit.id),
-    disabled: !canEdit,
+    disabled: !canEdit || isPinnedVisit,
     data: { kind: 'placed-visit', visitId: visit.id },
   });
 
@@ -826,9 +868,14 @@ function OccupantPatientInfo({
       {...listeners}
       {...attributes}
       data-row-draggable-visit-id={visit.id}
+      data-row-draggable-disabled={isPinnedVisit ? 'true' : undefined}
+      title={
+        isPinnedVisit ? '完全固定中のため移動できません. 先に 🔒 を解除してください.' : undefined
+      }
       className={cn(
         'flex flex-row flex-wrap items-baseline gap-x-2 gap-y-0 min-w-0 touch-none select-none',
-        canEdit ? 'cursor-grab active:cursor-grabbing' : '',
+        canEdit && !isPinnedVisit ? 'cursor-grab active:cursor-grabbing' : '',
+        isPinnedVisit ? 'cursor-not-allowed' : '',
         isDragging ? 'opacity-40' : '',
       )}
     >
@@ -845,6 +892,9 @@ function OccupantPatientInfo({
         partnerLocation={visit.partner_location ?? null}
         isMultiStaff={visit.patient_requires_multiple_staff}
         sexRestrictionLabel={visit.patient_sex_restriction_label}
+        fixedVisitId={visit.fixed_visit_id ?? null}
+        isPinned={visit.is_pinned === true}
+        onTogglePin={onTogglePin}
       />
       {/* 住所 — 📍 prefix + truncate + title で full address */}
       {visit.patient_address ? (
@@ -913,6 +963,15 @@ interface OccupantNameDraggableProps {
    * その他 → 標準 (色指定なし)
    */
   sexRestrictionLabel?: string | null;
+  /**
+   * Phase G-21: ソース PFV id.
+   * null → 🔒 toggle は disabled. tooltip で「先に固定枠登録が必要」.
+   */
+  fixedVisitId?: string | null;
+  /** Phase G-21: 完全固定中フラグ (= 🔒 表示). */
+  isPinned?: boolean;
+  /** Phase G-21: 🔒 toggle ハンドラ (pfvId, nextPinned). */
+  onTogglePin?: (pfvId: string, nextPinned: boolean) => void;
 }
 
 /**
@@ -941,6 +1000,9 @@ function OccupantNameDraggable({
   partnerLocation,
   isMultiStaff,
   sexRestrictionLabel,
+  fixedVisitId,
+  isPinned,
+  onTogglePin,
 }: OccupantNameDraggableProps) {
   // Phase G-15: 性別制限による患者名色 (inline style で確実反映)
   const sexStyle: React.CSSProperties =
@@ -1052,6 +1114,57 @@ function OccupantNameDraggable({
           data-testid={`patient-detail-btn-${visitId}`}
         >
           <Info className="h-3 w-3 text-brand-primary" />
+        </button>
+      )}
+      {/* Phase G-21: 🔒 完全固定 toggle.
+          - fixedVisitId が無い (= weekly_pattern 由来) 場合は disabled + tooltip 表示.
+          - canEdit=false の場合は表示しない (閲覧専用ロール).
+          - isPinned=true: 常時表示 (色付き 🔒)
+          - isPinned=false: hover で出現 (薄い 🔓). タッチデバイスでは常時表示. */}
+      {canEdit && onTogglePin && (
+        <button
+          type="button"
+          className={cn(
+            'transition-opacity p-0.5 rounded flex-shrink-0',
+            isPinned
+              ? 'opacity-100 hover:bg-yellow-100'
+              : 'opacity-0 group-hover:opacity-60 [@media(hover:none)]:opacity-60 hover:opacity-100 hover:bg-yellow-50',
+            !fixedVisitId ? 'cursor-not-allowed opacity-30' : '',
+          )}
+          onClick={(e) => {
+            e.stopPropagation();
+            if (!fixedVisitId) return;
+            onTogglePin(fixedVisitId, !isPinned);
+          }}
+          onPointerDown={(e) => {
+            // Phase G-19 と同じく行 drag を抑止.
+            e.stopPropagation();
+          }}
+          disabled={!fixedVisitId}
+          aria-label={
+            isPinned
+              ? `${label} の完全固定を解除`
+              : !fixedVisitId
+                ? `${label} は固定枠が無いため完全固定できません`
+                : `${label} を完全固定`
+          }
+          title={
+            !fixedVisitId
+              ? '先に固定枠登録が必要'
+              : isPinned
+                ? '完全固定を解除 (Layer 2 が再配置可能になります)'
+                : '完全固定 (Layer 2 が動かさなくなります)'
+          }
+          aria-pressed={!!isPinned}
+          data-testid={`pin-visit-btn-${visitId}`}
+          data-pinned={isPinned ? 'true' : 'false'}
+          data-pfv-id={fixedVisitId ?? ''}
+        >
+          {isPinned ? (
+            <Lock className="h-3 w-3 text-yellow-700" />
+          ) : (
+            <Unlock className="h-3 w-3 text-text-muted" />
+          )}
         </button>
       )}
       {canEdit && onDeleteVisit && (

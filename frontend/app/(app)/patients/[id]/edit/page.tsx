@@ -190,6 +190,7 @@ export default function EditPatientPage() {
         submitLabel="更新"
         onDirtyChange={setIsFormDirty}
         formRef={formHandleRef}
+        patientId={id}
       />
 
       <PatientFixedVisitsPanel

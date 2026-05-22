@@ -362,8 +362,27 @@ async def delete_visit(
     # mode='normal' と 'special' の両方を対象にする (どちらが残っていても
     # 翌週展開で二重訪問になり得るため). slot_index 0/1 も全て削除される
     # (W37 Phase 2-A: 2 名体制患者の partner も含めた全 slot を一掃).
+    #
+    # Phase G-21 final C1: pinned PFV (is_pinned=True) は D&D / cascade で
+    # 動かせない (= 物理削除 + 新規 PFV で is_pinned=false 化されるバイパス防止).
+    # 削除対象に pinned PFV が 1 件でもあれば 422 で拒否し、ユーザーに先に
+    # 完全固定を解除するよう促す.
     if cascade_fixed_visit:
         old_weekday = visit.visit_date.weekday()
+        pinned_targets = (
+            await db.scalars(
+                select(PatientFixedVisit).where(
+                    PatientFixedVisit.patient_id == visit.patient_id,
+                    PatientFixedVisit.weekday == old_weekday,
+                    PatientFixedVisit.is_pinned.is_(True),
+                )
+            )
+        ).all()
+        if pinned_targets:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=("完全固定の固定枠は削除できません. 先に完全固定を解除してください."),
+            )
         await db.execute(
             delete(PatientFixedVisit).where(
                 PatientFixedVisit.patient_id == visit.patient_id,

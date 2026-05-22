@@ -63,6 +63,8 @@ import {
 } from '@/lib/queries/staff-events';
 import type { EventRead } from '@/lib/schemas/staff-events';
 import { useDeleteVisit, useVisits } from '@/lib/queries/visits';
+import { useTogglePfvPin } from '@/lib/queries/g21';
+import type { PatientFixedVisitV2Read } from '@/lib/schemas/v2/patient_fixed_visit';
 import { capacityForWeekday, type CourseTemplateRead } from '@/lib/schemas/v2/course_template';
 import {
   SEX_RESTRICTION_LABEL,
@@ -305,6 +307,58 @@ export function CourseDayTablePanel({
   const weekEndStr = format(addDays(weekStart, 6), 'yyyy-MM-dd');
   const visitsQuery = useVisits({ week_start: weekStartStr, week_end: weekEndStr });
   const weekVisits = useMemo(() => visitsQuery.data?.items ?? [], [visitsQuery.data]);
+
+  // ─── Phase G-21 T4 reviewer C2: visit ↔ PFV 逆引き ──────────────
+  // BE visits API は現状 `fixed_visit_id` / `is_pinned` を返さない. FE 側で
+  // 当週 visit に出現する患者群の PFV を per-patient `useQueries` で並列 fetch
+  // し、 `(patient_id, weekday, start_time, slot_index)` で join して
+  // `pfvByVisitKey` を構築する. visitsByCourse builder 側でこの map を引いて
+  // `CourseGridVisit.fixed_visit_id` / `is_pinned` を populate する.
+  //
+  // 並列 fetch 件数は当週出現患者の uniq 数 (= 通常 30 〜 80 件). TanStack Query
+  // が同 queryKey で重複 fetch を抑止するため、 PatientFixedVisitsPanel と同じ
+  // patient で開いていれば cache hit する.
+  const pfvPatientIds = useMemo(() => {
+    const s = new Set<string>();
+    for (const v of weekVisits) s.add(v.patient_id);
+    return Array.from(s).sort();
+  }, [weekVisits]);
+
+  const pfvQueries = useQueries({
+    queries: pfvPatientIds.map((pid) => ({
+      queryKey: ['patients', pid, 'fixed-visits', 'all'] as const,
+      enabled: sessionStatus === 'authenticated' && Boolean(pid),
+      queryFn: () =>
+        fetcher<PatientFixedVisitV2Read[]>(`/api/v1/patients/${pid}/fixed-visits`, {
+          accessToken,
+          refreshToken,
+        }),
+      // 5 分 cache (= PFV は頻繁に変わらない / pin toggle 時は invalidate される).
+      staleTime: 5 * 60 * 1000,
+    })),
+  });
+
+  // `(patient_id, weekday, "HH:MM", slot_index) → PFV` のフラット lookup.
+  // queries 配列は参照不安定なので dataUpdatedAt + status 派生キーで stable dep.
+  const pfvQueriesDepKey = pfvQueries.map((q) => `${q.dataUpdatedAt}:${q.status}`).join(',');
+  const pfvByVisitKey = useMemo(() => {
+    const m = new Map<string, PatientFixedVisitV2Read>();
+    pfvPatientIds.forEach((pid, i) => {
+      const list = pfvQueries[i]?.data ?? [];
+      for (const pfv of list) {
+        // 当週は通常 mode のみ join 対象 (special week 切替は別 layer の責務).
+        if (pfv.mode !== 'normal') continue;
+        const hhmm = (pfv.start_time ?? '').slice(0, 5);
+        const slot = pfv.slot_index ?? 0;
+        m.set(`${pid}:${pfv.weekday}:${hhmm}:${slot}`, pfv);
+      }
+    });
+    return m;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pfvPatientIds.join(','), pfvQueriesDepKey]);
+
+  // Phase G-21 T4 reviewer C2: 単一 PFV pin toggle hook (panel 全体で 1 instance).
+  const togglePfvPin = useTogglePfvPin();
 
   // ─── Courses (当週: course_template の逆引き / 担当 dropdown 用) ──
   const coursesQuery = useCourses({ iso_year: isoYear, iso_week: isoWeek, limit: 200 });
@@ -673,6 +727,40 @@ export function CourseDayTablePanel({
         | null
         | undefined;
 
+      // ─── Phase G-21 T4 reviewer C2: visit → PFV 逆引き ──────────────
+      // BE は visit に fixed_visit_id を持たない. 同 (patient_id, weekday, HH:MM)
+      // で PFV を探し、 slot は visit_group_id 内 index に合わせる (group なしは 0).
+      const visitDate = v.visit_date ? new Date(`${v.visit_date}T00:00:00`) : null;
+      // visit_date.getDay(): 0=Sun..6=Sat → PFV.weekday は 0=Mon..6=Sun
+      // 変換: (jsDay + 6) % 7 = 0(Mon)..6(Sun)
+      const pfvWeekday =
+        visitDate !== null && !Number.isNaN(visitDate.getTime())
+          ? (visitDate.getDay() + 6) % 7
+          : null;
+      const visitHHMM = (v.start_time ?? '').slice(0, 5);
+      // PFV slot は visit_group 内 index (assignedSlotsByPatient と同じ規則).
+      let pfvSlot: 0 | 1 = 0;
+      if (groupId) {
+        const groupVisits = visitsByGroupId.get(groupId) ?? [];
+        const idx = groupVisits.findIndex((gv) => gv.id === v.id);
+        pfvSlot = idx === 1 ? 1 : 0;
+      }
+      let fixedVisitId: string | null = null;
+      let isPinned = false;
+      if (pfvWeekday !== null && visitHHMM) {
+        const pfv = pfvByVisitKey.get(`${v.patient_id}:${pfvWeekday}:${visitHHMM}:${pfvSlot}`);
+        if (pfv) {
+          fixedVisitId = pfv.id;
+          isPinned = pfv.is_pinned === true;
+        }
+      }
+      // BE が将来 visit response に直接 fixed_visit_id / is_pinned を expose した
+      // 場合のフォールバック (= 上書きできない PFV lookup より優先).
+      const beFixedVisitId = (v as { fixed_visit_id?: string | null }).fixed_visit_id ?? null;
+      const beIsPinned = (v as { is_pinned?: boolean | null }).is_pinned ?? null;
+      if (beFixedVisitId) fixedVisitId = beFixedVisitId;
+      if (beIsPinned !== null) isPinned = beIsPinned === true;
+
       const arr = m.get(cid) ?? [];
       arr.push({
         id: v.id,
@@ -695,6 +783,9 @@ export function CourseDayTablePanel({
         // Phase G-6: 同住所×同時刻ペア囲み用. 同 start_slot 内に同 key が複数あれば
         // CourseDayTable 側で紫枠装飾を付ける.
         same_address_group_id: sameAddressKeyByPatientId.get(v.patient_id) ?? null,
+        // Phase G-21 T4 reviewer C2: PFV lookup 結果 (= null なら 🔒 ボタンは disabled).
+        fixed_visit_id: fixedVisitId,
+        is_pinned: isPinned,
       });
       m.set(cid, arr);
     }
@@ -708,6 +799,7 @@ export function CourseDayTablePanel({
     offices,
     partnerLocationByVisit,
     sameAddressKeyByPatientId,
+    pfvByVisitKey,
   ]);
 
   // ─── Wave 37 Phase 3-C: 患者ごとの「配置済み slot」マップ ───────────────
@@ -1246,6 +1338,45 @@ export function CourseDayTablePanel({
   const handleOpenPatientDetail = useCallback((pid: string) => setPatientDetailId(pid), []);
   const handleClosePatientDetail = useCallback(() => setPatientDetailId(null), []);
 
+  // ─── Phase G-21 T4 reviewer C2: 🔒 完全固定 toggle handler ────────────
+  // CourseDayTable / WeekdayScheduleCard から (pfvId, nextPinned) で呼ばれる.
+  // 該当 visit から patient_id を逆引きして PFV cache を invalidate する.
+  const handleTogglePin = useCallback(
+    (pfvId: string, nextPinned: boolean) => {
+      if (!canEdit) {
+        toast.warning('編集権限がありません');
+        return;
+      }
+      // pfvByVisitKey の value 群から逆引きして patient_id を取り出す.
+      let patientId: string | null = null;
+      for (const pfv of pfvByVisitKey.values()) {
+        if (pfv.id === pfvId) {
+          patientId = pfv.patient_id;
+          break;
+        }
+      }
+      if (!patientId) {
+        toast.error('対象の固定枠が見つかりません');
+        return;
+      }
+      togglePfvPin.mutate(
+        { pfvId, isPinned: nextPinned, patientId },
+        {
+          onSuccess: () => {
+            toast.success(
+              nextPinned ? '完全固定にしました (Layer 2 は動かしません)' : '完全固定を解除しました',
+            );
+          },
+          onError: (err) => {
+            const msg = err instanceof Error ? err.message : '不明なエラー';
+            toast.error(`完全固定の更新に失敗: ${msg}`);
+          },
+        },
+      );
+    },
+    [canEdit, pfvByVisitKey, togglePfvPin],
+  );
+
   const handleGenerateWeek = async () => {
     if (!canEdit) {
       toast.warning('編集権限がありません');
@@ -1388,6 +1519,9 @@ export function CourseDayTablePanel({
           same_address_group_id: buildSameAddressKey(lat, lng),
           distance_to_next_km: distance,
           duration_min: durationMin,
+          // Phase G-21 T4 reviewer C2: list view にも pin 状態を流し込む.
+          fixed_visit_id: cv.fixed_visit_id ?? null,
+          is_pinned: cv.is_pinned === true,
         };
       });
 
@@ -1664,6 +1798,9 @@ export function CourseDayTablePanel({
                       courses={weekdayListCourses}
                       testIdPrefix={`course-day-list-${activeWeekday}`}
                       onPatientClick={handleOpenPatientDetail}
+                      // Phase G-21 T4 reviewer C2: list view にも 🔒 toggle を渡す
+                      // (= admin/manager 時のみ button が描画される).
+                      onTogglePin={canEdit ? handleTogglePin : undefined}
                     />
                   </div>
                 ) : (
@@ -1702,6 +1839,10 @@ export function CourseDayTablePanel({
                           void handleDeleteVisit(visitId, patientName);
                         }}
                         onPatientClick={handleOpenPatientDetail}
+                        // Phase G-21 T4 reviewer C2: 🔒 完全固定 toggle を wire-up.
+                        // CourseDayTable 側で canEdit=true && onTogglePin 指定時のみ
+                        // button を描画する (= staff role は表示なし).
+                        onTogglePin={canEdit ? handleTogglePin : undefined}
                       />
                     );
                   })

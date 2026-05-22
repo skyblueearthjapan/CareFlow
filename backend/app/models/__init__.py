@@ -15,8 +15,10 @@ from app.models.geocoding_cache import GeocodingCache
 from app.models.kaipoke_job import KaipokeJob, KaipokeJobItem
 from app.models.notification import Notification
 from app.models.office import Office, OfficeCity
+from app.models.office_feature_flag import OfficeFeatureFlag
 from app.models.patient import Patient, PatientAllowedOffice
 from app.models.patient_fixed_visit import PatientFixedVisit
+from app.models.patient_same_address_link import PatientSameAddressLink
 from app.models.pending_request import PendingRequest
 from app.models.shift_request import ShiftRequest
 from app.models.special_week import SpecialWeek, SpecialWeekItem
@@ -48,9 +50,11 @@ __all__ = [
     "Notification",
     "Office",
     "OfficeCity",
+    "OfficeFeatureFlag",
     "Patient",
     "PatientAllowedOffice",
     "PatientFixedVisit",
+    "PatientSameAddressLink",
     "PendingRequest",
     "ShiftRequest",
     "SpecialWeek",

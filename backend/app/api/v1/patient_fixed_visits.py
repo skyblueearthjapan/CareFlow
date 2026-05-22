@@ -28,6 +28,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import CurrentActiveUser, DbDep, require_role
+from app.models.audit_log import AuditLog
 from app.models.course import Course
 from app.models.course_template import CourseTemplate
 from app.models.office import Office
@@ -38,6 +39,8 @@ from app.models.visit import Visit
 from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.schemas.v2.patient_fixed_visit import (
     PatientFixedVisitMode,
+    PatientFixedVisitPinBulkItem,
+    PatientFixedVisitPinUpdate,
     PatientFixedVisitsBulkPut,
     PatientFixedVisitV2Base,
     PatientFixedVisitV2Read,
@@ -526,6 +529,126 @@ async def from_week_bulk(
         "updated_count": len(updated_patient_ids),
         "patients": [str(pid) for pid in updated_patient_ids],
     }
+
+
+# ---------------------------------------------------------------------------
+# Phase G-21 T2: is_pinned 切替 endpoints
+#
+# パス先頭が ``/fixed-visits/...`` (= 既存の collection-level pattern と同じ) なので、
+# ``/{patient_id}/...`` catch-all より先に必ずマッチする (router 内の宣言順 + 静的
+# プレフィックスの優先).
+# ---------------------------------------------------------------------------
+
+
+@router.patch(
+    "/fixed-visits/{pfv_id}/pin",
+    response_model=PatientFixedVisitV2Read,
+    summary="Phase G-21: PFV.is_pinned を切替 (admin/manager のみ)",
+)
+async def update_pfv_pin(
+    pfv_id: UUID,
+    payload: PatientFixedVisitPinUpdate,
+    db: DbDep,
+    actor: Annotated[User, Depends(require_role("admin", "manager"))],
+) -> PatientFixedVisitV2Read:
+    """Phase G-21: 単一 PFV 行の ``is_pinned`` を切替.
+
+    audit_logs に ``action="pfv_pin_toggle"`` で before/after を記録する.
+    """
+    pfv = await db.scalar(select(PatientFixedVisit).where(PatientFixedVisit.id == pfv_id))
+    if pfv is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="PatientFixedVisit not found"
+        )
+
+    old_value = bool(pfv.is_pinned)
+    new_value = bool(payload.is_pinned)
+    pfv.is_pinned = new_value
+
+    db.add(
+        AuditLog(
+            actor_user_id=actor.id,
+            action="pfv_pin_toggle",
+            target_table="patient_fixed_visits",
+            target_id=str(pfv.id),
+            before={"is_pinned": old_value},
+            after={"is_pinned": new_value},
+        )
+    )
+
+    await db.commit()
+    await db.refresh(pfv)
+    return PatientFixedVisitV2Read.model_validate(pfv)
+
+
+@router.post(
+    "/fixed-visits/pin/bulk",
+    response_model=list[PatientFixedVisitV2Read],
+    summary="Phase G-21: 複数 PFV.is_pinned を一括切替 (admin/manager のみ)",
+)
+async def bulk_pin_pfvs(
+    payload: list[PatientFixedVisitPinBulkItem],
+    db: DbDep,
+    actor: Annotated[User, Depends(require_role("admin", "manager"))],
+) -> list[PatientFixedVisitV2Read]:
+    """Phase G-21: 複数 PFV 行の ``is_pinned`` を一括切替.
+
+    1 件でも対象 PFV が存在しない場合は 404 で全 rollback (atomic).
+    payload 内に重複 ``pfv_id`` があれば 422 (= reviewer H2 / 競合した is_pinned
+    値で最後勝ち順序依存を避ける).
+    audit_logs には 1 件ごとに ``action="pfv_pin_toggle"`` を記録する.
+    """
+    if not payload:
+        return []
+
+    # H2: payload 内重複 pfv_id チェック (= 同 PFV を別の is_pinned で更新するような
+    # ambiguous リクエストは弾く).
+    pfv_ids = [item.pfv_id for item in payload]
+    if len(pfv_ids) != len(set(pfv_ids)):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="payload に重複した pfv_id があります",
+        )
+
+    rows = (
+        await db.scalars(select(PatientFixedVisit).where(PatientFixedVisit.id.in_(pfv_ids)))
+    ).all()
+    by_id = {row.id: row for row in rows}
+
+    missing = [str(pid) for pid in pfv_ids if pid not in by_id]
+    if missing:
+        # atomic: ここで raise すると本リクエストの未 commit 変更は破棄される
+        # (まだ何も書いていない). 既存 PFV の is_pinned は変更されず、audit_log も
+        # 残らない (= 全 rollback 相当).
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"PatientFixedVisit not found: {missing}",
+        )
+
+    for item in payload:
+        pfv = by_id[item.pfv_id]
+        old_value = bool(pfv.is_pinned)
+        new_value = bool(item.is_pinned)
+        pfv.is_pinned = new_value
+        db.add(
+            AuditLog(
+                actor_user_id=actor.id,
+                action="pfv_pin_toggle",
+                target_table="patient_fixed_visits",
+                target_id=str(pfv.id),
+                before={"is_pinned": old_value},
+                after={"is_pinned": new_value},
+            )
+        )
+
+    await db.commit()
+
+    # L2: commit 後に既存 ``by_id`` (= 既に session に attach 済の ORM オブジェクト)
+    # を再利用. refresh で UPDATE 後の値を session レベルで同期し、再クエリは避ける.
+    for pfv in by_id.values():
+        await db.refresh(pfv)
+    # 返却順は payload の指定順序を保つ.
+    return [PatientFixedVisitV2Read.model_validate(by_id[item.pfv_id]) for item in payload]
 
 
 # ---------------------------------------------------------------------------

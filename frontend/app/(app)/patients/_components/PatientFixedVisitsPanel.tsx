@@ -99,6 +99,10 @@ const DURATION_OPTIONS = [15, 30, 45, 60, 90, 120, 150, 180, 240, 300, 360, 480]
  *   - course_template_id_2 : コース 2 (slot_index=1) 用 (requires_multiple_staff=true のみ使用)
  *
  * 開始時刻 / 所要時間は slot 0/1 で共通 (BE 仕様: 同曜日・同時刻・同 duration の 2 行).
+ *
+ * Phase G-21:
+ *   - is_pinned: 「完全固定」フラグ. true で Layer 2 が visit を動かさない.
+ *     slot 0/1 で共通で 1 値 (= 同曜日 2 行は同時に pin/unpin される).
  */
 interface DayRow {
   enabled: boolean;
@@ -113,6 +117,8 @@ interface DayRow {
    * slot 0/1 共通で 1 値 (主担当 + サブ拠点の対は 1 row 単位で表現).
    */
   sub_office_id: string | null;
+  /** Phase G-21: 完全固定フラグ (true = visit 移動禁止). */
+  is_pinned: boolean;
 }
 
 type DayRows = Record<number, DayRow>;
@@ -127,6 +133,7 @@ function emptyDayRow(): DayRow {
     course_template_id: null,
     course_template_id_2: null,
     sub_office_id: null,
+    is_pinned: false,
   };
 }
 
@@ -162,6 +169,8 @@ function readsToDayRows(reads: PatientFixedVisitV2Read[]): DayRows {
         // Phase E-5: sub_office_id は slot 0 を優先 (slot 0/1 で原則一致するが、
         // 不整合があれば slot 0 を採用).
         sub_office_id: r.sub_office_id ?? current.sub_office_id,
+        // Phase G-21: is_pinned は slot 0 を優先. どちらかが true なら行全体を pin 扱い.
+        is_pinned: r.is_pinned === true || current.is_pinned,
       };
     } else {
       // slot 1: enabled は slot 0 のフラグを尊重 (slot 0 が無い場合は slot 1 で起こす)
@@ -174,6 +183,8 @@ function readsToDayRows(reads: PatientFixedVisitV2Read[]): DayRows {
         course_template_id_2: r.course_template_id ?? null,
         // Phase E-5: slot 0 が未設定の場合のみ slot 1 の sub_office_id を採用.
         sub_office_id: current.sub_office_id ?? r.sub_office_id ?? null,
+        // Phase G-21: slot 1 でも pin が立っていれば反映.
+        is_pinned: r.is_pinned === true || current.is_pinned,
       };
     }
   }
@@ -215,6 +226,8 @@ function dayRowsToItems(rows: DayRows, requiresMultipleStaff: boolean): PatientF
       slot_index: 0,
       // Phase E-5 (項目 ⑥B): サブ拠点 ID (slot 0/1 共通).
       sub_office_id: row.sub_office_id,
+      // Phase G-21: 完全固定フラグ (slot 0/1 共通).
+      is_pinned: row.is_pinned,
     });
 
     // slot 1 は requires_multiple_staff=true かつ
@@ -230,15 +243,31 @@ function dayRowsToItems(rows: DayRows, requiresMultipleStaff: boolean): PatientF
         slot_index: 1,
         // Phase E-5: slot 0 と同じ sub_office を継承.
         sub_office_id: row.sub_office_id,
+        // Phase G-21: slot 0 と同じ pin 状態を継承.
+        is_pinned: row.is_pinned,
       });
     }
   }
   return items;
 }
 
-/** 患者の weekly_pattern (希望パターン) から DayRows を生成する */
-function weeklyPatternToDayRows(pattern: WeeklyPattern | null | undefined): DayRows {
-  const rows = emptyDayRows();
+/**
+ * 患者の weekly_pattern (希望パターン) から DayRows を生成する.
+ *
+ * Phase G-21 T4 reviewer C3 / M2:
+ *   - 既存の DayRows (= current) を受け取り、 `preferred_weekdays` に含まれる
+ *     曜日のみ希望時刻 + duration で上書きする. 含まれない曜日は既存値を維持する
+ *     (旧実装は強制的に空 DayRows で塗り潰していたため既存設定が消失していた).
+ *   - 既存 row の `is_pinned`/`course_template_id`/`course_template_id_2`/
+ *     `sub_office_id` は merge 時にそのまま保持する (= 完全固定設定の消失防止).
+ *   - `preferred_weekdays` 外の曜日は **何もしない**.
+ */
+export function weeklyPatternToDayRows(
+  pattern: WeeklyPattern | null | undefined,
+  current?: DayRows,
+): DayRows {
+  // base は current の shallow copy (= 引数なしなら従来通り全曜日 空 row).
+  const rows: DayRows = current ? { ...current } : emptyDayRows();
   if (!pattern) return rows;
 
   const WEEKDAY_KEY_MAP: Record<string, number> = {
@@ -272,16 +301,20 @@ function weeklyPatternToDayRows(pattern: WeeklyPattern | null | undefined): DayR
 
   for (const wd of preferred) {
     const idx = WEEKDAY_KEY_MAP[wd];
-    if (idx !== undefined) {
-      rows[idx] = {
-        enabled: true,
-        start_time: startTime,
-        duration_min: Math.max(1, Math.min(480, duration)),
-        course_template_id: null,
-        course_template_id_2: null,
-        sub_office_id: null,
-      };
-    }
+    if (idx === undefined) continue;
+    const existing = rows[idx] ?? emptyDayRow();
+    rows[idx] = {
+      // enabled は確実に true (= 希望曜日であることを反映)
+      enabled: true,
+      // start_time / duration_min は希望から上書き (= 「希望から自動生成」 の主目的)
+      start_time: startTime,
+      duration_min: Math.max(1, Math.min(480, duration)),
+      // 既存設定 (コース選択 / サブ拠点 / 完全固定) は維持
+      course_template_id: existing.course_template_id,
+      course_template_id_2: existing.course_template_id_2,
+      sub_office_id: existing.sub_office_id,
+      is_pinned: existing.is_pinned,
+    };
   }
   return rows;
 }
@@ -350,10 +383,12 @@ function ReadOnlyWeekGrid({
     <div className="space-y-1">
       {[0, 1, 2, 3, 4, 5, 6].map((wd) => {
         const row = rows[wd] ?? emptyDayRow();
+        const pinnedHighlightCls = row.enabled && row.is_pinned ? 'bg-yellow-50' : '';
         return (
           <div
             key={wd}
-            className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md border border-border-default px-3 py-2 text-sm"
+            data-pinned={row.enabled && row.is_pinned ? 'true' : undefined}
+            className={`flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md border border-border-default px-3 py-2 text-sm ${pinnedHighlightCls}`}
             data-testid={`ro-row-${wd}`}
           >
             <span className="w-5 shrink-0 text-center font-medium text-text-secondary">
@@ -363,6 +398,17 @@ function ReadOnlyWeekGrid({
               <>
                 <span className="text-text-primary tnum">{row.start_time}</span>
                 <span className="text-text-muted">{row.duration_min} 分</span>
+                {/* Phase G-21: 完全固定行は 🔒 バッジを併記. */}
+                {row.is_pinned ? (
+                  <span
+                    className="rounded bg-yellow-200/70 px-1.5 py-0.5 text-xs font-medium text-yellow-800"
+                    data-testid={`ro-pin-${wd}`}
+                    aria-label="完全固定"
+                    title="完全固定"
+                  >
+                    🔒 完全固定
+                  </span>
+                ) : null}
                 {/* Phase E-5: サブ拠点が設定されていればバッジで明示. */}
                 {row.sub_office_id ? (
                   <span
@@ -455,10 +501,14 @@ function WeekGrid({
           courseTemplates,
           row.sub_office_id ? getSubOfficeCourseTemplates(row.sub_office_id) : [],
         );
+        // Phase G-21: 完全固定行は黄色背景で強調する (= リスト/テーブルと統一).
+        const pinnedHighlightCls = row.enabled && row.is_pinned ? 'bg-yellow-50' : '';
         return (
           <div
             key={wd}
-            className="flex flex-wrap items-center gap-3 rounded-md border border-border-default px-3 py-2"
+            data-pinned={row.enabled && row.is_pinned ? 'true' : undefined}
+            data-testid={`pfv-row-${wd}`}
+            className={`flex flex-wrap items-center gap-3 rounded-md border border-border-default px-3 py-2 ${pinnedHighlightCls}`}
           >
             <span className="w-5 text-center text-sm font-medium text-text-secondary">
               {WEEKDAY_LABELS[wd]}
@@ -581,6 +631,21 @@ function WeekGrid({
                     <span className="text-xs text-text-muted">コース 2</span>
                   ) : null}
                 </div>
+                {/* Phase G-21: 完全固定 checkbox (= 該当行の is_pinned). */}
+                <label
+                  className="flex items-center gap-1 text-xs text-text-secondary"
+                  data-testid={`pfv-pin-label-${wd}`}
+                >
+                  <Checkbox
+                    checked={row.is_pinned}
+                    onCheckedChange={(c) => update(wd, { is_pinned: c === true })}
+                    disabled={disabled}
+                    aria-label={`${WEEKDAY_LABELS[wd]} 完全固定`}
+                    data-testid={`pfv-pin-checkbox-${wd}`}
+                  />
+                  <span aria-hidden="true">{row.is_pinned ? '🔒' : ''}</span>
+                  <span>完全固定</span>
+                </label>
                 {errors[wd] ? <span className="text-xs text-error">{errors[wd]}</span> : null}
                 {!errors[wd] && warnings[wd] ? (
                   <span className="text-xs text-warning" data-testid={`row-warning-${wd}`}>
@@ -678,12 +743,17 @@ function ModePanel({
   }, [rows, requiresMultipleStaff]);
 
   // ── 希望から自動生成 ──────────────────────────────────────────────────
+  // Phase G-21 T4 reviewer C3 / M2: 既存 rows を base に merge する (= 既存の
+  // is_pinned / コース選択 / サブ拠点 を保持). preferred_weekdays に無い曜日も
+  // 既存の enabled/設定をそのまま残す.
   const handleAutoFill = () => {
-    const newRows = weeklyPatternToDayRows(weeklyPattern);
+    const newRows = weeklyPatternToDayRows(weeklyPattern, rows);
     setRows(newRows);
     setFieldErrors({});
     setFormError(null);
-    toast.success('希望パターンをフォームに反映しました (まだ保存されていません)');
+    toast.success(
+      '希望パターンをフォームに反映しました (まだ保存されていません). 既存の完全固定・コース選択は保持されています',
+    );
   };
 
   // ── 現スケから取込 (Phase 2) ──────────────────────────────────────────

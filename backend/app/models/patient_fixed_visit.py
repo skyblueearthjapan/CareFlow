@@ -18,7 +18,9 @@ import uuid
 from datetime import datetime, time
 from typing import TYPE_CHECKING
 
+import sqlalchemy as sa
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -93,6 +95,16 @@ class PatientFixedVisit(Base):
     sub_office: Mapped[Office | None] = relationship(
         "Office",
         foreign_keys=[sub_office_id],
+    )
+
+    # Phase G-21: 完全固定フラグ. true = 自動算出で絶対動かさない.
+    # 既存全 PFV は migration で true backfill 済 (後方互換).
+    # 新規 PFV は default false.
+    is_pinned: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=sa.false(),
     )
 
     created_at: Mapped[datetime] = mapped_column(

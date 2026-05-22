@@ -23,6 +23,7 @@ import { Input } from '@/components/ui/input';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Checkbox } from '@/components/ui/checkbox';
 import { OfficeCombobox } from '@/components/master/OfficeCombobox';
+import { SameAddressLinksSection } from '@/components/patients/SameAddressLinksSection';
 import {
   INSURANCE_LABEL,
   INSURANCE_OPTIONS,
@@ -68,6 +69,11 @@ interface PatientFormProps {
   onDirtyChange?: (isDirty: boolean) => void;
   /** フォームのメソッドを親から呼び出すための ref (W10-FE3: sticky bar 用) */
   formRef?: React.Ref<PatientFormHandle>;
+  /**
+   * Phase G-21: 対象患者の ID. 指定時のみ最下部に
+   * <SameAddressLinksSection /> を描画する (新規作成画面では undefined).
+   */
+  patientId?: string;
 }
 
 export function PatientForm({
@@ -79,6 +85,7 @@ export function PatientForm({
   submitLabel = '保存',
   onDirtyChange,
   formRef,
+  patientId,
 }: PatientFormProps) {
   const form = useForm<PatientFormValues>({
     // `patientFormSchema` matches the structured/checkbox shape react-hook-form
@@ -353,6 +360,9 @@ export function PatientForm({
           className="w-full rounded-md border border-border-default bg-bg-base px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus-visible:outline-none focus-visible:border-brand-primary focus-visible:ring-2 focus-visible:ring-brand-primary-light"
         />
       </Card>
+
+      {/* Phase G-21: 同住所紐付け (edit 画面のみ; patientId が渡された場合に描画). */}
+      {patientId ? <SameAddressLinksSection patientId={patientId} /> : null}
 
       <div className="flex items-center justify-end gap-2">
         <Button

@@ -55,6 +55,16 @@ class PatientFixedVisitV2Base(BaseModel):
             "1 名体制では 0 のみ. 複数スタッフ対応 (W37) で 0/1 の 2 行を持つ."
         ),
     )
+    # Phase G-21: 完全固定フラグ. true = 自動算出で絶対動かさない.
+    # 既存全 PFV は migration で true backfill 済 (後方互換).
+    # 新規 PFV は default false.
+    is_pinned: bool = Field(
+        default=False,
+        description=(
+            "Phase G-21: 完全固定フラグ. true = 自動算出で絶対動かさない. "
+            "既存全 PFV は migration で true backfill 済 (後方互換)."
+        ),
+    )
 
 
 class PatientFixedVisitV2Read(PatientFixedVisitV2Base):
@@ -93,3 +103,31 @@ class PatientFixedVisitsBulkPut(BaseModel):
         if len(keys) != len(set(keys)):
             raise ValueError("items に (weekday, slot_index) の重複があります")
         return self
+
+
+# ---------------------------------------------------------------------------
+# Phase G-21 T2: is_pinned 単独切替用 schema
+# ---------------------------------------------------------------------------
+
+
+class PatientFixedVisitPinUpdate(BaseModel):
+    """PATCH /patients/.../fixed-visits/{pfv_id}/pin の body.
+
+    既存 PFV 行の ``is_pinned`` のみ単独切替する用途.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    is_pinned: bool = Field(description="Phase G-21: true = 自動算出で絶対動かさない完全固定.")
+
+
+class PatientFixedVisitPinBulkItem(BaseModel):
+    """POST /patients/fixed-visits/pin/bulk の items 1 件.
+
+    複数 PFV の is_pinned を一括切替する用途.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    pfv_id: UUID = Field(description="対象 patient_fixed_visits.id")
+    is_pinned: bool = Field(description="Phase G-21: true = 自動算出で絶対動かさない完全固定.")

@@ -19,8 +19,10 @@ from app.api.v1 import (
     health,
     integrations,
     notifications,
+    office_feature_flags,
     offices,
     patient_fixed_visits,
+    patient_same_address_links,
     patient_sync,
     patients,
     patients_excel,
@@ -53,12 +55,16 @@ api_router.include_router(
     prefix="/patients/import-export",
     tags=["patients-excel"],
 )
-api_router.include_router(patients.router, prefix="/patients", tags=["patients"])
 # W9-BE1: patient fixed-visit pattern sub-resource.
-# Must be included BEFORE patients.router catch-all routes.
+# Phase G-21 final H3: patients.router の **前** に登録すること.
+# FastAPI 現行版は path specificity で fall-through するが、 ルート定義順依存に
+# しないため明示的に patient_fixed_visits を先に登録する.
+# 例: PATCH /patients/fixed-visits/{pfv_id}/pin が PATCH /patients/{patient_id}
+# の path-param に吸われないよう保護する.
 api_router.include_router(
     patient_fixed_visits.router, prefix="/patients", tags=["patient-fixed-visits"]
 )
+api_router.include_router(patients.router, prefix="/patients", tags=["patients"])
 # 今週 visits → 固定枠 (PFV) 個別反映 sub-resource.
 # POST /patients/{patient_id}/sync-week-visits-to-fixed
 api_router.include_router(patient_sync.router, prefix="/patients", tags=["patient-sync"])
@@ -131,5 +137,17 @@ api_router.include_router(schedule.router, prefix="/schedule", tags=["schedule"]
 # v1 (``/schedule/auto-allocate`` 等) は schedule.router にそのまま残し、UI 完成後の
 # 別 PR で削除する.
 api_router.include_router(schedule_v2.router, prefix="/schedule", tags=["schedule-v2"])
+# Phase G-21 T2: 同住所紐付け CRUD (blocked / required の link 行管理).
+api_router.include_router(
+    patient_same_address_links.router,
+    prefix="/patient-same-address-links",
+    tags=["patient-same-address-links"],
+)
+# Phase G-21 T2: 拠点 feature flag CRUD (canary 3 phase 制御).
+api_router.include_router(
+    office_feature_flags.router,
+    prefix="/office-feature-flags",
+    tags=["office-feature-flags"],
+)
 
 __all__ = ["api_router"]

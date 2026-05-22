@@ -75,6 +75,13 @@ export const visitReadSchema = visitBaseSchema.extend({
     .optional(),
   /** v2 §3.3: 2 名体制の visit グルーピングキー. 通常は null. */
   visit_group_id: z.string().uuid().nullable().optional(),
+  /**
+   * Phase G-21 T4 reviewer C2: BE が将来 visits API に `fixed_visit_id` / `is_pinned`
+   * を expose した場合に備えて optional で受け取れるようにする. 現状 BE 未 expose で
+   * あり、FE は別途 PFV API を join して値を導出する (CourseDayTablePanel 参照).
+   */
+  fixed_visit_id: z.string().uuid().nullable().optional(),
+  is_pinned: z.boolean().nullable().optional(),
 });
 
 export type VisitCreate = z.infer<typeof visitCreateSchema>;

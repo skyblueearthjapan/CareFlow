@@ -32,10 +32,14 @@ from sqlalchemy.exc import IntegrityError
 
 from app.core.deps import CurrentActiveUser, DbDep, require_role
 from app.models.patient import Patient
+from app.models.patient_same_address_link import PatientSameAddressLink
 from app.models.user import User
 from app.models.visit import Visit
 from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.schemas.patient import PatientCreate, PatientRead, PatientUpdate
+from app.schemas.patient_same_address_link import SameAddressCandidate
+from app.services.geocoding.hash import normalize_address
+from app.services.scheduling.auto_allocator_v2 import SAME_ADDRESS_TOLERANCE, _address_bucket
 
 router = APIRouter()
 
@@ -223,11 +227,158 @@ async def delete_patient(
     db: DbDep,
     _user: Annotated[User, Depends(require_role("admin"))],
 ) -> None:
+    """Soft-delete patient.
+
+    M3: 同住所紐付け行 (:class:`PatientSameAddressLink`) は a/b 両側について物理削除する.
+    DB 上 FK ON DELETE CASCADE が付いていないため、reviewer 指摘に従い endpoint で
+    明示削除する (= soft delete patient を re-create した時に古い link が復活しない
+    ことを保証).
+    """
     patient = await db.scalar(
         select(Patient).where(Patient.id == patient_id, Patient.deleted_at.is_(None))
     )
     if patient is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     patient.deleted_at = func.now()
+
+    # M3: 同住所紐付けを a/b 両側について物理削除.
+    link_rows = (
+        await db.scalars(
+            select(PatientSameAddressLink).where(
+                or_(
+                    PatientSameAddressLink.patient_a_id == patient_id,
+                    PatientSameAddressLink.patient_b_id == patient_id,
+                )
+            )
+        )
+    ).all()
+    for link in link_rows:
+        await db.delete(link)
+
     await db.commit()
     return None
+
+
+# ---------------------------------------------------------------------------
+# Phase G-21 T2: 同住所候補取得
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/{patient_id}/same-address-candidates",
+    response_model=list[SameAddressCandidate],
+    summary="Phase G-21: 同住所候補 (同 address_bucket かつ住所文字列一致) 取得",
+)
+async def get_same_address_candidates(
+    patient_id: UUID,
+    db: DbDep,
+    user: CurrentActiveUser,
+) -> list[SameAddressCandidate]:
+    """同住所候補 (= ``_address_bucket`` 同一かつ ``address`` 文字列一致の他患者) を返す.
+
+    各候補について :class:`PatientSameAddressLink` から ``pair_mode`` を引く. 行が
+    無ければ ``"preferred"`` (= デフォルト) を返す.
+
+    RBAC: admin / manager / staff (read). staff は role チェックのみ (= patient 単位
+    の絞り込みは行わない. UI 側の表示制御に委ねる).
+    """
+    if user.role not in {"admin", "manager", "staff"}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
+
+    base = await db.scalar(
+        select(Patient).where(Patient.id == patient_id, Patient.deleted_at.is_(None))
+    )
+    if base is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+
+    # 座標 / 住所文字列のいずれかが欠けていれば候補なし.
+    if base.lat is None or base.lng is None or not base.address:
+        return []
+
+    base_lat = float(base.lat)
+    base_lng = float(base.lng)
+    base_bucket = _address_bucket(base_lat, base_lng)
+    # M2: NFKC + whitespace collapse + strip 正規化 (全半角/末尾空白による
+    # false-negative 回避). 比較は正規化後の文字列同士で行う.
+    base_address_norm = normalize_address(base.address)
+
+    # H4: 全 active 患者ロードを避けるため SQL 側で lat/lng range で一次絞り込み.
+    # bucket 量子化は ``round(x/T)*T`` のため、bucket 中心 ± T/2 を厳密に含むのは
+    # [-T/2, +T/2). 浮動小数誤差 + 隣接 bucket の境界をカバーするため ± T (~100m)
+    # で広めに引き、Python 側で bucket equality を最終確認する.
+    # address は SQL 側で `==` (= 文字列一致した行のみ) と NFKC 正規化一致 (= 全角
+    # 半角 / 末尾空白の混在ケース) の OR で絞り込みたいが、SQL 関数が dialect 依存
+    # (PostgreSQL / SQLite テスト両対応) になるため文字列等値のみ SQL でかけ、
+    # Python 側で NFKC 等値を最終確認する (raw 文字列一致なら通る + 正規化一致でも
+    # 通る; 既存データの大半は同一文字列入力なので range クエリだけで十分絞れる).
+    lat_min = base_lat - SAME_ADDRESS_TOLERANCE
+    lat_max = base_lat + SAME_ADDRESS_TOLERANCE
+    lng_min = base_lng - SAME_ADDRESS_TOLERANCE
+    lng_max = base_lng + SAME_ADDRESS_TOLERANCE
+    other_rows = (
+        await db.scalars(
+            select(Patient).where(
+                Patient.id != patient_id,
+                Patient.deleted_at.is_(None),
+                Patient.status == "active",
+                Patient.lat.is_not(None),
+                Patient.lng.is_not(None),
+                Patient.address.is_not(None),
+                Patient.lat.between(lat_min, lat_max),
+                Patient.lng.between(lng_min, lng_max),
+            )
+        )
+    ).all()
+
+    candidates: list[Patient] = []
+    for other in other_rows:
+        # _address_bucket は SAME_ADDRESS_TOLERANCE (= 0.001) で量子化済.
+        if other.lat is None or other.lng is None:
+            continue
+        if _address_bucket(float(other.lat), float(other.lng)) != base_bucket:
+            continue
+        # M2: NFKC 正規化 + strip 後の equality で判定 (= 全角半角 / 末尾空白の
+        # false-negative 回避).
+        if other.address is None or normalize_address(other.address) != base_address_norm:
+            continue
+        candidates.append(other)
+
+    if not candidates:
+        return []
+
+    # candidate ごとに PatientSameAddressLink を一括引き.
+    candidate_ids = [c.id for c in candidates]
+    link_rows = (
+        await db.scalars(
+            select(PatientSameAddressLink).where(
+                (
+                    (PatientSameAddressLink.patient_a_id == patient_id)
+                    & (PatientSameAddressLink.patient_b_id.in_(candidate_ids))
+                )
+                | (
+                    (PatientSameAddressLink.patient_b_id == patient_id)
+                    & (PatientSameAddressLink.patient_a_id.in_(candidate_ids))
+                )
+            )
+        )
+    ).all()
+    link_by_other_id: dict[UUID, PatientSameAddressLink] = {}
+    for link in link_rows:
+        other_id = link.patient_b_id if link.patient_a_id == patient_id else link.patient_a_id
+        link_by_other_id[other_id] = link
+
+    out: list[SameAddressCandidate] = []
+    for c in candidates:
+        link_opt: PatientSameAddressLink | None = link_by_other_id.get(c.id)
+        out.append(
+            SameAddressCandidate(
+                patient_id=c.id,
+                patient_code=c.code,
+                patient_name=c.name,
+                address=c.address,
+                pair_mode=link_opt.pair_mode if link_opt is not None else "preferred",
+                decided_by_user_id=link_opt.decided_by_user_id if link_opt is not None else None,
+                note=link_opt.note if link_opt is not None else None,
+            )
+        )
+    return out

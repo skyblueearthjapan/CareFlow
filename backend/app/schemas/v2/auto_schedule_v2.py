@@ -484,6 +484,9 @@ class AutoScheduleV2ResetToFixedRequest(BaseModel):
 
     W41 v2 final cross-review (M-Codex-1): ``confirm=True`` を必須化し、UI 側で
     確認ダイアログを経由せずに直接 API 叩く誤操作を防ぐ.
+
+    Phase G-21 T3-5: ``mode`` / ``dry_run`` を追加. デフォルトは後方互換の
+    ``mode='legacy'`` / ``dry_run=False``.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -494,6 +497,23 @@ class AutoScheduleV2ResetToFixedRequest(BaseModel):
     confirm: Literal[True] = Field(
         default=True,
         description="必ず true を指定すること (UI 側で確認ダイアログ後に True 固定送信)",
+    )
+    mode: Literal["legacy", "auto"] = Field(
+        default="legacy",
+        description=(
+            "Phase G-21 T3-5: reset の挙動モード. "
+            "'legacy' (既定, 後方互換) = 全 PFV を pinned 扱い + apply_travel_corrections "
+            "完全スキップ. "
+            "'auto' = pinned PFV のみ厳守 + 非 pinned は weekly_pattern 配置経路."
+        ),
+    )
+    dry_run: bool = Field(
+        default=False,
+        description=(
+            "Phase G-21 T3-5: True の場合は DB を変更せず件数のみ返却する. "
+            "レスポンスには visits_to_insert / visits_to_skip_protected / "
+            "visits_to_skip_conflict が含まれる."
+        ),
     )
 
 
@@ -506,6 +526,14 @@ class AutoScheduleV2ResetToFixedResponse(BaseModel):
     visits_soft_deleted: int = Field(ge=0)
     courses_used: int = Field(ge=0)
     warnings: list[str] = Field(default_factory=list)
+    # Phase G-21 T3-5: dry_run=True の場合のみ返す件数 (mode 後方互換のため Optional).
+    dry_run: bool = Field(
+        default=False,
+        description="True の場合は DB 未変更 + visits_to_* フィールドで件数返却",
+    )
+    visits_to_insert: int = Field(default=0, ge=0)
+    visits_to_skip_protected: int = Field(default=0, ge=0)
+    visits_to_skip_conflict: int = Field(default=0, ge=0)
 
 
 # ---------------------------------------------------------------------------

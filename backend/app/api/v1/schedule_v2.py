@@ -82,6 +82,7 @@ from app.services.scheduling.auto_allocator_v2 import (
     LUNCH_DEFAULT_END,
     LUNCH_DEFAULT_START,
     CrossAddressTimeConflictError,
+    PinnedVisitMovedError,
     V2Visit,
     V2Warning,
     _address_bucket,
@@ -792,14 +793,30 @@ async def reset_to_fixed_endpoint(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="confirm=true must be set explicitly",
         )
+    # Phase G-21 T3 (Reviewer L2 fix): dry_run リクエストを 1 行 INFO で監査ログに残す.
+    if payload.dry_run:
+        logger.info(
+            "reset_to_fixed dry_run=True iso_year=%d iso_week=%d office_ids=%s mode=%s",
+            payload.iso_year,
+            payload.iso_week,
+            [str(oid) for oid in payload.office_ids],
+            payload.mode,
+        )
     try:
         result = await reset_visits_to_fixed(
             db,
             iso_year=payload.iso_year,
             iso_week=payload.iso_week,
             office_ids=list(payload.office_ids),
+            mode=payload.mode,
+            dry_run=payload.dry_run,
         )
-        await db.commit()
+        # Phase G-21 T3-5: dry_run=True の場合は DB 変更がないので rollback で statement
+        # を破棄する (= flush もしていないが、 SQLAlchemy autobegin で開いた tx を閉じる).
+        if payload.dry_run:
+            await db.rollback()
+        else:
+            await db.commit()
     except ValueError as exc:
         await db.rollback()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -861,6 +878,10 @@ async def reset_to_fixed_endpoint(
         visits_soft_deleted=int(result.get("visits_soft_deleted", 0)),
         courses_used=int(result.get("courses_used", 0)),
         warnings=list(result.get("warnings", [])),
+        dry_run=bool(result.get("dry_run", False)),
+        visits_to_insert=int(result.get("visits_to_insert", 0)),
+        visits_to_skip_protected=int(result.get("visits_to_skip_protected", 0)),
+        visits_to_skip_conflict=int(result.get("visits_to_skip_conflict", 0)),
     )
 
 
@@ -997,6 +1018,26 @@ async def apply_week_only_endpoint(
     except ValueError as exc:
         await db.rollback()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except PinnedVisitMovedError as exc:
+        # Phase G-21 T3-6: D&D で pinned PFV を動かした → 422 拒否.
+        await db.rollback()
+        logger.warning(
+            "apply_week_only: pinned PFV moved attempt: iso_year=%s iso_week=%s count=%d",
+            payload.iso_year,
+            payload.iso_week,
+            len(exc.violations),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "pinned_visit_moved",
+                "message": (
+                    f"{len(exc.violations)} 件の pinned PFV を D&D で動かす操作は拒否されました. "
+                    "pinned 解除してから再操作してください."
+                ),
+                "violations": exc.violations[:10],
+            },
+        ) from exc
     except IntegrityError as exc:
         await db.rollback()
         logger.warning(
