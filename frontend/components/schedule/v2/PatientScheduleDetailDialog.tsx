@@ -26,7 +26,7 @@
  *     BE 側 sync endpoint と同じ採用ルール.
  */
 import * as React from 'react';
-import { Loader2 } from 'lucide-react';
+import { Loader2, Pencil } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { addDays } from '@/components/schedule/WeekSelector';
@@ -47,6 +47,8 @@ import { useFixedVisits } from '@/lib/queries/patient_fixed_visits';
 import { useVisits } from '@/lib/queries/visits';
 import type { PatientFixedVisitV2Read } from '@/lib/schemas/v2/patient_fixed_visit';
 import type { VisitRead } from '@/lib/schemas/visit';
+
+import { PatientEditDialog } from './PatientEditDialog';
 
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'] as const;
 
@@ -291,11 +293,15 @@ export function PatientScheduleDetailDialog({
   const [stage, setStage] = React.useState<ApplyStage>('idle');
   const [preview, setPreview] = React.useState<SyncWeekToFixedResponse | null>(null);
 
+  // Phase G-20: 編集ダイアログ (= dialog 内 dialog) の open 状態.
+  const [editOpen, setEditOpen] = React.useState(false);
+
   // open 状態のリセット.
   React.useEffect(() => {
     if (!open) {
       setStage('idle');
       setPreview(null);
+      setEditOpen(false);
     }
   }, [open]);
 
@@ -560,6 +566,19 @@ export function PatientScheduleDetailDialog({
               <Button type="button" variant="outline" onClick={onClose}>
                 閉じる
               </Button>
+              {/* Phase G-20: 患者情報を編集する dialog 内 dialog を開く. admin / manager のみ. */}
+              {canEdit ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setEditOpen(true)}
+                  disabled={isLoading || isError || !patientId}
+                  data-testid="patient-schedule-edit-patient-button"
+                >
+                  <Pencil className="mr-1 h-4 w-4" />
+                  編集
+                </Button>
+              ) : null}
               <Button
                 type="button"
                 onClick={handlePreview}
@@ -579,6 +598,17 @@ export function PatientScheduleDetailDialog({
           )}
         </DialogFooter>
       </DialogContent>
+
+      {/* Phase G-20: 患者情報編集ダイアログ (= dialog 内 dialog).
+          canEdit=false のときはレンダリング自体しない (= ボタンも出ない). */}
+      {canEdit ? (
+        <PatientEditDialog
+          patientId={patientId}
+          open={editOpen}
+          onClose={() => setEditOpen(false)}
+          canEdit={canEdit}
+        />
+      ) : null}
     </Dialog>
   );
 }
