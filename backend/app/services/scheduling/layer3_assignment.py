@@ -229,6 +229,19 @@ def _strip_tz(dt: datetime) -> datetime:
     return dt
 
 
+def _normalize_sex_restriction(restriction: str) -> str:
+    """patients.sex_restriction の値 ('female_only'/'male_only') を
+    staff.sex の値 ('female'/'male') と比較可能な形に正規化する.
+
+    Phase G-27 fix: DB 上は sex_restriction='female_only' / staff.sex='female' と
+    suffix が異なるため、 直接比較すると全 staff INF になる cost matrix bug の
+    対策. cost 計算前にここで suffix を剥がす.
+    """
+    if restriction.endswith("_only"):
+        return restriction[: -len("_only")]
+    return restriction
+
+
 def _has_event_overlap(
     *,
     staff_id: UUID,
@@ -594,6 +607,9 @@ class Layer3Assigner:
               fixed 経由で割り当てられた manager は許容する.
             - 各曜日ごとに独立にハンガリアン法を適用 (1 スタッフ 1 日 1 コース原則).
             - W16: 曜日順 (Mon -> Sat) に解き、前日割当を後続曜日へ伝搬する.
+            - Phase G-27: ``course.gender_restrictions`` の値 ('female_only'/'male_only') は
+              cost 計算時に ``_normalize_sex_restriction`` で staff.sex の形式
+              ('female'/'male') に正規化してから比較する.
         """
         if history is None:
             history = []
@@ -889,12 +905,15 @@ class Layer3Assigner:
             return HUNGARIAN_INFINITY
 
         # ---------- γ: 性別ミスマッチ (ハード制約) ----------
-        # 患者の sex_restriction (例: "female") はそのスタッフの sex と一致する必要あり
+        # 患者の sex_restriction (例: "female_only") はそのスタッフの sex と一致する必要あり.
+        # Phase G-27 fix: DB の sex_restriction は 'female_only'/'male_only' で staff.sex
+        # ('female'/'male') と suffix が異なるため、 _normalize_sex_restriction で
+        # 正規化してから比較する (旧コードは全 staff INF になり未割当を量産していた).
         if course.gender_restrictions:
             if staff.sex is None:
                 return HUNGARIAN_INFINITY
             for restriction in course.gender_restrictions:
-                if restriction != staff.sex:
+                if _normalize_sex_restriction(restriction) != staff.sex:
                     return HUNGARIAN_INFINITY
 
         # ---------- W27/W33: StaffEvent 時間帯重複 + バッファ (ハード制約) ----------
