@@ -6549,6 +6549,12 @@ async def run_v2_pipeline(
                         if pm_set is not None:
                             affected_visits_nocode.extend(pm_set.visits)
                         for v in affected_visits_nocode:
+                            # Phase G-32: pinned visit は未割当に流さない (= 元 course
+                            # を維持). Stage 4 が他 set の空き code 枯渇で fallback
+                            # 不能になった場合でも、 pinned 自身は既存 course_code
+                            # (= PFV.course_template_id 由来) を保持する.
+                            if v.is_pinned:
+                                continue
                             v.course_code = None
                             unassigned_visit_ids.add(id(v))
                         warnings.append(
@@ -6631,6 +6637,12 @@ async def run_v2_pipeline(
                     affected_patient_ids_overflow = list({v.patient_id for v in affected_visits})
                     affected_patient_count = len(affected_patient_ids_overflow)
                     for v in affected_visits:
+                        # Phase G-32: pinned visit は未割当に流さない (= 元 course
+                        # を維持). manager 数超過で本 set に code を割当てられない
+                        # 場合でも、 pinned 自身は PFV.course_template_id 由来の
+                        # course_code を保持する.
+                        if v.is_pinned:
+                            continue
                         unassigned_visit_ids.add(id(v))
                     warnings.append(
                         V2Warning(
@@ -6653,9 +6665,20 @@ async def run_v2_pipeline(
                     )
                     continue
             assigned_codes.add(code)
+            # Phase G-32: pinned visit (= V2Visit.is_pinned=True, PFV.is_pinned 由来)
+            # の course_code は **絶対動かさない**. Stage 4 conflict fallback で
+            # candidate (= 既存 pinned 由来 course) が他 set と衝突して別 code に
+            # 振り替わった場合でも、 pinned visit 自身は元 course を維持する.
+            # 非 pinned visit のみ確定 code を書き戻し、 pinned 同住所ペア相手の
+            # 非 pinned 側は pinned の course に追従させる仕組みは
+            # ``existing_codes`` 経路 (candidate=pinned の course) が担保している.
             for v in am_set.visits if am_set else []:
+                if v.is_pinned:
+                    continue
                 v.course_code = code
             for v in pm_set.visits if pm_set else []:
+                if v.is_pinned:
+                    continue
                 v.course_code = code
 
     # マネージャー不足で未割当になった visit を after_visits から取り除く.
