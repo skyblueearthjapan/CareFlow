@@ -5103,9 +5103,14 @@ async def _load_before_visits_from_pfv(
         )
     ).all()
 
-    # course_template_id → CourseTemplate.label の map を事前構築 (N+1 回避)
+    # course_template_id → (CourseTemplate.label, office_id) の map を事前構築 (N+1 回避)
     ct_ids = {pfv.course_template_id for pfv in pfv_rows if pfv.course_template_id is not None}
     ct_label_by_id: dict[UUID, str] = {}
+    # Phase G-24: V2Visit.office_id を patient.primary_office_id ではなく
+    # course_template の office_id 由来にするための逆引き map.
+    # 例: INAGE 拠点患者だが PFV.course_template が TSUGA-A を指す場合 (= Phase G-8 cross-office),
+    # Before の Course グループは (TSUGA, weekday, "A") に集計される.
+    ct_office_by_id: dict[UUID, UUID] = {}
     if ct_ids:
         ct_rows = await db.scalars(
             select(CourseTemplate).where(
@@ -5115,6 +5120,7 @@ async def _load_before_visits_from_pfv(
         )
         for ct in ct_rows.all():
             ct_label_by_id[ct.id] = ct.label
+            ct_office_by_id[ct.id] = ct.office_id
 
     pending_overlay = pending_overlay or {}
     pfv_keys_seen: set[tuple[UUID, int]] = set()
@@ -5151,6 +5157,16 @@ async def _load_before_visits_from_pfv(
         else:
             tt = _extract_time_type_for_weekday(patient, pfv.weekday)
             ps_str, pe_str = _extract_preferred_window_for_weekday(patient, pfv.weekday)
+        # Phase G-24: V2Visit.office_id を course_template の office_id 由来にする.
+        # patient.primary_office_id を使うと cross-office PFV (Phase G-8) で
+        # Before の Course グループが (patient_office, "A") に統合され、
+        # 例えば TSUGA-A 行の visit が INAGE-A に混入する問題が起きる.
+        course_office_id = (
+            ct_office_by_id.get(pfv.course_template_id)
+            if pfv.course_template_id is not None
+            else None
+        )
+        v2_office_id = course_office_id or patient.primary_office_id
         out.append(
             V2Visit(
                 patient_id=patient.id,
@@ -5162,7 +5178,7 @@ async def _load_before_visits_from_pfv(
                 service_minutes=duration_v,
                 lat=float(patient.lat),
                 lng=float(patient.lng),
-                office_id=patient.primary_office_id,
+                office_id=v2_office_id,
                 am_pm=am_pm,  # type: ignore[arg-type]
                 course_code=course_code,  # PFV.course_template_id 由来
                 source_kind="fixed",
