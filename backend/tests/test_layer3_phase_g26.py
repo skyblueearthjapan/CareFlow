@@ -233,6 +233,11 @@ async def test_build_fixed_assignments_mixed_status_both_picked(db) -> None:
     await _seed_visit_for_course(
         db, course_id=a_course_fixed.id, patient_code="G26X-A0-P", weekday=0
     )
+    # Phase G-28: visits=0 のコースは固定対象から除外されるため、
+    # 本テスト (status 混在の両方拾い) では両コースに visit を seed しておく.
+    await _seed_visit_for_course(
+        db, course_id=a_course_staff_assigned.id, patient_code="G26X-A1-P", weekday=1
+    )
     await db.commit()
 
     assigner = Layer3Assigner()

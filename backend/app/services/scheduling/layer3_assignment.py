@@ -52,7 +52,7 @@ from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import and_, delete, select
+from sqlalchemy import and_, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.course import (
@@ -503,6 +503,20 @@ class Layer3Assigner:
             Course.assigned_staff_id.isnot(None),
         )
         already_assigned_courses = list((await db.scalars(already_assigned_stmt)).all())
+
+        # Phase G-28 H1 fix: 既に staff_id が付与済みの 0-visits コース (= 過去の
+        # 自動割付で assign 済のまま visit 削除で空になったゴミ状態) は W25 経路でも
+        # ``fixed_staff_by_course`` に再注入しない。 staff_pool が解放されず、
+        # 患者ありコースが NULL になる本番バグ (2026-W21 で 5 件 NULL) の根本回避.
+        # ``_load_course_targets`` / ``_build_fixed_assignments`` の空コース skip と整合.
+        if already_assigned_courses:
+            aa_visit_counts = await self._count_planned_visits_by_courses(
+                db, [c.id for c in already_assigned_courses]
+            )
+            already_assigned_courses = [
+                c for c in already_assigned_courses if aa_visit_counts.get(c.id, 0) > 0
+            ]
+
         for c in already_assigned_courses:
             if c.id not in fixed_staff_by_course and c.assigned_staff_id is not None:
                 fixed_staff_by_course[c.id] = c.assigned_staff_id
@@ -1074,6 +1088,12 @@ class Layer3Assigner:
             office_id: 指定時は当該拠点のコースに絞る (W16).
             include_manager_courses: W16 — True のとき code='M' も対象に含める
                 (manager 固定割当のため). False で旧挙動 (M を除外).
+
+        Phase G-28 fix: ``patient_ids`` が空になるコース (= 所属 visits が
+        0 件のコース) を target list から除外する。 ハンガリアン法の入力に
+        含まれると staff_pool を圧迫し、 患者ありコースが NULL のまま残る
+        本番バグ (W21 で 5/35 件 NULL) の原因となるため、 visit 取得を
+        先頭に移動して early-skip する。
         """
         # CareFlow バグ修正 (Layer 3 staff_assigned 拾い漏れ): assign-staff-only
         # で ``course_status='course_fixed'`` のみ処理対象にしていたため、
@@ -1099,6 +1119,25 @@ class Layer3Assigner:
 
         targets: list[CourseAssignmentTarget] = []
         for course in courses:
+            # Phase G-28 fix: コース所属 visits を先頭で取得し、 0 件のコースは
+            # staff 割当対象から除外する (= 空コースに staff を縛ると
+            # staff_pool が圧迫され、 患者ありコースが NULL になる本番バグ回避).
+            # W27 Phase A: コース所属 visit の時間帯一覧 (event 重複判定用)
+            visit_stmt = select(Visit).where(
+                Visit.course_id == course.id,
+                Visit.status == VISIT_STATUS_PLANNED,
+                Visit.deleted_at.is_(None),
+            )
+            course_visit_rows = list((await db.scalars(visit_stmt)).all())
+            if not course_visit_rows:
+                # visits=0 のコースは patient_ids が空になりハンガリアン法に
+                # 含めても意味がない (W21 本番 5/35 NULL の根本原因).
+                continue
+            visit_slots = [
+                VisitTimeSlot(start_time=v.start_time, end_time=v.end_time)
+                for v in course_visit_rows
+            ]
+
             # コース所属 visits → patient_id → patient (lat/lng/sex_restriction)
             patient_stmt = (
                 select(Patient)
@@ -1123,18 +1162,6 @@ class Layer3Assigner:
             for p in patients:
                 if p.sex_restriction:
                     restrictions.add(p.sex_restriction)
-
-            # W27 Phase A: コース所属 visit の時間帯一覧 (event 重複判定用)
-            visit_stmt = select(Visit).where(
-                Visit.course_id == course.id,
-                Visit.status == VISIT_STATUS_PLANNED,
-                Visit.deleted_at.is_(None),
-            )
-            course_visit_rows = list((await db.scalars(visit_stmt)).all())
-            visit_slots = [
-                VisitTimeSlot(start_time=v.start_time, end_time=v.end_time)
-                for v in course_visit_rows
-            ]
 
             targets.append(
                 CourseAssignmentTarget(
@@ -1449,6 +1476,39 @@ class Layer3Assigner:
             result.setdefault(ev.staff_id, []).append(ev)
         return result
 
+    @staticmethod
+    async def _count_planned_visits_by_courses(
+        db: AsyncSession, course_ids: list[UUID]
+    ) -> dict[UUID, int]:
+        """指定 course の planned visit 数を course_id 別に返す helper.
+
+        Phase G-28 fix: 0 件のコースを Layer 3 / W25 fix から除外する判定で
+        複数経路 (manager 固定 / 都賀 staff 固定 / W25 already_assigned fix) で
+        使われるため共通化.
+
+        Args:
+            db: 共有 AsyncSession.
+            course_ids: 集計対象 course の id リスト. 空ならクエリ skip.
+
+        Returns:
+            ``{course_id: planned visit count}`` の dict. visit 0 件のコースは
+            返り値に含まれない (= ``.get(cid, 0)`` で 0 扱いするのが定石).
+        """
+        if not course_ids:
+            return {}
+        rows = (
+            await db.execute(
+                select(Visit.course_id, func.count(Visit.id))
+                .where(
+                    Visit.course_id.in_(course_ids),
+                    Visit.status == VISIT_STATUS_PLANNED,
+                    Visit.deleted_at.is_(None),
+                )
+                .group_by(Visit.course_id)
+            )
+        ).all()
+        return {cid: cnt for cid, cnt in rows}
+
     async def _build_fixed_assignments(
         self,
         db: AsyncSession,
@@ -1482,6 +1542,11 @@ class Layer3Assigner:
         のコースだけに絞り込み、 admin が UI から手動で別 staff を
         割り当てた M / 都賀 A コースを上書きしないようにする
         (W25 admin 手動割付保護 = ``already_assigned_stmt`` との整合).
+
+        Phase G-28 fix: M / 都賀 A コースでも、 所属 visits が 0 件のものは
+        固定対象から除外する。 空コースに manager / 都賀 staff を縛ると
+        staff_pool が無駄に消費され、 他コースが NULL になるため
+        (``_load_course_targets`` の空コース skip と整合).
 
         Returns:
             ``{course_id: staff_id}`` の dict.
@@ -1539,6 +1604,16 @@ class Layer3Assigner:
                 for c in mgr_courses
                 if c.assigned_staff_id is None or c.assigned_staff_id in manager_ids
             ]
+
+            # Phase G-28: visits=0 の M コースは固定対象から除外 (空コースに
+            # manager を縛ると無駄に staff_pool を消費して他コースが未割当に
+            # なるため). visit 数は ``_count_planned_visits_by_courses`` helper
+            # (Phase G-28 H1 fix で共通化) で集計し、 0 件のコースを Python 側で filter.
+            if mgr_courses:
+                mgr_visit_count_by_course = await self._count_planned_visits_by_courses(
+                    db, [c.id for c in mgr_courses]
+                )
+                mgr_courses = [c for c in mgr_courses if mgr_visit_count_by_course.get(c.id, 0) > 0]
 
             # NOTE: code 列は ('A','B','C','D','E','M') CHECK 制約があるため
             # 複数 manager の場合も全て code='M' で運用される (W16 想定 N=1).
@@ -1598,6 +1673,19 @@ class Layer3Assigner:
                 for c in tsuga_courses
                 if c.assigned_staff_id is None or c.assigned_staff_id == primary_staff.id
             ]
+
+            # Phase G-28: visits=0 の 都賀 A コースは固定対象から除外 (空コースに
+            # primary_staff を縛ると本名さんが無駄に消費され、 他拠点の他曜日 staff_pool
+            # が圧迫されるため. ``_load_course_targets`` の空コース skip と整合).
+            # Phase G-28 H1 fix: ヘルパー ``_count_planned_visits_by_courses`` で共通化.
+            if tsuga_courses:
+                tsuga_visit_count_by_course = await self._count_planned_visits_by_courses(
+                    db, [c.id for c in tsuga_courses]
+                )
+                tsuga_courses = [
+                    c for c in tsuga_courses if tsuga_visit_count_by_course.get(c.id, 0) > 0
+                ]
+
             for course in tsuga_courses:
                 result[course.id] = primary_staff.id
 
