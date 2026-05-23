@@ -3,17 +3,15 @@
 /**
  * CourseDayTablePanel — Wave 17 Phase B-2 メインパネル.
  *
- * Excel スケジュール枠組みに完全準拠した 1 画面構造:
- *   ┌─ ヘッダー (Phase G-38 リフレッシュ) ─────────────────────┐
- *   │  Row 1 (主要操作, admin/manager only, 右寄せ):            │
- *   │                [週を生成][自動割付 🟢][全面最適化 🟢][プール投入]│
- *   │  ─── 区切り線 ─────────────────────────                  │
- *   │  Row 2 (曜日タブ (左) + 二次操作 (右), admin/manager のみ二次操作表示): │
+ * Excel スケジュール枠組みに完全準拠した 1 画面構造
+ * (Phase G-40 で Card 2 を 2 row に圧縮、主要 4 ボタンは page.tsx Card 1 へ移設):
+ *   ┌─ ヘッダー ────────────────────────────────────────────┐
+ *   │  Row 1 (曜日タブ (左) + 二次操作 (右, admin/manager only)): │
  *   │    [月][火][水][木][金][土][週] YYYY-Www                  │
- *   │                  [固定枠に戻す][一斉未割当] │ [一括保存]   │
+ *   │                  [固定枠に戻す] │ [全患者固定枠を一括保存]   │
  *   │  ─── 区切り線 ─────────────────────────                  │
- *   │  Row 3 (テーブル/リスト切替 (左) + 🔒/🔓 (右, admin/manager only)): │
- *   │    [テーブル | リスト]                          [🔒][🔓]  │
+ *   │  Row 2 (テーブル/リスト切替 (左) + 個別 reset 群 (右, admin/manager only)): │
+ *   │    [テーブル | リスト]              [一斉未割当] │ [🔒][🔓]  │
  *   ├──────────────────────────────────────────────────────┤
  *   │  選択曜日のコーステーブル N 個 (縦並び)                 │
  *   │   - 本店 A / B / C / D / E / M + 都賀 A 等             │
@@ -24,13 +22,13 @@
  *
  * 主な機能:
  *   - 曜日タブで月〜土を切替 (capacity_<wd> > 0 の曜日のみ表示)
- *   - 「週を生成」 = Layer 1 (visits 再構築)
- *   - 「自動割付」 = Layer 3 (スタッフ自動割付)
+ *   - Phase G-40: 「週を生成」「自動割付」「全面最適化」「プール投入」 は page (Card 1) へ移設.
+ *     本 panel は mutation 中の pending 状態を isProcessing prop で受け取り、二次操作を多重実行から保護する.
  *   - 各コーステーブルの担当 dropdown で PATCH /api/v1/courses/{id}
  *   - プールセル → コーステーブル行ドロップ → place-and-fix
  *
  * RBAC:
- *   - admin / manager: 編集可 (ドロップ + 週生成 + 自動割付 + 担当変更)
+ *   - admin / manager: 編集可 (ドロップ + 担当変更 + 二次操作 + 個別 reset)
  *   - staff: 閲覧のみ
  */
 import { useCallback, useMemo, useState } from 'react';
@@ -47,18 +45,14 @@ import {
 import { useQueries } from '@tanstack/react-query';
 import { useSession } from 'next-auth/react';
 import { format } from 'date-fns';
-import { Loader2, Plus, RefreshCw, UserCheck } from 'lucide-react';
 import { toast } from 'sonner';
 
-import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { addDays } from '@/components/schedule/WeekSelector';
 import { ApiError } from '@/lib/api-client';
 import { fetcher } from '@/lib/api/fetcher';
 import { useCourses, useUpdateCourse, type CourseV2Read } from '@/lib/queries/courses';
-import { useGenerateWeekOnly } from '@/lib/queries/generate_week';
-import { useAssignStaffOnly } from '@/lib/queries/assign_staff_only';
 import { useOffices } from '@/lib/queries/offices';
 import { usePatients } from '@/lib/queries/patients';
 import { usePlaceAndFix } from '@/lib/queries/place_and_fix';
@@ -91,8 +85,6 @@ import {
 import { AcceptanceLegend } from './AcceptanceLayer';
 import { BulkFixToPatternButton } from './BulkFixToPatternButton';
 import { BulkPinAllPfvsButton } from './BulkPinAllPfvsButton';
-import { DiffAddDialog } from './DiffAddDialog';
-import { FullOptimizeDialog } from './FullOptimizeDialog';
 import { ResetToFixedButton } from './ResetToFixedButton';
 import { UnassignAllStaffButton } from './UnassignAllStaffButton';
 import {
@@ -229,6 +221,12 @@ export interface CourseDayTablePanelProps {
   canEdit: boolean;
   /** 受入目安レイヤー ON/OFF (フッター凡例のみ). */
   showAcceptanceLayer: boolean;
+  /**
+   * Phase G-40: 主要 4 ボタン (週生成 / 自動割付 / 全面最適化 / プール投入) は
+   * page 側 (Card 1) へ移設済. その mutation 中は本パネル内の二次操作
+   * (固定枠戻 / 一斉未割当) を多重実行から保護するため pending 状態を受け取る.
+   */
+  isProcessing?: boolean;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -240,6 +238,7 @@ export function CourseDayTablePanel({
   officeId,
   canEdit,
   showAcceptanceLayer,
+  isProcessing = false,
 }: CourseDayTablePanelProps) {
   const { isoYear, isoWeek } = useMemo(() => toIsoYearWeek(weekStart), [weekStart]);
 
@@ -1362,13 +1361,8 @@ export function CourseDayTablePanel({
     }
   };
 
-  // ─── 「週を生成」 (Layer 1) / 「自動割付」 (Layer 3) ────────────
-  const generateWeekMut = useGenerateWeekOnly();
-  const assignStaffOnlyMut = useAssignStaffOnly();
-
-  // ─── Wave 41 v2: 差分追加 / 全面最適化 ダイアログの open state ───
-  const [diffAddOpen, setDiffAddOpen] = useState(false);
-  const [fullOptimizeOpen, setFullOptimizeOpen] = useState(false);
+  // ─── Phase G-40: 「週を生成」 / 「自動割付」 / 「全面最適化」 / 「プール投入」 は
+  //     page 側 (Card 1) へ移設済. ここでは mutation 中の pending 状態のみ props で受け取る. ───
 
   // ─── 患者スケジュール詳細ダイアログ (固定枠 vs 今週 + 個別反映) ───
   const [patientDetailId, setPatientDetailId] = useState<string | null>(null);
@@ -1414,52 +1408,6 @@ export function CourseDayTablePanel({
     },
     [canEdit, pfvByVisitKey, togglePfvPin],
   );
-
-  const handleGenerateWeek = async () => {
-    if (!canEdit) {
-      toast.warning('編集権限がありません');
-      return;
-    }
-    try {
-      const res = await generateWeekMut.mutateAsync({
-        iso_year: isoYear,
-        iso_week: isoWeek,
-        office_id: officeId,
-      });
-      toast.success(`週次 visits を生成しました (visits=${res.visits_created})`);
-    } catch (err) {
-      const msg =
-        err instanceof ApiError
-          ? `${err.status} ${err.message}`
-          : err instanceof Error
-            ? err.message
-            : '不明なエラー';
-      toast.error(`週の生成に失敗しました: ${msg}`);
-    }
-  };
-
-  const handleAssignStaff = async () => {
-    if (!canEdit) {
-      toast.warning('編集権限がありません');
-      return;
-    }
-    try {
-      const res = await assignStaffOnlyMut.mutateAsync({
-        iso_year: isoYear,
-        iso_week: isoWeek,
-        office_id: officeId,
-      });
-      toast.success(`スタッフを自動割付しました (courses=${res.courses_assigned})`);
-    } catch (err) {
-      const msg =
-        err instanceof ApiError
-          ? `${err.status} ${err.message}`
-          : err instanceof Error
-            ? err.message
-            : '不明なエラー';
-      toast.error(`自動割付に失敗しました: ${msg}`);
-    }
-  };
 
   // ─── 担当 dropdown 変更 (PATCH /courses/{id}) ───────────────────
   const updateCourseMut = useUpdateCourse();
@@ -1600,94 +1548,23 @@ export function CourseDayTablePanel({
     <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
       <section className="space-y-3" data-testid="course-day-table-panel">
         {/*
-          Phase G-39: 🔒 全件ロック / 🔓 全件解除 を Row 3 (テーブル/リスト切替と同じ行) の右端へ移動.
-          Card 2 = 3 row 構造 (row 間は border-t 区切り線で視覚的に階層を表現).
-            Row 1 (主要操作, admin/manager only, 右寄せ):
-              Group A: 週を生成 / 自動割付 🟢 / 全面最適化 🟢 / プール投入 (毎週使う主要操作)
-              (Group A だけになるため縦区切り線は不要)
-            Row 2 (曜日タブ + 二次操作): 左に曜日タブ + iso week label、右に二次操作 (admin/manager only).
-              Group B: 固定枠に戻す / 一斉未割当 (たまにのリセット)
-              Group C: 全患者固定枠を一括保存 (滅多に使わない・危険)
+          Phase G-40: 主要 4 ボタン (週生成 / 自動割付 / 全面最適化 / プール投入) を Card 1 (page.tsx) へ移設.
+          Card 2 は 2 row 構造に圧縮 (row 間は border-t 区切り線で視覚的に階層を表現):
+            Row 1 (曜日タブ + 二次操作): 左に曜日タブ + iso week label、右に二次操作 (admin/manager only).
+              - 固定枠に戻す (Group B: リセット)
+              - 全患者固定枠を一括保存 (Group C: 一括設定 / 滅多に使わない・危険)
               Group B / C 間は縦区切り線で分離 (G-35 から維持).
-            Row 3 (表示モード制御): 左に テーブル/リスト切替 (「週」タブ以外で表示)、
-              右に 🔒 全件ロック / 🔓 全件解除 (canEdit only、ml-auto で右端、「週」タブでも常時表示).
-              Row 3 自体は常時表示 (= 「週」タブ時もロック/解除は右端に出る).
-          ボタンは基本 variant="outline" size="sm" で統一感を担保し、
-          毎週必ず押す主要 2 ボタン (自動割付 / 全面最適化) のみ variant="default" (= brand-primary 緑) で目立たせる.
+              ※ 「一斉未割当」 は Row 2 (個別 reset 群) へ移設済.
+            Row 2 (表示モード + 個別 reset): 左に テーブル/リスト切替 (「週」タブ以外で表示)、
+              右 (ml-auto) に 一斉未割当 → 🔒 全件ロック → 🔓 全件解除 を並べる (canEdit only).
+              「一斉未割当」 と 🔒/🔓 群の間は性質が違う (個別 reset vs 一括設定) ため縦区切り線で分離.
+              Row 2 自体は常時表示 (= 「週」タブ時もテーブル/リスト切替のみ消え、右端は残る).
+          ボタンは基本 variant="outline" size="sm" で統一感を担保.
         */}
         <Card className="p-3">
-          {/* Row 1: 主要操作 row (Group A 算出のみ、canEdit のみ表示、右寄せ). */}
-          {canEdit ? (
-            <div
-              className="flex flex-wrap items-center justify-end gap-4"
-              data-testid="course-day-action-toolbar"
-            >
-              {/* Group A: 算出 (毎週使う、主要操作) */}
-              <div className="flex flex-wrap items-center gap-1.5">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={handleGenerateWeek}
-                  disabled={generateWeekMut.isPending}
-                  data-testid="generate-week-button"
-                >
-                  {generateWeekMut.isPending ? (
-                    <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
-                  ) : (
-                    <RefreshCw className="mr-1 h-4 w-4" aria-hidden />
-                  )}
-                  週を生成
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="default"
-                  onClick={handleAssignStaff}
-                  disabled={assignStaffOnlyMut.isPending}
-                  data-testid="assign-staff-only-button"
-                >
-                  {assignStaffOnlyMut.isPending ? (
-                    <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
-                  ) : (
-                    <UserCheck className="mr-1 h-4 w-4" aria-hidden />
-                  )}
-                  自動割付
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="default"
-                  onClick={() => setFullOptimizeOpen(true)}
-                  disabled={generateWeekMut.isPending || assignStaffOnlyMut.isPending}
-                  data-testid="full-optimize-button"
-                >
-                  <RefreshCw className="mr-1 h-4 w-4" aria-hidden />
-                  全面最適化
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setDiffAddOpen(true)}
-                  disabled={generateWeekMut.isPending || assignStaffOnlyMut.isPending}
-                  data-testid="diff-add-button"
-                >
-                  <Plus className="mr-1 h-4 w-4" aria-hidden />
-                  プール投入
-                </Button>
-              </div>
-            </div>
-          ) : null}
-
-          {/* Row 2: 曜日タブ (左) + 二次操作 (右、canEdit のみ、ml-auto で右寄せ).
-              canEdit 時は直上の Row 1 (主要操作) との間に border-t + mt-3 pt-3 で水平区切り線 + 余白を入れる. */}
-          <div
-            className={`flex flex-wrap items-center gap-2${
-              canEdit ? ' mt-3 border-t border-border-default pt-3' : ''
-            }`}
-            data-testid="course-day-tab-row"
-          >
+          {/* Row 1: 曜日タブ (左) + 二次操作 (右、canEdit のみ、ml-auto で右寄せ).
+              Phase G-40: 旧 Row 2 が新 Row 1 に昇格 (= 最上段なので border-t 不要). */}
+          <div className="flex flex-wrap items-center gap-2" data-testid="course-day-tab-row">
             {/* 曜日タブ */}
             <div
               role="tablist"
@@ -1740,26 +1617,20 @@ export function CourseDayTablePanel({
 
             <span className="tnum text-[11px] text-text-muted">{isoWeekLabel}</span>
 
-            {/* 二次操作 (Group B + Group C) を Row 2 の右端に配置 (admin/manager のみ).
-                ml-auto で右寄せにすることで、Row 1 (主要操作) の右端と縦ラインが揃う. */}
+            {/* 二次操作 (Group B: 固定枠戻 / Group C: 全件保存) を Row 1 の右端に配置 (admin/manager のみ).
+                Phase G-40: 「一斉未割当」 は Row 2 (個別 reset 群) へ移設済. */}
             {canEdit ? (
               <div
                 className="ml-auto flex flex-wrap items-center gap-4"
                 data-testid="course-day-secondary-toolbar"
               >
-                {/* Group B: リセット (たまにのやり直し) */}
+                {/* Group B: リセット (たまにのやり直し) — 固定枠に戻す */}
                 <div className="flex flex-wrap items-center gap-1.5">
                   <ResetToFixedButton
                     isoYear={isoYear}
                     isoWeek={isoWeek}
                     officeId={officeId}
-                    disabled={generateWeekMut.isPending || assignStaffOnlyMut.isPending}
-                  />
-                  <UnassignAllStaffButton
-                    isoYear={isoYear}
-                    isoWeek={isoWeek}
-                    officeId={officeId}
-                    disabled={generateWeekMut.isPending || assignStaffOnlyMut.isPending}
+                    disabled={isProcessing}
                   />
                 </div>
 
@@ -1770,8 +1641,7 @@ export function CourseDayTablePanel({
                   data-testid="course-day-button-divider"
                 />
 
-                {/* Group C: 一括設定 (滅多に使わない・危険度高).
-                    G-39 で BulkPinAllPfvsButton (🔒/🔓) は Row 3 右端へ移動済 → 全患者固定枠保存のみ. */}
+                {/* Group C: 一括設定 (滅多に使わない・危険度高) — 全患者固定枠を一括保存 */}
                 <div className="flex flex-wrap items-center gap-1.5">
                   <BulkFixToPatternButton canEdit={canEdit} isoYear={isoYear} isoWeek={isoWeek} />
                 </div>
@@ -1779,20 +1649,23 @@ export function CourseDayTablePanel({
             ) : null}
           </div>
 
-          {/* Row 3: 表示モード制御 (G-39).
-              左: テーブル/リスト切替 (「週」タブ選択時のみ非表示 — 週ビューはテーブル/リストの概念が無い).
-              右: 🔒 全件ロック / 🔓 全件解除 (ml-auto、canEdit only、「週」タブでも常時表示).
-              Row 3 自体は常時表示 (= テーブル/リスト切替が消えても 🔒/🔓 は右端に残る).
+          {/* Row 2: 表示モード制御 + 個別 reset 群 (Phase G-40 で新設).
+              右寄せ配置: [テーブル/リスト切替] [一斉未割当] | [🔒][🔓]
+                テーブル/リスト切替を ml-auto で右寄せし、 course table 内の「担当:」 dropdown 上付近に配置.
+                一斉未割当グループはその右隣に並ぶ (= ml-auto 削除).
+              「週」 タブ時はテーブル/リスト切替が非表示になるため、 一斉未割当グループ側に ml-auto を付けて右寄せを維持.
+                「一斉未割当」 と 🔒/🔓 群の間は性質が違う (個別 reset vs 一括設定) ため縦区切り線で分離.
+              Row 2 自体は常時表示 (= テーブル/リスト切替が消えても 一斉未割当 + 🔒/🔓 は右端に残る).
               直上の row との間は border-t で水平区切り線 + 余白. */}
           <div
-            className="mt-3 flex flex-wrap items-center border-t border-border-default pt-3"
+            className="mt-3 flex flex-wrap items-center gap-3 border-t border-border-default pt-3"
             data-testid="course-day-view-mode-toolbar"
           >
             {activeTab !== 'week' ? (
               <div
                 role="group"
                 aria-label="月-土タブ 表示モード切替"
-                className="inline-flex overflow-hidden rounded border border-border-default text-xs"
+                className="ml-auto inline-flex overflow-hidden rounded border border-border-default text-xs"
               >
                 <button
                   type="button"
@@ -1823,12 +1696,35 @@ export function CourseDayTablePanel({
               </div>
             ) : null}
 
-            {/* 🔒 全件ロック / 🔓 全件解除 を Row 3 の右端 (ml-auto) に配置.
-                canEdit のみ表示 (BulkPinAllPfvsButton 内部で制御済).
-                「週」タブ時もテーブル/リスト切替が非表示になるだけで、🔒/🔓 は常時右端に残る. */}
+            {/* Phase G-40: 一斉未割当 → 🔒 → 🔓 を テーブル/リスト切替 の右隣に並べる.
+                canEdit のみ表示 (個別 component 内のガードに任せる).
+                テーブル/リスト切替が表示中はその右隣 (= 切替側の ml-auto で纏めて右寄せされる).
+                「週」 タブ時は切替が非表示になるため、 ここに ml-auto を付けて単独で右寄せを維持.
+                一斉未割当 と 🔒/🔓 の間は性質が違うため縦区切り線で分離. */}
             {canEdit ? (
-              <div className="ml-auto flex flex-wrap items-center gap-1.5">
-                <BulkPinAllPfvsButton canEdit={canEdit} />
+              <div
+                className={`flex flex-wrap items-center gap-4${activeTab === 'week' ? ' ml-auto' : ''}`}
+                data-testid="course-day-row2-right-toolbar"
+              >
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <UnassignAllStaffButton
+                    isoYear={isoYear}
+                    isoWeek={isoWeek}
+                    officeId={officeId}
+                    disabled={isProcessing}
+                  />
+                </div>
+
+                {/* 個別 reset / 一括設定 間の区切り線 */}
+                <span
+                  aria-hidden
+                  className="h-5 w-px bg-border-default"
+                  data-testid="course-day-row2-divider"
+                />
+
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <BulkPinAllPfvsButton canEdit={canEdit} />
+                </div>
               </div>
             ) : null}
           </div>
@@ -2039,23 +1935,7 @@ export function CourseDayTablePanel({
           />
         ) : null}
 
-        {/* Wave 41 v2 § 3 / §13.5.1: 差分追加ダイアログ */}
-        <DiffAddDialog
-          open={diffAddOpen}
-          onClose={() => setDiffAddOpen(false)}
-          isoYear={isoYear}
-          isoWeek={isoWeek}
-          officeId={officeId}
-        />
-
-        {/* Wave 41 v2 § 4 / §13.5.2: 全面最適化ダイアログ */}
-        <FullOptimizeDialog
-          open={fullOptimizeOpen}
-          onClose={() => setFullOptimizeOpen(false)}
-          isoYear={isoYear}
-          isoWeek={isoWeek}
-          officeId={officeId}
-        />
+        {/* Phase G-40: 差分追加 / 全面最適化 ダイアログ は page.tsx (Card 1) 側へ移設済. */}
 
         {/* 患者スケジュール詳細 (固定枠 vs 今週 + 個別反映)
             条件付きレンダリングで unmount を保証 (hooks の lazy 起動). */}

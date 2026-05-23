@@ -4,10 +4,7 @@
  * カバーするシナリオ:
  *   1. 表示対象コースが 0 件のとき案内文が出る
  *   2. active コーステンプレート 2 個でテーブルが 2 個描画される
- *   3. canEdit=true で「週を生成」「自動割付」ボタンが両方描画される
- *   4. canEdit=false で両ボタンが非表示
- *   5. 「週を生成」をクリックすると useGenerateWeekOnly.mutateAsync が呼ばれる
- *   6. 「自動割付」をクリックすると useAssignStaffOnly.mutateAsync が呼ばれる
+ *   3-6. (Phase G-40 で削除) 主要 4 ボタンは page.tsx (Card 1) へ移設のため panel 側では未描画
  *   7. 時刻軸が 9:30〜18:00 / 15min / 35 行で描画される
  *   8. 月〜土の 6 つの曜日タブが描画される (日曜なし)
  *   9. visit が当該コース・スロットに描画される (start_time → 15min 切り下げ)
@@ -369,83 +366,10 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
     expect(screen.getByTestId('course-day-table-0-tpl-B')).toBeInTheDocument();
   });
 
-  it('3. canEdit=true で「週を生成」「自動割付」ボタンが描画される', () => {
-    setupHooks({ templates: [] });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId={null}
-        canEdit={true}
-        showAcceptanceLayer={false}
-      />,
-    );
-    expect(screen.getByTestId('generate-week-button')).toBeInTheDocument();
-    expect(screen.getByTestId('assign-staff-only-button')).toBeInTheDocument();
-  });
-
-  it('4. canEdit=false で両ボタンが非表示', () => {
-    setupHooks({ templates: [] });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId={null}
-        canEdit={false}
-        showAcceptanceLayer={false}
-      />,
-    );
-    expect(screen.queryByTestId('generate-week-button')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('assign-staff-only-button')).not.toBeInTheDocument();
-  });
-
-  it('5. 「週を生成」をクリックすると useGenerateWeekOnly.mutateAsync が呼ばれる', async () => {
-    mockGenerateWeek.mockResolvedValue({
-      iso_year: 2026,
-      iso_week: 19,
-      visits_created: 12,
-      courses_touched: 3,
-      message: 'ok',
-    });
-    setupHooks({ templates: [] });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId="office-honten"
-        canEdit={true}
-        showAcceptanceLayer={false}
-      />,
-    );
-    fireEvent.click(screen.getByTestId('generate-week-button'));
-    await Promise.resolve();
-    expect(mockGenerateWeek).toHaveBeenCalledOnce();
-    const arg = mockGenerateWeek.mock.calls[0][0];
-    expect(arg.iso_year).toBe(2026);
-    expect(arg.iso_week).toBe(19);
-    expect(arg.office_id).toBe('office-honten');
-  });
-
-  it('6. 「自動割付」をクリックすると useAssignStaffOnly.mutateAsync が呼ばれる', async () => {
-    mockAssignStaffOnly.mockResolvedValue({
-      iso_year: 2026,
-      iso_week: 19,
-      courses_assigned: 4,
-      message: 'ok',
-    });
-    setupHooks({ templates: [] });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId={null}
-        canEdit={true}
-        showAcceptanceLayer={false}
-      />,
-    );
-    fireEvent.click(screen.getByTestId('assign-staff-only-button'));
-    await Promise.resolve();
-    expect(mockAssignStaffOnly).toHaveBeenCalledOnce();
-    const arg = mockAssignStaffOnly.mock.calls[0][0];
-    expect(arg.iso_year).toBe(2026);
-    expect(arg.iso_week).toBe(19);
-  });
+  // Phase G-40: テスト #3〜#6 は削除済.
+  // 主要 4 ボタン (週生成 / 自動割付 / 全面最適化 / プール投入) は CourseDayTablePanel から
+  // page.tsx (Card 1) へ移設されたため、panel 単体ではボタンを描画しなくなった.
+  // これらのボタンのカバレッジは将来 schedule/page.tsx 側の test に移管する.
 
   it('7. 時刻軸が 9:30〜18:00 / 15min / 35 行で描画される', () => {
     setupHooks({
