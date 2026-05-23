@@ -883,8 +883,23 @@ export function CourseDayTablePanel({
       }
       if (wd == null || wd < 0 || wd > 5) continue;
       const patient = patientById.get(v.patient_id);
-      // Phase G-22: 🔒 toggle 用 PFV id 逆引き (visitsByCourse builder と同じ pattern)
-      const pfvHit = pfvByVisitKey.get(`${v.patient_id}:${wd}:${v.start_time ?? ''}`);
+      // Phase G-23 fix: 🔒 toggle 用 PFV id 逆引き
+      // visitsByCourse builder と完全同じ key 形式 ({patient_id}:{weekday}:{HH:MM}:{slot})
+      // を使う. visitHHMM = start_time の先頭 5 文字, slot は visit_group_id 内 index.
+      const visitHHMM = (v.start_time ?? '').slice(0, 5);
+      const groupId = (v as { visit_group_id?: string | null }).visit_group_id ?? null;
+      let pfvSlot: 0 | 1 = 0;
+      if (groupId) {
+        const groupVisits = visitsByGroupId.get(groupId) ?? [];
+        const idx = groupVisits.findIndex((gv) => gv.id === v.id);
+        pfvSlot = idx === 1 ? 1 : 0;
+      }
+      const pfvHit = visitHHMM
+        ? pfvByVisitKey.get(`${v.patient_id}:${wd}:${visitHHMM}:${pfvSlot}`)
+        : undefined;
+      // BE が将来 fixed_visit_id / is_pinned を直接返した場合のフォールバック
+      const beFixedVisitId = (v as { fixed_visit_id?: string | null }).fixed_visit_id ?? null;
+      const beIsPinned = (v as { is_pinned?: boolean | null }).is_pinned ?? null;
       out.push({
         id: v.id,
         patient_id: v.patient_id,
@@ -896,13 +911,13 @@ export function CourseDayTablePanel({
         patient_sex_restriction:
           normalizePatientSexRestriction(patient?.sex_restriction as string | null | undefined) ??
           null,
-        // Phase G-22: 週ビュー 🔒 toggle 用
-        fixed_visit_id: pfvHit?.id ?? null,
-        is_pinned: pfvHit?.is_pinned === true,
+        // Phase G-23: 週ビュー 🔒 toggle 用
+        fixed_visit_id: beFixedVisitId ?? pfvHit?.id ?? null,
+        is_pinned: beIsPinned !== null ? beIsPinned === true : pfvHit?.is_pinned === true,
       });
     }
     return out;
-  }, [weekVisits, courseTemplateByCourseId, courses, patientById, pfvByVisitKey]);
+  }, [weekVisits, courseTemplateByCourseId, courses, patientById, pfvByVisitKey, visitsByGroupId]);
 
   const officeNameById = useMemo(() => {
     const m = new Map<string, string>();
