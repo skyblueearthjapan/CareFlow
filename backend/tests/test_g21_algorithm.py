@@ -1148,9 +1148,13 @@ async def test_reviewer_c1_canary_off_keeps_legacy_after(db) -> None:
     )
     after_visits = result.get("after_visits") or []
     same_pw = [v for v in after_visits if v.patient_id == p.id and v.weekday == 0]
-    # legacy 経路: is_pinned=False (= legacy build_visits_for_pool が立てない) のはず.
+    # Phase G-30: legacy 経路でも pinned PFV (is_pinned=True) は V2Visit.is_pinned=True
+    # を立てる (= apply_travel_corrections で時刻が動かない). canary OFF でも
+    # 「pinned なら不動」という不変条件は維持される.
     assert len(same_pw) >= 1
-    assert same_pw[0].is_pinned is False, "canary OFF で is_pinned=True が乗ってはならない"
+    assert same_pw[0].is_pinned is True, (
+        "Phase G-30: canary OFF でも pinned PFV は is_pinned=True が乗るべき"
+    )
 
 
 # ---------------------------------------------------------------------------

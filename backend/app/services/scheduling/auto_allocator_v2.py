@@ -1693,6 +1693,19 @@ def build_visits_for_pool(
         # W41 v2 拡張 (二人組訪問): patient.requires_multiple_staff を per-visit に
         # 流す. 旧 DB 状態 (フィールド存在しない場合) は False にフォールバック.
         req_multi = bool(getattr(patient, "requires_multiple_staff", False) or False)
+        # Phase G-30: weekday -> pinned PFV (slot_index=0, mode='normal',
+        # is_pinned=True) のマップを患者ごとに構築. legacy 経路 (= G-21 OFF) でも
+        # ``is_pinned=True`` を V2Visit に流して、 後段
+        # ``_apply_corrections_to_visits`` の pinned fence (= snapshot
+        # post-restore) で時刻が動かないようにする. weekly_pattern 分岐でも参照
+        # するため if 文の外で構築する.
+        pinned_pfv_by_wd: dict[int, PatientFixedVisit] = {}
+        if fixed_by_patient is not None:
+            for _row in fixed_by_patient.get(patient.id) or []:
+                if _row.mode != "normal" or _row.slot_index != 0:
+                    continue
+                if _row.is_pinned:
+                    pinned_pfv_by_wd[_row.weekday] = _row
         used_fixed = False
         if use_fixed_as_source and fixed_by_patient is not None:
             fixed_rows = fixed_by_patient.get(patient.id) or []
@@ -1740,6 +1753,10 @@ def build_visits_for_pool(
                     cc_eff = wd_to_course_code.get(wd)
                     # Phase E-5: sub_office_id 差し替え (該当 weekday のみ).
                     office_id_eff = wd_to_office_id.get(wd, patient.primary_office_id)
+                    # Phase G-30: 該当 weekday に pinned PFV があれば
+                    # ``is_pinned=True``. legacy 経路でも pinned visit の時刻が
+                    # ``apply_travel_corrections`` で動かないようにする.
+                    is_pinned_eff = wd in pinned_pfv_by_wd
                     visits.append(
                         V2Visit(
                             patient_id=patient.id,
@@ -1762,6 +1779,7 @@ def build_visits_for_pool(
                             preferred_end=pe_eff,
                             sex_restriction=sex_r,
                             requires_multiple_staff=req_multi,
+                            is_pinned=is_pinned_eff,
                         )
                     )
         if not used_fixed:
@@ -1782,6 +1800,12 @@ def build_visits_for_pool(
                     pe_eff = pe_str
                 end_t = _add_minutes(st_eff, sm_eff)
                 am_pm = determine_am_pm(time_type=tt_eff, preferred_start=st_eff)
+                # Phase G-30: weekly_pattern 由来でも、 同 (patient_id, weekday)
+                # に pinned PFV があれば ``is_pinned=True``. legacy full_optimize
+                # 経路では patient.weekly_pattern dict があれば pinned PFV があっても
+                # weekly_pattern 分岐に流れるため、 ここで pinned 情報を救う必要が
+                # ある. PFV を持たない患者 (= pinned_pfv_by_wd 空) は False のまま.
+                is_pinned_eff = wd in pinned_pfv_by_wd
                 visits.append(
                     V2Visit(
                         patient_id=patient.id,
@@ -1803,6 +1827,7 @@ def build_visits_for_pool(
                         preferred_start=ps_eff,
                         preferred_end=pe_eff,
                         requires_multiple_staff=req_multi,
+                        is_pinned=is_pinned_eff,
                     )
                 )
     return visits
@@ -5192,6 +5217,12 @@ async def _load_before_visits_from_pfv(
                 requires_multiple_staff=bool(
                     getattr(patient, "requires_multiple_staff", False) or False
                 ),
+                # Phase G-30: legacy Before 経路でも pinned PFV の is_pinned=True を
+                # V2Visit に流す. diff_add 経路では before_visits → before_copies
+                # (dataclasses.replace) 経由で after_visits に流入するため、
+                # ここで True を立てておかないと apply_travel_corrections の
+                # pinned fence が engage せず時刻が動く可能性がある.
+                is_pinned=bool(pfv.is_pinned),
             )
         )
 
@@ -6076,7 +6107,28 @@ async def run_v2_pipeline(
     # ``pool_patients_orphan_fixed`` の判定基準が mode によって異なる:
     #   - diff_add     : PFV あり + 今週 visit 無し (= 孤児)
     #   - full_optimize: PFV あり + weekly_pattern が dict でない (= 完全孤児)
-    pool_visits = build_visits_for_pool(pool_patients_no_fixed, pending_overlay=pending_overlay)
+    #
+    # Phase G-30: weekly_pattern ベース pool (= ``pool_patients_no_fixed``) で
+    # も pinned PFV を持つ患者がいる (full_optimize で patient.weekly_pattern が
+    # dict + PFV あり). この場合 ``build_visits_for_pool`` の weekly_pattern 分岐
+    # で V2Visit.is_pinned=True を立てたいので、 該当患者の PFV を事前ロードし
+    # ``fixed_by_patient`` 経由で渡す.
+    pinned_pfv_by_patient_for_pool: dict[UUID, list[PatientFixedVisit]] = {}
+    _no_fixed_with_pfv_ids = [p.id for p in pool_patients_no_fixed if p.id in patients_with_fixed]
+    if _no_fixed_with_pfv_ids:
+        _pfv_rows = await db.scalars(
+            select(PatientFixedVisit).where(
+                PatientFixedVisit.patient_id.in_(_no_fixed_with_pfv_ids),
+                PatientFixedVisit.mode == "normal",
+            )
+        )
+        for _pfv in _pfv_rows.all():
+            pinned_pfv_by_patient_for_pool.setdefault(_pfv.patient_id, []).append(_pfv)
+    pool_visits = build_visits_for_pool(
+        pool_patients_no_fixed,
+        fixed_by_patient=pinned_pfv_by_patient_for_pool or None,
+        pending_overlay=pending_overlay,
+    )
     if pool_patients_orphan_fixed and orphan_fixed_by_patient:
         # CareFlow #102 Fix A: orphan PFV の course_template_id -> course label
         # map を事前構築 (N+1 回避). build_visits_for_pool が PFV.course_template_id
