@@ -624,6 +624,8 @@ class Layer3Assigner:
             - Phase G-27: ``course.gender_restrictions`` の値 ('female_only'/'male_only') は
               cost 計算時に ``_normalize_sex_restriction`` で staff.sex の形式
               ('female'/'male') に正規化してから比較する.
+            - Phase G-29: 1st pass で NULL のまま残ったコースに対しては、
+              ``_apply_manager_fallback`` (2nd pass) で manager を greedy 配置する.
         """
         if history is None:
             history = []
@@ -688,11 +690,26 @@ class Layer3Assigner:
                 patient_prev2_day_history=working_prev2_day,
                 patient_prev_week_fri_sat_history=patient_prev_week_fri_sat_history,
             )
+
+            # ---------- Phase G-29: 2nd pass — manager fallback ----------
+            # 1st pass (Hungarian, manager 除外) 完了後、 当該曜日で NULL のまま
+            # 残ったコースに対し manager を greedy 配置する。
+            # User 仕様: 「割り当ての人がいなかった場合に manager を配置する。
+            # 最初からの割り当てロジックの中に manager を混ぜない」.
+            day_assignments = self._apply_manager_fallback(
+                weekday=weekday,
+                day_courses=day_courses,
+                staff_pool=staff_pool,
+                day_assignments=day_assignments,
+                events_by_staff=events_by_staff,
+                week_monday=week_monday,
+            )
+
             for a in day_assignments:
                 all_assignments.append(a)
-                # 距離集計
+                # 距離集計 — fallback で入った manager も staff_pool に居るので参照可
                 course = next(c for c in day_courses if c.course_id == a.course_id)
-                staff = next(s for s in eligible_staff if s.staff_id == a.staff_id)
+                staff = next(s for s in staff_pool if s.staff_id == a.staff_id)
                 total_distance += self._distance_km(course, staff)
 
             # 当日割当を「前日割当」として次曜日へ受け渡し
@@ -1039,6 +1056,185 @@ class Layer3Assigner:
             course.centroid_lat,
             course.centroid_lng,
         )
+
+    # ------------------------------------------------------------------ #
+    # Phase G-29: manager fallback (2nd pass)
+    # ------------------------------------------------------------------ #
+
+    def _try_fallback_manager_for_course(
+        self,
+        *,
+        course: CourseAssignmentTarget,
+        free_managers: list[StaffInfo],
+        weekday: int,
+        events_by_staff: dict[UUID, list[StaffEvent]],
+        week_monday: date_cls | None,
+    ) -> StaffInfo | None:
+        """1 つの unassigned course に対し best (= 最短距離) manager を返す.
+
+        Phase G-29: 1st pass (Hungarian, manager 除外) で割当不能だったコースに
+        対する 2nd pass の helper. 制約 (work_days / 性別 / 当日 event 重複) を
+        満たす manager のうち、 ``_distance_km`` が最小のものを greedy に選ぶ。
+
+        Args:
+            course: 割当対象の NULL コース.
+            free_managers: まだ当該曜日で未使用の manager 候補リスト.
+            weekday: 0=Mon..6=Sun.
+            events_by_staff: ``staff_id -> [StaffEvent, ...]``. 重複判定用.
+            week_monday: 当該週月曜日 (event 重複判定に必要).
+
+        Returns:
+            適合 manager (= ``StaffInfo``) または None (適合者なし).
+
+        Notes:
+            - 同距離なら staff_id (UUID) 文字列の昇順で安定化する
+              (= 決定的な結果のため). spec 上は ``staff.code`` 昇順だが
+              ``StaffInfo`` に code フィールドが無いため代理として ``staff_id``
+              を用いる. 距離で大体一意に決まるためテストで観測される差は無い.
+        """
+        best_mgr: StaffInfo | None = None
+        best_key: tuple[float, str] | None = None
+
+        for mgr in free_managers:
+            # ---------- 性別 check (ハード) ----------
+            # 1st pass の ``_cost_single_cell`` と同じ AND semantics に統一.
+            # Phase G-29 reviewer 指摘 HIGH-1: 元の OR semantics (set 構築 +
+            # ``mgr.sex in normalized_restrictions``) だと「female_only +
+            # male_only 両方を含むコース」 で manager が誤割当される hard 制約
+            # 違反のリスクがあった (= 男性限定患者にも女性 manager が割当)。
+            if course.gender_restrictions:
+                if mgr.sex is None:
+                    continue
+                skip = False
+                for restriction in course.gender_restrictions:
+                    if _normalize_sex_restriction(restriction) != mgr.sex:
+                        skip = True
+                        break
+                if skip:
+                    continue
+
+            # ---------- 当日勤務 check (ハード, work_days) ----------
+            if weekday not in mgr.work_days:
+                continue
+
+            # ---------- event 重複 check (ハード, W33 buffer) ----------
+            if events_by_staff and week_monday is not None and course.visits:
+                if _has_event_overlap_with_buffer(
+                    staff_id=mgr.staff_id,
+                    course=course,
+                    weekday=weekday,
+                    events_by_staff=events_by_staff,
+                    week_monday=week_monday,
+                ):
+                    continue
+
+            # ---------- 距離 (= 主な選好) ----------
+            d = self._distance_km(course, mgr)
+            key = (d, str(mgr.staff_id))
+            if best_key is None or key < best_key:
+                best_key = key
+                best_mgr = mgr
+
+        return best_mgr
+
+    def _apply_manager_fallback(
+        self,
+        *,
+        weekday: int,
+        day_courses: list[CourseAssignmentTarget],
+        staff_pool: list[StaffInfo],
+        day_assignments: list[StaffAssignment],
+        events_by_staff: dict[UUID, list[StaffEvent]],
+        week_monday: date_cls | None,
+    ) -> list[StaffAssignment]:
+        """Phase G-29: 1st pass 後、 NULL コースに manager を greedy 配置する.
+
+        User 要望: 「割り当ての人がいなかった場合に manager を配置する。 最初からの
+        割り当てロジックの中に manager を混ぜない」 = 1st pass は通常 staff (+ 固定
+        manager) のみ、 2nd pass で残った NULL コースに manager を fallback 配置する。
+
+        Manager 配置条件 (全て満たす):
+          1. role='manager' (= staff_pool に居る) かつ is_trainee=False
+          2. 当日勤務 (weekday ∈ manager.work_days)
+          3. 性別制限を満たす (``_normalize_sex_restriction`` で正規化後の集合に
+             manager.sex が含まれる)
+          4. 当日まだ他コース未担当 (= 1 staff 1 day 1 course を manager にも適用.
+             1st pass で M コース固定担当の manager は 2nd pass で再利用しない)
+          5. StaffEvent 時間帯重複なし (``_has_event_overlap_with_buffer``)
+
+        複数 NULL コースがある場合は greedy: コースを 1 件ずつ巡回し、 残存
+        manager から best (= 最短距離) を選ぶ。 1 度割当てた manager は free_managers
+        から除外する (= 1 day 1 course 制約).
+
+        Args:
+            weekday: 0=Mon..6=Sun.
+            day_courses: 当該曜日の全コース.
+            staff_pool: 全スタッフ (= manager 含む生の pool).
+            day_assignments: 1st pass の結果 (= solve_one_day の戻り値).
+            events_by_staff: ``staff_id -> [StaffEvent, ...]``.
+            week_monday: 当該週月曜日 (event 重複判定用).
+
+        Returns:
+            1st pass + 2nd pass を統合した最終 assignment list.
+
+        Notes:
+            - 距離のみで判定. ローテ履歴 / W16 連続防止 / Wave 5 同患者ペナルティ
+              は 2nd pass では考慮しない (= 「割当不能な救済」 という性質上、
+              副次的最適化より配置できることを優先).
+        """
+        if not day_courses or not staff_pool:
+            return day_assignments
+
+        assigned_course_ids: set[UUID] = {a.course_id for a in day_assignments}
+        assigned_staff_ids: set[UUID] = {a.staff_id for a in day_assignments}
+
+        # NULL のままのコース
+        unassigned = [c for c in day_courses if c.course_id not in assigned_course_ids]
+        if not unassigned:
+            return day_assignments
+
+        # fallback 候補 manager: role='manager', is_trainee=False,
+        # 当日他コース未担当 (= 1st pass で固定 M を担当した manager は除外).
+        # work_days / 性別 / event は course 個別に判定するため
+        # ``_try_fallback_manager_for_course`` 内で行う。
+        free_managers = [
+            s
+            for s in staff_pool
+            if s.role == "manager" and not s.is_trainee and s.staff_id not in assigned_staff_ids
+        ]
+        if not free_managers:
+            return day_assignments
+
+        # greedy: 各 unassigned course に対し best manager を 1 件ずつ確定し、
+        # 確定した manager を free_managers から除く. 同一 course を複数 manager に
+        # 割り当てない (1 day 1 course 制約) + 同一 manager を複数 course に割り
+        # 当てない (1 staff 1 day 1 course 制約).
+        # コース処理順は day_courses の元順 (= _load_course_targets の order_by
+        # weekday, code に従う) で決定論的.
+        result = list(day_assignments)
+        for course in unassigned:
+            if not free_managers:
+                break
+            best_mgr = self._try_fallback_manager_for_course(
+                course=course,
+                free_managers=free_managers,
+                weekday=weekday,
+                events_by_staff=events_by_staff,
+                week_monday=week_monday,
+            )
+            if best_mgr is None:
+                continue
+            result.append(
+                StaffAssignment(
+                    weekday=weekday,
+                    course_code=course.course_code,
+                    course_id=course.course_id,
+                    staff_id=best_mgr.staff_id,
+                )
+            )
+            free_managers.remove(best_mgr)
+
+        return result
 
     def _gini_index(self, items: list[Any], *, staff_count: int) -> float:
         """ローテ分散度を Gini 係数で表現する.
