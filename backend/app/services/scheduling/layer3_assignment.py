@@ -1449,6 +1449,21 @@ class Layer3Assigner:
            → 当該 office の code='A' course にスタッフを 1 名固定
               (複数人居る場合は staff.code 昇順で先頭の 1 名)
 
+        Phase G-26 fix: 対象 course の status 条件は
+        ``course_fixed`` だけでなく ``staff_assigned`` も含める.
+        「一斉未割当」 ボタン押下後は全コースが
+        ``course_status='staff_assigned' / assigned_staff_id=NULL`` 状態になる
+        ため、 旧条件 (course_fixed のみ) では固定割当辞書が空になり
+        manager → M / 都賀 staff → 都賀 A のルールが全く効かない不具合があった.
+        (``_load_course_targets`` line 1071 は既に同種修正済だったが、 本関数への伝播漏れ.
+         VPS 本番 DB 35 件中 10 件 NULL + manager 0 件 割当の症状で発覚.)
+
+        Phase G-26 safe-guard: SQL fetch 後に Python 側で
+        「assigned_staff_id が NULL もしくは 該当 manager / primary_staff の id」
+        のコースだけに絞り込み、 admin が UI から手動で別 staff を
+        割り当てた M / 都賀 A コースを上書きしないようにする
+        (W25 admin 手動割付保護 = ``already_assigned_stmt`` との整合).
+
         Returns:
             ``{course_id: staff_id}`` の dict.
         """
@@ -1476,19 +1491,35 @@ class Layer3Assigner:
             managers = list((await db.scalars(mgr_stmt)).all())
 
             # M / M2 / .. の course (course_fixed) を取得
+            # Phase G-26 fix: assign-staff-only 再実行時に staff_assigned 状態 (= 一斉未割当後) でも固定割当が効くよう両 status を対象に含める
             mgr_course_stmt = (
                 select(Course)
                 .where(
                     Course.iso_year == iso_year,
                     Course.iso_week == iso_week,
                     Course.deleted_at.is_(None),
-                    Course.course_status == COURSE_STATUS_COURSE_FIXED,
+                    Course.course_status.in_(
+                        [COURSE_STATUS_COURSE_FIXED, COURSE_STATUS_STAFF_ASSIGNED]
+                    ),
                     Course.office_id == office.id,
                     Course.code == "M",
                 )
                 .order_by(Course.weekday)
             )
             mgr_courses = list((await db.scalars(mgr_course_stmt)).all())
+
+            # Phase G-26 safe-guard: admin が手動で別 staff (= manager 以外) を割当済の
+            # M course は保護し、 manager で上書きしない (W25 fix との整合).
+            # 旧 SQL は course_status='staff_assigned' を含めるようになったため、
+            # admin が UI から手動変更した「別 staff 割付済の M」 も拾ってしまい、
+            # W25 の admin 手動割付保護 (already_assigned_stmt) と競合する。
+            # 「assigned_staff_id が NULL もしくは manager のいずれかの id」 に絞る.
+            manager_ids = {m.id for m in managers}
+            mgr_courses = [
+                c
+                for c in mgr_courses
+                if c.assigned_staff_id is None or c.assigned_staff_id in manager_ids
+            ]
 
             # NOTE: code 列は ('A','B','C','D','E','M') CHECK 制約があるため
             # 複数 manager の場合も全て code='M' で運用される (W16 想定 N=1).
@@ -1523,19 +1554,31 @@ class Layer3Assigner:
                 continue
             primary_staff = tsuga_staff[0]
 
+            # Phase G-26 fix: assign-staff-only 再実行時に staff_assigned 状態 (= 一斉未割当後) でも固定割当が効くよう両 status を対象に含める
             tsuga_course_stmt = (
                 select(Course)
                 .where(
                     Course.iso_year == iso_year,
                     Course.iso_week == iso_week,
                     Course.deleted_at.is_(None),
-                    Course.course_status == COURSE_STATUS_COURSE_FIXED,
+                    Course.course_status.in_(
+                        [COURSE_STATUS_COURSE_FIXED, COURSE_STATUS_STAFF_ASSIGNED]
+                    ),
                     Course.office_id == office.id,
                     Course.code == "A",
                 )
                 .order_by(Course.weekday)
             )
             tsuga_courses = list((await db.scalars(tsuga_course_stmt)).all())
+
+            # Phase G-26 safe-guard: admin が手動で別 staff (= primary_staff 以外) を割当済の
+            # 都賀 A course は保護し、 primary_staff で上書きしない (W25 fix との整合).
+            # 「assigned_staff_id が NULL もしくは primary_staff.id」 に絞る.
+            tsuga_courses = [
+                c
+                for c in tsuga_courses
+                if c.assigned_staff_id is None or c.assigned_staff_id == primary_staff.id
+            ]
             for course in tsuga_courses:
                 result[course.id] = primary_staff.id
 
