@@ -27,6 +27,7 @@ import { useMemo, useState } from 'react';
 import { useSession } from 'next-auth/react';
 
 import { BulkFixToPatternButton } from '@/components/schedule/v2/BulkFixToPatternButton';
+import { BulkPinAllPfvsButton } from '@/components/schedule/v2/BulkPinAllPfvsButton';
 import { CourseDayTablePanel } from '@/components/schedule/v2/CourseDayTablePanel';
 import { WeekSelector, toWeekStart } from '@/components/schedule/WeekSelector';
 import { Card } from '@/components/ui/card';
@@ -115,6 +116,7 @@ export default function SchedulePage() {
           </label>
 
           <BulkFixToPatternButton canEdit={canEdit} isoYear={isoYear} isoWeek={isoWeek} />
+          <BulkPinAllPfvsButton canEdit={canEdit} />
         </div>
       </Card>
 
