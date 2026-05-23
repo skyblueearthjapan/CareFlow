@@ -1827,6 +1827,19 @@ def build_visits_for_pool(
                         pe_eff = None
                     end_t = _add_minutes(st_eff, sm_eff)
                     am_pm = determine_am_pm(time_type=tt_eff, preferred_start=st_eff)
+                    # Phase G-31: PFV.course_template_id を course_code に流して
+                    # Stage 4 振り分けで別 course に動かないよう fence する.
+                    # G-30.1 で時刻 (start_time) は pinned 固定したが、course_code
+                    # を未指定 (None) のまま emit していたため Stage 4 が別 course
+                    # にアサインし、 BEFORE A → AFTER M 等 course が動く事象が
+                    # VPS で再現していた. fixed-source 分岐 (L1716-1721) と同じ
+                    # 規約で course_code_by_template_id から引き当てる.
+                    cc_eff = (
+                        course_code_by_template_id.get(pinned_pfv.course_template_id)
+                        if course_code_by_template_id is not None
+                        and pinned_pfv.course_template_id is not None
+                        else None
+                    )
                     visits.append(
                         V2Visit(
                             patient_id=patient.id,
@@ -1841,6 +1854,7 @@ def build_visits_for_pool(
                             office_id=patient.primary_office_id,
                             am_pm=am_pm,
                             source_kind="pool",
+                            course_code=cc_eff,
                             address=addr,
                             area_label=area,
                             time_type=tt_eff,
@@ -6187,10 +6201,34 @@ async def run_v2_pipeline(
         )
         for _pfv in _pfv_rows.all():
             pinned_pfv_by_patient_for_pool.setdefault(_pfv.patient_id, []).append(_pfv)
+    # Phase G-31: weekly_pattern + pinned PFV 経路でも PFV.course_template_id
+    # から course_code を引いて V2Visit.course_code に流すため、 template_id ->
+    # label map を事前ロードする (orphan 経路 / G-21 経路と同じ規約). これを
+    # 怠ると build_visits_for_pool の weekly_pattern 分岐 pinned emit が
+    # course_code=None で V2Visit を作り、 Stage 4 振り分けで pinned visit が
+    # 別 course (例 A → M) にアサインされる事象 (G-30.1 取り残し) が再現する.
+    pinned_pool_course_code_by_template_id: dict[UUID, str] = {}
+    if pinned_pfv_by_patient_for_pool:
+        _pinned_template_ids: set[UUID] = {
+            _pfv.course_template_id
+            for _pfvs in pinned_pfv_by_patient_for_pool.values()
+            for _pfv in _pfvs
+            if _pfv.course_template_id is not None
+        }
+        if _pinned_template_ids:
+            _pinned_ct_rows = await db.scalars(
+                select(CourseTemplate).where(
+                    CourseTemplate.id.in_(_pinned_template_ids),
+                    CourseTemplate.deleted_at.is_(None),
+                )
+            )
+            for _ct in _pinned_ct_rows.all():
+                pinned_pool_course_code_by_template_id[_ct.id] = _ct.label
     pool_visits = build_visits_for_pool(
         pool_patients_no_fixed,
         fixed_by_patient=pinned_pfv_by_patient_for_pool or None,
         pending_overlay=pending_overlay,
+        course_code_by_template_id=pinned_pool_course_code_by_template_id or None,
     )
     if pool_patients_orphan_fixed and orphan_fixed_by_patient:
         # CareFlow #102 Fix A: orphan PFV の course_template_id -> course label
