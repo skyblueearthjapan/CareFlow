@@ -883,6 +883,8 @@ export function CourseDayTablePanel({
       }
       if (wd == null || wd < 0 || wd > 5) continue;
       const patient = patientById.get(v.patient_id);
+      // Phase G-22: 🔒 toggle 用 PFV id 逆引き (visitsByCourse builder と同じ pattern)
+      const pfvHit = pfvByVisitKey.get(`${v.patient_id}:${wd}:${v.start_time ?? ''}`);
       out.push({
         id: v.id,
         patient_id: v.patient_id,
@@ -894,10 +896,13 @@ export function CourseDayTablePanel({
         patient_sex_restriction:
           normalizePatientSexRestriction(patient?.sex_restriction as string | null | undefined) ??
           null,
+        // Phase G-22: 週ビュー 🔒 toggle 用
+        fixed_visit_id: pfvHit?.id ?? null,
+        is_pinned: pfvHit?.is_pinned === true,
       });
     }
     return out;
-  }, [weekVisits, courseTemplateByCourseId, courses, patientById]);
+  }, [weekVisits, courseTemplateByCourseId, courses, patientById, pfvByVisitKey]);
 
   const officeNameById = useMemo(() => {
     const m = new Map<string, string>();
@@ -1732,6 +1737,7 @@ export function CourseDayTablePanel({
                   staffMap={staffMap}
                   sameAddressKeyByPatientId={sameAddressKeyByPatientId}
                   onPatientClick={handleOpenPatientDetail}
+                  onTogglePin={canEdit ? handleTogglePin : undefined}
                 />
               </div>
             ) : (

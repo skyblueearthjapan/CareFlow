@@ -40,6 +40,13 @@ export interface WeekOverviewVisit {
    * 女性のみ → 患者名 赤 / 男性のみ → 青 / その他 → 標準.
    */
   patient_sex_restriction?: 'female_only' | 'male_only' | null;
+  /**
+   * Phase G-22: 当該 visit のソース PFV id (= 🔒 toggle 対象).
+   * 指定があれば 🔒 toggle が enable.
+   */
+  fixed_visit_id?: string | null;
+  /** Phase G-22: PFV.is_pinned のミラー値. */
+  is_pinned?: boolean | null;
 }
 
 export interface CourseWeekOverviewProps {
@@ -79,6 +86,12 @@ export interface CourseWeekOverviewProps {
    * canEdit に依らない。
    */
   onPatientClick?: (patientId: string) => void;
+  /**
+   * Phase G-22: 🔒 完全固定 toggle ハンドラ (週ビュー).
+   * 指定時のみ各 visit の患者名後ろに 🔒 / 🔓 button が描画される.
+   * visit.fixed_visit_id が無い場合は disabled.
+   */
+  onTogglePin?: (pfvId: string, nextPinned: boolean) => void;
 }
 
 export function CourseWeekOverview({
@@ -91,6 +104,7 @@ export function CourseWeekOverview({
   staffMap,
   sameAddressKeyByPatientId,
   onPatientClick,
+  onTogglePin,
 }: CourseWeekOverviewProps) {
   // (template_id, weekday) → visits[] (start_time 昇順)
   const cellMap = React.useMemo(() => {
@@ -223,6 +237,10 @@ export function CourseWeekOverview({
                         groupKey: string | null;
                         /** Phase G-15: 性別制限. female_only=赤 / male_only=青. */
                         sexRestriction: 'female_only' | 'male_only' | null;
+                        /** Phase G-22: 🔒 toggle 対象 PFV id. null = weekly_pattern 由来. */
+                        fixedVisitId: string | null;
+                        /** Phase G-22: PFV.is_pinned. */
+                        isPinned: boolean;
                       }
                     | {
                         kind: 'event';
@@ -243,6 +261,8 @@ export function CourseWeekOverview({
                         label: v.patient_name ?? v.patient_id,
                         groupKey: inGroup ? k : null,
                         sexRestriction: v.patient_sex_restriction ?? null,
+                        fixedVisitId: v.fixed_visit_id ?? null,
+                        isPinned: v.is_pinned === true,
                       };
                     }),
                     ...staffDayEvents.map((e) => {
@@ -391,6 +411,17 @@ export function CourseWeekOverview({
                                           <span style={sexStyle}>{item.label}</span>
                                         );
                                       })()}
+                                      {/* Phase G-22: 🔒 完全固定 toggle (週ビュー) */}
+                                      {onTogglePin && (
+                                        <PinIconButton
+                                          fixedVisitId={item.fixedVisitId}
+                                          isPinned={item.isPinned}
+                                          label={item.label}
+                                          onTogglePin={onTogglePin}
+                                          testIdPrefix="course-week-overview-pin"
+                                          visitId={item.id}
+                                        />
+                                      )}
                                     </li>
                                   ) : (
                                     <li
@@ -455,6 +486,17 @@ export function CourseWeekOverview({
                                               <span style={sexStyle}>{v.label}</span>
                                             );
                                           })()}
+                                          {/* Phase G-22: 🔒 完全固定 toggle (週ビュー pair cluster) */}
+                                          {onTogglePin && (
+                                            <PinIconButton
+                                              fixedVisitId={v.fixedVisitId}
+                                              isPinned={v.isPinned}
+                                              label={v.label}
+                                              onTogglePin={onTogglePin}
+                                              testIdPrefix="course-week-overview-pin"
+                                              visitId={v.id}
+                                            />
+                                          )}
                                         </li>
                                       ))}
                                     </ul>
@@ -474,5 +516,65 @@ export function CourseWeekOverview({
         </div>
       </div>
     </Card>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Phase G-22: PinIconButton (週ビュー 用)
+// ─────────────────────────────────────────────────────────────────────────
+
+interface PinIconButtonProps {
+  fixedVisitId: string | null;
+  isPinned: boolean;
+  label: string;
+  visitId: string;
+  testIdPrefix: string;
+  onTogglePin: (pfvId: string, nextPinned: boolean) => void;
+}
+
+function PinIconButton({
+  fixedVisitId,
+  isPinned,
+  label,
+  visitId,
+  testIdPrefix,
+  onTogglePin,
+}: PinIconButtonProps) {
+  const disabled = !fixedVisitId;
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        if (!fixedVisitId) return;
+        onTogglePin(fixedVisitId, !isPinned);
+      }}
+      disabled={disabled}
+      aria-label={
+        isPinned
+          ? `${label} の完全固定を解除`
+          : disabled
+            ? `${label} は固定枠が無いため完全固定できません`
+            : `${label} を完全固定`
+      }
+      title={
+        disabled
+          ? '先に固定枠登録が必要'
+          : isPinned
+            ? '完全固定を解除'
+            : '完全固定 (Layer 2 で動かさない)'
+      }
+      aria-pressed={isPinned}
+      data-testid={`${testIdPrefix}-${visitId}`}
+      data-pinned={isPinned ? 'true' : 'false'}
+      data-pfv-id={fixedVisitId ?? ''}
+      className={cn(
+        'ml-1 inline-flex items-center justify-center rounded px-0.5 text-[9px] leading-none align-middle',
+        isPinned ? 'text-yellow-700 hover:bg-yellow-100' : 'text-text-muted hover:bg-bg-muted',
+        disabled ? 'cursor-not-allowed opacity-30' : '',
+      )}
+    >
+      <span aria-hidden="true">{isPinned ? '🔒' : '🔓'}</span>
+    </button>
   );
 }
