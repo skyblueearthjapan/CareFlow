@@ -1784,7 +1784,74 @@ def build_visits_for_pool(
                     )
         if not used_fixed:
             entries = _extract_weekly_entries(patient)
+            # Phase G-30.1 HIGH-1: 同 weekday に複数 entry (= AM/PM split 構成)
+            # + pinned PFV があると、 同じ pinned visit が複数回 emit される.
+            # 既に pinned visit を emit した weekday を記録し、 同 weekday の
+            # 2 件目以降の entry を skip する.
+            emitted_pinned_wds: set[int] = set()
             for wd, st, sm, tt, ps_str, pe_str in entries:
+                # Phase G-30.1: weekly_pattern 由来でも、 同 (patient_id, weekday) に
+                # pinned PFV があれば PFV ベースに切替える (= start_time /
+                # duration / time_type を PFV から取る). G-30 で is_pinned=True の
+                # propagate は実装済だが、 start_time が weekly_pattern.preferred_start
+                # (例 09:00) のままだと PFV.start_time (例 09:30) と divergent.
+                # ``apply_travel_corrections`` の post-restore は snapshot 時点の
+                # 値に戻すので、 snapshot 時点で既に 09:00 になっていたら 09:00 に
+                # 復元される (= PFV の 09:30 に戻らない). 対策として weekly_pattern
+                # entry は完全に skip し、 PFV ベース 1 件のみ emit する.
+                # overlay (pending edit) があれば overlay 値が PFV 値より優先される
+                # (= 既存 fixed-source 分岐 / G-21 と同規約).
+                pinned_pfv = pinned_pfv_by_wd.get(wd)
+                if pinned_pfv is not None:
+                    if wd in emitted_pinned_wds:
+                        # Phase G-30.1 HIGH-1: 同 weekday に複数 entry がある場合、
+                        # pinned visit は 1 件しか emit しない (重複防止).
+                        continue
+                    emitted_pinned_wds.add(wd)
+                    ov = overlay.get((patient.id, wd))
+                    if ov is not None:
+                        st_eff = ov.new_start
+                        sm_eff = _compute_overlay_duration(
+                            ov, existing_duration=pinned_pfv.duration_min
+                        )
+                        tt_eff = ov.new_time_type or "固定"
+                        ps_eff = ov.new_start_str
+                        pe_eff = ov.new_end_str
+                    else:
+                        st_eff = pinned_pfv.start_time
+                        sm_eff = pinned_pfv.duration_min
+                        # PFV.time_type カラムは存在しないため固定文字列 "固定" を
+                        # セット (= fixed-source 分岐と同じ規約).
+                        tt_eff = "固定"
+                        ps_eff = _fmt_hhmm(pinned_pfv.start_time)
+                        pe_eff = None
+                    end_t = _add_minutes(st_eff, sm_eff)
+                    am_pm = determine_am_pm(time_type=tt_eff, preferred_start=st_eff)
+                    visits.append(
+                        V2Visit(
+                            patient_id=patient.id,
+                            patient_name=patient.name,
+                            patient_code=patient.code,
+                            weekday=wd,
+                            start_time=st_eff,
+                            end_time=end_t,
+                            service_minutes=sm_eff,
+                            lat=float(patient.lat),
+                            lng=float(patient.lng),
+                            office_id=patient.primary_office_id,
+                            am_pm=am_pm,
+                            source_kind="pool",
+                            address=addr,
+                            area_label=area,
+                            time_type=tt_eff,
+                            sex_restriction=sex_r,
+                            preferred_start=ps_eff,
+                            preferred_end=pe_eff,
+                            requires_multiple_staff=req_multi,
+                            is_pinned=True,
+                        )
+                    )
+                    continue
                 ov = overlay.get((patient.id, wd))
                 if ov is not None:
                     st_eff = ov.new_start
@@ -1800,12 +1867,8 @@ def build_visits_for_pool(
                     pe_eff = pe_str
                 end_t = _add_minutes(st_eff, sm_eff)
                 am_pm = determine_am_pm(time_type=tt_eff, preferred_start=st_eff)
-                # Phase G-30: weekly_pattern 由来でも、 同 (patient_id, weekday)
-                # に pinned PFV があれば ``is_pinned=True``. legacy full_optimize
-                # 経路では patient.weekly_pattern dict があれば pinned PFV があっても
-                # weekly_pattern 分岐に流れるため、 ここで pinned 情報を救う必要が
-                # ある. PFV を持たない患者 (= pinned_pfv_by_wd 空) は False のまま.
-                is_pinned_eff = wd in pinned_pfv_by_wd
+                # Phase G-30 / G-30.1: pinned PFV があれば上の continue で処理済.
+                # ここに到達する weekly_pattern entry は必ず非 pinned.
                 visits.append(
                     V2Visit(
                         patient_id=patient.id,
@@ -1827,7 +1890,7 @@ def build_visits_for_pool(
                         preferred_start=ps_eff,
                         preferred_end=pe_eff,
                         requires_multiple_staff=req_multi,
-                        is_pinned=is_pinned_eff,
+                        is_pinned=False,
                     )
                 )
     return visits

@@ -506,3 +506,204 @@ def test_build_visits_for_pool_propagates_pfv_is_pinned() -> None:
     assert all(v.is_pinned is False for v in wed), (
         "Phase G-30: weekly_pattern 経路の V2Visit は is_pinned=False のまま (= 既存挙動)"
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase G-30.1: weekly_pattern 分岐で pinned PFV があれば PFV.start_time /
+# duration を優先する (= weekly_pattern.preferred_start は無視).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_legacy_path_weekly_pattern_with_pinned_pfv_uses_pfv_time(db) -> None:
+    """legacy + weekly_pattern + pinned PFV (divergent time) で PFV 時刻が採用される.
+
+    背景:
+        G-30 で V2Visit.is_pinned=True の propagate は実装済だが、 weekly_pattern
+        分岐の start_time は ``preferred_start`` (例 09:00) のまま. PFV.start_time
+        (例 09:30) と divergent なため、 ``apply_travel_corrections`` の post-restore
+        は snapshot 値 (= 09:00) に戻し、 PFV 値 (09:30) に戻らなかった.
+
+    G-30.1 修正:
+        weekly_pattern 分岐で pinned PFV があれば start_time / duration / time_type
+        を PFV から取る. weekly_pattern entry は完全に skip (= 重複 visit 生成防止).
+
+    検証:
+        - PFV.start_time=09:30, preferred_start=09:00.
+        - after_visit.start_time == 09:30 (= PFV 値) であることを確認.
+    """
+    office = await _make_office(db, name="g30-1-1-office")
+    p = await _make_patient(
+        db,
+        code="G30-1-1",
+        name="g30-1-1 patient",
+        office=office,
+        weekly_pattern={
+            "preferred_weekdays": ["Mon"],
+            "preferred_start": "09:00",  # PFV.start_time とは divergent
+            "time_type": "固定",
+        },
+    )
+    # PFV は 09:30 (= weekly_pattern の 09:00 ではない), is_pinned=True
+    await _make_pfv(
+        db,
+        patient=p,
+        weekday=0,
+        start_hhmm=(9, 30),
+        is_pinned=True,
+        duration_min=45,  # weekly_pattern (= default 30) と divergent
+    )
+    await _seed_staff_and_shift(db, office=office, weekday=0, name="g30-1-1-staff")
+    await db.commit()
+
+    result = await run_v2_pipeline(
+        db,
+        iso_year=2026,
+        iso_week=20,
+        office_ids=[office.id],
+        mode="full_optimize",
+    )
+    after_visits = result.get("after_visits") or []
+    p_after = [v for v in after_visits if v.patient_id == p.id and v.weekday == 0]
+    assert len(p_after) == 1, (
+        f"G-30.1: pinned PFV + weekly_pattern で visit 1 件期待 (重複防止) だが "
+        f"{len(p_after)} 件: {p_after}"
+    )
+    assert p_after[0].is_pinned is True, (
+        "G-30.1: weekly_pattern 分岐で pinned PFV を捕捉した V2Visit には is_pinned=True が乗るべき"
+    )
+    assert p_after[0].start_time == time(9, 30), (
+        f"G-30.1: PFV.start_time=09:30 が採用されるべき (weekly_pattern の 09:00 ではない): "
+        f"actual={p_after[0].start_time}"
+    )
+    assert p_after[0].service_minutes == 45, (
+        f"G-30.1: PFV.duration_min=45 が採用されるべき: actual={p_after[0].service_minutes}"
+    )
+    assert p_after[0].time_type == "固定", (
+        f"G-30.1: pinned PFV ベースなので time_type='固定' のはず: actual={p_after[0].time_type}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_legacy_path_weekly_pattern_without_pfv_uses_weekly_pattern_time(db) -> None:
+    """regression: weekly_pattern のみ (PFV なし) は preferred_start が採用される.
+
+    G-30.1 修正で 「pinned PFV があれば PFV ベース」 に切替えたが、 PFV を持たない
+    患者は引き続き weekly_pattern.preferred_start が採用される (= 既存挙動維持).
+    """
+    office = await _make_office(db, name="g30-1-2-office")
+    p = await _make_patient(
+        db,
+        code="G30-1-2",
+        name="g30-1-2 patient",
+        office=office,
+        weekly_pattern={
+            "preferred_weekdays": ["Mon"],
+            "preferred_start": "09:00",
+            "time_type": "固定",
+        },
+    )
+    # PFV は作らない
+    await _seed_staff_and_shift(db, office=office, weekday=0, name="g30-1-2-staff")
+    await db.commit()
+
+    result = await run_v2_pipeline(
+        db,
+        iso_year=2026,
+        iso_week=20,
+        office_ids=[office.id],
+        mode="full_optimize",
+    )
+    after_visits = result.get("after_visits") or []
+    p_after = [v for v in after_visits if v.patient_id == p.id and v.weekday == 0]
+    assert len(p_after) == 1, (
+        f"G-30.1 regression: PFV なし weekly_pattern で visit 1 件期待だが {len(p_after)} 件"
+    )
+    assert p_after[0].is_pinned is False, (
+        "G-30.1 regression: PFV を持たない weekly_pattern visit は is_pinned=False のまま"
+    )
+    assert p_after[0].start_time == time(9, 0), (
+        f"G-30.1 regression: weekly_pattern.preferred_start=09:00 が採用されるべき: "
+        f"actual={p_after[0].start_time}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase G-30.1 HIGH-1: 同 weekday マルチエントリ + pinned PFV で重複 visit を出さない.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_legacy_path_multi_entry_weekday_with_pinned_pfv_no_duplicate(db) -> None:
+    """同 weekday に複数 weekly_pattern entry (= AM/PM split 構成) + pinned PFV で
+    pinned visit が **重複 emit されない** こと.
+
+    背景 (reviewer 指摘 HIGH-1):
+        ``_extract_weekly_entries`` は ``entries`` リストをそのまま展開するため、
+        同 weekday に複数 entry がある場合は同じ weekday を複数回 yield する.
+        G-30.1 の pinned PFV 分岐は entry ごとに pinned check するので、 同 weekday
+        に 2+ entries + pinned PFV があると、 同じ pinned visit が 2 回以上
+        emit されてしまう (= 重複).
+
+    本番データには現在この組み合わせは無いが、 将来発火する可能性あり.
+
+    G-30.1 HIGH-1 fix:
+        weekly_pattern ループ内で ``emitted_pinned_wds: set[int]`` を保持し、
+        pinned visit を既に emit した weekday の 2 件目以降の entry を skip.
+
+    検証:
+        - patient.weekly_pattern.entries = [{weekday:0, 09:00}, {weekday:0, 14:00}]
+        - PFV: weekday=0, start_time=09:30, is_pinned=True
+        - 期待: 月曜 visit は 1 件のみ (09:30 の pinned visit).
+    """
+    office = await _make_office(db, name="g30-1-h1-office")
+    p = await _make_patient(
+        db,
+        code="G30-1-H1",
+        name="g30-1 multi-entry pinned patient",
+        office=office,
+        weekly_pattern={
+            "entries": [
+                {
+                    "weekday": "Mon",
+                    "preferred_start": "09:00",
+                    "time_type": "固定",
+                },
+                {
+                    "weekday": "Mon",
+                    "preferred_start": "14:00",
+                    "time_type": "固定",
+                },
+            ],
+        },
+    )
+    await _make_pfv(
+        db,
+        patient=p,
+        weekday=0,
+        start_hhmm=(9, 30),
+        is_pinned=True,
+        duration_min=30,
+    )
+    await _seed_staff_and_shift(db, office=office, weekday=0, name="g30-1-h1-staff")
+    await db.commit()
+
+    result = await run_v2_pipeline(
+        db,
+        iso_year=2026,
+        iso_week=20,
+        office_ids=[office.id],
+        mode="full_optimize",
+    )
+    after_visits = result.get("after_visits") or []
+    p_after = [v for v in after_visits if v.patient_id == p.id and v.weekday == 0]
+    assert len(p_after) == 1, (
+        f"G-30.1 HIGH-1: 同 weekday マルチエントリ + pinned PFV で月曜 visit 1 件期待だが "
+        f"{len(p_after)} 件: {p_after}"
+    )
+    assert p_after[0].is_pinned is True, (
+        "G-30.1 HIGH-1: 残った 1 件は pinned visit (is_pinned=True) であるべき"
+    )
+    assert p_after[0].start_time == time(9, 30), (
+        f"G-30.1 HIGH-1: PFV.start_time=09:30 が採用されるべき: actual={p_after[0].start_time}"
+    )
