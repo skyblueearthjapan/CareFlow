@@ -411,6 +411,11 @@ export interface CourseDayTableProps {
    * - 親は PATCH /patients/fixed-visits/{pfv_id}/pin を発火する.
    */
   onTogglePin?: (pfvId: string, nextPinned: boolean) => void;
+  /**
+   * Phase G-25: staff の所属拠点名を表示するための office_id → name map.
+   * 担当 dropdown の各 option に拠点名を併記する用途 (= 全拠点 staff 解放と組合せ).
+   */
+  officeNameById?: Map<string, string>;
 }
 
 export function CourseDayTable({
@@ -427,6 +432,7 @@ export function CourseDayTable({
   onDeleteVisit,
   onPatientClick,
   onTogglePin,
+  officeNameById,
 }: CourseDayTableProps) {
   // visits を slot ("HH:MM") → CourseGridVisit[] にバケット化.
   const occupants = useMemo(() => {
@@ -535,9 +541,19 @@ export function CourseDayTable({
                 {staffOptions.map((s) => {
                   const dayEvents = getStaffEventsForWeekday(s.id, weekday, eventsMap);
                   const ev = dayEvents[0];
+                  // Phase G-25: 全拠点 staff 解放のため、 各 option に所属拠点 + role を併記
+                  const staffOfficeName =
+                    (s.primary_office_id && officeNameById?.get(s.primary_office_id)) || null;
+                  const roleSuffix = s.role === 'manager' ? '・管理者' : '';
+                  const officeSuffix = staffOfficeName
+                    ? ` [${staffOfficeName}${roleSuffix}]`
+                    : roleSuffix
+                      ? ` [${roleSuffix.replace('・', '')}]`
+                      : '';
+                  const baseName = `${s.name}${officeSuffix}`;
                   const label = ev
-                    ? `${s.name} [${ev.type} ${ev.start_time}-${ev.end_time}]`
-                    : s.name;
+                    ? `${baseName} (${ev.type} ${ev.start_time}-${ev.end_time})`
+                    : baseName;
                   return (
                     <option key={s.id} value={s.id}>
                       {label}

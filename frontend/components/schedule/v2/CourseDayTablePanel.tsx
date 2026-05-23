@@ -364,26 +364,35 @@ export function CourseDayTablePanel({
   const coursesQuery = useCourses({ iso_year: isoYear, iso_week: isoWeek, limit: 200 });
   const courses = useMemo(() => coursesQuery.data ?? [], [coursesQuery.data]);
 
-  // ─── 拠点別 active staff (担当 dropdown の選択肢) ───────────────
+  // Phase G-25: 担当 dropdown は全拠点解放 (= 拠点を超えて配置可能).
+  // 自動算出 (run_v2_pipeline) は引き続き拠点内のみだが、 手動 dropdown は全 active staff を表示.
+  // 各 option には 「氏名 (拠点名)」 形式で所属を併記 (= CourseDayTable 側で format).
   const staffByOffice = useMemo(() => {
+    const allActive = [...allStaff]
+      .filter((s) => s.status === 'active')
+      .sort((a, b) => {
+        // 主担当拠点 → kana/氏名 でソート
+        const oa = a.primary_office_id ?? '';
+        const ob = b.primary_office_id ?? '';
+        if (oa !== ob) return oa.localeCompare(ob);
+        return (a.kana ?? a.name).localeCompare(b.kana ?? b.name, 'ja');
+      });
+    // 全 course_template に同じリストを返す (= office_id で絞らない)
     const m = new Map<string, typeof allStaff>();
+    // 既存 callsite が staffByOffice.get(office_id) で取得するため、 全 office_id に対して
+    // 同じ list を返す map を構築する.
+    const officeIds = new Set<string>();
     for (const s of allStaff) {
-      if (s.status !== 'active') continue;
-      const oid = s.primary_office_id;
-      if (!oid) continue;
-      const arr = m.get(oid) ?? [];
-      arr.push(s);
-      m.set(oid, arr);
+      if (s.primary_office_id) officeIds.add(s.primary_office_id);
     }
-    // 拠点ごとに kana / 氏名でソート
-    for (const [k, arr] of m.entries()) {
-      m.set(
-        k,
-        [...arr].sort((a, b) => (a.kana ?? a.name).localeCompare(b.kana ?? b.name, 'ja')),
-      );
+    for (const o of offices) {
+      officeIds.add(o.id);
+    }
+    for (const oid of officeIds) {
+      m.set(oid, allActive);
     }
     return m;
-  }, [allStaff]);
+  }, [allStaff, offices]);
 
   // ─── Wave 27 Phase B-1: 当週全スタッフの events バッチ取得 ─────────────
   const allStaffIds = useMemo(() => allStaff.map((s) => s.id), [allStaff]);
@@ -1847,6 +1856,7 @@ export function CourseDayTablePanel({
                         staffEventsByStaff={staffEventsByStaff}
                         canEdit={canEdit}
                         isStaffMutating={updateCourseMut.isPending}
+                        officeNameById={officeNameById}
                         onChangeAssignedStaff={(staffId) => {
                           if (!course) {
                             toast.warning(
