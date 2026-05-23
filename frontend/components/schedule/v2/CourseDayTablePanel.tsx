@@ -4,14 +4,14 @@
  * CourseDayTablePanel — Wave 17 Phase B-2 メインパネル.
  *
  * Excel スケジュール枠組みに完全準拠した 1 画面構造
- * (Phase G-41 で Card 2 に主要 4 + 曜日タブ + 二次操作を統合、Card 1 は表示制御 only):
+ * (Phase G-43 で Row 1 を flex justify-end 単一 toolbar 化し、主要 4 と固定枠戻を隣接させた):
  *   ┌─ ヘッダー ────────────────────────────────────────────┐
- *   │  Row 1 (主要 4 ボタン, 右寄せ, admin/manager only):           │
- *   │              [週を生成][自動割付 🟢][全面最適化 🟢][プール投入]│
- *   │  ─── border-t ────────────────────                          │
- *   │  Row 2 (曜日タブ + テーブル/リスト + 二次操作):                │
- *   │    [月][火][水][木][金][土][週] YYYY-Www                      │
- *   │    [テーブル | リスト] [固定枠戻 / 全件保存] │ [一斉未割当] │ [🔒][🔓] │
+ *   │  Row 1 (右寄せ 1 行 toolbar, admin/manager only):                              │
+ *   │     [週を生成][自動割付 🟢][全面最適化 🟢][プール投入] │ [固定枠戻][全件保存]    │
+ *   │  ─── border-t ────────────────────                                            │
+ *   │  Row 2 (曜日タブ + テーブル/リスト + 二次操作):                                  │
+ *   │    [月][火][水][木][金][土][週] YYYY-Www                                       │
+ *   │    [テーブル | リスト] │ [一斉未割当] │ [🔒][🔓]                                  │
  *   ├──────────────────────────────────────────────────────┤
  *   │  選択曜日のコーステーブル N 個 (縦並び)                 │
  *   │   - 本店 A / B / C / D / E / M + 都賀 A 等             │
@@ -1590,12 +1590,13 @@ export function CourseDayTablePanel({
     <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
       <section className="space-y-3" data-testid="course-day-table-panel">
         {/*
-          Phase G-42: Row 1 の主要 4 ボタンを中央寄り + 右端に「固定枠戻 / 全件保存」を配置.
-          Row 2 からは β group (= ResetToFixedButton + BulkFixToPatternButton) を削除し、
-          結果として残り 3 グループ (α | γ | δ) のみが ml-auto で右側に並ぶ.
-            Row 1 (admin/manager only, 3-column grid: 1fr_auto_1fr):
-              中央: 週を生成 / 自動割付 🟢 / 全面最適化 🟢 / プール投入 (毎週使う主要操作)
-              右端: 固定枠に戻す / 全患者固定枠を一括保存 (= データ書き戻し系)
+          Phase G-43: Row 1 を flex justify-end の単一行 toolbar に再構成.
+          G-42 の 3-column grid (1fr_auto_1fr) では中央セルと右端セルの間に左 spacer が挟まり、
+          「主要 4」と「固定枠戻 / 全件保存」が視覚的に離れて見えていたため、
+          全要素を 1 つの flex container に並べて全部右寄せ + 主要 4 と固定枠戻の間に縦区切り線を配置する.
+            Row 1 (admin/manager only, flex justify-end):
+              [週を生成][自動割付 🟢][全面最適化 🟢][プール投入] │ [固定枠戻][全件保存]
+              ※ 主要 4 と固定枠戻/全件保存の間に縦区切り線で視覚的セパレーション.
               ※ Row 1 は最上段なので border-t 不要.
             Row 2 (曜日タブ + テーブル/リスト + 二次操作):
               左: 曜日タブ (月〜土 + 週) + iso week label.
@@ -1607,87 +1608,85 @@ export function CourseDayTablePanel({
           毎週必ず押す主要 2 ボタン (自動割付 / 全面最適化) のみ variant="default" (= brand-primary 緑) で目立たせる.
         */}
         <Card className="p-3">
-          {/* Row 1: 主要 4 ボタン (中央) + 固定枠戻 / 全件保存 (右端) (canEdit のみ).
-              Phase G-42: 3-column grid (1fr_auto_1fr) で中央セル auto 幅 + 左右 spacer 等幅 →
-              主要 4 を確実に中央寄りに、 右端セルに「固定枠戻 / 全件保存」を justify-end で配置.
-              狭幅では各セル内で flex-wrap して縦に折り返す. */}
+          {/* Row 1: 主要 4 ボタン + 固定枠戻 / 全件保存 をまとめて右寄せ (canEdit のみ).
+              Phase G-43: flex flex-wrap justify-end で単一 toolbar 化し、主要 4 と固定枠戻の境界に
+              縦区切り線を入れる. 狭幅では flex-wrap で折り返す. */}
           {canEdit ? (
             <div
-              className="grid grid-cols-[1fr_auto_1fr] items-center gap-3"
+              className="flex flex-wrap items-center justify-end gap-2"
+              role="toolbar"
+              aria-label="スケジュール主要操作"
               data-testid="schedule-main-action-toolbar"
             >
-              {/* 左 spacer (空セル). */}
-              <div aria-hidden />
-
-              {/* 中央: 主要 4 ボタン. */}
-              <div className="flex flex-wrap items-center justify-center gap-1.5">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={handleGenerateWeek}
-                  disabled={generateWeekMut.isPending}
-                  data-testid="generate-week-button"
-                >
-                  {generateWeekMut.isPending ? (
-                    <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
-                  ) : (
-                    <RefreshCw className="mr-1 h-4 w-4" aria-hidden />
-                  )}
-                  週を生成
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="default"
-                  onClick={handleAssignStaff}
-                  disabled={assignStaffOnlyMut.isPending}
-                  data-testid="assign-staff-only-button"
-                >
-                  {assignStaffOnlyMut.isPending ? (
-                    <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
-                  ) : (
-                    <UserCheck className="mr-1 h-4 w-4" aria-hidden />
-                  )}
-                  自動割付
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="default"
-                  onClick={() => setFullOptimizeOpen(true)}
-                  disabled={isProcessing}
-                  data-testid="full-optimize-button"
-                >
-                  <RefreshCw className="mr-1 h-4 w-4" aria-hidden />
-                  全面最適化
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setDiffAddOpen(true)}
-                  disabled={isProcessing}
-                  data-testid="diff-add-button"
-                >
-                  <Plus className="mr-1 h-4 w-4" aria-hidden />
-                  プール投入
-                </Button>
-              </div>
-
-              {/* 右端: 固定枠戻 + 全件保存 (= データ書き戻し系, 旧 Row 2 β group). */}
-              <div
-                className="flex flex-wrap items-center justify-end gap-1.5"
-                data-testid="course-day-secondary-toolbar"
+              {/* 主要 4 ボタン. */}
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={handleGenerateWeek}
+                disabled={generateWeekMut.isPending}
+                data-testid="generate-week-button"
               >
-                <ResetToFixedButton
-                  isoYear={isoYear}
-                  isoWeek={isoWeek}
-                  officeId={officeId}
-                  disabled={isProcessing}
-                />
-                <BulkFixToPatternButton canEdit={canEdit} isoYear={isoYear} isoWeek={isoWeek} />
-              </div>
+                {generateWeekMut.isPending ? (
+                  <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
+                ) : (
+                  <RefreshCw className="mr-1 h-4 w-4" aria-hidden />
+                )}
+                週を生成
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="default"
+                onClick={handleAssignStaff}
+                disabled={assignStaffOnlyMut.isPending}
+                data-testid="assign-staff-only-button"
+              >
+                {assignStaffOnlyMut.isPending ? (
+                  <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
+                ) : (
+                  <UserCheck className="mr-1 h-4 w-4" aria-hidden />
+                )}
+                自動割付
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="default"
+                onClick={() => setFullOptimizeOpen(true)}
+                disabled={isProcessing}
+                data-testid="full-optimize-button"
+              >
+                <RefreshCw className="mr-1 h-4 w-4" aria-hidden />
+                全面最適化
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => setDiffAddOpen(true)}
+                disabled={isProcessing}
+                data-testid="diff-add-button"
+              >
+                <Plus className="mr-1 h-4 w-4" aria-hidden />
+                プール投入
+              </Button>
+
+              {/* 主要 4 と「固定枠戻 / 全件保存」 の区切り線. */}
+              <span
+                aria-hidden
+                className="h-5 w-px bg-border-default"
+                data-testid="course-day-button-divider"
+              />
+
+              {/* 固定枠戻 + 全件保存 (= データ書き戻し系). */}
+              <ResetToFixedButton
+                isoYear={isoYear}
+                isoWeek={isoWeek}
+                officeId={officeId}
+                disabled={isProcessing}
+              />
+              <BulkFixToPatternButton canEdit={canEdit} isoYear={isoYear} isoWeek={isoWeek} />
             </div>
           ) : null}
 
