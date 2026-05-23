@@ -10,10 +10,10 @@
  *   │  ─── 区切り線 ─────────────────────────                  │
  *   │  Row 2 (曜日タブ (左) + 二次操作 (右), admin/manager のみ二次操作表示): │
  *   │    [月][火][水][木][金][土][週] YYYY-Www                  │
- *   │            [固定枠に戻す][一斉未割当] │ [一括保存][🔒][🔓]│
+ *   │                  [固定枠に戻す][一斉未割当] │ [一括保存]   │
  *   │  ─── 区切り線 ─────────────────────────                  │
- *   │  Row 3 (テーブル/リスト切替, 「週」タブ以外で表示):         │
- *   │    [テーブル | リスト]                                    │
+ *   │  Row 3 (テーブル/リスト切替 (左) + 🔒/🔓 (右, admin/manager only)): │
+ *   │    [テーブル | リスト]                          [🔒][🔓]  │
  *   ├──────────────────────────────────────────────────────┤
  *   │  選択曜日のコーステーブル N 個 (縦並び)                 │
  *   │   - 本店 A / B / C / D / E / M + 都賀 A 等             │
@@ -1600,17 +1600,18 @@ export function CourseDayTablePanel({
     <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
       <section className="space-y-3" data-testid="course-day-table-panel">
         {/*
-          Phase G-38: ヘッダー 2 段 + 右寄せ再配置 (G-37 から Row 1 を主要操作のみに絞り込み、
-          Group B + Group C を Row 2 の曜日タブと同じ行の右端に移動).
+          Phase G-39: 🔒 全件ロック / 🔓 全件解除 を Row 3 (テーブル/リスト切替と同じ行) の右端へ移動.
           Card 2 = 3 row 構造 (row 間は border-t 区切り線で視覚的に階層を表現).
             Row 1 (主要操作, admin/manager only, 右寄せ):
               Group A: 週を生成 / 自動割付 🟢 / 全面最適化 🟢 / プール投入 (毎週使う主要操作)
               (Group A だけになるため縦区切り線は不要)
             Row 2 (曜日タブ + 二次操作): 左に曜日タブ + iso week label、右に二次操作 (admin/manager only).
               Group B: 固定枠に戻す / 一斉未割当 (たまにのリセット)
-              Group C: 全患者固定枠を一括保存 / 全件ロック / 全件解除 (滅多に使わない・危険)
+              Group C: 全患者固定枠を一括保存 (滅多に使わない・危険)
               Group B / C 間は縦区切り線で分離 (G-35 から維持).
-            Row 3 (テーブル/リスト切替): 「週」タブ以外で表示 (単独 row).
+            Row 3 (表示モード制御): 左に テーブル/リスト切替 (「週」タブ以外で表示)、
+              右に 🔒 全件ロック / 🔓 全件解除 (canEdit only、ml-auto で右端、「週」タブでも常時表示).
+              Row 3 自体は常時表示 (= 「週」タブ時もロック/解除は右端に出る).
           ボタンは基本 variant="outline" size="sm" で統一感を担保し、
           毎週必ず押す主要 2 ボタン (自動割付 / 全面最適化) のみ variant="default" (= brand-primary 緑) で目立たせる.
         */}
@@ -1769,23 +1770,25 @@ export function CourseDayTablePanel({
                   data-testid="course-day-button-divider"
                 />
 
-                {/* Group C: 一括設定 (滅多に使わない・危険度高) */}
+                {/* Group C: 一括設定 (滅多に使わない・危険度高).
+                    G-39 で BulkPinAllPfvsButton (🔒/🔓) は Row 3 右端へ移動済 → 全患者固定枠保存のみ. */}
                 <div className="flex flex-wrap items-center gap-1.5">
                   <BulkFixToPatternButton canEdit={canEdit} isoYear={isoYear} isoWeek={isoWeek} />
-                  <BulkPinAllPfvsButton canEdit={canEdit} />
                 </div>
               </div>
             ) : null}
           </div>
 
-          {/* Row 3: テーブル/リスト切替 (単独 row、曜日タブ row の下).
-              「週」タブ選択時は表示しない (週ビューはテーブル/リストの概念が無い).
+          {/* Row 3: 表示モード制御 (G-39).
+              左: テーブル/リスト切替 (「週」タブ選択時のみ非表示 — 週ビューはテーブル/リストの概念が無い).
+              右: 🔒 全件ロック / 🔓 全件解除 (ml-auto、canEdit only、「週」タブでも常時表示).
+              Row 3 自体は常時表示 (= テーブル/リスト切替が消えても 🔒/🔓 は右端に残る).
               直上の row との間は border-t で水平区切り線 + 余白. */}
-          {activeTab !== 'week' ? (
-            <div
-              className="mt-3 flex flex-wrap items-center border-t border-border-default pt-3"
-              data-testid="course-day-view-mode-toolbar"
-            >
+          <div
+            className="mt-3 flex flex-wrap items-center border-t border-border-default pt-3"
+            data-testid="course-day-view-mode-toolbar"
+          >
+            {activeTab !== 'week' ? (
               <div
                 role="group"
                 aria-label="月-土タブ 表示モード切替"
@@ -1818,8 +1821,17 @@ export function CourseDayTablePanel({
                   リスト
                 </button>
               </div>
-            </div>
-          ) : null}
+            ) : null}
+
+            {/* 🔒 全件ロック / 🔓 全件解除 を Row 3 の右端 (ml-auto) に配置.
+                canEdit のみ表示 (BulkPinAllPfvsButton 内部で制御済).
+                「週」タブ時もテーブル/リスト切替が非表示になるだけで、🔒/🔓 は常時右端に残る. */}
+            {canEdit ? (
+              <div className="ml-auto flex flex-wrap items-center gap-1.5">
+                <BulkPinAllPfvsButton canEdit={canEdit} />
+              </div>
+            ) : null}
+          </div>
         </Card>
 
         {/* Wave 19: 2 ペイン レイアウト — メイン (1fr) + プール (320px固定 sticky) */}
