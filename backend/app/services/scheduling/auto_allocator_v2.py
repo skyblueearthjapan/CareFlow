@@ -1659,6 +1659,7 @@ def build_visits_for_pool(
     use_fixed_as_source: bool = False,
     pending_overlay: dict[tuple[UUID, int], PendingEditOverlay] | None = None,
     course_code_by_template_id: dict[UUID, str] | None = None,
+    ct_office_by_id: dict[UUID, UUID] | None = None,
     sub_office_scope: set[UUID] | None = None,
 ) -> list[V2Visit]:
     """段階 1〜2 中間: 各患者の希望を V2Visit に展開する.
@@ -1675,6 +1676,17 @@ def build_visits_for_pool(
     course label (例 "B") を引いて V2Visit.course_code に埋める. これにより
     orphan PFV (= 旧版で常に course_code=None だった visit) が後段 Stage 5 の
     機械的付番で別 course に上書きされず、PFV で指定された course を尊重できる.
+
+    Phase G-33: ``ct_office_by_id`` (= course_template_id → office_id の map) が
+    渡された場合、 PFV.course_template_id を持つ V2Visit の ``office_id`` を
+    その template の ``office_id`` に差し替える (= cross-office PFV 対応). 例えば
+    patient.primary_office_id = 稲毛 だが PFV.course_template_id が都賀A を
+    指す場合、 V2Visit.office_id を都賀にする. これにより After (= Stage 4 以降)
+    の Course グループが (template_office, weekday, course_code) で集計され、
+    Before 側 (Phase G-24 で適用済) と同じ規約になる. ``sub_office_scope`` 側の
+    差し替え (PFV.sub_office_id) が優先で、 cross-office 差し替えはその次.
+    map が None または該当 entry 無しなら patient.primary_office_id を使う (=
+    既存挙動). G-21 経路 (= build_visits_for_pool_v2) は本変更対象外.
 
     Phase E-5 (項目 ⑥B): ``sub_office_scope`` が渡された場合、fixed source 分岐で
     PFV.sub_office_id が set 内に含まれる行は V2Visit.office_id を sub_office_id に
@@ -1727,6 +1739,18 @@ def build_visits_for_pool(
                 for _row in fixed_rows:
                     if _row.sub_office_id is not None and _row.sub_office_id in sub_scope:
                         wd_to_office_id[_row.weekday] = _row.sub_office_id
+            # Phase G-33: cross-office PFV 対応. PFV.course_template_id が
+            # patient.primary_office_id と異なる office を指す場合、 その weekday
+            # の V2Visit.office_id を template の office_id に差し替える. Before 側
+            # (Phase G-24) と同じ規約を After 側にも適用する. sub_office_id 差し替え
+            # (Phase E-5) は precedence が上 (= cross-office より優先).
+            wd_to_course_office_id: dict[int, UUID] = {}
+            if ct_office_by_id:
+                for _row in fixed_rows:
+                    if _row.course_template_id is not None:
+                        _co = ct_office_by_id.get(_row.course_template_id)
+                        if _co is not None:
+                            wd_to_course_office_id[_row.weekday] = _co
             entries_fixed = _extract_fixed_visits_for_patient(fixed_rows)
             if entries_fixed:
                 used_fixed = True
@@ -1751,8 +1775,15 @@ def build_visits_for_pool(
                     # course_code を尊重するため、orphan PFV visit は PFV で
                     # 指定された course にそのまま配置される.
                     cc_eff = wd_to_course_code.get(wd)
-                    # Phase E-5: sub_office_id 差し替え (該当 weekday のみ).
-                    office_id_eff = wd_to_office_id.get(wd, patient.primary_office_id)
+                    # Phase E-5 / G-33: office_id 差し替え (該当 weekday のみ).
+                    # 優先順位: sub_office_id (Phase E-5) > course_template.office_id
+                    # (Phase G-33 cross-office PFV) > patient.primary_office_id.
+                    if wd in wd_to_office_id:
+                        office_id_eff = wd_to_office_id[wd]
+                    elif wd in wd_to_course_office_id:
+                        office_id_eff = wd_to_course_office_id[wd]
+                    else:
+                        office_id_eff = patient.primary_office_id
                     # Phase G-30: 該当 weekday に pinned PFV があれば
                     # ``is_pinned=True``. legacy 経路でも pinned visit の時刻が
                     # ``apply_travel_corrections`` で動かないようにする.
@@ -1840,6 +1871,18 @@ def build_visits_for_pool(
                         and pinned_pfv.course_template_id is not None
                         else None
                     )
+                    # Phase G-33: cross-office pinned PFV 対応. PFV.course_template_id
+                    # が patient.primary_office_id と異なる office を指す場合、
+                    # V2Visit.office_id を template の office_id に差し替える.
+                    # Before 側 (Phase G-24) と同じ規約. weekly_pattern 分岐 pinned
+                    # emit は sub_office_scope 経路を使わないため、 cross-office
+                    # 差し替えのみで OK.
+                    pinned_course_office_id = (
+                        ct_office_by_id.get(pinned_pfv.course_template_id)
+                        if ct_office_by_id is not None and pinned_pfv.course_template_id is not None
+                        else None
+                    )
+                    office_id_eff = pinned_course_office_id or patient.primary_office_id
                     visits.append(
                         V2Visit(
                             patient_id=patient.id,
@@ -1851,7 +1894,7 @@ def build_visits_for_pool(
                             service_minutes=sm_eff,
                             lat=float(patient.lat),
                             lng=float(patient.lng),
-                            office_id=patient.primary_office_id,
+                            office_id=office_id_eff,
                             am_pm=am_pm,
                             source_kind="pool",
                             course_code=cc_eff,
@@ -6208,6 +6251,14 @@ async def run_v2_pipeline(
     # course_code=None で V2Visit を作り、 Stage 4 振り分けで pinned visit が
     # 別 course (例 A → M) にアサインされる事象 (G-30.1 取り残し) が再現する.
     pinned_pool_course_code_by_template_id: dict[UUID, str] = {}
+    # Phase G-33: cross-office PFV 対応で template_id -> office_id map も同 query
+    # で事前構築 (= N+1 を増やさず Phase G-31 の CourseTemplate ロードを拡張).
+    # build_visits_for_pool の weekly_pattern 分岐 pinned emit が
+    # PFV.course_template_id を持つとき、 V2Visit.office_id を template.office_id
+    # に差し替える. patient.primary_office_id (= 稲毛) と異なる office (= 都賀)
+    # の course_template を指す pinned PFV があると、 After で都賀 Course が
+    # 失われて稲毛 Course に合体する事象が VPS で報告されていた.
+    pinned_pool_office_by_template_id: dict[UUID, UUID] = {}
     if pinned_pfv_by_patient_for_pool:
         _pinned_template_ids: set[UUID] = {
             _pfv.course_template_id
@@ -6224,11 +6275,13 @@ async def run_v2_pipeline(
             )
             for _ct in _pinned_ct_rows.all():
                 pinned_pool_course_code_by_template_id[_ct.id] = _ct.label
+                pinned_pool_office_by_template_id[_ct.id] = _ct.office_id
     pool_visits = build_visits_for_pool(
         pool_patients_no_fixed,
         fixed_by_patient=pinned_pfv_by_patient_for_pool or None,
         pending_overlay=pending_overlay,
         course_code_by_template_id=pinned_pool_course_code_by_template_id or None,
+        ct_office_by_id=pinned_pool_office_by_template_id or None,
     )
     if pool_patients_orphan_fixed and orphan_fixed_by_patient:
         # CareFlow #102 Fix A: orphan PFV の course_template_id -> course label
@@ -6241,6 +6294,9 @@ async def run_v2_pipeline(
             if pfv.course_template_id is not None
         }
         orphan_course_code_by_template_id: dict[UUID, str] = {}
+        # Phase G-33: cross-office PFV 対応で template_id -> office_id map も同 query
+        # で事前構築 (orphan 経路でも cross-office を尊重する).
+        orphan_office_by_template_id: dict[UUID, UUID] = {}
         if orphan_template_ids:
             ct_rows = await db.scalars(
                 select(CourseTemplate).where(
@@ -6250,12 +6306,14 @@ async def run_v2_pipeline(
             )
             for ct in ct_rows.all():
                 orphan_course_code_by_template_id[ct.id] = ct.label
+                orphan_office_by_template_id[ct.id] = ct.office_id
         pool_visits_orphan = build_visits_for_pool(
             pool_patients_orphan_fixed,
             fixed_by_patient=orphan_fixed_by_patient,
             use_fixed_as_source=True,
             pending_overlay=pending_overlay,
             course_code_by_template_id=orphan_course_code_by_template_id,
+            ct_office_by_id=orphan_office_by_template_id or None,
             # Phase E-5: diff_add のみ — PFV.sub_office_id が scope 内なら
             # V2Visit.office_id を sub_office_id に差し替える. 自動算出本体
             # (full_optimize) では sub_office_patient_ids が空 = scope set 不要.
