@@ -4,13 +4,17 @@
  * CourseDayTablePanel — Wave 17 Phase B-2 メインパネル.
  *
  * Excel スケジュール枠組みに完全準拠した 1 画面構造:
- *   ┌─ ヘッダー (Phase G-35 リフレッシュ) ─────────────────────┐
- *   │  Row 1 (操作, admin/manager only):                       │
+ *   ┌─ ヘッダー (Phase G-36 リフレッシュ) ─────────────────────┐
+ *   │  Row 1 (曜日タブ + iso week label):                      │
+ *   │    [月][火][水][木][金][土][週]    YYYY-Www              │
+ *   │  ─── 区切り線 ─────────────────────────                  │
+ *   │  Row 2 (操作, admin/manager only):                       │
  *   │    [週を生成][自動割付][全面最適化][プール投入] │         │
  *   │    [固定枠に戻す][一斉未割当] │                          │
  *   │    [全患者固定枠を一括保存][🔒全件ロック][🔓全件解除]      │
- *   │  Row 2 (曜日タブ + テーブル/リスト切替 右端):              │
- *   │    [月][火][水][木][金][土][週]    YYYY-Www  [テーブル|リスト]│
+ *   │  ─── 区切り線 ─────────────────────────                  │
+ *   │  Row 3 (テーブル/リスト切替, 「週」タブ以外で表示):         │
+ *   │    [テーブル | リスト]                                    │
  *   ├──────────────────────────────────────────────────────┤
  *   │  選択曜日のコーステーブル N 個 (縦並び)                 │
  *   │   - 本店 A / B / C / D / E / M + 都賀 A 等             │
@@ -1597,20 +1601,77 @@ export function CourseDayTablePanel({
     <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
       <section className="space-y-3" data-testid="course-day-table-panel">
         {/*
-          Phase G-35: ヘッダー刷新.
-          Card 2 = 2 row 構造.
-            Row 1 (操作): 3 group を縦区切り線で分離.
+          Phase G-36: ヘッダー刷新 (G-35 から row 順序入れ替え + テーブル/リスト切替を別 row へ分離).
+          Card 2 = 3 row 構造 (row 間は border-t 区切り線で視覚的に階層を表現).
+            Row 1 (曜日タブ): 月-土+週 タブ + iso week label (シンプルに).
+            Row 2 (操作, admin/manager only): 3 group を縦区切り線で分離.
               Group A: 週を生成 / 自動割付 / 全面最適化 / プール投入 (毎週使う主要操作)
               Group B: 固定枠に戻す / 一斉未割当 (たまにのリセット)
               Group C: 全患者固定枠を一括保存 / 全件ロック / 全件解除 (滅多に使わない・危険、視線最後の右端)
-            Row 2 (曜日タブ): 月-土+週 タブ + iso week label + テーブル/リスト切替 (右端).
+            Row 3 (テーブル/リスト切替): 「週」タブ以外で表示 (単独 row).
           ボタンは全て variant="outline" size="sm" で統一感を担保.
         */}
         <Card className="p-3">
-          {/* Row 1: 操作 row (canEdit のみ表示) */}
+          {/* Row 1: 曜日タブ + iso week label (一番上、シンプル). */}
+          <div className="flex flex-wrap items-center gap-2" data-testid="course-day-tab-row">
+            {/* 曜日タブ */}
+            <div
+              role="tablist"
+              aria-label="曜日タブ"
+              className="flex flex-wrap gap-1"
+              data-testid="course-day-tabs"
+            >
+              {DISPLAY_WEEKDAYS.map((wd) => {
+                const selected = activeTab === wd;
+                return (
+                  <button
+                    key={wd}
+                    type="button"
+                    role="tab"
+                    aria-selected={selected}
+                    aria-controls={`course-day-panel-${wd}`}
+                    onClick={() => setActiveTab(wd)}
+                    data-testid={`course-day-tab-${wd}`}
+                    className={`rounded border px-3 py-1 text-xs font-semibold ${
+                      selected
+                        ? 'border-brand-primary bg-brand-primary text-white'
+                        : 'border-border-default bg-bg-base text-text-secondary hover:bg-bg-muted'
+                    }`}
+                  >
+                    {WEEKDAY_LABELS[wd]}{' '}
+                    <span className="tnum text-[10px] opacity-80">
+                      {format(addDays(weekStart, wd), 'M/d')}
+                    </span>
+                  </button>
+                );
+              })}
+              {/* Wave 18 Phase B-6: 「週」タブ */}
+              <button
+                key="week"
+                type="button"
+                role="tab"
+                aria-selected={activeTab === 'week'}
+                aria-controls="course-week-overview-panel"
+                onClick={() => setActiveTab('week')}
+                data-testid="course-day-tab-week"
+                className={`rounded border px-3 py-1 text-xs font-semibold ${
+                  activeTab === 'week'
+                    ? 'border-brand-primary bg-brand-primary text-white'
+                    : 'border-border-default bg-bg-base text-text-secondary hover:bg-bg-muted'
+                }`}
+              >
+                週
+              </button>
+            </div>
+
+            <span className="tnum text-[11px] text-text-muted">{isoWeekLabel}</span>
+          </div>
+
+          {/* Row 2: 操作 row (canEdit のみ表示).
+              Row 1 (曜日タブ) との間は border-t で水平区切り線 + 余白. */}
           {canEdit ? (
             <div
-              className="flex flex-wrap items-center gap-4"
+              className="mt-3 flex flex-wrap items-center gap-4 border-t border-border-default pt-3"
               data-testid="course-day-action-toolbar"
             >
               {/* Group A: 算出 (毎週使う、主要操作) */}
@@ -1703,103 +1764,48 @@ export function CourseDayTablePanel({
             </div>
           ) : null}
 
-          {/* Row 2: 曜日タブ + iso week + テーブル/リスト切替 (同じ行).
-              操作 row が無い (= staff) 場合は mt-3 を打ち消す. */}
-          <div
-            className={`flex flex-wrap items-center gap-2 ${canEdit ? 'mt-3' : ''}`}
-            data-testid="course-day-tab-row"
-          >
-            {/* 曜日タブ */}
+          {/* Row 3: テーブル/リスト切替 (単独 row、操作 row の下).
+              「週」タブ選択時は表示しない (週ビューはテーブル/リストの概念が無い).
+              直上の row との間は border-t で水平区切り線 + 余白. */}
+          {activeTab !== 'week' ? (
             <div
-              role="tablist"
-              aria-label="曜日タブ"
-              className="flex flex-wrap gap-1"
-              data-testid="course-day-tabs"
+              className="mt-3 flex flex-wrap items-center border-t border-border-default pt-3"
+              data-testid="course-day-view-mode-toolbar"
             >
-              {DISPLAY_WEEKDAYS.map((wd) => {
-                const selected = activeTab === wd;
-                return (
-                  <button
-                    key={wd}
-                    type="button"
-                    role="tab"
-                    aria-selected={selected}
-                    aria-controls={`course-day-panel-${wd}`}
-                    onClick={() => setActiveTab(wd)}
-                    data-testid={`course-day-tab-${wd}`}
-                    className={`rounded border px-3 py-1 text-xs font-semibold ${
-                      selected
-                        ? 'border-brand-primary bg-brand-primary text-white'
-                        : 'border-border-default bg-bg-base text-text-secondary hover:bg-bg-muted'
-                    }`}
-                  >
-                    {WEEKDAY_LABELS[wd]}{' '}
-                    <span className="tnum text-[10px] opacity-80">
-                      {format(addDays(weekStart, wd), 'M/d')}
-                    </span>
-                  </button>
-                );
-              })}
-              {/* Wave 18 Phase B-6: 「週」タブ */}
-              <button
-                key="week"
-                type="button"
-                role="tab"
-                aria-selected={activeTab === 'week'}
-                aria-controls="course-week-overview-panel"
-                onClick={() => setActiveTab('week')}
-                data-testid="course-day-tab-week"
-                className={`rounded border px-3 py-1 text-xs font-semibold ${
-                  activeTab === 'week'
-                    ? 'border-brand-primary bg-brand-primary text-white'
-                    : 'border-border-default bg-bg-base text-text-secondary hover:bg-bg-muted'
-                }`}
+              <div
+                role="group"
+                aria-label="月-土タブ 表示モード切替"
+                className="inline-flex overflow-hidden rounded border border-border-default text-xs"
               >
-                週
-              </button>
-            </div>
-
-            <span className="tnum text-[11px] text-text-muted">{isoWeekLabel}</span>
-
-            {/* テーブル/リスト切替 (曜日タブと同じ行の右端 = ml-auto で push).
-                「週」タブ選択時は表示しない (週ビューはテーブル/リストの概念が無い). */}
-            {activeTab !== 'week' ? (
-              <div className="ml-auto" data-testid="course-day-view-mode-toolbar">
-                <div
-                  role="group"
-                  aria-label="月-土タブ 表示モード切替"
-                  className="inline-flex overflow-hidden rounded border border-border-default text-xs"
+                <button
+                  type="button"
+                  onClick={() => setWeekdayViewMode('table')}
+                  aria-pressed={weekdayViewMode === 'table'}
+                  data-testid="course-day-mode-table"
+                  className={
+                    weekdayViewMode === 'table'
+                      ? 'bg-brand-primary px-2 py-1 text-white'
+                      : 'bg-bg-base px-2 py-1 text-text-secondary hover:bg-bg-muted'
+                  }
                 >
-                  <button
-                    type="button"
-                    onClick={() => setWeekdayViewMode('table')}
-                    aria-pressed={weekdayViewMode === 'table'}
-                    data-testid="course-day-mode-table"
-                    className={
-                      weekdayViewMode === 'table'
-                        ? 'bg-brand-primary px-2 py-1 text-white'
-                        : 'bg-bg-base px-2 py-1 text-text-secondary hover:bg-bg-muted'
-                    }
-                  >
-                    テーブル
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setWeekdayViewMode('list')}
-                    aria-pressed={weekdayViewMode === 'list'}
-                    data-testid="course-day-mode-list"
-                    className={
-                      weekdayViewMode === 'list'
-                        ? 'bg-brand-primary px-2 py-1 text-white'
-                        : 'bg-bg-base px-2 py-1 text-text-secondary hover:bg-bg-muted'
-                    }
-                  >
-                    リスト
-                  </button>
-                </div>
+                  テーブル
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setWeekdayViewMode('list')}
+                  aria-pressed={weekdayViewMode === 'list'}
+                  data-testid="course-day-mode-list"
+                  className={
+                    weekdayViewMode === 'list'
+                      ? 'bg-brand-primary px-2 py-1 text-white'
+                      : 'bg-bg-base px-2 py-1 text-text-secondary hover:bg-bg-muted'
+                  }
+                >
+                  リスト
+                </button>
               </div>
-            ) : null}
-          </div>
+            </div>
+          ) : null}
         </Card>
 
         {/* Wave 19: 2 ペイン レイアウト — メイン (1fr) + プール (320px固定 sticky) */}
@@ -1840,7 +1846,7 @@ export function CourseDayTablePanel({
                 className="space-y-3"
                 data-testid="course-day-table-list"
               >
-                {/* Phase G-35: 表示モード切替 (テーブル ⇄ リスト) は曜日タブ row の右端へ移設済. */}
+                {/* Phase G-36: 表示モード切替 (テーブル ⇄ リスト) は Card 2 の独立 Row 3 へ移設済. */}
                 {courseTablesForActiveDay.length === 0 ? (
                   <Card className="p-4 text-sm text-text-muted">
                     {WEEKDAY_LABELS[activeWeekday]}曜日の表示対象コースがありません。 拠点マスタの
