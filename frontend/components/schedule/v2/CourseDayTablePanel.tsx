@@ -4,14 +4,13 @@
  * CourseDayTablePanel — Wave 17 Phase B-2 メインパネル.
  *
  * Excel スケジュール枠組みに完全準拠した 1 画面構造:
- *   ┌─ ヘッダー (Phase G-37 リフレッシュ) ─────────────────────┐
- *   │  Row 1 (操作, admin/manager only):                       │
- *   │    [週を生成][自動割付 🟢][全面最適化 🟢][プール投入] │   │
- *   │    [固定枠に戻す][一斉未割当] │                          │
- *   │    [全患者固定枠を一括保存][🔒全件ロック][🔓全件解除]      │
+ *   ┌─ ヘッダー (Phase G-38 リフレッシュ) ─────────────────────┐
+ *   │  Row 1 (主要操作, admin/manager only, 右寄せ):            │
+ *   │                [週を生成][自動割付 🟢][全面最適化 🟢][プール投入]│
  *   │  ─── 区切り線 ─────────────────────────                  │
- *   │  Row 2 (曜日タブ + iso week label, サンドイッチ):         │
- *   │    [月][火][水][木][金][土][週]    YYYY-Www              │
+ *   │  Row 2 (曜日タブ (左) + 二次操作 (右), admin/manager のみ二次操作表示): │
+ *   │    [月][火][水][木][金][土][週] YYYY-Www                  │
+ *   │            [固定枠に戻す][一斉未割当] │ [一括保存][🔒][🔓]│
  *   │  ─── 区切り線 ─────────────────────────                  │
  *   │  Row 3 (テーブル/リスト切替, 「週」タブ以外で表示):         │
  *   │    [テーブル | リスト]                                    │
@@ -1601,22 +1600,25 @@ export function CourseDayTablePanel({
     <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
       <section className="space-y-3" data-testid="course-day-table-panel">
         {/*
-          Phase G-37: ヘッダー刷新 (G-36 から Row 1 と Row 2 を入れ替え + 主要 2 ボタンを緑色に).
+          Phase G-38: ヘッダー 2 段 + 右寄せ再配置 (G-37 から Row 1 を主要操作のみに絞り込み、
+          Group B + Group C を Row 2 の曜日タブと同じ行の右端に移動).
           Card 2 = 3 row 構造 (row 間は border-t 区切り線で視覚的に階層を表現).
-            Row 1 (操作, admin/manager only): 3 group を縦区切り線で分離 (一番上).
+            Row 1 (主要操作, admin/manager only, 右寄せ):
               Group A: 週を生成 / 自動割付 🟢 / 全面最適化 🟢 / プール投入 (毎週使う主要操作)
+              (Group A だけになるため縦区切り線は不要)
+            Row 2 (曜日タブ + 二次操作): 左に曜日タブ + iso week label、右に二次操作 (admin/manager only).
               Group B: 固定枠に戻す / 一斉未割当 (たまにのリセット)
-              Group C: 全患者固定枠を一括保存 / 全件ロック / 全件解除 (滅多に使わない・危険、視線最後の右端)
-            Row 2 (曜日タブ): 月-土+週 タブ + iso week label (操作 row と切替 row の間にサンドイッチ).
+              Group C: 全患者固定枠を一括保存 / 全件ロック / 全件解除 (滅多に使わない・危険)
+              Group B / C 間は縦区切り線で分離 (G-35 から維持).
             Row 3 (テーブル/リスト切替): 「週」タブ以外で表示 (単独 row).
           ボタンは基本 variant="outline" size="sm" で統一感を担保し、
           毎週必ず押す主要 2 ボタン (自動割付 / 全面最適化) のみ variant="default" (= brand-primary 緑) で目立たせる.
         */}
         <Card className="p-3">
-          {/* Row 1: 操作 row (canEdit のみ表示、一番上). */}
+          {/* Row 1: 主要操作 row (Group A 算出のみ、canEdit のみ表示、右寄せ). */}
           {canEdit ? (
             <div
-              className="flex flex-wrap items-center gap-4"
+              className="flex flex-wrap items-center justify-end gap-4"
               data-testid="course-day-action-toolbar"
             >
               {/* Group A: 算出 (毎週使う、主要操作) */}
@@ -1674,43 +1676,11 @@ export function CourseDayTablePanel({
                   プール投入
                 </Button>
               </div>
-
-              {/* Group A / B 間の区切り線 */}
-              <span
-                aria-hidden
-                className="h-5 w-px bg-border-default"
-                data-testid="course-day-button-divider"
-              />
-
-              {/* Group B: リセット (たまにのやり直し) */}
-              <div className="flex flex-wrap items-center gap-1.5">
-                <ResetToFixedButton
-                  isoYear={isoYear}
-                  isoWeek={isoWeek}
-                  officeId={officeId}
-                  disabled={generateWeekMut.isPending || assignStaffOnlyMut.isPending}
-                />
-                <UnassignAllStaffButton
-                  isoYear={isoYear}
-                  isoWeek={isoWeek}
-                  officeId={officeId}
-                  disabled={generateWeekMut.isPending || assignStaffOnlyMut.isPending}
-                />
-              </div>
-
-              {/* Group B / C 間の区切り線 */}
-              <span aria-hidden className="h-5 w-px bg-border-default" />
-
-              {/* Group C: 一括設定 (滅多に使わない・危険度高、視線最後の右端) */}
-              <div className="flex flex-wrap items-center gap-1.5">
-                <BulkFixToPatternButton canEdit={canEdit} isoYear={isoYear} isoWeek={isoWeek} />
-                <BulkPinAllPfvsButton canEdit={canEdit} />
-              </div>
             </div>
           ) : null}
 
-          {/* Row 2: 曜日タブ + iso week label (= サンドイッチ位置、操作 row の下 / 切替 row の上).
-              canEdit 時は直上の Row 1 (操作) との間に border-t + mt-3 pt-3 で水平区切り線 + 余白を入れる. */}
+          {/* Row 2: 曜日タブ (左) + 二次操作 (右、canEdit のみ、ml-auto で右寄せ).
+              canEdit 時は直上の Row 1 (主要操作) との間に border-t + mt-3 pt-3 で水平区切り線 + 余白を入れる. */}
           <div
             className={`flex flex-wrap items-center gap-2${
               canEdit ? ' mt-3 border-t border-border-default pt-3' : ''
@@ -1768,6 +1738,44 @@ export function CourseDayTablePanel({
             </div>
 
             <span className="tnum text-[11px] text-text-muted">{isoWeekLabel}</span>
+
+            {/* 二次操作 (Group B + Group C) を Row 2 の右端に配置 (admin/manager のみ).
+                ml-auto で右寄せにすることで、Row 1 (主要操作) の右端と縦ラインが揃う. */}
+            {canEdit ? (
+              <div
+                className="ml-auto flex flex-wrap items-center gap-4"
+                data-testid="course-day-secondary-toolbar"
+              >
+                {/* Group B: リセット (たまにのやり直し) */}
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <ResetToFixedButton
+                    isoYear={isoYear}
+                    isoWeek={isoWeek}
+                    officeId={officeId}
+                    disabled={generateWeekMut.isPending || assignStaffOnlyMut.isPending}
+                  />
+                  <UnassignAllStaffButton
+                    isoYear={isoYear}
+                    isoWeek={isoWeek}
+                    officeId={officeId}
+                    disabled={generateWeekMut.isPending || assignStaffOnlyMut.isPending}
+                  />
+                </div>
+
+                {/* Group B / C 間の区切り線 (G-35 から維持) */}
+                <span
+                  aria-hidden
+                  className="h-5 w-px bg-border-default"
+                  data-testid="course-day-button-divider"
+                />
+
+                {/* Group C: 一括設定 (滅多に使わない・危険度高) */}
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <BulkFixToPatternButton canEdit={canEdit} isoYear={isoYear} isoWeek={isoWeek} />
+                  <BulkPinAllPfvsButton canEdit={canEdit} />
+                </div>
+              </div>
+            ) : null}
           </div>
 
           {/* Row 3: テーブル/リスト切替 (単独 row、曜日タブ row の下).
