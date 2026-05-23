@@ -26,8 +26,6 @@
 import { useMemo, useState } from 'react';
 import { useSession } from 'next-auth/react';
 
-import { BulkFixToPatternButton } from '@/components/schedule/v2/BulkFixToPatternButton';
-import { BulkPinAllPfvsButton } from '@/components/schedule/v2/BulkPinAllPfvsButton';
 import { CourseDayTablePanel } from '@/components/schedule/v2/CourseDayTablePanel';
 import { WeekSelector, toWeekStart } from '@/components/schedule/WeekSelector';
 import { Card } from '@/components/ui/card';
@@ -79,7 +77,8 @@ export default function SchedulePage() {
         </p>
       </header>
 
-      {/* ヘッダーバー: 週切替 + 拠点フィルタ + 受入目安レイヤー + 一括固定化 */}
+      {/* ヘッダーバー (表示制御のみ): 週切替 + 拠点フィルタ + 受入目安レイヤー.
+          Phase G-35: 一括操作系ボタン (Bulk*) は CourseDayTablePanel ヘッダーへ集約済. */}
       <Card className="flex flex-wrap items-center justify-between gap-3 p-3">
         <div className="flex flex-wrap items-center gap-3">
           <WeekSelector weekStart={weekStart} onChange={setWeekStart} />
@@ -114,9 +113,6 @@ export default function SchedulePage() {
             />
             <span>受入目安</span>
           </label>
-
-          <BulkFixToPatternButton canEdit={canEdit} isoYear={isoYear} isoWeek={isoWeek} />
-          <BulkPinAllPfvsButton canEdit={canEdit} />
         </div>
       </Card>
 

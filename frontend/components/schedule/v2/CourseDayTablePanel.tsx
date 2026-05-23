@@ -4,9 +4,13 @@
  * CourseDayTablePanel — Wave 17 Phase B-2 メインパネル.
  *
  * Excel スケジュール枠組みに完全準拠した 1 画面構造:
- *   ┌─ ヘッダー ────────────────────────────────────────────┐
- *   │  曜日タブ [月][火][水][木][金][土]                     │
- *   │  [ 週を生成 ] [ 自動割付 ]   ← admin/manager only       │
+ *   ┌─ ヘッダー (Phase G-35 リフレッシュ) ─────────────────────┐
+ *   │  Row 1 (操作, admin/manager only):                       │
+ *   │    [週を生成][自動割付][全面最適化][プール投入] │         │
+ *   │    [固定枠に戻す][一斉未割当] │                          │
+ *   │    [全患者固定枠を一括保存][🔒全件ロック][🔓全件解除]      │
+ *   │  Row 2 (曜日タブ + テーブル/リスト切替 右端):              │
+ *   │    [月][火][水][木][金][土][週]    YYYY-Www  [テーブル|リスト]│
  *   ├──────────────────────────────────────────────────────┤
  *   │  選択曜日のコーステーブル N 個 (縦並び)                 │
  *   │   - 本店 A / B / C / D / E / M + 都賀 A 等             │
@@ -82,6 +86,8 @@ import {
   type VisitListItem as ScheduleVisitListItem,
 } from '../WeekdayScheduleCard';
 import { AcceptanceLegend } from './AcceptanceLayer';
+import { BulkFixToPatternButton } from './BulkFixToPatternButton';
+import { BulkPinAllPfvsButton } from './BulkPinAllPfvsButton';
 import { DiffAddDialog } from './DiffAddDialog';
 import { FullOptimizeDialog } from './FullOptimizeDialog';
 import { ResetToFixedButton } from './ResetToFixedButton';
@@ -1590,14 +1596,124 @@ export function CourseDayTablePanel({
   return (
     <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
       <section className="space-y-3" data-testid="course-day-table-panel">
-        {/* ヘッダー: 曜日タブ + 「週を生成」「自動割付」 */}
-        <Card className="space-y-2 p-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
+        {/*
+          Phase G-35: ヘッダー刷新.
+          Card 2 = 2 row 構造.
+            Row 1 (操作): 3 group を縦区切り線で分離.
+              Group A: 週を生成 / 自動割付 / 全面最適化 / プール投入 (毎週使う主要操作)
+              Group B: 固定枠に戻す / 一斉未割当 (たまにのリセット)
+              Group C: 全患者固定枠を一括保存 / 全件ロック / 全件解除 (滅多に使わない・危険、視線最後の右端)
+            Row 2 (曜日タブ): 月-土+週 タブ + iso week label + テーブル/リスト切替 (右端).
+          ボタンは全て variant="outline" size="sm" で統一感を担保.
+        */}
+        <Card className="p-3">
+          {/* Row 1: 操作 row (canEdit のみ表示) */}
+          {canEdit ? (
+            <div
+              className="flex flex-wrap items-center gap-4"
+              data-testid="course-day-action-toolbar"
+            >
+              {/* Group A: 算出 (毎週使う、主要操作) */}
+              <div className="flex flex-wrap items-center gap-1.5">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={handleGenerateWeek}
+                  disabled={generateWeekMut.isPending}
+                  data-testid="generate-week-button"
+                >
+                  {generateWeekMut.isPending ? (
+                    <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
+                  ) : (
+                    <RefreshCw className="mr-1 h-4 w-4" aria-hidden />
+                  )}
+                  週を生成
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={handleAssignStaff}
+                  disabled={assignStaffOnlyMut.isPending}
+                  data-testid="assign-staff-only-button"
+                >
+                  {assignStaffOnlyMut.isPending ? (
+                    <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
+                  ) : (
+                    <UserCheck className="mr-1 h-4 w-4" aria-hidden />
+                  )}
+                  自動割付
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setFullOptimizeOpen(true)}
+                  disabled={generateWeekMut.isPending || assignStaffOnlyMut.isPending}
+                  data-testid="full-optimize-button"
+                >
+                  <RefreshCw className="mr-1 h-4 w-4" aria-hidden />
+                  全面最適化
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setDiffAddOpen(true)}
+                  disabled={generateWeekMut.isPending || assignStaffOnlyMut.isPending}
+                  data-testid="diff-add-button"
+                >
+                  <Plus className="mr-1 h-4 w-4" aria-hidden />
+                  プール投入
+                </Button>
+              </div>
+
+              {/* Group A / B 間の区切り線 */}
+              <span
+                aria-hidden
+                className="h-5 w-px bg-border-default"
+                data-testid="course-day-button-divider"
+              />
+
+              {/* Group B: リセット (たまにのやり直し) */}
+              <div className="flex flex-wrap items-center gap-1.5">
+                <ResetToFixedButton
+                  isoYear={isoYear}
+                  isoWeek={isoWeek}
+                  officeId={officeId}
+                  disabled={generateWeekMut.isPending || assignStaffOnlyMut.isPending}
+                />
+                <UnassignAllStaffButton
+                  isoYear={isoYear}
+                  isoWeek={isoWeek}
+                  officeId={officeId}
+                  disabled={generateWeekMut.isPending || assignStaffOnlyMut.isPending}
+                />
+              </div>
+
+              {/* Group B / C 間の区切り線 */}
+              <span aria-hidden className="h-5 w-px bg-border-default" />
+
+              {/* Group C: 一括設定 (滅多に使わない・危険度高、視線最後の右端) */}
+              <div className="flex flex-wrap items-center gap-1.5">
+                <BulkFixToPatternButton canEdit={canEdit} isoYear={isoYear} isoWeek={isoWeek} />
+                <BulkPinAllPfvsButton canEdit={canEdit} />
+              </div>
+            </div>
+          ) : null}
+
+          {/* Row 2: 曜日タブ + iso week + テーブル/リスト切替 (同じ行).
+              操作 row が無い (= staff) 場合は mt-3 を打ち消す. */}
+          <div
+            className={`flex flex-wrap items-center gap-2 ${canEdit ? 'mt-3' : ''}`}
+            data-testid="course-day-tab-row"
+          >
             {/* 曜日タブ */}
             <div
               role="tablist"
               aria-label="曜日タブ"
-              className="flex gap-1"
+              className="flex flex-wrap gap-1"
               data-testid="course-day-tabs"
             >
               {DISPLAY_WEEKDAYS.map((wd) => {
@@ -1643,95 +1759,46 @@ export function CourseDayTablePanel({
               </button>
             </div>
 
-            <div className="flex items-center gap-2">
-              <span className="tnum text-[11px] text-text-muted">{isoWeekLabel}</span>
-              {canEdit ? (
-                <>
-                  <Button
+            <span className="tnum text-[11px] text-text-muted">{isoWeekLabel}</span>
+
+            {/* テーブル/リスト切替 (曜日タブと同じ行の右端 = ml-auto で push).
+                「週」タブ選択時は表示しない (週ビューはテーブル/リストの概念が無い). */}
+            {activeTab !== 'week' ? (
+              <div className="ml-auto" data-testid="course-day-view-mode-toolbar">
+                <div
+                  role="group"
+                  aria-label="月-土タブ 表示モード切替"
+                  className="inline-flex overflow-hidden rounded border border-border-default text-xs"
+                >
+                  <button
                     type="button"
-                    size="sm"
-                    variant="outline"
-                    onClick={handleGenerateWeek}
-                    disabled={generateWeekMut.isPending}
-                    data-testid="generate-week-button"
+                    onClick={() => setWeekdayViewMode('table')}
+                    aria-pressed={weekdayViewMode === 'table'}
+                    data-testid="course-day-mode-table"
+                    className={
+                      weekdayViewMode === 'table'
+                        ? 'bg-brand-primary px-2 py-1 text-white'
+                        : 'bg-bg-base px-2 py-1 text-text-secondary hover:bg-bg-muted'
+                    }
                   >
-                    {generateWeekMut.isPending ? (
-                      <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
-                    ) : (
-                      <RefreshCw className="mr-1 h-4 w-4" aria-hidden />
-                    )}
-                    週を生成
-                  </Button>
-                  <Button
+                    テーブル
+                  </button>
+                  <button
                     type="button"
-                    size="sm"
-                    onClick={handleAssignStaff}
-                    disabled={assignStaffOnlyMut.isPending}
-                    data-testid="assign-staff-only-button"
+                    onClick={() => setWeekdayViewMode('list')}
+                    aria-pressed={weekdayViewMode === 'list'}
+                    data-testid="course-day-mode-list"
+                    className={
+                      weekdayViewMode === 'list'
+                        ? 'bg-brand-primary px-2 py-1 text-white'
+                        : 'bg-bg-base px-2 py-1 text-text-secondary hover:bg-bg-muted'
+                    }
                   >
-                    {assignStaffOnlyMut.isPending ? (
-                      <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
-                    ) : (
-                      <UserCheck className="mr-1 h-4 w-4" aria-hidden />
-                    )}
-                    自動割付
-                  </Button>
-
-                  {/* Wave 41 v2: 縦線で旧 (週生成/自動割付) と新 (差分追加/全面最適化/固定枠に戻す) を区切る */}
-                  <span
-                    aria-hidden
-                    className="mx-1 h-5 w-px bg-border-default"
-                    data-testid="course-day-button-divider"
-                  />
-
-                  {/* Wave 41 v2 § 13.6: 差分追加 (機能 A) — Phase E-1 で UI 文言を
-                      「プール投入」にリネーム (= プールに溢れた患者をスケジュールに投入する).
-                      識別子 (testid / queryKey / API path) は維持. */}
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    onClick={() => setDiffAddOpen(true)}
-                    disabled={generateWeekMut.isPending || assignStaffOnlyMut.isPending}
-                    data-testid="diff-add-button"
-                  >
-                    <Plus className="mr-1 h-4 w-4" aria-hidden />
-                    プール投入
-                  </Button>
-
-                  {/* Wave 41 v2 § 13.6: 全面最適化 (機能 B).
-                      自動割付と同じ default (brand-primary 緑) で「再算出系の主要アクション」
-                      であることを視覚的に揃える. */}
-                  <Button
-                    type="button"
-                    size="sm"
-                    onClick={() => setFullOptimizeOpen(true)}
-                    disabled={generateWeekMut.isPending || assignStaffOnlyMut.isPending}
-                    data-testid="full-optimize-button"
-                  >
-                    <RefreshCw className="mr-1 h-4 w-4" aria-hidden />
-                    全面最適化
-                  </Button>
-
-                  {/* Wave 41 v2 § 13.6: 固定枠に戻す (機能 D) */}
-                  <ResetToFixedButton
-                    isoYear={isoYear}
-                    isoWeek={isoWeek}
-                    officeId={officeId}
-                    disabled={generateWeekMut.isPending || assignStaffOnlyMut.isPending}
-                  />
-
-                  {/* Phase G-17: 一斉未割当 (表示週の全 Course 担当 +
-                      visit_staff_assignments を一括解除する). */}
-                  <UnassignAllStaffButton
-                    isoYear={isoYear}
-                    isoWeek={isoWeek}
-                    officeId={officeId}
-                    disabled={generateWeekMut.isPending || assignStaffOnlyMut.isPending}
-                  />
-                </>
-              ) : null}
-            </div>
+                    リスト
+                  </button>
+                </div>
+              </div>
+            ) : null}
           </div>
         </Card>
 
@@ -1773,43 +1840,7 @@ export function CourseDayTablePanel({
                 className="space-y-3"
                 data-testid="course-day-table-list"
               >
-                {/* 2026-W20: 月-土タブ表示モード切替 (テーブル ⇄ リスト).
-                    リストは全面最適化 Before/After と同じ視覚言語で出力 (DRY). */}
-                <div className="flex justify-end" data-testid="course-day-view-mode-toolbar">
-                  <div
-                    role="group"
-                    aria-label="月-土タブ 表示モード切替"
-                    className="inline-flex overflow-hidden rounded border border-border-default text-xs"
-                  >
-                    <button
-                      type="button"
-                      onClick={() => setWeekdayViewMode('table')}
-                      aria-pressed={weekdayViewMode === 'table'}
-                      data-testid="course-day-mode-table"
-                      className={
-                        weekdayViewMode === 'table'
-                          ? 'bg-brand-primary px-2 py-1 text-white'
-                          : 'bg-bg-base px-2 py-1 text-text-secondary hover:bg-bg-muted'
-                      }
-                    >
-                      テーブル
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setWeekdayViewMode('list')}
-                      aria-pressed={weekdayViewMode === 'list'}
-                      data-testid="course-day-mode-list"
-                      className={
-                        weekdayViewMode === 'list'
-                          ? 'bg-brand-primary px-2 py-1 text-white'
-                          : 'bg-bg-base px-2 py-1 text-text-secondary hover:bg-bg-muted'
-                      }
-                    >
-                      リスト (詳細)
-                    </button>
-                  </div>
-                </div>
-
+                {/* Phase G-35: 表示モード切替 (テーブル ⇄ リスト) は曜日タブ row の右端へ移設済. */}
                 {courseTablesForActiveDay.length === 0 ? (
                   <Card className="p-4 text-sm text-text-muted">
                     {WEEKDAY_LABELS[activeWeekday]}曜日の表示対象コースがありません。 拠点マスタの
