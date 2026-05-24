@@ -118,6 +118,7 @@ const V2_WARNING_TYPE_LABEL_JA: Record<V2WarningType, string> = {
   data_health_staff_shifts_missing: 'スタッフシフト未投入',
   auto_time_shift_for_conflict: '自動時刻シフト',
   care_alarm_deviation: 'ケアアラーム閾値 (30-60 分乖離)',
+  office_closed: '拠点休業日',
   general: 'その他',
 };
 
