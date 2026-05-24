@@ -56,6 +56,9 @@ export const v2WarningTypeSchema = z.enum([
   // Wave 4 (Phase C): 固定/時間帯 patient の希望時刻からの大乖離 warning.
   // 30 分超で emit (60 分超は unassigned + UnassignedReason=care_alarm_exceeded).
   'care_alarm_deviation',
+  // Phase G-45: 拠点稼働曜日外で visit をスケジュールできなかった patient.
+  // offices.operating_weekdays に当該 weekday が含まれない場合に emit.
+  'office_closed',
   'general',
 ]);
 export type V2WarningType = z.infer<typeof v2WarningTypeSchema>;
