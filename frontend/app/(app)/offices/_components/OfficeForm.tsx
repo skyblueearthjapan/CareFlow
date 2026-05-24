@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { AddressGeocodeField } from '@/components/AddressGeocodeField';
 import { OperatingWeekdaysField } from '@/components/master/OperatingWeekdaysField';
@@ -18,6 +18,12 @@ interface OfficeFormProps {
   submitting?: boolean;
   error?: unknown;
   submitLabel?: string;
+  /**
+   * Phase G-46.1: dirty 状態が変わるたびに呼ばれるコールバック。
+   * 編集ページの RecordNavigator (onBeforeNavigate) と連携し未保存変更を検知する。
+   * 患者/スタッフ編集と同じパターン (= 親が isDirty state を保持して confirm を表示).
+   */
+  onDirtyChange?: (isDirty: boolean) => void;
 }
 
 export function OfficeForm({
@@ -26,6 +32,7 @@ export function OfficeForm({
   submitting,
   error,
   submitLabel = '作成',
+  onDirtyChange,
 }: OfficeFormProps) {
   const [name, setName] = useState(initial?.name ?? '');
   const [code, setCode] = useState(initial?.code ?? '');
@@ -41,6 +48,43 @@ export function OfficeForm({
   const [operatingWeekdays, setOperatingWeekdays] = useState<number[]>(
     initial?.operating_weekdays ?? [...DEFAULT_OPERATING_WEEKDAYS],
   );
+
+  // Phase G-46.1: 未保存変更検知用の初期スナップショット.
+  // useState の初期化と同じロジックで snapshot を作成し、現在値と JSON 比較する。
+  // useRef で一度だけキャプチャするため、 props 変化では更新しない (= 編集ページが
+  // mount 後に initial を差し替えないことを前提)。
+  const initialSnapshotRef = useRef<string>(
+    JSON.stringify({
+      name: initial?.name ?? '',
+      code: initial?.code ?? '',
+      address: initial?.address ?? '',
+      lat: initial?.lat?.toString() ?? '',
+      lng: initial?.lng?.toString() ?? '',
+      prefecture: initial?.prefecture ?? '',
+      note: initial?.note ?? '',
+      allowed: initial?.allowed_cities ?? [],
+      operatingWeekdays: initial?.operating_weekdays ?? [...DEFAULT_OPERATING_WEEKDAYS],
+    }),
+  );
+
+  const isDirty = useMemo(() => {
+    const current = JSON.stringify({
+      name,
+      code,
+      address,
+      lat,
+      lng,
+      prefecture,
+      note,
+      allowed,
+      operatingWeekdays,
+    });
+    return current !== initialSnapshotRef.current;
+  }, [name, code, address, lat, lng, prefecture, note, allowed, operatingWeekdays]);
+
+  useEffect(() => {
+    onDirtyChange?.(isDirty);
+  }, [isDirty, onDirtyChange]);
 
   const { cities, isLoading: citiesLoading } = useCities({
     search: cityFilter || undefined,

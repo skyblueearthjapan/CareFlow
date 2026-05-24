@@ -117,4 +117,31 @@ describe('OfficeForm (Phase G-45)', () => {
     // 入力エラー Alert タイトルが見える.
     expect(screen.getByText('入力エラー')).toBeInTheDocument();
   });
+
+  // Phase G-46.1: 未保存変更ガード用 onDirtyChange callback.
+  it('notifies onDirtyChange when form values diverge from initial (G-46.1)', async () => {
+    const onDirtyChange = vi.fn();
+    render(
+      <OfficeForm
+        initial={{ name: 'g46-1-init', operating_weekdays: [0, 1, 2, 3, 4] }}
+        onSubmit={vi.fn()}
+        onDirtyChange={onDirtyChange}
+      />,
+    );
+
+    // 初期 mount では false が一度 (= 初期スナップショットと一致).
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+
+    // 拠点名を変更 → true 通知.
+    fireEvent.change(screen.getByRole('textbox', { name: /拠点名/ }) as HTMLInputElement, {
+      target: { value: 'g46-1-changed' },
+    });
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+
+    // 元の値に戻すと再び false (= snapshot 一致).
+    fireEvent.change(screen.getByRole('textbox', { name: /拠点名/ }) as HTMLInputElement, {
+      target: { value: 'g46-1-init' },
+    });
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+  });
 });

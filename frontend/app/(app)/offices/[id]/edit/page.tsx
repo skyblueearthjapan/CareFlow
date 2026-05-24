@@ -1,7 +1,7 @@
 'use client';
 
 import { useParams, useRouter } from 'next/navigation';
-import { useMemo } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 
 import { OfficeForm } from '../../_components/OfficeForm';
 import { Card } from '@/components/ui/card';
@@ -31,6 +31,16 @@ export default function EditOfficePage() {
     [officesQuery.allOffices],
   );
 
+  // Phase G-46.1: 未保存変更ガード (患者/スタッフ編集と対称).
+  const [isFormDirty, setIsFormDirty] = useState(false);
+
+  const handleBeforeNavigate = useCallback(() => {
+    if (!isFormDirty) return true;
+    return window.confirm(
+      '未保存の変更があります。移動するとこれらの変更は失われます。続行しますか？',
+    );
+  }, [isFormDirty]);
+
   const handleSubmit = async (values: OfficeUpdate) => {
     await update.mutateAsync(values);
     router.push(`/offices/${id}`);
@@ -53,6 +63,7 @@ export default function EditOfficePage() {
               hrefTemplate="/offices/{id}/edit"
               entityLabel="拠点"
               truncated={navRecords.length >= 500}
+              onBeforeNavigate={handleBeforeNavigate}
             />
           )}
         </div>
@@ -81,6 +92,7 @@ export default function EditOfficePage() {
             submitting={update.isPending}
             error={update.error}
             submitLabel="更新"
+            onDirtyChange={setIsFormDirty}
           />
         )}
       </Card>
