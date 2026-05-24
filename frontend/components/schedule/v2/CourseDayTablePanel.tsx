@@ -114,6 +114,8 @@ import {
   parsePoolDraggableId,
 } from './PoolPanel';
 import type { SlotIndex } from '@/lib/schemas/v2/patient_fixed_visit';
+// Phase G-44: 「希望訪問パターン」 vs 「実 visit 数」 の共通 utility.
+import { countWeekVisits, getDesiredWeeklyVisitCount } from '@/lib/scheduling/preferred-visits';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Constants
@@ -844,31 +846,51 @@ export function CourseDayTablePanel({
     return m;
   }, [weekVisits, visitsByGroupId]);
 
-  // ─── Pool patients (当週いずれの visit にも未配置な active 患者) ─
-  // W37 Phase 3-B/3-C: requires_multiple_staff=true 患者は slot 単位で配置判定する
-  // ため、ここでは「visit が 1 件でも存在する」だけで除外せず、PoolGroupedByWeekday
-  // 側で assignedSlotsByPatient (slot 0/1) を見て両方埋まっていればカード 0 枚に
-  // 丸める。通常患者 (フラグ OFF) は従来どおり 1 件配置で pool から除外。
-  const placedPatientIds = useMemo(() => {
-    const s = new Set<string>();
-    const multiStaffIds = new Set(
-      allPatients
-        .filter((p) => (p as { requires_multiple_staff?: boolean | null }).requires_multiple_staff)
-        .map((p) => p.id),
-    );
-    for (const v of weekVisits) {
-      if (v.visit_date && !multiStaffIds.has(v.patient_id)) {
-        s.add(v.patient_id);
-      }
+  // ─── Pool patients ────────────────────────────────────────────────
+  // Phase G-44: 「希望訪問パターン (= weekly_pattern.frequency_per_week) を
+  // Source of Truth」に変更. 二値判定 (= 1 件でも visit があれば除外) ではなく
+  // 「希望 N 件 vs 実 X 件」 の数値ベース判定にする.
+  //
+  //   - 希望未設定 (frequency_per_week=0 / null) → 既存挙動と同じく pool 対象外.
+  //   - 不足あり (desired > actual) → pool に残す.
+  //   - 過不足なし (actual >= desired) → pool から除外.
+  //
+  // W37 Phase 3-B/3-C 補完:
+  //   - requires_multiple_staff=true 患者は slot 単位で配置判定するため、
+  //     ここでは「frequency_per_week 判定」を回避し、PoolGroupedByWeekday 側に
+  //     assignedSlotsByPatient (slot 0/1) で両方埋まっていれば 0 枚に丸める判定を
+  //     委譲する (= 従来挙動の維持).
+  //
+  // patientShortageById: 各 patient の不足数 (= 希望 - 配置済) のマップ.
+  // PatientCard の不足バッジ表示に直接渡す.
+  const patientShortageById = useMemo(() => {
+    const m = new Map<string, { desired: number; actual: number; shortage: number }>();
+    for (const p of allPatients) {
+      const desired = getDesiredWeeklyVisitCount(p);
+      if (desired === 0) continue;
+      const actual = countWeekVisits(weekVisits, p.id);
+      const shortage = Math.max(0, desired - actual);
+      m.set(p.id, { desired, actual, shortage });
     }
-    return s;
-  }, [weekVisits, allPatients]);
+    return m;
+  }, [allPatients, weekVisits]);
 
-  const poolPatients = useMemo(
-    () =>
-      allPatients.filter((p) => p.status === 'active' && !placedPatientIds.has(p.id)).slice(0, 200),
-    [allPatients, placedPatientIds],
-  );
+  const poolPatients = useMemo(() => {
+    return allPatients
+      .filter((p) => {
+        if (p.status !== 'active') return false;
+        const isMultiStaff =
+          (p as { requires_multiple_staff?: boolean | null }).requires_multiple_staff === true;
+        // 複数体制患者は slot 単位判定 (PoolGroupedByWeekday に委譲). 常に候補.
+        if (isMultiStaff) return true;
+        const info = patientShortageById.get(p.id);
+        // 希望未設定 (frequency_per_week=0) → pool 対象外.
+        if (!info) return false;
+        // 不足あり (= 希望 > 実) → pool に残す.
+        return info.shortage > 0;
+      })
+      .slice(0, 200);
+  }, [allPatients, patientShortageById]);
 
   // ─── visit lookup (Wave 18 Phase B-5: 配置済みドラッグ用) ──────────
   const visitById = useMemo(() => {
@@ -1976,6 +1998,15 @@ export function CourseDayTablePanel({
               partnerLocationByPatientSlot={partnerLocationByPatientSlot}
               renderCard={(p, slotInfo) => {
                 const wp = coerceWeeklyPattern(p.weekly_pattern);
+                // Phase G-44: 不足表示用. 複数体制患者は slot 単位で表示しているので
+                // 数値ラベルは出さない (= 既存 partnerAssigned バッジで十分).
+                const isMultiStaff =
+                  (p as { requires_multiple_staff?: boolean | null }).requires_multiple_staff ===
+                  true;
+                const shortageInfo =
+                  !isMultiStaff && patientShortageById.has(p.id)
+                    ? (patientShortageById.get(p.id) ?? null)
+                    : null;
                 return (
                   <PatientCard
                     draggableId={buildPoolDraggableId(p.id, slotInfo.slotIndex)}
@@ -1996,6 +2027,8 @@ export function CourseDayTablePanel({
                       partnerAssigned: slotInfo.partnerAssigned,
                       // Wave 38: 相方の現在地ラベル ("本店-A 15:00" など) を素通しする.
                       partnerLocationLabel: slotInfo.partnerLocationLabel ?? null,
+                      // Phase G-44: 「希望 N、配置 X、不足 Y」 のラベル表示.
+                      shortageInfo,
                     }}
                     disabled={!canEdit}
                   />

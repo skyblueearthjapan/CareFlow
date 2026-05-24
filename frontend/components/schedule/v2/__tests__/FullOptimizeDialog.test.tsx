@@ -166,7 +166,12 @@ vi.mock('../FixedTimeEditModal', () => ({
 
 // ─── Subject under test ─────────────────────────────────────────────────────
 
-import { FullOptimizeDialog, countWillBeInserted } from '../FullOptimizeDialog';
+import {
+  FullOptimizeDialog,
+  countWillBeInserted,
+  computeDesiredVsAfter,
+  extractExclusionWarnings,
+} from '../FullOptimizeDialog';
 import type { FullOptimizeResponse } from '@/lib/schemas/v2/autoScheduleV2';
 
 // ─── Fixtures ───────────────────────────────────────────────────────────────
@@ -1180,5 +1185,197 @@ describe('FullOptimizeDialog — W41 v2.12 一括反映結果バナー', () => {
     expect(screen.queryByTestId('bulk-apply-result-banner-applying')).toBeNull();
     // 自動再算出も走らない (initial fetch のみ)
     expect(mocks.fullOptimizeMutateAsync).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ─── Phase G-44: 「希望 vs After」 数値サマリ + 除外 visit 一覧 ──────────────
+
+describe('computeDesiredVsAfter (Phase G-44 純関数)', () => {
+  it('配置成功 / 配置 patient / 除外 patient を集計し 希望 ≒ 配置+除外 を返す', () => {
+    const res = makeResponse({
+      assignedPatientIds: ['p1', 'p2', 'p3'],
+      unassignedPatientIds: ['u1'],
+    });
+    const stats = computeDesiredVsAfter(res);
+    expect(stats.placedVisits).toBe(3); // after.courses[0].visits.length
+    expect(stats.placedPatients).toBe(3);
+    expect(stats.excludedPatients).toBe(1);
+    expect(stats.desiredVisitsApprox).toBe(4); // 3 + 1
+  });
+
+  it('除外 0 名 → 希望 = 配置成功', () => {
+    const res = makeResponse({
+      assignedPatientIds: ['p1', 'p2'],
+      unassignedPatientIds: [],
+    });
+    const stats = computeDesiredVsAfter(res);
+    expect(stats.excludedPatients).toBe(0);
+    expect(stats.desiredVisitsApprox).toBe(stats.placedVisits);
+  });
+
+  it('配置 0 件 + 除外 のみ → 希望 = 除外 patient 数', () => {
+    const res = makeResponse({
+      assignedPatientIds: [],
+      unassignedPatientIds: ['u1', 'u2'],
+    });
+    const stats = computeDesiredVsAfter(res);
+    expect(stats.placedVisits).toBe(0);
+    expect(stats.placedPatients).toBe(0);
+    expect(stats.excludedPatients).toBe(2);
+    expect(stats.desiredVisitsApprox).toBe(2);
+  });
+});
+
+describe('extractExclusionWarnings (Phase G-44 純関数)', () => {
+  it('patient_id 一致と affected_patient_ids 一致の両方を拾う', () => {
+    const pid = uuid('p1');
+    const warnings = [
+      {
+        type: 'travel_time_shortage' as const,
+        message: '前 visit との距離 8km',
+        weekday: 0,
+        actionable: false,
+        patient_id: pid,
+        patient_name: null,
+        visit_id: null,
+        current_time: null,
+        suggested_time: null,
+        time_type: null,
+        preferred_start: null,
+        preferred_end: null,
+        affected_patient_ids: [],
+        category: 'time_deviation' as const,
+      },
+      {
+        type: 'course_capacity' as const,
+        message: 'コース定員超過',
+        weekday: 1,
+        actionable: false,
+        patient_id: null,
+        patient_name: null,
+        visit_id: null,
+        current_time: null,
+        suggested_time: null,
+        time_type: null,
+        preferred_start: null,
+        preferred_end: null,
+        affected_patient_ids: [pid],
+        category: 'capacity' as const,
+      },
+      {
+        type: 'general' as const,
+        message: '別 patient の警告',
+        weekday: null,
+        actionable: false,
+        patient_id: uuid('other'),
+        patient_name: null,
+        visit_id: null,
+        current_time: null,
+        suggested_time: null,
+        time_type: null,
+        preferred_start: null,
+        preferred_end: null,
+        affected_patient_ids: [],
+        category: 'conflict' as const,
+      },
+    ];
+    const out = extractExclusionWarnings(warnings, pid);
+    expect(out).toContain('前 visit との距離 8km');
+    expect(out).toContain('コース定員超過');
+    expect(out).not.toContain('別 patient の警告');
+  });
+
+  it('該当 warning なし → 空配列', () => {
+    expect(extractExclusionWarnings([], uuid('p1'))).toEqual([]);
+  });
+});
+
+describe('FullOptimizeDialog — Phase G-44 「希望 vs After」 サマリ + 除外一覧', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('除外なし: 数値サマリが描画され「除外なし」状態を示す', async () => {
+    const res = makeResponse({
+      assignedPatientIds: ['p1', 'p2'],
+      unassignedPatientIds: [],
+    });
+    mocks.fullOptimizeMutateAsync.mockResolvedValue(res);
+
+    render(
+      <FullOptimizeDialog
+        open
+        onClose={vi.fn()}
+        isoYear={2026}
+        isoWeek={20}
+        officeId={OFFICE_ID}
+      />,
+    );
+
+    const block = await screen.findByTestId('full-optimize-desired-vs-after');
+    expect(block).toBeInTheDocument();
+    // 配置成功 2 件
+    expect(screen.getByTestId('full-optimize-placed-visits').textContent).toMatch(/2 件/);
+    // 除外 0 件
+    expect(screen.getByTestId('full-optimize-excluded-patients').textContent).toMatch(/0 件/);
+    // 除外一覧は出ない
+    expect(screen.queryByTestId('full-optimize-excluded-list')).toBeNull();
+  });
+
+  it('除外あり: 除外 visit 一覧 + 理由が表示される', async () => {
+    const res = makeResponse({
+      assignedPatientIds: ['p1'],
+      unassignedPatientIds: ['u1'],
+    });
+    // 除外 patient に紐づく warning を追加
+    const u1Id = uuid('u1');
+    res.warnings.push({
+      type: 'travel_time_shortage',
+      message: '前 visit との距離 8km',
+      weekday: 0,
+      actionable: false,
+      patient_id: u1Id,
+      patient_name: null,
+      visit_id: null,
+      current_time: null,
+      suggested_time: null,
+      time_type: null,
+      preferred_start: null,
+      preferred_end: null,
+      affected_patient_ids: [],
+      category: 'time_deviation',
+    });
+    mocks.fullOptimizeMutateAsync.mockResolvedValue(res);
+
+    render(
+      <FullOptimizeDialog
+        open
+        onClose={vi.fn()}
+        isoYear={2026}
+        isoWeek={20}
+        officeId={OFFICE_ID}
+      />,
+    );
+
+    const block = await screen.findByTestId('full-optimize-desired-vs-after');
+    // 希望 (近似) = 1 配置 + 1 除外 = 2 件
+    expect(screen.getByTestId('full-optimize-desired-visits').textContent).toMatch(/2 件/);
+    // 配置成功 1 件
+    expect(screen.getByTestId('full-optimize-placed-visits').textContent).toMatch(/1 件/);
+    // 除外 1 件
+    expect(screen.getByTestId('full-optimize-excluded-patients').textContent).toMatch(/1 件/);
+    // 除外一覧が出る
+    const list = screen.getByTestId('full-optimize-excluded-list');
+    expect(list).toBeInTheDocument();
+    // 該当 patient の row が描画される
+    const row = screen.getByTestId(`full-optimize-excluded-row-${u1Id}`);
+    expect(row).toBeInTheDocument();
+    // 除外理由 (unknown enum → 日本語ラベル "原因不明")
+    expect(row.textContent).toMatch(/原因不明/);
+    // 関連 warning の message が併記される
+    const warningsBlock = screen.getByTestId(`full-optimize-excluded-row-warnings-${u1Id}`);
+    expect(warningsBlock.textContent).toMatch(/前 visit との距離 8km/);
+    // block 全体を suppress warning なしで参照させたい (block 変数を unused 扱いさせない)
+    expect(block).toBeInTheDocument();
   });
 });

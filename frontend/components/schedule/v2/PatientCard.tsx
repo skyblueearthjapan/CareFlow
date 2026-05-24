@@ -76,6 +76,17 @@ export interface PatientCardData {
    * - 通常患者では常に null / 無視される.
    */
   partnerLocationLabel?: string | null;
+  /**
+   * Phase G-44: 「希望週訪問回数 vs 配置済」 の不足カウント表示用.
+   *
+   * - undefined / null → 表示なし (= 希望未設定 or 不要 = 既存挙動).
+   * - `{ desired, actual, shortage }` を渡すと
+   *   「希望 N、配置 X、不足 Y」 のラベルを controlled に出す.
+   *
+   * 表示判定は呼出側 (CourseDayTablePanel) が行い、 PatientCard は素朴に表示する.
+   * shortage>0 のときは赤系バッジ + ラベルで視覚的強調する.
+   */
+  shortageInfo?: { desired: number; actual: number; shortage: number } | null;
 }
 
 export interface PatientCardProps {
@@ -244,6 +255,36 @@ export function PatientCard({
                 新規
               </Badge>
             )}
+          </div>
+        ) : null}
+        {/*
+          Phase G-44: 「希望 N、配置 X、不足 Y」 表示.
+          - shortageInfo が指定された patient (= 希望未設定でない) のみ表示.
+          - shortage>0 → 赤系バッジ + 強調. shortage=0 → 控えめな緑表示.
+          - 配置済みカード (isPlaced=true) でも表示する (= 「配置済だが不足あり」 = 別曜日に追加要).
+          - compact モードでも表示 (= ステータス把握が UX 上重要).
+         */}
+        {!isPlaced && patient.shortageInfo ? (
+          <div
+            className="flex flex-wrap items-center gap-1 pl-4"
+            data-testid={`patient-card-shortage-${patient.id}`}
+            data-shortage={patient.shortageInfo.shortage}
+          >
+            {patient.shortageInfo.shortage > 0 ? (
+              <Badge
+                variant="warning"
+                className="h-4 border-error/40 bg-error/10 px-1 text-[10px] text-error"
+                data-testid={`patient-card-shortage-badge-${patient.id}`}
+              >
+                不足 {patient.shortageInfo.shortage}
+              </Badge>
+            ) : null}
+            <span
+              className="tnum text-[10px] text-text-muted"
+              data-testid={`patient-card-shortage-label-${patient.id}`}
+            >
+              希望 {patient.shortageInfo.desired} / 配置 {patient.shortageInfo.actual}
+            </span>
           </div>
         ) : null}
         {/*

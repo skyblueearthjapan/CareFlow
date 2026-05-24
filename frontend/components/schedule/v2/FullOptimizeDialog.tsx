@@ -738,6 +738,10 @@ export function FullOptimizeDialog({
               ℹ️ グループ化基準: 最近接 2-3 名を 1 セット / コース容量 6 名/コース
             </div>
 
+            {/* Phase G-44: 「希望 vs After」 数値サマリ + 除外 visit 詳細.
+                ディレクター要望: 希望訪問パターンを正としつつ、 除外を可視化する. */}
+            <DesiredVsAfterSummary result={result} />
+
             {/* W41 v2 (Mode 2 UI 拡張): 割当状況バナー */}
             <AssignmentSummaryBanner result={result} />
 
@@ -1270,6 +1274,177 @@ export function countWillBeInserted(result: FullOptimizeResponse): number {
     }
   }
   return set.size;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Phase G-44: 「希望 vs After 数値サマリ + 除外 visit 一覧」
+//
+// 「希望訪問パターンを正としてほしい」 (= ディレクター要望) を popup でも可視化.
+//
+// FullOptimizeResponse からは以下を集計:
+//   - 配置成功 visits  = week_proposals[].after.courses[].visits の総数
+//   - 配置成功 patients = unique patient_id (after に出現)
+//   - 除外 patients    = unassigned_patients.length (= 物理不可能配置)
+//   - 希望 visits ≒ 配置成功 visits + 除外 patients
+//       (= 除外 patient ごとに少なくとも 1 件の希望が満たせなかった approximation.
+//          BE 側で patient master の frequency_per_week を join していないため
+//          patient-level 下限近似を採用. UI 上は 「除外 N 件」 として明示する.)
+// ─────────────────────────────────────────────────────────────────────────
+
+interface DesiredVsAfterStats {
+  desiredVisitsApprox: number;
+  placedVisits: number;
+  placedPatients: number;
+  excludedPatients: number;
+}
+
+export function computeDesiredVsAfter(result: FullOptimizeResponse): DesiredVsAfterStats {
+  let placedVisits = 0;
+  const placedSet = new Set<string>();
+  for (const wp of result.week_proposals) {
+    for (const c of wp.after.courses) {
+      placedVisits += c.visits.length;
+      for (const v of c.visits) {
+        placedSet.add(v.patient_id);
+      }
+    }
+  }
+  const excludedPatients = result.unassigned_patients.length;
+  return {
+    placedVisits,
+    placedPatients: placedSet.size,
+    excludedPatients,
+    // 希望 ≒ 配置成功 + 除外 (= 1 除外 patient あたり最低 1 visit 失われた近似).
+    desiredVisitsApprox: placedVisits + excludedPatients,
+  };
+}
+
+/**
+ * 警告 (V2Warning) から特定 patient_id に関連する除外理由のメッセージを抽出する.
+ *
+ * 優先順位:
+ *   1. warning.patient_id 一致
+ *   2. warning.affected_patient_ids に含まれる
+ *
+ * UnassignedReason は patient.reason_detail に既に詳細が入っていることが多いが、
+ * warnings 経由でしか拾えない補足情報 (例: travel_time_shortage の前 visit 距離) を
+ * 合わせて表示するために、関連 warning を全件マージする.
+ */
+export function extractExclusionWarnings(
+  warnings: ReadonlyArray<V2Warning>,
+  patientId: string,
+): string[] {
+  const out: string[] = [];
+  for (const w of warnings) {
+    const matchById = w.patient_id === patientId;
+    const matchByAffected = w.affected_patient_ids?.includes(patientId) ?? false;
+    if (matchById || matchByAffected) {
+      out.push(w.message);
+    }
+  }
+  return out;
+}
+
+function DesiredVsAfterSummary({ result }: { result: FullOptimizeResponse }) {
+  const stats = React.useMemo(() => computeDesiredVsAfter(result), [result]);
+  const hasExclusion = stats.excludedPatients > 0;
+  return (
+    <div
+      className="rounded border border-border-default bg-bg-base p-3 text-sm"
+      data-testid="full-optimize-desired-vs-after"
+    >
+      <div className="mb-2 text-xs font-semibold text-text-secondary">
+        希望訪問パターン vs 全面最適化結果
+      </div>
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+        <div
+          className="rounded border border-border-default bg-bg-muted/30 p-2"
+          data-testid="full-optimize-desired-visits"
+        >
+          <div className="text-[10px] text-text-muted">📊 希望訪問 (近似)</div>
+          <div className="tnum text-base font-semibold text-text-primary">
+            {stats.desiredVisitsApprox} 件
+          </div>
+          <div className="text-[10px] text-text-muted">配置成功 + 除外 patient 件数</div>
+        </div>
+        <div
+          className="rounded border border-emerald-200 bg-emerald-50/60 p-2"
+          data-testid="full-optimize-placed-visits"
+        >
+          <div className="text-[10px] text-emerald-700">✅ 配置成功</div>
+          <div className="tnum text-base font-semibold text-emerald-800">
+            {stats.placedVisits} 件
+          </div>
+          <div className="text-[10px] text-emerald-700">{stats.placedPatients} 名</div>
+        </div>
+        <div
+          className={
+            hasExclusion
+              ? 'rounded border border-error/40 bg-error/5 p-2'
+              : 'rounded border border-border-default bg-bg-muted/30 p-2'
+          }
+          data-testid="full-optimize-excluded-patients"
+        >
+          <div className={hasExclusion ? 'text-[10px] text-error' : 'text-[10px] text-text-muted'}>
+            {hasExclusion ? '⚠️ 除外' : '✅ 除外なし'}
+          </div>
+          <div
+            className={
+              hasExclusion
+                ? 'tnum text-base font-semibold text-error'
+                : 'tnum text-base font-semibold text-text-primary'
+            }
+          >
+            {stats.excludedPatients} 件
+          </div>
+          <div className="text-[10px] text-text-muted">物理不可能配置 (= プール残)</div>
+        </div>
+      </div>
+
+      {/* 除外 visit (= 配置に失敗した patient) の詳細一覧.
+          warnings から関連メッセージを抽出して併記する. */}
+      {hasExclusion ? (
+        <div className="mt-3" data-testid="full-optimize-excluded-list">
+          <div className="mb-1 text-xs font-semibold text-text-secondary">
+            除外された patient 一覧 ({stats.excludedPatients} 件)
+          </div>
+          <ul className="space-y-1 text-xs">
+            {result.unassigned_patients.map((p) => {
+              const extraWarnings = extractExclusionWarnings(result.warnings, p.patient_id);
+              return (
+                <li
+                  key={p.patient_id}
+                  className="rounded border border-error/30 bg-error/5 p-2"
+                  data-testid={`full-optimize-excluded-row-${p.patient_id}`}
+                >
+                  <div>
+                    <span className="font-semibold text-text-primary">{p.patient_code ?? '—'}</span>{' '}
+                    {p.patient_name}
+                  </div>
+                  <div className="text-text-secondary">
+                    除外: <span className="text-error">{fmtUnassignedReason(p.reason)}</span>
+                    {p.reason_detail ? (
+                      <span className="ml-1 text-text-muted">({p.reason_detail})</span>
+                    ) : null}
+                  </div>
+                  {extraWarnings.length > 0 ? (
+                    <ul
+                      className="mt-1 ml-3 list-disc text-[11px] text-text-muted"
+                      data-testid={`full-optimize-excluded-row-warnings-${p.patient_id}`}
+                    >
+                      {extraWarnings.map((msg, i) => (
+                        <li key={i}>{msg}</li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function AssignmentSummaryBanner({ result }: { result: FullOptimizeResponse }) {
