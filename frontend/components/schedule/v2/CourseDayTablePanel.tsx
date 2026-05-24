@@ -68,7 +68,9 @@ import {
 } from '@/lib/queries/staff-events';
 import type { EventRead } from '@/lib/schemas/staff-events';
 import { useDeleteVisit, useVisits } from '@/lib/queries/visits';
-import { useTogglePfvPin } from '@/lib/queries/g21';
+import { useBulkPinPfvs, useTogglePfvPin } from '@/lib/queries/g21';
+// Phase G-47: PinScope 型 (= 個別 🔒 toggle のスコープ '曜日のみ' / '全曜日').
+import type { PinScope } from './PinScopeMenu';
 import type { PatientFixedVisitV2Read } from '@/lib/schemas/v2/patient_fixed_visit';
 import { capacityForWeekday, type CourseTemplateRead } from '@/lib/schemas/v2/course_template';
 import {
@@ -368,6 +370,8 @@ export function CourseDayTablePanel({
 
   // Phase G-21 T4 reviewer C2: 単一 PFV pin toggle hook (panel 全体で 1 instance).
   const togglePfvPin = useTogglePfvPin();
+  // Phase G-47: 「全曜日」 スコープ選択時の bulk hook (panel 全体で 1 instance).
+  const bulkPinPfvs = useBulkPinPfvs();
 
   // ─── Courses (当週: course_template の逆引き / 担当 dropdown 用) ──
   const coursesQuery = useCourses({ iso_year: isoYear, iso_week: isoWeek, limit: 200 });
@@ -1392,42 +1396,92 @@ export function CourseDayTablePanel({
   const handleClosePatientDetail = useCallback(() => setPatientDetailId(null), []);
 
   // ─── Phase G-21 T4 reviewer C2: 🔒 完全固定 toggle handler ────────────
-  // CourseDayTable / WeekdayScheduleCard から (pfvId, nextPinned) で呼ばれる.
-  // 該当 visit から patient_id を逆引きして PFV cache を invalidate する.
+  // CourseDayTable / CourseWeekOverview / WeekdayScheduleCard から
+  // (pfvId, nextPinned, scope, patientId) で呼ばれる.
+  //
+  // Phase G-47: PinScopeMenu で「曜日のみ / 全曜日」が選択可能になったので、
+  //   scope に応じて単一 PATCH か bulk POST を振り分ける.
+  //     - scope='day'      → 当該 PFV のみ反転 (= 既存挙動と完全同等).
+  //     - scope='all-days' → 当該患者の全 PFV (= pfvByPatientId map から取得) を
+  //                           bulk POST. 既に target 状態の PFV は payload 除外.
+  //
+  //   反映先:
+  //     - React Query invalidate (patients / courses / visits) で全 UI 再 fetch.
+  //     - これにより 患者マスタ / 各曜日テーブル / 週ビュー / リスト表示 が同期する.
   const handleTogglePin = useCallback(
-    (pfvId: string, nextPinned: boolean) => {
+    (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => {
       if (!canEdit) {
         toast.warning('編集権限がありません');
         return;
       }
-      // pfvByVisitKey の value 群から逆引きして patient_id を取り出す.
-      let patientId: string | null = null;
-      for (const pfv of pfvByVisitKey.values()) {
-        if (pfv.id === pfvId) {
-          patientId = pfv.patient_id;
-          break;
+      // 患者 ID の整合性確認 (= 渡された patientId が pfvByVisitKey と一致するか).
+      // 'day' scope は単一 PFV を更新するため pfvId からも逆引きする.
+      if (scope === 'day') {
+        if (!pfvId) {
+          toast.error('対象の固定枠が見つかりません');
+          return;
         }
-      }
-      if (!patientId) {
-        toast.error('対象の固定枠が見つかりません');
+        togglePfvPin.mutate(
+          { pfvId, isPinned: nextPinned, patientId },
+          {
+            onSuccess: () => {
+              toast.success(
+                nextPinned
+                  ? '完全固定にしました (Layer 2 は動かしません)'
+                  : '完全固定を解除しました',
+              );
+            },
+            onError: (err) => {
+              const msg = err instanceof Error ? err.message : '不明なエラー';
+              toast.error(`完全固定の更新に失敗: ${msg}`);
+            },
+          },
+        );
         return;
       }
-      togglePfvPin.mutate(
-        { pfvId, isPinned: nextPinned, patientId },
-        {
-          onSuccess: () => {
-            toast.success(
-              nextPinned ? '完全固定にしました (Layer 2 は動かしません)' : '完全固定を解除しました',
-            );
-          },
-          onError: (err) => {
-            const msg = err instanceof Error ? err.message : '不明なエラー';
-            toast.error(`完全固定の更新に失敗: ${msg}`);
-          },
+
+      // ─ 'all-days' (全曜日 bulk) ─────────────────────────────────────────
+      // pfvByVisitKey から当該患者の全 PFV を抽出 (= 7 曜日 × 最大 2 slot まで).
+      // 同 pfv は (patient_id, weekday, slot, time) 軸で複数 key を持ち得るが、
+      // pfv.id でユニーク化することで重複 PATCH を防ぐ.
+      if (!patientId) {
+        toast.error('患者 ID が指定されていません');
+        return;
+      }
+      const seen = new Set<string>();
+      const allPfvs: PatientFixedVisitV2Read[] = [];
+      for (const pfv of pfvByVisitKey.values()) {
+        if (pfv.patient_id !== patientId) continue;
+        if (seen.has(pfv.id)) continue;
+        seen.add(pfv.id);
+        allPfvs.push(pfv);
+      }
+      if (allPfvs.length === 0) {
+        toast.error('対象患者の固定枠が見つかりません');
+        return;
+      }
+      // 既に target 状態の PFV は除外 (= 無駄な PATCH 抑止 + audit_log のノイズ削減).
+      const needUpdate = allPfvs.filter((p) => Boolean(p.is_pinned) !== nextPinned);
+      if (needUpdate.length === 0) {
+        toast.info(nextPinned ? '既に全曜日ロック状態です' : '既に全曜日解除状態です');
+        return;
+      }
+      const items = needUpdate.map((p) => ({ pfv_id: p.id, is_pinned: nextPinned }));
+      bulkPinPfvs.mutate(items, {
+        onSuccess: () => {
+          toast.success(
+            nextPinned
+              ? `全曜日 ${items.length} 件を完全固定しました (Layer 2 は動かしません)`
+              : `全曜日 ${items.length} 件の完全固定を解除しました`,
+          );
         },
-      );
+        onError: (err) => {
+          const msg = err instanceof Error ? err.message : '不明なエラー';
+          toast.error(`全曜日の完全固定更新に失敗: ${msg}`);
+        },
+      });
     },
-    [canEdit, pfvByVisitKey, togglePfvPin],
+    [canEdit, pfvByVisitKey, togglePfvPin, bulkPinPfvs],
   );
 
   // ─── Phase G-41: 主要 4 ボタン (週生成 / 自動割付 / 全面最適化 / プール投入) を本 panel Row 1 に再収容 ───

@@ -29,6 +29,7 @@ import { cn } from '@/lib/utils';
 import { formatDuration } from '@/lib/format/duration';
 import { VisitArrow } from './v2/VisitArrow';
 import { trimSeconds } from './v2/_autoScheduleUtils';
+import { PinScopeMenu, type PinScope } from './v2/PinScopeMenu';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Types — 共通 visit / course データ型 (V2VisitForUI と互換)
@@ -127,7 +128,7 @@ export interface WeekdayScheduleCardProps {
    * - visit.fixed_visit_id が無い場合は disabled (tooltip で説明).
    * - canEdit による表示制御は呼び出し側 (ハンドラ未指定で完全に非表示) で行う.
    */
-  onTogglePin?: (pfvId: string, nextPinned: boolean) => void;
+  onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -274,7 +275,7 @@ interface CourseRowProps {
   testIdPrefix?: string;
   onPatientClick?: (patientId: string) => void;
   weekView: boolean;
-  onTogglePin?: (pfvId: string, nextPinned: boolean) => void;
+  onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
 }
 
 function CourseRow({
@@ -352,7 +353,7 @@ interface PairClusterProps {
   testIdPrefix?: string;
   onPatientClick?: (patientId: string) => void;
   weekView: boolean;
-  onTogglePin?: (pfvId: string, nextPinned: boolean) => void;
+  onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
 }
 
 function PairCluster({
@@ -406,7 +407,7 @@ interface PairMemberRowProps {
   testIdPrefix?: string;
   onPatientClick?: (patientId: string) => void;
   weekView: boolean;
-  onTogglePin?: (pfvId: string, nextPinned: boolean) => void;
+  onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
 }
 
 /**
@@ -464,7 +465,7 @@ interface VisitRowProps {
   testIdPrefix?: string;
   onPatientClick?: (patientId: string) => void;
   weekView: boolean;
-  onTogglePin?: (pfvId: string, nextPinned: boolean) => void;
+  onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
 }
 
 function VisitRow({ visit, testIdPrefix, onPatientClick, weekView, onTogglePin }: VisitRowProps) {
@@ -536,7 +537,7 @@ interface VisitRowContentProps {
   /** ペア内距離 (0km) を省略する場合 true. */
   suppressDistance?: boolean;
   /** Phase G-21: 🔒 toggle ハンドラ. 指定時のみボタンが描画される. */
-  onTogglePin?: (pfvId: string, nextPinned: boolean) => void;
+  onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
 }
 
 function VisitRowContent({
@@ -640,7 +641,7 @@ function VisitRowContent({
 
 interface PinToggleButtonProps {
   visit: VisitListItem;
-  onTogglePin: (pfvId: string, nextPinned: boolean) => void;
+  onTogglePin: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
 }
 
 /**
@@ -656,42 +657,55 @@ interface PinToggleButtonProps {
 function PinToggleButton({ visit, onTogglePin }: PinToggleButtonProps) {
   const isPinned = visit.is_pinned === true;
   const pfvId = visit.fixed_visit_id ?? null;
-  const disabled = !pfvId;
+  // Phase G-47: bulk (全曜日) スコープには patient_id が必須.
+  // visit.patient_id が無い (= weekly_pattern fallback 等の例外) ときは disabled.
+  const patientId = visit.patient_id ?? null;
+  const disabled = !pfvId || !patientId;
+  // Phase G-47: click 即時 toggle を廃し、 PinScopeMenu で「曜日のみ / 全曜日」 2 択を提示.
   return (
-    <button
-      type="button"
-      onClick={(e) => {
-        e.stopPropagation();
-        if (!pfvId) return;
-        onTogglePin(pfvId, !isPinned);
-      }}
+    <PinScopeMenu
+      pfvId={pfvId ?? ''}
+      patientId={patientId ?? ''}
+      isPinned={isPinned}
+      onSelect={onTogglePin}
       disabled={disabled}
-      aria-label={
-        isPinned
-          ? `${visit.patient_name} の完全固定を解除`
-          : disabled
-            ? `${visit.patient_name} は固定枠が無いため完全固定できません`
-            : `${visit.patient_name} を完全固定`
-      }
-      title={
-        disabled
-          ? '先に固定枠登録が必要'
-          : isPinned
-            ? '完全固定を解除'
-            : '完全固定 (Layer 2 で動かさない)'
-      }
-      aria-pressed={isPinned}
-      data-testid={`weekday-pin-btn-${visit.key}`}
-      data-pinned={isPinned ? 'true' : 'false'}
-      data-pfv-id={pfvId ?? ''}
-      className={cn(
-        'inline-flex items-center justify-center rounded px-1 py-0.5 text-[10px] leading-none',
-        isPinned ? 'text-yellow-700 hover:bg-yellow-100' : 'text-text-muted hover:bg-bg-muted',
-        disabled ? 'cursor-not-allowed opacity-30' : '',
-      )}
+      testIdSuffix={`weekday-${visit.key}`}
     >
-      <span aria-hidden="true">{isPinned ? '🔒' : '🔓'}</span>
-    </button>
+      {({ isOpen }) => (
+        <button
+          type="button"
+          onPointerDown={(e) => e.stopPropagation()}
+          disabled={disabled}
+          aria-label={
+            isPinned
+              ? `${visit.patient_name} の完全固定スコープを選択 (解除)`
+              : disabled
+                ? `${visit.patient_name} は固定枠が無いため完全固定できません`
+                : `${visit.patient_name} の完全固定スコープを選択 (ロック)`
+          }
+          title={
+            disabled
+              ? '先に固定枠登録が必要'
+              : isPinned
+                ? '完全固定の解除スコープを選択 (この曜日のみ / 全曜日)'
+                : '完全固定のロックスコープを選択 (この曜日のみ / 全曜日)'
+          }
+          aria-pressed={isPinned}
+          aria-haspopup="menu"
+          aria-expanded={isOpen}
+          data-testid={`weekday-pin-btn-${visit.key}`}
+          data-pinned={isPinned ? 'true' : 'false'}
+          data-pfv-id={pfvId ?? ''}
+          className={cn(
+            'inline-flex items-center justify-center rounded px-1 py-0.5 text-[10px] leading-none',
+            isPinned ? 'text-yellow-700 hover:bg-yellow-100' : 'text-text-muted hover:bg-bg-muted',
+            disabled ? 'cursor-not-allowed opacity-30' : '',
+          )}
+        >
+          <span aria-hidden="true">{isPinned ? '🔒' : '🔓'}</span>
+        </button>
+      )}
+    </PinScopeMenu>
   );
 }
 

@@ -192,6 +192,8 @@ vi.mock('@/lib/queries/assign_staff_only', () => ({
 // noop で十分.
 vi.mock('@/lib/queries/g21', () => ({
   useTogglePfvPin: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
+  // Phase G-47: PinScopeMenu の「全曜日」スコープ用 bulk hook (panel 内で使用).
+  useBulkPinPfvs: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
 }));
 // Wave 41 v2: autoScheduleV2 モック (useMutation を直接呼ぶため QueryClient が無いと
 // テスト環境で例外になる。ボタンを叩かないテストでは noop で十分).

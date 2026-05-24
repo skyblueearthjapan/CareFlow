@@ -45,6 +45,44 @@ vi.mock('lucide-react', () => ({
   Unlock: (props: React.SVGProps<SVGSVGElement>) => <svg data-testid="unlock-icon" {...props} />,
 }));
 
+// Phase G-47: PinScopeMenu を軽量モック化.
+//   - menu UI は別ファイル (PinScopeMenu.test.tsx) で検証する.
+//   - ここでは trigger button の click が即時 'day' スコープで onSelect を呼ぶ
+//     簡易動作にして、 CourseDayTable 側の wiring (= 既存テスト互換) を検証する.
+vi.mock('../PinScopeMenu', () => ({
+  PinScopeMenu: ({
+    pfvId,
+    patientId,
+    isPinned,
+    onSelect,
+    disabled,
+    children,
+  }: {
+    pfvId: string;
+    patientId: string;
+    isPinned: boolean;
+    onSelect: (
+      pfvId: string,
+      nextPinned: boolean,
+      scope: 'day' | 'all-days',
+      patientId: string,
+    ) => void;
+    disabled?: boolean;
+    children: (args: { isOpen: boolean }) => React.ReactElement;
+  }) => {
+    const node = children({ isOpen: false });
+    // trigger button に onClick を注入して 'day' スコープで onSelect を発火する.
+    // disabled のときは何もしない (= 既存挙動と同じ).
+    const handleClick = () => {
+      if (disabled) return;
+      onSelect(pfvId, !isPinned, 'day', patientId);
+    };
+    return React.cloneElement(node, {
+      onClick: handleClick,
+    });
+  },
+}));
+
 import { CourseDayTable } from '../CourseDayTable';
 import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
 import type { CourseGridVisit } from '../CourseDayTable';
@@ -88,7 +126,13 @@ function makeVisit(overrides: Partial<CourseGridVisit> = {}): CourseGridVisit {
 
 interface RenderOpts {
   canEdit?: boolean;
-  onTogglePin?: (pfvId: string, nextPinned: boolean) => void;
+  // Phase G-47: onTogglePin に scope + patientId 引数が追加された.
+  onTogglePin?: (
+    pfvId: string,
+    nextPinned: boolean,
+    scope: 'day' | 'all-days',
+    patientId: string,
+  ) => void;
   visits?: CourseGridVisit[];
   includeOnTogglePin?: boolean;
 }
@@ -172,27 +216,28 @@ describe('CourseDayTable 🔒 pin toggle (Phase G-21)', () => {
     expect(cells.length).toBeGreaterThan(0);
   });
 
-  it('6. 🔒 click (is_pinned=true) → onTogglePin(pfvId, false) が呼ばれる', () => {
+  it('6. 🔒 click (is_pinned=true) → onTogglePin(pfvId, false, "day", patientId) が呼ばれる', () => {
     const onTogglePin = vi.fn();
     renderTable({
       canEdit: true,
       onTogglePin,
-      visits: [makeVisit({ fixed_visit_id: 'pfv-xyz', is_pinned: true })],
+      visits: [makeVisit({ fixed_visit_id: 'pfv-xyz', is_pinned: true, patient_id: 'p-1' })],
     });
     fireEvent.click(screen.getByTestId('pin-visit-btn-visit-g21-1'));
     expect(onTogglePin).toHaveBeenCalledOnce();
-    expect(onTogglePin).toHaveBeenCalledWith('pfv-xyz', false);
+    // Phase G-47: 4 引数 (scope='day' / patientId) を伴って呼ばれる.
+    expect(onTogglePin).toHaveBeenCalledWith('pfv-xyz', false, 'day', 'p-1');
   });
 
-  it('7. 🔓 click (is_pinned=false) → onTogglePin(pfvId, true) が呼ばれる', () => {
+  it('7. 🔓 click (is_pinned=false) → onTogglePin(pfvId, true, "day", patientId) が呼ばれる', () => {
     const onTogglePin = vi.fn();
     renderTable({
       canEdit: true,
       onTogglePin,
-      visits: [makeVisit({ fixed_visit_id: 'pfv-zzz', is_pinned: false })],
+      visits: [makeVisit({ fixed_visit_id: 'pfv-zzz', is_pinned: false, patient_id: 'p-2' })],
     });
     fireEvent.click(screen.getByTestId('pin-visit-btn-visit-g21-1'));
-    expect(onTogglePin).toHaveBeenCalledWith('pfv-zzz', true);
+    expect(onTogglePin).toHaveBeenCalledWith('pfv-zzz', true, 'day', 'p-2');
   });
 
   it('8. fixed_visit_id なし click → onTogglePin が呼ばれない (button disabled で stopPropagation)', () => {

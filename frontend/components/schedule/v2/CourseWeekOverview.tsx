@@ -20,6 +20,7 @@ import { capacityForWeekday, type CourseTemplateRead } from '@/lib/schemas/v2/co
 import type { EventRead } from '@/lib/schemas/staff-events';
 import type { StaffRead } from '@/lib/schemas/staff';
 import { formatEventLabelLines, getStaffEventsForWeekday } from './CourseDayTable';
+import { PinScopeMenu, type PinScope } from './PinScopeMenu';
 
 const WEEKDAYS = [0, 1, 2, 3, 4, 5] as const;
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土'] as const;
@@ -87,11 +88,12 @@ export interface CourseWeekOverviewProps {
    */
   onPatientClick?: (patientId: string) => void;
   /**
-   * Phase G-22: 🔒 完全固定 toggle ハンドラ (週ビュー).
-   * 指定時のみ各 visit の患者名後ろに 🔒 / 🔓 button が描画される.
+   * Phase G-22 / Phase G-47: 🔒 完全固定 toggle ハンドラ (週ビュー).
+   * 指定時のみ各 visit の患者名後ろに 🔒 / 🔓 button が描画され、 click で
+   * PinScopeMenu (= 曜日のみ / 全曜日) が開く.
    * visit.fixed_visit_id が無い場合は disabled.
    */
-  onTogglePin?: (pfvId: string, nextPinned: boolean) => void;
+  onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
 }
 
 export function CourseWeekOverview({
@@ -411,12 +413,13 @@ export function CourseWeekOverview({
                                           <span style={sexStyle}>{item.label}</span>
                                         );
                                       })()}
-                                      {/* Phase G-22: 🔒 完全固定 toggle (週ビュー) */}
+                                      {/* Phase G-22 / G-47: 🔒 完全固定 toggle (週ビュー) — scope 選択メニュー化 */}
                                       {onTogglePin && (
                                         <PinIconButton
                                           fixedVisitId={item.fixedVisitId}
                                           isPinned={item.isPinned}
                                           label={item.label}
+                                          patientId={item.patient_id}
                                           onTogglePin={onTogglePin}
                                           testIdPrefix="course-week-overview-pin"
                                           visitId={item.id}
@@ -486,12 +489,13 @@ export function CourseWeekOverview({
                                               <span style={sexStyle}>{v.label}</span>
                                             );
                                           })()}
-                                          {/* Phase G-22: 🔒 完全固定 toggle (週ビュー pair cluster) */}
+                                          {/* Phase G-22 / G-47: 🔒 完全固定 toggle (週ビュー pair cluster) — scope 選択メニュー化 */}
                                           {onTogglePin && (
                                             <PinIconButton
                                               fixedVisitId={v.fixedVisitId}
                                               isPinned={v.isPinned}
                                               label={v.label}
+                                              patientId={v.patient_id}
                                               onTogglePin={onTogglePin}
                                               testIdPrefix="course-week-overview-pin"
                                               visitId={v.id}
@@ -527,54 +531,67 @@ interface PinIconButtonProps {
   fixedVisitId: string | null;
   isPinned: boolean;
   label: string;
+  /** Phase G-47: bulk (全曜日) スコープ選択時に patient の全 PFV 対象として渡る. */
+  patientId: string;
   visitId: string;
   testIdPrefix: string;
-  onTogglePin: (pfvId: string, nextPinned: boolean) => void;
+  onTogglePin: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
 }
 
 function PinIconButton({
   fixedVisitId,
   isPinned,
   label,
+  patientId,
   visitId,
   testIdPrefix,
   onTogglePin,
 }: PinIconButtonProps) {
   const disabled = !fixedVisitId;
+  // Phase G-47: click 即時 toggle を廃し、 PinScopeMenu で「曜日のみ / 全曜日」 2 択を提示.
   return (
-    <button
-      type="button"
-      onClick={(e) => {
-        e.stopPropagation();
-        if (!fixedVisitId) return;
-        onTogglePin(fixedVisitId, !isPinned);
-      }}
+    <PinScopeMenu
+      pfvId={fixedVisitId ?? ''}
+      patientId={patientId}
+      isPinned={isPinned}
+      onSelect={onTogglePin}
       disabled={disabled}
-      aria-label={
-        isPinned
-          ? `${label} の完全固定を解除`
-          : disabled
-            ? `${label} は固定枠が無いため完全固定できません`
-            : `${label} を完全固定`
-      }
-      title={
-        disabled
-          ? '先に固定枠登録が必要'
-          : isPinned
-            ? '完全固定を解除'
-            : '完全固定 (Layer 2 で動かさない)'
-      }
-      aria-pressed={isPinned}
-      data-testid={`${testIdPrefix}-${visitId}`}
-      data-pinned={isPinned ? 'true' : 'false'}
-      data-pfv-id={fixedVisitId ?? ''}
-      className={cn(
-        'ml-1 inline-flex items-center justify-center rounded px-0.5 text-[9px] leading-none align-middle',
-        isPinned ? 'text-yellow-700 hover:bg-yellow-100' : 'text-text-muted hover:bg-bg-muted',
-        disabled ? 'cursor-not-allowed opacity-30' : '',
-      )}
+      testIdSuffix={`${testIdPrefix}-${visitId}`}
     >
-      <span aria-hidden="true">{isPinned ? '🔒' : '🔓'}</span>
-    </button>
+      {({ isOpen }) => (
+        <button
+          type="button"
+          onPointerDown={(e) => e.stopPropagation()}
+          disabled={disabled}
+          aria-label={
+            isPinned
+              ? `${label} の完全固定スコープを選択 (解除)`
+              : disabled
+                ? `${label} は固定枠が無いため完全固定できません`
+                : `${label} の完全固定スコープを選択 (ロック)`
+          }
+          title={
+            disabled
+              ? '先に固定枠登録が必要'
+              : isPinned
+                ? '完全固定の解除スコープを選択 (この曜日のみ / 全曜日)'
+                : '完全固定のロックスコープを選択 (この曜日のみ / 全曜日)'
+          }
+          aria-pressed={isPinned}
+          aria-haspopup="menu"
+          aria-expanded={isOpen}
+          data-testid={`${testIdPrefix}-${visitId}`}
+          data-pinned={isPinned ? 'true' : 'false'}
+          data-pfv-id={fixedVisitId ?? ''}
+          className={cn(
+            'ml-1 inline-flex items-center justify-center rounded px-0.5 text-[9px] leading-none align-middle',
+            isPinned ? 'text-yellow-700 hover:bg-yellow-100' : 'text-text-muted hover:bg-bg-muted',
+            disabled ? 'cursor-not-allowed opacity-30' : '',
+          )}
+        >
+          <span aria-hidden="true">{isPinned ? '🔒' : '🔓'}</span>
+        </button>
+      )}
+    </PinScopeMenu>
   );
 }

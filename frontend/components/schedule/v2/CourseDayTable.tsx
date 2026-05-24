@@ -30,6 +30,7 @@ import type { CourseV2Read } from '@/lib/queries/courses';
 import type { StaffRead } from '@/lib/schemas/staff';
 import type { EventRead } from '@/lib/schemas/staff-events';
 import { formatTimeCondition } from '@/components/schedule/WeekdayScheduleCard';
+import { PinScopeMenu, type PinScope } from './PinScopeMenu';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Constants — 時刻軸 (B-2 / Excel 完全準拠)
@@ -408,9 +409,14 @@ export interface CourseDayTableProps {
    * Phase G-21: 🔒 完全固定 toggle ハンドラ.
    * - visit.fixed_visit_id が無い場合は呼ばれない (button が disabled).
    * - canEdit=false の場合は呼ばれない (button が disabled).
-   * - 親は PATCH /patients/fixed-visits/{pfv_id}/pin を発火する.
+   * - 親は scope に応じて PATCH /patients/fixed-visits/{pfv_id}/pin (= 'day') か
+   *   POST /patients/fixed-visits/pin/bulk (= 'all-days', 患者の全 PFV) を発火する.
+   *
+   * Phase G-47: 第 3 引数 `scope` + 第 4 引数 `patientId` を追加.
+   *   - scope='day'      → 当該 PFV のみ反転 (= 既存挙動).
+   *   - scope='all-days' → 当該患者の全曜日 PFV を bulk 反転.
    */
-  onTogglePin?: (pfvId: string, nextPinned: boolean) => void;
+  onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
   /**
    * Phase G-25: staff の所属拠点名を表示するための office_id → name map.
    * 担当 dropdown の各 option に拠点名を併記する用途 (= 全拠点 staff 解放と組合せ).
@@ -649,8 +655,8 @@ interface CourseTimeRowProps {
   onDeleteVisit?: (visitId: string, patientName: string) => void;
   /** 患者氏名横の info アイコンクリックハンドラ. */
   onPatientClick?: (patientId: string) => void;
-  /** Phase G-21: 🔒 完全固定 toggle ハンドラ. */
-  onTogglePin?: (pfvId: string, nextPinned: boolean) => void;
+  /** Phase G-21 / Phase G-47: 🔒 完全固定 toggle ハンドラ (scope + patientId 付き). */
+  onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
 }
 
 function CourseTimeRow({
@@ -843,8 +849,8 @@ interface OccupantPatientInfoProps {
   canEdit: boolean;
   onDeleteVisit?: (visitId: string, patientName: string) => void;
   onPatientClick?: (patientId: string) => void;
-  /** Phase G-21: 🔒 完全固定 toggle ハンドラ. */
-  onTogglePin?: (pfvId: string, nextPinned: boolean) => void;
+  /** Phase G-21 / Phase G-47: 🔒 完全固定 toggle ハンドラ (scope + patientId 付き). */
+  onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
 }
 
 function OccupantPatientInfo({
@@ -937,52 +943,61 @@ function OccupantPatientInfo({
           <span className="truncate">{sexText}</span>
         ) : null}
       </span>
-      {/* Phase G-22: 🔒 完全固定 toggle — 時間条件 + 性別制限 の直後に配置 (= リスト表示と統一) */}
+      {/* Phase G-22: 🔒 完全固定 toggle — 時間条件 + 性別制限 の直後に配置 (= リスト表示と統一).
+          Phase G-47: click 即時 toggle を廃し、 PinScopeMenu で「曜日のみ / 全曜日」 2 択へ. */}
       {canEdit && onTogglePin && (
-        <button
-          type="button"
-          className={cn(
-            'transition-opacity p-0.5 rounded flex-shrink-0',
-            visit.is_pinned === true
-              ? 'opacity-100 hover:bg-yellow-100'
-              : 'opacity-0 group-hover:opacity-60 [@media(hover:none)]:opacity-60 hover:opacity-100 hover:bg-yellow-50',
-            !visit.fixed_visit_id ? 'cursor-not-allowed opacity-30' : '',
-          )}
-          onClick={(e) => {
-            e.stopPropagation();
-            if (!visit.fixed_visit_id) return;
-            onTogglePin(visit.fixed_visit_id, visit.is_pinned !== true);
-          }}
-          onPointerDown={(e) => {
-            // 行 drag を抑止
-            e.stopPropagation();
-          }}
+        <PinScopeMenu
+          pfvId={visit.fixed_visit_id ?? ''}
+          patientId={visit.patient_id}
+          isPinned={visit.is_pinned === true}
+          onSelect={onTogglePin}
           disabled={!visit.fixed_visit_id}
-          aria-label={
-            visit.is_pinned === true
-              ? `${visit.patient_name ?? visit.patient_id} の完全固定を解除`
-              : !visit.fixed_visit_id
-                ? `${visit.patient_name ?? visit.patient_id} は固定枠が無いため完全固定できません`
-                : `${visit.patient_name ?? visit.patient_id} を完全固定`
-          }
-          title={
-            !visit.fixed_visit_id
-              ? '先に固定枠登録が必要'
-              : visit.is_pinned === true
-                ? '完全固定を解除 (Layer 2 が再配置可能になります)'
-                : '完全固定 (Layer 2 が動かさなくなります)'
-          }
-          aria-pressed={visit.is_pinned === true}
-          data-testid={`pin-visit-btn-${visit.id}`}
-          data-pinned={visit.is_pinned === true ? 'true' : 'false'}
-          data-pfv-id={visit.fixed_visit_id ?? ''}
+          testIdSuffix={visit.id}
         >
-          {visit.is_pinned === true ? (
-            <Lock className="h-3 w-3 text-yellow-700" />
-          ) : (
-            <Unlock className="h-3 w-3 text-text-muted" />
+          {({ isOpen }) => (
+            <button
+              type="button"
+              className={cn(
+                'transition-opacity p-0.5 rounded flex-shrink-0',
+                visit.is_pinned === true || isOpen
+                  ? 'opacity-100 hover:bg-yellow-100'
+                  : 'opacity-0 group-hover:opacity-60 [@media(hover:none)]:opacity-60 hover:opacity-100 hover:bg-yellow-50',
+                !visit.fixed_visit_id ? 'cursor-not-allowed opacity-30' : '',
+              )}
+              onPointerDown={(e) => {
+                // 行 drag を抑止 (Popover 側の click 検知より前に行 drag が発火しないように).
+                e.stopPropagation();
+              }}
+              disabled={!visit.fixed_visit_id}
+              aria-label={
+                visit.is_pinned === true
+                  ? `${visit.patient_name ?? visit.patient_id} の完全固定スコープを選択 (解除)`
+                  : !visit.fixed_visit_id
+                    ? `${visit.patient_name ?? visit.patient_id} は固定枠が無いため完全固定できません`
+                    : `${visit.patient_name ?? visit.patient_id} の完全固定スコープを選択 (ロック)`
+              }
+              title={
+                !visit.fixed_visit_id
+                  ? '先に固定枠登録が必要'
+                  : visit.is_pinned === true
+                    ? '完全固定の解除スコープを選択 (この曜日のみ / 全曜日)'
+                    : '完全固定のロックスコープを選択 (この曜日のみ / 全曜日)'
+              }
+              aria-pressed={visit.is_pinned === true}
+              aria-haspopup="menu"
+              aria-expanded={isOpen}
+              data-testid={`pin-visit-btn-${visit.id}`}
+              data-pinned={visit.is_pinned === true ? 'true' : 'false'}
+              data-pfv-id={visit.fixed_visit_id ?? ''}
+            >
+              {visit.is_pinned === true ? (
+                <Lock className="h-3 w-3 text-yellow-700" />
+              ) : (
+                <Unlock className="h-3 w-3 text-text-muted" />
+              )}
+            </button>
           )}
-        </button>
+        </PinScopeMenu>
       )}
     </div>
   );
@@ -1033,8 +1048,12 @@ interface OccupantNameDraggableProps {
   fixedVisitId?: string | null;
   /** Phase G-21: 完全固定中フラグ (= 🔒 表示). */
   isPinned?: boolean;
-  /** Phase G-21: 🔒 toggle ハンドラ (pfvId, nextPinned). */
-  onTogglePin?: (pfvId: string, nextPinned: boolean) => void;
+  /**
+   * Phase G-21 / Phase G-47: 🔒 toggle ハンドラ (pfvId, nextPinned, scope, patientId).
+   * NOTE: Phase G-22 で実描画は OccupantPatientInfo 側 (PinScopeMenu) に移設済.
+   * 本 props は API 互換維持のため残す.
+   */
+  onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
 }
 
 /**
