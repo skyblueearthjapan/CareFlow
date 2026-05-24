@@ -3,12 +3,14 @@
 import { useMemo, useState } from 'react';
 
 import { AddressGeocodeField } from '@/components/AddressGeocodeField';
+import { OperatingWeekdaysField } from '@/components/master/OperatingWeekdaysField';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useCities } from '@/lib/queries/cities';
 import type { Office, OfficeCreate } from '@/lib/schemas/office';
 import { OfficeCreateSchema } from '@/lib/schemas/office';
+import { DEFAULT_OPERATING_WEEKDAYS } from '@/lib/schemas/v2/office';
 
 interface OfficeFormProps {
   initial?: Partial<Office>;
@@ -35,6 +37,10 @@ export function OfficeForm({
   const [allowed, setAllowed] = useState<string[]>(initial?.allowed_cities ?? []);
   const [cityFilter, setCityFilter] = useState('');
   const [validationMsg, setValidationMsg] = useState<string | null>(null);
+  // Phase G-45: 拠点稼働曜日.
+  const [operatingWeekdays, setOperatingWeekdays] = useState<number[]>(
+    initial?.operating_weekdays ?? [...DEFAULT_OPERATING_WEEKDAYS],
+  );
 
   const { cities, isLoading: citiesLoading } = useCities({
     search: cityFilter || undefined,
@@ -87,6 +93,8 @@ export function OfficeForm({
       prefecture: prefecture || null,
       note: note || null,
       allowed_cities: allowed,
+      // Phase G-45: 稼働曜日.
+      operating_weekdays: operatingWeekdays,
     };
 
     const parsed = OfficeCreateSchema.safeParse(payload);
@@ -132,6 +140,18 @@ export function OfficeForm({
         addressLabel="拠点住所"
         disabled={submitting}
       />
+
+      <Field label="稼働曜日 *">
+        <OperatingWeekdaysField
+          value={operatingWeekdays}
+          onChange={setOperatingWeekdays}
+          disabled={submitting}
+        />
+        <p className="mt-1 text-xs text-text-muted">
+          休業日に設定された曜日は自動算出でその拠点の visit
+          を生成しません。サブ拠点で受ける場合は患者マスタの sub_office_id を設定してください。
+        </p>
+      </Field>
 
       <Field label="メモ">
         <textarea

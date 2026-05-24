@@ -52,6 +52,8 @@ class OfficeSeed:
     note: str
     # 担当市区町村: (prefecture, name) のタプルで cities テーブルを引く
     allowed_cities: tuple[tuple[str, str], ...]
+    # Phase G-45: 稼働曜日 (0=月..6=日). 稲毛=月-土, 都賀=月-金.
+    operating_weekdays: tuple[int, ...] = (0, 1, 2, 3, 4, 5)
 
 
 # 拠点マスタ シード値
@@ -67,6 +69,7 @@ SEEDS: tuple[OfficeSeed, ...] = (
         lng=140.1218,
         note="v2 シード (W1-BE3): 千葉市稲毛区を担当",
         allowed_cities=(("千葉県", "千葉市稲毛区"),),
+        operating_weekdays=(0, 1, 2, 3, 4, 5),  # 月-土
     ),
     OfficeSeed(
         code="TSUGA",
@@ -77,6 +80,7 @@ SEEDS: tuple[OfficeSeed, ...] = (
         lng=140.1535,
         note="v2 シード (W1-BE3): 千葉市若葉区都賀エリアを担当 (区単位は若葉区)",
         allowed_cities=(("千葉県", "千葉市若葉区"),),
+        operating_weekdays=(0, 1, 2, 3, 4),  # 月-金
     ),
 )
 
@@ -114,6 +118,7 @@ async def _apply(seeds: tuple[OfficeSeed, ...], dry_run: bool) -> SeedReport:
                         lat=seed.lat,
                         lng=seed.lng,
                         note=seed.note,
+                        operating_weekdays=list(seed.operating_weekdays),
                     )
                     session.add(office)
                     await session.flush()  # populate office.id

@@ -200,7 +200,13 @@ async def update_office(
 
     update_data = payload.model_dump(exclude_unset=True)
     allowed_cities = update_data.pop("allowed_cities", None)
+    # Phase G-45: ``operating_weekdays`` は NOT NULL カラムなので、 明示的に
+    # None で送られても無視する (= 既存値を保護). 同様に他カラムも None で送られた
+    # 場合は触らない方が安全な振る舞いだが、後方互換のため operating_weekdays のみ
+    # 限定的にガードする (= 旧来 name/code/note 等の None 上書きは許容のまま).
     for field, value in update_data.items():
+        if field == "operating_weekdays" and value is None:
+            continue
         setattr(office, field, value)
 
     if allowed_cities is not None:

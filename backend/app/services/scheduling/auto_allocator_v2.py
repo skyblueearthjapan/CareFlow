@@ -61,7 +61,7 @@ from app.models.office_feature_flag import OfficeFeatureFlag
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.patient_same_address_link import PatientSameAddressLink
-from app.models.staff import Staff, StaffShift, StaffWeeklyOverride
+from app.models.staff import Staff, StaffSecondaryOffice, StaffShift, StaffWeeklyOverride
 from app.models.visit import Visit
 from app.models.visit_staff_assignment import VisitStaffAssignment
 
@@ -69,6 +69,11 @@ from app.models.visit_staff_assignment import VisitStaffAssignment
 # OfficeFeatureFlag.feature_key が ``g21_new_algorithm`` で enabled_at IS NOT NULL の
 # office のみ新アルゴリズム (pinned/非 pinned 2 経路化 + 4 経路 union before) を使う.
 G21_NEW_ALGORITHM_FEATURE_KEY: str = "g21_new_algorithm"
+
+# Phase G-45: 拠点稼働曜日 (= operating_weekdays) のデフォルト値 (= 月-土).
+# DB カラム NULL / 不正値 (= リスト以外 or 範囲外要素を含む) の場合に
+# ``_load_office_operating_weekdays`` がフォールバックする.
+DEFAULT_OFFICE_OPERATING_WEEKDAYS: frozenset[int] = frozenset({0, 1, 2, 3, 4, 5})
 
 logger = logging.getLogger(__name__)
 
@@ -332,6 +337,10 @@ V2WarningType = Literal[
     # emit. 60 分超は unassigned + reason="care_alarm_exceeded" として外す
     # (= 警告でなく未割当扱い).
     "care_alarm_deviation",
+    # Phase G-45: 拠点稼働曜日 (= operating_weekdays) に含まれない曜日に
+    # patient の visit がスケジュールされそうになった場合に emit.
+    # 同 (patient_id, weekday) で 1 件のみ重複排除.
+    "office_closed",
     "general",
 ]
 
@@ -368,6 +377,7 @@ _WARNING_CODE_TO_CATEGORY: dict[str, V2WarningCategory] = {
     "same_address_consolidation": V2WarningCategory.placement_info,
     "auto_time_shift_for_conflict": V2WarningCategory.placement_info,
     "diff_add_conflict": V2WarningCategory.conflict,
+    "office_closed": V2WarningCategory.conflict,
     "general": V2WarningCategory.conflict,
 }
 
@@ -1317,6 +1327,104 @@ async def _load_g21_enabled_offices(
     return set(rows.all())
 
 
+def _coerce_operating_weekdays(raw: object) -> set[int]:
+    """``Office.operating_weekdays`` (JSONB) を ``set[int]`` (0..6) に正規化する.
+
+    不正値 (= list でない / 要素が int でない / 範囲外 / 重複) を含む場合は
+    デフォルト (= 月-土 = {0..5}) にフォールバックする. 後方互換のため、
+    本番運用で万一壊れたデータがあってもパイプライン全停止を防ぐ.
+    """
+    if not isinstance(raw, list) or not raw:
+        return set(DEFAULT_OFFICE_OPERATING_WEEKDAYS)
+    out: set[int] = set()
+    for v in raw:
+        # bool は int subclass だが weekday としては不適切.
+        if isinstance(v, bool) or not isinstance(v, int):
+            return set(DEFAULT_OFFICE_OPERATING_WEEKDAYS)
+        if v < 0 or v > 6:
+            return set(DEFAULT_OFFICE_OPERATING_WEEKDAYS)
+        out.add(v)
+    if not out:
+        return set(DEFAULT_OFFICE_OPERATING_WEEKDAYS)
+    return out
+
+
+def _emit_office_closed_warning(
+    *,
+    warnings: list[V2Warning] | None,
+    closed_warned: set[tuple[UUID, int]],
+    patient_id: UUID,
+    patient_name: str | None,
+    weekday: int,
+    office_id: UUID,
+    office_name_by_id: dict[UUID, str] | None,
+) -> None:
+    """Phase G-45: 拠点休業日 skip 時の構造化警告を emit する (= 重複防止 helper).
+
+    同 ``(patient_id, weekday)`` で複数の経路 (= PFV / weekly / orphan etc) が
+    重複して emit しないよう、 ``closed_warned`` set で dedupe する.
+    ``warnings`` が None の場合は何もしない.
+    """
+    if warnings is None:
+        return
+    key = (patient_id, weekday)
+    if key in closed_warned:
+        return
+    closed_warned.add(key)
+    name = patient_name or "不明"
+    office_name = (
+        (office_name_by_id or {}).get(office_id) if office_name_by_id else None
+    ) or "拠点"
+    msg = (
+        f"{_weekday_jp(weekday)}: 拠点 {office_name} は休業日のため "
+        f"{name} 様の visit をスケジュールしません. "
+        "サブ拠点で受ける場合は患者マスタを編集してください"
+    )
+    warnings.append(
+        V2Warning(
+            type="office_closed",
+            message=msg,
+            weekday=weekday,
+            actionable=True,
+            patient_id=patient_id,
+            patient_name=patient_name,
+            affected_patient_ids=[patient_id],
+        )
+    )
+
+
+async def _load_office_operating_weekdays(
+    db: AsyncSession,
+    *,
+    office_ids: list[UUID],
+) -> dict[UUID, set[int]]:
+    """Phase G-45: 拠点ごとの稼働曜日集合を返す.
+
+    DB の ``offices.operating_weekdays`` カラム (JSONB int 配列) を読み出し、
+    ``{office_id: {weekday, ...}}`` の dict にする. NULL / 不正値はデフォルト
+    (= 月-土 = {0..5}) にフォールバックする.
+
+    パイプライン (Stage 1) で V2Visit 生成時に休業曜日を skip するために使用する.
+    呼び出し側 (= ``build_visits_for_pool`` / ``_load_before_visits_*`` /
+    ``reset_visits_to_fixed``) は ``(office_id, weekday)`` 単位で
+    ``weekday in op_weekdays_by_office[office_id]`` をチェックする.
+    """
+    if not office_ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(Office.id, Office.operating_weekdays).where(
+                Office.id.in_(office_ids),
+                Office.deleted_at.is_(None),
+            )
+        )
+    ).all()
+    out: dict[UUID, set[int]] = {}
+    for oid, raw in rows:
+        out[oid] = _coerce_operating_weekdays(raw)
+    return out
+
+
 async def _load_same_address_pair_modes(
     db: AsyncSession,
     *,
@@ -1661,6 +1769,9 @@ def build_visits_for_pool(
     course_code_by_template_id: dict[UUID, str] | None = None,
     ct_office_by_id: dict[UUID, UUID] | None = None,
     sub_office_scope: set[UUID] | None = None,
+    op_weekdays_by_office: dict[UUID, set[int]] | None = None,
+    office_name_by_id: dict[UUID, str] | None = None,
+    warnings: list[V2Warning] | None = None,
 ) -> list[V2Visit]:
     """段階 1〜2 中間: 各患者の希望を V2Visit に展開する.
 
@@ -1692,10 +1803,19 @@ def build_visits_for_pool(
     PFV.sub_office_id が set 内に含まれる行は V2Visit.office_id を sub_office_id に
     差し替える (= サブ拠点経由のフォロー配置を pool 候補化). 自動算出本体 (mode 2 /
     full_optimize) は ``sub_office_scope=None`` で呼ぶため挙動は不変.
+
+    Phase G-45 (拠点稼働曜日): ``op_weekdays_by_office`` が渡された場合、
+    最終 ``office_id_eff`` (= sub_office / cross-office 差し替え後の office) が
+    当該 weekday に休業の場合 V2Visit を emit せず skip する.
+    同 ``(patient_id, weekday)`` で重複しないよう ``warnings`` に 1 件のみ emit
+    (= ``V2Warning(type="office_closed")``). ``op_weekdays_by_office=None`` は
+    旧挙動互換 (= skip しない).
     """
     overlay = pending_overlay or {}
     sub_scope = sub_office_scope or set()
     visits: list[V2Visit] = []
+    # Phase G-45: 拠点休業日 skip の重複 emit 抑止. (patient_id, weekday) ごと 1 件.
+    closed_warned: set[tuple[UUID, int]] = set()
     for patient in patients:
         if patient.lat is None or patient.lng is None or patient.primary_office_id is None:
             continue
@@ -1788,6 +1908,21 @@ def build_visits_for_pool(
                     # ``is_pinned=True``. legacy 経路でも pinned visit の時刻が
                     # ``apply_travel_corrections`` で動かないようにする.
                     is_pinned_eff = wd in pinned_pfv_by_wd
+                    # Phase G-45: 最終 office_id_eff (sub_office / cross-office 差し替え後)
+                    # が当該 weekday に休業の場合は emit せず skip + warning.
+                    if op_weekdays_by_office is not None:
+                        _op_wd = op_weekdays_by_office.get(office_id_eff)
+                        if _op_wd is not None and wd not in _op_wd:
+                            _emit_office_closed_warning(
+                                warnings=warnings,
+                                closed_warned=closed_warned,
+                                patient_id=patient.id,
+                                patient_name=patient.name,
+                                weekday=wd,
+                                office_id=office_id_eff,
+                                office_name_by_id=office_name_by_id,
+                            )
+                            continue
                     visits.append(
                         V2Visit(
                             patient_id=patient.id,
@@ -1883,6 +2018,20 @@ def build_visits_for_pool(
                         else None
                     )
                     office_id_eff = pinned_course_office_id or patient.primary_office_id
+                    # Phase G-45: 拠点休業日 skip (weekly_pattern + pinned PFV 経路).
+                    if op_weekdays_by_office is not None:
+                        _op_wd = op_weekdays_by_office.get(office_id_eff)
+                        if _op_wd is not None and wd not in _op_wd:
+                            _emit_office_closed_warning(
+                                warnings=warnings,
+                                closed_warned=closed_warned,
+                                patient_id=patient.id,
+                                patient_name=patient.name,
+                                weekday=wd,
+                                office_id=office_id_eff,
+                                office_name_by_id=office_name_by_id,
+                            )
+                            continue
                     visits.append(
                         V2Visit(
                             patient_id=patient.id,
@@ -1924,6 +2073,21 @@ def build_visits_for_pool(
                     pe_eff = pe_str
                 end_t = _add_minutes(st_eff, sm_eff)
                 am_pm = determine_am_pm(time_type=tt_eff, preferred_start=st_eff)
+                # Phase G-45: 拠点休業日 skip (weekly_pattern 非 pinned 経路).
+                # 非 pinned weekly entry は patient.primary_office_id を office として使う.
+                if op_weekdays_by_office is not None:
+                    _op_wd = op_weekdays_by_office.get(patient.primary_office_id)
+                    if _op_wd is not None and wd not in _op_wd:
+                        _emit_office_closed_warning(
+                            warnings=warnings,
+                            closed_warned=closed_warned,
+                            patient_id=patient.id,
+                            patient_name=patient.name,
+                            weekday=wd,
+                            office_id=patient.primary_office_id,
+                            office_name_by_id=office_name_by_id,
+                        )
+                        continue
                 # Phase G-30 / G-30.1: pinned PFV があれば上の continue で処理済.
                 # ここに到達する weekly_pattern entry は必ず非 pinned.
                 visits.append(
@@ -1965,6 +2129,8 @@ def build_visits_for_pool_v2(
     pending_overlay: dict[tuple[UUID, int], PendingEditOverlay] | None = None,
     course_code_by_template_id: dict[UUID, str] | None = None,
     sub_office_scope: set[UUID] | None = None,
+    op_weekdays_by_office: dict[UUID, set[int]] | None = None,
+    office_name_by_id: dict[UUID, str] | None = None,
     warnings: list[V2Warning] | None = None,
 ) -> list[V2Visit]:
     """Phase G-21 T3-2: pinned / 非 pinned 患者で 2 経路に分けて V2Visit に展開する.
@@ -1998,6 +2164,8 @@ def build_visits_for_pool_v2(
     sub_scope = sub_office_scope or set()
     fixed_map = fixed_by_patient or {}
     visits: list[V2Visit] = []
+    # Phase G-45: 拠点休業日 skip の重複 emit 抑止. (patient_id, weekday) ごと 1 件.
+    closed_warned: set[tuple[UUID, int]] = set()
 
     for patient in patients:
         if patient.lat is None or patient.lng is None or patient.primary_office_id is None:
@@ -2050,6 +2218,20 @@ def build_visits_for_pool_v2(
             am_pm = determine_am_pm(time_type=tt_eff, preferred_start=st_eff)
             cc_eff = wd_to_course_code.get(wd)
             office_id_eff = wd_to_office_id.get(wd, patient.primary_office_id)
+            # Phase G-45: 拠点休業日 skip (G-21 経路 pinned PFV).
+            if op_weekdays_by_office is not None:
+                _op_wd = op_weekdays_by_office.get(office_id_eff)
+                if _op_wd is not None and wd not in _op_wd:
+                    _emit_office_closed_warning(
+                        warnings=warnings,
+                        closed_warned=closed_warned,
+                        patient_id=patient.id,
+                        patient_name=patient.name,
+                        weekday=wd,
+                        office_id=office_id_eff,
+                        office_name_by_id=office_name_by_id,
+                    )
+                    continue
             visits.append(
                 V2Visit(
                     patient_id=patient.id,
@@ -2115,6 +2297,20 @@ def build_visits_for_pool_v2(
                 pe_eff = pe_str
             end_t = _add_minutes(st_eff, sm_eff)
             am_pm = determine_am_pm(time_type=tt_eff, preferred_start=st_eff)
+            # Phase G-45: 拠点休業日 skip (G-21 経路 非 pinned weekly_pattern).
+            if op_weekdays_by_office is not None:
+                _op_wd = op_weekdays_by_office.get(patient.primary_office_id)
+                if _op_wd is not None and wd not in _op_wd:
+                    _emit_office_closed_warning(
+                        warnings=warnings,
+                        closed_warned=closed_warned,
+                        patient_id=patient.id,
+                        patient_name=patient.name,
+                        weekday=wd,
+                        office_id=patient.primary_office_id,
+                        office_name_by_id=office_name_by_id,
+                    )
+                    continue
             visits.append(
                 V2Visit(
                     patient_id=patient.id,
@@ -2833,18 +3029,67 @@ async def count_active_staff_per_weekday(
 
     対象: is_trainee=false, role='staff', primary_office_id in office_ids
     かつ StaffShift.is_on=True (当該曜日). weekly override で off になっていれば除外.
+
+    Phase G-45: primary_office が当該 weekday に休業の場合、 staff の
+    ``StaffSecondaryOffice`` を辿り、 稼働している secondary_office に転入して
+    カウントする (= 「応援」). secondary は ``staff_id, office_id`` の挿入順
+    (= row insert 順) で評価し、 最初に当該 weekday が稼働の secondary を採用する.
+    secondary が無い / 全 secondary も休業の staff は当該 weekday カウント外.
+    1 staff = 1 office カウント (= 重複排除).
+    """
+    return await _count_active_staff_per_weekday_for_role(
+        db,
+        office_ids=office_ids,
+        iso_year=iso_year,
+        iso_week=iso_week,
+        role="staff",
+    )
+
+
+async def _count_active_staff_per_weekday_for_role(
+    db: AsyncSession,
+    *,
+    office_ids: list[UUID],
+    iso_year: int,
+    iso_week: int,
+    role: str,
+) -> dict[tuple[UUID, int], int]:
+    """Phase G-45: ``count_active_staff_per_weekday`` /
+    ``count_active_managers_per_weekday`` の共通実装.
+
+    role = 'staff' or 'manager' で切り替える.
     """
     if not office_ids:
         return {}
-    staff_rows = await db.scalars(
-        select(Staff).where(
+    # primary_office_id が office_ids に含まれる staff を取得.
+    # Phase G-45: 加えて、 office_ids に primary が無くても secondary が
+    # office_ids に含まれる staff も応援候補に含める. これを抜くと、
+    # office_ids=[INAGE] のときに primary=TSUGA + secondary=INAGE の staff が
+    # INAGE 応援としてカウントされない.
+    primary_match_stmt = select(Staff.id).where(
+        Staff.status == "active",
+        Staff.deleted_at.is_(None),
+        Staff.role == role,
+        Staff.is_trainee.is_(False),
+        Staff.primary_office_id.in_(office_ids),
+    )
+    secondary_match_stmt = (
+        select(Staff.id)
+        .join(StaffSecondaryOffice, StaffSecondaryOffice.staff_id == Staff.id)
+        .where(
             Staff.status == "active",
             Staff.deleted_at.is_(None),
-            Staff.role == "staff",
+            Staff.role == role,
             Staff.is_trainee.is_(False),
-            Staff.primary_office_id.in_(office_ids),
+            StaffSecondaryOffice.office_id.in_(office_ids),
         )
     )
+    primary_ids = set((await db.scalars(primary_match_stmt)).all())
+    secondary_ids = set((await db.scalars(secondary_match_stmt)).all())
+    target_ids = primary_ids | secondary_ids
+    if not target_ids:
+        return {}
+    staff_rows = await db.scalars(select(Staff).where(Staff.id.in_(target_ids)))
     staff_list = list(staff_rows.all())
     if not staff_list:
         return {}
@@ -2870,6 +3115,36 @@ async def count_active_staff_per_weekday(
     off_overrides: set[tuple[UUID, int]] = {
         (ov.staff_id, ov.weekday) for ov in overrides_rows.all()
     }
+
+    # Phase G-45: 全 staff の secondary_office_id を staff_id ごとに先取り (1 query).
+    # ORDER BY (staff_id, office_id) で deterministic 順序を保証する
+    # (= fallback で先頭 secondary を選ぶため UUID 昇順で安定化).
+    sec_rows = await db.scalars(
+        select(StaffSecondaryOffice)
+        .where(StaffSecondaryOffice.staff_id.in_(staff_ids))
+        .order_by(
+            StaffSecondaryOffice.staff_id,
+            StaffSecondaryOffice.office_id,
+        )
+    )
+    secondaries_by_staff: dict[UUID, list[UUID]] = {}
+    for sec in sec_rows.all():
+        secondaries_by_staff.setdefault(sec.staff_id, []).append(sec.office_id)
+
+    # Phase G-45: 全候補 office (primary / secondary) の稼働曜日 map.
+    # 1 staff = 1 office カウントを守るため、 primary が closed なら最初の
+    # 稼働 secondary に転入する.
+    candidate_office_ids: set[UUID] = set()
+    for s in staff_list:
+        if s.primary_office_id is not None:
+            candidate_office_ids.add(s.primary_office_id)
+        for sid in secondaries_by_staff.get(s.id, []):
+            candidate_office_ids.add(sid)
+    op_weekdays_by_office = await _load_office_operating_weekdays(
+        db, office_ids=list(candidate_office_ids)
+    )
+    office_ids_set: set[UUID] = set(office_ids)
+
     counter: Counter[tuple[UUID, int]] = Counter()
     for s in staff_list:
         if s.primary_office_id is None:
@@ -2877,7 +3152,22 @@ async def count_active_staff_per_weekday(
         for wd in shifts_by_staff.get(s.id, set()):
             if (s.id, wd) in off_overrides:
                 continue
-            counter[(s.primary_office_id, wd)] += 1
+            # 1) primary が当該曜日に稼働 + 範囲内 (= office_ids_set) ならそこにカウント.
+            primary_op = op_weekdays_by_office.get(s.primary_office_id)
+            if s.primary_office_id in office_ids_set and (primary_op is None or wd in primary_op):
+                counter[(s.primary_office_id, wd)] += 1
+                continue
+            # 2) primary が休業 (or 範囲外) — secondary を順に評価し、 最初の
+            # 稼働 secondary が office_ids 内なら転入してカウント. 1 staff = 1 office.
+            chosen_secondary: UUID | None = None
+            for sec_oid in secondaries_by_staff.get(s.id, []):
+                sec_op = op_weekdays_by_office.get(sec_oid)
+                if sec_oid in office_ids_set and (sec_op is None or wd in sec_op):
+                    chosen_secondary = sec_oid
+                    break
+            if chosen_secondary is not None:
+                counter[(chosen_secondary, wd)] += 1
+                # else: primary 休業 + secondary も無効 — 当該 weekday カウント外.
     return dict(counter)
 
 
@@ -2899,54 +3189,17 @@ async def count_active_managers_per_weekday(
     1 つのコースのみ」ルールの実装. 超過セットは ``run_v2_pipeline`` Stage 5
     で ``unassigned_patients`` に流す.
 
-    ``count_active_staff_per_weekday`` と全く同じシグネチャ / 動作だが
-    ``Staff.role`` が ``'manager'`` か ``'staff'`` かだけが違う.
+    Phase G-45: ``count_active_staff_per_weekday`` と同じく、 primary_office が
+    当該 weekday に休業の manager は ``StaffSecondaryOffice`` を辿って
+    secondary に転入してカウントする (= 応援運用と整合).
     """
-    if not office_ids:
-        return {}
-    staff_rows = await db.scalars(
-        select(Staff).where(
-            Staff.status == "active",
-            Staff.deleted_at.is_(None),
-            Staff.role == "manager",
-            Staff.is_trainee.is_(False),
-            Staff.primary_office_id.in_(office_ids),
-        )
+    return await _count_active_staff_per_weekday_for_role(
+        db,
+        office_ids=office_ids,
+        iso_year=iso_year,
+        iso_week=iso_week,
+        role="manager",
     )
-    staff_list = list(staff_rows.all())
-    if not staff_list:
-        return {}
-    staff_ids = [s.id for s in staff_list]
-    shifts_rows = await db.scalars(
-        select(StaffShift).where(
-            StaffShift.staff_id.in_(staff_ids),
-            StaffShift.is_on.is_(True),
-        )
-    )
-    shifts_by_staff: dict[UUID, set[int]] = {}
-    for sh in shifts_rows.all():
-        shifts_by_staff.setdefault(sh.staff_id, set()).add(sh.weekday)
-    # 当該週の off override を取得
-    overrides_rows = await db.scalars(
-        select(StaffWeeklyOverride).where(
-            StaffWeeklyOverride.staff_id.in_(staff_ids),
-            StaffWeeklyOverride.iso_year == iso_year,
-            StaffWeeklyOverride.iso_week == iso_week,
-            StaffWeeklyOverride.override_type == "off",
-        )
-    )
-    off_overrides: set[tuple[UUID, int]] = {
-        (ov.staff_id, ov.weekday) for ov in overrides_rows.all()
-    }
-    counter: Counter[tuple[UUID, int]] = Counter()
-    for s in staff_list:
-        if s.primary_office_id is None:
-            continue
-        for wd in shifts_by_staff.get(s.id, set()):
-            if (s.id, wd) in off_overrides:
-                continue
-            counter[(s.primary_office_id, wd)] += 1
-    return dict(counter)
 
 
 async def _emit_staff_shifts_data_health_warning(
@@ -5229,13 +5482,21 @@ async def _load_before_visits_from_pfv(
     patients_by_id: dict[UUID, Patient],
     pending_overlay: dict[tuple[UUID, int], PendingEditOverlay] | None = None,
     warnings: list[V2Warning] | None = None,
+    op_weekdays_by_office: dict[UUID, set[int]] | None = None,
+    office_name_by_id: dict[UUID, str] | None = None,
 ) -> list[V2Visit]:
     """Before スナップショット: 既存 patient_fixed_visits (mode='normal') から構築.
 
     ``pending_overlay`` が渡された場合は、PFV 値を Python オブジェクトレベルで上書きする
     (DB / SQLAlchemy セッションには触らない). マスターは絶対に変更しない.
     overlay に該当するキーがあるのに PFV が見つからない場合は warning に記録.
+
+    Phase G-45 (拠点稼働曜日): ``op_weekdays_by_office`` が渡された場合、
+    最終 ``v2_office_id`` (= course_template の office_id 由来) が当該 weekday に
+    休業の場合は V2Visit を emit せず skip + 重複防止 warning emit.
     """
+    # Phase G-45: 拠点休業日 skip 用 dedupe set.
+    closed_warned: set[tuple[UUID, int]] = set()
     if not patients_by_id:
         return []
     pfv_rows = (
@@ -5312,6 +5573,20 @@ async def _load_before_visits_from_pfv(
             else None
         )
         v2_office_id = course_office_id or patient.primary_office_id
+        # Phase G-45: 拠点休業日 skip (Before legacy 経路).
+        if op_weekdays_by_office is not None:
+            _op_wd = op_weekdays_by_office.get(v2_office_id)
+            if _op_wd is not None and pfv.weekday not in _op_wd:
+                _emit_office_closed_warning(
+                    warnings=warnings,
+                    closed_warned=closed_warned,
+                    patient_id=patient.id,
+                    patient_name=patient.name,
+                    weekday=pfv.weekday,
+                    office_id=v2_office_id,
+                    office_name_by_id=office_name_by_id,
+                )
+                continue
         out.append(
             V2Visit(
                 patient_id=patient.id,
@@ -5377,6 +5652,8 @@ async def _load_before_visits_v2(
     iso_week: int,
     pending_overlay: dict[tuple[UUID, int], PendingEditOverlay] | None = None,
     warnings: list[V2Warning] | None = None,
+    op_weekdays_by_office: dict[UUID, set[int]] | None = None,
+    office_name_by_id: dict[UUID, str] | None = None,
 ) -> list[V2Visit]:
     """Phase G-21 T3-1: Before スナップショットを 4 経路 union で構築する.
 
@@ -5394,6 +5671,10 @@ async def _load_before_visits_v2(
         上位経路で採用された entry の値を ``(patient_id, weekday)`` キーで上書きする.
         ただし overlay にしか存在しない (= 上位経路に無い) 患者は warning に出る経路を維持.
 
+    Phase G-45 (拠点稼働曜日): ``op_weekdays_by_office`` が渡された場合、
+    最終 V2Visit.office_id が当該 weekday に休業の場合は経路採用を skip + 重複防止
+    warning emit. 4 経路すべてで適用する.
+
     Returns:
         ``list[V2Visit]``: Before スナップショット (dedupe 後).
     """
@@ -5402,6 +5683,8 @@ async def _load_before_visits_v2(
 
     pending_overlay = pending_overlay or {}
     patient_ids = list(patients_by_id.keys())
+    # Phase G-45: 拠点休業日 skip 用 dedupe set.
+    closed_warned: set[tuple[UUID, int]] = set()
 
     # course_template_id → label の事前 map.
     pfv_rows_all = (
@@ -5526,6 +5809,20 @@ async def _load_before_visits_v2(
             ps_str, pe_str = _extract_preferred_window_for_weekday(patient, wd)
             am_pm = "am" if v.start_time.hour < NOON_HOUR else "pm"
             addr = patient.address
+            # Phase G-45: 拠点休業日 skip (Before 経路 1 = 既存 DB Visit).
+            if op_weekdays_by_office is not None:
+                _op_wd = op_weekdays_by_office.get(patient.primary_office_id)
+                if _op_wd is not None and wd not in _op_wd:
+                    _emit_office_closed_warning(
+                        warnings=warnings,
+                        closed_warned=closed_warned,
+                        patient_id=patient.id,
+                        patient_name=patient.name,
+                        weekday=wd,
+                        office_id=patient.primary_office_id,
+                        office_name_by_id=office_name_by_id,
+                    )
+                    continue
             chosen[key] = V2Visit(
                 patient_id=patient.id,
                 patient_name=patient.name,
@@ -5562,6 +5859,20 @@ async def _load_before_visits_v2(
             continue
         v2v = _make_v2_visit_from_pfv(pfv, patient)
         if v2v is not None:
+            # Phase G-45: 拠点休業日 skip (Before 経路 2 = pinned PFV).
+            if op_weekdays_by_office is not None:
+                _op_wd = op_weekdays_by_office.get(v2v.office_id)
+                if _op_wd is not None and v2v.weekday not in _op_wd:
+                    _emit_office_closed_warning(
+                        warnings=warnings,
+                        closed_warned=closed_warned,
+                        patient_id=patient.id,
+                        patient_name=patient.name,
+                        weekday=v2v.weekday,
+                        office_id=v2v.office_id,
+                        office_name_by_id=office_name_by_id,
+                    )
+                    continue
             chosen[key] = v2v
 
     # 経路 3: 非 pinned PFV (is_pinned=False).
@@ -5576,6 +5887,20 @@ async def _load_before_visits_v2(
             continue
         v2v = _make_v2_visit_from_pfv(pfv, patient)
         if v2v is not None:
+            # Phase G-45: 拠点休業日 skip (Before 経路 3 = 非 pinned PFV).
+            if op_weekdays_by_office is not None:
+                _op_wd = op_weekdays_by_office.get(v2v.office_id)
+                if _op_wd is not None and v2v.weekday not in _op_wd:
+                    _emit_office_closed_warning(
+                        warnings=warnings,
+                        closed_warned=closed_warned,
+                        patient_id=patient.id,
+                        patient_name=patient.name,
+                        weekday=v2v.weekday,
+                        office_id=v2v.office_id,
+                        office_name_by_id=office_name_by_id,
+                    )
+                    continue
             chosen[key] = v2v
 
     # 経路 4: weekly_pattern entries.
@@ -5605,6 +5930,20 @@ async def _load_before_visits_v2(
             end_t = _add_minutes(st_eff, sm_eff)
             am_pm = "am" if st_eff.hour < NOON_HOUR else "pm"
             addr = patient.address
+            # Phase G-45: 拠点休業日 skip (Before 経路 4 = weekly_pattern).
+            if op_weekdays_by_office is not None:
+                _op_wd = op_weekdays_by_office.get(patient.primary_office_id)
+                if _op_wd is not None and wd not in _op_wd:
+                    _emit_office_closed_warning(
+                        warnings=warnings,
+                        closed_warned=closed_warned,
+                        patient_id=patient.id,
+                        patient_name=patient.name,
+                        weekday=wd,
+                        office_id=patient.primary_office_id,
+                        office_name_by_id=office_name_by_id,
+                    )
+                    continue
             chosen[key] = V2Visit(
                 patient_id=patient.id,
                 patient_name=patient.name,
@@ -6031,6 +6370,26 @@ async def run_v2_pipeline(
     # Stage 1: プール作成
     patients_by_id = await _load_active_patients(db, office_ids=office_ids)
 
+    # Phase G-45: 拠点稼働曜日 map をロード. cross-office PFV / sub_office 経路で
+    # office_ids に含まれない office に visit が振り分けられるケースもあるため、
+    # patient.primary_office_id を全部含めた和集合で query する.
+    _op_office_ids_pipeline: set[UUID] = set(office_ids)
+    for _p in patients_by_id.values():
+        if _p.primary_office_id is not None:
+            _op_office_ids_pipeline.add(_p.primary_office_id)
+    op_weekdays_by_office = await _load_office_operating_weekdays(
+        db, office_ids=list(_op_office_ids_pipeline)
+    )
+    # office_name_by_id は warnings の office 名表示に使うため、 cross-office で
+    # office_ids に含まれない office の名前も追加で fetch する.
+    _missing_office_ids = [oid for oid in _op_office_ids_pipeline if oid not in office_name_by_id]
+    if _missing_office_ids:
+        _extra_office_rows = await db.scalars(
+            select(Office).where(Office.id.in_(_missing_office_ids))
+        )
+        for _o in _extra_office_rows.all():
+            office_name_by_id[_o.id] = _o.name
+
     # Phase E-5 (項目 ⑥B): diff_add のみ — PFV.sub_office_id 経由でフォロー対象患者を
     # 引き込む. 主担当が他拠点でも sub_office_id が ``office_ids`` に該当するなら
     # pool 候補化する. 自動算出本体 (full_optimize) は触らない (= 既存挙動維持).
@@ -6175,6 +6534,8 @@ async def run_v2_pipeline(
                 iso_week=iso_week,
                 pending_overlay=pending_overlay,
                 warnings=warnings,
+                op_weekdays_by_office=op_weekdays_by_office,
+                office_name_by_id=office_name_by_id,
             )
             if g21_patients_by_id
             else []
@@ -6185,6 +6546,8 @@ async def run_v2_pipeline(
                 patients_by_id=legacy_patients_by_id,
                 pending_overlay=pending_overlay,
                 warnings=warnings,
+                op_weekdays_by_office=op_weekdays_by_office,
+                office_name_by_id=office_name_by_id,
             )
             if legacy_patients_by_id
             else []
@@ -6197,6 +6560,8 @@ async def run_v2_pipeline(
             patients_by_id=patients_by_id,
             pending_overlay=pending_overlay,
             warnings=warnings,
+            op_weekdays_by_office=op_weekdays_by_office,
+            office_name_by_id=office_name_by_id,
         )
 
     # Stage 1+2 中間: pool_patients を V2Visit に展開
@@ -6282,6 +6647,9 @@ async def run_v2_pipeline(
         pending_overlay=pending_overlay,
         course_code_by_template_id=pinned_pool_course_code_by_template_id or None,
         ct_office_by_id=pinned_pool_office_by_template_id or None,
+        op_weekdays_by_office=op_weekdays_by_office,
+        office_name_by_id=office_name_by_id,
+        warnings=warnings,
     )
     if pool_patients_orphan_fixed and orphan_fixed_by_patient:
         # CareFlow #102 Fix A: orphan PFV の course_template_id -> course label
@@ -6318,6 +6686,9 @@ async def run_v2_pipeline(
             # V2Visit.office_id を sub_office_id に差し替える. 自動算出本体
             # (full_optimize) では sub_office_patient_ids が空 = scope set 不要.
             sub_office_scope=sub_office_scope_set if mode == "diff_add" else None,
+            op_weekdays_by_office=op_weekdays_by_office,
+            office_name_by_id=office_name_by_id,
+            warnings=warnings,
         )
         pool_visits = pool_visits + pool_visits_orphan
 
@@ -6376,6 +6747,8 @@ async def run_v2_pipeline(
                     pending_overlay=pending_overlay,
                     course_code_by_template_id=g21_course_code_by_template_id or None,
                     sub_office_scope=sub_office_scope_set if mode == "diff_add" else None,
+                    op_weekdays_by_office=op_weekdays_by_office,
+                    office_name_by_id=office_name_by_id,
                     warnings=warnings,
                 )
                 pool_visits = pool_visits + g21_pool_visits
@@ -8023,6 +8396,20 @@ async def reset_visits_to_fixed(
     for office_row in office_rows_for_name.all():
         office_name_by_id_for_corr[office_row.id] = office_row.name or str(office_row.id)
 
+    # Phase G-45: 拠点稼働曜日 map をロード. patient_ids が指す拠点も含めるため、
+    # reset 対象の office_ids に加えて patient.primary_office_id も query 範囲に入れる.
+    # 通常 patient の primary_office_id は office_ids 内だが、 cross-office PFV の
+    # 防衛として明示的に和集合する.
+    _op_office_ids: set[UUID] = set(office_ids)
+    for _p in patients_by_id.values():
+        if _p.primary_office_id is not None:
+            _op_office_ids.add(_p.primary_office_id)
+    op_weekdays_by_office_reset = await _load_office_operating_weekdays(
+        db, office_ids=list(_op_office_ids)
+    )
+    # Phase G-45: 拠点休業日 skip 用 dedupe set.
+    closed_warned_reset: set[tuple[UUID, int]] = set()
+
     v2_visits_reset: list[V2Visit] = []
     v2_meta_reset: list[dict[str, Any]] = []
     for pfv in pfv_list:
@@ -8033,6 +8420,21 @@ async def reset_visits_to_fixed(
         if end_t <= pfv.start_time:
             continue
         office_id = patient.primary_office_id
+        # Phase G-45: 拠点休業日 skip (reset_visits_to_fixed).
+        # patient.primary_office_id (= reset で使う office_id) が当該 weekday に
+        # 休業の場合は visit 再生成を skip し、 string warning として記録する.
+        _op_wd_reset = op_weekdays_by_office_reset.get(office_id)
+        if _op_wd_reset is not None and pfv.weekday not in _op_wd_reset:
+            _key = (patient.id, pfv.weekday)
+            if _key not in closed_warned_reset:
+                closed_warned_reset.add(_key)
+                _office_name = office_name_by_id_for_corr.get(office_id) or "拠点"
+                warnings.append(
+                    f"{_weekday_jp(pfv.weekday)}: 拠点 {_office_name} は休業日のため "
+                    f"{patient.name or '不明'} 様の visit を再生成しません. "
+                    "サブ拠点で受ける場合は患者マスタを編集してください"
+                )
+            continue
         # W41 v2 final cross-review (C-Codex-1): 対応する Course を解決して
         # visit.course_id をセットする. これを抜くと Frontend の CourseDayTablePanel
         # でコース表から除外されてしまう.

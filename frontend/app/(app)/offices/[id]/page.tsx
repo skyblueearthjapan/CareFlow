@@ -22,6 +22,18 @@ export default function OfficeDetailPage() {
     return city ? `${city.prefecture} / ${city.name}` : cityId;
   });
 
+  // Phase G-45: 稼働曜日表示 (太字=稼働, opacity-50=休業).
+  const operatingSet = new Set<number>(office?.operating_weekdays ?? []);
+  const weekdayCells = [
+    { wd: 0, label: '月' },
+    { wd: 1, label: '火' },
+    { wd: 2, label: '水' },
+    { wd: 3, label: '木' },
+    { wd: 4, label: '金' },
+    { wd: 5, label: '土' },
+    { wd: 6, label: '日' },
+  ];
+
   return (
     <section className="space-y-4">
       <header className="flex flex-wrap items-center justify-between gap-3">
@@ -62,6 +74,32 @@ export default function OfficeDetailPage() {
             <Field label="住所" value={office.address ?? '--'} />
             <Field label="緯度" value={office.lat?.toString() ?? '--'} />
             <Field label="経度" value={office.lng?.toString() ?? '--'} />
+            <div className="sm:col-span-2">
+              <dt className="text-xs font-medium text-text-secondary">稼働曜日</dt>
+              <dd
+                className="mt-1 flex flex-wrap gap-1.5 text-sm"
+                data-testid="office-operating-weekdays"
+              >
+                {weekdayCells.map(({ wd, label }) => {
+                  const open = operatingSet.has(wd);
+                  return (
+                    <span
+                      key={wd}
+                      className={
+                        'inline-block min-w-[28px] rounded border px-2 py-0.5 text-center ' +
+                        (open
+                          ? 'border-brand-primary font-bold text-text-primary'
+                          : 'border-border-default text-text-muted opacity-50')
+                      }
+                      data-testid={`office-operating-weekday-${wd}`}
+                      data-state={open ? 'open' : 'closed'}
+                    >
+                      {label}
+                    </span>
+                  );
+                })}
+              </dd>
+            </div>
             <Field
               label="担当エリア (cities)"
               value={allowed.length > 0 ? allowed.join(' / ') : '未設定'}

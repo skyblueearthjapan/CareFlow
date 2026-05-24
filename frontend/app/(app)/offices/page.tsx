@@ -74,33 +74,68 @@ export default function OfficesPage() {
                     <th className="px-3 py-2 font-medium">住所</th>
                     <th className="px-3 py-2 font-medium">緯度</th>
                     <th className="px-3 py-2 font-medium">経度</th>
+                    <th className="px-3 py-2 font-medium">稼働曜日</th>
                     <th className="px-3 py-2 font-medium">操作</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {paged.map((o) => (
-                    <tr key={o.id} className="border-b border-border-default last:border-0">
-                      <td className="px-3 py-2">
-                        <Link
-                          href={`/offices/${o.id}`}
-                          className="text-brand-primary hover:underline"
-                        >
-                          {o.name}
-                        </Link>
-                      </td>
-                      <td className="px-3 py-2 text-text-secondary">{o.address ?? '--'}</td>
-                      <td className="px-3 py-2 tnum">{o.lat ?? '--'}</td>
-                      <td className="px-3 py-2 tnum">{o.lng ?? '--'}</td>
-                      <td className="px-3 py-2">
-                        <Link
-                          href={`/offices/${o.id}/edit`}
-                          className="text-brand-primary hover:underline"
-                        >
-                          編集
-                        </Link>
-                      </td>
-                    </tr>
-                  ))}
+                  {paged.map((o) => {
+                    const opSet = new Set<number>(o.operating_weekdays ?? []);
+                    return (
+                      <tr key={o.id} className="border-b border-border-default last:border-0">
+                        <td className="px-3 py-2">
+                          <Link
+                            href={`/offices/${o.id}`}
+                            className="text-brand-primary hover:underline"
+                          >
+                            {o.name}
+                          </Link>
+                        </td>
+                        <td className="px-3 py-2 text-text-secondary">{o.address ?? '--'}</td>
+                        <td className="px-3 py-2 tnum">{o.lat ?? '--'}</td>
+                        <td className="px-3 py-2 tnum">{o.lng ?? '--'}</td>
+                        <td className="px-3 py-2">
+                          <div
+                            className="flex gap-1 text-xs"
+                            data-testid={`office-list-operating-${o.id}`}
+                          >
+                            {[
+                              { wd: 0, label: '月' },
+                              { wd: 1, label: '火' },
+                              { wd: 2, label: '水' },
+                              { wd: 3, label: '木' },
+                              { wd: 4, label: '金' },
+                              { wd: 5, label: '土' },
+                              { wd: 6, label: '日' },
+                            ].map(({ wd, label }) => {
+                              const open = opSet.has(wd);
+                              return (
+                                <span
+                                  key={wd}
+                                  className={
+                                    open
+                                      ? 'font-bold text-text-primary'
+                                      : 'text-text-muted opacity-50'
+                                  }
+                                  data-state={open ? 'open' : 'closed'}
+                                >
+                                  {label}
+                                </span>
+                              );
+                            })}
+                          </div>
+                        </td>
+                        <td className="px-3 py-2">
+                          <Link
+                            href={`/offices/${o.id}/edit`}
+                            className="text-brand-primary hover:underline"
+                          >
+                            編集
+                          </Link>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

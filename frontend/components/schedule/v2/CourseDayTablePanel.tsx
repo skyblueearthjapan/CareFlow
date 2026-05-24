@@ -1729,6 +1729,20 @@ export function CourseDayTablePanel({
             >
               {DISPLAY_WEEKDAYS.map((wd) => {
                 const selected = activeTab === wd;
+                // Phase G-45: 拠点 filter 選択時のみ、選択中の拠点が休業の曜日タブは
+                // 薄色 + 「(休)」表示 + tooltip. 全拠点モード (officeId=null) は
+                // 既存挙動 (= 何もしない).
+                const selectedOffice = officeId
+                  ? (offices.find((o) => o.id === officeId) ?? null)
+                  : null;
+                const officeIsClosedOnDay =
+                  selectedOffice != null &&
+                  Array.isArray(selectedOffice.operating_weekdays) &&
+                  !selectedOffice.operating_weekdays.includes(wd);
+                const closedClasses = officeIsClosedOnDay && !selected ? ' opacity-50' : '';
+                const tooltipTitle = officeIsClosedOnDay
+                  ? `${selectedOffice?.name ?? '拠点'} は ${WEEKDAY_LABELS[wd]} 曜日は休業日です`
+                  : undefined;
                 return (
                   <button
                     key={wd}
@@ -1738,13 +1752,20 @@ export function CourseDayTablePanel({
                     aria-controls={`course-day-panel-${wd}`}
                     onClick={() => setActiveTab(wd)}
                     data-testid={`course-day-tab-${wd}`}
-                    className={`rounded border px-3 py-1 text-xs font-semibold ${
-                      selected
+                    data-closed={officeIsClosedOnDay ? 'true' : 'false'}
+                    title={tooltipTitle}
+                    className={
+                      'rounded border px-3 py-1 text-xs font-semibold ' +
+                      (selected
                         ? 'border-brand-primary bg-brand-primary text-white'
-                        : 'border-border-default bg-bg-base text-text-secondary hover:bg-bg-muted'
-                    }`}
+                        : 'border-border-default bg-bg-base text-text-secondary hover:bg-bg-muted') +
+                      closedClasses
+                    }
                   >
-                    {WEEKDAY_LABELS[wd]}{' '}
+                    {WEEKDAY_LABELS[wd]}
+                    {officeIsClosedOnDay ? (
+                      <span className="ml-1 text-[10px] opacity-70">(休)</span>
+                    ) : null}{' '}
                     <span className="tnum text-[10px] opacity-80">
                       {format(addDays(weekStart, wd), 'M/d')}
                     </span>

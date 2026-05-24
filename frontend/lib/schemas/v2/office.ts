@@ -15,6 +15,21 @@
 import { z } from 'zod';
 
 /**
+ * Phase G-45: 拠点稼働曜日 (= operating_weekdays).
+ *
+ * 0=月..6=日 の int 配列で表現。重複なし、最低 1 個必須。
+ * Backend 側の Pydantic validator (`_validate_operating_weekdays`) と
+ * 同じ規約をフロントでも適用する。
+ */
+export const operatingWeekdaysSchema = z
+  .array(z.number().int().min(0).max(6))
+  .min(1, '稼働曜日は最低 1 日選択してください')
+  .refine((arr) => new Set(arr).size === arr.length, {
+    message: '稼働曜日に重複する曜日があります',
+  });
+export const DEFAULT_OPERATING_WEEKDAYS = [0, 1, 2, 3, 4, 5] as const;
+
+/**
  * 拠点マスタ v2 (§4.3).
  *
  * 距離計算の起点として使う `address / lat / lng` を必須情報として扱う
@@ -29,6 +44,8 @@ export const officeV2BaseSchema = z.object({
   lat: z.number().min(-90).max(90).nullable().optional(),
   lng: z.number().min(-180).max(180).nullable().optional(),
   note: z.string().nullable().optional(),
+  /** Phase G-45: 拠点稼働曜日 (0=月..6=日 の int 配列). default = 月-土. */
+  operating_weekdays: operatingWeekdaysSchema.default([...DEFAULT_OPERATING_WEEKDAYS]),
 });
 export type OfficeV2Base = z.infer<typeof officeV2BaseSchema>;
 
@@ -53,6 +70,8 @@ export const officeV2UpdateSchema = z.object({
   lat: z.number().min(-90).max(90).nullable().optional(),
   lng: z.number().min(-180).max(180).nullable().optional(),
   note: z.string().nullable().optional(),
+  /** Phase G-45: PATCH では未指定 (undefined) で「触らない」. */
+  operating_weekdays: operatingWeekdaysSchema.optional(),
   allowed_cities: z.array(z.string().uuid()).nullable().optional(),
 });
 export type OfficeV2Update = z.infer<typeof officeV2UpdateSchema>;

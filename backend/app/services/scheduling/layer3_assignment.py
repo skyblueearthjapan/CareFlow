@@ -62,11 +62,41 @@ from app.models.course import (
 )
 from app.models.office import Office
 from app.models.patient import Patient
-from app.models.staff import Staff, StaffEvent, StaffShift, StaffWeeklyOverride
+from app.models.staff import (
+    Staff,
+    StaffEvent,
+    StaffSecondaryOffice,
+    StaffShift,
+    StaffWeeklyOverride,
+)
 from app.models.staff_companion_assignment import StaffCompanionAssignment
 from app.models.visit import VISIT_STATUS_PLANNED, Visit
 from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.services.scheduling.layer2_clustering import haversine_km
+
+# Phase G-45: 拠点稼働曜日デフォルト (= 月-土).
+_DEFAULT_OFFICE_OPERATING_WEEKDAYS: frozenset[int] = frozenset({0, 1, 2, 3, 4, 5})
+
+
+def _coerce_office_operating_weekdays(raw: object) -> set[int]:
+    """``Office.operating_weekdays`` (JSONB) を ``set[int]`` (0..6) に正規化.
+
+    不正値 (= list でない / 要素が int でない / 範囲外) はデフォルト (= 月-土) に
+    フォールバック. Layer 3 / auto_allocator_v2 で同じ正規化ロジックを共有する.
+    """
+    if not isinstance(raw, list) or not raw:
+        return set(_DEFAULT_OFFICE_OPERATING_WEEKDAYS)
+    out: set[int] = set()
+    for v in raw:
+        if isinstance(v, bool) or not isinstance(v, int):
+            return set(_DEFAULT_OFFICE_OPERATING_WEEKDAYS)
+        if v < 0 or v > 6:
+            return set(_DEFAULT_OFFICE_OPERATING_WEEKDAYS)
+        out.add(v)
+    if not out:
+        return set(_DEFAULT_OFFICE_OPERATING_WEEKDAYS)
+    return out
+
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +191,48 @@ class StaffInfo:
     primary_office_lng: float | None
     work_days: frozenset[int]  # 0=Mon..6=Sun
     is_trainee: bool = False  # W10-BE2: 新人フラグ
+    # Phase G-45: 主拠点 ID. 拠点稼働曜日判定で primary が休業のときに
+    # secondary に転入するために必要 (= load_active_staff が埋める).
+    primary_office_id: UUID | None = None
+    # Phase G-45: 全 secondary_office_id (挿入順保持). primary が休業の weekday
+    # では 先頭の稼働 secondary を主拠点として扱う.
+    secondary_office_ids: tuple[UUID, ...] = ()
+    # Phase G-45: 当 staff が属する office (primary + secondary) の稼働曜日 map.
+    # ``effective_office_for_weekday`` が primary 休業 → secondary 転入を判定する.
+    office_operating_weekdays: dict[UUID, frozenset[int]] = field(default_factory=dict)
+
+    def effective_office_for_weekday(self, weekday: int) -> UUID | None:
+        """Phase G-45: 当該 weekday の effective 主拠点 (= 稼働日かどうかで切替).
+
+        - primary_office が当該 weekday に稼働なら primary を返す.
+        - primary 休業 + secondary がある場合、 最初に稼働している secondary を返す.
+        - どの office も稼働しない場合は None (= 当該 weekday は除外対象).
+
+        ``office_operating_weekdays`` map が空 (= G-45 未連携 / 後方互換) の
+        場合は primary_office_id をそのまま返す.
+
+        **適用範囲 (= scope) の明示**:
+
+        本 API は ``count_active_staff_per_weekday`` (= H6 制約 / 応援 staff_count
+        算入) **専用** として導入された. Hungarian assignment の距離計算
+        (``_distance_km`` / line 1101 付近) は **本 API を参照せず**、 引き続き
+        ``staff.primary_office_lat`` / ``primary_office_lng`` を使用する.
+
+        理由: Phase G-45 は「応援カウントの修正」に scope を限定しており、
+        distance ベースのコスト関数への波及 (= secondary 拠点の座標で距離計算
+        する) は副作用範囲が大きいため Phase G-46 以降で別途設計する.
+        """
+        if not self.office_operating_weekdays:
+            return self.primary_office_id
+        if self.primary_office_id is not None:
+            op = self.office_operating_weekdays.get(self.primary_office_id)
+            if op is None or weekday in op:
+                return self.primary_office_id
+        for sec_oid in self.secondary_office_ids:
+            op = self.office_operating_weekdays.get(sec_oid)
+            if op is None or weekday in op:
+                return sec_oid
+        return None
 
 
 @dataclass(frozen=True)
@@ -1042,6 +1114,13 @@ class Layer3Assigner:
         """主拠点 → コース重心の Haversine 距離 (km).
 
         座標欠損 (None) のときは 0.0 を返す (= 距離項を無効化).
+
+        Phase G-45 scope 注意:
+            ``staff.effective_office_for_weekday(course.weekday)`` は **参照しない**.
+            応援運用 (= primary 休業日に secondary office へ転入) でも、 距離計算は
+            常に ``staff.primary_office_lat`` / ``primary_office_lng`` を使用する.
+            distance ベースのコストを応援先 office 座標に切り替えるかは Phase G-46
+            以降で別途設計予定 (= 副作用範囲が大きいため G-45 では touch しない).
         """
         if (
             course.centroid_lat is None
@@ -1486,6 +1565,11 @@ class Layer3Assigner:
         - ``Staff.status='active'`` のみ
         - ``StaffShift`` から ``is_on=True`` の曜日集合を構築
         - ``StaffWeeklyOverride`` (override_type='off') があれば当該曜日を除外
+
+        Phase G-45: ``StaffSecondaryOffice`` を staff ごとにロードし、
+        各 office の ``operating_weekdays`` を ``StaffInfo`` に持たせる. これにより
+        ``StaffInfo.effective_office_for_weekday(wd)`` が primary 休業日の
+        secondary 転入を判定できる.
         """
         # スタッフ + 主拠点 (Office) を取得
         stmt = (
@@ -1526,6 +1610,45 @@ class Layer3Assigner:
             elif ov.override_type == "custom_time":
                 on_days_override.setdefault(ov.staff_id, set()).add(ov.weekday)
 
+        # Phase G-45: secondary_offices を staff_id ごとに集約 (1 query).
+        # ORDER BY (staff_id, office_id) で deterministic 順序を保証する
+        # (= fallback で先頭 secondary を選ぶため UUID 昇順で安定化).
+        sec_rows = list(
+            (
+                await db.scalars(
+                    select(StaffSecondaryOffice)
+                    .where(StaffSecondaryOffice.staff_id.in_(staff_ids))
+                    .order_by(
+                        StaffSecondaryOffice.staff_id,
+                        StaffSecondaryOffice.office_id,
+                    )
+                )
+            ).all()
+        )
+        secondaries_by_staff: dict[UUID, list[UUID]] = {}
+        for sec in sec_rows:
+            secondaries_by_staff.setdefault(sec.staff_id, []).append(sec.office_id)
+
+        # Phase G-45: 全 office (primary + secondary) の operating_weekdays を bulk fetch.
+        candidate_office_ids: set[UUID] = set()
+        for staff, _office in rows:
+            if staff.primary_office_id is not None:
+                candidate_office_ids.add(staff.primary_office_id)
+            for oid in secondaries_by_staff.get(staff.id, []):
+                candidate_office_ids.add(oid)
+        op_weekdays_by_office: dict[UUID, frozenset[int]] = {}
+        if candidate_office_ids:
+            op_rows = (
+                await db.execute(
+                    select(Office.id, Office.operating_weekdays).where(
+                        Office.id.in_(list(candidate_office_ids))
+                    )
+                )
+            ).all()
+            for oid, raw in op_rows:
+                wds = _coerce_office_operating_weekdays(raw)
+                op_weekdays_by_office[oid] = frozenset(wds)
+
         result: list[StaffInfo] = []
         for staff, office in rows:
             base_days = shift_map.get(staff.id, set())
@@ -1533,6 +1656,17 @@ class Layer3Assigner:
             effective = (base_days | on_days_override.get(staff.id, set())) - off_days.get(
                 staff.id, set()
             )
+            sec_ids = tuple(secondaries_by_staff.get(staff.id, []))
+            # 当 staff に関連する office のみ map に詰める (コピー).
+            staff_op_map: dict[UUID, frozenset[int]] = {}
+            if staff.primary_office_id is not None:
+                pop = op_weekdays_by_office.get(staff.primary_office_id)
+                if pop is not None:
+                    staff_op_map[staff.primary_office_id] = pop
+            for oid in sec_ids:
+                pop = op_weekdays_by_office.get(oid)
+                if pop is not None:
+                    staff_op_map[oid] = pop
             result.append(
                 StaffInfo(
                     staff_id=staff.id,
@@ -1547,6 +1681,9 @@ class Layer3Assigner:
                     ),
                     work_days=frozenset(effective),
                     is_trainee=staff.is_trainee,
+                    primary_office_id=staff.primary_office_id,
+                    secondary_office_ids=sec_ids,
+                    office_operating_weekdays=staff_op_map,
                 )
             )
         return result

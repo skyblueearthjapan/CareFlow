@@ -5,7 +5,8 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, Numeric, String, Text, func, text
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, Numeric, String, Text, func, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -25,6 +26,17 @@ class Office(Base, TimestampMixin):
     lat: Mapped[float | None] = mapped_column(Numeric(10, 7), nullable=True)
     lng: Mapped[float | None] = mapped_column(Numeric(10, 7), nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Phase G-45: 拠点稼働曜日 (0=月..6=日 の int 配列).
+    # default [0..5] (月-土). 休業曜日は V2Visit 生成を skip + staff 応援判定で
+    # secondary_office にフォールバック.
+    # PG では JSONB, SQLite (テスト) では JSON にフォールバック.
+    operating_weekdays: Mapped[list[int]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"),
+        nullable=False,
+        server_default=text("'[0,1,2,3,4,5]'"),
+        default=lambda: [0, 1, 2, 3, 4, 5],
+    )
 
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
