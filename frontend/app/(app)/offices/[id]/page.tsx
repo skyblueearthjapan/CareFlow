@@ -2,12 +2,14 @@
 
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
+import { useMemo } from 'react';
 
 import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
-import { useOffice } from '@/lib/queries/offices';
+import { RecordNavigator, type NavigatorRecord } from '@/components/RecordNavigator';
+import { useOffice, useOffices } from '@/lib/queries/offices';
 import { useCities } from '@/lib/queries/cities';
 
 export default function OfficeDetailPage() {
@@ -16,6 +18,18 @@ export default function OfficeDetailPage() {
 
   const { data: office, isLoading, isError, error } = useOffice(id);
   const { allCities } = useCities();
+  const officesQuery = useOffices({ limit: 500 });
+
+  const navRecords = useMemo<NavigatorRecord[]>(
+    () =>
+      (officesQuery.allOffices ?? []).map((o) => ({
+        id: o.id,
+        code: o.code ?? null,
+        name: o.name,
+        kana: undefined,
+      })),
+    [officesQuery.allOffices],
+  );
 
   const allowed = (office?.allowed_cities ?? []).map((cityId) => {
     const city = allCities.find((c) => c.id === cityId);
@@ -36,11 +50,25 @@ export default function OfficeDetailPage() {
 
   return (
     <section className="space-y-4">
-      <header className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="font-serif text-2xl font-bold text-text-primary">
-          拠点詳細 {office ? `- ${office.name}` : ''}
-        </h1>
-        <div className="flex gap-2">
+      {/* grid 3 列 (1fr - auto - 1fr) で RecordNavigator を viewport 中央に固定. */}
+      <header className="grid grid-cols-1 items-end gap-3 lg:grid-cols-[1fr_auto_1fr]">
+        <div>
+          <h1 className="font-serif text-2xl font-bold text-text-primary">
+            拠点詳細 {office ? `- ${office.name}` : ''}
+          </h1>
+        </div>
+        <div className="flex justify-center">
+          {id && navRecords.length > 0 && (
+            <RecordNavigator
+              currentId={id}
+              records={navRecords}
+              hrefTemplate="/offices/{id}"
+              entityLabel="拠点"
+              truncated={navRecords.length >= 500}
+            />
+          )}
+        </div>
+        <div className="flex gap-2 lg:justify-end">
           <Button variant="outline" asChild>
             <Link href="/offices">一覧へ戻る</Link>
           </Button>

@@ -37,8 +37,8 @@ export interface RecordNavigatorProps {
   records: NavigatorRecord[];
   /** ナビゲート先 URL のテンプレート (例: '/patients/{id}' or '/patients/{id}/edit') */
   hrefTemplate: string;
-  /** 表示用ラベル ('患者' or 'スタッフ') */
-  entityLabel: '患者' | 'スタッフ';
+  /** 表示用ラベル ('患者' or 'スタッフ' or '拠点') */
+  entityLabel: '患者' | 'スタッフ' | '拠点';
   /** ナビゲート前に呼ばれる確認 callback. false を返したらキャンセル. */
   onBeforeNavigate?: () => boolean | Promise<boolean>;
   /** true のとき表示件数が上限を超えている旨の注意書きを表示する */
