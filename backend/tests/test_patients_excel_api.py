@@ -3358,6 +3358,8 @@ async def test_grid_course_count_and_subheaders(client, db) -> None:
     # 先頭ブロック = 稲B. row2 col1 (月のコース件数) = 2.
     assert ws.cell(row=2, column=_grid_day_start_col(0)).value == 2
     assert ws.cell(row=2, column=_grid_day_start_col(0) + 1).value == "B"
+    # Phase G-57: row2 の住所列 (col+2) に拠点名 (稲毛/都賀) を表示し稲毛/都賀を判別可能に.
+    assert ws.cell(row=2, column=_grid_day_start_col(0) + 2).value == "稲毛"
     # row3 = サブ見出し [時間帯, 氏名, 住所, 複数, 条件].
     assert [ws.cell(row=3, column=_grid_day_start_col(0) + k).value for k in range(5)] == [
         "時間帯",
@@ -3366,6 +3368,26 @@ async def test_grid_course_count_and_subheaders(client, db) -> None:
         "複数",
         "条件",
     ]
+
+
+# G-57) 編集用シートのコース dropdown は稲毛(稲)先 → 都賀(津) 順.
+@pytest.mark.asyncio
+async def test_edit_sheet_course_dropdown_inage_first(client, db) -> None:
+    admin = await _make_user(db, "g57-dropdown@example.com", "admin")
+    await _setup_two_office_courses(db)
+    res = await client.get("/api/v1/patients/import-export/export", headers=_bearer(admin))
+    assert res.status_code == 200
+    wb = load_workbook(BytesIO(res.content))
+    ws = wb[SHEET_PFV_EDIT]
+    # コース dropdown (拠点付きトークンを含む DataValidation) を探す.
+    course_dv = None
+    for dv in ws.data_validations.dataValidation:
+        if dv.formula1 and "稲" in dv.formula1 and "津" in dv.formula1:
+            course_dv = dv
+            break
+    assert course_dv is not None, "コース dropdown が見つからない"
+    # 稲 (INAGE: 稲B,稲C) が 津 (TSUGA: 津A) より前に並ぶ.
+    assert course_dv.formula1.index("稲B") < course_dv.formula1.index("津A")
 
 
 # G-55-4) 患者は start_time の 30 分スロット行に配置され、住所/複数/条件 列も描画.

@@ -410,17 +410,30 @@ def _course_token_dropdown_values(
 ) -> list[str]:
     """course_templates (office×label) から拠点付きコーストークンの dropdown 値を作る.
 
-    例 ["稲A", "稲B", ..., "津A", "津M"]. office_code (拠点短縮名) → label の順で
-    重複排除しつつソート (office_code 順 → label 順) する.
+    例 ["稲A", "稲B", ..., "稲M", "津A", "津M"]. Phase G-57: 並びは
+    GRID_OFFICE_ORDER (稲毛→都賀) → GRID_COURSE_ORDER (A,B,C,D,E,M) 順.
+    単純な sorted() だと Unicode 順で「津」が「稲」より先に来てしまうため、
+    グリッドのブロック順と同じ規則で明示的に並べる (= 稲毛 A から始まる).
     """
     office_code_by_id: dict[UUID, str] = {o.id: o.code for o in offices if o.code}
-    tokens: set[str] = set()
+    by_office: dict[str, set[str]] = {}
     for ct in course_templates:
         code = office_code_by_id.get(ct.office_id)
-        token = course_token(code, ct.label)
-        if token is not None:
-            tokens.add(token)
-    return sorted(tokens)
+        if not code or not ct.label:
+            continue
+        by_office.setdefault(code, set()).add(ct.label)
+    ordered_offices = [c for c in GRID_OFFICE_ORDER if c in by_office]
+    ordered_offices += sorted(c for c in by_office if c not in GRID_OFFICE_ORDER)
+    out: list[str] = []
+    for code in ordered_offices:
+        labels = by_office[code]
+        ordered_labels = [lbl for lbl in GRID_COURSE_ORDER if lbl in labels]
+        ordered_labels += sorted(lbl for lbl in labels if lbl not in GRID_COURSE_ORDER)
+        for lbl in ordered_labels:
+            token = course_token(code, lbl)
+            if token is not None:
+                out.append(token)
+    return out
 
 
 def _attach_course_dropdowns_to_edit_sheet(
@@ -504,6 +517,9 @@ def _build_grid_sheet(
     """
     patient_by_id: dict[UUID, Patient] = {p.id: p for p in patients}
     office_code_by_id: dict[UUID, str] = {o.id: o.code for o in offices if o.code}
+    # Phase G-57: ブロックが稲毛/都賀どちらか判別できるよう、拠点名を表示する.
+    # office_code (INAGE/TSUGA) → 拠点名 (稲毛/都賀). name 未設定なら code を使う.
+    office_name_by_code: dict[str, str] = {o.code: (o.name or o.code) for o in offices if o.code}
 
     num_days = len(GRID_WEEKDAY_FULL_LABELS)  # 6 (月〜土)
 
@@ -613,6 +629,12 @@ def _build_grid_sheet(
             lc.font = course_font
             lc.fill = course_fill
             lc.alignment = center
+            # Phase G-57: コース行の住所列(c0+2)に拠点名(稲毛/都賀)を表示し、
+            # 稲毛-A / 都賀-A の判別を可能にする.
+            ofc = ws.cell(row=r2, column=c0 + 2, value=office_name_by_code.get(code, code))
+            ofc.font = course_font
+            ofc.fill = course_fill
+            ofc.alignment = center
             # row3: サブ見出し [時間帯, 氏名, 住所, 複数, 条件].
             for k, sub in enumerate(GRID_DAY_SUBHEADERS):
                 sh = ws.cell(row=r3, column=c0 + k, value=sub)
