@@ -3235,6 +3235,176 @@ async def test_static_grid_sheet_is_ignored_by_importer(client, db) -> None:
     assert summary["pfv_noop"] == 1, summary
 
 
+# ---------------------------------------------------------------------------
+# Phase G-55: 静的グリッド集計シートを「スケジュール枠組み（仮）」形式に再構築
+# (稲毛先の縦ブロック / A1=月の日合計 / コース件数 / 30 分スロット配置)
+# ---------------------------------------------------------------------------
+
+
+def _grid_day_start_col(day_idx: int) -> int:
+    """グリッドの日ブロック開始列 (1-indexed): col 1,6,11,16,21,26."""
+    return day_idx * 5 + 1
+
+
+# G-55-1) グリッドは稲毛(INAGE)→都賀(TSUGA) の順でブロックを並べ、各拠点内は A,B,..
+@pytest.mark.asyncio
+async def test_grid_blocks_inage_before_tsuga(client, db) -> None:
+    admin = await _make_user(db, "g55-order@example.com", "admin")
+    office_inage, office_tsuga, cts = await _setup_two_office_courses(db)
+    # 稲毛: 月=稲B, 都賀: 木=津A.
+    p_inage = await _make_patient(
+        db, code="P-G55-IN", name="稲毛患者", primary_office_id=office_inage.id
+    )
+    p_tsuga = await _make_patient(
+        db, code="P-G55-TS", name="都賀患者", primary_office_id=office_tsuga.id
+    )
+    await _make_pfv(
+        db,
+        patient_id=p_inage.id,
+        weekday=0,
+        start_time=time(11, 0),
+        course_template_id=cts[("INAGE", "B")].id,
+    )
+    await _make_pfv(
+        db,
+        patient_id=p_tsuga.id,
+        weekday=3,
+        start_time=time(11, 0),
+        course_template_id=cts[("TSUGA", "A")].id,
+    )
+
+    res = await client.get("/api/v1/patients/import-export/export", headers=_bearer(admin))
+    assert res.status_code == 200
+    wb = load_workbook(BytesIO(res.content))
+    ws = wb[SHEET_PFV_GRID]
+
+    # 各ブロックの「コース文字」(row2 col2) を上から順に集める.
+    # ブロック高 21 + 空き 1 = 22 行刻み. 拠点グループ間はさらに +1 行.
+    # row1 col2 == "月曜日" のブロックを検出し、その次行 (row2) col2 = コース文字.
+    course_chars: list[str] = []
+    for r in range(1, ws.max_row + 1):
+        if ws.cell(row=r, column=2).value == "月曜日":
+            course_chars.append(ws.cell(row=r + 1, column=2).value)
+    # course_templates は 稲B, 稲C, 津A. 稲毛先なので B, C, A の順.
+    assert course_chars == ["B", "C", "A"], course_chars
+
+
+# G-55-2) A1 = 月曜の日合計 (全コース合計). A1 にコメント (閲覧専用) が付く.
+@pytest.mark.asyncio
+async def test_grid_a1_is_monday_day_total_with_comment(client, db) -> None:
+    admin = await _make_user(db, "g55-a1@example.com", "admin")
+    office_inage, _office_tsuga, cts = await _setup_two_office_courses(db)
+    # 月曜に 2 名 (稲B / 稲C), 火曜に 1 名 → A1 (月) = 2.
+    for i, (lbl, t) in enumerate([("B", time(11, 0)), ("C", time(13, 0))]):
+        p = await _make_patient(
+            db, code=f"P-G55-MON{i}", name=f"月患者{i}", primary_office_id=office_inage.id
+        )
+        await _make_pfv(
+            db,
+            patient_id=p.id,
+            weekday=0,
+            start_time=t,
+            course_template_id=cts[("INAGE", lbl)].id,
+        )
+    p_tue = await _make_patient(
+        db, code="P-G55-TUE", name="火患者", primary_office_id=office_inage.id
+    )
+    await _make_pfv(
+        db,
+        patient_id=p_tue.id,
+        weekday=1,
+        start_time=time(11, 0),
+        course_template_id=cts[("INAGE", "B")].id,
+    )
+
+    res = await client.get("/api/v1/patients/import-export/export", headers=_bearer(admin))
+    assert res.status_code == 200
+    wb = load_workbook(BytesIO(res.content))
+    ws = wb[SHEET_PFV_GRID]
+    # A1 = 月曜の全コース合計 = 2.
+    assert ws["A1"].value == 2
+    # row1 各日 col1 = 日合計 (稲毛先頭ブロックのみ). 月=2, 火=1.
+    assert ws.cell(row=1, column=_grid_day_start_col(0)).value == 2  # 月
+    assert ws.cell(row=1, column=_grid_day_start_col(1)).value == 1  # 火
+    # row1 各日 col2 = 曜日名.
+    assert ws.cell(row=1, column=_grid_day_start_col(0) + 1).value == "月曜日"
+    # A1 コメント (ホバー) が付く.
+    assert ws["A1"].comment is not None
+    assert "閲覧専用" in ws["A1"].comment.text
+
+
+# G-55-3) コース件数 (row2 col1) = その (office×course×曜日) の患者数.
+@pytest.mark.asyncio
+async def test_grid_course_count_and_subheaders(client, db) -> None:
+    admin = await _make_user(db, "g55-count@example.com", "admin")
+    office_inage, _office_tsuga, cts = await _setup_two_office_courses(db)
+    # 稲B 月曜に 2 名.
+    for i in range(2):
+        p = await _make_patient(
+            db, code=f"P-G55-B{i}", name=f"B患者{i}", primary_office_id=office_inage.id
+        )
+        await _make_pfv(
+            db,
+            patient_id=p.id,
+            weekday=0,
+            start_time=time(11, 0) if i == 0 else time(13, 0),
+            course_template_id=cts[("INAGE", "B")].id,
+        )
+
+    res = await client.get("/api/v1/patients/import-export/export", headers=_bearer(admin))
+    assert res.status_code == 200
+    wb = load_workbook(BytesIO(res.content))
+    ws = wb[SHEET_PFV_GRID]
+    # 先頭ブロック = 稲B. row2 col1 (月のコース件数) = 2.
+    assert ws.cell(row=2, column=_grid_day_start_col(0)).value == 2
+    assert ws.cell(row=2, column=_grid_day_start_col(0) + 1).value == "B"
+    # row3 = サブ見出し [時間帯, 氏名, 住所, 複数, 条件].
+    assert [ws.cell(row=3, column=_grid_day_start_col(0) + k).value for k in range(5)] == [
+        "時間帯",
+        "氏名",
+        "住所",
+        "複数",
+        "条件",
+    ]
+
+
+# G-55-4) 患者は start_time の 30 分スロット行に配置され、住所/複数/条件 列も描画.
+@pytest.mark.asyncio
+async def test_grid_patients_placed_in_30min_slots(client, db) -> None:
+    admin = await _make_user(db, "g55-slot@example.com", "admin")
+    office_inage, _office_tsuga, cts = await _setup_two_office_courses(db)
+    # 稲B 月曜 11:00 に 複数 + 女性のみ 患者.
+    p = await _make_patient(
+        db,
+        code="P-G55-SLOT",
+        name="スロット患者",
+        primary_office_id=office_inage.id,
+        address="千葉県千葉市稲毛区test99",
+        requires_multiple_staff=True,
+        sex_restriction="female_only",
+    )
+    await _make_pfv(
+        db,
+        patient_id=p.id,
+        weekday=0,
+        start_time=time(11, 0),
+        course_template_id=cts[("INAGE", "B")].id,
+    )
+
+    res = await client.get("/api/v1/patients/import-export/export", headers=_bearer(admin))
+    assert res.status_code == 200
+    wb = load_workbook(BytesIO(res.content))
+    ws = wb[SHEET_PFV_GRID]
+    # スロット先頭行 = block row1(1) + 3 = row4 (09:30). 11:00 はスロット index 3 → row7.
+    c0 = _grid_day_start_col(0)
+    assert ws.cell(row=4, column=c0).value == "09:30"
+    assert ws.cell(row=7, column=c0).value == "11:00"
+    assert ws.cell(row=7, column=c0 + 1).value == "スロット患者"  # 氏名
+    assert ws.cell(row=7, column=c0 + 2).value == "千葉県千葉市稲毛区test99"  # 住所
+    assert ws.cell(row=7, column=c0 + 3).value == "複数"  # 複数
+    assert ws.cell(row=7, column=c0 + 4).value == "女性のみ"  # 条件
+
+
 # G-51-6) 旧 per-visit 形式「固定訪問パターン」シートは後方互換 fallback で取り込める.
 @pytest.mark.asyncio
 async def test_legacy_pervisit_pfv_sheet_fallback(client, db) -> None:

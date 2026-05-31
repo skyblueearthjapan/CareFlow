@@ -20,7 +20,7 @@ from uuid import UUID
 from openpyxl import Workbook
 from openpyxl.comments import Comment
 from openpyxl.formatting.rule import FormulaRule
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.worksheet.worksheet import Worksheet
@@ -32,6 +32,14 @@ from app.models.patient_fixed_visit import PatientFixedVisit
 from app.services.patient_excel.schema import (
     COMMENT_AUTHOR,
     DEFAULT_TIME_TYPE,
+    GRID_BLOCK_HEIGHT,
+    GRID_COLS_PER_DAY,
+    GRID_COURSE_ORDER,
+    GRID_DAY_SUBHEADERS,
+    GRID_OFFICE_GAP,
+    GRID_OFFICE_ORDER,
+    GRID_TIME_SLOTS,
+    GRID_WEEKDAY_FULL_LABELS,
     HEADER_FILL_COLOR,
     HEADER_FONT_COLOR,
     ID_COLUMN_FILL_COLOR,
@@ -47,8 +55,7 @@ from app.services.patient_excel.schema import (
     PFV_EDIT_PATIENT_ID_COMMENT_TEXT,
     PFV_EDIT_WEEKDAY_KEY_TO_INT,
     PFV_EDIT_WEEKDAY_KEYS,
-    PFV_EDIT_WEEKDAY_LABELS,
-    PFV_GRID_BANNER_TEXT,
+    PFV_GRID_A1_COMMENT_TEXT,
     SEX_EN_TO_JA,
     SEX_RESTRICTION_EN_TO_JA,
     SHEET_PATIENTS,
@@ -437,6 +444,42 @@ def _attach_course_dropdowns_to_edit_sheet(
         ws.add_data_validation(dv)
 
 
+def _patient_condition_label(patient: Patient | None) -> str | None:
+    """グリッドの「条件」列に出す患者条件 (性別制限) を返す.
+
+    sex_restriction が設定されていれば「女性のみ / 男性のみ」を返す. 無ければ None.
+    """
+    if patient is None or not patient.sex_restriction:
+        return None
+    return SEX_RESTRICTION_EN_TO_JA.get(patient.sex_restriction, patient.sex_restriction)
+
+
+def _patient_multi_label(patient: Patient | None) -> str | None:
+    """グリッドの「複数」列に出すラベルを返す (requires_multiple_staff → "複数")."""
+    if patient is not None and patient.requires_multiple_staff:
+        return "複数"
+    return None
+
+
+def _slot_index_for_time(t: time | None) -> int | None:
+    """start_time を 30 分グリッドのスロット index (0..17) に丸める.
+
+    GRID_TIME_SLOTS (09:30〜18:00 を 30 分刻み) のうち最近接スロットを返す.
+    範囲外 (09:30 未満 / 18:00 超過) は端のスロットにクランプする.
+    """
+    if t is None:
+        return None
+    minutes = t.hour * 60 + t.minute
+    best_idx: int | None = None
+    best_diff: int | None = None
+    for idx, (h, m) in enumerate(GRID_TIME_SLOTS):
+        diff = abs(minutes - (h * 60 + m))
+        if best_diff is None or diff < best_diff:
+            best_diff = diff
+            best_idx = idx
+    return best_idx
+
+
 def _build_grid_sheet(
     ws: Worksheet,
     *,
@@ -445,100 +488,174 @@ def _build_grid_sheet(
     offices: Sequence[Office],
     course_templates: Sequence[CourseTemplate],
 ) -> None:
-    """Phase G-51: 静的グリッド集計シート (閲覧専用スナップショット) を描画.
+    """Phase G-55: 静的グリッド集計シート (閲覧専用スナップショット) を描画.
 
-    行 = コース (存在する (office, label) を 拠点短縮+ラベル で表記),
-    列 = 月〜土, セル = その (コース, 曜日) の「HH:MM 患者名」を時刻昇順で列挙.
-    最上部に閲覧専用バナーを明記する. importer はこのシートを一切読まない.
+    参照元「スケジュール枠組み（仮）」と同形式: コースごとの縦ブロックを
+    稲毛(INAGE)→都賀(TSUGA)、各拠点内 A,B,C,D,E,M 順に並べる. 1 ブロック = 6 日分
+    (月〜土), 1 日 = 5 列 [時間帯, 氏名, 住所, 複数, 条件]. 日ブロックは
+    col 1,6,11,16,21,26 開始.
+      row1: 各日 [日合計(全コース合計), 曜日名]  (日合計は各拠点の先頭ブロックのみ)
+      row2: 各日 [コース件数(office×course×曜日), コース文字]
+      row3: サブ見出し [時間帯, 氏名, 住所, 複数, 条件] ×6
+      row4〜row21: 09:30〜18:00 を 30 分刻み (18 スロット) の時刻 + その枠の患者
+
+    A1 = 月曜の日合計 (= 稲毛先頭ブロック row1 col1). A1 には閲覧専用コメントを添える.
+    importer はこのシート (シート名 SHEET_PFV_GRID) を一切読まない.
     """
-    banner_font = Font(bold=True, color="FF9C0006")
-    banner_fill = PatternFill("solid", fgColor="FFFFC7CE")  # 薄い赤 (注意喚起)
-    cell = ws.cell(row=1, column=1, value=PFV_GRID_BANNER_TEXT)
-    cell.font = banner_font
-    cell.fill = banner_fill
-    # バナーを 1+曜日数 列に結合 (見やすさ).
-    ws.merge_cells(
-        start_row=1, start_column=1, end_row=1, end_column=1 + len(PFV_EDIT_WEEKDAY_LABELS)
-    )
-    ws.row_dimensions[1].height = 32
-
     patient_by_id: dict[UUID, Patient] = {p.id: p for p in patients}
     office_code_by_id: dict[UUID, str] = {o.id: o.code for o in offices if o.code}
-    ct_by_id: dict[UUID, CourseTemplate] = {ct.id: ct for ct in course_templates}
 
-    # 行 (コース) の並び: course_templates から存在する token を office→label 順に.
-    course_rows: list[str] = _course_token_dropdown_values(offices, course_templates)
-    # PFV が指すが templates に無い token も拾う (データ不整合でもグリッドに出す).
-    extra_tokens: set[str] = set()
-    for pfv in pfvs:
-        if pfv.mode != "normal" or pfv.course_template_id is None:
-            continue
-        ct = ct_by_id.get(pfv.course_template_id)
-        if ct is None:
-            continue
-        token = course_token(office_code_by_id.get(ct.office_id), ct.label)
-        if token is not None and token not in course_rows:
-            extra_tokens.add(token)
-    # 「コース未設定」行も用意 (course_template_id=None の normal PFV を可視化).
-    row_tokens = course_rows + sorted(extra_tokens)
-    unset_label = "(コース未設定)"
+    num_days = len(GRID_WEEKDAY_FULL_LABELS)  # 6 (月〜土)
 
-    # (row_token, weekday) → list[(start_time, patient_name)]
-    grid: dict[tuple[str, int], list[tuple[time, str]]] = {}
+    # ブロック順序を組み立てる: (office_code, course_label, course_template_id?).
+    # 拠点 = 稲毛→都賀 (GRID_OFFICE_ORDER), 各拠点内 = A,B,C,D,E,M (GRID_COURSE_ORDER) で
+    # 存在する course_template のみ. 順序外の office / label は末尾に安定追加する.
+    by_office: dict[str, dict[str, UUID]] = {}
+    for ct in course_templates:
+        code = office_code_by_id.get(ct.office_id)
+        if not code or not ct.label:
+            continue
+        by_office.setdefault(code, {})[ct.label] = ct.id
+
+    ordered_offices = [c for c in GRID_OFFICE_ORDER if c in by_office]
+    ordered_offices += sorted(c for c in by_office if c not in GRID_OFFICE_ORDER)
+
+    # (office_code, label, course_template_id) のブロック並び + 各拠点の先頭ブロック判定.
+    blocks: list[tuple[str, str, UUID]] = []
+    office_first_block_index: dict[str, int] = {}
+    for code in ordered_offices:
+        labels = by_office[code]
+        ordered_labels = [lbl for lbl in GRID_COURSE_ORDER if lbl in labels]
+        ordered_labels += sorted(lbl for lbl in labels if lbl not in GRID_COURSE_ORDER)
+        for lbl in ordered_labels:
+            if code not in office_first_block_index:
+                office_first_block_index[code] = len(blocks)
+            blocks.append((code, lbl, labels[lbl]))
+
+    # 集計: (course_template_id, weekday, slot_index) → list[patient].
+    # 日合計 (全コース): (weekday) → 患者数 (normal PFV 件数, 月〜土のみ).
+    cell_patients: dict[tuple[UUID, int, int], list[Patient]] = {}
+    course_count: dict[tuple[UUID, int], int] = {}
+    day_total: dict[int, int] = dict.fromkeys(range(num_days), 0)
     for pfv in pfvs:
         if pfv.mode != "normal":
             continue
-        if pfv.weekday not in range(len(PFV_EDIT_WEEKDAY_LABELS)):
+        if pfv.weekday not in range(num_days):
             continue  # 月〜土のみ (日曜は対象外)
-        cell_token: str | None = None
-        if pfv.course_template_id is not None:
-            ct = ct_by_id.get(pfv.course_template_id)
-            if ct is not None:
-                cell_token = course_token(office_code_by_id.get(ct.office_id), ct.label)
-        key_token = cell_token or unset_label
+        day_total[pfv.weekday] += 1
+        if pfv.course_template_id is None:
+            continue
+        course_count[(pfv.course_template_id, pfv.weekday)] = (
+            course_count.get((pfv.course_template_id, pfv.weekday), 0) + 1
+        )
+        slot = _slot_index_for_time(pfv.start_time)
+        if slot is None:
+            continue
         p = patient_by_id.get(pfv.patient_id)
-        name = p.name if p else "?"
-        grid.setdefault((key_token, pfv.weekday), []).append((pfv.start_time, name or "?"))
+        if p is not None:
+            cell_patients.setdefault((pfv.course_template_id, pfv.weekday, slot), []).append(p)
 
-    # UNSET 行は実データがある場合のみ末尾に追加.
-    has_unset = any(k[0] == unset_label for k in grid)
-    if has_unset and unset_label not in row_tokens:
-        row_tokens = row_tokens + [unset_label]
-
-    # ヘッダー行 (row 2): A2 = "コース＼曜日", B2.. = 月〜土.
-    header_row = 2
-    header_font = Font(bold=True, color=HEADER_FONT_COLOR)
-    header_fill = PatternFill("solid", fgColor=HEADER_FILL_COLOR)
+    # ---- styling ----
+    thin = Side(style="thin", color="FFBFBFBF")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    daytotal_font = Font(bold=True, color="FF9C0006")  # 赤系 (日合計を強調)
+    dayname_font = Font(bold=True, color=HEADER_FONT_COLOR)
+    dayname_fill = PatternFill("solid", fgColor=HEADER_FILL_COLOR)
+    course_font = Font(bold=True)
+    course_fill = PatternFill("solid", fgColor=ID_COLUMN_FILL_COLOR)
+    subheader_font = Font(bold=True, color="FF333333")
+    subheader_fill = PatternFill("solid", fgColor="FFDDEBF7")  # 薄い青
     center = Alignment(horizontal="center", vertical="center")
-    hc = ws.cell(row=header_row, column=1, value="コース ＼ 曜日")
-    hc.font = header_font
-    hc.fill = header_fill
-    hc.alignment = center
-    ws.column_dimensions["A"].width = 16
-    for j, label in enumerate(PFV_EDIT_WEEKDAY_LABELS, start=2):
-        c = ws.cell(row=header_row, column=j, value=label)
-        c.font = header_font
-        c.fill = header_fill
-        c.alignment = center
-        ws.column_dimensions[get_column_letter(j)].width = 22
-
-    # データ行.
-    course_header_font = Font(bold=True)
-    course_header_fill = PatternFill("solid", fgColor=ID_COLUMN_FILL_COLOR)
     wrap = Alignment(vertical="top", wrap_text=True)
-    for r_offset, token in enumerate(row_tokens):
-        r = header_row + 1 + r_offset
-        rc = ws.cell(row=r, column=1, value=token)
-        rc.font = course_header_font
-        rc.fill = course_header_fill
-        rc.alignment = center
-        for wd_int in range(len(PFV_EDIT_WEEKDAY_LABELS)):
-            entries = grid.get((token, wd_int), [])
-            entries.sort(key=lambda e: (e[0].hour, e[0].minute))
-            text = "\n".join(f"{_hhmm(t)} {n}" for t, n in entries)
-            dc = ws.cell(row=r, column=2 + wd_int, value=text or None)
-            dc.alignment = wrap
-    ws.freeze_panes = "B3"
+    time_align = Alignment(horizontal="center", vertical="top")
+
+    # 列幅: 時間帯=9, 氏名=20, 住所=34, 複数=6, 条件=10 を各日繰り返す.
+    day_widths = (9, 20, 34, 6, 10)
+    for d in range(num_days):
+        for k, w in enumerate(day_widths):
+            col = d * GRID_COLS_PER_DAY + 1 + k
+            ws.column_dimensions[get_column_letter(col)].width = w
+
+    def _day_start_col(day_idx: int) -> int:
+        return day_idx * GRID_COLS_PER_DAY + 1  # 1,6,11,16,21,26
+
+    # ---- 各ブロックを描画 ----
+    block_start_row = 1
+    prev_office: str | None = None
+    for b_index, (code, label, ct_id) in enumerate(blocks):
+        # 拠点グループが変わったら追加の空き行を 1 行入れる (参照元同様).
+        if prev_office is not None and code != prev_office:
+            block_start_row += GRID_OFFICE_GAP
+        prev_office = code
+
+        is_office_first = office_first_block_index.get(code) == b_index
+        r1 = block_start_row  # 曜日名 + 日合計
+        r2 = block_start_row + 1  # コース件数 + コース文字
+        r3 = block_start_row + 2  # サブ見出し
+        slot_row0 = block_start_row + 3  # スロット先頭行
+
+        for d in range(num_days):
+            c0 = _day_start_col(d)  # 時間帯列
+            # row1: [日合計, 曜日名]. 日合計は各拠点の先頭ブロックのみ.
+            if is_office_first:
+                dt = ws.cell(row=r1, column=c0, value=day_total.get(d, 0))
+                dt.font = daytotal_font
+                dt.alignment = center
+            dn = ws.cell(row=r1, column=c0 + 1, value=GRID_WEEKDAY_FULL_LABELS[d])
+            dn.font = dayname_font
+            dn.fill = dayname_fill
+            dn.alignment = center
+            # row2: [コース件数, コース文字].
+            cc = ws.cell(row=r2, column=c0, value=course_count.get((ct_id, d), 0))
+            cc.font = course_font
+            cc.alignment = center
+            lc = ws.cell(row=r2, column=c0 + 1, value=label)
+            lc.font = course_font
+            lc.fill = course_fill
+            lc.alignment = center
+            # row3: サブ見出し [時間帯, 氏名, 住所, 複数, 条件].
+            for k, sub in enumerate(GRID_DAY_SUBHEADERS):
+                sh = ws.cell(row=r3, column=c0 + k, value=sub)
+                sh.font = subheader_font
+                sh.fill = subheader_fill
+                sh.alignment = center
+                sh.border = border
+            # row4〜: 30 分スロット.
+            for s, (h, m) in enumerate(GRID_TIME_SLOTS):
+                rr = slot_row0 + s
+                tc = ws.cell(row=rr, column=c0, value=f"{h:02d}:{m:02d}")
+                tc.alignment = time_align
+                tc.border = border
+                ps = cell_patients.get((ct_id, d, s), [])
+                names = "\n".join(p.name for p in ps if p.name)
+                addrs = "\n".join(p.address or "" for p in ps)
+                multi = "\n".join(_patient_multi_label(p) or "" for p in ps)
+                cond = "\n".join(_patient_condition_label(p) or "" for p in ps)
+                nc = ws.cell(row=rr, column=c0 + 1, value=names or None)
+                nc.alignment = wrap
+                nc.border = border
+                ac = ws.cell(row=rr, column=c0 + 2, value=addrs.strip("\n") or None)
+                ac.alignment = wrap
+                ac.border = border
+                mc = ws.cell(row=rr, column=c0 + 3, value=multi.strip("\n") or None)
+                mc.alignment = wrap
+                mc.border = border
+                oc = ws.cell(row=rr, column=c0 + 4, value=cond.strip("\n") or None)
+                oc.alignment = wrap
+                oc.border = border
+
+        block_start_row += GRID_BLOCK_HEIGHT + 1  # ブロック間 1 行の空き
+
+    # A1 = 月曜 (day 0) の日合計. ブロックが 1 つも無い場合は 0.
+    a1 = ws.cell(row=1, column=1, value=day_total.get(0, 0))
+    a1.font = daytotal_font
+    a1.alignment = center
+    a1_comment = Comment(PFV_GRID_A1_COMMENT_TEXT, COMMENT_AUTHOR)
+    a1_comment.width = 320
+    a1_comment.height = 110
+    a1.comment = a1_comment
+
+    ws.freeze_panes = "A4"
 
 
 # ---------------------------------------------------------------------------
