@@ -290,12 +290,64 @@ describe('CourseWeekOverview (B-6)', () => {
         visits={visits}
         onJumpToDay={vi.fn()}
         staffCountFor={fullStaff}
+        staffSummaryOffices={[{ id: 'o1', label: '本店' }]}
       />,
     );
-    expect(screen.getByTestId('weekday-header-patients-0')).toHaveTextContent('患者 3 名');
-    expect(screen.getByTestId('weekday-header-patients-1')).toHaveTextContent('患者 1 名');
+    // G-54: 「患者 N / 受入可能数 名」形式。受入可能数 = 出勤スタッフ全員(S+M)×6.
+    // fullStaff=5, manager 未指定=0 → 5×6=30.
+    expect(screen.getByTestId('weekday-header-patients-0')).toHaveTextContent('患者 3 / 30 名');
+    expect(screen.getByTestId('weekday-header-patients-1')).toHaveTextContent('患者 1 / 30 名');
     // 訪問が無い曜日は 0 名.
-    expect(screen.getByTestId('weekday-header-patients-2')).toHaveTextContent('患者 0 名');
+    expect(screen.getByTestId('weekday-header-patients-2')).toHaveTextContent('患者 0 / 30 名');
+  });
+
+  it('Phase G-54: 受入可能数 = 全拠点スタッフ(S+M)×6 で患者比率を表示', () => {
+    // 月曜: 稲毛 S4 M1 + 都賀 S1 = 計6名 × 6 = 36. 患者 A:2 = 2 名 → 「患者 2 / 36 名」.
+    const inageId = 'office-inage';
+    const tsugaId = 'office-tsuga';
+    const templates = [makeTemplate('tpl-A', 'A', inageId)];
+    const visits: WeekOverviewVisit[] = [
+      {
+        id: 'v1',
+        patient_id: 'p1',
+        patient_name: '田中',
+        weekday: 0,
+        course_template_id: 'tpl-A',
+        start_time: null,
+      },
+      {
+        id: 'v2',
+        patient_id: 'p2',
+        patient_name: '佐藤',
+        weekday: 0,
+        course_template_id: 'tpl-A',
+        start_time: null,
+      },
+    ];
+    render(
+      <CourseWeekOverview
+        templates={templates}
+        officeNameById={
+          new Map([
+            [inageId, '稲毛'],
+            [tsugaId, '都賀'],
+          ])
+        }
+        visits={visits}
+        onJumpToDay={vi.fn()}
+        staffCountFor={(officeId, wd) =>
+          wd === 0 ? (officeId === inageId ? 4 : officeId === tsugaId ? 1 : 0) : 0
+        }
+        managerCountFor={(officeId, wd) => (wd === 0 && officeId === inageId ? 1 : 0)}
+        staffSummaryOffices={[
+          { id: inageId, label: '稲' },
+          { id: tsugaId, label: '津' },
+        ]}
+      />,
+    );
+    expect(screen.getByTestId('weekday-header-patients-0')).toHaveTextContent('患者 2 / 36 名');
+    // スタッフ0の曜日は 0 名 / 0 名.
+    expect(screen.getByTestId('weekday-header-patients-1')).toHaveTextContent('患者 0 / 0 名');
   });
 
   it('Phase G-53: 曜日ヘッダーに拠点別 S/M を表示する (稲 S:4 M:1 / 津 S:1)', () => {

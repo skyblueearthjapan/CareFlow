@@ -29,6 +29,8 @@ import { PinScopeMenu, type PinScope } from './PinScopeMenu';
 
 const WEEKDAYS = [0, 1, 2, 3, 4, 5] as const;
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土'] as const;
+// G-54: 1 スタッフあたりの受入可能患者数 (1 コース = 6 名). 受入可能数 = 出勤スタッフ全員 × 6.
+const CAPACITY_PER_STAFF = 6;
 
 /** CourseWeekOverview が必要とする 1 セル分の visit 表示データ. */
 export interface WeekOverviewVisit {
@@ -202,16 +204,18 @@ export function CourseWeekOverview({
             コース \ 曜日
           </div>
           {WEEKDAYS.map((wd) => {
-            // Phase G-53: 患者総数 + 拠点別 S/M をヘッダー右端/下段に小さく表示.
+            // Phase G-53 / G-54: 患者総数 / 受入可能数 + 拠点別 S/M をヘッダーに表示.
             const patientTotal = patientTotalByWeekday.get(wd) ?? 0;
-            const officeParts = (staffSummaryOffices ?? [])
-              .map((o) => {
-                const s = staffCountFor ? staffCountFor(o.id, wd) : 0;
-                const m = managerCountFor ? managerCountFor(o.id, wd) : 0;
-                return { label: o.label, s, m };
-              })
-              // 当該曜日に S も M も 0 の拠点は省略 (出勤がある拠点のみ表示).
-              .filter((p) => p.s > 0 || p.m > 0);
+            const officePartsAll = (staffSummaryOffices ?? []).map((o) => {
+              const s = staffCountFor ? staffCountFor(o.id, wd) : 0;
+              const m = managerCountFor ? managerCountFor(o.id, wd) : 0;
+              return { label: o.label, s, m };
+            });
+            // G-54: 受入可能患者数 = 出勤スタッフ全員(全拠点 S + M) × 6.
+            const totalStaff = officePartsAll.reduce((acc, p) => acc + p.s + p.m, 0);
+            const acceptCapacity = totalStaff * CAPACITY_PER_STAFF;
+            // 当該曜日に S も M も 0 の拠点は省略 (出勤がある拠点のみ表示).
+            const officeParts = officePartsAll.filter((p) => p.s > 0 || p.m > 0);
             return (
               <button
                 key={`h-${wd}`}
@@ -219,7 +223,7 @@ export function CourseWeekOverview({
                 onClick={() => onJumpToDay(wd)}
                 className="flex flex-col items-center gap-0.5 border-b border-r border-border-default bg-bg-muted px-2 py-1 text-center text-[10px] font-semibold text-text-secondary hover:bg-brand-primary/10"
                 data-testid={`course-week-overview-header-${wd}`}
-                aria-label={`${WEEKDAY_LABELS[wd]}曜日タブにジャンプ (患者 ${patientTotal} 名)`}
+                aria-label={`${WEEKDAY_LABELS[wd]}曜日タブにジャンプ (患者 ${patientTotal} / 受入 ${acceptCapacity} 名)`}
                 title={`${WEEKDAY_LABELS[wd]}曜日タブにジャンプ`}
               >
                 <span>{WEEKDAY_LABELS[wd]}</span>
@@ -228,7 +232,7 @@ export function CourseWeekOverview({
                   data-testid={`weekday-header-totals-${wd}`}
                 >
                   <span className="tnum" data-testid={`weekday-header-patients-${wd}`}>
-                    患者 {patientTotal} 名
+                    患者 {patientTotal} / {acceptCapacity} 名
                   </span>
                   {officeParts.length > 0 ? (
                     <span className="tnum" data-testid={`weekday-header-staff-${wd}`}>
