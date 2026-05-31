@@ -104,6 +104,10 @@ BOOL_VALUES: Final[tuple[str, ...]] = ("TRUE", "FALSE")
 BOOL_JA_VALUES: Final[tuple[str, ...]] = ("はい", "いいえ")
 BOOL_JA_TO_BOOL: Final[dict[str, bool]] = {"はい": True, "いいえ": False}
 
+# Phase G-50: 希望曜日 7 列の選択肢を「〇/×」に (はい/いいえ より一覧で視認しやすい).
+# 〇 = 選択, × = 非選択. import 側は 〇/はい/TRUE/1/yes を選択扱い (後方互換).
+WEEKDAY_MARK_VALUES: Final[tuple[str, ...]] = ("〇", "×")
+
 # ---------------------------------------------------------------------------
 # Phase G-49: 入力性向上のための dropdown 値レンジ
 # ---------------------------------------------------------------------------
@@ -217,24 +221,21 @@ def weekdays_cell_to_en(value: str | None) -> list[str]:
 
 
 def weekdays_en_to_yesno_cells(weekdays: list[str] | None) -> dict[str, str]:
-    """Phase G-49: preferred_weekdays (英 list) → 7 列 (pref_wd_mon..) の はい/いいえ.
+    """Phase G-49/G-50: preferred_weekdays (英 list) → 7 列 (pref_wd_mon..) の 〇/×.
 
-    希望されている曜日の列に「はい」、それ以外に「いいえ」を入れた dict を返す.
-    None / 空 list でも全列「いいえ」を返す (round-trip 安定のため空欄にしない).
+    希望されている曜日の列に「〇」、それ以外に「×」を入れた dict を返す.
+    None / 空 list でも全列「×」を返す (round-trip 安定のため空欄にしない).
     """
     present = {str(w) for w in (weekdays or [])}
-    return {
-        key: ("はい" if en in present else "いいえ")
-        for key, en in PATIENT_WEEKDAY_KEY_TO_EN.items()
-    }
+    return {key: ("〇" if en in present else "×") for key, en in PATIENT_WEEKDAY_KEY_TO_EN.items()}
 
 
 def weekday_yesno_cells_to_en(cells: dict[str, object]) -> list[str]:
-    """Phase G-49: 7 列 (pref_wd_mon..) の はい/いいえ → preferred_weekdays (英 list).
+    """Phase G-49/G-50: 7 列 (pref_wd_mon..) の 〇/× → preferred_weekdays (英 list).
 
-    「はい」(= True 相当) の曜日のみを Mon..Sun の正準順で返す. 値の解釈は
-    importer の bool 受理と同じく「はい/TRUE/1/yes」を True とする. 候補外/空は
-    いいえ扱い (壊さない方針).
+    「〇」(= 選択 / True 相当) の曜日のみを Mon..Sun の正準順で返す. 値の解釈は
+    `_is_yes` に準拠し「〇/はい/TRUE/1/yes」を選択扱い (後方互換). ×/空/候補外は
+    非選択扱い (壊さない方針).
     """
     found: set[str] = set()
     for key, en in PATIENT_WEEKDAY_KEY_TO_EN.items():
@@ -244,7 +245,8 @@ def weekday_yesno_cells_to_en(cells: dict[str, object]) -> list[str]:
 
 
 def _is_yes(value: object) -> bool:
-    """セル値が「はい」相当 (True) かを判定. 空/いいえ/候補外は False."""
+    """セル値が「選択」(True) かを判定. 〇/はい/TRUE/1/yes を True とする.
+    空/×/いいえ/候補外は False (後方互換のため はい も受理)."""
     if value is None:
         return False
     if isinstance(value, bool):
@@ -252,7 +254,7 @@ def _is_yes(value: object) -> bool:
     s = str(value).strip()
     if s == "":
         return False
-    if s in ("はい",):
+    if s in ("〇", "○", "はい"):  # 〇(U+3007) / ○(U+25CB) 両方許容 + 旧 はい
         return True
     return s.upper() in ("TRUE", "1", "YES", "Y")
 
@@ -352,50 +354,50 @@ PATIENT_COLUMNS: Final[list[dict[str, object]]] = [
         "dropdown": VISIT_FREQUENCY_JA_VALUES,
     },
     {"key": "visit_weeks", "header": "訪問週 (例 '1,3')", "width": 14, "dropdown": None},
-    # Phase G-49: 希望曜日を 7 列クリック式 (月..日 / はい・いいえ) に分割.
+    # Phase G-49/G-50: 希望曜日を 7 列クリック式 (月..日 / 〇・×) に分割.
     # 旧 1 セル "希望曜日 (例 '月,水,金')" 列は廃止 (旧 export ファイルは importer の
     # 後方互換経路で読む).
     {
         "key": "pref_wd_mon",
         "header": PATIENT_WEEKDAY_KEY_TO_HEADER["pref_wd_mon"],
         "width": 11,
-        "dropdown": BOOL_JA_VALUES,
+        "dropdown": WEEKDAY_MARK_VALUES,
     },
     {
         "key": "pref_wd_tue",
         "header": PATIENT_WEEKDAY_KEY_TO_HEADER["pref_wd_tue"],
         "width": 11,
-        "dropdown": BOOL_JA_VALUES,
+        "dropdown": WEEKDAY_MARK_VALUES,
     },
     {
         "key": "pref_wd_wed",
         "header": PATIENT_WEEKDAY_KEY_TO_HEADER["pref_wd_wed"],
         "width": 11,
-        "dropdown": BOOL_JA_VALUES,
+        "dropdown": WEEKDAY_MARK_VALUES,
     },
     {
         "key": "pref_wd_thu",
         "header": PATIENT_WEEKDAY_KEY_TO_HEADER["pref_wd_thu"],
         "width": 11,
-        "dropdown": BOOL_JA_VALUES,
+        "dropdown": WEEKDAY_MARK_VALUES,
     },
     {
         "key": "pref_wd_fri",
         "header": PATIENT_WEEKDAY_KEY_TO_HEADER["pref_wd_fri"],
         "width": 11,
-        "dropdown": BOOL_JA_VALUES,
+        "dropdown": WEEKDAY_MARK_VALUES,
     },
     {
         "key": "pref_wd_sat",
         "header": PATIENT_WEEKDAY_KEY_TO_HEADER["pref_wd_sat"],
         "width": 11,
-        "dropdown": BOOL_JA_VALUES,
+        "dropdown": WEEKDAY_MARK_VALUES,
     },
     {
         "key": "pref_wd_sun",
         "header": PATIENT_WEEKDAY_KEY_TO_HEADER["pref_wd_sun"],
         "width": 11,
-        "dropdown": BOOL_JA_VALUES,
+        "dropdown": WEEKDAY_MARK_VALUES,
     },
     # Phase G-49: サービス時間を 5 分刻み dropdown 化.
     {

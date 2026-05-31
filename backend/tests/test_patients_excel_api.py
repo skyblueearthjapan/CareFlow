@@ -2003,14 +2003,14 @@ async def test_export_includes_weekly_pattern_in_patient_sheet(client, db) -> No
     assert row[PATIENT_COL_INDEX["service_minutes"]] == 35
     # 訪問頻度: DB "every" → 日本語 "毎週".
     assert row[PATIENT_COL_INDEX["visit_frequency"]] == "毎週"
-    # Phase G-49: 希望曜日は 7 列 (月..日) の はい/いいえ. Mon/Wed/Fri が「はい」.
-    assert row[PATIENT_COL_INDEX["pref_wd_mon"]] == "はい"
-    assert row[PATIENT_COL_INDEX["pref_wd_tue"]] == "いいえ"
-    assert row[PATIENT_COL_INDEX["pref_wd_wed"]] == "はい"
-    assert row[PATIENT_COL_INDEX["pref_wd_thu"]] == "いいえ"
-    assert row[PATIENT_COL_INDEX["pref_wd_fri"]] == "はい"
-    assert row[PATIENT_COL_INDEX["pref_wd_sat"]] == "いいえ"
-    assert row[PATIENT_COL_INDEX["pref_wd_sun"]] == "いいえ"
+    # Phase G-50: 希望曜日は 7 列 (月..日) の 〇/×. Mon/Wed/Fri が「〇」.
+    assert row[PATIENT_COL_INDEX["pref_wd_mon"]] == "〇"
+    assert row[PATIENT_COL_INDEX["pref_wd_tue"]] == "×"
+    assert row[PATIENT_COL_INDEX["pref_wd_wed"]] == "〇"
+    assert row[PATIENT_COL_INDEX["pref_wd_thu"]] == "×"
+    assert row[PATIENT_COL_INDEX["pref_wd_fri"]] == "〇"
+    assert row[PATIENT_COL_INDEX["pref_wd_sat"]] == "×"
+    assert row[PATIENT_COL_INDEX["pref_wd_sun"]] == "×"
 
 
 @pytest.mark.asyncio
@@ -2486,6 +2486,39 @@ async def test_weekday_7columns_yesno_input(client, db) -> None:
 
 
 @pytest.mark.asyncio
+async def test_weekday_7columns_mark_input(client, db) -> None:
+    """Phase G-50: 希望曜日 7 列の「〇」を選択扱いで読み preferred_weekdays に反映.
+    「×」は非選択. 〇/× が新しい既定の選択肢."""
+    admin = await _make_user(db, "g50-wd-mark@example.com", "admin")
+    p = await _make_patient(db, code="P-G50-WD", name="曜日マーク")
+    p.weekly_pattern = None
+    await db.commit()
+    pid = p.id
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                "patient_id": str(pid),
+                "patient_code": "P-G50-WD",
+                # 月・水・金 を「〇」、火・木・土・日 を「×」.
+                "pref_wd_mon": "〇",
+                "pref_wd_tue": "×",
+                "pref_wd_wed": "〇",
+                "pref_wd_thu": "×",
+                "pref_wd_fri": "〇",
+                "pref_wd_sat": "×",
+                "pref_wd_sun": "×",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    db.expire_all()
+    p_after = await db.get(Patient, pid)
+    assert p_after.weekly_pattern is not None
+    assert p_after.weekly_pattern["preferred_weekdays"] == ["Mon", "Wed", "Fri"]
+
+
+@pytest.mark.asyncio
 async def test_weekly_blank_keeps_existing(client, db) -> None:
     """weekly フィールド全空の行は既存 weekly_pattern を維持 (clear しない)."""
     admin = await _make_user(db, "g48-wk-keep@example.com", "admin")
@@ -2837,8 +2870,10 @@ async def test_template_has_dropdowns_and_conditional_format(client, db) -> None
     assert any("15," in f and "180" in f for f in dv_formulas)
     # HH:MM (06:00 / 20:00 が含まれる).
     assert any("06:00" in f and "20:00" in f for f in dv_formulas)
-    # 希望曜日 7 列の はい/いいえ dropdown (はい,いいえ が複数列).
-    assert joined.count('"はい,いいえ"') >= 7
+    # Phase G-50: 希望曜日 7 列は 〇/× dropdown (7 列分).
+    assert joined.count('"〇,×"') >= 7
+    # 複数スタッフ必須は引き続き はい/いいえ.
+    assert '"はい,いいえ"' in joined
     # 時間タイプ列を参照する条件付き書式が時刻 2 列に設定されている.
     cf_ranges = [str(r.sqref) for r in ws.conditional_formatting]
     assert len(cf_ranges) >= 2
@@ -2886,25 +2921,25 @@ async def test_weekday_7columns_roundtrip_noop(client, db) -> None:
 
 @pytest.mark.asyncio
 async def test_weekday_7columns_all_no_keeps_existing(client, db) -> None:
-    """Phase G-49: 7 列全「いいえ」/空でも preferred_weekdays は維持 (blank=keep)."""
+    """Phase G-49/G-50: 7 列全「×」/空でも preferred_weekdays は維持 (blank=keep)."""
     admin = await _make_user(db, "g49-wd-keep@example.com", "admin")
     p = await _make_patient(db, code="P-G49-WDKEEP", name="曜日維持")
     p.weekly_pattern = {"preferred_weekdays": ["Mon"], "time_type": "時間帯"}
     await db.commit()
     pid = p.id
-    # 曜日 7 列を全て「いいえ」、他 weekly も空 → weekly 全空扱い = 維持.
+    # 曜日 7 列を全て「×」、他 weekly も空 → weekly 全空扱い = 維持.
     content = _build_workbook_bytes(
         patient_rows=[
             {
                 "patient_id": str(pid),
                 "patient_code": "P-G49-WDKEEP",
-                "pref_wd_mon": "いいえ",
-                "pref_wd_tue": "いいえ",
-                "pref_wd_wed": "いいえ",
-                "pref_wd_thu": "いいえ",
-                "pref_wd_fri": "いいえ",
-                "pref_wd_sat": "いいえ",
-                "pref_wd_sun": "いいえ",
+                "pref_wd_mon": "×",
+                "pref_wd_tue": "×",
+                "pref_wd_wed": "×",
+                "pref_wd_thu": "×",
+                "pref_wd_fri": "×",
+                "pref_wd_sat": "×",
+                "pref_wd_sun": "×",
             }
         ],
     )

@@ -230,7 +230,7 @@ def _write_patient_row(
     visit_frequency_ja = (
         VISIT_FREQUENCY_EN_TO_JA.get(vf_raw, vf_raw) if isinstance(vf_raw, str) else None
     )
-    # Phase G-49: 希望曜日を 7 列 (月..日) の はい/いいえ に展開.
+    # Phase G-49/G-50: 希望曜日を 7 列 (月..日) の 〇/× に展開.
     pref_weekdays = wp.get("preferred_weekdays")
     weekday_cells = weekdays_en_to_yesno_cells(
         pref_weekdays if isinstance(pref_weekdays, list) else None
