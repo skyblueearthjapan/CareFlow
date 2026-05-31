@@ -160,6 +160,15 @@ vi.mock('@/lib/api/fetcher', () => ({
   fetcher: vi.fn(),
 }));
 
+// スタッフ数連動 (auto-schedule 統一) の hook. 既存テストは A-E コースが
+// 開講している前提なので staffCountFor は十分な人数 (=5) を返す.
+vi.mock('@/lib/queries/weekday_staff_capacity', () => ({
+  useWeekdayStaffCapacityLookup: () => ({
+    staffCountFor: () => 5,
+    courseCodesMax: 5,
+    isLoading: false,
+  }),
+}));
 vi.mock('@/lib/queries/offices', () => ({
   useOffices: (...args: unknown[]) => mockOffices(...args),
 }));

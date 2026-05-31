@@ -72,7 +72,8 @@ import { useBulkPinPfvs, useTogglePfvPin } from '@/lib/queries/g21';
 // Phase G-47: PinScope 型 (= 個別 🔒 toggle のスコープ '曜日のみ' / '全曜日').
 import type { PinScope } from './PinScopeMenu';
 import type { PatientFixedVisitV2Read } from '@/lib/schemas/v2/patient_fixed_visit';
-import { capacityForWeekday, type CourseTemplateRead } from '@/lib/schemas/v2/course_template';
+import { effectiveCapacity, type CourseTemplateRead } from '@/lib/schemas/v2/course_template';
+import { useWeekdayStaffCapacityLookup } from '@/lib/queries/weekday_staff_capacity';
 import {
   SEX_RESTRICTION_LABEL,
   coerceWeeklyPattern,
@@ -377,6 +378,16 @@ export function CourseDayTablePanel({
   const coursesQuery = useCourses({ iso_year: isoYear, iso_week: isoWeek, limit: 200 });
   const courses = useMemo(() => coursesQuery.data ?? [], [coursesQuery.data]);
 
+  // ─── スタッフ数連動の有効定員 (週ビューのコース「休」/定員を auto-schedule と統一) ──
+  // (office_id, weekday) → 稼働スタッフ数. A-E コースは effectiveCapacity で
+  // index < min(staffCount, courseCodesMax) なら開講 (定員6), else 休 (定員0).
+  // M系は従来の静的 capacity_<曜日> を使う (effectiveCapacity が両方扱う).
+  const { staffCountFor, courseCodesMax } = useWeekdayStaffCapacityLookup({
+    iso_year: isoYear,
+    iso_week: isoWeek,
+    office_id: officeId,
+  });
+
   // Phase G-25: 担当 dropdown は全拠点解放 (= 拠点を超えて配置可能).
   // 自動算出 (run_v2_pipeline) は引き続き拠点内のみだが、 手動 dropdown は全 active staff を表示.
   // 各 option には 「氏名 (拠点名)」 形式で所属を併記 (= CourseDayTable 側で format).
@@ -444,7 +455,9 @@ export function CourseDayTablePanel({
       officeName: string;
     }> = [];
     for (const t of templates) {
-      const cap = capacityForWeekday(t, activeWeekday);
+      // スタッフ数連動: A-E は staff_count で開講判定, M系は静的 capacity.
+      const staffCount = staffCountFor(t.office_id, activeWeekday);
+      const cap = effectiveCapacity(t, activeWeekday, staffCount, courseCodesMax);
       if (cap <= 0) continue;
       const officeName = offices.find((o) => o.id === t.office_id)?.name ?? '';
       list.push({ template: t, officeName });
@@ -456,7 +469,7 @@ export function CourseDayTablePanel({
       return (a.template.label || '').localeCompare(b.template.label || '', 'ja');
     });
     return list;
-  }, [templates, offices, activeWeekday]);
+  }, [templates, offices, activeWeekday, staffCountFor, courseCodesMax]);
 
   // ─── Wave 18 Phase B-6 / Wave 37 P3-C: course_id → course_template_id の逆引き ──
   // (元 line 467 から移設: visitsByCourse / partner ラベル解決から参照されるため上に移動)
@@ -1185,12 +1198,18 @@ export function CourseDayTablePanel({
           toast.error('drop 先のコーステンプレートが見つかりません');
           return;
         }
-        // 候補: 同じ office_id + 当該 weekday に capacity > 0 + primary を除外
+        // 候補: 同じ office_id + 当該 weekday に開講 (effectiveCapacity>0) + primary を除外.
+        // スタッフ数連動 (auto-schedule 統一): A-E は staff_count, M系は静的 capacity.
         const candidates = templates.filter(
           (t) =>
             t.id !== primaryTemplate.id &&
             t.office_id === primaryTemplate.office_id &&
-            capacityForWeekday(t, cell.weekday) > 0,
+            effectiveCapacity(
+              t,
+              cell.weekday,
+              staffCountFor(t.office_id, cell.weekday),
+              courseCodesMax,
+            ) > 0,
         );
         const officeName = offices.find((o) => o.id === primaryTemplate.office_id)?.name ?? '';
         const wdLabel = ['月', '火', '水', '木', '金', '土', '日'][cell.weekday] ?? '';
@@ -1789,13 +1808,27 @@ export function CourseDayTablePanel({
                 const selectedOffice = officeId
                   ? (offices.find((o) => o.id === officeId) ?? null)
                   : null;
-                const officeIsClosedOnDay =
+                const officeNonOperating =
                   selectedOffice != null &&
                   Array.isArray(selectedOffice.operating_weekdays) &&
                   !selectedOffice.operating_weekdays.includes(wd);
+                // スタッフ数連動 (auto-schedule 統一): 拠点 filter 選択時、当該曜日に
+                // 開講するコース (A-E 開講 or M定員>0) が 1 つも無ければ「休」扱い.
+                // (営業日でも staff 0 名なら A-E は全休 / M も静的定員 0 なら休.)
+                const hasOpenCourseOnDay =
+                  selectedOffice != null &&
+                  templates.some(
+                    (t) =>
+                      t.office_id === selectedOffice.id &&
+                      effectiveCapacity(t, wd, staffCountFor(t.office_id, wd), courseCodesMax) > 0,
+                  );
+                const officeIsClosedOnDay =
+                  selectedOffice != null && (officeNonOperating || !hasOpenCourseOnDay);
                 const closedClasses = officeIsClosedOnDay && !selected ? ' opacity-50' : '';
                 const tooltipTitle = officeIsClosedOnDay
-                  ? `${selectedOffice?.name ?? '拠点'} は ${WEEKDAY_LABELS[wd]} 曜日は休業日です`
+                  ? officeNonOperating
+                    ? `${selectedOffice?.name ?? '拠点'} は ${WEEKDAY_LABELS[wd]} 曜日は休業日です`
+                    : `${selectedOffice?.name ?? '拠点'} は ${WEEKDAY_LABELS[wd]} 曜日に開講するコースがありません`
                   : undefined;
                 return (
                   <button
@@ -1958,6 +1991,8 @@ export function CourseDayTablePanel({
                   sameAddressKeyByPatientId={sameAddressKeyByPatientId}
                   onPatientClick={handleOpenPatientDetail}
                   onTogglePin={canEdit ? handleTogglePin : undefined}
+                  staffCountFor={staffCountFor}
+                  courseCodesMax={courseCodesMax}
                 />
               </div>
             ) : (

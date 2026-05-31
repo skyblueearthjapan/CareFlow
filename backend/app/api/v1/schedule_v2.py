@@ -28,7 +28,7 @@ from datetime import time as time_cls
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
@@ -68,8 +68,11 @@ from app.schemas.v2.auto_schedule_v2 import (
     V2VisitPlan,
     V2WarningOut,
     V2WeekdayBeforeAfter,
+    WeekdayStaffCapacityItem,
+    WeekdayStaffCapacityResponse,
 )
 from app.services.scheduling.auto_allocator_v2 import (
+    _COURSE_CODES_MAX,
     # Wave 3 (#WAVE3): API 境界の H10 (lunch overlap) ガードは
     # ``_is_in_lunch_break`` (= 動的 lunch 11:30-13:30 のどの 45 分配置でも
     # 避けられない visit か?) で判定する. service 層 (compute_lunch_window) が
@@ -91,6 +94,7 @@ from app.services.scheduling.auto_allocator_v2 import (
     apply_week_only,
     calc_h_violations,
     calc_total_distance,
+    count_active_staff_per_weekday,
     haversine_km,
     reset_visits_to_fixed,
     run_v2_pipeline,
@@ -1477,6 +1481,67 @@ async def unassign_all_staff_endpoint(
     return AutoScheduleV2UnassignAllResponse(
         courses_unassigned=int(result["courses_unassigned"]),
         visit_assignments_removed=int(result["visit_assignments_removed"]),
+    )
+
+
+# ---------------------------------------------------------------------------
+# weekday-staff-capacity (週ビューのコース「休」/定員をスタッフ数連動に)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/v2/weekday-staff-capacity",
+    response_model=WeekdayStaffCapacityResponse,
+    status_code=status.HTTP_200_OK,
+    summary="週ビュー: (拠点×曜日) ごとの稼働スタッフ数 (A-E コース開講判定用)",
+)
+async def weekday_staff_capacity_endpoint(
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    iso_year: int = Query(..., ge=2020, le=2100),
+    iso_week: int = Query(..., ge=1, le=53),
+    office_id: UUID | None = Query(
+        default=None,
+        description="単一拠点に絞る場合に指定. 未指定なら全 active 拠点を対象.",
+    ),
+) -> WeekdayStaffCapacityResponse:
+    """週ビュー (CourseWeekOverview / CourseDayTablePanel) の A-E コース「休」/
+    定員表示を auto-schedule (auto_allocator_v2 Stage 4) と統一するための read-only
+    エンドポイント.
+
+    返すのは (office_id, weekday) ごとの稼働可能 staff 数 (role='staff', trainee
+    除外, shift/override/応援/営業日 考慮済 = ``count_active_staff_per_weekday``).
+    frontend は ``courseCodeIndex(A=0..E=4) < min(staff_count, course_codes_max)``
+    で A-E コースを開講 (定員6) / 休 (定員0) と判定する.
+
+    Mコース (M/M2..) はこの API の対象外 (引き続き course_template の静的
+    capacity_<曜日> を使う).
+    """
+    # 対象拠点: office_id 指定なら単一、未指定なら全 active 拠点.
+    if office_id is not None:
+        office_ids = [office_id]
+    else:
+        rows = await db.scalars(select(Office.id).where(Office.deleted_at.is_(None)))
+        office_ids = list(rows.all())
+
+    counts = await count_active_staff_per_weekday(
+        db,
+        office_ids=office_ids,
+        iso_year=iso_year,
+        iso_week=iso_week,
+    )
+
+    items = [
+        WeekdayStaffCapacityItem(office_id=oid, weekday=wd, staff_count=cnt)
+        for (oid, wd), cnt in counts.items()
+        if cnt > 0
+    ]
+    # 安定した出力順 (office_id, weekday) でソート.
+    items.sort(key=lambda it: (str(it.office_id), it.weekday))
+
+    return WeekdayStaffCapacityResponse(
+        items=items,
+        course_codes_max=_COURSE_CODES_MAX,
     )
 
 

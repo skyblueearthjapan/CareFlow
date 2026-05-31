@@ -679,6 +679,43 @@ class AutoScheduleV2UnassignAllResponse(BaseModel):
     visit_assignments_removed: int = Field(ge=0)
 
 
+# ---------------------------------------------------------------------------
+# weekday-staff-capacity (週ビューのコース「休」/定員をスタッフ数連動にする)
+# ---------------------------------------------------------------------------
+
+
+class WeekdayStaffCapacityItem(BaseModel):
+    """``GET /api/v1/schedule/v2/weekday-staff-capacity`` の 1 要素.
+
+    ある (office_id, weekday) で稼働可能な staff 数 (role='staff', trainee 除外,
+    shift/override/応援/営業日 考慮済). frontend 週ビューは
+    ``courseCodeIndex(A=0..E=4) < min(staff_count, course_codes_max)`` で
+    A-E コースの開講/休を判定する (auto_allocator_v2 Stage 4 と同一ロジック).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    office_id: uuid.UUID
+    weekday: int = Field(ge=0, le=6)
+    staff_count: int = Field(ge=0)
+
+
+class WeekdayStaffCapacityResponse(BaseModel):
+    """``GET /api/v1/schedule/v2/weekday-staff-capacity`` response.
+
+    ``items`` は staff_count > 0 の (office_id, weekday) のみ含む (0 は省略 =
+    frontend 側で未存在キーは staff_count=0 として扱う).
+    ``course_codes_max`` は通常コース (A/B/C/D/E) の発行上限 (= 5,
+    ``auto_allocator_v2._COURSE_CODES_MAX``). frontend は
+    ``min(staff_count, course_codes_max)`` を有効コース数に使う.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[WeekdayStaffCapacityItem] = Field(default_factory=list)
+    course_codes_max: int = Field(ge=1)
+
+
 __all__ = [
     "AmPmV2",
     "AutoScheduleV2ApplyIndividualRequest",
@@ -715,4 +752,6 @@ __all__ = [
     "V2WarningOut",
     "V2WarningTypeOut",
     "V2WeekdayBeforeAfter",
+    "WeekdayStaffCapacityItem",
+    "WeekdayStaffCapacityResponse",
 ]

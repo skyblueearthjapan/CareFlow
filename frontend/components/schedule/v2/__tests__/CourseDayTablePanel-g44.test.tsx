@@ -214,6 +214,13 @@ vi.mock('@/lib/api/fetcher', () => ({
   fetcher: vi.fn(),
 }));
 
+vi.mock('@/lib/queries/weekday_staff_capacity', () => ({
+  useWeekdayStaffCapacityLookup: () => ({
+    staffCountFor: () => 5,
+    courseCodesMax: 5,
+    isLoading: false,
+  }),
+}));
 vi.mock('@/lib/queries/offices', () => ({
   useOffices: (...args: unknown[]) => mockOffices(...args),
 }));

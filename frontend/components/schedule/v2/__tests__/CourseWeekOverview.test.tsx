@@ -3,8 +3,13 @@
  *
  * - 全 (template × weekday) のセルが描画される
  * - 容量バッジ "x/N" が表示され、満杯では warning スタイル
- * - capacity=0 の曜日は「休」表示
+ * - A-E コースは staffCountFor (スタッフ数連動) で「休」/定員を判定
  * - 曜日ヘッダクリックで onJumpToDay(wd) が呼ばれる
+ *
+ * スタッフ数連動 (auto-schedule 統一): A-E コードの template は
+ * courseCodeIndex(A=0..E=4) < min(staffCount, courseCodesMax) なら開講 (定員6),
+ * それ以外は「休」(定員0). 既存テストは staffCountFor で全 A-E を開講させる
+ * ために十分な人数 (=5) を返すスタブを渡す.
  */
 import * as React from 'react';
 import { describe, it, expect, vi } from 'vitest';
@@ -56,6 +61,9 @@ function makeTemplate(id: string, label: string, officeId: string): CourseTempla
   return { id, label, office_id: officeId, ...baseTpl } as any;
 }
 
+/** A-E を全開講させる十分なスタッフ数 (=5) を返すスタブ. */
+const fullStaff = () => 5;
+
 describe('CourseWeekOverview (B-6)', () => {
   it('templates が空のとき空表示', () => {
     render(
@@ -77,6 +85,7 @@ describe('CourseWeekOverview (B-6)', () => {
         officeNameById={new Map([['o1', '本店']])}
         visits={[]}
         onJumpToDay={vi.fn()}
+        staffCountFor={fullStaff}
       />,
     );
     // 2 templates × 6 weekdays = 12 セル
@@ -115,6 +124,7 @@ describe('CourseWeekOverview (B-6)', () => {
         officeNameById={new Map([['o1', '本店']])}
         visits={visits}
         onJumpToDay={vi.fn()}
+        staffCountFor={fullStaff}
       />,
     );
     const badge = screen.getByTestId('course-week-overview-capacity-tpl-A-0');
@@ -125,21 +135,72 @@ describe('CourseWeekOverview (B-6)', () => {
     expect(screen.getByTestId('course-week-overview-name-v-2')).toHaveTextContent('佐藤');
   });
 
-  it('capacity=0 の曜日は「休」表示で、容量バッジは出ない', () => {
-    // 日曜は表示対象外なので別の曜日を 0 にする
-    const tpl: CourseTemplateRead = makeTemplate('tpl-A', 'A', 'o1');
-    const tpl2 = { ...tpl, capacity_sat: 0 };
+  it('スタッフ数連動: A-E は staff_count 不足の曜日で「休」表示・容量バッジは出ない', () => {
+    // D コース (index=3) は staffCount<4 で休. staffCount=3 を返すスタブで月曜を休に.
+    const tplD: CourseTemplateRead = makeTemplate('tpl-D', 'D', 'o1');
     render(
       <CourseWeekOverview
-        templates={[tpl2]}
+        templates={[tplD]}
         officeNameById={new Map([['o1', '本店']])}
         visits={[]}
         onJumpToDay={vi.fn()}
+        staffCountFor={() => 3}
       />,
     );
-    const cell = screen.getByTestId('course-week-overview-cell-tpl-A-5');
+    const cell = screen.getByTestId('course-week-overview-cell-tpl-D-0');
     expect(cell).toHaveTextContent('休');
-    expect(screen.queryByTestId('course-week-overview-capacity-tpl-A-5')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('course-week-overview-capacity-tpl-D-0')).not.toBeInTheDocument();
+  });
+
+  it('スタッフ数連動: 4 名出勤で D コース開講, 3 名で D 休 (回帰)', () => {
+    const tplD: CourseTemplateRead = makeTemplate('tpl-D', 'D', 'o1');
+    // 4 名 → D (index 3 < min(4,5)=4) 開講.
+    const { unmount } = render(
+      <CourseWeekOverview
+        templates={[tplD]}
+        officeNameById={new Map([['o1', '本店']])}
+        visits={[]}
+        onJumpToDay={vi.fn()}
+        staffCountFor={() => 4}
+      />,
+    );
+    const openCell = screen.getByTestId('course-week-overview-cell-tpl-D-0');
+    expect(openCell).not.toHaveTextContent('休');
+    // 開講時は容量バッジ (上限 6) が出る.
+    expect(screen.getByTestId('course-week-overview-capacity-tpl-D-0')).toHaveTextContent('上限 6');
+    unmount();
+
+    // 3 名 → D (index 3 < min(3,5)=3 = false) 休.
+    render(
+      <CourseWeekOverview
+        templates={[tplD]}
+        officeNameById={new Map([['o1', '本店']])}
+        visits={[]}
+        onJumpToDay={vi.fn()}
+        staffCountFor={() => 3}
+      />,
+    );
+    const restCell = screen.getByTestId('course-week-overview-cell-tpl-D-0');
+    expect(restCell).toHaveTextContent('休');
+  });
+
+  it('M系コースは staff_count に依らず静的 capacity を使う', () => {
+    // M template: capacity_sat=0 → staffCount に依らず土曜は「休」.
+    const tplM: CourseTemplateRead = makeTemplate('tpl-M', 'M', 'o1');
+    const tplM0 = { ...tplM, capacity_sat: 0 };
+    render(
+      <CourseWeekOverview
+        templates={[tplM0]}
+        officeNameById={new Map([['o1', '本店']])}
+        visits={[]}
+        onJumpToDay={vi.fn()}
+        staffCountFor={() => 5}
+      />,
+    );
+    // 土曜 (wd=5) は静的 capacity_sat=0 → 休.
+    expect(screen.getByTestId('course-week-overview-cell-tpl-M-5')).toHaveTextContent('休');
+    // 月曜 (wd=0) は静的 capacity_mon=4 → 開講.
+    expect(screen.getByTestId('course-week-overview-cell-tpl-M-0')).not.toHaveTextContent('休');
   });
 
   it('曜日ヘッダクリックで onJumpToDay(wd) が呼ばれる', () => {
@@ -174,6 +235,7 @@ describe('CourseWeekOverview (B-6)', () => {
         officeNameById={new Map([['o1', '本店']])}
         visits={visits}
         onJumpToDay={vi.fn()}
+        staffCountFor={fullStaff}
       />,
     );
     const el = screen.getByTestId('course-week-overview-name-v-t1');
@@ -201,6 +263,7 @@ describe('CourseWeekOverview (B-6)', () => {
         officeNameById={new Map([['o1', '本店']])}
         visits={visits}
         onJumpToDay={vi.fn()}
+        staffCountFor={fullStaff}
       />,
     );
     const el = screen.getByTestId('course-week-overview-name-v-t2');

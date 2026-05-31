@@ -16,7 +16,12 @@ import * as React from 'react';
 
 import { Card } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
-import { capacityForWeekday, type CourseTemplateRead } from '@/lib/schemas/v2/course_template';
+import {
+  COURSE_CODES_MAX,
+  capacityForWeekday,
+  effectiveCapacity,
+  type CourseTemplateRead,
+} from '@/lib/schemas/v2/course_template';
 import type { EventRead } from '@/lib/schemas/staff-events';
 import type { StaffRead } from '@/lib/schemas/staff';
 import { formatEventLabelLines, getStaffEventsForWeekday } from './CourseDayTable';
@@ -94,6 +99,15 @@ export interface CourseWeekOverviewProps {
    * visit.fixed_visit_id が無い場合は disabled.
    */
   onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
+  /**
+   * スタッフ数連動 (auto-schedule 統一): (office_id, weekday) → 稼働スタッフ数.
+   * A-E コースの「休」/定員はこの値で判定する
+   * (`effectiveCapacity`: index < min(staffCount, courseCodesMax) なら定員6, else 0).
+   * 未指定時は 0 を返すフォールバックで全 A-E が「休」になる (= API 未取得時).
+   */
+  staffCountFor?: (officeId: string, weekday: number) => number;
+  /** A-E 発行上限 (API 由来の course_codes_max. 省略時は COURSE_CODES_MAX=5). */
+  courseCodesMax?: number;
 }
 
 export function CourseWeekOverview({
@@ -107,6 +121,8 @@ export function CourseWeekOverview({
   sameAddressKeyByPatientId,
   onPatientClick,
   onTogglePin,
+  staffCountFor,
+  courseCodesMax = COURSE_CODES_MAX,
 }: CourseWeekOverviewProps) {
   // (template_id, weekday) → visits[] (start_time 昇順)
   const cellMap = React.useMemo(() => {
@@ -186,7 +202,12 @@ export function CourseWeekOverview({
                   {officeName ? `${officeName}-${tpl.label}` : tpl.label}
                 </div>
                 {WEEKDAYS.map((wd) => {
-                  const cap = capacityForWeekday(tpl, wd);
+                  // スタッフ数連動 (auto-schedule 統一): staffCountFor が渡されたときのみ
+                  // A-E を staff_count で開講判定 (M系は静的 capacity). staffCountFor が
+                  // 無い (= 旧呼出 / API 未配線) 場合は従来通り静的 capacity を使う.
+                  const cap = staffCountFor
+                    ? effectiveCapacity(tpl, wd, staffCountFor(tpl.office_id, wd), courseCodesMax)
+                    : capacityForWeekday(tpl, wd);
                   const visitList = cellMap.get(`${tpl.id}:${wd}`) ?? [];
 
                   // Wave 28 Phase B-2: 担当スタッフの event をマージ
