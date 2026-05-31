@@ -656,29 +656,76 @@ async def test_import_apply_resolves_office_code(client, db) -> None:
     assert rows[0].primary_office_id == office_id
 
 
-# 15) apply: patient_code 重複 → error 行は skip (有効 op が他に無ければ TX 非実行)
+# 15) Phase G-48: patient_id 空 + 既存 code → 新規 error ではなく UPDATE 突合.
+# ユーザーが export (code 入り) を直接編集して再アップするだけで更新できる.
 @pytest.mark.asyncio
-async def test_import_apply_duplicate_code_errors(client, db) -> None:
+async def test_import_existing_code_without_id_updates(client, db) -> None:
     admin = await _make_user(db, "im-dup@example.com", "admin")
-    await _make_patient(db, code="P-DUP-001", name="既存")
+    p = await _make_patient(db, code="P-DUP-001", name="既存", sex="male", status="active")
+    pid = p.id
 
     content = _build_workbook_bytes(
         patient_rows=[
             {
-                "patient_code": "P-DUP-001",  # 重複!
-                "name": "重複新規",
-                "sex": "male",
+                # patient_id 空 + 既存 code → その患者を UPDATE する (旧来は error).
+                "patient_code": "P-DUP-001",
+                "name": "更新後の名前",
+                "sex": "female",
                 "status": "active",
                 "address": "addr",
             }
         ],
     )
     res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
     body = res.json()
-    # 唯一の行が error なので有効 op = 0 → transaction_applied=False.
-    assert body["transaction_applied"] is False
+    assert body["transaction_applied"] is True
+    assert body["summary"]["patients_error"] == 0
+    assert body["summary"]["patients_update"] == 1
+    assert body["summary"]["patients_new"] == 0
+    row = body["patient_rows"][0]
+    assert row["operation"] == "update"
+    assert row["patient_id"] == str(pid)
+
+    db.expire_all()
+    p_after = await db.get(Patient, pid)
+    assert p_after.name == "更新後の名前"
+    assert p_after.sex == "female"
+    # 新規行は作られていない (同一 code が 1 件だけ).
+    rows = (await db.scalars(select(Patient).where(Patient.code == "P-DUP-001"))).all()
+    assert len(rows) == 1
+
+
+# 15b) 同一ファイル内 patient_code 重複は従来どおり error.
+@pytest.mark.asyncio
+async def test_import_in_file_duplicate_code_errors(client, db) -> None:
+    admin = await _make_user(db, "im-dup-infile@example.com", "admin")
+
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                "patient_code": "P-INFILE-DUP",
+                "name": "1行目",
+                "sex": "male",
+                "status": "active",
+                "address": "addr",
+            },
+            {
+                "patient_code": "P-INFILE-DUP",  # 同ファイル内重複!
+                "name": "2行目",
+                "sex": "female",
+                "status": "active",
+                "address": "addr",
+            },
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=True)
+    body = res.json()
+    # 1 件目は new, 2 件目は同ファイル内重複で error.
     assert body["summary"]["patients_error"] == 1
-    assert "P-DUP-001" in body["patient_rows"][0]["error_message"]
+    assert body["summary"]["patients_new"] == 1
+    err_row = next(r for r in body["patient_rows"] if r["operation"] == "error")
+    assert "P-INFILE-DUP" in err_row["error_message"]
 
 
 # 16) RBAC: staff は 403
@@ -1785,7 +1832,8 @@ async def test_export_writes_requires_multiple_staff_true(client, db) -> None:
     wb = load_workbook(BytesIO(res.content))
     ws = wb[SHEET_PATIENTS]
     val = ws.cell(row=2, column=PATIENT_COL_INDEX["requires_multiple_staff"] + 1).value
-    assert val == "TRUE"
+    # Phase G-48: 日本語ラベル「はい/いいえ」で書き出す.
+    assert val == "はい"
 
 
 @pytest.mark.asyncio
@@ -1800,7 +1848,8 @@ async def test_export_writes_requires_multiple_staff_false(client, db) -> None:
     wb = load_workbook(BytesIO(res.content))
     ws = wb[SHEET_PATIENTS]
     val = ws.cell(row=2, column=PATIENT_COL_INDEX["requires_multiple_staff"] + 1).value
-    assert val == "FALSE"
+    # Phase G-48: 日本語ラベル「はい/いいえ」で書き出す.
+    assert val == "いいえ"
 
 
 @pytest.mark.asyncio
@@ -1920,8 +1969,11 @@ async def test_import_blank_requires_multiple_staff_preserves_existing(client, d
 
 
 @pytest.mark.asyncio
-async def test_export_includes_weekly_pattern_sheet(client, db) -> None:
-    """Phase E-8: export 結果に「希望訪問パターン」シートが含まれる."""
+async def test_export_includes_weekly_pattern_in_patient_sheet(client, db) -> None:
+    """Phase G-48: weekly_pattern は患者マスタシートに統合して書き出される.
+
+    旧 Phase E-8 の独立「希望訪問パターン」シートは export では作られない.
+    """
     admin = await _make_user(db, "e8-export@example.com", "admin")
     p = await _make_patient(db, code="P-E8-1", name="希望あり患者")
     p.weekly_pattern = {
@@ -1931,67 +1983,55 @@ async def test_export_includes_weekly_pattern_sheet(client, db) -> None:
         "preferred_weekdays": ["Mon", "Wed", "Fri"],
         "service_minutes": 35,
         "frequency_per_week": 3,
+        "visit_frequency": "every",
     }
     await db.commit()
     res = await client.get("/api/v1/patients/import-export/export", headers=_bearer(admin))
     assert res.status_code == 200
     wb = load_workbook(BytesIO(res.content))
-    assert SHEET_WEEKLY in wb.sheetnames
-    ws = wb[SHEET_WEEKLY]
-    # 1 patient → 1 行 (+ header)
-    assert ws.max_row >= 2
-    # 値を verify
+    # 独立シートは作られない (2 シート構成).
+    assert SHEET_WEEKLY not in wb.sheetnames
+    ws = wb[SHEET_PATIENTS]
     row = next(ws.iter_rows(min_row=2, max_row=2, values_only=True))
-    code = row[WEEKLY_COL_INDEX["patient_code"]]
-    assert code == "P-E8-1"
-    assert row[WEEKLY_COL_INDEX["time_type"]] == "時間帯"
-    assert row[WEEKLY_COL_INDEX["preferred_start"]] == "09:00"
-    assert row[WEEKLY_COL_INDEX["preferred_end"]] == "12:00"
-    assert row[WEEKLY_COL_INDEX["frequency_per_week"]] == 3
-    assert row[WEEKLY_COL_INDEX["service_minutes"]] == 35
-    # 希望曜日: Mon/Wed/Fri は TRUE, 他は FALSE
-    assert row[WEEKLY_COL_INDEX["wd_mon"]] == "TRUE"
-    assert row[WEEKLY_COL_INDEX["wd_tue"]] == "FALSE"
-    assert row[WEEKLY_COL_INDEX["wd_wed"]] == "TRUE"
-    assert row[WEEKLY_COL_INDEX["wd_thu"]] == "FALSE"
-    assert row[WEEKLY_COL_INDEX["wd_fri"]] == "TRUE"
+    assert row[PATIENT_COL_INDEX["patient_code"]] == "P-E8-1"
+    assert row[PATIENT_COL_INDEX["weekly_time_type"]] == "時間帯"
+    assert row[PATIENT_COL_INDEX["preferred_start"]] == "09:00"
+    assert row[PATIENT_COL_INDEX["preferred_end"]] == "12:00"
+    assert row[PATIENT_COL_INDEX["frequency_per_week"]] == 3
+    assert row[PATIENT_COL_INDEX["service_minutes"]] == 35
+    # 訪問頻度: DB "every" → 日本語 "毎週".
+    assert row[PATIENT_COL_INDEX["visit_frequency"]] == "毎週"
+    # 希望曜日: 1 セルにカンマ区切り (Mon..Sun 正準順).
+    assert row[PATIENT_COL_INDEX["preferred_weekdays"]] == "月,水,金"
 
 
 @pytest.mark.asyncio
 async def test_import_updates_weekly_pattern(client, db) -> None:
-    """Phase E-8: 希望訪問パターン シートで patient.weekly_pattern を更新できる."""
+    """Phase G-48: 統合シートで patient.weekly_pattern を更新できる."""
     admin = await _make_user(db, "e8-import@example.com", "admin")
     p = await _make_patient(db, code="P-E8-2", name="更新対象")
     p.weekly_pattern = None
     await db.commit()
     pid = p.id
 
-    # 希望訪問パターン シートを含む xlsx を build
-    wb = Workbook()
-    ws_p = wb.active
-    ws_p.title = SHEET_PATIENTS
-    ws_p.append([col["header"] for col in PATIENT_COLUMNS])
-    # 患者シート: 既存 patient_id で update なし (空 row)
-    pfv_ws = wb.create_sheet(SHEET_PFV)
-    pfv_ws.append([col["header"] for col in PFV_COLUMNS])
-    # 希望訪問パターン シート
-    from app.services.patient_excel.schema import WEEKLY_COLUMNS
-
-    ws_w = wb.create_sheet(SHEET_WEEKLY)
-    ws_w.append([col["header"] for col in WEEKLY_COLUMNS])
-    weekly_row = [None] * len(WEEKLY_COLUMNS)
-    weekly_row[WEEKLY_COL_INDEX["patient_id"]] = str(pid)
-    weekly_row[WEEKLY_COL_INDEX["patient_code"]] = "P-E8-2"
-    weekly_row[WEEKLY_COL_INDEX["patient_name"]] = "更新対象"
-    weekly_row[WEEKLY_COL_INDEX["time_type"]] = "固定"
-    weekly_row[WEEKLY_COL_INDEX["preferred_start"]] = "10:00"
-    weekly_row[WEEKLY_COL_INDEX["service_minutes"]] = 45
-    weekly_row[WEEKLY_COL_INDEX["wd_mon"]] = "TRUE"
-    weekly_row[WEEKLY_COL_INDEX["wd_wed"]] = "TRUE"
-    ws_w.append(weekly_row)
-    buf = BytesIO()
-    wb.save(buf)
-    content = buf.getvalue()
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                "patient_id": str(pid),
+                "patient_code": "P-E8-2",
+                "name": "更新対象",
+                "sex": "男性",
+                "status": "稼働",
+                "address": "千葉市稲毛区test1",
+                "weekly_time_type": "固定",
+                "preferred_start": "10:00",
+                "service_minutes": 45,
+                "preferred_weekdays": "月,水",
+                "visit_frequency": "隔週",
+                "frequency_per_week": 2,
+            }
+        ],
+    )
 
     res = await _upload(client, admin, content=content, dry_run=False)
     assert res.status_code == 200, res.text
@@ -2003,11 +2043,14 @@ async def test_import_updates_weekly_pattern(client, db) -> None:
     assert p_after.weekly_pattern["preferred_start"] == "10:00"
     assert p_after.weekly_pattern["service_minutes"] == 45
     assert set(p_after.weekly_pattern.get("preferred_weekdays", [])) == {"Mon", "Wed"}
+    # 訪問頻度は DB 英語正準値へ正規化される.
+    assert p_after.weekly_pattern["visit_frequency"] == "biweekly"
+    assert p_after.weekly_pattern["frequency_per_week"] == 2
 
 
 @pytest.mark.asyncio
 async def test_weekly_pattern_roundtrip(client, db) -> None:
-    """Phase E-8: export → 編集なし import で weekly_pattern が完全 noop."""
+    """Phase G-48: export → 編集なし import で weekly_pattern が完全 noop."""
     admin = await _make_user(db, "e8-roundtrip@example.com", "admin")
     p = await _make_patient(db, code="P-E8-RT", name="round-trip")
     p.weekly_pattern = {
@@ -2016,6 +2059,7 @@ async def test_weekly_pattern_roundtrip(client, db) -> None:
         "preferred_end": "15:00",
         "preferred_weekdays": ["Tue", "Thu"],
         "service_minutes": 30,
+        "visit_frequency": "monthly",
     }
     await db.commit()
     export_res = await client.get("/api/v1/patients/import-export/export", headers=_bearer(admin))
@@ -2039,3 +2083,587 @@ async def test_weekly_pattern_roundtrip(client, db) -> None:
     assert summary["patients_error"] == 0, body
     assert summary["patients_update"] == 0, body
     assert summary["patients_noop"] == 1, body
+
+
+@pytest.mark.asyncio
+async def test_weekly_pattern_roundtrip_preserves_unmanaged_keys(client, db) -> None:
+    """CRITICAL 回帰防止 (Phase G-48 hotfix): weekly_pattern に管理外キー
+    (entries / staff_count) を持つ患者を export → 無編集 import したとき、
+
+      (a) patients_update == 0 (真の noop)
+      (b) DB 上の entries / staff_count が **保持** される
+
+    ことを担保する. exporter は管理 8 キーのみ書き出し importer も 8 キーのみ
+    再構築するため、丸ごと置換だと無編集でも entries が消えて update 扱いになる
+    (= スケジューラの訪問時刻 / 2 名体制が静かに壊れる). merge 化でこれを防ぐ.
+
+    既存の round-trip テスト (test_weekly_pattern_roundtrip) は 8 キーのみで
+    管理外キーが盲点だったため、本テストを管理外キー入りで追加する.
+
+    visit_frequency は canonical 値 (biweekly) を入れて round-trip が noop に
+    なる (= legacy-JP 正規化が canonical をそのまま通す) ことも確認する.
+    """
+    admin = await _make_user(db, "g48-rt-unmanaged@example.com", "admin")
+    p = await _make_patient(db, code="P-G48-RT-ENTRIES", name="管理外キー保持")
+    original_wp = {
+        # ---- 管理 8 キー (exporter/import が扱う、round-trip で復元される) ----
+        "frequency_per_week": 3,
+        "visit_frequency": "biweekly",  # canonical 値 (JP 正規化が noop で通すこと)
+        "preferred_weekdays": ["Mon", "Wed", "Fri"],
+        "service_minutes": 45,
+        "time_type": "時間帯",
+        "preferred_start": "10:00",
+        "preferred_end": "11:30",
+        # ---- 管理外キー (本パイプライン非管理. merge で保持されねばならない) ----
+        "staff_count": 1,
+        "entries": [
+            {
+                "weekday": "Mon",
+                "time_type": "時間帯",
+                "preferred_start": "10:00",
+                "preferred_end": "11:30",
+                "service_minutes": 45,
+                "staff_count": 1,
+            },
+            {
+                "weekday": "Wed",
+                "time_type": "固定",
+                "preferred_start": "14:00",
+                "preferred_end": "15:00",
+                "service_minutes": 60,
+                "staff_count": 2,  # 2 名体制エントリ — 消えると静かに壊れる
+            },
+            {
+                "weekday": "Fri",
+                "time_type": "時間帯",
+                "preferred_start": "10:00",
+                "preferred_end": "11:30",
+                "service_minutes": 45,
+                "staff_count": 1,
+            },
+        ],
+    }
+    p.weekly_pattern = dict(original_wp)
+    await db.commit()
+    pid = p.id
+
+    # export → 無編集 import (dry_run でまず noop を確認)
+    export_res = await client.get("/api/v1/patients/import-export/export", headers=_bearer(admin))
+    assert export_res.status_code == 200
+    exported = export_res.content
+    dry_files = {
+        "file": (
+            "exported.xlsx",
+            exported,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
+    dry_res = await client.post(
+        "/api/v1/patients/import-export/import?dry_run=true",
+        headers=_bearer(admin),
+        files=dry_files,
+    )
+    assert dry_res.status_code == 200, dry_res.text
+    summary = dry_res.json()["summary"]
+    # (a) 真の noop — entries 持ち患者でも update にならない
+    assert summary["patients_error"] == 0, dry_res.json()
+    assert summary["patients_update"] == 0, dry_res.json()
+    assert summary["patients_noop"] == 1, dry_res.json()
+
+    # apply して DB 上の entries / staff_count が保持されることを確認
+    apply_files = {
+        "file": (
+            "exported.xlsx",
+            exported,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
+    apply_res = await client.post(
+        "/api/v1/patients/import-export/import?dry_run=false",
+        headers=_bearer(admin),
+        files=apply_files,
+    )
+    assert apply_res.status_code == 200, apply_res.text
+    assert apply_res.json()["summary"]["patients_update"] == 0, apply_res.json()
+
+    db.expire_all()
+    p_after = await db.get(Patient, pid)
+    # (b) 管理外キーが保持される
+    assert p_after.weekly_pattern is not None
+    assert p_after.weekly_pattern.get("staff_count") == 1
+    assert p_after.weekly_pattern.get("entries") == original_wp["entries"]
+    # 2 名体制エントリも保持
+    wed = next(e for e in p_after.weekly_pattern["entries"] if e["weekday"] == "Wed")
+    assert wed["staff_count"] == 2
+    # 管理 8 キーも維持 (canonical visit_frequency が round-trip 安定)
+    assert p_after.weekly_pattern["visit_frequency"] == "biweekly"
+    assert p_after.weekly_pattern["frequency_per_week"] == 3
+
+
+@pytest.mark.asyncio
+async def test_weekly_pattern_partial_edit_preserves_unmanaged_keys(client, db) -> None:
+    """Phase G-48 hotfix: 管理 8 キーの一部だけ編集して import した場合でも、
+    管理外キー (entries/staff_count) は保持され、編集した管理キーのみ反映される.
+
+    blank=keep + 管理外キー保持 の両立を確認する (merge セマンティクス)."""
+    admin = await _make_user(db, "g48-partial-unmanaged@example.com", "admin")
+    p = await _make_patient(db, code="P-G48-PARTIAL", name="部分編集")
+    p.weekly_pattern = {
+        "time_type": "時間帯",
+        "preferred_start": "09:00",
+        "preferred_end": "10:00",
+        "service_minutes": 30,
+        "staff_count": 2,
+        "entries": [
+            {"weekday": "Tue", "time_type": "時間帯", "staff_count": 2},
+        ],
+    }
+    await db.commit()
+    pid = p.id
+    # service_minutes のみ 30 → 60 に変更、他 weekly 列は export 相当で埋める.
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                "patient_id": str(pid),
+                "patient_code": "P-G48-PARTIAL",
+                "name": "部分編集",
+                "weekly_time_type": "時間帯",
+                "preferred_start": "09:00",
+                "preferred_end": "10:00",
+                "service_minutes": 60,  # ここだけ変更
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    db.expire_all()
+    p_after = await db.get(Patient, pid)
+    # 編集した管理キーは反映
+    assert p_after.weekly_pattern["service_minutes"] == 60
+    # 管理外キーは保持
+    assert p_after.weekly_pattern.get("staff_count") == 2
+    assert p_after.weekly_pattern.get("entries") == [
+        {"weekday": "Tue", "time_type": "時間帯", "staff_count": 2}
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Phase G-48: 日本語化 + 英↔日マッピング + code 突合 (UUID 不要化) + 統合シート
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_export_writes_japanese_enum_labels(client, db) -> None:
+    """Phase G-48: enum 系が日本語ラベルで書き出される (DB 英語値 → 日本語)."""
+    admin = await _make_user(db, "g48-ex-ja@example.com", "admin")
+    await _make_patient(
+        db,
+        code="P-G48-EX",
+        name="日本語出力",
+        sex="female",
+        status="suspended",
+        insurance="medical",
+        sex_restriction="female_only",
+        address="千葉市稲毛区test1",
+    )
+    res = await client.get("/api/v1/patients/import-export/export", headers=_bearer(admin))
+    assert res.status_code == 200
+    wb = load_workbook(BytesIO(res.content))
+    ws = wb[SHEET_PATIENTS]
+    row = next(ws.iter_rows(min_row=2, max_row=2, values_only=True))
+    assert row[PATIENT_COL_INDEX["sex"]] == "女性"
+    assert row[PATIENT_COL_INDEX["status"]] == "休止"
+    assert row[PATIENT_COL_INDEX["insurance"]] == "医療保険"
+    assert row[PATIENT_COL_INDEX["sex_restriction"]] == "女性のみ"
+
+
+@pytest.mark.asyncio
+async def test_export_sex_restriction_none_writes_nashi(client, db) -> None:
+    """sex_restriction が DB NULL のとき「なし」を明示出力する."""
+    admin = await _make_user(db, "g48-ex-nashi@example.com", "admin")
+    await _make_patient(db, code="P-G48-NASHI", name="制限なし", sex_restriction=None)
+    res = await client.get("/api/v1/patients/import-export/export", headers=_bearer(admin))
+    wb = load_workbook(BytesIO(res.content))
+    ws = wb[SHEET_PATIENTS]
+    row = next(ws.iter_rows(min_row=2, max_row=2, values_only=True))
+    assert row[PATIENT_COL_INDEX["sex_restriction"]] == "なし"
+
+
+@pytest.mark.asyncio
+async def test_import_japanese_enum_labels_new_patient(client, db) -> None:
+    """Phase G-48: 日本語ラベルで新規患者を登録すると DB に英語 enum が格納される."""
+    admin = await _make_user(db, "g48-im-ja@example.com", "admin")
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                "patient_code": "P-G48-JA-NEW",
+                "name": "日本語入力",
+                "sex": "女性",
+                "status": "入院",
+                "insurance": "介護保険",
+                "sex_restriction": "男性のみ",
+                "address": "千葉市稲毛区xxx",
+                "requires_multiple_staff": "はい",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    db.expire_all()
+    p = await db.scalar(select(Patient).where(Patient.code == "P-G48-JA-NEW"))
+    assert p is not None
+    assert p.sex == "female"
+    assert p.status == "admitted"
+    assert p.insurance == "care"
+    assert p.sex_restriction == "male_only"
+    assert p.requires_multiple_staff is True
+
+
+@pytest.mark.asyncio
+async def test_import_english_enum_values_still_accepted(client, db) -> None:
+    """後方互換: 英語 enum 値 (旧 export) でも import が壊れない."""
+    admin = await _make_user(db, "g48-im-en@example.com", "admin")
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                "patient_code": "P-G48-EN-NEW",
+                "name": "英語値互換",
+                "sex": "male",
+                "status": "active",
+                "insurance": "medical",
+                "sex_restriction": "female_only",
+                "address": "千葉市稲毛区xxx",
+                "requires_multiple_staff": "TRUE",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    db.expire_all()
+    p = await db.scalar(select(Patient).where(Patient.code == "P-G48-EN-NEW"))
+    assert p is not None
+    assert p.sex == "male"
+    assert p.status == "active"
+    assert p.insurance == "medical"
+    assert p.sex_restriction == "female_only"
+    assert p.requires_multiple_staff is True
+
+
+@pytest.mark.asyncio
+async def test_import_sex_restriction_nashi_clears_to_null(client, db) -> None:
+    """「なし」を import すると sex_restriction が NULL になる (制限解除)."""
+    admin = await _make_user(db, "g48-im-nashi@example.com", "admin")
+    p = await _make_patient(db, code="P-G48-CLR", name="制限解除", sex_restriction="female_only")
+    pid = p.id
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                "patient_id": str(pid),
+                "patient_code": "P-G48-CLR",
+                "sex_restriction": "なし",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["summary"]["patients_update"] == 1
+    db.expire_all()
+    p_after = await db.get(Patient, pid)
+    assert p_after.sex_restriction is None
+
+
+@pytest.mark.asyncio
+async def test_import_update_via_code_without_id(client, db) -> None:
+    """Phase G-48 (最重要): patient_id 空 + patient_code で既存患者を UPDATE."""
+    admin = await _make_user(db, "g48-code-upd@example.com", "admin")
+    p = await _make_patient(
+        db, code="P-G48-CODE", name="旧名前", sex="male", status="active", address="旧住所"
+    )
+    pid = p.id
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                # patient_id 列なし (UUID 不要) — code だけで突合.
+                "patient_code": "P-G48-CODE",
+                "name": "新名前",
+                "address": "新住所",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["summary"]["patients_update"] == 1
+    assert body["summary"]["patients_new"] == 0
+    assert body["patient_rows"][0]["patient_id"] == str(pid)
+    db.expire_all()
+    p_after = await db.get(Patient, pid)
+    assert p_after.name == "新名前"
+    assert p_after.address == "新住所"
+
+
+@pytest.mark.asyncio
+async def test_pfv_mode_japanese_label(client, db) -> None:
+    """Phase G-48: PFV モードを日本語「特別」で指定すると DB に "special" が入る."""
+    admin = await _make_user(db, "g48-pfv-mode@example.com", "admin")
+    p = await _make_patient(db, code="P-G48-PFV", name="モード日本語")
+    pid = p.id
+    content = _build_workbook_bytes(
+        pfv_rows=[
+            {
+                "patient_id": str(pid),
+                "weekday": "月",
+                "slot_index": 0,
+                "mode": "特別",
+                "time_type": "固定",
+                "start_time": "09:00",
+                "duration_min": 30,
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    db.expire_all()
+    rows = (
+        await db.scalars(select(PatientFixedVisit).where(PatientFixedVisit.patient_id == pid))
+    ).all()
+    assert len(rows) == 1
+    assert rows[0].mode == "special"
+
+
+@pytest.mark.asyncio
+async def test_export_pfv_mode_japanese(client, db) -> None:
+    """PFV モードが日本語で export される (special → 特別)."""
+    admin = await _make_user(db, "g48-ex-pfv-mode@example.com", "admin")
+    p = await _make_patient(db, code="P-G48-PFVEX", name="モード出力")
+    await _make_pfv(db, patient_id=p.id, weekday=0, mode="special")
+    res = await client.get("/api/v1/patients/import-export/export", headers=_bearer(admin))
+    wb = load_workbook(BytesIO(res.content))
+    ws_f = wb[SHEET_PFV]
+    mode_val = ws_f.cell(row=2, column=PFV_COL_INDEX["mode"] + 1).value
+    assert mode_val == "特別"
+
+
+@pytest.mark.asyncio
+async def test_weekday_single_cell_comma_variants(client, db) -> None:
+    """希望曜日 1 セル: 半角/全角カンマ・読点いずれの区切りも受理する."""
+    admin = await _make_user(db, "g48-wd-cell@example.com", "admin")
+    p = await _make_patient(db, code="P-G48-WD", name="曜日1セル")
+    p.weekly_pattern = None
+    await db.commit()
+    pid = p.id
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                "patient_id": str(pid),
+                "patient_code": "P-G48-WD",
+                # 全角カンマ + 読点 + 半角カンマ混在.
+                "preferred_weekdays": "月，火、水,金",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    db.expire_all()
+    p_after = await db.get(Patient, pid)
+    assert p_after.weekly_pattern is not None
+    # Mon..Sun 正準順で格納される.
+    assert p_after.weekly_pattern["preferred_weekdays"] == ["Mon", "Tue", "Wed", "Fri"]
+
+
+@pytest.mark.asyncio
+async def test_weekly_blank_keeps_existing(client, db) -> None:
+    """weekly フィールド全空の行は既存 weekly_pattern を維持 (clear しない)."""
+    admin = await _make_user(db, "g48-wk-keep@example.com", "admin")
+    p = await _make_patient(db, code="P-G48-KEEP", name="維持")
+    existing_wp = {
+        "time_type": "時間帯",
+        "preferred_start": "09:00",
+        "preferred_end": "12:00",
+        "preferred_weekdays": ["Mon"],
+    }
+    p.weekly_pattern = dict(existing_wp)
+    await db.commit()
+    pid = p.id
+    # name だけ変更、weekly 列は全空.
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                "patient_id": str(pid),
+                "patient_code": "P-G48-KEEP",
+                "name": "新名前",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    db.expire_all()
+    p_after = await db.get(Patient, pid)
+    assert p_after.name == "新名前"
+    # weekly_pattern は破壊されず維持される.
+    assert p_after.weekly_pattern == existing_wp
+
+
+@pytest.mark.asyncio
+async def test_full_japanese_roundtrip_noop(client, db) -> None:
+    """Phase G-48: 日本語 enum + weekly 統合 + 全列適切な患者で export → 無編集
+    import が完全 noop (0 変更) になる (round-trip 安定性、最重要)."""
+    admin = await _make_user(db, "g48-rt-noop@example.com", "admin")
+    office = await _make_office(db, code="INAGE", name="稲毛")
+    p = await _make_patient(
+        db,
+        code="P-G48-RT",
+        name="往復患者",
+        kana="オウフクカンジャ",
+        sex="female",
+        status="active",
+        insurance="care",
+        address="千葉市稲毛区test1",
+        sex_restriction="female_only",
+        requires_multiple_staff=True,
+        primary_office_id=office.id,
+    )
+    p.weekly_pattern = {
+        "frequency_per_week": 3,
+        "visit_frequency": "every",
+        "visit_weeks": "1,3",
+        "preferred_weekdays": ["Mon", "Wed", "Fri"],
+        "service_minutes": 40,
+        "time_type": "時間帯",
+        "preferred_start": "09:00",
+        "preferred_end": "12:00",
+    }
+    await db.commit()
+
+    export_res = await client.get("/api/v1/patients/import-export/export", headers=_bearer(admin))
+    assert export_res.status_code == 200
+    files = {
+        "file": (
+            "exported.xlsx",
+            export_res.content,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
+    import_res = await client.post(
+        "/api/v1/patients/import-export/import?dry_run=true",
+        headers=_bearer(admin),
+        files=files,
+    )
+    assert import_res.status_code == 200, import_res.text
+    summary = import_res.json()["summary"]
+    assert summary["patients_error"] == 0, import_res.json()
+    assert summary["patients_update"] == 0, import_res.json()
+    assert summary["patients_noop"] == 1, import_res.json()
+
+
+@pytest.mark.asyncio
+async def test_backward_compat_legacy_three_sheet_english(client, db) -> None:
+    """後方互換: 旧 3 シート構成 (英語値 + 曜日 7 列 TRUE/FALSE) も import 可能.
+
+    旧 export ファイル (Phase E-8 形式) を手で組み立てて import する.
+    """
+    from app.services.patient_excel.schema import WEEKLY_COLUMNS
+
+    admin = await _make_user(db, "g48-bc-legacy@example.com", "admin")
+    p = await _make_patient(db, code="P-G48-LEGACY", name="旧形式")
+    p.weekly_pattern = None
+    await db.commit()
+    pid = p.id
+
+    wb = Workbook()
+    # 患者シート: 旧形式は patient_id を持つだけの update なし行でよい.
+    # ただし旧 patient sheet には weekly 列が無い前提なので、新ヘッダーで空行を作る
+    # と weekly は空 = 維持. weekly は独立シートから来る.
+    ws_p = wb.active
+    ws_p.title = SHEET_PATIENTS
+    ws_p.append([str(c["header"]) for c in PATIENT_COLUMNS])
+    prow = [None] * len(PATIENT_COLUMNS)
+    prow[PATIENT_COL_INDEX["patient_id"]] = str(pid)
+    prow[PATIENT_COL_INDEX["patient_code"]] = "P-G48-LEGACY"
+    ws_p.append(prow)
+    # PFV シート (空).
+    pfv_ws = wb.create_sheet(SHEET_PFV)
+    pfv_ws.append([str(c["header"]) for c in PFV_COLUMNS])
+    # 旧 独立「希望訪問パターン」シート (曜日 7 列 TRUE/FALSE).
+    ws_w = wb.create_sheet(SHEET_WEEKLY)
+    ws_w.append([str(c["header"]) for c in WEEKLY_COLUMNS])
+    wrow = [None] * len(WEEKLY_COLUMNS)
+    wrow[WEEKLY_COL_INDEX["patient_id"]] = str(pid)
+    wrow[WEEKLY_COL_INDEX["patient_code"]] = "P-G48-LEGACY"
+    wrow[WEEKLY_COL_INDEX["time_type"]] = "固定"
+    wrow[WEEKLY_COL_INDEX["preferred_start"]] = "10:00"
+    wrow[WEEKLY_COL_INDEX["wd_tue"]] = "TRUE"
+    wrow[WEEKLY_COL_INDEX["wd_thu"]] = "TRUE"
+    # 旧形式では visit_frequency に日本語が入っていた可能性 → 英語へ正規化されること.
+    wrow[WEEKLY_COL_INDEX["visit_frequency"]] = "毎週"
+    ws_w.append(wrow)
+    buf = BytesIO()
+    wb.save(buf)
+
+    res = await _upload(client, admin, content=buf.getvalue(), dry_run=False)
+    assert res.status_code == 200, res.text
+    db.expire_all()
+    p_after = await db.get(Patient, pid)
+    assert p_after.weekly_pattern is not None
+    assert p_after.weekly_pattern["time_type"] == "固定"
+    assert p_after.weekly_pattern["preferred_start"] == "10:00"
+    assert set(p_after.weekly_pattern["preferred_weekdays"]) == {"Tue", "Thu"}
+    # 旧シートの日本語 visit_frequency も英語正準値へ正規化される.
+    assert p_after.weekly_pattern["visit_frequency"] == "every"
+
+
+@pytest.mark.asyncio
+async def test_backward_compat_legacy_weekly_sheet_delete_clears(client, db) -> None:
+    """後方互換 / HIGH 回帰防止 (Phase G-48 hotfix-2):
+
+    旧 3 シート構成の「希望訪問パターン」シートに ``<DELETE>`` 行を含むファイルを
+    import すると、(a) 例外 (TypeError) を出さず 200 で完了し、(b) 当該患者の
+    weekly_pattern が None にクリアされること.
+
+    旧経路は ``<DELETE>`` 行で merge 関数へ ``wp=None`` を渡すため、None ガードが
+    無いと ``key in None`` で TypeError → import が 500 / rollback していた.
+    """
+    from app.services.patient_excel.schema import WEEKLY_COLUMNS
+
+    admin = await _make_user(db, "g48-bc-legacy-del@example.com", "admin")
+    p = await _make_patient(db, code="P-G48-LEGDEL", name="旧形式削除")
+    # 既存 weekly_pattern (管理外キー込み) を設定 → クリア対象.
+    p.weekly_pattern = {
+        "time_type": "固定",
+        "preferred_start": "10:00",
+        "preferred_weekdays": ["Tue", "Thu"],
+        "staff_count": 2,
+        "entries": [{"weekday": "Tue", "start": "10:00"}],
+    }
+    await db.commit()
+    pid = p.id
+
+    wb = Workbook()
+    ws_p = wb.active
+    ws_p.title = SHEET_PATIENTS
+    ws_p.append([str(c["header"]) for c in PATIENT_COLUMNS])
+    prow = [None] * len(PATIENT_COLUMNS)
+    prow[PATIENT_COL_INDEX["patient_id"]] = str(pid)
+    prow[PATIENT_COL_INDEX["patient_code"]] = "P-G48-LEGDEL"
+    ws_p.append(prow)
+    pfv_ws = wb.create_sheet(SHEET_PFV)
+    pfv_ws.append([str(c["header"]) for c in PFV_COLUMNS])
+    # 旧 独立「希望訪問パターン」シートに <DELETE> 行.
+    ws_w = wb.create_sheet(SHEET_WEEKLY)
+    ws_w.append([str(c["header"]) for c in WEEKLY_COLUMNS])
+    wrow = [None] * len(WEEKLY_COLUMNS)
+    wrow[WEEKLY_COL_INDEX["patient_id"]] = str(pid)
+    wrow[WEEKLY_COL_INDEX["patient_code"]] = "P-G48-LEGDEL"
+    wrow[WEEKLY_COL_INDEX["delete_flag"]] = "<DELETE>"
+    ws_w.append(wrow)
+    buf = BytesIO()
+    wb.save(buf)
+
+    # (a) 例外を出さず 200 で完了する.
+    res = await _upload(client, admin, content=buf.getvalue(), dry_run=False)
+    assert res.status_code == 200, res.text
+    db.expire_all()
+    p_after = await db.get(Patient, pid)
+    # (b) weekly_pattern が None にクリアされる (明示削除なので entries 等も消える).
+    assert p_after.weekly_pattern is None

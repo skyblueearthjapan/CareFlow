@@ -35,17 +35,23 @@ from app.services.patient_excel.schema import (
     HEADER_FONT_COLOR,
     ID_COLUMN_FILL_COLOR,
     ID_COLUMN_FONT_COLOR,
+    INSURANCE_EN_TO_JA,
+    LATLNG_COMMENT_TEXT,
     PATIENT_COL_INDEX,
     PATIENT_COLUMNS,
     PATIENT_ID_COMMENT_TEXT,
     PFV_COL_INDEX,
     PFV_COLUMNS,
+    PFV_MODE_EN_TO_JA,
     PFV_PATIENT_ID_COMMENT_TEXT,
+    SEX_EN_TO_JA,
+    SEX_RESTRICTION_EN_TO_JA,
     SHEET_PATIENTS,
     SHEET_PFV,
-    SHEET_WEEKLY,
+    STATUS_EN_TO_JA,
+    VISIT_FREQUENCY_EN_TO_JA,
     WEEKDAY_INT_TO_LABEL,
-    WEEKLY_COLUMNS,
+    weekdays_en_to_cell,
 )
 
 logger = logging.getLogger(__name__)
@@ -166,23 +172,58 @@ def _write_patient_row(
     code = ""
     if patient.primary_office_id is not None:
         code = office_code_by_id.get(patient.primary_office_id, "")
+
+    # Phase G-48: enum 系は日本語ラベルで書き出す (DB 英語値 → 日本語).
+    # 想定外の DB 値はそのまま書き出す (import 側で英語値受理にフォールバックさせる).
+    sex_ja = SEX_EN_TO_JA.get(patient.sex, patient.sex) if patient.sex else None
+    status_ja = STATUS_EN_TO_JA.get(patient.status, patient.status) if patient.status else None
+    insurance_ja = (
+        INSURANCE_EN_TO_JA.get(patient.insurance, patient.insurance) if patient.insurance else None
+    )
+    # 性別制限: DB NULL → 「なし」を明示出力 (dropdown に合わせ運用者に意図を示す).
+    sex_restriction_ja = (
+        SEX_RESTRICTION_EN_TO_JA.get(patient.sex_restriction, patient.sex_restriction)
+        if patient.sex_restriction
+        else "なし"
+    )
+
+    # Phase G-48: weekly_pattern (希望訪問パターン) を統合シートの横一列に展開.
+    wp = patient.weekly_pattern or {}
+    if not isinstance(wp, dict):
+        wp = {}
+    vf_raw = wp.get("visit_frequency")
+    visit_frequency_ja = (
+        VISIT_FREQUENCY_EN_TO_JA.get(vf_raw, vf_raw) if isinstance(vf_raw, str) else None
+    )
+    pref_weekdays = wp.get("preferred_weekdays")
+    weekdays_cell = weekdays_en_to_cell(pref_weekdays if isinstance(pref_weekdays, list) else None)
+
     values: dict[str, object | None] = {
         "patient_id": str(patient.id),
         "patient_code": patient.code,
         "name": patient.name,
         "kana": patient.kana,
-        "sex": patient.sex,
-        "status": patient.status,
-        "insurance": patient.insurance,
+        "sex": sex_ja,
+        "status": status_ja,
+        "insurance": insurance_ja,
         "address": patient.address,
         # Numeric → 文字列化を避けて数値のまま書く. None はそのまま空セル.
         "lat": float(patient.lat) if patient.lat is not None else None,
         "lng": float(patient.lng) if patient.lng is not None else None,
         "office_code": code or None,
-        "sex_restriction": patient.sex_restriction,
-        # Phase E-7 (gap P0-1): requires_multiple_staff を TRUE/FALSE で書き出す.
+        "sex_restriction": sex_restriction_ja,
+        # Phase E-7 (gap P0-1): requires_multiple_staff を「はい/いいえ」で書き出す.
         # NOT NULL bool 列なのでデフォルト False で必ず値が入る.
-        "requires_multiple_staff": "TRUE" if patient.requires_multiple_staff else "FALSE",
+        "requires_multiple_staff": "はい" if patient.requires_multiple_staff else "いいえ",
+        # ---- Phase G-48: weekly_pattern 統合列 ----
+        "frequency_per_week": wp.get("frequency_per_week"),
+        "visit_frequency": visit_frequency_ja,
+        "visit_weeks": wp.get("visit_weeks"),
+        "preferred_weekdays": weekdays_cell or None,
+        "service_minutes": wp.get("service_minutes"),
+        "weekly_time_type": wp.get("time_type"),
+        "preferred_start": wp.get("preferred_start"),
+        "preferred_end": wp.get("preferred_end"),
         "note": patient.note,
         "delete_flag": None,
     }
@@ -257,7 +298,8 @@ def _write_pfv_row(
         "patient_name": p.name if p else None,
         "weekday": WEEKDAY_INT_TO_LABEL.get(pfv.weekday),
         "slot_index": pfv.slot_index,
-        "mode": pfv.mode,
+        # Phase G-48: モードを日本語化 (normal→通常 / special→特別).
+        "mode": PFV_MODE_EN_TO_JA.get(pfv.mode, pfv.mode),
         "time_type": resolved_tt or DEFAULT_TIME_TYPE,
         "start_time": start_hhmm,
         "end_time": end_hhmm,
@@ -268,41 +310,6 @@ def _write_pfv_row(
     }
     for col_key, col_idx in PFV_COL_INDEX.items():
         ws.cell(row=row_idx, column=col_idx + 1, value=values.get(col_key))
-
-
-def _write_weekly_row(ws: Worksheet, row_idx: int, patient: Patient) -> None:
-    """Phase E-8: patient.weekly_pattern を 「希望訪問パターン」シートの 1 行に展開.
-
-    patient.weekly_pattern は JSONB で、WeeklyPatternV2 schema の dict (or None).
-    None の場合は patient_id / patient_code / patient_name のみ書き出し、他は空欄.
-    """
-    wp = patient.weekly_pattern or {}
-    if not isinstance(wp, dict):
-        wp = {}
-
-    # 希望曜日: list[str] | None → 7 bool に展開
-    pref_weekdays = wp.get("preferred_weekdays") or []
-    if not isinstance(pref_weekdays, list):
-        pref_weekdays = []
-    pref_set = {str(w) for w in pref_weekdays}
-
-    def _wd_flag(wd_en: str) -> str:
-        return "TRUE" if wd_en in pref_set else "FALSE"
-
-    ws.cell(row=row_idx, column=1, value=str(patient.id))
-    ws.cell(row=row_idx, column=2, value=patient.code or "")
-    ws.cell(row=row_idx, column=3, value=patient.name or "")
-    ws.cell(row=row_idx, column=4, value=wp.get("frequency_per_week"))
-    ws.cell(row=row_idx, column=5, value=wp.get("visit_frequency"))
-    ws.cell(row=row_idx, column=6, value=wp.get("visit_weeks"))
-    # 希望曜日 月-日 (7 列, col 7-13)
-    for i, wd_en in enumerate(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]):
-        ws.cell(row=row_idx, column=7 + i, value=_wd_flag(wd_en))
-    ws.cell(row=row_idx, column=14, value=wp.get("service_minutes"))
-    ws.cell(row=row_idx, column=15, value=wp.get("time_type"))
-    ws.cell(row=row_idx, column=16, value=wp.get("preferred_start"))
-    ws.cell(row=row_idx, column=17, value=wp.get("preferred_end"))
-    # delete_flag: col 18 (空)
 
 
 def _resolve_time_type(patient: Patient, weekday: int) -> str | None:
@@ -357,6 +364,9 @@ def build_workbook(
     _set_header_row(ws_p, PATIENT_COLUMNS)
     _attach_dropdowns(ws_p, PATIENT_COLUMNS)
     _attach_header_comment(ws_p, "patient_id", PATIENT_COLUMNS, text=PATIENT_ID_COMMENT_TEXT)
+    # Phase G-48: 緯度/経度は住所からの自動算出 (派生列). 編集不要コメントを付与.
+    _attach_header_comment(ws_p, "lat", PATIENT_COLUMNS, text=LATLNG_COMMENT_TEXT)
+    _attach_header_comment(ws_p, "lng", PATIENT_COLUMNS, text=LATLNG_COMMENT_TEXT)
 
     office_code_by_id: dict[UUID, str] = {
         office.id: (office.code or "")
@@ -365,7 +375,10 @@ def build_workbook(
     }
     for i, patient in enumerate(patients, start=2):
         _write_patient_row(ws_p, i, patient, office_code_by_id=office_code_by_id)
+    # Phase G-48: patient_id / 緯度 / 経度 の派生列はグレー塗りで「触らない雰囲気」.
     _shade_id_column_data_rows(ws_p, "patient_id", PATIENT_COLUMNS, data_row_count=len(patients))
+    _shade_id_column_data_rows(ws_p, "lat", PATIENT_COLUMNS, data_row_count=len(patients))
+    _shade_id_column_data_rows(ws_p, "lng", PATIENT_COLUMNS, data_row_count=len(patients))
 
     # PFV シート
     ws_f: Worksheet = wb.create_sheet(title=SHEET_PFV)
@@ -405,15 +418,9 @@ def build_workbook(
             len(crossoffice_warnings),
         )
 
-    # Phase E-8: 希望訪問パターン シート (1 patient = 1 行).
-    # patient.weekly_pattern を読み出して書き出す.
-    ws_w: Worksheet = wb.create_sheet(title=SHEET_WEEKLY)
-    _set_header_row(ws_w, WEEKLY_COLUMNS)
-    _attach_dropdowns(ws_w, WEEKLY_COLUMNS)
-    _attach_header_comment(ws_w, "patient_id", WEEKLY_COLUMNS, text=PATIENT_ID_COMMENT_TEXT)
-    for i, patient in enumerate(patients, start=2):
-        _write_weekly_row(ws_w, i, patient)
-    _shade_id_column_data_rows(ws_w, "patient_id", WEEKLY_COLUMNS, data_row_count=len(patients))
+    # Phase G-48: 希望訪問パターン (weekly_pattern) は患者マスタシートに統合済み
+    # のため、独立シートは書き出さない (2 シート構成: 患者マスタ + 固定訪問パターン).
+    # 旧 3 シート構成ファイルの import は importer 側で後方互換的に受理する.
 
     return wb
 

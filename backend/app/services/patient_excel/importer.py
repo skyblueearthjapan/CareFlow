@@ -39,23 +39,58 @@ from app.schemas.v2.patient_excel import (
 )
 from app.services.patient_excel.schema import (
     DEFAULT_TIME_TYPE,
+    INSURANCE_JA_TO_EN,
     INSURANCE_VALUES,
     LEGACY_SHEET_PFV,
     PATIENT_COL_INDEX,
     PFV_COL_INDEX,
+    PFV_MODE_JA_TO_EN,
     PFV_MODE_VALUES,
+    SEX_JA_TO_EN,
+    SEX_RESTRICTION_JA_TO_EN,
+    SEX_RESTRICTION_JA_VALUES,
+    SEX_RESTRICTION_NONE_JA,
     SEX_RESTRICTION_VALUES,
     SEX_VALUES,
     SHEET_PATIENTS,
     SHEET_PFV,
     SHEET_WEEKLY,
+    STATUS_JA_TO_EN,
     STATUS_VALUES,
     TIME_TYPE_VALUES,
+    VISIT_FREQUENCY_JA_TO_EN,
     VISIT_FREQUENCY_VALUES,
     WEEKDAY_LABEL_TO_INT,
     WEEKLY_COL_INDEX,
     is_magic_clear,
     is_magic_delete,
+    weekdays_cell_to_en,
+)
+
+
+# Phase G-48: 日本語ラベル → DB 英語 enum 値への変換マップ.
+# importer は日本語ラベル / 英語正準値の双方を受理する (後方互換).
+#   * key を日本語ラベルとした dict に英語正準値を自己写像で追加することで、
+#     1 つの dict で「日本語 or 英語」両受理を実現する.
+def _bidir_enum_map(ja_to_en: dict[str, str], en_values: tuple[str, ...]) -> dict[str, str]:
+    """日本語→英語 map に英語値の自己写像を足して「双方向受理」 map を作る."""
+    merged = dict(ja_to_en)
+    for en in en_values:
+        merged.setdefault(en, en)
+    return merged
+
+
+SEX_ANY_TO_EN: dict[str, str] = _bidir_enum_map(SEX_JA_TO_EN, SEX_VALUES)
+STATUS_ANY_TO_EN: dict[str, str] = _bidir_enum_map(STATUS_JA_TO_EN, STATUS_VALUES)
+INSURANCE_ANY_TO_EN: dict[str, str] = _bidir_enum_map(INSURANCE_JA_TO_EN, INSURANCE_VALUES)
+SEX_RESTRICTION_ANY_TO_EN: dict[str, str] = _bidir_enum_map(
+    SEX_RESTRICTION_JA_TO_EN, SEX_RESTRICTION_VALUES
+)
+PFV_MODE_ANY_TO_EN: dict[str, str] = _bidir_enum_map(PFV_MODE_JA_TO_EN, PFV_MODE_VALUES)
+# 訪問頻度: 日本語ラベル + 英語正準値に加え、旧バグで日本語が DB に保存され得る
+# ケースを吸収するため、英語値も自己写像で受理する.
+VISIT_FREQUENCY_ANY_TO_EN: dict[str, str] = _bidir_enum_map(
+    VISIT_FREQUENCY_JA_TO_EN, VISIT_FREQUENCY_VALUES
 )
 
 # ---------------------------------------------------------------------------
@@ -124,7 +159,13 @@ def _read_bool(value: Any) -> bool | None:
         return None
     if isinstance(value, bool):
         return value
-    s = str(value).strip().upper()
+    raw = str(value).strip()
+    # Phase G-48: 日本語ラベル「はい/いいえ」も受理.
+    if raw in ("はい",):
+        return True
+    if raw in ("いいえ",):
+        return False
+    s = raw.upper()
     if s in ("TRUE", "1", "YES", "Y"):
         return True
     if s in ("FALSE", "0", "NO", "N"):
@@ -307,6 +348,16 @@ def _parse_patient_row(
                 None,
             )
 
+    # Phase G-48 (最重要): patient_id 空でも patient_code が既存 (alive) 患者に
+    # 一致すれば UPDATE 突合する. これによりユーザーは export (code 入り) を直接
+    # 編集して再アップするだけで更新できる (UUID 列が空 / 消えていても可).
+    # soft-deleted 患者の code は existing_patients_by_code に含まれないため、
+    # ここでは一致せず、後段の resurrection ロジックへ正しくフォールバックする.
+    if existing_patient is None and patient_code is not None:
+        existing_patient = existing_patients_by_code.get(patient_code)
+        if existing_patient is not None:
+            patient_id = existing_patient.id
+
     # 削除フラグ
     if is_magic_delete(raw_delete):
         # 1) patient_id があれば既存通り (上で resolution 済み)
@@ -380,7 +431,8 @@ def _parse_patient_row(
         parsed["code"] = ("SET", patient_code)
 
     # enum 系
-    def _parse_enum(key: str, allowed: tuple[str, ...]) -> None:
+    # Phase G-48: 日本語ラベル / 英語正準値の双方を受理し、DB 英語値へ正規化する.
+    def _parse_enum(key: str, mapping: dict[str, str]) -> None:
         v = cells[key]
         if _is_blank(v):
             parsed[key] = None
@@ -389,15 +441,36 @@ def _parse_patient_row(
             parsed[key] = ("CLEAR", None)
             return
         s = _read_str(v)
-        if s not in allowed:
-            errors.append(f"列「{key}」の値が候補外: {s!r} (許容: {','.join(allowed)})")
+        en = mapping.get(s or "")
+        if en is None:
+            allowed = ",".join(dict.fromkeys(mapping.keys()))
+            errors.append(f"列「{key}」の値が候補外: {s!r} (許容: {allowed})")
             return
-        parsed[key] = ("SET", s)
+        parsed[key] = ("SET", en)
 
-    _parse_enum("sex", SEX_VALUES)
-    _parse_enum("status", STATUS_VALUES)
-    _parse_enum("insurance", INSURANCE_VALUES)
-    _parse_enum("sex_restriction", SEX_RESTRICTION_VALUES)
+    _parse_enum("sex", SEX_ANY_TO_EN)
+    _parse_enum("status", STATUS_ANY_TO_EN)
+    _parse_enum("insurance", INSURANCE_ANY_TO_EN)
+
+    # sex_restriction: 「なし」(空相当) は DB NULL に倒す. CLEAR / 「なし」 → CLEAR.
+    # それ以外は日本語/英語ラベルを英語値に正規化.
+    raw_sr = cells["sex_restriction"]
+    if _is_blank(raw_sr):
+        parsed["sex_restriction"] = None
+    elif is_magic_clear(raw_sr):
+        parsed["sex_restriction"] = ("CLEAR", None)
+    else:
+        sr_s = _read_str(raw_sr)
+        if sr_s == SEX_RESTRICTION_NONE_JA:
+            # 「なし」 = 制限解除 (DB NULL). round-trip 安定性のため CLEAR 扱い.
+            parsed["sex_restriction"] = ("CLEAR", None)
+        else:
+            sr_en = SEX_RESTRICTION_ANY_TO_EN.get(sr_s or "")
+            if sr_en is None:
+                allowed = ",".join(SEX_RESTRICTION_JA_VALUES)
+                errors.append(f"列「sex_restriction」の値が候補外: {sr_s!r} (許容: {allowed})")
+            else:
+                parsed["sex_restriction"] = ("SET", sr_en)
 
     # lat / lng (float, 範囲チェック)
     for k, lo, hi in (("lat", -90.0, 90.0), ("lng", -180.0, 180.0)):
@@ -941,8 +1014,10 @@ def _parse_pfv_row(
     if _is_blank(raw_mode):
         mode = "normal"
     else:
+        # Phase G-48: モードは日本語 (通常/特別) / 英語 (normal/special) 双方受理.
         mode_str = _read_str(raw_mode)
-        if mode_str not in PFV_MODE_VALUES:
+        mode_en = PFV_MODE_ANY_TO_EN.get(mode_str or "")
+        if mode_en is None:
             return (
                 PfvExcelImportRow(
                     row_number=row_number,
@@ -955,7 +1030,7 @@ def _parse_pfv_row(
                 ),
                 None,
             )
-        mode = mode_str
+        mode = mode_en
 
     key = (patient_id, mode, weekday, slot_index)
     existing_pfv = existing_pfvs.get(key)
@@ -1261,6 +1336,127 @@ def _parse_pfv_row(
 # ---------------------------------------------------------------------------
 
 
+def _build_weekly_pattern(
+    *,
+    frequency_per_week: Any,
+    visit_frequency: Any,
+    visit_weeks: Any,
+    preferred_weekdays_en: list[str],
+    service_minutes: Any,
+    time_type: Any,
+    preferred_start: Any,
+    preferred_end: Any,
+) -> dict[str, Any]:
+    """各 weekly フィールド (生セル値) → weekly_pattern dict (WeeklyPatternV2 準拠).
+
+    空 / 候補外の値は dict に積まない (= round-trip 安定性のため「維持」セマンティクス).
+    visit_frequency は日本語/英語いずれも受理し DB 英語正準値 (every 等) へ正規化.
+    preferred_weekdays_en は呼び出し側で英 list 化済みのものを受け取る.
+    """
+    wp: dict[str, Any] = {}
+
+    freq = _read_int(frequency_per_week)
+    if freq is not None and 1 <= freq <= 7:
+        wp["frequency_per_week"] = freq
+
+    vf = _read_str(visit_frequency)
+    if vf:
+        vf_en = VISIT_FREQUENCY_ANY_TO_EN.get(vf)
+        if vf_en is not None:
+            wp["visit_frequency"] = vf_en
+
+    vw = _read_str(visit_weeks)
+    if vw:
+        wp["visit_weeks"] = vw
+
+    if preferred_weekdays_en:
+        wp["preferred_weekdays"] = preferred_weekdays_en
+
+    sm = _read_int(service_minutes)
+    if sm is not None and 0 <= sm <= 300:
+        wp["service_minutes"] = sm
+
+    tt = _read_str(time_type)
+    if tt and tt in TIME_TYPE_VALUES:
+        wp["time_type"] = tt
+
+    ps = _read_hhmm(preferred_start)
+    if ps:
+        wp["preferred_start"] = ps
+    pe = _read_hhmm(preferred_end)
+    if pe:
+        wp["preferred_end"] = pe
+
+    return wp
+
+
+# Phase G-48 hotfix: 統合「患者マスタ」シートが扱う weekly_pattern の管理キー (8 個).
+# exporter/_build_weekly_pattern が読み書きするのはこの 8 キーのみ. ``entries`` /
+# ``staff_count`` 等の細粒度キー (WeeklyPatternV2 は extra="allow") は本パイプラインの
+# 管理対象外で、merge 時に必ず保持しなければならない (消すとスケジューラの訪問時刻 /
+# 2 名体制が静かに壊れる).
+MANAGED_WEEKLY_KEYS: tuple[str, ...] = (
+    "frequency_per_week",
+    "visit_frequency",
+    "visit_weeks",
+    "preferred_weekdays",
+    "service_minutes",
+    "time_type",
+    "preferred_start",
+    "preferred_end",
+)
+
+
+def _merge_weekly_pattern(
+    existing_wp: dict[str, Any] | None,
+    wp: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """既存 weekly_pattern のコピーに、Excel 由来の管理 8 キーのみ上書きしたものを返す.
+
+    Phase G-48 hotfix (CRITICAL データ損失修正):
+    - ``existing_wp`` のコピーから開始 → ``entries`` / ``staff_count`` 等の **管理外キーを保持**.
+    - ``wp`` (= ``_build_weekly_pattern`` の出力、非空セルの管理キーのみ) を上書き.
+    - ``wp`` に無い管理キーは既存値のまま (= 空セル → 「維持」semantics).
+
+    これにより blank=keep を保ったまま、丸ごと置換による管理外キーの消失を防ぐ.
+
+    Phase G-48 hotfix-2 (HIGH クラッシュ修正):
+    - ``wp`` が None / 空 dict のとき weekly_pattern を **None にクリア** (返り値 None).
+      旧 3 シート構成の「希望訪問パターン」シートで ``<DELETE>`` 行を import すると
+      呼び出し側が ``wp=None`` を渡すため、明示クリアとして扱う (旧挙動の維持).
+      統合シート経路では全空行は merge を呼ばず blank=keep なので、この guard が
+      維持 semantics を壊すことはない (merge は非空 wp でのみ到達).
+    """
+    if not wp:  # None or {} => 旧シート <DELETE> のクリア意味論
+        return None
+    base: dict[str, Any] = dict(existing_wp) if isinstance(existing_wp, dict) else {}
+    for key in MANAGED_WEEKLY_KEYS:
+        if key in wp:
+            base[key] = wp[key]
+    return base
+
+
+def _parse_weekly_from_patient_cells(cells: dict[str, Any]) -> dict[str, Any] | None:
+    """Phase G-48: 統合「患者マスタ」シート 1 行の cells → weekly_pattern dict.
+
+    cells は PATIENT_COL_INDEX のキーで引ける dict (``_parse_patient_row`` 内で構築済).
+    希望曜日は 1 セルカンマ区切り ("月,水,金"). 全 weekly フィールドが空なら None
+    (= 既存維持). <DELETE> は呼び出し側 (delete_flag) で処理するためここでは扱わない.
+    """
+    weekdays_en = weekdays_cell_to_en(_read_str(cells.get("preferred_weekdays")))
+    wp = _build_weekly_pattern(
+        frequency_per_week=cells.get("frequency_per_week"),
+        visit_frequency=cells.get("visit_frequency"),
+        visit_weeks=cells.get("visit_weeks"),
+        preferred_weekdays_en=weekdays_en,
+        service_minutes=cells.get("service_minutes"),
+        time_type=cells.get("weekly_time_type"),
+        preferred_start=cells.get("preferred_start"),
+        preferred_end=cells.get("preferred_end"),
+    )
+    return wp or None
+
+
 def _parse_weekly_row(
     r_idx: int,
     row: tuple[Any, ...],
@@ -1270,19 +1466,13 @@ def _parse_weekly_row(
     patient_code_to_id: dict[str, UUID],
     pending_new_patients: dict[UUID, _PendingNewPatient],
 ) -> tuple[UUID, dict[str, Any]] | None:
-    """Phase E-8: 「希望訪問パターン」シート 1 行 → (patient_id, weekly_pattern dict).
+    """【後方互換専用】旧「希望訪問パターン」独立シート 1 行 → (patient_id, weekly dict).
+
+    Phase E-8 で導入した 3 シート構成 (曜日 7 列 TRUE/FALSE) の旧 export ファイルを
+    import するためのパーサ. Phase G-48 で weekly_pattern は患者マスタへ統合された
+    ため新規 export はこのシートを出力しないが、旧ファイル受理のため温存する.
 
     return None: 行が無効 (patient 解決失敗、または全セル空).
-
-    weekly_pattern dict 構造 (WeeklyPatternV2 schema 準拠):
-      - frequency_per_week: int | None
-      - visit_frequency: str | None (毎週/隔週/月次)
-      - visit_weeks: str | None
-      - preferred_weekdays: list[str] (Mon/Tue/.../Sun)
-      - service_minutes: int | None
-      - time_type: str | None
-      - preferred_start: str | None  (HH:MM)
-      - preferred_end: str | None    (HH:MM)
     """
 
     def _g(key: str) -> Any:
@@ -1306,25 +1496,7 @@ def _parse_weekly_row(
     if target_pid is None:
         return None  # patient 解決不可 = skip (warning は呼び出し側で必要なら出す)
 
-    # 各セルを読み出し
-    wp: dict[str, Any] = {}
-
-    # frequency_per_week (int 1-7)
-    freq = _read_int(_g("frequency_per_week"))
-    if freq is not None and 1 <= freq <= 7:
-        wp["frequency_per_week"] = freq
-
-    # visit_frequency (毎週/隔週/月次)
-    vf = _read_str(_g("visit_frequency"))
-    if vf and vf in VISIT_FREQUENCY_VALUES:
-        wp["visit_frequency"] = vf
-
-    # visit_weeks (例 "1,3")
-    vw = _read_str(_g("visit_weeks"))
-    if vw:
-        wp["visit_weeks"] = vw
-
-    # 希望曜日 (7 列、TRUE → list に追加)
+    # 希望曜日 (旧 7 列、TRUE → list に追加)
     weekday_keys = [
         ("wd_mon", "Mon"),
         ("wd_tue", "Tue"),
@@ -1339,28 +1511,17 @@ def _parse_weekly_row(
         val = _read_bool(_g(col_key))
         if val:  # TRUE のみ拾う (FALSE/空 = この曜日希望なし)
             preferred_weekdays.append(wd_en)
-    # 1 つでも TRUE があれば preferred_weekdays を set.
-    # 全 FALSE / 全空 → skip (= 既存維持, round-trip 安定化のため).
-    if preferred_weekdays:
-        wp["preferred_weekdays"] = preferred_weekdays
 
-    # service_minutes
-    sm = _read_int(_g("service_minutes"))
-    if sm is not None and 0 <= sm <= 300:
-        wp["service_minutes"] = sm
-
-    # time_type
-    tt = _read_str(_g("time_type"))
-    if tt and tt in TIME_TYPE_VALUES:
-        wp["time_type"] = tt
-
-    # preferred_start / preferred_end (HH:MM)
-    ps = _read_hhmm(_g("preferred_start"))
-    if ps:
-        wp["preferred_start"] = ps
-    pe = _read_hhmm(_g("preferred_end"))
-    if pe:
-        wp["preferred_end"] = pe
+    wp = _build_weekly_pattern(
+        frequency_per_week=_g("frequency_per_week"),
+        visit_frequency=_g("visit_frequency"),
+        visit_weeks=_g("visit_weeks"),
+        preferred_weekdays_en=preferred_weekdays,
+        service_minutes=_g("service_minutes"),
+        time_type=_g("time_type"),
+        preferred_start=_g("preferred_start"),
+        preferred_end=_g("preferred_end"),
+    )
 
     # 削除フラグ: <DELETE> なら weekly_pattern = None (= clear)
     if is_magic_delete(_g("delete_flag")):
@@ -1427,6 +1588,9 @@ async def parse_and_diff(
     patient_rows: list[PatientExcelImportRow] = []
     patient_ops: list[dict[str, Any]] = []
     already_seen_codes: set[str] = set()
+    # Phase G-48: 統合シートから読み取った weekly_pattern. patient_id →
+    # weekly_pattern dict (空 dict = clear). 後段で patient_ops にマージする.
+    weekly_from_patient_sheet: dict[UUID, dict[str, Any] | None] = {}
     # row_number は 1-indexed; ヘッダーが 1 行目, データは 2 行目から.
     for r_idx, row in enumerate(ws_p.iter_rows(min_row=2, values_only=True), start=2):
         if _row_is_empty(row):
@@ -1444,6 +1608,17 @@ async def parse_and_diff(
         patient_rows.append(diff_row)
         if op is not None:
             patient_ops.append(op)
+        # Phase G-48: 統合シートの weekly_pattern を抽出.
+        # error 行 / patient 未解決行 (patient_id None) は対象外.
+        # delete 行は後段の merge で delete op に統合しないので除外.
+        if diff_row.operation in ("new", "update", "noop") and diff_row.patient_id is not None:
+            row_cells: dict[str, Any] = {
+                col_key: (row[idx] if idx < len(row) else None)
+                for col_key, idx in PATIENT_COL_INDEX.items()
+            }
+            weekly = _parse_weekly_from_patient_cells(row_cells)
+            if weekly is not None:
+                weekly_from_patient_sheet[diff_row.patient_id] = weekly
 
     # PFV シートが patient_code 経由で新規患者をリンクできるよう、
     # patient_code → patient_id の lookup を構築する。新規患者は
@@ -1510,13 +1685,77 @@ async def parse_and_diff(
         if op is not None:
             pfv_ops.append(op)
 
-    # ---- 希望訪問パターン シート (Phase E-8) ----
-    # SHEET_WEEKLY は optional. 旧 Excel (E-7 以前) との後方互換のため、
-    # シート不在は silent skip.
+    # ---- weekly_pattern マージ ----
+    # weekly_pattern dict (空 dict = clear) を該当 patient op に統合する共通処理.
+    # 既存値と同じ場合は skip (= noop 維持、round-trip 安定化).
+    def _merge_weekly_updates(weekly_pattern_updates: dict[UUID, dict[str, Any] | None]) -> None:
+        ops_by_pid: dict[UUID, dict[str, Any]] = {}
+        for op in patient_ops:
+            op_pid = op.get("_patient_id") or op.get("_new_patient_id")
+            if op_pid is not None:
+                ops_by_pid[op_pid] = op
+
+        for pid, wp in weekly_pattern_updates.items():
+            existing_patient = existing_patients.get(pid)
+            existing_wp = existing_patient.weekly_pattern if existing_patient else None
+            existing_op = ops_by_pid.get(pid)
+            # 既存 op が weekly_pattern を既にセット済 (= 同 import で先に統合済) なら
+            # それを merge 基準にする (統合シート → 旧シートの順で上書きされ得るため).
+            if existing_op is not None and "weekly_pattern" in existing_op:
+                current_wp = existing_op["weekly_pattern"]
+            elif existing_op is not None and existing_op.get("_op") == "resurrect":
+                current_wp = existing_op.get("_updates", {}).get("weekly_pattern", existing_wp)
+            else:
+                current_wp = existing_wp
+            # Phase G-48 hotfix: 丸ごと置換ではなく merge. current_wp の管理外キー
+            # (entries/staff_count 等) を保持しつつ、管理 8 キーのみ上書きする.
+            # noop 判定も merge 後の dict で行う (entries 持ち患者の無編集 round-trip を
+            # 真の noop にするため).
+            merged_wp = _merge_weekly_pattern(current_wp, wp)
+            if merged_wp == current_wp:
+                continue  # 差分なし → DB 更新不要
+
+            if existing_op is None:
+                # No existing op (= noop だった patient or weekly only update)
+                # → 新規 update op を patient_ops に追加.
+                new_op = {
+                    "_op": "update",
+                    "_patient_id": pid,
+                    "weekly_pattern": merged_wp,
+                }
+                patient_ops.append(new_op)
+                ops_by_pid[pid] = new_op
+                # patient_rows 側の operation も "update" に上書き (noop → update)
+                for pr in patient_rows:
+                    if pr.patient_id == pid and pr.operation == "noop":
+                        pr.operation = "update"
+                        pr.changes.append(
+                            PatientExcelChange(
+                                field="weekly_pattern",
+                                old_value=_serializable(existing_wp),
+                                new_value="(希望訪問パターン更新)",
+                            )
+                        )
+                        break
+            else:
+                op_type = existing_op.get("_op")
+                if op_type == "delete":
+                    # delete op に weekly_pattern を統合しない (削除されるため)
+                    continue
+                if op_type == "resurrect":
+                    existing_op.setdefault("_updates", {})["weekly_pattern"] = merged_wp
+                else:  # new / update
+                    existing_op["weekly_pattern"] = merged_wp
+
+    # Phase G-48: 統合「患者マスタ」シートから読み取った weekly_pattern をマージ.
+    _merge_weekly_updates(weekly_from_patient_sheet)
+
+    # ---- 【後方互換】旧 独立「希望訪問パターン」シート (Phase E-8 / 3 シート構成) ----
+    # SHEET_WEEKLY は optional. 旧 Excel ファイルとの後方互換のためのみ読み込む.
+    # 統合シートより後にマージすることで、旧シートに明示された値が優先される.
     if SHEET_WEEKLY in wb.sheetnames:
         ws_w = wb[SHEET_WEEKLY]
-        # patient_id → weekly_pattern dict (空 dict = clear)
-        weekly_pattern_updates: dict[UUID, dict[str, Any] | None] = {}
+        legacy_weekly_updates: dict[UUID, dict[str, Any] | None] = {}
         for r_idx, row in enumerate(ws_w.iter_rows(min_row=2, values_only=True), start=2):
             if _row_is_empty(row):
                 continue
@@ -1531,56 +1770,8 @@ async def parse_and_diff(
             if result is None:
                 continue
             pid, wp = result
-            # 空 dict = clear (= weekly_pattern を None にする)
-            weekly_pattern_updates[pid] = wp if wp else None
-
-        # Merge into patient_ops (= weekly_pattern を該当 op に統合)
-        # 既存値と同じ場合は skip (= noop 維持、round-trip 安定化).
-        ops_by_pid: dict[UUID, dict[str, Any]] = {}
-        for op in patient_ops:
-            op_pid = op.get("_patient_id") or op.get("_new_patient_id")
-            if op_pid is not None:
-                ops_by_pid[op_pid] = op
-
-        for pid, wp in weekly_pattern_updates.items():
-            # 既存値との比較. 同じなら skip (= noop 維持、無駄な update 検出を防ぐ).
-            existing_patient = existing_patients.get(pid)
-            existing_wp = existing_patient.weekly_pattern if existing_patient else None
-            if existing_wp == wp:
-                continue  # 差分なし → DB 更新不要
-
-            existing_op = ops_by_pid.get(pid)
-            if existing_op is None:
-                # No existing op (= noop だった patient or weekly only update)
-                # → 新規 update op を patient_ops に追加.
-                patient_ops.append(
-                    {
-                        "_op": "update",
-                        "_patient_id": pid,
-                        "weekly_pattern": wp,
-                    }
-                )
-                # patient_rows 側の operation も "update" に上書き (noop → update)
-                for pr in patient_rows:
-                    if pr.patient_id == pid and pr.operation == "noop":
-                        pr.operation = "update"
-                        pr.changes.append(
-                            {
-                                "field": "weekly_pattern",
-                                "old": _serializable(existing_wp),
-                                "new": "(希望訪問パターン更新)",
-                            }
-                        )
-                        break
-            else:
-                op_type = existing_op.get("_op")
-                if op_type == "delete":
-                    # delete op に weekly_pattern を統合しない (削除されるため)
-                    continue
-                if op_type == "resurrect":
-                    existing_op.setdefault("_updates", {})["weekly_pattern"] = wp
-                else:  # new / update
-                    existing_op["weekly_pattern"] = wp
+            legacy_weekly_updates[pid] = wp if wp else None
+        _merge_weekly_updates(legacy_weekly_updates)
 
     # ---- summary ----
     summary = PatientExcelImportSummary()

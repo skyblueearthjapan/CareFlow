@@ -40,8 +40,26 @@ def is_magic_clear(value: object) -> bool:
 # ---------------------------------------------------------------------------
 # Dropdown 値リスト
 # ---------------------------------------------------------------------------
+#
+# Phase G-48: 患者マスタの enum 値を「人が手編集しやすい」日本語表記へ作り替える.
+# DB には従来どおり英語 enum を格納し、exporter は日本語で書き出し、importer は
+# 日本語→英語へ変換して DB へ反映する. 後方互換のため importer は英語値も受理する.
+#
+# 各 enum について以下を定義する:
+#   * ``*_VALUES``        : DB に格納される英語の正準値 (後方互換受理用).
+#   * ``*_JA_VALUES``     : Excel の dropdown に出す日本語ラベル (export 出力値).
+#   * ``*_EN_TO_JA``      : DB 英語値 → 日本語ラベル (export 時).
+#   * ``*_JA_TO_EN``      : 日本語ラベル → DB 英語値 (import 時. 英語値も自己写像で受理).
 
 SEX_VALUES: Final[tuple[str, ...]] = ("male", "female", "unknown")
+SEX_EN_TO_JA: Final[dict[str, str]] = {
+    "female": "女性",
+    "male": "男性",
+    "unknown": "不明",
+}
+SEX_JA_VALUES: Final[tuple[str, ...]] = ("女性", "男性", "不明")
+SEX_JA_TO_EN: Final[dict[str, str]] = {ja: en for en, ja in SEX_EN_TO_JA.items()}
+
 STATUS_VALUES: Final[tuple[str, ...]] = (
     "active",
     "suspended",
@@ -49,13 +67,42 @@ STATUS_VALUES: Final[tuple[str, ...]] = (
     "pending",
     "cancelled",
 )
+STATUS_EN_TO_JA: Final[dict[str, str]] = {
+    "active": "稼働",
+    "suspended": "休止",
+    "admitted": "入院",
+    "pending": "未開始",
+    "cancelled": "解約",
+}
+STATUS_JA_VALUES: Final[tuple[str, ...]] = ("稼働", "休止", "入院", "未開始", "解約")
+STATUS_JA_TO_EN: Final[dict[str, str]] = {ja: en for en, ja in STATUS_EN_TO_JA.items()}
+
 INSURANCE_VALUES: Final[tuple[str, ...]] = ("medical", "care")
+INSURANCE_EN_TO_JA: Final[dict[str, str]] = {
+    "medical": "医療保険",
+    "care": "介護保険",
+}
+INSURANCE_JA_VALUES: Final[tuple[str, ...]] = ("医療保険", "介護保険")
+INSURANCE_JA_TO_EN: Final[dict[str, str]] = {ja: en for en, ja in INSURANCE_EN_TO_JA.items()}
+
 SEX_RESTRICTION_VALUES: Final[tuple[str, ...]] = ("female_only", "male_only")
+# 性別制限の「なし」は DB では NULL (空). Excel dropdown では「なし」を明示表示する.
+SEX_RESTRICTION_NONE_JA: Final = "なし"
+SEX_RESTRICTION_EN_TO_JA: Final[dict[str, str]] = {
+    "female_only": "女性のみ",
+    "male_only": "男性のみ",
+}
+SEX_RESTRICTION_JA_VALUES: Final[tuple[str, ...]] = ("なし", "女性のみ", "男性のみ")
+SEX_RESTRICTION_JA_TO_EN: Final[dict[str, str]] = {
+    ja: en for en, ja in SEX_RESTRICTION_EN_TO_JA.items()
+}
+
 OFFICE_CODE_VALUES: Final[tuple[str, ...]] = ("INAGE", "TSUGA")
 # Phase E-7: requires_multiple_staff (Patient W18 Phase A-1 列) を Excel で扱うため.
 BOOL_VALUES: Final[tuple[str, ...]] = ("TRUE", "FALSE")
-# 仕様書: 1〜3 だが現状の DB スキーマには列が無い (W1-BE1 で削除済み).
-# 互換のため Excel 上の dropdown 値のみ定義 (実 import では列が無いので未使用).
+# Phase G-48: 複数スタッフ必須を「はい/いいえ」で表示. TRUE/FALSE も受理 (後方互換).
+BOOL_JA_VALUES: Final[tuple[str, ...]] = ("はい", "いいえ")
+BOOL_JA_TO_BOOL: Final[dict[str, bool]] = {"はい": True, "いいえ": False}
 
 WEEKDAY_LABELS: Final[tuple[str, ...]] = ("月", "火", "水", "木", "金", "土", "日")
 WEEKDAY_LABEL_TO_INT: Final[dict[str, int]] = {label: i for i, label in enumerate(WEEKDAY_LABELS)}
@@ -72,12 +119,89 @@ TIME_TYPE_VALUES: Final[tuple[str, ...]] = ("固定", "時間帯", "午前", "�
 DEFAULT_TIME_TYPE: Final[str] = "時間帯"
 COURSE_TEMPLATE_CODES: Final[tuple[str, ...]] = ("A", "B", "C", "D", "E", "M")
 PFV_MODE_VALUES: Final[tuple[str, ...]] = ("normal", "special")
+# Phase G-48: PFV モードを日本語化 (通常/特別). 英語値も受理 (後方互換).
+PFV_MODE_EN_TO_JA: Final[dict[str, str]] = {"normal": "通常", "special": "特別"}
+PFV_MODE_JA_VALUES: Final[tuple[str, ...]] = ("通常", "特別")
+PFV_MODE_JA_TO_EN: Final[dict[str, str]] = {ja: en for en, ja in PFV_MODE_EN_TO_JA.items()}
 
 DELETE_FLAG_VALUES: Final[tuple[str, ...]] = (MAGIC_DELETE,)
 
 
 # ---------------------------------------------------------------------------
-# シート 1: 患者マスタ
+# 訪問頻度 (weekly_pattern.visit_frequency) — VisitFrequencyV2 正準値との対応
+# ---------------------------------------------------------------------------
+#
+# Phase G-48: schemas/v2/patient.py の ``VisitFrequencyV2 = Literal["every",
+# "biweekly", "monthly"]`` が DB 格納の正準値. UI の「毎週/隔週/月次」と双方向
+# マッピングする. exporter は DB 値 (every 等) → 日本語、importer は日本語 →
+# DB 値へ変換する. 旧 export では日本語が直接格納されていた可能性があるため、
+# importer は日本語ラベル / 英語正準値 / (旧バグで保存され得る) 日本語値の
+# いずれも受理する.
+
+VISIT_FREQUENCY_VALUES: Final[tuple[str, ...]] = ("every", "biweekly", "monthly")
+VISIT_FREQUENCY_EN_TO_JA: Final[dict[str, str]] = {
+    "every": "毎週",
+    "biweekly": "隔週",
+    "monthly": "月次",
+}
+VISIT_FREQUENCY_JA_VALUES: Final[tuple[str, ...]] = ("毎週", "隔週", "月次")
+VISIT_FREQUENCY_JA_TO_EN: Final[dict[str, str]] = {
+    ja: en for en, ja in VISIT_FREQUENCY_EN_TO_JA.items()
+}
+
+
+# ---------------------------------------------------------------------------
+# 希望曜日 (weekly_pattern.preferred_weekdays) — 1 セルカンマ区切りの双方向変換
+# ---------------------------------------------------------------------------
+#
+# 内部 (JSONB) は英短縮形 Mon..Sun の list. Excel では 1 セルに日本語カンマ区切り
+# ("月,水,金") で表現する. 区切りは半角/全角カンマ・読点いずれも許容.
+
+WEEKDAY_EN_LIST: Final[tuple[str, ...]] = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+WEEKDAY_EN_TO_JA: Final[dict[str, str]] = dict(zip(WEEKDAY_EN_LIST, WEEKDAY_LABELS, strict=True))
+WEEKDAY_JA_TO_EN: Final[dict[str, str]] = {ja: en for en, ja in WEEKDAY_EN_TO_JA.items()}
+# import 時に許容する区切り文字 (半角カンマ / 全角カンマ / 読点).
+WEEKDAY_SPLIT_CHARS: Final = (",", "，", "、")
+
+
+def weekdays_en_to_cell(weekdays: list[str] | None) -> str:
+    """preferred_weekdays (英 list) → "月,水,金" 形式の 1 セル文字列.
+
+    Mon..Sun の正準順で並べ替えて出力する (round-trip 安定性のため).
+    None / 空 list は空文字を返す.
+    """
+    if not weekdays:
+        return ""
+    present = {str(w) for w in weekdays}
+    return ",".join(WEEKDAY_EN_TO_JA[en] for en in WEEKDAY_EN_LIST if en in present)
+
+
+def weekdays_cell_to_en(value: str | None) -> list[str]:
+    """ "月,水,金" / "Mon,Wed,Fri" 形式の 1 セル → preferred_weekdays (英 list).
+
+    日本語ラベル・英短縮形いずれも受理 (後方互換). Mon..Sun の正準順で返す.
+    """
+    if value is None:
+        return []
+    text = str(value).strip()
+    if not text:
+        return []
+    # 全角/半角カンマ・読点を統一区切りに正規化.
+    for ch in WEEKDAY_SPLIT_CHARS:
+        text = text.replace(ch, ",")
+    tokens = [t.strip() for t in text.split(",") if t.strip()]
+    found: set[str] = set()
+    for tok in tokens:
+        if tok in WEEKDAY_JA_TO_EN:
+            found.add(WEEKDAY_JA_TO_EN[tok])
+        elif tok in WEEKDAY_EN_LIST:
+            found.add(tok)
+        # 候補外トークンは無視 (壊さない方針).
+    return [en for en in WEEKDAY_EN_LIST if en in found]
+
+
+# ---------------------------------------------------------------------------
+# シート 1: 患者マスタ (Phase G-48 で希望訪問パターンを統合)
 # ---------------------------------------------------------------------------
 
 SHEET_PATIENTS: Final = "患者マスタ"
@@ -87,17 +211,25 @@ SHEET_PFV: Final = "固定訪問パターン"
 # wb[LEGACY_SHEET_PFV] を読みに行く. 新規 export は常に SHEET_PFV で書き出す.
 LEGACY_SHEET_PFV: Final = "固定訪問スケジュール"
 
+# Phase G-48: 患者マスタシートに weekly_pattern (希望訪問パターン) を横一列で統合.
+# 1 患者 = 1 行. 固定訪問パターン (PFV) は 1 患者複数行のため別シート維持.
+#
 # 列定義: (key, header, width, dropdown_values).
 # key は内部識別子. header は実際の Excel ヘッダー文字列.
 # dropdown_values が None でない場合、その列に DataValidation (list) を設定.
 PATIENT_COLUMNS: Final[list[dict[str, object]]] = [
-    {"key": "patient_id", "header": "patient_id (※新規時は空欄)", "width": 38, "dropdown": None},
+    {
+        "key": "patient_id",
+        "header": "patient_id (※システム用・編集不要)",
+        "width": 38,
+        "dropdown": None,
+    },
     {"key": "patient_code", "header": "patient_code", "width": 14, "dropdown": None},
     {"key": "name", "header": "患者名", "width": 18, "dropdown": None},
     {"key": "kana", "header": "フリガナ", "width": 18, "dropdown": None},
-    {"key": "sex", "header": "性別", "width": 10, "dropdown": SEX_VALUES},
-    {"key": "status", "header": "ステータス", "width": 12, "dropdown": STATUS_VALUES},
-    {"key": "insurance", "header": "保険区分", "width": 10, "dropdown": INSURANCE_VALUES},
+    {"key": "sex", "header": "性別", "width": 10, "dropdown": SEX_JA_VALUES},
+    {"key": "status", "header": "ステータス", "width": 12, "dropdown": STATUS_JA_VALUES},
+    {"key": "insurance", "header": "保険区分", "width": 12, "dropdown": INSURANCE_JA_VALUES},
     {"key": "address", "header": "住所", "width": 32, "dropdown": None},
     {"key": "lat", "header": "緯度", "width": 12, "dropdown": None},
     {"key": "lng", "header": "経度", "width": 12, "dropdown": None},
@@ -106,7 +238,7 @@ PATIENT_COLUMNS: Final[list[dict[str, object]]] = [
         "key": "sex_restriction",
         "header": "性別制限",
         "width": 12,
-        "dropdown": SEX_RESTRICTION_VALUES,
+        "dropdown": SEX_RESTRICTION_JA_VALUES,
     },
     # Phase E-7 (gap P0-1): W18 Phase A-1 で追加された Patient.requires_multiple_staff
     # を Excel 入出力で扱えるようにする. 空セル = 維持 (既存) / False (新規) の
@@ -115,8 +247,27 @@ PATIENT_COLUMNS: Final[list[dict[str, object]]] = [
         "key": "requires_multiple_staff",
         "header": "複数スタッフ必須",
         "width": 16,
-        "dropdown": BOOL_VALUES,
+        "dropdown": BOOL_JA_VALUES,
     },
+    # ---- Phase G-48: weekly_pattern を統合 (希望訪問パターン) ----
+    {"key": "frequency_per_week", "header": "週訪問回数", "width": 12, "dropdown": None},
+    {
+        "key": "visit_frequency",
+        "header": "訪問頻度",
+        "width": 12,
+        "dropdown": VISIT_FREQUENCY_JA_VALUES,
+    },
+    {"key": "visit_weeks", "header": "訪問週 (例 '1,3')", "width": 14, "dropdown": None},
+    {
+        "key": "preferred_weekdays",
+        "header": "希望曜日 (例 '月,水,金')",
+        "width": 18,
+        "dropdown": None,
+    },
+    {"key": "service_minutes", "header": "サービス時間 (分)", "width": 16, "dropdown": None},
+    {"key": "weekly_time_type", "header": "時間タイプ", "width": 12, "dropdown": TIME_TYPE_VALUES},
+    {"key": "preferred_start", "header": "希望開始時刻", "width": 14, "dropdown": None},
+    {"key": "preferred_end", "header": "希望終了時刻", "width": 14, "dropdown": None},
     {"key": "note", "header": "備考", "width": 30, "dropdown": None},
     {"key": "delete_flag", "header": "(削除フラグ)", "width": 14, "dropdown": DELETE_FLAG_VALUES},
 ]
@@ -125,6 +276,23 @@ PATIENT_COLUMNS: Final[list[dict[str, object]]] = [
 PATIENT_COL_INDEX: Final[dict[str, int]] = {
     str(col["key"]): i for i, col in enumerate(PATIENT_COLUMNS)
 }
+
+# Phase G-48: weekly_pattern を構成する統合シート上の列キー (importer が patient 行
+# から weekly を読むときに使う). weekly_time_type は patient sheet 上のキー名で、
+# weekly_pattern dict 内では "time_type" にマップする.
+PATIENT_WEEKLY_KEYS: Final[tuple[str, ...]] = (
+    "frequency_per_week",
+    "visit_frequency",
+    "visit_weeks",
+    "preferred_weekdays",
+    "service_minutes",
+    "weekly_time_type",
+    "preferred_start",
+    "preferred_end",
+)
+
+# 派生列 (システム自動算出 / システム用). exporter でグレー塗り + コメントを付与.
+DERIVED_PATIENT_COLUMNS: Final[tuple[str, ...]] = ("patient_id", "lat", "lng")
 
 # 必須項目 (新規作成時): 仕様書 §1
 PATIENT_REQUIRED_ON_NEW: Final[tuple[str, ...]] = (
@@ -151,7 +319,7 @@ PFV_COLUMNS: Final[list[dict[str, object]]] = [
     {"key": "patient_name", "header": "患者名", "width": 18, "dropdown": None},
     {"key": "weekday", "header": "曜日", "width": 8, "dropdown": WEEKDAY_LABELS},
     {"key": "slot_index", "header": "slot_index", "width": 10, "dropdown": None},
-    {"key": "mode", "header": "モード", "width": 10, "dropdown": PFV_MODE_VALUES},
+    {"key": "mode", "header": "モード", "width": 10, "dropdown": PFV_MODE_JA_VALUES},
     {"key": "time_type", "header": "時間タイプ", "width": 12, "dropdown": TIME_TYPE_VALUES},
     {"key": "start_time", "header": "開始時刻", "width": 12, "dropdown": None},
     {"key": "end_time", "header": "終了時刻", "width": 12, "dropdown": None},
@@ -187,22 +355,17 @@ PFV_REQUIRED: Final[tuple[str, ...]] = (
 
 
 # ---------------------------------------------------------------------------
-# Phase E-8: シート 3: 希望訪問パターン (patient.weekly_pattern JSONB)
+# 【後方互換専用】旧シート 3: 希望訪問パターン (patient.weekly_pattern JSONB)
 # ---------------------------------------------------------------------------
 #
-# User 指摘 (Phase E-8): patient.weekly_pattern (希望時間帯・希望曜日・週訪問
-# 回数等) が従来の Excel テンプレート (患者マスタ + 固定訪問パターン) に
-# 含まれておらず、完全置換でも反映されない問題があった. これを解消するため
-# 「希望訪問パターン」シートを追加し、1 patient = 1 行で patient.weekly_pattern
-# を export / import 可能にする.
-#
-# 名称整理: User 視点での「希望訪問パターン (= weekly_pattern)」 vs 「固定訪問
-# パターン (= PFV)」の紛らわしさを解消するため、本シート名を「希望訪問パターン」
-# とし、PFV は「固定訪問パターン」に統一する (Phase G で旧「固定訪問スケジュール」から改名).
+# Phase E-8 で導入した独立シート「希望訪問パターン」(1 patient = 1 行、曜日 7 列の
+# TRUE/FALSE). Phase G-48 でこの内容を「患者マスタ」シートに統合したため、
+# 新規 export では **このシートを書き出さない**. ただし旧 export ファイル
+# (3 シート構成・曜日 7 列) を import できるよう、シート名・列定義・lookup は
+# 後方互換のため温存する. importer / replace_all は SHEET_WEEKLY が存在する場合
+# のみ旧ロジックでこのシートを読みに行く.
 
 SHEET_WEEKLY: Final = "希望訪問パターン"
-
-VISIT_FREQUENCY_VALUES: Final[tuple[str, ...]] = ("毎週", "隔週", "月次")
 
 WEEKLY_COLUMNS: Final[list[dict[str, object]]] = [
     {"key": "patient_id", "header": "patient_id (※新規時は空欄)", "width": 38, "dropdown": None},
@@ -238,8 +401,8 @@ WEEKLY_COL_INDEX: Final[dict[str, int]] = {
 # 必須項目: patient_id (or patient_code) — 残りは optional (空セル = 維持)
 WEEKLY_REQUIRED: Final[tuple[str, ...]] = ("patient_id",)
 
-# 7 曜日キー (英) — JSON 内では英短縮形 (Mon..Sun) を使う (v2 標準)
-WEEKDAY_EN_LIST: Final[tuple[str, ...]] = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+# 旧 7 列 (TRUE/FALSE) Excel キー → 英短縮形. 後方互換読み込み専用.
+# (WEEKDAY_EN_LIST は上部で定義済み.)
 WEEKDAY_EXCEL_TO_EN: Final[dict[str, str]] = {
     "wd_mon": "Mon",
     "wd_tue": "Tue",
@@ -262,8 +425,15 @@ ID_COLUMN_FILL_COLOR: Final = "FFEEEEEE"  # 薄いグレー (参照用 patient_i
 ID_COLUMN_FONT_COLOR: Final = "FF666666"  # 中間グレー (新規時に触らない雰囲気)
 
 # patient_id 列のヘッダーセルに添えるコメント (新規登録時のガイダンス)。
+# Phase G-48: patient_id 空欄でも patient_code で既存患者を突合できる旨を明記.
 PATIENT_ID_COMMENT_TEXT: Final = (
-    "新規登録時はこの列を空欄のままにしてください。\nシステムが自動的に UUID を発番します。"
+    "システム用・編集不要。\n"
+    "新規登録時はこの列を空欄のままにしてください。\n"
+    "patient_code を入力しておけば、この列が空でも既存患者を更新できます。"
+)
+# Phase G-48: 緯度/経度はシステムが住所から自動算出する派生列. ユーザー編集不要.
+LATLNG_COMMENT_TEXT: Final = (
+    "自動算出・編集不要。\nシステムが住所から緯度経度を計算します。\n空欄のままにしてください。"
 )
 PFV_PATIENT_ID_COMMENT_TEXT: Final = (
     "新規患者の PFV を登録する場合: この列を空欄にし、"
