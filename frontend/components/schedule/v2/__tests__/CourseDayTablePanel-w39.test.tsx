@@ -193,6 +193,7 @@ vi.mock('@/lib/api/fetcher', () => ({
 vi.mock('@/lib/queries/weekday_staff_capacity', () => ({
   useWeekdayStaffCapacityLookup: () => ({
     staffCountFor: () => 5,
+    managerCountFor: () => 0,
     courseCodesMax: 5,
     isLoading: false,
   }),

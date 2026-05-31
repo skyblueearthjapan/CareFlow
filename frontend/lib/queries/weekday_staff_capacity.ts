@@ -32,6 +32,12 @@ export interface WeekdayStaffCapacityItem {
   /** 0=Mon..6=Sun. */
   weekday: number;
   staff_count: number;
+  /**
+   * Phase G-53: 週ビューヘッダーの「拠点別 S/M」表示用. role='manager' の
+   * 稼働可能数. staff_count とは独立に集計されるため、staff_count=0 でも
+   * manager_count>0 の項目が返り得る. 旧 BE 互換のため省略時は 0 扱い.
+   */
+  manager_count?: number;
 }
 
 /** BE ``WeekdayStaffCapacityResponse`` とミラー. */
@@ -61,6 +67,8 @@ function authPair(session: ReturnType<typeof useSession>['data']) {
  */
 export interface WeekdayStaffCapacityLookup {
   staffCountFor: (officeId: string, weekday: number) => number;
+  /** Phase G-53: (office_id, weekday) → manager_count (未存在キーは 0). */
+  managerCountFor: (officeId: string, weekday: number) => number;
   courseCodesMax: number;
   isLoading: boolean;
 }
@@ -105,11 +113,15 @@ export function useWeekdayStaffCapacityLookup(
   return useMemo(() => {
     const data = query.data;
     const m = new Map<string, number>();
+    const mgr = new Map<string, number>();
     for (const it of data?.items ?? []) {
       m.set(`${it.office_id}:${it.weekday}`, it.staff_count);
+      mgr.set(`${it.office_id}:${it.weekday}`, it.manager_count ?? 0);
     }
     return {
       staffCountFor: (officeId: string, weekday: number) => m.get(`${officeId}:${weekday}`) ?? 0,
+      managerCountFor: (officeId: string, weekday: number) =>
+        mgr.get(`${officeId}:${weekday}`) ?? 0,
       courseCodesMax: data?.course_codes_max ?? COURSE_CODES_MAX,
       isLoading: query.isLoading,
     };

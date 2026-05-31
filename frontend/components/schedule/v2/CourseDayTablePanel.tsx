@@ -382,7 +382,7 @@ export function CourseDayTablePanel({
   // (office_id, weekday) → 稼働スタッフ数. A-E コースは effectiveCapacity で
   // index < min(staffCount, courseCodesMax) なら開講 (定員6), else 休 (定員0).
   // M系は従来の静的 capacity_<曜日> を使う (effectiveCapacity が両方扱う).
-  const { staffCountFor, courseCodesMax } = useWeekdayStaffCapacityLookup({
+  const { staffCountFor, managerCountFor, courseCodesMax } = useWeekdayStaffCapacityLookup({
     iso_year: isoYear,
     iso_week: isoWeek,
     office_id: officeId,
@@ -978,6 +978,19 @@ export function CourseDayTablePanel({
     const m = new Map<string, string>();
     for (const o of offices) m.set(o.id, o.name);
     return m;
+  }, [offices]);
+
+  // Phase G-53: 週ビュー曜日ヘッダーの「拠点別 S/M」表示用. (office.code or name)
+  // から短縮ラベルを作る (INAGE→稲 / TSUGA→津, それ以外は name 先頭 1 文字).
+  // 表示順は offices の並び (= 拠点マスタ順) をそのまま使う.
+  const staffSummaryOffices = useMemo(() => {
+    const shortLabel = (o: (typeof offices)[number]): string => {
+      const code = (o.code ?? '').toUpperCase();
+      if (code === 'INAGE') return '稲';
+      if (code === 'TSUGA') return '津';
+      return (o.name ?? '').slice(0, 1) || code.slice(0, 1) || '?';
+    };
+    return offices.map((o) => ({ id: o.id, label: shortLabel(o) }));
   }, [offices]);
 
   // Phase G-6: sameAddressKeyByPatientId は visitsByCourse より前に移動済み.
@@ -1993,6 +2006,8 @@ export function CourseDayTablePanel({
                   onTogglePin={canEdit ? handleTogglePin : undefined}
                   staffCountFor={staffCountFor}
                   courseCodesMax={courseCodesMax}
+                  managerCountFor={managerCountFor}
+                  staffSummaryOffices={staffSummaryOffices}
                 />
               </div>
             ) : (

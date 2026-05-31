@@ -245,6 +245,97 @@ describe('CourseWeekOverview (B-6)', () => {
     expect(el).toHaveTextContent('09:30');
   });
 
+  it('Phase G-53: 曜日ヘッダーに患者総数 (全コース合計) を表示する', () => {
+    // 月曜 (wd=0): A に 2 名 + B に 1 名 = 全コース合計 3 名.
+    const templates = [makeTemplate('tpl-A', 'A', 'o1'), makeTemplate('tpl-B', 'B', 'o1')];
+    const visits: WeekOverviewVisit[] = [
+      {
+        id: 'v-a1',
+        patient_id: 'p-a1',
+        patient_name: '田中',
+        weekday: 0,
+        course_template_id: 'tpl-A',
+        start_time: null,
+      },
+      {
+        id: 'v-a2',
+        patient_id: 'p-a2',
+        patient_name: '佐藤',
+        weekday: 0,
+        course_template_id: 'tpl-A',
+        start_time: null,
+      },
+      {
+        id: 'v-b1',
+        patient_id: 'p-b1',
+        patient_name: '鈴木',
+        weekday: 0,
+        course_template_id: 'tpl-B',
+        start_time: null,
+      },
+      // 火曜 (wd=1): A に 1 名.
+      {
+        id: 'v-a3',
+        patient_id: 'p-a3',
+        patient_name: '山田',
+        weekday: 1,
+        course_template_id: 'tpl-A',
+        start_time: null,
+      },
+    ];
+    render(
+      <CourseWeekOverview
+        templates={templates}
+        officeNameById={new Map([['o1', '本店']])}
+        visits={visits}
+        onJumpToDay={vi.fn()}
+        staffCountFor={fullStaff}
+      />,
+    );
+    expect(screen.getByTestId('weekday-header-patients-0')).toHaveTextContent('患者 3 名');
+    expect(screen.getByTestId('weekday-header-patients-1')).toHaveTextContent('患者 1 名');
+    // 訪問が無い曜日は 0 名.
+    expect(screen.getByTestId('weekday-header-patients-2')).toHaveTextContent('患者 0 名');
+  });
+
+  it('Phase G-53: 曜日ヘッダーに拠点別 S/M を表示する (稲 S:4 M:1 / 津 S:1)', () => {
+    const inageId = 'office-inage';
+    const tsugaId = 'office-tsuga';
+    const templates = [makeTemplate('tpl-A', 'A', inageId)];
+    render(
+      <CourseWeekOverview
+        templates={templates}
+        officeNameById={
+          new Map([
+            [inageId, '稲毛'],
+            [tsugaId, '都賀'],
+          ])
+        }
+        visits={[]}
+        onJumpToDay={vi.fn()}
+        staffCountFor={(officeId, wd) => {
+          if (wd !== 0) return 0;
+          if (officeId === inageId) return 4;
+          if (officeId === tsugaId) return 1;
+          return 0;
+        }}
+        managerCountFor={(officeId, wd) => {
+          if (wd !== 0) return 0;
+          if (officeId === inageId) return 1;
+          return 0;
+        }}
+        staffSummaryOffices={[
+          { id: inageId, label: '稲' },
+          { id: tsugaId, label: '津' },
+        ]}
+      />,
+    );
+    // 月曜: 稲 S:4 M:1 / 津 S:1 (M=0 拠点は M 省略).
+    expect(screen.getByTestId('weekday-header-staff-0')).toHaveTextContent('稲 S:4 M:1 / 津 S:1');
+    // 出勤が無い火曜は拠点別 S/M ブロックを出さない.
+    expect(screen.queryByTestId('weekday-header-staff-1')).not.toBeInTheDocument();
+  });
+
   it('start_time が null の visit は氏名のみ表示', () => {
     const tpl = makeTemplate('tpl-A', 'A', 'o1');
     const visits: WeekOverviewVisit[] = [

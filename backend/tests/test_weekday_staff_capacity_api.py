@@ -72,6 +72,14 @@ def _count_for(body: dict, office_id, weekday: int) -> int:
     return 0
 
 
+def _manager_count_for(body: dict, office_id, weekday: int) -> int:
+    """body.items から (office_id, weekday) の manager_count を引く (未存在は 0)."""
+    for it in body["items"]:
+        if it["office_id"] == str(office_id) and it["weekday"] == weekday:
+            return it["manager_count"]
+    return 0
+
+
 def _opens_course(staff_count: int, course_index: int, course_codes_max: int) -> bool:
     """frontend と同一の A-E 開講判定."""
     return course_index < min(staff_count, course_codes_max)
@@ -193,6 +201,52 @@ async def test_all_offices_when_office_id_omitted(client, db) -> None:
     body = res.json()
     assert _count_for(body, office_a.id, 0) == 1
     assert _count_for(body, office_b.id, 1) == 1
+
+
+# ---------------------------------------------------------------------------
+# Phase G-53: manager_count (週ビューヘッダーの拠点別 S/M 表示用)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_manager_count_returned_per_weekday(client, db) -> None:
+    """月: staff 4 名 + manager 1 名 → staff_count=4, manager_count=1."""
+    admin = await _make_user(db, email="wsc-mgr1@example.com", role="admin")
+    office = await _make_office(db, name="wsc-office-mgr1")
+    for i in range(4):
+        await _make_staff(db, name=f"wsc-mgr1-s{i}", office=office, work_days=[0])
+    await _make_staff(db, name="wsc-mgr1-m0", office=office, work_days=[0], role="manager")
+    await db.commit()
+
+    res = await client.get(
+        "/api/v1/schedule/v2/weekday-staff-capacity",
+        headers=_bearer(admin),
+        params={"iso_year": 2026, "iso_week": 20, "office_id": str(office.id)},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert _count_for(body, office.id, 0) == 4
+    assert _manager_count_for(body, office.id, 0) == 1
+
+
+@pytest.mark.asyncio
+async def test_manager_only_weekday_still_returned(client, db) -> None:
+    """staff 0 名でも manager>0 の (office, weekday) は item として返る."""
+    admin = await _make_user(db, email="wsc-mgr2@example.com", role="admin")
+    office = await _make_office(db, name="wsc-office-mgr2")
+    # 火 (wd=1): manager のみ 1 名, staff 0 名.
+    await _make_staff(db, name="wsc-mgr2-m0", office=office, work_days=[1], role="manager")
+    await db.commit()
+
+    res = await client.get(
+        "/api/v1/schedule/v2/weekday-staff-capacity",
+        headers=_bearer(admin),
+        params={"iso_year": 2026, "iso_week": 20, "office_id": str(office.id)},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert _count_for(body, office.id, 1) == 0
+    assert _manager_count_for(body, office.id, 1) == 1
 
 
 # ---------------------------------------------------------------------------

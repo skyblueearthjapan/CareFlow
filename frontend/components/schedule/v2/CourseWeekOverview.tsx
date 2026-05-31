@@ -108,6 +108,18 @@ export interface CourseWeekOverviewProps {
   staffCountFor?: (officeId: string, weekday: number) => number;
   /** A-E 発行上限 (API 由来の course_codes_max. 省略時は COURSE_CODES_MAX=5). */
   courseCodesMax?: number;
+  /**
+   * Phase G-53: (office_id, weekday) → 稼働マネージャー数 (role='manager').
+   * 曜日ヘッダーの「拠点別 S/M」表示で M の値に使う. 未指定時は 0 扱い.
+   */
+  managerCountFor?: (officeId: string, weekday: number) => number;
+  /**
+   * Phase G-53: 曜日ヘッダーの拠点別 S/M を出す対象拠点の表示順 + 短縮ラベル.
+   * 例: [{ id: <INAGE uuid>, label: '稲' }, { id: <TSUGA uuid>, label: '津' }].
+   * 親 (CourseDayTablePanel) で office.code (INAGE→稲 / TSUGA→津) or name から構築.
+   * 未指定時はヘッダーに拠点別 S/M を出さない (患者総数のみ).
+   */
+  staffSummaryOffices?: { id: string; label: string }[];
 }
 
 export function CourseWeekOverview({
@@ -123,6 +135,8 @@ export function CourseWeekOverview({
   onTogglePin,
   staffCountFor,
   courseCodesMax = COURSE_CODES_MAX,
+  managerCountFor,
+  staffSummaryOffices,
 }: CourseWeekOverviewProps) {
   // (template_id, weekday) → visits[] (start_time 昇順)
   const cellMap = React.useMemo(() => {
@@ -138,6 +152,17 @@ export function CourseWeekOverview({
         key,
         [...arr].sort((a, b) => (a.start_time ?? '').localeCompare(b.start_time ?? '')),
       );
+    }
+    return m;
+  }, [visits]);
+
+  // Phase G-53: weekday → 患者総数 (全コース行合計). visits は (template, weekday)
+  // でフラットに渡されるため、weekday 別に visit 件数を数えるだけで全コース合計に
+  // なる. 同住所ペアも各 1 件 (= 実患者数) として数える (= visit 1 行 = 1 名).
+  const patientTotalByWeekday = React.useMemo(() => {
+    const m = new Map<number, number>();
+    for (const v of visits) {
+      m.set(v.weekday, (m.get(v.weekday) ?? 0) + 1);
     }
     return m;
   }, [visits]);
@@ -176,19 +201,48 @@ export function CourseWeekOverview({
           <div className="border-b border-r border-border-default bg-bg-muted px-2 py-1 text-[10px] font-semibold text-text-muted">
             コース \ 曜日
           </div>
-          {WEEKDAYS.map((wd) => (
-            <button
-              key={`h-${wd}`}
-              type="button"
-              onClick={() => onJumpToDay(wd)}
-              className="border-b border-r border-border-default bg-bg-muted px-2 py-1 text-center text-[10px] font-semibold text-text-secondary hover:bg-brand-primary/10"
-              data-testid={`course-week-overview-header-${wd}`}
-              aria-label={`${WEEKDAY_LABELS[wd]}曜日タブにジャンプ`}
-              title={`${WEEKDAY_LABELS[wd]}曜日タブにジャンプ`}
-            >
-              {WEEKDAY_LABELS[wd]}
-            </button>
-          ))}
+          {WEEKDAYS.map((wd) => {
+            // Phase G-53: 患者総数 + 拠点別 S/M をヘッダー右端/下段に小さく表示.
+            const patientTotal = patientTotalByWeekday.get(wd) ?? 0;
+            const officeParts = (staffSummaryOffices ?? [])
+              .map((o) => {
+                const s = staffCountFor ? staffCountFor(o.id, wd) : 0;
+                const m = managerCountFor ? managerCountFor(o.id, wd) : 0;
+                return { label: o.label, s, m };
+              })
+              // 当該曜日に S も M も 0 の拠点は省略 (出勤がある拠点のみ表示).
+              .filter((p) => p.s > 0 || p.m > 0);
+            return (
+              <button
+                key={`h-${wd}`}
+                type="button"
+                onClick={() => onJumpToDay(wd)}
+                className="flex flex-col items-center gap-0.5 border-b border-r border-border-default bg-bg-muted px-2 py-1 text-center text-[10px] font-semibold text-text-secondary hover:bg-brand-primary/10"
+                data-testid={`course-week-overview-header-${wd}`}
+                aria-label={`${WEEKDAY_LABELS[wd]}曜日タブにジャンプ (患者 ${patientTotal} 名)`}
+                title={`${WEEKDAY_LABELS[wd]}曜日タブにジャンプ`}
+              >
+                <span>{WEEKDAY_LABELS[wd]}</span>
+                <span
+                  className="flex flex-col items-center gap-0 text-[9px] font-normal leading-tight text-text-muted"
+                  data-testid={`weekday-header-totals-${wd}`}
+                >
+                  <span className="tnum" data-testid={`weekday-header-patients-${wd}`}>
+                    患者 {patientTotal} 名
+                  </span>
+                  {officeParts.length > 0 ? (
+                    <span className="tnum" data-testid={`weekday-header-staff-${wd}`}>
+                      {officeParts
+                        .map((p) =>
+                          p.m > 0 ? `${p.label} S:${p.s} M:${p.m}` : `${p.label} S:${p.s}`,
+                        )
+                        .join(' / ')}
+                    </span>
+                  ) : null}
+                </span>
+              </button>
+            );
+          })}
 
           {/* 行: 各 template × 各 weekday */}
           {sortedTemplates.map((tpl) => {

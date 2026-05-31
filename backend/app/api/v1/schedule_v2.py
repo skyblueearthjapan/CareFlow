@@ -94,6 +94,7 @@ from app.services.scheduling.auto_allocator_v2 import (
     apply_week_only,
     calc_h_violations,
     calc_total_distance,
+    count_active_managers_per_weekday,
     count_active_staff_per_weekday,
     haversine_km,
     reset_visits_to_fixed,
@@ -1530,11 +1531,27 @@ async def weekday_staff_capacity_endpoint(
         iso_year=iso_year,
         iso_week=iso_week,
     )
+    # Phase G-53: 週ビューヘッダーの「拠点別 S/M」表示用に manager 数も集計する.
+    # staff と独立に (office_id, weekday) → count を引けるよう別 dict で持ち、
+    # どちらか一方でも > 0 の (office_id, weekday) を item として返す
+    # (frontend は欠損キーを 0 扱いするので両方 0 は省略する).
+    manager_counts = await count_active_managers_per_weekday(
+        db,
+        office_ids=office_ids,
+        iso_year=iso_year,
+        iso_week=iso_week,
+    )
 
+    keys = set(counts.keys()) | set(manager_counts.keys())
     items = [
-        WeekdayStaffCapacityItem(office_id=oid, weekday=wd, staff_count=cnt)
-        for (oid, wd), cnt in counts.items()
-        if cnt > 0
+        WeekdayStaffCapacityItem(
+            office_id=oid,
+            weekday=wd,
+            staff_count=counts.get((oid, wd), 0),
+            manager_count=manager_counts.get((oid, wd), 0),
+        )
+        for (oid, wd) in keys
+        if counts.get((oid, wd), 0) > 0 or manager_counts.get((oid, wd), 0) > 0
     ]
     # 安定した出力順 (office_id, weekday) でソート.
     items.sort(key=lambda it: (str(it.office_id), it.weekday))

@@ -698,6 +698,10 @@ class WeekdayStaffCapacityItem(BaseModel):
     office_id: uuid.UUID
     weekday: int = Field(ge=0, le=6)
     staff_count: int = Field(ge=0)
+    # Phase G-53: 週ビューヘッダーの「拠点別 S/M」表示用. role='manager' の
+    # 稼働可能数 (count_active_managers_per_weekday). staff_count と独立に
+    # 集計するため、staff_count=0 でも manager_count>0 の項目が返り得る.
+    manager_count: int = Field(default=0, ge=0)
 
 
 class WeekdayStaffCapacityResponse(BaseModel):
