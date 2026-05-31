@@ -104,6 +104,19 @@ BOOL_VALUES: Final[tuple[str, ...]] = ("TRUE", "FALSE")
 BOOL_JA_VALUES: Final[tuple[str, ...]] = ("はい", "いいえ")
 BOOL_JA_TO_BOOL: Final[dict[str, bool]] = {"はい": True, "いいえ": False}
 
+# ---------------------------------------------------------------------------
+# Phase G-49: 入力性向上のための dropdown 値レンジ
+# ---------------------------------------------------------------------------
+#
+# 週訪問回数: 1〜7 の整数 dropdown.
+FREQUENCY_PER_WEEK_VALUES: Final[tuple[str, ...]] = tuple(str(n) for n in range(1, 8))
+# サービス時間(分): 15〜180 を 5 分刻み. import は int として解釈される.
+SERVICE_MINUTES_VALUES: Final[tuple[str, ...]] = tuple(str(n) for n in range(15, 181, 5))
+# 希望開始/終了時刻: 06:00〜20:00 を 30 分刻みの "HH:MM" 文字列 (_read_hhmm が解釈可能).
+HHMM_VALUES: Final[tuple[str, ...]] = tuple(
+    f"{h:02d}:{m:02d}" for h in range(6, 21) for m in (0, 30)
+)
+
 WEEKDAY_LABELS: Final[tuple[str, ...]] = ("月", "火", "水", "木", "金", "土", "日")
 WEEKDAY_LABEL_TO_INT: Final[dict[str, int]] = {label: i for i, label in enumerate(WEEKDAY_LABELS)}
 WEEKDAY_INT_TO_LABEL: Final[dict[int, str]] = {
@@ -111,6 +124,9 @@ WEEKDAY_INT_TO_LABEL: Final[dict[int, str]] = {
 }
 
 TIME_TYPE_VALUES: Final[tuple[str, ...]] = ("固定", "時間帯", "午前", "午後", "終日")
+# Phase G-49: これらの時間タイプは時刻 (開始/終了) を使わない. exporter は
+# 希望開始/終了時刻セルを条件付き書式でグレーアウトして「不要」を視覚的に示す.
+TIME_TYPE_GREYOUT_VALUES: Final[tuple[str, ...]] = ("午前", "午後", "終日")
 # Export / import 時に time_type を解決できない (patient.weekly_pattern にエントリ無し /
 # 空セル) の場合に fallback として使うデフォルト値。
 # "時間帯" は一般的な訪問形態を表す中立な値で、後から UI で個別に変更できる。
@@ -200,6 +216,78 @@ def weekdays_cell_to_en(value: str | None) -> list[str]:
     return [en for en in WEEKDAY_EN_LIST if en in found]
 
 
+def weekdays_en_to_yesno_cells(weekdays: list[str] | None) -> dict[str, str]:
+    """Phase G-49: preferred_weekdays (英 list) → 7 列 (pref_wd_mon..) の はい/いいえ.
+
+    希望されている曜日の列に「はい」、それ以外に「いいえ」を入れた dict を返す.
+    None / 空 list でも全列「いいえ」を返す (round-trip 安定のため空欄にしない).
+    """
+    present = {str(w) for w in (weekdays or [])}
+    return {
+        key: ("はい" if en in present else "いいえ")
+        for key, en in PATIENT_WEEKDAY_KEY_TO_EN.items()
+    }
+
+
+def weekday_yesno_cells_to_en(cells: dict[str, object]) -> list[str]:
+    """Phase G-49: 7 列 (pref_wd_mon..) の はい/いいえ → preferred_weekdays (英 list).
+
+    「はい」(= True 相当) の曜日のみを Mon..Sun の正準順で返す. 値の解釈は
+    importer の bool 受理と同じく「はい/TRUE/1/yes」を True とする. 候補外/空は
+    いいえ扱い (壊さない方針).
+    """
+    found: set[str] = set()
+    for key, en in PATIENT_WEEKDAY_KEY_TO_EN.items():
+        if _is_yes(cells.get(key)):
+            found.add(en)
+    return [en for en in WEEKDAY_EN_LIST if en in found]
+
+
+def _is_yes(value: object) -> bool:
+    """セル値が「はい」相当 (True) かを判定. 空/いいえ/候補外は False."""
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    s = str(value).strip()
+    if s == "":
+        return False
+    if s in ("はい",):
+        return True
+    return s.upper() in ("TRUE", "1", "YES", "Y")
+
+
+# ---------------------------------------------------------------------------
+# 希望曜日 7 列クリック式 (Phase G-49) — 月..日 を「はい/いいえ」dropdown に分割
+# ---------------------------------------------------------------------------
+#
+# Phase G-48 までは 1 セルカンマ区切り ("月,水,金") だったが、入力性向上のため
+# 月/火/水/木/金/土/日 の 7 列に分割し、各列を BOOL_JA (はい/いいえ) dropdown とする.
+# 内部 (JSONB) の preferred_weekdays は従来どおり英短縮形 Mon..Sun の list.
+#
+# patient sheet 上の列キー: pref_wd_mon .. pref_wd_sun. weekly_pattern dict 内では
+# preferred_weekdays (英 list) にマップする.
+
+PATIENT_WEEKDAY_COL_KEYS: Final[tuple[str, ...]] = (
+    "pref_wd_mon",
+    "pref_wd_tue",
+    "pref_wd_wed",
+    "pref_wd_thu",
+    "pref_wd_fri",
+    "pref_wd_sat",
+    "pref_wd_sun",
+)
+# 列キー → 英短縮形 (Mon..Sun). WEEKDAY_EN_LIST と同順.
+PATIENT_WEEKDAY_KEY_TO_EN: Final[dict[str, str]] = dict(
+    zip(PATIENT_WEEKDAY_COL_KEYS, WEEKDAY_EN_LIST, strict=True)
+)
+# 列キー → ヘッダー日本語ラベル (希望曜日_月 等).
+PATIENT_WEEKDAY_KEY_TO_HEADER: Final[dict[str, str]] = {
+    key: f"希望曜日_{label}"
+    for key, label in zip(PATIENT_WEEKDAY_COL_KEYS, WEEKDAY_LABELS, strict=True)
+}
+
+
 # ---------------------------------------------------------------------------
 # シート 1: 患者マスタ (Phase G-48 で希望訪問パターンを統合)
 # ---------------------------------------------------------------------------
@@ -250,7 +338,13 @@ PATIENT_COLUMNS: Final[list[dict[str, object]]] = [
         "dropdown": BOOL_JA_VALUES,
     },
     # ---- Phase G-48: weekly_pattern を統合 (希望訪問パターン) ----
-    {"key": "frequency_per_week", "header": "週訪問回数", "width": 12, "dropdown": None},
+    # Phase G-49: 週訪問回数を 1〜7 dropdown 化.
+    {
+        "key": "frequency_per_week",
+        "header": "週訪問回数",
+        "width": 12,
+        "dropdown": FREQUENCY_PER_WEEK_VALUES,
+    },
     {
         "key": "visit_frequency",
         "header": "訪問頻度",
@@ -258,16 +352,62 @@ PATIENT_COLUMNS: Final[list[dict[str, object]]] = [
         "dropdown": VISIT_FREQUENCY_JA_VALUES,
     },
     {"key": "visit_weeks", "header": "訪問週 (例 '1,3')", "width": 14, "dropdown": None},
+    # Phase G-49: 希望曜日を 7 列クリック式 (月..日 / はい・いいえ) に分割.
+    # 旧 1 セル "希望曜日 (例 '月,水,金')" 列は廃止 (旧 export ファイルは importer の
+    # 後方互換経路で読む).
     {
-        "key": "preferred_weekdays",
-        "header": "希望曜日 (例 '月,水,金')",
-        "width": 18,
-        "dropdown": None,
+        "key": "pref_wd_mon",
+        "header": PATIENT_WEEKDAY_KEY_TO_HEADER["pref_wd_mon"],
+        "width": 11,
+        "dropdown": BOOL_JA_VALUES,
     },
-    {"key": "service_minutes", "header": "サービス時間 (分)", "width": 16, "dropdown": None},
+    {
+        "key": "pref_wd_tue",
+        "header": PATIENT_WEEKDAY_KEY_TO_HEADER["pref_wd_tue"],
+        "width": 11,
+        "dropdown": BOOL_JA_VALUES,
+    },
+    {
+        "key": "pref_wd_wed",
+        "header": PATIENT_WEEKDAY_KEY_TO_HEADER["pref_wd_wed"],
+        "width": 11,
+        "dropdown": BOOL_JA_VALUES,
+    },
+    {
+        "key": "pref_wd_thu",
+        "header": PATIENT_WEEKDAY_KEY_TO_HEADER["pref_wd_thu"],
+        "width": 11,
+        "dropdown": BOOL_JA_VALUES,
+    },
+    {
+        "key": "pref_wd_fri",
+        "header": PATIENT_WEEKDAY_KEY_TO_HEADER["pref_wd_fri"],
+        "width": 11,
+        "dropdown": BOOL_JA_VALUES,
+    },
+    {
+        "key": "pref_wd_sat",
+        "header": PATIENT_WEEKDAY_KEY_TO_HEADER["pref_wd_sat"],
+        "width": 11,
+        "dropdown": BOOL_JA_VALUES,
+    },
+    {
+        "key": "pref_wd_sun",
+        "header": PATIENT_WEEKDAY_KEY_TO_HEADER["pref_wd_sun"],
+        "width": 11,
+        "dropdown": BOOL_JA_VALUES,
+    },
+    # Phase G-49: サービス時間を 5 分刻み dropdown 化.
+    {
+        "key": "service_minutes",
+        "header": "サービス時間 (分)",
+        "width": 16,
+        "dropdown": SERVICE_MINUTES_VALUES,
+    },
     {"key": "weekly_time_type", "header": "時間タイプ", "width": 12, "dropdown": TIME_TYPE_VALUES},
-    {"key": "preferred_start", "header": "希望開始時刻", "width": 14, "dropdown": None},
-    {"key": "preferred_end", "header": "希望終了時刻", "width": 14, "dropdown": None},
+    # Phase G-49: 希望開始/終了時刻を HH:MM dropdown 化.
+    {"key": "preferred_start", "header": "希望開始時刻", "width": 14, "dropdown": HHMM_VALUES},
+    {"key": "preferred_end", "header": "希望終了時刻", "width": 14, "dropdown": HHMM_VALUES},
     {"key": "note", "header": "備考", "width": 30, "dropdown": None},
     {"key": "delete_flag", "header": "(削除フラグ)", "width": 14, "dropdown": DELETE_FLAG_VALUES},
 ]
@@ -284,7 +424,8 @@ PATIENT_WEEKLY_KEYS: Final[tuple[str, ...]] = (
     "frequency_per_week",
     "visit_frequency",
     "visit_weeks",
-    "preferred_weekdays",
+    # Phase G-49: 希望曜日は 7 列 (pref_wd_mon..pref_wd_sun) に分割.
+    *PATIENT_WEEKDAY_COL_KEYS,
     "service_minutes",
     "weekly_time_type",
     "preferred_start",
@@ -292,7 +433,8 @@ PATIENT_WEEKLY_KEYS: Final[tuple[str, ...]] = (
 )
 
 # 派生列 (システム自動算出 / システム用). exporter でグレー塗り + コメントを付与.
-DERIVED_PATIENT_COLUMNS: Final[tuple[str, ...]] = ("patient_id", "lat", "lng")
+# Phase G-49: 拠点コードは住所から自動割当する派生列扱いに (緯度/経度と同様).
+DERIVED_PATIENT_COLUMNS: Final[tuple[str, ...]] = ("patient_id", "lat", "lng", "office_code")
 
 # 必須項目 (新規作成時): 仕様書 §1
 PATIENT_REQUIRED_ON_NEW: Final[tuple[str, ...]] = (
@@ -434,6 +576,13 @@ PATIENT_ID_COMMENT_TEXT: Final = (
 # Phase G-48: 緯度/経度はシステムが住所から自動算出する派生列. ユーザー編集不要.
 LATLNG_COMMENT_TEXT: Final = (
     "自動算出・編集不要。\nシステムが住所から緯度経度を計算します。\n空欄のままにしてください。"
+)
+# Phase G-49: 拠点コードは住所から自動割当する派生列. 空欄なら住所から自動解決.
+OFFICE_CODE_COMMENT_TEXT: Final = (
+    "住所から自動割当・編集不要。\n"
+    "新規患者は空欄のままにすると、システムが住所 (市区町村) から拠点を自動判定します。\n"
+    "既存患者は現在の拠点が表示されます (空欄にしても変更されません)。\n"
+    "手動で拠点を指定/変更したい場合のみコードを入力してください。"
 )
 PFV_PATIENT_ID_COMMENT_TEXT: Final = (
     "新規患者の PFV を登録する場合: この列を空欄にし、"

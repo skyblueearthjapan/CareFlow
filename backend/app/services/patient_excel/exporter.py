@@ -19,6 +19,7 @@ from uuid import UUID
 
 from openpyxl import Workbook
 from openpyxl.comments import Comment
+from openpyxl.formatting.rule import FormulaRule
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
@@ -37,6 +38,7 @@ from app.services.patient_excel.schema import (
     ID_COLUMN_FONT_COLOR,
     INSURANCE_EN_TO_JA,
     LATLNG_COMMENT_TEXT,
+    OFFICE_CODE_COMMENT_TEXT,
     PATIENT_COL_INDEX,
     PATIENT_COLUMNS,
     PATIENT_ID_COMMENT_TEXT,
@@ -49,9 +51,10 @@ from app.services.patient_excel.schema import (
     SHEET_PATIENTS,
     SHEET_PFV,
     STATUS_EN_TO_JA,
+    TIME_TYPE_GREYOUT_VALUES,
     VISIT_FREQUENCY_EN_TO_JA,
     WEEKDAY_INT_TO_LABEL,
-    weekdays_en_to_cell,
+    weekdays_en_to_yesno_cells,
 )
 
 logger = logging.getLogger(__name__)
@@ -157,6 +160,38 @@ def _attach_header_comment(
     cell.comment = comment
 
 
+def _attach_time_greyout_conditional_format(
+    ws: Worksheet,
+    columns: list[dict[str, object]],
+    *,
+    max_data_rows: int = 1000,
+) -> None:
+    """Phase G-49: 時間タイプが 午前/午後/終日 のとき希望開始/終了時刻をグレーアウト.
+
+    マクロを使わず openpyxl の ``FormulaRule`` (条件付き書式) で、時間タイプ列を
+    参照する数式 (例 ``OR($S2="午前",$S2="午後",$S2="終日")``) を時刻 2 列に適用する.
+    列レターは実際の列順から算出する (列追加/並び替えに追従).
+    """
+    tt_idx = _column_index("weekly_time_type", columns)
+    start_idx = _column_index("preferred_start", columns)
+    end_idx = _column_index("preferred_end", columns)
+    if tt_idx is None or start_idx is None or end_idx is None:
+        return
+    tt_letter = get_column_letter(tt_idx)
+    last_row = 1 + max_data_rows
+    # 数式は適用範囲の先頭行 (2 行目) 基準で書く. openpyxl が各行に相対展開する.
+    # 時間タイプ列は絶対列 ($), 行は相対 (行番号なし → 評価行) にする.
+    conditions = ",".join(f'${tt_letter}2="{v}"' for v in TIME_TYPE_GREYOUT_VALUES)
+    formula = f"OR({conditions})"
+    grey_fill = PatternFill("solid", fgColor=ID_COLUMN_FILL_COLOR)
+    grey_font = Font(italic=True, color=ID_COLUMN_FONT_COLOR)
+    for col_idx in (start_idx, end_idx):
+        col_letter = get_column_letter(col_idx)
+        rng = f"{col_letter}2:{col_letter}{last_row}"
+        rule = FormulaRule(formula=[formula], fill=grey_fill, font=grey_font)
+        ws.conditional_formatting.add(rng, rule)
+
+
 def _write_patient_row(
     ws: Worksheet,
     row_idx: int,
@@ -195,8 +230,11 @@ def _write_patient_row(
     visit_frequency_ja = (
         VISIT_FREQUENCY_EN_TO_JA.get(vf_raw, vf_raw) if isinstance(vf_raw, str) else None
     )
+    # Phase G-49: 希望曜日を 7 列 (月..日) の はい/いいえ に展開.
     pref_weekdays = wp.get("preferred_weekdays")
-    weekdays_cell = weekdays_en_to_cell(pref_weekdays if isinstance(pref_weekdays, list) else None)
+    weekday_cells = weekdays_en_to_yesno_cells(
+        pref_weekdays if isinstance(pref_weekdays, list) else None
+    )
 
     values: dict[str, object | None] = {
         "patient_id": str(patient.id),
@@ -219,7 +257,8 @@ def _write_patient_row(
         "frequency_per_week": wp.get("frequency_per_week"),
         "visit_frequency": visit_frequency_ja,
         "visit_weeks": wp.get("visit_weeks"),
-        "preferred_weekdays": weekdays_cell or None,
+        # Phase G-49: 希望曜日 7 列 (はい/いいえ).
+        **weekday_cells,
         "service_minutes": wp.get("service_minutes"),
         "weekly_time_type": wp.get("time_type"),
         "preferred_start": wp.get("preferred_start"),
@@ -367,6 +406,10 @@ def build_workbook(
     # Phase G-48: 緯度/経度は住所からの自動算出 (派生列). 編集不要コメントを付与.
     _attach_header_comment(ws_p, "lat", PATIENT_COLUMNS, text=LATLNG_COMMENT_TEXT)
     _attach_header_comment(ws_p, "lng", PATIENT_COLUMNS, text=LATLNG_COMMENT_TEXT)
+    # Phase G-49: 拠点コードは住所から自動割当 (派生列). 編集不要コメントを付与.
+    _attach_header_comment(ws_p, "office_code", PATIENT_COLUMNS, text=OFFICE_CODE_COMMENT_TEXT)
+    # Phase G-49: 時間タイプ 午前/午後/終日 のとき時刻 2 列を条件付き書式でグレーアウト.
+    _attach_time_greyout_conditional_format(ws_p, PATIENT_COLUMNS)
 
     office_code_by_id: dict[UUID, str] = {
         office.id: (office.code or "")
@@ -375,10 +418,12 @@ def build_workbook(
     }
     for i, patient in enumerate(patients, start=2):
         _write_patient_row(ws_p, i, patient, office_code_by_id=office_code_by_id)
-    # Phase G-48: patient_id / 緯度 / 経度 の派生列はグレー塗りで「触らない雰囲気」.
+    # Phase G-48/G-49: patient_id / 緯度 / 経度 / 拠点コード の派生列はグレー塗りで
+    # 「触らない雰囲気」.
     _shade_id_column_data_rows(ws_p, "patient_id", PATIENT_COLUMNS, data_row_count=len(patients))
     _shade_id_column_data_rows(ws_p, "lat", PATIENT_COLUMNS, data_row_count=len(patients))
     _shade_id_column_data_rows(ws_p, "lng", PATIENT_COLUMNS, data_row_count=len(patients))
+    _shade_id_column_data_rows(ws_p, "office_code", PATIENT_COLUMNS, data_row_count=len(patients))
 
     # PFV シート
     ws_f: Worksheet = wb.create_sheet(title=SHEET_PFV)

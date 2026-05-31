@@ -34,8 +34,10 @@ from sqlalchemy import select
 
 from app.core.security import create_access_token, hash_password
 from app.models import (
+    City,
     CourseTemplate,
     Office,
+    OfficeCity,
     Patient,
     PatientFixedVisit,
     User,
@@ -2001,8 +2003,14 @@ async def test_export_includes_weekly_pattern_in_patient_sheet(client, db) -> No
     assert row[PATIENT_COL_INDEX["service_minutes"]] == 35
     # 訪問頻度: DB "every" → 日本語 "毎週".
     assert row[PATIENT_COL_INDEX["visit_frequency"]] == "毎週"
-    # 希望曜日: 1 セルにカンマ区切り (Mon..Sun 正準順).
-    assert row[PATIENT_COL_INDEX["preferred_weekdays"]] == "月,水,金"
+    # Phase G-49: 希望曜日は 7 列 (月..日) の はい/いいえ. Mon/Wed/Fri が「はい」.
+    assert row[PATIENT_COL_INDEX["pref_wd_mon"]] == "はい"
+    assert row[PATIENT_COL_INDEX["pref_wd_tue"]] == "いいえ"
+    assert row[PATIENT_COL_INDEX["pref_wd_wed"]] == "はい"
+    assert row[PATIENT_COL_INDEX["pref_wd_thu"]] == "いいえ"
+    assert row[PATIENT_COL_INDEX["pref_wd_fri"]] == "はい"
+    assert row[PATIENT_COL_INDEX["pref_wd_sat"]] == "いいえ"
+    assert row[PATIENT_COL_INDEX["pref_wd_sun"]] == "いいえ"
 
 
 @pytest.mark.asyncio
@@ -2026,7 +2034,9 @@ async def test_import_updates_weekly_pattern(client, db) -> None:
                 "weekly_time_type": "固定",
                 "preferred_start": "10:00",
                 "service_minutes": 45,
-                "preferred_weekdays": "月,水",
+                # Phase G-49: 希望曜日は 7 列 はい/いいえ. 月・水を「はい」.
+                "pref_wd_mon": "はい",
+                "pref_wd_wed": "はい",
                 "visit_frequency": "隔週",
                 "frequency_per_week": 2,
             }
@@ -2446,10 +2456,10 @@ async def test_export_pfv_mode_japanese(client, db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_weekday_single_cell_comma_variants(client, db) -> None:
-    """希望曜日 1 セル: 半角/全角カンマ・読点いずれの区切りも受理する."""
-    admin = await _make_user(db, "g48-wd-cell@example.com", "admin")
-    p = await _make_patient(db, code="P-G48-WD", name="曜日1セル")
+async def test_weekday_7columns_yesno_input(client, db) -> None:
+    """Phase G-49: 希望曜日 7 列 (月..日) の「はい」を読み preferred_weekdays に反映."""
+    admin = await _make_user(db, "g49-wd-7col@example.com", "admin")
+    p = await _make_patient(db, code="P-G49-WD", name="曜日7列")
     p.weekly_pattern = None
     await db.commit()
     pid = p.id
@@ -2457,9 +2467,12 @@ async def test_weekday_single_cell_comma_variants(client, db) -> None:
         patient_rows=[
             {
                 "patient_id": str(pid),
-                "patient_code": "P-G48-WD",
-                # 全角カンマ + 読点 + 半角カンマ混在.
-                "preferred_weekdays": "月，火、水,金",
+                "patient_code": "P-G49-WD",
+                # 月・火・水・金 を「はい」、他は空 (= いいえ相当).
+                "pref_wd_mon": "はい",
+                "pref_wd_tue": "はい",
+                "pref_wd_wed": "はい",
+                "pref_wd_fri": "はい",
             }
         ],
     )
@@ -2667,3 +2680,238 @@ async def test_backward_compat_legacy_weekly_sheet_delete_clears(client, db) -> 
     p_after = await db.get(Patient, pid)
     # (b) weekly_pattern が None にクリアされる (明示削除なので entries 等も消える).
     assert p_after.weekly_pattern is None
+
+
+# ---------------------------------------------------------------------------
+# Phase G-49: 拠点コード自動割当 (住所ベース) / dropdown / 7 列曜日 / 条件付き書式
+# ---------------------------------------------------------------------------
+
+
+async def _seed_inage_city_office(db) -> Office:
+    """稲毛区 → INAGE の city / office_cities を seed して INAGE office を返す."""
+    inage_city = City(prefecture="千葉県", name="千葉市稲毛区", jis_code="12103")
+    db.add(inage_city)
+    await db.commit()
+    await db.refresh(inage_city)
+    office = await _make_office(db, "INAGE", "稲毛")
+    db.add(OfficeCity(office_id=office.id, city_id=inage_city.id))
+    await db.commit()
+    return office
+
+
+@pytest.mark.asyncio
+async def test_import_new_patient_office_auto_assigned_from_address(client, db) -> None:
+    """Phase G-49: 拠点コード空欄の新規患者は住所から primary_office_id を自動割当."""
+    admin = await _make_user(db, "g49-auto-new@example.com", "admin")
+    office = await _seed_inage_city_office(db)
+    office_id = office.id
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                # patient_id / office_code は空欄. 住所だけから拠点を解決させる.
+                "patient_code": "P-G49-AUTO",
+                "name": "自動割当",
+                "sex": "男性",
+                "status": "稼働",
+                "address": "千葉県千葉市稲毛区稲毛東1-1-1",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    db.expire_all()
+    p_after = (await db.scalars(select(Patient).where(Patient.code == "P-G49-AUTO"))).first()
+    assert p_after is not None
+    assert p_after.primary_office_id == office_id
+
+
+@pytest.mark.asyncio
+async def test_import_explicit_office_code_respected_over_auto(client, db) -> None:
+    """Phase G-49: 拠点コードが入っていれば住所自動割当より明示コードを尊重."""
+    admin = await _make_user(db, "g49-explicit@example.com", "admin")
+    inage = await _seed_inage_city_office(db)
+    inage_id = inage.id
+    # 別拠点 TSUGA も用意 (住所は稲毛区だが TSUGA を明示指定).
+    tsuga = await _make_office(db, "TSUGA", "都賀")
+    tsuga_id = tsuga.id
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                "patient_code": "P-G49-EXP",
+                "name": "明示尊重",
+                "sex": "男性",
+                "status": "稼働",
+                "address": "千葉県千葉市稲毛区稲毛東1-1-1",
+                "office_code": "TSUGA",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    db.expire_all()
+    p_after = (await db.scalars(select(Patient).where(Patient.code == "P-G49-EXP"))).first()
+    assert p_after is not None
+    # 明示コード (TSUGA) が尊重され、住所自動割当 (INAGE) では上書きされない.
+    assert p_after.primary_office_id == tsuga_id
+    assert p_after.primary_office_id != inage_id
+
+
+@pytest.mark.asyncio
+async def test_import_existing_patient_blank_office_not_auto_assigned(client, db) -> None:
+    """Phase G-49: 既存患者の拠点コード空欄は「維持」(住所自動割当しない)."""
+    admin = await _make_user(db, "g49-existing@example.com", "admin")
+    await _seed_inage_city_office(db)
+    # 既存患者 (primary_office 未設定). 空欄 import で None のまま維持される.
+    p = await _make_patient(
+        db,
+        code="P-G49-EXIST",
+        name="既存維持",
+        address="千葉県千葉市稲毛区test",
+        primary_office_id=None,
+    )
+    pid = p.id
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                "patient_id": str(pid),
+                "patient_code": "P-G49-EXIST",
+                # office_code 空欄 → 既存患者は触らない.
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=True)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    # 既存患者・空欄は自動割当しないので noop (= primary_office_id 変更なし).
+    assert body["patient_rows"][0]["operation"] == "noop"
+
+
+@pytest.mark.asyncio
+async def test_export_office_code_roundtrip_noop(client, db) -> None:
+    """Phase G-49: 拠点コードあり export → 無編集 import = noop (round-trip 安定)."""
+    admin = await _make_user(db, "g49-rt-office@example.com", "admin")
+    office = await _seed_inage_city_office(db)
+    await _make_patient(
+        db,
+        code="P-G49-RT",
+        name="拠点RT",
+        address="千葉県千葉市稲毛区test",
+        primary_office_id=office.id,
+    )
+    export_res = await client.get("/api/v1/patients/import-export/export", headers=_bearer(admin))
+    assert export_res.status_code == 200
+    files = {
+        "file": (
+            "exported.xlsx",
+            export_res.content,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
+    import_res = await client.post(
+        "/api/v1/patients/import-export/import?dry_run=true",
+        headers=_bearer(admin),
+        files=files,
+    )
+    assert import_res.status_code == 200, import_res.text
+    summary = import_res.json()["summary"]
+    assert summary["patients_error"] == 0
+    assert summary["patients_update"] == 0
+    assert summary["patients_noop"] == 1
+
+
+@pytest.mark.asyncio
+async def test_template_has_dropdowns_and_conditional_format(client, db) -> None:
+    """Phase G-49: テンプレートに dropdown (1-7 / 5 分刻み / HH:MM / 7 列はい・いいえ)
+    と時刻グレーアウトの条件付き書式が設定される."""
+    admin = await _make_user(db, "g49-tmpl@example.com", "admin")
+    res = await client.get("/api/v1/patients/import-export/template", headers=_bearer(admin))
+    assert res.status_code == 200
+    wb = load_workbook(BytesIO(res.content))
+    ws = wb[SHEET_PATIENTS]
+    # dropdown formula を集約.
+    dv_formulas = [dv.formula1 for dv in ws.data_validations.dataValidation]
+    joined = " ".join(dv_formulas)
+    # 週訪問回数 1〜7.
+    assert '"1,2,3,4,5,6,7"' in dv_formulas
+    # サービス時間 5 分刻み (15 / 180 が含まれる).
+    assert any("15," in f and "180" in f for f in dv_formulas)
+    # HH:MM (06:00 / 20:00 が含まれる).
+    assert any("06:00" in f and "20:00" in f for f in dv_formulas)
+    # 希望曜日 7 列の はい/いいえ dropdown (はい,いいえ が複数列).
+    assert joined.count('"はい,いいえ"') >= 7
+    # 時間タイプ列を参照する条件付き書式が時刻 2 列に設定されている.
+    cf_ranges = [str(r.sqref) for r in ws.conditional_formatting]
+    assert len(cf_ranges) >= 2
+    # 数式に 午前/午後/終日 が含まれる.
+    all_rules_have_greyout = False
+    for rng in ws.conditional_formatting:
+        for rule in ws.conditional_formatting[rng]:
+            if rule.formula and any("午前" in f for f in rule.formula):
+                all_rules_have_greyout = True
+    assert all_rules_have_greyout
+
+
+@pytest.mark.asyncio
+async def test_weekday_7columns_roundtrip_noop(client, db) -> None:
+    """Phase G-49: 7 列曜日 export → 無編集 import = noop (round-trip 安定)."""
+    admin = await _make_user(db, "g49-wd-rt@example.com", "admin")
+    p = await _make_patient(db, code="P-G49-WDRT", name="曜日RT")
+    p.weekly_pattern = {
+        "preferred_weekdays": ["Mon", "Wed", "Fri"],
+        "time_type": "時間帯",
+        "preferred_start": "09:00",
+        "preferred_end": "10:00",
+    }
+    await db.commit()
+    export_res = await client.get("/api/v1/patients/import-export/export", headers=_bearer(admin))
+    assert export_res.status_code == 200
+    files = {
+        "file": (
+            "exported.xlsx",
+            export_res.content,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
+    import_res = await client.post(
+        "/api/v1/patients/import-export/import?dry_run=true",
+        headers=_bearer(admin),
+        files=files,
+    )
+    assert import_res.status_code == 200, import_res.text
+    summary = import_res.json()["summary"]
+    assert summary["patients_error"] == 0
+    assert summary["patients_update"] == 0
+    assert summary["patients_noop"] == 1
+
+
+@pytest.mark.asyncio
+async def test_weekday_7columns_all_no_keeps_existing(client, db) -> None:
+    """Phase G-49: 7 列全「いいえ」/空でも preferred_weekdays は維持 (blank=keep)."""
+    admin = await _make_user(db, "g49-wd-keep@example.com", "admin")
+    p = await _make_patient(db, code="P-G49-WDKEEP", name="曜日維持")
+    p.weekly_pattern = {"preferred_weekdays": ["Mon"], "time_type": "時間帯"}
+    await db.commit()
+    pid = p.id
+    # 曜日 7 列を全て「いいえ」、他 weekly も空 → weekly 全空扱い = 維持.
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                "patient_id": str(pid),
+                "patient_code": "P-G49-WDKEEP",
+                "pref_wd_mon": "いいえ",
+                "pref_wd_tue": "いいえ",
+                "pref_wd_wed": "いいえ",
+                "pref_wd_thu": "いいえ",
+                "pref_wd_fri": "いいえ",
+                "pref_wd_sat": "いいえ",
+                "pref_wd_sun": "いいえ",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    db.expire_all()
+    p_after = await db.get(Patient, pid)
+    # 全いいえ + 他空 → weekly 全空 = 既存維持 (Mon 保持).
+    assert p_after.weekly_pattern is not None
+    assert p_after.weekly_pattern["preferred_weekdays"] == ["Mon"]

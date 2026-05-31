@@ -35,6 +35,7 @@ from app.schemas.v2.patient_excel import (
     PatientExcelReplaceAllSummary,
     PfvExcelImportRow,
 )
+from app.services.office_assigner import PreloadedOfficeCities, load_office_cities_index
 
 # weekly_pattern parse ヘルパーは importer.py 側に実装済. 完全置換でも同じ
 # セマンティクスを使うため import して再利用.
@@ -200,6 +201,7 @@ def _parse_patient_row_replace(
     deleted_patients_by_code: dict[str, Patient],
     offices_by_code: dict[str, Office],
     already_seen_codes: set[str],
+    office_index: PreloadedOfficeCities | None = None,
 ) -> tuple[PatientExcelImportRow, dict[str, Any] | None]:
     """1 行をパースして差分行 + apply 用 op を返す.
 
@@ -315,9 +317,16 @@ def _parse_patient_row_replace(
         parsed[k] = f
 
     # 拠点コード → primary_office_id
+    # Phase G-49: コードが入っていれば尊重 (手動上書き). 空欄なら新規/復活時のみ
+    # 住所から自動割当を試みる (UI 挙動と一致). 既存患者の空欄は従来どおり NULL 上書き
+    # (完全置換セマンティクス). これにより export (コードあり) → import = noop が保たれ、
+    # 既存患者の round-trip 安定性を壊さない.
     raw_office = cells["office_code"]
+    auto_office_id: UUID | None = None  # 空欄時に住所から解決 (新規/復活でのみ採用).
     if _is_blank(raw_office):
         parsed["primary_office_id"] = None
+        if office_index is not None:
+            auto_office_id = office_index.resolve_office_id(_read_str(cells.get("address")))
     else:
         oc = _read_str(raw_office)
         office = offices_by_code.get(oc) if oc else None
@@ -477,6 +486,11 @@ def _parse_patient_row_replace(
             ),
             None,
         )
+
+    # Phase G-49: ここに到達するのは新規/復活のみ (既存 update は上で return 済).
+    # 拠点コード空欄なら住所から自動割当した値を採用する (UI 挙動と一致).
+    if parsed.get("primary_office_id") is None and auto_office_id is not None:
+        parsed["primary_office_id"] = auto_office_id
 
     # 復活 (soft-deleted 同じ code が DB に居る)
     resurrect_target = deleted_patients_by_code.get(patient_code) if patient_code else None
@@ -1003,6 +1017,10 @@ async def parse_and_diff_replace_all(
         (ct.office_id, ct.label): ct for ct in ct_rows
     }
 
+    # Phase G-49: 拠点コード空欄の住所→拠点 自動割当用. cities/office_cities を
+    # 一度だけロードし、行ごとは同期照合 (N+1 回避).
+    office_index = await load_office_cities_index(db)
+
     # ---- patient sheet ----
     ws_p = wb[SHEET_PATIENTS]
     patient_rows: list[PatientExcelImportRow] = []
@@ -1024,6 +1042,7 @@ async def parse_and_diff_replace_all(
             deleted_patients_by_code=deleted_patients_by_code,
             offices_by_code=offices_by_code,
             already_seen_codes=already_seen_codes,
+            office_index=office_index,
         )
         patient_rows.append(diff_row)
         if op is not None:

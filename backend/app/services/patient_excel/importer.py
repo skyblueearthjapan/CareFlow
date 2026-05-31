@@ -37,6 +37,7 @@ from app.schemas.v2.patient_excel import (
     PatientExcelImportSummary,
     PfvExcelImportRow,
 )
+from app.services.office_assigner import PreloadedOfficeCities, load_office_cities_index
 from app.services.patient_excel.schema import (
     DEFAULT_TIME_TYPE,
     INSURANCE_JA_TO_EN,
@@ -60,10 +61,12 @@ from app.services.patient_excel.schema import (
     TIME_TYPE_VALUES,
     VISIT_FREQUENCY_JA_TO_EN,
     VISIT_FREQUENCY_VALUES,
+    WEEKDAY_EN_LIST,
     WEEKDAY_LABEL_TO_INT,
     WEEKLY_COL_INDEX,
     is_magic_clear,
     is_magic_delete,
+    weekday_yesno_cells_to_en,
     weekdays_cell_to_en,
 )
 
@@ -300,6 +303,7 @@ def _parse_patient_row(
     offices_by_code: dict[str, Office],
     existing_codes: set[str],
     already_seen_codes: set[str],
+    office_index: PreloadedOfficeCities | None = None,
 ) -> tuple[PatientExcelImportRow, dict[str, Any] | None]:
     """1 行を差分行に変換する.
 
@@ -492,9 +496,17 @@ def _parse_patient_row(
         parsed[k] = ("SET", f)
 
     # 拠点コード → primary_office_id
+    # Phase G-49: コードが入っていれば従来どおり尊重 (手動上書き可). 空欄のときは
+    # 「住所から自動割当」を試みる. ただし auto-assign は「新規 / クリア時」のみ適用し、
+    # 既存患者の空欄は従来どおり「触らない」(下流の操作判定で None = 維持) とする.
+    # round-trip 安定: export は常にコードを出力するため import はコードありで尊重 → noop.
     raw_office = cells["office_code"]
+    auto_office_id: UUID | None = None  # 空欄時に住所から解決した office_id (新規用).
     if _is_blank(raw_office):
         parsed["primary_office_id"] = None
+        if office_index is not None:
+            addr_for_office = _read_str(cells.get("address"))
+            auto_office_id = office_index.resolve_office_id(addr_for_office)
     elif is_magic_clear(raw_office):
         parsed["primary_office_id"] = ("CLEAR", None)
     else:
@@ -650,6 +662,21 @@ def _parse_patient_row(
                     )
                 )
                 updates[orm_attr] = new_val
+            # Phase G-49: 拠点コード空欄での復活も住所から自動割当 (新規同様).
+            # 明示コードがあれば上の field_map_resurrect で既に反映済.
+            if (
+                auto_office_id is not None
+                and "primary_office_id" not in updates
+                and resurrect_target.primary_office_id != auto_office_id
+            ):
+                changes_for_view.append(
+                    PatientExcelChange(
+                        field="primary_office_id",
+                        old_value=_serializable(resurrect_target.primary_office_id),
+                        new_value=_serializable(auto_office_id),
+                    )
+                )
+                updates["primary_office_id"] = auto_office_id
             return (
                 PatientExcelImportRow(
                     row_number=row_number,
@@ -691,6 +718,10 @@ def _parse_patient_row(
                 tag, val = v
                 # CLEAR は新規時は単に「None で INSERT」と等価.
                 new_dict[k] = val
+        # Phase G-49: 拠点コード空欄の新規患者は住所から自動割当 (UI 挙動と一致).
+        # 明示コードがあれば上の loop で既にセット済 (auto では上書きしない).
+        if auto_office_id is not None and "primary_office_id" not in new_dict:
+            new_dict["primary_office_id"] = auto_office_id
         changes_for_view = [
             PatientExcelChange(field=k, old_value=None, new_value=new_dict[k])
             for k in sorted(new_dict.keys())
@@ -1440,10 +1471,23 @@ def _parse_weekly_from_patient_cells(cells: dict[str, Any]) -> dict[str, Any] | 
     """Phase G-48: 統合「患者マスタ」シート 1 行の cells → weekly_pattern dict.
 
     cells は PATIENT_COL_INDEX のキーで引ける dict (``_parse_patient_row`` 内で構築済).
-    希望曜日は 1 セルカンマ区切り ("月,水,金"). 全 weekly フィールドが空なら None
-    (= 既存維持). <DELETE> は呼び出し側 (delete_flag) で処理するためここでは扱わない.
+    Phase G-49: 希望曜日は 7 列 (pref_wd_mon..pref_wd_sun) の はい/いいえ. 全列いいえ/
+    空なら preferred_weekdays は wp に積まない (= 既存維持 / blank=keep).
+
+    後方互換: 旧 1 セル形式 ("月,水,金") のキー ``preferred_weekdays`` が cells に
+    残っている場合 (旧 export を新スキーマ index で読んだ場合は通常存在しないが、
+    呼び出し側が補完した場合に備える) はそちらも併せて解釈する.
+    全 weekly フィールドが空なら None (= 既存維持). <DELETE> は呼び出し側
+    (delete_flag) で処理するためここでは扱わない.
     """
-    weekdays_en = weekdays_cell_to_en(_read_str(cells.get("preferred_weekdays")))
+    # Phase G-49: 7 列 はい/いいえ → 英 list.
+    weekdays_en = weekday_yesno_cells_to_en(cells)
+    # 後方互換: 旧 1 セル形式が残っていれば併合 (どちらかに値があれば拾う).
+    legacy_cell = _read_str(cells.get("preferred_weekdays"))
+    if legacy_cell:
+        legacy_en = weekdays_cell_to_en(legacy_cell)
+        merged = set(weekdays_en) | set(legacy_en)
+        weekdays_en = [en for en in WEEKDAY_EN_LIST if en in merged]
     wp = _build_weekly_pattern(
         frequency_per_week=cells.get("frequency_per_week"),
         visit_frequency=cells.get("visit_frequency"),
@@ -1582,6 +1626,9 @@ async def parse_and_diff(
     }
     # resurrection 用: soft-deleted な patient_code → Patient.
     deleted_patients_by_code = await _load_deleted_patients_by_code(db)
+    # Phase G-49: 拠点コード空欄の住所→拠点 自動割当用. cities/office_cities を
+    # 一度だけロードし、行ごとは同期照合 (N+1 回避).
+    office_index = await load_office_cities_index(db)
 
     # ---- 患者シート ----
     ws_p = wb[SHEET_PATIENTS]
@@ -1604,6 +1651,7 @@ async def parse_and_diff(
             offices_by_code=offices_by_code,
             existing_codes=existing_codes,
             already_seen_codes=already_seen_codes,
+            office_index=office_index,
         )
         patient_rows.append(diff_row)
         if op is not None:

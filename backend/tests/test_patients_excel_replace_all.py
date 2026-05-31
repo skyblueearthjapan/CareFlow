@@ -22,8 +22,10 @@ from sqlalchemy import select
 
 from app.core.security import create_access_token, hash_password
 from app.models import (
+    City,
     CourseTemplate,
     Office,
+    OfficeCity,
     Patient,
     PatientFixedVisit,
     User,
@@ -935,7 +937,9 @@ async def test_replace_all_weekly_integrated_sheet(client, db) -> None:
                 "weekly_time_type": "時間帯",
                 "preferred_start": "09:00",
                 "preferred_end": "11:00",
-                "preferred_weekdays": "火,木",
+                # Phase G-49: 希望曜日は 7 列 はい/いいえ. 火・木を「はい」.
+                "pref_wd_tue": "はい",
+                "pref_wd_thu": "はい",
                 "visit_frequency": "毎週",
             }
         ],
@@ -948,6 +952,40 @@ async def test_replace_all_weekly_integrated_sheet(client, db) -> None:
     assert p_after.weekly_pattern["time_type"] == "時間帯"
     assert set(p_after.weekly_pattern["preferred_weekdays"]) == {"Tue", "Thu"}
     assert p_after.weekly_pattern["visit_frequency"] == "every"
+
+
+@pytest.mark.asyncio
+async def test_replace_all_new_patient_office_auto_assigned(client, db) -> None:
+    """Phase G-49: 完全置換でも拠点コード空欄の新規患者は住所から自動割当."""
+    admin = await _make_user(db, "ra-g49-auto@example.com", "admin")
+    # 稲毛区 → INAGE の city/office_cities を seed.
+    inage_city = City(prefecture="千葉県", name="千葉市稲毛区", jis_code="12103")
+    db.add(inage_city)
+    await db.commit()
+    await db.refresh(inage_city)
+    office = await _make_office(db, "INAGE", "稲毛")
+    office_id = office.id
+    db.add(OfficeCity(office_id=office_id, city_id=inage_city.id))
+    await db.commit()
+
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                "patient_code": "P-RA-G49-AUTO",
+                "name": "完全置換自動割当",
+                "sex": "男性",
+                "status": "稼働",
+                "address": "千葉県千葉市稲毛区稲毛東1-1-1",
+                # office_code 空欄 → 住所から自動割当.
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    db.expire_all()
+    p_after = (await db.scalars(select(Patient).where(Patient.code == "P-RA-G49-AUTO"))).first()
+    assert p_after is not None
+    assert p_after.primary_office_id == office_id
 
 
 @pytest.mark.asyncio

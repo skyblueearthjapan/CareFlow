@@ -109,6 +109,83 @@ def _detect_prefecture(address: str) -> str | None:
 
 
 @dataclass(frozen=True)
+class PreloadedOfficeCities:
+    """住所→拠点解決を「同期・N+1 なし」で行うための事前ロード済みインデックス.
+
+    Excel import のように多数の住所をまとめて解決する経路では、行ごとに
+    ``resolve_for_address`` (= cities を毎回 SELECT) を呼ぶと N+1 になる.
+    parse_and_diff 系で cities / office_cities を一度だけロードして本オブジェクトを
+    構築し、各行は ``resolve_office_id`` の同期照合で解決する.
+
+    - ``cities``: (city_id, prefecture, name) のタプル list (alive のみ).
+    - ``office_id_by_city``: city_id → 担当 office_id (alive office のみ. 複数ある
+      場合は created_at 昇順の最初の 1 件 = ``OfficeAssigner.resolve_with_details``
+      と同じ採用ルール).
+    """
+
+    cities: tuple[tuple[UUID, str, str], ...]
+    office_id_by_city: dict[UUID, UUID]
+
+    def resolve_office_id(self, address: str | None) -> UUID | None:
+        """住所文字列 → primary_office_id (同期). 解決不能は None.
+
+        ``OfficeAssigner.resolve_with_details`` の照合ロジック (都道府県検出 +
+        市区町村名 最長一致 + office_cities 経由) を同期で踏襲する.
+        """
+        if not address or not address.strip():
+            return None
+        normalized = address.strip()
+        detected_pref = _detect_prefecture(normalized)
+
+        candidates: list[tuple[UUID, str, int]] = []
+        for city_id, prefecture, name in self.cities:
+            # 都道府県が検出できた場合はそれに一致する city のみ候補にする
+            # (resolve_with_details の prefecture 絞り込みと同等).
+            if detected_pref is not None and prefecture != detected_pref:
+                continue
+            idx = normalized.find(name)
+            if idx >= 0:
+                candidates.append((city_id, name, idx))
+
+        if not candidates:
+            return None
+
+        # 長さ降順 → 出現位置昇順 で並べ、最も具体的なマッチを採用.
+        candidates.sort(key=lambda c: (-len(c[1]), c[2]))
+        best_city_id = candidates[0][0]
+        return self.office_id_by_city.get(best_city_id)
+
+
+async def load_office_cities_index(db: AsyncSession) -> PreloadedOfficeCities:
+    """cities / office_cities を一度だけロードして同期解決用インデックスを返す.
+
+    Excel import の parse_and_diff 系から行ループ前に 1 回だけ呼ぶ想定 (N+1 回避).
+    複数 office が同 city を担当する場合は created_at 昇順の最初の 1 件を採用し、
+    ``OfficeAssigner.resolve_with_details`` の採用ルールと一致させる.
+    """
+    city_rows = list((await db.scalars(select(City).where(City.deleted_at.is_(None)))).all())
+    cities = tuple((c.id, c.prefecture, c.name) for c in city_rows)
+
+    # city_id → office_id (alive office, created_at 昇順で最初の 1 件).
+    oc_rows = list(
+        (
+            await db.execute(
+                select(OfficeCity.city_id, Office.id)
+                .join(Office, OfficeCity.office_id == Office.id)
+                .where(Office.deleted_at.is_(None))
+                .order_by(Office.created_at.asc())
+            )
+        ).all()
+    )
+    office_id_by_city: dict[UUID, UUID] = {}
+    for city_id, office_id in oc_rows:
+        # created_at 昇順なので最初に見つかったものを優先 (= 先勝ち).
+        office_id_by_city.setdefault(city_id, office_id)
+
+    return PreloadedOfficeCities(cities=cities, office_id_by_city=office_id_by_city)
+
+
+@dataclass(frozen=True)
 class OfficeResolution:
     """`resolve_for_address` の戻り値（詳細情報を含む）.
 
@@ -234,4 +311,9 @@ class OfficeAssigner:
         )
 
 
-__all__ = ["OfficeAssigner", "OfficeResolution"]
+__all__ = [
+    "OfficeAssigner",
+    "OfficeResolution",
+    "PreloadedOfficeCities",
+    "load_office_cities_index",
+]
