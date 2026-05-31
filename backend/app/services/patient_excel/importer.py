@@ -45,6 +45,9 @@ from app.services.patient_excel.schema import (
     LEGACY_SHEET_PFV,
     PATIENT_COL_INDEX,
     PFV_COL_INDEX,
+    PFV_EDIT_COL_INDEX,
+    PFV_EDIT_WEEKDAY_KEY_TO_INT,
+    PFV_EDIT_WEEKDAY_KEYS,
     PFV_MODE_JA_TO_EN,
     PFV_MODE_VALUES,
     SEX_JA_TO_EN,
@@ -55,6 +58,7 @@ from app.services.patient_excel.schema import (
     SEX_VALUES,
     SHEET_PATIENTS,
     SHEET_PFV,
+    SHEET_PFV_EDIT,
     SHEET_WEEKLY,
     STATUS_JA_TO_EN,
     STATUS_VALUES,
@@ -66,6 +70,7 @@ from app.services.patient_excel.schema import (
     WEEKLY_COL_INDEX,
     is_magic_clear,
     is_magic_delete,
+    parse_course_token,
     weekday_yesno_cells_to_en,
     weekdays_cell_to_en,
 )
@@ -1363,6 +1368,331 @@ def _parse_pfv_row(
 
 
 # ---------------------------------------------------------------------------
+# Phase G-51: 「固定訪問パターン（編集用）」シート (患者 1 行) パーサ
+# ---------------------------------------------------------------------------
+
+
+def _resolve_pfv_course(
+    token: str | None,
+    *,
+    patient: Patient | _PendingNewPatient,
+    offices_by_code: dict[str, Office],
+    course_templates: dict[tuple[UUID, str], CourseTemplate],
+) -> UUID | None:
+    """拠点付きコーストークン (例 "稲A" / クロス拠点 "津A") → course_template_id.
+
+    トークンを (office_code, label) に分解し、その拠点の course_template を解決する.
+    トークンに拠点が含まれるためクロス拠点コースもそのまま course_template_id で表現できる
+    (sub_office_id は本シートでは扱わない: 既存 PFV の sub_office_id を保持し round-trip 安定).
+    解決できない場合は None (= best-effort: コース未解決でも PFV は保持).
+    """
+    if token is None:
+        return None
+    parsed = parse_course_token(token)
+    if parsed is None:
+        return None
+    office_code, label = parsed
+    office = offices_by_code.get(office_code)
+    if office is None:
+        return None
+    ct = course_templates.get((office.id, label))
+    if ct is None:
+        return None
+    return ct.id
+
+
+def _parse_pfv_edit_patient(
+    row_number: int,
+    row: tuple[Any, ...],
+    *,
+    existing_patients: dict[UUID, Patient],
+    pending_new_patients: dict[UUID, _PendingNewPatient],
+    patient_code_to_id: dict[str, UUID],
+    course_templates: dict[tuple[UUID, str], CourseTemplate],
+    existing_pfvs: dict[tuple[UUID, str, int, int], PatientFixedVisit],
+    offices_by_code: dict[str, Office],
+) -> tuple[list[PfvExcelImportRow], list[dict[str, Any]]]:
+    """「固定訪問パターン（編集用）」1 行 (患者 1 行) → PFV 差分行 + apply op の list.
+
+    per-patient replace セマンティクス (normal mode のみ対象):
+      - 各曜日 (月..土) の ``{曜日}_時刻`` が入っていれば PFV(weekday, slot_index=0,
+        mode=normal) を upsert. ``{曜日}_コース`` を (office, label) → course_template に解決.
+      - 行が示す曜日集合に既存 normal PFV を **一致させる**: 行に無い曜日の既存 normal
+        PFV は削除、ある曜日は upsert (空欄曜日 = 訪問なし).
+      - special mode / slot_index!=0 の既存 PFV は触らない (本シート対象外で保持).
+      - 行に出てこない患者の PFV は触らない (incremental; 呼び出し側でループ).
+    """
+    cells: dict[str, Any] = {
+        col_key: (row[idx] if idx < len(row) else None)
+        for col_key, idx in PFV_EDIT_COL_INDEX.items()
+    }
+
+    raw_id = cells["patient_id"]
+    raw_code = cells["patient_code"]
+
+    try:
+        patient_id = _read_uuid(raw_id)
+    except ValueError:
+        return (
+            [
+                PfvExcelImportRow(
+                    row_number=row_number,
+                    patient_id=None,
+                    patient_code=_read_str(raw_code),
+                    operation="error",
+                    error_message=f"patient_id が UUID 形式ではありません: {raw_id!r}",
+                )
+            ],
+            [],
+        )
+
+    patient_code = _read_str(raw_code)
+
+    # patient 解決 (patient_id 空 → patient_code).
+    if patient_id is None:
+        if patient_code is None:
+            return (
+                [
+                    PfvExcelImportRow(
+                        row_number=row_number,
+                        patient_id=None,
+                        patient_code=None,
+                        operation="error",
+                        error_message="patient_id または patient_code が必須です",
+                    )
+                ],
+                [],
+            )
+        resolved_id = patient_code_to_id.get(patient_code)
+        if resolved_id is None:
+            return (
+                [
+                    PfvExcelImportRow(
+                        row_number=row_number,
+                        patient_id=None,
+                        patient_code=patient_code,
+                        operation="error",
+                        error_message=(
+                            f"patient_code が DB にも import 内にも存在しません: {patient_code!r}"
+                        ),
+                    )
+                ],
+                [],
+            )
+        patient_id = resolved_id
+    elif patient_code is not None:
+        expected = patient_code_to_id.get(patient_code)
+        if expected is not None and expected != patient_id:
+            return (
+                [
+                    PfvExcelImportRow(
+                        row_number=row_number,
+                        patient_id=patient_id,
+                        patient_code=patient_code,
+                        operation="error",
+                        error_message=(
+                            f"patient_id と patient_code が異なる患者を指しています "
+                            f"(id={patient_id}, code={patient_code} → 期待 id={expected})"
+                        ),
+                    )
+                ],
+                [],
+            )
+
+    patient: Patient | _PendingNewPatient | None = existing_patients.get(patient_id)
+    if patient is None:
+        patient = pending_new_patients.get(patient_id)
+        if patient is None:
+            return (
+                [
+                    PfvExcelImportRow(
+                        row_number=row_number,
+                        patient_id=patient_id,
+                        patient_code=patient_code,
+                        operation="error",
+                        error_message=f"patient_id が DB に存在しません: {patient_id}",
+                    )
+                ],
+                [],
+            )
+
+    # サービス時間 (患者共通 duration) / 時間タイプ.
+    raw_sm = cells["service_minutes"]
+    try:
+        service_minutes = _read_int(raw_sm)
+    except (ValueError, TypeError):
+        service_minutes = None
+    if service_minutes is not None and (service_minutes < 1 or service_minutes > 480):
+        service_minutes = None  # 範囲外は default に倒す (壊さない方針)
+
+    # 各曜日のセル → 「行が示す曜日 → (start_time, course_template_id, sub_office_id, duration)」.
+    row_pfvs: dict[int, dict[str, Any]] = {}
+    errors: list[str] = []
+    for wd_key in PFV_EDIT_WEEKDAY_KEYS:
+        wd_int = PFV_EDIT_WEEKDAY_KEY_TO_INT[wd_key]
+        raw_time = cells.get(f"{wd_key}_time")
+        if _is_blank(raw_time):
+            continue  # この曜日は訪問なし.
+        try:
+            start_str = _read_hhmm(raw_time)
+        except (ValueError, TypeError) as exc:
+            errors.append(f"{wd_key} の時刻が HH:MM 形式ではありません: {exc}")
+            continue
+        if start_str is None:
+            continue
+        ct_id = _resolve_pfv_course(
+            _read_str(cells.get(f"{wd_key}_course")),
+            patient=patient,
+            offices_by_code=offices_by_code,
+            course_templates=course_templates,
+        )
+        duration = service_minutes if service_minutes is not None else 30
+        row_pfvs[wd_int] = {
+            "start_time": _hhmm_to_time(start_str),
+            "start_str": start_str,
+            "course_template_id": ct_id,
+            "duration_min": duration,
+        }
+
+    if errors:
+        return (
+            [
+                PfvExcelImportRow(
+                    row_number=row_number,
+                    patient_id=patient_id,
+                    patient_code=patient.code,
+                    operation="error",
+                    error_message=" / ".join(errors),
+                )
+            ],
+            [],
+        )
+
+    # 既存 normal PFV (slot_index=0) を曜日でひく.
+    existing_by_weekday: dict[int, PatientFixedVisit] = {}
+    for (pid, mode, wd, slot), pfv in existing_pfvs.items():
+        if pid == patient_id and mode == "normal" and slot == 0:
+            existing_by_weekday[wd] = pfv
+
+    diff_rows: list[PfvExcelImportRow] = []
+    ops: list[dict[str, Any]] = []
+
+    # 行が示す曜日: upsert. 既存にあれば update/noop, 無ければ new.
+    for wd_int in sorted(row_pfvs):
+        spec = row_pfvs[wd_int]
+        existing_pfv = existing_by_weekday.get(wd_int)
+        if existing_pfv is None:
+            ops.append(
+                {
+                    "_op": "new",
+                    "patient_id": patient_id,
+                    "mode": "normal",
+                    "weekday": wd_int,
+                    "slot_index": 0,
+                    "start_time": spec["start_time"],
+                    "duration_min": spec["duration_min"],
+                    "course_template_id": spec["course_template_id"],
+                    # sub_office_id は本シート対象外 (model default None). 既存 PFV の
+                    # sub_office_id は update でも触らない (round-trip 安定).
+                }
+            )
+            diff_rows.append(
+                PfvExcelImportRow(
+                    row_number=row_number,
+                    patient_id=patient_id,
+                    patient_code=patient.code,
+                    weekday=wd_int,
+                    slot_index=0,
+                    operation="new",
+                    changes=[
+                        PatientExcelChange(
+                            field="start_time", old_value=None, new_value=spec["start_str"]
+                        ),
+                        PatientExcelChange(
+                            field="duration_min",
+                            old_value=None,
+                            new_value=spec["duration_min"],
+                        ),
+                    ],
+                )
+            )
+            continue
+        # update / noop.
+        changes: list[PatientExcelChange] = []
+        update_dict: dict[str, Any] = {"_pfv_id": existing_pfv.id, "_op": "update"}
+        if existing_pfv.start_time != spec["start_time"]:
+            changes.append(
+                PatientExcelChange(
+                    field="start_time",
+                    old_value=_serializable(existing_pfv.start_time),
+                    new_value=spec["start_str"],
+                )
+            )
+            update_dict["start_time"] = spec["start_time"]
+        if existing_pfv.duration_min != spec["duration_min"]:
+            changes.append(
+                PatientExcelChange(
+                    field="duration_min",
+                    old_value=existing_pfv.duration_min,
+                    new_value=spec["duration_min"],
+                )
+            )
+            update_dict["duration_min"] = spec["duration_min"]
+        if existing_pfv.course_template_id != spec["course_template_id"]:
+            changes.append(
+                PatientExcelChange(
+                    field="course_template_id",
+                    old_value=_serializable(existing_pfv.course_template_id),
+                    new_value=_serializable(spec["course_template_id"]),
+                )
+            )
+            update_dict["course_template_id"] = spec["course_template_id"]
+        # sub_office_id は本シートでは触らない (既存値を保持; round-trip 安定 + 誤削除防止).
+        if changes:
+            ops.append(update_dict)
+            diff_rows.append(
+                PfvExcelImportRow(
+                    row_number=row_number,
+                    patient_id=patient_id,
+                    patient_code=patient.code,
+                    weekday=wd_int,
+                    slot_index=0,
+                    operation="update",
+                    changes=changes,
+                )
+            )
+        else:
+            diff_rows.append(
+                PfvExcelImportRow(
+                    row_number=row_number,
+                    patient_id=patient_id,
+                    patient_code=patient.code,
+                    weekday=wd_int,
+                    slot_index=0,
+                    operation="noop",
+                )
+            )
+
+    # 行に無い曜日の既存 normal PFV は削除 (空欄曜日 = 訪問なし).
+    for wd_int, existing_pfv in existing_by_weekday.items():
+        if wd_int in row_pfvs:
+            continue
+        ops.append({"_pfv_id": existing_pfv.id, "_op": "delete"})
+        diff_rows.append(
+            PfvExcelImportRow(
+                row_number=row_number,
+                patient_id=patient_id,
+                patient_code=patient.code,
+                weekday=wd_int,
+                slot_index=0,
+                operation="delete",
+            )
+        )
+
+    return diff_rows, ops
+
+
+# ---------------------------------------------------------------------------
 # public entrypoints
 # ---------------------------------------------------------------------------
 
@@ -1602,8 +1932,12 @@ async def parse_and_diff(
 
     if SHEET_PATIENTS not in wb.sheetnames:
         raise ValueError(f"シート「{SHEET_PATIENTS}」が見つかりません")
-    # 新名「固定訪問パターン」または旧名「固定訪問スケジュール」 のどちらかを受け入れる
-    # (Phase G で旧名から改名済み. 過去 export 済の xlsx も import 可能にするため fallback).
+    # Phase G-51: PFV シートの形式を判定する.
+    #   * 新「固定訪問パターン（編集用）」(患者 1 行) があれば最優先で使う.
+    #   * 無ければ旧 per-visit「固定訪問パターン」/「固定訪問スケジュール」(旧名) に
+    #     フォールバック (過去 export 済 xlsx も import 可能にするため).
+    #   * 静的「グリッド集計（静的・閲覧専用）」シートは一切読まない (シート名で識別して無視).
+    use_pfv_edit_sheet = SHEET_PFV_EDIT in wb.sheetnames
     pfv_sheet_name = (
         SHEET_PFV
         if SHEET_PFV in wb.sheetnames
@@ -1611,8 +1945,8 @@ async def parse_and_diff(
         if LEGACY_SHEET_PFV in wb.sheetnames
         else None
     )
-    if pfv_sheet_name is None:
-        raise ValueError(f"シート「{SHEET_PFV}」が見つかりません")
+    if not use_pfv_edit_sheet and pfv_sheet_name is None:
+        raise ValueError(f"シート「{SHEET_PFV_EDIT}」が見つかりません")
 
     existing_patients = await _load_patients_by_id(db)
     existing_codes = await _load_patient_codes(db)
@@ -1710,28 +2044,72 @@ async def parse_and_diff(
         )
 
     # ---- PFV シート ----
-    ws_f = wb[pfv_sheet_name]
     pfv_rows: list[PfvExcelImportRow] = []
     pfv_ops: list[dict[str, Any]] = []
-    pending_new_keys: set[tuple[UUID, str, int, int]] = set()
-    for r_idx, row in enumerate(ws_f.iter_rows(min_row=2, values_only=True), start=2):
-        if _row_is_empty(row):
-            continue
-        diff_row, op = _parse_pfv_row(
-            r_idx,
-            row,
-            existing_patients=existing_patients,
-            pending_new_patients=pending_new_patients,
-            patient_code_to_id=patient_code_to_id,
-            course_templates=course_templates,
-            existing_pfvs=existing_pfvs,
-            pending_new_keys=pending_new_keys,
-            # Phase E-5: sub_office_code 解決用 (患者シートと共有).
-            offices_by_code=offices_by_code,
-        )
-        pfv_rows.append(diff_row)
-        if op is not None:
-            pfv_ops.append(op)
+    if use_pfv_edit_sheet:
+        # Phase G-51: 新「固定訪問パターン（編集用）」(患者 1 行) を per-patient replace で処理.
+        ws_f = wb[SHEET_PFV_EDIT]
+        seen_edit_pids: set[UUID] = set()
+        for r_idx, row in enumerate(ws_f.iter_rows(min_row=2, values_only=True), start=2):
+            if _row_is_empty(row):
+                continue
+            diff_rows_edit, ops_edit = _parse_pfv_edit_patient(
+                r_idx,
+                row,
+                existing_patients=existing_patients,
+                pending_new_patients=pending_new_patients,
+                patient_code_to_id=patient_code_to_id,
+                course_templates=course_templates,
+                existing_pfvs=existing_pfvs,
+                offices_by_code=offices_by_code,
+            )
+            # 同一患者が複数行に出てきた場合の二重処理を防ぐ (1 行目を採用).
+            for dr in diff_rows_edit:
+                if (
+                    dr.operation != "error"
+                    and dr.patient_id is not None
+                    and dr.patient_id in seen_edit_pids
+                ):
+                    # 既に処理済 patient の重複行: error 化して誤削除を防ぐ.
+                    pfv_rows.append(
+                        PfvExcelImportRow(
+                            row_number=r_idx,
+                            patient_id=dr.patient_id,
+                            patient_code=dr.patient_code,
+                            operation="error",
+                            error_message="同ファイル内で同一患者が複数行に出現しています",
+                        )
+                    )
+                    break
+            else:
+                pfv_rows.extend(diff_rows_edit)
+                pfv_ops.extend(ops_edit)
+                for dr in diff_rows_edit:
+                    if dr.operation != "error" and dr.patient_id is not None:
+                        seen_edit_pids.add(dr.patient_id)
+    else:
+        # 旧 per-visit シート (後方互換 fallback).
+        assert pfv_sheet_name is not None
+        ws_f = wb[pfv_sheet_name]
+        pending_new_keys: set[tuple[UUID, str, int, int]] = set()
+        for r_idx, row in enumerate(ws_f.iter_rows(min_row=2, values_only=True), start=2):
+            if _row_is_empty(row):
+                continue
+            diff_row, op = _parse_pfv_row(
+                r_idx,
+                row,
+                existing_patients=existing_patients,
+                pending_new_patients=pending_new_patients,
+                patient_code_to_id=patient_code_to_id,
+                course_templates=course_templates,
+                existing_pfvs=existing_pfvs,
+                pending_new_keys=pending_new_keys,
+                # Phase E-5: sub_office_code 解決用 (患者シートと共有).
+                offices_by_code=offices_by_code,
+            )
+            pfv_rows.append(diff_row)
+            if op is not None:
+                pfv_ops.append(op)
 
     # ---- weekly_pattern マージ ----
     # weekly_pattern dict (空 dict = clear) を該当 patient op に統合する共通処理.

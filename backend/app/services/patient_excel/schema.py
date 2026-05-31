@@ -499,6 +499,153 @@ PFV_REQUIRED: Final[tuple[str, ...]] = (
 
 
 # ---------------------------------------------------------------------------
+# Phase G-51: 拠点付きコース表記 (office_code × course_label → 表示トークン)
+# ---------------------------------------------------------------------------
+#
+# 新「固定訪問パターン（編集用）」シート (患者 1 行) と「グリッド集計」シートで、
+# コースを **拠点短縮 + ラベル** の 1 トークンで表記する (例 "稲A" / "津M").
+# クロス拠点 (例 月=稲B・木=津A) を 1 患者行で表現できるよう、(office, label) を
+# 一意な文字列にエンコードし、import 時にパースして (office_code, label) へ戻す.
+#
+# office_code → 短縮名 (1 文字). INAGE→稲 (稲毛), TSUGA→津 (都賀).
+
+OFFICE_CODE_TO_SHORT: Final[dict[str, str]] = {
+    "INAGE": "稲",
+    "TSUGA": "津",
+}
+OFFICE_SHORT_TO_CODE: Final[dict[str, str]] = {
+    short: code for code, short in OFFICE_CODE_TO_SHORT.items()
+}
+
+
+def course_token(office_code: str | None, label: str | None) -> str | None:
+    """(office_code, label) → 拠点付きコーストークン (例 "稲A").
+
+    office_code が短縮名マップに無い / label が空の場合は None (= 書き出さない).
+    短縮名が無い拠点コードはそのままコードを使う (例 "FOOA"; 解析時も後方互換で対応).
+    """
+    if not label:
+        return None
+    if not office_code:
+        return None
+    short = OFFICE_CODE_TO_SHORT.get(office_code, office_code)
+    return f"{short}{label}"
+
+
+def parse_course_token(token: str | None) -> tuple[str, str] | None:
+    """拠点付きコーストークン (例 "稲A") → (office_code, label).
+
+    先頭の短縮名 (稲/津) を office_code に、残りを label に分解する.
+    解析できない場合は None (= コース未解決として best-effort で扱う).
+    後方互換: 短縮名でなく office_code そのもの始まり ("INAGEA") も受理する.
+    """
+    if token is None:
+        return None
+    s = str(token).strip()
+    if not s:
+        return None
+    # 1 文字短縮名 (稲/津) 始まり.
+    head = s[0]
+    if head in OFFICE_SHORT_TO_CODE:
+        label = s[1:].strip()
+        if label:
+            return OFFICE_SHORT_TO_CODE[head], label
+        return None
+    # 後方互換: office_code そのもの始まり (例 "INAGEA").
+    for code in OFFICE_CODE_VALUES:
+        if s.startswith(code):
+            label = s[len(code) :].strip()
+            if label:
+                return code, label
+    return None
+
+
+# 「固定訪問パターン（編集用）」シート (患者 1 行) の曜日キー. 月..土 (slot_index=0).
+# 各曜日 2 列: time (HH:MM) と course (拠点付きトークン).
+PFV_EDIT_WEEKDAY_KEYS: Final[tuple[str, ...]] = ("mon", "tue", "wed", "thu", "fri", "sat")
+PFV_EDIT_WEEKDAY_LABELS: Final[tuple[str, ...]] = ("月", "火", "水", "木", "金", "土")
+# 曜日キー → DB weekday int (0=月..5=土).
+PFV_EDIT_WEEKDAY_KEY_TO_INT: Final[dict[str, int]] = {
+    key: i for i, key in enumerate(PFV_EDIT_WEEKDAY_KEYS)
+}
+
+SHEET_PFV_EDIT: Final = "固定訪問パターン（編集用）"
+SHEET_PFV_GRID: Final = "グリッド集計（静的・閲覧専用）"
+
+# 静的シート最上部の閲覧専用バナー文言.
+PFV_GRID_BANNER_TEXT: Final = (
+    "※このシートは閲覧専用の静的スナップショット (export 時点) です。"
+    "編集しても取り込まれません。編集は『固定訪問パターン（編集用）』で行ってください。"
+)
+
+
+def _pfv_edit_columns() -> list[dict[str, object]]:
+    """「固定訪問パターン（編集用）」シートの列定義を組み立てる.
+
+    course 列の dropdown は build_workbook 内で (office, label) から動的生成するため、
+    ここでは None (= dropdown 無し) のプレースホルダ. exporter が差し替える.
+    """
+    cols: list[dict[str, object]] = [
+        {
+            "key": "patient_id",
+            "header": "patient_id (※システム用・編集不要)",
+            "width": 38,
+            "dropdown": None,
+        },
+        {"key": "patient_code", "header": "patient_code", "width": 14, "dropdown": None},
+        {"key": "patient_name", "header": "患者名", "width": 18, "dropdown": None},
+        {
+            "key": "service_minutes",
+            "header": "サービス時間 (分)",
+            "width": 16,
+            "dropdown": SERVICE_MINUTES_VALUES,
+        },
+        {"key": "time_type", "header": "時間タイプ", "width": 12, "dropdown": TIME_TYPE_VALUES},
+    ]
+    for key, label in zip(PFV_EDIT_WEEKDAY_KEYS, PFV_EDIT_WEEKDAY_LABELS, strict=True):
+        cols.append(
+            {
+                "key": f"{key}_time",
+                "header": f"{label}_時刻",
+                "width": 12,
+                "dropdown": HHMM_VALUES,
+            }
+        )
+        # course 列の dropdown は exporter が course_templates から差し替える.
+        cols.append(
+            {
+                "key": f"{key}_course",
+                "header": f"{label}_コース",
+                "width": 12,
+                "dropdown": None,
+            }
+        )
+    cols.append(
+        {
+            "key": "delete_flag",
+            "header": "(削除フラグ)",
+            "width": 14,
+            "dropdown": DELETE_FLAG_VALUES,
+        }
+    )
+    return cols
+
+
+PFV_EDIT_COLUMNS: Final[list[dict[str, object]]] = _pfv_edit_columns()
+PFV_EDIT_COL_INDEX: Final[dict[str, int]] = {
+    str(col["key"]): i for i, col in enumerate(PFV_EDIT_COLUMNS)
+}
+
+# patient_id 列ヘッダーのガイダンスコメント (新「編集用」シート用).
+PFV_EDIT_PATIENT_ID_COMMENT_TEXT: Final = (
+    "システム用・編集不要。\n"
+    "新規患者の固定枠を登録する場合はこの列を空欄にし、"
+    "patient_code に患者コードを入力してください。\n"
+    "各曜日の『時刻』を空欄にすると、その曜日の固定枠は削除されます。"
+)
+
+
+# ---------------------------------------------------------------------------
 # 【後方互換専用】旧シート 3: 希望訪問パターン (patient.weekly_pattern JSONB)
 # ---------------------------------------------------------------------------
 #

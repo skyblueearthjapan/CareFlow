@@ -42,18 +42,22 @@ from app.services.patient_excel.schema import (
     PATIENT_COL_INDEX,
     PATIENT_COLUMNS,
     PATIENT_ID_COMMENT_TEXT,
-    PFV_COL_INDEX,
-    PFV_COLUMNS,
-    PFV_MODE_EN_TO_JA,
-    PFV_PATIENT_ID_COMMENT_TEXT,
+    PFV_EDIT_COL_INDEX,
+    PFV_EDIT_COLUMNS,
+    PFV_EDIT_PATIENT_ID_COMMENT_TEXT,
+    PFV_EDIT_WEEKDAY_KEY_TO_INT,
+    PFV_EDIT_WEEKDAY_KEYS,
+    PFV_EDIT_WEEKDAY_LABELS,
+    PFV_GRID_BANNER_TEXT,
     SEX_EN_TO_JA,
     SEX_RESTRICTION_EN_TO_JA,
     SHEET_PATIENTS,
-    SHEET_PFV,
+    SHEET_PFV_EDIT,
+    SHEET_PFV_GRID,
     STATUS_EN_TO_JA,
     TIME_TYPE_GREYOUT_VALUES,
     VISIT_FREQUENCY_EN_TO_JA,
-    WEEKDAY_INT_TO_LABEL,
+    course_token,
     weekdays_en_to_yesno_cells,
 )
 
@@ -276,78 +280,99 @@ def _hhmm(t: time | None) -> str | None:
     return f"{t.hour:02d}:{t.minute:02d}"
 
 
-def _end_time(start: time, duration_min: int) -> str:
-    total = start.hour * 60 + start.minute + duration_min
-    h = (total // 60) % 24
-    m = total % 60
-    return f"{h:02d}:{m:02d}"
-
-
-def _write_pfv_row(
+def _write_pfv_edit_patient_row(
     ws: Worksheet,
     row_idx: int,
-    pfv: PatientFixedVisit,
+    patient: Patient,
+    pfvs: list[PatientFixedVisit],
     *,
-    patient_lookup: dict[UUID, Patient],
     course_template_by_id: dict[UUID, CourseTemplate],
-    office_code_by_id: dict[UUID, str] | None = None,
+    office_code_by_id: dict[UUID, str],
     crossoffice_warnings: list[str] | None = None,
 ) -> None:
-    p = patient_lookup.get(pfv.patient_id)
-    # course_template_code は患者の primary_office に存在する CourseTemplate のラベルのみ
-    # 書き出す。クロスオフィス参照 (PFV.course_template が患者拠点に存在しない
-    # template を指している場合) は round-trip import で
-    # 「course_template_code が患者拠点に存在しません」エラーになるため、
-    # その場合は空欄として書き出す (バックアップ運用での再 import を 0 エラーで通すため).
-    code_label: str | None = None
-    if pfv.course_template_id is not None:
-        ct = course_template_by_id.get(pfv.course_template_id)
-        if ct is not None and ct.label:
-            # 患者拠点と template 拠点が一致 → ラベルを書き出す.
-            # 不一致 (データ不整合) → 空欄. import 時に course_template_id=None で
-            # 取り込まれる (PFV 自体は保持される).
-            if p is not None and p.primary_office_id == ct.office_id:
-                code_label = ct.label
-            else:
-                # Phase E-7 (gap P2): クロスオフィス参照を warning として収集.
-                # サイレントに空欄化すると import で course_template binding が
-                # 喪失することに気付けないため、export 時点で warning を残す.
-                msg = (
-                    f"PFV クロスオフィス course_template 参照 (row={row_idx}): "
-                    f"patient_id={pfv.patient_id} primary_office={p.primary_office_id if p else None}, "
-                    f"template_office={ct.office_id} ({ct.label}) — Excel は空欄化, "
-                    "import で binding が喪失します"
-                )
-                logger.warning(msg)
-                if crossoffice_warnings is not None:
-                    crossoffice_warnings.append(msg)
-    start_hhmm = _hhmm(pfv.start_time) or ""
-    end_hhmm = _end_time(pfv.start_time, pfv.duration_min) if pfv.start_time else ""
-    # time_type は patient.weekly_pattern から導く。該当エントリが無い場合は
-    # default "時間帯" を書き出す (空セルだと import 時に「time_type が空です」
-    # エラーになるため. round-trip 運用で 0 エラーを担保).
-    resolved_tt = _resolve_time_type(p, pfv.weekday) if p else None
-    # Phase E-5: sub_office_id → コードに変換 (lookup が無ければ空欄).
-    sub_office_code: str | None = None
-    if pfv.sub_office_id is not None and office_code_by_id is not None:
-        sub_office_code = office_code_by_id.get(pfv.sub_office_id) or None
+    """Phase G-51: 患者 1 行 (月〜土 各曜日 時刻 + コース) を「編集用」シートに書く.
+
+    ``pfvs`` はこの患者の **normal mode** PFV のみ (呼び出し側でフィルタ済).
+    各曜日 (0=月..5=土) に start_time → ``{曜日}_時刻``、course_template → ``{曜日}_コース``
+    (拠点付きトークン) を書く. duration / time_type は患者代表値 (全曜日同一前提;
+    異なる場合は最初の行の値を採用しログ警告). slot_index=1 は現データ 0 だが、
+    存在したらログ警告し slot_index=0 の行を優先採用 (将来対応).
+    """
+    # weekday → 採用する PFV (slot_index=0 を優先).
+    by_weekday: dict[int, PatientFixedVisit] = {}
+    for pfv in pfvs:
+        if pfv.slot_index != 0:
+            logger.warning(
+                "PFV slot_index!=0 を「編集用」シートで検出 (patient=%s weekday=%d slot=%d): "
+                "1 行形式では slot_index=0 のみ採用します (将来対応)",
+                patient.id,
+                pfv.weekday,
+                pfv.slot_index,
+            )
+            continue
+        existing = by_weekday.get(pfv.weekday)
+        if existing is not None:
+            logger.warning(
+                "PFV 同一曜日に複数行 (patient=%s weekday=%d): 1 行目を採用します",
+                patient.id,
+                pfv.weekday,
+            )
+            continue
+        by_weekday[pfv.weekday] = pfv
+
+    # 代表 duration / time_type を最初の曜日 (昇順) から導く.
+    rep_duration: int | None = None
+    durations_seen: set[int] = set()
+    for wd in sorted(by_weekday):
+        durations_seen.add(by_weekday[wd].duration_min)
+        if rep_duration is None:
+            rep_duration = by_weekday[wd].duration_min
+    if len(durations_seen) > 1:
+        logger.warning(
+            "PFV duration が曜日で不一致 (patient=%s durations=%s): 最初の曜日の値 %s を採用",
+            patient.id,
+            sorted(durations_seen),
+            rep_duration,
+        )
+    rep_tt = _resolve_time_type(patient, sorted(by_weekday)[0]) if by_weekday else None
+
     values: dict[str, object | None] = {
-        "patient_id": str(pfv.patient_id),
-        "patient_code": p.code if p else None,
-        "patient_name": p.name if p else None,
-        "weekday": WEEKDAY_INT_TO_LABEL.get(pfv.weekday),
-        "slot_index": pfv.slot_index,
-        # Phase G-48: モードを日本語化 (normal→通常 / special→特別).
-        "mode": PFV_MODE_EN_TO_JA.get(pfv.mode, pfv.mode),
-        "time_type": resolved_tt or DEFAULT_TIME_TYPE,
-        "start_time": start_hhmm,
-        "end_time": end_hhmm,
-        "duration_min": pfv.duration_min,
-        "course_template_code": code_label,
-        "sub_office_code": sub_office_code,
+        "patient_id": str(patient.id),
+        "patient_code": patient.code,
+        "patient_name": patient.name,
+        "service_minutes": rep_duration,
+        "time_type": rep_tt or DEFAULT_TIME_TYPE,
         "delete_flag": None,
     }
-    for col_key, col_idx in PFV_COL_INDEX.items():
+
+    for wd_key in PFV_EDIT_WEEKDAY_KEYS:
+        wd_int = PFV_EDIT_WEEKDAY_KEY_TO_INT[wd_key]
+        pfv = by_weekday.get(wd_int)
+        if pfv is None:
+            values[f"{wd_key}_time"] = None
+            values[f"{wd_key}_course"] = None
+            continue
+        values[f"{wd_key}_time"] = _hhmm(pfv.start_time)
+        # course_template → 拠点付きトークン. クロスオフィス参照は空欄 + warning.
+        token: str | None = None
+        if pfv.course_template_id is not None:
+            ct = course_template_by_id.get(pfv.course_template_id)
+            if ct is not None and ct.label:
+                office_code = office_code_by_id.get(ct.office_id)
+                if office_code:
+                    token = course_token(office_code, ct.label)
+                if token is None:
+                    msg = (
+                        f"PFV course_template の拠点コードが解決できません "
+                        f"(patient={patient.id} weekday={wd_int} template_office={ct.office_id} "
+                        f"label={ct.label}) — コースを空欄化"
+                    )
+                    logger.warning(msg)
+                    if crossoffice_warnings is not None:
+                        crossoffice_warnings.append(msg)
+        values[f"{wd_key}_course"] = token
+
+    for col_key, col_idx in PFV_EDIT_COL_INDEX.items():
         ws.cell(row=row_idx, column=col_idx + 1, value=values.get(col_key))
 
 
@@ -370,6 +395,150 @@ def _resolve_time_type(patient: Patient, weekday: int) -> str | None:
                     return tt
     tt_root = wp.get("time_type")
     return tt_root if isinstance(tt_root, str) else None
+
+
+def _course_token_dropdown_values(
+    offices: Sequence[Office],
+    course_templates: Sequence[CourseTemplate],
+) -> list[str]:
+    """course_templates (office×label) から拠点付きコーストークンの dropdown 値を作る.
+
+    例 ["稲A", "稲B", ..., "津A", "津M"]. office_code (拠点短縮名) → label の順で
+    重複排除しつつソート (office_code 順 → label 順) する.
+    """
+    office_code_by_id: dict[UUID, str] = {o.id: o.code for o in offices if o.code}
+    tokens: set[str] = set()
+    for ct in course_templates:
+        code = office_code_by_id.get(ct.office_id)
+        token = course_token(code, ct.label)
+        if token is not None:
+            tokens.add(token)
+    return sorted(tokens)
+
+
+def _attach_course_dropdowns_to_edit_sheet(
+    ws: Worksheet,
+    tokens: list[str],
+    *,
+    max_data_rows: int = 1000,
+) -> None:
+    """「編集用」シートの各 ``{曜日}_course`` 列に拠点付きコース dropdown を設定."""
+    if not tokens:
+        return
+    last_row = 1 + max_data_rows
+    formula = '"' + ",".join(tokens) + '"'
+    for wd_key in PFV_EDIT_WEEKDAY_KEYS:
+        col_idx = PFV_EDIT_COL_INDEX[f"{wd_key}_course"] + 1
+        dv = DataValidation(type="list", formula1=formula, allow_blank=True)
+        dv.error = "リストにないコースです"
+        dv.errorTitle = "入力エラー"
+        col_letter = get_column_letter(col_idx)
+        dv.add(f"{col_letter}2:{col_letter}{last_row}")
+        ws.add_data_validation(dv)
+
+
+def _build_grid_sheet(
+    ws: Worksheet,
+    *,
+    patients: Sequence[Patient],
+    pfvs: Sequence[PatientFixedVisit],
+    offices: Sequence[Office],
+    course_templates: Sequence[CourseTemplate],
+) -> None:
+    """Phase G-51: 静的グリッド集計シート (閲覧専用スナップショット) を描画.
+
+    行 = コース (存在する (office, label) を 拠点短縮+ラベル で表記),
+    列 = 月〜土, セル = その (コース, 曜日) の「HH:MM 患者名」を時刻昇順で列挙.
+    最上部に閲覧専用バナーを明記する. importer はこのシートを一切読まない.
+    """
+    banner_font = Font(bold=True, color="FF9C0006")
+    banner_fill = PatternFill("solid", fgColor="FFFFC7CE")  # 薄い赤 (注意喚起)
+    cell = ws.cell(row=1, column=1, value=PFV_GRID_BANNER_TEXT)
+    cell.font = banner_font
+    cell.fill = banner_fill
+    # バナーを 1+曜日数 列に結合 (見やすさ).
+    ws.merge_cells(
+        start_row=1, start_column=1, end_row=1, end_column=1 + len(PFV_EDIT_WEEKDAY_LABELS)
+    )
+    ws.row_dimensions[1].height = 32
+
+    patient_by_id: dict[UUID, Patient] = {p.id: p for p in patients}
+    office_code_by_id: dict[UUID, str] = {o.id: o.code for o in offices if o.code}
+    ct_by_id: dict[UUID, CourseTemplate] = {ct.id: ct for ct in course_templates}
+
+    # 行 (コース) の並び: course_templates から存在する token を office→label 順に.
+    course_rows: list[str] = _course_token_dropdown_values(offices, course_templates)
+    # PFV が指すが templates に無い token も拾う (データ不整合でもグリッドに出す).
+    extra_tokens: set[str] = set()
+    for pfv in pfvs:
+        if pfv.mode != "normal" or pfv.course_template_id is None:
+            continue
+        ct = ct_by_id.get(pfv.course_template_id)
+        if ct is None:
+            continue
+        token = course_token(office_code_by_id.get(ct.office_id), ct.label)
+        if token is not None and token not in course_rows:
+            extra_tokens.add(token)
+    # 「コース未設定」行も用意 (course_template_id=None の normal PFV を可視化).
+    row_tokens = course_rows + sorted(extra_tokens)
+    unset_label = "(コース未設定)"
+
+    # (row_token, weekday) → list[(start_time, patient_name)]
+    grid: dict[tuple[str, int], list[tuple[time, str]]] = {}
+    for pfv in pfvs:
+        if pfv.mode != "normal":
+            continue
+        if pfv.weekday not in range(len(PFV_EDIT_WEEKDAY_LABELS)):
+            continue  # 月〜土のみ (日曜は対象外)
+        cell_token: str | None = None
+        if pfv.course_template_id is not None:
+            ct = ct_by_id.get(pfv.course_template_id)
+            if ct is not None:
+                cell_token = course_token(office_code_by_id.get(ct.office_id), ct.label)
+        key_token = cell_token or unset_label
+        p = patient_by_id.get(pfv.patient_id)
+        name = p.name if p else "?"
+        grid.setdefault((key_token, pfv.weekday), []).append((pfv.start_time, name or "?"))
+
+    # UNSET 行は実データがある場合のみ末尾に追加.
+    has_unset = any(k[0] == unset_label for k in grid)
+    if has_unset and unset_label not in row_tokens:
+        row_tokens = row_tokens + [unset_label]
+
+    # ヘッダー行 (row 2): A2 = "コース＼曜日", B2.. = 月〜土.
+    header_row = 2
+    header_font = Font(bold=True, color=HEADER_FONT_COLOR)
+    header_fill = PatternFill("solid", fgColor=HEADER_FILL_COLOR)
+    center = Alignment(horizontal="center", vertical="center")
+    hc = ws.cell(row=header_row, column=1, value="コース ＼ 曜日")
+    hc.font = header_font
+    hc.fill = header_fill
+    hc.alignment = center
+    ws.column_dimensions["A"].width = 16
+    for j, label in enumerate(PFV_EDIT_WEEKDAY_LABELS, start=2):
+        c = ws.cell(row=header_row, column=j, value=label)
+        c.font = header_font
+        c.fill = header_fill
+        c.alignment = center
+        ws.column_dimensions[get_column_letter(j)].width = 22
+
+    # データ行.
+    course_header_font = Font(bold=True)
+    course_header_fill = PatternFill("solid", fgColor=ID_COLUMN_FILL_COLOR)
+    wrap = Alignment(vertical="top", wrap_text=True)
+    for r_offset, token in enumerate(row_tokens):
+        r = header_row + 1 + r_offset
+        rc = ws.cell(row=r, column=1, value=token)
+        rc.font = course_header_font
+        rc.fill = course_header_fill
+        rc.alignment = center
+        for wd_int in range(len(PFV_EDIT_WEEKDAY_LABELS)):
+            entries = grid.get((token, wd_int), [])
+            entries.sort(key=lambda e: (e[0].hour, e[0].minute))
+            text = "\n".join(f"{_hhmm(t)} {n}" for t, n in entries)
+            dc = ws.cell(row=r, column=2 + wd_int, value=text or None)
+            dc.alignment = wrap
+    ws.freeze_panes = "B3"
 
 
 # ---------------------------------------------------------------------------
@@ -425,47 +594,71 @@ def build_workbook(
     _shade_id_column_data_rows(ws_p, "lng", PATIENT_COLUMNS, data_row_count=len(patients))
     _shade_id_column_data_rows(ws_p, "office_code", PATIENT_COLUMNS, data_row_count=len(patients))
 
-    # PFV シート
-    ws_f: Worksheet = wb.create_sheet(title=SHEET_PFV)
-    _set_header_row(ws_f, PFV_COLUMNS)
-    _attach_dropdowns(ws_f, PFV_COLUMNS)
-    _attach_header_comment(ws_f, "patient_id", PFV_COLUMNS, text=PFV_PATIENT_ID_COMMENT_TEXT)
+    # ---- 固定訪問パターン（編集用）シート (Phase G-51: 患者 1 行) ----
+    ws_f: Worksheet = wb.create_sheet(title=SHEET_PFV_EDIT)
+    _set_header_row(ws_f, PFV_EDIT_COLUMNS)
+    _attach_dropdowns(ws_f, PFV_EDIT_COLUMNS)
+    _attach_header_comment(
+        ws_f, "patient_id", PFV_EDIT_COLUMNS, text=PFV_EDIT_PATIENT_ID_COMMENT_TEXT
+    )
+    # コース dropdown は course_templates から動的生成 (拠点付きトークン).
+    course_tokens = _course_token_dropdown_values(offices, course_templates)
+    _attach_course_dropdowns_to_edit_sheet(ws_f, course_tokens)
 
-    patient_lookup: dict[UUID, Patient] = {p.id: p for p in patients}
-    # PFV の course_template_id → CourseTemplate (office_id 付き) の lookup。
-    # _write_pfv_row 内で「patient.primary_office と template.office_id が一致するか」を
-    # 確認し、不一致 (クロスオフィス参照) なら label を書き出さない。
     course_template_by_id: dict[UUID, CourseTemplate] = {ct.id: ct for ct in course_templates}
-    # Phase E-7 (gap P2): クロスオフィス参照 warning 収集用. build_workbook 自身は
-    # warning を返さないが、logger.warning で必ず出力される. ``crossoffice_warnings_out``
-    # を呼び出し側が渡した場合はそこにも append し、API endpoint から response header に
-    # 件数を出して operator が気付けるようにする.
+    # Phase E-7 (gap P2): クロスオフィス参照 warning 収集用.
     crossoffice_warnings: list[str] = (
         crossoffice_warnings_out if crossoffice_warnings_out is not None else []
     )
-    for i, pfv in enumerate(pfvs, start=2):
-        _write_pfv_row(
+
+    # normal mode PFV を患者ごとに集約. 行 = normal PFV を持つ患者のみ (確定週次固定枠の正本).
+    normal_pfvs_by_patient: dict[UUID, list[PatientFixedVisit]] = {}
+    for pfv in pfvs:
+        if pfv.mode != "normal":
+            continue
+        normal_pfvs_by_patient.setdefault(pfv.patient_id, []).append(pfv)
+
+    patient_by_id: dict[UUID, Patient] = {p.id: p for p in patients}
+    # patient.code 順で安定出力 (export 順序の決定性).
+    ordered_pids = sorted(
+        normal_pfvs_by_patient.keys(),
+        key=lambda pid: (patient_by_id[pid].code or "") if pid in patient_by_id else "",
+    )
+    row_idx = 2
+    edit_row_count = 0
+    for pid in ordered_pids:
+        patient = patient_by_id.get(pid)
+        if patient is None:
+            continue  # alive patient のみ (export は alive のみ渡される想定)
+        _write_pfv_edit_patient_row(
             ws_f,
-            i,
-            pfv,
-            patient_lookup=patient_lookup,
+            row_idx,
+            patient,
+            normal_pfvs_by_patient[pid],
             course_template_by_id=course_template_by_id,
-            # Phase E-5: sub_office_id → コード解決用 (患者シートと共用).
             office_code_by_id=office_code_by_id,
             crossoffice_warnings=crossoffice_warnings,
         )
-    _shade_id_column_data_rows(ws_f, "patient_id", PFV_COLUMNS, data_row_count=len(pfvs))
+        row_idx += 1
+        edit_row_count += 1
+    _shade_id_column_data_rows(ws_f, "patient_id", PFV_EDIT_COLUMNS, data_row_count=edit_row_count)
 
     if crossoffice_warnings:
         logger.warning(
-            "patient_excel export: クロスオフィス course_template 参照を %d 件 "
-            "空欄化しました. 再 import 時に course_template binding が喪失します.",
+            "patient_excel export: 解決できない course_template 拠点参照を %d 件 空欄化しました.",
             len(crossoffice_warnings),
         )
 
-    # Phase G-48: 希望訪問パターン (weekly_pattern) は患者マスタシートに統合済み
-    # のため、独立シートは書き出さない (2 シート構成: 患者マスタ + 固定訪問パターン).
-    # 旧 3 シート構成ファイルの import は importer 側で後方互換的に受理する.
+    # ---- グリッド集計（静的・閲覧専用）シート (Phase G-51) ----
+    # importer はこのシートを一切読まない (シート名で識別して無視).
+    ws_grid: Worksheet = wb.create_sheet(title=SHEET_PFV_GRID)
+    _build_grid_sheet(
+        ws_grid,
+        patients=patients,
+        pfvs=pfvs,
+        offices=offices,
+        course_templates=course_templates,
+    )
 
     return wb
 

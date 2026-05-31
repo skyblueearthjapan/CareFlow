@@ -47,8 +47,12 @@ from app.services.patient_excel.schema import (
     PATIENT_COLUMNS,
     PFV_COL_INDEX,
     PFV_COLUMNS,
+    PFV_EDIT_COL_INDEX,
+    PFV_EDIT_COLUMNS,
     SHEET_PATIENTS,
     SHEET_PFV,
+    SHEET_PFV_EDIT,
+    SHEET_PFV_GRID,
     SHEET_WEEKLY,
     WEEKLY_COL_INDEX,
 )
@@ -163,6 +167,45 @@ def _build_workbook_bytes(
     return buf.getvalue()
 
 
+def _edit_pfv_headers() -> list[str]:
+    return [str(c["header"]) for c in PFV_EDIT_COLUMNS]
+
+
+def _build_edit_workbook_bytes(
+    *,
+    patient_rows: list[dict] | None = None,
+    pfv_edit_rows: list[dict] | None = None,
+) -> bytes:
+    """Phase G-51: 新「固定訪問パターン（編集用）」(患者 1 行) シート付き workbook.
+
+    pfv_edit_rows の各 dict は PFV_EDIT_COL_INDEX のキー (patient_code, mon_time,
+    mon_course, service_minutes, ...) を持つ.
+    """
+    wb = Workbook()
+    ws_p = wb.active
+    ws_p.title = SHEET_PATIENTS
+    for col_idx, header in enumerate(_patient_headers(), start=1):
+        ws_p.cell(row=1, column=col_idx, value=header)
+    for r_idx, row_dict in enumerate(patient_rows or [], start=2):
+        for col_key, idx in PATIENT_COL_INDEX.items():
+            v = row_dict.get(col_key)
+            if v is not None:
+                ws_p.cell(row=r_idx, column=idx + 1, value=v)
+
+    ws_f = wb.create_sheet(title=SHEET_PFV_EDIT)
+    for col_idx, header in enumerate(_edit_pfv_headers(), start=1):
+        ws_f.cell(row=1, column=col_idx, value=header)
+    for r_idx, row_dict in enumerate(pfv_edit_rows or [], start=2):
+        for col_key, idx in PFV_EDIT_COL_INDEX.items():
+            v = row_dict.get(col_key)
+            if v is not None:
+                ws_f.cell(row=r_idx, column=idx + 1, value=v)
+
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 async def _upload(client, admin, *, content: bytes, dry_run: bool = True):
     """multipart helper. fastapi UploadFile は ``file`` という名前で受ける."""
     files = {
@@ -220,12 +263,12 @@ async def test_export_n_patients_writes_n_plus_1_rows(client, db) -> None:
     assert set(codes) == {"P-EX-001", "P-EX-002", "P-EX-003"}
 
 
-# 2) export: PFV が patient_code でリンクされている
+# 2) export: 「編集用」シートが患者 1 行で patient_code / 曜日時刻にリンクされている
 @pytest.mark.asyncio
 async def test_export_pfv_links_to_patient_code(client, db) -> None:
     admin = await _make_user(db, "ex-pfv@example.com", "admin")
     patient = await _make_patient(db, code="P-PFV-LINK", name="リンク患者")
-    await _make_pfv(db, patient_id=patient.id, weekday=0)
+    await _make_pfv(db, patient_id=patient.id, weekday=0, start_time=time(9, 0))
 
     res = await client.get(
         "/api/v1/patients/import-export/export",
@@ -233,12 +276,17 @@ async def test_export_pfv_links_to_patient_code(client, db) -> None:
     )
     assert res.status_code == 200
     wb = load_workbook(BytesIO(res.content))
-    ws_f = wb[SHEET_PFV]
-    assert ws_f.max_row == 2  # 1 header + 1 PFV
-    code_cell = ws_f.cell(row=2, column=PFV_COL_INDEX["patient_code"] + 1).value
-    name_cell = ws_f.cell(row=2, column=PFV_COL_INDEX["patient_name"] + 1).value
+    # Phase G-51: PFV は「編集用」(患者 1 行) + 静的グリッドの 2 シート構成.
+    assert SHEET_PFV_EDIT in wb.sheetnames
+    assert SHEET_PFV_GRID in wb.sheetnames
+    ws_f = wb[SHEET_PFV_EDIT]
+    assert ws_f.max_row == 2  # 1 header + 1 患者行
+    code_cell = ws_f.cell(row=2, column=PFV_EDIT_COL_INDEX["patient_code"] + 1).value
+    name_cell = ws_f.cell(row=2, column=PFV_EDIT_COL_INDEX["patient_name"] + 1).value
+    mon_time = ws_f.cell(row=2, column=PFV_EDIT_COL_INDEX["mon_time"] + 1).value
     assert code_cell == "P-PFV-LINK"
     assert name_cell == "リンク患者"
+    assert mon_time == "09:00"
 
 
 # 3) dry_run: 新規行検出
@@ -795,9 +843,11 @@ async def test_template_download_has_header_only(client, db) -> None:
     assert res.status_code == 200
     wb = load_workbook(BytesIO(res.content))
     assert SHEET_PATIENTS in wb.sheetnames
-    assert SHEET_PFV in wb.sheetnames
+    assert SHEET_PFV_EDIT in wb.sheetnames
+    assert SHEET_PFV_GRID in wb.sheetnames
     assert wb[SHEET_PATIENTS].max_row == 1
-    assert wb[SHEET_PFV].max_row == 1
+    # 編集用シートはヘッダーのみ (患者行 0).
+    assert wb[SHEET_PFV_EDIT].max_row == 1
 
 
 # 18) magic word: case-insensitive
@@ -1516,8 +1566,8 @@ async def test_resurrection_preserves_id(client, db) -> None:
 # ---------------------------------------------------------------------------
 
 
-# E-4-1) export 時に patient.weekly_pattern エントリが無くても time_type が
-# default ("時間帯") で書き出され、import 側で空欄エラーにならない.
+# E-4-1) Phase G-51: export 時に patient.weekly_pattern が無くても「編集用」シートの
+# time_type が default ("時間帯") で書き出され、import 側で空欄エラーにならない.
 @pytest.mark.asyncio
 async def test_patient_export_fills_default_time_type_when_empty(client, db) -> None:
     admin = await _make_user(db, "e4-export-tt@example.com", "admin")
@@ -1533,15 +1583,14 @@ async def test_patient_export_fills_default_time_type_when_empty(client, db) -> 
     )
     assert res.status_code == 200
     wb = load_workbook(BytesIO(res.content))
-    ws_f = wb[SHEET_PFV]
-    # PFV 行 (row 2) の time_type セルが空ではなく default "時間帯".
-    tt_value = ws_f.cell(row=2, column=PFV_COL_INDEX["time_type"] + 1).value
+    ws_f = wb[SHEET_PFV_EDIT]
+    # 患者行 (row 2) の time_type セルが空ではなく default "時間帯".
+    tt_value = ws_f.cell(row=2, column=PFV_EDIT_COL_INDEX["time_type"] + 1).value
     assert tt_value == "時間帯"
 
 
-# E-4-2) export 時に patient の primary_office と PFV.course_template の office が
-# 不一致 (クロスオフィス参照) の場合、course_template_code は空欄で書き出される.
-# round-trip import で「拠点に存在しません」エラーを発生させないため.
+# E-4-2) Phase G-51: クロス拠点 course (患者 primary≠template office) は
+# **拠点付きトークン** (例 "津B") で書き出される (1 行形式でクロス拠点を表現可能).
 @pytest.mark.asyncio
 async def test_patient_export_omits_cross_office_course_template_code(client, db) -> None:
     admin = await _make_user(db, "e4-export-ct@example.com", "admin")
@@ -1554,7 +1603,7 @@ async def test_patient_export_omits_cross_office_course_template_code(client, db
         name="cross-office",
         primary_office_id=office_a.id,
     )
-    # PFV は TSUGA 側の template を指す (データ不整合).
+    # PFV は TSUGA 側の template を指す (クロス拠点 = 月=津B).
     template_b = CourseTemplate(office_id=office_b.id, label="B")
     db.add(template_b)
     await db.commit()
@@ -1567,14 +1616,13 @@ async def test_patient_export_omits_cross_office_course_template_code(client, db
     )
     assert res.status_code == 200
     wb = load_workbook(BytesIO(res.content))
-    ws_f = wb[SHEET_PFV]
-    ct_value = ws_f.cell(row=2, column=PFV_COL_INDEX["course_template_code"] + 1).value
-    # クロスオフィス参照は空欄に倒される.
-    assert ct_value is None
+    ws_f = wb[SHEET_PFV_EDIT]
+    course_value = ws_f.cell(row=2, column=PFV_EDIT_COL_INDEX["mon_course"] + 1).value
+    # 拠点付きトークン (TSUGA→津) で書き出される.
+    assert course_value == "津B"
 
 
-# E-4-3) export 時に patient の primary_office と template の office が一致して
-# いる場合は course_template_code が書き出される.
+# E-4-3) Phase G-51: 同一拠点 course は拠点付きトークン (例 "稲M") で書き出される.
 @pytest.mark.asyncio
 async def test_patient_export_writes_course_template_code_for_same_office(client, db) -> None:
     admin = await _make_user(db, "e4-export-ct-ok@example.com", "admin")
@@ -1597,9 +1645,9 @@ async def test_patient_export_writes_course_template_code_for_same_office(client
     )
     assert res.status_code == 200
     wb = load_workbook(BytesIO(res.content))
-    ws_f = wb[SHEET_PFV]
-    ct_value = ws_f.cell(row=2, column=PFV_COL_INDEX["course_template_code"] + 1).value
-    assert ct_value == "M"
+    ws_f = wb[SHEET_PFV_EDIT]
+    course_value = ws_f.cell(row=2, column=PFV_EDIT_COL_INDEX["mon_course"] + 1).value
+    assert course_value == "稲M"
 
 
 # E-4-4) import 時に time_type が空セルでも error にならず、default で吸収される.
@@ -1751,10 +1799,11 @@ async def test_patient_export_then_import_round_trip_completes_without_errors(cl
     # round-trip では「変更なし」(noop) が主体になる. error は 0 件.
     assert summary["patients_error"] == 0, body
     assert summary["pfv_error"] == 0, body
-    # cross-office PFV-B は silent update (course_template_id が剥がされる) になる.
-    # この挙動を test で明示しておくことで、将来の意図しない挙動変化を検出できる.
-    assert summary["pfv_update"] == 1, body  # PFV-B: cross-office で course_template_id=None に
-    assert summary["pfv_noop"] == 1, body  # PFV-A: same-office なので noop
+    # Phase G-51: クロス拠点コースは拠点付きトークン (例 "津C") で表現されるため、
+    # 旧来の silent update (course_template_id が剥がれる) は解消され、PFV-A/PFV-B とも
+    # 完全 noop で round-trip する (データロスゼロ).
+    assert summary["pfv_update"] == 0, body
+    assert summary["pfv_noop"] == 2, body
 
 
 # E-4-7) round-trip (クリーンデータ): 同じ拠点の template + weekly_pattern 設定済 + 全列適切な
@@ -2443,16 +2492,20 @@ async def test_pfv_mode_japanese_label(client, db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_export_pfv_mode_japanese(client, db) -> None:
-    """PFV モードが日本語で export される (special → 特別)."""
+async def test_export_pfv_special_mode_excluded_from_edit_sheet(client, db) -> None:
+    """Phase G-51: special mode PFV のみの患者は「編集用」シートに出力されない.
+
+    「編集用」シートは normal mode の確定週次固定枠の正本のみを 1 患者 1 行で扱う.
+    special mode は本シート対象外で DB に保持される (誤削除防止).
+    """
     admin = await _make_user(db, "g48-ex-pfv-mode@example.com", "admin")
     p = await _make_patient(db, code="P-G48-PFVEX", name="モード出力")
     await _make_pfv(db, patient_id=p.id, weekday=0, mode="special")
     res = await client.get("/api/v1/patients/import-export/export", headers=_bearer(admin))
     wb = load_workbook(BytesIO(res.content))
-    ws_f = wb[SHEET_PFV]
-    mode_val = ws_f.cell(row=2, column=PFV_COL_INDEX["mode"] + 1).value
-    assert mode_val == "特別"
+    ws_f = wb[SHEET_PFV_EDIT]
+    # special のみ → 編集用シートに患者行は無い (ヘッダーのみ).
+    assert ws_f.max_row == 1
 
 
 @pytest.mark.asyncio
@@ -2950,3 +3003,301 @@ async def test_weekday_7columns_all_no_keeps_existing(client, db) -> None:
     # 全いいえ + 他空 → weekly 全空 = 既存維持 (Mon 保持).
     assert p_after.weekly_pattern is not None
     assert p_after.weekly_pattern["preferred_weekdays"] == ["Mon"]
+
+
+# ---------------------------------------------------------------------------
+# Phase G-51: 「固定訪問パターン（編集用）」(患者 1 行) + 静的グリッド集計
+# ---------------------------------------------------------------------------
+
+
+async def _setup_two_office_courses(db):
+    """INAGE/TSUGA 拠点 + course_templates (稲B, 稲C, 津A) を作る helper."""
+    office_inage = await _make_office(db, code="INAGE", name="稲毛")
+    office_tsuga = await _make_office(db, code="TSUGA", name="都賀")
+    cts = {
+        ("INAGE", "B"): CourseTemplate(office_id=office_inage.id, label="B"),
+        ("INAGE", "C"): CourseTemplate(office_id=office_inage.id, label="C"),
+        ("TSUGA", "A"): CourseTemplate(office_id=office_tsuga.id, label="A"),
+    }
+    for ct in cts.values():
+        db.add(ct)
+    await db.commit()
+    for ct in cts.values():
+        await db.refresh(ct)
+    return office_inage, office_tsuga, cts
+
+
+# G-51-1) round-trip: export → 無編集 import が全 noop (0 更新 0 エラー).
+@pytest.mark.asyncio
+async def test_pfv_edit_export_import_round_trip_noop(client, db) -> None:
+    admin = await _make_user(db, "g51-rt@example.com", "admin")
+    office_inage, office_tsuga, cts = await _setup_two_office_courses(db)
+    patient = await _make_patient(
+        db, code="P-G51-RT", name="往復患者", primary_office_id=office_inage.id
+    )
+    patient.weekly_pattern = {"time_type": "固定"}
+    await db.commit()
+    # 月=稲B, 木=津A (クロス拠点), duration 35 で統一.
+    await _make_pfv(
+        db,
+        patient_id=patient.id,
+        weekday=0,
+        start_time=time(9, 0),
+        duration_min=35,
+        course_template_id=cts[("INAGE", "B")].id,
+    )
+    await _make_pfv(
+        db,
+        patient_id=patient.id,
+        weekday=3,
+        start_time=time(10, 30),
+        duration_min=35,
+        course_template_id=cts[("TSUGA", "A")].id,
+    )
+
+    export_res = await client.get("/api/v1/patients/import-export/export", headers=_bearer(admin))
+    assert export_res.status_code == 200
+    files = {
+        "file": (
+            "exported.xlsx",
+            export_res.content,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
+    import_res = await client.post(
+        "/api/v1/patients/import-export/import?dry_run=true",
+        headers=_bearer(admin),
+        files=files,
+    )
+    assert import_res.status_code == 200, import_res.text
+    summary = import_res.json()["summary"]
+    assert summary["pfv_error"] == 0, summary
+    assert summary["pfv_new"] == 0, summary
+    assert summary["pfv_update"] == 0, summary
+    assert summary["pfv_delete"] == 0, summary
+    assert summary["pfv_noop"] == 2, summary
+    assert summary["patients_error"] == 0, summary
+
+
+# G-51-2) per-patient replace: 行に無い曜日の既存 normal PFV は削除、ある曜日は upsert.
+@pytest.mark.asyncio
+async def test_pfv_edit_per_patient_replace_deletes_absent_weekday(client, db) -> None:
+    admin = await _make_user(db, "g51-replace@example.com", "admin")
+    office_inage, _office_tsuga, cts = await _setup_two_office_courses(db)
+    patient = await _make_patient(
+        db, code="P-G51-REP", name="置換患者", primary_office_id=office_inage.id
+    )
+    pid = patient.id
+    expected_ct_id = cts[("INAGE", "B")].id  # expire_all 前に capture.
+    # 既存: 月 + 水 の 2 枠.
+    await _make_pfv(db, patient_id=pid, weekday=0, start_time=time(9, 0), duration_min=30)
+    await _make_pfv(db, patient_id=pid, weekday=2, start_time=time(9, 0), duration_min=30)
+
+    # 編集用シート: 月だけ残す (水は時刻空欄 = 削除), 月の時刻を 10:00 に変更.
+    content = _build_edit_workbook_bytes(
+        pfv_edit_rows=[
+            {
+                "patient_id": str(pid),
+                "patient_code": "P-G51-REP",
+                "service_minutes": 30,
+                "time_type": "固定",
+                "mon_time": "10:00",
+                "mon_course": "稲B",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["transaction_applied"] is True
+    assert body["summary"]["pfv_update"] == 1  # 月: 時刻 + course 更新
+    assert body["summary"]["pfv_delete"] == 1  # 水: 削除
+    assert body["summary"]["pfv_error"] == 0
+
+    db.expire_all()
+    rows = (
+        await db.scalars(select(PatientFixedVisit).where(PatientFixedVisit.patient_id == pid))
+    ).all()
+    assert len(rows) == 1
+    assert rows[0].weekday == 0
+    assert rows[0].start_time == time(10, 0)
+    assert rows[0].course_template_id == expected_ct_id
+
+
+# G-51-3) 拠点付きコース解決: クロス拠点 "津A" が course_template_id + sub_office_id に解決.
+@pytest.mark.asyncio
+async def test_pfv_edit_cross_office_course_resolves(client, db) -> None:
+    admin = await _make_user(db, "g51-cross@example.com", "admin")
+    office_inage, office_tsuga, cts = await _setup_two_office_courses(db)
+    patient = await _make_patient(
+        db, code="P-G51-X", name="クロス患者", primary_office_id=office_inage.id
+    )
+    pid = patient.id
+    expected_ct_id = cts[("TSUGA", "A")].id  # expire_all 前に capture.
+    content = _build_edit_workbook_bytes(
+        pfv_edit_rows=[
+            {
+                "patient_id": str(pid),
+                "patient_code": "P-G51-X",
+                "service_minutes": 40,
+                "time_type": "固定",
+                "thu_time": "11:00",
+                "thu_course": "津A",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["transaction_applied"] is True
+    assert body["summary"]["pfv_new"] == 1
+    assert body["summary"]["pfv_error"] == 0
+
+    db.expire_all()
+    rows = (
+        await db.scalars(select(PatientFixedVisit).where(PatientFixedVisit.patient_id == pid))
+    ).all()
+    assert len(rows) == 1
+    assert rows[0].weekday == 3
+    assert rows[0].duration_min == 40
+    # クロス拠点 course はトークンに拠点が含まれるため course_template_id で直接表現される.
+    assert rows[0].course_template_id == expected_ct_id
+
+
+# G-51-4) 存在しないコース表記 → best-effort (course_template_id=None で保存、error にしない).
+@pytest.mark.asyncio
+async def test_pfv_edit_unknown_course_token_best_effort(client, db) -> None:
+    admin = await _make_user(db, "g51-unkct@example.com", "admin")
+    office_inage, _office_tsuga, _cts = await _setup_two_office_courses(db)
+    patient = await _make_patient(
+        db, code="P-G51-UNK", name="未知コース", primary_office_id=office_inage.id
+    )
+    pid = patient.id
+    content = _build_edit_workbook_bytes(
+        pfv_edit_rows=[
+            {
+                "patient_id": str(pid),
+                "patient_code": "P-G51-UNK",
+                "service_minutes": 30,
+                "time_type": "固定",
+                "mon_time": "09:00",
+                "mon_course": "稲Z",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["summary"]["pfv_error"] == 0
+    assert body["summary"]["pfv_new"] == 1
+    db.expire_all()
+    rows = (
+        await db.scalars(select(PatientFixedVisit).where(PatientFixedVisit.patient_id == pid))
+    ).all()
+    assert len(rows) == 1
+    assert rows[0].course_template_id is None
+
+
+# G-51-5) 静的グリッド集計シートは importer に無視される (編集しても取り込まれない).
+@pytest.mark.asyncio
+async def test_static_grid_sheet_is_ignored_by_importer(client, db) -> None:
+    admin = await _make_user(db, "g51-grid-ignore@example.com", "admin")
+    office_inage, _office_tsuga, _cts = await _setup_two_office_courses(db)
+    patient = await _make_patient(
+        db, code="P-G51-GRID", name="グリッド患者", primary_office_id=office_inage.id
+    )
+    pid = patient.id
+    await _make_pfv(db, patient_id=pid, weekday=0, start_time=time(9, 0), duration_min=30)
+
+    export_res = await client.get("/api/v1/patients/import-export/export", headers=_bearer(admin))
+    assert export_res.status_code == 200
+    wb = load_workbook(BytesIO(export_res.content))
+    assert SHEET_PFV_GRID in wb.sheetnames
+    wb[SHEET_PFV_GRID].cell(row=99, column=99, value="改ざんデータ")
+    buf = BytesIO()
+    wb.save(buf)
+    files = {
+        "file": (
+            "tampered.xlsx",
+            buf.getvalue(),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
+    import_res = await client.post(
+        "/api/v1/patients/import-export/import?dry_run=true",
+        headers=_bearer(admin),
+        files=files,
+    )
+    assert import_res.status_code == 200, import_res.text
+    summary = import_res.json()["summary"]
+    assert summary["pfv_error"] == 0, summary
+    assert summary["pfv_new"] == 0, summary
+    assert summary["pfv_noop"] == 1, summary
+
+
+# G-51-6) 旧 per-visit 形式「固定訪問パターン」シートは後方互換 fallback で取り込める.
+@pytest.mark.asyncio
+async def test_legacy_pervisit_pfv_sheet_fallback(client, db) -> None:
+    admin = await _make_user(db, "g51-legacy@example.com", "admin")
+    patient = await _make_patient(db, code="P-G51-LEG", name="旧形式患者")
+    pid = patient.id
+    content = _build_workbook_bytes(
+        pfv_rows=[
+            {
+                "patient_id": str(pid),
+                "weekday": "月",
+                "slot_index": 0,
+                "mode": "normal",
+                "time_type": "固定",
+                "start_time": "09:00",
+                "duration_min": 30,
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["transaction_applied"] is True
+    assert body["summary"]["pfv_new"] == 1
+    assert body["summary"]["pfv_error"] == 0
+    db.expire_all()
+    rows = (
+        await db.scalars(select(PatientFixedVisit).where(PatientFixedVisit.patient_id == pid))
+    ).all()
+    assert len(rows) == 1
+    assert rows[0].weekday == 0
+
+
+# G-51-7) per-patient replace は他 mode (special) を壊さない.
+@pytest.mark.asyncio
+async def test_pfv_edit_replace_preserves_special_mode(client, db) -> None:
+    admin = await _make_user(db, "g51-special@example.com", "admin")
+    office_inage, _office_tsuga, _cts = await _setup_two_office_courses(db)
+    patient = await _make_patient(
+        db, code="P-G51-SP", name="特別保持", primary_office_id=office_inage.id
+    )
+    pid = patient.id
+    await _make_pfv(db, patient_id=pid, weekday=0, start_time=time(9, 0), mode="normal")
+    await _make_pfv(db, patient_id=pid, weekday=1, start_time=time(9, 0), mode="special")
+
+    content = _build_edit_workbook_bytes(
+        pfv_edit_rows=[
+            {
+                "patient_id": str(pid),
+                "patient_code": "P-G51-SP",
+                "service_minutes": 30,
+                "time_type": "固定",
+                "mon_time": "09:00",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["summary"]["pfv_error"] == 0
+    db.expire_all()
+    rows = (
+        await db.scalars(select(PatientFixedVisit).where(PatientFixedVisit.patient_id == pid))
+    ).all()
+    modes = sorted((r.mode, r.weekday) for r in rows)
+    assert modes == [("normal", 0), ("special", 1)]  # special 保持

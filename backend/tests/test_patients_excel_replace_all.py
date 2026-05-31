@@ -17,7 +17,7 @@ from datetime import UTC, datetime, time
 from io import BytesIO
 
 import pytest
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from sqlalchemy import select
 
 from app.core.security import create_access_token, hash_password
@@ -772,8 +772,12 @@ async def test_replace_all_roundtrip_requires_multiple_staff(client, db) -> None
 
 @pytest.mark.asyncio
 async def test_export_crossoffice_course_template_emits_warning(client, db, caplog) -> None:
-    """異なる拠点の course_template を持つ PFV を export すると logger.warning が出る."""
+    """Phase G-51: クロス拠点 course は拠点付きトークン (例 "津X") で表現できるため、
+    もはやデータロス警告ではない. export で warning を出さず、トークンが書かれる.
+    """
     import logging as _logging
+
+    from app.services.patient_excel.schema import PFV_EDIT_COL_INDEX, SHEET_PFV_EDIT
 
     admin = await _make_user(db, "ex-co-warn@example.com", "admin")
     office_inage = await _make_office(db, code="INAGE", name="稲毛")
@@ -787,26 +791,28 @@ async def test_export_crossoffice_course_template_emits_warning(client, db, capl
         address="千葉市稲毛区",
         primary_office_id=office_inage.id,
     )
-    # course_template は TSUGA 拠点 → クロスオフィス参照
+    # course_template は TSUGA 拠点 → クロス拠点コース (月=津X).
     ct_tsuga = CourseTemplate(office_id=office_tsuga.id, label="X")
     db.add(ct_tsuga)
     await db.commit()
     await db.refresh(ct_tsuga)
     await _make_pfv(db, patient_id=p.id, weekday=0, course_template_id=ct_tsuga.id)
 
-    # caplog で warning を捕捉
     with caplog.at_level(_logging.WARNING, logger="app.services.patient_excel.exporter"):
         export_res = await client.get(
             "/api/v1/patients/import-export/export", headers=_bearer(admin)
         )
     assert export_res.status_code == 200
-    # warning が 1 件以上出ていること.
+    # クロス拠点はトークンで表現できるので「解決できない」warning は出ない.
     warning_msgs = [r.message for r in caplog.records if r.levelno == _logging.WARNING]
-    assert any("クロスオフィス" in m for m in warning_msgs), warning_msgs
-    # Phase E-7 (gap P2): response header にクロスオフィス warning 件数が出る.
-    # operator が export 結果から気付けるように常に header を返す.
+    assert not any("解決できません" in m for m in warning_msgs), warning_msgs
+    # ヘッダーは互換のため常に存在し、解決不能は 0 件.
     assert "X-Excel-Crossoffice-Warnings-Count" in export_res.headers
-    assert int(export_res.headers["X-Excel-Crossoffice-Warnings-Count"]) >= 1
+    assert int(export_res.headers["X-Excel-Crossoffice-Warnings-Count"]) == 0
+    # 編集用シートにクロス拠点トークン "津X" が書かれている.
+    wb = load_workbook(BytesIO(export_res.content))
+    ws_f = wb[SHEET_PFV_EDIT]
+    assert ws_f.cell(row=2, column=PFV_EDIT_COL_INDEX["mon_course"] + 1).value == "津X"
 
 
 @pytest.mark.asyncio
@@ -1174,3 +1180,87 @@ async def test_replace_all_legacy_weekly_sheet_delete_clears(client, db) -> None
     p_after = await db.get(Patient, pid)
     # (b) weekly_pattern が None にクリアされる.
     assert p_after.weekly_pattern is None
+
+
+# ---------------------------------------------------------------------------
+# Phase G-51: 新「固定訪問パターン（編集用）」(患者 1 行) — replace-all 経路
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_replace_all_pfv_edit_roundtrip_recreates_pfvs(client, db) -> None:
+    """Phase G-51: 新「編集用」シートを export → replace-all import.
+
+    replace-all は全 PFV 物理削除 → 再投入の仕様なので、PFV は pfv_to_create に倒れ、
+    error 0 件で完了し、曜日/時刻/コースが保たれる.
+    """
+    from app.services.patient_excel.schema import PFV_EDIT_WEEKDAY_KEY_TO_INT  # noqa: F401
+
+    admin = await _make_user(db, "ra-g51-rt@example.com", "admin")
+    office_inage = await _make_office(db, code="INAGE", name="稲毛")
+    office_tsuga = await _make_office(db, code="TSUGA", name="都賀")
+    ct_inage_b = CourseTemplate(office_id=office_inage.id, label="B")
+    ct_tsuga_a = CourseTemplate(office_id=office_tsuga.id, label="A")
+    db.add_all([ct_inage_b, ct_tsuga_a])
+    await db.commit()
+    await db.refresh(ct_inage_b)
+    await db.refresh(ct_tsuga_a)
+    inage_b_id = ct_inage_b.id
+    tsuga_a_id = ct_tsuga_a.id
+
+    p = await _make_patient(
+        db,
+        code="P-RA-G51",
+        name="往復患者",
+        status="active",
+        address="千葉市稲毛区test",
+        primary_office_id=office_inage.id,
+    )
+    p.weekly_pattern = {"time_type": "固定", "service_minutes": 35}
+    pid = p.id
+    await db.commit()
+    # 月=稲B, 木=津A (クロス拠点).
+    await _make_pfv(
+        db,
+        patient_id=pid,
+        weekday=0,
+        start_time=time(9, 0),
+        duration_min=35,
+        course_template_id=inage_b_id,
+    )
+    await _make_pfv(
+        db,
+        patient_id=pid,
+        weekday=3,
+        start_time=time(10, 30),
+        duration_min=35,
+        course_template_id=tsuga_a_id,
+    )
+
+    export_res = await client.get("/api/v1/patients/import-export/export", headers=_bearer(admin))
+    assert export_res.status_code == 200
+
+    # dry-run: error 0, soft-delete 0.
+    res = await _upload(client, admin, content=export_res.content, dry_run=True)
+    assert res.status_code == 200, res.text
+    summary = res.json()["summary"]
+    assert summary["patients_error"] == 0, res.json()
+    assert summary["pfv_error"] == 0, res.json()
+    assert summary["patients_to_soft_delete"] == 0, res.json()
+    assert summary["pfv_to_create"] == 2, res.json()
+
+    # apply: 全件再投入され、曜日/時刻/コースが保たれる.
+    res = await _upload(client, admin, content=export_res.content, dry_run=False)
+    assert res.status_code == 200, res.text
+    assert res.json()["transaction_applied"] is True
+
+    db.expire_all()
+    rows = (
+        await db.scalars(select(PatientFixedVisit).where(PatientFixedVisit.patient_id == pid))
+    ).all()
+    by_wd = {r.weekday: r for r in rows}
+    assert set(by_wd) == {0, 3}
+    assert by_wd[0].start_time == time(9, 0)
+    assert by_wd[0].course_template_id == inage_b_id
+    assert by_wd[3].start_time == time(10, 30)
+    assert by_wd[3].course_template_id == tsuga_a_id  # クロス拠点も保たれる

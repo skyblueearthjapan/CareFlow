@@ -361,15 +361,27 @@ async def test_auto_allocator_v2_does_not_use_sub_office_for_full_optimize(clien
 
 
 # ---------------------------------------------------------------------------
-# 6. Excel export に sub_office_code 列が含まれる
+# 6. Phase G-51: 「編集用」シート (患者 1 行) — sub_office_id 単体は列で表現しないが、
+#    クロス拠点コースはトークンで表現される.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_pfv_excel_export_includes_sub_office(client, db) -> None:
-    """Export した Excel の PFV シートに sub_office_code 列が含まれ、値が書き出される."""
+    """Phase G-51: export はクロス拠点 course を拠点付きトークン (例 "津A") で表現する.
+
+    旧 per-visit シートの ``sub_office_code`` 列は廃止. course_template が cross-office
+    の場合、その course は token に拠点が含まれる形 ("津A") で「編集用」シートに書かれる.
+    """
+    from app.services.patient_excel.schema import PFV_EDIT_COL_INDEX, SHEET_PFV_EDIT
+
     inage = await _make_office(db, code="INAGE", name="稲毛")
     tsuga = await _make_office(db, code="TSUGA", name="都賀")
+    # TSUGA の course_template (クロス拠点 course を token で表現するため).
+    ct_tsuga = CourseTemplate(office_id=tsuga.id, label="A")
+    db.add(ct_tsuga)
+    await db.commit()
+    await db.refresh(ct_tsuga)
     patient = await _make_patient(
         db,
         code="P-EXP-SUB",
@@ -384,6 +396,7 @@ async def test_pfv_excel_export_includes_sub_office(client, db) -> None:
         slot_index=0,
         start_time=time(9, 0),
         duration_min=30,
+        course_template_id=ct_tsuga.id,
         sub_office_id=tsuga.id,
     )
     db.add(pfv)
@@ -402,15 +415,11 @@ async def test_pfv_excel_export_includes_sub_office(client, db) -> None:
     )
     raw = workbook_to_bytes(wb)
 
-    # 読み戻して PFV row の sub_office_code を確認
+    # 「編集用」シート (患者 1 行) に月曜の course が "津A" (クロス拠点トークン) で書かれる.
     wb2 = load_workbook(BytesIO(raw), data_only=True)
-    ws = wb2[SHEET_PFV]
-    headers = [cell.value for cell in ws[1]]
-    assert "sub_office_code" in headers
-    sub_office_idx = headers.index("sub_office_code")
-    row2 = list(ws.iter_rows(min_row=2, max_row=2, values_only=True))
-    assert len(row2) == 1
-    assert row2[0][sub_office_idx] == "TSUGA"
+    ws = wb2[SHEET_PFV_EDIT]
+    mon_course = ws.cell(row=2, column=PFV_EDIT_COL_INDEX["mon_course"] + 1).value
+    assert mon_course == "津A"
 
 
 # ---------------------------------------------------------------------------
