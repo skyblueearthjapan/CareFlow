@@ -1287,6 +1287,48 @@ async def _load_active_patients_via_sub_office(
     return extras, sub_office_by_patient
 
 
+async def _load_visit_delete_target_patient_ids(
+    db: AsyncSession,
+    *,
+    office_ids: list[UUID],
+) -> set[UUID]:
+    """visit 削除対象とすべき patient_id 集合を返す (status 不問).
+
+    CareFlow 本番バグ (Bug A) 修正:
+        ``reset_visits_to_fixed`` の step1 削除は ``_load_active_patients`` の
+        active 患者のみを対象にしていたため、 患者が一時休止 (status='inactive')
+        / suspended / pending 等に変わると、 過去に再生成系 (source=auto / reset_v2
+        等, status='planned') で作られた旧 visit が削除されず週ビューに残り続けた
+        (= ゴースト). 削除対象 patient 範囲を「status 不問 + 対象 office 範囲」に
+        広げ、 非稼働患者の旧 visit も掃除する. (再生成 step2 は従来通り active
+        患者の PFV のみ → 非稼働患者は消えて再生成されない = 正しい挙動.)
+
+    office 範囲の解釈は **再生成スコープと対称** にする (誤削除防止):
+        - ``Patient.primary_office_id`` ∈ office_ids のみ
+
+        再生成 step2 (``_load_active_patients`` / PFV クエリ) は primary_office_id
+        基準で患者を集める. もし削除側に ``PatientFixedVisit.sub_office_id`` ∈
+        office_ids の arm を残すと、 「主拠点が office_ids 範囲外・sub_office PFV が
+        範囲内」の cross-office 患者 (例: 都賀 primary / INAGE serving) が、 単一
+        office reset の step1 で削除されながら step2 の再生成スコープに入らず、
+        消失 (visit が削除されっぱなし) する. 削除対象 = 再生成対象 = primary-office
+        範囲に揃えることで対称性を保ち、 cross-office 患者の誤削除を防ぐ.
+
+    source / status による保護フィルタ (= manual / completed / cancelled 保護) は
+    呼び出し側の DELETE SQL 側で従来通り適用するため、 本 helper は patient 範囲
+    のみを担う.
+    """
+    if not office_ids:
+        return set()
+    primary_rows = await db.scalars(
+        select(Patient.id).where(
+            Patient.deleted_at.is_(None),
+            Patient.primary_office_id.in_(office_ids),
+        )
+    )
+    return set(primary_rows.all())
+
+
 async def _load_patients_with_fixed(
     db: AsyncSession,
     *,
@@ -8214,22 +8256,32 @@ async def reset_visits_to_fixed(
     patients_by_id = await _load_active_patients(db, office_ids=office_ids)
     patient_ids = list(patients_by_id.keys())
 
-    # 1) 対象週の active visits を取得 (該当 patient のみ).
+    # CareFlow 本番バグ修正 (Bug A): step1 の削除対象 patient 範囲を「status 不問 +
+    # 対象 office 範囲」に広げる. 旧実装は active 患者 (= patient_ids) のみを削除
+    # 対象にしていたため、 患者が非稼働 (inactive / suspended / pending) になると
+    # 過去に再生成系で作られた旧 visit (source∈auto/reset_v2 等, status='planned')
+    # が削除されず週ビューに残り続けた (= ゴースト). step2 の再生成は従来通り
+    # active 患者の PFV のみ → 非稼働患者は消えて再生成されない = 正しい挙動.
+    delete_target_patient_ids = await _load_visit_delete_target_patient_ids(
+        db, office_ids=office_ids
+    )
+
+    # 1) 対象週の active visits を取得 (削除対象 patient 範囲).
     # W41 v2 final cross-review (C-Codex-2): source / status で絞り、
     # 手動作成 (source != auto-generated) / 完了済み (status != planned)
-    # / キャンセル済み visit は保護する.
+    # / キャンセル済み visit は保護する (= Bug A 修正でも source/status 保護は維持).
     # C-Claude-1: with_for_update() で行ロックを取得し、同じ週に対する
     # 並行 reset / apply を直列化する.
     from datetime import UTC as _UTC  # noqa: N814  (UTC alias for clarity)
     from datetime import datetime as _dt
 
     visits_to_delete: list[Visit] = []
-    if patient_ids:
+    if delete_target_patient_ids:
         week_sunday = date.fromordinal(week_monday.toordinal() + 6)
         stmt = (
             select(Visit)
             .where(
-                Visit.patient_id.in_(patient_ids),
+                Visit.patient_id.in_(delete_target_patient_ids),
                 Visit.deleted_at.is_(None),
                 Visit.visit_date >= week_monday,
                 Visit.visit_date <= week_sunday,
@@ -8292,6 +8344,40 @@ async def reset_visits_to_fixed(
     )
     pfv_list = list(pfv_rows.all())
 
+    # CareFlow 本番バグ修正 (Bug B): PFV ごとの「実際に担当する拠点 (serving office)」を
+    # 解決する map を構築する. 1860-1906 (Phase E-5 / G-33) と同じ優先順位
+    #   sub_office_id (PFV) > course_template.office_id > patient.primary_office_id
+    # を reset 経路にも適用する. 旧実装は primary_office_id 固定だったため、
+    # 主拠点=都賀 (土曜休業) の患者が PFV で稲毛 (土曜稼働) コースに割当てられて
+    # いても、 operating_weekday 判定が主拠点基準になり土曜だけ生成 skip された.
+    _ct_ids_reset = {
+        pfv.course_template_id for pfv in pfv_list if pfv.course_template_id is not None
+    }
+    ct_office_by_id_reset: dict[UUID, UUID] = {}
+    if _ct_ids_reset:
+        _ct_rows_reset = await db.scalars(
+            select(CourseTemplate).where(
+                CourseTemplate.id.in_(_ct_ids_reset),
+                CourseTemplate.deleted_at.is_(None),
+            )
+        )
+        for _ct in _ct_rows_reset.all():
+            ct_office_by_id_reset[_ct.id] = _ct.office_id
+
+    def _serving_office_id_for_pfv(pfv: PatientFixedVisit, patient: Patient) -> UUID | None:
+        """PFV の serving office を優先順位で解決する (Bug B).
+
+        sub_office_id (Phase E-5) > course_template.office_id (Phase G-33
+        cross-office PFV) > patient.primary_office_id.
+        """
+        if pfv.sub_office_id is not None:
+            return pfv.sub_office_id
+        if pfv.course_template_id is not None:
+            _co = ct_office_by_id_reset.get(pfv.course_template_id)
+            if _co is not None:
+                return _co
+        return patient.primary_office_id
+
     # Wave 1 (#115): _detect_cross_address_time_conflicts は「データ不備」検出に
     # 縮小済み (= 座標 None / office None のみ). 異住所同時刻ペアは Wave 1 で
     # apply_travel_corrections の auto_shift が解消する.
@@ -8308,13 +8394,15 @@ async def reset_visits_to_fixed(
     pfv_items: list[_PfvWithOffice] = []
     for pfv in pfv_list:
         p = patients_by_id.get(pfv.patient_id)
+        # Bug B: 衝突検出も serving office 基準で判定する.
+        _serving_oid = _serving_office_id_for_pfv(pfv, p) if p is not None else None
         pfv_items.append(
             _PfvWithOffice(
                 patient_id=pfv.patient_id,
                 weekday=pfv.weekday,
                 start_time=pfv.start_time,
                 course_template_id=pfv.course_template_id,
-                office_id=(p.primary_office_id if p is not None else None),
+                office_id=_serving_oid,
             )
         )
     pfv_conflicts = _detect_cross_address_time_conflicts(pfv_items, patients_by_id)
@@ -8400,10 +8488,19 @@ async def reset_visits_to_fixed(
     # reset 対象の office_ids に加えて patient.primary_office_id も query 範囲に入れる.
     # 通常 patient の primary_office_id は office_ids 内だが、 cross-office PFV の
     # 防衛として明示的に和集合する.
+    # Bug B: serving office (sub_office / course_template office) も operating_weekday
+    # 判定対象に含めるため、 PFV の serving office を query 範囲に加える.
     _op_office_ids: set[UUID] = set(office_ids)
     for _p in patients_by_id.values():
         if _p.primary_office_id is not None:
             _op_office_ids.add(_p.primary_office_id)
+    for _pfv in pfv_list:
+        _pp = patients_by_id.get(_pfv.patient_id)
+        if _pp is None:
+            continue
+        _so = _serving_office_id_for_pfv(_pfv, _pp)
+        if _so is not None:
+            _op_office_ids.add(_so)
     op_weekdays_by_office_reset = await _load_office_operating_weekdays(
         db, office_ids=list(_op_office_ids)
     )
@@ -8419,10 +8516,14 @@ async def reset_visits_to_fixed(
         end_t = _add_minutes(pfv.start_time, pfv.duration_min)
         if end_t <= pfv.start_time:
             continue
-        office_id = patient.primary_office_id
-        # Phase G-45: 拠点休業日 skip (reset_visits_to_fixed).
-        # patient.primary_office_id (= reset で使う office_id) が当該 weekday に
-        # 休業の場合は visit 再生成を skip し、 string warning として記録する.
+        # Bug B: serving office (sub_office > course_template office > primary) を
+        # 使う. 旧実装は primary_office_id 固定で、 cross-office PFV (主拠点 休業日
+        # × serving office 稼働日) の visit が誤って skip されていた.
+        office_id = _serving_office_id_for_pfv(pfv, patient)
+        if office_id is None:
+            continue
+        # Phase G-45 / Bug B: serving office が当該 weekday に休業の場合は
+        # visit 再生成を skip し、 string warning として記録する.
         _op_wd_reset = op_weekdays_by_office_reset.get(office_id)
         if _op_wd_reset is not None and pfv.weekday not in _op_wd_reset:
             _key = (patient.id, pfv.weekday)
