@@ -32,16 +32,23 @@ from app.schemas.v2.staff_excel import (
 )
 from app.services.staff_excel.schema import (
     OVERRIDE_COL_INDEX,
+    OVERRIDE_EDIT_COL_INDEX,
+    OVERRIDE_EDIT_WEEKDAY_KEY_TO_INT,
     OVERRIDE_TYPE_VALUES,
     ROLE_VALUES,
     SEX_VALUES,
     SHEET_OVERRIDE,
+    SHEET_OVERRIDE_EDIT,
     SHEET_SHIFT,
+    SHEET_SHIFT_EDIT,
     SHEET_STAFF,
     SHIFT_COL_INDEX,
+    SHIFT_EDIT_COL_INDEX,
+    SHIFT_EDIT_WEEKDAY_KEY_TO_INT,
     STAFF_COL_INDEX,
     STATUS_VALUES,
     WEEKDAY_LABEL_TO_INT,
+    parse_override_cell,
 )
 
 logger = logging.getLogger(__name__)
@@ -985,6 +992,330 @@ def _parse_override_row_replace(
 
 
 # ---------------------------------------------------------------------------
+# Edit-sheet parsers (Phase G-56: 1 行化, replace-all は全件 INSERT のみ)
+# ---------------------------------------------------------------------------
+
+
+def _resolve_staff_for_edit_row_replace(
+    raw_id: Any,
+    raw_code: Any,
+    *,
+    existing_staff: dict[UUID, Staff],
+    new_code_to_uuid: dict[str, UUID],
+    existing_code_to_id: dict[str, UUID],
+    resurrect_staff_ids: set[UUID],
+) -> tuple[UUID | None, str | None, Staff | None, str | None]:
+    staff_id: UUID | None = None
+    try:
+        if not _is_blank(raw_id):
+            staff_id = _read_uuid(raw_id)
+    except ValueError:
+        return None, _read_str(raw_code), None, f"staff_id が UUID 形式ではありません: {raw_id!r}"
+
+    staff_code = _read_str(raw_code)
+    if staff_id is None:
+        if not staff_code:
+            return None, None, None, "staff_id / staff_code のどちらも空です"
+        if staff_code in existing_code_to_id:
+            staff_id = existing_code_to_id[staff_code]
+        elif staff_code in new_code_to_uuid:
+            staff_id = new_code_to_uuid[staff_code]
+        else:
+            return (
+                None,
+                staff_code,
+                None,
+                f"staff_code が DB / 同ファイル内に存在しません: {staff_code!r}",
+            )
+
+    is_pending = staff_id in set(new_code_to_uuid.values()) or staff_id in resurrect_staff_ids
+    staff_obj: Staff | None = existing_staff.get(staff_id) if not is_pending else None
+    if staff_obj is None and not is_pending:
+        return staff_id, staff_code, None, f"staff_id が DB に存在しません: {staff_id}"
+    staff_code_for_view = staff_obj.code if staff_obj is not None else staff_code
+    return staff_id, staff_code_for_view, staff_obj, None
+
+
+def _parse_shift_edit_row_replace(
+    row_number: int,
+    row: tuple[Any, ...],
+    *,
+    existing_staff: dict[UUID, Staff],
+    new_code_to_uuid: dict[str, UUID],
+    existing_code_to_id: dict[str, UUID],
+    resurrect_staff_ids: set[UUID],
+    seen_staff_ids: set[UUID],
+) -> tuple[list[ShiftExcelImportRow], list[dict[str, Any]]]:
+    """Phase G-56: 「勤務シフト（編集用）」1 行 (replace-all). 7 曜日全件 new INSERT.
+
+    開始&終了両方あり → is_on=True + 時刻. 両方空欄 → is_on=False (休, 時刻なし).
+    """
+    cells: dict[str, Any] = {
+        col_key: (row[idx] if idx < len(row) else None)
+        for col_key, idx in SHIFT_EDIT_COL_INDEX.items()
+    }
+    staff_id, staff_code_for_view, _staff_obj, err = _resolve_staff_for_edit_row_replace(
+        cells.get("staff_id"),
+        cells.get("staff_code"),
+        existing_staff=existing_staff,
+        new_code_to_uuid=new_code_to_uuid,
+        existing_code_to_id=existing_code_to_id,
+        resurrect_staff_ids=resurrect_staff_ids,
+    )
+    if err is not None:
+        return (
+            [
+                ShiftExcelImportRow(
+                    row_number=row_number,
+                    staff_id=staff_id,
+                    staff_code=staff_code_for_view,
+                    operation="error",
+                    error_message=err,
+                )
+            ],
+            [],
+        )
+    assert staff_id is not None
+
+    if staff_id in seen_staff_ids:
+        return (
+            [
+                ShiftExcelImportRow(
+                    row_number=row_number,
+                    staff_id=staff_id,
+                    staff_code=staff_code_for_view,
+                    operation="error",
+                    error_message="同ファイル内で同一スタッフが複数行に現れています",
+                )
+            ],
+            [],
+        )
+    seen_staff_ids.add(staff_id)
+
+    diff_rows: list[ShiftExcelImportRow] = []
+    ops: list[dict[str, Any]] = []
+    errors: list[str] = []
+    specs: dict[int, dict[str, Any]] = {}
+    for wd_key, wd_int in SHIFT_EDIT_WEEKDAY_KEY_TO_INT.items():
+        try:
+            start_str = _read_hhmm(cells.get(f"{wd_key}_start"))
+        except (ValueError, TypeError) as exc:
+            errors.append(f"{wd_key} の開始時刻が HH:MM 形式ではありません: {exc}")
+            continue
+        try:
+            end_str = _read_hhmm(cells.get(f"{wd_key}_end"))
+        except (ValueError, TypeError) as exc:
+            errors.append(f"{wd_key} の終了時刻が HH:MM 形式ではありません: {exc}")
+            continue
+        if start_str is not None and end_str is not None:
+            specs[wd_int] = {
+                "is_on": True,
+                "start_time": _hhmm_to_time(start_str),
+                "end_time": _hhmm_to_time(end_str),
+                "start_str": start_str,
+                "end_str": end_str,
+            }
+        elif start_str is None and end_str is None:
+            specs[wd_int] = {
+                "is_on": False,
+                "start_time": None,
+                "end_time": None,
+                "start_str": None,
+                "end_str": None,
+            }
+        else:
+            errors.append(f"{wd_key} は開始・終了の両方、または両方空欄にしてください")
+    if errors:
+        return (
+            [
+                ShiftExcelImportRow(
+                    row_number=row_number,
+                    staff_id=staff_id,
+                    staff_code=staff_code_for_view,
+                    operation="error",
+                    error_message=" / ".join(errors),
+                )
+            ],
+            [],
+        )
+    for wd_int in range(7):
+        spec = specs[wd_int]
+        ops.append(
+            {
+                "_op": "new",
+                "staff_id": staff_id,
+                "weekday": wd_int,
+                "is_on": spec["is_on"],
+                "start_time": spec["start_time"],
+                "end_time": spec["end_time"],
+            }
+        )
+        diff_rows.append(
+            ShiftExcelImportRow(
+                row_number=row_number,
+                staff_id=staff_id,
+                staff_code=staff_code_for_view,
+                weekday=wd_int,
+                operation="new",
+                changes=[
+                    StaffExcelChange(field="is_on", old_value=None, new_value=spec["is_on"]),
+                    StaffExcelChange(
+                        field="start_time", old_value=None, new_value=spec["start_str"]
+                    ),
+                    StaffExcelChange(field="end_time", old_value=None, new_value=spec["end_str"]),
+                ],
+            )
+        )
+    return diff_rows, ops
+
+
+def _parse_override_edit_row_replace(
+    row_number: int,
+    row: tuple[Any, ...],
+    *,
+    existing_staff: dict[UUID, Staff],
+    new_code_to_uuid: dict[str, UUID],
+    existing_code_to_id: dict[str, UUID],
+    resurrect_staff_ids: set[UUID],
+    seen_week_keys: set[tuple[UUID, int, int]],
+) -> tuple[list[OverrideExcelImportRow], list[dict[str, Any]]]:
+    """Phase G-56: 「勤務例外（編集用）」1 行 (replace-all). 各曜日例外を new INSERT."""
+    cells: dict[str, Any] = {
+        col_key: (row[idx] if idx < len(row) else None)
+        for col_key, idx in OVERRIDE_EDIT_COL_INDEX.items()
+    }
+    staff_id, staff_code_for_view, _staff_obj, err = _resolve_staff_for_edit_row_replace(
+        cells.get("staff_id"),
+        cells.get("staff_code"),
+        existing_staff=existing_staff,
+        new_code_to_uuid=new_code_to_uuid,
+        existing_code_to_id=existing_code_to_id,
+        resurrect_staff_ids=resurrect_staff_ids,
+    )
+    if err is not None:
+        return (
+            [
+                OverrideExcelImportRow(
+                    row_number=row_number,
+                    staff_id=staff_id,
+                    staff_code=staff_code_for_view,
+                    operation="error",
+                    error_message=err,
+                )
+            ],
+            [],
+        )
+    assert staff_id is not None
+
+    try:
+        iso_year = _read_int(cells.get("iso_year"))
+        iso_week = _read_int(cells.get("iso_week"))
+    except (ValueError, TypeError):
+        return (
+            [
+                OverrideExcelImportRow(
+                    row_number=row_number,
+                    staff_id=staff_id,
+                    staff_code=staff_code_for_view,
+                    operation="error",
+                    error_message="iso_year / iso_week が整数ではありません",
+                )
+            ],
+            [],
+        )
+    if iso_year is None or iso_week is None:
+        return (
+            [
+                OverrideExcelImportRow(
+                    row_number=row_number,
+                    staff_id=staff_id,
+                    staff_code=staff_code_for_view,
+                    operation="error",
+                    error_message="iso_year / iso_week は必須です",
+                )
+            ],
+            [],
+        )
+
+    week_key = (staff_id, iso_year, iso_week)
+    if week_key in seen_week_keys:
+        return (
+            [
+                OverrideExcelImportRow(
+                    row_number=row_number,
+                    staff_id=staff_id,
+                    staff_code=staff_code_for_view,
+                    iso_year=iso_year,
+                    iso_week=iso_week,
+                    operation="error",
+                    error_message="同ファイル内で同一 (staff, iso_year, iso_week) が複数行に現れています",
+                )
+            ],
+            [],
+        )
+    seen_week_keys.add(week_key)
+
+    reason = _read_str(cells.get("reason"))
+    diff_rows: list[OverrideExcelImportRow] = []
+    ops: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for wd_key, wd_int in OVERRIDE_EDIT_WEEKDAY_KEY_TO_INT.items():
+        try:
+            parsed = parse_override_cell(cells.get(wd_key))
+        except ValueError as exc:
+            errors.append(f"{wd_key}: {exc}")
+            continue
+        if parsed is None:
+            continue
+        ot, start_str, end_str = parsed
+        ops.append(
+            {
+                "_op": "new",
+                "staff_id": staff_id,
+                "iso_year": iso_year,
+                "iso_week": iso_week,
+                "weekday": wd_int,
+                "override_type": ot,
+                "start_time": _hhmm_to_time(start_str) if start_str else None,
+                "end_time": _hhmm_to_time(end_str) if end_str else None,
+                "reason": reason,
+            }
+        )
+        diff_rows.append(
+            OverrideExcelImportRow(
+                row_number=row_number,
+                staff_id=staff_id,
+                staff_code=staff_code_for_view,
+                iso_year=iso_year,
+                iso_week=iso_week,
+                weekday=wd_int,
+                operation="new",
+                changes=[
+                    StaffExcelChange(field="override_type", old_value=None, new_value=ot),
+                    StaffExcelChange(field="start_time", old_value=None, new_value=start_str),
+                    StaffExcelChange(field="end_time", old_value=None, new_value=end_str),
+                ],
+            )
+        )
+    if errors:
+        return (
+            [
+                OverrideExcelImportRow(
+                    row_number=row_number,
+                    staff_id=staff_id,
+                    staff_code=staff_code_for_view,
+                    iso_year=iso_year,
+                    iso_week=iso_week,
+                    operation="error",
+                    error_message=" / ".join(errors),
+                )
+            ],
+            [],
+        )
+    return diff_rows, ops
+
+
+# ---------------------------------------------------------------------------
 # public entrypoints
 # ---------------------------------------------------------------------------
 
@@ -1006,8 +1337,11 @@ async def parse_and_diff_replace_all(
     wb = load_workbook(BytesIO(file_bytes), data_only=True)
     if SHEET_STAFF not in wb.sheetnames:
         raise ValueError(f"シート「{SHEET_STAFF}」が見つかりません")
-    if SHEET_SHIFT not in wb.sheetnames:
-        raise ValueError(f"シート「{SHEET_SHIFT}」が見つかりません")
+    # Phase G-56: 新「勤務シフト（編集用）」優先, 無ければ旧 per-row へフォールバック.
+    use_shift_edit_sheet = SHEET_SHIFT_EDIT in wb.sheetnames
+    if not use_shift_edit_sheet and SHEET_SHIFT not in wb.sheetnames:
+        raise ValueError(f"シート「{SHEET_SHIFT_EDIT}」が見つかりません")
+    use_override_edit_sheet = SHEET_OVERRIDE_EDIT in wb.sheetnames
 
     rows = (await db.scalars(select(Staff).where(Staff.deleted_at.is_(None)))).all()
     existing_staff: dict[UUID, Staff] = {s.id: s for s in rows}
@@ -1070,30 +1404,66 @@ async def parse_and_diff_replace_all(
     }
 
     # ---- shift sheet ----
-    ws_f = wb[SHEET_SHIFT]
     shift_rows: list[ShiftExcelImportRow] = []
     shift_ops: list[dict[str, Any]] = []
-    pending_new_keys: set[tuple[UUID, int]] = set()
-    for r_idx, row in enumerate(ws_f.iter_rows(min_row=2, values_only=True), start=2):
-        if _row_is_empty(row):
-            continue
-        diff_row, op = _parse_shift_row_replace(
-            r_idx,
-            row,
-            existing_staff=existing_staff,
-            new_code_to_uuid=new_code_to_uuid,
-            existing_code_to_id=existing_code_to_id_with_resurrect,
-            resurrect_staff_ids=set(resurrect_code_to_uuid.values()),
-            pending_new_keys=pending_new_keys,
-        )
-        shift_rows.append(diff_row)
-        if op is not None:
-            shift_ops.append(op)
+    resurrect_ids = set(resurrect_code_to_uuid.values())
+    if use_shift_edit_sheet:
+        ws_f = wb[SHEET_SHIFT_EDIT]
+        seen_staff_ids: set[UUID] = set()
+        for r_idx, row in enumerate(ws_f.iter_rows(min_row=2, values_only=True), start=2):
+            if _row_is_empty(row):
+                continue
+            diff_rows_edit, ops_edit = _parse_shift_edit_row_replace(
+                r_idx,
+                row,
+                existing_staff=existing_staff,
+                new_code_to_uuid=new_code_to_uuid,
+                existing_code_to_id=existing_code_to_id_with_resurrect,
+                resurrect_staff_ids=resurrect_ids,
+                seen_staff_ids=seen_staff_ids,
+            )
+            shift_rows.extend(diff_rows_edit)
+            shift_ops.extend(ops_edit)
+    else:
+        ws_f = wb[SHEET_SHIFT]
+        pending_new_keys: set[tuple[UUID, int]] = set()
+        for r_idx, row in enumerate(ws_f.iter_rows(min_row=2, values_only=True), start=2):
+            if _row_is_empty(row):
+                continue
+            diff_row, op = _parse_shift_row_replace(
+                r_idx,
+                row,
+                existing_staff=existing_staff,
+                new_code_to_uuid=new_code_to_uuid,
+                existing_code_to_id=existing_code_to_id_with_resurrect,
+                resurrect_staff_ids=resurrect_ids,
+                pending_new_keys=pending_new_keys,
+            )
+            shift_rows.append(diff_row)
+            if op is not None:
+                shift_ops.append(op)
 
-    # ---- 勤務例外シート (Phase E-7 gap P1) ----
+    # ---- 勤務例外シート (Phase E-7 gap P1 / G-56) ----
     override_rows: list[OverrideExcelImportRow] = []
     override_ops: list[dict[str, Any]] = []
-    if SHEET_OVERRIDE in wb.sheetnames:
+    if use_override_edit_sheet:
+        ws_o = wb[SHEET_OVERRIDE_EDIT]
+        seen_week_keys: set[tuple[UUID, int, int]] = set()
+        for r_idx, row in enumerate(ws_o.iter_rows(min_row=2, values_only=True), start=2):
+            if _row_is_empty(row):
+                continue
+            diff_rows_edit, ops_edit = _parse_override_edit_row_replace(
+                r_idx,
+                row,
+                existing_staff=existing_staff,
+                new_code_to_uuid=new_code_to_uuid,
+                existing_code_to_id=existing_code_to_id_with_resurrect,
+                resurrect_staff_ids=resurrect_ids,
+                seen_week_keys=seen_week_keys,
+            )
+            override_rows.extend(diff_rows_edit)
+            override_ops.extend(ops_edit)
+    elif SHEET_OVERRIDE in wb.sheetnames:
         ws_o = wb[SHEET_OVERRIDE]
         pending_override_keys: set[tuple[UUID, int, int, int]] = set()
         for r_idx, row in enumerate(ws_o.iter_rows(min_row=2, values_only=True), start=2):
@@ -1105,7 +1475,7 @@ async def parse_and_diff_replace_all(
                 existing_staff=existing_staff,
                 new_code_to_uuid=new_code_to_uuid,
                 existing_code_to_id=existing_code_to_id_with_resurrect,
-                resurrect_staff_ids=set(resurrect_code_to_uuid.values()),
+                resurrect_staff_ids=resurrect_ids,
                 pending_new_keys=pending_override_keys,
             )
             override_rows.append(diff_row)

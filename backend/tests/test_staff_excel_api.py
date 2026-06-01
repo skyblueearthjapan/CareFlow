@@ -208,9 +208,11 @@ async def test_export_n_staff_writes_n_plus_1_rows(client, db) -> None:
     assert set(codes) == {"S-EX-001", "S-EX-002", "S-EX-003"}
 
 
-# 2) export: shift が staff_id でリンクされている
+# 2) export: shift が staff_id でリンクされている (Phase G-56: 編集用シート 1 行)
 @pytest.mark.asyncio
 async def test_export_shift_links_to_staff_code(client, db) -> None:
+    from app.services.staff_excel.schema import SHEET_SHIFT_EDIT, SHIFT_EDIT_COL_INDEX
+
     admin = await _make_user(db, "stx-sh@example.com", "admin")
     staff = await _make_staff(db, code="S-SH-LINK", name="シフト持ち")
     await _make_shift(db, staff_id=staff.id, weekday=0)
@@ -221,10 +223,10 @@ async def test_export_shift_links_to_staff_code(client, db) -> None:
     )
     assert res.status_code == 200
     wb = load_workbook(BytesIO(res.content))
-    ws_f = wb[SHEET_SHIFT]
-    assert ws_f.max_row == 2  # 1 header + 1 shift
-    code_cell = ws_f.cell(row=2, column=SHIFT_COL_INDEX["staff_code"] + 1).value
-    name_cell = ws_f.cell(row=2, column=SHIFT_COL_INDEX["staff_name"] + 1).value
+    ws_f = wb[SHEET_SHIFT_EDIT]
+    assert ws_f.max_row == 2  # 1 header + 1 staff row
+    code_cell = ws_f.cell(row=2, column=SHIFT_EDIT_COL_INDEX["staff_code"] + 1).value
+    name_cell = ws_f.cell(row=2, column=SHIFT_EDIT_COL_INDEX["staff_name"] + 1).value
     assert code_cell == "S-SH-LINK"
     assert name_cell == "シフト持ち"
 
@@ -705,12 +707,14 @@ async def test_template_download_has_header_only(client, db) -> None:
         "/api/v1/staff/import-export/template",
         headers=_bearer(admin),
     )
+    from app.services.staff_excel.schema import SHEET_SHIFT_EDIT
+
     assert res.status_code == 200
     wb = load_workbook(BytesIO(res.content))
     assert SHEET_STAFF in wb.sheetnames
-    assert SHEET_SHIFT in wb.sheetnames
+    assert SHEET_SHIFT_EDIT in wb.sheetnames
     assert wb[SHEET_STAFF].max_row == 1
-    assert wb[SHEET_SHIFT].max_row == 1
+    assert wb[SHEET_SHIFT_EDIT].max_row == 1
 
 
 # 18) magic word: case-insensitive
@@ -1475,9 +1479,9 @@ def _build_workbook_with_overrides(
 
 @pytest.mark.asyncio
 async def test_export_writes_overrides_sheet(client, db) -> None:
-    """StaffWeeklyOverride を export すると勤務例外シートに書き出される."""
+    """StaffWeeklyOverride を export すると勤務例外（編集用）シートに 1 週 1 行で書き出される."""
     from app.models import StaffWeeklyOverride
-    from app.services.staff_excel.schema import OVERRIDE_COL_INDEX, SHEET_OVERRIDE
+    from app.services.staff_excel.schema import OVERRIDE_EDIT_COL_INDEX, SHEET_OVERRIDE_EDIT
 
     admin = await _make_user(db, "ex-ov@example.com", "admin")
     s = await _make_staff(db, code="S-OV-EX", name="例外持ち")
@@ -1496,17 +1500,16 @@ async def test_export_writes_overrides_sheet(client, db) -> None:
     res = await client.get("/api/v1/staff/import-export/export", headers=_bearer(admin))
     assert res.status_code == 200
     wb = load_workbook(BytesIO(res.content))
-    assert SHEET_OVERRIDE in wb.sheetnames
-    ws_o = wb[SHEET_OVERRIDE]
-    assert ws_o.max_row == 2  # header + 1 data row
-    val_year = ws_o.cell(row=2, column=OVERRIDE_COL_INDEX["iso_year"] + 1).value
-    val_week = ws_o.cell(row=2, column=OVERRIDE_COL_INDEX["iso_week"] + 1).value
-    val_wd = ws_o.cell(row=2, column=OVERRIDE_COL_INDEX["weekday"] + 1).value
-    val_type = ws_o.cell(row=2, column=OVERRIDE_COL_INDEX["override_type"] + 1).value
+    assert SHEET_OVERRIDE_EDIT in wb.sheetnames
+    ws_o = wb[SHEET_OVERRIDE_EDIT]
+    assert ws_o.max_row == 2  # header + 1 (staff, week) row
+    val_year = ws_o.cell(row=2, column=OVERRIDE_EDIT_COL_INDEX["iso_year"] + 1).value
+    val_week = ws_o.cell(row=2, column=OVERRIDE_EDIT_COL_INDEX["iso_week"] + 1).value
+    # 水曜セル = "休"
+    val_wed = ws_o.cell(row=2, column=OVERRIDE_EDIT_COL_INDEX["wed"] + 1).value
     assert val_year == 2026
     assert val_week == 20
-    assert val_wd == "水"
-    assert val_type == "off"
+    assert val_wed == "休"
 
 
 @pytest.mark.asyncio
@@ -1912,3 +1915,438 @@ async def test_import_override_combined_delete_update_new_in_single_file(client,
     assert upd.start_time == time(10, 0)
     assert upd.end_time == time(18, 0)
     assert upd.reason == "更新後"
+
+
+# ---------------------------------------------------------------------------
+# Phase G-56: 「勤務シフト（編集用）」/「勤務例外（編集用）」 1 スタッフ 1 行
+# ---------------------------------------------------------------------------
+
+
+def _shift_edit_headers() -> list[str]:
+    from app.services.staff_excel.schema import SHIFT_EDIT_COLUMNS
+
+    return [str(c["header"]) for c in SHIFT_EDIT_COLUMNS]
+
+
+def _override_edit_headers() -> list[str]:
+    from app.services.staff_excel.schema import OVERRIDE_EDIT_COLUMNS
+
+    return [str(c["header"]) for c in OVERRIDE_EDIT_COLUMNS]
+
+
+def _build_edit_workbook_bytes(
+    *,
+    staff_rows: list[dict] | None = None,
+    shift_edit_rows: list[dict] | None = None,
+    override_edit_rows: list[dict] | None = None,
+) -> bytes:
+    """Phase G-56: 編集用シート (1 スタッフ 1 行) を持つワークブックを作る.
+
+    各 dict は { col_key: value } を持つ.
+    """
+    from app.services.staff_excel.schema import (
+        OVERRIDE_EDIT_COL_INDEX,
+        SHEET_OVERRIDE_EDIT,
+        SHEET_SHIFT_EDIT,
+        SHIFT_EDIT_COL_INDEX,
+    )
+
+    wb = Workbook()
+    ws_s = wb.active
+    ws_s.title = SHEET_STAFF
+    for col_idx, header in enumerate(_staff_headers(), start=1):
+        ws_s.cell(row=1, column=col_idx, value=header)
+    for r_idx, row_dict in enumerate(staff_rows or [], start=2):
+        for col_key, idx in STAFF_COL_INDEX.items():
+            v = row_dict.get(col_key)
+            if v is not None:
+                ws_s.cell(row=r_idx, column=idx + 1, value=v)
+
+    ws_f = wb.create_sheet(title=SHEET_SHIFT_EDIT)
+    for col_idx, header in enumerate(_shift_edit_headers(), start=1):
+        ws_f.cell(row=1, column=col_idx, value=header)
+    for r_idx, row_dict in enumerate(shift_edit_rows or [], start=2):
+        for col_key, idx in SHIFT_EDIT_COL_INDEX.items():
+            v = row_dict.get(col_key)
+            if v is not None:
+                ws_f.cell(row=r_idx, column=idx + 1, value=v)
+
+    ws_o = wb.create_sheet(title=SHEET_OVERRIDE_EDIT)
+    for col_idx, header in enumerate(_override_edit_headers(), start=1):
+        ws_o.cell(row=1, column=col_idx, value=header)
+    for r_idx, row_dict in enumerate(override_edit_rows or [], start=2):
+        for col_key, idx in OVERRIDE_EDIT_COL_INDEX.items():
+            v = row_dict.get(col_key)
+            if v is not None:
+                ws_o.cell(row=r_idx, column=idx + 1, value=v)
+
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_export_writes_shift_edit_one_row_per_staff(client, db) -> None:
+    """export: 1 スタッフ = シフト編集用シートの 1 行. 各曜日が開始/終了列に展開される."""
+    from app.services.staff_excel.schema import SHEET_SHIFT_EDIT, SHIFT_EDIT_COL_INDEX
+
+    admin = await _make_user(db, "g56-ex-shift@example.com", "admin")
+    s = await _make_staff(db, code="S-G56-SH", name="編集シフト")
+    # 月: 出勤 9-18, 火: 休 (is_on=False)
+    await _make_shift(
+        db, staff_id=s.id, weekday=0, is_on=True, start_time=time(9, 0), end_time=time(18, 0)
+    )
+    await _make_shift(db, staff_id=s.id, weekday=1, is_on=False, start_time=None, end_time=None)
+
+    res = await client.get("/api/v1/staff/import-export/export", headers=_bearer(admin))
+    assert res.status_code == 200, res.text
+    wb = load_workbook(BytesIO(res.content))
+    assert SHEET_SHIFT_EDIT in wb.sheetnames
+    ws = wb[SHEET_SHIFT_EDIT]
+    assert ws.max_row == 2  # header + 1 staff row
+    assert ws.cell(row=2, column=SHIFT_EDIT_COL_INDEX["staff_code"] + 1).value == "S-G56-SH"
+    assert ws.cell(row=2, column=SHIFT_EDIT_COL_INDEX["mon_start"] + 1).value == "09:00"
+    assert ws.cell(row=2, column=SHIFT_EDIT_COL_INDEX["mon_end"] + 1).value == "18:00"
+    # 火 (休) は空欄
+    assert ws.cell(row=2, column=SHIFT_EDIT_COL_INDEX["tue_start"] + 1).value is None
+    assert ws.cell(row=2, column=SHIFT_EDIT_COL_INDEX["tue_end"] + 1).value is None
+
+
+@pytest.mark.asyncio
+async def test_shift_edit_roundtrip_no_changes(client, db) -> None:
+    """export → 無編集 import で全 noop (round-trip 安定)."""
+    admin = await _make_user(db, "g56-rt-shift@example.com", "admin")
+    s = await _make_staff(db, code="S-G56-RT", name="往復")
+    sid = s.id
+    for wd in range(7):
+        if wd < 5:
+            await _make_shift(
+                db,
+                staff_id=sid,
+                weekday=wd,
+                is_on=True,
+                start_time=time(9, 0),
+                end_time=time(18, 0),
+            )
+        else:
+            await _make_shift(
+                db, staff_id=sid, weekday=wd, is_on=False, start_time=None, end_time=None
+            )
+
+    export_res = await client.get("/api/v1/staff/import-export/export", headers=_bearer(admin))
+    files = {
+        "file": (
+            "export.xlsx",
+            export_res.content,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
+    import_res = await client.post(
+        "/api/v1/staff/import-export/import?dry_run=false",
+        headers=_bearer(admin),
+        files=files,
+    )
+    assert import_res.status_code == 200, import_res.text
+    body = import_res.json()
+    assert body["summary"]["shift_error"] == 0
+    assert body["summary"]["shift_new"] == 0
+    assert body["summary"]["shift_update"] == 0
+    assert body["summary"]["shift_delete"] == 0
+    # 全て noop
+    assert all(r["operation"] == "noop" for r in body["shift_rows"])
+
+
+@pytest.mark.asyncio
+async def test_shift_edit_per_staff_replace_turns_weekday_off(client, db) -> None:
+    """per-staff replace: ある曜日を空欄にすると is_on=False (休) に置換される."""
+    admin = await _make_user(db, "g56-off@example.com", "admin")
+    s = await _make_staff(db, code="S-G56-OFF", name="休化")
+    sid = s.id
+    await _make_shift(
+        db, staff_id=sid, weekday=0, is_on=True, start_time=time(9, 0), end_time=time(18, 0)
+    )
+
+    # 月の開始/終了を空欄にする (= 休)
+    content = _build_edit_workbook_bytes(
+        shift_edit_rows=[
+            {
+                "staff_id": str(sid),
+                "staff_code": "S-G56-OFF",
+                # mon_start / mon_end 空欄 → is_on=False
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["transaction_applied"] is True
+    db.expire_all()
+    sh = await db.scalar(
+        select(StaffShift).where(StaffShift.staff_id == sid, StaffShift.weekday == 0)
+    )
+    assert sh is not None
+    assert sh.is_on is False
+    assert sh.start_time is None
+
+
+@pytest.mark.asyncio
+async def test_shift_edit_does_not_touch_other_staff(client, db) -> None:
+    """per-staff replace は対象 staff の shift のみ. 行に出ない staff は不変."""
+    admin = await _make_user(db, "g56-other@example.com", "admin")
+    s1 = await _make_staff(db, code="S-G56-A", name="A")
+    s2 = await _make_staff(db, code="S-G56-B", name="B")
+    s2_id = s2.id
+    await _make_shift(
+        db, staff_id=s2_id, weekday=0, is_on=True, start_time=time(8, 0), end_time=time(17, 0)
+    )
+
+    content = _build_edit_workbook_bytes(
+        shift_edit_rows=[
+            {
+                "staff_id": str(s1.id),
+                "staff_code": "S-G56-A",
+                "mon_start": "09:00",
+                "mon_end": "18:00",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    db.expire_all()
+    # s2 の shift は不変
+    sh2 = await db.scalar(
+        select(StaffShift).where(StaffShift.staff_id == s2_id, StaffShift.weekday == 0)
+    )
+    assert sh2 is not None
+    assert sh2.start_time == time(8, 0)
+
+
+@pytest.mark.asyncio
+async def test_shift_edit_new_staff_via_code_link(client, db) -> None:
+    """新規 staff + 編集用シフト行を staff_code リンクで登録."""
+    admin = await _make_user(db, "g56-newlink@example.com", "admin")
+    content = _build_edit_workbook_bytes(
+        staff_rows=[
+            {
+                "staff_code": "S-G56-NEW",
+                "name": "新規",
+                "status": "active",
+                "role": "staff",
+            }
+        ],
+        shift_edit_rows=[
+            {
+                "staff_code": "S-G56-NEW",
+                "mon_start": "09:00",
+                "mon_end": "18:00",
+                "tue_start": "10:00",
+                "tue_end": "19:00",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["transaction_applied"] is True
+    assert body["summary"]["staff_new"] == 1
+    db.expire_all()
+    new_staff = await db.scalar(select(Staff).where(Staff.code == "S-G56-NEW"))
+    assert new_staff is not None
+    shifts = (await db.scalars(select(StaffShift).where(StaffShift.staff_id == new_staff.id))).all()
+    # 7 曜日分 (月火 出勤, 残り 休) が登録される
+    assert len(shifts) == 7
+    by_wd = {sh.weekday: sh for sh in shifts}
+    assert by_wd[0].is_on is True and by_wd[0].start_time == time(9, 0)
+    assert by_wd[2].is_on is False
+
+
+@pytest.mark.asyncio
+async def test_override_edit_export_empty_sheet(client, db) -> None:
+    """override が 0 件でも勤務例外（編集用）シートはヘッダーのみで出力される."""
+    from app.services.staff_excel.schema import SHEET_OVERRIDE_EDIT
+
+    admin = await _make_user(db, "g56-ov-empty@example.com", "admin")
+    await _make_staff(db, code="S-G56-OVE", name="例外なし")
+    res = await client.get("/api/v1/staff/import-export/export", headers=_bearer(admin))
+    assert res.status_code == 200
+    wb = load_workbook(BytesIO(res.content))
+    assert SHEET_OVERRIDE_EDIT in wb.sheetnames
+    assert wb[SHEET_OVERRIDE_EDIT].max_row == 1  # header only
+
+
+@pytest.mark.asyncio
+async def test_override_edit_roundtrip(client, db) -> None:
+    """override export → 無編集 import で round-trip 安定 (人工データ)."""
+    from app.models import StaffWeeklyOverride
+
+    admin = await _make_user(db, "g56-ov-rt@example.com", "admin")
+    s = await _make_staff(db, code="S-G56-OVRT", name="例外往復")
+    sid = s.id
+    db.add(
+        StaffWeeklyOverride(
+            staff_id=sid, iso_year=2026, iso_week=20, weekday=2, override_type="off", reason="私用"
+        )
+    )
+    db.add(
+        StaffWeeklyOverride(
+            staff_id=sid,
+            iso_year=2026,
+            iso_week=20,
+            weekday=4,
+            override_type="custom_time",
+            start_time=time(10, 0),
+            end_time=time(16, 0),
+            reason="私用",
+        )
+    )
+    await db.commit()
+
+    export_res = await client.get("/api/v1/staff/import-export/export", headers=_bearer(admin))
+    files = {
+        "file": (
+            "export.xlsx",
+            export_res.content,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
+    import_res = await client.post(
+        "/api/v1/staff/import-export/import?dry_run=false",
+        headers=_bearer(admin),
+        files=files,
+    )
+    assert import_res.status_code == 200, import_res.text
+    body = import_res.json()
+    assert body["summary"]["override_error"] == 0
+    assert body["summary"]["override_new"] == 0
+    assert body["summary"]["override_update"] == 0
+    assert body["summary"]["override_delete"] == 0
+    db.expire_all()
+    ovs = (
+        await db.scalars(select(StaffWeeklyOverride).where(StaffWeeklyOverride.staff_id == sid))
+    ).all()
+    assert len(ovs) == 2
+
+
+@pytest.mark.asyncio
+async def test_override_edit_per_week_replace(client, db) -> None:
+    """per-(staff, week) replace: 空欄曜日=削除, 休=off, HH:MM-HH:MM=custom_time."""
+    from app.models import StaffWeeklyOverride
+
+    admin = await _make_user(db, "g56-ov-rep@example.com", "admin")
+    s = await _make_staff(db, code="S-G56-OVREP", name="週置換")
+    sid = s.id
+    # 既存: 月=off, 火=custom. import で 月削除, 火更新, 水追加.
+    db.add(
+        StaffWeeklyOverride(
+            staff_id=sid, iso_year=2026, iso_week=25, weekday=0, override_type="off"
+        )
+    )
+    db.add(
+        StaffWeeklyOverride(
+            staff_id=sid,
+            iso_year=2026,
+            iso_week=25,
+            weekday=1,
+            override_type="custom_time",
+            start_time=time(9, 0),
+            end_time=time(17, 0),
+        )
+    )
+    await db.commit()
+
+    content = _build_edit_workbook_bytes(
+        override_edit_rows=[
+            {
+                "staff_id": str(sid),
+                "staff_code": "S-G56-OVREP",
+                "iso_year": 2026,
+                "iso_week": 25,
+                # mon 空欄 → 削除
+                "tue": "10:00-18:00",  # 火 更新
+                "wed": "休",  # 水 追加
+                "reason": "調整",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["transaction_applied"] is True
+    assert body["summary"]["override_delete"] == 1
+    assert body["summary"]["override_update"] == 1
+    assert body["summary"]["override_new"] == 1
+    db.expire_all()
+    ovs = (
+        await db.scalars(
+            select(StaffWeeklyOverride)
+            .where(StaffWeeklyOverride.staff_id == sid)
+            .order_by(StaffWeeklyOverride.weekday)
+        )
+    ).all()
+    assert [ov.weekday for ov in ovs] == [1, 2]
+    tue = next(ov for ov in ovs if ov.weekday == 1)
+    assert tue.override_type == "custom_time"
+    assert tue.start_time == time(10, 0)
+    wed = next(ov for ov in ovs if ov.weekday == 2)
+    assert wed.override_type == "off"
+
+
+@pytest.mark.asyncio
+async def test_override_edit_duplicate_week_errors(client, db) -> None:
+    """同一 (staff, iso_year, iso_week) が複数行 → 2 行目が error."""
+    admin = await _make_user(db, "g56-ov-dup@example.com", "admin")
+    s = await _make_staff(db, code="S-G56-OVDUP", name="週重複")
+    sid = s.id
+    content = _build_edit_workbook_bytes(
+        override_edit_rows=[
+            {
+                "staff_id": str(sid),
+                "staff_code": "S-G56-OVDUP",
+                "iso_year": 2026,
+                "iso_week": 26,
+                "mon": "休",
+            },
+            {
+                "staff_id": str(sid),
+                "staff_code": "S-G56-OVDUP",
+                "iso_year": 2026,
+                "iso_week": 26,
+                "tue": "休",
+            },
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=True)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["summary"]["override_error"] == 1
+
+
+@pytest.mark.asyncio
+async def test_legacy_shift_sheet_fallback(client, db) -> None:
+    """旧形式 (per-row 勤務シフトシート) でもクラッシュせず処理される (後方互換)."""
+    admin = await _make_user(db, "g56-legacy@example.com", "admin")
+    staff = await _make_staff(db, code="S-G56-LEG", name="旧形式")
+    staff_id = staff.id
+    # _build_workbook_bytes は旧 SHEET_SHIFT を作る.
+    content = _build_workbook_bytes(
+        shift_rows=[
+            {
+                "staff_id": str(staff_id),
+                "weekday": "月",
+                "is_on": "TRUE",
+                "start_time": "09:00",
+                "end_time": "18:00",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["transaction_applied"] is True
+    assert body["summary"]["shift_new"] == 1
+    db.expire_all()
+    sh = await db.scalar(
+        select(StaffShift).where(StaffShift.staff_id == staff_id, StaffShift.weekday == 0)
+    )
+    assert sh is not None
+    assert sh.start_time == time(9, 0)

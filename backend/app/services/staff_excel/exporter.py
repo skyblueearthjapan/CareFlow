@@ -28,16 +28,18 @@ from app.services.staff_excel.schema import (
     HEADER_FILL_COLOR,
     HEADER_FONT_COLOR,
     ID_COLUMN_FILL_COLOR,
-    OVERRIDE_COL_INDEX,
-    OVERRIDE_COLUMNS,
-    SHEET_OVERRIDE,
-    SHEET_SHIFT,
+    OVERRIDE_EDIT_COL_INDEX,
+    OVERRIDE_EDIT_COLUMNS,
+    OVERRIDE_EDIT_WEEKDAY_KEY_TO_INT,
+    SHEET_OVERRIDE_EDIT,
+    SHEET_SHIFT_EDIT,
     SHEET_STAFF,
-    SHIFT_COL_INDEX,
-    SHIFT_COLUMNS,
+    SHIFT_EDIT_COL_INDEX,
+    SHIFT_EDIT_COLUMNS,
+    SHIFT_EDIT_WEEKDAY_KEY_TO_INT,
     STAFF_COL_INDEX,
     STAFF_COLUMNS,
-    WEEKDAY_INT_TO_LABEL,
+    format_override_cell,
 )
 
 # ---------------------------------------------------------------------------
@@ -158,51 +160,73 @@ def _hhmm(t: time | None) -> str | None:
     return f"{t.hour:02d}:{t.minute:02d}"
 
 
-def _write_shift_row(
+def _write_shift_edit_row(
     ws: Worksheet,
     row_idx: int,
-    shift: StaffShift,
-    *,
-    staff_lookup: dict[UUID, Staff],
+    staff: Staff,
+    shifts_for_staff: list[StaffShift],
 ) -> None:
-    s = staff_lookup.get(shift.staff_id)
+    """Phase G-56: 1 スタッフ分の週次シフトを 1 行に書き込む (編集用シート).
+
+    各曜日について開始/終了を書く. is_on=False (休) もしくは shift 未登録の曜日は空欄.
+    """
+    by_weekday: dict[int, StaffShift] = {sh.weekday: sh for sh in shifts_for_staff}
     values: dict[str, object | None] = {
-        "staff_id": str(shift.staff_id),
-        "staff_code": s.code if s else None,
-        "staff_name": s.name if s else None,
-        "weekday": WEEKDAY_INT_TO_LABEL.get(shift.weekday),
-        "is_on": "TRUE" if shift.is_on else "FALSE",
-        "start_time": _hhmm(shift.start_time),
-        "end_time": _hhmm(shift.end_time),
+        "staff_id": str(staff.id),
+        "staff_code": staff.code,
+        "staff_name": staff.name,
         "delete_flag": None,
     }
-    for col_key, col_idx in SHIFT_COL_INDEX.items():
+    for wd_key, wd_int in SHIFT_EDIT_WEEKDAY_KEY_TO_INT.items():
+        sh = by_weekday.get(wd_int)
+        if sh is not None and sh.is_on and sh.start_time is not None and sh.end_time is not None:
+            values[f"{wd_key}_start"] = _hhmm(sh.start_time)
+            values[f"{wd_key}_end"] = _hhmm(sh.end_time)
+        else:
+            # 休 (is_on=False) もしくは shift 未登録 → 空欄.
+            values[f"{wd_key}_start"] = None
+            values[f"{wd_key}_end"] = None
+    for col_key, col_idx in SHIFT_EDIT_COL_INDEX.items():
         ws.cell(row=row_idx, column=col_idx + 1, value=values.get(col_key))
 
 
-def _write_override_row(
+def _write_override_edit_row(
     ws: Worksheet,
     row_idx: int,
-    override: StaffWeeklyOverride,
-    *,
-    staff_lookup: dict[UUID, Staff],
+    staff: Staff,
+    iso_year: int,
+    iso_week: int,
+    overrides_for_week: list[StaffWeeklyOverride],
 ) -> None:
-    """Phase E-7 (gap P1): StaffWeeklyOverride を 1 行書き込む."""
-    s = staff_lookup.get(override.staff_id)
+    """Phase G-56: 1 (staff, iso_year, iso_week) 分の例外を 1 行に書き込む.
+
+    各曜日セルに "休" / "HH:MM-HH:MM" を書く. 例外なしの曜日は空欄. 理由は代表値
+    (週内で最初に見つかった非空の reason).
+    """
+    by_weekday: dict[int, StaffWeeklyOverride] = {ov.weekday: ov for ov in overrides_for_week}
+    reason: str | None = None
+    for ov in overrides_for_week:
+        if ov.reason:
+            reason = ov.reason
+            break
     values: dict[str, object | None] = {
-        "staff_id": str(override.staff_id),
-        "staff_code": s.code if s else None,
-        "staff_name": s.name if s else None,
-        "iso_year": override.iso_year,
-        "iso_week": override.iso_week,
-        "weekday": WEEKDAY_INT_TO_LABEL.get(override.weekday),
-        "override_type": override.override_type,
-        "start_time": _hhmm(override.start_time),
-        "end_time": _hhmm(override.end_time),
-        "reason": override.reason,
+        "staff_id": str(staff.id),
+        "staff_code": staff.code,
+        "staff_name": staff.name,
+        "iso_year": iso_year,
+        "iso_week": iso_week,
+        "reason": reason,
         "delete_flag": None,
     }
-    for col_key, col_idx in OVERRIDE_COL_INDEX.items():
+    for wd_key, wd_int in OVERRIDE_EDIT_WEEKDAY_KEY_TO_INT.items():
+        ov = by_weekday.get(wd_int)
+        if ov is None:
+            values[wd_key] = None
+        else:
+            values[wd_key] = format_override_cell(
+                ov.override_type, _hhmm(ov.start_time), _hhmm(ov.end_time)
+            )
+    for col_key, col_idx in OVERRIDE_EDIT_COL_INDEX.items():
         ws.cell(row=row_idx, column=col_idx + 1, value=values.get(col_key))
 
 
@@ -253,26 +277,47 @@ def build_workbook(
         )
     _shade_id_column_data_rows(ws_s, "staff_id", STAFF_COLUMNS, data_row_count=len(staff_list))
 
-    # 勤務シフトシート
-    ws_f: Worksheet = wb.create_sheet(title=SHEET_SHIFT)
-    _set_header_row(ws_f, SHIFT_COLUMNS)
-    _attach_dropdowns(ws_f, SHIFT_COLUMNS)
-
     staff_lookup: dict[UUID, Staff] = {s.id: s for s in staff_list}
-    for i, shift in enumerate(shifts, start=2):
-        _write_shift_row(ws_f, i, shift, staff_lookup=staff_lookup)
-    _shade_id_column_data_rows(ws_f, "staff_id", SHIFT_COLUMNS, data_row_count=len(shifts))
 
-    # Phase E-7 (gap P1): 勤務例外シート (StaffWeeklyOverride).
-    ws_o: Worksheet = wb.create_sheet(title=SHEET_OVERRIDE)
-    _set_header_row(ws_o, OVERRIDE_COLUMNS)
-    _attach_dropdowns(ws_o, OVERRIDE_COLUMNS)
+    # 勤務シフト（編集用）シート — Phase G-56: 1 スタッフ 1 行.
+    ws_f: Worksheet = wb.create_sheet(title=SHEET_SHIFT_EDIT)
+    _set_header_row(ws_f, SHIFT_EDIT_COLUMNS)
+    _attach_dropdowns(ws_f, SHIFT_EDIT_COLUMNS)
+
+    # staff_id → その staff の shift list. 全スタッフを 1 行ずつ出力する (shift 無しの
+    # staff も行を出す = 週次シフトの正本).
+    shifts_by_staff: dict[UUID, list[StaffShift]] = {}
+    for sh in shifts:
+        shifts_by_staff.setdefault(sh.staff_id, []).append(sh)
+    for i, staff in enumerate(staff_list, start=2):
+        _write_shift_edit_row(ws_f, i, staff, shifts_by_staff.get(staff.id, []))
+    _shade_id_column_data_rows(ws_f, "staff_id", SHIFT_EDIT_COLUMNS, data_row_count=len(staff_list))
+
+    # 勤務例外（編集用）シート — Phase G-56: 1 スタッフ × 1 週 = 1 行.
+    ws_o: Worksheet = wb.create_sheet(title=SHEET_OVERRIDE_EDIT)
+    _set_header_row(ws_o, OVERRIDE_EDIT_COLUMNS)
+    _attach_dropdowns(ws_o, OVERRIDE_EDIT_COLUMNS)
     override_list = list(overrides or [])
-    for i, ov in enumerate(override_list, start=2):
-        _write_override_row(ws_o, i, ov, staff_lookup=staff_lookup)
-    _shade_id_column_data_rows(
-        ws_o, "staff_id", OVERRIDE_COLUMNS, data_row_count=len(override_list)
+    # (staff_id, iso_year, iso_week) でグルーピング. round-trip 安定のため
+    # staff_list 順 → (year, week) 昇順で並べる.
+    grouped: dict[tuple[UUID, int, int], list[StaffWeeklyOverride]] = {}
+    for ov in override_list:
+        grouped.setdefault((ov.staff_id, ov.iso_year, ov.iso_week), []).append(ov)
+    staff_order: dict[UUID, int] = {s.id: idx for idx, s in enumerate(staff_list)}
+    ordered_keys = sorted(
+        grouped.keys(),
+        key=lambda k: (staff_order.get(k[0], len(staff_list)), k[1], k[2]),
     )
+    row_idx = 2
+    for staff_id, iso_year, iso_week in ordered_keys:
+        staff = staff_lookup.get(staff_id)
+        if staff is None:
+            continue
+        _write_override_edit_row(
+            ws_o, row_idx, staff, iso_year, iso_week, grouped[(staff_id, iso_year, iso_week)]
+        )
+        row_idx += 1
+    _shade_id_column_data_rows(ws_o, "staff_id", OVERRIDE_EDIT_COLUMNS, data_row_count=row_idx - 2)
 
     return wb
 
