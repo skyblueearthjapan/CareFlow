@@ -31,6 +31,8 @@ from app.services.staff_excel.schema import (
     OVERRIDE_EDIT_COL_INDEX,
     OVERRIDE_EDIT_COLUMNS,
     OVERRIDE_EDIT_WEEKDAY_KEY_TO_INT,
+    SAMPLE_ROW_FILL_COLOR,
+    SAMPLE_ROW_MARKER,
     SHEET_OVERRIDE_EDIT,
     SHEET_SHIFT_EDIT,
     SHEET_STAFF,
@@ -91,12 +93,13 @@ def _shade_id_column_data_rows(
     columns: list[dict[str, object]],
     *,
     data_row_count: int,
+    start_row: int = 2,
 ) -> None:
     """staff_id 列の **データ行のみ** を薄いグレー背景でハイライト.
 
     無条件で固定行数 (例: 1000) を塗ると ``ws.max_row`` が 1000 を返してしまい、
     テンプレート判定 (空 = max_row==1) ができなくなる。データ行が 0 件のときは
-    何もしない。
+    何もしない。``start_row`` は記入例行などの先頭固定行を除外するために使う.
     """
     if data_row_count <= 0:
         return
@@ -109,7 +112,7 @@ def _shade_id_column_data_rows(
         return
     fill = PatternFill("solid", fgColor=ID_COLUMN_FILL_COLOR)
     col_letter = get_column_letter(target_index)
-    for row in range(2, 2 + data_row_count):
+    for row in range(start_row, start_row + data_row_count):
         ws[f"{col_letter}{row}"].fill = fill
 
 
@@ -230,6 +233,32 @@ def _write_override_edit_row(
         ws.cell(row=row_idx, column=col_idx + 1, value=values.get(col_key))
 
 
+def _write_override_sample_row(ws: Worksheet, row_idx: int) -> None:
+    """Phase G-58.1: 勤務例外（編集用）シートに「記入例 (サンプル)」行を書く.
+
+    空シートで記入方法が分からない問題への対策。staff_code を ``SAMPLE_ROW_MARKER``
+    (「（記入例）」) にすることで importer / replace_all が is_sample_row 判定で
+    **完全に無視** する (DB 変更ゼロ・エラー無し). 行全体をグレー背景 + 斜体にして
+    「編集対象でない」雰囲気を出す.
+    """
+    values: dict[str, object | None] = {
+        "staff_id": None,
+        "staff_code": SAMPLE_ROW_MARKER,
+        "staff_name": f"↓この行は取り込まれません{SAMPLE_ROW_MARKER}",
+        "iso_year": 2026,
+        "iso_week": 23,
+        "mon": "休",
+        "tue": "10:00-15:00",
+        "reason": "（例）火曜は通院のため時間変更、月曜は休み",
+    }
+    sample_font = Font(italic=True, color="FF808080")
+    sample_fill = PatternFill("solid", fgColor=SAMPLE_ROW_FILL_COLOR)
+    for col_key, col_idx in OVERRIDE_EDIT_COL_INDEX.items():
+        cell = ws.cell(row=row_idx, column=col_idx + 1, value=values.get(col_key))
+        cell.font = sample_font
+        cell.fill = sample_fill
+
+
 # ---------------------------------------------------------------------------
 # public entrypoints
 # ---------------------------------------------------------------------------
@@ -297,6 +326,9 @@ def build_workbook(
     ws_o: Worksheet = wb.create_sheet(title=SHEET_OVERRIDE_EDIT)
     _set_header_row(ws_o, OVERRIDE_EDIT_COLUMNS)
     _attach_dropdowns(ws_o, OVERRIDE_EDIT_COLUMNS)
+    # Phase G-58.1: ヘッダー直下 (row 2) に記入例 (サンプル) 行を常に書く.
+    # 実データの有無に関わらず先頭に置き、import 時は is_sample_row で skip される.
+    _write_override_sample_row(ws_o, 2)
     override_list = list(overrides or [])
     # (staff_id, iso_year, iso_week) でグルーピング. round-trip 安定のため
     # staff_list 順 → (year, week) 昇順で並べる.
@@ -308,7 +340,8 @@ def build_workbook(
         grouped.keys(),
         key=lambda k: (staff_order.get(k[0], len(staff_list)), k[1], k[2]),
     )
-    row_idx = 2
+    # 記入例行が row 2 なので実データは row 3 から.
+    row_idx = 3
     for staff_id, iso_year, iso_week in ordered_keys:
         staff = staff_lookup.get(staff_id)
         if staff is None:
@@ -317,7 +350,10 @@ def build_workbook(
             ws_o, row_idx, staff, iso_year, iso_week, grouped[(staff_id, iso_year, iso_week)]
         )
         row_idx += 1
-    _shade_id_column_data_rows(ws_o, "staff_id", OVERRIDE_EDIT_COLUMNS, data_row_count=row_idx - 2)
+    # データ行のグレー装飾は row 3 以降のみ (記入例行は独自装飾済み).
+    _shade_id_column_data_rows(
+        ws_o, "staff_id", OVERRIDE_EDIT_COLUMNS, data_row_count=row_idx - 3, start_row=3
+    )
 
     return wb
 

@@ -64,6 +64,7 @@ from app.services.staff_excel.schema import (
     WEEKDAY_LABEL_TO_INT,
     is_magic_clear,
     is_magic_delete,
+    is_sample_row,
     parse_override_cell,
 )
 
@@ -286,11 +287,12 @@ def _parse_staff_row(
     new_code_to_uuid: dict[str, UUID],
     resurrect_code_to_uuid: dict[str, UUID],
     existing_secondary_offices: dict[UUID, list[UUID]] | None = None,
-) -> tuple[StaffExcelImportRow, dict[str, Any] | None]:
+) -> tuple[StaffExcelImportRow | None, dict[str, Any] | None]:
     """1 行を差分行に変換する.
 
     戻り値の第 2 要素は apply 時に使う「DB 用 dict」. operation が "error" / "noop" /
-    "delete" のときは None or 部分的に意味のあるもの.
+    "delete" のときは None or 部分的に意味のあるもの. 記入例 (サンプル) 行のときは
+    第 1 要素も None を返して完全に skip する.
     """
     cells: dict[str, Any] = {}
     for col_key, idx in STAFF_COL_INDEX.items():
@@ -300,6 +302,10 @@ def _parse_staff_row(
     raw_id = cells["staff_id"]
     raw_code = cells["staff_code"]
     raw_delete = cells["delete_flag"]
+
+    # Phase G-58.1: 記入例 (サンプル) 行は完全に無視する (op も diff 行も出さない).
+    if is_sample_row(raw_code, raw_id):
+        return None, None
 
     # staff_id がある場合は UUID パース.
     try:
@@ -1634,6 +1640,10 @@ def _parse_shift_edit_row(
     }
     raw_delete = cells.get("delete_flag")
 
+    # Phase G-58.1: 記入例 (サンプル) 行は完全に無視する.
+    if is_sample_row(cells.get("staff_code"), cells.get("staff_id")):
+        return [], []
+
     staff_id, staff_code_for_view, _staff_obj, err = _resolve_staff_for_edit_row(
         cells.get("staff_id"),
         cells.get("staff_code"),
@@ -1855,6 +1865,12 @@ def _parse_override_edit_row(
         for col_key, idx in OVERRIDE_EDIT_COL_INDEX.items()
     }
     raw_delete = cells.get("delete_flag")
+
+    # Phase G-58.1: 記入例 (サンプル) 行は完全に無視する (op を出さない・error にも
+    # noop にもしない). マーカー一致時のみ skip = ユーザーが実 staff_code に直せば
+    # 通常通り取り込まれる.
+    if is_sample_row(cells.get("staff_code"), cells.get("staff_id")):
+        return [], []
 
     staff_id, staff_code_for_view, _staff_obj, err = _resolve_staff_for_edit_row(
         cells.get("staff_id"),
@@ -2216,6 +2232,9 @@ async def parse_and_diff(
             resurrect_code_to_uuid=resurrect_code_to_uuid,
             existing_secondary_offices=existing_secondary_offices,
         )
+        if diff_row is None:
+            # 記入例 (サンプル) 行 → 完全に skip.
+            continue
         staff_rows.append(diff_row)
         if op is not None:
             staff_ops.append(op)

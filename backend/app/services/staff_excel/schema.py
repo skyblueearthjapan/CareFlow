@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import unicodedata
 from typing import Final
 
 # ---------------------------------------------------------------------------
@@ -38,6 +39,45 @@ def is_magic_delete(value: object) -> bool:
 
 def is_magic_clear(value: object) -> bool:
     return isinstance(value, str) and value.strip().upper() == MAGIC_CLEAR
+
+
+# ---------------------------------------------------------------------------
+# 記入例 (サンプル) 行マーカー — Phase G-58.1
+# ---------------------------------------------------------------------------
+#
+# 空シートで記入方法が分からない問題への対策として、exporter が編集用シートの
+# 先頭に「記入例 (サンプル)」行を書き出す。staff_code / staff_id がこのマーカーに
+# 一致する行は importer / replace_all で **完全に無視** する (op を出さない・error
+# にもしない・noop 計上もしない)。ユーザーがこの行を編集して実 staff_code に変えた
+# 場合のみ通常通り取り込まれる (マーカー一致時のみ skip).
+
+SAMPLE_ROW_MARKER: Final = "（記入例）"
+
+
+def _normalize_marker(value: object) -> str | None:
+    """セル値を NFKC 正規化した str として返す (空は None).
+
+    全角/半角の揺れ (例: 全角括弧 vs 半角括弧) を吸収するため NFKC で正規化する.
+    """
+    if not isinstance(value, str):
+        return None
+    s = value.strip()
+    if not s:
+        return None
+    return unicodedata.normalize("NFKC", s)
+
+
+def is_sample_row(staff_code: object, staff_id: object) -> bool:
+    """記入例 (サンプル) 行かどうかを判定する.
+
+    staff_code か staff_id のいずれかが ``SAMPLE_ROW_MARKER`` (「（記入例）」) に
+    NFKC 正規化後一致したら True. 実データはこのマーカーを含まないため安全.
+    """
+    target = _normalize_marker(SAMPLE_ROW_MARKER)
+    for raw in (staff_code, staff_id):
+        if _normalize_marker(raw) == target:
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -360,3 +400,4 @@ def _normalize_hhmm(s: str) -> str:
 HEADER_FILL_COLOR: Final = "FF4472C4"  # 濃い青
 HEADER_FONT_COLOR: Final = "FFFFFFFF"  # 白
 ID_COLUMN_FILL_COLOR: Final = "FFEEEEEE"  # 薄いグレー (参照用 staff_id 列)
+SAMPLE_ROW_FILL_COLOR: Final = "FFE0E0E0"  # グレー (記入例行 — 編集対象でない雰囲気)

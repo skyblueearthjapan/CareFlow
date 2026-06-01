@@ -1502,11 +1502,12 @@ async def test_export_writes_overrides_sheet(client, db) -> None:
     wb = load_workbook(BytesIO(res.content))
     assert SHEET_OVERRIDE_EDIT in wb.sheetnames
     ws_o = wb[SHEET_OVERRIDE_EDIT]
-    assert ws_o.max_row == 2  # header + 1 (staff, week) row
-    val_year = ws_o.cell(row=2, column=OVERRIDE_EDIT_COL_INDEX["iso_year"] + 1).value
-    val_week = ws_o.cell(row=2, column=OVERRIDE_EDIT_COL_INDEX["iso_week"] + 1).value
+    # Phase G-58.1: header(1) + 記入例(2) + 実データ(3) = max_row 3.
+    assert ws_o.max_row == 3
+    val_year = ws_o.cell(row=3, column=OVERRIDE_EDIT_COL_INDEX["iso_year"] + 1).value
+    val_week = ws_o.cell(row=3, column=OVERRIDE_EDIT_COL_INDEX["iso_week"] + 1).value
     # 水曜セル = "休"
-    val_wed = ws_o.cell(row=2, column=OVERRIDE_EDIT_COL_INDEX["wed"] + 1).value
+    val_wed = ws_o.cell(row=3, column=OVERRIDE_EDIT_COL_INDEX["wed"] + 1).value
     assert val_year == 2026
     assert val_week == 20
     assert val_wed == "休"
@@ -2162,8 +2163,16 @@ async def test_shift_edit_new_staff_via_code_link(client, db) -> None:
 
 @pytest.mark.asyncio
 async def test_override_edit_export_empty_sheet(client, db) -> None:
-    """override が 0 件でも勤務例外（編集用）シートはヘッダーのみで出力される."""
-    from app.services.staff_excel.schema import SHEET_OVERRIDE_EDIT
+    """override が 0 件でも勤務例外（編集用）シートはヘッダー + 記入例行で出力される.
+
+    Phase G-58.1: 記入方法が分かるよう、データが無くても常に記入例 (サンプル) 行を
+    ヘッダー直下に置く (header(1) + 記入例(2) = max_row 2).
+    """
+    from app.services.staff_excel.schema import (
+        OVERRIDE_EDIT_COL_INDEX,
+        SAMPLE_ROW_MARKER,
+        SHEET_OVERRIDE_EDIT,
+    )
 
     admin = await _make_user(db, "g56-ov-empty@example.com", "admin")
     await _make_staff(db, code="S-G56-OVE", name="例外なし")
@@ -2171,7 +2180,10 @@ async def test_override_edit_export_empty_sheet(client, db) -> None:
     assert res.status_code == 200
     wb = load_workbook(BytesIO(res.content))
     assert SHEET_OVERRIDE_EDIT in wb.sheetnames
-    assert wb[SHEET_OVERRIDE_EDIT].max_row == 1  # header only
+    ws_o = wb[SHEET_OVERRIDE_EDIT]
+    assert ws_o.max_row == 2  # header + 記入例行
+    sample_code = ws_o.cell(row=2, column=OVERRIDE_EDIT_COL_INDEX["staff_code"] + 1).value
+    assert sample_code == SAMPLE_ROW_MARKER
 
 
 @pytest.mark.asyncio
@@ -2350,3 +2362,205 @@ async def test_legacy_shift_sheet_fallback(client, db) -> None:
     )
     assert sh is not None
     assert sh.start_time == time(9, 0)
+
+
+# ---------------------------------------------------------------------------
+# Phase G-58.1: 勤務例外（編集用）記入例 (サンプル) 行
+# ---------------------------------------------------------------------------
+
+
+def test_is_sample_row_nfkc_unit() -> None:
+    """is_sample_row は NFKC 正規化で全角/半角揺れを吸収する (純粋関数)."""
+    from app.services.staff_excel.schema import SAMPLE_ROW_MARKER, is_sample_row
+
+    # staff_code 一致.
+    assert is_sample_row(SAMPLE_ROW_MARKER, None) is True
+    # staff_id 一致.
+    assert is_sample_row(None, SAMPLE_ROW_MARKER) is True
+    # NFKC で半角括弧表記も一致 (全角→半角に正規化されて等価).
+    assert is_sample_row("(記入例)", None) is True
+    # 前後空白を吸収.
+    assert is_sample_row("  （記入例）  ", None) is True
+    # 実データは一致しない.
+    assert is_sample_row("S-001", "11111111-1111-1111-1111-111111111111") is False
+    assert is_sample_row(None, None) is False
+    assert is_sample_row("記入例", None) is False  # 括弧なしは別物
+
+
+@pytest.mark.asyncio
+async def test_override_sample_row_exported_with_content(client, db) -> None:
+    """export の勤務例外（編集用）シートに記入例行が常に row 2 に書かれる."""
+    from app.services.staff_excel.schema import (
+        OVERRIDE_EDIT_COL_INDEX,
+        SAMPLE_ROW_MARKER,
+        SHEET_OVERRIDE_EDIT,
+    )
+
+    admin = await _make_user(db, "g58-sample-ex@example.com", "admin")
+    await _make_staff(db, code="S-G58-SMP", name="サンプル確認")
+    res = await client.get("/api/v1/staff/import-export/export", headers=_bearer(admin))
+    assert res.status_code == 200
+    wb = load_workbook(BytesIO(res.content))
+    ws_o = wb[SHEET_OVERRIDE_EDIT]
+    # row 2 = 記入例行.
+    assert ws_o.cell(row=2, column=OVERRIDE_EDIT_COL_INDEX["staff_code"] + 1).value == (
+        SAMPLE_ROW_MARKER
+    )
+    assert ws_o.cell(row=2, column=OVERRIDE_EDIT_COL_INDEX["iso_year"] + 1).value == 2026
+    assert ws_o.cell(row=2, column=OVERRIDE_EDIT_COL_INDEX["iso_week"] + 1).value == 23
+    assert ws_o.cell(row=2, column=OVERRIDE_EDIT_COL_INDEX["mon"] + 1).value == "休"
+    assert ws_o.cell(row=2, column=OVERRIDE_EDIT_COL_INDEX["tue"] + 1).value == "10:00-15:00"
+    reason = ws_o.cell(row=2, column=OVERRIDE_EDIT_COL_INDEX["reason"] + 1).value
+    assert reason is not None and "（例）" in reason  # reason に例文あり
+    # 記入例行はグレー背景 + 斜体で装飾されている.
+    cell = ws_o.cell(row=2, column=OVERRIDE_EDIT_COL_INDEX["staff_code"] + 1)
+    assert cell.font.italic is True
+
+
+@pytest.mark.asyncio
+async def test_override_sample_row_skipped_on_import(client, db) -> None:
+    """記入例行は import で完全に無視される (DB 変更ゼロ・error/noop どちらにもならない)."""
+    from app.models import StaffWeeklyOverride
+    from app.services.staff_excel.schema import SAMPLE_ROW_MARKER
+
+    admin = await _make_user(db, "g58-sample-im@example.com", "admin")
+    s = await _make_staff(db, code="S-G58-SKIP", name="スキップ確認")
+    sid = s.id
+
+    # 記入例行のみ (export と同じ内容) を含む override-edit シートを import.
+    content = _build_edit_workbook_bytes(
+        override_edit_rows=[
+            {
+                "staff_code": SAMPLE_ROW_MARKER,
+                "staff_name": f"↓この行は取り込まれません{SAMPLE_ROW_MARKER}",
+                "iso_year": 2026,
+                "iso_week": 23,
+                "mon": "休",
+                "tue": "10:00-15:00",
+                "reason": "（例）火曜は通院のため時間変更、月曜は休み",
+            },
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    # 記入例行はどの operation にも計上されない.
+    assert body["summary"]["override_new"] == 0
+    assert body["summary"]["override_update"] == 0
+    assert body["summary"]["override_delete"] == 0
+    assert body["summary"]["override_error"] == 0
+    assert body["summary"]["override_noop"] == 0
+    assert body["override_rows"] == []
+    # DB は完全に変更なし.
+    db.expire_all()
+    ovs = (
+        await db.scalars(select(StaffWeeklyOverride).where(StaffWeeklyOverride.staff_id == sid))
+    ).all()
+    assert ovs == []
+
+
+@pytest.mark.asyncio
+async def test_override_sample_row_roundtrip_all_noop(client, db) -> None:
+    """export(記入例行含む) → 無編集 import が全 noop (記入例 skip + 実データ noop)."""
+    from app.models import StaffWeeklyOverride
+
+    admin = await _make_user(db, "g58-sample-rt@example.com", "admin")
+    s = await _make_staff(db, code="S-G58-RT", name="往復確認")
+    sid = s.id
+    db.add(
+        StaffWeeklyOverride(
+            staff_id=sid,
+            iso_year=2026,
+            iso_week=24,
+            weekday=3,
+            override_type="custom_time",
+            start_time=time(8, 30),
+            end_time=time(17, 30),
+            reason="短縮勤務",
+        )
+    )
+    await db.commit()
+
+    export_res = await client.get("/api/v1/staff/import-export/export", headers=_bearer(admin))
+    assert export_res.status_code == 200
+    files = {
+        "file": (
+            "export.xlsx",
+            export_res.content,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
+    import_res = await client.post(
+        "/api/v1/staff/import-export/import?dry_run=false",
+        headers=_bearer(admin),
+        files=files,
+    )
+    assert import_res.status_code == 200, import_res.text
+    body = import_res.json()
+    # 記入例行は skip, 実データは noop → new/update/delete/error すべて 0.
+    assert body["summary"]["override_new"] == 0
+    assert body["summary"]["override_update"] == 0
+    assert body["summary"]["override_delete"] == 0
+    assert body["summary"]["override_error"] == 0
+    db.expire_all()
+    ovs = (
+        await db.scalars(select(StaffWeeklyOverride).where(StaffWeeklyOverride.staff_id == sid))
+    ).all()
+    assert len(ovs) == 1
+    assert ovs[0].override_type == "custom_time"
+    assert ovs[0].reason == "短縮勤務"
+
+
+@pytest.mark.asyncio
+async def test_override_sample_row_skipped_on_replace_all(client, db) -> None:
+    """replace_all でも記入例行は skip され DB 変更ゼロ (実データのみ反映)."""
+    from app.models import StaffWeeklyOverride
+    from app.services.staff_excel.schema import SAMPLE_ROW_MARKER
+
+    admin = await _make_user(db, "g58-sample-ra@example.com", "admin")
+    s = await _make_staff(db, code="S-G58-RA", name="完全置換確認")
+    sid = s.id
+
+    content = _build_edit_workbook_bytes(
+        staff_rows=[
+            {
+                "staff_id": str(sid),
+                "staff_code": "S-G58-RA",
+                "name": "完全置換確認",
+                "status": "active",
+                "role": "staff",
+            }
+        ],
+        shift_edit_rows=[{"staff_id": str(sid), "staff_code": "S-G58-RA"}],
+        override_edit_rows=[
+            {
+                "staff_code": SAMPLE_ROW_MARKER,
+                "iso_year": 2026,
+                "iso_week": 23,
+                "mon": "休",
+                "tue": "10:00-15:00",
+            },
+        ],
+    )
+    files = {
+        "file": (
+            "replace.xlsx",
+            content,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
+    res = await client.post(
+        "/api/v1/staff/import-export/replace-all?dry_run=false",
+        headers=_bearer(admin),
+        files=files,
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    # 記入例行は new/error に計上されない.
+    assert body["summary"]["override_to_create"] == 0
+    assert body["summary"]["override_error"] == 0
+    db.expire_all()
+    ovs = (
+        await db.scalars(select(StaffWeeklyOverride).where(StaffWeeklyOverride.staff_id == sid))
+    ).all()
+    assert ovs == []
