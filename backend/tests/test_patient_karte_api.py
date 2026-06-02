@@ -311,6 +311,85 @@ def test_blank_template_has_dropdowns_no_values() -> None:
     assert "B5" in _dv_cells(ws)
 
 
+# 4.5) 視覚回帰: 装飾済みテンプレート資産がサンプルと同じ見た目で焼き込まれている
+#      (Phase G-60: 行高 / 罫線箱組み / 濃灰見出し+白文字 / 游ゴシック / 曜日見出し箱).
+def _build_sample_karte():
+    oid = uuid4()
+    office = Office(id=oid, code="INAGE", name="稲毛")
+    ct = CourseTemplate(id=uuid4(), office_id=oid, label="A")
+    p = Patient(
+        id=uuid4(),
+        code="P-VIS",
+        name="視覚 太郎",
+        sex="male",
+        status="active",
+        address="千葉市稲毛区vis",
+        primary_office_id=oid,
+        note="メモ",
+        weekly_pattern={"service_minutes": 60, "time_type": "時間帯"},
+    )
+    wb = build_karte_workbook(patient=p, fixed_visits=[], offices=[office], course_templates=[ct])
+    return wb[SHEET_KARTE]
+
+
+def test_karte_visual_regression_styling() -> None:
+    ws = _build_sample_karte()
+
+    # (a) 行高が設定されている (row1≈30 タイトル / row3≈7 余白 / row22≈34 備考).
+    assert ws.row_dimensions[1].height == pytest.approx(30.0, abs=0.5)
+    assert ws.row_dimensions[3].height == pytest.approx(7.05, abs=0.5)
+    assert ws.row_dimensions[22].height == pytest.approx(34.05, abs=0.5)
+
+    # (b) ■ セクション見出しが濃灰 FF404040 + 白文字 FFFFFFFF (A4/A8/A16/A21).
+    for ref in ("A4", "A8", "A16", "A21"):
+        assert ws[ref].fill.fgColor.rgb == "FF404040", ref
+        assert ws[ref].font.color.rgb == "FFFFFFFF", ref
+        # 各見出しは left/right=thick で箱組み.
+        assert ws[ref].border.left.style == "thick", ref
+        assert ws[ref].border.right.style == "thick", ref
+
+    # (c) 曜日見出し B10 に罫線がある (希望曜日見出しの箱).
+    assert ws["B10"].border.left.style is not None
+    assert ws["B10"].border.bottom.style is not None
+    assert ws["B10"].fill.fgColor.rgb == "FFD9D9D9"
+
+    # (d) 既定フォント名 = 游ゴシック (タイトル / 値セルとも).
+    assert ws["A1"].font.name == "游ゴシック"
+    assert ws["B12"].font.name == "游ゴシック"
+
+    # (e) A22 備考に 下/左/右 thick 罫線.
+    assert ws["A22"].border.bottom.style == "thick"
+    assert ws["A22"].border.left.style == "thick"
+    assert ws["A22"].border.right.style == "thick"
+
+    # タイトル A1 は濃灰 FF1A1A1A + 白文字 16pt.
+    assert ws["A1"].fill.fgColor.rgb == "FF1A1A1A"
+    assert ws["A1"].font.color.rgb == "FFFFFFFF"
+    assert ws["A1"].font.size == 16
+
+    # ラベル (性別: 等) はフォント色 FF595959 + 太字.
+    assert ws["A5"].font.color.rgb == "FF595959"
+    assert ws["A5"].font.bold is True
+
+    # 氏名行 (行 2) は薄灰 FFF2F2F2.
+    assert ws["A2"].fill.fgColor.rgb == "FFF2F2F2"
+
+
+def test_blank_template_is_decorated() -> None:
+    """空白テンプレも装飾あり (行高 / 見出し色 / 罫線 / フォント)."""
+    oid = uuid4()
+    office = Office(id=oid, code="INAGE", name="稲毛")
+    ct = CourseTemplate(id=uuid4(), office_id=oid, label="A")
+    wb = build_blank_karte_template(offices=[office], course_templates=[ct])
+    ws = wb[SHEET_KARTE]
+    assert ws.row_dimensions[1].height == pytest.approx(30.0, abs=0.5)
+    assert ws["A4"].fill.fgColor.rgb == "FF404040"
+    assert ws["A4"].font.color.rgb == "FFFFFFFF"
+    assert ws["B10"].border.left.style is not None
+    assert ws["A1"].font.name == "游ゴシック"
+    assert ws["A22"].border.bottom.style == "thick"
+
+
 # ---------------------------------------------------------------------------
 # round-trip 0 差分 (DB)
 # ---------------------------------------------------------------------------

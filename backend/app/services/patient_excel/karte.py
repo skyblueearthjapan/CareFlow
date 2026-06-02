@@ -25,12 +25,13 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import time
 from io import BytesIO
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.formatting.rule import FormulaRule
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.styles import Font, PatternFill
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.worksheet.worksheet import Worksheet
 
@@ -42,7 +43,6 @@ from app.services.patient_excel.exporter import _course_token_dropdown_values
 from app.services.patient_excel.schema import (
     BOOL_JA_VALUES,
     FREQUENCY_PER_WEEK_VALUES,
-    HEADER_FONT_COLOR,
     HHMM_VALUES,
     ID_COLUMN_FILL_COLOR,
     ID_COLUMN_FONT_COLOR,
@@ -68,7 +68,6 @@ from app.services.patient_excel.schema import (
     TIME_TYPE_VALUES,
     VISIT_FREQUENCY_EN_TO_JA,
     VISIT_FREQUENCY_JA_VALUES,
-    WEEKDAY_LABELS,
     WEEKDAY_MARK_VALUES,
     course_token,
     weekdays_en_to_yesno_cells,
@@ -79,14 +78,15 @@ from app.services.patient_excel.schema import (
 # ---------------------------------------------------------------------------
 
 SHEET_KARTE: str = "訪問看護スケジューリング用カルテ"
-KARTE_TITLE: str = "訪問看護スケジューリング用カルテ"
+
+# 装飾済みテンプレート資産 (Phase G-60). サンプル
+# `Sampledata/カルテ表／Sampleフォーマット.xlsx` を `scripts/build_karte_template.py`
+# で値クリア・整形した成果物. 行高 / 罫線 / 塗り / フォント (游ゴシック) / 結合 /
+# ページ設定を内包する. build 関数はこれをロードし値だけ流し込む.
+KARTE_TEMPLATE_PATH: Path = Path(__file__).resolve().parent / "templates" / "karte_template.xlsx"
 
 # 拠点コード → 自動表示用ラベル (B6). 「{office_label}（自動）」.
 OFFICE_AUTO_SUFFIX: str = "（自動）"
-
-# 印刷範囲 / 体裁.
-KARTE_PRINT_AREA: str = "A1:H25"
-KARTE_FIT_SCALE: int = 91  # fitToPage 91%
 
 # 月..日 の 7 列を B..H に割り当てる (固定訪問スケジュール / 希望曜日).
 # B=2 .. H=8. WEEKDAY_LABELS (月火水木金土日) と同順.
@@ -122,138 +122,21 @@ FIXED_SCHEDULE_HEADING: str = f"■ 固定訪問スケジュール（週）　{F
 # ---------------------------------------------------------------------------
 
 
-def _apply_print_setup(ws: Worksheet) -> None:
-    """A4 縦 / 印刷範囲 A1:H25 / fitToPage 91% を設定."""
-    ws.page_setup.orientation = "portrait"
-    ws.page_setup.paperSize = ws.PAPERSIZE_A4
-    ws.page_setup.fitToWidth = 1
-    ws.page_setup.fitToHeight = 1
-    ws.sheet_properties.pageSetUpPr.fitToPage = True
-    ws.page_setup.scale = KARTE_FIT_SCALE
-    ws.print_area = KARTE_PRINT_AREA
+def _load_template_ws() -> tuple[Workbook, Worksheet]:
+    """装飾済みテンプレート資産をロードし (Workbook, Worksheet) を返す.
 
-
-def _style_layout(ws: Worksheet) -> None:
-    """カルテの静的体裁 (タイトル / セクション見出し / 静的見出し / ラベル / 列幅 / merge)."""
-    title_font = Font(bold=True, size=16, color=HEADER_FONT_COLOR)
-    title_fill = PatternFill("solid", fgColor="FF4472C4")
-    section_font = Font(bold=True, size=12, color="FF222222")
-    section_fill = PatternFill("solid", fgColor="FFD9D9D9")
-    label_font = Font(bold=True, color="FF444444")
-    static_font = Font(bold=True, color="FF333333")
-    static_fill = PatternFill("solid", fgColor="FFDDEBF7")
-    center = Alignment(horizontal="center", vertical="center")
-    left = Alignment(horizontal="left", vertical="center")
-
-    # 列幅 (A=ラベル, B..H=値). A4 縦に収まるよう抑え目.
-    widths = {"A": 12, "B": 12, "C": 8, "D": 12, "E": 8, "F": 12, "G": 10, "H": 10}
-    for col, w in widths.items():
-        ws.column_dimensions[col].width = w
-
-    # ---- merge (サンプル準拠. ただし B13:G13 は解除し 3 セル運用) ----
-    for rng in ("B2:C2", "A4:H4", "D6:G6", "A8:H8", "A16:H16", "A21:H21", "A22:H25"):
-        ws.merge_cells(rng)
-
-    # ---- タイトル (A1) ----
-    a1 = ws["A1"]
-    a1.value = KARTE_TITLE
-    a1.font = title_font
-    a1.fill = title_fill
-    a1.alignment = left
-
-    # ---- コードラベル F1 ----
-    ws["F1"].value = "コード:"
-    ws["F1"].font = label_font
-    ws["F1"].alignment = Alignment(horizontal="right", vertical="center")
-
-    # ---- 氏名 / フリガナ (行 2) ----
-    ws["A2"].value = "氏名:"
-    ws["D2"].value = "フリガナ:"
-    for ref in ("A2", "D2"):
-        ws[ref].font = label_font
-        ws[ref].alignment = left
-
-    # ---- セクション見出し ----
-    for ref, text in (
-        ("A4", "■ 基本情報"),
-        ("A8", "■ 訪問条件"),
-        ("A16", FIXED_SCHEDULE_HEADING),
-        ("A21", "■ 備考 / ヒアリングメモ"),
-    ):
-        ws[ref].value = text
-        ws[ref].font = section_font
-        ws[ref].fill = section_fill
-        ws[ref].alignment = left
-
-    # ---- 基本情報ラベル (行 5/6) ----
-    for ref, text in (
-        ("A5", "性別:"),
-        ("C5", "ステータス:"),
-        ("E5", "保険:"),
-        ("A6", "拠点:"),
-        ("C6", "住所:"),
-    ):
-        ws[ref].value = text
-        ws[ref].font = label_font
-        ws[ref].alignment = left
-
-    # ---- 訪問条件ラベル (行 9/10/11/12/13/14) ----
-    for ref, text in (
-        ("A9", "週訪問回数:"),
-        ("C9", "訪問頻度:"),
-        ("A10", "希望曜日:"),
-        ("A11", "希望"),
-        ("A12", "サービス時間:"),
-        ("C12", "時間タイプ:"),
-        ("A13", "希望時刻:"),
-        ("A14", "性別制限:"),
-        ("C14", "複数スタッフ:"),
-    ):
-        ws[ref].value = text
-        ws[ref].font = label_font
-        ws[ref].alignment = left
-
-    # 希望時刻の区切り「〜」(C13 静的).
-    ws["C13"].value = "〜"
-    ws["C13"].alignment = center
-
-    # ---- 静的曜日見出し (行 10: 希望曜日見出し / 行 17: 固定訪問見出し) ----
-    for col, label in zip(WEEKDAY_COL_LETTERS, WEEKDAY_LABELS, strict=True):
-        for r in (10, 17):
-            cell = ws[f"{col}{r}"]
-            cell.value = label
-            cell.font = static_font
-            cell.fill = static_fill
-            cell.alignment = center
-
-    # ---- 固定訪問スケジュールの行ラベル (A18 時刻 / A19 コース) ----
-    for ref, text in (("A18", "時刻"), ("A19", "コース")):
-        ws[ref].value = text
-        ws[ref].font = label_font
-        ws[ref].alignment = left
-
-    # 値セル (希望曜日 / 固定訪問時刻・コース) は中央寄せ.
-    for ref in (
-        *PREF_WEEKDAY_CELLS,
-        *FIXED_TIME_CELLS,
-        *FIXED_COURSE_CELLS,
-        "B5",
-        "D5",
-        "F5",
-        "B6",
-        "B9",
-        "D9",
-        "B12",
-        "D12",
-        "B13",
-        "D13",
-        "B14",
-        "D14",
-    ):
-        ws[ref].alignment = center
-
-    # 備考は左上寄せ + 折り返し.
-    ws["A22"].alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
+    資産には行高 / 列幅 / 罫線 / 塗り / フォント (游ゴシック) / 結合 / ラベル /
+    セクション見出し / 曜日見出し / ページ設定 (A4 縦 / 印刷範囲 A1:H25 / fitToPage)
+    が全て焼き込まれている. build 関数はこのシートに値・dropdown・条件付き書式・
+    日曜グレー・A16 注記を上書きする.
+    """
+    wb = load_workbook(KARTE_TEMPLATE_PATH)
+    ws: Worksheet = wb[SHEET_KARTE] if SHEET_KARTE in wb.sheetnames else wb.active  # type: ignore[assignment]
+    ws.title = SHEET_KARTE
+    # 固定訪問スケジュール見出し (A16) に日曜取込対象外の注記を併記する.
+    # 資産側の見出しは注記なしのため、ここで本文へ差し替える (font/fill は維持される).
+    ws["A16"].value = FIXED_SCHEDULE_HEADING
+    return wb, ws
 
 
 def _add_list_validation(ws: Worksheet, cell: str, values: Sequence[str]) -> None:
@@ -318,10 +201,12 @@ def _style_sunday_fixed_unsupported(ws: Worksheet) -> None:
     (weekly path は 7 日対応).
     """
     grey_fill = PatternFill("solid", fgColor=ID_COLUMN_FILL_COLOR)
-    grey_font = Font(italic=True, color=ID_COLUMN_FONT_COLOR)
     for cell in FIXED_SUNDAY_CELLS:
-        ws[cell].fill = grey_fill
-        ws[cell].font = grey_font
+        c = ws[cell]
+        # フォント名 (游ゴシック) を資産から引き継いだ上で斜体・グレーに上書きする
+        # (資産フォントを丸ごと置換すると 游ゴシック が失われ見た目が崩れる).
+        c.font = Font(name=c.font.name, size=c.font.size, italic=True, color=ID_COLUMN_FONT_COLOR)
+        c.fill = grey_fill
 
 
 # 保険は短縮表記 (医療/介護) で統一 (取込は「医療保険/介護保険」も後方互換受理).
@@ -392,15 +277,10 @@ def build_karte_workbook(
         elif office_code:
             office_label = OFFICE_CODE_TO_LABEL.get(office_code, office_code)
 
-    wb = Workbook()
-    ws: Worksheet = wb.active  # type: ignore[assignment]
-    ws.title = SHEET_KARTE
-
-    _style_layout(ws)
+    wb, ws = _load_template_ws()
     course_tokens = _course_token_dropdown_values(offices, course_templates)
     _attach_dropdowns(ws, course_tokens)
     _attach_time_greyout(ws)
-    _apply_print_setup(ws)
 
     # ---- 値の書き込み ----
     # G1: 患者コード (突合キー).
@@ -504,17 +384,12 @@ def build_blank_karte_template(
     固定訪問スケジュールは空欄 (= 記入されなければ訪問なし). 「―」は明示しない
     (空白テンプレなので dropdown 候補にのみ存在).
     """
-    wb = Workbook()
-    ws: Worksheet = wb.active  # type: ignore[assignment]
-    ws.title = SHEET_KARTE
-
-    _style_layout(ws)
+    wb, ws = _load_template_ws()
     course_tokens = _course_token_dropdown_values(offices, course_templates)
     _attach_dropdowns(ws, course_tokens)
     _attach_time_greyout(ws)
     # 固定訪問の日曜セルを「取込対象外」として体裁付与 (グレー + 斜体 + 注記).
     _style_sunday_fixed_unsupported(ws)
-    _apply_print_setup(ws)
     return wb
 
 
