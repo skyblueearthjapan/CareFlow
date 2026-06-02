@@ -3124,6 +3124,52 @@ async def test_pfv_edit_per_patient_replace_deletes_absent_weekday(client, db) -
     assert rows[0].course_template_id == expected_ct_id
 
 
+# G-51-2b) per-patient replace: 管理対象外曜日 (日曜=weekday6) の既存 normal PFV は
+# 削除しない (CRITICAL 回帰防止). 編集用シートは月..土のみ管理するため、行に無くても
+# 日曜 PFV は温存され、月..土の削除/upsert 挙動は不変であること.
+@pytest.mark.asyncio
+async def test_pfv_edit_per_patient_replace_preserves_sunday(client, db) -> None:
+    admin = await _make_user(db, "g51-sun@example.com", "admin")
+    office_inage, _office_tsuga, _cts = await _setup_two_office_courses(db)
+    patient = await _make_patient(
+        db, code="P-G51-SUN", name="日曜温存", primary_office_id=office_inage.id
+    )
+    pid = patient.id
+    # 既存: 月 (管理対象) + 日曜 (weekday=6, 管理対象外) の 2 枠.
+    await _make_pfv(db, patient_id=pid, weekday=0, start_time=time(9, 0), duration_min=30)
+    sunday = await _make_pfv(db, patient_id=pid, weekday=6, start_time=time(10, 0), duration_min=30)
+    sunday_id = sunday.id
+
+    # 編集用シート: 月だけ記入 (日曜は管理対象外でシートに列が無い).
+    content = _build_edit_workbook_bytes(
+        pfv_edit_rows=[
+            {
+                "patient_id": str(pid),
+                "patient_code": "P-G51-SUN",
+                "service_minutes": 30,
+                "time_type": "固定",
+                "mon_time": "09:00",
+                "mon_course": "稲B",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    # 日曜 PFV は削除されない.
+    assert body["summary"]["pfv_delete"] == 0
+    assert body["summary"]["pfv_error"] == 0
+
+    db.expire_all()
+    # 日曜 PFV は DB に残存.
+    assert await db.get(PatientFixedVisit, sunday_id) is not None
+    rows = (
+        await db.scalars(select(PatientFixedVisit).where(PatientFixedVisit.patient_id == pid))
+    ).all()
+    weekdays = {r.weekday for r in rows}
+    assert weekdays == {0, 6}  # 月 + 日曜 (両方残る).
+
+
 # G-51-3) 拠点付きコース解決: クロス拠点 "津A" が course_template_id + sub_office_id に解決.
 @pytest.mark.asyncio
 async def test_pfv_edit_cross_office_course_resolves(client, db) -> None:

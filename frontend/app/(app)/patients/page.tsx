@@ -29,6 +29,7 @@ import {
 import { usePatients } from '@/lib/queries/patients';
 import { useOffices } from '@/lib/queries/offices';
 import { PatientsExcelButtons } from '@/components/patients/PatientsExcelButtons';
+import { PatientKarteButtons } from '@/components/patients/PatientKarteButtons';
 import { PatientsReplaceAllButton } from '@/components/patients/PatientsReplaceAllButton';
 
 const PAGE_SIZE = 20;
@@ -88,9 +89,20 @@ export default function PatientsPage() {
             {total > 0 ? `全 ${total} 件` : '登録済み患者を一覧表示します'}
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          {canCreate ? <PatientsExcelButtons /> : null}
-          {isAdmin ? <PatientsReplaceAllButton /> : null}
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-2">
+          {canCreate ? (
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-medium text-text-muted">一括 (全患者)</span>
+              <PatientsExcelButtons />
+              {isAdmin ? <PatientsReplaceAllButton /> : null}
+            </div>
+          ) : null}
+          {canCreate ? (
+            <div className="flex items-center gap-2 border-l border-border-default pl-2">
+              <span className="text-xs font-medium text-text-muted">個別カルテ (1 患者)</span>
+              <PatientKarteButtons />
+            </div>
+          ) : null}
           {canCreate ? (
             <Button asChild>
               <Link href="/patients/new">

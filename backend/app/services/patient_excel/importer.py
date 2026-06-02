@@ -1674,9 +1674,18 @@ def _parse_pfv_edit_patient(
             )
 
     # 行に無い曜日の既存 normal PFV は削除 (空欄曜日 = 訪問なし).
+    # ただし削除スコープは「このシートが実際に管理する曜日」(PFV_EDIT_WEEKDAY_KEYS =
+    # 月..土) に限定する. 本シート (カルテ / 固定訪問パターン（編集用）) は月..土しか
+    # 入出力しないため、管理対象外の曜日 (日曜=6) の既存 normal slot0 PFV は
+    # 空欄=削除と誤解せず必ず温存する (CRITICAL: 無編集 round-trip で日曜 PFV が
+    # 黙殺削除されるのを防ぐ). special / slot_index!=0 / manual は existing_by_weekday
+    # の構築段階で既に除外済み.
+    managed_weekdays = set(PFV_EDIT_WEEKDAY_KEY_TO_INT.values())
     for wd_int, existing_pfv in existing_by_weekday.items():
         if wd_int in row_pfvs:
             continue
+        if wd_int not in managed_weekdays:
+            continue  # 管理対象外曜日 (日曜) は削除しない (温存).
         ops.append({"_pfv_id": existing_pfv.id, "_op": "delete"})
         diff_rows.append(
             PfvExcelImportRow(

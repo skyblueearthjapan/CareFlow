@@ -32,6 +32,11 @@ from app.schemas.v2.patient_excel import (
 )
 from app.services.patient_excel.exporter import build_workbook, workbook_to_bytes
 from app.services.patient_excel.importer import apply_changes, parse_and_diff
+from app.services.patient_excel.karte import (
+    build_blank_karte_template,
+    build_karte_workbook,
+    parse_karte_workbook,
+)
 from app.services.patient_excel.replace_all import (
     apply_replace_all,
     parse_and_diff_replace_all,
@@ -339,4 +344,190 @@ async def replace_all_endpoint(
         pfv_rows=pfv_rows,
         transaction_applied=transaction_applied,
         patients_to_soft_delete_preview=patients_to_soft_delete_preview,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 患者個別カルテ (A4・1 患者 1 ファイル)
+#   * GET  /karte-template            — 空白カルテ (新規ヒアリング記入用)
+#   * GET  /karte-export?patient_id=  — 1 患者のカルテ
+#   * POST /karte-import?dry_run=     — 単一カルテ取込 (プレビュー / 反映)
+# ---------------------------------------------------------------------------
+
+
+def _karte_attachment_headers(filename: str) -> dict[str, str]:
+    """日本語ファイル名対応の Content-Disposition (RFC 5987 + ASCII fallback)."""
+    from urllib.parse import quote
+
+    ascii_fallback = filename.encode("ascii", "ignore").decode("ascii") or "karte.xlsx"
+    quoted = quote(filename)
+    return {
+        "Content-Disposition": (
+            f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{quoted}"
+        )
+    }
+
+
+@router.get(
+    "/karte-template",
+    summary="空白の患者個別カルテ (A4) をダウンロード (admin/manager のみ)",
+    response_class=Response,
+)
+async def download_karte_template(
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+) -> Response:
+    """dropdown と体裁のみの空白カルテを返す (新規患者ヒアリング記入用)."""
+    offices = (await db.scalars(select(Office).where(Office.deleted_at.is_(None)))).all()
+    course_templates = (
+        await db.scalars(select(CourseTemplate).where(CourseTemplate.deleted_at.is_(None)))
+    ).all()
+    wb = build_blank_karte_template(
+        offices=list(offices),
+        course_templates=list(course_templates),
+    )
+    content = workbook_to_bytes(wb)
+    return Response(
+        content=content,
+        media_type=EXCEL_MIME,
+        headers=_attachment_headers("patient_karte_template.xlsx"),
+    )
+
+
+@router.get(
+    "/karte-export",
+    summary="1 患者の個別カルテ (A4) をダウンロード",
+    response_class=Response,
+)
+async def export_karte(
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    patient_id: UUID,
+) -> Response:
+    """指定患者のカルテ Excel を返す. Content-Disposition は 患者コード_氏名.xlsx."""
+    patient = await db.get(Patient, patient_id)
+    if patient is None or patient.deleted_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="患者が見つかりません",
+        )
+    fixed_visits = (
+        await db.scalars(
+            select(PatientFixedVisit).where(PatientFixedVisit.patient_id == patient_id)
+        )
+    ).all()
+    offices = (await db.scalars(select(Office).where(Office.deleted_at.is_(None)))).all()
+    course_templates = (
+        await db.scalars(select(CourseTemplate).where(CourseTemplate.deleted_at.is_(None)))
+    ).all()
+    wb = build_karte_workbook(
+        patient=patient,
+        fixed_visits=list(fixed_visits),
+        offices=list(offices),
+        course_templates=list(course_templates),
+    )
+    content = workbook_to_bytes(wb)
+    filename = f"{patient.code or 'karte'}_{patient.name or ''}.xlsx"
+    return Response(
+        content=content,
+        media_type=EXCEL_MIME,
+        headers=_karte_attachment_headers(filename),
+    )
+
+
+@router.post(
+    "/karte-import",
+    response_model=PatientExcelImportResponse,
+    summary="患者個別カルテ (A4) のアップロード (プレビュー / 反映)",
+)
+async def import_karte(
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    file: UploadFile = File(..., description="カルテ Excel ファイル (.xlsx)"),
+    dry_run: bool = True,
+) -> PatientExcelImportResponse:
+    """単一カルテを取り込む.
+
+    カルテの固定セルを既存 importer 互換の標準 2 シート Workbook に変換し、
+    既存の ``parse_and_diff`` / ``apply_changes`` パイプライン (患者 upsert /
+    weekly merge / PFV 患者単位 replace) に乗せる. 応答は通常 import と同じ
+    ImportPreviewModal 互換 shape.
+    """
+    content = await file.read()
+    if not content:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="アップロードされたファイルが空です",
+        )
+    if len(content) > MAX_UPLOAD_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=(f"ファイルサイズが上限 ({MAX_UPLOAD_SIZE // 1024 // 1024}MB) を超えています"),
+        )
+
+    # カルテ → 標準 2 シート Workbook bytes に変換してから既存パイプラインへ.
+    try:
+        standard_bytes = parse_karte_workbook(content)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"カルテのパースに失敗しました: {exc}",
+        ) from exc
+    except Exception as exc:  # noqa: BLE001 — openpyxl が多様な例外を投げる
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"カルテの読み込みに失敗しました: {type(exc).__name__}: {exc}",
+        ) from exc
+
+    try:
+        patient_rows, pfv_rows, summary, patient_ops, pfv_ops = await parse_and_diff(
+            db,
+            file_bytes=standard_bytes,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"カルテのパースに失敗しました: {exc}",
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"カルテの読み込みに失敗しました: {type(exc).__name__}: {exc}",
+        ) from exc
+
+    transaction_applied = False
+    if not dry_run:
+        if not patient_ops and not pfv_ops:
+            return PatientExcelImportResponse(
+                summary=summary,
+                patient_rows=patient_rows,
+                pfv_rows=pfv_rows,
+                transaction_applied=False,
+            )
+        try:
+            await apply_changes(db, patient_ops=patient_ops, pfv_ops=pfv_ops)
+            await db.commit()
+            transaction_applied = True
+        except IntegrityError as exc:
+            await db.rollback()
+            logger.warning("patients_excel karte import IntegrityError: %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "データ整合性エラーが発生しました "
+                    "(patient_code 重複や同時更新の可能性)。再試行してください。"
+                ),
+            ) from exc
+        except Exception as exc:  # noqa: BLE001
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"DB 反映時にエラーが発生しました: {type(exc).__name__}: {exc}",
+            ) from exc
+
+    return PatientExcelImportResponse(
+        summary=summary,
+        patient_rows=patient_rows,
+        pfv_rows=pfv_rows,
+        transaction_applied=transaction_applied,
     )

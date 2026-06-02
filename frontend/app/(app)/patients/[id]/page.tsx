@@ -24,6 +24,7 @@ import {
 } from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/sonner';
+import { downloadPatientKarte, triggerBlobDownload } from '@/lib/api/patientsExcel';
 import { RecordNavigator, type NavigatorRecord } from '@/components/RecordNavigator';
 import { useDeletePatient, usePatient, usePatients } from '@/lib/queries/patients';
 import { useOffices } from '@/lib/queries/offices';
@@ -52,12 +53,34 @@ export default function PatientDetailPage() {
   const role = session?.user?.role;
   const canEdit = role === 'admin' || role === 'manager';
   const canDelete = role === 'admin';
+  const canExportKarte = role === 'admin' || role === 'manager';
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
 
   const { data, isLoading, isError, error } = usePatient(id);
   const { data: patientsList } = usePatients({ limit: 500 });
   const { offices } = useOffices();
   const deleteMutation = useDeletePatient();
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [isExportingKarte, setIsExportingKarte] = useState(false);
+
+  const handleExportKarte = async () => {
+    if (!accessToken || !id) return;
+    setIsExportingKarte(true);
+    try {
+      const { blob, filename } = await downloadPatientKarte({
+        patientId: id,
+        accessToken,
+        refreshToken,
+      });
+      // Content-Disposition のファイル名 (患者コード_氏名.xlsx) を尊重. なければ fallback.
+      triggerBlobDownload(blob, filename ?? `karte_${id}.xlsx`);
+    } catch (e) {
+      toast.error(`カルテ出力に失敗しました: ${e instanceof Error ? e.message : '不明なエラー'}`);
+    } finally {
+      setIsExportingKarte(false);
+    }
+  };
 
   // 主担当拠点 表示用: ID → 「拠点名 (住所)」 (UI 統一: 編集 form と同じ可読形式)
   const primaryOfficeLabel = useMemo<string>(() => {
@@ -153,6 +176,15 @@ export default function PatientDetailPage() {
           )}
         </div>
         <div className="flex gap-2 lg:justify-end">
+          {canExportKarte ? (
+            <Button
+              variant="outline"
+              onClick={() => void handleExportKarte()}
+              disabled={isExportingKarte || !accessToken}
+            >
+              {isExportingKarte ? '出力中…' : '📄 カルテ出力'}
+            </Button>
+          ) : null}
           {canEdit && !data.deleted_at ? (
             <Button asChild variant="outline">
               <Link href={`/patients/${id}/edit`}>編集</Link>
