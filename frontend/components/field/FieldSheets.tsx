@@ -14,7 +14,7 @@
  * Phase 1 のモック (RANK_PAIR / RANK_NORMAL / CF_PATIENTS) は撤去済み。
  */
 
-import { useState, type CSSProperties, type ReactNode } from 'react';
+import { useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import {
   X,
   MapPin,
@@ -26,6 +26,9 @@ import {
   AlertTriangle,
   Search,
   Link2,
+  Check,
+  CheckCircle2,
+  ClipboardCheck,
 } from 'lucide-react';
 
 import {
@@ -36,10 +39,12 @@ import {
   VISIT_FREQUENCY_LABELS,
   SEX_RESTRICTION_OPTIONS,
   SEX_RESTRICTION_LABEL,
+  SEX_OPTIONS,
+  SEX_LABEL,
+  INSURANCE_OPTIONS,
   WEEKDAY_KEYS,
   WEEKDAY_LABELS_JA,
   INSURANCE_LABEL,
-  SEX_LABEL,
   coerceWeeklyPattern,
   normalizePatientSex,
   normalizePatientInsurance,
@@ -47,17 +52,25 @@ import {
   type WeekdayKey,
 } from '@/lib/schemas/patient';
 import { usePatient, usePatients } from '@/lib/queries/patients';
+import { useCreatePendingRequest } from '@/lib/queries/pending_requests';
 import type { PatientRead } from '@/lib/schemas/patient';
 import {
   useProposeSlots,
   WEEKDAY_CODE_TO_INT,
   proposeWarningLabel,
 } from '@/lib/queries/fieldBoard';
+import {
+  buildProposedVisits,
+  buildPatientCreatePayload,
+  type KarteInput,
+  type DesiredSchedule,
+} from '@/lib/field/patientCreate';
 import type { BoardVisit, WeekdayCode } from '@/lib/schemas/v2/board';
 import type {
   ProposeSlotItem,
   ProposeMiniScheduleEntry,
   ProposeTimeType,
+  ProposeCoverage,
 } from '@/lib/schemas/v2/propose_slots';
 
 import type { SameAddressGroups } from './FieldBoard';
@@ -66,6 +79,8 @@ const _TERRA = '#D97706',
   _TERRAD = '#B45309',
   _PLUM = '#8B5C9E',
   _MINT = '#0E9F6E',
+  _MINTD = '#0E8472',
+  _ROSE = '#C75C77',
   _INK = '#1C1917',
   _INK2 = '#57534E',
   _INK3 = '#A8A29E',
@@ -452,13 +467,29 @@ export function SuggestSheet({
     '' | (typeof SEX_RESTRICTION_OPTIONS)[number]
   >('');
 
+  // StageB: 新規モードのカルテ項目 (氏名 / コード / フリガナ / 性別 / 保険)。
+  // 住所・性別制限・複数スタッフは既存 state を流用 (addr / sexRestriction /
+  // requiresMultipleStaff)。提案作成 (pending patient_create) 時にまとめて送る。
+  const [karteName, setKarteName] = useState('');
+  const [karteCode, setKarteCode] = useState('');
+  const [karteKana, setKarteKana] = useState('');
+  const [karteSex, setKarteSex] = useState<'' | (typeof SEX_OPTIONS)[number]>('');
+  const [karteInsurance, setKarteInsurance] = useState<'' | (typeof INSURANCE_OPTIONS)[number]>('');
+
+  // StageB: 採用した枠 (曜日 → 提案枠)。週N日なら各曜日 1 枠を選んで積む。
+  // 同じ曜日を再タップすると採用解除 (toggle)。
+  const [adopted, setAdopted] = useState<Map<WeekdayKey, ProposeSlotItem>>(() => new Map());
+
   const proposeMut = useProposeSlots();
+  const createPendingMut = useCreatePendingRequest();
 
   // existing モードでの患者検索 (氏名 / カナ / コードで部分一致・client-side)。
   // 検索語が 1 文字以上のときのみ候補を出す (空のときは候補リストを隠す)。
   const trimmedQuery = patientQuery.trim();
   const isExisting = seg === 1;
-  const patientsQuery = usePatients({ search: trimmedQuery, limit: 8 });
+  // StageA MEDIUM 対処: 患者一覧 (最大 500 件) は既存モードのときだけ取得する。
+  // 新規モードでは enabled:false で fetch を抑止し、無駄な取得を防ぐ。
+  const patientsQuery = usePatients({ search: trimmedQuery, limit: 8, enabled: isExisting });
   const candidates = isExisting && trimmedQuery ? (patientsQuery.data?.items ?? []) : [];
 
   // 選択した患者から提案フォームをプリフィルする。プリフィル後もユーザーが調整可。
@@ -515,6 +546,8 @@ export function SuggestSheet({
       onToast('住所を入力してください');
       return;
     }
+    // 再提案のたびに採用枠をクリア (枠の顔ぶれが変わるため)。
+    setAdopted(new Map());
     const preferred_weekdays: WeekdayCode[] = WEEKDAY_KEYS.filter(
       (d) => weekdays[d],
     ) as WeekdayCode[];
@@ -550,6 +583,90 @@ export function SuggestSheet({
 
   const result = proposeMut.data;
   const slots = result?.slots ?? [];
+  const coverage = result?.coverage ?? null;
+
+  // ── StageB: 枠の採用 (曜日 → 枠)。週N日なら各曜日 1 枠。同じ枠の再タップで解除。
+  const weekdayKeyOf = (code: WeekdayCode): WeekdayKey => code as unknown as WeekdayKey;
+  const slotKey = (s: ProposeSlotItem) =>
+    `${s.office_id}-${s.weekday}-${s.course_code}-${s.start_time}`;
+  const isAdopted = (s: ProposeSlotItem) => {
+    const cur = adopted.get(weekdayKeyOf(s.weekday_code));
+    return !!cur && slotKey(cur) === slotKey(s);
+  };
+  const toggleAdopt = (s: ProposeSlotItem) => {
+    setAdopted((prev) => {
+      const next = new Map(prev);
+      const wk = weekdayKeyOf(s.weekday_code);
+      const cur = next.get(wk);
+      if (cur && slotKey(cur) === slotKey(s)) {
+        next.delete(wk); // 同じ枠の再タップ → 解除
+      } else {
+        next.set(wk, s); // その曜日の採用枠を差し替え
+      }
+      return next;
+    });
+  };
+
+  // 希望週N日 (required_days)。coverage 優先、無ければ frequencyPerWeek。
+  const requiredDays = coverage?.required_days ?? frequencyPerWeek;
+  const adoptedCount = adopted.size;
+  // 提案作成可否: 新規モードで、氏名/コードあり + 採用枠が 1 件以上。
+  const canCreate =
+    !isExisting &&
+    karteName.trim().length > 0 &&
+    karteCode.trim().length > 0 &&
+    adoptedCount > 0 &&
+    !createPendingMut.isPending;
+
+  const submitKarte = () => {
+    if (isExisting) return; // 既存患者は本フロー対象外 (StageA のまま)。
+    if (!karteName.trim()) {
+      onToast('氏名を入力してください');
+      return;
+    }
+    if (!karteCode.trim()) {
+      onToast('患者コードを入力してください');
+      return;
+    }
+    if (adoptedCount === 0) {
+      onToast('採用する枠を選んでください');
+      return;
+    }
+    const preferred_weekdays: WeekdayKey[] = WEEKDAY_KEYS.filter((d) => weekdays[d]);
+    const karte: KarteInput = {
+      name: karteName.trim(),
+      code: karteCode.trim(),
+      kana: karteKana.trim(),
+      sex: karteSex,
+      insurance: karteInsurance,
+      address: addr.trim(),
+      lat: null,
+      lng: null,
+      sex_restriction: sexRestriction,
+      requires_multiple_staff: requiresMultipleStaff,
+    };
+    const schedule: DesiredSchedule = {
+      frequency_per_week: frequencyPerWeek,
+      visit_frequency: visitFrequency,
+      preferred_weekdays,
+      service_minutes: serviceMinutes,
+      time_type: timeType,
+      preferred_start: showTimeRange ? preferredStart : null,
+      preferred_end: showEnd ? preferredEnd : null,
+    };
+    const proposedVisits = buildProposedVisits(adopted, serviceMinutes);
+    const payload = buildPatientCreatePayload(karte, schedule, proposedVisits);
+    createPendingMut.mutate(
+      { request_type: 'patient_create', payload },
+      {
+        onSuccess: () => {
+          onToast('✓ 提案を作成しました（承認待ち）');
+          onClose();
+        },
+        onError: () => onToast('提案の作成に失敗しました'),
+      },
+    );
+  };
 
   return (
     <SlideSheet>
@@ -635,6 +752,21 @@ export function SuggestSheet({
             isError={patientsQuery.isError}
             onSelect={linkPatient}
             onUnlink={unlinkPatient}
+          />
+        )}
+
+        {!isExisting && (
+          <KarteFormSection
+            name={karteName}
+            onName={setKarteName}
+            code={karteCode}
+            onCode={setKarteCode}
+            kana={karteKana}
+            onKana={setKarteKana}
+            sex={karteSex}
+            onSex={setKarteSex}
+            insurance={karteInsurance}
+            onInsurance={setKarteInsurance}
           />
         )}
 
@@ -890,6 +1022,7 @@ export function SuggestSheet({
               </div>
             ) : (
               <>
+                {coverage && <CoverageSummary coverage={coverage} onPick={toggleAdopt} />}
                 <h4
                   style={{
                     fontFamily: 'var(--font-serif)',
@@ -902,14 +1035,31 @@ export function SuggestSheet({
                   }}
                 >
                   おすすめ枠 {slots.length}件
+                  {!isExisting && (
+                    <span style={{ fontSize: 11, color: _INK3, fontWeight: 600 }}>
+                      （タップで採用）
+                    </span>
+                  )}
                 </h4>
                 {slots.map((s, i) => (
                   <RankCard
                     key={`${s.office_id}-${s.weekday}-${s.course_code}-${i}`}
                     s={s}
                     rank={i + 1}
+                    selectable={!isExisting}
+                    adopted={isAdopted(s)}
+                    onAdopt={toggleAdopt}
                   />
                 ))}
+                {!isExisting && (
+                  <CreatePendingBar
+                    adopted={adopted}
+                    requiredDays={requiredDays}
+                    canCreate={canCreate}
+                    isPending={createPendingMut.isPending}
+                    onSubmit={submitKarte}
+                  />
+                )}
               </>
             )}
           </div>
@@ -1269,7 +1419,21 @@ function MiniSlot({ row }: { row: ProposeMiniScheduleEntry }) {
   );
 }
 
-function RankCard({ s, rank }: { s: ProposeSlotItem; rank: number }) {
+function RankCard({
+  s,
+  rank,
+  selectable = false,
+  adopted = false,
+  onAdopt,
+}: {
+  s: ProposeSlotItem;
+  rank: number;
+  /** StageB: 新規モードで「採用」操作を出すか。 */
+  selectable?: boolean;
+  /** その枠が採用済みか。 */
+  adopted?: boolean;
+  onAdopt?: (s: ProposeSlotItem) => void;
+}) {
   const medal = ['#E5B53A', '#B6BEC8', '#CF8048'][rank - 1] || '#CDC2B2';
   const mInk = ['#7A5200', '#3F4750', '#fff', '#fff'][rank - 1] ?? '#fff';
   const dow = WEEKDAY_INT_TO_DOW[s.weekday] ?? '';
@@ -1280,8 +1444,8 @@ function RankCard({ s, rank }: { s: ProposeSlotItem; rank: number }) {
       style={{
         borderRadius: 16,
         marginBottom: 12,
-        background: '#fff',
-        border: `2px solid ${rank === 1 ? '#E5B53A' : _LINE}`,
+        background: adopted ? '#FCFBF4' : '#fff',
+        border: `2px solid ${adopted ? _MINT : rank === 1 ? '#E5B53A' : _LINE}`,
         overflow: 'hidden',
       }}
     >
@@ -1397,6 +1561,437 @@ function RankCard({ s, rank }: { s: ProposeSlotItem; rank: number }) {
           </div>
         </div>
       )}
+
+      {selectable && (
+        <div style={{ padding: '0 14px 12px' }}>
+          <button
+            type="button"
+            onClick={() => onAdopt?.(s)}
+            aria-pressed={adopted}
+            style={{
+              width: '100%',
+              minHeight: 42,
+              padding: '10px 14px',
+              borderRadius: 12,
+              fontFamily: 'var(--font-serif)',
+              fontSize: 13.5,
+              fontWeight: 700,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 7,
+              border: `2px solid ${adopted ? _MINT : _TERRA}`,
+              background: adopted ? _MINT : '#FFFDF9',
+              color: adopted ? '#fff' : _TERRAD,
+            }}
+          >
+            {adopted ? (
+              <>
+                <Check size={15} />
+                {dow}曜 この枠を採用中
+              </>
+            ) : (
+              <>
+                <Sparkles size={14} />
+                {dow}曜 この枠を採用
+              </>
+            )}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================ StageB: 新規カルテ入力 ============================
+
+/**
+ * 新規モードのカルテ項目入力 (氏名 / 患者コード / フリガナ / 性別 / 保険)。
+ *
+ * 住所・性別制限・複数スタッフは提案フォーム本体 (既存 Field) で入力するため
+ * ここには含めない。患者マスタ準拠の選択肢 (SEX_OPTIONS / INSURANCE_OPTIONS) を流用。
+ */
+function KarteFormSection({
+  name,
+  onName,
+  code,
+  onCode,
+  kana,
+  onKana,
+  sex,
+  onSex,
+  insurance,
+  onInsurance,
+}: {
+  name: string;
+  onName: (v: string) => void;
+  code: string;
+  onCode: (v: string) => void;
+  kana: string;
+  onKana: (v: string) => void;
+  sex: '' | (typeof SEX_OPTIONS)[number];
+  onSex: (v: '' | (typeof SEX_OPTIONS)[number]) => void;
+  insurance: '' | (typeof INSURANCE_OPTIONS)[number];
+  onInsurance: (v: '' | (typeof INSURANCE_OPTIONS)[number]) => void;
+}) {
+  return (
+    <div
+      style={{
+        background: 'linear-gradient(180deg,#FFFDF8,#FBF4E8)',
+        border: `2px solid ${_LINE}`,
+        borderRadius: 16,
+        padding: '13px 14px 4px',
+        marginBottom: 14,
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+          fontFamily: 'var(--font-serif)',
+          fontSize: 12.5,
+          fontWeight: 700,
+          color: _TERRAD,
+          marginBottom: 10,
+        }}
+      >
+        <User size={13} />
+        新規カルテ
+        <span style={{ flex: 1, height: 2, background: '#F3E6D2', borderRadius: 2 }} />
+      </div>
+
+      <Field label="氏名（必須）">
+        <input
+          value={name}
+          onChange={(e) => onName(e.target.value)}
+          placeholder="例: 青柳 あい"
+          aria-label="氏名"
+          style={cfInput}
+        />
+      </Field>
+
+      <div style={{ display: 'flex', gap: 12 }}>
+        <Field label="患者コード（必須）" flex>
+          <input
+            value={code}
+            onChange={(e) => onCode(e.target.value)}
+            placeholder="例: P-1042"
+            aria-label="患者コード"
+            style={cfInput}
+          />
+        </Field>
+        <Field label="フリガナ" flex>
+          <input
+            value={kana}
+            onChange={(e) => onKana(e.target.value)}
+            placeholder="アオヤギ アイ"
+            aria-label="フリガナ"
+            style={cfInput}
+          />
+        </Field>
+      </div>
+
+      <div style={{ display: 'flex', gap: 12 }}>
+        <Field label="性別" flex>
+          <select
+            style={cfInput}
+            value={sex}
+            aria-label="性別"
+            onChange={(e) => onSex(e.target.value as '' | (typeof SEX_OPTIONS)[number])}
+          >
+            <option value="">未選択</option>
+            {SEX_OPTIONS.map((v) => (
+              <option key={v} value={v}>
+                {SEX_LABEL[v]}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="保険" flex>
+          <select
+            style={cfInput}
+            value={insurance}
+            aria-label="保険"
+            onChange={(e) => onInsurance(e.target.value as '' | (typeof INSURANCE_OPTIONS)[number])}
+          >
+            <option value="">未選択</option>
+            {INSURANCE_OPTIONS.map((v) => (
+              <option key={v} value={v}>
+                {INSURANCE_LABEL[v]}
+              </option>
+            ))}
+          </select>
+        </Field>
+      </div>
+    </div>
+  );
+}
+
+// ============================ StageC: 週N日カバレッジ ============================
+
+/**
+ * 自動提案結果の上部に出すカバレッジサマリ (StageC)。
+ *
+ * - 見出し: 「希望 週{required_days}日 → {covered_days}/{required_days}日 提案可」。
+ * - per_day を曜日チップで ○(has_slot) / ×(無し, 赤系) 表示。
+ * - fully_covered なら緑「全日OK」、未充足は警告色。
+ * - ○ チップ (best_slot あり) をタップでその枠を採用 (onPick)。
+ */
+function CoverageSummary({
+  coverage,
+  onPick,
+}: {
+  coverage: ProposeCoverage;
+  onPick: (s: ProposeSlotItem) => void;
+}) {
+  const { required_days, covered_days, fully_covered, per_day } = coverage;
+  const accent = fully_covered ? _MINTD : _TERRAD;
+  const bg = fully_covered
+    ? 'linear-gradient(180deg,#EAF9F4,#DCF4EC)'
+    : 'linear-gradient(180deg,#FFF7EC,#FDEFD9)';
+  const border = fully_covered ? _MINT : _TERRA;
+  return (
+    <div
+      style={{
+        background: bg,
+        border: `2px solid ${border}`,
+        borderRadius: 16,
+        padding: '12px 14px',
+        marginBottom: 14,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span
+          style={{
+            width: 30,
+            height: 30,
+            flex: '0 0 auto',
+            borderRadius: 10,
+            background: border,
+            color: '#fff',
+            display: 'grid',
+            placeItems: 'center',
+          }}
+        >
+          {fully_covered ? <CheckCircle2 size={17} /> : <Calendar size={16} />}
+        </span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div
+            style={{
+              fontFamily: 'var(--font-serif)',
+              fontSize: 13.5,
+              fontWeight: 700,
+              color: accent,
+            }}
+          >
+            希望 週{required_days}日 → {covered_days}/{required_days}日 提案可
+          </div>
+          <div style={{ fontSize: 10.5, color: _INK2, marginTop: 1 }}>
+            {fully_covered ? '全日OK・採用する枠を選んでください' : '未充足の曜日があります'}
+          </div>
+        </div>
+        {fully_covered && (
+          <span
+            style={{
+              flex: '0 0 auto',
+              fontSize: 11,
+              fontWeight: 700,
+              padding: '3px 10px',
+              borderRadius: 999,
+              background: _MINT,
+              color: '#fff',
+              fontFamily: 'var(--font-serif)',
+            }}
+          >
+            全日OK
+          </span>
+        )}
+      </div>
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7, marginTop: 11 }}>
+        {per_day.map((d) => {
+          const ja = WEEKDAY_INT_TO_DOW[d.weekday] ?? '';
+          const ok = d.has_slot;
+          const tappable = ok && !!d.best_slot;
+          return (
+            <button
+              key={d.weekday_code}
+              type="button"
+              disabled={!tappable}
+              onClick={() => d.best_slot && onPick(d.best_slot)}
+              aria-label={`${ja}曜 ${ok ? '提案あり' : '提案なし'}`}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 5,
+                padding: '6px 11px',
+                minHeight: 36,
+                borderRadius: 999,
+                fontFamily: 'var(--font-serif)',
+                fontSize: 13,
+                fontWeight: 700,
+                cursor: tappable ? 'pointer' : 'default',
+                background: ok ? '#D7F2EE' : '#FCE3E8',
+                color: ok ? _MINTD : _ROSE,
+                border: `2px solid ${ok ? _MINT : '#F1B9C5'}`,
+              }}
+            >
+              <span>{ja}</span>
+              <span style={{ fontSize: 14, lineHeight: 1 }}>{ok ? '○' : '×'}</span>
+              {tappable && d.best_slot && (
+                <span style={{ fontSize: 10, fontFamily: 'var(--font-mono)', fontWeight: 600 }}>
+                  {d.best_slot.start_time}〜
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ============================ StageB: 提案作成バー ============================
+
+/**
+ * 採用した枠の要約と「提案を作成（承認へ）」ボタン (StageB)。
+ *
+ * - 採用枠を曜日順に並べて、未充足曜日があれば警告。
+ * - pending `patient_create` 作成 (onSubmit)。氏名/コードと採用枠が揃うまで無効。
+ */
+function CreatePendingBar({
+  adopted,
+  requiredDays,
+  canCreate,
+  isPending,
+  onSubmit,
+}: {
+  adopted: Map<WeekdayKey, ProposeSlotItem>;
+  requiredDays: number;
+  canCreate: boolean;
+  isPending: boolean;
+  onSubmit: () => void;
+}) {
+  const picks = useMemo(
+    () =>
+      Array.from(adopted.values()).sort(
+        (a, b) => a.weekday - b.weekday || a.start_time.localeCompare(b.start_time),
+      ),
+    [adopted],
+  );
+  const adoptedCount = picks.length;
+  const shortfall = Math.max(0, requiredDays - adoptedCount);
+  return (
+    <div
+      style={{
+        marginTop: 6,
+        background: '#fff',
+        border: `2px solid ${_LINE}`,
+        borderRadius: 16,
+        padding: '13px 14px',
+      }}
+    >
+      <div
+        style={{
+          fontFamily: 'var(--font-serif)',
+          fontSize: 12.5,
+          fontWeight: 700,
+          color: _INK,
+          marginBottom: 8,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+        }}
+      >
+        <ClipboardCheck size={13} />
+        採用した枠 {adoptedCount}件 / 希望 週{requiredDays}日
+      </div>
+
+      {adoptedCount === 0 ? (
+        <div style={{ fontSize: 11.5, color: _INK2, marginBottom: 10 }}>
+          上のおすすめ枠から、曜日ごとに 1 枠ずつ採用してください。
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 5, marginBottom: 10 }}>
+          {picks.map((s) => (
+            <div
+              key={`${s.office_id}-${s.weekday}-${s.course_code}-${s.start_time}`}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 7,
+                fontSize: 12,
+                color: _INK2,
+              }}
+            >
+              <span
+                style={{
+                  width: 22,
+                  height: 22,
+                  flex: '0 0 auto',
+                  borderRadius: 7,
+                  background: '#D7F2EE',
+                  color: _MINTD,
+                  display: 'grid',
+                  placeItems: 'center',
+                  fontFamily: 'var(--font-serif)',
+                  fontSize: 12,
+                  fontWeight: 700,
+                }}
+              >
+                {WEEKDAY_INT_TO_DOW[s.weekday] ?? ''}
+              </span>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5 }}>
+                {s.start_time}〜{s.end_time}
+              </span>
+              <span style={{ fontWeight: 700, color: _INK }}>{s.course_label}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {shortfall > 0 && adoptedCount > 0 && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 5,
+            fontSize: 11,
+            fontWeight: 700,
+            color: _TERRAD,
+            marginBottom: 10,
+          }}
+        >
+          <AlertTriangle size={12} />
+          あと {shortfall} 日ぶん未充足です（このまま作成も可）
+        </div>
+      )}
+
+      <button
+        type="button"
+        onClick={onSubmit}
+        disabled={!canCreate}
+        style={{
+          width: '100%',
+          padding: 14,
+          minHeight: 50,
+          borderRadius: 14,
+          fontFamily: 'var(--font-serif)',
+          fontSize: 15,
+          fontWeight: 700,
+          color: '#fff',
+          background: canCreate ? `linear-gradient(135deg, ${_MINT}, ${_MINTD})` : '#CFC8BC',
+          boxShadow: canCreate ? '0 6px 16px rgba(14,159,110,0.28)' : 'none',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 8,
+        }}
+      >
+        <ClipboardCheck size={16} />
+        {isPending ? '作成中…' : '提案を作成（承認へ）'}
+      </button>
     </div>
   );
 }

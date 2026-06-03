@@ -47,6 +47,15 @@ export interface PatientsListParams {
   includeDeleted?: boolean;
   /** Filter by insurance label. */
   insurance?: string;
+  /**
+   * 取得ゲート (default true)。`false` のときは fetch を抑止する。
+   *
+   * 現場ボード `/m` の提案シートでは「既存のお客様」モードのときだけ患者一覧
+   * (最大 500 件) を取得すれば十分なため、新規モードでは `enabled: false` で
+   * 無駄な取得を抑える (StageA MEDIUM 指摘の対処)。`authenticated` ゲートと
+   * AND されるため、既存呼び出し (引数なし) は従来どおり取得する。
+   */
+  enabled?: boolean;
 }
 
 export interface PatientsListResult {
@@ -141,10 +150,11 @@ export function usePatients(
   const limit = Math.max(1, params.limit ?? 20);
   const search = params.search?.trim().toLowerCase() ?? '';
   const insurance = params.insurance ?? '';
+  const gate = params.enabled ?? true;
 
   return useQuery<PatientsListResult, Error>({
     queryKey: [...PATIENTS_KEY, { page, limit, search, insurance }],
-    enabled: status === 'authenticated',
+    enabled: status === 'authenticated' && gate,
     queryFn: async () => {
       // Fetch a generous window so the client-side search across pages
       // remains usable until backend search lands. Capped at the backend

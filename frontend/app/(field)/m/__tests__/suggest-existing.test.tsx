@@ -33,8 +33,13 @@ vi.mock('@/lib/queries/patients', () => ({
   usePatients: vi.fn(),
 }));
 
+vi.mock('@/lib/queries/pending_requests', () => ({
+  useCreatePendingRequest: vi.fn(),
+}));
+
 import { useProposeSlots } from '@/lib/queries/fieldBoard';
 import { usePatients } from '@/lib/queries/patients';
+import { useCreatePendingRequest } from '@/lib/queries/pending_requests';
 import { SuggestSheet } from '@/components/field/FieldSheets';
 
 const PATIENT_ID = '33333333-3333-3333-3333-333333333333';
@@ -90,6 +95,12 @@ beforeEach(() => {
   mutate.mockReset();
   (useProposeSlots as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
     mutate,
+    isPending: false,
+    isError: false,
+    data: undefined,
+  });
+  (useCreatePendingRequest as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    mutate: vi.fn(),
     isPending: false,
     isError: false,
     data: undefined,

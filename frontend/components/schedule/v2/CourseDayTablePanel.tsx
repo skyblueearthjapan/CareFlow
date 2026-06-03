@@ -94,6 +94,7 @@ import { BulkFixToPatternButton } from './BulkFixToPatternButton';
 import { BulkPinAllPfvsButton } from './BulkPinAllPfvsButton';
 import { DiffAddDialog } from './DiffAddDialog';
 import { FullOptimizeDialog } from './FullOptimizeDialog';
+import { ProposeNewModal } from './ProposeNewModal';
 import { ResetToFixedButton } from './ResetToFixedButton';
 import { UnassignAllStaffButton } from './UnassignAllStaffButton';
 import {
@@ -1548,6 +1549,8 @@ export function CourseDayTablePanel({
   const assignStaffOnlyMut = useAssignStaffOnly();
   const [diffAddOpen, setDiffAddOpen] = useState(false);
   const [fullOptimizeOpen, setFullOptimizeOpen] = useState(false);
+  // 統合提案モーダル「＋新規提案」(StageA+C+B). diff-add (プール投入) とは別 entry.
+  const [proposeNewOpen, setProposeNewOpen] = useState(false);
   const isProcessing = generateWeekMut.isPending || assignStaffOnlyMut.isPending;
 
   const handleGenerateWeek = async () => {
@@ -1803,6 +1806,17 @@ export function CourseDayTablePanel({
               >
                 <Plus className="mr-1 h-4 w-4" aria-hidden />
                 プール投入
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => setProposeNewOpen(true)}
+                disabled={isProcessing}
+                data-testid="propose-new-button"
+              >
+                <Plus className="mr-1 h-4 w-4" aria-hidden />
+                新規提案
               </Button>
 
               {/* 主要 4 と「固定枠戻 / 全件保存」 の区切り線. */}
@@ -2240,6 +2254,15 @@ export function CourseDayTablePanel({
         <DiffAddDialog
           open={diffAddOpen}
           onClose={() => setDiffAddOpen(false)}
+          isoYear={isoYear}
+          isoWeek={isoWeek}
+          officeId={officeId}
+        />
+
+        {/* 統合提案モーダル「＋新規提案」(StageA+C+B). diff-add とは独立・併存. */}
+        <ProposeNewModal
+          open={proposeNewOpen}
+          onClose={() => setProposeNewOpen(false)}
           isoYear={isoYear}
           isoWeek={isoWeek}
           officeId={officeId}

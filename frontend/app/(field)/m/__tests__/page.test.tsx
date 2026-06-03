@@ -48,6 +48,7 @@ vi.mock('@/lib/queries/pending_requests', () => ({
   usePendingRequests: vi.fn(),
   useApproveRequest: vi.fn(),
   useRejectRequest: vi.fn(),
+  useCreatePendingRequest: vi.fn(),
 }));
 
 vi.mock('@/lib/queries/patients', () => ({
@@ -61,6 +62,7 @@ import {
   usePendingRequests,
   useApproveRequest,
   useRejectRequest,
+  useCreatePendingRequest,
 } from '@/lib/queries/pending_requests';
 import { usePatient, usePatients } from '@/lib/queries/patients';
 import FieldBoardPage from '../page';
@@ -288,6 +290,7 @@ beforeEach(() => {
   });
   (useApproveRequest as unknown as ReturnType<typeof vi.fn>).mockReturnValue(noMutation());
   (useRejectRequest as unknown as ReturnType<typeof vi.fn>).mockReturnValue(noMutation());
+  (useCreatePendingRequest as unknown as ReturnType<typeof vi.fn>).mockReturnValue(noMutation());
   (usePatient as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
     data: makePatient(),
     isLoading: false,

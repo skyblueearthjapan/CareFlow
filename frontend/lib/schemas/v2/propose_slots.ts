@@ -82,7 +82,25 @@ export const proposeSlotItemSchema = z.object({
 });
 export type ProposeSlotItem = z.infer<typeof proposeSlotItemSchema>;
 
-/** POST /v2/propose-slots レスポンス (ランキング済み候補リスト)。 */
+/** 週N日カバレッジ: 希望曜日ごとの実現可能性 (StageC)。 */
+export const proposeCoverageDaySchema = z.object({
+  weekday: z.number().int().min(0).max(6),
+  weekday_code: weekdayCodeSchema,
+  has_slot: z.boolean(),
+  best_slot: proposeSlotItemSchema.nullish(),
+});
+export type ProposeCoverageDay = z.infer<typeof proposeCoverageDaySchema>;
+
+export const proposeCoverageSchema = z.object({
+  required_days: z.number().int(),
+  requested_weekdays: z.array(z.number().int().min(0).max(6)).default([]),
+  per_day: z.array(proposeCoverageDaySchema).default([]),
+  covered_days: z.number().int(),
+  fully_covered: z.boolean(),
+});
+export type ProposeCoverage = z.infer<typeof proposeCoverageSchema>;
+
+/** POST /v2/propose-slots レスポンス (ランキング済み候補リスト + 週N日カバレッジ)。 */
 export const proposeSlotsResponseSchema = z.object({
   iso_year: z.number().int(),
   iso_week: z.number().int(),
@@ -90,6 +108,7 @@ export const proposeSlotsResponseSchema = z.object({
   candidate_lng: z.number().nullish(),
   resolved_office_id: z.string().uuid().nullish(),
   slots: z.array(proposeSlotItemSchema).default([]),
+  coverage: proposeCoverageSchema.nullish(),
   message: z.string().nullish(),
 });
 export type ProposeSlotsResponse = z.infer<typeof proposeSlotsResponseSchema>;

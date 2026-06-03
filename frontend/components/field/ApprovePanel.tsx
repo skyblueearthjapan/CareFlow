@@ -14,7 +14,7 @@
  */
 
 import { useState } from 'react';
-import { Check, ClipboardCheck, User, Calendar } from 'lucide-react';
+import { Check, ClipboardCheck, User, Calendar, Sparkles, Heart } from 'lucide-react';
 
 import {
   usePendingRequests,
@@ -22,11 +22,13 @@ import {
   useRejectRequest,
 } from '@/lib/queries/pending_requests';
 import type { PendingRequestV2Read, RequestType } from '@/lib/schemas/pending_request';
+import { INSURANCE_LABEL, SEX_LABEL } from '@/lib/schemas/patient';
+import { WEEKDAY_INT_TO_JA } from '@/lib/field/patientCreate';
 import { ApiError } from '@/lib/api-client';
 
 import { CF_THEME } from './theme';
 
-const { MINT, INK, INK2, INK3, LINE, GOLD } = CF_THEME;
+const { MINT, TERRA, TERRA_DEEP, INK, INK2, INK3, LINE, GOLD } = CF_THEME;
 
 /** request_type の日本語ラベル。 */
 const REQUEST_TYPE_LABEL_JA: Record<RequestType, string> = {
@@ -56,6 +58,169 @@ function payloadHeadline(req: PendingRequestV2Read): string | null {
     if (typeof v === 'string' && v.trim()) return v.trim();
   }
   return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// patient_create プレビュー (StageB)
+// ─────────────────────────────────────────────────────────────────────────
+
+interface ProposedVisitView {
+  weekday: number;
+  start_time: string;
+  duration_min: number;
+  course_code: string;
+}
+
+/** payload.proposed_visits を安全にパースして表示用配列にする。 */
+function readProposedVisits(payload: Record<string, unknown>): ProposedVisitView[] {
+  const raw = payload.proposed_visits;
+  if (!Array.isArray(raw)) return [];
+  const out: ProposedVisitView[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const r = item as Record<string, unknown>;
+    const weekday = Number(r.weekday);
+    const start = typeof r.start_time === 'string' ? r.start_time : '';
+    if (!Number.isFinite(weekday) || !start) continue;
+    out.push({
+      weekday,
+      start_time: start,
+      duration_min: Number.isFinite(Number(r.duration_min)) ? Number(r.duration_min) : 0,
+      course_code: typeof r.course_code === 'string' ? r.course_code : '',
+    });
+  }
+  out.sort((a, b) => a.weekday - b.weekday || a.start_time.localeCompare(b.start_time));
+  return out;
+}
+
+function str(payload: Record<string, unknown>, key: string): string | null {
+  const v = payload[key];
+  return typeof v === 'string' && v.trim() ? v.trim() : null;
+}
+
+/**
+ * patient_create 申請の payload からカルテ概要 + 提案枠 (曜日/時刻/コース) を
+ * プレビュー表示する (StageB)。承認すると患者作成 + PFV 確定が同一 TX で走る。
+ */
+function PatientCreatePreview({ payload }: { payload: Record<string, unknown> }) {
+  const code = str(payload, 'code');
+  const kana = str(payload, 'kana');
+  const sexRaw = str(payload, 'sex');
+  const sex = sexRaw && sexRaw in SEX_LABEL ? SEX_LABEL[sexRaw as keyof typeof SEX_LABEL] : null;
+  const insRaw = str(payload, 'insurance');
+  const insurance =
+    insRaw && insRaw in INSURANCE_LABEL
+      ? INSURANCE_LABEL[insRaw as keyof typeof INSURANCE_LABEL]
+      : null;
+  const address = str(payload, 'address');
+  const visits = readProposedVisits(payload);
+
+  const chips: Array<{ k: string; v: string }> = [];
+  if (code) chips.push({ k: 'コード', v: code });
+  if (kana) chips.push({ k: 'カナ', v: kana });
+  if (sex) chips.push({ k: '性別', v: sex });
+  if (insurance) chips.push({ k: '保険', v: insurance });
+
+  return (
+    <div
+      style={{
+        marginTop: 8,
+        background: '#fff',
+        border: `1.5px solid ${LINE}`,
+        borderRadius: 12,
+        padding: '9px 11px',
+      }}
+    >
+      {(chips.length > 0 || address) && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 5,
+            fontSize: 10.5,
+            fontWeight: 700,
+            color: TERRA_DEEP,
+            marginBottom: 6,
+          }}
+        >
+          <Heart size={11} />
+          カルテ概要
+        </div>
+      )}
+      {chips.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginBottom: address ? 5 : 0 }}>
+          {chips.map((c) => (
+            <span
+              key={c.k}
+              style={{
+                fontSize: 10.5,
+                fontWeight: 700,
+                padding: '2px 8px',
+                borderRadius: 999,
+                background: '#F4EFE7',
+                color: INK2,
+              }}
+            >
+              {c.k}: <span style={{ color: INK }}>{c.v}</span>
+            </span>
+          ))}
+        </div>
+      )}
+      {address && <div style={{ fontSize: 11, color: INK2, marginBottom: 2 }}>住所: {address}</div>}
+
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 5,
+          fontSize: 10.5,
+          fontWeight: 700,
+          color: TERRA_DEEP,
+          margin: '8px 0 6px',
+        }}
+      >
+        <Sparkles size={11} />
+        提案枠 {visits.length}件
+      </div>
+      {visits.length === 0 ? (
+        <div style={{ fontSize: 11, color: INK3 }}>提案枠は登録されていません</div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {visits.map((v, i) => (
+            <div
+              key={`${v.weekday}-${v.start_time}-${i}`}
+              style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12 }}
+            >
+              <span
+                style={{
+                  width: 22,
+                  height: 22,
+                  flex: '0 0 auto',
+                  borderRadius: 7,
+                  background: '#FCEBD6',
+                  color: TERRA,
+                  display: 'grid',
+                  placeItems: 'center',
+                  fontFamily: 'var(--font-serif)',
+                  fontSize: 12,
+                  fontWeight: 700,
+                }}
+              >
+                {WEEKDAY_INT_TO_JA[v.weekday] ?? '?'}
+              </span>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, color: INK }}>
+                {v.start_time}
+                {v.duration_min > 0 ? ` ・ ${v.duration_min}分` : ''}
+              </span>
+              {v.course_code && (
+                <span style={{ fontWeight: 700, color: INK2 }}>{v.course_code}</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function ApprovePanel({ onToast }: { onToast: (msg: string) => void }) {
@@ -275,6 +440,10 @@ export function ApprovePanel({ onToast }: { onToast: (msg: string) => void }) {
             >
               申請: {req.created_at.slice(0, 16).replace('T', ' ')}
             </div>
+
+            {req.request_type === 'patient_create' && (
+              <PatientCreatePreview payload={req.payload as Record<string, unknown>} />
+            )}
 
             {isRejecting ? (
               <div style={{ marginTop: 10 }}>
