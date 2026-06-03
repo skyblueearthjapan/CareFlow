@@ -153,6 +153,41 @@ class ProposeSlotItem(BaseModel):
     mini_schedule: list[ProposeMiniScheduleEntry] = Field(default_factory=list)
 
 
+class ProposeCoverageDay(BaseModel):
+    """週N日カバレッジ: 希望曜日 1 日ぶんの実現可否と最良枠."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    weekday: int = Field(..., ge=0, le=6, description="0=Mon..6=Sun")
+    weekday_code: WeekdayCode
+    has_slot: bool = Field(..., description="この曜日に実現可能枠が 1 つでもあるか")
+    best_slot: ProposeSlotItem | None = Field(
+        default=None, description="この曜日の最良枠 (has_slot=False なら null)"
+    )
+
+
+class ProposeCoverage(BaseModel):
+    """週N日カバレッジ集計 (希望が週N日なら、その N 日とも提案できているか)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    required_days: int = Field(
+        default=0,
+        ge=0,
+        description="必要日数. frequency_per_week 優先, 無ければ len(preferred_weekdays)",
+    )
+    requested_weekdays: list[int] = Field(
+        default_factory=list, description="希望曜日 (preferred_weekdays). 無ければ全曜日"
+    )
+    per_day: list[ProposeCoverageDay] = Field(
+        default_factory=list, description="希望曜日ごとの実現可否 + 最良枠"
+    )
+    covered_days: int = Field(default=0, ge=0, description="has_slot=True の曜日数")
+    fully_covered: bool = Field(
+        default=False, description="required_days>0 かつ covered_days>=required_days"
+    )
+
+
 class ProposeSlotsResponse(BaseModel):
     """``POST /v2/propose-slots`` レスポンス (ランキング済み候補リスト)."""
 
@@ -166,12 +201,17 @@ class ProposeSlotsResponse(BaseModel):
         default=None, description="address から判定した拠点 (あれば)"
     )
     slots: list[ProposeSlotItem] = Field(default_factory=list)
+    coverage: ProposeCoverage | None = Field(
+        default=None, description="週N日カバレッジ (希望曜日ごとの実現可否)"
+    )
     message: str | None = Field(
         default=None, description="0 件時の「入れられる枠なし」メッセージ等"
     )
 
 
 __all__ = [
+    "ProposeCoverage",
+    "ProposeCoverageDay",
     "ProposeMiniScheduleEntry",
     "ProposeSlotItem",
     "ProposeSlotsRequest",

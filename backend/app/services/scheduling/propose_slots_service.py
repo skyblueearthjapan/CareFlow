@@ -386,7 +386,7 @@ def _score_slot(
     return score
 
 
-def compute_proposed_slots(
+def compute_all_proposed_slots(
     buckets: dict[tuple[UUID, int, str], _CourseBucket],
     office_name_by_id: dict[UUID, str],
     candidate: CandidateInput,
@@ -394,9 +394,11 @@ def compute_proposed_slots(
     office_ids: list[UUID],
     office_code_by_id: dict[UUID, str | None] | None = None,
     candidate_name: str = "(提案)",
-    limit: int = 10,
 ) -> list[ProposedSlot]:
-    """全 (開講コース × 候補希望曜日) でソルバを回し、ランキング済みスロットを返す.
+    """全 (開講コース × 候補希望曜日) でソルバを回し、ランキング済み全スロットを返す.
+
+    ``compute_proposed_slots`` の limit なし版. slots[] と coverage で同一の
+    実現可能性判定 / ランキングを共有するための内部 API.
 
     実現不能なコース / 曜日は候補に出さない (= 入らない時間は提案しない).
     """
@@ -507,12 +509,103 @@ def compute_proposed_slots(
             r.course_code,
         )
     )
-    return results[:limit]
+    return results
+
+
+def compute_proposed_slots(
+    buckets: dict[tuple[UUID, int, str], _CourseBucket],
+    office_name_by_id: dict[UUID, str],
+    candidate: CandidateInput,
+    *,
+    office_ids: list[UUID],
+    office_code_by_id: dict[UUID, str | None] | None = None,
+    candidate_name: str = "(提案)",
+    limit: int = 10,
+) -> list[ProposedSlot]:
+    """全 (開講コース × 候補希望曜日) でソルバを回し、上位 ``limit`` 件を返す.
+
+    実現不能なコース / 曜日は候補に出さない (= 入らない時間は提案しない).
+    """
+    return compute_all_proposed_slots(
+        buckets,
+        office_name_by_id,
+        candidate,
+        office_ids=office_ids,
+        office_code_by_id=office_code_by_id,
+        candidate_name=candidate_name,
+    )[:limit]
+
+
+@dataclass
+class CoverageDay:
+    """カバレッジ 1 曜日ぶん (実現可否 + その曜日の最良枠)."""
+
+    weekday: int
+    has_slot: bool
+    best_slot: ProposedSlot | None
+
+
+@dataclass
+class Coverage:
+    """週N日カバレッジ集計 (API schema に詰める前の内部表現)."""
+
+    required_days: int
+    requested_weekdays: list[int]
+    per_day: list[CoverageDay]
+    covered_days: int
+    fully_covered: bool
+
+
+def compute_coverage(
+    all_proposed: list[ProposedSlot],
+    *,
+    requested_weekdays: frozenset[int],
+    required_days: int,
+) -> Coverage:
+    """ランキング済み全スロットを曜日ごとにグルーピングしカバレッジを算出する.
+
+    ``all_proposed`` はスコア降順済み (``compute_all_proposed_slots`` の戻り値)
+    を想定. 各希望曜日について、その曜日の最上位スロットを最良枠とし、
+    1 つでもあれば has_slot=True とする (実現可能性判定自体は流用; 再計算しない).
+
+    Args:
+        all_proposed: limit なしのランキング済みスロット列.
+        requested_weekdays: 希望曜日 (空なら全曜日を対象にする).
+        required_days: 必要日数 (frequency_per_week 優先, 無ければ希望曜日数).
+    """
+    target_weekdays = sorted(requested_weekdays) if requested_weekdays else list(range(7))
+
+    # 曜日 → その曜日の最上位スロット (all_proposed はスコア降順なので最初に出た物).
+    best_by_weekday: dict[int, ProposedSlot] = {}
+    for slot in all_proposed:
+        best_by_weekday.setdefault(slot.weekday, slot)
+
+    per_day: list[CoverageDay] = []
+    covered_days = 0
+    for wd in target_weekdays:
+        best = best_by_weekday.get(wd)
+        has_slot = best is not None
+        if has_slot:
+            covered_days += 1
+        per_day.append(CoverageDay(weekday=wd, has_slot=has_slot, best_slot=best))
+
+    fully_covered = required_days > 0 and covered_days >= required_days
+    return Coverage(
+        required_days=required_days,
+        requested_weekdays=target_weekdays,
+        per_day=per_day,
+        covered_days=covered_days,
+        fully_covered=fully_covered,
+    )
 
 
 __all__ = [
     "CandidateInput",
+    "Coverage",
+    "CoverageDay",
     "ProposedSlot",
+    "compute_all_proposed_slots",
+    "compute_coverage",
     "compute_proposed_slots",
     "load_week_course_buckets",
 ]

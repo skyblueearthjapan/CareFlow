@@ -413,6 +413,164 @@ async def test_propose_empty_when_no_courses(client, db) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 週N日カバレッジ (coverage)
+# ---------------------------------------------------------------------------
+
+
+async def _seed_open_course_with_anchor(
+    db,
+    *,
+    office: Office,
+    staff: Staff,
+    weekday: int,
+    code: str = "A",
+) -> Course:
+    """指定曜日に「近接の既存訪問 1 件だけ」の開講コースを作る (空き枠が出る状態)."""
+    course = await _seed_course(db, office=office, staff=staff, weekday=weekday, code=code)
+    pn = await _seed_patient(
+        db, office=office, code=f"ANC{weekday}{code}", lat=NEAR[0], lng=NEAR[1]
+    )
+    await _seed_visit(db, patient=pn, course=course, start=time(9, 30), end=time(10, 0))
+    return course
+
+
+@pytest.mark.asyncio
+async def test_coverage_partial_when_only_some_weekdays_open(client, db) -> None:
+    """希望週3日 (Mon/Tue/Wed) で Mon/Tue のみ開講 → 3 日中 2 日 has_slot, 未充足."""
+    admin = await _make_user(db, email="ps-cov1@example.com", role="admin")
+    office, staff = await _seed_office_staff(db)
+    # Mon(0), Tue(1) は空き枠あり / Wed(2) は開講なし.
+    await _seed_open_course_with_anchor(db, office=office, staff=staff, weekday=0)
+    await _seed_open_course_with_anchor(db, office=office, staff=staff, weekday=1)
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/propose-slots",
+        headers=_bearer(admin),
+        json=_base_payload(office, preferred_weekdays=["Mon", "Tue", "Wed"]),
+    )
+    assert res.status_code == 200, res.text
+    cov = res.json()["coverage"]
+    assert cov is not None
+    assert cov["required_days"] == 3  # len(preferred_weekdays)
+    assert cov["requested_weekdays"] == [0, 1, 2]
+    by_wd = {d["weekday"]: d for d in cov["per_day"]}
+    assert by_wd[0]["has_slot"] is True
+    assert by_wd[1]["has_slot"] is True
+    assert by_wd[2]["has_slot"] is False
+    assert by_wd[2]["best_slot"] is None
+    assert cov["covered_days"] == 2
+    assert cov["fully_covered"] is False
+
+
+@pytest.mark.asyncio
+async def test_coverage_fully_covered_when_all_weekdays_open(client, db) -> None:
+    """希望週3日が全て開講 → covered_days==3, fully_covered=True. best_slot 付与."""
+    admin = await _make_user(db, email="ps-cov2@example.com", role="admin")
+    office, staff = await _seed_office_staff(db)
+    for wd in (0, 1, 2):
+        await _seed_open_course_with_anchor(db, office=office, staff=staff, weekday=wd)
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/propose-slots",
+        headers=_bearer(admin),
+        json=_base_payload(office, preferred_weekdays=["Mon", "Tue", "Wed"]),
+    )
+    assert res.status_code == 200, res.text
+    cov = res.json()["coverage"]
+    assert cov["covered_days"] == 3
+    assert cov["fully_covered"] is True
+    for d in cov["per_day"]:
+        assert d["has_slot"] is True
+        assert d["best_slot"] is not None
+        # best_slot はその曜日のスロット (weekday 一致).
+        assert d["best_slot"]["weekday"] == d["weekday"]
+
+
+@pytest.mark.asyncio
+async def test_coverage_required_days_prefers_frequency_per_week(client, db) -> None:
+    """required_days は frequency_per_week 優先 (希望曜日数より frequency が勝つ)."""
+    admin = await _make_user(db, email="ps-cov3@example.com", role="admin")
+    office, staff = await _seed_office_staff(db)
+    await _seed_open_course_with_anchor(db, office=office, staff=staff, weekday=0)
+    await _seed_open_course_with_anchor(db, office=office, staff=staff, weekday=1)
+    await db.commit()
+
+    # 希望曜日 3 日だが frequency_per_week=2 → required_days=2, covered=2 → 充足.
+    res = await client.post(
+        "/api/v1/schedule/v2/propose-slots",
+        headers=_bearer(admin),
+        json=_base_payload(office, preferred_weekdays=["Mon", "Tue", "Wed"], frequency_per_week=2),
+    )
+    assert res.status_code == 200, res.text
+    cov = res.json()["coverage"]
+    assert cov["required_days"] == 2  # frequency_per_week 優先 (len=3 ではない).
+    assert cov["covered_days"] == 2
+    assert cov["fully_covered"] is True
+
+
+@pytest.mark.asyncio
+async def test_coverage_full_day_has_no_slot(client, db) -> None:
+    """満杯曜日 (6 名) は has_slot=False, best_slot=None になる."""
+    admin = await _make_user(db, email="ps-cov4@example.com", role="admin")
+    office, staff = await _seed_office_staff(db)
+    # Mon(0): 空き枠あり.
+    await _seed_open_course_with_anchor(db, office=office, staff=staff, weekday=0)
+    # Tue(1): 6 名で満杯 (異住所で散らす).
+    full_course = await _seed_course(db, office=office, staff=staff, weekday=1, code="A")
+    starts = [time(9, 30), time(10, 10), time(10, 50), time(13, 0), time(13, 40), time(14, 20)]
+    for i, st in enumerate(starts):
+        lat = BASE[0] + 0.02 * (i + 1)
+        lng = BASE[1] + 0.02 * (i + 1)
+        p = await _seed_patient(db, office=office, code=f"TFULL{i}", lat=lat, lng=lng)
+        end = time(st.hour, st.minute + 30) if st.minute < 30 else time(st.hour + 1, st.minute - 30)
+        await _seed_visit(db, patient=p, course=full_course, start=st, end=end)
+    await db.commit()
+
+    # 候補は異住所 (FAR) で同住所ペア成立を防ぎ、満杯曜日に枠が出ないようにする.
+    res = await client.post(
+        "/api/v1/schedule/v2/propose-slots",
+        headers=_bearer(admin),
+        json=_base_payload(office, lat=FAR[0], lng=FAR[1], preferred_weekdays=["Mon", "Tue"]),
+    )
+    assert res.status_code == 200, res.text
+    cov = res.json()["coverage"]
+    by_wd = {d["weekday"]: d for d in cov["per_day"]}
+    assert by_wd[0]["has_slot"] is True
+    assert by_wd[1]["has_slot"] is False
+    assert by_wd[1]["best_slot"] is None
+    assert cov["covered_days"] == 1
+
+
+@pytest.mark.asyncio
+async def test_coverage_best_slot_is_top_for_that_weekday(client, db) -> None:
+    """best_slot はその曜日 slots の最上位 (slots[] 内の同曜日トップと一致)."""
+    admin = await _make_user(db, email="ps-cov5@example.com", role="admin")
+    office, staff = await _seed_office_staff(db)
+    await _seed_open_course_with_anchor(db, office=office, staff=staff, weekday=0)
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/propose-slots",
+        headers=_bearer(admin),
+        json=_base_payload(office, preferred_weekdays=["Mon"]),
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    cov = body["coverage"]
+    mon = next(d for d in cov["per_day"] if d["weekday"] == 0)
+    assert mon["has_slot"] is True
+    # slots[] の Mon 最上位 (= スコア降順なので最初に出る Mon).
+    mon_slots = [s for s in body["slots"] if s["weekday"] == 0]
+    assert mon_slots, body["slots"]
+    top_mon = mon_slots[0]
+    assert mon["best_slot"]["start_time"] == top_mon["start_time"]
+    assert mon["best_slot"]["score"] == top_mon["score"]
+    assert mon["best_slot"]["course_label"] == top_mon["course_label"]
+
+
+# ---------------------------------------------------------------------------
 # 認証
 # ---------------------------------------------------------------------------
 

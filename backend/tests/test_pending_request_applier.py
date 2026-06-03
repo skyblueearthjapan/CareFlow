@@ -632,6 +632,195 @@ async def test_apply_patient_create_inserts_patient(db) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 5b) patient_create + proposed_visits (StageB-backend: 1 承認で作成 + PFV 確定)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apply_patient_create_with_proposed_visits_sets_normal_pfv(db) -> None:
+    """proposed_visits 付き承認 → 患者作成 + normal PFV (slot0) が設定される。"""
+    from app.models.patient_fixed_visit import PatientFixedVisit
+
+    user = await _make_user(db, "apl-pcreate-pv@example.com")
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="patient_create",
+        payload={
+            "code": "P-PV-001",
+            "name": "確定 太郎",
+            "status": "active",
+            "proposed_visits": [
+                {"weekday": 0, "start_time": "10:00", "duration_min": 60},
+                {"weekday": 3, "start_time": "14:30", "duration_min": 45},
+            ],
+        },
+    )
+
+    applier = PendingRequestApplier()
+    await applier.apply(db, pr)
+    await db.commit()
+
+    patient = await db.scalar(select(Patient).where(Patient.code == "P-PV-001"))
+    assert patient is not None
+
+    rows = (
+        await db.scalars(
+            select(PatientFixedVisit)
+            .where(PatientFixedVisit.patient_id == patient.id)
+            .order_by(PatientFixedVisit.weekday)
+        )
+    ).all()
+    assert len(rows) == 2
+    assert all(r.mode == "normal" for r in rows)
+    assert all(r.slot_index == 0 for r in rows)
+    assert rows[0].weekday == 0
+    assert rows[0].start_time == time(10, 0)
+    assert rows[0].duration_min == 60
+    assert rows[1].weekday == 3
+    assert rows[1].start_time == time(14, 30)
+    assert rows[1].duration_min == 45
+
+
+@pytest.mark.asyncio
+async def test_apply_patient_create_without_proposed_visits_creates_patient_only(db) -> None:
+    """proposed_visits 無し → 患者作成のみ (現行不変; PFV 0 件)。"""
+    from app.models.patient_fixed_visit import PatientFixedVisit
+
+    user = await _make_user(db, "apl-pcreate-nopv@example.com")
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="patient_create",
+        payload={
+            "code": "P-NOPV-001",
+            "name": "通常 花子",
+            "status": "active",
+        },
+    )
+
+    applier = PendingRequestApplier()
+    await applier.apply(db, pr)
+    await db.commit()
+
+    patient = await db.scalar(select(Patient).where(Patient.code == "P-NOPV-001"))
+    assert patient is not None
+
+    rows = (
+        await db.scalars(
+            select(PatientFixedVisit).where(PatientFixedVisit.patient_id == patient.id)
+        )
+    ).all()
+    assert len(rows) == 0
+
+
+@pytest.mark.asyncio
+async def test_apply_patient_create_with_invalid_proposed_visits_rolls_back(db) -> None:
+    """proposed_visits の検証失敗 → 例外 + 患者作成もロールバック (同一 TX)。"""
+    from app.models.patient_fixed_visit import PatientFixedVisit
+
+    user = await _make_user(db, "apl-pcreate-bad@example.com")
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="patient_create",
+        payload={
+            "code": "P-BADPV-001",
+            "name": "失敗 一郎",
+            "status": "active",
+            # weekday=9 は範囲外 → ProposedVisitsError
+            "proposed_visits": [
+                {"weekday": 9, "start_time": "10:00", "duration_min": 60},
+            ],
+        },
+    )
+
+    applier = PendingRequestApplier()
+    with pytest.raises(PendingRequestApplyError) as exc_info:
+        await applier.apply(db, pr)
+    assert exc_info.value.http_status == 422
+
+    # HTTP 層相当の rollback を模倣
+    await db.rollback()
+
+    # 患者は作成されていない (同一 TX rollback)
+    patient = await db.scalar(select(Patient).where(Patient.code == "P-BADPV-001"))
+    assert patient is None
+    # PFV も残っていない
+    rows = (await db.scalars(select(PatientFixedVisit))).all()
+    assert len(rows) == 0
+
+
+@pytest.mark.asyncio
+async def test_apply_patient_create_proposed_visits_does_not_touch_other_patients(db) -> None:
+    """proposed_visits 設定が special / 他患者の PFV を壊さない。"""
+    from app.models.patient_fixed_visit import PatientFixedVisit
+
+    user = await _make_user(db, "apl-pcreate-iso@example.com")
+
+    # 既存の別患者 + その normal/special PFV (壊れてはいけない)
+    other = await _make_patient(db, code="P-OTHER-PV")
+    db.add(
+        PatientFixedVisit(
+            patient_id=other.id,
+            mode="normal",
+            weekday=1,
+            start_time=time(9, 0),
+            duration_min=30,
+            slot_index=0,
+        )
+    )
+    db.add(
+        PatientFixedVisit(
+            patient_id=other.id,
+            mode="special",
+            weekday=2,
+            start_time=time(11, 0),
+            duration_min=30,
+            slot_index=0,
+        )
+    )
+    await db.commit()
+
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="patient_create",
+        payload={
+            "code": "P-NEWISO-001",
+            "name": "隔離 太郎",
+            "status": "active",
+            "proposed_visits": [
+                {"weekday": 0, "start_time": "10:00", "duration_min": 60},
+            ],
+        },
+    )
+
+    applier = PendingRequestApplier()
+    await applier.apply(db, pr)
+    await db.commit()
+
+    # 他患者の PFV は normal/special ともに維持
+    other_rows = (
+        await db.scalars(select(PatientFixedVisit).where(PatientFixedVisit.patient_id == other.id))
+    ).all()
+    assert len(other_rows) == 2
+    modes = {r.mode for r in other_rows}
+    assert modes == {"normal", "special"}
+
+    # 新患者の normal PFV は 1 件
+    new_patient = await db.scalar(select(Patient).where(Patient.code == "P-NEWISO-001"))
+    assert new_patient is not None
+    new_rows = (
+        await db.scalars(
+            select(PatientFixedVisit).where(PatientFixedVisit.patient_id == new_patient.id)
+        )
+    ).all()
+    assert len(new_rows) == 1
+    assert new_rows[0].mode == "normal"
+
+
+# ---------------------------------------------------------------------------
 # 6) patient_cancel
 # ---------------------------------------------------------------------------
 

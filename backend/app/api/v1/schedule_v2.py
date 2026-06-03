@@ -84,6 +84,8 @@ from app.schemas.v2.board import (
 from app.schemas.v2.propose_slots import (
     WEEKDAY_CODE_TO_INT,
     WEEKDAY_INT_TO_CODE,
+    ProposeCoverage,
+    ProposeCoverageDay,
     ProposeMiniScheduleEntry,
     ProposeSlotItem,
     ProposeSlotsRequest,
@@ -136,7 +138,9 @@ from app.services.scheduling.board_service import (
 )
 from app.services.scheduling.propose_slots_service import (
     CandidateInput,
-    compute_proposed_slots,
+    ProposedSlot,
+    compute_all_proposed_slots,
+    compute_coverage,
     load_week_course_buckets,
 )
 
@@ -1640,6 +1644,36 @@ async def _resolve_candidate_coords(
     return payload.lat, payload.lng, resolved_office_id
 
 
+def _proposed_to_item(p: ProposedSlot) -> ProposeSlotItem:
+    """内部表現 ``ProposedSlot`` を API schema ``ProposeSlotItem`` へ変換."""
+    return ProposeSlotItem(
+        office_id=p.office_id,
+        office_name=p.office_name,
+        weekday=p.weekday,
+        weekday_code=WEEKDAY_INT_TO_CODE[p.weekday],  # type: ignore[arg-type]
+        course_code=p.course_code,
+        course_label=p.course_label,
+        staff_name=p.staff_name,
+        start_time=f"{p.start.hour:02d}:{p.start.minute:02d}",
+        end_time=f"{p.end.hour:02d}:{p.end.minute:02d}",
+        score=p.score,
+        reasons=p.reasons,
+        warnings=p.warnings,
+        is_pair=p.is_pair,
+        pair_partner=p.pair_partner,
+        mini_schedule=[
+            ProposeMiniScheduleEntry(
+                time=str(e["time"]),
+                name=str(e["name"]),
+                ins=e["ins"],  # type: ignore[arg-type]
+                is_here=bool(e["is_here"]),
+                is_pair=bool(e["is_pair"]),
+            )
+            for e in p.mini_schedule
+        ],
+    )
+
+
 @router.post(
     "/v2/propose-slots",
     response_model=ProposeSlotsResponse,
@@ -1711,45 +1745,45 @@ async def propose_slots_endpoint(
         existing_patient_id=payload.existing_patient_id,
     )
 
-    proposed = compute_proposed_slots(
+    # ランキング済み全スロットを 1 回算出し、slots[] (上位 limit) と coverage で共有.
+    all_proposed = compute_all_proposed_slots(
         buckets,
         office_name_by_id,
         candidate,
         office_ids=office_ids,
         office_code_by_id=office_code_by_id,
-        limit=payload.limit,
     )
+    proposed = all_proposed[: payload.limit]
 
-    # 5. API schema に詰める.
-    slots_out = [
-        ProposeSlotItem(
-            office_id=p.office_id,
-            office_name=p.office_name,
-            weekday=p.weekday,
-            weekday_code=WEEKDAY_INT_TO_CODE[p.weekday],  # type: ignore[arg-type]
-            course_code=p.course_code,
-            course_label=p.course_label,
-            staff_name=p.staff_name,
-            start_time=f"{p.start.hour:02d}:{p.start.minute:02d}",
-            end_time=f"{p.end.hour:02d}:{p.end.minute:02d}",
-            score=p.score,
-            reasons=p.reasons,
-            warnings=p.warnings,
-            is_pair=p.is_pair,
-            pair_partner=p.pair_partner,
-            mini_schedule=[
-                ProposeMiniScheduleEntry(
-                    time=str(e["time"]),
-                    name=str(e["name"]),
-                    ins=e["ins"],  # type: ignore[arg-type]
-                    is_here=bool(e["is_here"]),
-                    is_pair=bool(e["is_pair"]),
-                )
-                for e in p.mini_schedule
-            ],
-        )
-        for p in proposed
-    ]
+    # 5. API schema に詰める (slots[] は従来通り上位 limit 件).
+    slots_out = [_proposed_to_item(p) for p in proposed]
+
+    # 6. 週N日カバレッジ: 希望曜日ごとに実現可否 + 最良枠をグルーピング.
+    #    required_days は frequency_per_week 優先, 無ければ希望曜日数.
+    if payload.frequency_per_week is not None:
+        required_days = payload.frequency_per_week
+    else:
+        required_days = len(preferred_weekday_ints)
+    cov = compute_coverage(
+        all_proposed,
+        requested_weekdays=preferred_weekday_ints,
+        required_days=required_days,
+    )
+    coverage = ProposeCoverage(
+        required_days=cov.required_days,
+        requested_weekdays=cov.requested_weekdays,
+        per_day=[
+            ProposeCoverageDay(
+                weekday=d.weekday,
+                weekday_code=WEEKDAY_INT_TO_CODE[d.weekday],  # type: ignore[arg-type]
+                has_slot=d.has_slot,
+                best_slot=_proposed_to_item(d.best_slot) if d.best_slot is not None else None,
+            )
+            for d in cov.per_day
+        ],
+        covered_days=cov.covered_days,
+        fully_covered=cov.fully_covered,
+    )
 
     message = None if slots_out else "入れられる枠なし (実現可能な空き枠が見つかりませんでした)"
 
@@ -1760,6 +1794,7 @@ async def propose_slots_endpoint(
         candidate_lng=cand_lng,
         resolved_office_id=resolved_office_id,
         slots=slots_out,
+        coverage=coverage,
         message=message,
     )
 

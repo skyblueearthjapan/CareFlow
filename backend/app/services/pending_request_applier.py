@@ -51,6 +51,10 @@ from app.models.staff_companion_assignment import StaffCompanionAssignment
 from app.models.visit import VISIT_STATUS_CANCELLED, Visit
 from app.schemas.v2.enums import RequestScope, RequestStatus, RequestType
 from app.services.manager_course_sync import sync_manager_course_templates
+from app.services.proposed_visits_pfv import (
+    ProposedVisitsError,
+    apply_proposed_visits_as_normal_pfv,
+)
 
 
 class PendingRequestApplyError(Exception):
@@ -397,7 +401,14 @@ async def _apply_staff_create(db: AsyncSession, request: PendingRequest, payload
 async def _apply_patient_create(
     db: AsyncSession, request: PendingRequest, payload: _Payload
 ) -> None:
-    """``patient_create``: 新規患者を INSERT."""
+    """``patient_create``: 新規患者を INSERT.
+
+    StageB-backend: payload に ``proposed_visits`` (任意) があれば、患者 INSERT 後に
+    同一 TX でその患者の normal PFV (slot_index=0) を設定する
+    (= 患者作成 + スケジュール確定を 1 承認で). ``proposed_visits`` 無し / 空の場合は
+    従来どおり患者作成のみ (現行不変). 失敗時は患者 INSERT もまとめて呼び出し元で
+    rollback される。
+    """
     code = payload.get("code")
     name = payload.get("name")
     if not code or not name:
@@ -426,6 +437,20 @@ async def _apply_patient_create(
     )
     db.add(row)
     await db.flush()
+
+    # StageB-backend: proposed_visits があれば normal PFV を同一 TX で設定する。
+    proposed_visits = payload.get("proposed_visits")
+    if proposed_visits:
+        try:
+            await apply_proposed_visits_as_normal_pfv(
+                db, patient=row, proposed_visits=proposed_visits
+            )
+        except ProposedVisitsError as exc:
+            # 共通サービスの検証エラーを applier の業務エラーに翻訳する
+            # (患者 INSERT も呼び出し元で rollback される)。
+            raise PendingRequestApplyError(
+                f"patient_create: {exc}", http_status=exc.http_status
+            ) from exc
 
 
 async def _apply_patient_cancel(
