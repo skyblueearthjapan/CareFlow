@@ -8,8 +8,19 @@
  * SlideSheet / Toast。ランキングデータは `./mockData` (RANK_PAIR / RANK_NORMAL)。
  */
 
-import { useState, type CSSProperties, type ReactNode } from 'react';
+import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
 import { X, MapPin, User, Heart, Calendar, Bell, Sparkles } from 'lucide-react';
+
+import {
+  TIME_TYPE_OPTIONS,
+  VISIT_FREQUENCY_OPTIONS,
+  VISIT_FREQUENCY_LABELS,
+  SEX_RESTRICTION_OPTIONS,
+  SEX_RESTRICTION_LABEL,
+  WEEKDAY_KEYS,
+  WEEKDAY_LABELS_JA,
+  type WeekdayKey,
+} from '@/lib/schemas/patient';
 
 import {
   CF_PATIENTS,
@@ -288,6 +299,61 @@ const KV = ({ k, v }: { k: string; v: ReactNode }) => (
 
 // ============================ Suggest sheet ============================
 
+/**
+ * サービス時間プリセット — 患者マスタ `WeeklyPatternEditor` の
+ * `SERVICE_MINUTES_PRESETS` と一致 (15/30/45/60)。
+ */
+const SUGGEST_SERVICE_PRESETS = [15, 30, 45, 60] as const;
+
+/**
+ * 希望開始/終了時刻のプルダウン候補。
+ * 患者マスタは `<input type="time">` (自由 HH:MM) だが、現場ボードの提案は
+ * モバイル探索用途のため 30 分刻み 06:00〜20:00 の選択式で簡略化する
+ * (タスク許容: 「難しければ 30 分刻み 06:00-20:00 のプルダウンで可」)。
+ */
+const SUGGEST_TIME_OPTIONS: string[] = (() => {
+  const out: string[] = [];
+  for (let m = 6 * 60; m <= 20 * 60; m += 30) {
+    const h = Math.floor(m / 60);
+    const mm = m % 60;
+    out.push(`${String(h).padStart(2, '0')}:${String(mm).padStart(2, '0')}`);
+  }
+  return out;
+})();
+
+/** 時間帯では開始/終了の両方、固定では開始のみ実質有効。 */
+type SuggestOfficeResult = {
+  office: OfficeKey;
+  name: string;
+  confidence: 'high' | 'low' | 'none';
+} | null;
+
+/**
+ * 住所 → 主担当拠点の簡易自動判定 (Phase 1 モック)。
+ *
+ * 患者マスタの `/offices/resolve` (useResolveOffice) と同 UX
+ * (住所入力 → デバウンス → 拠点名 + confidence 表示) を、認証 / QueryClient に
+ * 結合せずに再現する。判定ロジックは現場モックの区 → 拠点対応:
+ *   稲毛区 / 花見川区  → 稲毛
+ *   若葉区            → 都賀
+ * それ以外 / 空        → confidence='none' (手動選択を促す)
+ */
+function resolveOfficeFromAddress(addr: string): SuggestOfficeResult {
+  const a = addr.trim();
+  if (!a) return null;
+  if (a.includes('若葉区') || a.includes('都賀')) {
+    return { office: 'TSUGA', name: '都賀', confidence: 'high' };
+  }
+  if (a.includes('稲毛区') || a.includes('花見川区')) {
+    return { office: 'INAGE', name: '稲毛', confidence: 'high' };
+  }
+  if (a.includes('千葉市')) {
+    // 市内だが区が特定できない → 稲毛を低信頼で仮置き。
+    return { office: 'INAGE', name: '稲毛', confidence: 'low' };
+  }
+  return { office: 'INAGE', name: '稲毛', confidence: 'none' };
+}
+
 export function SuggestSheet({
   onClose,
   onToast,
@@ -298,10 +364,47 @@ export function SuggestSheet({
   const [seg, setSeg] = useState(0);
   const [addr, setAddr] = useState('千葉市稲毛区小仲台 6-2-1');
   const [paired, setPaired] = useState(false);
-  const [dows, setDows] = useState<Record<string, boolean>>({ 火: true, 木: true });
-  const [period, setPeriod] = useState('午前');
+
+  // マスタ準拠の訪問条件 state -------------------------------------------------
+  const [frequencyPerWeek, setFrequencyPerWeek] = useState(1); // 1〜7
+  const [visitFrequency, setVisitFrequency] =
+    useState<(typeof VISIT_FREQUENCY_OPTIONS)[number]>('every'); // 毎週/隔週/月次
+  const [weekdays, setWeekdays] = useState<Record<WeekdayKey, boolean>>({
+    Mon: false,
+    Tue: true,
+    Wed: false,
+    Thu: true,
+    Fri: false,
+    Sat: false,
+    Sun: false,
+  });
+  const [serviceMinutes, setServiceMinutes] = useState(60); // 1〜180
+  const [timeType, setTimeType] = useState<(typeof TIME_TYPE_OPTIONS)[number]>('終日'); // 既定は終日
+  const [preferredStart, setPreferredStart] = useState('09:00');
+  const [preferredEnd, setPreferredEnd] = useState('12:00');
+  const [requiresMultipleStaff, setRequiresMultipleStaff] = useState(false);
+  const [sexRestriction, setSexRestriction] = useState<
+    '' | (typeof SEX_RESTRICTION_OPTIONS)[number]
+  >('');
+
   const [results, setResults] = useState<RankCandidate[] | null>(null);
   const [added, setAdded] = useState<Record<number, boolean>>({});
+
+  // 住所 → 拠点自動判定 (デバウンス, マスタ /offices/resolve と同 UX の簡易版)。
+  const [office, setOffice] = useState<SuggestOfficeResult>(() =>
+    resolveOfficeFromAddress('千葉市稲毛区小仲台 6-2-1'),
+  );
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setOffice(resolveOfficeFromAddress(addr));
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [addr]);
+
+  // 時間タイプが「固定」「時間帯」のときのみ時刻欄を表示 (マスタの条件付き表示)。
+  const showTimeRange = timeType === '固定' || timeType === '時間帯';
+  // 「固定」は開始のみ実質有効、「時間帯」は開始 + 終了。
+  const showEnd = timeType === '時間帯';
 
   const runSuggest = () => {
     setResults(paired ? RANK_PAIR : RANK_NORMAL);
@@ -405,56 +508,229 @@ export function SuggestSheet({
               通常の例に戻す
             </button>
           </div>
+          {/* 住所 → 拠点自動判定ヒント (マスタ /offices/resolve と同 UX) */}
+          {office && office.confidence !== 'none' && (
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                fontSize: 11.5,
+                fontWeight: 700,
+                color: office.confidence === 'high' ? '#0E8472' : _TERRAD,
+                background: office.confidence === 'high' ? '#E9FAF4' : '#FCF1DF',
+                border: `1px solid ${office.confidence === 'high' ? '#C7EFE4' : '#F2DDB8'}`,
+                borderRadius: 10,
+                padding: '7px 10px',
+                marginTop: 7,
+              }}
+            >
+              <MapPin size={13} />
+              担当拠点: {office.name}
+              <span style={{ fontWeight: 600, color: _INK2 }}>
+                （自動判定{office.confidence === 'low' ? '・要確認' : ''}）
+              </span>
+            </div>
+          )}
+          {office && office.confidence === 'none' && (
+            <div
+              style={{
+                fontSize: 11.5,
+                fontWeight: 700,
+                color: _TERRAD,
+                marginTop: 7,
+              }}
+            >
+              ⚠ 拠点エリア外: 住所をご確認ください
+            </div>
+          )}
           <div style={{ fontSize: 10.5, color: _INK2, marginTop: 5, lineHeight: 1.5 }}>
             ※ 既存患者と<b>同住所（100m以内）</b>のとき、1位に「同住所ペア」候補を表示します。
           </div>
         </Field>
 
         <div style={{ display: 'flex', gap: 12 }}>
-          <Field label="サービス時間" flex>
-            <select style={cfInput} defaultValue="60分">
-              <option>30分</option>
-              <option>60分</option>
-              <option>90分</option>
-            </select>
+          <Field label="週訪問回数" flex>
+            <Stepper
+              value={frequencyPerWeek}
+              min={1}
+              max={7}
+              suffix="回 / 週"
+              onChange={setFrequencyPerWeek}
+            />
           </Field>
-          <Field label="頻度" flex>
-            <select style={cfInput} defaultValue="週1回">
-              <option>週1回</option>
-              <option>週2回</option>
-              <option>隔週</option>
+          <Field label="訪問頻度" flex>
+            <select
+              style={cfInput}
+              value={visitFrequency}
+              onChange={(e) =>
+                setVisitFrequency(e.target.value as (typeof VISIT_FREQUENCY_OPTIONS)[number])
+              }
+            >
+              {VISIT_FREQUENCY_OPTIONS.map((k) => (
+                <option key={k} value={k}>
+                  {VISIT_FREQUENCY_LABELS[k]}
+                </option>
+              ))}
             </select>
           </Field>
         </div>
 
         <Field label="希望曜日（複数可）">
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-            {['月', '火', '水', '木', '金', '土'].map((d) => {
-              const on = !!dows[d];
+            {WEEKDAY_KEYS.map((d) => {
+              const on = !!weekdays[d];
               return (
                 <button
                   key={d}
-                  onClick={() => setDows((s) => ({ ...s, [d]: !s[d] }))}
+                  onClick={() => setWeekdays((s) => ({ ...s, [d]: !s[d] }))}
                   style={{ ...chip, ...(on ? chipOn : {}) }}
                 >
-                  {d}
+                  {WEEKDAY_LABELS_JA[d]}
                 </button>
               );
             })}
           </div>
         </Field>
-        <Field label="希望時間帯">
-          <div style={{ display: 'flex', gap: 8 }}>
-            {['午前', '午後', '指定なし'].map((t) => (
-              <button
-                key={t}
-                onClick={() => setPeriod(t)}
-                style={{ ...chip, ...(period === t ? chipOn : {}) }}
-              >
-                {t}
-              </button>
-            ))}
+
+        <Field label="サービス時間">
+          <input
+            type="number"
+            min={1}
+            max={180}
+            value={serviceMinutes}
+            onChange={(e) => {
+              const n = Number(e.target.value);
+              setServiceMinutes(Number.isFinite(n) ? Math.min(180, Math.max(1, n)) : 30);
+            }}
+            style={cfInput}
+          />
+          <div style={{ display: 'flex', gap: 7, marginTop: 7, flexWrap: 'wrap' }}>
+            {SUGGEST_SERVICE_PRESETS.map((m) => {
+              const on = serviceMinutes === m;
+              return (
+                <button
+                  key={m}
+                  onClick={() => setServiceMinutes(m)}
+                  style={{ ...miniChip, ...(on ? miniChipOn : {}) }}
+                >
+                  {m}分
+                </button>
+              );
+            })}
           </div>
+        </Field>
+
+        <Field label="時間タイプ">
+          <select
+            style={cfInput}
+            value={timeType}
+            onChange={(e) => setTimeType(e.target.value as (typeof TIME_TYPE_OPTIONS)[number])}
+          >
+            {TIME_TYPE_OPTIONS.map((t) => (
+              <option key={t} value={t}>
+                {t}
+              </option>
+            ))}
+          </select>
+        </Field>
+
+        {showTimeRange && (
+          <div style={{ display: 'flex', gap: 12 }}>
+            <Field label="希望開始時刻" flex>
+              <select
+                style={cfInput}
+                value={preferredStart}
+                onChange={(e) => setPreferredStart(e.target.value)}
+              >
+                {SUGGEST_TIME_OPTIONS.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            {showEnd && (
+              <Field label="希望終了時刻" flex>
+                <select
+                  style={cfInput}
+                  value={preferredEnd}
+                  onChange={(e) => setPreferredEnd(e.target.value)}
+                >
+                  {SUGGEST_TIME_OPTIONS.map((t) => (
+                    <option key={t} value={t}>
+                      {t}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            )}
+          </div>
+        )}
+
+        <Field label="性別制限">
+          <select
+            style={cfInput}
+            value={sexRestriction}
+            onChange={(e) =>
+              setSexRestriction(e.target.value as '' | (typeof SEX_RESTRICTION_OPTIONS)[number])
+            }
+          >
+            <option value="">なし</option>
+            {SEX_RESTRICTION_OPTIONS.map((v) => (
+              <option key={v} value={v}>
+                {SEX_RESTRICTION_LABEL[v]}
+              </option>
+            ))}
+          </select>
+        </Field>
+
+        <Field label="複数スタッフ">
+          <button
+            onClick={() => setRequiresMultipleStaff((v) => !v)}
+            aria-pressed={requiresMultipleStaff}
+            style={{
+              width: '100%',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+              padding: '11px 13px',
+              minHeight: 46,
+              borderRadius: 12,
+              border: `2px solid ${requiresMultipleStaff ? _TERRA : _LINE}`,
+              background: requiresMultipleStaff ? '#FCEBD6' : '#FFFDF9',
+              textAlign: 'left',
+            }}
+          >
+            <span
+              style={{
+                width: 22,
+                height: 22,
+                flex: '0 0 auto',
+                borderRadius: 7,
+                display: 'grid',
+                placeItems: 'center',
+                background: requiresMultipleStaff ? _TERRA : '#fff',
+                border: `2px solid ${requiresMultipleStaff ? _TERRA : _INK3}`,
+                color: '#fff',
+                fontSize: 13,
+                fontWeight: 700,
+                lineHeight: 1,
+              }}
+            >
+              {requiresMultipleStaff ? '✓' : ''}
+            </span>
+            <span
+              style={{
+                fontFamily: 'var(--font-serif)',
+                fontSize: 13.5,
+                fontWeight: 700,
+                color: requiresMultipleStaff ? _TERRAD : _INK2,
+              }}
+            >
+              2名以上での訪問が必要
+            </span>
+          </button>
         </Field>
 
         <button
@@ -843,6 +1119,93 @@ const miniChip: CSSProperties = {
   fontWeight: 700,
   border: '2px solid transparent',
 };
+const miniChipOn: CSSProperties = {
+  background: '#FCEBD6',
+  color: _TERRAD,
+  borderColor: _TERRA,
+};
+
+/**
+ * 数値ステッパー — 患者マスタ `frequency_per_week` (1〜7) の数値入力を、
+ * 現場ボードの Warm 意匠 (cfInput と同枠) でタップしやすい ± ボタンにしたもの。
+ */
+function Stepper({
+  value,
+  min,
+  max,
+  suffix,
+  onChange,
+}: {
+  value: number;
+  min: number;
+  max: number;
+  suffix?: string;
+  onChange: (next: number) => void;
+}) {
+  const clamp = (n: number) => Math.min(max, Math.max(min, n));
+  const btn: CSSProperties = {
+    width: 38,
+    height: 38,
+    flex: '0 0 auto',
+    borderRadius: 10,
+    background: '#F4EFE7',
+    color: _TERRAD,
+    fontFamily: 'var(--font-serif)',
+    fontSize: 20,
+    fontWeight: 700,
+    lineHeight: 1,
+    display: 'grid',
+    placeItems: 'center',
+  };
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        border: `2px solid ${_LINE}`,
+        borderRadius: 12,
+        background: '#FFFDF9',
+        padding: 4,
+        minHeight: 46,
+      }}
+    >
+      <button
+        type="button"
+        aria-label="減らす"
+        onClick={() => onChange(clamp(value - 1))}
+        disabled={value <= min}
+        style={{ ...btn, opacity: value <= min ? 0.4 : 1 }}
+      >
+        −
+      </button>
+      <span
+        style={{
+          flex: 1,
+          textAlign: 'center',
+          fontFamily: 'var(--font-serif)',
+          fontSize: 15,
+          fontWeight: 700,
+          color: _INK,
+        }}
+      >
+        {value}
+        {suffix ? (
+          <span style={{ fontSize: 11, color: _INK2, marginLeft: 4 }}>{suffix}</span>
+        ) : null}
+      </span>
+      <button
+        type="button"
+        aria-label="増やす"
+        onClick={() => onChange(clamp(value + 1))}
+        disabled={value >= max}
+        style={{ ...btn, opacity: value >= max ? 0.4 : 1 }}
+      >
+        ＋
+      </button>
+    </div>
+  );
+}
 
 export function Toast({ msg }: { msg: string }) {
   return (
