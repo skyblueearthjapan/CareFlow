@@ -62,8 +62,10 @@ def _bearer(user: User) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-async def _seed_office_staff(db, *, name: str = "稲") -> tuple[Office, Staff]:
-    office = Office(name=name)
+async def _seed_office_staff(
+    db, *, name: str = "稲", code: str | None = "INAGE"
+) -> tuple[Office, Staff]:
+    office = Office(name=name, code=code)
     db.add(office)
     await db.flush()
     staff = Staff(name="担当看護師", role="staff", is_trainee=False, primary_office_id=office.id)
@@ -183,6 +185,32 @@ async def test_propose_returns_feasible_slots_ranked(client, db) -> None:
     top = body["slots"][0]
     assert any(e["is_here"] for e in top["mini_schedule"])
     assert any(e["name"] == "P-EX1" for e in top["mini_schedule"])
+
+
+@pytest.mark.asyncio
+async def test_propose_course_label_uses_office_code_tsuga(client, db) -> None:
+    """course_label は office_code 基準の正準短縮 (TSUGA→津) で「津A」になる.
+
+    拠点名先頭 1 字ヒューリスティック (都賀→「都」) ではなく
+    ``OFFICE_CODE_TO_SHORT`` 経由で board / 患者 Excel と同一短縮へ統一する.
+    """
+    admin = await _make_user(db, email="ps-admin-tsuga@example.com", role="admin")
+    office, staff = await _seed_office_staff(db, name="都賀", code="TSUGA")
+    course = await _seed_course(db, office=office, staff=staff)
+    pn = await _seed_patient(db, office=office, code="EX1", lat=NEAR[0], lng=NEAR[1])
+    await _seed_visit(db, patient=pn, course=course, start=time(9, 30), end=time(10, 0))
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/propose-slots",
+        headers=_bearer(admin),
+        json=_base_payload(office),
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["slots"], body
+    for s in body["slots"]:
+        assert s["course_label"] == "津A"
 
 
 @pytest.mark.asyncio

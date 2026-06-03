@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import date, timedelta
 from datetime import time as time_cls
 from typing import Annotated
 from uuid import UUID
@@ -71,6 +72,15 @@ from app.schemas.v2.auto_schedule_v2 import (
     WeekdayStaffCapacityItem,
     WeekdayStaffCapacityResponse,
 )
+from app.schemas.v2.board import (
+    BoardCapacity,
+    BoardCell,
+    BoardCourse,
+    BoardOffice,
+    BoardResponse,
+    BoardVisit,
+    BoardWeekday,
+)
 from app.schemas.v2.propose_slots import (
     WEEKDAY_CODE_TO_INT,
     WEEKDAY_INT_TO_CODE,
@@ -114,6 +124,15 @@ from app.services.scheduling.auto_allocator_v2 import (
     reset_visits_to_fixed,
     run_v2_pipeline,
     unassign_all_staff_for_week,
+)
+from app.services.scheduling.board_service import (
+    MAX_PATIENTS_PER_COURSE,
+    BoardCourseData,
+    load_board_buckets,
+    load_weekday_staff_counts,
+)
+from app.services.scheduling.board_service import (
+    _office_short as _board_office_short,
 )
 from app.services.scheduling.propose_slots_service import (
     CandidateInput,
@@ -1665,7 +1684,7 @@ async def propose_slots_endpoint(
 
     # 2. 対象週 × 拠点の実 Visit を 1 回ロードしてコース単位に集計.
     try:
-        buckets, office_name_by_id = await load_week_course_buckets(
+        buckets, office_name_by_id, office_code_by_id = await load_week_course_buckets(
             db,
             iso_year=payload.iso_year,
             iso_week=payload.iso_week,
@@ -1697,6 +1716,7 @@ async def propose_slots_endpoint(
         office_name_by_id,
         candidate,
         office_ids=office_ids,
+        office_code_by_id=office_code_by_id,
         limit=payload.limit,
     )
 
@@ -1741,6 +1761,173 @@ async def propose_slots_endpoint(
         resolved_office_id=resolved_office_id,
         slots=slots_out,
         message=message,
+    )
+
+
+# ---------------------------------------------------------------------------
+# board (Phase2-3a: モバイル現場ボード /m 用の週ボード read API)
+# ---------------------------------------------------------------------------
+
+
+def _board_course_to_schema(
+    course: BoardCourseData,
+) -> BoardCourse:
+    """``BoardCourseData`` → API schema ``BoardCourse`` (実時刻 + 容量集計)."""
+    visits_out = [
+        BoardVisit(
+            visit_id=bv.visit_id,
+            patient_id=bv.patient_id,
+            patient_name=bv.patient_name,
+            patient_kana=bv.patient_kana,
+            insurance=bv.insurance,  # type: ignore[arg-type]
+            service_minutes=bv.service_minutes,
+            start_time=f"{bv.start_time.hour:02d}:{bv.start_time.minute:02d}",
+            end_time=f"{bv.end_time.hour:02d}:{bv.end_time.minute:02d}",
+            address=bv.address,
+            lat=bv.lat,
+            lng=bv.lng,
+            same_address_group_id=bv.same_address_group_id,
+            mode=bv.mode,  # type: ignore[arg-type]
+            slot_index=bv.slot_index,
+        )
+        for bv in course.visits
+    ]
+    filled = len(visits_out)
+    total_minutes = sum(bv.service_minutes for bv in course.visits)
+    return BoardCourse(
+        course_id=course.course_id,
+        course_code=course.course_code,
+        course_label=f"{_board_office_short(course.office_code)}{course.course_code}",
+        staff_name=course.staff_name,
+        visits=visits_out,
+        capacity=BoardCapacity(
+            filled=filled,
+            max=MAX_PATIENTS_PER_COURSE,
+            total_minutes=total_minutes,
+            remaining=max(0, MAX_PATIENTS_PER_COURSE - filled),
+        ),
+    )
+
+
+@router.get(
+    "/v2/board",
+    response_model=BoardResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Phase2-3a: モバイル現場ボード /m 用の週ボード (実 Visit) を返す",
+)
+async def board_endpoint(
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    iso_year: int = Query(..., ge=2020, le=2100),
+    iso_week: int = Query(..., ge=1, le=53),
+    office_id: UUID | None = Query(
+        default=None,
+        description="単一拠点に絞る場合に指定. 未指定なら全 active 拠点を対象.",
+    ),
+) -> BoardResponse:
+    """対象週 × 拠点の実 Visit を office × weekday × course 構造で返す read-only API.
+
+    実 Visit 由来の **実時刻** (start/end) をそのまま返す (モックの空き枠は出さない).
+    休講曜日 (その拠点・曜日にスタッフ 0 名) は courses を空にし closed=True とする.
+    """
+    # 対象拠点: office_id 指定なら単一、未指定なら全 active 拠点.
+    if office_id is not None:
+        office_ids = [office_id]
+    else:
+        rows = await db.scalars(select(Office.id).where(Office.deleted_at.is_(None)))
+        office_ids = list(rows.all())
+
+    # 実 Visit を 1 回ロードしてコース単位に集計 (同住所 group_id 付与済).
+    try:
+        buckets, office_name_by_id, _office_code_by_id = await load_board_buckets(
+            db,
+            iso_year=iso_year,
+            iso_week=iso_week,
+            office_ids=office_ids,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    # (office, weekday) のスタッフ数 (休講判定 + ヘッダー集計).
+    staff_counts, manager_counts = await load_weekday_staff_counts(
+        db,
+        iso_year=iso_year,
+        iso_week=iso_week,
+        office_ids=office_ids,
+    )
+
+    # 対象拠点: 明示指定 office_ids を基本にしつつ、visit / staff に出た office も含める.
+    target_office_ids: set[UUID] = set(office_ids)
+    target_office_ids |= {b.office_id for b in buckets.values()}
+    target_office_ids |= {oid for (oid, _wd) in staff_counts}
+    target_office_ids |= {oid for (oid, _wd) in manager_counts}
+    if office_id is not None:
+        # 単一指定時はその拠点に限定する.
+        target_office_ids = {office_id}
+
+    # offices[] は安定順 (拠点名 → id) で返す.
+    offices_sorted = sorted(
+        target_office_ids,
+        key=lambda oid: (office_name_by_id.get(oid, ""), str(oid)),
+    )
+    offices_out = [
+        BoardOffice(office_id=oid, office_name=office_name_by_id.get(oid, ""))
+        for oid in offices_sorted
+    ]
+
+    # weekdays[] (曜日ヘッダー: 日付 + 全拠点合計患者数).
+    week_monday = date.fromisocalendar(iso_year, iso_week, 1)
+    patients_per_weekday: dict[int, int] = {}
+    for b in buckets.values():
+        patients_per_weekday[b.weekday] = patients_per_weekday.get(b.weekday, 0) + len(b.visits)
+    weekdays_out = [
+        BoardWeekday(
+            weekday=wd,
+            weekday_code=WEEKDAY_INT_TO_CODE[wd],  # type: ignore[arg-type]
+            date=(week_monday + timedelta(days=wd)).isoformat(),
+            patient_count=patients_per_weekday.get(wd, 0),
+        )
+        for wd in range(7)
+    ]
+
+    # board[]: office × weekday ごとに courses をまとめる.
+    courses_by_cell: dict[tuple[UUID, int], list[BoardCourseData]] = {}
+    for b in buckets.values():
+        courses_by_cell.setdefault((b.office_id, b.weekday), []).append(b)
+
+    board_out: list[BoardCell] = []
+    for oid in offices_sorted:
+        for wd in range(7):
+            staff_count = staff_counts.get((oid, wd), 0)
+            manager_count = manager_counts.get((oid, wd), 0)
+            cell_courses = courses_by_cell.get((oid, wd), [])
+            # 休講: スタッフ 0 名 (= コース開講なし). 実 visit が無くても courses 空.
+            closed = staff_count == 0 and manager_count == 0
+            courses_schema = [
+                _board_course_to_schema(c)
+                for c in sorted(cell_courses, key=lambda c: (c.course_code,))
+            ]
+            patient_count = sum(len(c.visits) for c in cell_courses)
+            board_out.append(
+                BoardCell(
+                    office_id=oid,
+                    weekday=wd,
+                    weekday_code=WEEKDAY_INT_TO_CODE[wd],  # type: ignore[arg-type]
+                    closed=closed,
+                    staff_count=staff_count,
+                    manager_count=manager_count,
+                    patient_count=patient_count,
+                    courses=courses_schema,
+                )
+            )
+
+    return BoardResponse(
+        iso_year=iso_year,
+        iso_week=iso_week,
+        course_max=MAX_PATIENTS_PER_COURSE,
+        offices=offices_out,
+        weekdays=weekdays_out,
+        board=board_out,
     )
 
 

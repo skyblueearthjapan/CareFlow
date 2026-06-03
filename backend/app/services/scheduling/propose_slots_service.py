@@ -33,6 +33,7 @@ from app.models.office import Office
 from app.models.patient import Patient
 from app.models.staff import Staff
 from app.models.visit import VISIT_STATUS_PLANNED, Visit
+from app.services.patient_excel.schema import OFFICE_CODE_TO_SHORT
 from app.services.scheduling.auto_allocator_v2 import (
     NOON_HOUR,
     _address_bucket,
@@ -80,6 +81,7 @@ class _CourseBucket:
     office_id: UUID
     weekday: int
     course_code: str
+    office_code: str | None = None
     staff_name: str | None = None
     visits: list[_V2Visit] = field(default_factory=list)
 
@@ -125,7 +127,7 @@ async def load_week_course_buckets(
     iso_year: int,
     iso_week: int,
     office_ids: list[UUID],
-) -> tuple[dict[tuple[UUID, int, str], _CourseBucket], dict[UUID, str]]:
+) -> tuple[dict[tuple[UUID, int, str], _CourseBucket], dict[UUID, str], dict[UUID, str | None]]:
     """対象週 × 拠点の実 Visit を 1 回ロードし、コース単位に集計する.
 
     schedule.py の ``Visit JOIN Course OUTER JOIN Staff`` と同じ読み方:
@@ -134,7 +136,9 @@ async def load_week_course_buckets(
         - patient 座標 (lat/lng) は Patient から引く (visit には無い).
 
     Returns:
-        ``({(office_id, weekday, course_code): _CourseBucket}, {office_id: name})``
+        ``({(office_id, weekday, course_code): _CourseBucket}, {office_id: name},
+        {office_id: code})``. ``code`` は course_label 用の正準短縮
+        (OFFICE_CODE_TO_SHORT) を引くために使う (board と同一短縮へ統一).
     """
     try:
         week_monday = date.fromisocalendar(iso_year, iso_week, 1)
@@ -177,6 +181,17 @@ async def load_week_course_buckets(
         )
         patients_by_id = {p.id: p for p in prows.all()}
 
+    # 拠点 name / code map (対象 office + バケットに出た office) を先に 1 回ロード.
+    # code は course_label の正準短縮 (OFFICE_CODE_TO_SHORT) を引くために bucket へ持たせる.
+    office_ids_in_use: set[UUID] = {course.office_id for (_v, course, _s) in rows} | set(office_ids)
+    office_name_by_id: dict[UUID, str] = {}
+    office_code_by_id: dict[UUID, str | None] = {}
+    if office_ids_in_use:
+        orows = await db.scalars(select(Office).where(Office.id.in_(office_ids_in_use)))
+        for o in orows.all():
+            office_name_by_id[o.id] = o.name
+            office_code_by_id[o.id] = o.code
+
     buckets: dict[tuple[UUID, int, str], _CourseBucket] = {}
     for v, course, staff in rows:
         patient = patients_by_id.get(v.patient_id)
@@ -190,6 +205,7 @@ async def load_week_course_buckets(
                 office_id=course.office_id,
                 weekday=course.weekday,
                 course_code=code,
+                office_code=office_code_by_id.get(course.office_id),
                 staff_name=staff.name if staff is not None else None,
             )
             buckets[key] = bucket
@@ -215,14 +231,7 @@ async def load_week_course_buckets(
             )
         )
 
-    # 拠点名 map (対象 office + バケットに出た office).
-    office_ids_in_use: set[UUID] = {b.office_id for b in buckets.values()} | set(office_ids)
-    office_name_by_id: dict[UUID, str] = {}
-    if office_ids_in_use:
-        orows = await db.scalars(select(Office).where(Office.id.in_(office_ids_in_use)))
-        office_name_by_id = {o.id: o.name for o in orows.all()}
-
-    return buckets, office_name_by_id
+    return buckets, office_name_by_id, office_code_by_id
 
 
 def _to_existing_visits(bucket: _CourseBucket) -> list[ExistingVisit]:
@@ -249,9 +258,17 @@ def _min_distance_km(bucket: _CourseBucket, lat: float, lng: float) -> float | N
     return min(haversine_km(lat, lng, v.lat, v.lng) for v in bucket.visits)
 
 
-def _course_label(office_name: str | None, course_code: str) -> str:
-    """UI 表示用ラベル (拠点名 + コード, 例: 稲A). 拠点名不明なら code のみ."""
-    return f"{office_name}{course_code}" if office_name else course_code
+def _course_label(office_code: str | None, course_code: str) -> str:
+    """UI 表示用ラベル (拠点短縮 + コード, 例: 稲A / 津A).
+
+    office_code 基準の正準短縮 (``patient_excel.schema.OFFICE_CODE_TO_SHORT``,
+    INAGE→稲 / TSUGA→津) を使い board / 患者 Excel / グリッド集計と同一表記へ統一する.
+    マップに無い拠点コードはコードそのものを使う. office_code が無い場合は code のみ.
+    """
+    if not office_code:
+        return course_code
+    short = OFFICE_CODE_TO_SHORT.get(office_code, office_code)
+    return f"{short}{course_code}"
 
 
 def _build_mini_schedule(
@@ -375,6 +392,7 @@ def compute_proposed_slots(
     candidate: CandidateInput,
     *,
     office_ids: list[UUID],
+    office_code_by_id: dict[UUID, str | None] | None = None,
     candidate_name: str = "(提案)",
     limit: int = 10,
 ) -> list[ProposedSlot]:
@@ -421,7 +439,12 @@ def compute_proposed_slots(
         )
         matched_time_type = candidate.time_type in ("固定", "時間帯", "午前", "午後")
         office_name = office_name_by_id.get(office_id)
-        label = _course_label(office_name, course_code)
+        # course_label は office_code 基準の正準短縮 (稲A/津A) を使う. bucket が持つ
+        # code を優先し、無ければ map から引く (どちらも無ければ code のみ).
+        office_code = bucket.office_code
+        if office_code is None and office_code_by_id is not None:
+            office_code = office_code_by_id.get(office_id)
+        label = _course_label(office_code, course_code)
 
         for slot in slots:
             # 同住所ペア相手の名前を引く (slot.start に既存単独患者がいる).
