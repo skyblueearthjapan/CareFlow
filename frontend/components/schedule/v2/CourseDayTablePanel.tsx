@@ -119,6 +119,8 @@ import {
 import type { SlotIndex } from '@/lib/schemas/v2/patient_fixed_visit';
 // Phase G-44: 「希望訪問パターン」 vs 「実 visit 数」 の共通 utility.
 import { countWeekVisits, getDesiredWeeklyVisitCount } from '@/lib/scheduling/preferred-visits';
+// Phase G-55: 空き時間帯 (≥60分) 算出の共有 util (mobile FieldBoard と共通).
+import { computeFreeGaps, type FreeGap } from '@/lib/scheduling/freeGaps';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Constants
@@ -836,6 +838,29 @@ export function CourseDayTablePanel({
     sameAddressKeyByPatientId,
     pfvByVisitKey,
   ]);
+
+  // ─── Phase G-55: course_id → 空き時間帯 (≥60分) のマップ ───────────────
+  // 親機 (デスクトップ) の日テーブルに「空き時間帯」を出すため、当週 visit の実時刻
+  // (start_time/end_time) から営業枠の空きを算出する。mobile FieldBoard と同じ
+  // 共有 util (computeFreeGaps) を使い、ロジックを二重化しない。
+  // 頭数ゲート (remaining<=0 → 満員) は CourseDayTable 側で capacity を見て行うため、
+  // ここでは時間 gap のみを course 単位で持つ。
+  const freeGapsByCourse = useMemo(() => {
+    const m = new Map<string, FreeGap[]>();
+    // course_id → その course の生 visit (start_time/end_time) を集約。
+    const rawByCourse = new Map<string, Array<{ start_time: string; end_time: string }>>();
+    for (const v of weekVisits) {
+      const cid = v.course_id ?? null;
+      if (!cid) continue;
+      const arr = rawByCourse.get(cid) ?? [];
+      arr.push({ start_time: v.start_time ?? '', end_time: v.end_time ?? '' });
+      rawByCourse.set(cid, arr);
+    }
+    for (const [cid, raw] of rawByCourse.entries()) {
+      m.set(cid, computeFreeGaps(raw));
+    }
+    return m;
+  }, [weekVisits]);
 
   // ─── Wave 37 Phase 3-C: 患者ごとの「配置済み slot」マップ ───────────────
   //   - visit_group_id 持ち visit (= ペア配置済) → slot 0 / slot 1 の両方を埋める
@@ -2054,6 +2079,17 @@ export function CourseDayTablePanel({
                     });
                     const visits = course ? (visitsByCourse.get(course.id) ?? []) : [];
                     const staffOptions = staffByOffice.get(template.office_id) ?? [];
+                    // Phase G-55: 実効定員 (= 親機が既に週ビューで使う effectiveCapacity を流用)。
+                    //   A-E は開講判定で 6 / M系は静的 capacity。filled は配置済み visit 件数。
+                    const capMax = effectiveCapacity(
+                      template,
+                      activeWeekday,
+                      staffCountFor(template.office_id, activeWeekday),
+                      courseCodesMax,
+                    );
+                    const capacityInfo = { filled: visits.length, max: capMax };
+                    // 空き時間帯 (≥60分) は course が生成済みのときのみ算出済みマップから引く。
+                    const freeGaps = course ? (freeGapsByCourse.get(course.id) ?? []) : [];
                     return (
                       <CourseDayTable
                         key={`${template.id}:${activeWeekday}`}
@@ -2067,6 +2103,8 @@ export function CourseDayTablePanel({
                         canEdit={canEdit}
                         isStaffMutating={updateCourseMut.isPending}
                         officeNameById={officeNameById}
+                        capacity={capacityInfo}
+                        freeGaps={freeGaps}
                         onChangeAssignedStaff={(staffId) => {
                           if (!course) {
                             toast.warning(

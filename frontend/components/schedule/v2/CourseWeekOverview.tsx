@@ -430,7 +430,7 @@ export function CourseWeekOverview({
                               </span>
                             )}
                           </div>
-                          <div className="mb-0.5 flex items-center justify-between">
+                          <div className="mb-0.5 flex items-center justify-between gap-1">
                             <span
                               className={cn(
                                 'rounded px-1 text-[10px] tnum',
@@ -442,6 +442,22 @@ export function CourseWeekOverview({
                             >
                               {visitList.length} 名 / 上限 6
                             </span>
+                            {/* Phase G-55: 頭数の空き枠 (= cap - 配置済). remaining>0 のとき
+                                「残N枠」小バッジを teal 系で出す。満員 (<=0) は出さない
+                                (= 上の容量バッジが warning 色になり満員を示す)。 */}
+                            {(() => {
+                              const remaining = Math.max(0, cap - visitList.length);
+                              return remaining > 0 ? (
+                                <span
+                                  className="rounded bg-brand-primary/10 px-1 text-[10px] font-semibold tnum text-brand-primary"
+                                  data-testid={`course-week-overview-remaining-${tpl.id}-${wd}`}
+                                  data-remaining={remaining}
+                                  title={`空き ${remaining} 枠`}
+                                >
+                                  残{remaining}枠
+                                </span>
+                              ) : null;
+                            })()}
                           </div>
                           {items.length === 0 ? (
                             <span className="text-[10px] text-text-muted">—</span>

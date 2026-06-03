@@ -24,8 +24,10 @@ import { useDraggable, useDroppable } from '@dnd-kit/core';
 import { Info, Lock, Unlock, X } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
+import { Badge } from '@/components/ui/badge';
 import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
 import { capacityKeyForWeekday } from '@/lib/schemas/v2/course_template';
+import type { FreeGap } from '@/lib/scheduling/freeGaps';
 import type { CourseV2Read } from '@/lib/queries/courses';
 import type { StaffRead } from '@/lib/schemas/staff';
 import type { EventRead } from '@/lib/schemas/staff-events';
@@ -422,6 +424,20 @@ export interface CourseDayTableProps {
    * 担当 dropdown の各 option に拠点名を併記する用途 (= 全拠点 staff 解放と組合せ).
    */
   officeNameById?: Map<string, string>;
+  /**
+   * Phase G-55: このコースの実効定員 (= effectiveCapacity) と配置済み件数。
+   * - max:    そのコースの実効定員 (開講 A-E は 6 / M系は静的 capacity)。
+   * - filled: 当該 (template, weekday) に配置済みの visit 件数。
+   * 「空きN枠」表示と頭数ゲート (remaining = max - filled <= 0 → 満員) に使う。
+   * 未指定時は空き表示を出さない (= 既存テスト / 旧呼出の後方互換)。
+   */
+  capacity?: { filled: number; max: number };
+  /**
+   * Phase G-55: 営業枠から既存 visit を除いた空き時間帯 (≥60分, start 昇順)。
+   * 共有 util `@/lib/scheduling/freeGaps` の computeFreeGaps で親が算出して渡す。
+   * remaining>0 のときのみ表示する (頭数ゲートは capacity から本コンポーネントで判定)。
+   */
+  freeGaps?: FreeGap[];
 }
 
 export function CourseDayTable({
@@ -439,6 +455,8 @@ export function CourseDayTable({
   onPatientClick,
   onTogglePin,
   officeNameById,
+  capacity,
+  freeGaps,
 }: CourseDayTableProps) {
   // visits を slot ("HH:MM") → CourseGridVisit[] にバケット化.
   const occupants = useMemo(() => {
@@ -500,9 +518,18 @@ export function CourseDayTable({
   // capacity が 0 の曜日 (例: 日曜) は描画しない (親が事前に判定するが念のため)
   if (!capKey) return null;
 
+  // Phase G-55: 実効定員 / 配置済み / 残枠 (= 頭数の空き)。capacity 未指定時は
+  // 従来通り定員 6 と仮定し、空き表示はスキップする (= shows summary only when wired).
+  const capMax = capacity?.max ?? 6;
+  const capFilled = capacity?.filled ?? 0;
+  const remaining = Math.max(0, capMax - capFilled);
+  // 頭数ゲート: remaining<=0 (満員) のときは時間 gap があっても空き時間帯を出さない。
+  const showFreeSlots = capacity != null && remaining > 0;
+  const gapsToShow = showFreeSlots ? (freeGaps ?? []) : [];
+
   const headerLabel = officeName
-    ? `${officeName}-${template.label} コース (6)`
-    : `${template.label} コース (6)`;
+    ? `${officeName}-${template.label} コース (${capMax})`
+    : `${template.label} コース (${capMax})`;
 
   return (
     <section
@@ -522,7 +549,34 @@ export function CourseDayTable({
               : {};
         return (
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border-default bg-bg-muted/40 px-3 py-2">
-            <span className="text-sm font-semibold text-text-primary">{headerLabel}</span>
+            <span className="flex flex-wrap items-center gap-2">
+              <span className="text-sm font-semibold text-text-primary">{headerLabel}</span>
+              {/* Phase G-55: 頭数の空き (= remaining 枠) / 満員 を親機の Badge で表示。
+                  capacity が wire されたときのみ出す (旧呼出は非表示 = 後方互換)。 */}
+              {capacity != null ? (
+                remaining > 0 ? (
+                  <Badge
+                    variant="success"
+                    className="tnum"
+                    data-testid={`course-day-capacity-${weekday}-${template.id}`}
+                    data-remaining={remaining}
+                    title={`配置 ${capFilled} 名 / 定員 ${capMax} 名 (空き ${remaining} 枠)`}
+                  >
+                    {capFilled}/{capMax}・空き{remaining}枠
+                  </Badge>
+                ) : (
+                  <Badge
+                    variant="secondary"
+                    className="tnum"
+                    data-testid={`course-day-capacity-${weekday}-${template.id}`}
+                    data-remaining={0}
+                    title={`配置 ${capFilled} 名 / 定員 ${capMax} 名 (満員)`}
+                  >
+                    {capFilled}/{capMax}・満員
+                  </Badge>
+                )
+              ) : null}
+            </span>
             <label className="flex items-center gap-1 text-[11px] text-text-secondary">
               <span aria-hidden>👤</span>
               <span>担当:</span>
@@ -571,6 +625,34 @@ export function CourseDayTable({
           </div>
         );
       })()}
+
+      {/*
+        Phase G-55: 空き時間帯 (≥60分) のサマリ帯。
+        - 親機の意匠で出す: クリーム/破線オレンジのモバイルカードは持ち込まない。
+          薄い teal 背景 + amber (terracotta) の左ボーダー + 時刻は tnum/等幅。
+        - 頭数ゲート (remaining<=0 = 満員) のときは時間 gap があっても出さない
+          (showFreeSlots=false → gapsToShow=[])。
+        - 空き枠 (= 頭数) はヘッダー Badge 側で表示済みなのでここは時間帯のみ。
+      */}
+      {gapsToShow.length > 0 ? (
+        <div
+          className="flex flex-wrap items-center gap-1.5 border-b border-border-default bg-brand-primary/5 px-3 py-1.5"
+          data-testid={`course-day-free-gaps-${weekday}-${template.id}`}
+          data-free-gap-count={gapsToShow.length}
+        >
+          <span className="text-[10px] font-semibold text-text-secondary">空き時間帯</span>
+          {gapsToShow.map((gap) => (
+            <span
+              key={`gap-${gap.startMin}`}
+              className="inline-flex items-center rounded border-l-2 border-amber-500 bg-bg-base px-1.5 py-0.5 text-[10px] font-medium tnum text-brand-primary shadow-sm"
+              data-testid={`course-day-free-gap-${weekday}-${template.id}-${gap.startMin}`}
+              title={`空き時間帯 ${gap.label}`}
+            >
+              {gap.label}
+            </span>
+          ))}
+        </div>
+      ) : null}
 
       {/*
         3 列テーブル (CareFlow #UX-2026W21):
