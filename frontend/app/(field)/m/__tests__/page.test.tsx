@@ -65,11 +65,16 @@ describe('/m 現場ボード', () => {
     expect(screen.getByText('新規訪問の提案')).toBeInTheDocument();
   });
 
-  it('レイアウト切替で「週全体」を選ぶと今週の全コースが表示される', () => {
+  it('一覧レイアウト固定でコース一覧と曜日ステッパーが表示され、レイアウト切替UIは無い', () => {
     setSession('manager');
     render(<FieldBoardPage />);
-    fireEvent.click(screen.getByRole('radio', { name: '週全体' }));
-    expect(screen.getByText('の全コース')).toBeInTheDocument();
+    // 一覧 (agenda) のコースヘッダー (月曜・稲毛の先頭コース「稲A」) が出る
+    expect(screen.getByText('稲A')).toBeInTheDocument();
+    // 曜日ステッパーの当日見出し (月曜) が出る
+    expect(screen.getByText('月曜')).toBeInTheDocument();
+    // 旧レイアウト切替 (単日/週全体/横送り/一覧) のラジオは撤去済み
+    expect(screen.queryByRole('radio')).not.toBeInTheDocument();
+    expect(screen.queryByText('週全体')).not.toBeInTheDocument();
   });
 
   it('staff セッションでは /m/home へリダイレクトし、ボードを描画しない', () => {

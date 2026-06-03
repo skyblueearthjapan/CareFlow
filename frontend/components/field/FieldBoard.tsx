@@ -4,8 +4,8 @@
  * CareFlow Mobile — 現場ボード (Warm & Human aligned)
  *
  * `mocks/design_bundle/carelink/project/careflow-mobile.jsx` をピクセル忠実に
- * 移植したフィールドボード本体。電話/タブレット向け: 曜日タブ + コース縦積み、
- * カルテシート、ランキング付き提案シート、承認モード、4 つの週ビューレイアウト。
+ * 移植したフィールドボード本体。電話/タブレット向け: 曜日ステッパー + コース一覧
+ * (agenda) 固定、カルテシート、ランキング付き提案シート、承認モード。
  *
  * ⚠️ Phase 1 はフロント完結・ダミーデータ (`./mockData`)。
  */
@@ -54,8 +54,6 @@ const {
   GOLD,
 } = CF_THEME;
 
-export type FieldLayout = 'stack' | 'week' | 'carousel' | 'agenda';
-
 type ApproveVerdict = 'ok' | 'no';
 type ApproveFn = (key: string, verdict: ApproveVerdict) => void;
 
@@ -73,7 +71,6 @@ interface BoardCommonProps {
 export function FieldBoard({ topPad = 16 }: { topPad?: number }) {
   const [office, setOffice] = useState<OfficeKey>('INAGE');
   const [day, setDay] = useState<Dow>('月');
-  const [layout, setLayout] = useState<FieldLayout>('stack');
   const [approve, setApprove] = useState(false);
   const [weekOff, setWeekOff] = useState(0);
   const [karte, setKarte] = useState<string | null>(null);
@@ -133,43 +130,18 @@ export function FieldBoard({ topPad = 16 }: { topPad?: number }) {
         setWeekOff={setWeekOff}
         approve={approve}
         setApprove={setApprove}
-        layout={layout}
-        setLayout={setLayout}
         onNew={() => setSheet(true)}
         onToast={showToast}
         topPad={topPad}
       />
 
-      {layout === 'week' ? (
-        <BoardHead day={day} layout={layout} />
-      ) : (
-        <DayStepper office={office} day={day} setDay={setDay} />
-      )}
+      <DayStepper office={office} day={day} setDay={setDay} />
 
       <div
         className="cf-scroll"
         style={{ flex: 1, overflow: 'auto', WebkitOverflowScrolling: 'touch' }}
       >
-        {courses.length === 0 && layout !== 'week' ? (
-          <Empty day={day} />
-        ) : layout === 'carousel' ? (
-          <CarouselBoard {...boardProps} />
-        ) : layout === 'agenda' ? (
-          <AgendaBoard {...boardProps} />
-        ) : layout === 'week' ? (
-          <WeekBoard
-            office={office}
-            approve={approve}
-            pendingState={pendingState}
-            day={day}
-            setDay={setDay}
-            onKarte={setKarte}
-            onEmpty={() => setSheet(true)}
-            onApprove={onApprove}
-          />
-        ) : (
-          <StackBoard {...boardProps} />
-        )}
+        {courses.length === 0 ? <Empty day={day} /> : <AgendaBoard {...boardProps} />}
         <div style={{ height: 28 }} />
       </div>
 
@@ -209,8 +181,6 @@ interface HeaderProps {
   setWeekOff: (fn: (w: number) => number) => void;
   approve: boolean;
   setApprove: (fn: (a: boolean) => boolean) => void;
-  layout: FieldLayout;
-  setLayout: (l: FieldLayout) => void;
   onNew: () => void;
   onToast: (msg: string) => void;
   topPad?: number;
@@ -223,8 +193,6 @@ function Header({
   setWeekOff,
   approve,
   setApprove,
-  layout,
-  setLayout,
   onNew,
   onToast,
   topPad = 16,
@@ -434,9 +402,6 @@ function Header({
           </button>
         </div>
       </div>
-
-      {/* レイアウト切替コントロール (プロトタイプの Tweaks 相当を控えめに新設) */}
-      <LayoutSwitch layout={layout} setLayout={setLayout} accentInk={accentInk} />
     </div>
   );
 }
@@ -462,116 +427,7 @@ const hdrAct: CSSProperties = {
   boxShadow: '0 2px 6px rgba(0,0,0,0.10)',
 };
 
-// ============================ Layout switch ============================
-
-const LAYOUT_OPTIONS: { v: FieldLayout; l: string }[] = [
-  { v: 'stack', l: '単日' },
-  { v: 'week', l: '週全体' },
-  { v: 'carousel', l: '横送り' },
-  { v: 'agenda', l: '一覧' },
-];
-
-function LayoutSwitch({
-  layout,
-  setLayout,
-  accentInk,
-}: {
-  layout: FieldLayout;
-  setLayout: (l: FieldLayout) => void;
-  accentInk: string;
-}) {
-  return (
-    <div
-      role="radiogroup"
-      aria-label="レイアウト切替"
-      style={{
-        display: 'flex',
-        gap: 4,
-        marginTop: 11,
-        background: 'rgba(255,255,255,0.14)',
-        padding: 3,
-        borderRadius: 12,
-      }}
-    >
-      {LAYOUT_OPTIONS.map((o) => {
-        const on = layout === o.v;
-        return (
-          <button
-            key={o.v}
-            role="radio"
-            aria-checked={on}
-            onClick={() => setLayout(o.v)}
-            style={{
-              flex: 1,
-              padding: '6px 4px',
-              borderRadius: 9,
-              fontSize: 11.5,
-              fontWeight: 700,
-              fontFamily: 'var(--font-serif)',
-              background: on ? '#fff' : 'transparent',
-              color: on ? accentInk : 'rgba(255,255,255,0.92)',
-              boxShadow: on ? '0 2px 5px rgba(0,0,0,0.12)' : 'none',
-            }}
-          >
-            {o.l}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-// ============================ Board head ============================
-
-function BoardHead({ day, layout }: { day: Dow; layout: FieldLayout }) {
-  return (
-    <div
-      style={{
-        flex: '0 0 auto',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: 8,
-        padding: '8px 16px 2px',
-      }}
-    >
-      <h2
-        style={{
-          fontFamily: 'var(--font-serif)',
-          fontSize: 17,
-          fontWeight: 700,
-          margin: 0,
-          whiteSpace: 'nowrap',
-          flexShrink: 0,
-        }}
-      >
-        {layout === 'week' ? (
-          <span>
-            <span style={{ color: TEAL_DEEP }}>今週</span>の全コース
-          </span>
-        ) : (
-          <span>
-            <span style={{ color: TEAL_DEEP }}>{day}曜</span>のコース
-          </span>
-        )}
-      </h2>
-      <div
-        style={{
-          display: 'flex',
-          gap: 8,
-          fontSize: 10,
-          color: INK2,
-          flexWrap: 'wrap',
-          justifyContent: 'flex-end',
-        }}
-      >
-        <Legend col={TERRA} t="空き枠" />
-        <Legend col={GOLD} t="承認待ち" />
-        <Legend col={PLUM} t="同住所" />
-      </div>
-    </div>
-  );
-}
+// ============================ Legend (shared by DayStepper) ============================
 
 const Legend = ({ col, t }: { col: string; t: string }) => (
   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}>
@@ -618,7 +474,7 @@ function DayStepper({
     color: TEAL_DEEP,
   };
   return (
-    <div style={{ flex: '0 0 auto', padding: '4px 14px 2px' }}>
+    <div style={{ flex: '0 0 auto', padding: '8px 14px 2px' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <button onClick={() => go(-1)} style={arrow} aria-label="前の曜日">
           <ChevronLeft size={20} />
@@ -1092,150 +948,6 @@ function CourseSlots({
   return <div style={{ display: 'flex', flexDirection: 'column', gap: 7, padding: 8 }}>{out}</div>;
 }
 
-function CourseHead({ co }: { co: Course }) {
-  const k = cc(co.c);
-  const filled = co.slots.filter(Boolean).length;
-  const room = 6 - filled;
-  return (
-    <div
-      style={{
-        padding: '11px 14px',
-        background: k.c,
-        color: '#fff',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-      }}
-    >
-      <div
-        style={{
-          fontFamily: 'var(--font-serif)',
-          fontSize: 16,
-          fontWeight: 700,
-          display: 'flex',
-          alignItems: 'center',
-          gap: 7,
-          minWidth: 0,
-        }}
-      >
-        {co.id}
-        <span
-          style={{
-            fontSize: 11,
-            opacity: 0.92,
-            fontWeight: 600,
-            fontFamily: 'var(--font-sans)',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          {co.staff}
-        </span>
-      </div>
-      <div
-        style={{
-          fontSize: 11.5,
-          fontWeight: 700,
-          background: 'rgba(255,255,255,0.24)',
-          padding: '3px 9px',
-          borderRadius: 999,
-          whiteSpace: 'nowrap',
-          flexShrink: 0,
-        }}
-      >
-        {filled}/6 {room > 0 ? `空${room}` : '満'}
-      </div>
-    </div>
-  );
-}
-
-// ============================ Layout: STACK ============================
-
-function StackBoard({
-  courses,
-  pend,
-  pendingState,
-  onKarte,
-  onEmpty,
-  onApprove,
-}: BoardCommonProps) {
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 13, padding: '8px 14px 0' }}>
-      {courses.map((co, ci) => (
-        <section
-          key={co.id}
-          style={{
-            background: PANEL,
-            borderRadius: 18,
-            boxShadow: '0 2px 8px rgba(28,25,23,0.07)',
-            overflow: 'hidden',
-          }}
-        >
-          <CourseHead co={co} />
-          <CourseSlots
-            co={co}
-            ci={ci}
-            pend={pend}
-            pendingState={pendingState}
-            onKarte={onKarte}
-            onEmpty={onEmpty}
-            onApprove={onApprove}
-          />
-        </section>
-      ))}
-    </div>
-  );
-}
-
-// ============================ Layout: CAROUSEL ============================
-
-function CarouselBoard({
-  courses,
-  pend,
-  pendingState,
-  onKarte,
-  onEmpty,
-  onApprove,
-}: BoardCommonProps) {
-  return (
-    <div
-      className="cf-scroll"
-      style={{
-        display: 'flex',
-        gap: 12,
-        padding: '8px 14px 0',
-        overflowX: 'auto',
-        scrollSnapType: 'x mandatory',
-      }}
-    >
-      {courses.map((co, ci) => (
-        <section
-          key={co.id}
-          style={{
-            flex: '0 0 86%',
-            scrollSnapAlign: 'center',
-            background: PANEL,
-            borderRadius: 18,
-            boxShadow: '0 2px 8px rgba(28,25,23,0.07)',
-            overflow: 'hidden',
-            alignSelf: 'flex-start',
-          }}
-        >
-          <CourseHead co={co} />
-          <CourseSlots
-            co={co}
-            ci={ci}
-            pend={pend}
-            pendingState={pendingState}
-            onKarte={onKarte}
-            onEmpty={onEmpty}
-            onApprove={onApprove}
-          />
-        </section>
-      ))}
-    </div>
-  );
-}
-
 // ============================ Layout: AGENDA ============================
 
 function AgendaBoard({
@@ -1248,7 +960,7 @@ function AgendaBoard({
 }: BoardCommonProps) {
   const [open, setOpen] = useState<Set<string>>(() => new Set(courses.map((c) => c.id)));
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: '8px 14px 0' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: '4px 14px 0' }}>
       {courses.map((co, ci) => {
         const k = cc(co.c);
         const filled = co.slots.filter(Boolean).length;
@@ -1331,183 +1043,6 @@ function AgendaBoard({
               />
             )}
           </section>
-        );
-      })}
-    </div>
-  );
-}
-
-// ============================ Layout: WEEK ============================
-
-function WeekBoard({
-  office,
-  approve,
-  pendingState,
-  day,
-  setDay,
-  onKarte,
-  onEmpty,
-  onApprove,
-}: {
-  office: OfficeKey;
-  approve: boolean;
-  pendingState: Record<string, ApproveVerdict>;
-  day: Dow;
-  setDay: (d: Dow) => void;
-  onKarte: (pk: string) => void;
-  onEmpty: () => void;
-  onApprove: ApproveFn;
-}) {
-  return (
-    <div
-      className="cf-scroll"
-      style={{
-        display: 'flex',
-        gap: 12,
-        padding: '8px 14px 0',
-        overflowX: 'auto',
-        height: '100%',
-        alignItems: 'stretch',
-      }}
-    >
-      {CF_DOWS.map((d, i) => {
-        const courses = CF_WEEK[office][d] || [];
-        const sat = d === '土';
-        const sun = d === '日';
-        let room = 0;
-        courses.forEach((co) =>
-          co.slots.forEach((s) => {
-            if (!s) room++;
-          }),
-        );
-        const closed = courses.length === 0;
-        const isToday = d === day;
-        const pend = (approve && CF_PENDING[office][d]) || null;
-        return (
-          <div
-            key={d}
-            style={{ flex: '0 0 240px', display: 'flex', flexDirection: 'column', minWidth: 0 }}
-          >
-            <button
-              onClick={() => setDay(d)}
-              style={{
-                flex: '0 0 auto',
-                position: 'sticky',
-                top: 0,
-                zIndex: 2,
-                textAlign: 'left',
-                background: isToday ? 'linear-gradient(135deg, #0D9488, #0F766E)' : PANEL,
-                color: isToday ? '#fff' : INK,
-                borderRadius: 14,
-                padding: '10px 13px',
-                marginBottom: 10,
-                border: `2px solid ${isToday ? 'transparent' : LINE}`,
-                boxShadow: isToday
-                  ? '0 4px 12px rgba(13,148,136,0.22)'
-                  : '0 1px 3px rgba(28,25,23,0.05)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: 8,
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: 7 }}>
-                <span
-                  style={{
-                    fontFamily: 'var(--font-serif)',
-                    fontSize: 17,
-                    fontWeight: 700,
-                    color: isToday ? '#fff' : sat ? '#2F6FB0' : sun ? '#C75C77' : INK,
-                  }}
-                >
-                  {d}
-                </span>
-                <span
-                  style={{
-                    fontSize: 11,
-                    opacity: isToday ? 0.9 : 0.6,
-                    color: isToday ? '#fff' : INK2,
-                  }}
-                >
-                  {CF_DATES[i]}
-                </span>
-              </div>
-              <span
-                style={{
-                  fontSize: 10.5,
-                  fontWeight: 700,
-                  padding: '2px 8px',
-                  borderRadius: 999,
-                  whiteSpace: 'nowrap',
-                  background: isToday
-                    ? 'rgba(255,255,255,0.22)'
-                    : closed
-                      ? '#F2EDE4'
-                      : room > 0
-                        ? '#D7F2EE'
-                        : '#F0ECE5',
-                  color: isToday ? '#fff' : closed ? '#C5B8A7' : room > 0 ? '#0E8472' : INK3,
-                }}
-              >
-                {closed ? '休' : room > 0 ? `空${room}` : '満'}
-              </span>
-            </button>
-            {closed ? (
-              <div
-                style={{
-                  flex: 1,
-                  display: 'grid',
-                  placeItems: 'center',
-                  color: INK3,
-                  fontFamily: 'var(--font-serif)',
-                  fontSize: 13,
-                  fontWeight: 700,
-                  background: PANEL,
-                  borderRadius: 16,
-                  border: `1px dashed ${LINE}`,
-                }}
-              >
-                <div style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: 30 }}>🌙</div>
-                  休講
-                </div>
-              </div>
-            ) : (
-              <div
-                className="cf-scroll"
-                style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 10,
-                  overflowY: 'auto',
-                  paddingBottom: 8,
-                }}
-              >
-                {courses.map((co, ci) => (
-                  <section
-                    key={co.id}
-                    style={{
-                      background: PANEL,
-                      borderRadius: 16,
-                      boxShadow: '0 2px 8px rgba(28,25,23,0.07)',
-                      overflow: 'hidden',
-                    }}
-                  >
-                    <CourseHead co={co} />
-                    <CourseSlots
-                      co={co}
-                      ci={ci}
-                      pend={pend}
-                      pendingState={pendingState}
-                      onKarte={onKarte}
-                      onEmpty={onEmpty}
-                      onApprove={onApprove}
-                    />
-                  </section>
-                ))}
-              </div>
-            )}
-          </div>
         );
       })}
     </div>
