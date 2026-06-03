@@ -632,6 +632,152 @@ async def test_apply_patient_create_inserts_patient(db) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 5a) patient_create: requires_multiple_staff / 住所ジオコード補完 (code-reviewer)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apply_patient_create_saves_requires_multiple_staff(db) -> None:
+    """payload の requires_multiple_staff=true が患者に保存される。"""
+    user = await _make_user(db, "apl-pcreate-rms@example.com")
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="patient_create",
+        payload={
+            "code": "P-RMS-001",
+            "name": "複数 太郎",
+            "status": "active",
+            "requires_multiple_staff": True,
+        },
+    )
+
+    applier = PendingRequestApplier()
+    await applier.apply(db, pr)
+    await db.commit()
+
+    row = await db.scalar(select(Patient).where(Patient.code == "P-RMS-001"))
+    assert row is not None
+    assert row.requires_multiple_staff is True
+
+
+@pytest.mark.asyncio
+async def test_apply_patient_create_geocodes_when_lat_lng_missing(db, monkeypatch) -> None:
+    """payload に lat/lng 無し + address 有 → geocode が呼ばれ座標が設定される。"""
+    from app.services.geocoding.client import GeocodeResult
+
+    calls: list[str] = []
+
+    async def _fake_geocode(address: str, **kwargs) -> GeocodeResult:
+        calls.append(address)
+        return GeocodeResult(
+            lat=35.6,
+            lng=139.7,
+            formatted_address="東京都…",
+            place_id="fake",
+            status="OK",
+        )
+
+    # applier モジュールが import している参照を差し替える。
+    monkeypatch.setattr("app.services.pending_request_applier.geocode_address", _fake_geocode)
+
+    user = await _make_user(db, "apl-pcreate-geo@example.com")
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="patient_create",
+        payload={
+            "code": "P-GEO-001",
+            "name": "ジオ 太郎",
+            "status": "active",
+            "address": "東京都千代田区1-1",
+            # lat / lng は意図的に未指定 (モバイル経路)
+        },
+    )
+
+    applier = PendingRequestApplier()
+    await applier.apply(db, pr)
+    await db.commit()
+
+    assert calls == ["東京都千代田区1-1"]
+    row = await db.scalar(select(Patient).where(Patient.code == "P-GEO-001"))
+    assert row is not None
+    assert float(row.lat) == 35.6
+    assert float(row.lng) == 139.7
+
+
+@pytest.mark.asyncio
+async def test_apply_patient_create_geocode_failure_still_creates_patient(db, monkeypatch) -> None:
+    """geocode が例外でも患者作成は成功 (best-effort; 座標は None)。"""
+
+    async def _failing_geocode(address: str, **kwargs):
+        raise RuntimeError("upstream down")
+
+    monkeypatch.setattr("app.services.pending_request_applier.geocode_address", _failing_geocode)
+
+    user = await _make_user(db, "apl-pcreate-geofail@example.com")
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="patient_create",
+        payload={
+            "code": "P-GEOFAIL-001",
+            "name": "失敗 太郎",
+            "status": "active",
+            "address": "東京都千代田区1-1",
+        },
+    )
+
+    applier = PendingRequestApplier()
+    await applier.apply(db, pr)
+    await db.commit()
+
+    row = await db.scalar(select(Patient).where(Patient.code == "P-GEOFAIL-001"))
+    assert row is not None
+    assert row.lat is None
+    assert row.lng is None
+
+
+@pytest.mark.asyncio
+async def test_apply_patient_create_does_not_regeocode_when_lat_lng_present(
+    db, monkeypatch
+) -> None:
+    """payload に lat/lng 明示時は再 geocode しない (与えられた座標を採用)。"""
+    calls: list[str] = []
+
+    async def _fake_geocode(address: str, **kwargs):
+        calls.append(address)
+        raise AssertionError("geocode_address must not be called when lat/lng present")
+
+    monkeypatch.setattr("app.services.pending_request_applier.geocode_address", _fake_geocode)
+
+    user = await _make_user(db, "apl-pcreate-nogeo@example.com")
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="patient_create",
+        payload={
+            "code": "P-NOGEO-001",
+            "name": "座標 太郎",
+            "status": "active",
+            "address": "東京都千代田区1-1",
+            "lat": 34.0,
+            "lng": 135.0,
+        },
+    )
+
+    applier = PendingRequestApplier()
+    await applier.apply(db, pr)
+    await db.commit()
+
+    assert calls == []
+    row = await db.scalar(select(Patient).where(Patient.code == "P-NOGEO-001"))
+    assert row is not None
+    assert float(row.lat) == 34.0
+    assert float(row.lng) == 135.0
+
+
+# ---------------------------------------------------------------------------
 # 5b) patient_create + proposed_visits (StageB-backend: 1 承認で作成 + PFV 確定)
 # ---------------------------------------------------------------------------
 

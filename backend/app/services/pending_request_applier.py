@@ -36,6 +36,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from datetime import date, datetime, time
 from typing import Any
@@ -50,11 +51,14 @@ from app.models.staff import Staff, StaffEvent, StaffWeeklyOverride
 from app.models.staff_companion_assignment import StaffCompanionAssignment
 from app.models.visit import VISIT_STATUS_CANCELLED, Visit
 from app.schemas.v2.enums import RequestScope, RequestStatus, RequestType
+from app.services.geocoding.client import geocode_address
 from app.services.manager_course_sync import sync_manager_course_templates
 from app.services.proposed_visits_pfv import (
     ProposedVisitsError,
     apply_proposed_visits_as_normal_pfv,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class PendingRequestApplyError(Exception):
@@ -418,6 +422,23 @@ async def _apply_patient_create(
         )
     primary_office_id = _coerce_uuid(payload.get("primary_office_id"))
 
+    # 座標: payload に lat/lng が明示されていればそれを優先 (再 geocode しない)。
+    # 未指定 (None) かつ address があれば、患者 INSERT 前に住所を best-effort で
+    # ジオコードして lat/lng を補完する (モバイル経路では lat/lng=null で申請されるため)。
+    # ジオコード失敗 / 例外時は lat/lng を None のままにして患者作成は続行する
+    # (同一 TX・例外は握り潰してログのみ)。
+    lat = payload.get("lat")
+    lng = payload.get("lng")
+    address = payload.get("address")
+    if lat is None and lng is None and address and str(address).strip():
+        try:
+            geo = await geocode_address(str(address))
+            if geo is not None:
+                lat = geo.lat
+                lng = geo.lng
+        except Exception as exc:  # noqa: BLE001 - best-effort: 患者作成はブロックしない
+            logger.warning("patient_create geocode failed (best-effort, skipped): %s", exc)
+
     row = Patient(
         code=str(code),
         name=str(name),
@@ -425,11 +446,12 @@ async def _apply_patient_create(
         sex=payload.get("sex"),
         status=str(payload.get("status") or "active"),
         insurance=payload.get("insurance"),
-        address=payload.get("address"),
-        lat=payload.get("lat"),
-        lng=payload.get("lng"),
+        address=address,
+        lat=lat,
+        lng=lng,
         primary_office_id=primary_office_id,
         sex_restriction=payload.get("sex_restriction"),
+        requires_multiple_staff=bool(payload.get("requires_multiple_staff", False)),
         weekly_pattern=payload.get("weekly_pattern"),
         special_weekly_pattern=payload.get("special_weekly_pattern"),
         special_week_active=payload.get("special_week_active") or [],
