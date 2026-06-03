@@ -57,6 +57,41 @@ const {
 type ApproveVerdict = 'ok' | 'no';
 type ApproveFn = (key: string, verdict: ApproveVerdict) => void;
 
+// ============================ 時間モデル ============================
+//
+// 多くのコースは `times` を持たないため、6 訪問枠に既定の開始時刻を割り当てる。
+// 昼休み (11:45〜13:00) を空けた現実的な並び。`co.times` に明示があれば優先する。
+const SLOT_WINDOWS = ['09:30', '10:45', '13:00', '14:15', '15:30', '16:45'] as const;
+const LAST_SLOT_MIN = 60; // 最終枠の既定所要 (終了算出のフォールバック)
+
+/** 'HH:MM' → 0時起点の分。不正値は null。 */
+function parseHM(s: string | null | undefined): number | null {
+  if (!s) return null;
+  const m = /^(\d{1,2}):(\d{2})$/.exec(s.trim());
+  if (!m) return null;
+  const h = Number(m[1]);
+  const mm = Number(m[2]);
+  if (h < 0 || h > 47 || mm < 0 || mm > 59) return null;
+  return h * 60 + mm;
+}
+
+/** 分 → 'HH:MM'。 */
+function fmtHM(min: number): string {
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+/**
+ * スロット si の開始時刻 (分)。mock に明示 times があれば優先、無ければ既定枠。
+ * 文字列が必要なときは `fmtHM(slotStartMin(co, si))`。
+ */
+function slotStartMin(co: Course, si: number): number {
+  const explicit = parseHM(co.times?.[si]);
+  if (explicit !== null) return explicit;
+  return parseHM(SLOT_WINDOWS[si] ?? SLOT_WINDOWS[SLOT_WINDOWS.length - 1])!;
+}
+
 interface BoardCommonProps {
   courses: Course[];
   pend: PendingPlacement | null;
@@ -537,6 +572,7 @@ function PatientCard({
   inPair,
   onKarte,
   compact,
+  startOverride,
 }: {
   pk: string;
   si: number;
@@ -544,9 +580,12 @@ function PatientCard({
   inPair?: boolean;
   onKarte: (pk: string) => void;
   compact?: boolean;
+  /** ペア連続訪問など、開始時刻を明示上書きする場合 (分) */
+  startOverride?: number;
 }) {
   const p = getPatient(pk);
-  const t = (co.times && co.times[si]) || null;
+  const startMin = startOverride ?? slotStartMin(co, si);
+  const timeLabel = `${fmtHM(startMin)}〜${fmtHM(startMin + p.svc)}`;
   const k = cc(co.c);
   const sameArea =
     !inPair &&
@@ -584,23 +623,23 @@ function PatientCard({
       >
         {si + 1}/6
       </span>
-      {t && (
-        <span
-          style={{
-            fontFamily: 'var(--font-mono)',
-            fontSize: 11,
-            color: TEAL_DEEP,
-            background: '#fff',
-            border: `1.5px solid ${k.bg}`,
-            borderRadius: 7,
-            padding: '1px 7px',
-            alignSelf: 'flex-start',
-            fontWeight: 600,
-          }}
-        >
-          {t}
-        </span>
-      )}
+      <span
+        style={{
+          fontFamily: 'var(--font-mono)',
+          fontSize: 11,
+          color: TEAL_DEEP,
+          background: '#fff',
+          border: `1.5px solid ${k.bg}`,
+          borderRadius: 7,
+          padding: '1px 7px',
+          alignSelf: 'flex-start',
+          fontWeight: 600,
+          whiteSpace: 'nowrap',
+          letterSpacing: '-0.01em',
+        }}
+      >
+        {timeLabel}
+      </span>
       <div
         style={{
           fontFamily: 'var(--font-serif)',
@@ -670,7 +709,11 @@ function PatientCard({
   );
 }
 
-function EmptySlot({ onEmpty }: { onEmpty: () => void }) {
+function EmptySlot({ co, si, onEmpty }: { co: Course; si: number; onEmpty: () => void }) {
+  const startMin = slotStartMin(co, si);
+  // 終了 = 次枠の開始。最終枠は 開始 + 既定所要。
+  const endMin = si < co.slots.length - 1 ? slotStartMin(co, si + 1) : startMin + LAST_SLOT_MIN;
+  const windowLabel = `${fmtHM(startMin)}〜${fmtHM(endMin)}`;
   return (
     <button
       onClick={onEmpty}
@@ -685,28 +728,45 @@ function EmptySlot({ onEmpty }: { onEmpty: () => void }) {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        gap: 6,
+        gap: 8,
+        flexWrap: 'wrap',
+        padding: '6px 10px',
         fontFamily: 'var(--font-serif)',
         fontSize: 13,
         fontWeight: 700,
       }}
     >
-      <span
-        style={{
-          width: 24,
-          height: 24,
-          borderRadius: '50%',
-          background: TERRA,
-          color: '#fff',
-          display: 'grid',
-          placeItems: 'center',
-          fontSize: 16,
-          lineHeight: 1,
-        }}
-      >
-        ＋
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+        <span
+          style={{
+            width: 24,
+            height: 24,
+            borderRadius: '50%',
+            background: TERRA,
+            color: '#fff',
+            display: 'grid',
+            placeItems: 'center',
+            fontSize: 16,
+            lineHeight: 1,
+            flex: '0 0 auto',
+          }}
+        >
+          ＋
+        </span>
+        <span
+          style={{
+            fontFamily: 'var(--font-mono)',
+            fontSize: 12,
+            fontWeight: 700,
+            color: TERRA_DEEP,
+            letterSpacing: '-0.01em',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {windowLabel}
+        </span>
       </span>
-      <span style={{ whiteSpace: 'nowrap' }}>空き枠</span>
+      <span style={{ whiteSpace: 'nowrap' }}>空き</span>
     </button>
   );
 }
@@ -722,7 +782,16 @@ function PairWrap({
   si2: number;
   onKarte: (pk: string) => void;
 }) {
-  const tShared = (co.times && co.times[si]) || '';
+  const pkA = co.slots[si] as string;
+  const pkB = co.slots[si2] as string;
+  const svcA = getPatient(pkA).svc;
+  const svcB = getPatient(pkB).svc;
+  // T = ペア先頭の開始。1人目 T〜T+svcA、2人目 (T+svcA)〜(T+svcA+svcB)。
+  const startA = slotStartMin(co, si);
+  const startB = startA + svcA;
+  const endB = startB + svcB;
+  const totalMin = endB - startA;
+  const bandLabel = `${fmtHM(startA)}〜${fmtHM(endB)} 連続訪問（約${totalMin}分）`;
   return (
     <div
       style={{
@@ -757,12 +826,9 @@ function PairWrap({
           style={{ display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}
         >
           <MapPin size={11} /> 同住所・同時
-        </span>{' '}
-        <span style={{ fontSize: 9.5, opacity: 0.92, fontWeight: 600, whiteSpace: 'nowrap' }}>
-          1スタッフ連続・約90分
         </span>
       </div>
-      <PatientCard pk={co.slots[si] as string} si={si} co={co} inPair onKarte={onKarte} />
+      <PatientCard pk={pkA} si={si} co={co} inPair onKarte={onKarte} startOverride={startA} />
       <div
         style={{
           display: 'flex',
@@ -775,10 +841,14 @@ function PairWrap({
         }}
       >
         <span style={{ flex: 1, height: 2, background: '#DCC8EE', borderRadius: 2 }} />
-        {tShared} 連続訪問
+        <span
+          style={{ fontFamily: 'var(--font-mono)', whiteSpace: 'nowrap', letterSpacing: '-0.01em' }}
+        >
+          {bandLabel}
+        </span>
         <span style={{ flex: 1, height: 2, background: '#DCC8EE', borderRadius: 2 }} />
       </div>
-      <PatientCard pk={co.slots[si2] as string} si={si2} co={co} inPair onKarte={onKarte} />
+      <PatientCard pk={pkB} si={si2} co={co} inPair onKarte={onKarte} startOverride={startB} />
     </div>
   );
 }
@@ -943,7 +1013,7 @@ function CourseSlots({
       return;
     }
     if (pk) out.push(<PatientCard key={si} pk={pk} si={si} co={co} onKarte={onKarte} />);
-    else out.push(<EmptySlot key={si} onEmpty={onEmpty} />);
+    else out.push(<EmptySlot key={si} co={co} si={si} onEmpty={onEmpty} />);
   });
   return <div style={{ display: 'flex', flexDirection: 'column', gap: 7, padding: 8 }}>{out}</div>;
 }
