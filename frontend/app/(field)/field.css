@@ -1,0 +1,74 @@
+/*
+ * CareFlow Mobile 現場ボード — スコープ限定スタイル。
+ *
+ * フォント変数 (--font-sans / --font-serif / --font-mono) は `.cf-field-root`
+ * 配下にのみ再定義する。これにより /m ルート以外のアプリ全体のフォント
+ * (globals.css の --font-sans 等) には一切影響しない。
+ */
+
+.cf-field-root {
+  /* next/font が注入する CSS 変数を、コンポーネントが参照する汎用名へマップ。
+   * このスコープ内でのみ有効。 */
+  --font-sans: var(--font-field-sans), -apple-system, system-ui, sans-serif;
+  --font-serif: var(--font-field-serif), 'Hiragino Mincho ProN', serif;
+  --font-mono: var(--font-field-mono), ui-monospace, monospace;
+
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background: #faf7f2;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+.cf-field-root * {
+  box-sizing: border-box;
+}
+
+/* prototype: button / input リセット */
+.cf-field-root button {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+  color: inherit;
+}
+.cf-field-root input,
+.cf-field-root select {
+  font-family: inherit;
+}
+.cf-field-root input:focus,
+.cf-field-root select:focus {
+  border-color: #0d9488 !important;
+}
+
+/* スクロールバー非表示 (prototype .cf-scroll) */
+.cf-field-root .cf-scroll::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+.cf-field-root .cf-scroll {
+  scrollbar-width: none;
+}
+
+/* prototype keyframes */
+@keyframes cfSheetUp {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+@keyframes cfToast {
+  from {
+    transform: translate(-50%, 12px);
+    opacity: 0;
+  }
+  to {
+    transform: translate(-50%, 0);
+    opacity: 1;
+  }
+}
