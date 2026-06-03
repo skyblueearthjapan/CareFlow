@@ -661,7 +661,7 @@ function DayStepper({
               <span>
                 訪問 <b style={{ color: INK }}>{visitsCount}</b> 件 ・{' '}
                 <span style={{ color: roomCount > 0 ? '#0E8472' : INK3, fontWeight: 700 }}>
-                  {roomCount > 0 ? `空き ${roomCount}` : '満員'}
+                  {roomCount > 0 ? `空き ${roomCount}つ` : '満員'}
                 </span>
               </span>
             )}
@@ -1042,12 +1042,16 @@ function CourseSlots({
   }
 
   // 空き帯: ≥60分 の各 gap を、その開始時刻位置に「この時間空いてますよ：HH:MM〜HH:MM」で挿入。
-  for (const gap of computeFreeGaps(co.visits)) {
-    items.push({
-      sortKey: gap.startMin,
-      seq: seq++,
-      node: <EmptySlot key={`gap@${gap.startMin}`} gap={gap} onEmpty={onEmpty} />,
-    });
+  // ただし頭数(capacity)でゲートする: remaining<=0 (filled>=6 満員) なら、時間的に空き帯が
+  // あっても「この時間空いてますよ」カードを一切出さない (空きなし)。remaining>0 のときのみ表示。
+  if (co.capacity.remaining > 0) {
+    for (const gap of computeFreeGaps(co.visits)) {
+      items.push({
+        sortKey: gap.startMin,
+        seq: seq++,
+        node: <EmptySlot key={`gap@${gap.startMin}`} gap={gap} onEmpty={onEmpty} />,
+      });
+    }
   }
 
   // start_time 昇順。同一開始時刻は元の出現順 (seq) で安定ソート。
@@ -1134,7 +1138,7 @@ function AgendaBoard({
                   borderRadius: 999,
                 }}
               >
-                {filled}/{co.capacity.max} {room > 0 ? `空${room}` : '満'}
+                {filled}/{co.capacity.max} {room > 0 ? `空き${room}つ` : '空きなし'}
               </span>
               <span
                 style={{

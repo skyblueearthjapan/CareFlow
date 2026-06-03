@@ -447,3 +447,96 @@ describe('/m 現場ボード 空き帯の精緻化', () => {
     expect(screen.getByText('13:00〜18:00')).toBeInTheDocument();
   });
 });
+
+// ============================ 頭数(capacity)ゲート ============================
+//
+// 「この時間空いてますよ」カードは capacity.remaining(=6−filled, 最大6) でゲートする。
+//   - filled>=6 (remaining<=0): 時間的に空き帯(≥60分)があっても一切出さない (空きなし)。
+//   - filled<6 (remaining>0): 従来通り ≥60分 空き帯を開始時刻順に表示。件数はヘッダ「空きNつ」。
+
+/**
+ * 月曜に 1 コース。filled を引数で指定し、capacity.remaining = 6 − filled をセットする。
+ * 訪問は 11:00〜12:00 の 1 件のみ (filled の数値とは独立。時間 gap は AM/PM に必ず残る)。
+ * → 時間的には ≥60分 の空き帯 (09:30〜11:00 / 13:00〜18:00) が存在する状態。
+ */
+function makeCapacityBoard(filled: number): BoardResponse {
+  const base = makeBoard();
+  const monCell = base.board[0]!;
+  monCell.courses = [
+    {
+      course_id: COURSE_GAP_ID,
+      course_code: 'A',
+      course_label: '稲A',
+      staff_name: '佐藤 Ns',
+      visits: [v('dddddddd-0000-0000-0000-000000000001', '昼前 太郎', '11:00', '12:00', null, 0)],
+      capacity: { filled, max: 6, total_minutes: 60, remaining: 6 - filled },
+    },
+  ];
+  return base;
+}
+
+/**
+ * 月曜に 1 コース。remaining>0 だが ≥60分 の空き帯は存在しない (AM/PM を実時刻で埋め切る)。
+ * → ゲートは通過するが空き帯カードは出ない。ヘッダのみ「空きNつ」。
+ */
+function makeNoGapButRoomBoard(): BoardResponse {
+  const base = makeBoard();
+  const monCell = base.board[0]!;
+  monCell.courses = [
+    {
+      course_id: COURSE_GAP_ID,
+      course_code: 'A',
+      course_label: '稲A',
+      staff_name: '佐藤 Ns',
+      visits: [
+        v('eeeeeeee-0000-0000-0000-000000000001', '埋め 一郎', '09:30', '12:00', null, 0),
+        v('eeeeeeee-0000-0000-0000-000000000002', '埋め 二郎', '13:00', '18:00', null, 1),
+      ],
+      capacity: { filled: 4, max: 6, total_minutes: 450, remaining: 2 },
+    },
+  ];
+  return base;
+}
+
+describe('/m 現場ボード 頭数ゲート', () => {
+  it('filled>=6 (remaining=0): 時間gapがあっても空き帯カード非表示・ヘッダ「空きなし」', () => {
+    setSession('manager');
+    setBoard({ data: makeCapacityBoard(6) });
+    render(<FieldBoardPage />);
+    // 時間的には空き帯があるが、頭数ゲートで一切出さない。
+    expect(screen.queryByText(/この時間空いてますよ：/)).not.toBeInTheDocument();
+    // コースヘッダは満員表記。
+    expect(screen.getByText(/6\/6 空きなし/)).toBeInTheDocument();
+  });
+
+  it('filled=4 (remaining=2): ヘッダ「空き2つ」・≥60分空き帯カードを表示', () => {
+    setSession('manager');
+    setBoard({ data: makeCapacityBoard(4) });
+    render(<FieldBoardPage />);
+    // ヘッダ件数。
+    expect(screen.getByText(/4\/6 空き2つ/)).toBeInTheDocument();
+    // 時間 gap (09:30〜11:00 / 13:00〜18:00) の 2 帯を表示。
+    expect(screen.getAllByText(/この時間空いてますよ：/)).toHaveLength(2);
+    expect(screen.getByText('09:30〜11:00')).toBeInTheDocument();
+    expect(screen.getByText('13:00〜18:00')).toBeInTheDocument();
+  });
+
+  it('filled=5 (remaining=1): ヘッダ「空き1つ」', () => {
+    setSession('manager');
+    setBoard({ data: makeCapacityBoard(5) });
+    render(<FieldBoardPage />);
+    expect(screen.getByText(/5\/6 空き1つ/)).toBeInTheDocument();
+    // remaining>0 なので空き帯カードは出る (時間 gap あり)。
+    expect(screen.getAllByText(/この時間空いてますよ：/).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('remaining>0 だが ≥60分空き帯が無い: カード無しでもヘッダは「空きNつ」', () => {
+    setSession('manager');
+    setBoard({ data: makeNoGapButRoomBoard() });
+    render(<FieldBoardPage />);
+    // 時間 gap が無いので空き帯カードは出ない。
+    expect(screen.queryByText(/この時間空いてますよ：/)).not.toBeInTheDocument();
+    // だが頭数の空きはあるのでヘッダは「空き2つ」。
+    expect(screen.getByText(/4\/6 空き2つ/)).toBeInTheDocument();
+  });
+});
