@@ -52,6 +52,7 @@ vi.mock('@/lib/queries/pending_requests', () => ({
 
 vi.mock('@/lib/queries/patients', () => ({
   usePatient: vi.fn(),
+  usePatients: vi.fn(),
 }));
 
 import { useSession } from 'next-auth/react';
@@ -61,7 +62,7 @@ import {
   useApproveRequest,
   useRejectRequest,
 } from '@/lib/queries/pending_requests';
-import { usePatient } from '@/lib/queries/patients';
+import { usePatient, usePatients } from '@/lib/queries/patients';
 import FieldBoardPage from '../page';
 
 type Role = 'admin' | 'manager' | 'staff';
@@ -290,6 +291,12 @@ beforeEach(() => {
   (usePatient as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
     data: makePatient(),
     isLoading: false,
+    isError: false,
+  });
+  (usePatients as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    data: { items: [], total: 0, page: 1, limit: 8, truncated: false },
+    isLoading: false,
+    isFetching: false,
     isError: false,
   });
 });

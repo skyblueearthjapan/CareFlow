@@ -15,7 +15,18 @@
  */
 
 import { useState, type CSSProperties, type ReactNode } from 'react';
-import { X, MapPin, User, Heart, Calendar, Bell, Sparkles, AlertTriangle } from 'lucide-react';
+import {
+  X,
+  MapPin,
+  User,
+  Heart,
+  Calendar,
+  Bell,
+  Sparkles,
+  AlertTriangle,
+  Search,
+  Link2,
+} from 'lucide-react';
 
 import {
   SERVICE_MINUTES_OPTIONS,
@@ -32,9 +43,11 @@ import {
   coerceWeeklyPattern,
   normalizePatientSex,
   normalizePatientInsurance,
+  normalizePatientSexRestriction,
   type WeekdayKey,
 } from '@/lib/schemas/patient';
-import { usePatient } from '@/lib/queries/patients';
+import { usePatient, usePatients } from '@/lib/queries/patients';
+import type { PatientRead } from '@/lib/schemas/patient';
 import {
   useProposeSlots,
   WEEKDAY_CODE_TO_INT,
@@ -408,6 +421,15 @@ export function SuggestSheet({
   const [seg, setSeg] = useState(0);
   const [addr, setAddr] = useState('');
 
+  // 既存患者の検索・紐付け (StageA)。
+  // - existing モード (seg===1) のときだけ患者検索ボックスを出す。
+  // - 選択した患者の id を `existing_patient_id` として propose に付与する。
+  // - lat/lng は選択患者からコピーしてそのまま送る (再ジオコード不要)。
+  const [patientQuery, setPatientQuery] = useState('');
+  const [linkedPatient, setLinkedPatient] = useState<PatientRead | null>(null);
+  const [linkedLat, setLinkedLat] = useState<number | null>(null);
+  const [linkedLng, setLinkedLng] = useState<number | null>(null);
+
   // マスタ準拠の訪問条件 state。
   const [frequencyPerWeek, setFrequencyPerWeek] = useState(1); // 1〜7
   const [visitFrequency, setVisitFrequency] =
@@ -432,6 +454,58 @@ export function SuggestSheet({
 
   const proposeMut = useProposeSlots();
 
+  // existing モードでの患者検索 (氏名 / カナ / コードで部分一致・client-side)。
+  // 検索語が 1 文字以上のときのみ候補を出す (空のときは候補リストを隠す)。
+  const trimmedQuery = patientQuery.trim();
+  const isExisting = seg === 1;
+  const patientsQuery = usePatients({ search: trimmedQuery, limit: 8 });
+  const candidates = isExisting && trimmedQuery ? (patientsQuery.data?.items ?? []) : [];
+
+  // 選択した患者から提案フォームをプリフィルする。プリフィル後もユーザーが調整可。
+  const linkPatient = (p: PatientRead) => {
+    setLinkedPatient(p);
+    const wp = coerceWeeklyPattern(p.weekly_pattern);
+
+    if (p.address) setAddr(p.address);
+    setLinkedLat(typeof p.lat === 'number' ? p.lat : null);
+    setLinkedLng(typeof p.lng === 'number' ? p.lng : null);
+
+    setFrequencyPerWeek(wp.frequency_per_week);
+    if (wp.visit_frequency) setVisitFrequency(wp.visit_frequency);
+    setWeekdays({
+      Mon: wp.preferred_weekdays.includes('Mon'),
+      Tue: wp.preferred_weekdays.includes('Tue'),
+      Wed: wp.preferred_weekdays.includes('Wed'),
+      Thu: wp.preferred_weekdays.includes('Thu'),
+      Fri: wp.preferred_weekdays.includes('Fri'),
+      Sat: wp.preferred_weekdays.includes('Sat'),
+      Sun: wp.preferred_weekdays.includes('Sun'),
+    });
+    setServiceMinutes(wp.service_minutes);
+    setTimeType(wp.time_type);
+    if (wp.preferred_start) setPreferredStart(wp.preferred_start);
+    if (wp.preferred_end) setPreferredEnd(wp.preferred_end);
+
+    setSexRestriction(
+      (normalizePatientSexRestriction(p.sex_restriction as string | null | undefined) ?? '') as
+        | ''
+        | (typeof SEX_RESTRICTION_OPTIONS)[number],
+    );
+    setRequiresMultipleStaff(
+      (p as { requires_multiple_staff?: boolean | null }).requires_multiple_staff === true,
+    );
+
+    // 候補リストを畳む (検索語クリア)。
+    setPatientQuery('');
+  };
+
+  // 紐付け解除 (新規入力に戻す)。住所/希望はユーザーが触れている可能性があるので保持する。
+  const unlinkPatient = () => {
+    setLinkedPatient(null);
+    setLinkedLat(null);
+    setLinkedLng(null);
+  };
+
   // 時間タイプが「固定」「時間帯」のときのみ時刻欄を表示。
   const showTimeRange = timeType === '固定' || timeType === '時間帯';
   const showEnd = timeType === '時間帯';
@@ -444,9 +518,14 @@ export function SuggestSheet({
     const preferred_weekdays: WeekdayCode[] = WEEKDAY_KEYS.filter(
       (d) => weekdays[d],
     ) as WeekdayCode[];
+    // 既存患者を紐付け中なら existing_patient_id と (あれば) lat/lng を付与する。
+    // 新規モード (紐付けなし) では existing_patient_id は送らない。
+    const linked = isExisting ? linkedPatient : null;
     proposeMut.mutate(
       {
         address: addr.trim(),
+        lat: linked && linkedLat !== null ? linkedLat : null,
+        lng: linked && linkedLng !== null ? linkedLng : null,
         service_minutes: serviceMinutes,
         time_type: timeType as ProposeTimeType,
         preferred_start: showTimeRange ? preferredStart : null,
@@ -460,6 +539,7 @@ export function SuggestSheet({
         iso_week: isoWeek,
         // 拠点プルダウン廃止に伴い office_ids は省略 (= 全拠点検索)。拠点跨ぎで提示する。
         office_ids: [],
+        existing_patient_id: linked ? linked.id : null,
         limit: 10,
       },
       {
@@ -544,6 +624,19 @@ export function SuggestSheet({
             </button>
           ))}
         </div>
+
+        {isExisting && (
+          <PatientLinkPanel
+            linked={linkedPatient}
+            query={patientQuery}
+            onQueryChange={setPatientQuery}
+            candidates={candidates}
+            isFetching={patientsQuery.isFetching}
+            isError={patientsQuery.isError}
+            onSelect={linkPatient}
+            onUnlink={unlinkPatient}
+          />
+        )}
 
         <Field label="ご住所">
           <input
@@ -824,6 +917,237 @@ export function SuggestSheet({
         <div style={{ height: 12 }} />
       </div>
     </SlideSheet>
+  );
+}
+
+/**
+ * 既存患者の検索・紐付けパネル (StageA)。
+ *
+ * - 未紐付け: 検索ボックス (氏名/カナ/コード部分一致) + 入力に応じた候補リスト。
+ *   候補を選ぶと親側 (`onSelect`) で提案フォームをプリフィルする。
+ * - 紐付け中: 「○○様(コード)を紐付け中 [変更]」を上部に表示し、`onUnlink` で解除。
+ *
+ * Warm 意匠 (cfInput / Terra アクセント) で検索 UI も提案シートに統一する。
+ */
+function PatientLinkPanel({
+  linked,
+  query,
+  onQueryChange,
+  candidates,
+  isFetching,
+  isError,
+  onSelect,
+  onUnlink,
+}: {
+  linked: PatientRead | null;
+  query: string;
+  onQueryChange: (next: string) => void;
+  candidates: PatientRead[];
+  isFetching: boolean;
+  isError: boolean;
+  onSelect: (p: PatientRead) => void;
+  onUnlink: () => void;
+}) {
+  const trimmed = query.trim();
+  const showEmpty = !!trimmed && !isFetching && !isError && candidates.length === 0;
+
+  if (linked) {
+    return (
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 11,
+          background: 'linear-gradient(180deg,#FFF7EC,#FDF0DC)',
+          border: `2px solid ${_TERRA}`,
+          borderRadius: 14,
+          padding: '11px 13px',
+          marginBottom: 14,
+        }}
+      >
+        <span
+          style={{
+            width: 36,
+            height: 36,
+            flex: '0 0 auto',
+            borderRadius: 12,
+            background: _TERRA,
+            color: '#fff',
+            display: 'grid',
+            placeItems: 'center',
+          }}
+        >
+          <Link2 size={17} />
+        </span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div
+            style={{
+              fontFamily: 'var(--font-serif)',
+              fontSize: 14,
+              fontWeight: 700,
+              color: _TERRAD,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {linked.name} 様 を紐付け中
+          </div>
+          <div style={{ fontSize: 10.5, color: _INK2, marginTop: 1 }}>
+            患者コード: {linked.code}
+            {linked.address ? ` ・ ${linked.address}` : ''}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onUnlink}
+          style={{
+            flex: '0 0 auto',
+            padding: '7px 14px',
+            minHeight: 38,
+            borderRadius: 999,
+            background: '#fff',
+            border: `2px solid ${_TERRA}`,
+            color: _TERRAD,
+            fontFamily: 'var(--font-serif)',
+            fontSize: 12.5,
+            fontWeight: 700,
+          }}
+        >
+          変更
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <Field label="既存のお客様を検索">
+      <div style={{ position: 'relative' }}>
+        <span
+          style={{
+            position: 'absolute',
+            left: 12,
+            top: '50%',
+            transform: 'translateY(-50%)',
+            color: _INK3,
+            pointerEvents: 'none',
+            display: 'grid',
+            placeItems: 'center',
+          }}
+        >
+          <Search size={16} />
+        </span>
+        <input
+          value={query}
+          onChange={(e) => onQueryChange(e.target.value)}
+          placeholder="氏名 / カナ / 患者コードで検索"
+          aria-label="既存のお客様を検索"
+          style={{ ...cfInput, paddingLeft: 36 }}
+        />
+      </div>
+
+      {isError && (
+        <div style={{ fontSize: 11, color: '#C75C77', fontWeight: 700, marginTop: 7 }}>
+          患者の検索に失敗しました。通信状況をご確認ください。
+        </div>
+      )}
+
+      {!!trimmed && isFetching && candidates.length === 0 && (
+        <div style={{ fontSize: 11, color: _INK2, marginTop: 7, fontFamily: 'var(--font-serif)' }}>
+          検索中…
+        </div>
+      )}
+
+      {showEmpty && (
+        <div style={{ fontSize: 11, color: _INK2, marginTop: 7 }}>
+          該当するお客様が見つかりませんでした。
+        </div>
+      )}
+
+      {candidates.length > 0 && (
+        <div
+          style={{
+            marginTop: 8,
+            border: `2px solid ${_LINE}`,
+            borderRadius: 12,
+            overflow: 'hidden',
+            background: '#fff',
+          }}
+        >
+          {candidates.map((p, i) => (
+            <button
+              key={p.id}
+              type="button"
+              onClick={() => onSelect(p)}
+              style={{
+                width: '100%',
+                textAlign: 'left',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 11,
+                padding: '10px 12px',
+                background: '#fff',
+                borderTop: i === 0 ? 'none' : `1px solid ${_LINE}`,
+              }}
+            >
+              <span
+                style={{
+                  width: 34,
+                  height: 34,
+                  flex: '0 0 auto',
+                  borderRadius: 11,
+                  background: '#F4EFE7',
+                  color: _TERRAD,
+                  display: 'grid',
+                  placeItems: 'center',
+                  fontFamily: 'var(--font-serif)',
+                  fontSize: 16,
+                  fontWeight: 700,
+                }}
+              >
+                {p.name.charAt(0)}
+              </span>
+              <span style={{ flex: 1, minWidth: 0 }}>
+                <span
+                  style={{
+                    display: 'block',
+                    fontFamily: 'var(--font-serif)',
+                    fontSize: 14,
+                    fontWeight: 700,
+                    color: _INK,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {p.name}
+                  <span style={{ fontSize: 10.5, color: _INK3, fontWeight: 600, marginLeft: 7 }}>
+                    {p.code}
+                  </span>
+                </span>
+                {(p.kana || p.address) && (
+                  <span
+                    style={{
+                      display: 'block',
+                      fontSize: 10.5,
+                      color: _INK2,
+                      marginTop: 1,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {p.kana ? `${p.kana}` : ''}
+                    {p.kana && p.address ? ' ・ ' : ''}
+                    {p.address ?? ''}
+                  </span>
+                )}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </Field>
   );
 }
 
