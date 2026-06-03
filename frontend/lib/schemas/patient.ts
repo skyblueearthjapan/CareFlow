@@ -115,6 +115,24 @@ export const VISIT_FREQUENCY_LABELS: Record<(typeof VISIT_FREQUENCY_OPTIONS)[num
 
 export const TIME_TYPE_OPTIONS = ['固定', '午前', '午後', '終日', '時間帯'] as const;
 
+/**
+ * サービス時間 `service_minutes` の共有プルダウン候補。
+ *
+ * 5 分刻み・範囲 15〜180 分 (Excel 取込ドロップダウン慣習に一致)。
+ * 本機 (患者マスタ `WeeklyPatternEditor`) と子機 (現場ボード `SuggestSheet`) の
+ * 両方から import して**完全に同一の選択肢**にし、定義のドリフトを防ぐ。
+ *
+ * value は number で統一する (onChange 側で `Number(...)` に揃える)。
+ */
+export const SERVICE_MINUTES_OPTIONS: number[] = (() => {
+  const out: number[] = [];
+  for (let m = 15; m <= 180; m += 5) out.push(m);
+  return out;
+})();
+
+/** サービス時間の既定値 (基本 35 分)。新規作成時のデフォルトに使う。 */
+export const DEFAULT_SERVICE_MINUTES = 35;
+
 export interface WeeklyPattern {
   frequency_per_week: number;
   visit_frequency: (typeof VISIT_FREQUENCY_OPTIONS)[number] | null;
@@ -132,7 +150,7 @@ export const emptyWeeklyPattern: WeeklyPattern = {
   visit_frequency: null,
   visit_weeks: null,
   preferred_weekdays: [],
-  service_minutes: 30,
+  service_minutes: DEFAULT_SERVICE_MINUTES,
   time_type: '終日',
   preferred_start: null,
   preferred_end: null,
@@ -451,7 +469,9 @@ export function coerceWeeklyPattern(raw: unknown): WeeklyPattern {
     visit_frequency: visitFreq,
     visit_weeks: typeof r.visit_weeks === 'string' ? r.visit_weeks : null,
     preferred_weekdays: filterWeekdays(r.preferred_weekdays),
-    service_minutes: Number.isFinite(minutes) ? Math.min(180, Math.max(1, minutes)) : 30,
+    service_minutes: Number.isFinite(minutes)
+      ? Math.min(180, Math.max(1, minutes))
+      : DEFAULT_SERVICE_MINUTES,
     time_type: timeType,
     preferred_start:
       typeof r.preferred_start === 'string' && r.preferred_start ? r.preferred_start : null,

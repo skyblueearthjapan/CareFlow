@@ -12,6 +12,8 @@ import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
 import { X, MapPin, User, Heart, Calendar, Bell, Sparkles } from 'lucide-react';
 
 import {
+  SERVICE_MINUTES_OPTIONS,
+  DEFAULT_SERVICE_MINUTES,
   TIME_TYPE_OPTIONS,
   VISIT_FREQUENCY_OPTIONS,
   VISIT_FREQUENCY_LABELS,
@@ -300,12 +302,6 @@ const KV = ({ k, v }: { k: string; v: ReactNode }) => (
 // ============================ Suggest sheet ============================
 
 /**
- * サービス時間プリセット — 患者マスタ `WeeklyPatternEditor` の
- * `SERVICE_MINUTES_PRESETS` と一致 (15/30/45/60)。
- */
-const SUGGEST_SERVICE_PRESETS = [15, 30, 45, 60] as const;
-
-/**
  * 希望開始/終了時刻のプルダウン候補。
  * 患者マスタは `<input type="time">` (自由 HH:MM) だが、現場ボードの提案は
  * モバイル探索用途のため 30 分刻み 06:00〜20:00 の選択式で簡略化する
@@ -378,7 +374,7 @@ export function SuggestSheet({
     Sat: false,
     Sun: false,
   });
-  const [serviceMinutes, setServiceMinutes] = useState(60); // 1〜180
+  const [serviceMinutes, setServiceMinutes] = useState(DEFAULT_SERVICE_MINUTES); // 5分刻み 15〜180, 既定35
   const [timeType, setTimeType] = useState<(typeof TIME_TYPE_OPTIONS)[number]>('終日'); // 既定は終日
   const [preferredStart, setPreferredStart] = useState('09:00');
   const [preferredEnd, setPreferredEnd] = useState('12:00');
@@ -594,31 +590,17 @@ export function SuggestSheet({
         </Field>
 
         <Field label="サービス時間">
-          <input
-            type="number"
-            min={1}
-            max={180}
-            value={serviceMinutes}
-            onChange={(e) => {
-              const n = Number(e.target.value);
-              setServiceMinutes(Number.isFinite(n) ? Math.min(180, Math.max(1, n)) : 30);
-            }}
+          <select
             style={cfInput}
-          />
-          <div style={{ display: 'flex', gap: 7, marginTop: 7, flexWrap: 'wrap' }}>
-            {SUGGEST_SERVICE_PRESETS.map((m) => {
-              const on = serviceMinutes === m;
-              return (
-                <button
-                  key={m}
-                  onClick={() => setServiceMinutes(m)}
-                  style={{ ...miniChip, ...(on ? miniChipOn : {}) }}
-                >
-                  {m}分
-                </button>
-              );
-            })}
-          </div>
+            value={serviceMinutes}
+            onChange={(e) => setServiceMinutes(Number(e.target.value))}
+          >
+            {SERVICE_MINUTES_OPTIONS.map((m) => (
+              <option key={m} value={m}>
+                {m}分
+              </option>
+            ))}
+          </select>
         </Field>
 
         <Field label="時間タイプ">
@@ -1118,11 +1100,6 @@ const miniChip: CSSProperties = {
   color: _INK2,
   fontWeight: 700,
   border: '2px solid transparent',
-};
-const miniChipOn: CSSProperties = {
-  background: '#FCEBD6',
-  color: _TERRAD,
-  borderColor: _TERRA,
 };
 
 /**

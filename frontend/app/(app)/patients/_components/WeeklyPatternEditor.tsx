@@ -14,6 +14,7 @@ import * as React from 'react';
 import { Input } from '@/components/ui/input';
 import { Checkbox } from '@/components/ui/checkbox';
 import {
+  SERVICE_MINUTES_OPTIONS,
   TIME_TYPE_OPTIONS,
   VISIT_FREQUENCY_LABELS,
   VISIT_FREQUENCY_OPTIONS,
@@ -22,8 +23,6 @@ import {
   type WeekdayKey,
   type WeeklyPattern,
 } from '@/lib/schemas/patient';
-
-const SERVICE_MINUTES_PRESETS = [15, 30, 45, 60] as const;
 
 interface WeeklyPatternEditorProps {
   value: WeeklyPattern;
@@ -54,6 +53,17 @@ export function WeeklyPatternEditor({
   };
 
   const showTimeRange = value.time_type === '時間帯' || value.time_type === '固定';
+
+  // サービス時間プルダウン候補 (5 分刻み 15〜180)。
+  // 既存値が候補に無い (将来の非 5 分値など) 場合は防御的にその値を差し込み、
+  // 編集時に値が勝手に変わらないようにする。現データは全て 5 の倍数なので通常は不要。
+  const serviceMinutesOptions = React.useMemo(() => {
+    const current = value.service_minutes;
+    if (Number.isFinite(current) && !SERVICE_MINUTES_OPTIONS.includes(current)) {
+      return [...SERVICE_MINUTES_OPTIONS, current].sort((a, b) => a - b);
+    }
+    return SERVICE_MINUTES_OPTIONS;
+  }, [value.service_minutes]);
 
   return (
     <div className="space-y-4 rounded-md border border-border-default bg-bg-base p-4">
@@ -130,34 +140,16 @@ export function WeeklyPatternEditor({
       </Field>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <Field label="サービス時間 (分)" hint="1〜180">
-          <div className="flex items-center gap-2">
-            <Input
-              type="number"
-              min={1}
-              max={180}
-              disabled={disabled}
-              value={value.service_minutes}
-              onChange={(e) => {
-                const n = Number(e.target.value);
-                update('service_minutes', Number.isFinite(n) ? Math.min(180, Math.max(1, n)) : 30);
-              }}
-              className="flex-1"
-            />
-            <Select
-              disabled={disabled}
-              value={String(value.service_minutes)}
-              onChange={(v) => {
-                const n = Number(v);
-                if (Number.isFinite(n)) update('service_minutes', n);
-              }}
-              options={[
-                ['', '--'],
-                ...SERVICE_MINUTES_PRESETS.map((m) => [String(m), `${m}分`] as const),
-              ]}
-              className="w-24"
-            />
-          </div>
+        <Field label="サービス時間 (分)" hint="5分刻み・基本35分">
+          <Select
+            disabled={disabled}
+            value={String(value.service_minutes)}
+            onChange={(v) => {
+              const n = Number(v);
+              if (Number.isFinite(n)) update('service_minutes', Math.min(180, Math.max(1, n)));
+            }}
+            options={serviceMinutesOptions.map((m) => [String(m), `${m}分`] as const)}
+          />
         </Field>
 
         <Field label="時間タイプ">
