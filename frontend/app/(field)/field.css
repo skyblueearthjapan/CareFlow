@@ -7,11 +7,12 @@
  */
 
 .cf-field-root {
-  /* next/font が注入する CSS 変数を、コンポーネントが参照する汎用名へマップ。
-   * このスコープ内でのみ有効。 */
-  --font-sans: var(--font-field-sans), -apple-system, system-ui, sans-serif;
-  --font-serif: var(--font-field-serif), 'Hiragino Mincho ProN', serif;
-  --font-mono: var(--font-field-mono), ui-monospace, monospace;
+  /* フォントはレイアウトの <link> でランタイム読み込み (Google Fonts)。
+   * ビルド時フォント取得 (next/font) はオフラインのビルドコンテナで失敗するため不使用。
+   * font-family 名を直接マップし、このスコープ内でのみ有効。 */
+  --font-sans: 'Noto Sans JP', -apple-system, system-ui, sans-serif;
+  --font-serif: 'Noto Serif JP', 'Hiragino Mincho ProN', serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
 
   position: fixed;
   inset: 0;

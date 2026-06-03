@@ -7,28 +7,15 @@
  * アプリ他画面のフォントには影響させない。
  */
 import type { Metadata, Viewport } from 'next';
-import { Noto_Sans_JP, Noto_Serif_JP, JetBrains_Mono } from 'next/font/google';
 
 import './field.css';
 
-const notoSans = Noto_Sans_JP({
-  subsets: ['latin'],
-  weight: ['400', '500', '600', '700'],
-  variable: '--font-field-sans',
-  display: 'swap',
-});
-const notoSerif = Noto_Serif_JP({
-  subsets: ['latin'],
-  weight: ['500', '600', '700'],
-  variable: '--font-field-serif',
-  display: 'swap',
-});
-const jetBrains = JetBrains_Mono({
-  subsets: ['latin'],
-  weight: ['400', '500'],
-  variable: '--font-field-mono',
-  display: 'swap',
-});
+// フォント (Noto Sans/Serif JP・JetBrains Mono) は **ランタイムで Google Fonts
+// から読み込む** (<link>)。next/font/google はビルド時にフォントを取得するが、
+// 巨大な CJK サブセットをオフラインのビルドコンテナが取得できず失敗するため不使用。
+// font-family は field.css の .cf-field-root スコープ内でのみ参照され、他画面に漏れない。
+const FIELD_FONTS_HREF =
+  'https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;600;700&family=Noto+Serif+JP:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap';
 
 export const metadata: Metadata = {
   title: 'CareFlow — 現場ボード',
@@ -44,10 +31,12 @@ export const viewport: Viewport = {
 
 export default function FieldLayout({ children }: { children: React.ReactNode }) {
   return (
-    <div
-      className={`${notoSans.variable} ${notoSerif.variable} ${jetBrains.variable} cf-field-root`}
-    >
-      {children}
-    </div>
+    <>
+      {/* Next.js は layout 内の <link> を <head> へ巻き上げる。preconnect でフォント取得を高速化。 */}
+      <link rel="preconnect" href="https://fonts.googleapis.com" />
+      <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
+      <link rel="stylesheet" href={FIELD_FONTS_HREF} />
+      <div className="cf-field-root">{children}</div>
+    </>
   );
 }
