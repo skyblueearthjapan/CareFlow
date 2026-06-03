@@ -214,17 +214,21 @@ describe('/m 現場ボード (実データ)', () => {
     expect(screen.getByText('月曜')).toBeInTheDocument();
   });
 
-  it('実訪問が実時刻 + 容量 + 空き枠で表示される', () => {
+  it('実訪問が実時刻 + 容量 + 空き帯 (≥60分・開始時刻表示) で表示される', () => {
     setSession('manager');
     render(<FieldBoardPage />);
     // 実時刻 (start_time〜end_time)。
     expect(screen.getByText('09:30〜10:30')).toBeInTheDocument();
     // 容量 filled/max。
     expect(screen.getByText(/1\/6/)).toBeInTheDocument();
-    // 空き枠 (remaining): 「この時間空いてますよ：空きN個」。
-    expect(screen.getByText(/この時間空いてますよ：空き5個/)).toBeInTheDocument();
-    // 空き時間帯 (営業枠 09:30–12:00 / 13:00–18:00 から 09:30〜10:30 の visit を除く)。
-    expect(screen.getByText(/10:30〜12:00 \/ 13:00〜18:00/)).toBeInTheDocument();
+    // 空き帯: 営業枠 09:30–12:00 / 13:00–18:00 から 09:30〜10:30 の visit を除いた
+    // ≥60分 の 2 帯 (AM 10:30〜12:00=90分, PM 13:00〜18:00=300分) を各々のカードで表示。
+    const empties = screen.getAllByText(/この時間空いてますよ：/);
+    expect(empties).toHaveLength(2);
+    expect(screen.getByText('10:30〜12:00')).toBeInTheDocument();
+    expect(screen.getByText('13:00〜18:00')).toBeInTheDocument();
+    // 旧仕様「空きN個」まとめ表示は廃止。
+    expect(screen.queryByText(/空き\d+個/)).not.toBeInTheDocument();
   });
 
   it('患者カード click でカルテシートが開く (患者詳細の実 API 値)', () => {
@@ -328,14 +332,118 @@ describe('/m 現場ボード 同住所連続', () => {
     expect(screen.getByText('別時 次郎')).toBeInTheDocument();
   });
 
-  it('空き枠は「この時間空いてますよ：空きN個」+ 空き時間帯を表示する', () => {
+  it('60分未満の空き帯は表示せず、≥60分のみ「この時間空いてますよ：HH:MM〜HH:MM」で出す', () => {
     setSession('manager');
     setBoard({ data: makeSameAddressBoard() });
     render(<FieldBoardPage />);
-    // remaining=3。
-    expect(screen.getByText(/この時間空いてますよ：空き3個/)).toBeInTheDocument();
-    // 占有 09:30〜10:30 / 11:00〜12:00 を営業枠から除いた空き gap。
-    // AM: 10:30〜11:00 (30分) / PM: 13:00〜18:00。12:00 開始の空きは無し。
-    expect(screen.getByText(/10:30〜11:00 \/ 13:00〜18:00/)).toBeInTheDocument();
+    // 占有 09:30〜10:30 / 11:00〜12:00 を営業枠から除いた空き gap:
+    //   AM 10:30〜11:00 (30分) → <60分 なので非表示。
+    //   PM 13:00〜18:00 (300分) → ≥60分 なので 1 帯表示。
+    const empties = screen.getAllByText(/この時間空いてますよ：/);
+    expect(empties).toHaveLength(1);
+    expect(screen.getByText('13:00〜18:00')).toBeInTheDocument();
+    // 60分未満 (10:30〜11:00) の空き帯は出ない。
+    expect(screen.queryByText('10:30〜11:00')).not.toBeInTheDocument();
+    // 旧「空きN個」まとめ表示は廃止。
+    expect(screen.queryByText(/空き\d+個/)).not.toBeInTheDocument();
+  });
+});
+
+// ============================ 空き帯の精緻化 (≥60分・interleave) ============================
+
+const COURSE_GAP_ID = '77777777-7777-7777-7777-777777777777';
+
+/**
+ * 月曜に 1 コース。訪問は 11:00〜12:00 のみ。
+ *   AM: 09:30〜11:00 (90分) → ≥60分 → 訪問より前 (先頭) に空き帯。
+ *   PM: 13:00〜18:00 (300分) → ≥60分 → 訪問より後に空き帯。
+ * 空き帯が「開始時刻順」で訪問と正しく interleave されることを検証する。
+ */
+function makeInterleaveBoard(): BoardResponse {
+  const base = makeBoard();
+  const monCell = base.board[0]!;
+  monCell.courses = [
+    {
+      course_id: COURSE_GAP_ID,
+      course_code: 'A',
+      course_label: '稲A',
+      staff_name: '佐藤 Ns',
+      visits: [v('bbbbbbbb-0000-0000-0000-000000000001', '昼前 太郎', '11:00', '12:00', null, 0)],
+      capacity: { filled: 1, max: 6, total_minutes: 60, remaining: 5 },
+    },
+  ];
+  return base;
+}
+
+/** 月曜に満杯コース (AM/PM を埋め切り、空き帯ゼロ)。 */
+function makeFullBoard(): BoardResponse {
+  const base = makeBoard();
+  const monCell = base.board[0]!;
+  monCell.courses = [
+    {
+      course_id: COURSE_GAP_ID,
+      course_code: 'A',
+      course_label: '稲A',
+      staff_name: '佐藤 Ns',
+      visits: [
+        v('cccccccc-0000-0000-0000-000000000001', '満杯 一郎', '09:30', '12:00', null, 0),
+        v('cccccccc-0000-0000-0000-000000000002', '満杯 二郎', '13:00', '18:00', null, 1),
+      ],
+      capacity: { filled: 2, max: 6, total_minutes: 450, remaining: 4 },
+    },
+  ];
+  return base;
+}
+
+/** 月曜に空コース (訪問ゼロ)。AM/PM が各 ≥60分 → 2 帯。 */
+function makeEmptyCourseBoard(): BoardResponse {
+  const base = makeBoard();
+  const monCell = base.board[0]!;
+  monCell.courses = [
+    {
+      course_id: COURSE_GAP_ID,
+      course_code: 'A',
+      course_label: '稲A',
+      staff_name: '佐藤 Ns',
+      visits: [],
+      capacity: { filled: 0, max: 6, total_minutes: 0, remaining: 6 },
+    },
+  ];
+  return base;
+}
+
+describe('/m 現場ボード 空き帯の精緻化', () => {
+  it('空き帯が開始時刻順で訪問と正しく interleave される (前: AM空き → 訪問 → 後: PM空き)', () => {
+    setSession('manager');
+    setBoard({ data: makeInterleaveBoard() });
+    render(<FieldBoardPage />);
+    // 3 要素: AM空き帯 (09:30〜11:00) / 訪問カード (昼前 太郎 11:00〜12:00) / PM空き帯 (13:00〜18:00)。
+    const amGap = screen.getByText('09:30〜11:00');
+    const visit = screen.getByText('11:00〜12:00');
+    const pmGap = screen.getByText('13:00〜18:00');
+    // DOM 文書順 = 描画順。空き帯はその開始時刻位置に挿入される。
+    // a が b より前なら compareDocumentPosition に DOCUMENT_POSITION_FOLLOWING(=4) が立つ。
+    const FOLLOWING = Node.DOCUMENT_POSITION_FOLLOWING;
+    expect(amGap.compareDocumentPosition(visit) & FOLLOWING).toBeTruthy();
+    expect(visit.compareDocumentPosition(pmGap) & FOLLOWING).toBeTruthy();
+    // 空き帯は 2 つ。
+    expect(screen.getAllByText(/この時間空いてますよ：/)).toHaveLength(2);
+  });
+
+  it('満杯コースでは空き帯を表示しない', () => {
+    setSession('manager');
+    setBoard({ data: makeFullBoard() });
+    render(<FieldBoardPage />);
+    expect(screen.queryByText(/この時間空いてますよ：/)).not.toBeInTheDocument();
+  });
+
+  it('空コースでは AM / PM の 2 帯を表示する', () => {
+    setSession('manager');
+    setBoard({ data: makeEmptyCourseBoard() });
+    render(<FieldBoardPage />);
+    // AM 09:30〜12:00 (150分) / PM 13:00〜18:00 (300分)。
+    expect(screen.getAllByText(/この時間空いてますよ：/)).toHaveLength(2);
+    expect(screen.getByText('09:30〜12:00')).toBeInTheDocument();
+    expect(screen.getByText('13:00〜18:00')).toBeInTheDocument();
   });
 });

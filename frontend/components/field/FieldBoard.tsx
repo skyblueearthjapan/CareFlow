@@ -72,14 +72,27 @@ const BUSINESS_BLOCKS: ReadonlyArray<readonly [number, number]> = [
   [13 * 60, 18 * 60], // 13:00–18:00
 ];
 
-/** これより短い gap は目安表示として省略する (分)。 */
-const MIN_FREE_GAP_MIN = 15;
+/**
+ * これより短い gap は空き帯として表示しない (分)。
+ * 60分 = 移動 + 約35分業務 + バッファーで概ね 1 時間確保が必要なため。
+ */
+const MIN_FREE_GAP_MIN = 60;
+
+/** 営業枠から既存 visit の占有を除いた空き時間帯 (≥MIN_FREE_GAP_MIN)。 */
+export interface FreeGap {
+  /** gap 開始 (0時起点の分。interleave の並べ替えキー)。 */
+  startMin: number;
+  /** gap 終了 (0時起点の分)。 */
+  endMin: number;
+  /** 'HH:MM〜HH:MM' の表示ラベル。 */
+  label: string;
+}
 
 /**
  * コースの営業枠から既存 visit の占有 [start, end) を除いた空き時間帯を算出する。
- * 戻り値は 'HH:MM〜HH:MM' のラベル配列 (短すぎる gap は省略)。
+ * 戻り値は MIN_FREE_GAP_MIN 以上の gap のみ (短すぎる gap は省略)、start 昇順。
  */
-function computeFreeGaps(visits: BoardVisit[]): string[] {
+function computeFreeGaps(visits: BoardVisit[]): FreeGap[] {
   const occupied: Array<[number, number]> = [];
   for (const v of visits) {
     const s = parseHM(v.start_time);
@@ -89,22 +102,23 @@ function computeFreeGaps(visits: BoardVisit[]): string[] {
   }
   occupied.sort((a, b) => a[0] - b[0]);
 
-  const labels: string[] = [];
+  const gaps: FreeGap[] = [];
+  const push = (s: number, e: number) => {
+    if (e - s >= MIN_FREE_GAP_MIN) {
+      gaps.push({ startMin: s, endMin: e, label: `${fmtHM(s)}〜${fmtHM(e)}` });
+    }
+  };
   for (const [blockStart, blockEnd] of BUSINESS_BLOCKS) {
     let cursor = blockStart;
     for (const [s, e] of occupied) {
       if (e <= cursor || s >= blockEnd) continue; // ブロック外は無視
       const segStart = Math.max(s, blockStart);
-      if (segStart - cursor >= MIN_FREE_GAP_MIN) {
-        labels.push(`${fmtHM(cursor)}〜${fmtHM(segStart)}`);
-      }
+      push(cursor, segStart);
       cursor = Math.max(cursor, Math.min(e, blockEnd));
     }
-    if (blockEnd - cursor >= MIN_FREE_GAP_MIN) {
-      labels.push(`${fmtHM(cursor)}〜${fmtHM(blockEnd)}`);
-    }
+    push(cursor, blockEnd);
   }
-  return labels;
+  return gaps;
 }
 
 // ============================ 日付フォーマット ============================
@@ -813,16 +827,11 @@ function PatientCard({
   );
 }
 
-function EmptySlot({
-  remaining,
-  freeGaps,
-  onEmpty,
-}: {
-  remaining: number;
-  /** 営業枠から既存 visit を除いた空き時間帯 ('HH:MM〜HH:MM' の目安)。 */
-  freeGaps: string[];
-  onEmpty: () => void;
-}) {
+/**
+ * ≥60分 の空き帯 1 つを表すカード。その帯の開始時刻位置 (時間順) に挿入される。
+ * 文言は「この時間空いてますよ：HH:MM〜HH:MM」。タップで提案シート (onEmpty) へ。
+ */
+function EmptySlot({ gap, onEmpty }: { gap: FreeGap; onEmpty: () => void }) {
   return (
     <button
       onClick={onEmpty}
@@ -863,25 +872,17 @@ function EmptySlot({
       </span>
       <span style={{ flex: '1 1 0', minWidth: 0 }}>
         <span style={{ display: 'block', whiteSpace: 'normal', lineHeight: 1.25 }}>
-          この時間空いてますよ：空き{remaining}個
-        </span>
-        {freeGaps.length > 0 && (
+          この時間空いてますよ：
           <span
             style={{
-              display: 'block',
-              marginTop: 3,
               fontFamily: 'var(--font-mono)',
-              fontSize: 11,
-              fontWeight: 600,
-              color: TERRA_DEEP,
-              opacity: 0.92,
               letterSpacing: '-0.01em',
-              wordBreak: 'break-word',
+              whiteSpace: 'nowrap',
             }}
           >
-            {freeGaps.join(' / ')}
+            {gap.label}
           </span>
-        )}
+        </span>
       </span>
     </button>
   );
@@ -992,13 +993,16 @@ function CourseSlots({
   onKarte: (v: BoardVisit) => void;
   onEmpty: () => void;
 }) {
-  // 同住所グループの連結描画: group_id を持つ visit は先頭で 1 度だけ PairWrap 描画。
+  // 訪問カード / 同住所連結 / 空き帯を start_time 昇順に interleave して描画する。
+  // 各要素は { sortKey=開始分, seq=安定タイブレーク, node } を持ち、最後にまとめて並べ替える。
   // 色解決用の course_code は BoardCourse から明示的に prop で渡す
   // (react-query キャッシュ物体への書込はしない)。
-  const out: React.ReactNode[] = [];
+  const items: Array<{ sortKey: number; seq: number; node: React.ReactNode }> = [];
+  let seq = 0;
   // 連結済みの (group_id, start_time) ペアキー。同住所でも別時刻なら別グループ。
   const renderedKeys = new Set<string>();
   for (const v of co.visits) {
+    const startKey = parseHM(v.start_time) ?? Number.MAX_SAFE_INTEGER;
     const gid = v.same_address_group_id;
     if (gid && sameAddressGroups.byGroup.has(gid)) {
       // 同住所連続(ペア)扱いの条件: same_address_group_id が同じ + 同コース + start_time が同一。
@@ -1013,36 +1017,47 @@ function CourseSlots({
         const pairKey = `${gid}@${v.start_time}`;
         if (renderedKeys.has(pairKey)) continue;
         renderedKeys.add(pairKey);
-        out.push(
-          <PairWrap
-            key={'pair' + pairKey}
-            visits={members}
-            courseCode={co.course_code}
-            onKarte={onKarte}
-          />,
-        );
+        items.push({
+          sortKey: startKey,
+          seq: seq++,
+          node: (
+            <PairWrap
+              key={'pair' + pairKey}
+              visits={members}
+              courseCode={co.course_code}
+              onKarte={onKarte}
+            />
+          ),
+        });
         continue;
       }
     }
-    out.push(
-      <PatientCard key={v.visit_id} visit={v} courseCode={co.course_code} onKarte={onKarte} />,
-    );
+    items.push({
+      sortKey: startKey,
+      seq: seq++,
+      node: (
+        <PatientCard key={v.visit_id} visit={v} courseCode={co.course_code} onKarte={onKarte} />
+      ),
+    });
   }
 
-  // 空き枠: remaining ぶんを「この時間空いてますよ：空きN個」+ 空き時間帯で表示。
-  if (co.capacity.remaining > 0) {
-    const freeGaps = computeFreeGaps(co.visits);
-    out.push(
-      <EmptySlot
-        key="empty"
-        remaining={co.capacity.remaining}
-        freeGaps={freeGaps}
-        onEmpty={onEmpty}
-      />,
-    );
+  // 空き帯: ≥60分 の各 gap を、その開始時刻位置に「この時間空いてますよ：HH:MM〜HH:MM」で挿入。
+  for (const gap of computeFreeGaps(co.visits)) {
+    items.push({
+      sortKey: gap.startMin,
+      seq: seq++,
+      node: <EmptySlot key={`gap@${gap.startMin}`} gap={gap} onEmpty={onEmpty} />,
+    });
   }
 
-  return <div style={{ display: 'flex', flexDirection: 'column', gap: 7, padding: 8 }}>{out}</div>;
+  // start_time 昇順。同一開始時刻は元の出現順 (seq) で安定ソート。
+  items.sort((a, b) => a.sortKey - b.sortKey || a.seq - b.seq);
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 7, padding: 8 }}>
+      {items.map((it) => it.node)}
+    </div>
+  );
 }
 
 // ============================ Layout: AGENDA ============================
