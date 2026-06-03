@@ -162,6 +162,15 @@ export interface ProposeNewModalProps {
   isoWeek: number;
   /** 単一拠点モード時の対象拠点 ID。null = 全拠点 (office_ids 空配列で全拠点検索)。 */
   officeId: string | null;
+  /**
+   * 「プールから選ぶ」タブの候補となるプール患者。
+   * CourseDayTablePanel が算出済の `poolPatients`
+   * (希望訪問回数 frequency_per_week に対する不足>0、または requires_multiple_staff)
+   * を渡す。これにより全患者 (usePatients) ではなく実プール候補のみが出る。
+   * 「既存患者を検索」タブは従来通り usePatients (全患者検索) を使う。
+   * 未指定時は空配列 (= プール候補なし) として扱う。
+   */
+  poolPatients?: PatientRead[];
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -174,6 +183,7 @@ export function ProposeNewModal({
   isoYear,
   isoWeek,
   officeId,
+  poolPatients = [],
 }: ProposeNewModalProps) {
   const { data: session, status: sessionStatus } = useSession();
   const accessToken = session?.accessToken ?? null;
@@ -291,27 +301,29 @@ export function ProposeNewModal({
     setTab(next);
   };
 
-  // ─── 患者一覧 (プール / 既存検索) ────────────────────────────────────
-  // プールタブ: 候補となる active 患者を一覧。既存タブ: 検索語で絞る。
+  // ─── 患者一覧 (既存検索のみ) ─────────────────────────────────────────
+  // 既存タブ: usePatients (全患者) を検索語で絞る。
+  // プールタブ: 親 (CourseDayTablePanel) が算出済の poolPatients prop を使うため
+  //   usePatients は呼ばない (= プール候補と全患者検索のデータソースを明確に分離)。
   // 新規タブでは患者一覧 fetch を抑止 (enabled:false)。
   const patientsQuery = usePatients({
     search: isExisting ? search.trim() : '',
-    limit: isPool ? 200 : 12,
-    enabled: open && !isNew,
+    limit: 12,
+    enabled: open && isExisting,
   });
   const patientItems = React.useMemo(() => patientsQuery.data?.items ?? [], [patientsQuery.data]);
 
-  // プールタブの候補: 希望訪問あり (frequency_per_week>0) の active 患者を優先表示。
+  // プールタブの候補: 親が渡したプール患者 (希望不足>0 / requires_multiple_staff) を
+  // 検索語で絞るのみ。全患者フィルタは廃止 (プールに居ない患者は出さない)。
   const poolCandidates = React.useMemo(() => {
     if (!isPool) return [] as PatientRead[];
     const term = search.trim().toLowerCase();
-    return patientItems.filter((p) => {
-      if (p.status !== 'active') return false;
-      if (!term) return true;
+    if (!term) return poolPatients;
+    return poolPatients.filter((p) => {
       const hay = `${p.name ?? ''} ${p.kana ?? ''} ${p.code ?? ''}`.toLowerCase();
       return hay.includes(term);
     });
-  }, [isPool, patientItems, search]);
+  }, [isPool, poolPatients, search]);
 
   const existingCandidates = React.useMemo(() => {
     if (!isExisting || !search.trim()) return [] as PatientRead[];

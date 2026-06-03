@@ -27,6 +27,7 @@ import * as React from 'react';
 
 import { cn } from '@/lib/utils';
 import { formatDuration } from '@/lib/format/duration';
+import { parseHM, type FreeGap } from '@/lib/scheduling/freeGaps';
 import { VisitArrow } from './v2/VisitArrow';
 import { trimSeconds } from './v2/_autoScheduleUtils';
 import { PinScopeMenu, type PinScope } from './v2/PinScopeMenu';
@@ -93,6 +94,20 @@ export interface CourseListItem {
   summary?: string | null;
   /** 描画する visit 群. start_time 昇順で並べておくこと. */
   visits: VisitListItem[];
+  /**
+   * Phase G-55: 営業枠から既存 visit を除いた空き時間帯 (≥60分, start 昇順)。
+   * 共有 util `@/lib/scheduling/freeGaps` の computeFreeGaps で親が算出して渡す。
+   * 指定があり、かつ頭数の空き (capacity.remaining>0) のときのみ、visit 行に
+   * 時刻順 interleave で「HH:MM〜HH:MM 空き時間」マーカーが挿入される。
+   */
+  freeGaps?: FreeGap[];
+  /**
+   * Phase G-55: 実効定員 / 配置済み。頭数ゲートに使う。
+   * remaining = max - filled <= 0 (満員) のときは時間 gap があっても空き時間帯を
+   * 表示しない (モバイル AgendaBoard と同 semantics)。未指定時は空き時間帯を出さない
+   * (= freeGaps だけ渡しても capacity 無しでは非表示 = 後方互換)。
+   */
+  capacity?: { filled: number; max: number };
 }
 
 export interface WeekdayScheduleCardProps {
@@ -293,15 +308,56 @@ function CourseRow({
   const overflowCount = course.visits.length - sliced.length;
   const clusters = React.useMemo(() => clusterVisits(sliced), [sliced]);
 
+  // Phase G-55: 空き時間帯 (≥60分) を visit (cluster) と時刻順に interleave する。
+  //   - 頭数ゲート: capacity.remaining<=0 (満員) のときは時間 gap があっても出さない
+  //     (モバイル AgendaBoard と同 semantics)。capacity 未指定でも非表示。
+  //   - 各 cluster の開始分は内部 visit の最小 start_time、gap は startMin。
+  //   - 同一開始時刻は元の出現順 (seq) で安定ソート (gap は visit の後ろ)。
+  const renderItems = React.useMemo(() => {
+    type RenderItem =
+      | { kind: 'cluster'; sortKey: number; seq: number; cluster: ClusterItem; ci: number }
+      | { kind: 'gap'; sortKey: number; seq: number; gap: FreeGap };
+    const items: RenderItem[] = [];
+    let seq = 0;
+    clusters.forEach((cluster, ci) => {
+      const visits = cluster.kind === 'pair' ? cluster.visits : [cluster.visit];
+      const startMin = visits.reduce<number>((min, v) => {
+        const m = parseHM(v.start_time);
+        return m != null && m < min ? m : min;
+      }, Number.MAX_SAFE_INTEGER);
+      items.push({ kind: 'cluster', sortKey: startMin, seq: seq++, cluster, ci });
+    });
+    const capacity = course.capacity;
+    const remaining = capacity ? Math.max(0, capacity.max - capacity.filled) : 0;
+    const showFreeSlots = capacity != null && remaining > 0;
+    if (showFreeSlots) {
+      for (const gap of course.freeGaps ?? []) {
+        items.push({ kind: 'gap', sortKey: gap.startMin, seq: seq++, gap });
+      }
+    }
+    items.sort((a, b) => a.sortKey - b.sortKey || a.seq - b.seq);
+    return items;
+  }, [clusters, course.freeGaps, course.capacity]);
+
   return (
     <li className="px-2 py-1.5">
       <div className="flex items-center justify-between text-[11px]">
         <span className="font-semibold text-text-primary">{course.title}</span>
         {course.summary ? <span className="tnum text-text-muted">{course.summary}</span> : null}
       </div>
-      {clusters.length > 0 ? (
+      {renderItems.length > 0 ? (
         <ul className="mt-1 space-y-0.5">
-          {clusters.map((cluster, ci) => {
+          {renderItems.map((item) => {
+            if (item.kind === 'gap') {
+              return (
+                <FreeGapRow
+                  key={`gap-${item.gap.startMin}`}
+                  gap={item.gap}
+                  testIdPrefix={testIdPrefix}
+                />
+              );
+            }
+            const cluster = item.cluster;
             if (cluster.kind === 'single') {
               const v = cluster.visit;
               return (
@@ -323,7 +379,7 @@ function CourseRow({
             const nextAfterPair = pairLastIdx >= 0 ? (sliced[pairLastIdx + 1] ?? null) : null;
             return (
               <PairCluster
-                key={`pair-${cluster.groupId}-${ci}`}
+                key={`pair-${cluster.groupId}-${item.ci}`}
                 cluster={cluster}
                 nextAfterPair={nextAfterPair}
                 testIdPrefix={testIdPrefix}
@@ -338,6 +394,29 @@ function CourseRow({
           ) : null}
         </ul>
       ) : null}
+    </li>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// FreeGapRow — Phase G-55: 空き時間帯マーカー (リスト内 時刻順 interleave)
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * 1 つの空き時間帯 (≥60分) を表す行。visit 行と時刻順に並ぶよう CourseRow が
+ * interleave して描画する。親機意匠: 薄い teal 背景 + amber 左ボーダー + 等幅時刻
+ * (CourseDayTable のサマリ帯と同じ視覚言語。モバイルの warm 配色は持ち込まない)。
+ */
+function FreeGapRow({ gap, testIdPrefix }: { gap: FreeGap; testIdPrefix?: string }) {
+  return (
+    <li
+      className="flex items-center gap-1 rounded border-l-2 border-amber-500 bg-brand-primary/5 px-1.5 py-0.5 text-[10px] font-medium text-brand-primary"
+      data-testid={testIdPrefix ? `${testIdPrefix}-free-gap-${gap.startMin}` : undefined}
+      data-free-gap-start={gap.startMin}
+      title={`空き時間帯 ${gap.label}`}
+    >
+      <span className="tnum">{gap.label}</span>
+      <span className="text-text-secondary">空き時間</span>
     </li>
   );
 }

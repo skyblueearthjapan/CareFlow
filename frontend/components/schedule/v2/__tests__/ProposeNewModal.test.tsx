@@ -299,9 +299,16 @@ function setExistingFixedVisits(
   });
 }
 
-function renderModal() {
+function renderModal(poolPatients: PatientRead[] = [POOL_PATIENT]) {
   return render(
-    <ProposeNewModal open onClose={vi.fn()} isoYear={2026} isoWeek={23} officeId={OFFICE_ID} />,
+    <ProposeNewModal
+      open
+      onClose={vi.fn()}
+      isoYear={2026}
+      isoWeek={23}
+      officeId={OFFICE_ID}
+      poolPatients={poolPatients}
+    />,
   );
 }
 
@@ -344,6 +351,40 @@ describe('候補ソース切替', () => {
     renderModal();
     expect(screen.getByTestId('propose-patient-candidates')).toBeInTheDocument();
     expect(screen.getByText('山田 太郎')).toBeInTheDocument();
+  });
+
+  it('プール候補は渡された poolPatients のみで、全患者 (usePatients) は使わない', () => {
+    // usePatients は「全患者」(プール外の患者を含む) を返す状態にしておく。
+    const NON_POOL_PATIENT = {
+      ...POOL_PATIENT,
+      id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      code: 'P-999',
+      name: 'プール外 次郎',
+    } as PatientRead;
+    (usePatients as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      data: {
+        items: [POOL_PATIENT, NON_POOL_PATIENT],
+        total: 2,
+        page: 1,
+        limit: 12,
+        truncated: false,
+      },
+      isLoading: false,
+      isFetching: false,
+      isError: false,
+    });
+    // poolPatients prop には山田 太郎のみ渡す。
+    renderModal([POOL_PATIENT]);
+    // プールタブの候補は渡された poolPatients のみ。
+    expect(screen.getByText('山田 太郎')).toBeInTheDocument();
+    // usePatients が返す「プール外」患者は出ない (全患者フィルタを使っていない証拠)。
+    expect(screen.queryByText('プール外 次郎')).not.toBeInTheDocument();
+  });
+
+  it('poolPatients が空のときはプール候補なし表示', () => {
+    renderModal([]);
+    expect(screen.getByText('プール候補がありません。')).toBeInTheDocument();
+    expect(screen.queryByText('山田 太郎')).not.toBeInTheDocument();
   });
 });
 

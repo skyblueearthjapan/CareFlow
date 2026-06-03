@@ -515,6 +515,10 @@ export function CourseDayTable({
   }, [assignedStaffDayEvents]);
 
   const capKey = capacityKeyForWeekday(weekday);
+  // capKey 判定の前に freeGaps から grid 配置情報を計算しても副作用は無いが、
+  // hooks 規則上 useMemo は早期 return より前で呼ぶ必要があるため、ここに置く。
+  // ただし capacity に依存する showFreeSlots ゲートは下で適用するので、ここでは
+  // 「時刻 → grid 行」へのマッピングのみ行う (gap 自体は props.freeGaps をそのまま使用)。
   // capacity が 0 の曜日 (例: 日曜) は描画しない (親が事前に判定するが念のため)
   if (!capKey) return null;
 
@@ -627,32 +631,14 @@ export function CourseDayTable({
       })()}
 
       {/*
-        Phase G-55: 空き時間帯 (≥60分) のサマリ帯。
-        - 親機の意匠で出す: クリーム/破線オレンジのモバイルカードは持ち込まない。
-          薄い teal 背景 + amber (terracotta) の左ボーダー + 時刻は tnum/等幅。
-        - 頭数ゲート (remaining<=0 = 満員) のときは時間 gap があっても出さない
-          (showFreeSlots=false → gapsToShow=[])。
-        - 空き枠 (= 頭数) はヘッダー Badge 側で表示済みなのでここは時間帯のみ。
+        Phase G-55: 空き時間帯 (≥60分) は「サマリ帯」をやめ、時間グリッド内の
+        該当時刻位置 (午前=上 / 午後=下) にマーカーを配置する (モバイル AgendaBoard
+        と同じ「時刻順の位置に空きを出す」semantics)。実際の描画はグリッド内の
+        freeGapBlocks (gridRow 配置) で行う。
+        - 頭数ゲート (remaining<=0 = 満員) のときは出さない (gapsToShow=[])。
+        - 親機意匠: 薄い teal 背景 + amber 左ボーダー + 等幅時刻。warm 配色は持ち込まない。
+        - pointer-events-none で下層 cell の droppable / dnd を妨げない (gap は空セル領域)。
       */}
-      {gapsToShow.length > 0 ? (
-        <div
-          className="flex flex-wrap items-center gap-1.5 border-b border-border-default bg-brand-primary/5 px-3 py-1.5"
-          data-testid={`course-day-free-gaps-${weekday}-${template.id}`}
-          data-free-gap-count={gapsToShow.length}
-        >
-          <span className="text-[10px] font-semibold text-text-secondary">空き時間帯</span>
-          {gapsToShow.map((gap) => (
-            <span
-              key={`gap-${gap.startMin}`}
-              className="inline-flex items-center rounded border-l-2 border-amber-500 bg-bg-base px-1.5 py-0.5 text-[10px] font-medium tnum text-brand-primary shadow-sm"
-              data-testid={`course-day-free-gap-${weekday}-${template.id}-${gap.startMin}`}
-              title={`空き時間帯 ${gap.label}`}
-            >
-              {gap.label}
-            </span>
-          ))}
-        </div>
-      ) : null}
 
       {/*
         3 列テーブル (CareFlow #UX-2026W21):
@@ -713,6 +699,35 @@ export function CourseDayTable({
               canEdit={canEdit}
             />
           ))}
+
+          {/*
+            Phase G-55: 空き時間帯マーカー (時刻位置配置).
+            - gridRow: ${rowIndex + 2} / span ${rowSpan} で gap の時刻位置に配置
+              (column header が +1 行を占有するので +2 オフセット)。
+            - grid-column: 2 / span 2 (時間帯列を除く 患者情報 + 複数 の 2 列) に重ねる。
+            - pointer-events-none: 下層の空セル droppable / dnd を妨げない。
+            - 満員 (showFreeSlots=false) のときは gapsToShow=[] なので何も出ない。
+          */}
+          {gapsToShow.map((gap) => {
+            const block = freeGapToGridBlock(gap.startMin, gap.endMin);
+            if (!block) return null;
+            return (
+              <div
+                key={`free-gap-${gap.startMin}`}
+                style={{
+                  gridRow: `${block.rowIndex + 2} / span ${block.rowSpan}`,
+                  gridColumn: '2 / span 2',
+                }}
+                className="pointer-events-none z-0 m-px flex items-start gap-1 rounded border-l-2 border-amber-500 bg-brand-primary/5 px-1.5 py-0.5 text-[10px] font-medium leading-tight text-brand-primary"
+                data-testid={`course-day-free-gap-${weekday}-${template.id}-${gap.startMin}`}
+                data-free-gap-start={gap.startMin}
+                title={`空き時間帯 ${gap.label}`}
+              >
+                <span className="tnum">{gap.label}</span>
+                <span className="text-text-secondary">空き時間</span>
+              </div>
+            );
+          })}
         </div>
       </div>
     </section>
@@ -1390,4 +1405,29 @@ export function floorToCourseSlot(rawTime: string): string | null {
   const fhh = Math.floor(flooredTotal / 60);
   const fmm = flooredTotal % 60;
   return `${String(fhh).padStart(2, '0')}:${String(fmm).padStart(2, '0')}`;
+}
+
+/**
+ * Phase G-55: 空き時間帯 (FreeGap) を時間グリッド内の (rowIndex, rowSpan) に変換する。
+ * - 時刻軸は 09:30〜18:00 / 15 分刻み (TIME_SLOTS)。
+ * - rowIndex: gap.startMin を 15 分境界に切り下げた行 index (0-based)。
+ * - rowSpan: gap の長さ (15 分単位、最低 1)。表示範囲を超える分はクリップ。
+ * - 範囲外 (gap 全体が表示範囲外) は null。
+ * これにより「午前の空きは上、午後の空きは下」と時刻位置にマーカーを置ける。
+ */
+export function freeGapToGridBlock(
+  startMin: number,
+  endMin: number,
+): { rowIndex: number; rowSpan: number } | null {
+  const tableStart = TIME_SLOT_START_HOUR * 60 + TIME_SLOT_START_MINUTE;
+  const tableEnd = TIME_SLOT_END_HOUR * 60 + TIME_SLOT_END_MINUTE;
+  const s = Math.max(startMin, tableStart);
+  const e = Math.min(endMin, tableEnd);
+  if (e <= s) return null;
+  const flooredFromStart = s - tableStart - ((s - tableStart) % TIME_SLOT_MINUTES);
+  const rowIndex = flooredFromStart / TIME_SLOT_MINUTES;
+  if (rowIndex < 0 || rowIndex >= TIME_SLOTS.length) return null;
+  const span = Math.max(1, Math.ceil((e - (tableStart + flooredFromStart)) / TIME_SLOT_MINUTES));
+  const clamped = Math.min(span, TIME_SLOTS.length - rowIndex);
+  return { rowIndex, rowSpan: clamped };
 }

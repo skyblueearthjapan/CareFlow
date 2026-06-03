@@ -24,6 +24,7 @@ import {
 } from '@/lib/schemas/v2/course_template';
 import type { EventRead } from '@/lib/schemas/staff-events';
 import type { StaffRead } from '@/lib/schemas/staff';
+import type { FreeGap } from '@/lib/scheduling/freeGaps';
 import { formatEventLabelLines, getStaffEventsForWeekday } from './CourseDayTable';
 import { PinScopeMenu, type PinScope } from './PinScopeMenu';
 
@@ -122,6 +123,15 @@ export interface CourseWeekOverviewProps {
    * 未指定時はヘッダーに拠点別 S/M を出さない (患者総数のみ).
    */
   staffSummaryOffices?: { id: string; label: string }[];
+  /**
+   * Phase G-55: (template_id, weekday) → 空き時間帯 (≥60分, start 昇順) の Map。
+   * key 形式は `${template.id}:${weekday}` (cellMap と同形式)。
+   * 親 (CourseDayTablePanel) が (course, weekday) ごとに computeFreeGaps した結果を
+   * template×weekday に解決して渡す。各セルの患者名リストに時刻順 interleave で
+   * 「HH:MM〜HH:MM 空き時間」マーカーが挿入される。
+   * 頭数ゲート: cap - 配置済 <= 0 (満員) のセルでは時間 gap があっても出さない。
+   */
+  freeGapsByCell?: Map<string, FreeGap[]>;
 }
 
 export function CourseWeekOverview({
@@ -139,6 +149,7 @@ export function CourseWeekOverview({
   courseCodesMax = COURSE_CODES_MAX,
   managerCountFor,
   staffSummaryOffices,
+  freeGapsByCell,
 }: CourseWeekOverviewProps) {
   // (template_id, weekday) → visits[] (start_time 昇順)
   const cellMap = React.useMemo(() => {
@@ -329,7 +340,20 @@ export function CourseWeekOverview({
                         time: string;
                         titleLine: string;
                         timeLine: string;
+                      }
+                    | {
+                        // Phase G-55: 空き時間帯 (≥60分) マーカー。頭数ゲート (満員=非表示)
+                        // を通過したときのみ items に含める。pair cluster には属さない (single 扱い)。
+                        kind: 'gap';
+                        id: string;
+                        time: string;
+                        label: string;
+                        startMin: number;
                       };
+                  // Phase G-55: 頭数ゲート — cap - 配置済 <= 0 (満員) なら gap を出さない。
+                  const remainingForGaps = Math.max(0, cap - visitList.length);
+                  const cellGaps =
+                    remainingForGaps > 0 ? (freeGapsByCell?.get(`${tpl.id}:${wd}`) ?? []) : [];
                   const items: OverviewItem[] = [
                     ...visitList.map((v) => {
                       const k = sameAddressKeyByPatientId?.get(v.patient_id) ?? null;
@@ -356,6 +380,14 @@ export function CourseWeekOverview({
                         timeLine: lines.time,
                       };
                     }),
+                    ...cellGaps.map((g) => ({
+                      kind: 'gap' as const,
+                      id: `gap-${g.startMin}`,
+                      // 開始時刻を 'HH:MM' に正規化して既存の time 文字列比較ソートに乗せる。
+                      time: g.label.slice(0, 5),
+                      label: g.label,
+                      startMin: g.startMin,
+                    })),
                   ].sort((a, b) => (a.time ?? '').localeCompare(b.time ?? ''));
 
                   // 2026-W20 後期: 連続する同 groupKey の visit を pair cluster に集約.
@@ -466,6 +498,22 @@ export function CourseWeekOverview({
                               {visibleClusters.map((cluster, ci) => {
                                 if (cluster.kind === 'single') {
                                   const item = cluster.item;
+                                  if (item.kind === 'gap') {
+                                    // Phase G-55: 空き時間帯マーカー (週ビュー セル内 時刻順)。
+                                    // 親機意匠: 薄い teal 背景 + amber 左ボーダー + 等幅時刻。
+                                    return (
+                                      <li
+                                        key={item.id}
+                                        className="rounded border-l-2 border-amber-500 bg-brand-primary/5 px-1 py-0.5 text-[9px] font-medium text-brand-primary"
+                                        data-testid={`course-week-overview-free-gap-${tpl.id}-${wd}-${item.startMin}`}
+                                        data-free-gap-start={item.startMin}
+                                        title={`空き時間帯 ${item.label}`}
+                                      >
+                                        <span className="tnum">{item.label}</span>
+                                        <span className="ml-1 text-text-secondary">空き時間</span>
+                                      </li>
+                                    );
+                                  }
                                   return item.kind === 'visit' ? (
                                     <li
                                       key={item.id}

@@ -7,10 +7,14 @@
  *   - remaining<=0 (満員) のときは時間 gap があっても空き時間帯を一切出さない (頭数ゲート).
  *   - remaining>0 のときのみ「空きN枠」Badge + 空き時間帯帯を表示する.
  *
+ * Phase G-55 (時刻位置配置改修): 空き時間帯は見出し下の「サマリ帯」をやめ、
+ * 時間グリッド内の該当時刻位置 (午前=上 / 午後=下) にマーカーを配置する。
+ * 各マーカーは testid `course-day-free-gap-{weekday}-{templateId}-{startMin}` を持つ。
+ *
  * カバー:
- *   1. capacity 指定 + remaining>0 → 「空きN枠」Badge + freeGaps 帯を表示.
- *   2. 満員 (filled>=max) → 「満員」Badge + freeGaps 帯は非表示 (頭数ゲート).
- *   3. capacity 未指定 (旧呼出) → Badge も帯も非表示 (後方互換).
+ *   1. capacity 指定 + remaining>0 → 「空きN枠」Badge + 各 gap マーカーを時刻位置に表示.
+ *   2. 満員 (filled>=max) → 「満員」Badge + gap マーカーは非表示 (頭数ゲート).
+ *   3. capacity 未指定 (旧呼出) → Badge も gap マーカーも非表示 (後方互換).
  *   4. ヘッダーのコース名定員が capacity.max を反映する.
  */
 import * as React from 'react';
@@ -105,40 +109,46 @@ function renderTable(
 }
 
 describe('Phase G-55: CourseDayTable 親機 空き表示', () => {
-  it('1. capacity remaining>0 → 「空きN枠」Badge + 空き時間帯帯を表示', () => {
+  it('1. capacity remaining>0 → 「空きN枠」Badge + 各 gap マーカーを時刻位置に表示', () => {
     renderTable({ capacity: { filled: 1, max: 6 }, freeGaps: GAPS });
     // 頭数の空き Badge (remaining = 6 - 1 = 5).
     const cap = screen.getByTestId(`course-day-capacity-0-${TPL_ID}`);
     expect(cap).toHaveAttribute('data-remaining', '5');
     expect(cap.textContent).toContain('空き5枠');
-    // 空き時間帯帯 (2 帯).
-    const band = screen.getByTestId(`course-day-free-gaps-0-${TPL_ID}`);
-    expect(band).toHaveAttribute('data-free-gap-count', '2');
-    expect(screen.getByText('09:30〜11:00')).toBeInTheDocument();
-    expect(screen.getByText('13:00〜18:00')).toBeInTheDocument();
+    // 各 gap マーカーが時刻位置 (startMin) に配置される (午前=09:30 / 午後=13:00)。
+    const am = screen.getByTestId(`course-day-free-gap-0-${TPL_ID}-570`);
+    const pm = screen.getByTestId(`course-day-free-gap-0-${TPL_ID}-780`);
+    expect(am).toHaveAttribute('data-free-gap-start', '570');
+    expect(pm).toHaveAttribute('data-free-gap-start', '780');
+    expect(am.textContent).toContain('09:30〜11:00');
+    expect(pm.textContent).toContain('13:00〜18:00');
+    // gridRow が時刻位置順 (午前が午後より前の行) になっている。
+    const amRow = Number((am.style.gridRow.match(/^(\d+)/) ?? [])[1]);
+    const pmRow = Number((pm.style.gridRow.match(/^(\d+)/) ?? [])[1]);
+    expect(amRow).toBeLessThan(pmRow);
   });
 
-  it('2. 満員 (filled>=max) → 「満員」Badge + 空き時間帯帯は非表示 (頭数ゲート)', () => {
-    // remaining = 0 だが freeGaps は時間的には存在する状態 → ゲートで帯を出さない。
+  it('2. 満員 (filled>=max) → 「満員」Badge + gap マーカーは非表示 (頭数ゲート)', () => {
+    // remaining = 0 だが freeGaps は時間的には存在する状態 → ゲートでマーカーを出さない。
     renderTable({ capacity: { filled: 6, max: 6 }, freeGaps: GAPS });
     const cap = screen.getByTestId(`course-day-capacity-0-${TPL_ID}`);
     expect(cap).toHaveAttribute('data-remaining', '0');
     expect(cap.textContent).toContain('満員');
-    expect(screen.queryByTestId(`course-day-free-gaps-0-${TPL_ID}`)).not.toBeInTheDocument();
-    expect(screen.queryByText('09:30〜11:00')).not.toBeInTheDocument();
+    expect(screen.queryByTestId(`course-day-free-gap-0-${TPL_ID}-570`)).not.toBeInTheDocument();
+    expect(screen.queryByTestId(`course-day-free-gap-0-${TPL_ID}-780`)).not.toBeInTheDocument();
   });
 
-  it('3. capacity 未指定 (旧呼出) → Badge も帯も出さない (後方互換)', () => {
+  it('3. capacity 未指定 (旧呼出) → Badge も gap マーカーも出さない (後方互換)', () => {
     renderTable({ freeGaps: GAPS });
     expect(screen.queryByTestId(`course-day-capacity-0-${TPL_ID}`)).not.toBeInTheDocument();
-    expect(screen.queryByTestId(`course-day-free-gaps-0-${TPL_ID}`)).not.toBeInTheDocument();
+    expect(screen.queryByTestId(`course-day-free-gap-0-${TPL_ID}-570`)).not.toBeInTheDocument();
   });
 
   it('4. ヘッダーのコース名定員が capacity.max を反映する', () => {
     renderTable({ capacity: { filled: 2, max: 6 }, freeGaps: [] });
     expect(screen.getByText('本店-A コース (6)')).toBeInTheDocument();
-    // freeGaps 空配列 → 帯は出ないが Badge は出る。
-    expect(screen.queryByTestId(`course-day-free-gaps-0-${TPL_ID}`)).not.toBeInTheDocument();
+    // freeGaps 空配列 → マーカーは出ないが Badge は出る。
+    expect(screen.queryByTestId(`course-day-free-gap-0-${TPL_ID}-570`)).not.toBeInTheDocument();
     expect(screen.getByTestId(`course-day-capacity-0-${TPL_ID}`).textContent).toContain('空き4枠');
   });
 });

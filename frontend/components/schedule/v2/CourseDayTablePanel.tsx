@@ -863,6 +863,23 @@ export function CourseDayTablePanel({
     return m;
   }, [weekVisits]);
 
+  // ─── Phase G-55: (template_id, weekday) → 空き時間帯 のマップ (週ビュー用) ──
+  // freeGapsByCourse は course_id 単位。週ビュー (CourseWeekOverview) は
+  // (template, weekday) セル単位で gap を引くため、course → (template_id, weekday)
+  // に解決し直す。key 形式は CourseWeekOverview の cellMap と同じ `${tpl.id}:${wd}`。
+  const freeGapsByCell = useMemo(() => {
+    const m = new Map<string, FreeGap[]>();
+    for (const c of courses) {
+      const templateId = courseTemplateByCourseId.get(c.id);
+      if (!templateId) continue;
+      const wd = c.weekday;
+      if (wd == null || wd < 0 || wd > 5) continue;
+      const gaps = freeGapsByCourse.get(c.id);
+      if (gaps && gaps.length > 0) m.set(`${templateId}:${wd}`, gaps);
+    }
+    return m;
+  }, [courses, courseTemplateByCourseId, freeGapsByCourse]);
+
   // ─── Wave 37 Phase 3-C: 患者ごとの「配置済み slot」マップ ───────────────
   //   - visit_group_id 持ち visit (= ペア配置済) → slot 0 / slot 1 の両方を埋める
   //   - 単独 visit (visit_group_id=null) → slot 0 のみ埋める
@@ -1689,11 +1706,25 @@ export function CourseDayTablePanel({
         };
       });
 
+      // Phase G-55: リストモードでも空き時間帯を時刻順 interleave で出すため、
+      //   日テーブルと同じ実効定員 (effectiveCapacity) + 空き gap (freeGapsByCourse)
+      //   を course 単位で添える。頭数ゲート (満員=非表示) は WeekdayScheduleCard 側で
+      //   capacity から判定する (= 共有 freeGaps util と同 semantics)。
+      const capMax = effectiveCapacity(
+        template,
+        activeWeekday,
+        staffCountFor(template.office_id, activeWeekday),
+        courseCodesMax,
+      );
+      const freeGaps = course ? (freeGapsByCourse.get(course.id) ?? []) : [];
+
       out.push({
         key: `${template.id}:${activeWeekday}`,
         title: `${officeName ? `${officeName} ` : ''}${template.label} コース`,
         summary: `${visits.length}件`,
         visits,
+        freeGaps,
+        capacity: { filled: visits.length, max: capMax },
       });
     }
     return out;
@@ -1707,6 +1738,9 @@ export function CourseDayTablePanel({
     visitsByCourse,
     patientById,
     visitById,
+    freeGapsByCourse,
+    staffCountFor,
+    courseCodesMax,
   ]);
 
   // ─── Render ──────────────────────────────────────────────────────
@@ -2047,6 +2081,7 @@ export function CourseDayTablePanel({
                   courseCodesMax={courseCodesMax}
                   managerCountFor={managerCountFor}
                   staffSummaryOffices={staffSummaryOffices}
+                  freeGapsByCell={freeGapsByCell}
                 />
               </div>
             ) : (
@@ -2266,6 +2301,7 @@ export function CourseDayTablePanel({
           isoYear={isoYear}
           isoWeek={isoWeek}
           officeId={officeId}
+          poolPatients={poolPatients}
         />
 
         {/* Wave 41 v2 § 4 / §13.5.2: 全面最適化ダイアログ. */}
