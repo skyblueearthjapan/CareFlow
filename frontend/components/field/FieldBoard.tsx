@@ -31,7 +31,7 @@ import { CF_THEME, CF_DOWS, cc } from './theme';
 import { KarteSheet, SuggestSheet, Toast } from './FieldSheets';
 import { ApprovePanel } from './ApprovePanel';
 
-const { TEAL, TEAL_DEEP, TERRA, TERRA_DEEP, INK, INK2, INK3, CREAM, LINE, PANEL, GOLD } = CF_THEME;
+const { TEAL, TEAL_DEEP, TERRA, TERRA_DEEP, INK, INK2, INK3, CREAM, LINE, PANEL } = CF_THEME;
 
 const WEEKLEN = 7;
 
@@ -241,9 +241,6 @@ export function FieldBoard({ topPad = 16 }: { topPad?: number }) {
         offices={offices}
         officeId={officeId}
         setOfficeId={setOfficeId}
-        weekLabel={weekLabel}
-        weekRange={weekRange}
-        goWeek={goWeek}
         approve={approve}
         setApprove={setApprove}
         pendingCount={pendingCount}
@@ -258,7 +255,9 @@ export function FieldBoard({ topPad = 16 }: { topPad?: number }) {
         visitsCount={visitsCount}
         roomCount={roomCount}
         closed={closed}
-        approve={approve}
+        weekLabel={weekLabel}
+        weekRange={weekRange}
+        goWeek={goWeek}
       />
 
       <div
@@ -362,9 +361,6 @@ interface HeaderProps {
   offices: OfficeOpt[];
   officeId: string | null;
   setOfficeId: (id: string) => void;
-  weekLabel: string;
-  weekRange: string;
-  goWeek: (delta: number) => void;
   approve: boolean;
   setApprove: (fn: (a: boolean) => boolean) => void;
   pendingCount: number;
@@ -376,9 +372,6 @@ function Header({
   offices,
   officeId,
   setOfficeId,
-  weekLabel,
-  weekRange,
-  goWeek,
   approve,
   setApprove,
   pendingCount,
@@ -402,15 +395,13 @@ function Header({
         zIndex: 20,
       }}
     >
-      <div
-        style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '0 0 auto' }}>
           <div
             style={{
-              width: 28,
-              height: 28,
-              borderRadius: 9,
+              width: 26,
+              height: 26,
+              borderRadius: 8,
               background: '#fff',
               color: accentInk,
               display: 'grid',
@@ -418,74 +409,23 @@ function Header({
               boxShadow: '0 2px 6px rgba(0,0,0,0.14)',
             }}
           >
-            <Heart size={15} strokeWidth={2.4} />
+            <Heart size={14} strokeWidth={2.4} />
           </div>
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-            <div
-              style={{
-                fontFamily: 'var(--font-serif)',
-                fontSize: 16,
-                fontWeight: 700,
-                lineHeight: 1,
-                letterSpacing: '-0.01em',
-              }}
-            >
-              CareFlow
-            </div>
-            <div style={{ fontSize: 9.5, opacity: 0.85 }}>現場ボード</div>
-          </div>
-        </div>
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 2,
-            background: 'rgba(255,255,255,0.18)',
-            borderRadius: 999,
-            padding: 2,
-          }}
-        >
-          <button onClick={() => goWeek(-1)} style={hdrCircle} aria-label="前の週">
-            <ChevronLeft size={16} />
-          </button>
           <div
             style={{
               fontFamily: 'var(--font-serif)',
-              fontSize: 12.5,
+              fontSize: 15,
               fontWeight: 700,
-              minWidth: 92,
-              textAlign: 'center',
-              lineHeight: 1.1,
+              lineHeight: 1,
+              letterSpacing: '-0.01em',
             }}
           >
-            {weekLabel}
-            <div
-              style={{
-                fontSize: 9,
-                opacity: 0.85,
-                fontFamily: 'var(--font-sans)',
-                fontWeight: 500,
-                lineHeight: 1.1,
-              }}
-            >
-              {weekRange}
-            </div>
+            CareFlow
+            <span style={{ fontSize: 9, opacity: 0.85, fontWeight: 500, marginLeft: 4 }}>
+              現場ボード
+            </span>
           </div>
-          <button onClick={() => goWeek(1)} style={hdrCircle} aria-label="次の週">
-            <ChevronRight size={16} />
-          </button>
         </div>
-      </div>
-
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: 8,
-          marginTop: 7,
-        }}
-      >
         <div
           style={{
             display: 'flex',
@@ -569,14 +509,6 @@ function Header({
   );
 }
 
-const hdrCircle: CSSProperties = {
-  width: 30,
-  height: 30,
-  borderRadius: '50%',
-  display: 'grid',
-  placeItems: 'center',
-  color: '#fff',
-};
 const hdrAct: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
@@ -590,16 +522,7 @@ const hdrAct: CSSProperties = {
   boxShadow: '0 2px 6px rgba(0,0,0,0.10)',
 };
 
-// ============================ Legend ============================
-
-const Legend = ({ col, t }: { col: string; t: string }) => (
-  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}>
-    <i style={{ width: 9, height: 9, borderRadius: 3, background: col }} />
-    {t}
-  </span>
-);
-
-// ============================ Day stepper (←/→ 曜日送り) ============================
+// ============================ Day stepper (週送り + 曜日送り 統合) ============================
 
 function DayStepper({
   dayIdx,
@@ -608,7 +531,9 @@ function DayStepper({
   visitsCount,
   roomCount,
   closed,
-  approve,
+  weekLabel,
+  weekRange,
+  goWeek,
 }: {
   dayIdx: number;
   setDayIdx: (d: number) => void;
@@ -616,12 +541,15 @@ function DayStepper({
   visitsCount: number;
   roomCount: number;
   closed: boolean;
-  approve: boolean;
+  weekLabel: string;
+  weekRange: string;
+  goWeek: (delta: number) => void;
 }) {
   const go = (dir: number) => setDayIdx((dayIdx + dir + WEEKLEN) % WEEKLEN);
   const day = CF_DOWS[dayIdx] ?? '月';
   const sat = dayIdx === 5;
   const sun = dayIdx === 6;
+  // 日送りは押しやすい 36px 級、週送りは小さめ 28px。
   const arrow: CSSProperties = {
     width: 36,
     height: 36,
@@ -634,84 +562,110 @@ function DayStepper({
     placeItems: 'center',
     color: TEAL_DEEP,
   };
+  const wkArrow: CSSProperties = {
+    width: 28,
+    height: 28,
+    flex: '0 0 auto',
+    borderRadius: 9,
+    background: '#fff',
+    border: `1px solid ${LINE}`,
+    display: 'grid',
+    placeItems: 'center',
+    color: TEAL_DEEP,
+  };
   return (
-    <div style={{ flex: '0 0 auto', padding: '6px 14px 2px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-        <button onClick={() => go(-1)} style={arrow} aria-label="前の曜日">
-          <ChevronLeft size={20} />
+    <div
+      style={{
+        flex: '0 0 auto',
+        padding: '6px 12px 4px',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+      }}
+    >
+      {/* 週送り (小さめ) */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 3, flex: '0 0 auto' }}>
+        <button onClick={() => goWeek(-1)} style={wkArrow} aria-label="前の週">
+          <ChevronLeft size={16} />
         </button>
-        <div
-          style={{
-            flex: 1,
-            display: 'flex',
-            flexWrap: 'wrap',
-            alignItems: 'baseline',
-            justifyContent: 'center',
-            gap: '0 8px',
-            lineHeight: 1.1,
-          }}
-        >
-          <span
+        <div style={{ textAlign: 'center', lineHeight: 1.1, minWidth: 52 }}>
+          <div
             style={{
               fontFamily: 'var(--font-serif)',
-              fontSize: 17,
+              fontSize: 12.5,
               fontWeight: 700,
+              color: INK,
+              whiteSpace: 'nowrap',
             }}
           >
-            <span style={{ color: sat ? '#2F6FB0' : sun ? '#C75C77' : TEAL_DEEP }}>{day}曜</span>
-            {dateLabel && (
-              <span style={{ fontSize: 12.5, color: INK3, fontWeight: 600, marginLeft: 6 }}>
-                {dateLabel}
-              </span>
-            )}
-          </span>
-          <span style={{ fontSize: 11, color: INK2 }}>
-            {closed ? (
-              '休講日'
-            ) : (
-              <>
-                訪問 <b style={{ color: INK }}>{visitsCount}</b> 件 ・{' '}
-                <span style={{ color: roomCount > 0 ? '#0E8472' : INK3, fontWeight: 700 }}>
-                  {roomCount > 0 ? `空き ${roomCount}つ` : '満員'}
-                </span>
-              </>
-            )}
-          </span>
+            {weekLabel.replace(/^\d+年\s*/, '')}
+          </div>
+          <div style={{ fontSize: 9, color: INK3, fontWeight: 600, whiteSpace: 'nowrap' }}>
+            {weekRange}
+          </div>
         </div>
-        <button onClick={() => go(1)} style={arrow} aria-label="次の曜日">
-          <ChevronRight size={20} />
+        <button onClick={() => goWeek(1)} style={wkArrow} aria-label="次の週">
+          <ChevronRight size={16} />
         </button>
       </div>
+
+      {/* 区切り */}
+      <span
+        style={{
+          width: 1,
+          alignSelf: 'stretch',
+          background: LINE,
+          flex: '0 0 auto',
+          margin: '2px 0',
+        }}
+      />
+
+      {/* 日送り (押しやすい 36px) */}
+      <button onClick={() => go(-1)} style={arrow} aria-label="前の曜日">
+        <ChevronLeft size={20} />
+      </button>
       <div
         style={{
+          flex: 1,
+          minWidth: 0,
           display: 'flex',
-          gap: 10,
-          fontSize: 9.5,
-          color: INK2,
+          flexWrap: 'wrap',
+          alignItems: 'baseline',
           justifyContent: 'center',
-          marginTop: 3,
-          whiteSpace: 'nowrap',
+          gap: '0 6px',
+          lineHeight: 1.1,
         }}
       >
-        {approve ? (
-          <Legend col={GOLD} t="承認待ち" />
-        ) : (
-          <>
-            <Legend col={TERRA} t="空き枠" />
-            <span
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 3,
-                whiteSpace: 'nowrap',
-                color: INK2,
-              }}
-            >
-              <MapPin size={10} /> 同住所・同時
+        <span
+          style={{
+            fontFamily: 'var(--font-serif)',
+            fontSize: 16,
+            fontWeight: 700,
+          }}
+        >
+          <span style={{ color: sat ? '#2F6FB0' : sun ? '#C75C77' : TEAL_DEEP }}>{day}曜</span>
+          {dateLabel && (
+            <span style={{ fontSize: 12, color: INK3, fontWeight: 600, marginLeft: 5 }}>
+              {dateLabel}
             </span>
-          </>
-        )}
+          )}
+        </span>
+        <span style={{ fontSize: 10.5, color: INK2 }}>
+          {closed ? (
+            '休講日'
+          ) : (
+            <>
+              訪問 <b style={{ color: INK }}>{visitsCount}</b> 件 ・{' '}
+              <span style={{ color: roomCount > 0 ? '#0E8472' : INK3, fontWeight: 700 }}>
+                {roomCount > 0 ? `空き ${roomCount}つ` : '満員'}
+              </span>
+            </>
+          )}
+        </span>
       </div>
+      <button onClick={() => go(1)} style={arrow} aria-label="次の曜日">
+        <ChevronRight size={20} />
+      </button>
     </div>
   );
 }
