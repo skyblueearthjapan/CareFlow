@@ -395,9 +395,9 @@ function Header({
         flex: '0 0 auto',
         background: bg,
         color: '#fff',
-        padding: `${topPad}px 16px 16px`,
-        borderRadius: '0 0 24px 24px',
-        boxShadow: '0 8px 22px rgba(13,148,136,0.22)',
+        padding: `${Math.max(topPad - 12, 6)}px 16px 9px`,
+        borderRadius: '0 0 15px 15px',
+        boxShadow: '0 5px 14px rgba(13,148,136,0.18)',
         position: 'relative',
         zIndex: 20,
       }}
@@ -405,26 +405,26 @@ function Header({
       <div
         style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <div
             style={{
-              width: 34,
-              height: 34,
-              borderRadius: 11,
+              width: 28,
+              height: 28,
+              borderRadius: 9,
               background: '#fff',
               color: accentInk,
               display: 'grid',
               placeItems: 'center',
-              boxShadow: '0 3px 8px rgba(0,0,0,0.14)',
+              boxShadow: '0 2px 6px rgba(0,0,0,0.14)',
             }}
           >
-            <Heart size={18} strokeWidth={2.4} />
+            <Heart size={15} strokeWidth={2.4} />
           </div>
-          <div>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
             <div
               style={{
                 fontFamily: 'var(--font-serif)',
-                fontSize: 18,
+                fontSize: 16,
                 fontWeight: 700,
                 lineHeight: 1,
                 letterSpacing: '-0.01em',
@@ -432,7 +432,7 @@ function Header({
             >
               CareFlow
             </div>
-            <div style={{ fontSize: 10, opacity: 0.85, marginTop: 2 }}>現場ボード</div>
+            <div style={{ fontSize: 9.5, opacity: 0.85 }}>現場ボード</div>
           </div>
         </div>
         <div
@@ -442,7 +442,7 @@ function Header({
             gap: 2,
             background: 'rgba(255,255,255,0.18)',
             borderRadius: 999,
-            padding: 3,
+            padding: 2,
           }}
         >
           <button onClick={() => goWeek(-1)} style={hdrCircle} aria-label="前の週">
@@ -451,11 +451,11 @@ function Header({
           <div
             style={{
               fontFamily: 'var(--font-serif)',
-              fontSize: 13,
+              fontSize: 12.5,
               fontWeight: 700,
               minWidth: 92,
               textAlign: 'center',
-              lineHeight: 1.15,
+              lineHeight: 1.1,
             }}
           >
             {weekLabel}
@@ -465,6 +465,7 @@ function Header({
                 opacity: 0.85,
                 fontFamily: 'var(--font-sans)',
                 fontWeight: 500,
+                lineHeight: 1.1,
               }}
             >
               {weekRange}
@@ -482,7 +483,7 @@ function Header({
           alignItems: 'center',
           justifyContent: 'space-between',
           gap: 8,
-          marginTop: 13,
+          marginTop: 7,
         }}
       >
         <div
@@ -498,7 +499,7 @@ function Header({
           }}
         >
           {offices.length === 0 ? (
-            <span style={{ padding: '7px 16px', fontSize: 12, opacity: 0.8 }}>拠点を読込中…</span>
+            <span style={{ padding: '6px 16px', fontSize: 12, opacity: 0.8 }}>拠点を読込中…</span>
           ) : (
             offices.map((o) => {
               const on = officeId === o.office_id;
@@ -507,7 +508,8 @@ function Header({
                   key={o.office_id}
                   onClick={() => setOfficeId(o.office_id)}
                   style={{
-                    padding: '7px 16px',
+                    padding: '6px 16px',
+                    minHeight: 34,
                     borderRadius: 999,
                     fontSize: 13,
                     fontWeight: 600,
@@ -568,8 +570,8 @@ function Header({
 }
 
 const hdrCircle: CSSProperties = {
-  width: 34,
-  height: 34,
+  width: 30,
+  height: 30,
   borderRadius: '50%',
   display: 'grid',
   placeItems: 'center',
@@ -579,9 +581,9 @@ const hdrAct: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   gap: 5,
-  padding: '9px 13px',
-  minHeight: 40,
-  borderRadius: 13,
+  padding: '7px 13px',
+  minHeight: 35,
+  borderRadius: 12,
   fontSize: 13,
   fontWeight: 600,
   fontFamily: 'var(--font-serif)',
@@ -621,10 +623,10 @@ function DayStepper({
   const sat = dayIdx === 5;
   const sun = dayIdx === 6;
   const arrow: CSSProperties = {
-    width: 42,
-    height: 42,
+    width: 36,
+    height: 36,
     flex: '0 0 auto',
-    borderRadius: 14,
+    borderRadius: 12,
     background: '#fff',
     border: `1px solid ${LINE}`,
     boxShadow: '0 2px 6px rgba(28,25,23,0.06)',
@@ -633,39 +635,48 @@ function DayStepper({
     color: TEAL_DEEP,
   };
   return (
-    <div style={{ flex: '0 0 auto', padding: '8px 14px 2px' }}>
+    <div style={{ flex: '0 0 auto', padding: '6px 14px 2px' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <button onClick={() => go(-1)} style={arrow} aria-label="前の曜日">
           <ChevronLeft size={20} />
         </button>
-        <div style={{ flex: 1, textAlign: 'center' }}>
-          <div
+        <div
+          style={{
+            flex: 1,
+            display: 'flex',
+            flexWrap: 'wrap',
+            alignItems: 'baseline',
+            justifyContent: 'center',
+            gap: '0 8px',
+            lineHeight: 1.1,
+          }}
+        >
+          <span
             style={{
               fontFamily: 'var(--font-serif)',
-              fontSize: 19,
+              fontSize: 17,
               fontWeight: 700,
-              lineHeight: 1.1,
             }}
           >
             <span style={{ color: sat ? '#2F6FB0' : sun ? '#C75C77' : TEAL_DEEP }}>{day}曜</span>
             {dateLabel && (
-              <span style={{ fontSize: 13, color: INK3, fontWeight: 600, marginLeft: 8 }}>
+              <span style={{ fontSize: 12.5, color: INK3, fontWeight: 600, marginLeft: 6 }}>
                 {dateLabel}
               </span>
             )}
-          </div>
-          <div style={{ fontSize: 11, color: INK2, marginTop: 3 }}>
+          </span>
+          <span style={{ fontSize: 11, color: INK2 }}>
             {closed ? (
               '休講日'
             ) : (
-              <span>
+              <>
                 訪問 <b style={{ color: INK }}>{visitsCount}</b> 件 ・{' '}
                 <span style={{ color: roomCount > 0 ? '#0E8472' : INK3, fontWeight: 700 }}>
                   {roomCount > 0 ? `空き ${roomCount}つ` : '満員'}
                 </span>
-              </span>
+              </>
             )}
-          </div>
+          </span>
         </div>
         <button onClick={() => go(1)} style={arrow} aria-label="次の曜日">
           <ChevronRight size={20} />
@@ -675,10 +686,11 @@ function DayStepper({
         style={{
           display: 'flex',
           gap: 10,
-          fontSize: 10,
+          fontSize: 9.5,
           color: INK2,
           justifyContent: 'center',
-          marginTop: 6,
+          marginTop: 3,
+          whiteSpace: 'nowrap',
         }}
       >
         {approve ? (
@@ -690,12 +702,12 @@ function DayStepper({
               style={{
                 display: 'inline-flex',
                 alignItems: 'center',
-                gap: 4,
+                gap: 3,
                 whiteSpace: 'nowrap',
                 color: INK2,
               }}
             >
-              <MapPin size={11} /> 同住所・同時
+              <MapPin size={10} /> 同住所・同時
             </span>
           </>
         )}
