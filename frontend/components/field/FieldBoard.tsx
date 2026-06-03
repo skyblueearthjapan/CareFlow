@@ -31,8 +31,7 @@ import { CF_THEME, CF_DOWS, cc } from './theme';
 import { KarteSheet, SuggestSheet, Toast } from './FieldSheets';
 import { ApprovePanel } from './ApprovePanel';
 
-const { TEAL, TEAL_DEEP, TERRA, TERRA_DEEP, PLUM, INK, INK2, INK3, CREAM, LINE, PANEL, GOLD } =
-  CF_THEME;
+const { TEAL, TEAL_DEEP, TERRA, TERRA_DEEP, INK, INK2, INK3, CREAM, LINE, PANEL, GOLD } = CF_THEME;
 
 const WEEKLEN = 7;
 
@@ -52,6 +51,60 @@ function parseHM(s: string | null | undefined): number | null {
 /** 'HH:MM〜HH:MM' の実時刻ラベル (start/end をそのまま使う)。 */
 function visitTimeLabel(v: BoardVisit): string {
   return `${v.start_time}〜${v.end_time}`;
+}
+
+/** 0時起点の分 → 'HH:MM'。 */
+function fmtHM(min: number): string {
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+// ============================ 営業枠 / 空き時間帯 ============================
+
+/**
+ * コースの営業枠 (フロント表示用の目安。バックエンド定数の複製)。
+ * AM 09:30–12:00 / PM 13:00–18:00。昼休み 12:00–13:00 はブロック間で非営業。
+ * 厳密な配置可否 (移動時間等) は提案フロー (propose-slots) が担保する。
+ */
+const BUSINESS_BLOCKS: ReadonlyArray<readonly [number, number]> = [
+  [9 * 60 + 30, 12 * 60], // 09:30–12:00
+  [13 * 60, 18 * 60], // 13:00–18:00
+];
+
+/** これより短い gap は目安表示として省略する (分)。 */
+const MIN_FREE_GAP_MIN = 15;
+
+/**
+ * コースの営業枠から既存 visit の占有 [start, end) を除いた空き時間帯を算出する。
+ * 戻り値は 'HH:MM〜HH:MM' のラベル配列 (短すぎる gap は省略)。
+ */
+function computeFreeGaps(visits: BoardVisit[]): string[] {
+  const occupied: Array<[number, number]> = [];
+  for (const v of visits) {
+    const s = parseHM(v.start_time);
+    const e = parseHM(v.end_time);
+    if (s === null || e === null || e <= s) continue;
+    occupied.push([s, e]);
+  }
+  occupied.sort((a, b) => a[0] - b[0]);
+
+  const labels: string[] = [];
+  for (const [blockStart, blockEnd] of BUSINESS_BLOCKS) {
+    let cursor = blockStart;
+    for (const [s, e] of occupied) {
+      if (e <= cursor || s >= blockEnd) continue; // ブロック外は無視
+      const segStart = Math.max(s, blockStart);
+      if (segStart - cursor >= MIN_FREE_GAP_MIN) {
+        labels.push(`${fmtHM(cursor)}〜${fmtHM(segStart)}`);
+      }
+      cursor = Math.max(cursor, Math.min(e, blockEnd));
+    }
+    if (blockEnd - cursor >= MIN_FREE_GAP_MIN) {
+      labels.push(`${fmtHM(cursor)}〜${fmtHM(blockEnd)}`);
+    }
+  }
+  return labels;
 }
 
 // ============================ 日付フォーマット ============================
@@ -619,7 +672,17 @@ function DayStepper({
         ) : (
           <>
             <Legend col={TERRA} t="空き枠" />
-            <Legend col={PLUM} t="同住所" />
+            <span
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4,
+                whiteSpace: 'nowrap',
+                color: INK2,
+              }}
+            >
+              <MapPin size={11} /> 同住所・同時
+            </span>
           </>
         )}
       </div>
@@ -654,7 +717,7 @@ function PatientCard({
         textAlign: 'left',
         background: inPair ? '#fff' : k.soft,
         borderRadius: 12,
-        borderLeft: `5px solid ${inPair ? PLUM : k.c}`,
+        borderLeft: `5px solid ${k.c}`,
         padding: '9px 12px',
         display: 'flex',
         flexDirection: 'column',
@@ -734,8 +797,8 @@ function PatientCard({
               fontWeight: 700,
               padding: '1px 7px',
               borderRadius: 999,
-              background: '#F0E7F5',
-              color: PLUM,
+              background: k.bg,
+              color: k.c,
               display: 'inline-flex',
               alignItems: 'center',
               gap: 2,
@@ -750,7 +813,16 @@ function PatientCard({
   );
 }
 
-function EmptySlot({ remaining, onEmpty }: { remaining: number; onEmpty: () => void }) {
+function EmptySlot({
+  remaining,
+  freeGaps,
+  onEmpty,
+}: {
+  remaining: number;
+  /** 営業枠から既存 visit を除いた空き時間帯 ('HH:MM〜HH:MM' の目安)。 */
+  freeGaps: string[];
+  onEmpty: () => void;
+}) {
   return (
     <button
       onClick={onEmpty}
@@ -764,34 +836,53 @@ function EmptySlot({ remaining, onEmpty }: { remaining: number; onEmpty: () => v
         color: TERRA_DEEP,
         display: 'flex',
         alignItems: 'center',
-        justifyContent: 'center',
-        gap: 8,
+        gap: 10,
         flexWrap: 'wrap',
-        padding: '6px 10px',
+        padding: '8px 12px',
         fontFamily: 'var(--font-serif)',
         fontSize: 13,
         fontWeight: 700,
+        textAlign: 'left',
       }}
     >
-      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-        <span
-          style={{
-            width: 24,
-            height: 24,
-            borderRadius: '50%',
-            background: TERRA,
-            color: '#fff',
-            display: 'grid',
-            placeItems: 'center',
-            fontSize: 16,
-            lineHeight: 1,
-            flex: '0 0 auto',
-          }}
-        >
-          ＋
-        </span>
+      <span
+        style={{
+          width: 24,
+          height: 24,
+          borderRadius: '50%',
+          background: TERRA,
+          color: '#fff',
+          display: 'grid',
+          placeItems: 'center',
+          fontSize: 16,
+          lineHeight: 1,
+          flex: '0 0 auto',
+        }}
+      >
+        ＋
       </span>
-      <span style={{ whiteSpace: 'nowrap' }}>空き（残 {remaining}）</span>
+      <span style={{ flex: '1 1 0', minWidth: 0 }}>
+        <span style={{ display: 'block', whiteSpace: 'normal', lineHeight: 1.25 }}>
+          この時間空いてますよ：空き{remaining}個
+        </span>
+        {freeGaps.length > 0 && (
+          <span
+            style={{
+              display: 'block',
+              marginTop: 3,
+              fontFamily: 'var(--font-mono)',
+              fontSize: 11,
+              fontWeight: 600,
+              color: TERRA_DEEP,
+              opacity: 0.92,
+              letterSpacing: '-0.01em',
+              wordBreak: 'break-word',
+            }}
+          >
+            {freeGaps.join(' / ')}
+          </span>
+        )}
+      </span>
     </button>
   );
 }
@@ -812,15 +903,17 @@ function PairWrap({
   const startMin = parseHM(first.start_time);
   const endMin = parseHM(last.end_time);
   const totalMin = startMin !== null && endMin !== null ? endMin - startMin : null;
+  // 同住所ペアの色は固定の PLUM ではなく、そのコース色に統一する。
+  const k = cc(courseCode);
   const bandLabel =
     totalMin !== null
-      ? `${first.start_time}〜${last.end_time} 連続訪問（約${totalMin}分）`
-      : `${first.start_time}〜${last.end_time} 連続訪問`;
+      ? `${first.start_time}〜${last.end_time} 同時刻・連続訪問（約${totalMin}分）`
+      : `${first.start_time}〜${last.end_time} 同時刻・連続訪問`;
   return (
     <div
       style={{
-        border: `2.5px solid ${PLUM}`,
-        background: 'linear-gradient(180deg, #F7F0FB 0%, #F1E7F8 100%)',
+        border: `2.5px solid ${k.c}`,
+        background: k.soft,
         borderRadius: 15,
         padding: '6px 6px 7px',
         display: 'flex',
@@ -833,7 +926,7 @@ function PairWrap({
           fontFamily: 'var(--font-serif)',
           fontSize: 11,
           color: '#fff',
-          background: `linear-gradient(135deg, ${PLUM}, #7A4E91)`,
+          background: k.c,
           borderRadius: 8,
           padding: '5px 8px',
           display: 'flex',
@@ -849,7 +942,7 @@ function PairWrap({
         <span
           style={{ display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}
         >
-          <MapPin size={11} /> 同住所・連続
+          <MapPin size={11} /> 同住所・同時
         </span>
       </div>
       {visits.map((v, i) => (
@@ -864,11 +957,11 @@ function PairWrap({
                 gap: 6,
                 fontSize: 10,
                 fontWeight: 700,
-                color: '#7A4E91',
+                color: k.c,
                 marginTop: 6,
               }}
             >
-              <span style={{ flex: 1, height: 2, background: '#DCC8EE', borderRadius: 2 }} />
+              <span style={{ flex: 1, height: 2, background: k.bg, borderRadius: 2 }} />
               <span
                 style={{
                   fontFamily: 'var(--font-mono)',
@@ -878,7 +971,7 @@ function PairWrap({
               >
                 {bandLabel}
               </span>
-              <span style={{ flex: 1, height: 2, background: '#DCC8EE', borderRadius: 2 }} />
+              <span style={{ flex: 1, height: 2, background: k.bg, borderRadius: 2 }} />
             </div>
           )}
         </div>
@@ -903,19 +996,26 @@ function CourseSlots({
   // 色解決用の course_code は BoardCourse から明示的に prop で渡す
   // (react-query キャッシュ物体への書込はしない)。
   const out: React.ReactNode[] = [];
-  const renderedGroups = new Set<string>();
+  // 連結済みの (group_id, start_time) ペアキー。同住所でも別時刻なら別グループ。
+  const renderedKeys = new Set<string>();
   for (const v of co.visits) {
     const gid = v.same_address_group_id;
     if (gid && sameAddressGroups.byGroup.has(gid)) {
+      // 同住所連続(ペア)扱いの条件: same_address_group_id が同じ + 同コース + start_time が同一。
+      // 同住所でも開始時刻が違えば連結しない (各々通常カードで表示)。
       const members = sameAddressGroups.byGroup
         .get(gid)!
-        .filter((m) => co.visits.some((cv) => cv.visit_id === m.visit_id));
+        .filter(
+          (m) =>
+            co.visits.some((cv) => cv.visit_id === m.visit_id) && m.start_time === v.start_time,
+        );
       if (members.length >= 2) {
-        if (renderedGroups.has(gid)) continue;
-        renderedGroups.add(gid);
+        const pairKey = `${gid}@${v.start_time}`;
+        if (renderedKeys.has(pairKey)) continue;
+        renderedKeys.add(pairKey);
         out.push(
           <PairWrap
-            key={'pair' + gid}
+            key={'pair' + pairKey}
             visits={members}
             courseCode={co.course_code}
             onKarte={onKarte}
@@ -929,9 +1029,17 @@ function CourseSlots({
     );
   }
 
-  // 空き枠: remaining ぶんを表示。
+  // 空き枠: remaining ぶんを「この時間空いてますよ：空きN個」+ 空き時間帯で表示。
   if (co.capacity.remaining > 0) {
-    out.push(<EmptySlot key="empty" remaining={co.capacity.remaining} onEmpty={onEmpty} />);
+    const freeGaps = computeFreeGaps(co.visits);
+    out.push(
+      <EmptySlot
+        key="empty"
+        remaining={co.capacity.remaining}
+        freeGaps={freeGaps}
+        onEmpty={onEmpty}
+      />,
+    );
   }
 
   return <div style={{ display: 'flex', flexDirection: 'column', gap: 7, padding: 8 }}>{out}</div>;

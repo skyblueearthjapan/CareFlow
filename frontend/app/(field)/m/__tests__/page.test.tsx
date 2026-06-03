@@ -221,8 +221,10 @@ describe('/m 現場ボード (実データ)', () => {
     expect(screen.getByText('09:30〜10:30')).toBeInTheDocument();
     // 容量 filled/max。
     expect(screen.getByText(/1\/6/)).toBeInTheDocument();
-    // 空き枠 (remaining)。
-    expect(screen.getByText(/空き（残 5）/)).toBeInTheDocument();
+    // 空き枠 (remaining): 「この時間空いてますよ：空きN個」。
+    expect(screen.getByText(/この時間空いてますよ：空き5個/)).toBeInTheDocument();
+    // 空き時間帯 (営業枠 09:30–12:00 / 13:00–18:00 から 09:30〜10:30 の visit を除く)。
+    expect(screen.getByText(/10:30〜12:00 \/ 13:00〜18:00/)).toBeInTheDocument();
   });
 
   it('患者カード click でカルテシートが開く (患者詳細の実 API 値)', () => {
@@ -259,5 +261,81 @@ describe('/m 現場ボード (実データ)', () => {
     render(<FieldBoardPage />);
     expect(mockReplace).toHaveBeenCalledWith('/m/home');
     expect(screen.queryByText('現場ボード')).not.toBeInTheDocument();
+  });
+});
+
+// ============================ 同住所連続 (3点修正) ============================
+
+const GROUP_ID = '55555555-5555-5555-5555-555555555555';
+const COURSE_C_ID = '66666666-6666-6666-6666-666666666666';
+
+function v(id: string, name: string, start: string, end: string, gid: string | null, slot: number) {
+  return {
+    visit_id: id,
+    patient_id: PATIENT_ID,
+    patient_name: name,
+    patient_kana: null,
+    insurance: 'med' as const,
+    service_minutes: 60,
+    start_time: start,
+    end_time: end,
+    address: '千葉市稲毛区小仲台6-2-1',
+    lat: null,
+    lng: null,
+    same_address_group_id: gid,
+    mode: 'normal' as const,
+    slot_index: slot,
+  };
+}
+
+/**
+ * 月曜に 1 コース (Cコース)。同じ same_address_group_id を持つ 3 visit:
+ *   - A/B は 09:30 開始 (同時刻 → 連結)
+ *   - C は 11:00 開始 (別時刻 → 連結しない、通常カード)
+ */
+function makeSameAddressBoard(): BoardResponse {
+  const base = makeBoard();
+  const monCell = base.board[0]!;
+  monCell.courses = [
+    {
+      course_id: COURSE_C_ID,
+      course_code: 'C',
+      course_label: '稲C',
+      staff_name: '佐藤 Ns',
+      visits: [
+        v('aaaaaaaa-0000-0000-0000-000000000001', '同時 太郎', '09:30', '10:30', GROUP_ID, 0),
+        v('aaaaaaaa-0000-0000-0000-000000000002', '同時 花子', '09:30', '10:30', GROUP_ID, 1),
+        v('aaaaaaaa-0000-0000-0000-000000000003', '別時 次郎', '11:00', '12:00', GROUP_ID, 2),
+      ],
+      capacity: { filled: 3, max: 6, total_minutes: 180, remaining: 3 },
+    },
+  ];
+  return base;
+}
+
+describe('/m 現場ボード 同住所連続', () => {
+  it('同住所でも開始時刻が異なれば連結しない (同時刻の 2 名のみ連続バンド)', () => {
+    setSession('manager');
+    setBoard({ data: makeSameAddressBoard() });
+    render(<FieldBoardPage />);
+    // 同時刻 (09:30) の 2 名は「同住所・同時」連続バンドにまとまる。
+    // 「同住所・同時」は連続バンド見出しと DayStepper 凡例の両方に出るため getAllByText で検証。
+    expect(screen.getAllByText('同住所・同時').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText(/09:30〜10:30 同時刻・連続訪問（約60分）/)).toBeInTheDocument();
+    // 全 3 名が描画される (別時刻の次郎は通常カードとして単独表示)。
+    expect(screen.getByText('同時 太郎')).toBeInTheDocument();
+    expect(screen.getByText('同時 花子')).toBeInTheDocument();
+    expect(screen.getByText('別時 次郎')).toBeInTheDocument();
+  });
+
+  it('空き枠は「この時間空いてますよ：空きN個」+ 空き時間帯を表示する', () => {
+    setSession('manager');
+    setBoard({ data: makeSameAddressBoard() });
+    render(<FieldBoardPage />);
+    // remaining=3。
+    expect(screen.getByText(/この時間空いてますよ：空き3個/)).toBeInTheDocument();
+    // 占有 09:30〜10:30 / 11:00〜12:00 を営業枠から除いた空き gap。
+    // AM: 10:30〜11:00 (30分) / PM: 13:00〜18:00。12:00 開始の空きは無し。
+    expect(screen.getByText(/10:30〜11:00 \/ 13:00〜18:00/)).toBeInTheDocument();
   });
 });
