@@ -5,7 +5,7 @@
  * モックし、ボード本体・カルテ・提案シート・承認モードの描画を確認する。
  *
  * カバー:
- *   1. manager セッションでボードが描画される (ヘッダー + 拠点タブ + コース)
+ *   1. manager セッションでボードが描画される (ヘッダー + コース)
  *   2. DEMO チップは撤去済み (実データのため非表示)
  *   3. 実訪問が実時刻 (start_time〜end_time) + filled/6 + 空き枠で表示される
  *   4. 患者カード click → カルテシートが開く (患者詳細の実 API 値)
@@ -13,6 +13,8 @@
  *   6. ローディング中はスピナー文言を出す
  *   7. staff セッションでは /m/home へリダイレクトし、ボードを描画しない
  *   8. レイアウト切替 UI (radio) は無い
+ *   9. 全拠点を 1 ボードに 稲毛→都賀 / code 順で結合表示する (拠点プルダウン廃止)
+ *  10. 曜日ヘッダーの訪問/空き集計が全拠点合算になる
  */
 import * as React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -137,10 +139,14 @@ function makeBoard(): BoardResponse {
 
 const OFFICE2_ID = '11111111-1111-1111-1111-111111111112';
 const COURSE2_ID = '44444444-4444-4444-4444-444444444445';
+const COURSE_INM_ID = '44444444-4444-4444-4444-44444444444a';
 
 /**
- * 2 拠点ボード。稲毛 (OFFICE_ID) は makeBoard と同じ月曜コース「稲A」。
- * 都賀 (OFFICE2_ID) は月曜にコース「都賀X」を持つ。拠点切替で表示が入れ替わることを検証する。
+ * 2 拠点ボード (全拠点結合表示の検証用)。
+ *   - 稲毛 (OFFICE_ID): 月曜に「稲M」「稲A」(あえてコード逆順で投入 → ソート検証)。
+ *   - 都賀 (OFFICE2_ID): 月曜に「津A」。
+ * 結合 + ソート後の期待並び: 稲A → 稲M → 津A (拠点順 稲毛→都賀 → code 順 A..M)。
+ * 各コース 1 訪問 (filled=1) なので、月曜ヘッダー集計は全拠点合算で訪問 3 件になる。
  */
 function makeTwoOfficeBoard(): BoardResponse {
   const base = makeBoard();
@@ -148,7 +154,37 @@ function makeTwoOfficeBoard(): BoardResponse {
     { office_id: OFFICE_ID, office_name: '稲毛' },
     { office_id: OFFICE2_ID, office_name: '都賀' },
   ];
-  // 都賀ぶんの 7 曜日セルを追加 (月曜のみコースあり)。
+  // 稲毛の月曜に「稲M」を追加 (既存「稲A」より前に投入してソート安定性を見る)。
+  base.board[0]!.courses = [
+    {
+      course_id: COURSE_INM_ID,
+      course_code: 'M',
+      course_label: '稲M',
+      staff_name: '田中 Ns',
+      visits: [
+        {
+          visit_id: '88888888-8888-8888-8888-888888888888',
+          patient_id: PATIENT_ID,
+          patient_name: '移動 三郎',
+          patient_kana: null,
+          insurance: 'care' as const,
+          service_minutes: 60,
+          start_time: '13:00',
+          end_time: '14:00',
+          address: '千葉市稲毛区小仲台6-2-9',
+          lat: null,
+          lng: null,
+          same_address_group_id: null,
+          mode: 'normal' as const,
+          slot_index: 0,
+        },
+      ],
+      capacity: { filled: 1, max: 6, total_minutes: 60, remaining: 5 },
+    },
+    ...base.board[0]!.courses, // 既存「稲A」
+  ];
+  base.board[0]!.patient_count = 2;
+  // 都賀ぶんの 7 曜日セルを追加 (月曜のみコース「津A」あり)。
   for (let weekday = 0; weekday < 7; weekday++) {
     base.board.push({
       office_id: OFFICE2_ID,
@@ -163,8 +199,8 @@ function makeTwoOfficeBoard(): BoardResponse {
           ? [
               {
                 course_id: COURSE2_ID,
-                course_code: 'B',
-                course_label: '都賀X',
+                course_code: 'A',
+                course_label: '津A',
                 staff_name: '鈴木 Ns',
                 visits: [
                   {
@@ -266,10 +302,12 @@ describe('/m 現場ボード (実データ)', () => {
     expect(screen.getByText('現場ボード')).toBeInTheDocument();
     // 実データのため DEMO チップは撤去済み。
     expect(screen.queryByText('DEMO')).not.toBeInTheDocument();
-    // 拠点プルダウン (offices[] から構築) のトリガに現在拠点名、月曜のコース。
+    // 拠点プルダウンは廃止。拠点は薄い小見出しとして表示され (稲毛)、月曜のコースが並ぶ。
     expect(screen.getByText('稲毛')).toBeInTheDocument();
     expect(screen.getByText('稲A')).toBeInTheDocument();
     expect(screen.getByText('月曜')).toBeInTheDocument();
+    // 拠点プルダウン (トリガ button) は存在しない。
+    expect(screen.queryByRole('button', { name: /拠点を選択/ })).not.toBeInTheDocument();
   });
 
   it('実訪問が実時刻 + 容量 + 空き帯 (≥60分・開始時刻表示) で表示される', () => {
@@ -325,20 +363,45 @@ describe('/m 現場ボード (実データ)', () => {
     expect(screen.queryByText('現場ボード')).not.toBeInTheDocument();
   });
 
-  it('拠点プルダウンを開いて別拠点を選ぶと、その拠点のコースに切り替わる', () => {
+  it('全拠点が 1 ボードに 稲毛→都賀 / code 順 (稲A→稲M→津A) で結合表示される', () => {
     setSession('manager');
     setBoard({ data: makeTwoOfficeBoard() });
     render(<FieldBoardPage />);
-    // 初期は先頭拠点 (稲毛) のコースが表示される。
-    expect(screen.getByText('稲A')).toBeInTheDocument();
-    expect(screen.queryByText('都賀X')).not.toBeInTheDocument();
-    // プルダウンを開く (トリガ button を押す)。
-    fireEvent.click(screen.getByRole('button', { name: /拠点を選択/ }));
-    // メニュー項目「都賀」を選択 → 拠点切替。
-    fireEvent.click(screen.getByRole('menuitemradio', { name: '都賀' }));
-    // 都賀のコースに切り替わり、稲毛のコースは消える。
-    expect(screen.getByText('都賀X')).toBeInTheDocument();
-    expect(screen.queryByText('稲A')).not.toBeInTheDocument();
+    // 拠点プルダウンは無い (廃止)。
+    expect(screen.queryByRole('button', { name: /拠点を選択/ })).not.toBeInTheDocument();
+    // 全拠点のコースが同時に表示される (切替なし)。
+    const inageA = screen.getByText('稲A');
+    const inageM = screen.getByText('稲M');
+    const tsugaA = screen.getByText('津A');
+    expect(inageA).toBeInTheDocument();
+    expect(inageM).toBeInTheDocument();
+    expect(tsugaA).toBeInTheDocument();
+    // 拠点小見出し (稲毛 / 都賀) が各拠点ブロック先頭に出る。
+    expect(screen.getByText('稲毛')).toBeInTheDocument();
+    expect(screen.getByText('都賀')).toBeInTheDocument();
+    // DOM 文書順 = 描画順: 稲A → 稲M → 津A (拠点順 稲毛→都賀 → code 順 A..M)。
+    const FOLLOWING = Node.DOCUMENT_POSITION_FOLLOWING;
+    expect(inageA.compareDocumentPosition(inageM) & FOLLOWING).toBeTruthy();
+    expect(inageM.compareDocumentPosition(tsugaA) & FOLLOWING).toBeTruthy();
+    // 稲毛小見出しは稲A より前、都賀小見出しは津A より前。
+    const inageHead = screen.getByText('稲毛');
+    const tsugaHead = screen.getByText('都賀');
+    expect(inageHead.compareDocumentPosition(inageA) & FOLLOWING).toBeTruthy();
+    expect(tsugaHead.compareDocumentPosition(tsugaA) & FOLLOWING).toBeTruthy();
+  });
+
+  it('曜日ヘッダーの訪問/空き集計が全拠点合算になる', () => {
+    setSession('manager');
+    setBoard({ data: makeTwoOfficeBoard() });
+    render(<FieldBoardPage />);
+    // 月曜: 稲A(filled1,remaining5) + 稲M(filled1,remaining5) + 津A(filled1,remaining5)。
+    // 全拠点合算で 訪問 3 件・空き 15 つ。
+    // 訪問件数は DayStepper 内で「訪問 <b>3</b> 件」と表示される。<b> 要素で件数を特定。
+    const visitCountBold = screen
+      .getAllByText('3')
+      .find((el) => el.tagName === 'B' && el.parentElement?.textContent?.includes('訪問'));
+    expect(visitCountBold).toBeDefined();
+    expect(screen.getByText('空き 15つ')).toBeInTheDocument();
   });
 });
 

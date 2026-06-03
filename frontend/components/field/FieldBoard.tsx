@@ -3,16 +3,20 @@
 /**
  * CareFlow Mobile — 現場ボード (Warm & Human aligned, Phase2-3c 実データ接続)
  *
- * 電話/タブレット向けのフィールドボード本体。週切替 + 拠点タブ + 曜日ステッパーで
+ * 電話/タブレット向けのフィールドボード本体。週切替 + 曜日ステッパーで
  * `GET /api/v1/schedule/v2/board` を再取得し、コース毎に実訪問を実時刻
  * (start_time〜end_time) で表示する。容量 filled/6・空き枠 (remaining)・同住所
  * (same_address_group_id) 連結を実データで描画する。
+ *
+ * 拠点 (稲毛/都賀) は分けず、親機 (デスクトップ週ビュー CourseWeekOverview) と同様に
+ * **全拠点を 1 ボードに結合表示**する。選択日の全拠点コースを
+ * 拠点順 (稲毛→都賀) → course_code (A,B,C,D,E,M) で並べる。
  *
  * 旧 Phase 1 のモック (CF_WEEK / CF_PATIENTS / CF_PENDING / RANK_*) は撤去済み。
  * 意匠 (Warm パレット・一覧レイアウト・実時刻表示・同住所/空き枠の見た目) は維持。
  */
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import {
   Heart,
   ChevronLeft,
@@ -21,12 +25,11 @@ import {
   Plus,
   ClipboardCheck,
   MapPin,
-  Check,
 } from 'lucide-react';
 
 import { useFieldBoard, toWeekStart, toIsoYearWeek } from '@/lib/queries/fieldBoard';
 import { usePendingRequests } from '@/lib/queries/pending_requests';
-import type { BoardCell, BoardCourse, BoardVisit } from '@/lib/schemas/v2/board';
+import type { BoardCell, BoardCourse, BoardOffice, BoardVisit } from '@/lib/schemas/v2/board';
 
 import { CF_THEME, CF_DOWS, cc } from './theme';
 import { KarteSheet, SuggestSheet, Toast } from './FieldSheets';
@@ -131,6 +134,66 @@ const MD_FORMAT = (iso: string): string => {
   return `${Number(m[2])}/${Number(m[3])}`;
 };
 
+// ============================ 拠点 / コース並び順 ============================
+//
+// 親機 (CourseWeekOverview) と同様に全拠点を 1 ボードに結合表示する。
+// board API は cell に office_code を持たない (offices[].office_name のみ) ため、
+// 拠点順は office_name から導く: 稲毛 → 都賀 → その他 (名前順)。
+// その中で course_code を A,B,C,D,E,M の明示順で並べる (未知コードは末尾, code 昇順)。
+
+/** office_name → 拠点並び順 (小さいほど先頭)。マップ外は名前順で末尾に回す。 */
+const OFFICE_ORDER: Record<string, number> = { 稲毛: 0, 都賀: 1 };
+
+function officeRank(officeName: string): number {
+  const r = OFFICE_ORDER[officeName];
+  return r === undefined ? 100 : r;
+}
+
+/** course_code → 並び順 (A,B,C,D,E,M)。マップ外は末尾 (code 昇順タイブレーク)。 */
+const COURSE_ORDER: Record<string, number> = { A: 0, B: 1, C: 2, D: 3, E: 4, M: 5 };
+
+function courseRank(courseCode: string): number {
+  const head = (courseCode || '').trim().charAt(0).toUpperCase();
+  const r = COURSE_ORDER[head];
+  return r === undefined ? 100 : r;
+}
+
+/** 選択日の全拠点コースに office 情報を添えたフラットな表示単位。 */
+export interface BoardCourseWithOffice {
+  course: BoardCourse;
+  officeId: string;
+  officeName: string;
+}
+
+/**
+ * 選択日 (weekday) の全拠点 cell を集約し、コースを
+ * 拠点順 (稲毛→都賀) → course_code (A,B,C,D,E,M) で並べた配列を返す。
+ */
+function collectDayCourses(
+  cells: BoardCell[],
+  weekday: number,
+  officeNameById: Map<string, string>,
+): BoardCourseWithOffice[] {
+  const out: BoardCourseWithOffice[] = [];
+  for (const cell of cells) {
+    if (cell.weekday !== weekday) continue;
+    const officeName = officeNameById.get(cell.office_id) ?? '';
+    for (const course of cell.courses) {
+      out.push({ course, officeId: cell.office_id, officeName });
+    }
+  }
+  out.sort((a, b) => {
+    const or = officeRank(a.officeName) - officeRank(b.officeName);
+    if (or !== 0) return or;
+    const on = a.officeName.localeCompare(b.officeName, 'ja');
+    if (on !== 0) return on;
+    const cr = courseRank(a.course.course_code) - courseRank(b.course.course_code);
+    if (cr !== 0) return cr;
+    return (a.course.course_code || '').localeCompare(b.course.course_code || '', 'ja');
+  });
+  return out;
+}
+
 // ============================ App ============================
 
 export function FieldBoard({ topPad = 16 }: { topPad?: number }) {
@@ -138,59 +201,56 @@ export function FieldBoard({ topPad = 16 }: { topPad?: number }) {
   const [weekStart, setWeekStart] = useState<Date>(() => toWeekStart(new Date()));
   const { isoYear, isoWeek } = useMemo(() => toIsoYearWeek(weekStart), [weekStart]);
 
-  const [officeId, setOfficeId] = useState<string | null>(null);
   const [dayIdx, setDayIdx] = useState(0); // 0=月..6=日
   const [approve, setApprove] = useState(false);
   const [karte, setKarte] = useState<BoardVisit | null>(null);
   const [sheet, setSheet] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
-  // 全拠点ぶんを 1 度に取得 (officeId 指定なし)。拠点タブはレスポンスの offices[] から構築。
+  // 全拠点ぶんを 1 度に取得 (officeId 指定なし)。拠点は分けず 1 ボードに結合表示する。
   const boardQuery = useFieldBoard({ isoYear, isoWeek, officeId: null });
   const board = boardQuery.data;
 
-  const offices = board?.offices ?? [];
+  const offices: BoardOffice[] = useMemo(() => board?.offices ?? [], [board]);
 
-  // office 未選択 / 一覧変化時は先頭拠点を選ぶ。
+  // office_id → office_name の索引 (拠点並び順の解決に使う)。
+  const officeNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const o of offices) m.set(o.office_id, o.office_name);
+    return m;
+  }, [offices]);
+
+  // 選択日の全拠点コースを 拠点順 (稲毛→都賀) → course_code (A..M) で並べた配列。
+  const dayCourses = useMemo<BoardCourseWithOffice[]>(() => {
+    if (!board) return [];
+    return collectDayCourses(board.board, dayIdx, officeNameById);
+  }, [board, dayIdx, officeNameById]);
+
+  // 表示用のコース配列 (参照安定化のため dayCourses から導出)。
+  const courses = useMemo(() => dayCourses.map((d) => d.course), [dayCourses]);
+
+  // 休講判定: 選択日に全拠点いずれの cell も closed で、かつコースが 1 件も無ければ休講。
+  const closed = useMemo(() => {
+    if (!board) return false;
+    const dayCells = board.board.filter((c) => c.weekday === dayIdx);
+    if (dayCells.length === 0) return false;
+    if (dayCourses.length > 0) return false;
+    return dayCells.every((c) => c.closed);
+  }, [board, dayIdx, dayCourses]);
+
+  // 当日に全拠点コースが無いなら、最初にコースのある曜日へジャンプ。
   useEffect(() => {
-    if (offices.length === 0) return;
-    if (!officeId || !offices.some((o) => o.office_id === officeId)) {
-      setOfficeId(offices[0]?.office_id ?? null);
-    }
-    // offices 配列の中身が変わったときのみ評価。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [offices.map((o) => o.office_id).join(',')]);
-
-  // 選択拠点の曜日 → セル を引く索引。
-  const cellsByDay = useMemo(() => {
-    const map = new Map<number, BoardCell>();
-    if (!board || !officeId) return map;
-    for (const cell of board.board) {
-      if (cell.office_id === officeId) map.set(cell.weekday, cell);
-    }
-    return map;
-  }, [board, officeId]);
-
-  const cell = cellsByDay.get(dayIdx) ?? null;
-  // 参照安定化 (空配列の再生成で useMemo 依存が毎回変わるのを防ぐ)。
-  const courses = useMemo(() => cell?.courses ?? [], [cell]);
-  const closed = cell?.closed ?? false;
-
-  // 当日にコースが無い拠点なら、最初に開いている曜日へジャンプ。
-  useEffect(() => {
-    if (!board || !officeId) return;
-    const current = cellsByDay.get(dayIdx);
-    const hasCourses = (current?.courses.length ?? 0) > 0;
-    if (hasCourses || current?.closed) return;
+    if (!board) return;
+    if (dayCourses.length > 0 || closed) return;
     for (let d = 0; d < WEEKLEN; d++) {
-      const c = cellsByDay.get(d);
-      if ((c?.courses.length ?? 0) > 0) {
+      const has = board.board.some((c) => c.weekday === d && c.courses.length > 0);
+      if (has) {
         setDayIdx(d);
         return;
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [officeId, board]);
+  }, [board]);
 
   const showToast = (msg: string) => {
     setToast(msg);
@@ -211,8 +271,17 @@ export function FieldBoard({ topPad = 16 }: { topPad?: number }) {
   const visitsCount = courses.reduce((n, co) => n + co.capacity.filled, 0);
   const roomCount = courses.reduce((n, co) => n + co.capacity.remaining, 0);
 
-  // 同住所相手解決用: 当日 (選択拠点) の全 visit を group_id でまとめる。
+  // 同住所相手解決用: 当日 (全拠点) の全 visit を group_id でまとめる。
   const sameAddressGroups = useMemo(() => buildSameAddressGroups(courses), [courses]);
+
+  // カルテの「担当拠点」表示用: visit_id → office_name (全拠点結合のため)。
+  const officeNameByVisitId = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const dc of dayCourses) {
+      for (const v of dc.course.visits) m.set(v.visit_id, dc.officeName);
+    }
+    return m;
+  }, [dayCourses]);
 
   // 承認待ち件数バッジ (実 pending-requests, pending 状態のみ)。
   const pendingQuery = usePendingRequests({ status: 'pending', limit: 100 });
@@ -239,9 +308,6 @@ export function FieldBoard({ topPad = 16 }: { topPad?: number }) {
       }}
     >
       <Header
-        offices={offices}
-        officeId={officeId}
-        setOfficeId={setOfficeId}
         approve={approve}
         setApprove={setApprove}
         pendingCount={pendingCount}
@@ -273,11 +339,11 @@ export function FieldBoard({ topPad = 16 }: { topPad?: number }) {
           <ErrorState onRetry={() => void boardQuery.refetch()} />
         ) : closed ? (
           <ClosedState dayIdx={dayIdx} />
-        ) : courses.length === 0 ? (
+        ) : dayCourses.length === 0 ? (
           <EmptyState dayIdx={dayIdx} />
         ) : (
           <AgendaBoard
-            courses={courses}
+            dayCourses={dayCourses}
             sameAddressGroups={sameAddressGroups}
             onKarte={setKarte}
             onEmpty={() => setSheet(true)}
@@ -306,7 +372,7 @@ export function FieldBoard({ topPad = 16 }: { topPad?: number }) {
       {karte && (
         <KarteSheet
           visit={karte}
-          officeName={offices.find((o) => o.office_id === officeId)?.office_name ?? ''}
+          officeName={officeNameByVisitId.get(karte.visit_id) ?? ''}
           sameAddressGroups={sameAddressGroups}
           onClose={() => setKarte(null)}
           onOpenVisit={setKarte}
@@ -316,7 +382,6 @@ export function FieldBoard({ topPad = 16 }: { topPad?: number }) {
         <SuggestSheet
           isoYear={isoYear}
           isoWeek={isoWeek}
-          officeId={officeId}
           onClose={() => setSheet(false)}
           onToast={showToast}
         />
@@ -353,177 +418,7 @@ function buildSameAddressGroups(courses: BoardCourse[]): SameAddressGroups {
 
 // ============================ Header ============================
 
-interface OfficeOpt {
-  office_id: string;
-  office_name: string;
-}
-
-// ============================ 拠点プルダウン ============================
-
-/**
- * ヘッダー内の拠点セレクタ。`📍 {現在の拠点名} ▾` ボタン + 直下ポップオーバー一覧。
- * 旧・横並びピルを置換。外側クリック / 再タップ / 項目選択でクローズし、選択は setOfficeId。
- * offices は API 由来 (board.offices)。将来拠点が増えてもそのまま列挙する。
- */
-function OfficePicker({
-  offices,
-  officeId,
-  setOfficeId,
-  accentInk,
-}: {
-  offices: OfficeOpt[];
-  officeId: string | null;
-  setOfficeId: (id: string) => void;
-  accentInk: string;
-}) {
-  const [open, setOpen] = useState(false);
-  const wrapRef = useRef<HTMLDivElement | null>(null);
-
-  const current = offices.find((o) => o.office_id === officeId);
-  const currentName = current?.office_name || '拠点';
-  const loading = offices.length === 0;
-
-  // 外側クリック / タップで閉じる (ポップオーバー外を pointerdown したら close)。
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e: MouseEvent | TouchEvent) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener('pointerdown', onDoc);
-    return () => document.removeEventListener('pointerdown', onDoc);
-  }, [open]);
-
-  return (
-    <div
-      ref={wrapRef}
-      style={{ position: 'relative', flex: '1 1 auto', minWidth: 0, display: 'flex' }}
-    >
-      <button
-        type="button"
-        onClick={() => !loading && setOpen((v) => !v)}
-        disabled={loading}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-label={`拠点を選択 (現在: ${currentName})`}
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 5,
-          minHeight: 34,
-          maxWidth: '100%',
-          padding: '5px 10px',
-          borderRadius: 999,
-          background: open ? '#fff' : 'rgba(255,255,255,0.16)',
-          color: open ? accentInk : '#fff',
-          fontFamily: 'var(--font-serif)',
-          fontSize: 13,
-          fontWeight: 600,
-          boxShadow: open ? '0 2px 6px rgba(0,0,0,0.12)' : 'none',
-          minWidth: 0,
-        }}
-      >
-        <MapPin size={14} strokeWidth={2.2} style={{ flex: '0 0 auto' }} />
-        <span
-          style={{
-            whiteSpace: 'nowrap',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            minWidth: 0,
-          }}
-        >
-          {loading ? '拠点を読込中…' : currentName}
-        </span>
-        <ChevronDown
-          size={15}
-          strokeWidth={2.4}
-          style={{
-            flex: '0 0 auto',
-            transition: 'transform .18s',
-            transform: open ? 'rotate(180deg)' : 'none',
-          }}
-        />
-      </button>
-
-      {open && !loading && (
-        <div
-          role="menu"
-          aria-label="拠点一覧"
-          style={{
-            position: 'absolute',
-            top: 'calc(100% + 6px)',
-            left: 0,
-            minWidth: 168,
-            maxWidth: 240,
-            background: '#fff',
-            borderRadius: 14,
-            boxShadow: '0 10px 28px rgba(28,25,23,0.22)',
-            border: `1px solid ${LINE}`,
-            padding: 5,
-            zIndex: 30,
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 2,
-          }}
-        >
-          {offices.map((o) => {
-            const on = o.office_id === officeId;
-            return (
-              <button
-                key={o.office_id}
-                type="button"
-                role="menuitemradio"
-                aria-checked={on}
-                onClick={() => {
-                  setOfficeId(o.office_id);
-                  setOpen(false);
-                }}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                  width: '100%',
-                  textAlign: 'left',
-                  minHeight: 38,
-                  padding: '7px 10px',
-                  borderRadius: 10,
-                  background: on ? '#EBF9F7' : 'transparent',
-                  color: on ? accentInk : INK,
-                  fontFamily: 'var(--font-serif)',
-                  fontSize: 14,
-                  fontWeight: on ? 700 : 600,
-                }}
-              >
-                <span
-                  style={{ width: 16, flex: '0 0 auto', display: 'grid', placeItems: 'center' }}
-                >
-                  {on && <Check size={15} strokeWidth={3} color={accentInk} />}
-                </span>
-                <span
-                  style={{
-                    flex: '1 1 0',
-                    minWidth: 0,
-                    whiteSpace: 'nowrap',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                  }}
-                >
-                  {o.office_name || '拠点'}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
 interface HeaderProps {
-  offices: OfficeOpt[];
-  officeId: string | null;
-  setOfficeId: (id: string) => void;
   approve: boolean;
   setApprove: (fn: (a: boolean) => boolean) => void;
   pendingCount: number;
@@ -531,16 +426,7 @@ interface HeaderProps {
   topPad?: number;
 }
 
-function Header({
-  offices,
-  officeId,
-  setOfficeId,
-  approve,
-  setApprove,
-  pendingCount,
-  onNew,
-  topPad = 16,
-}: HeaderProps) {
+function Header({ approve, setApprove, pendingCount, onNew, topPad = 16 }: HeaderProps) {
   const bg = approve
     ? 'linear-gradient(135deg, #E0A21A 0%, #B5790A 100%)'
     : `linear-gradient(135deg, ${TEAL} 0%, ${TEAL_DEEP} 100%)`;
@@ -598,12 +484,8 @@ function Header({
               </span>
             </div>
           </div>
-          <OfficePicker
-            offices={offices}
-            officeId={officeId}
-            setOfficeId={setOfficeId}
-            accentInk={accentInk}
-          />
+          {/* ロゴ(左) と 提案/承認(右) の間を埋めるスペーサ。拠点プルダウンは廃止 (全拠点結合)。 */}
+          <span style={{ flex: '1 1 auto', minWidth: 8 }} />
           <div style={{ display: 'flex', gap: 7, flex: '0 0 auto' }}>
             <button onClick={onNew} style={{ ...hdrAct, background: '#fff', color: accentInk }}>
               <Plus size={15} /> 提案
@@ -1172,12 +1054,13 @@ function CourseSlots({
 // ============================ Layout: AGENDA ============================
 
 function AgendaBoard({
-  courses,
+  dayCourses,
   sameAddressGroups,
   onKarte,
   onEmpty,
 }: {
-  courses: BoardCourse[];
+  /** 拠点順 (稲毛→都賀) → course_code (A..M) で並んだ全拠点コース。 */
+  dayCourses: BoardCourseWithOffice[];
   sameAddressGroups: SameAddressGroups;
   onKarte: (v: BoardVisit) => void;
   onEmpty: () => void;
@@ -1185,86 +1068,119 @@ function AgendaBoard({
   const [closedCourses, setClosedCourses] = useState<Set<string>>(() => new Set());
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: '4px 14px 0' }}>
-      {courses.map((co) => {
+      {dayCourses.map((dc, idx) => {
+        const co = dc.course;
         const k = cc(co.course_code);
         const filled = co.capacity.filled;
         const room = co.capacity.remaining;
-        const cid = co.course_id ?? co.course_label;
+        // 拠点跨ぎでも安定する key: office_id + (course_id || code + label)。
+        const cid = `${dc.officeId}:${co.course_id ?? `${co.course_code}:${co.course_label}`}`;
         const isOpen = !closedCourses.has(cid);
+        // 拠点ブロックの先頭にだけ薄い拠点小見出しを挿入 (コンパクト優先・視認性のため)。
+        const showOfficeHeading = idx === 0 || dayCourses[idx - 1]!.officeId !== dc.officeId;
         return (
-          <section
-            key={cid}
-            style={{
-              background: PANEL,
-              borderRadius: 16,
-              boxShadow: '0 2px 8px rgba(28,25,23,0.06)',
-              overflow: 'hidden',
-              borderLeft: `5px solid ${k.c}`,
-            }}
-          >
-            <button
-              onClick={() =>
-                setClosedCourses((s) => {
-                  const n = new Set(s);
-                  if (n.has(cid)) n.delete(cid);
-                  else n.add(cid);
-                  return n;
-                })
-              }
-              style={{
-                width: '100%',
-                padding: '11px 14px',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 10,
-                textAlign: 'left',
-              }}
-              aria-expanded={isOpen}
-            >
-              <span
+          <div key={cid} style={{ display: 'contents' }}>
+            {showOfficeHeading && dc.officeName && (
+              <div
                 style={{
-                  fontFamily: 'var(--font-serif)',
-                  fontSize: 15,
-                  fontWeight: 700,
-                  color: k.c,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 7,
+                  padding: idx === 0 ? '0 2px 0' : '4px 2px 0',
+                  marginTop: idx === 0 ? 0 : 2,
                 }}
               >
-                {co.course_label}
-              </span>
-              {co.staff_name && <span style={{ fontSize: 11, color: INK2 }}>{co.staff_name}</span>}
-              <span style={{ flex: 1 }} />
-              <span
-                style={{
-                  fontSize: 11,
-                  fontWeight: 700,
-                  color: room > 0 ? TEAL_DEEP : INK3,
-                  background: room > 0 ? '#D7F2EE' : '#F0ECE5',
-                  padding: '2px 8px',
-                  borderRadius: 999,
-                }}
-              >
-                {filled}/{co.capacity.max} {room > 0 ? `空き${room}つ` : '空きなし'}
-              </span>
-              <span
-                style={{
-                  color: INK3,
-                  transform: isOpen ? 'rotate(180deg)' : 'none',
-                  transition: 'transform .2s',
-                  display: 'inline-flex',
-                }}
-              >
-                <ChevronDown size={16} />
-              </span>
-            </button>
-            {isOpen && (
-              <CourseSlots
-                co={co}
-                sameAddressGroups={sameAddressGroups}
-                onKarte={onKarte}
-                onEmpty={onEmpty}
-              />
+                <MapPin size={12} strokeWidth={2.4} color={INK3} style={{ flex: '0 0 auto' }} />
+                <span
+                  style={{
+                    fontFamily: 'var(--font-serif)',
+                    fontSize: 12,
+                    fontWeight: 700,
+                    color: INK2,
+                    letterSpacing: '0.02em',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {dc.officeName}
+                </span>
+                <span style={{ flex: 1, height: 1, background: LINE, borderRadius: 1 }} />
+              </div>
             )}
-          </section>
+            <section
+              style={{
+                background: PANEL,
+                borderRadius: 16,
+                boxShadow: '0 2px 8px rgba(28,25,23,0.06)',
+                overflow: 'hidden',
+                borderLeft: `5px solid ${k.c}`,
+              }}
+            >
+              <button
+                onClick={() =>
+                  setClosedCourses((s) => {
+                    const n = new Set(s);
+                    if (n.has(cid)) n.delete(cid);
+                    else n.add(cid);
+                    return n;
+                  })
+                }
+                style={{
+                  width: '100%',
+                  padding: '11px 14px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                  textAlign: 'left',
+                }}
+                aria-expanded={isOpen}
+              >
+                <span
+                  style={{
+                    fontFamily: 'var(--font-serif)',
+                    fontSize: 15,
+                    fontWeight: 700,
+                    color: k.c,
+                  }}
+                >
+                  {co.course_label}
+                </span>
+                {co.staff_name && (
+                  <span style={{ fontSize: 11, color: INK2 }}>{co.staff_name}</span>
+                )}
+                <span style={{ flex: 1 }} />
+                <span
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 700,
+                    color: room > 0 ? TEAL_DEEP : INK3,
+                    background: room > 0 ? '#D7F2EE' : '#F0ECE5',
+                    padding: '2px 8px',
+                    borderRadius: 999,
+                  }}
+                >
+                  {filled}/{co.capacity.max} {room > 0 ? `空き${room}つ` : '空きなし'}
+                </span>
+                <span
+                  style={{
+                    color: INK3,
+                    transform: isOpen ? 'rotate(180deg)' : 'none',
+                    transition: 'transform .2s',
+                    display: 'inline-flex',
+                  }}
+                >
+                  <ChevronDown size={16} />
+                </span>
+              </button>
+              {isOpen && (
+                <CourseSlots
+                  co={co}
+                  sameAddressGroups={sameAddressGroups}
+                  onKarte={onKarte}
+                  onEmpty={onEmpty}
+                />
+              )}
+            </section>
+          </div>
         );
       })}
     </div>

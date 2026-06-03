@@ -6,9 +6,10 @@
  * - KarteSheet  : board の visit (patient_id) から `GET /api/v1/patients/{id}` を
  *                 取得し、基本情報 / 保険・サービス / 希望曜日 / 備考 を表示する。
  *                 同住所相手は board の same_address_group から解決する。
- * - SuggestSheet: フォーム値 + 現在の週/拠点で `POST .../propose-slots` を実呼び出し
+ * - SuggestSheet: フォーム値 + 現在の週で `POST .../propose-slots` を実呼び出し
  *                 し、返ってきた slots をランキング + ミニスケジュール (実時刻) で
- *                 レンダする。0 件 / warnings も表示する。
+ *                 レンダする。office_ids は省略 (= 全拠点検索) で拠点跨ぎ提示。
+ *                 0 件 / warnings も表示する。
  *
  * Phase 1 のモック (RANK_PAIR / RANK_NORMAL / CF_PATIENTS) は撤去済み。
  */
@@ -396,13 +397,11 @@ const SUGGEST_TIME_OPTIONS: string[] = (() => {
 export function SuggestSheet({
   isoYear,
   isoWeek,
-  officeId,
   onClose,
   onToast,
 }: {
   isoYear: number;
   isoWeek: number;
-  officeId: string | null;
   onClose: () => void;
   onToast: (msg: string) => void;
 }) {
@@ -459,7 +458,8 @@ export function SuggestSheet({
         sex_restriction: sexRestriction || null,
         iso_year: isoYear,
         iso_week: isoWeek,
-        office_ids: officeId ? [officeId] : [],
+        // 拠点プルダウン廃止に伴い office_ids は省略 (= 全拠点検索)。拠点跨ぎで提示する。
+        office_ids: [],
         limit: 10,
       },
       {
