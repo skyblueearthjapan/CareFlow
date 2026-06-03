@@ -12,7 +12,7 @@
  * 意匠 (Warm パレット・一覧レイアウト・実時刻表示・同住所/空き枠の見た目) は維持。
  */
 
-import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import {
   Heart,
   ChevronLeft,
@@ -21,6 +21,7 @@ import {
   Plus,
   ClipboardCheck,
   MapPin,
+  Check,
 } from 'lucide-react';
 
 import { useFieldBoard, toWeekStart, toIsoYearWeek } from '@/lib/queries/fieldBoard';
@@ -357,6 +358,168 @@ interface OfficeOpt {
   office_name: string;
 }
 
+// ============================ 拠点プルダウン ============================
+
+/**
+ * ヘッダー内の拠点セレクタ。`📍 {現在の拠点名} ▾` ボタン + 直下ポップオーバー一覧。
+ * 旧・横並びピルを置換。外側クリック / 再タップ / 項目選択でクローズし、選択は setOfficeId。
+ * offices は API 由来 (board.offices)。将来拠点が増えてもそのまま列挙する。
+ */
+function OfficePicker({
+  offices,
+  officeId,
+  setOfficeId,
+  accentInk,
+}: {
+  offices: OfficeOpt[];
+  officeId: string | null;
+  setOfficeId: (id: string) => void;
+  accentInk: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+
+  const current = offices.find((o) => o.office_id === officeId);
+  const currentName = current?.office_name || '拠点';
+  const loading = offices.length === 0;
+
+  // 外側クリック / タップで閉じる (ポップオーバー外を pointerdown したら close)。
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent | TouchEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener('pointerdown', onDoc);
+    return () => document.removeEventListener('pointerdown', onDoc);
+  }, [open]);
+
+  return (
+    <div
+      ref={wrapRef}
+      style={{ position: 'relative', flex: '1 1 auto', minWidth: 0, display: 'flex' }}
+    >
+      <button
+        type="button"
+        onClick={() => !loading && setOpen((v) => !v)}
+        disabled={loading}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={`拠点を選択 (現在: ${currentName})`}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 5,
+          minHeight: 34,
+          maxWidth: '100%',
+          padding: '5px 10px',
+          borderRadius: 999,
+          background: open ? '#fff' : 'rgba(255,255,255,0.16)',
+          color: open ? accentInk : '#fff',
+          fontFamily: 'var(--font-serif)',
+          fontSize: 13,
+          fontWeight: 600,
+          boxShadow: open ? '0 2px 6px rgba(0,0,0,0.12)' : 'none',
+          minWidth: 0,
+        }}
+      >
+        <MapPin size={14} strokeWidth={2.2} style={{ flex: '0 0 auto' }} />
+        <span
+          style={{
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            minWidth: 0,
+          }}
+        >
+          {loading ? '拠点を読込中…' : currentName}
+        </span>
+        <ChevronDown
+          size={15}
+          strokeWidth={2.4}
+          style={{
+            flex: '0 0 auto',
+            transition: 'transform .18s',
+            transform: open ? 'rotate(180deg)' : 'none',
+          }}
+        />
+      </button>
+
+      {open && !loading && (
+        <div
+          role="menu"
+          aria-label="拠点一覧"
+          style={{
+            position: 'absolute',
+            top: 'calc(100% + 6px)',
+            left: 0,
+            minWidth: 168,
+            maxWidth: 240,
+            background: '#fff',
+            borderRadius: 14,
+            boxShadow: '0 10px 28px rgba(28,25,23,0.22)',
+            border: `1px solid ${LINE}`,
+            padding: 5,
+            zIndex: 30,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 2,
+          }}
+        >
+          {offices.map((o) => {
+            const on = o.office_id === officeId;
+            return (
+              <button
+                key={o.office_id}
+                type="button"
+                role="menuitemradio"
+                aria-checked={on}
+                onClick={() => {
+                  setOfficeId(o.office_id);
+                  setOpen(false);
+                }}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  width: '100%',
+                  textAlign: 'left',
+                  minHeight: 38,
+                  padding: '7px 10px',
+                  borderRadius: 10,
+                  background: on ? '#EBF9F7' : 'transparent',
+                  color: on ? accentInk : INK,
+                  fontFamily: 'var(--font-serif)',
+                  fontSize: 14,
+                  fontWeight: on ? 700 : 600,
+                }}
+              >
+                <span
+                  style={{ width: 16, flex: '0 0 auto', display: 'grid', placeItems: 'center' }}
+                >
+                  {on && <Check size={15} strokeWidth={3} color={accentInk} />}
+                </span>
+                <span
+                  style={{
+                    flex: '1 1 0',
+                    minWidth: 0,
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  }}
+                >
+                  {o.office_name || '拠点'}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface HeaderProps {
   offices: OfficeOpt[];
   officeId: string | null;
@@ -386,123 +549,99 @@ function Header({
     <div
       style={{
         flex: '0 0 auto',
-        background: bg,
-        color: '#fff',
-        padding: `${Math.max(topPad - 12, 6)}px 16px 9px`,
-        borderRadius: '0 0 15px 15px',
-        boxShadow: '0 5px 14px rgba(13,148,136,0.18)',
+        // 浮きカード: 上・左右に小さめ余白を取り、周囲のクリーム背景を覗かせる。
+        // 上余白は safe-area の下に 6〜8px、左右 8px。縦増分は最小限 (上に約 7px のみ)。
+        padding: `${Math.max(topPad - 13, 6)}px 8px 0`,
         position: 'relative',
         zIndex: 20,
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '0 0 auto' }}>
-          <div
-            style={{
-              width: 26,
-              height: 26,
-              borderRadius: 8,
-              background: '#fff',
-              color: accentInk,
-              display: 'grid',
-              placeItems: 'center',
-              boxShadow: '0 2px 6px rgba(0,0,0,0.14)',
-            }}
-          >
-            <Heart size={14} strokeWidth={2.4} />
+      <div
+        style={{
+          background: bg,
+          color: '#fff',
+          padding: '9px 14px',
+          // 四隅すべて角丸の浮きカード。
+          borderRadius: 16,
+          boxShadow: '0 5px 14px rgba(13,148,136,0.18)',
+          position: 'relative',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '0 0 auto' }}>
+            <div
+              style={{
+                width: 26,
+                height: 26,
+                borderRadius: 8,
+                background: '#fff',
+                color: accentInk,
+                display: 'grid',
+                placeItems: 'center',
+                boxShadow: '0 2px 6px rgba(0,0,0,0.14)',
+              }}
+            >
+              <Heart size={14} strokeWidth={2.4} />
+            </div>
+            <div
+              style={{
+                fontFamily: 'var(--font-serif)',
+                fontSize: 15,
+                fontWeight: 700,
+                lineHeight: 1,
+                letterSpacing: '-0.01em',
+              }}
+            >
+              CareFlow
+              <span style={{ fontSize: 9, opacity: 0.85, fontWeight: 500, marginLeft: 4 }}>
+                現場ボード
+              </span>
+            </div>
           </div>
-          <div
-            style={{
-              fontFamily: 'var(--font-serif)',
-              fontSize: 15,
-              fontWeight: 700,
-              lineHeight: 1,
-              letterSpacing: '-0.01em',
-            }}
-          >
-            CareFlow
-            <span style={{ fontSize: 9, opacity: 0.85, fontWeight: 500, marginLeft: 4 }}>
-              現場ボード
-            </span>
-          </div>
-        </div>
-        <div
-          style={{
-            display: 'flex',
-            gap: 5,
-            background: 'rgba(255,255,255,0.16)',
-            padding: 3,
-            borderRadius: 999,
-            flex: '1 1 auto',
-            minWidth: 0,
-            overflowX: 'auto',
-          }}
-        >
-          {offices.length === 0 ? (
-            <span style={{ padding: '6px 16px', fontSize: 12, opacity: 0.8 }}>拠点を読込中…</span>
-          ) : (
-            offices.map((o) => {
-              const on = officeId === o.office_id;
-              return (
-                <button
-                  key={o.office_id}
-                  onClick={() => setOfficeId(o.office_id)}
+          <OfficePicker
+            offices={offices}
+            officeId={officeId}
+            setOfficeId={setOfficeId}
+            accentInk={accentInk}
+          />
+          <div style={{ display: 'flex', gap: 7, flex: '0 0 auto' }}>
+            <button onClick={onNew} style={{ ...hdrAct, background: '#fff', color: accentInk }}>
+              <Plus size={15} /> 提案
+            </button>
+            <button
+              onClick={() => setApprove((a) => !a)}
+              style={{
+                ...hdrAct,
+                background: approve ? '#fff' : 'rgba(255,255,255,0.16)',
+                color: approve ? accentInk : '#fff',
+                position: 'relative',
+              }}
+            >
+              <ClipboardCheck size={15} /> 承認
+              {pendingCount > 0 && (
+                <span
                   style={{
-                    padding: '6px 16px',
-                    minHeight: 34,
+                    position: 'absolute',
+                    top: -6,
+                    right: -6,
+                    minWidth: 18,
+                    height: 18,
+                    padding: '0 5px',
+                    background: '#E1657F',
+                    color: '#fff',
+                    fontSize: 11,
+                    fontWeight: 700,
                     borderRadius: 999,
-                    fontSize: 13,
-                    fontWeight: 600,
-                    fontFamily: 'var(--font-serif)',
-                    whiteSpace: 'nowrap',
-                    background: on ? '#fff' : 'transparent',
-                    color: on ? accentInk : '#fff',
-                    boxShadow: on ? '0 2px 6px rgba(0,0,0,0.12)' : 'none',
+                    display: 'grid',
+                    placeItems: 'center',
+                    border: '2px solid #fff',
                   }}
                 >
-                  {o.office_name || '拠点'}
-                </button>
-              );
-            })
-          )}
-        </div>
-        <div style={{ display: 'flex', gap: 7, flex: '0 0 auto' }}>
-          <button onClick={onNew} style={{ ...hdrAct, background: '#fff', color: accentInk }}>
-            <Plus size={15} /> 提案
-          </button>
-          <button
-            onClick={() => setApprove((a) => !a)}
-            style={{
-              ...hdrAct,
-              background: approve ? '#fff' : 'rgba(255,255,255,0.16)',
-              color: approve ? accentInk : '#fff',
-              position: 'relative',
-            }}
-          >
-            <ClipboardCheck size={15} /> 承認
-            {pendingCount > 0 && (
-              <span
-                style={{
-                  position: 'absolute',
-                  top: -6,
-                  right: -6,
-                  minWidth: 18,
-                  height: 18,
-                  padding: '0 5px',
-                  background: '#E1657F',
-                  color: '#fff',
-                  fontSize: 11,
-                  fontWeight: 700,
-                  borderRadius: 999,
-                  display: 'grid',
-                  placeItems: 'center',
-                  border: '2px solid #fff',
-                }}
-              >
-                {pendingCount}
-              </span>
-            )}
-          </button>
+                  {pendingCount}
+                </span>
+              )}
+            </button>
+          </div>
         </div>
       </div>
     </div>

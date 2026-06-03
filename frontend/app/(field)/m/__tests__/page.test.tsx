@@ -135,6 +135,64 @@ function makeBoard(): BoardResponse {
   };
 }
 
+const OFFICE2_ID = '11111111-1111-1111-1111-111111111112';
+const COURSE2_ID = '44444444-4444-4444-4444-444444444445';
+
+/**
+ * 2 拠点ボード。稲毛 (OFFICE_ID) は makeBoard と同じ月曜コース「稲A」。
+ * 都賀 (OFFICE2_ID) は月曜にコース「都賀X」を持つ。拠点切替で表示が入れ替わることを検証する。
+ */
+function makeTwoOfficeBoard(): BoardResponse {
+  const base = makeBoard();
+  base.offices = [
+    { office_id: OFFICE_ID, office_name: '稲毛' },
+    { office_id: OFFICE2_ID, office_name: '都賀' },
+  ];
+  // 都賀ぶんの 7 曜日セルを追加 (月曜のみコースあり)。
+  for (let weekday = 0; weekday < 7; weekday++) {
+    base.board.push({
+      office_id: OFFICE2_ID,
+      weekday,
+      weekday_code: base.weekdays[weekday]!.weekday_code,
+      closed: false,
+      staff_count: 1,
+      manager_count: 0,
+      patient_count: weekday === 0 ? 1 : 0,
+      courses:
+        weekday === 0
+          ? [
+              {
+                course_id: COURSE2_ID,
+                course_code: 'B',
+                course_label: '都賀X',
+                staff_name: '鈴木 Ns',
+                visits: [
+                  {
+                    visit_id: '99999999-9999-9999-9999-999999999999',
+                    patient_id: PATIENT_ID,
+                    patient_name: '都賀 患者',
+                    patient_kana: null,
+                    insurance: 'med' as const,
+                    service_minutes: 60,
+                    start_time: '09:30',
+                    end_time: '10:30',
+                    address: '千葉市若葉区都賀1-1-1',
+                    lat: null,
+                    lng: null,
+                    same_address_group_id: null,
+                    mode: 'normal' as const,
+                    slot_index: 0,
+                  },
+                ],
+                capacity: { filled: 1, max: 6, total_minutes: 60, remaining: 5 },
+              },
+            ]
+          : [],
+    });
+  }
+  return base;
+}
+
 function makePatient(): PatientRead {
   return {
     id: PATIENT_ID,
@@ -208,7 +266,7 @@ describe('/m 現場ボード (実データ)', () => {
     expect(screen.getByText('現場ボード')).toBeInTheDocument();
     // 実データのため DEMO チップは撤去済み。
     expect(screen.queryByText('DEMO')).not.toBeInTheDocument();
-    // 拠点タブ (offices[] から構築) と月曜のコース。
+    // 拠点プルダウン (offices[] から構築) のトリガに現在拠点名、月曜のコース。
     expect(screen.getByText('稲毛')).toBeInTheDocument();
     expect(screen.getByText('稲A')).toBeInTheDocument();
     expect(screen.getByText('月曜')).toBeInTheDocument();
@@ -265,6 +323,22 @@ describe('/m 現場ボード (実データ)', () => {
     render(<FieldBoardPage />);
     expect(mockReplace).toHaveBeenCalledWith('/m/home');
     expect(screen.queryByText('現場ボード')).not.toBeInTheDocument();
+  });
+
+  it('拠点プルダウンを開いて別拠点を選ぶと、その拠点のコースに切り替わる', () => {
+    setSession('manager');
+    setBoard({ data: makeTwoOfficeBoard() });
+    render(<FieldBoardPage />);
+    // 初期は先頭拠点 (稲毛) のコースが表示される。
+    expect(screen.getByText('稲A')).toBeInTheDocument();
+    expect(screen.queryByText('都賀X')).not.toBeInTheDocument();
+    // プルダウンを開く (トリガ button を押す)。
+    fireEvent.click(screen.getByRole('button', { name: /拠点を選択/ }));
+    // メニュー項目「都賀」を選択 → 拠点切替。
+    fireEvent.click(screen.getByRole('menuitemradio', { name: '都賀' }));
+    // 都賀のコースに切り替わり、稲毛のコースは消える。
+    expect(screen.getByText('都賀X')).toBeInTheDocument();
+    expect(screen.queryByText('稲A')).not.toBeInTheDocument();
   });
 });
 
