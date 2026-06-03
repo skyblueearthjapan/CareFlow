@@ -1,14 +1,16 @@
 'use client';
 
 /**
- * /m — CareFlow Mobile 現場ボード (Phase 1: フロント完結・ダミーデータ)。
+ * /m — CareFlow Mobile 現場ボード (Phase2-3c: 実データ接続・manager/admin 向け)。
  *
  * 認証ガード: manager / admin のみ。staff には非表示 (/m/home へ戻す)。
  *   - 認証そのものは middleware (decideRoute) が担保済み。
  *   - ここでは role が staff の場合に早期リダイレクトする
  *     ((app)/staff/new と同じクライアントガードパターン)。
  *
- * ⚠️ バックエンド接続なし。ボード/カルテ/提案はすべて `components/field/mockData`。
+ * Phase2-3c: 実データ接続済み。ボード/カルテ/提案/承認はすべて実 API
+ *   (GET /schedule/v2/board, GET /patients/{id}, POST /schedule/v2/propose-slots,
+ *    GET/PATCH /pending-requests) に接続。フォントは (field) レイアウトで読込。
  */
 
 import { useRouter } from 'next/navigation';

@@ -1,0 +1,171 @@
+'use client';
+
+/**
+ * 現場ボード `/m` (CareFlow Mobile) 用 TanStack Query フック群 (Phase2-3c)。
+ *
+ * Backend (`app/api/v1/schedule_v2.py`) のエンドポイントを 1:1 で写像する:
+ *   - GET  /api/v1/schedule/v2/board          → useFieldBoard
+ *   - POST /api/v1/schedule/v2/propose-slots   → useProposeSlots (mutation)
+ *
+ * 認証は NextAuth セッションの access/refresh token を `fetcher` に渡す
+ * (他の v2 フックと同じ流儀)。RBAC は BE 側で admin/manager を担保。
+ */
+import {
+  useMutation,
+  useQuery,
+  type UseMutationResult,
+  type UseQueryResult,
+} from '@tanstack/react-query';
+import { useSession } from 'next-auth/react';
+
+import { fetcher } from '@/lib/api/fetcher';
+import { boardResponseSchema, type BoardResponse, type WeekdayCode } from '@/lib/schemas/v2/board';
+import {
+  proposeSlotsRequestSchema,
+  proposeSlotsResponseSchema,
+  type ProposeSlotsRequest,
+  type ProposeSlotsResponse,
+} from '@/lib/schemas/v2/propose_slots';
+
+const BOARD_PATH = '/api/v1/schedule/v2/board';
+const PROPOSE_SLOTS_PATH = '/api/v1/schedule/v2/propose-slots';
+
+const FIELD_BOARD_KEY = ['field-board'] as const;
+
+function authPair(session: ReturnType<typeof useSession>['data']): {
+  accessToken: string | null;
+  refreshToken: string | null;
+} {
+  return {
+    accessToken: session?.accessToken ?? null,
+    refreshToken: session?.refreshToken ?? null,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// ISO 年週ヘルパー (schedule ページ `toIsoYearWeek` と同一ロジック)
+// ─────────────────────────────────────────────────────────────────────────
+
+/** 任意の Date を ISO 週の月曜 (Mon=0..Sun=6 規約) に丸める。 */
+export function toWeekStart(d: Date): Date {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  // JS getDay(): Sun=0..Sat=6. Map Sun→6, Mon→0, …, Sat→5.
+  const dow = (x.getDay() + 6) % 7;
+  x.setDate(x.getDate() - dow);
+  return x;
+}
+
+/** Date → { isoYear, isoWeek } (ISO-8601 週番号)。 */
+export function toIsoYearWeek(d: Date): { isoYear: number; isoWeek: number } {
+  const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  const day = date.getUTCDay() || 7;
+  date.setUTCDate(date.getUTCDate() + 4 - day);
+  const year = date.getUTCFullYear();
+  const yearStart = new Date(Date.UTC(year, 0, 1));
+  const week = Math.ceil(((date.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
+  return { isoYear: year, isoWeek: week };
+}
+
+/** weekday コード (Mon..Sun) → 0..6 の整数 (Mon=0)。 */
+export const WEEKDAY_CODE_TO_INT: Record<WeekdayCode, number> = {
+  Mon: 0,
+  Tue: 1,
+  Wed: 2,
+  Thu: 3,
+  Fri: 4,
+  Sat: 5,
+  Sun: 6,
+};
+
+// ─────────────────────────────────────────────────────────────────────────
+// GET /v2/board — 週ボード
+// ─────────────────────────────────────────────────────────────────────────
+
+export interface UseFieldBoardParams {
+  isoYear: number;
+  isoWeek: number;
+  /** 単一拠点に絞る場合の office_id。未指定なら全 active 拠点。 */
+  officeId?: string | null;
+}
+
+/**
+ * GET /api/v1/schedule/v2/board — 対象週 × 拠点の実 Visit を
+ * office × weekday × course 構造で取得する。
+ *
+ * レスポンスは zod (`boardResponseSchema`) で再パースするため、BE が列を
+ * 追加してもクライアント型は安全に保たれる (forward compat)。
+ */
+export function useFieldBoard(params: UseFieldBoardParams): UseQueryResult<BoardResponse, Error> {
+  const { data: session, status } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+  const { isoYear, isoWeek, officeId } = params;
+
+  return useQuery<BoardResponse, Error>({
+    queryKey: [...FIELD_BOARD_KEY, { isoYear, isoWeek, officeId: officeId ?? null }],
+    enabled: status === 'authenticated',
+    queryFn: async () => {
+      const usp = new URLSearchParams({
+        iso_year: String(isoYear),
+        iso_week: String(isoWeek),
+      });
+      if (officeId) usp.set('office_id', officeId);
+      const raw = await fetcher<unknown>(`${BOARD_PATH}?${usp.toString()}`, {
+        accessToken,
+        refreshToken,
+      });
+      return boardResponseSchema.parse(raw);
+    },
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// POST /v2/propose-slots — 自動提案
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * POST /api/v1/schedule/v2/propose-slots — 候補患者の希望から、対象週 × 拠点の
+ * 実現可能な空き枠を算出・ランキングして取得する (read-only, DB 書込なし)。
+ *
+ * 「自動提案する」ボタンから呼ぶ mutation。返ってきた slots をランキング表示 +
+ * ミニスケジュール (実時刻) でレンダする。
+ */
+export function useProposeSlots(): UseMutationResult<
+  ProposeSlotsResponse,
+  Error,
+  ProposeSlotsRequest
+> {
+  const { data: session } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+
+  return useMutation<ProposeSlotsResponse, Error, ProposeSlotsRequest>({
+    mutationFn: async (raw) => {
+      const payload = proposeSlotsRequestSchema.parse(raw);
+      const result = await fetcher<unknown>(PROPOSE_SLOTS_PATH, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+        accessToken,
+        refreshToken,
+      });
+      return proposeSlotsResponseSchema.parse(result);
+    },
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// 提案 warnings の日本語ラベル (UI 表示用)
+// ─────────────────────────────────────────────────────────────────────────
+
+/** propose-slots warnings コードの日本語ラベル。未知コードはそのまま表示。 */
+const PROPOSE_WARNING_LABEL_JA: Record<string, string> = {
+  travel_time_shortage: '移動時間がタイト',
+  buffer_shortage: 'バッファー不足',
+  lunch_overlap: '昼休みと重複',
+  late_finish: '終了が遅め',
+  capacity_tight: '容量に余裕なし',
+  sex_restriction_unmet: '性別条件を満たせない',
+};
+
+export function proposeWarningLabel(code: string): string {
+  return PROPOSE_WARNING_LABEL_JA[code] ?? code;
+}

@@ -37,11 +37,13 @@
   color: inherit;
 }
 .cf-field-root input,
-.cf-field-root select {
+.cf-field-root select,
+.cf-field-root textarea {
   font-family: inherit;
 }
 .cf-field-root input:focus,
-.cf-field-root select:focus {
+.cf-field-root select:focus,
+.cf-field-root textarea:focus {
   border-color: #0d9488 !important;
 }
 
@@ -71,5 +73,10 @@
   to {
     transform: translate(-50%, 0);
     opacity: 1;
+  }
+}
+@keyframes cfSpin {
+  to {
+    transform: rotate(360deg);
   }
 }

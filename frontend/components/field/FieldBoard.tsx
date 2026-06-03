@@ -1,68 +1,42 @@
 'use client';
 
 /**
- * CareFlow Mobile — 現場ボード (Warm & Human aligned)
+ * CareFlow Mobile — 現場ボード (Warm & Human aligned, Phase2-3c 実データ接続)
  *
- * `mocks/design_bundle/carelink/project/careflow-mobile.jsx` をピクセル忠実に
- * 移植したフィールドボード本体。電話/タブレット向け: 曜日ステッパー + コース一覧
- * (agenda) 固定、カルテシート、ランキング付き提案シート、承認モード。
+ * 電話/タブレット向けのフィールドボード本体。週切替 + 拠点タブ + 曜日ステッパーで
+ * `GET /api/v1/schedule/v2/board` を再取得し、コース毎に実訪問を実時刻
+ * (start_time〜end_time) で表示する。容量 filled/6・空き枠 (remaining)・同住所
+ * (same_address_group_id) 連結を実データで描画する。
  *
- * ⚠️ Phase 1 はフロント完結・ダミーデータ (`./mockData`)。
+ * 旧 Phase 1 のモック (CF_WEEK / CF_PATIENTS / CF_PENDING / RANK_*) は撤去済み。
+ * 意匠 (Warm パレット・一覧レイアウト・実時刻表示・同住所/空き枠の見た目) は維持。
  */
 
-import { useEffect, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import {
   Heart,
   ChevronLeft,
   ChevronRight,
   ChevronDown,
   Plus,
-  Check,
   ClipboardCheck,
   MapPin,
 } from 'lucide-react';
 
-import {
-  CF_WEEK,
-  CF_DOWS,
-  CF_DATES,
-  CF_PATIENTS,
-  CF_PENDING,
-  CF_THEME,
-  cc,
-  getPatient,
-  type Course,
-  type Dow,
-  type OfficeKey,
-  type PendingPlacement,
-} from './mockData';
+import { useFieldBoard, toWeekStart, toIsoYearWeek } from '@/lib/queries/fieldBoard';
+import { usePendingRequests } from '@/lib/queries/pending_requests';
+import type { BoardCell, BoardCourse, BoardVisit } from '@/lib/schemas/v2/board';
+
+import { CF_THEME, CF_DOWS, cc } from './theme';
 import { KarteSheet, SuggestSheet, Toast } from './FieldSheets';
+import { ApprovePanel } from './ApprovePanel';
 
-const {
-  TEAL,
-  TEAL_DEEP,
-  TERRA,
-  TERRA_DEEP,
-  PLUM,
-  MINT,
-  INK,
-  INK2,
-  INK3,
-  CREAM,
-  LINE,
-  PANEL,
-  GOLD,
-} = CF_THEME;
+const { TEAL, TEAL_DEEP, TERRA, TERRA_DEEP, PLUM, INK, INK2, INK3, CREAM, LINE, PANEL, GOLD } =
+  CF_THEME;
 
-type ApproveVerdict = 'ok' | 'no';
-type ApproveFn = (key: string, verdict: ApproveVerdict) => void;
+const WEEKLEN = 7;
 
-// ============================ 時間モデル ============================
-//
-// 多くのコースは `times` を持たないため、6 訪問枠に既定の開始時刻を割り当てる。
-// 昼休み (11:45〜13:00) を空けた現実的な並び。`co.times` に明示があれば優先する。
-const SLOT_WINDOWS = ['09:30', '10:45', '13:00', '14:15', '15:30', '16:45'] as const;
-const LAST_SLOT_MIN = 60; // 最終枠の既定所要 (終了算出のフォールバック)
+// ============================ 時間ユーティリティ ============================
 
 /** 'HH:MM' → 0時起点の分。不正値は null。 */
 function parseHM(s: string | null | undefined): number | null {
@@ -75,46 +49,80 @@ function parseHM(s: string | null | undefined): number | null {
   return h * 60 + mm;
 }
 
-/** 分 → 'HH:MM'。 */
-function fmtHM(min: number): string {
-  const h = Math.floor(min / 60);
-  const m = min % 60;
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+/** 'HH:MM〜HH:MM' の実時刻ラベル (start/end をそのまま使う)。 */
+function visitTimeLabel(v: BoardVisit): string {
+  return `${v.start_time}〜${v.end_time}`;
 }
 
-/**
- * スロット si の開始時刻 (分)。mock に明示 times があれば優先、無ければ既定枠。
- * 文字列が必要なときは `fmtHM(slotStartMin(co, si))`。
- */
-function slotStartMin(co: Course, si: number): number {
-  const explicit = parseHM(co.times?.[si]);
-  if (explicit !== null) return explicit;
-  return parseHM(SLOT_WINDOWS[si] ?? SLOT_WINDOWS[SLOT_WINDOWS.length - 1])!;
-}
+// ============================ 日付フォーマット ============================
 
-interface BoardCommonProps {
-  courses: Course[];
-  pend: PendingPlacement | null;
-  pendingState: Record<string, ApproveVerdict>;
-  onKarte: (pk: string) => void;
-  onEmpty: () => void;
-  onApprove: ApproveFn;
-}
+const MD_FORMAT = (iso: string): string => {
+  // 'YYYY-MM-DD' → 'M/D'
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  if (!m) return iso;
+  return `${Number(m[2])}/${Number(m[3])}`;
+};
 
 // ============================ App ============================
 
 export function FieldBoard({ topPad = 16 }: { topPad?: number }) {
-  const [office, setOffice] = useState<OfficeKey>('INAGE');
-  const [day, setDay] = useState<Dow>('月');
+  // 週 state: 月曜起点の Date を持ち、ISO 年/週へ変換して API に渡す。
+  const [weekStart, setWeekStart] = useState<Date>(() => toWeekStart(new Date()));
+  const { isoYear, isoWeek } = useMemo(() => toIsoYearWeek(weekStart), [weekStart]);
+
+  const [officeId, setOfficeId] = useState<string | null>(null);
+  const [dayIdx, setDayIdx] = useState(0); // 0=月..6=日
   const [approve, setApprove] = useState(false);
-  const [weekOff, setWeekOff] = useState(0);
-  const [karte, setKarte] = useState<string | null>(null);
+  const [karte, setKarte] = useState<BoardVisit | null>(null);
   const [sheet, setSheet] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
-  const [pendingState, setPendingState] = useState<Record<string, ApproveVerdict>>({});
 
-  const courses = CF_WEEK[office][day] || [];
-  const week = 23 + weekOff;
+  // 全拠点ぶんを 1 度に取得 (officeId 指定なし)。拠点タブはレスポンスの offices[] から構築。
+  const boardQuery = useFieldBoard({ isoYear, isoWeek, officeId: null });
+  const board = boardQuery.data;
+
+  const offices = board?.offices ?? [];
+
+  // office 未選択 / 一覧変化時は先頭拠点を選ぶ。
+  useEffect(() => {
+    if (offices.length === 0) return;
+    if (!officeId || !offices.some((o) => o.office_id === officeId)) {
+      setOfficeId(offices[0]?.office_id ?? null);
+    }
+    // offices 配列の中身が変わったときのみ評価。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [offices.map((o) => o.office_id).join(',')]);
+
+  // 選択拠点の曜日 → セル を引く索引。
+  const cellsByDay = useMemo(() => {
+    const map = new Map<number, BoardCell>();
+    if (!board || !officeId) return map;
+    for (const cell of board.board) {
+      if (cell.office_id === officeId) map.set(cell.weekday, cell);
+    }
+    return map;
+  }, [board, officeId]);
+
+  const cell = cellsByDay.get(dayIdx) ?? null;
+  // 参照安定化 (空配列の再生成で useMemo 依存が毎回変わるのを防ぐ)。
+  const courses = useMemo(() => cell?.courses ?? [], [cell]);
+  const closed = cell?.closed ?? false;
+
+  // 当日にコースが無い拠点なら、最初に開いている曜日へジャンプ。
+  useEffect(() => {
+    if (!board || !officeId) return;
+    const current = cellsByDay.get(dayIdx);
+    const hasCourses = (current?.courses.length ?? 0) > 0;
+    if (hasCourses || current?.closed) return;
+    for (let d = 0; d < WEEKLEN; d++) {
+      const c = cellsByDay.get(d);
+      if ((c?.courses.length ?? 0) > 0) {
+        setDayIdx(d);
+        return;
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [officeId, board]);
 
   const showToast = (msg: string) => {
     setToast(msg);
@@ -122,29 +130,33 @@ export function FieldBoard({ topPad = 16 }: { topPad?: number }) {
     (window as unknown as { __cfT?: number }).__cfT = window.setTimeout(() => setToast(null), 2200);
   };
 
-  useEffect(() => {
-    // 当日にコースが無い拠点なら、最初に開いている曜日へジャンプ。
-    const open = CF_DOWS.filter((d) => (CF_WEEK[office][d] || []).length > 0);
-    if (!open.includes(day)) setDay(open[0] || '月');
-    // office 切替時のみ評価する (day を依存に含めない — 移植元と同挙動)。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [office]);
-
-  const onApprove: ApproveFn = (key, verdict) => {
-    setPendingState((s) => ({ ...s, [key]: verdict }));
-    showToast(verdict === 'ok' ? '✓ 承認しました' : '却下しました');
+  const goWeek = (delta: number) => {
+    setWeekStart((w) => {
+      const x = new Date(w);
+      x.setDate(x.getDate() + delta * 7);
+      return x;
+    });
+    showToast(delta < 0 ? '◀ 前の週' : '▶ 次の週');
   };
 
-  const pend = (approve && CF_PENDING[office][day]) || null;
+  // 当日のヘッダー集計 (実訪問件数 + 残り空き枠合計)。
+  const visitsCount = courses.reduce((n, co) => n + co.capacity.filled, 0);
+  const roomCount = courses.reduce((n, co) => n + co.capacity.remaining, 0);
 
-  const boardProps: BoardCommonProps = {
-    courses,
-    pend,
-    pendingState,
-    onKarte: setKarte,
-    onEmpty: () => setSheet(true),
-    onApprove,
-  };
+  // 同住所相手解決用: 当日 (選択拠点) の全 visit を group_id でまとめる。
+  const sameAddressGroups = useMemo(() => buildSameAddressGroups(courses), [courses]);
+
+  // 承認待ち件数バッジ (実 pending-requests, pending 状態のみ)。
+  const pendingQuery = usePendingRequests({ status: 'pending', limit: 100 });
+  const pendingCount = pendingQuery.data?.items.length ?? 0;
+
+  const weekLabel = board ? `${isoYear}年 第${isoWeek}週` : `第${isoWeek}週`;
+  const weekRange = useMemo(() => {
+    const start = MD_FORMAT(weekStart.toISOString().slice(0, 10));
+    const end = new Date(weekStart);
+    end.setDate(end.getDate() + 6);
+    return `${start} - ${MD_FORMAT(end.toISOString().slice(0, 10))}`;
+  }, [weekStart]);
 
   return (
     <div
@@ -159,24 +171,51 @@ export function FieldBoard({ topPad = 16 }: { topPad?: number }) {
       }}
     >
       <Header
-        office={office}
-        setOffice={setOffice}
-        week={week}
-        setWeekOff={setWeekOff}
+        offices={offices}
+        officeId={officeId}
+        setOfficeId={setOfficeId}
+        weekLabel={weekLabel}
+        weekRange={weekRange}
+        goWeek={goWeek}
         approve={approve}
         setApprove={setApprove}
+        pendingCount={pendingCount}
         onNew={() => setSheet(true)}
-        onToast={showToast}
         topPad={topPad}
       />
 
-      <DayStepper office={office} day={day} setDay={setDay} />
+      <DayStepper
+        dayIdx={dayIdx}
+        setDayIdx={setDayIdx}
+        dateLabel={board?.weekdays[dayIdx]?.date ? MD_FORMAT(board.weekdays[dayIdx]!.date) : ''}
+        visitsCount={visitsCount}
+        roomCount={roomCount}
+        closed={closed}
+        approve={approve}
+      />
 
       <div
         className="cf-scroll"
         style={{ flex: 1, overflow: 'auto', WebkitOverflowScrolling: 'touch' }}
       >
-        {courses.length === 0 ? <Empty day={day} /> : <AgendaBoard {...boardProps} />}
+        {approve ? (
+          <ApprovePanel onToast={showToast} />
+        ) : boardQuery.isLoading ? (
+          <LoadingState />
+        ) : boardQuery.isError ? (
+          <ErrorState onRetry={() => void boardQuery.refetch()} />
+        ) : closed ? (
+          <ClosedState dayIdx={dayIdx} />
+        ) : courses.length === 0 ? (
+          <EmptyState dayIdx={dayIdx} />
+        ) : (
+          <AgendaBoard
+            courses={courses}
+            sameAddressGroups={sameAddressGroups}
+            onKarte={setKarte}
+            onEmpty={() => setSheet(true)}
+          />
+        )}
         <div style={{ height: 28 }} />
       </div>
 
@@ -198,38 +237,85 @@ export function FieldBoard({ topPad = 16 }: { topPad?: number }) {
       )}
 
       {karte && (
-        <KarteSheet pk={karte} office={office} onClose={() => setKarte(null)} onOpen={setKarte} />
+        <KarteSheet
+          visit={karte}
+          officeName={offices.find((o) => o.office_id === officeId)?.office_name ?? ''}
+          sameAddressGroups={sameAddressGroups}
+          onClose={() => setKarte(null)}
+          onOpenVisit={setKarte}
+        />
       )}
-      {sheet && <SuggestSheet onClose={() => setSheet(false)} onToast={showToast} />}
+      {sheet && (
+        <SuggestSheet
+          isoYear={isoYear}
+          isoWeek={isoWeek}
+          officeId={officeId}
+          onClose={() => setSheet(false)}
+          onToast={showToast}
+        />
+      )}
 
       {toast && <Toast msg={toast} />}
     </div>
   );
 }
 
+// ============================ 同住所グループ ============================
+
+export interface SameAddressGroups {
+  /** group_id → その group に属する visit 一覧 (同コース内, start 昇順想定) */
+  byGroup: Map<string, BoardVisit[]>;
+  /** visit_id → group_id */
+  groupOf: Map<string, string>;
+}
+
+function buildSameAddressGroups(courses: BoardCourse[]): SameAddressGroups {
+  const byGroup = new Map<string, BoardVisit[]>();
+  const groupOf = new Map<string, string>();
+  for (const co of courses) {
+    for (const v of co.visits) {
+      if (!v.same_address_group_id) continue;
+      groupOf.set(v.visit_id, v.same_address_group_id);
+      const arr = byGroup.get(v.same_address_group_id) ?? [];
+      arr.push(v);
+      byGroup.set(v.same_address_group_id, arr);
+    }
+  }
+  return { byGroup, groupOf };
+}
+
 // ============================ Header ============================
 
+interface OfficeOpt {
+  office_id: string;
+  office_name: string;
+}
+
 interface HeaderProps {
-  office: OfficeKey;
-  setOffice: (o: OfficeKey) => void;
-  week: number;
-  setWeekOff: (fn: (w: number) => number) => void;
+  offices: OfficeOpt[];
+  officeId: string | null;
+  setOfficeId: (id: string) => void;
+  weekLabel: string;
+  weekRange: string;
+  goWeek: (delta: number) => void;
   approve: boolean;
   setApprove: (fn: (a: boolean) => boolean) => void;
+  pendingCount: number;
   onNew: () => void;
-  onToast: (msg: string) => void;
   topPad?: number;
 }
 
 function Header({
-  office,
-  setOffice,
-  week,
-  setWeekOff,
+  offices,
+  officeId,
+  setOfficeId,
+  weekLabel,
+  weekRange,
+  goWeek,
   approve,
   setApprove,
+  pendingCount,
   onNew,
-  onToast,
   topPad = 16,
 }: HeaderProps) {
   const bg = approve
@@ -275,27 +361,9 @@ function Header({
                 fontWeight: 700,
                 lineHeight: 1,
                 letterSpacing: '-0.01em',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 7,
               }}
             >
               CareFlow
-              <span
-                style={{
-                  fontFamily: 'var(--font-sans)',
-                  fontSize: 9.5,
-                  fontWeight: 700,
-                  letterSpacing: '0.04em',
-                  padding: '2px 7px',
-                  borderRadius: 999,
-                  background: 'rgba(255,255,255,0.22)',
-                  color: '#fff',
-                  border: '1px solid rgba(255,255,255,0.35)',
-                }}
-              >
-                DEMO
-              </span>
             </div>
             <div style={{ fontSize: 10, opacity: 0.85, marginTop: 2 }}>現場ボード</div>
           </div>
@@ -310,27 +378,20 @@ function Header({
             padding: 3,
           }}
         >
-          <button
-            onClick={() => {
-              setWeekOff((w) => w - 1);
-              onToast('◀ 前の週');
-            }}
-            style={hdrCircle}
-            aria-label="前の週"
-          >
+          <button onClick={() => goWeek(-1)} style={hdrCircle} aria-label="前の週">
             <ChevronLeft size={16} />
           </button>
           <div
             style={{
               fontFamily: 'var(--font-serif)',
-              fontSize: 14,
+              fontSize: 13,
               fontWeight: 700,
-              minWidth: 74,
+              minWidth: 92,
               textAlign: 'center',
-              lineHeight: 1.1,
+              lineHeight: 1.15,
             }}
           >
-            第{week}週
+            {weekLabel}
             <div
               style={{
                 fontSize: 9,
@@ -339,17 +400,10 @@ function Header({
                 fontWeight: 500,
               }}
             >
-              6/1 - 6/7
+              {weekRange}
             </div>
           </div>
-          <button
-            onClick={() => {
-              setWeekOff((w) => w + 1);
-              onToast('▶ 次の週');
-            }}
-            style={hdrCircle}
-            aria-label="次の週"
-          >
+          <button onClick={() => goWeek(1)} style={hdrCircle} aria-label="次の週">
             <ChevronRight size={16} />
           </button>
         </div>
@@ -371,36 +425,39 @@ function Header({
             background: 'rgba(255,255,255,0.16)',
             padding: 3,
             borderRadius: 999,
+            flex: '1 1 auto',
+            minWidth: 0,
+            overflowX: 'auto',
           }}
         >
-          {(
-            [
-              { v: 'INAGE', l: '稲毛' },
-              { v: 'TSUGA', l: '都賀' },
-            ] as const
-          ).map((o) => {
-            const on = office === o.v;
-            return (
-              <button
-                key={o.v}
-                onClick={() => setOffice(o.v)}
-                style={{
-                  padding: '7px 16px',
-                  borderRadius: 999,
-                  fontSize: 13,
-                  fontWeight: 600,
-                  fontFamily: 'var(--font-serif)',
-                  background: on ? '#fff' : 'transparent',
-                  color: on ? accentInk : '#fff',
-                  boxShadow: on ? '0 2px 6px rgba(0,0,0,0.12)' : 'none',
-                }}
-              >
-                {o.l}
-              </button>
-            );
-          })}
+          {offices.length === 0 ? (
+            <span style={{ padding: '7px 16px', fontSize: 12, opacity: 0.8 }}>拠点を読込中…</span>
+          ) : (
+            offices.map((o) => {
+              const on = officeId === o.office_id;
+              return (
+                <button
+                  key={o.office_id}
+                  onClick={() => setOfficeId(o.office_id)}
+                  style={{
+                    padding: '7px 16px',
+                    borderRadius: 999,
+                    fontSize: 13,
+                    fontWeight: 600,
+                    fontFamily: 'var(--font-serif)',
+                    whiteSpace: 'nowrap',
+                    background: on ? '#fff' : 'transparent',
+                    color: on ? accentInk : '#fff',
+                    boxShadow: on ? '0 2px 6px rgba(0,0,0,0.12)' : 'none',
+                  }}
+                >
+                  {o.office_name || '拠点'}
+                </button>
+              );
+            })
+          )}
         </div>
-        <div style={{ display: 'flex', gap: 7 }}>
+        <div style={{ display: 'flex', gap: 7, flex: '0 0 auto' }}>
           <button onClick={onNew} style={{ ...hdrAct, background: '#fff', color: accentInk }}>
             <Plus size={15} /> 提案
           </button>
@@ -414,26 +471,28 @@ function Header({
             }}
           >
             <ClipboardCheck size={15} /> 承認
-            <span
-              style={{
-                position: 'absolute',
-                top: -6,
-                right: -6,
-                minWidth: 18,
-                height: 18,
-                padding: '0 5px',
-                background: '#E1657F',
-                color: '#fff',
-                fontSize: 11,
-                fontWeight: 700,
-                borderRadius: 999,
-                display: 'grid',
-                placeItems: 'center',
-                border: '2px solid #fff',
-              }}
-            >
-              2
-            </span>
+            {pendingCount > 0 && (
+              <span
+                style={{
+                  position: 'absolute',
+                  top: -6,
+                  right: -6,
+                  minWidth: 18,
+                  height: 18,
+                  padding: '0 5px',
+                  background: '#E1657F',
+                  color: '#fff',
+                  fontSize: 11,
+                  fontWeight: 700,
+                  borderRadius: 999,
+                  display: 'grid',
+                  placeItems: 'center',
+                  border: '2px solid #fff',
+                }}
+              >
+                {pendingCount}
+              </span>
+            )}
           </button>
         </div>
       </div>
@@ -462,7 +521,7 @@ const hdrAct: CSSProperties = {
   boxShadow: '0 2px 6px rgba(0,0,0,0.10)',
 };
 
-// ============================ Legend (shared by DayStepper) ============================
+// ============================ Legend ============================
 
 const Legend = ({ col, t }: { col: string; t: string }) => (
   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}>
@@ -474,28 +533,26 @@ const Legend = ({ col, t }: { col: string; t: string }) => (
 // ============================ Day stepper (←/→ 曜日送り) ============================
 
 function DayStepper({
-  office,
-  day,
-  setDay,
+  dayIdx,
+  setDayIdx,
+  dateLabel,
+  visitsCount,
+  roomCount,
+  closed,
+  approve,
 }: {
-  office: OfficeKey;
-  day: Dow;
-  setDay: (d: Dow) => void;
+  dayIdx: number;
+  setDayIdx: (d: number) => void;
+  dateLabel: string;
+  visitsCount: number;
+  roomCount: number;
+  closed: boolean;
+  approve: boolean;
 }) {
-  const idx = CF_DOWS.indexOf(day);
-  const go = (dir: number) => setDay(CF_DOWS[(idx + dir + 7) % 7] ?? '月');
-  const courses = CF_WEEK[office][day] || [];
-  let total = 0;
-  let room = 0;
-  courses.forEach((co) =>
-    co.slots.forEach((s) => {
-      total++;
-      if (!s) room++;
-    }),
-  );
-  const closed = courses.length === 0;
-  const sat = day === '土';
-  const sun = day === '日';
+  const go = (dir: number) => setDayIdx((dayIdx + dir + WEEKLEN) % WEEKLEN);
+  const day = CF_DOWS[dayIdx] ?? '月';
+  const sat = dayIdx === 5;
+  const sun = dayIdx === 6;
   const arrow: CSSProperties = {
     width: 42,
     height: 42,
@@ -524,18 +581,20 @@ function DayStepper({
             }}
           >
             <span style={{ color: sat ? '#2F6FB0' : sun ? '#C75C77' : TEAL_DEEP }}>{day}曜</span>
-            <span style={{ fontSize: 13, color: INK3, fontWeight: 600, marginLeft: 8 }}>
-              {CF_DATES[idx]}
-            </span>
+            {dateLabel && (
+              <span style={{ fontSize: 13, color: INK3, fontWeight: 600, marginLeft: 8 }}>
+                {dateLabel}
+              </span>
+            )}
           </div>
           <div style={{ fontSize: 11, color: INK2, marginTop: 3 }}>
             {closed ? (
               '休講日'
             ) : (
               <span>
-                訪問 <b style={{ color: INK }}>{total - room}</b> 件 ・{' '}
-                <span style={{ color: room > 0 ? '#0E8472' : INK3, fontWeight: 700 }}>
-                  {room > 0 ? `空き ${room}` : '満員'}
+                訪問 <b style={{ color: INK }}>{visitsCount}</b> 件 ・{' '}
+                <span style={{ color: roomCount > 0 ? '#0E8472' : INK3, fontWeight: 700 }}>
+                  {roomCount > 0 ? `空き ${roomCount}` : '満員'}
                 </span>
               </span>
             )}
@@ -555,9 +614,14 @@ function DayStepper({
           marginTop: 6,
         }}
       >
-        <Legend col={TERRA} t="空き枠" />
-        <Legend col={GOLD} t="承認待ち" />
-        <Legend col={PLUM} t="同住所" />
+        {approve ? (
+          <Legend col={GOLD} t="承認待ち" />
+        ) : (
+          <>
+            <Legend col={TERRA} t="空き枠" />
+            <Legend col={PLUM} t="同住所" />
+          </>
+        )}
       </div>
     </div>
   );
@@ -566,44 +630,32 @@ function DayStepper({
 // ============================ Patient card (shared) ============================
 
 function PatientCard({
-  pk,
-  si,
-  co,
+  visit,
+  courseCode,
   inPair,
-  onKarte,
-  compact,
   startOverride,
+  onKarte,
 }: {
-  pk: string;
-  si: number;
-  co: Course;
+  visit: BoardVisit;
+  /** 所属コードの course_code (色解決用。BoardCourse から明示的に渡す)。 */
+  courseCode: string;
   inPair?: boolean;
-  onKarte: (pk: string) => void;
-  compact?: boolean;
-  /** ペア連続訪問など、開始時刻を明示上書きする場合 (分) */
-  startOverride?: number;
+  /** ペア連結で開始ラベルを上書きする場合のラベル */
+  startOverride?: string;
+  onKarte: (v: BoardVisit) => void;
 }) {
-  const p = getPatient(pk);
-  const startMin = startOverride ?? slotStartMin(co, si);
-  const timeLabel = `${fmtHM(startMin)}〜${fmtHM(startMin + p.svc)}`;
-  const k = cc(co.c);
-  const sameArea =
-    !inPair &&
-    co.slots.some((o, oi) => {
-      if (!o || oi === si) return false;
-      const other = CF_PATIENTS[o];
-      return !!other && other.area === p.area;
-    });
+  const k = cc(courseCode);
+  const timeLabel = startOverride ?? visitTimeLabel(visit);
   return (
     <button
-      onClick={() => onKarte(pk)}
+      onClick={() => onKarte(visit)}
       style={{
         width: '100%',
         textAlign: 'left',
         background: inPair ? '#fff' : k.soft,
         borderRadius: 12,
         borderLeft: `5px solid ${inPair ? PLUM : k.c}`,
-        padding: compact ? '8px 11px' : '9px 12px',
+        padding: '9px 12px',
         display: 'flex',
         flexDirection: 'column',
         gap: 2,
@@ -621,7 +673,7 @@ function PatientCard({
           fontWeight: 600,
         }}
       >
-        {si + 1}/6
+        {visit.slot_index + 1}枠目
       </span>
       <span
         style={{
@@ -648,7 +700,7 @@ function PatientCard({
           lineHeight: 1.15,
         }}
       >
-        {p.name}
+        {visit.patient_name}
       </div>
       <div
         style={{
@@ -660,20 +712,22 @@ function PatientCard({
           flexWrap: 'wrap',
         }}
       >
-        <span
-          style={{
-            fontSize: 10,
-            fontWeight: 700,
-            padding: '1px 7px',
-            borderRadius: 999,
-            background: p.ins === 'med' ? '#E2EDF8' : '#D7F2EE',
-            color: p.ins === 'med' ? '#2F6FB0' : '#0E8472',
-          }}
-        >
-          {p.ins === 'med' ? '医療' : '介護'}
-        </span>
-        <span>{p.svc}分</span>
-        {inPair ? (
+        {visit.insurance && (
+          <span
+            style={{
+              fontSize: 10,
+              fontWeight: 700,
+              padding: '1px 7px',
+              borderRadius: 999,
+              background: visit.insurance === 'med' ? '#E2EDF8' : '#D7F2EE',
+              color: visit.insurance === 'med' ? '#2F6FB0' : '#0E8472',
+            }}
+          >
+            {visit.insurance === 'med' ? '医療' : '介護'}
+          </span>
+        )}
+        <span>{visit.service_minutes}分</span>
+        {inPair && (
           <span
             style={{
               fontSize: 10,
@@ -690,30 +744,13 @@ function PatientCard({
             <MapPin size={9} />
             同住所
           </span>
-        ) : sameArea ? (
-          <span
-            style={{
-              color: MINT,
-              fontWeight: 700,
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 2,
-            }}
-          >
-            <MapPin size={9} />
-            同エリア
-          </span>
-        ) : null}
+        )}
       </div>
     </button>
   );
 }
 
-function EmptySlot({ co, si, onEmpty }: { co: Course; si: number; onEmpty: () => void }) {
-  const startMin = slotStartMin(co, si);
-  // 終了 = 次枠の開始。最終枠は 開始 + 既定所要。
-  const endMin = si < co.slots.length - 1 ? slotStartMin(co, si + 1) : startMin + LAST_SLOT_MIN;
-  const windowLabel = `${fmtHM(startMin)}〜${fmtHM(endMin)}`;
+function EmptySlot({ remaining, onEmpty }: { remaining: number; onEmpty: () => void }) {
   return (
     <button
       onClick={onEmpty}
@@ -753,45 +790,32 @@ function EmptySlot({ co, si, onEmpty }: { co: Course; si: number; onEmpty: () =>
         >
           ＋
         </span>
-        <span
-          style={{
-            fontFamily: 'var(--font-mono)',
-            fontSize: 12,
-            fontWeight: 700,
-            color: TERRA_DEEP,
-            letterSpacing: '-0.01em',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          {windowLabel}
-        </span>
       </span>
-      <span style={{ whiteSpace: 'nowrap' }}>空き</span>
+      <span style={{ whiteSpace: 'nowrap' }}>空き（残 {remaining}）</span>
     </button>
   );
 }
 
 function PairWrap({
-  co,
-  si,
-  si2,
+  visits,
+  courseCode,
   onKarte,
 }: {
-  co: Course;
-  si: number;
-  si2: number;
-  onKarte: (pk: string) => void;
+  visits: BoardVisit[];
+  /** 連結バンド内カードの色解決用 course_code (BoardCourse から明示的に渡す)。 */
+  courseCode: string;
+  onKarte: (v: BoardVisit) => void;
 }) {
-  const pkA = co.slots[si] as string;
-  const pkB = co.slots[si2] as string;
-  const svcA = getPatient(pkA).svc;
-  const svcB = getPatient(pkB).svc;
-  // T = ペア先頭の開始。1人目 T〜T+svcA、2人目 (T+svcA)〜(T+svcA+svcB)。
-  const startA = slotStartMin(co, si);
-  const startB = startA + svcA;
-  const endB = startB + svcB;
-  const totalMin = endB - startA;
-  const bandLabel = `${fmtHM(startA)}〜${fmtHM(endB)} 連続訪問（約${totalMin}分）`;
+  // 同住所連結バンドの所要 = 先頭 start 〜 末尾 end。
+  const first = visits[0]!;
+  const last = visits[visits.length - 1]!;
+  const startMin = parseHM(first.start_time);
+  const endMin = parseHM(last.end_time);
+  const totalMin = startMin !== null && endMin !== null ? endMin - startMin : null;
+  const bandLabel =
+    totalMin !== null
+      ? `${first.start_time}〜${last.end_time} 連続訪問（約${totalMin}分）`
+      : `${first.start_time}〜${last.end_time} 連続訪問`;
   return (
     <div
       style={{
@@ -825,196 +849,91 @@ function PairWrap({
         <span
           style={{ display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}
         >
-          <MapPin size={11} /> 同住所・同時
+          <MapPin size={11} /> 同住所・連続
         </span>
       </div>
-      <PatientCard pk={pkA} si={si} co={co} inPair onKarte={onKarte} startOverride={startA} />
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          gap: 6,
-          fontSize: 10,
-          fontWeight: 700,
-          color: '#7A4E91',
-        }}
-      >
-        <span style={{ flex: 1, height: 2, background: '#DCC8EE', borderRadius: 2 }} />
-        <span
-          style={{ fontFamily: 'var(--font-mono)', whiteSpace: 'nowrap', letterSpacing: '-0.01em' }}
-        >
-          {bandLabel}
-        </span>
-        <span style={{ flex: 1, height: 2, background: '#DCC8EE', borderRadius: 2 }} />
-      </div>
-      <PatientCard pk={pkB} si={si2} co={co} inPair onKarte={onKarte} startOverride={startB} />
-    </div>
-  );
-}
-
-function PendingCard({
-  pend,
-  ci,
-  si,
-  state,
-  onApprove,
-}: {
-  pend: PendingPlacement;
-  ci: number;
-  si: number;
-  state: Record<string, ApproveVerdict>;
-  onApprove: ApproveFn;
-}) {
-  const k = `${ci}-${si}`;
-  const done = state[k];
-  const p = getPatient(pend.patient);
-  if (done === 'no') return null;
-  if (done === 'ok') {
-    return (
-      <div
-        style={{
-          borderRadius: 12,
-          border: `2px solid ${MINT}`,
-          background: '#E6F7EF',
-          padding: '9px 12px',
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <Check size={14} style={{ color: MINT }} />
-          <span style={{ fontFamily: 'var(--font-serif)', fontWeight: 700, fontSize: 14 }}>
-            {p.name}
-          </span>
-          <span style={{ fontSize: 10.5, color: MINT, fontWeight: 700 }}>承認済</span>
+      {visits.map((v, i) => (
+        <div key={v.visit_id}>
+          <PatientCard visit={v} courseCode={courseCode} inPair onKarte={onKarte} />
+          {i < visits.length - 1 && (
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 6,
+                fontSize: 10,
+                fontWeight: 700,
+                color: '#7A4E91',
+                marginTop: 6,
+              }}
+            >
+              <span style={{ flex: 1, height: 2, background: '#DCC8EE', borderRadius: 2 }} />
+              <span
+                style={{
+                  fontFamily: 'var(--font-mono)',
+                  whiteSpace: 'nowrap',
+                  letterSpacing: '-0.01em',
+                }}
+              >
+                {bandLabel}
+              </span>
+              <span style={{ flex: 1, height: 2, background: '#DCC8EE', borderRadius: 2 }} />
+            </div>
+          )}
         </div>
-      </div>
-    );
-  }
-  return (
-    <div
-      style={{
-        borderRadius: 12,
-        border: `2.5px dashed ${GOLD}`,
-        background:
-          'repeating-linear-gradient(45deg, #FFFCEC, #FFFCEC 9px, #FFF5C9 9px, #FFF5C9 18px)',
-        padding: '9px 12px',
-        position: 'relative',
-      }}
-    >
-      <span
-        style={{
-          position: 'absolute',
-          top: -9,
-          right: 8,
-          background: GOLD,
-          color: '#fff',
-          fontFamily: 'var(--font-serif)',
-          fontSize: 10,
-          fontWeight: 700,
-          padding: '2px 8px',
-          borderRadius: 999,
-        }}
-      >
-        承認待ち
-      </span>
-      <div
-        style={{ fontFamily: 'var(--font-serif)', fontSize: 14, fontWeight: 700, color: '#9A7400' }}
-      >
-        {p.name}
-      </div>
-      <div style={{ fontSize: 10.5, color: INK2, marginTop: 1 }}>
-        {pend.who} ・ {p.svc}分 ・ {si + 1}枠目
-      </div>
-      <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
-        <button
-          onClick={() => onApprove(k, 'ok')}
-          style={{
-            flex: 1,
-            padding: '9px',
-            borderRadius: 10,
-            background: MINT,
-            color: '#fff',
-            fontFamily: 'var(--font-serif)',
-            fontWeight: 700,
-            fontSize: 13,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: 5,
-          }}
-        >
-          <Check size={14} />
-          承認
-        </button>
-        <button
-          onClick={() => onApprove(k, 'no')}
-          style={{
-            flex: 1,
-            padding: '9px',
-            borderRadius: 10,
-            background: '#fff',
-            color: '#C75C77',
-            border: '2px solid #F4D4DC',
-            fontFamily: 'var(--font-serif)',
-            fontWeight: 700,
-            fontSize: 13,
-          }}
-        >
-          却下
-        </button>
-      </div>
+      ))}
     </div>
   );
 }
 
-// コース内のスロット一覧 (stack / carousel / agenda / week で共有)
+// コース内のスロット一覧 (実訪問 + 同住所連結 + 空き枠)。
 function CourseSlots({
   co,
-  ci,
-  pend,
-  pendingState,
+  sameAddressGroups,
   onKarte,
   onEmpty,
-  onApprove,
 }: {
-  co: Course;
-  ci: number;
-  pend: PendingPlacement | null;
-  pendingState: Record<string, ApproveVerdict>;
-  onKarte: (pk: string) => void;
+  co: BoardCourse;
+  sameAddressGroups: SameAddressGroups;
+  onKarte: (v: BoardVisit) => void;
   onEmpty: () => void;
-  onApprove: ApproveFn;
 }) {
-  const pairList = co.pairs || [];
-  const pairSecond = new Set(pairList.map((pr) => pr[1]));
-  const pairFirst: Record<number, number> = {};
-  pairList.forEach((pr) => {
-    pairFirst[pr[0]] = pr[1];
-  });
+  // 同住所グループの連結描画: group_id を持つ visit は先頭で 1 度だけ PairWrap 描画。
+  // 色解決用の course_code は BoardCourse から明示的に prop で渡す
+  // (react-query キャッシュ物体への書込はしない)。
   const out: React.ReactNode[] = [];
-  co.slots.forEach((pk, si) => {
-    if (pairSecond.has(si)) return;
-    if (pend && pend.courseIdx === ci && pend.slotIdx === si) {
-      out.push(
-        <PendingCard
-          key={'p' + si}
-          pend={pend}
-          ci={ci}
-          si={si}
-          state={pendingState}
-          onApprove={onApprove}
-        />,
-      );
-      return;
+  const renderedGroups = new Set<string>();
+  for (const v of co.visits) {
+    const gid = v.same_address_group_id;
+    if (gid && sameAddressGroups.byGroup.has(gid)) {
+      const members = sameAddressGroups.byGroup
+        .get(gid)!
+        .filter((m) => co.visits.some((cv) => cv.visit_id === m.visit_id));
+      if (members.length >= 2) {
+        if (renderedGroups.has(gid)) continue;
+        renderedGroups.add(gid);
+        out.push(
+          <PairWrap
+            key={'pair' + gid}
+            visits={members}
+            courseCode={co.course_code}
+            onKarte={onKarte}
+          />,
+        );
+        continue;
+      }
     }
-    const mate = pairFirst[si];
-    if (pk && mate !== undefined) {
-      out.push(<PairWrap key={'pair' + si} co={co} si={si} si2={mate} onKarte={onKarte} />);
-      return;
-    }
-    if (pk) out.push(<PatientCard key={si} pk={pk} si={si} co={co} onKarte={onKarte} />);
-    else out.push(<EmptySlot key={si} co={co} si={si} onEmpty={onEmpty} />);
-  });
+    out.push(
+      <PatientCard key={v.visit_id} visit={v} courseCode={co.course_code} onKarte={onKarte} />,
+    );
+  }
+
+  // 空き枠: remaining ぶんを表示。
+  if (co.capacity.remaining > 0) {
+    out.push(<EmptySlot key="empty" remaining={co.capacity.remaining} onEmpty={onEmpty} />);
+  }
+
   return <div style={{ display: 'flex', flexDirection: 'column', gap: 7, padding: 8 }}>{out}</div>;
 }
 
@@ -1022,23 +941,27 @@ function CourseSlots({
 
 function AgendaBoard({
   courses,
-  pend,
-  pendingState,
+  sameAddressGroups,
   onKarte,
   onEmpty,
-  onApprove,
-}: BoardCommonProps) {
-  const [open, setOpen] = useState<Set<string>>(() => new Set(courses.map((c) => c.id)));
+}: {
+  courses: BoardCourse[];
+  sameAddressGroups: SameAddressGroups;
+  onKarte: (v: BoardVisit) => void;
+  onEmpty: () => void;
+}) {
+  const [closedCourses, setClosedCourses] = useState<Set<string>>(() => new Set());
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: '4px 14px 0' }}>
-      {courses.map((co, ci) => {
-        const k = cc(co.c);
-        const filled = co.slots.filter(Boolean).length;
-        const room = 6 - filled;
-        const isOpen = open.has(co.id);
+      {courses.map((co) => {
+        const k = cc(co.course_code);
+        const filled = co.capacity.filled;
+        const room = co.capacity.remaining;
+        const cid = co.course_id ?? co.course_label;
+        const isOpen = !closedCourses.has(cid);
         return (
           <section
-            key={co.id}
+            key={cid}
             style={{
               background: PANEL,
               borderRadius: 16,
@@ -1049,10 +972,10 @@ function AgendaBoard({
           >
             <button
               onClick={() =>
-                setOpen((s) => {
+                setClosedCourses((s) => {
                   const n = new Set(s);
-                  if (n.has(co.id)) n.delete(co.id);
-                  else n.add(co.id);
+                  if (n.has(cid)) n.delete(cid);
+                  else n.add(cid);
                   return n;
                 })
               }
@@ -1074,9 +997,9 @@ function AgendaBoard({
                   color: k.c,
                 }}
               >
-                {co.id}
+                {co.course_label}
               </span>
-              <span style={{ fontSize: 11, color: INK2 }}>{co.staff}</span>
+              {co.staff_name && <span style={{ fontSize: 11, color: INK2 }}>{co.staff_name}</span>}
               <span style={{ flex: 1 }} />
               <span
                 style={{
@@ -1088,7 +1011,7 @@ function AgendaBoard({
                   borderRadius: 999,
                 }}
               >
-                {filled}/6 {room > 0 ? `空${room}` : '満'}
+                {filled}/{co.capacity.max} {room > 0 ? `空${room}` : '満'}
               </span>
               <span
                 style={{
@@ -1104,12 +1027,9 @@ function AgendaBoard({
             {isOpen && (
               <CourseSlots
                 co={co}
-                ci={ci}
-                pend={pend}
-                pendingState={pendingState}
+                sameAddressGroups={sameAddressGroups}
                 onKarte={onKarte}
                 onEmpty={onEmpty}
-                onApprove={onApprove}
               />
             )}
           </section>
@@ -1119,7 +1039,72 @@ function AgendaBoard({
   );
 }
 
-function Empty({ day }: { day: Dow }) {
+// ============================ 状態表示 (loading / error / empty / closed) ============================
+
+function LoadingState() {
+  return (
+    <div
+      style={{
+        textAlign: 'center',
+        color: INK3,
+        padding: '60px 20px',
+        fontFamily: 'var(--font-serif)',
+      }}
+    >
+      <div
+        style={{
+          width: 34,
+          height: 34,
+          borderRadius: '50%',
+          border: `3px solid ${LINE}`,
+          borderTopColor: TEAL,
+          margin: '0 auto',
+          animation: 'cfSpin 0.8s linear infinite',
+        }}
+      />
+      <div style={{ marginTop: 14, fontSize: 14, fontWeight: 700 }}>ボードを読み込んでいます…</div>
+    </div>
+  );
+}
+
+function ErrorState({ onRetry }: { onRetry: () => void }) {
+  return (
+    <div
+      style={{
+        textAlign: 'center',
+        color: INK2,
+        padding: '54px 20px',
+        fontFamily: 'var(--font-serif)',
+      }}
+    >
+      <div style={{ fontSize: 40 }}>⚠️</div>
+      <div style={{ marginTop: 10, fontSize: 16, fontWeight: 700, color: '#C75C77' }}>
+        読み込みに失敗しました
+      </div>
+      <div style={{ fontSize: 12.5, marginTop: 4, fontFamily: 'var(--font-sans)' }}>
+        通信状況をご確認ください
+      </div>
+      <button
+        onClick={onRetry}
+        style={{
+          marginTop: 16,
+          padding: '10px 22px',
+          borderRadius: 12,
+          background: TEAL,
+          color: '#fff',
+          fontFamily: 'var(--font-serif)',
+          fontWeight: 700,
+          fontSize: 13,
+        }}
+      >
+        再読み込み
+      </button>
+    </div>
+  );
+}
+
+function ClosedState({ dayIdx }: { dayIdx: number }) {
+  const day = CF_DOWS[dayIdx] ?? '月';
   return (
     <div
       style={{
@@ -1133,6 +1118,28 @@ function Empty({ day }: { day: Dow }) {
       <div style={{ marginTop: 10, fontSize: 16, fontWeight: 700 }}>{day}曜は休講日です</div>
       <div style={{ fontSize: 12.5, marginTop: 4, fontFamily: 'var(--font-sans)' }}>
         出勤スタッフがいません
+      </div>
+    </div>
+  );
+}
+
+function EmptyState({ dayIdx }: { dayIdx: number }) {
+  const day = CF_DOWS[dayIdx] ?? '月';
+  return (
+    <div
+      style={{
+        textAlign: 'center',
+        color: INK3,
+        padding: '60px 20px',
+        fontFamily: 'var(--font-serif)',
+      }}
+    >
+      <div style={{ fontSize: 44 }}>🗓️</div>
+      <div style={{ marginTop: 10, fontSize: 16, fontWeight: 700 }}>
+        {day}曜の訪問はまだありません
+      </div>
+      <div style={{ fontSize: 12.5, marginTop: 4, fontFamily: 'var(--font-sans)' }}>
+        「提案」から新しい訪問枠を探せます
       </div>
     </div>
   );

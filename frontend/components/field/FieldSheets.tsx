@@ -1,15 +1,20 @@
 'use client';
 
 /**
- * CareFlow Mobile — Karte ボトムシート + 提案シート (Warm & Human)
+ * CareFlow Mobile — Karte ボトムシート + 提案シート (Warm & Human, Phase2-3c 実データ)
  *
- * `mocks/design_bundle/carelink/project/careflow-sheets.jsx` を TypeScript へ
- * ピクセル忠実に移植。KarteSheet / SuggestSheet / RankCard / MiniSlot /
- * SlideSheet / Toast。ランキングデータは `./mockData` (RANK_PAIR / RANK_NORMAL)。
+ * - KarteSheet  : board の visit (patient_id) から `GET /api/v1/patients/{id}` を
+ *                 取得し、基本情報 / 保険・サービス / 希望曜日 / 備考 を表示する。
+ *                 同住所相手は board の same_address_group から解決する。
+ * - SuggestSheet: フォーム値 + 現在の週/拠点で `POST .../propose-slots` を実呼び出し
+ *                 し、返ってきた slots をランキング + ミニスケジュール (実時刻) で
+ *                 レンダする。0 件 / warnings も表示する。
+ *
+ * Phase 1 のモック (RANK_PAIR / RANK_NORMAL / CF_PATIENTS) は撤去済み。
  */
 
-import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
-import { X, MapPin, User, Heart, Calendar, Bell, Sparkles } from 'lucide-react';
+import { useState, type CSSProperties, type ReactNode } from 'react';
+import { X, MapPin, User, Heart, Calendar, Bell, Sparkles, AlertTriangle } from 'lucide-react';
 
 import {
   SERVICE_MINUTES_OPTIONS,
@@ -21,19 +26,27 @@ import {
   SEX_RESTRICTION_LABEL,
   WEEKDAY_KEYS,
   WEEKDAY_LABELS_JA,
+  INSURANCE_LABEL,
+  SEX_LABEL,
+  coerceWeeklyPattern,
+  normalizePatientSex,
+  normalizePatientInsurance,
   type WeekdayKey,
 } from '@/lib/schemas/patient';
-
+import { usePatient } from '@/lib/queries/patients';
 import {
-  CF_PATIENTS,
-  CF_DOWS,
-  RANK_PAIR,
-  RANK_NORMAL,
-  getPatient,
-  type OfficeKey,
-  type RankCandidate,
-  type RankScheduleRow,
-} from './mockData';
+  useProposeSlots,
+  WEEKDAY_CODE_TO_INT,
+  proposeWarningLabel,
+} from '@/lib/queries/fieldBoard';
+import type { BoardVisit, WeekdayCode } from '@/lib/schemas/v2/board';
+import type {
+  ProposeSlotItem,
+  ProposeMiniScheduleEntry,
+  ProposeTimeType,
+} from '@/lib/schemas/v2/propose_slots';
+
+import type { SameAddressGroups } from './FieldBoard';
 
 const _TERRA = '#D97706',
   _TERRAD = '#B45309',
@@ -45,33 +58,43 @@ const _TERRA = '#D97706',
   _LINE = '#EAE3D8';
 const PANEL_W = '#FFFFFF';
 
-// 同住所ペアの相手を探す (新規候補 newp/newpair は除外)
-function cfMate(pk: string): string | null {
-  const me = getPatient(pk);
-  for (const k in CF_PATIENTS) {
-    if (k === pk || k === 'newp' || k === 'newpair') continue;
-    const other = CF_PATIENTS[k];
-    if (other && other.addr === me.addr) return k;
-  }
-  return null;
-}
+const DOW_JA: Record<WeekdayKey, string> = WEEKDAY_LABELS_JA;
 
 // ============================ Karte bottom sheet ============================
 
 export function KarteSheet({
-  pk,
-  office,
+  visit,
+  officeName,
+  sameAddressGroups,
   onClose,
-  onOpen,
+  onOpenVisit,
 }: {
-  pk: string;
-  office: OfficeKey;
+  visit: BoardVisit;
+  officeName: string;
+  sameAddressGroups: SameAddressGroups;
   onClose: () => void;
-  onOpen: (pk: string) => void;
+  onOpenVisit: (v: BoardVisit) => void;
 }) {
-  const p = getPatient(pk);
-  const mateKey = cfMate(pk);
-  const mate = mateKey ? getPatient(mateKey) : null;
+  // 患者詳細を実 API から取得 (基本情報 / 希望曜日 / 備考 等)。
+  const patientQuery = usePatient(visit.patient_id);
+  const p = patientQuery.data;
+
+  // 同住所相手: board の same_address_group から、自分以外の visit を引く。
+  const gid = visit.same_address_group_id;
+  const mates = gid
+    ? (sameAddressGroups.byGroup.get(gid) ?? []).filter((m) => m.visit_id !== visit.visit_id)
+    : [];
+
+  // 表示値: 患者詳細が来るまでは board visit の値でフォールバック。
+  const wp = p ? coerceWeeklyPattern(p.weekly_pattern) : null;
+  const sex = p ? normalizePatientSex(p.sex as string | null | undefined) : null;
+  const insurance =
+    (p ? normalizePatientInsurance(p.insurance as string | null | undefined) : null) ??
+    (visit.insurance === 'med' ? 'medical' : visit.insurance === 'care' ? 'care' : null);
+  const address = p?.address ?? visit.address ?? null;
+  const serviceMin = wp?.service_minutes ?? visit.service_minutes;
+  const note = p?.note ?? null;
+
   return (
     <SlideSheet>
       <Grip />
@@ -101,14 +124,16 @@ export function KarteSheet({
               flex: '0 0 auto',
             }}
           >
-            {p.name.charAt(0)}
+            {(p?.name ?? visit.patient_name).charAt(0)}
           </div>
-          <div style={{ flex: 1 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontFamily: 'var(--font-serif)', fontSize: 19, fontWeight: 700 }}>
-              {p.name}
+              {p?.name ?? visit.patient_name}
             </div>
-            <div style={{ fontSize: 11, opacity: 0.9 }}>{p.kana}</div>
-            <div style={{ fontSize: 10.5, opacity: 0.8, marginTop: 2 }}>患者コード: {p.code}</div>
+            <div style={{ fontSize: 11, opacity: 0.9 }}>{p?.kana ?? visit.patient_kana ?? ''}</div>
+            {p?.code && (
+              <div style={{ fontSize: 10.5, opacity: 0.8, marginTop: 2 }}>患者コード: {p.code}</div>
+            )}
           </div>
           <button
             onClick={onClose}
@@ -131,121 +156,174 @@ export function KarteSheet({
         className="cf-scroll"
         style={{ overflowY: 'auto', padding: '16px 20px 28px', background: PANEL_W, flex: 1 }}
       >
-        {mate && mateKey && (
-          <KSec title="同住所ペア" icon={<MapPin size={12} />}>
-            <button
-              onClick={() => onOpen(mateKey)}
-              style={{
-                width: '100%',
-                textAlign: 'left',
-                background: 'linear-gradient(180deg,#F7F0FB,#F1E7F8)',
-                border: `2px solid ${_PLUM}`,
-                borderRadius: 14,
-                padding: '12px 14px',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 12,
-              }}
-            >
-              <div
-                style={{
-                  width: 40,
-                  height: 40,
-                  borderRadius: 13,
-                  background: _PLUM,
-                  color: '#fff',
-                  display: 'grid',
-                  placeItems: 'center',
-                  fontFamily: 'var(--font-serif)',
-                  fontSize: 17,
-                  fontWeight: 700,
-                }}
-              >
-                {mate.name.charAt(0)}
-              </div>
-              <div style={{ flex: 1 }}>
-                <div
-                  style={{
-                    fontFamily: 'var(--font-serif)',
-                    fontSize: 14.5,
-                    fontWeight: 700,
-                    color: '#7A4E91',
-                  }}
-                >
-                  相手: {mate.name} 様 ›
-                </div>
-                <div style={{ fontSize: 10.5, color: _INK2, marginTop: 2 }}>
-                  同住所・同時刻に <b>1スタッフが連続訪問</b>（約90分・2枠消費）
-                </div>
-              </div>
-            </button>
-          </KSec>
-        )}
-        <KSec title="基本情報" icon={<User size={12} />}>
-          <KV k="性別 / 年齢" v={`${p.sex} / ${p.age}歳`} />
-          <KV
-            k="ご住所"
-            v={
-              <span>
-                {p.addr}
-                {mate && <span style={pBadge}>同住所</span>}
-              </span>
-            }
-          />
-          <KV k="エリア" v={p.area} />
-        </KSec>
-        <KSec title="保険・サービス" icon={<Heart size={12} />}>
-          <KV k="保険種別" v={p.ins === 'med' ? '医療保険' : '介護保険'} />
-          <KV k="サービス時間" v={`${p.svc}分`} />
-          <KV k="時間タイプ" v={p.type} />
-        </KSec>
-        <KSec title="希望曜日" icon={<Calendar size={12} />}>
-          <div style={{ display: 'flex', gap: 5 }}>
-            {CF_DOWS.slice(0, 6).map((d) => {
-              const yes = p.dow[d] === 1;
-              return (
-                <div
-                  key={d}
-                  style={{
-                    flex: 1,
-                    textAlign: 'center',
-                    padding: '6px 0',
-                    borderRadius: 9,
-                    fontFamily: 'var(--font-serif)',
-                    fontSize: 13,
-                    fontWeight: 700,
-                    background: yes ? '#D7F2EE' : '#F4EFE7',
-                    color: yes ? '#0E8472' : '#CDC2B2',
-                  }}
-                >
-                  <span style={{ fontSize: 10, display: 'block', color: _INK3, fontWeight: 500 }}>
-                    {d}
-                  </span>
-                  {yes ? '○' : '×'}
-                </div>
-              );
-            })}
-          </div>
-        </KSec>
-        <KSec title="固定訪問 / 拠点" icon={<MapPin size={12} />}>
-          <KV k="固定コース" v={p.fixed} />
-          <KV k="担当拠点" v={office === 'INAGE' ? '稲毛' : '都賀'} />
-        </KSec>
-        <KSec title="備考・申し送り" icon={<Bell size={12} />}>
+        {patientQuery.isError && (
           <div
             style={{
-              background: '#FFF9EC',
-              borderRadius: 14,
-              padding: 13,
-              fontWeight: 600,
-              lineHeight: 1.6,
-              border: '2px solid #FBEFCE',
-              fontSize: 13,
+              background: '#FCEFF2',
+              border: '2px solid #F4D4DC',
+              borderRadius: 12,
+              padding: 11,
+              fontSize: 12.5,
+              fontWeight: 700,
+              color: '#C75C77',
+              marginBottom: 14,
             }}
           >
-            {p.note}
+            患者詳細の読み込みに失敗しました。ボード上の情報のみ表示します。
           </div>
+        )}
+
+        {mates.length > 0 && (
+          <KSec title="同住所ペア" icon={<MapPin size={12} />}>
+            {mates.map((mate) => (
+              <button
+                key={mate.visit_id}
+                onClick={() => onOpenVisit(mate)}
+                style={{
+                  width: '100%',
+                  textAlign: 'left',
+                  background: 'linear-gradient(180deg,#F7F0FB,#F1E7F8)',
+                  border: `2px solid ${_PLUM}`,
+                  borderRadius: 14,
+                  padding: '12px 14px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 12,
+                  marginBottom: 8,
+                }}
+              >
+                <div
+                  style={{
+                    width: 40,
+                    height: 40,
+                    borderRadius: 13,
+                    background: _PLUM,
+                    color: '#fff',
+                    display: 'grid',
+                    placeItems: 'center',
+                    fontFamily: 'var(--font-serif)',
+                    fontSize: 17,
+                    fontWeight: 700,
+                    flex: '0 0 auto',
+                  }}
+                >
+                  {mate.patient_name.charAt(0)}
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div
+                    style={{
+                      fontFamily: 'var(--font-serif)',
+                      fontSize: 14.5,
+                      fontWeight: 700,
+                      color: '#7A4E91',
+                    }}
+                  >
+                    相手: {mate.patient_name} 様 ›
+                  </div>
+                  <div style={{ fontSize: 10.5, color: _INK2, marginTop: 2 }}>
+                    同住所・連続訪問（{mate.start_time}〜{mate.end_time}）
+                  </div>
+                </div>
+              </button>
+            ))}
+          </KSec>
+        )}
+
+        <KSec title="基本情報" icon={<User size={12} />}>
+          {sex && <KV k="性別" v={SEX_LABEL[sex]} />}
+          {address && (
+            <KV
+              k="ご住所"
+              v={
+                <span>
+                  {address}
+                  {mates.length > 0 && <span style={pBadge}>同住所</span>}
+                </span>
+              }
+            />
+          )}
         </KSec>
+
+        <KSec title="保険・サービス" icon={<Heart size={12} />}>
+          {insurance && <KV k="保険種別" v={INSURANCE_LABEL[insurance]} />}
+          <KV k="サービス時間" v={`${serviceMin}分`} />
+          {wp?.time_type && <KV k="時間タイプ" v={wp.time_type} />}
+          {wp?.time_type === '時間帯' && (wp.preferred_start || wp.preferred_end) && (
+            <KV k="希望時間" v={`${wp.preferred_start ?? '—'}〜${wp.preferred_end ?? '—'}`} />
+          )}
+          {wp?.time_type === '固定' && wp.preferred_start && (
+            <KV k="固定開始" v={wp.preferred_start} />
+          )}
+        </KSec>
+
+        {wp && (
+          <KSec title="希望曜日" icon={<Calendar size={12} />}>
+            <div style={{ display: 'flex', gap: 5 }}>
+              {WEEKDAY_KEYS.slice(0, 6).map((d) => {
+                const yes = wp.preferred_weekdays.includes(d);
+                return (
+                  <div
+                    key={d}
+                    style={{
+                      flex: 1,
+                      textAlign: 'center',
+                      padding: '6px 0',
+                      borderRadius: 9,
+                      fontFamily: 'var(--font-serif)',
+                      fontSize: 13,
+                      fontWeight: 700,
+                      background: yes ? '#D7F2EE' : '#F4EFE7',
+                      color: yes ? '#0E8472' : '#CDC2B2',
+                    }}
+                  >
+                    <span style={{ fontSize: 10, display: 'block', color: _INK3, fontWeight: 500 }}>
+                      {DOW_JA[d]}
+                    </span>
+                    {yes ? '○' : '×'}
+                  </div>
+                );
+              })}
+            </div>
+          </KSec>
+        )}
+
+        <KSec title="この訪問 / 拠点" icon={<MapPin size={12} />}>
+          <KV k="この枠の時刻" v={`${visit.start_time}〜${visit.end_time}`} />
+          {officeName && <KV k="担当拠点" v={officeName} />}
+        </KSec>
+
+        {note && (
+          <KSec title="備考・申し送り" icon={<Bell size={12} />}>
+            <div
+              style={{
+                background: '#FFF9EC',
+                borderRadius: 14,
+                padding: 13,
+                fontWeight: 600,
+                lineHeight: 1.6,
+                border: '2px solid #FBEFCE',
+                fontSize: 13,
+                whiteSpace: 'pre-wrap',
+              }}
+            >
+              {note}
+            </div>
+          </KSec>
+        )}
+
+        {patientQuery.isLoading && (
+          <div
+            style={{
+              textAlign: 'center',
+              color: _INK3,
+              fontSize: 12,
+              fontFamily: 'var(--font-serif)',
+              padding: '8px 0',
+            }}
+          >
+            患者詳細を読み込み中…
+          </div>
+        )}
       </div>
     </SlideSheet>
   );
@@ -302,10 +380,8 @@ const KV = ({ k, v }: { k: string; v: ReactNode }) => (
 // ============================ Suggest sheet ============================
 
 /**
- * 希望開始/終了時刻のプルダウン候補。
- * 患者マスタは `<input type="time">` (自由 HH:MM) だが、現場ボードの提案は
- * モバイル探索用途のため 30 分刻み 06:00〜20:00 の選択式で簡略化する
- * (タスク許容: 「難しければ 30 分刻み 06:00-20:00 のプルダウンで可」)。
+ * 希望開始/終了時刻のプルダウン候補 (30 分刻み 06:00〜20:00)。
+ * propose-slots は HH:MM を受け取る。
  */
 const SUGGEST_TIME_OPTIONS: string[] = (() => {
   const out: string[] = [];
@@ -317,65 +393,37 @@ const SUGGEST_TIME_OPTIONS: string[] = (() => {
   return out;
 })();
 
-/** 時間帯では開始/終了の両方、固定では開始のみ実質有効。 */
-type SuggestOfficeResult = {
-  office: OfficeKey;
-  name: string;
-  confidence: 'high' | 'low' | 'none';
-} | null;
-
-/**
- * 住所 → 主担当拠点の簡易自動判定 (Phase 1 モック)。
- *
- * 患者マスタの `/offices/resolve` (useResolveOffice) と同 UX
- * (住所入力 → デバウンス → 拠点名 + confidence 表示) を、認証 / QueryClient に
- * 結合せずに再現する。判定ロジックは現場モックの区 → 拠点対応:
- *   稲毛区 / 花見川区  → 稲毛
- *   若葉区            → 都賀
- * それ以外 / 空        → confidence='none' (手動選択を促す)
- */
-function resolveOfficeFromAddress(addr: string): SuggestOfficeResult {
-  const a = addr.trim();
-  if (!a) return null;
-  if (a.includes('若葉区') || a.includes('都賀')) {
-    return { office: 'TSUGA', name: '都賀', confidence: 'high' };
-  }
-  if (a.includes('稲毛区') || a.includes('花見川区')) {
-    return { office: 'INAGE', name: '稲毛', confidence: 'high' };
-  }
-  if (a.includes('千葉市')) {
-    // 市内だが区が特定できない → 稲毛を低信頼で仮置き。
-    return { office: 'INAGE', name: '稲毛', confidence: 'low' };
-  }
-  return { office: 'INAGE', name: '稲毛', confidence: 'none' };
-}
-
 export function SuggestSheet({
+  isoYear,
+  isoWeek,
+  officeId,
   onClose,
   onToast,
 }: {
+  isoYear: number;
+  isoWeek: number;
+  officeId: string | null;
   onClose: () => void;
   onToast: (msg: string) => void;
 }) {
   const [seg, setSeg] = useState(0);
-  const [addr, setAddr] = useState('千葉市稲毛区小仲台 6-2-1');
-  const [paired, setPaired] = useState(false);
+  const [addr, setAddr] = useState('');
 
-  // マスタ準拠の訪問条件 state -------------------------------------------------
+  // マスタ準拠の訪問条件 state。
   const [frequencyPerWeek, setFrequencyPerWeek] = useState(1); // 1〜7
   const [visitFrequency, setVisitFrequency] =
-    useState<(typeof VISIT_FREQUENCY_OPTIONS)[number]>('every'); // 毎週/隔週/月次
+    useState<(typeof VISIT_FREQUENCY_OPTIONS)[number]>('every');
   const [weekdays, setWeekdays] = useState<Record<WeekdayKey, boolean>>({
     Mon: false,
-    Tue: true,
+    Tue: false,
     Wed: false,
-    Thu: true,
+    Thu: false,
     Fri: false,
     Sat: false,
     Sun: false,
   });
-  const [serviceMinutes, setServiceMinutes] = useState(DEFAULT_SERVICE_MINUTES); // 5分刻み 15〜180, 既定35
-  const [timeType, setTimeType] = useState<(typeof TIME_TYPE_OPTIONS)[number]>('終日'); // 既定は終日
+  const [serviceMinutes, setServiceMinutes] = useState(DEFAULT_SERVICE_MINUTES);
+  const [timeType, setTimeType] = useState<(typeof TIME_TYPE_OPTIONS)[number]>('終日');
   const [preferredStart, setPreferredStart] = useState('09:00');
   const [preferredEnd, setPreferredEnd] = useState('12:00');
   const [requiresMultipleStaff, setRequiresMultipleStaff] = useState(false);
@@ -383,28 +431,45 @@ export function SuggestSheet({
     '' | (typeof SEX_RESTRICTION_OPTIONS)[number]
   >('');
 
-  const [results, setResults] = useState<RankCandidate[] | null>(null);
-  const [added, setAdded] = useState<Record<number, boolean>>({});
+  const proposeMut = useProposeSlots();
 
-  // 住所 → 拠点自動判定 (デバウンス, マスタ /offices/resolve と同 UX の簡易版)。
-  const [office, setOffice] = useState<SuggestOfficeResult>(() =>
-    resolveOfficeFromAddress('千葉市稲毛区小仲台 6-2-1'),
-  );
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setOffice(resolveOfficeFromAddress(addr));
-    }, 500);
-    return () => clearTimeout(timer);
-  }, [addr]);
-
-  // 時間タイプが「固定」「時間帯」のときのみ時刻欄を表示 (マスタの条件付き表示)。
+  // 時間タイプが「固定」「時間帯」のときのみ時刻欄を表示。
   const showTimeRange = timeType === '固定' || timeType === '時間帯';
-  // 「固定」は開始のみ実質有効、「時間帯」は開始 + 終了。
   const showEnd = timeType === '時間帯';
 
   const runSuggest = () => {
-    setResults(paired ? RANK_PAIR : RANK_NORMAL);
+    if (!addr.trim()) {
+      onToast('住所を入力してください');
+      return;
+    }
+    const preferred_weekdays: WeekdayCode[] = WEEKDAY_KEYS.filter(
+      (d) => weekdays[d],
+    ) as WeekdayCode[];
+    proposeMut.mutate(
+      {
+        address: addr.trim(),
+        service_minutes: serviceMinutes,
+        time_type: timeType as ProposeTimeType,
+        preferred_start: showTimeRange ? preferredStart : null,
+        preferred_end: showEnd ? preferredEnd : null,
+        preferred_weekdays,
+        visit_frequency: visitFrequency,
+        frequency_per_week: frequencyPerWeek,
+        requires_multiple_staff: requiresMultipleStaff,
+        sex_restriction: sexRestriction || null,
+        iso_year: isoYear,
+        iso_week: isoWeek,
+        office_ids: officeId ? [officeId] : [],
+        limit: 10,
+      },
+      {
+        onError: () => onToast('提案の取得に失敗しました'),
+      },
+    );
   };
+
+  const result = proposeMut.data;
+  const slots = result?.slots ?? [];
 
   return (
     <SlideSheet>
@@ -481,67 +546,15 @@ export function SuggestSheet({
         </div>
 
         <Field label="ご住所">
-          <input value={addr} onChange={(e) => setAddr(e.target.value)} style={cfInput} />
-          <div style={{ display: 'flex', gap: 7, marginTop: 7, flexWrap: 'wrap' }}>
-            <button
-              onClick={() => {
-                setAddr('千葉市稲毛区天台2-3-7');
-                setPaired(true);
-                setResults(null);
-              }}
-              style={{ ...miniChip, background: '#F0E7F5', color: _PLUM, borderColor: '#DCC8EE' }}
-            >
-              同住所の例（天台2-3-7）
-            </button>
-            <button
-              onClick={() => {
-                setAddr('千葉市稲毛区小仲台 6-2-1');
-                setPaired(false);
-                setResults(null);
-              }}
-              style={miniChip}
-            >
-              通常の例に戻す
-            </button>
-          </div>
-          {/* 住所 → 拠点自動判定ヒント (マスタ /offices/resolve と同 UX) */}
-          {office && office.confidence !== 'none' && (
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 6,
-                fontSize: 11.5,
-                fontWeight: 700,
-                color: office.confidence === 'high' ? '#0E8472' : _TERRAD,
-                background: office.confidence === 'high' ? '#E9FAF4' : '#FCF1DF',
-                border: `1px solid ${office.confidence === 'high' ? '#C7EFE4' : '#F2DDB8'}`,
-                borderRadius: 10,
-                padding: '7px 10px',
-                marginTop: 7,
-              }}
-            >
-              <MapPin size={13} />
-              担当拠点: {office.name}
-              <span style={{ fontWeight: 600, color: _INK2 }}>
-                （自動判定{office.confidence === 'low' ? '・要確認' : ''}）
-              </span>
-            </div>
-          )}
-          {office && office.confidence === 'none' && (
-            <div
-              style={{
-                fontSize: 11.5,
-                fontWeight: 700,
-                color: _TERRAD,
-                marginTop: 7,
-              }}
-            >
-              ⚠ 拠点エリア外: 住所をご確認ください
-            </div>
-          )}
+          <input
+            value={addr}
+            onChange={(e) => setAddr(e.target.value)}
+            placeholder="例: 千葉市稲毛区小仲台6-2-1"
+            style={cfInput}
+          />
           <div style={{ fontSize: 10.5, color: _INK2, marginTop: 5, lineHeight: 1.5 }}>
-            ※ 既存患者と<b>同住所（100m以内）</b>のとき、1位に「同住所ペア」候補を表示します。
+            ※ 住所からジオコードして担当拠点・近接スコアを判定します。既存患者と<b>同住所</b>
+            のときは「同住所ペア」候補を優先表示します。
           </div>
         </Field>
 
@@ -582,7 +595,7 @@ export function SuggestSheet({
                   onClick={() => setWeekdays((s) => ({ ...s, [d]: !s[d] }))}
                   style={{ ...chip, ...(on ? chipOn : {}) }}
                 >
-                  {WEEKDAY_LABELS_JA[d]}
+                  {DOW_JA[d]}
                 </button>
               );
             })}
@@ -717,6 +730,7 @@ export function SuggestSheet({
 
         <button
           onClick={runSuggest}
+          disabled={proposeMut.isPending}
           style={{
             width: '100%',
             marginTop: 8,
@@ -733,39 +747,78 @@ export function SuggestSheet({
             alignItems: 'center',
             justifyContent: 'center',
             gap: 8,
+            opacity: proposeMut.isPending ? 0.7 : 1,
           }}
         >
           <Sparkles size={17} />
-          自動提案する
+          {proposeMut.isPending ? '提案を計算中…' : '自動提案する'}
         </button>
 
-        {results && (
+        {proposeMut.isError && (
+          <div
+            style={{
+              marginTop: 12,
+              background: '#FCEFF2',
+              border: '2px solid #F4D4DC',
+              borderRadius: 12,
+              padding: 11,
+              fontSize: 12.5,
+              fontWeight: 700,
+              color: '#C75C77',
+            }}
+          >
+            提案の取得に失敗しました。住所や通信状況をご確認ください。
+          </div>
+        )}
+
+        {result && !proposeMut.isPending && (
           <div style={{ marginTop: 18 }}>
-            <h4
-              style={{
-                fontFamily: 'var(--font-serif)',
-                fontSize: 14.5,
-                fontWeight: 700,
-                margin: '0 0 10px',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 6,
-              }}
-            >
-              おすすめ枠 {results.length}件
-            </h4>
-            {results.map((r, i) => (
-              <RankCard
-                key={i}
-                r={r}
-                rank={i + 1}
-                added={!!added[i]}
-                onAdd={() => {
-                  setAdded((s) => ({ ...s, [i]: true }));
-                  onToast(r.pair ? '✓ ペアで提案リストに追加' : '✓ 提案リストに追加');
+            {slots.length === 0 ? (
+              <div
+                style={{
+                  textAlign: 'center',
+                  padding: '28px 16px',
+                  color: _INK2,
+                  fontFamily: 'var(--font-serif)',
+                  background: '#F8F4ED',
+                  borderRadius: 14,
+                  border: `1px solid ${_LINE}`,
                 }}
-              />
-            ))}
+              >
+                <div style={{ fontSize: 32 }}>🔍</div>
+                <div style={{ marginTop: 8, fontSize: 15, fontWeight: 700 }}>
+                  入れられる枠がありません
+                </div>
+                {result.message && (
+                  <div style={{ fontSize: 11.5, marginTop: 6, fontFamily: 'var(--font-sans)' }}>
+                    {result.message}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <>
+                <h4
+                  style={{
+                    fontFamily: 'var(--font-serif)',
+                    fontSize: 14.5,
+                    fontWeight: 700,
+                    margin: '0 0 10px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                  }}
+                >
+                  おすすめ枠 {slots.length}件
+                </h4>
+                {slots.map((s, i) => (
+                  <RankCard
+                    key={`${s.office_id}-${s.weekday}-${s.course_code}-${i}`}
+                    s={s}
+                    rank={i + 1}
+                  />
+                ))}
+              </>
+            )}
           </div>
         )}
         <div style={{ height: 12 }} />
@@ -774,9 +827,17 @@ export function SuggestSheet({
   );
 }
 
-function MiniSlot({ row }: { row: RankScheduleRow }) {
-  if (row.here) {
-    const mint = row.pair;
+const WEEKDAY_INT_TO_DOW: Record<number, string> = (() => {
+  const out: Record<number, string> = {};
+  for (const code of WEEKDAY_KEYS) {
+    out[WEEKDAY_CODE_TO_INT[code as WeekdayCode]] = DOW_JA[code];
+  }
+  return out;
+})();
+
+function MiniSlot({ row }: { row: ProposeMiniScheduleEntry }) {
+  if (row.is_here) {
+    const mint = row.is_pair;
     return (
       <div style={{ display: 'flex', alignItems: 'stretch', gap: 8 }}>
         <span
@@ -790,7 +851,7 @@ function MiniSlot({ row }: { row: RankScheduleRow }) {
             fontWeight: 600,
           }}
         >
-          {row.t}
+          {row.time}
         </span>
         <div
           style={{
@@ -830,7 +891,7 @@ function MiniSlot({ row }: { row: RankScheduleRow }) {
               color: mint ? '#0E8472' : _TERRAD,
             }}
           >
-            {mint ? 'ここに一緒に入れましょうか？' : 'ここに入れましょうか？'}
+            {mint ? 'ここに一緒に入れられます' : 'ここに入れられます'}
           </span>
         </div>
       </div>
@@ -848,14 +909,14 @@ function MiniSlot({ row }: { row: RankScheduleRow }) {
           paddingTop: 8,
         }}
       >
-        {row.t}
+        {row.time}
       </span>
       <div
         style={{
           flex: 1,
           borderRadius: 10,
           background: '#F8F4ED',
-          borderLeft: `4px solid ${row.anchor ? _PLUM : row.ins === 'med' ? '#2F6FB0' : '#0E8472'}`,
+          borderLeft: `4px solid ${row.ins === 'med' ? '#2F6FB0' : '#0E8472'}`,
           padding: '7px 11px',
           display: 'flex',
           alignItems: 'center',
@@ -865,31 +926,18 @@ function MiniSlot({ row }: { row: RankScheduleRow }) {
         <span style={{ fontFamily: 'var(--font-serif)', fontSize: 12.5, fontWeight: 700 }}>
           {row.name}
         </span>
-        <span
-          style={{
-            fontSize: 9.5,
-            fontWeight: 700,
-            padding: '1px 6px',
-            borderRadius: 999,
-            background: row.ins === 'med' ? '#E2EDF8' : '#D7F2EE',
-            color: row.ins === 'med' ? '#2F6FB0' : '#0E8472',
-          }}
-        >
-          {row.ins === 'med' ? '医療' : '介護'}
-        </span>
-        {row.anchor && (
+        {(row.ins === 'med' || row.ins === 'care') && (
           <span
             style={{
               fontSize: 9.5,
               fontWeight: 700,
               padding: '1px 6px',
               borderRadius: 999,
-              background: '#F0E7F5',
-              color: _PLUM,
-              marginLeft: 'auto',
+              background: row.ins === 'med' ? '#E2EDF8' : '#D7F2EE',
+              color: row.ins === 'med' ? '#2F6FB0' : '#0E8472',
             }}
           >
-            同住所
+            {row.ins === 'med' ? '医療' : '介護'}
           </span>
         )}
       </div>
@@ -897,20 +945,12 @@ function MiniSlot({ row }: { row: RankScheduleRow }) {
   );
 }
 
-function RankCard({
-  r,
-  rank,
-  added,
-  onAdd,
-}: {
-  r: RankCandidate;
-  rank: number;
-  added: boolean;
-  onAdd: () => void;
-}) {
+function RankCard({ s, rank }: { s: ProposeSlotItem; rank: number }) {
   const medal = ['#E5B53A', '#B6BEC8', '#CF8048'][rank - 1] || '#CDC2B2';
-  const mInk = ['#7A5200', '#3F4750', '#fff', '#fff'][rank - 1];
-  const filled = r.schedule.filter((s) => !s.here).length;
+  const mInk = ['#7A5200', '#3F4750', '#fff', '#fff'][rank - 1] ?? '#fff';
+  const dow = WEEKDAY_INT_TO_DOW[s.weekday] ?? '';
+  const filled = s.mini_schedule.filter((m) => !m.is_here).length;
+  const whenLabel = `${dow} ${s.start_time}〜`;
   return (
     <div
       style={{
@@ -941,70 +981,98 @@ function RankCard({
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontFamily: 'var(--font-serif)', fontSize: 14.5, fontWeight: 700 }}>
-            {r.course} <span style={{ color: r.pair ? _MINT : _TERRAD }}>{r.when}</span>
+            {s.course_label} <span style={{ color: s.is_pair ? _MINT : _TERRAD }}>{whenLabel}</span>
           </div>
           <div style={{ fontSize: 10.5, color: _INK2, marginTop: 1 }}>
-            {r.staff} ・ {r.score}
+            {s.staff_name ? `${s.staff_name} ・ ` : ''}
+            {s.start_time}〜{s.end_time}
+            {s.is_pair && s.pair_partner ? ` ・ ペア相手: ${s.pair_partner}` : ''}
           </div>
         </div>
-        <button
-          onClick={onAdd}
-          style={{
-            flex: '0 0 auto',
-            padding: '9px 13px',
-            minHeight: 40,
-            borderRadius: 12,
-            background: added ? _INK3 : _MINT,
-            color: '#fff',
-            fontFamily: 'var(--font-serif)',
-            fontSize: 12.5,
-            fontWeight: 700,
-          }}
-        >
-          {added ? '追加済' : '＋ 追加'}
-        </button>
       </div>
-      <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', padding: '0 14px 10px' }}>
-        {r.badges.map((b, i) => (
-          <span
-            key={i}
-            style={{
-              fontSize: 10.5,
-              padding: '2px 8px',
-              borderRadius: 999,
-              fontWeight: 700,
-              background: b[1],
-              color: b[2],
-            }}
-          >
-            {b[0]}
-          </span>
-        ))}
-      </div>
-      <div
-        style={{
-          background: '#FCFAF6',
-          borderTop: `1px solid ${_LINE}`,
-          padding: '11px 14px 13px',
-        }}
-      >
-        <div
-          style={{
-            fontSize: 10,
-            fontWeight: 700,
-            color: _INK2,
-            marginBottom: 8,
-            letterSpacing: '0.04em',
-          }}
-        >
-          {r.course}（{r.staff}）の{r.when.charAt(0)}曜 ・ {filled}件 + 提案枠
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {r.schedule.map((row, i) => (
-            <MiniSlot key={i} row={row} />
+
+      {(s.reasons.length > 0 || s.is_pair) && (
+        <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', padding: '0 14px 8px' }}>
+          {s.is_pair && (
+            <span
+              style={{
+                fontSize: 10.5,
+                padding: '2px 8px',
+                borderRadius: 999,
+                fontWeight: 700,
+                background: '#F0E7F5',
+                color: _PLUM,
+              }}
+            >
+              同住所ペア
+            </span>
+          )}
+          {s.reasons.map((r, i) => (
+            <span
+              key={i}
+              style={{
+                fontSize: 10.5,
+                padding: '2px 8px',
+                borderRadius: 999,
+                fontWeight: 700,
+                background: '#D7F2EE',
+                color: '#0E8472',
+              }}
+            >
+              {r}
+            </span>
           ))}
         </div>
-      </div>
+      )}
+
+      {s.warnings.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '0 14px 8px' }}>
+          {s.warnings.map((w, i) => (
+            <span
+              key={i}
+              style={{
+                fontSize: 10.5,
+                fontWeight: 700,
+                color: _TERRAD,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4,
+              }}
+            >
+              <AlertTriangle size={11} />
+              {proposeWarningLabel(w)}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {s.mini_schedule.length > 0 && (
+        <div
+          style={{
+            background: '#FCFAF6',
+            borderTop: `1px solid ${_LINE}`,
+            padding: '11px 14px 13px',
+          }}
+        >
+          <div
+            style={{
+              fontSize: 10,
+              fontWeight: 700,
+              color: _INK2,
+              marginBottom: 8,
+              letterSpacing: '0.04em',
+            }}
+          >
+            {s.course_label}
+            {s.staff_name ? `（${s.staff_name}）` : ''}の{dow}曜 ・ {filled}件 + 提案枠
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {s.mini_schedule.map((row, i) => (
+              <MiniSlot key={i} row={row} />
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1092,19 +1160,9 @@ const chip: CSSProperties = {
   border: '2px solid transparent',
 };
 const chipOn: CSSProperties = { background: '#FCEBD6', color: _TERRAD, borderColor: _TERRA };
-const miniChip: CSSProperties = {
-  fontSize: 11.5,
-  padding: '7px 11px',
-  borderRadius: 999,
-  background: '#F4EFE7',
-  color: _INK2,
-  fontWeight: 700,
-  border: '2px solid transparent',
-};
 
 /**
- * 数値ステッパー — 患者マスタ `frequency_per_week` (1〜7) の数値入力を、
- * 現場ボードの Warm 意匠 (cfInput と同枠) でタップしやすい ± ボタンにしたもの。
+ * 数値ステッパー — `frequency_per_week` (1〜7) をタップしやすい ± ボタンで。
  */
 function Stepper({
   value,
