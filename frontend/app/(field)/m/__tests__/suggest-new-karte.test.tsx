@@ -260,3 +260,26 @@ describe('StageB 新規カルテ登録', () => {
     expect(screen.getByText('月曜 この枠を採用')).toBeInTheDocument();
   });
 });
+
+describe('複数スタッフ注記 (Major#3)', () => {
+  const NOTE = '※ 2名体制の空き判定は未対応です（1名前提の提案）';
+
+  it('複数スタッフ OFF の初期状態では注記を出さない', () => {
+    renderSheet();
+    expect(screen.queryByText(NOTE)).not.toBeInTheDocument();
+  });
+
+  it('複数スタッフ ON にすると結果付近に注記を出す', () => {
+    renderSheet();
+    // 「2名以上での訪問が必要」トグルを ON。
+    fireEvent.click(screen.getByText('2名以上での訪問が必要'));
+    expect(screen.getByText(NOTE)).toBeInTheDocument();
+  });
+
+  it('複数スタッフ ON でも propose 結果が無ければ注記は出さない (結果付近のみ)', () => {
+    setPropose(undefined);
+    renderSheet();
+    fireEvent.click(screen.getByText('2名以上での訪問が必要'));
+    expect(screen.queryByText(NOTE)).not.toBeInTheDocument();
+  });
+});

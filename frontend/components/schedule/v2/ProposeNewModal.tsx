@@ -493,12 +493,16 @@ export function ProposeNewModal({
   };
 
   // 既存/プール患者用: 既存 normal 枠とマージした完全セットを組む。
-  //   - 採用した曜日: 今回の採用枠で置換/追加 (既存の同曜日枠は破棄)。
+  //   - 採用した曜日: 採用枠で slot_index=0 (主担当) を置換/追加。
+  //     ただし同曜日の slot_index!=0 (2 名体制の相方など) は破棄せず保持する。
   //   - 採用しなかった曜日: 既存枠をそのまま保持 (slot_index 等も維持)。
-  // これにより backend の全削除→INSERT で他曜日の固定枠が消えるのを防ぐ。
+  // これにより backend の全削除→INSERT で 2 名体制の相方枠や他曜日の固定枠が
+  // 消えるのを防ぐ。
   const buildBulkPutMerged = (existing: PatientFixedVisitV2Read[]): PatientFixedVisitsBulkPut => {
     const adoptedWeekdays = new Set(Array.from(adopted.values()).map((s) => s.weekday));
-    const preserved = existing.filter((v) => !adoptedWeekdays.has(v.weekday)).map(existingToItem);
+    const preserved = existing
+      .filter((v) => !adoptedWeekdays.has(v.weekday) || (v.slot_index ?? 0) !== 0)
+      .map(existingToItem);
     const adoptedItems = Array.from(adopted.values()).map(adoptedToItem);
     const items = [...preserved, ...adoptedItems].sort(
       (a, b) => a.weekday - b.weekday || a.start_time.localeCompare(b.start_time),
@@ -554,6 +558,9 @@ export function ProposeNewModal({
     // 座標欠落を防ぐ。propose 未実行で座標不明なら従来通り住所のみ (空文字)。
     const candLat = result?.candidate_lat;
     const candLng = result?.candidate_lng;
+    // propose が住所から解決した拠点 (resolved_office_id) を所属拠点として渡す。
+    // 拠点 NULL のまま登録すると後続スケジュール最適化で不利になるため、解決済みなら設定する。
+    // propose 未実行 / 解決不能なら空文字 (従来通り拠点なし)。
     const formValues: PatientFormValues = {
       ...emptyPatientFormValues,
       code: karteCode.trim(),
@@ -564,6 +571,7 @@ export function ProposeNewModal({
       address: addr.trim(),
       lat: typeof candLat === 'number' ? String(candLat) : '',
       lng: typeof candLng === 'number' ? String(candLng) : '',
+      primary_office_id: result?.resolved_office_id ?? '',
       sex_restriction: sexRestriction,
       requires_multiple_staff: requiresMultipleStaff,
       weekly_pattern: {
@@ -749,6 +757,16 @@ export function ProposeNewModal({
             ) : (
               <>
                 {coverage ? <CoverageSummary coverage={coverage} onPick={toggleAdopt} /> : null}
+
+                {requiresMultipleStaff ? (
+                  <Alert variant="warning" data-testid="propose-multistaff-note">
+                    <AlertTriangle className="h-4 w-4" aria-hidden />
+                    <AlertTitle>2名体制の空き判定は未対応です</AlertTitle>
+                    <AlertDescription>
+                      以下の提案は1名前提で算出しています。2名体制が必要な場合は、確定後に相方枠を別途ご確認ください。
+                    </AlertDescription>
+                  </Alert>
+                ) : null}
 
                 <div className="flex items-center gap-2 border-b border-border-default pb-2">
                   <h4 className="font-serif text-sm font-semibold text-text-primary">

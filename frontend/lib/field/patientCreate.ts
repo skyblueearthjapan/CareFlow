@@ -41,6 +41,12 @@ export interface KarteInput {
   lng: number | null;
   sex_restriction: '' | 'female_only' | 'male_only';
   requires_multiple_staff: boolean;
+  /**
+   * 住所から解決した担当拠点 (propose の `resolved_office_id`)。
+   * 値があるときのみ payload に載せ、患者の primary_office_id を設定する
+   * (NULL だと後続スケジュールで拠点未割当になり不利)。
+   */
+  primary_office_id: string | null;
 }
 
 /** 希望スケジュール (weekly_pattern) を構成する値。 */
@@ -104,7 +110,7 @@ function parseHM(hm: string | null | undefined): number | null {
  * pending `patient_create` の payload を組み立てる。
  *
  * - カルテ項目 (code/name/kana/sex/insurance/address/lat/lng/sex_restriction/
- *   requires_multiple_staff) + status:'active' を平坦に格納。
+ *   requires_multiple_staff/primary_office_id) + status:'active' を平坦に格納。
  * - weekly_pattern は希望スケジュールから構成 (患者マスタ準拠の dict)。
  * - proposed_visits は採用枠から生成 (承認時に normal PFV 確定に使われる)。
  * - patient_name は ApprovePanel のヘッドライン解決用に冗長に持たせる
@@ -145,6 +151,9 @@ export function buildPatientCreatePayload(
   if (karte.lat !== null) payload.lat = karte.lat;
   if (karte.lng !== null) payload.lng = karte.lng;
   if (karte.sex_restriction) payload.sex_restriction = karte.sex_restriction;
+  // 住所から解決した拠点 (propose の resolved_office_id) があれば伝播。
+  // applier は payload.get("primary_office_id") を読んで患者の拠点を設定する。
+  if (karte.primary_office_id) payload.primary_office_id = karte.primary_office_id;
 
   return payload;
 }

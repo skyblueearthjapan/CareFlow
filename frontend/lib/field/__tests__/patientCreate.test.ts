@@ -101,6 +101,7 @@ describe('buildPatientCreatePayload', () => {
     lng: 140.11,
     sex_restriction: 'female_only',
     requires_multiple_staff: true,
+    primary_office_id: null,
   };
   const schedule: DesiredSchedule = {
     frequency_per_week: 2,
@@ -151,6 +152,7 @@ describe('buildPatientCreatePayload', () => {
       lng: null,
       sex_restriction: '',
       requires_multiple_staff: false,
+      primary_office_id: null,
     };
     const p = buildPatientCreatePayload(minimal, schedule, []);
     expect(p.name).toBe('田中 太郎');

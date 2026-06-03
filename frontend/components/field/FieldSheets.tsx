@@ -644,6 +644,9 @@ export function SuggestSheet({
       lng: null,
       sex_restriction: sexRestriction,
       requires_multiple_staff: requiresMultipleStaff,
+      // 直近 propose 結果が住所から解決した担当拠点。propose 未実行 / None なら
+      // 載せず (患者の primary_office_id は applier 側で NULL のまま)。
+      primary_office_id: result?.resolved_office_id ?? null,
     };
     const schedule: DesiredSchedule = {
       frequency_per_week: frequencyPerWeek,
@@ -998,6 +1001,7 @@ export function SuggestSheet({
 
         {result && !proposeMut.isPending && (
           <div style={{ marginTop: 18 }}>
+            {requiresMultipleStaff && <MultiStaffNote />}
             {slots.length === 0 ? (
               <div
                 style={{
@@ -1724,6 +1728,40 @@ function KarteFormSection({
           </select>
         </Field>
       </div>
+    </div>
+  );
+}
+
+// ============================ 複数スタッフ注記 ============================
+
+/**
+ * 複数スタッフ必須 (requires_multiple_staff) ON のときに結果付近へ出す控えめな注記。
+ *
+ * solver は現状 2 名体制の空き判定に未対応 (1 名前提の提案) のため、提案結果が
+ * 2 名体制の可否を保証しない旨を Warm 意匠で正直に伝える。
+ */
+function MultiStaffNote() {
+  return (
+    <div
+      role="note"
+      style={{
+        display: 'flex',
+        alignItems: 'flex-start',
+        gap: 7,
+        background: '#FFFBF3',
+        border: `1px solid ${_LINE}`,
+        borderRadius: 12,
+        padding: '9px 12px',
+        marginBottom: 12,
+        fontSize: 11.5,
+        lineHeight: 1.5,
+        color: _INK2,
+      }}
+    >
+      <span style={{ flex: '0 0 auto', color: _TERRAD, paddingTop: 1 }}>
+        <AlertTriangle size={13} />
+      </span>
+      <span>※ 2名体制の空き判定は未対応です（1名前提の提案）</span>
     </div>
   );
 }

@@ -463,6 +463,37 @@ describe('採用 → 確定: 既存 (登録済)', () => {
     expect(byWeekday.get(2)).toMatchObject({ weekday: 2, start_time: '09:00', duration_min: 45 });
   });
 
+  it('採用曜日でも slot_index!=0 の既存枠 (2名体制の相方) は保持される', () => {
+    // 患者は月曜に slot_index=0 (主担当 08:00) と slot_index=1 (相方 08:00) を持つ。
+    // 月曜を採用すると slot_index=0 は置換されるが、slot_index=1 (相方) は残す。
+    setExistingFixedVisits([
+      fixedVisit({ weekday: 0, start_time: '08:00', duration_min: 30, slot_index: 0 }),
+      fixedVisit({
+        id: '88888888-8888-8888-8888-888888888888',
+        weekday: 0,
+        start_time: '08:00',
+        duration_min: 30,
+        slot_index: 1,
+      }),
+    ]);
+    setPropose(response());
+    renderModal();
+    fireEvent.click(screen.getByText('山田 太郎'));
+    fireEvent.click(screen.getByTestId(`propose-adopt-${OFFICE_ID}-0-A-10:00`));
+    fireEvent.click(screen.getByTestId('propose-existing-confirm-button'));
+
+    const arg = mocks.confirmMutate.mock.calls[0]![0] as {
+      body: { items: Array<Record<string, unknown>> };
+    };
+    const mondays = arg.body.items.filter((it) => it.weekday === 0);
+    // 月曜は 2 件: 採用した slot_index=0 (10:00) + 保持された相方 slot_index=1 (08:00)。
+    expect(mondays).toHaveLength(2);
+    const partner = mondays.find((it) => it.slot_index === 1);
+    expect(partner).toMatchObject({ weekday: 0, start_time: '08:00', slot_index: 1 });
+    const primary = mondays.find((it) => it.slot_index === 0);
+    expect(primary).toMatchObject({ weekday: 0, start_time: '10:00' });
+  });
+
   it('採用曜日と同じ曜日の既存枠は今回の枠で置換される (二重化しない)', () => {
     // 患者は月曜 08:00 の既存枠を持つ → 月曜を採用すると置換される。
     setExistingFixedVisits([
@@ -549,6 +580,38 @@ describe('採用 → 確定: 新規 (作成 + 確定)', () => {
     expect(formValues.lng).toBe('140.456');
   });
 
+  it('propose の resolved_office_id が create payload の primary_office_id に乗る', async () => {
+    setPropose(response({ resolved_office_id: OFFICE_ID }));
+    renderModal();
+
+    fireEvent.click(screen.getByTestId('tab-new'));
+    fireEvent.change(screen.getByLabelText('氏名（必須）'), { target: { value: '新規 花子' } });
+    fireEvent.change(screen.getByLabelText('患者コード（必須）'), { target: { value: 'P-999' } });
+    fireEvent.click(screen.getByTestId(`propose-adopt-${OFFICE_ID}-0-A-10:00`));
+    fireEvent.click(screen.getByTestId('propose-new-proceed-button'));
+    fireEvent.click(screen.getByTestId('propose-new-confirm-button'));
+
+    await waitFor(() => expect(mocks.createMutateAsync).toHaveBeenCalledTimes(1));
+    const formValues = mocks.createMutateAsync.mock.calls[0]![0] as Record<string, unknown>;
+    expect(formValues.primary_office_id).toBe(OFFICE_ID);
+  });
+
+  it('resolved_office_id が無い場合は primary_office_id は空文字', async () => {
+    setPropose(response({ resolved_office_id: null }));
+    renderModal();
+
+    fireEvent.click(screen.getByTestId('tab-new'));
+    fireEvent.change(screen.getByLabelText('氏名（必須）'), { target: { value: '新規 花子' } });
+    fireEvent.change(screen.getByLabelText('患者コード（必須）'), { target: { value: 'P-999' } });
+    fireEvent.click(screen.getByTestId(`propose-adopt-${OFFICE_ID}-0-A-10:00`));
+    fireEvent.click(screen.getByTestId('propose-new-proceed-button'));
+    fireEvent.click(screen.getByTestId('propose-new-confirm-button'));
+
+    await waitFor(() => expect(mocks.createMutateAsync).toHaveBeenCalledTimes(1));
+    const formValues = mocks.createMutateAsync.mock.calls[0]![0] as Record<string, unknown>;
+    expect(formValues.primary_office_id).toBe('');
+  });
+
   it('candidate 座標が無い場合は lat/lng 空文字 (住所のみ)', async () => {
     setPropose(response({ candidate_lat: null, candidate_lng: null }));
     renderModal();
@@ -606,5 +669,26 @@ describe('採用 → 確定: 新規 (作成 + 確定)', () => {
     const msg = String(mockToast.error.mock.calls[0]![0]);
     expect(msg).toContain('患者の登録に失敗');
     expect(msg).not.toContain('固定枠の確定のみ失敗');
+  });
+});
+
+describe('2名体制の注記 (solver 未対応の正直表示)', () => {
+  it('2名体制 ON で提案結果がある時は注記を出す', () => {
+    setPropose(response());
+    renderModal();
+    // プール患者を選択 (提案結果を表示するため)。
+    fireEvent.click(screen.getByText('山田 太郎'));
+    // 「2名体制が必要」トグルを ON。
+    fireEvent.click(screen.getByText('2名体制が必要'));
+    // 結果近傍に注記が出る。
+    expect(screen.getByTestId('propose-multistaff-note')).toBeInTheDocument();
+    expect(screen.getByText('2名体制の空き判定は未対応です')).toBeInTheDocument();
+  });
+
+  it('2名体制 OFF の時は注記を出さない', () => {
+    setPropose(response());
+    renderModal();
+    fireEvent.click(screen.getByText('山田 太郎'));
+    expect(screen.queryByTestId('propose-multistaff-note')).not.toBeInTheDocument();
   });
 });
