@@ -71,6 +71,20 @@ from app.schemas.v2.auto_schedule_v2 import (
     WeekdayStaffCapacityItem,
     WeekdayStaffCapacityResponse,
 )
+from app.schemas.v2.propose_slots import (
+    WEEKDAY_CODE_TO_INT,
+    WEEKDAY_INT_TO_CODE,
+    ProposeMiniScheduleEntry,
+    ProposeSlotItem,
+    ProposeSlotsRequest,
+    ProposeSlotsResponse,
+    _parse_hhmm,
+)
+from app.services.geocoding.client import (
+    GeocodingServiceError,
+    geocode_address,
+)
+from app.services.office_assigner import OfficeAssigner
 from app.services.scheduling.auto_allocator_v2 import (
     _COURSE_CODES_MAX,
     # Wave 3 (#WAVE3): API 境界の H10 (lunch overlap) ガードは
@@ -100,6 +114,11 @@ from app.services.scheduling.auto_allocator_v2 import (
     reset_visits_to_fixed,
     run_v2_pipeline,
     unassign_all_staff_for_week,
+)
+from app.services.scheduling.propose_slots_service import (
+    CandidateInput,
+    compute_proposed_slots,
+    load_week_course_buckets,
 )
 
 logger = logging.getLogger(__name__)
@@ -1559,6 +1578,169 @@ async def weekday_staff_capacity_endpoint(
     return WeekdayStaffCapacityResponse(
         items=items,
         course_codes_max=_COURSE_CODES_MAX,
+    )
+
+
+# ---------------------------------------------------------------------------
+# propose-slots (Phase2-2: 候補患者の実現可能な空き枠を算出・ランキング)
+# ---------------------------------------------------------------------------
+
+
+async def _resolve_candidate_coords(
+    db: DbDep,
+    payload: ProposeSlotsRequest,
+) -> tuple[float | None, float | None, UUID | None]:
+    """候補座標と (address 由来の) 拠点を確定する.
+
+    優先順位:
+        1. address があれば geocode → lat/lng + 拠点判定 (OfficeAssigner).
+        2. address 無し + lat/lng があればそれを採用.
+        3. どちらも無ければ (None, None, None) を返す
+           (近接スコア無効で続行; 400 にはしない).
+
+    geocode 失敗時は lat/lng フォールバックがあればそれを使い、無ければ
+    座標 None で続行する (実現可能性判定自体は座標が無くても容量/時刻系で動く).
+    """
+    resolved_office_id: UUID | None = None
+    if payload.address and payload.address.strip():
+        try:
+            geo = await geocode_address(payload.address)
+        except GeocodingServiceError as exc:
+            logger.warning("propose-slots geocode failed: %s", exc)
+            geo = None
+        if geo is not None:
+            # 住所から拠点も判定する (失敗は無視).
+            try:
+                resolution = await OfficeAssigner.resolve_with_details(db, payload.address)
+                if resolution.office is not None:
+                    resolved_office_id = resolution.office.id
+            except Exception as exc:  # pragma: no cover - 補助情報なので握り潰す
+                logger.warning("propose-slots office resolve failed: %s", exc)
+            return geo.lat, geo.lng, resolved_office_id
+    # address 無し or geocode 失敗 → lat/lng フォールバック.
+    return payload.lat, payload.lng, resolved_office_id
+
+
+@router.post(
+    "/v2/propose-slots",
+    response_model=ProposeSlotsResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Phase2-2: 候補患者を入れられる実現可能な空き枠を算出・ランキング",
+)
+async def propose_slots_endpoint(
+    payload: ProposeSlotsRequest,
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+) -> ProposeSlotsResponse:
+    """候補患者の希望から、対象週 × 拠点の実スケジュールの実現可能な空き枠を返す.
+
+    本 endpoint は **read-only**: DB を変更しない.
+
+    実現不能な時刻は一切返さない (距離 / 移動 / バッファー / 昼休み / 18:00 /
+    容量 / time_type / 同住所を Stage1 純ソルバが自動割当と同手法で判定).
+    """
+    # 1. 候補座標 (+ 住所判定拠点) を確定.
+    cand_lat, cand_lng, resolved_office_id = await _resolve_candidate_coords(db, payload)
+
+    # 対象拠点: 明示指定 > 住所判定拠点 > 全拠点.
+    office_ids = list(payload.office_ids)
+    if not office_ids and resolved_office_id is not None:
+        office_ids = [resolved_office_id]
+
+    # 座標が確定できなければ近接スコア / 距離判定が無効になる. ソルバは座標を
+    # 必須にするため (haversine 計算), 座標無しでは枠を返せない. 0 件として返す.
+    if cand_lat is None or cand_lng is None:
+        return ProposeSlotsResponse(
+            iso_year=payload.iso_year,
+            iso_week=payload.iso_week,
+            candidate_lat=None,
+            candidate_lng=None,
+            resolved_office_id=resolved_office_id,
+            slots=[],
+            message=(
+                "候補の座標を確定できませんでした (住所のジオコード失敗 / lat-lng 未指定). "
+                "住所または緯度経度を指定してください。"
+            ),
+        )
+
+    # 2. 対象週 × 拠点の実 Visit を 1 回ロードしてコース単位に集計.
+    try:
+        buckets, office_name_by_id = await load_week_course_buckets(
+            db,
+            iso_year=payload.iso_year,
+            iso_week=payload.iso_week,
+            office_ids=office_ids,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    # 3-4. 候補入力を組み立てて全コース × 希望曜日でソルバを回しランキング.
+    preferred_weekday_ints = frozenset(
+        WEEKDAY_CODE_TO_INT[code]
+        for code in payload.preferred_weekdays
+        if code in WEEKDAY_CODE_TO_INT
+    )
+    candidate = CandidateInput(
+        lat=cand_lat,
+        lng=cand_lng,
+        service_minutes=payload.service_minutes,
+        time_type=payload.time_type,
+        preferred_start=_parse_hhmm(payload.preferred_start),
+        preferred_end=_parse_hhmm(payload.preferred_end),
+        preferred_weekdays=preferred_weekday_ints,
+        requires_multiple_staff=payload.requires_multiple_staff,
+        existing_patient_id=payload.existing_patient_id,
+    )
+
+    proposed = compute_proposed_slots(
+        buckets,
+        office_name_by_id,
+        candidate,
+        office_ids=office_ids,
+        limit=payload.limit,
+    )
+
+    # 5. API schema に詰める.
+    slots_out = [
+        ProposeSlotItem(
+            office_id=p.office_id,
+            office_name=p.office_name,
+            weekday=p.weekday,
+            weekday_code=WEEKDAY_INT_TO_CODE[p.weekday],  # type: ignore[arg-type]
+            course_code=p.course_code,
+            course_label=p.course_label,
+            staff_name=p.staff_name,
+            start_time=f"{p.start.hour:02d}:{p.start.minute:02d}",
+            end_time=f"{p.end.hour:02d}:{p.end.minute:02d}",
+            score=p.score,
+            reasons=p.reasons,
+            warnings=p.warnings,
+            is_pair=p.is_pair,
+            pair_partner=p.pair_partner,
+            mini_schedule=[
+                ProposeMiniScheduleEntry(
+                    time=str(e["time"]),
+                    name=str(e["name"]),
+                    ins=e["ins"],  # type: ignore[arg-type]
+                    is_here=bool(e["is_here"]),
+                    is_pair=bool(e["is_pair"]),
+                )
+                for e in p.mini_schedule
+            ],
+        )
+        for p in proposed
+    ]
+
+    message = None if slots_out else "入れられる枠なし (実現可能な空き枠が見つかりませんでした)"
+
+    return ProposeSlotsResponse(
+        iso_year=payload.iso_year,
+        iso_week=payload.iso_week,
+        candidate_lat=cand_lat,
+        candidate_lng=cand_lng,
+        resolved_office_id=resolved_office_id,
+        slots=slots_out,
+        message=message,
     )
 
 
