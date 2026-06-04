@@ -13,6 +13,7 @@ import {
   Plug,
   ScrollText,
   Inbox,
+  LayoutGrid,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -23,6 +24,9 @@ interface SidebarProps {
 const NAV_ITEMS = [
   { href: '/dashboard', label: 'ダッシュボード', icon: LayoutDashboard },
   { href: '/schedule', label: 'スケジュール', icon: CalendarDays },
+  // 現場ボード (/m) — manager/admin 向けの独立フルスクリーン現場ビュー。
+  // adminOnly=true で manager+admin のみ表示 (既存の出し分けに乗る)。
+  { href: '/m', label: '現場ボード', icon: LayoutGrid, adminOnly: true },
   { href: '/patients', label: '患者', icon: Users },
   { href: '/staff', label: 'スタッフ', icon: UserCircle2 },
   { href: '/offices', label: '拠点', icon: Building2 },

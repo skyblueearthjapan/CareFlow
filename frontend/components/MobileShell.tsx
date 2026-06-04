@@ -2,7 +2,15 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Home, CalendarCheck, CalendarRange, UserCircle2 } from 'lucide-react';
+import { useSession } from 'next-auth/react';
+import {
+  Home,
+  CalendarCheck,
+  CalendarRange,
+  UserCircle2,
+  LayoutGrid,
+  ChevronRight,
+} from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const TABS = [
@@ -18,8 +26,22 @@ interface MobileShellProps {
 
 export function MobileShell({ children }: MobileShellProps) {
   const pathname = usePathname();
+  const { data: session } = useSession();
+  // 現場ボード (/m) は manager/admin 専用。staff には導線を出さない
+  // (Sidebar の adminOnly と同じ role!=='staff' 判定に揃える)。
+  const showFieldBoard = !!session && session.user?.role !== 'staff';
   return (
     <div className="flex h-screen w-screen flex-col bg-bg-app">
+      {showFieldBoard && (
+        <Link
+          href="/m"
+          className="flex shrink-0 items-center justify-center gap-1.5 border-b border-border-default bg-bg-base px-4 py-2 text-xs font-medium text-brand-primary transition-colors hover:bg-bg-muted"
+        >
+          <LayoutGrid className="h-3.5 w-3.5" strokeWidth={2} />
+          <span>現場ボードを開く</span>
+          <ChevronRight className="h-3.5 w-3.5" strokeWidth={2} />
+        </Link>
+      )}
       <main
         className="flex-1 overflow-y-auto p-4"
         style={{ paddingBottom: 'calc(64px + env(safe-area-inset-bottom))' }}

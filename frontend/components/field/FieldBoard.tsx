@@ -17,6 +17,7 @@
  */
 
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import Link from 'next/link';
 import { useSession } from 'next-auth/react';
 import {
   Heart,
@@ -26,6 +27,7 @@ import {
   Plus,
   ClipboardCheck,
   MapPin,
+  ArrowLeft,
 } from 'lucide-react';
 
 import { useFieldBoard, toWeekStart, toIsoYearWeek } from '@/lib/queries/fieldBoard';
@@ -391,6 +393,29 @@ function Header({ approve, setApprove, pendingCount, onNew, topPad = 16 }: Heade
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '0 0 auto' }}>
+            {/* アプリ (デスクトップ/モバイル) へ戻る控えめなリンク。同タブ遷移。 */}
+            <Link
+              href="/dashboard"
+              aria-label="アプリに戻る"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 3,
+                height: 26,
+                padding: '0 9px 0 7px',
+                borderRadius: 8,
+                background: 'rgba(255,255,255,0.16)',
+                color: '#fff',
+                fontFamily: 'var(--font-serif)',
+                fontSize: 11,
+                fontWeight: 600,
+                lineHeight: 1,
+                whiteSpace: 'nowrap',
+              }}
+            >
+              <ArrowLeft size={13} strokeWidth={2.4} />
+              アプリ
+            </Link>
             <div
               style={{
                 width: 26,
@@ -420,8 +445,9 @@ function Header({ approve, setApprove, pendingCount, onNew, topPad = 16 }: Heade
               </span>
             </div>
           </div>
-          {/* ロゴ(左) と 提案/承認(右) の間を埋めるスペーサ。拠点プルダウンは廃止 (全拠点結合)。 */}
-          <span style={{ flex: '1 1 auto', minWidth: 8 }} />
+          {/* ロゴ(左) と 提案/承認(右) の間を埋めるスペーサ。拠点プルダウンは廃止 (全拠点結合)。
+              狭幅(375px)で「アプリ」リンク追加分を吸収できるよう minWidth は 0。 */}
+          <span style={{ flex: '1 1 auto', minWidth: 0 }} />
           <div style={{ display: 'flex', gap: 7, flex: '0 0 auto' }}>
             <button onClick={onNew} style={{ ...hdrAct, background: '#fff', color: accentInk }}>
               <Plus size={15} /> 提案
