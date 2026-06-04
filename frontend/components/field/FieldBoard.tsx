@@ -393,9 +393,11 @@ function Header({ approve, setApprove, pendingCount, onNew, topPad = 16 }: Heade
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '0 0 auto' }}>
-            {/* アプリ (デスクトップ/モバイル) へ戻る控えめなリンク。同タブ遷移。 */}
+            {/* アプリへ戻る控えめなリンク。同タブ遷移。
+                遷移先は "/" (ルート) — UA で振り分け (モバイル→/m/home・PC→/dashboard) されるため、
+                モバイルで PC 版 AppShell が開いて見えなくなる問題を回避。 */}
             <Link
-              href="/dashboard"
+              href="/"
               aria-label="アプリに戻る"
               style={{
                 display: 'inline-flex',
