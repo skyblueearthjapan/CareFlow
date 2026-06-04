@@ -17,6 +17,7 @@
  */
 
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useSession } from 'next-auth/react';
 import {
   Heart,
   ChevronLeft,
@@ -127,6 +128,11 @@ export function FieldBoard({ topPad = 16 }: { topPad?: number }) {
   // 週 state: 月曜起点の Date を持ち、ISO 年/週へ変換して API に渡す。
   const [weekStart, setWeekStart] = useState<Date>(() => toWeekStart(new Date()));
   const { isoYear, isoWeek } = useMemo(() => toIsoYearWeek(weekStart), [weekStart]);
+
+  // カルテ編集の認可: manager / admin のみ編集ボタンを出す (staff は閲覧専用)。
+  // /m ページ自体が manager/admin ガード済みだが、二重で role を見て安全側に倒す。
+  const { data: session } = useSession();
+  const canEditKarte = session?.user?.role === 'admin' || session?.user?.role === 'manager';
 
   const [dayIdx, setDayIdx] = useState(0); // 0=月..6=日
   const [approve, setApprove] = useState(false);
@@ -300,9 +306,12 @@ export function FieldBoard({ topPad = 16 }: { topPad?: number }) {
         <KarteSheet
           visit={karte}
           officeName={officeNameByVisitId.get(karte.visit_id) ?? ''}
+          offices={offices}
+          canEdit={canEditKarte}
           sameAddressGroups={sameAddressGroups}
           onClose={() => setKarte(null)}
           onOpenVisit={setKarte}
+          onToast={showToast}
         />
       )}
       {sheet && (

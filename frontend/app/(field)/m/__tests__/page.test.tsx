@@ -18,7 +18,7 @@
  */
 import * as React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 
 import type { BoardResponse } from '@/lib/schemas/v2/board';
 import type { PatientRead } from '@/lib/schemas/patient';
@@ -54,6 +54,15 @@ vi.mock('@/lib/queries/pending_requests', () => ({
 vi.mock('@/lib/queries/patients', () => ({
   usePatient: vi.fn(),
   usePatients: vi.fn(),
+  useUpdatePatient: vi.fn(),
+}));
+
+vi.mock('@/lib/queries/geocoding', () => ({
+  useGeocode: vi.fn(),
+}));
+
+vi.mock('@/lib/queries/offices', () => ({
+  useResolveOffice: vi.fn(),
 }));
 
 import { useSession } from 'next-auth/react';
@@ -64,7 +73,9 @@ import {
   useRejectRequest,
   useCreatePendingRequest,
 } from '@/lib/queries/pending_requests';
-import { usePatient, usePatients } from '@/lib/queries/patients';
+import { usePatient, usePatients, useUpdatePatient } from '@/lib/queries/patients';
+import { useGeocode } from '@/lib/queries/geocoding';
+import { useResolveOffice } from '@/lib/queries/offices';
 import FieldBoardPage from '../page';
 
 type Role = 'admin' | 'manager' | 'staff';
@@ -239,13 +250,17 @@ function makePatient(): PatientRead {
     name: '青柳 あい',
     kana: 'アオヤギ アイ',
     sex: 'female',
-    status: 'active',
+    status: 'admitted',
     insurance: 'medical',
     address: '千葉市稲毛区小仲台6-2-1',
+    primary_office_id: OFFICE_ID,
+    sex_restriction: 'female_only',
+    requires_multiple_staff: true,
     note: '玄関の鍵は植木鉢の下。',
     weekly_pattern: {
-      frequency_per_week: 2,
-      preferred_weekdays: ['Mon', 'Fri'],
+      frequency_per_week: 3,
+      visit_frequency: 'biweekly',
+      preferred_weekdays: ['Mon', 'Fri', 'Sun'],
       service_minutes: 60,
       time_type: '終日',
     },
@@ -301,6 +316,15 @@ beforeEach(() => {
     isLoading: false,
     isFetching: false,
     isError: false,
+  });
+  (useUpdatePatient as unknown as ReturnType<typeof vi.fn>).mockReturnValue(noMutation());
+  (useGeocode as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    mutateAsync: vi.fn(),
+    isPending: false,
+  });
+  (useResolveOffice as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    mutateAsync: vi.fn(),
+    isPending: false,
   });
 });
 
@@ -685,5 +709,145 @@ describe('/m 現場ボード 頭数ゲート', () => {
     expect(screen.queryByText(/この時間空いてますよ：/)).not.toBeInTheDocument();
     // だが頭数の空きはあるのでヘッダは「空き2つ」。
     expect(screen.getByText(/4\/6 空き2つ/)).toBeInTheDocument();
+  });
+});
+
+// ============================ カルテ閲覧拡充 + 編集 (KarteSheet) ============================
+//
+// 実装1: 閲覧の情報拡充 (ステータス/性別制限/複数スタッフ/主担当拠点/週訪問回数/日曜)。
+// 実装2: 編集機能 (manager/admin のみ編集ボタン・staff は閲覧専用・PATCH 呼び出し)。
+
+/** 患者カードを開いてカルテシートを表示する (月曜「青柳 あい」)。 */
+function openKarte() {
+  fireEvent.click(screen.getByText('青柳 あい'));
+}
+
+describe('/m カルテ 閲覧の情報拡充', () => {
+  it('新しい閲覧項目 (ステータス/性別制限/複数スタッフ/主担当拠点/週訪問回数/訪問頻度) を表示する', () => {
+    setSession('manager');
+    render(<FieldBoardPage />);
+    openKarte();
+    // ステータス (admitted → 入院中)。
+    expect(screen.getByText('ステータス')).toBeInTheDocument();
+    expect(screen.getByText('入院中')).toBeInTheDocument();
+    // 性別制限 (female_only → 女性のみ)。
+    expect(screen.getByText('性別制限')).toBeInTheDocument();
+    expect(screen.getByText('女性のみ')).toBeInTheDocument();
+    // 複数スタッフ必須 (true → はい)。
+    expect(screen.getByText('複数スタッフ必須')).toBeInTheDocument();
+    expect(screen.getByText('はい')).toBeInTheDocument();
+    // 主担当拠点 (primary_office_id → 稲毛)。基本情報内に拠点名。
+    expect(screen.getByText('主担当拠点')).toBeInTheDocument();
+    // 週訪問回数 / 訪問頻度。
+    expect(screen.getByText('週訪問回数')).toBeInTheDocument();
+    expect(screen.getByText('3回 / 週')).toBeInTheDocument();
+    expect(screen.getByText('訪問頻度')).toBeInTheDocument();
+    expect(screen.getByText('隔週')).toBeInTheDocument();
+  });
+
+  it('希望曜日に日曜 (日) を含む 月〜日 7 日を表示する', () => {
+    setSession('manager');
+    render(<FieldBoardPage />);
+    openKarte();
+    // 希望曜日セクションに「日」ラベルが出る (7 日表示)。preferred_weekdays に Sun 含む。
+    expect(screen.getByText('希望曜日')).toBeInTheDocument();
+    expect(screen.getByText('日')).toBeInTheDocument();
+  });
+});
+
+describe('/m カルテ 編集ボタンの認可', () => {
+  it('manager では編集ボタンを表示する', () => {
+    setSession('manager');
+    render(<FieldBoardPage />);
+    openKarte();
+    expect(screen.getByRole('button', { name: 'カルテを編集' })).toBeInTheDocument();
+  });
+
+  it('admin でも編集ボタンを表示する', () => {
+    setSession('admin');
+    render(<FieldBoardPage />);
+    openKarte();
+    expect(screen.getByRole('button', { name: 'カルテを編集' })).toBeInTheDocument();
+  });
+
+  // staff は /m ページ自体がリダイレクトされるため、ボード (=カルテ) を描画しない。
+  // → staff には編集 UI が一切到達しないことを担保する。
+  it('staff ではボード自体が描画されず、カルテ・編集 UI に到達しない', () => {
+    setSession('staff');
+    render(<FieldBoardPage />);
+    expect(mockReplace).toHaveBeenCalledWith('/m/home');
+    expect(screen.queryByText('青柳 あい')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'カルテを編集' })).not.toBeInTheDocument();
+  });
+});
+
+describe('/m カルテ 編集 → 保存', () => {
+  it('編集ボタン → 保存で useUpdatePatient(PATCH) が正しい値で呼ばれる', async () => {
+    setSession('manager');
+    const mutate = vi.fn();
+    (useUpdatePatient as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      mutate,
+      isPending: false,
+      isError: false,
+      data: undefined,
+    });
+
+    render(<FieldBoardPage />);
+    openKarte();
+
+    // 編集モードへ。
+    fireEvent.click(screen.getByRole('button', { name: 'カルテを編集' }));
+
+    // 編集フォームが出る (氏名フィールドに初期値)。
+    const nameInput = screen.getByLabelText('氏名') as HTMLInputElement;
+    expect(nameInput.value).toBe('青柳 あい');
+
+    // 氏名を変更して保存。
+    fireEvent.change(nameInput, { target: { value: '青柳 あい (更新)' } });
+    fireEvent.click(screen.getByRole('button', { name: /カルテを保存/ }));
+
+    await waitFor(() => expect(mutate).toHaveBeenCalledTimes(1));
+    const submitted = mutate.mock.calls[0][0] as Record<string, unknown>;
+    // 主要フィールドが期待値で渡る。
+    expect(submitted.name).toBe('青柳 あい (更新)');
+    expect(submitted.code).toBe('P-1042');
+    expect(submitted.status).toBe('admitted');
+    expect(submitted.sex_restriction).toBe('female_only');
+    expect(submitted.requires_multiple_staff).toBe(true);
+    // weekly_pattern (frequency/visit_frequency/preferred_weekdays) が保持される。
+    const wp = submitted.weekly_pattern as Record<string, unknown>;
+    expect(wp.frequency_per_week).toBe(3);
+    expect(wp.visit_frequency).toBe('biweekly');
+    expect(wp.preferred_weekdays).toEqual(['Mon', 'Fri', 'Sun']);
+  });
+
+  it('住所未変更なら保存時にジオコード・拠点解決を呼ばない (best-effort)', async () => {
+    setSession('manager');
+    const mutate = vi.fn();
+    const geocodeAsync = vi.fn();
+    const resolveAsync = vi.fn();
+    (useUpdatePatient as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      mutate,
+      isPending: false,
+      isError: false,
+      data: undefined,
+    });
+    (useGeocode as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      mutateAsync: geocodeAsync,
+      isPending: false,
+    });
+    (useResolveOffice as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      mutateAsync: resolveAsync,
+      isPending: false,
+    });
+
+    render(<FieldBoardPage />);
+    openKarte();
+    fireEvent.click(screen.getByRole('button', { name: 'カルテを編集' }));
+    fireEvent.click(screen.getByRole('button', { name: /カルテを保存/ }));
+
+    await waitFor(() => expect(mutate).toHaveBeenCalledTimes(1));
+    expect(geocodeAsync).not.toHaveBeenCalled();
+    expect(resolveAsync).not.toHaveBeenCalled();
   });
 });

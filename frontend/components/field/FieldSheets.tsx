@@ -14,7 +14,7 @@
  * Phase 1 のモック (RANK_PAIR / RANK_NORMAL / CF_PATIENTS) は撤去済み。
  */
 
-import { useMemo, useState, type CSSProperties, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import {
   X,
   MapPin,
@@ -29,6 +29,8 @@ import {
   Check,
   CheckCircle2,
   ClipboardCheck,
+  Pencil,
+  Save,
 } from 'lucide-react';
 
 import {
@@ -41,6 +43,8 @@ import {
   SEX_RESTRICTION_LABEL,
   SEX_OPTIONS,
   SEX_LABEL,
+  STATUS_OPTIONS,
+  STATUS_LABEL,
   INSURANCE_OPTIONS,
   WEEKDAY_KEYS,
   WEEKDAY_LABELS_JA,
@@ -49,11 +53,18 @@ import {
   normalizePatientSex,
   normalizePatientInsurance,
   normalizePatientSexRestriction,
+  normalizePatientStatus,
+  patientReadToFormValues,
   type WeekdayKey,
+  type PatientFormValues,
+  type WeeklyPattern,
 } from '@/lib/schemas/patient';
-import { usePatient, usePatients } from '@/lib/queries/patients';
+import { usePatient, usePatients, useUpdatePatient } from '@/lib/queries/patients';
 import { useCreatePendingRequest } from '@/lib/queries/pending_requests';
+import { useGeocode } from '@/lib/queries/geocoding';
+import { useResolveOffice } from '@/lib/queries/offices';
 import type { PatientRead } from '@/lib/schemas/patient';
+import type { BoardOffice } from '@/lib/schemas/v2/board';
 import {
   useProposeSlots,
   WEEKDAY_CODE_TO_INT,
@@ -94,19 +105,34 @@ const DOW_JA: Record<WeekdayKey, string> = WEEKDAY_LABELS_JA;
 export function KarteSheet({
   visit,
   officeName,
+  offices = [],
+  canEdit = false,
   sameAddressGroups,
   onClose,
   onOpenVisit,
+  onToast,
 }: {
   visit: BoardVisit;
   officeName: string;
+  /** 全拠点 (board.offices)。主担当拠点 (primary_office_id) の名前解決に使う。 */
+  offices?: BoardOffice[];
+  /** manager / admin のときのみ「編集」ボタンを出す。staff は閲覧専用。 */
+  canEdit?: boolean;
   sameAddressGroups: SameAddressGroups;
   onClose: () => void;
   onOpenVisit: (v: BoardVisit) => void;
+  /** 保存成功/失敗のトースト表示用 (編集機能)。 */
+  onToast?: (msg: string) => void;
 }) {
   // 患者詳細を実 API から取得 (基本情報 / 希望曜日 / 備考 等)。
   const patientQuery = usePatient(visit.patient_id);
   const p = patientQuery.data;
+
+  // 閲覧 ⇄ 編集モードのトグル。患者が切り替わったら閲覧へ戻す。
+  const [editing, setEditing] = useState(false);
+  useEffect(() => {
+    setEditing(false);
+  }, [visit.patient_id]);
 
   // 同住所相手: board の same_address_group から、自分以外の visit を引く。
   const gid = visit.same_address_group_id;
@@ -117,12 +143,39 @@ export function KarteSheet({
   // 表示値: 患者詳細が来るまでは board visit の値でフォールバック。
   const wp = p ? coerceWeeklyPattern(p.weekly_pattern) : null;
   const sex = p ? normalizePatientSex(p.sex as string | null | undefined) : null;
+  const status = p ? normalizePatientStatus(p.status as string | null | undefined) : null;
+  const sexRestriction = p
+    ? normalizePatientSexRestriction(p.sex_restriction as string | null | undefined)
+    : null;
+  const requiresMultiple =
+    (p as { requires_multiple_staff?: boolean | null } | undefined)?.requires_multiple_staff ===
+    true;
   const insurance =
     (p ? normalizePatientInsurance(p.insurance as string | null | undefined) : null) ??
     (visit.insurance === 'med' ? 'medical' : visit.insurance === 'care' ? 'care' : null);
   const address = p?.address ?? visit.address ?? null;
   const serviceMin = wp?.service_minutes ?? visit.service_minutes;
   const note = p?.note ?? null;
+
+  // 主担当拠点 (primary_office_id) の名前解決 (board.offices より)。不明なら表示省略。
+  const primaryOfficeName = useMemo(() => {
+    const id = p?.primary_office_id;
+    if (!id) return null;
+    return offices.find((o) => o.office_id === id)?.office_name ?? null;
+  }, [p?.primary_office_id, offices]);
+
+  // 編集モード: 患者詳細取得後のみ。フォームへは patientReadToFormValues で渡す。
+  if (editing && p) {
+    return (
+      <KarteEditSheet
+        patient={p}
+        onClose={onClose}
+        onCancel={() => setEditing(false)}
+        onSaved={() => setEditing(false)}
+        onToast={onToast}
+      />
+    );
+  }
 
   return (
     <SlideSheet>
@@ -164,6 +217,29 @@ export function KarteSheet({
               <div style={{ fontSize: 10.5, opacity: 0.8, marginTop: 2 }}>患者コード: {p.code}</div>
             )}
           </div>
+          {canEdit && p && (
+            <button
+              onClick={() => setEditing(true)}
+              aria-label="カルテを編集"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 5,
+                height: 36,
+                padding: '0 12px',
+                borderRadius: 999,
+                background: 'rgba(255,255,255,0.22)',
+                color: '#fff',
+                fontFamily: 'var(--font-serif)',
+                fontSize: 13,
+                fontWeight: 700,
+                flex: '0 0 auto',
+              }}
+            >
+              <Pencil size={14} />
+              編集
+            </button>
+          )}
           <button
             onClick={onClose}
             aria-label="閉じる"
@@ -175,6 +251,7 @@ export function KarteSheet({
               color: '#fff',
               display: 'grid',
               placeItems: 'center',
+              flex: '0 0 auto',
             }}
           >
             <X size={17} />
@@ -260,6 +337,9 @@ export function KarteSheet({
 
         <KSec title="基本情報" icon={<User size={12} />}>
           {sex && <KV k="性別" v={SEX_LABEL[sex]} />}
+          {status && <KV k="ステータス" v={STATUS_LABEL[status]} />}
+          <KV k="性別制限" v={sexRestriction ? SEX_RESTRICTION_LABEL[sexRestriction] : 'なし'} />
+          <KV k="複数スタッフ必須" v={requiresMultiple ? 'はい' : 'いいえ'} />
           {address && (
             <KV
               k="ご住所"
@@ -271,10 +351,15 @@ export function KarteSheet({
               }
             />
           )}
+          {primaryOfficeName && <KV k="主担当拠点" v={primaryOfficeName} />}
         </KSec>
 
         <KSec title="保険・サービス" icon={<Heart size={12} />}>
           {insurance && <KV k="保険種別" v={INSURANCE_LABEL[insurance]} />}
+          {wp && <KV k="週訪問回数" v={`${wp.frequency_per_week}回 / 週`} />}
+          {wp?.visit_frequency && (
+            <KV k="訪問頻度" v={VISIT_FREQUENCY_LABELS[wp.visit_frequency]} />
+          )}
           <KV k="サービス時間" v={`${serviceMin}分`} />
           {wp?.time_type && <KV k="時間タイプ" v={wp.time_type} />}
           {wp?.time_type === '時間帯' && (wp.preferred_start || wp.preferred_end) && (
@@ -288,7 +373,7 @@ export function KarteSheet({
         {wp && (
           <KSec title="希望曜日" icon={<Calendar size={12} />}>
             <div style={{ display: 'flex', gap: 5 }}>
-              {WEEKDAY_KEYS.slice(0, 6).map((d) => {
+              {WEEKDAY_KEYS.map((d) => {
                 const yes = wp.preferred_weekdays.includes(d);
                 return (
                   <div
@@ -405,6 +490,549 @@ const KV = ({ k, v }: { k: string; v: ReactNode }) => (
     <div style={{ flex: 1, fontWeight: 700 }}>{v}</div>
   </div>
 );
+
+// ============================ Karte edit sheet (manager/admin) ============================
+
+/**
+ * カルテ編集シート (マスタ主要項目) — 現場ボード `/m` の manager/admin 向け。
+ *
+ * - 初期値は `patientReadToFormValues(patient)` で取得 (デスクトップ PatientForm と同源)。
+ * - 編集対象: name/code/kana/sex/status/insurance/address/sex_restriction/
+ *   requires_multiple_staff/note ＋ weekly_pattern (frequency_per_week/visit_frequency/
+ *   preferred_weekdays(月〜日)/service_minutes/time_type/preferred_start/preferred_end)。
+ *   special_weekly_pattern (特別週) / 固定訪問 (PFV) は対象外。
+ * - 住所変更時は保存時に best-effort で再ジオコード (lat/lng) + 拠点解決
+ *   (primary_office_id) を行う。失敗しても保存は継続する。
+ * - 保存は `useUpdatePatient(id, initial)` で PATCH。成功で閲覧に戻り、トースト表示。
+ *
+ * バリデーション/選択肢はデスクトップと同一定数 (SEX/INSURANCE/STATUS/SEX_RESTRICTION/
+ * TIME_TYPE/SERVICE_MINUTES_OPTIONS/WEEKDAY) を流用し、ドリフトを防ぐ。
+ */
+function KarteEditSheet({
+  patient,
+  onClose,
+  onCancel,
+  onSaved,
+  onToast,
+}: {
+  patient: PatientRead;
+  onClose: () => void;
+  onCancel: () => void;
+  onSaved: () => void;
+  onToast?: (msg: string) => void;
+}) {
+  // 初期値 (read → form values)。再マウントせず保持するため useState 初期化子で 1 度だけ算出。
+  const initial = useMemo(() => patientReadToFormValues(patient), [patient]);
+
+  const [name, setName] = useState(initial.name);
+  const [code, setCode] = useState(initial.code);
+  const [kana, setKana] = useState(initial.kana);
+  const [sex, setSex] = useState<PatientFormValues['sex']>(initial.sex);
+  const [status, setStatus] = useState<PatientFormValues['status']>(initial.status);
+  const [insurance, setInsurance] = useState<PatientFormValues['insurance']>(initial.insurance);
+  const [address, setAddress] = useState(initial.address);
+  const [sexRestriction, setSexRestriction] = useState<PatientFormValues['sex_restriction']>(
+    initial.sex_restriction,
+  );
+  const [requiresMultipleStaff, setRequiresMultipleStaff] = useState(
+    initial.requires_multiple_staff,
+  );
+  const [note, setNote] = useState(initial.note);
+
+  // weekly_pattern 構造化値。
+  const wp0 = initial.weekly_pattern;
+  const [frequencyPerWeek, setFrequencyPerWeek] = useState(wp0.frequency_per_week);
+  const [visitFrequency, setVisitFrequency] = useState<(typeof VISIT_FREQUENCY_OPTIONS)[number]>(
+    wp0.visit_frequency ?? 'every',
+  );
+  const [weekdays, setWeekdays] = useState<Record<WeekdayKey, boolean>>(() => {
+    const m = {} as Record<WeekdayKey, boolean>;
+    for (const d of WEEKDAY_KEYS) m[d] = wp0.preferred_weekdays.includes(d);
+    return m;
+  });
+  const [serviceMinutes, setServiceMinutes] = useState(wp0.service_minutes);
+  const [timeType, setTimeType] = useState<(typeof TIME_TYPE_OPTIONS)[number]>(wp0.time_type);
+  const [preferredStart, setPreferredStart] = useState(wp0.preferred_start ?? '09:00');
+  const [preferredEnd, setPreferredEnd] = useState(wp0.preferred_end ?? '12:00');
+
+  const updateMut = useUpdatePatient(patient.id, initial);
+  const geocodeMut = useGeocode();
+  const resolveMut = useResolveOffice();
+
+  // 時間タイプが「固定」「時間帯」のときのみ希望時刻欄を表示 (PatientForm/SuggestSheet と同条件)。
+  const showTimeRange = timeType === '固定' || timeType === '時間帯';
+  const showEnd = timeType === '時間帯';
+
+  const addressChanged = address.trim() !== (initial.address ?? '').trim();
+
+  const handleSave = async () => {
+    if (!name.trim()) {
+      onToast?.('氏名を入力してください');
+      return;
+    }
+    if (!code.trim()) {
+      onToast?.('患者コードを入力してください');
+      return;
+    }
+
+    // 住所変更時のみ best-effort で再ジオコード + 拠点解決。重く結合せず、失敗は黙殺。
+    let lat = initial.lat;
+    let lng = initial.lng;
+    let primaryOfficeId = initial.primary_office_id;
+    const trimmedAddress = address.trim();
+    if (addressChanged && trimmedAddress.length >= 5) {
+      try {
+        const geo = await geocodeMut.mutateAsync({ address: trimmedAddress });
+        lat = String(geo.lat);
+        lng = String(geo.lng);
+      } catch {
+        // ジオコード失敗 → lat/lng は据え置き (best-effort)。
+      }
+      try {
+        const resolved = await resolveMut.mutateAsync(trimmedAddress);
+        if (resolved.confidence !== 'none' && resolved.office_id) {
+          primaryOfficeId = resolved.office_id;
+        }
+      } catch {
+        // 拠点解決失敗 → primary_office_id は据え置き。
+      }
+    }
+
+    const preferred_weekdays: WeekdayKey[] = WEEKDAY_KEYS.filter((d) => weekdays[d]);
+    const weekly_pattern: WeeklyPattern = {
+      ...wp0,
+      frequency_per_week: frequencyPerWeek,
+      visit_frequency: visitFrequency,
+      preferred_weekdays,
+      service_minutes: serviceMinutes,
+      time_type: timeType,
+      preferred_start: showTimeRange ? preferredStart : null,
+      preferred_end: showEnd ? preferredEnd : null,
+    };
+
+    const values: PatientFormValues = {
+      ...initial,
+      name: name.trim(),
+      code: code.trim(),
+      kana: kana.trim(),
+      sex,
+      status,
+      insurance,
+      address: trimmedAddress,
+      lat,
+      lng,
+      primary_office_id: primaryOfficeId,
+      sex_restriction: sexRestriction,
+      requires_multiple_staff: requiresMultipleStaff,
+      note: note.trim(),
+      weekly_pattern,
+      // special_week は据え置き (特別週は本シートの編集対象外)。
+      special_week: initial.special_week,
+    };
+
+    updateMut.mutate(values, {
+      onSuccess: () => {
+        onToast?.('✓ カルテを更新しました');
+        onSaved();
+      },
+      onError: () => onToast?.('カルテの更新に失敗しました'),
+    });
+  };
+
+  return (
+    <SlideSheet>
+      <Grip />
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '4px 20px 10px',
+        }}
+      >
+        <h3
+          style={{
+            fontFamily: 'var(--font-serif)',
+            fontSize: 18,
+            fontWeight: 700,
+            color: _PLUM,
+            margin: 0,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 7,
+          }}
+        >
+          <Pencil size={16} />
+          カルテを編集
+        </h3>
+        <button
+          onClick={onClose}
+          aria-label="閉じる"
+          style={{
+            width: 34,
+            height: 34,
+            borderRadius: '50%',
+            background: '#F1ECE3',
+            color: _INK2,
+            display: 'grid',
+            placeItems: 'center',
+          }}
+        >
+          <X size={16} />
+        </button>
+      </div>
+
+      <div className="cf-scroll" style={{ overflowY: 'auto', padding: '2px 20px 26px', flex: 1 }}>
+        <Field label="氏名（必須）">
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            aria-label="氏名"
+            placeholder="例: 青柳 あい"
+            style={cfInput}
+          />
+        </Field>
+
+        <div style={{ display: 'flex', gap: 12 }}>
+          <Field label="患者コード（必須）" flex>
+            <input
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              aria-label="患者コード"
+              placeholder="例: P-1042"
+              style={cfInput}
+            />
+          </Field>
+          <Field label="フリガナ" flex>
+            <input
+              value={kana}
+              onChange={(e) => setKana(e.target.value)}
+              aria-label="フリガナ"
+              placeholder="アオヤギ アイ"
+              style={cfInput}
+            />
+          </Field>
+        </div>
+
+        <div style={{ display: 'flex', gap: 12 }}>
+          <Field label="性別" flex>
+            <select
+              style={cfInput}
+              value={sex}
+              aria-label="性別"
+              onChange={(e) => setSex(e.target.value as PatientFormValues['sex'])}
+            >
+              <option value="">未選択</option>
+              {SEX_OPTIONS.map((v) => (
+                <option key={v} value={v}>
+                  {SEX_LABEL[v]}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="ステータス" flex>
+            <select
+              style={cfInput}
+              value={status}
+              aria-label="ステータス"
+              onChange={(e) => setStatus(e.target.value as PatientFormValues['status'])}
+            >
+              {STATUS_OPTIONS.map((v) => (
+                <option key={v} value={v}>
+                  {STATUS_LABEL[v]}
+                </option>
+              ))}
+            </select>
+          </Field>
+        </div>
+
+        <Field label="保険">
+          <select
+            style={cfInput}
+            value={insurance}
+            aria-label="保険"
+            onChange={(e) => setInsurance(e.target.value as PatientFormValues['insurance'])}
+          >
+            <option value="">未選択</option>
+            {INSURANCE_OPTIONS.map((v) => (
+              <option key={v} value={v}>
+                {INSURANCE_LABEL[v]}
+              </option>
+            ))}
+          </select>
+        </Field>
+
+        <Field label="ご住所">
+          <input
+            value={address}
+            onChange={(e) => setAddress(e.target.value)}
+            aria-label="ご住所"
+            placeholder="例: 千葉市稲毛区小仲台6-2-1"
+            style={cfInput}
+          />
+          <div style={{ fontSize: 10.5, color: _INK2, marginTop: 5, lineHeight: 1.5 }}>
+            ※ 住所を変更すると、保存時に緯度経度・主担当拠点を自動で取り直します。
+          </div>
+        </Field>
+
+        <Field label="性別制限">
+          <select
+            style={cfInput}
+            value={sexRestriction}
+            aria-label="性別制限"
+            onChange={(e) =>
+              setSexRestriction(e.target.value as PatientFormValues['sex_restriction'])
+            }
+          >
+            <option value="">なし</option>
+            {SEX_RESTRICTION_OPTIONS.map((v) => (
+              <option key={v} value={v}>
+                {SEX_RESTRICTION_LABEL[v]}
+              </option>
+            ))}
+          </select>
+        </Field>
+
+        <Field label="複数スタッフ">
+          <button
+            type="button"
+            onClick={() => setRequiresMultipleStaff((v) => !v)}
+            aria-pressed={requiresMultipleStaff}
+            style={{
+              width: '100%',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+              padding: '11px 13px',
+              minHeight: 46,
+              borderRadius: 12,
+              border: `2px solid ${requiresMultipleStaff ? _PLUM : _LINE}`,
+              background: requiresMultipleStaff ? '#F4ECF8' : '#FFFDF9',
+              textAlign: 'left',
+            }}
+          >
+            <span
+              style={{
+                width: 22,
+                height: 22,
+                flex: '0 0 auto',
+                borderRadius: 7,
+                display: 'grid',
+                placeItems: 'center',
+                background: requiresMultipleStaff ? _PLUM : '#fff',
+                border: `2px solid ${requiresMultipleStaff ? _PLUM : _INK3}`,
+                color: '#fff',
+                fontSize: 13,
+                fontWeight: 700,
+                lineHeight: 1,
+              }}
+            >
+              {requiresMultipleStaff ? '✓' : ''}
+            </span>
+            <span
+              style={{
+                fontFamily: 'var(--font-serif)',
+                fontSize: 13.5,
+                fontWeight: 700,
+                color: requiresMultipleStaff ? '#7A4E91' : _INK2,
+              }}
+            >
+              2名以上での訪問が必要
+            </span>
+          </button>
+        </Field>
+
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            fontFamily: 'var(--font-serif)',
+            fontSize: 12,
+            color: _PLUM,
+            fontWeight: 700,
+            margin: '6px 0 10px',
+          }}
+        >
+          <Calendar size={13} />
+          希望スケジュール
+          <span style={{ flex: 1, height: 2, background: '#F0E7F5', borderRadius: 2 }} />
+        </div>
+
+        <div style={{ display: 'flex', gap: 12 }}>
+          <Field label="週訪問回数" flex>
+            <Stepper
+              value={frequencyPerWeek}
+              min={1}
+              max={7}
+              suffix="回 / 週"
+              onChange={setFrequencyPerWeek}
+            />
+          </Field>
+          <Field label="訪問頻度" flex>
+            <select
+              style={cfInput}
+              value={visitFrequency}
+              aria-label="訪問頻度"
+              onChange={(e) =>
+                setVisitFrequency(e.target.value as (typeof VISIT_FREQUENCY_OPTIONS)[number])
+              }
+            >
+              {VISIT_FREQUENCY_OPTIONS.map((k) => (
+                <option key={k} value={k}>
+                  {VISIT_FREQUENCY_LABELS[k]}
+                </option>
+              ))}
+            </select>
+          </Field>
+        </div>
+
+        <Field label="希望曜日（複数可）">
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {WEEKDAY_KEYS.map((d) => {
+              const on = !!weekdays[d];
+              return (
+                <button
+                  key={d}
+                  type="button"
+                  onClick={() => setWeekdays((s) => ({ ...s, [d]: !s[d] }))}
+                  aria-pressed={on}
+                  aria-label={`${DOW_JA[d]}曜`}
+                  style={{ ...chip, ...(on ? chipOn : {}) }}
+                >
+                  {DOW_JA[d]}
+                </button>
+              );
+            })}
+          </div>
+        </Field>
+
+        <Field label="サービス時間">
+          <select
+            style={cfInput}
+            value={serviceMinutes}
+            aria-label="サービス時間"
+            onChange={(e) => setServiceMinutes(Number(e.target.value))}
+          >
+            {SERVICE_MINUTES_OPTIONS.map((m) => (
+              <option key={m} value={m}>
+                {m}分
+              </option>
+            ))}
+          </select>
+        </Field>
+
+        <Field label="時間タイプ">
+          <select
+            style={cfInput}
+            value={timeType}
+            aria-label="時間タイプ"
+            onChange={(e) => setTimeType(e.target.value as (typeof TIME_TYPE_OPTIONS)[number])}
+          >
+            {TIME_TYPE_OPTIONS.map((t) => (
+              <option key={t} value={t}>
+                {t}
+              </option>
+            ))}
+          </select>
+        </Field>
+
+        {showTimeRange && (
+          <div style={{ display: 'flex', gap: 12 }}>
+            <Field label="希望開始時刻" flex>
+              <select
+                style={cfInput}
+                value={preferredStart}
+                aria-label="希望開始時刻"
+                onChange={(e) => setPreferredStart(e.target.value)}
+              >
+                {SUGGEST_TIME_OPTIONS.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            {showEnd && (
+              <Field label="希望終了時刻" flex>
+                <select
+                  style={cfInput}
+                  value={preferredEnd}
+                  aria-label="希望終了時刻"
+                  onChange={(e) => setPreferredEnd(e.target.value)}
+                >
+                  {SUGGEST_TIME_OPTIONS.map((t) => (
+                    <option key={t} value={t}>
+                      {t}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            )}
+          </div>
+        )}
+
+        <Field label="備考・申し送り">
+          <textarea
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            aria-label="備考・申し送り"
+            rows={3}
+            placeholder="玄関の鍵は植木鉢の下、など"
+            style={{ ...cfInput, minHeight: 80, resize: 'vertical', lineHeight: 1.6 }}
+          />
+        </Field>
+
+        <div style={{ display: 'flex', gap: 10, marginTop: 8 }}>
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={updateMut.isPending}
+            style={{
+              flex: '0 0 auto',
+              padding: '14px 18px',
+              minHeight: 50,
+              borderRadius: 14,
+              background: '#F1ECE3',
+              color: _INK2,
+              fontFamily: 'var(--font-serif)',
+              fontSize: 14.5,
+              fontWeight: 700,
+            }}
+          >
+            キャンセル
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleSave()}
+            disabled={updateMut.isPending}
+            style={{
+              flex: 1,
+              padding: 14,
+              minHeight: 50,
+              borderRadius: 14,
+              fontFamily: 'var(--font-serif)',
+              fontSize: 15,
+              fontWeight: 700,
+              color: '#fff',
+              background: `linear-gradient(135deg, ${_PLUM}, #7A4E91)`,
+              boxShadow: '0 6px 16px rgba(139,92,158,0.30)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 8,
+              opacity: updateMut.isPending ? 0.7 : 1,
+            }}
+          >
+            <Save size={16} />
+            {updateMut.isPending ? '保存中…' : 'カルテを保存'}
+          </button>
+        </div>
+        <div style={{ height: 12 }} />
+      </div>
+    </SlideSheet>
+  );
+}
 
 // ============================ Suggest sheet ============================
 
