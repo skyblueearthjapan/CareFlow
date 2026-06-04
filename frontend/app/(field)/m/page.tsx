@@ -37,10 +37,13 @@ export default function FieldBoardPage() {
     return null;
   }
 
-  // ノッチ/ステータスバーぶんの安全余白を確保しつつ、現場ボードを全画面表示。
+  // 現場ボードを全画面表示。ノッチ/ステータスバーぶんの安全余白は
+  // FieldBoard 最上部の「← モバイルアプリへ」バー (BackToAppBar) が
+  // env(safe-area-inset-top) で吸収するため、ここでは padding を持たない
+  // (二重に空けない)。
   return (
-    <div style={{ height: '100%', paddingTop: 'env(safe-area-inset-top)' }}>
-      <FieldBoard topPad={20} />
+    <div style={{ height: '100%' }}>
+      <FieldBoard />
     </div>
   );
 }

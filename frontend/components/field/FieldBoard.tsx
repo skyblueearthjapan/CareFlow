@@ -126,7 +126,7 @@ function collectDayCourses(
 
 // ============================ App ============================
 
-export function FieldBoard({ topPad = 16 }: { topPad?: number }) {
+export function FieldBoard() {
   // 週 state: 月曜起点の Date を持ち、ISO 年/週へ変換して API に渡す。
   const [weekStart, setWeekStart] = useState<Date>(() => toWeekStart(new Date()));
   const { isoYear, isoWeek } = useMemo(() => toIsoYearWeek(weekStart), [weekStart]);
@@ -242,12 +242,13 @@ export function FieldBoard({ topPad = 16 }: { topPad?: number }) {
         fontFamily: 'var(--font-sans)',
       }}
     >
+      <BackToAppBar />
+
       <Header
         approve={approve}
         setApprove={setApprove}
         pendingCount={pendingCount}
         onNew={() => setSheet(true)}
-        topPad={topPad}
       />
 
       <DayStepper
@@ -354,6 +355,52 @@ function buildSameAddressGroups(courses: BoardCourse[]): SameAddressGroups {
   return { byGroup, groupOf };
 }
 
+// ============================ 最上部: モバイルアプリへ戻るバー ============================
+//
+// モバイルアプリ (MobileShell) 最上部の「現場ボードを開く →」全幅バーと対になる導線。
+// 現場ボードでは最上部に「← モバイルアプリへ」の細い全幅バーを置く。
+//
+// - 遷移先は "/" (同タブ)。UA で振り分け (モバイル→/m/home・PC→/dashboard) されるため、
+//   モバイルから戻ると正しくモバイル版へ戻る。
+// - 様式: 現場ボードの Warm 意匠に合わせ、白/クリーム系の細い帯 + 下境界線 +
+//   TEAL_DEEP 系テキスト。控えめ・薄め (縦を圧迫しない)。
+// - safe-area: 最上部がこのバーになるため、ノッチぶんの余白 (env(safe-area-inset-top))
+//   はこのバーの上 padding で吸収する (Teal ヘッダ側では二重に空けない)。
+
+function BackToAppBar() {
+  return (
+    <Link
+      href="/"
+      aria-label="モバイルアプリに戻る"
+      style={{
+        flex: '0 0 auto',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 5,
+        // ノッチぶんの安全余白はこのバーの上 padding で吸収する。
+        paddingTop: 'calc(env(safe-area-inset-top) + 6px)',
+        paddingBottom: 6,
+        paddingLeft: 14,
+        paddingRight: 14,
+        background: CREAM,
+        borderBottom: `1px solid ${LINE}`,
+        color: TEAL_DEEP,
+        fontFamily: 'var(--font-serif)',
+        fontSize: 12,
+        fontWeight: 600,
+        lineHeight: 1,
+        whiteSpace: 'nowrap',
+        position: 'relative',
+        zIndex: 21,
+      }}
+    >
+      <ArrowLeft size={13} strokeWidth={2.4} />
+      モバイルアプリへ
+    </Link>
+  );
+}
+
 // ============================ Header ============================
 
 interface HeaderProps {
@@ -361,10 +408,9 @@ interface HeaderProps {
   setApprove: (fn: (a: boolean) => boolean) => void;
   pendingCount: number;
   onNew: () => void;
-  topPad?: number;
 }
 
-function Header({ approve, setApprove, pendingCount, onNew, topPad = 16 }: HeaderProps) {
+function Header({ approve, setApprove, pendingCount, onNew }: HeaderProps) {
   const bg = approve
     ? 'linear-gradient(135deg, #E0A21A 0%, #B5790A 100%)'
     : `linear-gradient(135deg, ${TEAL} 0%, ${TEAL_DEEP} 100%)`;
@@ -374,8 +420,9 @@ function Header({ approve, setApprove, pendingCount, onNew, topPad = 16 }: Heade
       style={{
         flex: '0 0 auto',
         // 浮きカード: 上・左右に小さめ余白を取り、周囲のクリーム背景を覗かせる。
-        // 上余白は safe-area の下に 6〜8px、左右 8px。縦増分は最小限 (上に約 7px のみ)。
-        padding: `${Math.max(topPad - 13, 6)}px 8px 0`,
+        // safe-area / 最上部余白は BackToAppBar 側が吸収するため、ここは固定の小さな
+        // 上余白 (6px) のみ (二重に空けず縦増分を抑える)。
+        padding: '6px 8px 0',
         position: 'relative',
         zIndex: 20,
       }}
@@ -393,31 +440,8 @@ function Header({ approve, setApprove, pendingCount, onNew, topPad = 16 }: Heade
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '0 0 auto' }}>
-            {/* アプリへ戻る控えめなリンク。同タブ遷移。
-                遷移先は "/" (ルート) — UA で振り分け (モバイル→/m/home・PC→/dashboard) されるため、
-                モバイルで PC 版 AppShell が開いて見えなくなる問題を回避。 */}
-            <Link
-              href="/"
-              aria-label="アプリに戻る"
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 3,
-                height: 26,
-                padding: '0 9px 0 7px',
-                borderRadius: 8,
-                background: 'rgba(255,255,255,0.16)',
-                color: '#fff',
-                fontFamily: 'var(--font-serif)',
-                fontSize: 11,
-                fontWeight: 600,
-                lineHeight: 1,
-                whiteSpace: 'nowrap',
-              }}
-            >
-              <ArrowLeft size={13} strokeWidth={2.4} />
-              アプリ
-            </Link>
+            {/* 「← モバイルアプリへ」導線はヘッダから撤去し、最上部の独立バー
+                (BackToAppBar) に移設済み (Phase G-48)。ここはロゴ頭に戻す。 */}
             <div
               style={{
                 width: 26,
@@ -448,7 +472,7 @@ function Header({ approve, setApprove, pendingCount, onNew, topPad = 16 }: Heade
             </div>
           </div>
           {/* ロゴ(左) と 提案/承認(右) の間を埋めるスペーサ。拠点プルダウンは廃止 (全拠点結合)。
-              狭幅(375px)で「アプリ」リンク追加分を吸収できるよう minWidth は 0。 */}
+              狭幅(375px)でも縮められるよう minWidth は 0。 */}
           <span style={{ flex: '1 1 auto', minWidth: 0 }} />
           <div style={{ display: 'flex', gap: 7, flex: '0 0 auto' }}>
             <button onClick={onNew} style={{ ...hdrAct, background: '#fff', color: accentInk }}>
