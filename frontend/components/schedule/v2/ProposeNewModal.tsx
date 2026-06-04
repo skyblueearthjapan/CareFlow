@@ -557,10 +557,7 @@ export function ProposeNewModal({
       toast.warning('氏名を入力してください');
       return;
     }
-    if (!karteCode.trim()) {
-      toast.warning('患者コードを入力してください');
-      return;
-    }
+    // 患者コードは任意 (空欄なら backend が P095… を自動採番する)。氏名と採用枠のみ必須。
     if (adoptedCount === 0) {
       toast.warning('採用する枠を選んでください');
       return;
@@ -628,9 +625,9 @@ export function ProposeNewModal({
     !!linkedPatient &&
     (existingFixedVisitsQuery.isLoading || existingFixedVisitsQuery.isFetching);
 
-  // 新規確定フォームへ進める条件。
-  const canProceedNew =
-    karteName.trim().length > 0 && karteCode.trim().length > 0 && adoptedCount > 0;
+  // 新規確定フォームへ進める条件。患者コードは任意 (空欄で自動採番) のため、
+  // 氏名と採用枠のみを必須とする。
+  const canProceedNew = karteName.trim().length > 0 && adoptedCount > 0;
 
   const handleOpenChange = (o: boolean) => {
     if (!o && !isBusy) onClose();
@@ -1032,12 +1029,12 @@ function KarteFields({
       </div>
       <div className="grid grid-cols-2 gap-3">
         <div className="space-y-1">
-          <Label htmlFor="propose-karte-code">患者コード（必須）</Label>
+          <Label htmlFor="propose-karte-code">患者コード（任意・空欄で自動採番）</Label>
           <Input
             id="propose-karte-code"
             value={code}
             onChange={(e) => onCode(e.target.value)}
-            placeholder="例: P-1042"
+            placeholder="空欄で自動採番"
           />
         </div>
         <div className="space-y-1">
@@ -1676,7 +1673,9 @@ function NewConfirmDialog({
         <div className="space-y-2 rounded-md border border-border-default p-3 text-sm">
           <div className="flex justify-between">
             <span className="text-text-muted">患者コード</span>
-            <span className="font-medium text-text-primary">{code}</span>
+            <span className="font-medium text-text-primary">
+              {code.trim() ? code : '（自動採番）'}
+            </span>
           </div>
           {address ? (
             <div className="flex justify-between gap-3">

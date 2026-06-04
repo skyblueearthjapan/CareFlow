@@ -43,6 +43,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import delete, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.course import Course
@@ -55,6 +56,7 @@ from app.models.visit import VISIT_STATUS_CANCELLED, VISIT_STATUS_PLANNED, Visit
 from app.schemas.v2.enums import RequestScope, RequestStatus, RequestType
 from app.services.geocoding.client import geocode_address
 from app.services.manager_course_sync import sync_manager_course_templates
+from app.services.patient_code import generate_next_patient_code
 from app.services.proposed_visits_pfv import (
     ProposedVisitsError,
     _resolve_course_template_id,
@@ -63,6 +65,9 @@ from app.services.proposed_visits_pfv import (
 from app.services.scheduling.auto_allocator_v2 import MAX_PATIENTS_PER_COURSE
 
 logger = logging.getLogger(__name__)
+
+# Phase G-86: 自動採番した patient code が UNIQUE 衝突したときの再採番上限。
+_PATIENT_CODE_RETRY_MAX = 5
 
 
 class PendingRequestApplyError(Exception):
@@ -472,14 +477,22 @@ async def _apply_patient_create(
     (= 患者作成 + スケジュール確定を 1 承認で). ``proposed_visits`` 無し / 空の場合は
     従来どおり患者作成のみ (現行不変). 失敗時は患者 INSERT もまとめて呼び出し元で
     rollback される。
+
+    Phase G-86: ``code`` が空 / None なら ``generate_next_patient_code`` で自動採番する
+    (``name`` は従来どおり必須). **自動採番した場合のみ** INSERT の UNIQUE 衝突を
+    savepoint (``begin_nested``) 単位で巻き戻して採番からやり直す (最大数回). 手入力
+    code の衝突は従来どおり呼び出し元へ伝播する (= ユーザー入力エラー).
     """
-    code = payload.get("code")
+    raw_code = payload.get("code")
     name = payload.get("name")
-    if not code or not name:
+    if not name:
         raise PendingRequestApplyError(
-            "patient_create: code and name are required",
+            "patient_create: name is required",
             http_status=422,
         )
+    # 非空文字列なら手入力 code として採用、それ以外 (None / 空文字 / 空白) は自動採番。
+    manual_code = raw_code.strip() if isinstance(raw_code, str) and raw_code.strip() else None
+    auto_code = manual_code is None
 
     # Phase G-84 A-2/A-3: placement/warnings/override_reason は業務反映に使わない
     # (監査/表示用メタ) が、赤警告があるのに override_reason 空なら 422 で拒否する.
@@ -504,26 +517,52 @@ async def _apply_patient_create(
         except Exception as exc:  # noqa: BLE001 - best-effort: 患者作成はブロックしない
             logger.warning("patient_create geocode failed (best-effort, skipped): %s", exc)
 
-    row = Patient(
-        code=str(code),
-        name=str(name),
-        kana=payload.get("kana"),
-        sex=payload.get("sex"),
-        status=str(payload.get("status") or "active"),
-        insurance=payload.get("insurance"),
-        address=address,
-        lat=lat,
-        lng=lng,
-        primary_office_id=primary_office_id,
-        sex_restriction=payload.get("sex_restriction"),
-        requires_multiple_staff=bool(payload.get("requires_multiple_staff", False)),
-        weekly_pattern=payload.get("weekly_pattern"),
-        special_weekly_pattern=payload.get("special_weekly_pattern"),
-        special_week_active=payload.get("special_week_active") or [],
-        note=payload.get("note"),
-    )
-    db.add(row)
-    await db.flush()
+    def _build_patient(code_value: str) -> Patient:
+        return Patient(
+            code=code_value,
+            name=str(name),
+            kana=payload.get("kana"),
+            sex=payload.get("sex"),
+            status=str(payload.get("status") or "active"),
+            insurance=payload.get("insurance"),
+            address=address,
+            lat=lat,
+            lng=lng,
+            primary_office_id=primary_office_id,
+            sex_restriction=payload.get("sex_restriction"),
+            requires_multiple_staff=bool(payload.get("requires_multiple_staff", False)),
+            weekly_pattern=payload.get("weekly_pattern"),
+            special_weekly_pattern=payload.get("special_weekly_pattern"),
+            special_week_active=payload.get("special_week_active") or [],
+            note=payload.get("note"),
+        )
+
+    if not auto_code:
+        # 手入力 code: 従来どおり flush し、UNIQUE 衝突は呼び出し元へ伝播 (409/422)。
+        row = _build_patient(manual_code or "")
+        db.add(row)
+        await db.flush()
+    else:
+        # 自動採番: UNIQUE 衝突時は savepoint を巻き戻して採番からやり直す。
+        # savepoint 単位の rollback なので外側の TX (proposed_visits 等) は壊さない。
+        row = None  # type: ignore[assignment]
+        for _ in range(_PATIENT_CODE_RETRY_MAX):
+            next_code = await generate_next_patient_code(db)
+            try:
+                async with db.begin_nested():  # savepoint — race-safe
+                    candidate = _build_patient(next_code)
+                    db.add(candidate)
+                    await db.flush()
+            except IntegrityError:
+                # 並行採番で同一 code が先に確定。再採番してリトライ。
+                continue
+            row = candidate
+            break
+        if row is None:
+            raise PendingRequestApplyError(
+                "patient_create: failed to allocate a unique patient code",
+                http_status=409,
+            )
 
     # StageB-backend: proposed_visits があれば normal PFV を同一 TX で設定する。
     proposed_visits = payload.get("proposed_visits")

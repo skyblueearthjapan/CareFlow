@@ -164,4 +164,26 @@ describe('buildPatientCreatePayload', () => {
     expect('lng' in p).toBe(false);
     expect('sex_restriction' in p).toBe(false);
   });
+
+  // Phase G-86: 患者コードを空で送れる (backend が空 code を自動採番する契約)。
+  it('code 空文字でも payload に空 code を載せる (backend 自動採番)', () => {
+    const blankCode: KarteInput = {
+      name: '佐藤 花子',
+      code: '   ', // 前後空白のみ → trim で空文字。
+      kana: '',
+      sex: '',
+      insurance: '',
+      address: '',
+      lat: null,
+      lng: null,
+      sex_restriction: '',
+      requires_multiple_staff: false,
+      primary_office_id: null,
+    };
+    const p = buildPatientCreatePayload(blankCode, schedule, []);
+    // code キー自体は存在し、値は空文字 (backend が空とみなして採番する)。
+    expect('code' in p).toBe(true);
+    expect(p.code).toBe('');
+    expect(p.name).toBe('佐藤 花子');
+  });
 });

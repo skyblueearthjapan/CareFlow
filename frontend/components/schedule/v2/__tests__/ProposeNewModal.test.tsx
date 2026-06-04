@@ -576,7 +576,9 @@ describe('採用 → 確定: 新規 (作成 + 確定)', () => {
 
     // 新規タブのカルテ欄が出る。
     fireEvent.change(screen.getByLabelText('氏名（必須）'), { target: { value: '新規 花子' } });
-    fireEvent.change(screen.getByLabelText('患者コード（必須）'), { target: { value: 'P-999' } });
+    fireEvent.change(screen.getByLabelText('患者コード（任意・空欄で自動採番）'), {
+      target: { value: 'P-999' },
+    });
     fireEvent.change(screen.getByLabelText('フリガナ'), { target: { value: 'シンキ ハナコ' } });
 
     // 月曜枠を採用。
@@ -604,13 +606,45 @@ describe('採用 → 確定: 新規 (作成 + 確定)', () => {
     expect(confirmArg.body.items).toHaveLength(1);
   });
 
+  it('患者コード空欄でも 登録へ進む → 登録して確定 へ進め、code は空文字で送られる (自動採番)', async () => {
+    setPropose(response());
+    renderModal();
+
+    fireEvent.click(screen.getByTestId('tab-new'));
+    // 氏名のみ入力 (患者コードは空欄のまま)。
+    fireEvent.change(screen.getByLabelText('氏名（必須）'), { target: { value: '新規 花子' } });
+    fireEvent.click(screen.getByTestId(`propose-adopt-${OFFICE_ID}-0-A-10:00`));
+
+    // 患者コード空欄でも「登録へ進む」が活性で確認 dialog が開く (canProceedNew=true)。
+    const proceed = screen.getByTestId('propose-new-proceed-button') as HTMLButtonElement;
+    expect(proceed.disabled).toBe(false);
+    fireEvent.click(proceed);
+    expect(screen.getByTestId('propose-new-confirm-dialog')).toBeInTheDocument();
+    // 確認カードのコードは「（自動採番）」表示。
+    expect(screen.getByText('（自動採番）')).toBeInTheDocument();
+
+    // 登録して確定 → POST patients が code 空文字で呼ばれる。
+    fireEvent.click(screen.getByTestId('propose-new-confirm-button'));
+    await waitFor(() => expect(mocks.createMutateAsync).toHaveBeenCalledTimes(1));
+    const formValues = mocks.createMutateAsync.mock.calls[0]![0] as Record<string, unknown>;
+    expect(formValues.name).toBe('新規 花子');
+    expect(formValues.code).toBe('');
+
+    // PUT fixed-visits も続けて呼ばれる。
+    await waitFor(() => expect(mocks.confirmMutateAsync).toHaveBeenCalledTimes(1));
+    // 患者コード必須ガードの警告 toast は出ていない。
+    expect(mockToast.warning).not.toHaveBeenCalled();
+  });
+
   it('propose の candidate_lat/lng が create payload に lat/lng として乗る', async () => {
     setPropose(response({ candidate_lat: 35.123, candidate_lng: 140.456 }));
     renderModal();
 
     fireEvent.click(screen.getByTestId('tab-new'));
     fireEvent.change(screen.getByLabelText('氏名（必須）'), { target: { value: '新規 花子' } });
-    fireEvent.change(screen.getByLabelText('患者コード（必須）'), { target: { value: 'P-999' } });
+    fireEvent.change(screen.getByLabelText('患者コード（任意・空欄で自動採番）'), {
+      target: { value: 'P-999' },
+    });
     fireEvent.click(screen.getByTestId(`propose-adopt-${OFFICE_ID}-0-A-10:00`));
     fireEvent.click(screen.getByTestId('propose-new-proceed-button'));
     fireEvent.click(screen.getByTestId('propose-new-confirm-button'));
@@ -627,7 +661,9 @@ describe('採用 → 確定: 新規 (作成 + 確定)', () => {
 
     fireEvent.click(screen.getByTestId('tab-new'));
     fireEvent.change(screen.getByLabelText('氏名（必須）'), { target: { value: '新規 花子' } });
-    fireEvent.change(screen.getByLabelText('患者コード（必須）'), { target: { value: 'P-999' } });
+    fireEvent.change(screen.getByLabelText('患者コード（任意・空欄で自動採番）'), {
+      target: { value: 'P-999' },
+    });
     fireEvent.click(screen.getByTestId(`propose-adopt-${OFFICE_ID}-0-A-10:00`));
     fireEvent.click(screen.getByTestId('propose-new-proceed-button'));
     fireEvent.click(screen.getByTestId('propose-new-confirm-button'));
@@ -643,7 +679,9 @@ describe('採用 → 確定: 新規 (作成 + 確定)', () => {
 
     fireEvent.click(screen.getByTestId('tab-new'));
     fireEvent.change(screen.getByLabelText('氏名（必須）'), { target: { value: '新規 花子' } });
-    fireEvent.change(screen.getByLabelText('患者コード（必須）'), { target: { value: 'P-999' } });
+    fireEvent.change(screen.getByLabelText('患者コード（任意・空欄で自動採番）'), {
+      target: { value: 'P-999' },
+    });
     fireEvent.click(screen.getByTestId(`propose-adopt-${OFFICE_ID}-0-A-10:00`));
     fireEvent.click(screen.getByTestId('propose-new-proceed-button'));
     fireEvent.click(screen.getByTestId('propose-new-confirm-button'));
@@ -659,7 +697,9 @@ describe('採用 → 確定: 新規 (作成 + 確定)', () => {
 
     fireEvent.click(screen.getByTestId('tab-new'));
     fireEvent.change(screen.getByLabelText('氏名（必須）'), { target: { value: '新規 花子' } });
-    fireEvent.change(screen.getByLabelText('患者コード（必須）'), { target: { value: 'P-999' } });
+    fireEvent.change(screen.getByLabelText('患者コード（任意・空欄で自動採番）'), {
+      target: { value: 'P-999' },
+    });
     fireEvent.click(screen.getByTestId(`propose-adopt-${OFFICE_ID}-0-A-10:00`));
     fireEvent.click(screen.getByTestId('propose-new-proceed-button'));
     fireEvent.click(screen.getByTestId('propose-new-confirm-button'));
@@ -677,7 +717,9 @@ describe('採用 → 確定: 新規 (作成 + 確定)', () => {
 
     fireEvent.click(screen.getByTestId('tab-new'));
     fireEvent.change(screen.getByLabelText('氏名（必須）'), { target: { value: '新規 花子' } });
-    fireEvent.change(screen.getByLabelText('患者コード（必須）'), { target: { value: 'P-999' } });
+    fireEvent.change(screen.getByLabelText('患者コード（任意・空欄で自動採番）'), {
+      target: { value: 'P-999' },
+    });
     fireEvent.click(screen.getByTestId(`propose-adopt-${OFFICE_ID}-0-A-10:00`));
     fireEvent.click(screen.getByTestId('propose-new-proceed-button'));
     fireEvent.click(screen.getByTestId('propose-new-confirm-button'));
@@ -698,7 +740,9 @@ describe('採用 → 確定: 新規 (作成 + 確定)', () => {
 
     fireEvent.click(screen.getByTestId('tab-new'));
     fireEvent.change(screen.getByLabelText('氏名（必須）'), { target: { value: '新規 花子' } });
-    fireEvent.change(screen.getByLabelText('患者コード（必須）'), { target: { value: 'P-999' } });
+    fireEvent.change(screen.getByLabelText('患者コード（任意・空欄で自動採番）'), {
+      target: { value: 'P-999' },
+    });
     fireEvent.click(screen.getByTestId(`propose-adopt-${OFFICE_ID}-0-A-10:00`));
     fireEvent.click(screen.getByTestId('propose-new-proceed-button'));
     fireEvent.click(screen.getByTestId('propose-new-confirm-button'));

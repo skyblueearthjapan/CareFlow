@@ -1250,13 +1250,10 @@ export function SuggestSheet({
   // 希望週N日 (required_days)。coverage 優先、無ければ frequencyPerWeek。
   const requiredDays = coverage?.required_days ?? frequencyPerWeek;
   const adoptedCount = adopted.size;
-  // 提案作成可否: 新規モードで、氏名/コードあり + 採用枠が 1 件以上。
+  // 提案作成可否: 新規モードで、氏名あり + 採用枠が 1 件以上。
+  // Phase G-86: 患者コードは任意 (空欄なら backend が自動採番) なので要件から外す。
   const canCreate =
-    !isExisting &&
-    karteName.trim().length > 0 &&
-    karteCode.trim().length > 0 &&
-    adoptedCount > 0 &&
-    !createPendingMut.isPending;
+    !isExisting && karteName.trim().length > 0 && adoptedCount > 0 && !createPendingMut.isPending;
 
   const submitKarte = () => {
     if (isExisting) return; // 既存患者は本フロー対象外 (StageA のまま)。
@@ -1264,10 +1261,7 @@ export function SuggestSheet({
       onToast('氏名を入力してください');
       return;
     }
-    if (!karteCode.trim()) {
-      onToast('患者コードを入力してください');
-      return;
-    }
+    // Phase G-86: 患者コードは任意 (空欄なら backend が自動採番) のため guard を外す。
     if (adoptedCount === 0) {
       onToast('採用する枠を選んでください');
       return;
@@ -2316,11 +2310,11 @@ function KarteFormSection({
       </Field>
 
       <div style={{ display: 'flex', gap: 12 }}>
-        <Field label="患者コード（必須）" flex>
+        <Field label="患者コード（任意・空欄で自動採番）" flex>
           <input
             value={code}
             onChange={(e) => onCode(e.target.value)}
-            placeholder="例: P-1042"
+            placeholder="空欄で自動採番"
             aria-label="患者コード"
             style={cfInput}
           />
@@ -2871,14 +2865,13 @@ export function PlacementSheet({
   // 送信可否: 必須入力 + 赤は理由必須 + 黄は承知チェック。
   const reasonOk = !hasRed || overrideReason.trim().length > 0;
   const ackOk = !hasYellow || acknowledged;
-  const baseInputOk = isExisting
-    ? linkedPatient !== null
-    : karteName.trim().length > 0 && karteCode.trim().length > 0;
+  // Phase G-86: 新規患者の患者コードは任意 (空欄なら backend が自動採番)。氏名のみ必須。
+  const baseInputOk = isExisting ? linkedPatient !== null : karteName.trim().length > 0;
   const canSubmit = baseInputOk && reasonOk && ackOk && !createPendingMut.isPending;
 
   const submit = () => {
     if (!baseInputOk) {
-      onToast(isExisting ? 'お客様を選んでください' : '氏名・患者コードを入力してください');
+      onToast(isExisting ? 'お客様を選んでください' : '氏名を入力してください');
       return;
     }
     if (!reasonOk) {

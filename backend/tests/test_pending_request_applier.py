@@ -967,6 +967,139 @@ async def test_apply_patient_create_proposed_visits_does_not_touch_other_patient
 
 
 # ---------------------------------------------------------------------------
+# 5c) Phase G-86: patient_create の code 自動採番
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apply_patient_create_autonumbers_when_code_empty(db) -> None:
+    """code 空 → generate_next_patient_code で自動採番して患者作成。"""
+    # 既存 P094 があるので次は P095。
+    existing = Patient(code="P094", name="既存", status="active")
+    db.add(existing)
+    await db.commit()
+
+    user = await _make_user(db, "apl-pcreate-auto@example.com")
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="patient_create",
+        payload={
+            "code": "",  # 空文字 → 自動採番
+            "name": "自動 太郎",
+            "status": "active",
+        },
+    )
+
+    applier = PendingRequestApplier()
+    await applier.apply(db, pr)
+    await db.commit()
+
+    row = await db.scalar(select(Patient).where(Patient.name == "自動 太郎"))
+    assert row is not None
+    assert row.code == "P095"
+
+
+@pytest.mark.asyncio
+async def test_apply_patient_create_autonumbers_when_code_missing(db) -> None:
+    """code キー自体が無い → 自動採番 (P001)。"""
+    user = await _make_user(db, "apl-pcreate-nomissing@example.com")
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="patient_create",
+        payload={"name": "採番 花子", "status": "active"},
+    )
+
+    applier = PendingRequestApplier()
+    await applier.apply(db, pr)
+    await db.commit()
+
+    row = await db.scalar(select(Patient).where(Patient.name == "採番 花子"))
+    assert row is not None
+    assert row.code == "P001"
+
+
+@pytest.mark.asyncio
+async def test_apply_patient_create_keeps_manual_code(db) -> None:
+    """code 指定あり → そのまま使う (自動採番しない)。"""
+    user = await _make_user(db, "apl-pcreate-manual@example.com")
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="patient_create",
+        payload={"code": "P-MANUAL-001", "name": "手入力 次郎", "status": "active"},
+    )
+
+    applier = PendingRequestApplier()
+    await applier.apply(db, pr)
+    await db.commit()
+
+    row = await db.scalar(select(Patient).where(Patient.name == "手入力 次郎"))
+    assert row is not None
+    assert row.code == "P-MANUAL-001"
+
+
+@pytest.mark.asyncio
+async def test_apply_patient_create_autonumber_retries_on_conflict(db, monkeypatch) -> None:
+    """自動採番した code が既存と衝突 → リトライで別番に落ち着く。
+
+    generate_next_patient_code を最初の 1 回だけ既存衝突する値 (P010) を返し、
+    2 回目以降は実コードを返すようパッチして、savepoint リトライで作成成功することを確認。
+    """
+    import app.services.pending_request_applier as applier_mod
+
+    # 既存 P010 を作っておく (1 回目の採番が衝突するように)。
+    db.add(Patient(code="P010", name="衝突相手", status="active"))
+    await db.commit()
+
+    real_gen = applier_mod.generate_next_patient_code
+    calls = {"n": 0}
+
+    async def _fake_gen(db_arg):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return "P010"  # 既存と衝突する番号
+        return await real_gen(db_arg)
+
+    monkeypatch.setattr(applier_mod, "generate_next_patient_code", _fake_gen)
+
+    user = await _make_user(db, "apl-pcreate-retry@example.com")
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="patient_create",
+        payload={"code": None, "name": "リトライ 三郎", "status": "active"},
+    )
+
+    applier = PendingRequestApplier()
+    await applier.apply(db, pr)
+    await db.commit()
+
+    row = await db.scalar(select(Patient).where(Patient.name == "リトライ 三郎"))
+    assert row is not None
+    assert row.code != "P010"
+    assert calls["n"] >= 2  # 1 回目衝突 → 再採番した
+
+
+@pytest.mark.asyncio
+async def test_apply_patient_create_name_empty_still_422(db) -> None:
+    """name 空は従来どおり 422 (code 任意化後も name は必須)。"""
+    user = await _make_user(db, "apl-pcreate-noname@example.com")
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="patient_create",
+        payload={"code": "", "name": "", "status": "active"},
+    )
+
+    applier = PendingRequestApplier()
+    with pytest.raises(PendingRequestApplyError) as exc_info:
+        await applier.apply(db, pr)
+    assert exc_info.value.http_status == 422
+
+
+# ---------------------------------------------------------------------------
 # 6) patient_cancel
 # ---------------------------------------------------------------------------
 

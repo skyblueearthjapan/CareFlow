@@ -177,8 +177,15 @@ export const patientV2BaseSchema = z.object({
 });
 export type PatientV2Base = z.infer<typeof patientV2BaseSchema>;
 
-/** POST /api/v1/patients リクエスト (W1-BE1). */
-export const patientV2CreateSchema = patientV2BaseSchema;
+/**
+ * POST /api/v1/patients リクエスト (W1-BE1).
+ *
+ * Phase G-86: `code` を任意化 (空欄なら backend が自動採番)。base (Read 共有) の
+ * 必須 `code` には触れず、Create 変種のみ緩める。
+ */
+export const patientV2CreateSchema = patientV2BaseSchema.extend({
+  code: z.string().min(1).max(64).optional(),
+});
 export type PatientV2Create = z.infer<typeof patientV2CreateSchema>;
 
 /**

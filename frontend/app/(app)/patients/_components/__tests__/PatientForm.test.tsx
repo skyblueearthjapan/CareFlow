@@ -332,6 +332,39 @@ describe('PatientForm — W12-FE 住所→拠点自動判定', () => {
     expect(submittedValues?.requires_multiple_staff).toBe(true);
   });
 
+  // ─── Phase G-86: 患者コードの自動採番 (必須→任意) ───────────────────────────
+  // code 空 (未入力) でも氏名さえあれば form validation が通り submit できる。
+  // backend は空 code を自動採番する契約。
+
+  it('9. 患者コード空でも氏名があれば submit できる (自動採番)', async () => {
+    setupMocks();
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+
+    render(<PatientForm onSubmit={onSubmit} />);
+
+    // 氏名のみ入力 (患者コードは空のまま)。
+    const nameInput = screen.getByLabelText(/氏名/) as HTMLInputElement;
+    act(() => {
+      fireEvent.change(nameInput, { target: { value: 'テスト患者' } });
+    });
+
+    // 患者コードが空であることを確認。
+    const codeInput = screen.getByLabelText(/患者コード/) as HTMLInputElement;
+    expect(codeInput.value).toBe('');
+
+    const submitBtn = screen.getByRole('button', { name: '保存' });
+    await act(async () => {
+      fireEvent.click(submitBtn);
+    });
+    await flushDebounceAndMutation(0);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // validation を通過し onSubmit が呼ばれる (code 空でブロックされない)。
+    expect(onSubmit).toHaveBeenCalled();
+  });
+
   it('5. ユーザー手動選択後は住所変更で auto-set されない', async () => {
     const officeId = 'bbbbbbbb-0000-0000-0000-000000000002';
     const mutateAsync = vi.fn().mockResolvedValue({

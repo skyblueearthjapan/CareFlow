@@ -60,3 +60,50 @@ async def test_patients_delete_staff_returns_403(client, db) -> None:
 async def test_patients_list_no_token_returns_401(client) -> None:
     res = await client.get("/api/v1/patients")
     assert res.status_code == 401, res.text
+
+
+# ---------------------------------------------------------------------------
+# Phase G-86: POST /patients の code 自動採番
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_patient_autonumbers_when_code_omitted(client, db) -> None:
+    """code 未指定 → サーバが自動採番 (既存 P094 → P095)。"""
+    admin = await _make_user(db, "p-g86-omit@example.com", "admin")
+    db.add(Patient(code="P094", name="既存"))
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/patients",
+        headers=_bearer(admin),
+        json={"name": "自動 太郎", "status": "active"},
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["code"] == "P095"
+
+
+@pytest.mark.asyncio
+async def test_create_patient_autonumbers_when_code_empty(client, db) -> None:
+    """code 空文字 → None 扱いで自動採番 (P001)。"""
+    admin = await _make_user(db, "p-g86-empty@example.com", "admin")
+    res = await client.post(
+        "/api/v1/patients",
+        headers=_bearer(admin),
+        json={"code": "", "name": "採番 花子", "status": "active"},
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["code"] == "P001"
+
+
+@pytest.mark.asyncio
+async def test_create_patient_keeps_manual_code(client, db) -> None:
+    """code 指定あり → そのまま使う (従来どおり)。"""
+    admin = await _make_user(db, "p-g86-manual@example.com", "admin")
+    res = await client.post(
+        "/api/v1/patients",
+        headers=_bearer(admin),
+        json={"code": "P-MANUAL-9", "name": "手入力 次郎", "status": "active"},
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["code"] == "P-MANUAL-9"

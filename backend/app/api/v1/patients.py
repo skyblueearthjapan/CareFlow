@@ -39,7 +39,11 @@ from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.schemas.patient import PatientCreate, PatientRead, PatientUpdate
 from app.schemas.patient_same_address_link import SameAddressCandidate
 from app.services.geocoding.hash import normalize_address
+from app.services.patient_code import generate_next_patient_code
 from app.services.scheduling.auto_allocator_v2 import SAME_ADDRESS_TOLERANCE, _address_bucket
+
+# Phase G-86: 自動採番した code が UNIQUE 衝突したときの再採番上限。
+_PATIENT_CODE_RETRY_MAX = 5
 
 router = APIRouter()
 
@@ -189,11 +193,37 @@ async def create_patient(
     _user: Annotated[User, Depends(require_role("admin", "manager"))],
 ) -> Patient:
     data = _model_dump_for_orm(payload, partial=False)
-    patient = Patient(**data)
-    db.add(patient)
-    await _commit_or_409(db)
-    await db.refresh(patient)
-    return patient
+
+    # Phase G-86: code が空 / None なら自動採番する。
+    # 手入力 code はそのまま使い、衝突時は従来どおり 409 (_commit_or_409)。
+    auto_code = not data.get("code")
+    if not auto_code:
+        patient = Patient(**data)
+        db.add(patient)
+        await _commit_or_409(db)
+        await db.refresh(patient)
+        return patient
+
+    # 自動採番経路: UNIQUE 衝突 (並行採番) 時は採番からやり直す。
+    last_exc: IntegrityError | None = None
+    for _ in range(_PATIENT_CODE_RETRY_MAX):
+        data["code"] = await generate_next_patient_code(db)
+        patient = Patient(**data)
+        db.add(patient)
+        try:
+            await db.commit()
+        except IntegrityError as exc:
+            await db.rollback()
+            last_exc = exc
+            continue
+        await db.refresh(patient)
+        return patient
+
+    # リトライ上限到達 (高頻度の並行採番衝突)。409 で返す。
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="Conflict: failed to allocate a unique patient code",
+    ) from last_exc
 
 
 @router.patch("/{patient_id}", response_model=PatientRead, summary="Update patient")

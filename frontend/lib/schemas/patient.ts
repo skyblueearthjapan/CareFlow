@@ -267,7 +267,23 @@ export const patientBaseSchema = z.object({
     .default([]),
 });
 
-export const patientCreateSchema = patientBaseSchema;
+/**
+ * Phase G-86: 患者コードを任意化する Create/Form 用の上書きフィールド。
+ * 空文字は `undefined` に畳んで wire から落とし、backend に自動採番させる
+ * (`dropUndefined` が undefined キーを除外)。値が入っていれば従来どおり送る。
+ * base (Read 共有) の必須 `code` には触れず、Create/Form 変種のみ緩める。
+ */
+const optionalPatientCode = z
+  .string()
+  .trim()
+  .max(64)
+  .optional()
+  .transform((v) => (v === '' || v === undefined ? undefined : v));
+
+/** Create: `code` は任意 (空欄で backend 自動採番)。他フィールドは base のまま。 */
+export const patientCreateSchema = patientBaseSchema.extend({
+  code: optionalPatientCode,
+});
 
 /**
  * Update: all fields optional. Hand-written (not `.partial()`) so that the
@@ -350,6 +366,8 @@ export const patientFormSchema = patientBaseSchema
     requires_multiple_staff: true,
   })
   .extend({
+    // Phase G-86: フォームでも患者コードは任意 (空欄で backend 自動採番)。
+    code: optionalPatientCode,
     weekly_pattern: z.record(z.unknown()).optional(),
     special_week: z.boolean().optional().default(false),
     /** Wave 18: フォームでは plain boolean でバインド。送信時に PATCH 経由で BE に渡す。 */

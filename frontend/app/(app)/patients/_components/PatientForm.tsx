@@ -188,8 +188,9 @@ export function PatientForm({
       <Card className="p-5 space-y-4">
         <h2 className="font-serif text-lg font-bold text-text-primary">基本情報</h2>
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          <Field label="患者コード" required error={errors.code?.message}>
-            <Input {...register('code')} placeholder="例: P-0001" />
+          {/* Phase G-86: 患者コードは任意 (空欄で backend が自動採番)。 */}
+          <Field label="患者コード" hint="任意・空欄で自動採番" error={errors.code?.message}>
+            <Input {...register('code')} placeholder="空欄で自動採番" />
           </Field>
           <Field label="氏名" required error={errors.name?.message}>
             <Input {...register('name')} placeholder="例: 山田 太郎" />

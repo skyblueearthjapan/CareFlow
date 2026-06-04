@@ -225,7 +225,27 @@ class PatientV2Base(BaseModel):
 
 
 class PatientV2Create(PatientV2Base):
-    """POST /api/v1/patients リクエスト (W1-BE1)."""
+    """POST /api/v1/patients リクエスト (W1-BE1).
+
+    Phase G-86: 患者コードを任意化する。``code`` が空 / None なら
+    サーバ側で自動採番する (採番は呼び出し側 = API / applier の責務)。
+    Base の ``min_length=1`` 必須を Create 変種のみで override し、Read /
+    Update / 他用途には波及させない。空文字は None 扱い (採番対象) に正規化する。
+    """
+
+    code: str | None = Field(
+        default=None,
+        max_length=64,
+        description="患者コード (一意識別). 空 / 未指定ならサーバが自動採番 (Phase G-86)",
+    )
+
+    @field_validator("code", mode="before")
+    @classmethod
+    def _empty_code_to_none(cls, v: object) -> object:
+        # 空文字 / 空白のみは None 扱い (= 自動採番対象) にする。
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
 
 
 class PatientV2Update(BaseModel):
