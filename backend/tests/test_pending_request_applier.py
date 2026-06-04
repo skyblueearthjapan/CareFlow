@@ -2174,3 +2174,486 @@ async def test_apply_patient_create_red_warning_without_reason_rejected(db) -> N
 
     patient = await db.scalar(select(Patient).where(Patient.code == "P-REDNO-001"))
     assert patient is None
+
+
+# ---------------------------------------------------------------------------
+# Phase G-85: patient_visit_add scope=one_time (その週だけの単発配置)
+# ---------------------------------------------------------------------------
+
+_G85_ISO_YEAR = 2026
+_G85_ISO_WEEK = 23
+
+
+async def _make_office_g85(db, *, name: str = "稲毛G85", code: str = "INAGE"):
+    from app.models import Office
+
+    o = Office(name=name, code=code)
+    db.add(o)
+    await db.commit()
+    await db.refresh(o)
+    return o
+
+
+async def _make_course_g85(
+    db,
+    *,
+    office,
+    weekday: int,
+    code: str = "A",
+    iso_year: int = _G85_ISO_YEAR,
+    iso_week: int = _G85_ISO_WEEK,
+    assigned_staff_id=None,
+):
+    from app.models.course import COURSE_STATUS_STAFF_ASSIGNED, Course
+
+    c = Course(
+        iso_year=iso_year,
+        iso_week=iso_week,
+        weekday=weekday,
+        code=code,
+        course_status=COURSE_STATUS_STAFF_ASSIGNED,
+        assigned_staff_id=assigned_staff_id,
+        office_id=office.id,
+    )
+    db.add(c)
+    await db.commit()
+    await db.refresh(c)
+    return c
+
+
+@pytest.mark.asyncio
+async def test_apply_visit_add_permanent_unchanged_no_visit_created(db) -> None:
+    """scope 省略 (=permanent): 現行どおり PFV upsert のみ。Visit は作成されない。"""
+    from app.models.patient_fixed_visit import PatientFixedVisit
+
+    user = await _make_user(db, "apl-g85-perm@example.com")
+    patient = await _make_patient(db, code="P-G85-PERM")
+
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="patient_visit_add",
+        payload={
+            "patient_id": str(patient.id),
+            "proposed_visits": [
+                {"weekday": 2, "start_time": "10:00", "duration_min": 40},
+            ],
+        },
+        target_patient_id=patient.id,
+    )
+
+    applier = PendingRequestApplier()
+    await applier.apply(db, pr)
+    await db.commit()
+
+    # PFV が 1 件 upsert される (恒常).
+    pfv_rows = (
+        await db.scalars(
+            select(PatientFixedVisit).where(PatientFixedVisit.patient_id == patient.id)
+        )
+    ).all()
+    assert len(pfv_rows) == 1
+    assert pfv_rows[0].weekday == 2
+    assert pfv_rows[0].start_time == time(10, 0)
+
+    # Visit は 1 件も作られない (恒常経路は実 Visit を作らない).
+    visit_rows = (await db.scalars(select(Visit).where(Visit.patient_id == patient.id))).all()
+    assert len(visit_rows) == 0
+
+
+@pytest.mark.asyncio
+async def test_apply_visit_add_onetime_creates_visit_for_week_only(db) -> None:
+    """scope=one_time: 対象週の Visit を 1 件 INSERT。board に出て翌週には出ない。"""
+    from app.models.patient_fixed_visit import PatientFixedVisit
+    from app.services.scheduling.board_service import load_board_buckets
+
+    user = await _make_user(db, "apl-g85-onetime@example.com")
+    staff = await _make_staff(db, name="単発担当")
+    patient = await _make_patient(db, code="P-G85-ONE")
+    office = await _make_office_g85(db, code="INAGE")
+    weekday = 1  # Tue
+    course = await _make_course_g85(
+        db, office=office, weekday=weekday, code="A", assigned_staff_id=staff.id
+    )
+
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="patient_visit_add",
+        payload={
+            "patient_id": str(patient.id),
+            "course_id": str(course.id),
+            "iso_year": _G85_ISO_YEAR,
+            "iso_week": _G85_ISO_WEEK,
+            "weekday": weekday,
+            "proposed_visits": [
+                {"weekday": weekday, "start_time": "13:30", "duration_min": 45},
+            ],
+        },
+        target_patient_id=patient.id,
+        scope="one_time",
+    )
+
+    applier = PendingRequestApplier()
+    await applier.apply(db, pr)
+    await db.commit()
+
+    # PFV は触らない (単発).
+    pfv_rows = (
+        await db.scalars(
+            select(PatientFixedVisit).where(PatientFixedVisit.patient_id == patient.id)
+        )
+    ).all()
+    assert len(pfv_rows) == 0
+
+    # Visit が 1 件、確定フィールドで作られる.
+    visit = await db.scalar(select(Visit).where(Visit.patient_id == patient.id))
+    assert visit is not None
+    expected_date = date.fromisocalendar(_G85_ISO_YEAR, _G85_ISO_WEEK, weekday + 1)
+    assert visit.visit_date == expected_date
+    assert visit.start_time == time(13, 30)
+    assert visit.end_time == time(14, 15)
+    assert visit.type == "regular"
+    assert visit.status == VISIT_STATUS_PLANNED
+    assert visit.source == "manual"
+    assert visit.course_id == course.id
+    assert visit.primary_staff_id == staff.id
+    assert visit.required_staff_count == 1
+
+    # board: 対象週に出る.
+    buckets, _names, _codes = await load_board_buckets(
+        db, iso_year=_G85_ISO_YEAR, iso_week=_G85_ISO_WEEK, office_ids=[office.id]
+    )
+    key = (office.id, weekday, "A")
+    assert key in buckets
+    assert any(bv.patient_id == patient.id for bv in buckets[key].visits)
+
+    # board: 翌週には出ない (複製されない).
+    buckets_next, _n2, _c2 = await load_board_buckets(
+        db, iso_year=_G85_ISO_YEAR, iso_week=_G85_ISO_WEEK + 1, office_ids=[office.id]
+    )
+    assert all(
+        bv.patient_id != patient.id for bucket in buckets_next.values() for bv in bucket.visits
+    )
+
+
+@pytest.mark.asyncio
+async def test_apply_visit_add_onetime_course_not_found_rejected(db) -> None:
+    """scope=one_time: course 不在 → 422。"""
+    import uuid as _uuid
+
+    user = await _make_user(db, "apl-g85-nocourse@example.com")
+    patient = await _make_patient(db, code="P-G85-NOCOURSE")
+
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="patient_visit_add",
+        payload={
+            "patient_id": str(patient.id),
+            "course_id": str(_uuid.uuid4()),
+            "iso_year": _G85_ISO_YEAR,
+            "iso_week": _G85_ISO_WEEK,
+            "weekday": 1,
+            "proposed_visits": [
+                {"weekday": 1, "start_time": "09:00", "duration_min": 30},
+            ],
+        },
+        target_patient_id=patient.id,
+        scope="one_time",
+    )
+
+    applier = PendingRequestApplier()
+    with pytest.raises(PendingRequestApplyError) as exc_info:
+        await applier.apply(db, pr)
+    assert exc_info.value.http_status == 422
+
+
+@pytest.mark.asyncio
+async def test_apply_visit_add_onetime_course_wrong_week_rejected(db) -> None:
+    """scope=one_time: course が別週/別曜日 → 422。"""
+    user = await _make_user(db, "apl-g85-wrongweek@example.com")
+    patient = await _make_patient(db, code="P-G85-WRONGWEEK")
+    office = await _make_office_g85(db, code="INAGE")
+    # course は weekday=1 だが payload では weekday=3 を指定する → 不一致.
+    course = await _make_course_g85(db, office=office, weekday=1, code="A")
+
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="patient_visit_add",
+        payload={
+            "patient_id": str(patient.id),
+            "course_id": str(course.id),
+            "iso_year": _G85_ISO_YEAR,
+            "iso_week": _G85_ISO_WEEK,
+            "weekday": 3,
+            "proposed_visits": [
+                {"weekday": 3, "start_time": "09:00", "duration_min": 30},
+            ],
+        },
+        target_patient_id=patient.id,
+        scope="one_time",
+    )
+
+    applier = PendingRequestApplier()
+    with pytest.raises(PendingRequestApplyError) as exc_info:
+        await applier.apply(db, pr)
+    assert exc_info.value.http_status == 422
+
+
+@pytest.mark.asyncio
+async def test_apply_visit_add_onetime_missing_required_rejected(db) -> None:
+    """scope=one_time: 必須 payload (course_id/iso_year/iso_week) 欠落 → 422。"""
+    user = await _make_user(db, "apl-g85-missing@example.com")
+    patient = await _make_patient(db, code="P-G85-MISSING")
+
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="patient_visit_add",
+        payload={
+            "patient_id": str(patient.id),
+            # course_id / iso_year / iso_week なし.
+            "proposed_visits": [
+                {"weekday": 1, "start_time": "09:00", "duration_min": 30},
+            ],
+        },
+        target_patient_id=patient.id,
+        scope="one_time",
+    )
+
+    applier = PendingRequestApplier()
+    with pytest.raises(PendingRequestApplyError) as exc_info:
+        await applier.apply(db, pr)
+    assert exc_info.value.http_status == 422
+
+
+@pytest.mark.asyncio
+async def test_apply_visit_add_onetime_time_overlap_without_reason_rejected(db) -> None:
+    """scope=one_time: 同コース同日の実 Visit と時刻重複 + override_reason 空 → 422。"""
+    user = await _make_user(db, "apl-g85-overlap@example.com")
+    other = await _make_patient(db, code="P-G85-OVERLAP-OTHER")
+    patient = await _make_patient(db, code="P-G85-OVERLAP")
+    office = await _make_office_g85(db, code="INAGE")
+    weekday = 1
+    course = await _make_course_g85(db, office=office, weekday=weekday, code="A")
+    visit_date = date.fromisocalendar(_G85_ISO_YEAR, _G85_ISO_WEEK, weekday + 1)
+    # 既存 planned Visit 10:00-10:45 (重複対象).
+    db.add(
+        Visit(
+            patient_id=other.id,
+            visit_date=visit_date,
+            start_time=time(10, 0),
+            end_time=time(10, 45),
+            type="regular",
+            status=VISIT_STATUS_PLANNED,
+            source="manual",
+            course_id=course.id,
+            required_staff_count=1,
+        )
+    )
+    await db.commit()
+
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="patient_visit_add",
+        payload={
+            "patient_id": str(patient.id),
+            "course_id": str(course.id),
+            "iso_year": _G85_ISO_YEAR,
+            "iso_week": _G85_ISO_WEEK,
+            "weekday": weekday,
+            # 10:30-11:00 は既存 10:00-10:45 と重複.
+            "proposed_visits": [
+                {"weekday": weekday, "start_time": "10:30", "duration_min": 30},
+            ],
+        },
+        target_patient_id=patient.id,
+        scope="one_time",
+    )
+
+    applier = PendingRequestApplier()
+    with pytest.raises(PendingRequestApplyError) as exc_info:
+        await applier.apply(db, pr)
+    assert exc_info.value.http_status == 422
+
+
+@pytest.mark.asyncio
+async def test_apply_visit_add_onetime_adjacent_no_overlap_ok(db) -> None:
+    """scope=one_time: 端点接触 (10:45 始まり vs 既存 10:45 終わり) は重複としない。"""
+    user = await _make_user(db, "apl-g85-adjacent@example.com")
+    other = await _make_patient(db, code="P-G85-ADJ-OTHER")
+    patient = await _make_patient(db, code="P-G85-ADJ")
+    office = await _make_office_g85(db, code="INAGE")
+    weekday = 1
+    course = await _make_course_g85(db, office=office, weekday=weekday, code="A")
+    visit_date = date.fromisocalendar(_G85_ISO_YEAR, _G85_ISO_WEEK, weekday + 1)
+    db.add(
+        Visit(
+            patient_id=other.id,
+            visit_date=visit_date,
+            start_time=time(10, 0),
+            end_time=time(10, 45),
+            type="regular",
+            status=VISIT_STATUS_PLANNED,
+            source="manual",
+            course_id=course.id,
+            required_staff_count=1,
+        )
+    )
+    await db.commit()
+
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="patient_visit_add",
+        payload={
+            "patient_id": str(patient.id),
+            "course_id": str(course.id),
+            "iso_year": _G85_ISO_YEAR,
+            "iso_week": _G85_ISO_WEEK,
+            "weekday": weekday,
+            # 10:45 始まり = 既存 10:45 終わりと端点接触 (重複なし).
+            "proposed_visits": [
+                {"weekday": weekday, "start_time": "10:45", "duration_min": 30},
+            ],
+        },
+        target_patient_id=patient.id,
+        scope="one_time",
+    )
+
+    applier = PendingRequestApplier()
+    # 赤無し → override_reason 不要で成功.
+    await applier.apply(db, pr)
+    await db.commit()
+
+    visit = await db.scalar(select(Visit).where(Visit.patient_id == patient.id))
+    assert visit is not None
+    assert visit.start_time == time(10, 45)
+
+
+@pytest.mark.asyncio
+async def test_apply_visit_add_onetime_idempotent_double_apply(db) -> None:
+    """scope=one_time: applied_at ガードで再 apply しても Visit は二重作成されない。"""
+    user = await _make_user(db, "apl-g85-idem@example.com")
+    patient = await _make_patient(db, code="P-G85-IDEM")
+    office = await _make_office_g85(db, code="INAGE")
+    weekday = 1
+    course = await _make_course_g85(db, office=office, weekday=weekday, code="A")
+
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="patient_visit_add",
+        payload={
+            "patient_id": str(patient.id),
+            "course_id": str(course.id),
+            "iso_year": _G85_ISO_YEAR,
+            "iso_week": _G85_ISO_WEEK,
+            "weekday": weekday,
+            "proposed_visits": [
+                {"weekday": weekday, "start_time": "09:00", "duration_min": 30},
+            ],
+        },
+        target_patient_id=patient.id,
+        scope="one_time",
+    )
+
+    applier = PendingRequestApplier()
+    await applier.apply(db, pr)
+    # apply 済みを示すため applied_at を立てる (HTTP 層が行う遷移を模倣).
+    pr.applied_at = datetime(2026, 6, 5, 0, 0, 0)
+    await db.commit()
+
+    # 再 apply: ガードで no-op.
+    await applier.apply(db, pr)
+    await db.commit()
+
+    visit_rows = (await db.scalars(select(Visit).where(Visit.patient_id == patient.id))).all()
+    assert len(visit_rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_apply_visit_add_onetime_capacity_full_without_reason_rejected(db) -> None:
+    """scope=one_time: 対象 Course が既に満員 (≥MAX_PATIENTS_PER_COURSE) で
+    override_reason 空 → 422。override_reason を付ければ成功 (Visit 作成).
+    """
+    from app.services.scheduling.auto_allocator_v2 import MAX_PATIENTS_PER_COURSE
+
+    user = await _make_user(db, "apl-g85-capacity@example.com")
+    patient = await _make_patient(db, code="P-G85-CAP")
+    office = await _make_office_g85(db, code="INAGE")
+    weekday = 1
+    course = await _make_course_g85(db, office=office, weekday=weekday, code="A")
+    visit_date = date.fromisocalendar(_G85_ISO_YEAR, _G85_ISO_WEEK, weekday + 1)
+
+    # 対象 Course・対象 visit_date に planned Visit を満員数 (=6) 作る.
+    # 時刻は重ならない 30 分刻みで配置 → capacity 判定のみを発火させ、
+    # time_overlap が混入しないようにする.
+    for i in range(MAX_PATIENTS_PER_COURSE):
+        existing = await _make_patient(db, code=f"P-G85-CAP-FILL-{i}")
+        start_min = 9 * 60 + i * 30  # 09:00, 09:30, ... と隙間なく連続.
+        end_min = start_min + 30
+        db.add(
+            Visit(
+                patient_id=existing.id,
+                visit_date=visit_date,
+                start_time=time(start_min // 60, start_min % 60),
+                end_time=time(end_min // 60, end_min % 60),
+                type="regular",
+                status=VISIT_STATUS_PLANNED,
+                source="manual",
+                course_id=course.id,
+                required_staff_count=1,
+            )
+        )
+    await db.commit()
+
+    # 既存 6 件と重ならない時刻 (13:00) を提案 → 赤は capacity_full のみ.
+    base_payload = {
+        "patient_id": str(patient.id),
+        "course_id": str(course.id),
+        "iso_year": _G85_ISO_YEAR,
+        "iso_week": _G85_ISO_WEEK,
+        "weekday": weekday,
+        "proposed_visits": [
+            {"weekday": weekday, "start_time": "13:00", "duration_min": 30},
+        ],
+    }
+
+    # override_reason 空 → capacity_full でサーバが赤再判定 → 422.
+    pr_no_reason = await _make_pending(
+        db,
+        requester=user,
+        request_type="patient_visit_add",
+        payload=dict(base_payload),
+        target_patient_id=patient.id,
+        scope="one_time",
+    )
+    applier = PendingRequestApplier()
+    with pytest.raises(PendingRequestApplyError) as exc_info:
+        await applier.apply(db, pr_no_reason)
+    assert exc_info.value.http_status == 422
+
+    # Visit は作られていない (満員のまま).
+    visit_rows = (await db.scalars(select(Visit).where(Visit.patient_id == patient.id))).all()
+    assert len(visit_rows) == 0
+
+    # override_reason を付ければ満員でも強行配置できる → Visit が 1 件作成.
+    pr_with_reason = await _make_pending(
+        db,
+        requester=user,
+        request_type="patient_visit_add",
+        payload={**base_payload, "override_reason": "現場判断で満員でも追加"},
+        target_patient_id=patient.id,
+        scope="one_time",
+    )
+    await applier.apply(db, pr_with_reason)
+    await db.commit()
+
+    visit_rows = (await db.scalars(select(Visit).where(Visit.patient_id == patient.id))).all()
+    assert len(visit_rows) == 1
+    assert visit_rows[0].start_time == time(13, 0)
+    assert visit_rows[0].course_id == course.id

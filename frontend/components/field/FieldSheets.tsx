@@ -85,6 +85,7 @@ import {
   type SlotPlacementContext,
   type PlacementWarning,
   type PlacementExtras,
+  type VisitAddScope,
 } from '@/lib/field/patientCreate';
 import { fmtHM, parseHM } from '@/lib/scheduling/freeGaps';
 import type { BoardVisit, WeekdayCode } from '@/lib/schemas/v2/board';
@@ -2697,16 +2698,28 @@ function clampStart(min: number, gapStart: number, gapEnd: number, durationMin: 
 
 export function PlacementSheet({
   ctx,
+  isoYear,
+  isoWeek,
   onClose,
   onToast,
 }: {
   ctx: SlotPlacementContext;
+  /** 対象週 ISO 年 (単発 scope の payload に同梱)。 */
+  isoYear: number;
+  /** 対象週 ISO 週 (単発 scope の payload に同梱)。 */
+  isoWeek: number;
   onClose: () => void;
   onToast: (msg: string) => void;
 }) {
   // 新規(0) / 既存(1) トグル。
   const [seg, setSeg] = useState(0);
   const isExisting = seg === 1;
+
+  // Phase G-85: 既存患者の「配置方法」(毎週固定 / この週だけ単発)。既定=毎週固定。
+  // 新規患者モードでは常に恒常 (このトグルは既存患者選択時のみ表示)。
+  // ctx.courseId == null の枠は materialize 先が無いため単発不可。
+  const canOneTime = ctx.courseId != null;
+  const [scope, setScope] = useState<VisitAddScope>('permanent');
 
   // 所要 (分)。サービス時間と連動。
   const [durationMin, setDurationMin] = useState(DEFAULT_SERVICE_MINUTES);
@@ -2890,17 +2903,28 @@ export function PlacementSheet({
     };
 
     if (isExisting && linkedPatient) {
+      // Phase G-85: 単発は ctx.courseId が必要 (materialize 先)。無ければ恒常に倒す。
+      const effectiveScope: VisitAddScope =
+        scope === 'one_time' && canOneTime ? 'one_time' : 'permanent';
       const payload = buildPatientVisitAddPayload(
         linkedPatient.id,
         linkedPatient.name,
         proposedVisit,
         extras,
+        effectiveScope,
+        effectiveScope === 'one_time' && ctx.courseId != null
+          ? { courseId: ctx.courseId, isoYear, isoWeek }
+          : null,
       );
       createPendingMut.mutate(
         { request_type: 'patient_visit_add', payload },
         {
           onSuccess: () => {
-            onToast('✓ 訪問追加を申請しました（承認待ち）');
+            onToast(
+              effectiveScope === 'one_time'
+                ? '✓ 単発の訪問追加を申請しました（承認待ち）'
+                : '✓ 訪問追加を申請しました（承認待ち）',
+            );
             onClose();
           },
           onError: () => onToast('申請に失敗しました'),
@@ -3067,16 +3091,81 @@ export function PlacementSheet({
         </div>
 
         {isExisting ? (
-          <PatientLinkPanel
-            linked={linkedPatient}
-            query={patientQuery}
-            onQueryChange={setPatientQuery}
-            candidates={candidates}
-            isFetching={patientsQuery.isFetching}
-            isError={patientsQuery.isError}
-            onSelect={linkPatient}
-            onUnlink={unlinkPatient}
-          />
+          <>
+            <PatientLinkPanel
+              linked={linkedPatient}
+              query={patientQuery}
+              onQueryChange={setPatientQuery}
+              candidates={candidates}
+              isFetching={patientsQuery.isFetching}
+              isError={patientsQuery.isError}
+              onSelect={linkPatient}
+              onUnlink={unlinkPatient}
+            />
+            {/* Phase G-85: 配置方法 (毎週固定 / この週だけ単発)。既存患者選択時のみ。 */}
+            <Field label="配置方法">
+              <div
+                style={{
+                  display: 'flex',
+                  gap: 6,
+                  background: '#F4EFE7',
+                  padding: 4,
+                  borderRadius: 13,
+                }}
+              >
+                {(
+                  [
+                    { v: 'permanent', label: '毎週 固定', sub: 'マスタに追加', enabled: true },
+                    {
+                      v: 'one_time',
+                      label: 'この週だけ',
+                      sub: '単発',
+                      enabled: canOneTime,
+                    },
+                  ] as const
+                ).map((opt) => {
+                  const active = scope === opt.v;
+                  const disabled = !opt.enabled;
+                  return (
+                    <button
+                      key={opt.v}
+                      type="button"
+                      onClick={() => !disabled && setScope(opt.v)}
+                      disabled={disabled}
+                      aria-pressed={active}
+                      style={{
+                        flex: 1,
+                        padding: '9px 6px',
+                        borderRadius: 10,
+                        fontFamily: 'var(--font-serif)',
+                        fontWeight: 700,
+                        lineHeight: 1.25,
+                        background: active ? '#fff' : 'transparent',
+                        color: disabled ? _INK3 : active ? _TERRAD : _INK2,
+                        boxShadow: active ? '0 2px 6px rgba(0,0,0,0.07)' : 'none',
+                        opacity: disabled ? 0.45 : 1,
+                      }}
+                    >
+                      <span style={{ display: 'block', fontSize: 13.5 }}>{opt.label}</span>
+                      <span style={{ display: 'block', fontSize: 10.5, color: _INK3 }}>
+                        {opt.sub}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              {!canOneTime && (
+                <div style={{ fontSize: 10.5, color: _INK2, marginTop: 5, lineHeight: 1.5 }}>
+                  ※ この枠は単発配置に対応していません（毎週固定のみ）。
+                </div>
+              )}
+              {scope === 'one_time' && canOneTime && (
+                <div style={{ fontSize: 10.5, color: _INK2, marginTop: 5, lineHeight: 1.5 }}>
+                  ※ この週（{isoYear}年 第{isoWeek}週）にのみ追加します。マスタは変更しません。
+                </div>
+              )}
+            </Field>
+          </>
         ) : (
           <>
             <KarteFormSection

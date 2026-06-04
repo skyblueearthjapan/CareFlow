@@ -109,3 +109,41 @@ describe('ApprovePanel placement カード', () => {
     expect(screen.queryByText('配置する枠')).not.toBeInTheDocument();
   });
 });
+
+describe('ApprovePanel scope ラベル (Phase G-85)', () => {
+  it('scope 未指定 (恒常) は「毎週固定」を出す', () => {
+    render(<ApprovePanel onToast={vi.fn()} />);
+    expect(screen.getAllByText('毎週固定').length).toBeGreaterThan(0);
+  });
+
+  it('scope=one_time + iso は「この週だけ（YYYY-Www）」を出す', () => {
+    const base = makeReq();
+    setPending([
+      makeReq({
+        payload: {
+          ...(base.payload as Record<string, unknown>),
+          scope: 'one_time',
+          course_id: 'weekly-course-1',
+          iso_year: 2026,
+          iso_week: 23,
+        },
+      }),
+    ]);
+    render(<ApprovePanel onToast={vi.fn()} />);
+    expect(screen.getAllByText('この週だけ（2026-W23）').length).toBeGreaterThan(0);
+  });
+
+  it('scope=one_time だが iso 欠落でも「この週だけ（単発）」にフォールバック', () => {
+    const base = makeReq();
+    setPending([
+      makeReq({
+        payload: {
+          ...(base.payload as Record<string, unknown>),
+          scope: 'one_time',
+        },
+      }),
+    ]);
+    render(<ApprovePanel onToast={vi.fn()} />);
+    expect(screen.getAllByText('この週だけ（単発）').length).toBeGreaterThan(0);
+  });
+});

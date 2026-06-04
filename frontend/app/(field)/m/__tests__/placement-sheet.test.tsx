@@ -57,7 +57,42 @@ const createMutate = vi.fn();
 const travelMutate = vi.fn();
 
 function renderSheet(over: Partial<SlotPlacementContext> = {}) {
-  return render(<PlacementSheet ctx={ctx(over)} onClose={vi.fn()} onToast={vi.fn()} />);
+  return render(
+    <PlacementSheet
+      ctx={ctx(over)}
+      isoYear={2026}
+      isoWeek={23}
+      onClose={vi.fn()}
+      onToast={vi.fn()}
+    />,
+  );
+}
+
+/** usePatients に候補1件を仕込んで既存モードで選択するヘルパ。 */
+function mockOnePatient() {
+  (usePatients as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    data: {
+      items: [
+        {
+          id: 'pid-1',
+          code: 'P-1',
+          name: '田中 太郎',
+          kana: 'タナカ タロウ',
+          address: '千葉市稲毛区1-1',
+          lat: 35.6,
+          lng: 140.1,
+          weekly_pattern: {},
+        },
+      ],
+      total: 1,
+      page: 1,
+      limit: 8,
+      truncated: false,
+    },
+    isLoading: false,
+    isFetching: false,
+    isError: false,
+  });
 }
 
 beforeEach(() => {
@@ -250,6 +285,68 @@ describe('PlacementSheet 既存患者の訪問追加', () => {
     expect(pv[0]!.course_code).toBe('稲A');
     expect(arg.payload.placement).toBeTruthy();
     expect(arg.payload.override_reason).toBeNull();
+    // Phase G-85: 既定は恒常 (毎週固定)。course_id/iso は載せない。
+    expect(arg.payload.scope).toBe('permanent');
+    expect('course_id' in arg.payload).toBe(false);
+    expect('iso_year' in arg.payload).toBe(false);
+  });
+});
+
+describe('PlacementSheet 配置方法トグル (Phase G-85)', () => {
+  it('新規モードでは「配置方法」トグルを出さない (恒常のみ)', () => {
+    renderSheet();
+    expect(screen.queryByText('配置方法')).not.toBeInTheDocument();
+  });
+
+  it('既存モードでは「配置方法」トグルを出す', () => {
+    mockOnePatient();
+    renderSheet();
+    fireEvent.click(screen.getByText('既存のお客様'));
+    expect(screen.getByText('配置方法')).toBeInTheDocument();
+    expect(screen.getByText('毎週 固定')).toBeInTheDocument();
+    expect(screen.getByText('この週だけ')).toBeInTheDocument();
+  });
+
+  it('「この週だけ」選択で one_time payload に course_id/iso を同梱して申請', () => {
+    mockOnePatient();
+    renderSheet();
+    fireEvent.click(screen.getByText('既存のお客様'));
+    fireEvent.change(screen.getByLabelText('既存のお客様を検索'), { target: { value: '田中' } });
+    fireEvent.click(screen.getByText('田中 太郎'));
+    // 単発トグルへ切替。
+    fireEvent.click(screen.getByText('この週だけ'));
+    fireEvent.click(screen.getByText('この枠に配置を申請（承認へ）'));
+
+    expect(createMutate).toHaveBeenCalledTimes(1);
+    const arg = createMutate.mock.calls[0]![0] as {
+      request_type: string;
+      payload: Record<string, unknown>;
+    };
+    expect(arg.request_type).toBe('patient_visit_add');
+    expect(arg.payload.scope).toBe('one_time');
+    expect(arg.payload.course_id).toBe('course-1');
+    expect(arg.payload.iso_year).toBe(2026);
+    expect(arg.payload.iso_week).toBe(23);
+  });
+
+  it('ctx.courseId == null の枠では単発を無効化 (恒常で申請)', () => {
+    mockOnePatient();
+    renderSheet({ courseId: null });
+    fireEvent.click(screen.getByText('既存のお客様'));
+    fireEvent.change(screen.getByLabelText('既存のお客様を検索'), { target: { value: '田中' } });
+    fireEvent.click(screen.getByText('田中 太郎'));
+    // 単発ボタンは disabled。クリックしても scope は変わらない。
+    const oneTimeBtn = screen.getByText('この週だけ').closest('button');
+    expect(oneTimeBtn).toBeDisabled();
+    fireEvent.click(screen.getByText('この週だけ'));
+    fireEvent.click(screen.getByText('この枠に配置を申請（承認へ）'));
+
+    const arg = createMutate.mock.calls[0]![0] as {
+      request_type: string;
+      payload: Record<string, unknown>;
+    };
+    expect(arg.payload.scope).toBe('permanent');
+    expect('course_id' in arg.payload).toBe(false);
   });
 });
 

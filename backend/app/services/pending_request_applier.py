@@ -38,19 +38,20 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from typing import Any
 from uuid import UUID
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.course import Course
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.pending_request import PendingRequest
 from app.models.staff import Staff, StaffEvent, StaffWeeklyOverride
 from app.models.staff_companion_assignment import StaffCompanionAssignment
-from app.models.visit import VISIT_STATUS_CANCELLED, Visit
+from app.models.visit import VISIT_STATUS_CANCELLED, VISIT_STATUS_PLANNED, Visit
 from app.schemas.v2.enums import RequestScope, RequestStatus, RequestType
 from app.services.geocoding.client import geocode_address
 from app.services.manager_course_sync import sync_manager_course_templates
@@ -59,6 +60,7 @@ from app.services.proposed_visits_pfv import (
     _resolve_course_template_id,
     apply_proposed_visits_as_normal_pfv,
 )
+from app.services.scheduling.auto_allocator_v2 import MAX_PATIENTS_PER_COURSE
 
 logger = logging.getLogger(__name__)
 
@@ -541,7 +543,36 @@ async def _apply_patient_create(
 async def _apply_patient_visit_add(
     db: AsyncSession, request: PendingRequest, payload: _Payload
 ) -> None:
-    """``patient_visit_add`` (Phase G-84 A-4): 既存患者の normal PFV に 1 枠を追加.
+    """``patient_visit_add``: 既存患者の空き枠直接配置 (scope で恒常 / 単発を分岐).
+
+    Phase G-85: ``scope`` (``request.scope`` または payload, 既定 ``permanent``) で
+    2 経路に分岐する:
+
+    - ``permanent`` / 未指定 → ``_apply_visit_add_permanent`` (Phase G-84 の現行ロジック.
+      normal PFV へ 1 枠マージ追加. 毎週固定. **完全不変・後方互換**).
+    - ``one_time`` → ``_apply_visit_add_onetime`` (その週だけの単発. Visit を 1 件 INSERT.
+      PFV は触らない).
+
+    scope は ``RequestScope`` enum (``one_time`` / ``permanent``) のいずれか. 不正値は 422.
+    """
+    scope = request.scope or payload.get("scope") or RequestScope.PERMANENT.value
+    if scope not in {RequestScope.ONE_TIME.value, RequestScope.PERMANENT.value}:
+        raise PendingRequestApplyError(
+            f"patient_visit_add: invalid scope {scope!r}",
+            http_status=422,
+        )
+
+    if scope == RequestScope.ONE_TIME.value:
+        await _apply_visit_add_onetime(db, request, payload)
+        return
+
+    await _apply_visit_add_permanent(db, request, payload)
+
+
+async def _apply_visit_add_permanent(
+    db: AsyncSession, request: PendingRequest, payload: _Payload
+) -> None:
+    """``patient_visit_add`` (scope=permanent, Phase G-84 A-4): 既存患者の normal PFV に 1 枠を追加.
 
     payload:
         ``{patient_id, patient_name?, proposed_visits:[1枠], placement?,
@@ -689,6 +720,210 @@ async def _apply_patient_visit_add(
             duration_min=new_duration,
             course_template_id=course_template_id,
             slot_index=0,
+        )
+    )
+    await db.flush()
+
+
+async def _apply_visit_add_onetime(
+    db: AsyncSession, request: PendingRequest, payload: _Payload
+) -> None:
+    """``patient_visit_add`` (scope=one_time, Phase G-85): その週だけの単発配置.
+
+    PFV (毎週固定パターン) は **触らず**, 対象週の実 ``Visit`` を 1 件だけ INSERT する.
+    現場ボード (``board_service.load_board_buckets``) は実 Visit を週次 Course と
+    INNER JOIN して描画するため, 以下の条件を満たすことでその週のボードに出る:
+        - ``deleted_at IS NULL`` / ``status == 'planned'`` / ``type == 'regular'`` (normal 表示)
+        - ``visit_date`` が対象 ISO 週内
+        - ``course_id`` が対象週の実 Course (deleted_at NULL) を指す
+
+    ★``source = 'manual'`` が必須: Layer-1 再展開 (``layer1_expander``) は
+    ``source = 'auto'`` の planned visit を purge して再生成するが, manual は保護される.
+    これにより単発が再算出で消えず, かつ翌週に複製もされない (PFV を介さないため).
+
+    payload (one_time 必須):
+        ``{patient_id, course_id, iso_year, iso_week, proposed_visits:[1枠],
+           placement?, warnings?, override_reason?}``
+        weekday は payload (任意) または ``proposed_visits[0].weekday`` から解決する.
+
+    冪等性: 呼び出し元 (``PendingRequestApplier.apply``) の ``applied_at`` ガード内で
+    実行されるため, 同一 request の再 approve では本関数は呼ばれず Visit を二重作成しない
+    (raw INSERT なので冪等性はこのガードに依存する点に注意).
+    """
+    patient_id = _coerce_uuid(payload.get("patient_id") or request.target_patient_id)
+    if patient_id is None:
+        raise PendingRequestApplyError(
+            "patient_visit_add(one_time): patient_id is required",
+            http_status=422,
+        )
+
+    # one_time 必須 payload: course_id / iso_year / iso_week.
+    course_id = _coerce_uuid(payload.get("course_id"))
+    iso_year_raw = payload.get("iso_year")
+    iso_week_raw = payload.get("iso_week")
+    if course_id is None or iso_year_raw is None or iso_week_raw is None:
+        raise PendingRequestApplyError(
+            "patient_visit_add(one_time): course_id, iso_year, iso_week are required",
+            http_status=422,
+        )
+    try:
+        iso_year = int(iso_year_raw)
+        iso_week = int(iso_week_raw)
+    except (TypeError, ValueError):
+        raise PendingRequestApplyError(
+            "patient_visit_add(one_time): iso_year / iso_week must be int",
+            http_status=422,
+        ) from None
+
+    proposed_visits = payload.get("proposed_visits")
+    if (
+        not proposed_visits
+        or not isinstance(proposed_visits, list)
+        or len(proposed_visits) != 1
+        or not isinstance(proposed_visits[0], dict)
+    ):
+        raise PendingRequestApplyError(
+            "patient_visit_add(one_time): proposed_visits must contain exactly 1 object",
+            http_status=422,
+        )
+    new_visit = proposed_visits[0]
+
+    # weekday: payload 優先, 無ければ proposed_visits[0].weekday.
+    weekday_raw = payload.get("weekday")
+    if weekday_raw is None:
+        weekday_raw = new_visit.get("weekday")
+    if (
+        not isinstance(weekday_raw, int)
+        or isinstance(weekday_raw, bool)
+        or not (0 <= weekday_raw <= 6)
+    ):
+        raise PendingRequestApplyError(
+            "patient_visit_add(one_time): weekday must be int 0-6",
+            http_status=422,
+        )
+    weekday = weekday_raw
+
+    new_start = _coerce_time(new_visit.get("start_time"))
+    if new_start is None:
+        raise PendingRequestApplyError(
+            "patient_visit_add(one_time): proposed_visits[0].start_time must be 'HH:MM'",
+            http_status=422,
+        )
+
+    duration_raw = new_visit.get("duration_min", 30)
+    try:
+        new_duration = int(duration_raw)
+    except (TypeError, ValueError):
+        raise PendingRequestApplyError(
+            "patient_visit_add(one_time): proposed_visits[0].duration_min must be int",
+            http_status=422,
+        ) from None
+    if new_duration < 1 or new_duration > 480:
+        raise PendingRequestApplyError(
+            "patient_visit_add(one_time): proposed_visits[0].duration_min must be 1..480",
+            http_status=422,
+        )
+
+    # end_time = start + duration (> start を検証).
+    start_dt = datetime.combine(date.min, new_start)
+    end_dt = start_dt + timedelta(minutes=new_duration)
+    if end_dt.date() != date.min:
+        raise PendingRequestApplyError(
+            "patient_visit_add(one_time): end_time overflows the day",
+            http_status=422,
+        )
+    new_end = end_dt.time()
+    if new_end <= new_start:
+        raise PendingRequestApplyError(
+            "patient_visit_add(one_time): end_time must be > start_time",
+            http_status=422,
+        )
+
+    # visit_date = 対象 ISO 週 × weekday (0=Mon → ISO day 1).
+    try:
+        visit_date = date.fromisocalendar(iso_year, iso_week, weekday + 1)
+    except ValueError as exc:
+        raise PendingRequestApplyError(
+            f"patient_visit_add(one_time): invalid iso week {iso_year}-W{iso_week}: {exc}",
+            http_status=422,
+        ) from exc
+
+    # 患者存在チェック.
+    patient = await db.scalar(
+        select(Patient).where(Patient.id == patient_id, Patient.deleted_at.is_(None))
+    )
+    if patient is None:
+        raise PendingRequestApplyError(
+            f"patient_visit_add(one_time): patient {patient_id} not found",
+            http_status=404,
+        )
+
+    # Course 検証: 存在・deleted_at NULL・iso_year/iso_week/weekday が payload と一致.
+    # 不一致だとボードに出ない / 別週に出るため INSERT 前に 422 で弾く.
+    course = await db.scalar(
+        select(Course).where(Course.id == course_id, Course.deleted_at.is_(None))
+    )
+    if course is None:
+        raise PendingRequestApplyError(
+            f"patient_visit_add(one_time): course {course_id} not found",
+            http_status=422,
+        )
+    if course.iso_year != iso_year or course.iso_week != iso_week or course.weekday != weekday:
+        raise PendingRequestApplyError(
+            "patient_visit_add(one_time): course does not match the target "
+            f"week/weekday (course={course.iso_year}-W{course.iso_week} wd={course.weekday}, "
+            f"payload={iso_year}-W{iso_week} wd={weekday})",
+            http_status=422,
+        )
+
+    # 単発の精密 赤再判定 (恒常より強い): その週の対象 Course の実 Visit を読んで
+    # time_overlap (区間 [start,end) 重複, 端点接触は除外) と capacity_full
+    # (≥ MAX_PATIENTS_PER_COURSE) を判定する.
+    existing_visits = (
+        await db.scalars(
+            select(Visit).where(
+                Visit.course_id == course_id,
+                Visit.visit_date == visit_date,
+                Visit.status == VISIT_STATUS_PLANNED,
+                Visit.deleted_at.is_(None),
+            )
+        )
+    ).all()
+
+    extra_red: list[str] = []
+    new_start_min = new_start.hour * 60 + new_start.minute
+    new_end_min = new_end.hour * 60 + new_end.minute
+    for ev in existing_visits:
+        ev_start_min = ev.start_time.hour * 60 + ev.start_time.minute
+        ev_end_min = ev.end_time.hour * 60 + ev.end_time.minute
+        # [start, end) 区間重複 (端点接触は重複としない).
+        if new_start_min < ev_end_min and ev_start_min < new_end_min:
+            extra_red.append("time_overlap")
+            break
+    if len(existing_visits) >= MAX_PATIENTS_PER_COURSE:
+        extra_red.append("capacity_full")
+
+    # 赤警告があるのに override_reason 空なら 422 (クライアント申告 + サーバ再判定を合算).
+    _validate_override_reason_for_red(payload, extra_red_codes=extra_red)
+
+    # primary_staff_id = 対象 Course の assigned_staff_id (無ければ NULL 可).
+    primary_staff_id = course.assigned_staff_id
+
+    # 単発 Visit を 1 件 INSERT (PFV は触らない).
+    # ★source='manual': Layer-1 auto purge から保護 + 翌週複製を防ぐ.
+    db.add(
+        Visit(
+            patient_id=patient_id,
+            primary_staff_id=primary_staff_id,
+            visit_date=visit_date,
+            start_time=new_start,
+            end_time=new_end,
+            type="regular",
+            status=VISIT_STATUS_PLANNED,
+            source="manual",
+            course_id=course_id,
+            required_staff_count=1,
+            note="現場ボード単発配置 (G-85)",
         )
     )
     await db.flush()

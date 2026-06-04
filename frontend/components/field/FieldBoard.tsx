@@ -397,7 +397,13 @@ export function FieldBoard() {
         />
       )}
       {placement && (
-        <PlacementSheet ctx={placement} onClose={() => setPlacement(null)} onToast={showToast} />
+        <PlacementSheet
+          ctx={placement}
+          isoYear={isoYear}
+          isoWeek={isoWeek}
+          onClose={() => setPlacement(null)}
+          onToast={showToast}
+        />
       )}
 
       {toast && <Toast msg={toast} />}

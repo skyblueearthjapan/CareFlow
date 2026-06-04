@@ -421,24 +421,59 @@ function withPlacementExtras(
 }
 
 /**
+ * 既存患者の枠配置の「配置方法」(Phase G-85)。
+ * - `'permanent'`: 毎週固定。normal PFV にマージ (G-84 までの既定挙動・後方互換)。
+ * - `'one_time'` : その週だけの単発。backend が対象週に Visit を 1 件 INSERT する。
+ */
+export type VisitAddScope = 'permanent' | 'one_time';
+
+/**
+ * 単発 (scope=='one_time') のとき payload に同梱する対象週座標 (Phase G-85)。
+ * backend は course_id (= 週次 `Course.id`, フロント `ctx.courseId`) と iso_year/iso_week
+ * から materialize 先の週次 Course / visit_date を解決する。permanent では同梱しない。
+ */
+export interface OneTimePlacement {
+  /** 週次 `Course.id` (= `SlotPlacementContext.courseId`)。materialize 先の Course。 */
+  courseId: string;
+  /** ISO 週年。FieldSheets が board から保持。 */
+  isoYear: number;
+  /** ISO 週番号。FieldSheets が board から保持。 */
+  isoWeek: number;
+}
+
+/**
  * 既存患者の枠配置 pending `patient_visit_add` payload を組み立てる純関数。
  *
  * backend `_apply_patient_visit_add` が読む shape:
- *   { patient_id, patient_name, proposed_visits:[1枠], placement, warnings, override_reason }
- * proposed_visits は**タップした 1 枠のみ**。applier が既存 normal PFV にマージする
- * (同一 weekday は置換、無ければ追加 = PUT 同等の冪等上書き)。
+ *   { patient_id, patient_name, proposed_visits:[1枠], scope, placement, warnings, override_reason }
+ * proposed_visits は**タップした 1 枠のみ**。
+ *
+ * Phase G-85: `scope` で配置方法を切り替える。
+ * - `'permanent'` (既定): normal PFV にマージ (同一 weekday は置換、無ければ追加 =
+ *   PUT 同等の冪等上書き)。course_id/iso は載せない (後方互換)。
+ * - `'one_time'`: payload に `course_id` (= `oneTime.courseId`) / `iso_year` / `iso_week`
+ *   を載せ、backend がその週に Visit を 1 件 INSERT する (PFV は触らない)。
  */
 export function buildPatientVisitAddPayload(
   patientId: string,
   patientName: string,
   proposedVisit: ProposedVisit,
   extras: PlacementExtras,
+  scope: VisitAddScope = 'permanent',
+  oneTime?: OneTimePlacement | null,
 ): Record<string, unknown> {
   const base: Record<string, unknown> = {
     patient_id: patientId,
     patient_name: patientName.trim(),
     proposed_visits: [proposedVisit],
+    scope,
   };
+  // 単発のみ対象週座標を同梱 (permanent では載せない = 後方互換)。
+  if (scope === 'one_time' && oneTime) {
+    base.course_id = oneTime.courseId;
+    base.iso_year = oneTime.isoYear;
+    base.iso_week = oneTime.isoWeek;
+  }
   return withPlacementExtras(base, extras);
 }
 

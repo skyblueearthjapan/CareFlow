@@ -210,6 +210,48 @@ describe('buildPatientVisitAddPayload', () => {
     expect(p.override_reason).toBe('急患対応のため');
     expect((p.warnings as unknown[]).length).toBe(1);
   });
+
+  // ── Phase G-85: scope (毎週固定 / この週だけ単発) 分岐。
+  it('scope 省略は permanent。course_id/iso を載せない (後方互換)', () => {
+    const p = buildPatientVisitAddPayload('pid-1', '田中 太郎', visit, extras());
+    expect(p.scope).toBe('permanent');
+    expect('course_id' in p).toBe(false);
+    expect('iso_year' in p).toBe(false);
+    expect('iso_week' in p).toBe(false);
+  });
+
+  it('scope=permanent を明示しても course_id/iso は載せない', () => {
+    const p = buildPatientVisitAddPayload('pid-1', '田中 太郎', visit, extras(), 'permanent', {
+      courseId: 'weekly-course-1',
+      isoYear: 2026,
+      isoWeek: 23,
+    });
+    expect(p.scope).toBe('permanent');
+    expect('course_id' in p).toBe(false);
+    expect('iso_year' in p).toBe(false);
+    expect('iso_week' in p).toBe(false);
+  });
+
+  it('scope=one_time は course_id(=ctx.courseId)/iso_year/iso_week を同梱', () => {
+    const p = buildPatientVisitAddPayload('pid-1', '田中 太郎', visit, extras(), 'one_time', {
+      courseId: 'weekly-course-1',
+      isoYear: 2026,
+      isoWeek: 23,
+    });
+    expect(p.scope).toBe('one_time');
+    expect(p.course_id).toBe('weekly-course-1');
+    expect(p.iso_year).toBe(2026);
+    expect(p.iso_week).toBe(23);
+    // 既存フィールドは維持。
+    expect(p.patient_id).toBe('pid-1');
+    expect(p.proposed_visits).toEqual([visit]);
+  });
+
+  it('scope=one_time だが oneTime 未指定なら course_id/iso を載せない (防御)', () => {
+    const p = buildPatientVisitAddPayload('pid-1', '田中 太郎', visit, extras(), 'one_time', null);
+    expect(p.scope).toBe('one_time');
+    expect('course_id' in p).toBe(false);
+  });
 });
 
 describe('buildPatientCreatePlacementPayload', () => {

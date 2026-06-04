@@ -109,6 +109,45 @@ function str(payload: Record<string, unknown>, key: string): string | null {
 }
 
 /**
+ * Phase G-85: patient_visit_add の scope (毎週固定 / この週だけ単発) を
+ * 表示用ラベルに変換する。payload は defensively に読む (scope/iso 欠落を許容)。
+ * - one_time: 「この週だけ（YYYY-Www）」(iso_year/iso_week があれば併記)。
+ * - permanent / 未指定: 「毎週固定」。
+ */
+function visitAddScopeLabel(payload: Record<string, unknown>): string {
+  if (payload.scope !== 'one_time') return '毎週固定';
+  const y = payload.iso_year;
+  const w = payload.iso_week;
+  if (typeof y === 'number' && typeof w === 'number') {
+    return `この週だけ（${y}-W${String(w).padStart(2, '0')}）`;
+  }
+  return 'この週だけ（単発）';
+}
+
+/** scope ラベルを小さなバッジで描画する (one_time は強調色)。 */
+function ScopeBadge({ payload }: { payload: Record<string, unknown> }) {
+  const oneTime = payload.scope === 'one_time';
+  const label = visitAddScopeLabel(payload);
+  return (
+    <span
+      style={{
+        display: 'inline-block',
+        marginLeft: 6,
+        padding: '1px 7px',
+        borderRadius: 8,
+        fontSize: 10,
+        fontWeight: 700,
+        color: oneTime ? '#fff' : INK2,
+        background: oneTime ? TERRA : '#F1ECE3',
+        border: oneTime ? 'none' : `1px solid ${LINE}`,
+      }}
+    >
+      {label}
+    </span>
+  );
+}
+
+/**
  * patient_create 申請の payload からカルテ概要 + 提案枠 (曜日/時刻/コース) を
  * プレビュー表示する (StageB)。承認すると患者作成 + PFV 確定が同一 TX で走る。
  */
@@ -339,6 +378,7 @@ function PlacementCard({ payload }: { payload: Record<string, unknown> }) {
       >
         <MapPin size={11} />
         配置する枠
+        {payload.scope === 'one_time' && <ScopeBadge payload={payload} />}
       </div>
       <div style={{ fontSize: 12, color: INK, fontWeight: 700 }}>
         {placement.officeName ?? ''}
@@ -439,6 +479,7 @@ function PatientVisitAddPreview({ payload }: { payload: Record<string, unknown> 
       >
         <Sparkles size={11} />
         追加する枠 {visits.length}件
+        <ScopeBadge payload={payload} />
       </div>
       {visits.length === 0 ? (
         <div style={{ fontSize: 11, color: INK3 }}>追加枠は登録されていません</div>
