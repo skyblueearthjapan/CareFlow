@@ -37,6 +37,8 @@ export const REQUEST_TYPE_VALUES = [
   'patient_special_week_off',
   'staff_status_update',
   'patient_status_update',
+  // Phase G-84: 現場ボードの空き枠への既存患者の直接配置 (normal PFV に 1 枠マージ)。
+  'patient_visit_add',
 ] as const;
 export const requestTypeEnum = z.enum(REQUEST_TYPE_VALUES);
 export type RequestType = z.infer<typeof requestTypeEnum>;

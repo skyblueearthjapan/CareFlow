@@ -26,9 +26,16 @@ import {
   type ProposeSlotsRequest,
   type ProposeSlotsResponse,
 } from '@/lib/schemas/v2/propose_slots';
+import {
+  travelEstimateRequestSchema,
+  travelEstimateResponseSchema,
+  type TravelEstimateRequest,
+  type TravelEstimateResponse,
+} from '@/lib/schemas/v2/travel_estimate';
 
 const BOARD_PATH = '/api/v1/schedule/v2/board';
 const PROPOSE_SLOTS_PATH = '/api/v1/schedule/v2/propose-slots';
+const TRAVEL_ESTIMATE_PATH = '/api/v1/schedule/v2/travel-estimate';
 
 const FIELD_BOARD_KEY = ['field-board'] as const;
 
@@ -148,6 +155,40 @@ export function useProposeSlots(): UseMutationResult<
         refreshToken,
       });
       return proposeSlotsResponseSchema.parse(result);
+    },
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// POST /v2/travel-estimate — 移動時間見積 (Phase G-84, 空き枠直接配置の案2)
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * POST /api/v1/schedule/v2/travel-estimate — 直前訪問 → 配置先の移動 +
+ * バッファー所要分を見積もる (read-only, DB 書込なし)。
+ *
+ * 空き枠タップ時の PlacementSheet が、開始時刻の初期値 (案2 = 直前訪問の終了 +
+ * total_minutes) を決めるために呼ぶ mutation。座標が確定できないと minutes は
+ * null で返り、フロントは枠頭 (案1) にフォールバックする。
+ */
+export function useTravelEstimate(): UseMutationResult<
+  TravelEstimateResponse,
+  Error,
+  TravelEstimateRequest
+> {
+  const { data: session } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+
+  return useMutation<TravelEstimateResponse, Error, TravelEstimateRequest>({
+    mutationFn: async (raw) => {
+      const payload = travelEstimateRequestSchema.parse(raw);
+      const result = await fetcher<unknown>(TRAVEL_ESTIMATE_PATH, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+        accessToken,
+        refreshToken,
+      });
+      return travelEstimateResponseSchema.parse(result);
     },
   });
 }

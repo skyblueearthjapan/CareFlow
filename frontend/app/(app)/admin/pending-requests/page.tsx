@@ -93,6 +93,7 @@ const REQUEST_TYPE_LABEL: Record<RequestType, string> = {
   patient_special_week_on: '特別週ON',
   patient_special_week_off: '特別週OFF',
   patient_status_update: '患者状態変更',
+  patient_visit_add: '訪問追加',
 };
 
 const STATUS_LABEL: Record<RequestStatus, string> = {

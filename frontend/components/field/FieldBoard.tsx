@@ -34,9 +34,10 @@ import { useFieldBoard, toWeekStart, toIsoYearWeek } from '@/lib/queries/fieldBo
 import { usePendingRequests } from '@/lib/queries/pending_requests';
 import type { BoardCell, BoardCourse, BoardOffice, BoardVisit } from '@/lib/schemas/v2/board';
 import { computeFreeGaps, parseHM, type FreeGap } from '@/lib/scheduling/freeGaps';
+import type { SlotPlacementContext } from '@/lib/field/patientCreate';
 
 import { CF_THEME, CF_DOWS, cc } from './theme';
-import { KarteSheet, SuggestSheet, Toast } from './FieldSheets';
+import { KarteSheet, SuggestSheet, PlacementSheet, Toast } from './FieldSheets';
 import { ApprovePanel } from './ApprovePanel';
 
 const { TEAL, TEAL_DEEP, TERRA, TERRA_DEEP, INK, INK2, INK3, CREAM, LINE, PANEL } = CF_THEME;
@@ -53,6 +54,45 @@ const WEEKLEN = 7;
 /** 'HH:MM〜HH:MM' の実時刻ラベル (start/end をそのまま使う)。 */
 function visitTimeLabel(v: BoardVisit): string {
   return `${v.start_time}〜${v.end_time}`;
+}
+
+/**
+ * gap 直前 visit: end_time <= gap 開始 のうち最も遅く終わる visit (= 移動の起点)。
+ * 空き枠への直接配置 (Phase G-84) で「誰の隣か」「移動時間の起点」を解決する。
+ */
+function lastVisitEndingAtOrBefore(
+  visits: ReadonlyArray<BoardVisit>,
+  gapStartMin: number,
+): BoardVisit | null {
+  let best: BoardVisit | null = null;
+  let bestEnd = -1;
+  for (const v of visits) {
+    const e = parseHM(v.end_time);
+    if (e === null || e > gapStartMin) continue;
+    if (e > bestEnd) {
+      bestEnd = e;
+      best = v;
+    }
+  }
+  return best;
+}
+
+/** gap 直後 visit: start_time >= gap 終了 のうち最も早く始まる visit。 */
+function firstVisitStartingAtOrAfter(
+  visits: ReadonlyArray<BoardVisit>,
+  gapEndMin: number,
+): BoardVisit | null {
+  let best: BoardVisit | null = null;
+  let bestStart = Number.MAX_SAFE_INTEGER;
+  for (const v of visits) {
+    const s = parseHM(v.start_time);
+    if (s === null || s < gapEndMin) continue;
+    if (s < bestStart) {
+      bestStart = s;
+      best = v;
+    }
+  }
+  return best;
 }
 
 // ============================ 日付フォーマット ============================
@@ -73,6 +113,33 @@ const MD_FORMAT = (iso: string): string => {
 
 /** office_name → 拠点並び順 (小さいほど先頭)。マップ外は名前順で末尾に回す。 */
 const OFFICE_ORDER: Record<string, number> = { 稲毛: 0, 都賀: 1 };
+
+// 拠点付きコーストークン (applier の parse_course_token 規約) 用の短縮名。
+// backend `patient_excel/schema.py` OFFICE_SHORT_TO_CODE と対応: 稲毛→稲(INAGE)・都賀→津(TSUGA)。
+// board API は office_code を持たず office_name のみ返すため、ここで名前→短縮名へ写す。
+const OFFICE_NAME_TO_SHORT: Record<string, string> = { 稲毛: '稲', 都賀: '津' };
+
+/**
+ * 拠点付きコーストークン (例 "稲A") を組み立てる。applier はこのトークンを
+ * `parse_course_token` で拠点 + コードに分解してコースを解決する (= 唯一の解決経路。
+ * board は週次 Course.id しか返さず course_template_id は無いためトークンが頼り)。
+ *
+ * - board の course_code が既に短縮名始まり (稲/津) ならそのまま採用。
+ * - 裸コード ("A") の場合は office_name から短縮名を前置する。
+ * - 短縮名が解決できない拠点では拠点付きにできず、裸コードのままになる
+ *   (この場合 applier の `parse_course_token` が拠点を特定できずコース解決に失敗する。
+ *   現状の対象拠点は稲毛/都賀のみで必ず短縮名を引けるためトリガーしない)。
+ *   呼び出し側 (CourseSlots) で拠点付きにできたかを判定し、できない枠は空き枠カードを
+ *   出さない (= 配置不可) ことで、解決不能トークンの送出を防ぐ。
+ */
+function buildCourseToken(officeName: string, courseCode: string): string | null {
+  const code = (courseCode || '').trim();
+  const short = OFFICE_NAME_TO_SHORT[officeName];
+  // 短縮名を引けない拠点は拠点付きトークン化できない → null (配置不可)。
+  if (!short) return null;
+  if (code.startsWith('稲') || code.startsWith('津')) return code;
+  return `${short}${code}`;
+}
 
 function officeRank(officeName: string): number {
   const r = OFFICE_ORDER[officeName];
@@ -140,6 +207,8 @@ export function FieldBoard() {
   const [approve, setApprove] = useState(false);
   const [karte, setKarte] = useState<BoardVisit | null>(null);
   const [sheet, setSheet] = useState(false);
+  // 空き枠タップ → 直接配置シート (Phase G-84)。枠コンテキストを保持して開く。
+  const [placement, setPlacement] = useState<SlotPlacementContext | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
   // 全拠点ぶんを 1 度に取得 (officeId 指定なし)。拠点は分けず 1 ボードに結合表示する。
@@ -280,20 +349,22 @@ export function FieldBoard() {
         ) : (
           <AgendaBoard
             dayCourses={dayCourses}
+            weekday={dayIdx}
             sameAddressGroups={sameAddressGroups}
             onKarte={setKarte}
-            onEmpty={() => setSheet(true)}
+            onEmpty={setPlacement}
           />
         )}
         <div style={{ height: 28 }} />
       </div>
 
       {/* scrim */}
-      {(karte || sheet) && (
+      {(karte || sheet || placement) && (
         <div
           onClick={() => {
             setKarte(null);
             setSheet(false);
+            setPlacement(null);
           }}
           style={{
             position: 'absolute',
@@ -324,6 +395,9 @@ export function FieldBoard() {
           onClose={() => setSheet(false)}
           onToast={showToast}
         />
+      )}
+      {placement && (
+        <PlacementSheet ctx={placement} onClose={() => setPlacement(null)} onToast={showToast} />
       )}
 
       {toast && <Toast msg={toast} />}
@@ -959,14 +1033,21 @@ function PairWrap({
 // コース内のスロット一覧 (実訪問 + 同住所連結 + 空き枠)。
 function CourseSlots({
   co,
+  officeId,
+  officeName,
+  weekday,
   sameAddressGroups,
   onKarte,
   onEmpty,
 }: {
   co: BoardCourse;
+  /** 直接配置の枠コンテキスト構築用 (拠点情報 + 曜日)。 */
+  officeId: string;
+  officeName: string;
+  weekday: number;
   sameAddressGroups: SameAddressGroups;
   onKarte: (v: BoardVisit) => void;
-  onEmpty: () => void;
+  onEmpty: (ctx: SlotPlacementContext) => void;
 }) {
   // 訪問カード / 同住所連結 / 空き帯を start_time 昇順に interleave して描画する。
   // 各要素は { sortKey=開始分, seq=安定タイブレーク, node } を持ち、最後にまとめて並べ替える。
@@ -1020,11 +1101,41 @@ function CourseSlots({
   // ただし頭数(capacity)でゲートする: remaining<=0 (filled>=6 満員) なら、時間的に空き帯が
   // あっても「この時間空いてますよ」カードを一切出さない (空きなし)。remaining>0 のときのみ表示。
   if (co.capacity.remaining > 0) {
-    for (const gap of computeFreeGaps(co.visits)) {
+    // そのコースの既存 visit 占有 (時刻重複の赤判定用)。start 昇順。
+    const occupied = co.visits
+      .map((v) => ({ startTime: v.start_time, endTime: v.end_time }))
+      .filter((v) => parseHM(v.startTime) !== null && parseHM(v.endTime) !== null)
+      .sort((a, b) => (parseHM(a.startTime) ?? 0) - (parseHM(b.startTime) ?? 0));
+    const courseToken = buildCourseToken(officeName, co.course_code);
+    // 拠点付きトークンにできない (= applier がコース解決できない) 場合は空き枠カードを
+    // 出さない。解決不能トークンを承認に送ると PFV の course が NULL になるため配置不可とする。
+    // 現状の対象拠点 (稲毛/都賀) では必ず解決できるため通常はトリガーしない。
+    const gaps = courseToken === null ? [] : computeFreeGaps(co.visits);
+    for (const gap of gaps) {
+      // gap 直前 / 直後の visit を実時刻位置から解決する (移動時間 / 表示用)。
+      const prev = lastVisitEndingAtOrBefore(co.visits, gap.startMin);
+      const next = firstVisitStartingAtOrAfter(co.visits, gap.endMin);
+      const ctx: SlotPlacementContext = {
+        officeId,
+        officeName,
+        courseId: co.course_id ?? null,
+        // gaps は courseToken!==null のときのみ非空なので、ここでは必ず文字列。
+        courseCode: courseToken!,
+        courseLabel: co.course_label,
+        weekday,
+        gapStartMin: gap.startMin,
+        gapEndMin: gap.endMin,
+        prevVisit: prev
+          ? { patientId: prev.patient_id, patientName: prev.patient_name, endTime: prev.end_time }
+          : null,
+        nextVisit: next ? { patientName: next.patient_name, startTime: next.start_time } : null,
+        capacityRemaining: co.capacity.remaining,
+        existingVisits: occupied,
+      };
       items.push({
         sortKey: gap.startMin,
         seq: seq++,
-        node: <EmptySlot key={`gap@${gap.startMin}`} gap={gap} onEmpty={onEmpty} />,
+        node: <EmptySlot key={`gap@${gap.startMin}`} gap={gap} onEmpty={() => onEmpty(ctx)} />,
       });
     }
   }
@@ -1043,15 +1154,18 @@ function CourseSlots({
 
 function AgendaBoard({
   dayCourses,
+  weekday,
   sameAddressGroups,
   onKarte,
   onEmpty,
 }: {
   /** 拠点順 (稲毛→都賀) → course_code (A..M) で並んだ全拠点コース。 */
   dayCourses: BoardCourseWithOffice[];
+  /** 選択日の曜日 (0=Mon..6=Sun)。直接配置の枠コンテキスト用。 */
+  weekday: number;
   sameAddressGroups: SameAddressGroups;
   onKarte: (v: BoardVisit) => void;
-  onEmpty: () => void;
+  onEmpty: (ctx: SlotPlacementContext) => void;
 }) {
   const [closedCourses, setClosedCourses] = useState<Set<string>>(() => new Set());
   return (
@@ -1162,6 +1276,9 @@ function AgendaBoard({
               {isOpen && (
                 <CourseSlots
                   co={co}
+                  officeId={dc.officeId}
+                  officeName={dc.officeName}
+                  weekday={weekday}
                   sameAddressGroups={sameAddressGroups}
                   onKarte={onKarte}
                   onEmpty={onEmpty}

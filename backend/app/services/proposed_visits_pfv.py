@@ -222,5 +222,6 @@ async def apply_proposed_visits_as_normal_pfv(
 
 __all__ = [
     "ProposedVisitsError",
+    "_resolve_course_template_id",
     "apply_proposed_visits_as_normal_pfv",
 ]

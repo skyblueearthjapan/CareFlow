@@ -1381,7 +1381,7 @@ async def test_http_approve_failure_rollback(client, db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_all_eleven_request_types_have_handlers() -> None:
+async def test_all_request_types_have_handlers() -> None:
     from app.services.pending_request_applier import _HANDLERS
 
     expected = {
@@ -1396,6 +1396,8 @@ async def test_all_eleven_request_types_have_handlers() -> None:
         "patient_special_week_off",
         "staff_status_update",
         "patient_status_update",
+        # Phase G-84 A-4
+        "patient_visit_add",
     }
     assert set(_HANDLERS.keys()) == expected
 
@@ -1653,3 +1655,522 @@ async def test_apply_patient_status_update_deleted_patient_raises(db) -> None:
     with pytest.raises(PendingRequestApplyError) as exc_info:
         await applier.apply(db, pr)
     assert exc_info.value.http_status == 404
+
+
+# ---------------------------------------------------------------------------
+# Phase G-84: patient_visit_add (既存患者の空き枠直接配置)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apply_patient_visit_add_preserves_existing_and_adds_one(db) -> None:
+    """patient_visit_add: 既存 normal PFV を維持しつつ別曜日に 1 枠追加する。"""
+    from app.models.patient_fixed_visit import PatientFixedVisit
+
+    user = await _make_user(db, "apl-visitadd-keep@example.com")
+    patient = await _make_patient(db, code="P-VA-KEEP")
+    # 既存 normal PFV (Mon 09:00-30分).
+    db.add(
+        PatientFixedVisit(
+            patient_id=patient.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(9, 0),
+            duration_min=30,
+            slot_index=0,
+        )
+    )
+    await db.commit()
+
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="patient_visit_add",
+        payload={
+            "patient_id": str(patient.id),
+            "patient_name": "患者",
+            "proposed_visits": [
+                {"weekday": 3, "start_time": "14:00", "duration_min": 45},
+            ],
+        },
+        target_patient_id=patient.id,
+    )
+
+    applier = PendingRequestApplier()
+    await applier.apply(db, pr)
+    await db.commit()
+
+    rows = (
+        await db.scalars(
+            select(PatientFixedVisit)
+            .where(PatientFixedVisit.patient_id == patient.id)
+            .order_by(PatientFixedVisit.weekday)
+        )
+    ).all()
+    assert len(rows) == 2
+    assert rows[0].weekday == 0
+    assert rows[0].start_time == time(9, 0)
+    assert rows[0].duration_min == 30
+    assert rows[1].weekday == 3
+    assert rows[1].start_time == time(14, 0)
+    assert rows[1].duration_min == 45
+
+
+@pytest.mark.asyncio
+async def test_apply_patient_visit_add_same_weekday_replaces_with_reason(db) -> None:
+    """patient_visit_add: 同一 weekday は置換 (赤=time_overlap, override_reason あれば許可)。"""
+    from app.models.patient_fixed_visit import PatientFixedVisit
+
+    user = await _make_user(db, "apl-visitadd-replace@example.com")
+    patient = await _make_patient(db, code="P-VA-REPLACE")
+    db.add(
+        PatientFixedVisit(
+            patient_id=patient.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(9, 0),
+            duration_min=30,
+            slot_index=0,
+        )
+    )
+    await db.commit()
+
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="patient_visit_add",
+        payload={
+            "patient_id": str(patient.id),
+            "proposed_visits": [
+                {"weekday": 0, "start_time": "11:00", "duration_min": 60},
+            ],
+            "warnings": [
+                {"level": "red", "code": "time_overlap", "message": "時刻重複"},
+            ],
+            "override_reason": "現場判断で強行",
+        },
+        target_patient_id=patient.id,
+    )
+
+    applier = PendingRequestApplier()
+    await applier.apply(db, pr)
+    await db.commit()
+
+    rows = (
+        await db.scalars(
+            select(PatientFixedVisit).where(PatientFixedVisit.patient_id == patient.id)
+        )
+    ).all()
+    # 同一 weekday=0 は置換されるので 1 件のまま (新しい時刻).
+    assert len(rows) == 1
+    assert rows[0].weekday == 0
+    assert rows[0].start_time == time(11, 0)
+    assert rows[0].duration_min == 60
+
+
+@pytest.mark.asyncio
+async def test_apply_patient_visit_add_same_weekday_without_reason_rejected(db) -> None:
+    """patient_visit_add: 同一 weekday (=サーバ再判定の赤) で override_reason 空 → 422。"""
+    from app.models.patient_fixed_visit import PatientFixedVisit
+
+    user = await _make_user(db, "apl-visitadd-noreason@example.com")
+    patient = await _make_patient(db, code="P-VA-NOREASON")
+    db.add(
+        PatientFixedVisit(
+            patient_id=patient.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(9, 0),
+            duration_min=30,
+            slot_index=0,
+        )
+    )
+    await db.commit()
+
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="patient_visit_add",
+        payload={
+            "patient_id": str(patient.id),
+            # 同一 weekday=0 → サーバが time_overlap を再判定 → reason 必須.
+            "proposed_visits": [
+                {"weekday": 0, "start_time": "11:00", "duration_min": 60},
+            ],
+        },
+        target_patient_id=patient.id,
+    )
+
+    applier = PendingRequestApplier()
+    with pytest.raises(PendingRequestApplyError) as exc_info:
+        await applier.apply(db, pr)
+    # 同一 weekday → サーバが time_overlap を再判定 → override_reason 必須 → 422.
+    assert exc_info.value.http_status == 422
+
+
+@pytest.mark.asyncio
+async def test_apply_patient_visit_add_patient_not_found(db) -> None:
+    """patient_visit_add: 患者不在 → 404。"""
+    import uuid as _uuid
+
+    user = await _make_user(db, "apl-visitadd-404@example.com")
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="patient_visit_add",
+        payload={
+            "patient_id": str(_uuid.uuid4()),
+            "proposed_visits": [
+                {"weekday": 1, "start_time": "10:00", "duration_min": 30},
+            ],
+        },
+    )
+
+    applier = PendingRequestApplier()
+    with pytest.raises(PendingRequestApplyError) as exc_info:
+        await applier.apply(db, pr)
+    assert exc_info.value.http_status == 404
+
+
+@pytest.mark.asyncio
+async def test_apply_patient_visit_add_preserves_slot1_multistaff(db) -> None:
+    """patient_visit_add (CRITICAL 是正): multi-staff 患者の slot_index=1 を保全する。
+
+    同曜日に slot_index=0 / 1 の 2 本 normal PFV を持つ multi-staff 患者に、
+    **別曜日** へ 1 枠 visit_add する。修正前は全 normal PFV を削除し slot_index=0
+    のみ再 INSERT していたため slot_index=1 が恒久消失していた (= このテストは
+    修正前なら失敗する)。修正後は slot_index=1 が保全され、新 weekday の
+    slot_index=0 が追加されることを検証する。
+    """
+    from app.models.patient_fixed_visit import PatientFixedVisit
+
+    user = await _make_user(db, "apl-visitadd-slot1@example.com")
+    patient = await _make_patient(db, code="P-VA-SLOT1")
+    patient.requires_multiple_staff = True
+    # 同曜日 (Mon) に 2 本: slot_index=0 と slot_index=1.
+    db.add(
+        PatientFixedVisit(
+            patient_id=patient.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(9, 0),
+            duration_min=30,
+            slot_index=0,
+        )
+    )
+    db.add(
+        PatientFixedVisit(
+            patient_id=patient.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(9, 0),
+            duration_min=30,
+            slot_index=1,
+        )
+    )
+    await db.commit()
+
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="patient_visit_add",
+        payload={
+            "patient_id": str(patient.id),
+            "proposed_visits": [
+                {"weekday": 3, "start_time": "14:00", "duration_min": 45},
+            ],
+        },
+        target_patient_id=patient.id,
+    )
+
+    applier = PendingRequestApplier()
+    await applier.apply(db, pr)
+    await db.commit()
+
+    rows = (
+        await db.scalars(
+            select(PatientFixedVisit)
+            .where(PatientFixedVisit.patient_id == patient.id)
+            .order_by(PatientFixedVisit.weekday, PatientFixedVisit.slot_index)
+        )
+    ).all()
+    # Mon slot0 + Mon slot1 (保全) + 新 Thu slot0 = 3 行.
+    assert len(rows) == 3
+    keyed = {(r.weekday, r.slot_index): r for r in rows}
+    assert (0, 0) in keyed
+    assert (0, 1) in keyed  # ★ slot_index=1 が保全されている (修正前は消失)
+    assert (3, 0) in keyed
+    assert keyed[(3, 0)].start_time == time(14, 0)
+    assert keyed[(3, 0)].duration_min == 45
+    # 元の Mon 2 本は時刻不変.
+    assert keyed[(0, 0)].start_time == time(9, 0)
+    assert keyed[(0, 1)].start_time == time(9, 0)
+
+
+@pytest.mark.asyncio
+async def test_apply_patient_visit_add_same_weekday_keeps_slot1(db) -> None:
+    """patient_visit_add: 同一 weekday の slot0 を置換しても slot1 は残る。
+
+    同曜日に slot_index=0 / 1 を持つ患者に、同じ weekday へ visit_add (置換)。
+    赤=time_overlap になるので override_reason 必須。slot_index=0 は新時刻に
+    置換され、slot_index=1 は触れられずそのまま残ることを検証する。
+    """
+    from app.models.patient_fixed_visit import PatientFixedVisit
+
+    user = await _make_user(db, "apl-visitadd-replace-slot1@example.com")
+    patient = await _make_patient(db, code="P-VA-REPL-SLOT1")
+    db.add(
+        PatientFixedVisit(
+            patient_id=patient.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(9, 0),
+            duration_min=30,
+            slot_index=0,
+        )
+    )
+    db.add(
+        PatientFixedVisit(
+            patient_id=patient.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(9, 0),
+            duration_min=30,
+            slot_index=1,
+        )
+    )
+    await db.commit()
+
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="patient_visit_add",
+        payload={
+            "patient_id": str(patient.id),
+            "proposed_visits": [
+                {"weekday": 0, "start_time": "11:00", "duration_min": 60},
+            ],
+            "override_reason": "現場判断で強行",
+        },
+        target_patient_id=patient.id,
+    )
+
+    applier = PendingRequestApplier()
+    await applier.apply(db, pr)
+    await db.commit()
+
+    rows = (
+        await db.scalars(
+            select(PatientFixedVisit)
+            .where(PatientFixedVisit.patient_id == patient.id)
+            .order_by(PatientFixedVisit.slot_index)
+        )
+    ).all()
+    # slot0 は置換 (新時刻), slot1 は保全 → 2 行のまま.
+    assert len(rows) == 2
+    keyed = {r.slot_index: r for r in rows}
+    assert keyed[0].weekday == 0
+    assert keyed[0].start_time == time(11, 0)  # 置換された
+    assert keyed[0].duration_min == 60
+    assert keyed[1].weekday == 0
+    assert keyed[1].start_time == time(9, 0)  # slot1 は不変
+
+
+@pytest.mark.asyncio
+async def test_apply_patient_visit_add_blank_override_reason_rejected(db) -> None:
+    """patient_visit_add: override_reason が空白のみ ('  ') → 422 (trim 判定)。"""
+    from app.models.patient_fixed_visit import PatientFixedVisit
+
+    user = await _make_user(db, "apl-visitadd-blankreason@example.com")
+    patient = await _make_patient(db, code="P-VA-BLANK")
+    db.add(
+        PatientFixedVisit(
+            patient_id=patient.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(9, 0),
+            duration_min=30,
+            slot_index=0,
+        )
+    )
+    await db.commit()
+
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="patient_visit_add",
+        payload={
+            "patient_id": str(patient.id),
+            # 同一 weekday=0 → サーバ time_overlap 再判定 → reason 必須.
+            "proposed_visits": [
+                {"weekday": 0, "start_time": "11:00", "duration_min": 60},
+            ],
+            "override_reason": "   ",  # 空白のみ → trim で空扱い → 422.
+        },
+        target_patient_id=patient.id,
+    )
+
+    applier = PendingRequestApplier()
+    with pytest.raises(PendingRequestApplyError) as exc_info:
+        await applier.apply(db, pr)
+    assert exc_info.value.http_status == 422
+
+    # 副作用なし: 既存 PFV は変化していない (slot0 のまま 09:00).
+    rows = (
+        await db.scalars(
+            select(PatientFixedVisit).where(PatientFixedVisit.patient_id == patient.id)
+        )
+    ).all()
+    assert len(rows) == 1
+    assert rows[0].start_time == time(9, 0)
+
+
+@pytest.mark.asyncio
+async def test_apply_patient_visit_add_empty_proposed_visits_rejected(db) -> None:
+    """patient_visit_add: proposed_visits が空 → 422。"""
+    user = await _make_user(db, "apl-visitadd-empty@example.com")
+    patient = await _make_patient(db, code="P-VA-EMPTY")
+
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="patient_visit_add",
+        payload={"patient_id": str(patient.id), "proposed_visits": []},
+        target_patient_id=patient.id,
+    )
+    applier = PendingRequestApplier()
+    with pytest.raises(PendingRequestApplyError) as exc_info:
+        await applier.apply(db, pr)
+    assert exc_info.value.http_status == 422
+
+
+@pytest.mark.asyncio
+async def test_apply_patient_visit_add_two_proposed_visits_rejected(db) -> None:
+    """patient_visit_add: proposed_visits が 2 件 → 422。"""
+    user = await _make_user(db, "apl-visitadd-two@example.com")
+    patient = await _make_patient(db, code="P-VA-TWO")
+
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="patient_visit_add",
+        payload={
+            "patient_id": str(patient.id),
+            "proposed_visits": [
+                {"weekday": 0, "start_time": "09:00", "duration_min": 30},
+                {"weekday": 1, "start_time": "10:00", "duration_min": 30},
+            ],
+        },
+        target_patient_id=patient.id,
+    )
+    applier = PendingRequestApplier()
+    with pytest.raises(PendingRequestApplyError) as exc_info:
+        await applier.apply(db, pr)
+    assert exc_info.value.http_status == 422
+
+
+@pytest.mark.asyncio
+async def test_apply_patient_visit_add_weekday_out_of_range_rejected(db) -> None:
+    """patient_visit_add: weekday 範囲外 (7) → 422。"""
+    user = await _make_user(db, "apl-visitadd-wd@example.com")
+    patient = await _make_patient(db, code="P-VA-WD")
+
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="patient_visit_add",
+        payload={
+            "patient_id": str(patient.id),
+            "proposed_visits": [
+                {"weekday": 7, "start_time": "09:00", "duration_min": 30},
+            ],
+        },
+        target_patient_id=patient.id,
+    )
+    applier = PendingRequestApplier()
+    with pytest.raises(PendingRequestApplyError) as exc_info:
+        await applier.apply(db, pr)
+    assert exc_info.value.http_status == 422
+
+
+# ---------------------------------------------------------------------------
+# Phase G-84: patient_create + placement/warnings (業務反映に影響しないこと)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apply_patient_create_placement_meta_does_not_affect_business(db) -> None:
+    """placement / yellow warnings は監査メタ扱いで業務反映に影響しない。"""
+    from app.models.patient_fixed_visit import PatientFixedVisit
+
+    user = await _make_user(db, "apl-pcreate-placement@example.com")
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="patient_create",
+        payload={
+            "code": "P-PLACE-001",
+            "name": "配置 太郎",
+            "status": "active",
+            "proposed_visits": [
+                {"weekday": 0, "start_time": "10:00", "duration_min": 60},
+            ],
+            "placement": {
+                "office_id": "00000000-0000-0000-0000-000000000001",
+                "office_name": "稲毛",
+                "course_code": "稲A",
+                "course_label": "稲A",
+                "weekday": 0,
+                "start_time": "10:00",
+                "duration_min": 60,
+            },
+            # 黄警告のみ → override_reason 不要.
+            "warnings": [
+                {"level": "yellow", "code": "travel_shortage", "message": "移動不足"},
+            ],
+        },
+    )
+
+    applier = PendingRequestApplier()
+    await applier.apply(db, pr)
+    await db.commit()
+
+    patient = await db.scalar(select(Patient).where(Patient.code == "P-PLACE-001"))
+    assert patient is not None
+    rows = (
+        await db.scalars(
+            select(PatientFixedVisit).where(PatientFixedVisit.patient_id == patient.id)
+        )
+    ).all()
+    # placement は格納されず、proposed_visits の 1 枠のみが PFV になる.
+    assert len(rows) == 1
+    assert rows[0].weekday == 0
+    assert rows[0].start_time == time(10, 0)
+
+
+@pytest.mark.asyncio
+async def test_apply_patient_create_red_warning_without_reason_rejected(db) -> None:
+    """patient_create: 赤警告ありで override_reason 空 → 422。"""
+    user = await _make_user(db, "apl-pcreate-redno@example.com")
+    pr = await _make_pending(
+        db,
+        requester=user,
+        request_type="patient_create",
+        payload={
+            "code": "P-REDNO-001",
+            "name": "赤 太郎",
+            "status": "active",
+            "warnings": [
+                {"level": "red", "code": "capacity_full", "message": "満員"},
+            ],
+        },
+    )
+
+    applier = PendingRequestApplier()
+    with pytest.raises(PendingRequestApplyError) as exc_info:
+        await applier.apply(db, pr)
+    assert exc_info.value.http_status == 422
+    await db.rollback()
+
+    patient = await db.scalar(select(Patient).where(Patient.code == "P-REDNO-001"))
+    assert patient is None

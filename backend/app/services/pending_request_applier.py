@@ -46,6 +46,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.patient import Patient
+from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.pending_request import PendingRequest
 from app.models.staff import Staff, StaffEvent, StaffWeeklyOverride
 from app.models.staff_companion_assignment import StaffCompanionAssignment
@@ -55,6 +56,7 @@ from app.services.geocoding.client import geocode_address
 from app.services.manager_course_sync import sync_manager_course_templates
 from app.services.proposed_visits_pfv import (
     ProposedVisitsError,
+    _resolve_course_template_id,
     apply_proposed_visits_as_normal_pfv,
 )
 
@@ -119,6 +121,62 @@ def _coerce_time(value: Any) -> time | None:
 def _date_to_iso(d: date) -> tuple[int, int, int]:
     iso = d.isocalendar()
     return iso.year, iso.week, d.weekday()
+
+
+# Phase G-84 A-2: 赤警告コード (満員 / 時刻重複). フロント (computePlacementWarnings)
+# / 仕様書 §警告判定ルール と一致させる. ここに無いコードは黄警告扱い (= 強行可,
+# override_reason 不要) とする.
+_RED_WARNING_CODES: frozenset[str] = frozenset({"capacity_full", "time_overlap"})
+
+
+def _extract_red_warnings(payload: _Payload) -> list[str]:
+    """payload の ``warnings`` から赤警告 (red) の code リストを抽出する.
+
+    warnings は ``[{level: "red"|"yellow", code: str, message: str}]`` 形式
+    (Phase G-84 A-2). level=="red" もしくは code が ``_RED_WARNING_CODES`` の
+    いずれかなら赤とみなす (level 改ざんに備えて code 側でも判定する).
+    """
+    warnings = payload.get("warnings")
+    if not isinstance(warnings, list):
+        return []
+    red: list[str] = []
+    for w in warnings:
+        if not isinstance(w, dict):
+            continue
+        level = w.get("level")
+        code = w.get("code")
+        code_str = str(code) if code is not None else ""
+        if level == "red" or code_str in _RED_WARNING_CODES:
+            red.append(code_str or "red")
+    return red
+
+
+def _validate_override_reason_for_red(
+    payload: _Payload,
+    *,
+    extra_red_codes: list[str] | None = None,
+) -> None:
+    """赤警告があるのに override_reason が空なら 422 で拒否する (Phase G-84 A-2).
+
+    クライアント申告の warnings (改ざん想定) に加え、サーバ側で再判定した赤警告
+    (``extra_red_codes``) も合算して判定する. 赤が 1 件でもあり override_reason が
+    空 / 空白なら ``PendingRequestApplyError(422)``.
+
+    placement / warnings 自体は業務反映に使わない (監査 / 表示用メタ). 本検証だけが
+    applier 内で warnings を参照する唯一の箇所.
+    """
+    red_codes = _extract_red_warnings(payload)
+    if extra_red_codes:
+        red_codes = red_codes + list(extra_red_codes)
+    if not red_codes:
+        return
+    override_reason = payload.get("override_reason")
+    if override_reason is None or not str(override_reason).strip():
+        raise PendingRequestApplyError(
+            "赤警告 (" + ", ".join(sorted(set(red_codes))) + ") を強行するには "
+            "override_reason (理由) が必須です",
+            http_status=422,
+        )
 
 
 class PendingRequestApplier:
@@ -420,6 +478,11 @@ async def _apply_patient_create(
             "patient_create: code and name are required",
             http_status=422,
         )
+
+    # Phase G-84 A-2/A-3: placement/warnings/override_reason は業務反映に使わない
+    # (監査/表示用メタ) が、赤警告があるのに override_reason 空なら 422 で拒否する.
+    _validate_override_reason_for_red(payload)
+
     primary_office_id = _coerce_uuid(payload.get("primary_office_id"))
 
     # 座標: payload に lat/lng が明示されていればそれを優先 (再 geocode しない)。
@@ -473,6 +536,162 @@ async def _apply_patient_create(
             raise PendingRequestApplyError(
                 f"patient_create: {exc}", http_status=exc.http_status
             ) from exc
+
+
+async def _apply_patient_visit_add(
+    db: AsyncSession, request: PendingRequest, payload: _Payload
+) -> None:
+    """``patient_visit_add`` (Phase G-84 A-4): 既存患者の normal PFV に 1 枠を追加.
+
+    payload:
+        ``{patient_id, patient_name?, proposed_visits:[1枠], placement?,
+           warnings?, override_reason?}``
+
+    ★設計 (code-reviewer CRITICAL 是正): visit_add は「対象 weekday に 1 枠だけ追加
+    /置換」する操作なので、全パターン PUT 上書き
+    (``apply_proposed_visits_as_normal_pfv``) は使わない. ``apply_…`` は当該患者の
+    normal PFV を **全削除** (slot_index=0 / 1 両方) → slot_index=0 のみ再 INSERT する
+    ため、``requires_multiple_staff=True`` 患者の同曜日 2 コース目 (slot_index=1)
+    normal PFV を恒久消失させてしまう. そのため本ハンドラは **対象 weekday の
+    slot_index=0 行だけ** を upsert する:
+        1. course を ``_resolve_course_template_id`` で解決
+           (course_template_id 優先, 無ければ course_code トークン).
+        2. 対象 ``(patient_id, mode='normal', weekday=対象, slot_index=0)`` 行が
+           あれば DELETE し、新しい 1 枠を INSERT.
+           **slot_index=1 / 他 weekday の行には一切触れない** (保全).
+        3. weekday/start_time/duration_min のバリデーションは
+           ``apply_proposed_visits_as_normal_pfv`` と同基準 (0-6, HH:MM, 1..480).
+
+    赤警告再判定の限界 (MEDIUM #1): サーバ側の time_overlap 再判定は「対象 weekday の
+    slot_index=0 行が既に存在する＝置換が起きる」という近似でしか赤を立てない.
+    他コース (slot_index=1) や他患者との **実時刻** 重複は検証していない. 正確な
+    時刻重複検証は別レイヤ (フロント computePlacementWarnings / スケジューラ) に委ねる.
+
+    placement / warnings / override_reason は業務反映に使わない (監査 / 表示用メタ).
+    赤警告検証のみ ``_validate_override_reason_for_red`` で参照する.
+    """
+    patient_id = _coerce_uuid(payload.get("patient_id") or request.target_patient_id)
+    if patient_id is None:
+        raise PendingRequestApplyError(
+            "patient_visit_add: patient_id is required",
+            http_status=422,
+        )
+
+    proposed_visits = payload.get("proposed_visits")
+    if not proposed_visits or not isinstance(proposed_visits, list):
+        raise PendingRequestApplyError(
+            "patient_visit_add: proposed_visits (1 件) is required",
+            http_status=422,
+        )
+    if len(proposed_visits) != 1:
+        raise PendingRequestApplyError(
+            "patient_visit_add: proposed_visits must contain exactly 1 visit",
+            http_status=422,
+        )
+
+    new_visit = proposed_visits[0]
+    if not isinstance(new_visit, dict):
+        raise PendingRequestApplyError(
+            "patient_visit_add: proposed_visits[0] must be an object",
+            http_status=422,
+        )
+
+    # MEDIUM #2 (防御的キー抽出): payload 由来 dict をそのまま使わず、必要キーだけ
+    # 抽出する. 余計なキー (id / placement 由来など) を業務反映に持ち込まない.
+    new_weekday = new_visit.get("weekday")
+    if (
+        not isinstance(new_weekday, int)
+        or isinstance(new_weekday, bool)
+        or not (0 <= new_weekday <= 6)
+    ):
+        raise PendingRequestApplyError(
+            "patient_visit_add: proposed_visits[0].weekday must be int 0-6",
+            http_status=422,
+        )
+
+    new_start = _coerce_time(new_visit.get("start_time"))
+    if new_start is None:
+        raise PendingRequestApplyError(
+            "patient_visit_add: proposed_visits[0].start_time must be 'HH:MM'",
+            http_status=422,
+        )
+
+    duration_raw = new_visit.get("duration_min", 30)
+    try:
+        new_duration = int(duration_raw)
+    except (TypeError, ValueError):
+        raise PendingRequestApplyError(
+            "patient_visit_add: proposed_visits[0].duration_min must be int",
+            http_status=422,
+        ) from None
+    if new_duration < 1 or new_duration > 480:
+        raise PendingRequestApplyError(
+            "patient_visit_add: proposed_visits[0].duration_min must be 1..480",
+            http_status=422,
+        )
+
+    # 患者存在チェック.
+    patient = await db.scalar(
+        select(Patient).where(Patient.id == patient_id, Patient.deleted_at.is_(None))
+    )
+    if patient is None:
+        raise PendingRequestApplyError(
+            f"patient_visit_add: patient {patient_id} not found",
+            http_status=404,
+        )
+
+    # 対象 weekday の slot_index=0 行が既存か判定 (置換 = time_overlap 相当の赤).
+    # 注意: slot_index=1 / 他 weekday の行は読み出さない (保全対象なので無関係).
+    existing_slot0 = await db.scalar(
+        select(PatientFixedVisit).where(
+            PatientFixedVisit.patient_id == patient_id,
+            PatientFixedVisit.mode == "normal",
+            PatientFixedVisit.weekday == new_weekday,
+            PatientFixedVisit.slot_index == 0,
+        )
+    )
+
+    # サーバ側 赤警告再判定 (A-2 / 限界は docstring 参照): 対象 weekday の slot0 が
+    # 既存 = 置換が起きる → time_overlap (赤) とみなす.
+    extra_red: list[str] = []
+    if existing_slot0 is not None:
+        extra_red.append("time_overlap")
+
+    # 赤警告があるのに override_reason 空なら 422 (クライアント申告 + サーバ再判定を合算).
+    _validate_override_reason_for_red(payload, extra_red_codes=extra_red)
+
+    # course 解決 (course_template_id 優先, 無ければ course_code トークン).
+    try:
+        course_template_id = await _resolve_course_template_id(
+            db,
+            course_template_id=_coerce_uuid(new_visit.get("course_template_id")),
+            course_code=new_visit.get("course_code"),
+        )
+    except ProposedVisitsError as exc:
+        raise PendingRequestApplyError(
+            f"patient_visit_add: {exc}", http_status=exc.http_status
+        ) from exc
+
+    # ターゲット upsert: 対象 weekday の slot_index=0 行のみ置換.
+    # slot_index=1 / 他 weekday には一切触れない (multi-staff 患者の 2 コース目を保全).
+    if existing_slot0 is not None:
+        await db.delete(existing_slot0)
+        # UNIQUE (patient_id, mode, weekday, slot_index) 制約に同 TX 内で再 INSERT
+        # するため、DELETE を先に DB へ反映させてから INSERT する.
+        await db.flush()
+
+    db.add(
+        PatientFixedVisit(
+            patient_id=patient_id,
+            mode="normal",
+            weekday=new_weekday,
+            start_time=new_start,
+            duration_min=new_duration,
+            course_template_id=course_template_id,
+            slot_index=0,
+        )
+    )
+    await db.flush()
 
 
 async def _apply_patient_cancel(
@@ -758,6 +977,8 @@ _HANDLERS: dict[str, _HandlerFn] = {
     RequestType.PATIENT_SPECIAL_WEEK_OFF.value: _apply_patient_special_week_off,
     RequestType.STAFF_STATUS_UPDATE.value: _apply_staff_status_update,
     RequestType.PATIENT_STATUS_UPDATE.value: _apply_patient_status_update,
+    # Phase G-84 A-4: 既存患者の空き枠直接配置 (normal PFV へ 1 枠マージ追加).
+    RequestType.PATIENT_VISIT_ADD.value: _apply_patient_visit_add,
 }
 
 

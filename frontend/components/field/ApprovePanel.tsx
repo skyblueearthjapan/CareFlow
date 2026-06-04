@@ -14,7 +14,16 @@
  */
 
 import { useState } from 'react';
-import { Check, ClipboardCheck, User, Calendar, Sparkles, Heart } from 'lucide-react';
+import {
+  Check,
+  ClipboardCheck,
+  User,
+  Calendar,
+  Sparkles,
+  Heart,
+  MapPin,
+  AlertTriangle,
+} from 'lucide-react';
 
 import {
   usePendingRequests,
@@ -43,6 +52,7 @@ const REQUEST_TYPE_LABEL_JA: Record<RequestType, string> = {
   patient_special_week_off: '特別週 OFF',
   staff_status_update: 'スタッフ状態変更',
   patient_status_update: '患者状態変更',
+  patient_visit_add: '訪問追加',
 };
 
 function requestTypeLabel(t: string): string {
@@ -184,6 +194,254 @@ function PatientCreatePreview({ payload }: { payload: Record<string, unknown> })
       </div>
       {visits.length === 0 ? (
         <div style={{ fontSize: 11, color: INK3 }}>提案枠は登録されていません</div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {visits.map((v, i) => (
+            <div
+              key={`${v.weekday}-${v.start_time}-${i}`}
+              style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12 }}
+            >
+              <span
+                style={{
+                  width: 22,
+                  height: 22,
+                  flex: '0 0 auto',
+                  borderRadius: 7,
+                  background: '#FCEBD6',
+                  color: TERRA,
+                  display: 'grid',
+                  placeItems: 'center',
+                  fontFamily: 'var(--font-serif)',
+                  fontSize: 12,
+                  fontWeight: 700,
+                }}
+              >
+                {WEEKDAY_INT_TO_JA[v.weekday] ?? '?'}
+              </span>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, color: INK }}>
+                {v.start_time}
+                {v.duration_min > 0 ? ` ・ ${v.duration_min}分` : ''}
+              </span>
+              {v.course_code && (
+                <span style={{ fontWeight: 700, color: INK2 }}>{v.course_code}</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// placement カード (Phase G-84: 空き枠への直接配置の枠座標 + 警告)
+// ─────────────────────────────────────────────────────────────────────────
+
+interface PlacementView {
+  officeName: string | null;
+  courseLabel: string | null;
+  courseCode: string | null;
+  weekday: number | null;
+  startTime: string | null;
+  durationMin: number | null;
+  prev: { name: string; end: string } | null;
+  next: { name: string; start: string } | null;
+}
+
+interface WarningView {
+  level: 'red' | 'yellow';
+  message: string;
+}
+
+/** payload.placement を安全にパースして表示用にする。無ければ null。 */
+function readPlacement(payload: Record<string, unknown>): PlacementView | null {
+  const raw = payload.placement;
+  if (!raw || typeof raw !== 'object') return null;
+  const p = raw as Record<string, unknown>;
+  const prevRaw = p.prev_visit;
+  const nextRaw = p.next_visit;
+  const prev =
+    prevRaw && typeof prevRaw === 'object'
+      ? {
+          name: String((prevRaw as Record<string, unknown>).patient_name ?? ''),
+          end: String((prevRaw as Record<string, unknown>).end_time ?? ''),
+        }
+      : null;
+  const next =
+    nextRaw && typeof nextRaw === 'object'
+      ? {
+          name: String((nextRaw as Record<string, unknown>).patient_name ?? ''),
+          start: String((nextRaw as Record<string, unknown>).start_time ?? ''),
+        }
+      : null;
+  const wd = Number(p.weekday);
+  const dur = Number(p.duration_min);
+  return {
+    officeName: typeof p.office_name === 'string' ? p.office_name : null,
+    courseLabel: typeof p.course_label === 'string' ? p.course_label : null,
+    courseCode: typeof p.course_code === 'string' ? p.course_code : null,
+    weekday: Number.isFinite(wd) ? wd : null,
+    startTime: typeof p.start_time === 'string' ? p.start_time : null,
+    durationMin: Number.isFinite(dur) ? dur : null,
+    prev,
+    next,
+  };
+}
+
+/** payload.warnings を安全にパースして表示用にする。 */
+function readWarnings(payload: Record<string, unknown>): WarningView[] {
+  const raw = payload.warnings;
+  if (!Array.isArray(raw)) return [];
+  const out: WarningView[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const r = item as Record<string, unknown>;
+    const level = r.level === 'red' ? 'red' : r.level === 'yellow' ? 'yellow' : null;
+    const message = typeof r.message === 'string' ? r.message : '';
+    if (!level || !message) continue;
+    out.push({ level, message });
+  }
+  return out;
+}
+
+/**
+ * placement (枠座標) + warnings + override_reason を承認カードに転記する
+ * (どの枠に・誰の隣に・どの警告か)。patient_create / patient_visit_add 共通。
+ */
+function PlacementCard({ payload }: { payload: Record<string, unknown> }) {
+  const placement = readPlacement(payload);
+  if (!placement) return null;
+  const warnings = readWarnings(payload);
+  const overrideReason = str(payload, 'override_reason');
+  const reds = warnings.filter((w) => w.level === 'red');
+  const yellows = warnings.filter((w) => w.level === 'yellow');
+
+  return (
+    <div
+      style={{
+        marginTop: 8,
+        background: '#fff',
+        border: `1.5px solid ${LINE}`,
+        borderRadius: 12,
+        padding: '9px 11px',
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 5,
+          fontSize: 10.5,
+          fontWeight: 700,
+          color: TERRA_DEEP,
+          marginBottom: 6,
+        }}
+      >
+        <MapPin size={11} />
+        配置する枠
+      </div>
+      <div style={{ fontSize: 12, color: INK, fontWeight: 700 }}>
+        {placement.officeName ?? ''}
+        {placement.courseLabel ? ` ・ ${placement.courseLabel}` : ''}
+        {placement.weekday !== null ? ` ・ ${WEEKDAY_INT_TO_JA[placement.weekday] ?? '?'}曜` : ''}
+      </div>
+      {placement.startTime && (
+        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: INK2, marginTop: 2 }}>
+          {placement.startTime}
+          {placement.durationMin ? ` ・ ${placement.durationMin}分` : ''}
+        </div>
+      )}
+      {(placement.prev || placement.next) && (
+        <div style={{ fontSize: 11, color: INK2, marginTop: 4, lineHeight: 1.5 }}>
+          {placement.prev && (
+            <div>
+              直前: {placement.prev.name}（〜{placement.prev.end}）
+            </div>
+          )}
+          {placement.next && (
+            <div>
+              直後: {placement.next.name}（{placement.next.start}〜）
+            </div>
+          )}
+        </div>
+      )}
+
+      {warnings.length > 0 && (
+        <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {[...reds, ...yellows].map((w, i) => (
+            <div
+              key={`${w.level}-${i}`}
+              style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: 6,
+                fontSize: 11.5,
+                fontWeight: 700,
+                lineHeight: 1.4,
+                color: w.level === 'red' ? '#C04A64' : '#8A6D00',
+              }}
+            >
+              <span style={{ flex: '0 0 auto', paddingTop: 1 }}>
+                <AlertTriangle size={12} />
+              </span>
+              <span>{w.message}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {overrideReason && (
+        <div
+          style={{
+            marginTop: 8,
+            fontSize: 11,
+            color: INK2,
+            background: '#FCEFF2',
+            border: '1.5px solid #F4D4DC',
+            borderRadius: 8,
+            padding: '6px 9px',
+            lineHeight: 1.5,
+          }}
+        >
+          <b style={{ color: '#C04A64' }}>強行理由:</b> {overrideReason}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * patient_visit_add 申請の payload から「患者名 + 追加する 1 枠」をプレビューする。
+ * 既存患者の normal PFV に 1 枠マージする (承認時)。
+ */
+function PatientVisitAddPreview({ payload }: { payload: Record<string, unknown> }) {
+  const visits = readProposedVisits(payload);
+  return (
+    <div
+      style={{
+        marginTop: 8,
+        background: '#fff',
+        border: `1.5px solid ${LINE}`,
+        borderRadius: 12,
+        padding: '9px 11px',
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 5,
+          fontSize: 10.5,
+          fontWeight: 700,
+          color: TERRA_DEEP,
+          marginBottom: 6,
+        }}
+      >
+        <Sparkles size={11} />
+        追加する枠 {visits.length}件
+      </div>
+      {visits.length === 0 ? (
+        <div style={{ fontSize: 11, color: INK3 }}>追加枠は登録されていません</div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           {visits.map((v, i) => (
@@ -443,6 +701,16 @@ export function ApprovePanel({ onToast }: { onToast: (msg: string) => void }) {
 
             {req.request_type === 'patient_create' && (
               <PatientCreatePreview payload={req.payload as Record<string, unknown>} />
+            )}
+
+            {req.request_type === 'patient_visit_add' && (
+              <PatientVisitAddPreview payload={req.payload as Record<string, unknown>} />
+            )}
+
+            {/* 空き枠への直接配置 (Phase G-84): 枠座標 + 警告 + 強行理由を転記。 */}
+            {(req.request_type === 'patient_create' ||
+              req.request_type === 'patient_visit_add') && (
+              <PlacementCard payload={req.payload as Record<string, unknown>} />
             )}
 
             {isRejecting ? (

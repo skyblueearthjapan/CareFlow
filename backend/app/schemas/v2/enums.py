@@ -44,6 +44,8 @@ class RequestType(StrEnum):
     PATIENT_SPECIAL_WEEK_OFF = "patient_special_week_off"
     STAFF_STATUS_UPDATE = "staff_status_update"
     PATIENT_STATUS_UPDATE = "patient_status_update"
+    # Phase G-84: 現場ボード 空き枠への既存患者直接配置 (normal PFV へ 1 枠追加).
+    PATIENT_VISIT_ADD = "patient_visit_add"
 
 
 class RequestStatus(StrEnum):

@@ -92,6 +92,10 @@ from app.schemas.v2.propose_slots import (
     ProposeSlotsResponse,
     _parse_hhmm,
 )
+from app.schemas.v2.travel_estimate import (
+    TravelEstimateRequest,
+    TravelEstimateResponse,
+)
 from app.services.geocoding.client import (
     GeocodingServiceError,
     geocode_address,
@@ -135,6 +139,10 @@ from app.services.scheduling.board_service import (
 )
 from app.services.scheduling.board_service import (
     _office_short as _board_office_short,
+)
+from app.services.scheduling.proposal_solver import (
+    VISIT_BUFFER_MINUTES,
+    haversine_minutes,
 )
 from app.services.scheduling.propose_slots_service import (
     CandidateInput,
@@ -1796,6 +1804,94 @@ async def propose_slots_endpoint(
         slots=slots_out,
         coverage=coverage,
         message=message,
+    )
+
+
+# ---------------------------------------------------------------------------
+# travel-estimate (Phase G-84 A-1: 空き枠直接配置の移動時間提案 = 案2の根拠)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/v2/travel-estimate",
+    response_model=TravelEstimateResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Phase G-84: 直前訪問から候補住所までの移動時間を推定",
+)
+async def travel_estimate_endpoint(
+    payload: TravelEstimateRequest,
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+) -> TravelEstimateResponse:
+    """空き枠直接配置 (案2) 用に from→to の移動時間を推定する read-only API.
+
+    本 endpoint は **read-only**: DB を変更しない.
+
+    座標解決:
+        - from 座標: ``from_patient_id`` → ``patients.lat/lng``、無ければ
+          ``from_lat/lng`` フォールバック.
+        - to 座標: ``to_lat/lng`` を優先、無ければ ``geocode_address(to_address)``
+          を best-effort (失敗 / 例外は座標未確定として握り潰す).
+        - 両方確定: ``travel = haversine_minutes(haversine_km(...))`` /
+          ``total = travel + VISIT_BUFFER_MINUTES``.
+        - どちらか未確定: minutes は null (フロントは案1=枠頭にフォールバック).
+
+    距離 / 移動時間 / バッファーは ``proposal_solver`` の既存ユーティリティを
+    そのまま再利用する (自動割当 / 提案と同一の数値).
+    """
+    # 1. from 座標を確定する.
+    from_lat: float | None = None
+    from_lng: float | None = None
+    if payload.from_patient_id is not None:
+        patient = await db.scalar(
+            select(Patient).where(
+                Patient.id == payload.from_patient_id,
+                Patient.deleted_at.is_(None),
+            )
+        )
+        if patient is not None and patient.lat is not None and patient.lng is not None:
+            from_lat = float(patient.lat)
+            from_lng = float(patient.lng)
+    if (from_lat is None or from_lng is None) and (
+        payload.from_lat is not None and payload.from_lng is not None
+    ):
+        from_lat = payload.from_lat
+        from_lng = payload.from_lng
+
+    # 2. to 座標を確定する (lat/lng 優先 → geocode best-effort).
+    to_lat: float | None = None
+    to_lng: float | None = None
+    if payload.to_lat is not None and payload.to_lng is not None:
+        to_lat = payload.to_lat
+        to_lng = payload.to_lng
+    elif payload.to_address and payload.to_address.strip():
+        try:
+            geo = await geocode_address(payload.to_address)
+        except Exception as exc:  # noqa: BLE001 - best-effort: minutes=null で続行
+            logger.warning("travel-estimate geocode failed (best-effort): %s", exc)
+            geo = None
+        if geo is not None:
+            to_lat = geo.lat
+            to_lng = geo.lng
+
+    from_resolved = from_lat is not None and from_lng is not None
+    to_resolved = to_lat is not None and to_lng is not None
+
+    # 3. 両方確定なら移動時間 + バッファーを算出. 片方でも未確定なら null.
+    travel_minutes: int | None = None
+    total_minutes: int | None = None
+    if from_resolved and to_resolved:
+        travel_minutes = haversine_minutes(
+            haversine_km(from_lat, from_lng, to_lat, to_lng)  # type: ignore[arg-type]
+        )
+        total_minutes = travel_minutes + VISIT_BUFFER_MINUTES
+
+    return TravelEstimateResponse(
+        from_resolved=from_resolved,
+        to_resolved=to_resolved,
+        travel_minutes=travel_minutes,
+        buffer_minutes=VISIT_BUFFER_MINUTES,
+        total_minutes=total_minutes,
     )
 
 
