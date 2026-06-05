@@ -788,6 +788,14 @@ function CourseTimeRow({
   // 30 分境界 (HH:00 / HH:30) は時刻ラベル強調. それ以外は薄く.
   const showLabel = time.endsWith(':00') || time.endsWith(':30');
 
+  // この行の grid 行番号 (0-based slot index + 2; column header が row 1 を占有).
+  // ★この行の 2 セル (時刻列 / 患者情報列) を **明示的に gridRow 配置** する。
+  // 空き時間マーカー / イベントブロックは `gridRow: N / span M` で明示配置されるため、
+  // 行セルを auto-placement のままにすると CSS Grid の配置順 (明示→自動) により
+  // 行セルがオーバーレイと衝突して押し出され、行全体がズレる (UI 崩れの原因)。
+  // 行セルも明示配置にすることで、オーバーレイは「同じセルに重なるだけ」に戻る。
+  const gridRowLine = TIME_SLOTS.indexOf(time) + 2;
+
   // Phase G-6: 同住所×同時刻ペア判定 (detectSameAddressPair を共通使用).
   // 異なる patient_id × 同 same_address_group_id × 2 件以上 で true.
   const hasSameAddressPair = useMemo(() => detectSameAddressPair(occupants), [occupants]);
@@ -808,6 +816,7 @@ function CourseTimeRow({
             ? 'bg-bg-muted/30 text-[10px] font-semibold text-text-secondary'
             : 'text-[10px] text-text-muted',
         )}
+        style={{ gridColumn: 1, gridRow: gridRowLine }}
       >
         {time}
       </div>
@@ -840,7 +849,7 @@ function CourseTimeRow({
           // 同住所ペアと併存するときは同住所ペアのリング表示を優先.
           !isOver && !hasSameAddressPair && hasPinnedVisit ? 'bg-yellow-50/50' : '',
         )}
-        style={{ gridColumn: 'span 2 / span 2' }}
+        style={{ gridColumn: '2 / span 2', gridRow: gridRowLine }}
       >
         {occupants.length === 0 ? (
           // ── 空セル: 2 列を空のまま描画 (droppable hit-area 維持) ─────
