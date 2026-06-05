@@ -581,9 +581,18 @@ function Header({
               <button
                 onClick={onManage}
                 aria-label="患者の登録・編集"
-                style={{ ...hdrAct, ...hdrActCompact, background: '#fff', color: accentInk }}
+                title="患者の登録・編集"
+                style={{
+                  ...hdrAct,
+                  ...hdrActCompact,
+                  // アイコンのみ (👤+) でヘッダ幅を節約 (承認のはみ出し対策・Phase G-87b)。
+                  padding: '7px 10px',
+                  gap: 0,
+                  background: '#fff',
+                  color: accentInk,
+                }}
               >
-                <UserPlus size={15} /> 患者
+                <UserPlus size={16} />
               </button>
             )}
             <button
