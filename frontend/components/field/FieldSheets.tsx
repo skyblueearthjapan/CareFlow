@@ -32,6 +32,9 @@ import {
   Pencil,
   Save,
   Clock,
+  UserPlus,
+  Users,
+  ChevronLeft,
 } from 'lucide-react';
 
 import {
@@ -56,11 +59,17 @@ import {
   normalizePatientSexRestriction,
   normalizePatientStatus,
   patientReadToFormValues,
+  emptyPatientFormValues,
   type WeekdayKey,
   type PatientFormValues,
   type WeeklyPattern,
 } from '@/lib/schemas/patient';
-import { usePatient, usePatients, useUpdatePatient } from '@/lib/queries/patients';
+import {
+  useCreatePatient,
+  usePatient,
+  usePatients,
+  useUpdatePatient,
+} from '@/lib/queries/patients';
 import { useCreatePendingRequest } from '@/lib/queries/pending_requests';
 import { useGeocode } from '@/lib/queries/geocoding';
 import { useResolveOffice } from '@/lib/queries/offices';
@@ -506,35 +515,51 @@ const KV = ({ k, v }: { k: string; v: ReactNode }) => (
 // ============================ Karte edit sheet (manager/admin) ============================
 
 /**
- * カルテ編集シート (マスタ主要項目) — 現場ボード `/m` の manager/admin 向け。
+ * カルテ編集 / 新規登録シート (マスタ主要項目) — 現場ボード `/m` の manager/admin 向け。
  *
- * - 初期値は `patientReadToFormValues(patient)` で取得 (デスクトップ PatientForm と同源)。
+ * Phase G-87: `mode` で edit / create を切り替える 1 コンポーネント。
+ *   - edit  (既定): 既存患者の編集。`patient` 必須。`useUpdatePatient(id, initial)` で PATCH。
+ *   - create      : 新規患者の直接登録 (提案/承認を介さない)。`patient` なし。空デフォルト初期値で
+ *                   開始し `useCreatePatient()` で POST。患者コードは任意 (空欄で backend 自動採番)。
+ *
+ * - 初期値: edit は `patientReadToFormValues(patient)`、create は `emptyPatientFormValues`
+ *   (デスクトップ PatientForm と同源・ドリフト防止)。
  * - 編集対象: name/code/kana/sex/status/insurance/address/sex_restriction/
  *   requires_multiple_staff/note ＋ weekly_pattern (frequency_per_week/visit_frequency/
  *   preferred_weekdays(月〜日)/service_minutes/time_type/preferred_start/preferred_end)。
  *   special_weekly_pattern (特別週) / 固定訪問 (PFV) は対象外。
  * - 住所変更時は保存時に best-effort で再ジオコード (lat/lng) + 拠点解決
- *   (primary_office_id) を行う。失敗しても保存は継続する。
- * - 保存は `useUpdatePatient(id, initial)` で PATCH。成功で閲覧に戻り、トースト表示。
+ *   (primary_office_id) を行う。失敗しても保存は継続する (両モード共通)。
+ * - 保存: edit=PATCH (成功で閲覧へ)、create=POST (成功でトースト「✓ 患者を登録しました」)。
  *
  * バリデーション/選択肢はデスクトップと同一定数 (SEX/INSURANCE/STATUS/SEX_RESTRICTION/
  * TIME_TYPE/SERVICE_MINUTES_OPTIONS/WEEKDAY) を流用し、ドリフトを防ぐ。
  */
 function KarteEditSheet({
+  mode = 'edit',
   patient,
   onClose,
   onCancel,
   onSaved,
   onToast,
 }: {
-  patient: PatientRead;
+  /** edit (既定) = 既存患者を PATCH、create = 新規患者を POST。 */
+  mode?: 'create' | 'edit';
+  /** edit モードのみ必須。create モードでは渡さない (空デフォルトで開始)。 */
+  patient?: PatientRead;
   onClose: () => void;
   onCancel: () => void;
   onSaved: () => void;
   onToast?: (msg: string) => void;
 }) {
-  // 初期値 (read → form values)。再マウントせず保持するため useState 初期化子で 1 度だけ算出。
-  const initial = useMemo(() => patientReadToFormValues(patient), [patient]);
+  const isCreate = mode === 'create';
+
+  // 初期値: edit は read→form values、create は空デフォルト。再マウントせず
+  // 保持するため useMemo で 1 度だけ算出する。
+  const initial = useMemo(
+    () => (patient ? patientReadToFormValues(patient) : emptyPatientFormValues),
+    [patient],
+  );
 
   const [name, setName] = useState(initial.name);
   const [code, setCode] = useState(initial.code);
@@ -567,7 +592,11 @@ function KarteEditSheet({
   const [preferredStart, setPreferredStart] = useState(wp0.preferred_start ?? '09:00');
   const [preferredEnd, setPreferredEnd] = useState(wp0.preferred_end ?? '12:00');
 
-  const updateMut = useUpdatePatient(patient.id, initial);
+  // フックは順序固定で両モードぶん用意し、保存時に mode で使い分ける
+  // (create では update を呼ばず、edit では create を呼ばない)。
+  const updateMut = useUpdatePatient(patient?.id ?? '', initial);
+  const createMut = useCreatePatient();
+  const saveMut = isCreate ? createMut : updateMut;
   const geocodeMut = useGeocode();
   const resolveMut = useResolveOffice();
 
@@ -582,7 +611,9 @@ function KarteEditSheet({
       onToast?.('氏名を入力してください');
       return;
     }
-    if (!code.trim()) {
+    // create では患者コードは任意 (空欄なら backend が自動採番)。edit は必須維持
+    // (既存患者は必ずコードを持つため)。
+    if (!isCreate && !code.trim()) {
       onToast?.('患者コードを入力してください');
       return;
     }
@@ -642,12 +673,13 @@ function KarteEditSheet({
       special_week: initial.special_week,
     };
 
-    updateMut.mutate(values, {
+    saveMut.mutate(values, {
       onSuccess: () => {
-        onToast?.('✓ カルテを更新しました');
+        onToast?.(isCreate ? '✓ 患者を登録しました' : '✓ カルテを更新しました');
         onSaved();
       },
-      onError: () => onToast?.('カルテの更新に失敗しました'),
+      onError: () =>
+        onToast?.(isCreate ? '患者の登録に失敗しました' : 'カルテの更新に失敗しました'),
     });
   };
 
@@ -674,8 +706,8 @@ function KarteEditSheet({
             gap: 7,
           }}
         >
-          <Pencil size={16} />
-          カルテを編集
+          {isCreate ? <UserPlus size={16} /> : <Pencil size={16} />}
+          {isCreate ? '新規患者を登録' : 'カルテを編集'}
         </h3>
         <button
           onClick={onClose}
@@ -706,14 +738,19 @@ function KarteEditSheet({
         </Field>
 
         <div style={{ display: 'flex', gap: 12 }}>
-          <Field label="患者コード（必須）" flex>
+          <Field label={isCreate ? '患者コード（任意）' : '患者コード（必須）'} flex>
             <input
               value={code}
               onChange={(e) => setCode(e.target.value)}
               aria-label="患者コード"
-              placeholder="例: P-1042"
+              placeholder={isCreate ? '空欄で自動採番' : '例: P-1042'}
               style={cfInput}
             />
+            {isCreate && (
+              <div style={{ fontSize: 10.5, color: _INK2, marginTop: 5, lineHeight: 1.5 }}>
+                ※ 任意。空欄のまま登録すると自動で採番されます。
+              </div>
+            )}
           </Field>
           <Field label="フリガナ" flex>
             <input
@@ -999,7 +1036,7 @@ function KarteEditSheet({
           <button
             type="button"
             onClick={onCancel}
-            disabled={updateMut.isPending}
+            disabled={saveMut.isPending}
             style={{
               flex: '0 0 auto',
               padding: '14px 18px',
@@ -1012,12 +1049,12 @@ function KarteEditSheet({
               fontWeight: 700,
             }}
           >
-            キャンセル
+            {isCreate ? '戻る' : 'キャンセル'}
           </button>
           <button
             type="button"
             onClick={() => void handleSave()}
-            disabled={updateMut.isPending}
+            disabled={saveMut.isPending}
             style={{
               flex: 1,
               padding: 14,
@@ -1033,14 +1070,256 @@ function KarteEditSheet({
               alignItems: 'center',
               justifyContent: 'center',
               gap: 8,
-              opacity: updateMut.isPending ? 0.7 : 1,
+              opacity: saveMut.isPending ? 0.7 : 1,
             }}
           >
             <Save size={16} />
-            {updateMut.isPending ? '保存中…' : 'カルテを保存'}
+            {saveMut.isPending ? '保存中…' : isCreate ? '登録' : 'カルテを保存'}
           </button>
         </div>
         <div style={{ height: 12 }} />
+      </div>
+    </SlideSheet>
+  );
+}
+
+// ============================ Patient manage sheet (新規登録 + 検索編集ハブ) ============================
+
+/**
+ * 患者管理シート (Phase G-87) — 現場ボード `/m` の manager/admin 向け。
+ *
+ * 提案 (SuggestSheet) / 枠採用 / 承認を介さずに、患者の新規登録と既存患者の
+ * 検索 → 編集を行うハブ。3 つの内部ビューを切り替える:
+ *   - list   : 「＋新規患者を登録」ボタン + 患者検索 (氏名/カナ/コード部分一致)。
+ *   - create : `KarteEditSheet` を create モードで開く (直接 POST)。
+ *   - edit   : 検索候補をタップ → `usePatient(id)` で詳細取得 → `KarteEditSheet` を
+ *              edit モードで開く (`KarteSheet` と同じ取得経路)。
+ *
+ * 検索 UI は `PatientLinkPanel` の検索ボックス + 候補リストを流用する
+ * (紐付けバッジは出さず、タップで即編集に進む)。
+ */
+export function PatientManageSheet({
+  onClose,
+  onToast,
+}: {
+  onClose: () => void;
+  onToast: (msg: string) => void;
+}) {
+  // 内部ビュー。selectedId が立つと edit ビュー (詳細取得後にフォーム)。
+  const [view, setView] = useState<'list' | 'create' | 'edit'>('list');
+  const [query, setQuery] = useState('');
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  // 検索: 検索語が 1 文字以上のときのみ候補を出す (空のときは候補リストを隠す)。
+  const trimmedQuery = query.trim();
+  const patientsQuery = usePatients({ search: trimmedQuery, limit: 8, enabled: view === 'list' });
+  const candidates = trimmedQuery ? (patientsQuery.data?.items ?? []) : [];
+
+  // 候補タップ → 詳細を取得して edit ビューへ。
+  const selectedQuery = usePatient(view === 'edit' ? selectedId : null);
+
+  const openCreate = () => setView('create');
+  const openEdit = (p: PatientRead) => {
+    setSelectedId(p.id);
+    setView('edit');
+  };
+  const backToList = () => {
+    setSelectedId(null);
+    setView('list');
+  };
+
+  // create ビュー: 空デフォルトで KarteEditSheet を create モードで開く。
+  if (view === 'create') {
+    return (
+      <KarteEditSheet
+        mode="create"
+        onClose={onClose}
+        onCancel={backToList}
+        onSaved={backToList}
+        onToast={onToast}
+      />
+    );
+  }
+
+  // edit ビュー: 詳細取得後に KarteEditSheet を edit モードで開く。取得中はローダ。
+  if (view === 'edit') {
+    const p = selectedQuery.data;
+    if (p) {
+      return (
+        <KarteEditSheet
+          mode="edit"
+          patient={p}
+          onClose={onClose}
+          onCancel={backToList}
+          onSaved={backToList}
+          onToast={onToast}
+        />
+      );
+    }
+    return (
+      <SlideSheet>
+        <Grip />
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '4px 20px 10px',
+          }}
+        >
+          <button
+            type="button"
+            onClick={backToList}
+            aria-label="一覧へ戻る"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 4,
+              padding: '7px 11px',
+              borderRadius: 999,
+              background: '#F1ECE3',
+              color: _INK2,
+              fontFamily: 'var(--font-serif)',
+              fontSize: 13,
+              fontWeight: 700,
+            }}
+          >
+            <ChevronLeft size={15} />
+            一覧へ
+          </button>
+          <button
+            onClick={onClose}
+            aria-label="閉じる"
+            style={{
+              width: 34,
+              height: 34,
+              borderRadius: '50%',
+              background: '#F1ECE3',
+              color: _INK2,
+              display: 'grid',
+              placeItems: 'center',
+            }}
+          >
+            <X size={16} />
+          </button>
+        </div>
+        <div style={{ padding: '24px 20px 40px', textAlign: 'center' }}>
+          {selectedQuery.isError ? (
+            <div style={{ color: '#C75C77', fontWeight: 700, fontSize: 13 }}>
+              患者詳細の読み込みに失敗しました。
+            </div>
+          ) : (
+            <div
+              style={{
+                color: _INK3,
+                fontSize: 13,
+                fontFamily: 'var(--font-serif)',
+              }}
+            >
+              患者詳細を読み込み中…
+            </div>
+          )}
+        </div>
+      </SlideSheet>
+    );
+  }
+
+  // list ビュー: 新規登録ボタン + 検索 + 候補リスト。
+  return (
+    <SlideSheet>
+      <Grip />
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '4px 20px 10px',
+        }}
+      >
+        <h3
+          style={{
+            fontFamily: 'var(--font-serif)',
+            fontSize: 18,
+            fontWeight: 700,
+            color: _PLUM,
+            margin: 0,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 7,
+          }}
+        >
+          <Users size={17} />
+          患者の登録・編集
+        </h3>
+        <button
+          onClick={onClose}
+          aria-label="閉じる"
+          style={{
+            width: 34,
+            height: 34,
+            borderRadius: '50%',
+            background: '#F1ECE3',
+            color: _INK2,
+            display: 'grid',
+            placeItems: 'center',
+          }}
+        >
+          <X size={16} />
+        </button>
+      </div>
+
+      <div className="cf-scroll" style={{ overflowY: 'auto', padding: '2px 20px 26px', flex: 1 }}>
+        <button
+          type="button"
+          onClick={openCreate}
+          style={{
+            width: '100%',
+            marginBottom: 16,
+            padding: 14,
+            minHeight: 52,
+            background: `linear-gradient(135deg, ${_PLUM}, #7A4E91)`,
+            color: '#fff',
+            fontFamily: 'var(--font-serif)',
+            fontSize: 15,
+            fontWeight: 700,
+            borderRadius: 14,
+            boxShadow: '0 6px 16px rgba(139,92,158,0.30)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 8,
+          }}
+        >
+          <UserPlus size={17} />＋ 新規患者を登録
+        </button>
+
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            fontFamily: 'var(--font-serif)',
+            fontSize: 12,
+            color: _PLUM,
+            fontWeight: 700,
+            margin: '4px 0 10px',
+          }}
+        >
+          <Search size={13} />
+          既存の患者を検索して編集
+          <span style={{ flex: 1, height: 2, background: '#F0E7F5', borderRadius: 2 }} />
+        </div>
+
+        <PatientLinkPanel
+          linked={null}
+          query={query}
+          onQueryChange={setQuery}
+          candidates={candidates}
+          isFetching={patientsQuery.isFetching}
+          isError={patientsQuery.isError}
+          onSelect={openEdit}
+          onUnlink={() => undefined}
+        />
       </div>
     </SlideSheet>
   );

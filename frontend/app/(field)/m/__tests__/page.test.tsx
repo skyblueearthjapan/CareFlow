@@ -55,6 +55,7 @@ vi.mock('@/lib/queries/patients', () => ({
   usePatient: vi.fn(),
   usePatients: vi.fn(),
   useUpdatePatient: vi.fn(),
+  useCreatePatient: vi.fn(),
 }));
 
 vi.mock('@/lib/queries/geocoding', () => ({
@@ -73,7 +74,12 @@ import {
   useRejectRequest,
   useCreatePendingRequest,
 } from '@/lib/queries/pending_requests';
-import { usePatient, usePatients, useUpdatePatient } from '@/lib/queries/patients';
+import {
+  usePatient,
+  usePatients,
+  useUpdatePatient,
+  useCreatePatient,
+} from '@/lib/queries/patients';
 import { useGeocode } from '@/lib/queries/geocoding';
 import { useResolveOffice } from '@/lib/queries/offices';
 import FieldBoardPage from '../page';
@@ -318,6 +324,7 @@ beforeEach(() => {
     isError: false,
   });
   (useUpdatePatient as unknown as ReturnType<typeof vi.fn>).mockReturnValue(noMutation());
+  (useCreatePatient as unknown as ReturnType<typeof vi.fn>).mockReturnValue(noMutation());
   (useGeocode as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
     mutateAsync: vi.fn(),
     isPending: false,
@@ -849,5 +856,41 @@ describe('/m カルテ 編集 → 保存', () => {
     await waitFor(() => expect(mutate).toHaveBeenCalledTimes(1));
     expect(geocodeAsync).not.toHaveBeenCalled();
     expect(resolveAsync).not.toHaveBeenCalled();
+  });
+});
+
+// ============================ 患者管理ボタン (Phase G-87) ============================
+//
+// 提案を介さない新規登録 + 検索編集ハブ (PatientManageSheet) の入口。
+// ヘッダ「患者」ボタンは manager/admin (canEditKarte) のみ表示し、押下で
+// PatientManageSheet を開く。staff には /m 自体が到達しない。
+
+describe('/m ヘッダ 患者ボタン (Phase G-87)', () => {
+  it('manager では「患者」ボタンを表示する', () => {
+    setSession('manager');
+    render(<FieldBoardPage />);
+    expect(screen.getByRole('button', { name: '患者の登録・編集' })).toBeInTheDocument();
+  });
+
+  it('admin でも「患者」ボタンを表示する', () => {
+    setSession('admin');
+    render(<FieldBoardPage />);
+    expect(screen.getByRole('button', { name: '患者の登録・編集' })).toBeInTheDocument();
+  });
+
+  it('staff ではボード自体が描画されず、患者ボタンに到達しない', () => {
+    setSession('staff');
+    render(<FieldBoardPage />);
+    expect(mockReplace).toHaveBeenCalledWith('/m/home');
+    expect(screen.queryByRole('button', { name: '患者の登録・編集' })).not.toBeInTheDocument();
+  });
+
+  it('「患者」ボタン押下で患者管理シート (新規登録 + 検索) が開く', () => {
+    setSession('manager');
+    render(<FieldBoardPage />);
+    fireEvent.click(screen.getByRole('button', { name: '患者の登録・編集' }));
+    // 患者管理シート: 新規登録ボタン + 検索ボックス。
+    expect(screen.getByText('＋ 新規患者を登録')).toBeInTheDocument();
+    expect(screen.getByLabelText('既存のお客様を検索')).toBeInTheDocument();
   });
 });

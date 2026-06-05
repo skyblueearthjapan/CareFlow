@@ -28,6 +28,7 @@ import {
   ClipboardCheck,
   MapPin,
   ArrowLeft,
+  UserPlus,
 } from 'lucide-react';
 
 import { useFieldBoard, toWeekStart, toIsoYearWeek } from '@/lib/queries/fieldBoard';
@@ -37,7 +38,7 @@ import { computeFreeGaps, parseHM, type FreeGap } from '@/lib/scheduling/freeGap
 import type { SlotPlacementContext } from '@/lib/field/patientCreate';
 
 import { CF_THEME, CF_DOWS, cc } from './theme';
-import { KarteSheet, SuggestSheet, PlacementSheet, Toast } from './FieldSheets';
+import { KarteSheet, SuggestSheet, PlacementSheet, PatientManageSheet, Toast } from './FieldSheets';
 import { ApprovePanel } from './ApprovePanel';
 
 const { TEAL, TEAL_DEEP, TERRA, TERRA_DEEP, INK, INK2, INK3, CREAM, LINE, PANEL } = CF_THEME;
@@ -207,6 +208,9 @@ export function FieldBoard() {
   const [approve, setApprove] = useState(false);
   const [karte, setKarte] = useState<BoardVisit | null>(null);
   const [sheet, setSheet] = useState(false);
+  // 患者管理シート (Phase G-87): 提案を介さない新規登録 + 検索編集ハブ。
+  // manager/admin (canEditKarte) のみ開ける。
+  const [manage, setManage] = useState(false);
   // 空き枠タップ → 直接配置シート (Phase G-84)。枠コンテキストを保持して開く。
   const [placement, setPlacement] = useState<SlotPlacementContext | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -318,6 +322,8 @@ export function FieldBoard() {
         setApprove={setApprove}
         pendingCount={pendingCount}
         onNew={() => setSheet(true)}
+        canManagePatients={canEditKarte}
+        onManage={() => setManage(true)}
       />
 
       <DayStepper
@@ -359,12 +365,13 @@ export function FieldBoard() {
       </div>
 
       {/* scrim */}
-      {(karte || sheet || placement) && (
+      {(karte || sheet || placement || manage) && (
         <div
           onClick={() => {
             setKarte(null);
             setSheet(false);
             setPlacement(null);
+            setManage(false);
           }}
           style={{
             position: 'absolute',
@@ -404,6 +411,9 @@ export function FieldBoard() {
           onClose={() => setPlacement(null)}
           onToast={showToast}
         />
+      )}
+      {manage && canEditKarte && (
+        <PatientManageSheet onClose={() => setManage(false)} onToast={showToast} />
       )}
 
       {toast && <Toast msg={toast} />}
@@ -488,9 +498,19 @@ interface HeaderProps {
   setApprove: (fn: (a: boolean) => boolean) => void;
   pendingCount: number;
   onNew: () => void;
+  /** 患者管理ボタン (新規登録 + 検索編集) を出すか。manager/admin のみ true。 */
+  canManagePatients: boolean;
+  onManage: () => void;
 }
 
-function Header({ approve, setApprove, pendingCount, onNew }: HeaderProps) {
+function Header({
+  approve,
+  setApprove,
+  pendingCount,
+  onNew,
+  canManagePatients,
+  onManage,
+}: HeaderProps) {
   const bg = approve
     ? 'linear-gradient(135deg, #E0A21A 0%, #B5790A 100%)'
     : `linear-gradient(135deg, ${TEAL} 0%, ${TEAL_DEEP} 100%)`;
@@ -554,14 +574,29 @@ function Header({ approve, setApprove, pendingCount, onNew }: HeaderProps) {
           {/* ロゴ(左) と 提案/承認(右) の間を埋めるスペーサ。拠点プルダウンは廃止 (全拠点結合)。
               狭幅(375px)でも縮められるよう minWidth は 0。 */}
           <span style={{ flex: '1 1 auto', minWidth: 0 }} />
-          <div style={{ display: 'flex', gap: 7, flex: '0 0 auto' }}>
-            <button onClick={onNew} style={{ ...hdrAct, background: '#fff', color: accentInk }}>
+          <div style={{ display: 'flex', gap: 6, flex: '0 0 auto' }}>
+            {/* 患者管理 (Phase G-87): 提案を介さない新規登録 + 検索編集。
+                manager/admin のみ・狭幅 (375px) で収まるよう提案/承認よりコンパクトに。 */}
+            {canManagePatients && (
+              <button
+                onClick={onManage}
+                aria-label="患者の登録・編集"
+                style={{ ...hdrAct, ...hdrActCompact, background: '#fff', color: accentInk }}
+              >
+                <UserPlus size={15} /> 患者
+              </button>
+            )}
+            <button
+              onClick={onNew}
+              style={{ ...hdrAct, ...hdrActCompact, background: '#fff', color: accentInk }}
+            >
               <Plus size={15} /> 提案
             </button>
             <button
               onClick={() => setApprove((a) => !a)}
               style={{
                 ...hdrAct,
+                ...hdrActCompact,
                 background: approve ? '#fff' : 'rgba(255,255,255,0.16)',
                 color: approve ? accentInk : '#fff',
                 position: 'relative',
@@ -609,6 +644,15 @@ const hdrAct: CSSProperties = {
   fontWeight: 600,
   fontFamily: 'var(--font-serif)',
   boxShadow: '0 2px 6px rgba(0,0,0,0.10)',
+};
+
+/**
+ * 患者/提案/承認 の 3 ボタンを 375px 幅に収めるためのコンパクト上書き
+ * (Phase G-87)。横 padding と gap を詰める。
+ */
+const hdrActCompact: CSSProperties = {
+  gap: 4,
+  padding: '7px 10px',
 };
 
 // ============================ Day stepper (週送り + 曜日送り 統合) ============================
