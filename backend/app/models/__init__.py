@@ -20,6 +20,7 @@ from app.models.patient import Patient, PatientAllowedOffice
 from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.patient_same_address_link import PatientSameAddressLink
 from app.models.pending_request import PendingRequest
+from app.models.scheduling_settings import SchedulingSettings
 from app.models.shift_request import ShiftRequest
 from app.models.special_week import SpecialWeek, SpecialWeekItem
 from app.models.staff import (
@@ -56,6 +57,7 @@ __all__ = [
     "PatientFixedVisit",
     "PatientSameAddressLink",
     "PendingRequest",
+    "SchedulingSettings",
     "ShiftRequest",
     "SpecialWeek",
     "SpecialWeekItem",

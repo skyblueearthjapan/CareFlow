@@ -43,6 +43,55 @@ Step1(調査)=`optimization-config-catalog.md`。本書は Step2/3(協議→合�
 4. **管理UI(専用ページ + ⚙入口)**。
 5. 各段階 executor + code-reviewer、pg_dump の上デプロイ。
 
+## 実装契約(全エージェント共有)
+
+### SchedulingConfig (dataclass, frozen)
+`backend/app/services/scheduling/config.py`:
+```
+@dataclass(frozen=True)
+class SchedulingConfig:
+    visit_buffer_min: int          # ① 既定8 / 0..30
+    travel_speed_kmh: float        # ② 既定20 / 10..40
+    lunch_duration_min: int        # ③a 既定60 / 30..90
+    lunch_window_start: time       # ③b 既定11:30
+    lunch_window_end: time         # ③b 既定13:30
+    business_start: time           # ④ 既定09:30
+    business_end: time             # ④ 既定18:00
+    max_patients_per_course: int   # ⑤ 既定6 / 1..10
+```
+既定値は `scheduling/constants.py`(土台で集約済) を出所にする(新規 default も constants へ追加)。
+
+### 設定テーブル `scheduling_settings` (事業所=DB 単位の単一行)
+- シングルトン: `id` PK + `is_singleton bool` に部分 UNIQUE 制約 or 固定行。各設定列は **nullable**
+  (NULL=既定値 fallback)。+ created_at/updated_at。Alembic マイグレーション(head 単一を確認)。
+- 列: visit_buffer_min(int) / travel_speed_kmh(numeric) / lunch_duration_min(int) /
+  lunch_window_start(time) / lunch_window_end(time) / business_start(time) / business_end(time) /
+  max_patients_per_course(int)。CHECK 制約で範囲(buffer 0-30, speed 10-40, lunch 30-90,
+  capacity 1-10, lunch_start<lunch_end, business_start<business_end)。
+
+### ローダー
+`async def load_scheduling_config(db) -> SchedulingConfig`: 単一行を読み、各フィールド
+row 値 or constants 既定で SchedulingConfig を組む(行が無ければ全既定)。
+
+### API (`/api/v1/scheduling-settings`)
+- `GET`: 現在の有効値(SchedulingConfig)を返す(各値 + 既定かどうか)。require_role admin/manager。
+- `PUT`: 更新(部分可)。範囲バリデーション(422)。admin/manager。更新後の有効値を返す。
+- フロント freeGaps 同期用に営業枠/定員も GET に含める(またはこの GET をフロントが読む)。
+
+### Step3 注入方針
+- `run_v2_pipeline` / propose-slots が `SchedulingConfig` を受け取り、module 定数の代わりに使用:
+  buffer(`VISIT_BUFFER_MINUTES`)・速度(`haversine_minutes` の TRAVEL_SPEED_KMH)・昼休み
+  (`compute_lunch_window` の duration/window)・営業枠(AM/PM_BLOCK→連続 [business_start,end])・
+  定員(`MAX_PATIENTS_PER_COURSE`)。**グローバル定数の書換はしない**(引数注入)。
+- 営業枠連続化: 12:00-13:00 固定非営業を廃し、[business_start,business_end] 連続 + ③動的昼休み。
+  正午12:00(午前/午後判定)は内部維持。フロント `freeGaps.ts` は GET API から営業枠を取得。
+- propose と full-optimize で同一 config を使い一貫性維持。
+
+### UI (Step4)
+- 親機ヘッダ右上 ⚙(admin/manager) → 専用ページ `/settings`(or `/admin/scheduling-settings`)。
+- 3グループ(時間のルール/移動の見積もり/営業・コース)、スライダー+数値・時刻ピッカー・±定員。
+- 各項目に平易説明＋ライブ表示(速度→1kmあたり分)。既定に戻す・保存・「次回の最適化から反映」。
+
 ## 未決(実装時に確認)
 - ~~A-E/A-D 不整合の正しい値~~ → ✅調査完了: 別機能の上限のため統一しない(v2=5 / `/courses/generate`=4)。
 - 別系統 `/allocate`(`allocation/engine.py`)が運用中か(運用中なら設定整合の要否)。

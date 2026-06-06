@@ -29,6 +29,7 @@ from app.api.v1 import (
     pending_requests,
     schedule,
     schedule_v2,
+    scheduling_settings,
     shift_requests,
     staff,
     staff_companion,
@@ -148,6 +149,12 @@ api_router.include_router(
     office_feature_flags.router,
     prefix="/office-feature-flags",
     tags=["office-feature-flags"],
+)
+# Phase G-88 Step2: 自動最適化設定 (事業所単位の単一行) の取得 / 部分更新.
+api_router.include_router(
+    scheduling_settings.router,
+    prefix="/scheduling-settings",
+    tags=["scheduling-settings"],
 )
 
 __all__ = ["api_router"]
