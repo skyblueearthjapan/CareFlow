@@ -34,7 +34,15 @@ import {
 import { useFieldBoard, toWeekStart, toIsoYearWeek } from '@/lib/queries/fieldBoard';
 import { usePendingRequests } from '@/lib/queries/pending_requests';
 import type { BoardCell, BoardCourse, BoardOffice, BoardVisit } from '@/lib/schemas/v2/board';
-import { computeFreeGaps, parseHM, type FreeGap } from '@/lib/scheduling/freeGaps';
+import {
+  computeFreeGaps,
+  businessBlocksFromHours,
+  BUSINESS_BLOCKS,
+  parseHM,
+  type FreeGap,
+} from '@/lib/scheduling/freeGaps';
+// Phase G-88: 営業時間設定を空き枠表示に反映 (取得前/失敗時は既定枠にフォールバック).
+import { useSchedulingSettings } from '@/lib/queries/schedulingSettings';
 import type { SlotPlacementContext } from '@/lib/field/patientCreate';
 
 import { CF_THEME, CF_DOWS, cc } from './theme';
@@ -295,6 +303,13 @@ export function FieldBoard() {
   const pendingQuery = usePendingRequests({ status: 'pending', limit: 100 });
   const pendingCount = pendingQuery.data?.items.length ?? 0;
 
+  // Phase G-88: 営業時間設定 → 空き枠 (取得前/失敗時は既定枠にフォールバック)。
+  const schedulingSettingsQuery = useSchedulingSettings();
+  const businessBlocks = useMemo(() => {
+    const v = schedulingSettingsQuery.data?.values;
+    return businessBlocksFromHours(v?.business_start, v?.business_end) ?? BUSINESS_BLOCKS;
+  }, [schedulingSettingsQuery.data]);
+
   const weekLabel = board ? `${isoYear}年 第${isoWeek}週` : `第${isoWeek}週`;
   const weekRange = useMemo(() => {
     const start = MD_FORMAT(weekStart.toISOString().slice(0, 10));
@@ -357,6 +372,7 @@ export function FieldBoard() {
             dayCourses={dayCourses}
             weekday={dayIdx}
             sameAddressGroups={sameAddressGroups}
+            businessBlocks={businessBlocks}
             onKarte={setKarte}
             onEmpty={setPlacement}
           />
@@ -1096,6 +1112,7 @@ function CourseSlots({
   officeName,
   weekday,
   sameAddressGroups,
+  businessBlocks,
   onKarte,
   onEmpty,
 }: {
@@ -1105,6 +1122,8 @@ function CourseSlots({
   officeName: string;
   weekday: number;
   sameAddressGroups: SameAddressGroups;
+  /** Phase G-88: 営業設定から算出した営業枠 (空き帯算出用)。 */
+  businessBlocks: ReadonlyArray<readonly [number, number]>;
   onKarte: (v: BoardVisit) => void;
   onEmpty: (ctx: SlotPlacementContext) => void;
 }) {
@@ -1169,7 +1188,7 @@ function CourseSlots({
     // 拠点付きトークンにできない (= applier がコース解決できない) 場合は空き枠カードを
     // 出さない。解決不能トークンを承認に送ると PFV の course が NULL になるため配置不可とする。
     // 現状の対象拠点 (稲毛/都賀) では必ず解決できるため通常はトリガーしない。
-    const gaps = courseToken === null ? [] : computeFreeGaps(co.visits);
+    const gaps = courseToken === null ? [] : computeFreeGaps(co.visits, businessBlocks);
     for (const gap of gaps) {
       // gap 直前 / 直後の visit を実時刻位置から解決する (移動時間 / 表示用)。
       const prev = lastVisitEndingAtOrBefore(co.visits, gap.startMin);
@@ -1215,6 +1234,7 @@ function AgendaBoard({
   dayCourses,
   weekday,
   sameAddressGroups,
+  businessBlocks,
   onKarte,
   onEmpty,
 }: {
@@ -1223,6 +1243,8 @@ function AgendaBoard({
   /** 選択日の曜日 (0=Mon..6=Sun)。直接配置の枠コンテキスト用。 */
   weekday: number;
   sameAddressGroups: SameAddressGroups;
+  /** Phase G-88: 営業設定から算出した営業枠 (空き帯算出用)。 */
+  businessBlocks: ReadonlyArray<readonly [number, number]>;
   onKarte: (v: BoardVisit) => void;
   onEmpty: (ctx: SlotPlacementContext) => void;
 }) {
@@ -1339,6 +1361,7 @@ function AgendaBoard({
                   officeName={dc.officeName}
                   weekday={weekday}
                   sameAddressGroups={sameAddressGroups}
+                  businessBlocks={businessBlocks}
                   onKarte={onKarte}
                   onEmpty={onEmpty}
                 />

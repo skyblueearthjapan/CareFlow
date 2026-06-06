@@ -64,6 +64,10 @@ from app.models.patient_same_address_link import PatientSameAddressLink
 from app.models.staff import Staff, StaffSecondaryOffice, StaffShift, StaffWeeklyOverride
 from app.models.visit import Visit
 from app.models.visit_staff_assignment import VisitStaffAssignment
+from app.services.scheduling.config import (
+    DEFAULT_SCHEDULING_CONFIG,
+    SchedulingConfig,
+)
 from app.services.scheduling.constants import (
     COURSE_MAX_MINUTES,
     DEFAULT_OFFICE_OPERATING_WEEKDAYS,
@@ -583,18 +587,22 @@ def haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     return r_km * c
 
 
-def haversine_minutes(distance_km: float) -> int:
+def haversine_minutes(distance_km: float, *, speed_kmh: float = TRAVEL_SPEED_KMH) -> int:
     """W41 v2 拡張 (移動時間の time 化): 直線距離 (km) から移動時間 (分) を概算する.
 
     Rules:
         - ``distance_km <= 0`` (同住所 / 数値誤差): 0 分
-        - それ以外: ``distance_km / TRAVEL_SPEED_KMH * 60`` を整数丸めし、最低 1 分.
+        - それ以外: ``distance_km / speed_kmh * 60`` を整数丸めし、最低 1 分.
 
     都市部の安全側仮定として ``TRAVEL_SPEED_KMH = 20`` km/h (信号・混雑考慮).
+
+    Phase G-88 Step3: ``speed_kmh`` 引数で移動速度を注入可能にする. 既定は module
+    定数 ``TRAVEL_SPEED_KMH`` (= 20) なので、config を渡さない既存呼出は挙動不変.
+    最適化経路では ``config.travel_speed_kmh`` を渡す.
     """
     if distance_km <= 0:
         return 0
-    return max(1, int(round(distance_km / TRAVEL_SPEED_KMH * 60)))
+    return max(1, int(round(distance_km / speed_kmh * 60)))
 
 
 def _address_bucket(lat: float, lng: float) -> tuple[float, float]:
@@ -973,8 +981,19 @@ def determine_am_pm(
     return "any"
 
 
-def _is_in_lunch_break(start: time, end: time) -> bool:
+def _is_in_lunch_break(
+    start: time,
+    end: time,
+    *,
+    window_start: time = LUNCH_EARLIEST_START,
+    window_end: time = LUNCH_LATEST_END,
+) -> bool:
     """H10: visit が「動的 lunch window (11:30-13:30)」と物理的に重なるか判定.
+
+    Phase G-88 Step3: ``window_start`` / ``window_end`` 引数で昼休み取得時間帯を
+    注入可能にする. 既定は module 定数 (``LUNCH_EARLIEST_START`` 11:30 /
+    ``LUNCH_LATEST_END`` 13:30) なので、引数を渡さない既存呼出・テストは挙動不変.
+    最適化経路では ``config.lunch_window_start`` / ``config.lunch_window_end`` を渡す.
 
     Phase E-3 改修 (2): フレキシブルランチ 3 段階 fallback (60→45→30 分) に
     合わせて緩和. ``LUNCH_DURATION_MIN`` (= 30 分) の最低 lunch でも避けられない
@@ -1007,14 +1026,14 @@ def _is_in_lunch_break(start: time, end: time) -> bool:
         - ``end <= 11:30`` (visit が lunch window より前): False
         - ``start >= 13:30`` (visit が lunch window より後): False
     """
-    if end <= LUNCH_EARLIEST_START:
+    if end <= window_start:
         return False
-    if start >= LUNCH_LATEST_END:
+    if start >= window_end:
         return False
     # AM 側回避: 11:30-12:00 (30 分 lunch) → visit_start >= 12:00 で OK.
     # PM 側回避: 13:00-13:30 (30 分 lunch) → visit_end <= 13:00 で OK.
-    am_avoidable_visit_start = _add_minutes(LUNCH_EARLIEST_START, LUNCH_DURATION_MIN)  # 12:00
-    pm_avoidable_visit_end = _add_minutes(LUNCH_LATEST_END, -LUNCH_DURATION_MIN)  # 13:00
+    am_avoidable_visit_start = _add_minutes(window_start, LUNCH_DURATION_MIN)  # 12:00
+    pm_avoidable_visit_end = _add_minutes(window_end, -LUNCH_DURATION_MIN)  # 13:00
     if start >= am_avoidable_visit_start:
         # AM 側 lunch (11:30-12:00 30 分) で重複回避可.
         return False
@@ -1043,6 +1062,9 @@ def compute_lunch_window(
     weekday: int = -1,
     course_code: str | None = None,
     office_name: str = "",
+    duration: int = LUNCH_DURATION_PREFERRED,
+    window_start: time = LUNCH_EARLIEST_START,
+    window_end: time = LUNCH_LATEST_END,
 ) -> tuple[time, time] | None:
     """Wave 3 (#WAVE3): コース内 visit リストから最適 lunch slot を動的に決定する.
 
@@ -1050,6 +1072,21 @@ def compute_lunch_window(
     「11:30-13:30 の 2 時間枠内のどこかで必ず 45-60 分の休憩を確保。最悪、
     なんとなくスペース確保」(User 確定仕様) のため、60 分が取れなければ 45 分、
     45 分も取れなければ 30 分の最終 fallback を試す. 30 分採用時は warning 発火.
+
+    Phase G-88 Step3 (設定注入):
+        ``duration`` / ``window_start`` / ``window_end`` を引数化し、事業所別設定
+        (``SchedulingConfig.lunch_duration_min`` / ``lunch_window_start`` /
+        ``lunch_window_end``) を注入できるようにする. 既定は module 定数
+        (``LUNCH_DURATION_PREFERRED`` (60) / ``LUNCH_EARLIEST_START`` (11:30) /
+        ``LUNCH_LATEST_END`` (13:30)) なので、config を渡さない既存呼出・テストは
+        挙動不変.
+
+        **config 化するのは「標準 (= 最優先) の長さと取得時間帯」のみ**. 内部 fallback
+        (45 分 / 最低 30 分 / 5 分刻み候補走査) は労基・人道的下限として **固定**
+        のまま残す (``LUNCH_DURATION_FALLBACK`` / ``LUNCH_DURATION_MIN`` /
+        ``LUNCH_CANDIDATE_STEP_MIN``). ただし fallback 長は標準長より短いものだけ
+        を使う (例: 標準 30 分なら 45 分 fallback は不使用). 正午 (``NOON_HOUR``)
+        中心の採用優先も固定.
 
     Algorithm:
       1. visit を ``start_time`` 昇順 sort し、占有区間 [start, end) のリストを作る.
@@ -1086,14 +1123,23 @@ def compute_lunch_window(
         occupied.append((s, e))
     occupied.sort()
 
-    earliest_min = _time_to_min(LUNCH_EARLIEST_START)  # 11:30 = 690
-    latest_start_min = _time_to_min(LUNCH_LATEST_START)  # 12:30 = 750
-    latest_end_min = _time_to_min(LUNCH_LATEST_END)  # 13:30 = 810
+    # Phase G-88 Step3: window/duration を引数 (= config 値 or module 定数既定) から
+    # 解決する. 既定 (11:30 / 13:30 / 60) では従来の固定値と一致する.
+    earliest_min = _time_to_min(window_start)  # 既定 11:30 = 690
+    latest_end_min = _time_to_min(window_end)  # 既定 13:30 = 810
+    # 標準 (= 最優先) 長の cand_start 上限 (= window_end - duration).
+    # 既定では 12:30 (= 13:30 - 60) で旧 LUNCH_LATEST_START と一致する.
+    latest_start_min = latest_end_min - duration  # 既定 12:30 = 750
     # Phase E-3 改修 (2): 30 分 fallback では cand_start を 13:00 (=
-    # LUNCH_LATEST_END - LUNCH_DURATION_MIN) まで広げて探索する.
+    # window_end - LUNCH_DURATION_MIN) まで広げて探索する.
     # 30 分 lunch を 13:00-13:30 に配置するケース (= PM 側ギリギリ) を許容するため.
     latest_start_min_30 = latest_end_min - LUNCH_DURATION_MIN  # 13:00 = 780
-    noon_min = NOON_HOUR * 60  # 12:00 = 720
+    noon_min = NOON_HOUR * 60  # 12:00 = 720 (午前/午後境界は固定)
+    # 標準長より短い fallback 長のみ採用する (= 標準 30 分時に 45 分 fallback を
+    # 使わない). 既定 (標準 60) では [45, 30] で従来と一致する.
+    _fallback_durations = [d for d in (LUNCH_DURATION_FALLBACK, LUNCH_DURATION_MIN) if d < duration]
+    _dur_45 = LUNCH_DURATION_FALLBACK if LUNCH_DURATION_FALLBACK in _fallback_durations else None
+    _dur_30 = LUNCH_DURATION_MIN if LUNCH_DURATION_MIN in _fallback_durations else None
 
     def _has_free_window(slot_start: int, slot_end: int) -> bool:
         """[slot_start, slot_end) が占有区間と一切重ならないか."""
@@ -1105,6 +1151,8 @@ def compute_lunch_window(
                 return False
         return True
 
+    # best_60 = 標準長 (= duration; 既定 60) の最良枠. best_45 / best_30 は固定
+    # fallback 長 (45 / 30 分) の最良枠. 変数名は既定値由来で歴史的に 60/45/30.
     best_60: tuple[int, int] | None = None
     best_60_dist: int = 10**9
     best_45: tuple[int, int] | None = None
@@ -1112,46 +1160,51 @@ def compute_lunch_window(
     best_30: tuple[int, int] | None = None
     best_30_dist: int = 10**9
 
-    # Phase E-3 改修 (2): 3 段階 fallback. 各 cand_start で 60→45→30 を順に試す.
-    # 60 が取れた候補で 45/30 は試さない (= 60 優先). 60 が取れない候補のみ 45 を試し、
-    # 45 も取れなければ 30 を試す.
+    # Phase E-3 改修 (2): 3 段階 fallback. 各 cand_start で 標準長→45→30 を順に試す.
+    # 標準長が取れた候補で 45/30 は試さない (= 標準長優先). 標準長が取れない候補のみ
+    # 45 を試し、45 も取れなければ 30 を試す.
+    # Phase G-88 Step3: 標準長 (= duration) は config 値. fallback 長 (45/30) は固定.
+    #   標準長より長い fallback (= duration < 45 のときの 45) は使わない
+    #   (``_fallback_durations`` で除外済み).
     # cand_start の上限は duration ごとに異なる:
-    #   - 60 分 lunch: cand_start <= 12:30 (= LUNCH_LATEST_START) で end <= 13:30.
-    #   - 45 分 lunch: cand_start <= 12:45 (= LUNCH_LATEST_END - 45).
-    #   - 30 分 lunch: cand_start <= 13:00 (= LUNCH_LATEST_END - 30).
-    # 統一して latest_start_min_30 (= 13:00) まで走査する.
+    #   - 標準長 lunch: cand_start <= latest_start_min (= window_end - duration).
+    #   - 45 分 lunch: cand_start <= window_end - 45.
+    #   - 30 分 lunch: cand_start <= window_end - 30.
+    # 統一して latest_start_min_30 (= window_end - 30) まで走査する.
     for cand_start in range(earliest_min, latest_start_min_30 + 1, LUNCH_CANDIDATE_STEP_MIN):
-        end_60 = cand_start + LUNCH_DURATION_PREFERRED
+        end_pref = cand_start + duration
         if (
             cand_start <= latest_start_min
-            and end_60 <= latest_end_min
-            and _has_free_window(cand_start, end_60)
+            and end_pref <= latest_end_min
+            and _has_free_window(cand_start, end_pref)
         ):
             dist = abs(cand_start - noon_min)
             if dist < best_60_dist or (
                 dist == best_60_dist and best_60 is not None and cand_start < best_60[0]
             ):
-                best_60 = (cand_start, end_60)
+                best_60 = (cand_start, end_pref)
                 best_60_dist = dist
             continue
-        end_45 = cand_start + LUNCH_DURATION_FALLBACK
-        if end_45 <= latest_end_min and _has_free_window(cand_start, end_45):
-            dist = abs(cand_start - noon_min)
-            if dist < best_45_dist or (
-                dist == best_45_dist and best_45 is not None and cand_start < best_45[0]
-            ):
-                best_45 = (cand_start, end_45)
-                best_45_dist = dist
-            continue
+        if _dur_45 is not None:
+            end_45 = cand_start + _dur_45
+            if end_45 <= latest_end_min and _has_free_window(cand_start, end_45):
+                dist = abs(cand_start - noon_min)
+                if dist < best_45_dist or (
+                    dist == best_45_dist and best_45 is not None and cand_start < best_45[0]
+                ):
+                    best_45 = (cand_start, end_45)
+                    best_45_dist = dist
+                continue
         # 45 分も取れない候補のみ 30 分 (= LUNCH_DURATION_MIN) を試す.
-        end_30 = cand_start + LUNCH_DURATION_MIN
-        if end_30 <= latest_end_min and _has_free_window(cand_start, end_30):
-            dist = abs(cand_start - noon_min)
-            if dist < best_30_dist or (
-                dist == best_30_dist and best_30 is not None and cand_start < best_30[0]
-            ):
-                best_30 = (cand_start, end_30)
-                best_30_dist = dist
+        if _dur_30 is not None:
+            end_30 = cand_start + _dur_30
+            if end_30 <= latest_end_min and _has_free_window(cand_start, end_30):
+                dist = abs(cand_start - noon_min)
+                if dist < best_30_dist or (
+                    dist == best_30_dist and best_30 is not None and cand_start < best_30[0]
+                ):
+                    best_30 = (cand_start, end_30)
+                    best_30_dist = dist
 
     if best_60 is not None:
         return (_min_to_time(best_60[0]), _min_to_time(best_60[1]))
@@ -1511,6 +1564,8 @@ async def _load_same_address_pair_modes(
 
 def _extract_weekly_entries(
     patient: Patient,
+    *,
+    config: SchedulingConfig | None = None,
 ) -> list[tuple[int, time, int, str | None, str | None, str | None]]:
     """patient.weekly_pattern から ``(weekday, start_time, service_minutes,
     time_type, preferred_start_str, preferred_end_str)`` を取り出す.
@@ -1520,7 +1575,13 @@ def _extract_weekly_entries(
 
     W41 v2 (UI 時間詳細表示): ``preferred_start`` / ``preferred_end`` の元文字列も
     そのまま返して V2Visit に積む.
+
+    Phase G-88 Step3: ``preferred_start`` 不在時の仮開始時刻を ``config.business_start``
+    で注入可能にする. ``config=None`` は module 定数 ``AM_BLOCK_START`` (09:30) を
+    使い挙動不変.
     """
+    # Phase G-88 Step3: 仮開始時刻 (preferred_start 不在時) を config 化.
+    _business_start = config.business_start if config is not None else AM_BLOCK_START
     pattern = patient.weekly_pattern
     if not isinstance(pattern, dict):
         return []
@@ -1548,7 +1609,7 @@ def _extract_weekly_entries(
                 sm = int(sm_value) if isinstance(sm_value, int) and sm_value > 0 else 35
             if st is None:
                 # 時刻なしでも午前/午後判定はできるが、提案では仮 9:30 開始にする.
-                st = AM_BLOCK_START
+                st = _business_start
             out.append(
                 (
                     wd,
@@ -1574,7 +1635,7 @@ def _extract_weekly_entries(
             wd = _resolve_weekday(wd_raw)
             if wd is None:
                 continue
-            st = base_start if base_start is not None else AM_BLOCK_START
+            st = base_start if base_start is not None else _business_start
             out.append(
                 (
                     wd,
@@ -1825,6 +1886,7 @@ def build_visits_for_pool(
     op_weekdays_by_office: dict[UUID, set[int]] | None = None,
     office_name_by_id: dict[UUID, str] | None = None,
     warnings: list[V2Warning] | None = None,
+    config: SchedulingConfig | None = None,
 ) -> list[V2Visit]:
     """段階 1〜2 中間: 各患者の希望を V2Visit に展開する.
 
@@ -2002,7 +2064,7 @@ def build_visits_for_pool(
                         )
                     )
         if not used_fixed:
-            entries = _extract_weekly_entries(patient)
+            entries = _extract_weekly_entries(patient, config=config)
             # Phase G-30.1 HIGH-1: 同 weekday に複数 entry (= AM/PM split 構成)
             # + pinned PFV があると、 同じ pinned visit が複数回 emit される.
             # 既に pinned visit を emit した weekday を記録し、 同 weekday の
@@ -2185,6 +2247,7 @@ def build_visits_for_pool_v2(
     op_weekdays_by_office: dict[UUID, set[int]] | None = None,
     office_name_by_id: dict[UUID, str] | None = None,
     warnings: list[V2Warning] | None = None,
+    config: SchedulingConfig | None = None,
 ) -> list[V2Visit]:
     """Phase G-21 T3-2: pinned / 非 pinned 患者で 2 経路に分けて V2Visit に展開する.
 
@@ -2313,7 +2376,7 @@ def build_visits_for_pool_v2(
 
         # 2) 非 pinned 経路: weekly_pattern.entries の time_type / preferred_start / preferred_end
         #    を採用. apply_travel_corrections が時間帯範囲内で時刻 shift する.
-        entries = _extract_weekly_entries(patient)
+        entries = _extract_weekly_entries(patient, config=config)
         for wd, st, sm, tt, ps_str, pe_str in entries:
             # Invariant G21-A: 同 weekday に pinned PFV があれば weekly_pattern entry skip + warning.
             if wd in pinned_by_wd:
@@ -3432,6 +3495,7 @@ def combine_am_pm_sets(
     staff_count: int,
     warnings: list[V2Warning],
     office_name_by_id: dict[UUID, str] | None = None,
+    config: SchedulingConfig | None = None,
 ) -> list[tuple[V2Set | None, V2Set | None]]:
     """段階 5: 各スタッフ 1 日 = 午前セット + 午後セットを組み合わせる.
 
@@ -3440,9 +3504,16 @@ def combine_am_pm_sets(
       2. am と pm を greedy に「最も近い」ペアでマッチング.
       3. 同エリア優先 (5km 以内なら OK). 5km 以上離れていれば警告.
       4. 余った片方は単独コース (午前のみ or 午後のみ).
+
+    Phase G-88 Step3: ``config`` 注入時のみ 1 コース最大人数を
+    ``config.max_patients_per_course`` に差し替える. ``config=None`` は module 定数
+    ``MAX_PATIENTS_PER_COURSE`` (= 6) を使い挙動不変.
     """
     if not am_sets and not pm_sets:
         return []
+    _max_patients = (
+        config.max_patients_per_course if config is not None else MAX_PATIENTS_PER_COURSE
+    )
 
     # H4: staff_count == 0 (= 勤務可能スタッフ 0 名) の場合は
     #     UI 上 "通常コース (A/B/C/D/E)" を出すと「採用可能」と誤認させるため,
@@ -3490,7 +3561,7 @@ def combine_am_pm_sets(
             for j, p in enumerate(pm_remaining):
                 # 容量 check
                 total = len(a.visits) + len(p.visits)
-                if total > MAX_PATIENTS_PER_COURSE:
+                if total > _max_patients:
                     # 容量超過は除外
                     continue
                 d = _set_distance(a, p)
@@ -3588,7 +3659,11 @@ def combine_am_pm_sets(
 # ---------------------------------------------------------------------------
 
 
-def calc_course_total_minutes(visits: list[V2Visit]) -> int:
+def calc_course_total_minutes(
+    visits: list[V2Visit],
+    *,
+    config: SchedulingConfig | None = None,
+) -> int:
     """コース内訪問の合計所要時間 (分) = visit duration + 隣接移動時間 + バッファー.
 
     W41 v2 拡張 (コース容量 duration 化): ``len(visits)`` だけでは長時間訪問や
@@ -3611,6 +3686,10 @@ def calc_course_total_minutes(visits: list[V2Visit]) -> int:
     """
     if not visits:
         return 0
+    # Phase G-88 Step3: config 注入時のみ buffer / 移動速度を差し替え. config=None
+    # は module 定数を使い挙動不変.
+    _buffer_min = config.visit_buffer_min if config is not None else VISIT_BUFFER_MINUTES
+    _speed_kmh = config.travel_speed_kmh if config is not None else TRAVEL_SPEED_KMH
     sv = sorted(visits, key=lambda v: v.start_time)
     # Phase E-3 改修 (3): 同住所ペア (隣接 same_address) の service 合計が
     # ``SAME_ADDRESS_PAIR_MIN_OCCUPANCY`` (= 90) 未満なら 90 分に底上げして total に積む.
@@ -3653,9 +3732,11 @@ def calc_course_total_minutes(visits: list[V2Visit]) -> int:
         # 同住所は移動時間 0 + バッファー 0
         if _address_bucket(prev.lat, prev.lng) == _address_bucket(cur.lat, cur.lng):
             continue
-        travel_min = haversine_minutes(haversine_km(prev.lat, prev.lng, cur.lat, cur.lng))
+        travel_min = haversine_minutes(
+            haversine_km(prev.lat, prev.lng, cur.lat, cur.lng), speed_kmh=_speed_kmh
+        )
         # _apply_travel_time_to_courses と同じく異住所はバッファー加算.
-        total += travel_min + VISIT_BUFFER_MINUTES
+        total += travel_min + _buffer_min
     return total
 
 
@@ -3827,6 +3908,7 @@ def _auto_shift_same_time_conflicts(
     course_code: str | None,
     weekday: int,
     warnings: list[V2Warning],
+    config: SchedulingConfig | None = None,
 ) -> list[V2Visit]:
     """Fix E (CareFlow): 同コース内の異住所同時刻 2 名以上を自動シフトする.
 
@@ -3887,6 +3969,11 @@ def _auto_shift_same_time_conflicts(
     """
     if len(sv) < 2:
         return sv
+
+    # Phase G-88 Step3: config 注入時のみ buffer / 移動速度を差し替え. config=None
+    # は module 定数 (VISIT_BUFFER_MINUTES=8 / TRAVEL_SPEED_KMH=20) を使い挙動不変.
+    _buffer_min = config.visit_buffer_min if config is not None else VISIT_BUFFER_MINUTES
+    _speed_kmh = config.travel_speed_kmh if config is not None else TRAVEL_SPEED_KMH
 
     def _dist(p: V2Visit | None, q: V2Visit | None) -> float:
         """2 visit 間の Haversine 距離 (km). 片方 None なら 0 (邪魔しない)."""
@@ -3984,8 +4071,10 @@ def _auto_shift_same_time_conflicts(
                 travel_min = 0
                 buffer_min = 0
             else:
-                travel_min = haversine_minutes(haversine_km(prev.lat, prev.lng, cur.lat, cur.lng))
-                buffer_min = VISIT_BUFFER_MINUTES
+                travel_min = haversine_minutes(
+                    haversine_km(prev.lat, prev.lng, cur.lat, cur.lng), speed_kmh=_speed_kmh
+                )
+                buffer_min = _buffer_min
             earliest = _add_minutes(prev.end_time, travel_min + buffer_min)
             # 5 分刻み切り上げ (固定でも例外的に動かすため一律適用).
             new_start = _round_up_to_5min(earliest)
@@ -4035,6 +4124,7 @@ def _align_same_address_pair_to_same_time(
     course_code: str | None,
     office_name: str,
     unassigned_visit_ids: set[int] | None = None,
+    config: SchedulingConfig | None = None,
 ) -> list[V2Visit]:
     """Wave 2 (#115) + Phase E-3 改修 (4): 同住所ペアを **同 start_time** に揃え +
     duration を ``max(service 合計, SAME_ADDRESS_PAIR_MIN_OCCUPANCY=90)`` 占有させる.
@@ -4099,6 +4189,12 @@ def _align_same_address_pair_to_same_time(
         return sv
 
     wd_jp = _weekday_jp(weekday)
+
+    # Phase G-88 Step3: config 注入時のみ昼休み取得時間帯を差し替え. config=None
+    # は module 定数 (LUNCH_EARLIEST_START 11:30 / LUNCH_LATEST_END 13:30) を使い
+    # 挙動不変. lunch 圧迫 warning 判定 (_is_in_lunch_break / 残空き計算) に効く.
+    _lunch_window_start = config.lunch_window_start if config is not None else LUNCH_EARLIEST_START
+    _lunch_window_end = config.lunch_window_end if config is not None else LUNCH_LATEST_END
 
     # Phase E-3 改修 (4): 同住所 3 名以上の自動別コース化.
     # H2 enforce (_enforce_h2_same_address / _enforce_h2_split_overflow) で
@@ -4295,7 +4391,12 @@ def _align_same_address_pair_to_same_time(
         # ざっくり警告する.
         pair_start_t = aligned_start
         pair_end_t = _add_minutes(aligned_start, pair_occupancy)
-        pair_blocks_lunch_physically = _is_in_lunch_break(pair_start_t, pair_end_t)
+        pair_blocks_lunch_physically = _is_in_lunch_break(
+            pair_start_t,
+            pair_end_t,
+            window_start=_lunch_window_start,
+            window_end=_lunch_window_end,
+        )
         if pair_blocks_lunch_physically:
             a_name = a.patient_name or (a.patient_code or "不明")
             b_name = b.patient_name or (b.patient_code or "不明")
@@ -4307,7 +4408,8 @@ def _align_same_address_pair_to_same_time(
                         f"同住所ペア {a_name} 様 + {b_name} 様 "
                         f"({_fmt_hhmm(aligned_start)} 占有 "
                         f"{pair_occupancy} 分) が "
-                        "昼休憩 (11:30-13:30 の動的枠) と重なります"
+                        f"昼休憩 ({_fmt_hhmm(_lunch_window_start)}-"
+                        f"{_fmt_hhmm(_lunch_window_end)} の動的枠) と重なります"
                     ),
                     weekday=weekday,
                     actionable=True,
@@ -4327,8 +4429,8 @@ def _align_same_address_pair_to_same_time(
             # else 分岐に置く. User 確定仕様 = 45-60 分の lunch 確保.
             pair_start_min_local = _time_to_min(pair_start_t)
             pair_end_min_local = _time_to_min(pair_end_t)
-            lunch_start_min_local = _time_to_min(LUNCH_EARLIEST_START)  # 11:30
-            lunch_end_min_local = _time_to_min(LUNCH_LATEST_END)  # 13:30
+            lunch_start_min_local = _time_to_min(_lunch_window_start)  # 既定 11:30
+            lunch_end_min_local = _time_to_min(_lunch_window_end)  # 既定 13:30
             overlap_start = max(pair_start_min_local, lunch_start_min_local)
             overlap_end = min(pair_end_min_local, lunch_end_min_local)
             if overlap_start < overlap_end:
@@ -4370,8 +4472,12 @@ def _apply_corrections_to_visits(
     *,
     warnings: list[V2Warning],
     office_name_by_id: dict[UUID, str] | None = None,
+    config: SchedulingConfig | None = None,
 ) -> set[int]:
     """Phase G-21 W1: 4 経路統合のための共通補正 helper.
+
+    Phase G-88 Step3: ``config`` を ``apply_travel_corrections`` へそのまま伝播する.
+    ``config=None`` は module 定数を使い挙動不変.
 
     呼び出し側 4 経路:
         - ``run_v2_pipeline``        (全面最適化)
@@ -4405,6 +4511,7 @@ def _apply_corrections_to_visits(
         visits,
         warnings=warnings,
         office_name_by_id=office_name_by_id,
+        config=config,
     )
     # pinned visit の値を snapshot から復元する ("監視のみ" — 制約計算には参加
     # するが、 自身の時刻 / コースは絶対に動かない).
@@ -4425,8 +4532,12 @@ def apply_travel_corrections(
     *,
     warnings: list[V2Warning],
     office_name_by_id: dict[UUID, str] | None = None,
+    config: SchedulingConfig | None = None,
 ) -> set[int]:
     """Wave 1 (#115): visit list に対し時刻補正フル一式を適用する public helper.
+
+    Phase G-88 Step3: ``config`` を ``_apply_travel_time_to_courses`` へ伝播する.
+    ``config=None`` は module 定数を使い挙動不変.
 
     補正内容 (``_apply_travel_time_to_courses`` から切り出し / Wave 2 追加):
         1. ``(office_id, weekday, course_code)`` ごとに grouping.
@@ -4453,7 +4564,7 @@ def apply_travel_corrections(
         (= ``unassigned`` 扱いで物理不可能だったもの).
     """
     return _apply_travel_time_to_courses(
-        visits, warnings=warnings, office_name_by_id=office_name_by_id
+        visits, warnings=warnings, office_name_by_id=office_name_by_id, config=config
     )
 
 
@@ -4559,8 +4670,16 @@ def _apply_travel_time_to_courses(
     *,
     warnings: list[V2Warning],
     office_name_by_id: dict[UUID, str] | None = None,
+    config: SchedulingConfig | None = None,
 ) -> set[int]:
     """W41 v2 拡張 (動的 start_time): 同コース連続訪問に移動時間を反映する.
+
+    Phase G-88 Step3: ``config`` 注入時のみ buffer (``config.visit_buffer_min``) /
+    移動速度 (``config.travel_speed_kmh``) / 営業終了境界 (``config.business_end``;
+    旧 ``PM_BLOCK_END``) / 昼休み (``config.lunch_*``; ``compute_lunch_window`` 経由)
+    を差し替える. ``config=None`` は module 定数を使い挙動不変.
+    **正午 12:00 境界 (AM_BLOCK_END / PM_BLOCK_START) の内部構造は今回据え置き**
+    (営業の開始・終了境界のみ config 化).
 
     Algorithm:
         1. ``(office_id, weekday, course_code)`` ごとに visits を集計
@@ -4607,6 +4726,16 @@ def _apply_travel_time_to_courses(
         warning type は **travel_time_shortage** (移動時間で時刻調整) と
         **course_long_distance** (累積 30 分超) を分けて出力する.
     """
+    # Phase G-88 Step3: 有効値を解決. config=None は module 定数で挙動不変.
+    _buffer_min = config.visit_buffer_min if config is not None else VISIT_BUFFER_MINUTES
+    _speed_kmh = config.travel_speed_kmh if config is not None else TRAVEL_SPEED_KMH
+    # 営業終了境界 (旧 PM_BLOCK_END = 18:00) のみ config 化. 正午境界は据え置き.
+    _business_end = config.business_end if config is not None else PM_BLOCK_END
+    # 昼休み標準長 / 取得時間帯 (compute_lunch_window へ渡す).
+    _lunch_duration = config.lunch_duration_min if config is not None else LUNCH_DURATION_PREFERRED
+    _lunch_window_start = config.lunch_window_start if config is not None else LUNCH_EARLIEST_START
+    _lunch_window_end = config.lunch_window_end if config is not None else LUNCH_LATEST_END
+
     # 1) コードごとに集計
     groups: dict[tuple[UUID, int, str | None], list[V2Visit]] = {}
     for v in visits:
@@ -4618,7 +4747,7 @@ def _apply_travel_time_to_courses(
     # ここで初期化する ``lunch_start_min`` / ``lunch_end_min`` は **コース確定前の
     # フォールバック値** (標準枠 12:00-13:00). 各コースに入った直後に
     # ``compute_lunch_window`` で上書きする.
-    pm_block_end_min = PM_BLOCK_END.hour * 60 + PM_BLOCK_END.minute  # 1080
+    pm_block_end_min = _business_end.hour * 60 + _business_end.minute  # 既定 18:00 = 1080
 
     # 物理不可能配置として course から外した visit の id(v) 集合.
     # 呼び出し側 (run_v2_pipeline) が after_visits からの除去に使う.
@@ -4658,6 +4787,7 @@ def _apply_travel_time_to_courses(
             course_code=course_code,
             weekday=weekday,
             warnings=warnings,
+            config=config,
         )
         # Wave 2 (#115) + Phase E-3 改修 (3)(4): 同住所ペアを同 start_time + 90 分
         # 占有 (= max(service 合計, 90)) に揃える. 同コース内 3 名以上は 3 名目以降を
@@ -4670,6 +4800,7 @@ def _apply_travel_time_to_courses(
             course_code=course_code,
             office_name=office_name,
             unassigned_visit_ids=unassigned_visit_ids,
+            config=config,
         )
 
         # Wave 3 (#WAVE3): このコース用の lunch slot を動的決定する.
@@ -4690,6 +4821,9 @@ def _apply_travel_time_to_courses(
             weekday=weekday,
             course_code=course_code,
             office_name=office_name,
+            duration=_lunch_duration,
+            window_start=_lunch_window_start,
+            window_end=_lunch_window_end,
         )
         lunch_re_validate_enabled = lunch_window is not None
         if lunch_window is None:
@@ -4708,8 +4842,10 @@ def _apply_travel_time_to_courses(
                 travel_min = 0
                 buffer_min = 0
             else:
-                travel_min = haversine_minutes(haversine_km(prev.lat, prev.lng, cur.lat, cur.lng))
-                buffer_min = VISIT_BUFFER_MINUTES
+                travel_min = haversine_minutes(
+                    haversine_km(prev.lat, prev.lng, cur.lat, cur.lng), speed_kmh=_speed_kmh
+                )
+                buffer_min = _buffer_min
             cumulative_travel_min += travel_min
 
             # Wave 2 (#115): 同住所ペアの 2 人目は ``_align_same_address_pair_to_same_time``
@@ -4817,7 +4953,7 @@ def _apply_travel_time_to_courses(
                 ps = _parse_hhmm(cur.preferred_start)
                 pe = _parse_hhmm(cur.preferred_end)
                 window_lower = ps if ps is not None else desired_start
-                window_upper = pe if pe is not None else PM_BLOCK_END
+                window_upper = pe if pe is not None else _business_end
                 candidate = max(desired_start, earliest_start, window_lower)
                 if candidate > window_upper:
                     # HIGH #2: 範囲超過: window_upper にクランプすると
@@ -4944,7 +5080,7 @@ def _apply_travel_time_to_courses(
                                 f"{office_name} {course_code} {wd_jp}: "
                                 f"{cur_name} 様 (午後希望) が earliest "
                                 f"{_fmt_hhmm(earliest_start)} で "
-                                f"{_fmt_hhmm(PM_BLOCK_END)} を超過 "
+                                f"{_fmt_hhmm(_business_end)} を超過 "
                                 "(運用者要確認)"
                             ),
                             weekday=weekday,
@@ -4984,7 +5120,7 @@ def _apply_travel_time_to_courses(
                                     f"{office_name} {course_code} {wd_jp}: "
                                     f"{cur_name} 様 (午後希望) が 5 分刻み切り上げで "
                                     f"{_fmt_hhmm(actual_start)} 開始となり "
-                                    f"{_fmt_hhmm(PM_BLOCK_END)} を超過 "
+                                    f"{_fmt_hhmm(_business_end)} を超過 "
                                     "(運用者要確認)"
                                 ),
                                 weekday=weekday,
@@ -5058,7 +5194,7 @@ def _apply_travel_time_to_courses(
                     elif tt == "時間帯":
                         # 時間帯 window 内 (= window_upper 以下) なら可.
                         pe_v = _parse_hhmm(cur.preferred_end)
-                        window_upper_v = pe_v if pe_v is not None else PM_BLOCK_END
+                        window_upper_v = pe_v if pe_v is not None else _business_end
                         window_upper_min = window_upper_v.hour * 60 + window_upper_v.minute
                         can_bump = bumped_start_min <= window_upper_min
                     elif tt == "午後":
@@ -5155,6 +5291,7 @@ def _check_course_capacity_minutes(
     *,
     warnings: list[V2Warning],
     office_name_by_id: dict[UUID, str] | None = None,
+    config: SchedulingConfig | None = None,
 ) -> None:
     """W41 v2 拡張 (コース容量 duration 化): コース総所要時間が ``COURSE_MAX_MINUTES``
     (= 480 分 = 8 時間, 昼休憩除く) を超えていれば warning を追加する.
@@ -5172,7 +5309,7 @@ def _check_course_capacity_minutes(
         groups.setdefault((v.office_id, v.weekday, v.course_code), []).append(v)
 
     for (office_id, weekday, course_code), gv in groups.items():
-        total_min = calc_course_total_minutes(gv)
+        total_min = calc_course_total_minutes(gv, config=config)
         if total_min > COURSE_MAX_MINUTES:
             office_name = (office_name_by_id or {}).get(office_id) or str(office_id)
             wd_jp = _weekday_jp(weekday)
@@ -5276,6 +5413,7 @@ def _filter_unavailable_and_lunch(
     unavailable_slots: dict[tuple[UUID, int], set[time]],
     warnings: list[V2Warning],
     skip_acceptance: bool = False,
+    config: SchedulingConfig | None = None,
 ) -> list[V2Visit]:
     """H5 + H10: 受入 × 時刻 + 昼休憩枠を除外 (Wave 3: lunch コース別動的).
 
@@ -5292,6 +5430,14 @@ def _filter_unavailable_and_lunch(
         course_code が None (= pool stage で未確定) のコースは同じバケットに
         まとめて lunch を試算する.
     """
+    # Phase G-88 Step3: config 注入時のみ昼休み標準長 / 取得時間帯を差し替え.
+    # config=None は module 定数 (LUNCH_DURATION_PREFERRED 60 / LUNCH_EARLIEST_START
+    # 11:30 / LUNCH_LATEST_END 13:30) を使い挙動不変. _is_in_lunch_break /
+    # compute_lunch_window のプレフィルタ判定に効く.
+    _lunch_duration = config.lunch_duration_min if config is not None else LUNCH_DURATION_PREFERRED
+    _lunch_window_start = config.lunch_window_start if config is not None else LUNCH_EARLIEST_START
+    _lunch_window_end = config.lunch_window_end if config is not None else LUNCH_LATEST_END
+
     # ---------------------------------------------------------------
     # 1) H5: 受入カレンダー × フィルタ (skip_acceptance=False 時のみ).
     # ---------------------------------------------------------------
@@ -5334,7 +5480,12 @@ def _filter_unavailable_and_lunch(
     #         素通し (後段の補正 / Stage 6 で再警告).
     stage2: list[V2Visit] = []
     for v in stage1:
-        if _is_in_lunch_break(v.start_time, v.end_time):
+        if _is_in_lunch_break(
+            v.start_time,
+            v.end_time,
+            window_start=_lunch_window_start,
+            window_end=_lunch_window_end,
+        ):
             code = v.patient_code or "-"
             name = v.patient_name or "-"
             warnings.append(
@@ -5362,8 +5513,8 @@ def _filter_unavailable_and_lunch(
 
     out: list[V2Visit] = []
     noon_min = NOON_HOUR * 60
-    range_start_min = _time_to_min(LUNCH_EARLIEST_START)
-    range_end_min = _time_to_min(LUNCH_LATEST_END)
+    range_start_min = _time_to_min(_lunch_window_start)
+    range_end_min = _time_to_min(_lunch_window_end)
 
     def _overlap_with_range(v: V2Visit) -> int:
         s = max(_time_to_min(v.start_time), range_start_min)
@@ -5384,7 +5535,12 @@ def _filter_unavailable_and_lunch(
         # 残存 visit (= lunch 確定後に通す候補) と除外候補.
         anchors: list[V2Visit] = list(gv)
         excluded: list[V2Visit] = []
-        lunch: tuple[time, time] | None = compute_lunch_window(anchors)
+        lunch: tuple[time, time] | None = compute_lunch_window(
+            anchors,
+            duration=_lunch_duration,
+            window_start=_lunch_window_start,
+            window_end=_lunch_window_end,
+        )
         # 11:30-13:30 range と重なる visit を「除外コストが低い順」に外していく.
         # 除外コスト判定 (lex order, 小さい順に外す):
         #   1. start_time >= 12:00 (= 午後 / 昼以降側) を優先的に外す.
@@ -5400,7 +5556,12 @@ def _filter_unavailable_and_lunch(
             victim = min(overlap_candidates, key=_exclusion_cost)
             anchors.remove(victim)
             excluded.append(victim)
-            lunch = compute_lunch_window(anchors)
+            lunch = compute_lunch_window(
+                anchors,
+                duration=_lunch_duration,
+                window_start=_lunch_window_start,
+                window_end=_lunch_window_end,
+            )
 
         if lunch is None:
             # どうやっても lunch 取れない: 全 visit を素通し (後段の補正で再判定).
@@ -5474,8 +5635,23 @@ def calc_total_distance(visits: list[V2Visit]) -> float:
     return total
 
 
-def calc_h_violations(visits: list[V2Visit]) -> dict[str, int]:
-    """H1-H10 の違反件数を集計."""
+def calc_h_violations(
+    visits: list[V2Visit], *, config: SchedulingConfig | None = None
+) -> dict[str, int]:
+    """H1-H10 の違反件数を集計.
+
+    Phase G-88 Step3: H9 (コース定員超過) の上限を ``config.max_patients_per_course``
+    で注入可能にする. ``config=None`` は module 定数 ``MAX_PATIENTS_PER_COURSE`` (= 6)
+    を使い挙動不変. full-optimize / diff-add の active path で呼ばれるため、提案
+    プレビューの容量超過件数を config と整合させる.
+    """
+    _max_per_course = (
+        config.max_patients_per_course if config is not None else MAX_PATIENTS_PER_COURSE
+    )
+    # Phase G-88 Step3 残漏れ修正: H10 昼休み窓を config から注入 (H9 と同様).
+    # config=None は module 定数 (11:30-13:30) で挙動不変.
+    _lws = config.lunch_window_start if config is not None else LUNCH_EARLIEST_START
+    _lwe = config.lunch_window_end if config is not None else LUNCH_LATEST_END
     # H1: 同 patient_id の start_time が複数
     by_patient: dict[UUID, set[time]] = {}
     for v in visits:
@@ -5495,10 +5671,14 @@ def calc_h_violations(visits: list[V2Visit]) -> dict[str, int]:
         by_course[(v.office_id, v.weekday, v.course_code)] = (
             by_course.get((v.office_id, v.weekday, v.course_code), 0) + 1
         )
-    h9 = sum(1 for c in by_course.values() if c > MAX_PATIENTS_PER_COURSE)
+    h9 = sum(1 for c in by_course.values() if c > _max_per_course)
 
     # H10: 昼休憩枠と重複
-    h10 = sum(1 for v in visits if _is_in_lunch_break(v.start_time, v.end_time))
+    h10 = sum(
+        1
+        for v in visits
+        if _is_in_lunch_break(v.start_time, v.end_time, window_start=_lws, window_end=_lwe)
+    )
 
     # H4: 全訪問同スタッフ禁止 — 週 2 回以上訪問なのに同 staff のみのケース
     by_patient_assigned: dict[UUID, list[UUID]] = {}
@@ -5707,6 +5887,7 @@ async def _load_before_visits_v2(
     warnings: list[V2Warning] | None = None,
     op_weekdays_by_office: dict[UUID, set[int]] | None = None,
     office_name_by_id: dict[UUID, str] | None = None,
+    config: SchedulingConfig | None = None,
 ) -> list[V2Visit]:
     """Phase G-21 T3-1: Before スナップショットを 4 経路 union で構築する.
 
@@ -5962,7 +6143,7 @@ async def _load_before_visits_v2(
             continue
         if patient.primary_office_id is None:
             continue
-        entries = _extract_weekly_entries(patient)
+        entries = _extract_weekly_entries(patient, config=config)
         for wd, st, sm, tt_raw, ps_raw, pe_raw in entries:
             key = (patient.id, wd, 0)
             if key in chosen:
@@ -6364,6 +6545,7 @@ async def run_v2_pipeline(
     office_ids: list[UUID],
     mode: Literal["diff_add", "full_optimize"],
     pending_edits: list[Any] | None = None,
+    config: SchedulingConfig | None = None,
 ) -> dict[str, Any]:
     """5 段階を順に実行する.
 
@@ -6389,6 +6571,11 @@ async def run_v2_pipeline(
         raise ValueError(f"iso_week out of range: {iso_week}")
     if mode not in ("diff_add", "full_optimize"):
         raise ValueError(f"unsupported mode: {mode!r}")
+
+    # Phase G-88 Step3: 事業所別設定. None なら全既定 (= 現行 module 定数と同値) で
+    # 挙動不変. エントリ (schedule_v2.py) が ``load_scheduling_config(db)`` を渡す.
+    if config is None:
+        config = DEFAULT_SCHEDULING_CONFIG
 
     warnings: list[V2Warning] = []
     proposal_batch_id = uuid.uuid4()
@@ -6589,6 +6776,7 @@ async def run_v2_pipeline(
                 warnings=warnings,
                 op_weekdays_by_office=op_weekdays_by_office,
                 office_name_by_id=office_name_by_id,
+                config=config,
             )
             if g21_patients_by_id
             else []
@@ -6703,6 +6891,7 @@ async def run_v2_pipeline(
         op_weekdays_by_office=op_weekdays_by_office,
         office_name_by_id=office_name_by_id,
         warnings=warnings,
+        config=config,
     )
     if pool_patients_orphan_fixed and orphan_fixed_by_patient:
         # CareFlow #102 Fix A: orphan PFV の course_template_id -> course label
@@ -6742,6 +6931,7 @@ async def run_v2_pipeline(
             op_weekdays_by_office=op_weekdays_by_office,
             office_name_by_id=office_name_by_id,
             warnings=warnings,
+            config=config,
         )
         pool_visits = pool_visits + pool_visits_orphan
 
@@ -6803,6 +6993,7 @@ async def run_v2_pipeline(
                     op_weekdays_by_office=op_weekdays_by_office,
                     office_name_by_id=office_name_by_id,
                     warnings=warnings,
+                    config=config,
                 )
                 pool_visits = pool_visits + g21_pool_visits
 
@@ -6817,6 +7008,7 @@ async def run_v2_pipeline(
         unavailable_slots=unavailable,
         warnings=warnings,
         skip_acceptance=skip_acceptance,
+        config=config,
     )
 
     # 機能 A: pool_visits 単独で配置 (既存 PFV はそのまま)
@@ -6839,7 +7031,7 @@ async def run_v2_pipeline(
             replace(v) for v in before_visits if v.patient_id not in orphan_patient_ids
         ]
         filtered_before = _filter_unavailable_and_lunch(
-            before_copies, unavailable_slots=unavailable, warnings=warnings
+            before_copies, unavailable_slots=unavailable, warnings=warnings, config=config
         )
         # 既存 visit (filtered_before) と時間重複する pool visit を除外.
         # 同 (patient_id, weekday) で時間帯が被るものを取り除き、warning を出す.
@@ -6929,6 +7121,7 @@ async def run_v2_pipeline(
             staff_count=staff_count,
             warnings=warnings,
             office_name_by_id=office_name_by_id,
+            config=config,
         )
         # course_code を割り振る (A/B/C/D/E).
         # H4: staff_count == 0 のときは全コースを "M" (manager-required) にする.
@@ -7183,7 +7376,7 @@ async def run_v2_pipeline(
     # Phase G-21 W1: 4 経路統合 — 共通 helper ``_apply_corrections_to_visits``
     # 経由で呼ぶ. pinned PFV は補正対象外として fence される.
     travel_unassigned_ids = _apply_corrections_to_visits(
-        after_visits, warnings=warnings, office_name_by_id=office_name_by_id
+        after_visits, warnings=warnings, office_name_by_id=office_name_by_id, config=config
     )
     if travel_unassigned_ids:
         after_visits = [v for v in after_visits if id(v) not in travel_unassigned_ids]
@@ -7191,7 +7384,7 @@ async def run_v2_pipeline(
     # W41 v2 拡張 (コース容量 duration 化): 既存の人数制約 (MAX_PATIENTS_PER_COURSE=6)
     # と独立して、コース総所要時間 (visit duration + 移動時間) が 480 分を超えていないか check.
     _check_course_capacity_minutes(
-        after_visits, warnings=warnings, office_name_by_id=office_name_by_id
+        after_visits, warnings=warnings, office_name_by_id=office_name_by_id, config=config
     )
 
     # W41 v2 拡張 (二人組訪問): requires_multiple_staff=True 患者の visit に
@@ -7523,6 +7716,7 @@ async def apply_week_only(
     office_ids: list[UUID],
     patient_visit_plans: list[dict[str, Any]],
     pending_edits: list[Any] | None = None,
+    config: SchedulingConfig | None = None,
 ) -> dict[str, Any]:
     """全面最適化結果を visits のみに反映 (patient_fixed_visits は更新しない).
 
@@ -7869,6 +8063,13 @@ async def apply_week_only(
     # backend 側でも (patient_id, weekday) ベースで上書きする.
     apply_overlay = _build_pending_edit_overlay(pending_edits)
 
+    # Phase G-88 Step3 残漏れ修正: apply_week_only 内の 2 つの昼休みゲートが
+    # 固定 11:30-13:30 で判定していた (config-aware プレビューと不整合 →
+    # 非既定昼休み窓で誤スキップしうる). config の昼休み窓を解決し両ゲートに渡す.
+    # config=None は module 定数で挙動不変 (回帰ゼロ).
+    _lws = config.lunch_window_start if config is not None else LUNCH_EARLIEST_START
+    _lwe = config.lunch_window_end if config is not None else LUNCH_LATEST_END
+
     # Wave 1 (#115): visit_plans を V2Visit に変換し ``apply_travel_corrections``
     # で時刻補正 (auto_shift + 同住所 align + バッファー + 5 分切上 + lunch 再検証
     # + shortage 判定) を適用してから DB INSERT する.
@@ -7962,10 +8163,11 @@ async def apply_week_only(
             # するが、入力時点で明確に動的 lunch 枠を取れない plan は弾く).
             # Wave 3 (#WAVE3): ``_is_in_lunch_break`` は「lunch slot 11:30-13:30 の
             # どこに置いても 45 分 lunch も避けられない区間」を判定する.
-            if _is_in_lunch_break(st, et):
+            if _is_in_lunch_break(st, et, window_start=_lws, window_end=_lwe):
                 warnings.append(
                     f"patient_id={patient_id}: {_weekday_jp(wd)} {_fmt_hhmm(st)}-"
-                    f"{_fmt_hhmm(et)} は昼休憩 (11:30-13:30 動的枠) に重なるため配置不可"
+                    f"{_fmt_hhmm(et)} は昼休憩 ({_fmt_hhmm(_lws)}-{_fmt_hhmm(_lwe)} "
+                    "動的枠) に重なるため配置不可"
                 )
                 continue
             if isinstance(office_id_raw, UUID):
@@ -8094,7 +8296,7 @@ async def apply_week_only(
     # V2Warning は文字列メッセージに展開して warnings に追加.
     v2_warnings: list[V2Warning] = []
     travel_unassigned_ids = _apply_corrections_to_visits(
-        v2_visits, warnings=v2_warnings, office_name_by_id=office_name_by_id
+        v2_visits, warnings=v2_warnings, office_name_by_id=office_name_by_id, config=config
     )
     for vw in v2_warnings:
         warnings.append(vw.message)
@@ -8129,11 +8331,12 @@ async def apply_week_only(
         # 最後の防衛としてスキップ.
         # Wave 3 (#WAVE3): ``_is_in_lunch_break`` は 11:30-13:30 動的枠での
         # 「45 分 lunch も取れない」判定 (最広範囲チェック).
-        if _is_in_lunch_break(corrected_start, corrected_end):
+        if _is_in_lunch_break(corrected_start, corrected_end, window_start=_lws, window_end=_lwe):
             warnings.append(
                 f"patient_id={meta['patient_id']}: {_weekday_jp(meta['weekday'])} "
                 f"{_fmt_hhmm(corrected_start)}-{_fmt_hhmm(corrected_end)} "
-                "補正後も昼休憩 (11:30-13:30 動的枠) に重なるためスキップ"
+                f"補正後も昼休憩 ({_fmt_hhmm(_lws)}-{_fmt_hhmm(_lwe)} 動的枠) "
+                "に重なるためスキップ"
             )
             continue
         visit_date = date.fromordinal(week_monday.toordinal() + meta["weekday"])
@@ -8216,6 +8419,7 @@ async def reset_visits_to_fixed(
     office_ids: list[UUID],
     mode: Literal["legacy", "auto"] = "legacy",
     dry_run: bool = False,
+    config: SchedulingConfig | None = None,
 ) -> dict[str, Any]:
     """機能 D: 対象週の visits を soft-delete → patient_fixed_visits から再生成.
 
@@ -8650,6 +8854,7 @@ async def reset_visits_to_fixed(
             v2_visits_reset,
             warnings=v2_warnings_reset,
             office_name_by_id=office_name_by_id_for_corr,
+            config=config,
         )
         for vw in v2_warnings_reset:
             warnings.append(vw.message)
@@ -8766,6 +8971,7 @@ async def apply_individual_proposal(
     *,
     patient_id: UUID,
     visit_plans: list[dict[str, Any]],
+    config: SchedulingConfig | None = None,
 ) -> dict[str, Any]:
     """1 患者の固定枠 (patient_fixed_visits mode='normal') を提案で上書きする.
 
@@ -8984,6 +9190,7 @@ async def apply_individual_proposal(
                     proposal_visits,
                     warnings=proposal_warnings,
                     office_name_by_id=None,
+                    config=config,
                 )
                 for vw in proposal_warnings:
                     warnings.append(vw.message)

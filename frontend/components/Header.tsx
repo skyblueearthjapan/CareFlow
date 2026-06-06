@@ -13,6 +13,7 @@ import {
   LogOut,
   Menu,
   ScrollText,
+  Settings,
   ShieldCheck,
   User,
 } from 'lucide-react';
@@ -47,6 +48,7 @@ export function Header({ title = 'CareFlow', onToggleSidebar }: HeaderProps) {
         </div>
         <NotificationButton />
         <UserMenuButton />
+        <SchedulingSettingsButton />
         <AdminUsersButton />
         <AuditLogsButton />
         <AiHelpButton />
@@ -287,6 +289,29 @@ function AdminUsersButton() {
 // 監査ログ / AIヘルプ — Sidebar から移設したクイックアクセス
 // 申請履歴はサイドバーの連携の下に移設済 (Sidebar.tsx 参照)
 // ============================================================
+
+// ============================================================
+// 最適化ルール設定 (Phase G-88) — admin/manager のみ
+// ============================================================
+
+function SchedulingSettingsButton() {
+  const { data: session } = useSession();
+  const role = session?.user?.role;
+  if (role !== 'admin' && role !== 'manager') return null;
+  return (
+    <Button
+      variant="ghost"
+      size="icon"
+      asChild
+      aria-label="最適化ルール設定"
+      title="最適化ルール設定"
+    >
+      <Link href="/settings/scheduling">
+        <Settings className="h-5 w-5" strokeWidth={1.75} />
+      </Link>
+    </Button>
+  );
+}
 
 function AuditLogsButton() {
   const { data: session } = useSession();

@@ -104,16 +104,14 @@ from app.services.office_assigner import OfficeAssigner
 from app.services.scheduling.auto_allocator_v2 import (
     _COURSE_CODES_MAX,
     # Wave 3 (#WAVE3): API 境界の H10 (lunch overlap) ガードは
-    # ``_is_in_lunch_break`` (= 動的 lunch 11:30-13:30 のどの 45 分配置でも
-    # 避けられない visit か?) で判定する. service 層 (compute_lunch_window) が
-    # コース別に lunch を 11:30-12:15 / 12:30-13:30 等にずらすことで合法になる
-    # visit (例: 12:15-12:45 = AM 側 11:30-12:15 lunch なら衝突しない) は
-    # API 境界で 422 reject せず service 層に通す. ``LUNCH_DEFAULT_START`` /
-    # ``LUNCH_DEFAULT_END`` (= 12:00 / 13:00) は apply_week_only の #113 hotfix
-    # logger で利用するメッセージ用途と、duration ベース判定 (新仕様未対応箇所)
-    # のフォールバックに残置.
-    LUNCH_DEFAULT_END,
-    LUNCH_DEFAULT_START,
+    # ``_is_in_lunch_break`` (= 動的 lunch のどの 45 分配置でも避けられない visit か?)
+    # で判定する. service 層 (compute_lunch_window) がコース別に lunch を
+    # 11:30-12:15 / 12:30-13:30 等にずらすことで合法になる visit
+    # (例: 12:15-12:45 = AM 側 11:30-12:15 lunch なら衝突しない) は
+    # API 境界で 422 reject せず service 層に通す.
+    # Phase G-88 最終監査: 各 apply 境界は ``config.lunch_window_start`` /
+    # ``config.lunch_window_end`` を ``_is_in_lunch_break(window_start=, window_end=)``
+    # に注入するため、固定の ``LUNCH_DEFAULT_*`` 参照は撤去した.
     CrossAddressTimeConflictError,
     PinnedVisitMovedError,
     V2Visit,
@@ -140,6 +138,7 @@ from app.services.scheduling.board_service import (
 from app.services.scheduling.board_service import (
     _office_short as _board_office_short,
 )
+from app.services.scheduling.config import SchedulingConfig, load_scheduling_config
 from app.services.scheduling.proposal_solver import (
     VISIT_BUFFER_MINUTES,
     haversine_minutes,
@@ -291,13 +290,14 @@ def _build_kpi_overall(
     after: list[V2Visit],
     *,
     warnings: list[V2Warning],
+    config: SchedulingConfig | None = None,
 ) -> V2KpiOverall:
     bd = calc_total_distance(before)
     ad = calc_total_distance(after)
     reduction = ((bd - ad) / bd * 100.0) if bd > 0 else 0.0
     courses_before = len({(v.office_id, v.weekday, v.course_code) for v in before if v.course_code})
     courses_after = len({(v.office_id, v.weekday, v.course_code) for v in after if v.course_code})
-    h_viol = calc_h_violations(after)
+    h_viol = calc_h_violations(after, config=config)
     # W41 v2 (警告日本語化): warning に「マネージャー補充候補」が出る = 容量/コース超過.
     # 旧表現 "超過" / "exceeds" を後方互換で残す.
     overflows = sum(
@@ -519,6 +519,9 @@ async def diff_add_endpoint(
 
     本 endpoint は **read-only**: DB を変更しない. 採用は ``/apply-individual``.
     """
+    # Phase G-88 Step3: 事業所別の最適化設定をロードして注入 (read-only).
+    # propose と full-optimize で同一 config を使い一貫性を保つ.
+    config = await load_scheduling_config(db)
     try:
         result = await run_v2_pipeline(
             db,
@@ -526,6 +529,7 @@ async def diff_add_endpoint(
             iso_week=payload.iso_week,
             office_ids=list(payload.office_ids),
             mode="diff_add",
+            config=config,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -587,7 +591,7 @@ async def diff_add_endpoint(
             )
         )
 
-    kpi = _build_kpi_overall(before_visits, after_visits, warnings=warnings)
+    kpi = _build_kpi_overall(before_visits, after_visits, warnings=warnings, config=config)
 
     return AutoScheduleV2DiffAddResponse(
         proposal_batch_id=result["proposal_batch_id"],
@@ -617,6 +621,8 @@ async def full_optimize_endpoint(
 
     本 endpoint も **read-only**.
     """
+    # Phase G-88 Step3: 事業所別の最適化設定をロードして注入 (read-only).
+    config = await load_scheduling_config(db)
     try:
         result = await run_v2_pipeline(
             db,
@@ -625,6 +631,7 @@ async def full_optimize_endpoint(
             office_ids=list(payload.office_ids),
             mode="full_optimize",
             pending_edits=list(payload.pending_edits),
+            config=config,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -651,7 +658,7 @@ async def full_optimize_endpoint(
         warnings=warnings_out,
     )
     individual = _build_individual_proposals(before_visits, after_visits)
-    kpi = _build_kpi_overall(before_visits, after_visits, warnings=warnings)
+    kpi = _build_kpi_overall(before_visits, after_visits, warnings=warnings, config=config)
 
     # W41 v2 (Mode 2 UI 拡張): pool に入れたが after_visits に出てこなかった患者.
     # P2: reason / reason_detail / dropped_at_stage を構造化フィールドとして渡す.
@@ -722,6 +729,16 @@ async def apply_individual_endpoint(
             detail="visit_plans must not be empty",
         )
 
+    # Phase G-88 Step3: 確定再計算をプレビュー (propose/full-optimize) と同一 config で
+    # 行い、確定スケジュールを設定どおりにする (read-only ロード).
+    # Phase G-88 最終監査: H10 事前ゲートも config 窓を適用するため、ゲートより前に
+    # ロードする (旧版では下のサービス層呼出直前でのみロードしていたため、事前ゲートが
+    # 固定窓 11:30-13:30 のままで非既定昼休み窓設定時に設定窓では合法な visit を
+    # 422 で弾く回帰があった).
+    config = await load_scheduling_config(db)
+    _lws = config.lunch_window_start
+    _lwe = config.lunch_window_end
+
     # W41 v2 final cross-review (H-Codex-2): apply 境界での最低限の再検証.
     # クライアントが偽の visit_plans を送る攻撃に対して明らかな違反を弾く.
     # service 層は信頼境界の内側なので weekday / duration_min / start_time の
@@ -731,18 +748,18 @@ async def apply_individual_endpoint(
     # Wave 3 (#WAVE3) Phase B 修正: 旧仕様の固定 12:00-13:00 ガードでは、
     # service 層 (compute_lunch_window) が動的に lunch=11:30-12:15 等にずらせば
     # 合法になる visit (例: 12:15-12:45) も 422 で reject されてしまい、
-    # apply 経路が詰まっていた. ``_is_in_lunch_break`` (= 動的 lunch 11:30-13:30
-    # のどの 45 分配置でも避けられない時間帯か?) を使って「物理的に不可能」な
-    # visit のみ reject する.
+    # apply 経路が詰まっていた. ``_is_in_lunch_break`` (= 動的 lunch のどの配置でも
+    # 避けられない時間帯か?) を使って「物理的に不可能」な visit のみ reject する.
     for idx, vp in enumerate(payload.visit_plans):
-        # H10: 動的 lunch (11:30-13:30, 45-60 分) のどの配置でも避けられない
+        # H10: 動的 lunch (config 窓・45-60 分) のどの配置でも避けられない
         # visit を弾く. 例: 12:15-12:45 は AM 側 11:30-12:15 lunch なら合法 → 通す.
         # 例: 12:10-12:50 は AM/PM どちらの避け方でも 45 分 lunch を確保できない → 422.
-        if _is_in_lunch_break(vp.start_time, vp.end_time):
+        if _is_in_lunch_break(vp.start_time, vp.end_time, window_start=_lws, window_end=_lwe):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=(
-                    f"visit_plans[{idx}]: H10 違反 — 動的昼休憩 (11:30-13:30 内 45 分) を "
+                    f"visit_plans[{idx}]: H10 違反 — 動的昼休憩 "
+                    f"({_lws.strftime('%H:%M')}-{_lwe.strftime('%H:%M')} 内 45 分) を "
                     f"どこにも確保できない visit は不可 "
                     f"(start={vp.start_time}, end={vp.end_time})"
                 ),
@@ -761,7 +778,7 @@ async def apply_individual_endpoint(
     plans = [vp.model_dump() for vp in payload.visit_plans]
     try:
         result = await apply_individual_proposal(
-            db, patient_id=payload.patient_id, visit_plans=plans
+            db, patient_id=payload.patient_id, visit_plans=plans, config=config
         )
         await db.commit()
     except HTTPException:
@@ -857,6 +874,8 @@ async def reset_to_fixed_endpoint(
             [str(oid) for oid in payload.office_ids],
             payload.mode,
         )
+    # Phase G-88 Step3: 確定再計算 (mode='auto') をプレビューと同一 config で行う.
+    config = await load_scheduling_config(db)
     try:
         result = await reset_visits_to_fixed(
             db,
@@ -865,6 +884,7 @@ async def reset_to_fixed_endpoint(
             office_ids=list(payload.office_ids),
             mode=payload.mode,
             dry_run=payload.dry_run,
+            config=config,
         )
         # Phase G-21 T3-5: dry_run=True の場合は DB 変更がないので rollback で statement
         # を破棄する (= flush もしていないが、 SQLAlchemy autobegin で開いた tx を閉じる).
@@ -973,8 +993,17 @@ async def apply_week_only_endpoint(
             detail="visit_plans_per_patient must not be empty",
         )
 
+    # Phase G-88 Step3: 確定再計算をプレビュー (full-optimize) と同一 config で行う.
+    # Phase G-88 最終監査: H10 事前ゲートも config 窓を適用するため、ゲートより前に
+    # ロードする (旧版では下のサービス層呼出直前でのみロードしていたため、警告判定が
+    # 固定窓 11:30-13:30 のままで非既定昼休み窓設定時に不整合だった). 下のサービス層
+    # 呼出はこの config を再利用する.
+    config = await load_scheduling_config(db)
+    _lws = config.lunch_window_start
+    _lwe = config.lunch_window_end
+
     # H10 を境界で再検証 (apply-individual と同じ防衛深度).
-    # CareFlow #113 hotfix: H10 違反 (動的昼休憩 11:30-13:30 重複) も 422 拒否を撤去し
+    # CareFlow #113 hotfix: H10 違反 (動的昼休憩 重複) も 422 拒否を撤去し
     # warning log のみで続行. Fix E の auto_shift で意図せず lunch にずれた visit
     # を apply できないと業務詰まり. 後段で全面最適化を再実行すれば Fix E + lunch
     # bump で解消する想定. end_time <= start_time は論理的に不正なので 422 維持.
@@ -982,12 +1011,12 @@ async def apply_week_only_endpoint(
     # Wave 3 (#WAVE3) Phase B 修正: 旧仕様の固定 12:00-13:00 判定では、
     # service 層 (compute_lunch_window) が動的に lunch=11:30-12:15 等にずらせば
     # 合法になる visit (例: 12:15-12:45) も警告対象になっていた. 他 endpoint と
-    # 統一して ``_is_in_lunch_break`` (= 動的 lunch 11:30-13:30 のどの 45 分配置でも
+    # 統一して ``_is_in_lunch_break`` (= 動的 lunch config 窓のどの 45 分配置でも
     # 避けられない visit か?) で判定する.
     lunch_violations: list[str] = []
     for pi, pvp in enumerate(payload.visit_plans_per_patient):
         for vi, vp in enumerate(pvp.visit_plans):
-            if _is_in_lunch_break(vp.start_time, vp.end_time):
+            if _is_in_lunch_break(vp.start_time, vp.end_time, window_start=_lws, window_end=_lwe):
                 lunch_violations.append(
                     f"patient[{pi}].visit[{vi}] start={vp.start_time} end={vp.end_time}"
                 )
@@ -1002,10 +1031,10 @@ async def apply_week_only_endpoint(
                 )
     if lunch_violations:
         logger.warning(
-            "apply_week_only: H10 violations (lunch dynamic 11:30-13:30 overlap; "
-            "static reference %s-%s) detected, apply 続行: %s",
-            LUNCH_DEFAULT_START,
-            LUNCH_DEFAULT_END,
+            "apply_week_only: H10 violations (lunch dynamic %s-%s overlap) "
+            "detected, apply 続行: %s",
+            _lws.strftime("%H:%M"),
+            _lwe.strftime("%H:%M"),
             lunch_violations[:5],
         )
 
@@ -1060,6 +1089,7 @@ async def apply_week_only_endpoint(
         }
         for pvp in payload.visit_plans_per_patient
     ]
+    # config は上の H10 事前ゲートでロード済 (Phase G-88 最終監査で前倒し). 再利用する.
     try:
         result = await apply_week_only(
             db,
@@ -1068,6 +1098,7 @@ async def apply_week_only_endpoint(
             office_ids=list(payload.office_ids),
             patient_visit_plans=patient_visit_plans,
             pending_edits=list(payload.pending_edits),
+            config=config,
         )
         await db.commit()
     except ValueError as exc:
@@ -1301,6 +1332,9 @@ async def update_fixed_time_master_endpoint(
                 if end_total >= 24 * 60:
                     end_total = 23 * 60 + 59
                 actual_end_t = time_cls(end_total // 60, end_total % 60)
+            # Phase G-88 最終監査: out-of-scope (PFV マスタ CRUD, 最適化3経路ではない).
+            # config 窓注入は full/diff/propose/apply-individual/apply-week-only/
+            # reset-to-fixed のみが対象のため、ここは固定窓のまま据え置く.
             if _is_in_lunch_break(start_t, actual_end_t):
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1433,6 +1467,8 @@ async def update_fixed_time_week_only_endpoint(
         # Wave 3 (#WAVE3) Phase B 修正: 旧仕様の固定 12:00-13:00 ガードを
         # ``_is_in_lunch_break`` (動的 lunch のどの配置でも避けられない時間帯か?)
         # に置き換えた. 例: 12:15-12:45 は AM 側 11:30-12:15 lunch なら合法 → 通す.
+        # Phase G-88 最終監査: out-of-scope (PFV マスタ CRUD week-only,
+        # 最適化3経路ではない). config 窓注入対象外のため固定窓のまま据え置く.
         effective_end = end_t or visit_row.end_time
         if _is_in_lunch_break(start_t, effective_end):
             raise HTTPException(
@@ -1753,6 +1789,9 @@ async def propose_slots_endpoint(
         existing_patient_id=payload.existing_patient_id,
     )
 
+    # Phase G-88 Step3: full-optimize と同一の事業所別設定をロードして注入 (read-only).
+    config = await load_scheduling_config(db)
+
     # ランキング済み全スロットを 1 回算出し、slots[] (上位 limit) と coverage で共有.
     all_proposed = compute_all_proposed_slots(
         buckets,
@@ -1760,6 +1799,7 @@ async def propose_slots_endpoint(
         candidate,
         office_ids=office_ids,
         office_code_by_id=office_code_by_id,
+        config=config,
     )
     proposed = all_proposed[: payload.limit]
 

@@ -33,6 +33,7 @@ from app.services.scheduling.auto_allocator_v2 import (
     PM_BLOCK_START,
     SAME_ADDRESS_PAIR_MIN_OCCUPANCY,
     SHORTAGE_THRESHOLD_MIN,
+    TRAVEL_SPEED_KMH,
     VISIT_BUFFER_MINUTES,
     _add_minutes,
     _address_bucket,
@@ -41,6 +42,40 @@ from app.services.scheduling.auto_allocator_v2 import (
     haversine_km,
     haversine_minutes,
 )
+from app.services.scheduling.config import SchedulingConfig
+
+# ---------------------------------------------------------------------------
+# Phase G-88 Step3: 設定注入の解決ヘルパ.
+#
+# propose 経路 (proposal_solver) は auto_allocator_v2 と **同一 config** を受け、
+# module 定数の代わりに使用して一貫性を保つ. ``config=None`` は module 定数を使い
+# 挙動不変 (既存テストはすべて config 無しで呼ぶ).
+#
+# config 化する項目: 訪問間バッファー / 移動速度 / 営業開始境界 (AM_BLOCK_START) /
+# 営業終了境界 (PM_BLOCK_END) / 1 コース最大人数. **正午境界 (AM_BLOCK_END=12:00 /
+# PM_BLOCK_START=13:00) と COURSE_MAX_MINUTES は据え置き** (auto_allocator_v2 と同方針).
+# ---------------------------------------------------------------------------
+
+
+def _cfg_buffer_min(config: SchedulingConfig | None) -> int:
+    return config.visit_buffer_min if config is not None else VISIT_BUFFER_MINUTES
+
+
+def _cfg_speed_kmh(config: SchedulingConfig | None) -> float:
+    return config.travel_speed_kmh if config is not None else TRAVEL_SPEED_KMH
+
+
+def _cfg_business_start(config: SchedulingConfig | None) -> time:
+    return config.business_start if config is not None else AM_BLOCK_START
+
+
+def _cfg_business_end(config: SchedulingConfig | None) -> time:
+    return config.business_end if config is not None else PM_BLOCK_END
+
+
+def _cfg_max_patients(config: SchedulingConfig | None) -> int:
+    return config.max_patients_per_course if config is not None else MAX_PATIENTS_PER_COURSE
+
 
 # ``calc_course_total_minutes`` は ``V2Visit`` を引数に取るため、本ソルバの
 # 素データ (ExistingVisit) からは直接呼べない. 代わりに同関数と **同一の計算規約**
@@ -131,6 +166,7 @@ def compute_earliest_start_after(
     cand_latlng: tuple[float, float],
     *,
     same_address: bool,
+    config: SchedulingConfig | None = None,
 ) -> time:
     """前 visit 終了後、候補を最早でいつ開始できるか (5 分刻み切上げ).
 
@@ -155,9 +191,10 @@ def compute_earliest_start_after(
         buffer_min = 0
     else:
         travel_min = haversine_minutes(
-            haversine_km(prev_latlng[0], prev_latlng[1], cand_latlng[0], cand_latlng[1])
+            haversine_km(prev_latlng[0], prev_latlng[1], cand_latlng[0], cand_latlng[1]),
+            speed_kmh=_cfg_speed_kmh(config),
         )
-        buffer_min = VISIT_BUFFER_MINUTES
+        buffer_min = _cfg_buffer_min(config)
     earliest = _add_minutes(prev_end, travel_min + buffer_min)
     return _round_up_to_5min(earliest)
 
@@ -172,14 +209,27 @@ def _is_same_address(lat1: float, lng1: float, lat2: float, lng2: float) -> bool
     return _address_bucket(lat1, lng1) == _address_bucket(lat2, lng2)
 
 
-def _travel_buffer_between(a_lat: float, a_lng: float, b_lat: float, b_lng: float) -> int:
+def _travel_buffer_between(
+    a_lat: float,
+    a_lng: float,
+    b_lat: float,
+    b_lng: float,
+    *,
+    config: SchedulingConfig | None = None,
+) -> int:
     """2 地点間の移動 + バッファー (分). 同住所は 0."""
     if _is_same_address(a_lat, a_lng, b_lat, b_lng):
         return 0
-    return haversine_minutes(haversine_km(a_lat, a_lng, b_lat, b_lng)) + VISIT_BUFFER_MINUTES
+    return haversine_minutes(
+        haversine_km(a_lat, a_lng, b_lat, b_lng), speed_kmh=_cfg_speed_kmh(config)
+    ) + _cfg_buffer_min(config)
 
 
-def _course_total_minutes_from_existing(visits: list[ExistingVisit]) -> int:
+def _course_total_minutes_from_existing(
+    visits: list[ExistingVisit],
+    *,
+    config: SchedulingConfig | None = None,
+) -> int:
     """既存訪問列のコース占有合計 (分).
 
     auto_allocator_v2 ``calc_course_total_minutes`` (V2Visit 版) と **同一規約**:
@@ -217,24 +267,31 @@ def _course_total_minutes_from_existing(visits: list[ExistingVisit]) -> int:
         cur = sv[j]
         if _is_same_address(prev.lat, prev.lng, cur.lat, cur.lng):
             continue
-        total += (
-            haversine_minutes(haversine_km(prev.lat, prev.lng, cur.lat, cur.lng))
-            + VISIT_BUFFER_MINUTES
-        )
+        total += haversine_minutes(
+            haversine_km(prev.lat, prev.lng, cur.lat, cur.lng), speed_kmh=_cfg_speed_kmh(config)
+        ) + _cfg_buffer_min(config)
     return total
 
 
-def _within_operating_block(start: time, end: time, block: str) -> bool:
-    """営業枠 (AM 09:30-12:00 / PM 13:00-18:00) に [start, end] が収まるか."""
+def _within_operating_block(
+    start: time, end: time, block: str, *, config: SchedulingConfig | None = None
+) -> bool:
+    """営業枠 (AM 09:30-12:00 / PM 13:00-18:00) に [start, end] が収まるか.
+
+    Phase G-88 Step3: 営業開始境界 (AM 側下限) / 営業終了境界 (PM 側上限) のみ config 化.
+    正午境界 (AM_BLOCK_END=12:00 / PM_BLOCK_START=13:00) は据え置き.
+    """
     if block == "am":
-        return start >= AM_BLOCK_START and end <= AM_BLOCK_END
-    return start >= PM_BLOCK_START and end <= PM_BLOCK_END
+        return start >= _cfg_business_start(config) and end <= AM_BLOCK_END
+    return start >= PM_BLOCK_START and end <= _cfg_business_end(config)
 
 
 def _time_type_allows(
     candidate: Candidate,
     start: time,
     end: time,
+    *,
+    config: SchedulingConfig | None = None,
 ) -> bool:
     """time_type 別の時刻制約を満たすか.
 
@@ -261,9 +318,15 @@ def _time_type_allows(
         #   ``AM_BLOCK_START`` (09:30) を下限とする (挙動はこれで維持).
         #   上限 None も同様に営業終了の ``PM_BLOCK_END`` (18:00) を採用.
         lower = (
-            candidate.preferred_start if candidate.preferred_start is not None else AM_BLOCK_START
+            candidate.preferred_start
+            if candidate.preferred_start is not None
+            else _cfg_business_start(config)
         )
-        upper = candidate.preferred_end if candidate.preferred_end is not None else PM_BLOCK_END
+        upper = (
+            candidate.preferred_end
+            if candidate.preferred_end is not None
+            else _cfg_business_end(config)
+        )
         return lower <= start <= upper
     if tt == "午前":
         return end <= AM_BLOCK_END
@@ -279,6 +342,7 @@ def slot_feasible(
     *,
     lunch_window: tuple[time, time] | None,
     block: str,
+    config: SchedulingConfig | None = None,
 ) -> bool:
     """ある開始時刻 ``start`` に候補を置けるか (時刻系の全制約).
 
@@ -292,11 +356,11 @@ def slot_feasible(
     # 18:00 を跨ぐ / 翌日に回る異常は弾く.
     if _time_to_min(end) <= _time_to_min(start):
         return False
-    if not _within_operating_block(start, end, block):
+    if not _within_operating_block(start, end, block, config=config):
         return False
     if _lunch_overlaps(start, end, lunch_window):
         return False
-    if not _time_type_allows(candidate, start, end):
+    if not _time_type_allows(candidate, start, end, config=config):
         return False
     return True
 
@@ -344,6 +408,7 @@ def find_available_slots_for_candidate(
     weekday: int,
     course_capacity_used: int | None = None,
     course_minutes_used: int | None = None,
+    config: SchedulingConfig | None = None,
 ) -> list[Slot]:
     """候補をコースの空きに入れられる開始時刻を列挙する (不可なら空リスト).
 
@@ -375,19 +440,20 @@ def find_available_slots_for_candidate(
     used_minutes = (
         course_minutes_used
         if course_minutes_used is not None
-        else _course_total_minutes_from_existing(sv)
+        else _course_total_minutes_from_existing(sv, config=config)
     )
 
-    # 容量: visit 数 < 6 かつ total + 候補占有 (= service) <= 480.
+    # 容量: visit 数 < max_patients かつ total + 候補占有 (= service) <= 480.
+    # Phase G-88 Step3: max_patients は config 化. COURSE_MAX_MINUTES は据え置き.
     capacity_ok = (
-        used_count < MAX_PATIENTS_PER_COURSE
+        used_count < _cfg_max_patients(config)
         and used_minutes + int(candidate.service_minutes) <= COURSE_MAX_MINUTES
     )
 
     slots: list[Slot] = []
     if capacity_ok:
-        slots.extend(_scan_block(sv, candidate, lunch_window, "am"))
-        slots.extend(_scan_block(sv, candidate, lunch_window, "pm"))
+        slots.extend(_scan_block(sv, candidate, lunch_window, "am", config=config))
+        slots.extend(_scan_block(sv, candidate, lunch_window, "pm", config=config))
 
     # 同住所ペア: 候補が既存の単独患者と同住所なら、その隣に同時刻で入れる.
     slots.extend(
@@ -396,6 +462,7 @@ def find_available_slots_for_candidate(
             candidate,
             used_count=used_count,
             used_minutes=used_minutes,
+            config=config,
         )
     )
 
@@ -416,15 +483,20 @@ def _scan_block(
     candidate: Candidate,
     lunch_window: tuple[time, time] | None,
     block: str,
+    *,
+    config: SchedulingConfig | None = None,
 ) -> list[Slot]:
     """1 営業枠 (am / pm) 内のギャップを走査し、収まる開始時刻を返す.
 
     各ギャップごとに「前 visit からの最早開始 (移動+バッファー+5分切上げ)」を
     起点に slot_feasible を試す. 候補が次 visit に被らない (= 候補↔次の移動+
     バッファーを確保して next.start までに終わる) ことも確認する.
+
+    Phase G-88 Step3: AM 枠の開始 (business_start) / PM 枠の終了 (business_end) のみ
+    config 化. 正午境界 (AM_BLOCK_END / PM_BLOCK_START) は据え置き.
     """
-    block_start = AM_BLOCK_START if block == "am" else PM_BLOCK_START
-    block_end = AM_BLOCK_END if block == "am" else PM_BLOCK_END
+    block_start = _cfg_business_start(config) if block == "am" else PM_BLOCK_START
+    block_end = AM_BLOCK_END if block == "am" else _cfg_business_end(config)
 
     # この枠に重なる既存 visit のみ対象 (start が枠内、または枠と重なる).
     in_block = [
@@ -453,6 +525,7 @@ def _scan_block(
                 (prev.lat, prev.lng),
                 (candidate.lat, candidate.lng),
                 same_address=_is_same_address(prev.lat, prev.lng, candidate.lat, candidate.lng),
+                config=config,
             )
             earliest_candidates.append((earliest, prev, nxt))
 
@@ -479,7 +552,7 @@ def _scan_block(
                 continue
             if prev is not None:
                 travel_buffer = _travel_buffer_between(
-                    prev.lat, prev.lng, candidate.lat, candidate.lng
+                    prev.lat, prev.lng, candidate.lat, candidate.lng, config=config
                 )
                 earliest_raw = _add_minutes(prev.end_time, travel_buffer)
                 shortage = _time_to_min(earliest_raw) - _time_to_min(fixed)
@@ -495,12 +568,16 @@ def _scan_block(
 
         # 次 visit と被らないか: 候補 end + (候補↔次の移動+バッファー) <= next.start.
         if nxt is not None:
-            gap_after = _travel_buffer_between(candidate.lat, candidate.lng, nxt.lat, nxt.lng)
+            gap_after = _travel_buffer_between(
+                candidate.lat, candidate.lng, nxt.lat, nxt.lng, config=config
+            )
             latest_end = _add_minutes(nxt.start_time, -gap_after)
             if _time_to_min(end) > _time_to_min(latest_end):
                 continue
 
-        if not slot_feasible(start, candidate, lunch_window=lunch_window, block=block):
+        if not slot_feasible(
+            start, candidate, lunch_window=lunch_window, block=block, config=config
+        ):
             continue
 
         results.append(
@@ -526,6 +603,7 @@ def _same_address_pair_slots(
     *,
     used_count: int,
     used_minutes: int,
+    config: SchedulingConfig | None = None,
 ) -> list[Slot]:
     """候補が既存の単独患者と同住所なら、その隣に同時刻ペアで入れるスロット.
 
@@ -536,7 +614,7 @@ def _same_address_pair_slots(
     容量はペアでも「コースに 1 名追加」「占有増分」を見る.
     """
     results: list[Slot] = []
-    if used_count >= MAX_PATIENTS_PER_COURSE:
+    if used_count >= _cfg_max_patients(config):
         return results
 
     for v in sv:
@@ -566,7 +644,7 @@ def _same_address_pair_slots(
         # ペア占有 [pair_start, pair_end] が営業枠 / 18:00 内に収まるか再確認する
         # (相方の service が短くても 90 分底上げで 18:00 を超えるケースを弾く).
         block = "am" if _time_to_min(pair_start) < _time_to_min(PM_BLOCK_START) else "pm"
-        if not _within_operating_block(pair_start, pair_end, block):
+        if not _within_operating_block(pair_start, pair_end, block, config=config):
             continue
 
         results.append(

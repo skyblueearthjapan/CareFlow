@@ -1868,6 +1868,126 @@ async def test_apply_week_only_skips_protected_visit(db) -> None:
     assert actives[0].id == protected_id
 
 
+@pytest.mark.asyncio
+async def test_apply_week_only_honors_nondefault_lunch_window(db) -> None:
+    """残漏れ修正 (G-88 Step3 再レビュー): apply_week_only の昼休みゲートが
+    config の昼休み窓を honor する (固定 11:30-13:30 で誤スキップしない).
+
+    14:10-15:40 の plan (90 分):
+      - 既定窓 (11:30-13:30): visit は窓外 → INSERT される (= プレビューと一致).
+      - 非既定窓 (14:00-16:00): AM 側回避 (14:10 < 14:30) も PM 側回避
+        (15:40 > 15:30) も不可で lunch 不可避 → 動的窓 warning でスキップされる
+        (= config-aware プレビューと確定が一致; 固定窓で誤って INSERT しない).
+    """
+    from dataclasses import replace as _dc_replace
+    from datetime import date
+
+    from sqlalchemy import select
+
+    from app.models.visit import Visit
+    from app.services.scheduling.auto_allocator_v2 import (
+        DEFAULT_SCHEDULING_CONFIG,
+        apply_week_only,
+    )
+
+    office = Office(name="awolunch-office")
+    db.add(office)
+    await db.flush()
+    p = Patient(
+        code="AWOLUNCH",
+        name="awolunch-patient",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        primary_office_id=office.id,
+    )
+    db.add(p)
+    await db.flush()
+    s = Staff(name="awolunch-staff", role="staff", is_trainee=False, primary_office_id=office.id)
+    db.add(s)
+    await db.flush()
+    db.add(StaffShift(staff_id=s.id, weekday=0, is_on=True))
+    await db.commit()
+
+    plan = {
+        "patient_id": p.id,
+        "visit_plans": [
+            {
+                "weekday": 0,
+                "start_time": time(14, 10),
+                "end_time": time(15, 40),
+                "duration_min": 90,
+                "course_code": "M",
+                "office_id": office.id,
+                "am_pm": "pm",
+            }
+        ],
+    }
+
+    # (a) 既定窓 (11:30-13:30): 14:10-15:40 は窓外 → INSERT される.
+    result_default = await apply_week_only(
+        db,
+        iso_year=2026,
+        iso_week=20,
+        office_ids=[office.id],
+        patient_visit_plans=[plan],
+        config=DEFAULT_SCHEDULING_CONFIG,
+    )
+    await db.commit()
+    inserted_default = (
+        await db.scalars(
+            select(Visit).where(
+                Visit.patient_id == p.id,
+                Visit.visit_date == date(2026, 5, 11),
+                Visit.start_time == time(14, 10),
+                Visit.deleted_at.is_(None),
+            )
+        )
+    ).all()
+    assert len(inserted_default) == 1, (
+        "既定窓 (11:30-13:30) では 14:10-15:40 は窓外で INSERT される: "
+        f"warnings={result_default.get('warnings')!r}"
+    )
+
+    # (b) 非既定窓 (14:00-16:00): lunch 不可避 → 動的窓 warning でスキップ.
+    nondefault_cfg = _dc_replace(
+        DEFAULT_SCHEDULING_CONFIG,
+        lunch_window_start=time(14, 0),
+        lunch_window_end=time(16, 0),
+    )
+    result_shifted = await apply_week_only(
+        db,
+        iso_year=2026,
+        iso_week=20,
+        office_ids=[office.id],
+        patient_visit_plans=[plan],
+        config=nondefault_cfg,
+    )
+    await db.commit()
+    warning_texts = "\n".join(result_shifted.get("warnings", []))
+    # 固定 11:30-13:30 文字列ではなく、config 窓 (14:00-16:00) を反映した warning.
+    assert "14:00-16:00" in warning_texts, (
+        f"非既定昼休み窓を反映した warning が見当たらない: {warning_texts!r}"
+    )
+    assert "11:30-13:30" not in warning_texts, (
+        f"固定窓 11:30-13:30 のリテラルが残っている (config 未注入): {warning_texts!r}"
+    )
+    # 該当 visit は INSERT されていない (= 確定がプレビュー = config-aware と一致).
+    actives_shifted = (
+        await db.scalars(
+            select(Visit).where(
+                Visit.patient_id == p.id,
+                Visit.visit_date == date(2026, 5, 11),
+                Visit.start_time == time(14, 10),
+                Visit.deleted_at.is_(None),
+            )
+        )
+    ).all()
+    assert actives_shifted == [], (
+        "非既定窓 (14:00-16:00) では 14:10-15:40 は lunch 不可避でスキップされる"
+    )
+
+
 # ---------------------------------------------------------------------------
 # W41 v2 (Mode 2 UI 拡張) — _extract_area_label
 # ---------------------------------------------------------------------------

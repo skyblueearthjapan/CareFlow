@@ -397,6 +397,86 @@ async def test_apply_individual_allows_visit_in_dynamic_lunch_avoidable_slot(cli
     assert res.status_code == 200, res.text
 
 
+@pytest.mark.asyncio
+async def test_apply_individual_h10_gate_honors_nondefault_lunch_window(client, db) -> None:
+    """Phase G-88 最終監査: apply-individual の H10 事前ゲートが非既定昼休み窓設定を honor する.
+
+    11:50-13:10 の visit:
+      - 既定窓 (11:30-13:30): AM 側 (start 11:50 < 12:00) も PM 側 (end 13:10 > 13:00)
+        も 30 分 lunch を確保できず lunch 不可避 → 事前ゲートで 422 (対照).
+      - 窓を 14:00-16:00 にずらすと、この visit は窓より前 (end 13:10 <= 14:00) で
+        干渉せず合法 → 事前ゲートで 422 にならない (= 設定窓を honor している根拠).
+
+    旧版では事前ゲートが固定窓 11:30-13:30 のままだったため、非既定窓設定下でも
+    設定窓では合法な visit を 422 で弾く回帰があった.
+    """
+    from app.models.scheduling_settings import SchedulingSettings
+
+    # --- 対照: 既定窓では 11:50-13:10 は lunch 不可避 → 422 ---
+    admin_def = await _make_user(db, email="v2-h10-defwin-admin@example.com", role="admin")
+    office_def, _ = await _seed_office_with_staff(db)
+    p_def = await _seed_patient(db, office=office_def, code="H10-DEFWIN")
+    await db.commit()
+    res_default = await client.post(
+        "/api/v1/schedule/v2/apply-individual",
+        headers=_bearer(admin_def),
+        json={
+            "patient_id": str(p_def.id),
+            "confirm": True,
+            "visit_plans": [
+                {
+                    "weekday": 0,
+                    "start_time": "11:50",
+                    "end_time": "13:10",
+                    "duration_min": 80,
+                    "course_code": "A",
+                    "office_id": str(office_def.id),
+                    "am_pm": "pm",
+                }
+            ],
+        },
+    )
+    assert res_default.status_code == 422, res_default.text
+    assert "H10" in res_default.text
+    # detail の窓文字列も既定 (11:30-13:30) で動的化されている.
+    assert "11:30-13:30" in res_default.text
+
+    # --- 本題: 昼休み窓を 14:00-16:00 にずらすと 11:50-13:10 は合法 → 422 にならない ---
+    admin = await _make_user(db, email="v2-h10-shiftwin-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    p = await _seed_patient(db, office=office, code="H10-SHIFTWIN")
+    db.add(
+        SchedulingSettings(
+            is_singleton=True,
+            lunch_window_start=time(14, 0),
+            lunch_window_end=time(16, 0),
+        )
+    )
+    await db.commit()
+    res_shifted = await client.post(
+        "/api/v1/schedule/v2/apply-individual",
+        headers=_bearer(admin),
+        json={
+            "patient_id": str(p.id),
+            "confirm": True,
+            "visit_plans": [
+                {
+                    "weekday": 0,
+                    "start_time": "11:50",
+                    "end_time": "13:10",
+                    "duration_min": 80,
+                    "course_code": "A",
+                    "office_id": str(office.id),
+                    "am_pm": "am",
+                }
+            ],
+        },
+    )
+    # 非既定窓 (14:00-16:00) では 11:50-13:10 は lunch 不可避ではない → H10 ゲートで弾かれない.
+    assert res_shifted.status_code != 422, res_shifted.text
+    assert "H10" not in res_shifted.text
+
+
 # ---------------------------------------------------------------------------
 # /v2/reset-to-fixed
 # ---------------------------------------------------------------------------
@@ -3396,3 +3476,107 @@ async def test_full_optimize_unassigned_for_care_alarm_exceeded(client, db) -> N
     body = res.json()
     # unassigned_patients は list で返る (空でも OK).
     assert isinstance(body.get("unassigned_patients", []), list)
+
+
+# ---------------------------------------------------------------------------
+# Phase G-88 Step3 漏れ修正 (6): 確定適用経路が SchedulingSettings 行 (= プレビュー
+# と同一 config) をロードして確定再計算する. apply-week-only エンドポイントで
+# 非既定 buffer を設定すると、確定 visit の start_time が config 反映で後ろにずれる.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apply_week_only_finalizes_with_scheduling_config_buffer(client, db) -> None:
+    """確定 (apply-week-only) が SchedulingSettings の非既定 buffer をロードして反映する.
+
+    同コース PM 連続 2 件 (異住所) を確定すると、2 件目は
+    ``prev.end + travel + buffer`` の earliest_start に補正される. buffer を既定 (8)
+    から 30 に上げると、確定後の 2 件目 start_time が後ろにずれる
+    (= 確定経路が config をロードして再計算に効かせている根拠).
+    """
+    from datetime import date
+
+    from app.models.scheduling_settings import SchedulingSettings
+    from app.models.visit import Visit
+
+    admin = await _make_user(db, email="v2-cfg-buf-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    # 異住所 2 患者 (BASE と ~2.7km 離れた点). time_type='終日' で補正対象.
+    pat = {
+        "preferred_weekdays": ["Tue"],
+        "service_minutes": 30,
+        "time_type": "終日",
+    }
+    p1 = await _seed_patient(
+        db, office=office, code="CFG-B1", lat=35.6000, lng=140.1000, weekly_pattern=pat
+    )
+    p2 = await _seed_patient(
+        db, office=office, code="CFG-B2", lat=35.6000, lng=140.1300, weekly_pattern=pat
+    )
+    # 非既定 buffer=30 の設定行を投入 (プレビュー / 確定が同一 config を使う前提).
+    db.add(
+        SchedulingSettings(
+            is_singleton=True,
+            visit_buffer_min=30,
+        )
+    )
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/apply-week-only",
+        headers=_bearer(admin),
+        json={
+            "iso_year": 2026,
+            "iso_week": 20,
+            "office_ids": [str(office.id)],
+            "visit_plans_per_patient": [
+                {
+                    "patient_id": str(p1.id),
+                    "visit_plans": [
+                        {
+                            "weekday": 1,
+                            "start_time": "14:00",
+                            "end_time": "14:30",
+                            "duration_min": 30,
+                            "course_code": "A",
+                            "office_id": str(office.id),
+                            "am_pm": "pm",
+                        }
+                    ],
+                },
+                {
+                    "patient_id": str(p2.id),
+                    "visit_plans": [
+                        {
+                            "weekday": 1,
+                            "start_time": "14:30",
+                            "end_time": "15:00",
+                            "duration_min": 30,
+                            "course_code": "A",
+                            "office_id": str(office.id),
+                            "am_pm": "pm",
+                        }
+                    ],
+                },
+            ],
+            "confirm": True,
+        },
+    )
+    assert res.status_code == 200, res.text
+
+    # 確定後の p2 visit を取得 (Tue W20 = 2026-05-12).
+    p2_visit = await db.scalar(
+        select(Visit).where(
+            Visit.patient_id == p2.id,
+            Visit.visit_date == date(2026, 5, 12),
+            Visit.source == "auto_alloc_v2w",
+            Visit.deleted_at.is_(None),
+        )
+    )
+    assert p2_visit is not None
+    # 既定 buffer 8 なら 14:30 + travel8 + buf8 = 14:46 → 14:50.
+    # buffer 30 なら 14:30 + travel8 + buf30 = 15:08 → 15:10 (= 後ろにずれる).
+    # 14:50 より後 (= buffer 30 が確定再計算に効いている) を確認する.
+    assert p2_visit.start_time > time(14, 50), (
+        f"buffer 30 設定で確定 2 件目が後ろにずれるべき: got {p2_visit.start_time}"
+    )

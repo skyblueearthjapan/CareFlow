@@ -60,6 +60,43 @@ export const BUSINESS_BLOCKS: ReadonlyArray<readonly [number, number]> = [
  */
 export const MIN_FREE_GAP_MIN = 60;
 
+/**
+ * 営業時間設定 (Phase G-88) からフロント表示用の営業枠を組み立てる。
+ *
+ * 親機の最適化設定 (`/api/v1/scheduling-settings`) の `business_start` /
+ * `business_end` を反映するための導線。従来の表示と同じく昼休み帯 (12:00–13:00)
+ * は枠の間で非営業として扱う (午前/午後の境界 = 正午は内部固定概念のため踏襲)。
+ *
+ *   - business 範囲が昼休み帯を内包 → [start,12:00] と [13:00,end] の 2 枠
+ *   - 昼休み帯と重ならない → 単一の [start,end] 枠
+ *
+ * 入力が不正 (start>=end 等) のときは null を返し、呼び出し側は既定
+ * `BUSINESS_BLOCKS` にフォールバックする (取得前 / 失敗時の後方互換)。
+ */
+export function businessBlocksFromHours(
+  businessStart: string | null | undefined,
+  businessEnd: string | null | undefined,
+): ReadonlyArray<readonly [number, number]> | null {
+  const start = parseHM(businessStart);
+  const end = parseHM(businessEnd);
+  if (start === null || end === null || start >= end) return null;
+
+  const LUNCH_START = 12 * 60; // 12:00
+  const LUNCH_END = 13 * 60; // 13:00
+
+  // 昼休み帯と重ならない (営業が昼前で終わる / 昼後に始まる) → 単一枠。
+  if (end <= LUNCH_START || start >= LUNCH_END) {
+    return [[start, end]];
+  }
+
+  const blocks: Array<readonly [number, number]> = [];
+  const am: readonly [number, number] = [start, Math.min(end, LUNCH_START)];
+  if (am[1] > am[0]) blocks.push(am);
+  const pm: readonly [number, number] = [Math.max(start, LUNCH_END), end];
+  if (pm[1] > pm[0]) blocks.push(pm);
+  return blocks.length > 0 ? blocks : null;
+}
+
 /** 営業枠から既存 visit の占有を除いた空き時間帯 (≥MIN_FREE_GAP_MIN)。 */
 export interface FreeGap {
   /** gap 開始 (0 時起点の分。interleave の並べ替えキー)。 */
@@ -79,8 +116,14 @@ export interface TimeOccupiedVisit {
 /**
  * コースの営業枠から既存 visit の占有 [start, end) を除いた空き時間帯を算出する。
  * 戻り値は MIN_FREE_GAP_MIN 以上の gap のみ (短すぎる gap は省略)、start 昇順。
+ *
+ * @param businessBlocks 営業枠 (Phase G-88: 設定値から `businessBlocksFromHours`
+ *   で組み立てた枠を渡せる)。省略時は既定 `BUSINESS_BLOCKS` (09:30–12:00/13:00–18:00)。
  */
-export function computeFreeGaps(visits: ReadonlyArray<TimeOccupiedVisit>): FreeGap[] {
+export function computeFreeGaps(
+  visits: ReadonlyArray<TimeOccupiedVisit>,
+  businessBlocks: ReadonlyArray<readonly [number, number]> = BUSINESS_BLOCKS,
+): FreeGap[] {
   const occupied: Array<[number, number]> = [];
   for (const v of visits) {
     const s = parseHM(v.start_time);
@@ -96,7 +139,7 @@ export function computeFreeGaps(visits: ReadonlyArray<TimeOccupiedVisit>): FreeG
       gaps.push({ startMin: s, endMin: e, label: `${fmtHM(s)}〜${fmtHM(e)}` });
     }
   };
-  for (const [blockStart, blockEnd] of BUSINESS_BLOCKS) {
+  for (const [blockStart, blockEnd] of businessBlocks) {
     let cursor = blockStart;
     for (const [s, e] of occupied) {
       if (e <= cursor || s >= blockEnd) continue; // ブロック外は無視

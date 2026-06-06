@@ -121,7 +121,14 @@ import type { SlotIndex } from '@/lib/schemas/v2/patient_fixed_visit';
 // Phase G-44: 「希望訪問パターン」 vs 「実 visit 数」 の共通 utility.
 import { countWeekVisits, getDesiredWeeklyVisitCount } from '@/lib/scheduling/preferred-visits';
 // Phase G-55: 空き時間帯 (≥60分) 算出の共有 util (mobile FieldBoard と共通).
-import { computeFreeGaps, type FreeGap } from '@/lib/scheduling/freeGaps';
+import {
+  computeFreeGaps,
+  businessBlocksFromHours,
+  BUSINESS_BLOCKS,
+  type FreeGap,
+} from '@/lib/scheduling/freeGaps';
+// Phase G-88: 営業時間設定を空き枠表示に反映 (取得前/失敗時は既定枠にフォールバック).
+import { useSchedulingSettings } from '@/lib/queries/schedulingSettings';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Constants
@@ -380,6 +387,13 @@ export function CourseDayTablePanel({
   // ─── Courses (当週: course_template の逆引き / 担当 dropdown 用) ──
   const coursesQuery = useCourses({ iso_year: isoYear, iso_week: isoWeek, limit: 200 });
   const courses = useMemo(() => coursesQuery.data ?? [], [coursesQuery.data]);
+
+  // ─── Phase G-88: 営業時間設定 → 空き枠 (取得前/失敗時は既定枠にフォールバック) ──
+  const schedulingSettingsQuery = useSchedulingSettings();
+  const businessBlocks = useMemo(() => {
+    const v = schedulingSettingsQuery.data?.values;
+    return businessBlocksFromHours(v?.business_start, v?.business_end) ?? BUSINESS_BLOCKS;
+  }, [schedulingSettingsQuery.data]);
 
   // ─── スタッフ数連動の有効定員 (週ビューのコース「休」/定員を auto-schedule と統一) ──
   // (office_id, weekday) → 稼働スタッフ数. A-E コースは effectiveCapacity で
@@ -858,10 +872,10 @@ export function CourseDayTablePanel({
       rawByCourse.set(cid, arr);
     }
     for (const [cid, raw] of rawByCourse.entries()) {
-      m.set(cid, computeFreeGaps(raw));
+      m.set(cid, computeFreeGaps(raw, businessBlocks));
     }
     return m;
-  }, [weekVisits]);
+  }, [weekVisits, businessBlocks]);
 
   // ─── Phase G-55: (template_id, weekday) → 空き時間帯 のマップ (週ビュー用) ──
   // freeGapsByCourse は course_id 単位。週ビュー (CourseWeekOverview) は

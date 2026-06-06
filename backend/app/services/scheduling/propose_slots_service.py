@@ -35,6 +35,15 @@ from app.models.staff import Staff
 from app.models.visit import VISIT_STATUS_PLANNED, Visit
 from app.services.patient_excel.schema import OFFICE_CODE_TO_SHORT
 from app.services.scheduling.auto_allocator_v2 import (
+    LUNCH_DURATION_PREFERRED as _LUNCH_DURATION_PREFERRED,
+)
+from app.services.scheduling.auto_allocator_v2 import (
+    LUNCH_EARLIEST_START as _LUNCH_EARLIEST_START,
+)
+from app.services.scheduling.auto_allocator_v2 import (
+    LUNCH_LATEST_END as _LUNCH_LATEST_END,
+)
+from app.services.scheduling.auto_allocator_v2 import (
     NOON_HOUR,
     _address_bucket,
     compute_lunch_window,
@@ -43,6 +52,7 @@ from app.services.scheduling.auto_allocator_v2 import (
 from app.services.scheduling.auto_allocator_v2 import (
     V2Visit as _V2Visit,
 )
+from app.services.scheduling.config import SchedulingConfig
 from app.services.scheduling.constants import (
     COURSE_MAX_MINUTES as _COURSE_MAX_MINUTES,
 )
@@ -360,8 +370,13 @@ def _score_slot(
     remaining_minutes: int,
     matched_weekday: bool,
     matched_time_type: bool,
+    max_patients: int = _MAX_PATIENTS_PER_COURSE,
 ) -> float:
-    """合成スコア (降順用). 同住所ペアは大ボーナスで最優先."""
+    """合成スコア (降順用). 同住所ペアは大ボーナスで最優先.
+
+    Phase G-88 Step3: 残容量正規化の分母 (``max_patients``) を config 化可能にする.
+    既定は module 定数 ``_MAX_PATIENTS_PER_COURSE`` (= 6) で挙動不変.
+    """
     score = 0.0
     if slot.same_address_pair:
         score += _PAIR_BONUS
@@ -382,7 +397,7 @@ def _score_slot(
     score += _W_PREFERENCE * pref
 
     # 空きの平準化: 残件数 + 残分の平均的余裕度 (0..1).
-    count_ratio = remaining_count / _MAX_PATIENTS_PER_COURSE
+    count_ratio = remaining_count / max_patients
     min_ratio = remaining_minutes / _COURSE_MAX_MINUTES
     balance = max(0.0, min(1.0, (count_ratio + min_ratio) / 2.0))
     score += _W_BALANCE * balance
@@ -401,6 +416,7 @@ def compute_all_proposed_slots(
     office_ids: list[UUID],
     office_code_by_id: dict[UUID, str | None] | None = None,
     candidate_name: str = "(提案)",
+    config: SchedulingConfig | None = None,
 ) -> list[ProposedSlot]:
     """全 (開講コース × 候補希望曜日) でソルバを回し、ランキング済み全スロットを返す.
 
@@ -408,7 +424,19 @@ def compute_all_proposed_slots(
     実現可能性判定 / ランキングを共有するための内部 API.
 
     実現不能なコース / 曜日は候補に出さない (= 入らない時間は提案しない).
+
+    Phase G-88 Step3: ``config`` を ``compute_lunch_window`` /
+    ``find_available_slots_for_candidate`` / 残容量計算へ伝播する. ``config=None`` は
+    module 定数を使い挙動不変. full-optimize と同一 config を渡して一貫性を保つ.
     """
+    # 残容量 (件数) の上限: config 化. 残分 (COURSE_MAX_MINUTES) は据え置き.
+    _max_patients = (
+        config.max_patients_per_course if config is not None else _MAX_PATIENTS_PER_COURSE
+    )
+    # 昼休み標準長 / 取得時間帯 (compute_lunch_window へ渡す既定 = module 定数).
+    _lunch_duration = config.lunch_duration_min if config is not None else _LUNCH_DURATION_PREFERRED
+    _lunch_window_start = config.lunch_window_start if config is not None else _LUNCH_EARLIEST_START
+    _lunch_window_end = config.lunch_window_end if config is not None else _LUNCH_LATEST_END
     target_weekdays = candidate.preferred_weekdays or frozenset(range(7))
     cand = Candidate(
         lat=candidate.lat,
@@ -428,19 +456,27 @@ def compute_all_proposed_slots(
             continue
 
         existing = _to_existing_visits(bucket)
-        lunch = compute_lunch_window(bucket.visits, warnings=None, weekday=weekday)
+        lunch = compute_lunch_window(
+            bucket.visits,
+            warnings=None,
+            weekday=weekday,
+            duration=_lunch_duration,
+            window_start=_lunch_window_start,
+            window_end=_lunch_window_end,
+        )
 
         slots = find_available_slots_for_candidate(
             existing,
             cand,
             lunch_window=lunch,
             weekday=weekday,
+            config=config,
         )
         if not slots:
             continue
 
         min_dist = _min_distance_km(bucket, candidate.lat, candidate.lng)
-        remaining_count = max(0, _MAX_PATIENTS_PER_COURSE - len(bucket.visits))
+        remaining_count = max(0, _max_patients - len(bucket.visits))
         used_minutes = sum(v.service_minutes for v in bucket.visits)
         remaining_minutes = max(0, _COURSE_MAX_MINUTES - used_minutes)
         matched_weekday = (
@@ -480,6 +516,7 @@ def compute_all_proposed_slots(
                 remaining_minutes=remaining_minutes,
                 matched_weekday=matched_weekday,
                 matched_time_type=matched_time_type,
+                max_patients=_max_patients,
             )
             mini = _build_mini_schedule(
                 bucket,
@@ -528,10 +565,13 @@ def compute_proposed_slots(
     office_code_by_id: dict[UUID, str | None] | None = None,
     candidate_name: str = "(提案)",
     limit: int = 10,
+    config: SchedulingConfig | None = None,
 ) -> list[ProposedSlot]:
     """全 (開講コース × 候補希望曜日) でソルバを回し、上位 ``limit`` 件を返す.
 
     実現不能なコース / 曜日は候補に出さない (= 入らない時間は提案しない).
+
+    Phase G-88 Step3: ``config`` を ``compute_all_proposed_slots`` へ伝播する.
     """
     return compute_all_proposed_slots(
         buckets,
@@ -540,6 +580,7 @@ def compute_proposed_slots(
         office_ids=office_ids,
         office_code_by_id=office_code_by_id,
         candidate_name=candidate_name,
+        config=config,
     )[:limit]
 
 
