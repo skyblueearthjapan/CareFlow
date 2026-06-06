@@ -64,6 +64,12 @@ from app.models.patient_same_address_link import PatientSameAddressLink
 from app.models.staff import Staff, StaffSecondaryOffice, StaffShift, StaffWeeklyOverride
 from app.models.visit import Visit
 from app.models.visit_staff_assignment import VisitStaffAssignment
+from app.services.scheduling.constants import (
+    COURSE_MAX_MINUTES,
+    DEFAULT_OFFICE_OPERATING_WEEKDAYS,
+    MAX_PATIENTS_PER_COURSE,
+    SAME_ADDRESS_TOLERANCE,
+)
 
 # Phase G-21: feature flag canary 切替キー.
 # OfficeFeatureFlag.feature_key が ``g21_new_algorithm`` で enabled_at IS NOT NULL の
@@ -73,7 +79,8 @@ G21_NEW_ALGORITHM_FEATURE_KEY: str = "g21_new_algorithm"
 # Phase G-45: 拠点稼働曜日 (= operating_weekdays) のデフォルト値 (= 月-土).
 # DB カラム NULL / 不正値 (= リスト以外 or 範囲外要素を含む) の場合に
 # ``_load_office_operating_weekdays`` がフォールバックする.
-DEFAULT_OFFICE_OPERATING_WEEKDAYS: frozenset[int] = frozenset({0, 1, 2, 3, 4, 5})
+# Phase G-88: 正準値は ``app.services.scheduling.constants`` に単一ソース化.
+# 上部 import 済みの ``DEFAULT_OFFICE_OPERATING_WEEKDAYS`` を再エクスポート維持.
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +90,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 # H9: 1 コース (午前 + 午後 合計) の上限人数 (§12.1).
-MAX_PATIENTS_PER_COURSE: int = 6
+# Phase G-88: 正準値は ``constants`` に単一ソース化 (上部 import 済み). 値 = 6.
+# 下流 (``from auto_allocator_v2 import MAX_PATIENTS_PER_COURSE``) のため再エクスポート維持.
 
 # 1 セット (= バケット内の距離クラスタ) 上限人数.
 MAX_PATIENTS_PER_SET: int = 3
@@ -95,7 +103,7 @@ TRAVEL_SPEED_KMH: float = 20.0
 
 # W41 v2 拡張 (コース容量 duration 化): 1 コース (1 スタッフ × 1 日, 昼休憩除く)
 # の所要時間上限 (分). 9:00-12:00 + 13:00-18:00 = 8 時間 = 480 分.
-COURSE_MAX_MINUTES: int = 480
+# Phase G-88: 正準値は ``constants`` に単一ソース化 (上部 import 済み). 値 = 480.
 
 # 訪問間バッファー (書類記入・移動準備・次患者対応準備等の余裕時間).
 # 全面最適化 (mode="full_optimize") と差分追加 (mode="diff_add") の両方で
@@ -151,7 +159,7 @@ CARE_ALARM_WARNING_THRESHOLD_MIN: int = 30
 CARE_ALARM_UNASSIGNED_THRESHOLD_MIN: int = 60
 
 # H2: 同住所判定の許容誤差 (緯度経度の絶対差 ≒ 100m).
-SAME_ADDRESS_TOLERANCE: float = 0.001
+# Phase G-88: 正準値は ``constants`` に単一ソース化 (上部 import 済み). 値 = 0.001.
 
 # 午前/午後の境界 (Q1 確定: 12:00 未満=午前, 12:00 以降=午後).
 NOON_HOUR: int = 12
@@ -215,6 +223,9 @@ PM_BLOCK_START: time = time(13, 0)
 PM_BLOCK_END: time = time(18, 0)
 
 # Course code (午前/午後同一スタッフが担当) — 1 拠点で最大 5 スタッフ.
+# ⚠️ これは v2 全面最適化 (full_optimize) のコース上限 (A-E = 5). 別機能である
+#    ``layer2_clustering.COURSE_CODES`` (A-D = /courses/generate 旧 Layer2 案生成) とは
+#    意図的に別物であり、互いに統一しないこと.
 _COURSE_CODES: tuple[str, ...] = ("A", "B", "C", "D", "E")
 _COURSE_CODES_MAX: int = len(_COURSE_CODES)
 

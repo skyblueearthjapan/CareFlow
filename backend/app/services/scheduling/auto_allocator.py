@@ -74,6 +74,10 @@ from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.staff import Staff
 from app.models.visit import VISIT_STATUS_PLANNED, Visit
 from app.models.visit_staff_assignment import VisitStaffAssignment
+from app.services.scheduling.constants import (
+    MAX_PATIENTS_PER_COURSE,
+    SAME_ADDRESS_TOLERANCE,
+)
 from app.services.scheduling.layer2_clustering import (
     haversine_km,
     run_kmeans,
@@ -98,13 +102,14 @@ WEIGHT_SOFT_VIOLATIONS: float = 1.0
 
 # H2 同住所判定の許容誤差 (緯度経度の絶対差).
 # 0.001 deg ≒ 約 100 m。仕様: "ほぼ一致 (誤差 ≤ 0.001)".
-SAME_ADDRESS_TOLERANCE: float = 0.001
+# Phase G-88: 正準値は ``constants`` に単一ソース化 (上部 import 済み). 値 = 0.001.
 
 # H2: 同住所同時刻に配置できる最大人数.
 SAME_ADDRESS_MAX: int = 2
 
 # H5 (review): 1 コースあたりの上限人数 (Layer 2 の §3.6.3 と整合).
-MAX_PATIENTS_PER_COURSE: int = 6
+# Phase G-88: 正準値は ``constants`` に単一ソース化 (上部 import 済み). 値 = 6.
+# 既存の再エクスポート名 ``MAX_PATIENTS_PER_COURSE`` (``__all__`` 経由) は維持される.
 
 # auto_allocator が新規生成する visit の source 値.
 # M4: Layer 1 の "auto" と区別するため "auto_alloc" を採用.

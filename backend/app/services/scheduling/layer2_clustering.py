@@ -45,6 +45,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.patient import Patient
 from app.models.visit import VISIT_STATUS_PLANNED, Visit
+from app.services.scheduling.constants import MAX_PATIENTS_PER_COURSE
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -53,10 +54,14 @@ from app.models.visit import VISIT_STATUS_PLANNED, Visit
 # コース記号 (§3.6.5). 4 コースまでは A〜D を使う。
 # staff_count=5 以上の場合は CourseV2 schema が許す M (manager) は専用枠なので
 # 通常コースとしては A〜D の 4 つを上限とする (MVP)。
+# ⚠️ これは /courses/generate (旧 Layer2 案生成) のコース上限 (A-D = 4). 別機能である
+#    ``auto_allocator_v2._COURSE_CODES`` (A-E = 5, v2 全面最適化) とは意図的に別物で
+#    あり、互いに統一しないこと.
 COURSE_CODES: tuple[str, ...] = ("A", "B", "C", "D")
 
 # 1 コースあたりの上限人数 (§3.6.3)
-MAX_PATIENTS_PER_COURSE: int = 6
+# Phase G-88: 正準値は ``constants`` に単一ソース化 (上部 import 済み). 値 = 6.
+# 既存の再エクスポート名 ``MAX_PATIENTS_PER_COURSE`` は維持される.
 
 # Q1: サービス時間枠消費 — sum(service_min) <= MAX_SERVICE_RATIO * avg(service_min)
 # チケット要件: ``sum(service_min) <= 6 * avg(service_min)`` (= 上限 6 件相当)

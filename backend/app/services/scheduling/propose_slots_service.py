@@ -43,6 +43,12 @@ from app.services.scheduling.auto_allocator_v2 import (
 from app.services.scheduling.auto_allocator_v2 import (
     V2Visit as _V2Visit,
 )
+from app.services.scheduling.constants import (
+    COURSE_MAX_MINUTES as _COURSE_MAX_MINUTES,
+)
+from app.services.scheduling.constants import (
+    MAX_PATIENTS_PER_COURSE as _MAX_PATIENTS_PER_COURSE,
+)
 from app.services.scheduling.proposal_solver import (
     Candidate,
     ExistingVisit,
@@ -62,8 +68,9 @@ _PAIR_BONUS: float = 1000.0
 # 近接スコアの飽和距離 (km). これ以上離れると近接スコア 0.
 _PROXIMITY_SAT_KM: float = 5.0
 
-_COURSE_MAX_MINUTES: int = 480
-_MAX_PATIENTS_PER_COURSE: int = 6
+# Phase G-88: コース容量定数は ``constants`` に単一ソース化.
+# 既存ローカル名 (``_COURSE_MAX_MINUTES`` = 480 / ``_MAX_PATIENTS_PER_COURSE`` = 6) は
+# 上部の import 別名で維持される.
 
 
 def _fmt_hhmm(t: time) -> str:

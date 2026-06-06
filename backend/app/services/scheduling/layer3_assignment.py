@@ -72,10 +72,12 @@ from app.models.staff import (
 from app.models.staff_companion_assignment import StaffCompanionAssignment
 from app.models.visit import VISIT_STATUS_PLANNED, Visit
 from app.models.visit_staff_assignment import VisitStaffAssignment
+from app.services.scheduling.constants import DEFAULT_OFFICE_OPERATING_WEEKDAYS
 from app.services.scheduling.layer2_clustering import haversine_km
 
 # Phase G-45: 拠点稼働曜日デフォルト (= 月-土).
-_DEFAULT_OFFICE_OPERATING_WEEKDAYS: frozenset[int] = frozenset({0, 1, 2, 3, 4, 5})
+# Phase G-88: 正準値は ``constants`` に単一ソース化. 既存ローカル名は別名で維持.
+_DEFAULT_OFFICE_OPERATING_WEEKDAYS: frozenset[int] = DEFAULT_OFFICE_OPERATING_WEEKDAYS
 
 
 def _coerce_office_operating_weekdays(raw: object) -> set[int]:
