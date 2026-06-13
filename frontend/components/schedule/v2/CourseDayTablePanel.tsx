@@ -54,7 +54,11 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { addDays } from '@/components/schedule/WeekSelector';
 import { ApiError } from '@/lib/api-client';
 import { fetcher } from '@/lib/api/fetcher';
-import { useAssignStaffOnly } from '@/lib/queries/assign_staff_only';
+import {
+  useAssignStaffOnly,
+  type RotationConflictWarning,
+  type UnassignedCourseWarning,
+} from '@/lib/queries/assign_staff_only';
 import { useCourses, useUpdateCourse, type CourseV2Read } from '@/lib/queries/courses';
 import { useGenerateWeekOnly } from '@/lib/queries/generate_week';
 import { useOffices } from '@/lib/queries/offices';
@@ -93,6 +97,7 @@ import { AcceptanceLegend } from './AcceptanceLayer';
 import { BulkFixToPatternButton } from './BulkFixToPatternButton';
 import { BulkPinAllPfvsButton } from './BulkPinAllPfvsButton';
 import { DiffAddDialog } from './DiffAddDialog';
+import { AssignWarningDialog } from './AssignWarningDialog';
 import { FullOptimizeDialog } from './FullOptimizeDialog';
 import { ProposeNewModal } from './ProposeNewModal';
 import { ResetToFixedButton } from './ResetToFixedButton';
@@ -1580,6 +1585,10 @@ export function CourseDayTablePanel({
   const assignStaffOnlyMut = useAssignStaffOnly();
   const [diffAddOpen, setDiffAddOpen] = useState(false);
   const [fullOptimizeOpen, setFullOptimizeOpen] = useState(false);
+  // Phase G-89: 自動割付の事後警告ダイアログ (ローテ衝突 / 未割当).
+  const [assignWarningOpen, setAssignWarningOpen] = useState(false);
+  const [rotationWarnings, setRotationWarnings] = useState<RotationConflictWarning[]>([]);
+  const [unassignedWarnings, setUnassignedWarnings] = useState<UnassignedCourseWarning[]>([]);
   // 統合提案モーダル「＋新規提案」(StageA+C+B). diff-add (プール投入) とは別 entry.
   const [proposeNewOpen, setProposeNewOpen] = useState(false);
   const isProcessing = generateWeekMut.isPending || assignStaffOnlyMut.isPending;
@@ -1612,7 +1621,21 @@ export function CourseDayTablePanel({
         iso_week: isoWeek,
         office_id: officeId,
       });
-      toast.success(`スタッフを自動割付しました (courses=${res.courses_assigned})`);
+      // Phase G-89: ローテ衝突 / 未割当があれば事後警告ダイアログを開く。
+      // 衝突ゼロなら従来どおり success toast のみ (ダイアログは出さない)。
+      const rot = res.rotation_warnings ?? [];
+      const unassigned = res.unassigned_warnings ?? [];
+      if (rot.length > 0 || unassigned.length > 0) {
+        setRotationWarnings(rot);
+        setUnassignedWarnings(unassigned);
+        setAssignWarningOpen(true);
+        toast.warning(
+          `自動割付しました (courses=${res.courses_assigned})。` +
+            `人手不足の警告が ${rot.length + unassigned.length} 件あります。`,
+        );
+      } else {
+        toast.success(`スタッフを自動割付しました (courses=${res.courses_assigned})`);
+      }
     } catch (err) {
       toast.error(`自動割付に失敗しました: ${formatErr(err)}`);
     }
@@ -2325,6 +2348,14 @@ export function CourseDayTablePanel({
           isoYear={isoYear}
           isoWeek={isoWeek}
           officeId={officeId}
+        />
+
+        {/* Phase G-89: 自動割付の事後警告ダイアログ (ローテ衝突 / 未割当). */}
+        <AssignWarningDialog
+          open={assignWarningOpen}
+          onClose={() => setAssignWarningOpen(false)}
+          rotationWarnings={rotationWarnings}
+          unassignedWarnings={unassignedWarnings}
         />
 
         {/* 患者スケジュール詳細 (固定枠 vs 今週 + 個別反映)

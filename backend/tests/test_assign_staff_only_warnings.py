@@ -244,3 +244,52 @@ async def test_warnings_field_present_when_no_visits(client, db) -> None:
     body = res.json()
     assert "warnings" in body
     assert body["warnings"] == []
+
+
+@pytest.mark.asyncio
+async def test_assignment_persists_when_warning_build_fails(client, db, monkeypatch) -> None:
+    """Phase G-89 修正1: 警告構築が commit 後に失敗しても割付は残る (regression).
+
+    ``_build_rotation_and_unassigned_warnings`` を例外化しても:
+      - レスポンスは 200
+      - rotation_warnings / unassigned_warnings は空
+      - 割付 (visit.primary_staff_id) は DB に確保されたまま (= rollback されない)
+    """
+    from sqlalchemy import select
+
+    import app.api.v1.schedule as schedule_module
+
+    admin = await _make_user(db, "w27-warn-rollback@example.com")
+    seeds = await _seed_basic(db, with_event=False, event_overlaps=False)
+    # ORM 属性が後で expire/lazy-load されないよう、 必要な id を先に確定させておく.
+    course_id = seeds["course"].id
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("simulated warning build failure")
+
+    monkeypatch.setattr(
+        schedule_module,
+        "_build_rotation_and_unassigned_warnings",
+        _boom,
+    )
+
+    res = await client.post(
+        "/api/v1/schedule/assign-staff-only",
+        headers=_bearer(admin),
+        json={"iso_year": W27_ISO_YEAR, "iso_week": W27_ISO_WEEK},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    # 警告は best-effort: 失敗時は空で返る
+    assert body.get("rotation_warnings") == []
+    assert body.get("unassigned_warnings") == []
+
+    # 割付は DB に確保されたまま (= commit 済みで rollback されていない)
+    db.expire_all()
+    rows = (
+        await db.execute(select(Visit.primary_staff_id).where(Visit.course_id == course_id))
+    ).all()
+    assert rows, "対象コースの visit が消えている (= 割付が rollback された)"
+    assert all(r[0] is not None for r in rows), (
+        "visit に primary_staff_id が無い (= 割付が確保されていない)"
+    )

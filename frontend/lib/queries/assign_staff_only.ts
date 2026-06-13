@@ -54,12 +54,49 @@ export const assignWarningSchema = z.object({
 
 export type AssignWarning = z.infer<typeof assignWarningSchema>;
 
+// ---------------------------------------------------------------------------
+// Phase G-89: ローテ衝突 / 未割当コース警告 — BE スキーマと厳密ミラー
+// ---------------------------------------------------------------------------
+
+/** 🔴 ローテ衝突 (= 人手不足で直近担当者を再割り当てした) 警告. */
+export const rotationConflictWarningSchema = z.object({
+  patient_id: z.string().uuid(),
+  patient_name: z.string().nullable().optional(),
+  staff_id: z.string().uuid(),
+  staff_name: z.string().nullable().optional(),
+  course_id: z.string().uuid(),
+  course_code: z.string(),
+  weekday: z.number().int().min(0).max(6),
+  visit_start_time: z.string().nullable().optional(),
+  // working_recent index. 0 = 1 つ前と同じ (= 連続), 1 = 2 個前と同じ.
+  recent_index: z.number().int().nonnegative(),
+  is_consecutive: z.boolean(),
+});
+
+export type RotationConflictWarning = z.infer<typeof rotationConflictWarningSchema>;
+
+/** 🟠 未割当 (= 人手不足で担当を確保できなかった) コース警告. */
+export const unassignedCourseWarningSchema = z.object({
+  course_id: z.string().uuid(),
+  course_code: z.string(),
+  weekday: z.number().int().min(0).max(6),
+  visit_start_time: z.string().nullable().optional(),
+  patient_ids: z.array(z.string().uuid()).default([]),
+  patient_names: z.array(z.string()).default([]),
+});
+
+export type UnassignedCourseWarning = z.infer<typeof unassignedCourseWarningSchema>;
+
 export const assignStaffOnlyResponseSchema = z.object({
   iso_year: z.number().int(),
   iso_week: z.number().int(),
   courses_assigned: z.number().int().nonnegative(),
   message: z.string(),
   warnings: z.array(assignWarningSchema).default([]),
+  // Phase G-89: ローテ衝突 (埋めたが直近担当者を再割り当て)
+  rotation_warnings: z.array(rotationConflictWarningSchema).default([]),
+  // Phase G-89: 未割当 (担当を確保できなかった)
+  unassigned_warnings: z.array(unassignedCourseWarningSchema).default([]),
 });
 
 export type AssignStaffOnlyResponse = z.infer<typeof assignStaffOnlyResponseSchema>;

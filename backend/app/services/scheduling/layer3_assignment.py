@@ -294,6 +294,31 @@ class StaffAssignment(BaseModel):
     staff_id: UUID
 
 
+@dataclass(frozen=True)
+class RotationConflict:
+    """Phase G-89: ローテーション衝突 (= 患者の担当が直近担当者リストに入っていた).
+
+    人手不足で「同じ人を避ける」 を維持できず、 患者の直近担当者を再度割り当てざるを
+    得なかったケースを 1 件 1 record で記録する。
+
+    Attributes:
+        course_id: 衝突が起きたコースの ID.
+        weekday: 0=Mon..6=Sun.
+        patient_id: 連続担当になってしまった患者の ID.
+        staff_id: 割り当てられた (= 直近担当者だった) スタッフの ID.
+        recent_index: 当該患者の ``working_recent`` リスト内での staff_id の index.
+            0 = 1 つ前と同じ (= 連続), 1 = 2 個前と同じ (前回は別の人), 2 = 3 個前.
+            cost 関数が penalty 判定に使ったのと同じ index を記録する
+            (= ``_PATIENT_RECENT_PENALTY_BY_INDEX`` のキーと一致).
+    """
+
+    course_id: UUID
+    weekday: int
+    patient_id: UUID
+    staff_id: UUID
+    recent_index: int
+
+
 @dataclass
 class Layer3Result:
     """Layer 3 の総合出力."""
@@ -301,6 +326,14 @@ class Layer3Result:
     assignments: list[StaffAssignment] = field(default_factory=list)
     rotation_score: float = 0.0  # ローテ分散度 (低いほど分散している)
     total_distance_km: float = 0.0
+    # Phase G-89: 人手不足で直近担当者を再割り当てせざるを得なかった衝突一覧.
+    # solve() の曜日ループ内で「割当確定時点の working_recent (= cost 関数が
+    # 参照した状態)」に対して検出する. 既存呼出は default の空 list で互換維持.
+    rotation_conflicts: list[RotationConflict] = field(default_factory=list)
+    # Phase G-89: visits>0 なのに担当が 1 人も確保できなかった (= 未割当) コースの
+    # course_id 一覧. ``assign()`` が course_targets と assignments を突き合わせて
+    # 埋める (solve() 単体では空のまま). 既存呼出は default の空 list で互換維持.
+    unassigned_course_ids: list[UUID] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -679,6 +712,16 @@ class Layer3Assigner:
             patient_recent_staff=patient_recent_staff,
         )
 
+        # ---------- 5b. Phase G-89: 未割当コース検出 ----------
+        # course_targets は visits>0 のコースのみ (= _load_course_targets が空コース
+        # を early-skip 済). assignments に course_id が出てこないものは「人手不足で
+        # 担当を確保できなかった」未割当コース. course_targets の順 (= weekday, code
+        # 昇順) を保つことで決定的な並びにする.
+        assigned_course_ids = {a.course_id for a in result.assignments}
+        result.unassigned_course_ids = [
+            ct.course_id for ct in course_targets if ct.course_id not in assigned_course_ids
+        ]
+
         # ---------- 6. DB 反映 ----------
         trainee_ids = frozenset(s.staff_id for s in staff_pool if s.is_trainee)
         await self._persist(db, result.assignments, trainee_staff_ids=trainee_ids)
@@ -779,6 +822,8 @@ class Layer3Assigner:
 
         all_assignments: list[StaffAssignment] = []
         total_distance = 0.0
+        # Phase G-89: ローテ衝突 (= 直近担当者を再割り当てした) の記録先.
+        rotation_conflicts: list[RotationConflict] = []
 
         # W16: 「前日同コースペナルティ」用. (course_code, staff_id) を直前曜日
         # の割当から構築する.
@@ -834,6 +879,33 @@ class Layer3Assigner:
             # 当日割当を「前日割当」として次曜日へ受け渡し
             prev_day_pairs = {(a.course_code, a.staff_id) for a in day_assignments}
 
+            # Phase G-89: ローテ衝突検出 (= working_recent prepend 更新 **前**).
+            # この時点の working_recent は cost 関数が penalty 算出に参照したのと
+            # 同一状態 (= 当日割当を未だ反映していない). 各 assignment の course の
+            # 各 patient について working_recent.get(pid) 内の staff_id index を引き、
+            # ヒットしたら衝突として記録する (= 人手不足で直近担当者を再割り当て).
+            # Hungarian 経由は cost が使った recent index と一致する。 manager
+            # fallback 経由は cost 未評価のため、 本ループで実 recent 位置を新規算出する
+            # (= patient 安全上は同じ衝突として扱う).
+            for a in day_assignments:
+                course = next(c for c in day_courses if c.course_id == a.course_id)
+                for pid in course.patient_ids:
+                    recent = working_recent.get(pid)
+                    if not recent:
+                        continue
+                    for idx, sid in enumerate(recent):
+                        if sid == a.staff_id:
+                            rotation_conflicts.append(
+                                RotationConflict(
+                                    course_id=a.course_id,
+                                    weekday=weekday,
+                                    patient_id=pid,
+                                    staff_id=a.staff_id,
+                                    recent_index=idx,
+                                )
+                            )
+                            break  # 最小 index (= cost が使った最大 penalty) のみ
+
             # Phase 2: 当日割当の各患者リスト先頭に当日 staff を prepend する.
             # 既存なら前方へ移動 (distinct 維持) し、 DEPTH で truncate する. これにより
             # 後続曜日は当日割当を「1 回前」 として見る (= 火→木 同患者で別 staff を満たす).
@@ -864,6 +936,7 @@ class Layer3Assigner:
             assignments=all_assignments,
             rotation_score=round(rotation_score, 6),
             total_distance_km=round(total_distance, 4),
+            rotation_conflicts=rotation_conflicts,
         )
 
     # ------------------------------------------------------------------ #

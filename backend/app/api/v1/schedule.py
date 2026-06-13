@@ -43,6 +43,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import DbDep, require_role
 from app.models.course import (
@@ -84,8 +85,11 @@ from app.services.scheduling.layer1_expander import (
     _is_special_week_active,
 )
 from app.services.scheduling.layer3_assignment import (
+    PATIENT_RECENT_DEPTH,
     Layer3Assigner,
     Layer3AssignmentError,
+    Layer3Result,
+    RotationConflict,
 )
 
 logger = logging.getLogger(__name__)
@@ -1291,6 +1295,49 @@ class AssignStaffWarning(BaseModel):
     message: str
 
 
+class RotationConflictWarning(BaseModel):
+    """Phase G-89: ローテ衝突警告 (= 人手不足で直近担当者を再割り当てした).
+
+    最終割当で患者の担当が「直近担当者リスト」に入っていたケース。 人手不足のため
+    「同じ人を避ける」 を維持できず、 訪問を確保するため直近担当者を再度当てた。
+    管理者は内容を見て、 必要なら担当 dropdown で手動変更する (= 埋めて事後警告).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    patient_id: UUID
+    patient_name: str | None = None
+    staff_id: UUID
+    staff_name: str | None = None
+    course_id: UUID
+    course_code: str
+    weekday: int = Field(ge=0, le=6)
+    visit_start_time: time | None = None
+    # working_recent リスト内 index. 0 = 1 つ前と同じ (= 連続), 1 = 2 個前と同じ.
+    # working_recent は PATIENT_RECENT_DEPTH で truncate されるため有効域は 0..DEPTH-1。
+    # 衝突集合は cost 関数の penalty map と同一ドメイン (= 同じ working_recent) を見る。
+    recent_index: int = Field(ge=0, le=PATIENT_RECENT_DEPTH - 1)
+    # 連続性 (= 前回と同じ担当). recent_index==0 のとき True.
+    is_consecutive: bool
+
+
+class UnassignedCourseWarning(BaseModel):
+    """Phase G-89: 未割当コース警告 (= 人手不足で担当を確保できなかった).
+
+    visits>0 なのに担当が 1 人も割り当てられなかったコース。 管理者は対象患者を見て、
+    必要なら担当 dropdown で手動補填する.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    course_id: UUID
+    course_code: str
+    weekday: int = Field(ge=0, le=6)
+    visit_start_time: time | None = None
+    patient_ids: list[UUID] = Field(default_factory=list)
+    patient_names: list[str] = Field(default_factory=list)
+
+
 class AssignStaffOnlyResponse(BaseModel):
     """``POST /api/v1/schedule/assign-staff-only`` のレスポンス (W17-BE-A2)."""
 
@@ -1302,6 +1349,10 @@ class AssignStaffOnlyResponse(BaseModel):
     message: str
     # W27 Phase A: event 時間帯と既存 visit (assigned_staff) の重複警告
     warnings: list[AssignStaffWarning] = Field(default_factory=list)
+    # Phase G-89: ローテ衝突 (埋めたが直近担当者を再割り当て) 警告
+    rotation_warnings: list[RotationConflictWarning] = Field(default_factory=list)
+    # Phase G-89: 未割当 (担当を確保できなかった) コース警告
+    unassigned_warnings: list[UnassignedCourseWarning] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -1494,6 +1545,8 @@ async def assign_staff_only(
             office_id=payload.office_id,
         )
 
+        # 割付 (visits 確保) を先に commit する。 Phase G-89 のローテ/未割当警告は
+        # 「埋めて事後警告」 の化粧処理であり、 その構築失敗で割付を巻き戻してはならない。
         await db.commit()
     except Layer3AssignmentError as exc:
         await db.rollback()
@@ -1504,6 +1557,18 @@ async def assign_staff_only(
     except Exception:
         await db.rollback()
         raise
+
+    # ----- Phase G-89: ローテ衝突 / 未割当コースの warnings 収集 (commit 後・graceful) -----
+    # commit 済みなので以降は読み取り専用 SELECT のみ。 警告構築が失敗しても
+    # 確保済みの割付は壊さず、 空 warnings で 200 を返す (= 事後警告は best-effort).
+    try:
+        rotation_warnings, unassigned_warnings = await _build_rotation_and_unassigned_warnings(
+            db,
+            l3_result=l3_result,
+        )
+    except Exception:
+        logger.exception("warning build failed post-commit; returning empty warnings")
+        rotation_warnings, unassigned_warnings = [], []
 
     courses_assigned = len(l3_result.assignments)
 
@@ -1517,6 +1582,8 @@ async def assign_staff_only(
             + (f" (office {payload.office_id})" if payload.office_id else "")
         ),
         warnings=warnings,
+        rotation_warnings=rotation_warnings,
+        unassigned_warnings=unassigned_warnings,
     )
 
 
@@ -1626,6 +1693,165 @@ async def _collect_event_visit_warnings(
                     )
                 )
     return warnings
+
+
+# ---------------------------------------------------------------------------
+# Phase G-89: ローテ衝突 / 未割当コース warnings 構築
+# ---------------------------------------------------------------------------
+
+
+async def _build_rotation_and_unassigned_warnings(
+    db: AsyncSession,
+    *,
+    l3_result: Layer3Result,
+) -> tuple[list[RotationConflictWarning], list[UnassignedCourseWarning]]:
+    """Phase G-89: solve() の衝突/未割当検出結果を表示用 warnings に変換する.
+
+    ``l3_result.rotation_conflicts`` (= 直近担当者を再割り当てした衝突) と
+    ``l3_result.unassigned_course_ids`` (= 担当を確保できなかったコース) を、
+    表示に必要なメタ (患者名 / 担当者名 / コースコード / 代表 visit 時刻) を
+    DB から引いて payload 化する。
+
+    決定性:
+        - rotation_warnings は (weekday, course_code, visit_start_time, patient_id)
+          で安定ソート.
+        - unassigned_warnings は (weekday, course_code) で安定ソート、
+          各コース内 patient は (visit_start_time, patient_id) で安定ソート.
+    """
+    rotation_conflicts: list[RotationConflict] = l3_result.rotation_conflicts
+    unassigned_ids: list[UUID] = l3_result.unassigned_course_ids
+    if not rotation_conflicts and not unassigned_ids:
+        return [], []
+
+    # ----- 必要な ID 集合を収集 -----
+    course_ids: set[UUID] = {c.course_id for c in rotation_conflicts} | set(unassigned_ids)
+    patient_ids: set[UUID] = {c.patient_id for c in rotation_conflicts}
+    staff_ids: set[UUID] = {c.staff_id for c in rotation_conflicts}
+
+    # ----- コース (code) -----
+    course_map: dict[UUID, Course] = {}
+    if course_ids:
+        course_rows = (
+            await db.scalars(select(Course).where(Course.id.in_(list(course_ids))))
+        ).all()
+        course_map = {c.id: c for c in course_rows}
+
+    # ----- 未割当コースの所属患者 (patient_ids を補完) -----
+    # course_id -> [(visit_start_time, patient_id, patient_name), ...]
+    unassigned_patients: dict[UUID, list[tuple[time, UUID]]] = {}
+    if unassigned_ids:
+        # soft-deleted 患者を除外し、 アロケータの _load_course_targets が見た
+        # patient 集合 (Patient.deleted_at.is_(None)) と一致させる。
+        vp_rows = (
+            await db.execute(
+                select(Visit.course_id, Visit.start_time, Visit.patient_id)
+                .join(Patient, Patient.id == Visit.patient_id)
+                .where(
+                    Visit.course_id.in_(list(unassigned_ids)),
+                    Visit.status == VISIT_STATUS_PLANNED,
+                    Visit.deleted_at.is_(None),
+                    Patient.deleted_at.is_(None),
+                )
+            )
+        ).all()
+        for c_id, start_time, p_id in vp_rows:
+            if p_id is None:
+                continue
+            unassigned_patients.setdefault(c_id, []).append((start_time, p_id))
+            patient_ids.add(p_id)
+
+    # ----- 代表 visit start_time (rotation conflict 用): (course_id, patient_id) -> 最小 start_time -----
+    rep_start: dict[tuple[UUID, UUID], time] = {}
+    if rotation_conflicts:
+        rc_pairs = {(c.course_id, c.patient_id) for c in rotation_conflicts}
+        rc_rows = (
+            await db.execute(
+                select(Visit.course_id, Visit.patient_id, Visit.start_time).where(
+                    Visit.course_id.in_([cid for cid, _ in rc_pairs]),
+                    Visit.status == VISIT_STATUS_PLANNED,
+                    Visit.deleted_at.is_(None),
+                )
+            )
+        ).all()
+        for c_id, p_id, start_time in rc_rows:
+            key = (c_id, p_id)
+            if key not in rc_pairs:
+                continue
+            cur = rep_start.get(key)
+            if cur is None or start_time < cur:
+                rep_start[key] = start_time
+
+    # ----- patient / staff 名 -----
+    patient_name_map: dict[UUID, str] = {}
+    if patient_ids:
+        prows = (await db.scalars(select(Patient).where(Patient.id.in_(list(patient_ids))))).all()
+        patient_name_map = {p.id: p.name for p in prows}
+    staff_name_map: dict[UUID, str] = {}
+    if staff_ids:
+        srows = (await db.scalars(select(Staff).where(Staff.id.in_(list(staff_ids))))).all()
+        staff_name_map = {s.id: s.name for s in srows}
+
+    # ----- rotation_warnings 構築 -----
+    rotation_warnings: list[RotationConflictWarning] = []
+    for c in rotation_conflicts:
+        course = course_map.get(c.course_id)
+        if course is None:
+            continue
+        rotation_warnings.append(
+            RotationConflictWarning(
+                patient_id=c.patient_id,
+                patient_name=patient_name_map.get(c.patient_id),
+                staff_id=c.staff_id,
+                staff_name=staff_name_map.get(c.staff_id),
+                course_id=c.course_id,
+                course_code=course.code,
+                weekday=c.weekday,
+                visit_start_time=rep_start.get((c.course_id, c.patient_id)),
+                recent_index=c.recent_index,
+                is_consecutive=(c.recent_index == 0),
+            )
+        )
+    rotation_warnings.sort(
+        key=lambda w: (
+            w.weekday,
+            w.course_code,
+            w.visit_start_time.isoformat() if w.visit_start_time is not None else "",
+            str(w.patient_id),
+        )
+    )
+
+    # ----- unassigned_warnings 構築 -----
+    unassigned_warnings: list[UnassignedCourseWarning] = []
+    for c_id in unassigned_ids:
+        course = course_map.get(c_id)
+        if course is None:
+            continue
+        patients = unassigned_patients.get(c_id, [])
+        # (visit_start_time, patient_id) で安定ソートし、 distinct な patient を抽出.
+        patients_sorted = sorted(patients, key=lambda t: (t[0], str(t[1])))
+        seen: set[UUID] = set()
+        ordered_pids: list[UUID] = []
+        rep: time | None = None
+        for start_time, p_id in patients_sorted:
+            if rep is None:
+                rep = start_time
+            if p_id in seen:
+                continue
+            seen.add(p_id)
+            ordered_pids.append(p_id)
+        unassigned_warnings.append(
+            UnassignedCourseWarning(
+                course_id=c_id,
+                course_code=course.code,
+                weekday=course.weekday,
+                visit_start_time=rep,
+                patient_ids=ordered_pids,
+                patient_names=[patient_name_map.get(pid, "") for pid in ordered_pids],
+            )
+        )
+    unassigned_warnings.sort(key=lambda w: (w.weekday, w.course_code))
+
+    return rotation_warnings, unassigned_warnings
 
 
 # Suppress F401 for LAYER1_VISIT_SOURCE (kept for documentation / future use)
