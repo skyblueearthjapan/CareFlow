@@ -7,7 +7,7 @@
  * (Phase G-43 で Row 1 を flex justify-end 単一 toolbar 化し、主要 4 と固定枠戻を隣接させた):
  *   ┌─ ヘッダー ────────────────────────────────────────────┐
  *   │  Row 1 (右寄せ 1 行 toolbar, admin/manager only):                              │
- *   │     [週を生成][自動割付 🟢][全面最適化 🟢][プール投入] │ [固定枠戻][全件保存]    │
+ *   │     [週を生成][自動スタッフ割付 🟢][全面最適化 🟢][プール投入] │ [固定枠戻][全件保存]    │
  *   │  ─── border-t ────────────────────                                            │
  *   │  Row 2 (曜日タブ + テーブル/リスト + 二次操作):                                  │
  *   │    [月][火][水][木][金][土][週] YYYY-Www                                       │
@@ -22,7 +22,7 @@
  *
  * 主な機能:
  *   - 曜日タブで月〜土を切替 (capacity_<wd> > 0 の曜日のみ表示)
- *   - Phase G-41: 「週を生成」「自動割付」「全面最適化」「プール投入」 を Row 1 (右寄せ) に再収容.
+ *   - Phase G-41: 「週を生成」「自動スタッフ割付」「全面最適化」「プール投入」 を Row 1 (右寄せ) に再収容.
  *     mutation pending 状態は内部で算出し、二次操作 (固定枠戻 / 一斉未割当) を多重実行から保護する.
  *   - 各コーステーブルの担当 dropdown で PATCH /api/v1/courses/{id}
  *   - プールセル → コーステーブル行ドロップ → place-and-fix
@@ -56,8 +56,8 @@ import { ApiError } from '@/lib/api-client';
 import { fetcher } from '@/lib/api/fetcher';
 import {
   useAssignStaffOnly,
-  type RotationConflictWarning,
-  type UnassignedCourseWarning,
+  useApplyStaffReview,
+  type ReviewItem,
 } from '@/lib/queries/assign_staff_only';
 import { useCourses, useUpdateCourse, type CourseV2Read } from '@/lib/queries/courses';
 import { useGenerateWeekOnly } from '@/lib/queries/generate_week';
@@ -97,7 +97,7 @@ import { AcceptanceLegend } from './AcceptanceLayer';
 import { BulkFixToPatternButton } from './BulkFixToPatternButton';
 import { BulkPinAllPfvsButton } from './BulkPinAllPfvsButton';
 import { DiffAddDialog } from './DiffAddDialog';
-import { AssignWarningDialog } from './AssignWarningDialog';
+import { AssignWarningDialog, type ApprovedReviewItem } from './AssignWarningDialog';
 import { FullOptimizeDialog } from './FullOptimizeDialog';
 import { ProposeNewModal } from './ProposeNewModal';
 import { ResetToFixedButton } from './ResetToFixedButton';
@@ -1480,7 +1480,7 @@ export function CourseDayTablePanel({
     }
   };
 
-  // ─── Phase G-40: 「週を生成」 / 「自動割付」 / 「全面最適化」 / 「プール投入」 は
+  // ─── Phase G-40: 「週を生成」 / 「自動スタッフ割付」 / 「全面最適化」 / 「プール投入」 は
   //     page 側 (Card 1) へ移設済. ここでは mutation 中の pending 状態のみ props で受け取る. ───
 
   // ─── 患者スケジュール詳細ダイアログ (固定枠 vs 今週 + 個別反映) ───
@@ -1578,17 +1578,17 @@ export function CourseDayTablePanel({
     [canEdit, pfvByVisitKey, togglePfvPin, bulkPinPfvs],
   );
 
-  // ─── Phase G-41: 主要 4 ボタン (週生成 / 自動割付 / 全面最適化 / プール投入) を本 panel Row 1 に再収容 ───
+  // ─── Phase G-41: 主要 4 ボタン (週生成 / 自動スタッフ割付 / 全面最適化 / プール投入) を本 panel Row 1 に再収容 ───
   //   page 側 (Card 1) に置いた G-40 構成から戻し、 mutation/state/dialog を全部 panel 内で抱える.
   //   pending 中の `isProcessing` は二次操作 (固定枠戻 / 一斉未割当) の多重実行抑止にも利用する.
   const generateWeekMut = useGenerateWeekOnly();
   const assignStaffOnlyMut = useAssignStaffOnly();
   const [diffAddOpen, setDiffAddOpen] = useState(false);
   const [fullOptimizeOpen, setFullOptimizeOpen] = useState(false);
-  // Phase G-89: 自動割付の事後警告ダイアログ (ローテ衝突 / 未割当).
+  // Phase G-91: 確認レビューフローのダイアログ (連続 / 性別).
   const [assignWarningOpen, setAssignWarningOpen] = useState(false);
-  const [rotationWarnings, setRotationWarnings] = useState<RotationConflictWarning[]>([]);
-  const [unassignedWarnings, setUnassignedWarnings] = useState<UnassignedCourseWarning[]>([]);
+  const [reviewItems, setReviewItems] = useState<ReviewItem[]>([]);
+  const [reviewApplying, setReviewApplying] = useState(false);
   // 統合提案モーダル「＋新規提案」(StageA+C+B). diff-add (プール投入) とは別 entry.
   const [proposeNewOpen, setProposeNewOpen] = useState(false);
   const isProcessing = generateWeekMut.isPending || assignStaffOnlyMut.isPending;
@@ -1621,28 +1621,80 @@ export function CourseDayTablePanel({
         iso_week: isoWeek,
         office_id: officeId,
       });
-      // Phase G-89: ローテ衝突 / 未割当があれば事後警告ダイアログを開く。
-      // 衝突ゼロなら従来どおり success toast のみ (ダイアログは出さない)。
-      const rot = res.rotation_warnings ?? [];
-      const unassigned = res.unassigned_warnings ?? [];
-      if (rot.length > 0 || unassigned.length > 0) {
-        setRotationWarnings(rot);
-        setUnassignedWarnings(unassigned);
+      // Phase G-91: 確認レビューフロー。 問題コース (連続 / 性別) があれば
+      // レビューダイアログを開く。 クリーンなら従来どおり success toast のみ。
+      const items = res.review_items ?? [];
+      if (items.length > 0) {
+        setReviewItems(items);
         setAssignWarningOpen(true);
         toast.warning(
-          `自動割付しました (courses=${res.courses_assigned})。` +
-            `人手不足の警告が ${rot.length + unassigned.length} 件あります。`,
+          `自動スタッフ割付しました (確定 ${res.courses_assigned} 件)。` +
+            `レビューが必要なコースが ${items.length} 件あります。`,
         );
       } else {
-        toast.success(`スタッフを自動割付しました (courses=${res.courses_assigned})`);
+        toast.success(`自動スタッフ割付しました (確定 ${res.courses_assigned} 件)`);
       }
     } catch (err) {
-      toast.error(`自動割付に失敗しました: ${formatErr(err)}`);
+      toast.error(`自動スタッフ割付に失敗しました: ${formatErr(err)}`);
     }
   };
 
   // ─── 担当 dropdown 変更 (PATCH /courses/{id}) ───────────────────
   const updateCourseMut = useUpdateCourse();
+
+  // Phase G-91 (修正1): レビュー承認カードを apply する (= 専用 endpoint 1 回呼び出し).
+  // 従来の PATCH /courses ループ (assigned_staff_id のみ) を廃し、
+  // POST /apply-staff-review を 1 回呼ぶ。 BE が自動割付と同一の _persist 経由で
+  // VSA INSERT / course_status / primary・secondary 同期 / 2 名体制 / trainee
+  // companion を全て反映する (= apply 済コースの visit が未割当表示になる
+  // リグレッションを解消)。 監査はミドルウェアが POST を自動記録する。
+  const applyStaffReviewMut = useApplyStaffReview();
+
+  // Phase G-91 (修正5): 部分失敗時は成功済 course を reviewItems から除去し、
+  // 失敗分のみ残す (= 再 apply で成功分を二重反映しない)。
+  const handleApplyReview = async (approvedList: ApprovedReviewItem[]) => {
+    if (!canEdit) {
+      toast.warning('編集権限がありません');
+      return;
+    }
+    if (approvedList.length === 0) {
+      setAssignWarningOpen(false);
+      return;
+    }
+    setReviewApplying(true);
+    try {
+      const res = await applyStaffReviewMut.mutateAsync({
+        iso_year: isoYear,
+        iso_week: isoWeek,
+        items: approvedList.map((a) => ({
+          course_id: a.course_id,
+          staff_id: a.candidate_staff_id,
+        })),
+      });
+      // 承認した course のうち成功したものを抽出 (= partner 自動補完分は無視)。
+      const approvedIds = new Set(approvedList.map((a) => a.course_id));
+      const succeededIds = new Set(
+        res.results.filter((r) => r.ok && approvedIds.has(r.course_id)).map((r) => r.course_id),
+      );
+      const failedCount = approvedList.length - succeededIds.size;
+      if (failedCount === 0) {
+        toast.success(`レビュー内容を割り付けました (${approvedList.length} 件)`);
+        setAssignWarningOpen(false);
+        setReviewItems([]);
+      } else {
+        // 成功した course のみ reviewItems から除去する (= 失敗分 + 未承認分は残す)。
+        // 未承認カードを誤って消さないよう、 succeeded だけを取り除く。
+        setReviewItems((prev) => prev.filter((i) => !succeededIds.has(i.course_id)));
+        toast.error(
+          `一部の割り付けに失敗しました (成功 ${succeededIds.size} / 失敗 ${failedCount})`,
+        );
+      }
+    } catch (err) {
+      toast.error(`割り付けに失敗しました: ${formatErr(err)}`);
+    } finally {
+      setReviewApplying(false);
+    }
+  };
 
   const handleChangeAssignedStaff = async (courseId: string, staffId: string | null) => {
     if (!canEdit) {
@@ -1802,7 +1854,7 @@ export function CourseDayTablePanel({
           「主要 4」と「固定枠戻 / 全件保存」が視覚的に離れて見えていたため、
           全要素を 1 つの flex container に並べて全部右寄せ + 主要 4 と固定枠戻の間に縦区切り線を配置する.
             Row 1 (admin/manager only, flex justify-end):
-              [週を生成][自動割付 🟢][全面最適化 🟢][プール投入] │ [固定枠戻][全件保存]
+              [週を生成][自動スタッフ割付 🟢][全面最適化 🟢][プール投入] │ [固定枠戻][全件保存]
               ※ 主要 4 と固定枠戻/全件保存の間に縦区切り線で視覚的セパレーション.
               ※ Row 1 は最上段なので border-t 不要.
             Row 2 (曜日タブ + テーブル/リスト + 二次操作):
@@ -1812,7 +1864,7 @@ export function CourseDayTablePanel({
                 γ 一斉未割当 (= リセット)
                 δ 🔒 全件ロック + 🔓 全件解除 (= 一括設定)
           ボタンは基本 variant="outline" size="sm" で統一感を担保し、
-          毎週必ず押す主要 2 ボタン (自動割付 / 全面最適化) のみ variant="default" (= brand-primary 緑) で目立たせる.
+          毎週必ず押す主要 2 ボタン (自動スタッフ割付 / 全面最適化) のみ variant="default" (= brand-primary 緑) で目立たせる.
         */}
         <Card className="p-3">
           {/* Row 1: 主要 4 ボタン + 固定枠戻 / 全件保存 をまとめて右寄せ (canEdit のみ).
@@ -1854,7 +1906,7 @@ export function CourseDayTablePanel({
                 ) : (
                   <UserCheck className="mr-1 h-4 w-4" aria-hidden />
                 )}
-                自動割付
+                自動スタッフ割付
               </Button>
               <Button
                 type="button"
@@ -2350,12 +2402,13 @@ export function CourseDayTablePanel({
           officeId={officeId}
         />
 
-        {/* Phase G-89: 自動割付の事後警告ダイアログ (ローテ衝突 / 未割当). */}
+        {/* Phase G-91: 自動スタッフ割付の確認レビューフロー (連続 / 性別). */}
         <AssignWarningDialog
           open={assignWarningOpen}
           onClose={() => setAssignWarningOpen(false)}
-          rotationWarnings={rotationWarnings}
-          unassignedWarnings={unassignedWarnings}
+          reviewItems={reviewItems}
+          onApply={handleApplyReview}
+          applying={reviewApplying}
         />
 
         {/* 患者スケジュール詳細 (固定枠 vs 今週 + 個別反映)

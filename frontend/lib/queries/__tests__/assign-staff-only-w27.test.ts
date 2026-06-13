@@ -9,7 +9,13 @@
  */
 import { describe, it, expect } from 'vitest';
 
-import { assignStaffOnlyResponseSchema, assignWarningSchema } from '../assign_staff_only';
+import {
+  applyStaffReviewRequestSchema,
+  applyStaffReviewResponseSchema,
+  assignStaffOnlyResponseSchema,
+  assignWarningSchema,
+  reviewItemSchema,
+} from '../assign_staff_only';
 
 const baseResponse = {
   iso_year: 2026,
@@ -67,5 +73,93 @@ describe('assignWarningSchema (Wave 27 Phase B-5)', () => {
 
   it('6. staff_id が UUID 形式でない場合は ZodError', () => {
     expect(() => assignWarningSchema.parse({ ...validWarning, staff_id: 'not-a-uuid' })).toThrow();
+  });
+});
+
+describe('reviewItemSchema (Phase G-91 確認レビューフロー)', () => {
+  const validReviewItem = {
+    course_id: '00000000-0000-0000-0000-0000000000a1',
+    office_name: '都賀拠点',
+    course_code: 'A',
+    weekday: 0,
+    reason: 'gender',
+    candidate_staff_id: '00000000-0000-0000-0000-0000000000a2',
+    candidate_staff_name: '山田太郎',
+    candidate_staff_sex: 'male',
+    visits: [
+      {
+        patient_id: '00000000-0000-0000-0000-0000000000a3',
+        patient_name: '女性のみ患者',
+        start_time: '09:00:00',
+        sex_restriction: 'female_only',
+        is_cause: true,
+      },
+    ],
+  };
+
+  it('7. 正しい gender review item を parse できる', () => {
+    const r = reviewItemSchema.parse(validReviewItem);
+    expect(r.reason).toBe('gender');
+    expect(r.candidate_staff_name).toBe('山田太郎');
+    expect(r.visits[0]?.is_cause).toBe(true);
+  });
+
+  it('8. reason が consecutive/gender 以外なら ZodError', () => {
+    expect(() => reviewItemSchema.parse({ ...validReviewItem, reason: 'other' })).toThrow();
+  });
+
+  it('9. review_items は省略時 [] にデフォルト', () => {
+    const data = assignStaffOnlyResponseSchema.parse(baseResponse);
+    expect(data.review_items).toEqual([]);
+  });
+
+  it('10. response に review_items を含めて parse できる', () => {
+    const data = assignStaffOnlyResponseSchema.parse({
+      ...baseResponse,
+      review_items: [validReviewItem],
+    });
+    expect(data.review_items).toHaveLength(1);
+    expect(data.review_items[0]?.course_code).toBe('A');
+  });
+
+  it('11. linked_course_ids は省略時 [] にデフォルト', () => {
+    const r = reviewItemSchema.parse(validReviewItem);
+    expect(r.linked_course_ids).toEqual([]);
+  });
+});
+
+describe('applyStaffReview schemas (Phase G-91 修正1)', () => {
+  it('12. 正しい apply request を parse できる', () => {
+    const req = applyStaffReviewRequestSchema.parse({
+      iso_year: 2026,
+      iso_week: 19,
+      items: [
+        {
+          course_id: '00000000-0000-0000-0000-0000000000b1',
+          staff_id: '00000000-0000-0000-0000-0000000000b2',
+        },
+      ],
+    });
+    expect(req.items).toHaveLength(1);
+    expect(req.items[0]?.staff_id).toBe('00000000-0000-0000-0000-0000000000b2');
+  });
+
+  it('13. items 空配列は ZodError (min 1)', () => {
+    expect(() =>
+      applyStaffReviewRequestSchema.parse({ iso_year: 2026, iso_week: 19, items: [] }),
+    ).toThrow();
+  });
+
+  it('14. apply response (部分失敗) を parse できる', () => {
+    const res = applyStaffReviewResponseSchema.parse({
+      applied_count: 1,
+      results: [
+        { course_id: '00000000-0000-0000-0000-0000000000b1', ok: true },
+        { course_id: '00000000-0000-0000-0000-0000000000b3', ok: false, error: 'not found' },
+      ],
+      message: 'Applied staff to 1 courses',
+    });
+    expect(res.applied_count).toBe(1);
+    expect(res.results.filter((r) => !r.ok)).toHaveLength(1);
   });
 });

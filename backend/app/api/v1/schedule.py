@@ -49,6 +49,7 @@ from app.core.deps import DbDep, require_role
 from app.models.course import (
     COURSE_STATUS_COURSE_FIXED,
     COURSE_STATUS_PROPOSED,
+    COURSE_STATUS_STAFF_ASSIGNED,
     Course,
 )
 from app.models.course_template import CourseTemplate
@@ -89,7 +90,9 @@ from app.services.scheduling.layer3_assignment import (
     Layer3Assigner,
     Layer3AssignmentError,
     Layer3Result,
+    ReviewItem,
     RotationConflict,
+    StaffAssignment,
 )
 
 logger = logging.getLogger(__name__)
@@ -1338,6 +1341,47 @@ class UnassignedCourseWarning(BaseModel):
     patient_names: list[str] = Field(default_factory=list)
 
 
+class ReviewVisitSchema(BaseModel):
+    """Phase G-91: レビューカード内の 1 visit (= コース所属の 1 患者訪問)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    patient_id: UUID
+    patient_name: str
+    start_time: time
+    sex_restriction: str | None = None
+    # 当該 review item の原因患者 (連続になる患者 / 性別 NG 患者) なら True.
+    is_cause: bool
+
+
+class ReviewItemSchema(BaseModel):
+    """Phase G-91: 確認レビューフローの 1 カード (= レビュー対象の 1 コース).
+
+    「自動スタッフ割付」 実行時、 クリーンなコースは自動確定 (commit) するが、
+    以下 2 種はレビュー対象として返す (= DB 未割当のまま):
+      - reason='consecutive' (🟡 連続/軽度): 直近担当者 (recent_index==0) と
+        同じスタッフになるケース. candidate は本来割り当たるスタッフ.
+      - reason='gender' (🔴 性別/重度): 適合性別の同拠点スタッフが居ないケース.
+        candidate は性別制約を無視したら割り当たる候補スタッフ.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    course_id: UUID
+    office_name: str
+    course_code: str
+    weekday: int = Field(ge=0, le=6)
+    reason: Literal["consecutive", "gender"]
+    candidate_staff_id: UUID
+    candidate_staff_name: str
+    candidate_staff_sex: str | None = None
+    visits: list[ReviewVisitSchema] = Field(default_factory=list)
+    # Phase G-91 (修正4): 2 名体制で連動する partner course_id 一覧.
+    # X と Y は片方だけ apply すると half-assigned になるため、 apply 時に同一
+    # _persist へ一緒に渡す (BE 側 apply-staff-review が group 単位で自動補完する).
+    linked_course_ids: list[UUID] = Field(default_factory=list)
+
+
 class AssignStaffOnlyResponse(BaseModel):
     """``POST /api/v1/schedule/assign-staff-only`` のレスポンス (W17-BE-A2)."""
 
@@ -1353,6 +1397,10 @@ class AssignStaffOnlyResponse(BaseModel):
     rotation_warnings: list[RotationConflictWarning] = Field(default_factory=list)
     # Phase G-89: 未割当 (担当を確保できなかった) コース警告
     unassigned_warnings: list[UnassignedCourseWarning] = Field(default_factory=list)
+    # Phase G-91: 確認レビューフロー (= 連続 index0 / 性別ブロック) のカード一覧.
+    # クリーンなコースは自動確定し、 本 list のコースは DB 未割当のまま管理者が
+    # レビューして apply (= PATCH /courses/{id}) で最終判断する.
+    review_items: list[ReviewItemSchema] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -1561,16 +1609,32 @@ async def assign_staff_only(
     # ----- Phase G-89: ローテ衝突 / 未割当コースの warnings 収集 (commit 後・graceful) -----
     # commit 済みなので以降は読み取り専用 SELECT のみ。 警告構築が失敗しても
     # 確保済みの割付は壊さず、 空 warnings で 200 を返す (= 事後警告は best-effort).
+    # Phase G-91 (修正5): review 化したコース (= 確認レビューフローのカードに
+    # 出すコース) は rotation/unassigned warnings から除外する (= 同一事象の
+    # 二重出力解消). review_item.course_id がそのまま除外集合になる.
+    review_course_ids = {item.course_id for item in l3_result.review_items}
     try:
         rotation_warnings, unassigned_warnings = await _build_rotation_and_unassigned_warnings(
             db,
             l3_result=l3_result,
+            exclude_course_ids=review_course_ids,
         )
     except Exception:
         logger.exception("warning build failed post-commit; returning empty warnings")
         rotation_warnings, unassigned_warnings = [], []
 
-    courses_assigned = len(l3_result.assignments)
+    # Phase G-91: 確認レビューフローのカードをレスポンス schema へ変換する.
+    # ``l3_result.review_items`` は assign() が commit 前に構築済み (= solve 結果 +
+    # DB 読み). 連続 index0 コース + その partner は _persist 対象から除外済 (DB 未割当).
+    review_items = _build_review_items_response(l3_result.review_items)
+
+    # Phase G-91 (修正2): 自動確定 (commit) したコース数 = ``committed_course_ids``
+    # (= _persist へ実際に渡した assignments の course). 連続コースだけでなく、
+    # その visit_group partner (clean 含む) も非 commit のため、 単純な
+    # assignments - consecutive では partner を過大計上していた. assign() が
+    # 構築する commit 実数 list を単一ソースにする.
+    courses_assigned = len(l3_result.committed_course_ids)
+    review_count = len(review_items)
 
     return AssignStaffOnlyResponse(
         iso_year=payload.iso_year,
@@ -1578,12 +1642,308 @@ async def assign_staff_only(
         courses_assigned=courses_assigned,
         message=(
             f"Assigned staff to {courses_assigned} courses "
+            f"({review_count} courses need review) "
             f"for ISO {payload.iso_year}-W{payload.iso_week}"
             + (f" (office {payload.office_id})" if payload.office_id else "")
         ),
         warnings=warnings,
         rotation_warnings=rotation_warnings,
         unassigned_warnings=unassigned_warnings,
+        review_items=review_items,
+    )
+
+
+def _build_review_items_response(items: list[ReviewItem]) -> list[ReviewItemSchema]:
+    """Phase G-91: Layer3 の ``ReviewItem`` dataclass をレスポンス schema へ変換.
+
+    DB I/O は ``Layer3Assigner._build_review_items`` が commit 前に済ませているため、
+    本関数は純粋なフィールド写像のみ (= 失敗しない). 並びは Layer3 側で決定的に
+    ソート済み (weekday, course_code, 代表 start_time) なので保持する.
+    """
+    return [
+        ReviewItemSchema(
+            course_id=item.course_id,
+            office_name=item.office_name,
+            course_code=item.course_code,
+            weekday=item.weekday,
+            reason=item.reason,  # type: ignore[arg-type]  # 'consecutive'|'gender' を Literal へ
+            candidate_staff_id=item.candidate_staff_id,
+            candidate_staff_name=item.candidate_staff_name,
+            candidate_staff_sex=item.candidate_staff_sex,
+            visits=[
+                ReviewVisitSchema(
+                    patient_id=v.patient_id,
+                    patient_name=v.patient_name,
+                    start_time=v.start_time,
+                    sex_restriction=v.sex_restriction,
+                    is_cause=v.is_cause,
+                )
+                for v in item.visits
+            ],
+            linked_course_ids=item.linked_course_ids,
+        )
+        for item in items
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Endpoint: /apply-staff-review (Phase G-91 修正1)
+# ---------------------------------------------------------------------------
+
+
+class ApplyStaffReviewItem(BaseModel):
+    """``POST /api/v1/schedule/apply-staff-review`` のリクエスト 1 件 (= 1 コース)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    course_id: UUID
+    staff_id: UUID
+
+
+class ApplyStaffReviewRequest(BaseModel):
+    """``POST /api/v1/schedule/apply-staff-review`` のリクエストボディ (Phase G-91 修正1).
+
+    確認レビューフローで管理者が承認したカードを、 自動スタッフ割付と **完全に
+    同じ反映経路** (= ``Layer3Assigner._persist``) で DB に書き込むためのペイロード.
+    ``items`` の各要素 = (course_id, 割り当てる staff_id).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    iso_year: int = Field(ge=2000, le=2100)
+    iso_week: int = Field(ge=1, le=53)
+    items: list[ApplyStaffReviewItem] = Field(min_length=1)
+
+
+class ApplyStaffReviewResultItem(BaseModel):
+    """apply 結果 1 件 (= 1 コース). 成功/失敗を FE に返す (部分失敗対応)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    course_id: UUID
+    ok: bool
+    error: str | None = None
+
+
+class ApplyStaffReviewResponse(BaseModel):
+    """``POST /api/v1/schedule/apply-staff-review`` のレスポンス (Phase G-91 修正1)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    applied_count: int
+    results: list[ApplyStaffReviewResultItem] = Field(default_factory=list)
+    message: str
+
+
+@router.post(
+    "/apply-staff-review",
+    response_model=ApplyStaffReviewResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Phase G-91: 確認レビューフローの承認カードを _persist 経由で反映",
+)
+async def apply_staff_review(
+    payload: ApplyStaffReviewRequest,
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+) -> ApplyStaffReviewResponse:
+    """確認レビューフローで承認されたコースを ``_persist`` 経由で DB 反映する.
+
+    **なぜ専用 endpoint か (修正1)**:
+        従来の apply は ``PATCH /courses/{id}`` (= assigned_staff_id のみ更新) を
+        呼んでいたが、 これだと自動割付 (``_persist``) がやる
+          (a) course_status='staff_assigned'
+          (b) VisitStaffAssignment INSERT (= スタッフの visit 可視性・子アプリ表示)
+          (c) visits.primary_staff_id / secondary_staff_id 同期
+          (d) 2 名体制 secondary 解決
+          (e) trainee companion 自動付与
+        を一切行わず、 apply 済コースの visit が未割当表示のまま・子アプリに
+        スタッフが見えない機能リグレッションになる. 本 endpoint は承認カードから
+        ``StaffAssignment`` を組み、 自動割付と **同一の ``_persist``** を呼ぶ.
+
+    **2 名体制ペア (修正4)**:
+        承認 item の course が visit_group (2 名体制) に属する場合、 同 group の
+        partner course も自動で本割付対象に含める (= group 単位で同一 ``_persist``
+        呼出に渡し、 secondary を正しく解決する). partner の staff は items で
+        与えられた値 (= review_item の candidate) を優先し、 無ければ現 DB 値を使う.
+
+    冪等性 / トランザクション:
+        - 各 item の course を存在確認 (当該週・非削除) し、 不正 item は results に
+          ok=False で記録するが他 item は反映する (= best-effort 部分適用).
+        - 反映可能な assignments が 1 件でもあれば ``_persist`` → ``commit``.
+        - 監査はミドルウェアが POST を自動記録する (= 追加実装不要).
+
+    RBAC: admin / manager only.
+    """
+    # ----- ISO 週バリデーション -----
+    try:
+        date.fromisocalendar(payload.iso_year, payload.iso_week, 1)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"invalid ISO week: year={payload.iso_year} week={payload.iso_week}",
+        ) from exc
+
+    # ----- 重複 course_id 排除 (= 同一 course が複数 item にある場合は先勝ち) -----
+    requested_staff_by_course: dict[UUID, UUID] = {}
+    for it in payload.items:
+        requested_staff_by_course.setdefault(it.course_id, it.staff_id)
+
+    results: list[ApplyStaffReviewResultItem] = []
+
+    try:
+        # ----- 対象 course を当該週・非削除でロード -----
+        course_rows = list(
+            (
+                await db.scalars(
+                    select(Course).where(
+                        Course.id.in_(list(requested_staff_by_course.keys())),
+                        Course.iso_year == payload.iso_year,
+                        Course.iso_week == payload.iso_week,
+                        Course.deleted_at.is_(None),
+                    )
+                )
+            ).all()
+        )
+        course_by_id: dict[UUID, Course] = {c.id: c for c in course_rows}
+
+        # 不正 item (= 当該週に存在しない course) は ok=False で記録.
+        valid_course_ids: list[UUID] = []
+        for course_id in requested_staff_by_course:
+            if course_id in course_by_id:
+                valid_course_ids.append(course_id)
+            else:
+                results.append(
+                    ApplyStaffReviewResultItem(
+                        course_id=course_id,
+                        ok=False,
+                        error="course not found in the specified week",
+                    )
+                )
+
+        if not valid_course_ids:
+            await db.rollback()
+            return ApplyStaffReviewResponse(
+                applied_count=0,
+                results=results,
+                message="No valid courses to apply",
+            )
+
+        # ----- 修正4: 2 名体制 partner course を group 単位で自動補完 -----
+        # 承認 course の visit_group partner も同一 _persist へ渡し、 secondary を
+        # 正しく解決する (= 片方だけ反映の half-assigned を防ぐ).
+        apply_staff_by_course: dict[UUID, UUID] = {
+            cid: requested_staff_by_course[cid] for cid in valid_course_ids
+        }
+        group_id_rows = (
+            await db.execute(
+                select(Visit.visit_group_id, Visit.course_id).where(
+                    Visit.course_id.in_(valid_course_ids),
+                    Visit.visit_group_id.isnot(None),
+                    Visit.status == VISIT_STATUS_PLANNED,
+                    Visit.deleted_at.is_(None),
+                )
+            )
+        ).all()
+        group_ids = {gid for gid, _ in group_id_rows if gid is not None}
+        if group_ids:
+            grp_member_rows = (
+                await db.execute(
+                    select(Visit.course_id).where(
+                        Visit.visit_group_id.in_(list(group_ids)),
+                        Visit.status == VISIT_STATUS_PLANNED,
+                        Visit.deleted_at.is_(None),
+                    )
+                )
+            ).all()
+            partner_course_ids = {c_id for (c_id,) in grp_member_rows if c_id is not None}
+            # 未指定の partner course は items に staff があれば使い、 無ければ現 DB 値.
+            missing_partner_ids = [
+                c_id
+                for c_id in partner_course_ids
+                if c_id not in apply_staff_by_course and c_id not in valid_course_ids
+            ]
+            if missing_partner_ids:
+                partner_rows = list(
+                    (
+                        await db.scalars(
+                            select(Course).where(
+                                Course.id.in_(missing_partner_ids),
+                                Course.iso_year == payload.iso_year,
+                                Course.iso_week == payload.iso_week,
+                                Course.deleted_at.is_(None),
+                            )
+                        )
+                    ).all()
+                )
+                for pc in partner_rows:
+                    course_by_id.setdefault(pc.id, pc)
+                    if pc.id in requested_staff_by_course:
+                        apply_staff_by_course[pc.id] = requested_staff_by_course[pc.id]
+                    elif (
+                        pc.course_status == COURSE_STATUS_STAFF_ASSIGNED
+                        and pc.assigned_staff_id is not None
+                    ):
+                        # 既に確定済みの clean partner は本割付に含めない (= 不要な VSA
+                        # 再生成・staff_assigned_at 更新を避ける). _persist は X の visit
+                        # を処理する際、 未指定 partner course の現 DB assigned_staff_id を
+                        # 自前で読んで secondary を解決するため、 含めなくても整合する.
+                        pass
+                    elif pc.assigned_staff_id is not None:
+                        # 未確定 (proposed/course_fixed) だが既に staff が付いている partner は
+                        # その staff で本割付対象に含める (= status を staff_assigned に確定させる).
+                        apply_staff_by_course[pc.id] = pc.assigned_staff_id
+                    # assigned_staff_id も無い partner は解決不能 → 含めない
+                    # (= secondary 無しで反映; _persist は partner 無し扱いになる).
+
+        # ----- StaffAssignment 構築 -----
+        assignments: list[StaffAssignment] = []
+        for course_id, staff_id in apply_staff_by_course.items():
+            course = course_by_id.get(course_id)
+            if course is None:
+                continue
+            assignments.append(
+                StaffAssignment(
+                    weekday=course.weekday,
+                    course_code=course.code,
+                    course_id=course.id,
+                    staff_id=staff_id,
+                )
+            )
+
+        # ----- trainee_staff_ids 構築 (apply 対象 staff の is_trainee から) -----
+        target_staff_ids = {a.staff_id for a in assignments}
+        trainee_ids: frozenset[UUID] = frozenset()
+        if target_staff_ids:
+            trainee_rows = (
+                await db.execute(
+                    select(Staff.id).where(
+                        Staff.id.in_(list(target_staff_ids)),
+                        Staff.is_trainee.is_(True),
+                        Staff.deleted_at.is_(None),
+                    )
+                )
+            ).all()
+            trainee_ids = frozenset(sid for (sid,) in trainee_rows)
+
+        # ----- 自動割付と同一の _persist 経由で反映 -----
+        assigner = Layer3Assigner()
+        await assigner._persist(db, assignments, trainee_staff_ids=trainee_ids)
+        await db.commit()
+    except Exception:
+        # 修正C: HTTPException / 想定外例外いずれも rollback して再 raise (挙動は同一)。
+        await db.rollback()
+        raise
+
+    # 成功 item を results に追加 (= apply_staff_by_course に乗った course).
+    for course_id in apply_staff_by_course:
+        # partner 自動補完分も成功として返す (FE は要求した course のみ参照する).
+        results.append(ApplyStaffReviewResultItem(course_id=course_id, ok=True))
+
+    applied_count = len(apply_staff_by_course)
+    return ApplyStaffReviewResponse(
+        applied_count=applied_count,
+        results=results,
+        message=f"Applied staff to {applied_count} courses",
     )
 
 
@@ -1704,6 +2064,7 @@ async def _build_rotation_and_unassigned_warnings(
     db: AsyncSession,
     *,
     l3_result: Layer3Result,
+    exclude_course_ids: set[UUID] | None = None,
 ) -> tuple[list[RotationConflictWarning], list[UnassignedCourseWarning]]:
     """Phase G-89: solve() の衝突/未割当検出結果を表示用 warnings に変換する.
 
@@ -1712,14 +2073,23 @@ async def _build_rotation_and_unassigned_warnings(
     表示に必要なメタ (患者名 / 担当者名 / コースコード / 代表 visit 時刻) を
     DB から引いて payload 化する。
 
+    Phase G-91 (修正5): ``exclude_course_ids`` に含まれる course は warnings から
+    除外する. 確認レビューフロー (review_items) に出すコースは同一事象なので
+    rotation/unassigned warnings に重複出力しない (= 二重出力解消).
+
     決定性:
         - rotation_warnings は (weekday, course_code, visit_start_time, patient_id)
           で安定ソート.
         - unassigned_warnings は (weekday, course_code) で安定ソート、
           各コース内 patient は (visit_start_time, patient_id) で安定ソート.
     """
-    rotation_conflicts: list[RotationConflict] = l3_result.rotation_conflicts
-    unassigned_ids: list[UUID] = l3_result.unassigned_course_ids
+    excluded = exclude_course_ids or set()
+    rotation_conflicts: list[RotationConflict] = [
+        c for c in l3_result.rotation_conflicts if c.course_id not in excluded
+    ]
+    unassigned_ids: list[UUID] = [
+        cid for cid in l3_result.unassigned_course_ids if cid not in excluded
+    ]
     if not rotation_conflicts and not unassigned_ids:
         return [], []
 

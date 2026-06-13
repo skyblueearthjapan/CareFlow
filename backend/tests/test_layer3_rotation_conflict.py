@@ -26,7 +26,11 @@ import pytest
 
 from app.core.security import create_access_token, hash_password
 from app.models import Course, Office, Patient, Staff, StaffShift, User, Visit
-from app.models.course import COURSE_STATUS_PROPOSED, COURSE_STATUS_STAFF_ASSIGNED
+from app.models.course import (
+    COURSE_STATUS_COURSE_FIXED,
+    COURSE_STATUS_PROPOSED,
+    COURSE_STATUS_STAFF_ASSIGNED,
+)
 from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.visit import VISIT_STATUS_PLANNED
 from app.services.scheduling.layer3_assignment import (
@@ -350,19 +354,27 @@ async def test_no_warnings_when_assignment_clean(client, db) -> None:
     assert body["courses_assigned"] == 1
     assert body["rotation_warnings"] == []
     assert body["unassigned_warnings"] == []
+    # Phase G-91: クリーンなコースのみ → review_items は空.
+    assert body["review_items"] == []
 
 
 @pytest.mark.asyncio
 async def test_rotation_warning_when_forced_repeat(client, db) -> None:
-    """直近担当者しか稼働しておらず再割り当て → rotation_warnings (連続) 1 件.
+    """直近担当者 (連続 index0) になるコース → 自動 commit せず review_items に入る.
+
+    Phase G-91 (意図的変更): 確認レビューフローへの作り替えにより、 連続
+    (recent_index==0) のコースは **自動では割り付けず** (= DB 未割当 /
+    courses_assigned に数えない)、 review_items (reason='consecutive') として返す.
+    旧仕様 (Phase G-89) は「埋めて事後警告」 で courses_assigned==1 + rotation_warnings
+    だったが、 新仕様では管理者が後でレビューして apply する対象になる.
 
     前週 (lookback 内) に staff が当該患者を担当した履歴 (staff_assigned コース +
     VisitStaffAssignment) を seed し、 当該週は同 staff しか稼働させない.
-    → 直近担当者を再割り当てせざるを得ず、 rotation_warnings に is_consecutive=True.
+    → 連続 index0 のため自動割付されず、 review_items に candidate=その staff で出る.
 
     注意: 前週コースは別コード (B) にする. 同コード (A) だと course_code 単位の
     rotation 履歴ハード除外 (ROTATION_EXCLUSION_WEEKS=1) が効いて staff が候補から
-    消え、 「衝突」 ではなく「未割当」 になってしまうため (= patient 中心ローテの
+    消え、 「連続」 ではなく「未割当」 になってしまうため (= patient 中心ローテの
     衝突を観測するには course_code レベルの除外と切り離す必要がある).
     """
     from app.models.visit_staff_assignment import VisitStaffAssignment
@@ -465,19 +477,956 @@ async def test_rotation_warning_when_forced_repeat(client, db) -> None:
     )
     assert res.status_code == 200, res.text
     body = res.json()
-    # 割当は埋まる (= 訪問確保)
-    assert body["courses_assigned"] == 1
-    rw = body["rotation_warnings"]
-    assert len(rw) == 1, f"ローテ衝突 1 件想定だが {len(rw)} 件: {rw}"
-    w = rw[0]
-    assert w["patient_id"] == str(patient.id)
-    assert w["patient_name"] == "連続患者"
-    assert w["staff_id"] == str(staff.id)
-    assert w["staff_name"] == "連続スタッフ"
-    assert w["course_code"] == "A"
-    assert w["weekday"] == 0
-    assert w["recent_index"] == 0
-    assert w["is_consecutive"] is True
-    assert w["visit_start_time"] == "09:00:00"
-    # 埋まったので未割当なし
+    # Phase G-91: 連続 index0 は自動 commit しない (= DB 未割当 / courses_assigned=0).
+    assert body["courses_assigned"] == 0
+    # review_items に reason='consecutive' で 1 件入る.
+    items = body["review_items"]
+    assert len(items) == 1, f"レビュー 1 件想定だが {len(items)} 件: {items}"
+    item = items[0]
+    assert item["course_id"] == str(course.id)
+    assert item["reason"] == "consecutive"
+    assert item["course_code"] == "A"
+    assert item["weekday"] == 0
+    # candidate = 本来割り当たるはずだった (= 連続になる) staff.
+    assert item["candidate_staff_id"] == str(staff.id)
+    assert item["candidate_staff_name"] == "連続スタッフ"
+    # visits に原因患者が is_cause=True で入る.
+    assert len(item["visits"]) == 1
+    v = item["visits"][0]
+    assert v["patient_id"] == str(patient.id)
+    assert v["patient_name"] == "連続患者"
+    assert v["start_time"] == "09:00:00"
+    assert v["is_cause"] is True
+    # 連続は未割当ではない (= 候補が存在する) ので unassigned_warnings には出ない.
     assert body["unassigned_warnings"] == []
+
+    # Phase G-91 (修正5): review 化したコースは rotation_warnings から除外する
+    # (= 同一事象の二重出力解消). この連続コースは review_items に出るので
+    # rotation_warnings は空になる.
+    assert body["rotation_warnings"] == [], (
+        f"review 化したコースは rotation_warnings に出さない: {body['rotation_warnings']}"
+    )
+
+    # DB 上は course が未割当のままであることを確認する.
+    from sqlalchemy import select as _select
+
+    course_id = course.id
+    db.expire_all()
+    assigned = (
+        await db.execute(_select(Course.assigned_staff_id).where(Course.id == course_id))
+    ).scalar_one()
+    assert assigned is None, "連続コースは DB 未割当のはず"
+
+
+@pytest.mark.asyncio
+async def test_applied_consecutive_not_resurfaced_on_rerun(client, db) -> None:
+    """Phase G-91 (修正A): 適用済み連続コースは再実行で review に再浮上しない.
+
+    シナリオ (本番事故): 連続コース X を一度 apply して
+    course_status='staff_assigned' + assigned_staff_id=S にした後、 同一週で
+    「自動スタッフ割付」 を再実行する. 旧挙動では _load_patient_recent_staff が
+    当該週を除外して pre-week 履歴で index0 を再検出し、 _build_review_items に
+    staff_assigned ガードが無かったため毎回 review に再浮上 + courses_assigned から
+    も落ちて件数過少になっていた.
+
+    修正A: solve 候補 (= S) が DB 上の確定 staff (= S, NOT NULL) と一致する連続
+    コースは「承認済み」 とみなし、 (1) review_items に出さない (2) commit に残す
+    (= courses_assigned に数える). これを検証する.
+
+    setup は ``test_rotation_warning_when_forced_repeat`` と同型だが、 当該週の
+    コースを **最初から staff_assigned + S** にしておく (= apply 相当の状態).
+    """
+    from app.models.visit_staff_assignment import VisitStaffAssignment
+
+    admin = await _make_user(db, "g91-applied-rerun@example.com")
+
+    office = Office(name="G91 拠点 applied", lat=35.65, lng=140.0)
+    db.add(office)
+    await db.flush()
+
+    staff = Staff(
+        code="G91-AP1",
+        name="適用済みスタッフ",
+        role="staff",
+        status="active",
+        primary_office_id=office.id,
+    )
+    db.add(staff)
+    await db.flush()
+    db.add(StaffShift(staff_id=staff.id, weekday=0, is_on=True))
+    await db.flush()
+
+    patient = Patient(
+        code="G91-PA", name="適用済み患者", status="active", primary_office_id=office.id
+    )
+    db.add(patient)
+    await db.flush()
+    db.add(
+        PatientFixedVisit(
+            patient_id=patient.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(9, 0),
+            duration_min=60,
+        )
+    )
+    await db.flush()
+
+    # ----- 前週 (= 直近担当履歴) の staff_assigned コース + VSA (別コード B) -----
+    prev_monday = date(2026, 6, 8)
+    prev_course = Course(
+        iso_year=2026,
+        iso_week=24,
+        weekday=0,
+        code="B",
+        course_status=COURSE_STATUS_STAFF_ASSIGNED,
+        assigned_staff_id=staff.id,
+        office_id=office.id,
+    )
+    db.add(prev_course)
+    await db.flush()
+    prev_visit = Visit(
+        patient_id=patient.id,
+        visit_date=prev_monday,
+        start_time=time(9, 0),
+        end_time=time(10, 0),
+        type="regular",
+        status=VISIT_STATUS_PLANNED,
+        source="auto",
+        required_staff_count=1,
+        course_id=prev_course.id,
+        primary_staff_id=staff.id,
+    )
+    db.add(prev_visit)
+    await db.flush()
+    db.add(VisitStaffAssignment(visit_id=prev_visit.id, staff_id=staff.id))
+    await db.flush()
+
+    # ----- 当該週のコース: 既に apply 済 (staff_assigned + S) -----
+    course = Course(
+        iso_year=G89_ISO_YEAR,
+        iso_week=G89_ISO_WEEK,
+        weekday=0,
+        code="A",
+        course_status=COURSE_STATUS_STAFF_ASSIGNED,
+        assigned_staff_id=staff.id,
+        office_id=office.id,
+    )
+    db.add(course)
+    await db.flush()
+    cur_visit = Visit(
+        patient_id=patient.id,
+        visit_date=G89_WEEK_MONDAY,
+        start_time=time(9, 0),
+        end_time=time(10, 0),
+        type="regular",
+        status=VISIT_STATUS_PLANNED,
+        source="auto",
+        required_staff_count=1,
+        course_id=course.id,
+        primary_staff_id=staff.id,
+    )
+    db.add(cur_visit)
+    await db.flush()
+    db.add(VisitStaffAssignment(visit_id=cur_visit.id, staff_id=staff.id))
+    await db.commit()
+    # expire 前に ID を確定取得しておく (= 後段の DB 検証で expire 後の lazy IO を回避).
+    course_id = course.id
+    staff_id = staff.id
+
+    # ----- 同一週で再実行 -----
+    res = await client.post(
+        "/api/v1/schedule/assign-staff-only",
+        headers=_bearer(admin),
+        json={"iso_year": G89_ISO_YEAR, "iso_week": G89_ISO_WEEK},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+
+    # 修正A: 適用済み連続コースは review_items に出ない.
+    items = body["review_items"]
+    course_ids = {it["course_id"] for it in items}
+    assert str(course_id) not in course_ids, f"適用済みコースが review に再浮上した: {items}"
+    assert items == [], f"適用済みのみなら review は空のはず: {items}"
+
+    # 修正A: 適用済みコースは commit に残り courses_assigned に数えられる.
+    assert body["courses_assigned"] == 1, (
+        f"適用済みコースは確定カウントされるはず: {body['courses_assigned']}"
+    )
+
+    # DB 上も staff_assigned + S のまま (= 再実行で剥がれない).
+    from sqlalchemy import select as _select
+
+    db.expire_all()
+    row = (
+        await db.execute(
+            _select(Course.course_status, Course.assigned_staff_id).where(Course.id == course_id)
+        )
+    ).one()
+    assert row[0] == COURSE_STATUS_STAFF_ASSIGNED
+    assert row[1] == staff_id
+
+
+@pytest.mark.asyncio
+async def test_index1_two_back_is_committed_not_reviewed(client, db) -> None:
+    """Phase G-91: 2 個前 (recent_index==1) は自動 commit され review 対象外.
+
+    患者の直近担当者リストを ``[Sother(1つ前), S(2個前)]`` にし、 当該週は S しか
+    稼働させない. → S は recent_index==1 (2個前) で再割り当て = **連続ではない**
+    ため自動 commit される (courses_assigned==1)。 review_items には入らない.
+    """
+    from app.models.visit_staff_assignment import VisitStaffAssignment
+
+    admin = await _make_user(db, "g91-index1@example.com")
+
+    office = Office(name="G91 拠点 idx1", lat=35.65, lng=140.0)
+    db.add(office)
+    await db.flush()
+
+    # 当該週に稼働するのは s_target のみ (= 2個前担当). s_other は当該週休み.
+    s_target = Staff(
+        code="G91-IDX1-T",
+        name="2個前スタッフ",
+        role="staff",
+        status="active",
+        primary_office_id=office.id,
+    )
+    s_other = Staff(
+        code="G91-IDX1-O",
+        name="1つ前スタッフ",
+        role="staff",
+        status="active",
+        primary_office_id=office.id,
+    )
+    db.add_all([s_target, s_other])
+    await db.flush()
+    db.add(StaffShift(staff_id=s_target.id, weekday=0, is_on=True))
+    # s_other は稼働させない (= 当該週シフト無し).
+    await db.flush()
+
+    patient = Patient(
+        code="G91-IDX1-P", name="idx1 患者", status="active", primary_office_id=office.id
+    )
+    db.add(patient)
+    await db.flush()
+    db.add(
+        PatientFixedVisit(
+            patient_id=patient.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(9, 0),
+            duration_min=60,
+        )
+    )
+    await db.flush()
+
+    # 履歴: week-2 (古い) = s_target, week-1 (新しい) = s_other.
+    # _load_patient_recent_staff は新しい順 → [s_other, s_target] = s_target が index1.
+    # course_code は当該週 (A) と別コード (B/C) にして course_code 単位ハード除外を回避.
+    for iso_week, code, sid, mon in (
+        (23, "C", s_target.id, date(2026, 6, 1)),  # 2 週前
+        (24, "B", s_other.id, date(2026, 6, 8)),  # 1 週前
+    ):
+        prev_course = Course(
+            iso_year=2026,
+            iso_week=iso_week,
+            weekday=0,
+            code=code,
+            course_status=COURSE_STATUS_STAFF_ASSIGNED,
+            assigned_staff_id=sid,
+            office_id=office.id,
+        )
+        db.add(prev_course)
+        await db.flush()
+        prev_visit = Visit(
+            patient_id=patient.id,
+            visit_date=mon,
+            start_time=time(9, 0),
+            end_time=time(10, 0),
+            type="regular",
+            status=VISIT_STATUS_PLANNED,
+            source="auto",
+            required_staff_count=1,
+            course_id=prev_course.id,
+            primary_staff_id=sid,
+        )
+        db.add(prev_visit)
+        await db.flush()
+        db.add(VisitStaffAssignment(visit_id=prev_visit.id, staff_id=sid))
+        await db.flush()
+
+    course = Course(
+        iso_year=G89_ISO_YEAR,
+        iso_week=G89_ISO_WEEK,
+        weekday=0,
+        code="A",
+        course_status=COURSE_STATUS_PROPOSED,
+        office_id=office.id,
+    )
+    db.add(course)
+    await db.flush()
+    db.add(
+        Visit(
+            patient_id=patient.id,
+            visit_date=G89_WEEK_MONDAY,
+            start_time=time(9, 0),
+            end_time=time(10, 0),
+            type="regular",
+            status=VISIT_STATUS_PLANNED,
+            source="auto",
+            required_staff_count=1,
+            course_id=course.id,
+        )
+    )
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/assign-staff-only",
+        headers=_bearer(admin),
+        json={"iso_year": G89_ISO_YEAR, "iso_week": G89_ISO_WEEK},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    # index1 (2個前) は連続ではない → 自動 commit.
+    assert body["courses_assigned"] == 1
+    assert body["review_items"] == [], f"index1 は review 対象外のはず: {body['review_items']}"
+    # DB 上は s_target が割り当たっている.
+    from sqlalchemy import select as _select
+
+    course_id = course.id
+    target_id = s_target.id
+    db.expire_all()
+    assigned = (
+        await db.execute(_select(Course.assigned_staff_id).where(Course.id == course_id))
+    ).scalar_one()
+    assert assigned == target_id
+
+
+@pytest.mark.asyncio
+async def test_gender_block_produces_review_item_with_candidate(client, db) -> None:
+    """Phase G-91: 性別ブロックコース → 性別無視時の候補付き review_item (gender).
+
+    女性のみ患者のコースに男性スタッフしか居ない → 性別ハード制約で未割当.
+    性別を無視すれば男性スタッフが候補になるため、 reason='gender' の review_item が
+    candidate=男性スタッフで返る. 原因患者 (sex_restriction='female_only') は is_cause.
+    """
+    admin = await _make_user(db, "g91-gender@example.com")
+
+    office = Office(name="G91 拠点 gender", lat=35.65, lng=140.0)
+    db.add(office)
+    await db.flush()
+
+    # 男性スタッフのみ (= 女性のみ患者を満たせない).
+    male_staff = Staff(
+        code="G91-GEN-M",
+        name="男性スタッフ",
+        role="staff",
+        status="active",
+        sex="male",
+        primary_office_id=office.id,
+    )
+    db.add(male_staff)
+    await db.flush()
+    db.add(StaffShift(staff_id=male_staff.id, weekday=0, is_on=True))
+    await db.flush()
+
+    # 女性のみ患者.
+    patient = Patient(
+        code="G91-GEN-P",
+        name="女性のみ患者",
+        status="active",
+        sex_restriction="female_only",
+        primary_office_id=office.id,
+    )
+    db.add(patient)
+    await db.flush()
+    db.add(
+        PatientFixedVisit(
+            patient_id=patient.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(9, 0),
+            duration_min=60,
+        )
+    )
+    await db.flush()
+
+    course = Course(
+        iso_year=G89_ISO_YEAR,
+        iso_week=G89_ISO_WEEK,
+        weekday=0,
+        code="A",
+        course_status=COURSE_STATUS_PROPOSED,
+        office_id=office.id,
+    )
+    db.add(course)
+    await db.flush()
+    db.add(
+        Visit(
+            patient_id=patient.id,
+            visit_date=G89_WEEK_MONDAY,
+            start_time=time(9, 0),
+            end_time=time(10, 0),
+            type="regular",
+            status=VISIT_STATUS_PLANNED,
+            source="auto",
+            required_staff_count=1,
+            course_id=course.id,
+        )
+    )
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/assign-staff-only",
+        headers=_bearer(admin),
+        json={"iso_year": G89_ISO_YEAR, "iso_week": G89_ISO_WEEK},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    # 性別で未割当 → commit 0.
+    assert body["courses_assigned"] == 0
+    items = body["review_items"]
+    assert len(items) == 1, f"gender review 1 件想定だが {len(items)} 件: {items}"
+    item = items[0]
+    assert item["course_id"] == str(course.id)
+    assert item["reason"] == "gender"
+    # candidate = 性別を無視した候補 (= 男性スタッフ).
+    assert item["candidate_staff_id"] == str(male_staff.id)
+    assert item["candidate_staff_sex"] == "male"
+    # 原因患者 (sex_restriction あり) は is_cause=True.
+    assert len(item["visits"]) == 1
+    v = item["visits"][0]
+    assert v["patient_id"] == str(patient.id)
+    assert v["sex_restriction"] == "female_only"
+    assert v["is_cause"] is True
+    # DB 未割当のまま (= 自動では割り付けない).
+    from sqlalchemy import select as _select
+
+    course_id = course.id
+    db.expire_all()
+    assigned = (
+        await db.execute(_select(Course.assigned_staff_id).where(Course.id == course_id))
+    ).scalar_one()
+    assert assigned is None
+
+
+# ---------------------------------------------------------------------------
+# Phase G-91 (修正1): apply-staff-review endpoint = _persist 経路で反映
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apply_staff_review_persists_via_persist_path(client, db) -> None:
+    """Phase G-91 (修正1): apply-staff-review は _persist 経由で完全反映する.
+
+    レビューで承認した course を apply すると、 PATCH /courses (assigned_staff_id
+    のみ) では起きなかった以下が全て反映されることを確認する:
+      (a) course.assigned_staff_id + course_status='staff_assigned'
+      (b) VisitStaffAssignment INSERT (= スタッフの visit 可視性)
+      (c) visits.primary_staff_id 同期
+    """
+    from sqlalchemy import select as _select
+
+    from app.models.visit_staff_assignment import VisitStaffAssignment
+
+    admin = await _make_user(db, "g91-apply@example.com")
+
+    office = Office(name="G91 拠点 apply", lat=35.65, lng=140.0)
+    db.add(office)
+    await db.flush()
+
+    staff = Staff(
+        code="G91-APPLY",
+        name="apply スタッフ",
+        role="staff",
+        status="active",
+        primary_office_id=office.id,
+    )
+    db.add(staff)
+    await db.flush()
+    db.add(StaffShift(staff_id=staff.id, weekday=0, is_on=True))
+    await db.flush()
+
+    patient = Patient(
+        code="G91-AP", name="apply 患者", status="active", primary_office_id=office.id
+    )
+    db.add(patient)
+    await db.flush()
+
+    course = Course(
+        iso_year=G89_ISO_YEAR,
+        iso_week=G89_ISO_WEEK,
+        weekday=0,
+        code="A",
+        course_status=COURSE_STATUS_COURSE_FIXED,
+        office_id=office.id,
+    )
+    db.add(course)
+    await db.flush()
+    visit = Visit(
+        patient_id=patient.id,
+        visit_date=G89_WEEK_MONDAY,
+        start_time=time(9, 0),
+        end_time=time(10, 0),
+        type="regular",
+        status=VISIT_STATUS_PLANNED,
+        source="auto",
+        required_staff_count=1,
+        course_id=course.id,
+    )
+    db.add(visit)
+    await db.commit()
+    # ID 値を expire 前に確保 (= expire_all 後の ORM 属性 lazy-load 回避).
+    course_id = course.id
+    staff_id = staff.id
+    visit_id = visit.id
+
+    res = await client.post(
+        "/api/v1/schedule/apply-staff-review",
+        headers=_bearer(admin),
+        json={
+            "iso_year": G89_ISO_YEAR,
+            "iso_week": G89_ISO_WEEK,
+            "items": [{"course_id": str(course_id), "staff_id": str(staff_id)}],
+        },
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["applied_count"] == 1
+    assert any(r["course_id"] == str(course_id) and r["ok"] for r in body["results"])
+
+    db.expire_all()
+    # (a) course 更新.
+    c = (await db.execute(_select(Course).where(Course.id == course_id))).scalar_one()
+    assert c.assigned_staff_id == staff_id
+    assert c.course_status == COURSE_STATUS_STAFF_ASSIGNED
+    # (b) VisitStaffAssignment INSERT.
+    vsa = (
+        (
+            await db.execute(
+                _select(VisitStaffAssignment).where(VisitStaffAssignment.visit_id == visit_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(vsa) == 1
+    assert vsa[0].staff_id == staff_id
+    # (c) visits.primary_staff_id 同期.
+    v = (await db.execute(_select(Visit).where(Visit.id == visit_id))).scalar_one()
+    assert v.primary_staff_id == staff_id
+
+
+@pytest.mark.asyncio
+async def test_apply_staff_review_unknown_course_marked_failed(client, db) -> None:
+    """Phase G-91 (修正1/修正5): 当該週に存在しない course は ok=False で返す."""
+    admin = await _make_user(db, "g91-apply-bad@example.com")
+
+    office = Office(name="G91 拠点 apply-bad", lat=35.65, lng=140.0)
+    db.add(office)
+    await db.flush()
+    staff = Staff(
+        code="G91-APPLY-BAD",
+        name="apply スタッフ bad",
+        role="staff",
+        status="active",
+        primary_office_id=office.id,
+    )
+    db.add(staff)
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/apply-staff-review",
+        headers=_bearer(admin),
+        json={
+            "iso_year": G89_ISO_YEAR,
+            "iso_week": G89_ISO_WEEK,
+            "items": [{"course_id": str(uuid4()), "staff_id": str(staff.id)}],
+        },
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["applied_count"] == 0
+    assert len(body["results"]) == 1
+    assert body["results"][0]["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_apply_staff_review_resolves_two_person_secondary(client, db) -> None:
+    """Phase G-91 (修正4): 2 名体制ペアを同時 apply すると secondary が解決される.
+
+    course X (staff A) と course Y (staff B) が同一 visit_group (2 名体制) のとき、
+    両 course を 1 回の apply-staff-review に渡すと、 X 側 visit の
+    secondary_staff_id=B / Y 側 visit の secondary_staff_id=A が _persist 経由で
+    正しく解決される (= half-assigned にならない).
+    """
+    from uuid import uuid4 as _uuid4
+
+    from sqlalchemy import select as _select
+
+    from app.models.visit_staff_assignment import VisitStaffAssignment
+
+    admin = await _make_user(db, "g91-pair@example.com")
+
+    office = Office(name="G91 拠点 pair", lat=35.65, lng=140.0)
+    db.add(office)
+    await db.flush()
+
+    staff_a = Staff(
+        code="G91-PAIR-A",
+        name="ペア A",
+        role="staff",
+        status="active",
+        primary_office_id=office.id,
+    )
+    staff_b = Staff(
+        code="G91-PAIR-B",
+        name="ペア B",
+        role="staff",
+        status="active",
+        primary_office_id=office.id,
+    )
+    db.add_all([staff_a, staff_b])
+    await db.flush()
+
+    patient = Patient(
+        code="G91-PAIR-P", name="2 名体制患者", status="active", primary_office_id=office.id
+    )
+    db.add(patient)
+    await db.flush()
+
+    course_x = Course(
+        iso_year=G89_ISO_YEAR,
+        iso_week=G89_ISO_WEEK,
+        weekday=0,
+        code="A",
+        course_status=COURSE_STATUS_COURSE_FIXED,
+        office_id=office.id,
+    )
+    course_y = Course(
+        iso_year=G89_ISO_YEAR,
+        iso_week=G89_ISO_WEEK,
+        weekday=0,
+        code="B",
+        course_status=COURSE_STATUS_COURSE_FIXED,
+        office_id=office.id,
+    )
+    db.add_all([course_x, course_y])
+    await db.flush()
+
+    group_id = _uuid4()
+    # 2 名体制: 同 visit_group_id を持つ 2 visit (= 別コースに所属).
+    visit_x = Visit(
+        patient_id=patient.id,
+        visit_date=G89_WEEK_MONDAY,
+        start_time=time(9, 0),
+        end_time=time(10, 0),
+        type="regular",
+        status=VISIT_STATUS_PLANNED,
+        source="auto",
+        required_staff_count=2,
+        visit_group_id=group_id,
+        course_id=course_x.id,
+    )
+    visit_y = Visit(
+        patient_id=patient.id,
+        visit_date=G89_WEEK_MONDAY,
+        start_time=time(9, 0),
+        end_time=time(10, 0),
+        type="regular",
+        status=VISIT_STATUS_PLANNED,
+        source="auto",
+        required_staff_count=2,
+        visit_group_id=group_id,
+        course_id=course_y.id,
+    )
+    db.add_all([visit_x, visit_y])
+    await db.commit()
+
+    cx_id, cy_id = course_x.id, course_y.id
+    sa_id, sb_id = staff_a.id, staff_b.id
+    vx_id, vy_id = visit_x.id, visit_y.id
+
+    res = await client.post(
+        "/api/v1/schedule/apply-staff-review",
+        headers=_bearer(admin),
+        json={
+            "iso_year": G89_ISO_YEAR,
+            "iso_week": G89_ISO_WEEK,
+            "items": [
+                {"course_id": str(cx_id), "staff_id": str(sa_id)},
+                {"course_id": str(cy_id), "staff_id": str(sb_id)},
+            ],
+        },
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["applied_count"] == 2
+
+    db.expire_all()
+    # X 側 visit: primary=A, secondary=B.
+    vx = (await db.execute(_select(Visit).where(Visit.id == vx_id))).scalar_one()
+    assert vx.primary_staff_id == sa_id
+    assert vx.secondary_staff_id == sb_id
+    # Y 側 visit: primary=B, secondary=A.
+    vy = (await db.execute(_select(Visit).where(Visit.id == vy_id))).scalar_one()
+    assert vy.primary_staff_id == sb_id
+    assert vy.secondary_staff_id == sa_id
+    # VSA は X visit に A+B の 2 行.
+    vsa_x = (
+        (
+            await db.execute(
+                _select(VisitStaffAssignment).where(VisitStaffAssignment.visit_id == vx_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert {row.staff_id for row in vsa_x} == {sa_id, sb_id}
+
+
+@pytest.mark.asyncio
+async def test_apply_review_secondary_resolves_when_partner_already_committed(client, db) -> None:
+    """Phase G-91 (修正4 + review fix): partner Y が確定済みでも X の secondary が解決.
+
+    Y を先に確定 (staff_assigned + assigned_staff_id=B) しておき、 X (= 連続で
+    review に出た側) だけを apply する. apply-staff-review は確定済み Y を本割付に
+    含めない (= 不要な VSA 再生成回避) が、 _persist が Y の現 DB 値を読んで
+    X の secondary=B を解決するため、 X 側 visit の secondary は正しく B になる.
+    """
+    from uuid import uuid4 as _uuid4
+
+    from sqlalchemy import select as _select
+
+    from app.models.visit_staff_assignment import VisitStaffAssignment
+
+    admin = await _make_user(db, "g91-partner-committed@example.com")
+
+    office = Office(name="G91 拠点 partner-committed", lat=35.65, lng=140.0)
+    db.add(office)
+    await db.flush()
+
+    staff_a = Staff(
+        code="G91-PC-A", name="PC A", role="staff", status="active", primary_office_id=office.id
+    )
+    staff_b = Staff(
+        code="G91-PC-B", name="PC B", role="staff", status="active", primary_office_id=office.id
+    )
+    db.add_all([staff_a, staff_b])
+    await db.flush()
+
+    patient = Patient(code="G91-PC-P", name="PC 患者", status="active", primary_office_id=office.id)
+    db.add(patient)
+    await db.flush()
+
+    course_x = Course(
+        iso_year=G89_ISO_YEAR,
+        iso_week=G89_ISO_WEEK,
+        weekday=0,
+        code="A",
+        course_status=COURSE_STATUS_COURSE_FIXED,
+        office_id=office.id,
+    )
+    # Y は先に確定済み (staff_assigned + B).
+    course_y = Course(
+        iso_year=G89_ISO_YEAR,
+        iso_week=G89_ISO_WEEK,
+        weekday=0,
+        code="B",
+        course_status=COURSE_STATUS_STAFF_ASSIGNED,
+        assigned_staff_id=staff_b.id,
+        office_id=office.id,
+    )
+    db.add_all([course_x, course_y])
+    await db.flush()
+
+    group_id = _uuid4()
+    visit_x = Visit(
+        patient_id=patient.id,
+        visit_date=G89_WEEK_MONDAY,
+        start_time=time(9, 0),
+        end_time=time(10, 0),
+        type="regular",
+        status=VISIT_STATUS_PLANNED,
+        source="auto",
+        required_staff_count=2,
+        visit_group_id=group_id,
+        course_id=course_x.id,
+    )
+    visit_y = Visit(
+        patient_id=patient.id,
+        visit_date=G89_WEEK_MONDAY,
+        start_time=time(9, 0),
+        end_time=time(10, 0),
+        type="regular",
+        status=VISIT_STATUS_PLANNED,
+        source="auto",
+        required_staff_count=2,
+        visit_group_id=group_id,
+        course_id=course_y.id,
+        primary_staff_id=staff_b.id,
+    )
+    db.add_all([visit_x, visit_y])
+    await db.flush()
+    # Y は確定済みなので VSA も既にある想定.
+    db.add(VisitStaffAssignment(visit_id=visit_y.id, staff_id=staff_b.id))
+    await db.commit()
+
+    cx_id, sa_id, sb_id = course_x.id, staff_a.id, staff_b.id
+    vx_id = visit_x.id
+
+    # X だけを apply (Y は items に含めない).
+    res = await client.post(
+        "/api/v1/schedule/apply-staff-review",
+        headers=_bearer(admin),
+        json={
+            "iso_year": G89_ISO_YEAR,
+            "iso_week": G89_ISO_WEEK,
+            "items": [{"course_id": str(cx_id), "staff_id": str(sa_id)}],
+        },
+    )
+    assert res.status_code == 200, res.text
+    # 確定済み Y は本割付に含めない → applied_count は X の 1 件のみ.
+    assert res.json()["applied_count"] == 1
+
+    db.expire_all()
+    # X 側 visit: primary=A, secondary=B (= _persist が Y の現 DB 値から解決).
+    vx = (await db.execute(_select(Visit).where(Visit.id == vx_id))).scalar_one()
+    assert vx.primary_staff_id == sa_id
+    assert vx.secondary_staff_id == sb_id
+    vsa_x = (
+        (
+            await db.execute(
+                _select(VisitStaffAssignment).where(VisitStaffAssignment.visit_id == vx_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert {row.staff_id for row in vsa_x} == {sa_id, sb_id}
+
+
+@pytest.mark.asyncio
+async def test_fixed_course_consecutive_surfaces_to_review(client, db) -> None:
+    """Phase G-91 (修正3): 固定コース (都賀 A / 1 名拠点) の連続も review に出す.
+
+    オーナー決定 B: 1 名拠点 (都賀=本名 1 名) でも連続は必ずレビューに出す.
+    旧仕様は固定コースの連続を自動 commit していたが、 新仕様では candidate=本名で
+    review_items (reason='consecutive') に出し、 DB 未割当のまま管理者が確認する.
+    """
+    from sqlalchemy import select as _select
+
+    from app.models.visit_staff_assignment import VisitStaffAssignment
+
+    admin = await _make_user(db, "g91-fixed@example.com")
+
+    # 拠点名に「都賀」 を含む → 都賀 A 固定割当の対象.
+    office = Office(name="都賀 G91 拠点", lat=35.65, lng=140.0)
+    db.add(office)
+    await db.flush()
+
+    # 都賀拠点の唯一の staff (= 本名 1 名).
+    honmyo = Staff(
+        code="G91-TSUGA",
+        name="本名さん",
+        role="staff",
+        status="active",
+        primary_office_id=office.id,
+    )
+    db.add(honmyo)
+    await db.flush()
+    db.add(StaffShift(staff_id=honmyo.id, weekday=0, is_on=True))
+    await db.flush()
+
+    patient = Patient(code="G91-TSP", name="都賀患者", status="active", primary_office_id=office.id)
+    db.add(patient)
+    await db.flush()
+    db.add(
+        PatientFixedVisit(
+            patient_id=patient.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(9, 0),
+            duration_min=60,
+        )
+    )
+    await db.flush()
+
+    # 前週 (= 直近担当履歴) は別コード (B) で本名が当該患者を担当 (連続の素地).
+    prev_course = Course(
+        iso_year=2026,
+        iso_week=24,
+        weekday=0,
+        code="B",
+        course_status=COURSE_STATUS_STAFF_ASSIGNED,
+        assigned_staff_id=honmyo.id,
+        office_id=office.id,
+    )
+    db.add(prev_course)
+    await db.flush()
+    prev_visit = Visit(
+        patient_id=patient.id,
+        visit_date=date(2026, 6, 8),
+        start_time=time(9, 0),
+        end_time=time(10, 0),
+        type="regular",
+        status=VISIT_STATUS_PLANNED,
+        source="auto",
+        required_staff_count=1,
+        course_id=prev_course.id,
+        primary_staff_id=honmyo.id,
+    )
+    db.add(prev_visit)
+    await db.flush()
+    db.add(VisitStaffAssignment(visit_id=prev_visit.id, staff_id=honmyo.id))
+    await db.flush()
+
+    # 当該週の 都賀 A コース (固定割当対象).
+    course = Course(
+        iso_year=G89_ISO_YEAR,
+        iso_week=G89_ISO_WEEK,
+        weekday=0,
+        code="A",
+        course_status=COURSE_STATUS_PROPOSED,
+        office_id=office.id,
+    )
+    db.add(course)
+    await db.flush()
+    db.add(
+        Visit(
+            patient_id=patient.id,
+            visit_date=G89_WEEK_MONDAY,
+            start_time=time(9, 0),
+            end_time=time(10, 0),
+            type="regular",
+            status=VISIT_STATUS_PLANNED,
+            source="auto",
+            required_staff_count=1,
+            course_id=course.id,
+        )
+    )
+    await db.commit()
+    course_id = course.id
+    honmyo_id = honmyo.id
+
+    res = await client.post(
+        "/api/v1/schedule/assign-staff-only",
+        headers=_bearer(admin),
+        json={"iso_year": G89_ISO_YEAR, "iso_week": G89_ISO_WEEK},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    # 固定連続も review に出す → 自動 commit しない.
+    assert body["courses_assigned"] == 0
+    items = body["review_items"]
+    assert len(items) == 1, f"固定連続 review 1 件想定だが {len(items)} 件: {items}"
+    item = items[0]
+    assert item["course_id"] == str(course_id)
+    assert item["reason"] == "consecutive"
+    # candidate = 本名 (固定でも solve が割り当てた staff と同一).
+    assert item["candidate_staff_id"] == str(honmyo_id)
+    # DB 未割当のまま.
+    db.expire_all()
+    assigned = (
+        await db.execute(_select(Course.assigned_staff_id).where(Course.id == course_id))
+    ).scalar_one()
+    assert assigned is None, "固定連続コースも DB 未割当のはず"

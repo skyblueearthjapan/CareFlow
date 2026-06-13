@@ -87,6 +87,40 @@ export const unassignedCourseWarningSchema = z.object({
 
 export type UnassignedCourseWarning = z.infer<typeof unassignedCourseWarningSchema>;
 
+// ---------------------------------------------------------------------------
+// Phase G-91: 確認レビューフロー review_items — BE スキーマと厳密ミラー
+// ---------------------------------------------------------------------------
+
+/** レビューカード内の 1 visit (= コース所属の 1 患者訪問). */
+export const reviewVisitSchema = z.object({
+  patient_id: z.string().uuid(),
+  patient_name: z.string(),
+  start_time: z.string(),
+  sex_restriction: z.string().nullable().optional(),
+  // 当該 review item の原因患者 (連続になる患者 / 性別 NG 患者) なら true.
+  is_cause: z.boolean(),
+});
+
+export type ReviewVisit = z.infer<typeof reviewVisitSchema>;
+
+/** 確認レビューフローの 1 カード (= レビュー対象の 1 コース). */
+export const reviewItemSchema = z.object({
+  course_id: z.string().uuid(),
+  office_name: z.string(),
+  course_code: z.string(),
+  weekday: z.number().int().min(0).max(6),
+  // 'consecutive' (🟡 連続/軽度) | 'gender' (🔴 性別/重度).
+  reason: z.enum(['consecutive', 'gender']),
+  candidate_staff_id: z.string().uuid(),
+  candidate_staff_name: z.string(),
+  candidate_staff_sex: z.string().nullable().optional(),
+  visits: z.array(reviewVisitSchema).default([]),
+  // 2 名体制で連動する partner course_id 一覧 (= apply 時に一緒に反映される).
+  linked_course_ids: z.array(z.string().uuid()).default([]),
+});
+
+export type ReviewItem = z.infer<typeof reviewItemSchema>;
+
 export const assignStaffOnlyResponseSchema = z.object({
   iso_year: z.number().int(),
   iso_week: z.number().int(),
@@ -97,6 +131,8 @@ export const assignStaffOnlyResponseSchema = z.object({
   rotation_warnings: z.array(rotationConflictWarningSchema).default([]),
   // Phase G-89: 未割当 (担当を確保できなかった)
   unassigned_warnings: z.array(unassignedCourseWarningSchema).default([]),
+  // Phase G-91: 確認レビューフロー (= 連続 index0 / 性別ブロック) のカード一覧.
+  review_items: z.array(reviewItemSchema).default([]),
 });
 
 export type AssignStaffOnlyResponse = z.infer<typeof assignStaffOnlyResponseSchema>;
@@ -155,6 +191,83 @@ export function useAssignStaffOnly(): UseMutationResult<
           );
         }
       }
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Phase G-91 (修正1): POST /apply-staff-review — 確認レビュー承認カードを反映
+// ---------------------------------------------------------------------------
+
+const APPLY_STAFF_REVIEW_PATH = '/api/v1/schedule/apply-staff-review';
+
+/** apply-staff-review リクエスト 1 件 (= 1 コース). */
+export const applyStaffReviewItemSchema = z.object({
+  course_id: z.string().uuid(),
+  staff_id: z.string().uuid(),
+});
+
+export type ApplyStaffReviewItem = z.infer<typeof applyStaffReviewItemSchema>;
+
+export const applyStaffReviewRequestSchema = z.object({
+  iso_year: z.number().int().min(2000).max(2100),
+  iso_week: z.number().int().min(1).max(53),
+  items: z.array(applyStaffReviewItemSchema).min(1),
+});
+
+export type ApplyStaffReviewRequest = z.infer<typeof applyStaffReviewRequestSchema>;
+
+export const applyStaffReviewResultItemSchema = z.object({
+  course_id: z.string().uuid(),
+  ok: z.boolean(),
+  error: z.string().nullable().optional(),
+});
+
+export type ApplyStaffReviewResultItem = z.infer<typeof applyStaffReviewResultItemSchema>;
+
+export const applyStaffReviewResponseSchema = z.object({
+  applied_count: z.number().int(),
+  results: z.array(applyStaffReviewResultItemSchema).default([]),
+  message: z.string(),
+});
+
+export type ApplyStaffReviewResponse = z.infer<typeof applyStaffReviewResponseSchema>;
+
+/**
+ * POST /api/v1/schedule/apply-staff-review — 確認レビュー承認カードを反映する mutation.
+ *
+ * 自動スタッフ割付と **同一の ``_persist`` 経路** で DB 反映する (= VSA INSERT /
+ * course_status / primary・secondary 同期 / 2 名体制 / trainee companion を全て実施).
+ * 従来の PATCH /courses ループ (assigned_staff_id のみ) では起きていた
+ * 「apply 済コースの visit が未割当表示・子アプリにスタッフが見えない」 リグレッションを解消.
+ *
+ * onSuccess で courses / visits を invalidate する。
+ * RBAC: admin / manager のみ (BE 側で 403 担保)。
+ */
+export function useApplyStaffReview(): UseMutationResult<
+  ApplyStaffReviewResponse,
+  Error,
+  ApplyStaffReviewRequest
+> {
+  const qc = useQueryClient();
+  const { data: session } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+
+  return useMutation<ApplyStaffReviewResponse, Error, ApplyStaffReviewRequest>({
+    mutationFn: async (raw) => {
+      const payload = applyStaffReviewRequestSchema.parse(raw);
+      return fetcher<ApplyStaffReviewResponse>(APPLY_STAFF_REVIEW_PATH, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+        accessToken,
+        refreshToken,
+      });
+    },
+    onSuccess: () => {
+      // courses は assigned_staff_id が変わるので必ず再取得
+      void qc.invalidateQueries({ queryKey: ['courses'] });
+      // visits は primary/secondary_staff_id が同期される
+      void qc.invalidateQueries({ queryKey: ['visits'] });
     },
   });
 }

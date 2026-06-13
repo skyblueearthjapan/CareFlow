@@ -327,6 +327,73 @@ class RotationConflict:
     recent_index: int
 
 
+@dataclass(frozen=True)
+class ReviewVisit:
+    """Phase G-91: レビューカード内の 1 visit (= コース所属の 1 患者訪問).
+
+    確認レビューフロー (= 自動スタッフ割付の問題コードを管理者が最終判断する)
+    のカード描画に必要な visit 単位のメタ.
+
+    Attributes:
+        patient_id: 患者 ID.
+        patient_name: 患者名 (表示用).
+        start_time: 訪問開始時刻.
+        sex_restriction: 患者の性別制限 ('female_only'/'male_only'/None).
+        is_cause: 当該 review item の原因となった患者なら True.
+            reason='consecutive' のとき = 連続 (= 候補スタッフが直近担当者) になる患者.
+            reason='gender' のとき = 性別制限を持つ (= 性別 NG の原因) 患者.
+    """
+
+    patient_id: UUID
+    patient_name: str
+    start_time: time_cls
+    sex_restriction: str | None
+    is_cause: bool
+
+
+@dataclass(frozen=True)
+class ReviewItem:
+    """Phase G-91: 確認レビューフローの 1 カード (= レビュー対象の 1 コース).
+
+    「自動スタッフ割付」 を実行したとき、 クリーンなコースは自動確定 (commit) する
+    が、 以下 2 種のコースは自動では割り付けず (= DB 未割当のまま)、 管理者が
+    レビューして最終判断する対象として返す:
+
+    - reason='consecutive' (🟡 連続/軽度): 患者の直近担当者 (recent_index==0)
+      と同じスタッフになるケース. candidate_staff は本来割り当たるはずだった
+      (= solve が選んだ) スタッフ.
+    - reason='gender' (🔴 性別/重度): コースに性別制限患者が居て、 適合性別の
+      同拠点スタッフが居ないケース. candidate_staff は性別制約を無視したら
+      割り当たる候補スタッフ (= 管理者が override 判断する材料).
+
+    Attributes:
+        course_id: レビュー対象コースの ID.
+        office_name: コース所属拠点名 (表示用).
+        course_code: コースコード (A/B/C/D/E/M).
+        weekday: 0=Mon..6=Sun.
+        reason: 'consecutive' (連続) または 'gender' (性別).
+        candidate_staff_id: 候補スタッフ ID (= apply 時に割り当てる staff).
+        candidate_staff_name: 候補スタッフ名 (表示用).
+        candidate_staff_sex: 候補スタッフ性別 ('male'/'female'/None).
+        visits: コース所属 visit 一覧 (原因患者に is_cause フラグ).
+        linked_course_ids: 2 名体制で連動する partner course_id 一覧 (修正4).
+            連続コース X とその visit_group partner Y は片方だけ apply すると
+            half-assigned になるため、 apply 時に必ず同じ ``_persist`` 呼出へ
+            一緒に渡す必要がある course を表す. 単独コースは空.
+    """
+
+    course_id: UUID
+    office_name: str
+    course_code: str
+    weekday: int
+    reason: str  # 'consecutive' | 'gender'
+    candidate_staff_id: UUID
+    candidate_staff_name: str
+    candidate_staff_sex: str | None
+    visits: list[ReviewVisit] = field(default_factory=list)
+    linked_course_ids: list[UUID] = field(default_factory=list)
+
+
 @dataclass
 class Layer3Result:
     """Layer 3 の総合出力."""
@@ -342,6 +409,16 @@ class Layer3Result:
     # course_id 一覧. ``assign()`` が course_targets と assignments を突き合わせて
     # 埋める (solve() 単体では空のまま). 既存呼出は default の空 list で互換維持.
     unassigned_course_ids: list[UUID] = field(default_factory=list)
+    # Phase G-91: 確認レビューフローのカード一覧 (= 連続 index0 / 性別ブロック).
+    # ``assign()`` が solve() 結果 + DB 読みで構築する (solve() 単体では空のまま).
+    # 既存呼出は default の空 list で互換維持.
+    review_items: list[ReviewItem] = field(default_factory=list)
+    # Phase G-91 (修正2): 実際に ``_persist`` で commit した course_id 一覧.
+    # = assignments から「連続 index0 コース + その visit_group partner (clean 含む)」
+    # を除外したもの. ``courses_assigned`` の commit 実数算出に使う (= partner が
+    # clean で未 commit なのに確定カウントされる過大計上を防ぐ).
+    # ``assign()`` のみが埋める (solve() 単体では空のまま). 既存呼出は default 空 list.
+    committed_course_ids: list[UUID] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -692,6 +769,18 @@ class Layer3Assigner:
                 c for c in already_assigned_courses if aa_visit_counts.get(c.id, 0) > 0
             ]
 
+        # Phase G-91 (修正A): 適用済み連続コースの再浮上防止用マップ.
+        # 既に course_status='staff_assigned' かつ assigned_staff_id 付き (NOT NULL)
+        # の course_id -> 確定済み staff_id. ``_build_review_items`` で「候補 (=solve
+        # 割当) が既に確定済み staff と一致する連続/partner コース」を review から
+        # 除外し、 かつ exclude_course_ids にも入れない (= commit に残す) ために使う.
+        # already_assigned_courses は上の visits>0 フィルタ済 (= ゴミ 0-visits は除く).
+        applied_staff_by_course: dict[UUID, UUID] = {
+            c.id: c.assigned_staff_id
+            for c in already_assigned_courses
+            if c.assigned_staff_id is not None
+        }
+
         for c in already_assigned_courses:
             if c.id not in fixed_staff_by_course and c.assigned_staff_id is not None:
                 fixed_staff_by_course[c.id] = c.assigned_staff_id
@@ -730,11 +819,349 @@ class Layer3Assigner:
             ct.course_id for ct in course_targets if ct.course_id not in assigned_course_ids
         ]
 
+        # ---------- 5c. Phase G-91: 確認レビューフロー (連続 index0 / 性別ブロック) ----------
+        # クリーンなコースは自動確定 (commit) し、 以下 2 種はレビュー対象として返す:
+        #   🟡 連続 (index0): solve で割当たったが直近担当者 (recent_index==0) と同じ
+        #      → DB 未割当のまま (= commit しない). candidate は本来割り当たるスタッフ.
+        #   🔴 性別ブロック: gender で未割当 + 性別無視時の候補が居る
+        #      → DB 未割当のまま. candidate は性別無視時の候補スタッフ.
+        # ``review_items`` を埋め、 連続 index0 コースを ``_persist`` 対象から除外する.
+        review_items, exclude_course_ids = await self._build_review_items(
+            db,
+            course_targets=course_targets,
+            result=result,
+            staff_pool=staff_pool,
+            fixed_staff_by_course=fixed_staff_by_course,
+            events_by_staff=events_by_staff,
+            week_monday=week_monday,
+            history=history,
+            iso_year=iso_year,
+            iso_week=iso_week,
+            patient_recent_staff=patient_recent_staff,
+            applied_staff_by_course=applied_staff_by_course,
+        )
+        result.review_items = review_items
+
+        # 連続 index0 コースは自動 commit しない (= DB 未割当のまま). visit_group
+        # partner を含めた除外集合を使い、 _persist へ渡す assignments から落とす.
+        persist_assignments = [
+            a for a in result.assignments if a.course_id not in exclude_course_ids
+        ]
+        # Phase G-91 (修正2): commit 実数 = _persist へ渡した assignments の course.
+        # courses_assigned 算出はこれを単一ソースにする (= clean partner の過大計上回避).
+        result.committed_course_ids = [a.course_id for a in persist_assignments]
+
         # ---------- 6. DB 反映 ----------
         trainee_ids = frozenset(s.staff_id for s in staff_pool if s.is_trainee)
-        await self._persist(db, result.assignments, trainee_staff_ids=trainee_ids)
+        await self._persist(db, persist_assignments, trainee_staff_ids=trainee_ids)
 
         return result
+
+    # ------------------------------------------------------------------ #
+    # Phase G-91: 確認レビューフロー review_items 構築
+    # ------------------------------------------------------------------ #
+
+    async def _build_review_items(
+        self,
+        db: AsyncSession,
+        *,
+        course_targets: list[CourseAssignmentTarget],
+        result: Layer3Result,
+        staff_pool: list[StaffInfo],
+        fixed_staff_by_course: dict[UUID, UUID],
+        events_by_staff: dict[UUID, list[StaffEvent]],
+        week_monday: date_cls | None,
+        history: list[tuple[int, str, UUID]],
+        iso_year: int | None,
+        iso_week: int | None,
+        patient_recent_staff: dict[UUID, list[UUID]],
+        applied_staff_by_course: dict[UUID, UUID] | None = None,
+    ) -> tuple[list[ReviewItem], set[UUID]]:
+        """Phase G-91: 連続 index0 / 性別ブロックの ``ReviewItem`` を構築する.
+
+        レビュー対象 2 種を判定し、 表示用メタ (拠点名 / 患者名 / 訪問時刻 /
+        sex_restriction / is_cause / 候補スタッフ) を DB から肉付けして返す.
+
+        判定:
+        - 🟡 連続 (consecutive): ``result.rotation_conflicts`` のうち
+          ``recent_index==0`` を持つ course. **固定割当 (都賀 A / manager M) でも
+          除外しない** (修正3 / オーナー決定 B: 1 名拠点でも連続は必ずレビューに
+          出す. candidate = solve が割り当てた staff = 固定なら本名 1 名と同一).
+          原因患者 (is_cause) = 連続になる患者 (= conflict の patient_id).
+        - 🔴 性別 (gender): ``result.unassigned_course_ids`` のうち、
+          gender_restrictions を持ち、 性別を無視したときの候補スタッフが居る
+          course. candidate = ``_compute_gender_candidate_for_course`` の結果.
+          原因患者 (is_cause) = 性別制限を持つ患者.
+        - 🔗 partner (修正4): 連続コース X の visit_group partner Y (clean) も
+          review_item に出す (candidate = Y の solve 割当 staff). X と Y は
+          ``linked_course_ids`` で相互に紐付け、 apply 時に同一 ``_persist`` へ
+          一緒に渡して 2 名体制 secondary を正しく解決する (= half-assigned 回避).
+          partner Y の reason は元コード X の reason ('consecutive') を継ぐ.
+
+        非 commit 除外集合 (``exclude_course_ids``):
+            連続 index0 コース + その visit_group partner コース
+            (= 片方だけ未割当を避けるため group 単位で除外).
+
+        修正A (適用済み再浮上防止):
+            ``applied_staff_by_course`` = 既に DB 上で course_status='staff_assigned'
+            かつ assigned_staff_id (NOT NULL) のコース -> その確定 staff_id.
+            連続 (X) / partner (Y) コードが、 既に当該マップにあり、 かつ確定 staff が
+            候補 staff (= solve 割当) と一致する場合は「承認済み (=再確認不要)」とみなし、
+            (1) review_items に出さない (2) exclude_course_ids にも入れない
+            (= committed に残し件数を正しく数える). assigned_staff_id=NULL (一斉未割当
+            後) や候補と不一致のコースは従来どおり review に出す.
+
+        Returns:
+            ``(review_items, exclude_course_ids)``.
+            review_items は (weekday, course_code, 代表 start_time) で決定的ソート.
+        """
+        targets_by_id: dict[UUID, CourseAssignmentTarget] = {
+            ct.course_id: ct for ct in course_targets
+        }
+        staff_by_id: dict[UUID, StaffInfo] = {s.staff_id: s for s in staff_pool}
+        assigned_staff_by_course: dict[UUID, UUID] = {
+            a.course_id: a.staff_id for a in result.assignments
+        }
+        if applied_staff_by_course is None:
+            applied_staff_by_course = {}
+
+        def _is_applied_match(course_id: UUID) -> bool:
+            """修正A: 当該コースが既に承認済み (= 確定 staff == solve 候補) か.
+
+            DB 上で staff_assigned + assigned_staff_id (NOT NULL) のコースが、 今回
+            solve で割り当たった候補と同一 staff のとき True. これに該当する連続 /
+            partner は再確認不要 (= review に出さず commit に残す). 確定 staff が NULL
+            (一斉未割当後) や候補と不一致のときは False (= 従来どおり review 対象).
+            """
+            applied = applied_staff_by_course.get(course_id)
+            if applied is None:
+                return False
+            candidate = assigned_staff_by_course.get(course_id)
+            return candidate is not None and candidate == applied
+
+        # ----- 🟡 連続 index0 コース (修正3: 固定割当も除外しない) -----
+        # course_id -> 連続になる患者 id 集合 (is_cause マーク用).
+        # オーナー決定 B: 都賀 A / manager M の固定連続も「候補=本名」でレビューに出す.
+        # 修正A: 既に承認済み (確定 staff == 候補) の連続コースは再浮上させない.
+        consecutive_cause_patients: dict[UUID, set[UUID]] = {}
+        for conflict in result.rotation_conflicts:
+            if conflict.recent_index != 0:
+                continue
+            if _is_applied_match(conflict.course_id):
+                continue  # 修正A: 適用済み連続 → review にも exclude にも入れない
+            consecutive_cause_patients.setdefault(conflict.course_id, set()).add(
+                conflict.patient_id
+            )
+
+        # ----- 🔴 性別ブロック コース (候補が居るもののみ) -----
+        # course_id -> candidate StaffInfo.
+        gender_candidates: dict[UUID, StaffInfo] = {}
+        for course_id in result.unassigned_course_ids:
+            course = targets_by_id.get(course_id)
+            if course is None:
+                continue
+            if not course.gender_restrictions:
+                continue  # 性別制限が無い → 純粋人手不足 (レビュー対象外)
+            candidate = self._compute_gender_candidate_for_course(
+                course=course,
+                staff_pool=staff_pool,
+                weekday=course.weekday,
+                events_by_staff=events_by_staff,
+                week_monday=week_monday,
+                fixed_staff_by_course=fixed_staff_by_course,
+                history=history,
+                prev_day_pairs=set(),
+                iso_year=iso_year,
+                iso_week=iso_week,
+                patient_recent_staff=patient_recent_staff,
+            )
+            if candidate is None:
+                continue  # 性別無視でも候補なし = 純粋人手不足 (レビュー対象外)
+            gender_candidates[course_id] = candidate
+
+        if not consecutive_cause_patients and not gender_candidates:
+            return [], set()
+
+        # ----- 🔗 修正4: 連続コースの visit_group partner を解決 -----
+        # 連続コース X を非 commit にする際、 同 visit_group の partner course Y
+        # (= 2 名体制の相方; clean のことが多い) も DB 未割当のまま残ると
+        # half-assigned になる. Y を review_item として出し、 X と相互に
+        # ``linked_course_ids`` で紐付ける. apply 時に X+Y を同一 _persist へ渡す.
+        # course_id -> 連動する partner course_id 集合 (相互).
+        partner_links: dict[UUID, set[UUID]] = {}
+        # exclude_course_ids = 連続コース + その partner (= 非 commit 集合).
+        exclude_course_ids: set[UUID] = set(consecutive_cause_patients)
+        if consecutive_cause_patients:
+            seed_ids = list(consecutive_cause_patients)
+            seed_group_rows = (
+                await db.execute(
+                    select(Visit.visit_group_id, Visit.course_id).where(
+                        Visit.course_id.in_(seed_ids),
+                        Visit.visit_group_id.isnot(None),
+                        Visit.status == VISIT_STATUS_PLANNED,
+                        Visit.deleted_at.is_(None),
+                    )
+                )
+            ).all()
+            seed_group_ids = {gid for gid, _ in seed_group_rows if gid is not None}
+            if seed_group_ids:
+                grp_member_rows = (
+                    await db.execute(
+                        select(Visit.visit_group_id, Visit.course_id).where(
+                            Visit.visit_group_id.in_(list(seed_group_ids)),
+                            Visit.status == VISIT_STATUS_PLANNED,
+                            Visit.deleted_at.is_(None),
+                        )
+                    )
+                ).all()
+                # visit_group_id -> 所属 course_id 集合
+                courses_by_group: dict[UUID, set[UUID]] = {}
+                for gid, c_id in grp_member_rows:
+                    if gid is None or c_id is None:
+                        continue
+                    courses_by_group.setdefault(gid, set()).add(c_id)
+                # 各 seed (連続) course の所属 group の他 course を partner として相互紐付け.
+                # 修正A: partner Y が既に承認済み (確定 staff == 候補) の場合は exclude /
+                # partner_links に含めない (= commit に残す). 連動対象は未承認メンバーのみ.
+                seed_set = set(consecutive_cause_patients)
+                for members in courses_by_group.values():
+                    seeds_in_group = members & seed_set
+                    if not seeds_in_group:
+                        continue
+                    # seed (X) は guard 済 (= consecutive_cause_patients に残ったもの)。
+                    # partner (= seed 以外) のみ承認済みなら除外集合から落とす.
+                    linkable = {m for m in members if m in seed_set or not _is_applied_match(m)}
+                    for member in linkable:
+                        exclude_course_ids.add(member)
+                    for x in linkable:
+                        partner_links.setdefault(x, set()).update(linkable - {x})
+
+        # partner Y (= 連続コードではないが exclude された group メンバー) を review に含める.
+        partner_only_ids = exclude_course_ids - set(consecutive_cause_patients)
+
+        review_course_ids = (
+            set(consecutive_cause_patients) | set(gender_candidates) | partner_only_ids
+        )
+        if not review_course_ids:
+            return [], exclude_course_ids
+
+        # ----- visit 情報 (patient_id, patient_name, start_time, sex_restriction) を一括ロード -----
+        # course_id -> [(start_time, patient_id, patient_name, sex_restriction), ...]
+        visit_rows = (
+            await db.execute(
+                select(
+                    Visit.course_id,
+                    Visit.start_time,
+                    Visit.patient_id,
+                    Patient.name,
+                    Patient.sex_restriction,
+                )
+                .join(Patient, Patient.id == Visit.patient_id)
+                .where(
+                    Visit.course_id.in_(list(review_course_ids)),
+                    Visit.status == VISIT_STATUS_PLANNED,
+                    Visit.deleted_at.is_(None),
+                    Patient.deleted_at.is_(None),
+                )
+            )
+        ).all()
+        visits_by_course: dict[UUID, list[tuple[time_cls, UUID, str, str | None]]] = {}
+        for c_id, start_time, p_id, p_name, sex_restriction in visit_rows:
+            if p_id is None:
+                continue
+            visits_by_course.setdefault(c_id, []).append(
+                (start_time, p_id, p_name or "", sex_restriction)
+            )
+
+        # ----- 拠点名 (office_id -> name) を一括ロード -----
+        office_ids = {
+            ct.office_id
+            for cid in review_course_ids
+            if (ct := targets_by_id.get(cid)) is not None and ct.office_id is not None
+        }
+        office_name_by_id: dict[UUID, str] = {}
+        if office_ids:
+            o_rows = (await db.scalars(select(Office).where(Office.id.in_(list(office_ids))))).all()
+            office_name_by_id = {o.id: o.name for o in o_rows}
+
+        # ----- ReviewItem 構築 -----
+        items: list[ReviewItem] = []
+        for course_id in review_course_ids:
+            course = targets_by_id.get(course_id)
+            if course is None:
+                continue
+            is_consecutive = course_id in consecutive_cause_patients
+            is_gender = course_id in gender_candidates
+            # 連続 / partner はともに reason='consecutive' (= 黄カード) で扱う.
+            # partner Y は連続コードではないが、 X と連動して apply するため同 reason.
+            reason = "gender" if is_gender else "consecutive"
+
+            # 候補スタッフ
+            if is_gender:
+                candidate = gender_candidates.get(course_id)
+            else:
+                # 連続 X / partner Y はともに solve が割り当てた staff が候補.
+                candidate_id = assigned_staff_by_course.get(course_id)
+                candidate = staff_by_id.get(candidate_id) if candidate_id is not None else None
+            if candidate is None:
+                continue  # 候補不明 (= 連続なのに assignment が無い等の異常) は skip
+
+            # 原因患者集合 (is_cause)
+            if is_consecutive:
+                cause_pids = consecutive_cause_patients.get(course_id, set())
+            elif is_gender:
+                # 性別: sex_restriction を持つ患者が原因.
+                cause_pids = {
+                    p_id for (_st, p_id, _name, sr) in visits_by_course.get(course_id, []) if sr
+                }
+            else:
+                # partner Y 自体は原因患者なし (= X が原因; Y は連動 apply のため出すだけ).
+                cause_pids = set()
+
+            # visits 構築 (start_time, patient_id 昇順で決定的に).
+            raw_visits = sorted(
+                visits_by_course.get(course_id, []),
+                key=lambda t: (t[0], str(t[1])),
+            )
+            review_visits = [
+                ReviewVisit(
+                    patient_id=p_id,
+                    patient_name=p_name,
+                    start_time=start_time,
+                    sex_restriction=sex_restriction,
+                    is_cause=(p_id in cause_pids),
+                )
+                for (start_time, p_id, p_name, sex_restriction) in raw_visits
+            ]
+
+            # 連動 partner (修正4): exclude された group の他 course を決定的順に.
+            linked = sorted(partner_links.get(course_id, set()), key=str)
+
+            office_name = (
+                office_name_by_id.get(course.office_id, "") if course.office_id is not None else ""
+            )
+            items.append(
+                ReviewItem(
+                    course_id=course_id,
+                    office_name=office_name,
+                    course_code=course.course_code,
+                    weekday=course.weekday,
+                    reason=reason,
+                    candidate_staff_id=candidate.staff_id,
+                    candidate_staff_name=candidate.name,
+                    candidate_staff_sex=candidate.sex,
+                    visits=review_visits,
+                    linked_course_ids=linked,
+                )
+            )
+
+        # 決定的ソート (weekday, course_code, 代表 start_time = 最小 visit start_time).
+        def _sort_key(item: ReviewItem) -> tuple[int, str, str]:
+            rep = item.visits[0].start_time.isoformat() if item.visits else ""
+            return (item.weekday, item.course_code, rep)
+
+        items.sort(key=_sort_key)
+        return items, exclude_course_ids
 
     # ------------------------------------------------------------------ #
     # 純粋関数: solve()
@@ -1377,6 +1804,107 @@ class Layer3Assigner:
                 best_mgr = mgr
 
         return best_mgr
+
+    def _compute_gender_candidate_for_course(
+        self,
+        *,
+        course: CourseAssignmentTarget,
+        staff_pool: list[StaffInfo],
+        weekday: int,
+        events_by_staff: dict[UUID, list[StaffEvent]],
+        week_monday: date_cls | None,
+        fixed_staff_by_course: dict[UUID, UUID],
+        history: list[tuple[int, str, UUID]],
+        prev_day_pairs: set[tuple[str, UUID]],
+        iso_year: int | None,
+        iso_week: int | None,
+        patient_recent_staff: dict[UUID, list[UUID]],
+    ) -> StaffInfo | None:
+        """Phase G-91: 性別ブロック course の「性別を無視したら誰が割り当たるか」候補.
+
+        性別制限 (= ``_staff_satisfies_gender``) のため Layer 3 で未割当になった
+        course について、 **性別制約だけを外した** ときの最小コスト same-office
+        staff を 1 名 greedy に算出する (= 管理者が override 判断する材料).
+
+        選定ロジック (architect 助言 Q2):
+        - 固定対象 (都賀 A / manager M) ならその固定スタッフを候補にする
+          (= 性別違反でも「管理者が override すべきか」 の判断材料として返す).
+        - それ以外は「同拠点 (effective_office_for_weekday==course.office_id) +
+          当日勤務 + event 重複なし」 の same-office staff のうち、 性別以外の
+          コスト (= ``_cost_single_cell`` を性別 skip で算出) が最小の 1 名.
+        - タイブレーク: cost 昇順 → 同コストは staff_id (UUID) 昇順で決定的に安定化.
+
+        Hungarian 全体を gender 無効で再実行しないのは、 既に確定した他コースの
+        結果を引きはがして整合性を壊すため (= レビュー候補は排他性不要、 単一
+        course の greedy で十分).
+
+        Returns:
+            候補 ``StaffInfo`` または None (純粋人手不足 = 候補なし → レビュー対象外).
+        """
+        # ---------- 固定対象 (都賀 A / manager M) はその固定スタッフを候補に ----------
+        fixed_staff_id = fixed_staff_by_course.get(course.course_id)
+        if fixed_staff_id is not None:
+            fixed_staff = next((s for s in staff_pool if s.staff_id == fixed_staff_id), None)
+            if fixed_staff is not None and weekday in fixed_staff.work_days:
+                return fixed_staff
+
+        # ---------- 性別以外のハード制約を満たす same-office staff を greedy 評価 ----------
+        best_staff: StaffInfo | None = None
+        best_key: tuple[float, str] | None = None
+        for staff in staff_pool:
+            # manager は通常割付の候補にしない (M 固定 / fallback は別経路).
+            if staff.role == "manager":
+                continue
+            # 当日勤務 (ハード)
+            if weekday not in staff.work_days:
+                continue
+            # 拠点ハード制約 (= 自拠点コースのみ). 合成 fixture (office_id None) は skip.
+            if course.office_id is not None:
+                if staff.effective_office_for_weekday(weekday) != course.office_id:
+                    continue
+            # event 重複 (ハード, W33 buffer)
+            if events_by_staff and week_monday is not None and course.visits:
+                if _has_event_overlap_with_buffer(
+                    staff_id=staff.staff_id,
+                    course=course,
+                    weekday=weekday,
+                    events_by_staff=events_by_staff,
+                    week_monday=week_monday,
+                ):
+                    continue
+            # 性別「以外」のコスト. _cost_single_cell は gender INF を返し得るので、
+            # gender_restrictions を空にした課題コースを使って性別だけ無効化する.
+            course_no_gender = CourseAssignmentTarget(
+                course_id=course.course_id,
+                weekday=course.weekday,
+                course_code=course.course_code,
+                centroid_lat=course.centroid_lat,
+                centroid_lng=course.centroid_lng,
+                gender_restrictions=frozenset(),
+                patient_ids=course.patient_ids,
+                visits=course.visits,
+                office_id=course.office_id,
+            )
+            cost = self._cost_single_cell(
+                weekday=weekday,
+                course=course_no_gender,
+                staff=staff,
+                history=history,
+                prev_day_pairs=prev_day_pairs,
+                events_by_staff=events_by_staff,
+                week_monday=week_monday,
+                iso_year=iso_year,
+                iso_week=iso_week,
+                patient_recent_staff=patient_recent_staff,
+            )
+            if cost >= HUNGARIAN_INFINITY:
+                # 性別以外のハード制約 (= 履歴除外等) で不可 → 候補外.
+                continue
+            key = (cost, str(staff.staff_id))
+            if best_key is None or key < best_key:
+                best_key = key
+                best_staff = staff
+        return best_staff
 
     def _apply_manager_fallback(
         self,
@@ -2663,6 +3191,9 @@ __all__ = [
     "Layer3Assigner",
     "Layer3AssignmentError",
     "Layer3Result",
+    "ReviewItem",
+    "ReviewVisit",
+    "RotationConflict",
     "StaffAssignment",
     "StaffInfo",
     "VisitTimeSlot",
