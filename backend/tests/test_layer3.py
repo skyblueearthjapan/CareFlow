@@ -507,6 +507,13 @@ async def _seed_one_day_fixed_courses(db) -> dict[str, UUID]:
     await db.flush()
 
     # courses + patients + visits
+    # Phase G-90: 拠点ハード制約に対応するため、 コースを拠点別に振り分ける.
+    # fixture の staff は S1/S2 = inage (lat 35.6383), S3/S4 = tsuga (lat 35.65).
+    # 4 コース全員割当 (1 staff 1 course) を維持するには inage/tsuga 各 2 コース
+    # である必要があるため、 course A/B -> inage, C/D -> tsuga に割り当てる.
+    # (旧: 全コース inage は距離前提のテスト。 office ハード制約導入で他拠点 staff
+    # が割当不能になり 4 名割当が崩れるため office ベースに更新.)
+    course_office_by_code = {"A": inage.id, "B": inage.id, "C": tsuga.id, "D": tsuga.id}
     for c in data["courses_per_week"]:
         course = Course(
             iso_year=TEST_ISO_YEAR,
@@ -514,7 +521,8 @@ async def _seed_one_day_fixed_courses(db) -> dict[str, UUID]:
             weekday=int(c["weekday"]),
             code=c["course_code"],
             course_status=COURSE_STATUS_COURSE_FIXED,
-            office_id=inage.id,  # W15-BE-FIXPATTERN: courses.office_id NOT NULL
+            # Phase G-90: course_code に応じて拠点を割当 (default inage).
+            office_id=course_office_by_code.get(c["course_code"], inage.id),
         )
         db.add(course)
         await db.flush()

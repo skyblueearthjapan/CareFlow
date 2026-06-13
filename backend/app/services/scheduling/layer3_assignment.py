@@ -106,8 +106,9 @@ logger = logging.getLogger(__name__)
 # Constants — cost function weights (§5.4)
 # ---------------------------------------------------------------------------
 
-# α: 距離スコアの係数 (km) — 主拠点 → コース重心
-COST_ALPHA_DISTANCE: float = 1.0
+# Phase G-90: α (距離スコアの係数) は撤去した. スタッフは自拠点コースにのみ行く
+# (拠点ハード制約) ため、 同拠点内では距離 (km) は割付に無関係.
+# ``DISTANCE_UNKNOWN_KM`` / ``_distance_km`` は total_distance_km レポート用に残す.
 
 # Phase 3: 座標欠損時の代替距離 (km).
 # 根拠: 旧実装は座標 (course 重心 or staff 主拠点) が None のとき 0.0 を返し、
@@ -236,14 +237,17 @@ class StaffInfo:
 
         **適用範囲 (= scope) の明示**:
 
-        本 API は ``count_active_staff_per_weekday`` (= H6 制約 / 応援 staff_count
-        算入) **専用** として導入された. Hungarian assignment の距離計算
-        (``_distance_km`` / line 1101 付近) は **本 API を参照せず**、 引き続き
-        ``staff.primary_office_lat`` / ``primary_office_lng`` を使用する.
+        本 API は Phase G-45 で ``count_active_staff_per_weekday`` (= H6 制約 /
+        応援 staff_count 算入) 用に導入されたが、 **Phase G-90 以降は拠点ハード
+        制約の唯一の権威** でもある: ``_cost_single_cell`` / manager fallback
+        (``_try_fallback_manager_for_course``) / 固定割当防御 (``_solve_one_day``
+        の c2) の 3 経路すべてが本 API を呼び、 ``effective_office_for_weekday
+        (course.weekday) != course.office_id`` のセルを ``HUNGARIAN_INFINITY`` で
+        除外する (= スタッフは自分の実効拠点のコースにしか割り当たらない).
 
-        理由: Phase G-45 は「応援カウントの修正」に scope を限定しており、
-        distance ベースのコスト関数への波及 (= secondary 拠点の座標で距離計算
-        する) は副作用範囲が大きいため Phase G-46 以降で別途設計する.
+        なお ``_distance_km`` は Phase G-90 でコスト関数から撤去され、 現在は
+        ``total_distance_km`` レポート用にのみ残る (= 割付の最適化対象ではない).
+        レポート距離は応援時も ``primary_office_lat/lng`` ベースの近似値である点に注意.
         """
         if not self.office_operating_weekdays:
             return self.primary_office_id
@@ -281,6 +285,10 @@ class CourseAssignmentTarget:
     # W27: コース所属 visit の時間帯 (start_time, end_time) の一覧.
     # StaffEvent との重複判定に用いる. 空リストのときは event 除外を skip.
     visits: list[VisitTimeSlot] = field(default_factory=list)
+    # Phase G-90: コースの所属拠点 ID (= 拠点ハード制約の判定に使う).
+    # ``_load_course_targets`` が ``Course.office_id`` を populate する.
+    # ``None`` (= 合成テスト fixture / 後方互換) のときは拠点ハード制約を skip する.
+    office_id: UUID | None = None
 
 
 class StaffAssignment(BaseModel):
@@ -1012,6 +1020,16 @@ class Layer3Assigner:
             if not _staff_satisfies_gender(staff, course):
                 free_courses.append(course)
                 continue
+            # (c2) Phase G-90: 拠点ハード制約 (固定割当ルートの多重防御).
+            # ``_build_fixed_assignments`` は primary_office_id==office.id で
+            # 絞っているので通常は整合するが、 primary 休業曜日に effective が
+            # secondary へ転入する edge では固定 staff が他拠点コースに残り得る.
+            # 実効拠点 ≠ course 拠点なら固定確定せず free_courses へ回す.
+            # ``course.office_id is None`` (= 合成 fixture) では skip (後方互換).
+            if course.office_id is not None:
+                if staff.effective_office_for_weekday(weekday) != course.office_id:
+                    free_courses.append(course)
+                    continue
             # (d) event 時間帯重複 (W33 buffer 込み, events 情報がある場合のみ)
             if events_by_staff and week_monday is not None and course.visits:
                 if _has_event_overlap_with_buffer(
@@ -1107,19 +1125,24 @@ class Layer3Assigner:
     ) -> float:
         """単一セル (course, staff) のコストを返す.
 
-        コスト関数 (§5.4 + W16 拡張 + W27 Phase A 拡張 + W33 バッファ拡張 + Phase 2 拡張):
-            cost = α * distance
-                 + β * rotation_penalty (course-code 単位の補助タイブレーク)
-                 + γ * gender
-                 + δ * work_day
+        コスト関数 (§5.4 + W16 拡張 + W27 Phase A 拡張 + W33 バッファ拡張
+        + Phase 2 拡張 + Phase G-90 拡張):
+            cost = β * rotation_penalty (course-code 単位の補助タイブレーク)
+                 + γ * gender (ハード)
+                 + δ * work_day (ハード)
+                 + Phase G-90: 拠点ハード制約 (= 実効拠点 ≠ course 拠点で INF)
                  + W16: 前日同コース penalty
                  + W27/W33: event 時間帯重複 + BUFFER_MINUTES バッファ (ハード除外)
                  + Phase 2: patient 中心ローテ段階ペナルティ
                    (直近 1/2/3 回前 = COST_PATIENT_RECENT_1/2/3, 患者間は max)
                  + Wave 5: deterministic random rotation score (0 .. COST_W5_ROTATION_MAX)
 
-        γ / δ / W27/W33 はハード制約なので INF 相当 (= ``HUNGARIAN_INFINITY``).
+        γ / δ / 拠点 / W27/W33 はハード制約なので INF 相当 (= ``HUNGARIAN_INFINITY``).
         Phase 2 / Wave 5 ペナルティはすべてソフト (= INF ではなく加算).
+
+        Phase G-90: 距離 (α) はコストから撤去した. スタッフは自拠点コースにのみ
+        行く (拠点ハード制約) ため、 同拠点内では距離 (km) は割付に無関係.
+        ``_distance_km`` は total_distance_km レポート用にのみ残す.
         """
         if prev_day_pairs is None:
             prev_day_pairs = set()
@@ -1139,6 +1162,18 @@ class Layer3Assigner:
         # 正規化と AND semantics は同ヘルパー内で処理する (Phase G-27 fix 維持).
         if not _staff_satisfies_gender(staff, course):
             return HUNGARIAN_INFINITY
+
+        # ---------- Phase G-90: 拠点ハード制約 ----------
+        # スタッフの実効拠点 (当該 weekday の effective office) ≠ コースの拠点なら
+        # 割当不可 (= 他拠点漏れの防止). スタッフは住所で拠点が決まり、 自拠点の
+        # コースにのみ行く (距離は無関係). primary 休業曜日は応援先 secondary が
+        # effective になる (``effective_office_for_weekday`` の既存仕様).
+        # ``course.office_id is None`` (= 合成テスト fixture) のときは制約 skip
+        # (後方互換).
+        if course.office_id is not None:
+            eff = staff.effective_office_for_weekday(weekday)
+            if eff != course.office_id:
+                return HUNGARIAN_INFINITY
 
         # ---------- W27/W33: StaffEvent 時間帯重複 + バッファ (ハード制約) ----------
         # W27: event 時間帯と course 内 visit 時間帯が重なる場合は除外。
@@ -1163,8 +1198,10 @@ class Layer3Assigner:
             ):
                 return HUNGARIAN_INFINITY
 
-        # ---------- α: 距離スコア ----------
-        distance = self._distance_km(course, staff)
+        # ---------- Phase G-90: 距離はコストから撤去 ----------
+        # スタッフは自拠点コースにのみ行く (上の拠点ハード制約). 同拠点内では
+        # 距離 (km) は割付に無関係なので cost 項から除去した. ``_distance_km`` は
+        # total_distance_km レポート用に残す (solve の集計で使用).
 
         # ---------- β: ローテーションペナルティ (ソフト) ----------
         # 直近 ROTATION_HISTORY_WEEKS 週で同一 course_code を担当した回数
@@ -1224,8 +1261,7 @@ class Layer3Assigner:
             )
 
         return (
-            COST_ALPHA_DISTANCE * distance
-            + COST_BETA_ROTATION * rotation_count
+            COST_BETA_ROTATION * rotation_count
             + prev_day_penalty
             + patient_rotation_penalty
             + rotation_random
@@ -1234,16 +1270,16 @@ class Layer3Assigner:
     def _distance_km(self, course: CourseAssignmentTarget, staff: StaffInfo) -> float:
         """主拠点 → コース重心の Haversine 距離 (km).
 
-        Phase 3: 座標欠損 (None) のときは ``DISTANCE_UNKNOWN_KM`` (= 12.0) を返す.
-        旧実装は 0.0 を返し「最良 (最短)」 扱いになる逆インセンティブがあった
-        (= 座標が無い staff/course ほど距離項で有利になる) ため、 中庸距離に置換する.
+        Phase G-90: **本メソッドはコスト関数から撤去され、 現在は
+        ``total_distance_km`` レポート集計用にのみ呼ばれる** (= 割付の最適化対象
+        ではない). スタッフの拠点振り分けは ``effective_office_for_weekday`` の
+        ハード制約が担う (距離は割付に無関係、というドメイン要件).
 
-        Phase G-45 scope 注意:
-            ``staff.effective_office_for_weekday(course.weekday)`` は **参照しない**.
-            応援運用 (= primary 休業日に secondary office へ転入) でも、 距離計算は
-            常に ``staff.primary_office_lat`` / ``primary_office_lng`` を使用する.
-            distance ベースのコストを応援先 office 座標に切り替えるかは Phase G-46
-            以降で別途設計予定 (= 副作用範囲が大きいため G-45 では touch しない).
+        座標欠損 (None) のときは ``DISTANCE_UNKNOWN_KM`` (= 12.0) を返す.
+
+        応援 (primary 休業日に secondary へ転入) 時もレポート距離は常に
+        ``staff.primary_office_lat`` / ``primary_office_lng`` ベースの近似値であり、
+        実際の稼働拠点 (secondary) 座標には切り替えない (レポート用途のため許容).
         """
         if (
             course.centroid_lat is None
@@ -1272,11 +1308,17 @@ class Layer3Assigner:
         events_by_staff: dict[UUID, list[StaffEvent]],
         week_monday: date_cls | None,
     ) -> StaffInfo | None:
-        """1 つの unassigned course に対し best (= 最短距離) manager を返す.
+        """1 つの unassigned course に対し best manager を返す.
 
         Phase G-29: 1st pass (Hungarian, manager 除外) で割当不能だったコースに
-        対する 2nd pass の helper. 制約 (work_days / 性別 / 当日 event 重複) を
-        満たす manager のうち、 ``_distance_km`` が最小のものを greedy に選ぶ。
+        対する 2nd pass の helper. 制約 (拠点 / work_days / 性別 / 当日 event 重複)
+        を満たす manager のうち、 ``staff_id`` 昇順の決定的タイブレークで選ぶ。
+
+        Phase G-90: 拠点ハード制約を追加し、 距離を選定基準から撤去した.
+        manager も自拠点コースにのみ配置する (= 実効拠点 ≠ course 拠点なら skip).
+        同拠点内では距離 (km) は割付に無関係なので、 選定キーを
+        ``staff_id`` (UUID 文字列) 昇順の決定的タイブレークに変更した
+        (旧 ``(distance, staff_id)`` を置換).
 
         Args:
             course: 割当対象の NULL コース.
@@ -1289,15 +1331,21 @@ class Layer3Assigner:
             適合 manager (= ``StaffInfo``) または None (適合者なし).
 
         Notes:
-            - 同距離なら staff_id (UUID) 文字列の昇順で安定化する
-              (= 決定的な結果のため). spec 上は ``staff.code`` 昇順だが
-              ``StaffInfo`` に code フィールドが無いため代理として ``staff_id``
-              を用いる. 距離で大体一意に決まるためテストで観測される差は無い.
+            - 選定は ``staff_id`` (UUID) 文字列の昇順で決定的に安定化する.
+              spec 上は ``staff.code`` 昇順だが ``StaffInfo`` に code フィールドが
+              無いため代理として ``staff_id`` を用いる.
         """
         best_mgr: StaffInfo | None = None
-        best_key: tuple[float, str] | None = None
+        best_key: str | None = None
 
         for mgr in free_managers:
+            # ---------- Phase G-90: 拠点ハード制約 ----------
+            # manager も自拠点コースにのみ配置する (= 他拠点漏れ防止).
+            # ``course.office_id is None`` (= 合成テスト fixture) では skip (後方互換).
+            if course.office_id is not None:
+                if mgr.effective_office_for_weekday(weekday) != course.office_id:
+                    continue
+
             # ---------- 性別 check (ハード) ----------
             # 1st pass の ``_cost_single_cell`` と同じ AND semantics に統一.
             # Phase G-29 reviewer 指摘 HIGH-1: 元の OR semantics だと「female_only +
@@ -1321,9 +1369,9 @@ class Layer3Assigner:
                 ):
                     continue
 
-            # ---------- 距離 (= 主な選好) ----------
-            d = self._distance_km(course, mgr)
-            key = (d, str(mgr.staff_id))
+            # ---------- Phase G-90: staff_id 昇順の決定的タイブレーク ----------
+            # 同拠点内なので距離は無意味. staff_id (UUID 文字列) 昇順で安定選択.
+            key = str(mgr.staff_id)
             if best_key is None or key < best_key:
                 best_key = key
                 best_mgr = mgr
@@ -1354,10 +1402,12 @@ class Layer3Assigner:
           4. 当日まだ他コース未担当 (= 1 staff 1 day 1 course を manager にも適用.
              1st pass で M コース固定担当の manager は 2nd pass で再利用しない)
           5. StaffEvent 時間帯重複なし (``_has_event_overlap_with_buffer``)
+          6. Phase G-90: 拠点ハード制約 (= 実効拠点 == course 拠点). 詳細は
+             ``_try_fallback_manager_for_course`` 参照.
 
         複数 NULL コースがある場合は greedy: コースを 1 件ずつ巡回し、 残存
-        manager から best (= 最短距離) を選ぶ。 1 度割当てた manager は free_managers
-        から除外する (= 1 day 1 course 制約).
+        manager から best (= staff_id 昇順の決定的タイブレーク) を選ぶ。 1 度
+        割当てた manager は free_managers から除外する (= 1 day 1 course 制約).
 
         Args:
             weekday: 0=Mon..6=Sun.
@@ -1371,9 +1421,10 @@ class Layer3Assigner:
             1st pass + 2nd pass を統合した最終 assignment list.
 
         Notes:
-            - 距離のみで判定. ローテ履歴 / W16 連続防止 / Wave 5 同患者ペナルティ
-              は 2nd pass では考慮しない (= 「割当不能な救済」 という性質上、
-              副次的最適化より配置できることを優先).
+            - Phase G-90: 拠点ハード制約 + staff_id 昇順の決定的タイブレークで判定.
+              ローテ履歴 / W16 連続防止 / Wave 5 同患者ペナルティは 2nd pass では
+              考慮しない (= 「割当不能な救済」 という性質上、 副次的最適化より
+              配置できることを優先).
         """
         if not day_courses or not staff_pool:
             return day_assignments
@@ -1562,6 +1613,8 @@ class Layer3Assigner:
                     gender_restrictions=frozenset(restrictions),
                     patient_ids=[p.id for p in patients],
                     visits=visit_slots,
+                    # Phase G-90: 拠点ハード制約用に所属拠点 ID を伝搬する.
+                    office_id=course.office_id,
                 )
             )
         return targets
@@ -2595,7 +2648,6 @@ def history_from_fixture_list(
 
 
 __all__ = [
-    "COST_ALPHA_DISTANCE",
     "COST_BETA_ROTATION",
     "COST_PATIENT_RECENT_1",
     "COST_PATIENT_RECENT_2",
