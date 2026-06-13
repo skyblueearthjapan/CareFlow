@@ -1,12 +1,17 @@
-"""Wave 5: Layer 3 ランダム振り分け + 連続割付防止 + 週跨ぎ重複回避テスト.
+"""Layer 3 ローテーション: 決定的ランダム + 患者中心ローテ + 週跨ぎ重複回避テスト.
+
+Phase 2 で旧 Wave5 (前日/前々日/前週金土の継ぎ接ぎ) を「患者中心の直近 N 回
+ローテ」 に作り替えた. 本ファイルは新機構 (``patient_recent_staff`` /
+``_load_patient_recent_staff`` / 段階ペナルティ) の検証に更新済み.
 
 検証観点:
-  1. 同 patient で iso_week=N と N+1 で staff の選択が変わる傾向 (deterministic random)
-  2. 連続割付 penalty: 月曜 staff A → 火曜は staff B 優先
-  3. 週跨ぎ重複 penalty: 前週金 staff A → 今週月は staff B 優先
-  4. sex_restriction はランダムを入れてもハード制約のまま (female_only → male NG)
-  5. 既存 W25 fix の挙動維持 (staff_assigned コースは変更されない)
-  6. deterministic seed: 同じ (iso_year, iso_week) で 2 回実行すると同じ結果
+  1. deterministic random helper (補助タイブレーク) の再現性 / 週次変動
+  2. 患者中心ローテ: 直近担当者を段階ペナルティで避ける (週・曜日横断)
+  3. 週内伝搬: 月→火 同患者で別 staff (working_recent prepend)
+  4. 週跨ぎ重複: 前週担当者を今週回避 (DB ローダー経由)
+  5. sex_restriction はランダムを入れてもハード制約のまま
+  6. 既存 W25 fix の挙動維持 (staff_assigned コースは変更されない)
+  7. deterministic seed: 同じ (iso_year, iso_week) で 2 回実行すると同じ結果
 """
 
 from __future__ import annotations
@@ -31,9 +36,12 @@ from app.models.course import (
 )
 from app.models.visit import VISIT_STATUS_PLANNED
 from app.services.scheduling.layer3_assignment import (
-    COST_W5_PATIENT_PREV2_DAY,
-    COST_W5_PATIENT_PREV_DAY,
+    COST_PATIENT_RECENT_1,
+    COST_PATIENT_RECENT_2,
+    COST_PATIENT_RECENT_3,
     COST_W5_ROTATION_MAX,
+    HUNGARIAN_INFINITY,
+    PATIENT_RECENT_DEPTH,
     CourseAssignmentTarget,
     Layer3Assigner,
     StaffInfo,
@@ -88,11 +96,11 @@ def _make_course(
 
 
 # ---------------------------------------------------------------------------
-# 1. deterministic_random helper
+# 1. deterministic_random helper (補助タイブレーク)
 # ---------------------------------------------------------------------------
 
 
-def test_w5_deterministic_random_is_reproducible() -> None:
+def test_deterministic_random_is_reproducible() -> None:
     """同じ seed なら何度呼んでも同じ値を返す."""
     pid = uuid4()
     sid = uuid4()
@@ -102,15 +110,22 @@ def test_w5_deterministic_random_is_reproducible() -> None:
     assert 0.0 <= a < COST_W5_ROTATION_MAX
 
 
-def test_w5_deterministic_random_changes_across_weeks() -> None:
+def test_deterministic_random_changes_across_weeks() -> None:
     """同じ patient × staff でも iso_week が変われば値が変わる (= ローテーション)."""
     pid = uuid4()
     sid = uuid4()
     v1 = _deterministic_random(iso_year=2026, iso_week=22, patient_id=pid, staff_id=sid)
     v2 = _deterministic_random(iso_year=2026, iso_week=23, patient_id=pid, staff_id=sid)
     v3 = _deterministic_random(iso_year=2026, iso_week=24, patient_id=pid, staff_id=sid)
-    # 3 つの異なる週で同じ値になる確率は (1/2^64)^2 でほぼゼロ
     assert len({v1, v2, v3}) >= 2
+
+
+def test_recent_penalties_are_staged_and_below_infinity() -> None:
+    """段階ペナルティは 1>2>3 の順で、 いずれも HUNGARIAN_INFINITY 未満 (= 段階的緩和)."""
+    assert COST_PATIENT_RECENT_1 > COST_PATIENT_RECENT_2 > COST_PATIENT_RECENT_3 > 0.0
+    assert COST_PATIENT_RECENT_1 < HUNGARIAN_INFINITY
+    # distance(α×〜30) や random(<=10) より桁違いに大きいこと
+    assert COST_PATIENT_RECENT_3 > COST_W5_ROTATION_MAX * 100
 
 
 # ---------------------------------------------------------------------------
@@ -118,98 +133,60 @@ def test_w5_deterministic_random_changes_across_weeks() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_w5_rotation_assigns_different_staff_across_weeks() -> None:
-    """同 patient で iso_week=22 と 23 で staff の傾向が変わる.
-
-    history なし / 距離なし / 同条件下で、cost に rotation_random が乗ることで
-    異なる週の最適解が変わりうることを確認する。
-    """
+def test_rotation_assigns_different_staff_across_weeks() -> None:
+    """同 patient で複数週に渡り、 特定 1 staff に固定されない (random タイブレーク)."""
     s1 = _make_staff("S1")
     s2 = _make_staff("S2")
     s3 = _make_staff("S3")
     s4 = _make_staff("S4")
-
-    # 1 コース / 1 患者. 各週で同じコース構造 (course_id は週ごとに作り直す).
     pid = uuid4()
 
     asgn = Layer3Assigner()
-
-    # 10 週分シミュレートして「特定の 1 staff に固定」されないことを確認.
     chosen_staff: set[UUID] = set()
     for w in range(20, 30):
         course = _make_course(weekday=0, code="A", patient_ids=[pid])
-        result = asgn.solve(
-            [course],
-            [s1, s2, s3, s4],
-            iso_year=2026,
-            iso_week=w,
-        )
-        # この course に対する staff
+        result = asgn.solve([course], [s1, s2, s3, s4], iso_year=2026, iso_week=w)
         for a in result.assignments:
             if a.course_id == course.course_id:
                 chosen_staff.add(a.staff_id)
-    # 10 週中、複数の staff が選ばれている = ローテーションが回っている
     assert len(chosen_staff) >= 2, (
         f"rotation not working: only {len(chosen_staff)} unique staff over 10 weeks"
     )
 
 
 # ---------------------------------------------------------------------------
-# 3. 連続割付防止 (前日 penalty)
+# 3. 患者中心ローテ: 直近担当者を段階ペナルティで避ける
 # ---------------------------------------------------------------------------
 
 
-def test_w5_continuity_penalty_prevents_consecutive_days() -> None:
-    """同 patient × 月曜割当 staff_A が居る場合、火曜は別 staff が選ばれる.
-
-    history を patient_prev_day_history で渡し、火曜のセル評価で
-    +1000 のソフトペナルティが効くことを検証する。
-    """
+def test_recent_staff_avoided_via_patient_recent_staff() -> None:
+    """``patient_recent_staff`` で直近担当 (= index 0) の staff が回避される."""
     s_a = _make_staff("S-A")
     s_b = _make_staff("S-B")
     s_c = _make_staff("S-C")
 
     pid = uuid4()
-    # 火曜 (weekday=1) の単一コース
-    tue_course = _make_course(weekday=1, code="A", patient_ids=[pid])
+    course = _make_course(weekday=1, code="A", patient_ids=[pid])
 
     asgn = Layer3Assigner()
-
-    # 「月曜の visit で同 patient に S-A が割当てられていた」と DB 履歴で与える
-    prev_day_hist: dict[tuple[int, UUID], set[UUID]] = {
-        (1, pid): {s_a.staff_id},  # weekday=1 のセル評価で「前日 (= 月曜) = S-A」
-    }
+    # 「直近担当者 = S-A」 を渡す
+    recent: dict[UUID, list[UUID]] = {pid: [s_a.staff_id]}
 
     result = asgn.solve(
-        [tue_course],
+        [course],
         [s_a, s_b, s_c],
         iso_year=2026,
         iso_week=22,
-        patient_prev_day_history=prev_day_hist,
+        patient_recent_staff=recent,
     )
-
-    tue_assignment = next(
-        (a for a in result.assignments if a.course_id == tue_course.course_id), None
-    )
-    assert tue_assignment is not None
-    # rotation_random (<=10) << 前日 penalty (1000) なので、S-A は回避されるはず
-    assert tue_assignment.staff_id != s_a.staff_id, (
-        f"continuity penalty failed: tue staff = {tue_assignment.staff_id}"
-    )
+    a = next((x for x in result.assignments if x.course_id == course.course_id), None)
+    assert a is not None
+    # RECENT_1 (1e6) >> random(<=10) なので S-A は避けられる
+    assert a.staff_id != s_a.staff_id, f"recent staff not avoided: got {a.staff_id}"
 
 
-def test_w5_prev2_day_penalty_softer_than_prev_day() -> None:
-    """前々日 penalty は前日 penalty より小さい (200 vs 1000)."""
-    assert COST_W5_PATIENT_PREV2_DAY < COST_W5_PATIENT_PREV_DAY
-    assert COST_W5_PATIENT_PREV2_DAY == 200.0
-    assert COST_W5_PATIENT_PREV_DAY == 1000.0
-
-
-def test_w5_within_week_carryover_avoids_consecutive_days() -> None:
-    """solve() 内のループで当日割当が patient レベルに伝搬され、翌日に同 staff が回避される.
-
-    DB 履歴を渡さずとも、同週内 (月→火) で同 staff が連続しないことを確認する。
-    """
+def test_within_week_carryover_avoids_consecutive_days() -> None:
+    """solve() 内 working_recent prepend で、 同週内 (月→火) の同 staff 連続を回避."""
     s_a = _make_staff("S-A")
     s_b = _make_staff("S-B")
     s_c = _make_staff("S-C")
@@ -225,112 +202,93 @@ def test_w5_within_week_carryover_avoids_consecutive_days() -> None:
         iso_year=2026,
         iso_week=22,
     )
-
     mon_a = next(a for a in result.assignments if a.course_id == mon_course.course_id)
     tue_a = next(a for a in result.assignments if a.course_id == tue_course.course_id)
-    # 月曜と火曜で同じ staff が同 patient を取らないことを確認
     assert mon_a.staff_id != tue_a.staff_id, (
         f"within-week continuity failed: mon=tue={mon_a.staff_id}"
     )
 
 
-# ---------------------------------------------------------------------------
-# 4. 週跨ぎ重複回避 (前週金/土 → 今週月)
-# ---------------------------------------------------------------------------
-
-
-def test_w5_week_crossover_avoids_friday_to_monday() -> None:
-    """前週金に S-A → 今週月の同 patient は S-A 以外が選ばれる."""
+def test_three_day_gap_same_patient_different_staff() -> None:
+    """Phase 2 要件①②: 月→金 (3日差) 同患者でも別 staff になる (旧 Wave5 の穴)."""
     s_a = _make_staff("S-A")
     s_b = _make_staff("S-B")
     s_c = _make_staff("S-C")
 
     pid = uuid4()
-    mon_course = _make_course(weekday=0, code="A", patient_ids=[pid])
+    mon = _make_course(weekday=0, code="A", patient_ids=[pid])
+    fri = _make_course(weekday=4, code="A", patient_ids=[pid])
 
     asgn = Layer3Assigner()
-    prev_week_hist: dict[UUID, set[UUID]] = {pid: {s_a.staff_id}}
-
-    result = asgn.solve(
-        [mon_course],
-        [s_a, s_b, s_c],
-        iso_year=2026,
-        iso_week=22,
-        patient_prev_week_fri_sat_history=prev_week_hist,
-    )
-
-    mon_a = next(a for a in result.assignments if a.course_id == mon_course.course_id)
-    # 800 >> rotation_random max 10 なので S-A は回避
-    assert mon_a.staff_id != s_a.staff_id, (
-        f"week-crossover penalty failed: mon staff = {mon_a.staff_id}"
+    result = asgn.solve([mon, fri], [s_a, s_b, s_c], iso_year=2026, iso_week=22)
+    mon_a = next(a for a in result.assignments if a.course_id == mon.course_id)
+    fri_a = next(a for a in result.assignments if a.course_id == fri.course_id)
+    assert mon_a.staff_id != fri_a.staff_id, (
+        f"3-day-gap continuity failed: mon=fri={mon_a.staff_id} (旧Wave5 の月→金穴)"
     )
 
 
-def test_w5_week_crossover_only_applies_on_monday() -> None:
-    """前週金/土 penalty は月曜 (weekday=0) でのみ適用される.
+def test_graceful_relaxation_fills_when_only_one_eligible() -> None:
+    """Phase 2 要件④: 適任者が 1 人しか居ない時は未割当でなく埋まる (段階的緩和).
 
-    火曜のコースには前週金/土 history は影響しないことを確認.
+    直近担当者であっても、 他に適任 (= 当日勤務 + 性別適合) が居なければ
+    ペナルティを払ってでも割当する (= HUNGARIAN_INFINITY 未満なので埋まる).
     """
-    s_a = _make_staff("S-A")
-    s_b = _make_staff("S-B")
-    s_c = _make_staff("S-C")
-
+    s_only = _make_staff("S-ONLY")
     pid = uuid4()
-    # weekday=1 (火曜) の単一コース. history は前週金/土 = S-A.
-    tue_course = _make_course(weekday=1, code="A", patient_ids=[pid])
+    course = _make_course(weekday=0, code="A", patient_ids=[pid])
 
     asgn = Layer3Assigner()
-    prev_week_hist: dict[UUID, set[UUID]] = {pid: {s_a.staff_id}}
-
-    # S-A を強制的に選ばせるため、他の staff は work_days を空に
-    s_b_off = StaffInfo(
-        staff_id=s_b.staff_id,
-        name=s_b.name,
-        sex=None,
-        role="staff",
-        primary_office_lat=None,
-        primary_office_lng=None,
-        work_days=frozenset(),
-    )
-    s_c_off = StaffInfo(
-        staff_id=s_c.staff_id,
-        name=s_c.name,
-        sex=None,
-        role="staff",
-        primary_office_lat=None,
-        primary_office_lng=None,
-        work_days=frozenset(),
-    )
-
+    # S-ONLY が直近担当者でも、 他に居ないので埋まるべき
+    recent: dict[UUID, list[UUID]] = {pid: [s_only.staff_id]}
     result = asgn.solve(
-        [tue_course],
-        [s_a, s_b_off, s_c_off],
+        [course],
+        [s_only],
         iso_year=2026,
         iso_week=22,
-        patient_prev_week_fri_sat_history=prev_week_hist,
+        patient_recent_staff=recent,
+    )
+    a = next((x for x in result.assignments if x.course_id == course.course_id), None)
+    assert a is not None and a.staff_id == s_only.staff_id, (
+        "段階的緩和が効かず未割当になった (適任者 1 人なら埋めるべき)"
     )
 
-    # 火曜なので前週金/土 history は影響せず、S-A が普通に取れる
-    tue_a = next(a for a in result.assignments if a.course_id == tue_course.course_id)
-    assert tue_a.staff_id == s_a.staff_id
+
+def test_recent_list_truncated_to_depth() -> None:
+    """working_recent は最大 DEPTH 件で truncate される (= それ以前は忘れる)."""
+    # DEPTH 人 + 1 を連続で当てると、 最古の担当者は recent から落ちる.
+    staffs = [_make_staff(f"S{i}") for i in range(PATIENT_RECENT_DEPTH + 2)]
+    pid = uuid4()
+    asgn = Layer3Assigner()
+
+    # 各曜日に 1 コース (同患者). DEPTH+2 曜日分.
+    courses = [
+        _make_course(weekday=wd, code="A", patient_ids=[pid])
+        for wd in range(PATIENT_RECENT_DEPTH + 2)
+    ]
+    result = asgn.solve(courses, staffs, iso_year=2026, iso_week=22)
+    by_wd = {
+        next(c for c in courses if c.course_id == a.course_id).weekday: a.staff_id
+        for a in result.assignments
+    }
+    # 連続する DEPTH+1 曜日は全て distinct (= 直近 DEPTH を避けるため)
+    window = [by_wd[wd] for wd in range(PATIENT_RECENT_DEPTH + 1) if wd in by_wd]
+    assert len(window) == len(set(window)), f"recent window has duplicates within DEPTH+1: {window}"
 
 
 # ---------------------------------------------------------------------------
-# 5. sex_restriction はランダム要素が入ってもハード制約
+# 4. sex_restriction はランダム要素が入ってもハード制約
 # ---------------------------------------------------------------------------
 
 
-def test_w5_sex_restriction_remains_hard_constraint() -> None:
+def test_sex_restriction_remains_hard_constraint() -> None:
     """female_only patient に male staff は割当てられない (ランダム要素があっても)."""
     male_staff = _make_staff("M-1", sex="male")
     male_staff2 = _make_staff("M-2", sex="male")
     female_staff = _make_staff("F-1", sex="female")
-
     pid = uuid4()
-    # female_only restriction. course は週ごとに作り直す.
 
     asgn = Layer3Assigner()
-    # 複数週試行しても常に female が選ばれる
     for w in range(20, 30):
         result = asgn.solve(
             [
@@ -353,11 +311,11 @@ def test_w5_sex_restriction_remains_hard_constraint() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 6. deterministic seed: 2 回実行で同じ結果
+# 5. deterministic seed: 2 回実行で同じ結果
 # ---------------------------------------------------------------------------
 
 
-def test_w5_deterministic_seed_reproducible() -> None:
+def test_deterministic_seed_reproducible() -> None:
     """同じ (iso_year, iso_week) で 2 回 solve() しても同じ結果 (random は決定的)."""
     s1 = _make_staff("S1")
     s2 = _make_staff("S2")
@@ -373,17 +331,11 @@ def test_w5_deterministic_seed_reproducible() -> None:
         ]
 
     asgn = Layer3Assigner()
-    # course_id は uuid4 で毎回変わるが、(staff_id ベース) の選択は patient seed に
-    # 依存するため、固定の patient 順序で staff 選択が再現することを確認する。
     courses_a = _build_courses()
     courses_b = _build_courses()
-    # patient_ids を同じにすれば、course_id が異なっても staff 選択は同じはず.
-    # course の cost は course_code に依存しないので、患者 patient_ids[0] と
-    # staff_id の hash で選択が決まる.
     res_a = asgn.solve(courses_a, [s1, s2, s3, s4], iso_year=2026, iso_week=22)
     res_b = asgn.solve(courses_b, [s1, s2, s3, s4], iso_year=2026, iso_week=22)
 
-    # patient_id 経由で staff 選択をマップ化
     def _staff_by_first_patient(
         courses: list[CourseAssignmentTarget], assignments: list
     ) -> dict[UUID, UUID]:
@@ -400,12 +352,12 @@ def test_w5_deterministic_seed_reproducible() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 7. 既存 W25 fix 維持: staff_assigned コースは変更されない (DB integration)
+# 6. 既存 W25 fix 維持: staff_assigned コースは変更されない (DB integration)
 # ---------------------------------------------------------------------------
 
 
 async def _seed_office_and_staff(db) -> dict[str, object]:
-    """W5 integration test 用の office + staff seed."""
+    """integration test 用の office + staff seed."""
     inage = Office(name="本店(稲毛)", lat=35.6383, lng=140.1041)
     db.add(inage)
     await db.flush()
@@ -446,18 +398,16 @@ async def _seed_office_and_staff(db) -> dict[str, object]:
 
 
 @pytest.mark.asyncio
-async def test_w5_existing_assigned_staff_not_overridden(db) -> None:
+async def test_existing_assigned_staff_not_overridden(db) -> None:
     """既に staff_assigned 状態のコースは Layer 3 再実行で staff が変わらない (W25 fix 維持)."""
     seeds = await _seed_office_and_staff(db)
     office = seeds["office"]
     staff_list = seeds["staff"]
 
-    # 患者
     p1 = Patient(code="W5-P1", name="P1", status="active")
     db.add(p1)
     await db.flush()
 
-    # 月曜のコース: 既に staff_assigned 状態 (assigned_staff_id = S1)
     locked_staff = staff_list[0]
     course = Course(
         iso_year=W5_ISO_YEAR,
@@ -499,21 +449,24 @@ async def test_w5_existing_assigned_staff_not_overridden(db) -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# 7. 週跨ぎ重複回避 (前週担当 → 今週回避) — DB ローダー経由
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.asyncio
-async def test_w5_week_crossover_db_integration(db) -> None:
-    """DB 経由 — 前週金 visit が S1 のとき、今週月の同 patient は S1 以外が選ばれる."""
+async def test_week_crossover_db_integration(db) -> None:
+    """Phase 2 要件③: 前週金 visit が S1 のとき、 今週月の同 patient は S1 以外."""
     seeds = await _seed_office_and_staff(db)
     office = seeds["office"]
     s1, s2, s3 = seeds["staff"]
 
-    # 患者
     p1 = Patient(code="W5-P2", name="P2", status="active")
     db.add(p1)
     await db.flush()
 
-    # 前週 (W21) の金曜日 visit に S1 が割り当てられていた履歴
     prev_week_friday = W5_WEEK_MONDAY - timedelta(days=3)  # 前週金曜
-    assert prev_week_friday.weekday() == 4  # Fri
+    assert prev_week_friday.weekday() == 4
 
     prev_course = Course(
         iso_year=2026,
@@ -543,7 +496,6 @@ async def test_w5_week_crossover_db_integration(db) -> None:
     await db.flush()
     db.add(VisitStaffAssignment(visit_id=prev_visit.id, staff_id=s1.id))
 
-    # 今週 (W22) の月曜コース (course_fixed) — 同 patient
     cur_course = Course(
         iso_year=W5_ISO_YEAR,
         iso_week=W5_ISO_WEEK,
@@ -575,36 +527,31 @@ async def test_w5_week_crossover_db_integration(db) -> None:
 
     a = next((x for x in result.assignments if x.course_id == cur_course.id), None)
     assert a is not None
-    # 800 >> rotation_random max 10 なので S1 は回避される
     assert a.staff_id != s1.id, (
-        f"week-crossover penalty (DB) failed: today=S1 same as prev-fri, got {a.staff_id}"
+        f"week-crossover (DB) failed: today=S1 same as prev-fri, got {a.staff_id}"
     )
 
 
 # ---------------------------------------------------------------------------
-# 8. MEDIUM #1 (re-run swing 回避): course_fixed の VSA は history 対象外
+# 8. re-run swing 回避: course_fixed の VSA は history 対象外
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_w5_history_only_loads_staff_assigned_courses(db) -> None:
-    """前回 Layer 3 実行の残骸 (course_fixed のままの VSA) は history に含まれない.
+async def test_recent_loader_only_loads_staff_assigned_courses(db) -> None:
+    """前回 Layer 3 実行の残骸 (course_fixed のままの VSA) は recent に含まれない.
 
     再実行時の swing 原因を排除するための回帰テスト:
-      - 前週金: ``course_status='course_fixed'`` の course + VSA(S1)  → history 対象外
-      - 今週月: 同 patient の course_fixed → S1 が選ばれても OK (history 無効化済み)
-    Wave 5 fix 前は前週金の VSA が week-crossover penalty を発火させて S1 が回避されていた.
+      - 前週金: ``course_fixed`` の course + VSA(S1)  → recent 対象外
     """
     seeds = await _seed_office_and_staff(db)
     office = seeds["office"]
     s1, _s2, _s3 = seeds["staff"]
 
-    # 患者
     p1 = Patient(code="W5-P3", name="P3", status="active")
     db.add(p1)
     await db.flush()
 
-    # 前週 (W21) の金曜日 visit — course_status は course_fixed (= 未確定の残骸)
     prev_week_friday = W5_WEEK_MONDAY - timedelta(days=3)
     assert prev_week_friday.weekday() == 4
 
@@ -632,68 +579,132 @@ async def test_w5_history_only_loads_staff_assigned_courses(db) -> None:
     )
     db.add(prev_visit)
     await db.flush()
-    # 前回 Layer 3 実行で書き残った VSA を再現 — S1 にひも付く
     db.add(VisitStaffAssignment(visit_id=prev_visit.id, staff_id=s1.id))
+    await db.flush()
 
-    # _load_patient_visit_history を直接呼び、course_fixed の VSA が
-    # history map に乗らないことを確認する.
     assigner = Layer3Assigner()
-    prev_day_map, prev2_day_map, prev_week_map = await assigner._load_patient_visit_history(
-        db, week_monday=W5_WEEK_MONDAY
+    recent = await assigner._load_patient_recent_staff(db, week_monday=W5_WEEK_MONDAY)
+    # course_fixed の VSA は除外されるので、 recent に S1 が現れないはず.
+    assert p1.id not in recent or s1.id not in recent.get(p1.id, []), (
+        f"course_fixed VSA leaked into recent: {recent}"
     )
-    # course_fixed の VSA は除外されるので、いずれの map にも S1 が現れないはず.
-    assert p1.id not in prev_week_map, (
-        f"course_fixed VSA leaked into prev_week_map: {prev_week_map}"
-    )
-    # prev_day / prev2_day は当該週内 visit から構築される. 前週 visit のみ用意した
-    # 本シナリオでは patient_id は当該週 map には現れない.
-    assert all(p1.id != pid for (_, pid) in prev_day_map)
-    assert all(p1.id != pid for (_, pid) in prev2_day_map)
 
-    # 対照: もし course を staff_assigned に変えたら history に乗ること.
+    # 対照: staff_assigned に変えたら recent に乗ること.
     prev_course.course_status = COURSE_STATUS_STAFF_ASSIGNED
     await db.flush()
-    _pd, _pd2, prev_week_map_after = await assigner._load_patient_visit_history(
-        db, week_monday=W5_WEEK_MONDAY
-    )
-    assert p1.id in prev_week_map_after, "staff_assigned VSA should be loaded into prev_week_map"
-    assert s1.id in prev_week_map_after[p1.id]
+    recent_after = await assigner._load_patient_recent_staff(db, week_monday=W5_WEEK_MONDAY)
+    assert p1.id in recent_after, "staff_assigned VSA should be loaded into recent"
+    assert s1.id in recent_after[p1.id]
 
 
-# ---------------------------------------------------------------------------
-# 9. MEDIUM #2: seed_patient is deterministic even if patient_ids order differs
-# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_recent_loader_orders_newest_first_and_caps_depth(db) -> None:
+    """ローダーは visit_date desc 順で distinct staff を最大 DEPTH 件まで返す."""
+    seeds = await _seed_office_and_staff(db)
+    office = seeds["office"]
+    s1, s2, s3 = seeds["staff"]
+
+    p1 = Patient(code="W5-P4", name="P4", status="active")
+    db.add(p1)
+    await db.flush()
+
+    # 過去 3 週: 古い順に s3 (3週前), s2 (2週前), s1 (1週前) を当てる.
+    assigner = Layer3Assigner()
+    week_offsets_staff = [(3, s3), (2, s2), (1, s1)]
+    for weeks_ago, staff in week_offsets_staff:
+        vdate = W5_WEEK_MONDAY - timedelta(weeks=weeks_ago)
+        iso = vdate.isocalendar()
+        c = Course(
+            iso_year=iso.year,
+            iso_week=iso.week,
+            weekday=vdate.weekday(),
+            code="A",
+            course_status=COURSE_STATUS_STAFF_ASSIGNED,
+            assigned_staff_id=staff.id,
+            office_id=office.id,
+        )
+        db.add(c)
+        await db.flush()
+        v = Visit(
+            patient_id=p1.id,
+            visit_date=vdate,
+            start_time=time(9, 0),
+            end_time=time(10, 0),
+            type="regular",
+            status=VISIT_STATUS_PLANNED,
+            source="auto",
+            required_staff_count=1,
+            course_id=c.id,
+        )
+        db.add(v)
+        await db.flush()
+        db.add(VisitStaffAssignment(visit_id=v.id, staff_id=staff.id))
+    await db.commit()
+
+    recent = await assigner._load_patient_recent_staff(db, week_monday=W5_WEEK_MONDAY)
+    assert p1.id in recent
+    # 最近順 = [s1 (1週前), s2 (2週前), s3 (3週前)]
+    assert recent[p1.id][0] == s1.id, f"newest-first violated: {recent[p1.id]}"
+    assert len(recent[p1.id]) <= PATIENT_RECENT_DEPTH
 
 
-def test_w5_seed_patient_deterministic_with_unsorted_list() -> None:
-    """同じ集合の patient_ids でも順序が異なる場合に seed (= 選択 staff) が同じ.
+@pytest.mark.asyncio
+async def test_recent_loader_tie_break_is_deterministic_by_staff_id(db) -> None:
+    """同時刻・同患者の複数 staff (required_staff_count>1) は staff_id 昇順で安定化.
 
-    Wave 5 fix: ``seed_patient = min(course.patient_ids)`` により、
-    DB 取得順依存を排除する.
+    修正1 (loader tie-break 決定性) の回帰テスト:
+      - 1 visit (同 visit_date, 同 start_time) に 2 staff の VSA を付与する.
+      - (visit_date, start_time) が完全一致するため、 staff_id.asc() の
+        tie-break が無いと recent list の順序は DB 物理行順依存で非決定的になる.
+      - tie-break 追加後は、 同時刻同患者の複数 staff が staff_id 昇順で並ぶことを検証.
     """
-    s1 = _make_staff("S1")
-    s2 = _make_staff("S2")
-    s3 = _make_staff("S3")
-    s4 = _make_staff("S4")
+    seeds = await _seed_office_and_staff(db)
+    office = seeds["office"]
+    s1, s2, _s3 = seeds["staff"]
 
-    # 3 患者 — シャッフル可能な異なる順序で 2 コースを作る.
-    p_low = UUID("00000000-0000-0000-0000-000000000001")
-    p_mid = UUID("00000000-0000-0000-0000-000000000002")
-    p_high = UUID("00000000-0000-0000-0000-000000000003")
+    p1 = Patient(code="W5-P5", name="P5", status="active")
+    db.add(p1)
+    await db.flush()
 
-    course_sorted = _make_course(weekday=0, code="A", patient_ids=[p_low, p_mid, p_high])
-    course_unsorted = _make_course(weekday=0, code="A", patient_ids=[p_high, p_low, p_mid])
-
-    asgn = Layer3Assigner()
-    res_sorted = asgn.solve([course_sorted], [s1, s2, s3, s4], iso_year=2026, iso_week=22)
-    res_unsorted = asgn.solve([course_unsorted], [s1, s2, s3, s4], iso_year=2026, iso_week=22)
-
-    a_sorted = next(a for a in res_sorted.assignments if a.course_id == course_sorted.course_id)
-    a_unsorted = next(
-        a for a in res_unsorted.assignments if a.course_id == course_unsorted.course_id
+    vdate = W5_WEEK_MONDAY - timedelta(weeks=1)
+    iso = vdate.isocalendar()
+    course = Course(
+        iso_year=iso.year,
+        iso_week=iso.week,
+        weekday=vdate.weekday(),
+        code="A",
+        course_status=COURSE_STATUS_STAFF_ASSIGNED,
+        office_id=office.id,
     )
-    # min(patient_ids) は順序に依らず p_low なので、staff 選択も同じ.
-    assert a_sorted.staff_id == a_unsorted.staff_id, (
-        f"seed_patient non-deterministic w.r.t. list order: "
-        f"sorted={a_sorted.staff_id} vs unsorted={a_unsorted.staff_id}"
+    db.add(course)
+    await db.flush()
+
+    visit = Visit(
+        patient_id=p1.id,
+        visit_date=vdate,
+        start_time=time(9, 0),
+        end_time=time(10, 0),
+        type="regular",
+        status=VISIT_STATUS_PLANNED,
+        source="auto",
+        required_staff_count=2,
+        course_id=course.id,
+    )
+    db.add(visit)
+    await db.flush()
+    # 2 staff を同一 (visit_date, start_time) の visit に紐付ける.
+    # 物理 INSERT 順を「staff_id 降順」 にして、 tie-break が無いと
+    # 先頭が大きい方になる (= 非決定/規約違反) ことを突く.
+    first_id, second_id = sorted([s1.id, s2.id])
+    db.add(VisitStaffAssignment(visit_id=visit.id, staff_id=second_id))
+    await db.flush()
+    db.add(VisitStaffAssignment(visit_id=visit.id, staff_id=first_id))
+    await db.commit()
+
+    assigner = Layer3Assigner()
+    recent = await assigner._load_patient_recent_staff(db, week_monday=W5_WEEK_MONDAY)
+    assert p1.id in recent
+    # staff_id 昇順で安定化されるので、 INSERT 順に依らず [first_id, second_id].
+    assert recent[p1.id] == [first_id, second_id], (
+        f"tie-break by staff_id.asc() violated: {recent[p1.id]}"
     )

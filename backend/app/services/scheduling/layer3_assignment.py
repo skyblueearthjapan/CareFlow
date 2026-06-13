@@ -109,6 +109,14 @@ logger = logging.getLogger(__name__)
 # α: 距離スコアの係数 (km) — 主拠点 → コース重心
 COST_ALPHA_DISTANCE: float = 1.0
 
+# Phase 3: 座標欠損時の代替距離 (km).
+# 根拠: 旧実装は座標 (course 重心 or staff 主拠点) が None のとき 0.0 を返し、
+# 「最良 (= 最短距離)」 扱いになる逆インセンティブがあった (= 座標が無い staff/course
+# ほど距離項で有利になり優先選択されてしまう). 12.0 km は当サービスの稼働圏 (千葉市内
+# 拠点 → 患者宅) の典型的な中庸距離 (= 短すぎず長すぎない) を採用し、 座標既知の
+# 近距離ペア (数 km) より不利、 遠距離ペア (20km+) より有利な中立値とする.
+DISTANCE_UNKNOWN_KM: float = 12.0
+
 # β: ローテーションペナルティの係数 — 最近 N 週で同一 course を担当した回数
 #    1 回担当 = 5.0 のペナルティ (距離換算で 5 km 相当)
 COST_BETA_ROTATION: float = 5.0
@@ -144,22 +152,35 @@ COST_SCALE: int = 10_000
 BUFFER_MINUTES: int = 15  # 移動・準備の余裕 (Wave 33)
 
 # ---------------------------------------------------------------------------
-# Wave 5 (NEW): patient ベースの連続割付防止 + 週跨ぎ重複回避 + 決定的ランダム
+# Phase 2: patient 中心ローテーション (= 同じ患者に毎回同じ staff を避ける)
 # ---------------------------------------------------------------------------
+# 設計: 旧 Wave5 の「前日 / 前々日 / 前週金土」継ぎ接ぎ (穴: 3日差・週またぎ同曜日)
+# を廃止し、 患者ごとの「直近 N 回の担当者リスト」 を週・曜日横断で一元管理する.
+# 段階的ペナルティで「避けられる限り必ず避ける」が「適任者ゼロなら埋める」を担保.
 
-# 同一 patient × 前日 visit が同一 staff だった場合のソフトペナルティ.
-# ハード INF にしないのは「他に勤務可能なスタッフが居ない」場合の救済のため.
-COST_W5_PATIENT_PREV_DAY: float = 1000.0
+# 履歴を遡る週数 (= patient ごとの過去担当者を何週分集めるか).
+PATIENT_ROTATION_LOOKBACK_WEEKS: int = 4
 
-# 同一 patient × 前々日 visit が同一 staff だった場合のソフトペナルティ.
-COST_W5_PATIENT_PREV2_DAY: float = 200.0
+# 避ける「直近担当者」の人数 (= リストの最大長). 分散範囲 = 直近 2〜3 回分.
+PATIENT_RECENT_DEPTH: int = 3
 
-# 月曜のみ — 前週金/土の visit が同 staff だった場合のソフトペナルティ.
-COST_W5_PATIENT_WEEK_CROSSOVER: float = 800.0
+# 段階ペナルティ (= 直近 1〜3 回前の担当者を避ける重み). いずれも
+# HUNGARIAN_INFINITY(1e12) 未満 = 「適任者ゼロなら埋める」段階的緩和を担保.
+# distance(α=1.0 × 〜30km)や random(max10)より桁違いに大きく、 避けられる限り必ず避ける.
+COST_PATIENT_RECENT_1: float = 1.0e6  # 1 回前 (= 最も最近の担当者)
+COST_PATIENT_RECENT_2: float = 5.0e5  # 2 回前
+COST_PATIENT_RECENT_3: float = 2.0e5  # 3 回前
+
+# index -> penalty のマップ (= working_recent list の index に対応). DEPTH と整合.
+_PATIENT_RECENT_PENALTY_BY_INDEX: dict[int, float] = {
+    0: COST_PATIENT_RECENT_1,
+    1: COST_PATIENT_RECENT_2,
+    2: COST_PATIENT_RECENT_3,
+}
 
 # 決定的ランダム加算の上限値. cost に [0.0, COST_W5_ROTATION_MAX) を加算して
-# ローテーション (= 同じ patient に常に同じ staff が当たる現象) を回避する.
-# 距離 km 換算で 0-10 km 程度の振れ幅を持たせる.
+# ローテーション (= 同じ patient に常に同じ staff が当たる現象) の補助タイブレーク
+# とする. 距離 km 換算で 0-10 km 程度の振れ幅. (Phase 2 でも補助として残す.)
 COST_W5_ROTATION_MAX: float = 10.0
 
 
@@ -314,6 +335,45 @@ def _normalize_sex_restriction(restriction: str) -> str:
     if restriction.endswith("_only"):
         return restriction[: -len("_only")]
     return restriction
+
+
+def _sex_satisfies_restrictions(sex: str | None, restrictions: frozenset[str]) -> bool:
+    """``sex`` が ``restrictions`` (例: {'female_only'}) を満たすなら True.
+
+    Phase 1: 性別ハード制約判定のプリミティブ (= 単一ソース). ``StaffInfo`` を
+    持たない経路 (= ``_build_fixed_assignments`` の生 ``Staff`` ORM) でも同一
+    セマンティクスを共有するため、 ``sex`` と ``restrictions`` の組で受ける.
+
+    セマンティクスは AND (= 全 restriction を満たす):
+    - ``restrictions`` が空 → 制限なし → True.
+    - 非空 → ``sex is None`` なら False (= 性別不明は割当不可).
+    - 各 restriction について ``_normalize_sex_restriction(restriction) != sex``
+      が一つでもあれば False (= 'female_only' + 'male_only' の複合制限では
+      どの staff も満たせない → 誤割当を防ぐ AND semantics).
+    """
+    if not restrictions:
+        return True
+    if sex is None:
+        return False
+    for restriction in restrictions:
+        if _normalize_sex_restriction(restriction) != sex:
+            return False
+    return True
+
+
+def _staff_satisfies_gender(staff: StaffInfo, course: CourseAssignmentTarget) -> bool:
+    """staff がコースの性別ハード制約を満たすなら True (= 割当可能).
+
+    既存の ``_cost_single_cell`` (γ ブロック) / ``_try_fallback_manager_for_course``
+    の性別判定ロジックの **単一ソース** (``_sex_satisfies_restrictions`` に委譲).
+    ``gender_restrictions`` の値 ('female_only'/'male_only') は
+    ``_normalize_sex_restriction`` で staff.sex の形式 ('female'/'male') に
+    正規化してから比較する (Phase G-27 fix と整合).
+
+    Phase 1 (固定割当の性別穴塞ぎ): 通常ルート (cost) / manager fallback /
+    固定割当の 3 経路で同一ロジックを共有し、 固定割当ルートの性別未チェックを塞ぐ.
+    """
+    return _sex_satisfies_restrictions(staff.sex, course.gender_restrictions)
 
 
 def _has_event_overlap(
@@ -603,12 +663,8 @@ class Layer3Assigner:
             week_monday=week_monday,
         )
 
-        # ---------- 4d. Wave 5: patient × staff 履歴 (前日 / 前々日 / 前週金土) ----------
-        (
-            patient_prev_day_history,
-            patient_prev2_day_history,
-            patient_prev_week_fri_sat_history,
-        ) = await self._load_patient_visit_history(db, week_monday=week_monday)
+        # ---------- 4d. Phase 2: patient ごとの直近担当者リスト (週・曜日横断) ----------
+        patient_recent_staff = await self._load_patient_recent_staff(db, week_monday=week_monday)
 
         # ---------- 5. 計算 ----------
         result = self.solve(
@@ -620,9 +676,7 @@ class Layer3Assigner:
             week_monday=week_monday,
             iso_year=iso_year,
             iso_week=iso_week,
-            patient_prev_day_history=patient_prev_day_history,
-            patient_prev2_day_history=patient_prev2_day_history,
-            patient_prev_week_fri_sat_history=patient_prev_week_fri_sat_history,
+            patient_recent_staff=patient_recent_staff,
         )
 
         # ---------- 6. DB 反映 ----------
@@ -647,9 +701,7 @@ class Layer3Assigner:
         week_monday: date_cls | None = None,
         iso_year: int | None = None,
         iso_week: int | None = None,
-        patient_prev_day_history: dict[tuple[int, UUID], set[UUID]] | None = None,
-        patient_prev2_day_history: dict[tuple[int, UUID], set[UUID]] | None = None,
-        patient_prev_week_fri_sat_history: dict[UUID, set[UUID]] | None = None,
+        patient_recent_staff: dict[UUID, list[UUID]] | None = None,
     ) -> Layer3Result:
         """純粋関数版エントリポイント (テスト / fixture 評価で直接使う).
 
@@ -675,15 +727,16 @@ class Layer3Assigner:
             iso_year: Wave 5 — ローテーション seed 用 ISO 年.
                 ``None`` のとき rotation score の加算を skip.
             iso_week: Wave 5 — ローテーション seed 用 ISO 週 (1-53).
-            patient_prev_day_history: Wave 5 — 前日 (当該 weekday - 1) の visit に
-                同 patient で割当てられていた staff を ``(weekday, patient_id) -> {staff_id}``
-                で渡す. weekday は **判定対象の今週** の曜日 (= 例: 火曜のセル評価では
-                weekday=1 を渡し、前日=月曜の staff 集合を取得する).
-            patient_prev2_day_history: Wave 5 — 前々日 (当該 weekday - 2) の同 patient
-                ``staff_id`` 集合. None で penalty 無し.
-            patient_prev_week_fri_sat_history: Wave 5 — 前週の金/土の同 patient ``staff_id``
-                集合 (``patient_id -> {staff_id}``). 月曜 (weekday=0) のセル評価時にのみ
-                参照される.
+            patient_recent_staff: Phase 2 — 患者ごとの「直近担当者リスト」
+                (``patient_id -> [staff_id, ...]``). 最近順 (index 0 = 最も最近)、
+                最大 ``PATIENT_RECENT_DEPTH`` 件. 週・曜日を横断した過去履歴を
+                ``_load_patient_recent_staff`` で構築して渡す. solve 内で当日割当を
+                各患者リストの先頭に prepend しながら後続曜日へ伝搬し、 「同じ患者に
+                毎回同じ staff が当たる」 のを段階ペナルティ
+                (``COST_PATIENT_RECENT_1/2/3``) で避ける. ``None`` で履歴なし.
+                **前提: 患者は1日1 visit**。 working_recent の前進伝搬は曜日ループの
+                各曜日完了後に一括更新するため、 同一 weekday 内で同患者が複数コースに
+                跨っても当日内の相互伝搬はしない (= 曜日横断でのみ伝搬する).
 
         Returns:
             Layer3Result.
@@ -707,12 +760,8 @@ class Layer3Assigner:
             fixed_staff_by_course = {}
         if events_by_staff is None:
             events_by_staff = {}
-        if patient_prev_day_history is None:
-            patient_prev_day_history = {}
-        if patient_prev2_day_history is None:
-            patient_prev2_day_history = {}
-        if patient_prev_week_fri_sat_history is None:
-            patient_prev_week_fri_sat_history = {}
+        if patient_recent_staff is None:
+            patient_recent_staff = {}
 
         # 固定割当先となる staff_id 集合 (= manager を除外しない対象)
         fixed_staff_ids: set[UUID] = set(fixed_staff_by_course.values())
@@ -735,14 +784,12 @@ class Layer3Assigner:
         # の割当から構築する.
         prev_day_pairs: set[tuple[str, UUID]] = set()
 
-        # Wave 5: 当該週内の当日割当を patient レベルで「前日 / 前々日」マップに
-        # 伝搬する. ループ内で書き換えるため、呼び出し側から渡された辞書を
-        # 破壊しないようコピーを保持する.
-        working_prev_day: dict[tuple[int, UUID], set[UUID]] = {
-            k: set(v) for k, v in patient_prev_day_history.items()
-        }
-        working_prev2_day: dict[tuple[int, UUID], set[UUID]] = {
-            k: set(v) for k, v in patient_prev2_day_history.items()
+        # Phase 2: 患者ごとの「直近担当者リスト」を週内で前進伝搬する単一機構.
+        # loader 結果のコピーで初期化 (= 呼び出し側辞書を破壊しない). 各曜日完了後に
+        # 当日割当の各患者リストへ当日 staff を prepend し、 後続曜日は当日割当を
+        # 「1 回前」 として見る (= 旧 working_prev_day/working_prev2_day を統合置換).
+        working_recent: dict[UUID, list[UUID]] = {
+            pid: list(staff_list) for pid, staff_list in patient_recent_staff.items()
         }
 
         # 各曜日ごとに独立して解く (= 1 スタッフ 1 日 1 コース制約は曜日内で閉じる)
@@ -760,9 +807,7 @@ class Layer3Assigner:
                 week_monday=week_monday,
                 iso_year=iso_year,
                 iso_week=iso_week,
-                patient_prev_day_history=working_prev_day,
-                patient_prev2_day_history=working_prev2_day,
-                patient_prev_week_fri_sat_history=patient_prev_week_fri_sat_history,
+                patient_recent_staff=working_recent,
             )
 
             # ---------- Phase G-29: 2nd pass — manager fallback ----------
@@ -789,17 +834,20 @@ class Layer3Assigner:
             # 当日割当を「前日割当」として次曜日へ受け渡し
             prev_day_pairs = {(a.course_code, a.staff_id) for a in day_assignments}
 
-            # Wave 5: 当日 (weekday=W) 割当の patient × staff を、次々曜日 (W+1) の
-            # 「前日マップ」と (W+2) の「前々日マップ」に追加する.
-            next_wd = weekday + 1
-            next2_wd = weekday + 2
+            # Phase 2: 当日割当の各患者リスト先頭に当日 staff を prepend する.
+            # 既存なら前方へ移動 (distinct 維持) し、 DEPTH で truncate する. これにより
+            # 後続曜日は当日割当を「1 回前」 として見る (= 火→木 同患者で別 staff を満たす).
+            # 前提: 患者は1日1 visit。 同一 weekday 内で同患者が複数コースに跨る場合、
+            # working_recent の更新は曜日ループ完了後に一括で行われるため、 当日内の
+            # 相互伝搬 (=同日別コース間で互いを「1回前」 と見る) は発生しない.
             for a in day_assignments:
                 course = next(c for c in day_courses if c.course_id == a.course_id)
                 for pid in course.patient_ids:
-                    if next_wd <= 6:
-                        working_prev_day.setdefault((next_wd, pid), set()).add(a.staff_id)
-                    if next2_wd <= 6:
-                        working_prev2_day.setdefault((next2_wd, pid), set()).add(a.staff_id)
+                    recent = working_recent.get(pid, [])
+                    # 既存 staff を除去してから先頭に追加 (= 前方移動 + distinct)
+                    recent = [sid for sid in recent if sid != a.staff_id]
+                    recent.insert(0, a.staff_id)
+                    working_recent[pid] = recent[:PATIENT_RECENT_DEPTH]
 
         # ローテーション分散度 (Gini) — fixed 割当は分散度計算対象外
         # (固定スタッフはローテーション対象ではないため)
@@ -835,9 +883,7 @@ class Layer3Assigner:
         week_monday: date_cls | None = None,
         iso_year: int | None = None,
         iso_week: int | None = None,
-        patient_prev_day_history: dict[tuple[int, UUID], set[UUID]] | None = None,
-        patient_prev2_day_history: dict[tuple[int, UUID], set[UUID]] | None = None,
-        patient_prev_week_fri_sat_history: dict[UUID, set[UUID]] | None = None,
+        patient_recent_staff: dict[UUID, list[UUID]] | None = None,
     ) -> list[StaffAssignment]:
         """1 曜日内で (course × staff) のハンガリアンを解く.
 
@@ -854,6 +900,8 @@ class Layer3Assigner:
             events_by_staff: W27 Phase A — staff_id -> [StaffEvent, ...].
             week_monday: W27 Phase A — 当該週月曜日 (visit 時刻と event の
                 重複判定に必要).
+            patient_recent_staff: Phase 2 — 患者ごとの直近担当者リスト
+                (``patient_id -> [staff_id, ...]``, 最近順, 最大 ``PATIENT_RECENT_DEPTH``).
         """
         if not day_courses or not staff_pool:
             return []
@@ -863,28 +911,45 @@ class Layer3Assigner:
             prev_day_pairs = set()
         if events_by_staff is None:
             events_by_staff = {}
-        if patient_prev_day_history is None:
-            patient_prev_day_history = {}
-        if patient_prev2_day_history is None:
-            patient_prev2_day_history = {}
-        if patient_prev_week_fri_sat_history is None:
-            patient_prev_week_fri_sat_history = {}
+        if patient_recent_staff is None:
+            patient_recent_staff = {}
 
-        # ----- W16: 固定割当を先に剥がす -----
+        # ----- W16 + Phase 1: 固定割当を先に剥がす (有効な固定のみ確定) -----
+        # Phase 1: 固定割当ルートは従来 work_days のみ見て無条件確定し、 性別 /
+        # event 重複のハード制約を素通りしていた (= 患者安全の穴). 固定 course は
+        # 「(a) staff が pool に存在 (b) 当日勤務 (c) 性別制約を満たす (d) event 重複なし」
+        # を **全て満たす時のみ** 確定し、 満たさない course は free_courses に回して
+        # 通常ハンガリアン + manager fallback で正しい性別の人へ割当する (不能なら未割当).
         result: list[StaffAssignment] = []
-        fixed_courses: list[CourseAssignmentTarget] = []
         free_courses: list[CourseAssignmentTarget] = []
+        # 有効に固定確定したスタッフのみ (= free_staff から除外する集合).
+        # 違反でドロップした固定スタッフは free に残し、 別コースで再利用可能にする.
+        valid_fixed_staff_ids: set[UUID] = set()
         for course in day_courses:
             staff_id = fixed_staff_by_course.get(course.course_id)
             if staff_id is None:
                 free_courses.append(course)
                 continue
-            # 当該 staff が当日の staff_pool に存在しなければ skip (work_days 違反など)
             staff = next((s for s in staff_pool if s.staff_id == staff_id), None)
+            # (a) pool 存在 + (b) 当日勤務
             if staff is None or weekday not in staff.work_days:
-                # 固定スタッフが当日勤務でない → 当該コースは未割当のまま
-                fixed_courses.append(course)
+                free_courses.append(course)
                 continue
+            # (c) 性別ハード制約 (Phase 1: 固定割当ルートの性別穴塞ぎ)
+            if not _staff_satisfies_gender(staff, course):
+                free_courses.append(course)
+                continue
+            # (d) event 時間帯重複 (W33 buffer 込み, events 情報がある場合のみ)
+            if events_by_staff and week_monday is not None and course.visits:
+                if _has_event_overlap_with_buffer(
+                    staff_id=staff.staff_id,
+                    course=course,
+                    weekday=weekday,
+                    events_by_staff=events_by_staff,
+                    week_monday=week_monday,
+                ):
+                    free_courses.append(course)
+                    continue
             result.append(
                 StaffAssignment(
                     weekday=weekday,
@@ -893,20 +958,14 @@ class Layer3Assigner:
                     staff_id=staff.staff_id,
                 )
             )
-            fixed_courses.append(course)
+            valid_fixed_staff_ids.add(staff.staff_id)
 
         # 固定で取られたスタッフは free のマッチング対象から除外。
-        # Bug #1 fix (W25): result に含まれる staff だけでなく、fixed_staff_by_course の
-        # 全 staff_id を除外する。当該曜日に勤務しない manager は fixed 経路で skip され
-        # result に含まれないが、eligible_staff には残っているため free_staff に混入し
-        # ハンガリアンで E 等のコースに重複割付される問題を修正。
-        all_fixed_staff_ids: set[UUID] = set(fixed_staff_by_course.values())
-        fixed_assigned_staff_ids: set[UUID] = {a.staff_id for a in result}
-        free_staff = [
-            s
-            for s in staff_pool
-            if s.staff_id not in fixed_assigned_staff_ids and s.staff_id not in all_fixed_staff_ids
-        ]
+        # Phase 1 修正: 除外対象は「**有効確定した固定割当のスタッフのみ**」.
+        # 旧 W25 fix は fixed_staff_by_course の全 values を除外していたが、 これだと
+        # 性別/event 違反でドロップした固定スタッフまで free から消え、 他コースで
+        # 再利用できなくなる (= 不要な未割当を生む). 違反でドロップした分は free に残す.
+        free_staff = [s for s in staff_pool if s.staff_id not in valid_fixed_staff_ids]
 
         if not free_courses or not free_staff:
             return result
@@ -930,9 +989,7 @@ class Layer3Assigner:
                     week_monday=week_monday,
                     iso_year=iso_year,
                     iso_week=iso_week,
-                    patient_prev_day_history=patient_prev_day_history,
-                    patient_prev2_day_history=patient_prev2_day_history,
-                    patient_prev_week_fri_sat_history=patient_prev_week_fri_sat_history,
+                    patient_recent_staff=patient_recent_staff,
                 )
         # ダミー行 (i >= n_courses): 全列コスト 0  → 「未割当の course/staff」を吸収
         # ダミー列 (j >= n_staff): 全行コスト 0
@@ -973,37 +1030,30 @@ class Layer3Assigner:
         week_monday: date_cls | None = None,
         iso_year: int | None = None,
         iso_week: int | None = None,
-        patient_prev_day_history: dict[tuple[int, UUID], set[UUID]] | None = None,
-        patient_prev2_day_history: dict[tuple[int, UUID], set[UUID]] | None = None,
-        patient_prev_week_fri_sat_history: dict[UUID, set[UUID]] | None = None,
+        patient_recent_staff: dict[UUID, list[UUID]] | None = None,
     ) -> float:
         """単一セル (course, staff) のコストを返す.
 
-        コスト関数 (§5.4 + W16 拡張 + W27 Phase A 拡張 + W33 バッファ拡張 + Wave 5 拡張):
+        コスト関数 (§5.4 + W16 拡張 + W27 Phase A 拡張 + W33 バッファ拡張 + Phase 2 拡張):
             cost = α * distance
-                 + β * rotation_penalty
+                 + β * rotation_penalty (course-code 単位の補助タイブレーク)
                  + γ * gender
                  + δ * work_day
                  + W16: 前日同コース penalty
                  + W27/W33: event 時間帯重複 + BUFFER_MINUTES バッファ (ハード除外)
-                 + Wave 5: patient × 前日 same staff penalty (+1000)
-                 + Wave 5: patient × 前々日 same staff penalty (+200)
-                 + Wave 5: 月曜のみ patient × 前週金/土 same staff penalty (+800)
+                 + Phase 2: patient 中心ローテ段階ペナルティ
+                   (直近 1/2/3 回前 = COST_PATIENT_RECENT_1/2/3, 患者間は max)
                  + Wave 5: deterministic random rotation score (0 .. COST_W5_ROTATION_MAX)
 
         γ / δ / W27/W33 はハード制約なので INF 相当 (= ``HUNGARIAN_INFINITY``).
-        Wave 5 ペナルティはすべてソフト (= INF ではなく加算).
+        Phase 2 / Wave 5 ペナルティはすべてソフト (= INF ではなく加算).
         """
         if prev_day_pairs is None:
             prev_day_pairs = set()
         if events_by_staff is None:
             events_by_staff = {}
-        if patient_prev_day_history is None:
-            patient_prev_day_history = {}
-        if patient_prev2_day_history is None:
-            patient_prev2_day_history = {}
-        if patient_prev_week_fri_sat_history is None:
-            patient_prev_week_fri_sat_history = {}
+        if patient_recent_staff is None:
+            patient_recent_staff = {}
 
         # ---------- δ: 勤務曜日違反 (ハード制約) ----------
         if weekday not in staff.work_days:
@@ -1011,15 +1061,11 @@ class Layer3Assigner:
 
         # ---------- γ: 性別ミスマッチ (ハード制約) ----------
         # 患者の sex_restriction (例: "female_only") はそのスタッフの sex と一致する必要あり.
-        # Phase G-27 fix: DB の sex_restriction は 'female_only'/'male_only' で staff.sex
-        # ('female'/'male') と suffix が異なるため、 _normalize_sex_restriction で
-        # 正規化してから比較する (旧コードは全 staff INF になり未割当を量産していた).
-        if course.gender_restrictions:
-            if staff.sex is None:
-                return HUNGARIAN_INFINITY
-            for restriction in course.gender_restrictions:
-                if _normalize_sex_restriction(restriction) != staff.sex:
-                    return HUNGARIAN_INFINITY
+        # Phase 1: 判定ロジックは ``_staff_satisfies_gender`` に単一ソース化
+        # (固定割当ルートと同一セマンティクス). 'female_only'/'male_only' の
+        # 正規化と AND semantics は同ヘルパー内で処理する (Phase G-27 fix 維持).
+        if not _staff_satisfies_gender(staff, course):
+            return HUNGARIAN_INFINITY
 
         # ---------- W27/W33: StaffEvent 時間帯重複 + バッファ (ハード制約) ----------
         # W27: event 時間帯と course 内 visit 時間帯が重なる場合は除外。
@@ -1068,26 +1114,26 @@ class Layer3Assigner:
         if (course.course_code, staff.staff_id) in prev_day_pairs:
             prev_day_penalty = COST_W16_PREV_DAY_SAME_COURSE
 
-        # ---------- Wave 5: patient ベース連続割付 / 週跨ぎ重複 / ローテ ----------
-        # course.patient_ids にある各患者について、その患者の前日 (前々日 / 前週金土) に
-        # 同じ staff が割当てられていた場合にペナルティを加える。
-        # 1 コースに複数患者がいる場合は **最大ペナルティを採用** する
-        # (= 1 人でも該当すれば回避したい). 合算だと複数患者で過剰にコストが膨らみ
-        # ハード除外と区別がつかなくなるため。
-        wave5_patient_penalty = 0.0
+        # ---------- Phase 2: patient 中心ローテ段階ペナルティ ----------
+        # course.patient_ids の各患者について、 その患者の直近担当者リスト
+        # ``patient_recent_staff[pid]`` (最近順, index 0 = 1 回前) における
+        # staff.staff_id の index を引き、 {0: RECENT_1, 1: _2, 2: _3} で penalty 化.
+        # 段階ペナルティはいずれも HUNGARIAN_INFINITY 未満 = 「適任者ゼロなら埋める」
+        # 段階的緩和を担保する (= 避けられる限り必ず避けるが、 尽きたら妥協して埋める).
+        # 患者間は **max** (= 1 人でも該当すれば回避). 同一患者で複数 index にヒット
+        # することは distinct リスト構造上ありえないが、 念のため最小 index (= 最大
+        # penalty) を採用する.
+        patient_rotation_penalty = 0.0
         for pid in course.patient_ids:
+            recent = patient_recent_staff.get(pid)
+            if not recent:
+                continue
             cell_penalty = 0.0
-            prev_day_set = patient_prev_day_history.get((weekday, pid))
-            if prev_day_set is not None and staff.staff_id in prev_day_set:
-                cell_penalty = max(cell_penalty, COST_W5_PATIENT_PREV_DAY)
-            prev2_day_set = patient_prev2_day_history.get((weekday, pid))
-            if prev2_day_set is not None and staff.staff_id in prev2_day_set:
-                cell_penalty = max(cell_penalty, COST_W5_PATIENT_PREV2_DAY)
-            if weekday == 0:  # 月曜のみ前週金/土チェック
-                prev_week_set = patient_prev_week_fri_sat_history.get(pid)
-                if prev_week_set is not None and staff.staff_id in prev_week_set:
-                    cell_penalty = max(cell_penalty, COST_W5_PATIENT_WEEK_CROSSOVER)
-            wave5_patient_penalty = max(wave5_patient_penalty, cell_penalty)
+            for idx, sid in enumerate(recent):
+                if sid == staff.staff_id:
+                    cell_penalty = _PATIENT_RECENT_PENALTY_BY_INDEX.get(idx, 0.0)
+                    break  # 最小 index (= 最大 penalty) のみ採用
+            patient_rotation_penalty = max(patient_rotation_penalty, cell_penalty)
 
         # ---------- Wave 5: 決定的ランダム rotation score ----------
         # 同じ patient に常に同じ staff が当たる現象を避ける。
@@ -1108,14 +1154,16 @@ class Layer3Assigner:
             COST_ALPHA_DISTANCE * distance
             + COST_BETA_ROTATION * rotation_count
             + prev_day_penalty
-            + wave5_patient_penalty
+            + patient_rotation_penalty
             + rotation_random
         )
 
     def _distance_km(self, course: CourseAssignmentTarget, staff: StaffInfo) -> float:
         """主拠点 → コース重心の Haversine 距離 (km).
 
-        座標欠損 (None) のときは 0.0 を返す (= 距離項を無効化).
+        Phase 3: 座標欠損 (None) のときは ``DISTANCE_UNKNOWN_KM`` (= 12.0) を返す.
+        旧実装は 0.0 を返し「最良 (最短)」 扱いになる逆インセンティブがあった
+        (= 座標が無い staff/course ほど距離項で有利になる) ため、 中庸距離に置換する.
 
         Phase G-45 scope 注意:
             ``staff.effective_office_for_weekday(course.weekday)`` は **参照しない**.
@@ -1130,7 +1178,7 @@ class Layer3Assigner:
             or staff.primary_office_lat is None
             or staff.primary_office_lng is None
         ):
-            return 0.0
+            return DISTANCE_UNKNOWN_KM
         return haversine_km(
             staff.primary_office_lat,
             staff.primary_office_lng,
@@ -1179,20 +1227,11 @@ class Layer3Assigner:
         for mgr in free_managers:
             # ---------- 性別 check (ハード) ----------
             # 1st pass の ``_cost_single_cell`` と同じ AND semantics に統一.
-            # Phase G-29 reviewer 指摘 HIGH-1: 元の OR semantics (set 構築 +
-            # ``mgr.sex in normalized_restrictions``) だと「female_only +
-            # male_only 両方を含むコース」 で manager が誤割当される hard 制約
-            # 違反のリスクがあった (= 男性限定患者にも女性 manager が割当)。
-            if course.gender_restrictions:
-                if mgr.sex is None:
-                    continue
-                skip = False
-                for restriction in course.gender_restrictions:
-                    if _normalize_sex_restriction(restriction) != mgr.sex:
-                        skip = True
-                        break
-                if skip:
-                    continue
+            # Phase G-29 reviewer 指摘 HIGH-1: 元の OR semantics だと「female_only +
+            # male_only 両方を含むコース」で manager が誤割当される hard 制約違反の
+            # リスクがあった. Phase 1: ``_staff_satisfies_gender`` に単一ソース化.
+            if not _staff_satisfies_gender(mgr, course):
+                continue
 
             # ---------- 当日勤務 check (ハード, work_days) ----------
             if weekday not in mgr.work_days:
@@ -1690,92 +1729,73 @@ class Layer3Assigner:
             )
         return result
 
-    async def _load_patient_visit_history(
+    async def _load_patient_recent_staff(
         self,
         db: AsyncSession,
         *,
         week_monday: date_cls,
-    ) -> tuple[
-        dict[tuple[int, UUID], set[UUID]],
-        dict[tuple[int, UUID], set[UUID]],
-        dict[UUID, set[UUID]],
-    ]:
-        """Wave 5: patient × staff の最近履歴を 3 種類のマップで返す.
+    ) -> dict[UUID, list[UUID]]:
+        """Phase 2: 患者ごとの「直近担当者リスト」 (最近順) を返す.
 
-        当該週の月曜日 ``week_monday`` を起点に、前週月曜から当該週日曜までの
-        ``visit_staff_assignments`` を ``Visit`` と JOIN して取得する。
+        ``week_monday`` より前の過去 ``PATIENT_ROTATION_LOOKBACK_WEEKS`` 週分の visit を
+        遡り、 患者ごとに **新しい順** で distinct な staff_id を最大
+        ``PATIENT_RECENT_DEPTH`` 件まで並べた list を返す (index 0 = 最も最近).
+
+        旧 ``_load_patient_visit_history`` (前日/前々日/前週金土の3マップ) を置換する.
+        「前日/前々日/前週金土」 の継ぎ接ぎでは 3 日差 (月→金) や週またぎ同曜日に穴が
+        あったが、 本ローダーは「直近 N 回」 を週・曜日横断で一元的に捉える.
 
         Returns:
-            ``(prev_day_map, prev2_day_map, prev_week_fri_sat_map)``
-
-            - ``prev_day_map``: ``(weekday, patient_id) -> {staff_id, ...}``
-              当該週 weekday W のセル評価で「前日 (weekday W-1) の同 patient」
-              として参照する集合. **当該週内の履歴** から構築する。
-              W=0 (月曜) には前日エントリは入らない (前日は前週日曜だが本仕様では未使用).
-            - ``prev2_day_map``: ``(weekday, patient_id) -> {staff_id, ...}``
-              前々日 (weekday W-2) 用. W=0, W=1 には前々日エントリは入らない.
-            - ``prev_week_fri_sat_map``: ``patient_id -> {staff_id, ...}``
-              前週金 (weekday=4) と前週土 (weekday=5) の同 patient staff の和集合.
-              月曜セル評価でのみ参照される.
+            ``{patient_id: [staff_id, ...]}`` (最近順, 最大 ``PATIENT_RECENT_DEPTH`` 件).
 
         Notes:
-            - ``visit_staff_assignments`` テーブルから staff_id を取得する
-              (= v2 正規の割当テーブル). visit.primary_staff_id は対象外.
-            - planned / completed どちらでも参照する
-              (= 既に staff_assigned 状態の当該週 visit も含める).
-            - Wave 5 fix (re-run swing 回避): visit.course_id を介して
-              ``Course.course_status == 'staff_assigned'`` のコースのみに限定する.
-              これにより、前回 Layer 3 実行の残骸 VSA が再実行で history として
-              作用して staff 選択が振れる現象を防ぐ. course_fixed (= 未確定) の
-              VSA は履歴対象外.
+            - 対象は ``week_monday`` **より前** の visit のみ (= 当該週は含めない.
+              当該週内の伝搬は ``solve()`` の working_recent prepend が担う).
+            - ``visit_staff_assignments`` JOIN ``Visit`` JOIN ``Course`` で、
+              ``course_status == 'staff_assigned'`` のコースのみに限定する
+              (= 前回 Layer 3 実行の残骸 (course_fixed) VSA を除外し re-run swing を回避).
+            - 並びは (visit_date desc, start_time desc) で新しい順に走査し、
+              患者ごとに初出の staff_id を順に DEPTH 件まで採用する.
+            - 同時刻同患者の複数 staff (required_staff_count>1 等) は staff_id 昇順で安定化
+              (= tie-break を全順序化し、 DB 物理行順依存の再実行 swing を防ぐ).
         """
-        prev_week_monday = week_monday - timedelta(days=7)
-        this_week_sunday_plus1 = week_monday + timedelta(days=7)
+        lookback_start = week_monday - timedelta(weeks=PATIENT_ROTATION_LOOKBACK_WEEKS)
 
         stmt = (
             select(
                 Visit.patient_id,
                 Visit.visit_date,
+                Visit.start_time,
                 VisitStaffAssignment.staff_id,
             )
             .join(VisitStaffAssignment, VisitStaffAssignment.visit_id == Visit.id)
             .join(Course, Course.id == Visit.course_id)
             .where(
-                Visit.visit_date >= prev_week_monday,
-                Visit.visit_date < this_week_sunday_plus1,
+                Visit.visit_date >= lookback_start,
+                Visit.visit_date < week_monday,
                 Visit.deleted_at.is_(None),
                 Course.course_status == COURSE_STATUS_STAFF_ASSIGNED,
+            )
+            .order_by(
+                Visit.visit_date.desc(),
+                Visit.start_time.desc(),
+                VisitStaffAssignment.staff_id.asc(),
             )
         )
         rows = (await db.execute(stmt)).all()
 
-        prev_day_map: dict[tuple[int, UUID], set[UUID]] = {}
-        prev2_day_map: dict[tuple[int, UUID], set[UUID]] = {}
-        prev_week_fri_sat_map: dict[UUID, set[UUID]] = {}
-
-        for patient_id, visit_date, staff_id in rows:
-            if patient_id is None or staff_id is None or visit_date is None:
+        recent: dict[UUID, list[UUID]] = {}
+        for patient_id, _visit_date, _start_time, staff_id in rows:
+            if patient_id is None or staff_id is None:
                 continue
-            # 当該週内ならば weekday を直接利用. 前週ならば fri/sat だけ拾う.
-            delta_days = (visit_date - week_monday).days
-            if 0 <= delta_days <= 6:
-                # 当該週内
-                wd = visit_date.weekday()
-                # 前日候補: wd+1 のセル評価から見れば「前日」エントリになる
-                next_wd = wd + 1
-                if next_wd <= 6:
-                    prev_day_map.setdefault((next_wd, patient_id), set()).add(staff_id)
-                # 前々日候補: wd+2 のセル評価から見れば「前々日」エントリ
-                next2_wd = wd + 2
-                if next2_wd <= 6:
-                    prev2_day_map.setdefault((next2_wd, patient_id), set()).add(staff_id)
-            elif -7 <= delta_days < 0:
-                # 前週内
-                wd = visit_date.weekday()
-                if wd in (4, 5):  # 前週金 (4) または 土 (5)
-                    prev_week_fri_sat_map.setdefault(patient_id, set()).add(staff_id)
+            staff_list = recent.setdefault(patient_id, [])
+            if len(staff_list) >= PATIENT_RECENT_DEPTH:
+                continue
+            if staff_id in staff_list:
+                continue  # distinct 維持 (= 同 staff の複数回は最も最近の 1 回のみ)
+            staff_list.append(staff_id)
 
-        return prev_day_map, prev2_day_map, prev_week_fri_sat_map
+        return recent
 
     async def _load_staff_events(
         self,
@@ -1843,6 +1863,41 @@ class Layer3Assigner:
             )
         ).all()
         return {cid: cnt for cid, cnt in rows}
+
+    @staticmethod
+    async def _load_gender_restrictions_by_courses(
+        db: AsyncSession, course_ids: list[UUID]
+    ) -> dict[UUID, frozenset[str]]:
+        """指定 course の所属患者 ``sex_restriction`` 集合を course_id 別に返す helper.
+
+        Phase 1: ``_build_fixed_assignments`` で固定割当 (manager→M / 都賀→A) を
+        貼る前に性別ハード制約を多重防御チェックするために使う. ``_load_course_targets``
+        と同じく planned visit 経由で患者を辿り、 非 NULL の ``sex_restriction`` を集約する.
+
+        Returns:
+            ``{course_id: frozenset[restriction]}``. 制限のないコースは空集合を持つ
+            (= キーは存在し ``.get(cid, frozenset())`` で空扱い).
+        """
+        if not course_ids:
+            return {}
+        rows = (
+            await db.execute(
+                select(Visit.course_id, Patient.sex_restriction)
+                .join(Patient, Patient.id == Visit.patient_id)
+                .where(
+                    Visit.course_id.in_(course_ids),
+                    Visit.status == VISIT_STATUS_PLANNED,
+                    Visit.deleted_at.is_(None),
+                    Patient.deleted_at.is_(None),
+                )
+            )
+        ).all()
+        out: dict[UUID, set[str]] = {}
+        for cid, restriction in rows:
+            bucket = out.setdefault(cid, set())
+            if restriction:
+                bucket.add(restriction)
+        return {cid: frozenset(vals) for cid, vals in out.items()}
 
     async def _build_fixed_assignments(
         self,
@@ -1950,6 +2005,13 @@ class Layer3Assigner:
                 )
                 mgr_courses = [c for c in mgr_courses if mgr_visit_count_by_course.get(c.id, 0) > 0]
 
+            # Phase 1: 固定割当を貼る前に性別ハード制約をチェック (多重防御).
+            # 違反するペア (= 例: 女性のみ患者コース × 男性 manager) は result に
+            # 入れず通常割付に回す. ``_solve_one_day`` 側のガードと二重防御になる.
+            mgr_restrictions = await self._load_gender_restrictions_by_courses(
+                db, [c.id for c in mgr_courses]
+            )
+
             # NOTE: code 列は ('A','B','C','D','E','M') CHECK 制約があるため
             # 複数 manager の場合も全て code='M' で運用される (W16 想定 N=1).
             # 同 (year, week, weekday) 内に M course が複数あればラベル順に
@@ -1962,7 +2024,12 @@ class Layer3Assigner:
                 for idx, course in enumerate(day_courses):
                     if idx >= len(managers):
                         break
-                    result[course.id] = managers[idx].id
+                    mgr = managers[idx]
+                    if not _sex_satisfies_restrictions(
+                        mgr.sex, mgr_restrictions.get(course.id, frozenset())
+                    ):
+                        continue
+                    result[course.id] = mgr.id
 
         # ---------- 2) 都賀 staff 固定割当 ----------
         for office in offices:
@@ -2021,7 +2088,16 @@ class Layer3Assigner:
                     c for c in tsuga_courses if tsuga_visit_count_by_course.get(c.id, 0) > 0
                 ]
 
+            # Phase 1: 都賀 A 固定割当も性別ハード制約をチェック (多重防御).
+            # 違反するペアは result に入れず通常割付に回す.
+            tsuga_restrictions = await self._load_gender_restrictions_by_courses(
+                db, [c.id for c in tsuga_courses]
+            )
             for course in tsuga_courses:
+                if not _sex_satisfies_restrictions(
+                    primary_staff.sex, tsuga_restrictions.get(course.id, frozenset())
+                ):
+                    continue
                 result[course.id] = primary_staff.id
 
         # offices_by_id は将来拡張用 (mypy 警告抑止のため軽く参照)
@@ -2448,17 +2524,20 @@ def history_from_fixture_list(
 __all__ = [
     "COST_ALPHA_DISTANCE",
     "COST_BETA_ROTATION",
-    "COST_W5_PATIENT_PREV2_DAY",
-    "COST_W5_PATIENT_PREV_DAY",
-    "COST_W5_PATIENT_WEEK_CROSSOVER",
+    "COST_PATIENT_RECENT_1",
+    "COST_PATIENT_RECENT_2",
+    "COST_PATIENT_RECENT_3",
     "COST_W5_ROTATION_MAX",
-    "CourseAssignmentTarget",
+    "DISTANCE_UNKNOWN_KM",
     "HUNGARIAN_INFINITY",
-    "Layer3AssignmentError",
-    "Layer3Assigner",
-    "Layer3Result",
+    "PATIENT_RECENT_DEPTH",
+    "PATIENT_ROTATION_LOOKBACK_WEEKS",
     "ROTATION_EXCLUSION_WEEKS",
     "ROTATION_HISTORY_WEEKS",
+    "CourseAssignmentTarget",
+    "Layer3Assigner",
+    "Layer3AssignmentError",
+    "Layer3Result",
     "StaffAssignment",
     "StaffInfo",
     "VisitTimeSlot",
