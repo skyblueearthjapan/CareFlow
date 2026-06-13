@@ -315,6 +315,18 @@ class V2DiffAddProposal(BaseModel):
     after_summary: V2BeforeAfterSummary = Field(default_factory=V2BeforeAfterSummary)
     delta: V2ProposalDelta = Field(default_factory=V2ProposalDelta)
     warnings: list[V2WarningOut] = Field(default_factory=list)
+    # Phase G-92 (プール投入 固定優先→希望フォールバック): この提案がどの希望ソース
+    # から導かれたか.
+    #   - "fixed"                   : 固定訪問スケジュール (PFV mode='normal') で配置.
+    #   - "fixed_fallback_preferred": 固定枠が 3 条件 (時間不適合 / 定員オーバー /
+    #     時間衝突) で入らず、 希望訪問パターンへフォールバックして配置.
+    #   - "preferred"               : 固定枠が無く、 希望訪問パターンで配置.
+    # 既存 FE 非破壊のため default 付き (= 旧クライアントは無視できる).
+    proposal_source: Literal["fixed", "fixed_fallback_preferred", "preferred"] = "preferred"
+    # Phase G-92: フォールバック時の固定枠不可理由コード (空可).
+    #   "time_no_fit" / "capacity_over" / "time_conflict" の組合せ.
+    # proposal_source != "fixed_fallback_preferred" のときは常に空リスト.
+    fixed_unavailable_reasons: list[str] = Field(default_factory=list)
 
 
 class AutoScheduleV2DiffAddResponse(BaseModel):

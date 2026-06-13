@@ -20,6 +20,8 @@
 import { describe, it, expect } from 'vitest';
 
 import {
+  diffAddProposalSchema,
+  diffAddProposalSourceSchema,
   unassignedPatientSchema,
   v2WarningCategorySchema,
   v2WarningSchema,
@@ -148,6 +150,102 @@ describe('unassignedPatientSchema (Wave 4 Phase C)', () => {
       const result = unassignedPatientSchema.safeParse({ ...baseUnassigned(), reason: r });
       expect(result.success, `reason=${r} should parse`).toBe(true);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase G-92 FE: diffAddProposalSchema の proposal_source / fixed_unavailable_reasons.
+// BE additive フィールドのミラー整合 (default + 未知キー耐性) を確認する.
+// ---------------------------------------------------------------------------
+
+const PROPOSAL_ID = '00000000-0000-4000-8000-000000000010';
+const OFFICE_ID = '00000000-0000-4000-8000-000000000011';
+
+function baseVisitPlan() {
+  return {
+    weekday: 0,
+    start_time: '09:00',
+    end_time: '10:00',
+    duration_min: 60,
+    course_code: 'A',
+    office_id: OFFICE_ID,
+    am_pm: 'am' as const,
+    assigned_staff_id: null,
+  };
+}
+
+function baseDiffAddProposal() {
+  return {
+    proposal_id: PROPOSAL_ID,
+    patient_id: PATIENT_ID,
+    patient_name: '山田 太郎',
+    patient_code: null,
+    suggested: baseVisitPlan(),
+    suggested_visits: [baseVisitPlan()],
+    before_summary: { course_visits_count: 3, distance_km: 1.2 },
+    after_summary: { course_visits_count: 4, distance_km: 1.5 },
+    delta: {
+      distance_km: 0.3,
+      capacity: null,
+      course_visits_count_before: 3,
+      course_visits_count_after: 4,
+    },
+    warnings: [],
+  };
+}
+
+describe('diffAddProposalSchema (Phase G-92 FE)', () => {
+  it('proposal_source / fixed_unavailable_reasons 省略時は default ("preferred" / []) になる', () => {
+    // 旧 BE レスポンス (新フィールド無し) を模す.
+    const result = diffAddProposalSchema.safeParse(baseDiffAddProposal());
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.proposal_source).toBe('preferred');
+      expect(result.data.fixed_unavailable_reasons).toEqual([]);
+    }
+  });
+
+  it('3 種の proposal_source を受理する', () => {
+    for (const src of ['fixed', 'fixed_fallback_preferred', 'preferred'] as const) {
+      const result = diffAddProposalSchema.safeParse({
+        ...baseDiffAddProposal(),
+        proposal_source: src,
+      });
+      expect(result.success, `proposal_source=${src} should parse`).toBe(true);
+      if (result.success) expect(result.data.proposal_source).toBe(src);
+    }
+  });
+
+  it('未知の proposal_source は reject される', () => {
+    const result = diffAddProposalSchema.safeParse({
+      ...baseDiffAddProposal(),
+      proposal_source: 'bogus',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('fixed_unavailable_reasons は理由コード配列を受理する (未知コードも string なので通る)', () => {
+    const result = diffAddProposalSchema.safeParse({
+      ...baseDiffAddProposal(),
+      proposal_source: 'fixed_fallback_preferred',
+      fixed_unavailable_reasons: ['time_no_fit', 'capacity_over', 'time_conflict', 'future_code'],
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.fixed_unavailable_reasons).toEqual([
+        'time_no_fit',
+        'capacity_over',
+        'time_conflict',
+        'future_code',
+      ]);
+    }
+  });
+
+  it('diffAddProposalSourceSchema は 3 値のみ受理し未知値を reject', () => {
+    for (const src of ['fixed', 'fixed_fallback_preferred', 'preferred'] as const) {
+      expect(diffAddProposalSourceSchema.safeParse(src).success).toBe(true);
+    }
+    expect(diffAddProposalSourceSchema.safeParse('xxx').success).toBe(false);
   });
 });
 

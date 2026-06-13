@@ -26,7 +26,7 @@ import logging
 import uuid
 from datetime import date, timedelta
 from datetime import time as time_cls
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -538,6 +538,11 @@ async def diff_add_endpoint(
     after_visits: list[V2Visit] = result["after_visits"]
     pool_visits: list[V2Visit] = result["pool_visits"]
     warnings: list[V2Warning] = result["warnings"]
+    # Phase G-92: 患者単位の proposal_source / 固定不可理由
+    # ({patient_id: {"proposal_source": ..., "fixed_unavailable_reasons": [...]}}).
+    proposal_meta_by_patient: dict[UUID, dict[str, Any]] = result.get(
+        "proposal_meta_by_patient", {}
+    )
 
     # プール患者ごとに 1 つの proposal を作る
     by_pid: dict[UUID, list[V2Visit]] = {}
@@ -548,6 +553,11 @@ async def diff_add_endpoint(
     for pid, pv in by_pid.items():
         pv_sorted = sorted(pv, key=lambda x: (x.weekday, x.start_time))
         primary = pv_sorted[0]
+        # Phase G-92: proposal_source / fixed_unavailable_reasons を patient meta から
+        # 引く. meta が無い (= 旧経路 / full_optimize) 場合は既定 "preferred".
+        _meta = proposal_meta_by_patient.get(pid) or {}
+        _proposal_source = _meta.get("proposal_source", "preferred")
+        _fixed_unavailable_reasons = list(_meta.get("fixed_unavailable_reasons", []))
         # その patient の追加で当該コースの容量・距離がどう変わるか
         cc = primary.course_code or "M"
         same_course_before = [
@@ -588,6 +598,9 @@ async def diff_add_endpoint(
                     course_visits_count_before=len(same_course_before),
                     course_visits_count_after=len(same_course_after),
                 ),
+                # Phase G-92: 固定優先→希望フォールバックの分類結果.
+                proposal_source=_proposal_source,
+                fixed_unavailable_reasons=_fixed_unavailable_reasons,
             )
         )
 

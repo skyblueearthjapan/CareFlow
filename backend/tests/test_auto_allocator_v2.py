@@ -9,15 +9,17 @@ from __future__ import annotations
 
 import uuid
 from collections import Counter
-from datetime import time
+from datetime import UTC, datetime, time
 from uuid import UUID
 
 import pytest
 
 from app.models import Office, Patient
+from app.models.office_feature_flag import OfficeFeatureFlag
 from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.staff import Staff, StaffShift
 from app.services.scheduling.auto_allocator_v2 import (
+    G21_NEW_ALGORITHM_FEATURE_KEY,
     MAX_PATIENTS_PER_COURSE,
     MAX_PATIENTS_PER_SET,
     V2Visit,
@@ -7783,3 +7785,411 @@ def test_extract_weekly_entries_default_service_minutes_is_35() -> None:
     assert len(summary_entries) == 1
     _, _, sm2, _, _, _ = summary_entries[0]
     assert sm2 == 35, f"Phase E-3: サマリ形式 default service_minutes=35, got {sm2}"
+
+
+# ---------------------------------------------------------------------------
+# Phase G-92 — プール投入 固定優先→希望フォールバック
+# ---------------------------------------------------------------------------
+
+
+async def _seed_g92_office(db, *, name: str, staffed_weekdays: list[int]) -> Office:
+    """Phase G-92 テスト用: 指定曜日にスタッフ 1 名を出勤させた office を作る."""
+    office = Office(name=name)
+    db.add(office)
+    await db.flush()
+    s = Staff(name=f"{name}-staff", role="staff", is_trainee=False, primary_office_id=office.id)
+    db.add(s)
+    await db.flush()
+    for wd in staffed_weekdays:
+        db.add(StaffShift(staff_id=s.id, weekday=wd, is_on=True))
+    await db.flush()
+    return office
+
+
+@pytest.mark.asyncio
+async def test_g92_diff_add_fixed_slot_fits_returns_fixed(db) -> None:
+    """① 固定枠が 3 条件をクリア → proposal_source='fixed', 理由なし."""
+    office = await _seed_g92_office(db, name="g92-fixed", staffed_weekdays=[0])
+    p = Patient(
+        code="G92-FIXED",
+        name="固定OK",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        primary_office_id=office.id,
+        # 希望も Mon だが固定が優先される.
+        weekly_pattern={
+            "preferred_weekdays": ["Mon"],
+            "preferred_start": "14:00",
+            "time_type": "固定",
+        },
+    )
+    db.add(p)
+    await db.flush()
+    db.add(
+        PatientFixedVisit(
+            patient_id=p.id,
+            mode="normal",
+            weekday=0,  # Mon (staffed)
+            start_time=time(10, 0),
+            duration_min=30,
+            slot_index=0,
+        )
+    )
+    await db.commit()
+
+    result = await run_v2_pipeline(
+        db, iso_year=2026, iso_week=20, office_ids=[office.id], mode="diff_add"
+    )
+    meta = result["proposal_meta_by_patient"][p.id]
+    assert meta["proposal_source"] == "fixed", meta
+    assert meta["fixed_unavailable_reasons"] == []
+    # 固定枠 (Mon 10:00) で配置されていること.
+    pv = [v for v in result["pool_visits"] if v.patient_id == p.id]
+    assert any(v.weekday == 0 and v.start_time == time(10, 0) for v in pv), pv
+
+
+@pytest.mark.asyncio
+async def test_g92_diff_add_fixed_unavailable_falls_back_to_preferred(db) -> None:
+    """② 固定枠が定員 (条件ｲ) で入らない → 希望フォールバック + 理由付与.
+
+    PFV は Wed (稼働曜日だがスタッフ 0 名 → 定員オーバー), 希望は Mon (スタッフあり).
+    固定 (Wed) が落ち、 希望 (Mon) が生存する.
+    """
+    office = await _seed_g92_office(db, name="g92-fallback", staffed_weekdays=[0])  # Mon only
+    p = Patient(
+        code="G92-FB",
+        name="フォールバック",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        primary_office_id=office.id,
+        weekly_pattern={
+            "preferred_weekdays": ["Mon"],
+            "preferred_start": "14:00",
+            "time_type": "固定",
+        },
+    )
+    db.add(p)
+    await db.flush()
+    db.add(
+        PatientFixedVisit(
+            patient_id=p.id,
+            mode="normal",
+            weekday=2,  # Wed (operating weekday but no staff)
+            start_time=time(10, 0),
+            duration_min=30,
+            slot_index=0,
+        )
+    )
+    await db.commit()
+
+    result = await run_v2_pipeline(
+        db, iso_year=2026, iso_week=20, office_ids=[office.id], mode="diff_add"
+    )
+    meta = result["proposal_meta_by_patient"][p.id]
+    assert meta["proposal_source"] == "fixed_fallback_preferred", meta
+    assert meta["fixed_unavailable_reasons"], "固定不可理由が 1 件以上付与されるべき"
+    assert "capacity_over" in meta["fixed_unavailable_reasons"], meta
+    # フォールバックで希望 (Mon 14:00) が提案され、 落ちた固定 (Wed) は除外される.
+    pv = [v for v in result["pool_visits"] if v.patient_id == p.id]
+    assert all(v.weekday != 2 for v in pv), f"落ちた固定 (Wed) は proposal から除外: {pv}"
+    assert any(v.weekday == 0 for v in pv), f"希望 (Mon) が proposal に残る: {pv}"
+
+
+@pytest.mark.asyncio
+async def test_g92_diff_add_no_fixed_returns_preferred(db) -> None:
+    """③ 固定枠なし → proposal_source='preferred', 理由なし."""
+    office = await _seed_g92_office(db, name="g92-preferred", staffed_weekdays=[0])
+    p = Patient(
+        code="G92-PREF",
+        name="希望のみ",
+        status="active",
+        lat=35.66,
+        lng=140.11,
+        primary_office_id=office.id,
+        weekly_pattern={
+            "preferred_weekdays": ["Mon"],
+            "preferred_start": "10:30",
+            "time_type": "固定",
+        },
+    )
+    db.add(p)
+    await db.commit()
+
+    result = await run_v2_pipeline(
+        db, iso_year=2026, iso_week=20, office_ids=[office.id], mode="diff_add"
+    )
+    meta = result["proposal_meta_by_patient"][p.id]
+    assert meta["proposal_source"] == "preferred", meta
+    assert meta["fixed_unavailable_reasons"] == []
+
+
+@pytest.mark.asyncio
+async def test_g92_diff_add_both_unavailable_unassigned_with_reason(db) -> None:
+    """④ 固定も希望も入らない → 未割当 + 理由付与.
+
+    PFV は Wed (スタッフ 0), 希望も Wed (スタッフ 0). どちらも配置不可.
+    """
+    office = await _seed_g92_office(db, name="g92-both-fail", staffed_weekdays=[0])  # Mon only
+    p = Patient(
+        code="G92-BOTH",
+        name="両方ダメ",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        primary_office_id=office.id,
+        weekly_pattern={
+            "preferred_weekdays": ["Wed"],
+            "preferred_start": "14:00",
+            "time_type": "固定",
+        },
+    )
+    db.add(p)
+    await db.flush()
+    db.add(
+        PatientFixedVisit(
+            patient_id=p.id,
+            mode="normal",
+            weekday=2,  # Wed (no staff)
+            start_time=time(10, 0),
+            duration_min=30,
+            slot_index=0,
+        )
+    )
+    await db.commit()
+
+    result = await run_v2_pipeline(
+        db, iso_year=2026, iso_week=20, office_ids=[office.id], mode="diff_add"
+    )
+    # after_visits に当該患者は出てこない (両曜日とも配置不可).
+    after_pids = {v.patient_id for v in result["after_visits"]}
+    assert p.id not in after_pids, "両方ダメなら after_visits に出ない"
+    # 未割当リストに理由付きで載る.
+    unassigned_pids = {u["patient_id"] for u in result["unassigned_patients"]}
+    assert p.id in unassigned_pids, result["unassigned_patients"]
+    u = next(u for u in result["unassigned_patients"] if u["patient_id"] == p.id)
+    assert u["reason"] is not None and u["reason"] != "unknown", u
+
+
+# ---------------------------------------------------------------------------
+# Phase G-92 — Reviewer 指摘 修正 1/2/3/4 の回帰テスト
+# ---------------------------------------------------------------------------
+
+
+async def _enable_g21_flag(db, office: Office) -> None:
+    """Phase G-92 テスト用: 拠点で g21_new_algorithm feature flag を有効化する."""
+    db.add(
+        OfficeFeatureFlag(
+            office_id=office.id,
+            feature_key=G21_NEW_ALGORITHM_FEATURE_KEY,
+            enabled_at=datetime.now(tz=UTC),
+        )
+    )
+    await db.flush()
+
+
+@pytest.mark.asyncio
+async def test_g92_diff_add_g21_enabled_sets_fixed_pool_origin(db) -> None:
+    """修正1: g21 feature flag 有効拠点でも固定候補に pool_origin='fixed' が立つ.
+
+    g21 経路は build_visits_for_pool_v2 で pool_visits を再生成する. 旧実装では
+    pool_origin が設定されず全候補が "preferred" 既定になり、
+    _dedup_fixed_preferred_candidates が fixed_keys を見つけられず
+    fixed_fallback_preferred 分岐に到達できなかった (= G-92 が g21 拠点で無効化).
+    修正後は pinned PFV 由来の候補に pool_origin='fixed' が立ち、 固定優先→希望
+    フォールバックの土台 (dedup の fixed_keys 検出) が成立する.
+
+    本テストは g21 有効状態で pinned PFV (Mon・スタッフあり) が固定として配置され、
+    その pool_visit に pool_origin='fixed' / proposal_source='fixed' が立つことを
+    検証する (= wiring が legacy 経路と同等であることの確認).
+    """
+    office = await _seed_g92_office(db, name="g92-g21-fixed", staffed_weekdays=[0])  # Mon
+    await _enable_g21_flag(db, office)
+    p = Patient(
+        code="G92-G21-FX",
+        name="g21固定",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        primary_office_id=office.id,
+        weekly_pattern={
+            "preferred_weekdays": ["Mon"],
+            "preferred_start": "14:00",
+            "time_type": "固定",
+        },
+    )
+    db.add(p)
+    await db.flush()
+    db.add(
+        PatientFixedVisit(
+            patient_id=p.id,
+            mode="normal",
+            weekday=0,  # Mon (staffed → 固定生存)
+            start_time=time(10, 0),
+            duration_min=30,
+            slot_index=0,
+            is_pinned=True,
+        )
+    )
+    await db.commit()
+
+    result = await run_v2_pipeline(
+        db, iso_year=2026, iso_week=20, office_ids=[office.id], mode="diff_add"
+    )
+    meta = result["proposal_meta_by_patient"][p.id]
+    assert meta["proposal_source"] == "fixed", meta
+    # g21 再生成パスでも固定候補に pool_origin='fixed' が立っていること (= 修正1 の核心).
+    pv = [v for v in result["pool_visits"] if v.patient_id == p.id]
+    fixed_pv = [v for v in pv if v.weekday == 0 and v.start_time == time(10, 0)]
+    assert fixed_pv, f"g21 経路で固定 (Mon 10:00) が配置される: {pv}"
+    assert fixed_pv[0].pool_origin == "fixed", (
+        f"g21 再生成パスでも固定候補に pool_origin='fixed' が立つ: {fixed_pv[0].pool_origin}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_g92_diff_add_same_weekday_both_fail_no_double_classification(db) -> None:
+    """修正2: 固定と希望が同曜日で両方とも配置不可の患者を二重分類しない.
+
+    PFV は Mon (start 10:00), 希望も Mon (同曜日). Mon はスタッフ 0 で両方とも
+    配置不可. 旧実装は失敗した固定 visit を pool_visits 内で「同曜日の希望時刻」に
+    in-place 差し替えるが、 この差替候補は Stage 5/6 を経ておらず after_visits に
+    乗らない (= 未検証提案). その結果、 当該患者は他に生存曜日が無いため
+    _identify_unassigned_patients で「未割当」に計上される一方、 pool_visits に残った
+    差替候補を endpoint が「提案あり」として surface する二重分類が起きた.
+    修正後は未検証の差替候補を pool_visits から除去し、 提案を出さず未割当判定に
+    一本化する.
+
+    定員 0 を作るため staffed_weekdays=[] (どの曜日もスタッフ無し) とする.
+    """
+    office = await _seed_g92_office(db, name="g92-same-wd", staffed_weekdays=[])
+    p = Patient(
+        code="G92-SAME-WD",
+        name="同曜日両方ダメ",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        primary_office_id=office.id,
+        weekly_pattern={
+            "preferred_weekdays": ["Mon"],
+            "preferred_start": "14:00",
+            "time_type": "固定",
+        },
+    )
+    db.add(p)
+    await db.flush()
+    db.add(
+        PatientFixedVisit(
+            patient_id=p.id,
+            mode="normal",
+            weekday=0,  # Mon — 希望と同曜日
+            start_time=time(10, 0),
+            duration_min=30,
+            slot_index=0,
+        )
+    )
+    await db.commit()
+
+    result = await run_v2_pipeline(
+        db, iso_year=2026, iso_week=20, office_ids=[office.id], mode="diff_add"
+    )
+    # 未検証の差替候補は pool_visits から除去され、 提案として surface されない.
+    pv = [v for v in result["pool_visits"] if v.patient_id == p.id]
+    assert pv == [], f"未検証の同曜日差替候補は pool_visits から除去される: {pv}"
+    # 未割当判定に一本化される (= 二重分類しない).
+    unassigned_pids = {u["patient_id"] for u in result["unassigned_patients"]}
+    assert p.id in unassigned_pids, (
+        f"同曜日で両方ダメな患者は未割当に計上される: {result['unassigned_patients']}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_g92_diff_add_fixed_patient_preferred_only_weekday_proposed(db) -> None:
+    """修正3 (方針A): 固定を持つ患者でも「希望のみ曜日」は preferred 提案に出す.
+
+    PFV は Mon (固定 OK で生存), 希望は Mon + Tue. Tue は固定が無く希望のみ.
+    方針A により Tue も preferred 提案として残ることを検証する (取りこぼし解消).
+    """
+    office = await _seed_g92_office(db, name="g92-pref-only", staffed_weekdays=[0, 1])  # Mon+Tue
+    p = Patient(
+        code="G92-PREF-ONLY",
+        name="希望のみ曜日",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        primary_office_id=office.id,
+        weekly_pattern={
+            "preferred_weekdays": ["Mon", "Tue"],
+            "preferred_start": "14:00",
+            "time_type": "固定",
+        },
+    )
+    db.add(p)
+    await db.flush()
+    db.add(
+        PatientFixedVisit(
+            patient_id=p.id,
+            mode="normal",
+            weekday=0,  # Mon (staffed → 固定生存)
+            start_time=time(10, 0),
+            duration_min=30,
+            slot_index=0,
+        )
+    )
+    await db.commit()
+
+    result = await run_v2_pipeline(
+        db, iso_year=2026, iso_week=20, office_ids=[office.id], mode="diff_add"
+    )
+    pv = [v for v in result["pool_visits"] if v.patient_id == p.id]
+    weekdays = {v.weekday for v in pv}
+    # Mon (固定) と Tue (希望のみ) の両方が提案に出る.
+    assert 0 in weekdays, f"固定 (Mon) が出る: {pv}"
+    assert 1 in weekdays, f"方針A: 希望のみ曜日 (Tue) も preferred 提案に出る: {pv}"
+
+
+@pytest.mark.asyncio
+async def test_g92_diff_add_fallback_reason_not_hardcoded_time_conflict(db) -> None:
+    """修正4: フォールバック理由は warnings 由来で、 time_conflict ハードコードしない.
+
+    PFV は Wed (稼働曜日・スタッフ 0 → 定員オーバー). 理由は capacity_over であり、
+    time_conflict が混入しないことを検証する (旧実装は理由空のとき time_conflict を
+    既定にしていた).
+    """
+    office = await _seed_g92_office(db, name="g92-reason", staffed_weekdays=[0])  # Mon only
+    p = Patient(
+        code="G92-REASON",
+        name="理由精度",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        primary_office_id=office.id,
+        weekly_pattern={
+            "preferred_weekdays": ["Mon"],
+            "preferred_start": "14:00",
+            "time_type": "固定",
+        },
+    )
+    db.add(p)
+    await db.flush()
+    db.add(
+        PatientFixedVisit(
+            patient_id=p.id,
+            mode="normal",
+            weekday=2,  # Wed (no staff → capacity_over)
+            start_time=time(10, 0),
+            duration_min=30,
+            slot_index=0,
+        )
+    )
+    await db.commit()
+
+    result = await run_v2_pipeline(
+        db, iso_year=2026, iso_week=20, office_ids=[office.id], mode="diff_add"
+    )
+    meta = result["proposal_meta_by_patient"][p.id]
+    assert meta["proposal_source"] == "fixed_fallback_preferred", meta
+    assert "capacity_over" in meta["fixed_unavailable_reasons"], meta
+    # time_conflict はハードコード既定として混入しない (定員起因なので).
+    assert "time_conflict" not in meta["fixed_unavailable_reasons"], meta

@@ -542,6 +542,16 @@ class V2Visit:
     # ``_apply_corrections_to_visits`` (W1 4 経路共通 helper) は本フラグを見て、
     # pinned visit の start_time / end_time / course_code を一切動かさない.
     is_pinned: bool = False
+    # Phase G-92 (プール投入 固定優先→希望フォールバック): diff_add でこの pool
+    # visit がどの希望ソースから展開されたかを示す.
+    #   - "fixed"                   : 固定訪問スケジュール (PFV mode='normal') 由来.
+    #   - "preferred"               : 希望訪問パターン (patient.weekly_pattern) 由来.
+    #   - "fixed_fallback_preferred": 固定枠が 3 条件 (時間不適合 / 定員オーバー /
+    #     時間衝突) で入らず、 希望訪問パターンへフォールバックした候補.
+    # diff_add の PFV 患者は固定枠と希望の両ソースを候補展開し、固定が 3 条件を
+    # クリアできない場合に希望側へ差し替える. 既定 ``"preferred"`` で、 PFV 非対象 /
+    # full_optimize 等の既存経路は不変.
+    pool_origin: Literal["fixed", "preferred", "fixed_fallback_preferred"] = "preferred"
 
 
 @dataclass
@@ -6301,6 +6311,7 @@ def _identify_unassigned_patients(
     pool_patients: list[Patient],
     after_visits: list[V2Visit],
     warnings: list[V2Warning],
+    exclude_patient_ids: set[UUID] | None = None,
 ) -> list[dict[str, Any]]:
     """Mode 2 (full_optimize) で after_visits に出てこなかった患者と理由を抽出する.
 
@@ -6309,15 +6320,21 @@ def _identify_unassigned_patients(
     最終 fallback は ``reason="unknown"`` で固定 (旧「原因不明 (...のいずれか)」
     のような曖昧文言は撤去).
 
+    Args:
+        exclude_patient_ids: Phase G-92 — 未割当判定から除外する patient_id 集合.
+            固定→希望フォールバックが成立した患者は希望候補が proposal として
+            残るため (after_visits には痕跡が無くても) 未割当に計上しない.
+
     Returns:
         ``[{"patient_id": UUID, "patient_name": str, "patient_code": str | None,
         "reason": UnassignedReason, "reason_detail": str | None,
         "dropped_at_stage": UnassignedStage | None}, ...]``
     """
     after_pids = {v.patient_id for v in after_visits}
+    excluded = exclude_patient_ids or set()
     out: list[dict[str, Any]] = []
     for p in pool_patients:
-        if p.id in after_pids:
+        if p.id in after_pids or p.id in excluded:
             continue
         reason: UnassignedReason
         stage: UnassignedStage | None
@@ -6530,6 +6547,111 @@ def _filter_pool_internal_conflicts(
             )
 
     return [v for v in pool if id(v) not in dropped_ids]
+
+
+def _dedup_fixed_preferred_candidates(
+    pool: list[V2Visit],
+) -> tuple[list[V2Visit], dict[tuple[UUID, int], V2Visit]]:
+    """Phase G-92 (固定優先→希望フォールバック): 同 ``(patient_id, weekday)`` に
+    固定候補 (``pool_origin="fixed"``) と希望候補 (``pool_origin="preferred"``) が
+    並存する場合、固定を優先採用し希望候補を脇に退避する.
+
+    本 helper は diff_add で PFV 患者を「固定枠候補 + 希望訪問パターン候補」の
+    両方で展開した直後に呼ぶ. 呼び出し前段の ``_filter_conflicting_pool_visits``
+    で固定候補が既存訪問との時間衝突 (条件ｳ) により除外されていれば、 ここでは
+    希望候補のみが残り、 自動的に希望側へフォールバックする.
+
+    判定方針 (決定性維持):
+      - グルーピングキーは ``(patient_id, weekday)``.
+      - そのキーに ``pool_origin="fixed"`` が 1 件でも残っていれば、 同キーの
+        ``pool_origin="preferred"`` を脇に退避する (= 固定優先).
+      - 固定が 0 件なら希望候補をそのまま残す (= フォールバック成立).
+      - ``warnings`` には何も積まない (フォールバックは正常動作であり警告でない).
+
+    方針A (オーナー決定・意図的): 固定を持つ患者でも「希望のみ曜日」(固定が無く
+    希望だけの weekday) は preferred 提案として出す. 例) 月固定・火希望のみの患者で、
+    火曜は同 (patient, weekday) に固定候補が無いため希望候補が退避されず提案に残る.
+    これは取りこぼし解消のための意図的挙動であり、 dedup は (patient, weekday) 単位で
+    固定優先するだけなので、 別曜日の希望は影響を受けない.
+
+    退避した希望候補は戻り値の 2 番目 ``fallback_by_key`` で返す. 後段で固定候補が
+    Stage 5/6 (定員オーバー / 時間不適合) により未割当になった場合、 退避した
+    希望候補の時刻情報で固定候補を差し替える (= 遅延フォールバック). 同 (patient,
+    weekday) に複数の希望候補がある稀ケースでは最初の 1 件を退避先とする
+    (= 決定性).
+
+    Note:
+        本 helper は diff_add 経路専用. full_optimize は ``pool_origin`` を
+        既定 (``"preferred"``) のまま使うため、 全候補が preferred 扱いとなり
+        本 dedup は実質 no-op (= 挙動不変, ``fallback_by_key`` は空).
+    """
+    if not pool:
+        return list(pool), {}
+
+    fixed_keys: set[tuple[UUID, int]] = {
+        (v.patient_id, v.weekday) for v in pool if v.pool_origin == "fixed"
+    }
+    if not fixed_keys:
+        return list(pool), {}
+
+    kept: list[V2Visit] = []
+    fallback_by_key: dict[tuple[UUID, int], V2Visit] = {}
+    for v in pool:
+        key = (v.patient_id, v.weekday)
+        if v.pool_origin == "preferred" and key in fixed_keys:
+            # 同 (patient, weekday) に固定候補があるので希望候補は退避する.
+            # 複数あれば最初の 1 件のみ保持 (決定性).
+            if key not in fallback_by_key:
+                fallback_by_key[key] = v
+            continue
+        kept.append(v)
+    return kept, fallback_by_key
+
+
+# Phase G-92: 固定枠が入らない 3 条件の理由コード.
+#   - time_no_fit  : 前訪問移動 + 実務 service + バッファで固定時刻にルート上
+#                    入りきらない (= travel_time_shortage で未割当).
+#   - capacity_over: 定員オーバー (MAX_PATIENTS_PER_COURSE / コース数上限超過).
+#   - time_conflict: 固定時刻に既存予定と時間重複.
+_G92_REASON_TIME_NO_FIT = "time_no_fit"
+_G92_REASON_CAPACITY_OVER = "capacity_over"
+_G92_REASON_TIME_CONFLICT = "time_conflict"
+
+
+def _g92_collect_fixed_unavailable_reasons(
+    patient_id: UUID,
+    weekdays: set[int],
+    warnings: list[V2Warning],
+) -> list[str]:
+    """Phase G-92: 固定枠が入らなかった理由コードを warnings から収集する.
+
+    対象患者 (``patient_id``) の該当曜日 (``weekdays``) に紐づく warning を走査し、
+    type から 3 理由コード (time_no_fit / capacity_over / time_conflict) に
+    マップする. 複数該当可. 重複は除去し、 決定性のため定義順に並べる.
+
+    照合方針:
+      - ``affected_patient_ids`` または ``patient_id`` で患者一致を判定.
+      - ``weekday`` が warning にあれば ``weekdays`` との一致も要求 (None は通す).
+    """
+    found: set[str] = set()
+    for w in warnings:
+        matched_pid = patient_id in (w.affected_patient_ids or []) or w.patient_id == patient_id
+        if not matched_pid:
+            continue
+        if w.weekday is not None and w.weekday not in weekdays:
+            continue
+        if w.type == "travel_time_shortage":
+            found.add(_G92_REASON_TIME_NO_FIT)
+        elif w.type in ("course_capacity", "course_count"):
+            found.add(_G92_REASON_CAPACITY_OVER)
+        elif w.type == "diff_add_conflict":
+            found.add(_G92_REASON_TIME_CONFLICT)
+    ordered = [
+        _G92_REASON_TIME_NO_FIT,
+        _G92_REASON_CAPACITY_OVER,
+        _G92_REASON_TIME_CONFLICT,
+    ]
+    return [r for r in ordered if r in found]
 
 
 # ---------------------------------------------------------------------------
@@ -6933,7 +7055,34 @@ async def run_v2_pipeline(
             warnings=warnings,
             config=config,
         )
+        # Phase G-92: 固定訪問スケジュール由来の候補は pool_origin="fixed" を立てる.
+        # 固定が 3 条件 (時間不適合 / 定員オーバー / 時間衝突) で入らない場合に
+        # 希望訪問パターンへフォールバックするための識別子.
+        for _v in pool_visits_orphan:
+            _v.pool_origin = "fixed"
         pool_visits = pool_visits + pool_visits_orphan
+
+        # Phase G-92: 固定優先→希望フォールバック.
+        # diff_add のとき、 PFV を持つ患者については固定枠候補 (上の
+        # pool_visits_orphan) に加えて **希望訪問パターン由来のフォールバック候補**
+        # も展開しておく. 後段の dedup / 衝突フィルタで「固定が入れば固定、
+        # 入らなければ希望」が自動的に選ばれる. weekly_pattern が dict でない
+        # (= 希望未設定) 患者ではフォールバック候補は 0 件になり挙動不変.
+        if mode == "diff_add":
+            pool_visits_fallback = build_visits_for_pool(
+                pool_patients_orphan_fixed,
+                # use_fixed_as_source=False (既定) で patient.weekly_pattern を読む.
+                pending_overlay=pending_overlay,
+                op_weekdays_by_office=op_weekdays_by_office,
+                office_name_by_id=office_name_by_id,
+                # フォールバック候補は重複 warning を避けるため warnings を渡さない
+                # (固定候補展開で既に office_closed 等は emit 済).
+                warnings=None,
+                config=config,
+            )
+            for _v in pool_visits_fallback:
+                _v.pool_origin = "preferred"
+            pool_visits = pool_visits + pool_visits_fallback
 
     # Phase G-21 T3 (Reviewer C1 fix): G21 feature flag enabled 拠点に属する
     # patient については legacy build_visits_for_pool の出力を捨て、
@@ -6995,7 +7144,46 @@ async def run_v2_pipeline(
                     warnings=warnings,
                     config=config,
                 )
+                # Phase G-92: g21 再生成パスでも pool_origin を立てる. legacy 経路
+                # (7048-7049) と同じく「固定優先→希望フォールバック」を成立させる.
+                # build_visits_for_pool_v2 は pinned PFV を source_kind="fixed"
+                # (is_pinned=True), weekly_pattern を source_kind="pool" で展開する
+                # ため、 これを pool_origin に写像する:
+                #   - source_kind="fixed" (pinned PFV 由来)   → pool_origin="fixed"
+                #   - source_kind="pool"  (weekly_pattern 由来) → pool_origin="preferred"
+                # これで _dedup_fixed_preferred_candidates が fixed_keys を検出でき、
+                # 固定が落ちたときに fixed_fallback_preferred 分岐へ到達する.
+                for _gv in g21_pool_visits:
+                    _gv.pool_origin = "fixed" if _gv.source_kind == "fixed" else "preferred"
                 pool_visits = pool_visits + g21_pool_visits
+
+                # Phase G-92: g21 PFV 患者の希望フォールバック候補を補完する.
+                # build_visits_for_pool_v2 は Invariant G21-A により pinned PFV と
+                # 同 (patient, weekday) の weekly_pattern entry を skip するため、
+                # 「同曜日で固定が落ちたら希望へ差し替える」フォールバック候補が
+                # 上の再生成だけでは欠落する. legacy 経路 (7058-7072) と同様に、
+                # weekly_pattern を素直に展開した preferred 候補を別途追加し、
+                # _dedup で固定候補の裏に退避させる (= 遅延フォールバック源).
+                # diff_add のみ (full_optimize は固定優先フォールバック対象外).
+                if mode == "diff_add":
+                    g21_fixed_patient_ids = set(g21_pfv_by_patient.keys())
+                    g21_fallback_patients = [
+                        p for p in g21_pool_patients if p.id in g21_fixed_patient_ids
+                    ]
+                    if g21_fallback_patients:
+                        g21_pool_visits_fallback = build_visits_for_pool(
+                            g21_fallback_patients,
+                            # use_fixed_as_source=False (既定) で weekly_pattern を読む.
+                            pending_overlay=pending_overlay,
+                            op_weekdays_by_office=op_weekdays_by_office,
+                            office_name_by_id=office_name_by_id,
+                            # 重複 warning を避けるため warnings は渡さない.
+                            warnings=None,
+                            config=config,
+                        )
+                        for _gfv in g21_pool_visits_fallback:
+                            _gfv.pool_origin = "preferred"
+                        pool_visits = pool_visits + g21_pool_visits_fallback
 
     # H5 + H10: 受入カレンダー × + 昼休憩を除外
     # Mode 2 (full_optimize) は H5 をスキップ — 受入カレンダー × は既存スケジュール
@@ -7036,12 +7224,20 @@ async def run_v2_pipeline(
         # 既存 visit (filtered_before) と時間重複する pool visit を除外.
         # 同 (patient_id, weekday) で時間帯が被るものを取り除き、warning を出す.
         pool_visits = _filter_conflicting_pool_visits(filtered_before, pool_visits, warnings)
+        # Phase G-92: 固定優先→希望フォールバックの dedup.
+        # 同 (patient_id, weekday) に固定候補 (pool_origin="fixed") と希望候補
+        # (pool_origin="preferred") が並存する場合、固定を優先採用し希望を落とす.
+        # 固定候補が上の存在衝突フィルタで既に除外されていれば希望候補が残り、
+        # 自動的にフォールバックする. weekday をまたいだ固定/希望の混在 (例: 月は
+        # 固定・火は希望のみ) は別 (patient,weekday) なので両方残る.
+        pool_visits, fallback_preferred_by_key = _dedup_fixed_preferred_candidates(pool_visits)
         # pool 内の同 (patient_id, weekday) 重複も検出
         # (weekly_pattern.entries が同曜日 2 件以上ある稀ケース対策).
         pool_visits = _filter_pool_internal_conflicts(pool_visits, warnings)
         after_visits = filtered_before + list(pool_visits)
     else:
         after_visits = list(pool_visits)
+        fallback_preferred_by_key = {}
 
     # W41 v2 (同住所同時刻集約 ソフト制約): _enforce_h2_same_address の前に呼ぶ.
     # 同住所 patient が異なる start_time に分散している場合、最多 start_time に
@@ -7381,6 +7577,144 @@ async def run_v2_pipeline(
     if travel_unassigned_ids:
         after_visits = [v for v in after_visits if id(v) not in travel_unassigned_ids]
 
+    # Phase G-92 (固定優先→希望フォールバックの遅延差し替え + proposal_source 分類):
+    # diff_add で PFV 患者の固定枠候補が Stage 5/6 (定員オーバー / 時間不適合) で
+    # 未割当になった場合、 dedup 時に退避しておいた希望候補 (fallback_preferred_by_key)
+    # の時刻情報で固定候補を差し替える. これにより proposal の表示時刻が「希望訪問
+    # パターン」由来になり、 source='fixed_fallback_preferred' と整合する.
+    #
+    # 検出: after_visits は Stage 5/6 で未割当 visit を物理除去済. shared object
+    # identity により pool_visits の固定候補オブジェクトと after_visits の同一性は
+    # 一致するため、 (patient_id, weekday) が after に残っていなければ固定枠は失敗.
+    proposal_meta_by_patient: dict[UUID, dict[str, Any]] = {}
+    if mode == "diff_add":
+        after_keys: set[tuple[UUID, int]] = {(v.patient_id, v.weekday) for v in after_visits}
+        # Phase G-92 (Reviewer fix #2): in-place 差し替えで生成した「同曜日希望候補」の
+        # id を記録する. この候補は run の Stage 5/6 を経ていない (= after_visits に
+        # 乗らない) 未検証の提案であり、 配置可能性が保証できない. 同曜日で固定も
+        # 希望も配置できない患者 (= 他に生存曜日が無い) はこの候補だけが pool_visits に
+        # 残り、 endpoint が「提案あり」として surface する一方で
+        # _identify_unassigned_patients が「未割当」に計上する二重分類が起きる.
+        # 後段で「未検証 (after_visits に無い) かつ別曜日に生存提案も無い」候補を
+        # pool_visits から除去し、 二重分類を解消する.
+        _g92_converted_ids: set[int] = set()
+        for (pid_fb, wd_fb), fallback_v in fallback_preferred_by_key.items():
+            if (pid_fb, wd_fb) in after_keys:
+                # 固定枠が after に残った = 固定成功. フォールバック差し替え不要.
+                continue
+            # 固定候補が未割当になった → pool_visits の固定候補を希望候補で差し替える.
+            # Phase G-92 (Reviewer note #5): 同 (patient, weekday) に複数 PFV がある
+            # 稀ケースでは先頭 1 件のみ差し替えて break する (= 決定性・意図的).
+            # 退避先 fallback_v も _dedup で先頭 1 件に固定済のため整合する. 1 患者
+            # 1 曜日 1 提案の前提を崩さないための仕様.
+            for pv in pool_visits:
+                if pv.patient_id == pid_fb and pv.weekday == wd_fb and pv.pool_origin == "fixed":
+                    pv.start_time = fallback_v.start_time
+                    pv.end_time = fallback_v.end_time
+                    pv.service_minutes = fallback_v.service_minutes
+                    pv.am_pm = fallback_v.am_pm
+                    pv.time_type = fallback_v.time_type
+                    pv.preferred_start = fallback_v.preferred_start
+                    pv.preferred_end = fallback_v.preferred_end
+                    pv.office_id = fallback_v.office_id
+                    # course_code は希望側に確定枠が無いため None (= 未確定提案).
+                    pv.course_code = None
+                    pv.pool_origin = "fixed_fallback_preferred"
+                    _g92_converted_ids.add(id(pv))
+                    break
+
+        # proposal_source / fixed_unavailable_reasons を患者単位で確定する.
+        # 「固定成功」は、 固定候補 (pool_origin="fixed") が Stage 5/6 を生き残り
+        # after_visits に残っていることで判定する (= after_keys に存在). 固定候補が
+        # pool_visits に残っていても after から落ちていれば固定失敗扱い.
+        #
+        # 判定 (PFV 患者 = patients_with_fixed のみ fixed 系を検討):
+        #   - 固定候補がいずれかの曜日で after に生存 → "fixed"
+        #   - 固定が全滅 かつ 希望候補が存在 (差替済 or 別曜日生存)
+        #       → "fixed_fallback_preferred" + 固定不可理由 + 落ちた固定候補を除外
+        #   - 固定が全滅 かつ 希望候補が無い (= 希望訪問パターン未設定)
+        #       → "fixed" のまま (= 既存の orphan 候補表示挙動を温存). 未割当判定は
+        #         _identify_unassigned_patients が担う (後方互換).
+        #   - PFV 無し → "preferred"
+        _origin_state_by_pid: dict[UUID, dict[str, set[int]]] = {}
+        for pv in pool_visits:
+            _slot = _origin_state_by_pid.setdefault(
+                pv.patient_id,
+                {
+                    "fixed_survived": set(),
+                    "fixed_failed": set(),
+                    "preferred": set(),
+                    "all": set(),
+                },
+            )
+            _slot["all"].add(pv.weekday)
+            in_after = (pv.patient_id, pv.weekday) in after_keys
+            if pv.pool_origin == "fixed":
+                if in_after:
+                    _slot["fixed_survived"].add(pv.weekday)
+                else:
+                    _slot["fixed_failed"].add(pv.weekday)
+            else:
+                # "preferred" (純希望) または "fixed_fallback_preferred" (差替済希望).
+                # いずれも希望訪問パターン由来の提案候補.
+                _slot["preferred"].add(pv.weekday)
+        # フォールバック確定患者: after に残らなかった固定候補は proposal から除く
+        # (= 希望側の提案のみを見せる).
+        _drop_failed_fixed_ids: set[int] = set()
+        for pid_meta, slots in _origin_state_by_pid.items():
+            if slots["fixed_survived"]:
+                proposal_meta_by_patient[pid_meta] = {
+                    "proposal_source": "fixed",
+                    "fixed_unavailable_reasons": [],
+                }
+            elif pid_meta in patients_with_fixed and slots["fixed_failed"] and slots["preferred"]:
+                # PFV 患者: 固定候補が全滅したが希望候補が残っている = フォールバック成立.
+                # 固定枠不可理由を warnings から収集 (全曜日対象).
+                reasons = _g92_collect_fixed_unavailable_reasons(
+                    pid_meta,
+                    slots["all"],
+                    warnings,
+                )
+                # Phase G-92 (Reviewer fix #4): 理由が warnings から確定できない場合は
+                # 空配列のままにする. 旧実装は time_conflict をハードコード既定にして
+                # いたが、 実際は定員 / 移動時間起因でも "time_conflict" と誤表示し得た
+                # ため撤去. 理由不明 = 表示しない (= フォールバック自体は成立).
+                proposal_meta_by_patient[pid_meta] = {
+                    "proposal_source": "fixed_fallback_preferred",
+                    "fixed_unavailable_reasons": reasons,
+                }
+                # after から落ちた固定候補 (pool_origin="fixed") を proposal から除外.
+                for _pv in pool_visits:
+                    if (
+                        _pv.patient_id == pid_meta
+                        and _pv.pool_origin == "fixed"
+                        and (_pv.patient_id, _pv.weekday) not in after_keys
+                    ):
+                        _drop_failed_fixed_ids.add(id(_pv))
+            elif pid_meta in patients_with_fixed:
+                # PFV 患者: 固定候補が残る or 固定が落ちたが希望候補も無い.
+                # 既存挙動を温存し "fixed" のまま (= orphan 候補表示 / 未割当は別経路).
+                proposal_meta_by_patient[pid_meta] = {
+                    "proposal_source": "fixed",
+                    "fixed_unavailable_reasons": [],
+                }
+            else:
+                proposal_meta_by_patient[pid_meta] = {
+                    "proposal_source": "preferred",
+                    "fixed_unavailable_reasons": [],
+                }
+        # Phase G-92 (Reviewer fix #2): in-place 差し替えで生成した同曜日希望候補は
+        # run の Stage 5/6 を経ておらず after_visits に乗らない (= 未検証提案). これが
+        # pool_visits に残ると endpoint が「提案あり」として surface する一方、 当該
+        # 患者は (他に生存曜日が無ければ) _identify_unassigned_patients で「未割当」に
+        # 計上され二重分類になる. 未検証の差替候補は pool_visits から除去し、 提案を
+        # 出さず未割当判定に一本化する (別曜日に生存提案がある真のフォールバック患者は
+        # その生存提案が after_visits に残るため影響を受けない).
+        for _cv_id in _g92_converted_ids:
+            _drop_failed_fixed_ids.add(_cv_id)
+        if _drop_failed_fixed_ids:
+            pool_visits = [v for v in pool_visits if id(v) not in _drop_failed_fixed_ids]
+
     # W41 v2 拡張 (コース容量 duration 化): 既存の人数制約 (MAX_PATIENTS_PER_COURSE=6)
     # と独立して、コース総所要時間 (visit duration + 移動時間) が 480 分を超えていないか check.
     _check_course_capacity_minutes(
@@ -7400,10 +7734,23 @@ async def run_v2_pipeline(
     # full_optimize モードのときのみ意味を持つ (after_visits = pool_visits 由来).
     # diff_add モードでは after_visits に before 由来 visit も含まれるため、
     # pool_patients (= 固定枠なし患者) のうち after に出ない者は依然として未割当扱い.
+    # Phase G-92 (Reviewer fix #2): 固定→希望フォールバックが成立した患者
+    # (proposal_source="fixed_fallback_preferred") は希望候補が提案として
+    # pool_visits に存在する. ところが遅延差し替えは after_visits を更新しない
+    # (希望候補は _dedup で fallback_preferred_by_key に退避され after に乗らない)
+    # ため、 固定と希望が同曜日で他に生存曜日が無い患者は after_visits に痕跡が
+    # 残らず、 _identify_unassigned_patients に「未割当」と誤計上される.
+    # フォールバック成立患者は提案ありなので未割当判定から除外する.
+    _g92_fallback_pids: set[UUID] = {
+        pid
+        for pid, meta in proposal_meta_by_patient.items()
+        if meta.get("proposal_source") == "fixed_fallback_preferred"
+    }
     unassigned = _identify_unassigned_patients(
         pool_patients=pool_patients,
         after_visits=after_visits,
         warnings=warnings,
+        exclude_patient_ids=_g92_fallback_pids,
     )
 
     return {
@@ -7414,6 +7761,10 @@ async def run_v2_pipeline(
         "warnings": warnings,
         "staff_count_by_weekday": staff_count_by_weekday,
         "unassigned_patients": unassigned,
+        # Phase G-92: 患者単位の proposal_source + 固定不可理由
+        # ({patient_id: {"proposal_source": ..., "fixed_unavailable_reasons": [...]}}).
+        # diff_add 以外では空 dict. endpoint が V2DiffAddProposal に流す.
+        "proposal_meta_by_patient": proposal_meta_by_patient,
     }
 
 

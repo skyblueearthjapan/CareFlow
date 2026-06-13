@@ -164,6 +164,49 @@ async def test_diff_add_rejects_bad_iso_year(client, db) -> None:
     assert res.status_code == 422
 
 
+@pytest.mark.asyncio
+async def test_diff_add_response_includes_proposal_source_fields(client, db) -> None:
+    """Phase G-92: diff-add の各 proposal が proposal_source /
+    fixed_unavailable_reasons を含む (後方互換: default 付き).
+
+    固定枠ありで入る患者 → 'fixed', 固定なし患者 → 'preferred'.
+    """
+    admin = await _make_user(db, email="v2-g92-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    # 固定枠あり (Mon 10:00, スタッフ Mon 稼働なので入る) → fixed
+    p_fixed = await _seed_patient(db, office=office, code="G92-API-F", lat=35.66, lng=140.11)
+    db.add(
+        PatientFixedVisit(
+            patient_id=p_fixed.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(10, 0),
+            duration_min=30,
+            slot_index=0,
+        )
+    )
+    # 固定枠なし → preferred
+    await _seed_patient(db, office=office, code="G92-API-P", lat=35.67, lng=140.12)
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/diff-add",
+        headers=_bearer(admin),
+        json={"iso_year": 2026, "iso_week": 20, "office_ids": [str(office.id)]},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    by_code = {p["patient_code"]: p for p in body["proposals"]}
+    # 両フィールドが全 proposal に存在する.
+    for prop in body["proposals"]:
+        assert "proposal_source" in prop
+        assert "fixed_unavailable_reasons" in prop
+        assert isinstance(prop["fixed_unavailable_reasons"], list)
+    assert by_code["G92-API-F"]["proposal_source"] == "fixed"
+    assert by_code["G92-API-F"]["fixed_unavailable_reasons"] == []
+    assert by_code["G92-API-P"]["proposal_source"] == "preferred"
+
+
 # ---------------------------------------------------------------------------
 # /v2/full-optimize
 # ---------------------------------------------------------------------------

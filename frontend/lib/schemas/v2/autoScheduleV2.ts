@@ -249,6 +249,36 @@ export const diffAddRequestSchema = z.object({
 });
 export type DiffAddRequest = z.infer<typeof diffAddRequestSchema>;
 
+// ---------------------------------------------------------------------------
+// Phase G-92 FE (プール投入 固定優先→希望フォールバック): 提案ソース + 固定枠不可理由.
+// BE ``V2DiffAddProposal.proposal_source`` / ``fixed_unavailable_reasons`` と 1:1.
+// 追加フィールドは additive (BE は default 付き) なので FE 側も default を与え、
+// 旧レスポンス (新フィールド無し) でも壊れないよう後方互換を保つ.
+// ---------------------------------------------------------------------------
+
+// この提案がどの希望ソースから導かれたか.
+//   - 'fixed'                    : 固定訪問スケジュール (PFV mode='normal') で配置.
+//   - 'fixed_fallback_preferred' : 固定枠が入らず希望訪問パターンへフォールバック.
+//   - 'preferred'                : 固定枠が無く希望訪問パターンで配置.
+export const diffAddProposalSourceSchema = z.enum([
+  'fixed',
+  'fixed_fallback_preferred',
+  'preferred',
+]);
+export type DiffAddProposalSource = z.infer<typeof diffAddProposalSourceSchema>;
+
+// 固定枠不可理由コード (fixed_fallback_preferred のときのみ非空).
+//   - 'time_no_fit'   : 移動時間が足りず希望時刻に入らない.
+//   - 'capacity_over' : コースが定員オーバー.
+//   - 'time_conflict' : 既存訪問と時間が重複.
+// BE は将来 list[str] に未知コードを足し得る (additive) ので、ここでは enum で
+// 縛らず string として受け、UI 側でラベル未定義時は中立表示にフォールバックする.
+export const V2_DIFF_ADD_FIXED_UNAVAILABLE_REASON_LABEL_JA: Record<string, string> = {
+  time_no_fit: '移動時間が足りません',
+  capacity_over: 'コースが定員オーバーです',
+  time_conflict: '時間が重複しています',
+};
+
 export const diffAddProposalSchema = z.object({
   proposal_id: z.string().uuid(),
   patient_id: z.string().uuid(),
@@ -260,6 +290,9 @@ export const diffAddProposalSchema = z.object({
   after_summary: v2BeforeAfterSummarySchema,
   delta: v2ProposalDeltaSchema,
   warnings: z.array(v2WarningSchema).default([]),
+  // Phase G-92 FE: BE additive フィールド (default 付きでミラー).
+  proposal_source: diffAddProposalSourceSchema.default('preferred'),
+  fixed_unavailable_reasons: z.array(z.string()).default([]),
 });
 export type DiffAddProposal = z.infer<typeof diffAddProposalSchema>;
 
