@@ -4950,7 +4950,52 @@ def _apply_travel_time_to_courses(
                 continue
 
             desired_start = cur.start_time
-            earliest_start = _add_minutes(prev.end_time, travel_min + buffer_min)
+            # Phase G-95 (修正2 同住所既存ペア 90 分占有): ``prev`` が「同住所バケットの
+            # 別患者」と組む **既存ペア** の一員なら、 そのペア占有は本来
+            # ``_align_same_address_pair_to_same_time`` で 90 分 (= max(service 合計,
+            # SAME_ADDRESS_PAIR_MIN_OCCUPANCY)) に底上げされる. しかし既に placed 済
+            # (= 既存ペアが before から来る / 同時刻トリオが auto_shift で de-align さ
+            # れる 等) の場合、 align の 90 分底上げが効かず ``prev.end_time`` が実
+            # service 長 (例: 35 分) のまま残る (= 植田 16:35 起点で 16:45 過密提案).
+            #
+            # ここで earliest_start の起点占有を
+            # ``max(prev.end_time, pair_anchor_start + SAME_ADDRESS_PAIR_MIN_OCCUPANCY)``
+            # に底上げし、 同住所 2 名 1.5 時間占有を既存ペア相手でも反映する.
+            #
+            # 検出: ``prev`` と **ペア関係** にある同住所・別患者 visit が同コース (sv)
+            # に存在するか. ここで「ペア関係」= 次のいずれか (= 同時刻配置/連続配置):
+            #   (a) 同 start_time (= align 済 / 既存同時刻ペア), または
+            #   (b) 連続 (一方の end == 他方の start; 同住所は travel 0 + buffer 0 で
+            #       隙間なく並ぶため、 auto_shift で de-align された 2 人目は contiguous).
+            # 「同建物だが別時刻 (例: 11:00-12:00 と 12:30-13:30 で間に隙間)」の単なる
+            # 連続訪問は **ペアではない** ため除外する (= 90 分占有を誤適用しない).
+            #
+            # ``pair_anchor_start`` は当該ペアクラスタの **最早 start_time** (= de-align
+            # 前のペア起点; auto_shift は 2 人目を後ろへずらすため 1 人目の start が
+            # anchor として残る). 直前で処理済の「同住所ペアの 2 人目」(= cur が prev
+            # とペア) とは別概念で、 こちらは prev 自身が既存ペアの一員かを見る.
+            # read-only (in-memory; prev は書き換えない. earliest 計算にのみ反映).
+            _prev_occupancy_end = prev.end_time
+            _prev_bucket = _address_bucket(prev.lat, prev.lng)
+            _pair_members = [
+                ov
+                for ov in sv
+                if ov is not prev
+                and ov.patient_id != prev.patient_id
+                and _address_bucket(ov.lat, ov.lng) == _prev_bucket
+                and (
+                    ov.start_time == prev.start_time  # (a) 同時刻ペア.
+                    or ov.start_time == prev.end_time  # (b) prev の直後に連続.
+                    or ov.end_time == prev.start_time  # (b) prev の直前に連続.
+                )
+            ]
+            if _pair_members:
+                # ペア起点 = prev とそのペア相手の最早 start_time.
+                pair_anchor_start = min([prev.start_time] + [ov.start_time for ov in _pair_members])
+                _pair_floor_end = _add_minutes(pair_anchor_start, SAME_ADDRESS_PAIR_MIN_OCCUPANCY)
+                if _pair_floor_end > _prev_occupancy_end:
+                    _prev_occupancy_end = _pair_floor_end
+            earliest_start = _add_minutes(_prev_occupancy_end, travel_min + buffer_min)
 
             tt = cur.time_type
             actual_start: time
@@ -6765,6 +6810,16 @@ def _g94_resolve_cross_patient_double_booking(
     既存 visit / 他患者の pool 提案同士の衝突は本 helper では動かさない (= pool 提案
     のみを調整対象とし、 確定済の既存配置は不変). read-only (in-memory 調整のみ).
 
+    Phase G-95 (修正1) で衝突検出を **2 段** にした:
+      - 段 a: 従来の同 ``course_code`` 確定グループ内照合 (course_code is None は除外).
+      - 段 b: 段 a で処理しきれなかった pool 提案 (= ``course_code=None`` または確定
+        グループに乗らなかった分) を、 同 ``(office_id, weekday)`` の **全既存確定
+        visit** (= pool でない before placed; 全 course) の占有時間帯と照合する.
+        PFV 無し・weekly_pattern のみ の患者 (例: 中尾 火 16:00 固定) の pool 提案が
+        ``course_code=None`` のまま生成され、 別 code で placed された既存 visit
+        (例: 井上 火 16:00 稲毛 C コース) と code 不一致で突き合わされない取りこぼしを
+        塞ぐ. 段 a で動かした pool 提案は段 b で二重処理しない (``stage_a_handled_ids``).
+
     Returns:
         提案不可として ``after_visits`` から除去すべき pool visit の ``id(v)`` 集合.
     """
@@ -6786,6 +6841,10 @@ def _g94_resolve_cross_patient_double_booking(
         groups[(v.office_id, v.weekday, v.course_code)].append(v)
 
     unassign_ids: set[int] = set()
+    # Phase G-95 (修正1 段 b ガード): 段 a (= 同 course_code 確定グループ内照合) で
+    # 衝突解消 (移動) / 提案不可 (未割当) として「処理済」とした pool 提案の id.
+    # 段 b は段 a で動かした pool 提案を二重処理しないようこの集合を除外する.
+    stage_a_handled_ids: set[int] = set()
 
     for (office_id, weekday, course_code), group in groups.items():
         if len(group) < 2:
@@ -6876,10 +6935,12 @@ def _g94_resolve_cross_patient_double_booking(
                     break
 
             if moved:
+                stage_a_handled_ids.add(id(pv))
                 continue
 
             # ずらせない (固定 or 入る時刻が無い) → 提案不可 (未割当化).
             unassign_ids.add(id(pv))
+            stage_a_handled_ids.add(id(pv))
             name = pv.patient_name or (pv.patient_code or "不明")
             other_name = conflict.patient_name or (conflict.patient_code or "不明")
             office_name = (office_name_by_id or {}).get(office_id, "")
@@ -6900,6 +6961,149 @@ def _g94_resolve_cross_patient_double_booking(
                     affected_patient_ids=[pv.patient_id],
                 )
             )
+
+    # -----------------------------------------------------------------------
+    # Phase G-95 (修正1 段 b): course_code に依らない (office_id, weekday) 横断照合.
+    #
+    # 段 a は同 ``course_code`` 確定グループ内でしか衝突を見ないため、 PFV 無し
+    # weekly_pattern のみ の患者 (例: 中尾 火 16:00 固定) の pool 提案が
+    # ``course_code=None`` (= 未確定) のまま生成されると、 別 code/未確定で placed
+    # された既存 visit (例: 井上 火 16:00 稲毛 C コース) と code 不一致で突き合わされず、
+    # 同時刻衝突が残る.
+    #
+    # 段 b は **段 a で処理しきれなかった pool 提案** (= ``course_code=None`` または
+    # 段 a の確定グループに乗らなかった分) を、 同 ``(office_id, weekday)`` の
+    # **全既存確定 visit** (= pool 提案でない before placed; 全 course) の占有時間帯と
+    # 照合する. 半開区間 [start, end) で重複する pool 提案を:
+    #   - 幅あり (time_type が 時間帯/午前/午後/終日/None) → 衝突しない最早時刻へずらす
+    #     (_can_move_to_time + 占有非重複 + service_minutes 確保).
+    #   - 固定 / 入る時刻が無い → 提案不可 (未割当化) + diff_add_conflict warning.
+    # 段 a で動かした pool 提案は ``stage_a_handled_ids`` で除外し二重処理を防ぐ.
+    # 既存確定 visit は不変 (read-only; pool 提案のみ調整).
+    # -----------------------------------------------------------------------
+
+    # (office_id, weekday) ごとの「既存確定 visit (= pool でない) の占有区間」.
+    # course を問わず全件集める. pool 提案同士は確定占有とみなさない (= 相手に
+    # しない) ため除外する.
+    existing_busy_by_ow: dict[tuple[UUID, int], list[tuple[time, time, V2Visit]]] = defaultdict(
+        list
+    )
+    for v in after_visits:
+        if id(v) in pool_visit_ids:
+            continue  # pool 提案は確定占有でない.
+        if id(v) in unassign_ids:
+            continue
+        existing_busy_by_ow[(v.office_id, v.weekday)].append((v.start_time, v.end_time, v))
+
+    # 段 b の検査対象 pool 提案. 決定性のため (office, weekday, start, patient) で
+    # ソートして処理順を固定する.
+    stage_b_targets = sorted(
+        (
+            pv
+            for pv in after_visits
+            if id(pv) in pool_visit_ids
+            and id(pv) not in unassign_ids
+            and id(pv) not in stage_a_handled_ids
+        ),
+        key=lambda v: (str(v.office_id), v.weekday, v.start_time, str(v.patient_id)),
+    )
+
+    for pv in stage_b_targets:
+        ow_key = (pv.office_id, pv.weekday)
+        # 相手 = 同 (office, weekday) の既存確定 visit (別患者; 全 course).
+        others_b = [
+            (bs, be, ov)
+            for (bs, be, ov) in existing_busy_by_ow.get(ow_key, [])
+            if ov.patient_id != pv.patient_id
+        ]
+        conflict_b = next(
+            (
+                (bs, be, ov)
+                for (bs, be, ov) in others_b
+                if _overlaps(pv.start_time, pv.end_time, bs, be)
+            ),
+            None,
+        )
+        if conflict_b is None:
+            continue
+
+        busy_b: list[tuple[time, time]] = [(bs, be) for (bs, be, _ov) in others_b]
+        moved_b = False
+        if pv.time_type != "固定":
+            raw_candidates_b = [pv.start_time]
+            for _bs, _be in busy_b:
+                raw_candidates_b.append(_add_minutes(_be, _buffer_min))
+            seen_b: set[time] = set()
+            for cand_raw in sorted(raw_candidates_b):
+                cand = _round_up_to_5min(cand_raw)
+                if cand in seen_b:
+                    continue
+                seen_b.add(cand)
+                cand_end = _add_minutes(cand, pv.service_minutes)
+                if not _can_move_to_time(pv, cand):
+                    continue
+                if any(_overlaps(cand, cand_end, bs, be) for bs, be in busy_b):
+                    continue
+                if cand == pv.start_time:
+                    moved_b = True
+                    break
+                old_start = pv.start_time
+                pv.start_time = cand
+                pv.end_time = cand_end
+                moved_b = True
+                _conf_v = conflict_b[2]
+                name = pv.patient_name or (pv.patient_code or "不明")
+                other_name = _conf_v.patient_name or (_conf_v.patient_code or "不明")
+                office_name = (office_name_by_id or {}).get(pv.office_id, "")
+                warnings.append(
+                    V2Warning(
+                        type="auto_time_shift_for_conflict",
+                        message=(
+                            f"{office_name} {_weekday_jp(pv.weekday)}: "
+                            f"{name} 様 ({_fmt_hhmm(old_start)}) が "
+                            f"{other_name} 様 ({_fmt_hhmm(_conf_v.start_time)}-"
+                            f"{_fmt_hhmm(_conf_v.end_time)}) と同時刻衝突のため "
+                            f"{_fmt_hhmm(cand)} に変更"
+                        ),
+                        weekday=pv.weekday,
+                        actionable=False,
+                        patient_id=pv.patient_id,
+                        patient_name=pv.patient_name,
+                        current_time=_fmt_hhmm(cand),
+                        suggested_time=_fmt_hhmm(cand),
+                        time_type=pv.time_type,
+                        preferred_start=pv.preferred_start,
+                        preferred_end=pv.preferred_end,
+                        affected_patient_ids=[pv.patient_id],
+                    )
+                )
+                break
+
+        if moved_b:
+            continue
+
+        # ずらせない (固定 or 入る時刻が無い) → 提案不可 (未割当化).
+        unassign_ids.add(id(pv))
+        _conf_v = conflict_b[2]
+        name = pv.patient_name or (pv.patient_code or "不明")
+        other_name = _conf_v.patient_name or (_conf_v.patient_code or "不明")
+        office_name = (office_name_by_id or {}).get(pv.office_id, "")
+        warnings.append(
+            V2Warning(
+                type="diff_add_conflict",
+                message=(
+                    f"{name} 様: {office_name} {_weekday_jp(pv.weekday)} "
+                    f"{_fmt_hhmm(pv.start_time)}-{_fmt_hhmm(pv.end_time)} は "
+                    f"{other_name} 様 ({_fmt_hhmm(_conf_v.start_time)}-"
+                    f"{_fmt_hhmm(_conf_v.end_time)}) と同時刻のため提案不可"
+                ),
+                weekday=pv.weekday,
+                actionable=True,
+                patient_id=pv.patient_id,
+                patient_name=pv.patient_name,
+                affected_patient_ids=[pv.patient_id],
+            )
+        )
 
     return unassign_ids
 

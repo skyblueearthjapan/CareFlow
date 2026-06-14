@@ -9096,3 +9096,280 @@ def test_g94_double_booking_no_conflict_no_change() -> None:
     assert unassign == set(), "非衝突なら未割当なし"
     assert warnings == [], "非衝突なら warning なし"
     assert pool_ok.start_time == time(17, 0)
+
+
+# ---------------------------------------------------------------------------
+# Phase G-95 (修正1 段 b): course_code を問わない (office, weekday) 横断照合.
+# PFV 無し・weekly_pattern のみ の患者 (中尾型) の pool 提案は course_code=None で
+# 生成され、 別 code で placed された既存 visit (井上型) と段 a (同 code 照合) では
+# 突き合わされない. 段 b でこの取りこぼしを塞ぐ.
+# ---------------------------------------------------------------------------
+
+
+def test_g95_stage_b_preferred_only_fixed_pool_unassigned_cross_course() -> None:
+    """① PFV 無し希望のみ (中尾型) の固定 pool が別 course の既存 placed と同時刻 → 提案不可.
+
+    中尾 (pool, course_code=None, 固定 16:00) が井上 (既存, course='C', 16:00-16:30)
+    と同 (office, weekday) で同時刻. 段 a は course_code=None を除外するため素通り
+    するが、 段 b が (office, weekday) 横断で照合し、 固定はずらせないため提案不可
+    (未割当 + diff_add_conflict = time_conflict 整合).
+    """
+    office_id = uuid.uuid4()
+    existing = _g94_make_visit(
+        patient_name="井上",
+        office_id=office_id,
+        weekday=1,  # 火曜.
+        start=time(16, 0),
+        service_minutes=30,
+        course_code="C",  # 稲毛 C コース placed.
+    )
+    pool_fixed = _g94_make_visit(
+        patient_name="中尾",
+        office_id=office_id,
+        weekday=1,
+        start=time(16, 0),
+        service_minutes=30,
+        course_code=None,  # PFV 無し・希望のみ → 未確定.
+        time_type="固定",
+        preferred_start="16:00",
+    )
+    after_visits = [existing, pool_fixed]
+    warnings: list[V2Warning] = []
+    unassign = _g94_resolve_cross_patient_double_booking(
+        after_visits,
+        pool_visit_ids={id(pool_fixed)},
+        warnings=warnings,
+        office_name_by_id={office_id: "テスト拠点"},
+    )
+    assert id(pool_fixed) in unassign, "段 b: 固定の同時刻 pool 提案は提案不可 (未割当)"
+    assert id(existing) not in unassign, "既存 visit は動かさない"
+    assert any(
+        w.type == "diff_add_conflict" and pool_fixed.patient_id in (w.affected_patient_ids or [])
+        for w in warnings
+    ), f"time_conflict 整合の warning が emit される: {[w.type for w in warnings]}"
+    # read-only: 既存 visit の時刻は不変.
+    assert existing.start_time == time(16, 0)
+
+
+def test_g95_stage_b_preferred_only_flex_pool_shifted_cross_course() -> None:
+    """① (幅あり版) 希望のみ幅あり pool は別 course の既存 placed と同時刻 → ずれて回避.
+
+    中尾 (pool, course_code=None, 時間帯 16:00-18:00) が井上 (既存, course='C',
+    16:00-16:30) と同時刻. 幅があるため段 b で衝突しない最早時刻へずれる (未割当に
+    ならず提案維持).
+    """
+    office_id = uuid.uuid4()
+    existing = _g94_make_visit(
+        patient_name="井上",
+        office_id=office_id,
+        weekday=1,
+        start=time(16, 0),
+        service_minutes=30,
+        course_code="C",
+    )
+    pool_flex = _g94_make_visit(
+        patient_name="中尾",
+        office_id=office_id,
+        weekday=1,
+        start=time(16, 0),
+        service_minutes=30,
+        course_code=None,
+        time_type="時間帯",
+        preferred_start="16:00",
+        preferred_end="18:00",
+    )
+    after_visits = [existing, pool_flex]
+    warnings: list[V2Warning] = []
+    unassign = _g94_resolve_cross_patient_double_booking(
+        after_visits,
+        pool_visit_ids={id(pool_flex)},
+        warnings=warnings,
+        office_name_by_id={office_id: "テスト拠点"},
+    )
+    assert id(pool_flex) not in unassign, "幅のある希望はずらして提案維持"
+    assert not (
+        pool_flex.start_time < existing.end_time and pool_flex.end_time > existing.start_time
+    ), f"ずらし後は既存と非重複: {pool_flex.start_time}-{pool_flex.end_time}"
+    assert time(16, 0) <= pool_flex.start_time <= time(18, 0)
+    assert existing.start_time == time(16, 0)
+    assert any(w.type == "auto_time_shift_for_conflict" for w in warnings), [
+        w.type for w in warnings
+    ]
+
+
+def test_g95_stage_b_no_double_process_after_stage_a() -> None:
+    """① (ガード) 段 a で動かした pool 提案を段 b で二重処理しない.
+
+    井上 (既存, course='C', 16:00) と中尾 (pool, course='C', 時間帯 16:00-18:00) は
+    同 course で段 a がずらす. 段 b は ``stage_a_handled_ids`` で除外するため、
+    シフト warning は 1 回のみ.
+    """
+    office_id = uuid.uuid4()
+    existing = _g94_make_visit(
+        patient_name="井上",
+        office_id=office_id,
+        weekday=1,
+        start=time(16, 0),
+        service_minutes=30,
+        course_code="C",
+    )
+    pool_flex = _g94_make_visit(
+        patient_name="中尾",
+        office_id=office_id,
+        weekday=1,
+        start=time(16, 0),
+        service_minutes=30,
+        course_code="C",  # 段 a で照合される確定 course.
+        time_type="時間帯",
+        preferred_start="16:00",
+        preferred_end="18:00",
+    )
+    warnings: list[V2Warning] = []
+    _g94_resolve_cross_patient_double_booking(
+        [existing, pool_flex],
+        pool_visit_ids={id(pool_flex)},
+        warnings=warnings,
+        office_name_by_id={office_id: "テスト拠点"},
+    )
+    shift_warnings = [w for w in warnings if w.type == "auto_time_shift_for_conflict"]
+    assert len(shift_warnings) == 1, f"段 a で 1 回のみシフト (二重処理なし): {len(shift_warnings)}"
+
+
+# ---------------------------------------------------------------------------
+# Phase G-95 (修正2): 同住所既存ペア (35 分 placed) 直後の pool 提案は 90 分占有起点.
+# _apply_travel_time_to_courses の earliest_start 計算で、 prev が同 start_time・
+# 同住所の別患者と組む既存ペアなら占有を max(実 end, pair_start + 90) に底上げ.
+# ---------------------------------------------------------------------------
+
+
+def test_g95_existing_same_address_pair_90min_occupancy_for_next_pool() -> None:
+    """② 既存同住所ペア (35 分 placed) 直後の pool 提案は 90 分占有起点で計算する.
+
+    安永 (16:00-16:35) ・菅原 (16:35-17:10) が同住所の既存ペア (両者固定で時刻不一致
+    のため ``_align_same_address_pair_to_same_time`` は揃えず 90 分底上げが効かない =
+    実 service 長のまま). 植田 (pool, 異住所近接) が後続. 旧実装は prev (菅原) の
+    end_time=17:10 起点 (17:10+移動+バッファ ≒ 17:20) で、 ペアの 90 分占有 (16:00 起点
+    = 17:30) が反映されない. 修正後は anchor=16:00 → 16:00+90=17:30 起点 → ≒ 17:39.
+    """
+    office_id = uuid.uuid4()
+    # 同住所ペア (園生町 想定): 同住所バケット + 別患者 + 連続配置 (16:00 / 16:35).
+    # 両者固定で時刻不一致のため align は揃えられず 90 分底上げが効かない (= 既存
+    # placed ペアと同じ「実 35 分占有」状態を再現).
+    yasunaga = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=16, start_m=0, patient_name="安永"
+    )
+    yasunaga.end_time = time(16, 35)
+    yasunaga.service_minutes = 35
+    yasunaga.course_code = "D"
+    yasunaga.time_type = "固定"
+    yasunaga.preferred_start = "16:00"
+    sugawara = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=16, start_m=35, patient_name="菅原"
+    )
+    sugawara.end_time = time(17, 10)
+    sugawara.service_minutes = 35
+    sugawara.course_code = "D"
+    sugawara.time_type = "固定"
+    sugawara.preferred_start = "16:35"
+    # 後続 pool 患者 (異住所だが近接 = 移動 1 分; 幅あり): earliest が 90 分占有起点に
+    # なるか. 近接座標にすることで「移動時間で勝手に押し出された」のではなく
+    # 「90 分占有底上げで押し出された」ことを切り分ける.
+    ueda = _make_visit(
+        lat=35.652, lng=140.10, office_id=office_id, start_h=17, start_m=10, patient_name="植田"
+    )
+    ueda.end_time = time(17, 40)
+    ueda.service_minutes = 30
+    ueda.course_code = "D"
+    ueda.time_type = "時間帯"
+    ueda.preferred_start = "16:00"
+    ueda.preferred_end = "18:00"
+
+    warnings: list[V2Warning] = []
+    apply_travel_corrections([yasunaga, sugawara, ueda], warnings=warnings)
+
+    # 植田の起点は anchor 16:00 + 90 = 17:30 (+ 移動 1 分 + バッファ + 5 分切り上げ)
+    # なので 17:30 以降. 旧実装は prev (菅原) end 17:10 起点で 17:20 だったため、
+    # 17:30 以降は 90 分占有底上げ (16:00 起点) が効いた証拠.
+    assert ueda.start_time >= time(17, 30), (
+        f"既存ペア 90 分占有起点 (17:30) 以降に配置されるべき: {ueda.start_time}"
+    )
+
+
+def test_g95_existing_same_address_pair_pushes_pool_over_window_unassigned() -> None:
+    """② 既存ペア 90 分占有で固定 pool が物理不可 → 提案不可 (未割当化).
+
+    既存ペア 安永 (16:00-16:35) ・菅原 (16:35-17:10) の 90 分占有起点 = 16:00+90=17:30.
+    後続 pool 植田 は固定 17:20 希望. 近接座標 (移動 1 分) なので 90 分底上げが無ければ
+    prev (菅原) end 17:10 + 1 + 8 = 17:19 で 17:20 固定に間に合う. しかし 90 分占有起点
+    17:30 では 17:30+1+8=17:39 が 17:20 を超過 (shortage 19 ≥ 5) → 物理不可で
+    course_code=None + 未割当 (= 90 分占有底上げが効いた証拠).
+    """
+    office_id = uuid.uuid4()
+    yasunaga = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=16, start_m=0, patient_name="安永"
+    )
+    yasunaga.end_time = time(16, 35)
+    yasunaga.service_minutes = 35
+    yasunaga.course_code = "D"
+    yasunaga.time_type = "固定"
+    yasunaga.preferred_start = "16:00"
+    sugawara = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=16, start_m=35, patient_name="菅原"
+    )
+    sugawara.end_time = time(17, 10)
+    sugawara.service_minutes = 35
+    sugawara.course_code = "D"
+    sugawara.time_type = "固定"
+    sugawara.preferred_start = "16:35"
+    # 後続 pool: 固定 17:20 希望.
+    ueda = _make_visit(
+        lat=35.652, lng=140.10, office_id=office_id, start_h=17, start_m=20, patient_name="植田"
+    )
+    ueda.end_time = time(17, 50)
+    ueda.service_minutes = 30
+    ueda.course_code = "D"
+    ueda.time_type = "固定"
+    ueda.preferred_start = "17:20"
+
+    warnings: list[V2Warning] = []
+    unassigned = apply_travel_corrections([yasunaga, sugawara, ueda], warnings=warnings)
+
+    # 90 分占有 (17:30 起点) で 17:20 固定に間に合わず物理不可 → course_code=None + 未割当.
+    assert id(ueda) in unassigned, "90 分占有起点で固定時刻に届かず提案不可 (未割当)"
+    assert ueda.course_code is None
+    assert any(w.type == "travel_time_shortage" for w in warnings), [w.type for w in warnings]
+
+
+def test_g95_no_existing_pair_occupancy_unchanged_for_normal_next() -> None:
+    """③ 既存ペアが無ければ占有底上げは起きない (誤発火しない / 既存挙動不変).
+
+    A (16:00-16:35 単独, 同住所ペア相手なし) の直後の B (異住所) は通常通り
+    prev.end_time=16:35 起点で配置される (90 分底上げは適用されない).
+    """
+    office_id = uuid.uuid4()
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=16, start_m=0, patient_name="A"
+    )
+    a.end_time = time(16, 35)
+    a.service_minutes = 35
+    a.course_code = "D"
+    a.time_type = "固定"
+    a.preferred_start = "16:00"
+    b = _make_visit(
+        lat=35.652, lng=140.10, office_id=office_id, start_h=16, start_m=0, patient_name="B"
+    )
+    b.end_time = time(16, 30)
+    b.service_minutes = 30
+    b.course_code = "D"
+    b.time_type = "時間帯"
+    b.preferred_start = "16:00"
+    b.preferred_end = "18:00"
+
+    warnings: list[V2Warning] = []
+    apply_travel_corrections([a, b], warnings=warnings)
+
+    # A は同住所ペア相手なし → 占有は実 35 分のまま. B は 16:35 + 移動 1 分 + バッファ
+    # 起点 (= 16:44 → 16:45) で配置され、 17:30 起点にはならない.
+    assert b.start_time < time(17, 30), (
+        f"既存ペアが無ければ 90 分占有底上げは起きない: {b.start_time}"
+    )
