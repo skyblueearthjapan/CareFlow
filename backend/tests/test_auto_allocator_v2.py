@@ -24,6 +24,7 @@ from app.services.scheduling.auto_allocator_v2 import (
     MAX_PATIENTS_PER_SET,
     V2Visit,
     V2Warning,
+    _g94_resolve_cross_patient_double_booking,
     apply_individual_proposal,
     apply_travel_corrections,
     build_visits_for_pool,
@@ -8779,3 +8780,319 @@ async def test_g93_diff_add_frequency_only_pattern_uses_pfv_weekdays_only(db) ->
     assert {v.weekday for v in pv} == {0}, (
         f"frequency のみ患者は PFV 曜日のみが desired (Mon 提案): {[v.weekday for v in pv]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase G-94 — 修正1: 過剰提案 (回数充足 / 固定曜日 ≠ 希望曜日のズレ患者)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_g94_diff_add_count_satisfied_fixed_weekday_mismatch_not_proposed(db) -> None:
+    """① 過剰提案防止: 固定曜日 ≠ 希望曜日でも希望回数を満たせば提案しない (小宮再現).
+
+    小宮啓子の再現: 固定枠 (水/木/金) と weekly 希望曜日 (火) がズレている.
+    frequency_per_week=3 で今週すでに 3 件 (水/木/金) 配置済 → 回数は充足.
+    G-93 の曜日判定だけだと希望曜日 (火) が未配置 = 不足扱いで過剰提案されるが、
+    G-94 の回数充足チェックで除外される.
+    """
+    from datetime import date
+
+    from app.models.visit import VISIT_STATUS_PLANNED, Visit
+
+    office = await _seed_g92_office(
+        db, name="g94-mismatch", staffed_weekdays=[1, 2, 3, 4]
+    )  # Tue/Wed/Thu/Fri
+    p = Patient(
+        code="G94-MISMATCH",
+        name="小宮型",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        primary_office_id=office.id,
+        # 希望曜日は火 (Tue) だが固定枠は水木金. frequency=3.
+        weekly_pattern={
+            "preferred_weekdays": ["Tue"],
+            "preferred_start": "10:30",
+            "time_type": "固定",
+            "frequency_per_week": 3,
+        },
+    )
+    db.add(p)
+    await db.flush()
+    # PFV 3 件 (Wed/Thu/Fri).
+    for wd in (2, 3, 4):
+        db.add(
+            PatientFixedVisit(
+                patient_id=p.id,
+                mode="normal",
+                weekday=wd,
+                start_time=time(10, 0),
+                duration_min=30,
+                slot_index=0,
+            )
+        )
+    await db.flush()
+    # 今週すでに Wed (05-13) / Thu (05-14) / Fri (05-15) に配置済 → 3 件 = 回数充足.
+    for vdate in (date(2026, 5, 13), date(2026, 5, 14), date(2026, 5, 15)):
+        db.add(
+            Visit(
+                patient_id=p.id,
+                visit_date=vdate,
+                start_time=time(10, 0),
+                end_time=time(10, 30),
+                type="regular",
+                status=VISIT_STATUS_PLANNED,
+                source="auto_alloc",
+                required_staff_count=1,
+            )
+        )
+    await db.commit()
+
+    result = await run_v2_pipeline(
+        db, iso_year=2026, iso_week=20, office_ids=[office.id], mode="diff_add"
+    )
+    pv = [v for v in result["pool_visits"] if v.patient_id == p.id]
+    # 回数 (3) 充足済 → 希望曜日 (火) がズレていても提案しない.
+    assert pv == [], f"回数充足済 (固定曜日 ≠ 希望曜日) は過剰提案しない: {pv}"
+
+
+@pytest.mark.asyncio
+async def test_g94_diff_add_count_short_still_proposed(db) -> None:
+    """② 本当に不足: frequency 未充足なら従来通り不足曜日を提案する (植田再現).
+
+    植田弥生の再現: 週3希望 (Mon/Wed/Fri), PFV 2 件 (Wed/Fri), 今週 2 件配置済.
+    frequency_per_week は未設定だが desired_wds (= Mon/Wed/Fri = 3) を回数フォール
+    バックに使うため、 placed 2 < desired 3 で回数充足せず、 不足曜日 (Mon) が提案
+    される. G-94 の回数チェックが「本当に不足」な患者を誤除外しないことを検証する.
+    """
+    from datetime import date
+
+    from app.models.visit import VISIT_STATUS_PLANNED, Visit
+
+    office = await _seed_g92_office(db, name="g94-short", staffed_weekdays=[0, 2, 4])
+    p = Patient(
+        code="G94-SHORT",
+        name="植田型",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        primary_office_id=office.id,
+        weekly_pattern={
+            "preferred_weekdays": ["Mon", "Wed", "Fri"],
+            "preferred_start": "10:30",
+            "time_type": "固定",
+        },
+    )
+    db.add(p)
+    await db.flush()
+    for wd in (2, 4):  # PFV Wed/Fri.
+        db.add(
+            PatientFixedVisit(
+                patient_id=p.id,
+                mode="normal",
+                weekday=wd,
+                start_time=time(10, 0),
+                duration_min=30,
+                slot_index=0,
+            )
+        )
+    await db.flush()
+    for vdate in (date(2026, 5, 13), date(2026, 5, 15)):  # Wed/Fri 配置済 (2 件).
+        db.add(
+            Visit(
+                patient_id=p.id,
+                visit_date=vdate,
+                start_time=time(10, 0),
+                end_time=time(10, 30),
+                type="regular",
+                status=VISIT_STATUS_PLANNED,
+                source="auto_alloc",
+                required_staff_count=1,
+            )
+        )
+    await db.commit()
+
+    result = await run_v2_pipeline(
+        db, iso_year=2026, iso_week=20, office_ids=[office.id], mode="diff_add"
+    )
+    pv = [v for v in result["pool_visits"] if v.patient_id == p.id]
+    # 回数未充足 (2 < 3) → 不足の Mon (0) が提案される.
+    assert {v.weekday for v in pv} == {0}, (
+        f"回数未充足の患者は不足曜日 (Mon) を提案: {[v.weekday for v in pv]}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase G-94 — 修正2: 同コース他患者との同時刻ダブルブッキング
+# ---------------------------------------------------------------------------
+
+
+def _g94_make_visit(
+    *,
+    patient_name: str,
+    office_id: UUID,
+    weekday: int,
+    start: time,
+    service_minutes: int,
+    course_code: str | None,
+    time_type: str | None = None,
+    preferred_start: str | None = None,
+    preferred_end: str | None = None,
+) -> V2Visit:
+    """G-94 修正2 テスト用 V2Visit ファクトリ."""
+    return V2Visit(
+        patient_id=uuid.uuid4(),
+        patient_name=patient_name,
+        patient_code=None,
+        weekday=weekday,
+        start_time=start,
+        end_time=time(
+            (start.hour * 60 + start.minute + service_minutes) // 60,
+            (start.hour * 60 + start.minute + service_minutes) % 60,
+        ),
+        service_minutes=service_minutes,
+        lat=35.65,
+        lng=140.10,
+        office_id=office_id,
+        am_pm="any",
+        source_kind="pool",
+        course_code=course_code,
+        time_type=time_type,
+        preferred_start=preferred_start,
+        preferred_end=preferred_end,
+    )
+
+
+def test_g94_double_booking_fixed_pool_proposal_unassigned() -> None:
+    """③ 固定の pool 提案が同コース他患者と同時刻 → 提案不可 (未割当 + time_conflict).
+
+    中尾 16:00 (pool, 固定) が井上 16:00 (既存, 同コース C) と重なる. 固定は
+    ずらせないため提案不可. 返り値に中尾 visit の id が入り、 diff_add_conflict
+    warning が emit される (= 後段で fixed_time_conflict / G-92 time_conflict に整合).
+    """
+    office_id = uuid.uuid4()
+    existing = _g94_make_visit(
+        patient_name="井上",
+        office_id=office_id,
+        weekday=0,
+        start=time(16, 0),
+        service_minutes=30,
+        course_code="C",
+    )
+    pool_fixed = _g94_make_visit(
+        patient_name="中尾",
+        office_id=office_id,
+        weekday=0,
+        start=time(16, 0),
+        service_minutes=30,
+        course_code="C",
+        time_type="固定",
+        preferred_start="16:00",
+    )
+    after_visits = [existing, pool_fixed]
+    warnings: list[V2Warning] = []
+    unassign = _g94_resolve_cross_patient_double_booking(
+        after_visits,
+        pool_visit_ids={id(pool_fixed)},  # existing は pool ではない.
+        warnings=warnings,
+        office_name_by_id={office_id: "テスト拠点"},
+    )
+    # 固定 pool 提案は未割当化される.
+    assert id(pool_fixed) in unassign, "固定の同時刻 pool 提案は提案不可 (未割当)"
+    assert id(existing) not in unassign, "既存 visit は動かさない"
+    # diff_add_conflict warning (= time_conflict 整合) が出る.
+    assert any(
+        w.type == "diff_add_conflict" and pool_fixed.patient_id in (w.affected_patient_ids or [])
+        for w in warnings
+    ), f"time_conflict 整合の warning が emit される: {[w.type for w in warnings]}"
+    # read-only: 既存 visit の時刻は不変.
+    assert existing.start_time == time(16, 0)
+
+
+def test_g94_double_booking_flex_pool_proposal_shifted() -> None:
+    """④ 幅のある希望の pool 提案は衝突しない最早時刻へずれて衝突回避する.
+
+    中尾 (pool, 時間帯 16:00-18:00) が井上 16:00-16:30 (既存, 同コース C) と
+    重なる. 幅があるため衝突しない最早時刻 (16:30 + buffer を 5 分切り上げ) へ
+    ずれ、 提案は維持される (未割当にならない).
+    """
+    office_id = uuid.uuid4()
+    existing = _g94_make_visit(
+        patient_name="井上",
+        office_id=office_id,
+        weekday=0,
+        start=time(16, 0),
+        service_minutes=30,  # 16:00-16:30 占有.
+        course_code="C",
+    )
+    pool_flex = _g94_make_visit(
+        patient_name="中尾",
+        office_id=office_id,
+        weekday=0,
+        start=time(16, 0),
+        service_minutes=30,
+        course_code="C",
+        time_type="時間帯",
+        preferred_start="16:00",
+        preferred_end="18:00",
+    )
+    after_visits = [existing, pool_flex]
+    warnings: list[V2Warning] = []
+    unassign = _g94_resolve_cross_patient_double_booking(
+        after_visits,
+        pool_visit_ids={id(pool_flex)},
+        warnings=warnings,
+        office_name_by_id={office_id: "テスト拠点"},
+    )
+    # 幅があるのでずれて回避 = 未割当にならない.
+    assert id(pool_flex) not in unassign, "幅のある希望はずらして提案維持"
+    # 衝突解消後、 既存 (16:00-16:30) と重ならない時刻に移動している.
+    assert not (
+        pool_flex.start_time < existing.end_time and pool_flex.end_time > existing.start_time
+    ), f"ずらし後は既存と非重複: {pool_flex.start_time}-{pool_flex.end_time}"
+    # 希望時間帯 (16:00-18:00) 内に収まっている.
+    assert time(16, 0) <= pool_flex.start_time <= time(18, 0)
+    # 既存 visit は不変 (read-only).
+    assert existing.start_time == time(16, 0)
+    # シフト warning が出る.
+    assert any(w.type == "auto_time_shift_for_conflict" for w in warnings), [
+        w.type for w in warnings
+    ]
+
+
+def test_g94_double_booking_no_conflict_no_change() -> None:
+    """⑤ 衝突が無ければ何もしない (誤検出しない).
+
+    同コース C に井上 16:00-16:30 と中尾 17:00-17:30 (非重複). 何も変えず、
+    未割当も warning も出ない.
+    """
+    office_id = uuid.uuid4()
+    existing = _g94_make_visit(
+        patient_name="井上",
+        office_id=office_id,
+        weekday=0,
+        start=time(16, 0),
+        service_minutes=30,
+        course_code="C",
+    )
+    pool_ok = _g94_make_visit(
+        patient_name="中尾",
+        office_id=office_id,
+        weekday=0,
+        start=time(17, 0),
+        service_minutes=30,
+        course_code="C",
+        time_type="固定",
+        preferred_start="17:00",
+    )
+    warnings: list[V2Warning] = []
+    unassign = _g94_resolve_cross_patient_double_booking(
+        [existing, pool_ok],
+        pool_visit_ids={id(pool_ok)},
+        warnings=warnings,
+        office_name_by_id={office_id: "テスト拠点"},
+    )
+    assert unassign == set(), "非衝突なら未割当なし"
+    assert warnings == [], "非衝突なら warning なし"
+    assert pool_ok.start_time == time(17, 0)

@@ -1773,6 +1773,45 @@ def _g93_desired_weekdays(
     return wds
 
 
+def _g94_desired_count(
+    patient: Patient,
+    fixed_rows: list[PatientFixedVisit] | None,
+    *,
+    config: SchedulingConfig | None = None,
+) -> int | None:
+    """Phase G-94 (修正1 過剰提案): 患者の「今週訪問を希望している回数」を返す.
+
+    G-93 の partial_short 判定は曜日ベース (希望曜日のうち未配置があれば不足) で
+    あるため、 固定枠曜日と weekly 希望曜日がズレた患者 (例: 固定 水木金 / 希望 火)
+    は、 希望回数 (frequency_per_week) を実 visit 件数で満たしていても「希望曜日
+    (火) が未配置」と判定され過剰提案されてしまう. これを防ぐため、 曜日判定の
+    前段で回数充足チェックに使う希望回数を求める.
+
+    決定順:
+      1. ``weekly_pattern.frequency_per_week`` (1〜7 の int) があればそれを採用
+         (= 希望回数の権威ソース. 小宮啓子 / 小湊愛莉 はこれが設定される).
+      2. 無ければ「希望週内スロット曜日 (PFV ∪ weekly preferred) の異曜日数」に
+         フォールバックする. PFV スロット数のみだと preferred 曜日が多い患者
+         (植田弥生: PFV 2 / 希望週3) を過小評価し、 本当に不足している患者を
+         誤って除外してしまうため、 両ソースの和集合曜日数を採る (= 最も寛容な
+         見積りで、 真に不足な患者を取りこぼさない).
+      3. どちらも得られない (frequency 未設定 かつ 希望曜日 0) なら ``None`` を
+         返し、 呼び出し側は回数チェックを skip して従来の曜日判定に委ねる.
+
+    Returns:
+        希望回数 (>= 1) または ``None`` (回数を確定できない場合).
+    """
+    pattern = patient.weekly_pattern
+    if isinstance(pattern, dict):
+        raw = pattern.get("frequency_per_week")
+        if isinstance(raw, int) and 1 <= raw <= 7:
+            return raw
+    desired_wds = _g93_desired_weekdays(patient, fixed_rows, config=config)
+    if desired_wds:
+        return len(desired_wds)
+    return None
+
+
 # ---------------------------------------------------------------------------
 # W41 v2 拡張 (今週限定オーバーレイ): pending_edits を (patient_id, weekday) → 編集
 # Map に変換し、PFV / weekly_pattern を「読み込み時だけ」上書きする.
@@ -6691,6 +6730,180 @@ def _g92_collect_fixed_unavailable_reasons(
     return [r for r in ordered if r in found]
 
 
+def _g94_resolve_cross_patient_double_booking(
+    after_visits: list[V2Visit],
+    *,
+    pool_visit_ids: set[int],
+    warnings: list[V2Warning],
+    office_name_by_id: dict[UUID, str] | None = None,
+    config: SchedulingConfig | None = None,
+) -> set[int]:
+    """Phase G-94 (修正2 ダブルブッキング): 同コース他患者と時間重複する pool 提案を解消する.
+
+    背景:
+        ``run_v2_pipeline`` の ``diff_add`` では ``after_visits = filtered_before +
+        pool_visits`` となり、 既存 visit (PFV 由来など) と新規 pool 提案が同一
+        ``(office_id, weekday, course_code)`` に同居しうる. ``_apply_corrections_to_visits``
+        の ``_auto_shift_same_time_conflicts`` はコース内同時刻を解消するが、 pinned
+        既存 visit は補正後に時刻を snapshot から復元される (= 動かない) ため、
+        固定既存 visit と pool 提案が同時刻になる「他患者ダブルブッキング」が残る
+        (例: 中尾 16:00 が井上 16:00 と同コース C で重なる).
+
+    本 helper は時刻補正後の ``after_visits`` 全体を走査し、 **pool 提案** (= ``id`` が
+    ``pool_visit_ids`` に含まれる visit) が **別患者の既存/他 visit** と同
+    ``(office_id, weekday, course_code)`` で時間帯重複する場合に以下で解消する:
+
+      1. 幅のある希望 (``time_type`` が 時間帯/午前/午後/終日/None) なら、
+         ``_can_move_to_time`` を満たす範囲で「衝突しない最早時刻」へずらす. ずらし先は
+         同コースの占有区間を避けつつ ``service_minutes`` を確保できる位置を 5 分刻みで探す.
+      2. 固定 (``time_type='固定'``) でずらせない / 幅があっても入る時刻が無い場合は提案
+         不可 (= 未割当化) とし、 ``id(v)`` を返り値集合に追加する. 呼び出し側はこれを
+         ``after_visits`` から除去する. ``diff_add_conflict`` warning を emit するため、
+         後段の ``_classify_warning_reason`` で ``fixed_time_conflict`` /
+         ``_g92_collect_fixed_unavailable_reasons`` で ``time_conflict`` に整合する.
+
+    既存 visit / 他患者の pool 提案同士の衝突は本 helper では動かさない (= pool 提案
+    のみを調整対象とし、 確定済の既存配置は不変). read-only (in-memory 調整のみ).
+
+    Returns:
+        提案不可として ``after_visits`` から除去すべき pool visit の ``id(v)`` 集合.
+    """
+    if not after_visits or not pool_visit_ids:
+        return set()
+
+    _buffer_min = config.visit_buffer_min if config is not None else VISIT_BUFFER_MINUTES
+
+    def _overlaps(a_start: time, a_end: time, b_start: time, b_end: time) -> bool:
+        # 半開区間 [start, end) で 1 分でも被れば重複 (touching は非重複).
+        return a_start < b_end and a_end > b_start
+
+    # (office_id, weekday, course_code) ごとにグルーピング. course_code=None
+    # (= 未確定) の visit は他 visit とコース共有が確定しないため対象外.
+    groups: dict[tuple[UUID, int, str], list[V2Visit]] = defaultdict(list)
+    for v in after_visits:
+        if v.course_code is None:
+            continue
+        groups[(v.office_id, v.weekday, v.course_code)].append(v)
+
+    unassign_ids: set[int] = set()
+
+    for (office_id, weekday, course_code), group in groups.items():
+        if len(group) < 2:
+            continue
+        # 当該コースの「占有区間」を 1 つでも持つ pool 提案を順に検査する.
+        # 検査対象 (pool 提案) と相手 (= 別患者の任意 visit) の重複を見る.
+        # 決定性のため start_time → patient_id でソートして処理順を固定する.
+        ordered = sorted(group, key=lambda v: (v.start_time, str(v.patient_id)))
+        for pv in ordered:
+            if id(pv) not in pool_visit_ids:
+                continue  # 既存 / 他患者の確定 visit は動かさない.
+            if id(pv) in unassign_ids:
+                continue
+            # 相手 (= 別患者の visit). 既に未割当化された pool 提案は占有しないため除く.
+            others = [
+                ov for ov in group if ov.patient_id != pv.patient_id and id(ov) not in unassign_ids
+            ]
+            conflict = next(
+                (
+                    ov
+                    for ov in others
+                    if _overlaps(pv.start_time, pv.end_time, ov.start_time, ov.end_time)
+                ),
+                None,
+            )
+            if conflict is None:
+                continue
+
+            # 衝突あり. 幅のある希望なら衝突しない最早時刻へずらす.
+            # 占有区間 = 自分以外の同コース visit の [start, end). これを避けつつ
+            # service_minutes を確保できる最早 start を 5 分刻みで探す.
+            busy: list[tuple[time, time]] = [
+                (ov.start_time, ov.end_time)
+                for ov in group
+                if id(ov) != id(pv) and id(ov) not in unassign_ids
+            ]
+            moved = False
+            if pv.time_type != "固定":
+                # 候補開始時刻: 自身の現在時刻 + 各占有区間の end_time + buffer.
+                # 5 分刻みに切り上げ、 _can_move_to_time と占有非重複を満たす最早を採る.
+                raw_candidates = [pv.start_time]
+                for _bs, _be in busy:
+                    raw_candidates.append(_add_minutes(_be, _buffer_min))
+                seen: set[time] = set()
+                for cand_raw in sorted(raw_candidates):
+                    cand = _round_up_to_5min(cand_raw)
+                    if cand in seen:
+                        continue
+                    seen.add(cand)
+                    cand_end = _add_minutes(cand, pv.service_minutes)
+                    if not _can_move_to_time(pv, cand):
+                        continue
+                    if any(_overlaps(cand, cand_end, bs, be) for bs, be in busy):
+                        continue
+                    if cand == pv.start_time:
+                        # 既に衝突なし時刻 (= 通常ここには来ないが安全側).
+                        moved = True
+                        break
+                    old_start = pv.start_time
+                    pv.start_time = cand
+                    pv.end_time = cand_end
+                    moved = True
+                    name = pv.patient_name or (pv.patient_code or "不明")
+                    other_name = conflict.patient_name or (conflict.patient_code or "不明")
+                    office_name = (office_name_by_id or {}).get(office_id, "")
+                    warnings.append(
+                        V2Warning(
+                            type="auto_time_shift_for_conflict",
+                            message=(
+                                f"{office_name} {course_code} コース {_weekday_jp(weekday)}: "
+                                f"{name} 様 ({_fmt_hhmm(old_start)}) が "
+                                f"{other_name} 様 ({_fmt_hhmm(conflict.start_time)}-"
+                                f"{_fmt_hhmm(conflict.end_time)}) と同時刻衝突のため "
+                                f"{_fmt_hhmm(cand)} に変更"
+                            ),
+                            weekday=weekday,
+                            actionable=False,
+                            patient_id=pv.patient_id,
+                            patient_name=pv.patient_name,
+                            current_time=_fmt_hhmm(cand),
+                            suggested_time=_fmt_hhmm(cand),
+                            time_type=pv.time_type,
+                            preferred_start=pv.preferred_start,
+                            preferred_end=pv.preferred_end,
+                            affected_patient_ids=[pv.patient_id],
+                        )
+                    )
+                    break
+
+            if moved:
+                continue
+
+            # ずらせない (固定 or 入る時刻が無い) → 提案不可 (未割当化).
+            unassign_ids.add(id(pv))
+            name = pv.patient_name or (pv.patient_code or "不明")
+            other_name = conflict.patient_name or (conflict.patient_code or "不明")
+            office_name = (office_name_by_id or {}).get(office_id, "")
+            warnings.append(
+                V2Warning(
+                    type="diff_add_conflict",
+                    message=(
+                        f"{name} 様: {office_name} {course_code} コース "
+                        f"{_weekday_jp(weekday)} {_fmt_hhmm(pv.start_time)}-"
+                        f"{_fmt_hhmm(pv.end_time)} は同コースの {other_name} 様 "
+                        f"({_fmt_hhmm(conflict.start_time)}-{_fmt_hhmm(conflict.end_time)}) "
+                        "と同時刻のため提案不可"
+                    ),
+                    weekday=weekday,
+                    actionable=True,
+                    patient_id=pv.patient_id,
+                    patient_name=pv.patient_name,
+                    affected_patient_ids=[pv.patient_id],
+                )
+            )
+
+    return unassign_ids
+
+
 # ---------------------------------------------------------------------------
 # Main pipeline — runs all 5 stages
 # ---------------------------------------------------------------------------
@@ -6843,6 +7056,13 @@ async def run_v2_pipeline(
         )
         patients_with_week_visit: set[UUID] = set()
         placed_slots_by_patient: dict[UUID, set[int]] = defaultdict(set)
+        # Phase G-94 (修正1 過剰提案): 今週の実 placed visit **件数** を患者単位で
+        # 数える. partial_short の回数充足チェック (固定曜日 ≠ 希望曜日のズレ患者で
+        # 希望回数は満たしているのに曜日不一致で不足扱いされる過剰提案) を防ぐため、
+        # 曜日集合 (placed_slots_by_patient) とは別に件数も保持する. 通常 1 患者 1
+        # 曜日 1 visit だが、 同曜日複数 visit の稀ケースも正確に数えるため曜日集合
+        # の cardinality ではなく実 row 数を集計する.
+        placed_count_by_patient: dict[UUID, int] = defaultdict(int)
         if week_monday is not None and week_sunday is not None:
             placed_rows = (
                 await db.execute(
@@ -6859,6 +7079,7 @@ async def run_v2_pipeline(
                     continue
                 patients_with_week_visit.add(_pid)
                 placed_slots_by_patient[_pid].add(_vdate.weekday())
+                placed_count_by_patient[_pid] += 1
 
         # 通常 pool (PFV 無し): weekly_pattern ベース展開.
         # Phase E-5: sub_office 経由で引き込まれた患者は除外 (sub_office 用 orphan
@@ -6904,6 +7125,15 @@ async def run_v2_pipeline(
                 continue
             if p.id not in patients_with_week_visit:
                 continue  # 完全孤児は既存 orphan 経路で扱う.
+            # Phase G-94 (修正1 過剰提案): 回数充足を曜日判定の前段でチェックする.
+            # 固定枠曜日と weekly 希望曜日がズレた患者 (固定 水木金 / 希望 火 等) は、
+            # 希望回数 (frequency_per_week, 無ければ PFV スロット数) を今週の実 placed
+            # visit 件数で満たしていれば「希望曜日が未配置」でも不足ではない (= フロント
+            # poolPatients の回数ベース判定と整合). desired_count が確定できる場合のみ
+            # 充足判定し、 充足済 (desired <= placed) なら partial_short から除外する.
+            desired_count = _g94_desired_count(p, all_fixed_by_patient.get(p.id), config=config)
+            if desired_count is not None and placed_count_by_patient.get(p.id, 0) >= desired_count:
+                continue
             desired_wds = _g93_desired_weekdays(p, all_fixed_by_patient.get(p.id), config=config)
             uncovered = desired_wds - placed_slots_by_patient.get(p.id, set())
             if uncovered:
@@ -7698,6 +7928,24 @@ async def run_v2_pipeline(
     )
     if travel_unassigned_ids:
         after_visits = [v for v in after_visits if id(v) not in travel_unassigned_ids]
+
+    # Phase G-94 (修正2 ダブルブッキング): 時刻補正後の after_visits 全体で「同
+    # (office, weekday, course_code) で別患者の既存/他 visit と時間帯重複する pool
+    # 提案」を検出し解消する. 幅のある希望は衝突しない最早時刻へずらし、 固定 /
+    # 入る時刻が無い場合は提案不可 (未割当化) とする. 既存配置 (= 確定済の他患者
+    # visit) は動かさず、 pool 提案のみ調整する. G-92 の after_keys 計算より前に
+    # 実行することで、 衝突で落ちた固定 pool 提案が希望フォールバックに正しく流れる.
+    if mode == "diff_add":
+        _g94_pool_ids = {id(v) for v in pool_visits}
+        _g94_double_booking_ids = _g94_resolve_cross_patient_double_booking(
+            after_visits,
+            pool_visit_ids=_g94_pool_ids,
+            warnings=warnings,
+            office_name_by_id=office_name_by_id,
+            config=config,
+        )
+        if _g94_double_booking_ids:
+            after_visits = [v for v in after_visits if id(v) not in _g94_double_booking_ids]
 
     # Phase G-92 (固定優先→希望フォールバックの遅延差し替え + proposal_source 分類):
     # diff_add で PFV 患者の固定枠候補が Stage 5/6 (定員オーバー / 時間不適合) で
@@ -9839,6 +10087,9 @@ __all__ = [
     "_enforce_h2_same_address",
     "_enforce_h2_split_overflow",
     "_enforce_same_address_pair_mode",
+    "_g93_desired_weekdays",
+    "_g94_desired_count",
+    "_g94_resolve_cross_patient_double_booking",
     "_is_in_lunch_break",
     "_load_before_visits_from_pfv",
     "_load_before_visits_v2",
