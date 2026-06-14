@@ -966,6 +966,78 @@ def _round_up_to_5min(t: time) -> time:
     return time(rounded // 60, rounded % 60)
 
 
+def _same_address_pair_members(
+    busy: V2Visit,
+    candidates: list[V2Visit],
+    *,
+    exclude_ids: frozenset[int] = frozenset(),
+) -> list[V2Visit]:
+    """Phase G-95/G-96: ``busy`` が同住所「既存ペア」の一員かを判定しペア相手を返す.
+
+    同住所ペア (= ``_align_same_address_pair_to_same_time`` で 1 スタッフが連続訪問
+    する最大 2 名) は本来ペア合算で 90 分占有するが、 既に placed 済 / auto_shift で
+    de-align された場合 ``busy.end_time`` が実 service 長 (例: 35 分) のまま残る.
+
+    ``busy`` と「ペア関係」にある同住所・別患者の visit を ``candidates`` から拾う.
+    「ペア関係」= 次のいずれか (= 同時刻配置 / 端点連続配置):
+      (a) 同 ``start_time`` (= align 済 / 既存同時刻ペア), または
+      (b) 連続 (一方の ``end == 他方の start``; 同住所は travel 0 + buffer 0 で隙間
+          なく並ぶため、 auto_shift で de-align された 2 人目は contiguous).
+    「同建物だが別時刻 (間に隙間)」の単なる連続訪問は **ペアではない** ため除外する
+    (= 90 分占有を誤適用しない).
+
+    Phase G-96 (修正1): ``exclude_ids`` に挙げた ``id(visit)`` は候補から除外する.
+    段 a (= プール投入の diff-add) では「いま動かそうとしている pool 提案 pv」自身が
+    ``candidates`` (= group) に含まれるため、 相手 ``ov`` の占有終端計算で pv を ov の
+    同住所ペア相手と誤認し、 ov が単独でも 90 分占有へ過大底上げされる事故があった.
+    呼び出し側で ``exclude_ids={id(pv)}`` を渡すことで pv をペア候補から外す.
+
+    read-only (in-memory; visit は一切書き換えない). 決定性は呼び出し側の入力順に従う.
+    """
+    busy_bucket = _address_bucket(busy.lat, busy.lng)
+    return [
+        ov
+        for ov in candidates
+        if ov is not busy
+        and id(ov) not in exclude_ids
+        and ov.patient_id != busy.patient_id
+        and _address_bucket(ov.lat, ov.lng) == busy_bucket
+        and (
+            ov.start_time == busy.start_time  # (a) 同時刻ペア.
+            or ov.start_time == busy.end_time  # (b) busy の直後に連続.
+            or ov.end_time == busy.start_time  # (b) busy の直前に連続.
+        )
+    ]
+
+
+def _same_address_pair_occupancy_end(
+    busy: V2Visit,
+    candidates: list[V2Visit],
+    *,
+    exclude_ids: frozenset[int] = frozenset(),
+) -> time:
+    """Phase G-95/G-96: ``busy`` の占有終端を同住所 2 名 90 分占有込みで返す.
+
+    ``busy`` が同住所「既存ペア」の一員なら占有終端を
+    ``max(busy.end_time, pair_anchor_start + SAME_ADDRESS_PAIR_MIN_OCCUPANCY)``
+    に底上げする. ``pair_anchor_start`` = 当該ペアクラスタの最早 ``start_time``
+    (= de-align 前のペア起点; auto_shift は 2 人目を後ろへずらすため 1 人目の
+    start が anchor として残る). ペアでなければ ``busy.end_time`` をそのまま返す.
+
+    Phase G-96 (修正1): ``exclude_ids`` は ``_same_address_pair_members`` へ素通しし、
+    指定 ``id(visit)`` をペア候補から外す. 段 a で移動対象 pool 提案 pv 自身を
+    相手 ov のペア相手と誤認しないようにするため.
+
+    read-only (in-memory; visit は書き換えない).
+    """
+    members = _same_address_pair_members(busy, candidates, exclude_ids=exclude_ids)
+    if not members:
+        return busy.end_time
+    pair_anchor_start = min([busy.start_time] + [ov.start_time for ov in members])
+    pair_floor_end = _add_minutes(pair_anchor_start, SAME_ADDRESS_PAIR_MIN_OCCUPANCY)
+    return max(busy.end_time, pair_floor_end)
+
+
 # ---------------------------------------------------------------------------
 # Stage helpers — am/pm decision (Q1)
 # ---------------------------------------------------------------------------
@@ -4975,26 +5047,11 @@ def _apply_travel_time_to_courses(
             # anchor として残る). 直前で処理済の「同住所ペアの 2 人目」(= cur が prev
             # とペア) とは別概念で、 こちらは prev 自身が既存ペアの一員かを見る.
             # read-only (in-memory; prev は書き換えない. earliest 計算にのみ反映).
-            _prev_occupancy_end = prev.end_time
-            _prev_bucket = _address_bucket(prev.lat, prev.lng)
-            _pair_members = [
-                ov
-                for ov in sv
-                if ov is not prev
-                and ov.patient_id != prev.patient_id
-                and _address_bucket(ov.lat, ov.lng) == _prev_bucket
-                and (
-                    ov.start_time == prev.start_time  # (a) 同時刻ペア.
-                    or ov.start_time == prev.end_time  # (b) prev の直後に連続.
-                    or ov.end_time == prev.start_time  # (b) prev の直前に連続.
-                )
-            ]
-            if _pair_members:
-                # ペア起点 = prev とそのペア相手の最早 start_time.
-                pair_anchor_start = min([prev.start_time] + [ov.start_time for ov in _pair_members])
-                _pair_floor_end = _add_minutes(pair_anchor_start, SAME_ADDRESS_PAIR_MIN_OCCUPANCY)
-                if _pair_floor_end > _prev_occupancy_end:
-                    _prev_occupancy_end = _pair_floor_end
+            #
+            # Phase G-96: 判定/底上げロジックは ``_same_address_pair_occupancy_end``
+            # にヘルパー化し、 段 b (_g94_resolve_cross_patient_double_booking) の
+            # ずらし計算でも同一占有規則を再利用する.
+            _prev_occupancy_end = _same_address_pair_occupancy_end(prev, sv)
             earliest_start = _add_minutes(_prev_occupancy_end, travel_min + buffer_min)
 
             tt = cur.time_type
@@ -6859,6 +6916,8 @@ def _g94_resolve_cross_patient_double_booking(
             if id(pv) in unassign_ids:
                 continue
             # 相手 (= 別患者の visit). 既に未割当化された pool 提案は占有しないため除く.
+            # Phase G-96 (修正A): 相手 ov が同住所既存ペアの一員なら占有終端を
+            # ``_same_address_pair_occupancy_end`` で 90 分占有込みに底上げする.
             others = [
                 ov for ov in group if ov.patient_id != pv.patient_id and id(ov) not in unassign_ids
             ]
@@ -6866,7 +6925,16 @@ def _g94_resolve_cross_patient_double_booking(
                 (
                     ov
                     for ov in others
-                    if _overlaps(pv.start_time, pv.end_time, ov.start_time, ov.end_time)
+                    if _overlaps(
+                        pv.start_time,
+                        pv.end_time,
+                        ov.start_time,
+                        # Phase G-96 (修正1): pv 自身を ov の同住所ペア相手と
+                        # 誤認しないよう exclude_ids={id(pv)} を渡す.
+                        _same_address_pair_occupancy_end(
+                            ov, group, exclude_ids=frozenset({id(pv)})
+                        ),
+                    )
                 ),
                 None,
             )
@@ -6874,10 +6942,17 @@ def _g94_resolve_cross_patient_double_booking(
                 continue
 
             # 衝突あり. 幅のある希望なら衝突しない最早時刻へずらす.
-            # 占有区間 = 自分以外の同コース visit の [start, end). これを避けつつ
+            # 占有区間 = 自分以外の同コース visit の [start, occ_end). これを避けつつ
             # service_minutes を確保できる最早 start を 5 分刻みで探す.
+            # occ_end は同住所 90 分占有込み (修正A).
             busy: list[tuple[time, time]] = [
-                (ov.start_time, ov.end_time)
+                # Phase G-96 (修正1): pv 自身を ov の同住所ペア相手と誤認しないよう
+                # exclude_ids={id(pv)} を渡す (pv は下の if で既に除外済だが、 別の
+                # ov の占有計算でも pv をペア候補から外す必要がある).
+                (
+                    ov.start_time,
+                    _same_address_pair_occupancy_end(ov, group, exclude_ids=frozenset({id(pv)})),
+                )
                 for ov in group
                 if id(ov) != id(pv) and id(ov) not in unassign_ids
             ]
@@ -6980,20 +7055,45 @@ def _g94_resolve_cross_patient_double_booking(
     #   - 固定 / 入る時刻が無い → 提案不可 (未割当化) + diff_add_conflict warning.
     # 段 a で動かした pool 提案は ``stage_a_handled_ids`` で除外し二重処理を防ぐ.
     # 既存確定 visit は不変 (read-only; pool 提案のみ調整).
+    #
+    # Phase G-96 (修正A 同住所 90 分占有): 既存確定 visit が「同住所既存ペア」の
+    # 一員なら、 占有終端を ``_same_address_pair_occupancy_end`` で
+    # ``max(実 end_time, pair_anchor_start + 90 分)`` に底上げする. これにより
+    # 安永+菅原 (同住所 16:00-16:35×2) の後ろに来る植田 (固定 pool) は実 end 16:35
+    # ではなく 90 分占有 17:30 を見て、 希望/勤務終了を超過し提案不可になる.
+    #
+    # Phase G-96 (修正B pool 同士衝突): 段 b は確定済 pool を逐次
+    # ``placed_pool_busy_by_ow`` へ積み、 後続 pool 提案が既配置 pool とも非重複に
+    # なるようにする. これで希望のみ患者 2 人が同 (office, weekday) 同時刻に集中
+    # しても 2 件目がずれる / 不能なら未割当化される (pool 同士の重なり残りを塞ぐ).
     # -----------------------------------------------------------------------
 
-    # (office_id, weekday) ごとの「既存確定 visit (= pool でない) の占有区間」.
-    # course を問わず全件集める. pool 提案同士は確定占有とみなさない (= 相手に
-    # しない) ため除外する.
-    existing_busy_by_ow: dict[tuple[UUID, int], list[tuple[time, time, V2Visit]]] = defaultdict(
-        list
-    )
+    # (office_id, weekday) ごとの「既存確定 visit (= pool でない)」全件. course を
+    # 問わず集める. pool 提案同士は確定占有とみなさない (= 段 b 開始時は相手にし
+    # ない; 確定した pool は placed_pool_busy_by_ow で別途逐次反映する).
+    existing_visits_by_ow: dict[tuple[UUID, int], list[V2Visit]] = defaultdict(list)
     for v in after_visits:
         if id(v) in pool_visit_ids:
             continue  # pool 提案は確定占有でない.
         if id(v) in unassign_ids:
             continue
-        existing_busy_by_ow[(v.office_id, v.weekday)].append((v.start_time, v.end_time, v))
+        existing_visits_by_ow[(v.office_id, v.weekday)].append(v)
+
+    # 各既存 visit の「占有区間」を同住所 90 分占有込みで事前計算する (修正A).
+    # 占有終端は同 (office, weekday) の既存 visit 群を pair 候補として算出する.
+    existing_busy_by_ow: dict[tuple[UUID, int], list[tuple[time, time, V2Visit]]] = defaultdict(
+        list
+    )
+    for ow_key, ow_visits in existing_visits_by_ow.items():
+        for v in ow_visits:
+            occ_end = _same_address_pair_occupancy_end(v, ow_visits)
+            existing_busy_by_ow[ow_key].append((v.start_time, occ_end, v))
+
+    # 修正B: 確定した pool 提案の占有区間を (office, weekday) ごとに逐次積む.
+    # busy 計算でこれを既存占有と合算し、 pool 同士の同時刻衝突を解消する.
+    placed_pool_busy_by_ow: dict[tuple[UUID, int], list[tuple[time, time, V2Visit]]] = defaultdict(
+        list
+    )
 
     # 段 b の検査対象 pool 提案. 決定性のため (office, weekday, start, patient) で
     # ソートして処理順を固定する.
@@ -7010,10 +7110,13 @@ def _g94_resolve_cross_patient_double_booking(
 
     for pv in stage_b_targets:
         ow_key = (pv.office_id, pv.weekday)
-        # 相手 = 同 (office, weekday) の既存確定 visit (別患者; 全 course).
+        # 相手 = 同 (office, weekday) の既存確定 visit (別患者; 全 course) +
+        # 既に確定した pool 提案 (修正B). いずれも別患者のみ.
         others_b = [
             (bs, be, ov)
-            for (bs, be, ov) in existing_busy_by_ow.get(ow_key, [])
+            for (bs, be, ov) in (
+                existing_busy_by_ow.get(ow_key, []) + placed_pool_busy_by_ow.get(ow_key, [])
+            )
             if ov.patient_id != pv.patient_id
         ]
         conflict_b = next(
@@ -7025,6 +7128,8 @@ def _g94_resolve_cross_patient_double_booking(
             None,
         )
         if conflict_b is None:
+            # 衝突なしでそのまま確定. 後続 pool の相手として占有を積む (修正B).
+            placed_pool_busy_by_ow[ow_key].append((pv.start_time, pv.end_time, pv))
             continue
 
         busy_b: list[tuple[time, time]] = [(bs, be) for (bs, be, _ov) in others_b]
@@ -7080,6 +7185,8 @@ def _g94_resolve_cross_patient_double_booking(
                 break
 
         if moved_b:
+            # 修正B: 確定した (= 移動 or 現状維持) pool の占有を後続のため積む.
+            placed_pool_busy_by_ow[ow_key].append((pv.start_time, pv.end_time, pv))
             continue
 
         # ずらせない (固定 or 入る時刻が無い) → 提案不可 (未割当化).
