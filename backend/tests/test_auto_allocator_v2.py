@@ -8193,3 +8193,589 @@ async def test_g92_diff_add_fallback_reason_not_hardcoded_time_conflict(db) -> N
     assert "capacity_over" in meta["fixed_unavailable_reasons"], meta
     # time_conflict はハードコード既定として混入しない (定員起因なので).
     assert "time_conflict" not in meta["fixed_unavailable_reasons"], meta
+
+
+# ---------------------------------------------------------------------------
+# Phase G-93 — プール投入 部分不足プール (希望回数に一部足りない患者を拾う)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_g93_diff_add_partial_shortage_proposes_only_missing_slot(db) -> None:
+    """① 部分不足: PFV あり週3希望で 2 配置済 → 不足 1 スロットだけ提案 (P070 再現).
+
+    P070 植田弥生 (稲毛) の再現:
+      - 希望 週3 (Mon/Wed/Fri), PFV (mode='normal') 2 件 (Wed/Fri).
+      - 今週すでに Wed/Fri に visit 配置済 (status='planned').
+      - Mon は PFV 無し → preferred 提案として 1 スロットだけ出るべき.
+    旧実装では PFV を持ち今週 visit が一部ある患者は orphan 経路から漏れ、
+    提案に出なかった (= 本 fix の対象).
+    """
+    from datetime import date
+
+    from app.models.visit import VISIT_STATUS_PLANNED, Visit
+
+    office = await _seed_g92_office(
+        db, name="g93-partial", staffed_weekdays=[0, 2, 4]
+    )  # Mon/Wed/Fri
+    p = Patient(
+        code="G93-PARTIAL",
+        name="部分不足",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        primary_office_id=office.id,
+        # 週3希望 (Mon/Wed/Fri).
+        weekly_pattern={
+            "preferred_weekdays": ["Mon", "Wed", "Fri"],
+            "preferred_start": "10:30",
+            "time_type": "固定",
+        },
+    )
+    db.add(p)
+    await db.flush()
+    # PFV 2 件 (Wed/Fri). Mon は固定枠なし (= preferred フォールバック対象).
+    for wd in (2, 4):
+        db.add(
+            PatientFixedVisit(
+                patient_id=p.id,
+                mode="normal",
+                weekday=wd,
+                start_time=time(10, 0),
+                duration_min=30,
+                slot_index=0,
+            )
+        )
+    await db.flush()
+    # 今週すでに Wed (05-13) / Fri (05-15) に配置済 (status='planned').
+    for vdate in (date(2026, 5, 13), date(2026, 5, 15)):
+        db.add(
+            Visit(
+                patient_id=p.id,
+                visit_date=vdate,
+                start_time=time(10, 0),
+                end_time=time(10, 30),
+                type="regular",
+                status=VISIT_STATUS_PLANNED,
+                source="auto_alloc",
+                required_staff_count=1,
+            )
+        )
+    await db.commit()
+
+    result = await run_v2_pipeline(
+        db, iso_year=2026, iso_week=20, office_ids=[office.id], mode="diff_add"
+    )
+    pv = [v for v in result["pool_visits"] if v.patient_id == p.id]
+    # 不足している Mon (weekday=0) だけが提案される.
+    assert pv, f"部分不足患者は提案に出る (= 旧実装の取りこぼし解消): {pv}"
+    assert {v.weekday for v in pv} == {0}, f"不足曜日 (Mon) のみ提案: {[v.weekday for v in pv]}"
+
+
+@pytest.mark.asyncio
+async def test_g93_diff_add_partial_shortage_no_double_proposal_for_placed(db) -> None:
+    """② 二重提案防止: 既配置の曜日 (Wed/Fri) は提案に出さない.
+
+    希望 週3 (Mon/Wed/Fri), PFV 3 件 (Mon/Wed/Fri 全曜日固定). 今週 Wed/Fri
+    配置済. → 既に配置済の Wed/Fri は提案から除外され、 不足の Mon のみ残る.
+    既配置曜日が固定 (PFV) でも二重提案されないことを検証する.
+    """
+    from datetime import date
+
+    from app.models.visit import VISIT_STATUS_PLANNED, Visit
+
+    office = await _seed_g92_office(db, name="g93-nodup", staffed_weekdays=[0, 2, 4])
+    p = Patient(
+        code="G93-NODUP",
+        name="二重提案防止",
+        status="active",
+        lat=35.66,
+        lng=140.11,
+        primary_office_id=office.id,
+        weekly_pattern={
+            "preferred_weekdays": ["Mon", "Wed", "Fri"],
+            "preferred_start": "10:30",
+            "time_type": "固定",
+        },
+    )
+    db.add(p)
+    await db.flush()
+    for wd in (0, 2, 4):  # 全曜日に固定枠.
+        db.add(
+            PatientFixedVisit(
+                patient_id=p.id,
+                mode="normal",
+                weekday=wd,
+                start_time=time(10, 0),
+                duration_min=30,
+                slot_index=0,
+            )
+        )
+    await db.flush()
+    # Wed/Fri は既配置.
+    for vdate in (date(2026, 5, 13), date(2026, 5, 15)):
+        db.add(
+            Visit(
+                patient_id=p.id,
+                visit_date=vdate,
+                start_time=time(10, 0),
+                end_time=time(10, 30),
+                type="regular",
+                status=VISIT_STATUS_PLANNED,
+                source="auto_alloc",
+                required_staff_count=1,
+            )
+        )
+    await db.commit()
+
+    result = await run_v2_pipeline(
+        db, iso_year=2026, iso_week=20, office_ids=[office.id], mode="diff_add"
+    )
+    pv = [v for v in result["pool_visits"] if v.patient_id == p.id]
+    # 既配置の Wed (2) / Fri (4) は二重提案されない.
+    assert all(v.weekday not in (2, 4) for v in pv), (
+        f"既配置曜日は二重提案されない: {[v.weekday for v in pv]}"
+    )
+    # 不足の Mon (0) は提案される.
+    assert any(v.weekday == 0 for v in pv), f"不足曜日 (Mon) は提案: {[v.weekday for v in pv]}"
+
+
+@pytest.mark.asyncio
+async def test_g93_diff_add_fully_covered_patient_not_proposed(db) -> None:
+    """③(a) 既存挙動不変: 希望を完全に満たす患者は提案に出ない.
+
+    週2希望 (Mon/Wed), PFV 2 件 (Mon/Wed). 今週 Mon/Wed 両方配置済 → 不足なし.
+    部分不足分類に入らず、 提案も出ない (= 既存挙動を壊さない).
+    """
+    from datetime import date
+
+    from app.models.visit import VISIT_STATUS_PLANNED, Visit
+
+    office = await _seed_g92_office(db, name="g93-full", staffed_weekdays=[0, 2])
+    p = Patient(
+        code="G93-FULL",
+        name="充足済",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        primary_office_id=office.id,
+        weekly_pattern={
+            "preferred_weekdays": ["Mon", "Wed"],
+            "preferred_start": "10:30",
+            "time_type": "固定",
+        },
+    )
+    db.add(p)
+    await db.flush()
+    for wd in (0, 2):
+        db.add(
+            PatientFixedVisit(
+                patient_id=p.id,
+                mode="normal",
+                weekday=wd,
+                start_time=time(10, 0),
+                duration_min=30,
+                slot_index=0,
+            )
+        )
+    await db.flush()
+    for vdate in (date(2026, 5, 11), date(2026, 5, 13)):  # Mon/Wed 両方配置済.
+        db.add(
+            Visit(
+                patient_id=p.id,
+                visit_date=vdate,
+                start_time=time(10, 0),
+                end_time=time(10, 30),
+                type="regular",
+                status=VISIT_STATUS_PLANNED,
+                source="auto_alloc",
+                required_staff_count=1,
+            )
+        )
+    await db.commit()
+
+    result = await run_v2_pipeline(
+        db, iso_year=2026, iso_week=20, office_ids=[office.id], mode="diff_add"
+    )
+    pv = [v for v in result["pool_visits"] if v.patient_id == p.id]
+    assert pv == [], f"希望充足済の患者は提案に出ない: {pv}"
+
+
+@pytest.mark.asyncio
+async def test_g93_diff_add_orphan_no_week_visit_unchanged(db) -> None:
+    """③(b) 既存挙動不変: 完全孤児 (PFV あり + 今週 visit 0 件) は従来通り全曜日提案.
+
+    G-93 の部分不足分類追加で、 既存の orphan 経路 (今週 visit ゼロ) が
+    壊れていないことを確認する. PFV 2 件 (Mon/Wed), 今週 visit 無し →
+    両曜日とも提案される.
+    """
+    office = await _seed_g92_office(db, name="g93-orphan", staffed_weekdays=[0, 2])
+    p = Patient(
+        code="G93-ORPHAN",
+        name="完全孤児",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        primary_office_id=office.id,
+        weekly_pattern={
+            "preferred_weekdays": ["Mon", "Wed"],
+            "preferred_start": "10:30",
+            "time_type": "固定",
+        },
+    )
+    db.add(p)
+    await db.flush()
+    for wd in (0, 2):
+        db.add(
+            PatientFixedVisit(
+                patient_id=p.id,
+                mode="normal",
+                weekday=wd,
+                start_time=time(10, 0),
+                duration_min=30,
+                slot_index=0,
+            )
+        )
+    await db.commit()
+
+    result = await run_v2_pipeline(
+        db, iso_year=2026, iso_week=20, office_ids=[office.id], mode="diff_add"
+    )
+    pv = [v for v in result["pool_visits"] if v.patient_id == p.id]
+    # 今週 visit ゼロの孤児は固定枠 (Mon/Wed) が両方提案される (従来挙動).
+    assert {v.weekday for v in pv} == {0, 2}, (
+        f"完全孤児は全固定曜日が提案される (挙動不変): {[v.weekday for v in pv]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_g93_diff_add_no_fixed_patient_unchanged(db) -> None:
+    """③(c) 既存挙動不変: PFV 無し患者 (no_fixed pool) は従来通り weekly_pattern 提案.
+
+    部分不足分類は PFV 患者のみ対象. PFV を持たない患者は no_fixed pool で
+    従来通り展開され、 今週 visit の有無に関わらず希望曜日が提案される.
+    """
+    from datetime import date
+
+    from app.models.visit import VISIT_STATUS_PLANNED, Visit
+
+    office = await _seed_g92_office(db, name="g93-nofixed", staffed_weekdays=[0, 2])
+    p = Patient(
+        code="G93-NOFIXED",
+        name="固定なし",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        primary_office_id=office.id,
+        weekly_pattern={
+            "preferred_weekdays": ["Mon", "Wed"],
+            "preferred_start": "10:30",
+            "time_type": "固定",
+        },
+    )
+    db.add(p)
+    await db.flush()
+    # PFV 無し. 今週 Mon に既配置 (no_fixed pool は配置済を二重提案する従来挙動を維持).
+    db.add(
+        Visit(
+            patient_id=p.id,
+            visit_date=date(2026, 5, 11),
+            start_time=time(10, 0),
+            end_time=time(10, 30),
+            type="regular",
+            status=VISIT_STATUS_PLANNED,
+            source="auto_alloc",
+            required_staff_count=1,
+        )
+    )
+    await db.commit()
+
+    result = await run_v2_pipeline(
+        db, iso_year=2026, iso_week=20, office_ids=[office.id], mode="diff_add"
+    )
+    pv = [v for v in result["pool_visits"] if v.patient_id == p.id]
+    # PFV 無し患者は no_fixed pool で weekly_pattern (Mon/Wed) 両方展開 (挙動不変).
+    assert {v.weekday for v in pv} == {0, 2}, (
+        f"PFV 無し患者は no_fixed pool で従来通り展開: {[v.weekday for v in pv]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_g93_diff_add_completed_weekday_not_reproposed(db) -> None:
+    """① completed の曜日は配置済み扱いで再提案されない (status 定義 fix).
+
+    週2希望 (Mon/Wed), PFV 2 件 (Mon/Wed). 今週 Wed を completed (完了), Mon は
+    未配置. completed を「未配置」とみなす旧実装では Wed が二重提案されたが、
+    placed_statuses ∈ {planned, in_progress, completed} に修正したことで Wed は
+    配置済み = 再提案されず、 不足の Mon のみが提案される.
+    """
+    from datetime import date
+
+    from app.models.visit import VISIT_STATUS_COMPLETED, Visit
+
+    office = await _seed_g92_office(db, name="g93-completed", staffed_weekdays=[0, 2])
+    p = Patient(
+        code="G93-COMPLETED",
+        name="完了配置",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        primary_office_id=office.id,
+        weekly_pattern={
+            "preferred_weekdays": ["Mon", "Wed"],
+            "preferred_start": "10:30",
+            "time_type": "固定",
+        },
+    )
+    db.add(p)
+    await db.flush()
+    for wd in (0, 2):
+        db.add(
+            PatientFixedVisit(
+                patient_id=p.id,
+                mode="normal",
+                weekday=wd,
+                start_time=time(10, 0),
+                duration_min=30,
+                slot_index=0,
+            )
+        )
+    await db.flush()
+    # Wed (05-13) は completed (完了済). Mon は未配置.
+    db.add(
+        Visit(
+            patient_id=p.id,
+            visit_date=date(2026, 5, 13),
+            start_time=time(10, 0),
+            end_time=time(10, 30),
+            type="regular",
+            status=VISIT_STATUS_COMPLETED,
+            source="auto_alloc",
+            required_staff_count=1,
+        )
+    )
+    await db.commit()
+
+    result = await run_v2_pipeline(
+        db, iso_year=2026, iso_week=20, office_ids=[office.id], mode="diff_add"
+    )
+    pv = [v for v in result["pool_visits"] if v.patient_id == p.id]
+    # completed の Wed (2) は配置済み = 再提案されない. 不足の Mon (0) のみ提案.
+    assert {v.weekday for v in pv} == {0}, (
+        f"completed 曜日は再提案されず不足曜日 (Mon) のみ提案: {[v.weekday for v in pv]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_g93_diff_add_cancelled_only_weekday_is_proposed(db) -> None:
+    """② cancelled のみの曜日は未配置扱いで提案される (status 定義 fix).
+
+    週2希望 (Mon/Wed), PFV 2 件 (Mon/Wed). 今週 Mon を cancelled, Wed を planned.
+    cancelled は患者が実際には訪問されておらず再訪問が必要 = 未配置扱い.
+    → 配置済みは Wed のみ、 cancelled の Mon は不足曜日として提案される.
+    """
+    from datetime import date
+
+    from app.models.visit import VISIT_STATUS_CANCELLED, VISIT_STATUS_PLANNED, Visit
+
+    office = await _seed_g92_office(db, name="g93-cancelled", staffed_weekdays=[0, 2])
+    p = Patient(
+        code="G93-CANCELLED",
+        name="取消配置",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        primary_office_id=office.id,
+        weekly_pattern={
+            "preferred_weekdays": ["Mon", "Wed"],
+            "preferred_start": "10:30",
+            "time_type": "固定",
+        },
+    )
+    db.add(p)
+    await db.flush()
+    for wd in (0, 2):
+        db.add(
+            PatientFixedVisit(
+                patient_id=p.id,
+                mode="normal",
+                weekday=wd,
+                start_time=time(10, 0),
+                duration_min=30,
+                slot_index=0,
+            )
+        )
+    await db.flush()
+    # Mon (05-11) は cancelled, Wed (05-13) は planned.
+    db.add(
+        Visit(
+            patient_id=p.id,
+            visit_date=date(2026, 5, 11),
+            start_time=time(10, 0),
+            end_time=time(10, 30),
+            type="regular",
+            status=VISIT_STATUS_CANCELLED,
+            source="auto_alloc",
+            required_staff_count=1,
+        )
+    )
+    db.add(
+        Visit(
+            patient_id=p.id,
+            visit_date=date(2026, 5, 13),
+            start_time=time(10, 0),
+            end_time=time(10, 30),
+            type="regular",
+            status=VISIT_STATUS_PLANNED,
+            source="auto_alloc",
+            required_staff_count=1,
+        )
+    )
+    await db.commit()
+
+    result = await run_v2_pipeline(
+        db, iso_year=2026, iso_week=20, office_ids=[office.id], mode="diff_add"
+    )
+    pv = [v for v in result["pool_visits"] if v.patient_id == p.id]
+    # cancelled の Mon (0) は未配置 = 提案される. planned の Wed (2) は配置済み.
+    assert {v.weekday for v in pv} == {0}, (
+        f"cancelled のみの曜日 (Mon) は未配置として提案: {[v.weekday for v in pv]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_g93_diff_add_entries_form_weekly_pattern_proposes_missing(db) -> None:
+    """③ weekly_pattern が entries (リスト) 形式でも desired 曜日が正しく算出される.
+
+    weekly_pattern を entries 形式 (週3: Mon/Wed/Fri) で定義し、 PFV は無し.
+    今週 Wed のみ planned 配置済 → desired から既配置 Wed を引いた Mon/Fri が
+    不足曜日として提案される (entries 形式でも _g93_desired_weekdays が機能する).
+
+    PFV を持たせて partial_short 経路 (PFV 患者のみ対象) に乗せるため、 entries の
+    曜日と一致しない PFV は使わず、 entries の一部だけを PFV にする.
+    """
+    from datetime import date
+
+    from app.models.visit import VISIT_STATUS_PLANNED, Visit
+
+    office = await _seed_g92_office(
+        db, name="g93-entries", staffed_weekdays=[0, 2, 4]
+    )  # Mon/Wed/Fri
+    p = Patient(
+        code="G93-ENTRIES",
+        name="エントリ形式",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        primary_office_id=office.id,
+        # entries (リスト) 形式で週3希望.
+        weekly_pattern={
+            "entries": [
+                {"weekday": "Mon", "preferred_start": "10:30"},
+                {"weekday": "Wed", "preferred_start": "10:30"},
+                {"weekday": "Fri", "preferred_start": "10:30"},
+            ],
+            "time_type": "固定",
+        },
+    )
+    db.add(p)
+    await db.flush()
+    # PFV は Wed のみ (partial_short 経路に乗せるための固定枠).
+    db.add(
+        PatientFixedVisit(
+            patient_id=p.id,
+            mode="normal",
+            weekday=2,
+            start_time=time(10, 0),
+            duration_min=30,
+            slot_index=0,
+        )
+    )
+    await db.flush()
+    # 今週 Wed (05-13) のみ planned 配置済.
+    db.add(
+        Visit(
+            patient_id=p.id,
+            visit_date=date(2026, 5, 13),
+            start_time=time(10, 0),
+            end_time=time(10, 30),
+            type="regular",
+            status=VISIT_STATUS_PLANNED,
+            source="auto_alloc",
+            required_staff_count=1,
+        )
+    )
+    await db.commit()
+
+    result = await run_v2_pipeline(
+        db, iso_year=2026, iso_week=20, office_ids=[office.id], mode="diff_add"
+    )
+    pv = [v for v in result["pool_visits"] if v.patient_id == p.id]
+    # entries 形式の desired (Mon/Wed/Fri) から既配置 Wed を除いた Mon/Fri が提案.
+    assert {v.weekday for v in pv} == {0, 4}, (
+        f"entries 形式でも不足曜日 (Mon/Fri) が提案される: {[v.weekday for v in pv]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_g93_diff_add_frequency_only_pattern_uses_pfv_weekdays_only(db) -> None:
+    """④ frequency_per_week のみの患者は PFV 曜日のみが desired になる (現挙動固定).
+
+    weekly_pattern に preferred_weekdays / entries が無く frequency_per_week のみの
+    患者は _extract_weekly_entries が空を返すため、 _g93_desired_weekdays は PFV
+    曜日のみになる. PFV (Mon/Wed) のうち Wed を配置済にすると、 不足は Mon のみ.
+    希望曜日が PFV に依存する現挙動をテストで固定する.
+    """
+    from datetime import date
+
+    from app.models.visit import VISIT_STATUS_PLANNED, Visit
+
+    office = await _seed_g92_office(db, name="g93-freqonly", staffed_weekdays=[0, 2])
+    p = Patient(
+        code="G93-FREQONLY",
+        name="頻度のみ",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        primary_office_id=office.id,
+        # preferred_weekdays / entries 無し. frequency_per_week のみ.
+        weekly_pattern={"frequency_per_week": 2},
+    )
+    db.add(p)
+    await db.flush()
+    # PFV 2 件 (Mon/Wed) — desired はこの 2 曜日のみになる.
+    for wd in (0, 2):
+        db.add(
+            PatientFixedVisit(
+                patient_id=p.id,
+                mode="normal",
+                weekday=wd,
+                start_time=time(10, 0),
+                duration_min=30,
+                slot_index=0,
+            )
+        )
+    await db.flush()
+    # Wed (05-13) のみ配置済 → 不足は Mon のみ.
+    db.add(
+        Visit(
+            patient_id=p.id,
+            visit_date=date(2026, 5, 13),
+            start_time=time(10, 0),
+            end_time=time(10, 30),
+            type="regular",
+            status=VISIT_STATUS_PLANNED,
+            source="auto_alloc",
+            required_staff_count=1,
+        )
+    )
+    await db.commit()
+
+    result = await run_v2_pipeline(
+        db, iso_year=2026, iso_week=20, office_ids=[office.id], mode="diff_add"
+    )
+    pv = [v for v in result["pool_visits"] if v.patient_id == p.id]
+    # desired = PFV 曜日 (Mon/Wed) のみ. 既配置 Wed を除いた Mon だけ提案.
+    assert {v.weekday for v in pv} == {0}, (
+        f"frequency のみ患者は PFV 曜日のみが desired (Mon 提案): {[v.weekday for v in pv]}"
+    )
