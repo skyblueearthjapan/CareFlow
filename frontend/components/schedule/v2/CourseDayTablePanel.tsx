@@ -7,7 +7,7 @@
  * (Phase G-43 で Row 1 を flex justify-end 単一 toolbar 化し、主要 4 と固定枠戻を隣接させた):
  *   ┌─ ヘッダー ────────────────────────────────────────────┐
  *   │  Row 1 (右寄せ 1 行 toolbar, admin/manager only):                              │
- *   │     [週を生成][自動スタッフ割付 🟢][全面最適化 🟢][プール投入] │ [固定枠戻][全件保存]    │
+ *   │     [週を生成][自動スタッフ割付 🟢][全面最適化 🟢][プール投入 🟢] │ [固定枠戻][全件保存] │
  *   │  ─── border-t ────────────────────                                            │
  *   │  Row 2 (曜日タブ + テーブル/リスト + 二次操作):                                  │
  *   │    [月][火][水][木][金][土][週] YYYY-Www                                       │
@@ -1879,7 +1879,7 @@ export function CourseDayTablePanel({
           「主要 4」と「固定枠戻 / 全件保存」が視覚的に離れて見えていたため、
           全要素を 1 つの flex container に並べて全部右寄せ + 主要 4 と固定枠戻の間に縦区切り線を配置する.
             Row 1 (admin/manager only, flex justify-end):
-              [週を生成][自動スタッフ割付 🟢][全面最適化 🟢][プール投入] │ [固定枠戻][全件保存]
+              [週を生成][自動スタッフ割付 🟢][全面最適化 🟢][プール投入 🟢] │ [固定枠戻][全件保存]
               ※ 主要 4 と固定枠戻/全件保存の間に縦区切り線で視覚的セパレーション.
               ※ Row 1 は最上段なので border-t 不要.
             Row 2 (曜日タブ + テーブル/リスト + 二次操作):
@@ -1947,7 +1947,7 @@ export function CourseDayTablePanel({
               <Button
                 type="button"
                 size="sm"
-                variant="outline"
+                variant="default"
                 onClick={() => setDiffAddOpen(true)}
                 disabled={isProcessing}
                 data-testid="diff-add-button"
