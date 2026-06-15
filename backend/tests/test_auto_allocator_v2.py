@@ -9515,6 +9515,71 @@ def test_g96_stage_b_existing_pair_90min_blocks_fixed_pool_unassigned() -> None:
     assert ueda.start_time == time(16, 45)
 
 
+def test_g99_stage_b_injected_existing_visit_blocks_fixed_pool() -> None:
+    """Phase G-99 (懸念①): after_visits に載っていない当週実 visit を
+    ``extra_existing_visits`` で注入すると、 同時刻の固定 pool 提案が提案不可になる.
+
+    中尾 (pool, 固定 16:00, course_code=None = PFV 無し希望のみ) が、 井上 (既存実
+    visit 16:00, 別 course C) と同 (office, weekday) で重なる. ただし井上は PFV 非対応
+    の手動配置等で before ローダ (legacy) に載らず after_visits に存在しない状況を再現.
+    井上を ``extra_existing_visits`` で渡すと段 b が衝突を検出し、 固定の中尾は提案不可
+    (未割当) になる. 注入しない場合 (=修正前) は衝突が見えず中尾がすり抜ける.
+    """
+    office_id = uuid.uuid4()
+    # 中尾: PFV 無し希望のみの固定 pool 提案 (course_code=None).
+    nakao = _g94_make_visit(
+        patient_name="中尾",
+        office_id=office_id,
+        weekday=1,
+        start=time(16, 0),
+        service_minutes=30,  # 16:00-16:30.
+        course_code=None,
+        time_type="固定",
+        preferred_start="16:00",
+        lat=35.66,
+        lng=140.12,
+    )
+    # 井上: after_visits に存在しない既存実 visit (別 course, 別住所, 別患者).
+    inoue = _g94_make_visit(
+        patient_name="井上",
+        office_id=office_id,
+        weekday=1,
+        start=time(16, 0),
+        service_minutes=30,  # 16:00-16:30.
+        course_code="C",
+        lat=35.65,
+        lng=140.10,
+    )
+
+    # 修正前相当 (注入なし): 衝突が見えず中尾は提案不可にならない (= バグ).
+    warnings_no_inject: list[V2Warning] = []
+    unassign_no_inject = _g94_resolve_cross_patient_double_booking(
+        [nakao],
+        pool_visit_ids={id(nakao)},
+        warnings=warnings_no_inject,
+        office_name_by_id={office_id: "テスト拠点"},
+    )
+    assert id(nakao) not in unassign_no_inject, (
+        "注入なしでは既存実 visit が見えず中尾がすり抜ける (= 修正前の挙動を再現)"
+    )
+
+    # 修正後 (注入あり): 段 b が井上との衝突を検出し中尾を提案不可にする.
+    warnings: list[V2Warning] = []
+    unassign = _g94_resolve_cross_patient_double_booking(
+        [nakao],
+        pool_visit_ids={id(nakao)},
+        warnings=warnings,
+        office_name_by_id={office_id: "テスト拠点"},
+        extra_existing_visits=[inoue],
+    )
+    assert id(nakao) in unassign, "注入された既存実 visit と同時刻の固定 pool は提案不可"
+    assert any(
+        w.type == "diff_add_conflict" and nakao.patient_id in (w.affected_patient_ids or [])
+        for w in warnings
+    ), f"time_conflict 整合 warning が emit される: {[w.type for w in warnings]}"
+    assert nakao.start_time == time(16, 0), "固定 pool の時刻は書き換えない"
+
+
 def test_g96_stage_b_pool_vs_pool_same_time_second_shifts() -> None:
     """② pool 提案 2 件が同 (office, weekday) 同時刻集中 → 2 件目がずれる.
 

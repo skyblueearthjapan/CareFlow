@@ -6880,6 +6880,7 @@ def _g94_resolve_cross_patient_double_booking(
     pool_visit_ids: set[int],
     warnings: list[V2Warning],
     office_name_by_id: dict[UUID, str] | None = None,
+    extra_existing_visits: list[V2Visit] | None = None,
     config: SchedulingConfig | None = None,
 ) -> set[int]:
     """Phase G-94 (修正2 ダブルブッキング): 同コース他患者と時間重複する pool 提案を解消する.
@@ -7119,6 +7120,15 @@ def _g94_resolve_cross_patient_double_booking(
             continue  # pool 提案は確定占有でない.
         if id(v) in unassign_ids:
             continue
+        existing_visits_by_ow[(v.office_id, v.weekday)].append(v)
+
+    # Phase G-99 (懸念①): canary 非依存で当週の実 placed visit を衝突相手に注入する.
+    # legacy before ローダ (_load_before_visits_from_pfv) は PatientFixedVisit のみ読み
+    # 実 visits テーブルを読まないため、 PFV 非対応の実 visit (手動配置等) が
+    # after_visits に載らず、 中尾 16:00 が井上 16:00 と同時刻でも衝突未検出になっていた.
+    # run_v2_pipeline が当週 placed visit を (patient_id, weekday) 重複排除済で渡すので、
+    # ここで既存確定占有として合算する (read-only; pool 提案ではない).
+    for v in extra_existing_visits or []:
         existing_visits_by_ow[(v.office_id, v.weekday)].append(v)
 
     # 各既存 visit の「占有区間」を同住所 90 分占有込みで事前計算する (修正A).
@@ -8290,11 +8300,58 @@ async def run_v2_pipeline(
     # 実行することで、 衝突で落ちた固定 pool 提案が希望フォールバックに正しく流れる.
     if mode == "diff_add":
         _g94_pool_ids = {id(v) for v in pool_visits}
+        # Phase G-99 (懸念①): g94 段 b の衝突相手集合に、 当週の実 placed visit を
+        # canary 非依存で注入する. before ローダ (legacy = PFV のみ) では PFV 非対応の
+        # 実 visit (手動配置等) が after_visits に載らず、 同時刻の提案が衝突未検出で
+        # すり抜ける (中尾 16:00 vs 井上 16:00). ここで visits テーブルを直接読み、
+        # after_visits に未表現の (patient_id, weekday) のみ V2Visit 化して渡す.
+        # read-only (SELECT のみ). full_optimize は g94 を呼ばないため非影響.
+        _g94_extra_existing: list[V2Visit] = []
+        if week_monday is not None and week_sunday is not None:
+            _g94_after_keys = {(v.patient_id, v.weekday) for v in after_visits}
+            _g94_stmt = (
+                select(Visit, Patient)
+                .join(Patient, Visit.patient_id == Patient.id)
+                .where(
+                    Visit.visit_date.between(week_monday, week_sunday),
+                    Visit.status.in_(placed_statuses),
+                    Visit.deleted_at.is_(None),
+                )
+            )
+            if office_ids:
+                _g94_stmt = _g94_stmt.where(Patient.primary_office_id.in_(office_ids))
+            _g94_rows = (await db.execute(_g94_stmt)).all()
+            for _vrow, _prow in _g94_rows:
+                if _vrow.start_time is None or _vrow.end_time is None:
+                    continue
+                if _prow.primary_office_id is None:
+                    continue
+                _wd = _vrow.visit_date.weekday()
+                if (_vrow.patient_id, _wd) in _g94_after_keys:
+                    continue  # after_visits に既に表現済 (二重計上回避).
+                _svc = max(1, _time_to_min(_vrow.end_time) - _time_to_min(_vrow.start_time))
+                _g94_extra_existing.append(
+                    V2Visit(
+                        patient_id=_vrow.patient_id,
+                        patient_name=_prow.name,
+                        patient_code=_prow.code,
+                        weekday=_wd,
+                        start_time=_vrow.start_time,
+                        end_time=_vrow.end_time,
+                        service_minutes=_svc,
+                        lat=float(_prow.lat) if _prow.lat is not None else 0.0,
+                        lng=float(_prow.lng) if _prow.lng is not None else 0.0,
+                        office_id=_prow.primary_office_id,
+                        am_pm="any",
+                        source_kind="fixed",
+                    )
+                )
         _g94_double_booking_ids = _g94_resolve_cross_patient_double_booking(
             after_visits,
             pool_visit_ids=_g94_pool_ids,
             warnings=warnings,
             office_name_by_id=office_name_by_id,
+            extra_existing_visits=_g94_extra_existing,
             config=config,
         )
         if _g94_double_booking_ids:
