@@ -52,6 +52,7 @@ import type { VisitRead } from '@/lib/schemas/visit';
 
 import { PatientEditDialog } from './PatientEditDialog';
 import { ProposalCard, ProposalConfirmModal, adoptedVisitPlans } from './DiffAddProposalCard';
+import { PoolCandidateList } from './PoolCandidateList';
 import { formatErr } from './_autoScheduleUtils';
 
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'] as const;
@@ -626,6 +627,20 @@ export function PatientScheduleDetailDialog({
                     条件に当てはまる投入枠は見つかりませんでした。
                   </div>
                 )}
+
+                {/* ③ 単体MVP: 推奨提案に加え、 propose-slots による他の実現可能候補
+                    (他時刻/他曜日/他コース) を on-demand で一覧表示し選べる.
+                    採用済 (poolAdopted) なら上の成功表示に一本化するため出さない. */}
+                {patient && !poolAdopted ? (
+                  <PoolCandidateList
+                    patient={patient}
+                    isoYear={isoYear}
+                    isoWeek={isoWeek}
+                    officeId={officeId}
+                    canEdit={canEdit}
+                    onAdopted={() => setPoolAdopted(true)}
+                  />
+                ) : null}
               </section>
             ) : null}
 

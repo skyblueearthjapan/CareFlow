@@ -131,6 +131,11 @@ vi.mock('../PatientEditDialog', () => ({
 vi.mock('../DiffAddProposalTimeline', () => ({
   DiffAddProposalTimeline: () => <div data-testid="timeline-stub" />,
 }));
+// ③ 単体MVP: propose-slots 候補一覧は独自フック群 (QueryClient 必須) を持つため stub.
+// 本テストは diff-add「推奨提案」挙動に集中する (候補一覧は別テストで検証).
+vi.mock('../PoolCandidateList', () => ({
+  PoolCandidateList: () => <div data-testid="pool-candidate-stub" />,
+}));
 
 // ─── Subject under test ─────────────────────────────────────────────────────
 
