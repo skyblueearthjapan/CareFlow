@@ -262,7 +262,8 @@ export function CourseDayTablePanel({
   const { isoYear, isoWeek } = useMemo(() => toIsoYearWeek(weekStart), [weekStart]);
 
   // ─── 曜日タブ state (Wave 18 Phase B-6: 'week' = 週間ビュー) ─────
-  const [activeTab, setActiveTab] = useState<number | 'week'>(0);
+  // デフォルトは週ビュー ('week'). 曜日別 (月-土) は各タブで切替.
+  const [activeTab, setActiveTab] = useState<number | 'week'>('week');
   const activeWeekday = typeof activeTab === 'number' ? activeTab : 0;
 
   // ─── 2026-W20: 月-土タブの表示モード ─────────────────────────
