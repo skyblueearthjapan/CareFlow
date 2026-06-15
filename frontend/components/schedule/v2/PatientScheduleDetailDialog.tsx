@@ -621,7 +621,8 @@ export function PatientScheduleDetailDialog({
                     className="py-3 text-center text-xs text-text-muted"
                     data-testid="patient-schedule-pool-no-proposal"
                   >
-                    この患者のプール投入候補はありません。
+                    この患者の固定訪問・希望訪問スケジュールと現状のスケジュールを照合しましたが、
+                    条件に当てはまる投入枠は見つかりませんでした。
                   </div>
                 )}
               </section>
