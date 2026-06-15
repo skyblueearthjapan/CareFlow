@@ -177,6 +177,17 @@ describe('PoolCandidateList (③ 単体MVP)', () => {
     expect(req.preferred_start).toBe('16:00');
   });
 
+  it('primary (主提案) は開いた時点で自動的に propose-slots を呼ぶ (ボタン不要)', () => {
+    render(<PoolCandidateList {...COMMON} primary />);
+    // on-demand ボタンは出ない (自動実行).
+    expect(screen.queryByTestId('pool-candidate-run-button')).not.toBeInTheDocument();
+    // マウント時に当該患者で propose-slots を呼ぶ.
+    expect(mocks.proposeMutate).toHaveBeenCalledTimes(1);
+    expect(mocks.proposeMutate.mock.calls[0][0].existing_patient_id).toBe(PATIENT.id);
+    // 主提案モードの見出し.
+    expect(screen.getByText('空き枠の候補')).toBeInTheDocument();
+  });
+
   it('候補スロットがランキング表示される (コース当日スケジュール + 挿入位置を含む)', () => {
     mocks.proposeData = {
       slots: [

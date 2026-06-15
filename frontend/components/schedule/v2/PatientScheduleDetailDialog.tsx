@@ -45,15 +45,11 @@ import type { SyncWeekToFixedResponse } from '@/lib/schemas/patientSync';
 import { usePatient } from '@/lib/queries/patients';
 import { useFixedVisits } from '@/lib/queries/patient_fixed_visits';
 import { useVisits } from '@/lib/queries/visits';
-import { useApplyIndividualMutation, useDiffAddProposalsQuery } from '@/lib/queries/autoScheduleV2';
 import type { PatientFixedVisitV2Read } from '@/lib/schemas/v2/patient_fixed_visit';
-import type { DiffAddProposal } from '@/lib/schemas/v2/autoScheduleV2';
 import type { VisitRead } from '@/lib/schemas/visit';
 
 import { PatientEditDialog } from './PatientEditDialog';
-import { ProposalCard, ProposalConfirmModal, adoptedVisitPlans } from './DiffAddProposalCard';
 import { PoolCandidateList } from './PoolCandidateList';
-import { formatErr } from './_autoScheduleUtils';
 
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'] as const;
 
@@ -314,23 +310,12 @@ export function PatientScheduleDetailDialog({
   // Phase G-20: 編集ダイアログ (= dialog 内 dialog) の open 状態.
   const [editOpen, setEditOpen] = React.useState(false);
 
-  // ─── プール投入 (diff-add) 提案セクション (Pool-detail 統合) ───
-  // enablePoolProposal=true のときだけ算出する (= プール由来クリック)。
-  // 一括ダイアログ (DiffAddDialog) と同一エンドポイント・同一 office スコープ・
-  // 同一 queryKey を使うため、同じ患者は両表示で必ず同一提案になる。
-  const poolQuery = useDiffAddProposalsQuery(
-    { isoYear, isoWeek, officeId },
-    { enabled: open && enablePoolProposal && !!patientId },
-  );
-  // 全員分の提案から当該患者 1 件をクライアント側で抽出する.
-  const poolProposal: DiffAddProposal | null = React.useMemo(() => {
-    if (!patientId) return null;
-    return poolQuery.data?.proposals.find((p) => p.patient_id === patientId) ?? null;
-  }, [poolQuery.data, patientId]);
-
-  const applyMut = useApplyIndividualMutation();
-  // 採用確認モーダル対象. null = 未表示.
-  const [poolConfirmTarget, setPoolConfirmTarget] = React.useState<DiffAddProposal | null>(null);
+  // ─── プール投入の提案セクション (Pool-detail 統合) ───
+  // enablePoolProposal=true (= プール由来クリック) のときだけ表示する。
+  // 単体クリックは「その 1 人だけ」を実際の確定済スケジュールに対して空き探索する
+  // propose-slots (PoolCandidateList primary) を主提案にする。diff-add (全員分バッチ
+  // 最適) は他プール患者との架空競合で当該患者が弾かれ得るため単体では使わない
+  // (一括ダイアログ DiffAddDialog は従来どおり全員バッチのまま)。
   // 採用完了フラグ (採用後はカードを隠して成功表示に切り替える).
   const [poolAdopted, setPoolAdopted] = React.useState(false);
 
@@ -340,37 +325,14 @@ export function PatientScheduleDetailDialog({
       setStage('idle');
       setPreview(null);
       setEditOpen(false);
-      setPoolConfirmTarget(null);
       setPoolAdopted(false);
     }
   }, [open]);
 
   // 別の患者を開き直したらプール投入セクションの一時状態をリセットする.
   React.useEffect(() => {
-    setPoolConfirmTarget(null);
     setPoolAdopted(false);
   }, [patientId]);
-
-  const handleAdoptPoolProposal = React.useCallback(async () => {
-    if (!poolProposal) return;
-    try {
-      await applyMut.mutateAsync({
-        proposal_id: poolProposal.proposal_id,
-        patient_id: poolProposal.patient_id,
-        confirm: true,
-        iso_year: isoYear,
-        iso_week: isoWeek,
-        // 採用 payload は共有ヘルパーで決定 (一括ダイアログと同一ロジック).
-        visit_plans: adoptedVisitPlans(poolProposal),
-      });
-      toast.success(`${poolProposal.patient_name} の固定枠を更新しました`);
-      setPoolConfirmTarget(null);
-      setPoolAdopted(true);
-    } catch (err) {
-      // エラー整形は一括ダイアログ (DiffAddDialog) と同じ formatErr に統一.
-      toast.error(`採用に失敗しました: ${formatErr(err)}`);
-    }
-  }, [poolProposal, applyMut, isoYear, isoWeek]);
 
   const isLoading = patientQuery.isLoading || pfvQuery.isLoading || visitsQuery.isLoading;
   const isError = patientQuery.isError || pfvQuery.isError || visitsQuery.isError;
@@ -580,58 +542,23 @@ export function PatientScheduleDetailDialog({
 
             {/* (2.5) プール投入の提案 (Pool-detail 統合).
                 プール由来クリック (enablePoolProposal) のときのみ表示。
-                一括表示 (DiffAddDialog) と同じ共有カードを描画する。 */}
+                単体は「その 1 人だけ」を確定済スケジュールに対し空き探索する
+                propose-slots (PoolCandidateList primary) を主提案にする
+                (= モバイル盤の新規患者 空き確認と同方式)。 */}
             {enablePoolProposal ? (
               <section
                 className="rounded border border-border-default p-3"
                 data-testid="patient-schedule-pool-proposal"
               >
                 <h3 className="mb-2 text-sm font-semibold text-text-primary">プール投入の提案</h3>
-                {poolQuery.isLoading ? (
-                  <div
-                    className="flex items-center gap-2 py-3 text-xs text-text-secondary"
-                    data-testid="patient-schedule-pool-loading"
-                  >
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    提案を算出中…
-                  </div>
-                ) : poolQuery.isError ? (
-                  <div className="rounded border border-error/40 bg-error/10 p-2 text-xs text-error">
-                    提案の取得に失敗しました
-                  </div>
-                ) : poolAdopted ? (
+                {poolAdopted ? (
                   <div
                     className="rounded border border-success/40 bg-success/5 p-2 text-xs text-success"
                     data-testid="patient-schedule-pool-adopted"
                   >
                     この患者を採用し、固定枠に反映しました。上の「固定枠」表示も更新されています。
                   </div>
-                ) : poolProposal ? (
-                  <ul className="space-y-3">
-                    <ProposalCard
-                      proposal={poolProposal}
-                      isoYear={isoYear}
-                      isoWeek={isoWeek}
-                      isBusy={applyMut.isPending}
-                      onAdopt={() => setPoolConfirmTarget(poolProposal)}
-                      showAdopt={canEdit}
-                    />
-                  </ul>
-                ) : (
-                  <div
-                    className="py-3 text-center text-xs text-text-muted"
-                    data-testid="patient-schedule-pool-no-proposal"
-                  >
-                    この患者の固定訪問・希望訪問スケジュールと現状のスケジュールを照合しましたが、
-                    <br />
-                    条件に当てはまる投入枠は見つかりませんでした。
-                  </div>
-                )}
-
-                {/* ③ 単体MVP: 推奨提案に加え、 propose-slots による他の実現可能候補
-                    (他時刻/他曜日/他コース) を on-demand で一覧表示し選べる.
-                    採用済 (poolAdopted) なら上の成功表示に一本化するため出さない. */}
-                {patient && !poolAdopted ? (
+                ) : patient ? (
                   <PoolCandidateList
                     patient={patient}
                     isoYear={isoYear}
@@ -639,6 +566,7 @@ export function PatientScheduleDetailDialog({
                     officeId={officeId}
                     canEdit={canEdit}
                     onAdopted={() => setPoolAdopted(true)}
+                    primary
                   />
                 ) : null}
               </section>
@@ -743,15 +671,6 @@ export function PatientScheduleDetailDialog({
         />
       ) : null}
 
-      {/* プール投入 提案の採用確認モーダル (一括ダイアログと共有部品). */}
-      {poolConfirmTarget ? (
-        <ProposalConfirmModal
-          proposal={poolConfirmTarget}
-          isApplying={applyMut.isPending}
-          onCancel={() => setPoolConfirmTarget(null)}
-          onApply={() => void handleAdoptPoolProposal()}
-        />
-      ) : null}
     </Dialog>
   );
 }

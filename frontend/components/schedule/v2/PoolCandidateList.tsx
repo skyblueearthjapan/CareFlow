@@ -143,6 +143,14 @@ export interface PoolCandidateListProps {
   canEdit: boolean;
   /** 採用確定後に親へ通知 (PFV/visits の再取得は invalidate 済だが画面更新トリガに使う). */
   onAdopted?: () => void;
+  /**
+   * 主提案モード (単体プール詳細ダイアログ用). true のとき:
+   *   - 開いた時点で自動的に propose-slots を実行する (ボタン押下不要).
+   *   - 見出しを「空き枠の候補」にする (上位に別見出しがある前提).
+   * 既定 false = 従来の on-demand 併設用途 (一括ダイアログ等で N 件同時 mount する
+   * ケースのクエリバーストを避けるため、 こちらはボタン押下で初めて実行する).
+   */
+  primary?: boolean;
 }
 
 export function PoolCandidateList({
@@ -152,6 +160,7 @@ export function PoolCandidateList({
   officeId,
   canEdit,
   onAdopted,
+  primary = false,
 }: PoolCandidateListProps) {
   const { data: session, status: sessionStatus } = useSession();
   const accessToken = session?.accessToken ?? null;
@@ -227,6 +236,14 @@ export function PoolCandidateList({
     );
   }, [patient, isoYear, isoWeek, officeId, proposeMut]);
 
+  // 主提案モード (単体プール詳細ダイアログ): 開いた時点 / 患者切替時に自動計算する.
+  // 併設用途 (primary=false) は handleRun をボタンから呼ぶ従来の on-demand を維持.
+  React.useEffect(() => {
+    if (primary) handleRun();
+    // patient 切替・週変更・拠点変更でのみ再実行 (handleRun 同値依存は除外).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [primary, patient.id, isoYear, isoWeek, officeId]);
+
   // 選択候補 1 件を既存 normal 枠にマージ (採用曜日の slot_index=0 を置換, 他は保持).
   // 採用枠の item 化・マージは共有 _proposeSlotUtils (ProposeNewModal と共通) を使う.
   const buildMergedPut = React.useCallback(
@@ -288,7 +305,9 @@ export function PoolCandidateList({
   const isBusy = proposeMut.isPending || confirmMut.isPending;
 
   // ─── Render ───────────────────────────────────────────────────────
-  if (!requested) {
+  // primary (主提案) は自動実行のためボタン待ち state を出さない. 併設 (on-demand) は
+  // ボタン押下で初めて propose-slots を回す.
+  if (!requested && !primary) {
     return (
       <div className="mt-2 border-t border-border-default/60 pt-2">
         <Button
@@ -309,7 +328,9 @@ export function PoolCandidateList({
   return (
     <div className="mt-2 border-t border-border-default/60 pt-2" data-testid="pool-candidate-list">
       <div className="mb-2 flex items-center gap-2">
-        <h4 className="text-xs font-semibold text-text-primary">他の空き枠（候補一覧）</h4>
+        <h4 className="text-xs font-semibold text-text-primary">
+          {primary ? '空き枠の候補' : '他の空き枠（候補一覧）'}
+        </h4>
         {proposeMut.isPending ? (
           <span className="flex items-center gap-1 text-[11px] text-text-muted">
             <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
