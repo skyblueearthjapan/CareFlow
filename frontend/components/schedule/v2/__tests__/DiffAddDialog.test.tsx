@@ -115,6 +115,13 @@ vi.mock('@/lib/queries/autoScheduleV2', () => ({
 vi.mock('../DiffAddProposalTimeline', () => ({
   DiffAddProposalTimeline: () => <div data-testid="timeline-stub" />,
 }));
+// ③: 各カードの「他の空き枠」(独自フック群; QueryClient 必須) は stub. 患者マスタも空で mock.
+vi.mock('../PoolCandidateList', () => ({
+  PoolCandidateList: () => <div data-testid="pool-candidate-stub" />,
+}));
+vi.mock('@/lib/queries/patients', () => ({
+  usePatients: () => ({ data: { items: [] }, isLoading: false, isError: false }),
+}));
 
 // ─── Subject under test ─────────────────────────────────────────────────────
 

@@ -48,9 +48,12 @@ import {
   useApplyIndividualMutation,
   useDiffAddProposalsMutation,
 } from '@/lib/queries/autoScheduleV2';
+import { usePatients } from '@/lib/queries/patients';
 import type { DiffAddProposal } from '@/lib/schemas/v2/autoScheduleV2';
+import type { PatientRead } from '@/lib/schemas/patient';
 
 import { ProposalCard, ProposalConfirmModal, adoptedVisitPlans } from './DiffAddProposalCard';
+import { PoolCandidateList } from './PoolCandidateList';
 import { formatErr } from './_autoScheduleUtils';
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -64,15 +67,32 @@ export interface DiffAddDialogProps {
   isoWeek: number;
   /** 単一拠点モード時の対象拠点 ID. null = 全拠点 (BE 側は office_ids 空配列で全拠点扱い). */
   officeId: string | null;
+  /** admin/manager のみ採用可 (本ダイアログ自体 RBAC ガード済のため既定 true). */
+  canEdit?: boolean;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
 // Component
 // ─────────────────────────────────────────────────────────────────────────
 
-export function DiffAddDialog({ open, onClose, isoYear, isoWeek, officeId }: DiffAddDialogProps) {
+export function DiffAddDialog({
+  open,
+  onClose,
+  isoYear,
+  isoWeek,
+  officeId,
+  canEdit = true,
+}: DiffAddDialogProps) {
   const fetchMut = useDiffAddProposalsMutation();
   const applyMut = useApplyIndividualMutation();
+
+  // 各患者の「他の空き枠（候補一覧）」(PoolCandidateList) 用に患者マスタを引く.
+  const patientsQuery = usePatients({ limit: 500, enabled: open });
+  const patientById = React.useMemo(() => {
+    const m = new Map<string, PatientRead>();
+    for (const p of patientsQuery.data?.items ?? []) m.set(p.id, p);
+    return m;
+  }, [patientsQuery.data]);
 
   // 候補リスト. apply 採用後にローカルから取り除く (画面差分のみ).
   const [proposals, setProposals] = React.useState<DiffAddProposal[]>([]);
@@ -135,6 +155,14 @@ export function DiffAddDialog({ open, onClose, isoYear, isoWeek, officeId }: Dif
       toast.error(`採用に失敗しました: ${formatErr(err)}`);
     }
   };
+
+  // 「他の空き枠（候補一覧）」(PoolCandidateList) で採用された患者をリストから除く.
+  // PoolCandidateList は確定 (PUT fixed-visits マージ) を自前で行うため、 ここでは
+  // 推奨提案カードの除去 + 採用済カウントのみ行う (推奨採用 handleApply と同じ後処理).
+  const handlePoolAdopted = React.useCallback((p: DiffAddProposal) => {
+    setProposals((prev) => prev.filter((x) => x.proposal_id !== p.proposal_id));
+    setAppliedCount((c) => c + 1);
+  }, []);
 
   // ─── Render ──────────────────────────────────────────────────────
   return (
@@ -199,18 +227,37 @@ export function DiffAddDialog({ open, onClose, isoYear, isoWeek, officeId }: Dif
                   : 'プール患者の候補はありません。'}
               </div>
             ) : (
-              <ul className="space-y-3">
-                {proposals.map((p) => (
-                  <ProposalCard
-                    key={p.proposal_id}
-                    proposal={p}
-                    isoYear={isoYear}
-                    isoWeek={isoWeek}
-                    isBusy={isBusy}
-                    onAdopt={() => setConfirmTarget(p)}
-                  />
-                ))}
-              </ul>
+              <div className="space-y-3">
+                {proposals.map((p) => {
+                  const patient = patientById.get(p.patient_id);
+                  return (
+                    <div key={p.proposal_id} className="space-y-1">
+                      {/* 推奨提案 (diff-add). ProposalCard は <li> なので ul で包む. */}
+                      <ul>
+                        <ProposalCard
+                          proposal={p}
+                          isoYear={isoYear}
+                          isoWeek={isoWeek}
+                          isBusy={isBusy}
+                          onAdopt={() => setConfirmTarget(p)}
+                        />
+                      </ul>
+                      {/* ③: 同患者の「他の空き枠（候補一覧）」を on-demand で併設
+                          (単体ダイアログと同じ PoolCandidateList を共有). */}
+                      {patient ? (
+                        <PoolCandidateList
+                          patient={patient}
+                          isoYear={isoYear}
+                          isoWeek={isoWeek}
+                          officeId={officeId}
+                          canEdit={canEdit}
+                          onAdopted={() => handlePoolAdopted(p)}
+                        />
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
             )}
           </div>
         )}

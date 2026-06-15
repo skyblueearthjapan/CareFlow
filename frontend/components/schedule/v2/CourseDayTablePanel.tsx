@@ -2398,6 +2398,7 @@ export function CourseDayTablePanel({
           isoYear={isoYear}
           isoWeek={isoWeek}
           officeId={officeId}
+          canEdit={canEdit}
         />
 
         {/* 統合提案モーダル「＋新規提案」(StageA+C+B). diff-add とは独立・併存. */}
