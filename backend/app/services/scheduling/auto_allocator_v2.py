@@ -8495,6 +8495,17 @@ async def run_v2_pipeline(
         if _drop_failed_fixed_ids:
             pool_visits = [v for v in pool_visits if id(v) not in _drop_failed_fixed_ids]
 
+        # Phase G-100 (二重 surface の解消): g94 (他患者ダブルブッキング) で「提案不可」
+        # と判定された pool 提案は after_visits から除去済 (8358) だが pool_visits には
+        # 残るため、 endpoint (schedule_v2) が pool_visits からカードを組み「提案あり」と
+        # 二重 surface していた (中尾 火16:00 / 植田 月15:30 が ⚠重複警告付きで出続ける真因).
+        # ここで衝突拒否された候補を pool_visits からも除去し、 未割当判定に一本化する.
+        # G-92 のフォールバック差し替え (固定→希望) は当除去より前に完了しており、 変換済
+        # 候補は既に _g92_converted_ids で除去済のため影響しない. orphan 救済 / 通常の
+        # pool 提案 (g94 衝突でない未配置) は対象外で従来どおり surface される.
+        if _g94_double_booking_ids:
+            pool_visits = [v for v in pool_visits if id(v) not in _g94_double_booking_ids]
+
     # W41 v2 拡張 (コース容量 duration 化): 既存の人数制約 (MAX_PATIENTS_PER_COURSE=6)
     # と独立して、コース総所要時間 (visit duration + 移動時間) が 480 分を超えていないか check.
     _check_course_capacity_minutes(

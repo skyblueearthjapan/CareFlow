@@ -18,6 +18,7 @@ from app.models import Office, Patient
 from app.models.office_feature_flag import OfficeFeatureFlag
 from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.staff import Staff, StaffShift
+from app.models.visit import VISIT_STATUS_PLANNED, Visit
 from app.services.scheduling.auto_allocator_v2 import (
     G21_NEW_ALGORITHM_FEATURE_KEY,
     MAX_PATIENTS_PER_COURSE,
@@ -566,6 +567,93 @@ async def test_run_v2_pipeline_diff_add_returns_pool_only(db) -> None:
     # hotfix#3 (W41 v2.8): orphan 救済 — PFV あるが今週 visit ない患者は
     # pool に含まれる (PFV ベース展開).
     assert "FIXED" in pool_codes
+
+
+@pytest.mark.asyncio
+async def test_run_v2_pipeline_diff_add_suppresses_conflicting_proposal(db) -> None:
+    """Phase G-99/G-100 (懸念①): 既存実 visit と同時刻の固定 pool 提案は、 提案不可
+    (pool_visits から除去 + unassigned 計上) になり、 endpoint が二重 surface しない.
+
+    井上型 (PFV 無し・weekly_pattern 無しだが、 手動配置の実 Visit が火 16:00 に存在) と
+    中尾型 (PFV 無し・weekly_pattern で火 16:00 固定希望の pool 患者) を同拠点に置く。
+    ① の注入で井上の実 Visit が g94 段 b の衝突相手に入り、 g94 が中尾を提案不可に判定。
+    G-100 で中尾は pool_visits からも除去され、 unassigned_patients に計上される。
+    """
+    from datetime import date
+
+    office = Office(name="conflict-office")
+    db.add(office)
+    await db.flush()
+
+    # 中尾型: PFV 無し・希望のみ (火 16:00 固定) の pool 患者.
+    nakao = Patient(
+        code="NAKAO",
+        name="中尾型",
+        status="active",
+        lat=35.66,
+        lng=140.12,
+        primary_office_id=office.id,
+        weekly_pattern={
+            "preferred_weekdays": ["Tue"],
+            "preferred_start": "16:00",
+            "time_type": "固定",
+        },
+    )
+    # 井上型: PFV 無し・weekly_pattern 無し (= pool 展開されない) だが、 実 Visit を持つ.
+    inoue = Patient(
+        code="INOUE",
+        name="井上型",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        primary_office_id=office.id,
+        weekly_pattern=None,
+    )
+    db.add_all([nakao, inoue])
+    await db.flush()
+
+    # 井上の手動配置 実 Visit (火 16:00-17:00, W20 火曜 = 2026-05-12). PFV 非対応 = before
+    # ローダに乗らない → ① の注入で初めて g94 の衝突相手になる.
+    db.add(
+        Visit(
+            patient_id=inoue.id,
+            visit_date=date(2026, 5, 12),
+            start_time=time(16, 0),
+            end_time=time(17, 0),
+            type="regular",
+            status=VISIT_STATUS_PLANNED,
+            source="manual",
+            required_staff_count=1,
+        )
+    )
+    s = Staff(name="staff1", role="staff", is_trainee=False, primary_office_id=office.id)
+    db.add(s)
+    await db.flush()
+    db.add(StaffShift(staff_id=s.id, weekday=1, is_on=True))  # 火曜稼働.
+    await db.commit()
+
+    result = await run_v2_pipeline(
+        db,
+        iso_year=2026,
+        iso_week=20,
+        office_ids=[office.id],
+        mode="diff_add",
+    )
+
+    pool_codes = {v.patient_code for v in result["pool_visits"]}
+    # 中尾は衝突拒否され pool_visits から除去される (= 二重 surface しない).
+    assert "NAKAO" not in pool_codes, (
+        f"既存実 visit と同時刻の固定提案は pool_visits から除去されるべき: {pool_codes}"
+    )
+
+    # かつ未割当に計上される (要素は dict or オブジェクトのどちらの形でも patient_id を引く).
+    def _pid(u):
+        if isinstance(u, dict):
+            return u.get("patient_id")
+        return getattr(u, "patient_id", None)
+
+    un_pids = {_pid(u) for u in result["unassigned_patients"]}
+    assert nakao.id in un_pids, "提案不可の中尾は unassigned_patients に計上されるべき"
 
 
 @pytest.mark.asyncio
