@@ -7,7 +7,14 @@
  */
 import { describe, it, expect } from 'vitest';
 
-import { BUSINESS_BLOCKS, MIN_FREE_GAP_MIN, computeFreeGaps, fmtHM, parseHM } from '../freeGaps';
+import {
+  BUSINESS_BLOCKS,
+  MIN_FREE_GAP_MIN,
+  buildSameAddressKey,
+  computeFreeGaps,
+  fmtHM,
+  parseHM,
+} from '../freeGaps';
 
 const v = (start: string | null | undefined, end: string | null | undefined) => ({
   start_time: start,
@@ -49,6 +56,22 @@ describe('parseHM / fmtHM', () => {
     expect(fmtHM(570)).toBe('09:30');
     expect(fmtHM(1080)).toBe('18:00');
     expect(fmtHM(780)).toBe('13:00');
+  });
+});
+
+describe('buildSameAddressKey', () => {
+  it('lat/lng を toFixed(3) で bucket 化したキーを返す', () => {
+    expect(buildSameAddressKey(35.12345, 139.98765)).toBe('35.123:139.988');
+  });
+
+  it('同 bucket に丸まる座標は同一キー (toFixed(3) 一致)', () => {
+    expect(buildSameAddressKey(35.1231, 139.9871)).toBe(buildSameAddressKey(35.1234, 139.9874));
+  });
+
+  it('lat/lng が欠けると null (グルーピングしない)', () => {
+    expect(buildSameAddressKey(null, 139.9)).toBeNull();
+    expect(buildSameAddressKey(35.1, null)).toBeNull();
+    expect(buildSameAddressKey(undefined, undefined)).toBeNull();
   });
 });
 

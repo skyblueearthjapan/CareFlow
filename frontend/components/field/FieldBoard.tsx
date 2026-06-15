@@ -37,6 +37,7 @@ import type { BoardCell, BoardCourse, BoardOffice, BoardVisit } from '@/lib/sche
 import {
   computeFreeGaps,
   businessBlocksFromHours,
+  buildSameAddressKey,
   BUSINESS_BLOCKS,
   parseHM,
   type FreeGap,
@@ -1188,7 +1189,14 @@ function CourseSlots({
     // 拠点付きトークンにできない (= applier がコース解決できない) 場合は空き枠カードを
     // 出さない。解決不能トークンを承認に送ると PFV の course が NULL になるため配置不可とする。
     // 現状の対象拠点 (稲毛/都賀) では必ず解決できるため通常はトリガーしない。
-    const gaps = courseToken === null ? [] : computeFreeGaps(co.visits, businessBlocks);
+    // 同住所 2 名 (同 lat/lng・同 start) の 90 分占有を空き時間に反映するため、各 visit に
+    // same_address_key (lat/lng 由来) を付与して computeFreeGaps へ渡す (PC 盤と同規約)。
+    // BoardVisit は lat/lng を持つので buildSameAddressKey でキー化できる。
+    const visitsForGaps = co.visits.map((v) => ({
+      ...v,
+      same_address_key: buildSameAddressKey(v.lat, v.lng),
+    }));
+    const gaps = courseToken === null ? [] : computeFreeGaps(visitsForGaps, businessBlocks);
     for (const gap of gaps) {
       // gap 直前 / 直後の visit を実時刻位置から解決する (移動時間 / 表示用)。
       const prev = lastVisitEndingAtOrBefore(co.visits, gap.startMin);

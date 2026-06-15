@@ -69,6 +69,20 @@ export const MIN_FREE_GAP_MIN = 60;
 export const SAME_ADDRESS_PAIR_MIN_OCCUPANCY = 90;
 
 /**
+ * lat/lng から同住所グループキーを生成する (tolerance 0.001 ≒ 100m)。
+ * Backend と同じ rounding (toFixed(3)) で bucket 化する。lat/lng が無い場合は
+ * null を返す (グルーピングしない)。`computeFreeGaps` の `same_address_key` や
+ * 親機テーブルの同住所ペア囲みで共通利用する (PC 盤 / モバイル盤 共有)。
+ */
+export function buildSameAddressKey(
+  lat: number | null | undefined,
+  lng: number | null | undefined,
+): string | null {
+  if (lat === null || lat === undefined || lng === null || lng === undefined) return null;
+  return `${lat.toFixed(3)}:${lng.toFixed(3)}`;
+}
+
+/**
  * 営業時間設定 (Phase G-88) からフロント表示用の営業枠を組み立てる。
  *
  * 親機の最適化設定 (`/api/v1/scheduling-settings`) の `business_start` /

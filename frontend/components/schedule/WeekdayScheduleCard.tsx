@@ -27,7 +27,7 @@ import * as React from 'react';
 
 import { cn } from '@/lib/utils';
 import { formatDuration } from '@/lib/format/duration';
-import { parseHM, type FreeGap } from '@/lib/scheduling/freeGaps';
+import { buildSameAddressKey, parseHM, type FreeGap } from '@/lib/scheduling/freeGaps';
 import { VisitArrow } from './v2/VisitArrow';
 import { trimSeconds } from './v2/_autoScheduleUtils';
 import { PinScopeMenu, type PinScope } from './v2/PinScopeMenu';
@@ -810,15 +810,6 @@ export function haversineKm(
   return 2 * R * Math.asin(Math.min(1, Math.sqrt(x)));
 }
 
-/**
- * lat/lng から同住所グループキーを生成する (tolerance 0.001 ≒ 100m).
- * Backend と同じ rounding (toFixed(3)) で bucket 化.
- * lat/lng が無い patient は null を返す (グルーピングしない).
- */
-export function buildSameAddressKey(
-  lat: number | null | undefined,
-  lng: number | null | undefined,
-): string | null {
-  if (lat === null || lat === undefined || lng === null || lng === undefined) return null;
-  return `${lat.toFixed(3)}:${lng.toFixed(3)}`;
-}
+// `buildSameAddressKey` は共有 util `@/lib/scheduling/freeGaps` へ移設 (PC 盤 /
+// モバイル盤 共有・bundle 軽量化のため)。既存 import 互換のためここから再エクスポートする。
+export { buildSameAddressKey };
