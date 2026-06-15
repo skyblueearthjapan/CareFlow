@@ -274,25 +274,38 @@ function SingleWeekdayTimeline({
     let beforeGap: number | null = null;
     let afterName: string | null = null;
     let afterGap: number | null = null;
+    // Phase G-98 (懸念②): 提案区間と重なる既存訪問を「重複」として収集する.
+    // 旧実装は前 (vEnd<=startMin) でも後 (vStart>=endMin) でもない重なり訪問を
+    // 無言で除外しており、 例えば 15:30-16:05 の提案に対し 16:00 開始の既存訪問が
+    // 「後」条件を満たさず脱落し「後:(なし)」と誤表示されていた. 重なりは
+    // 明示的に衝突として surface する (= ユーザーに「実は埋まっている」を見せる).
+    const conflicts: { name: string; range: string }[] = [];
     for (const v of existingCourseVisits) {
       const vStart = toMinutes(v.start_time);
       const vEnd = toMinutes(v.end_time);
       if (vStart === null || vEnd === null) continue;
+      const vName = patientById.get(v.patient_id)?.name ?? v.patient_name ?? '(不明)';
       if (vEnd <= startMin) {
         // 候補より前.
         if (beforeGap === null || startMin - vEnd < beforeGap) {
           beforeGap = startMin - vEnd;
-          beforeName = patientById.get(v.patient_id)?.name ?? v.patient_name ?? '(不明)';
+          beforeName = vName;
         }
       } else if (vStart >= endMin) {
         // 候補より後.
         if (afterGap === null || vStart - endMin < afterGap) {
           afterGap = vStart - endMin;
-          afterName = patientById.get(v.patient_id)?.name ?? v.patient_name ?? '(不明)';
+          afterName = vName;
         }
+      } else {
+        // 提案区間と重なる = 同時刻帯がすでに埋まっている (旧実装は無言除外).
+        conflicts.push({
+          name: vName,
+          range: `${trimSeconds(v.start_time)}–${trimSeconds(v.end_time)}`,
+        });
       }
     }
-    return { beforeName, beforeGap, afterName, afterGap };
+    return { beforeName, beforeGap, afterName, afterGap, conflicts };
   }, [primary, existingCourseVisits, patientById]);
 
   // ─── ローディング / フォールバック ────────────────────────────
@@ -344,6 +357,21 @@ function SingleWeekdayTimeline({
           {isVisitsEmpty ? (
             <div className="mt-1 text-[10px] text-text-muted">
               ※ 同コースの既存訪問はまだ DB に入っていません (Layer 1 未確定の可能性)。
+            </div>
+          ) : null}
+          {insertionGap && insertionGap.conflicts.length > 0 ? (
+            <div
+              className="mt-1 rounded border border-error/40 bg-error/5 px-2 py-1 text-[10px] text-error"
+              data-testid={`diff-add-timeline-${proposal.proposal_id}-conflicts`}
+            >
+              <span className="font-semibold">⚠ 同時刻に重複: </span>
+              {insertionGap.conflicts.map((c, i) => (
+                <span key={i} className="tnum">
+                  {i > 0 ? '、' : ''}
+                  {c.name} ({c.range})
+                </span>
+              ))}
+              <span className="text-text-muted"> — この時間帯はすでに埋まっています</span>
             </div>
           ) : null}
           {insertionGap ? (

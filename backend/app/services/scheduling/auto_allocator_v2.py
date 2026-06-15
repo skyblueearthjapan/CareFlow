@@ -5075,34 +5075,76 @@ def _apply_travel_time_to_courses(
                         desired_start.hour * 60 + desired_start.minute
                     )
                     if shortage >= SHORTAGE_THRESHOLD_MIN:
-                        # 物理不可能 → コースから外す + 未割当通知集合に追加.
-                        cur.course_code = None
-                        unassigned_visit_ids.add(id(cur))
-                        warnings.append(
-                            V2Warning(
-                                type="travel_time_shortage",
-                                message=(
-                                    f"{office_name} {course_code} {wd_jp}: "
-                                    f"{prev_name} 様 ({_fmt_hhmm(prev.end_time)} 終了) → "
-                                    f"{cur_name} 様 ({_fmt_hhmm(desired_start)} 固定開始) "
-                                    f"への必要 {travel_min + buffer_min} 分 "
-                                    f"(移動 {travel_min} 分 + バッファー {buffer_min} 分) "
-                                    f"が {shortage} 分不足 — 物理的に配置不可のため "
-                                    "未割当に移動 (固定時刻の見直し要)"
-                                ),
-                                weekday=weekday,
-                                actionable=True,
-                                patient_id=cur.patient_id,
-                                patient_name=cur.patient_name,
-                                current_time=_fmt_hhmm(desired_start),
-                                suggested_time=_fmt_hhmm(earliest_start),
-                                time_type=tt,
-                                preferred_start=cur.preferred_start,
-                                preferred_end=cur.preferred_end,
-                                # P2: 固定時刻衝突 — fixed_time_conflict にマップ.
-                                affected_patient_ids=[cur.patient_id],
-                            )
+                        # Phase G-98 (懸念②): 物理不可能. ただし cur が「動かせない」
+                        # (= pinned もしくは既存 visit source_kind="fixed") の場合、
+                        # 不足の原因は直前に差し込まれた movable な pool 提案 (prev) に
+                        # ある (例: 植田 15:30 提案を 16:00 固定の菅原の手前に入れたため、
+                        # 植田の実働 + 移動で菅原に間に合わない). この場合は既存/固定枠を
+                        # 守り、 原因の **prev (pool 提案) を提案不可** にする.
+                        # それ以外 (cur 自身が movable な pool 提案) は従来どおり cur を
+                        # 未割当にする (= forward 既存挙動を維持).
+                        redirect_to_prev = (
+                            (cur.is_pinned or cur.source_kind == "fixed")
+                            and prev.source_kind == "pool"
+                            and not prev.is_pinned
+                            and prev.course_code is not None
+                            and id(prev) not in unassigned_visit_ids
                         )
+                        if redirect_to_prev:
+                            prev.course_code = None
+                            unassigned_visit_ids.add(id(prev))
+                            warnings.append(
+                                V2Warning(
+                                    type="travel_time_shortage",
+                                    message=(
+                                        f"{office_name} {course_code} {wd_jp}: "
+                                        f"{prev_name} 様 ({_fmt_hhmm(prev.start_time)} 提案) は "
+                                        f"実働 + 移動を考慮すると次の "
+                                        f"{cur_name} 様 ({_fmt_hhmm(desired_start)} 固定開始) "
+                                        f"に間に合わない (必要 {travel_min + buffer_min} 分 "
+                                        f"= 移動 {travel_min} 分 + バッファー {buffer_min} 分 / "
+                                        f"{shortage} 分不足) — 既存の固定枠を優先し提案不可"
+                                    ),
+                                    weekday=weekday,
+                                    actionable=True,
+                                    patient_id=prev.patient_id,
+                                    patient_name=prev.patient_name,
+                                    current_time=_fmt_hhmm(prev.start_time),
+                                    time_type=prev.time_type,
+                                    preferred_start=prev.preferred_start,
+                                    preferred_end=prev.preferred_end,
+                                    affected_patient_ids=[prev.patient_id, cur.patient_id],
+                                )
+                            )
+                        else:
+                            # 物理不可能 → コースから外す + 未割当通知集合に追加.
+                            cur.course_code = None
+                            unassigned_visit_ids.add(id(cur))
+                            warnings.append(
+                                V2Warning(
+                                    type="travel_time_shortage",
+                                    message=(
+                                        f"{office_name} {course_code} {wd_jp}: "
+                                        f"{prev_name} 様 ({_fmt_hhmm(prev.end_time)} 終了) → "
+                                        f"{cur_name} 様 ({_fmt_hhmm(desired_start)} 固定開始) "
+                                        f"への必要 {travel_min + buffer_min} 分 "
+                                        f"(移動 {travel_min} 分 + バッファー {buffer_min} 分) "
+                                        f"が {shortage} 分不足 — 物理的に配置不可のため "
+                                        "未割当に移動 (固定時刻の見直し要)"
+                                    ),
+                                    weekday=weekday,
+                                    actionable=True,
+                                    patient_id=cur.patient_id,
+                                    patient_name=cur.patient_name,
+                                    current_time=_fmt_hhmm(desired_start),
+                                    suggested_time=_fmt_hhmm(earliest_start),
+                                    time_type=tt,
+                                    preferred_start=cur.preferred_start,
+                                    preferred_end=cur.preferred_end,
+                                    # P2: 固定時刻衝突 — fixed_time_conflict にマップ.
+                                    affected_patient_ids=[cur.patient_id],
+                                )
+                            )
                         # 物理不可能 visit は course 上でこれ以上後続に影響させない.
                         # 後続 pair (i+1) は cur をスキップして prev=prev のまま回したい
                         # が、ループ構造を大きく崩さないため cur.end_time も

@@ -2625,6 +2625,68 @@ def test_fixed_time_warning_when_travel_insufficient() -> None:
     assert matching, f"物理不可能 warning が出ていない: {warnings}"
 
 
+def test_backward_blame_pool_proposal_before_pinned_fixed() -> None:
+    """Phase G-98 (懸念②): 動かせない固定枠 (pinned) の手前に差し込んだ pool 提案が
+    実働 + 移動で次に間に合わないとき、 既存の固定枠ではなく **pool 提案側** を提案不可
+    にする (blame 付け替え).
+
+    再現: A = 15:30 開始・実働 35 分の pool 提案 (→ 16:05 占有終了), B = 16:00 固定で
+    pinned な既存 visit (source_kind="fixed"), 5km 離れて travel >= 5 分. forward は
+    (A,B) ペアで B の固定開始 16:00 に間に合わない shortage を検出するが、 B は動かせない
+    ため A を未割当にする (= 植田/菅原 ケース).
+    """
+    from app.services.scheduling.auto_allocator_v2 import (
+        SHORTAGE_THRESHOLD_MIN,
+        _apply_travel_time_to_courses,
+    )
+
+    office_id = uuid.uuid4()
+    # A: 15:30 開始 35 分の pool 提案 (= 差分追加で差し込んだ新規).
+    a = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=15, start_m=30, patient_name="A"
+    )
+    a.end_time = time(16, 5)
+    a.service_minutes = 35
+    a.course_code = "D"
+    a.time_type = "固定"
+    a.preferred_start = "15:30"
+    # source_kind は _make_visit 既定で "pool", is_pinned 既定 False.
+    assert a.source_kind == "pool" and a.is_pinned is False
+
+    # B: 16:00 固定で動かせない (pinned) 既存 visit. 5km 離れて travel 不足.
+    b = _make_visit(
+        lat=35.65, lng=140.155, office_id=office_id, start_h=16, start_m=0, patient_name="B"
+    )
+    b.end_time = time(16, 30)
+    b.service_minutes = 30
+    b.course_code = "D"
+    b.time_type = "固定"
+    b.preferred_start = "16:00"
+    b.is_pinned = True
+    b.source_kind = "fixed"
+
+    warnings: list[V2Warning] = []
+    unassigned_ids = _apply_travel_time_to_courses([a, b], warnings=warnings)
+
+    assert SHORTAGE_THRESHOLD_MIN <= 5  # 安全装置.
+    # pool 提案 A が提案不可 (= 未割当) になる.
+    assert id(a) in unassigned_ids, f"pool 提案 A が未割当にならない: {unassigned_ids}"
+    assert a.course_code is None, f"A.course_code は None になるべき: {a.course_code}"
+    # 既存の固定枠 B は守られる (時刻・コース不変, 未割当でない).
+    assert id(b) not in unassigned_ids, "pinned 固定枠 B を未割当にしてはならない"
+    assert b.course_code == "D", f"B.course_code は維持されるべき: {b.course_code}"
+    assert b.start_time == time(16, 0), f"B.start_time は 16:00 維持: {b.start_time}"
+    # blame 付け替え warning が A を対象に出る.
+    matching = [
+        w
+        for w in warnings
+        if w.type == "travel_time_shortage"
+        and a.patient_id in (w.affected_patient_ids or [])
+        and "既存の固定枠を優先し提案不可" in w.message
+    ]
+    assert matching, f"blame 付け替え warning が出ていない: {warnings}"
+
+
 def test_same_address_zero_travel_no_pushback() -> None:
     """W41 v2: 同住所の連続 visit は移動 0 分 (押し下げ最小限)."""
     from app.services.scheduling.auto_allocator_v2 import _apply_travel_time_to_courses
