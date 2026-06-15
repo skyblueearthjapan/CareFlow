@@ -209,6 +209,30 @@ async def test_propose_returns_feasible_slots_ranked(client, db) -> None:
         assert "is_multi_staff" in e
     ex1_row = next(e for e in top["mini_schedule"] if e["name"] == "P-EX1")
     assert ex1_row["sex_restriction"] == "female_only"
+    # 課題1 (2名体制): 通常候補 (requires_multiple_staff 未指定) には 2名体制警告は出ない.
+    assert all("two_staff_not_guaranteed" not in s["warnings"] for s in body["slots"])
+
+
+@pytest.mark.asyncio
+async def test_propose_two_staff_emits_warning(client, db) -> None:
+    """課題1 (2名体制): requires_multiple_staff=True の候補には two_staff_not_guaranteed
+    警告が付く (propose-slots はコース=1スタッフモデルで2人目を保証しないため明示する)."""
+    admin = await _make_user(db, email="ps-2staff@example.com", role="admin")
+    office, staff = await _seed_office_staff(db)
+    course = await _seed_course(db, office=office, staff=staff)
+    pn = await _seed_patient(db, office=office, code="EX2S", lat=NEAR[0], lng=NEAR[1])
+    await _seed_visit(db, patient=pn, course=course, start=time(9, 30), end=time(10, 0))
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/propose-slots",
+        headers=_bearer(admin),
+        json=_base_payload(office, requires_multiple_staff=True),
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["slots"], body
+    assert all("two_staff_not_guaranteed" in s["warnings"] for s in body["slots"]), body["slots"]
 
 
 @pytest.mark.asyncio

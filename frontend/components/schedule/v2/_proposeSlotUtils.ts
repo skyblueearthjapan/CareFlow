@@ -62,7 +62,10 @@ export function proposedSlotToFixedVisitItem(
   resolveCourseTemplateId: CourseTemplateIdResolver,
   serviceFallbackMin: number,
 ): PatientFixedVisitV2Base {
-  const duration = slotDurationMin(s) ?? serviceFallbackMin;
+  // 課題1: 同住所ペア枠 (is_pair) は end_time が 90 分占有を含むため、 PFV の duration_min
+  // には占有 (90分) ではなく患者の実サービス時間を記録する (90分占有はスケジューリング時に
+  // auto_allocator が再適用する). 非ペアは枠の長さ (end-start) をそのまま使う.
+  const duration = s.is_pair ? serviceFallbackMin : (slotDurationMin(s) ?? serviceFallbackMin);
   const tplId = resolveCourseTemplateId(s.office_id, s.course_code);
   return {
     weekday: s.weekday,

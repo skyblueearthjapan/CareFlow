@@ -68,6 +68,9 @@ export interface DesiredSchedule {
  * - 曜日ごとに 1 枠 (週N日なら N 件)。weekday は backend int 規約 (Mon=0)。
  * - duration_min は枠の start/end 差分 (分) から算出する。end が無い/不正なら
  *   `fallbackMinutes` (= 希望サービス時間) を使う。
+ * - 課題1: 同住所ペア枠 (is_pair) は end が 90 分占有を含むため、 duration_min には
+ *   占有でなく実サービス時間 (fallbackMinutes) を記録する (90分占有はスケジューリング時に
+ *   auto_allocator が再適用)。
  * - weekday 昇順で安定ソートして返す。
  */
 export function buildProposedVisits(
@@ -76,7 +79,7 @@ export function buildProposedVisits(
 ): ProposedVisit[] {
   const out: ProposedVisit[] = [];
   for (const [, slot] of adopted) {
-    const duration = slotDurationMin(slot) ?? fallbackMinutes;
+    const duration = slot.is_pair ? fallbackMinutes : (slotDurationMin(slot) ?? fallbackMinutes);
     out.push({
       weekday: slot.weekday,
       start_time: slot.start_time,

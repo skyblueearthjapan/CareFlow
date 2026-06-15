@@ -232,11 +232,21 @@ def _course_total_minutes_from_existing(
 ) -> int:
     """既存訪問列のコース占有合計 (分).
 
-    auto_allocator_v2 ``calc_course_total_minutes`` (V2Visit 版) と **同一規約**:
-        - service 合計. ただし隣接 same_address ペア (異患者) は
-          ``max(a.service + b.service, SAME_ADDRESS_PAIR_MIN_OCCUPANCY=90)`` に底上げ
-          (``i += 2`` でペア確定後は次へ).
+    基本は auto_allocator_v2 ``calc_course_total_minutes`` (V2Visit 版) と同規約だが、
+    同住所ペア (異患者) の占有計算だけ入力データの違いに応じて分岐する:
+        - **同 start_time** (= auto_allocator が ``_align_same_address_pair_to_same_time``
+          で整合済): 本関数の入力 ExistingVisit.service_minutes は DB の ``end-start``
+          (= 既に 90 分占有を反映済; ``propose_slots_service.load_week_course_buckets``
+          が end-start で算出) のため、 ここで ``max(a+b, 90)`` を再適用すると 90 分を
+          二重計上する. よって実占有 ``max(end) - 共有 start`` をそのまま使う.
+        - **別 start_time** (未整合の同住所連続): service_minutes は実サービス時間なので
+          従来どおり ``max(a.service + b.service, SAME_ADDRESS_PAIR_MIN_OCCUPANCY=90)``.
+        (``i += 2`` でペア確定後は次へ; 3 人目以降は single 扱い.)
         - 隣接遷移ごとに異住所なら ``travel + VISIT_BUFFER_MINUTES`` を加算.
+
+    注: auto_allocator は in-memory V2Visit (service_minutes=実サービス) を扱うため
+    常に ``max(a+b, 90)`` で良いが、 本関数は DB read 経路で service_minutes が膨張済の
+    ため上記の同 start_time 分岐が必要 (= 規約の意図は同じ、 入力差を吸収する).
     """
     if not visits:
         return 0
@@ -252,10 +262,21 @@ def _course_total_minutes_from_existing(
                 _is_same_address(cur.lat, cur.lng, nxt.lat, nxt.lng)
                 and cur.patient_id != nxt.patient_id
             ):
-                pair_occupancy = max(
-                    int(cur.service_minutes) + int(nxt.service_minutes),
-                    SAME_ADDRESS_PAIR_MIN_OCCUPANCY,
-                )
+                if cur.start_time == nxt.start_time:
+                    # 課題1 (二重計上是正): auto_allocator が同住所ペアを同 start_time に
+                    # 整合済 (_align_same_address_pair_to_same_time) の場合、 DB の end_time
+                    # は既に 90 分占有を反映している (service_minutes = end-start も底上げ済).
+                    # ここで再び max(a+b, 90) すると 90 分を二重計上し過大になるため、
+                    # 実占有 (max(end) - 共有 start) をそのまま使う.
+                    pair_occupancy = max(
+                        _time_to_min(cur.end_time), _time_to_min(nxt.end_time)
+                    ) - _time_to_min(cur.start_time)
+                else:
+                    # 未整合 (別 start_time) の同住所連続: service 合計と 90 分の大きい方.
+                    pair_occupancy = max(
+                        int(cur.service_minutes) + int(nxt.service_minutes),
+                        SAME_ADDRESS_PAIR_MIN_OCCUPANCY,
+                    )
                 total += pair_occupancy
                 i += 2
                 continue

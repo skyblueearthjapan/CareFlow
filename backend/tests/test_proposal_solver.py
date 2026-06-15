@@ -26,6 +26,7 @@ from app.services.scheduling.auto_allocator_v2 import (
 from app.services.scheduling.proposal_solver import (
     Candidate,
     ExistingVisit,
+    _course_total_minutes_from_existing,
     compute_earliest_start_after,
     find_available_slots_for_candidate,
     slot_feasible,
@@ -35,6 +36,47 @@ BASE = (35.6000, 140.1000)
 P_1_4KM = (35.6100, 140.1100)
 P_2_7KM = (35.6000, 140.1300)
 SAME = (35.60005, 140.10005)
+
+
+def test_course_total_pair_aligned_no_double_count() -> None:
+    """課題1: 同住所ペアが同 start_time に整合済 (auto_allocator) のとき、 占有合計は
+    実占有 (max(end)-start=90) を使い、 max(a+b,90) の二重計上 (120) にならない.
+
+    A=10:00-10:30 (service 30), B=10:00-11:30 (DB上 90分占有, service_minutes=90).
+    旧実装: max(30+90, 90)=120 (過大). 是正後: max(10:30,11:30)-10:00 = 90.
+    """
+    visits = [
+        ExistingVisit(time(10, 0), time(10, 30), *BASE, service_minutes=30, patient_id="A"),
+        ExistingVisit(time(10, 0), time(11, 30), *BASE, service_minutes=90, patient_id="B"),
+    ]
+    total = _course_total_minutes_from_existing(visits)
+    assert total == 90, f"ペア整合済は実占有90分 (二重計上120でない): {total}"
+
+
+def test_course_total_three_same_address_pair_plus_single() -> None:
+    """3 人同住所: 先頭2人が整合ペア(同start, 90分占有), 3人目は別startの single.
+    ペア=90 + single C=30 = 120 (同住所のため移動加算なし).
+    """
+    visits = [
+        ExistingVisit(time(10, 0), time(10, 30), *BASE, service_minutes=30, patient_id="A"),
+        ExistingVisit(time(10, 0), time(11, 30), *BASE, service_minutes=90, patient_id="B"),
+        ExistingVisit(time(11, 30), time(12, 0), *BASE, service_minutes=30, patient_id="C"),
+    ]
+    total = _course_total_minutes_from_existing(visits)
+    assert total == 90 + 30, f"ペア90 + single30 = 120: {total}"
+
+
+def test_course_total_non_aligned_same_address_uses_floor() -> None:
+    """未整合 (別 start_time) の同住所連続は従来どおり max(service合計, 90) を使う.
+
+    A=10:00-10:30 (30), B=10:30-11:00 (30), 同住所 → max(30+30, 90)=90.
+    """
+    visits = [
+        ExistingVisit(time(10, 0), time(10, 30), *BASE, service_minutes=30, patient_id="A"),
+        ExistingVisit(time(10, 30), time(11, 0), *BASE, service_minutes=30, patient_id="B"),
+    ]
+    total = _course_total_minutes_from_existing(visits)
+    assert total == SAME_ADDRESS_PAIR_MIN_OCCUPANCY, f"未整合は max(合計,90)=90: {total}"
 
 
 # ---------------------------------------------------------------------------

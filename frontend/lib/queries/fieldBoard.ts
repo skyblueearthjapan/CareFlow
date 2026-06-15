@@ -205,6 +205,7 @@ const PROPOSE_WARNING_LABEL_JA: Record<string, string> = {
   late_finish: '終了が遅め',
   capacity_tight: '容量に余裕なし',
   sex_restriction_unmet: '性別条件を満たせない',
+  two_staff_not_guaranteed: '2名体制: 2人目のスタッフ枠は別途確保が必要',
 };
 
 export function proposeWarningLabel(code: string): string {

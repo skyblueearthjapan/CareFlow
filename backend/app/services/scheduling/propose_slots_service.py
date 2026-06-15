@@ -375,6 +375,11 @@ def _slot_reasons_and_warnings(
 
     if slot.warning:
         warnings.append(_WARNING_LABEL_JA.get(slot.warning, slot.warning))
+    # 課題1 (2名体制): propose-slots ソルバは「コース=1スタッフ」モデルで 2 人目の
+    # スタッフ確保までは判定しない (auto_allocator も警告のみ). 2 名体制患者には
+    # 「2 人目要確認」の警告を付け、 自動で 2 名確保済とは誤認させない.
+    if candidate.requires_multiple_staff:
+        warnings.append("two_staff_not_guaranteed")
     return reasons, warnings
 
 
