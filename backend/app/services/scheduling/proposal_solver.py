@@ -499,6 +499,33 @@ def find_available_slots_for_candidate(
     return unique
 
 
+def _existing_occupancy_end(v: ExistingVisit, others: list[ExistingVisit]) -> time:
+    """既存 visit の占有終端を同住所 2 名 90 分占有込みで返す.
+
+    課題1 (スロット配置): auto_allocator ``_same_address_pair_occupancy_end`` 相当.
+    同住所・別患者・(同 start_time もしくは連続) の相手が居れば、 占有を
+    ``max(各 end, anchor_start + SAME_ADDRESS_PAIR_MIN_OCCUPANCY=90)`` に底上げする.
+    居なければ ``v.end_time`` をそのまま返す. ギャップ走査 (``_scan_block``) でこの
+    占有終端を「前 visit からの最早開始」起点に使うことで、 同住所ペアの 90 分占有の
+    最中 (例: 安永/菅原 16:00 ペア → 16:00-17:30) に候補を誤って差し込まないようにする.
+    """
+    members = [
+        o
+        for o in others
+        if o is not v
+        and (o.patient_id is None or v.patient_id is None or o.patient_id != v.patient_id)
+        and _is_same_address(v.lat, v.lng, o.lat, o.lng)
+        and (
+            o.start_time == v.start_time or o.end_time == v.start_time or v.end_time == o.start_time
+        )
+    ]
+    if not members:
+        return v.end_time
+    anchor_start = min([v.start_time, *[m.start_time for m in members]], key=_time_to_min)
+    floor_end = _add_minutes(anchor_start, SAME_ADDRESS_PAIR_MIN_OCCUPANCY)
+    return max([v.end_time, floor_end, *[m.end_time for m in members]], key=_time_to_min)
+
+
 def _scan_block(
     sv: list[ExistingVisit],
     candidate: Candidate,
@@ -541,8 +568,11 @@ def _scan_block(
         # 中間 + 末尾.
         for idx, prev in enumerate(in_block):
             nxt = in_block[idx + 1] if idx + 1 < len(in_block) else None
+            # 課題1: prev が同住所ペアなら 90 分占有終端を起点にする (生の end_time だと
+            # ペア占有の最中に候補を差し込んでしまう).
+            prev_occ_end = _existing_occupancy_end(prev, in_block)
             earliest = compute_earliest_start_after(
-                prev.end_time,
+                prev_occ_end,
                 (prev.lat, prev.lng),
                 (candidate.lat, candidate.lng),
                 same_address=_is_same_address(prev.lat, prev.lng, candidate.lat, candidate.lng),
@@ -575,7 +605,8 @@ def _scan_block(
                 travel_buffer = _travel_buffer_between(
                     prev.lat, prev.lng, candidate.lat, candidate.lng, config=config
                 )
-                earliest_raw = _add_minutes(prev.end_time, travel_buffer)
+                # 課題1: 固定時刻でも前が同住所ペアなら 90 分占有終端を起点にする.
+                earliest_raw = _add_minutes(_existing_occupancy_end(prev, in_block), travel_buffer)
                 shortage = _time_to_min(earliest_raw) - _time_to_min(fixed)
                 if shortage > 0:
                     if shortage >= SHORTAGE_THRESHOLD_MIN:
