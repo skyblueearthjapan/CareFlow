@@ -127,6 +127,11 @@ class ProposeMiniScheduleEntry(BaseModel):
     ins: str | None = Field(default=None, description="保険区分等の補助表示 (現状 None)")
     is_here: bool = Field(default=False, description="この行が提案枠 (ここに入れる) か")
     is_pair: bool = Field(default=False, description="同住所ペアとして入る行か")
+    # ③ 表示統一: 通常リストと同じ色分け用 (性別制限・2名体制).
+    sex_restriction: str | None = Field(
+        default=None, description="'female_only' | 'male_only' | None"
+    )
+    is_multi_staff: bool = Field(default=False, description="2名体制 (requires_multiple_staff) か")
 
 
 class ProposeSlotItem(BaseModel):

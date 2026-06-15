@@ -1725,6 +1725,8 @@ def _proposed_to_item(p: ProposedSlot) -> ProposeSlotItem:
                 ins=e["ins"],  # type: ignore[arg-type]
                 is_here=bool(e["is_here"]),
                 is_pair=bool(e["is_pair"]),
+                sex_restriction=e.get("sex_restriction"),  # type: ignore[arg-type]
+                is_multi_staff=bool(e.get("is_multi_staff", False)),
             )
             for e in p.mini_schedule
         ],
@@ -1800,6 +1802,7 @@ async def propose_slots_endpoint(
         preferred_weekdays=preferred_weekday_ints,
         requires_multiple_staff=payload.requires_multiple_staff,
         existing_patient_id=payload.existing_patient_id,
+        sex_restriction=payload.sex_restriction,
     )
 
     # Phase G-88 Step3: full-optimize と同一の事業所別設定をロードして注入 (read-only).

@@ -29,7 +29,7 @@ import { useCourses, type CourseV2Read } from '@/lib/queries/courses';
 import { useOffices } from '@/lib/queries/offices';
 import { usePatients } from '@/lib/queries/patients';
 import { useVisits } from '@/lib/queries/visits';
-import type { PatientRead } from '@/lib/schemas/patient';
+import { coerceWeeklyPattern, type PatientRead } from '@/lib/schemas/patient';
 import type { DiffAddProposal, V2VisitPlan } from '@/lib/schemas/v2/autoScheduleV2';
 
 import {
@@ -217,8 +217,11 @@ function SingleWeekdayTimeline({
     const code = primary?.course_code ?? '?';
 
     // 既存 visit → VisitListItem.
+    // ③ 表示統一: 通常リスト (WeekdayScheduleCard) と同じ色分け (性別制限・時間条件・
+    // 同住所) を出すため、 患者属性 (sex_restriction / weekly_pattern) を VisitListItem に流す.
     const existingItems: VisitListItem[] = existingCourseVisits.map((v) => {
       const p = patientById.get(v.patient_id);
+      const wp = coerceWeeklyPattern(p?.weekly_pattern);
       return {
         key: `existing-${v.id}`,
         start_time: v.start_time,
@@ -226,19 +229,29 @@ function SingleWeekdayTimeline({
         address: p?.address ?? null,
         same_address_group_id: buildSameAddressKey(p?.lat ?? null, p?.lng ?? null),
         distance_to_next_km: null,
+        sex_restriction: (p?.sex_restriction as 'female_only' | 'male_only' | null) ?? null,
+        time_type: wp.time_type,
+        preferred_start: wp.preferred_start,
+        preferred_end: wp.preferred_end,
       };
     });
 
     // proposed visit → VisitListItem (新規バッジ + 黄色強調用にユニーク key prefix).
     const proposedPatient = patientById.get(proposal.patient_id);
+    const proposedWp = coerceWeeklyPattern(proposedPatient?.weekly_pattern);
     const proposedItems: VisitListItem[] = proposedVisits.map((pv, i) => ({
       key: `proposed-${proposal.proposal_id}-${i}`,
       start_time: pv.start_time,
       patient_name: `${proposal.patient_name} (新規)`,
       address: proposedPatient?.address ?? null,
-      // 強制的に同住所グループ扱いさせない (= 既存 group との混線を避ける).
+      // 強制的に同住所グループ扱いさせない (= 既存 group との混線を避ける; 黄色強調は別CSS).
       same_address_group_id: null,
       distance_to_next_km: null,
+      sex_restriction:
+        (proposedPatient?.sex_restriction as 'female_only' | 'male_only' | null) ?? null,
+      time_type: proposedWp.time_type,
+      preferred_start: proposedWp.preferred_start,
+      preferred_end: proposedWp.preferred_end,
     }));
 
     // 結合 → start_time 昇順ソート.

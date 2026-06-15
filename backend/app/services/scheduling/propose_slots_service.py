@@ -116,6 +116,8 @@ class CandidateInput:
     preferred_weekdays: frozenset[int]
     requires_multiple_staff: bool
     existing_patient_id: UUID | None
+    # ③ 表示統一: 提案行 (is_here) の色分け用. 候補患者自身の性別制限.
+    sex_restriction: str | None = None
 
 
 @dataclass
@@ -245,6 +247,10 @@ async def load_week_course_buckets(
                 am_pm=am_pm,  # type: ignore[arg-type]
                 source_kind="fixed",
                 course_code=code,
+                # ③ 表示統一: ミニスケジュールで通常リストと同じ色分け
+                # (性別制限・2名体制) を出すため患者属性を流す.
+                sex_restriction=patient.sex_restriction,
+                requires_multiple_staff=bool(patient.requires_multiple_staff),
             )
         )
 
@@ -294,8 +300,14 @@ def _build_mini_schedule(
     *,
     candidate_name: str,
     pair_partner: str | None,
+    candidate_sex_restriction: str | None = None,
+    candidate_requires_multiple_staff: bool = False,
 ) -> list[dict[str, object]]:
-    """コース当日の既存訪問 + 提案枠を時刻順に並べたミニスケジュール."""
+    """コース当日の既存訪問 + 提案枠を時刻順に並べたミニスケジュール.
+
+    ③ 表示統一: 各行に ``sex_restriction`` / ``is_multi_staff`` を載せ、 FE が通常リストと
+    同じ色分け (性別制限・2名体制) を出せるようにする (提案行 is_here は候補患者の属性).
+    """
     entries: list[dict[str, object]] = []
     for v in bucket.visits:
         entries.append(
@@ -305,6 +317,8 @@ def _build_mini_schedule(
                 "ins": None,
                 "is_here": False,
                 "is_pair": bool(pair_partner is not None and v.patient_name == pair_partner),
+                "sex_restriction": v.sex_restriction,
+                "is_multi_staff": bool(v.requires_multiple_staff),
                 "_sort": _time_to_min(v.start_time),
             }
         )
@@ -315,6 +329,8 @@ def _build_mini_schedule(
             "ins": None,
             "is_here": True,
             "is_pair": slot.same_address_pair,
+            "sex_restriction": candidate_sex_restriction,
+            "is_multi_staff": bool(candidate_requires_multiple_staff),
             "_sort": _time_to_min(slot.start),
         }
     )
@@ -523,6 +539,8 @@ def compute_all_proposed_slots(
                 slot,
                 candidate_name=candidate_name,
                 pair_partner=pair_partner,
+                candidate_sex_restriction=candidate.sex_restriction,
+                candidate_requires_multiple_staff=candidate.requires_multiple_staff,
             )
             results.append(
                 ProposedSlot(

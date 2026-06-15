@@ -67,10 +67,45 @@ function slotDurationMin(s: ProposeSlotItem): number | null {
 const slotKey = (s: ProposeSlotItem): string =>
   `${s.office_id}-${s.weekday}-${s.course_code}-${s.start_time}`;
 
+/** 性別制限の名前色 (通常リスト WeekdayScheduleCard と同じ #dc2626 / #2563eb). */
+function sexNameColor(sex: string | null | undefined): string | undefined {
+  if (sex === 'female_only') return '#dc2626';
+  if (sex === 'male_only') return '#2563eb';
+  return undefined;
+}
+
+/** 性別制限・2名体制・同住所のマーカー群 (通常リストと同じ視覚言語). */
+function RowMarkers({ row }: { row: ProposeMiniScheduleEntry }) {
+  return (
+    <>
+      {row.is_pair ? (
+        <span className="text-[10px] text-yellow-600" title="同住所ペア">
+          📍
+        </span>
+      ) : null}
+      {row.sex_restriction === 'female_only' ? (
+        <span className="text-[10px]" style={{ color: '#dc2626' }}>
+          👩女性のみ
+        </span>
+      ) : row.sex_restriction === 'male_only' ? (
+        <span className="text-[10px]" style={{ color: '#2563eb' }}>
+          👨男性のみ
+        </span>
+      ) : null}
+      {row.is_multi_staff ? (
+        <Badge variant="info" className="text-[9px]">
+          複数
+        </Badge>
+      ) : null}
+    </>
+  );
+}
+
 /**
  * ミニスケジュール 1 行 (= そのコース当日の既存訪問 or 提案枠).
  * is_here の行は「ここに入れますか」と強調し、 コース全体の中での挿入位置を見せる
  * (ProposeNewModal の MiniRow と同じ視覚言語のコンパクト版).
+ * 通常リストと同じ色分け (性別制限の名前色・複数バッジ・同住所📍) を付ける.
  */
 function MiniRow({ row }: { row: ProposeMiniScheduleEntry }) {
   if (row.is_here) {
@@ -79,13 +114,14 @@ function MiniRow({ row }: { row: ProposeMiniScheduleEntry }) {
         <span className="tnum w-11 shrink-0 text-[11px] font-medium text-brand-primary">
           {trimSeconds(row.time)}
         </span>
-        <div className="flex flex-1 items-center gap-1.5 rounded border border-dashed border-brand-primary bg-brand-primary/5 px-2 py-1">
+        <div className="flex flex-1 flex-wrap items-center gap-1.5 rounded border border-dashed border-brand-primary bg-brand-primary/5 px-2 py-1">
           <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-brand-primary text-white">
             <Plus className="h-2.5 w-2.5" aria-hidden />
           </span>
           <span className="text-[11px] font-semibold text-brand-primary">
             {row.is_pair ? 'ここに一緒に入れますか' : 'ここに入れますか'}
           </span>
+          <RowMarkers row={row} />
         </div>
       </div>
     );
@@ -95,8 +131,17 @@ function MiniRow({ row }: { row: ProposeMiniScheduleEntry }) {
       <span className="tnum w-11 shrink-0 text-[11px] text-text-muted">
         {trimSeconds(row.time)}
       </span>
-      <div className="flex-1 rounded border-l-2 border-brand-primary/50 bg-bg-muted/50 px-2 py-1 text-[11px] text-text-primary">
-        {row.name}
+      <div className="flex flex-1 flex-wrap items-center gap-1.5 rounded border-l-2 border-brand-primary/50 bg-bg-muted/50 px-2 py-1 text-[11px]">
+        <span
+          className={sexNameColor(row.sex_restriction) ? undefined : 'text-text-primary'}
+          style={{
+            color: sexNameColor(row.sex_restriction),
+            fontWeight: row.sex_restriction ? 600 : undefined,
+          }}
+        >
+          {row.name}
+        </span>
+        <RowMarkers row={row} />
       </div>
     </div>
   );

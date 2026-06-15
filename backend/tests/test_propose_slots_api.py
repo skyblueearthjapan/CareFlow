@@ -75,7 +75,15 @@ async def _seed_office_staff(
 
 
 async def _seed_patient(
-    db, *, office: Office, code: str, lat: float, lng: float, name: str | None = None
+    db,
+    *,
+    office: Office,
+    code: str,
+    lat: float,
+    lng: float,
+    name: str | None = None,
+    sex_restriction: str | None = None,
+    requires_multiple_staff: bool = False,
 ) -> Patient:
     p = Patient(
         code=code,
@@ -84,6 +92,8 @@ async def _seed_patient(
         lat=lat,
         lng=lng,
         primary_office_id=office.id,
+        sex_restriction=sex_restriction,
+        requires_multiple_staff=requires_multiple_staff,
     )
     db.add(p)
     await db.flush()
@@ -157,8 +167,15 @@ async def test_propose_returns_feasible_slots_ranked(client, db) -> None:
     admin = await _make_user(db, email="ps-admin1@example.com", role="admin")
     office, staff = await _seed_office_staff(db)
     course = await _seed_course(db, office=office, staff=staff)
-    # 既存訪問 1 件 (09:30-10:00, NEAR).
-    pn = await _seed_patient(db, office=office, code="EX1", lat=NEAR[0], lng=NEAR[1])
+    # 既存訪問 1 件 (09:30-10:00, NEAR). ③ 表示統一の色分け検証用に性別制限を付与.
+    pn = await _seed_patient(
+        db,
+        office=office,
+        code="EX1",
+        lat=NEAR[0],
+        lng=NEAR[1],
+        sex_restriction="female_only",
+    )
     await _seed_visit(db, patient=pn, course=course, start=time(9, 30), end=time(10, 0))
     await db.commit()
 
@@ -185,6 +202,13 @@ async def test_propose_returns_feasible_slots_ranked(client, db) -> None:
     top = body["slots"][0]
     assert any(e["is_here"] for e in top["mini_schedule"])
     assert any(e["name"] == "P-EX1" for e in top["mini_schedule"])
+    # ③ 表示統一: mini_schedule の各行に色分け用フィールドが含まれ、 既存患者 P-EX1 の
+    # 性別制限 (female_only) が伝播する (通常リストと同じ色分けを FE が出せる).
+    for e in top["mini_schedule"]:
+        assert "sex_restriction" in e
+        assert "is_multi_staff" in e
+    ex1_row = next(e for e in top["mini_schedule"] if e["name"] == "P-EX1")
+    assert ex1_row["sex_restriction"] == "female_only"
 
 
 @pytest.mark.asyncio

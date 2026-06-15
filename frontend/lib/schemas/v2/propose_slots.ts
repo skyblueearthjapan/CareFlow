@@ -59,6 +59,9 @@ export const proposeMiniScheduleEntrySchema = z.object({
   ins: z.string().nullish(),
   is_here: z.boolean().default(false),
   is_pair: z.boolean().default(false),
+  // 表示統一: 通常リストと同じ色分け用 (性別制限・2名体制). 旧BEは未送出 → default。
+  sex_restriction: z.string().nullish(),
+  is_multi_staff: z.boolean().default(false),
 });
 export type ProposeMiniScheduleEntry = z.infer<typeof proposeMiniScheduleEntrySchema>;
 

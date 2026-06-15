@@ -182,8 +182,24 @@ describe('PoolCandidateList (③ 単体MVP)', () => {
       slots: [
         makeSlot({
           mini_schedule: [
-            { time: '13:00', name: '既存A', ins: null, is_here: false, is_pair: false },
-            { time: '14:00', name: '(提案)', ins: null, is_here: true, is_pair: false },
+            {
+              time: '13:00',
+              name: '既存A',
+              ins: null,
+              is_here: false,
+              is_pair: false,
+              sex_restriction: 'female_only',
+              is_multi_staff: false,
+            },
+            {
+              time: '14:00',
+              name: '(提案)',
+              ins: null,
+              is_here: true,
+              is_pair: false,
+              sex_restriction: null,
+              is_multi_staff: true,
+            },
           ],
         }),
       ],
@@ -198,6 +214,9 @@ describe('PoolCandidateList (③ 単体MVP)', () => {
     // コース当日の既存訪問 + 「ここに入れますか」挿入位置が見える.
     expect(screen.getByText('既存A')).toBeInTheDocument();
     expect(screen.getByText('ここに入れますか')).toBeInTheDocument();
+    // 通常リストと同じ色分け: 性別制限・2名体制マーカーが出る.
+    expect(screen.getByText('👩女性のみ')).toBeInTheDocument();
+    expect(screen.getByText('複数')).toBeInTheDocument();
   });
 
   it('採用 → 確認 → fixed-visits マージ確定が採用枠を含む body で呼ばれる', async () => {
