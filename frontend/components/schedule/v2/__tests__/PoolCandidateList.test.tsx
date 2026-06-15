@@ -27,6 +27,7 @@ vi.mock('sonner', () => ({ toast: mockToast }));
 vi.mock('lucide-react', () => ({
   CheckCircle2: () => <span />,
   Loader2: () => <span data-testid="loader" />,
+  Plus: () => <span />,
   Sparkles: () => <span />,
   X: () => <span />,
 }));
@@ -176,13 +177,27 @@ describe('PoolCandidateList (③ 単体MVP)', () => {
     expect(req.preferred_start).toBe('16:00');
   });
 
-  it('候補スロットがランキング表示される', () => {
-    mocks.proposeData = { slots: [makeSlot()], message: null };
+  it('候補スロットがランキング表示される (コース当日スケジュール + 挿入位置を含む)', () => {
+    mocks.proposeData = {
+      slots: [
+        makeSlot({
+          mini_schedule: [
+            { time: '13:00', name: '既存A', ins: null, is_here: false, is_pair: false },
+            { time: '14:00', name: '(提案)', ins: null, is_here: true, is_pair: false },
+          ],
+        }),
+      ],
+      message: null,
+    };
     render(<PoolCandidateList {...COMMON} />);
     fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
     expect(screen.getByTestId('pool-candidate-slots')).toBeInTheDocument();
-    expect(screen.getByText(/稲C/)).toBeInTheDocument();
+    // 稲C は候補ヘッダ + ミニスケジュール見出しの 2 箇所に出る.
+    expect(screen.getAllByText(/稲C/).length).toBeGreaterThan(0);
     expect(screen.getByText(/担当: 山田/)).toBeInTheDocument();
+    // コース当日の既存訪問 + 「ここに入れますか」挿入位置が見える.
+    expect(screen.getByText('既存A')).toBeInTheDocument();
+    expect(screen.getByText('ここに入れますか')).toBeInTheDocument();
   });
 
   it('採用 → 確認 → fixed-visits マージ確定が採用枠を含む body で呼ばれる', async () => {

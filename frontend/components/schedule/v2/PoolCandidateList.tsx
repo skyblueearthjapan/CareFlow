@@ -18,7 +18,7 @@
 import * as React from 'react';
 import { useQueries } from '@tanstack/react-query';
 import { useSession } from 'next-auth/react';
-import { CheckCircle2, Loader2, Sparkles, X } from 'lucide-react';
+import { CheckCircle2, Loader2, Plus, Sparkles, X } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -36,7 +36,12 @@ import type {
   PatientFixedVisitV2Read,
   PatientFixedVisitsBulkPut,
 } from '@/lib/schemas/v2/patient_fixed_visit';
-import type { ProposeSlotItem, ProposeTimeType, WeekdayCode } from '@/lib/schemas/v2/propose_slots';
+import type {
+  ProposeMiniScheduleEntry,
+  ProposeSlotItem,
+  ProposeTimeType,
+  WeekdayCode,
+} from '@/lib/schemas/v2/propose_slots';
 
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'] as const;
 
@@ -61,6 +66,41 @@ function slotDurationMin(s: ProposeSlotItem): number | null {
 
 const slotKey = (s: ProposeSlotItem): string =>
   `${s.office_id}-${s.weekday}-${s.course_code}-${s.start_time}`;
+
+/**
+ * ミニスケジュール 1 行 (= そのコース当日の既存訪問 or 提案枠).
+ * is_here の行は「ここに入れますか」と強調し、 コース全体の中での挿入位置を見せる
+ * (ProposeNewModal の MiniRow と同じ視覚言語のコンパクト版).
+ */
+function MiniRow({ row }: { row: ProposeMiniScheduleEntry }) {
+  if (row.is_here) {
+    return (
+      <div className="flex items-center gap-2">
+        <span className="tnum w-11 shrink-0 text-[11px] font-medium text-brand-primary">
+          {trimSeconds(row.time)}
+        </span>
+        <div className="flex flex-1 items-center gap-1.5 rounded border border-dashed border-brand-primary bg-brand-primary/5 px-2 py-1">
+          <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-brand-primary text-white">
+            <Plus className="h-2.5 w-2.5" aria-hidden />
+          </span>
+          <span className="text-[11px] font-semibold text-brand-primary">
+            {row.is_pair ? 'ここに一緒に入れますか' : 'ここに入れますか'}
+          </span>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-center gap-2">
+      <span className="tnum w-11 shrink-0 text-[11px] text-text-muted">
+        {trimSeconds(row.time)}
+      </span>
+      <div className="flex-1 rounded border-l-2 border-brand-primary/50 bg-bg-muted/50 px-2 py-1 text-[11px] text-text-primary">
+        {row.name}
+      </div>
+    </div>
+  );
+}
 
 export interface PoolCandidateListProps {
   patient: PatientRead;
@@ -349,6 +389,26 @@ export function PoolCandidateList({
                       {proposeWarningLabel(w)}
                     </Badge>
                   ))}
+                </div>
+              ) : null}
+
+              {/* このコース当日の全体スケジュール + 「ここに入れますか」挿入位置. */}
+              {s.mini_schedule.length > 0 ? (
+                <div
+                  className="mt-1.5 rounded border border-border-default bg-bg-muted/20 p-2"
+                  data-testid={`pool-candidate-mini-${slotKey(s)}`}
+                >
+                  <div className="mb-1 text-[10px] font-semibold text-text-muted">
+                    {s.course_label}
+                    {s.staff_name ? `（${s.staff_name}）` : ''} の{' '}
+                    {WEEKDAY_LABELS[s.weekday] ?? '?'}曜 ・ 既存{' '}
+                    {s.mini_schedule.filter((m) => !m.is_here).length} 件 + 提案枠
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    {s.mini_schedule.map((row, ri) => (
+                      <MiniRow key={ri} row={row} />
+                    ))}
+                  </div>
                 </div>
               ) : null}
 
