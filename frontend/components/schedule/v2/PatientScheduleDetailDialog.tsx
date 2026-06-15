@@ -622,6 +622,7 @@ export function PatientScheduleDetailDialog({
                     data-testid="patient-schedule-pool-no-proposal"
                   >
                     この患者の固定訪問・希望訪問スケジュールと現状のスケジュールを照合しましたが、
+                    <br />
                     条件に当てはまる投入枠は見つかりませんでした。
                   </div>
                 )}
