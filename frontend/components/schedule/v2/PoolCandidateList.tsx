@@ -31,11 +31,7 @@ import { useConfirmFixedVisits } from '@/lib/queries/propose_confirm';
 import { useFixedVisits } from '@/lib/queries/patient_fixed_visits';
 import { coerceWeeklyPattern, type PatientRead } from '@/lib/schemas/patient';
 import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
-import type {
-  PatientFixedVisitV2Base,
-  PatientFixedVisitV2Read,
-  PatientFixedVisitsBulkPut,
-} from '@/lib/schemas/v2/patient_fixed_visit';
+import type { PatientFixedVisitsBulkPut } from '@/lib/schemas/v2/patient_fixed_visit';
 import type {
   ProposeMiniScheduleEntry,
   ProposeSlotItem,
@@ -43,29 +39,19 @@ import type {
   WeekdayCode,
 } from '@/lib/schemas/v2/propose_slots';
 
+import {
+  buildCourseTemplateIdResolver,
+  mergeAdoptedIntoNormalFixedVisits,
+  proposedSlotToFixedVisitItem,
+  slotKey,
+} from './_proposeSlotUtils';
+
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'] as const;
 
 function trimSeconds(t: string | null | undefined): string {
   if (!t) return '';
   return t.length >= 5 ? t.slice(0, 5) : t;
 }
-
-/** 枠の start_time〜end_time から所要分を算出. パース不能なら null. */
-function slotDurationMin(s: ProposeSlotItem): number | null {
-  const parse = (hm: string | null | undefined): number | null => {
-    if (!hm) return null;
-    const m = /^(\d{1,2}):(\d{2})/.exec(hm);
-    if (!m) return null;
-    return Number(m[1]) * 60 + Number(m[2]);
-  };
-  const a = parse(s.start_time);
-  const b = parse(s.end_time);
-  if (a === null || b === null || b <= a) return null;
-  return b - a;
-}
-
-const slotKey = (s: ProposeSlotItem): string =>
-  `${s.office_id}-${s.weekday}-${s.course_code}-${s.start_time}`;
 
 /** 性別制限の名前色 (通常リスト WeekdayScheduleCard と同じ #dc2626 / #2563eb). */
 function sexNameColor(sex: string | null | undefined): string | undefined {
@@ -203,18 +189,11 @@ export function PoolCandidateList({
     })),
   });
   const templatesDepKey = templatesQueries.map((q) => `${q.dataUpdatedAt}:${q.status}`).join(',');
-  const resolveCourseTemplateId = React.useMemo(() => {
-    const m = new Map<string, string>();
-    for (const q of templatesQueries) {
-      for (const t of q.data ?? []) {
-        if (t.deleted_at) continue;
-        m.set(`${t.office_id}:${(t.label ?? '').trim().toUpperCase()}`, t.id);
-      }
-    }
-    return (oid: string, code: string): string | null =>
-      m.get(`${oid}:${code.trim().toUpperCase()}`) ?? null;
+  const resolveCourseTemplateId = React.useMemo(
+    () => buildCourseTemplateIdResolver(templatesQueries.map((q) => q.data)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [templatesDepKey]);
+    [templatesDepKey],
+  );
 
   const handleRun = React.useCallback(() => {
     setRequested(true);
@@ -248,46 +227,23 @@ export function PoolCandidateList({
     );
   }, [patient, isoYear, isoWeek, officeId, proposeMut]);
 
-  // 採用枠 1 件 → bulk PUT item (mode='normal').
-  const adoptedToItem = React.useCallback(
-    (s: ProposeSlotItem): PatientFixedVisitV2Base => {
+  // 選択候補 1 件を既存 normal 枠にマージ (採用曜日の slot_index=0 を置換, 他は保持).
+  // 採用枠の item 化・マージは共有 _proposeSlotUtils (ProposeNewModal と共通) を使う.
+  const buildMergedPut = React.useCallback(
+    (existing: Parameters<typeof mergeAdoptedIntoNormalFixedVisits>[0], s: ProposeSlotItem) => {
       const wp = coerceWeeklyPattern(patient.weekly_pattern);
-      const duration = slotDurationMin(s) ?? wp.service_minutes;
-      const tplId = resolveCourseTemplateId(s.office_id, s.course_code);
+      const adoptedItem = proposedSlotToFixedVisitItem(
+        s,
+        resolveCourseTemplateId,
+        wp.service_minutes,
+      );
       return {
-        weekday: s.weekday,
-        start_time: s.start_time,
-        duration_min: duration,
-        slot_index: 0,
-        ...(tplId ? { course_template_id: tplId } : {}),
-      };
+        mode: 'normal',
+        items: mergeAdoptedIntoNormalFixedVisits(existing, [adoptedItem]),
+      } satisfies PatientFixedVisitsBulkPut;
     },
     [patient.weekly_pattern, resolveCourseTemplateId],
   );
-
-  const existingToItem = (v: PatientFixedVisitV2Read): PatientFixedVisitV2Base => ({
-    weekday: v.weekday,
-    start_time: v.start_time,
-    duration_min: v.duration_min,
-    slot_index: v.slot_index ?? 0,
-    ...(v.course_template_id ? { course_template_id: v.course_template_id } : {}),
-    ...(v.sub_office_id ? { sub_office_id: v.sub_office_id } : {}),
-    ...(typeof v.is_pinned === 'boolean' ? { is_pinned: v.is_pinned } : {}),
-  });
-
-  // 選択候補 1 件を既存 normal 枠にマージ (採用曜日の slot_index=0 を置換, 他は保持).
-  const buildMergedPut = (
-    existing: PatientFixedVisitV2Read[],
-    s: ProposeSlotItem,
-  ): PatientFixedVisitsBulkPut => {
-    const preserved = existing
-      .filter((v) => v.weekday !== s.weekday || (v.slot_index ?? 0) !== 0)
-      .map(existingToItem);
-    const items = [...preserved, adoptedToItem(s)].sort(
-      (a, b) => a.weekday - b.weekday || a.start_time.localeCompare(b.start_time),
-    );
-    return { mode: 'normal', items };
-  };
 
   const handleConfirmAdopt = () => {
     const slot = pending;

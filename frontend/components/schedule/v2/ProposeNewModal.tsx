@@ -107,6 +107,14 @@ import type {
   PatientFixedVisitV2Read,
 } from '@/lib/schemas/v2/patient_fixed_visit';
 
+import {
+  buildCourseTemplateIdResolver,
+  mergeAdoptedIntoNormalFixedVisits,
+  proposedSlotToFixedVisitItem,
+  slotKey,
+  sortFixedVisitItems,
+} from './_proposeSlotUtils';
+
 // ─────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────
@@ -134,22 +142,8 @@ const TIME_OPTIONS: string[] = (() => {
 
 const FREQ_OPTIONS = [1, 2, 3, 4, 5, 6, 7] as const;
 
-const slotKey = (s: ProposeSlotItem) =>
-  `${s.office_id}-${s.weekday}-${s.course_code}-${s.start_time}`;
-
-/** 枠の start_time〜end_time から所要分を算出。パース不能なら null。 */
-function slotDurationMin(s: ProposeSlotItem): number | null {
-  const parse = (hm: string | null | undefined): number | null => {
-    if (!hm) return null;
-    const m = /^(\d{1,2}):(\d{2})/.exec(hm);
-    if (!m) return null;
-    return Number(m[1]) * 60 + Number(m[2]);
-  };
-  const a = parse(s.start_time);
-  const b = parse(s.end_time);
-  if (a === null || b === null || b <= a) return null;
-  return b - a;
-}
+// slotKey / slotDurationMin / 採用枠の item 化・マージは共有 _proposeSlotUtils
+// (PoolCandidateList と共通) を使う (二重メンテ防止).
 
 // ─────────────────────────────────────────────────────────────────────────
 // Props
@@ -356,19 +350,11 @@ export function ProposeNewModal({
     })),
   });
   const templatesDepKey = templatesQueries.map((q) => `${q.dataUpdatedAt}:${q.status}`).join(',');
-  const courseTemplateId = React.useMemo(() => {
-    // (office_id, label[大文字]) → course_template_id。
-    const m = new Map<string, string>();
-    for (const q of templatesQueries) {
-      for (const t of q.data ?? []) {
-        if (t.deleted_at) continue;
-        m.set(`${t.office_id}:${(t.label ?? '').trim().toUpperCase()}`, t.id);
-      }
-    }
-    return (officeId2: string, code: string): string | null =>
-      m.get(`${officeId2}:${code.trim().toUpperCase()}`) ?? null;
+  const courseTemplateId = React.useMemo(
+    () => buildCourseTemplateIdResolver(templatesQueries.map((q) => q.data)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [templatesDepKey]);
+    [templatesDepKey],
+  );
 
   // ─── 患者プリフィル ──────────────────────────────────────────────
   const linkPatient = (p: PatientRead) => {
@@ -471,38 +457,18 @@ export function ProposeNewModal({
   const requiredDays = coverage?.required_days ?? frequencyPerWeek;
   const adoptedCount = adopted.size;
 
-  // 採用枠 1 件 → bulk PUT item (mode='normal')。
-  const adoptedToItem = (s: ProposeSlotItem): PatientFixedVisitV2Base => {
-    const duration = slotDurationMin(s) ?? serviceMinutes;
-    const tplId = courseTemplateId(s.office_id, s.course_code);
-    return {
-      weekday: s.weekday,
-      start_time: s.start_time,
-      duration_min: duration,
-      slot_index: 0,
-      ...(tplId ? { course_template_id: tplId } : {}),
-    };
-  };
-
-  // 既存 normal 固定枠 1 件 → bulk PUT item (保持用)。slot_index / course_template_id /
-  // sub_office_id / is_pinned など既存値をそのまま引き継ぐ。
-  const existingToItem = (v: PatientFixedVisitV2Read): PatientFixedVisitV2Base => ({
-    weekday: v.weekday,
-    start_time: v.start_time,
-    duration_min: v.duration_min,
-    slot_index: v.slot_index ?? 0,
-    ...(v.course_template_id ? { course_template_id: v.course_template_id } : {}),
-    ...(v.sub_office_id ? { sub_office_id: v.sub_office_id } : {}),
-    ...(typeof v.is_pinned === 'boolean' ? { is_pinned: v.is_pinned } : {}),
-  });
+  // 採用枠 (Map) → bulk PUT item 群. 採用枠の item 化・マージは共有 _proposeSlotUtils
+  // (PoolCandidateList と共通) を使う (二重メンテ防止).
+  const adoptedItems = (): PatientFixedVisitV2Base[] =>
+    Array.from(adopted.values()).map((s) =>
+      proposedSlotToFixedVisitItem(s, courseTemplateId, serviceMinutes),
+    );
 
   // 新規患者用: 採用枠だけで完全 normal セットを組む (既存枠なし)。
-  const buildBulkPutNew = (): PatientFixedVisitsBulkPut => {
-    const items = Array.from(adopted.values())
-      .map(adoptedToItem)
-      .sort((a, b) => a.weekday - b.weekday || a.start_time.localeCompare(b.start_time));
-    return { mode: 'normal', items };
-  };
+  const buildBulkPutNew = (): PatientFixedVisitsBulkPut => ({
+    mode: 'normal',
+    items: sortFixedVisitItems(adoptedItems()),
+  });
 
   // 既存/プール患者用: 既存 normal 枠とマージした完全セットを組む。
   //   - 採用した曜日: 採用枠で slot_index=0 (主担当) を置換/追加。
@@ -510,17 +476,10 @@ export function ProposeNewModal({
   //   - 採用しなかった曜日: 既存枠をそのまま保持 (slot_index 等も維持)。
   // これにより backend の全削除→INSERT で 2 名体制の相方枠や他曜日の固定枠が
   // 消えるのを防ぐ。
-  const buildBulkPutMerged = (existing: PatientFixedVisitV2Read[]): PatientFixedVisitsBulkPut => {
-    const adoptedWeekdays = new Set(Array.from(adopted.values()).map((s) => s.weekday));
-    const preserved = existing
-      .filter((v) => !adoptedWeekdays.has(v.weekday) || (v.slot_index ?? 0) !== 0)
-      .map(existingToItem);
-    const adoptedItems = Array.from(adopted.values()).map(adoptedToItem);
-    const items = [...preserved, ...adoptedItems].sort(
-      (a, b) => a.weekday - b.weekday || a.start_time.localeCompare(b.start_time),
-    );
-    return { mode: 'normal', items };
-  };
+  const buildBulkPutMerged = (existing: PatientFixedVisitV2Read[]): PatientFixedVisitsBulkPut => ({
+    mode: 'normal',
+    items: mergeAdoptedIntoNormalFixedVisits(existing, adoptedItems()),
+  });
 
   // ─── 確定: 既存 / プール (登録済) ───────────────────────────────────
   const confirmExisting = () => {
