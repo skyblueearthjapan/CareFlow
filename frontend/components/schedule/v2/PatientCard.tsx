@@ -16,6 +16,7 @@
  *   - 希望時間 (formatPreferredTimeLabel + service_minutes)
  *   - バッジ: 女性のみ / 男性のみ / 複数 / 新規 (before_start)
  */
+import * as React from 'react';
 import { useDraggable } from '@dnd-kit/core';
 import { CSS } from '@dnd-kit/utilities';
 import { Plus, User, Users, X } from 'lucide-react';
@@ -108,6 +109,14 @@ export interface PatientCardProps {
    * true のとき caption / +1 ボタンを非表示にして幅を節約する。
    */
   compact?: boolean;
+  /**
+   * カード本体クリック (= ドラッグではない単純クリック) のハンドラ.
+   * プール側カードで患者スケジュール詳細を開く導線に使う。
+   * dnd-kit の activationConstraint (6px) によりドラッグ中は drag が優先され、
+   * 加えて pointerdown→click の移動量が大きい場合 (= ドラッグ) は発火しない。
+   * 未指定ならクリックは無反応 (従来どおり D&D 専用)。
+   */
+  onCardClick?: () => void;
 }
 
 /**
@@ -125,12 +134,43 @@ export function PatientCard({
   onUnassign,
   disabled = false,
   compact = false,
+  onCardClick,
 }: PatientCardProps) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: draggableId,
     disabled,
     data: { patientId: patient.id, staffCount },
   });
+
+  // クリック / ドラッグ判別:
+  //  (1) pointerdown 位置を記録し、click 時の移動量が PointerSensor の
+  //      activationConstraint (6px) を超えていたらドラッグ扱いで無反応にする。
+  //  (2) TouchSensor は delay ベース (250ms 長押し) のため移動量が小さくても
+  //      ドラッグが成立しうる。drop 後 isDragging は false に戻るので、isDragging を
+  //      ref で記憶し、直後の click を抑制する (タッチ長押しドラッグの誤爆防止)。
+  const pointerDownPos = React.useRef<{ x: number; y: number } | null>(null);
+  const draggedRef = React.useRef(false);
+  React.useEffect(() => {
+    if (isDragging) draggedRef.current = true;
+  }, [isDragging]);
+  const handleClick = React.useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      if (!onCardClick) return;
+      // 直前にドラッグが成立していたら click を無視してフラグを戻す。
+      if (draggedRef.current) {
+        draggedRef.current = false;
+        pointerDownPos.current = null;
+        return;
+      }
+      const start = pointerDownPos.current;
+      pointerDownPos.current = null;
+      if (start && (Math.abs(e.clientX - start.x) > 6 || Math.abs(e.clientY - start.y) > 6)) {
+        return; // ポインタ移動がしきい値超 = ドラッグ
+      }
+      onCardClick();
+    },
+    [onCardClick],
+  );
 
   const style: React.CSSProperties = {
     transform: CSS.Translate.toString(transform),
@@ -181,6 +221,11 @@ export function PatientCard({
       )}
       {...listeners}
       {...attributes}
+      onPointerDownCapture={(e) => {
+        pointerDownPos.current = { x: e.clientX, y: e.clientY };
+      }}
+      onClick={onCardClick ? handleClick : undefined}
+      data-clickable={onCardClick ? 'true' : undefined}
     >
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <div className="flex items-center gap-1">

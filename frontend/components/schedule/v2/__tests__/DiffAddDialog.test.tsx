@@ -119,6 +119,9 @@ vi.mock('../DiffAddProposalTimeline', () => ({
 // ─── Subject under test ─────────────────────────────────────────────────────
 
 import { DiffAddDialog } from '../DiffAddDialog';
+// ドリフト防止: 採用 payload は単体表示 (PatientScheduleDetailDialog) と同じ共有ヘルパーで
+// 決まることを両側で施錠する (詳細は pool-proposal テスト参照).
+import { adoptedVisitPlans } from '../DiffAddProposalCard';
 import type { DiffAddProposal, DiffAddProposalSource } from '@/lib/schemas/v2/autoScheduleV2';
 
 // ─── Fixtures ───────────────────────────────────────────────────────────────
@@ -278,7 +281,8 @@ describe('DiffAddDialog (Phase G-92 FE コースカード)', () => {
     expect(arg.proposal_id).toBe(p.proposal_id);
     expect(arg.patient_id).toBe(p.patient_id);
     expect(arg.confirm).toBe(true);
-    expect(arg.visit_plans).toHaveLength(1);
+    // 採用 payload は共有ヘルパーで決まる = 単体表示と同一 (取り残し検知).
+    expect(arg.visit_plans).toEqual(adoptedVisitPlans(p));
     // 採用後はカードが除去される.
     await waitFor(() =>
       expect(screen.queryByTestId(`diff-add-card-${p.proposal_id}`)).not.toBeInTheDocument(),

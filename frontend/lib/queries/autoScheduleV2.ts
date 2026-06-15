@@ -15,7 +15,13 @@
  *
  * RBAC: admin / manager のみ (BE 側で 403 担保).
  */
-import { useMutation, useQueryClient, type UseMutationResult } from '@tanstack/react-query';
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type UseMutationResult,
+  type UseQueryResult,
+} from '@tanstack/react-query';
 import { useSession } from 'next-auth/react';
 
 import { fetcher } from '@/lib/api/fetcher';
@@ -100,6 +106,56 @@ export function useDiffAddProposalsMutation(): UseMutationResult<
 }
 
 /**
+ * GET (実体は POST) /api/v1/schedule/v2/diff-add — diff-add 提案を **キャッシュ可能** に取得する.
+ *
+ * 用途: 単体表示 (PatientScheduleDetailDialog のプール投入セクション) で、
+ * 患者カードをクリックするたびに同じ拠点・週の提案を再計算しないよう、
+ * TanStack Query のキャッシュに載せて共有する。提案リスト全体を取得し、
+ * 呼出側で対象患者 1 件を ``patient_id`` で抽出する (クライアント側フィルタ).
+ *
+ * ドリフト防止: 一括表示 (DiffAddDialog) と **同一エンドポイント / 同一引数** を叩くため、
+ * 同じ患者は両表示で必ず同一の提案になる。office スコープを揃えること (呼出側責務).
+ *
+ * BE 側は read-only (write なし). queryKey に office_ids をソートして含めることで
+ * 拠点スコープ違いを別キャッシュに分離する。
+ *
+ * 算出は重い (full pipeline) ため staleTime を長めに取り、不要な再 fetch を避ける。
+ */
+export function useDiffAddProposalsQuery(
+  params: { isoYear: number; isoWeek: number; officeId: string | null },
+  options?: { enabled?: boolean },
+): UseQueryResult<DiffAddResponse, Error> {
+  const { data: session } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+  const { isoYear, isoWeek, officeId } = params;
+  const officeIds = officeId ? [officeId] : [];
+
+  return useQuery<DiffAddResponse, Error>({
+    // office_ids は [] / [id] のみだが将来の複数拠点に備えソートして安定化する.
+    queryKey: ['diff-add', isoYear, isoWeek, [...officeIds].sort()],
+    queryFn: async () => {
+      const payload = diffAddRequestSchema.parse({
+        iso_year: isoYear,
+        iso_week: isoWeek,
+        office_ids: officeIds,
+      });
+      const result = await fetcher<unknown>(DIFF_ADD_PATH, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+        accessToken,
+        refreshToken,
+      });
+      return diffAddResponseSchema.parse(result);
+    },
+    enabled: options?.enabled ?? true,
+    // full pipeline 再計算は高コスト. 5 分は同一週・拠点のバッチを再利用する.
+    staleTime: 5 * 60 * 1000,
+    gcTime: 10 * 60 * 1000,
+    refetchOnWindowFocus: false,
+  });
+}
+
+/**
  * POST /api/v1/schedule/v2/full-optimize — 全 active 患者で週単位の再構築提案を生成する.
  *
  * 計算は重い (spinner 必須). BE 側は何も書き込まない.
@@ -159,6 +215,9 @@ export function useApplyIndividualMutation(): UseMutationResult<
       void qc.invalidateQueries({ queryKey: ['patient-fixed-visits'] });
       void qc.invalidateQueries({ queryKey: ['visits'] });
       void qc.invalidateQueries({ queryKey: ['patients'] });
+      // 採用で当該患者の固定枠が変わるため、キャッシュした diff-add 提案も無効化する.
+      // 一括ダイアログ (DiffAddDialog) は mutation ベースで本キーを購読しないため再計算storm は起きない.
+      void qc.invalidateQueries({ queryKey: ['diff-add'] });
     },
   });
 }

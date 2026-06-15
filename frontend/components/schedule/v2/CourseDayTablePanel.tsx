@@ -1485,9 +1485,24 @@ export function CourseDayTablePanel({
 
   // ─── 患者スケジュール詳細ダイアログ (固定枠 vs 今週 + 個別反映) ───
   const [patientDetailId, setPatientDetailId] = useState<string | null>(null);
+  // プール由来クリックか否か. true のとき詳細ダイアログ内に「プール投入の提案」
+  // セクションを表示する (テーブル/週ビュー由来の通常クリックでは出さない =
+  // 配置済み患者で重い diff-add を毎回走らせないため).
+  const [patientDetailPoolMode, setPatientDetailPoolMode] = useState(false);
   // Wave Next 1 H5: useMemo は値メモ化用途. ハンドラは useCallback が正解.
-  const handleOpenPatientDetail = useCallback((pid: string) => setPatientDetailId(pid), []);
-  const handleClosePatientDetail = useCallback(() => setPatientDetailId(null), []);
+  const handleOpenPatientDetail = useCallback((pid: string) => {
+    setPatientDetailPoolMode(false);
+    setPatientDetailId(pid);
+  }, []);
+  // 保留プールの患者カードクリック専用. プール投入提案セクションを有効化して開く.
+  const handleOpenPoolPatientDetail = useCallback((pid: string) => {
+    setPatientDetailPoolMode(true);
+    setPatientDetailId(pid);
+  }, []);
+  const handleClosePatientDetail = useCallback(() => {
+    setPatientDetailId(null);
+    setPatientDetailPoolMode(false);
+  }, []);
 
   // ─── Phase G-21 T4 reviewer C2: 🔒 完全固定 toggle handler ────────────
   // CourseDayTable / CourseWeekOverview / WeekdayScheduleCard から
@@ -2332,6 +2347,8 @@ export function CourseDayTablePanel({
                       shortageInfo,
                     }}
                     disabled={!canEdit}
+                    // 保留プールの患者カードクリックで詳細 + プール投入提案を開く.
+                    onCardClick={() => handleOpenPoolPatientDetail(p.id)}
                   />
                 );
               }}
@@ -2421,6 +2438,11 @@ export function CourseDayTablePanel({
             isoYear={isoYear}
             isoWeek={isoWeek}
             canEdit={canEdit}
+            // プール由来クリックのときだけプール投入提案セクションを表示する.
+            // office スコープは一括ダイアログ (DiffAddDialog) と揃え、同一患者が
+            // 両表示で同一提案になるようにする (ドリフト防止 / 同一 queryKey 共有).
+            enablePoolProposal={patientDetailPoolMode}
+            officeId={officeId}
           />
         ) : null}
       </section>
