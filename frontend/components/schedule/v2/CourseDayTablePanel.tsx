@@ -867,20 +867,29 @@ export function CourseDayTablePanel({
   // ここでは時間 gap のみを course 単位で持つ。
   const freeGapsByCourse = useMemo(() => {
     const m = new Map<string, FreeGap[]>();
-    // course_id → その course の生 visit (start_time/end_time) を集約。
-    const rawByCourse = new Map<string, Array<{ start_time: string; end_time: string }>>();
+    // course_id → その course の生 visit (start_time/end_time + 同住所キー) を集約。
+    // 同住所キーを渡すことで computeFreeGaps が同住所 2 名ペアの 90 分占有を反映する
+    // (安永/菅原 16:00 ペア → 空きは 16:35 でなく占有後 17:30 から)。
+    const rawByCourse = new Map<
+      string,
+      Array<{ start_time: string; end_time: string; same_address_key: string | null }>
+    >();
     for (const v of weekVisits) {
       const cid = v.course_id ?? null;
       if (!cid) continue;
       const arr = rawByCourse.get(cid) ?? [];
-      arr.push({ start_time: v.start_time ?? '', end_time: v.end_time ?? '' });
+      arr.push({
+        start_time: v.start_time ?? '',
+        end_time: v.end_time ?? '',
+        same_address_key: sameAddressKeyByPatientId.get(v.patient_id) ?? null,
+      });
       rawByCourse.set(cid, arr);
     }
     for (const [cid, raw] of rawByCourse.entries()) {
       m.set(cid, computeFreeGaps(raw, businessBlocks));
     }
     return m;
-  }, [weekVisits, businessBlocks]);
+  }, [weekVisits, businessBlocks, sameAddressKeyByPatientId]);
 
   // ─── Phase G-55: (template_id, weekday) → 空き時間帯 のマップ (週ビュー用) ──
   // freeGapsByCourse は course_id 単位。週ビュー (CourseWeekOverview) は

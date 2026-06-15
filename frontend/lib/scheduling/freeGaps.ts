@@ -61,6 +61,14 @@ export const BUSINESS_BLOCKS: ReadonlyArray<readonly [number, number]> = [
 export const MIN_FREE_GAP_MIN = 60;
 
 /**
+ * 同住所 2 名ペアの最低占有 (分)。BE ``SAME_ADDRESS_PAIR_MIN_OCCUPANCY`` と同値の
+ * 表示用複製。 同住所・同時刻の 2 名 (例: 安永/菅原 16:00) は 1 スタッフが連続して
+ * 回るため、 各々の実サービス (例 35 分) ではなく **90 分** 占有とみなす。 これにより
+ * 空き時間帯がペア占有 (16:00-17:30) を踏まず、 正しく占有後 (17:30-) から始まる。
+ */
+export const SAME_ADDRESS_PAIR_MIN_OCCUPANCY = 90;
+
+/**
  * 営業時間設定 (Phase G-88) からフロント表示用の営業枠を組み立てる。
  *
  * 親機の最適化設定 (`/api/v1/scheduling-settings`) の `business_start` /
@@ -111,6 +119,12 @@ export interface FreeGap {
 export interface TimeOccupiedVisit {
   start_time: string | null | undefined;
   end_time: string | null | undefined;
+  /**
+   * 同住所バケットキー (`buildSameAddressKey(lat, lng)` 由来)。指定すると、 同キー・
+   * 同 start_time が 2 件以上 (= 同住所 2 名ペア) のとき占有を 90 分に底上げして空き
+   * 時間帯を算出する。 未指定 (旧呼び出し) は従来どおり生の [start, end) を使う。
+   */
+  same_address_key?: string | null;
 }
 
 /**
@@ -124,13 +138,29 @@ export function computeFreeGaps(
   visits: ReadonlyArray<TimeOccupiedVisit>,
   businessBlocks: ReadonlyArray<readonly [number, number]> = BUSINESS_BLOCKS,
 ): FreeGap[] {
-  const occupied: Array<[number, number]> = [];
-  for (const v of visits) {
-    const s = parseHM(v.start_time);
-    const e = parseHM(v.end_time);
-    if (s === null || e === null || e <= s) continue;
-    occupied.push([s, e]);
-  }
+  // 有効な occupancy を抽出 (同住所キー付き).
+  const parsed = visits
+    .map((v) => ({
+      s: parseHM(v.start_time),
+      e: parseHM(v.end_time),
+      key: v.same_address_key ?? null,
+    }))
+    .filter((v): v is { s: number; e: number; key: string | null } => {
+      return v.s !== null && v.e !== null && v.e > v.s;
+    });
+
+  // 同住所 2 名ペア (同 same_address_key・同 start が 2 件以上) は占有を 90 分に底上げ
+  // (BE SAME_ADDRESS_PAIR_MIN_OCCUPANCY と同規約). 単独同住所は延長しない.
+  const occupied: Array<[number, number]> = parsed.map((v) => {
+    let endEff = v.e;
+    if (v.key) {
+      const mates = parsed.filter((o) => o.key === v.key && o.s === v.s);
+      if (mates.length >= 2) {
+        endEff = Math.max(v.s + SAME_ADDRESS_PAIR_MIN_OCCUPANCY, ...mates.map((m) => m.e));
+      }
+    }
+    return [v.s, endEff];
+  });
   occupied.sort((a, b) => a[0] - b[0]);
 
   const gaps: FreeGap[] = [];

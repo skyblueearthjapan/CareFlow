@@ -83,6 +83,29 @@ describe('computeFreeGaps', () => {
     expect(gaps).toEqual([]);
   });
 
+  it('同住所2名ペア(同キー・同start)は90分占有に底上げ → 空きは占有後(17:30)から', () => {
+    // 安永/菅原 16:00-16:35 同住所ペア → 占有16:00-17:30. PM 残り 13:00-16:00 (180分)。
+    // 17:30-18:00 (30分) は <60 で省略。生の16:35で計算すると誤って16:35〜が出る。
+    const gaps = computeFreeGaps([
+      { start_time: '16:00', end_time: '16:35', same_address_key: 'addr-k1' },
+      { start_time: '16:00', end_time: '16:35', same_address_key: 'addr-k1' },
+    ]);
+    expect(gaps.map((g) => g.label)).toEqual(['09:30〜12:00', '13:00〜16:00']);
+  });
+
+  it('同住所キーが1件のみ(ペアでない)は90分延長せず生の終了を使う', () => {
+    const gaps = computeFreeGaps([
+      { start_time: '16:00', end_time: '16:35', same_address_key: 'addr-k1' },
+    ]);
+    // 占有16:00-16:35のみ → PM 13:00-16:00 + 16:35-18:00 (85分≥60)。
+    expect(gaps.map((g) => g.label)).toEqual(['09:30〜12:00', '13:00〜16:00', '16:35〜18:00']);
+  });
+
+  it('same_address_key 未指定 (旧呼び出し) は従来どおり生の [start,end)', () => {
+    const gaps = computeFreeGaps([v('16:00', '16:35'), v('16:00', '16:35')]);
+    expect(gaps.map((g) => g.label)).toEqual(['09:30〜12:00', '13:00〜16:00', '16:35〜18:00']);
+  });
+
   it('end <= start の不正な占有は無視する', () => {
     const gaps = computeFreeGaps([v('10:00', '10:00'), v('12:00', '09:00')]);
     // 不正占有を無視 → 空コース扱いで AM / PM 2 帯。
