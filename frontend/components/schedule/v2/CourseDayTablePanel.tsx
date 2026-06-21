@@ -1055,6 +1055,17 @@ export function CourseDayTablePanel({
     return m;
   }, [offices]);
 
+  // 距離算出 (1 人目=拠点からの距離) 用の拠点座標 lookup.
+  const officeLatLngById = useMemo(() => {
+    const m = new Map<string, { lat: number | null; lng: number | null }>();
+    for (const o of offices) {
+      const lat = (o as { lat?: number | null }).lat ?? null;
+      const lng = (o as { lng?: number | null }).lng ?? null;
+      m.set(o.id, { lat, lng });
+    }
+    return m;
+  }, [offices]);
+
   // Phase G-53: 週ビュー曜日ヘッダーの「拠点別 S/M」表示用. (office.code or name)
   // から短縮ラベルを作る (INAGE→稲 / TSUGA→津, それ以外は name 先頭 1 文字).
   // 表示順は offices の並び (= 拠点マスタ順) をそのまま使う.
@@ -1778,12 +1789,23 @@ export function CourseDayTablePanel({
         return { cv, patient: p, lat, lng };
       });
 
+      const officeCoord = officeLatLngById.get(template.office_id) ?? null;
       const visits: ScheduleVisitListItem[] = visitsWithCoords.map((row, i, arr) => {
         const { cv, patient, lat, lng } = row;
-        const next = arr[i + 1];
+        // 距離 = 「ここに来るまでの移動距離」(前の患者から。1 人目は拠点から).
+        //   distanceMode='to_reach' で WeekdayScheduleCard が全員ぶん表示する。
         let distance: number | null = null;
-        if (next && lat != null && lng != null && next.lat != null && next.lng != null) {
-          distance = haversineKm({ lat, lng }, { lat: next.lat, lng: next.lng });
+        if (lat != null && lng != null) {
+          if (i === 0) {
+            if (officeCoord && officeCoord.lat != null && officeCoord.lng != null) {
+              distance = haversineKm({ lat: officeCoord.lat, lng: officeCoord.lng }, { lat, lng });
+            }
+          } else {
+            const prev = arr[i - 1];
+            if (prev && prev.lat != null && prev.lng != null) {
+              distance = haversineKm({ lat: prev.lat, lng: prev.lng }, { lat, lng });
+            }
+          }
         }
         const wp = patient?.weekly_pattern as
           | {
@@ -1858,6 +1880,7 @@ export function CourseDayTablePanel({
     freeGapsByCourse,
     staffCountFor,
     courseCodesMax,
+    officeLatLngById,
   ]);
 
   // ─── Render ──────────────────────────────────────────────────────
@@ -2199,6 +2222,7 @@ export function CourseDayTablePanel({
                   managerCountFor={managerCountFor}
                   staffSummaryOffices={staffSummaryOffices}
                   freeGapsByCell={freeGapsByCell}
+                  officeLatLngById={officeLatLngById}
                 />
               </div>
             ) : (
@@ -2232,6 +2256,8 @@ export function CourseDayTablePanel({
                       // Phase G-21 T4 reviewer C2: list view にも 🔒 toggle を渡す
                       // (= admin/manager 時のみ button が描画される).
                       onTogglePin={canEdit ? handleTogglePin : undefined}
+                      // 距離は「ここに来るまでの移動 (前の患者/拠点から)」を全員ぶん表示.
+                      distanceMode="to_reach"
                     />
                   </div>
                 ) : (

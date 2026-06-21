@@ -414,7 +414,7 @@ describe('CourseWeekOverview (B-6)', () => {
     expect(el).not.toHaveTextContent(':');
   });
 
-  it('コース合計距離 + 各患者の次までの距離を表示する', () => {
+  it('距離は「前の患者から」。拠点座標なしなら 1 人目は空欄・2 人目から表示', () => {
     const tpl = makeTemplate('tpl-A', 'A', 'o1');
     const visits: WeekOverviewVisit[] = [
       {
@@ -448,11 +448,38 @@ describe('CourseWeekOverview (B-6)', () => {
       />,
     );
     // コース合計距離 (セル右端) が出る。
-    const total = screen.getByTestId('course-week-overview-distance-tpl-A-0');
-    expect(total).toHaveTextContent(/km/);
-    // 先頭 visit には「次までの距離」が出る。
+    expect(screen.getByTestId('course-week-overview-distance-tpl-A-0')).toHaveTextContent(/km/);
+    // 拠点座標なし → 1 人目は距離なし。
+    expect(screen.queryByTestId('course-week-overview-visit-distance-v1')).toBeNull();
+    // 2 人目は「前の患者(v1)から」の距離が出る。
+    expect(screen.getByTestId('course-week-overview-visit-distance-v2')).toHaveTextContent(/km/);
+  });
+
+  it('拠点座標があれば 1 人目に「拠点からの距離」を表示する', () => {
+    const tpl = makeTemplate('tpl-A', 'A', 'o1');
+    const visits: WeekOverviewVisit[] = [
+      {
+        id: 'v1',
+        patient_id: 'p1',
+        patient_name: '青柳',
+        weekday: 0,
+        course_template_id: 'tpl-A',
+        start_time: '09:30',
+        lat: 35.6,
+        lng: 140.1,
+      },
+    ];
+    render(
+      <CourseWeekOverview
+        templates={[tpl]}
+        officeNameById={new Map([['o1', '本店']])}
+        visits={visits}
+        onJumpToDay={vi.fn()}
+        staffCountFor={fullStaff}
+        officeLatLngById={new Map([['o1', { lat: 35.5, lng: 140.0 }]])}
+      />,
+    );
+    // 1 人目に拠点→患者の距離が出る。
     expect(screen.getByTestId('course-week-overview-visit-distance-v1')).toHaveTextContent(/km/);
-    // 最後尾 visit には距離が出ない。
-    expect(screen.queryByTestId('course-week-overview-visit-distance-v2')).toBeNull();
   });
 });

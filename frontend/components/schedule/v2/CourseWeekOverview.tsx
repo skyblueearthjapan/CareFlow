@@ -136,6 +136,11 @@ export interface CourseWeekOverviewProps {
    * 頭数ゲート: cap - 配置済 <= 0 (満員) のセルでは時間 gap があっても出さない。
    */
   freeGapsByCell?: Map<string, FreeGap[]>;
+  /**
+   * 距離算出用の拠点座標 (office_id → lat/lng)。1 人目の距離を「拠点 → 最初の患者」
+   * にするために使う。未指定 / 座標欠損の拠点は 1 人目の距離を出さない。
+   */
+  officeLatLngById?: Map<string, { lat: number | null; lng: number | null }>;
 }
 
 export function CourseWeekOverview({
@@ -154,6 +159,7 @@ export function CourseWeekOverview({
   managerCountFor,
   staffSummaryOffices,
   freeGapsByCell,
+  officeLatLngById,
 }: CourseWeekOverviewProps) {
   // (template_id, weekday) → visits[] (start_time 昇順)
   const cellMap = React.useMemo(() => {
@@ -283,28 +289,35 @@ export function CourseWeekOverview({
                     : capacityForWeekday(tpl, wd);
                   const visitList = cellMap.get(`${tpl.id}:${wd}`) ?? [];
 
-                  // 距離: コース内の連続する visit (start_time 昇順) の直線距離.
-                  //   - distByVisitId: 各 visit → 次の visit までの km (最後尾/座標欠損は null).
-                  //   - courseTotalKm: コース合計 (同住所連続は haversine≒0 で自然に吸収).
+                  // 距離: 各 visit に「そこに来るまでの移動距離」(前の患者から) を割当てる.
+                  //   - 1 人目 = 拠点 → 最初の患者 (officeLatLngById があるとき).
+                  //   - 2 人目以降 = 1 つ前の患者 → この患者 (同住所連続は haversine≒0).
+                  //   - courseTotalKm = 全区間の合計 (拠点→1人目 を含む).
+                  const officeCoord = officeLatLngById?.get(tpl.office_id) ?? null;
                   const distByVisitId = new Map<string, number | null>();
                   let courseTotalKm = 0;
                   for (let i = 0; i < visitList.length; i++) {
                     const cur = visitList[i]!;
-                    const next = visitList[i + 1];
                     let d: number | null = null;
-                    if (
-                      next &&
-                      cur.lat != null &&
-                      cur.lng != null &&
-                      next.lat != null &&
-                      next.lng != null
-                    ) {
-                      d = haversineKm(
-                        { lat: cur.lat, lng: cur.lng },
-                        { lat: next.lat, lng: next.lng },
-                      );
-                      courseTotalKm += d;
+                    if (cur.lat != null && cur.lng != null) {
+                      if (i === 0) {
+                        if (officeCoord && officeCoord.lat != null && officeCoord.lng != null) {
+                          d = haversineKm(
+                            { lat: officeCoord.lat, lng: officeCoord.lng },
+                            { lat: cur.lat, lng: cur.lng },
+                          );
+                        }
+                      } else {
+                        const prev = visitList[i - 1]!;
+                        if (prev.lat != null && prev.lng != null) {
+                          d = haversineKm(
+                            { lat: prev.lat, lng: prev.lng },
+                            { lat: cur.lat, lng: cur.lng },
+                          );
+                        }
+                      }
                     }
+                    if (d != null) courseTotalKm += d;
                     distByVisitId.set(cur.id, d);
                   }
 
@@ -608,12 +621,12 @@ export function CourseWeekOverview({
                                           />
                                         )}
                                       </span>
-                                      {/* 次の患者までの直線距離 (= リストと同粒度). 行末右端. */}
+                                      {/* ここに来るまでの移動距離 (前の患者/拠点から). 行末右端. */}
                                       {distByVisitId.get(item.id) != null ? (
                                         <span
                                           className="shrink-0 tnum text-[9px] text-text-muted"
                                           data-testid={`course-week-overview-visit-distance-${item.id}`}
-                                          title="次の患者までの直線距離 (概算)"
+                                          title="前の患者/拠点からここまでの移動距離 (概算)"
                                         >
                                           {distByVisitId.get(item.id)!.toFixed(1)}km
                                         </span>
@@ -700,7 +713,7 @@ export function CourseWeekOverview({
                                             <span
                                               className="shrink-0 tnum text-[9px] text-text-muted"
                                               data-testid={`course-week-overview-visit-distance-${v.id}`}
-                                              title="次の患者までの直線距離 (概算)"
+                                              title="前の患者/拠点からここまでの移動距離 (概算)"
                                             >
                                               {distByVisitId.get(v.id)!.toFixed(1)}km
                                             </span>

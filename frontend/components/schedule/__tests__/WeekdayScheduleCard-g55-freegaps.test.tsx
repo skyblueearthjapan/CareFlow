@@ -100,4 +100,43 @@ describe('Phase G-55: WeekdayScheduleCard リスト 空き時間帯 時刻順 in
     );
     expect(screen.queryByTestId(`${PREFIX}-free-gap-570`)).not.toBeInTheDocument();
   });
+
+  it('distanceMode=to_reach → 同住所ペアの全メンバーに距離 (visit-arrow) を表示', () => {
+    const pairCourse = makeCourse({
+      visits: [
+        {
+          key: 'a',
+          patient_id: 'pa',
+          start_time: '10:00',
+          patient_name: 'A',
+          same_address_group_id: 'g1',
+          distance_to_next_km: 1.2,
+        },
+        {
+          key: 'b',
+          patient_id: 'pb',
+          start_time: '10:00',
+          patient_name: 'B',
+          same_address_group_id: 'g1',
+          distance_to_next_km: 0,
+        },
+      ],
+    });
+    const { rerender } = render(
+      <WeekdayScheduleCard
+        title="月曜 コース一覧"
+        courses={[pairCourse]}
+        testIdPrefix={PREFIX}
+        distanceMode="to_reach"
+      />,
+    );
+    // to_reach: ペア 2 名とも距離を表示。
+    expect(screen.queryAllByTestId('visit-arrow')).toHaveLength(2);
+
+    // 既定 (to_next, nextAfterPair なし) は全メンバー抑制 → 2 未満。
+    rerender(
+      <WeekdayScheduleCard title="月曜 コース一覧" courses={[pairCourse]} testIdPrefix={PREFIX} />,
+    );
+    expect(screen.queryAllByTestId('visit-arrow').length).toBeLessThan(2);
+  });
 });

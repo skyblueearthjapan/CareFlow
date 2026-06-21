@@ -144,6 +144,14 @@ export interface WeekdayScheduleCardProps {
    * - canEdit による表示制御は呼び出し側 (ハンドラ未指定で完全に非表示) で行う.
    */
   onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
+  /**
+   * 距離 (distance_to_next_km) の意味.
+   * - 'to_next' (default): その値は「次の患者までの距離」。最後尾は空欄、同住所ペアは
+   *   最後の 1 名のみ表示 (従来挙動 / 提案ダイアログ用)。
+   * - 'to_reach': その値は「ここに来るまでの移動距離 (前の患者 or 拠点から)」。全員に
+   *   表示し、同住所ペアも各メンバーの値をそのまま出す (スケジュール日リスト用)。
+   */
+  distanceMode?: 'to_next' | 'to_reach';
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -247,6 +255,7 @@ export function WeekdayScheduleCard({
   onPatientClick,
   weekView = false,
   onTogglePin,
+  distanceMode = 'to_next',
 }: WeekdayScheduleCardProps) {
   const headerCls =
     tone === 'primary'
@@ -276,6 +285,7 @@ export function WeekdayScheduleCard({
               onPatientClick={onPatientClick}
               weekView={weekView}
               onTogglePin={onTogglePin}
+              distanceMode={distanceMode}
             />
           ))}
         </ul>
@@ -291,6 +301,7 @@ interface CourseRowProps {
   onPatientClick?: (patientId: string) => void;
   weekView: boolean;
   onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
+  distanceMode: 'to_next' | 'to_reach';
 }
 
 function CourseRow({
@@ -300,6 +311,7 @@ function CourseRow({
   onPatientClick,
   weekView,
   onTogglePin,
+  distanceMode,
 }: CourseRowProps) {
   // 「最大 N 件」制限は visit 単位で先に slice して、その後に cluster 化する.
   // (pair の片割れだけが切れる事態を避けるため、ペア跨ぎは clusterVisits 後に
@@ -386,6 +398,7 @@ function CourseRow({
                 onPatientClick={onPatientClick}
                 weekView={weekView}
                 onTogglePin={onTogglePin}
+                distanceMode={distanceMode}
               />
             );
           })}
@@ -433,6 +446,7 @@ interface PairClusterProps {
   onPatientClick?: (patientId: string) => void;
   weekView: boolean;
   onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
+  distanceMode: 'to_next' | 'to_reach';
 }
 
 function PairCluster({
@@ -442,6 +456,7 @@ function PairCluster({
   onPatientClick,
   weekView,
   onTogglePin,
+  distanceMode,
 }: PairClusterProps) {
   const { visits, groupId } = cluster;
   return (
@@ -456,12 +471,13 @@ function PairCluster({
       </div>
       <ul className="divide-y divide-yellow-200/70">
         {visits.map((v, i) => {
-          // ペア内 i=0..N-2 → 「次のペアメンバー」は同住所 (= 0km) なので距離は出さない.
-          //   isLastInPair=false → suppressDistance=true.
-          // ペア内 i=N-1 (最後) → 次のペア外要素 (nextAfterPair) があれば距離を出す.
-          //   isLastInPair=true & nextAfterPair!=null → distance を表示.
+          // 'to_reach' (= 日リスト): 各 visit の値は「ここに来るまでの距離」なので
+          //   そのまま全メンバー表示する (同住所の 2 人目以降は ≒0km / null)。
+          // 'to_next' (= 従来 / 提案ダイアログ): ペア内 i=0..N-2 は「次のペアメンバー」が
+          //   同住所 (=0km) なので距離を出さず、最後尾だけ nextAfterPair への距離を出す。
           const isLastInPair = i === visits.length - 1;
-          const suppressDistance = !isLastInPair || nextAfterPair == null;
+          const suppressDistance =
+            distanceMode === 'to_reach' ? false : !isLastInPair || nextAfterPair == null;
           return (
             <PairMemberRow
               key={v.key}
