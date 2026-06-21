@@ -234,7 +234,9 @@ export function PatientCard({
           ) : (
             <User className="h-3 w-3 shrink-0 text-text-muted" aria-hidden />
           )}
-          <span className="truncate font-medium">{patient.name}</span>
+          <span className="truncate font-medium" title={patient.name}>
+            {patient.name}
+          </span>
           {/* W37 Phase 3-B: スロット番号 (①/②) を氏名直後に表示 */}
           {slotMark ? (
             <span

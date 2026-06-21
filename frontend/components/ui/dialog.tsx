@@ -41,6 +41,9 @@ export const DialogContent = React.forwardRef<
       aria-describedby={ariaDescribedBy}
       className={cn(
         'fixed left-1/2 top-1/2 z-50 grid w-full max-w-lg -translate-x-1/2 -translate-y-1/2 gap-4 border border-border-default bg-bg-base p-6 shadow-lg sm:rounded-lg',
+        // 縦に長いダイアログ (提案が多い患者など) が viewport を超えてもスクロールでき、
+        // フッターの操作ボタンが隠れて押せなくなる事象を防ぐ (Mac/小さめ画面対策)。
+        'max-h-[90dvh] overflow-y-auto',
         'data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
         'data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95',
         className,
