@@ -413,4 +413,46 @@ describe('CourseWeekOverview (B-6)', () => {
     expect(el).toHaveTextContent('鈴木');
     expect(el).not.toHaveTextContent(':');
   });
+
+  it('コース合計距離 + 各患者の次までの距離を表示する', () => {
+    const tpl = makeTemplate('tpl-A', 'A', 'o1');
+    const visits: WeekOverviewVisit[] = [
+      {
+        id: 'v1',
+        patient_id: 'p1',
+        patient_name: '青柳',
+        weekday: 0,
+        course_template_id: 'tpl-A',
+        start_time: '09:30',
+        lat: 35.6,
+        lng: 140.1,
+      },
+      {
+        id: 'v2',
+        patient_id: 'p2',
+        patient_name: '本田',
+        weekday: 0,
+        course_template_id: 'tpl-A',
+        start_time: '10:30',
+        lat: 35.7,
+        lng: 140.2,
+      },
+    ];
+    render(
+      <CourseWeekOverview
+        templates={[tpl]}
+        officeNameById={new Map([['o1', '本店']])}
+        visits={visits}
+        onJumpToDay={vi.fn()}
+        staffCountFor={fullStaff}
+      />,
+    );
+    // コース合計距離 (セル右端) が出る。
+    const total = screen.getByTestId('course-week-overview-distance-tpl-A-0');
+    expect(total).toHaveTextContent(/km/);
+    // 先頭 visit には「次までの距離」が出る。
+    expect(screen.getByTestId('course-week-overview-visit-distance-v1')).toHaveTextContent(/km/);
+    // 最後尾 visit には距離が出ない。
+    expect(screen.queryByTestId('course-week-overview-visit-distance-v2')).toBeNull();
+  });
 });

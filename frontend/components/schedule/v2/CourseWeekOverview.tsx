@@ -25,6 +25,7 @@ import {
 import type { EventRead } from '@/lib/schemas/staff-events';
 import type { StaffRead } from '@/lib/schemas/staff';
 import type { FreeGap } from '@/lib/scheduling/freeGaps';
+import { haversineKm } from '../WeekdayScheduleCard';
 import { formatEventLabelLines, getStaffEventsForWeekday } from './CourseDayTable';
 import { PinScopeMenu, type PinScope } from './PinScopeMenu';
 
@@ -56,6 +57,9 @@ export interface WeekOverviewVisit {
   fixed_visit_id?: string | null;
   /** Phase G-22: PFV.is_pinned のミラー値. */
   is_pinned?: boolean | null;
+  /** 患者の緯度経度 (距離算出用). null = 未登録 → 距離は出さない. */
+  lat?: number | null;
+  lng?: number | null;
 }
 
 export interface CourseWeekOverviewProps {
@@ -279,6 +283,31 @@ export function CourseWeekOverview({
                     : capacityForWeekday(tpl, wd);
                   const visitList = cellMap.get(`${tpl.id}:${wd}`) ?? [];
 
+                  // 距離: コース内の連続する visit (start_time 昇順) の直線距離.
+                  //   - distByVisitId: 各 visit → 次の visit までの km (最後尾/座標欠損は null).
+                  //   - courseTotalKm: コース合計 (同住所連続は haversine≒0 で自然に吸収).
+                  const distByVisitId = new Map<string, number | null>();
+                  let courseTotalKm = 0;
+                  for (let i = 0; i < visitList.length; i++) {
+                    const cur = visitList[i]!;
+                    const next = visitList[i + 1];
+                    let d: number | null = null;
+                    if (
+                      next &&
+                      cur.lat != null &&
+                      cur.lng != null &&
+                      next.lat != null &&
+                      next.lng != null
+                    ) {
+                      d = haversineKm(
+                        { lat: cur.lat, lng: cur.lng },
+                        { lat: next.lat, lng: next.lng },
+                      );
+                      courseTotalKm += d;
+                    }
+                    distByVisitId.set(cur.id, d);
+                  }
+
                   // Wave 28 Phase B-2: 担当スタッフの event をマージ
                   const eventsMap = staffEventsByStaff ?? new Map<string, EventRead[]>();
                   const assignedStaffId =
@@ -474,22 +503,35 @@ export function CourseWeekOverview({
                             >
                               {visitList.length} 名 / 上限 6
                             </span>
-                            {/* Phase G-55: 頭数の空き枠 (= cap - 配置済). remaining>0 のとき
-                                「残N枠」小バッジを teal 系で出す。満員 (<=0) は出さない
-                                (= 上の容量バッジが warning 色になり満員を示す)。 */}
-                            {(() => {
-                              const remaining = Math.max(0, cap - visitList.length);
-                              return remaining > 0 ? (
+                            <span className="flex shrink-0 items-center gap-1">
+                              {/* コース合計距離 (直線・概算). コース右端に表示. */}
+                              {courseTotalKm > 0 ? (
                                 <span
-                                  className="rounded bg-brand-primary/10 px-1 text-[10px] font-semibold tnum text-brand-primary"
-                                  data-testid={`course-week-overview-remaining-${tpl.id}-${wd}`}
-                                  data-remaining={remaining}
-                                  title={`空き ${remaining} 枠`}
+                                  className="rounded bg-bg-muted px-1 text-[10px] tnum text-text-muted"
+                                  data-testid={`course-week-overview-distance-${tpl.id}-${wd}`}
+                                  data-distance-km={courseTotalKm.toFixed(1)}
+                                  title="コース合計の移動距離 (直線概算)"
                                 >
-                                  残{remaining}枠
+                                  計{courseTotalKm.toFixed(1)}km
                                 </span>
-                              ) : null;
-                            })()}
+                              ) : null}
+                              {/* Phase G-55: 頭数の空き枠 (= cap - 配置済). remaining>0 のとき
+                                  「残N枠」小バッジを teal 系で出す。満員 (<=0) は出さない
+                                  (= 上の容量バッジが warning 色になり満員を示す)。 */}
+                              {(() => {
+                                const remaining = Math.max(0, cap - visitList.length);
+                                return remaining > 0 ? (
+                                  <span
+                                    className="rounded bg-brand-primary/10 px-1 text-[10px] font-semibold tnum text-brand-primary"
+                                    data-testid={`course-week-overview-remaining-${tpl.id}-${wd}`}
+                                    data-remaining={remaining}
+                                    title={`空き ${remaining} 枠`}
+                                  >
+                                    残{remaining}枠
+                                  </span>
+                                ) : null;
+                              })()}
+                            </span>
                           </div>
                           {items.length === 0 ? (
                             <span className="text-[10px] text-text-muted">—</span>
@@ -517,57 +559,65 @@ export function CourseWeekOverview({
                                   return item.kind === 'visit' ? (
                                     <li
                                       key={item.id}
-                                      className="truncate text-[10px] text-text-primary"
+                                      className="flex items-center gap-1 text-[10px] text-text-primary"
                                       title={item.label}
                                       data-testid={`course-week-overview-name-${item.id}`}
                                     >
-                                      {/*
-                                        2026-W20 後期 C: 週ビューは情報を最小限に絞る.
-                                        表示: 患者名 (click 可) + 開始時刻のみ.
-                                        非表示: 実動時間 / time_type / sex_restriction / 距離 / 住所詳細.
-                                      */}
-                                      {item.time ? (
-                                        <span className="mr-1 tnum text-text-muted">
-                                          {item.time.slice(0, 5)}
+                                      <span className="min-w-0 flex-1 truncate">
+                                        {/* 患者名 (click 可) + 開始時刻 + 🔒. */}
+                                        {item.time ? (
+                                          <span className="mr-1 tnum text-text-muted">
+                                            {item.time.slice(0, 5)}
+                                          </span>
+                                        ) : null}
+                                        {(() => {
+                                          // Phase G-15: 性別制限色
+                                          const sexStyle: React.CSSProperties =
+                                            item.sexRestriction === 'female_only'
+                                              ? { color: '#dc2626', fontWeight: 600 }
+                                              : item.sexRestriction === 'male_only'
+                                                ? { color: '#2563eb', fontWeight: 600 }
+                                                : {};
+                                          return onPatientClick ? (
+                                            <button
+                                              type="button"
+                                              className="underline-offset-2 hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary"
+                                              style={sexStyle}
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                onPatientClick(item.patient_id);
+                                              }}
+                                              aria-label={`${item.label} の詳細を開く`}
+                                            >
+                                              {item.label}
+                                            </button>
+                                          ) : (
+                                            <span style={sexStyle}>{item.label}</span>
+                                          );
+                                        })()}
+                                        {/* Phase G-22 / G-47: 🔒 完全固定 toggle (週ビュー) — scope 選択メニュー化 */}
+                                        {onTogglePin && (
+                                          <PinIconButton
+                                            fixedVisitId={item.fixedVisitId}
+                                            isPinned={item.isPinned}
+                                            label={item.label}
+                                            patientId={item.patient_id}
+                                            onTogglePin={onTogglePin}
+                                            testIdPrefix="course-week-overview-pin"
+                                            visitId={item.id}
+                                          />
+                                        )}
+                                      </span>
+                                      {/* 次の患者までの直線距離 (= リストと同粒度). 行末右端. */}
+                                      {distByVisitId.get(item.id) != null ? (
+                                        <span
+                                          className="shrink-0 tnum text-[9px] text-text-muted"
+                                          data-testid={`course-week-overview-visit-distance-${item.id}`}
+                                          title="次の患者までの直線距離 (概算)"
+                                        >
+                                          {distByVisitId.get(item.id)!.toFixed(1)}km
                                         </span>
                                       ) : null}
-                                      {(() => {
-                                        // Phase G-15: 性別制限色
-                                        const sexStyle: React.CSSProperties =
-                                          item.sexRestriction === 'female_only'
-                                            ? { color: '#dc2626', fontWeight: 600 }
-                                            : item.sexRestriction === 'male_only'
-                                              ? { color: '#2563eb', fontWeight: 600 }
-                                              : {};
-                                        return onPatientClick ? (
-                                          <button
-                                            type="button"
-                                            className="underline-offset-2 hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary"
-                                            style={sexStyle}
-                                            onClick={(e) => {
-                                              e.stopPropagation();
-                                              onPatientClick(item.patient_id);
-                                            }}
-                                            aria-label={`${item.label} の詳細を開く`}
-                                          >
-                                            {item.label}
-                                          </button>
-                                        ) : (
-                                          <span style={sexStyle}>{item.label}</span>
-                                        );
-                                      })()}
-                                      {/* Phase G-22 / G-47: 🔒 完全固定 toggle (週ビュー) — scope 選択メニュー化 */}
-                                      {onTogglePin && (
-                                        <PinIconButton
-                                          fixedVisitId={item.fixedVisitId}
-                                          isPinned={item.isPinned}
-                                          label={item.label}
-                                          patientId={item.patient_id}
-                                          onTogglePin={onTogglePin}
-                                          testIdPrefix="course-week-overview-pin"
-                                          visitId={item.id}
-                                        />
-                                      )}
                                     </li>
                                   ) : (
                                     <li
@@ -597,53 +647,64 @@ export function CourseWeekOverview({
                                       {cluster.visits.map((v) => (
                                         <li
                                           key={v.id}
-                                          className="truncate py-0.5 text-[10px] text-text-primary"
+                                          className="flex items-center gap-1 py-0.5 text-[10px] text-text-primary"
                                           title={v.label}
                                           data-testid={`course-week-overview-name-${v.id}`}
                                           data-same-address-group="true"
                                         >
-                                          {v.time ? (
-                                            <span className="mr-1 tnum text-text-muted">
-                                              {v.time.slice(0, 5)}
+                                          <span className="min-w-0 flex-1 truncate">
+                                            {v.time ? (
+                                              <span className="mr-1 tnum text-text-muted">
+                                                {v.time.slice(0, 5)}
+                                              </span>
+                                            ) : null}
+                                            {(() => {
+                                              // Phase G-15: 性別制限色 (pair cluster 内)
+                                              const sexStyle: React.CSSProperties =
+                                                v.sexRestriction === 'female_only'
+                                                  ? { color: '#dc2626', fontWeight: 600 }
+                                                  : v.sexRestriction === 'male_only'
+                                                    ? { color: '#2563eb', fontWeight: 600 }
+                                                    : {};
+                                              return onPatientClick ? (
+                                                <button
+                                                  type="button"
+                                                  className="underline-offset-2 hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary"
+                                                  style={sexStyle}
+                                                  onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    onPatientClick(v.patient_id);
+                                                  }}
+                                                  aria-label={`${v.label} の詳細を開く`}
+                                                >
+                                                  {v.label}
+                                                </button>
+                                              ) : (
+                                                <span style={sexStyle}>{v.label}</span>
+                                              );
+                                            })()}
+                                            {/* Phase G-22 / G-47: 🔒 完全固定 toggle (週ビュー pair cluster) — scope 選択メニュー化 */}
+                                            {onTogglePin && (
+                                              <PinIconButton
+                                                fixedVisitId={v.fixedVisitId}
+                                                isPinned={v.isPinned}
+                                                label={v.label}
+                                                patientId={v.patient_id}
+                                                onTogglePin={onTogglePin}
+                                                testIdPrefix="course-week-overview-pin"
+                                                visitId={v.id}
+                                              />
+                                            )}
+                                          </span>
+                                          {distByVisitId.get(v.id) != null ? (
+                                            <span
+                                              className="shrink-0 tnum text-[9px] text-text-muted"
+                                              data-testid={`course-week-overview-visit-distance-${v.id}`}
+                                              title="次の患者までの直線距離 (概算)"
+                                            >
+                                              {distByVisitId.get(v.id)!.toFixed(1)}km
                                             </span>
                                           ) : null}
-                                          {(() => {
-                                            // Phase G-15: 性別制限色 (pair cluster 内)
-                                            const sexStyle: React.CSSProperties =
-                                              v.sexRestriction === 'female_only'
-                                                ? { color: '#dc2626', fontWeight: 600 }
-                                                : v.sexRestriction === 'male_only'
-                                                  ? { color: '#2563eb', fontWeight: 600 }
-                                                  : {};
-                                            return onPatientClick ? (
-                                              <button
-                                                type="button"
-                                                className="underline-offset-2 hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary"
-                                                style={sexStyle}
-                                                onClick={(e) => {
-                                                  e.stopPropagation();
-                                                  onPatientClick(v.patient_id);
-                                                }}
-                                                aria-label={`${v.label} の詳細を開く`}
-                                              >
-                                                {v.label}
-                                              </button>
-                                            ) : (
-                                              <span style={sexStyle}>{v.label}</span>
-                                            );
-                                          })()}
-                                          {/* Phase G-22 / G-47: 🔒 完全固定 toggle (週ビュー pair cluster) — scope 選択メニュー化 */}
-                                          {onTogglePin && (
-                                            <PinIconButton
-                                              fixedVisitId={v.fixedVisitId}
-                                              isPinned={v.isPinned}
-                                              label={v.label}
-                                              patientId={v.patient_id}
-                                              onTogglePin={onTogglePin}
-                                              testIdPrefix="course-week-overview-pin"
-                                              visitId={v.id}
-                                            />
-                                          )}
                                         </li>
                                       ))}
                                     </ul>

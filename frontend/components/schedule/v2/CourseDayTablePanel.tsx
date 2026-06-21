@@ -1041,6 +1041,9 @@ export function CourseDayTablePanel({
         // Phase G-23: 週ビュー 🔒 toggle 用
         fixed_visit_id: beFixedVisitId ?? pfvHit?.id ?? null,
         is_pinned: beIsPinned !== null ? beIsPinned === true : pfvHit?.is_pinned === true,
+        // 週ビューの距離算出用 (コース合計 + 次までの距離).
+        lat: (patient as { lat?: number | null } | undefined)?.lat ?? null,
+        lng: (patient as { lng?: number | null } | undefined)?.lng ?? null,
       });
     }
     return out;
