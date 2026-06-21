@@ -33,6 +33,7 @@ const MOCK: AcceptanceMatrixResponse = {
               time_slot: '10:00:00',
               auto_status: 'available',
               manual_status: null,
+              week_status: null,
               effective_status: 'available',
               source: 'auto',
               metrics: {
@@ -48,6 +49,7 @@ const MOCK: AcceptanceMatrixResponse = {
               time_slot: '11:00:00',
               auto_status: 'consult',
               manual_status: null,
+              week_status: null,
               effective_status: 'consult',
               source: 'auto',
               metrics: {

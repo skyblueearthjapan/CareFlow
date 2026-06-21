@@ -237,6 +237,119 @@ async def test_all_offices_when_office_id_omitted(client, db) -> None:
 
 
 @pytest.mark.asyncio
+async def test_week_override_layering(client, db) -> None:
+    admin = await _make_user(db, email="am-admin7@example.com", role="admin")
+    office, staff = await _seed_office_staff(db)
+    course = await _seed_course(db, office=office, staff=staff)
+    p = await _seed_patient(db, office=office, code="EX1")
+    await _seed_visit(db, patient=p, course=course, start=time(10, 0), end=time(10, 30))
+    # 常設手動: Mon 11:00 = consult
+    db.add(
+        AcceptanceCalendar(office_id=office.id, weekday=0, time_slot=time(11, 0), status="consult")
+    )
+    await db.commit()
+
+    # 初期: auto=available だが 常設 consult が effective。
+    res = await client.get(_url(office_id=office.id), headers=_bearer(admin))
+    cell = _cell(_monday(res.json()["offices"][0]), "11:00")
+    assert cell["auto_status"] == "available"
+    assert cell["manual_status"] == "consult"
+    assert cell["week_status"] is None
+    assert cell["effective_status"] == "consult"
+    assert cell["source"] == "manual_standing"
+
+    # 週別上書き: Mon 11:00 = unavailable (常設より優先)。
+    put = await client.put(
+        "/api/v1/acceptance-matrix/week-override",
+        headers=_bearer(admin),
+        json={
+            "office_id": str(office.id),
+            "iso_year": ISO_YEAR,
+            "iso_week": ISO_WEEK,
+            "weekday": 0,
+            "time_slot": "11:00:00",
+            "status": "unavailable",
+        },
+    )
+    assert put.status_code == 200, put.text
+
+    res2 = await client.get(_url(office_id=office.id), headers=_bearer(admin))
+    cell2 = _cell(_monday(res2.json()["offices"][0]), "11:00")
+    assert cell2["week_status"] == "unavailable"
+    assert cell2["effective_status"] == "unavailable"
+    assert cell2["source"] == "week_override"
+
+    # upsert (再 PUT で更新) → available。
+    put2 = await client.put(
+        "/api/v1/acceptance-matrix/week-override",
+        headers=_bearer(admin),
+        json={
+            "office_id": str(office.id),
+            "iso_year": ISO_YEAR,
+            "iso_week": ISO_WEEK,
+            "weekday": 0,
+            "time_slot": "11:00:00",
+            "status": "available",
+        },
+    )
+    assert put2.status_code == 200
+    res3 = await client.get(_url(office_id=office.id), headers=_bearer(admin))
+    assert _cell(_monday(res3.json()["offices"][0]), "11:00")["week_status"] == "available"
+
+    # 解除 → 常設 consult に戻る。
+    dele = await client.delete(
+        f"/api/v1/acceptance-matrix/week-override?office_id={office.id}"
+        f"&iso_year={ISO_YEAR}&iso_week={ISO_WEEK}&weekday=0&time_slot=11:00:00",
+        headers=_bearer(admin),
+    )
+    assert dele.status_code == 204
+    res4 = await client.get(_url(office_id=office.id), headers=_bearer(admin))
+    cell4 = _cell(_monday(res4.json()["offices"][0]), "11:00")
+    assert cell4["week_status"] is None
+    assert cell4["effective_status"] == "consult"
+    assert cell4["source"] == "manual_standing"
+
+
+@pytest.mark.asyncio
+async def test_week_override_rbac_staff_forbidden(client, db) -> None:
+    staffu = await _make_user(db, email="am-staff1@example.com", role="staff")
+    office, _staff = await _seed_office_staff(db)
+    await db.commit()
+    res = await client.put(
+        "/api/v1/acceptance-matrix/week-override",
+        headers=_bearer(staffu),
+        json={
+            "office_id": str(office.id),
+            "iso_year": ISO_YEAR,
+            "iso_week": ISO_WEEK,
+            "weekday": 0,
+            "time_slot": "11:00:00",
+            "status": "available",
+        },
+    )
+    assert res.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_week_override_unknown_office_404(client, db) -> None:
+    admin = await _make_user(db, email="am-admin8@example.com", role="admin")
+    await db.commit()
+    res = await client.put(
+        "/api/v1/acceptance-matrix/week-override",
+        headers=_bearer(admin),
+        json={
+            "office_id": "00000000-0000-0000-0000-0000000000ff",
+            "iso_year": ISO_YEAR,
+            "iso_week": ISO_WEEK,
+            "weekday": 0,
+            "time_slot": "11:00:00",
+            "status": "available",
+        },
+    )
+    assert res.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_requires_auth(client, db) -> None:
     office, _staff = await _seed_office_staff(db)
     await db.commit()

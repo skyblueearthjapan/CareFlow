@@ -11,7 +11,7 @@ import { z } from 'zod';
 
 import { acceptanceStatusEnum } from './acceptance';
 
-export const matrixCellSourceEnum = z.enum(['auto', 'manual_standing']);
+export const matrixCellSourceEnum = z.enum(['auto', 'manual_standing', 'week_override']);
 export type MatrixCellSource = z.infer<typeof matrixCellSourceEnum>;
 
 export const matrixCellMetricsSchema = z.object({
@@ -28,6 +28,7 @@ export const matrixCellSchema = z.object({
   time_slot: z.string(), // "HH:MM:SS"
   auto_status: acceptanceStatusEnum,
   manual_status: acceptanceStatusEnum.nullable(),
+  week_status: acceptanceStatusEnum.nullable().default(null),
   effective_status: acceptanceStatusEnum,
   source: matrixCellSourceEnum,
   metrics: matrixCellMetricsSchema,

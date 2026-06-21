@@ -23,8 +23,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.v2.acceptance import AcceptanceStatus
 
-# セルの実効値がどの層由来か (P4 で "week_override" を追加予定).
-MatrixCellSource = Literal["auto", "manual_standing"]
+# セルの実効値がどの層由来か (3 層: 週別上書き > 常設上書き > 自動算出).
+MatrixCellSource = Literal["auto", "manual_standing", "week_override"]
 
 
 class MatrixCellMetrics(BaseModel):
@@ -52,7 +52,12 @@ class MatrixCell(BaseModel):
     manual_status: AcceptanceStatus | None = Field(
         default=None, description="常設手動上書き (acceptance_calendar). 無ければ None"
     )
-    effective_status: AcceptanceStatus = Field(..., description="manual ?? auto")
+    week_status: AcceptanceStatus | None = Field(
+        default=None, description="週別手動上書き (acceptance_calendar_week). 無ければ None"
+    )
+    effective_status: AcceptanceStatus = Field(
+        ..., description="week_status ?? manual_status ?? auto_status"
+    )
     source: MatrixCellSource = Field(..., description="実効値の由来")
     metrics: MatrixCellMetrics
 
@@ -102,6 +107,28 @@ class AcceptanceMatrixResponse(BaseModel):
     offices: list[OfficeMatrix] = Field(default_factory=list)
 
 
+class WeekOverrideUpsert(BaseModel):
+    """週別上書き 1 セルの upsert 入力 (PUT /acceptance-matrix/week-override)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    office_id: UUID
+    iso_year: int = Field(ge=2020, le=2100)
+    iso_week: int = Field(ge=1, le=53)
+    weekday: int = Field(ge=0, le=6, description="0=Mon..6=Sun")
+    time_slot: time = Field(description="時間帯の開始時刻 (例 10:00:00)")
+    status: AcceptanceStatus
+    notes: str | None = Field(default=None)
+
+
+class WeekOverrideRead(WeekOverrideUpsert):
+    """週別上書き 1 セルのレスポンス."""
+
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+    id: UUID
+
+
 __all__ = [
     "AcceptanceMatrixResponse",
     "DayMatrix",
@@ -109,4 +136,6 @@ __all__ = [
     "MatrixCellMetrics",
     "MatrixCellSource",
     "OfficeMatrix",
+    "WeekOverrideRead",
+    "WeekOverrideUpsert",
 ]

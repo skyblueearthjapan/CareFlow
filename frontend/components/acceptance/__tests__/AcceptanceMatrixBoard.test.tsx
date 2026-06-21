@@ -18,6 +18,7 @@ function cell(time: string, effective: AcceptanceStatus, auto?: AcceptanceStatus
     time_slot: time,
     auto_status: auto ?? effective,
     manual_status: auto && auto !== effective ? effective : null,
+    week_status: null,
     effective_status: effective,
     source: auto && auto !== effective ? 'manual_standing' : 'auto',
     metrics: {

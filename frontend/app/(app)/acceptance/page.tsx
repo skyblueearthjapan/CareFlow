@@ -15,25 +15,44 @@ import { useMemo, useState } from 'react';
 import { format } from 'date-fns';
 import { ja } from 'date-fns/locale';
 import { Printer } from 'lucide-react';
+import { useSession } from 'next-auth/react';
 
 import {
   AcceptanceMatrixBoard,
   AcceptanceMatrixLegend,
+  type OnEditCell,
 } from '@/components/acceptance/AcceptanceMatrixBoard';
 import { WeekSelector, toWeekStart, addDays } from '@/components/schedule/WeekSelector';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
-import { useAcceptanceMatrix } from '@/lib/queries/acceptance_matrix';
+import {
+  useAcceptanceMatrix,
+  useClearWeekOverride,
+  useSetWeekOverride,
+} from '@/lib/queries/acceptance_matrix';
 import { toIsoYearWeek } from '@/lib/queries/fieldBoard';
 import { useOffices } from '@/lib/queries/offices';
 
 export default function AcceptanceMatrixPage() {
+  const { data: session } = useSession();
+  const role = session?.user?.role;
+  const canEdit = role === 'admin' || role === 'manager';
+
   const [weekStart, setWeekStart] = useState<Date>(() => toWeekStart(new Date()));
   const { isoYear, isoWeek } = useMemo(() => toIsoYearWeek(weekStart), [weekStart]);
   const [officeId, setOfficeId] = useState<string | null>(null);
 
   const officesQuery = useOffices({ limit: 50 });
   const matrixQuery = useAcceptanceMatrix({ isoYear, isoWeek, officeId });
+
+  const setOverride = useSetWeekOverride();
+  const clearOverride = useClearWeekOverride();
+  const editBusy = setOverride.isPending || clearOverride.isPending;
+  const onEditCell: OnEditCell = ({ officeId: oid, weekday, timeSlot, status }) => {
+    const key = { officeId: oid, isoYear, isoWeek, weekday, timeSlot };
+    if (status === null) clearOverride.mutate(key);
+    else setOverride.mutate({ ...key, status });
+  };
 
   const isoWeekLabel = `${isoYear}-W${String(isoWeek).padStart(2, '0')}`;
   const rangeLabel = `${format(weekStart, 'yyyy/M/d', { locale: ja })} 〜 ${format(
@@ -48,6 +67,7 @@ export default function AcceptanceMatrixPage() {
         <h1 className="font-serif text-2xl font-bold text-text-primary">受け入れ枠</h1>
         <p className="text-sm text-text-secondary">
           拠点ごとに全コースを統合した「曜日 × 時間帯」の受け入れ可能枠（おおよその目安）。
+          {canEdit && 'セルをクリックすると、この週だけ ○△× を上書きできます（週別上書き）。'}
         </p>
       </header>
 
@@ -114,7 +134,11 @@ export default function AcceptanceMatrixPage() {
                 ※ この週はまだコースが生成されていないため、空き枠を算出できません（×表示）。
               </p>
             )}
-            <AcceptanceMatrixBoard data={matrixQuery.data} />
+            <AcceptanceMatrixBoard
+              data={matrixQuery.data}
+              onEditCell={canEdit ? onEditCell : undefined}
+              editBusy={editBusy}
+            />
           </>
         )}
       </div>

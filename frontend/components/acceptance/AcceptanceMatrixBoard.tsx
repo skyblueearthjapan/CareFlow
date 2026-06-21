@@ -1,29 +1,40 @@
 'use client';
 
 /**
- * 受け入れ枠マトリックス (PC版) — P2.
+ * 受け入れ枠マトリックス (PC版) — P2 / P4。
  *
- * 拠点 × 曜日 × 時間帯の ○△× を 1 拠点 = 1 表で縦に積んで表示する。
- * 値は effective_status (= 手動上書き ?? 自動算出) を表示し、手動上書きセルには
- * 小さな印を付ける。デザイン (claude.ai/design `careflow-avail.jsx` の AvailDesktop)
- * の構成を Tailwind + デザイントークンに移植したもの。印刷も考慮し、色だけでなく
- * ○△× の記号で判別できるようにしている。
+ * 拠点 × 曜日 × 時間帯の ○△× を 1 拠点 = 1 表で縦に積んで表示する。値は
+ * effective_status (= 週別上書き ?? 常設上書き ?? 自動算出) を表示し、上書きセルには
+ * 由来印 (週=週別 / 常=常設) を付ける。デザイン (claude.ai/design `careflow-avail.jsx`
+ * の AvailDesktop) の構成を Tailwind + デザイントークンに移植したもの。印刷も考慮し、
+ * 色だけでなく ○△× の記号で判別できるようにしている。
+ *
+ * P4: ``onEditCell`` を渡すと各セルがクリックで「週別上書き」を編集できる
+ * (admin/manager のみ。page 側で権限を制御)。
  */
-import { useMemo } from 'react';
+import { useState } from 'react';
 
-import { cn } from '@/lib/utils';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { normalizeTimeSlot, type AcceptanceStatus } from '@/lib/schemas/v2/acceptance';
 import type {
   AcceptanceMatrixResponse,
   MatrixCell,
   OfficeMatrix,
 } from '@/lib/schemas/v2/acceptance_matrix';
+import { cn } from '@/lib/utils';
 
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'] as const;
 
+/** セル編集ハンドラ。status=null は上書き解除 (常設/自動へ戻す)。 */
+export type OnEditCell = (args: {
+  officeId: string;
+  weekday: number;
+  timeSlot: string; // "HH:MM:SS"
+  status: AcceptanceStatus | null;
+}) => void;
+
 interface StatusMeta {
   glyph: string;
-  text: string;
   cellClass: string;
   long: string;
 }
@@ -31,22 +42,11 @@ interface StatusMeta {
 const STATUS_META: Record<AcceptanceStatus, StatusMeta> = {
   available: {
     glyph: '○',
-    text: 'text-brand-primary',
     cellClass: 'bg-brand-primary/10 text-brand-primary font-bold',
     long: '受け入れ可能',
   },
-  consult: {
-    glyph: '△',
-    text: 'text-warning',
-    cellClass: 'bg-warning/10 text-warning font-bold',
-    long: '相談ください',
-  },
-  unavailable: {
-    glyph: '×',
-    text: 'text-text-muted',
-    cellClass: 'text-text-muted',
-    long: '枠なし',
-  },
+  consult: { glyph: '△', cellClass: 'bg-warning/10 text-warning font-bold', long: '相談ください' },
+  unavailable: { glyph: '×', cellClass: 'text-text-muted', long: '枠なし' },
 };
 
 function weekdayClass(weekday: number): string {
@@ -78,7 +78,21 @@ export function AcceptanceMatrixLegend({ className }: { className?: string }) {
   );
 }
 
-function MatrixCellView({ cell, closed }: { cell: MatrixCell | undefined; closed: boolean }) {
+function MatrixCellView({
+  cell,
+  closed,
+  hhmm,
+  onPick,
+  busy,
+}: {
+  cell: MatrixCell | undefined;
+  closed: boolean;
+  hhmm: string;
+  onPick?: (status: AcceptanceStatus | null) => void;
+  busy?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+
   if (closed) {
     return (
       <div className="grid h-9 place-items-center border-l border-t border-border-default/60 bg-bg-muted text-[10px] text-text-muted">
@@ -86,41 +100,112 @@ function MatrixCellView({ cell, closed }: { cell: MatrixCell | undefined; closed
       </div>
     );
   }
+
   const status = cell?.effective_status ?? 'unavailable';
   const meta = STATUS_META[status];
-  const isManual = cell?.source === 'manual_standing';
+  const src = cell?.source ?? 'auto';
+  const mark = src === 'week_override' ? '週' : src === 'manual_standing' ? '常' : null;
   const title = cell
-    ? `${cell.metrics.reasons.join(' / ')}｜残 ${cell.metrics.remaining_patients_total}名・${cell.metrics.remaining_minutes_total}分${isManual ? '（手動上書き）' : ''}`
+    ? `${cell.metrics.reasons.join(' / ')}｜残 ${cell.metrics.remaining_patients_total}名・${cell.metrics.remaining_minutes_total}分`
     : undefined;
-  return (
+
+  const body = (
     <div
-      title={title}
       className={cn(
         'relative grid h-9 place-items-center border-l border-t border-border-default/60 text-base',
         meta.cellClass,
+        src === 'week_override' && 'ring-1 ring-inset ring-brand-primary/50',
       )}
     >
       <span>{meta.glyph}</span>
-      {isManual && (
-        <span className="absolute right-0.5 top-0 text-[7px] leading-none text-text-muted">手</span>
+      {mark && (
+        <span className="absolute right-0.5 top-0 text-[7px] leading-none text-text-muted">
+          {mark}
+        </span>
       )}
     </div>
   );
+
+  if (!onPick) {
+    return <div title={title}>{body}</div>;
+  }
+
+  const pick = (s: AcceptanceStatus | null) => {
+    onPick(s);
+    setOpen(false);
+  };
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          title={title}
+          aria-label={`${hhmm} の受け入れ枠を編集`}
+          className="block w-full cursor-pointer"
+        >
+          {body}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="center" className="w-48 p-2">
+        <div className="mb-1.5 text-[11px] text-text-secondary">{hhmm}・この週だけ上書き</div>
+        <div className="flex flex-col gap-1">
+          {(['available', 'consult', 'unavailable'] as const).map((s) => {
+            const mm = STATUS_META[s];
+            const active = cell?.week_status === s;
+            return (
+              <button
+                key={s}
+                type="button"
+                disabled={busy}
+                onClick={() => pick(s)}
+                className={cn(
+                  'flex items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-bg-muted disabled:opacity-50',
+                  active && 'bg-bg-muted ring-1 ring-inset ring-brand-primary/40',
+                )}
+              >
+                <span
+                  className={cn('grid h-5 w-5 place-items-center rounded text-xs', mm.cellClass)}
+                >
+                  {mm.glyph}
+                </span>
+                {mm.long}
+              </button>
+            );
+          })}
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => pick(null)}
+            className="mt-0.5 rounded border-t border-border-default px-2 py-1.5 text-left text-xs text-text-secondary hover:bg-bg-muted disabled:opacity-50"
+          >
+            上書きを解除（常設/自動に戻す）
+          </button>
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
 }
 
-function OfficeMatrixTable({ office, slots }: { office: OfficeMatrix; slots: string[] }) {
-  // weekday -> day, day -> (HH:MM -> cell) の lookup を作る (render 毎の再生成を避ける).
-  const { dayByWeekday, cellLookup, operatingSet } = useMemo(() => {
-    const dayByWeekday = new Map(office.days.map((d) => [d.weekday, d]));
-    const cellLookup = new Map<number, Map<string, MatrixCell>>();
-    for (const d of office.days) {
-      const m = new Map<string, MatrixCell>();
-      for (const c of d.cells) m.set(normalizeTimeSlot(c.time_slot), c);
-      cellLookup.set(d.weekday, m);
-    }
-    const operatingSet = new Set(office.operating_weekdays);
-    return { dayByWeekday, cellLookup, operatingSet };
-  }, [office.days, office.operating_weekdays]);
+function OfficeMatrixTable({
+  office,
+  slots,
+  onEditCell,
+  editBusy,
+}: {
+  office: OfficeMatrix;
+  slots: string[];
+  onEditCell?: OnEditCell;
+  editBusy?: boolean;
+}) {
+  const dayByWeekday = new Map(office.days.map((d) => [d.weekday, d]));
+  const cellLookup = new Map<number, Map<string, MatrixCell>>();
+  for (const d of office.days) {
+    const m = new Map<string, MatrixCell>();
+    for (const c of d.cells) m.set(normalizeTimeSlot(c.time_slot), c);
+    cellLookup.set(d.weekday, m);
+  }
+  const operatingSet = new Set(office.operating_weekdays);
 
   return (
     <div className="space-y-2">
@@ -167,9 +252,27 @@ function OfficeMatrixTable({ office, slots }: { office: OfficeMatrix; slots: str
                 {WEEKDAY_LABELS.map((_, w) => {
                   const day = dayByWeekday.get(w);
                   const cell = cellLookup.get(w)?.get(hhmm);
-                  // day が無い場合も operating_weekdays から定休を判定 (防御).
                   const closed = day?.office_closed ?? !operatingSet.has(w);
-                  return <MatrixCellView key={w} cell={cell} closed={closed} />;
+                  const onPick =
+                    onEditCell && !closed
+                      ? (status: AcceptanceStatus | null) =>
+                          onEditCell({
+                            officeId: office.office_id,
+                            weekday: w,
+                            timeSlot: `${hhmm}:00`,
+                            status,
+                          })
+                      : undefined;
+                  return (
+                    <MatrixCellView
+                      key={w}
+                      cell={cell}
+                      closed={closed}
+                      hhmm={hhmm}
+                      onPick={onPick}
+                      busy={editBusy}
+                    />
+                  );
                 })}
               </div>
             );
@@ -180,14 +283,28 @@ function OfficeMatrixTable({ office, slots }: { office: OfficeMatrix; slots: str
   );
 }
 
-export function AcceptanceMatrixBoard({ data }: { data: AcceptanceMatrixResponse }) {
+export function AcceptanceMatrixBoard({
+  data,
+  onEditCell,
+  editBusy,
+}: {
+  data: AcceptanceMatrixResponse;
+  onEditCell?: OnEditCell;
+  editBusy?: boolean;
+}) {
   if (data.offices.length === 0) {
     return <p className="text-sm text-text-secondary">表示できる拠点がありません。</p>;
   }
   return (
     <div className="space-y-8">
       {data.offices.map((office) => (
-        <OfficeMatrixTable key={office.office_id} office={office} slots={data.slots} />
+        <OfficeMatrixTable
+          key={office.office_id}
+          office={office}
+          slots={data.slots}
+          onEditCell={onEditCell}
+          editBusy={editBusy}
+        />
       ))}
     </div>
   );

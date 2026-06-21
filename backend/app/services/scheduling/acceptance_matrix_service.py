@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.acceptance_calendar import AcceptanceCalendar
+from app.models.acceptance_calendar_week import AcceptanceCalendarWeek
 from app.models.course import COURSE_STATUS_PROPOSED, Course
 from app.models.office import Office, OfficeCity
 from app.models.patient import Patient
@@ -439,6 +440,20 @@ async def compute_acceptance_matrix(
     for ac in ac_rows:
         manual_map[(ac.office_id, ac.weekday, ac.time_slot)] = cast(AcceptanceStatus, ac.status)
 
+    # --- 週別手動上書き (acceptance_calendar_week, 当週のみ) ---
+    week_map: dict[tuple[UUID, int, time], AcceptanceStatus] = {}
+    acw_rows = (
+        await db.scalars(
+            select(AcceptanceCalendarWeek).where(
+                AcceptanceCalendarWeek.office_id.in_(target_office_ids),
+                AcceptanceCalendarWeek.iso_year == iso_year,
+                AcceptanceCalendarWeek.iso_week == iso_week,
+            )
+        )
+    ).all()
+    for acw in acw_rows:
+        week_map[(acw.office_id, acw.weekday, acw.time_slot)] = cast(AcceptanceStatus, acw.status)
+
     # --- 組み立て ---
     offices_out: list[dict] = []
     for office in offices:
@@ -496,13 +511,23 @@ async def compute_acceptance_matrix(
                     }
 
                 manual_status = manual_map.get((office.id, weekday, slot_t))
-                effective = manual_status if manual_status is not None else auto_status
-                source = "manual_standing" if manual_status is not None else "auto"
+                week_status = week_map.get((office.id, weekday, slot_t))
+                # 3 層: 週別 > 常設 > 自動.
+                if week_status is not None:
+                    effective = week_status
+                    source = "week_override"
+                elif manual_status is not None:
+                    effective = manual_status
+                    source = "manual_standing"
+                else:
+                    effective = auto_status
+                    source = "auto"
                 cells_out.append(
                     {
                         "time_slot": slot_t,
                         "auto_status": auto_status,
                         "manual_status": manual_status,
+                        "week_status": week_status,
                         "effective_status": effective,
                         "source": source,
                         "metrics": metrics,
