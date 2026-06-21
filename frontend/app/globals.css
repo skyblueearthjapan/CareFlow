@@ -34,3 +34,36 @@
     font-variant-numeric: tabular-nums;
   }
 }
+
+/* 印刷: 受け入れ枠マトリックス (#acceptance-print) のみを印字する。
+ * AppShell のサイドバー/ヘッダや操作バー (.no-print) は隠す。
+ * 重要: `body:has(#acceptance-print)` でスコープし、他ページで Ctrl+P しても
+ * 白紙にならないようにする (#acceptance-print が存在するページのみ適用)。 */
+@media print {
+  body:has(#acceptance-print) {
+    overflow: visible !important;
+    height: auto !important;
+    background: #fff !important;
+  }
+  body:has(#acceptance-print) * {
+    visibility: hidden !important;
+  }
+  body:has(#acceptance-print) #acceptance-print,
+  body:has(#acceptance-print) #acceptance-print * {
+    visibility: visible !important;
+  }
+  body:has(#acceptance-print) #acceptance-print {
+    position: absolute !important;
+    left: 0;
+    top: 0;
+    width: 100%;
+  }
+  /* 背景色 (○△× セル) を印刷でも再現する。 */
+  body:has(#acceptance-print) #acceptance-print * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+}

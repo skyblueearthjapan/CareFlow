@@ -8,6 +8,7 @@ import {
   Users,
   UserCircle2,
   CalendarDays,
+  Grid3x3,
   Heart,
   Building2,
   Plug,
@@ -23,6 +24,7 @@ interface SidebarProps {
 const NAV_ITEMS = [
   { href: '/dashboard', label: 'ダッシュボード', icon: LayoutDashboard },
   { href: '/schedule', label: 'スケジュール', icon: CalendarDays },
+  { href: '/acceptance', label: '受け入れ枠', icon: Grid3x3 },
   // 現場ボード (/m) は PC 盤(親機サイドバー)では不要のため非表示。
   // モバイル現場ビュー自体は /m に存在し、モバイル導線 (MobileShell) から開ける。
   { href: '/patients', label: '患者', icon: Users },
