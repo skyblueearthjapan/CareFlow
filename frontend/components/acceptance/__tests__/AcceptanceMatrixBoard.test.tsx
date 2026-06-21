@@ -24,8 +24,8 @@ function cell(time: string, effective: AcceptanceStatus, auto?: AcceptanceStatus
     metrics: {
       remaining_patients_total: 5,
       remaining_minutes_total: 420,
-      available_course_count: 1,
-      consult_course_count: 0,
+      available_course_count: effective === 'available' ? 3 : 0,
+      consult_course_count: effective === 'consult' ? 2 : 0,
       max_free_gap_minutes: 90,
       reasons: ['60分枠あり'],
     },
@@ -79,6 +79,8 @@ describe('AcceptanceMatrixBoard', () => {
     expect(screen.getAllByText('△').length).toBeGreaterThanOrEqual(1);
     // 月曜以外・未指定セルは × (unavailable)。
     expect(screen.getAllByText('×').length).toBeGreaterThanOrEqual(1);
+    // ○セルには空きコース数 (=3) が併記される。
+    expect(screen.getAllByText('3').length).toBeGreaterThanOrEqual(1);
   });
 
   it('定休日 (office_closed) のセルは「休」表示', () => {

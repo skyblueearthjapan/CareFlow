@@ -39,7 +39,7 @@ const MOCK: AcceptanceMatrixResponse = {
               metrics: {
                 remaining_patients_total: 5,
                 remaining_minutes_total: 420,
-                available_course_count: 1,
+                available_course_count: 3,
                 consult_course_count: 0,
                 max_free_gap_minutes: 90,
                 reasons: ['60分枠あり'],
@@ -83,6 +83,8 @@ describe('AcceptanceFieldView', () => {
     expect(screen.getAllByText('○').length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText('△').length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText('×').length).toBeGreaterThanOrEqual(1);
+    // ○セルに空きコース数 (=3) が併記される。
+    expect(screen.getAllByText('3').length).toBeGreaterThanOrEqual(1);
   });
 
   it('定休日 (日曜) の列は「休」表示', () => {

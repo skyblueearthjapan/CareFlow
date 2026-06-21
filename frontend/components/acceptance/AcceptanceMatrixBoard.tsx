@@ -74,6 +74,7 @@ export function AcceptanceMatrixLegend({ className }: { className?: string }) {
           </span>
         );
       })}
+      <span className="text-text-muted">数字 = その時間帯に入れる空きコース数</span>
     </div>
   );
 }
@@ -105,8 +106,17 @@ function MatrixCellView({
   const meta = STATUS_META[status];
   const src = cell?.source ?? 'auto';
   const mark = src === 'week_override' ? '週' : src === 'manual_standing' ? '常' : null;
+  // 空きコース数 (自動算出セルのみ。手動上書きは人の判断なので数字は出さない)。
+  const count =
+    src === 'auto' && cell
+      ? status === 'available'
+        ? cell.metrics.available_course_count
+        : status === 'consult'
+          ? cell.metrics.consult_course_count
+          : 0
+      : 0;
   const title = cell
-    ? `${cell.metrics.reasons.join(' / ')}｜残 ${cell.metrics.remaining_patients_total}名・${cell.metrics.remaining_minutes_total}分`
+    ? `${cell.metrics.reasons.join(' / ')}｜空き ${cell.metrics.available_course_count}コース・残 ${cell.metrics.remaining_patients_total}名・${cell.metrics.remaining_minutes_total}分`
     : undefined;
 
   const body = (
@@ -117,7 +127,10 @@ function MatrixCellView({
         src === 'week_override' && 'ring-1 ring-inset ring-brand-primary/50',
       )}
     >
-      <span>{meta.glyph}</span>
+      <span className="inline-flex items-baseline gap-px leading-none">
+        <span>{meta.glyph}</span>
+        {count > 0 && <span className="text-[10px] font-bold">{count}</span>}
+      </span>
       {mark && (
         <span className="absolute right-0.5 top-0 text-[7px] leading-none text-text-muted">
           {mark}

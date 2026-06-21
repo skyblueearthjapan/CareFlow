@@ -99,6 +99,7 @@ function Legend() {
           </span>
         );
       })}
+      <span style={{ color: INK3 }}>数字 = 入れる空きコース数</span>
     </div>
   );
 }
@@ -182,6 +183,15 @@ function OfficeMatrix({ office, slots }: { office: OfficeMatrix; slots: string[]
                 const m = STATUS_META[status];
                 const overridden =
                   cell?.source === 'week_override' || cell?.source === 'manual_standing';
+                // 空きコース数 (自動算出セルのみ)。
+                const count =
+                  cell?.source === 'auto'
+                    ? status === 'available'
+                      ? cell.metrics.available_course_count
+                      : status === 'consult'
+                        ? cell.metrics.consult_course_count
+                        : 0
+                    : 0;
                 return (
                   <div
                     key={w}
@@ -200,13 +210,18 @@ function OfficeMatrix({ office, slots }: { office: OfficeMatrix; slots: string[]
                     ) : (
                       <span
                         style={{
+                          display: 'inline-flex',
+                          alignItems: 'baseline',
+                          gap: 1,
                           color: m.col,
-                          fontSize: 16,
                           fontWeight: status === 'unavailable' ? 400 : 700,
                           lineHeight: 1,
                         }}
                       >
-                        {m.glyph}
+                        <span style={{ fontSize: 16 }}>{m.glyph}</span>
+                        {count > 0 && (
+                          <span style={{ fontSize: 10, fontWeight: 700 }}>{count}</span>
+                        )}
                       </span>
                     )}
                     {!closed && overridden && (
