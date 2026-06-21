@@ -4,6 +4,7 @@ from fastapi import APIRouter
 
 from app.api.v1 import (
     acceptance_calendar,
+    acceptance_matrix,
     admin,
     admin_geocoding,
     ai,
@@ -106,6 +107,10 @@ api_router.include_router(
 # W15-BE1: 受入カレンダー (拠点単位の bulk upsert).
 api_router.include_router(
     acceptance_calendar.router, prefix="/acceptance-calendar", tags=["acceptance-calendar"]
+)
+# 受け入れ枠マトリックス (拠点×曜日×時間帯 ○△× 自動算出, read-only).
+api_router.include_router(
+    acceptance_matrix.router, prefix="/acceptance-matrix", tags=["acceptance-matrix"]
 )
 api_router.include_router(offices.router, prefix="/offices", tags=["offices"])
 api_router.include_router(cities.router, prefix="/cities", tags=["cities"])
