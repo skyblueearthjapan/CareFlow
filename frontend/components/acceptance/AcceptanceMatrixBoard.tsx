@@ -1,16 +1,18 @@
 'use client';
 
 /**
- * 受け入れ枠マトリックス (PC版) — P2 / P4。
+ * 受け入れ枠マトリックス (PC版) — P2 / P4 / P5。
  *
  * 拠点 × 曜日 × 時間帯の ○△× を 1 拠点 = 1 表で縦に積んで表示する。値は
- * effective_status (= 週別上書き ?? 常設上書き ?? 自動算出) を表示し、上書きセルには
- * 由来印 (週=週別 / 常=常設) を付ける。デザイン (claude.ai/design `careflow-avail.jsx`
- * の AvailDesktop) の構成を Tailwind + デザイントークンに移植したもの。印刷も考慮し、
- * 色だけでなく ○△× の記号で判別できるようにしている。
+ * effective_status (= 週別上書き ?? 常設上書き ?? 自動算出)、空きコース数を併記。
+ * 由来印 (週=週別 / 常=常設)。デザイン (claude.ai/design `careflow-avail.jsx` の
+ * AvailDesktop) を Tailwind + デザイントークンに移植したもの。色だけでなく ○△× の
+ * 記号で判別できる (白黒印刷対応)。
  *
- * P4: ``onEditCell`` を渡すと各セルがクリックで「週別上書き」を編集できる
- * (admin/manager のみ。page 側で権限を制御)。
+ * P4/P5: ``edit`` を渡すと各セルがクリックで上書き編集できる (admin/manager のみ)。
+ *   - 「この週だけ」= 週別上書き (その週限り)
+ *   - 「毎週（継続）」= 常設上書き (解除するまで毎週)。全拠点に一括適用も可。
+ *   - コメント (notes) も保存できる。
  */
 import { useState } from 'react';
 
@@ -25,13 +27,26 @@ import { cn } from '@/lib/utils';
 
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'] as const;
 
-/** セル編集ハンドラ。status=null は上書き解除 (常設/自動へ戻す)。 */
-export type OnEditCell = (args: {
-  officeId: string;
-  weekday: number;
-  timeSlot: string; // "HH:MM:SS"
-  status: AcceptanceStatus | null;
-}) => void;
+/** セル編集 API。officeId=null は全拠点一括 (常設のみ)。timeSlot は "HH:MM:SS"。 */
+export interface MatrixEditApi {
+  busy: boolean;
+  setWeek: (a: {
+    officeId: string;
+    weekday: number;
+    timeSlot: string;
+    status: AcceptanceStatus;
+    notes: string | null;
+  }) => void;
+  clearWeek: (a: { officeId: string; weekday: number; timeSlot: string }) => void;
+  setStanding: (a: {
+    officeId: string | null;
+    weekday: number;
+    timeSlot: string;
+    status: AcceptanceStatus;
+    notes: string | null;
+  }) => void;
+  clearStanding: (a: { officeId: string | null; weekday: number; timeSlot: string }) => void;
+}
 
 interface StatusMeta {
   glyph: string;
@@ -79,20 +94,68 @@ export function AcceptanceMatrixLegend({ className }: { className?: string }) {
   );
 }
 
+/** ○△× の選択 + 解除ボタン行 (ポップオーバー内)。 */
+function StatusPicker({
+  current,
+  onPick,
+  onClear,
+  busy,
+}: {
+  current: AcceptanceStatus | null | undefined;
+  onPick: (s: AcceptanceStatus) => void;
+  onClear: () => void;
+  busy?: boolean;
+}) {
+  return (
+    <div className="flex items-center gap-1">
+      {(['available', 'consult', 'unavailable'] as const).map((s) => {
+        const mm = STATUS_META[s];
+        return (
+          <button
+            key={s}
+            type="button"
+            disabled={busy}
+            onClick={() => onPick(s)}
+            className={cn(
+              'grid h-7 w-7 place-items-center rounded text-sm hover:opacity-80 disabled:opacity-50',
+              mm.cellClass,
+              current === s && 'ring-2 ring-inset ring-brand-primary/60',
+            )}
+          >
+            {mm.glyph}
+          </button>
+        );
+      })}
+      <button
+        type="button"
+        disabled={busy}
+        onClick={onClear}
+        className="ml-1 rounded px-2 py-1 text-[11px] text-text-secondary hover:bg-bg-muted disabled:opacity-50"
+      >
+        解除
+      </button>
+    </div>
+  );
+}
+
 function MatrixCellView({
   cell,
   closed,
   hhmm,
-  onPick,
-  busy,
+  officeId,
+  weekday,
+  edit,
 }: {
   cell: MatrixCell | undefined;
   closed: boolean;
   hhmm: string;
-  onPick?: (status: AcceptanceStatus | null) => void;
-  busy?: boolean;
+  officeId: string;
+  weekday: number;
+  edit?: MatrixEditApi;
 }) {
   const [open, setOpen] = useState(false);
+  const [note, setNote] = useState('');
+  const [allOffices, setAllOffices] = useState(false);
 
   if (closed) {
     return (
@@ -106,7 +169,6 @@ function MatrixCellView({
   const meta = STATUS_META[status];
   const src = cell?.source ?? 'auto';
   const mark = src === 'week_override' ? '週' : src === 'manual_standing' ? '常' : null;
-  // 空きコース数 (自動算出セルのみ。手動上書きは人の判断なので数字は出さない)。
   const count =
     src === 'auto' && cell
       ? status === 'available'
@@ -116,7 +178,7 @@ function MatrixCellView({
           : 0
       : 0;
   const title = cell
-    ? `${cell.metrics.reasons.join(' / ')}｜空き ${cell.metrics.available_course_count}コース・残 ${cell.metrics.remaining_patients_total}名・${cell.metrics.remaining_minutes_total}分`
+    ? `${cell.metrics.reasons.join(' / ')}｜空き ${cell.metrics.available_course_count}コース・残 ${cell.metrics.remaining_patients_total}名・${cell.metrics.remaining_minutes_total}分${cell.note ? `｜${cell.note}` : ''}`
     : undefined;
 
   const body = (
@@ -139,17 +201,23 @@ function MatrixCellView({
     </div>
   );
 
-  if (!onPick) {
+  if (!edit) {
     return <div title={title}>{body}</div>;
   }
 
-  const pick = (s: AcceptanceStatus | null) => {
-    onPick(s);
-    setOpen(false);
+  const ts = `${hhmm}:00`;
+  const notes = () => (note.trim() ? note.trim() : null);
+  const close = () => setOpen(false);
+  const onOpenChange = (o: boolean) => {
+    if (o) {
+      setNote(cell?.note ?? '');
+      setAllOffices(false);
+    }
+    setOpen(o);
   };
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={onOpenChange}>
       <PopoverTrigger asChild>
         <button
           type="button"
@@ -160,40 +228,77 @@ function MatrixCellView({
           {body}
         </button>
       </PopoverTrigger>
-      <PopoverContent align="center" className="w-48 p-2">
-        <div className="mb-1.5 text-[11px] text-text-secondary">{hhmm}・この週だけ上書き</div>
-        <div className="flex flex-col gap-1">
-          {(['available', 'consult', 'unavailable'] as const).map((s) => {
-            const mm = STATUS_META[s];
-            const active = cell?.week_status === s;
-            return (
-              <button
-                key={s}
-                type="button"
-                disabled={busy}
-                onClick={() => pick(s)}
-                className={cn(
-                  'flex items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-bg-muted disabled:opacity-50',
-                  active && 'bg-bg-muted ring-1 ring-inset ring-brand-primary/40',
-                )}
-              >
-                <span
-                  className={cn('grid h-5 w-5 place-items-center rounded text-xs', mm.cellClass)}
-                >
-                  {mm.glyph}
-                </span>
-                {mm.long}
-              </button>
-            );
-          })}
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => pick(null)}
-            className="mt-0.5 rounded border-t border-border-default px-2 py-1.5 text-left text-xs text-text-secondary hover:bg-bg-muted disabled:opacity-50"
-          >
-            上書きを解除（常設/自動に戻す）
-          </button>
+      <PopoverContent align="center" className="w-64 p-3">
+        <div className="mb-2 text-[11px] font-medium text-text-secondary">
+          {WEEKDAY_LABELS[weekday]}曜 {hhmm} の受け入れ枠を上書き
+        </div>
+        <input
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="コメント（任意。例: 全体会議）"
+          className="mb-3 w-full rounded border border-border-default bg-bg-base px-2 py-1 text-xs"
+        />
+
+        {/* この週だけ */}
+        <div className="mb-3">
+          <div className="mb-1 text-[11px] font-bold text-text-primary">
+            この週だけ
+            {cell?.week_status && (
+              <span className="ml-1 text-[10px] font-normal text-text-muted">
+                (現在 {STATUS_META[cell.week_status].glyph})
+              </span>
+            )}
+          </div>
+          <StatusPicker
+            current={cell?.week_status}
+            busy={edit.busy}
+            onPick={(s) => {
+              edit.setWeek({ officeId, weekday, timeSlot: ts, status: s, notes: notes() });
+              close();
+            }}
+            onClear={() => {
+              edit.clearWeek({ officeId, weekday, timeSlot: ts });
+              close();
+            }}
+          />
+        </div>
+
+        {/* 毎週（継続） */}
+        <div className="border-t border-border-default pt-2">
+          <div className="mb-1 text-[11px] font-bold text-text-primary">
+            毎週（継続）
+            {cell?.manual_status && (
+              <span className="ml-1 text-[10px] font-normal text-text-muted">
+                (現在 {STATUS_META[cell.manual_status].glyph})
+              </span>
+            )}
+          </div>
+          <StatusPicker
+            current={cell?.manual_status}
+            busy={edit.busy}
+            onPick={(s) => {
+              edit.setStanding({
+                officeId: allOffices ? null : officeId,
+                weekday,
+                timeSlot: ts,
+                status: s,
+                notes: notes(),
+              });
+              close();
+            }}
+            onClear={() => {
+              edit.clearStanding({ officeId: allOffices ? null : officeId, weekday, timeSlot: ts });
+              close();
+            }}
+          />
+          <label className="mt-2 flex items-center gap-1.5 text-[11px] text-text-secondary">
+            <input
+              type="checkbox"
+              checked={allOffices}
+              onChange={(e) => setAllOffices(e.target.checked)}
+            />
+            全拠点に一括適用
+          </label>
         </div>
       </PopoverContent>
     </Popover>
@@ -203,13 +308,11 @@ function MatrixCellView({
 function OfficeMatrixTable({
   office,
   slots,
-  onEditCell,
-  editBusy,
+  edit,
 }: {
   office: OfficeMatrix;
   slots: string[];
-  onEditCell?: OnEditCell;
-  editBusy?: boolean;
+  edit?: MatrixEditApi;
 }) {
   const dayByWeekday = new Map(office.days.map((d) => [d.weekday, d]));
   const cellLookup = new Map<number, Map<string, MatrixCell>>();
@@ -266,24 +369,15 @@ function OfficeMatrixTable({
                   const day = dayByWeekday.get(w);
                   const cell = cellLookup.get(w)?.get(hhmm);
                   const closed = day?.office_closed ?? !operatingSet.has(w);
-                  const onPick =
-                    onEditCell && !closed
-                      ? (status: AcceptanceStatus | null) =>
-                          onEditCell({
-                            officeId: office.office_id,
-                            weekday: w,
-                            timeSlot: `${hhmm}:00`,
-                            status,
-                          })
-                      : undefined;
                   return (
                     <MatrixCellView
                       key={w}
                       cell={cell}
                       closed={closed}
                       hhmm={hhmm}
-                      onPick={onPick}
-                      busy={editBusy}
+                      officeId={office.office_id}
+                      weekday={w}
+                      edit={closed ? undefined : edit}
                     />
                   );
                 })}
@@ -298,12 +392,10 @@ function OfficeMatrixTable({
 
 export function AcceptanceMatrixBoard({
   data,
-  onEditCell,
-  editBusy,
+  edit,
 }: {
   data: AcceptanceMatrixResponse;
-  onEditCell?: OnEditCell;
-  editBusy?: boolean;
+  edit?: MatrixEditApi;
 }) {
   if (data.offices.length === 0) {
     return <p className="text-sm text-text-secondary">表示できる拠点がありません。</p>;
@@ -311,13 +403,7 @@ export function AcceptanceMatrixBoard({
   return (
     <div className="space-y-8">
       {data.offices.map((office) => (
-        <OfficeMatrixTable
-          key={office.office_id}
-          office={office}
-          slots={data.slots}
-          onEditCell={onEditCell}
-          editBusy={editBusy}
-        />
+        <OfficeMatrixTable key={office.office_id} office={office} slots={data.slots} edit={edit} />
       ))}
     </div>
   );

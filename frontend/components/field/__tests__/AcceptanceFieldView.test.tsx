@@ -36,6 +36,7 @@ const MOCK: AcceptanceMatrixResponse = {
               week_status: null,
               effective_status: 'available',
               source: 'auto',
+              note: null,
               metrics: {
                 remaining_patients_total: 5,
                 remaining_minutes_total: 420,
@@ -52,6 +53,7 @@ const MOCK: AcceptanceMatrixResponse = {
               week_status: null,
               effective_status: 'consult',
               source: 'auto',
+              note: null,
               metrics: {
                 remaining_patients_total: 3,
                 remaining_minutes_total: 60,

@@ -31,6 +31,7 @@ export const matrixCellSchema = z.object({
   week_status: acceptanceStatusEnum.nullable().default(null),
   effective_status: acceptanceStatusEnum,
   source: matrixCellSourceEnum,
+  note: z.string().nullable().default(null),
   metrics: matrixCellMetricsSchema,
 });
 export type MatrixCell = z.infer<typeof matrixCellSchema>;

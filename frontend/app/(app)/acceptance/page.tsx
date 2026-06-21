@@ -20,14 +20,16 @@ import { useSession } from 'next-auth/react';
 import {
   AcceptanceMatrixBoard,
   AcceptanceMatrixLegend,
-  type OnEditCell,
+  type MatrixEditApi,
 } from '@/components/acceptance/AcceptanceMatrixBoard';
 import { WeekSelector, toWeekStart, addDays } from '@/components/schedule/WeekSelector';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import {
   useAcceptanceMatrix,
+  useClearStandingOverride,
   useClearWeekOverride,
+  useSetStandingOverride,
   useSetWeekOverride,
 } from '@/lib/queries/acceptance_matrix';
 import { toIsoYearWeek } from '@/lib/queries/fieldBoard';
@@ -45,14 +47,25 @@ export default function AcceptanceMatrixPage() {
   const officesQuery = useOffices({ limit: 50 });
   const matrixQuery = useAcceptanceMatrix({ isoYear, isoWeek, officeId });
 
-  const setOverride = useSetWeekOverride();
-  const clearOverride = useClearWeekOverride();
-  const editBusy = setOverride.isPending || clearOverride.isPending;
-  const onEditCell: OnEditCell = ({ officeId: oid, weekday, timeSlot, status }) => {
-    const key = { officeId: oid, isoYear, isoWeek, weekday, timeSlot };
-    if (status === null) clearOverride.mutate(key);
-    else setOverride.mutate({ ...key, status });
-  };
+  const setWeek = useSetWeekOverride();
+  const clearWeek = useClearWeekOverride();
+  const setStanding = useSetStandingOverride();
+  const clearStanding = useClearStandingOverride();
+  const editBusy =
+    setWeek.isPending || clearWeek.isPending || setStanding.isPending || clearStanding.isPending;
+  const edit: MatrixEditApi | undefined = canEdit
+    ? {
+        busy: editBusy,
+        setWeek: ({ officeId: oid, weekday, timeSlot, status, notes }) =>
+          setWeek.mutate({ officeId: oid, isoYear, isoWeek, weekday, timeSlot, status, notes }),
+        clearWeek: ({ officeId: oid, weekday, timeSlot }) =>
+          clearWeek.mutate({ officeId: oid, isoYear, isoWeek, weekday, timeSlot }),
+        setStanding: ({ officeId: oid, weekday, timeSlot, status, notes }) =>
+          setStanding.mutate({ officeId: oid, weekday, timeSlot, status, notes }),
+        clearStanding: ({ officeId: oid, weekday, timeSlot }) =>
+          clearStanding.mutate({ officeId: oid, weekday, timeSlot }),
+      }
+    : undefined;
 
   const isoWeekLabel = `${isoYear}-W${String(isoWeek).padStart(2, '0')}`;
   const rangeLabel = `${format(weekStart, 'yyyy/M/d', { locale: ja })} 〜 ${format(
@@ -67,7 +80,8 @@ export default function AcceptanceMatrixPage() {
         <h1 className="font-serif text-2xl font-bold text-text-primary">受け入れ枠</h1>
         <p className="text-sm text-text-secondary">
           拠点ごとに全コースを統合した「曜日 × 時間帯」の受け入れ可能枠（おおよその目安）。
-          {canEdit && 'セルをクリックすると、この週だけ ○△× を上書きできます（週別上書き）。'}
+          {canEdit &&
+            'セルをクリックで「この週だけ」または「毎週（継続）」の上書き・コメント登録ができます。'}
         </p>
       </header>
 
@@ -134,11 +148,7 @@ export default function AcceptanceMatrixPage() {
                 ※ この週はまだコースが生成されていないため、空き枠を算出できません（×表示）。
               </p>
             )}
-            <AcceptanceMatrixBoard
-              data={matrixQuery.data}
-              onEditCell={canEdit ? onEditCell : undefined}
-              editBusy={editBusy}
-            />
+            <AcceptanceMatrixBoard data={matrixQuery.data} edit={edit} />
           </>
         )}
       </div>

@@ -21,6 +21,7 @@ function cell(time: string, effective: AcceptanceStatus, auto?: AcceptanceStatus
     week_status: null,
     effective_status: effective,
     source: auto && auto !== effective ? 'manual_standing' : 'auto',
+    note: null,
     metrics: {
       remaining_patients_total: 5,
       remaining_minutes_total: 420,

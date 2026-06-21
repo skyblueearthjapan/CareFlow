@@ -350,6 +350,80 @@ async def test_week_override_unknown_office_404(client, db) -> None:
 
 
 @pytest.mark.asyncio
+async def test_standing_override_all_offices_and_cross_week(client, db) -> None:
+    admin = await _make_user(db, email="am-admin9@example.com", role="admin")
+    await _seed_office_staff(db, name="稲毛拠点", code="INAGE")
+    await _seed_office_staff(db, name="都賀拠点", code="TSUGA")
+    await db.commit()
+
+    def mon_cell(body, name):
+        off = next(o for o in body["offices"] if o["office_name"] == name)
+        return _cell(_monday(off), "11:00")
+
+    # 全拠点に常設(毎週)上書き: Mon 11:00 = unavailable + コメント。
+    put = await client.put(
+        "/api/v1/acceptance-matrix/standing-override",
+        headers=_bearer(admin),
+        json={"weekday": 0, "time_slot": "11:00:00", "status": "unavailable", "notes": "全体会議"},
+    )
+    assert put.status_code == 200, put.text
+    assert put.json()["applied_office_count"] == 2
+
+    # 当週: 両拠点に effective + note。
+    res = await client.get(_url(), headers=_bearer(admin))
+    for name in ("稲毛拠点", "都賀拠点"):
+        c = mon_cell(res.json(), name)
+        assert c["manual_status"] == "unavailable"
+        assert c["effective_status"] == "unavailable"
+        assert c["source"] == "manual_standing"
+        assert c["note"] == "全体会議"
+
+    # 別の週でも常設は効く (毎週共通・全週一律)。
+    res2 = await client.get(
+        f"/api/v1/acceptance-matrix?iso_year={ISO_YEAR}&iso_week=25", headers=_bearer(admin)
+    )
+    assert mon_cell(res2.json(), "稲毛拠点")["source"] == "manual_standing"
+
+    # 全拠点まとめて解除。
+    dele = await client.delete(
+        "/api/v1/acceptance-matrix/standing-override?weekday=0&time_slot=11:00:00",
+        headers=_bearer(admin),
+    )
+    assert dele.status_code == 204
+    res3 = await client.get(_url(), headers=_bearer(admin))
+    assert mon_cell(res3.json(), "稲毛拠点")["manual_status"] is None
+
+
+@pytest.mark.asyncio
+async def test_standing_override_staff_forbidden(client, db) -> None:
+    staffu = await _make_user(db, email="am-staff2@example.com", role="staff")
+    await db.commit()
+    res = await client.put(
+        "/api/v1/acceptance-matrix/standing-override",
+        headers=_bearer(staffu),
+        json={"weekday": 0, "time_slot": "11:00:00", "status": "available"},
+    )
+    assert res.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_standing_override_unknown_office_404(client, db) -> None:
+    admin = await _make_user(db, email="am-admin10@example.com", role="admin")
+    await db.commit()
+    res = await client.put(
+        "/api/v1/acceptance-matrix/standing-override",
+        headers=_bearer(admin),
+        json={
+            "office_id": "00000000-0000-0000-0000-0000000000ee",
+            "weekday": 0,
+            "time_slot": "11:00:00",
+            "status": "available",
+        },
+    )
+    assert res.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_requires_auth(client, db) -> None:
     office, _staff = await _seed_office_staff(db)
     await db.commit()

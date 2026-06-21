@@ -430,18 +430,21 @@ async def compute_acceptance_matrix(
     else:
         visit_coords = {}
 
-    # --- 常設手動上書き (acceptance_calendar) ---
-    manual_map: dict[tuple[UUID, int, time], AcceptanceStatus] = {}
+    # --- 常設手動上書き (acceptance_calendar). 値は (status, note). ---
+    manual_map: dict[tuple[UUID, int, time], tuple[AcceptanceStatus, str | None]] = {}
     ac_rows = (
         await db.scalars(
             select(AcceptanceCalendar).where(AcceptanceCalendar.office_id.in_(target_office_ids))
         )
     ).all()
     for ac in ac_rows:
-        manual_map[(ac.office_id, ac.weekday, ac.time_slot)] = cast(AcceptanceStatus, ac.status)
+        manual_map[(ac.office_id, ac.weekday, ac.time_slot)] = (
+            cast(AcceptanceStatus, ac.status),
+            ac.notes,
+        )
 
-    # --- 週別手動上書き (acceptance_calendar_week, 当週のみ) ---
-    week_map: dict[tuple[UUID, int, time], AcceptanceStatus] = {}
+    # --- 週別手動上書き (acceptance_calendar_week, 当週のみ). 値は (status, note). ---
+    week_map: dict[tuple[UUID, int, time], tuple[AcceptanceStatus, str | None]] = {}
     acw_rows = (
         await db.scalars(
             select(AcceptanceCalendarWeek).where(
@@ -452,7 +455,10 @@ async def compute_acceptance_matrix(
         )
     ).all()
     for acw in acw_rows:
-        week_map[(acw.office_id, acw.weekday, acw.time_slot)] = cast(AcceptanceStatus, acw.status)
+        week_map[(acw.office_id, acw.weekday, acw.time_slot)] = (
+            cast(AcceptanceStatus, acw.status),
+            acw.notes,
+        )
 
     # --- 組み立て ---
     offices_out: list[dict] = []
@@ -510,18 +516,23 @@ async def compute_acceptance_matrix(
                         "reasons": reasons,
                     }
 
-                manual_status = manual_map.get((office.id, weekday, slot_t))
-                week_status = week_map.get((office.id, weekday, slot_t))
-                # 3 層: 週別 > 常設 > 自動.
-                if week_status is not None:
-                    effective = week_status
+                manual_entry = manual_map.get((office.id, weekday, slot_t))
+                week_entry = week_map.get((office.id, weekday, slot_t))
+                manual_status = manual_entry[0] if manual_entry is not None else None
+                week_status = week_entry[0] if week_entry is not None else None
+                # 3 層: 週別 > 常設 > 自動. note は勝った層のコメント.
+                if week_entry is not None:
+                    effective = week_entry[0]
                     source = "week_override"
-                elif manual_status is not None:
-                    effective = manual_status
+                    note = week_entry[1]
+                elif manual_entry is not None:
+                    effective = manual_entry[0]
                     source = "manual_standing"
+                    note = manual_entry[1]
                 else:
                     effective = auto_status
                     source = "auto"
+                    note = None
                 cells_out.append(
                     {
                         "time_slot": slot_t,
@@ -530,6 +541,7 @@ async def compute_acceptance_matrix(
                         "week_status": week_status,
                         "effective_status": effective,
                         "source": source,
+                        "note": note,
                         "metrics": metrics,
                     }
                 )

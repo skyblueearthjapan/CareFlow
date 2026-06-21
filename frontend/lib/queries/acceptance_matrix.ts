@@ -14,6 +14,7 @@ import {
   type UseQueryResult,
 } from '@tanstack/react-query';
 import { useSession } from 'next-auth/react';
+import { toast } from 'sonner';
 
 import { fetcher } from '@/lib/api/fetcher';
 import type { AcceptanceStatus } from '@/lib/schemas/v2/acceptance';
@@ -83,13 +84,13 @@ export interface WeekOverrideKey {
 export function useSetWeekOverride(): UseMutationResult<
   unknown,
   Error,
-  WeekOverrideKey & { status: AcceptanceStatus }
+  WeekOverrideKey & { status: AcceptanceStatus; notes?: string | null }
 > {
   const qc = useQueryClient();
   const { data: session } = useSession();
   const { accessToken, refreshToken } = authPair(session);
   return useMutation({
-    mutationFn: (v: WeekOverrideKey & { status: AcceptanceStatus }) =>
+    mutationFn: (v: WeekOverrideKey & { status: AcceptanceStatus; notes?: string | null }) =>
       fetcher<unknown>(WEEK_OVERRIDE_PATH, {
         method: 'PUT',
         body: JSON.stringify({
@@ -99,12 +100,84 @@ export function useSetWeekOverride(): UseMutationResult<
           weekday: v.weekday,
           time_slot: v.timeSlot,
           status: v.status,
+          notes: v.notes ?? null,
         }),
         accessToken,
         refreshToken,
       }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ACCEPTANCE_MATRIX_KEY });
+    },
+    onError: (err: Error) => {
+      toast.error(`上書きに失敗しました: ${err.message}`);
+    },
+  });
+}
+
+const STANDING_OVERRIDE_PATH = `${ACCEPTANCE_MATRIX_PATH}/standing-override`;
+
+export interface StandingOverrideKey {
+  /** null = 全拠点に一括。 */
+  officeId: string | null;
+  weekday: number;
+  timeSlot: string; // "HH:MM:SS"
+}
+
+/** PUT /api/v1/acceptance-matrix/standing-override — 常設(毎週)上書きを設定 (admin/manager). */
+export function useSetStandingOverride(): UseMutationResult<
+  unknown,
+  Error,
+  StandingOverrideKey & { status: AcceptanceStatus; notes?: string | null }
+> {
+  const qc = useQueryClient();
+  const { data: session } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+  return useMutation({
+    mutationFn: (v: StandingOverrideKey & { status: AcceptanceStatus; notes?: string | null }) =>
+      fetcher<unknown>(STANDING_OVERRIDE_PATH, {
+        method: 'PUT',
+        body: JSON.stringify({
+          office_id: v.officeId, // null = 全拠点
+          weekday: v.weekday,
+          time_slot: v.timeSlot,
+          status: v.status,
+          notes: v.notes ?? null,
+        }),
+        accessToken,
+        refreshToken,
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ACCEPTANCE_MATRIX_KEY });
+    },
+    onError: (err: Error) => {
+      toast.error(`上書きに失敗しました: ${err.message}`);
+    },
+  });
+}
+
+/** DELETE /api/v1/acceptance-matrix/standing-override — 常設(毎週)上書きを解除 (admin/manager). */
+export function useClearStandingOverride(): UseMutationResult<null, Error, StandingOverrideKey> {
+  const qc = useQueryClient();
+  const { data: session } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+  return useMutation({
+    mutationFn: (v: StandingOverrideKey) => {
+      const usp = new URLSearchParams({
+        weekday: String(v.weekday),
+        time_slot: v.timeSlot,
+      });
+      if (v.officeId) usp.set('office_id', v.officeId); // 省略=全拠点
+      return fetcher<null>(`${STANDING_OVERRIDE_PATH}?${usp.toString()}`, {
+        method: 'DELETE',
+        accessToken,
+        refreshToken,
+      });
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ACCEPTANCE_MATRIX_KEY });
+    },
+    onError: (err: Error) => {
+      toast.error(`上書きに失敗しました: ${err.message}`);
     },
   });
 }
@@ -131,6 +204,9 @@ export function useClearWeekOverride(): UseMutationResult<unknown, Error, WeekOv
     },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ACCEPTANCE_MATRIX_KEY });
+    },
+    onError: (err: Error) => {
+      toast.error(`上書きに失敗しました: ${err.message}`);
     },
   });
 }

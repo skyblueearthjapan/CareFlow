@@ -1,12 +1,15 @@
-"""受け入れ枠マトリックス (acceptance matrix) endpoints — P1 / P4.
+"""受け入れ枠マトリックス (acceptance matrix) endpoints — P1 / P4 / P5.
 
-GET    /api/v1/acceptance-matrix                — 拠点×曜日×時間帯 ○△× 自動算出 (read-only)
-PUT    /api/v1/acceptance-matrix/week-override  — 週別手動上書き 1 セルを upsert (admin/manager)
-DELETE /api/v1/acceptance-matrix/week-override  — 週別手動上書き 1 セルを解除 (admin/manager)
+GET    /api/v1/acceptance-matrix                    — 拠点×曜日×時間帯 ○△× 自動算出 (read-only)
+PUT    /api/v1/acceptance-matrix/week-override      — 週別手動上書き 1 セルを upsert (admin/manager)
+DELETE /api/v1/acceptance-matrix/week-override      — 週別手動上書き 1 セルを解除 (admin/manager)
+PUT    /api/v1/acceptance-matrix/standing-override  — 常設(毎週)上書き 1 セルを upsert (admin/manager)
+DELETE /api/v1/acceptance-matrix/standing-override  — 常設(毎週)上書き 1 セルを解除 (admin/manager)
 
 自動算出値 (``auto_status``) に、常設手動 (``acceptance_calendar``) と週別手動
 (``acceptance_calendar_week``) を重ねた ``effective_status`` (= 週別 ?? 常設 ?? 自動)
-を返す。GET は read-only。週別上書きの編集は PUT/DELETE で行う。
+を返す。GET は read-only。週別=その週だけ、常設=毎週(解除するまで)。常設は
+``office_id`` 省略で全拠点一括も可。コメントは notes で保存する。
 
 ロジック本体は ``app.services.scheduling.acceptance_matrix_service``。
 """
@@ -21,13 +24,16 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import DbDep, require_role
+from app.models.acceptance_calendar import AcceptanceCalendar
 from app.models.acceptance_calendar_week import AcceptanceCalendarWeek
 from app.models.office import Office
 from app.models.user import User
 from app.schemas.v2.acceptance_matrix import (
     AcceptanceMatrixResponse,
+    StandingOverrideUpsert,
     WeekOverrideRead,
     WeekOverrideUpsert,
 )
@@ -148,6 +154,106 @@ async def delete_week_override(
             AcceptanceCalendarWeek.iso_week == iso_week,
             AcceptanceCalendarWeek.weekday == weekday,
             AcceptanceCalendarWeek.time_slot == time_slot,
+        )
+    )
+    await db.commit()
+    return None
+
+
+# ---------------------------------------------------------------------------
+# 常設(毎週)上書き — acceptance_calendar (毎週共通・全週一律). office_id 省略=全拠点.
+# ---------------------------------------------------------------------------
+
+
+async def _resolve_standing_office_ids(db: AsyncSession, office_id: UUID | None) -> list[UUID]:
+    """office_id 指定なら存在チェックして単一、None なら全 (未削除) 拠点を返す."""
+    if office_id is not None:
+        office = await db.get(Office, office_id)
+        if office is None or office.deleted_at is not None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="office not found")
+        return [office_id]
+    rows = await db.scalars(select(Office.id).where(Office.deleted_at.is_(None)))
+    return list(rows.all())
+
+
+@router.put(
+    "/standing-override",
+    summary="常設(毎週)上書き 1 セルを upsert (admin/manager, office_id省略=全拠点)",
+)
+async def upsert_standing_override(
+    payload: StandingOverrideUpsert,
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+) -> dict[str, int]:
+    """(office_id?, weekday, time_slot) の常設上書きを upsert する (毎週共通).
+
+    ``office_id`` 省略時は全 (未削除) 拠点に一括適用 (例: 全社会議)。同一キーへの
+    同時 PUT は UNIQUE 競合を捕捉して update に切替える (race-safe)。
+    """
+    office_ids = await _resolve_standing_office_ids(db, payload.office_id)
+
+    async def _apply() -> None:
+        for oid in office_ids:
+            existing = await db.scalar(
+                select(AcceptanceCalendar).where(
+                    AcceptanceCalendar.office_id == oid,
+                    AcceptanceCalendar.weekday == payload.weekday,
+                    AcceptanceCalendar.time_slot == payload.time_slot,
+                )
+            )
+            if existing is not None:
+                existing.status = payload.status
+                existing.notes = payload.notes
+            else:
+                db.add(
+                    AcceptanceCalendar(
+                        id=uuid.uuid4(),
+                        office_id=oid,
+                        weekday=payload.weekday,
+                        time_slot=payload.time_slot,
+                        status=payload.status,
+                        notes=payload.notes,
+                    )
+                )
+
+    # 同時 PUT による UNIQUE 競合は rollback 後に再試行 (2 回目以降は既存行を
+    # update に切替えるため通常 1 回で収束). 最大 3 回で打ち切り 409.
+    for _attempt in range(3):
+        await _apply()
+        try:
+            await db.commit()
+            break
+        except IntegrityError:
+            await db.rollback()
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="concurrent conflict, please retry"
+        )
+    return {"applied_office_count": len(office_ids)}
+
+
+@router.delete(
+    "/standing-override",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="常設(毎週)上書き 1 セルを解除 (admin/manager, office_id省略=全拠点)",
+)
+async def delete_standing_override(
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    weekday: Annotated[int, Query(ge=0, le=6)],
+    time_slot: Annotated[time, Query(description="時間帯の開始時刻 (例 10:00:00)")],
+    office_id: Annotated[UUID | None, Query(description="省略=全拠点まとめて解除")] = None,
+) -> None:
+    """常設上書きを解除する (週別 or 自動算出に戻す). 冪等 (無くても 204).
+
+    office_id 省略時は全 (未削除) 拠点をまとめて解除する (削除済み拠点の行は触らない)。
+    """
+    target_ids = await _resolve_standing_office_ids(db, office_id)
+    await db.execute(
+        delete(AcceptanceCalendar).where(
+            AcceptanceCalendar.weekday == weekday,
+            AcceptanceCalendar.time_slot == time_slot,
+            AcceptanceCalendar.office_id.in_(target_ids),
         )
     )
     await db.commit()

@@ -59,6 +59,9 @@ class MatrixCell(BaseModel):
         ..., description="week_status ?? manual_status ?? auto_status"
     )
     source: MatrixCellSource = Field(..., description="実効値の由来")
+    note: str | None = Field(
+        default=None, description="実効上書き層のコメント (週別 or 常設の notes). 無ければ None"
+    )
     metrics: MatrixCellMetrics
 
 
@@ -129,6 +132,22 @@ class WeekOverrideRead(WeekOverrideUpsert):
     id: UUID
 
 
+class StandingOverrideUpsert(BaseModel):
+    """常設(毎週)上書き 1 セルの upsert 入力 (PUT /acceptance-matrix/standing-override).
+
+    ``office_id`` を省略 (None) すると全拠点に一括適用する (例: 全社会議)。
+    常設層は ``acceptance_calendar`` (毎週共通・全週一律) を指す。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    office_id: UUID | None = Field(default=None, description="None=全拠点に一括")
+    weekday: int = Field(ge=0, le=6, description="0=Mon..6=Sun")
+    time_slot: time = Field(description="時間帯の開始時刻 (例 10:00:00)")
+    status: AcceptanceStatus
+    notes: str | None = Field(default=None)
+
+
 __all__ = [
     "AcceptanceMatrixResponse",
     "DayMatrix",
@@ -136,6 +155,7 @@ __all__ = [
     "MatrixCellMetrics",
     "MatrixCellSource",
     "OfficeMatrix",
+    "StandingOverrideUpsert",
     "WeekOverrideRead",
     "WeekOverrideUpsert",
 ]
