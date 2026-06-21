@@ -29,6 +29,7 @@ import {
   MapPin,
   ArrowLeft,
   UserPlus,
+  Grid3x3,
 } from 'lucide-react';
 
 import { useFieldBoard, toWeekStart, toIsoYearWeek } from '@/lib/queries/fieldBoard';
@@ -476,15 +477,13 @@ function buildSameAddressGroups(courses: BoardCourse[]): SameAddressGroups {
 
 function BackToAppBar() {
   return (
-    <Link
-      href="/"
-      aria-label="モバイルアプリに戻る"
+    <div
       style={{
         flex: '0 0 auto',
         display: 'flex',
         alignItems: 'center',
-        justifyContent: 'center',
-        gap: 5,
+        justifyContent: 'space-between',
+        gap: 8,
         // ノッチぶんの安全余白はこのバーの上 padding で吸収する。
         paddingTop: 'calc(env(safe-area-inset-top) + 6px)',
         paddingBottom: 6,
@@ -492,19 +491,52 @@ function BackToAppBar() {
         paddingRight: 14,
         background: CREAM,
         borderBottom: `1px solid ${LINE}`,
-        color: TEAL_DEEP,
-        fontFamily: 'var(--font-serif)',
-        fontSize: 12,
-        fontWeight: 600,
-        lineHeight: 1,
-        whiteSpace: 'nowrap',
         position: 'relative',
         zIndex: 21,
       }}
     >
-      <ArrowLeft size={13} strokeWidth={2.4} />
-      モバイルアプリへ
-    </Link>
+      <Link
+        href="/"
+        aria-label="モバイルアプリに戻る"
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 5,
+          color: TEAL_DEEP,
+          fontFamily: 'var(--font-serif)',
+          fontSize: 12,
+          fontWeight: 600,
+          lineHeight: 1,
+          whiteSpace: 'nowrap',
+        }}
+      >
+        <ArrowLeft size={13} strokeWidth={2.4} />
+        モバイルアプリへ
+      </Link>
+      {/* 受け入れ枠マトリックス導線 (P3)。BackToAppBar の右側余白を活用。 */}
+      <Link
+        href="/m/acceptance"
+        aria-label="受け入れ枠マトリックスを開く"
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 5,
+          padding: '4px 10px',
+          borderRadius: 999,
+          border: `1px solid ${LINE}`,
+          background: '#fff',
+          color: TEAL_DEEP,
+          fontFamily: 'var(--font-serif)',
+          fontSize: 12,
+          fontWeight: 700,
+          lineHeight: 1,
+          whiteSpace: 'nowrap',
+        }}
+      >
+        <Grid3x3 size={12} strokeWidth={2.2} />
+        受け入れ枠
+      </Link>
+    </div>
   );
 }
 
