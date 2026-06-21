@@ -1,18 +1,16 @@
 'use client';
 
 /**
- * CareFlow Mobile — 受け入れ枠マトリックス (現場ボード /m 配下, P3)。
+ * CareFlow Mobile — 受け入れ枠マトリックス (現場ボード /m 配下, P3 / 設計準拠版)。
  *
- * 拠点ごとに、配下の全コースを統合した「曜日 × 時間帯」の受け入れ可否 (○△×) を
- * モバイル向けに「日めくり (曜日ステッパー) + 時間帯リスト」で表示する read-only
- * ビュー。デザイン (claude.ai/design `careflow-avail.jsx` の AvailListMode) を
- * 現場ボードの Warm パレット (inline style + CF_THEME) に移植したもの。
- *
- * 値は自動算出 (当週の実 Visit) に既存の手動「受入目安」を重ねた effective を表示。
+ * 拠点トグルで 1 拠点ずつ、「曜日 × 時間帯」のコンパクトな ○△× マトリックスを表示する
+ * read-only ビュー。デザイン (claude.ai/design `careflow-mobile.jsx` の AvailBoard =
+ * `careflow-avail.jsx` の AvailMatrixCore) を現場ボードの Warm パレット (inline style +
+ * CF_THEME) に移植したもの。値は effective_status (= 週別上書き ?? 常設上書き ?? 自動算出)。
  * 拠点・コースはアプリ登録データに完全追従する (ハードコードなし)。
  */
 
-import { useMemo, useState, type CSSProperties } from 'react';
+import { useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import Link from 'next/link';
 
 import { format } from 'date-fns';
@@ -43,34 +41,25 @@ interface StatusMeta {
 const STATUS_META: Record<AcceptanceStatus, StatusMeta> = {
   available: { glyph: '○', col: '#0E8472', bg: '#E7F4F0', ln: '#CDE8E0', label: '受け入れ可能' },
   consult: { glyph: '△', col: '#B5790A', bg: '#FBF1DD', ln: '#F0DFBC', label: '相談ください' },
-  unavailable: { glyph: '×', col: INK3, bg: 'transparent', ln: LINE, label: '枠なし' },
+  unavailable: { glyph: '×', col: '#9A8E80', bg: 'transparent', ln: LINE, label: '枠なし' },
 };
 
 function dowColor(idx: number): string {
   if (idx === 5) return '#2F6FB0'; // 土
   if (idx === 6) return '#C75C77'; // 日
-  return TEAL_DEEP;
+  return INK;
 }
 
-const arrowBtn: CSSProperties = {
-  width: 40,
-  height: 40,
+const wkArrowBtn: CSSProperties = {
+  width: 32,
+  height: 32,
   flex: '0 0 auto',
-  borderRadius: 13,
-  background: '#fff',
-  border: `1px solid ${LINE}`,
-  boxShadow: '0 2px 6px rgba(28,25,23,0.06)',
+  borderRadius: 9,
+  background: 'rgba(255,255,255,0.18)',
   display: 'grid',
   placeItems: 'center',
-  color: TEAL_DEEP,
+  color: '#fff',
   cursor: 'pointer',
-};
-
-const wkArrowBtn: CSSProperties = {
-  ...arrowBtn,
-  width: 30,
-  height: 30,
-  borderRadius: 9,
 };
 
 function Legend() {
@@ -79,11 +68,11 @@ function Legend() {
       style={{
         display: 'flex',
         flexWrap: 'wrap',
-        gap: 12,
+        gap: 14,
         alignItems: 'center',
         fontSize: 11,
         color: INK2,
-        padding: '12px 4px 4px',
+        padding: '14px 4px 4px',
       }}
     >
       {(['available', 'consult', 'unavailable'] as const).map((s) => {
@@ -114,144 +103,153 @@ function Legend() {
   );
 }
 
-function OfficeDayCard({
-  office,
-  dayIdx,
-  slots,
-}: {
-  office: OfficeMatrix;
-  dayIdx: number;
-  slots: string[];
-}) {
-  const { closed, cellByTime } = useMemo(() => {
-    const day = office.days.find((d) => d.weekday === dayIdx);
+/** 1 拠点ぶんの 曜日 × 時間帯 マトリックス (AvailMatrixCore 相当)。 */
+function OfficeMatrix({ office, slots }: { office: OfficeMatrix; slots: string[] }) {
+  const { cellByWeekday, closedByWeekday } = useMemo(() => {
+    const cellByWeekday = new Map<number, Map<string, MatrixCell>>();
+    for (const d of office.days) {
+      const m = new Map<string, MatrixCell>();
+      for (const c of d.cells) m.set(normalizeTimeSlot(c.time_slot), c);
+      cellByWeekday.set(d.weekday, m);
+    }
     const operating = new Set(office.operating_weekdays);
-    const closed = day?.office_closed ?? !operating.has(dayIdx);
-    const cellByTime = new Map<string, MatrixCell>();
-    for (const c of day?.cells ?? []) cellByTime.set(normalizeTimeSlot(c.time_slot), c);
-    return { closed, cellByTime };
-  }, [office, dayIdx]);
+    const closedByWeekday = new Map<number, boolean>();
+    for (let w = 0; w < 7; w++) {
+      const day = office.days.find((d) => d.weekday === w);
+      closedByWeekday.set(w, day?.office_closed ?? !operating.has(w));
+    }
+    return { cellByWeekday, closedByWeekday };
+  }, [office]);
+
+  const closedFor = (w: number): boolean => closedByWeekday.get(w) ?? false;
+
+  const cellH = 38;
+  const headCellStyle: CSSProperties = {
+    height: 34,
+    display: 'grid',
+    placeItems: 'center',
+    fontFamily: 'var(--font-serif)',
+    fontSize: 13,
+    fontWeight: 700,
+    background: CREAM,
+    borderBottom: `1px solid ${LINE}`,
+  };
 
   return (
-    <div style={{ marginBottom: 16 }}>
-      {/* エリア帯 */}
+    <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
       <div
         style={{
-          background: 'linear-gradient(135deg, #0E8472 0%, #0B6E5E 100%)',
+          display: 'grid',
+          gridTemplateColumns: `46px repeat(7, minmax(40px, 1fr))`,
+          minWidth: 46 + 7 * 40,
+          border: `1px solid ${LINE}`,
           borderRadius: 14,
-          padding: '10px 14px',
-          color: '#fff',
-          marginBottom: 10,
-          boxShadow: '0 5px 14px rgba(14,132,114,0.2)',
+          overflow: 'hidden',
+          background: PANEL,
         }}
       >
-        <div style={{ fontFamily: 'var(--font-serif)', fontSize: 15, fontWeight: 700 }}>
-          {office.office_name}
-        </div>
-        {office.city_names.length > 0 && (
-          <div style={{ fontSize: 10.5, opacity: 0.9, marginTop: 2 }}>
-            {office.city_names.join('・')}
+        {/* ヘッダ行: 時刻列 + 月〜日 */}
+        <div style={headCellStyle} />
+        {DOW.map((d, w) => (
+          <div key={w} style={{ ...headCellStyle, color: dowColor(w) }}>
+            {d}
           </div>
-        )}
-      </div>
+        ))}
 
-      {closed ? (
-        <div
-          style={{
-            padding: '28px 0',
-            textAlign: 'center',
-            color: INK3,
-            background: '#F1ECE3',
-            borderRadius: 14,
-            fontFamily: 'var(--font-serif)',
-            fontSize: 15,
-          }}
-        >
-          定休日
-        </div>
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
-          {slots.map((slot) => {
-            const hhmm = normalizeTimeSlot(slot);
-            const cell = cellByTime.get(hhmm);
-            const status = cell?.effective_status ?? 'unavailable';
-            const m = STATUS_META[status];
-            const isManual = cell?.source === 'manual_standing';
-            return (
+        {/* 本体: 時間帯ごと */}
+        {slots.map((slot) => {
+          const hhmm = normalizeTimeSlot(slot);
+          return (
+            <RowFragment key={slot}>
               <div
-                key={slot}
                 style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 12,
-                  background: PANEL,
-                  border: `1px solid ${LINE}`,
-                  borderLeft: `4px solid ${status === 'unavailable' ? LINE : m.col}`,
-                  borderRadius: 13,
-                  padding: '11px 14px',
+                  height: cellH,
+                  display: 'grid',
+                  placeItems: 'center',
+                  fontSize: 11,
+                  color: INK2,
+                  background: CREAM,
+                  borderTop: `1px solid ${LINE}`,
+                  fontVariantNumeric: 'tabular-nums',
                 }}
               >
-                <div
-                  style={{
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: 14,
-                    fontWeight: 700,
-                    color: INK,
-                    width: 52,
-                  }}
-                >
-                  {hhmm}
-                </div>
-                <div
-                  style={{
-                    flex: 1,
-                    fontSize: 13,
-                    color: status === 'unavailable' ? INK3 : INK2,
-                    fontWeight: status === 'unavailable' ? 400 : 600,
-                  }}
-                >
-                  {m.label}
-                  {isManual && (
-                    <span style={{ marginLeft: 6, fontSize: 10, color: INK3 }}>（手動）</span>
-                  )}
-                </div>
-                <div
-                  style={{
-                    width: 34,
-                    height: 34,
-                    borderRadius: 10,
-                    background: m.bg,
-                    border: `1px solid ${m.ln}`,
-                    display: 'grid',
-                    placeItems: 'center',
-                    color: m.col,
-                    fontSize: 18,
-                    fontWeight: status === 'unavailable' ? 400 : 700,
-                  }}
-                >
-                  {m.glyph}
-                </div>
+                {hhmm}
               </div>
-            );
-          })}
-        </div>
-      )}
+              {DOW.map((_, w) => {
+                const closed = closedFor(w);
+                const cell = cellByWeekday.get(w)?.get(hhmm);
+                const status = cell?.effective_status ?? 'unavailable';
+                const m = STATUS_META[status];
+                const overridden =
+                  cell?.source === 'week_override' || cell?.source === 'manual_standing';
+                return (
+                  <div
+                    key={w}
+                    style={{
+                      height: cellH,
+                      display: 'grid',
+                      placeItems: 'center',
+                      borderTop: `1px solid ${LINE}`,
+                      borderLeft: `1px solid ${LINE}`,
+                      background: closed ? '#F1ECE3' : m.bg,
+                      position: 'relative',
+                    }}
+                  >
+                    {closed ? (
+                      <span style={{ fontSize: 10, color: INK3 }}>休</span>
+                    ) : (
+                      <span
+                        style={{
+                          color: m.col,
+                          fontSize: 16,
+                          fontWeight: status === 'unavailable' ? 400 : 700,
+                          lineHeight: 1,
+                        }}
+                      >
+                        {m.glyph}
+                      </span>
+                    )}
+                    {!closed && overridden && (
+                      <span
+                        style={{
+                          position: 'absolute',
+                          top: 2,
+                          right: 2,
+                          width: 4,
+                          height: 4,
+                          borderRadius: 999,
+                          background: cell?.source === 'week_override' ? TEAL : INK3,
+                        }}
+                      />
+                    )}
+                  </div>
+                );
+              })}
+            </RowFragment>
+          );
+        })}
+      </div>
     </div>
   );
 }
 
+/** grid に直接子を並べるためのフラグメント (DOM ノードを作らない)。 */
+function RowFragment({ children }: { children: ReactNode }) {
+  return <>{children}</>;
+}
+
 export function AcceptanceFieldView() {
   const [weekStart, setWeekStart] = useState<Date>(() => toWeekStart(new Date()));
-  const [dayIdx, setDayIdx] = useState(0);
   const { isoYear, isoWeek } = useMemo(() => toIsoYearWeek(weekStart), [weekStart]);
+  const [officeId, setOfficeId] = useState<string | null>(null);
 
   const query = useAcceptanceMatrix({ isoYear, isoWeek, officeId: null });
 
-  const goDay = (d: number) => setDayIdx((p) => (p + d + 7) % 7);
   const goWeek = (d: number) => setWeekStart((w) => addDays(w, d * 7));
-
-  const dayDate = addDays(weekStart, dayIdx);
   const weekRange = `${format(weekStart, 'M/d', { locale: ja })} - ${format(addDays(weekStart, 6), 'M/d', { locale: ja })}`;
+
+  const offices = query.data?.offices ?? [];
+  const selected = offices.find((o) => o.office_id === officeId) ?? offices[0] ?? null;
 
   return (
     <div
@@ -290,71 +288,113 @@ export function AcceptanceFieldView() {
         現場ボードへ
       </Link>
 
-      {/* ヘッダ帯 */}
+      {/* ヘッダ帯: タイトル + 週送り + 拠点トグル */}
       <div style={{ flex: '0 0 auto', padding: '6px 8px 0' }}>
         <div
           style={{
             background: `linear-gradient(135deg, ${TEAL} 0%, ${TEAL_DEEP} 100%)`,
             color: '#fff',
-            padding: '10px 14px',
+            padding: '11px 14px',
             borderRadius: 16,
             boxShadow: '0 5px 14px rgba(13,148,136,0.18)',
           }}
         >
-          <div style={{ fontFamily: 'var(--font-serif)', fontSize: 16, fontWeight: 700 }}>
-            受け入れ枠
-          </div>
-          <div style={{ fontSize: 10, opacity: 0.85, marginTop: 2 }}>
-            全コース統合の目安 ・ おおよその空き状況
-          </div>
-        </div>
-      </div>
-
-      {/* 週 + 曜日ステッパー */}
-      <div style={{ flex: '0 0 auto', padding: '10px 10px 4px' }}>
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: 8,
-            marginBottom: 8,
-          }}
-        >
-          <button type="button" onClick={() => goWeek(-1)} style={wkArrowBtn} aria-label="前の週">
-            <ChevronLeft size={16} />
-          </button>
-          <div style={{ textAlign: 'center', minWidth: 96 }}>
-            <div style={{ fontFamily: 'var(--font-serif)', fontSize: 13, fontWeight: 700 }}>
-              第{isoWeek}週
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 8,
+            }}
+          >
+            <div>
+              <div style={{ fontFamily: 'var(--font-serif)', fontSize: 16, fontWeight: 700 }}>
+                受け入れ枠
+              </div>
+              <div style={{ fontSize: 10, opacity: 0.85, marginTop: 2 }}>全コース統合の目安</div>
             </div>
-            <div style={{ fontSize: 9.5, color: INK3 }}>{weekRange}</div>
-          </div>
-          <button type="button" onClick={() => goWeek(1)} style={wkArrowBtn} aria-label="次の週">
-            <ChevronRight size={16} />
-          </button>
-        </div>
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <button type="button" onClick={() => goDay(-1)} style={arrowBtn} aria-label="前の曜日">
-            <ChevronLeft size={20} />
-          </button>
-          <div style={{ flex: 1, textAlign: 'center' }}>
-            <div style={{ fontFamily: 'var(--font-serif)', fontSize: 19, fontWeight: 700 }}>
-              <span style={{ color: dowColor(dayIdx) }}>{DOW[dayIdx]}曜</span>
-              <span style={{ fontSize: 13, color: INK3, fontWeight: 600, marginLeft: 8 }}>
-                {format(dayDate, 'M/d', { locale: ja })}
-              </span>
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 2,
+                background: 'rgba(255,255,255,0.18)',
+                borderRadius: 999,
+                padding: 3,
+              }}
+            >
+              <button onClick={() => goWeek(-1)} style={wkArrowBtn} aria-label="前の週">
+                <ChevronLeft size={16} />
+              </button>
+              <div
+                style={{
+                  fontFamily: 'var(--font-serif)',
+                  fontSize: 13,
+                  fontWeight: 700,
+                  minWidth: 78,
+                  textAlign: 'center',
+                  lineHeight: 1.1,
+                }}
+              >
+                第{isoWeek}週
+                <div
+                  style={{
+                    fontSize: 9,
+                    opacity: 0.85,
+                    fontFamily: 'var(--font-sans)',
+                    fontWeight: 500,
+                  }}
+                >
+                  {weekRange}
+                </div>
+              </div>
+              <button onClick={() => goWeek(1)} style={wkArrowBtn} aria-label="次の週">
+                <ChevronRight size={16} />
+              </button>
             </div>
           </div>
-          <button type="button" onClick={() => goDay(1)} style={arrowBtn} aria-label="次の曜日">
-            <ChevronRight size={20} />
-          </button>
+
+          {/* 拠点トグル (2 拠点以上のとき) */}
+          {offices.length > 1 && (
+            <div
+              style={{
+                display: 'flex',
+                gap: 5,
+                background: 'rgba(255,255,255,0.16)',
+                padding: 3,
+                borderRadius: 999,
+                marginTop: 12,
+              }}
+            >
+              {offices.map((o) => {
+                const on = (selected?.office_id ?? '') === o.office_id;
+                return (
+                  <button
+                    key={o.office_id}
+                    onClick={() => setOfficeId(o.office_id)}
+                    style={{
+                      flex: 1,
+                      padding: '7px 10px',
+                      borderRadius: 999,
+                      fontSize: 13,
+                      fontWeight: 700,
+                      fontFamily: 'var(--font-serif)',
+                      background: on ? '#fff' : 'transparent',
+                      color: on ? TEAL_DEEP : '#fff',
+                      boxShadow: on ? '0 2px 6px rgba(0,0,0,0.12)' : 'none',
+                    }}
+                  >
+                    {o.office_name}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
 
       {/* 本体 (スクロール) */}
-      <div style={{ flex: 1, overflowY: 'auto', padding: '6px 12px 24px' }}>
+      <div style={{ flex: 1, overflowY: 'auto', padding: '12px 12px 24px' }}>
         {query.isLoading && (
           <p style={{ fontSize: 13, color: INK2, padding: '24px 0', textAlign: 'center' }}>
             読み込み中…
@@ -365,9 +405,44 @@ export function AcceptanceFieldView() {
             読み込みに失敗しました
           </p>
         )}
-        {query.data && (
+        {query.data && !selected && (
+          <p style={{ fontSize: 13, color: INK2 }}>表示できる拠点がありません。</p>
+        )}
+        {query.data && selected && (
           <>
-            {!query.data.week_generated_any && (
+            {/* エリア帯 */}
+            <div
+              style={{
+                background: 'linear-gradient(135deg, #0E8472 0%, #0B6E5E 100%)',
+                borderRadius: 16,
+                padding: '12px 16px',
+                color: '#fff',
+                marginBottom: 14,
+                boxShadow: '0 6px 16px rgba(14,132,114,0.22)',
+              }}
+            >
+              <div style={{ fontSize: 10.5, opacity: 0.85, fontWeight: 600 }}>
+                受け入れ可能枠 ・ 第{isoWeek}週（{weekRange}）現在
+              </div>
+              <div
+                style={{
+                  fontFamily: 'var(--font-serif)',
+                  fontSize: 16,
+                  fontWeight: 700,
+                  marginTop: 3,
+                }}
+              >
+                {selected.office_name}
+                {selected.city_names.length > 0 && (
+                  <span style={{ fontSize: 12, fontWeight: 600, opacity: 0.9 }}>
+                    {' '}
+                    ・ {selected.city_names.join('・')}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {!selected.week_generated && (
               <p
                 style={{
                   fontSize: 11.5,
@@ -381,18 +456,8 @@ export function AcceptanceFieldView() {
                 ※ この週はまだコースが生成されていないため、空き枠を算出できません。
               </p>
             )}
-            {query.data.offices.length === 0 ? (
-              <p style={{ fontSize: 13, color: INK2 }}>表示できる拠点がありません。</p>
-            ) : (
-              query.data.offices.map((office) => (
-                <OfficeDayCard
-                  key={office.office_id}
-                  office={office}
-                  dayIdx={dayIdx}
-                  slots={query.data.slots}
-                />
-              ))
-            )}
+
+            <OfficeMatrix office={selected} slots={query.data.slots} />
             <Legend />
           </>
         )}

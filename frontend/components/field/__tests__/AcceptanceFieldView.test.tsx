@@ -1,12 +1,12 @@
 /**
- * AcceptanceFieldView — モバイル受け入れ枠 (現場ボード /m) の描画テスト。
+ * AcceptanceFieldView — モバイル受け入れ枠マトリックス (現場ボード /m) の描画テスト。
  *
  * カバー:
- *   1. 拠点名・選択曜日の○△× ラベルが表示される
- *   2. 「次の曜日」を進めて定休日 (office_closed) に到達すると「定休日」表示
+ *   1. 拠点名とマトリックスの ○ / △ 記号が表示される
+ *   2. 定休日 (office_closed) の曜日列は「休」表示
  */
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 
 import type { AcceptanceMatrixResponse } from '@/lib/schemas/v2/acceptance_matrix';
 
@@ -76,18 +76,18 @@ vi.mock('@/lib/queries/acceptance_matrix', () => ({
 import { AcceptanceFieldView } from '../AcceptanceFieldView';
 
 describe('AcceptanceFieldView', () => {
-  it('拠点名と選択曜日の ○ / △ ラベルを表示する', () => {
+  it('拠点名とマトリックスの ○ / △ 記号を表示する', () => {
     render(<AcceptanceFieldView />);
     expect(screen.getByText('稲毛拠点')).toBeInTheDocument();
-    // 行ラベル + 凡例の両方に出るので getAllByText。
-    expect(screen.getAllByText('受け入れ可能').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText('相談ください').length).toBeGreaterThanOrEqual(1);
+    // 月曜の 10:00=○, 11:00=△ がマトリックスに出る (× は他の曜日列に多数)。
+    expect(screen.getAllByText('○').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('△').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('×').length).toBeGreaterThanOrEqual(1);
   });
 
-  it('「次の曜日」で定休日 (日曜) に到達すると「定休日」表示', () => {
+  it('定休日 (日曜) の列は「休」表示', () => {
     render(<AcceptanceFieldView />);
-    const next = screen.getByLabelText('次の曜日');
-    for (let i = 0; i < 6; i++) fireEvent.click(next); // 月(0) → 日(6)
-    expect(screen.getByText('定休日')).toBeInTheDocument();
+    // 日曜 (closed) の 2 時間帯セル = 「休」2 つ。
+    expect(screen.getAllByText('休')).toHaveLength(2);
   });
 });
