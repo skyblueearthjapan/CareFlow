@@ -26,6 +26,8 @@ class MonitorThresholds(BaseModel):
     accuracy_m: int
     no_show_grace_min: int
     late_min: int
+    # 退出忘れ (長時間 inprogress) しきい値 (分)。Phase 4 で設定化。
+    max_inprogress_min: int
 
 
 class MonitorCheckin(BaseModel):
@@ -74,6 +76,12 @@ class MonitorVisit(BaseModel):
     distance_to_next_m: float | None = None
     # 表示用の理由 (未訪問の理由 ?? 到着の理由)。
     reason: str | None = None
+    # 「確認済み」(visit 単位の review)。reviewed なら要対応トレイから外れ
+    # (alert_level を抑制)、タイムラインに「確認済」印が付く (Phase 5-3)。
+    reviewed: bool = False
+    reviewed_by_name: str | None = None
+    reviewed_at: datetime | None = None
+    review_comment: str | None = None
 
 
 class MonitorStaffRow(BaseModel):

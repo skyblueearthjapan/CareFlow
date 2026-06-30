@@ -70,6 +70,10 @@ class CheckinSettings(Base):
     no_show_grace_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # 遅延しきい値 (分). NULL = 既定 15. 範囲 0..240.
     late_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # 退出忘れ (長時間 inprogress) しきい値 (分). NULL = 既定 240. 範囲 30..1440.
+    # 到着済・退出未記録のままこの分数を超えた訪問を monitor が review に上げる
+    # (Phase 4 で定数 monitor.MAX_INPROGRESS_MIN を設定化)。
+    max_inprogress_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -104,6 +108,11 @@ class CheckinSettings(Base):
         CheckConstraint(
             "late_min IS NULL OR (late_min >= 0 AND late_min <= 240)",
             name="ck_checkin_settings_late_min_range",
+        ),
+        CheckConstraint(
+            "max_inprogress_min IS NULL OR "
+            "(max_inprogress_min >= 30 AND max_inprogress_min <= 1440)",
+            name="ck_checkin_settings_max_inprogress_range",
         ),
         # 交差 CHECK: review_m >= match_m (両方非 NULL 時のみ強制).
         CheckConstraint(

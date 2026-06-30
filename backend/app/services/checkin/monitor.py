@@ -30,8 +30,11 @@ from sqlalchemy.orm import selectinload
 from app.models.course import Course
 from app.models.office import Office
 from app.models.patient import Patient
+from app.models.staff import Staff
+from app.models.user import User
 from app.models.visit import VISIT_STATUS_CANCELLED, Visit
 from app.models.visit_checkin import VisitCheckin
+from app.models.visit_review import VisitReview
 from app.schemas.visit_monitor import (
     MonitorCheckin,
     MonitorOffice,
@@ -62,7 +65,8 @@ ALERT_MISSING = "missing"
 
 # 退出忘れ (長時間 inprogress) の要確認しきい値 (分)。到着済・退出未記録のまま
 # この分数を超えて滞在し続けている訪問を「退出未記録の可能性」として review に上げる。
-# Phase4 で checkin_settings 化予定 (現状はサーバ定数)。
+# Phase 4 で checkin_settings (max_inprogress_min) 化済。この定数は設定が無い場合の
+# コード既定値 (= DEFAULT_THRESHOLDS["max_inprogress_min"]) として残す。
 MAX_INPROGRESS_MIN = 240
 
 
@@ -111,15 +115,22 @@ def compute_alert(
     start_dt: datetime,
     late_min: int,
     stay_minutes: int | None = None,
+    max_inprogress_min: int = MAX_INPROGRESS_MIN,
+    reviewed: bool = False,
 ) -> str:
     """要対応レベルを合成する (位置判定 + 時間遅延の worst).
 
+    - **reviewed (確認済み) は最優先で none** (要対応トレイから外す / Phase 5-3)。
     - missing 中は missing。
     - 到着あり & match_status==mismatch → mismatch。
     - match_status in (review, no_gps) / 到着遅延 (>= late_min) / 退出忘れ
-      (inprogress かつ 滞在 > MAX_INPROGRESS_MIN) → review。
+      (inprogress かつ 滞在 > max_inprogress_min) → review。
     - それ以外 (未到着の future/awaiting を含む) → none。
+
+    ``max_inprogress_min`` は checkin_settings の設定値 (無ければ既定 240)。
     """
+    if reviewed:
+        return ALERT_NONE
     if phase == PHASE_MISSING:
         return ALERT_MISSING
     if arrival_match_status is None:
@@ -134,7 +145,7 @@ def compute_alert(
     long_inprogress = (
         phase == PHASE_INPROGRESS
         and stay_minutes is not None
-        and stay_minutes > MAX_INPROGRESS_MIN
+        and stay_minutes > max_inprogress_min
     )
     if arrival_match_status in ("review", "no_gps") or late or long_inprogress:
         return ALERT_REVIEW
@@ -227,6 +238,26 @@ async def build_monitor(
             if key not in latest:  # DESC 並びなので最初に出た = 最新。
                 latest[key] = r
 
+    # 「確認済み」(visit 単位の review) を 1 クエリで取得。確認者名は
+    # users → staff を outer join で解決 (staff 未紐付け / 退職は email/None に fallback)。
+    reviews: dict[UUID, tuple[VisitReview, str | None]] = {}
+    if visit_ids:
+        review_rows = (
+            await db.execute(
+                select(VisitReview, User, Staff)
+                .outerjoin(User, VisitReview.reviewed_by == User.id)
+                .outerjoin(Staff, User.staff_id == Staff.id)
+                .where(VisitReview.visit_id.in_(visit_ids))
+            )
+        ).all()
+        for review, user, staff in review_rows:
+            name = (
+                staff.name
+                if staff is not None
+                else (user.email if user is not None else None)
+            )
+            reviews[review.visit_id] = (review, name)
+
     # コース名ラベル (course_id → "Xコース")。
     course_ids = {v.course_id for v in visits if v.course_id is not None}
     course_code: dict[UUID, str] = {}
@@ -293,6 +324,8 @@ async def build_monitor(
                 grace_min=thresholds["no_show_grace_min"],
             )
             stay = _stay_minutes(arr_p, dep_p, now_jst)
+            review_entry = reviews.get(v.id)
+            reviewed = review_entry is not None
             alert_level = compute_alert(
                 phase=phase,
                 arrival_match_status=arrival.match_status if arrival is not None else None,
@@ -300,6 +333,8 @@ async def build_monitor(
                 start_dt=start_dt,
                 late_min=thresholds["late_min"],
                 stay_minutes=stay,
+                max_inprogress_min=thresholds["max_inprogress_min"],
+                reviewed=reviewed,
             )
 
             arrival_delay_min = (
@@ -341,6 +376,10 @@ async def build_monitor(
                     stay_minutes=stay,
                     arrival_delay_min=arrival_delay_min,
                     reason=reason,
+                    reviewed=reviewed,
+                    reviewed_by_name=review_entry[1] if review_entry is not None else None,
+                    reviewed_at=review_entry[0].reviewed_at if review_entry is not None else None,
+                    review_comment=review_entry[0].comment if review_entry is not None else None,
                 )
             )
 

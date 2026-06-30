@@ -6,11 +6,13 @@ from app.api.v1 import (
     acceptance_calendar,
     acceptance_matrix,
     admin,
+    admin_checkin,
     admin_geocoding,
     ai,
     allocate,
     audit_logs,
     auth,
+    checkin_settings,
     cities,
     course_templates,
     courses,
@@ -42,6 +44,7 @@ from app.api.v1 import (
     staff_shifts,
     visit_monitor,
     visit_photos,
+    visit_review,
     visits,
 )
 
@@ -51,6 +54,8 @@ api_router.include_router(auth.router)
 api_router.include_router(admin.router)
 # Task #144: lat/lng 整合性 audit (定期 cron 用 admin endpoint).
 api_router.include_router(admin_geocoding.router)
+# QR チェックイン Phase 5-2 / 5-6: 未訪問通知 + GPS パージ (定期 cron 用 admin endpoint).
+api_router.include_router(admin_checkin.router)
 # W41+ patient master Excel import / export. Must be registered BEFORE
 # patients.router so /patients/import-export/* paths are matched before the
 # /patients/{patient_id} catch-all.
@@ -103,6 +108,8 @@ api_router.include_router(staff.router, prefix="/staff", tags=["staff"])
 # before visits.router so its routes are matched before the generic
 # /visits/{visit_id} catch-all.
 api_router.include_router(visit_photos.router, prefix="/visits", tags=["visit-photos"])
+# /visits/{visit_id}/review (確認済み) — visits.router の前に登録 (Phase 5-3)。
+api_router.include_router(visit_review.router, prefix="/visits", tags=["visit-review"])
 api_router.include_router(visits.router, prefix="/visits", tags=["visits"])
 # QR 訪問チェックイン Phase 3: PC 訪問モニター集計 (admin/manager, read-only).
 api_router.include_router(visit_monitor.router, prefix="/monitor", tags=["visit-monitor"])
@@ -168,6 +175,13 @@ api_router.include_router(
     scheduling_settings.router,
     prefix="/scheduling-settings",
     tags=["scheduling-settings"],
+)
+# QR 訪問チェックイン Phase 4: しきい値設定 (全社一律・単一行) の取得 / 部分更新 +
+# 距離系のみの public 取得 (モバイル到着プレビュー同期).
+api_router.include_router(
+    checkin_settings.router,
+    prefix="/checkin-settings",
+    tags=["checkin-settings"],
 )
 
 __all__ = ["api_router"]

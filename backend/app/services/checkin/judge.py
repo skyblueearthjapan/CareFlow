@@ -41,6 +41,9 @@ DEFAULT_THRESHOLDS: dict[str, int] = {
     "accuracy_m": 50,
     "no_show_grace_min": 20,
     "late_min": 15,
+    # 退出忘れ (長時間 inprogress) しきい値 (分)。Phase 3 までは monitor の定数
+    # MAX_INPROGRESS_MIN にハードコードされていたが Phase 4 で設定化した。
+    "max_inprogress_min": 240,
 }
 
 

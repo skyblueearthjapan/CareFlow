@@ -37,6 +37,7 @@ from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.schemas.visit import VisitCreate, VisitRead, VisitUpdate
 from app.schemas.visit_checkin import CheckinCreate
 from app.services.checkin.judge import judge_checkin
+from app.services.checkin.notify import notify_checkin_mismatch, resolve_checkin_missing
 
 router = APIRouter()
 
@@ -673,12 +674,18 @@ async def checkin_visit(
     user: CurrentActiveUser,
 ) -> dict:
     visit, staff_id = await _load_visit_for_checkin(db, visit_id, user)
-    await judge_checkin(db, visit, staff_id, payload, "arrival")
+    checkin = await judge_checkin(db, visit, staff_id, payload, "arrival")
     # status 退行ガード: 既に completed の visit に再 checkin しても completed の
     # まま据え置く (in_progress へ巻き戻さない)。planned / in_progress のときのみ
     # in_progress へ進める。checkin 行 (append-only) は status に依らず記録される。
     if visit.status in (VISIT_STATUS_PLANNED, VISIT_STATUS_IN_PROGRESS):
         visit.status = VISIT_STATUS_IN_PROGRESS
+    # Phase 5-2: 場所違い (mismatch) は admin/manager へイベント駆動で冪等通知する
+    # (同一 transaction で add し、下の commit で一括永続化)。
+    await notify_checkin_mismatch(db, visit=visit, checkin=checkin)
+    # 遅刻→到着で cron 生成済みの「未訪問」通知が残らないよう、到着記録と同一
+    # transaction で当該 visit の missing 通知を解消する (全ユーザー分削除)。
+    await resolve_checkin_missing(db, visit.id)
     await db.commit()
     return await _checkin_response(db, visit_id)
 
