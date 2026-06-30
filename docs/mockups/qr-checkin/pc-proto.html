@@ -1,0 +1,646 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>QR訪問チェックイン — PC管理 動的プロトタイプ</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  :root{
+    --brand:#0d9488; --brand-accent:#14b8a6; --brand-hover:#0f766e; --brand-light:#ccfbf1;
+    --cream:#faf7f2; --base:#ffffff; --muted-bg:#f5f3ef;
+    --ink:#1c1917; --sub:#57534e; --muted:#a8a29e; --border:#e7e2d9;
+    --ok:#0d9488; --okbg:#e6faf6; --warn:#d97706; --warnbg:#fef3c7; --bad:#dc2626; --badbg:#fee2e2;
+    --plan:#cfd8d6;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0; height:100%}
+  body{background:var(--cream); color:var(--ink);
+    font-family:"Noto Sans JP",-apple-system,"Hiragino Kaku Gothic ProN","Segoe UI",sans-serif; font-size:13px}
+  .app{display:flex; height:100vh; padding:12px}
+  .side{width:200px; background:var(--base); border:1px solid var(--border); border-right:none; border-radius:18px 0 0 18px; display:flex; flex-direction:column}
+  .brand{height:56px; display:flex; align-items:center; gap:8px; padding:0 18px; border-bottom:1px solid var(--border); font-weight:700; font-size:16px}
+  .brand .h{color:var(--brand)}
+  .nav{padding:12px; display:flex; flex-direction:column; gap:3px}
+  .nav a{display:flex; align-items:center; gap:11px; padding:9px 12px; border-radius:10px; color:var(--sub); text-decoration:none; font-size:13px; cursor:pointer}
+  .nav a.on{background:var(--brand-light); color:var(--brand-hover); font-weight:600}
+
+  .main{flex:1; background:var(--base); border:1px solid var(--border); border-radius:0 18px 18px 0; display:flex; flex-direction:column; overflow:hidden}
+  .topbar{height:56px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:14px; padding:0 20px}
+  .topbar h1{font-size:18px; margin:0; font-weight:700}
+  .spacer{flex:1}
+  .live{display:inline-flex; align-items:center; gap:6px; font-size:11.5px; color:var(--sub)}
+  .live .dotlive{width:8px; height:8px; border-radius:50%; background:#16a34a; animation:blink 1.4s infinite}
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+  .btn{border:1px solid var(--border); background:var(--base); border-radius:9px; padding:7px 12px; font-family:inherit; font-size:12.5px; cursor:pointer; display:inline-flex; gap:6px; align-items:center; color:var(--sub)}
+  .btn.brand{background:var(--brand); color:#fff; border-color:var(--brand); font-weight:600}
+  .btn.call{background:var(--bad); color:#fff; border-color:var(--bad); font-weight:700}
+
+  .filters{display:flex; align-items:center; gap:8px; padding:11px 20px; border-bottom:1px solid var(--border); flex-wrap:wrap}
+  .datepick{display:inline-flex; align-items:center; gap:8px; font-weight:600; font-size:14px}
+  .datepick button{border:1px solid var(--border); background:var(--base); width:26px; height:26px; border-radius:8px; cursor:pointer}
+  .vsep{width:1px; height:20px; background:var(--border)}
+  .chip{border:1px solid var(--border); border-radius:99px; padding:6px 13px; font-size:12.5px; color:var(--sub); cursor:pointer; background:var(--base)}
+  .chip.on{background:var(--brand-light); color:var(--brand-hover); border-color:transparent; font-weight:600}
+
+  /* ---- KPI: 1行のスリムなチップ列 ---- */
+  .kpis{display:flex; gap:8px; flex-wrap:wrap; align-items:center; padding:8px 20px 4px}
+  .kpi{display:inline-flex; align-items:baseline; gap:6px; border:1px solid var(--border); border-radius:99px; padding:4px 12px; background:var(--base)}
+  .kpi .lab{font-size:11px; color:var(--muted)}
+  .kpi .num{font-size:15px; font-weight:700; font-variant-numeric:tabular-nums}
+  .kpi.warn .num{color:var(--warn)} .kpi.bad .num{color:var(--bad)} .kpi.ok .num{color:var(--brand-hover)}
+  .kpi.bad{border-color:#fca5a5; background:#fff5f5}
+
+  /* ---- alert tray: 1行カードの横スクロール ---- */
+  .alerthd{display:none}
+  .alerttray{display:flex; align-items:center; gap:8px; padding:2px 20px 8px; overflow-x:auto}
+  .alerttray.empty{color:var(--muted); font-size:12px; padding:4px 20px 10px}
+  .alab{flex:0 0 auto; font-size:11.5px; font-weight:700; color:var(--bad); white-space:nowrap}
+  .alert{flex:0 0 auto; display:flex; align-items:center; gap:8px; border-radius:10px; padding:5px 10px; border:1px solid; cursor:pointer; background:var(--base)}
+  .alert.missing{background:#fef2f2; border-color:#fca5a5; animation:pulse 1.7s infinite}
+  .alert.mismatch{background:#fff7ed; border-color:#fed7aa}
+  .alert.review{background:#fefce8; border-color:#fde68a}
+  .alert.sel{outline:2px solid var(--ink); outline-offset:1px}
+  @keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(220,38,38,0)}50%{box-shadow:0 0 0 4px rgba(220,38,38,.13)}}
+  .alert .tag{font-size:10px; font-weight:700; padding:2px 7px; border-radius:99px; color:#fff; white-space:nowrap}
+  .alert.missing .tag{background:var(--bad)} .alert.mismatch .tag{background:var(--warn)} .alert.review .tag{background:#ca8a04}
+  .alert .ttl{font-weight:700; font-size:12.5px; white-space:nowrap}
+  .alert .who2{font-size:10.5px; color:var(--muted); white-space:nowrap}
+  .alert .rs{font-size:11px; color:var(--sub); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:160px}
+  .alert .qa{display:flex; gap:5px; flex:0 0 auto}
+  .alert .qa .btn{padding:3px 8px; font-size:11px}
+
+  /* 「全件 ▾」ドロップダウン（件数が多いとき全アラートを縦一覧） */
+  .alertwrap{position:relative}
+  .amore{flex:0 0 auto; font-size:11.5px; font-weight:700; color:var(--brand-hover); background:var(--brand-light); border:none; padding:5px 12px; border-radius:99px; cursor:pointer; white-space:nowrap}
+  .amore.on{background:var(--brand); color:#fff}
+  .alertpop{position:absolute; top:calc(100% - 4px); left:20px; right:20px; z-index:40; background:var(--base); border:1px solid var(--border); border-radius:12px; box-shadow:0 14px 34px rgba(28,25,23,.18); max-height:56vh; overflow-y:auto; padding:4px 6px 6px}
+  .alertpop .pophd{position:sticky; top:0; background:var(--base); display:flex; align-items:center; justify-content:space-between; padding:8px; font-size:12px; font-weight:700; color:var(--sub)}
+  .alertpop .pophd .x{cursor:pointer; color:var(--muted); font-size:14px; padding:0 4px}
+  .arow{display:flex; align-items:center; gap:9px; padding:8px 10px; border-radius:9px; cursor:pointer; border-top:1px solid var(--muted-bg)}
+  .arow:hover{background:var(--muted-bg)}
+  .arow.sel{background:var(--brand-light)}
+  .arow .tag{font-size:10px; font-weight:700; padding:2px 7px; border-radius:99px; color:#fff; white-space:nowrap}
+  .arow.missing .tag{background:var(--bad)} .arow.mismatch .tag{background:var(--warn)} .arow.review .tag{background:#ca8a04}
+  .arow .ttl{font-weight:700; font-size:12.5px; white-space:nowrap}
+  .arow .who2{font-size:10.5px; color:var(--muted); white-space:nowrap}
+  .arow .rs2{flex:1; font-size:11.5px; color:var(--sub); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .arow .qa{display:flex; gap:5px; flex:0 0 auto}
+  .arow .qa .btn{padding:3px 8px; font-size:11px}
+
+  .legend{display:flex; gap:14px; flex-wrap:wrap; padding:2px 20px 8px; font-size:12px; color:var(--sub)}
+  .legend b{display:inline-flex; align-items:center; gap:6px; font-weight:500}
+  .sw{width:20px; height:11px; border-radius:3px; display:inline-block}
+
+  .body{flex:1; display:flex; min-height:0}
+  .tl-wrap{flex:1; overflow:auto}
+
+  /* ---- timeline ---- */
+  .gantt{min-width:880px; padding:4px 20px 16px}
+  .axis{display:grid; grid-template-columns:156px 1fr; position:sticky; top:0; background:var(--base); z-index:5; border-bottom:1px solid var(--border)}
+  .axis .corner{font-size:11px; color:var(--muted); padding:8px}
+  .hours{display:flex}
+  .hours .h{flex:1; font-size:11px; color:var(--muted); padding:8px 0 8px 2px; border-left:1px solid var(--border)}
+  .row{position:relative; display:grid; grid-template-columns:156px 1fr; border-bottom:1px solid var(--muted-bg); min-height:66px; cursor:pointer; transition:opacity .15s, background .12s}
+  .row.dim{opacity:.3}
+  /* 1つ選ぶと他行を沈めて、選択中の人を一目で際立たせる */
+  .gantt.has-sel .row:not(.sel):not(.dim){opacity:.4}
+  .row.sel{background:#d4f1ea; box-shadow:inset 5px 0 0 var(--brand); z-index:1}
+  .row:hover:not(.sel){background:var(--muted-bg)}
+  .who{display:flex; align-items:center; gap:7px; padding:6px 8px}
+  .winfo{min-width:0; overflow:hidden}
+  .winfo .nm{font-weight:600; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .winfo .sm{font-size:10.5px; color:var(--muted)}
+  .rownum{width:20px; height:20px; border-radius:6px; background:var(--muted-bg); color:var(--sub); font-size:11px; font-weight:700; display:flex; align-items:center; justify-content:center; flex:0 0 auto; font-variant-numeric:tabular-nums}
+  .row.sel .rownum{background:var(--brand); color:#fff}
+  .ava{width:30px; height:30px; border-radius:50%; background:linear-gradient(135deg,var(--brand),var(--brand-accent)); color:#fff; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:700; flex:0 0 auto}
+  .row.sel .ava{box-shadow:0 0 0 2px #fff,0 0 0 4px var(--brand)}
+  .row.sel .winfo .nm{font-weight:800; color:var(--brand-hover)}
+  .seltag{display:inline-block; font-size:9.5px; font-weight:700; color:#fff; background:var(--brand); padding:1px 7px; border-radius:99px}
+  .track{position:relative; border-left:1px solid var(--border)}
+  .grid-lines{position:absolute; inset:0; display:flex}
+  .grid-lines i{flex:1; border-left:1px solid var(--muted-bg)}
+  .now-line{position:absolute; top:0; bottom:0; width:2px; background:#2563eb; z-index:4}
+  .now-line::after{content:"今"; position:absolute; top:-1px; left:3px; font-size:9px; color:#2563eb; font-weight:700}
+
+  .vlabel{position:absolute; top:4px; font-size:10px; color:var(--sub); white-space:nowrap; font-weight:600; pointer-events:none; text-shadow:0 0 3px #fff,0 0 3px #fff}
+  .nextdist{position:absolute; top:21px; font-size:9px; color:var(--muted); white-space:nowrap; pointer-events:none; text-shadow:0 0 3px #fff,0 0 3px #fff}
+  .bar{position:absolute; border-radius:5px; cursor:pointer}
+  .plan{top:20px; height:14px; background:repeating-linear-gradient(90deg,var(--plan),var(--plan) 6px,#dde4e2 6px,#dde4e2 12px); opacity:.9; border:1px solid #c2ccc9}
+  .act{top:38px; height:15px; display:flex; align-items:center; padding:0 5px; color:#fff; font-size:10px; font-weight:600; overflow:hidden; white-space:nowrap}
+  .act.match{background:var(--brand)} .act.review{background:var(--warn)} .act.mismatch{background:var(--bad)}
+  .act.inprogress{background:var(--brand); background-image:repeating-linear-gradient(45deg,rgba(255,255,255,.25),rgba(255,255,255,.25) 4px,transparent 4px,transparent 8px)}
+  .act.missing{background:repeating-linear-gradient(45deg,#dc2626,#dc2626 5px,#ef4444 5px,#ef4444 10px); color:#fff; box-shadow:0 0 0 2px #fecaca; animation:pulse 1.7s infinite}
+  .bar.sel{outline:3px solid var(--ink); outline-offset:1px; box-shadow:0 0 0 5px rgba(13,148,136,.32); z-index:7}
+  .flag{position:absolute; top:36px; font-size:12px; z-index:3; pointer-events:none}
+  .flag.big{font-size:15px; top:35px}
+
+  /* ---- detail (right) ---- */
+  /* パネル全体を1つのスクロール領域に（地図も一緒にスクロール） */
+  .detail{width:348px; border-left:1px solid var(--border); background:var(--muted-bg); overflow-y:auto}
+  #map{height:280px; background:#dfe7e4; z-index:0}
+  .dbody{padding:16px}
+  .dbody.empty{display:flex; align-items:center; justify-content:center; color:var(--muted); text-align:center; font-size:13px; padding:30px; min-height:240px}
+  .dbody h3{margin:0 0 2px; font-size:15px}
+  .dbody .meta{font-size:12px; color:var(--sub); margin-bottom:14px}
+  .dcard{background:var(--base); border:1px solid var(--border); border-radius:12px; padding:6px 14px; margin-bottom:12px}
+  .kv{display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--muted-bg); font-size:12.5px}
+  .kv:last-child{border-bottom:none}
+  .kv .k{color:var(--sub)} .kv .v{font-weight:600; font-variant-numeric:tabular-nums}
+  .judge{display:flex; align-items:center; gap:9px; padding:11px 13px; border-radius:11px; font-size:13px; font-weight:600; margin-bottom:12px}
+  .judge.match{background:var(--okbg); color:var(--brand-hover)} .judge.review{background:var(--warnbg); color:var(--warn)}
+  .judge.mismatch{background:var(--badbg); color:var(--bad)} .judge.inprogress{background:#dbeafe; color:#1e40af} .judge.missing{background:var(--badbg); color:var(--bad)}
+  .judge .big{font-size:18px}
+  .reasonbox{font-size:12.5px; background:var(--warnbg); border:1px solid #fde68a; border-radius:10px; padding:11px 13px; line-height:1.6; margin-bottom:12px}
+  .reasonbox.bad{background:var(--badbg); border-color:#fca5a5}
+  .reasonbox .rh{font-weight:700; font-size:11px; color:var(--sub); display:block; margin-bottom:4px}
+  .callbox{background:#fff5f5; border:1px solid #fca5a5; border-radius:12px; padding:12px; margin-bottom:12px}
+  .callbox .ttl{font-weight:700; color:var(--bad); font-size:13px; margin-bottom:6px}
+  .callbox .ln{font-size:12px; color:var(--sub); margin-bottom:8px}
+  .stoplist{list-style:none; margin:0; padding:0}
+  .stoplist li{display:flex; align-items:center; gap:9px; padding:9px 6px; border-bottom:1px solid var(--muted-bg); cursor:pointer; border-radius:8px}
+  .stoplist li:hover{background:var(--muted-bg)}
+  .stoplist li.sel{background:var(--brand-light)}
+  .stopdot{width:11px; height:11px; border-radius:50%; flex:0 0 auto}
+  .stoplist .t{font-variant-numeric:tabular-nums; color:var(--sub); font-size:12px; width:42px; flex:0 0 auto}
+  .stoplist .n{font-weight:600; font-size:13px; flex:1}
+  .stoplist .s{font-size:11px}
+  .stoplist .seg{font-size:10.5px; color:var(--muted); padding:1px 6px 6px 63px}
+  .acts{display:flex; gap:8px; margin-top:6px}
+  .acts .btn{flex:1; justify-content:center}
+  .hint-bar{font-size:11.5px; color:var(--muted); padding:6px 20px; border-top:1px dashed var(--border); background:var(--cream)}
+  .leaflet-container{font:inherit}
+  /* leaflet custom markers */
+  .lpin{width:16px; height:16px; border-radius:50%; border:2px solid #fff; box-shadow:0 1px 4px rgba(0,0,0,.45); position:relative}
+  .lpin.sel{outline:3px solid var(--ink); outline-offset:1px}
+  .lnum{position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); font-size:9px; font-weight:700; color:#fff}
+  .mk-home{width:30px; height:30px; border-radius:9px 9px 9px 2px; background:var(--brand); color:#fff; display:flex; align-items:center; justify-content:center; font-size:16px; border:2px solid #fff; box-shadow:0 2px 6px rgba(0,0,0,.4)}
+  .mk-gps{width:30px; height:30px; border-radius:50%; background:var(--bad); color:#fff; display:flex; align-items:center; justify-content:center; font-size:15px; border:3px solid #fff; box-shadow:0 0 0 5px rgba(220,38,38,.25),0 2px 6px rgba(0,0,0,.4)}
+  .mk-near{width:22px; height:22px; border-radius:50%; background:#fff; color:var(--sub); display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; border:2px dashed var(--muted)}
+  .seg-dist{background:rgba(255,255,255,.9); border:1px solid var(--border); border-radius:6px; padding:0 5px; font-size:10px; color:var(--sub); white-space:nowrap; font-weight:600}
+  .gap-dist{background:var(--bad); color:#fff; border-radius:6px; padding:1px 6px; font-size:10.5px; white-space:nowrap; font-weight:700; box-shadow:0 1px 4px rgba(0,0,0,.3)}
+  .near-lab{background:rgba(255,255,255,.92); border:1px solid var(--border); border-radius:6px; padding:0 5px; font-size:10px; color:var(--sub); white-space:nowrap}
+
+  /* ---- しきい値設定モーダル ---- */
+  .modal-scrim{position:fixed; inset:0; background:rgba(28,25,23,.42); display:flex; align-items:center; justify-content:center; z-index:200}
+  .modal-scrim[hidden]{display:none}
+  .modal{width:440px; max-width:92vw; background:var(--base); border-radius:16px; box-shadow:0 22px 54px rgba(0,0,0,.32); overflow:hidden}
+  .modal-hd{display:flex; align-items:center; gap:10px; padding:14px 16px; border-bottom:1px solid var(--border)}
+  .modal-hd b{font-size:15px}
+  .modal-hd .scope{font-size:11px; color:var(--brand-hover); background:var(--brand-light); padding:3px 9px; border-radius:99px; font-weight:700}
+  .modal-hd .x{margin-left:auto; cursor:pointer; color:var(--muted); font-size:16px}
+  .modal-bd{padding:10px 16px 16px; max-height:66vh; overflow-y:auto}
+  .modal-bd .sec{font-size:11px; font-weight:700; color:var(--muted); margin:14px 0 2px}
+  .modal-bd label{display:flex; justify-content:space-between; align-items:baseline; gap:10px; font-size:12.5px; color:var(--sub); margin-top:10px}
+  .modal-bd output{font-weight:700; color:var(--ink); font-variant-numeric:tabular-nums; white-space:nowrap}
+  .modal-bd input[type=range]{width:100%; accent-color:var(--brand); margin-top:4px}
+  .preview{margin-top:16px; background:var(--muted-bg); border-radius:10px; padding:10px 12px; font-size:12.5px; display:flex; gap:14px; flex-wrap:wrap; align-items:center}
+  .preview .pm{color:var(--brand-hover); font-weight:700} .preview .pr{color:var(--warn); font-weight:700} .preview .px{color:var(--bad); font-weight:700}
+  .modal-ft{display:flex; justify-content:flex-end; gap:8px; padding:12px 16px; border-top:1px solid var(--border)}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand"><span class="h">♥</span> CareFlow</div>
+    <nav class="nav">
+      <a>📊 ダッシュボード</a><a>📅 スケジュール</a><a>▦ 受け入れ枠</a>
+      <a class="on">📍 訪問モニター</a>
+      <a>👥 患者</a><a>🧑‍⚕️ スタッフ</a><a>🏢 拠点</a><a>🔌 連携</a>
+    </nav>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <h1>訪問モニター</h1>
+      <div class="spacer"></div>
+      <span class="live"><span class="dotlive"></span>リアルタイム更新中（13:30）</span>
+      <button class="btn" id="thBtn">⚙ しきい値設定</button>
+    </div>
+
+    <div class="filters">
+      <span class="datepick"><button>‹</button> 2026/06/30 (月) <button>›</button></span>
+      <span class="vsep"></span>
+      <span class="chip on" data-office="all">全拠点</span>
+      <span class="chip" data-office="稲毛">稲毛</span>
+      <span class="chip" data-office="都賀">都賀</span>
+      <span class="vsep"></span>
+      <span class="chip" data-only="anomaly">⚠ 異常のみ</span>
+      <span class="chip" data-only="missing">未訪問のみ</span>
+    </div>
+
+    <div class="kpis" id="kpis"></div>
+
+    <div class="alertwrap">
+      <div class="alerttray" id="alerttray"></div>
+      <div class="alertpop" id="alertpop" hidden></div>
+    </div>
+
+    <div class="legend">
+      <b><span class="sw" style="background:repeating-linear-gradient(90deg,#cfd8d6,#cfd8d6 6px,#dde4e2 6px,#dde4e2 12px); border:1px solid #c2ccc9"></span>予定（患者名）</b>
+      <b><span class="sw" style="background:var(--brand)"></span>一致</b>
+      <b><span class="sw" style="background:var(--warn)"></span>要確認</b>
+      <b><span class="sw" style="background:var(--bad)"></span>不一致</b>
+      <b><span class="sw" style="background:repeating-linear-gradient(45deg,#dc2626,#dc2626 5px,#ef4444 5px,#ef4444 10px)"></span>未訪問</b>
+      <b>→1.2km 次までの距離</b>
+    </div>
+
+    <div class="body">
+      <div class="tl-wrap"><div class="gantt" id="gantt"></div></div>
+      <aside class="detail">
+        <div id="map"></div>
+        <div class="dbody empty" id="dbody">行（コース）をクリックで地図に目的地を表示。<br>各訪問バー／上部の要対応カードをクリックで詳細。</div>
+      </aside>
+    </div>
+    <div class="hint-bar">💡 行=コース地図／バー=訪問詳細／上部カード=要対応へジャンプ。地図は OpenStreetMap（要ネット接続）。ダミーデータ。</div>
+  </main>
+</div>
+
+<div class="modal-scrim" id="thScrim" hidden>
+  <div class="modal">
+    <div class="modal-hd"><b>しきい値設定</b><span class="scope">適用: 全社一律</span><span class="x" id="thX">✕</span></div>
+    <div class="modal-bd">
+      <div class="sec">位置判定（登録住所からの距離）</div>
+      <label>一致（○）の範囲 <output id="oMatch"></output></label>
+      <input type="range" id="thMatch" min="20" max="300" step="10">
+      <label>要確認（△）の上限：超えたら不一致（×） <output id="oReview"></output></label>
+      <input type="range" id="thReview" min="100" max="600" step="10">
+      <label>GPS精度の許容：超えたら「測位不良」で要確認 <output id="oAcc"></output></label>
+      <input type="range" id="thAcc" min="10" max="200" step="5">
+      <div class="sec">時間判定</div>
+      <label>未訪問の猶予（予定開始＋） <output id="oNoShow"></output></label>
+      <input type="range" id="thNoShow" min="5" max="60" step="5">
+      <label>遅延の判定（予定＋） <output id="oLate"></output></label>
+      <input type="range" id="thLate" min="5" max="60" step="5">
+      <div class="preview" id="thPreview"></div>
+    </div>
+    <div class="modal-ft"><button class="btn" id="thReset">既定に戻す</button><button class="btn brand" id="thSave">保存して再判定</button></div>
+  </div>
+</div>
+
+<script>
+const NOW = 13*60+30;
+const T0 = 8*60, T1 = 19*60, SPAN = T1-T0;
+const pct = m => ((m-T0)/SPAN)*100;
+const hm = m => String(Math.floor(m/60)).padStart(2,'0')+':'+String(m%60).padStart(2,'0');
+function haversine(a,b,c,d){const R=6371000,r=Math.PI/180;const dl=(c-a)*r,dn=(d-b)*r;
+  const x=Math.sin(dl/2)**2+Math.cos(a*r)*Math.cos(c*r)*Math.sin(dn/2)**2;return 2*R*Math.asin(Math.sqrt(x));}
+const fmtD = m => m==null?'—':(m<1000?Math.round(m/10)*10+'m':(m/1000).toFixed(1)+'km');
+
+const STAFF = [
+  {id:'s1', name:'田中 太郎', ini:'田', office:'稲毛', course:'Aコース'},
+  {id:'s2', name:'佐藤 美咲', ini:'佐', office:'稲毛', course:'Bコース'},
+  {id:'s3', name:'鈴木 健一', ini:'鈴', office:'稲毛', course:'Cコース'},
+  {id:'s4', name:'高橋 涼',   ini:'高', office:'都賀', course:'Aコース'},
+  {id:'s5', name:'伊藤 さくら',ini:'伊', office:'都賀', course:'Bコース'},
+];
+const V = [
+  {id:'v1', s:'s1', pt:'山田 花子', tel:'090-1111-0001', ps:570, pe:630, aa:568, ad:615, st:'match', dist:12, acc:8, lat:35.6072, lng:140.1065},
+  {id:'v2', s:'s1', pt:'佐藤 一郎', tel:'090-1111-0002', ps:660, pe:720, aa:678, ad:730, st:'review', dist:8,  acc:6, lat:35.6085, lng:140.1098, reason:'前訪問が押して18分遅れ。'},
+  {id:'v3', s:'s1', pt:'本田 武',   tel:'090-1111-0003', ps:780, pe:840, aa:785, ad:null,st:'inprogress', dist:20, acc:10, lat:35.6061, lng:140.1042},
+  {id:'v4', s:'s2', pt:'高橋 桃',   tel:'090-2222-0004', ps:540, pe:600, aa:542, ad:595, st:'match', dist:15, acc:9, lat:35.6098, lng:140.1051},
+  {id:'v5', s:'s2', pt:'井川 裕太', tel:'090-2222-0005', ps:660, pe:720, aa:678, ad:725, st:'review', dist:60, acc:12, lat:35.6110, lng:140.1083,
+     reason:'到着が18分遅れ。前訪問が長引いたとの申告あり。'},
+  {id:'v6', s:'s2', pt:'林 みなみ', tel:'090-2222-0006', ps:780, pe:825, aa:781, ad:820, st:'mismatch', dist:360, acc:11, lat:35.6045, lng:140.1109, glat:35.6018, glng:140.1075, reason:'隣接アパートの入口側で測位された可能性。'},
+  {id:'v7', s:'s3', pt:'渡辺 三郎', tel:'090-3333-0007', ps:540, pe:600, aa:541, ad:598, st:'match', dist:10, acc:8, lat:35.6033, lng:140.1024},
+  {id:'v8', s:'s3', pt:'中村 良子', tel:'090-3333-0008', ps:630, pe:690, aa:634, ad:672, st:'mismatch', dist:340, acc:15, lat:35.6088, lng:140.1132,
+     glat:35.6116, glng:140.1166, reason:'マンション裏手の駐車場で測位されたため離れた表示です（スタッフ入力）。'},
+  {id:'v9', s:'s3', pt:'小林 悠',   tel:'090-3333-0009', ps:780, pe:840, aa:783, ad:null,st:'inprogress', dist:18, acc:9, lat:35.6075, lng:140.1075},
+  {id:'v10',s:'s4', pt:'加藤 蓮',   tel:'090-4444-0010', ps:600, pe:660, aa:603, ad:655, st:'match', dist:14, acc:8, lat:35.6332, lng:140.1551},
+  {id:'v11',s:'s4', pt:'吉田 千夏', tel:'090-4444-0011', ps:720, pe:765, aa:null, ad:null,st:'missing', dist:null, acc:null, lat:35.6358, lng:140.1602,
+     reason:''},
+  {id:'v12',s:'s4', pt:'山下 旭',   tel:'090-4444-0012', ps:840, pe:900, aa:null, ad:null,st:'future', dist:null, acc:null, lat:35.6300, lng:140.1648},
+  {id:'v13',s:'s5', pt:'松本 結衣', tel:'090-5555-0013', ps:480, pe:540, aa:498, ad:545, st:'review', dist:11, acc:7, lat:35.6371, lng:140.1582, reason:'始業直後で18分遅れ。渋滞の申告。'},
+  {id:'v14',s:'s5', pt:'清水 楓',   tel:'090-5555-0014', ps:600, pe:660, aa:601, ad:658, st:'mismatch', dist:420, acc:13, lat:35.6405, lng:140.1671, glat:35.6372, glng:140.1628, reason:'登録住所と異なる棟で記録。要確認。'},
+  {id:'v15',s:'s5', pt:'山口 一颯', tel:'090-5555-0015', ps:840, pe:880, aa:null, ad:null,st:'future', dist:null, acc:null, lat:35.6345, lng:140.1539},
+];
+// DBの全患者宅（近隣候補「〇〇様宅？」推定用）。実装では patients テーブルの lat/lng を流用。
+const HOMES = [
+  {name:'田村', lat:35.6117, lng:140.1167}, {name:'岡田', lat:35.6109, lng:140.1158},
+  {name:'西村', lat:35.6122, lng:140.1175}, {name:'森田', lat:35.6101, lng:140.1149},
+];
+const ST_LABEL = {match:'一致', review:'要確認', mismatch:'不一致', inprogress:'訪問中', missing:'未訪問', future:'予定'};
+const ST_COLOR = {match:'#0d9488', review:'#d97706', mismatch:'#dc2626', inprogress:'#2563eb', missing:'#dc2626', future:'#cbd5e1'};
+const ST_JUDGE = {match:['✓','登録住所と一致'], review:['⚠','要確認（遅延／距離）'], mismatch:['✕','場所違いの可能性'],
+  inprogress:['●','訪問中'], missing:['⚠','未訪問・未記録'], future:['○','これからの予定']};
+
+/* ---------- しきい値（全社一律）と自動判定 ---------- */
+const TH_DEFAULT={matchM:100, reviewM:300, accM:50, noShowMin:20, lateMin:15};
+let TH={...TH_DEFAULT};
+// 生データ（距離・時刻・GPS精度）から状態を導出。判定はハードコードせずこの関数に集約。
+function classifyWith(v,th){
+  if(v.aa==null) return (NOW >= v.ps + th.noShowMin) ? 'missing' : 'future';  // 到着スキャンなし
+  if(v.ad==null) return 'inprogress';                                          // 到着済・退出前
+  const late = (v.aa - v.ps) >= th.lateMin;
+  const poorAcc = v.acc!=null && v.acc > th.accM;
+  let d;
+  if(v.dist==null || v.dist<=th.matchM) d='match';
+  else if(v.dist<=th.reviewM) d='review';
+  else d='mismatch';
+  if(d==='mismatch') return 'mismatch';
+  if(d==='review' || late || poorAcc) return 'review';
+  return 'match';
+}
+function recompute(){ V.forEach(v=>{ v.st=classifyWith(v,TH); }); }
+
+let selStaff=null, selVisit=null, office='all', only=null;
+const staffOf = id => STAFF.find(s=>s.id===id);
+const courseVisits = sid => V.filter(v=>v.s===sid).sort((a,b)=>a.ps-b.ps);
+function nextVisit(v){ const list=courseVisits(v.s); const i=list.findIndex(x=>x.id===v.id); return list[i+1]||null; }
+function distToNext(v){ const n=nextVisit(v); return (n&&v.lat&&n.lat)?haversine(v.lat,v.lng,n.lat,n.lng):null; }
+function visible(v){
+  const s=staffOf(v.s);
+  if(office!=='all' && s.office!==office) return false;
+  if(only==='anomaly' && !(v.st==='review'||v.st==='mismatch'||v.st==='missing')) return false;
+  if(only==='missing' && v.st!=='missing') return false;
+  return true;
+}
+
+/* ---------- KPI ---------- */
+function renderKpi(){
+  const vis=V.filter(visible);
+  const match=vis.filter(v=>v.st==='match'||v.st==='inprogress').length;
+  const review=vis.filter(v=>v.st==='review'||v.st==='mismatch').length;
+  const miss=vis.filter(v=>v.st==='missing').length;
+  const diffs=vis.filter(v=>v.aa).map(v=>v.aa-v.ps);
+  const avg=diffs.length?Math.round(diffs.reduce((a,b)=>a+b,0)/diffs.length):0;
+  document.getElementById('kpis').innerHTML=`
+    <div class="kpi"><span class="lab">本日の訪問</span><span class="num">${vis.length}</span></div>
+    <div class="kpi ok"><span class="lab">記録済</span><span class="num">${match}</span></div>
+    <div class="kpi warn"><span class="lab">要確認</span><span class="num">${review}</span></div>
+    <div class="kpi ${miss?'bad':''}"><span class="lab">未訪問</span><span class="num">${miss}</span></div>
+    <div class="kpi"><span class="lab">平均到着ズレ</span><span class="num">${avg>=0?'+':''}${avg}分</span></div>`;
+}
+
+/* ---------- alert tray (理由を優先表示) ---------- */
+const ALERT_RANK = {missing:0, mismatch:1, review:2};
+let popOpen=false;
+function callMock(id){ const v=V.find(x=>x.id===id); alert(`発信（モック）：${v.pt} さん ${v.tel}`); }
+function alertTag(v){ return {missing:'未訪問', mismatch:`場所違い ${v.dist}m`, review:'要確認'}[v.st]; }
+function alertReason(v){ return v.reason ? v.reason : (v.st==='missing'?'理由未入力（要確認）':'理由なし'); }
+
+function renderAlerts(){
+  const al=V.filter(v=>visible(v) && (v.st==='missing'||v.st==='mismatch'||v.st==='review'))
+    .sort((a,b)=>ALERT_RANK[a.st]-ALERT_RANK[b.st] || a.ps-b.ps);
+  const tray=document.getElementById('alerttray'), pop=document.getElementById('alertpop');
+  if(!al.length){ tray.className='alerttray empty'; tray.innerHTML='✓ 要対応の異常はありません'; pop.hidden=true; popOpen=false; return; }
+  tray.className='alerttray';
+  const label=`<span class="alab" title="未訪問→場所違い→要確認の優先順">⚠ 要対応 ${al.length}件</span>`;
+  const cards=al.map(v=>{
+    const s=staffOf(v.s), sel=selVisit===v.id?' sel':'';
+    const callBtn=v.st==='missing'?`<button class="btn call" data-call="${v.id}">📞連絡</button>`:'';
+    return `<div class="alert ${v.st}${sel}" data-go="${v.id}">
+      <span class="tag">${alertTag(v)}</span><span class="ttl">${v.pt}</span><span class="who2">${s.name}</span>
+      <span class="rs" title="${alertReason(v)}">📝 ${alertReason(v)}</span>
+      <span class="qa">${callBtn}<button class="btn" data-go="${v.id}">地図</button></span></div>`;
+  }).join('');
+  // 4件以上は「全件 ▾」で縦一覧ドロップダウンも開ける（左側固定で常に押せる）
+  const more = al.length>3 ? `<button class="amore${popOpen?' on':''}" id="amore">全件 ${popOpen?'▴':'▾'}</button>` : '';
+  tray.innerHTML=label+more+cards;
+
+  // ドロップダウン（全アラートを縦に。8件以上でもスクロールで全部見える）
+  pop.innerHTML=`<div class="pophd"><span>⚠ 要対応 ${al.length}件（未訪問→場所違い→要確認）</span><span class="x" id="popx">✕</span></div>`+
+    al.map(v=>{
+      const s=staffOf(v.s), sel=selVisit===v.id?' sel':'';
+      const callBtn=v.st==='missing'?`<button class="btn call" data-call="${v.id}">📞連絡</button>`:'';
+      return `<div class="arow ${v.st}${sel}" data-go="${v.id}">
+        <span class="tag">${alertTag(v)}</span><span class="ttl">${v.pt}</span><span class="who2">${s.name}/${s.office}</span>
+        <span class="rs2" title="${alertReason(v)}">📝 ${alertReason(v)}</span>
+        <span class="qa">${callBtn}<button class="btn" data-go="${v.id}">地図</button></span></div>`;
+    }).join('');
+  pop.hidden=!popOpen;
+
+  // wiring
+  const goSel = (el,closePop)=>el.onclick=e=>{ e.stopPropagation(); if(closePop){popOpen=false; pop.hidden=true;} selectVisit(el.dataset.go); };
+  tray.querySelectorAll('.alert[data-go], .alert .btn[data-go]').forEach(el=>goSel(el,false));
+  pop.querySelectorAll('.arow[data-go], .arow .btn[data-go]').forEach(el=>goSel(el,true));
+  [...tray.querySelectorAll('[data-call]'), ...pop.querySelectorAll('[data-call]')].forEach(el=>el.onclick=e=>{ e.stopPropagation(); callMock(el.dataset.call); });
+  const amore=document.getElementById('amore'); if(amore) amore.onclick=e=>{ e.stopPropagation(); popOpen=!popOpen; pop.hidden=!popOpen; amore.classList.toggle('on',popOpen); amore.textContent='全件 '+(popOpen?'▴':'▾'); };
+  const popx=document.getElementById('popx'); if(popx) popx.onclick=e=>{ e.stopPropagation(); popOpen=false; pop.hidden=true; };
+}
+
+/* ---------- timeline ---------- */
+function renderTimeline(){
+  const hours=Array.from({length:11},(_,i)=>`<span class="h">${8+i}</span>`).join('');
+  let rows='';
+  STAFF.forEach((s,idx)=>{
+    const vs=courseVisits(s.id);
+    const anyVisible=vs.some(visible);
+    const bars=vs.map(v=>{
+      const pL=pct(v.ps), pW=pct(v.pe)-pct(v.ps);
+      let html=`<div class="vlabel" style="left:${pL}%" title="${v.pt}">${v.pt}</div>`;
+      const dn=distToNext(v);
+      if(dn!=null){ const nx=nextVisit(v); html+=`<div class="nextdist" style="left:${(pct(v.pe)+pct(nx.ps))/2}%">→${fmtD(dn)}</div>`; }
+      html+=`<div class="bar plan" style="left:${pL}%; width:${pW}%" data-id="${v.id}" title="予定 ${hm(v.ps)}–${hm(v.pe)} ${v.pt}"></div>`;
+      if(v.aa){
+        const end=v.ad??NOW, aL=pct(v.aa), aW=Math.max(pct(end)-pct(v.aa),2.5);
+        const sel=selVisit===v.id?' sel':'';
+        const lbl=v.st==='mismatch'?`${v.dist}m`:v.st==='review'?`+${v.aa-v.ps}分`:'';
+        html+=`<div class="bar act ${v.st}${sel}" style="left:${aL}%; width:${aW}%" data-id="${v.id}">${lbl}</div>`;
+      } else if(v.st==='missing'){
+        const sel=selVisit===v.id?' sel':'';
+        html+=`<div class="bar act missing${sel}" style="left:${pL}%; width:${pW}%" data-id="${v.id}">未訪問</div>`;
+      }
+      if(v.st==='mismatch') html+=`<span class="flag" style="left:${pL}%">🔴</span>`;
+      else if(v.st==='review') html+=`<span class="flag" style="left:${pL}%">🟠</span>`;
+      else if(v.st==='missing') html+=`<span class="flag big" style="left:${pL}%">⛔</span>`;
+      return html;
+    }).join('');
+    const sel=selStaff===s.id;
+    const sm=sel?`<span class="seltag">● 選択中</span>`:`${s.office} ・ ${s.course}`;
+    rows+=`<div class="row ${anyVisible?'':'dim'}${sel?' sel':''}" data-staff="${s.id}">
+      <div class="who"><span class="rownum">${idx+1}</span><span class="ava">${s.ini}</span>
+        <span class="winfo"><span class="nm">${s.name}</span><br><span class="sm">${sm}</span></span></div>
+      <div class="track"><div class="grid-lines">${'<i></i>'.repeat(11)}</div><div class="now-line" style="left:${pct(NOW)}%"></div>${bars}</div>
+    </div>`;
+  });
+  const g=document.getElementById('gantt');
+  g.className='gantt'+(selStaff?' has-sel':'');
+  g.innerHTML=`<div class="axis"><div class="corner">#／スタッフ</div><div class="hours">${hours}</div></div>${rows}`;
+  document.querySelectorAll('#gantt .row[data-staff]').forEach(r=>r.onclick=()=>selectCourse(r.dataset.staff));
+  document.querySelectorAll('#gantt .bar[data-id]').forEach(b=>b.onclick=e=>{ e.stopPropagation(); selectVisit(b.dataset.id); });
+}
+
+/* ---------- leaflet map ---------- */
+let map, layer;
+function ensureMap(){
+  if(map) return;
+  // scrollWheelZoom:false → 地図上のホイールはパネルのスクロールに使う（ズームは +/− ボタン・ダブルクリック）
+  map=L.map('map',{zoomControl:true, attributionControl:false, scrollWheelZoom:false}).setView([35.61,140.11],14);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);
+  layer=L.layerGroup().addTo(map);
+}
+const numIcon=(color,sel,num)=>L.divIcon({className:'', iconSize:[18,18], iconAnchor:[9,9],
+  html:`<div class="lpin ${sel?'sel':''}" style="background:${color}">${num?`<span class="lnum">${num}</span>`:''}</div>`});
+const htmlIcon=(cls,txt,sz,anch)=>L.divIcon({className:'', iconSize:sz, iconAnchor:anch, html:`<div class="${cls}">${txt}</div>`});
+const labIcon=(cls,txt)=>L.divIcon({className:'', iconSize:[1,1], iconAnchor:[0,0], html:`<div class="${cls}" style="transform:translate(-50%,-130%)">${txt}</div>`});
+
+function drawCourse(staffId, focusVisitId){
+  ensureMap(); layer.clearLayers();
+  const vs=courseVisits(staffId).filter(v=>v.lat);
+  const regPts=[], allPts=[];
+  const focus=V.find(v=>v.id===focusVisitId);
+  vs.forEach((v,i)=>{
+    const sel=v.id===focusVisitId;
+    if(v.st==='mismatch' && v.glat){
+      // 自宅（予定）= 家アイコン
+      const hm2=L.marker([v.lat,v.lng],{icon:htmlIcon('mk-home','🏠',[30,30],[15,28])}).addTo(layer);
+      hm2.bindPopup(`<b>${v.pt} さん宅（予定）</b><br>登録住所`);
+      hm2.on('click',()=>selectVisit(v.id));
+      L.marker([v.lat,v.lng],{icon:labIcon('near-lab',`${v.pt}様宅`)}).addTo(layer);
+      // しきい値円（100m）
+      L.circle([v.lat,v.lng],{radius:100,color:'#0d9488',weight:1,dashArray:'4',fillColor:'#0d9488',fillOpacity:.06}).addTo(layer);
+      // 実GPS = 位置アイコン
+      const gp=L.marker([v.glat,v.glng],{icon:htmlIcon('mk-gps','📍',[30,30],[15,28])}).addTo(layer);
+      gp.bindPopup(`<b>実際のGPS現在地</b><br>登録住所から ${v.dist}m`);
+      // 結ぶ線＋距離ラベル
+      L.polyline([[v.lat,v.lng],[v.glat,v.glng]],{color:'#dc2626',dashArray:'6',weight:2.5}).addTo(layer);
+      L.marker([(v.lat+v.glat)/2,(v.lng+v.glng)/2],{icon:labIcon('gap-dist',`${v.dist}m 離れています`)}).addTo(layer);
+      allPts.push([v.lat,v.lng],[v.glat,v.glng]);
+      // 近隣患者宅「〇〇様宅？」候補（GPS近傍）
+      if(sel){
+        HOMES.map(h=>({...h,d:haversine(v.glat,v.glng,h.lat,h.lng)})).filter(h=>h.d<160).sort((a,b)=>a.d-b.d).forEach(h=>{
+          L.marker([h.lat,h.lng],{icon:htmlIcon('mk-near','？',[22,22],[11,11])}).addTo(layer)
+            .bindPopup(`${h.name} 様宅？<br>GPSから ${Math.round(h.d)}m（近隣の登録住所）`);
+          L.marker([h.lat,h.lng],{icon:labIcon('near-lab',`${h.name}様宅？`)}).addTo(layer);
+          allPts.push([h.lat,h.lng]);
+        });
+      }
+    } else {
+      const m=L.marker([v.lat,v.lng],{icon:numIcon(ST_COLOR[v.st],sel,i+1)}).addTo(layer);
+      m.bindPopup(`<b>${i+1}. ${v.pt}</b><br>${hm(v.ps)}–${hm(v.pe)} ／ ${ST_LABEL[v.st]}${v.dist!=null?`<br>距離 ${v.dist}m`:''}`);
+      m.on('click',()=>selectVisit(v.id));
+      if(sel) setTimeout(()=>m.openPopup(),60);
+    }
+    regPts.push([v.lat,v.lng]); if(!(v.st==='mismatch')) allPts.push([v.lat,v.lng]);
+  });
+  // 順路ライン＋区間距離（次までの距離）
+  for(let i=0;i<vs.length-1;i++){
+    const a=vs[i], b=vs[i+1];
+    L.polyline([[a.lat,a.lng],[b.lat,b.lng]],{color:'#0d9488',weight:2,opacity:.45}).addTo(layer);
+    const d=haversine(a.lat,a.lng,b.lat,b.lng);
+    L.marker([(a.lat+b.lat)/2,(a.lng+b.lng)/2],{icon:labIcon('seg-dist',`→${fmtD(d)}`)}).addTo(layer);
+  }
+  if(allPts.length) map.fitBounds(allPts,{padding:[40,40],maxZoom:16});
+  setTimeout(()=>map.invalidateSize(),80);
+}
+
+/* ---------- detail body ---------- */
+function renderCourseBody(staffId){
+  const s=staffOf(staffId); const vs=courseVisits(staffId);
+  const stops=vs.map((v,i)=>{ const dn=distToNext(v);
+    return `<li data-id="${v.id}" class="${selVisit===v.id?'sel':''}">
+      <span class="stopdot" style="background:${ST_COLOR[v.st]}"></span>
+      <span class="t">${hm(v.ps)}</span><span class="n">${i+1}. ${v.pt}</span>
+      <span class="s" style="color:${ST_COLOR[v.st]}">${ST_LABEL[v.st]}</span></li>
+      ${dn!=null?`<div class="seg">↓ 次まで ${fmtD(dn)}</div>`:''}`;
+  }).join('');
+  const d=document.getElementById('dbody'); d.className='dbody';
+  d.innerHTML=`<h3>${s.name}</h3><div class="meta">${s.office} ${s.course} ／ 訪問 ${vs.length}件</div>
+    <div class="dcard" style="padding:4px 10px"><ul class="stoplist">${stops}</ul></div>
+    <div style="font-size:11.5px; color:var(--muted)">↑ 地図のピン番号と対応。クリックで詳細。</div>`;
+  d.querySelectorAll('.stoplist li').forEach(li=>li.onclick=()=>selectVisit(li.dataset.id));
+}
+function renderVisitBody(v){
+  const s=staffOf(v.s); const [icon,txt]=ST_JUDGE[v.st];
+  const arrive=v.aa?hm(v.aa):'—', depart=v.ad?hm(v.ad):(v.st==='inprogress'?'（滞在中）':'—');
+  const stay=(v.aa&&v.ad)?`${v.ad-v.aa}分`:(v.st==='inprogress'?`${NOW-v.aa}分（経過）`:'—');
+  const diff=v.aa?`${v.aa-v.ps>=0?'+':''}${v.aa-v.ps}分`:'—';
+  const distCol=v.st==='mismatch'?'var(--bad)':v.st==='review'?'var(--warn)':'var(--brand-hover)';
+  const dn=distToNext(v); const nx=nextVisit(v);
+
+  let topAction='', reasonBlock='', infoCard='';
+  if(v.st==='missing'){
+    // 最後に記録された訪問（直前の完了）
+    const list=courseVisits(v.s); const idx=list.findIndex(x=>x.id===v.id);
+    const last=list.slice(0,idx).reverse().find(x=>x.ad);
+    const lastTxt=last?`${last.pt}様宅（${hm(last.ad)} 退出）`:'記録なし';
+    topAction=`<div class="callbox">
+      <div class="ttl">⛔ 未訪問 — 即対応</div>
+      <div class="ln">予定 ${hm(v.ps)}–${hm(v.pe)} を過ぎても到着スキャンがありません。</div>
+      <div class="ln">最後の記録: ${lastTxt}</div>
+      <div class="acts"><button class="btn call" onclick="alert('発信（モック）：${v.pt} ${v.tel}')">📞 患者へ連絡</button>
+        <button class="btn" onclick="alert('発信（モック）：${s.name} へ連絡')">📞 スタッフへ連絡</button></div></div>`;
+    reasonBlock = v.reason
+      ? `<div class="reasonbox bad"><span class="rh">未訪問の理由（スタッフ入力）</span>${v.reason}</div>`
+      : `<div class="reasonbox bad"><span class="rh">未訪問の理由</span>未入力 — スタッフへ確認してください。</div>`;
+  } else if(v.reason){
+    reasonBlock=`<div class="reasonbox ${v.st==='mismatch'?'bad':''}"><span class="rh">${v.st==='mismatch'?'場所違いの理由':'理由'}（スタッフ入力）</span>${v.reason}</div>`;
+  }
+  if(v.st!=='missing'){
+    const kvDist=v.dist!=null?`<div class="kv"><span class="k">登録住所からの距離</span><span class="v" style="color:${distCol}">${v.dist}m</span></div>
+        <div class="kv"><span class="k">GPS精度</span><span class="v">±${v.acc}m</span></div>`:'';
+    infoCard=`<div class="dcard">
+      <div class="kv"><span class="k">予定時刻</span><span class="v">${hm(v.ps)} – ${hm(v.pe)}</span></div>
+      <div class="kv"><span class="k">到着（QR/GPS）</span><span class="v">${arrive}</span></div>
+      <div class="kv"><span class="k">退出（QR/GPS）</span><span class="v">${depart}</span></div>
+      <div class="kv"><span class="k">滞在時間</span><span class="v">${stay}</span></div>
+      <div class="kv"><span class="k">到着ズレ</span><span class="v">${diff}</span></div>${kvDist}
+      ${dn!=null?`<div class="kv"><span class="k">次の訪問（${nx.pt}）まで</span><span class="v">${fmtD(dn)}</span></div>`:''}
+    </div>`;
+  }
+  const d=document.getElementById('dbody'); d.className='dbody';
+  d.innerHTML=`<h3>${v.pt} さん</h3><div class="meta">${s.name} ／ ${s.office} ${s.course}</div>
+    <div class="judge ${v.st}"><span class="big">${icon}</span> ${txt}${v.dist!=null?`（${v.dist}m）`:''}</div>
+    ${topAction}${reasonBlock}${infoCard}
+    <div class="acts"><button class="btn">✓ 確認済みにする</button><button class="btn">患者カルテ</button></div>`;
+}
+
+/* ---------- interactions ---------- */
+function selectCourse(staffId){ selStaff=staffId; selVisit=null; renderTimeline(); renderAlerts(); drawCourse(staffId,null); renderCourseBody(staffId); }
+function selectVisit(id){ const v=V.find(x=>x.id===id); selStaff=v.s; selVisit=id; renderTimeline(); renderAlerts(); drawCourse(v.s,id); renderVisitBody(v); }
+function renderAll(){ renderKpi(); renderAlerts(); renderTimeline(); }
+
+document.querySelectorAll('.chip[data-office]').forEach(c=>c.onclick=()=>{
+  office=c.dataset.office;
+  document.querySelectorAll('.chip[data-office]').forEach(x=>x.classList.toggle('on',x===c));
+  renderAll();
+});
+document.querySelectorAll('.chip[data-only]').forEach(c=>c.onclick=()=>{
+  only=(only===c.dataset.only)?null:c.dataset.only;
+  document.querySelectorAll('.chip[data-only]').forEach(x=>x.classList.toggle('on',x.dataset.only===only));
+  renderAll();
+});
+
+// ドロップダウン外クリックで閉じる
+document.addEventListener('click',()=>{ if(popOpen){ popOpen=false; const p=document.getElementById('alertpop'); if(p) p.hidden=true; renderAlerts(); } });
+
+/* ---------- しきい値設定モーダル ---------- */
+const thScrim=document.getElementById('thScrim');
+const thKeys={matchM:'thMatch', reviewM:'thReview', accM:'thAcc', noShowMin:'thNoShow', lateMin:'thLate'};
+let thTmp={...TH};
+function thRefresh(){
+  for(const k in thKeys) document.getElementById(thKeys[k]).value=thTmp[k];
+  document.getElementById('oMatch').textContent=thTmp.matchM+' m 以内';
+  document.getElementById('oReview').textContent=thTmp.reviewM+' m まで';
+  document.getElementById('oAcc').textContent='±'+thTmp.accM+' m';
+  document.getElementById('oNoShow').textContent=thTmp.noShowMin+' 分';
+  document.getElementById('oLate').textContent=thTmp.lateMin+' 分';
+  let m=0,r=0,x=0,ms=0;
+  V.forEach(v=>{ const s=classifyWith(v,thTmp);
+    if(s==='match'||s==='inprogress')m++; else if(s==='review')r++; else if(s==='mismatch')x++; else if(s==='missing')ms++; });
+  document.getElementById('thPreview').innerHTML=
+    `この設定での再判定 →　<span class="pm">一致 ${m}</span>　<span class="pr">要確認 ${r}</span>　<span class="px">不一致 ${x}</span>　<span class="px">未訪問 ${ms}</span>`;
+}
+function thOpen(){ thTmp={...TH}; thRefresh(); thScrim.hidden=false; }
+function thClose(){ thScrim.hidden=true; }
+document.getElementById('thBtn').onclick=e=>{ e.stopPropagation(); thOpen(); };
+document.getElementById('thX').onclick=thClose;
+thScrim.onclick=e=>{ if(e.target===thScrim) thClose(); };
+for(const k in thKeys) document.getElementById(thKeys[k]).oninput=e=>{
+  thTmp[k]=+e.target.value;
+  if(thTmp.reviewM<thTmp.matchM){ if(k==='matchM') thTmp.reviewM=thTmp.matchM; else thTmp.matchM=thTmp.reviewM; }
+  thRefresh();
+};
+document.getElementById('thReset').onclick=()=>{ thTmp={...TH_DEFAULT}; thRefresh(); };
+document.getElementById('thSave').onclick=()=>{ TH={...thTmp}; recompute(); renderAll();
+  if(selVisit) selectVisit(selVisit); else if(selStaff) selectCourse(selStaff); thClose(); };
+
+// boot: しきい値で判定 → 場所違いケースを初期選択（地図で自宅↔GPS↔近隣候補を表示）
+recompute();
+renderAll();
+selectVisit('v8');
+</script>
+</body>
+</html>

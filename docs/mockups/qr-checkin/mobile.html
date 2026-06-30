@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>QR訪問チェックイン — モバイルUIモック</title>
+<style>
+  :root{
+    --brand:#0d9488; --brand-accent:#14b8a6; --brand-hover:#0f766e; --brand-light:#ccfbf1;
+    --cream:#faf7f2; --base:#ffffff; --muted-bg:#f5f3ef;
+    --ink:#1c1917; --sub:#57534e; --muted:#a8a29e; --border:#e7e2d9;
+    --ok:#0d9488; --okbg:#ccfbf1; --warn:#b45309; --warnbg:#fef3c7; --bad:#dc2626; --badbg:#fee2e2;
+    --shadow:0 1px 2px rgba(28,25,23,.05), 0 8px 24px rgba(28,25,23,.07);
+    --r:16px;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
+  body{margin:0; background:var(--cream); color:var(--ink);
+    font-family:"Noto Sans JP",-apple-system,"Hiragino Kaku Gothic ProN","Segoe UI",sans-serif;}
+  .page-head{max-width:1200px; margin:0 auto; padding:28px 24px 8px}
+  .page-head h1{font-size:22px; margin:0 0 6px; font-weight:700; letter-spacing:-.01em}
+  .page-head p{margin:0; color:var(--sub); font-size:13px; line-height:1.7}
+  .legend{display:flex; gap:14px; flex-wrap:wrap; margin-top:12px; font-size:12px; color:var(--sub)}
+  .legend b{display:inline-flex; align-items:center; gap:5px; font-weight:500}
+  .dot{width:10px; height:10px; border-radius:50%}
+
+  .gallery{display:flex; gap:22px; overflow-x:auto; padding:18px 24px 40px; scroll-snap-type:x proximity}
+  .frame-wrap{flex:0 0 auto; scroll-snap-align:start}
+  .caption{font-size:12.5px; color:var(--sub); margin:0 0 8px; font-weight:600; display:flex; align-items:center; gap:6px}
+  .caption .step{display:inline-flex; width:20px; height:20px; border-radius:50%; background:var(--brand); color:#fff;
+    align-items:center; justify-content:center; font-size:11px; font-weight:700}
+  .sub-note{font-size:11px; color:var(--muted); margin:6px 2px 0; max-width:300px; line-height:1.6}
+
+  /* phone frame */
+  .phone{width:300px; height:640px; border-radius:38px; background:#1c1917; padding:10px;
+    box-shadow:0 10px 30px rgba(28,25,23,.18); position:relative}
+  .screen{width:100%; height:100%; border-radius:30px; overflow:hidden; background:var(--cream);
+    display:flex; flex-direction:column; position:relative}
+  .notch{position:absolute; top:10px; left:50%; transform:translateX(-50%); width:110px; height:22px;
+    background:#1c1917; border-radius:0 0 14px 14px; z-index:30}
+
+  /* mobile header */
+  .m-head{padding:30px 18px 12px; background:var(--base); border-bottom:1px solid var(--border)}
+  .m-head .date{font-size:11px; color:var(--muted)}
+  .m-head .title{font-size:17px; font-weight:700; display:flex; justify-content:space-between; align-items:center}
+  .bell{width:34px; height:34px; border-radius:9px; background:var(--muted-bg); display:flex; align-items:center; justify-content:center}
+
+  .scroll{flex:1; overflow-y:auto; padding:14px}
+  .prog{display:flex; align-items:center; justify-content:space-between; font-size:12px; color:var(--sub); margin-bottom:12px}
+  .bar{height:6px; border-radius:99px; background:var(--muted-bg); overflow:hidden; flex:1; margin:0 10px}
+  .bar > i{display:block; height:100%; background:var(--brand); border-radius:99px}
+
+  .vcard{background:var(--base); border:1px solid var(--border); border-radius:12px; padding:13px; margin-bottom:10px; box-shadow:0 1px 2px rgba(28,25,23,.04)}
+  .vcard.now{border-left:4px solid var(--brand); box-shadow:var(--shadow)}
+  .vcard .top{display:flex; justify-content:space-between; align-items:baseline; gap:8px}
+  .vcard .time{font-size:15px; font-weight:700; font-variant-numeric:tabular-nums}
+  .vcard .dur{font-size:12px; color:var(--muted)}
+  .vcard .name{font-size:15px; font-weight:600; margin:4px 0 2px}
+  .vcard .addr{font-size:12px; color:var(--sub); display:flex; align-items:center; gap:4px}
+  .badge{font-size:11px; font-weight:600; padding:3px 8px; border-radius:99px; white-space:nowrap}
+  .b-ok{background:var(--okbg); color:var(--brand-hover)}
+  .b-now{background:#dbeafe; color:#1e40af}
+  .b-todo{background:var(--muted-bg); color:var(--sub)}
+  .b-warn{background:var(--warnbg); color:var(--warn)}
+  .b-bad{background:var(--badbg); color:var(--bad)}
+
+  .btn{display:flex; align-items:center; justify-content:center; gap:8px; width:100%; border:none; cursor:pointer;
+    font-family:inherit; font-size:15px; font-weight:700; border-radius:12px; padding:14px; margin-top:10px}
+  .btn-primary{background:linear-gradient(135deg,var(--brand),var(--brand-accent)); color:#fff;
+    box-shadow:0 8px 20px rgba(13,148,136,.32)}
+  .btn-ghost{background:var(--base); color:var(--sub); border:1px solid var(--border); font-weight:600; font-size:14px}
+  .btn-danger{background:#fff; color:var(--bad); border:1px solid #fca5a5; font-weight:700}
+
+  /* bottom nav */
+  .bnav{height:62px; background:var(--base); border-top:1px solid var(--border); display:grid; grid-template-columns:repeat(4,1fr)}
+  .bnav a{display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; font-size:10px; color:var(--muted); text-decoration:none}
+  .bnav a.on{color:var(--brand); font-weight:600}
+  .ico{width:20px; height:20px; display:block}
+
+  /* scan screen */
+  .scan{flex:1; background:#0c0a09; display:flex; flex-direction:column; align-items:center; color:#fff; position:relative}
+  .scan .top-row{width:100%; display:flex; justify-content:space-between; padding:34px 18px 0; font-size:13px}
+  .scan .target{margin-top:auto; margin-bottom:8px; font-size:13px; color:#d6d3d1}
+  .vf{width:210px; height:210px; border-radius:22px; position:relative; margin:auto}
+  .vf::before,.vf::after, .vf > i, .vf > b{content:""; position:absolute; width:34px; height:34px; border:3px solid var(--brand-accent)}
+  .vf::before{top:0; left:0; border-right:0; border-bottom:0; border-radius:12px 0 0 0}
+  .vf::after{top:0; right:0; border-left:0; border-bottom:0; border-radius:0 12px 0 0}
+  .vf > i{bottom:0; left:0; border-right:0; border-top:0; border-radius:0 0 0 12px}
+  .vf > b{bottom:0; right:0; border-left:0; border-top:0; border-radius:0 0 12px 0}
+  .scanline{position:absolute; left:8px; right:8px; top:50%; height:2px; background:var(--brand-accent); box-shadow:0 0 12px var(--brand-accent)}
+  .scan .hint{margin:18px 0 auto; font-size:12px; color:#a8a29e; text-align:center; padding:0 30px; line-height:1.7}
+  .scan .qr-demo{width:64px; height:64px; border-radius:10px; background:#fff; padding:7px; margin:0 auto 10px}
+  .scan .cta-cancel{margin:0 0 26px; background:rgba(255,255,255,.12); color:#fff; border:none; padding:11px 26px; border-radius:99px; font-size:14px; font-weight:600}
+
+  /* confirm screen */
+  .csheet{flex:1; overflow-y:auto; padding:18px 16px}
+  .pill{display:inline-flex; align-items:center; gap:6px; font-size:12px; font-weight:600; padding:5px 12px; border-radius:99px; margin-bottom:14px}
+  .map{height:130px; border-radius:14px; position:relative; overflow:hidden; border:1px solid var(--border);
+    background:linear-gradient(135deg,#e8f3f1,#f3efe7)}
+  .map .grid{position:absolute; inset:0; background-image:linear-gradient(rgba(13,148,136,.10) 1px,transparent 1px),linear-gradient(90deg,rgba(13,148,136,.10) 1px,transparent 1px); background-size:26px 26px}
+  .map .home{position:absolute; left:46%; top:40%; font-size:22px}
+  .map .me{position:absolute; left:54%; top:58%; width:16px; height:16px; border-radius:50%; background:#2563eb; border:3px solid #fff; box-shadow:0 0 0 4px rgba(37,99,235,.25)}
+  .map .ring{position:absolute; left:46%; top:40%; width:120px; height:120px; transform:translate(-50%,-50%); border:2px dashed rgba(13,148,136,.45); border-radius:50%}
+  .kv{display:flex; justify-content:space-between; padding:11px 2px; border-bottom:1px solid var(--border); font-size:13px}
+  .kv:last-child{border-bottom:none}
+  .kv .k{color:var(--sub)}
+  .kv .v{font-weight:600; font-variant-numeric:tabular-nums}
+  .judge{display:flex; align-items:center; gap:10px; padding:12px 14px; border-radius:12px; margin:14px 0; font-size:13px; font-weight:600}
+  .judge.ok{background:var(--okbg); color:var(--brand-hover)}
+  .judge.warn{background:var(--warnbg); color:var(--warn)}
+  .judge.bad{background:var(--badbg); color:var(--bad)}
+  .judge .big{font-size:20px}
+  .card-block{background:var(--base); border:1px solid var(--border); border-radius:12px; padding:14px; margin-bottom:12px}
+  .field{width:100%; border:1px solid var(--border); border-radius:10px; padding:10px 12px; font-family:inherit; font-size:13px; resize:none; margin-top:6px}
+  .lbl{font-size:12px; color:var(--sub); font-weight:600}
+  .timer{font-size:34px; font-weight:700; font-variant-numeric:tabular-nums; text-align:center; color:var(--brand-hover); letter-spacing:.02em}
+  .timer-sub{text-align:center; font-size:12px; color:var(--muted); margin-top:2px}
+  .photo-row{display:flex; gap:8px; margin-top:8px}
+  .photo-add{width:58px; height:58px; border:1.5px dashed var(--border); border-radius:10px; display:flex; align-items:center; justify-content:center; color:var(--muted); font-size:22px}
+  .photo-thumb{width:58px; height:58px; border-radius:10px; background:linear-gradient(135deg,#d6d3d1,#a8a29e)}
+</style>
+</head>
+<body>
+
+<div class="page-head">
+  <h1>QR訪問チェックイン — モバイルUIモック</h1>
+  <p>
+    患者宅に貼った<b>固定QR</b>をスタッフがスキャン → GPSで現地を判定 → 到着/退出を記録するフロー。<br>
+    既存 CareFlow モバイル（<code>(mobile)</code> グループ・ボトムナビ4タブ）の「今日」「訪問詳細」を置き換える想定。横スクロールで全状態を確認できます。
+  </p>
+  <div class="legend">
+    <b><span class="dot" style="background:var(--ok)"></span>一致（100m以内）</b>
+    <b><span class="dot" style="background:var(--warn)"></span>要確認（100〜300m）</b>
+    <b><span class="dot" style="background:var(--bad)"></span>不一致（300m超）</b>
+    <b><span class="dot" style="background:var(--muted)"></span>未訪問</b>
+  </div>
+</div>
+
+<div class="gallery">
+
+  <!-- 1: 今日の訪問リスト -->
+  <div class="frame-wrap">
+    <p class="caption"><span class="step">1</span>今日の訪問（スキャン導線）</p>
+    <div class="phone"><div class="notch"></div><div class="screen">
+      <div class="m-head">
+        <div class="date">6月30日 月</div>
+        <div class="title">今日の訪問 <span class="bell">🔔</span></div>
+      </div>
+      <div class="scroll">
+        <div class="prog"><span>3 / 7 完了</span><span class="bar"><i style="width:43%"></i></span><span>残4</span></div>
+
+        <div class="vcard now">
+          <div class="top"><span class="time">09:30 <span class="dur">(60分)</span></span><span class="badge b-now">● 次の訪問</span></div>
+          <div class="name">山田 花子</div>
+          <div class="addr">📍 千葉市稲毛区小仲台2-…</div>
+          <button class="btn btn-primary">📷 QRで到着を記録</button>
+        </div>
+
+        <div class="vcard">
+          <div class="top"><span class="time">08:00 <span class="dur">(45分)</span></span><span class="badge b-ok">✓ 完了 一致</span></div>
+          <div class="name">佐藤 一郎</div>
+          <div class="addr">📍 千葉市稲毛区轟町5-…</div>
+        </div>
+
+        <div class="vcard">
+          <div class="top"><span class="time">10:45 <span class="dur">(60分)</span></span><span class="badge b-todo">未訪問</span></div>
+          <div class="name">鈴木 みどり</div>
+          <div class="addr">📍 千葉市稲毛区天台1-…</div>
+        </div>
+
+        <div class="vcard">
+          <div class="top"><span class="time">13:00 <span class="dur">(30分)</span></span><span class="badge b-todo">未訪問</span></div>
+          <div class="name">高橋 健</div>
+          <div class="addr">📍 千葉市稲毛区作草部…</div>
+        </div>
+      </div>
+      <div class="bnav">
+        <a>🏠<span>ホーム</span></a>
+        <a class="on">📅<span>今日</span></a>
+        <a>🗓<span>今週</span></a>
+        <a>👤<span>マイ</span></a>
+      </div>
+    </div></div>
+    <p class="sub-note">「次の訪問」カードに大きな到着ボタン。完了済みは結果バッジ（一致/要確認）を表示。グローバルなスキャンFABを右下に置く案も可。</p>
+  </div>
+
+  <!-- 2: QRスキャン -->
+  <div class="frame-wrap">
+    <p class="caption"><span class="step">2</span>QRスキャン</p>
+    <div class="phone"><div class="notch"></div><div class="screen">
+      <div class="scan">
+        <div class="top-row"><span>✕ 閉じる</span><span>🔦 ライト</span></div>
+        <div class="vf"><i></i><b></b><div class="scanline"></div></div>
+        <div class="target">対象: <b>山田 花子</b> さん宅</div>
+        <div class="hint">患者宅に貼られたQRコードを枠内に合わせてください。<br>読み取ると自動で到着確認に進みます。</div>
+        <div class="qr-demo">
+          <svg viewBox="0 0 100 100" width="100%" height="100%"><rect width="100" height="100" fill="#fff"/>
+            <g fill="#0c0a09"><rect x="6" y="6" width="26" height="26"/><rect x="68" y="6" width="26" height="26"/><rect x="6" y="68" width="26" height="26"/>
+            <rect x="12" y="12" width="14" height="14" fill="#fff"/><rect x="74" y="12" width="14" height="14" fill="#fff"/><rect x="12" y="74" width="14" height="14" fill="#fff"/>
+            <rect x="44" y="6" width="6" height="6"/><rect x="56" y="18" width="6" height="6"/><rect x="44" y="30" width="6" height="6"/><rect x="44" y="56" width="6" height="6"/><rect x="68" y="56" width="6" height="6"/><rect x="80" y="68" width="6" height="6"/><rect x="56" y="80" width="6" height="6"/><rect x="68" y="80" width="6" height="6"/></g></svg>
+        </div>
+        <button class="cta-cancel">手入力で選ぶ</button>
+      </div>
+    </div></div>
+    <p class="sub-note">カメラ全画面 + 読み取り枠。フォールバックとして「手入力で選ぶ」（患者一覧から選択）を必ず用意。</p>
+  </div>
+
+  <!-- 3: 到着確認（一致） -->
+  <div class="frame-wrap">
+    <p class="caption"><span class="step">3</span>到着確認 — GPS一致</p>
+    <div class="phone"><div class="notch"></div><div class="screen">
+      <div class="m-head"><div class="date">QR読み取り完了</div><div class="title">到着の確認</div></div>
+      <div class="csheet">
+        <span class="pill b-ok">📷 山田 花子 さん宅 のQR</span>
+        <div class="map"><div class="grid"></div><div class="ring"></div><div class="home">🏠</div><div class="me"></div></div>
+        <div class="judge ok"><span class="big">✓</span> 登録住所と一致（12m）</div>
+        <div class="card-block" style="padding:4px 14px">
+          <div class="kv"><span class="k">予定時刻</span><span class="v">09:30</span></div>
+          <div class="kv"><span class="k">現在時刻</span><span class="v">09:28</span></div>
+          <div class="kv"><span class="k">GPS精度</span><span class="v">±8m</span></div>
+          <div class="kv"><span class="k">登録住所からの距離</span><span class="v" style="color:var(--brand-hover)">12m</span></div>
+        </div>
+        <button class="btn btn-primary">到着を記録する</button>
+        <button class="btn btn-ghost">スキャンし直す</button>
+      </div>
+    </div></div>
+    <p class="sub-note">地図にホーム📍と現在地●、しきい値リング。距離・時刻・精度を一覧。記録ボタンで打刻＋GPSをバックエンドへ送信。</p>
+  </div>
+
+  <!-- 4: 訪問中 -->
+  <div class="frame-wrap">
+    <p class="caption"><span class="step">4</span>訪問中（滞在）</p>
+    <div class="phone"><div class="notch"></div><div class="screen">
+      <div class="m-head"><div class="date">山田 花子 ・ 09:28 到着</div><div class="title">訪問中</div></div>
+      <div class="csheet">
+        <div class="card-block">
+          <div class="timer">00:42</div>
+          <div class="timer-sub">経過時間（到着 09:28 〜）</div>
+        </div>
+        <div class="card-block">
+          <span class="lbl">サービスメモ</span>
+          <textarea class="field" rows="3" placeholder="実施内容・申し送りを記録">バイタル測定、清拭。血圧 128/80。</textarea>
+          <span class="lbl" style="display:block; margin-top:12px">写真</span>
+          <div class="photo-row"><div class="photo-thumb"></div><div class="photo-add">＋</div></div>
+        </div>
+        <button class="btn btn-primary">📷 QRで退出を記録</button>
+      </div>
+    </div></div>
+    <p class="sub-note">到着後の状態。経過タイマー＋メモ＋写真。退出も同じ固定QRを再スキャン＝「まだ現地にいる」証明になり不正に強い。</p>
+  </div>
+
+  <!-- 5: 退出確認 -->
+  <div class="frame-wrap">
+    <p class="caption"><span class="step">5</span>退出確認 — 完了</p>
+    <div class="phone"><div class="notch"></div><div class="screen">
+      <div class="m-head"><div class="date">QR読み取り完了</div><div class="title">退出の確認</div></div>
+      <div class="csheet">
+        <span class="pill b-ok">📷 山田 花子 さん宅 のQR</span>
+        <div class="map"><div class="grid"></div><div class="ring"></div><div class="home">🏠</div><div class="me"></div></div>
+        <div class="judge ok"><span class="big">✓</span> 登録住所と一致（8m）</div>
+        <div class="card-block" style="padding:4px 14px">
+          <div class="kv"><span class="k">到着</span><span class="v">09:28</span></div>
+          <div class="kv"><span class="k">退出</span><span class="v">10:15</span></div>
+          <div class="kv"><span class="k">滞在時間</span><span class="v" style="color:var(--brand-hover)">47分</span></div>
+          <div class="kv"><span class="k">予定（60分）との差</span><span class="v">−13分</span></div>
+        </div>
+        <button class="btn btn-primary">訪問を完了する</button>
+      </div>
+    </div></div>
+    <p class="sub-note">滞在時間と予定との差を提示。完了で「今日の訪問」へ戻り、当該カードが ✓完了 一致 に更新。</p>
+  </div>
+
+  <!-- 6: 異常系 場所違い -->
+  <div class="frame-wrap">
+    <p class="caption"><span class="step">!</span>異常系 — 場所違い</p>
+    <div class="phone"><div class="notch"></div><div class="screen">
+      <div class="m-head"><div class="date">QR読み取り完了</div><div class="title">到着の確認</div></div>
+      <div class="csheet">
+        <span class="pill b-bad">📷 鈴木 みどり さん宅 のQR</span>
+        <div class="map"><div class="grid"></div><div class="ring"></div><div class="home">🏠</div><div class="me" style="left:78%; top:80%; background:var(--bad); box-shadow:0 0 0 4px rgba(220,38,38,.22)"></div></div>
+        <div class="judge bad"><span class="big">✕</span> 登録住所から 340m 離れています</div>
+        <div class="card-block">
+          <span class="lbl">理由（任意・管理者に共有されます）</span>
+          <textarea class="field" rows="2" placeholder="例: マンション裏口で測位、近隣の別棟 など"></textarea>
+        </div>
+        <button class="btn btn-danger">理由を付けて記録する</button>
+        <button class="btn btn-ghost">スキャンし直す</button>
+      </div>
+    </div></div>
+    <p class="sub-note">300m超は赤判定。記録は止めず「理由付きで記録」を許容（現場の事情がある）。この記録はPC側で⚠フラグ付きに。要確認(100〜300m)は黄色で同様の理由欄。</p>
+  </div>
+
+</div>
+</body>
+</html>

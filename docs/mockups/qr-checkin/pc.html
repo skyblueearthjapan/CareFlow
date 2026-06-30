@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>QR訪問チェックイン — PC管理UIモック</title>
+<style>
+  :root{
+    --brand:#0d9488; --brand-accent:#14b8a6; --brand-hover:#0f766e; --brand-light:#ccfbf1;
+    --cream:#faf7f2; --base:#ffffff; --muted-bg:#f5f3ef;
+    --ink:#1c1917; --sub:#57534e; --muted:#a8a29e; --border:#e7e2d9;
+    --ok:#0d9488; --okbg:#e6faf6; --warn:#b45309; --warnbg:#fef3c7; --bad:#dc2626; --badbg:#fee2e2;
+    --plan:#cfd8d6; /* 予定（薄） */
+    --shadow:0 1px 2px rgba(28,25,23,.05), 0 8px 24px rgba(28,25,23,.06);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0; height:100%}
+  body{background:var(--cream); color:var(--ink);
+    font-family:"Noto Sans JP",-apple-system,"Hiragino Kaku Gothic ProN","Segoe UI",sans-serif; font-size:13px}
+  .app{display:flex; height:100vh; padding:12px; gap:0}
+  /* sidebar (既存CareFlowに合わせた簡略版) */
+  .side{width:210px; background:var(--base); border:1px solid var(--border); border-radius:18px 0 0 18px; border-right:none; display:flex; flex-direction:column}
+  .brand{height:58px; display:flex; align-items:center; gap:8px; padding:0 18px; border-bottom:1px solid var(--border); font-weight:700; font-size:16px}
+  .brand .h{color:var(--brand)}
+  .nav{padding:12px; display:flex; flex-direction:column; gap:3px}
+  .nav a{display:flex; align-items:center; gap:11px; padding:10px 12px; border-radius:10px; color:var(--sub); text-decoration:none; font-size:13px}
+  .nav a.on{background:var(--brand-light); color:var(--brand-hover); font-weight:600}
+  .nav .ico{width:18px; text-align:center}
+
+  /* main */
+  .main{flex:1; background:var(--base); border:1px solid var(--border); border-radius:0 18px 18px 0; display:flex; flex-direction:column; overflow:hidden}
+  .topbar{height:58px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:14px; padding:0 20px}
+  .topbar h1{font-size:18px; margin:0; font-weight:700; letter-spacing:-.01em}
+  .topbar .spacer{flex:1}
+  .seg{display:inline-flex; background:var(--muted-bg); border-radius:10px; padding:3px}
+  .seg button{border:none; background:none; font-family:inherit; font-size:12.5px; padding:6px 12px; border-radius:8px; cursor:pointer; color:var(--sub)}
+  .seg button.on{background:var(--base); color:var(--ink); font-weight:600; box-shadow:0 1px 2px rgba(0,0,0,.06)}
+  .btn{border:1px solid var(--border); background:var(--base); border-radius:9px; padding:7px 12px; font-family:inherit; font-size:12.5px; cursor:pointer; display:inline-flex; gap:6px; align-items:center; color:var(--sub)}
+  .btn.brand{background:var(--brand); color:#fff; border-color:var(--brand); font-weight:600}
+
+  /* filter row */
+  .filters{display:flex; align-items:center; gap:10px; padding:12px 20px; border-bottom:1px solid var(--border); flex-wrap:wrap}
+  .chip{border:1px solid var(--border); border-radius:99px; padding:6px 13px; font-size:12.5px; color:var(--sub); cursor:pointer; background:var(--base)}
+  .chip.on{background:var(--brand-light); color:var(--brand-hover); border-color:transparent; font-weight:600}
+  .datepick{display:inline-flex; align-items:center; gap:8px; font-weight:600; font-size:14px}
+  .datepick button{border:1px solid var(--border); background:var(--base); width:28px; height:28px; border-radius:8px; cursor:pointer}
+
+  /* KPI strip */
+  .kpis{display:grid; grid-template-columns:repeat(5,1fr); gap:12px; padding:14px 20px}
+  .kpi{border:1px solid var(--border); border-radius:14px; padding:12px 14px; background:var(--base)}
+  .kpi .lab{font-size:11.5px; color:var(--muted)}
+  .kpi .num{font-size:24px; font-weight:700; font-variant-numeric:tabular-nums; margin-top:2px}
+  .kpi.warn .num{color:var(--warn)} .kpi.bad .num{color:var(--bad)} .kpi.ok .num{color:var(--brand-hover)}
+
+  /* layout: timeline + detail */
+  .body{flex:1; display:flex; min-height:0}
+  .tl-wrap{flex:1; overflow:auto; padding:0 8px 16px 0}
+  .legend{display:flex; gap:16px; flex-wrap:wrap; padding:6px 20px 12px; font-size:12px; color:var(--sub)}
+  .legend b{display:inline-flex; align-items:center; gap:6px; font-weight:500}
+  .sw{width:22px; height:12px; border-radius:3px; display:inline-block}
+
+  /* gantt */
+  .gantt{min-width:920px; padding:0 20px}
+  .axis{display:grid; grid-template-columns:130px 1fr; align-items:center; position:sticky; top:0; background:var(--base); z-index:5; border-bottom:1px solid var(--border)}
+  .axis .corner{font-size:11px; color:var(--muted); padding:8px 8px}
+  .hours{display:flex; position:relative}
+  .hours .h{flex:1; font-size:11px; color:var(--muted); text-align:left; padding:8px 0 8px 2px; border-left:1px solid var(--border)}
+
+  .row{display:grid; grid-template-columns:130px 1fr; border-bottom:1px solid var(--muted-bg); min-height:54px}
+  .who{display:flex; align-items:center; gap:8px; padding:6px 8px}
+  .ava{width:30px; height:30px; border-radius:50%; background:linear-gradient(135deg,var(--brand),var(--brand-accent)); color:#fff; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:700}
+  .who .nm{font-weight:600; font-size:13px} .who .sm{font-size:10.5px; color:var(--muted)}
+  .track{position:relative; border-left:1px solid var(--border)}
+  .grid-lines{position:absolute; inset:0; display:flex}
+  .grid-lines i{flex:1; border-left:1px solid var(--muted-bg)}
+  .now-line{position:absolute; top:0; bottom:0; width:2px; background:#2563eb; z-index:4}
+  .now-line::after{content:"今"; position:absolute; top:-1px; left:3px; font-size:9px; color:#2563eb; font-weight:700}
+
+  /* bars: hour range 8:00-19:00 = 11h. left/width in % of 11h */
+  .bar{position:absolute; height:16px; border-radius:5px; font-size:0; cursor:pointer}
+  .plan{top:9px; background:repeating-linear-gradient(90deg,var(--plan),var(--plan) 6px,#dde4e2 6px,#dde4e2 12px); opacity:.85}
+  .act{top:28px; height:16px; display:flex; align-items:center; padding:0 5px; color:#fff; font-size:10px; font-weight:600; overflow:hidden; white-space:nowrap}
+  .act.ok{background:var(--brand)}
+  .act.warn{background:#d97706}
+  .act.bad{background:var(--bad)}
+  .act.missing{background:repeating-linear-gradient(45deg,#fca5a5,#fca5a5 5px,#fecaca 5px,#fecaca 10px); color:var(--bad)}
+  .flag{position:absolute; top:24px; font-size:13px; z-index:3}
+
+  /* detail panel */
+  .detail{width:320px; border-left:1px solid var(--border); background:var(--muted-bg); overflow-y:auto; padding:16px}
+  .detail h3{margin:0 0 2px; font-size:15px}
+  .detail .meta{font-size:12px; color:var(--sub); margin-bottom:14px}
+  .dcard{background:var(--base); border:1px solid var(--border); border-radius:12px; padding:14px; margin-bottom:12px}
+  .kv{display:flex; justify-content:space-between; padding:7px 0; border-bottom:1px solid var(--muted-bg); font-size:12.5px}
+  .kv:last-child{border-bottom:none}
+  .kv .k{color:var(--sub)} .kv .v{font-weight:600; font-variant-numeric:tabular-nums}
+  .judge{display:flex; align-items:center; gap:9px; padding:11px 13px; border-radius:11px; font-size:13px; font-weight:600; margin-bottom:12px}
+  .judge.warn{background:var(--warnbg); color:var(--warn)}
+  .judge .big{font-size:18px}
+  .map{height:140px; border-radius:12px; position:relative; overflow:hidden; border:1px solid var(--border); background:linear-gradient(135deg,#e8f3f1,#f3efe7); margin-bottom:12px}
+  .map .grid{position:absolute; inset:0; background-image:linear-gradient(rgba(13,148,136,.10) 1px,transparent 1px),linear-gradient(90deg,rgba(13,148,136,.10) 1px,transparent 1px); background-size:24px 24px}
+  .map .home{position:absolute; left:42%; top:38%; font-size:20px}
+  .map .ring{position:absolute; left:42%; top:38%; width:120px; height:120px; transform:translate(-50%,-50%); border:2px dashed rgba(217,119,6,.5); border-radius:50%}
+  .map .me{position:absolute; left:70%; top:72%; width:14px; height:14px; border-radius:50%; background:#d97706; border:3px solid #fff; box-shadow:0 0 0 4px rgba(217,119,6,.22)}
+  .note{font-size:12px; color:var(--sub); background:var(--warnbg); border-radius:10px; padding:10px 12px; line-height:1.6}
+  .detail .acts{display:flex; gap:8px; margin-top:4px}
+  .detail .acts .btn{flex:1; justify-content:center}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- sidebar -->
+  <aside class="side">
+    <div class="brand"><span class="h">♥</span> CareFlow</div>
+    <nav class="nav">
+      <a>📊 ダッシュボード</a>
+      <a>📅 スケジュール</a>
+      <a>▦ 受け入れ枠</a>
+      <a class="on">📍 訪問モニター</a>
+      <a>👥 患者</a>
+      <a>🧑‍⚕️ スタッフ</a>
+      <a>🏢 拠点</a>
+      <a>🔌 連携</a>
+    </nav>
+  </aside>
+
+  <!-- main -->
+  <main class="main">
+    <div class="topbar">
+      <h1>訪問モニター</h1>
+      <div class="seg">
+        <button class="on">タイムライン</button>
+        <button>地図</button>
+        <button>一覧</button>
+      </div>
+      <div class="spacer"></div>
+      <button class="btn">⚙ しきい値設定</button>
+      <button class="btn brand">⤓ CSV出力</button>
+    </div>
+
+    <!-- filters -->
+    <div class="filters">
+      <span class="datepick"><button>‹</button> 2026/06/30 (月) <button>›</button></span>
+      <span style="width:1px; height:22px; background:var(--border)"></span>
+      <span class="chip on">全拠点</span>
+      <span class="chip">稲毛</span>
+      <span class="chip">都賀</span>
+      <span style="width:1px; height:22px; background:var(--border)"></span>
+      <span class="chip on">全員</span>
+      <span class="chip">⚠ 異常のみ</span>
+      <span class="chip">未訪問のみ</span>
+    </div>
+
+    <!-- KPI -->
+    <div class="kpis">
+      <div class="kpi"><div class="lab">本日の訪問</div><div class="num">42</div></div>
+      <div class="kpi ok"><div class="lab">記録済（一致）</div><div class="num">35</div></div>
+      <div class="kpi warn"><div class="lab">要確認（場所/時間）</div><div class="num">4</div></div>
+      <div class="kpi bad"><div class="lab">未訪問・未記録</div><div class="num">3</div></div>
+      <div class="kpi"><div class="lab">平均到着ズレ</div><div class="num">+6<span style="font-size:13px">分</span></div></div>
+    </div>
+
+    <div class="legend">
+      <b><span class="sw plan" style="background:repeating-linear-gradient(90deg,#cfd8d6,#cfd8d6 6px,#dde4e2 6px,#dde4e2 12px)"></span>予定</b>
+      <b><span class="sw" style="background:var(--brand)"></span>実績・一致</b>
+      <b><span class="sw" style="background:#d97706"></span>要確認（場所ズレ/遅延）</b>
+      <b><span class="sw" style="background:var(--bad)"></span>不一致（場所違い）</b>
+      <b><span class="sw" style="background:repeating-linear-gradient(45deg,#fca5a5,#fca5a5 5px,#fecaca 5px,#fecaca 10px)"></span>未訪問</b>
+      <b><span style="color:#2563eb; font-weight:700">｜今</span> 現在時刻</b>
+    </div>
+
+    <div class="body">
+      <!-- timeline -->
+      <div class="tl-wrap">
+        <div class="gantt">
+          <div class="axis">
+            <div class="corner">スタッフ ／ 拠点</div>
+            <div class="hours">
+              <span class="h">8</span><span class="h">9</span><span class="h">10</span><span class="h">11</span><span class="h">12</span><span class="h">13</span><span class="h">14</span><span class="h">15</span><span class="h">16</span><span class="h">17</span><span class="h">18</span>
+            </div>
+          </div>
+
+          <!-- row: 田中 (normal) -->
+          <div class="row">
+            <div class="who"><span class="ava">田</span><span><span class="nm">田中 太郎</span><br><span class="sm">稲毛 ・ Aコース</span></span></div>
+            <div class="track">
+              <div class="grid-lines"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+              <div class="now-line" style="left:54.5%"></div>
+              <!-- 8:00-19:00 = 660min. left% = (start-480)/660*100 -->
+              <div class="bar plan" style="left:0%; width:6.8%"></div>
+              <div class="bar act ok" style="left:0.5%; width:6.5%">山田</div>
+              <div class="bar plan" style="left:13.6%; width:9.1%"></div>
+              <div class="bar act ok" style="left:14.4%; width:8.5%">佐藤</div>
+              <div class="bar plan" style="left:34%; width:9.1%"></div>
+              <div class="bar act ok" style="left:34.5%; width:9%">鈴木</div>
+            </div>
+          </div>
+
+          <!-- row: 佐藤 (warn: 遅延+要確認) -->
+          <div class="row">
+            <div class="who"><span class="ava">佐</span><span><span class="nm">佐藤 美咲</span><br><span class="sm">稲毛 ・ Bコース</span></span></div>
+            <div class="track">
+              <div class="grid-lines"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+              <div class="now-line" style="left:54.5%"></div>
+              <div class="bar plan" style="left:9%; width:9.1%"></div>
+              <div class="bar act ok" style="left:9.5%; width:9%">高橋</div>
+              <div class="bar plan" style="left:27.2%; width:9.1%"></div>
+              <div class="bar act warn" style="left:31%; width:9.5%">井川 +18分</div>
+              <span class="flag" style="left:30%">🟠</span>
+              <div class="bar plan" style="left:45.4%; width:6.8%"></div>
+              <div class="bar act ok" style="left:46%; width:6.5%">林</div>
+            </div>
+          </div>
+
+          <!-- row: 鈴木 (bad: 場所違い) — selected -->
+          <div class="row" style="background:#fff7ed">
+            <div class="who"><span class="ava" style="background:linear-gradient(135deg,#d97706,#f59e0b)">鈴</span><span><span class="nm">鈴木 健一</span><br><span class="sm">稲毛 ・ Cコース</span></span></div>
+            <div class="track">
+              <div class="grid-lines"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+              <div class="now-line" style="left:54.5%"></div>
+              <div class="bar plan" style="left:4.5%; width:9.1%"></div>
+              <div class="bar act ok" style="left:5%; width:9%">渡辺</div>
+              <div class="bar plan" style="left:22.7%; width:9.1%"></div>
+              <div class="bar act bad" style="left:23.4%; width:9%; outline:2px solid var(--bad); outline-offset:1px">中村 340m</div>
+              <span class="flag" style="left:22%">🔴</span>
+              <div class="bar plan" style="left:40.9%; width:9.1%"></div>
+              <div class="bar act ok" style="left:41.5%; width:9%">小林</div>
+            </div>
+          </div>
+
+          <!-- row: 高橋 (missing 未訪問) -->
+          <div class="row">
+            <div class="who"><span class="ava">高</span><span><span class="nm">高橋 涼</span><br><span class="sm">都賀 ・ Aコース</span></span></div>
+            <div class="track">
+              <div class="grid-lines"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+              <div class="now-line" style="left:54.5%"></div>
+              <div class="bar plan" style="left:13.6%; width:9.1%"></div>
+              <div class="bar act ok" style="left:14%; width:9%">加藤</div>
+              <div class="bar plan" style="left:31.8%; width:6.8%"></div>
+              <div class="bar act missing" style="left:31.8%; width:6.8%">未訪問</div>
+              <span class="flag" style="left:31%">⚠️</span>
+              <div class="bar plan" style="left:45.4%; width:9.1%"></div>
+            </div>
+          </div>
+
+          <!-- row: 伊藤 -->
+          <div class="row">
+            <div class="who"><span class="ava">伊</span><span><span class="nm">伊藤 さくら</span><br><span class="sm">都賀 ・ Bコース</span></span></div>
+            <div class="track">
+              <div class="grid-lines"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+              <div class="now-line" style="left:54.5%"></div>
+              <div class="bar plan" style="left:0%; width:9.1%"></div>
+              <div class="bar act ok" style="left:0.5%; width:9%">松本</div>
+              <div class="bar plan" style="left:18.1%; width:9.1%"></div>
+              <div class="bar act ok" style="left:18.6%; width:9%">清水</div>
+              <div class="bar plan" style="left:50%; width:9.1%"></div>
+              <div class="bar act ok" style="left:50.5%; width:6%">山口</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- detail panel (選択中=鈴木の場所違い) -->
+      <aside class="detail">
+        <h3>中村 良子 さん</h3>
+        <div class="meta">鈴木 健一 ／ 稲毛 Cコース ／ 2枠目</div>
+
+        <div class="judge warn"><span class="big">⚠</span> 場所違いの可能性（340m）</div>
+
+        <div class="map">
+          <div class="grid"></div><div class="ring"></div>
+          <div class="home">🏠</div><div class="me"></div>
+        </div>
+
+        <div class="dcard">
+          <div class="kv"><span class="k">予定時刻</span><span class="v">10:30 – 11:30</span></div>
+          <div class="kv"><span class="k">到着（QR/GPS）</span><span class="v">10:34</span></div>
+          <div class="kv"><span class="k">退出（QR/GPS）</span><span class="v">11:12</span></div>
+          <div class="kv"><span class="k">滞在時間</span><span class="v">38分</span></div>
+          <div class="kv"><span class="k">登録住所からの距離</span><span class="v" style="color:var(--bad)">340m</span></div>
+          <div class="kv"><span class="k">GPS精度</span><span class="v">±15m</span></div>
+        </div>
+
+        <div class="note">📝 スタッフ入力理由：「マンション裏手の駐車場で測位されたため離れた表示です」</div>
+
+        <div class="acts" style="margin-top:12px">
+          <button class="btn">✓ 確認済みにする</button>
+          <button class="btn">患者カルテ</button>
+        </div>
+      </aside>
+    </div>
+  </main>
+</div>
+</body>
+</html>

@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>患者QR 印刷（個別＆一括・二つ折り） — モック</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<style>
+  :root{
+    --brand:#0d9488; --brand-accent:#14b8a6; --brand-hover:#0f766e; --brand-light:#ccfbf1;
+    --cream:#faf7f2; --base:#ffffff; --ink:#1c1917; --sub:#57534e; --muted:#a8a29e; --border:#e7e2d9;
+  }
+  *{box-sizing:border-box}
+  body{margin:0; background:#e9e6e0; color:var(--ink);
+    font-family:"Noto Sans JP",-apple-system,"Hiragino Kaku Gothic ProN","Segoe UI",sans-serif; font-size:13px}
+
+  /* ---- toolbar（画面のみ） ---- */
+  .toolbar{position:sticky; top:0; z-index:10; background:var(--base); border-bottom:1px solid var(--border);
+    display:flex; align-items:center; gap:12px; padding:12px 22px; flex-wrap:wrap}
+  .toolbar h1{font-size:16px; margin:0; font-weight:700}
+  .toolbar .crumb{font-size:11.5px; color:var(--muted)}
+  .sep{width:1px; height:30px; background:var(--border)}
+  .spacer{flex:1}
+  .seg{display:inline-flex; background:var(--cream); border:1px solid var(--border); border-radius:10px; padding:3px}
+  .seg button{border:none; background:none; font-family:inherit; font-size:12.5px; padding:6px 13px; border-radius:8px; cursor:pointer; color:var(--sub)}
+  .seg button.on{background:var(--base); color:var(--brand-hover); font-weight:700; box-shadow:0 1px 2px rgba(0,0,0,.07)}
+  .chip{border:1px solid var(--border); border-radius:99px; padding:6px 13px; font-size:12.5px; color:var(--sub); cursor:pointer; background:var(--base)}
+  .chip.on{background:var(--brand-light); color:var(--brand-hover); border-color:transparent; font-weight:600}
+  select{font-family:inherit; font-size:13px; padding:6px 10px; border:1px solid var(--border); border-radius:8px; background:var(--base)}
+  .count{font-size:12.5px; color:var(--sub)}
+  .btn{border:1px solid var(--border); background:var(--base); border-radius:9px; padding:8px 14px; font-family:inherit; font-size:13px; cursor:pointer; color:var(--sub); display:inline-flex; gap:6px; align-items:center}
+  .btn.brand{background:var(--brand); color:#fff; border-color:var(--brand); font-weight:700}
+  .hint{font-size:11.5px; color:var(--muted); padding:6px 22px 0; line-height:1.7}
+
+  /* ---- A4：1名1枚 ---- */
+  .pages{padding:18px 0 40px}
+  .sheet{position:relative; width:210mm; height:297mm; background:#fff; margin:0 auto 18px;
+    box-shadow:0 6px 20px rgba(0,0,0,.14); display:flex; flex-direction:column}
+  .sheet.off{opacity:.28}
+  .chk{position:absolute; top:8px; right:10px; transform:scale(1.3); cursor:pointer; z-index:3}
+
+  .panel{flex:1; display:flex; flex-direction:column; padding:14mm 16mm}
+  .front{align-items:center; justify-content:center; text-align:center}
+  .front .office{font-size:13px; color:var(--brand-hover); font-weight:700; background:var(--brand-light); padding:3px 12px; border-radius:99px}
+  .front .pname{font-size:34px; font-weight:800; margin:6mm 0 1mm; line-height:1.15}
+  .front .pcode{font-size:14px; color:var(--muted); letter-spacing:.06em}
+  .front .qrbox{margin:7mm 0 5mm; padding:5mm; border:1px solid var(--border); border-radius:12px; background:#fff}
+  .front .lead{font-size:14px; color:var(--sub); line-height:1.7}
+  .front .brand{margin-top:4mm; font-size:12px; font-weight:700; color:var(--brand-hover); letter-spacing:.05em}
+
+  /* 折り線：A4の物理的中央（top:50%＝148.5mm）に固定。内容量に依存しない。 */
+  .fold{position:absolute; left:10mm; right:10mm; top:50%; height:0; border-top:1.4px dashed #c9b8a0; z-index:2}
+  .fold span{position:absolute; left:50%; top:-9px; transform:translateX(-50%); background:#fff; padding:0 10px;
+    font-size:10px; color:#b08968; letter-spacing:.04em; white-space:nowrap}
+
+  .inside{justify-content:flex-start; gap:3mm}
+  .inside h2{font-size:15px; margin:2mm 0 0; color:var(--ink); border-left:4px solid var(--brand); padding-left:8px}
+  .inside p{font-size:12.5px; color:var(--sub); line-height:1.8; margin:0}
+  .inside ul{margin:1mm 0 0; padding-left:1.2em}
+  .inside li{font-size:12.5px; color:var(--sub); line-height:1.9}
+  .inside .contact{margin-top:auto; background:var(--cream); border:1px solid var(--border); border-radius:10px; padding:4mm 5mm; font-size:12.5px}
+  .inside .contact b{font-size:13px}
+  .inside .foot{display:flex; justify-content:space-between; font-size:10px; color:var(--muted); margin-top:3mm}
+
+  /* ---- print ---- */
+  @page{ size:A4; margin:0; }
+  @media print{
+    body{background:#fff}
+    .toolbar,.hint{display:none}
+    .pages{padding:0}
+    .sheet{margin:0; box-shadow:none; page-break-after:always}
+    .chk{display:none}
+    .sheet.off{display:none}
+  }
+</style>
+</head>
+<body>
+
+<div class="toolbar">
+  <div>
+    <div class="crumb" id="crumb"></div>
+    <h1>患者QR 印刷</h1>
+  </div>
+  <span class="sep"></span>
+  <div class="seg" id="modeSeg">
+    <button data-mode="single" class="on">個別（患者詳細から1名）</button>
+    <button data-mode="bulk">一括（一覧から全員）</button>
+  </div>
+  <span class="sep"></span>
+  <span id="singleCtl">患者：<select id="patSel"></select></span>
+  <span id="bulkCtl" hidden>
+    <span class="chip on" data-office="all">全拠点</span>
+    <span class="chip" data-office="稲毛">稲毛</span>
+    <span class="chip" data-office="都賀">都賀</span>
+  </span>
+  <span class="spacer"></span>
+  <span class="count" id="count"></span>
+  <button class="btn" id="selAll" hidden>全選択</button>
+  <button class="btn" id="selNone" hidden>全解除</button>
+  <button class="btn brand" onclick="window.print()">🖨 印刷</button>
+</div>
+<div class="hint" id="hint"></div>
+
+<div class="pages" id="pages"></div>
+
+<script>
+const PATIENTS=[
+  {name:'山田 花子', code:'P095', office:'稲毛', tel:'043-301-0001', token:'kf93Qa2LmX7tZ'},
+  {name:'佐藤 一郎', code:'P096', office:'稲毛', tel:'043-301-0001', token:'a8Lp02QmZ4kR'},
+  {name:'鈴木 みどり', code:'P097', office:'稲毛', tel:'043-301-0001', token:'Yt7vBn1cWq0e'},
+  {name:'加藤 蓮', code:'P103', office:'都賀', tel:'043-302-0002', token:'Qw4Er7Ty1Ui3'},
+  {name:'吉田 千夏', code:'P104', office:'都賀', tel:'043-302-0002', token:'As6Df9Gh2Jk5'},
+];
+const BASE='https://careflow.app/q/';
+const ISSUED='2026-06-30';
+let mode='single';          // 'single'（患者詳細から1名） | 'bulk'（一覧から全員）
+let office='all';
+const selected=new Set(PATIENTS.map(p=>p.code));
+
+function shown(){ return PATIENTS.filter(p=>office==='all'||p.office===office); }
+function targetList(){
+  if(mode==='single'){ const code=document.getElementById('patSel').value; return PATIENTS.filter(p=>p.code===code); }
+  return shown();
+}
+
+function cardHTML(p, withChk, on){
+  return `
+    ${withChk?`<input type="checkbox" class="chk" ${on?'checked':''}>`:''}
+    <div class="panel front">
+      <span class="office">${p.office}拠点</span>
+      <div class="pname">${p.name} 様</div>
+      <div class="pcode">${p.code}</div>
+      <div class="qrbox"><div class="qr"></div></div>
+      <div class="lead">訪問のたびに、このQRコードを<br>スタッフが読み取って記録します</div>
+      <div class="brand">♥ CareFlow 訪問チェックイン</div>
+    </div>
+    <div class="fold"><span>✂ ここで半分に折ってお渡し／掲示できます</span></div>
+    <div class="panel inside">
+      <h2>このQRコードについて</h2>
+      <p>訪問介護スタッフが訪問のたびにこのQRコードを読み取り、到着・退出の時刻を記録します。記録を正確に行うため、下記にご協力をお願いいたします。</p>
+      <ul>
+        <li>玄関の内側など、雨の当たらない見やすい場所に掲示してください。</li>
+        <li>QRがはがれた・汚れて読めない場合は事業所へご連絡ください（無料で再発行します）。</li>
+        <li>このQRコードに、お名前や住所などの個人情報は含まれていません。</li>
+      </ul>
+      <div class="contact">お問い合わせ：<b>${p.office} 訪問介護事業所</b>　TEL ${p.tel}</div>
+      <div class="foot"><span>CareFlow 訪問チェックイン</span><span>発行日 ${ISSUED}　/　${p.code}</span></div>
+    </div>`;
+}
+
+function render(){
+  const pages=document.getElementById('pages'); pages.innerHTML='';
+  const list=targetList();
+  list.forEach(p=>{
+    const on = mode==='single' ? true : selected.has(p.code);
+    const sheet=document.createElement('div');
+    sheet.className='sheet'+(on?'':' off');
+    sheet.innerHTML=cardHTML(p, mode==='bulk', on);
+    pages.appendChild(sheet);
+    new QRCode(sheet.querySelector('.qr'), { text:BASE+p.token, width:190, height:190,
+      colorDark:'#1c1917', colorLight:'#ffffff', correctLevel:QRCode.CorrectLevel.M });
+    const chk=sheet.querySelector('.chk');
+    if(chk) chk.onchange=e=>{
+      if(e.target.checked) selected.add(p.code); else selected.delete(p.code);
+      sheet.classList.toggle('off', !e.target.checked); updateCount();
+    };
+  });
+  updateCount();
+}
+
+function updateCount(){
+  const c=document.getElementById('count');
+  if(mode==='single'){ c.textContent='印刷 1枚'; return; }
+  const sh=shown(); const sel=sh.filter(p=>selected.has(p.code)).length;
+  c.textContent=`表示 ${sh.length}名 / 印刷 ${sel}枚`;
+}
+
+function applyMode(){
+  const single=mode==='single';
+  document.getElementById('singleCtl').hidden=!single;
+  document.getElementById('bulkCtl').hidden=single;
+  document.getElementById('selAll').hidden=single;
+  document.getElementById('selNone').hidden=single;
+  document.getElementById('crumb').textContent=single?'患者マスター › 患者詳細 › QR印刷':'患者マスター › QR一括印刷';
+  document.getElementById('hint').innerHTML=single
+    ? '💡 <b>個別モード</b>：患者詳細画面の「QRコード生成」を押した状態。選んだ患者 <b>1名分（A4 1枚）</b> を印刷・再発行します。'
+    : '💡 <b>一括モード</b>：患者一覧（全体画面）の「QRコード生成」を押した状態。拠点で絞り込み、チェックで対象を選び <b>全員分を各A4 1枚ずつ</b> 印刷します。';
+  render();
+}
+
+// 患者セレクト初期化
+const sel=document.getElementById('patSel');
+sel.innerHTML=PATIENTS.map(p=>`<option value="${p.code}">${p.name}（${p.code}・${p.office}）</option>`).join('');
+sel.onchange=render;
+
+document.getElementById('modeSeg').onclick=e=>{
+  const b=e.target.closest('button'); if(!b) return;
+  mode=b.dataset.mode;
+  document.querySelectorAll('#modeSeg button').forEach(x=>x.classList.toggle('on',x===b));
+  applyMode();
+};
+document.querySelectorAll('.chip[data-office]').forEach(c=>c.onclick=()=>{
+  office=c.dataset.office;
+  document.querySelectorAll('.chip[data-office]').forEach(x=>x.classList.toggle('on',x===c));
+  render();
+});
+document.getElementById('selAll').onclick=()=>{ shown().forEach(p=>selected.add(p.code)); render(); };
+document.getElementById('selNone').onclick=()=>{ shown().forEach(p=>selected.delete(p.code)); render(); };
+
+applyMode();
+</script>
+</body>
+</html>

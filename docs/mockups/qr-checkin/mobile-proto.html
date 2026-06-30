@@ -1,0 +1,409 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>QR訪問チェックイン — モバイル 動的プロトタイプ</title>
+<style>
+  :root{
+    --brand:#0d9488; --brand-accent:#14b8a6; --brand-hover:#0f766e; --brand-light:#ccfbf1;
+    --cream:#faf7f2; --base:#ffffff; --muted-bg:#f5f3ef;
+    --ink:#1c1917; --sub:#57534e; --muted:#a8a29e; --border:#e7e2d9;
+    --ok:#0d9488; --okbg:#ccfbf1; --warn:#b45309; --warnbg:#fef3c7; --bad:#dc2626; --badbg:#fee2e2;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
+  body{margin:0; background:var(--cream); color:var(--ink); display:flex; gap:34px; padding:30px 24px; min-height:100vh;
+    font-family:"Noto Sans JP",-apple-system,"Hiragino Kaku Gothic ProN","Segoe UI",sans-serif; align-items:flex-start}
+  .intro{max-width:300px; position:sticky; top:30px}
+  .intro h1{font-size:20px; margin:0 0 8px}
+  .intro p{font-size:13px; color:var(--sub); line-height:1.8; margin:0 0 14px}
+  .intro .flow{font-size:12px; color:var(--sub); background:var(--base); border:1px solid var(--border); border-radius:12px; padding:14px; line-height:2}
+  .intro .flow b{color:var(--brand-hover)}
+  .intro code{background:var(--muted-bg); padding:1px 5px; border-radius:5px; font-size:11.5px}
+
+  .phone{width:320px; height:670px; border-radius:40px; background:#1c1917; padding:11px; box-shadow:0 14px 40px rgba(28,25,23,.22); position:relative; flex:0 0 auto}
+  .notch{position:absolute; top:11px; left:50%; transform:translateX(-50%); width:120px; height:24px; background:#1c1917; border-radius:0 0 16px 16px; z-index:50}
+  .screen{width:100%; height:100%; border-radius:31px; overflow:hidden; background:var(--cream); position:relative}
+
+  /* sliding scenes */
+  .scene{position:absolute; inset:0; display:flex; flex-direction:column; background:var(--cream);
+    transform:translateX(100%); transition:transform .32s cubic-bezier(.4,0,.2,1); will-change:transform}
+  .scene.in{transform:translateX(0)}
+  .scene.out-left{transform:translateX(-26%)}
+  .scene.front{z-index:10}
+
+  .m-head{padding:32px 18px 12px; background:var(--base); border-bottom:1px solid var(--border); flex:0 0 auto}
+  .m-head .date{font-size:11px; color:var(--muted)}
+  .m-head .title{font-size:17px; font-weight:700; display:flex; justify-content:space-between; align-items:center}
+  .m-head .back{font-size:13px; color:var(--brand-hover); cursor:pointer; margin-bottom:2px; display:inline-flex; gap:3px; align-items:center}
+  .bell{width:32px; height:32px; border-radius:9px; background:var(--muted-bg); display:flex; align-items:center; justify-content:center; font-size:15px}
+
+  .scroll{flex:1; overflow-y:auto; padding:14px}
+  .prog{display:flex; align-items:center; justify-content:space-between; font-size:12px; color:var(--sub); margin-bottom:12px}
+  .bar{height:6px; border-radius:99px; background:var(--muted-bg); overflow:hidden; flex:1; margin:0 10px}
+  .bar>i{display:block; height:100%; background:var(--brand)}
+
+  .vcard{background:var(--base); border:1px solid var(--border); border-radius:12px; padding:13px; margin-bottom:10px; cursor:pointer; box-shadow:0 1px 2px rgba(28,25,23,.04); transition:transform .08s}
+  .vcard:active{transform:scale(.985)}
+  .vcard.now{border-left:4px solid var(--brand); box-shadow:0 1px 2px rgba(28,25,23,.05),0 8px 22px rgba(28,25,23,.07)}
+  .vcard .top{display:flex; justify-content:space-between; align-items:baseline; gap:8px}
+  .vcard .time{font-size:15px; font-weight:700; font-variant-numeric:tabular-nums}
+  .vcard .dur{font-size:12px; color:var(--muted); font-weight:400}
+  .vcard .name{font-size:15px; font-weight:600; margin:4px 0 2px}
+  .vcard .addr{font-size:12px; color:var(--sub)}
+  .badge{font-size:11px; font-weight:600; padding:3px 8px; border-radius:99px; white-space:nowrap}
+  .b-ok{background:var(--okbg); color:var(--brand-hover)} .b-now{background:#dbeafe; color:#1e40af}
+  .b-todo{background:var(--muted-bg); color:var(--sub)} .b-prog{background:#dbeafe; color:#1e40af} .b-bad{background:var(--badbg); color:var(--bad)}
+
+  .btn{display:flex; align-items:center; justify-content:center; gap:8px; width:100%; border:none; cursor:pointer;
+    font-family:inherit; font-size:15px; font-weight:700; border-radius:12px; padding:14px; margin-top:10px}
+  .btn:active{transform:scale(.99)}
+  .btn-primary{background:linear-gradient(135deg,var(--brand),var(--brand-accent)); color:#fff; box-shadow:0 8px 20px rgba(13,148,136,.3)}
+  .btn-ghost{background:var(--base); color:var(--sub); border:1px solid var(--border); font-weight:600; font-size:14px}
+  .btn-danger{background:#fff; color:var(--bad); border:1px solid #fca5a5}
+  .card-btn{margin-top:10px}
+
+  .bnav{height:60px; background:var(--base); border-top:1px solid var(--border); display:grid; grid-template-columns:repeat(4,1fr); flex:0 0 auto}
+  .bnav a{display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px; font-size:10px; color:var(--muted); cursor:pointer}
+  .bnav a.on{color:var(--brand); font-weight:600}
+
+  /* scan */
+  .scan{flex:1; background:#0c0a09; display:flex; flex-direction:column; align-items:center; color:#fff; position:relative}
+  .scan .top-row{width:100%; display:flex; justify-content:space-between; padding:36px 18px 0; font-size:13px}
+  .scan .top-row span{cursor:pointer}
+  .vf{width:212px; height:212px; position:relative; margin:auto}
+  .vf>i,.vf>b,.vf::before,.vf::after{content:""; position:absolute; width:34px; height:34px; border:3px solid var(--brand-accent)}
+  .vf::before{top:0;left:0;border-right:0;border-bottom:0;border-radius:12px 0 0 0}
+  .vf::after{top:0;right:0;border-left:0;border-bottom:0;border-radius:0 12px 0 0}
+  .vf>i{bottom:0;left:0;border-right:0;border-top:0;border-radius:0 0 0 12px}
+  .vf>b{bottom:0;right:0;border-left:0;border-top:0;border-radius:0 0 12px 0}
+  .scanline{position:absolute; left:6px; right:6px; height:2px; background:var(--brand-accent); box-shadow:0 0 12px var(--brand-accent); animation:scan 1.8s ease-in-out infinite}
+  @keyframes scan{0%,100%{top:8px}50%{top:200px}}
+  .scan .target{font-size:13px; color:#d6d3d1; margin-bottom:6px}
+  .scan .hint{margin:16px 0 auto; font-size:12px; color:#a8a29e; text-align:center; padding:0 34px; line-height:1.7}
+  .scan .reading{font-size:13px; color:var(--brand-accent); margin-top:10px; opacity:0; transition:opacity .3s}
+  .scan .reading.on{opacity:1}
+  .scan .cancel{margin:0 0 26px; background:rgba(255,255,255,.12); color:#fff; border:none; padding:11px 26px; border-radius:99px; font-size:14px; font-weight:600; cursor:pointer}
+
+  /* confirm */
+  .csheet{flex:1; overflow-y:auto; padding:18px 16px}
+  .pill{display:inline-flex; align-items:center; gap:6px; font-size:12px; font-weight:600; padding:5px 12px; border-radius:99px; margin-bottom:14px}
+  .gps-load{display:flex; align-items:center; gap:10px; padding:14px; background:var(--base); border:1px solid var(--border); border-radius:12px; font-size:13px; color:var(--sub); margin-bottom:12px}
+  .spin{width:18px; height:18px; border:2.5px solid var(--muted-bg); border-top-color:var(--brand); border-radius:50%; animation:rot .8s linear infinite}
+  @keyframes rot{to{transform:rotate(360deg)}}
+  .map{height:130px; border-radius:14px; position:relative; overflow:hidden; border:1px solid var(--border); background:linear-gradient(135deg,#e8f3f1,#f3efe7); margin-bottom:12px}
+  .map .grid{position:absolute; inset:0; background-image:linear-gradient(rgba(13,148,136,.10) 1px,transparent 1px),linear-gradient(90deg,rgba(13,148,136,.10) 1px,transparent 1px); background-size:26px 26px}
+  .map .home{position:absolute; left:46%; top:40%; font-size:22px}
+  .map .ring{position:absolute; left:46%; top:40%; width:120px; height:120px; transform:translate(-50%,-50%); border:2px dashed rgba(13,148,136,.45); border-radius:50%}
+  .map .me{position:absolute; width:16px; height:16px; border-radius:50%; border:3px solid #fff}
+  .judge{display:flex; align-items:center; gap:10px; padding:12px 14px; border-radius:12px; margin:0 0 14px; font-size:13px; font-weight:600}
+  .judge.ok{background:var(--okbg); color:var(--brand-hover)} .judge.bad{background:var(--badbg); color:var(--bad)}
+  .judge .big{font-size:20px}
+  .card-block{background:var(--base); border:1px solid var(--border); border-radius:12px; padding:4px 14px; margin-bottom:12px}
+  .card-block.pad{padding:14px}
+  .kv{display:flex; justify-content:space-between; padding:10px 0; border-bottom:1px solid var(--muted-bg); font-size:13px}
+  .kv:last-child{border-bottom:none}
+  .kv .k{color:var(--sub)} .kv .v{font-weight:600; font-variant-numeric:tabular-nums}
+  .lbl{font-size:12px; color:var(--sub); font-weight:600}
+  .field{width:100%; border:1px solid var(--border); border-radius:10px; padding:10px 12px; font-family:inherit; font-size:13px; resize:none; margin-top:6px}
+  .timer{font-size:36px; font-weight:700; font-variant-numeric:tabular-nums; text-align:center; color:var(--brand-hover); padding:6px 0 0}
+  .timer-sub{text-align:center; font-size:12px; color:var(--muted); margin:2px 0 6px}
+  .photo-row{display:flex; gap:8px; margin-top:8px}
+  .photo-add{width:56px; height:56px; border:1.5px dashed var(--border); border-radius:10px; display:flex; align-items:center; justify-content:center; color:var(--muted); font-size:22px}
+  .toast{position:absolute; left:16px; right:16px; bottom:18px; background:var(--ink); color:#fff; padding:13px 16px; border-radius:12px; font-size:13px; font-weight:600; text-align:center; z-index:60; opacity:0; transform:translateY(10px); transition:.25s; pointer-events:none}
+  .toast.on{opacity:1; transform:translateY(0)}
+</style>
+</head>
+<body>
+
+<div class="intro">
+  <h1>モバイル 動的プロト</h1>
+  <p>実際にタップして画面遷移を確認できます。<b>患者カードのタップ</b>と<b>QRフローの状態遷移</b>を再現しています（カメラ/GPSはダミー）。</p>
+  <div class="flow">
+    <b>① 今日の訪問</b><br>
+    └ カードタップ → <b>② 訪問詳細</b><br>
+    └「QRで到着」→ <b>③ スキャン</b>（自動読取）<br>
+    → <b>④ 到着確認</b>（GPS判定）<br>
+    →「到着を記録」→ <b>⑤ 訪問中</b><br>
+    →「QRで退出」→ ③ → <b>⑥ 退出確認</b><br>
+    →「完了」→ ① に戻り状態更新<br>
+    <span style="color:var(--muted); font-size:11px">※「鈴木みどり」を選ぶと場所違い(340m)の異常系を体験できます。</span>
+  </div>
+</div>
+
+<div class="phone">
+  <div class="notch"></div>
+  <div class="screen" id="screen"></div>
+</div>
+
+<script>
+const NOW_LABEL = '6月30日 月';
+// state
+let patients = [
+  {id:'p1', name:'山田 花子', addr:'千葉市稲毛区小仲台2-…', ps:'09:30', dur:60, st:'todo', dist:12},
+  {id:'p2', name:'佐藤 一郎', addr:'千葉市稲毛区轟町5-…', ps:'08:00', dur:45, st:'done', dist:8, arrive:'08:01', depart:'08:46'},
+  {id:'p3', name:'鈴木 みどり', addr:'千葉市稲毛区天台1-…', ps:'10:45', dur:60, st:'todo', dist:340}, // 異常系
+  {id:'p4', name:'高橋 健', addr:'千葉市稲毛区作草部…', ps:'13:00', dur:30, st:'todo', dist:15},
+];
+let current = null;       // 選択中 patient id
+let flowReason = '';
+const P = id => patients.find(p=>p.id===id);
+const screen = document.getElementById('screen');
+let scenes = [];          // stack
+
+function badge(p){
+  if(p.st==='done') return `<span class="badge b-ok">✓ 完了 一致</span>`;
+  if(p.st==='inprogress') return `<span class="badge b-prog">● 訪問中</span>`;
+  if(p.st==='done-flag') return `<span class="badge b-bad">⚠ 要確認</span>`;
+  if(p.st==='missing') return `<span class="badge b-bad">⛔ 未訪問</span>`;
+  if(p.id===nextTodo()) return `<span class="badge b-now">● 次の訪問</span>`;
+  return `<span class="badge b-todo">未訪問</span>`;
+}
+function nextTodo(){ const t = patients.filter(p=>p.st==='todo').sort((a,b)=>a.ps.localeCompare(b.ps))[0]; return t&&t.id; }
+function isMismatch(p){ return p.dist>300; }
+
+/* ---------- scene renderers ---------- */
+function homeScene(){
+  const done = patients.filter(p=>p.st==='done'||p.st==='done-flag').length;
+  const cards = patients.slice().sort((a,b)=>a.ps.localeCompare(b.ps)).map(p=>{
+    const isNext = p.id===nextTodo();
+    const cta = isNext ? `<button class="btn btn-primary card-btn" data-act="open" data-id="${p.id}">📷 QRで到着を記録</button>` : '';
+    return `<div class="vcard ${isNext?'now':''}" data-act="open" data-id="${p.id}">
+      <div class="top"><span class="time">${p.ps} <span class="dur">(${p.dur}分)</span></span>${badge(p)}</div>
+      <div class="name">${p.name}</div><div class="addr">📍 ${p.addr}</div>${cta}</div>`;
+  }).join('');
+  return `<div class="m-head"><div class="date">${NOW_LABEL}</div><div class="title">今日の訪問 <span class="bell">🔔</span></div></div>
+    <div class="scroll">
+      <div class="prog"><span>${done} / ${patients.length} 完了</span><span class="bar"><i style="width:${done/patients.length*100}%"></i></span><span>残${patients.length-done}</span></div>
+      ${cards}
+    </div>
+    <div class="bnav"><a>🏠<br>ホーム</a><a class="on">📅<br>今日</a><a>🗓<br>今週</a><a>👤<br>マイ</a></div>`;
+}
+
+function detailScene(p){
+  const statusLine = p.st==='done' ? `<div class="judge ok"><span class="big">✓</span> 訪問完了（${p.arrive}〜${p.depart}）</div>`
+    : p.st==='inprogress' ? `<div class="judge ok"><span class="big">●</span> 訪問中（${p.arrive} 到着）</div>`
+    : p.st==='missing' ? `<div class="judge bad"><span class="big">⛔</span> 未訪問として記録済み</div>${p.reason?`<div class="card-block pad" style="font-size:12.5px; color:var(--sub)"><span class="lbl">理由</span><br>${p.reason}</div>`:''}`
+    : '';
+  const mainBtn = p.st==='todo' ? `<button class="btn btn-primary" data-act="scan" data-mode="arrival" data-id="${p.id}">📷 QRで到着を記録</button>
+      <button class="btn btn-danger" data-act="cantvisit" data-id="${p.id}">訪問できなかった（理由を記録）</button>`
+    : p.st==='inprogress' ? `<button class="btn btn-primary" data-act="scan" data-mode="departure" data-id="${p.id}">📷 QRで退出を記録</button>`
+    : `<button class="btn btn-ghost" data-act="back">一覧へ戻る</button>`;
+  return `<div class="m-head">
+      <div class="back" data-act="back">‹ 今日の訪問</div>
+      <div class="title">${p.name}</div></div>
+    <div class="csheet">
+      ${statusLine}
+      <div class="card-block">
+        <div class="kv"><span class="k">予定時刻</span><span class="v">${p.ps}（${p.dur}分）</span></div>
+        <div class="kv"><span class="k">住所</span><span class="v" style="font-weight:500; font-size:12px; max-width:160px; text-align:right">${p.addr}</span></div>
+        <div class="kv"><span class="k">状態</span><span class="v">${ {todo:'未訪問', done:'完了', 'done-flag':'要確認', inprogress:'訪問中'}[p.st] }</span></div>
+      </div>
+      <div class="card-block pad"><span class="lbl">📞 連絡先・備考</span><div style="font-size:12.5px; color:var(--sub); margin-top:6px; line-height:1.7">担当ケアマネ: 03-xxxx-xxxx<br>玄関の固定QRを読み取って打刻してください。</div></div>
+      ${mainBtn}
+    </div>`;
+}
+
+function scanScene(p, mode){
+  return `<div class="scan">
+      <div class="top-row"><span data-act="back">✕ 閉じる</span><span>🔦 ライト</span></div>
+      <div class="vf"><i></i><b></b><div class="scanline"></div></div>
+      <div class="target">対象: <b>${p.name}</b> さん宅 ／ ${mode==='arrival'?'到着':'退出'}スキャン</div>
+      <div class="hint">患者宅のQRコードを枠内に合わせてください。</div>
+      <div class="reading" id="reading">QRを認識しました…</div>
+      <button class="cancel" data-act="manual">手入力で選ぶ</button>
+    </div>`;
+}
+
+function confirmScene(p, mode){
+  const mismatch = isMismatch(p);
+  const meX = mismatch?78:54, meY = mismatch?80:58;
+  const meColor = mismatch?'var(--bad)':'#2563eb';
+  const judge = mismatch
+    ? `<div class="judge bad"><span class="big">✕</span> 登録住所から ${p.dist}m 離れています</div>`
+    : `<div class="judge ok"><span class="big">✓</span> 登録住所と一致（${p.dist}m）</div>`;
+  let info, reasonBlock='', mainBtn;
+  if(mode==='arrival'){
+    info = `<div class="card-block">
+      <div class="kv"><span class="k">予定時刻</span><span class="v">${p.ps}</span></div>
+      <div class="kv"><span class="k">現在時刻</span><span class="v">09:28</span></div>
+      <div class="kv"><span class="k">登録住所からの距離</span><span class="v" style="color:${mismatch?'var(--bad)':'var(--brand-hover)'}">${p.dist}m</span></div></div>`;
+    if(mismatch){
+      reasonBlock = `<div class="card-block pad"><span class="lbl">理由（任意・管理者に共有）</span>
+        <textarea class="field" id="reason" rows="2" placeholder="例: マンション裏口で測位 など"></textarea></div>`;
+      mainBtn = `<button class="btn btn-danger" data-act="record" data-mode="arrival" data-id="${p.id}">理由を付けて到着を記録</button>`;
+    } else {
+      mainBtn = `<button class="btn btn-primary" data-act="record" data-mode="arrival" data-id="${p.id}">到着を記録する</button>`;
+    }
+  } else {
+    info = `<div class="card-block">
+      <div class="kv"><span class="k">到着</span><span class="v">${p.arrive}</span></div>
+      <div class="kv"><span class="k">退出</span><span class="v">10:15</span></div>
+      <div class="kv"><span class="k">滞在時間</span><span class="v" style="color:var(--brand-hover)">47分</span></div>
+      <div class="kv"><span class="k">予定（${p.dur}分）との差</span><span class="v">${47-p.dur>=0?'+':''}${47-p.dur}分</span></div></div>`;
+    mainBtn = `<button class="btn btn-primary" data-act="complete" data-id="${p.id}">訪問を完了する</button>`;
+  }
+  return `<div class="m-head"><div class="date">QR読み取り完了</div><div class="title">${mode==='arrival'?'到着':'退出'}の確認</div></div>
+    <div class="csheet" id="confirmBody">
+      <span class="pill ${mismatch?'':''}" style="background:${mismatch?'var(--badbg)':'var(--okbg)'}; color:${mismatch?'var(--bad)':'var(--brand-hover)'}">📷 ${p.name} さん宅 のQR</span>
+      <div class="gps-load" id="gpsLoad"><span class="spin"></span> GPSで現在地を取得中…</div>
+      <div id="gpsResult" style="display:none">
+        <div class="map"><div class="grid"></div><div class="ring"></div><div class="home">🏠</div>
+          <div class="me" style="left:${meX}%; top:${meY}%; background:${meColor}; box-shadow:0 0 0 4px ${meColor}33"></div></div>
+        ${judge}${info}${reasonBlock}${mainBtn}
+        <button class="btn btn-ghost" data-act="rescan" data-mode="${mode}" data-id="${p.id}">スキャンし直す</button>
+      </div>
+    </div>`;
+}
+
+function missingScene(p){
+  const chips=['不在（応答なし）','本人都合キャンセル','入院／受診','家族都合'];
+  return `<div class="m-head"><div class="back" data-act="back">‹ ${p.name}</div><div class="title">未訪問の記録</div></div>
+    <div class="csheet">
+      <div class="judge bad"><span class="big">⛔</span> 訪問できなかった理由</div>
+      <div class="card-block pad">
+        <span class="lbl">理由（管理者に即共有されます）</span>
+        <textarea class="field" id="mreason" rows="3" placeholder="例: 不在。呼び鈴・電話とも応答なし。"></textarea>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px">
+          ${chips.map(t=>`<span class="badge b-todo" data-chip="${t}" style="cursor:pointer; padding:7px 11px">${t}</span>`).join('')}
+        </div>
+      </div>
+      <button class="btn btn-danger" data-act="recordMissing" data-id="${p.id}">未訪問として記録する</button>
+      <button class="btn btn-ghost" data-act="back">戻る</button>
+    </div>`;
+}
+
+function progressScene(p){
+  return `<div class="m-head"><div class="date">${p.name} ・ ${p.arrive} 到着</div><div class="title">訪問中</div></div>
+    <div class="csheet">
+      <div class="card-block pad"><div class="timer" id="timer">00:00</div><div class="timer-sub">経過時間（到着 ${p.arrive} 〜）</div></div>
+      <div class="card-block pad">
+        <span class="lbl">サービスメモ</span>
+        <textarea class="field" rows="3" placeholder="実施内容・申し送り">バイタル測定、清拭。</textarea>
+        <span class="lbl" style="display:block; margin-top:12px">写真</span>
+        <div class="photo-row"><div class="photo-add">＋</div></div>
+      </div>
+      <button class="btn btn-primary" data-act="scan" data-mode="departure" data-id="${p.id}">📷 QRで退出を記録</button>
+    </div>`;
+}
+
+/* ---------- scene transition engine ---------- */
+function push(html){
+  // 前面に出ている現在のシーンを「先に」捕まえる（push後だと新シーン自身を
+  // 掴んでしまい、新シーンに out-left が付いて中央からズレ＆行き過ぎる）。
+  const prev = scenes[scenes.length-1] || null;
+  const el = document.createElement('div');
+  el.className='scene front';
+  el.innerHTML = html;
+  screen.appendChild(el);
+  scenes.push(el);
+  bind(el);
+  // 2フレーム後にトランジション開始：前画面を左へ退避、新画面を中央へ。
+  requestAnimationFrame(()=>{ requestAnimationFrame(()=>{
+    if(prev) prev.classList.add('out-left');
+    el.classList.add('in');
+  });});
+}
+function replaceRoot(html){
+  scenes.forEach(s=>s.remove()); scenes=[];
+  const el = document.createElement('div'); el.className='scene front in'; el.innerHTML=html;
+  el.style.transition='none';
+  screen.appendChild(el); scenes=[el]; bind(el);
+}
+function pop(){
+  if(scenes.length<=1) return;
+  const top = scenes.pop();
+  top.classList.remove('in'); // slide out right
+  const prev = scenes[scenes.length-1];
+  prev.classList.remove('out-left');
+  setTimeout(()=>top.remove(), 320);
+}
+function popTo(depth){ while(scenes.length>depth) pop(); }
+
+function toast(msg){
+  const t=document.createElement('div'); t.className='toast'; t.textContent=msg; screen.appendChild(t);
+  requestAnimationFrame(()=>t.classList.add('on'));
+  setTimeout(()=>{ t.classList.remove('on'); setTimeout(()=>t.remove(),300); }, 1600);
+}
+
+/* ---------- actions ---------- */
+function bind(el){
+  el.querySelectorAll('[data-act]').forEach(node=>{
+    node.addEventListener('click', e=>{
+      e.stopPropagation();
+      const a = node.dataset.act, id = node.dataset.id||current, mode = node.dataset.mode;
+      if(a==='open'){ current=id; push(detailScene(P(id))); }
+      else if(a==='back'){ pop(); }
+      else if(a==='scan'){ current=id; push(scanScene(P(id), mode)); autoScan(P(id), mode); }
+      else if(a==='manual'){ pop(); }
+      else if(a==='record'){ doArrival(P(id)); }
+      else if(a==='cantvisit'){ current=id; push(missingScene(P(id))); }
+      else if(a==='recordMissing'){ doMissing(P(id)); }
+      else if(a==='complete'){ doComplete(P(id)); }
+      else if(a==='rescan'){ pop(); /* back to scan */ const s=scenes[scenes.length-1]; if(s && s.querySelector('.scan')) autoScan(P(id), mode); else { push(scanScene(P(id),mode)); autoScan(P(id),mode);} }
+    });
+  });
+  // 未訪問理由のクイック選択チップ
+  el.querySelectorAll('[data-chip]').forEach(c=>c.addEventListener('click',e=>{
+    e.stopPropagation();
+    const t=document.getElementById('mreason'); if(t){ t.value=(t.value?t.value+'、':'')+c.dataset.chip; }
+  }));
+}
+
+function doMissing(p){
+  const r=document.getElementById('mreason'); p.reason=r&&r.value?r.value:'（理由未記入）';
+  p.st='missing';
+  popTo(1); replaceRoot(homeScene());
+  toast('⛔ 未訪問として記録しました');
+}
+
+function autoScan(p, mode){
+  // simulate QR recognized after delay → go to confirm with GPS spinner
+  const reading = document.getElementById('reading');
+  setTimeout(()=>{ if(reading) reading.classList.add('on'); }, 700);
+  setTimeout(()=>{
+    push(confirmScene(p, mode));
+    // simulate GPS resolve
+    setTimeout(()=>{
+      const load=document.getElementById('gpsLoad'), res=document.getElementById('gpsResult');
+      if(load&&res){ load.style.display='none'; res.style.display='block'; }
+    }, 1100);
+  }, 1400);
+}
+
+function doArrival(p){
+  const r = document.getElementById('reason'); if(r) flowReason=r.value;
+  p.st='inprogress'; p.arrive='09:28';
+  // pop scan+confirm, back to (detail or home) then open progress fresh as root flow
+  popTo(1);                 // back to home root
+  // refresh home then open detail→progress chain so back works
+  replaceRoot(homeScene());
+  current=p.id;
+  push(detailScene(p));
+  push(progressScene(p));
+  startTimer(p);
+  toast('到着を記録しました');
+}
+
+function doComplete(p){
+  p.st = isMismatch(p) ? 'done-flag' : 'done';
+  p.depart='10:15';
+  popTo(1);
+  replaceRoot(homeScene());
+  toast(isMismatch(p)?'⚠ 要確認として記録しました':'訪問を完了しました');
+}
+
+let timerInt=null;
+function startTimer(p){
+  if(timerInt) clearInterval(timerInt);
+  let sec=42*60; // start at 00:42 for demo feel
+  const tick=()=>{ const el=document.getElementById('timer'); if(!el){clearInterval(timerInt);return;}
+    const m=String(Math.floor(sec/60)).padStart(2,'0'), s=String(sec%60).padStart(2,'0'); el.textContent=`${m}:${s}`; sec++; };
+  tick(); timerInt=setInterval(tick,1000);
+}
+
+// boot
+replaceRoot(homeScene());
+</script>
+</body>
+</html>
