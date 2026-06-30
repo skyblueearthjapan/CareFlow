@@ -13,6 +13,7 @@ import * as React from 'react';
 import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 // ─── Mock next/navigation ─────────────────────────────────────────────────────
 const mockPush = vi.fn();
@@ -40,6 +41,11 @@ vi.mock('@/lib/queries/patients', () => ({
   useDeletePatient: vi.fn(),
 }));
 
+// ─── Mock patient QR query hooks ──────────────────────────────────────────────
+vi.mock('@/lib/queries/patientQr', () => ({
+  useRegeneratePatientQr: vi.fn(),
+}));
+
 // ─── Mock patient_fixed_visits query hooks ─────────────────────────────────────
 vi.mock('@/lib/queries/patient_fixed_visits', () => ({
   useFixedVisits: vi.fn(),
@@ -53,6 +59,11 @@ vi.mock('@/lib/queries/course_templates', () => ({
   useCourseTemplates: vi.fn(),
 }));
 
+// ─── Mock offices query ───────────────────────────────────────────────────────
+vi.mock('@/lib/queries/offices', () => ({
+  useOffices: vi.fn(),
+}));
+
 // ─── Mock toast ───────────────────────────────────────────────────────────────
 vi.mock('@/components/ui/sonner', () => ({
   toast: {
@@ -63,6 +74,7 @@ vi.mock('@/components/ui/sonner', () => ({
 
 import { useSession } from 'next-auth/react';
 import { usePatient, usePatients, useDeletePatient } from '@/lib/queries/patients';
+import { useRegeneratePatientQr } from '@/lib/queries/patientQr';
 import {
   useFixedVisits,
   useUpdateFixedVisits,
@@ -70,8 +82,20 @@ import {
   useApplyFromWeek,
 } from '@/lib/queries/patient_fixed_visits';
 import { useCourseTemplates } from '@/lib/queries/course_templates';
+import { useOffices } from '@/lib/queries/offices';
 
 import PatientDetailPage from '../page';
+
+// PatientFixedVisitsPanel が内部で useQueries (course-templates 並列 fetch) を呼ぶため、
+// QueryClientProvider で包んで描画する (retry 無効で fetch 失敗時も即 error 状態へ)。
+function renderPage() {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <PatientDetailPage />
+    </QueryClientProvider>,
+  );
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -163,6 +187,11 @@ function setupMocks(
     makeQueryResult({ items: [patientRecord], total: 1, page: 1, limit: 500, truncated: false }),
   );
   (useDeletePatient as Mock).mockReturnValue(makeMutation());
+  (useRegeneratePatientQr as Mock).mockReturnValue(makeMutation());
+  (useOffices as Mock).mockReturnValue({
+    offices: [{ id: OFFICE_ID, name: '稲毛', address: null }],
+    allOffices: [],
+  });
 
   (useFixedVisits as Mock).mockReturnValue(makeQueryResult(opts.fixedVisitReads ?? []));
   (useUpdateFixedVisits as Mock).mockReturnValue(makeMutation());
@@ -197,7 +226,7 @@ describe('PatientDetailPage — W37 Phase 3-D', () => {
       ],
     });
 
-    render(<PatientDetailPage />);
+    renderPage();
 
     // コース 1 セルはある (「コース: A」形式)
     await waitFor(() => {
@@ -240,7 +269,7 @@ describe('PatientDetailPage — W37 Phase 3-D', () => {
       ],
     });
 
-    render(<PatientDetailPage />);
+    renderPage();
 
     await waitFor(() => {
       expect(screen.getByTestId('ro-course1-0')).toHaveTextContent('コース 1: A');
@@ -270,7 +299,7 @@ describe('PatientDetailPage — W37 Phase 3-D', () => {
       ],
     });
 
-    render(<PatientDetailPage />);
+    renderPage();
 
     await waitFor(() => {
       expect(screen.getByTestId('ro-course1-0')).toHaveTextContent('コース 1: A');
@@ -285,7 +314,7 @@ describe('PatientDetailPage — W37 Phase 3-D', () => {
   it('4. 編集ボタンクリックで編集画面へのリンクが正しい (regression)', () => {
     setupMocks({ patientOverrides: { requires_multiple_staff: false } });
 
-    render(<PatientDetailPage />);
+    renderPage();
 
     const editLink = screen.getByRole('link', { name: '編集' });
     expect(editLink).toHaveAttribute('href', `/patients/${PATIENT_ID}/edit`);
@@ -294,7 +323,7 @@ describe('PatientDetailPage — W37 Phase 3-D', () => {
   it('5. requires_multiple_staff=true → ヘッダに「2 名対応」バッジ表示', () => {
     setupMocks({ patientOverrides: { requires_multiple_staff: true } });
 
-    render(<PatientDetailPage />);
+    renderPage();
 
     expect(screen.getByTestId('badge-multiple-staff')).toBeInTheDocument();
     expect(screen.getByTestId('badge-multiple-staff')).toHaveTextContent('2 名対応');
@@ -303,7 +332,7 @@ describe('PatientDetailPage — W37 Phase 3-D', () => {
   it('6. requires_multiple_staff=false → 「2 名対応」バッジ非表示', () => {
     setupMocks({ patientOverrides: { requires_multiple_staff: false } });
 
-    render(<PatientDetailPage />);
+    renderPage();
 
     expect(screen.queryByTestId('badge-multiple-staff')).not.toBeInTheDocument();
   });
@@ -314,7 +343,7 @@ describe('PatientDetailPage — W37 Phase 3-D', () => {
       fixedVisitReads: [],
     });
 
-    render(<PatientDetailPage />);
+    renderPage();
 
     await waitFor(() => {
       // ReadOnlyWeekGrid で 7 曜日すべて「訪問なし」
@@ -330,7 +359,7 @@ describe('PatientDetailPage — W37 Phase 3-D', () => {
       role: 'admin',
     });
 
-    render(<PatientDetailPage />);
+    renderPage();
 
     // readOnly=true のため保存ボタンは表示されない
     expect(screen.queryByRole('button', { name: '保存' })).not.toBeInTheDocument();

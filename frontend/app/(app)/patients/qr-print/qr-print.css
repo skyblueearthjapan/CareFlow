@@ -1,0 +1,360 @@
+/**
+ * QR 印刷ビューのスタイル (Phase 5-1)。
+ * `docs/mockups/qr-checkin/qr-print.html` の <style> を本実装に移植。
+ * クラス名は `qrprint-` 接頭辞で衝突を避ける。
+ *
+ * 折り線は A4 物理中央 (top:50%) に固定し、内容量に依存しない。
+ * @media print で A4・ツールバー非表示・page-break-after を効かせる。
+ */
+
+.qrprint-root {
+  --qrp-brand: #0d9488;
+  --qrp-brand-hover: #0f766e;
+  --qrp-brand-light: #ccfbf1;
+  --qrp-cream: #faf7f2;
+  --qrp-ink: #1c1917;
+  --qrp-sub: #57534e;
+  --qrp-muted: #a8a29e;
+  --qrp-border: #e7e2d9;
+  background: #e9e6e0;
+  color: var(--qrp-ink);
+  font-size: 13px;
+  min-height: 100vh;
+}
+
+/* ---- toolbar (画面のみ) ---- */
+.qrprint-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: #fff;
+  border-bottom: 1px solid var(--qrp-border);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 22px;
+  flex-wrap: wrap;
+}
+.qrprint-title {
+  font-size: 16px;
+  margin: 0;
+  font-weight: 700;
+}
+.qrprint-crumb {
+  font-size: 11.5px;
+  color: var(--qrp-muted);
+}
+.qrprint-sep {
+  width: 1px;
+  height: 30px;
+  background: var(--qrp-border);
+}
+.qrprint-spacer {
+  flex: 1;
+}
+.qrprint-seg {
+  display: inline-flex;
+  background: var(--qrp-cream);
+  border: 1px solid var(--qrp-border);
+  border-radius: 10px;
+  padding: 3px;
+}
+.qrprint-seg button {
+  border: none;
+  background: none;
+  font-family: inherit;
+  font-size: 12.5px;
+  padding: 6px 13px;
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--qrp-sub);
+}
+.qrprint-seg button.on {
+  background: #fff;
+  color: var(--qrp-brand-hover);
+  font-weight: 700;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.07);
+}
+.qrprint-chips {
+  display: inline-flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.qrprint-chip {
+  border: 1px solid var(--qrp-border);
+  border-radius: 99px;
+  padding: 6px 13px;
+  font-size: 12.5px;
+  color: var(--qrp-sub);
+  cursor: pointer;
+  background: #fff;
+}
+.qrprint-chip.on {
+  background: var(--qrp-brand-light);
+  color: var(--qrp-brand-hover);
+  border-color: transparent;
+  font-weight: 600;
+}
+.qrprint-select {
+  font-family: inherit;
+  font-size: 13px;
+  padding: 6px 10px;
+  border: 1px solid var(--qrp-border);
+  border-radius: 8px;
+  background: #fff;
+}
+.qrprint-count {
+  font-size: 12.5px;
+  color: var(--qrp-sub);
+}
+.qrprint-btn {
+  border: 1px solid var(--qrp-border);
+  background: #fff;
+  border-radius: 9px;
+  padding: 8px 14px;
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  color: var(--qrp-sub);
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+.qrprint-btn.brand {
+  background: var(--qrp-brand);
+  color: #fff;
+  border-color: var(--qrp-brand);
+  font-weight: 700;
+}
+.qrprint-hint {
+  font-size: 11.5px;
+  color: var(--qrp-muted);
+  padding: 6px 22px 0;
+  line-height: 1.7;
+}
+.qrprint-empty {
+  padding: 24px 22px;
+  color: var(--qrp-sub);
+}
+.qrprint-warn {
+  margin: 8px 22px 0;
+  padding: 10px 14px;
+  border: 1px solid #f5c2a0;
+  background: #fff4ec;
+  color: #9a3412;
+  border-radius: 9px;
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+
+/* ---- 一括: 未選択患者のコンパクト行 (画面のみ) ---- */
+.qrprint-selrow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 210mm;
+  max-width: calc(100% - 24px);
+  margin: 0 auto 6px;
+  padding: 10px 16px;
+  background: #fff;
+  border: 1px solid var(--qrp-border);
+  border-radius: 9px;
+  cursor: pointer;
+}
+.qrprint-selrow-chk {
+  transform: scale(1.2);
+  cursor: pointer;
+}
+.qrprint-selrow-name {
+  font-weight: 700;
+  color: var(--qrp-ink);
+}
+.qrprint-selrow-meta {
+  font-size: 12px;
+  color: var(--qrp-muted);
+  letter-spacing: 0.04em;
+}
+
+/* ---- A4: 1 名 1 枚 ---- */
+.qrprint-pages {
+  padding: 18px 0 40px;
+}
+.qrprint-sheet {
+  position: relative;
+  width: 210mm;
+  height: 297mm;
+  background: #fff;
+  margin: 0 auto 18px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
+  display: flex;
+  flex-direction: column;
+}
+.qrprint-sheet.off {
+  opacity: 0.28;
+}
+.qrprint-chk {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  transform: scale(1.3);
+  cursor: pointer;
+  z-index: 3;
+}
+
+.qrprint-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 14mm 16mm;
+}
+.qrprint-panel.front {
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+.qrprint-office {
+  font-size: 13px;
+  color: var(--qrp-brand-hover);
+  font-weight: 700;
+  background: var(--qrp-brand-light);
+  padding: 3px 12px;
+  border-radius: 99px;
+}
+.qrprint-pname {
+  font-size: 34px;
+  font-weight: 800;
+  margin: 6mm 0 1mm;
+  line-height: 1.15;
+}
+.qrprint-pcode {
+  font-size: 14px;
+  color: var(--qrp-muted);
+  letter-spacing: 0.06em;
+}
+.qrprint-qrbox {
+  margin: 7mm 0 5mm;
+  padding: 5mm;
+  border: 1px solid var(--qrp-border);
+  border-radius: 12px;
+  background: #fff;
+}
+.qrprint-qr-placeholder {
+  width: 190px;
+  height: 190px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--qrp-muted);
+  font-size: 13px;
+}
+.qrprint-lead {
+  font-size: 14px;
+  color: var(--qrp-sub);
+  line-height: 1.7;
+}
+.qrprint-brand {
+  margin-top: 4mm;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--qrp-brand-hover);
+  letter-spacing: 0.05em;
+}
+
+/* 折り線: A4 物理中央 (top:50% = 148.5mm) に固定。内容量に依存しない。 */
+.qrprint-fold {
+  position: absolute;
+  left: 10mm;
+  right: 10mm;
+  top: 50%;
+  height: 0;
+  border-top: 1.4px dashed #c9b8a0;
+  z-index: 2;
+}
+.qrprint-fold span {
+  position: absolute;
+  left: 50%;
+  top: -9px;
+  transform: translateX(-50%);
+  background: #fff;
+  padding: 0 10px;
+  font-size: 10px;
+  color: #b08968;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.qrprint-panel.inside {
+  justify-content: flex-start;
+  gap: 3mm;
+}
+.qrprint-panel.inside h2 {
+  font-size: 15px;
+  margin: 2mm 0 0;
+  color: var(--qrp-ink);
+  border-left: 4px solid var(--qrp-brand);
+  padding-left: 8px;
+}
+.qrprint-panel.inside p {
+  font-size: 12.5px;
+  color: var(--qrp-sub);
+  line-height: 1.8;
+  margin: 0;
+}
+.qrprint-panel.inside ul {
+  margin: 1mm 0 0;
+  padding-left: 1.2em;
+}
+.qrprint-panel.inside li {
+  font-size: 12.5px;
+  color: var(--qrp-sub);
+  line-height: 1.9;
+}
+.qrprint-contact {
+  margin-top: auto;
+  background: var(--qrp-cream);
+  border: 1px solid var(--qrp-border);
+  border-radius: 10px;
+  padding: 4mm 5mm;
+  font-size: 12.5px;
+}
+.qrprint-contact b {
+  font-size: 13px;
+}
+.qrprint-foot {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--qrp-muted);
+  margin-top: 3mm;
+}
+
+/* ---- print ---- */
+@page {
+  size: A4;
+  margin: 0;
+}
+@media print {
+  .qrprint-root {
+    background: #fff;
+  }
+  .qrprint-toolbar,
+  .qrprint-hint,
+  .qrprint-warn,
+  .qrprint-selrow {
+    display: none;
+  }
+  .qrprint-pages {
+    padding: 0;
+  }
+  .qrprint-sheet {
+    margin: 0;
+    box-shadow: none;
+    page-break-after: always;
+  }
+  .qrprint-chk {
+    display: none;
+  }
+  .qrprint-sheet.off {
+    display: none;
+  }
+}

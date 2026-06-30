@@ -104,6 +104,11 @@ export default function PatientsPage() {
             </div>
           ) : null}
           {canCreate ? (
+            <Button asChild variant="outline">
+              <Link href="/patients/qr-print?mode=bulk">QR一括印刷</Link>
+            </Button>
+          ) : null}
+          {canCreate ? (
             <Button asChild>
               <Link href="/patients/new">
                 <Plus className="h-4 w-4" />
