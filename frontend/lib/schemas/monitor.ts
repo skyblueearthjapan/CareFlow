@@ -41,6 +41,12 @@ export const monitorVisitSchema = z.object({
   arrival_delay_min: z.number().nullable().optional(),
   distance_to_next_m: z.number().nullable().optional(),
   reason: z.string().nullable().optional(),
+  // 「確認済み」(visit 単位の review)。reviewed なら要対応トレイから外れ、
+  // タイムラインに「確認済」印が付く (Phase 5-3)。
+  reviewed: z.boolean().default(false),
+  reviewed_by_name: z.string().nullable().optional(),
+  reviewed_at: z.string().nullable().optional(),
+  review_comment: z.string().nullable().optional(),
 });
 
 export const monitorStaffRowSchema = z.object({
@@ -63,6 +69,8 @@ export const monitorThresholdsSchema = z.object({
   accuracy_m: z.number(),
   no_show_grace_min: z.number(),
   late_min: z.number(),
+  // 退出忘れ (長時間 inprogress) しきい値 (分)。Phase 4 で設定化。
+  max_inprogress_min: z.number(),
 });
 
 export const monitorResponseSchema = z.object({

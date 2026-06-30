@@ -53,6 +53,8 @@ import {
   type MyVisit,
 } from '@/lib/queries/me';
 import { useUploadPhoto, useVisitPhotos } from '@/lib/queries/visit-photos';
+import { useCheckinSettingsPublic } from '@/lib/queries/checkinSettings';
+import { CHECKIN_PUBLIC_FALLBACK } from '@/lib/schemas/checkinSettings';
 
 type ScanMode = 'arrival' | 'departure';
 
@@ -85,11 +87,6 @@ type Flow =
 /** Quick-pick chips for the no-show reason. */
 const NOSHOW_CHIPS = ['不在（応答なし）', '本人都合キャンセル', '入院／受診', '家族都合'] as const;
 
-// 距離しきい値 (m). サーバ judge と同値だが、ここはあくまで記録前プレビュー用の
-// 概算 (正本はサーバ)。
-const MATCH_M = 100;
-const REVIEW_M = 300;
-
 function shortTime(t: string): string {
   return t.length >= 5 ? t.slice(0, 5) : t;
 }
@@ -116,8 +113,15 @@ function statusLabel(status: string): {
 /**
  * Position status → display metadata. Used both for the client-side preview
  * (記録前) and to paint the server's authoritative verdict.
+ *
+ * しきい値 (matchM/reviewM) は `GET /api/v1/checkin-settings/public` から取得した
+ * 値を渡す (管理者が Phase 4 で変更したしきい値にラベルも追随させる)。
  */
-function matchInfo(s: CheckinMatchStatus): {
+function matchInfo(
+  s: CheckinMatchStatus,
+  matchM: number,
+  reviewM: number,
+): {
   label: string;
   variant: 'success' | 'warning' | 'destructive';
   hint: string;
@@ -127,13 +131,13 @@ function matchInfo(s: CheckinMatchStatus): {
       return { label: '登録住所と一致', variant: 'success', hint: '位置を確認しました。' };
     case 'review':
       return {
-        label: '要確認（100〜300m）',
+        label: `要確認（${matchM}〜${reviewM}m）`,
         variant: 'warning',
         hint: '登録住所からやや離れています。',
       };
     case 'mismatch':
       return {
-        label: '登録住所と不一致（300m超）',
+        label: `登録住所と不一致（${reviewM}m超）`,
         variant: 'destructive',
         hint: '別の場所で測位された可能性があります。',
       };
@@ -148,10 +152,14 @@ function matchInfo(s: CheckinMatchStatus): {
 }
 
 /** Client-side position verdict from a previewed distance (server is authoritative). */
-function previewStatusOf(distance: number | null): CheckinMatchStatus {
+function previewStatusOf(
+  distance: number | null,
+  matchM: number,
+  reviewM: number,
+): CheckinMatchStatus {
   if (distance === null) return 'no_gps';
-  if (distance <= MATCH_M) return 'match';
-  if (distance <= REVIEW_M) return 'review';
+  if (distance <= matchM) return 'match';
+  if (distance <= reviewM) return 'review';
   return 'mismatch';
 }
 
@@ -291,6 +299,12 @@ export default function MobileVisitDetailPage() {
   const checkOut = useCheckOut(visitId);
   const noShow = useNoShow(visitId);
 
+  // 到着プレビューの距離しきい値 (管理者が設定した値に追随)。取得失敗時は既定へ
+  // フォールバックする (100/300/50)。距離系のみの public エンドポイントを使う。
+  const { data: publicThresholds } = useCheckinSettingsPublic();
+  const matchM = publicThresholds?.match_m ?? CHECKIN_PUBLIC_FALLBACK.match_m;
+  const reviewM = publicThresholds?.review_m ?? CHECKIN_PUBLIC_FALLBACK.review_m;
+
   // Seed from localStorage so a previous check-in survives navigation. The
   // backend (QR checkin Phase 1) is the source of truth on success; the local
   // record is only an offline insurance for unreachable-server errors.
@@ -429,7 +443,14 @@ export default function MobileVisitDetailPage() {
     setFlow({ step: 'locating', mode });
     const geo = await getGeolocation();
     const distance = previewDistance(geo);
-    setFlow({ step: 'preview', mode, token, geo, distance, status: previewStatusOf(distance) });
+    setFlow({
+      step: 'preview',
+      mode,
+      token,
+      geo,
+      distance,
+      status: previewStatusOf(distance, matchM, reviewM),
+    });
   }
 
   async function relocate() {
@@ -712,6 +733,8 @@ export default function MobileVisitDetailPage() {
               mode={flow.mode}
               distance={flow.distance}
               status={flow.status}
+              matchM={matchM}
+              reviewM={reviewM}
               mismatchReason={mismatchReason}
               onMismatchReasonChange={setMismatchReason}
               onRecord={recordPreview}
@@ -907,6 +930,8 @@ interface PreviewPanelProps {
   mode: ScanMode;
   distance: number | null;
   status: CheckinMatchStatus;
+  matchM: number;
+  reviewM: number;
   mismatchReason: string;
   onMismatchReasonChange: (v: string) => void;
   onRecord: () => void;
@@ -917,6 +942,8 @@ function PreviewPanel({
   mode,
   distance,
   status,
+  matchM,
+  reviewM,
   mismatchReason,
   onMismatchReasonChange,
   onRecord,
@@ -925,7 +952,7 @@ function PreviewPanel({
   const isArrival = mode === 'arrival';
   const isMismatch = status === 'mismatch';
   const isReview = status === 'review';
-  const info = matchInfo(status);
+  const info = matchInfo(status, matchM, reviewM);
   // Show a reason box when位置がずれている: arrival mismatch (必須) /
   // departure mismatch・review (任意・item 6 の非対称解消)。
   const showReason = (isArrival && isMismatch) || (!isArrival && (isMismatch || isReview));

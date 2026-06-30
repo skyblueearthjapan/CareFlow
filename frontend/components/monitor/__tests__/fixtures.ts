@@ -26,6 +26,10 @@ export function makeVisit(overrides: Partial<MonitorVisit> = {}): MonitorVisit {
     arrival_delay_min: null,
     distance_to_next_m: null,
     reason: null,
+    reviewed: false,
+    reviewed_by_name: null,
+    reviewed_at: null,
+    review_comment: null,
     ...overrides,
   };
 }

@@ -32,6 +32,8 @@ interface MonitorAlertTrayProps {
   rows: MonitorStaffRow[];
   selectedVisitId: string | null;
   onSelectVisit: (visitId: string) => void;
+  /** 退出忘れしきい値 (分)。モニター応答の thresholds.max_inprogress_min を渡す。 */
+  maxInprogressMin?: number;
 }
 
 function alertTag(v: MonitorVisit): string {
@@ -43,9 +45,9 @@ function alertTag(v: MonitorVisit): string {
   return '要確認';
 }
 
-function alertReason(v: MonitorVisit): string {
+function alertReason(v: MonitorVisit, maxInprogressMin?: number): string {
   if (v.reason) return v.reason;
-  if (isLongInprogress(v)) return LONG_INPROGRESS_REASON;
+  if (isLongInprogress(v, maxInprogressMin)) return LONG_INPROGRESS_REASON;
   return v.alert_level === 'missing' ? '理由未入力（要確認）' : '理由なし';
 }
 
@@ -55,7 +57,12 @@ const TAG_CLASS: Record<string, string> = {
   review: 'bg-yellow-600',
 };
 
-export function MonitorAlertTray({ rows, selectedVisitId, onSelectVisit }: MonitorAlertTrayProps) {
+export function MonitorAlertTray({
+  rows,
+  selectedVisitId,
+  onSelectVisit,
+  maxInprogressMin,
+}: MonitorAlertTrayProps) {
   const [popOpen, setPopOpen] = useState(false);
 
   // 2 名体制 (visit_group_id) は 1 枚に集約。worst(alert_level) の visit を代表に、
@@ -134,9 +141,9 @@ export function MonitorAlertTray({ rows, selectedVisitId, onSelectVisit }: Monit
             'overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-text-secondary',
             inPop ? 'flex-1' : 'max-w-[160px]',
           )}
-          title={alertReason(v)}
+          title={alertReason(v, maxInprogressMin)}
         >
-          📝 {alertReason(v)}
+          📝 {alertReason(v, maxInprogressMin)}
         </span>
         {v.alert_level === 'missing' && (
           <button

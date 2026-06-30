@@ -17,9 +17,14 @@ vi.mock('next-auth/react', () => ({
 
 const useMonitor = vi.fn();
 const useNearbyPatients = vi.fn(() => ({ data: { items: [] } }));
+const mutate = vi.fn();
+const useReviewVisit = vi.fn(() => ({ mutate, isPending: false }));
+const useUnreviewVisit = vi.fn(() => ({ mutate, isPending: false }));
 vi.mock('@/lib/queries/monitor', () => ({
   useMonitor: (...a: unknown[]) => useMonitor(...a),
   useNearbyPatients: (...a: unknown[]) => useNearbyPatients(...a),
+  useReviewVisit: () => useReviewVisit(),
+  useUnreviewVisit: () => useUnreviewVisit(),
 }));
 
 // Leaflet を引き込む地図はモック。
@@ -54,6 +59,7 @@ describe('MonitorPage RBAC', () => {
           accuracy_m: 50,
           no_show_grace_min: 20,
           late_min: 15,
+          max_inprogress_min: 240,
         },
         offices: [],
         staff: [],

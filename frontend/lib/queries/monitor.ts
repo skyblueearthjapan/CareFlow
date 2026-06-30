@@ -9,7 +9,13 @@
  */
 'use client';
 
-import { useQuery, type UseQueryResult } from '@tanstack/react-query';
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type UseMutationResult,
+  type UseQueryResult,
+} from '@tanstack/react-query';
 import { useSession } from 'next-auth/react';
 
 import { fetcher } from '@/lib/api/fetcher';
@@ -106,6 +112,55 @@ export function useNearbyPatients(params: UseNearbyParams): UseQueryResult<Nearb
         refreshToken,
       });
       return nearbyResponseSchema.parse(raw);
+    },
+  });
+}
+
+export interface ReviewVisitVars {
+  visitId: string;
+  comment?: string | null;
+}
+
+/**
+ * POST /api/v1/visits/{visit_id}/review — 訪問を確認済みにする (Phase 5-3)。
+ * 成功時にモニターを再フェッチして要対応トレイ/タイムラインへ反映する。
+ */
+export function useReviewVisit(): UseMutationResult<unknown, Error, ReviewVisitVars> {
+  const qc = useQueryClient();
+  const { data: session } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+
+  return useMutation<unknown, Error, ReviewVisitVars>({
+    mutationFn: ({ visitId, comment }) =>
+      fetcher<unknown>(`/api/v1/visits/${encodeURIComponent(visitId)}/review`, {
+        method: 'POST',
+        body: JSON.stringify({ comment: comment ?? null }),
+        accessToken,
+        refreshToken,
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: MONITOR_KEY });
+    },
+  });
+}
+
+/**
+ * DELETE /api/v1/visits/{visit_id}/review — 確認を取り消す (undo, Phase 5-3)。
+ */
+export function useUnreviewVisit(): UseMutationResult<unknown, Error, string> {
+  const qc = useQueryClient();
+  const { data: session } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+
+  return useMutation<unknown, Error, string>({
+    mutationFn: (visitId) =>
+      fetcher<unknown>(`/api/v1/visits/${encodeURIComponent(visitId)}/review`, {
+        method: 'DELETE',
+        accessToken,
+        refreshToken,
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: MONITOR_KEY });
     },
   });
 }

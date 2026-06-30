@@ -72,20 +72,27 @@ export function isAlert(v: Pick<MonitorVisit, 'alert_level'>): boolean {
 }
 
 /**
- * 退出忘れ (長時間 inprogress) の表示しきい値 (分)。BE の MAX_INPROGRESS_MIN と一致。
- * Phase4 で checkin_settings 化予定 (現状はクライアント定数)。
+ * 退出忘れ (長時間 inprogress) の表示しきい値 (分) の既定。BE の
+ * checkin_settings.max_inprogress_min が無いときのフォールバック。
+ * 通常はモニター応答の ``thresholds.max_inprogress_min`` を渡して動的化する。
  */
 export const MAX_INPROGRESS_MIN = 240;
 
-/** 退出未記録のまま長時間 inprogress (退出忘れの可能性) か。 */
+/**
+ * 退出未記録のまま長時間 inprogress (退出忘れの可能性) か。
+ *
+ * ``maxInprogressMin`` はモニター応答 (``thresholds.max_inprogress_min``) の値を渡す。
+ * 省略時は既定 240 にフォールバックする (ハードコード排除)。
+ */
 export function isLongInprogress(
   v: Pick<MonitorVisit, 'phase' | 'departure' | 'stay_minutes'>,
+  maxInprogressMin: number = MAX_INPROGRESS_MIN,
 ): boolean {
   return (
     v.phase === 'inprogress' &&
     v.departure == null &&
     v.stay_minutes != null &&
-    v.stay_minutes > MAX_INPROGRESS_MIN
+    v.stay_minutes > maxInprogressMin
   );
 }
 
@@ -164,6 +171,20 @@ export function isoToHm(iso: string | null | undefined): string {
   if (!iso) return '—';
   const d = new Date(iso);
   return new Intl.DateTimeFormat('ja-JP', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+    timeZone: 'Asia/Tokyo',
+  }).format(d);
+}
+
+/** ISO 文字列 → "M/D HH:MM" (JST 表示)。確認済みの日時表示用。 */
+export function isoToYmdHm(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return new Intl.DateTimeFormat('ja-JP', {
+    month: 'numeric',
+    day: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
     hour12: false,

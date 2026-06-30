@@ -56,4 +56,45 @@ describe('MonitorDetailPanel', () => {
     render(<MonitorDetailPanel visit={v} row={row} onSelectVisit={vi.fn()} />);
     expect(screen.getByTestId('monitor-callbox')).toBeInTheDocument();
   });
+
+  it('未確認は「確認済みにする」→ 理由入力 → 確定で onReview を呼ぶ', () => {
+    const v = makeVisit({ phase: 'missing', alert_level: 'missing', arrival: null });
+    const row = makeRow({ visits: [v] });
+    const onReview = vi.fn();
+    render(<MonitorDetailPanel visit={v} row={row} onSelectVisit={vi.fn()} onReview={onReview} />);
+    fireEvent.click(screen.getByTestId('monitor-review-button'));
+    fireEvent.change(screen.getByTestId('monitor-review-comment'), {
+      target: { value: '電話で確認済み' },
+    });
+    fireEvent.click(screen.getByTestId('monitor-review-submit'));
+    expect(onReview).toHaveBeenCalledWith(v.visit_id, '電話で確認済み');
+  });
+
+  it('確認済みは確認者/理由を表示し、取り消しで onUnreview を呼ぶ', () => {
+    const v = makeVisit({
+      phase: 'missing',
+      alert_level: 'none',
+      arrival: null,
+      reviewed: true,
+      reviewed_by_name: '管理 太郎',
+      reviewed_at: '2026-06-30T01:00:00Z',
+      review_comment: '在宅を電話確認',
+    });
+    const row = makeRow({ visits: [v] });
+    const onUnreview = vi.fn();
+    render(
+      <MonitorDetailPanel
+        visit={v}
+        row={row}
+        onSelectVisit={vi.fn()}
+        onReview={vi.fn()}
+        onUnreview={onUnreview}
+      />,
+    );
+    expect(screen.getByTestId('monitor-review-done')).toBeInTheDocument();
+    expect(screen.getByText('管理 太郎', { exact: false })).toBeInTheDocument();
+    expect(screen.getByText('在宅を電話確認')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('monitor-review-undo'));
+    expect(onUnreview).toHaveBeenCalledWith(v.visit_id);
+  });
 });

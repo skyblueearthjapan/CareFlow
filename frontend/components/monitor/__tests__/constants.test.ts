@@ -70,6 +70,16 @@ describe('isLongInprogress', () => {
     // done は対象外。
     expect(isLongInprogress({ phase: 'done', departure: null, stay_minutes: 300 })).toBe(false);
   });
+
+  it('しきい値引数 (モニター応答の max_inprogress_min) で境界が動く', () => {
+    const v = { phase: 'inprogress' as const, departure: null, stay_minutes: 270 };
+    // 既定 240 では 270 は退出忘れ。
+    expect(isLongInprogress(v)).toBe(true);
+    // 設定 300 (緩め) では 270 は該当しない。
+    expect(isLongInprogress(v, 300)).toBe(false);
+    // 設定 200 (厳しめ) では該当。
+    expect(isLongInprogress(v, 200)).toBe(true);
+  });
 });
 
 describe('minutesToPct', () => {

@@ -75,9 +75,15 @@ vi.mock('@/lib/queries/visit-photos', () => ({
   useUploadPhoto: vi.fn(),
 }));
 
+// 距離プレビューの public しきい値取得 (Phase 4)。既定では 100/300/50 を返す。
+vi.mock('@/lib/queries/checkinSettings', () => ({
+  useCheckinSettingsPublic: vi.fn(),
+}));
+
 import { useSession } from 'next-auth/react';
 import { useMyVisit, useCheckIn, useCheckOut, useNoShow } from '@/lib/queries/me';
 import { useVisitPhotos, useUploadPhoto } from '@/lib/queries/visit-photos';
+import { useCheckinSettingsPublic } from '@/lib/queries/checkinSettings';
 import { toast } from '@/components/ui/sonner';
 import MobileVisitDetailPage from '../page';
 
@@ -189,6 +195,9 @@ beforeEach(() => {
   asMock(useNoShow).mockReturnValue({ mutateAsync: noShowMutate, isPending: false });
   asMock(useVisitPhotos).mockReturnValue({ data: [] });
   asMock(useUploadPhoto).mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
+  asMock(useCheckinSettingsPublic).mockReturnValue({
+    data: { match_m: 100, review_m: 300, accuracy_m: 50 },
+  });
 });
 
 describe('QR チェックイン モバイル — 基本表示', () => {
@@ -288,6 +297,26 @@ describe('QR チェックイン モバイル — mismatch 理由必須 + 単一P
       reason: '裏口で測位',
       qr_token: 'TESTTOKEN',
     });
+  });
+});
+
+describe('QR チェックイン モバイル — プレビューしきい値の動的同期 (Phase 4)', () => {
+  it('public しきい値を反映したラベルを表示する (取得値=150/500)', async () => {
+    asMock(useCheckinSettingsPublic).mockReturnValue({
+      data: { match_m: 150, review_m: 500, accuracy_m: 50 },
+    });
+    // 遠い患者座標 → クライアントプレビューで mismatch。ラベルは取得した reviewM(500) 由来。
+    asMock(useMyVisit).mockReturnValue({
+      data: makeVisit('planned', { lat: 35.5, lng: 140.5 }),
+      isLoading: false,
+      isError: false,
+      error: null,
+    });
+    render(<MobileVisitDetailPage />);
+    fireEvent.click(screen.getByText('QRで到着を記録'));
+    fireEvent.click(screen.getByText('__scan__'));
+    await waitFor(() => expect(screen.getByText('到着の確認')).toBeInTheDocument());
+    expect(screen.getByText('登録住所と不一致（500m超）')).toBeInTheDocument();
   });
 });
 

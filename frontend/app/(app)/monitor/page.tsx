@@ -7,15 +7,22 @@
  * する。タイムライン (ガント) + 要対応アラートトレイ + 詳細パネル + 地図 (Leaflet)。
  * 非該当ロールは /dashboard へリダイレクト (settings/scheduling の作法に倣う)。
  *
- * しきい値設定 (⚙ モーダル) は Phase 4 のため本ページには載せない。
+ * しきい値設定 (⚙) は専用ページ /settings/checkin へ遷移する (Phase 4)。
  */
 import { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
+import { Settings } from 'lucide-react';
 
 import { Skeleton } from '@/components/ui/skeleton';
 import { cn } from '@/lib/utils';
-import { useMonitor, useNearbyPatients } from '@/lib/queries/monitor';
+import {
+  useMonitor,
+  useNearbyPatients,
+  useReviewVisit,
+  useUnreviewVisit,
+} from '@/lib/queries/monitor';
 import type { MonitorStaffRow, MonitorVisit, NearbyPatient } from '@/lib/schemas/monitor';
 
 import { MonitorTimeline } from '@/components/monitor/MonitorTimeline';
@@ -122,6 +129,13 @@ export default function MonitorPage() {
     enabled: isMismatch,
   });
 
+  const reviewVisit = useReviewVisit();
+  const unreviewVisit = useUnreviewVisit();
+  const reviewPending = reviewVisit.isPending || unreviewVisit.isPending;
+  const onReview = (visitId: string, comment: string | null) =>
+    reviewVisit.mutate({ visitId, comment });
+  const onUnreview = (visitId: string) => unreviewVisit.mutate(visitId);
+
   const onSelectVisit = (visitId: string) => {
     for (const r of data?.staff ?? []) {
       const v = r.visits.find((x) => x.visit_id === visitId);
@@ -184,6 +198,14 @@ export default function MonitorPage() {
             過去日表示（リアルタイム更新なし）
           </span>
         )}
+        <Link
+          href="/settings/checkin"
+          data-testid="monitor-threshold-settings-link"
+          className="inline-flex items-center gap-1.5 rounded-md border border-border-default bg-bg-base px-2.5 py-1 text-[12px] text-text-secondary hover:bg-bg-muted"
+        >
+          <Settings className="h-3.5 w-3.5" strokeWidth={1.75} />
+          しきい値設定
+        </Link>
       </div>
 
       {/* フィルタ */}
@@ -246,6 +268,7 @@ export default function MonitorPage() {
           rows={filteredRows}
           selectedVisitId={selectedVisitId}
           onSelectVisit={onSelectVisit}
+          maxInprogressMin={data.thresholds.max_inprogress_min}
         />
       )}
 
@@ -303,6 +326,10 @@ export default function MonitorPage() {
             visit={selectedVisit}
             row={selectedRow}
             onSelectVisit={onSelectVisit}
+            maxInprogressMin={data?.thresholds.max_inprogress_min}
+            onReview={onReview}
+            onUnreview={onUnreview}
+            reviewPending={reviewPending}
           />
         </aside>
       </div>

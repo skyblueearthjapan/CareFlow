@@ -5,6 +5,8 @@
  * 未訪問は即連絡ボックスを最上部に出す。visit 未選択でコースのみ選択時は訪問一覧
  * (stop list) を出す。
  */
+import { useState } from 'react';
+
 import { cn } from '@/lib/utils';
 import type { MonitorStaffRow, MonitorVisit } from '@/lib/schemas/monitor';
 
@@ -17,17 +19,43 @@ import {
   formatDistance,
   isLongInprogress,
   isoToHm,
+  isoToYmdHm,
 } from './constants';
 
 interface MonitorDetailPanelProps {
   visit: MonitorVisit | null;
   row: MonitorStaffRow | null;
   onSelectVisit: (visitId: string) => void;
+  /** 退出忘れしきい値 (分)。モニター応答の thresholds.max_inprogress_min を渡す。 */
+  maxInprogressMin?: number;
+  /** 確認済みにする (comment 任意)。admin/manager のみ呼ばれる。 */
+  onReview?: (visitId: string, comment: string | null) => void;
+  /** 確認を取り消す (undo)。 */
+  onUnreview?: (visitId: string) => void;
+  /** review/undo の実行中フラグ (ボタン無効化用)。 */
+  reviewPending?: boolean;
 }
 
-export function MonitorDetailPanel({ visit, row, onSelectVisit }: MonitorDetailPanelProps) {
+export function MonitorDetailPanel({
+  visit,
+  row,
+  onSelectVisit,
+  maxInprogressMin,
+  onReview,
+  onUnreview,
+  reviewPending,
+}: MonitorDetailPanelProps) {
   if (visit) {
-    return <VisitDetail visit={visit} row={row} />;
+    return (
+      <VisitDetail
+        visit={visit}
+        row={row}
+        maxInprogressMin={maxInprogressMin}
+        onReview={onReview}
+        onUnreview={onUnreview}
+        reviewPending={reviewPending}
+      />
+    );
   }
   if (row) {
     return <CourseDetail row={row} onSelectVisit={onSelectVisit} />;
@@ -97,7 +125,21 @@ function CourseDetail({
   );
 }
 
-function VisitDetail({ visit, row }: { visit: MonitorVisit; row: MonitorStaffRow | null }) {
+function VisitDetail({
+  visit,
+  row,
+  maxInprogressMin,
+  onReview,
+  onUnreview,
+  reviewPending,
+}: {
+  visit: MonitorVisit;
+  row: MonitorStaffRow | null;
+  maxInprogressMin?: number;
+  onReview?: (visitId: string, comment: string | null) => void;
+  onUnreview?: (visitId: string) => void;
+  reviewPending?: boolean;
+}) {
   const st = displayStatus(visit);
   const [icon, txt] = STATUS_JUDGE[st];
   const arrive = isoToHm(visit.arrival?.scanned_at);
@@ -150,7 +192,16 @@ function VisitDetail({ visit, row }: { visit: MonitorVisit; row: MonitorStaffRow
         {dist != null && `（${Math.round(dist)}m）`}
       </div>
 
-      {isLongInprogress(visit) && (
+      {(onReview || onUnreview) && (
+        <ReviewSection
+          visit={visit}
+          onReview={onReview}
+          onUnreview={onUnreview}
+          reviewPending={reviewPending}
+        />
+      )}
+
+      {isLongInprogress(visit, maxInprogressMin) && (
         <div
           className="mb-3 rounded-[10px] border border-amber-300 bg-amber-50 p-3 text-[12.5px] leading-relaxed text-amber-800"
           data-testid="monitor-long-inprogress"
@@ -205,6 +256,120 @@ function VisitDetail({ visit, row }: { visit: MonitorVisit; row: MonitorStaffRow
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * 「確認済みにする」セクション (Phase 5-3)。
+ *
+ * - 未確認: 「✓ 確認済みにする」ボタン → クリックで理由 (任意) 入力フォームを開き、
+ *   確定で review を送る。
+ * - 確認済み: 確認者 / 日時 / 理由を表示し「確認を取り消す (undo)」ボタンを出す。
+ */
+function ReviewSection({
+  visit,
+  onReview,
+  onUnreview,
+  reviewPending,
+}: {
+  visit: MonitorVisit;
+  onReview?: (visitId: string, comment: string | null) => void;
+  onUnreview?: (visitId: string) => void;
+  reviewPending?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [comment, setComment] = useState('');
+
+  if (visit.reviewed) {
+    return (
+      <div
+        className="mb-3 rounded-[10px] border border-teal-300 bg-teal-50 p-3"
+        data-testid="monitor-review-done"
+      >
+        <div className="mb-1 flex items-center gap-1.5 text-[12.5px] font-bold text-teal-700">
+          ✓ 確認済み
+        </div>
+        <div className="text-[11.5px] text-text-secondary">
+          {visit.reviewed_by_name ?? '—'}
+          {visit.reviewed_at != null && ` ／ ${isoToYmdHm(visit.reviewed_at)}`}
+        </div>
+        {visit.review_comment && (
+          <div className="mt-1.5 whitespace-pre-wrap text-[12px] text-text-primary">
+            {visit.review_comment}
+          </div>
+        )}
+        {onUnreview && (
+          <button
+            type="button"
+            data-testid="monitor-review-undo"
+            disabled={reviewPending}
+            onClick={() => onUnreview(visit.visit_id)}
+            className="mt-2 rounded-md border border-border-default bg-bg-base px-2.5 py-1 text-[11.5px] font-semibold text-text-secondary hover:bg-bg-muted disabled:opacity-50"
+          >
+            確認を取り消す
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  if (!onReview) return null;
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        data-testid="monitor-review-button"
+        onClick={() => setOpen(true)}
+        className="mb-3 w-full rounded-[10px] border border-teal-300 bg-teal-50 px-3 py-2 text-[12.5px] font-bold text-teal-700 hover:bg-teal-100"
+      >
+        ✓ 確認済みにする
+      </button>
+    );
+  }
+
+  return (
+    <div
+      className="mb-3 rounded-[10px] border border-teal-300 bg-teal-50 p-3"
+      data-testid="monitor-review-form"
+    >
+      <label className="mb-1 block text-[11px] font-bold text-text-secondary">
+        確認理由（任意）
+      </label>
+      <textarea
+        data-testid="monitor-review-comment"
+        value={comment}
+        onChange={(e) => setComment(e.target.value)}
+        rows={2}
+        placeholder="例: 電話で在宅を確認済み"
+        className="mb-2 w-full resize-none rounded-md border border-border-default bg-bg-base px-2 py-1.5 text-[12px]"
+      />
+      <div className="flex gap-2">
+        <button
+          type="button"
+          data-testid="monitor-review-submit"
+          disabled={reviewPending}
+          onClick={() => {
+            onReview(visit.visit_id, comment.trim() || null);
+            setOpen(false);
+            setComment('');
+          }}
+          className="rounded-md bg-teal-600 px-3 py-1 text-[11.5px] font-bold text-white hover:bg-teal-700 disabled:opacity-50"
+        >
+          確定
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setOpen(false);
+            setComment('');
+          }}
+          className="rounded-md border border-border-default bg-bg-base px-3 py-1 text-[11.5px] font-semibold text-text-secondary hover:bg-bg-muted"
+        >
+          キャンセル
+        </button>
+      </div>
     </div>
   );
 }
