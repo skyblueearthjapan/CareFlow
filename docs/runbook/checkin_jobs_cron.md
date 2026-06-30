@@ -37,8 +37,28 @@ QR 訪問チェックインの 2 つの定期ジョブを登録する。
 
 ## VPS 側 cron 設定 (初回のみ)
 
-`lat_lng_audit_cron.md` の `carelink-cron` user と `.secrets/carelink.env`
-(`ADMIN_TOKEN=...`) をそのまま流用する (既に作成済みなら新規作成不要)。
+`carelink-cron` user と `/home/carelink-cron/.secrets/carelink.env` (`ADMIN_TOKEN=...`)
+を使う。**2026-07-01 時点で本番に作成・登録済み**（cron 稼働確認済）。
+
+### ADMIN_TOKEN の発行 / 再発行 (10年有効・本番設定済)
+
+cron 用トークンはアプリ署名の admin アクセストークン。`jwt_access_ttl_seconds` (既定1h)
+ではなく `ttl_seconds` 上書きで長期発行する。**現在 10年有効 (exp 2036-06-27)**。
+漏洩時や延長時は以下で再発行し `.secrets/carelink.env` を上書きする:
+
+```bash
+cd /opt/carelink
+DCP="docker compose -f docs/deployment/docker-compose.production.yml --env-file .env"
+ADMIN_ID=$(docker exec -i carelink-postgres psql -U carelink -d carelink -tAc \
+  "SELECT id FROM users WHERE role='admin' AND deleted_at IS NULL ORDER BY created_at LIMIT 1" </dev/null)
+TOKEN=$($DCP exec -T backend python -c \
+  "from app.core.security import create_access_token; print(create_access_token(subject='$ADMIN_ID', role='admin', ttl_seconds=315360000))" </dev/null)
+printf 'ADMIN_TOKEN=%s\n' "$TOKEN" > /home/carelink-cron/.secrets/carelink.env
+chown carelink-cron:carelink-cron /home/carelink-cron/.secrets/carelink.env
+chmod 600 /home/carelink-cron/.secrets/carelink.env
+```
+> 注意: `docker exec`/`compose exec` は heredoc/stdin を奪うので `</dev/null` を付ける。
+> 理想は scoped な service account / API キー化 (アプリ改修・backlog)。
 
 ### cron 登録
 
