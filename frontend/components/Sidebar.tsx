@@ -14,6 +14,7 @@ import {
   Plug,
   ScrollText,
   Inbox,
+  MapPin,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -25,6 +26,8 @@ const NAV_ITEMS = [
   { href: '/dashboard', label: 'ダッシュボード', icon: LayoutDashboard },
   { href: '/schedule', label: 'スケジュール', icon: CalendarDays },
   { href: '/acceptance', label: '受け入れ枠', icon: Grid3x3 },
+  // QR チェックイン Phase 3: PC 訪問モニター (admin/manager のみ = staff 非表示)。
+  { href: '/monitor', label: '訪問モニター', icon: MapPin, adminOnly: true },
   // 現場ボード (/m) は PC 盤(親機サイドバー)では不要のため非表示。
   // モバイル現場ビュー自体は /m に存在し、モバイル導線 (MobileShell) から開ける。
   { href: '/patients', label: '患者', icon: Users },

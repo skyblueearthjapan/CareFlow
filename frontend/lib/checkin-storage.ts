@@ -115,17 +115,14 @@ export function clearCheckin(staffId: string, visitId: string): void {
   }
 }
 
-/**
- * Purge every `checkin:*` key from localStorage. Called at sign-out and on
- * auth-refresh failure so PHI-adjacent records do not outlive the session.
- */
-export function clearAllCheckins(): void {
+/** Remove every localStorage key whose name starts with one of `prefixes`. */
+function purgeByPrefixes(prefixes: readonly string[]): void {
   if (typeof window === 'undefined') return;
   try {
     const keys: string[] = [];
     for (let i = 0; i < window.localStorage.length; i += 1) {
       const k = window.localStorage.key(i);
-      if (k && k.startsWith(PREFIX)) keys.push(k);
+      if (k && prefixes.some((p) => k.startsWith(p))) keys.push(k);
     }
     for (const k of keys) {
       window.localStorage.removeItem(k);
@@ -133,4 +130,25 @@ export function clearAllCheckins(): void {
   } catch {
     /* ignore */
   }
+}
+
+/**
+ * Purge every `checkin:*` key from localStorage. Called at sign-out and on
+ * auth-refresh failure so PHI-adjacent records do not outlive the session.
+ */
+export function clearAllCheckins(): void {
+  purgeByPrefixes([PREFIX]);
+}
+
+/**
+ * Purge ALL mobile session-scoped, PHI-adjacent localStorage on logout:
+ *   - `checkin:`         — check-in/out fallback records (this module)
+ *   - `checkin-pending:` — un-sent re-send queue (`checkin-queue.ts`)
+ *   - `visit-memo:`      — per-visit service memo drafts (mobile detail page)
+ *
+ * Used at sign-out so a user-switch on a shared device cannot read the previous
+ * account's data. Runs on the client; a no-op on the server (no `localStorage`).
+ */
+export function clearAllSessionData(): void {
+  purgeByPrefixes(['checkin:', 'checkin-pending:', 'visit-memo:']);
 }

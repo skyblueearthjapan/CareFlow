@@ -11,13 +11,15 @@
  * Endpoints touched:
  *   GET  /api/v1/visits?staff_id={id}      list (server-filtered to "mine")
  *   GET  /api/v1/staff/{id}                detail (no shifts in current schema)
- *   POST /api/v1/visits/{id}/checkin       NOT YET IMPLEMENTED on the backend
- *   POST /api/v1/visits/{id}/checkout      NOT YET IMPLEMENTED on the backend
+ *   POST /api/v1/visits/{id}/checkin       QR チェックイン Phase 1 で稼働済み
+ *   POST /api/v1/visits/{id}/checkout      QR チェックイン Phase 1 で稼働済み
  *
- * The check-in / check-out mutations call the (planned) endpoints best-effort.
- * Until the server lands, callers are expected to fall back to localStorage on
- * 404/405/501/network errors (see `m/today/[visitId]/page.tsx`). Wave 2-D will
- * remove the local fallback once the routes ship.
+ * The check-in / check-out / no-show routes ship in the QR-checkin Phase 1
+ * backend. The localStorage fallback in `m/today/[visitId]/page.tsx` is no
+ * longer a "route not implemented" stopgap — it is offline insurance for true
+ * network failures / 5xx (server unreachable), paired with a pending re-send
+ * queue (`lib/checkin-queue.ts`). 404 / 409 are real errors (invalid / wrong
+ * QR) and are surfaced to the user instead of being stashed.
  */
 'use client';
 
@@ -32,6 +34,30 @@ import { useSession } from 'next-auth/react';
 
 import { fetcher } from '@/lib/api/fetcher';
 import type { StaffRead, StaffShift } from '@/lib/schemas/staff';
+
+/** Server-side judgement of the position match (QR checkin Phase 1). */
+export type CheckinMatchStatus = 'match' | 'review' | 'mismatch' | 'no_gps';
+
+/**
+ * Projection of the latest checkin row, attached non-destructively to
+ * `VisitRead.latest_checkin` by the backend. `null` when the visit has no
+ * checkin yet. Coordinates are intentionally NOT returned by the server
+ * (APPI / privacy); only the derived `distance_m` / `match_status`.
+ */
+export interface LatestCheckin {
+  id: string;
+  /** 打刻種別。 */
+  kind: 'arrival' | 'departure' | 'no_show';
+  match_status: CheckinMatchStatus;
+  distance_m: number | null;
+  accuracy_m: number | null;
+  /** Server receive time (ISO 8601). */
+  scanned_at: string;
+  /** 'qr' | 'manual'. */
+  checkin_source: string;
+  reason: string | null;
+  is_override: boolean;
+}
 
 /** Visit row returned by `GET /api/v1/visits`. */
 export interface MyVisit {
@@ -49,6 +75,18 @@ export interface MyVisit {
   note: string | null;
   patient_name: string | null;
   staff_name: string | null;
+  /**
+   * Patient geocode (non-destructive add). Used by the mobile QR check-in to
+   * preview the distance client-side BEFORE recording. `null` when the patient
+   * isn't geocoded (the UI then previews `no_gps` and still allows the POST).
+   */
+  patient_lat?: number | null;
+  patient_lng?: number | null;
+  /**
+   * Latest checkin projection. Optional / nullable so older deployments that
+   * don't yet send it (or list endpoints that omit it) keep type-checking.
+   */
+  latest_checkin?: LatestCheckin | null;
 }
 
 const ME_KEY = ['me'] as const;
@@ -213,21 +251,47 @@ export function useMyShifts(_weekday?: number): UseQueryResult<UseMyShiftsResult
   });
 }
 
-/** Geolocation payload for check-in/out. */
+/** Check-in / check-out payload (QR checkin Phase 2). */
 export interface CheckInPayload {
+  /**
+   * Token extracted from the patient-home QR (`/q/{token}`). Omitted for a
+   * manual check-in — the backend then resolves the patient from
+   * `visit.patient_id` and records `checkin_source='manual'`.
+   */
+  qr_token?: string;
   lat?: number;
   lng?: number;
-  /** Client-side timestamp (ISO 8601). */
+  /** GPS accuracy in metres (best-effort). */
+  accuracy?: number;
+  /** Reason text (location mismatch / free note). */
+  reason?: string;
+  /** Force-record despite a mismatch. */
+  is_override?: boolean;
+  /** Client-side timestamp (ISO 8601). Backend reads it as `device_time`. */
   at: string;
+}
+
+/** No-show payload — reason is required by the backend. */
+export interface NoShowPayload {
+  reason: string;
+  lat?: number;
+  lng?: number;
+  /**
+   * Client-side timestamp (ISO 8601). Backend reads it as `device_time`.
+   * Symmetric with the offline re-send queue payload so an online no-show and a
+   * re-sent one persist the same device time.
+   */
+  at?: string;
 }
 
 /**
  * POST /api/v1/visits/{id}/checkin
  *
- * NOTE: backend endpoint is not yet implemented. The mutation calls the URL
- * anyway; until the route ships, callers fall back to a localStorage
- * permanent record on 404/405/501/network errors so check-in survives page
- * navigation. Phase 5 will replace the local fallback with server sync.
+ * Backend (QR checkin Phase 1) records the arrival and returns the updated
+ * `VisitRead` with the server-judged `latest_checkin` (distance / match_status).
+ * `qr_token` is optional — omit it for a manual check-in. Callers still fall
+ * back to a localStorage record on 404/405/501/network errors so a tap
+ * survives navigation when the route is unreachable (offline insurance).
  */
 export function useCheckIn(visitId: string): UseMutationResult<MyVisit, Error, CheckInPayload> {
   const qc = useQueryClient();
@@ -257,6 +321,32 @@ export function useCheckOut(visitId: string): UseMutationResult<MyVisit, Error, 
   return useMutation<MyVisit, Error, CheckInPayload>({
     mutationFn: (payload) =>
       fetcher<MyVisit>(`/api/v1/visits/${visitId}/checkout`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+        accessToken,
+        refreshToken,
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ME_KEY });
+    },
+  });
+}
+
+/**
+ * POST /api/v1/visits/{id}/no-show — record an un-visited stop with a reason.
+ *
+ * `reason` is required (the backend returns 422 otherwise). Coordinates are
+ * best-effort. Returns the updated `VisitRead` (status stays `planned`; the
+ * monitor derives "missing" from time).
+ */
+export function useNoShow(visitId: string): UseMutationResult<MyVisit, Error, NoShowPayload> {
+  const qc = useQueryClient();
+  const { data: session } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+
+  return useMutation<MyVisit, Error, NoShowPayload>({
+    mutationFn: (payload) =>
+      fetcher<MyVisit>(`/api/v1/visits/${visitId}/no-show`, {
         method: 'POST',
         body: JSON.stringify(payload),
         accessToken,

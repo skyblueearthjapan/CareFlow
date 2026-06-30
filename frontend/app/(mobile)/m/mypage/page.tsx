@@ -17,7 +17,7 @@ import { useUIStore } from '@/lib/stores/ui';
 import { useMyShifts } from '@/lib/queries/me';
 import { useCreateShiftRequest, useShiftRequests } from '@/lib/queries/shift-requests';
 import { roleLabel } from '@/lib/schemas/staff';
-import { clearAllCheckins } from '@/lib/checkin-storage';
+import { clearAllSessionData } from '@/lib/checkin-storage';
 import type { AppRole } from '@/types/auth';
 
 function ProfileRow({ label, value }: { label: string; value: React.ReactNode }) {
@@ -248,11 +248,12 @@ export default function MobileMyPage() {
         variant="outline"
         className="w-full"
         onClick={() => {
-          // PHI-adjacent: drop every `checkin:*` key before the auth event
-          // so a user-switch on a shared device cannot read prior records.
-          // The auth.ts `events.signOut` callback also runs this as a
-          // belt-and-braces — duplicate calls are a no-op.
-          clearAllCheckins();
+          // PHI-adjacent: drop every `checkin:` / `checkin-pending:` /
+          // `visit-memo:` key before the auth event so a user-switch on a
+          // shared device cannot read prior records. The auth.ts
+          // `events.signOut` callback also runs this as a belt-and-braces —
+          // duplicate calls are a no-op.
+          clearAllSessionData();
           void signOut({ callbackUrl: '/login' });
         }}
       >
