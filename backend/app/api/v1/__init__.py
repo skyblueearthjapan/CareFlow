@@ -23,6 +23,7 @@ from app.api.v1 import (
     office_feature_flags,
     offices,
     patient_fixed_visits,
+    patient_qr,
     patient_same_address_links,
     patient_sync,
     patients,
@@ -67,6 +68,10 @@ api_router.include_router(
 api_router.include_router(
     patient_fixed_visits.router, prefix="/patients", tags=["patient-fixed-visits"]
 )
+# QR 訪問チェックイン Phase 5-1: 患者 QR 発行 / 再発行 sub-resource.
+# patients.router の **前** に登録し、/patients/{id}/qr が /patients/{id} の
+# catch-all に吸われないようにする (patient_fixed_visits と同方針)。
+api_router.include_router(patient_qr.router, prefix="/patients", tags=["patient-qr"])
 api_router.include_router(patients.router, prefix="/patients", tags=["patients"])
 # 今週 visits → 固定枠 (PFV) 個別反映 sub-resource.
 # POST /patients/{patient_id}/sync-week-visits-to-fixed

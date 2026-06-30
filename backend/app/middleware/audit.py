@@ -60,6 +60,7 @@ _REDACT_FULL = {
     "temp_password",
     "secret",
     "token",
+    "qr_token",
     "access_token",
     "refresh_token",
     "authorization",

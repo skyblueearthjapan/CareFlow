@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.checkin_settings import CheckinSettings
 from app.models.patient import Patient
+from app.models.revoked_qr_token import RevokedQrToken
 from app.models.visit import VISIT_STATUS_CANCELLED, Visit
 from app.models.visit_checkin import VisitCheckin
 from app.schemas.visit_checkin import CheckinCreate
@@ -109,6 +110,31 @@ async def _resolve_patient(
         )
     )
     if patient is None:
+        # 未知トークン: 再発行で失効した旧 QR (= ローテ済) なら 410 Gone を返し、
+        # 旧ステッカーで打刻したスタッフに「QR が更新された」と気づかせる。
+        # 失効履歴にも無い完全な未知トークンは従来どおり 404。
+        revoked = await db.scalar(
+            select(RevokedQrToken).where(RevokedQrToken.token == qr_token)
+        )
+        if revoked is not None:
+            # 氏名スコープ: 旧トークンが「この visit の患者」のものなら氏名入りで
+            # 案内する。担当外患者の旧トークン (= 別患者のステッカー誤読) では
+            # 氏名を漏らさず汎用文に留める (情報露出の最小化)。
+            if revoked.patient_id == visit.patient_id:
+                revoked_patient = await db.scalar(
+                    select(Patient).where(
+                        Patient.id == revoked.patient_id,
+                        Patient.deleted_at.is_(None),
+                    )
+                )
+                patient_name = revoked_patient.name if revoked_patient is not None else "利用者"
+                detail = f"このQRは更新されています。{patient_name}の新しいQRをご利用ください"
+            else:
+                detail = "このQRは更新されています。正しいQRをご利用ください"
+            raise HTTPException(
+                status_code=status.HTTP_410_GONE,
+                detail=detail,
+            )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="QR token not found",
