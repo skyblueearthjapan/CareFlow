@@ -1,0 +1,613 @@
+"""QR 訪問チェックイン Phase 3 — 訪問モニター集計のテスト.
+
+- 実効状態の合成 (compute_phase / compute_alert の全分岐 + build_monitor 統合):
+  future / awaiting / inprogress / done / missing × none / review / mismatch / missing。
+- 次訪問までの距離 (haversine, 時刻順)。
+- JST 境界 (深夜の当日判定)。
+- RBAC (staff は 403, admin/manager は 200)。
+- office_id フィルタ。
+- /monitor/nearby (近隣患者候補)。
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, date, datetime, time
+from zoneinfo import ZoneInfo
+
+import pytest
+
+from app.core.security import create_access_token, hash_password
+from app.models import Office, Patient, Staff, User, Visit, VisitCheckin
+from app.services.checkin.monitor import (
+    ALERT_MISMATCH,
+    ALERT_MISSING,
+    ALERT_NONE,
+    ALERT_REVIEW,
+    PHASE_AWAITING,
+    PHASE_DONE,
+    PHASE_FUTURE,
+    PHASE_INPROGRESS,
+    PHASE_MISSING,
+    build_monitor,
+    compute_alert,
+    compute_phase,
+)
+
+JST = ZoneInfo("Asia/Tokyo")
+TARGET = date(2026, 6, 30)
+
+
+def _utc(h: int, mi: int, *, d: date = TARGET) -> datetime:
+    """JST 壁時計 (d の h:mi) を UTC aware に変換する (DB 保存は UTC 前提)."""
+    return datetime(d.year, d.month, d.day, h, mi, tzinfo=JST).astimezone(UTC)
+
+
+def _jst_dt(h: int, mi: int) -> datetime:
+    return datetime(TARGET.year, TARGET.month, TARGET.day, h, mi, tzinfo=JST)
+
+
+async def _make_staff(db, name: str, office_id=None) -> Staff:
+    staff = Staff(name=name, primary_office_id=office_id)
+    db.add(staff)
+    await db.commit()
+    await db.refresh(staff)
+    return staff
+
+
+async def _make_user(db, email: str, role: str, staff_id=None) -> User:
+    user = User(
+        email=email,
+        password_hash=hash_password("x"),
+        role=role,
+        staff_id=staff_id,
+    )
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+
+def _bearer(user: User) -> dict[str, str]:
+    token = create_access_token(subject=user.id, role=user.role, staff_id=user.staff_id)
+    return {"Authorization": f"Bearer {token}"}
+
+
+async def _make_patient(db, code: str, *, lat=None, lng=None) -> Patient:
+    p = Patient(code=code, name=f"患者{code}", lat=lat, lng=lng)
+    db.add(p)
+    await db.commit()
+    await db.refresh(p)
+    return p
+
+
+async def _make_visit(
+    db, patient, staff, *, start=time(9, 0), end=time(10, 0), status="planned", visit_group_id=None
+) -> Visit:
+    v = Visit(
+        patient_id=patient.id,
+        primary_staff_id=staff.id,
+        visit_date=TARGET,
+        start_time=start,
+        end_time=end,
+        type="regular",
+        status=status,
+        visit_group_id=visit_group_id,
+    )
+    db.add(v)
+    await db.commit()
+    await db.refresh(v)
+    return v
+
+
+async def _add_checkin(
+    db,
+    visit,
+    staff,
+    kind,
+    *,
+    scanned_at,
+    match_status="match",
+    distance_m=None,
+    accuracy_m=None,
+    reason=None,
+    lat=None,
+    lng=None,
+    device_time=None,
+) -> VisitCheckin:
+    c = VisitCheckin(
+        visit_id=visit.id,
+        patient_id=visit.patient_id,
+        staff_id=staff.id,
+        kind=kind,
+        scanned_at=scanned_at,
+        device_time=device_time,
+        lat=lat,
+        lng=lng,
+        accuracy_m=accuracy_m,
+        distance_m=distance_m,
+        match_status=match_status,
+        threshold_snapshot={"v": 1},
+        reason=reason,
+        is_override=False,
+        checkin_source="qr",
+    )
+    db.add(c)
+    await db.commit()
+    await db.refresh(c)
+    return c
+
+
+def _find(resp, visit_id):
+    for row in resp.staff:
+        for v in row.visits:
+            if v.visit_id == visit_id:
+                return v
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Unit: compute_phase
+# ---------------------------------------------------------------------------
+
+
+def test_phase_future_before_start() -> None:
+    assert (
+        compute_phase(
+            arrival_scanned=None,
+            departure_scanned=None,
+            has_no_show=False,
+            start_dt=_jst_dt(15, 0),
+            now=_jst_dt(13, 30),
+            grace_min=20,
+        )
+        == PHASE_FUTURE
+    )
+
+
+def test_phase_awaiting_within_grace() -> None:
+    assert (
+        compute_phase(
+            arrival_scanned=None,
+            departure_scanned=None,
+            has_no_show=False,
+            start_dt=_jst_dt(13, 20),
+            now=_jst_dt(13, 30),
+            grace_min=20,
+        )
+        == PHASE_AWAITING
+    )
+
+
+def test_phase_missing_after_grace() -> None:
+    assert (
+        compute_phase(
+            arrival_scanned=None,
+            departure_scanned=None,
+            has_no_show=False,
+            start_dt=_jst_dt(9, 0),
+            now=_jst_dt(13, 30),
+            grace_min=20,
+        )
+        == PHASE_MISSING
+    )
+
+
+def test_phase_missing_when_no_show_row_even_before_grace() -> None:
+    # no_show 行があれば猶予前でも missing。
+    assert (
+        compute_phase(
+            arrival_scanned=None,
+            departure_scanned=None,
+            has_no_show=True,
+            start_dt=_jst_dt(13, 25),
+            now=_jst_dt(13, 30),
+            grace_min=20,
+        )
+        == PHASE_MISSING
+    )
+
+
+def test_phase_inprogress_and_done() -> None:
+    assert (
+        compute_phase(
+            arrival_scanned=_jst_dt(9, 5),
+            departure_scanned=None,
+            has_no_show=False,
+            start_dt=_jst_dt(9, 0),
+            now=_jst_dt(13, 30),
+            grace_min=20,
+        )
+        == PHASE_INPROGRESS
+    )
+    assert (
+        compute_phase(
+            arrival_scanned=_jst_dt(9, 5),
+            departure_scanned=_jst_dt(9, 55),
+            has_no_show=False,
+            start_dt=_jst_dt(9, 0),
+            now=_jst_dt(13, 30),
+            grace_min=20,
+        )
+        == PHASE_DONE
+    )
+
+
+# ---------------------------------------------------------------------------
+# Unit: compute_alert
+# ---------------------------------------------------------------------------
+
+
+def test_alert_missing_overrides_all() -> None:
+    assert (
+        compute_alert(
+            phase=PHASE_MISSING,
+            arrival_match_status=None,
+            arrival_scanned=None,
+            start_dt=_jst_dt(9, 0),
+            late_min=15,
+        )
+        == ALERT_MISSING
+    )
+
+
+def test_alert_none_when_no_arrival_future() -> None:
+    assert (
+        compute_alert(
+            phase=PHASE_FUTURE,
+            arrival_match_status=None,
+            arrival_scanned=None,
+            start_dt=_jst_dt(15, 0),
+            late_min=15,
+        )
+        == ALERT_NONE
+    )
+
+
+def test_alert_mismatch() -> None:
+    assert (
+        compute_alert(
+            phase=PHASE_DONE,
+            arrival_match_status="mismatch",
+            arrival_scanned=_jst_dt(9, 5),
+            start_dt=_jst_dt(9, 0),
+            late_min=15,
+        )
+        == ALERT_MISMATCH
+    )
+
+
+def test_alert_review_from_no_gps_and_late_and_review() -> None:
+    # review status (on-time) → review。
+    assert (
+        compute_alert(
+            phase=PHASE_DONE,
+            arrival_match_status="review",
+            arrival_scanned=_jst_dt(9, 5),
+            start_dt=_jst_dt(9, 0),
+            late_min=15,
+        )
+        == ALERT_REVIEW
+    )
+    # no_gps → review。
+    assert (
+        compute_alert(
+            phase=PHASE_INPROGRESS,
+            arrival_match_status="no_gps",
+            arrival_scanned=_jst_dt(9, 5),
+            start_dt=_jst_dt(9, 0),
+            late_min=15,
+        )
+        == ALERT_REVIEW
+    )
+    # match だが遅延 (>= 15 分) → review。
+    assert (
+        compute_alert(
+            phase=PHASE_INPROGRESS,
+            arrival_match_status="match",
+            arrival_scanned=_jst_dt(9, 20),
+            start_dt=_jst_dt(9, 0),
+            late_min=15,
+        )
+        == ALERT_REVIEW
+    )
+
+
+def test_alert_none_when_match_on_time() -> None:
+    assert (
+        compute_alert(
+            phase=PHASE_DONE,
+            arrival_match_status="match",
+            arrival_scanned=_jst_dt(9, 5),
+            start_dt=_jst_dt(9, 0),
+            late_min=15,
+        )
+        == ALERT_NONE
+    )
+
+
+def test_alert_long_inprogress_boundary() -> None:
+    # 退出忘れ (長時間 inprogress) は MAX_INPROGRESS_MIN (240) 超で review。
+    # 境界: 239 → none、241 → review (on-time match で他要因なし)。
+    common = dict(
+        phase=PHASE_INPROGRESS,
+        arrival_match_status="match",
+        arrival_scanned=_jst_dt(9, 5),
+        start_dt=_jst_dt(9, 0),
+        late_min=15,
+    )
+    assert compute_alert(**common, stay_minutes=239) == ALERT_NONE
+    assert compute_alert(**common, stay_minutes=240) == ALERT_NONE
+    assert compute_alert(**common, stay_minutes=241) == ALERT_REVIEW
+
+
+# ---------------------------------------------------------------------------
+# Integration: build_monitor synthesis matrix
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_build_monitor_done_match(db) -> None:
+    staff = await _make_staff(db, "S-done")
+    p = await _make_patient(db, "M-DONE", lat=35.0, lng=139.0)
+    v = await _make_visit(db, p, staff, start=time(9, 0), end=time(10, 0))
+    await _add_checkin(db, v, staff, "arrival", scanned_at=_utc(9, 5), match_status="match")
+    await _add_checkin(db, v, staff, "departure", scanned_at=_utc(9, 55), match_status="match")
+
+    resp = await build_monitor(db, TARGET, now=_utc(13, 30))
+    mv = _find(resp, v.id)
+    assert mv is not None
+    assert mv.phase == PHASE_DONE
+    assert mv.alert_level == ALERT_NONE
+    assert mv.stay_minutes == 50
+    assert mv.arrival_delay_min == 5
+
+
+@pytest.mark.asyncio
+async def test_build_monitor_inprogress_review_late(db) -> None:
+    staff = await _make_staff(db, "S-inprog")
+    p = await _make_patient(db, "M-INPROG", lat=35.0, lng=139.0)
+    v = await _make_visit(db, p, staff, start=time(9, 0), end=time(10, 0))
+    # 20 分遅れの到着・退出なし → inprogress + review(late)。
+    await _add_checkin(db, v, staff, "arrival", scanned_at=_utc(9, 20), match_status="match")
+
+    resp = await build_monitor(db, TARGET, now=_utc(13, 30))
+    mv = _find(resp, v.id)
+    assert mv.phase == PHASE_INPROGRESS
+    assert mv.alert_level == ALERT_REVIEW
+    assert mv.departure is None
+    # 進行中の滞在 = now - arrival (13:30 - 9:20 = 250 分)。
+    assert mv.stay_minutes == 250
+
+
+@pytest.mark.asyncio
+async def test_build_monitor_done_mismatch(db) -> None:
+    staff = await _make_staff(db, "S-mis")
+    p = await _make_patient(db, "M-MIS", lat=35.0, lng=139.0)
+    v = await _make_visit(db, p, staff, start=time(9, 0), end=time(10, 0))
+    await _add_checkin(
+        db,
+        v,
+        staff,
+        "arrival",
+        scanned_at=_utc(9, 5),
+        match_status="mismatch",
+        distance_m=360.0,
+        lat=35.01,
+        lng=139.01,
+        reason="隣の棟で測位",
+    )
+    await _add_checkin(db, v, staff, "departure", scanned_at=_utc(9, 55), match_status="mismatch")
+
+    resp = await build_monitor(db, TARGET, now=_utc(13, 30))
+    mv = _find(resp, v.id)
+    assert mv.phase == PHASE_DONE
+    assert mv.alert_level == ALERT_MISMATCH
+    assert mv.arrival.distance_m == 360.0
+    # mismatch の地図表示用に GPS 座標を返す。
+    assert mv.arrival.lat == 35.01
+    assert mv.reason == "隣の棟で測位"
+
+
+@pytest.mark.asyncio
+async def test_build_monitor_awaiting_and_future_and_missing(db) -> None:
+    staff = await _make_staff(db, "S-time")
+    pa = await _make_patient(db, "M-AWAIT")
+    pf = await _make_patient(db, "M-FUT")
+    pm = await _make_patient(db, "M-MISS")
+    va = await _make_visit(db, pa, staff, start=time(13, 20), end=time(14, 0))
+    vf = await _make_visit(db, pf, staff, start=time(15, 0), end=time(16, 0))
+    vm = await _make_visit(db, pm, staff, start=time(9, 0), end=time(10, 0))
+
+    resp = await build_monitor(db, TARGET, now=_utc(13, 30))
+    assert _find(resp, va.id).phase == PHASE_AWAITING
+    assert _find(resp, vf.id).phase == PHASE_FUTURE
+    assert _find(resp, vm.id).phase == PHASE_MISSING
+    assert _find(resp, vm.id).alert_level == ALERT_MISSING
+
+
+@pytest.mark.asyncio
+async def test_build_monitor_missing_with_no_show_reason(db) -> None:
+    staff = await _make_staff(db, "S-ns")
+    p = await _make_patient(db, "M-NS")
+    v = await _make_visit(db, p, staff, start=time(13, 25), end=time(14, 0))
+    await _add_checkin(
+        db, v, staff, "no_show", scanned_at=_utc(13, 28), match_status="no_gps", reason="不在"
+    )
+
+    resp = await build_monitor(db, TARGET, now=_utc(13, 30))
+    mv = _find(resp, v.id)
+    assert mv.phase == PHASE_MISSING
+    assert mv.alert_level == ALERT_MISSING
+    assert mv.reason == "不在"
+
+
+@pytest.mark.asyncio
+async def test_build_monitor_excludes_cancelled(db) -> None:
+    # 取消済み (status=cancelled) の visit はモニターに出ない (judge ガードと同じ)。
+    staff = await _make_staff(db, "S-cancel")
+    p_ok = await _make_patient(db, "C-OK")
+    p_cancelled = await _make_patient(db, "C-CANCELLED")
+    v_ok = await _make_visit(db, p_ok, staff, start=time(9, 0), end=time(10, 0))
+    v_cancelled = await _make_visit(
+        db, p_cancelled, staff, start=time(11, 0), end=time(12, 0), status="cancelled"
+    )
+
+    resp = await build_monitor(db, TARGET, now=_utc(13, 30))
+    assert _find(resp, v_ok.id) is not None
+    assert _find(resp, v_cancelled.id) is None
+
+
+@pytest.mark.asyncio
+async def test_build_monitor_long_inprogress_review(db) -> None:
+    # 到着済・退出未記録で MAX_INPROGRESS_MIN (240分) 超の滞在 → review (退出忘れ)。
+    staff = await _make_staff(db, "S-longinprog")
+    p = await _make_patient(db, "M-LONG", lat=35.0, lng=139.0)
+    v = await _make_visit(db, p, staff, start=time(9, 0), end=time(10, 0))
+    # 9:00 到着・退出なし・now 13:30 → 滞在 270 分 (>240)。
+    await _add_checkin(db, v, staff, "arrival", scanned_at=_utc(9, 0), match_status="match")
+
+    resp = await build_monitor(db, TARGET, now=_utc(13, 30))
+    mv = _find(resp, v.id)
+    assert mv.phase == PHASE_INPROGRESS
+    assert mv.stay_minutes == 270
+    assert mv.alert_level == ALERT_REVIEW
+
+
+# ---------------------------------------------------------------------------
+# Integration: next distance / office filter / nearby
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_build_monitor_distance_to_next(db) -> None:
+    staff = await _make_staff(db, "S-dist")
+    p1 = await _make_patient(db, "D-1", lat=35.0000, lng=139.0000)
+    p2 = await _make_patient(db, "D-2", lat=35.0100, lng=139.0000)
+    v1 = await _make_visit(db, p1, staff, start=time(9, 0), end=time(10, 0))
+    v2 = await _make_visit(db, p2, staff, start=time(10, 30), end=time(11, 30))
+
+    resp = await build_monitor(db, TARGET, now=_utc(13, 30))
+    mv1 = _find(resp, v1.id)
+    mv2 = _find(resp, v2.id)
+    # 緯度 0.01 度 ≒ 1.1km。
+    assert mv1.distance_to_next_m is not None
+    assert 1000 < mv1.distance_to_next_m < 1200
+    # 最後の visit は次が無いので None。
+    assert mv2.distance_to_next_m is None
+
+
+@pytest.mark.asyncio
+async def test_build_monitor_office_filter(db) -> None:
+    office_a = Office(name="稲毛")
+    office_b = Office(name="都賀")
+    db.add_all([office_a, office_b])
+    await db.commit()
+    await db.refresh(office_a)
+    await db.refresh(office_b)
+
+    staff_a = await _make_staff(db, "S-A", office_id=office_a.id)
+    staff_b = await _make_staff(db, "S-B", office_id=office_b.id)
+    pa = await _make_patient(db, "OF-A")
+    pb = await _make_patient(db, "OF-B")
+    va = await _make_visit(db, pa, staff_a)
+    vb = await _make_visit(db, pb, staff_b)
+
+    # フィルタなし → 両拠点が登場。
+    full = await build_monitor(db, TARGET, now=_utc(13, 30))
+    assert _find(full, va.id) is not None
+    assert _find(full, vb.id) is not None
+    assert {o.name for o in full.offices} == {"稲毛", "都賀"}
+
+    # office_a フィルタ → A のみ。
+    only_a = await build_monitor(db, TARGET, office_id=office_a.id, now=_utc(13, 30))
+    assert _find(only_a, va.id) is not None
+    assert _find(only_a, vb.id) is None
+
+
+@pytest.mark.asyncio
+async def test_nearby_returns_within_radius_sorted(db) -> None:
+    await _make_patient(db, "N-near", lat=35.0001, lng=139.0000)  # ~11m
+    await _make_patient(db, "N-mid", lat=35.0010, lng=139.0000)  # ~111m
+    await _make_patient(db, "N-far", lat=35.0100, lng=139.0000)  # ~1.1km (out)
+
+    from app.services.checkin.monitor import find_nearby_patients
+
+    res = await find_nearby_patients(db, lat=35.0, lng=139.0, radius_m=150.0, limit=5)
+    codes = [n.code for n in res.items]
+    assert codes == ["N-near", "N-mid"]  # 距離昇順、far は除外。
+    assert res.items[0].distance_m < res.items[1].distance_m
+
+
+# ---------------------------------------------------------------------------
+# API: RBAC + JST 境界
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_monitor_api_rbac(client, db) -> None:
+    staff = await _make_staff(db, "S-rbac")
+    staff_user = await _make_user(db, "mon-staff@example.com", "staff", staff_id=staff.id)
+    manager_user = await _make_user(db, "mon-mgr@example.com", "manager")
+
+    # staff → 403。
+    res_staff = await client.get(
+        "/api/v1/monitor", params={"date": TARGET.isoformat()}, headers=_bearer(staff_user)
+    )
+    assert res_staff.status_code == 403, res_staff.text
+
+    # manager → 200。
+    res_mgr = await client.get(
+        "/api/v1/monitor", params={"date": TARGET.isoformat()}, headers=_bearer(manager_user)
+    )
+    assert res_mgr.status_code == 200, res_mgr.text
+    body = res_mgr.json()
+    assert body["date"] == TARGET.isoformat()
+    assert "thresholds" in body
+    assert "staff" in body
+
+
+@pytest.mark.asyncio
+async def test_nearby_api_rbac(client, db) -> None:
+    # /monitor/nearby も admin/manager 限定。staff → 403。
+    staff = await _make_staff(db, "S-nearby-rbac")
+    staff_user = await _make_user(db, "nearby-staff@example.com", "staff", staff_id=staff.id)
+    manager_user = await _make_user(db, "nearby-mgr@example.com", "manager")
+    params = {"lat": 35.0, "lng": 139.0}
+
+    res_staff = await client.get("/api/v1/monitor/nearby", params=params, headers=_bearer(staff_user))
+    assert res_staff.status_code == 403, res_staff.text
+
+    res_mgr = await client.get("/api/v1/monitor/nearby", params=params, headers=_bearer(manager_user))
+    assert res_mgr.status_code == 200, res_mgr.text
+
+
+@pytest.mark.asyncio
+async def test_monitor_api_returns_visit(client, db) -> None:
+    admin = await _make_user(db, "mon-admin@example.com", "admin")
+    staff = await _make_staff(db, "S-api")
+    p = await _make_patient(db, "API-1", lat=35.0, lng=139.0)
+    await _make_visit(db, p, staff, start=time(9, 0), end=time(10, 0))
+
+    res = await client.get(
+        "/api/v1/monitor", params={"date": TARGET.isoformat()}, headers=_bearer(admin)
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    rows = body["staff"]
+    assert len(rows) == 1
+    assert rows[0]["visits"][0]["patient_code"] == "API-1"
+
+
+@pytest.mark.asyncio
+async def test_build_monitor_jst_midnight_same_day(db) -> None:
+    """JST 00:30 (= 前日 UTC 15:30) でも当日 visit は当日として集計される."""
+    staff = await _make_staff(db, "S-jst")
+    p = await _make_patient(db, "JST-M", lat=35.0, lng=139.0)
+    v = await _make_visit(db, p, staff, start=time(0, 10), end=time(1, 0))
+    # JST 00:30 の now (前日 UTC 15:30)。
+    now = datetime(2026, 6, 30, 0, 30, tzinfo=JST).astimezone(UTC)
+    resp = await build_monitor(db, TARGET, now=now)
+    mv = _find(resp, v.id)
+    assert mv is not None
+    # 00:10 開始・00:30 現在・到着なし → 猶予 (20分) 境界。grace 20 で 00:30>=00:30 → missing。
+    assert mv.phase == PHASE_MISSING

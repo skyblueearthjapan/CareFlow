@@ -39,6 +39,7 @@ from app.api.v1 import (
     staff_excel,
     staff_overrides,
     staff_shifts,
+    visit_monitor,
     visit_photos,
     visits,
 )
@@ -98,6 +99,8 @@ api_router.include_router(staff.router, prefix="/staff", tags=["staff"])
 # /visits/{visit_id} catch-all.
 api_router.include_router(visit_photos.router, prefix="/visits", tags=["visit-photos"])
 api_router.include_router(visits.router, prefix="/visits", tags=["visits"])
+# QR 訪問チェックイン Phase 3: PC 訪問モニター集計 (admin/manager, read-only).
+api_router.include_router(visit_monitor.router, prefix="/monitor", tags=["visit-monitor"])
 # W2-BE4: Course CRUD (generate / fix / assign-staff は Wave 4 で追加).
 api_router.include_router(courses.router, prefix="/courses", tags=["courses"])
 # W15-BE1: 永続コーステンプレート CRUD.

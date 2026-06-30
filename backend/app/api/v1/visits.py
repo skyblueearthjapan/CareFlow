@@ -26,9 +26,17 @@ from sqlalchemy.orm import selectinload
 from app.core.deps import CurrentActiveUser, DbDep, require_role
 from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.user import User
-from app.models.visit import Visit
+from app.models.visit import (
+    VISIT_STATUS_COMPLETED,
+    VISIT_STATUS_IN_PROGRESS,
+    VISIT_STATUS_PLANNED,
+    Visit,
+)
+from app.models.visit_checkin import VisitCheckin
 from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.schemas.visit import VisitCreate, VisitRead, VisitUpdate
+from app.schemas.visit_checkin import CheckinCreate
+from app.services.checkin.judge import judge_checkin
 
 router = APIRouter()
 
@@ -64,7 +72,65 @@ async def _load_assignments(db, visit_id: UUID) -> list[dict]:
     ]
 
 
-def _serialize_visit(visit: Visit, assignments: list[dict] | None = None) -> dict:
+def _project_latest_checkin(row: VisitCheckin) -> dict:
+    """VisitCheckin 行を VisitRead.latest_checkin (CheckinRead 形) に射影する。"""
+    return {
+        "id": row.id,
+        "kind": row.kind,
+        "match_status": row.match_status,
+        "distance_m": float(row.distance_m) if row.distance_m is not None else None,
+        "accuracy_m": float(row.accuracy_m) if row.accuracy_m is not None else None,
+        "scanned_at": row.scanned_at,
+        "checkin_source": row.checkin_source,
+        "reason": row.reason,
+        "is_override": row.is_override,
+    }
+
+
+async def _load_latest_checkin(db, visit_id: UUID) -> dict | None:
+    """Load the most recent visit_checkins row (any kind) for a visit.
+
+    Append-only テーブルから ``scanned_at DESC LIMIT 1`` で最新の打刻を採用する。
+    VisitRead.latest_checkin に非破壊で載せる射影 (CheckinRead 形)。
+    """
+    row = await db.scalar(
+        select(VisitCheckin)
+        .where(VisitCheckin.visit_id == visit_id)
+        .order_by(VisitCheckin.scanned_at.desc())
+        .limit(1)
+    )
+    if row is None:
+        return None
+    return _project_latest_checkin(row)
+
+
+async def _load_latest_checkins_bulk(db, visit_ids: list[UUID]) -> dict[UUID, dict]:
+    """対象 visit 群の最新打刻 (any kind) を 1 クエリでバッチ取得する。
+
+    一覧 (list_visits) の N+1 を避けるため、monitor の latest-per-kind 取得と同様に
+    ``scanned_at DESC`` で全行を取得し visit_id ごと最初に出た行 (= 最新) を採用する。
+    """
+    latest: dict[UUID, dict] = {}
+    if not visit_ids:
+        return latest
+    rows = (
+        await db.scalars(
+            select(VisitCheckin)
+            .where(VisitCheckin.visit_id.in_(visit_ids))
+            .order_by(VisitCheckin.scanned_at.desc())
+        )
+    ).all()
+    for r in rows:
+        if r.visit_id not in latest:  # DESC 並びなので最初に出た = 最新。
+            latest[r.visit_id] = _project_latest_checkin(r)
+    return latest
+
+
+def _serialize_visit(
+    visit: Visit,
+    assignments: list[dict] | None = None,
+    latest_checkin: dict | None = None,
+) -> dict:
     """Project a Visit (with optional eager-loaded patient/primary_staff) into
     the VisitRead shape, including denormalized `patient_name`/`staff_name`
     and v2 ``staff_assignments`` (visit_staff_assignments).
@@ -94,7 +160,21 @@ def _serialize_visit(visit: Visit, assignments: list[dict] | None = None) -> dic
         "staff_name": (
             getattr(visit.primary_staff, "name", None) if visit.primary_staff is not None else None
         ),
+        # 患者ジオコード (Numeric → float). モバイル QR チェックインの距離プレビュー
+        # 用に非破壊で公開する. patient 未ロード / 未ジオコードは None.
+        "patient_lat": (
+            float(visit.patient.lat)
+            if visit.patient is not None and visit.patient.lat is not None
+            else None
+        ),
+        "patient_lng": (
+            float(visit.patient.lng)
+            if visit.patient is not None and visit.patient.lng is not None
+            else None
+        ),
         "staff_assignments": assignments or [],
+        # QR チェックイン (Phase 1) の最新打刻. 既存呼出は None のまま (非破壊).
+        "latest_checkin": latest_checkin,
     }
     return data
 
@@ -176,7 +256,17 @@ async def list_visits(
                     "assigned_at": a.created_at,
                 }
             )
-    return [_serialize_visit(v, assignments=assignments_by_visit.get(v.id, [])) for v in rows]
+    # 最新打刻を 1 クエリでバッチ取得し (N+1 回避)、各 visit に紐付ける。GET /visits/{id}
+    # との契約対称性のため一覧でも latest_checkin を返す (QR チェックイン)。
+    latest_by_visit = await _load_latest_checkins_bulk(db, visit_ids)
+    return [
+        _serialize_visit(
+            v,
+            assignments=assignments_by_visit.get(v.id, []),
+            latest_checkin=latest_by_visit.get(v.id),
+        )
+        for v in rows
+    ]
 
 
 @router.get("/{visit_id}", response_model=VisitRead, summary="Get visit by id")
@@ -212,7 +302,8 @@ async def get_visit(
         ):
             # Hide existence from non-assigned staff.
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
-    return _serialize_visit(visit, assignments=assignments)
+    latest_checkin = await _load_latest_checkin(db, visit.id)
+    return _serialize_visit(visit, assignments=assignments, latest_checkin=latest_checkin)
 
 
 @router.post(
@@ -494,3 +585,141 @@ async def remove_visit_staff(
     )
     await db.commit()
     return None
+
+
+# ---------------------------------------------------------------------------
+# QR 訪問チェックイン (Phase 1) — checkin / checkout / no-show
+#
+# staff が自分の visit に対して到着 / 退出 / 未訪問を打刻する。判定 (距離・
+# match_status) は ``app.services.checkin.judge`` がサーバ側で確定する。返却は
+# 既存 GET /visits/{id} と同形 (VisitRead) で、最新打刻を ``latest_checkin`` に
+# 非破壊で載せる (フロント me.ts の MyVisit を壊さない / 設計 R1・R7)。
+# ---------------------------------------------------------------------------
+
+
+async def _load_visit_for_checkin(db, visit_id: UUID, user: User) -> tuple[Visit, UUID]:
+    """打刻用に visit をロードし、呼び出し元が「自分の visit」か検証する。
+
+    visit ガード (削除 / 取消 / 当日) は judge が行うため、ここでは
+    ``deleted_at`` でフィルタしない (削除済みは judge が 409 を返す)。
+    可視性 (担当外) は存在を秘匿するため 404 とする (既存 get_visit と同方針)。
+
+    可視性判定を ``_staff_visibility_filter`` (WHERE 句) で直接絞らず、visit を
+    無条件にロードしてから Python 側で担当判定するのは意図的:
+      - 担当外 (visibility NG) は 404 で「存在を秘匿」したいが、
+      - 削除済み / 取消 / 当日外 (= 担当はしている) は judge が 409 を返す必要がある。
+    フィルタで一括に弾くと、削除済み visit が「行なし」となり 409 ではなく 404 に
+    潰れてしまい、この 409 と 404 の区別が付かなくなる。両者を分けるため visit を
+    取得後に Python で可視性のみ判定し、deleted/cancelled/当日外は judge に委ねる。
+
+    検証済みの ``(visit, staff_id)`` を返す (``staff_id`` は非 NULL を保証)。
+    """
+    if user.role not in {"admin", "manager", "staff"}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
+    staff_id = user.staff_id
+    if staff_id is None:
+        # User に staff 未紐付け → 打刻者を確定できない (設計 §2-1)。
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User is not linked to a staff record",
+        )
+
+    visit = await db.scalar(
+        select(Visit)
+        .where(Visit.id == visit_id)
+        .options(
+            selectinload(Visit.patient),
+            selectinload(Visit.primary_staff),
+        )
+    )
+    if visit is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+
+    assignments = await _load_assignments(db, visit.id)
+    assigned_staff_ids = {a["staff_id"] for a in assignments}
+    if staff_id not in (
+        {visit.primary_staff_id, visit.secondary_staff_id, visit.mentor_staff_id}
+        | assigned_staff_ids
+    ):
+        # 担当外には存在を秘匿する。
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    return visit, staff_id
+
+
+async def _checkin_response(db, visit_id: UUID) -> dict:
+    """打刻後の visit を GET /visits/{id} と同形で組み立てる (latest_checkin 付き)."""
+    visit = await db.scalar(
+        select(Visit)
+        .where(Visit.id == visit_id)
+        .options(
+            selectinload(Visit.patient),
+            selectinload(Visit.primary_staff),
+        )
+    )
+    assignments = await _load_assignments(db, visit_id)
+    latest_checkin = await _load_latest_checkin(db, visit_id)
+    return _serialize_visit(visit, assignments=assignments, latest_checkin=latest_checkin)
+
+
+@router.post(
+    "/{visit_id}/checkin",
+    response_model=VisitRead,
+    summary="QR チェックイン (到着) — staff (自分の visit)",
+)
+async def checkin_visit(
+    visit_id: UUID,
+    payload: CheckinCreate,
+    db: DbDep,
+    user: CurrentActiveUser,
+) -> dict:
+    visit, staff_id = await _load_visit_for_checkin(db, visit_id, user)
+    await judge_checkin(db, visit, staff_id, payload, "arrival")
+    # status 退行ガード: 既に completed の visit に再 checkin しても completed の
+    # まま据え置く (in_progress へ巻き戻さない)。planned / in_progress のときのみ
+    # in_progress へ進める。checkin 行 (append-only) は status に依らず記録される。
+    if visit.status in (VISIT_STATUS_PLANNED, VISIT_STATUS_IN_PROGRESS):
+        visit.status = VISIT_STATUS_IN_PROGRESS
+    await db.commit()
+    return await _checkin_response(db, visit_id)
+
+
+@router.post(
+    "/{visit_id}/checkout",
+    response_model=VisitRead,
+    summary="QR チェックアウト (退出) — staff (自分の visit)",
+)
+async def checkout_visit(
+    visit_id: UUID,
+    payload: CheckinCreate,
+    db: DbDep,
+    user: CurrentActiveUser,
+) -> dict:
+    visit, staff_id = await _load_visit_for_checkin(db, visit_id, user)
+    await judge_checkin(db, visit, staff_id, payload, "departure")
+    visit.status = VISIT_STATUS_COMPLETED
+    await db.commit()
+    return await _checkin_response(db, visit_id)
+
+
+@router.post(
+    "/{visit_id}/no-show",
+    response_model=VisitRead,
+    summary="未訪問記録 (理由必須) — staff (自分の visit)",
+)
+async def no_show_visit(
+    visit_id: UUID,
+    payload: CheckinCreate,
+    db: DbDep,
+    user: CurrentActiveUser,
+) -> dict:
+    # no_show は理由必須 (場所違いの強行記録とは異なり、未実施の説明を残す)。
+    if payload.reason is None or not payload.reason.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="reason is required for no-show",
+        )
+    visit, staff_id = await _load_visit_for_checkin(db, visit_id, user)
+    # no_show は visit.status を据置 (planned のまま; モニターが時間ベースで判定)。
+    await judge_checkin(db, visit, staff_id, payload, "no_show")
+    await db.commit()
+    return await _checkin_response(db, visit_id)

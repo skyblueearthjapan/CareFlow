@@ -21,6 +21,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.v2.visit import VisitStaffAssignmentV2Read
+from app.schemas.visit_checkin import CheckinRead
 
 # v2 visit_staff_assignments の Read 型 (re-export)
 VisitStaffAssignmentRead = VisitStaffAssignmentV2Read
@@ -106,12 +107,21 @@ class VisitRead(VisitBase):
     # Frontend (`schedule/page.tsx`) renders these directly without a join.
     patient_name: str | None = None
     staff_name: str | None = None
+    # 患者ジオコード (非破壊追加). モバイル QR チェックインのクライアント側
+    # 距離プレビュー (記録前の確認) に使う. 未ジオコードの患者は None
+    # (フロントは no_gps 相当としてプレビュー無しで POST 可能).
+    patient_lat: float | None = None
+    patient_lng: float | None = None
     # visit_staff_assignments 経由の割当スタッフ一覧 (§4.5)
     # 1 visit あたり 1 or 2 行 (required_staff_count による)
     staff_assignments: list[VisitStaffAssignmentRead] = Field(default_factory=list)
+    # QR チェックイン (Phase 1) の最新打刻 (非破壊追加). 未打刻なら None.
+    # 既存クライアント (me.ts の MyVisit) は本フィールドを無視できる.
+    latest_checkin: CheckinRead | None = None
 
 
 __all__ = [
+    "CheckinRead",
     "VisitBase",
     "VisitCreate",
     "VisitRead",

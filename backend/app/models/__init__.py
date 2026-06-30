@@ -8,6 +8,7 @@ from app.models.acceptance_calendar import AcceptanceCalendar
 from app.models.acceptance_calendar_week import AcceptanceCalendarWeek
 from app.models.ai_interpret_log import AiInterpretLog
 from app.models.audit_log import AuditLog
+from app.models.checkin_settings import CheckinSettings
 from app.models.city import City
 from app.models.correction_sheet import CorrectionSheet, CorrectionSheetItem
 from app.models.course import Course
@@ -34,6 +35,7 @@ from app.models.staff import (
 from app.models.staff_companion_assignment import StaffCompanionAssignment
 from app.models.user import User
 from app.models.visit import Visit
+from app.models.visit_checkin import VisitCheckin
 from app.models.visit_photo import VisitPhoto
 from app.models.visit_staff_assignment import VisitStaffAssignment
 
@@ -42,6 +44,7 @@ __all__ = [
     "AcceptanceCalendarWeek",
     "AiInterpretLog",
     "AuditLog",
+    "CheckinSettings",
     "City",
     "CorrectionSheet",
     "CorrectionSheetItem",
@@ -71,6 +74,7 @@ __all__ = [
     "StaffWeeklyOverride",
     "User",
     "Visit",
+    "VisitCheckin",
     "VisitPhoto",
     "VisitStaffAssignment",
 ]

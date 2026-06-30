@@ -36,9 +36,11 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     Numeric,
     String,
     Text,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
@@ -104,6 +106,19 @@ class Patient(Base, TimestampMixin):
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # ---- QR 訪問チェックイン (Phase 1, migration 0041) -----------------------
+    # 患者宅に固定掲示する QR の識別トークン (推測不能な乱数 ``token_urlsafe(16)``).
+    # NULL = 未発行 (遅延発行 / 一括スクリプトで採番). 部分 UNIQUE で非 NULL の
+    # 重複のみ禁止する (両 dialect の ``qr_token IS NOT NULL`` 述語).
+    qr_token: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # 再発行カウンタ. regenerate で +1 し旧 QR を失効させる (Phase 5).
+    qr_version: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+        server_default=text("1"),
+    )
+
     allowed_offices: Mapped[list[PatientAllowedOffice]] = relationship(
         "PatientAllowedOffice",
         back_populates="patient",
@@ -113,6 +128,14 @@ class Patient(Base, TimestampMixin):
     __table_args__ = (
         Index("ix_patients_status_office", "status", "primary_office_id"),
         Index("ix_patients_kana", "kana"),
+        # QR トークンの部分 UNIQUE (非 NULL のみ; 述語は両 dialect 同一).
+        Index(
+            "uq_patients_qr_token",
+            "qr_token",
+            unique=True,
+            postgresql_where=text("qr_token IS NOT NULL"),
+            sqlite_where=text("qr_token IS NOT NULL"),
+        ),
     )
 
 
