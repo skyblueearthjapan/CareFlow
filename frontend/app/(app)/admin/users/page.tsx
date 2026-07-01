@@ -68,7 +68,7 @@ export default function AdminUsersPage() {
     onSuccess: (resp, userId) => {
       const target = data?.items.find((u) => u.id === userId);
       setResetResult({
-        email: target?.email ?? userId,
+        email: target?.email ?? target?.username ?? target?.staff_name ?? userId,
         tempPassword: resp.temp_password,
       });
     },
@@ -104,7 +104,7 @@ export default function AdminUsersPage() {
             <Input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="メールアドレスで検索"
+              placeholder="メール / ログインID で検索"
               className="pl-9"
               aria-label="検索"
             />
@@ -176,6 +176,7 @@ export default function AdminUsersPage() {
               <thead className="border-b border-border-default text-left text-text-secondary">
                 <tr>
                   <th className="px-3 py-2 font-medium">メール</th>
+                  <th className="px-3 py-2 font-medium">ログインID</th>
                   <th className="px-3 py-2 font-medium">ロール</th>
                   <th className="px-3 py-2 font-medium">スタッフ紐付け</th>
                   <th className="px-3 py-2 font-medium">パスワード変更要求</th>
@@ -192,11 +193,10 @@ export default function AdminUsersPage() {
                       key={u.id}
                       className="border-b border-border-default last:border-0 hover:bg-bg-muted"
                     >
-                      <td className="px-3 py-2 font-medium">{u.email}</td>
+                      <td className="px-3 py-2 font-medium">{u.email ?? '--'}</td>
+                      <td className="px-3 py-2 text-text-secondary">{u.username ?? '--'}</td>
                       <td className="px-3 py-2">{roleLabel(u.role)}</td>
-                      <td className="px-3 py-2 text-text-secondary">
-                        {u.staff_id ? `${u.staff_id.slice(0, 8)}…` : '--'}
-                      </td>
+                      <td className="px-3 py-2 text-text-secondary">{u.staff_name ?? '--'}</td>
                       <td className="px-3 py-2">{u.must_change_password ? '必須' : '任意'}</td>
                       <td className="px-3 py-2">
                         {isDeleted ? <span className="text-text-muted">削除済み</span> : '有効'}
@@ -226,7 +226,8 @@ export default function AdminUsersPage() {
                             size="sm"
                             disabled={isDeleted || isSelf}
                             onClick={() => {
-                              if (window.confirm(`${u.email} を削除します。よろしいですか？`)) {
+                              const label = u.email ?? u.username ?? u.staff_name ?? u.id;
+                              if (window.confirm(`${label} を削除します。よろしいですか？`)) {
                                 deleteUser.mutate(u.id);
                               }
                             }}
