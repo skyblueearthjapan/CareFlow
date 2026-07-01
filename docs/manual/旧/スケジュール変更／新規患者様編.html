@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>CareFlow スケジュール変更／新規患者様編</title>
+<style>
+  :root{
+    --teal:#0d9488; --teal-deep:#0b6e5e; --teal-50:#e7f4f0;
+    --amber:#b5790a; --amber-50:#fbf1dd; --rose:#e11d48; --blue:#2563eb;
+    --ink:#2b2620; --ink2:#6b5e54; --ink3:#9c9087;
+    --line:#e7e0d6; --line-strong:#d9d0c3;
+    --bg:#faf7f2; --bg-card:#fff; --bg-muted:#f3efe8;
+    --radius:12px; --shadow:0 1px 2px rgba(43,38,32,.06),0 6px 18px rgba(43,38,32,.06);
+  }
+  *{box-sizing:border-box;}
+  html{scroll-behavior:smooth;}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Hiragino Kaku Gothic ProN","Hiragino Sans",Meiryo,sans-serif;
+    color:var(--ink);background:var(--bg);line-height:1.75;font-size:15.5px;-webkit-font-smoothing:antialiased;}
+  .layout{display:flex;max-width:1280px;margin:0 auto;}
+  .toc{width:300px;flex:0 0 300px;position:sticky;top:0;align-self:flex-start;height:100vh;overflow-y:auto;
+    padding:28px 18px 60px;background:linear-gradient(180deg,#fff,#fbf9f5);border-right:1px solid var(--line);}
+  .toc .brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:18px;color:var(--teal-deep);margin-bottom:2px;}
+  .toc .brand .logo{width:30px;height:30px;border-radius:8px;background:linear-gradient(135deg,var(--teal),var(--teal-deep));display:grid;place-items:center;color:#fff;font-size:15px;}
+  .toc .subtitle{font-size:12px;color:var(--ink3);margin:0 0 16px 40px;}
+  .toc ol{list-style:none;margin:0;padding:0;}
+  .toc>ol>li{margin-bottom:3px;}
+  .toc a{display:block;text-decoration:none;color:var(--ink2);padding:6px 10px;border-radius:8px;font-size:13.5px;transition:.12s;}
+  .toc a:hover{background:var(--teal-50);color:var(--teal-deep);}
+  .toc .part-link{font-weight:700;color:var(--ink);}
+  .toc ul{list-style:none;margin:2px 0 8px;padding:0 0 0 14px;}
+  .toc ul a{font-size:12.5px;padding:4px 10px;}
+  main{flex:1;min-width:0;padding:40px 48px 120px;}
+  .doc-header{background:linear-gradient(135deg,#7e22ce,#5b1696);color:#fff;border-radius:16px;padding:34px 40px;margin-bottom:12px;box-shadow:var(--shadow);}
+  .doc-header h1{margin:0 0 6px;font-size:27px;letter-spacing:.02em;}
+  .doc-header p{margin:0;opacity:.92;font-size:14.5px;}
+  .doc-header .meta{margin-top:14px;font-size:12.5px;opacity:.85;display:flex;gap:18px;flex-wrap:wrap;}
+  .intro-note{background:#f6edff;border:1px solid #e3cffa;border-radius:var(--radius);padding:14px 18px;margin:18px 0 28px;font-size:13.5px;color:#5b2a86;}
+  section{scroll-margin-top:16px;margin-bottom:14px;}
+  h2{font-size:22px;margin:48px 0 4px;padding-bottom:10px;border-bottom:3px solid #7e22ce;display:flex;align-items:center;gap:12px;}
+  h2 .num{background:#7e22ce;color:#fff;font-size:13px;font-weight:700;border-radius:8px;padding:3px 11px;flex:0 0 auto;}
+  h3{font-size:18px;margin:30px 0 10px;color:#6b1fa8;display:flex;align-items:center;gap:9px;}
+  h3::before{content:"";width:7px;height:18px;border-radius:3px;background:#7e22ce;display:inline-block;}
+  h4{font-size:15px;margin:20px 0 6px;color:var(--ink);}
+  p{margin:8px 0;}
+  .roles{display:inline-flex;gap:6px;vertical-align:middle;margin-left:6px;}
+  .role{font-size:11px;font-weight:700;padding:2px 9px;border-radius:999px;border:1px solid transparent;white-space:nowrap;}
+  .role.admin{background:#fde8e8;color:#b42318;border-color:#f6c9c4;}
+  .role.manager{background:#e7eefe;color:#1d4ed8;border-color:#c5d4fb;}
+  .role.staff{background:var(--teal-50);color:var(--teal-deep);border-color:#bfe3da;}
+  .role.all{background:var(--bg-muted);color:var(--ink2);border-color:var(--line-strong);}
+  .for-who{display:inline-flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--line);border-radius:999px;padding:4px 8px 4px 12px;font-size:12px;color:var(--ink2);margin:6px 0 4px;}
+  .callout{border-radius:var(--radius);padding:14px 16px 14px 46px;margin:16px 0;position:relative;font-size:14px;border:1px solid;}
+  .callout::before{position:absolute;left:14px;top:13px;font-size:18px;line-height:1;}
+  .callout.tip{background:var(--teal-50);border-color:#bfe3da;color:#0b5347;} .callout.tip::before{content:"💡";}
+  .callout.warn{background:#fff4e5;border-color:#f3d39b;color:#7a5a0c;} .callout.warn::before{content:"⚠️";}
+  .callout.info{background:#eef4ff;border-color:#cdddfb;color:#1e3a8a;} .callout.info::before{content:"ℹ️";}
+  .callout.danger{background:#fdecec;border-color:#f5c2c0;color:#9b1c17;} .callout.danger::before{content:"🚫";}
+  .callout.key{background:#f6edff;border-color:#e3cffa;color:#5b2a86;} .callout.key::before{content:"⭐";}
+  .callout b{font-weight:700;}
+  ol.steps{counter-reset:step;list-style:none;padding:0;margin:14px 0;}
+  ol.steps>li{position:relative;padding:4px 0 14px 44px;margin:0;}
+  ol.steps>li::before{counter-increment:step;content:counter(step);position:absolute;left:0;top:2px;width:28px;height:28px;border-radius:50%;background:#7e22ce;color:#fff;font-weight:700;font-size:14px;display:grid;place-items:center;}
+  ol.steps>li::after{content:"";position:absolute;left:13px;top:32px;bottom:4px;width:2px;background:var(--line-strong);}
+  ol.steps>li:last-child::after{display:none;}
+  ol.steps b{color:#6b1fa8;}
+  ul.plain{margin:8px 0;padding-left:20px;} ul.plain li{margin:4px 0;}
+  table{width:100%;border-collapse:collapse;margin:16px 0;font-size:13.5px;background:#fff;border-radius:var(--radius);overflow:hidden;box-shadow:var(--shadow);}
+  th,td{padding:10px 13px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;}
+  th{background:var(--bg-muted);font-weight:700;color:var(--ink);font-size:13px;}
+  tr:last-child td{border-bottom:none;}
+  td.center,th.center{text-align:center;}
+  .yes{color:var(--teal-deep);font-weight:700;} .no{color:var(--ink3);}
+  .must{color:#b42318;font-weight:700;} .rec{color:#1d4ed8;font-weight:700;} .opt{color:var(--ink3);}
+  code,.kbd{font-family:"SFMono-Regular",Consolas,Menlo,monospace;background:var(--bg-muted);padding:1px 6px;border-radius:5px;font-size:12.5px;color:#8a3b00;}
+  .kbd{background:#fff;border:1px solid var(--line-strong);box-shadow:0 1px 0 var(--line-strong);color:var(--ink);font-weight:600;}
+  .pill-label{display:inline-block;background:var(--bg-muted);border:1px solid var(--line);border-radius:6px;padding:1px 8px;font-size:12.5px;font-weight:600;color:var(--ink);}
+  .mock-wrap{margin:18px 0;} .mock-caption{font-size:12px;color:var(--ink3);margin-top:6px;text-align:center;}
+  .browser{border:1px solid var(--line-strong);border-radius:12px;overflow:hidden;box-shadow:var(--shadow);background:#fff;max-width:780px;margin:0 auto;}
+  .browser .bar{background:#ece6dd;padding:9px 12px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--line-strong);}
+  .browser .dot{width:11px;height:11px;border-radius:50%;}
+  .browser .dot.r{background:#ff5f57;} .browser .dot.y{background:#febc2e;} .browser .dot.g{background:#28c840;}
+  .browser .url{flex:1;background:#fff;border-radius:6px;padding:4px 12px;font-size:12px;color:var(--ink2);border:1px solid var(--line);font-family:monospace;}
+  .browser .body{padding:20px;}
+  .phone{width:300px;margin:0 auto;border:9px solid #2b2620;border-radius:34px;overflow:hidden;box-shadow:var(--shadow);background:#fff;}
+  .phone .notch{height:26px;background:#2b2620;position:relative;}
+  .phone .notch::after{content:"";position:absolute;left:50%;transform:translateX(-50%);top:8px;width:90px;height:7px;border-radius:4px;background:#4a443c;}
+  .phone .screen{background:var(--bg);min-height:420px;position:relative;}
+  .phone .tabbar{display:flex;border-top:1px solid var(--line);background:#fff;position:absolute;bottom:0;left:0;right:0;}
+  .phone .tabbar div{flex:1;text-align:center;font-size:9.5px;padding:7px 0 9px;color:var(--ink3);}
+  .phone .tabbar div.on{color:var(--teal-deep);font-weight:700;}
+  .phone .tabbar .ic{font-size:16px;display:block;}
+  .btn{display:inline-block;background:#7e22ce;color:#fff;font-weight:700;border-radius:8px;padding:9px 18px;font-size:13.5px;text-align:center;border:none;}
+  .btn.block{display:block;width:100%;} .btn.ghost{background:#fff;color:#6b1fa8;border:1px solid var(--line-strong);}
+  .btn.sm{padding:5px 12px;font-size:12px;} .btn.teal{background:var(--teal);}
+  .field{text-align:left;margin:9px 0;}
+  .field label{font-size:12px;font-weight:600;display:block;margin-bottom:3px;color:var(--ink2);}
+  .field label .req{color:#b42318;font-size:10px;margin-left:5px;}
+  .field .inp{border:1px solid var(--line-strong);border-radius:8px;padding:8px 10px;font-size:12.5px;color:var(--ink3);background:#fff;}
+  .ftabs{display:flex;gap:5px;margin-bottom:10px;}
+  .ftabs span{border:1px solid var(--line-strong);border-radius:7px 7px 0 0;padding:5px 13px;font-size:12px;color:var(--ink2);background:#f6f2eb;}
+  .ftabs span.on{background:#7e22ce;color:#fff;border-color:#7e22ce;font-weight:700;}
+  /* flow */
+  .flow{margin:18px 0 8px;}
+  .flow-step{display:flex;gap:16px;position:relative;padding-bottom:16px;}
+  .flow-step::after{content:"";position:absolute;left:17px;top:38px;bottom:-2px;width:2px;background:var(--line-strong);}
+  .flow-step:last-child::after{display:none;}
+  .flow-step .no{flex:0 0 36px;width:36px;height:36px;border-radius:50%;background:#7e22ce;color:#fff;font-weight:800;font-size:16px;display:grid;place-items:center;z-index:1;}
+  .flow-step .card{flex:1;background:#fff;border:1px solid var(--line);border-radius:10px;padding:12px 15px;box-shadow:var(--shadow);}
+  .flow-step .card .who{margin-bottom:4px;}
+  .flow-step .card .t{font-weight:800;font-size:15px;color:var(--ink);}
+  .flow-step .card p{font-size:13px;color:var(--ink2);margin:6px 0;}
+  /* layer mini */
+  .layers{margin:16px 0;}
+  .layer{display:flex;gap:14px;align-items:flex-start;}
+  .layer .lnum{flex:0 0 30px;width:30px;height:30px;border-radius:8px;display:grid;place-items:center;color:#fff;font-weight:800;font-size:13px;}
+  .layer.l0 .lnum{background:#b42318;} .layer.l1 .lnum{background:#7e22ce;} .layer.l2 .lnum{background:var(--amber);} .layer.l3 .lnum{background:var(--teal);}
+  .layer .lcard{flex:1;background:#fff;border:1px solid var(--line);border-radius:10px;padding:9px 13px;box-shadow:var(--shadow);margin-bottom:9px;}
+  .layer .lt{font-weight:800;font-size:14px;} .layer .ld{font-size:12.5px;color:var(--ink2);margin-top:2px;}
+  .arrow-down{text-align:center;color:var(--ink3);font-size:16px;margin:-3px 0 5px 14px;}
+  .arrow-note{font-size:11.5px;color:#6b1fa8;background:#f6edff;border:1px solid #e3cffa;border-radius:7px;padding:2px 10px;display:inline-block;}
+  /* hearing sheet */
+  .sheet{border:1.5px dashed #7e22ce;border-radius:11px;padding:14px 16px;background:#fdfbff;}
+  .sheet h4{margin:0 0 8px;color:#6b1fa8;}
+  .sheet .row{display:flex;align-items:center;gap:9px;padding:6px 0;border-bottom:1px dashed var(--line);font-size:13px;}
+  .sheet .row:last-child{border-bottom:none;}
+  .sheet .lbl{font-weight:700;width:160px;flex:0 0 auto;}
+  .sheet .lbl .req{color:#b42318;font-size:10px;margin-left:4px;}
+  .sheet .line{flex:1;border-bottom:1px solid #ccc;height:15px;}
+  .two-col{display:grid;grid-template-columns:1fr 1fr;gap:22px;align-items:start;}
+  @media(max-width:900px){.two-col{grid-template-columns:1fr;}}
+  .anchor-top{position:fixed;right:22px;bottom:22px;background:#7e22ce;color:#fff;width:44px;height:44px;border-radius:50%;display:grid;place-items:center;text-decoration:none;font-size:20px;box-shadow:var(--shadow);opacity:.9;}
+  hr.div{border:none;border-top:1px dashed var(--line-strong);margin:36px 0;}
+  .footer{margin-top:60px;padding-top:20px;border-top:1px solid var(--line);font-size:12px;color:var(--ink3);}
+  @media(max-width:980px){.layout{flex-direction:column;}.toc{position:relative;width:100%;height:auto;border-right:none;border-bottom:1px solid var(--line);}main{padding:24px 18px 80px;}}
+  @media print{.toc,.anchor-top{display:none;}body{background:#fff;font-size:11px;line-height:1.5;}main{padding:0;}.doc-header{background:#5b1696!important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}section,h2,h3,table,.callout,.mock-wrap,.layer,.flow-step{break-inside:avoid;}h2{margin-top:24px;}a{color:var(--ink);text-decoration:none;}}
+</style>
+</head>
+<body>
+<div class="layout">
+  <nav class="toc">
+    <div class="brand"><span class="logo">C</span>CareFlow</div>
+    <p class="subtitle">スケジュール変更／新規患者様編</p>
+    <ol>
+      <li><a class="part-link" href="#p1">1. このマニュアルについて</a></li>
+      <li><a class="part-link" href="#p2">2. 既存との違いは「1点」だけ</a>
+        <ul><li><a href="#s2-1">2.1 違い＝カルテ作成</a></li><li><a href="#s2-2">2.2 全体の流れ</a></li></ul>
+      </li>
+      <li><a class="part-link" href="#p3">3. 新規カルテに必要な情報</a>
+        <ul><li><a href="#s3-1">3.1 必須・推奨・任意</a></li><li><a href="#s3-2">3.2 ヒアリングシート</a></li></ul>
+      </li>
+      <li><a class="part-link" href="#p4">4. パターンA：事務所で受付→PC登録</a>
+        <ul>
+          <li><a href="#s4-1">A-1 「新規提案」で一気通貫（最短）</a></li>
+          <li><a href="#s4-2">A-2 じっくり登録（フォーム）</a></li>
+          <li><a href="#s4-3">A-3 Excelカルテで登録</a></li>
+        </ul>
+      </li>
+      <li><a class="part-link" href="#p5">5. パターンB：現場収集→持ち帰り</a>
+        <ul><li><a href="#s5-1">B 全体の流れ</a></li><li><a href="#s5-2">現場での情報収集手段</a></li></ul>
+      </li>
+      <li><a class="part-link" href="#p6">6. 登録手段 早見表</a></li>
+      <li><a class="part-link" href="#p7">7. よくある質問・注意</a></li>
+    </ol>
+  </nav>
+
+  <main>
+    <div class="doc-header" id="top">
+      <h1>スケジュール変更／新規患者様編</h1>
+      <p>CareFlow 訪問看護スケジューリング ／ 「新しい患者さんを受け入れて予定に入れる」ための手引き</p>
+      <div class="meta">
+        <span>🌐 https://carelink.kaipoke-api.net</span>
+        <span>👤 登録できるのは 管理者・マネージャー</span>
+        <span>📕 別冊：既存患者様編</span>
+      </div>
+    </div>
+
+    <div class="intro-note">
+      新規患者さんの受け入れも、<b>「空きを確認 → 受けられるか判断 → 予定に入れる」</b>という実務の流れは
+      <b>既存患者様編とまったく同じ</b>です。違うのは <b>「カルテ（患者マスタ）を新しく作る」</b> 一手間だけ。
+      本書はその「新規ならではの部分」に絞って説明します。空き枠の確認方法や予定変更の細かな操作は、別冊
+      <b>「スケジュール変更／既存患者様編」</b>を参照してください。
+    </div>
+
+    <!-- 1 -->
+    <section id="p1">
+      <h2><span class="num">1</span> このマニュアルについて</h2>
+      <p>新規患者さんを受け入れるときの流れを、変更を <b>「誰が行うか」</b> で2パターンに分けて説明します（既存編と同じ分け方）。</p>
+      <table>
+        <tr><th>パターン</th><th>こんなとき</th><th>章</th></tr>
+        <tr><td><b>A：事務所で受付 → PCで登録</b><br><span class="roles"><span class="role admin">管理者</span><span class="role manager">マネージャー</span></span></td>
+            <td>電話などで依頼を受け、その場でPCで登録・予定化する</td><td><a href="#p4">第4章</a></td></tr>
+        <tr><td><b>B：現場で情報収集 → 持ち帰り → 管理者登録</b><br><span class="roles"><span class="role staff">スタッフ</span> → <span class="role admin">管理者</span></span></td>
+            <td>現場で必要情報をヒアリングし、事務所に持ち帰って管理者が登録する</td><td><a href="#p5">第5章</a></td></tr>
+      </table>
+      <div class="callout info">
+        <b>大前提（権限）</b>：新規患者の<b>登録ができるのは 管理者・マネージャー</b>です。
+        <b>現場スタッフ（staff）は新規登録できません</b>（画面に登録ボタンが出ません）。だから現場は「情報を集めて持ち帰り、管理者が登録」という形になります（第5章）。
+      </div>
+    </section>
+
+    <!-- 2 -->
+    <section id="p2">
+      <h2><span class="num">2</span> 既存との違いは「1点」だけ</h2>
+
+      <h3 id="s2-1">2.1 違い＝最初に「カルテ作成」が要る</h3>
+      <p>既存患者さんは、すでにカルテ（患者マスタ）と「毎週の型」があるので、予定を動かすだけでした。
+        新規患者さんは <b>その土台がまだ無い</b>ので、いちばん最初に <b>カルテを作る</b> 必要があります。あとは既存と同じです。</p>
+
+      <div class="layers">
+        <div class="layer l0">
+          <div class="lnum">0</div>
+          <div class="lcard">
+            <div class="lt">カルテ（患者マスタ）を作る　<span style="font-size:11px;color:#b42318">★新規だけ必要</span></div>
+            <div class="ld">氏名・住所・保険・希望などを登録します。これが無いと予定に入れられません。</div>
+          </div>
+        </div>
+        <div class="arrow-down">▼ <span class="arrow-note">ここから先は既存患者様編と同じ「3つの層」</span></div>
+        <div class="layer l1"><div class="lnum">1</div><div class="lcard"><div class="lt">週間パターン（ご希望）</div><div class="ld">週に何回・何曜日・だいたい何時希望か。</div></div></div>
+        <div class="arrow-down">▼</div>
+        <div class="layer l2"><div class="lnum">2</div><div class="lcard"><div class="lt">固定訪問パターン（毎週の型）</div><div class="ld">毎週この曜日・この時刻、というくり返しの型。</div></div></div>
+        <div class="arrow-down">▼ <span class="arrow-note">「週を生成」で型から実際の予定を作る</span></div>
+        <div class="layer l3"><div class="lnum">3</div><div class="lcard"><div class="lt">スケジュール（実際の予定）</div><div class="ld">画面に並ぶ実際の訪問。</div></div></div>
+      </div>
+      <div class="callout key">
+        うれしいことに、<b>新規はこの「カルテ作成 → 型 → 予定」をまとめてやれる近道</b>があります。
+        スケジュール画面の <b>「新規提案」</b> を使うと、空き枠の提案から登録・予定化までを一度に進められます（<a href="#s4-1">A-1</a>）。
+      </div>
+
+      <h3 id="s2-2">2.2 全体の流れ（新規も既存も同じ）</h3>
+      <ol class="steps">
+        <li><b>空きを確認する</b>… いつ・どのコースなら受け入れられるかを確認（方法は既存編 第3章と同じ：曜日テーブルの空き時間／受け入れ枠○△×／現場ボード）。</li>
+        <li><b>受けられるか判断する</b>… 空き・スタッフ・移動などから管理者が可否を判断。</li>
+        <li><b>カルテを作る（新規だけ）</b>… 患者情報を登録。</li>
+        <li><b>予定に入れる</b>… 提案→採用、または型を作って「週を生成」、最後にスタッフ割付。</li>
+      </ol>
+      <div class="callout tip">空き枠の見方（PC曜日テーブルの「空き時間」、受け入れ枠の○△×、スマホ現場ボード）は <b>別冊「既存患者様編」第3章</b>と共通です。本書では繰り返しません。</div>
+    </section>
+
+    <!-- 3 -->
+    <section id="p3">
+      <h2><span class="num">3</span> 新規カルテに必要な情報</h2>
+      <p>登録フォームの項目です。<b>必ず要るのは「氏名」だけ</b>ですが、スケジュールを組むには <b>住所</b> が実質必要です（住所から自動で地図上の位置と担当拠点が決まります）。</p>
+
+      <h3 id="s3-1">3.1 必須・推奨・任意の一覧</h3>
+      <table>
+        <tr><th>項目</th><th>区分</th><th>説明・ポイント</th></tr>
+        <tr><td>氏名</td><td class="center"><span class="must">必須</span></td><td>唯一の必須項目。</td></tr>
+        <tr><td>住所</td><td class="center"><span class="rec">実質必須</span></td><td>入力すると <b>地図上の位置（緯度経度）と担当拠点が自動で設定</b>されます。スケジューリング（距離計算）に使うため、ほぼ必須。</td></tr>
+        <tr><td>患者コード</td><td class="center"><span class="opt">任意</span></td><td><b>空欄でOK（自動で採番）</b>。決まった番号があれば入力（重複するとエラー）。</td></tr>
+        <tr><td>保険区分</td><td class="center"><span class="rec">推奨</span></td><td><b>医療／介護</b>。請求や区分表示に使います。</td></tr>
+        <tr><td>性別 / カナ</td><td class="center"><span class="opt">任意</span></td><td>カナは一覧の並び・検索に便利。</td></tr>
+        <tr><td>性別制限</td><td class="center"><span class="rec">推奨</span></td><td>「女性スタッフのみ」等。割り当ての条件になります。</td></tr>
+        <tr><td>複数スタッフ必須（2名体制）</td><td class="center"><span class="rec">推奨</span></td><td>常に2名で訪問が必要な場合にチェック。</td></tr>
+        <tr><td>希望訪問パターン</td><td class="center"><span class="rec">推奨</span></td><td>週何回・希望曜日・サービス時間・時間帯。<b>提案や型づくりの元</b>になります。</td></tr>
+        <tr><td>備考</td><td class="center"><span class="opt">任意</span></td><td>アレルギー・注意事項・申し送りなど。</td></tr>
+        <tr><td>状態</td><td class="center"><span class="opt">既定</span></td><td>初期値は「稼働中」。通常は変更不要。</td></tr>
+      </table>
+      <div class="callout info">
+        <b>住所を入れるとどうなる？</b><br>
+        住所を入力すると、数百ミリ秒後に <b>自動で地図上の座標が入り、担当拠点（稲毛／都賀など）も自動判定</b>されます。
+        うまく見つからないときは「住所が見つかりませんでした」と出るので、その場合は座標を手入力するか拠点を手動選択します。
+      </div>
+
+      <h3 id="s3-2">3.2 現場ヒアリングシート（持ち帰り用）</h3>
+      <p>現場で新規の相談を受けたとき、この項目を控えて持ち帰ると、事務所での登録がスムーズです。</p>
+      <div class="sheet">
+        <h4>📋 新規患者ヒアリングシート</h4>
+        <div class="row"><span class="lbl">お名前（カナ）<span class="req">必須</span></span><span class="line"></span></div>
+        <div class="row"><span class="lbl">ご住所<span class="req">ほぼ必須</span></span><span class="line"></span></div>
+        <div class="row"><span class="lbl">保険区分（医療/介護）</span><span class="line"></span></div>
+        <div class="row"><span class="lbl">性別／性別制限</span><span class="line"></span></div>
+        <div class="row"><span class="lbl">2名体制が必要か</span><span class="line"></span></div>
+        <div class="row"><span class="lbl">希望（週何回・曜日・時間）</span><span class="line"></span></div>
+        <div class="row"><span class="lbl">サービス時間（分）</span><span class="line"></span></div>
+        <div class="row"><span class="lbl">開始希望日</span><span class="line"></span></div>
+        <div class="row"><span class="lbl">備考・注意事項</span><span class="line"></span></div>
+      </div>
+      <div class="callout tip">この様式は、PCから <b>「カルテテンプレート（Excel）」</b>を印刷して持参する形でも使えます（<a href="#s4-3">A-3</a>／<a href="#s5-2">5.2</a>）。</div>
+    </section>
+
+    <!-- 4 -->
+    <section id="p4">
+      <h2><span class="num">4</span> パターンA：事務所で受付 → PCで登録</h2>
+      <div class="for-who">対象者 <span class="roles"><span class="role admin">管理者</span><span class="role manager">マネージャー</span></span></div>
+      <p>電話などで依頼を受けたら、その場でPCで登録します。3つの方法があり、<b>A-1がいちばん早い</b>です。</p>
+
+      <h3 id="s4-1">A-1 「新規提案」で登録＋予定化を一気通貫（最短・おすすめ）</h3>
+      <p>スケジュール画面の <b>「新規提案」</b> ボタンから、空き枠の提案 → 採用 → 患者登録 → 型の確定 までを <b>一度に</b>行えます（承認不要）。</p>
+      <ol class="steps">
+        <li>スケジュール画面で対象の週を開き、ツールバーの <b>「新規提案」</b> を押します。</li>
+        <li>モーダル上部のタブで <b>「新規の方」</b> を選びます。</li>
+        <li><b>氏名・住所</b>と <b>希望</b>（週回数・希望曜日・サービス時間・時間帯・性別制限・2名体制）を入力します。</li>
+        <li><b>「提案する」</b> を押すと、入れられる空き枠が曜日ごとに提案されます（この時点では保存されません）。</li>
+        <li>採用する枠を選び、<b>「登録へ進む」</b> → 内容を確認して <b>確定</b>。患者の登録と固定枠の確定が同時に完了します。</li>
+        <li>必要に応じて <b>「自動スタッフ割付」</b> で担当を付けます。</li>
+      </ol>
+      <div class="mock-wrap">
+        <div class="browser">
+          <div class="bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="url">.../schedule　▶ 新規提案</span></div>
+          <div class="body">
+            <div style="font-weight:800;font-size:15px">新規提案 — ここに入れますか</div>
+            <div style="font-size:11px;color:var(--ink3);margin:4px 0 10px">候補（プール／既存／新規）の希望から、入れられる空き枠を提案します（承認不要）。</div>
+            <div class="ftabs"><span>プールから選ぶ</span><span>既存患者を検索</span><span class="on">新規の方</span></div>
+            <div class="two-col" style="gap:14px">
+              <div>
+                <div class="field"><label>氏名<span class="req">必須</span></label><div class="inp">山田 花子</div></div>
+                <div class="field"><label>患者コード（空欄で自動採番）</label><div class="inp">　</div></div>
+                <div class="field"><label>保険区分</label><div class="inp">介護 ▾</div></div>
+              </div>
+              <div>
+                <div class="field"><label>ご住所<span class="req">必須</span></label><div class="inp">千葉市稲毛区…</div></div>
+                <div class="field"><label>希望曜日</label><div class="inp">月・水・金</div></div>
+                <div class="field"><label>サービス時間 / 時間帯</label><div class="inp">60分 / 午前</div></div>
+              </div>
+            </div>
+            <div style="text-align:right;margin-top:10px"><button class="btn sm">提案する</button></div>
+          </div>
+        </div>
+        <div class="mock-caption">「新規提案」モーダル「新規の方」タブ（イメージ）。提案→採用→「登録へ進む」で登録＋型確定が完了</div>
+      </div>
+      <div class="callout info"><b>2名体制の患者さん</b>の空き判定は1名前提で算出されます。提案採用後、相方の枠は別途ご確認ください。</div>
+
+      <h3 id="s4-2">A-2 じっくり登録する（新規登録フォーム）</h3>
+      <p>提案を使わず、先にカルテだけ作って、あとで予定を組みたいときの方法です。</p>
+      <ol class="steps">
+        <li>左メニューの「患者」→ <b>「新規登録」</b>（<code>/patients/new</code>「患者 新規登録」）を開きます。</li>
+        <li><a href="#s3-1">第3章の項目</a>を入力します（氏名・住所は必ず。住所で座標・拠点が自動設定）。</li>
+        <li><b>「登録」</b> を押すと患者が作成され、患者詳細ページへ移動します。</li>
+        <li>患者詳細で <b>固定訪問パターン</b> を作成します（「希望から自動生成」で希望から曜日・時刻を一括入力できます）。</li>
+        <li>スケジュール画面で <b>「週を生成」</b>。型に沿って予定が作られます。型のない患者は <b>保留プール</b> に入るので、<b>「プール投入」</b> から空き枠へ配置します。</li>
+        <li><b>「自動スタッフ割付」</b> で担当を付けて完了です。</li>
+      </ol>
+      <div class="callout key"><b>型を作っただけでは予定に入りません。</b>「週を生成」または「プール投入」で実際の予定に反映します（既存編 第2章の大事なルールと同じ）。</div>
+
+      <h3 id="s4-3">A-3 Excelカルテで登録する</h3>
+      <p>まとめて登録する場合や、紙で集めた情報をまとめて入れる場合は、Excelカルテが使えます。</p>
+      <ol class="steps">
+        <li>患者画面から <b>「カルテテンプレート」</b> をダウンロード（ヒアリング記入用の空カルテ）。</li>
+        <li>新規患者の情報を記入（1患者1カルテ）。</li>
+        <li><b>カルテを取り込み（インポート）</b>。新規の行は「新規追加」として登録されます。まず <b>プレビュー</b> で確認してから反映できます。</li>
+        <li>登録後、固定訪問パターンを整え、スケジュール画面で <b>「週を生成」</b>。</li>
+      </ol>
+      <div class="callout warn">Excelカルテの操作は <b>PC（管理者・マネージャー）</b>のみです。スマホ（現場）にはExcelカルテの画面はありません。</div>
+    </section>
+
+    <!-- 5 -->
+    <section id="p5">
+      <h2><span class="num">5</span> パターンB：現場で情報収集 → 持ち帰り → 管理者が登録</h2>
+      <div class="for-who">対象者 <span class="roles"><span class="role staff">現場スタッフ</span> → <span class="role manager">マネージャー</span><span class="role admin">管理者</span></span></div>
+      <p>現場で新規の相談を受けたときの流れです。<b>現場スタッフは新規登録できない</b>ため、必要情報を集めて持ち帰り、管理者が登録します。</p>
+
+      <h3 id="s5-1">B 全体の流れ</h3>
+      <div class="flow">
+        <div class="flow-step">
+          <div class="no">1</div>
+          <div class="card">
+            <div class="who"><span class="role staff">現場スタッフ</span></div>
+            <div class="t">現場で必要情報をヒアリング</div>
+            <p><a href="#s3-2">ヒアリングシート</a>の項目（氏名・住所・保険・希望曜日/時間・2名体制の要否など）を確認します。スマホの <b>受け入れ枠（○△×）</b> を一緒に見て、入れられそうな曜日・時間帯も当たりを付けられます。</p>
+          </div>
+        </div>
+        <div class="flow-step">
+          <div class="no">2</div>
+          <div class="card">
+            <div class="who"><span class="role staff">現場スタッフ</span></div>
+            <div class="t">情報を持ち帰る</div>
+            <p>記入したヒアリングシート（または印刷カルテ・メモ）を事務所へ。電話受付の場合は、その場で管理者がPC入力できるので持ち帰り不要です。</p>
+          </div>
+        </div>
+        <div class="flow-step">
+          <div class="no">3</div>
+          <div class="card">
+            <div class="who"><span class="role manager">マネージャー</span><span class="role admin">管理者</span></div>
+            <div class="t">管理者が空きを確認し、受け入れを判断</div>
+            <p>PCで空き枠（曜日テーブル／受け入れ枠）を確認し、スタッフ稼働や移動も踏まえて可否を判断します。</p>
+          </div>
+        </div>
+        <div class="flow-step">
+          <div class="no">4</div>
+          <div class="card">
+            <div class="who"><span class="role manager">マネージャー</span><span class="role admin">管理者</span></div>
+            <div class="t">管理者がPCで登録＋予定化（＝パターンA）</div>
+            <p>持ち帰った情報で <a href="#s4-1">「新規提案」</a>（最短）か <a href="#s4-2">新規登録フォーム</a>で登録し、予定に入れます。</p>
+          </div>
+        </div>
+        <div class="flow-step">
+          <div class="no">5</div>
+          <div class="card">
+            <div class="who"><span class="role manager">マネージャー</span><span class="role admin">管理者</span> → <span class="role staff">現場スタッフ</span></div>
+            <div class="t">結果を現場・患者へ連絡</div>
+            <p>受け入れ可否と初回訪問日を共有します。担当に決まったスタッフは、スマホの「今日／今週」で新しい予定を確認できます。</p>
+          </div>
+        </div>
+      </div>
+
+      <h3 id="s5-2">現場での情報収集の手段と、できる／できないこと</h3>
+      <div class="two-col">
+        <div>
+          <h4>情報収集の手段</h4>
+          <ul class="plain">
+            <li><b>ヒアリングシート／印刷カルテ</b> … PCで「カルテテンプレート」を印刷して持参し、現場で記入。</li>
+            <li><b>メモ</b> … 第3章の必要項目を控える。</li>
+            <li><b>受け入れ枠（スマホ）</b> … ○の曜日・時間帯を患者さんと一緒に確認。</li>
+            <li><b>（マネージャー・管理者の場合）モバイルで直接登録</b> … 現場ボードの「患者管理」から新規登録も可能（その場で即時登録）。</li>
+          </ul>
+        </div>
+        <div>
+          <h4>権限の境界</h4>
+          <table style="box-shadow:none;margin:6px 0">
+            <tr><th>現場スタッフ（staff）</th><th class="center">可否</th></tr>
+            <tr><td>受け入れ枠・カルテの閲覧</td><td class="center yes">できる</td></tr>
+            <tr><td>必要情報のヒアリング・記入</td><td class="center yes">できる</td></tr>
+            <tr><td>新規患者の登録</td><td class="center no">できない</td></tr>
+            <tr><td>新規患者の申請（アプリ）</td><td class="center no">できない</td></tr>
+          </table>
+        </div>
+      </div>
+      <div class="callout info">
+        現場が <b>マネージャー・管理者</b> の場合は、現場ボードの <b>「患者管理（👤＋）」→「＋新規患者を登録」</b> からスマホで直接登録できます（即時反映）。
+        <b>スタッフ</b>の場合は登録ボタンが出ないため、情報収集に徹し、事務所で登録してもらいます。
+      </div>
+      <div class="mock-wrap">
+        <div class="phone">
+          <div class="notch"></div>
+          <div class="screen" style="min-height:300px">
+            <div style="padding:12px 10px 0">
+              <div style="display:flex;justify-content:space-between;align-items:center"><span style="font-weight:800;color:#6b1fa8;font-size:13px">患者管理</span><span class="btn sm" style="padding:3px 8px">👤＋</span></div>
+              <div style="border:1px solid var(--line);border-radius:9px;padding:10px;margin-top:8px;text-align:center;color:#6b1fa8;font-weight:700;font-size:13px">＋ 新規患者を登録</div>
+              <div style="font-size:10px;color:var(--ink3);margin-top:6px">※ マネージャー・管理者のみ表示。氏名・住所・希望などを入力して登録（即時反映）。</div>
+            </div>
+            <div class="tabbar"><div class="on"><span class="ic">📋</span>ボード</div><div><span class="ic">🏠</span>ホーム</div><div><span class="ic">📅</span>今日</div><div><span class="ic">👤</span>マイ</div></div>
+          </div>
+        </div>
+        <div class="mock-caption">現場ボードの患者管理（マネージャー・管理者のみ／イメージ）</div>
+      </div>
+    </section>
+
+    <!-- 6 -->
+    <section id="p6">
+      <h2><span class="num">6</span> 登録手段 早見表</h2>
+      <table>
+        <tr><th>手段</th><th>場所</th><th>特徴</th><th>権限</th></tr>
+        <tr><td><b>新規提案</b>（一気通貫）</td><td>PC スケジュール画面</td><td>空き提案→採用→登録→型確定をまとめて。<b>最短・おすすめ</b></td><td>管理者/マネージャー</td></tr>
+        <tr><td><b>新規登録フォーム</b></td><td>PC /patients/new</td><td>先にカルテだけ作る。後で型→週を生成→プール投入</td><td>管理者/マネージャー</td></tr>
+        <tr><td><b>Excelカルテ</b></td><td>PC 患者画面</td><td>印刷して現場記入→取込。まとめ登録向け</td><td>管理者/マネージャー</td></tr>
+        <tr><td><b>現場ボードの患者管理</b></td><td>スマホ 現場ボード</td><td>現場でその場で直接登録（即時）</td><td>管理者/マネージャー</td></tr>
+        <tr><td><b>情報収集して持ち帰り</b></td><td>現場（スマホ・紙）</td><td>スタッフはこれ。登録は事務所の管理者が実施</td><td>スタッフ→管理者</td></tr>
+      </table>
+      <div class="callout tip">どの手段で登録しても、最後は <b>「自動スタッフ割付」</b> で担当を付けるところまで行うと予定が完成します。</div>
+    </section>
+
+    <!-- 7 -->
+    <section id="p7">
+      <h2><span class="num">7</span> よくある質問・注意</h2>
+      <table>
+        <tr><th>状況・質問</th><th>答え・対処</th></tr>
+        <tr><td>最低限、何を入れれば登録できる？</td><td><b>氏名</b>だけでも登録は可能。ただし予定を組むには <b>住所</b> がほぼ必須（座標・拠点が自動設定されます）。</td></tr>
+        <tr><td>患者コードは決めないとダメ？</td><td>いいえ。<b>空欄で自動採番</b>されます。決まり番号があれば入力（重複はエラー）。</td></tr>
+        <tr><td>住所を入れたのに座標が付かない</td><td>「住所が見つかりませんでした」と出たら、住所表記を見直すか、座標を手入力／拠点を手動選択。</td></tr>
+        <tr><td>登録したのに予定に出てこない</td><td>カルテ登録＝予定化ではありません。<b>固定訪問パターン→「週を生成」</b>、または <b>「プール投入」</b>で予定に入れます（「新規提案」なら同時に完了）。</td></tr>
+        <tr><td>現場スタッフが新規の相談を受けた</td><td>スタッフは登録できません。<a href="#s3-2">ヒアリングシート</a>で情報を集めて持ち帰り、管理者が登録します。</td></tr>
+        <tr><td>2名体制の患者の枠提案がおかしい</td><td>提案は1名前提で算出されます。採用後に相方の枠を別途確認してください。</td></tr>
+        <tr><td>既存患者の予定変更をしたい</td><td>本書ではなく <b>別冊「スケジュール変更／既存患者様編」</b>を参照してください。</td></tr>
+      </table>
+      <div class="callout key">
+        <b>この1冊の要点</b><br>
+        ① 新規は最初に <b>カルテ作成</b>。あとの流れ（空き確認→判断→予定化）は既存と同じ。<br>
+        ② いちばん早いのは <b>「新規提案」</b>＝提案から登録・型確定まで一気通貫。<br>
+        ③ <b>登録は管理者・マネージャー。</b>現場スタッフは <b>情報を集めて持ち帰り</b>、管理者が登録。
+      </div>
+    </section>
+
+    <div class="footer">
+      <p>CareFlow スケジュール変更／新規患者様編 ／ 訪問看護スケジューリングシステム</p>
+      <p>本マニュアルは画面のイメージ図で操作を説明しています。実際の画面とは細部が異なる場合があります。
+         空き枠の確認方法・予定変更の操作は、別冊「スケジュール変更／既存患者様編」を参照してください。</p>
+    </div>
+  </main>
+</div>
+<a class="anchor-top" href="#top" title="先頭へ">↑</a>
+</body>
+</html>

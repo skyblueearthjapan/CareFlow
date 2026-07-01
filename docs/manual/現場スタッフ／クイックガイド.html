@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>CareFlow 現場スタッフ クイックガイド</title>
+<style>
+  :root{
+    --teal:#0d9488; --teal-deep:#0b6e5e; --teal-50:#e7f4f0;
+    --amber:#b5790a; --amber-50:#fbf1dd; --rose:#e11d48; --blue:#2563eb;
+    --gold:#0d9488; --gold-deep:#0b6e5e; --gold-50:#e7f4f0;
+    --purple:#d4799a; --purple-50:#fdeef3;
+    --ink:#2b2620; --ink2:#5f534a; --ink3:#9c9087;
+    --line:#e2dacd; --bg:#faf7f2;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:#cfc7ba;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Hiragino Kaku Gothic ProN","Hiragino Sans",Meiryo,sans-serif;
+    color:var(--ink);line-height:1.6;font-size:13px;-webkit-font-smoothing:antialiased;padding:24px 0;}
+  .toolbar{max-width:900px;margin:0 auto 16px;text-align:center;}
+  .toolbar button{background:var(--gold);color:#fff;border:none;border-radius:8px;padding:9px 20px;font-size:14px;font-weight:700;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,.15);}
+  .toolbar p{color:#5a5248;font-size:12px;margin:8px 0 0;}
+  .page{width:210mm;min-height:296mm;background:#fff;margin:0 auto 20px;padding:14mm 14mm 12mm;box-shadow:0 4px 18px rgba(0,0,0,.18);position:relative;}
+  /* 新規ページ＝ピンク */
+  .page.np .head{border-bottom-color:var(--purple);}
+  .page.np .head h1{color:#b25876;}
+  .page.np .head .logo{background:linear-gradient(135deg,var(--purple),#8a3a55);}
+  .page.np .card h2 .n{background:var(--purple);}
+  /* 既存ページ＝グリーン */
+  .page.ex .head{border-bottom-color:var(--teal);}
+  .page.ex .head h1{color:var(--teal-deep);}
+  .page.ex .head .logo{background:linear-gradient(135deg,var(--teal),var(--teal-deep));}
+  .page.ex .head .url b{color:var(--teal-deep);}
+  .page.ex .card h2 .n{background:var(--teal);}
+
+  /* 共通ページ＝金色 */
+  .head{display:flex;align-items:center;gap:12px;border-bottom:3px solid var(--gold);padding-bottom:10px;margin-bottom:14px;}
+  .head .logo{width:42px;height:42px;border-radius:11px;background:linear-gradient(135deg,var(--gold),var(--gold-deep));display:grid;place-items:center;color:#fff;font-size:22px;font-weight:800;flex:0 0 auto;}
+  .head h1{margin:0;font-size:21px;color:var(--gold-deep);}
+  .head .sub{font-size:12px;color:var(--ink3);margin-top:2px;}
+  .head .url{margin-left:auto;text-align:right;font-size:11px;color:var(--ink2);}
+  .head .url b{color:var(--gold-deep);font-family:monospace;font-size:12px;}
+
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+  .card{border:1px solid var(--line);border-radius:11px;padding:12px 14px;background:#fff;break-inside:avoid;}
+  .card.span2{grid-column:1 / -1;}
+  .card h2{margin:0 0 8px;font-size:15px;color:var(--ink);display:flex;align-items:center;gap:9px;}
+  .card h2 .n{flex:0 0 auto;width:26px;height:26px;border-radius:50%;background:var(--gold);color:#fff;font-size:14px;font-weight:800;display:grid;place-items:center;}
+  .card p{margin:5px 0;}
+  ol,ul{margin:5px 0;padding-left:20px;} li{margin:3px 0;}
+  .small{font-size:11.5px;color:var(--ink2);}
+  b{font-weight:700;} .tealb{color:var(--teal-deep);font-weight:700;} .purpb{color:#b25876;font-weight:700;}
+  code{background:#f3efe8;border-radius:5px;padding:1px 6px;font-family:monospace;font-size:11.5px;color:#8a3b00;}
+  .kbd{background:#fff;border:1px solid var(--line);border-radius:4px;padding:0 5px;font-weight:700;font-size:11px;}
+
+  .note{border-radius:9px;padding:8px 11px 8px 34px;position:relative;font-size:12px;margin:8px 0;border:1px solid;}
+  .note::before{position:absolute;left:10px;top:7px;font-size:15px;}
+  .note.warn{background:var(--amber-50);border-color:#ecd9a8;color:#7a5a0c;} .note.warn::before{content:"⚠️";}
+  .note.tip{background:var(--teal-50);border-color:#bfe3da;color:#0b5347;} .note.tip::before{content:"💡";}
+  .note.stop{background:#fdecec;border-color:#f5c2c0;color:#9b1c17;} .note.stop::before{content:"🛑";}
+  .note.pp{background:var(--purple-50);border-color:#e3cffa;color:#8a3a55;} .note.pp::before{content:"⭐";}
+
+  .tabs{display:flex;gap:5px;margin:8px 0;}
+  .tabs div{flex:1;text-align:center;border:1px solid var(--line);border-radius:8px;padding:6px 2px;font-size:10px;color:var(--ink2);}
+  .tabs div.on{background:var(--teal-50);border-color:#bfe3da;color:var(--teal-deep);font-weight:700;}
+  .tabs .ic{display:block;font-size:16px;}
+
+  .chips{display:flex;gap:8px;flex-wrap:wrap;margin:6px 0;}
+  .chip{display:inline-flex;align-items:center;gap:6px;font-size:12px;border:1px solid var(--line);border-radius:8px;padding:3px 9px;}
+  .chip .g{width:20px;height:20px;border-radius:5px;display:grid;place-items:center;font-weight:800;}
+  .g.o{background:var(--teal-50);color:var(--teal-deep);} .g.a{background:var(--amber-50);color:var(--amber);} .g.x{background:#fff;color:var(--ink3);border:1px solid var(--line);}
+
+  /* 受け入れ枠 モバイルUI ミニ画面 */
+  .acc-row{display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap;}
+  .acc-row .col{flex:1;min-width:220px;}
+  .miniphone{width:188px;flex:0 0 auto;border:7px solid #2b2620;border-radius:24px;overflow:hidden;background:#fff;box-shadow:0 3px 10px rgba(0,0,0,.18);}
+  .miniphone .top{height:14px;background:#2b2620;}
+  .miniphone .scr{background:#faf7f2;}
+  .miniphone .hd{background:linear-gradient(135deg,var(--teal),var(--teal-deep));color:#fff;padding:6px 8px;}
+  .miniphone .hd .t{font-weight:800;font-size:12px;}
+  .miniphone .hd .s{font-size:8.5px;opacity:.85;}
+  .miniphone .hd .wk{display:flex;justify-content:center;align-items:center;gap:8px;margin-top:5px;font-size:9px;}
+  .miniphone .hd .tg{display:flex;gap:4px;justify-content:center;margin-top:5px;}
+  .miniphone .hd .tg span{font-size:8px;border-radius:999px;padding:1px 8px;border:1px solid rgba(255,255,255,.5);}
+  .miniphone .hd .tg span.on{background:#fff;color:var(--teal-deep);font-weight:700;}
+  .miniphone .mx{padding:6px;}
+  .amx{border-collapse:separate;border-spacing:2px;margin:0 auto;}
+  .amx th{padding:1px;font-size:8px;text-align:center;color:var(--ink2);}
+  .amx th.sat{color:var(--blue);} .amx th.sun{color:var(--rose);}
+  .amx td{width:18px;height:18px;border:1px solid var(--line);border-radius:4px;text-align:center;font-size:11px;font-weight:700;}
+  .amx td.o{background:var(--teal-50);color:var(--teal-deep);}
+  .amx td.a{background:var(--amber-50);color:var(--amber);}
+  .amx td.x{background:#fff;color:var(--ink3);font-weight:400;}
+  .amx td.c{background:#f1ece3;color:var(--ink3);font-size:8px;font-weight:400;}
+  .amx td.tm{background:#f1ece3;color:var(--ink2);font-size:8px;font-weight:600;}
+
+  .memo{border:1.5px dashed var(--teal);border-radius:11px;padding:12px 14px;background:#fcfffe;}
+  .memo.pp{border-color:var(--purple);background:#fdfbff;}
+  .memo h3{margin:0 0 8px;font-size:14px;color:var(--teal-deep);}
+  .memo.pp h3{color:#b25876;}
+  .memo .row{display:flex;align-items:center;gap:9px;padding:5px 0;border-bottom:1px dashed var(--line);font-size:12.5px;}
+  .memo .row:last-child{border-bottom:none;}
+  .memo .box{width:15px;height:15px;border:2px solid var(--teal);border-radius:4px;flex:0 0 auto;}
+  .memo.pp .box{border-color:var(--purple);}
+  .memo .lbl{font-weight:700;width:140px;flex:0 0 auto;}
+  .memo .lbl .req{color:#b42318;font-size:9px;margin-left:3px;}
+  .memo .line{flex:1;border-bottom:1px solid #ccc;height:14px;}
+
+  .steps-inline{counter-reset:s;list-style:none;padding:0;margin:6px 0;}
+  .steps-inline li{position:relative;padding:3px 0 3px 26px;}
+  .steps-inline li::before{counter-increment:s;content:counter(s);position:absolute;left:0;top:3px;width:18px;height:18px;border-radius:50%;background:var(--teal);color:#fff;font-size:11px;font-weight:700;display:grid;place-items:center;}
+  .np .steps-inline li::before{background:var(--purple);}
+
+  .foot{margin-top:14px;padding-top:8px;border-top:1px solid var(--line);font-size:10.5px;color:var(--ink3);display:flex;justify-content:space-between;}
+
+  @media print{
+    body{background:#fff;padding:0;line-height:1.45;font-size:12.5px;}
+    .toolbar{display:none;}
+    .page{box-shadow:none;margin:0;width:auto;min-height:auto;height:auto;padding:8mm;page-break-after:always;overflow:hidden;}
+    .page:last-child{page-break-after:auto;}
+    .head{margin-bottom:9px;padding-bottom:7px;}
+    .grid{gap:9px;}
+    .card{padding:9px 12px;}
+    .card h2{margin-bottom:6px;}
+    .card p{margin:4px 0;}
+    li{margin:2px 0;}
+    .note{padding:6px 10px 6px 30px;margin:6px 0;}
+    .memo{padding:10px 12px;} .memo .row{padding:4px 0;}
+    .foot{margin-top:9px;padding-top:6px;}
+    @page{size:A4;margin:0;}
+  }
+</style>
+</head>
+<body>
+
+<div class="toolbar">
+  <button onclick="window.print()">🖨 印刷 / PDFで保存</button>
+  <p>このページは A4・3枚での印刷を想定しています（ブラウザの「印刷」→「PDFに保存」でも配布できます）。</p>
+</div>
+
+<!-- ================= PAGE 1 : 基本 ================= -->
+<div class="page">
+  <div class="head">
+    <div class="logo">C</div>
+    <div>
+      <h1>CareFlow 現場スタッフ クイックガイド</h1>
+      <div class="sub">訪問看護スケジューリング ／ 1枚目：基本の使い方</div>
+    </div>
+    <div class="url">ログイン先<br><b>carelink.kaipoke-api.net</b></div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h2><span class="n">1</span>ログインする</h2>
+      <ol class="steps-inline">
+        <li>スマホのブラウザで <code>carelink.kaipoke-api.net</code> を開く</li>
+        <li><b>スタッフID</b>（例：S002）と<b>仮パスワード</b>を入れて <span class="tealb">ログイン</span></li>
+      </ol>
+      <div class="note tip"><b>初めてのログイン</b>：管理者からのスタッフコード（S001、S002など）と仮パスワードで入ると、パスワード変更画面が出ます。新しいパスワード（<b>8文字以上・英字と数字を両方</b>）を決めます。</div>
+      <p class="small">入れないとき → スタッフID（大文字 S+数字）／パスワード確認。だめなら<b>管理者に再確認を依頼</b>。</p>
+    </div>
+
+    <div class="card">
+      <h2><span class="n">2</span>ホーム画面に追加（おすすめ）</h2>
+      <p class="small">毎回アドレスを打たずアプリのように開けます。</p>
+      <p><b>iPhone（Safari）</b><br><span class="small">共有ボタン → 「ホーム画面に追加」 → 追加</span></p>
+      <p><b>Android（Chrome）</b><br><span class="small">⋮メニュー → 「アプリをインストール」/「ホーム画面に追加」</span></p>
+    </div>
+
+    <div class="card span2">
+      <h2><span class="n">3</span>毎日の使い方（下のメニューで切替）</h2>
+      <div class="tabs">
+        <div class="on"><span class="ic">🏠</span>ホーム</div><div><span class="ic">📅</span>今日</div><div><span class="ic">📊</span>今週</div><div><span class="ic">👤</span>マイページ</div>
+      </div>
+      <ul class="small">
+        <li><b>ホーム</b> … あいさつと、今日・今週・今月の訪問件数。</li>
+        <li><b>今日</b> … 本日の訪問が時間順に。状態＝<b>未訪問／訪問中／完了</b>。タップで詳細。</li>
+        <li><b>今週</b> … 月〜日の予定を曜日ごとに確認。</li>
+        <li><b>マイページ</b> … プロフィール、<b>シフト希望提出</b>、表示設定、<b>ログアウト</b>。</li>
+      </ul>
+      <div class="note tip">表示されるのは <b>自分の担当の訪問</b>。出ないときはアカウントとスタッフ情報の<b>紐付け</b>を管理者に確認。</div>
+    </div>
+
+    <div class="card span2">
+      <h2><span class="n">4</span>受け入れ枠の見方（「いつ空いてる？」と聞かれたら）</h2>
+      <div class="acc-row">
+        <div class="col">
+          <p class="small">曜日 × 時間帯で、受け入れられるかの<b>おおよその目安</b>を記号で表示。スマホの<b>受け入れ枠</b>画面で確認できます（縦＝時間帯／横＝曜日）。</p>
+          <div class="chips">
+            <span class="chip"><span class="g o">○</span> 受け入れ可能</span>
+            <span class="chip"><span class="g a">△</span> 相談ください</span>
+            <span class="chip"><span class="g x">×</span> 枠なし</span>
+            <span class="chip">「休」= 定休日</span>
+          </div>
+          <p class="small">相談を受けたら<b>一緒に画面を見て「○の曜日・時間帯」</b>を候補に。<b>最終判断は管理者</b>。</p>
+          <div class="note tip"><b>開き方</b>：現場ボード上部の「受け入れ枠」から（<b>閲覧専用</b>）。開けない端末では管理者に確認を。</div>
+        </div>
+        <div class="miniphone">
+          <div class="top"></div>
+          <div class="scr">
+            <div class="hd">
+              <div class="t">受け入れ枠</div>
+              <div class="wk"><span>◀</span><span>第26週 6/22-6/28</span><span>▶</span></div>
+              <div class="tg"><span class="on">稲毛拠点</span><span>都賀拠点</span></div>
+            </div>
+            <div class="mx">
+              <table class="amx">
+                <tr><th></th><th>月</th><th>火</th><th>水</th><th>木</th><th>金</th><th class="sat">土</th><th class="sun">日</th></tr>
+                <tr><td class="tm">10</td><td class="o">○</td><td class="a">△</td><td class="x">×</td><td class="a">△</td><td class="o">○</td><td class="x">×</td><td class="c">休</td></tr>
+                <tr><td class="tm">11</td><td class="o">○</td><td class="o">○</td><td class="a">△</td><td class="a">△</td><td class="o">○</td><td class="a">△</td><td class="c">休</td></tr>
+                <tr><td class="tm">13</td><td class="a">△</td><td class="o">○</td><td class="x">×</td><td class="o">○</td><td class="o">○</td><td class="x">×</td><td class="c">休</td></tr>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="foot"><span>CareFlow 現場スタッフ クイックガイド</span><span>1 / 3</span></div>
+</div>
+
+<!-- ================= PAGE 2 : 既存患者の予定変更 ================= -->
+<div class="page ex">
+  <div class="head">
+    <div class="logo">C</div>
+    <div>
+      <h1>予定を変えたいと言われたら（既存の患者さん）</h1>
+      <div class="sub">訪問看護スケジューリング ／ 2枚目：今ある予定の変更相談を受けたとき</div>
+    </div>
+    <div class="url">ログイン先<br><b>carelink.kaipoke-api.net</b></div>
+  </div>
+
+  <div class="grid">
+    <div class="card span2">
+      <h2><span class="n">5</span>すでに通っている患者さんの予定変更</h2>
+      <div class="note stop"><b>現場スタッフは予定を自分で変更できません（閲覧専用）。</b>聞いた内容を<b>事務所に持ち帰り、管理者が変更します。</b></div>
+      <p class="small">あわてて約束せず、<b>下のメモを取って持ち帰り</b>ましょう。受け入れ枠（手順4）で「○の時間帯」を一緒に確認しておくと、管理者の判断が早くなります。</p>
+
+      <div class="memo">
+        <h3>📋 変更メモ（既存の患者さん）</h3>
+        <div class="row"><span class="box"></span><span class="lbl">患者さんの名前</span><span class="line"></span></div>
+        <div class="row"><span class="box"></span><span class="lbl">今の予定（曜日・時間）</span><span class="line"></span></div>
+        <div class="row"><span class="box"></span><span class="lbl">希望（曜日・時間）</span><span class="line"></span></div>
+        <div class="row"><span class="box"></span><span class="lbl">今回だけ / 今後ずっと</span><span class="line"></span></div>
+        <div class="row"><span class="box"></span><span class="lbl">理由・備考</span><span class="line"></span></div>
+      </div>
+      <p class="small" style="margin-top:8px">→ メモを <b>管理者・マネージャー</b> に渡す → 管理者が空きを確認して変更 → 結果が「今日／今週」に反映されます。</p>
+    </div>
+
+    <div class="card">
+      <h2><span class="n">★</span>覚えておく区別</h2>
+      <ul class="small">
+        <li><b>今回だけ</b> … 今週のその日だけ動かす（例：今週水曜だけ午後に）。</li>
+        <li><b>今後ずっと</b> … 毎週の曜日・時間を恒久的に変える。</li>
+      </ul>
+      <p class="small">どちらの希望かを聞いておくと、管理者の対応が早くなります。</p>
+    </div>
+
+    <div class="card">
+      <h2><span class="n">♥</span>現場の役割</h2>
+      <ul class="small">
+        <li>現場は <b>確認とヒアリング</b> が役割。</li>
+        <li><b>変更・登録は管理者・マネージャー</b>が担当。</li>
+        <li>受け入れ枠は<b>目安</b>。確約はしない。</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="foot"><span>既存の患者さんの予定変更</span><span>2 / 3</span></div>
+</div>
+
+<!-- ================= PAGE 3 : 新規患者の受け入れ ================= -->
+<div class="page np">
+  <div class="head">
+    <div class="logo">C</div>
+    <div>
+      <h1>新しい患者さんを受けたいと言われたら</h1>
+      <div class="sub">訪問看護スケジューリング ／ 3枚目：新規の相談を受けたとき・困ったとき</div>
+    </div>
+    <div class="url">ログイン先<br><b>carelink.kaipoke-api.net</b></div>
+  </div>
+
+  <div class="grid">
+    <div class="card span2">
+      <h2><span class="n">6</span>新規（はじめての）患者さんの相談を受けたら</h2>
+      <div class="note stop"><b>新規患者の登録も、現場スタッフはできません。</b>必要な情報を<b>聞き取って持ち帰り、管理者が登録します。</b></div>
+      <p class="small">やることは <b>「必要情報のヒアリング」</b> です。下のシートの項目を埋めて持ち帰りましょう。受け入れ枠（手順4）で「○の曜日・時間帯」も一緒に確認しておくと安心です。</p>
+
+      <div class="memo pp">
+        <h3>📋 新規患者ヒアリングシート</h3>
+        <div class="row"><span class="box"></span><span class="lbl">お名前（カナ）<span class="req">必須</span></span><span class="line"></span></div>
+        <div class="row"><span class="box"></span><span class="lbl">ご住所<span class="req">ほぼ必須</span></span><span class="line"></span></div>
+        <div class="row"><span class="box"></span><span class="lbl">保険区分（医療/介護）</span><span class="line"></span></div>
+        <div class="row"><span class="box"></span><span class="lbl">性別 / 性別制限</span><span class="line"></span></div>
+        <div class="row"><span class="box"></span><span class="lbl">2名体制が必要か</span><span class="line"></span></div>
+        <div class="row"><span class="box"></span><span class="lbl">希望（週何回・曜日・時間）</span><span class="line"></span></div>
+        <div class="row"><span class="box"></span><span class="lbl">サービス時間（分）/ 開始希望日</span><span class="line"></span></div>
+        <div class="row"><span class="box"></span><span class="lbl">備考・注意事項</span><span class="line"></span></div>
+      </div>
+      <p class="small" style="margin-top:8px">→ シートを <b>管理者・マネージャー</b> に渡す → 管理者がPCで登録し予定に入れる → 担当に決まれば「今日／今週」に反映。</p>
+      <div class="note pp"><b>ご住所はできるだけ正確に。</b>住所から地図上の位置と担当拠点が自動で決まり、予定づくりに使われます。</div>
+    </div>
+
+    <div class="card">
+      <h2><span class="n">7</span>困ったとき</h2>
+      <ul class="small">
+        <li><b>ログインできない</b> → スタッフコード（S+数字）とパスワードを確認（大文字小文字に注意）。だめなら管理者に再確認依頼。</li>
+        <li><b>「オフラインです」</b> → 電波・Wi-Fiを確認して開き直す。</li>
+        <li><b>予定が古い気がする</b> → 画面を下に引いて更新／アプリを開き直す。</li>
+        <li><b>自分の訪問が出ない</b> → アカウントとスタッフ情報の紐付けがまだです。管理者に確認して、紐付けしてもらうか、一度ログアウト→再ログインしてください。</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h2><span class="n">8</span>安全に使うために</h2>
+      <ul class="small">
+        <li>共有端末は使い終わったら<b>必ずログアウト</b>。</li>
+        <li>パスワードは教えない・画面を見せない。</li>
+        <li>患者情報は<b>業務以外で見ない・共有しない</b>。</li>
+      </ul>
+      <div class="note pp"><b>新規も既存も同じ</b>：現場は<b>確認とヒアリング</b>、登録・変更は<b>管理者</b>。</div>
+    </div>
+
+    <div class="card span2">
+      <h2><span class="n">★</span>これだけ覚えればOK</h2>
+      <ul class="small" style="columns:2;column-gap:24px;margin:0">
+        <li><b>開く</b> … carelink.kaipoke-api.net（ホーム画面に追加が便利）</li>
+        <li><b>初回</b> … 仮パスワードでログイン→自分のパスワードに変更</li>
+        <li><b>確認</b> … 「今日」「今週」で自分の訪問</li>
+        <li><b>空き</b> … 受け入れ枠 ○＝可 △＝相談 ×＝なし</li>
+        <li><b>既存の変更相談</b> … 変えずにメモして管理者へ</li>
+        <li><b>新規の相談</b> … ヒアリングシートを埋めて管理者へ</li>
+        <li><b>終了</b> … 共有端末は必ずログアウト</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="foot"><span>不明点は管理者・マネージャーまで</span><span>3 / 3</span></div>
+</div>
+
+</body>
+</html>

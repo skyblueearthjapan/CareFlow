@@ -1,0 +1,1211 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>CareFlow 利用マニュアル</title>
+<style>
+  :root {
+    --teal: #0d9488;
+    --teal-deep: #0b6e5e;
+    --teal-50: #e7f4f0;
+    --teal-100: #d1eae4;
+    --amber: #b5790a;
+    --amber-50: #fbf1dd;
+    --rose: #e11d48;
+    --blue: #2563eb;
+    --ink: #2b2620;
+    --ink2: #6b5e54;
+    --ink3: #9c9087;
+    --line: #e7e0d6;
+    --line-strong: #d9d0c3;
+    --bg: #faf7f2;
+    --bg-card: #ffffff;
+    --bg-muted: #f3efe8;
+    --radius: 12px;
+    --shadow: 0 1px 2px rgba(43, 38, 32, 0.06), 0 6px 18px rgba(43, 38, 32, 0.06);
+  }
+
+  * { box-sizing: border-box; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Kaku Gothic ProN",
+      "Hiragino Sans", Meiryo, sans-serif;
+    color: var(--ink);
+    background: var(--bg);
+    line-height: 1.75;
+    font-size: 15.5px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .layout { display: flex; max-width: 1280px; margin: 0 auto; }
+
+  /* ---------- Sidebar TOC ---------- */
+  .toc {
+    width: 290px;
+    flex: 0 0 290px;
+    position: sticky;
+    top: 0;
+    align-self: flex-start;
+    height: 100vh;
+    overflow-y: auto;
+    padding: 28px 18px 60px;
+    background: linear-gradient(180deg, #ffffff, #fbf9f5);
+    border-right: 1px solid var(--line);
+  }
+  .toc .brand {
+    display: flex; align-items: center; gap: 10px;
+    font-weight: 800; font-size: 19px; color: var(--teal-deep);
+    letter-spacing: .02em; margin-bottom: 4px;
+  }
+  .toc .brand .logo {
+    width: 30px; height: 30px; border-radius: 8px;
+    background: linear-gradient(135deg, var(--teal), var(--teal-deep));
+    display: grid; place-items: center; color: #fff; font-size: 15px;
+  }
+  .toc .subtitle { font-size: 12px; color: var(--ink3); margin: 0 0 18px 40px; }
+  .toc ol { list-style: none; margin: 0; padding: 0; counter-reset: part; }
+  .toc > ol > li { margin-bottom: 4px; }
+  .toc a {
+    display: block; text-decoration: none; color: var(--ink2);
+    padding: 6px 10px; border-radius: 8px; font-size: 13.5px; transition: .12s;
+  }
+  .toc a:hover { background: var(--teal-50); color: var(--teal-deep); }
+  .toc .part-link { font-weight: 700; color: var(--ink); }
+  .toc ul { list-style: none; margin: 2px 0 8px; padding: 0 0 0 14px; }
+  .toc ul a { font-size: 12.5px; padding: 4px 10px; }
+
+  /* ---------- Main ---------- */
+  main { flex: 1; min-width: 0; padding: 40px 48px 120px; }
+
+  .doc-header {
+    background: linear-gradient(135deg, var(--teal), var(--teal-deep));
+    color: #fff; border-radius: 16px; padding: 36px 40px; margin-bottom: 12px;
+    box-shadow: var(--shadow);
+  }
+  .doc-header h1 { margin: 0 0 6px; font-size: 30px; letter-spacing: .02em; }
+  .doc-header p { margin: 0; opacity: .92; font-size: 15px; }
+  .doc-header .meta { margin-top: 16px; font-size: 12.5px; opacity: .85; display:flex; gap:18px; flex-wrap:wrap;}
+
+  .intro-note {
+    background: var(--amber-50); border: 1px solid #ecd9a8; border-radius: var(--radius);
+    padding: 14px 18px; margin: 18px 0 30px; font-size: 13.5px; color: #7a5a0c;
+  }
+
+  section { scroll-margin-top: 16px; margin-bottom: 14px; }
+
+  h2 {
+    font-size: 23px; margin: 48px 0 4px; padding-bottom: 10px;
+    border-bottom: 3px solid var(--teal); display: flex; align-items: center; gap: 12px;
+  }
+  h2 .num {
+    background: var(--teal); color: #fff; font-size: 14px; font-weight: 700;
+    border-radius: 8px; padding: 3px 11px; flex: 0 0 auto;
+  }
+  h3 {
+    font-size: 18px; margin: 32px 0 10px; color: var(--teal-deep);
+    display: flex; align-items: center; gap: 9px;
+  }
+  h3::before {
+    content: ""; width: 7px; height: 18px; border-radius: 3px;
+    background: var(--teal); display: inline-block;
+  }
+  h4 { font-size: 15px; margin: 20px 0 6px; color: var(--ink); }
+
+  p { margin: 8px 0; }
+
+  /* ---------- Role badges ---------- */
+  .roles { display: inline-flex; gap: 6px; vertical-align: middle; margin-left: 6px; }
+  .role {
+    font-size: 11px; font-weight: 700; padding: 2px 9px; border-radius: 999px;
+    border: 1px solid transparent; white-space: nowrap;
+  }
+  .role.admin   { background: #fde8e8; color: #b42318; border-color: #f6c9c4; }
+  .role.manager { background: #e7eefe; color: #1d4ed8; border-color: #c5d4fb; }
+  .role.staff   { background: var(--teal-50); color: var(--teal-deep); border-color: #bfe3da; }
+  .role.all     { background: var(--bg-muted); color: var(--ink2); border-color: var(--line-strong); }
+
+  .for-who {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: #fff; border: 1px solid var(--line); border-radius: 999px;
+    padding: 4px 8px 4px 12px; font-size: 12px; color: var(--ink2); margin: 6px 0 4px;
+  }
+
+  /* ---------- Callouts ---------- */
+  .callout {
+    border-radius: var(--radius); padding: 14px 16px 14px 46px; margin: 16px 0;
+    position: relative; font-size: 14px; border: 1px solid;
+  }
+  .callout::before {
+    position: absolute; left: 14px; top: 13px; font-size: 18px; line-height: 1;
+  }
+  .callout.tip     { background: var(--teal-50);  border-color: #bfe3da; color: #0b5347; }
+  .callout.tip::before { content: "💡"; }
+  .callout.warn    { background: #fff4e5;        border-color: #f3d39b; color: #7a5a0c; }
+  .callout.warn::before { content: "⚠️"; }
+  .callout.info    { background: #eef4ff;        border-color: #cdddfb; color: #1e3a8a; }
+  .callout.info::before { content: "ℹ️"; }
+  .callout.danger  { background: #fdecec;        border-color: #f5c2c0; color: #9b1c17; }
+  .callout.danger::before { content: "🔒"; }
+  .callout b { font-weight: 700; }
+
+  /* ---------- Onboarding flow ---------- */
+  .flow { margin: 20px 0 8px; }
+  .flow-step { display: flex; gap: 16px; position: relative; padding-bottom: 16px; }
+  .flow-step::after {
+    content: ""; position: absolute; left: 17px; top: 38px; bottom: -2px; width: 2px;
+    background: var(--line-strong);
+  }
+  .flow-step:last-child::after { display: none; }
+  .flow-step .no {
+    flex: 0 0 36px; width: 36px; height: 36px; border-radius: 50%;
+    background: var(--teal); color: #fff; font-weight: 800; font-size: 16px;
+    display: grid; place-items: center; z-index: 1;
+  }
+  .flow-step.lead .no { background: #b42318; box-shadow: 0 0 0 4px #fde8e8; }
+  .flow-step .card {
+    flex: 1; background: #fff; border: 1px solid var(--line); border-radius: 10px;
+    padding: 12px 15px; box-shadow: var(--shadow);
+  }
+  .flow-step.lead .card { border-color: #f6c9c4; background: #fffafa; }
+  .flow-step .card .who { margin-bottom: 4px; }
+  .flow-step .card .t { font-weight: 800; font-size: 15px; color: var(--ink); }
+  .flow-step .card p { font-size: 13px; color: var(--ink2); margin: 6px 0 6px; }
+  .flow-step .card a { font-size: 12.5px; color: var(--teal-deep); font-weight: 700; text-decoration: none; }
+  .flow-step .card a:hover { text-decoration: underline; }
+
+  /* ---------- Steps ---------- */
+  ol.steps { counter-reset: step; list-style: none; padding: 0; margin: 14px 0; }
+  ol.steps > li {
+    position: relative; padding: 4px 0 14px 44px; margin: 0;
+  }
+  ol.steps > li::before {
+    counter-increment: step; content: counter(step);
+    position: absolute; left: 0; top: 2px;
+    width: 28px; height: 28px; border-radius: 50%;
+    background: var(--teal); color: #fff; font-weight: 700; font-size: 14px;
+    display: grid; place-items: center;
+  }
+  ol.steps > li::after {
+    content: ""; position: absolute; left: 13px; top: 32px; bottom: 4px; width: 2px;
+    background: var(--line-strong);
+  }
+  ol.steps > li:last-child::after { display: none; }
+  ol.steps b { color: var(--teal-deep); }
+
+  ul.plain { margin: 8px 0; padding-left: 20px; }
+  ul.plain li { margin: 4px 0; }
+
+  /* ---------- Tables ---------- */
+  table {
+    width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 13.5px;
+    background: #fff; border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow);
+  }
+  th, td { padding: 10px 13px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { background: var(--bg-muted); font-weight: 700; color: var(--ink); font-size: 13px; }
+  tr:last-child td { border-bottom: none; }
+  td.center, th.center { text-align: center; }
+  .yes { color: var(--teal-deep); font-weight: 700; }
+  .no  { color: var(--ink3); }
+
+  code, .kbd {
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    background: var(--bg-muted); padding: 1px 6px; border-radius: 5px; font-size: 12.5px;
+    color: #8a3b00;
+  }
+  .kbd {
+    background: #fff; border: 1px solid var(--line-strong);
+    box-shadow: 0 1px 0 var(--line-strong); color: var(--ink); font-weight: 600;
+  }
+
+  .pill-label {
+    display: inline-block; background: var(--bg-muted); border: 1px solid var(--line);
+    border-radius: 6px; padding: 1px 8px; font-size: 12.5px; font-weight: 600; color: var(--ink);
+  }
+
+  /* ====== UI MOCKUPS ====== */
+  .mock-wrap { margin: 18px 0; }
+  .mock-caption { font-size: 12px; color: var(--ink3); margin-top: 6px; text-align: center; }
+
+  /* Browser frame */
+  .browser {
+    border: 1px solid var(--line-strong); border-radius: 12px; overflow: hidden;
+    box-shadow: var(--shadow); background: #fff; max-width: 760px; margin: 0 auto;
+  }
+  .browser .bar {
+    background: #ece6dd; padding: 9px 12px; display: flex; align-items: center; gap: 8px;
+    border-bottom: 1px solid var(--line-strong);
+  }
+  .browser .dot { width: 11px; height: 11px; border-radius: 50%; }
+  .browser .dot.r { background: #ff5f57; } .browser .dot.y { background: #febc2e; } .browser .dot.g { background: #28c840; }
+  .browser .url {
+    flex: 1; background: #fff; border-radius: 6px; padding: 4px 12px; font-size: 12px;
+    color: var(--ink2); border: 1px solid var(--line); font-family: monospace;
+  }
+  .browser .body { padding: 22px; }
+
+  /* Phone frame */
+  .phone {
+    width: 300px; margin: 0 auto; border: 9px solid #2b2620; border-radius: 34px;
+    overflow: hidden; box-shadow: var(--shadow); background: #fff;
+  }
+  .phone .notch { height: 26px; background: #2b2620; position: relative; }
+  .phone .notch::after {
+    content: ""; position: absolute; left: 50%; transform: translateX(-50%); top: 8px;
+    width: 90px; height: 7px; border-radius: 4px; background: #4a443c;
+  }
+  .phone .screen { background: var(--bg); min-height: 420px; position: relative; }
+  .phone .tabbar {
+    display: flex; border-top: 1px solid var(--line); background: #fff;
+    position: absolute; bottom: 0; left: 0; right: 0;
+  }
+  .phone .tabbar div {
+    flex: 1; text-align: center; font-size: 9.5px; padding: 7px 0 9px; color: var(--ink3);
+  }
+  .phone .tabbar div.on { color: var(--teal-deep); font-weight: 700; }
+  .phone .tabbar .ic { font-size: 16px; display: block; }
+
+  /* Login mock */
+  .login-card {
+    max-width: 360px; margin: 6px auto; text-align: center;
+  }
+  .login-card .lg {
+    width: 46px; height: 46px; border-radius: 12px; margin: 0 auto 6px;
+    background: linear-gradient(135deg, var(--teal), var(--teal-deep));
+    display: grid; place-items: center; color: #fff; font-size: 22px; font-weight: 800;
+  }
+  .login-card .ttl { font-weight: 800; font-size: 20px; color: var(--teal-deep); }
+  .login-card .sub { font-size: 12px; color: var(--ink3); margin-bottom: 16px; }
+  .field { text-align: left; margin: 10px 0; }
+  .field label { font-size: 12.5px; font-weight: 600; display: block; margin-bottom: 4px; }
+  .field .inp {
+    border: 1px solid var(--line-strong); border-radius: 8px; padding: 9px 11px;
+    font-size: 13px; color: var(--ink3); background: #fff;
+  }
+  .btn {
+    display: inline-block; background: var(--teal); color: #fff; font-weight: 700;
+    border-radius: 8px; padding: 9px 18px; font-size: 13.5px; text-align: center; border: none;
+  }
+  .btn.block { display: block; width: 100%; }
+  .btn.ghost { background: #fff; color: var(--teal-deep); border: 1px solid var(--line-strong); }
+  .btn.amber { background: var(--amber); }
+  .btn.sm { padding: 5px 12px; font-size: 12px; }
+  .err-line {
+    background: #fdecec; border: 1px solid #f5c2c0; color: #9b1c17; border-radius: 8px;
+    padding: 7px 10px; font-size: 12px; margin: 10px 0; text-align: left;
+  }
+
+  /* matrix mock */
+  .matrix { border-collapse: separate; border-spacing: 3px; font-size: 12px; box-shadow: none; background: none; }
+  .matrix th { background: none; padding: 3px; font-size: 11px; text-align: center; }
+  .matrix td {
+    border: 1px solid var(--line); border-radius: 6px; width: 42px; height: 38px;
+    text-align: center; position: relative; padding: 0; font-size: 15px; font-weight: 700;
+  }
+  .matrix .o  { background: var(--teal-50); color: var(--teal-deep); }
+  .matrix .a  { background: var(--amber-50); color: var(--amber); }
+  .matrix .x  { background: #fff; color: var(--ink3); font-weight: 400; }
+  .matrix .closed { background: var(--bg-muted); color: var(--ink3); font-size: 11px; font-weight: 400; }
+  .matrix .cnt { position: absolute; right: 3px; bottom: 1px; font-size: 9px; font-weight: 700; }
+  .matrix .src { position: absolute; left: 3px; top: 1px; font-size: 8px; font-weight: 700; color: var(--teal); }
+  .matrix .timecol { font-weight: 600; color: var(--ink2); background: var(--bg-muted); }
+  .matrix .sat { color: var(--blue); }
+  .matrix .sun { color: var(--rose); }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12.5px; margin: 10px 0; color: var(--ink2); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .legend .g { width: 22px; height: 22px; border-radius: 6px; border: 1px solid var(--line); display: grid; place-items: center; font-weight: 700; }
+
+  /* popover mock */
+  .popover {
+    width: 250px; border: 1px solid var(--line-strong); border-radius: 10px; background: #fff;
+    box-shadow: var(--shadow); padding: 12px; margin: 0 auto; font-size: 12.5px;
+  }
+  .popover .ph { font-weight: 700; margin-bottom: 8px; }
+  .popover .sec-l { font-size: 11px; color: var(--ink3); margin: 10px 0 4px; font-weight: 700; }
+  .popover .grp { display: flex; gap: 5px; }
+  .popover .opt {
+    flex: 1; text-align: center; border: 1px solid var(--line-strong); border-radius: 7px;
+    padding: 5px 0; font-weight: 700;
+  }
+  .popover .opt.sel { box-shadow: 0 0 0 2px var(--teal) inset; }
+  .popover .opt.o { color: var(--teal-deep); } .popover .opt.a { color: var(--amber); } .popover .opt.x { color: var(--ink3); }
+  .popover .opt.clr { color: var(--ink2); font-weight: 500; }
+  .popover .cmt { border: 1px solid var(--line-strong); border-radius: 7px; padding: 6px 8px; color: var(--ink3); margin: 4px 0; }
+  .popover .chk { display: flex; align-items: center; gap: 6px; margin-top: 8px; color: var(--ink2); }
+  .popover .hr { border: none; border-top: 1px solid var(--line); margin: 10px 0; }
+
+  /* generic card grid mock */
+  .grid3 { display: flex; gap: 8px; }
+  .stat { flex: 1; background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 10px 8px; text-align: center; }
+  .stat .n { font-size: 22px; font-weight: 800; color: var(--teal-deep); }
+  .stat .l { font-size: 10px; color: var(--ink3); }
+
+  .vcard {
+    background: #fff; border: 1px solid var(--line); border-left: 4px solid var(--teal);
+    border-radius: 8px; padding: 8px 10px; margin: 6px 0; display: flex; gap: 10px; align-items: center;
+  }
+  .vcard .t { font-weight: 700; font-size: 12px; color: var(--ink2); width: 60px; }
+  .vcard .nm { font-weight: 700; font-size: 13px; flex: 1; }
+  .badge-sm { font-size: 9px; font-weight: 700; padding: 1px 7px; border-radius: 999px; }
+  .badge-sm.kaigo { background: var(--teal-50); color: var(--teal-deep); }
+  .badge-sm.iryo  { background: #e7eefe; color: var(--blue); }
+  .badge-sm.warn  { background: #fff4e5; color: var(--amber); }
+  .badge-sm.ok    { background: var(--teal-50); color: var(--teal-deep); }
+  .badge-sm.info  { background: #e7eefe; color: var(--blue); }
+
+  .fieldhdr {
+    background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 9px 11px;
+    display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;
+  }
+  .fieldhdr .l { font-weight: 800; color: var(--teal-deep); font-size: 13px; }
+  .freecell {
+    border: 1.5px dashed var(--amber); background: repeating-linear-gradient(45deg,#fff,#fff 6px,#fdf6ea 6px,#fdf6ea 12px);
+    border-radius: 8px; padding: 8px 10px; font-size: 12px; color: var(--amber); margin: 6px 0; font-weight: 600;
+  }
+
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; align-items: start; }
+  @media (max-width: 900px) { .two-col { grid-template-columns: 1fr; } }
+
+  .anchor-top {
+    position: fixed; right: 22px; bottom: 22px; background: var(--teal); color: #fff;
+    width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center;
+    text-decoration: none; font-size: 20px; box-shadow: var(--shadow); opacity: .9;
+  }
+
+  hr.div { border: none; border-top: 1px dashed var(--line-strong); margin: 36px 0; }
+
+  .footer {
+    margin-top: 60px; padding-top: 20px; border-top: 1px solid var(--line);
+    font-size: 12px; color: var(--ink3);
+  }
+
+  /* ---------- Mobile / print ---------- */
+  .menu-toggle { display: none; }
+
+  @media (max-width: 980px) {
+    .layout { flex-direction: column; }
+    .toc { position: relative; width: 100%; height: auto; border-right: none; border-bottom: 1px solid var(--line); }
+    main { padding: 24px 18px 80px; }
+  }
+
+  @media print {
+    .toc, .anchor-top { display: none; }
+    body { background: #fff; font-size: 11px; line-height: 1.5; }
+    main { padding: 0; }
+    .doc-header { background: var(--teal-deep) !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    section, h2, h3, table, .callout, .mock-wrap { break-inside: avoid; }
+    h2 { margin-top: 24px; }
+    a { color: var(--ink); text-decoration: none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="layout">
+  <!-- ============ SIDEBAR TOC ============ -->
+  <nav class="toc">
+    <div class="brand"><span class="logo">C</span>CareFlow</div>
+    <p class="subtitle">訪問看護スケジューリング 利用マニュアル</p>
+    <ol>
+      <li><a class="part-link" href="#p0">★ ご利用開始までの流れ</a></li>
+      <li><a class="part-link" href="#p1">第1部 はじめに</a>
+        <ul>
+          <li><a href="#s1-1">1.1 CareFlowとは</a></li>
+          <li><a href="#s1-2">1.2 動作環境・推奨ブラウザ</a></li>
+          <li><a href="#s1-3">1.3 PC版とスマホ版の違い</a></li>
+          <li><a href="#s1-4">1.4 権限（ロール）の種類</a></li>
+        </ul>
+      </li>
+      <li><a class="part-link" href="#p2">第2部 ログインと初期設定</a>
+        <ul>
+          <li><a href="#s2-1">2.1 ログイン手順</a></li>
+          <li><a href="#s2-2">2.2 初回ログイン（仮パスワード変更）</a></li>
+          <li><a href="#s2-3">2.3 パスワード変更・ログアウト</a></li>
+          <li><a href="#s2-4">2.4 ログインが続く仕組み</a></li>
+        </ul>
+      </li>
+      <li><a class="part-link" href="#p3">第3部 スマホで使う</a>
+        <ul>
+          <li><a href="#s3-1">3.1 ホーム画面に追加</a></li>
+          <li><a href="#s3-2">3.2 画面の構成と下部メニュー</a></li>
+          <li><a href="#s3-3">3.3 今日・今週の訪問を見る</a></li>
+          <li><a href="#s3-4">3.4 マイページ・シフト希望</a></li>
+        </ul>
+      </li>
+      <li><a class="part-link" href="#p4">第4部 現場ボード</a>
+        <ul>
+          <li><a href="#s4-1">4.1 開き方・画面構成</a></li>
+          <li><a href="#s4-2">4.2 訪問・空き枠の見方</a></li>
+          <li><a href="#s4-3">4.3 提案・承認・患者管理</a></li>
+        </ul>
+      </li>
+      <li><a class="part-link" href="#p5">第5部 受け入れ枠ページ</a>
+        <ul>
+          <li><a href="#s5-1">5.1 画面の見方（PC）</a></li>
+          <li><a href="#s5-2">5.2 ○△×の意味</a></li>
+          <li><a href="#s5-3">5.3 週・拠点切替・印刷</a></li>
+          <li><a href="#s5-4">5.4 セルの上書き編集</a></li>
+          <li><a href="#s5-5">5.5 スマホでの受け入れ枠</a></li>
+        </ul>
+      </li>
+      <li><a class="part-link" href="#p6">第6部 アカウント管理</a>
+        <ul>
+          <li><a href="#s6-1">6.1 ユーザーの新規作成</a></li>
+          <li><a href="#s6-2">6.2 編集・リセット・削除</a></li>
+          <li><a href="#s6-3">6.3 スタッフとアカウントの関係</a></li>
+        </ul>
+      </li>
+      <li><a class="part-link" href="#p7">付録 権限一覧・困ったとき</a></li>
+    </ol>
+  </nav>
+
+  <!-- ============ MAIN ============ -->
+  <main>
+    <div class="doc-header">
+      <h1>CareFlow 利用マニュアル</h1>
+      <p>訪問看護スケジューリングシステム　— スタッフ配布用ガイド</p>
+      <div class="meta">
+        <span>🌐 https://carelink.kaipoke-api.net</span>
+        <span>📱 PC・スマートフォン対応</span>
+        <span>👤 管理者 / マネージャー / スタッフ</span>
+      </div>
+    </div>
+
+    <div class="intro-note">
+      このマニュアルは <b>1冊で全員分</b> をカバーしています。各見出しに「対象者」バッジ
+      （<span class="role admin">管理者</span><span class="role manager">マネージャー</span><span class="role staff">スタッフ</span>）を付けています。
+      ご自身の役割のバッジが付いた章を中心にお読みください。左の目次から各項目へジャンプできます。
+    </div>
+
+    <!-- ===================== ONBOARDING FLOW ===================== -->
+    <section id="p0">
+      <h2><span class="num">最初に</span> ご利用開始までの流れ</h2>
+      <p>
+        CareFlowは、まず <b>管理者がアカウントを作成して仮パスワードを発行</b>し、それを本人へ伝えるところから始まります。
+        この最初の一手が整わないと、スタッフはログインできません。全体の流れは次のとおりです。
+      </p>
+
+      <div class="callout danger">
+        <b>管理者の方へ（最優先のお願い）</b><br>
+        新しいスタッフが使い始めるには、<b>① あなたがアカウントを作成 → ② 表示された仮パスワードを安全な方法で本人へ伝える</b>
+        という作業が必ず先に必要です。<b>仮パスワードは作成直後に一度しか表示されません。</b>
+        その場でコピー・控えを取り、メモのまま放置せず、確実に本人へ届けてください。
+        手順は <a href="#s6-1" style="color:#9b1c17;font-weight:800">第6部 6.1</a> を参照。
+      </div>
+
+      <div class="flow">
+        <div class="flow-step lead">
+          <div class="no">1</div>
+          <div class="card">
+            <div class="who"><span class="role admin">管理者</span></div>
+            <div class="t">スタッフアカウントを作成し、仮パスワードを発行する</div>
+            <p>ユーザー管理画面でスタッフ情報を選び、ロール「スタッフ」で作成。選んだスタッフのコード（S001など）がログインIDに自動設定され、<b>仮パスワードが発行され、1度だけ表示</b>されます。</p>
+            <a href="#s6-1">→ 6.1 ユーザーの新規作成</a>
+          </div>
+        </div>
+        <div class="flow-step lead">
+          <div class="no">2</div>
+          <div class="card">
+            <div class="who"><span class="role admin">管理者</span></div>
+            <div class="t">ログインID（スタッフコード）と仮パスワードを本人へ安全に伝える</div>
+            <p>表示された仮パスワードをメモし、信頼できる方法（対面・社内の安全な経路など）で本人へ渡します。<b>仮パスワードは表示後二度と見られません</b>。スタッフコードはユーザー一覧でいつでも確認できます。</p>
+            <a href="#s6-1">→ 6.1 スタッフアカウント作成のポイント</a>
+          </div>
+        </div>
+        <div class="flow-step">
+          <div class="no">3</div>
+          <div class="card">
+            <div class="who"><span class="role staff">スタッフ</span></div>
+            <div class="t">本人が初回ログイン → 自分のパスワードに変更</div>
+            <p>受け取ったスタッフコード（S002など）と仮パスワードでログインすると、<b>パスワード変更画面が自動表示</b>されます。新しいパスワードを設定します。</p>
+            <a href="#s2-2">→ 2.2 初回ログイン（仮パスワード変更）</a>
+          </div>
+        </div>
+        <div class="flow-step">
+          <div class="no">4</div>
+          <div class="card">
+            <div class="who"><span class="role admin">管理者</span></div>
+            <div class="t">スタッフ紐付けの確認・設定（必要に応じて）</div>
+            <p>すでにスタッフマスタに登録されている場合、編集画面で <b>アカウントとの紐付けを設定</b>。これで「自分の訪問」が見える状態になります。</p>
+            <a href="#s6-3">→ 6.3 スタッフ紐付け</a>
+          </div>
+        </div>
+        <div class="flow-step">
+          <div class="no">5</div>
+          <div class="card">
+            <div class="who"><span class="role staff">スタッフ</span></div>
+            <div class="t">利用開始</div>
+            <p>以降はスタッフコード＋自分のパスワードでログインし、スマホで訪問予定を確認するなど通常どおり利用できます。</p>
+            <a href="#p3">→ 第3部 スマホで使う</a>
+          </div>
+        </div>
+      </div>
+
+      <div class="callout tip">
+        <b>スタッフが「自分の訪問」を見るための必須条件：</b><br>
+        ① アカウント作成（スタッフコード＋仮パスワード発行） ＋ ② スタッフマスタとの紐付け<br>
+        新規スタッフの登録時は、6.1〜6.3 の全手順を確認してください。
+      </div>
+    </section>
+
+    <!-- ===================== PART 1 ===================== -->
+    <section id="p1">
+      <h2><span class="num">第1部</span> はじめに</h2>
+
+      <h3 id="s1-1">1.1 CareFlowとは</h3>
+      <p>
+        CareFlow（ケアフロー）は、訪問看護の<b>スケジュール（訪問予定）を作成・管理する</b>ための
+        Webアプリケーションです。事業所（拠点）ごとの訪問計画、スタッフの割り当て、空き枠の確認などを
+        パソコンとスマートフォンの両方から行えます。
+      </p>
+      <ul class="plain">
+        <li>事務所のパソコン … スケジュール編成・マスタ管理・受け入れ枠の調整など</li>
+        <li>現場のスマートフォン … 自分の訪問予定の確認、現場ボードでの当日運用など</li>
+      </ul>
+
+      <h3 id="s1-2">1.2 動作環境・推奨ブラウザ</h3>
+      <table>
+        <tr><th>端末</th><th>推奨ブラウザ</th><th>備考</th></tr>
+        <tr><td>パソコン（Windows / Mac）</td><td>Google Chrome / Microsoft Edge 最新版</td><td>画面が広いほど操作しやすくなります</td></tr>
+        <tr><td>iPhone / iPad</td><td>Safari 最新版</td><td>ホーム画面に追加してアプリのように使えます</td></tr>
+        <tr><td>Android スマホ</td><td>Google Chrome 最新版</td><td>同上</td></tr>
+      </table>
+      <div class="callout info">
+        インターネット接続が必要です。電波の届かない場所では「オフラインです。ネットワーク接続を確認してください。」と
+        表示されます。電波の良い場所で再度開いてください。
+      </div>
+
+      <h3 id="s1-3">1.3 PC版とスマホ版の違い</h3>
+      <p>
+        CareFlowは、<b>同じアドレス（<code>https://carelink.kaipoke-api.net</code>）にアクセスしても、
+        使っている端末を自動で判別して画面が切り替わります。</b>
+      </p>
+      <table>
+        <tr><th>アクセスした端末</th><th>最初に開く画面</th><th>主な用途</th></tr>
+        <tr><td>パソコン</td><td>ダッシュボード（PC版）</td><td>スケジュール編成・各種管理</td></tr>
+        <tr><td>スマートフォン</td><td>ホーム（スマホ版）</td><td>訪問予定の確認・現場運用</td></tr>
+      </table>
+      <div class="callout tip">
+        スマホでもパソコン版の画面を見たいといった切り替えは基本的に不要です。役割に応じて必要な画面が自動で表示されます。
+      </div>
+
+      <h3 id="s1-4">1.4 権限（ロール）の種類</h3>
+      <p>利用者は次の3つの権限のいずれかを持ちます。できる操作・見える画面が権限ごとに異なります。</p>
+      <table>
+        <tr><th>権限</th><th>画面の表示名</th><th>主にできること</th></tr>
+        <tr><td><span class="role admin">管理者</span></td><td>管理者</td><td>すべての操作。ユーザー（アカウント）管理、監査ログ閲覧を含む</td></tr>
+        <tr><td><span class="role manager">マネージャー</span></td><td>マネージャー</td><td>現場運用・スケジュール調整・受け入れ枠の編集など。ユーザー管理は不可</td></tr>
+        <tr><td><span class="role staff">スタッフ</span></td><td>スタッフ</td><td>自分の訪問予定の確認、受け入れ枠の閲覧など</td></tr>
+      </table>
+      <p>詳しい権限の対応表は <a href="#p7">付録の権限一覧</a> を参照してください。</p>
+    </section>
+
+    <!-- ===================== PART 2 ===================== -->
+    <section id="p2">
+      <h2><span class="num">第2部</span> ログインと初期設定</h2>
+      <div class="for-who">対象者
+        <span class="roles"><span class="role all">全員</span></span>
+      </div>
+
+      <h3 id="s2-1">2.1 ログイン手順</h3>
+      <p>
+        ログイン方法は <b>ご自身の役割</b> によって異なります。
+        <b>訪問スタッフはスタッフコード</b>（例：S002）で、<b>管理者・マネージャーはメールアドレス</b>でログインしてください。
+      </p>
+      <ol class="steps">
+        <li>ブラウザで <code>https://carelink.kaipoke-api.net</code> を開きます。</li>
+        <li>入力欄の <b>「メール または スタッフID」</b> に、メールアドレス <b>または</b> スタッフコード（例：S002）を入力します。</li>
+        <li><b>「パスワード」</b> に仮パスワード（初回）または自分のパスワードを入力します。</li>
+        <li><b>「ログイン」</b> ボタンを押します。送信中は「ログイン中…」と表示されます。</li>
+        <li>ログインに成功すると、パソコンではダッシュボード、スマホではホーム画面が開きます。</li>
+      </ol>
+
+      <div class="mock-wrap">
+        <div class="browser">
+          <div class="bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+            <span class="url">https://carelink.kaipoke-api.net/login</span></div>
+          <div class="body">
+            <div class="login-card">
+              <div class="lg">C</div>
+              <div class="ttl">CareFlow</div>
+              <div class="sub">訪問看護スケジューリング</div>
+              <div class="field"><label>メール または スタッフID</label><div class="inp">S002</div></div>
+              <div class="field"><label>パスワード</label><div class="inp">••••••••</div></div>
+              <button class="btn block">ログイン</button>
+            </div>
+          </div>
+        </div>
+        <div class="mock-caption">ログイン画面（イメージ）— スタッフはコード（S001〜S006等）、管理者はメールアドレスで入力</div>
+      </div>
+
+      <div class="callout info">
+        <b>誰が何で入るか</b><br>
+        • <b>訪問スタッフ</b>：スタッフコード（S001、S002など）＋パスワード<br>
+        • <b>管理者・マネージャー</b>：メールアドレス＋パスワード（従来通り）
+      </div>
+
+      <h4>うまくログインできないとき</h4>
+      <div class="err-line">メールアドレス/スタッフID またはパスワードが正しくありません</div>
+      <ul class="plain">
+        <li>このメッセージが出たら、入力内容を再確認してください（大文字・小文字、全角・半角に注意）。スタッフコードは S001 のように大文字です。</li>
+        <li>スタッフコードが不明な場合、または初回ログイン時の仮パスワードを忘れた場合は、管理者に <b>コード（またはパスワード）の確認</b> を依頼してください。</li>
+      </ul>
+
+      <h3 id="s2-2">2.2 初回ログイン（仮パスワードの変更）</h3>
+      <p>
+        アカウントが新しく作られた直後や、管理者にパスワードをリセットしてもらった直後は、
+        <b>仮パスワード</b> でログインします。この場合、最初に必ずパスワードの変更画面が表示されます。
+      </p>
+      <ol class="steps">
+        <li>管理者から伝えられた <b>メールアドレス</b> と <b>仮パスワード</b> でログインします。</li>
+        <li>「パスワードの変更が必要です」という画面が自動で表示されます。</li>
+        <li>新しいパスワードを入力し、<b>「パスワードを設定」</b> を押します。</li>
+        <li>設定が完了すると、通常の画面（ダッシュボード／ホーム）に進みます。</li>
+      </ol>
+
+      <div class="mock-wrap">
+        <div class="browser" style="max-width:520px">
+          <div class="bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+            <span class="url">.../settings/password/forced</span></div>
+          <div class="body">
+            <div class="login-card" style="max-width:420px">
+              <div class="ttl" style="font-size:17px">CareFlow</div>
+              <div class="callout warn" style="text-align:left; margin:14px 0">
+                <b>パスワードの変更が必要です</b><br>
+                <span style="font-size:12.5px">仮パスワード、または初回ログインでアクセスしています。続行する前に新しいパスワードを設定してください。</span>
+              </div>
+              <div class="field"><label>現在のパスワード</label><div class="inp">（仮パスワード）</div></div>
+              <div class="field"><label>新しいパスワード</label><div class="inp">••••••••</div></div>
+              <div class="field"><label>新しいパスワード（確認）</label><div class="inp">••••••••</div></div>
+              <button class="btn block">パスワードを設定</button>
+            </div>
+          </div>
+        </div>
+        <div class="mock-caption">初回ログイン時の強制パスワード変更画面（イメージ）</div>
+      </div>
+
+      <div class="callout info">
+        <b>パスワードの条件</b><br>
+        8文字以上で、<b>英字と数字をそれぞれ1文字以上</b> 含める必要があります。また、現在のパスワードと同じものは使えません。
+      </div>
+
+      <h3 id="s2-3">2.3 パスワードの変更・ログアウト</h3>
+      <h4>自分でパスワードを変えたいとき</h4>
+      <p>
+        画面右上のユーザーアイコンのメニューなどから設定画面を開き、<b>現在のパスワード</b>・<b>新しいパスワード</b>・
+        <b>新しいパスワード（確認）</b> を入力して <b>「パスワードを変更」</b> を押します。変更後は安全のため一度ログアウトされ、
+        再度ログインが必要になります。
+      </p>
+      <table>
+        <tr><th>表示されるメッセージ</th><th>意味・対処</th></tr>
+        <tr><td>8文字以上で入力してください</td><td>新しいパスワードが短すぎます</td></tr>
+        <tr><td>英字と数字をそれぞれ1文字以上含めてください</td><td>条件を満たしていません</td></tr>
+        <tr><td>現在のパスワードが正しくありません</td><td>現在のパスワードを再確認してください</td></tr>
+        <tr><td>新しいパスワードと一致しません</td><td>確認用と本体が違います</td></tr>
+        <tr><td>短時間に試行が多すぎます。15 分後に改めてお試しください。</td><td>連続で失敗しすぎた状態。時間をおいて再試行</td></tr>
+      </table>
+
+      <h4>ログアウト</h4>
+      <p>
+        パソコンでは画面右上のユーザーアイコンを押し、<b>「ログアウト」</b> を選びます。
+        スマホでは <b>マイページ</b> の下部に「ログアウト」ボタンがあります。
+      </p>
+      <div class="callout warn">
+        共有のスマホやタブレットを使う場合は、使い終わったら必ず <b>ログアウト</b> してください
+        （他の人に予定が見えてしまうのを防ぐためです）。
+      </div>
+
+      <h3 id="s2-4">2.4 ログインが続く仕組み（参考）</h3>
+      <p>
+        一度ログインすると、しばらくの間は再ログインせずに使い続けられます。利用中に自動で接続が更新されるため、
+        操作の途中で急にログイン画面に戻ることは通常ありません。長期間放置した後などは、改めてログインを求められる場合があります。
+      </p>
+    </section>
+
+    <!-- ===================== PART 3 ===================== -->
+    <section id="p3">
+      <h2><span class="num">第3部</span> スマホで使う</h2>
+      <div class="for-who">対象者
+        <span class="roles"><span class="role staff">スタッフ</span><span class="role manager">マネージャー</span><span class="role admin">管理者</span></span>
+      </div>
+      <p>現場で訪問予定を確認するスタッフ向けの章です。スマホのブラウザ（iPhone は Safari、Android は Chrome）で利用します。</p>
+
+      <h3 id="s3-1">3.1 ホーム画面に追加（アプリのように使う）</h3>
+      <p>毎回ブラウザでアドレスを入力する手間をなくすため、ホーム画面にアイコンを追加しておくと便利です。追加後はアドレスバーのないアプリのような画面で開きます。</p>
+      <div class="two-col">
+        <div>
+          <h4>iPhone（Safari）の場合</h4>
+          <ol class="steps">
+            <li>Safari で <code>https://carelink.kaipoke-api.net</code> を開きます。</li>
+            <li>画面下の <b>共有ボタン</b>（□に↑のマーク）を押します。</li>
+            <li>メニューから <b>「ホーム画面に追加」</b> を選びます。</li>
+            <li>名前が「CareFlow」になっているのを確認して <b>「追加」</b> を押します。</li>
+          </ol>
+        </div>
+        <div>
+          <h4>Android（Chrome）の場合</h4>
+          <ol class="steps">
+            <li>Chrome で同じアドレスを開きます。</li>
+            <li>右上の <b>⋮（メニュー）</b> を押します。</li>
+            <li><b>「アプリをインストール」</b> または <b>「ホーム画面に追加」</b> を選びます。</li>
+            <li>確認して追加します。ホーム画面に CareFlow のアイコンができます。</li>
+          </ol>
+        </div>
+      </div>
+
+      <h3 id="s3-2">3.2 画面の構成と下部メニュー</h3>
+      <p>スマホ版は画面下部に4つのメニューが常に表示されます。タップで切り替えます。</p>
+      <table>
+        <tr><th>メニュー</th><th>内容</th></tr>
+        <tr><td><span class="pill-label">🏠 ホーム</span></td><td>あいさつと、今日・今週・今月の訪問件数。各一覧への入口</td></tr>
+        <tr><td><span class="pill-label">📅 今日</span></td><td>本日の訪問一覧（時間順）</td></tr>
+        <tr><td><span class="pill-label">📊 今週</span></td><td>今週の予定を曜日ごとに表示</td></tr>
+        <tr><td><span class="pill-label">👤 マイページ</span></td><td>プロフィール、シフト希望の提出、表示設定、ログアウト</td></tr>
+      </table>
+
+      <div class="mock-wrap">
+        <div class="phone">
+          <div class="notch"></div>
+          <div class="screen">
+            <div style="padding:14px 12px 0">
+              <div style="font-weight:800;font-size:15px">こんにちは、山田 花子 さん</div>
+              <div style="font-size:10px;color:var(--ink3);margin-bottom:10px">今日も一日よろしくお願いします</div>
+              <div class="grid3">
+                <div class="stat"><div class="n">3</div><div class="l">今日</div></div>
+                <div class="stat"><div class="n">14</div><div class="l">今週</div></div>
+                <div class="stat"><div class="n">52</div><div class="l">今月</div></div>
+              </div>
+              <button class="btn block sm" style="margin-top:10px">今日の訪問へ</button>
+              <button class="btn block sm ghost" style="margin-top:6px">今週の予定へ</button>
+            </div>
+            <div class="tabbar">
+              <div class="on"><span class="ic">🏠</span>ホーム</div>
+              <div><span class="ic">📅</span>今日</div>
+              <div><span class="ic">📊</span>今週</div>
+              <div><span class="ic">👤</span>マイページ</div>
+            </div>
+          </div>
+        </div>
+        <div class="mock-caption">スマホ版ホーム画面（イメージ）</div>
+      </div>
+
+      <h3 id="s3-3">3.3 今日・今週の訪問を見る</h3>
+      <p>
+        <b>「今日」</b> では、本日の訪問が時間の早い順に一覧表示されます。各訪問には時間帯・患者名と、
+        状態を表すバッジ（<span class="badge-sm warn">未訪問</span> / <span class="badge-sm info">訪問中</span> /
+        <span class="badge-sm ok">完了</span>）が付きます。
+        訪問をタップすると、患者名・日時・メモなどの詳細を確認できます。
+      </p>
+      <div class="mock-wrap">
+        <div class="phone">
+          <div class="notch"></div>
+          <div class="screen">
+            <div style="padding:14px 12px 0">
+              <div style="font-weight:800;font-size:14px">今日の訪問</div>
+              <div style="font-size:10px;color:var(--ink3);margin-bottom:8px">6月26日（金）・ 3件</div>
+              <div class="vcard"><div class="t">09:00</div><div class="nm">佐藤 一郎</div><span class="badge-sm warn">未訪問</span></div>
+              <div class="vcard"><div class="t">10:30</div><div class="nm">鈴木 みどり</div><span class="badge-sm info">訪問中</span></div>
+              <div class="vcard"><div class="t">13:00</div><div class="nm">高橋 文子</div><span class="badge-sm ok">完了</span></div>
+            </div>
+            <div class="tabbar">
+              <div><span class="ic">🏠</span>ホーム</div>
+              <div class="on"><span class="ic">📅</span>今日</div>
+              <div><span class="ic">📊</span>今週</div>
+              <div><span class="ic">👤</span>マイページ</div>
+            </div>
+          </div>
+        </div>
+        <div class="mock-caption">「今日」の訪問一覧（イメージ）</div>
+      </div>
+      <p>
+        <b>「今週」</b> では、月曜から日曜までの予定が曜日ごとにまとまって表示され、各訪問の時刻と患者名が一覧できます。
+      </p>
+      <div class="callout info">
+        スタッフが見られるのは <b>自分の担当する訪問</b> です。他のスタッフの予定や事業所全体の予定は、現場ボード（第4部）など権限のある画面で確認します。
+      </div>
+
+      <h3 id="s3-4">3.4 マイページ・シフト希望の提出</h3>
+      <p><b>「マイページ」</b> では、自分のプロフィール（名前・メール・権限）や所属事業所を確認できるほか、次の操作ができます。</p>
+      <ul class="plain">
+        <li><b>シフト希望の提出</b> … 対象の月を選び、希望内容を入力して <b>「提出する」</b> を押します。提出済みの履歴は
+          <span class="badge-sm info">提出済</span> / <span class="badge-sm ok">確認済</span> のバッジで状態が分かります。</li>
+        <li><b>表示設定</b> … 「コンパクト表示」などの切り替え。</li>
+        <li><b>ログアウト</b> … 共有端末では使用後に必ず押してください。</li>
+      </ul>
+    </section>
+
+    <!-- ===================== PART 4 ===================== -->
+    <section id="p4">
+      <h2><span class="num">第4部</span> 現場ボードの使い方</h2>
+      <div class="for-who">対象者
+        <span class="roles"><span class="role manager">マネージャー</span><span class="role admin">管理者</span></span>
+        <span style="font-size:11px;color:var(--ink3)">（スタッフには表示されません）</span>
+      </div>
+      <p>
+        現場ボードは、事業所の<b>1日分の訪問予定を一覧</b>し、当日の調整（空き枠の確認・新規訪問の提案・承認）を
+        スマホ／タブレットで行うための画面です。マネージャー・管理者のみ利用できます。
+      </p>
+
+      <h3 id="s4-1">4.1 開き方・画面構成</h3>
+      <ol class="steps">
+        <li>スマホでログインします（マネージャー／管理者のみ）。</li>
+        <li>画面上部の <b>「📊 現場ボードを開く →」</b> の帯をタップします。</li>
+        <li>現場ボード（全拠点の当日予定）が開きます。</li>
+      </ol>
+      <p>画面は上から次のように構成されています。</p>
+      <table>
+        <tr><th>場所</th><th>内容</th></tr>
+        <tr><td>最上部のバー</td><td>左に <b>「← モバイルアプリへ」</b>（通常のスマホ画面に戻る）、右に <b>「受け入れ枠」</b> ボタン</td></tr>
+        <tr><td>ヘッダー</td><td><b>「CareFlow 現場ボード」</b> と、右側に「患者管理」「+ 提案」「承認（待ち件数バッジ付き）」ボタン</td></tr>
+        <tr><td>日付・週送り</td><td>週送り（◀ 第N週 ▶）と日送り（◀ 曜日・日付 ▶）。下に「訪問 X件 ・ 空き Y つ」のまとめ</td></tr>
+        <tr><td>メインエリア</td><td>拠点ごと → コース（A〜E, M）ごとに訪問カードが並ぶ</td></tr>
+      </table>
+
+      <h3 id="s4-2">4.2 訪問・空き枠の見方</h3>
+      <p>各コースの見出しには <b>コース名 ＋ 担当スタッフ名</b> と、空き状況（例：<span class="pill-label">filled/max ・ 空き2つ</span>）が表示されます。</p>
+      <div class="mock-wrap">
+        <div class="phone">
+          <div class="notch"></div>
+          <div class="screen" style="min-height:460px">
+            <div style="padding:10px 10px 0">
+              <div class="fieldhdr"><span class="l">CareFlow 現場ボード</span><span><span class="btn sm">+ 提案</span></span></div>
+              <div style="font-size:10px;color:var(--ink3);margin:6px 0">◀ 金曜 6/26 ▶ ・ 訪問 4件 ・ 空き 2つ</div>
+              <div style="font-weight:700;font-size:11px;color:var(--teal-deep);margin:8px 0 4px">🏢 稲毛拠点 ／ コースA（佐藤）</div>
+              <div class="vcard"><div class="t">09:00<br><span style="font-size:9px;font-weight:400">〜09:40</span></div><div class="nm">田中 太郎 <span class="badge-sm kaigo">介護</span></div></div>
+              <div class="freecell">＋ この時間空いてますよ：10:00〜11:00</div>
+              <div class="vcard"><div class="t">11:00<br><span style="font-size:9px;font-weight:400">〜11:30</span></div><div class="nm">伊藤 桜 <span class="badge-sm iryo">医療</span></div></div>
+            </div>
+            <div class="tabbar">
+              <div><span class="ic">🏠</span>ホーム</div><div><span class="ic">📅</span>今日</div>
+              <div><span class="ic">📊</span>今週</div><div><span class="ic">👤</span>マイ</div>
+            </div>
+          </div>
+        </div>
+        <div class="mock-caption">現場ボード（イメージ）</div>
+      </div>
+      <table>
+        <tr><th>表示</th><th>意味</th></tr>
+        <tr><td>訪問カード</td><td>時間帯・患者名・保険区分（<span class="badge-sm kaigo">介護</span>／<span class="badge-sm iryo">医療</span>）・サービス時間。タップで患者情報を表示</td></tr>
+        <tr><td><span class="pill-label">📍 同住所・同時</span></td><td>同じ住所で同時間帯に複数人を訪問する組み合わせ。枠で囲まれて表示</td></tr>
+        <tr><td>点線の空き枠</td><td>「＋ この時間空いてますよ：HH:MM〜HH:MM」。タップでその枠に訪問を配置</td></tr>
+        <tr><td>🌙 休講日</td><td>その曜日は出勤スタッフがいない日</td></tr>
+      </table>
+
+      <h3 id="s4-3">4.3 提案・承認・患者管理</h3>
+      <table>
+        <tr><th>ボタン</th><th>できること</th></tr>
+        <tr><td><b>+ 提案</b></td><td>新しい訪問を入れられる枠を探して提案・ランキング表示します</td></tr>
+        <tr><td><b>承認</b>（バッジ付き）</td><td>承認待ちの申請（新規患者・配置など）を一覧で確認し、承認します。数字は待ち件数</td></tr>
+        <tr><td><b>患者管理</b>（人＋アイコン）</td><td>患者の登録・編集を行います</td></tr>
+        <tr><td>空き枠をタップ</td><td>その枠に直接、訪問を配置するフォームを開きます</td></tr>
+      </table>
+      <div class="callout tip">
+        現場ボードから <b>受け入れ枠</b>（第5部）へは、上部バー右の「受け入れ枠」ボタンで移動できます。
+      </div>
+    </section>
+
+    <!-- ===================== PART 5 ===================== -->
+    <section id="p5">
+      <h2><span class="num">第5部</span> 受け入れ枠ページの使い方</h2>
+      <div class="for-who">閲覧
+        <span class="roles"><span class="role admin">管理者</span><span class="role manager">マネージャー</span><span class="role staff">スタッフ</span></span>
+        ／ 編集 <span class="roles"><span class="role admin">管理者</span><span class="role manager">マネージャー</span></span>
+      </div>
+      <p>
+        「受け入れ枠」は、拠点ごとに <b>「曜日 × 時間帯」</b> で<b>新しい訪問をどれくらい受け入れられるか</b>を
+        ○△× の記号で一覧表示するページです。新規の依頼が来たときに「いつなら入れられるか」をすぐ判断するために使います。
+      </p>
+      <div class="callout info">
+        画面の説明文：「拠点ごとに全コースを統合した『曜日 × 時間帯』の受け入れ可能枠（おおよその目安）。」<br>
+        あくまで <b>おおよその目安</b> です。最終的な可否は担当者が判断してください。
+      </div>
+
+      <h3 id="s5-1">5.1 画面の見方（PC版）</h3>
+      <p>パソコンでは、左メニューの <b>「受け入れ枠」</b> から開きます。表は <b>縦＝時間帯（10:00〜17:00、1時間ごと）</b>、
+        <b>横＝曜日（月〜日）</b> です。土曜は青字、日曜は赤字で表示されます。</p>
+
+      <div class="mock-wrap">
+        <div class="browser">
+          <div class="bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+            <span class="url">https://carelink.kaipoke-api.net/acceptance</span></div>
+          <div class="body">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+              <div style="font-weight:800;font-size:16px">受け入れ枠マトリックス</div>
+              <button class="btn sm ghost">🖨 印刷</button>
+            </div>
+            <div style="font-size:11px;color:var(--ink3);margin-bottom:8px">2026年 第26週（6/22 〜 6/28）現在 ・ 全コース統合の目安</div>
+            <table class="matrix">
+              <tr><th></th><th>月</th><th>火</th><th>水</th><th>木</th><th>金</th><th class="sat">土</th><th class="sun">日</th></tr>
+              <tr><td class="timecol">10:00</td><td class="o">○<span class="cnt">2</span></td><td class="a">△</td><td class="x">×</td><td class="a">△</td><td class="o">○</td><td class="x">×</td><td class="closed">休</td></tr>
+              <tr><td class="timecol">11:00</td><td class="o">○<span class="cnt">3</span></td><td class="o">○</td><td class="a">△<span class="src">常</span></td><td class="a">△</td><td class="o">○<span class="cnt">2</span></td><td class="a">△<span class="src">週</span></td><td class="closed">休</td></tr>
+              <tr><td class="timecol">12:00</td><td class="x">×</td><td class="x">×</td><td class="x">×</td><td class="x">×</td><td class="x">×</td><td class="x">×</td><td class="closed">休</td></tr>
+              <tr><td class="timecol">13:00</td><td class="a">△</td><td class="o">○</td><td class="x">×</td><td class="o">○<span class="cnt">2</span></td><td class="o">○</td><td class="x">×</td><td class="closed">休</td></tr>
+              <tr><td class="timecol">14:00</td><td class="o">○</td><td class="o">○</td><td class="o">○</td><td class="o">○</td><td class="a">△</td><td class="a">△</td><td class="closed">休</td></tr>
+            </table>
+          </div>
+        </div>
+        <div class="mock-caption">受け入れ枠マトリックス／PC版（イメージ）</div>
+      </div>
+
+      <h4>凡例（記号の意味）</h4>
+      <div class="legend">
+        <span><span class="g" style="background:var(--teal-50);color:var(--teal-deep)">○</span> 受け入れ可能</span>
+        <span><span class="g" style="background:var(--amber-50);color:var(--amber)">△</span> 相談ください</span>
+        <span><span class="g" style="background:#fff;color:var(--ink3)">×</span> 枠なし</span>
+        <span><b style="color:var(--teal-deep)">数字</b> = その時間帯に入れる空きコース数</span>
+      </div>
+      <table>
+        <tr><th>表示</th><th>意味</th></tr>
+        <tr><td>セル右下の小さな数字</td><td>その時間帯に入れる空きコースの数（例：○2 = 2コースで受け入れ可能）。自動算出のセルのみ表示</td></tr>
+        <tr><td>セル左上の <b>「週」</b></td><td>「この週だけ」の手動上書きが設定されている印</td></tr>
+        <tr><td>セル左上の <b>「常」</b></td><td>「毎週（継続）」の手動上書きが設定されている印</td></tr>
+        <tr><td><b>「休」</b>（灰色）</td><td>その曜日は定休日</td></tr>
+        <tr><td>12:00 が常に ×</td><td>昼休みの時間帯のため（自動算出では受け入れ不可扱い）</td></tr>
+      </table>
+
+      <h3 id="s5-2">5.2 ○△×の意味（判定の考え方）</h3>
+      <p>○△×は、その拠点の全コースの空き状況から <b>自動で計算</b>されます。考え方は次のとおりです（移動時間までは細かく見ない、おおまかな目安です）。</p>
+      <table>
+        <tr><th>記号</th><th>意味</th><th>判定のめやす</th></tr>
+        <tr><td><span class="legend"><span class="g" style="background:var(--teal-50);color:var(--teal-deep)">○</span></span></td>
+            <td><b>受け入れ可能</b></td>
+            <td>標準的な訪問（60分）がそのまま入る空きがあるコースが1つ以上ある（受け入れ人数・残り時間・連続した空き時間がそろっている）</td></tr>
+        <tr><td><span class="legend"><span class="g" style="background:var(--amber-50);color:var(--amber)">△</span></span></td>
+            <td><b>相談ください</b></td>
+            <td>60分まるごとは入らないが、30分以上の部分的な空きはある。時間や内容を調整すれば入れられる可能性</td></tr>
+        <tr><td><span class="legend"><span class="g" style="background:#fff;color:var(--ink3)">×</span></span></td>
+            <td><b>枠なし</b></td>
+            <td>空きがない／定休日／昼休み／その週のスケジュールがまだ作られていない、のいずれか</td></tr>
+      </table>
+      <div class="callout info">
+        1コースの上限は <b>最大6名・最大480分（8時間）</b>を目安に計算しています。
+        同じ住所で連続して訪問するケースなどは、まとめて時間を確保したものとして扱われます。
+      </div>
+
+      <h3 id="s5-3">5.3 週・拠点の切り替え・印刷</h3>
+      <table>
+        <tr><th>操作</th><th>方法</th></tr>
+        <tr><td>週を変える</td><td>上部の <b>「前週」「次週」「今週」</b> ボタン、または日付選択（カレンダー）で任意の週へ</td></tr>
+        <tr><td>拠点を絞る</td><td>上部の <b>「全拠点」</b> ドロップダウンで、特定の拠点だけ／すべてを切り替え</td></tr>
+        <tr><td>印刷する</td><td><b>「印刷」</b> ボタンを押すと、表の部分だけがきれいに印刷されます（操作バーは印刷されません）</td></tr>
+      </table>
+      <div class="callout warn">
+        表示が「この週はまだコースが生成されていないため、空き枠を算出できません（×表示）。」となっている場合は、
+        その週のスケジュールがまだ作られていません。先にスケジュールを作成してから確認してください。
+      </div>
+
+      <h3 id="s5-4">5.4 セルの上書き編集　<span class="roles"><span class="role admin">管理者</span><span class="role manager">マネージャー</span></span></h3>
+      <p>
+        自動計算の結果と実情が違うとき（例：全体会議で受けられない）、管理者・マネージャーは
+        セルをクリックして手動で○△×を上書きできます。スタッフは閲覧のみで、この編集はできません。
+      </p>
+      <p>上書きには <b>2つの種類</b> があり、自動計算より優先されます。</p>
+      <table>
+        <tr><th>種類</th><th>意味</th><th>優先順位</th></tr>
+        <tr><td><b>この週だけ</b></td><td>表示中の週にだけ適用される一時的な上書き（左上に「週」印）</td><td>最優先</td></tr>
+        <tr><td><b>毎週（継続）</b></td><td>解除するまで毎週ずっと適用される上書き（左上に「常」印）</td><td>2番目</td></tr>
+        <tr><td>自動</td><td>上書きがなければ自動計算の結果</td><td>最後</td></tr>
+      </table>
+      <div class="mock-wrap">
+        <div class="popover">
+          <div class="ph">月曜 11:00 の受け入れ枠を上書き</div>
+          <div class="cmt">コメント（任意。例: 全体会議）</div>
+          <hr class="hr">
+          <div class="sec-l">この週だけ　<span style="color:var(--ink3)">(現在 ○)</span></div>
+          <div class="grp">
+            <div class="opt o sel">○</div><div class="opt a">△</div><div class="opt x">×</div><div class="opt clr">解除</div>
+          </div>
+          <hr class="hr">
+          <div class="sec-l">毎週（継続）</div>
+          <div class="grp">
+            <div class="opt o">○</div><div class="opt a">△</div><div class="opt x">×</div><div class="opt clr">解除</div>
+          </div>
+          <div class="chk">☐ 全拠点に一括適用</div>
+        </div>
+        <div class="mock-caption">セルをクリックすると開く上書きパネル（イメージ）</div>
+      </div>
+      <ol class="steps">
+        <li>編集したいセルをクリックします。</li>
+        <li>必要なら <b>コメント</b>（例：全体会議）を入力します。後から見たときに理由が分かります。</li>
+        <li><b>「この週だけ」</b> か <b>「毎週（継続）」</b> の行で、<b>○ / △ / ×</b> を選びます。上書きをやめるときは <b>「解除」</b>。</li>
+        <li>すべての拠点に同じ設定をしたいときは <b>「全拠点に一括適用」</b> にチェックしてから選びます。</li>
+      </ol>
+
+      <h3 id="s5-5">5.5 スマホでの受け入れ枠　<span class="roles"><span class="role manager">マネージャー</span><span class="role admin">管理者</span></span></h3>
+      <p>
+        スマホでも受け入れ枠を確認できます（マネージャー・管理者のみ、<b>閲覧専用</b>）。
+        現場ボード上部の <b>「受け入れ枠」</b> ボタンから開きます。
+      </p>
+      <ul class="plain">
+        <li>ヘッダーの <b>「◀ 第N週 ▶」</b> で週を送れます。</li>
+        <li>拠点が2つ以上ある場合は、<b>拠点トグル</b>（例：稲毛拠点／都賀拠点）で1拠点ずつ表示を切り替えます。</li>
+        <li>○△×の意味・凡例はPC版と同じです。スマホでは編集はできません（編集はPCから）。</li>
+      </ul>
+    </section>
+
+    <!-- ===================== PART 6 ===================== -->
+    <section id="p6">
+      <h2><span class="num">第6部</span> アカウント管理</h2>
+      <div class="for-who">対象者
+        <span class="roles"><span class="role admin">管理者</span></span>
+        <span style="font-size:11px;color:var(--ink3)">（管理者のみが操作できます）</span>
+      </div>
+      <p>新しいスタッフにログインアカウントを発行したり、退職者のアカウントを止めたりする操作です。<b>管理者のみ</b>が行えます。</p>
+
+      <h3 id="s6-1">6.1 ユーザーの新規作成（アカウント発行）</h3>
+      <h4>スタッフアカウント作成のポイント（訪問スタッフの場合）</h4>
+      <p>
+        訪問スタッフのアカウント作成では、スタッフマスタから選択して作成する方法が最も効率的です。
+        こうすると選んだスタッフのコード（S001など）がログインIDに自動設定され、アカウント作成と同時に<b>スタッフ紐付けが完了</b>します。
+      </p>
+      <ol class="steps">
+        <li>PCでログインし、<b>ユーザー管理</b> 画面（<code>/admin/users</code>）を開きます。画面右上の管理者向けボタンからアクセスできます。</li>
+        <li><b>「新規ユーザー」</b> ボタンを押します。</li>
+        <li>
+          <b>ロール</b> を <b>「スタッフ」</b> に選び、<b>スタッフ選択</b>（既存のスタッフマスタから）を指定します。
+          <br>
+          <span style="font-size:13.5px;color:var(--ink2)">（またはメールアドレスだけで作成し、後から編集画面で紐付けることも可）</span>
+        </li>
+        <li>
+          <b>「作成」</b> を押します。選んだスタッフのコードがログインIDに設定され、<b>仮パスワードが発行され、1度だけ画面に表示</b>されます。
+        </li>
+        <li>表示された仮パスワードをメモし、安全な方法で本人へ伝えます（スタッフコードはユーザー一覧でいつでも確認できます）。</li>
+      </ol>
+
+      <div class="callout danger">
+        <b>仮パスワードは一度しか表示されません。</b>
+        画面を閉じると二度と見られません。必ずこの場でコピー・控えを取ってから閉じてください。
+      </div>
+
+      <h4>管理者・マネージャーのアカウント作成</h4>
+      <ol class="steps">
+        <li>ユーザー管理画面で <b>「新規ユーザー」</b> を押します。</li>
+        <li><b>メールアドレス</b> を入力し、<b>ロール</b> を「管理者」または「マネージャー」に選びます。</li>
+        <li><b>「作成」</b> を押します。<b>仮パスワードが自動で発行され、画面に表示</b>されます。</li>
+        <li>表示された仮パスワードを <b>コピー</b> し、安全な方法で本人へ伝えます。</li>
+      </ol>
+
+      <div class="callout info">
+        本人が初めてログインすると、<b>必ずパスワードの変更</b>を求められます（<a href="#s2-2">2.2 参照</a>）。
+        仮パスワードのままでは使い続けられない仕組みです。
+      </div>
+
+      <h3 id="s6-2">6.2 編集・パスワードリセット・削除</h3>
+      <p>ユーザー一覧の各行から、次の操作ができます。一覧には メール／ロール／スタッフ紐付け／パスワード変更要求／状態 が表示されます。</p>
+      <table>
+        <tr><th>操作</th><th>内容</th></tr>
+        <tr><td><b>編集</b>（✏️）</td><td>メールアドレス・ロールの変更、「次回ログイン時にパスワード変更を必須にする」の切り替え</td></tr>
+        <tr><td><b>パスワードリセット</b>（🔑）</td><td>新しい仮パスワードを発行。本人は次回ログイン時にパスワード変更が必須になります。パスワードを忘れた人への対応に使います</td></tr>
+        <tr><td><b>削除</b>（🗑️）</td><td>「{メール} を削除します。よろしいですか？」の確認後に無効化します（退職者など）</td></tr>
+      </table>
+
+      <h3 id="s6-3">6.3 スタッフ（マスタ）とログインアカウントの紐付け</h3>
+      <p>
+        CareFlowでは <b>「スタッフ情報（マスタ）」</b> と <b>「ログインアカウント」</b> は別々に管理されています。
+      </p>
+      <ul class="plain">
+        <li><b>スタッフ（マスタ）</b> … 訪問看護スタッフの氏名・所属・シフトなどの業務情報。</li>
+        <li><b>ユーザー（アカウント）</b> … ログインのためのスタッフコード（またはメール）・パスワード・権限。</li>
+      </ul>
+
+      <h4>紐付けの役割と必要性</h4>
+      <p>
+        スタッフ本人が「自分の訪問」を見られるようにするには、アカウント作成に加えて
+        <b>「このアカウントはどのスタッフのものか」を紐付ける</b> 必要があります。紐付けがないと、スマホのホーム画面に
+        訪問が表示されません。
+      </p>
+
+      <h4>紐付けの方法</h4>
+      <p>ユーザー管理画面で、対象のユーザー行の <b>「編集」</b> を押して編集ダイアログを開きます。</p>
+      <ul class="plain">
+        <li><b>スタッフから作成した場合：</b> 既に紐付けが完了。6.1 での「スタッフ選択」を使った方法です。</li>
+        <li><b>メールアドレスだけで作成した場合：</b> 編集画面の <b>「スタッフ」</b> フィールドから、該当するスタッフを選んで紐付けます。</li>
+        <li><b>紐付けを解除する：</b> 編集画面でスタッフ選択を空にして保存します（退職時など）。</li>
+      </ul>
+
+      <h4>紐付けのタイミングと注意</h4>
+      <table>
+        <tr><th>シーン</th><th>説明</th></tr>
+        <tr>
+          <td><b>新規スタッフの初回ログイン</b></td>
+          <td>
+            アカウント作成時に紐付けを完了させれば、初回ログイン直後から「自分の訪問」が見えます。
+          </td>
+        </tr>
+        <tr>
+          <td><b>既存スタッフへのアカウント後付け</b></td>
+          <td>
+            スタッフマスタは昔からあるが、最近になってアカウントを作る場合。編集画面で紐付けします。
+          </td>
+        </tr>
+        <tr>
+          <td><b>既にログイン中の人を紐付けた</b></td>
+          <td>
+            <b>反映は最大約1時間、またはログアウト→再ログイン時に即反映</b>されます。
+            急ぎの場合は本人に一度ログアウト→再ログインを依頼してください。
+          </td>
+        </tr>
+      </table>
+
+      <div class="callout danger">
+        <b>紐付けの変更時の注意：</b> 既にシステムにログイン中のユーザーを後から紐付けた場合、新しい紐付け情報が見えるまで
+        <b>最大1時間かかることがあります。</b>
+        テスト時や緊急時は、本人にログアウト → 再ログインを実施してもらうと即座に反映されます。
+      </div>
+    </section>
+
+    <!-- ===================== PART 7 ===================== -->
+    <section id="p7">
+      <h2><span class="num">付録</span> 権限一覧・困ったとき</h2>
+
+      <h3>権限ごとにできること（早見表）</h3>
+      <table>
+        <tr>
+          <th>機能</th>
+          <th class="center"><span class="role admin">管理者</span></th>
+          <th class="center"><span class="role manager">マネージャー</span></th>
+          <th class="center"><span class="role staff">スタッフ</span></th>
+        </tr>
+        <tr><td>スマホで自分の訪問を見る（ホーム／今日／今週）</td><td class="center yes">○</td><td class="center yes">○</td><td class="center yes">○</td></tr>
+        <tr><td>受け入れ枠を<b>見る</b></td><td class="center yes">○</td><td class="center yes">○</td><td class="center yes">○</td></tr>
+        <tr><td>受け入れ枠を<b>編集（上書き）</b>する</td><td class="center yes">○</td><td class="center yes">○</td><td class="center no">×</td></tr>
+        <tr><td>現場ボード（/m）を使う</td><td class="center yes">○</td><td class="center yes">○</td><td class="center no">×</td></tr>
+        <tr><td>スケジュール編成（PC）</td><td class="center yes">○</td><td class="center yes">○</td><td class="center no">×</td></tr>
+        <tr><td>連携・申請履歴</td><td class="center yes">○</td><td class="center yes">○</td><td class="center no">×</td></tr>
+        <tr><td>監査ログの閲覧</td><td class="center yes">○</td><td class="center no">×</td><td class="center no">×</td></tr>
+        <tr><td>ユーザー（アカウント）管理</td><td class="center yes">○</td><td class="center no">×</td><td class="center no">×</td></tr>
+      </table>
+
+      <h3>よくある質問・困ったとき</h3>
+      <table>
+        <tr><th>状況</th><th>対処</th></tr>
+        <tr><td>ログインできない／パスワードを忘れた</td><td>管理者にパスワードのリセット（再発行）を依頼してください</td></tr>
+        <tr><td>「メールアドレスまたはパスワードが正しくありません」と出る</td><td>入力を再確認。それでも入れない場合は管理者へ</td></tr>
+        <tr><td>パスワード変更画面から進めない</td><td>8文字以上・英字と数字を各1文字以上、確認用と一致しているか確認</td></tr>
+        <tr><td>スマホのホームに自分の訪問が出ない</td><td>アカウントとスタッフ情報の<b>紐付け</b>が必要です（管理者に確認）</td></tr>
+        <tr><td>受け入れ枠が全部「×」になっている</td><td>その週のスケジュールが未作成の可能性。スケジュール作成後に再確認</td></tr>
+        <tr><td>「オフラインです」と表示される</td><td>電波・Wi-Fiの状態を確認し、再試行してください</td></tr>
+        <tr><td>画面の表示が古い気がする</td><td>更新直後はブラウザの再読み込み（PCは <span class="kbd">Ctrl</span>+<span class="kbd">Shift</span>+<span class="kbd">R</span>）をお試しください</td></tr>
+      </table>
+
+      <div class="callout warn">
+        共有端末（事業所のスマホ・タブレット）を使ったあとは、必ず <b>ログアウト</b> してください。
+      </div>
+    </section>
+
+    <div class="footer">
+      <p>CareFlow 利用マニュアル ／ 訪問看護スケジューリングシステム</p>
+      <p>本マニュアルは画面のイメージ図を用いて操作を説明しています。実際の画面とは細部が異なる場合があります。
+         不明点は管理者・システム担当までお問い合わせください。</p>
+    </div>
+  </main>
+</div>
+
+<a class="anchor-top" href="#top" title="先頭へ">↑</a>
+
+</body>
+</html>
