@@ -18,6 +18,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.core.deps import DbDep, require_role
 from app.core.security import hash_password
+from app.models.staff import Staff
 from app.models.user import USER_ROLES, User
 from app.schemas._pagination import Paginated
 from app.schemas.admin_user import (
@@ -48,18 +49,51 @@ def _validate_role_or_400(role: str) -> None:
         )
 
 
+def _escape_like(value: str, escape_char: str = "\\") -> str:
+    """Escape LIKE wildcards in a search string to prevent injection / mis-matches."""
+    return (
+        value.replace(escape_char, escape_char * 2)
+        .replace("%", f"{escape_char}%")
+        .replace("_", f"{escape_char}_")
+    )
+
+
+async def _ensure_staff_alive_or_422(db, staff_id: UUID) -> None:
+    """Reject linkage to a non-existent or soft-deleted staff (FK does not
+    detect soft-delete, so an explicit alive check is required)."""
+    staff = await db.scalar(select(Staff).where(Staff.id == staff_id, Staff.deleted_at.is_(None)))
+    if staff is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="staff_id does not exist or is deleted",
+        )
+
+
 async def _commit_or_409(db) -> None:
-    """Translate UniqueViolation → 409, FK error → 422."""
+    """Translate UniqueViolation → 409, FK error → 422.
+
+    The 409 detail names the offending constraint. PostgreSQL reports the index
+    name (``ix_users_..._unique_alive``) while SQLite reports the column
+    (``users.email`` etc.), so we match on both flavours.
+    """
     try:
         await db.commit()
     except IntegrityError as exc:
         await db.rollback()
         msg = str(exc).lower()
         if "unique" in msg or "duplicate" in msg:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Conflict: duplicate value (email already in use?)",
-            ) from exc
+            # Be specific: the INSERT statement always mentions all column names, so
+            # we must distinguish by the constraint/index name (PG: "..._unique_alive")
+            # or the "table.column" form SQLite uses ("users.staff_id" etc.).
+            if "users.staff_id" in msg or "staff_id_unique" in msg:
+                detail = "Conflict: this staff is already linked to another account"
+            elif "users.email" in msg or "email_unique" in msg:
+                detail = "Conflict: email already in use"
+            elif "users.username" in msg or "username_unique" in msg:
+                detail = "Conflict: username already in use"
+            else:
+                detail = "Conflict: email / username / staff linkage duplicated"
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail) from exc
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Validation error: invalid foreign key",
@@ -79,7 +113,7 @@ async def list_users(
     db: DbDep,
     _admin: Annotated[User, Depends(require_role("admin"))],
     role: Annotated[str | None, Query(description="Filter by role")] = None,
-    q: Annotated[str | None, Query(description="Substring match on email")] = None,
+    q: Annotated[str | None, Query(description="Substring match on email or username")] = None,
     include_deleted: Annotated[bool, Query()] = False,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
@@ -91,8 +125,14 @@ async def list_users(
         _validate_role_or_400(role)
         conds.append(User.role == role)
     if q:
-        like = f"%{q.lower()}%"
-        conds.append(or_(func.lower(User.email).like(like)))
+        escaped = _escape_like(q.lower())
+        pattern = f"%{escaped}%"
+        conds.append(
+            or_(
+                func.lower(User.email).like(pattern, escape="\\"),
+                func.lower(User.username).like(pattern, escape="\\"),
+            )
+        )
 
     base = select(User)
     count_stmt = select(func.count()).select_from(User)
@@ -124,9 +164,32 @@ async def create_user(
     _admin: Annotated[User, Depends(require_role("admin"))],
 ) -> AdminUserCreateResponse:
     _validate_role_or_400(payload.role)
+    # At least one login identifier is required, otherwise the account can never
+    # authenticate (email or username). staff-role accounts commonly carry only
+    # a username (staff code).
+    if payload.email is None and payload.username is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="At least one of email or username is required",
+        )
+    # Role-specific identifier requirements (§4): admin/manager need email for
+    # current email-based login flow; staff need username for code-based login (P1b).
+    if payload.role in ("admin", "manager") and payload.email is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="email is required for admin/manager role",
+        )
+    if payload.role == "staff" and payload.username is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="username is required for staff role",
+        )
+    if payload.staff_id is not None:
+        await _ensure_staff_alive_or_422(db, payload.staff_id)
     temp_password = _generate_temp_password()
     user = User(
-        email=str(payload.email),
+        email=payload.email,
+        username=payload.username,
         password_hash=hash_password(temp_password),
         role=payload.role,
         staff_id=payload.staff_id,
@@ -161,9 +224,21 @@ async def update_user(
         _validate_role_or_400(data["role"])
     if "email" in data and data["email"] is not None:
         data["email"] = str(data["email"])
+    # staff soft-delete check (FK does not detect soft-delete).
+    if data.get("staff_id") is not None:
+        await _ensure_staff_alive_or_422(db, data["staff_id"])
 
     for field, value in data.items():
         setattr(user, field, value)
+
+    # Login-possibility guard: unlinking a staff (staff_id=None) or clearing the
+    # email must not leave an account with neither email nor username — that
+    # would make it permanently unable to log in.
+    if user.email is None and user.username is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Account must keep at least one of email or username (login would be impossible)",
+        )
     await _commit_or_409(db)
     await db.refresh(user)
     return AdminUserRead.model_validate(user)

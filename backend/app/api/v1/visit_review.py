@@ -40,7 +40,8 @@ def _reviewer_name(actor: User) -> str | None:
     staff = getattr(actor, "staff", None)
     if staff is not None and getattr(staff, "name", None):
         return staff.name
-    return actor.email
+    # email may be NULL for staff (code-based) accounts — fall back to username.
+    return actor.email or actor.username
 
 
 async def _load_visit_or_404(db: DbDep, visit_id: UUID) -> Visit:

@@ -51,7 +51,11 @@ async def login(request: Request, payload: LoginRequest, db: DbDep) -> LoginResp
     # per-IP 5/15min ceiling. The 6th attempt within the window returns 429
     # before we ever touch the DB, which keeps both account-enumeration and
     # lockout-driven DoS in check (Codex G2 followup).
-    user = await db.scalar(select(User).where(User.email == str(payload.email)))
+    # deleted_at IS NULL: email is now a partial-unique (allows reuse after soft-delete),
+    # so we must exclude soft-deleted rows to avoid authenticating a deleted account.
+    user = await db.scalar(
+        select(User).where(User.email == str(payload.email), User.deleted_at.is_(None))
+    )
     now = datetime.now(tz=UTC)
 
     # Generic 401 for both unknown email and wrong password to avoid enumeration.
@@ -119,7 +123,9 @@ async def refresh(payload: RefreshRequest, db: DbDep) -> TokenPair:
             detail="Invalid token subject",
         ) from exc
 
-    user = await db.scalar(select(User).where(User.id == user_id))
+    # Exclude soft-deleted accounts from refresh — a deleted user must not receive
+    # new tokens even if they hold a valid refresh token.
+    user = await db.scalar(select(User).where(User.id == user_id, User.deleted_at.is_(None)))
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

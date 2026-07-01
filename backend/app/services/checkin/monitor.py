@@ -254,7 +254,7 @@ async def build_monitor(
             name = (
                 staff.name
                 if staff is not None
-                else (user.email if user is not None else None)
+                else ((user.email or user.username) if user is not None else None)
             )
             reviews[review.visit_id] = (review, name)
 

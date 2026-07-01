@@ -7,21 +7,28 @@ fields are exposed.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from app.models.user import USER_ROLES
+
+# username は小文字英数字 / アンダースコア / ドット / ハイフンのみ許可。
+# schema 層で正規化 (strip().lower()) + 文字種検査を行い、DB 側の制約と二重防御する。
+_USERNAME_PATTERN = re.compile(r"^[a-z0-9_.\-]+$")
 
 
 class AdminUserRead(BaseModel):
     model_config = ConfigDict(from_attributes=True, extra="forbid")
 
     id: UUID
-    email: EmailStr
+    email: EmailStr | None = None
+    username: str | None = None
     role: str
     staff_id: UUID | None = None
+    staff_name: str | None = None
     must_change_password: bool = False
     failed_login_count: int = 0
     locked_until: datetime | None = None
@@ -35,18 +42,50 @@ class AdminUserCreate(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    email: EmailStr
+    email: EmailStr | None = None
+    username: str | None = None
     role: str = Field(default="staff")
     staff_id: UUID | None = None
+
+    @field_validator("username", mode="before")
+    @classmethod
+    def _normalize_username(cls, v: object) -> str | None:
+        """Normalize username: strip, lowercase, empty → None; validate pattern."""
+        if v is None:
+            return None
+        v = str(v).strip().lower()
+        if not v:
+            return None
+        if len(v) > 32:
+            raise ValueError("username must be at most 32 characters")
+        if not _USERNAME_PATTERN.match(v):
+            raise ValueError("username may only contain a-z, 0-9, hyphen, underscore, dot")
+        return v
 
 
 class AdminUserUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     email: EmailStr | None = None
+    username: str | None = None
     role: str | None = None
     staff_id: UUID | None = None
     must_change_password: bool | None = None
+
+    @field_validator("username", mode="before")
+    @classmethod
+    def _normalize_username(cls, v: object) -> str | None:
+        """Normalize username: strip, lowercase, empty → None; validate pattern."""
+        if v is None:
+            return None
+        v = str(v).strip().lower()
+        if not v:
+            return None
+        if len(v) > 32:
+            raise ValueError("username must be at most 32 characters")
+        if not _USERNAME_PATTERN.match(v):
+            raise ValueError("username may only contain a-z, 0-9, hyphen, underscore, dot")
+        return v
 
 
 class AdminUserCreateResponse(BaseModel):

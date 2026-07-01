@@ -25,7 +25,8 @@ class UserOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    email: EmailStr
+    email: EmailStr | None = None
+    username: str | None = None
     role: str
     staff_id: UUID | None = None
     # Wave 40: surfaced so the frontend can force a password-change flow on
