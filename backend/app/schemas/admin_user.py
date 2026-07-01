@@ -20,6 +20,23 @@ from app.models.user import USER_ROLES
 _USERNAME_PATTERN = re.compile(r"^[a-z0-9_.\-]+$")
 
 
+def _normalize_username_value(v: object) -> str | None:
+    """Normalize username: strip, lowercase, empty → None; validate pattern.
+
+    Shared by AdminUserCreate / AdminUserUpdate so the rule stays in one place.
+    """
+    if v is None:
+        return None
+    v = str(v).strip().lower()
+    if not v:
+        return None
+    if len(v) > 32:
+        raise ValueError("username must be at most 32 characters")
+    if not _USERNAME_PATTERN.match(v):
+        raise ValueError("username may only contain a-z, 0-9, hyphen, underscore, dot")
+    return v
+
+
 class AdminUserRead(BaseModel):
     model_config = ConfigDict(from_attributes=True, extra="forbid")
 
@@ -50,17 +67,7 @@ class AdminUserCreate(BaseModel):
     @field_validator("username", mode="before")
     @classmethod
     def _normalize_username(cls, v: object) -> str | None:
-        """Normalize username: strip, lowercase, empty → None; validate pattern."""
-        if v is None:
-            return None
-        v = str(v).strip().lower()
-        if not v:
-            return None
-        if len(v) > 32:
-            raise ValueError("username must be at most 32 characters")
-        if not _USERNAME_PATTERN.match(v):
-            raise ValueError("username may only contain a-z, 0-9, hyphen, underscore, dot")
-        return v
+        return _normalize_username_value(v)
 
 
 class AdminUserUpdate(BaseModel):
@@ -75,17 +82,7 @@ class AdminUserUpdate(BaseModel):
     @field_validator("username", mode="before")
     @classmethod
     def _normalize_username(cls, v: object) -> str | None:
-        """Normalize username: strip, lowercase, empty → None; validate pattern."""
-        if v is None:
-            return None
-        v = str(v).strip().lower()
-        if not v:
-            return None
-        if len(v) > 32:
-            raise ValueError("username must be at most 32 characters")
-        if not _USERNAME_PATTERN.match(v):
-            raise ValueError("username may only contain a-z, 0-9, hyphen, underscore, dot")
-        return v
+        return _normalize_username_value(v)
 
 
 class AdminUserCreateResponse(BaseModel):

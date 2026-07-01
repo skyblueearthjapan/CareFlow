@@ -239,6 +239,21 @@ async def update_user(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Account must keep at least one of email or username (login would be impossible)",
         )
+    # Role-specific identifier requirements — enforced ONLY when the role is being
+    # changed in this PATCH, mirroring create_user so a role switch cannot leave an
+    # account inconsistent with its new role. Ordinary edits that don't touch role
+    # stay flexible (the login-possibility guard above is the always-on floor).
+    if "role" in data:
+        if user.role in ("admin", "manager") and user.email is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="email is required for admin/manager role",
+            )
+        if user.role == "staff" and user.username is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="username is required for staff role",
+            )
     await _commit_or_409(db)
     await db.refresh(user)
     return AdminUserRead.model_validate(user)

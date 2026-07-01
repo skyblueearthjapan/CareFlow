@@ -371,6 +371,52 @@ async def test_patch_unlink_leaving_no_identifier_is_422(client, db) -> None:
 
 
 @pytest.mark.asyncio
+async def test_patch_role_change_to_staff_without_username_is_422(client, db) -> None:
+    """Changing an email-only account to staff via PATCH requires a username.
+
+    Mirrors create_user's role-specific rule so a direct API PATCH cannot leave
+    an account inconsistent with its role.
+    """
+    admin = await _make_user(db, "link-admin-role1@example.com", "admin")
+    # email-only manager account.
+    r = await client.post(
+        "/api/v1/admin/users",
+        headers=_bearer(admin),
+        json={"email": "role-target@example.com", "role": "manager"},
+    )
+    assert r.status_code == 201, r.text
+    user_id = r.json()["user"]["id"]
+
+    # Switch to staff without providing a username → 422.
+    res = await client.patch(
+        f"/api/v1/admin/users/{user_id}",
+        headers=_bearer(admin),
+        json={"role": "staff"},
+    )
+    assert res.status_code == 422, res.text
+
+
+@pytest.mark.asyncio
+async def test_patch_role_change_to_admin_without_email_is_422(client, db) -> None:
+    """Changing a username-only staff account to admin via PATCH requires email."""
+    admin = await _make_user(db, "link-admin-role2@example.com", "admin")
+    r = await client.post(
+        "/api/v1/admin/users",
+        headers=_bearer(admin),
+        json={"username": "roleflip01", "role": "staff"},
+    )
+    assert r.status_code == 201, r.text
+    user_id = r.json()["user"]["id"]
+
+    res = await client.patch(
+        f"/api/v1/admin/users/{user_id}",
+        headers=_bearer(admin),
+        json={"role": "admin"},
+    )
+    assert res.status_code == 422, res.text
+
+
+@pytest.mark.asyncio
 async def test_list_users_q_matches_username(client, db) -> None:
     admin = await _make_user(db, "link-admin-9@example.com", "admin")
     await client.post(
