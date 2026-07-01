@@ -5,12 +5,41 @@ from __future__ import annotations
 import re
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
+    """Login credentials.
+
+    P1b: login identifier is no longer email-only — a staff member may sign in
+    with their staff code (``username``). During the migration window the backend
+    accepts BOTH request keys so a BE-first / FE-later deploy keeps working:
+
+      * old FE sends ``{email, password}``
+      * new FE sends ``{identifier, password}``
+
+    The effective identifier is ``identifier or email``; at least one must be
+    present (both ``None`` → 422).
+    """
+
+    # `extra` is intentionally NOT "forbid": during the migration window old
+    # clients may send unknown keys (e.g. a legacy field) that we want to
+    # silently ignore rather than reject with 422. Do not tighten this.
+    model_config = ConfigDict(extra="ignore")
+
+    email: EmailStr | None = None
+    # min_length=1 rejects empty-string identifiers before the model_validator
+    # runs, closing the `"" or "None"` coercion bug (empty → truthiness-false
+    # → str(None) = "None" stored as the effective identifier).
+    # max_length=255 caps over-length inputs at the schema layer (security LOW#3).
+    identifier: str | None = Field(default=None, min_length=1, max_length=255)
     password: str = Field(min_length=1, max_length=255)
+
+    @model_validator(mode="after")
+    def _require_identifier(self) -> LoginRequest:
+        if self.identifier is None and self.email is None:
+            raise ValueError("either 'identifier' or 'email' is required")
+        return self
 
 
 class TokenPair(BaseModel):

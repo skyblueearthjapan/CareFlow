@@ -12,7 +12,7 @@ function LoginForm() {
   const searchParams = useSearchParams();
   const callbackUrl = searchParams.get('callbackUrl') ?? '/dashboard';
 
-  const [email, setEmail] = useState('');
+  const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -23,13 +23,13 @@ function LoginForm() {
     setError(null);
     try {
       const result = await signIn('credentials', {
-        email,
+        identifier,
         password,
         redirect: false,
         callbackUrl,
       });
       if (!result || result.error) {
-        setError('メールアドレスまたはパスワードが正しくありません');
+        setError('メール／スタッフIDまたはパスワードが正しくありません');
         return;
       }
       router.replace(result.url ?? callbackUrl);
@@ -43,16 +43,17 @@ function LoginForm() {
   return (
     <form onSubmit={onSubmit} className="space-y-4">
       <div>
-        <label htmlFor="email" className="mb-1 block text-sm text-text-secondary">
-          メールアドレス
+        <label htmlFor="identifier" className="mb-1 block text-sm text-text-secondary">
+          メール または スタッフID
         </label>
         <Input
-          id="email"
-          type="email"
-          autoComplete="email"
+          id="identifier"
+          type="text"
+          autoComplete="username"
+          placeholder="メールアドレス または スタッフID（例: S001）"
           required
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
+          value={identifier}
+          onChange={(e) => setIdentifier(e.target.value)}
         />
       </div>
       <div>

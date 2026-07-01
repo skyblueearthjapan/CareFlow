@@ -5,7 +5,8 @@ import { env } from '@/lib/config/env';
 import type { AppRole } from '@/types/auth';
 
 const credentialsSchema = z.object({
-  email: z.string().email(),
+  // P1b: identifier can be an email OR a staff code (S001…), so no email() here.
+  identifier: z.string().min(1),
   password: z.string().min(1),
 });
 
@@ -15,7 +16,10 @@ const credentialsSchema = z.object({
 const loginResponseSchema = z.object({
   user: z.object({
     id: z.union([z.string(), z.number()]).transform((v) => String(v)),
-    email: z.string().email(),
+    // P1b: staff accounts have no email — it may be null. username is the
+    // code-based login identifier (staff code).
+    email: z.string().email().nullable(),
+    username: z.string().nullable().optional(),
     name: z.string().optional(),
     role: z.enum(['admin', 'manager', 'staff']),
     staff_id: z.string().nullable().optional(),
@@ -39,19 +43,19 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     Credentials({
       name: 'Credentials',
       credentials: {
-        email: { label: 'Email', type: 'email' },
+        identifier: { label: 'Email or Staff ID', type: 'text' },
         password: { label: 'Password', type: 'password' },
       },
       async authorize(raw) {
         const parsed = credentialsSchema.safeParse(raw);
         if (!parsed.success) return null;
-        const { email, password } = parsed.data;
+        const { identifier, password } = parsed.data;
 
         try {
           const res = await fetch(`${env.BACKEND_API_BASE_URL}/api/v1/auth/login`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email, password }),
+            body: JSON.stringify({ identifier, password }),
             cache: 'no-store',
           });
           if (res.status !== 200) return null;
@@ -62,7 +66,10 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           return {
             id: user.id,
             email: user.email,
-            name: user.name ?? user.email.split('@')[0] ?? 'user',
+            username: user.username ?? null,
+            // null-safe: staff accounts have no email, so derive a display name
+            // from name → email local-part → username → 'user'.
+            name: user.name ?? user.email?.split('@')[0] ?? user.username ?? 'user',
             role: user.role,
             staffId: user.staff_id ?? null,
             mustChangePassword: user.must_change_password,
@@ -84,6 +91,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
 
       if (user) {
         token.role = user.role;
+        token.username = user.username ?? null;
         token.staffId = user.staffId ?? null;
         token.mustChangePassword = user.mustChangePassword ?? false;
         token.accessToken = user.accessToken;
@@ -149,6 +157,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     async session({ session, token }) {
       if (session.user) {
         session.user.role = (token.role as AppRole | undefined) ?? 'staff';
+        session.user.username = (token.username as string | null | undefined) ?? null;
         session.user.staffId = (token.staffId as string | null | undefined) ?? null;
         session.user.mustChangePassword =
           (token.mustChangePassword as boolean | undefined) ?? false;

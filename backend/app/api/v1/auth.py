@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request, status
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 
 from app.core.deps import CurrentUser, DbDep
 from app.core.rate_limit import limiter
@@ -44,25 +44,49 @@ def _build_token_pair(user: User) -> TokenPair:
     )
 
 
-@router.post("/login", response_model=LoginResponse, summary="Login with email + password")
+@router.post(
+    "/login", response_model=LoginResponse, summary="Login with staff ID or email + password"
+)
 @limiter.limit("5/15minutes")
 async def login(request: Request, payload: LoginRequest, db: DbDep) -> LoginResponse:
     # `request` is required by slowapi to extract the client IP for the
     # per-IP 5/15min ceiling. The 6th attempt within the window returns 429
     # before we ever touch the DB, which keeps both account-enumeration and
     # lockout-driven DoS in check (Codex G2 followup).
-    # deleted_at IS NULL: email is now a partial-unique (allows reuse after soft-delete),
-    # so we must exclude soft-deleted rows to avoid authenticating a deleted account.
+    #
+    # P1b: the login identifier may be either a username (staff code, S001…) or
+    # an email. During the migration window the schema accepts both `identifier`
+    # and `email` keys; the effective identifier is `identifier or email`. It is
+    # normalized (strip+lower) to match the lowercase-stored username and to make
+    # email matching case-insensitive (existing lowercase emails still match — no
+    # regression).
+    #
+    # deleted_at IS NULL: email/username are partial-unique (allow reuse after
+    # soft-delete), so we must exclude soft-deleted rows to avoid authenticating
+    # a deleted account.
+    # Explicit None-check instead of truthiness: min_length=1 in the schema
+    # already blocks empty strings, but the defensive fallback avoids the
+    # `"" or "None"` coercion that would occur if an empty identifier somehow
+    # slipped through (e.g. direct API call bypassing schema validation).
+    raw = (
+        payload.identifier
+        if payload.identifier is not None
+        else (str(payload.email) if payload.email else "")
+    )
+    norm = raw.strip().lower()
     user = await db.scalar(
-        select(User).where(User.email == str(payload.email), User.deleted_at.is_(None))
+        select(User).where(
+            or_(func.lower(User.username) == norm, func.lower(User.email) == norm),
+            User.deleted_at.is_(None),
+        )
     )
     now = datetime.now(tz=UTC)
 
-    # Generic 401 for both unknown email and wrong password to avoid enumeration.
+    # Generic 401 for both unknown identifier and wrong password to avoid enumeration.
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password",
+            detail="Invalid credentials",
         )
 
     if user.locked_until and user.locked_until > now:
@@ -79,7 +103,7 @@ async def login(request: Request, payload: LoginRequest, db: DbDep) -> LoginResp
         await db.commit()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password",
+            detail="Invalid credentials",
         )
 
     # Successful login → reset counters.
