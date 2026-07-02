@@ -17,7 +17,7 @@
  * デザイン: Warm & Human トークンのみ (bg/border/text/success/warning/brand-primary, tnum).
  */
 import * as React from 'react';
-import { Loader2 } from 'lucide-react';
+import { ArrowLeftRight, Loader2 } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -29,6 +29,12 @@ const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'] as cons
 function trimSeconds(t: string | null | undefined): string {
   if (!t) return '';
   return t.length >= 5 ? t.slice(0, 5) : t;
+}
+
+/** 曜日 + 時刻の短縮表記 (例: 月10:00). スワップの移動表示に使う. */
+function fmtWeekdayTime(weekday: number, start: string | null | undefined): string {
+  const wd = WEEKDAY_LABELS[weekday] ?? '?';
+  return `${wd}${trimSeconds(start)}`;
 }
 
 /** 効果の主役テキスト. 正 = 削減なので「−N分/週」で見せる (text-success). */
@@ -43,17 +49,181 @@ export interface ImprovementSuggestionCardProps {
   canEdit: boolean;
   /** 採用処理中 (親の confirm mutation). ボタンを disable する. */
   adopting?: boolean;
+  /** 表示中患者 (X) の氏名. スワップカードの双方向表示に使う (move カードでは未使用). */
+  patientName?: string;
   onAdopt: (suggestion: ImprovementSuggestion) => void;
   onDismiss: (suggestion: ImprovementSuggestion) => void;
+}
+
+/** 採用 / 見送りボタン列 (move / swap で共通). */
+function CardActions({
+  suggestion,
+  adopting,
+  onAdopt,
+  onDismiss,
+}: {
+  suggestion: ImprovementSuggestion;
+  adopting: boolean;
+  onAdopt: (s: ImprovementSuggestion) => void;
+  onDismiss: (s: ImprovementSuggestion) => void;
+}) {
+  return (
+    <div className="mt-2 flex items-center justify-end gap-2">
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={() => onDismiss(suggestion)}
+        disabled={adopting}
+        className="h-7 px-3 text-[11px]"
+        data-testid="improvement-dismiss-button"
+      >
+        見送り
+      </Button>
+      <Button
+        type="button"
+        size="sm"
+        onClick={() => onAdopt(suggestion)}
+        disabled={adopting}
+        className="h-7 px-3 text-[11px]"
+        data-testid="improvement-adopt-button"
+      >
+        {adopting ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" aria-hidden /> : null}
+        採用
+      </Button>
+    </div>
+  );
+}
+
+/**
+ * スワップ提案 (kind='swap') のカード. 効果 delta は move と同じ見せ方を流用し、
+ * ヘッダ (◯◯様と入れ替え) と双方向の移動表示・双方の要確認バッジを追加する.
+ */
+function SwapCard({
+  suggestion,
+  canEdit,
+  adopting,
+  patientName,
+  onAdopt,
+  onDismiss,
+}: {
+  suggestion: ImprovementSuggestion;
+  canEdit: boolean;
+  adopting: boolean;
+  patientName?: string;
+  onAdopt: (s: ImprovementSuggestion) => void;
+  onDismiss: (s: ImprovementSuggestion) => void;
+}) {
+  const { current, candidate, delta, staff_warnings, requires_patient_confirmation } = suggestion;
+  const cp = suggestion.swap_counterpart!;
+  const xName = patientName ? `${patientName} 様` : '対象の患者様';
+  const yName = `${cp.patient_name} 様`;
+  // X: current → candidate (candidate = Y の旧枠). Y: 現在枠 → X の旧枠.
+  const xMove = `${fmtWeekdayTime(current.weekday, current.start_time)}→${fmtWeekdayTime(candidate.weekday, candidate.start_time)}`;
+  const yMove = `${fmtWeekdayTime(cp.current_weekday, cp.current_start_time)}→${fmtWeekdayTime(cp.new_weekday, cp.new_start_time)}`;
+
+  return (
+    <div
+      className="rounded border border-border-default bg-bg-base p-3 text-xs"
+      data-testid={`improvement-card-${suggestion.kind}-${suggestion.target_weekday}`}
+    >
+      {/* ヘッダ: ◯◯様と入れ替え */}
+      <div
+        className="flex items-center gap-1.5 font-medium text-brand-primary"
+        data-testid="improvement-swap-header"
+      >
+        <ArrowLeftRight className="h-3.5 w-3.5" aria-hidden />
+        <span>{yName}と入れ替え</span>
+      </div>
+
+      {/* 効果 (主役) — move カードと同一の見せ方. */}
+      <div className="mt-1.5 flex flex-wrap items-baseline gap-2">
+        <span className="text-text-muted">移動</span>
+        <span className="tnum text-base font-bold text-success" data-testid="improvement-effect">
+          {formatSaved(delta.travel_minutes_saved, delta.travel_km_saved)}
+        </span>
+      </div>
+
+      {/* 双方向の移動表示. */}
+      <ul
+        className="mt-1.5 list-disc space-y-0.5 pl-4 text-text-primary"
+        data-testid="improvement-swap-moves"
+      >
+        <li className="tnum">
+          {xName}: {xMove}
+        </li>
+        <li className="tnum">
+          {yName}: {yMove}
+        </li>
+      </ul>
+
+      {/* 双方の要確認バッジ. */}
+      {requires_patient_confirmation || cp.requires_patient_confirmation ? (
+        <div className="mt-1.5 flex flex-wrap gap-1">
+          {requires_patient_confirmation ? (
+            <span
+              className="rounded border border-warning/40 bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning"
+              data-testid="improvement-requires-confirmation"
+            >
+              可動域未設定・患者様への確認推奨
+            </span>
+          ) : null}
+          {cp.requires_patient_confirmation ? (
+            <span
+              className="rounded border border-warning/40 bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning"
+              data-testid="improvement-swap-counterpart-confirmation"
+            >
+              {cp.patient_name} 様の可動域未設定
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+
+      {/* スタッフ警告 (P0-1 辞書を流用). */}
+      {staff_warnings.length > 0 ? (
+        <div className="mt-1.5 flex flex-wrap gap-1" data-testid="improvement-staff-warnings">
+          {staff_warnings.map((w, i) => (
+            <Badge key={`warn-${i}`} variant="warning" className="text-[10px]">
+              {proposeWarningLabel(w)}
+            </Badge>
+          ))}
+        </div>
+      ) : null}
+
+      {canEdit ? (
+        <CardActions
+          suggestion={suggestion}
+          adopting={adopting}
+          onAdopt={onAdopt}
+          onDismiss={onDismiss}
+        />
+      ) : null}
+    </div>
+  );
 }
 
 export function ImprovementSuggestionCard({
   suggestion,
   canEdit,
   adopting = false,
+  patientName,
   onAdopt,
   onDismiss,
 }: ImprovementSuggestionCardProps) {
+  // スワップは専用レイアウト (move カードの表示・挙動は完全不変).
+  if (suggestion.kind === 'swap' && suggestion.swap_counterpart) {
+    return (
+      <SwapCard
+        suggestion={suggestion}
+        canEdit={canEdit}
+        adopting={adopting}
+        patientName={patientName}
+        onAdopt={onAdopt}
+        onDismiss={onDismiss}
+      />
+    );
+  }
+
   const { current, candidate, delta, changes, staff_warnings, requires_patient_confirmation } =
     suggestion;
   const curWd = WEEKDAY_LABELS[current.weekday] ?? '?';

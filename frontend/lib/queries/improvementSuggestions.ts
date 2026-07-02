@@ -25,8 +25,11 @@ import { useSession } from 'next-auth/react';
 
 import { fetcher } from '@/lib/api/fetcher';
 import {
+  applySwapResponseSchema,
   improvementDismissResponseSchema,
   improvementSuggestionsResponseSchema,
+  type ApplySwapRequest,
+  type ApplySwapResponse,
   type ImprovementDismissRequest,
   type ImprovementDismissResponse,
   type ImprovementSuggestionsResponse,
@@ -105,6 +108,41 @@ export function useDismissSuggestion(): UseMutationResult<
           queryKey: ['patients', variables.patient_id, 'fixed-visits'],
         });
       }
+    },
+  });
+}
+
+/**
+ * POST /api/v1/schedule/v2/improvement-suggestions/apply-swap (P3-②).
+ * 2 患者の固定枠を 1 TX で入れ替える。成功後は改善提案キャッシュ・両患者の固定枠・
+ * 週次 visits を invalidate して親機テーブルへ即時反映する。
+ */
+export function useApplySwap(): UseMutationResult<ApplySwapResponse, Error, ApplySwapRequest> {
+  const qc = useQueryClient();
+  const { data: session } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+
+  return useMutation<ApplySwapResponse, Error, ApplySwapRequest>({
+    mutationFn: async (body) => {
+      const raw = await fetcher<unknown>(`${IMPROVEMENT_PATH}/apply-swap`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+        accessToken,
+        refreshToken,
+      });
+      return applySwapResponseSchema.parse(raw);
+    },
+    onSuccess: (_data, variables) => {
+      void qc.invalidateQueries({ queryKey: [IMPROVEMENT_SUGGESTIONS_KEY] });
+      // 両患者の固定枠 (mode 問わず prefix 一致で失効).
+      void qc.invalidateQueries({
+        queryKey: ['patients', variables.patient_a_id, 'fixed-visits'],
+      });
+      void qc.invalidateQueries({
+        queryKey: ['patients', variables.patient_b_id, 'fixed-visits'],
+      });
+      // 親機テーブルの実 visit (入れ替えで週次が変わる).
+      void qc.invalidateQueries({ queryKey: ['visits'] });
     },
   });
 }

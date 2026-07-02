@@ -472,3 +472,197 @@ async def test_missing_coords_transition_zero_travel_buffer_config(client, db) -
     assert c["travel_km"] == 0.0
     assert c["buffer_minutes"] == 8
     assert c["gap_minutes"] == 22
+
+
+# ---------------------------------------------------------------------------
+# 見直しどきトレンド (schedule-advisor Phase 3「見直しどき通知」)
+#   GET /api/v1/schedule/v2/schedule-health/trend
+#   指定週から遡る週次の office 横断合計を古→新順で返す (劣化判定は FE).
+# ---------------------------------------------------------------------------
+
+TREND_PATH = "/api/v1/schedule/v2/schedule-health/trend"
+
+
+async def _seed_course_at(
+    db, *, office, staff, iso_year: int, iso_week: int, weekday: int = 0, code: str = "A"
+) -> Course:
+    course = Course(
+        iso_year=iso_year,
+        iso_week=iso_week,
+        weekday=weekday,
+        code=code,
+        course_status=COURSE_STATUS_STAFF_ASSIGNED,
+        assigned_staff_id=staff.id if staff is not None else None,
+        office_id=office.id,
+    )
+    db.add(course)
+    await db.flush()
+    return course
+
+
+async def _seed_visit_at(
+    db, *, patient, course, visit_date, start: time, end: time,
+    status: str = VISIT_STATUS_PLANNED,
+) -> Visit:
+    visit = Visit(
+        patient_id=patient.id,
+        visit_date=visit_date,
+        start_time=start,
+        end_time=end,
+        type="regular",
+        status=status,
+        source="auto",
+        required_staff_count=1,
+        course_id=course.id,
+        primary_staff_id=course.assigned_staff_id,
+    )
+    db.add(visit)
+    await db.flush()
+    return visit
+
+
+async def _seed_cross_pair_week(
+    db, *, office, staff, iso_year: int, iso_week: int, tag: str
+) -> None:
+    """指定 ISO 週に BASE→FAR の異住所 2 訪問を 1 コース分投入する.
+
+    期待メトリクス: travel_minutes=15, travel_km=4.9, gap=37, visit_count=2.
+    """
+    monday = date.fromisocalendar(iso_year, iso_week, 1)
+    course = await _seed_course_at(db, office=office, staff=staff, iso_year=iso_year, iso_week=iso_week)
+    p1 = await _seed_patient(db, office=office, code=f"{tag}-1", lat=BASE[0], lng=BASE[1])
+    p2 = await _seed_patient(db, office=office, code=f"{tag}-2", lat=FAR[0], lng=FAR[1])
+    await _seed_visit_at(db, patient=p1, course=course, visit_date=monday, start=time(9, 0), end=time(9, 30))
+    await _seed_visit_at(db, patient=p2, course=course, visit_date=monday, start=time(10, 30), end=time(11, 0))
+
+
+async def _trend(client, user: User, **params: Any) -> Any:
+    body: dict[str, Any] = {"iso_year": ISO_YEAR, "iso_week": ISO_WEEK}
+    body.update(params)
+    return await client.get(TREND_PATH, headers=_bearer(user), params=body)
+
+
+@pytest.mark.asyncio
+async def test_trend_walks_back_weeks_old_to_new(client, db) -> None:
+    """weeks=3 で指定週から遡り、古→新順に3週返す (空週は totals 全0)."""
+    admin = await _make_user(db, email="tr-walk@example.com", role="admin")
+    office, staff = await _seed_office_staff(db)
+    # 指定週 (W20) と前週 (W19) に visit を入れ、W18 は空にする.
+    await _seed_cross_pair_week(db, office=office, staff=staff, iso_year=ISO_YEAR, iso_week=ISO_WEEK, tag="W20")
+    await _seed_cross_pair_week(db, office=office, staff=staff, iso_year=ISO_YEAR, iso_week=ISO_WEEK - 1, tag="W19")
+    await db.commit()
+
+    res = await _trend(client, admin, office_id=str(office.id), weeks=3)
+    assert res.status_code == 200, res.text
+    weeks = res.json()["weeks"]
+    assert len(weeks) == 3
+    # 古→新: [W18, W19, W20].
+    assert [w["iso_week"] for w in weeks] == [ISO_WEEK - 2, ISO_WEEK - 1, ISO_WEEK]
+    # 最古週 (W18) は visit なし → totals 全 0.
+    assert weeks[0]["totals"] == {
+        "visit_count": 0,
+        "travel_minutes": 0,
+        "travel_km": 0.0,
+        "gap_minutes": 0,
+    }
+    # W19 / W20 は同一メトリクス.
+    for w in weeks[1:]:
+        assert w["totals"] == {
+            "visit_count": 2,
+            "travel_minutes": 15,
+            "travel_km": 4.9,
+            "gap_minutes": 37,
+        }
+
+
+@pytest.mark.asyncio
+async def test_trend_empty_weeks_all_zero(client, db) -> None:
+    """visit ゼロでも weeks 数だけ totals 全 0 の週が古→新順で返る."""
+    admin = await _make_user(db, email="tr-empty@example.com", role="admin")
+    office, _ = await _seed_office_staff(db)
+    await db.commit()
+
+    res = await _trend(client, admin, office_id=str(office.id), weeks=4)
+    assert res.status_code == 200, res.text
+    weeks = res.json()["weeks"]
+    assert len(weeks) == 4
+    assert [w["iso_week"] for w in weeks] == [ISO_WEEK - 3, ISO_WEEK - 2, ISO_WEEK - 1, ISO_WEEK]
+    for w in weeks:
+        assert w["totals"] == {
+            "visit_count": 0, "travel_minutes": 0, "travel_km": 0.0, "gap_minutes": 0,
+        }
+
+
+@pytest.mark.asyncio
+async def test_trend_year_crossing(client, db) -> None:
+    """年跨ぎ: 2026-W01 から遡ると前週は 2025-W52 / W51 として導出される."""
+    admin = await _make_user(db, email="tr-yearcross@example.com", role="admin")
+    office, staff = await _seed_office_staff(db)
+    # 前年 2025-W52 に visit を入れる.
+    await _seed_cross_pair_week(db, office=office, staff=staff, iso_year=2025, iso_week=52, tag="Y52")
+    await db.commit()
+
+    res = await _trend(client, admin, office_id=str(office.id), iso_year=2026, iso_week=1, weeks=3)
+    assert res.status_code == 200, res.text
+    weeks = res.json()["weeks"]
+    assert len(weeks) == 3
+    # 古→新: [2025-W51, 2025-W52, 2026-W01].
+    assert [(w["iso_year"], w["iso_week"]) for w in weeks] == [
+        (2025, 51), (2025, 52), (2026, 1),
+    ]
+    assert weeks[1]["totals"]["visit_count"] == 2  # 2025-W52 に visit.
+    assert weeks[1]["totals"]["travel_minutes"] == 15
+    assert weeks[2]["totals"]["visit_count"] == 0  # 2026-W01 は空.
+
+
+@pytest.mark.asyncio
+async def test_trend_sums_across_offices(client, db) -> None:
+    """office_id 未指定なら全拠点の week_totals を横断合算する."""
+    admin = await _make_user(db, email="tr-crossoffice@example.com", role="admin")
+    office_a, staff_a = await _seed_office_staff(db, name="稲", code="INAGE")
+    office_b, staff_b = await _seed_office_staff(db, name="津", code="TSUGA")
+    await _seed_cross_pair_week(db, office=office_a, staff=staff_a, iso_year=ISO_YEAR, iso_week=ISO_WEEK, tag="OA")
+    await _seed_cross_pair_week(db, office=office_b, staff=staff_b, iso_year=ISO_YEAR, iso_week=ISO_WEEK, tag="OB")
+    await db.commit()
+
+    res = await _trend(client, admin, weeks=1)
+    assert res.status_code == 200, res.text
+    weeks = res.json()["weeks"]
+    assert len(weeks) == 1
+    # 2 拠点分を横断合算.
+    assert weeks[0]["totals"] == {
+        "visit_count": 4,
+        "travel_minutes": 30,
+        "travel_km": 9.8,
+        "gap_minutes": 74,
+    }
+
+
+@pytest.mark.asyncio
+async def test_trend_weeks_clamped_to_max(client, db) -> None:
+    """weeks 上限は 12. Query 上限 (le=12) で 12 週返る."""
+    admin = await _make_user(db, email="tr-clamp@example.com", role="admin")
+    office, _ = await _seed_office_staff(db)
+    await db.commit()
+
+    res = await _trend(client, admin, office_id=str(office.id), weeks=12)
+    assert res.status_code == 200, res.text
+    assert len(res.json()["weeks"]) == 12
+    # 上限超過はバリデーションで 422.
+    res_over = await _trend(client, admin, office_id=str(office.id), weeks=13)
+    assert res_over.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_trend_rejects_staff_role(client, db) -> None:
+    staff_user = await _make_user(db, email="tr-staff@example.com", role="staff")
+    res = await _trend(client, staff_user)
+    assert res.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_trend_rejects_no_auth(client, db) -> None:
+    res = await client.get(
+        TREND_PATH, params={"iso_year": ISO_YEAR, "iso_week": ISO_WEEK}
+    )
+    assert res.status_code == 401

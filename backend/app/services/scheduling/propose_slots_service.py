@@ -152,6 +152,9 @@ class ProposedSlot:
     is_pair: bool
     pair_partner: str | None
     mini_schedule: list[dict[str, object]]
+    # P3-④ (効率優先の代替枠): time_type/曜日のハード制約を外して再列挙し、通常候補と
+    # 重複しない「希望外だが効率的」な枠を後付けしたものは True. 既定 False で従来と不変.
+    is_efficiency_alternative: bool = False
 
 
 async def load_week_course_buckets(
@@ -404,6 +407,9 @@ _WARNING_LABEL_JA: dict[str, str] = {
     "travel_time_shortage": "移動時間がやや不足 (前訪問の早終わりで吸収)",
 }
 
+# P3-④: 効率優先の代替枠 (希望外だが近接/余裕が良い枠) に付ける理由バッジ.
+_REASON_EFFICIENCY_ALTERNATIVE = "希望外だが効率的（近接/余裕）"
+
 # N-3 (schedule-advisor P0-1 / L0→L1.5): 候補コースの割付スタッフ実態を検出し、
 # 候補から除外はせず「理由コード付き警告 + スコア降格」する.
 # 除外は絶対にしない: 0 件になるより「警告付きで出す」が正 (設計原則).
@@ -450,8 +456,14 @@ def _slot_reasons_and_warnings(
     staff_unassigned: bool = False,
     staff_absent: bool = False,
     staff_sex_mismatch: bool = False,
+    is_efficiency_alternative: bool = False,
 ) -> tuple[list[str], list[str]]:
-    """スロットの理由バッジ + 警告ラベルを組み立てる."""
+    """スロットの理由バッジ + 警告ラベルを組み立てる.
+
+    P3-④: ``is_efficiency_alternative=True`` の枠は「希望外」なので希望曜日 /
+    希望時間帯一致の理由は付けず、代わりに「希望外だが効率的」の理由を付ける.
+    近接 / 余裕 (効率の根拠) と全警告 (P0-1 スタッフ実態含む) は通常候補と同一に扱う.
+    """
     reasons: list[str] = []
     warnings: list[str] = []
 
@@ -460,15 +472,20 @@ def _slot_reasons_and_warnings(
     elif min_dist_km is not None and min_dist_km <= 1.0:
         reasons.append("近い")
 
-    # 希望適合: 曜日一致 + time_type / 時間帯一致.
-    if matched_weekday and candidate.preferred_weekdays:
-        reasons.append("希望曜日")
-    if candidate.time_type in ("固定", "時間帯", "午前", "午後"):
-        reasons.append("希望時間帯一致")
+    # 希望適合: 曜日一致 + time_type / 時間帯一致 (効率代替は希望外なので付けない).
+    if not is_efficiency_alternative:
+        if matched_weekday and candidate.preferred_weekdays:
+            reasons.append("希望曜日")
+        if candidate.time_type in ("固定", "時間帯", "午前", "午後"):
+            reasons.append("希望時間帯一致")
 
     # 空きの平準化: 残容量が多い (= 余裕).
     if remaining_count >= 3:
         reasons.append("余裕あり")
+
+    # P3-④: 効率代替の明示ラベル (希望外だが近接/余裕で効率的).
+    if is_efficiency_alternative:
+        reasons.append(_REASON_EFFICIENCY_ALTERNATIVE)
 
     if slot.warning:
         warnings.append(_WARNING_LABEL_JA.get(slot.warning, slot.warning))
@@ -510,11 +527,7 @@ def _score_slot(
         score += _PAIR_BONUS
 
     # 移動効率 (近接): 最小距離が小さいほど高. 既存 0 件は中立 (満点の半分).
-    if min_dist_km is None:
-        proximity = 0.5
-    else:
-        proximity = max(0.0, 1.0 - min(min_dist_km, _PROXIMITY_SAT_KM) / _PROXIMITY_SAT_KM)
-    score += _W_PROXIMITY * proximity
+    score += _W_PROXIMITY * _proximity_ratio(min_dist_km)
 
     # 希望適合.
     pref = 0.0
@@ -525,10 +538,7 @@ def _score_slot(
     score += _W_PREFERENCE * pref
 
     # 空きの平準化: 残件数 + 残分の平均的余裕度 (0..1).
-    count_ratio = remaining_count / max_patients
-    min_ratio = remaining_minutes / _COURSE_MAX_MINUTES
-    balance = max(0.0, min(1.0, (count_ratio + min_ratio) / 2.0))
-    score += _W_BALANCE * balance
+    score += _W_BALANCE * _balance_ratio(remaining_count, remaining_minutes, max_patients)
 
     # 警告ありは僅かに減点 (実現可能だが注意).
     if slot.warning:
@@ -543,47 +553,72 @@ def _score_slot(
     return score
 
 
-def compute_all_proposed_slots(
+def _proximity_ratio(min_dist_km: float | None) -> float:
+    """近接度 0..1 (最小距離が小さいほど高い). 既存 0 件は中立 0.5.
+
+    P3-④ レビューMEDIUM: ``_score_slot`` と ``_efficiency_component`` の式重複を
+    共通ヘルパ化 (「効率 = full score の proximity+balance 部分集合」を構造的に担保)。
+    """
+    if min_dist_km is None:
+        return 0.5
+    return max(0.0, 1.0 - min(min_dist_km, _PROXIMITY_SAT_KM) / _PROXIMITY_SAT_KM)
+
+
+def _balance_ratio(remaining_count: int, remaining_minutes: int, max_patients: int) -> float:
+    """空きの平準化 0..1 (残件数 + 残分の平均的余裕度). ``_proximity_ratio`` と対の共通ヘルパ."""
+    count_ratio = remaining_count / max_patients
+    min_ratio = remaining_minutes / _COURSE_MAX_MINUTES
+    return max(0.0, min(1.0, (count_ratio + min_ratio) / 2.0))
+
+
+def _efficiency_component(
+    *,
+    min_dist_km: float | None,
+    remaining_count: int,
+    remaining_minutes: int,
+    max_patients: int,
+) -> float:
+    """効率代替の採択判定に使う「近接 (proximity) + 平準化 (balance)」合計.
+
+    P3-④: ``_score_slot`` と同一の共通ヘルパで算出する
+    (pair ボーナス / 希望適合 / 警告降格は含めない = 純粋な効率指標).
+    バケット単位の指標なので同一コースの全 slot で共通の値になる.
+    """
+    return _W_PROXIMITY * _proximity_ratio(min_dist_km) + _W_BALANCE * _balance_ratio(
+        remaining_count, remaining_minutes, max_patients
+    )
+
+
+def _enumerate_candidate_slots(
     buckets: dict[tuple[UUID, int, str], _CourseBucket],
     office_name_by_id: dict[UUID, str],
     candidate: CandidateInput,
+    solver_candidate: Candidate,
     *,
+    target_weekdays: frozenset[int],
     office_ids: list[UUID],
-    office_code_by_id: dict[UUID, str | None] | None = None,
-    candidate_name: str = "(提案)",
-    config: SchedulingConfig | None = None,
-) -> list[ProposedSlot]:
-    """全 (開講コース × 候補希望曜日) でソルバを回し、ランキング済み全スロットを返す.
+    office_code_by_id: dict[UUID, str | None] | None,
+    candidate_name: str,
+    config: SchedulingConfig | None,
+    max_patients: int,
+    lunch_duration: int,
+    lunch_window_start: time,
+    lunch_window_end: time,
+    is_efficiency_alternative: bool = False,
+) -> list[tuple[ProposedSlot, float]]:
+    """1 候補 (solver_candidate) で全コース × target_weekdays を回し提案枠を列挙.
 
-    ``compute_proposed_slots`` の limit なし版. slots[] と coverage で同一の
-    実現可能性判定 / ランキングを共有するための内部 API.
+    ``compute_all_proposed_slots`` の内部ループを共有化したもの (通常候補 / 効率代替の
+    両方で使う). 戻り値は ``(ProposedSlot, 効率指標)`` のタプル列 (未ソート).
+    効率指標は効率代替の採択判定 (_efficiency_component) にのみ使う.
 
-    実現不能なコース / 曜日は候補に出さない (= 入らない時間は提案しない).
-
-    Phase G-88 Step3: ``config`` を ``compute_lunch_window`` /
-    ``find_available_slots_for_candidate`` / 残容量計算へ伝播する. ``config=None`` は
-    module 定数を使い挙動不変. full-optimize と同一 config を渡して一貫性を保つ.
+    ``is_efficiency_alternative=True`` のとき:
+        - 希望適合 (matched_weekday / matched_time_type) はスコア・理由とも無効化
+          (希望外の枠なので希望適合で加点しない).
+        - reason に「希望外だが効率的」を付与し、ProposedSlot.is_efficiency_alternative
+          を True にする. 警告 (P0-1 スタッフ実態含む) は通常候補と同一に付く.
     """
-    # 残容量 (件数) の上限: config 化. 残分 (COURSE_MAX_MINUTES) は据え置き.
-    _max_patients = (
-        config.max_patients_per_course if config is not None else _MAX_PATIENTS_PER_COURSE
-    )
-    # 昼休み標準長 / 取得時間帯 (compute_lunch_window へ渡す既定 = module 定数).
-    _lunch_duration = config.lunch_duration_min if config is not None else _LUNCH_DURATION_PREFERRED
-    _lunch_window_start = config.lunch_window_start if config is not None else _LUNCH_EARLIEST_START
-    _lunch_window_end = config.lunch_window_end if config is not None else _LUNCH_LATEST_END
-    target_weekdays = candidate.preferred_weekdays or frozenset(range(7))
-    cand = Candidate(
-        lat=candidate.lat,
-        lng=candidate.lng,
-        service_minutes=candidate.service_minutes,
-        time_type=candidate.time_type,
-        preferred_start=candidate.preferred_start,
-        preferred_end=candidate.preferred_end,
-        patient_id=str(candidate.existing_patient_id) if candidate.existing_patient_id else None,
-    )
-
-    results: list[ProposedSlot] = []
+    results: list[tuple[ProposedSlot, float]] = []
     for (office_id, weekday, course_code), bucket in buckets.items():
         if office_ids and office_id not in office_ids:
             continue
@@ -595,14 +630,14 @@ def compute_all_proposed_slots(
             bucket.visits,
             warnings=None,
             weekday=weekday,
-            duration=_lunch_duration,
-            window_start=_lunch_window_start,
-            window_end=_lunch_window_end,
+            duration=lunch_duration,
+            window_start=lunch_window_start,
+            window_end=lunch_window_end,
         )
 
         slots = find_available_slots_for_candidate(
             existing,
-            cand,
+            solver_candidate,
             lunch_window=lunch,
             weekday=weekday,
             config=config,
@@ -611,17 +646,22 @@ def compute_all_proposed_slots(
             continue
 
         min_dist = _min_distance_km(bucket, candidate.lat, candidate.lng)
-        remaining_count = max(0, _max_patients - len(bucket.visits))
+        remaining_count = max(0, max_patients - len(bucket.visits))
         used_minutes = sum(v.service_minutes for v in bucket.visits)
         remaining_minutes = max(0, _COURSE_MAX_MINUTES - used_minutes)
         # N-3: 割付スタッフ実態フラグ (bucket 単位で 1 回算出し全 slot に共有).
         staff_unassigned = bucket.assigned_staff_id is None
         staff_absent = bucket.staff_absent
         staff_sex_mismatch = _staff_sex_mismatch(bucket.staff_sex, candidate.sex_restriction)
-        matched_weekday = (
-            bool(candidate.preferred_weekdays) and weekday in candidate.preferred_weekdays
-        )
-        matched_time_type = candidate.time_type in ("固定", "時間帯", "午前", "午後")
+        # 効率代替は希望外なので希望適合フラグを無効化する.
+        if is_efficiency_alternative:
+            matched_weekday = False
+            matched_time_type = False
+        else:
+            matched_weekday = (
+                bool(candidate.preferred_weekdays) and weekday in candidate.preferred_weekdays
+            )
+            matched_time_type = candidate.time_type in ("固定", "時間帯", "午前", "午後")
         office_name = office_name_by_id.get(office_id)
         # course_label は office_code 基準の正準短縮 (稲A/津A) を使う. bucket が持つ
         # code を優先し、無ければ map から引く (どちらも無ければ code のみ).
@@ -629,6 +669,13 @@ def compute_all_proposed_slots(
         if office_code is None and office_code_by_id is not None:
             office_code = office_code_by_id.get(office_id)
         label = _course_label(office_code, course_code)
+
+        eff = _efficiency_component(
+            min_dist_km=min_dist,
+            remaining_count=remaining_count,
+            remaining_minutes=remaining_minutes,
+            max_patients=max_patients,
+        )
 
         for slot in slots:
             # 同住所ペア相手の名前を引く (slot.start に既存単独患者がいる).
@@ -650,6 +697,7 @@ def compute_all_proposed_slots(
                 staff_unassigned=staff_unassigned,
                 staff_absent=staff_absent,
                 staff_sex_mismatch=staff_sex_mismatch,
+                is_efficiency_alternative=is_efficiency_alternative,
             )
             score = _score_slot(
                 slot,
@@ -658,7 +706,7 @@ def compute_all_proposed_slots(
                 remaining_minutes=remaining_minutes,
                 matched_weekday=matched_weekday,
                 matched_time_type=matched_time_type,
-                max_patients=_max_patients,
+                max_patients=max_patients,
                 staff_unassigned=staff_unassigned,
                 staff_absent=staff_absent,
                 staff_sex_mismatch=staff_sex_mismatch,
@@ -672,23 +720,95 @@ def compute_all_proposed_slots(
                 candidate_requires_multiple_staff=candidate.requires_multiple_staff,
             )
             results.append(
-                ProposedSlot(
-                    office_id=office_id,
-                    office_name=office_name,
-                    weekday=weekday,
-                    course_code=course_code,
-                    course_label=label,
-                    staff_name=bucket.staff_name,
-                    start=slot.start,
-                    end=slot.end,
-                    score=round(score, 4),
-                    reasons=reasons,
-                    warnings=warnings,
-                    is_pair=slot.same_address_pair,
-                    pair_partner=pair_partner,
-                    mini_schedule=mini,
+                (
+                    ProposedSlot(
+                        office_id=office_id,
+                        office_name=office_name,
+                        weekday=weekday,
+                        course_code=course_code,
+                        course_label=label,
+                        staff_name=bucket.staff_name,
+                        start=slot.start,
+                        end=slot.end,
+                        score=round(score, 4),
+                        reasons=reasons,
+                        warnings=warnings,
+                        is_pair=slot.same_address_pair,
+                        pair_partner=pair_partner,
+                        mini_schedule=mini,
+                        is_efficiency_alternative=is_efficiency_alternative,
+                    ),
+                    eff,
                 )
             )
+    return results
+
+
+def compute_all_proposed_slots(
+    buckets: dict[tuple[UUID, int, str], _CourseBucket],
+    office_name_by_id: dict[UUID, str],
+    candidate: CandidateInput,
+    *,
+    office_ids: list[UUID],
+    office_code_by_id: dict[UUID, str | None] | None = None,
+    candidate_name: str = "(提案)",
+    config: SchedulingConfig | None = None,
+    include_efficiency_alternatives: bool = False,
+) -> list[ProposedSlot]:
+    """全 (開講コース × 候補希望曜日) でソルバを回し、ランキング済み全スロットを返す.
+
+    ``compute_proposed_slots`` の limit なし版. slots[] と coverage で同一の
+    実現可能性判定 / ランキングを共有するための内部 API.
+
+    実現不能なコース / 曜日は候補に出さない (= 入らない時間は提案しない).
+
+    Phase G-88 Step3: ``config`` を ``compute_lunch_window`` /
+    ``find_available_slots_for_candidate`` / 残容量計算へ伝播する. ``config=None`` は
+    module 定数を使い挙動不変. full-optimize と同一 config を渡して一貫性を保つ.
+
+    P3-④: ``include_efficiency_alternatives=True`` のとき、通常の希望適合候補に加え、
+    time_type / preferred_weekdays のハード制約を外した候補で再列挙し、通常候補と
+    重複せず「proximity+balance > 通常候補の最高スコア」を満たす効率的な枠を最大 3 件、
+    ``is_efficiency_alternative=True`` を付けて通常候補リストの後ろに追加する.
+    既定 (False) では従来と出力・順位とも完全に不変.
+    """
+    # 残容量 (件数) の上限: config 化. 残分 (COURSE_MAX_MINUTES) は据え置き.
+    _max_patients = (
+        config.max_patients_per_course if config is not None else _MAX_PATIENTS_PER_COURSE
+    )
+    # 昼休み標準長 / 取得時間帯 (compute_lunch_window へ渡す既定 = module 定数).
+    _lunch_duration = config.lunch_duration_min if config is not None else _LUNCH_DURATION_PREFERRED
+    _lunch_window_start = config.lunch_window_start if config is not None else _LUNCH_EARLIEST_START
+    _lunch_window_end = config.lunch_window_end if config is not None else _LUNCH_LATEST_END
+    target_weekdays = candidate.preferred_weekdays or frozenset(range(7))
+    cand = Candidate(
+        lat=candidate.lat,
+        lng=candidate.lng,
+        service_minutes=candidate.service_minutes,
+        time_type=candidate.time_type,
+        preferred_start=candidate.preferred_start,
+        preferred_end=candidate.preferred_end,
+        patient_id=str(candidate.existing_patient_id) if candidate.existing_patient_id else None,
+    )
+
+    # 通常候補 (希望適合): 従来どおり希望 time_type / 希望曜日で列挙・ランキング.
+    normal = _enumerate_candidate_slots(
+        buckets,
+        office_name_by_id,
+        candidate,
+        cand,
+        target_weekdays=target_weekdays,
+        office_ids=office_ids,
+        office_code_by_id=office_code_by_id,
+        candidate_name=candidate_name,
+        config=config,
+        max_patients=_max_patients,
+        lunch_duration=_lunch_duration,
+        lunch_window_start=_lunch_window_start,
+        lunch_window_end=_lunch_window_end,
+        is_efficiency_alternative=False,
+    )
+    results: list[ProposedSlot] = [ps for ps, _eff in normal]
 
     # 合成スコア降順 → 同点は (近さ, 早い時刻, 拠点, コード) で安定化.
     results.sort(
@@ -700,6 +820,62 @@ def compute_all_proposed_slots(
             r.course_code,
         )
     )
+
+    if not include_efficiency_alternatives or not results:
+        # 既定 (False) または通常候補ゼロ時は従来出力と完全一致 (効率代替を付けない).
+        return results
+
+    # P3-④ 効率優先の代替枠:
+    #   time_type / preferred_weekdays のハード制約を外した候補 (time_type=None・全曜日)
+    #   で再列挙し、通常候補と重複しない slot (office×weekday×course×start) のうち
+    #   「proximity+balance 合計 > 通常候補の最高スコア」を満たすものを効率的とみなす.
+    #   最大 3 件を通常候補リストの後ろに付加する (通常候補の順位は不変).
+    threshold = results[0].score  # results はスコア降順済み = 通常候補の最高スコア.
+    normal_keys = {(r.office_id, r.weekday, r.course_code, r.start) for r in results}
+    alt_cand = Candidate(
+        lat=candidate.lat,
+        lng=candidate.lng,
+        service_minutes=candidate.service_minutes,
+        time_type=None,
+        preferred_start=None,
+        preferred_end=None,
+        patient_id=str(candidate.existing_patient_id) if candidate.existing_patient_id else None,
+    )
+    alt = _enumerate_candidate_slots(
+        buckets,
+        office_name_by_id,
+        candidate,
+        alt_cand,
+        target_weekdays=frozenset(range(7)),
+        office_ids=office_ids,
+        office_code_by_id=office_code_by_id,
+        candidate_name=candidate_name,
+        config=config,
+        max_patients=_max_patients,
+        lunch_duration=_lunch_duration,
+        lunch_window_start=_lunch_window_start,
+        lunch_window_end=_lunch_window_end,
+        is_efficiency_alternative=True,
+    )
+    picked: list[tuple[float, ProposedSlot]] = []
+    for ps, eff in alt:
+        key = (ps.office_id, ps.weekday, ps.course_code, ps.start)
+        if key in normal_keys:
+            continue  # 通常候補と重複する枠は効率代替にしない.
+        if eff <= threshold:
+            continue  # 通常候補の最高スコアを超える効率のものだけを採る.
+        picked.append((eff, ps))
+    # 効率 (proximity+balance) 降順 → 同点は (早い時刻, 拠点, 曜日, コード) で安定化.
+    picked.sort(
+        key=lambda t: (
+            -t[0],
+            _time_to_min(t[1].start),
+            str(t[1].office_id),
+            t[1].weekday,
+            t[1].course_code,
+        )
+    )
+    results.extend(ps for _eff, ps in picked[:3])
     return results
 
 

@@ -117,13 +117,15 @@ export function DismissReasonDialog({
   );
 
   const handleNext = React.useCallback(() => {
-    // 昇格対象の理由は確認ステップへ. それ以外は即 POST (promote なし).
-    if (isPromotable(reason)) {
+    // スワップ却下は「相手との組合せ」の否定であり、当該患者の可動域 (曜日/時刻固定) の
+    // 断定ではない. したがって day/time_immovable を選んでも昇格確認は挟まず dismiss のみ
+    // (kind='swap' は promote_movability=false 固定). move (time_change/day_change) のみ昇格.
+    if (suggestion?.kind !== 'swap' && isPromotable(reason)) {
       setStep('promote');
     } else {
       doDismiss(false);
     }
-  }, [reason, doDismiss]);
+  }, [suggestion, reason, doDismiss]);
 
   const weekdayLabel =
     suggestion != null ? (WEEKDAY_LABELS[suggestion.target_weekday] ?? '?') : '?';

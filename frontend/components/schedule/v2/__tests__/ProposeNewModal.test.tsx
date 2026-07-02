@@ -16,7 +16,7 @@
  */
 import * as React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 
 import type {
   ProposeSlotsResponse,
@@ -776,5 +776,87 @@ describe('2名体制の注記 (solver 未対応の正直表示)', () => {
     renderModal();
     fireEvent.click(screen.getByText('山田 太郎'));
     expect(screen.queryByTestId('propose-multistaff-note')).not.toBeInTheDocument();
+  });
+});
+
+// P3-④: 効率優先の代替枠 (希望外だが近接/余裕が良い枠)。
+const effSlot = slot({
+  weekday: 1,
+  weekday_code: 'Tue',
+  course_code: 'A',
+  course_label: '稲A',
+  start_time: '11:00',
+  end_time: '12:00',
+  score: 66,
+  reasons: ['近い', '希望外だが効率的（近接/余裕）'],
+  is_efficiency_alternative: true,
+});
+
+describe('効率優先の代替枠 (P3-④)', () => {
+  it('propose 呼び出しに include_efficiency_alternatives: true が付く', () => {
+    renderModal();
+    fireEvent.click(screen.getByText('山田 太郎'));
+    fireEvent.click(screen.getByTestId('propose-run-button'));
+    expect(mocks.proposeMutate).toHaveBeenCalledTimes(1);
+    const arg = mocks.proposeMutate.mock.calls[0]![0] as Record<string, unknown>;
+    expect(arg.include_efficiency_alternatives).toBe(true);
+  });
+
+  it('効率代替がある時は別セクションに表示され、通常候補リストには含まれない', () => {
+    setPropose(response({ slots: [monSlot, friSlot, effSlot] }));
+    renderModal();
+    // 別セクション (見出し + 情報文) が出る。
+    const section = screen.getByTestId('propose-efficiency-section');
+    expect(section).toBeInTheDocument();
+    expect(
+      within(section).getByText('効率優先の代替枠（ご希望とは異なります）'),
+    ).toBeInTheDocument();
+    // 効率代替の枠は efficiency 用リストに出る。
+    const effList = screen.getByTestId('propose-efficiency-slot-list');
+    expect(within(effList).getByTestId(`propose-slot-${OFFICE_ID}-1-A-11:00`)).toBeInTheDocument();
+    // 通常候補リストには効率代替は含まれない (月/金のみ)。
+    const normalList = screen.getByTestId('propose-slot-list');
+    expect(
+      within(normalList).queryByTestId(`propose-slot-${OFFICE_ID}-1-A-11:00`),
+    ).not.toBeInTheDocument();
+    expect(within(normalList).getByTestId(`propose-slot-${OFFICE_ID}-0-A-10:00`)).toBeInTheDocument();
+    expect(within(normalList).getByTestId(`propose-slot-${OFFICE_ID}-4-B-14:00`)).toBeInTheDocument();
+    // 「おすすめ枠」の件数は通常候補のみ (2 件)。
+    expect(screen.getByText('おすすめ枠 2 件')).toBeInTheDocument();
+  });
+
+  it('通常候補の並びは効率代替の有無で変わらない (月→金の順)', () => {
+    setPropose(response({ slots: [monSlot, friSlot, effSlot] }));
+    renderModal();
+    const normalList = screen.getByTestId('propose-slot-list');
+    const cards = within(normalList).getAllByTestId(/^propose-slot-/);
+    expect(cards.map((c) => c.getAttribute('data-testid'))).toEqual([
+      `propose-slot-${OFFICE_ID}-0-A-10:00`,
+      `propose-slot-${OFFICE_ID}-4-B-14:00`,
+    ]);
+  });
+
+  it('効率代替が無い通常レスポンスでは別セクションを出さない', () => {
+    setPropose(response());
+    renderModal();
+    expect(screen.queryByTestId('propose-efficiency-section')).not.toBeInTheDocument();
+  });
+
+  it('効率代替の枠も既存と同じ採用フローで確定 payload に乗る', () => {
+    setPropose(response({ slots: [monSlot, effSlot] }));
+    renderModal();
+    fireEvent.click(screen.getByText('山田 太郎'));
+    // 効率代替 (火曜) を採用。
+    fireEvent.click(screen.getByTestId(`propose-adopt-${OFFICE_ID}-1-A-11:00`));
+    fireEvent.click(screen.getByTestId('propose-existing-confirm-button'));
+
+    expect(mocks.confirmMutate).toHaveBeenCalledTimes(1);
+    const arg = mocks.confirmMutate.mock.calls[0]![0] as {
+      body: { mode: string; items: Array<Record<string, unknown>> };
+    };
+    expect(arg.body.items).toHaveLength(1);
+    expect(arg.body.items[0]!.weekday).toBe(1);
+    expect(arg.body.items[0]!.start_time).toBe('11:00');
+    expect(arg.body.items[0]!.duration_min).toBe(60);
   });
 });

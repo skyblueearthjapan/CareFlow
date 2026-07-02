@@ -104,6 +104,10 @@ class ProposeSlotsRequest(BaseModel):
     # 返却件数上限 (上位 N 件).
     limit: int = Field(default=10, ge=1, le=50)
 
+    # P3-④: 効率優先の代替枠 (希望外だが近接/余裕が良い枠) を上乗せ提案するか.
+    # 既定 False で従来と完全に同一挙動 (通常候補のみ). ProposeNewModal のみ True を送る.
+    include_efficiency_alternatives: bool = Field(default=False)
+
     @field_validator("preferred_start", "preferred_end")
     @classmethod
     def _validate_hhmm(cls, v: str | None) -> str | None:
@@ -156,6 +160,8 @@ class ProposeSlotItem(BaseModel):
         default=None, description="同住所ペア相手の患者名 (is_pair=True のとき)"
     )
     mini_schedule: list[ProposeMiniScheduleEntry] = Field(default_factory=list)
+    # P3-④: 希望外だが効率的な「効率優先の代替枠」か (optional・後方互換で既定 False).
+    is_efficiency_alternative: bool = Field(default=False)
 
 
 class ProposeCoverageDay(BaseModel):

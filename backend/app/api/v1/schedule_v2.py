@@ -108,7 +108,10 @@ from app.schemas.v2.propose_slots import (
     ProposeSlotsResponse,
     _parse_hhmm,
 )
-from app.schemas.v2.schedule_health import ScheduleHealthResponse
+from app.schemas.v2.schedule_health import (
+    ScheduleHealthResponse,
+    ScheduleHealthTrendResponse,
+)
 from app.schemas.v2.travel_estimate import (
     TravelEstimateRequest,
     TravelEstimateResponse,
@@ -177,7 +180,10 @@ from app.services.scheduling.propose_slots_service import (
     compute_coverage,
     load_week_course_buckets,
 )
-from app.services.scheduling.schedule_health import compute_schedule_health
+from app.services.scheduling.schedule_health import (
+    compute_schedule_health,
+    compute_schedule_health_trend,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1747,6 +1753,45 @@ async def schedule_health_endpoint(
     )
 
 
+@router.get(
+    "/v2/schedule-health/trend",
+    response_model=ScheduleHealthTrendResponse,
+    status_code=status.HTTP_200_OK,
+    summary="見直しどきトレンド: 指定週から遡る週次の移動/隙間サマリ (劣化判定は FE)",
+)
+async def schedule_health_trend_endpoint(
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    iso_year: int = Query(..., ge=2020, le=2100),
+    iso_week: int = Query(..., ge=1, le=53),
+    weeks: int = Query(default=8, ge=1, le=12, description="遡る週数 (上限12)."),
+    office_id: UUID | None = Query(
+        default=None,
+        description="単一拠点に絞る場合に指定. 未指定なら全拠点を対象.",
+    ),
+) -> ScheduleHealthTrendResponse:
+    """schedule-advisor §3 Phase 3「見直しどき通知」: 週次トレンドの素データを返す.
+
+    指定週から遡って ``weeks`` 週分、各週の **office 横断合計のみ**
+    (visit_count / travel_minutes / travel_km / gap_minutes) を古→新順で返す
+    read-only エンドポイント. 過去週の実 Visit に対し健康診断計算を週ごとに回す
+    (履歴テーブルは持たない). visit ゼロの週も totals 全 0 で含める.
+
+    劣化判定 (見直しどきの成否) は現場フィードバックで調整しやすいよう **FE 側**
+    で行う. BE は素データのみを返す.
+    """
+    config = await load_scheduling_config(db)
+    office_ids = [office_id] if office_id is not None else []
+    return await compute_schedule_health_trend(
+        db,
+        iso_year=iso_year,
+        iso_week=iso_week,
+        weeks=weeks,
+        office_ids=office_ids,
+        config=config,
+    )
+
+
 # ---------------------------------------------------------------------------
 # propose-slots (Phase2-2: 候補患者の実現可能な空き枠を算出・ランキング)
 # ---------------------------------------------------------------------------
@@ -1816,6 +1861,7 @@ def _proposed_to_item(p: ProposedSlot) -> ProposeSlotItem:
             )
             for e in p.mini_schedule
         ],
+        is_efficiency_alternative=p.is_efficiency_alternative,
     )
 
 
@@ -1895,6 +1941,7 @@ async def propose_slots_endpoint(
     config = await load_scheduling_config(db)
 
     # ランキング済み全スロットを 1 回算出し、slots[] (上位 limit) と coverage で共有.
+    # P3-④: include_efficiency_alternatives=True 時は末尾に効率代替 (最大3件) が付く.
     all_proposed = compute_all_proposed_slots(
         buckets,
         office_name_by_id,
@@ -1902,20 +1949,28 @@ async def propose_slots_endpoint(
         office_ids=office_ids,
         office_code_by_id=office_code_by_id,
         config=config,
+        include_efficiency_alternatives=payload.include_efficiency_alternatives,
     )
-    proposed = all_proposed[: payload.limit]
+    # P3-④: 通常候補で limit を消費し、効率代替は limit 外で最大3件付加する
+    #   (通常候補が効率代替に押し出されないよう flag で分離). 既定 False では
+    #   効率代替が存在しないため slots[] = all_proposed[:limit] と完全に同一.
+    normal_proposed = [p for p in all_proposed if not p.is_efficiency_alternative]
+    alt_proposed = [p for p in all_proposed if p.is_efficiency_alternative]
+    proposed = normal_proposed[: payload.limit] + alt_proposed
 
-    # 5. API schema に詰める (slots[] は従来通り上位 limit 件).
+    # 5. API schema に詰める (slots[] は通常候補 上位 limit 件 + 効率代替 最大3件).
     slots_out = [_proposed_to_item(p) for p in proposed]
 
     # 6. 週N日カバレッジ: 希望曜日ごとに実現可否 + 最良枠をグルーピング.
     #    required_days は frequency_per_week 優先, 無ければ希望曜日数.
+    #    P3-④: カバレッジは希望適合の通常候補のみで判定 (効率代替=希望外は除外) し、
+    #    include_efficiency_alternatives の有無で coverage 出力が変わらないようにする.
     if payload.frequency_per_week is not None:
         required_days = payload.frequency_per_week
     else:
         required_days = len(preferred_weekday_ints)
     cov = compute_coverage(
-        all_proposed,
+        normal_proposed,
         requested_weekdays=preferred_weekday_ints,
         required_days=required_days,
     )
@@ -2495,10 +2550,20 @@ async def _apply_pfv_move(
     """1 患者の slot0 移動を適用する (同曜日=更新 / 別曜日=旧行削除+移動先作成/更新).
 
     movability / is_pinned / duration / sub_office は移動行のものを保持する.
+
+    course_template_id の意味論:
+      ``new_course is None`` = 「省略 = 変更なし」. FE は counterpart 側 (b_new)
+      の移動先コースを解決できないため省略してくる. 省略を無条件 None 代入すると
+      layer1_expander の非 NULL 優先採用が壊れる. 3 分岐すべてで
+      ``new_course if new_course is not None else moving_row.course_template_id``
+      として既存値を保持する (後方互換オプション b).
     """
+    # 省略(None) = 既存コースを保持. 明示値があれば上書き.
+    resolved_course = new_course if new_course is not None else moving_row.course_template_id
+
     if new_weekday == moving_row.weekday:
         moving_row.start_time = new_start
-        moving_row.course_template_id = new_course
+        moving_row.course_template_id = resolved_course
         return
 
     # 別曜日移動: 移動先に既存 slot0 行があれば上書き, なければ移動行の曜日を付け替える.
@@ -2512,7 +2577,7 @@ async def _apply_pfv_move(
     )
     if target is not None:
         target.start_time = new_start
-        target.course_template_id = new_course
+        target.course_template_id = resolved_course
         target.duration_min = moving_row.duration_min
         target.movability = moving_row.movability
         target.is_pinned = moving_row.is_pinned
@@ -2521,7 +2586,7 @@ async def _apply_pfv_move(
     else:
         moving_row.weekday = new_weekday
         moving_row.start_time = new_start
-        moving_row.course_template_id = new_course
+        moving_row.course_template_id = resolved_course
 
 
 @router.post(

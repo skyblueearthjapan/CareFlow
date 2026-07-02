@@ -31,6 +31,7 @@ import {
   Check,
   CheckCircle2,
   ClipboardCheck,
+  Lightbulb,
   Link2,
   Loader2,
   Plus,
@@ -329,6 +330,16 @@ export function ProposeNewModal({
   // (office_id, label) → course_template_id を引けるようにする (PUT fixed-visits 用)。
   const result = proposeMut.data;
   const slots = React.useMemo(() => result?.slots ?? [], [result]);
+  // P3-④: 通常候補 (希望適合) と効率優先の代替枠 (希望外) を分離して表示する。
+  // 採用フロー・SlotCard は共通のまま、代替枠だけ別セクション (情報トーン) にまとめる。
+  const normalSlots = React.useMemo(
+    () => slots.filter((s) => !s.is_efficiency_alternative),
+    [slots],
+  );
+  const efficiencySlots = React.useMemo(
+    () => slots.filter((s) => s.is_efficiency_alternative),
+    [slots],
+  );
   const coverage = result?.coverage ?? null;
 
   const slotOfficeIds = React.useMemo(() => {
@@ -433,6 +444,9 @@ export function ProposeNewModal({
         office_ids: officeId ? [officeId] : [],
         existing_patient_id: linked ? linked.id : null,
         limit: 10,
+        // P3-④: 「希望はここだけど本当は◯時の方が…」の効率優先の代替枠を上乗せ提案する。
+        // ProposeNewModal のみ true (PoolCandidateList は既定 false で不変)。
+        include_efficiency_alternatives: true,
       },
       { onError: () => toast.error('提案の取得に失敗しました') },
     );
@@ -743,13 +757,13 @@ export function ProposeNewModal({
 
                 <div className="flex items-center gap-2 border-b border-border-default pb-2">
                   <h4 className="font-serif text-sm font-semibold text-text-primary">
-                    おすすめ枠 {slots.length} 件
+                    おすすめ枠 {normalSlots.length} 件
                   </h4>
                   <span className="text-xs text-text-muted">（曜日ごとに 1 枠を採用）</span>
                 </div>
 
                 <div className="space-y-2" data-testid="propose-slot-list">
-                  {slots.map((s, i) => (
+                  {normalSlots.map((s, i) => (
                     <SlotCard
                       key={`${slotKey(s)}-${i}`}
                       slot={s}
@@ -759,6 +773,35 @@ export function ProposeNewModal({
                     />
                   ))}
                 </div>
+
+                {/* P3-④: 効率優先の代替枠 (希望外だが近接/余裕が良い枠)。情報トーンで下部に表示。 */}
+                {efficiencySlots.length > 0 ? (
+                  <div
+                    className="space-y-2 rounded-md border border-brand-primary-light bg-brand-primary-50 p-3"
+                    data-testid="propose-efficiency-section"
+                  >
+                    <div className="flex items-center gap-2 border-b border-brand-primary/20 pb-2">
+                      <Lightbulb className="h-4 w-4 text-brand-primary" aria-hidden />
+                      <h4 className="font-serif text-sm font-semibold text-text-primary">
+                        効率優先の代替枠（ご希望とは異なります）
+                      </h4>
+                    </div>
+                    <p className="text-xs text-text-muted">
+                      ご希望の曜日・時間帯とは異なりますが、移動効率や空きの余裕がより良い枠です。
+                    </p>
+                    <div className="space-y-2" data-testid="propose-efficiency-slot-list">
+                      {efficiencySlots.map((s, i) => (
+                        <SlotCard
+                          key={`eff-${slotKey(s)}-${i}`}
+                          slot={s}
+                          rank={normalSlots.length + i + 1}
+                          adopted={isAdopted(s)}
+                          onAdopt={toggleAdopt}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
 
                 {/* 採用サマリ + 確定 */}
                 <AdoptSummary

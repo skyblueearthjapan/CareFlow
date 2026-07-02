@@ -49,6 +49,10 @@ export const proposeSlotsRequestSchema = z.object({
   existing_patient_id: z.string().uuid().nullish(),
 
   limit: z.number().int().min(1).max(50).default(10),
+
+  // P3-④: 効率優先の代替枠 (希望外だが近接/余裕が良い枠) を上乗せ提案するか。
+  // 既定 false で従来と同一挙動 (通常候補のみ)。ProposeNewModal のみ true を送る。
+  include_efficiency_alternatives: z.boolean().default(false),
 });
 export type ProposeSlotsRequest = z.input<typeof proposeSlotsRequestSchema>;
 
@@ -82,6 +86,8 @@ export const proposeSlotItemSchema = z.object({
   is_pair: z.boolean().default(false),
   pair_partner: z.string().nullish(),
   mini_schedule: z.array(proposeMiniScheduleEntrySchema).default([]),
+  // P3-④: 希望外だが効率的な「効率優先の代替枠」か (optional・旧BEは未送出 → default)。
+  is_efficiency_alternative: z.boolean().default(false),
 });
 export type ProposeSlotItem = z.infer<typeof proposeSlotItemSchema>;
 

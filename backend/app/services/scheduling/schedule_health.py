@@ -54,6 +54,9 @@ from app.schemas.v2.schedule_health import (
     ScheduleHealthOffice,
     ScheduleHealthResponse,
     ScheduleHealthTotals,
+    ScheduleHealthTrendResponse,
+    ScheduleHealthTrendTotals,
+    ScheduleHealthTrendWeek,
     ScheduleHealthWeekday,
 )
 from app.services.scheduling.auto_allocator_v2 import (
@@ -354,6 +357,82 @@ async def compute_schedule_health(
     )
 
 
+# ---------------------------------------------------------------------------
+# 見直しどきトレンド (schedule-advisor §3 Phase 3「見直しどき通知」)
+#   履歴テーブルは作らず、過去週の実 Visit に対し compute_schedule_health を
+#   週ごとに呼び直してトレンドを組み立てる (既存関数の挙動不変)。
+# ---------------------------------------------------------------------------
+
+# 遡り週数の上限 (安全弁: 1 週=DB 数クエリのため過大要求を防ぐ).
+SCHEDULE_HEALTH_TREND_MAX_WEEKS = 12
+
+
+def _sum_trend_totals(health: ScheduleHealthResponse) -> ScheduleHealthTrendTotals:
+    """1 週の健康診断レスポンスから office 横断合計 (4 指標) を積み上げる.
+
+    travel_km は各 office の week_totals (小数1桁済み) を合算してから 1 回丸める。
+    visit ゼロの週は offices=[] なので全 0 になる。
+    """
+    return ScheduleHealthTrendTotals(
+        visit_count=sum(o.week_totals.visit_count for o in health.offices),
+        travel_minutes=sum(o.week_totals.travel_minutes for o in health.offices),
+        travel_km=round(sum(o.week_totals.travel_km for o in health.offices), 1),
+        gap_minutes=sum(o.week_totals.gap_minutes for o in health.offices),
+    )
+
+
+async def compute_schedule_health_trend(
+    db: AsyncSession,
+    *,
+    iso_year: int,
+    iso_week: int,
+    weeks: int,
+    office_ids: list[UUID],
+    config: SchedulingConfig,
+) -> ScheduleHealthTrendResponse:
+    """指定週から遡って ``weeks`` 週分の office 横断合計を古→新順で返す.
+
+    各週について ``compute_schedule_health`` を 1 回呼び、その週の全拠点
+    ``week_totals`` を横断合計する薄いループ。visit ゼロの週も totals 全 0 で
+    含める (欠測が見えるように)。``weeks`` は ``[1, SCHEDULE_HEALTH_TREND_MAX_WEEKS]``
+    にクランプする。
+
+    週境界は ``propose_slots_service`` と同方式で、指定週の月曜から 7 日ずつ遡る
+    (``date.fromisocalendar`` → ``timedelta(days=7)``)。年跨ぎは各週月曜の
+    ``isocalendar()`` から (iso_year, iso_week) を再導出するため自然に扱える。
+    """
+    weeks = max(1, min(weeks, SCHEDULE_HEALTH_TREND_MAX_WEEKS))
+    try:
+        target_monday = date.fromisocalendar(iso_year, iso_week, 1)
+    except ValueError as exc:
+        raise ValueError(f"無効な ISO 週: {iso_year}-W{iso_week}") from exc
+
+    # 古→新順: 最古週 (weeks-1 週前) を先頭、指定週を末尾にする.
+    week_mondays = [target_monday - timedelta(days=7 * i) for i in range(weeks - 1, -1, -1)]
+
+    trend_weeks: list[ScheduleHealthTrendWeek] = []
+    for monday in week_mondays:
+        iso = monday.isocalendar()
+        health = await compute_schedule_health(
+            db,
+            iso_year=iso.year,
+            iso_week=iso.week,
+            office_ids=office_ids,
+            config=config,
+        )
+        trend_weeks.append(
+            ScheduleHealthTrendWeek(
+                iso_year=iso.year,
+                iso_week=iso.week,
+                totals=_sum_trend_totals(health),
+            )
+        )
+
+    return ScheduleHealthTrendResponse(weeks=trend_weeks)
+
+
 __all__ = [
+    "SCHEDULE_HEALTH_TREND_MAX_WEEKS",
     "compute_schedule_health",
+    "compute_schedule_health_trend",
 ]

@@ -21,7 +21,9 @@ const { mockToast, mocks } = vi.hoisted(() => ({
     suggestionsResult: { data: undefined as unknown, isLoading: false, isError: false },
     confirmMutate: vi.fn(),
     dismissMutate: vi.fn(),
+    applySwapMutate: vi.fn(),
     existingFixedVisits: [] as unknown[],
+    templatesQueries: [] as unknown[],
     invalidateQueries: vi.fn(),
     toastFixedVisitWarnings: vi.fn(),
   },
@@ -35,13 +37,14 @@ vi.mock('next-auth/react', () => ({
   }),
 }));
 vi.mock('@tanstack/react-query', () => ({
-  useQueries: () => [],
+  useQueries: () => mocks.templatesQueries,
   useQueryClient: () => ({ invalidateQueries: mocks.invalidateQueries }),
 }));
 vi.mock('@/lib/api/fetcher', () => ({ fetcher: vi.fn() }));
 vi.mock('@/lib/queries/improvementSuggestions', () => ({
   useImprovementSuggestions: () => mocks.suggestionsResult,
   useDismissSuggestion: () => ({ mutate: mocks.dismissMutate, isPending: false }),
+  useApplySwap: () => ({ mutate: mocks.applySwapMutate, isPending: false }),
   IMPROVEMENT_SUGGESTIONS_KEY: 'improvement-suggestions',
 }));
 vi.mock('@/lib/queries/propose_confirm', () => ({
@@ -62,9 +65,10 @@ vi.mock('@/lib/schemas/patient', () => ({
 }));
 
 import { ImprovementSuggestionsSection } from '../ImprovementSuggestionsSection';
-import type {
-  ImprovementSuggestion,
-  ImprovementSuggestionsResponse,
+import {
+  improvementSuggestionsResponseSchema,
+  type ImprovementSuggestion,
+  type ImprovementSuggestionsResponse,
 } from '@/lib/schemas/v2/improvementSuggestion';
 import type { PatientRead } from '@/lib/schemas/patient';
 
@@ -107,6 +111,36 @@ function makeSuggestion(over: Partial<ImprovementSuggestion> = {}): ImprovementS
   };
 }
 
+function makeSwapSuggestion(over: Partial<ImprovementSuggestion> = {}): ImprovementSuggestion {
+  return {
+    ...makeSuggestion(),
+    kind: 'swap',
+    target_weekday: 0,
+    // X: 月09:00 → 月14:00 (candidate = Y の旧枠).
+    candidate: {
+      office_id: '11111111-1111-4111-8111-111111111111',
+      office_name: '稲毛',
+      weekday: 0,
+      weekday_code: 'Mon',
+      start_time: '14:00',
+      end_time: '14:30',
+      course_code: 'C',
+      course_label: '稲C',
+      staff_name: null,
+    },
+    swap_counterpart: {
+      patient_id: '33333333-3333-4333-8333-333333333333',
+      patient_name: '佐藤 花子',
+      current_weekday: 0,
+      current_start_time: '14:00',
+      new_weekday: 0,
+      new_start_time: '09:00',
+      requires_patient_confirmation: false,
+    },
+    ...over,
+  };
+}
+
 function makeResponse(
   suggestions: ImprovementSuggestion[],
   filtered?: Partial<ImprovementSuggestionsResponse['filtered_summary']>,
@@ -144,9 +178,14 @@ describe('ImprovementSuggestionsSection', () => {
     vi.clearAllMocks();
     mocks.suggestionsResult = { data: undefined, isLoading: false, isError: false };
     mocks.existingFixedVisits = [];
+    mocks.templatesQueries = [];
     mocks.confirmMutate.mockImplementation(
       (_vars: unknown, opts: { onSuccess?: (d: unknown) => void }) =>
         opts.onSuccess?.({ warnings: [] }),
+    );
+    mocks.applySwapMutate.mockImplementation(
+      (_vars: unknown, opts: { onSuccess?: (d: unknown) => void }) =>
+        opts.onSuccess?.({ applied: true, warnings: [] }),
     );
   });
 
@@ -288,5 +327,164 @@ describe('ImprovementSuggestionsSection', () => {
     renderSection(false);
     expect(screen.queryByTestId('improvement-adopt-button')).not.toBeInTheDocument();
     expect(screen.queryByTestId('improvement-dismiss-button')).not.toBeInTheDocument();
+  });
+
+  it('8. swap カード: ◯◯様と入れ替えヘッダ + 双方向の移動表示', () => {
+    mocks.suggestionsResult = {
+      data: makeResponse([makeSwapSuggestion()]),
+      isLoading: false,
+      isError: false,
+    };
+    renderSection();
+    expect(screen.getByTestId('improvement-swap-header')).toHaveTextContent(
+      '佐藤 花子 様と入れ替え',
+    );
+    const moves = screen.getByTestId('improvement-swap-moves');
+    // X (表示中患者) の移動: 月09:00 → 月14:00.
+    expect(moves).toHaveTextContent('中尾 要太 様: 月09:00→月14:00');
+    // Y (counterpart) の移動: 月14:00 → 月09:00.
+    expect(moves).toHaveTextContent('佐藤 花子 様: 月14:00→月09:00');
+    // 効果は move カードと同じ主役表示.
+    expect(screen.getByTestId('improvement-effect')).toHaveTextContent('−18分/週（−2.1km/週）');
+  });
+
+  it('9. swap カード: Y 側 (counterpart) の要確認バッジを患者名入りで出す', () => {
+    mocks.suggestionsResult = {
+      data: makeResponse([
+        makeSwapSuggestion({
+          requires_patient_confirmation: false,
+          swap_counterpart: {
+            ...makeSwapSuggestion().swap_counterpart!,
+            requires_patient_confirmation: true,
+          },
+        }),
+      ]),
+      isLoading: false,
+      isError: false,
+    };
+    renderSection();
+    expect(screen.getByTestId('improvement-swap-counterpart-confirmation')).toHaveTextContent(
+      '佐藤 花子 様の可動域未設定',
+    );
+    // X 側は未設定なので出ない.
+    expect(screen.queryByTestId('improvement-requires-confirmation')).not.toBeInTheDocument();
+  });
+
+  it('10. swap 採用 → 確認ダイアログ → apply-swap payload (a/b 対応・course 解決)', async () => {
+    // 候補拠点の course-templates を注入し、a_new.course_template_id を resolver で解決させる.
+    mocks.templatesQueries = [
+      {
+        data: [
+          {
+            id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            office_id: '11111111-1111-4111-8111-111111111111',
+            label: 'C',
+            deleted_at: null,
+          },
+        ],
+        dataUpdatedAt: 1,
+        status: 'success',
+        isLoading: false,
+      },
+    ];
+    mocks.suggestionsResult = {
+      data: makeResponse([makeSwapSuggestion()]),
+      isLoading: false,
+      isError: false,
+    };
+    renderSection();
+
+    // 採用 → 確認ダイアログが開く (即 mutate しない).
+    await userEvent.click(screen.getByTestId('improvement-adopt-button'));
+    expect(mocks.applySwapMutate).not.toHaveBeenCalled();
+    expect(screen.getByTestId('swap-confirm-dialog')).toBeInTheDocument();
+
+    // 確認 → apply-swap 実行.
+    await userEvent.click(screen.getByTestId('swap-confirm-apply'));
+    await waitFor(() => expect(mocks.applySwapMutate).toHaveBeenCalledTimes(1));
+
+    const req = mocks.applySwapMutate.mock.calls[0][0] as {
+      patient_a_id: string;
+      patient_b_id: string;
+      a_new: { weekday: number; start_time: string; course_template_id?: string };
+      b_new: { weekday: number; start_time: string; course_template_id?: string };
+      iso_year: number;
+      iso_week: number;
+    };
+    // a = 表示中患者 X, b = counterpart Y.
+    expect(req.patient_a_id).toBe(PATIENT.id);
+    expect(req.patient_b_id).toBe('33333333-3333-4333-8333-333333333333');
+    // a_new = candidate 由来 (X → Y の旧枠) + course 解決.
+    expect(req.a_new).toMatchObject({
+      weekday: 0,
+      start_time: '14:00',
+      course_template_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    });
+    // b_new = counterpart.new_* (Y → X の旧枠). course は解決不能なので省略.
+    expect(req.b_new).toEqual({ weekday: 0, start_time: '09:00' });
+    expect(req.iso_year).toBe(2026);
+    expect(req.iso_week).toBe(27);
+
+    // 成功でカードが消える.
+    await waitFor(() =>
+      expect(screen.queryByTestId('improvement-adopt-button')).not.toBeInTheDocument(),
+    );
+  });
+
+  it('11. swap 見送り → DismissReasonDialog を kind=swap で開き、day_immovable でも昇格確認を出さず即 dismiss', async () => {
+    mocks.suggestionsResult = {
+      data: makeResponse([makeSwapSuggestion()]),
+      isLoading: false,
+      isError: false,
+    };
+    mocks.dismissMutate.mockImplementation(
+      (_vars: unknown, opts: { onSuccess?: () => void }) => opts.onSuccess?.(),
+    );
+    renderSection();
+
+    await userEvent.click(screen.getByTestId('improvement-dismiss-button'));
+    expect(screen.getByTestId('dismiss-reason-dialog')).toBeInTheDocument();
+
+    // day_immovable を選んで「見送る」→ swap では昇格ステップを挟まず即 POST.
+    await userEvent.click(screen.getByLabelText('この曜日は動かせない'));
+    await userEvent.click(screen.getByTestId('dismiss-reason-next'));
+
+    // 昇格確認は出ない.
+    expect(screen.queryByTestId('dismiss-promote-confirm')).not.toBeInTheDocument();
+    await waitFor(() => expect(mocks.dismissMutate).toHaveBeenCalledTimes(1));
+    const body = mocks.dismissMutate.mock.calls[0][0] as {
+      kind: string;
+      promote_movability: boolean;
+    };
+    expect(body.kind).toBe('swap');
+    expect(body.promote_movability).toBe(false);
+  });
+
+  it('12. 未知 kind の要素は静かに除外され、既知カードは表示される (寛容化の施錠)', () => {
+    const known = makeSuggestion();
+    // BE が将来返しうる未知 kind の要素 (zod で除外される).
+    const unknown = { ...makeSuggestion(), kind: 'future_kind' } as unknown as ImprovementSuggestion;
+    const parsed = improvementSuggestionsResponseSchema.parse({
+      patient_id: PATIENT.id,
+      iso_year: 2026,
+      iso_week: 27,
+      suggestions: [known, unknown],
+      filtered_summary: {
+        pinned: 0,
+        locked: 0,
+        no_current_visit: 0,
+        dismissed: 0,
+        below_threshold: 0,
+        day_restricted: 0,
+      },
+    });
+    // 未知要素は落ち、既知 1 件のみ残る.
+    expect(parsed.suggestions).toHaveLength(1);
+    expect(parsed.suggestions[0]?.kind).toBe('time_change');
+
+    mocks.suggestionsResult = { data: parsed, isLoading: false, isError: false };
+    renderSection();
+    // 既存カードは表示される (セクション全滅しない).
+    expect(screen.getByTestId('improvement-effect')).toBeInTheDocument();
   });
 });

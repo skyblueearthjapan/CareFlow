@@ -25,6 +25,7 @@ from sqlalchemy import select
 
 from app.core.security import create_access_token, hash_password
 from app.models.course import COURSE_STATUS_STAFF_ASSIGNED, Course
+from app.models.course_template import CourseTemplate
 from app.models.office import Office
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
@@ -555,6 +556,135 @@ async def test_apply_swap_same_patient_id_is_422(client, db) -> None:
         },
     )
     assert res.status_code == 422, res.text
+
+
+# ---------------------------------------------------------------------------
+# _apply_pfv_move: course_template_id 保持 (MAJOR)
+# ---------------------------------------------------------------------------
+
+
+async def _seed_course_template(db, *, office: Office, label: str = "TA") -> CourseTemplate:
+    ct = CourseTemplate(office_id=office.id, label=label)
+    db.add(ct)
+    await db.flush()
+    return ct
+
+
+@pytest.mark.asyncio
+async def test_apply_swap_omitted_b_course_retains_existing(client, db) -> None:
+    """b_new.course_template_id 省略時 → Y の course_template_id が保持される (MAJOR fix).
+
+    FE は counterpart 側の移動先コースを解決できず省略してくる. 省略を
+    「変更なし」と扱い、既存の course_template_id を null 化しないことを確認.
+    """
+    admin = await _make_admin(db, email="sw-course-a@example.com")
+    office = await _seed_office(db, code="CT01", name="CT拠点")
+    ct = await _seed_course_template(db, office=office)
+
+    # A: 月, B: 水. B には course_template_id を設定しておく.
+    a = await _seed_patient(db, office=office, code="CTA", lat=BASE[0], lng=BASE[1])
+    b = await _seed_patient(db, office=office, code="CTB", lat=FAR[0], lng=FAR[1])
+    pfv_a = PatientFixedVisit(
+        patient_id=a.id, mode="normal", weekday=0, slot_index=0,
+        start_time=time(10, 30), duration_min=30,
+        movability="day_flexible", is_pinned=False,
+    )
+    pfv_b = PatientFixedVisit(
+        patient_id=b.id, mode="normal", weekday=2, slot_index=0,
+        start_time=time(9, 0), duration_min=30,
+        movability="day_flexible", is_pinned=False,
+        course_template_id=ct.id,  # B は既存コースを持つ
+    )
+    db.add_all([pfv_a, pfv_b])
+    await db.commit()
+
+    res = await client.post(
+        _APPLY_URL,
+        headers=_bearer(admin),
+        json={
+            "patient_a_id": str(a.id),
+            "patient_b_id": str(b.id),
+            "a_new": {"weekday": 2, "start_time": "09:00"},
+            # b_new.course_template_id を省略 (FE 契約 — counterpart 解決不能)
+            "b_new": {"weekday": 0, "start_time": "10:30"},
+            "iso_year": ISO_YEAR,
+            "iso_week": ISO_WEEK,
+        },
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["applied"] is True
+
+    # populate_existing=True: session が expire_on_commit=False のため、identity map の
+    # stale コピーを強制的に DB から再ロードする (endpoint の別セッション commit を反映).
+    # B は月(0)・10:30 に移動しており、course_template_id は保持されているはず.
+    b_rows = (
+        await db.scalars(
+            select(PatientFixedVisit)
+            .where(PatientFixedVisit.patient_id == b.id)
+            .execution_options(populate_existing=True)
+        )
+    ).all()
+    assert len(b_rows) == 1
+    assert b_rows[0].weekday == 0
+    assert b_rows[0].start_time == time(10, 30)
+    assert b_rows[0].course_template_id == ct.id, (
+        "省略された b_new.course_template_id は null 化せず保持されるべき"
+    )
+
+
+@pytest.mark.asyncio
+async def test_apply_swap_explicit_b_course_overwrites(client, db) -> None:
+    """b_new.course_template_id を明示指定すると、Y の course_template_id が上書きされる."""
+    admin = await _make_admin(db, email="sw-course-b@example.com")
+    office = await _seed_office(db, code="CT02", name="CT拠点2")
+    ct_old = await _seed_course_template(db, office=office, label="TA")
+    ct_new = await _seed_course_template(db, office=office, label="TB")
+
+    a = await _seed_patient(db, office=office, code="CTA2", lat=BASE[0], lng=BASE[1])
+    b = await _seed_patient(db, office=office, code="CTB2", lat=FAR[0], lng=FAR[1])
+    pfv_a = PatientFixedVisit(
+        patient_id=a.id, mode="normal", weekday=0, slot_index=0,
+        start_time=time(10, 30), duration_min=30,
+        movability="day_flexible", is_pinned=False,
+    )
+    pfv_b = PatientFixedVisit(
+        patient_id=b.id, mode="normal", weekday=2, slot_index=0,
+        start_time=time(9, 0), duration_min=30,
+        movability="day_flexible", is_pinned=False,
+        course_template_id=ct_old.id,
+    )
+    db.add_all([pfv_a, pfv_b])
+    await db.commit()
+
+    res = await client.post(
+        _APPLY_URL,
+        headers=_bearer(admin),
+        json={
+            "patient_a_id": str(a.id),
+            "patient_b_id": str(b.id),
+            "a_new": {"weekday": 2, "start_time": "09:00"},
+            # b_new に新しいコースを明示指定 → 上書きされるはず
+            "b_new": {"weekday": 0, "start_time": "10:30", "course_template_id": str(ct_new.id)},
+            "iso_year": ISO_YEAR,
+            "iso_week": ISO_WEEK,
+        },
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["applied"] is True
+
+    # populate_existing=True: session が expire_on_commit=False のため、identity map の
+    # stale コピーを強制的に DB から再ロードする (endpoint の別セッション commit を反映).
+    b_rows = (
+        await db.scalars(
+            select(PatientFixedVisit)
+            .where(PatientFixedVisit.patient_id == b.id)
+            .execution_options(populate_existing=True)
+        )
+    ).all()
+    assert len(b_rows) == 1
+    assert b_rows[0].course_template_id == ct_new.id, (
+        "明示指定した course_template_id は上書きされるべき"
+    )
 
 
 @pytest.mark.asyncio

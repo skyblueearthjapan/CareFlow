@@ -103,6 +103,7 @@ import { FullOptimizeDialog } from './FullOptimizeDialog';
 import { StaffSubstituteDialog } from './StaffSubstituteDialog';
 import { ProposeNewModal } from './ProposeNewModal';
 import { ScheduleHealthDialog } from './ScheduleHealthDialog';
+import { ScheduleReviewBanner } from './ScheduleReviewBanner';
 import { WeeklyRitualGuideDialog } from './WeeklyRitualGuideDialog';
 import { ResetToFixedButton } from './ResetToFixedButton';
 import { UnassignAllStaffButton } from './UnassignAllStaffButton';
@@ -2216,6 +2217,17 @@ export function CourseDayTablePanel({
             </div>
           </div>
         </Card>
+
+        {/* Schedule Advisor Phase 3: 見直しどきバナー (条件成立時のみ描画, admin/manager only).
+            トレンド上の移動時間悪化を検知したら健康診断への導線を控えめに提示する. */}
+        {canEdit ? (
+          <ScheduleReviewBanner
+            isoYear={isoYear}
+            isoWeek={isoWeek}
+            officeId={officeId}
+            onOpenHealth={() => setScheduleHealthOpen(true)}
+          />
+        ) : null}
 
         {/* Wave 19: 2 ペイン レイアウト — メイン (1fr) + プール (320px固定 sticky) */}
         <div

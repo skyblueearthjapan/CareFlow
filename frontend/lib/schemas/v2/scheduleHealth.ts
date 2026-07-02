@@ -77,3 +77,29 @@ export const scheduleHealthResponseSchema = z.object({
   offices: z.array(scheduleHealthOfficeSchema).default([]),
 });
 export type ScheduleHealthResponse = z.infer<typeof scheduleHealthResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// 見直しどきトレンド (Phase 3「見直しどき通知」).
+//   GET /api/v1/schedule/v2/schedule-health/trend?iso_year=&iso_week=&weeks=&office_id=(任意)
+//   各週の office 横断合計のみ (4 指標) を古→新順で返す. 劣化判定は FE 側.
+// ---------------------------------------------------------------------------
+
+export const scheduleHealthTrendTotalsSchema = z.object({
+  visit_count: z.number().default(0),
+  travel_minutes: z.number().default(0),
+  travel_km: z.number().default(0),
+  gap_minutes: z.number().default(0),
+});
+export type ScheduleHealthTrendTotals = z.infer<typeof scheduleHealthTrendTotalsSchema>;
+
+export const scheduleHealthTrendWeekSchema = z.object({
+  iso_year: z.number().int(),
+  iso_week: z.number().int(),
+  totals: scheduleHealthTrendTotalsSchema,
+});
+export type ScheduleHealthTrendWeek = z.infer<typeof scheduleHealthTrendWeekSchema>;
+
+export const scheduleHealthTrendResponseSchema = z.object({
+  weeks: z.array(scheduleHealthTrendWeekSchema).default([]),
+});
+export type ScheduleHealthTrendResponse = z.infer<typeof scheduleHealthTrendResponseSchema>;

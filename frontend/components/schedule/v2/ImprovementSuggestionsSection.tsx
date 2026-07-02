@@ -25,9 +25,19 @@ import { useSession } from 'next-auth/react';
 import { Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 
+import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { fetcher } from '@/lib/api/fetcher';
 import {
   IMPROVEMENT_SUGGESTIONS_KEY,
+  useApplySwap,
   useImprovementSuggestions,
 } from '@/lib/queries/improvementSuggestions';
 import { useConfirmFixedVisits } from '@/lib/queries/propose_confirm';
@@ -95,6 +105,7 @@ export function ImprovementSuggestionsSection({
 
   const suggestionsQuery = useImprovementSuggestions(patient.id, isoYear, isoWeek);
   const confirmMut = useConfirmFixedVisits();
+  const applySwapMut = useApplySwap();
   // マージ確定用に既存 normal 固定枠を取得 (採用しなかった曜日を保持するため).
   const existingFixedVisitsQuery = useFixedVisits(patient.id, 'normal');
 
@@ -104,12 +115,16 @@ export function ImprovementSuggestionsSection({
   const [adoptingFp, setAdoptingFp] = React.useState<string | null>(null);
   // 見送りダイアログの対象.
   const [dismissTarget, setDismissTarget] = React.useState<ImprovementSuggestion | null>(null);
+  // スワップ採用の確認ダイアログの対象.
+  const [swapConfirmTarget, setSwapConfirmTarget] =
+    React.useState<ImprovementSuggestion | null>(null);
 
   // 患者・週が変わったらローカル状態をリセット.
   React.useEffect(() => {
     setHandled(new Set());
     setAdoptingFp(null);
     setDismissTarget(null);
+    setSwapConfirmTarget(null);
   }, [patient.id, isoYear, isoWeek]);
 
   const allSuggestions = React.useMemo(
@@ -176,6 +191,11 @@ export function ImprovementSuggestionsSection({
 
   const handleAdopt = React.useCallback(
     (s: ImprovementSuggestion) => {
+      // スワップは専用の apply-swap フロー: まず確認ダイアログを開く (move の PUT 採用とは別経路).
+      if (s.kind === 'swap') {
+        setSwapConfirmTarget(s);
+        return;
+      }
       if (existingFixedVisitsQuery.isLoading || existingFixedVisitsQuery.isFetching) {
         toast.warning('既存の固定枠を読み込み中です。少し待ってからお試しください');
         return;
@@ -237,6 +257,60 @@ export function ImprovementSuggestionsSection({
     }
   }, [dismissTarget]);
 
+  // スワップ確認 → apply-swap 実行.
+  //   a = 表示中患者 X. a_new = candidate 由来 (= Y の旧枠へ X が移る).
+  //     course_template_id は candidate.office_id + candidate.course_code を resolver で解決.
+  //   b = counterpart Y. b_new = counterpart.new_* (= X の旧枠へ Y が移る).
+  //     Y の移動先 (X の旧枠) の course は current に course_code が無く解決不能なため
+  //     course_template_id は省略 (BE 契約上 optional).
+  const handleConfirmSwap = React.useCallback(() => {
+    const s = swapConfirmTarget;
+    const cp = s?.swap_counterpart;
+    if (!s || !cp) return;
+    if (applySwapMut.isPending) return;
+    const fp = fingerprint(s);
+    const aTpl = resolveCourseTemplateId(s.candidate.office_id, s.candidate.course_code);
+    applySwapMut.mutate(
+      {
+        patient_a_id: patient.id,
+        patient_b_id: cp.patient_id,
+        a_new: {
+          weekday: s.candidate.weekday,
+          start_time: s.candidate.start_time,
+          ...(aTpl ? { course_template_id: aTpl } : {}),
+        },
+        b_new: {
+          weekday: cp.new_weekday,
+          start_time: cp.new_start_time,
+        },
+        iso_year: isoYear,
+        iso_week: isoWeek,
+      },
+      {
+        onSuccess: (data) => {
+          toast.success(`${patient.name} 様と ${cp.patient_name} 様の枠を入れ替えました`);
+          // apply-swap の warnings は現場向け日本語文字列配列 (非致命).
+          const ws = data?.warnings ?? [];
+          for (const w of ws.slice(0, 3)) toast.warning(w);
+          if (ws.length > 3) toast.warning(`他 ${ws.length - 3} 件の警告があります`);
+          setHandled((prev) => new Set(prev).add(fp));
+          setSwapConfirmTarget(null);
+          onAdopted?.();
+        },
+        onError: () => toast.error('入れ替えに失敗しました'),
+      },
+    );
+  }, [
+    swapConfirmTarget,
+    applySwapMut,
+    resolveCourseTemplateId,
+    patient.id,
+    patient.name,
+    isoYear,
+    isoWeek,
+    onAdopted,
+  ]);
+
   // ─── Render ───────────────────────────────────────────────────────
   const isLoading = suggestionsQuery.isLoading;
   const isError = suggestionsQuery.isError;
@@ -266,9 +340,12 @@ export function ImprovementSuggestionsSection({
               key={fingerprint(s)}
               suggestion={s}
               canEdit={canEdit}
+              patientName={patient.name}
               // 採用実行中は全カードを無効化 (レビューM2: 同一 existing スナップショット
               // からの並行 PUT で先行採用が上書き消失するのを防ぐ)。
-              adopting={adoptingFp === fingerprint(s) || confirmMut.isPending}
+              adopting={
+                adoptingFp === fingerprint(s) || confirmMut.isPending || applySwapMut.isPending
+              }
               onAdopt={handleAdopt}
               onDismiss={setDismissTarget}
             />
@@ -296,6 +373,53 @@ export function ImprovementSuggestionsSection({
         onClose={() => setDismissTarget(null)}
         onDismissed={handleDismissed}
       />
+
+      <Dialog
+        open={swapConfirmTarget != null}
+        onOpenChange={(o) =>
+          !o && !applySwapMut.isPending ? setSwapConfirmTarget(null) : undefined
+        }
+      >
+        <DialogContent
+          aria-describedby="swap-confirm-desc"
+          data-testid="swap-confirm-dialog"
+        >
+          <DialogHeader>
+            <DialogTitle>2名の枠を入れ替えますか？</DialogTitle>
+            <DialogDescription id="swap-confirm-desc">
+              {swapConfirmTarget?.swap_counterpart
+                ? `2名の枠を同時に入れ替えます。${swapConfirmTarget.swap_counterpart.patient_name} 様にも変更が生じます。`
+                : '2名の枠を同時に入れ替えます。'}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setSwapConfirmTarget(null)}
+              disabled={applySwapMut.isPending}
+              data-testid="swap-confirm-cancel"
+            >
+              キャンセル
+            </Button>
+            <Button
+              type="button"
+              onClick={handleConfirmSwap}
+              disabled={applySwapMut.isPending}
+              data-testid="swap-confirm-apply"
+            >
+              {applySwapMut.isPending ? (
+                <>
+                  <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
+                  入れ替え中…
+                </>
+              ) : (
+                '入れ替える'
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </section>
   );
 }
