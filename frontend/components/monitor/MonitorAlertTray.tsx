@@ -10,7 +10,9 @@
  * して詳細パネルの即連絡ボックスへ誘導する (tel: リンクは番号が入り次第有効化)。
  */
 import { useState } from 'react';
+import { Check, FileText, Phone, TriangleAlert, X } from 'lucide-react';
 
+import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import type { MonitorStaffRow, MonitorVisit } from '@/lib/schemas/monitor';
 
@@ -52,9 +54,9 @@ function alertReason(v: MonitorVisit, maxInprogressMin?: number): string {
 }
 
 const TAG_CLASS: Record<string, string> = {
-  missing: 'bg-red-600',
-  mismatch: 'bg-amber-600',
-  review: 'bg-yellow-600',
+  missing: 'bg-error',
+  mismatch: 'bg-warning',
+  review: 'bg-warning',
 };
 
 export function MonitorAlertTray({
@@ -83,8 +85,12 @@ export function MonitorAlertTray({
 
   if (alerts.length === 0) {
     return (
-      <div className="px-5 py-2.5 text-xs text-text-muted" data-testid="monitor-alert-tray">
-        ✓ 要対応の異常はありません
+      <div
+        className="flex items-center gap-1 px-5 py-2.5 text-xs text-text-muted"
+        data-testid="monitor-alert-tray"
+      >
+        <Check className="h-3.5 w-3.5" />
+        要対応の異常はありません
       </div>
     );
   }
@@ -111,10 +117,10 @@ export function MonitorAlertTray({
         className={cn(
           'flex items-center gap-2 rounded-[10px] border px-2.5 py-1.5 cursor-pointer',
           inPop ? 'w-full border-transparent border-t-border-default/50' : 'flex-none',
-          v.alert_level === 'missing' && 'border-red-300 bg-red-50',
-          v.alert_level === 'mismatch' && 'border-amber-300 bg-amber-50',
-          v.alert_level === 'review' && 'border-yellow-300 bg-yellow-50',
-          sel && 'outline outline-2 outline-text-primary',
+          v.alert_level === 'missing' && 'border-error/30 bg-error-bg',
+          (v.alert_level === 'mismatch' || v.alert_level === 'review') &&
+            'border-warning/30 bg-warning-bg',
+          sel && 'outline outline-2 outline-brand-primary',
         )}
       >
         <span
@@ -138,26 +144,29 @@ export function MonitorAlertTray({
         </span>
         <span
           className={cn(
-            'overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-text-secondary',
+            'flex items-center gap-1 overflow-hidden whitespace-nowrap text-[11px] text-text-secondary',
             inPop ? 'flex-1' : 'max-w-[160px]',
           )}
           title={alertReason(v, maxInprogressMin)}
         >
-          📝 {alertReason(v, maxInprogressMin)}
+          <FileText className="h-3 w-3 shrink-0" />
+          <span className="overflow-hidden text-ellipsis">{alertReason(v, maxInprogressMin)}</span>
         </span>
         {v.alert_level === 'missing' && (
-          <button
+          <Button
             type="button"
+            variant="destructive"
             data-testid={`monitor-alert-contact-${v.visit_id}`}
             onClick={(e) => {
               e.stopPropagation();
               setPopOpen(false);
               onSelectVisit(v.visit_id);
             }}
-            className="whitespace-nowrap rounded-md bg-red-600 px-2 py-1 text-[11px] font-bold text-white"
+            className="h-7 gap-1 px-2 text-[11px] font-bold"
           >
-            📞連絡
-          </button>
+            <Phone className="h-3 w-3" />
+            連絡
+          </Button>
         )}
       </div>
     );
@@ -167,10 +176,11 @@ export function MonitorAlertTray({
     <div className="relative" data-testid="monitor-alert-tray">
       <div className="flex items-center gap-2 overflow-x-auto px-5 py-2">
         <span
-          className="flex-none whitespace-nowrap text-[11.5px] font-bold text-red-600"
+          className="flex flex-none items-center gap-1 whitespace-nowrap text-[11.5px] font-bold text-error"
           title="未訪問→場所違い→要確認の優先順"
         >
-          ⚠ 要対応 {alerts.length}件
+          <TriangleAlert className="h-3.5 w-3.5" />
+          要対応 {alerts.length}件
         </span>
         {alerts.length > 3 && (
           <button
@@ -196,14 +206,17 @@ export function MonitorAlertTray({
           className="absolute left-5 right-5 top-[calc(100%-4px)] z-40 max-h-[56vh] overflow-y-auto rounded-xl border border-border-default bg-bg-base p-1.5 shadow-xl"
         >
           <div className="sticky top-0 flex items-center justify-between bg-bg-base p-2 text-xs font-bold text-text-secondary">
-            <span>⚠ 要対応 {alerts.length}件（未訪問→場所違い→要確認）</span>
+            <span className="flex items-center gap-1">
+              <TriangleAlert className="h-3.5 w-3.5" />
+              要対応 {alerts.length}件（未訪問→場所違い→要確認）
+            </span>
             <button
               type="button"
               onClick={() => setPopOpen(false)}
               className="px-1 text-text-muted"
               aria-label="閉じる"
             >
-              ✕
+              <X className="h-3.5 w-3.5" />
             </button>
           </div>
           <div className="flex flex-col gap-0.5">

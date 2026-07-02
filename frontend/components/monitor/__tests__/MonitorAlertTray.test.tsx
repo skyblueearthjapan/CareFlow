@@ -91,7 +91,7 @@ describe('MonitorAlertTray', () => {
     const cards = document.querySelectorAll('[role="button"][data-testid^="monitor-alert-"]');
     expect(cards).toHaveLength(1);
     // worst = 未訪問。
-    expect(screen.getByText('⚠ 要対応 1件')).toBeInTheDocument();
+    expect(screen.getByText('要対応 1件')).toBeInTheDocument();
     expect(screen.getByText('未訪問')).toBeInTheDocument();
     // 2 名バッジと両スタッフ名。
     expect(screen.getByText('2名')).toBeInTheDocument();

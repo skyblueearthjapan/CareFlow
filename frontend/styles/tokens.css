@@ -49,6 +49,7 @@
   --success-bg: #d1fae5;
   --warning: #d97706;
   --warning-bg: #fef3c7;
+  --warning-strong: #92400e; /* warning-bg 上の可読テキスト用 (design doc 1-4 --c-care 前景と同値) */
   --error: #dc2626;
   --error-bg: #fee2e2;
   --info: #0d9488;

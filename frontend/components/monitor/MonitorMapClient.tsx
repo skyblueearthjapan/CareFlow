@@ -61,7 +61,7 @@ const nearIcon = () =>
     className: '',
     iconSize: [22, 22],
     iconAnchor: [11, 11],
-    html: `<div style="width:22px;height:22px;border-radius:50%;background:#fff;color:#57534e;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;border:2px dashed #a8a29e">？</div>`,
+    html: `<div style="width:22px;height:22px;border-radius:50%;background:#fff;color:var(--text-secondary);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;border:2px dashed var(--text-muted)">？</div>`,
   });
 
 /** points が変わるたびに地図を fit する子コンポーネント。 */

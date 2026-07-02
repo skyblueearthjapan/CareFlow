@@ -6,7 +6,20 @@
  * (stop list) を出す。
  */
 import { useState } from 'react';
+import {
+  Check,
+  Circle,
+  CircleCheck,
+  CircleDot,
+  CircleX,
+  Clock,
+  OctagonAlert,
+  Timer,
+  TriangleAlert,
+  type LucideIcon,
+} from 'lucide-react';
 
+import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import type { MonitorStaffRow, MonitorVisit } from '@/lib/schemas/monitor';
 
@@ -15,12 +28,24 @@ import {
   STATUS_COLOR,
   STATUS_JUDGE,
   STATUS_LABEL,
+  type DisplayStatus,
   displayStatus,
   formatDistance,
   isLongInprogress,
   isoToHm,
   isoToYmdHm,
 } from './constants';
+
+/** 判定見出しの status → lucide アイコン。 */
+const STATUS_ICON: Record<DisplayStatus, LucideIcon> = {
+  match: CircleCheck,
+  review: TriangleAlert,
+  mismatch: CircleX,
+  inprogress: CircleDot,
+  missing: TriangleAlert,
+  future: Circle,
+  awaiting: Clock,
+};
 
 interface MonitorDetailPanelProps {
   visit: MonitorVisit | null;
@@ -141,7 +166,8 @@ function VisitDetail({
   reviewPending?: boolean;
 }) {
   const st = displayStatus(visit);
-  const [icon, txt] = STATUS_JUDGE[st];
+  const txt = STATUS_JUDGE[st];
+  const JudgeIcon = STATUS_ICON[st];
   const arrive = isoToHm(visit.arrival?.scanned_at);
   const depart =
     visit.departure?.scanned_at != null
@@ -161,10 +187,10 @@ function VisitDetail({
 
   const judgeClass: Record<string, string> = {
     match: 'bg-brand-primary-50 text-brand-primary-hover',
-    review: 'bg-amber-50 text-amber-700',
-    mismatch: 'bg-red-50 text-red-600',
+    review: 'bg-warning-bg text-warning-strong',
+    mismatch: 'bg-error-bg text-error',
     inprogress: 'bg-brand-primary-50 text-brand-primary-hover',
-    missing: 'bg-red-50 text-red-600',
+    missing: 'bg-error-bg text-error',
     future: 'bg-bg-muted text-text-secondary',
     awaiting: 'bg-bg-muted text-text-secondary',
   };
@@ -189,7 +215,7 @@ function VisitDetail({
           judgeClass[st],
         )}
       >
-        <span className="text-lg">{icon}</span> {txt}
+        <JudgeIcon className="h-[18px] w-[18px] shrink-0" /> {txt}
         {dist != null && `（${Math.round(dist)}m）`}
       </div>
 
@@ -204,20 +230,26 @@ function VisitDetail({
 
       {isLongInprogress(visit, maxInprogressMin) && (
         <div
-          className="mb-3 rounded-[10px] border border-amber-300 bg-amber-50 p-3 text-[12.5px] leading-relaxed text-amber-800"
+          className="mb-3 rounded-[10px] border border-warning/40 bg-warning-bg p-3 text-[12.5px] leading-relaxed text-warning-strong"
           data-testid="monitor-long-inprogress"
         >
-          <span className="mb-1 block text-[11px] font-bold">⏱ 要確認</span>
+          <span className="mb-1 flex items-center gap-1 text-[11px] font-bold">
+            <Timer className="h-3.5 w-3.5" />
+            要確認
+          </span>
           {LONG_INPROGRESS_REASON}（滞在 {visit.stay_minutes}分）
         </div>
       )}
 
       {visit.phase === 'missing' && (
         <div
-          className="mb-3 rounded-xl border border-red-300 bg-red-50 p-3"
+          className="mb-3 rounded-xl border border-error/30 bg-error-bg p-3"
           data-testid="monitor-callbox"
         >
-          <div className="mb-1.5 text-[13px] font-bold text-red-600">⛔ 未訪問 — 即対応</div>
+          <div className="mb-1.5 flex items-center gap-1 text-[13px] font-bold text-error">
+            <OctagonAlert className="h-4 w-4" />
+            未訪問 — 即対応
+          </div>
           <div className="mb-2 text-xs text-text-secondary">
             予定 {visit.start_time}–{visit.end_time} を過ぎても到着スキャンがありません。
           </div>
@@ -231,7 +263,7 @@ function VisitDetail({
         <div
           className={cn(
             'mb-3 rounded-[10px] border p-3 text-[12.5px] leading-relaxed',
-            st === 'mismatch' ? 'border-red-300 bg-red-50' : 'border-amber-300 bg-amber-50',
+            st === 'mismatch' ? 'border-error/30 bg-error-bg' : 'border-warning/40 bg-warning-bg',
           )}
         >
           <span className="mb-1 block text-[11px] font-bold text-text-secondary">
@@ -289,7 +321,8 @@ function ReviewSection({
         data-testid="monitor-review-done"
       >
         <div className="mb-1 flex items-center gap-1.5 text-[12.5px] font-bold text-brand-primary-hover">
-          ✓ 確認済み
+          <Check className="h-3.5 w-3.5" />
+          確認済み
         </div>
         <div className="text-[11.5px] text-text-secondary">
           {visit.reviewed_by_name ?? '—'}
@@ -301,15 +334,17 @@ function ReviewSection({
           </div>
         )}
         {onUnreview && (
-          <button
+          <Button
             type="button"
+            variant="outline"
+            size="sm"
             data-testid="monitor-review-undo"
             disabled={reviewPending}
             onClick={() => onUnreview(visit.visit_id)}
-            className="mt-2 rounded-md border border-border-default bg-bg-base px-2.5 py-1 text-[11.5px] font-semibold text-text-secondary hover:bg-bg-muted disabled:opacity-50"
+            className="mt-2 h-7 px-2.5 text-[11.5px] font-semibold text-text-secondary"
           >
             確認を取り消す
-          </button>
+          </Button>
         )}
       </div>
     );
@@ -319,14 +354,16 @@ function ReviewSection({
 
   if (!open) {
     return (
-      <button
+      <Button
         type="button"
+        variant="outline"
         data-testid="monitor-review-button"
         onClick={() => setOpen(true)}
-        className="mb-3 w-full rounded-[10px] border border-brand-primary-light bg-brand-primary-50 px-3 py-2 text-[12.5px] font-bold text-brand-primary-hover hover:bg-brand-primary-light"
+        className="mb-3 h-auto w-full gap-1.5 rounded-[10px] border-brand-primary-light bg-brand-primary-50 px-3 py-2 text-[12.5px] font-bold text-brand-primary-hover hover:bg-brand-primary-light hover:text-brand-primary-hover"
       >
-        ✓ 確認済みにする
-      </button>
+        <Check className="h-3.5 w-3.5" />
+        確認済みにする
+      </Button>
     );
   }
 
@@ -347,8 +384,10 @@ function ReviewSection({
         className="mb-2 w-full resize-none rounded-md border border-border-default bg-bg-base px-2 py-1.5 text-[12px]"
       />
       <div className="flex gap-2">
-        <button
+        <Button
           type="button"
+          variant="default"
+          size="sm"
           data-testid="monitor-review-submit"
           disabled={reviewPending}
           onClick={() => {
@@ -356,20 +395,22 @@ function ReviewSection({
             setOpen(false);
             setComment('');
           }}
-          className="rounded-md bg-brand-primary px-3 py-1 text-[11.5px] font-bold text-white hover:bg-brand-primary-hover disabled:opacity-50"
+          className="h-7 px-3 text-[11.5px] font-bold"
         >
           確定
-        </button>
-        <button
+        </Button>
+        <Button
           type="button"
+          variant="outline"
+          size="sm"
           onClick={() => {
             setOpen(false);
             setComment('');
           }}
-          className="rounded-md border border-border-default bg-bg-base px-3 py-1 text-[11.5px] font-semibold text-text-secondary hover:bg-bg-muted"
+          className="h-7 px-3 text-[11.5px] font-semibold text-text-secondary"
         >
           キャンセル
-        </button>
+        </Button>
       </div>
     </div>
   );

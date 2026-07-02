@@ -72,15 +72,15 @@ export const STATUS_LABEL: Record<DisplayStatus, string> = {
   awaiting: '到着待ち',
 };
 
-/** 詳細パネルの判定見出し (アイコン + 文言)。 */
-export const STATUS_JUDGE: Record<DisplayStatus, [string, string]> = {
-  match: ['✓', '登録住所と一致'],
-  review: ['⚠', '要確認（遅延／距離）'],
-  mismatch: ['✕', '場所違いの可能性'],
-  inprogress: ['●', '訪問中'],
-  missing: ['⚠', '未訪問・未記録'],
-  future: ['○', 'これからの予定'],
-  awaiting: ['…', '到着待ち'],
+/** 詳細パネルの判定見出し (文言のみ。アイコンは DetailPanel 側で status→lucide マッピング)。 */
+export const STATUS_JUDGE: Record<DisplayStatus, string> = {
+  match: '登録住所と一致',
+  review: '要確認（遅延／距離）',
+  mismatch: '場所違いの可能性',
+  inprogress: '訪問中',
+  missing: '未訪問・未記録',
+  future: 'これからの予定',
+  awaiting: '到着待ち',
 };
 
 /** アラートトレイの優先順 (未訪問 → 場所違い → 要確認)。 */

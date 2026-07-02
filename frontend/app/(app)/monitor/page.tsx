@@ -13,8 +13,9 @@ import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
-import { Settings } from 'lucide-react';
+import { Settings, TriangleAlert } from 'lucide-react';
 
+import { FilterChip } from '@/components/ui/filter-chip';
 import { Skeleton } from '@/components/ui/skeleton';
 import { cn } from '@/lib/utils';
 import {
@@ -238,27 +239,28 @@ export default function MonitorPage() {
           </button>
         </span>
         <span className="h-5 w-px bg-border-default" />
-        <Chip active={officeId === null} onClick={() => setOfficeId(null)}>
+        <FilterChip active={officeId === null} onClick={() => setOfficeId(null)}>
           全拠点
-        </Chip>
+        </FilterChip>
         {(data?.offices ?? []).map((o) => (
-          <Chip key={o.id} active={officeId === o.id} onClick={() => setOfficeId(o.id)}>
+          <FilterChip key={o.id} active={officeId === o.id} onClick={() => setOfficeId(o.id)}>
             {o.name}
-          </Chip>
+          </FilterChip>
         ))}
         <span className="h-5 w-px bg-border-default" />
-        <Chip
+        <FilterChip
           active={only === 'anomaly'}
           onClick={() => setOnly((o) => (o === 'anomaly' ? null : 'anomaly'))}
         >
-          ⚠ 異常のみ
-        </Chip>
-        <Chip
+          <TriangleAlert className="h-3 w-3" />
+          異常のみ
+        </FilterChip>
+        <FilterChip
           active={only === 'missing'}
           onClick={() => setOnly((o) => (o === 'missing' ? null : 'missing'))}
         >
           未訪問のみ
-        </Chip>
+        </FilterChip>
       </div>
 
       {/* KPI */}
@@ -300,7 +302,7 @@ export default function MonitorPage() {
               <Skeleton className="h-16 w-full" />
             </div>
           ) : monitorQuery.isError ? (
-            <div className="p-6 text-sm text-red-600">
+            <div className="p-6 text-sm text-error">
               モニターの取得に失敗しました。再読み込みしてください。
             </div>
           ) : (
@@ -338,31 +340,6 @@ export default function MonitorPage() {
   );
 }
 
-function Chip({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        'rounded-full border px-3 py-1.5 text-[12.5px]',
-        active
-          ? 'border-transparent bg-brand-primary-light font-semibold text-brand-primary-hover'
-          : 'border-border-default bg-bg-base text-text-secondary',
-      )}
-    >
-      {children}
-    </button>
-  );
-}
-
 function Kpi({
   label,
   value,
@@ -384,7 +361,7 @@ function Kpi({
     <div
       className={cn(
         'inline-flex items-baseline gap-1.5 rounded-full border px-3 py-1',
-        tone === 'bad' ? 'border-red-300 bg-red-50' : 'border-border-default bg-bg-base',
+        tone === 'bad' ? 'border-error/30 bg-error-bg' : 'border-border-default bg-bg-base',
       )}
     >
       <span className="text-[11px] text-text-muted">{label}</span>

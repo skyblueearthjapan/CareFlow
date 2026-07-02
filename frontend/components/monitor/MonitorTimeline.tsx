@@ -271,12 +271,12 @@ function VisitBars({
           }}
           className={cn(
             'absolute top-[38px] flex h-[15px] items-center gap-0.5 overflow-hidden whitespace-nowrap rounded-[5px] px-1.5 text-[10px] font-semibold text-white',
-            isSelected ? 'outline outline-[3px] outline-text-primary' : '',
+            isSelected ? 'outline outline-2 outline-offset-1 outline-text-primary' : '',
             status === 'inprogress'
               ? '[background-image:repeating-linear-gradient(45deg,rgba(255,255,255,.25),rgba(255,255,255,.25)_4px,transparent_4px,transparent_8px)]'
               : '',
-            // 確認済みは淡色化 (要対応の消化が一目で分かる)。未訪問の点滅も止める。
-            visit.reviewed ? 'opacity-50' : status === 'missing' ? 'animate-pulse' : '',
+            // 確認済みは淡色化 (要対応の消化が一目で分かる)。未訪問は赤ハッチ+トレイで十分なため点滅しない。
+            visit.reviewed ? 'opacity-50' : '',
           )}
           style={
             status === 'missing'

@@ -33,6 +33,11 @@ const config: Config = {
         warning: 'var(--warning)',
         error: 'var(--error)',
         info: 'var(--info)',
+        'success-bg': 'var(--success-bg)',
+        'warning-bg': 'var(--warning-bg)',
+        'error-bg': 'var(--error-bg)',
+        'info-bg': 'var(--info-bg)',
+        'warning-strong': 'var(--warning-strong)',
       },
       borderRadius: {
         sm: 'var(--radius-sm)',
