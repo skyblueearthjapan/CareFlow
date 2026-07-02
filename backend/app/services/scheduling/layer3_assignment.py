@@ -2878,6 +2878,18 @@ class Layer3Assigner:
         )
         target_visits = list((await db.scalars(visit_stmt)).all())
 
+        # ---------- P3-① 保護: 手動差替え visit を再割当対象から除外 ----------
+        # manual_staff_override=True の visit は当日欠勤の代替スタッフ提案
+        # (staff_substitute.py apply) で人間が確定した差替え結果 (VSA +
+        # primary/secondary_staff_id) を保持している。assign-staff-only 系の
+        # 再割当で VSA を DELETE/INSERT・primary/secondary を同期し直すと差替えが
+        # 失われるため、行単位で対象から除外する。除外した visit は以降の DELETE
+        # (target_visit_ids) にも INSERT ループにも乗らないので、既存の VSA が
+        # そのまま温存される。2 名体制は Commit 1 が visit_group 全行に override を
+        # 立てるため、行単位の除外で group 全体が一貫して保護される。
+        # (設計: docs/plans/p3-1-staff-substitute-design.md §4)
+        target_visits = [v for v in target_visits if not v.manual_staff_override]
+
         if not target_visits:
             await db.flush()
             return

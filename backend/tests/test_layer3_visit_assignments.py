@@ -462,3 +462,191 @@ async def test_persist_skips_non_planned_visits(db) -> None:
     assert planned.id in visit_ids
     assert cancelled.id not in visit_ids
     assert len(rows) == 1
+
+
+# ---------------------------------------------------------------------------
+# 7) P3-① 保護: manual_staff_override=True の visit は再割当で上書きされない
+#    (docs/plans/p3-1-staff-substitute-design.md §4)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_persist_skips_manual_staff_override_visit(db) -> None:
+    """override=True の visit は VSA / primary_staff_id が差替え結果のまま保持される.
+
+    当日欠勤の代替スタッフ提案で s_sub に差し替えた visit を、後続の
+    assign-staff-only (course を s1 に割当) が上書きしないことを検証する。
+    """
+    office, staffs = await _make_office_and_staff(db, n_staff=2)
+    s1, s_sub = staffs[0], staffs[1]
+
+    course = await _make_course(db, weekday=0, code="A", office_id=office.id)
+    patient = await _make_patient(db, code="P5")
+    visit = await _make_visit(
+        db,
+        patient_id=patient.id,
+        course_id=course.id,
+        required_staff_count=1,
+    )
+    # 代替スタッフ提案 apply 済みの状態を再現: override フラグ + 差替え結果
+    visit.manual_staff_override = True
+    visit.primary_staff_id = s_sub.id
+    db.add(VisitStaffAssignment(visit_id=visit.id, staff_id=s_sub.id))
+    await db.commit()
+
+    assigner = Layer3Assigner()
+    await assigner._persist(
+        db,
+        [
+            StaffAssignment(
+                weekday=0,
+                course_code="A",
+                course_id=course.id,
+                staff_id=s1.id,
+            )
+        ],
+    )
+    await db.commit()
+
+    # VSA は差替え結果 (s_sub) のまま、s1 で上書きされていない
+    rows = (
+        await db.scalars(
+            select(VisitStaffAssignment).where(VisitStaffAssignment.visit_id == visit.id)
+        )
+    ).all()
+    assert len(rows) == 1
+    assert rows[0].staff_id == s_sub.id
+
+    # primary_staff_id も保護される
+    refreshed_visit = await db.scalar(select(Visit).where(Visit.id == visit.id))
+    assert refreshed_visit.primary_staff_id == s_sub.id
+
+    # course の遷移自体は行われる (course は override 対象外)
+    refreshed_course = await db.scalar(select(Course).where(Course.id == course.id))
+    assert refreshed_course.course_status == COURSE_STATUS_STAFF_ASSIGNED
+    assert refreshed_course.assigned_staff_id == s1.id
+
+
+@pytest.mark.asyncio
+async def test_persist_processes_non_override_visit_alongside_override(db) -> None:
+    """override=False の visit は従来通り処理される (回帰) — override と混在しても独立."""
+    office, staffs = await _make_office_and_staff(db, n_staff=2)
+    s1, s_sub = staffs[0], staffs[1]
+
+    course_a = await _make_course(db, weekday=0, code="A", office_id=office.id)
+    course_b = await _make_course(db, weekday=0, code="B", office_id=office.id)
+    patient = await _make_patient(db, code="P6")
+
+    # visit_a: override 済み (s_sub に差替え・保護対象)
+    visit_a = await _make_visit(
+        db, patient_id=patient.id, course_id=course_a.id, required_staff_count=1
+    )
+    visit_a.manual_staff_override = True
+    visit_a.primary_staff_id = s_sub.id
+    db.add(VisitStaffAssignment(visit_id=visit_a.id, staff_id=s_sub.id))
+
+    # visit_b: 通常 (override なし・処理対象)
+    visit_b = await _make_visit(
+        db, patient_id=patient.id, course_id=course_b.id, required_staff_count=1
+    )
+    await db.commit()
+
+    assigner = Layer3Assigner()
+    await assigner._persist(
+        db,
+        [
+            StaffAssignment(
+                weekday=0, course_code="A", course_id=course_a.id, staff_id=s1.id
+            ),
+            StaffAssignment(
+                weekday=0, course_code="B", course_id=course_b.id, staff_id=s1.id
+            ),
+        ],
+    )
+    await db.commit()
+
+    # visit_a は保護 (s_sub のまま)
+    rows_a = (
+        await db.scalars(
+            select(VisitStaffAssignment).where(VisitStaffAssignment.visit_id == visit_a.id)
+        )
+    ).all()
+    assert len(rows_a) == 1
+    assert rows_a[0].staff_id == s_sub.id
+
+    # visit_b は通常処理 (s1 が INSERT)
+    rows_b = (
+        await db.scalars(
+            select(VisitStaffAssignment).where(VisitStaffAssignment.visit_id == visit_b.id)
+        )
+    ).all()
+    assert len(rows_b) == 1
+    assert rows_b[0].staff_id == s1.id
+    refreshed_b = await db.scalar(select(Visit).where(Visit.id == visit_b.id))
+    assert refreshed_b.primary_staff_id == s1.id
+
+
+@pytest.mark.asyncio
+async def test_persist_protects_two_person_override_pair(db) -> None:
+    """2 名体制で override のペア (visit_group 全行 override) は両行とも保護される."""
+    office, staffs = await _make_office_and_staff(db, n_staff=4)
+    s1, s2, sub1, sub2 = staffs[0], staffs[1], staffs[2], staffs[3]
+
+    course_a = await _make_course(db, weekday=0, code="A", office_id=office.id)
+    course_b = await _make_course(db, weekday=0, code="B", office_id=office.id)
+    patient = await _make_patient(db, code="P7")
+
+    group_id = uuid.uuid4()
+    visit_a = await _make_visit(
+        db,
+        patient_id=patient.id,
+        course_id=course_a.id,
+        required_staff_count=2,
+        visit_group_id=group_id,
+    )
+    visit_b = await _make_visit(
+        db,
+        patient_id=patient.id,
+        course_id=course_b.id,
+        required_staff_count=2,
+        visit_group_id=group_id,
+    )
+    # Commit 1 は visit_group 全行に override を立てる。差替え結果を両行に設定。
+    for v, sub in ((visit_a, sub1), (visit_b, sub2)):
+        v.manual_staff_override = True
+        v.primary_staff_id = sub.id
+        db.add(VisitStaffAssignment(visit_id=v.id, staff_id=sub.id))
+    await db.commit()
+
+    assigner = Layer3Assigner()
+    await assigner._persist(
+        db,
+        [
+            StaffAssignment(
+                weekday=0, course_code="A", course_id=course_a.id, staff_id=s1.id
+            ),
+            StaffAssignment(
+                weekday=0, course_code="B", course_id=course_b.id, staff_id=s2.id
+            ),
+        ],
+    )
+    await db.commit()
+
+    # 両 visit とも差替え結果 (sub1 / sub2) のまま・s1/s2 で上書きされない
+    rows_a = (
+        await db.scalars(
+            select(VisitStaffAssignment).where(VisitStaffAssignment.visit_id == visit_a.id)
+        )
+    ).all()
+    rows_b = (
+        await db.scalars(
+            select(VisitStaffAssignment).where(VisitStaffAssignment.visit_id == visit_b.id)
+        )
+    ).all()
+    assert {r.staff_id for r in rows_a} == {sub1.id}
+    assert {r.staff_id for r in rows_b} == {sub2.id}
+
+    refreshed_a = await db.scalar(select(Visit).where(Visit.id == visit_a.id))
+    refreshed_b = await db.scalar(select(Visit).where(Visit.id == visit_b.id))
+    assert refreshed_a.primary_staff_id == sub1.id
+    assert refreshed_b.primary_staff_id == sub2.id
