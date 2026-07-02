@@ -52,7 +52,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
 
-SuggestionDismissalKind = Literal["time_change", "day_change"]
+SuggestionDismissalKind = Literal["time_change", "day_change", "swap"]
 SuggestionDismissalReason = Literal[
     "day_immovable", "time_immovable", "staff_relation", "other"
 ]
@@ -73,7 +73,8 @@ class SuggestionDismissal(Base):
         ForeignKey("patients.id", ondelete="CASCADE"),
         nullable=False,
     )
-    # 'time_change' / 'day_change'. 値域は CHECK ck_sd_kind で拘束.
+    # 'time_change' / 'day_change' / 'swap'. 値域は CHECK ck_sd_kind で拘束.
+    # 'swap' は P3-② (2 患者入れ替え提案) の却下指紋. migration 0049 で CHECK 拡張.
     kind: Mapped[SuggestionDismissalKind] = mapped_column(String(16), nullable=False)
     # 対象曜日 0=月 … 6=日. CHECK ck_sd_weekday で拘束.
     target_weekday: Mapped[int] = mapped_column(SmallInteger, nullable=False)
@@ -99,7 +100,7 @@ class SuggestionDismissal(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "kind IN ('time_change','day_change')",
+            "kind IN ('time_change','day_change','swap')",
             name="ck_sd_kind",
         ),
         CheckConstraint(

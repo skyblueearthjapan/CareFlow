@@ -39,10 +39,12 @@ from app.services.scheduling.auto_allocator_v2 import (
     LUNCH_LATEST_END as _LUNCH_LATEST_END,
 )
 from app.services.scheduling.auto_allocator_v2 import (
+    _add_minutes,
     compute_lunch_window,
     haversine_km,
 )
-from app.services.scheduling.config import SchedulingConfig
+from app.services.scheduling.config import DEFAULT_SCHEDULING_CONFIG, SchedulingConfig
+from app.services.scheduling.pfv_validator import _find_conflict
 from app.services.scheduling.proposal_solver import (
     Candidate,
     ExistingVisit,
@@ -63,6 +65,9 @@ IMPROVEMENT_THRESHOLD_MIN: int = 10
 
 # 患者 1 名あたりの最大提案件数.
 MAX_SUGGESTIONS_PER_PATIENT: int = 5
+
+# 患者 1 名あたりの最大スワップ提案件数 (既存 5 件枠に delta 降順で混ぜる).
+MAX_SWAP_SUGGESTIONS_PER_PATIENT: int = 2
 
 # スタッフ実態警告コード (propose-slots P0-1 と同一 raw code. FE が日本語化する).
 _WARN_STAFF_UNASSIGNED = "staff_unassigned"
@@ -140,7 +145,7 @@ def compute_marginal_cost(
 class ImprovementCandidateData:
     """改善提案 1 件 (内部表現)."""
 
-    kind: str  # 'time_change' | 'day_change'
+    kind: str  # 'time_change' | 'day_change' | 'swap'
     target_weekday: int  # 却下指紋の対象曜日 (= 現在枠の曜日)
     # 現在枠.
     current_office_id: UUID
@@ -165,6 +170,14 @@ class ImprovementCandidateData:
     requires_patient_confirmation: bool
     changes: list[str]
     unchanged: list[str]
+    # kind='swap' のときのみ設定される相手患者 Y の情報 (P3-②). それ以外は None.
+    swap_counterpart_patient_id: UUID | None = None
+    swap_counterpart_name: str | None = None
+    swap_counterpart_current_weekday: int | None = None
+    swap_counterpart_current_start: time | None = None
+    swap_counterpart_new_weekday: int | None = None
+    swap_counterpart_new_start: time | None = None
+    swap_counterpart_requires_confirmation: bool = False
 
 
 @dataclass
@@ -173,6 +186,11 @@ class FilteredSummaryData:
 
     各カウンタの単位は ImprovementFilteredSummary の description を参照.
     カテゴリ間は重複しない (1 PFV / 候補は 1 カテゴリのみに計上).
+
+    設計決定 D1: スワップ (kind='swap') 除外は現状カウント対象外.
+    スワップ提案は「X+Y のペア」を単位として生成されるため、PFV 単位・候補スロット単位と
+    粒度が異なり既存カウンタに加算すると意味が曖昧になる.
+    将来 swap_dismissed_pairs 等の専用カウンタを追加できる (後方互換フィールド追加のみ).
     """
 
     pinned: int = 0
@@ -325,6 +343,244 @@ def _build_changes(
 
 
 # ---------------------------------------------------------------------------
+# スワップ (2 患者入れ替え) 提案 — P3-②
+# ---------------------------------------------------------------------------
+
+
+def _ev_from_visit(v: object) -> ExistingVisit:
+    """bucket.visits の 1 要素 (V2Visit) から ExistingVisit を組む."""
+    return ExistingVisit(
+        start_time=v.start_time,  # type: ignore[attr-defined]
+        end_time=v.end_time,  # type: ignore[attr-defined]
+        lat=v.lat,  # type: ignore[attr-defined]
+        lng=v.lng,  # type: ignore[attr-defined]
+        service_minutes=v.service_minutes,  # type: ignore[attr-defined]
+        patient_id=str(v.patient_id),  # type: ignore[attr-defined]
+    )
+
+
+def _swap_candidates_for_pfv(
+    *,
+    patient: Patient,
+    patient_coord: Coord,
+    wx: int,
+    sx: time,
+    x_duration: int,
+    x_movability: str,
+    x_day_flexible: bool,
+    x_occupied_weekdays: set[int],
+    current: _CurrentPlacement,
+    current_course_label: str,
+    buckets: dict[tuple[UUID, int, str], _CourseBucket],
+    office_name_by_id: dict[UUID, str],
+    pfv_by_pw: dict[tuple[UUID, int], PatientFixedVisit],
+    swap_dismissed: set[tuple[UUID, int]],
+    config: SchedulingConfig | None,
+) -> list[ImprovementCandidateData]:
+    """X の 1 PFV について、同一 office の他患者 Y の枠との入れ替え候補を列挙する.
+
+    双方向 feasibility (X が Y の位置に自分の duration で置け、かつ Y が X の位置に
+    自分の duration で置ける) を ``_find_conflict`` で相互整合に判定し、閾値超の
+    combined delta を持つスワップのみ返す (最終的な件数上限は呼出側で適用).
+
+    others の相互整合 (設計原則 N-1): 同一バケット内スワップでは、X の新位置判定に
+    「Y を X の旧位置に置いた仮想 visit」を含め、Y の新位置判定に「X を Y の旧位置に
+    置いた仮想 visit」を含める. 90 分占有・移動バッファーは ``_find_conflict`` /
+    ``compute_marginal_cost`` の正典をそのまま使う.
+    """
+    # _find_conflict は config 必須 (非 optional). None のときは全既定を注入
+    # (None フォールバックと同一物差し = 移動/バッファー既定値).
+    eff_config = config if config is not None else DEFAULT_SCHEDULING_CONFIG
+
+    # X の現在枠が swap 却下済みなら、この PFV 起点のスワップは一切出さない.
+    if (patient.id, wx) in swap_dismissed:
+        return []
+
+    sx_min = _time_to_min(sx)
+    out: list[ImprovementCandidateData] = []
+
+    for (office_id_y, wy, course_code_y), bucket_y in buckets.items():
+        # 同一 office のバケットのみ交換候補にする.
+        if office_id_y != current.bucket.office_id:
+            continue
+        same_bucket = bucket_y is current.bucket
+        weekday_changes = wy != wx
+
+        for vy in bucket_y.visits:
+            y_pid = vy.patient_id  # type: ignore[attr-defined]
+            if y_pid == patient.id:
+                continue
+            # Y の可動域 / pin は Y の PFV から判定 (PFV 基準). 無ければ保守的に skip.
+            pfv_y = pfv_by_pw.get((y_pid, wy))
+            if pfv_y is None or pfv_y.is_pinned or pfv_y.movability == "locked":
+                continue
+            y_movability = pfv_y.movability
+            y_duration = vy.service_minutes  # type: ignore[attr-defined]
+            sy = vy.start_time  # type: ignore[attr-defined]
+            sy_min = _time_to_min(sy)
+            y_coord: Coord = (vy.lat, vy.lng)  # type: ignore[attr-defined]
+
+            # 曜日跨ぎスワップ: 移動先曜日に既に PFV を持つ患者は apply 時に 422 になるため
+            # 候補生成前に除外する (デッドエンド提案防止 / MEDIUM-1).
+            # - X が移動先 (wy) に PFV を持つ → X は wy を既に占有している.
+            # - Y が移動先 (wx) に PFV を持つ → Y は wx を既に占有している.
+            if weekday_changes and wy in x_occupied_weekdays:
+                continue
+            if weekday_changes and (y_pid, wx) in pfv_by_pw:
+                continue
+
+            # 双方の movability 尊重: 曜日が変わる側は day_flexible 必須.
+            if weekday_changes:
+                if not x_day_flexible or y_movability != "day_flexible":
+                    continue
+                x_conf = False
+                y_conf = False
+            else:
+                x_conf = x_movability == "unknown"
+                y_conf = y_movability == "unknown"
+
+            # Y 側の swap 却下指紋も尊重.
+            if (y_pid, wy) in swap_dismissed:
+                continue
+
+            # ---- feasibility (相互整合の others 構築) ----
+            others_x = [
+                _ev_from_visit(v)
+                for v in bucket_y.visits
+                if v.patient_id not in (patient.id, y_pid)  # type: ignore[attr-defined]
+            ]
+            others_y = [
+                _ev_from_visit(v)
+                for v in current.bucket.visits
+                if v.patient_id not in (patient.id, y_pid)  # type: ignore[attr-defined]
+            ]
+            if same_bucket:
+                # Y は X の旧位置 (sx) へ移る → X の新位置判定 others に Y 仮想を追加.
+                others_x.append(
+                    ExistingVisit(
+                        start_time=sx,
+                        end_time=_add_minutes(sx, y_duration),
+                        lat=y_coord[0],
+                        lng=y_coord[1],
+                        service_minutes=y_duration,
+                        patient_id=str(y_pid),
+                    )
+                )
+                # X は Y の旧位置 (sy) へ移る → Y の新位置判定 others に X 仮想を追加.
+                others_y.append(
+                    ExistingVisit(
+                        start_time=sy,
+                        end_time=_add_minutes(sy, x_duration),
+                        lat=patient_coord[0],
+                        lng=patient_coord[1],
+                        service_minutes=x_duration,
+                        patient_id=str(patient.id),
+                    )
+                )
+
+            proposed_x = ExistingVisit(
+                start_time=sy,
+                end_time=_add_minutes(sy, x_duration),
+                lat=patient_coord[0],
+                lng=patient_coord[1],
+                service_minutes=x_duration,
+                patient_id=str(patient.id),
+            )
+            proposed_y = ExistingVisit(
+                start_time=sx,
+                end_time=_add_minutes(sx, y_duration),
+                lat=y_coord[0],
+                lng=y_coord[1],
+                service_minutes=y_duration,
+                patient_id=str(y_pid),
+            )
+            if _find_conflict(proposed_x, others_x, config=eff_config) is not None:
+                continue
+            if _find_conflict(proposed_y, others_y, config=eff_config) is not None:
+                continue
+
+            # ---- delta = (X現在 + Y現在) − (X新 + Y新) ----
+            # Y 現在の限界コスト (現状: bucket_y から Y のみ除外, X は残す).
+            y_cur_existing = sorted(
+                (
+                    _ev_from_visit(v)
+                    for v in bucket_y.visits
+                    if v.patient_id != y_pid  # type: ignore[attr-defined]
+                ),
+                key=lambda e: _time_to_min(e.start_time),
+            )
+            yc_prev, yc_nxt = _neighbors_at(y_cur_existing, sy_min)
+            y_cur_min, y_cur_km = compute_marginal_cost(
+                y_coord, yc_prev, yc_nxt, config=config
+            )
+            # X 新 (sy, bucket_y): others_x の隣接.
+            ox_sorted = sorted(others_x, key=lambda e: _time_to_min(e.start_time))
+            xn_prev, xn_nxt = _neighbors_at(ox_sorted, sy_min)
+            x_new_min, x_new_km = compute_marginal_cost(
+                patient_coord, xn_prev, xn_nxt, config=config
+            )
+            # Y 新 (sx, bucket_x): others_y の隣接.
+            oy_sorted = sorted(others_y, key=lambda e: _time_to_min(e.start_time))
+            yn_prev, yn_nxt = _neighbors_at(oy_sorted, sx_min)
+            y_new_min, y_new_km = compute_marginal_cost(
+                y_coord, yn_prev, yn_nxt, config=config
+            )
+
+            delta_min = (current.marginal_min + y_cur_min) - (x_new_min + y_new_min)
+            delta_km = (current.marginal_km + y_cur_km) - (x_new_km + y_new_km)
+            if delta_min < IMPROVEMENT_THRESHOLD_MIN:
+                continue
+
+            cand_label = _course_label(bucket_y.office_code, course_code_y)
+            changes, unchanged = _build_changes(
+                current_weekday=wx,
+                current_start=sx,
+                current_course_label=current_course_label,
+                current_staff_name=current.bucket.staff_name,
+                cand_weekday=wy,
+                cand_start=sy,
+                cand_course_label=cand_label,
+                cand_staff_name=bucket_y.staff_name,
+            )
+            out.append(
+                ImprovementCandidateData(
+                    kind="swap",
+                    target_weekday=wx,
+                    current_office_id=current.bucket.office_id,
+                    current_weekday=wx,
+                    current_start=sx,
+                    current_end=current.end_time,
+                    current_course_label=current_course_label,
+                    current_staff_name=current.bucket.staff_name,
+                    cand_office_id=office_id_y,
+                    cand_office_name=office_name_by_id.get(office_id_y),
+                    cand_weekday=wy,
+                    cand_start=sy,
+                    cand_end=_add_minutes(sy, x_duration),
+                    cand_course_code=course_code_y,
+                    cand_course_label=cand_label,
+                    cand_staff_name=bucket_y.staff_name,
+                    delta_minutes=delta_min,
+                    delta_km=round(delta_km, 2),
+                    staff_warnings=_staff_warnings_for_bucket(
+                        bucket_y, patient.sex_restriction
+                    ),
+                    requires_patient_confirmation=x_conf,
+                    changes=changes,
+                    unchanged=unchanged,
+                    swap_counterpart_patient_id=y_pid,
+                    swap_counterpart_name=vy.patient_name,  # type: ignore[attr-defined]
+                    swap_counterpart_current_weekday=wy,
+                    swap_counterpart_current_start=sy,
+                    swap_counterpart_new_weekday=wx,
+                    swap_counterpart_new_start=sx,
+                    swap_counterpart_requires_confirmation=y_conf,
+                )
+            )
+    return out
+
+
+# ---------------------------------------------------------------------------
 # メイン
 # ---------------------------------------------------------------------------
 
@@ -382,6 +638,38 @@ async def find_improvement_candidates(
         if d.expires_at is None or _as_naive(d.expires_at) > now
     }
 
+    # スワップ却下記憶 (kind='swap') は相手患者 Y の分も要るため全患者ぶんを読む.
+    # 指紋 = (patient_id, target_weekday=現在枠曜日). 未失効のみ.
+    swap_dismissal_rows = (
+        await db.scalars(
+            select(SuggestionDismissal).where(SuggestionDismissal.kind == "swap")
+        )
+    ).all()
+    swap_dismissed: set[tuple[UUID, int]] = {
+        (d.patient_id, d.target_weekday)
+        for d in swap_dismissal_rows
+        if d.expires_at is None or _as_naive(d.expires_at) > now
+    }
+
+    # スワップ相手 Y の可動域 / pin 判定用: バケットに現れる全患者の PFV
+    # (通常週・slot0) を (patient_id, weekday) で引けるよう 1 クエリでロードする.
+    bucket_pids: set[UUID] = {
+        v.patient_id for bucket in buckets.values() for v in bucket.visits
+    }
+    pfv_by_pw: dict[tuple[UUID, int], PatientFixedVisit] = {}
+    if bucket_pids:
+        cand_pfvs = (
+            await db.scalars(
+                select(PatientFixedVisit).where(
+                    PatientFixedVisit.patient_id.in_(bucket_pids),
+                    PatientFixedVisit.mode == "normal",
+                    PatientFixedVisit.slot_index == 0,
+                )
+            )
+        ).all()
+        for row in cand_pfvs:
+            pfv_by_pw[(row.patient_id, row.weekday)] = row
+
     # 昼休み window 算出パラメータ (propose-slots と同一. config 優先, 既定は module 定数).
     lunch_duration = (
         config.lunch_duration_min if config is not None else _LUNCH_DURATION_PREFERRED
@@ -391,7 +679,11 @@ async def find_improvement_candidates(
     )
     lunch_window_end = config.lunch_window_end if config is not None else _LUNCH_LATEST_END
 
+    # 対象患者 X が占有している全曜日セット (multi-PFV デッドエンド防止 / MEDIUM-1).
+    x_occupied_weekdays: set[int] = {pfv.weekday for pfv in pfvs}
+
     candidates: list[ImprovementCandidateData] = []
+    swap_candidates: list[ImprovementCandidateData] = []
 
     for pfv in pfvs:
         weekday = pfv.weekday
@@ -542,6 +834,35 @@ async def find_improvement_candidates(
                         unchanged=unchanged,
                     )
                 )
+
+        # ---- スワップ (2 患者入れ替え) 提案 (P3-②). move 提案には一切影響しない ----
+        swap_candidates.extend(
+            _swap_candidates_for_pfv(
+                patient=patient,
+                patient_coord=patient_coord,
+                wx=weekday,
+                sx=current.start_time,
+                x_duration=pfv.duration_min,
+                x_movability=movability,
+                x_day_flexible=day_change_allowed,
+                x_occupied_weekdays=x_occupied_weekdays,
+                current=current,
+                current_course_label=current_course_label,
+                buckets=buckets,
+                office_name_by_id=office_name_by_id,
+                pfv_by_pw=pfv_by_pw,
+                swap_dismissed=swap_dismissed,
+                config=config,
+            )
+        )
+
+    # スワップは患者あたり最大 MAX_SWAP_SUGGESTIONS_PER_PATIENT 件を delta 降順で採り、
+    # 既存 move 提案の枠 (MAX_SUGGESTIONS_PER_PATIENT) に混ぜる. スワップが 0 件のとき
+    # move の出力・順位はスワップ無効時と完全に同一 (追加のみ).
+    swap_candidates.sort(
+        key=lambda c: (-c.delta_minutes, -c.delta_km, _time_to_min(c.cand_start))
+    )
+    candidates.extend(swap_candidates[:MAX_SWAP_SUGGESTIONS_PER_PATIENT])
 
     # delta (分) 降順 → 同点は (距離降順, 早い時刻) で安定化. 患者あたり最大 N 件.
     candidates.sort(

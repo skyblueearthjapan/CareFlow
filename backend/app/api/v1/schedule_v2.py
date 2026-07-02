@@ -83,6 +83,8 @@ from app.schemas.v2.board import (
     BoardWeekday,
 )
 from app.schemas.v2.improvement_suggestion import (
+    ApplySwapRequest,
+    ApplySwapResponse,
     ImprovementCandidateSlot,
     ImprovementChanges,
     ImprovementCurrentSlot,
@@ -92,7 +94,9 @@ from app.schemas.v2.improvement_suggestion import (
     ImprovementFilteredSummary,
     ImprovementSuggestion,
     ImprovementSuggestionsResponse,
+    SwapCounterpart,
 )
+from app.schemas.v2.patient_fixed_visit import PatientFixedVisitV2Base
 from app.schemas.v2.propose_slots import (
     WEEKDAY_CODE_TO_INT,
     WEEKDAY_INT_TO_CODE,
@@ -129,6 +133,7 @@ from app.services.scheduling.auto_allocator_v2 import (
     PinnedVisitMovedError,
     V2Visit,
     V2Warning,
+    _add_minutes,
     _address_bucket,
     _is_in_lunch_break,
     apply_individual_proposal,
@@ -156,8 +161,13 @@ from app.services.scheduling.improvement_engine import (
     ImprovementCandidateData,
     find_improvement_candidates,
 )
+from app.services.scheduling.pfv_validator import (
+    _find_conflict,
+    validate_pfv_changes,
+)
 from app.services.scheduling.proposal_solver import (
     VISIT_BUFFER_MINUTES,
+    ExistingVisit,
     haversine_minutes,
 )
 from app.services.scheduling.propose_slots_service import (
@@ -2199,6 +2209,29 @@ async def board_endpoint(
 # ---------------------------------------------------------------------------
 
 
+def _hhmm(t: time_cls) -> str:
+    return f"{t.hour:02d}:{t.minute:02d}"
+
+
+def _swap_counterpart_of(c: ImprovementCandidateData) -> SwapCounterpart | None:
+    """kind='swap' の内部表現から SwapCounterpart schema を組む (それ以外は None)."""
+    if c.kind != "swap" or c.swap_counterpart_patient_id is None:
+        return None
+    assert c.swap_counterpart_current_start is not None
+    assert c.swap_counterpart_new_start is not None
+    assert c.swap_counterpart_current_weekday is not None
+    assert c.swap_counterpart_new_weekday is not None
+    return SwapCounterpart(
+        patient_id=c.swap_counterpart_patient_id,
+        patient_name=c.swap_counterpart_name or "",
+        current_weekday=c.swap_counterpart_current_weekday,
+        current_start_time=_hhmm(c.swap_counterpart_current_start),
+        new_weekday=c.swap_counterpart_new_weekday,
+        new_start_time=_hhmm(c.swap_counterpart_new_start),
+        requires_patient_confirmation=c.swap_counterpart_requires_confirmation,
+    )
+
+
 def _improvement_to_schema(c: ImprovementCandidateData) -> ImprovementSuggestion:
     """内部表現 ``ImprovementCandidateData`` を API schema へ変換."""
     return ImprovementSuggestion(
@@ -2232,6 +2265,7 @@ def _improvement_to_schema(c: ImprovementCandidateData) -> ImprovementSuggestion
         staff_warnings=c.staff_warnings,
         feasibility_basis="pfv",
         requires_patient_confirmation=c.requires_patient_confirmation,
+        swap_counterpart=_swap_counterpart_of(c),
     )
 
 
@@ -2399,6 +2433,287 @@ async def improvement_dismiss_endpoint(
         movability_updated=movability_updated,
         new_movability=new_movability,
     )
+
+
+# ---------------------------------------------------------------------------
+# apply-swap (P3-②: 2 患者の入れ替えを 1 TX で適用)
+# ---------------------------------------------------------------------------
+
+
+def _pfv_to_base(row: PatientFixedVisit) -> PatientFixedVisitV2Base:
+    """既存 PFV 行を再検証用 schema (PatientFixedVisitV2Base) に写す (無変更)."""
+    return PatientFixedVisitV2Base(
+        weekday=row.weekday,
+        start_time=row.start_time,
+        duration_min=row.duration_min,
+        course_template_id=row.course_template_id,
+        sub_office_id=row.sub_office_id,
+        slot_index=row.slot_index,
+        is_pinned=row.is_pinned,
+        movability=row.movability,
+    )
+
+
+def _proposed_with_move(
+    rows: list[PatientFixedVisit],
+    *,
+    moving_id: UUID,
+    new_weekday: int,
+    new_start: time_cls,
+    new_course: UUID | None,
+) -> list[PatientFixedVisitV2Base]:
+    """患者の全 PFV を base 化しつつ、移動行のみ新位置に差し替える (再検証入力)."""
+    items: list[PatientFixedVisitV2Base] = []
+    for row in rows:
+        if row.id == moving_id:
+            items.append(
+                PatientFixedVisitV2Base(
+                    weekday=new_weekday,
+                    start_time=new_start,
+                    duration_min=row.duration_min,
+                    course_template_id=new_course,
+                    sub_office_id=row.sub_office_id,
+                    slot_index=0,
+                    is_pinned=row.is_pinned,
+                    movability=row.movability,
+                )
+            )
+        else:
+            items.append(_pfv_to_base(row))
+    return items
+
+
+async def _apply_pfv_move(
+    db: DbDep,
+    *,
+    moving_row: PatientFixedVisit,
+    all_rows: list[PatientFixedVisit],
+    new_weekday: int,
+    new_start: time_cls,
+    new_course: UUID | None,
+) -> None:
+    """1 患者の slot0 移動を適用する (同曜日=更新 / 別曜日=旧行削除+移動先作成/更新).
+
+    movability / is_pinned / duration / sub_office は移動行のものを保持する.
+    """
+    if new_weekday == moving_row.weekday:
+        moving_row.start_time = new_start
+        moving_row.course_template_id = new_course
+        return
+
+    # 別曜日移動: 移動先に既存 slot0 行があれば上書き, なければ移動行の曜日を付け替える.
+    target = next(
+        (
+            r
+            for r in all_rows
+            if r.weekday == new_weekday and r.slot_index == 0 and r.id != moving_row.id
+        ),
+        None,
+    )
+    if target is not None:
+        target.start_time = new_start
+        target.course_template_id = new_course
+        target.duration_min = moving_row.duration_min
+        target.movability = moving_row.movability
+        target.is_pinned = moving_row.is_pinned
+        target.sub_office_id = moving_row.sub_office_id
+        await db.delete(moving_row)
+    else:
+        moving_row.weekday = new_weekday
+        moving_row.start_time = new_start
+        moving_row.course_template_id = new_course
+
+
+@router.post(
+    "/v2/improvement-suggestions/apply-swap",
+    response_model=ApplySwapResponse,
+    status_code=status.HTTP_200_OK,
+    summary="P3-②: 2 患者の固定枠を入れ替える (1 TX / all-or-nothing)",
+)
+async def improvement_apply_swap_endpoint(
+    payload: ApplySwapRequest,
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+) -> ApplySwapResponse:
+    """A の枠と B の枠を入れ替える. A は b の旧位置 (a_new) へ、B は a の旧位置 (b_new) へ.
+
+    N-4 再検証: pinned 枠の移動は 422. validate_pfv_changes の warning
+    (患者間衝突 / 昼休み / 容量) と両者の新位置同士の相互衝突はブロックせず warnings に載せる.
+    all-or-nothing (1 トランザクション).
+    """
+    # 同一患者を両方に指定するのは論理エラー (早期ガード).
+    if payload.patient_a_id == payload.patient_b_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="patient_a_id と patient_b_id に同一患者は指定できません",
+        )
+
+    try:
+        a_new_start = _parse_hhmm(payload.a_new.start_time)
+        b_new_start = _parse_hhmm(payload.b_new.start_time)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    if a_new_start is None or b_new_start is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="a_new.start_time / b_new.start_time は HH:MM 必須です",
+        )
+
+    pa = await db.scalar(
+        select(Patient).where(
+            Patient.id == payload.patient_a_id, Patient.deleted_at.is_(None)
+        )
+    )
+    pb = await db.scalar(
+        select(Patient).where(
+            Patient.id == payload.patient_b_id, Patient.deleted_at.is_(None)
+        )
+    )
+    if pa is None or pb is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found"
+        )
+
+    # 各患者の旧枠曜日は相手の新枠曜日から導出する (swap 不変量).
+    a_old_weekday = payload.b_new.weekday
+    b_old_weekday = payload.a_new.weekday
+
+    a_all = list(
+        (
+            await db.scalars(
+                select(PatientFixedVisit).where(
+                    PatientFixedVisit.patient_id == payload.patient_a_id,
+                    PatientFixedVisit.mode == "normal",
+                )
+            )
+        ).all()
+    )
+    b_all = list(
+        (
+            await db.scalars(
+                select(PatientFixedVisit).where(
+                    PatientFixedVisit.patient_id == payload.patient_b_id,
+                    PatientFixedVisit.mode == "normal",
+                )
+            )
+        ).all()
+    )
+    a_row = next(
+        (r for r in a_all if r.weekday == a_old_weekday and r.slot_index == 0), None
+    )
+    b_row = next(
+        (r for r in b_all if r.weekday == b_old_weekday and r.slot_index == 0), None
+    )
+    if a_row is None or b_row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="対象の固定枠 (slot0) が見つかりません",
+        )
+
+    # N-4 再検証 (read-only). pinned 保護違反は適用前に 422 で返す.
+    config = await load_scheduling_config(db)
+    a_proposed = _proposed_with_move(
+        a_all,
+        moving_id=a_row.id,
+        new_weekday=payload.a_new.weekday,
+        new_start=a_new_start,
+        new_course=payload.a_new.course_template_id,
+    )
+    b_proposed = _proposed_with_move(
+        b_all,
+        moving_id=b_row.id,
+        new_weekday=payload.b_new.weekday,
+        new_start=b_new_start,
+        new_course=payload.b_new.course_template_id,
+    )
+    va = await validate_pfv_changes(
+        db, payload.patient_a_id, a_proposed, "normal", config=config
+    )
+    vb = await validate_pfv_changes(
+        db, payload.patient_b_id, b_proposed, "normal", config=config
+    )
+    if va.has_errors or vb.has_errors:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "message": "完全固定 (is_pinned) の枠は入れ替えできません",
+                "violations": [
+                    {
+                        "code": w.code,
+                        "message": w.message,
+                        "weekday": w.weekday,
+                        "severity": w.severity,
+                    }
+                    for w in (*va.errors, *vb.errors)
+                ],
+            },
+        )
+    warnings: list[str] = [w.message for w in va.warnings_only]
+    warnings.extend(w.message for w in vb.warnings_only)
+
+    # 両者の新位置同士の相互衝突 (同曜日・同コース) をブロックせず検査する.
+    # validate_pfv_changes は相手の「現在」DB 行しか見ないため、新位置同士は個別に見る.
+    if (
+        payload.a_new.weekday == payload.b_new.weekday
+        and payload.a_new.course_template_id == payload.b_new.course_template_id
+        and pa.lat is not None
+        and pa.lng is not None
+        and pb.lat is not None
+        and pb.lng is not None
+    ):
+        a_ev = ExistingVisit(
+            start_time=a_new_start,
+            end_time=_add_minutes(a_new_start, a_row.duration_min),
+            lat=float(pa.lat),
+            lng=float(pa.lng),
+            service_minutes=a_row.duration_min,
+            patient_id=str(payload.patient_a_id),
+        )
+        b_ev = ExistingVisit(
+            start_time=b_new_start,
+            end_time=_add_minutes(b_new_start, b_row.duration_min),
+            lat=float(pb.lat),
+            lng=float(pb.lng),
+            service_minutes=b_row.duration_min,
+            patient_id=str(payload.patient_b_id),
+        )
+        if (
+            _find_conflict(a_ev, [b_ev], config=config) is not None
+            or _find_conflict(b_ev, [a_ev], config=config) is not None
+        ):
+            warnings.append(
+                "入れ替え後の 2 枠が移動時間を含めて重なる可能性があります。"
+            )
+
+    # 適用 (1 TX / all-or-nothing). 片方でも失敗すれば rollback.
+    await _apply_pfv_move(
+        db,
+        moving_row=a_row,
+        all_rows=a_all,
+        new_weekday=payload.a_new.weekday,
+        new_start=a_new_start,
+        new_course=payload.a_new.course_template_id,
+    )
+    await _apply_pfv_move(
+        db,
+        moving_row=b_row,
+        all_rows=b_all,
+        new_weekday=payload.b_new.weekday,
+        new_start=b_new_start,
+        new_course=payload.b_new.course_template_id,
+    )
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="入れ替え適用が既存の固定枠と競合しました",
+        ) from exc
+
+    return ApplySwapResponse(applied=True, warnings=warnings)
 
 
 __all__ = ["router"]

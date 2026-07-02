@@ -24,7 +24,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.schemas.v2.propose_slots import WeekdayCode
 
 # 提案種別 (suggestion_dismissals.kind と同一値域).
-ImprovementKind = Literal["time_change", "day_change"]
+# 'swap' = P3-② (2 患者の入れ替え). dismiss も同一値域を受ける (migration 0049).
+ImprovementKind = Literal["time_change", "day_change", "swap"]
 
 # 却下理由 (suggestion_dismissals.reason と同一値域).
 ImprovementDismissReason = Literal[
@@ -89,6 +90,29 @@ class ImprovementChanges(BaseModel):
     unchanged: list[str] = Field(default_factory=list, description="変わらない項目 (日本語)")
 
 
+class SwapCounterpart(BaseModel):
+    """スワップ提案 (kind='swap') の相手患者 Y の情報 (P3-②).
+
+    主提案 (ImprovementSuggestion) の current/candidate は対象患者 X の視点.
+    Y は X の現在枠に自分の duration で移り、X は Y の枠 (candidate) に移る.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    patient_id: uuid.UUID
+    patient_name: str
+    current_weekday: int = Field(..., ge=0, le=6, description="Y の現在枠の曜日 (0=Mon)")
+    current_start_time: str = Field(..., description="Y の現在枠 開始 HH:MM")
+    new_weekday: int = Field(
+        ..., ge=0, le=6, description="Y の移動先の曜日 (= X の現在枠の曜日)"
+    )
+    new_start_time: str = Field(..., description="Y の移動先 開始 HH:MM (= X の現在開始)")
+    requires_patient_confirmation: bool = Field(
+        default=False,
+        description="Y の movability=unknown のとき Y 側にも付く要確認ラベル",
+    )
+
+
 class ImprovementSuggestion(BaseModel):
     """改善提案 1 件."""
 
@@ -112,6 +136,12 @@ class ImprovementSuggestion(BaseModel):
     requires_patient_confirmation: bool = Field(
         default=False,
         description="movability=unknown の時刻提案に付く要確認ラベル",
+    )
+    swap_counterpart: SwapCounterpart | None = Field(
+        default=None,
+        description=(
+            "kind='swap' のときのみ相手患者 Y の情報を持つ (後方互換: 既定 None)."
+        ),
     )
 
 
@@ -223,7 +253,71 @@ class ImprovementDismissResponse(BaseModel):
     )
 
 
+# ---------------------------------------------------------------------------
+# POST apply-swap (P3-②: 2 患者の入れ替えを 1 TX で適用)
+# ---------------------------------------------------------------------------
+
+
+class SwapNewSlot(BaseModel):
+    """スワップ後の 1 患者の新枠 (移動先). start_time は HH:MM でやり取りする."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    weekday: int = Field(..., ge=0, le=6, description="移動先の曜日 (0=Mon..6=Sun)")
+    start_time: str = Field(..., description="移動先 開始 HH:MM")
+    course_template_id: uuid.UUID | None = Field(
+        default=None, description="移動先の course_templates.id (任意)"
+    )
+
+
+class ApplySwapRequest(BaseModel):
+    """``POST /v2/improvement-suggestions/apply-swap`` リクエスト.
+
+    A は B の旧枠へ、B は A の旧枠へ移る (a_new = B の旧位置, b_new = A の旧位置).
+    各患者の旧枠曜日は相手の新枠曜日から導出する (A_old.weekday = b_new.weekday).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    patient_a_id: uuid.UUID
+    patient_b_id: uuid.UUID
+    a_new: SwapNewSlot
+    b_new: SwapNewSlot
+    iso_year: int = Field(
+        ...,
+        ge=2020,
+        le=2100,
+        description=(
+            "監査ログ記録・将来の週スコープ検証予約フィールド. "
+            "現在の apply-swap ロジックでは直接参照しないが、FE 契約の安定のため削除しない."
+        ),
+    )
+    iso_week: int = Field(
+        ...,
+        ge=1,
+        le=53,
+        description=(
+            "監査ログ記録・将来の週スコープ検証予約フィールド. "
+            "現在の apply-swap ロジックでは直接参照しないが、FE 契約の安定のため削除しない."
+        ),
+    )
+
+
+class ApplySwapResponse(BaseModel):
+    """``POST /v2/improvement-suggestions/apply-swap`` レスポンス (all-or-nothing)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    applied: bool = Field(..., description="両患者の PFV を更新できたか (原子的)")
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="N-4 再検証で検出した非致命の警告 (現場向け日本語). ブロックしない.",
+    )
+
+
 __all__ = [
+    "ApplySwapRequest",
+    "ApplySwapResponse",
     "ImprovementCandidateSlot",
     "ImprovementChanges",
     "ImprovementCurrentSlot",
@@ -235,4 +329,6 @@ __all__ = [
     "ImprovementKind",
     "ImprovementSuggestion",
     "ImprovementSuggestionsResponse",
+    "SwapCounterpart",
+    "SwapNewSlot",
 ]

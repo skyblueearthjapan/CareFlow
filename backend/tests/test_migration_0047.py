@@ -126,8 +126,10 @@ def test_migration_0047_revision_chain(alembic_cfg: Config) -> None:
     assert rev.down_revision == "0046_user_username_and_uniques", (
         f"0047 の down_revision は 0046 のはず, got {rev.down_revision}"
     )
+    # 単一 head 不変量 (0047 以降に 0048/0049… が積まれても head は 1 本であること).
+    # 具体的な head リビジョンは最新 migration に追従するためハードコードしない.
     heads = list(script.get_heads())
-    assert heads == [_MIGRATION_REVISION], f"単一 head 0047 のはず, got {heads}"
+    assert len(heads) == 1, f"単一 head のはず, got {heads}"
 
 
 # ---------------------------------------------------------------------------
