@@ -521,6 +521,123 @@ async def test_apply_individual_h10_gate_honors_nondefault_lunch_window(client, 
 
 
 # ---------------------------------------------------------------------------
+# P0-2 §4: apply-individual の H10 force_lunch モデル + 適用時再検証 (I-04)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apply_individual_force_lunch_false_still_422(client, db) -> None:
+    """P0-2: force_lunch=False (明示) でも H10 不可避 lunch visit は現行どおり 422 (回帰なし)."""
+    admin = await _make_user(db, email="v2-fl-false-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    p = await _seed_patient(db, office=office, code="FL-FALSE")
+    await db.commit()
+    res = await client.post(
+        "/api/v1/schedule/v2/apply-individual",
+        headers=_bearer(admin),
+        json={
+            "patient_id": str(p.id),
+            "confirm": True,
+            "force_lunch": False,
+            "visit_plans": [
+                {
+                    "weekday": 0,
+                    "start_time": "11:50",
+                    "end_time": "13:10",
+                    "duration_min": 80,
+                    "course_code": "A",
+                    "office_id": str(office.id),
+                    "am_pm": "pm",
+                }
+            ],
+        },
+    )
+    assert res.status_code == 422, res.text
+    assert "H10" in res.text
+
+
+@pytest.mark.asyncio
+async def test_apply_individual_force_lunch_true_applies_with_warning(client, db) -> None:
+    """P0-2 §4: force_lunch=True は H10 不可避 lunch visit を 200 で適用し、
+    昼休み警告をレスポンス warnings に載せる (service 層 validate_pfv_changes V4)."""
+    admin = await _make_user(db, email="v2-fl-true-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    p = await _seed_patient(db, office=office, code="FL-TRUE")
+    await db.commit()
+    res = await client.post(
+        "/api/v1/schedule/v2/apply-individual",
+        headers=_bearer(admin),
+        json={
+            "patient_id": str(p.id),
+            "confirm": True,
+            "force_lunch": True,
+            "visit_plans": [
+                {
+                    "weekday": 0,
+                    "start_time": "11:50",
+                    "end_time": "13:10",
+                    "duration_min": 80,
+                    "course_code": "A",
+                    "office_id": str(office.id),
+                    "am_pm": "pm",
+                }
+            ],
+        },
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["applied"] is True
+    assert any("昼休み" in w for w in body["warnings"]), body["warnings"]
+
+
+@pytest.mark.asyncio
+async def test_apply_individual_surfaces_patient_conflict_warning(client, db) -> None:
+    """P0-2 (I-04): 他患者 (異住所) と同時刻に衝突する visit_plans を適用 → 200 +
+    warnings に患者間衝突 (V3) を載せる (ブロックしない)."""
+    admin = await _make_user(db, email="v2-v3-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    # 既存 patient (異住所; lng を +0.10 ずらして >100m 分離).
+    other = await _seed_patient(db, office=office, code="V3-OTHER", lat=35.65, lng=140.20)
+    db.add(
+        PatientFixedVisit(
+            patient_id=other.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(10, 0),
+            duration_min=30,
+            slot_index=0,
+            course_template_id=None,
+        )
+    )
+    target = await _seed_patient(db, office=office, code="V3-TARGET", lat=35.65, lng=140.10)
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/apply-individual",
+        headers=_bearer(admin),
+        json={
+            "patient_id": str(target.id),
+            "confirm": True,
+            "visit_plans": [
+                {
+                    "weekday": 0,
+                    "start_time": "10:00",
+                    "end_time": "10:30",
+                    "duration_min": 30,
+                    "course_code": "A",
+                    "office_id": str(office.id),
+                    "am_pm": "am",
+                }
+            ],
+        },
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["applied"] is True
+    assert any("重なる可能性" in w for w in body["warnings"]), body["warnings"]
+
+
+# ---------------------------------------------------------------------------
 # /v2/reset-to-fixed
 # ---------------------------------------------------------------------------
 
@@ -974,6 +1091,45 @@ async def test_apply_week_only_allows_unique_times(client, db) -> None:
         },
     )
     assert res.status_code == 200, res.text
+
+
+@pytest.mark.asyncio
+async def test_apply_week_only_surfaces_h10_warning(client, db) -> None:
+    """P0-2 (I-05): apply-week-only の H10 違反 (不可避 lunch) を 200 で続行しつつ、
+    警告をレスポンス warnings に表面化する (従来は logger.warning のみ)."""
+    admin = await _make_user(db, email="v2-wo-h10-admin@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    p = await _seed_patient(db, office=office, code="WO-H10")
+    await db.commit()
+    res = await client.post(
+        "/api/v1/schedule/v2/apply-week-only",
+        headers=_bearer(admin),
+        json={
+            "iso_year": 2026,
+            "iso_week": 20,
+            "office_ids": [str(office.id)],
+            "visit_plans_per_patient": [
+                {
+                    "patient_id": str(p.id),
+                    "visit_plans": [
+                        {
+                            "weekday": 0,
+                            "start_time": "11:50",  # 不可避 lunch (11:30-13:30 内)
+                            "end_time": "13:10",
+                            "duration_min": 80,
+                            "course_code": "A",
+                            "office_id": str(office.id),
+                            "am_pm": "pm",
+                        }
+                    ],
+                },
+            ],
+            "confirm": True,
+        },
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert any("昼休み" in w for w in body["warnings"]), body["warnings"]
 
 
 # ---------------------------------------------------------------------------

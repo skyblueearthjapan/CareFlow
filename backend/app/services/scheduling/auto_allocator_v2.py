@@ -10337,6 +10337,45 @@ async def apply_individual_proposal(
                 for vw in proposal_warnings:
                     warnings.append(vw.message)
 
+    # P0-2 (I-04): 適用時再検証 (TOCTOU 緩和). ``with_for_update`` ロック取得後・
+    # 書込前の本位置で、他患者 PFV との時間衝突 (V3) / 昼休み重複 (V4) / コース容量 (V5)
+    # を read-only 再検証し、warning 文言をレスポンス ``warnings`` に載せる (ブロックしない).
+    # 注: pinned 保護 (カーネル V2 / has_errors) はここでは 422 化しない. 上の
+    # ``pinned_existing`` ガード (mode='normal' の既存 pinned があれば先に 422) が発火する
+    # ため、二重 422 を避ける設計 (設計書 §2.1 / Commit 2 スコープ). 警告文言は
+    # カーネル (Commit 1) が生成する日本語をそのまま流用し、ここでは重複定義しない.
+    if config is not None:
+        from app.schemas.v2.patient_fixed_visit import (
+            PatientFixedVisitV2Base as _PfvValidationItem,
+        )
+        from app.services.scheduling.pfv_validator import (
+            validate_pfv_changes as _validate_pfv_changes,
+        )
+
+        _validation_items = [
+            _PfvValidationItem(
+                weekday=wd,
+                start_time=st,
+                duration_min=dur,
+                # course_template_id は既存 PFV から継承 (無ければ None). カーネル V3/V5 の
+                # course 単位グルーピングを既存の異住所検出ロジックと一致させる.
+                # 既知の制限 (レビューLOW): 新規曜日は None バケットに落ちるため、その曜日の
+                # V5 容量警告は偽陰性になり得る (warning-only のため安全側). course_code から
+                # の解決は将来課題.
+                course_template_id=(
+                    existing_by_wd[wd].course_template_id if wd in existing_by_wd else None
+                ),
+                slot_index=0,
+                is_pinned=False,
+            )
+            for wd, (st, dur) in proposed_by_wd.items()
+        ]
+        _validation = await _validate_pfv_changes(
+            db, patient_id, _validation_items, "normal", config=config
+        )
+        for _w in _validation.warnings_only:
+            warnings.append(_w.message)
+
     # 差分適用: 既存 PFV (mode='normal', slot_index=0) を提案にあわせて UPSERT
     fixed_visit_ids: list[UUID] = []
     # 削除対象: 既存 wd が提案に無い

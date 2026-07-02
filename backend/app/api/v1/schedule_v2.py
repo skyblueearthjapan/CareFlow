@@ -768,16 +768,23 @@ async def apply_individual_endpoint(
         # visit を弾く. 例: 12:15-12:45 は AM 側 11:30-12:15 lunch なら合法 → 通す.
         # 例: 12:10-12:50 は AM/PM どちらの避け方でも 45 分 lunch を確保できない → 422.
         if _is_in_lunch_break(vp.start_time, vp.end_time, window_start=_lws, window_end=_lwe):
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=(
-                    f"visit_plans[{idx}]: H10 違反 — 動的昼休憩 "
-                    f"({_lws.strftime('%H:%M')}-{_lwe.strftime('%H:%M')} 内 45 分) を "
-                    f"どこにも確保できない visit は不可 "
-                    f"(start={vp.start_time}, end={vp.end_time})"
-                ),
-            )
-        # end_time > start_time (Pydantic では検証されない 0 / 負時間ガード)
+            # P0-2 §4 (force_lunch モデル): 既定 (force_lunch=False) は現行どおり 422 拒否.
+            # force_lunch=True は 422 を warning に降格して続行する. 昼休み警告の文言は
+            # 二重に持たず、service 層 apply_individual_proposal 内の適用時再検証
+            # (validate_pfv_changes の V4 = 本ゲートと同一 ``_is_in_lunch_break`` 判定) が
+            # レスポンス warnings に日本語メッセージを載せる.
+            if not payload.force_lunch:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=(
+                        f"visit_plans[{idx}]: H10 違反 — 動的昼休憩 "
+                        f"({_lws.strftime('%H:%M')}-{_lwe.strftime('%H:%M')} 内 45 分) を "
+                        f"どこにも確保できない visit は不可 "
+                        f"(start={vp.start_time}, end={vp.end_time})"
+                    ),
+                )
+        # end_time > start_time (Pydantic では検証されない 0 / 負時間ガード).
+        # force_lunch とは無関係に常に 422 (論理的に不正な区間のため).
         if vp.end_time <= vp.start_time:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1026,6 +1033,9 @@ async def apply_week_only_endpoint(
     # 合法になる visit (例: 12:15-12:45) も警告対象になっていた. 他 endpoint と
     # 統一して ``_is_in_lunch_break`` (= 動的 lunch config 窓のどの 45 分配置でも
     # 避けられない visit か?) で判定する.
+    # P0-2 (I-05): endpoint 段で検出した H10 警告をレスポンス warnings に表面化する
+    # (従来は logger.warning のみ). apply-individual との非対称を解消する.
+    endpoint_warnings: list[str] = []
     lunch_violations: list[str] = []
     for pi, pvp in enumerate(payload.visit_plans_per_patient):
         for vi, vp in enumerate(pvp.visit_plans):
@@ -1049,6 +1059,11 @@ async def apply_week_only_endpoint(
             _lws.strftime("%H:%M"),
             _lwe.strftime("%H:%M"),
             lunch_violations[:5],
+        )
+        # P0-2 (I-05): 同じ H10 警告をレスポンス warnings にも載せる (挙動は従来どおり続行).
+        endpoint_warnings.append(
+            f"H10 昼休み（{_lws.strftime('%H:%M')}-{_lwe.strftime('%H:%M')}）と重なる visit が "
+            f"{len(lunch_violations)} 件あります（週限定反映のため続行しました）。"
         )
 
     # CareFlow バグ検出 (apply_week_only 境界検証): 同 (office_id, weekday,
@@ -1161,7 +1176,8 @@ async def apply_week_only_endpoint(
         visits_soft_deleted=int(result.get("visits_soft_deleted", 0)),
         courses_created=int(result.get("courses_created", 0)),
         visit_staff_assignments_created=int(result.get("visit_staff_assignments_created", 0)),
-        warnings=list(result.get("warnings", [])),
+        # P0-2 (I-05): endpoint 段の H10 警告 + service 層の warnings を合流.
+        warnings=endpoint_warnings + list(result.get("warnings", [])),
     )
 
 

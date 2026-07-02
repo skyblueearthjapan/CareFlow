@@ -465,6 +465,16 @@ class AutoScheduleV2ApplyIndividualRequest(BaseModel):
     confirm: bool = Field(default=False, description="必ず true を指定すること")
     iso_year: int | None = Field(default=None, ge=2020, le=2100)
     iso_week: int | None = Field(default=None, ge=1, le=53)
+    # P0-2 §4 (H10 force_lunch モデル): 既定 False は現行どおり H10 違反を 422 で拒否.
+    # True は H10 違反を warning に降格して続行 (昼休み警告はレスポンス warnings に載る).
+    # 既定値で挙動不変 (#113 再発防止: 安全側は False).
+    force_lunch: bool = Field(
+        default=False,
+        description=(
+            "P0-2: True の場合 H10 (昼休み重複) 違反を 422 でなく warning 扱いにして続行する. "
+            "既定 False は現行どおり 422 拒否."
+        ),
+    )
     # クライアントが提案内容を直接送る経路 (proposal_id ベースだと
     # in-memory cache が必要だが、stateless 設計のため visit_plans を送る).
     visit_plans: list[V2VisitPlan] = Field(
@@ -588,6 +598,16 @@ class AutoScheduleV2ApplyWeekOnlyRequest(BaseModel):
     confirm: Literal[True] = Field(
         default=True,
         description="必ず true を指定すること (UI 側で確認ダイアログ後に True 固定送信)",
+    )
+    # P0-2 §4 (対称性のための予約フィールド): week-only は H10 違反でも #113 hotfix 以降
+    # 常に続行するため、force_lunch は現時点で実挙動に影響しない (既定 False で挙動不変).
+    # 将来 week-only を 422 化する場合の迂回フラグとして apply-individual と対称に用意する.
+    force_lunch: bool = Field(
+        default=False,
+        description=(
+            "P0-2: apply-individual との対称性のための予約. week-only は現状 H10 違反でも "
+            "続行するため実挙動には影響しない (将来 422 化時の迂回用)."
+        ),
     )
 
 
