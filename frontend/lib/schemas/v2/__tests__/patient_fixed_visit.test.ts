@@ -49,6 +49,34 @@ describe('patientFixedVisitV2BaseSchema (W37 Phase 1)', () => {
     });
     expect(result.success).toBe(false);
   });
+
+  it('P2-A: movability 省略時は undefined (is_pinned と同じ optional. BE server_default で unknown)', () => {
+    const parsed = patientFixedVisitV2BaseSchema.parse({
+      weekday: 0,
+      start_time: '09:00',
+      duration_min: 30,
+    });
+    expect(parsed.movability).toBeUndefined();
+  });
+
+  it('P2-A: movability の 4 値を許容し、不正値はエラー', () => {
+    for (const mv of ['unknown', 'time_flexible', 'day_flexible', 'locked'] as const) {
+      const parsed = patientFixedVisitV2BaseSchema.parse({
+        weekday: 0,
+        start_time: '09:00',
+        duration_min: 30,
+        movability: mv,
+      });
+      expect(parsed.movability).toBe(mv);
+    }
+    const bad = patientFixedVisitV2BaseSchema.safeParse({
+      weekday: 0,
+      start_time: '09:00',
+      duration_min: 30,
+      movability: 'bogus',
+    });
+    expect(bad.success).toBe(false);
+  });
 });
 
 describe('patientFixedVisitsBulkPutSchema (W37 Phase 1)', () => {
