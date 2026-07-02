@@ -20,6 +20,7 @@ from datetime import date, datetime, time
 from typing import TYPE_CHECKING, Literal
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     Date,
     DateTime,
@@ -29,6 +30,7 @@ from sqlalchemy import (
     String,
     Text,
     Time,
+    false,
 )
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -119,6 +121,15 @@ class Visit(Base, TimestampMixin):
     # 通常 (required_staff_count=1) は NULL.
     # 2 名体制 (required_staff_count=2) では同じ UUID を持つ visit が 2 行。
     visit_group_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+
+    # ---- P3-① 当日欠勤の代替スタッフ提案 (migration 0048) --------------------
+    # 当日欠勤対応で手動差替えした visit の保護フラグ. True の visit は
+    # layer3 ``_persist`` (assign-staff-only / 自動割当) の VSA DELETE/INSERT
+    # 対象から除外される — これにより手動差替えが自動割当で上書きされない.
+    # (除外実装自体は Commit 2. 本カラムは Commit 1 で追加のみ.)
+    manual_staff_override: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
 
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

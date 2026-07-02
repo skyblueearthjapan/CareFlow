@@ -42,6 +42,7 @@ from app.api.v1 import (
     staff_excel,
     staff_overrides,
     staff_shifts,
+    staff_substitute,
     visit_monitor,
     visit_photos,
     visit_review,
@@ -158,6 +159,10 @@ api_router.include_router(schedule.router, prefix="/schedule", tags=["schedule"]
 # v1 (``/schedule/auto-allocate`` 等) は schedule.router にそのまま残し、UI 完成後の
 # 別 PR で削除する.
 api_router.include_router(schedule_v2.router, prefix="/schedule", tags=["schedule-v2"])
+# P3-①: 当日欠勤の代替スタッフ提案 (candidates 提案 / apply 適用, admin/manager).
+api_router.include_router(
+    staff_substitute.router, prefix="/schedule", tags=["staff-substitute"]
+)
 # Phase G-21 T2: 同住所紐付け CRUD (blocked / required の link 行管理).
 api_router.include_router(
     patient_same_address_links.router,
