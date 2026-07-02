@@ -20,7 +20,7 @@ export function FilterChip({ active, onClick, children, className }: FilterChipP
       aria-pressed={active}
       onClick={onClick}
       className={cn(
-        'inline-flex items-center gap-1 rounded-full border px-3 py-1.5 text-[12.5px]',
+        'inline-flex items-center gap-1 rounded-full border px-3 py-1.5 text-[13px]',
         active
           ? 'border-transparent bg-brand-primary-light font-semibold text-brand-primary-hover'
           : 'border-border-default bg-bg-base text-text-secondary hover:bg-bg-muted',
