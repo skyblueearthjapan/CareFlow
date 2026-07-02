@@ -110,7 +110,7 @@ export function MonitorTimeline({
                 >
                   {row.staff_name ?? '（担当未設定）'}
                 </span>
-                <span className="text-[10.5px] text-text-muted">
+                <span className="text-[11px] text-text-muted">
                   {isSel
                     ? '● 選択中'
                     : [row.office_name, row.course_label].filter(Boolean).join(' ・ ') || '—'}
@@ -133,7 +133,7 @@ export function MonitorTimeline({
                   style={{ left: `${minutesToPct(nowMinutes)}%` }}
                   aria-hidden
                 >
-                  <span className="absolute -top-px left-1 text-[9px] font-bold text-brand-accent">
+                  <span className="absolute -top-px left-1 text-[10px] font-bold text-brand-accent">
                     今
                   </span>
                 </div>
@@ -211,7 +211,7 @@ function VisitBars({
       >
         {visit.patient_name ?? '—'}
         {isPair && (
-          <span className="rounded-full bg-c-coupled-bg px-1 py-px text-[8.5px] font-bold text-c-coupled [text-shadow:none]">
+          <span className="rounded-full bg-c-coupled-bg px-1 py-px text-[10px] font-bold text-c-coupled [text-shadow:none]">
             2名
           </span>
         )}
@@ -236,13 +236,14 @@ function VisitBars({
       {/* 次までの距離 */}
       {dn != null && (
         <div
-          className="pointer-events-none absolute top-[21px] whitespace-nowrap text-[9px] text-text-muted [text-shadow:0_0_3px_#fff,0_0_3px_#fff]"
+          className="pointer-events-none absolute top-[21px] whitespace-nowrap text-[10px] text-text-muted [text-shadow:0_0_3px_#fff,0_0_3px_#fff]"
           style={{ left: `${minutesToPct(pe)}%` }}
         >
           →{formatDistance(dn)}
         </div>
       )}
       {/* 予定バー (ハッチ) */}
+      {/* rounded-[5px]: 極小バーのためトークン(sm=8px)未満の例外 */}
       <button
         type="button"
         data-testid={`monitor-bar-plan-${visit.visit_id}`}
@@ -260,6 +261,7 @@ function VisitBars({
         }}
       />
       {/* 実績バー */}
+      {/* rounded-[5px]: 極小バーのためトークン(sm=8px)未満の例外 */}
       {hasActual && (
         <button
           type="button"

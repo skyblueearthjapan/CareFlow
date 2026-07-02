@@ -115,7 +115,7 @@ export function MonitorAlertTray({
           }
         }}
         className={cn(
-          'flex items-center gap-2 rounded-[10px] border px-2.5 py-1.5 cursor-pointer',
+          'flex items-center gap-2 rounded border px-2.5 py-1.5 cursor-pointer',
           inPop ? 'w-full border-transparent border-t-border-default/50' : 'flex-none',
           v.alert_level === 'missing' && 'border-error/30 bg-error-bg',
           (v.alert_level === 'mismatch' || v.alert_level === 'review') &&
@@ -131,15 +131,15 @@ export function MonitorAlertTray({
         >
           {alertTag(v)}
         </span>
-        <span className="whitespace-nowrap text-[12.5px] font-bold text-text-primary">
+        <span className="whitespace-nowrap text-[13px] font-bold text-text-primary">
           {v.patient_name ?? '—'}
         </span>
         {isPair && (
-          <span className="whitespace-nowrap rounded-full bg-c-coupled-bg px-1.5 py-0.5 text-[9.5px] font-bold text-c-coupled">
+          <span className="whitespace-nowrap rounded-full bg-c-coupled-bg px-1.5 py-0.5 text-[10px] font-bold text-c-coupled">
             2名
           </span>
         )}
-        <span className="whitespace-nowrap text-[10.5px] text-text-muted">
+        <span className="whitespace-nowrap text-[11px] text-text-muted">
           {staffNames.join('・')}
         </span>
         <span
@@ -176,7 +176,7 @@ export function MonitorAlertTray({
     <div className="relative" data-testid="monitor-alert-tray">
       <div className="flex items-center gap-2 overflow-x-auto px-5 py-2">
         <span
-          className="flex flex-none items-center gap-1 whitespace-nowrap text-[11.5px] font-bold text-error"
+          className="flex flex-none items-center gap-1 whitespace-nowrap text-xs font-bold text-error"
           title="未訪問→場所違い→要確認の優先順"
         >
           <TriangleAlert className="h-3.5 w-3.5" />
@@ -188,7 +188,7 @@ export function MonitorAlertTray({
             data-testid="monitor-alert-more"
             onClick={() => setPopOpen((o) => !o)}
             className={cn(
-              'flex-none whitespace-nowrap rounded-full px-3 py-1 text-[11.5px] font-bold',
+              'flex-none whitespace-nowrap rounded-full px-3 py-1 text-xs font-bold',
               popOpen
                 ? 'bg-brand-primary text-white'
                 : 'bg-brand-primary-light text-brand-primary-hover',

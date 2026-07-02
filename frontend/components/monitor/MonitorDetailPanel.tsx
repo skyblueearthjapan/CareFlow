@@ -138,7 +138,7 @@ function CourseDetail({
                 </span>
               </button>
               {v.distance_to_next_m != null && (
-                <div className="pb-1.5 pl-[60px] text-[10.5px] text-text-muted">
+                <div className="pb-1.5 pl-[60px] text-[11px] text-text-muted">
                   ↓ 次まで {formatDistance(v.distance_to_next_m)}
                 </div>
               )}
@@ -200,7 +200,7 @@ function VisitDetail({
       <h3 className="m-0 flex items-center gap-2 text-[15px] font-bold text-text-primary">
         {visit.patient_name ?? '—'} さん
         {visit.visit_group_id != null && (
-          <span className="rounded-full bg-c-coupled-bg px-2 py-0.5 text-[10.5px] font-bold text-c-coupled">
+          <span className="rounded-full bg-c-coupled-bg px-2 py-0.5 text-[11px] font-bold text-c-coupled">
             2名体制
           </span>
         )}
@@ -211,7 +211,7 @@ function VisitDetail({
 
       <div
         className={cn(
-          'mb-3 flex items-center gap-2.5 rounded-[11px] px-3 py-2.5 text-[13px] font-semibold',
+          'mb-3 flex items-center gap-2.5 rounded px-3 py-2.5 text-[13px] font-semibold',
           judgeClass[st],
         )}
       >
@@ -230,7 +230,7 @@ function VisitDetail({
 
       {isLongInprogress(visit, maxInprogressMin) && (
         <div
-          className="mb-3 rounded-[10px] border border-warning/40 bg-warning-bg p-3 text-[12.5px] leading-relaxed text-warning-strong"
+          className="mb-3 rounded border border-warning/40 bg-warning-bg p-3 text-[13px] leading-relaxed text-warning-strong"
           data-testid="monitor-long-inprogress"
         >
           <span className="mb-1 flex items-center gap-1 text-[11px] font-bold">
@@ -243,7 +243,7 @@ function VisitDetail({
 
       {visit.phase === 'missing' && (
         <div
-          className="mb-3 rounded-xl border border-error/30 bg-error-bg p-3"
+          className="mb-3 rounded-md border border-error/30 bg-error-bg p-3"
           data-testid="monitor-callbox"
         >
           <div className="mb-1.5 flex items-center gap-1 text-[13px] font-bold text-error">
@@ -262,7 +262,7 @@ function VisitDetail({
       {visit.phase !== 'missing' && visit.reason && (
         <div
           className={cn(
-            'mb-3 rounded-[10px] border p-3 text-[12.5px] leading-relaxed',
+            'mb-3 rounded border p-3 text-[13px] leading-relaxed',
             st === 'mismatch' ? 'border-error/30 bg-error-bg' : 'border-warning/40 bg-warning-bg',
           )}
         >
@@ -274,7 +274,7 @@ function VisitDetail({
       )}
 
       {visit.phase !== 'missing' && (
-        <div className="mb-3 rounded-xl border border-border-default bg-bg-base px-3.5 py-1.5">
+        <div className="mb-3 rounded-md border border-border-default bg-bg-base px-3.5 py-1.5">
           <Kv k="予定時刻" v={`${visit.start_time} – ${visit.end_time}`} />
           <Kv k="到着（QR/GPS）" v={arrive} />
           <Kv k="退出（QR/GPS）" v={depart} />
@@ -317,19 +317,19 @@ function ReviewSection({
   if (visit.reviewed) {
     return (
       <div
-        className="mb-3 rounded-[10px] border border-brand-primary-light bg-brand-primary-50 p-3"
+        className="mb-3 rounded border border-brand-primary-light bg-brand-primary-50 p-3"
         data-testid="monitor-review-done"
       >
-        <div className="mb-1 flex items-center gap-1.5 text-[12.5px] font-bold text-brand-primary-hover">
+        <div className="mb-1 flex items-center gap-1.5 text-[13px] font-bold text-brand-primary-hover">
           <Check className="h-3.5 w-3.5" />
           確認済み
         </div>
-        <div className="text-[11.5px] text-text-secondary">
+        <div className="text-xs text-text-secondary">
           {visit.reviewed_by_name ?? '—'}
           {visit.reviewed_at != null && ` ／ ${isoToYmdHm(visit.reviewed_at)}`}
         </div>
         {visit.review_comment && (
-          <div className="mt-1.5 whitespace-pre-wrap text-[12px] text-text-primary">
+          <div className="mt-1.5 whitespace-pre-wrap text-xs text-text-primary">
             {visit.review_comment}
           </div>
         )}
@@ -341,7 +341,7 @@ function ReviewSection({
             data-testid="monitor-review-undo"
             disabled={reviewPending}
             onClick={() => onUnreview(visit.visit_id)}
-            className="mt-2 h-7 px-2.5 text-[11.5px] font-semibold text-text-secondary"
+            className="mt-2 h-7 px-2.5 text-xs font-semibold text-text-secondary"
           >
             確認を取り消す
           </Button>
@@ -359,7 +359,7 @@ function ReviewSection({
         variant="outline"
         data-testid="monitor-review-button"
         onClick={() => setOpen(true)}
-        className="mb-3 h-auto w-full gap-1.5 rounded-[10px] border-brand-primary-light bg-brand-primary-50 px-3 py-2 text-[12.5px] font-bold text-brand-primary-hover hover:bg-brand-primary-light hover:text-brand-primary-hover"
+        className="mb-3 h-auto w-full gap-1.5 rounded border-brand-primary-light bg-brand-primary-50 px-3 py-2 text-[13px] font-bold text-brand-primary-hover hover:bg-brand-primary-light hover:text-brand-primary-hover"
       >
         <Check className="h-3.5 w-3.5" />
         確認済みにする
@@ -369,7 +369,7 @@ function ReviewSection({
 
   return (
     <div
-      className="mb-3 rounded-[10px] border border-brand-primary-light bg-brand-primary-50 p-3"
+      className="mb-3 rounded border border-brand-primary-light bg-brand-primary-50 p-3"
       data-testid="monitor-review-form"
     >
       <label className="mb-1 block text-[11px] font-bold text-text-secondary">
@@ -381,7 +381,7 @@ function ReviewSection({
         onChange={(e) => setComment(e.target.value)}
         rows={2}
         placeholder="例: 電話で在宅を確認済み"
-        className="mb-2 w-full resize-none rounded-md border border-border-default bg-bg-base px-2 py-1.5 text-[12px]"
+        className="mb-2 w-full resize-none rounded-md border border-border-default bg-bg-base px-2 py-1.5 text-xs"
       />
       <div className="flex gap-2">
         <Button
@@ -395,7 +395,7 @@ function ReviewSection({
             setOpen(false);
             setComment('');
           }}
-          className="h-7 px-3 text-[11.5px] font-bold"
+          className="h-7 px-3 text-xs font-bold"
         >
           確定
         </Button>
@@ -407,7 +407,7 @@ function ReviewSection({
             setOpen(false);
             setComment('');
           }}
-          className="h-7 px-3 text-[11.5px] font-semibold text-text-secondary"
+          className="h-7 px-3 text-xs font-semibold text-text-secondary"
         >
           キャンセル
         </Button>
@@ -418,7 +418,7 @@ function ReviewSection({
 
 function Kv({ k, v, vColor }: { k: string; v: string; vColor?: string }) {
   return (
-    <div className="flex justify-between border-b border-border-default/40 py-2 text-[12.5px] last:border-b-0">
+    <div className="flex justify-between border-b border-border-default/40 py-2 text-[13px] last:border-b-0">
       <span className="text-text-secondary">{k}</span>
       <span className="font-semibold tabular-nums" style={vColor ? { color: vColor } : undefined}>
         {v}

@@ -191,18 +191,18 @@ export default function MonitorPage() {
   }
 
   return (
-    <div className="flex h-[calc(100vh-100px)] flex-col">
+    <div className="flex h-[calc(100vh-100px)] flex-col overflow-hidden rounded-lg border border-border-default bg-bg-base shadow-outer-card">
       {/* ヘッダ */}
       <div className="flex items-center gap-3 border-b border-border-default px-5 py-3">
         <h1 className="font-serif text-xl font-bold text-text-primary">訪問モニター</h1>
         <div className="flex-1" />
         {isToday ? (
-          <span className="inline-flex items-center gap-1.5 text-[11.5px] text-text-secondary">
+          <span className="inline-flex items-center gap-1.5 text-xs text-text-secondary">
             <span className="h-2 w-2 animate-pulse rounded-full bg-success" />
             リアルタイム更新中
           </span>
         ) : (
-          <span className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold text-warning">
+          <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-warning">
             <span className="h-2 w-2 rounded-full bg-warning" />
             過去日表示（リアルタイム更新なし）
           </span>
@@ -210,7 +210,7 @@ export default function MonitorPage() {
         <Link
           href="/settings/checkin"
           data-testid="monitor-threshold-settings-link"
-          className="inline-flex items-center gap-1.5 rounded-md border border-border-default bg-bg-base px-2.5 py-1 text-[12px] text-text-secondary hover:bg-bg-muted"
+          className="inline-flex items-center gap-1.5 rounded-md border border-border-default bg-bg-base px-2.5 py-1 text-xs text-text-secondary hover:bg-bg-muted"
         >
           <Settings className="h-3.5 w-3.5" strokeWidth={1.75} />
           しきい値設定
@@ -374,6 +374,7 @@ function Legend({ swatch, label, border }: { swatch: string; label: string; bord
   return (
     <span className="inline-flex items-center gap-1.5">
       <span
+        // rounded-[3px]: 10x20px の極小スウォッチのためトークン(sm=8px)未満の例外
         className="inline-block h-2.5 w-5 rounded-[3px]"
         style={{ background: swatch, border: border ? `1px solid ${PLAN_BAR_BORDER}` : undefined }}
       />
