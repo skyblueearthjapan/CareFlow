@@ -156,11 +156,13 @@ def upgrade() -> None:
         sa.CheckConstraint(_KIND_CHECK_COND, name="ck_sd_kind"),
         sa.CheckConstraint(_REASON_CHECK_COND, name="ck_sd_reason"),
         sa.CheckConstraint(_WEEKDAY_CHECK_COND, name="ck_sd_weekday"),
-    )
-    op.create_index(
-        "ix_suggestion_dismissals_fingerprint",
-        "suggestion_dismissals",
-        ["patient_id", "kind", "target_weekday"],
+        # 指紋 UNIQUE (= UNIQUE index 兼用. dismiss upsert の TOCTOU 競合防止).
+        sa.UniqueConstraint(
+            "patient_id",
+            "kind",
+            "target_weekday",
+            name="uq_sd_fingerprint",
+        ),
     )
 
 
@@ -169,9 +171,7 @@ def downgrade() -> None:
     is_pg = bind.dialect.name == "postgresql"
 
     # ----- 変更 2: suggestion_dismissals -----
-    op.drop_index(
-        "ix_suggestion_dismissals_fingerprint", table_name="suggestion_dismissals"
-    )
+    # UNIQUE 制約 (uq_sd_fingerprint) はテーブル DROP で一緒に消えるため個別 drop 不要.
     op.drop_table("suggestion_dismissals")
 
     # ----- 変更 1: PFV.movability -----

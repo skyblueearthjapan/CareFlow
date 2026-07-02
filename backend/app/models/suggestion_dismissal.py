@@ -41,10 +41,10 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
-    Index,
     SmallInteger,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
@@ -110,11 +110,13 @@ class SuggestionDismissal(Base):
             "target_weekday BETWEEN 0 AND 6",
             name="ck_sd_weekday",
         ),
-        # 指紋 (patient_id, kind, target_weekday) での検索用 index.
-        Index(
-            "ix_suggestion_dismissals_fingerprint",
+        # 指紋 (patient_id, kind, target_weekday) の UNIQUE 制約.
+        # UNIQUE index を兼ねるため別途 Index 不要.
+        # dismiss upsert の TOCTOU 競合を DB 側で防ぐ.
+        UniqueConstraint(
             "patient_id",
             "kind",
             "target_weekday",
+            name="uq_sd_fingerprint",
         ),
     )

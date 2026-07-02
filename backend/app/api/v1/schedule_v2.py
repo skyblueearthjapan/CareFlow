@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from datetime import time as time_cls
 from typing import Annotated, Any
 from uuid import UUID
@@ -38,6 +38,7 @@ from app.models.audit_log import AuditLog
 from app.models.office import Office
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
+from app.models.suggestion_dismissal import SuggestionDismissal
 from app.models.user import User
 from app.models.visit import VISIT_STATUS_PLANNED, Visit
 from app.schemas.v2.auto_schedule_v2 import (
@@ -80,6 +81,17 @@ from app.schemas.v2.board import (
     BoardResponse,
     BoardVisit,
     BoardWeekday,
+)
+from app.schemas.v2.improvement_suggestion import (
+    ImprovementCandidateSlot,
+    ImprovementChanges,
+    ImprovementCurrentSlot,
+    ImprovementDelta,
+    ImprovementDismissRequest,
+    ImprovementDismissResponse,
+    ImprovementFilteredSummary,
+    ImprovementSuggestion,
+    ImprovementSuggestionsResponse,
 )
 from app.schemas.v2.propose_slots import (
     WEEKDAY_CODE_TO_INT,
@@ -140,6 +152,10 @@ from app.services.scheduling.board_service import (
     _office_short as _board_office_short,
 )
 from app.services.scheduling.config import SchedulingConfig, load_scheduling_config
+from app.services.scheduling.improvement_engine import (
+    ImprovementCandidateData,
+    find_improvement_candidates,
+)
 from app.services.scheduling.proposal_solver import (
     VISIT_BUFFER_MINUTES,
     haversine_minutes,
@@ -2175,6 +2191,213 @@ async def board_endpoint(
         offices=offices_out,
         weekdays=weekdays_out,
         board=board_out,
+    )
+
+
+# ---------------------------------------------------------------------------
+# improvement-suggestions (P2-B: 配置済み患者の改善提案 + 却下記憶)
+# ---------------------------------------------------------------------------
+
+
+def _improvement_to_schema(c: ImprovementCandidateData) -> ImprovementSuggestion:
+    """内部表現 ``ImprovementCandidateData`` を API schema へ変換."""
+    return ImprovementSuggestion(
+        kind=c.kind,  # type: ignore[arg-type]
+        target_weekday=c.target_weekday,
+        current=ImprovementCurrentSlot(
+            office_id=c.current_office_id,
+            weekday=c.current_weekday,
+            weekday_code=WEEKDAY_INT_TO_CODE[c.current_weekday],  # type: ignore[arg-type]
+            start_time=f"{c.current_start.hour:02d}:{c.current_start.minute:02d}",
+            end_time=f"{c.current_end.hour:02d}:{c.current_end.minute:02d}",
+            course_label=c.current_course_label,
+            staff_name=c.current_staff_name,
+        ),
+        candidate=ImprovementCandidateSlot(
+            office_id=c.cand_office_id,
+            office_name=c.cand_office_name,
+            weekday=c.cand_weekday,
+            weekday_code=WEEKDAY_INT_TO_CODE[c.cand_weekday],  # type: ignore[arg-type]
+            start_time=f"{c.cand_start.hour:02d}:{c.cand_start.minute:02d}",
+            end_time=f"{c.cand_end.hour:02d}:{c.cand_end.minute:02d}",
+            course_code=c.cand_course_code,
+            course_label=c.cand_course_label,
+            staff_name=c.cand_staff_name,
+        ),
+        delta=ImprovementDelta(
+            travel_minutes_saved=c.delta_minutes,
+            travel_km_saved=c.delta_km,
+        ),
+        changes=ImprovementChanges(changes=c.changes, unchanged=c.unchanged),
+        staff_warnings=c.staff_warnings,
+        feasibility_basis="pfv",
+        requires_patient_confirmation=c.requires_patient_confirmation,
+    )
+
+
+@router.get(
+    "/v2/improvement-suggestions",
+    response_model=ImprovementSuggestionsResponse,
+    status_code=status.HTTP_200_OK,
+    summary="P2-B: 配置済み患者の改善提案 (限界コスト方式) を返す",
+)
+async def improvement_suggestions_endpoint(
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    patient_id: Annotated[UUID, Query(description="対象患者 ID")],
+    iso_year: Annotated[int, Query(ge=2020, le=2100)],
+    iso_week: Annotated[int, Query(ge=1, le=53)],
+) -> ImprovementSuggestionsResponse:
+    """対象患者の各固定枠について、移動を縮められる入れ替え候補を返す read-only API.
+
+    本 endpoint は **read-only**: DB を変更しない.
+
+    0 件でも 200 + ``filtered_summary`` (pinned/locked/dismissed/below_threshold/
+    day_restricted の内訳 = N-6「黙って消さない」) を返す.
+    """
+    patient = await db.scalar(
+        select(Patient).where(
+            Patient.id == patient_id,
+            Patient.deleted_at.is_(None),
+        )
+    )
+    if patient is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
+
+    config = await load_scheduling_config(db)
+    try:
+        suggestions, summary = await find_improvement_candidates(
+            db,
+            patient=patient,
+            iso_year=iso_year,
+            iso_week=iso_week,
+            config=config,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    return ImprovementSuggestionsResponse(
+        patient_id=patient_id,
+        iso_year=iso_year,
+        iso_week=iso_week,
+        suggestions=[_improvement_to_schema(c) for c in suggestions],
+        filtered_summary=ImprovementFilteredSummary(
+            pinned=summary.pinned,
+            locked=summary.locked,
+            no_current_visit=summary.no_current_visit,
+            dismissed=summary.dismissed,
+            below_threshold=summary.below_threshold,
+            day_restricted=summary.day_restricted,
+        ),
+    )
+
+
+# 却下理由 → 可動域昇格先 (設計書 §2.3). is_pinned=true 行は昇格せず locked のまま.
+_PROMOTE_TARGET: dict[str, str] = {
+    "day_immovable": "time_flexible",
+    "time_immovable": "locked",
+}
+
+
+@router.post(
+    "/v2/improvement-suggestions/dismiss",
+    response_model=ImprovementDismissResponse,
+    status_code=status.HTTP_200_OK,
+    summary="P2-B: 改善提案を却下記憶に upsert (任意で可動域昇格)",
+)
+async def improvement_dismiss_endpoint(
+    payload: ImprovementDismissRequest,
+    db: DbDep,
+    actor: Annotated[User, Depends(require_role("admin", "manager"))],
+) -> ImprovementDismissResponse:
+    """改善提案の却下を記録する.
+
+    同一指紋 ``(patient_id, kind, target_weekday)`` は既存行を upsert (reason 更新).
+    ``promote_movability=true`` かつ reason が day_immovable / time_immovable のときのみ、
+    該当 PFV の movability を昇格する (is_pinned=true の行は locked のまま = 昇格しない).
+    """
+    patient = await db.scalar(
+        select(Patient).where(
+            Patient.id == payload.patient_id,
+            Patient.deleted_at.is_(None),
+        )
+    )
+    if patient is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
+
+    # 指紋 (patient_id, kind, target_weekday) で upsert.
+    # UniqueConstraint (uq_sd_fingerprint) により TOCTOU 競合は DB 側で検出される.
+    _fp_filter = [
+        SuggestionDismissal.patient_id == payload.patient_id,
+        SuggestionDismissal.kind == payload.kind,
+        SuggestionDismissal.target_weekday == payload.target_weekday,
+    ]
+    now = datetime.now(UTC)
+    existing = await db.scalar(select(SuggestionDismissal).where(*_fp_filter))
+    if existing is not None:
+        # UPDATE: reason / dismissed_by / dismissed_at を最新化.
+        existing.reason = payload.reason
+        existing.reason_note = payload.reason_note
+        existing.dismissed_by = actor.id
+        existing.dismissed_at = now
+        dismissal = existing
+        await db.flush()
+    else:
+        # INSERT: TOCTOU 競合で UniqueConstraint 違反が起きたら rollback → re-SELECT → UPDATE (1 retry).
+        new_row = SuggestionDismissal(
+            patient_id=payload.patient_id,
+            kind=payload.kind,
+            target_weekday=payload.target_weekday,
+            reason=payload.reason,
+            reason_note=payload.reason_note,
+            dismissed_by=actor.id,
+        )
+        db.add(new_row)
+        try:
+            await db.flush()
+            dismissal = new_row
+        except IntegrityError:
+            # 競合リクエストが同一指紋を先にINSERT → rollback して既存行をUPDATE.
+            await db.rollback()
+            existing = await db.scalar(select(SuggestionDismissal).where(*_fp_filter))
+            if existing is None:
+                raise  # DB 不整合: 再 raise して 500 に.
+            existing.reason = payload.reason
+            existing.reason_note = payload.reason_note
+            existing.dismissed_by = actor.id
+            existing.dismissed_at = now
+            dismissal = existing
+            await db.flush()
+
+    # 可動域昇格 (人間確認後にのみ). is_pinned=true 行は locked のまま.
+    movability_updated = False
+    new_movability: str | None = None
+    if payload.promote_movability and payload.reason in _PROMOTE_TARGET:
+        target = _PROMOTE_TARGET[payload.reason]
+        rows = (
+            await db.scalars(
+                select(PatientFixedVisit).where(
+                    PatientFixedVisit.patient_id == payload.patient_id,
+                    PatientFixedVisit.mode == "normal",
+                    PatientFixedVisit.weekday == payload.target_weekday,
+                )
+            )
+        ).all()
+        for row in rows:
+            if row.is_pinned:
+                continue  # is_pinned ⇒ locked のまま (昇格しない).
+            if row.movability != target:
+                row.movability = target
+                movability_updated = True
+        if movability_updated:
+            new_movability = target
+
+    await db.commit()
+
+    return ImprovementDismissResponse(
+        dismissal_id=dismissal.id,
+        movability_updated=movability_updated,
+        new_movability=new_movability,
     )
 
 

@@ -238,6 +238,42 @@ def test_suggestion_dismissals_table_and_checks(upgraded_engine) -> None:
             )
 
 
+def test_suggestion_dismissals_unique_fingerprint(upgraded_engine) -> None:
+    """指紋 (patient_id, kind, target_weekday) に UNIQUE 制約 (uq_sd_fingerprint) がある."""
+    engine, _ = upgraded_engine
+    # 1 件目: 正常 INSERT
+    with engine.begin() as conn:
+        conn.execute(sa.text("PRAGMA foreign_keys = ON"))
+        conn.execute(
+            sa.text(
+                "INSERT INTO suggestion_dismissals "
+                "(id, patient_id, kind, target_weekday, reason) "
+                "VALUES ('sd-uniq1', 'p1', 'time_change', 0, 'other')"
+            )
+        )
+    # 同一指紋の 2 件目: UNIQUE 違反 → IntegrityError
+    with pytest.raises(IntegrityError):
+        with engine.begin() as conn:
+            conn.execute(sa.text("PRAGMA foreign_keys = ON"))
+            conn.execute(
+                sa.text(
+                    "INSERT INTO suggestion_dismissals "
+                    "(id, patient_id, kind, target_weekday, reason) "
+                    "VALUES ('sd-uniq2', 'p1', 'time_change', 0, 'day_immovable')"
+                )
+            )
+    # 異なる kind は別指紋 → OK
+    with engine.begin() as conn:
+        conn.execute(sa.text("PRAGMA foreign_keys = ON"))
+        conn.execute(
+            sa.text(
+                "INSERT INTO suggestion_dismissals "
+                "(id, patient_id, kind, target_weekday, reason) "
+                "VALUES ('sd-uniq3', 'p1', 'day_change', 0, 'other')"
+            )
+        )
+
+
 def test_suggestion_dismissals_cascade_on_patient_delete(upgraded_engine) -> None:
     """patient 物理削除で suggestion_dismissals が CASCADE で消える."""
     engine, _ = upgraded_engine
