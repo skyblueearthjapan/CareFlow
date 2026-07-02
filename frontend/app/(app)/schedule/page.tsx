@@ -30,21 +30,8 @@ import { WeekSelector, toWeekStart } from '@/components/schedule/WeekSelector';
 import { Card } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
 import { useOffices } from '@/lib/queries/offices';
+import { isoWeekFromLocalDate } from '@/lib/format/isoWeek';
 import { useSession } from 'next-auth/react';
-
-// ─────────────────────────────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────────────────────────────
-
-function toIsoYearWeek(d: Date): { isoYear: number; isoWeek: number } {
-  const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
-  const day = date.getUTCDay() || 7;
-  date.setUTCDate(date.getUTCDate() + 4 - day);
-  const year = date.getUTCFullYear();
-  const yearStart = new Date(Date.UTC(year, 0, 1));
-  const week = Math.ceil(((date.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
-  return { isoYear: year, isoWeek: week };
-}
 
 // ─────────────────────────────────────────────────────────────────────────
 // Page
@@ -57,7 +44,7 @@ export default function SchedulePage() {
 
   // 週 state.
   const [weekStart, setWeekStart] = useState<Date>(() => toWeekStart(new Date()));
-  const { isoYear, isoWeek } = useMemo(() => toIsoYearWeek(weekStart), [weekStart]);
+  const { isoYear, isoWeek } = useMemo(() => isoWeekFromLocalDate(weekStart), [weekStart]);
 
   // 拠点フィルタ. null = 全拠点.
   const [officeId, setOfficeId] = useState<string | null>(null);

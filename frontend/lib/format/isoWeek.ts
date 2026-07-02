@@ -4,17 +4,44 @@
  * Schedule Advisor (健康診断パネル) の「当週 vs 前週」比較で、前週の
  * (iso_year, iso_week) を **年跨ぎ・53 週年を含めて正しく** 算出するために使う.
  *
- * CourseDayTablePanel 内のローカル `toIsoYearWeek` と同一の ISO ロジックだが、
- * こちらは (iso_year, iso_week) → 月曜 Date のラウンドトリップも提供し、
- * 「週1の前週 = 前年最終週 (52 or 53)」を Date 演算で厳密に導く.
- *
  * すべて UTC で計算し、内部でラウンドトリップの自己整合性を保つ.
+ *
+ * ## UTC 版 vs ローカル日付版
+ * - `isoWeekFromDate`      — UTC 版。Date の UTC 年月日で計算。
+ *                            `mondayOfIsoWeek` / `previousIsoWeek` との組み合わせに使う。
+ * - `isoWeekFromLocalDate` — ローカル版。Date の **ローカル** 年月日で計算。
+ *                            ブラウザで `toWeekStart()` 等から得たローカル日付を扱う
+ *                            コンポーネント側コードに使う（旧 `toIsoYearWeek` と同一ロジック）。
  */
 
-/** 任意の Date から ISO 週 (isoYear, isoWeek) を UTC で算出する. */
+/**
+ * 任意の Date から ISO 週 (isoYear, isoWeek) を **UTC** で算出する.
+ *
+ * UTC 日付ベース。`mondayOfIsoWeek` / `previousIsoWeek` のラウンドトリップ用。
+ * ローカル日付ベースで計算したい場合は `isoWeekFromLocalDate` を使うこと。
+ */
 export function isoWeekFromDate(d: Date): { isoYear: number; isoWeek: number } {
   const date = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
   // ISO では木曜日が属する年・週がその週の年・週になる. 月=1..日=7.
+  const day = date.getUTCDay() || 7;
+  date.setUTCDate(date.getUTCDate() + 4 - day);
+  const isoYear = date.getUTCFullYear();
+  const yearStart = new Date(Date.UTC(isoYear, 0, 1));
+  const isoWeek = Math.ceil(((date.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
+  return { isoYear, isoWeek };
+}
+
+/**
+ * 任意の Date から ISO 週 (isoYear, isoWeek) を **ローカル日付** で算出する.
+ *
+ * `d.getFullYear()` / `d.getMonth()` / `d.getDate()` を使うため、ブラウザで
+ * `toWeekStart()` 等から得たローカル午前0時 Date をそのまま渡せる。
+ * UTC 日付ベースで計算したい場合は `isoWeekFromDate` を使うこと。
+ *
+ * コードベース内の旧 `toIsoYearWeek` ローカル実装と完全同一のロジック。
+ */
+export function isoWeekFromLocalDate(d: Date): { isoYear: number; isoWeek: number } {
+  const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
   const day = date.getUTCDay() || 7;
   date.setUTCDate(date.getUTCDate() + 4 - day);
   const isoYear = date.getUTCFullYear();

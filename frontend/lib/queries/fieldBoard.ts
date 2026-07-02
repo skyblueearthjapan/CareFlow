@@ -19,6 +19,7 @@ import {
 import { useSession } from 'next-auth/react';
 
 import { fetcher } from '@/lib/api/fetcher';
+import { isoWeekFromLocalDate } from '@/lib/format/isoWeek';
 import { boardResponseSchema, type BoardResponse, type WeekdayCode } from '@/lib/schemas/v2/board';
 import {
   proposeSlotsRequestSchema,
@@ -50,7 +51,7 @@ function authPair(session: ReturnType<typeof useSession>['data']): {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// ISO 年週ヘルパー (schedule ページ `toIsoYearWeek` と同一ロジック)
+// ISO 年週ヘルパー
 // ─────────────────────────────────────────────────────────────────────────
 
 /** 任意の Date を ISO 週の月曜 (Mon=0..Sun=6 規約) に丸める。 */
@@ -63,15 +64,9 @@ export function toWeekStart(d: Date): Date {
   return x;
 }
 
-/** Date → { isoYear, isoWeek } (ISO-8601 週番号)。 */
+/** Date → { isoYear, isoWeek } (ISO-8601 週番号)。lib/format/isoWeek の共通実装に委譲。 */
 export function toIsoYearWeek(d: Date): { isoYear: number; isoWeek: number } {
-  const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
-  const day = date.getUTCDay() || 7;
-  date.setUTCDate(date.getUTCDate() + 4 - day);
-  const year = date.getUTCFullYear();
-  const yearStart = new Date(Date.UTC(year, 0, 1));
-  const week = Math.ceil(((date.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
-  return { isoYear: year, isoWeek: week };
+  return isoWeekFromLocalDate(d);
 }
 
 /** weekday コード (Mon..Sun) → 0..6 の整数 (Mon=0)。 */

@@ -29,6 +29,7 @@ import { useCourses, type CourseV2Read } from '@/lib/queries/courses';
 import { useOffices } from '@/lib/queries/offices';
 import { usePatients } from '@/lib/queries/patients';
 import { useVisits } from '@/lib/queries/visits';
+import { mondayOfIsoWeek } from '@/lib/format/isoWeek';
 import { coerceWeeklyPattern, type PatientRead } from '@/lib/schemas/patient';
 import type { DiffAddProposal, V2VisitPlan } from '@/lib/schemas/v2/autoScheduleV2';
 
@@ -47,16 +48,7 @@ import { trimSeconds } from './_autoScheduleUtils';
 
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'] as const;
 
-/** ISO (year, week) → 当該週の月曜日 (UTC) を返す. */
-function isoWeekToMonday(isoYear: number, isoWeek: number): Date {
-  const jan4 = new Date(Date.UTC(isoYear, 0, 4));
-  const jan4Day = jan4.getUTCDay() || 7; // Mon=1..Sun=7
-  const week1Monday = new Date(jan4);
-  week1Monday.setUTCDate(jan4.getUTCDate() - (jan4Day - 1));
-  const target = new Date(week1Monday);
-  target.setUTCDate(week1Monday.getUTCDate() + (isoWeek - 1) * 7);
-  return target;
-}
+// isoWeekToMonday は lib/format/isoWeek の mondayOfIsoWeek と完全同一のため削除し import に統一。
 
 /** Date → 'YYYY-MM-DD' (UTC ベース). */
 function toIsoDate(d: Date): string {
@@ -165,7 +157,7 @@ function SingleWeekdayTimeline({
   const courses = React.useMemo(() => coursesQuery.data ?? [], [coursesQuery.data]);
 
   const dayDate = React.useMemo(() => {
-    const monday = isoWeekToMonday(isoYear, isoWeek);
+    const monday = mondayOfIsoWeek(isoYear, isoWeek);
     monday.setUTCDate(monday.getUTCDate() + weekday);
     return toIsoDate(monday);
   }, [isoYear, isoWeek, weekday]);

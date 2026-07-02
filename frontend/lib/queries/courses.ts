@@ -36,6 +36,7 @@ import {
 import { useSession } from 'next-auth/react';
 
 import { fetcher } from '@/lib/api/fetcher';
+import { mondayOfIsoWeek } from '@/lib/format/isoWeek';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Path constants
@@ -158,21 +159,7 @@ function authPair(session: ReturnType<typeof useSession>['data']): {
   };
 }
 
-/**
- * ISO 8601 の (year, week) → 当該週の月曜日 (UTC) を返す。
- *
- * ISO 8601 では「最初の木曜を含む週が第 1 週」と定義されているため、
- * 1 月 4 日が必ず第 1 週に含まれる性質を利用して算出する。
- */
-function isoWeekToMonday(isoYear: number, isoWeek: number): Date {
-  const jan4 = new Date(Date.UTC(isoYear, 0, 4));
-  const jan4Day = jan4.getUTCDay() || 7; // Mon=1..Sun=7
-  const week1Monday = new Date(jan4);
-  week1Monday.setUTCDate(jan4.getUTCDate() - (jan4Day - 1));
-  const target = new Date(week1Monday);
-  target.setUTCDate(week1Monday.getUTCDate() + (isoWeek - 1) * 7);
-  return target;
-}
+// isoWeekToMonday は lib/format/isoWeek の mondayOfIsoWeek と完全同一のため削除し import に統一。
 
 /** Date → 'YYYY-MM-DD' (UTC ベース). */
 function toIsoDate(d: Date): string {
@@ -188,7 +175,7 @@ function toIsoDate(d: Date): string {
  * weekday は 0=Mon..6=Sun (BE 仕様).
  */
 function isoWeekdayToDate(isoYear: number, isoWeek: number, weekday: number): string {
-  const monday = isoWeekToMonday(isoYear, isoWeek);
+  const monday = mondayOfIsoWeek(isoYear, isoWeek);
   monday.setUTCDate(monday.getUTCDate() + weekday);
   return toIsoDate(monday);
 }

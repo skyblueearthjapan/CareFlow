@@ -9,12 +9,17 @@ const badgeVariants = cva(
     variants: {
       variant: {
         default: 'border-transparent bg-brand-primary text-white hover:bg-brand-primary-hover',
-        secondary: 'border-transparent bg-bg-muted text-text-primary hover:bg-bg-muted/80',
+        // hover:bg-bg-muted/80 → hover:bg-bg-muted:
+        //   bg-muted は var() 定義なので Tailwind の /alpha 修飾子が生成されない。
+        //   淡色トークン自体との差は視覚上ほぼ無いため /80 を除去。
+        secondary: 'border-transparent bg-bg-muted text-text-primary hover:bg-bg-muted',
         destructive: 'border-transparent bg-error text-white hover:opacity-90',
         outline: 'border-border-default text-text-primary',
-        success: 'border-transparent bg-success/15 text-success',
-        warning: 'border-transparent bg-warning/15 text-warning',
-        info: 'border-transparent bg-info/15 text-info',
+        // bg-success/15 等は var() 色に <alpha-value> が未定義なため CSS が生成されない本番バグ。
+        // P0-2 で追加済みの *-bg トークン（tokens.css の --success-bg 等）に置換。
+        success: 'border-transparent bg-success-bg text-success',
+        warning: 'border-transparent bg-warning-bg text-warning',
+        info: 'border-transparent bg-info-bg text-info',
       },
     },
     defaultVariants: {
