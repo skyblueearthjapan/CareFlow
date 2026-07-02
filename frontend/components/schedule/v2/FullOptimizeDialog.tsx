@@ -19,6 +19,7 @@ import {
   ArrowRight,
   CalendarRange,
   CheckCircle2,
+  FlaskConical,
   ListChecks,
   Loader2,
   Pin,
@@ -695,8 +696,8 @@ export function FullOptimizeDialog({
       >
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <RefreshCw className="h-5 w-5 text-brand-primary" aria-hidden />
-            全面最適化 - 週単位の再構築提案
+            <FlaskConical className="h-5 w-5 text-brand-primary" aria-hidden />
+            白紙シミュレーション（比較専用）
             {stage === 'individual-review' ? (
               <Badge variant="secondary" className="ml-2 text-[10px]">
                 {totalPatients} 件中 {currentIndex} 件目
@@ -713,6 +714,19 @@ export function FullOptimizeDialog({
                 : '全 active 患者で固定枠を再算出し、移動距離・偏差を改善する提案を生成します。「この週だけ試す」を選ぶと固定枠を変更せず一括反映できます。'}
           </DialogDescription>
         </DialogHeader>
+
+        {/* P3-⑤: 白紙シミュレーション説明バナー (常設). */}
+        <div
+          className="rounded-md border border-brand-primary/40 bg-brand-primary/5 px-3 py-2.5 text-xs text-text-primary"
+          data-testid="full-optimize-simulation-notice"
+          role="note"
+        >
+          現在の固定スケジュールを白紙から組み直した場合の比較です。
+          <strong>
+            適用すると患者様との既存のお約束が大きく変わる可能性があります。
+          </strong>
+          通常の改善は患者詳細の「改善提案」をご利用ください。
+        </div>
 
         {/* エラー */}
         {fetchMut.error ? (
@@ -958,14 +972,23 @@ export function FullOptimizeDialog({
             data-testid="full-optimize-week-only-confirm-panel"
           >
             <p className="mb-2 text-sm font-semibold text-text-primary">
-              この週のスケジュールを一括反映しますか？
+              シミュレーション結果の適用は既存スケジュールを変更します。よろしいですか？
+            </p>
+            <p className="mb-1 text-xs text-text-muted">
+              <span
+                className="font-semibold text-text-primary"
+                data-testid="full-optimize-week-only-count"
+              >
+                {result?.individual_proposals.length ?? 0} 件の変更が適用されます。
+              </span>
+              患者様との既存のお約束が大きく変わる可能性があります。
             </p>
             <p className="mb-4 text-xs text-text-muted">
               対象週の visits を提案内容で一括上書きします。
               <span className="font-semibold text-text-primary">
                 患者マスタの固定枠 (patient_fixed_visits) は変更しません。
               </span>
-              来週からは元の固定枠ベースのスケジュールに戻ります。よろしいですか？
+              来週からは元の固定枠ベースのスケジュールに戻ります。
             </p>
             <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
               <Button

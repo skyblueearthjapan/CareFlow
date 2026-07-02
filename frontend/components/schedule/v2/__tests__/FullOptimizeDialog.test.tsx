@@ -37,6 +37,7 @@ vi.mock('lucide-react', () => ({
   ArrowRight: () => <span />,
   CalendarRange: () => <span />,
   CheckCircle2: () => <span />,
+  FlaskConical: () => <span />,
   ListChecks: () => <span />,
   Loader2: () => <span data-testid="loader" />,
   Pin: () => <span />,
@@ -1377,5 +1378,79 @@ describe('FullOptimizeDialog — Phase G-44 「希望 vs After」 サマリ + �
     expect(warningsBlock.textContent).toMatch(/前 visit との距離 8km/);
     // block 全体を suppress warning なしで参照させたい (block 変数を unused 扱いさせない)
     expect(block).toBeInTheDocument();
+  });
+});
+
+// ─── P3-⑤ シミュレーション UI (常設バナー・確認パネル件数) ──────────────────
+
+describe('FullOptimizeDialog — P3-⑤ シミュレーション UI', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('常設 info バナーが描画される (full-optimize-simulation-notice)', async () => {
+    const res = makeResponse({ assignedPatientIds: ['p1'], unassignedPatientIds: [] });
+    mocks.fullOptimizeMutateAsync.mockResolvedValue(res);
+
+    render(
+      <FullOptimizeDialog
+        open
+        onClose={vi.fn()}
+        isoYear={2026}
+        isoWeek={20}
+        officeId={OFFICE_ID}
+      />,
+    );
+
+    const notice = screen.getByTestId('full-optimize-simulation-notice');
+    expect(notice).toBeInTheDocument();
+    expect(notice.textContent).toMatch(/白紙から組み直した場合の比較/);
+    expect(notice.textContent).toMatch(/お約束が大きく変わる可能性/);
+  });
+
+  it('week-only 確認パネルに変更件数テキストが表示される', async () => {
+    const res = makeResponse({
+      assignedPatientIds: ['p1', 'p2', 'p3'],
+      unassignedPatientIds: [],
+    });
+    mocks.fullOptimizeMutateAsync.mockResolvedValue(res);
+
+    render(
+      <FullOptimizeDialog
+        open
+        onClose={vi.fn()}
+        isoYear={2026}
+        isoWeek={20}
+        officeId={OFFICE_ID}
+      />,
+    );
+
+    await screen.findByTestId('full-optimize-decision-panel');
+    fireEvent.click(screen.getByTestId('full-optimize-week-only-button'));
+    await screen.findByTestId('full-optimize-week-only-confirm-panel');
+
+    const countEl = screen.getByTestId('full-optimize-week-only-count');
+    expect(countEl.textContent).toMatch(/3 件の変更が適用されます/);
+  });
+
+  it('week-only 確認ボタン押下前に applyWeekOnly は呼ばれない', async () => {
+    const res = makeResponse({ assignedPatientIds: ['p1'], unassignedPatientIds: [] });
+    mocks.fullOptimizeMutateAsync.mockResolvedValue(res);
+
+    render(
+      <FullOptimizeDialog
+        open
+        onClose={vi.fn()}
+        isoYear={2026}
+        isoWeek={20}
+        officeId={OFFICE_ID}
+      />,
+    );
+
+    await screen.findByTestId('full-optimize-decision-panel');
+    fireEvent.click(screen.getByTestId('full-optimize-week-only-button'));
+    await screen.findByTestId('full-optimize-week-only-confirm-panel');
+
+    expect(mocks.applyWeekOnlyMutateAsync).not.toHaveBeenCalled();
   });
 });

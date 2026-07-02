@@ -45,7 +45,7 @@ import {
 import { useQueries } from '@tanstack/react-query';
 import { useSession } from 'next-auth/react';
 import { format } from 'date-fns';
-import { HeartPulse, Loader2, Plus, RefreshCw, UserCheck } from 'lucide-react';
+import { FlaskConical, HeartPulse, Loader2, Plus, RefreshCw, UserCheck } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { Button } from '@/components/ui/button';
@@ -1966,17 +1966,6 @@ export function CourseDayTablePanel({
                 type="button"
                 size="sm"
                 variant="default"
-                onClick={() => setFullOptimizeOpen(true)}
-                disabled={isProcessing}
-                data-testid="full-optimize-button"
-              >
-                <RefreshCw className="mr-1 h-4 w-4" aria-hidden />
-                全面最適化
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="default"
                 onClick={() => setDiffAddOpen(true)}
                 disabled={isProcessing}
                 data-testid="diff-add-button"
@@ -2005,8 +1994,19 @@ export function CourseDayTablePanel({
                 <HeartPulse className="mr-1 h-4 w-4" aria-hidden />
                 健康診断
               </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => setFullOptimizeOpen(true)}
+                disabled={isProcessing}
+                data-testid="full-optimize-button"
+              >
+                <FlaskConical className="mr-1 h-4 w-4" aria-hidden />
+                シミュレーション
+              </Button>
 
-              {/* 主要 4 と「固定枠戻 / 全件保存」 の区切り線. */}
+              {/* 主要ボタン群と「固定枠戻 / 全件保存」 の区切り線. */}
               <span
                 aria-hidden
                 className="h-5 w-px bg-border-default"
