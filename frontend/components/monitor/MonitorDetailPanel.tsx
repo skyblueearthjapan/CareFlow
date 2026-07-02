@@ -156,13 +156,14 @@ function VisitDetail({
       : '—';
   const dist = visit.arrival?.distance_m;
   const acc = visit.arrival?.accuracy_m;
-  const distColor = st === 'mismatch' ? '#dc2626' : st === 'review' ? '#d97706' : '#0f766e';
+  const distColor =
+    st === 'mismatch' ? 'var(--error)' : st === 'review' ? 'var(--warning)' : 'var(--brand-primary-hover)';
 
   const judgeClass: Record<string, string> = {
-    match: 'bg-[#e6faf6] text-brand-primary-hover',
+    match: 'bg-brand-primary-50 text-brand-primary-hover',
     review: 'bg-amber-50 text-amber-700',
     mismatch: 'bg-red-50 text-red-600',
-    inprogress: 'bg-blue-50 text-blue-800',
+    inprogress: 'bg-brand-primary-50 text-brand-primary-hover',
     missing: 'bg-red-50 text-red-600',
     future: 'bg-bg-muted text-text-secondary',
     awaiting: 'bg-bg-muted text-text-secondary',
@@ -173,7 +174,7 @@ function VisitDetail({
       <h3 className="m-0 flex items-center gap-2 text-[15px] font-bold text-text-primary">
         {visit.patient_name ?? '—'} さん
         {visit.visit_group_id != null && (
-          <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[10.5px] font-bold text-indigo-700">
+          <span className="rounded-full bg-c-coupled-bg px-2 py-0.5 text-[10.5px] font-bold text-c-coupled">
             2名体制
           </span>
         )}
@@ -284,10 +285,10 @@ function ReviewSection({
   if (visit.reviewed) {
     return (
       <div
-        className="mb-3 rounded-[10px] border border-teal-300 bg-teal-50 p-3"
+        className="mb-3 rounded-[10px] border border-brand-primary-light bg-brand-primary-50 p-3"
         data-testid="monitor-review-done"
       >
-        <div className="mb-1 flex items-center gap-1.5 text-[12.5px] font-bold text-teal-700">
+        <div className="mb-1 flex items-center gap-1.5 text-[12.5px] font-bold text-brand-primary-hover">
           ✓ 確認済み
         </div>
         <div className="text-[11.5px] text-text-secondary">
@@ -322,7 +323,7 @@ function ReviewSection({
         type="button"
         data-testid="monitor-review-button"
         onClick={() => setOpen(true)}
-        className="mb-3 w-full rounded-[10px] border border-teal-300 bg-teal-50 px-3 py-2 text-[12.5px] font-bold text-teal-700 hover:bg-teal-100"
+        className="mb-3 w-full rounded-[10px] border border-brand-primary-light bg-brand-primary-50 px-3 py-2 text-[12.5px] font-bold text-brand-primary-hover hover:bg-brand-primary-light"
       >
         ✓ 確認済みにする
       </button>
@@ -331,7 +332,7 @@ function ReviewSection({
 
   return (
     <div
-      className="mb-3 rounded-[10px] border border-teal-300 bg-teal-50 p-3"
+      className="mb-3 rounded-[10px] border border-brand-primary-light bg-brand-primary-50 p-3"
       data-testid="monitor-review-form"
     >
       <label className="mb-1 block text-[11px] font-bold text-text-secondary">
@@ -355,7 +356,7 @@ function ReviewSection({
             setOpen(false);
             setComment('');
           }}
-          className="rounded-md bg-teal-600 px-3 py-1 text-[11.5px] font-bold text-white hover:bg-teal-700 disabled:opacity-50"
+          className="rounded-md bg-brand-primary px-3 py-1 text-[11.5px] font-bold text-white hover:bg-brand-primary-hover disabled:opacity-50"
         >
           確定
         </button>

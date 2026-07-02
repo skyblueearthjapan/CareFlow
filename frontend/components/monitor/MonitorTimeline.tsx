@@ -11,9 +11,12 @@ import { cn } from '@/lib/utils';
 import type { MonitorStaffRow, MonitorVisit } from '@/lib/schemas/monitor';
 
 import {
+  MISSING_BAR_BG,
+  PLAN_BAR_BG,
+  PLAN_BAR_BORDER,
   STATUS_COLOR,
-  TL_START_MIN,
   TL_END_MIN,
+  TL_START_MIN,
   displayStatus,
   formatDistance,
   hmToMinutes,
@@ -126,11 +129,11 @@ export function MonitorTimeline({
               {/* 今ライン */}
               {nowMinutes >= TL_START_MIN && nowMinutes <= TL_END_MIN && (
                 <div
-                  className="absolute bottom-0 top-0 z-[4] w-0.5 bg-blue-600"
+                  className="absolute bottom-0 top-0 z-[4] w-0.5 bg-brand-accent"
                   style={{ left: `${minutesToPct(nowMinutes)}%` }}
                   aria-hidden
                 >
-                  <span className="absolute -top-px left-1 text-[9px] font-bold text-blue-600">
+                  <span className="absolute -top-px left-1 text-[9px] font-bold text-brand-accent">
                     今
                   </span>
                 </div>
@@ -208,7 +211,7 @@ function VisitBars({
       >
         {visit.patient_name ?? '—'}
         {isPair && (
-          <span className="rounded-full bg-indigo-100 px-1 py-px text-[8.5px] font-bold text-indigo-700 [text-shadow:none]">
+          <span className="rounded-full bg-c-coupled-bg px-1 py-px text-[8.5px] font-bold text-c-coupled [text-shadow:none]">
             2名
           </span>
         )}
@@ -248,12 +251,12 @@ function VisitBars({
           onSelect(visit.visit_id);
         }}
         title={`予定 ${visit.start_time}–${visit.end_time} ${visit.patient_name ?? ''}`}
-        className="absolute top-5 h-3.5 rounded-[5px] border border-[#c2ccc9] opacity-90"
+        className="absolute top-5 h-3.5 rounded-[5px] border opacity-90"
         style={{
           left: `${pL}%`,
           width: `${pW}%`,
-          backgroundImage:
-            'repeating-linear-gradient(90deg,#cfd8d6,#cfd8d6 6px,#dde4e2 6px,#dde4e2 12px)',
+          borderColor: PLAN_BAR_BORDER,
+          backgroundImage: PLAN_BAR_BG,
         }}
       />
       {/* 実績バー */}
@@ -280,8 +283,7 @@ function VisitBars({
               ? {
                   left: `${pL}%`,
                   width: `${pW}%`,
-                  backgroundImage:
-                    'repeating-linear-gradient(45deg,#dc2626,#dc2626 5px,#ef4444 5px,#ef4444 10px)',
+                  backgroundImage: MISSING_BAR_BG,
                 }
               : { left: `${actLeft}%`, width: `${actWidth}%`, backgroundColor: color }
           }

@@ -40,8 +40,10 @@ const numIcon = (color: string, selected: boolean, num: number) =>
     className: '',
     iconSize: [18, 18],
     iconAnchor: [9, 9],
-    html: `<div style="width:16px;height:16px;border-radius:50%;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.45);background:${color};${
-      selected ? 'outline:3px solid #1c1917;outline-offset:1px;' : ''
+    // 影は温色 rgba(28,25,23,.35)（デザインシステム 1-8 準拠）。
+    // selected の outline は var(--text-primary) = #1c1917 と同値のため var() を使用可（html style 内）。
+    html: `<div style="width:16px;height:16px;border-radius:50%;border:2px solid #fff;box-shadow:0 1px 4px rgba(28,25,23,.35);background:${color};${
+      selected ? 'outline:3px solid var(--text-primary);outline-offset:1px;' : ''
     }position:relative"><span style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);font-size:9px;font-weight:700;color:#fff">${num}</span></div>`,
   });
 
@@ -50,7 +52,8 @@ const emojiIcon = (bg: string, txt: string) =>
     className: '',
     iconSize: [30, 30],
     iconAnchor: [15, 28],
-    html: `<div style="width:30px;height:30px;border-radius:9px;background:${bg};color:#fff;display:flex;align-items:center;justify-content:center;font-size:16px;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.4)">${txt}</div>`,
+    // 影は温色 rgba(28,25,23,.35)（デザインシステム 1-8 準拠）。
+    html: `<div style="width:30px;height:30px;border-radius:9px;background:${bg};color:#fff;display:flex;align-items:center;justify-content:center;font-size:16px;border:2px solid #fff;box-shadow:0 2px 6px rgba(28,25,23,.35)">${txt}</div>`,
   });
 
 const nearIcon = () =>
@@ -136,7 +139,7 @@ export default function MonitorMapClient({
         <Polyline
           key={`seg-${i}`}
           positions={[s.a, s.b]}
-          pathOptions={{ color: '#0d9488', weight: 2, opacity: 0.45 }}
+          pathOptions={{ color: '#0d9488' /* = --brand-primary; SVG属性のためvar()不可、tokens.cssと同期 */, weight: 2, opacity: 0.45 }}
         />
       ))}
 
@@ -174,7 +177,7 @@ export default function MonitorMapClient({
             center={[selected.patient_lat, selected.patient_lng]}
             radius={matchM}
             pathOptions={{
-              color: '#0d9488',
+              color: '#0d9488', // = --brand-primary; SVG属性のためvar()不可、tokens.cssと同期
               weight: 1,
               dashArray: '4',
               fillColor: '#0d9488',
@@ -183,7 +186,7 @@ export default function MonitorMapClient({
           />
           <Marker
             position={[selected.patient_lat, selected.patient_lng]}
-            icon={emojiIcon('#0d9488', '🏠')}
+            icon={emojiIcon('var(--brand-primary)', '🏠')}
           >
             <Popup>
               <b>{selected.patient_name ?? '—'} さん宅（予定）</b>
@@ -193,7 +196,7 @@ export default function MonitorMapClient({
           </Marker>
           <Marker
             position={[selected.arrival.lat as number, selected.arrival.lng as number]}
-            icon={emojiIcon('#dc2626', '📍')}
+            icon={emojiIcon('var(--error)', '📍')}
           >
             <Popup>
               <b>実際のGPS現在地</b>
@@ -210,7 +213,7 @@ export default function MonitorMapClient({
               [selected.patient_lat, selected.patient_lng],
               [selected.arrival.lat as number, selected.arrival.lng as number],
             ]}
-            pathOptions={{ color: '#dc2626', dashArray: '6', weight: 2.5 }}
+            pathOptions={{ color: '#dc2626' /* = --error; SVG属性のためvar()不可、tokens.cssと同期 */, dashArray: '6', weight: 2.5 }}
           />
           {nearby.map((n) => (
             <Marker key={n.patient_id} position={[n.lat, n.lng]} icon={nearIcon()}>

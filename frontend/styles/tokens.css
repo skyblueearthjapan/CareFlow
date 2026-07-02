@@ -54,6 +54,19 @@
   --info: #0d9488;
   --info-bg: #ccfbf1;
 
+  /* === データ系カラー (業務種別) — docs/design/01-design-system.md 1-4 === */
+  --c-coupled: #9a3412;
+  --c-coupled-bg: #ffedd5;
+
+  /* === 訪問モニター ステータス色 === */
+  --status-match: var(--success);
+  --status-review: var(--warning);
+  --status-mismatch: var(--error);
+  --status-inprogress: var(--brand-primary);
+  --status-missing: var(--error);
+  --status-future: var(--border-strong);
+  --status-awaiting: var(--text-muted);
+
   /* === Typography === */
   --font-sans: 'Inter', 'Hiragino Sans', 'Noto Sans JP', -apple-system, system-ui, sans-serif;
   --font-serif: 'Noto Serif JP', 'Hiragino Mincho ProN', serif;

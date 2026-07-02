@@ -25,6 +25,9 @@ const config: Config = {
         'text-primary': 'var(--text-primary)',
         'text-secondary': 'var(--text-secondary)',
         'text-muted': 'var(--text-muted)',
+        // データ系カラー (業務種別)
+        'c-coupled': 'var(--c-coupled)',
+        'c-coupled-bg': 'var(--c-coupled-bg)',
         // Semantic
         success: 'var(--success)',
         warning: 'var(--warning)',

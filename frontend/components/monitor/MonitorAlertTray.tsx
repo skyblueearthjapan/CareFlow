@@ -129,7 +129,7 @@ export function MonitorAlertTray({
           {v.patient_name ?? '—'}
         </span>
         {isPair && (
-          <span className="whitespace-nowrap rounded-full bg-indigo-100 px-1.5 py-0.5 text-[9.5px] font-bold text-indigo-700">
+          <span className="whitespace-nowrap rounded-full bg-c-coupled-bg px-1.5 py-0.5 text-[9.5px] font-bold text-c-coupled">
             2名
           </span>
         )}

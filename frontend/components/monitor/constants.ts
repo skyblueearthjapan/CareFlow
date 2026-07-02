@@ -3,7 +3,7 @@
  *
  * BE は phase (時間進捗) と alert_level (要対応) を別々に返す。タイムライン /
  * 詳細パネルでは 1 つの視覚状態に畳む必要があるため、ここで ``displayStatus`` を
- * 導出する。色は Warm パレットに合わせた teal/amber/red/blue を直値で持つ
+ * 導出する。色は tokens.css の CSS 変数参照 (var(--status-*)) を使う
  * (gantt のバー色は Tailwind purge を避けるため inline style で使う)。
  */
 import type { MonitorStaffRow, MonitorVisit } from '@/lib/schemas/monitor';
@@ -28,15 +28,39 @@ export function displayStatus(v: Pick<MonitorVisit, 'phase' | 'alert_level'>): D
   return 'match'; // done + none
 }
 
+/**
+ * ステータス別の色 (CSS 変数参照)。inline style / divIcon の html style で使用可。
+ *
+ * 注意: Leaflet のベクターレイヤ (Polyline/Circle の pathOptions) は SVG 属性のため
+ * var() 不可。divIcon の html inline style では使用可。
+ */
 export const STATUS_COLOR: Record<DisplayStatus, string> = {
-  match: '#0d9488',
-  review: '#d97706',
-  mismatch: '#dc2626',
-  inprogress: '#2563eb',
-  missing: '#dc2626',
-  future: '#cbd5e1',
-  awaiting: '#94a3b8',
+  match: 'var(--status-match)',
+  review: 'var(--status-review)',
+  mismatch: 'var(--status-mismatch)',
+  inprogress: 'var(--status-inprogress)',
+  missing: 'var(--status-missing)',
+  future: 'var(--status-future)',
+  awaiting: 'var(--status-awaiting)',
 };
+
+/**
+ * 予定バーのハッチパターン背景。
+ * repeating-linear-gradient 内は var() 使用可。
+ * Leaflet pathOptions (SVG 属性) では不可だが、divIcon の html inline style では使用可。
+ */
+export const PLAN_BAR_BG =
+  'repeating-linear-gradient(90deg,var(--border-default),var(--border-default) 6px,var(--border-subtle) 6px,var(--border-subtle) 12px)';
+
+/** 予定バーの枠線色。tokens.css --border-strong に対応。 */
+export const PLAN_BAR_BORDER = 'var(--border-strong)';
+
+/**
+ * 未訪問バーのハッチパターン背景。
+ * #ef4444 は --error の明色として直値維持 (デザインシステム補足色)。
+ */
+export const MISSING_BAR_BG =
+  'repeating-linear-gradient(45deg,var(--error),var(--error) 5px,#ef4444 5px,#ef4444 10px)';
 
 export const STATUS_LABEL: Record<DisplayStatus, string> = {
   match: '一致',

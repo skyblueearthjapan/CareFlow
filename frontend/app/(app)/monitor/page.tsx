@@ -29,7 +29,15 @@ import { MonitorTimeline } from '@/components/monitor/MonitorTimeline';
 import { MonitorAlertTray } from '@/components/monitor/MonitorAlertTray';
 import { MonitorDetailPanel } from '@/components/monitor/MonitorDetailPanel';
 import { MonitorMap } from '@/components/monitor/MonitorMap';
-import { displayStatus, groupVisits, hmToMinutes, isoToHm } from '@/components/monitor/constants';
+import {
+  MISSING_BAR_BG,
+  PLAN_BAR_BG,
+  PLAN_BAR_BORDER,
+  displayStatus,
+  groupVisits,
+  hmToMinutes,
+  isoToHm,
+} from '@/components/monitor/constants';
 
 type OnlyFilter = null | 'anomaly' | 'missing';
 
@@ -189,12 +197,12 @@ export default function MonitorPage() {
         <div className="flex-1" />
         {isToday ? (
           <span className="inline-flex items-center gap-1.5 text-[11.5px] text-text-secondary">
-            <span className="h-2 w-2 animate-pulse rounded-full bg-green-600" />
+            <span className="h-2 w-2 animate-pulse rounded-full bg-success" />
             リアルタイム更新中
           </span>
         ) : (
-          <span className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold text-amber-600">
-            <span className="h-2 w-2 rounded-full bg-amber-500" />
+          <span className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold text-warning">
+            <span className="h-2 w-2 rounded-full bg-warning" />
             過去日表示（リアルタイム更新なし）
           </span>
         )}
@@ -274,18 +282,11 @@ export default function MonitorPage() {
 
       {/* 凡例 */}
       <div className="flex flex-wrap gap-3.5 px-5 pb-2 text-xs text-text-secondary">
-        <Legend
-          swatch="repeating-linear-gradient(90deg,#cfd8d6,#cfd8d6 6px,#dde4e2 6px,#dde4e2 12px)"
-          label="予定（患者名）"
-          border
-        />
-        <Legend swatch="#0d9488" label="一致" />
-        <Legend swatch="#d97706" label="要確認" />
-        <Legend swatch="#dc2626" label="不一致" />
-        <Legend
-          swatch="repeating-linear-gradient(45deg,#dc2626,#dc2626 5px,#ef4444 5px,#ef4444 10px)"
-          label="未訪問"
-        />
+        <Legend swatch={PLAN_BAR_BG} label="予定（患者名）" border />
+        <Legend swatch="var(--status-match)" label="一致" />
+        <Legend swatch="var(--status-review)" label="要確認" />
+        <Legend swatch="var(--status-mismatch)" label="不一致" />
+        <Legend swatch={MISSING_BAR_BG} label="未訪問" />
         <span className="text-text-muted">→1.2km 次までの距離</span>
       </div>
 
@@ -375,9 +376,9 @@ function Kpi({
     tone === 'ok'
       ? 'text-brand-primary-hover'
       : tone === 'warn'
-        ? 'text-amber-600'
+        ? 'text-warning'
         : tone === 'bad'
-          ? 'text-red-600'
+          ? 'text-error'
           : 'text-text-primary';
   return (
     <div
@@ -397,7 +398,7 @@ function Legend({ swatch, label, border }: { swatch: string; label: string; bord
     <span className="inline-flex items-center gap-1.5">
       <span
         className="inline-block h-2.5 w-5 rounded-[3px]"
-        style={{ background: swatch, border: border ? '1px solid #c2ccc9' : undefined }}
+        style={{ background: swatch, border: border ? `1px solid ${PLAN_BAR_BORDER}` : undefined }}
       />
       {label}
     </span>
