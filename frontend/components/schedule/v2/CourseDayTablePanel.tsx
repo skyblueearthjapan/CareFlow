@@ -45,7 +45,7 @@ import {
 import { useQueries } from '@tanstack/react-query';
 import { useSession } from 'next-auth/react';
 import { format } from 'date-fns';
-import { FlaskConical, HeartPulse, Loader2, Plus, RefreshCw, UserCheck, UserX } from 'lucide-react';
+import { FlaskConical, HeartPulse, ListChecks, Loader2, Plus, RefreshCw, UserCheck, UserX } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { Button } from '@/components/ui/button';
@@ -85,6 +85,7 @@ import {
   normalizePatientSexRestriction,
   type PatientRead,
 } from '@/lib/schemas/patient';
+import { isoWeekFromLocalDate } from '@/lib/format/isoWeek';
 
 import {
   WeekdayScheduleCard,
@@ -102,6 +103,7 @@ import { FullOptimizeDialog } from './FullOptimizeDialog';
 import { StaffSubstituteDialog } from './StaffSubstituteDialog';
 import { ProposeNewModal } from './ProposeNewModal';
 import { ScheduleHealthDialog } from './ScheduleHealthDialog';
+import { WeeklyRitualGuideDialog } from './WeeklyRitualGuideDialog';
 import { ResetToFixedButton } from './ResetToFixedButton';
 import { UnassignAllStaffButton } from './UnassignAllStaffButton';
 import {
@@ -180,20 +182,6 @@ function formatHHMM(totalMinutes: number): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// ISO week helpers
-// ─────────────────────────────────────────────────────────────────────────
-
-function toIsoYearWeek(d: Date): { isoYear: number; isoWeek: number } {
-  const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
-  const day = date.getUTCDay() || 7;
-  date.setUTCDate(date.getUTCDate() + 4 - day);
-  const year = date.getUTCFullYear();
-  const yearStart = new Date(Date.UTC(year, 0, 1));
-  const week = Math.ceil(((date.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
-  return { isoYear: year, isoWeek: week };
-}
-
-// ─────────────────────────────────────────────────────────────────────────
 // Course resolution helpers
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -261,7 +249,7 @@ export function CourseDayTablePanel({
   canEdit,
   showAcceptanceLayer,
 }: CourseDayTablePanelProps) {
-  const { isoYear, isoWeek } = useMemo(() => toIsoYearWeek(weekStart), [weekStart]);
+  const { isoYear, isoWeek } = useMemo(() => isoWeekFromLocalDate(weekStart), [weekStart]);
 
   // ─── 曜日タブ state (Wave 18 Phase B-6: 'week' = 週間ビュー) ─────
   // デフォルトは週ビュー ('week'). 曜日別 (月-土) は各タブで切替.
@@ -1636,6 +1624,8 @@ export function CourseDayTablePanel({
   const [proposeNewOpen, setProposeNewOpen] = useState(false);
   // スケジュール健康診断ダイアログ (Schedule Advisor Phase 1).
   const [scheduleHealthOpen, setScheduleHealthOpen] = useState(false);
+  // P3-⑥: 週次ガイドダイアログ (案内のみ・実行ボタンなし).
+  const [weeklyRitualGuideOpen, setWeeklyRitualGuideOpen] = useState(false);
   const isProcessing = generateWeekMut.isPending || assignStaffOnlyMut.isPending;
 
   const handleGenerateWeek = async () => {
@@ -2017,6 +2007,17 @@ export function CourseDayTablePanel({
               >
                 <FlaskConical className="mr-1 h-4 w-4" aria-hidden />
                 シミュレーション
+              </Button>
+              {/* P3-⑥: 週次ガイド (案内のみ・variant=ghost で目立たせすぎない). */}
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                onClick={() => setWeeklyRitualGuideOpen(true)}
+                data-testid="weekly-ritual-guide-button"
+              >
+                <ListChecks className="mr-1 h-4 w-4" aria-hidden />
+                週次ガイド
               </Button>
 
               {/* 主要ボタン群と「固定枠戻 / 全件保存」 の区切り線. */}
@@ -2508,6 +2509,12 @@ export function CourseDayTablePanel({
           reviewItems={reviewItems}
           onApply={handleApplyReview}
           applying={reviewApplying}
+        />
+
+        {/* P3-⑥: 週次ガイドダイアログ (案内のみ・BE 変更なし). */}
+        <WeeklyRitualGuideDialog
+          open={weeklyRitualGuideOpen}
+          onClose={() => setWeeklyRitualGuideOpen(false)}
         />
 
         {/* 患者スケジュール詳細 (固定枠 vs 今週 + 個別反映)

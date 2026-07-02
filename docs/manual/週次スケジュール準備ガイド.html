@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>CareFlow 週次スケジュール準備ガイド</title>
+<style>
+  :root{
+    --gold:#0d9488; --gold-deep:#0b6e5e; --gold-50:#e7f4f0; --gold-100:#cfe7e0;
+    --amber:#b5790a; --amber-50:#fbf1dd;
+    --rose:#e11d48; --blue:#2563eb;
+    --ink:#2b2620; --ink2:#6b5e54; --ink3:#9c9087;
+    --line:#e7e0d6; --line-strong:#d9d0c3;
+    --bg:#faf8f3; --bg-card:#fff; --bg-muted:#f3efe8;
+    --radius:12px; --shadow:0 1px 2px rgba(43,38,32,.06),0 6px 18px rgba(43,38,32,.06);
+    --warn-bg:#fff4e5; --warn-border:#f3d39b; --warn-ink:#7a5a0c;
+    --danger-bg:#fdecec; --danger-border:#f5c2c0; --danger-ink:#9b1c17;
+  }
+  *{box-sizing:border-box;}
+  html{scroll-behavior:smooth;}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Hiragino Kaku Gothic ProN","Hiragino Sans",Meiryo,sans-serif;
+    color:var(--ink);background:var(--bg);line-height:1.75;font-size:15.5px;-webkit-font-smoothing:antialiased;}
+
+  /* ===== sticky topbar ===== */
+  .topbar{position:sticky;top:0;z-index:50;background:rgba(255,255,255,.92);backdrop-filter:blur(6px);
+    border-bottom:1px solid var(--line);padding:10px 22px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;}
+  .topbar .tb-brand{display:flex;align-items:center;gap:10px;font-weight:800;color:var(--gold-deep);font-size:16px;}
+  .topbar .tb-brand .logo{width:28px;height:28px;border-radius:8px;background:linear-gradient(135deg,var(--gold),var(--gold-deep));display:grid;place-items:center;color:#fff;font-size:14px;}
+  .topbar .tb-title{font-size:13px;color:var(--ink2);font-weight:700;}
+  .topbar .tb-meta{margin-left:auto;font-size:12px;color:var(--ink3);}
+
+  .layout{display:flex;max-width:1180px;margin:0 auto;}
+  .toc{width:260px;flex:0 0 260px;position:sticky;top:60px;align-self:flex-start;height:calc(100vh - 60px);overflow-y:auto;
+    padding:24px 16px 60px;border-right:1px solid var(--line);}
+  .toc .subtitle{font-size:12px;color:var(--ink3);margin:0 0 14px;}
+  .toc ol{list-style:none;margin:0;padding:0;}
+  .toc>ol>li{margin-bottom:3px;}
+  .toc a{display:block;text-decoration:none;color:var(--ink2);padding:7px 10px;border-radius:8px;font-size:13.5px;transition:.12s;}
+  .toc a:hover{background:var(--gold-50);color:var(--gold-deep);}
+
+  main{flex:1;min-width:0;padding:32px 48px 120px;}
+
+  .doc-header{background:linear-gradient(135deg,var(--gold),var(--gold-deep));color:#fff;border-radius:16px;padding:30px 38px;margin-bottom:24px;box-shadow:var(--shadow);}
+  .doc-header h1{margin:0 0 6px;font-size:24px;letter-spacing:.02em;}
+  .doc-header p{margin:0;opacity:.94;font-size:14px;}
+  .doc-header .meta{margin-top:12px;font-size:12.5px;opacity:.9;display:flex;gap:16px;flex-wrap:wrap;}
+
+  section{scroll-margin-top:74px;margin-bottom:14px;}
+  h2{font-size:21px;margin:46px 0 4px;padding-bottom:10px;border-bottom:3px solid var(--gold);display:flex;align-items:center;gap:12px;}
+  h2 .num{background:var(--gold);color:#fff;font-size:13px;font-weight:700;border-radius:8px;padding:3px 11px;flex:0 0 auto;}
+  h3{font-size:18px;margin:28px 0 10px;color:var(--gold-deep);display:flex;align-items:center;gap:9px;}
+  h3::before{content:"";width:7px;height:18px;border-radius:3px;background:var(--gold);display:inline-block;}
+  h4{font-size:15px;margin:18px 0 6px;color:var(--ink);}
+  p{margin:8px 0;}
+
+  /* role badges */
+  .roles{display:inline-flex;gap:6px;vertical-align:middle;margin-left:6px;}
+  .role{font-size:11px;font-weight:700;padding:2px 9px;border-radius:999px;border:1px solid transparent;white-space:nowrap;}
+  .role.admin{background:#fde8e8;color:#b42318;border-color:#f6c9c4;}
+  .role.manager{background:#e7eefe;color:#1d4ed8;border-color:#c5d4fb;}
+
+  /* callouts */
+  .callout{border-radius:var(--radius);padding:14px 16px 14px 46px;margin:16px 0;position:relative;font-size:14px;border:1px solid;}
+  .callout::before{position:absolute;left:14px;top:13px;font-size:18px;line-height:1;}
+  .callout.tip{background:var(--gold-50);border-color:var(--gold-100);color:#0b5347;} .callout.tip::before{content:"💡";}
+  .callout.warn{background:var(--warn-bg);border-color:var(--warn-border);color:var(--warn-ink);} .callout.warn::before{content:"⚠️";}
+  .callout.info{background:#eef4ff;border-color:#cdddfb;color:#1e3a8a;} .callout.info::before{content:"ℹ️";}
+  .callout.danger{background:var(--danger-bg);border-color:var(--danger-border);color:var(--danger-ink);} .callout.danger::before{content:"🚫";}
+  .callout.key{background:var(--gold-50);border-color:var(--gold-100);color:#0b5347;} .callout.key::before{content:"⭐";}
+  .callout b{font-weight:700;}
+
+  /* ritual steps */
+  .ritual-steps{list-style:none;padding:0;margin:20px 0;}
+  .ritual-step{display:flex;gap:16px;position:relative;padding-bottom:20px;}
+  .ritual-step::after{content:"";position:absolute;left:17px;top:40px;bottom:0;width:2px;background:var(--line-strong);}
+  .ritual-step:last-child::after{display:none;}
+  .ritual-step .snum{flex:0 0 36px;width:36px;height:36px;border-radius:50%;background:var(--gold);color:#fff;font-weight:800;font-size:17px;display:grid;place-items:center;z-index:1;box-shadow:var(--shadow);}
+  .ritual-step .scard{flex:1;background:var(--bg-card);border:1px solid var(--line);border-radius:var(--radius);padding:14px 17px;box-shadow:var(--shadow);}
+  .ritual-step .scard .st{font-weight:800;font-size:15px;color:var(--ink);margin-bottom:6px;}
+  .ritual-step .scard .sd{font-size:13.5px;color:var(--ink2);line-height:1.7;}
+  .ritual-step .scard .sfaq{margin-top:10px;background:var(--bg-muted);border-radius:8px;padding:8px 12px;font-size:12.5px;color:var(--ink2);}
+  .ritual-step .scard .sfaq .ql{font-weight:700;color:var(--ink);margin-right:4px;}
+  .btn-label{display:inline-block;background:var(--bg-card);border:1px solid var(--line-strong);border-radius:6px;padding:1px 9px;font-size:12.5px;font-weight:600;color:var(--ink);font-family:inherit;}
+  .btn-label.green{background:var(--gold);border-color:var(--gold-deep);color:#fff;}
+
+  /* tables */
+  table{width:100%;border-collapse:collapse;margin:16px 0;font-size:13.5px;background:#fff;border-radius:var(--radius);overflow:hidden;box-shadow:var(--shadow);}
+  th,td{padding:10px 13px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;}
+  th{background:var(--bg-muted);font-weight:700;color:var(--ink);font-size:13px;}
+  tr:last-child td{border-bottom:none;}
+  code{font-family:"SFMono-Regular",Consolas,Menlo,monospace;background:var(--bg-muted);padding:1px 6px;border-radius:5px;font-size:12.5px;color:#8a3b00;}
+  .kbd{font-family:"SFMono-Regular",Consolas,Menlo,monospace;background:#fff;border:1px solid var(--line-strong);box-shadow:0 1px 0 var(--line-strong);color:var(--ink);font-weight:600;padding:1px 6px;border-radius:5px;font-size:12.5px;}
+
+  /* review card examples */
+  .rcard{border-radius:8px;border:1px solid;padding:9px 12px;margin:8px 0;font-size:12.5px;}
+  .rcard.yellow{border-color:var(--warn-border);background:var(--warn-bg);}
+  .rcard.red{border-color:var(--danger-border);background:var(--danger-bg);}
+  .rcard .rh{display:flex;align-items:center;gap:8px;font-weight:700;margin-bottom:6px;}
+  .bdg{font-size:10px;font-weight:700;padding:1px 8px;border-radius:999px;display:inline-block;}
+  .bdg.yellow{background:var(--warn-border);color:var(--warn-ink);}
+  .bdg.red{background:var(--danger-border);color:var(--danger-ink);}
+
+  ul.plain{margin:8px 0;padding-left:20px;} ul.plain li{margin:4px 0;}
+
+  .anchor-top{position:fixed;right:22px;bottom:22px;background:var(--gold);color:#fff;width:44px;height:44px;border-radius:50%;display:grid;place-items:center;text-decoration:none;font-size:20px;box-shadow:var(--shadow);opacity:.9;}
+  .footer{margin-top:60px;padding-top:20px;border-top:1px solid var(--line);font-size:12px;color:var(--ink3);}
+
+  @media(max-width:980px){
+    .layout{flex-direction:column;}
+    .toc{position:relative;width:100%;height:auto;top:0;border-right:none;border-bottom:1px solid var(--line);}
+    main{padding:24px 18px 80px;}
+  }
+  @media print{
+    .topbar{position:static;} .toc,.anchor-top{display:none;}
+    body{background:#fff;font-size:11px;line-height:1.5;}
+    main{padding:0;}
+    .doc-header{background:var(--gold-deep)!important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+    section,h2,h3,table,.callout,.ritual-step{break-inside:avoid;}
+    h2{margin-top:22px;}
+    a{color:var(--ink);text-decoration:none;}
+  }
+</style>
+</head>
+<body>
+
+<!-- ===== sticky topbar ===== -->
+<div class="topbar">
+  <div class="tb-brand"><span class="logo">C</span>CareFlow</div>
+  <span class="tb-title">週次スケジュール準備ガイド</span>
+  <span class="tb-meta">管理者・マネージャー向け</span>
+</div>
+
+<div class="layout">
+  <nav class="toc">
+    <p class="subtitle">目次</p>
+    <ol>
+      <li><a href="#overview">概要：週次5分の儀式</a></li>
+      <li><a href="#step1">ステップ①：枠を生成</a></li>
+      <li><a href="#step2">ステップ②：自動スタッフ割付</a></li>
+      <li><a href="#step3">ステップ③：レビュー承認</a></li>
+      <li><a href="#review-cards">レビューカードの意味</a></li>
+      <li><a href="#pin-protect">ピン留めと手動確定の保護</a></li>
+      <li><a href="#absence">欠勤対応との組み合わせ</a></li>
+      <li><a href="#trouble">トラブル時の対処</a></li>
+    </ol>
+  </nav>
+
+  <main>
+    <div class="doc-header" id="top">
+      <h1>週次スケジュール準備ガイド</h1>
+      <p>CareFlow 訪問介護スケジューリング ／ 週に一度5分で完了する「週次ガイド」の手順書</p>
+      <div class="meta">
+        <span>対象: 管理者・マネージャー</span>
+        <span>所要目安: 約5分/週</span>
+        <span>PC スケジュール画面専用</span>
+      </div>
+    </div>
+
+    <!-- ===== 概要 ===== -->
+    <section id="overview">
+      <h2><span class="num">0</span> 概要：週次5分の儀式</h2>
+      <p>
+        毎週はじめに以下の <b>3ステップを順番に実行</b> するだけで、訪問予定の生成から
+        スタッフ割付まで完了します。PC の <b>スケジュール画面</b> で行います。
+        <span class="roles"><span class="role admin">管理者</span><span class="role manager">マネージャー</span></span>
+      </p>
+
+      <ol class="ritual-steps">
+        <li class="ritual-step">
+          <div class="snum">①</div>
+          <div class="scard">
+            <div class="st">今週の枠を生成する</div>
+            <div class="sd">固定訪問パターン（PFV）から今週の訪問予定を一括作成します。</div>
+          </div>
+        </li>
+        <li class="ritual-step">
+          <div class="snum">②</div>
+          <div class="scard">
+            <div class="st">自動スタッフ割付を実行する</div>
+            <div class="sd">最適なスタッフをコース別に自動で割り付けます。</div>
+          </div>
+        </li>
+        <li class="ritual-step">
+          <div class="snum">③</div>
+          <div class="scard">
+            <div class="st">レビューカードを確認して承認する</div>
+            <div class="sd">要確認コース（連続・性別）を人の判断で最終承認します。</div>
+          </div>
+        </li>
+      </ol>
+
+      <div class="callout tip">
+        <b>ツールバーの「週次ガイド」ボタン</b>（リストチェックアイコン）を押すと、
+        この手順の要点をいつでも画面上で確認できます。
+      </div>
+    </section>
+
+    <!-- ===== ステップ① ===== -->
+    <section id="step1">
+      <h2><span class="num">①</span> 今週の枠を生成する</h2>
+      <p>
+        スケジュール画面のツールバー右上にある
+        <span class="btn-label">↻ 週を生成</span>
+        ボタンをクリックします。
+      </p>
+
+      <h3>何が起きるか</h3>
+      <p>
+        固定訪問パターン（毎週の型 = PFV）をもとに、今週の実際の訪問予定（visit）が
+        一括で作成されます。コーステーブルの各スロットに患者名が並び始めます。
+      </p>
+
+      <h3>いつ押すか</h3>
+      <ul class="plain">
+        <li>週の最初（月曜または週末の準備タイミング）に1回押します。</li>
+        <li>型を変更した後（固定訪問パターンを編集した場合）も再度押してください。</li>
+      </ul>
+
+      <div class="callout warn">
+        <b>注意：</b>「ピン留め（完全固定）」していない訪問は、再生成で上書きされます。
+        今週だけ手動で変更した内容を残したい場合は、事前に
+        <b>🔒 ピン留め</b>（完全固定）を設定してください（次章参照）。
+      </div>
+    </section>
+
+    <!-- ===== ステップ② ===== -->
+    <section id="step2">
+      <h2><span class="num">②</span> 自動スタッフ割付を実行する</h2>
+      <p>
+        ツールバーの
+        <span class="btn-label green">✔ 自動スタッフ割付</span>（緑ボタン）をクリックします。
+      </p>
+
+      <h3>何が起きるか</h3>
+      <p>
+        コース別に最適なスタッフが自動で割り付けられます。
+        性別制限・連続担当・スタッフ稼働状況を考慮して最良の候補を選びます。
+        問題のないコースは即座に確定し、要確認のコースだけが次のステップ（レビュー）に送られます。
+      </p>
+
+      <h3>事前確認</h3>
+      <ul class="plain">
+        <li>欠勤対応が必要な場合は、<b>先に</b>「欠勤対応」ボタンで代替スタッフを指定してから本ボタンを押してください。</li>
+        <li>スタッフの稼働情報（勤務・休暇）が登録されていると精度が上がります。</li>
+      </ul>
+
+      <div class="callout info">
+        「週を生成」（①）を先に押してコースを作成してから実行してください。
+        コースが空の場合は割付できません。
+      </div>
+    </section>
+
+    <!-- ===== ステップ③ ===== -->
+    <section id="step3">
+      <h2><span class="num">③</span> レビューカードを確認して承認する</h2>
+      <p>
+        自動割付の後、要確認のコースがある場合は <b>レビューダイアログ</b> が自動的に開きます。
+        問題のないコースはすでに確定しているため、ここに表示されるのは <b>管理者の判断が必要な案件だけ</b> です。
+      </p>
+
+      <h3>レビューダイアログの操作手順</h3>
+      <ol class="ritual-steps">
+        <li class="ritual-step">
+          <div class="snum" style="background:#b5790a;font-size:13px;">🟡</div>
+          <div class="scard">
+            <div class="st">連続（黄色）カードを確認する</div>
+            <div class="sd">
+              直近の担当者と同じスタッフが続く場合に表示されます。
+              内容を確認して問題なければ <b>チェックボックス</b> にチェックを入れます。
+              スキップ（チェックなし）も可能です。
+            </div>
+          </div>
+        </li>
+        <li class="ritual-step">
+          <div class="snum" style="background:#e11d48;font-size:13px;">🔴</div>
+          <div class="scard">
+            <div class="st">性別（赤色）カードを確認する</div>
+            <div class="sd">
+              性別制限に適合しないスタッフが候補になった場合に表示されます。
+              内容を確認のうえ割り付けて問題なければ <b>「割り付ける」</b> ボタンを押し、
+              確認モーダルで <b>「割り付ける」</b> をもう一度選択します。
+            </div>
+          </div>
+        </li>
+        <li class="ritual-step">
+          <div class="snum">✓</div>
+          <div class="scard">
+            <div class="st">「選んだ内容で割り付け」で完了</div>
+            <div class="sd">
+              チェックまたは承認したカードをまとめて反映します。
+              スキップしたカードは担当が割り当てられないまま残ります（後から手動設定可）。
+            </div>
+          </div>
+        </li>
+      </ol>
+
+      <div class="callout tip">
+        レビューカードが <b>0件</b> の場合はダイアログが開かず、成功の通知（トースト）が
+        表示されて完了です。おめでとうございます。今週の準備は完了しました。
+      </div>
+    </section>
+
+    <!-- ===== レビューカードの意味 ===== -->
+    <section id="review-cards">
+      <h2><span class="num">4</span> レビューカードの意味と判断基準</h2>
+
+      <h3>🟡 連続（黄色）カード</h3>
+      <div class="rcard yellow">
+        <div class="rh"><span class="bdg yellow">連続</span>コースA / 月 / 田中 一郎（候補）</div>
+        <div style="font-size:12px;color:var(--warn-ink)">
+          担当（候補）の田中さんが直近も同コースを担当しているため表示されています。
+          継続担当を避けたい場合はスキップし、手動で別のスタッフを設定してください。
+        </div>
+      </div>
+      <p>
+        <b>判断基準：</b>連続担当を問題としない場合はそのまま承認してください。
+        担当を分散させたい場合はチェックを入れずスキップし、後から手動で変更できます。
+      </p>
+
+      <h3>🔴 性別（赤色）カード</h3>
+      <div class="rcard red">
+        <div class="rh"><span class="bdg red">性別</span>コースB / 火 / 鈴木 花子（候補）</div>
+        <div style="font-size:12px;color:var(--danger-ink)">
+          患者さんに性別制限（例：女性のみ）があるにもかかわらず、同拠点に適合するスタッフが
+          いないため表示されています。鈴木さんを割り付けると制限外になります。
+        </div>
+      </div>
+      <p>
+        <b>判断基準：</b>どうしても適合スタッフが手配できない場合は管理者判断で承認してください。
+        別の拠点から応援を手配できる場合は、スキップして担当を手動設定してください。
+      </p>
+
+      <table>
+        <tr>
+          <th>カード種別</th>
+          <th>表示条件</th>
+          <th>承認操作</th>
+          <th>スキップした場合</th>
+        </tr>
+        <tr>
+          <td>🟡 連続（黄）</td>
+          <td>直近担当と同一スタッフが候補</td>
+          <td>チェックボックス ON</td>
+          <td>担当なしのまま残る</td>
+        </tr>
+        <tr>
+          <td>🔴 性別（赤）</td>
+          <td>性別制限に適合しない候補のみ</td>
+          <td>「割り付ける」→ 確認モーダル</td>
+          <td>担当なしのまま残る</td>
+        </tr>
+      </table>
+    </section>
+
+    <!-- ===== ピン留めと手動確定の保護 ===== -->
+    <section id="pin-protect">
+      <h2><span class="num">5</span> ピン留め・手動確定の保護</h2>
+
+      <h3>「ピン留め（完全固定）」とは</h3>
+      <p>
+        訪問予定のセルにある <b>🔒 ボタン</b> を押すと、その訪問は「完全固定」になります。
+        完全固定された訪問は、<b>「週を生成」を再実行しても上書きされません</b>。
+        今週だけ時間や場所を変えた訪問を保護するために使います。
+      </p>
+
+      <h3>欠勤対応で差し替えた割付の保護</h3>
+      <p>
+        「欠勤対応」ボタンで代替スタッフを確定した場合、そのコースの担当は
+        <b>自動スタッフ割付から保護</b> されます。
+        欠勤対応後に自動スタッフ割付を実行しても、確定済みの代替担当は上書きされません。
+      </p>
+
+      <table>
+        <tr>
+          <th>操作の種類</th>
+          <th>保護されるか</th>
+          <th>補足</th>
+        </tr>
+        <tr>
+          <td>🔒 ピン留め（完全固定）した訪問</td>
+          <td><b style="color:var(--gold-deep)">保護される</b></td>
+          <td>「週を生成」でも上書きされない</td>
+        </tr>
+        <tr>
+          <td>欠勤対応で確定した代替担当</td>
+          <td><b style="color:var(--gold-deep)">保護される</b></td>
+          <td>「自動スタッフ割付」でも上書きされない</td>
+        </tr>
+        <tr>
+          <td>ドラッグで手動移動した訪問（ピンなし）</td>
+          <td style="color:var(--warn-ink)">上書きされる場合あり</td>
+          <td>「週を生成」前にピン留めしておく</td>
+        </tr>
+        <tr>
+          <td>担当 dropdown で手動変更したスタッフ</td>
+          <td style="color:var(--warn-ink)">上書きされる</td>
+          <td>自動割付を後から実行すると上書きされる</td>
+        </tr>
+      </table>
+
+      <div class="callout key">
+        <b>週次の順番が大切：</b>
+        ①「週を生成」→ ②「自動スタッフ割付」 の順に行えば、
+        手動で担当 dropdown を変えた後に自動割付で上書きされる、という誤操作を防げます。
+        欠勤対応は ② の前、または ② の直後（欠勤対応で確定すれば上書きから保護されるため）に行ってください。
+      </div>
+    </section>
+
+    <!-- ===== 欠勤対応との組み合わせ ===== -->
+    <section id="absence">
+      <h2><span class="num">6</span> 欠勤対応との組み合わせ</h2>
+
+      <p>
+        欠勤が発生した場合は、以下の順序で対応してください。
+      </p>
+
+      <ol class="ritual-steps">
+        <li class="ritual-step">
+          <div class="snum" style="font-size:13px;">①</div>
+          <div class="scard">
+            <div class="st">「週を生成」を実行する（まだの場合）</div>
+            <div class="sd">今週の訪問予定が作成されていない場合は先に実行します。</div>
+          </div>
+        </li>
+        <li class="ritual-step">
+          <div class="snum" style="font-size:13px;">②</div>
+          <div class="scard">
+            <div class="st">「欠勤対応」で代替スタッフを指定する</div>
+            <div class="sd">
+              ツールバーの「欠勤対応」ボタンを押し、欠勤スタッフと対象曜日・代替スタッフを指定して確定します。
+              確定した割付は以後の「自動スタッフ割付」から保護されます。
+            </div>
+          </div>
+        </li>
+        <li class="ritual-step">
+          <div class="snum" style="font-size:13px;">③</div>
+          <div class="scard">
+            <div class="st">「自動スタッフ割付」を実行する</div>
+            <div class="sd">
+              欠勤対応で確定した担当を保護したまま、残りのコースに最適なスタッフが割り付けられます。
+            </div>
+          </div>
+        </li>
+      </ol>
+
+      <div class="callout info">
+        欠勤対応後に自動スタッフ割付を実行しても、<b>欠勤対応で確定したコースは上書きされません</b>。
+        安心して通常の週次手順を続けてください。
+      </div>
+    </section>
+
+    <!-- ===== トラブル時 ===== -->
+    <section id="trouble">
+      <h2><span class="num">7</span> トラブル時の対処</h2>
+
+      <h3>画面が固まった・ボタンが反応しない</h3>
+      <p>
+        ブラウザを強制リロード（<span class="kbd">Ctrl</span> + <span class="kbd">Shift</span> +
+        <span class="kbd">R</span>、Mac は <span class="kbd">Cmd</span> + <span class="kbd">Shift</span> +
+        <span class="kbd">R</span>）してから再操作してください。
+        リロード前の未保存の変更は失われる場合があります。
+      </p>
+
+      <h3>「週を生成」を押してもコースに訪問が出ない</h3>
+      <ul class="plain">
+        <li>固定訪問パターン（PFV）が登録されているか確認してください（患者詳細 → 固定訪問タブ）。</li>
+        <li>患者のステータスが「アクティブ」になっているか確認してください。</li>
+        <li>対象週の表示が正しいか（ヘッダーの週セレクターで確認）確認してください。</li>
+      </ul>
+
+      <h3>自動スタッフ割付でエラーが出る</h3>
+      <ul class="plain">
+        <li>先に「週を生成」を実行して訪問予定を作成してください。</li>
+        <li>スタッフが1人も登録されていない場合は割付できません。管理者にスタッフ登録を依頼してください。</li>
+        <li>それでも解決しない場合は、ブラウザのコンソールに表示されるエラーを添えてシステム管理者に連絡してください。</li>
+      </ul>
+
+      <h3>レビューダイアログが毎週大量に出る</h3>
+      <p>
+        性別制限スタッフや連続担当が常に多い場合は、固定訪問パターンのコース設定を
+        見直すことで改善できる場合があります。スケジュール管理者にご相談ください。
+      </p>
+
+      <div class="callout danger">
+        <b>データが消えた・予定が重複している</b> など深刻な問題が発生した場合は、
+        その場でそれ以上の操作を止め、すぐにシステム管理者へ連絡してください。
+        操作履歴から状態を復元できる場合があります。
+      </div>
+    </section>
+
+    <div class="footer">
+      CareFlow 週次スケジュール準備ガイド ／ 管理者・マネージャー向け ／ 詳細は「スケジュール運用マニュアル」も参照してください。
+    </div>
+  </main>
+</div>
+
+<a href="#top" class="anchor-top" aria-label="ページ先頭へ">↑</a>
+
+</body>
+</html>
