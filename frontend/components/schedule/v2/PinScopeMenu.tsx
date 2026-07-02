@@ -21,12 +21,13 @@
  * デザイン方針:
  *   - 「品格 + シンプル」: shadcn/ui の既存 Popover (@/components/ui/popover) を使用.
  *   - DropdownMenu ライブラリ追加なし (= bundle 増 / 依存追加なし).
- *   - trigger は children prop パターン — 各呼び出し側が既存の 🔒/🔓 ボタン見た目を
- *     完全維持できる (CourseDayTable は lucide-react Lock/Unlock, リスト表示は絵文字).
+ *   - trigger は children prop パターン — 各呼び出し側が既存のピン留めボタン見た目を
+ *     完全維持できる (全 UI 共通の PushPin/PushPinOff アイコンを使用).
  */
 import * as React from 'react';
 
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { PushPin, PushPinOff } from '@/components/ui/push-pin';
 import { cn } from '@/lib/utils';
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -104,10 +105,14 @@ export function PinScopeMenu({
 }: PinScopeMenuProps) {
   const [open, setOpen] = React.useState(false);
 
-  const dayLabel = isPinned ? 'この曜日のみ 解除' : 'この曜日のみ ロック';
-  const allLabel = isPinned ? 'この患者の全曜日 解除' : 'この患者の全曜日 ロック';
-  const dayIcon = isPinned ? '🔓' : '🔒';
-  const allIcon = isPinned ? '🔓' : '🔒';
+  const dayLabel = isPinned ? 'この曜日のみ ピン留め解除' : 'この曜日のみ ピン留め';
+  const allLabel = isPinned ? 'この患者の全曜日 ピン留め解除' : 'この患者の全曜日 ピン留め';
+  // アイコンは「実行される操作」を表す: 未ピン → これからピン留め (PushPin), ピン留め中 → 外す (PushPinOff).
+  const actionIcon = isPinned ? (
+    <PushPinOff className="h-3.5 w-3.5 text-text-muted" aria-hidden />
+  ) : (
+    <PushPin className="h-3.5 w-3.5 text-yellow-700" aria-hidden />
+  );
 
   const handleSelect = (scope: PinScope) => {
     setOpen(false);
@@ -148,7 +153,7 @@ export function PinScopeMenu({
                 testIdSuffix ? `pin-scope-menu-day-${testIdSuffix}` : 'pin-scope-menu-day'
               }
             >
-              <span aria-hidden="true">{dayIcon}</span>
+              {actionIcon}
               <span>{dayLabel}</span>
             </button>
           </li>
@@ -165,7 +170,7 @@ export function PinScopeMenu({
                 testIdSuffix ? `pin-scope-menu-all-days-${testIdSuffix}` : 'pin-scope-menu-all-days'
               }
             >
-              <span aria-hidden="true">{allIcon}</span>
+              {actionIcon}
               <span>{allLabel}</span>
             </button>
           </li>

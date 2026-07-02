@@ -25,6 +25,7 @@ import {
 import type { EventRead } from '@/lib/schemas/staff-events';
 import type { StaffRead } from '@/lib/schemas/staff';
 import type { FreeGap } from '@/lib/scheduling/freeGaps';
+import { PushPin, PushPinOff } from '@/components/ui/push-pin';
 import { haversineKm } from '../WeekdayScheduleCard';
 import { formatEventLabelLines, getStaffEventsForWeekday } from './CourseDayTable';
 import { PinScopeMenu, type PinScope } from './PinScopeMenu';
@@ -782,17 +783,17 @@ function PinIconButton({
           disabled={disabled}
           aria-label={
             isPinned
-              ? `${label} の完全固定スコープを選択 (解除)`
+              ? `${label} のピン留めスコープを選択 (ピン留めを外す)`
               : disabled
-                ? `${label} は固定枠が無いため完全固定できません`
-                : `${label} の完全固定スコープを選択 (ロック)`
+                ? `${label} は固定枠が無いためピン留めできません`
+                : `${label} のピン留めスコープを選択 (ピン留めする)`
           }
           title={
             disabled
               ? '先に固定枠登録が必要'
               : isPinned
-                ? '完全固定の解除スコープを選択 (この曜日のみ / 全曜日)'
-                : '完全固定のロックスコープを選択 (この曜日のみ / 全曜日)'
+                ? 'ピン留めを外すスコープを選択 (この曜日のみ / 全曜日)'
+                : 'ピン留めするスコープを選択 (この曜日のみ / 全曜日)'
           }
           aria-pressed={isPinned}
           aria-haspopup="menu"
@@ -801,12 +802,12 @@ function PinIconButton({
           data-pinned={isPinned ? 'true' : 'false'}
           data-pfv-id={fixedVisitId ?? ''}
           className={cn(
-            'ml-1 inline-flex items-center justify-center rounded px-0.5 text-[9px] leading-none align-middle',
+            'ml-1 inline-flex items-center justify-center rounded px-0.5 leading-none align-middle',
             isPinned ? 'text-yellow-700 hover:bg-yellow-100' : 'text-text-muted hover:bg-bg-muted',
             disabled ? 'cursor-not-allowed opacity-30' : '',
           )}
         >
-          <span aria-hidden="true">{isPinned ? '🔒' : '🔓'}</span>
+          {isPinned ? <PushPin className="h-3 w-3" /> : <PushPinOff className="h-3 w-3" />}
         </button>
       )}
     </PinScopeMenu>

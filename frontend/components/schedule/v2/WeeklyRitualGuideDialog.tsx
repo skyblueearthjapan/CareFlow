@@ -107,7 +107,7 @@ export function WeeklyRitualGuideDialog({ open, onClose }: WeeklyRitualGuideDial
                 実際の訪問予定が一括で作成されます。
               </>
             }
-            faq="手動で動かした訪問は消える？ → 「ピン留め（完全固定）」した訪問は保護されます。ピン留めなしの訪問は型から再生成されます。"
+            faq="手動で動かした訪問は消える？ → 「ピン留め」した訪問は保護されます。ピン留めなしの訪問は型から再生成されます。"
           />
 
           <StepCard

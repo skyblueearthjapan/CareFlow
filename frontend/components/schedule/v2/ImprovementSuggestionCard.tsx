@@ -114,7 +114,14 @@ function SwapCard({
   onAdopt: (s: ImprovementSuggestion) => void;
   onDismiss: (s: ImprovementSuggestion) => void;
 }) {
-  const { current, candidate, delta, staff_warnings, requires_patient_confirmation } = suggestion;
+  const {
+    current,
+    candidate,
+    delta,
+    staff_warnings,
+    requires_patient_confirmation,
+    within_preference,
+  } = suggestion;
   const cp = suggestion.swap_counterpart!;
   const xName = patientName ? `${patientName} 様` : '対象の患者様';
   const yName = `${cp.patient_name} 様`;
@@ -157,9 +164,22 @@ function SwapCard({
         </li>
       </ul>
 
-      {/* 双方の要確認バッジ. */}
-      {requires_patient_confirmation || cp.requires_patient_confirmation ? (
+      {/* 双方の希望内 / 要確認バッジ (#P4-B).
+          - 希望内 (within_preference=true) は success トーンで「ご希望の範囲内」= 確認不要の安心感.
+          - 希望外は従来どおり要確認 (warning) バッジ. */}
+      {within_preference ||
+      requires_patient_confirmation ||
+      cp.within_preference ||
+      cp.requires_patient_confirmation ? (
         <div className="mt-1.5 flex flex-wrap gap-1">
+          {within_preference ? (
+            <span
+              className="rounded border border-success/40 bg-success-bg px-1.5 py-0.5 text-[10px] font-medium text-success"
+              data-testid="improvement-within-preference"
+            >
+              ✓ ご希望の範囲内
+            </span>
+          ) : null}
           {requires_patient_confirmation ? (
             <span
               className="rounded border border-warning/40 bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning"
@@ -168,7 +188,14 @@ function SwapCard({
               可動域未設定・患者様への確認推奨
             </span>
           ) : null}
-          {cp.requires_patient_confirmation ? (
+          {cp.within_preference ? (
+            <span
+              className="rounded border border-success/40 bg-success-bg px-1.5 py-0.5 text-[10px] font-medium text-success"
+              data-testid="improvement-swap-counterpart-within-preference"
+            >
+              {cp.patient_name} 様もご希望の範囲内
+            </span>
+          ) : cp.requires_patient_confirmation ? (
             <span
               className="rounded border border-warning/40 bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning"
               data-testid="improvement-swap-counterpart-confirmation"
@@ -224,8 +251,15 @@ export function ImprovementSuggestionCard({
     );
   }
 
-  const { current, candidate, delta, changes, staff_warnings, requires_patient_confirmation } =
-    suggestion;
+  const {
+    current,
+    candidate,
+    delta,
+    changes,
+    staff_warnings,
+    requires_patient_confirmation,
+    within_preference,
+  } = suggestion;
   const curWd = WEEKDAY_LABELS[current.weekday] ?? '?';
   const candWd = WEEKDAY_LABELS[candidate.weekday] ?? '?';
 
@@ -240,6 +274,15 @@ export function ImprovementSuggestionCard({
         <span className="tnum text-base font-bold text-success" data-testid="improvement-effect">
           {formatSaved(delta.travel_minutes_saved, delta.travel_km_saved)}
         </span>
+        {/* #P4-B: 希望内バッジ (確認不要の安心感). BE が within_preference=true のとき表示. */}
+        {within_preference ? (
+          <span
+            className="rounded border border-success/40 bg-success-bg px-1.5 py-0.5 text-[10px] font-medium text-success"
+            data-testid="improvement-within-preference"
+          >
+            ✓ ご希望の範囲内
+          </span>
+        ) : null}
         {requires_patient_confirmation ? (
           <span
             className="rounded border border-warning/40 bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning"

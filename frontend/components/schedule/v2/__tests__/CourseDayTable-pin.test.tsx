@@ -1,5 +1,5 @@
 /**
- * CourseDayTable 🔒 完全固定 toggle UI テスト (Phase G-21 T4).
+ * CourseDayTable ピン留め toggle UI テスト (Phase G-21 T4 / P4-B で鍵→ピン留めに統一).
  *
  * カバーするシナリオ:
  *   1. canEdit=true + onTogglePin + fixed_visit_id 有り → 🔒 button が DOM に存在
@@ -271,7 +271,7 @@ describe('CourseDayTable 🔒 pin toggle (Phase G-21)', () => {
     expect(rowEl).not.toBeNull();
     expect(rowEl?.getAttribute('data-row-draggable-disabled')).toBe('true');
     expect(rowEl?.className).toContain('cursor-not-allowed');
-    expect(rowEl?.getAttribute('title')).toMatch(/完全固定中/);
+    expect(rowEl?.getAttribute('title')).toMatch(/ピン留め中/);
   });
 
   it('10. is_pinned=false → 行 div は draggable (data-row-draggable-disabled 無し)', () => {

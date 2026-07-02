@@ -44,6 +44,7 @@ import {
 } from '@/components/ui/dialog';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { toast } from '@/components/ui/sonner';
+import { PushPin } from '@/components/ui/push-pin';
 
 import {
   useFixedVisits,
@@ -431,15 +432,16 @@ function ReadOnlyWeekGrid({
               <>
                 <span className="text-text-primary tnum">{row.start_time}</span>
                 <span className="text-text-muted">{row.duration_min} 分</span>
-                {/* Phase G-21: 完全固定行は 🔒 バッジを併記. */}
+                {/* Phase G-21 / #P4-B: ピン留め行はピン留めバッジを併記. */}
                 {row.is_pinned ? (
                   <span
-                    className="rounded bg-yellow-200/70 px-1.5 py-0.5 text-xs font-medium text-yellow-800"
+                    className="inline-flex items-center gap-0.5 rounded bg-yellow-200/70 px-1.5 py-0.5 text-xs font-medium text-yellow-800"
                     data-testid={`ro-pin-${wd}`}
-                    aria-label="完全固定"
-                    title="完全固定"
+                    aria-label="ピン留め"
+                    title="ピン留め"
                   >
-                    🔒 完全固定
+                    <PushPin className="h-3 w-3 text-yellow-700" />
+                    ピン留め
                   </span>
                 ) : null}
                 {/* Phase E-5: サブ拠点が設定されていればバッジで明示. */}
@@ -664,7 +666,7 @@ function WeekGrid({
                     <span className="text-xs text-text-muted">コース 2</span>
                   ) : null}
                 </div>
-                {/* Phase G-21: 完全固定 checkbox (= 該当行の is_pinned). */}
+                {/* Phase G-21 / #P4-B: ピン留め checkbox (= 該当行の is_pinned). */}
                 <label
                   className="flex items-center gap-1 text-xs text-text-secondary"
                   data-testid={`pfv-pin-label-${wd}`}
@@ -673,38 +675,55 @@ function WeekGrid({
                     checked={row.is_pinned}
                     onCheckedChange={(c) => update(wd, { is_pinned: c === true })}
                     disabled={disabled}
-                    aria-label={`${WEEKDAY_LABELS[wd]} 完全固定`}
+                    aria-label={`${WEEKDAY_LABELS[wd]} ピン留め`}
                     data-testid={`pfv-pin-checkbox-${wd}`}
                   />
-                  <span aria-hidden="true">{row.is_pinned ? '🔒' : ''}</span>
-                  <span>完全固定</span>
+                  {row.is_pinned ? (
+                    <PushPin className="h-3.5 w-3.5 text-yellow-700" aria-hidden />
+                  ) : null}
+                  <span>ピン留め</span>
                 </label>
-                {/* P2-C: 可動域 (提案の可否) セレクタ. is_pinned=true は locked 固定で変更不可. */}
+                {/* P2-C / #P4-B: 可動域 (提案の可否) セレクタ.
+                    - ピン留め行 (is_pinned=true) は locked 固定 → 「ピン留め（変更不可）」静的表示.
+                    - それ以外は既定で畳まれた「詳細設定」disclosure に格下げ (通常運用では非表示). */}
                 <div className="flex items-center gap-1" data-testid={`pfv-movability-wrap-${wd}`}>
                   {row.is_pinned ? (
                     <span
-                      className="rounded border border-border-default bg-bg-muted px-2 py-1 text-xs text-text-muted"
+                      className="inline-flex items-center gap-0.5 rounded border border-border-default bg-bg-muted px-2 py-1 text-xs text-text-muted"
                       data-testid={`pfv-movability-locked-${wd}`}
                     >
-                      完全固定（ピン留め）
+                      <PushPin className="h-3 w-3 text-yellow-700" aria-hidden />
+                      ピン留め（変更不可）
                     </span>
                   ) : (
-                    <select
-                      value={row.movability}
-                      onChange={(e) => update(wd, { movability: e.target.value as Movability })}
-                      disabled={disabled}
-                      className="h-8 rounded border border-border-default bg-bg-base px-2 text-sm text-text-primary focus:outline-none focus:border-brand-primary"
-                      aria-label={`${WEEKDAY_LABELS[wd]} 可動域`}
-                      data-testid={`pfv-movability-select-${wd}`}
+                    <details
+                      className="text-xs text-text-muted"
+                      data-testid={`pfv-movability-details-${wd}`}
                     >
-                      {MOVABILITY_OPTIONS.map((o) => (
-                        <option key={o.value} value={o.value}>
-                          {o.label}
-                        </option>
-                      ))}
-                    </select>
+                      <summary className="cursor-pointer select-none text-text-secondary">
+                        詳細設定
+                      </summary>
+                      <div className="mt-1 flex items-center gap-1">
+                        <select
+                          value={row.movability}
+                          onChange={(e) =>
+                            update(wd, { movability: e.target.value as Movability })
+                          }
+                          disabled={disabled}
+                          className="h-8 rounded border border-border-default bg-bg-base px-2 text-sm text-text-primary focus:outline-none focus:border-brand-primary"
+                          aria-label={`${WEEKDAY_LABELS[wd]} 可動域`}
+                          data-testid={`pfv-movability-select-${wd}`}
+                        >
+                          {MOVABILITY_OPTIONS.map((o) => (
+                            <option key={o.value} value={o.value}>
+                              {o.label}
+                            </option>
+                          ))}
+                        </select>
+                        <span className="text-xs text-text-muted">可動域</span>
+                      </div>
+                    </details>
                   )}
-                  <span className="text-xs text-text-muted">可動域</span>
                 </div>
                 {errors[wd] ? <span className="text-xs text-error">{errors[wd]}</span> : null}
                 {!errors[wd] && warnings[wd] ? (

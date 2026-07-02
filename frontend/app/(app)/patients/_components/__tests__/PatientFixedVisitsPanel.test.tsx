@@ -916,6 +916,30 @@ describe('PatientFixedVisitsPanel', () => {
       expect(options).toEqual(['未設定', '時刻変更可', '曜日変更可', '完全固定']);
     });
 
+    it('MV-6. (#P4-B) 可動域 selector は「詳細設定」disclosure 内に格下げされ、展開で操作可能', async () => {
+      const updateFn = vi.fn().mockResolvedValue([]);
+      setupMocks({ reads: [], updateFn });
+      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
+
+      const checkboxes = screen.getAllByRole('checkbox');
+      await userEvent.click(checkboxes[0]);
+
+      // 可動域 selector は details (詳細設定) 内に置かれる.
+      const details = screen.getByTestId('pfv-movability-details-0');
+      expect(details.tagName.toLowerCase()).toBe('details');
+      const select = screen.getByLabelText('月 可動域');
+      expect(details.contains(select)).toBe(true);
+
+      // 展開 (details.open=true) して値を変更でき、保存 payload に反映される.
+      (details as HTMLDetailsElement).open = true;
+      fireEvent.change(select, { target: { value: 'day_flexible' } });
+      const saveBtn = screen.getByRole('button', { name: '保存' });
+      await userEvent.click(saveBtn);
+      await waitFor(() => expect(updateFn).toHaveBeenCalledTimes(1));
+      const call = updateFn.mock.calls[0][0] as { items: { movability?: string }[] };
+      expect(call.items[0]?.movability).toBe('day_flexible');
+    });
+
     it('MV-2. 可動域を選んで保存すると movability が payload に含まれる', async () => {
       const updateFn = vi.fn().mockResolvedValue([]);
       setupMocks({ reads: [], updateFn });
@@ -961,7 +985,7 @@ describe('PatientFixedVisitsPanel', () => {
       expect((screen.getByLabelText('月 可動域') as HTMLSelectElement).value).toBe('time_flexible');
     });
 
-    it('MV-4. is_pinned=true の行は「完全固定（ピン留め）」表示で selector なし・payload は locked', async () => {
+    it('MV-4. is_pinned=true の行は「ピン留め（変更不可）」表示で selector なし・payload は locked', async () => {
       const updateFn = vi.fn().mockResolvedValue([]);
       setupMocks({
         reads: [
@@ -987,7 +1011,7 @@ describe('PatientFixedVisitsPanel', () => {
       // pinned 行は selector を出さず固定表示.
       await waitFor(() => {
         expect(screen.getByTestId('pfv-movability-locked-0')).toHaveTextContent(
-          '完全固定（ピン留め）',
+          'ピン留め（変更不可）',
         );
       });
       expect(screen.queryByLabelText('月 可動域')).not.toBeInTheDocument();

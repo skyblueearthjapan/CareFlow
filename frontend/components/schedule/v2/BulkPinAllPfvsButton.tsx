@@ -1,9 +1,9 @@
 'use client';
 
 /**
- * BulkPinAllPfvsButton — Phase G-34 一括ロック / 一括解除ボタン.
+ * BulkPinAllPfvsButton — Phase G-34 一括ピン留め / 一括ピン留め解除ボタン.
  *
- * /schedule ヘッダーに「全患者の PFV を一括ロック / 一括解除」する 2 つのボタンを
+ * /schedule ヘッダーに「全患者の PFV を一括ピン留め / 一括ピン留め解除」する 2 つのボタンを
  * 提供する. admin / manager のみ表示 (BE 側は role 検査済だが FE 側でも非表示にする).
  *
  * 動作 (一段階の Dialog で 2 段階の確認を要求する):
@@ -22,11 +22,12 @@
  *   - audit_logs に 1 件ごとに ``action="pfv_pin_toggle"`` を記録
  */
 import { useState } from 'react';
-import { Loader2, Lock, Unlock } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useSession } from 'next-auth/react';
 
 import { Button } from '@/components/ui/button';
+import { PushPin, PushPinOff } from '@/components/ui/push-pin';
 import {
   Dialog,
   DialogContent,
@@ -94,7 +95,7 @@ async function fetchAllActivePfvs(opts: {
 
 export function BulkPinAllPfvsButton({ canEdit }: BulkPinAllPfvsButtonProps) {
   // ダイアログ状態.
-  // null: 閉じている / true: ロック確認中 / false: 解除確認中.
+  // null: 閉じている / true: ピン留め確認中 / false: ピン留め解除確認中.
   const [target, setTarget] = useState<boolean | null>(null);
   // 二段階確認のステップ: 1 = 1 段目 (件数提示) / 2 = 2 段目 (最終確認).
   const [step, setStep] = useState<1 | 2>(1);
@@ -128,7 +129,7 @@ export function BulkPinAllPfvsButton({ canEdit }: BulkPinAllPfvsButtonProps) {
       // 既に全件 targetState ならば早期 return.
       const needUpdate = pfvs.filter((p) => Boolean(p.is_pinned) !== nextTarget);
       if (needUpdate.length === 0) {
-        toast.info(nextTarget ? '既に全件ロック状態です' : '既に全件解除状態です');
+        toast.info(nextTarget ? '既に全件ピン留め状態です' : '既に全件ピン留め解除状態です');
         return;
       }
       setTargetPfvIds(needUpdate.map((p) => p.id));
@@ -152,7 +153,7 @@ export function BulkPinAllPfvsButton({ canEdit }: BulkPinAllPfvsButtonProps) {
   const handleConfirmStep2 = async () => {
     if (target === null || targetPfvIds.length === 0) return;
     const items = targetPfvIds.map((pfv_id) => ({ pfv_id, is_pinned: target }));
-    const actionLabel = target ? 'ロック' : '解除';
+    const actionLabel = target ? 'ピン留め' : 'ピン留め解除';
     try {
       await bulkPin.mutateAsync(items);
       toast.success(`${targetPfvIds.length} 件を${actionLabel}しました`);
@@ -169,7 +170,7 @@ export function BulkPinAllPfvsButton({ canEdit }: BulkPinAllPfvsButtonProps) {
   };
 
   const dialogOpen = target !== null;
-  const actionLabel = target === true ? 'ロック' : target === false ? '解除' : '';
+  const actionLabel = target === true ? 'ピン留め' : target === false ? 'ピン留め解除' : '';
 
   return (
     <>
@@ -180,15 +181,15 @@ export function BulkPinAllPfvsButton({ canEdit }: BulkPinAllPfvsButtonProps) {
         onClick={() => void handleClick(true)}
         disabled={isLoading || isPending}
         className="gap-1.5"
-        aria-label="全患者の固定枠を一括ロック"
+        aria-label="全患者の固定枠を一括ピン留め"
         data-testid="bulk-pin-all-lock-button"
       >
         {isLoading || isPending ? (
           <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
         ) : (
-          <Lock className="h-4 w-4" aria-hidden />
+          <PushPin className="h-4 w-4" aria-hidden />
         )}
-        全件ロック
+        全件ピン留め
       </Button>
       <Button
         type="button"
@@ -197,15 +198,15 @@ export function BulkPinAllPfvsButton({ canEdit }: BulkPinAllPfvsButtonProps) {
         onClick={() => void handleClick(false)}
         disabled={isLoading || isPending}
         className="gap-1.5"
-        aria-label="全患者の固定枠を一括解除"
+        aria-label="全患者の固定枠を一括ピン留め解除"
         data-testid="bulk-pin-all-unlock-button"
       >
         {isLoading || isPending ? (
           <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
         ) : (
-          <Unlock className="h-4 w-4" aria-hidden />
+          <PushPinOff className="h-4 w-4" aria-hidden />
         )}
-        全件解除
+        全件ピン留め解除
       </Button>
 
       <Dialog open={dialogOpen} onOpenChange={(o) => (!o ? closeDialog() : undefined)}>

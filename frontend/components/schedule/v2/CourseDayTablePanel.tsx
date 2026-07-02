@@ -1551,13 +1551,13 @@ export function CourseDayTablePanel({
             onSuccess: () => {
               toast.success(
                 nextPinned
-                  ? '完全固定にしました (Layer 2 は動かしません)'
-                  : '完全固定を解除しました',
+                  ? 'ピン留めしました (Layer 2 は動かしません)'
+                  : 'ピン留めを外しました',
               );
             },
             onError: (err) => {
               const msg = err instanceof Error ? err.message : '不明なエラー';
-              toast.error(`完全固定の更新に失敗: ${msg}`);
+              toast.error(`ピン留めの更新に失敗: ${msg}`);
             },
           },
         );
@@ -1587,7 +1587,7 @@ export function CourseDayTablePanel({
       // 既に target 状態の PFV は除外 (= 無駄な PATCH 抑止 + audit_log のノイズ削減).
       const needUpdate = allPfvs.filter((p) => Boolean(p.is_pinned) !== nextPinned);
       if (needUpdate.length === 0) {
-        toast.info(nextPinned ? '既に全曜日ロック状態です' : '既に全曜日解除状態です');
+        toast.info(nextPinned ? '既に全曜日ピン留め状態です' : '既に全曜日ピン留め解除状態です');
         return;
       }
       const items = needUpdate.map((p) => ({ pfv_id: p.id, is_pinned: nextPinned }));
@@ -1595,13 +1595,13 @@ export function CourseDayTablePanel({
         onSuccess: () => {
           toast.success(
             nextPinned
-              ? `全曜日 ${items.length} 件を完全固定しました (Layer 2 は動かしません)`
-              : `全曜日 ${items.length} 件の完全固定を解除しました`,
+              ? `全曜日 ${items.length} 件をピン留めしました (Layer 2 は動かしません)`
+              : `全曜日 ${items.length} 件のピン留めを外しました`,
           );
         },
         onError: (err) => {
           const msg = err instanceof Error ? err.message : '不明なエラー';
-          toast.error(`全曜日の完全固定更新に失敗: ${msg}`);
+          toast.error(`全曜日のピン留め更新に失敗: ${msg}`);
         },
       });
     },

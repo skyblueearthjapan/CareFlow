@@ -3,10 +3,10 @@
  *
  * カバーケース:
  *   1. canEdit=false (staff) → ボタン非表示
- *   2. canEdit=true → 「全件ロック」 ボタン描画
- *   3. 全 PFV が既にロック状態のとき click → toast.info 出て dialog 開かない
+ *   2. canEdit=true → 「全件ピン留め」 ボタン描画
+ *   3. 全 PFV が既にピン留め状態のとき click → toast.info 出て dialog 開かない
  *   4. canEdit=true → click → 2 段階 dialog → 「実行」 で bulk POST + toast.success
- *   5. canEdit=true → 「全件解除」 click → is_pinned=false で POST される
+ *   5. canEdit=true → 「全件ピン留め解除」 click → is_pinned=false で POST される
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
@@ -175,23 +175,27 @@ describe('BulkPinAllPfvsButton (Phase G-34)', () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it('2. canEdit=true → 全件ロック / 全件解除 ボタンが描画される', () => {
+  it('2. canEdit=true → 全件ピン留め / 全件ピン留め解除 ボタンが描画される', () => {
     render(<BulkPinAllPfvsButton canEdit />);
-    expect(screen.getByRole('button', { name: '全患者の固定枠を一括ロック' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '全患者の固定枠を一括解除' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: '全患者の固定枠を一括ピン留め' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: '全患者の固定枠を一括ピン留め解除' }),
+    ).toBeInTheDocument();
   });
 
-  it('3. 全 PFV が既にロック状態のとき click → toast.info 出て dialog 開かない', async () => {
+  it('3. 全 PFV が既にピン留め状態のとき click → toast.info 出て dialog 開かない', async () => {
     setupFetcher({
       patients: [patientActive],
       pfvsByPatient: { [patientActive.id]: [pfvPinned] },
     });
 
     render(<BulkPinAllPfvsButton canEdit />);
-    fireEvent.click(screen.getByRole('button', { name: '全患者の固定枠を一括ロック' }));
+    fireEvent.click(screen.getByRole('button', { name: '全患者の固定枠を一括ピン留め' }));
 
     await waitFor(() => {
-      expect(mockToast.info).toHaveBeenCalledWith('既に全件ロック状態です');
+      expect(mockToast.info).toHaveBeenCalledWith('既に全件ピン留め状態です');
     });
     expect(screen.queryByTestId('dialog')).not.toBeInTheDocument();
     expect(mockMutateAsync).not.toHaveBeenCalled();
@@ -205,7 +209,7 @@ describe('BulkPinAllPfvsButton (Phase G-34)', () => {
     mockMutateAsync.mockResolvedValueOnce(undefined);
 
     render(<BulkPinAllPfvsButton canEdit />);
-    fireEvent.click(screen.getByRole('button', { name: '全患者の固定枠を一括ロック' }));
+    fireEvent.click(screen.getByRole('button', { name: '全患者の固定枠を一括ピン留め' }));
 
     // 1 段目ダイアログが開く (= unpinned が 1 件あるので)
     await waitFor(() => {
@@ -224,7 +228,7 @@ describe('BulkPinAllPfvsButton (Phase G-34)', () => {
     });
     // is_pinned=true で、 unpinned だった pfvUnpinned のみ payload に入る
     expect(mockMutateAsync).toHaveBeenCalledWith([{ pfv_id: pfvUnpinned.id, is_pinned: true }]);
-    expect(mockToast.success).toHaveBeenCalledWith('1 件をロックしました');
+    expect(mockToast.success).toHaveBeenCalledWith('1 件をピン留めしました');
     // inactive patient の PFV は fetch されないことを確認
     expect(mockFetcher).not.toHaveBeenCalledWith(
       expect.stringContaining(`/api/v1/patients/${patientInactive.id}/fixed-visits`),
@@ -232,7 +236,7 @@ describe('BulkPinAllPfvsButton (Phase G-34)', () => {
     );
   });
 
-  it('5. canEdit=true → 「全件解除」 click → is_pinned=false で POST', async () => {
+  it('5. canEdit=true → 「全件ピン留め解除」 click → is_pinned=false で POST', async () => {
     setupFetcher({
       patients: [patientActive],
       pfvsByPatient: { [patientActive.id]: [pfvPinned] },
@@ -240,7 +244,7 @@ describe('BulkPinAllPfvsButton (Phase G-34)', () => {
     mockMutateAsync.mockResolvedValueOnce(undefined);
 
     render(<BulkPinAllPfvsButton canEdit />);
-    fireEvent.click(screen.getByRole('button', { name: '全患者の固定枠を一括解除' }));
+    fireEvent.click(screen.getByRole('button', { name: '全患者の固定枠を一括ピン留め解除' }));
 
     await waitFor(() => {
       expect(screen.getByTestId('dialog')).toBeInTheDocument();
@@ -251,6 +255,6 @@ describe('BulkPinAllPfvsButton (Phase G-34)', () => {
     await waitFor(() => {
       expect(mockMutateAsync).toHaveBeenCalledWith([{ pfv_id: pfvPinned.id, is_pinned: false }]);
     });
-    expect(mockToast.success).toHaveBeenCalledWith('1 件を解除しました');
+    expect(mockToast.success).toHaveBeenCalledWith('1 件をピン留め解除しました');
   });
 });

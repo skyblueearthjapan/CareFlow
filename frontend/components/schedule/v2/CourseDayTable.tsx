@@ -21,10 +21,11 @@
  */
 import { useMemo } from 'react';
 import { useDraggable, useDroppable } from '@dnd-kit/core';
-import { Info, Lock, Unlock, X } from 'lucide-react';
+import { Info, X } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
+import { PushPin, PushPinOff } from '@/components/ui/push-pin';
 import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
 import { capacityKeyForWeekday } from '@/lib/schemas/v2/course_template';
 import type { FreeGap } from '@/lib/scheduling/freeGaps';
@@ -998,7 +999,9 @@ function OccupantPatientInfo({
       data-row-draggable-visit-id={visit.id}
       data-row-draggable-disabled={isPinnedVisit ? 'true' : undefined}
       title={
-        isPinnedVisit ? '完全固定中のため移動できません. 先に 🔒 を解除してください.' : undefined
+        isPinnedVisit
+          ? 'ピン留め中のため移動できません. 先にピン留めを外してください.'
+          : undefined
       }
       className={cn(
         'flex flex-row flex-wrap items-baseline gap-x-2 gap-y-0 min-w-0 touch-none select-none',
@@ -1077,17 +1080,17 @@ function OccupantPatientInfo({
               disabled={!visit.fixed_visit_id}
               aria-label={
                 visit.is_pinned === true
-                  ? `${visit.patient_name ?? visit.patient_id} の完全固定スコープを選択 (解除)`
+                  ? `${visit.patient_name ?? visit.patient_id} のピン留めスコープを選択 (ピン留めを外す)`
                   : !visit.fixed_visit_id
-                    ? `${visit.patient_name ?? visit.patient_id} は固定枠が無いため完全固定できません`
-                    : `${visit.patient_name ?? visit.patient_id} の完全固定スコープを選択 (ロック)`
+                    ? `${visit.patient_name ?? visit.patient_id} は固定枠が無いためピン留めできません`
+                    : `${visit.patient_name ?? visit.patient_id} のピン留めスコープを選択 (ピン留めする)`
               }
               title={
                 !visit.fixed_visit_id
                   ? '先に固定枠登録が必要'
                   : visit.is_pinned === true
-                    ? '完全固定の解除スコープを選択 (この曜日のみ / 全曜日)'
-                    : '完全固定のロックスコープを選択 (この曜日のみ / 全曜日)'
+                    ? 'ピン留めを外すスコープを選択 (この曜日のみ / 全曜日)'
+                    : 'ピン留めするスコープを選択 (この曜日のみ / 全曜日)'
               }
               aria-pressed={visit.is_pinned === true}
               aria-haspopup="menu"
@@ -1097,9 +1100,9 @@ function OccupantPatientInfo({
               data-pfv-id={visit.fixed_visit_id ?? ''}
             >
               {visit.is_pinned === true ? (
-                <Lock className="h-3 w-3 text-yellow-700" />
+                <PushPin className="h-3.5 w-3.5 text-yellow-700" />
               ) : (
-                <Unlock className="h-3 w-3 text-text-muted" />
+                <PushPinOff className="h-3.5 w-3.5 text-text-muted" />
               )}
             </button>
           )}

@@ -107,6 +107,8 @@ function makeSuggestion(over: Partial<ImprovementSuggestion> = {}): ImprovementS
     staff_warnings: [],
     feasibility_basis: 'pfv',
     requires_patient_confirmation: false,
+    within_preference: false,
+    swap_counterpart: null,
     ...over,
   };
 }
@@ -136,6 +138,7 @@ function makeSwapSuggestion(over: Partial<ImprovementSuggestion> = {}): Improvem
       new_weekday: 0,
       new_start_time: '09:00',
       requires_patient_confirmation: false,
+      within_preference: false,
     },
     ...over,
   };
@@ -205,6 +208,44 @@ describe('ImprovementSuggestionsSection', () => {
     expect(screen.getByTestId('improvement-requires-confirmation')).toHaveTextContent(
       '可動域未設定・患者様への確認推奨',
     );
+  });
+
+  it('2b. (#P4-B) within_preference=true で「ご希望の範囲内」バッジ表示', () => {
+    mocks.suggestionsResult = {
+      data: makeResponse([makeSuggestion({ within_preference: true })]),
+      isLoading: false,
+      isError: false,
+    };
+    renderSection();
+    expect(screen.getByTestId('improvement-within-preference')).toHaveTextContent(
+      'ご希望の範囲内',
+    );
+  });
+
+  it('2c. (#P4-B) within_preference=false のとき希望内バッジは出ない', () => {
+    mocks.suggestionsResult = {
+      data: makeResponse([makeSuggestion({ within_preference: false })]),
+      isLoading: false,
+      isError: false,
+    };
+    renderSection();
+    expect(screen.queryByTestId('improvement-within-preference')).not.toBeInTheDocument();
+  });
+
+  it('2d. (#P4-B) swap: cp.within_preference=true で「◯◯様もご希望の範囲内」バッジ表示', () => {
+    const swap = makeSwapSuggestion();
+    swap.within_preference = true;
+    swap.swap_counterpart = { ...swap.swap_counterpart!, within_preference: true };
+    mocks.suggestionsResult = {
+      data: makeResponse([swap]),
+      isLoading: false,
+      isError: false,
+    };
+    renderSection();
+    expect(screen.getByTestId('improvement-within-preference')).toBeInTheDocument();
+    expect(
+      screen.getByTestId('improvement-swap-counterpart-within-preference'),
+    ).toHaveTextContent('佐藤 花子 様もご希望の範囲内');
   });
 
   it('3. staff_warnings を proposeWarningLabel で表示', () => {

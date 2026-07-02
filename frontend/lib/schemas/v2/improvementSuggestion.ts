@@ -97,6 +97,8 @@ export const swapCounterpartSchema = z.object({
   new_weekday: z.number().int().min(0).max(6),
   new_start_time: z.string(),
   requires_patient_confirmation: z.boolean().default(false),
+  // #P4-B: 相手患者 Y の移動先が Y の希望範囲内かどうか (省略時 false = 従来の要確認ロジック).
+  within_preference: z.boolean().default(false),
 });
 export type SwapCounterpart = z.infer<typeof swapCounterpartSchema>;
 
@@ -112,6 +114,8 @@ export const improvementSuggestionSchema = z.object({
   staff_warnings: z.array(z.string()).catch([]),
   feasibility_basis: z.string().default('pfv'),
   requires_patient_confirmation: z.boolean().default(false),
+  // #P4-B: 提案先が対象患者の希望範囲内かどうか (省略時 false). true で「ご希望の範囲内」バッジを出す.
+  within_preference: z.boolean().default(false),
   // kind='swap' のときのみ相手患者 Y の情報を持つ (後方互換: 既定 null).
   swap_counterpart: swapCounterpartSchema.nullable().default(null),
 });

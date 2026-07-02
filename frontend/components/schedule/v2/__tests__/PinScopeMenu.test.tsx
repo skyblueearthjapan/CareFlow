@@ -112,21 +112,21 @@ describe('PinScopeMenu (Phase G-47)', () => {
     expect(onSelect).toHaveBeenCalledWith('pfv-B', true, 'all-days', 'p-B');
   });
 
-  it('5. isPinned=true → menu の表記が「解除」 系に切り替わる', () => {
+  it('5. isPinned=true → menu の表記が「ピン留め解除」 系に切り替わる', () => {
     renderMenu({ isPinned: true });
     fireEvent.click(screen.getByTestId('trigger'));
-    expect(screen.getByTestId('pin-scope-menu-day-t1')).toHaveTextContent('この曜日のみ 解除');
+    expect(screen.getByTestId('pin-scope-menu-day-t1')).toHaveTextContent('この曜日のみ ピン留め解除');
     expect(screen.getByTestId('pin-scope-menu-all-days-t1')).toHaveTextContent(
-      'この患者の全曜日 解除',
+      'この患者の全曜日 ピン留め解除',
     );
   });
 
-  it('6. isPinned=false → menu の表記が「ロック」 系に切り替わる', () => {
+  it('6. isPinned=false → menu の表記が「ピン留め」 系に切り替わる', () => {
     renderMenu({ isPinned: false });
     fireEvent.click(screen.getByTestId('trigger'));
-    expect(screen.getByTestId('pin-scope-menu-day-t1')).toHaveTextContent('この曜日のみ ロック');
+    expect(screen.getByTestId('pin-scope-menu-day-t1')).toHaveTextContent('この曜日のみ ピン留め');
     expect(screen.getByTestId('pin-scope-menu-all-days-t1')).toHaveTextContent(
-      'この患者の全曜日 ロック',
+      'この患者の全曜日 ピン留め',
     );
   });
 

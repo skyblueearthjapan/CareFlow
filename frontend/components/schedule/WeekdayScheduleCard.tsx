@@ -28,6 +28,7 @@ import * as React from 'react';
 import { cn } from '@/lib/utils';
 import { formatDuration } from '@/lib/format/duration';
 import { buildSameAddressKey, parseHM, type FreeGap } from '@/lib/scheduling/freeGaps';
+import { PushPin, PushPinOff } from '@/components/ui/push-pin';
 import { VisitArrow } from './v2/VisitArrow';
 import { trimSeconds } from './v2/_autoScheduleUtils';
 import { PinScopeMenu, type PinScope } from './v2/PinScopeMenu';
@@ -740,14 +741,14 @@ interface PinToggleButtonProps {
 }
 
 /**
- * 🔒 完全固定 toggle ボタン.
+ * ピン留め toggle ボタン.
  *
  * - visit.fixed_visit_id が無い (= weekly_pattern 由来) → disabled + tooltip 「先に固定枠登録が必要」
- * - visit.is_pinned=true                              → 🔒 (色付き)
- * - visit.is_pinned=false                             → 🔓 (薄表示)
+ * - visit.is_pinned=true                              → PushPin (赤い丸頭)
+ * - visit.is_pinned=false                             → PushPinOff (灰色アウトライン)
  *
- * lucide-react を import すると bundle が増えるため、リスト表示では絵文字
- * で十分 (CourseDayTable 側は元々 lucide を使っているので統一感は薄い).
+ * 全 UI 共通の PushPin/PushPinOff アイコン (@/components/ui/push-pin) を使用し、
+ * スケジュール表・週ビュー・リスト表示で「ピン留め」の見た目を統一する.
  */
 function PinToggleButton({ visit, onTogglePin }: PinToggleButtonProps) {
   const isPinned = visit.is_pinned === true;
@@ -773,17 +774,17 @@ function PinToggleButton({ visit, onTogglePin }: PinToggleButtonProps) {
           disabled={disabled}
           aria-label={
             isPinned
-              ? `${visit.patient_name} の完全固定スコープを選択 (解除)`
+              ? `${visit.patient_name} のピン留めスコープを選択 (ピン留めを外す)`
               : disabled
-                ? `${visit.patient_name} は固定枠が無いため完全固定できません`
-                : `${visit.patient_name} の完全固定スコープを選択 (ロック)`
+                ? `${visit.patient_name} は固定枠が無いためピン留めできません`
+                : `${visit.patient_name} のピン留めスコープを選択 (ピン留めする)`
           }
           title={
             disabled
               ? '先に固定枠登録が必要'
               : isPinned
-                ? '完全固定の解除スコープを選択 (この曜日のみ / 全曜日)'
-                : '完全固定のロックスコープを選択 (この曜日のみ / 全曜日)'
+                ? 'ピン留めを外すスコープを選択 (この曜日のみ / 全曜日)'
+                : 'ピン留めするスコープを選択 (この曜日のみ / 全曜日)'
           }
           aria-pressed={isPinned}
           aria-haspopup="menu"
@@ -792,12 +793,16 @@ function PinToggleButton({ visit, onTogglePin }: PinToggleButtonProps) {
           data-pinned={isPinned ? 'true' : 'false'}
           data-pfv-id={pfvId ?? ''}
           className={cn(
-            'inline-flex items-center justify-center rounded px-1 py-0.5 text-[10px] leading-none',
+            'inline-flex items-center justify-center rounded px-1 py-0.5 leading-none',
             isPinned ? 'text-yellow-700 hover:bg-yellow-100' : 'text-text-muted hover:bg-bg-muted',
             disabled ? 'cursor-not-allowed opacity-30' : '',
           )}
         >
-          <span aria-hidden="true">{isPinned ? '🔒' : '🔓'}</span>
+          {isPinned ? (
+            <PushPin className="h-3.5 w-3.5" />
+          ) : (
+            <PushPinOff className="h-3.5 w-3.5" />
+          )}
         </button>
       )}
     </PinScopeMenu>
