@@ -48,8 +48,20 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 _KIND_CHECK_NAME = "ck_sd_kind"
+# 本番 (PG) では 0047 の create_table 時に metadata の命名規約
+# (ck_%(table_name)s_%(constraint_name)s) が適用され、実名が
+# `ck_suggestion_dismissals_ck_sd_kind` になっている (2026-07-03 の
+# 本番デプロイ失敗で判明。SQLite テスト経路では素の名前のため再現しない環境差)。
+# DROP は両方の名前を IF EXISTS で試み、ADD は素の名前で張り直す。
+_KIND_CHECK_NAME_PREFIXED = "ck_suggestion_dismissals_ck_sd_kind"
 _KIND_CHECK_NEW = "kind IN ('time_change','day_change','swap')"
 _KIND_CHECK_OLD = "kind IN ('time_change','day_change')"
+
+
+def _pg_drop_kind_check_if_exists() -> None:
+    """PG: 命名規約の有無どちらの実名でも kind CHECK を除去する (冪等)。"""
+    for name in (_KIND_CHECK_NAME, _KIND_CHECK_NAME_PREFIXED):
+        op.execute(f"ALTER TABLE suggestion_dismissals DROP CONSTRAINT IF EXISTS {name}")
 
 
 def upgrade() -> None:
@@ -57,9 +69,7 @@ def upgrade() -> None:
     is_pg = bind.dialect.name == "postgresql"
 
     if is_pg:
-        op.execute(
-            f"ALTER TABLE suggestion_dismissals DROP CONSTRAINT {_KIND_CHECK_NAME}"
-        )
+        _pg_drop_kind_check_if_exists()
         op.execute(
             f"ALTER TABLE suggestion_dismissals ADD CONSTRAINT {_KIND_CHECK_NAME} "
             f"CHECK ({_KIND_CHECK_NEW})"
@@ -79,9 +89,7 @@ def downgrade() -> None:
     op.execute("DELETE FROM suggestion_dismissals WHERE kind = 'swap'")
 
     if is_pg:
-        op.execute(
-            f"ALTER TABLE suggestion_dismissals DROP CONSTRAINT {_KIND_CHECK_NAME}"
-        )
+        _pg_drop_kind_check_if_exists()
         op.execute(
             f"ALTER TABLE suggestion_dismissals ADD CONSTRAINT {_KIND_CHECK_NAME} "
             f"CHECK ({_KIND_CHECK_OLD})"
