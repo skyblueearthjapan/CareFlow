@@ -45,7 +45,7 @@ import {
 import { useQueries } from '@tanstack/react-query';
 import { useSession } from 'next-auth/react';
 import { format } from 'date-fns';
-import { FlaskConical, HeartPulse, Loader2, Plus, RefreshCw, UserCheck } from 'lucide-react';
+import { FlaskConical, HeartPulse, Loader2, Plus, RefreshCw, UserCheck, UserX } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { Button } from '@/components/ui/button';
@@ -99,6 +99,7 @@ import { BulkPinAllPfvsButton } from './BulkPinAllPfvsButton';
 import { DiffAddDialog } from './DiffAddDialog';
 import { AssignWarningDialog, type ApprovedReviewItem } from './AssignWarningDialog';
 import { FullOptimizeDialog } from './FullOptimizeDialog';
+import { StaffSubstituteDialog } from './StaffSubstituteDialog';
 import { ProposeNewModal } from './ProposeNewModal';
 import { ScheduleHealthDialog } from './ScheduleHealthDialog';
 import { ResetToFixedButton } from './ResetToFixedButton';
@@ -1625,6 +1626,8 @@ export function CourseDayTablePanel({
   const assignStaffOnlyMut = useAssignStaffOnly();
   const [diffAddOpen, setDiffAddOpen] = useState(false);
   const [fullOptimizeOpen, setFullOptimizeOpen] = useState(false);
+  // P3-①: 当日欠勤の代替スタッフ提案ダイアログ.
+  const [staffSubstituteOpen, setStaffSubstituteOpen] = useState(false);
   // Phase G-91: 確認レビューフローのダイアログ (連続 / 性別).
   const [assignWarningOpen, setAssignWarningOpen] = useState(false);
   const [reviewItems, setReviewItems] = useState<ReviewItem[]>([]);
@@ -1961,6 +1964,16 @@ export function CourseDayTablePanel({
                   <UserCheck className="mr-1 h-4 w-4" aria-hidden />
                 )}
                 自動スタッフ割付
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => setStaffSubstituteOpen(true)}
+                data-testid="staff-substitute-button"
+              >
+                <UserX className="mr-1 h-4 w-4" aria-hidden />
+                欠勤対応
               </Button>
               <Button
                 type="button"
@@ -2480,6 +2493,12 @@ export function CourseDayTablePanel({
           isoYear={isoYear}
           isoWeek={isoWeek}
           officeId={officeId}
+        />
+
+        {/* P3-①: 当日欠勤の代替スタッフ提案ダイアログ. */}
+        <StaffSubstituteDialog
+          open={staffSubstituteOpen}
+          onClose={() => setStaffSubstituteOpen(false)}
         />
 
         {/* Phase G-91: 自動スタッフ割付の確認レビューフロー (連続 / 性別). */}
