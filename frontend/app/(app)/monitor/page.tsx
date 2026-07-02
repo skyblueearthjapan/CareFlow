@@ -361,7 +361,7 @@ function Kpi({
     <div
       className={cn(
         'inline-flex items-baseline gap-1.5 rounded-full border px-3 py-1',
-        tone === 'bad' ? 'border-error/30 bg-error-bg' : 'border-border-default bg-bg-base',
+        tone === 'bad' ? 'border-border-error bg-error-bg' : 'border-border-default bg-bg-base',
       )}
     >
       <span className="text-[11px] text-text-muted">{label}</span>

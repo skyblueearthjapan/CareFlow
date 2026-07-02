@@ -230,7 +230,7 @@ function VisitDetail({
 
       {isLongInprogress(visit, maxInprogressMin) && (
         <div
-          className="mb-3 rounded border border-warning/40 bg-warning-bg p-3 text-[13px] leading-relaxed text-warning-strong"
+          className="mb-3 rounded border border-border-warning bg-warning-bg p-3 text-[13px] leading-relaxed text-warning-strong"
           data-testid="monitor-long-inprogress"
         >
           <span className="mb-1 flex items-center gap-1 text-[11px] font-bold">
@@ -243,7 +243,7 @@ function VisitDetail({
 
       {visit.phase === 'missing' && (
         <div
-          className="mb-3 rounded-md border border-error/30 bg-error-bg p-3"
+          className="mb-3 rounded-md border border-border-error bg-error-bg p-3"
           data-testid="monitor-callbox"
         >
           <div className="mb-1.5 flex items-center gap-1 text-[13px] font-bold text-error">
@@ -263,7 +263,7 @@ function VisitDetail({
         <div
           className={cn(
             'mb-3 rounded border p-3 text-[13px] leading-relaxed',
-            st === 'mismatch' ? 'border-error/30 bg-error-bg' : 'border-warning/40 bg-warning-bg',
+            st === 'mismatch' ? 'border-border-error bg-error-bg' : 'border-border-warning bg-warning-bg',
           )}
         >
           <span className="mb-1 block text-[11px] font-bold text-text-secondary">

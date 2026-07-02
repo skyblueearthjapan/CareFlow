@@ -54,6 +54,9 @@
   --error-bg: #fee2e2;
   --info: #0d9488;
   --info-bg: #ccfbf1;
+  /* *-bg 面に載せる淡色枠線 (var() 色は Tailwind の /alpha 修飾子が効かないため実値で定義) */
+  --border-warning: #fde68a;
+  --border-error: #fecaca;
 
   /* === データ系カラー (業務種別) — docs/design/01-design-system.md 1-4 === */
   --c-coupled: #9a3412;

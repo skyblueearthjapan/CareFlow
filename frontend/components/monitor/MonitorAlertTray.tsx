@@ -117,9 +117,9 @@ export function MonitorAlertTray({
         className={cn(
           'flex items-center gap-2 rounded border px-2.5 py-1.5 cursor-pointer',
           inPop ? 'w-full border-transparent border-t-border-default/50' : 'flex-none',
-          v.alert_level === 'missing' && 'border-error/30 bg-error-bg',
+          v.alert_level === 'missing' && 'border-border-error bg-error-bg',
           (v.alert_level === 'mismatch' || v.alert_level === 'review') &&
-            'border-warning/30 bg-warning-bg',
+            'border-border-warning bg-warning-bg',
           sel && 'outline outline-2 outline-brand-primary',
         )}
       >

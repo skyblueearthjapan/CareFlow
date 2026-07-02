@@ -22,6 +22,8 @@ const config: Config = {
         'border-default': 'var(--border-default)',
         'border-subtle': 'var(--border-subtle)',
         'border-strong': 'var(--border-strong)',
+        'border-warning': 'var(--border-warning)',
+        'border-error': 'var(--border-error)',
         'text-primary': 'var(--text-primary)',
         'text-secondary': 'var(--text-secondary)',
         'text-muted': 'var(--text-muted)',
