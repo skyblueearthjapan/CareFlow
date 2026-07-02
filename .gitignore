@@ -74,3 +74,8 @@ frontend/.omc/
 # 名前が _ で始まるものは re-runnable な中間生成物として扱う
 backend/scripts/_*
 backend/scripts/~$*
+
+# 配布用ログインカード等の秘密情報 (仮パスワードを含む・絶対にコミットしない)
+staff-login-cards*.html
+*-login-cards*.html
+_secrets/
