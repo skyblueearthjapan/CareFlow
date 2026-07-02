@@ -6,6 +6,7 @@ import { describe, it, expect } from 'vitest';
 
 import {
   buildCourseTemplateIdResolver,
+  existingFixedVisitToItem,
   mergeAdoptedIntoNormalFixedVisits,
   proposedSlotToFixedVisitItem,
   slotDurationMin,
@@ -77,6 +78,55 @@ describe('mergeAdoptedIntoNormalFixedVisits', () => {
     const tue0 = items.filter((i) => i.weekday === 1 && i.slot_index === 0);
     expect(tue0).toHaveLength(1);
     expect(tue0[0]!.start_time).toBe('16:00:00'); // 置換
+  });
+
+  it('非採用曜日の movability がマージを通して保持される (§1.3 レビューLOW)', () => {
+    const existing = [
+      {
+        weekday: 0,
+        start_time: '09:00:00',
+        duration_min: 30,
+        slot_index: 0,
+        movability: 'time_flexible',
+      },
+    ] as unknown as PatientFixedVisitV2Read[];
+    const adopted = proposedSlotToFixedVisitItem(slot({ weekday: 1 }), noResolve, 35);
+    const items = mergeAdoptedIntoNormalFixedVisits(existing, [adopted]);
+    expect(items.find((i) => i.weekday === 0)?.movability).toBe('time_flexible');
+  });
+});
+
+describe('existingFixedVisitToItem (P2-A movability 運搬)', () => {
+  it('movability を運搬する (§1.3 運搬の必須事項)', () => {
+    const v = {
+      weekday: 2,
+      start_time: '10:00:00',
+      duration_min: 30,
+      slot_index: 0,
+      movability: 'time_flexible',
+    } as unknown as PatientFixedVisitV2Read;
+    const item = existingFixedVisitToItem(v);
+    expect(item.movability).toBe('time_flexible');
+  });
+
+  it('locked / unknown も運搬する', () => {
+    const locked = existingFixedVisitToItem({
+      weekday: 0,
+      start_time: '09:00:00',
+      duration_min: 30,
+      slot_index: 0,
+      movability: 'locked',
+    } as unknown as PatientFixedVisitV2Read);
+    expect(locked.movability).toBe('locked');
+
+    const unknown = existingFixedVisitToItem({
+      weekday: 1,
+      start_time: '09:00:00',
+      duration_min: 30,
+      slot_index: 0,
+      movability: 'unknown',
+    } as unknown as PatientFixedVisitV2Read);
+    expect(unknown.movability).toBe('unknown');
   });
 });
 

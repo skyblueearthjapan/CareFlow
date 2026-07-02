@@ -410,7 +410,9 @@ async def put_fixed_visits(
             PatientFixedVisit.mode == body.mode,
         )
     )
-    for item in body.items:
+    # P2-A: INSERT には validation.corrected_items (V6 で pinned 行の movability を
+    # 'locked' 矯正済み) を使う. body.items をそのまま使うと矯正が DB に反映されない.
+    for item in validation.corrected_items:
         db.add(
             PatientFixedVisit(
                 patient_id=patient_id,
@@ -426,6 +428,9 @@ async def put_fixed_visits(
                 sub_office_id=item.sub_office_id,
                 # P0-2: pinned 保護フラグを引き継ぐ (省略すると silent に False になる).
                 is_pinned=item.is_pinned,
+                # P2-A (§1.3): 可動域フラグを運搬. 省略すると保存のたび 'unknown' に
+                # 戻る (P0-2 の is_pinned BLOCKER と同型の罠). 必ず引き継ぐこと.
+                movability=item.movability,
             )
         )
     await _commit_or_409(db)

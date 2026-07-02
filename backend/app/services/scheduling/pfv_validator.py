@@ -20,7 +20,7 @@ PUT /patients/{id}/fixed-visits（手動系統＋候補採用系統）の削除�
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import time
 from uuid import UUID
 
@@ -52,6 +52,7 @@ CODE_PINNED = "pinned_protection"  # V2 (error)
 CODE_PATIENT_CONFLICT = "patient_time_conflict"  # V3 (warning)
 CODE_LUNCH = "lunch_break_overlap"  # V4 (warning)
 CODE_CAPACITY = "course_capacity_exceeded"  # V5 (warning)
+CODE_MOVABILITY_CORRECTED = "movability_corrected"  # V6 (warning)
 
 _WEEKDAY_JP: tuple[str, ...] = ("月", "火", "水", "木", "金", "土", "日")
 
@@ -80,10 +81,16 @@ class PfvValidationWarning:
 
 @dataclass(frozen=True)
 class PfvValidationResult:
-    """再検証結果. ``warnings`` は error/warning の両方を含む."""
+    """再検証結果. ``warnings`` は error/warning の両方を含む.
+
+    ``corrected_items`` は V6 (movability 矯正) 適用後の items. 呼出側 (PUT INSERT) は
+    ``proposed_items`` ではなく **これ** を保存すること (pinned 行の movability='locked'
+    矯正を DB に反映するため). 矯正が無い場合も全 items をそのまま含む.
+    """
 
     warnings: list[PfvValidationWarning]
     has_errors: bool
+    corrected_items: list[PatientFixedVisitV2Base] = field(default_factory=list)
 
     @property
     def errors(self) -> list[PfvValidationWarning]:
@@ -217,6 +224,46 @@ class _OtherVisit:
 CourseKey = tuple[int, object]  # (weekday, course_template_id)
 
 
+# ---------------------------------------------------------------------------
+# V6: pinned 行の movability 矯正 (含意 is_pinned=True ⇒ movability='locked')
+# ---------------------------------------------------------------------------
+
+
+def _correct_pinned_movability(
+    proposed_items: list[PatientFixedVisitV2Base],
+) -> tuple[list[PatientFixedVisitV2Base], list[PfvValidationWarning]]:
+    """V6: is_pinned=True かつ movability != 'locked' の行を 'locked' に矯正する.
+
+    設計書 §1.1 / §1.3: is_pinned=True ⇒ movability='locked' の含意を、DB CHECK では
+    なくここで担保する (既存 PATCH pin 経路を壊さないため). 矯正は **in-place ではなく
+    コピー** (``model_copy``) で行い、呼出側の元 items を汚さない.
+
+    Returns:
+        (矯正済み items, 矯正 warning のリスト). 矯正が不要なら元と同じ内容の新リスト
+        + 空 warning を返す. ``validate_pfv_changes`` は V2 同一性比較の **前** にこれを
+        呼び、以降の検証は矯正済みリストで行う (同一性タプルに movability は含めない).
+    """
+    corrected: list[PatientFixedVisitV2Base] = []
+    warnings: list[PfvValidationWarning] = []
+    for item in proposed_items:
+        if item.is_pinned and item.movability != "locked":
+            corrected.append(item.model_copy(update={"movability": "locked"}))
+            warnings.append(
+                PfvValidationWarning(
+                    code=CODE_MOVABILITY_CORRECTED,
+                    message=(
+                        f"{_wd_name(item.weekday)}曜 枠{item.slot_index} は完全固定"
+                        "（ピン留め）のため、可動域を「完全固定」に自動調整しました。"
+                    ),
+                    weekday=item.weekday,
+                    severity="warning",
+                )
+            )
+        else:
+            corrected.append(item)
+    return corrected, warnings
+
+
 async def validate_pfv_changes(
     db: AsyncSession,
     patient_id: UUID,
@@ -239,6 +286,13 @@ async def validate_pfv_changes(
         削除前に 422 を返すこと (トランザクションを汚さない).
     """
     warnings: list[PfvValidationWarning] = []
+
+    # --- V6: pinned 行の movability 矯正 (V2 同一性比較の前に実施) ----------
+    # is_pinned=True かつ movability != 'locked' の行を 'locked' に矯正する.
+    # 以降の検証 (V2/V3/V4/V5) は矯正済みリストを使い、呼出側もこの corrected_items を
+    # INSERT する (元 body.items は汚さない).
+    proposed_items, v6_warnings = _correct_pinned_movability(proposed_items)
+    warnings.extend(v6_warnings)
 
     # --- V2: pinned 保護 (Q1: 既存 PFV 行) -------------------------------
     existing_rows = list(
@@ -396,4 +450,8 @@ async def validate_pfv_changes(
                 )
 
     has_errors = any(w.severity == "error" for w in warnings)
-    return PfvValidationResult(warnings=warnings, has_errors=has_errors)
+    return PfvValidationResult(
+        warnings=warnings,
+        has_errors=has_errors,
+        corrected_items=proposed_items,
+    )

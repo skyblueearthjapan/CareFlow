@@ -542,6 +542,100 @@ async def test_put_is_pinned_roundtrip(client, db) -> None:
 
 
 @pytest.mark.asyncio
+async def test_put_movability_roundtrip(client, db) -> None:
+    """P2-A (§1.3): PUT で movability='time_flexible' を送ると GET でも保持される.
+
+    INSERT ループが movability を省くと保存のたび 'unknown' に戻る (P0-2 is_pinned と
+    同型の運搬 BLOCKER). これを防ぐ回帰確認.
+    """
+    admin = await _make_user(db, "pfv-mv-rt@example.com", "admin")
+    patient = await _make_patient(db, "PFV-MVRT")
+
+    res = await client.put(
+        f"/api/v1/patients/{patient.id}/fixed-visits",
+        headers=_bearer(admin),
+        json=_put_body(
+            "normal",
+            [
+                {
+                    "weekday": 0,
+                    "start_time": "09:00",
+                    "duration_min": 30,
+                    "movability": "time_flexible",
+                }
+            ],
+        ),
+    )
+    assert res.status_code == 200, res.text
+    items = res.json()["items"]
+    assert len(items) == 1
+    assert items[0]["movability"] == "time_flexible"
+
+    # GET でも time_flexible が残る.
+    res_get = await client.get(
+        f"/api/v1/patients/{patient.id}/fixed-visits?mode=normal",
+        headers=_bearer(admin),
+    )
+    assert res_get.status_code == 200
+    data = res_get.json()
+    assert len(data) == 1
+    assert data[0]["movability"] == "time_flexible"
+
+
+@pytest.mark.asyncio
+async def test_put_default_movability_is_unknown(client, db) -> None:
+    """P2-A: movability を送らない旧 FE リクエストは 'unknown' で保存 (既定挙動不変)."""
+    admin = await _make_user(db, "pfv-mv-def@example.com", "admin")
+    patient = await _make_patient(db, "PFV-MVDEF")
+
+    res = await client.put(
+        f"/api/v1/patients/{patient.id}/fixed-visits",
+        headers=_bearer(admin),
+        json=_put_body("normal", [_item(0, "09:00", 30)]),
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["items"][0]["movability"] == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_put_pinned_movability_corrected_to_locked(client, db) -> None:
+    """P2-A V6: is_pinned=True + movability='unknown' 送信 → 保存値 'locked' + warning."""
+    admin = await _make_user(db, "pfv-mv-v6@example.com", "admin")
+    patient = await _make_patient(db, "PFV-MVV6")
+
+    res = await client.put(
+        f"/api/v1/patients/{patient.id}/fixed-visits",
+        headers=_bearer(admin),
+        json=_put_body(
+            "normal",
+            [
+                {
+                    "weekday": 0,
+                    "start_time": "09:00",
+                    "duration_min": 30,
+                    "is_pinned": True,
+                    "movability": "unknown",
+                }
+            ],
+        ),
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    # 保存値が 'locked' に矯正されている.
+    assert body["items"][0]["movability"] == "locked"
+    assert body["items"][0]["is_pinned"] is True
+    # 矯正 warning が同梱される.
+    assert any(w["code"] == "movability_corrected" for w in body["warnings"])
+
+    # DB (GET) にも locked が反映されている.
+    res_get = await client.get(
+        f"/api/v1/patients/{patient.id}/fixed-visits?mode=normal",
+        headers=_bearer(admin),
+    )
+    assert res_get.json()[0]["movability"] == "locked"
+
+
+@pytest.mark.asyncio
 async def test_put_conflict_returns_200_with_warning(client, db) -> None:
     """P0-2: 患者間衝突は 422 ではなく 200 + warnings で返す."""
     admin = await _make_user(db, "pfv-conf@example.com", "admin")

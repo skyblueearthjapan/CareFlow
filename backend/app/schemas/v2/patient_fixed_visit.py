@@ -17,6 +17,13 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 PatientFixedVisitMode = Literal["normal", "special"]
 
+# P2-A: 可動域フラグ = 提案の可否 (改善提案 MVP).
+# unknown(既定・保守的) / time_flexible(同曜日内の時刻変更可) /
+# day_flexible(曜日も変更可) / locked(完全固定).
+PatientFixedVisitMovability = Literal[
+    "unknown", "time_flexible", "day_flexible", "locked"
+]
+
 
 class PatientFixedVisitV2Base(BaseModel):
     """PUT body / 個別訪問アイテムの共通フィールド."""
@@ -63,6 +70,17 @@ class PatientFixedVisitV2Base(BaseModel):
         description=(
             "Phase G-21: 完全固定フラグ. true = 自動算出で絶対動かさない. "
             "既存全 PFV は migration で true backfill 済 (後方互換)."
+        ),
+    )
+    # P2-A: 可動域フラグ = 提案の可否 (改善提案 MVP).
+    # 送らない旧 FE リクエストは default 'unknown' で保存され従来と同一動作 (既定挙動不変).
+    # is_pinned=True かつ movability != 'locked' は pfv_validator V6 が 'locked' に矯正する.
+    movability: PatientFixedVisitMovability = Field(
+        default="unknown",
+        description=(
+            "P2-A: 可動域フラグ = 提案の可否. "
+            "unknown(既定) / time_flexible / day_flexible / locked. "
+            "未指定は 'unknown' で保存 (従来挙動)."
         ),
     )
 

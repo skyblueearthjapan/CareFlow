@@ -29,6 +29,19 @@ export type PatientFixedVisitMode = (typeof PATIENT_FIXED_VISIT_MODES)[number];
 export const SLOT_INDEX_VALUES = [0, 1] as const;
 export type SlotIndex = (typeof SLOT_INDEX_VALUES)[number];
 
+/**
+ * P2-A: 可動域フラグ = 提案の可否 (改善提案 MVP).
+ * unknown(既定・保守的) / time_flexible(同曜日内の時刻変更可) /
+ * day_flexible(曜日も変更可) / locked(完全固定).
+ */
+export const MOVABILITY_VALUES = [
+  'unknown',
+  'time_flexible',
+  'day_flexible',
+  'locked',
+] as const;
+export type Movability = (typeof MOVABILITY_VALUES)[number];
+
 export const patientFixedVisitV2BaseSchema = z.object({
   weekday: z.number().int().min(0).max(6),
   start_time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/, 'HH:MM 形式'),
@@ -63,6 +76,17 @@ export const patientFixedVisitV2BaseSchema = z.object({
    * Read 用途では BE が値を返す. Write 用途 (bulk PUT) では省略可 (BE は既存値維持 or false default).
    */
   is_pinned: z.boolean().optional(),
+  /**
+   * P2-A: 可動域フラグ = 提案の可否.
+   * is_pinned と同じく `.optional()` (default なし). 理由:
+   *   - Read/parse: movability を返さない旧 BE レスポンスでも `undefined` で壊れない
+   *     (BE 先行デプロイ互換). 送らない旧 FE リクエストも BE 側 server_default 'unknown'
+   *     で従来挙動を維持する (既定挙動不変).
+   *   - Write/build: proposedSlotToFixedVisitItem (新規枠=unknown が正) を変更せずに済む
+   *     よう、build 側で省略可能にする (`.default()` は infer 出力型を必須化し builder を
+   *     壊すため使わない — is_pinned と同一方針).
+   */
+  movability: z.enum(MOVABILITY_VALUES).optional(),
 });
 
 export const patientFixedVisitV2ReadSchema = patientFixedVisitV2BaseSchema.extend({

@@ -107,6 +107,19 @@ class PatientFixedVisit(Base):
         server_default=sa.false(),
     )
 
+    # P2-A: 可動域フラグ = 提案の可否 (改善提案 MVP).
+    #   - unknown(既定・保守的) / time_flexible(同曜日内の時刻変更可) /
+    #     day_flexible(曜日も変更可) / locked(完全固定).
+    #   - is_pinned=true の既存行は migration 0047 で 'locked' に backfill 済.
+    #   - is_pinned との矛盾 (is_pinned=True ⇒ locked) は DB CHECK でなく
+    #     pfv_validator V6 (proposed_items の自動矯正) で担保する.
+    movability: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default="unknown",
+        server_default="unknown",
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -143,5 +156,10 @@ class PatientFixedVisit(Base):
         CheckConstraint(
             "slot_index >= 0 AND slot_index <= 1",
             name="ck_pfv_slot_index",
+        ),
+        # P2-A: movability は 4 値のみ (migration 0047 と一致).
+        CheckConstraint(
+            "movability IN ('unknown','time_flexible','day_flexible','locked')",
+            name="ck_pfv_movability",
         ),
     )

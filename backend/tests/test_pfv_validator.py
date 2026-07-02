@@ -21,6 +21,7 @@ from app.services.scheduling.config import DEFAULT_SCHEDULING_CONFIG
 from app.services.scheduling.pfv_validator import (
     CODE_CAPACITY,
     CODE_LUNCH,
+    CODE_MOVABILITY_CORRECTED,
     CODE_PATIENT_CONFLICT,
     CODE_PINNED,
     validate_pfv_changes,
@@ -105,6 +106,7 @@ def _item(
     course_template_id=None,
     slot_index: int = 0,
     is_pinned: bool = False,
+    movability: str = "unknown",
 ) -> PatientFixedVisitV2Base:
     return PatientFixedVisitV2Base(
         weekday=weekday,
@@ -113,6 +115,7 @@ def _item(
         course_template_id=course_template_id,
         slot_index=slot_index,
         is_pinned=is_pinned,
+        movability=movability,
     )
 
 
@@ -352,3 +355,50 @@ async def test_no_capacity_warning_when_no_office(db) -> None:
 
     assert not result.has_errors
     assert result.warnings == []
+
+
+# ---------------------------------------------------------------------------
+# V6: pinned 行の movability 矯正 (is_pinned=True ⇒ movability='locked')
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_v6_pinned_movability_corrected_to_locked(db) -> None:
+    """is_pinned=True かつ movability='unknown' → corrected_items で 'locked' + warning."""
+    p = await _make_patient(db, code="MV-V6-1")
+    items = [_item(0, time(9, 0), 30, is_pinned=True, movability="unknown")]
+    result = await validate_pfv_changes(db, p.id, items, "normal", config=CFG)
+
+    # 矯正 warning が出る (error ではない = 続行可).
+    assert not result.has_errors
+    assert any(
+        w.code == CODE_MOVABILITY_CORRECTED and w.severity == "warning"
+        for w in result.warnings
+    )
+    # corrected_items の movability が 'locked' に矯正されている.
+    assert len(result.corrected_items) == 1
+    assert result.corrected_items[0].movability == "locked"
+    # 元 items は汚さない (副作用なし).
+    assert items[0].movability == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_v6_no_correction_when_already_locked(db) -> None:
+    """is_pinned=True かつ movability='locked' は矯正不要 (warning なし)."""
+    p = await _make_patient(db, code="MV-V6-2")
+    items = [_item(0, time(9, 0), 30, is_pinned=True, movability="locked")]
+    result = await validate_pfv_changes(db, p.id, items, "normal", config=CFG)
+
+    assert all(w.code != CODE_MOVABILITY_CORRECTED for w in result.warnings)
+    assert result.corrected_items[0].movability == "locked"
+
+
+@pytest.mark.asyncio
+async def test_v6_no_correction_for_non_pinned(db) -> None:
+    """非 pinned 行は movability を矯正しない (time_flexible をそのまま保持)."""
+    p = await _make_patient(db, code="MV-V6-3")
+    items = [_item(0, time(9, 0), 30, is_pinned=False, movability="time_flexible")]
+    result = await validate_pfv_changes(db, p.id, items, "normal", config=CFG)
+
+    assert all(w.code != CODE_MOVABILITY_CORRECTED for w in result.warnings)
+    assert result.corrected_items[0].movability == "time_flexible"

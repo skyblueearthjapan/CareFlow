@@ -86,6 +86,10 @@ export function existingFixedVisitToItem(v: PatientFixedVisitV2Read): PatientFix
     ...(v.course_template_id ? { course_template_id: v.course_template_id } : {}),
     ...(v.sub_office_id ? { sub_office_id: v.sub_office_id } : {}),
     ...(typeof v.is_pinned === 'boolean' ? { is_pinned: v.is_pinned } : {}),
+    // P2-A (§1.3): 可動域フラグを運搬 (is_pinned と同じ条件付き spread). 省略すると
+    // マージ保存のたび既存の movability が 'unknown' に戻る (運搬の必須事項).
+    // truthiness でなく null 判定 (将来 falsy な有効値が増えても silent drop しない).
+    ...(v.movability != null ? { movability: v.movability } : {}),
   };
 }
 
