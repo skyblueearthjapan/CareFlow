@@ -31,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.course import Course
 from app.models.office import Office
 from app.models.patient import Patient
-from app.models.staff import Staff
+from app.models.staff import Staff, StaffShift, StaffWeeklyOverride
 from app.models.visit import VISIT_STATUS_PLANNED, Visit
 from app.services.patient_excel.schema import OFFICE_CODE_TO_SHORT
 from app.services.scheduling.auto_allocator_v2 import (
@@ -58,6 +58,14 @@ from app.services.scheduling.constants import (
 )
 from app.services.scheduling.constants import (
     MAX_PATIENTS_PER_COURSE as _MAX_PATIENTS_PER_COURSE,
+)
+
+# N-3: 性別ハード制約の解釈は Layer3 割当と単一ソースにする (AND 意味論 /
+# 'female_only'→'female' 正規化). layer3_assignment は propose_slots_service を
+# import しないため循環にならない (import 方向: propose → layer3 の一方向).
+# 公開エイリアス (sex_satisfies_restrictions) 経由でプライベート関数を直接参照しない.
+from app.services.scheduling.layer3_assignment import (
+    sex_satisfies_restrictions as _sex_satisfies_restrictions,
 )
 from app.services.scheduling.proposal_solver import (
     Candidate,
@@ -100,6 +108,12 @@ class _CourseBucket:
     course_code: str
     office_code: str | None = None
     staff_name: str | None = None
+    # N-3: 割付スタッフ実態判定用. assigned_staff_id が None なら staff_unassigned.
+    # staff_sex は性別不適合判定 (candidate.sex_restriction と突合) に使う.
+    # staff_absent は当該 weekday の非番/当週休みを load 時に事前計算した結果.
+    assigned_staff_id: UUID | None = None
+    staff_sex: str | None = None
+    staff_absent: bool = False
     visits: list[_V2Visit] = field(default_factory=list)
 
 
@@ -226,6 +240,10 @@ async def load_week_course_buckets(
                 course_code=code,
                 office_code=office_code_by_id.get(course.office_id),
                 staff_name=staff.name if staff is not None else None,
+                # N-3: staff 実態判定用. assigned_staff_id は Course 属性
+                # (visit の primary_staff_id ではなくコース割付を正とする).
+                assigned_staff_id=course.assigned_staff_id,
+                staff_sex=staff.sex if staff is not None else None,
             )
             buckets[key] = bucket
         start_min = _time_to_min(v.start_time)
@@ -253,6 +271,47 @@ async def load_week_course_buckets(
                 requires_multiple_staff=bool(patient.requires_multiple_staff),
             )
         )
+
+    # N-3: 割付スタッフの非番/当週休みを判定する.
+    # bucket 内の全 assigned_staff_id をまとめて 2 クエリで取得 (N+1 回避):
+    #   1) StaffShift  … 固定週シフト (weekday ごとの is_on). 行が無い weekday は
+    #      「非番」とみなす (StaffShift は通常 staff あたり 7 行揃うため, 欠落 =
+    #      未設定 = 非番扱い. schedule-advisor N-3 の定義に従う).
+    #   2) StaffWeeklyOverride(override_type='off') … 当週の休み (iso_year/iso_week/
+    #      weekday). is_on=True のシフトでも当週 off なら非番になる.
+    staff_ids = {
+        b.assigned_staff_id for b in buckets.values() if b.assigned_staff_id is not None
+    }
+    if staff_ids:
+        shift_on_by_key: dict[tuple[UUID, int], bool] = {}
+        shift_rows = await db.execute(
+            select(StaffShift.staff_id, StaffShift.weekday, StaffShift.is_on).where(
+                StaffShift.staff_id.in_(staff_ids)
+            )
+        )
+        for sid, wd, is_on in shift_rows.all():
+            shift_on_by_key[(sid, wd)] = bool(is_on)
+
+        override_off_keys: set[tuple[UUID, int]] = set()
+        override_rows = await db.execute(
+            select(StaffWeeklyOverride.staff_id, StaffWeeklyOverride.weekday).where(
+                StaffWeeklyOverride.staff_id.in_(staff_ids),
+                StaffWeeklyOverride.iso_year == iso_year,
+                StaffWeeklyOverride.iso_week == iso_week,
+                StaffWeeklyOverride.override_type == "off",
+            )
+        )
+        for sid, wd in override_rows.all():
+            override_off_keys.add((sid, wd))
+
+        for b in buckets.values():
+            sid = b.assigned_staff_id
+            if sid is None:
+                continue
+            shift_key = (sid, b.weekday)
+            shift_on = shift_on_by_key.get(shift_key)  # None = シフト行なし
+            shift_absent = shift_on is None or shift_on is False
+            b.staff_absent = shift_absent or (shift_key in override_off_keys)
 
     return buckets, office_name_by_id, office_code_by_id
 
@@ -345,6 +404,41 @@ _WARNING_LABEL_JA: dict[str, str] = {
     "travel_time_shortage": "移動時間がやや不足 (前訪問の早終わりで吸収)",
 }
 
+# N-3 (schedule-advisor P0-1 / L0→L1.5): 候補コースの割付スタッフ実態を検出し、
+# 候補から除外はせず「理由コード付き警告 + スコア降格」する.
+# 除外は絶対にしない: 0 件になるより「警告付きで出す」が正 (設計原則).
+# 警告コードは two_staff_not_guaranteed と同じく raw code で載せ、FE が日本語化する.
+_WARN_STAFF_UNASSIGNED = "staff_unassigned"
+_WARN_STAFF_ABSENT = "staff_absent"
+_WARN_STAFF_SEX_MISMATCH = "staff_sex_mismatch"
+
+# スコア降格ペナルティ. 既存重み (proximity 50 / preference 30 / balance 20 /
+# pair 1000) を基準にした相対値:
+#   ABSENT / SEX_MISMATCH = 60.0 … proximity 満点 (50) + preference 片側一致 (15)
+#     を上回る大きさ. クリーンな候補より確実に下位へ沈める (現場の信頼確保のため
+#     「休みスタッフ/性別不適合」の枠は必ず後ろに回す). pair 1000 は超えないので
+#     同住所ペアの最優先は維持される.
+#   UNASSIGNED = 20.0 … 週次 Layer3 割付で解消され得る軽度事象なので軽い降格.
+_PENALTY_STAFF_ABSENT: float = 60.0
+_PENALTY_STAFF_SEX_MISMATCH: float = 60.0
+_PENALTY_STAFF_UNASSIGNED: float = 20.0
+
+
+def _staff_sex_mismatch(staff_sex: str | None, sex_restriction: str | None) -> bool:
+    """割付スタッフ性別がリクエストの性別制限に不適合なら True.
+
+    ``layer3_assignment._sex_satisfies_restrictions`` と同一解釈 (AND 意味論,
+    'female_only'→'female' 正規化) を再利用する. ただし誤検知で信頼を失う方が
+    害なので、以下は不適合と断定せず判定 skip (False):
+      - ``sex_restriction`` が None / 空 → 制限なし.
+      - ``staff_sex`` が None → 性別不明 (単一候補コースでは None を不適合扱いしない).
+    """
+    if not sex_restriction:
+        return False
+    if staff_sex is None:
+        return False
+    return not _sex_satisfies_restrictions(staff_sex, frozenset({sex_restriction}))
+
 
 def _slot_reasons_and_warnings(
     slot: Slot,
@@ -353,6 +447,9 @@ def _slot_reasons_and_warnings(
     min_dist_km: float | None,
     remaining_count: int,
     matched_weekday: bool,
+    staff_unassigned: bool = False,
+    staff_absent: bool = False,
+    staff_sex_mismatch: bool = False,
 ) -> tuple[list[str], list[str]]:
     """スロットの理由バッジ + 警告ラベルを組み立てる."""
     reasons: list[str] = []
@@ -380,6 +477,13 @@ def _slot_reasons_and_warnings(
     # 「2 人目要確認」の警告を付け、 自動で 2 名確保済とは誤認させない.
     if candidate.requires_multiple_staff:
         warnings.append("two_staff_not_guaranteed")
+    # N-3: 割付スタッフ実態の警告 (除外はせず注意喚起のみ). FE が日本語ラベル化する.
+    if staff_unassigned:
+        warnings.append(_WARN_STAFF_UNASSIGNED)
+    if staff_absent:
+        warnings.append(_WARN_STAFF_ABSENT)
+    if staff_sex_mismatch:
+        warnings.append(_WARN_STAFF_SEX_MISMATCH)
     return reasons, warnings
 
 
@@ -392,6 +496,9 @@ def _score_slot(
     matched_weekday: bool,
     matched_time_type: bool,
     max_patients: int = _MAX_PATIENTS_PER_COURSE,
+    staff_unassigned: bool = False,
+    staff_absent: bool = False,
+    staff_sex_mismatch: bool = False,
 ) -> float:
     """合成スコア (降順用). 同住所ペアは大ボーナスで最優先.
 
@@ -426,6 +533,13 @@ def _score_slot(
     # 警告ありは僅かに減点 (実現可能だが注意).
     if slot.warning:
         score -= 1.0
+    # N-3: 割付スタッフ実態の降格 (該当時のみ加算. 警告なし候補のスコア・順位は不変).
+    if staff_absent:
+        score -= _PENALTY_STAFF_ABSENT
+    if staff_sex_mismatch:
+        score -= _PENALTY_STAFF_SEX_MISMATCH
+    if staff_unassigned:
+        score -= _PENALTY_STAFF_UNASSIGNED
     return score
 
 
@@ -500,6 +614,10 @@ def compute_all_proposed_slots(
         remaining_count = max(0, _max_patients - len(bucket.visits))
         used_minutes = sum(v.service_minutes for v in bucket.visits)
         remaining_minutes = max(0, _COURSE_MAX_MINUTES - used_minutes)
+        # N-3: 割付スタッフ実態フラグ (bucket 単位で 1 回算出し全 slot に共有).
+        staff_unassigned = bucket.assigned_staff_id is None
+        staff_absent = bucket.staff_absent
+        staff_sex_mismatch = _staff_sex_mismatch(bucket.staff_sex, candidate.sex_restriction)
         matched_weekday = (
             bool(candidate.preferred_weekdays) and weekday in candidate.preferred_weekdays
         )
@@ -529,6 +647,9 @@ def compute_all_proposed_slots(
                 min_dist_km=min_dist,
                 remaining_count=remaining_count,
                 matched_weekday=matched_weekday,
+                staff_unassigned=staff_unassigned,
+                staff_absent=staff_absent,
+                staff_sex_mismatch=staff_sex_mismatch,
             )
             score = _score_slot(
                 slot,
@@ -538,6 +659,9 @@ def compute_all_proposed_slots(
                 matched_weekday=matched_weekday,
                 matched_time_type=matched_time_type,
                 max_patients=_max_patients,
+                staff_unassigned=staff_unassigned,
+                staff_absent=staff_absent,
+                staff_sex_mismatch=staff_sex_mismatch,
             )
             mini = _build_mini_schedule(
                 bucket,

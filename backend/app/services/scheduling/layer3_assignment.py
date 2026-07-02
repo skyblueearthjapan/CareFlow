@@ -3202,5 +3202,11 @@ __all__ = [
     "history_from_fixture_list",
     "hungarian_min_cost",
     "naive_round_robin",
+    "sex_satisfies_restrictions",
     "staff_from_fixture_dict",
 ]
+
+# N-3 (schedule-advisor P0-1): 性別ハード制約判定の公開 API.
+# propose_slots_service がプライベート関数 (_sex_satisfies_restrictions) を
+# 直接 import する代わりにこのエイリアスを使う. layer3 内部の実装は変えない.
+sex_satisfies_restrictions = _sex_satisfies_restrictions

@@ -206,6 +206,10 @@ const PROPOSE_WARNING_LABEL_JA: Record<string, string> = {
   capacity_tight: '容量に余裕なし',
   sex_restriction_unmet: '性別条件を満たせない',
   two_staff_not_guaranteed: '2名体制: 2人目のスタッフ枠は別途確保が必要',
+  // N-3 (schedule-advisor P0-1): 候補コースの割付スタッフ実態の警告。
+  staff_unassigned: 'スタッフ未割付',
+  staff_absent: '担当スタッフが休み',
+  staff_sex_mismatch: '性別条件に不適合',
 };
 
 export function proposeWarningLabel(code: string): string {

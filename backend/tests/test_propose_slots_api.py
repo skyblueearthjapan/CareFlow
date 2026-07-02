@@ -31,7 +31,7 @@ import pytest
 from app.core.security import create_access_token, hash_password
 from app.models import Office, Patient, User
 from app.models.course import COURSE_STATUS_STAFF_ASSIGNED, Course
-from app.models.staff import Staff
+from app.models.staff import Staff, StaffShift, StaffWeeklyOverride
 from app.models.visit import VISIT_STATUS_PLANNED, Visit
 
 ISO_YEAR = 2026
@@ -141,6 +141,30 @@ async def _seed_visit(
     db.add(visit)
     await db.flush()
     return visit
+
+
+async def _seed_shift(
+    db, *, staff: Staff, weekday: int, is_on: bool = True
+) -> StaffShift:
+    """指定曜日の固定シフト行を作る (is_on で在番/非番)."""
+    sh = StaffShift(staff_id=staff.id, weekday=weekday, is_on=is_on)
+    db.add(sh)
+    await db.flush()
+    return sh
+
+
+async def _seed_override_off(db, *, staff: Staff, weekday: int) -> StaffWeeklyOverride:
+    """当週 (ISO_YEAR/ISO_WEEK) の指定曜日を休み (off) にする週次上書きを作る."""
+    ov = StaffWeeklyOverride(
+        staff_id=staff.id,
+        iso_year=ISO_YEAR,
+        iso_week=ISO_WEEK,
+        weekday=weekday,
+        override_type="off",
+    )
+    db.add(ov)
+    await db.flush()
+    return ov
 
 
 def _base_payload(office: Office, **overrides: Any) -> dict[str, Any]:
@@ -653,3 +677,254 @@ async def test_propose_rejects_no_auth(client, db) -> None:
         },
     )
     assert res.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# N-3 (schedule-advisor P0-1 / L0→L1.5): 割付スタッフ実態の警告 + スコア降格.
+# 候補は除外しない (0 件になるより「警告付きで出す」が正). 警告コードのみ検証.
+# ---------------------------------------------------------------------------
+
+
+def _all_warnings(slots: list[dict[str, Any]]) -> set[str]:
+    out: set[str] = set()
+    for s in slots:
+        out.update(s["warnings"])
+    return out
+
+
+@pytest.mark.asyncio
+async def test_propose_staff_unassigned_warns_and_demotes(client, db) -> None:
+    """割付なしコースは staff_unassigned 警告 + 降格 (警告なし候補より下位)."""
+    admin = await _make_user(db, email="ps-unassigned@example.com", role="admin")
+    office, staff = await _seed_office_staff(db)
+    # クリーンなコース (staff 在番): Mon シフト on.
+    await _seed_shift(db, staff=staff, weekday=0, is_on=True)
+    clean = await _seed_course(db, office=office, staff=staff, weekday=0, code="A")
+    p_a = await _seed_patient(db, office=office, code="UA_A", lat=NEAR[0], lng=NEAR[1])
+    await _seed_visit(db, patient=p_a, course=clean, start=time(9, 30), end=time(10, 0))
+    # 割付なしコース (同一 geometry / 別コード).
+    unassigned = await _seed_course(db, office=office, staff=None, weekday=0, code="B")
+    p_b = await _seed_patient(db, office=office, code="UA_B", lat=NEAR[0], lng=NEAR[1])
+    await _seed_visit(db, patient=p_b, course=unassigned, start=time(9, 30), end=time(10, 0))
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/propose-slots",
+        headers=_bearer(admin),
+        json=_base_payload(office, limit=50),
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    a_slots = [s for s in body["slots"] if s["course_code"] == "A"]
+    b_slots = [s for s in body["slots"] if s["course_code"] == "B"]
+    assert a_slots and b_slots, body["slots"]
+    # クリーンコースにはスタッフ警告なし.
+    assert not (_all_warnings(a_slots) & {"staff_unassigned", "staff_absent", "staff_sex_mismatch"})
+    # 割付なしコースは staff_unassigned 警告付き.
+    assert all("staff_unassigned" in s["warnings"] for s in b_slots)
+    # 降格: 割付なしコースの最高スコア < クリーンコースの最高スコア.
+    assert max(s["score"] for s in b_slots) < max(s["score"] for s in a_slots)
+
+
+@pytest.mark.asyncio
+async def test_propose_staff_absent_via_shift_off(client, db) -> None:
+    """StaffShift is_on=False の曜日 → staff_absent 警告 (候補は除外しない)."""
+    admin = await _make_user(db, email="ps-absent-shift@example.com", role="admin")
+    office, staff = await _seed_office_staff(db)
+    await _seed_shift(db, staff=staff, weekday=0, is_on=False)  # Mon 非番.
+    course = await _seed_course(db, office=office, staff=staff, weekday=0, code="A")
+    pn = await _seed_patient(db, office=office, code="ABS1", lat=NEAR[0], lng=NEAR[1])
+    await _seed_visit(db, patient=pn, course=course, start=time(9, 30), end=time(10, 0))
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/propose-slots",
+        headers=_bearer(admin),
+        json=_base_payload(office),
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["slots"], body  # 除外しない.
+    assert all("staff_absent" in s["warnings"] for s in body["slots"])
+
+
+@pytest.mark.asyncio
+async def test_propose_staff_absent_via_weekly_override(client, db) -> None:
+    """在番シフト (is_on=True) でも当週 override(off) なら staff_absent."""
+    admin = await _make_user(db, email="ps-absent-ovr@example.com", role="admin")
+    office, staff = await _seed_office_staff(db)
+    await _seed_shift(db, staff=staff, weekday=0, is_on=True)  # 固定は在番.
+    await _seed_override_off(db, staff=staff, weekday=0)  # 当週 Mon は休み.
+    course = await _seed_course(db, office=office, staff=staff, weekday=0, code="A")
+    pn = await _seed_patient(db, office=office, code="OVR1", lat=NEAR[0], lng=NEAR[1])
+    await _seed_visit(db, patient=pn, course=course, start=time(9, 30), end=time(10, 0))
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/propose-slots",
+        headers=_bearer(admin),
+        json=_base_payload(office),
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["slots"], body
+    assert all("staff_absent" in s["warnings"] for s in body["slots"])
+
+
+@pytest.mark.asyncio
+async def test_propose_staff_sex_mismatch(client, db) -> None:
+    """sex_restriction=female_only × staff.sex=male → staff_sex_mismatch."""
+    admin = await _make_user(db, email="ps-sex-mm@example.com", role="admin")
+    office = Office(name="稲", code="INAGE")
+    db.add(office)
+    await db.flush()
+    staff = Staff(name="男性看護師", role="staff", sex="male", primary_office_id=office.id)
+    db.add(staff)
+    await db.flush()
+    await _seed_shift(db, staff=staff, weekday=0, is_on=True)
+    course = await _seed_course(db, office=office, staff=staff, weekday=0, code="A")
+    pn = await _seed_patient(db, office=office, code="SEX1", lat=NEAR[0], lng=NEAR[1])
+    await _seed_visit(db, patient=pn, course=course, start=time(9, 30), end=time(10, 0))
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/propose-slots",
+        headers=_bearer(admin),
+        json=_base_payload(office, sex_restriction="female_only"),
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["slots"], body
+    assert all("staff_sex_mismatch" in s["warnings"] for s in body["slots"])
+
+
+@pytest.mark.asyncio
+async def test_propose_staff_sex_unknown_no_warning(client, db) -> None:
+    """staff.sex=None は不適合と断定しない (誤検知回避) → staff_sex_mismatch 出ない."""
+    admin = await _make_user(db, email="ps-sex-none@example.com", role="admin")
+    office = Office(name="稲", code="INAGE")
+    db.add(office)
+    await db.flush()
+    staff = Staff(name="性別不明看護師", role="staff", sex=None, primary_office_id=office.id)
+    db.add(staff)
+    await db.flush()
+    await _seed_shift(db, staff=staff, weekday=0, is_on=True)
+    course = await _seed_course(db, office=office, staff=staff, weekday=0, code="A")
+    pn = await _seed_patient(db, office=office, code="SEX2", lat=NEAR[0], lng=NEAR[1])
+    await _seed_visit(db, patient=pn, course=course, start=time(9, 30), end=time(10, 0))
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/propose-slots",
+        headers=_bearer(admin),
+        json=_base_payload(office, sex_restriction="female_only"),
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["slots"], body
+    assert all("staff_sex_mismatch" not in s["warnings"] for s in body["slots"])
+
+
+@pytest.mark.asyncio
+async def test_propose_staff_warnings_do_not_exclude_candidates(client, db) -> None:
+    """スタッフ実態警告があっても候補件数は不変 (除外しない). 在番/非番で件数一致."""
+    admin = await _make_user(db, email="ps-noexcl@example.com", role="admin")
+    # 在番ケース (baseline slot 数).
+    office_on, staff_on = await _seed_office_staff(db, name="稲", code="INAGE")
+    await _seed_shift(db, staff=staff_on, weekday=0, is_on=True)
+    c_on = await _seed_course(db, office=office_on, staff=staff_on, weekday=0, code="A")
+    p_on = await _seed_patient(db, office=office_on, code="NX_ON", lat=NEAR[0], lng=NEAR[1])
+    await _seed_visit(db, patient=p_on, course=c_on, start=time(9, 30), end=time(10, 0))
+    # 非番ケース (別拠点, 同一 geometry).
+    office_off, staff_off = await _seed_office_staff(db, name="津", code="TSUGA")
+    await _seed_shift(db, staff=staff_off, weekday=0, is_on=False)
+    c_off = await _seed_course(db, office=office_off, staff=staff_off, weekday=0, code="A")
+    p_off = await _seed_patient(db, office=office_off, code="NX_OFF", lat=NEAR[0], lng=NEAR[1])
+    await _seed_visit(db, patient=p_off, course=c_off, start=time(9, 30), end=time(10, 0))
+    await db.commit()
+
+    res_on = await client.post(
+        "/api/v1/schedule/v2/propose-slots",
+        headers=_bearer(admin),
+        json=_base_payload(office_on, limit=50),
+    )
+    res_off = await client.post(
+        "/api/v1/schedule/v2/propose-slots",
+        headers=_bearer(admin),
+        json=_base_payload(office_off, limit=50),
+    )
+    assert res_on.status_code == 200 and res_off.status_code == 200
+    on_slots = res_on.json()["slots"]
+    off_slots = res_off.json()["slots"]
+    # 非番でも候補件数は在番と同一 (除外されていない).
+    assert len(off_slots) == len(on_slots)
+    assert off_slots  # 少なくとも 1 件.
+    assert all("staff_absent" in s["warnings"] for s in off_slots)
+    assert all("staff_absent" not in s["warnings"] for s in on_slots)
+
+
+# ---------------------------------------------------------------------------
+# N-3 境界テスト (退行防止施錠)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_propose_override_off_other_week_no_absent(client, db) -> None:
+    """別週の StaffWeeklyOverride(off) は当週の staff_absent に影響しない (WHERE句退行防止).
+
+    ISO_WEEK+1 の override を挿入し、当週 (ISO_WEEK) のスロットには
+    staff_absent 警告が出ないことを検証する。"""
+    admin = await _make_user(db, email="ps-ovr-otherweek@example.com", role="admin")
+    office, staff = await _seed_office_staff(db)
+    await _seed_shift(db, staff=staff, weekday=0, is_on=True)  # Mon 在番.
+    # 翌週 (ISO_WEEK+1) の Mon に off override を入れる.
+    other_week_ov = StaffWeeklyOverride(
+        staff_id=staff.id,
+        iso_year=ISO_YEAR,
+        iso_week=ISO_WEEK + 1,  # ← 当週ではない.
+        weekday=0,
+        override_type="off",
+    )
+    db.add(other_week_ov)
+    course = await _seed_course(db, office=office, staff=staff, weekday=0, code="A")
+    pn = await _seed_patient(db, office=office, code="OTH1", lat=NEAR[0], lng=NEAR[1])
+    await _seed_visit(db, patient=pn, course=course, start=time(9, 30), end=time(10, 0))
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/propose-slots",
+        headers=_bearer(admin),
+        json=_base_payload(office),
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["slots"], body
+    # 別週の override は当週のスロットに影響しない → staff_absent なし.
+    assert all("staff_absent" not in s["warnings"] for s in body["slots"])
+
+
+@pytest.mark.asyncio
+async def test_propose_no_shift_row_for_weekday_is_absent(client, db) -> None:
+    """対象曜日の StaffShift 行が存在しない場合は staff_absent 扱い (行なし=非番の仕様化).
+
+    他曜日 (Tue=1) に is_on=True の行を持つが、対象曜日 (Mon=0) には行がない場合でも
+    staff_absent 警告が出ることを確認する。"""
+    admin = await _make_user(db, email="ps-norow@example.com", role="admin")
+    office, staff = await _seed_office_staff(db)
+    # Mon(0) は行を入れない; Tue(1) のみ in 番.
+    await _seed_shift(db, staff=staff, weekday=1, is_on=True)
+    course = await _seed_course(db, office=office, staff=staff, weekday=0, code="A")
+    pn = await _seed_patient(db, office=office, code="NOR1", lat=NEAR[0], lng=NEAR[1])
+    await _seed_visit(db, patient=pn, course=course, start=time(9, 30), end=time(10, 0))
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/propose-slots",
+        headers=_bearer(admin),
+        json=_base_payload(office),
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["slots"], body
+    # 対象曜日のシフト行なし → 非番扱い → staff_absent 警告.
+    assert all("staff_absent" in s["warnings"] for s in body["slots"])
