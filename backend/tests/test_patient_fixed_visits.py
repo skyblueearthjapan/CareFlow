@@ -21,9 +21,10 @@ from __future__ import annotations
 from datetime import date, time
 
 import pytest
+from sqlalchemy import select
 
 from app.core.security import create_access_token, hash_password
-from app.models import Patient, Staff, User, Visit
+from app.models import Office, Patient, PatientFixedVisit, Staff, User, Visit
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -204,7 +205,8 @@ async def test_put_zero_items(client, db) -> None:
         json=_put_body("normal", []),
     )
     assert res.status_code == 200
-    assert res.json() == []
+    # P0-2: PUT レスポンスはエンベロープ ({items, warnings}) 化.
+    assert res.json()["items"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +226,7 @@ async def test_put_one_item(client, db) -> None:
         json=_put_body("normal", [_item(2, "10:00", 60)]),
     )
     assert res.status_code == 200
-    data = res.json()
+    data = res.json()["items"]
     assert len(data) == 1
     assert data[0]["weekday"] == 2
     assert data[0]["start_time"] == "10:00:00"
@@ -252,7 +254,7 @@ async def test_put_seven_items(client, db) -> None:
         json=_put_body("normal", items),
     )
     assert res.status_code == 200
-    data = res.json()
+    data = res.json()["items"]
     assert len(data) == 7
     assert [row["weekday"] for row in data] == list(range(7))
 
@@ -439,3 +441,144 @@ async def test_put_unique_violation_rolls_back(client, db) -> None:
     data = res_get.json()
     assert len(data) == 1
     assert data[0]["weekday"] == 3
+
+
+# ---------------------------------------------------------------------------
+# P0-2: 適用前再検証 (エンベロープ / pinned 422 / 衝突 warning)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_put_response_is_envelope(client, db) -> None:
+    """P0-2: PUT レスポンスは {items, warnings} エンベロープ."""
+    admin = await _make_user(db, "pfv-env@example.com", "admin")
+    patient = await _make_patient(db, "PFV-ENV")
+
+    res = await client.put(
+        f"/api/v1/patients/{patient.id}/fixed-visits",
+        headers=_bearer(admin),
+        json=_put_body("normal", [_item(0)]),
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert set(body.keys()) == {"items", "warnings"}
+    assert len(body["items"]) == 1
+    assert body["warnings"] == []
+
+
+@pytest.mark.asyncio
+async def test_put_pinned_change_returns_422(client, db) -> None:
+    """P0-2 / §2.1: 既存 pinned 行の変更を試みる PUT は 422 で拒否 (削除前)."""
+    admin = await _make_user(db, "pfv-pin422@example.com", "admin")
+    patient = await _make_patient(db, "PFV-PIN")
+    # 既存 pinned 行を直接投入.
+    db.add(
+        PatientFixedVisit(
+            patient_id=patient.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(9, 0),
+            duration_min=30,
+            slot_index=0,
+            is_pinned=True,
+        )
+    )
+    await db.commit()
+
+    # 同 weekday/slot だが start_time を変更 → 422.
+    res = await client.put(
+        f"/api/v1/patients/{patient.id}/fixed-visits",
+        headers=_bearer(admin),
+        json=_put_body("normal", [_item(0, "10:00", 30)]),
+    )
+    assert res.status_code == 422, res.text
+    detail = res.json()["detail"]
+    assert detail["violations"][0]["code"] == "pinned_protection"
+
+    # TX を汚していない: 既存 pinned 行はそのまま残る.
+    rows = (
+        await db.scalars(
+            select(PatientFixedVisit).where(PatientFixedVisit.patient_id == patient.id)
+        )
+    ).all()
+    assert len(rows) == 1
+    assert rows[0].start_time == time(9, 0)
+    assert rows[0].is_pinned is True
+
+
+@pytest.mark.asyncio
+async def test_put_is_pinned_roundtrip(client, db) -> None:
+    """P0-2 BLOCKER: PUT で is_pinned=True を送ると GET でも is_pinned=True が残る.
+
+    INSERT ループが is_pinned を省くと ORM default False が silent に適用され、
+    次回 PUT 時に「保持=OK」と判定できなくなる (V2 保護の自壊). これを防ぐ回帰確認.
+    """
+    admin = await _make_user(db, "pfv-pin-rt@example.com", "admin")
+    patient = await _make_patient(db, "PFV-PINRT")
+
+    res = await client.put(
+        f"/api/v1/patients/{patient.id}/fixed-visits",
+        headers=_bearer(admin),
+        json=_put_body(
+            "normal",
+            [{"weekday": 0, "start_time": "09:00", "duration_min": 30, "is_pinned": True}],
+        ),
+    )
+    assert res.status_code == 200, res.text
+    # PUT レスポンスのエンベロープ items にも is_pinned が反映される.
+    items = res.json()["items"]
+    assert len(items) == 1
+    assert items[0]["is_pinned"] is True
+
+    # GET でも is_pinned=True が残る (DB に正しく書き込まれていることを確認).
+    res_get = await client.get(
+        f"/api/v1/patients/{patient.id}/fixed-visits?mode=normal",
+        headers=_bearer(admin),
+    )
+    assert res_get.status_code == 200
+    data = res_get.json()
+    assert len(data) == 1
+    assert data[0]["is_pinned"] is True
+
+
+@pytest.mark.asyncio
+async def test_put_conflict_returns_200_with_warning(client, db) -> None:
+    """P0-2: 患者間衝突は 422 ではなく 200 + warnings で返す."""
+    admin = await _make_user(db, "pfv-conf@example.com", "admin")
+    office = Office(code="OF-PFV", name="OF-PFV")
+    db.add(office)
+    await db.commit()
+    await db.refresh(office)
+
+    target = Patient(
+        code="PFV-CT", name="対象", special_week_active=[],
+        primary_office_id=office.id, status="active", lat=35.600, lng=140.100,
+    )
+    other = Patient(
+        code="PFV-CO", name="山田", special_week_active=[],
+        primary_office_id=office.id, status="active", lat=35.700, lng=140.200,
+    )
+    db.add_all([target, other])
+    await db.commit()
+    await db.refresh(target)
+    await db.refresh(other)
+    # 他患者 PFV: 月 10:00 (異住所).
+    db.add(
+        PatientFixedVisit(
+            patient_id=other.id, mode="normal", weekday=0,
+            start_time=time(10, 0), duration_min=30, slot_index=0,
+        )
+    )
+    await db.commit()
+
+    # 対象を同曜日同時刻で PUT → 衝突 warning.
+    res = await client.put(
+        f"/api/v1/patients/{target.id}/fixed-visits",
+        headers=_bearer(admin),
+        json=_put_body("normal", [_item(0, "10:00", 30)]),
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert len(body["items"]) == 1  # 適用は成功
+    codes = {w["code"] for w in body["warnings"]}
+    assert "patient_time_conflict" in codes

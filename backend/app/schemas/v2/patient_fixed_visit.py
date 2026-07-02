@@ -106,6 +106,40 @@ class PatientFixedVisitsBulkPut(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# P0-2: PUT レスポンスのエンベロープ化 (再検証警告の同梱)
+# ---------------------------------------------------------------------------
+
+
+class PfvValidationWarningOut(BaseModel):
+    """PUT /fixed-visits の再検証で検出した 1 件の警告.
+
+    ``severity="warning"`` のみをレスポンスに載せる (error は 422 で返す).
+    code は pfv_validator の 4 種 (patient_time_conflict / lunch_break_overlap /
+    course_capacity_exceeded / pinned_protection).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: str = Field(description="警告種別コード (pfv_validator 準拠).")
+    message: str = Field(description="現場向け日本語メッセージ.")
+    weekday: int = Field(ge=0, le=6, description="0=月 … 6=日.")
+    severity: str = Field(description='"warning" (続行可) / "error" (422 対象).')
+
+
+class PatientFixedVisitsBulkPutResponse(BaseModel):
+    """PUT /patients/{id}/fixed-visits のエンベロープレスポンス (P0-2).
+
+    ``items`` は従来どおり確定後の全 PFV 行. ``warnings`` は再検証で検出した
+    非致命の指摘 (患者間衝突 / 昼休み / 容量). FE 未パースのため BE 先行デプロイ安全.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[PatientFixedVisitV2Read]
+    warnings: list[PfvValidationWarningOut] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
 # Phase G-21 T2: is_pinned 単独切替用 schema
 # ---------------------------------------------------------------------------
 

@@ -42,10 +42,14 @@ from app.schemas.v2.patient_fixed_visit import (
     PatientFixedVisitPinBulkItem,
     PatientFixedVisitPinUpdate,
     PatientFixedVisitsBulkPut,
+    PatientFixedVisitsBulkPutResponse,
     PatientFixedVisitV2Base,
     PatientFixedVisitV2Read,
+    PfvValidationWarningOut,
 )
+from app.services.scheduling.config import load_scheduling_config
 from app.services.scheduling.layer1_expander import _is_special_week_active
+from app.services.scheduling.pfv_validator import validate_pfv_changes
 
 router = APIRouter()
 
@@ -361,7 +365,7 @@ async def get_fixed_visits(
 
 @router.put(
     "/{patient_id}/fixed-visits",
-    response_model=list[PatientFixedVisitV2Read],
+    response_model=PatientFixedVisitsBulkPutResponse,
     summary="患者の固定訪問パターン一括上書き (admin/manager のみ)",
 )
 async def put_fixed_visits(
@@ -369,11 +373,35 @@ async def put_fixed_visits(
     body: PatientFixedVisitsBulkPut,
     db: DbDep,
     _user: Annotated[User, Depends(require_role("admin", "manager"))],
-) -> list[PatientFixedVisitV2Read]:
+) -> PatientFixedVisitsBulkPutResponse:
     await _ensure_patient_exists(db, patient_id)
 
     # Phase E-5 (項目 ⑥B): sub_office_id 関連の事前検証.
     await _validate_sub_office_items(db, body.items)
+
+    # P0-2: 適用前再検証 (read-only). pinned 保護違反 (has_errors) は削除前に 422 を返し
+    # トランザクションを汚さない. warning (患者間衝突 / 昼休み / 容量) は削除→INSERT 後に
+    # レスポンスへ載せる.
+    config = await load_scheduling_config(db)
+    validation = await validate_pfv_changes(
+        db, patient_id, body.items, body.mode, config=config
+    )
+    if validation.has_errors:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "message": "完全固定 (is_pinned) の枠を変更・削除しようとしています",
+                "violations": [
+                    {
+                        "code": w.code,
+                        "message": w.message,
+                        "weekday": w.weekday,
+                        "severity": w.severity,
+                    }
+                    for w in validation.errors
+                ],
+            },
+        )
 
     # 1 TX: 当該 (patient_id, mode) を DELETE → INSERT
     await db.execute(
@@ -396,6 +424,8 @@ async def put_fixed_visits(
                 slot_index=item.slot_index,
                 # Phase E-5 (項目 ⑥B): サブ拠点 ID (任意).
                 sub_office_id=item.sub_office_id,
+                # P0-2: pinned 保護フラグを引き継ぐ (省略すると silent に False になる).
+                is_pinned=item.is_pinned,
             )
         )
     await _commit_or_409(db)
@@ -410,7 +440,18 @@ async def put_fixed_visits(
             .order_by(PatientFixedVisit.weekday, PatientFixedVisit.slot_index)
         )
     ).all()
-    return [PatientFixedVisitV2Read.model_validate(r) for r in rows]
+    return PatientFixedVisitsBulkPutResponse(
+        items=[PatientFixedVisitV2Read.model_validate(r) for r in rows],
+        warnings=[
+            PfvValidationWarningOut(
+                code=w.code,
+                message=w.message,
+                weekday=w.weekday,
+                severity=w.severity,
+            )
+            for w in validation.warnings_only
+        ],
+    )
 
 
 @router.delete(

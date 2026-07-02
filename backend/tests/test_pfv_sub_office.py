@@ -121,7 +121,8 @@ async def test_pfv_create_with_sub_office_id(client, db) -> None:
         json=body,
     )
     assert res.status_code == 200, res.text
-    data = res.json()
+    # P0-2: PUT レスポンスはエンベロープ ({items, warnings}) 化.
+    data = res.json()["items"]
     assert len(data) == 1
     assert data[0]["sub_office_id"] == str(tsuga.id)
 
@@ -149,7 +150,7 @@ async def test_pfv_update_set_sub_office_id(client, db) -> None:
         },
     )
     assert res.status_code == 200, res.text
-    assert res.json()[0]["sub_office_id"] is None
+    assert res.json()["items"][0]["sub_office_id"] is None
 
     # 2 回目: sub_office_id を追加
     res = await client.put(
@@ -168,7 +169,7 @@ async def test_pfv_update_set_sub_office_id(client, db) -> None:
         },
     )
     assert res.status_code == 200, res.text
-    assert res.json()[0]["sub_office_id"] == str(tsuga.id)
+    assert res.json()["items"][0]["sub_office_id"] == str(tsuga.id)
 
 
 # ---------------------------------------------------------------------------
