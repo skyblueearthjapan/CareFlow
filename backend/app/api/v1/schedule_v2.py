@@ -92,6 +92,7 @@ from app.schemas.v2.propose_slots import (
     ProposeSlotsResponse,
     _parse_hhmm,
 )
+from app.schemas.v2.schedule_health import ScheduleHealthResponse
 from app.schemas.v2.travel_estimate import (
     TravelEstimateRequest,
     TravelEstimateResponse,
@@ -150,6 +151,7 @@ from app.services.scheduling.propose_slots_service import (
     compute_coverage,
     load_week_course_buckets,
 )
+from app.services.scheduling.schedule_health import compute_schedule_health
 
 logger = logging.getLogger(__name__)
 
@@ -1674,6 +1676,48 @@ async def weekday_staff_capacity_endpoint(
     return WeekdayStaffCapacityResponse(
         items=items,
         course_codes_max=_COURSE_CODES_MAX,
+    )
+
+
+# ---------------------------------------------------------------------------
+# schedule-advisor Phase 1「診る」: スケジュール健康診断 (read-only 集計)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/v2/schedule-health",
+    response_model=ScheduleHealthResponse,
+    status_code=status.HTTP_200_OK,
+    summary="スケジュール健康診断: 週次・拠点別・曜日別・コース別の移動/隙間の無駄集計",
+)
+async def schedule_health_endpoint(
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    iso_year: int = Query(..., ge=2020, le=2100),
+    iso_week: int = Query(..., ge=1, le=53),
+    office_id: UUID | None = Query(
+        default=None,
+        description="単一拠点に絞る場合に指定. 未指定なら全拠点を対象.",
+    ),
+) -> ScheduleHealthResponse:
+    """schedule-advisor §3 Phase 1「診る」: 固定スケジュールの無駄を数字で返す.
+
+    対象週の Visit (planned/in_progress/completed, 未削除) を Course/Patient と JOIN し
+    ``(office_id, weekday, course_code)`` 単位で総移動時間・距離・訪問間バッファー・
+    隙間 (gap) を集計する read-only エンドポイント.
+
+    効果の物差しは提案エンジンと同一の travel モデル (単一ソース). speed/buffer は
+    ``load_scheduling_config`` の事業所別設定で上書き可能. 空のコース / 曜日は出力しない.
+    """
+    # 提案 / 全面最適化と同一 config をロードして speed/buffer を一致させる (read-only).
+    config = await load_scheduling_config(db)
+    office_ids = [office_id] if office_id is not None else []
+    return await compute_schedule_health(
+        db,
+        iso_year=iso_year,
+        iso_week=iso_week,
+        office_ids=office_ids,
+        config=config,
     )
 
 

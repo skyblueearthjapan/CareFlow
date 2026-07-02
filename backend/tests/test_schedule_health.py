@@ -1,0 +1,474 @@
+"""Tests for GET /api/v1/schedule/v2/schedule-health (schedule-advisor Phase 1「診る」).
+
+固定スケジュールの「移動 / 隙間の無駄」を週次・拠点別・曜日別・コース別に集計して
+返す read-only エンドポイント. 効果の物差しは提案エンジンと同一の travel モデル
+(``auto_allocator_v2`` の haversine / _address_bucket / config.speed & buffer).
+
+ローカル SQLite のみ (本番 DB 禁止).
+
+座標メモ (千葉市近辺, test_propose_slots_api.py と整合):
+    BASE = (35.6000, 140.1000)
+    NEAR = (35.6010, 140.1010)  → BASE から ~0.1433km (異住所 / travel 1分@20km/h)
+    FAR  = (35.6300, 140.1400)  → BASE から ~4.9196km (異住所 / travel 15分@20km/h, 7分@40km/h)
+    SAME = (35.60005, 140.10005) → BASE と同住所 (_address_bucket 一致, travel/buffer=0)
+"""
+
+from __future__ import annotations
+
+from datetime import date, time
+from typing import Any
+
+import pytest
+
+from app.core.security import create_access_token, hash_password
+from app.models import Office, Patient, User
+from app.models.course import COURSE_STATUS_STAFF_ASSIGNED, Course
+from app.models.scheduling_settings import SchedulingSettings
+from app.models.staff import Staff
+from app.models.visit import (
+    VISIT_STATUS_CANCELLED,
+    VISIT_STATUS_COMPLETED,
+    VISIT_STATUS_IN_PROGRESS,
+    VISIT_STATUS_PLANNED,
+    Visit,
+)
+
+ISO_YEAR = 2026
+ISO_WEEK = 20
+WEEK_MONDAY = date.fromisocalendar(ISO_YEAR, ISO_WEEK, 1)  # 2026-05-11 (Mon)
+
+BASE = (35.6000, 140.1000)
+NEAR = (35.6010, 140.1010)
+FAR = (35.6300, 140.1400)
+SAME = (35.60005, 140.10005)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+async def _make_user(db, *, email: str, role: str) -> User:
+    user = User(email=email, password_hash=hash_password("does-not-matter"), role=role)
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+
+def _bearer(user: User) -> dict[str, str]:
+    token = create_access_token(subject=user.id, role=user.role, staff_id=user.staff_id)
+    return {"Authorization": f"Bearer {token}"}
+
+
+async def _seed_office_staff(
+    db, *, name: str = "稲", code: str | None = "INAGE", staff_name: str = "担当看護師"
+) -> tuple[Office, Staff]:
+    office = Office(name=name, code=code)
+    db.add(office)
+    await db.flush()
+    staff = Staff(name=staff_name, role="staff", is_trainee=False, primary_office_id=office.id)
+    db.add(staff)
+    await db.flush()
+    return office, staff
+
+
+async def _seed_patient(
+    db,
+    *,
+    office: Office,
+    code: str,
+    lat: float | None,
+    lng: float | None,
+    name: str | None = None,
+) -> Patient:
+    p = Patient(
+        code=code,
+        name=name or f"P-{code}",
+        status="active",
+        lat=lat,
+        lng=lng,
+        primary_office_id=office.id,
+    )
+    db.add(p)
+    await db.flush()
+    return p
+
+
+async def _seed_course(
+    db, *, office: Office, staff: Staff | None, weekday: int = 0, code: str = "A"
+) -> Course:
+    course = Course(
+        iso_year=ISO_YEAR,
+        iso_week=ISO_WEEK,
+        weekday=weekday,
+        code=code,
+        course_status=COURSE_STATUS_STAFF_ASSIGNED,
+        assigned_staff_id=staff.id if staff is not None else None,
+        office_id=office.id,
+    )
+    db.add(course)
+    await db.flush()
+    return course
+
+
+async def _seed_visit(
+    db,
+    *,
+    patient: Patient,
+    course: Course,
+    start: time,
+    end: time,
+    status: str = VISIT_STATUS_PLANNED,
+    deleted: bool = False,
+) -> Visit:
+    visit = Visit(
+        patient_id=patient.id,
+        visit_date=WEEK_MONDAY,
+        start_time=start,
+        end_time=end,
+        type="regular",
+        status=status,
+        source="auto",
+        required_staff_count=1,
+        course_id=course.id,
+        primary_staff_id=course.assigned_staff_id,
+    )
+    if deleted:
+        from datetime import UTC, datetime
+
+        visit.deleted_at = datetime.now(UTC)
+    db.add(visit)
+    await db.flush()
+    return visit
+
+
+def _params(**overrides: Any) -> dict[str, Any]:
+    body: dict[str, Any] = {"iso_year": ISO_YEAR, "iso_week": ISO_WEEK}
+    body.update(overrides)
+    return body
+
+
+async def _get(client, user: User, **params: Any) -> Any:
+    return await client.get(
+        "/api/v1/schedule/v2/schedule-health",
+        headers=_bearer(user),
+        params=_params(**params),
+    )
+
+
+def _only_course(body: dict[str, Any]) -> dict[str, Any]:
+    """単一拠点・単一曜日・単一コースを想定したレスポンスから course を取り出す."""
+    assert len(body["offices"]) == 1, body
+    office = body["offices"][0]
+    assert len(office["weekdays"]) == 1, office
+    wd = office["weekdays"][0]
+    assert len(wd["courses"]) == 1, wd
+    return wd["courses"][0]
+
+
+# ---------------------------------------------------------------------------
+# 集計の正しさ
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_two_visits_cross_address_metrics(client, db) -> None:
+    """異住所 2 訪問: travel/buffer/gap が手計算と一致.
+
+    V1 BASE 09:00-09:30 → V2 FAR 10:30-11:00 (連続).
+    haversine_km(BASE, FAR) = 4.9196km → round(,1)=4.9km.
+    travel = haversine_minutes(4.9196, 20km/h) = round(4.9196/20*60)=15 分.
+    buffer = config.visit_buffer_min (既定 8).
+    gap = max(0, 10:30 - 09:30 - travel - buffer) = max(0, 60 - 15 - 8) = 37 分.
+    service = 30 + 30 = 60 分. visit=2, patient=2.
+    """
+    admin = await _make_user(db, email="sh-cross@example.com", role="admin")
+    office, staff = await _seed_office_staff(db)
+    course = await _seed_course(db, office=office, staff=staff)
+    p1 = await _seed_patient(db, office=office, code="C1", lat=BASE[0], lng=BASE[1])
+    p2 = await _seed_patient(db, office=office, code="C2", lat=FAR[0], lng=FAR[1])
+    await _seed_visit(db, patient=p1, course=course, start=time(9, 0), end=time(9, 30))
+    await _seed_visit(db, patient=p2, course=course, start=time(10, 30), end=time(11, 0))
+    await db.commit()
+
+    res = await _get(client, admin, office_id=str(office.id))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    c = _only_course(body)
+    assert c["course_code"] == "A"
+    assert c["staff_name"] == "担当看護師"
+    assert c["visit_count"] == 2
+    assert c["patient_count"] == 2
+    assert c["service_minutes"] == 60
+    assert c["travel_minutes"] == 15
+    assert c["travel_km"] == 4.9
+    assert c["buffer_minutes"] == 8
+    assert c["gap_minutes"] == 37
+    # 曜日小計・週小計も同値 (単一コースのため).
+    wd_totals = body["offices"][0]["weekdays"][0]["totals"]
+    assert wd_totals == {
+        "visit_count": 2,
+        "service_minutes": 60,
+        "travel_minutes": 15,
+        "travel_km": 4.9,
+        "buffer_minutes": 8,
+        "gap_minutes": 37,
+    }
+    assert body["offices"][0]["week_totals"] == wd_totals
+
+
+@pytest.mark.asyncio
+async def test_same_address_zero_travel_buffer(client, db) -> None:
+    """同住所連続: travel=0 / travel_km=0 / buffer=0 (_address_bucket 一致).
+
+    V1 BASE 09:00-09:30 → V2 SAME 09:40-10:10 (同住所, 100m 以内).
+    gap = max(0, 09:40 - 09:30 - 0 - 0) = 10 分.
+    """
+    admin = await _make_user(db, email="sh-same@example.com", role="admin")
+    office, staff = await _seed_office_staff(db)
+    course = await _seed_course(db, office=office, staff=staff)
+    p1 = await _seed_patient(db, office=office, code="S1", lat=BASE[0], lng=BASE[1])
+    p2 = await _seed_patient(db, office=office, code="S2", lat=SAME[0], lng=SAME[1])
+    await _seed_visit(db, patient=p1, course=course, start=time(9, 0), end=time(9, 30))
+    await _seed_visit(db, patient=p2, course=course, start=time(9, 40), end=time(10, 10))
+    await db.commit()
+
+    res = await _get(client, admin, office_id=str(office.id))
+    assert res.status_code == 200, res.text
+    c = _only_course(res.json())
+    assert c["travel_minutes"] == 0
+    assert c["travel_km"] == 0.0
+    assert c["buffer_minutes"] == 0
+    assert c["gap_minutes"] == 10
+
+
+@pytest.mark.asyncio
+async def test_gap_clamped_to_zero_when_packed(client, db) -> None:
+    """詰まった異住所連続では gap が負になるが 0 にクランプされる.
+
+    V1 BASE 09:00-09:30 → V2 FAR 09:35-10:05.
+    travel=15, buffer=8. gap_raw = 09:35 - 09:30 - 15 - 8 = 5 - 23 = -18 → 0.
+    travel/buffer は依然計上される.
+    """
+    admin = await _make_user(db, email="sh-gap@example.com", role="admin")
+    office, staff = await _seed_office_staff(db)
+    course = await _seed_course(db, office=office, staff=staff)
+    p1 = await _seed_patient(db, office=office, code="G1", lat=BASE[0], lng=BASE[1])
+    p2 = await _seed_patient(db, office=office, code="G2", lat=FAR[0], lng=FAR[1])
+    await _seed_visit(db, patient=p1, course=course, start=time(9, 0), end=time(9, 30))
+    await _seed_visit(db, patient=p2, course=course, start=time(9, 35), end=time(10, 5))
+    await db.commit()
+
+    res = await _get(client, admin, office_id=str(office.id))
+    assert res.status_code == 200, res.text
+    c = _only_course(res.json())
+    assert c["gap_minutes"] == 0
+    assert c["travel_minutes"] == 15
+    assert c["buffer_minutes"] == 8
+
+
+@pytest.mark.asyncio
+async def test_status_filter_excludes_cancelled_and_deleted(client, db) -> None:
+    """cancelled / deleted は除外, in_progress / completed は含む."""
+    admin = await _make_user(db, email="sh-status@example.com", role="admin")
+    office, staff = await _seed_office_staff(db)
+    course = await _seed_course(db, office=office, staff=staff)
+    # 含む: completed + in_progress (異住所連続).
+    p1 = await _seed_patient(db, office=office, code="ST1", lat=BASE[0], lng=BASE[1])
+    p2 = await _seed_patient(db, office=office, code="ST2", lat=FAR[0], lng=FAR[1])
+    await _seed_visit(
+        db, patient=p1, course=course, start=time(9, 0), end=time(9, 30),
+        status=VISIT_STATUS_COMPLETED,
+    )
+    await _seed_visit(
+        db, patient=p2, course=course, start=time(10, 30), end=time(11, 0),
+        status=VISIT_STATUS_IN_PROGRESS,
+    )
+    # 除外: cancelled + deleted.
+    p3 = await _seed_patient(db, office=office, code="ST3", lat=NEAR[0], lng=NEAR[1])
+    p4 = await _seed_patient(db, office=office, code="ST4", lat=NEAR[0], lng=NEAR[1])
+    await _seed_visit(
+        db, patient=p3, course=course, start=time(14, 0), end=time(14, 30),
+        status=VISIT_STATUS_CANCELLED,
+    )
+    await _seed_visit(
+        db, patient=p4, course=course, start=time(15, 0), end=time(15, 30),
+        status=VISIT_STATUS_PLANNED, deleted=True,
+    )
+    await db.commit()
+
+    res = await _get(client, admin, office_id=str(office.id))
+    assert res.status_code == 200, res.text
+    c = _only_course(res.json())
+    # completed + in_progress の 2 件のみ.
+    assert c["visit_count"] == 2
+    assert c["patient_count"] == 2
+    assert c["service_minutes"] == 60
+    assert c["travel_minutes"] == 15  # BASE→FAR のみ (cancelled/deleted は遷移対象外).
+
+
+@pytest.mark.asyncio
+async def test_office_id_filter(client, db) -> None:
+    """office_id 指定で対象拠点のみ集計する."""
+    admin = await _make_user(db, email="sh-officefilter@example.com", role="admin")
+    office_a, staff_a = await _seed_office_staff(db, name="稲", code="INAGE")
+    office_b, staff_b = await _seed_office_staff(db, name="津", code="TSUGA")
+    for office, staff, tag in ((office_a, staff_a, "A"), (office_b, staff_b, "B")):
+        course = await _seed_course(db, office=office, staff=staff)
+        p = await _seed_patient(db, office=office, code=f"OF{tag}", lat=BASE[0], lng=BASE[1])
+        await _seed_visit(db, patient=p, course=course, start=time(9, 0), end=time(9, 30))
+    await db.commit()
+
+    res = await _get(client, admin, office_id=str(office_a.id))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert len(body["offices"]) == 1
+    assert body["offices"][0]["office_id"] == str(office_a.id)
+    assert body["offices"][0]["office_name"] == "稲"
+
+    # 未指定なら両拠点.
+    res_all = await _get(client, admin)
+    assert res_all.status_code == 200
+    assert len(res_all.json()["offices"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_empty_week_returns_empty_offices(client, db) -> None:
+    """対象週に visit が無ければ offices=[] で 200."""
+    admin = await _make_user(db, email="sh-empty@example.com", role="admin")
+    office, _ = await _seed_office_staff(db)
+    await db.commit()
+
+    res = await _get(client, admin, office_id=str(office.id))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["offices"] == []
+    assert body["iso_year"] == ISO_YEAR
+    assert body["iso_week"] == ISO_WEEK
+
+
+@pytest.mark.asyncio
+async def test_rejects_staff_role(client, db) -> None:
+    staff_user = await _make_user(db, email="sh-staff@example.com", role="staff")
+    res = await _get(client, staff_user)
+    assert res.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_rejects_no_auth(client, db) -> None:
+    res = await client.get(
+        "/api/v1/schedule/v2/schedule-health",
+        params=_params(),
+    )
+    assert res.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_config_override_reflects_buffer_and_speed(client, db) -> None:
+    """SchedulingSettings で buffer / speed 変更が集計に反映される.
+
+    既定 (buffer=8 / speed=20): 異住所 BASE→FAR で travel=15, buffer=8.
+    上書き (buffer=20 / speed=40): travel=haversine_minutes(4.9196, 40)=7, buffer=20.
+    """
+    admin = await _make_user(db, email="sh-config@example.com", role="admin")
+    office, staff = await _seed_office_staff(db)
+    course = await _seed_course(db, office=office, staff=staff)
+    p1 = await _seed_patient(db, office=office, code="CF1", lat=BASE[0], lng=BASE[1])
+    p2 = await _seed_patient(db, office=office, code="CF2", lat=FAR[0], lng=FAR[1])
+    await _seed_visit(db, patient=p1, course=course, start=time(9, 0), end=time(9, 30))
+    await _seed_visit(db, patient=p2, course=course, start=time(10, 30), end=time(11, 0))
+    db.add(
+        SchedulingSettings(
+            is_singleton=True,
+            visit_buffer_min=20,
+            travel_speed_kmh=40,
+        )
+    )
+    await db.commit()
+
+    res = await _get(client, admin, office_id=str(office.id))
+    assert res.status_code == 200, res.text
+    c = _only_course(res.json())
+    assert c["buffer_minutes"] == 20
+    assert c["travel_minutes"] == 7
+    # travel_km は距離なので config に依らず不変.
+    assert c["travel_km"] == 4.9
+    # gap = max(0, 60 - 7 - 20) = 33.
+    assert c["gap_minutes"] == 33
+
+
+@pytest.mark.asyncio
+async def test_single_visit_no_travel(client, db) -> None:
+    """1 visit のみのコース → travel/buffer/gap = 0 (連続ペアが存在しない)."""
+    admin = await _make_user(db, email="sh-single@example.com", role="admin")
+    office, staff = await _seed_office_staff(db)
+    course = await _seed_course(db, office=office, staff=staff)
+    p = await _seed_patient(db, office=office, code="SV1", lat=BASE[0], lng=BASE[1])
+    await _seed_visit(db, patient=p, course=course, start=time(9, 0), end=time(9, 30))
+    await db.commit()
+
+    res = await _get(client, admin, office_id=str(office.id))
+    assert res.status_code == 200, res.text
+    c = _only_course(res.json())
+    assert c["visit_count"] == 1
+    assert c["service_minutes"] == 30
+    assert c["travel_minutes"] == 0
+    assert c["travel_km"] == 0.0
+    assert c["buffer_minutes"] == 0
+    assert c["gap_minutes"] == 0
+
+
+@pytest.mark.asyncio
+async def test_same_start_time_two_visits_no_exception(client, db) -> None:
+    """同一 start_time の 2 visit → visit_count=2 で例外なく集計できる.
+
+    start_time が同じ場合、sorted() 後に隣接ペアとして計算される。
+    gap_raw = next.start - prev.end - travel - buffer は負値になり 0 にクランプされる。
+    service_minutes はそれぞれ独立に計上 (合計 60 分)。
+    """
+    admin = await _make_user(db, email="sh-sametime@example.com", role="admin")
+    office, staff = await _seed_office_staff(db)
+    course = await _seed_course(db, office=office, staff=staff)
+    p1 = await _seed_patient(db, office=office, code="TM1", lat=BASE[0], lng=BASE[1])
+    p2 = await _seed_patient(db, office=office, code="TM2", lat=FAR[0], lng=FAR[1])
+    # 同時刻 09:00 スタート (異住所).
+    await _seed_visit(db, patient=p1, course=course, start=time(9, 0), end=time(9, 30))
+    await _seed_visit(db, patient=p2, course=course, start=time(9, 0), end=time(9, 30))
+    await db.commit()
+
+    res = await _get(client, admin, office_id=str(office.id))
+    assert res.status_code == 200, res.text
+    c = _only_course(res.json())
+    assert c["visit_count"] == 2
+    assert c["patient_count"] == 2
+    assert c["service_minutes"] == 60
+    # gap_raw = 09:00 - 09:30 - travel - buffer < 0 → クランプ = 0.
+    assert c["gap_minutes"] == 0
+
+
+@pytest.mark.asyncio
+async def test_missing_coords_transition_zero_travel_buffer_config(client, db) -> None:
+    """座標欠損患者を含む遷移: travel=0 だが buffer=config値, visit はレスポンスに含む.
+
+    V1 BASE 09:00-09:30 → V2 (座標 None) 10:00-10:30.
+    距離算出不能 → travel=0, buffer=8 (config既定). visit_count=2 (除外しない).
+    gap = max(0, 10:00 - 09:30 - 0 - 8) = max(0, 30 - 8) = 22.
+    """
+    admin = await _make_user(db, email="sh-nocoord@example.com", role="admin")
+    office, staff = await _seed_office_staff(db)
+    course = await _seed_course(db, office=office, staff=staff)
+    p1 = await _seed_patient(db, office=office, code="NC1", lat=BASE[0], lng=BASE[1])
+    p2 = await _seed_patient(db, office=office, code="NC2", lat=None, lng=None)
+    await _seed_visit(db, patient=p1, course=course, start=time(9, 0), end=time(9, 30))
+    await _seed_visit(db, patient=p2, course=course, start=time(10, 0), end=time(10, 30))
+    await db.commit()
+
+    res = await _get(client, admin, office_id=str(office.id))
+    assert res.status_code == 200, res.text
+    c = _only_course(res.json())
+    assert c["visit_count"] == 2  # 座標欠損でも除外しない.
+    assert c["travel_minutes"] == 0
+    assert c["travel_km"] == 0.0
+    assert c["buffer_minutes"] == 8
+    assert c["gap_minutes"] == 22
