@@ -45,7 +45,7 @@ import {
 import { useQueries } from '@tanstack/react-query';
 import { useSession } from 'next-auth/react';
 import { format } from 'date-fns';
-import { Loader2, Plus, RefreshCw, UserCheck } from 'lucide-react';
+import { HeartPulse, Loader2, Plus, RefreshCw, UserCheck } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { Button } from '@/components/ui/button';
@@ -100,6 +100,7 @@ import { DiffAddDialog } from './DiffAddDialog';
 import { AssignWarningDialog, type ApprovedReviewItem } from './AssignWarningDialog';
 import { FullOptimizeDialog } from './FullOptimizeDialog';
 import { ProposeNewModal } from './ProposeNewModal';
+import { ScheduleHealthDialog } from './ScheduleHealthDialog';
 import { ResetToFixedButton } from './ResetToFixedButton';
 import { UnassignAllStaffButton } from './UnassignAllStaffButton';
 import {
@@ -1630,6 +1631,8 @@ export function CourseDayTablePanel({
   const [reviewApplying, setReviewApplying] = useState(false);
   // 統合提案モーダル「＋新規提案」(StageA+C+B). diff-add (プール投入) とは別 entry.
   const [proposeNewOpen, setProposeNewOpen] = useState(false);
+  // スケジュール健康診断ダイアログ (Schedule Advisor Phase 1).
+  const [scheduleHealthOpen, setScheduleHealthOpen] = useState(false);
   const isProcessing = generateWeekMut.isPending || assignStaffOnlyMut.isPending;
 
   const handleGenerateWeek = async () => {
@@ -1991,6 +1994,16 @@ export function CourseDayTablePanel({
               >
                 <Plus className="mr-1 h-4 w-4" aria-hidden />
                 新規提案
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => setScheduleHealthOpen(true)}
+                data-testid="schedule-health-button"
+              >
+                <HeartPulse className="mr-1 h-4 w-4" aria-hidden />
+                健康診断
               </Button>
 
               {/* 主要 4 と「固定枠戻 / 全件保存」 の区切り線. */}
@@ -2448,6 +2461,16 @@ export function CourseDayTablePanel({
           isoWeek={isoWeek}
           officeId={officeId}
           poolPatients={poolPatients}
+        />
+
+        {/* Schedule Advisor Phase 1: スケジュール健康診断ダイアログ (read-only). */}
+        <ScheduleHealthDialog
+          open={scheduleHealthOpen}
+          onClose={() => setScheduleHealthOpen(false)}
+          isoYear={isoYear}
+          isoWeek={isoWeek}
+          officeId={officeId}
+          weekLabel={isoWeekLabel}
         />
 
         {/* Wave 41 v2 § 4 / §13.5.2: 全面最適化ダイアログ. */}
