@@ -901,4 +901,119 @@ describe('PatientFixedVisitsPanel', () => {
       expect(parsed.sub_office_id).toBe(TSUGA_ID);
     });
   });
+
+  // ─── P2-C: 可動域 (movability) selector tests ──────────────────────────────
+  describe('P2-C (movability)', () => {
+    it('MV-1. 曜日 ON で可動域 selector が表示され 4 択を持つ', async () => {
+      setupMocks({ reads: [] });
+      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
+
+      const checkboxes = screen.getAllByRole('checkbox');
+      await userEvent.click(checkboxes[0]);
+
+      const select = screen.getByLabelText('月 可動域') as HTMLSelectElement;
+      const options = Array.from(select.options).map((o) => o.text);
+      expect(options).toEqual(['未設定', '時刻変更可', '曜日変更可', '完全固定']);
+    });
+
+    it('MV-2. 可動域を選んで保存すると movability が payload に含まれる', async () => {
+      const updateFn = vi.fn().mockResolvedValue([]);
+      setupMocks({ reads: [], updateFn });
+      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
+
+      const checkboxes = screen.getAllByRole('checkbox');
+      await userEvent.click(checkboxes[0]);
+
+      const select = screen.getByLabelText('月 可動域');
+      fireEvent.change(select, { target: { value: 'day_flexible' } });
+
+      const saveBtn = screen.getByRole('button', { name: '保存' });
+      await userEvent.click(saveBtn);
+
+      await waitFor(() => expect(updateFn).toHaveBeenCalledTimes(1));
+      const call = updateFn.mock.calls[0][0] as { items: { movability?: string }[] };
+      expect(call.items[0]?.movability).toBe('day_flexible');
+    });
+
+    it('MV-3. サーバーから movability が返ると selector に反映される (ラウンドトリップ)', async () => {
+      setupMocks({
+        reads: [
+          {
+            id: 'read-mv',
+            patient_id: PATIENT_ID,
+            weekday: 0,
+            start_time: '09:00',
+            duration_min: 30,
+            mode: 'normal',
+            course_template_id: null,
+            slot_index: 0,
+            movability: 'time_flexible',
+            created_at: '2026-01-01T00:00:00',
+            updated_at: '2026-01-01T00:00:00',
+          },
+        ],
+      });
+      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
+
+      await waitFor(() => {
+        expect(screen.getByLabelText('月 可動域')).toBeInTheDocument();
+      });
+      expect((screen.getByLabelText('月 可動域') as HTMLSelectElement).value).toBe('time_flexible');
+    });
+
+    it('MV-4. is_pinned=true の行は「完全固定（ピン留め）」表示で selector なし・payload は locked', async () => {
+      const updateFn = vi.fn().mockResolvedValue([]);
+      setupMocks({
+        reads: [
+          {
+            id: 'read-pin',
+            patient_id: PATIENT_ID,
+            weekday: 0,
+            start_time: '09:00',
+            duration_min: 30,
+            mode: 'normal',
+            course_template_id: null,
+            slot_index: 0,
+            is_pinned: true,
+            movability: 'locked',
+            created_at: '2026-01-01T00:00:00',
+            updated_at: '2026-01-01T00:00:00',
+          },
+        ],
+        updateFn,
+      });
+      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
+
+      // pinned 行は selector を出さず固定表示.
+      await waitFor(() => {
+        expect(screen.getByTestId('pfv-movability-locked-0')).toHaveTextContent(
+          '完全固定（ピン留め）',
+        );
+      });
+      expect(screen.queryByLabelText('月 可動域')).not.toBeInTheDocument();
+
+      // 保存すると movability=locked が送られる (is_pinned ⇒ locked 整合).
+      const saveBtn = screen.getByRole('button', { name: '保存' });
+      await userEvent.click(saveBtn);
+      await waitFor(() => expect(updateFn).toHaveBeenCalledTimes(1));
+      const call = updateFn.mock.calls[0][0] as {
+        items: { movability?: string; is_pinned?: boolean }[];
+      };
+      expect(call.items[0]?.movability).toBe('locked');
+      expect(call.items[0]?.is_pinned).toBe(true);
+    });
+
+    it('MV-5. patientFixedVisitV2BaseSchema が movability を受理する', async () => {
+      const { patientFixedVisitV2BaseSchema } = await import(
+        '@/lib/schemas/v2/patient_fixed_visit'
+      );
+      const parsed = patientFixedVisitV2BaseSchema.parse({
+        weekday: 0,
+        start_time: '09:00',
+        duration_min: 30,
+        movability: 'day_flexible',
+      });
+      expect(parsed.movability).toBe('day_flexible');
+    });
+  });
 });

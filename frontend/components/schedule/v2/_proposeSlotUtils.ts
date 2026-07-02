@@ -22,8 +22,14 @@ import type { ProposeSlotItem } from '@/lib/schemas/v2/propose_slots';
 export const slotKey = (s: ProposeSlotItem): string =>
   `${s.office_id}-${s.weekday}-${s.course_code}-${s.start_time}`;
 
-/** 枠の start_time〜end_time から所要分を算出. パース不能なら null. */
-export function slotDurationMin(s: ProposeSlotItem): number | null {
+/**
+ * 枠の start_time〜end_time から所要分を算出. パース不能なら null.
+ * 入力は start_time / end_time を持つ構造的最小型 (ProposeSlotItem も改善提案 candidate も充足).
+ */
+export function slotDurationMin(s: {
+  start_time?: string | null;
+  end_time?: string | null;
+}): number | null {
   const parse = (hm: string | null | undefined): number | null => {
     if (!hm) return null;
     const m = /^(\d{1,2}):(\d{2})/.exec(hm);
@@ -70,6 +76,43 @@ export function proposedSlotToFixedVisitItem(
   return {
     weekday: s.weekday,
     start_time: s.start_time,
+    duration_min: duration,
+    slot_index: 0,
+    ...(tplId ? { course_template_id: tplId } : {}),
+  };
+}
+
+/**
+ * 改善提案の採用可能な候補 (weekday/start_time/end_time/course_code/office_id) の
+ * 構造的最小型. `proposedSlotToFixedVisitItem` は ProposeSlotItem 全体を要求するため、
+ * 改善提案 candidate 用に薄いアダプタを別途用意する.
+ */
+export interface AdoptableCandidate {
+  weekday: number;
+  start_time: string;
+  end_time: string;
+  course_code: string;
+  office_id: string;
+}
+
+/**
+ * 改善提案 candidate 1 件 → bulk PUT item (mode='normal', slot_index=0).
+ *
+ * `proposedSlotToFixedVisitItem` (propose-slots 候補用) の兄弟. 改善提案 candidate は
+ * 同住所ペア (is_pair) を持たないため 90 分占有補正は不要で、常に枠長 (end-start) を
+ * duration とする. course_template_id は resolver で解決できれば付与.
+ * movability は未指定 = BE server_default 'unknown' (新規採用枠は unknown が正; §1.3).
+ */
+export function improvementCandidateToFixedVisitItem(
+  c: AdoptableCandidate,
+  resolveCourseTemplateId: CourseTemplateIdResolver,
+  serviceFallbackMin: number,
+): PatientFixedVisitV2Base {
+  const duration = slotDurationMin(c) ?? serviceFallbackMin;
+  const tplId = resolveCourseTemplateId(c.office_id, c.course_code);
+  return {
+    weekday: c.weekday,
+    start_time: c.start_time,
     duration_min: duration,
     slot_index: 0,
     ...(tplId ? { course_template_id: tplId } : {}),

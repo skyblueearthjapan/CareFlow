@@ -57,6 +57,7 @@ import { useOffices } from '@/lib/queries/offices';
 import {
   patientFixedVisitsBulkPutSchema,
   PATIENT_FIXED_VISIT_MODES,
+  type Movability,
   type PatientFixedVisitMode,
   type PatientFixedVisitV2Base,
   type PatientFixedVisitV2Read,
@@ -90,6 +91,18 @@ const TIME_OPTIONS: string[] = (() => {
 
 const DURATION_OPTIONS = [15, 30, 45, 60, 90, 120, 150, 180, 240, 300, 360, 480] as const;
 
+/**
+ * P2-C: 可動域 (movability) セレクタの選択肢. 提案の可否を表す (§1.1).
+ *   unknown(未設定・保守的) / time_flexible(時刻変更可) / day_flexible(曜日変更可) / locked(完全固定).
+ * is_pinned=true の行は locked 固定表示で変更不可 (is_pinned ⇒ locked; BE V6 が矯正).
+ */
+const MOVABILITY_OPTIONS: ReadonlyArray<{ value: Movability; label: string }> = [
+  { value: 'unknown', label: '未設定' },
+  { value: 'time_flexible', label: '時刻変更可' },
+  { value: 'day_flexible', label: '曜日変更可' },
+  { value: 'locked', label: '完全固定' },
+];
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 /**
@@ -120,6 +133,8 @@ interface DayRow {
   sub_office_id: string | null;
   /** Phase G-21: 完全固定フラグ (true = visit 移動禁止). */
   is_pinned: boolean;
+  /** P2-C: 可動域 (提案の可否). is_pinned=true ⇒ locked 扱い. slot 0/1 共通で 1 値. */
+  movability: Movability;
 }
 
 type DayRows = Record<number, DayRow>;
@@ -135,6 +150,7 @@ function emptyDayRow(): DayRow {
     course_template_id_2: null,
     sub_office_id: null,
     is_pinned: false,
+    movability: 'unknown',
   };
 }
 
@@ -172,6 +188,8 @@ function readsToDayRows(reads: PatientFixedVisitV2Read[]): DayRows {
         sub_office_id: r.sub_office_id ?? current.sub_office_id,
         // Phase G-21: is_pinned は slot 0 を優先. どちらかが true なら行全体を pin 扱い.
         is_pinned: r.is_pinned === true || current.is_pinned,
+        // P2-C: movability は slot 0 を優先 (旧 BE で未返却なら unknown フォールバック).
+        movability: r.movability ?? current.movability ?? 'unknown',
       };
     } else {
       // slot 1: enabled は slot 0 のフラグを尊重 (slot 0 が無い場合は slot 1 で起こす)
@@ -186,6 +204,11 @@ function readsToDayRows(reads: PatientFixedVisitV2Read[]): DayRows {
         sub_office_id: current.sub_office_id ?? r.sub_office_id ?? null,
         // Phase G-21: slot 1 でも pin が立っていれば反映.
         is_pinned: r.is_pinned === true || current.is_pinned,
+        // P2-C: slot 0 が未設定 (unknown) の場合のみ slot 1 の movability を採用.
+        movability:
+          current.movability && current.movability !== 'unknown'
+            ? current.movability
+            : (r.movability ?? current.movability ?? 'unknown'),
       };
     }
   }
@@ -219,6 +242,9 @@ function dayRowsToItems(rows: DayRows, requiresMultipleStaff: boolean): PatientF
 
     const effectiveSlot0Course = promote ? slot1Course : slot0Course;
 
+    // P2-C: is_pinned=true ⇒ movability='locked' (含意整合; BE V6 も矯正するが FE でも一致させる).
+    const effectiveMovability: Movability = row.is_pinned ? 'locked' : row.movability;
+
     items.push({
       weekday,
       start_time: row.start_time,
@@ -229,6 +255,8 @@ function dayRowsToItems(rows: DayRows, requiresMultipleStaff: boolean): PatientF
       sub_office_id: row.sub_office_id,
       // Phase G-21: 完全固定フラグ (slot 0/1 共通).
       is_pinned: row.is_pinned,
+      // P2-C: 可動域 (slot 0/1 共通). 漏らすと保存のたび unknown に戻る (§1.3 運搬).
+      movability: effectiveMovability,
     });
 
     // slot 1 は requires_multiple_staff=true かつ
@@ -246,6 +274,8 @@ function dayRowsToItems(rows: DayRows, requiresMultipleStaff: boolean): PatientF
         sub_office_id: row.sub_office_id,
         // Phase G-21: slot 0 と同じ pin 状態を継承.
         is_pinned: row.is_pinned,
+        // P2-C: slot 0 と同じ可動域を継承.
+        movability: effectiveMovability,
       });
     }
   }
@@ -315,6 +345,8 @@ export function weeklyPatternToDayRows(
       course_template_id_2: existing.course_template_id_2,
       sub_office_id: existing.sub_office_id,
       is_pinned: existing.is_pinned,
+      // P2-C: 可動域も既存設定を保持 (希望反映で消さない).
+      movability: existing.movability,
     };
   }
   return rows;
@@ -647,6 +679,33 @@ function WeekGrid({
                   <span aria-hidden="true">{row.is_pinned ? '🔒' : ''}</span>
                   <span>完全固定</span>
                 </label>
+                {/* P2-C: 可動域 (提案の可否) セレクタ. is_pinned=true は locked 固定で変更不可. */}
+                <div className="flex items-center gap-1" data-testid={`pfv-movability-wrap-${wd}`}>
+                  {row.is_pinned ? (
+                    <span
+                      className="rounded border border-border-default bg-bg-muted px-2 py-1 text-xs text-text-muted"
+                      data-testid={`pfv-movability-locked-${wd}`}
+                    >
+                      完全固定（ピン留め）
+                    </span>
+                  ) : (
+                    <select
+                      value={row.movability}
+                      onChange={(e) => update(wd, { movability: e.target.value as Movability })}
+                      disabled={disabled}
+                      className="h-8 rounded border border-border-default bg-bg-base px-2 text-sm text-text-primary focus:outline-none focus:border-brand-primary"
+                      aria-label={`${WEEKDAY_LABELS[wd]} 可動域`}
+                      data-testid={`pfv-movability-select-${wd}`}
+                    >
+                      {MOVABILITY_OPTIONS.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  <span className="text-xs text-text-muted">可動域</span>
+                </div>
                 {errors[wd] ? <span className="text-xs text-error">{errors[wd]}</span> : null}
                 {!errors[wd] && warnings[wd] ? (
                   <span className="text-xs text-warning" data-testid={`row-warning-${wd}`}>

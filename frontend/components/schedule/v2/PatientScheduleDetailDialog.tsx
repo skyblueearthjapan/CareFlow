@@ -48,6 +48,7 @@ import { useVisits } from '@/lib/queries/visits';
 import type { PatientFixedVisitV2Read } from '@/lib/schemas/v2/patient_fixed_visit';
 import type { VisitRead } from '@/lib/schemas/visit';
 
+import { ImprovementSuggestionsSection } from './ImprovementSuggestionsSection';
 import { PatientEditDialog } from './PatientEditDialog';
 import { PoolCandidateList } from './PoolCandidateList';
 
@@ -539,6 +540,19 @@ export function PatientScheduleDetailDialog({
                 </div>
               )}
             </section>
+
+            {/* (2.3) 配置改善の提案 (P2-C).
+                配置済み患者クリック (= !enablePoolProposal) のときだけ表示する。
+                プール由来クリックはプール投入 (下段) が主提案なので出さない。
+                API 未デプロイ環境でもセクション内でエラーテキストに落ち、ダイアログは生きる。 */}
+            {!enablePoolProposal && patient ? (
+              <ImprovementSuggestionsSection
+                patient={patient}
+                isoYear={isoYear}
+                isoWeek={isoWeek}
+                canEdit={canEdit}
+              />
+            ) : null}
 
             {/* (2.5) プール投入の提案 (Pool-detail 統合).
                 プール由来クリック (enablePoolProposal) のときのみ表示。
