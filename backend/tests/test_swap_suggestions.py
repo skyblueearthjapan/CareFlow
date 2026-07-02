@@ -358,6 +358,66 @@ async def test_swap_skipped_when_x_already_has_pfv_on_target_weekday(db) -> None
 
 
 # ---------------------------------------------------------------------------
+# engine: swap × 希望訪問スケジュール (weekly_pattern) — P4-A 層 2
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_swap_within_preference_one_side_only_that_side_confirmed(db) -> None:
+    """同曜日・双方 unknown で X だけ希望内 → X は確認不要、Y だけ要確認 (層 2 片側適用)."""
+    _office, x, _y = await _swap_scenario(
+        db, x_movability="unknown", y_movability="unknown"
+    )
+    # X の希望に月(0) 終日を登録 → X の新位置 (月, 10:30) が希望内になる.
+    x.weekly_pattern = {"entries": [{"weekday": 0, "time_type": None}]}
+    await db.commit()
+
+    suggestions, _summary = await find_improvement_candidates(
+        db, patient=x, iso_year=ISO_YEAR, iso_week=ISO_WEEK
+    )
+    swaps = [s for s in suggestions if s.kind == "swap"]
+    assert swaps, suggestions
+    s = swaps[0]
+    assert s.within_preference is True
+    assert not s.requires_patient_confirmation  # X 希望内 → 確認不要
+    assert s.swap_counterpart_within_preference is False
+    assert s.swap_counterpart_requires_confirmation  # Y 希望外 unknown → 要確認
+
+
+@pytest.mark.asyncio
+async def test_swap_cross_weekday_within_preference_authorizes_unknown(db) -> None:
+    """X=unknown でも X の新位置が希望内なら Y=day_flexible との曜日跨ぎスワップが成立 (層 2)."""
+    _office, x, y = await _swap_scenario(
+        db, x_movability="unknown", y_movability="day_flexible", y_weekday=2
+    )
+    # X の希望に水(2) 終日を登録 → X の新位置 (水, 10:30) が希望内 → unknown でも曜日跨ぎ許可.
+    x.weekly_pattern = {"entries": [{"weekday": 2, "time_type": None}]}
+    await db.commit()
+
+    suggestions, _summary = await find_improvement_candidates(
+        db, patient=x, iso_year=ISO_YEAR, iso_week=ISO_WEEK
+    )
+    swaps = [s for s in suggestions if s.kind == "swap"]
+    assert swaps, suggestions
+    assert swaps[0].cand_weekday == 2
+    assert swaps[0].within_preference is True
+    assert not swaps[0].requires_patient_confirmation
+    assert swaps[0].swap_counterpart_patient_id == y.id
+
+
+@pytest.mark.asyncio
+async def test_swap_cross_weekday_unknown_x_rejected_without_preference(db) -> None:
+    """対照: X=unknown・希望登録なし → 曜日跨ぎスワップは不成立 (層 3 のまま)."""
+    _office, x, _y = await _swap_scenario(
+        db, x_movability="unknown", y_movability="day_flexible", y_weekday=2
+    )
+    suggestions, _summary = await find_improvement_candidates(
+        db, patient=x, iso_year=ISO_YEAR, iso_week=ISO_WEEK
+    )
+    assert all(s.kind != "swap" for s in suggestions), suggestions
+
+
+# ---------------------------------------------------------------------------
 # endpoint: apply-swap
 # ---------------------------------------------------------------------------
 

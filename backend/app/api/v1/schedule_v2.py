@@ -2284,6 +2284,7 @@ def _swap_counterpart_of(c: ImprovementCandidateData) -> SwapCounterpart | None:
         new_weekday=c.swap_counterpart_new_weekday,
         new_start_time=_hhmm(c.swap_counterpart_new_start),
         requires_patient_confirmation=c.swap_counterpart_requires_confirmation,
+        within_preference=c.swap_counterpart_within_preference,
     )
 
 
@@ -2320,6 +2321,7 @@ def _improvement_to_schema(c: ImprovementCandidateData) -> ImprovementSuggestion
         staff_warnings=c.staff_warnings,
         feasibility_basis="pfv",
         requires_patient_confirmation=c.requires_patient_confirmation,
+        within_preference=c.within_preference,
         swap_counterpart=_swap_counterpart_of(c),
     )
 
@@ -2703,7 +2705,7 @@ async def improvement_apply_swap_endpoint(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail={
-                "message": "完全固定 (is_pinned) の枠は入れ替えできません",
+                "message": "ピン留めされた枠は入れ替えできません",
                 "violations": [
                     {
                         "code": w.code,

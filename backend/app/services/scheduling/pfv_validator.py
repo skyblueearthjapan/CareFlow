@@ -154,9 +154,9 @@ def _check_pinned(
             PfvValidationWarning(
                 code=CODE_PINNED,
                 message=(
-                    f"{_wd_name(row.weekday)}曜 枠{row.slot_index} の完全固定枠"
-                    "（ピン留め済み）を変更・削除しようとしています。"
-                    "固定を解除してから変更してください。"
+                    f"{_wd_name(row.weekday)}曜 枠{row.slot_index} のピン留めされた枠を"
+                    "変更・削除しようとしています。"
+                    "ピン留めを解除してから変更してください。"
                 ),
                 weekday=row.weekday,
                 severity="error",
@@ -252,8 +252,8 @@ def _correct_pinned_movability(
                 PfvValidationWarning(
                     code=CODE_MOVABILITY_CORRECTED,
                     message=(
-                        f"{_wd_name(item.weekday)}曜 枠{item.slot_index} は完全固定"
-                        "（ピン留め）のため、可動域を「完全固定」に自動調整しました。"
+                        f"{_wd_name(item.weekday)}曜 枠{item.slot_index} はピン留めのため、"
+                        "可動域を「完全固定」に自動調整しました。"
                     ),
                     weekday=item.weekday,
                     severity="warning",

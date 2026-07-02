@@ -40,6 +40,8 @@ from app.services.scheduling.auto_allocator_v2 import (
 )
 from app.services.scheduling.auto_allocator_v2 import (
     _add_minutes,
+    _extract_weekly_entries,
+    _parse_hhmm,
     compute_lunch_window,
     haversine_km,
 )
@@ -49,6 +51,7 @@ from app.services.scheduling.proposal_solver import (
     Candidate,
     ExistingVisit,
     _is_same_address,
+    _time_type_allows,
     _travel_buffer_between,
     find_available_slots_for_candidate,
 )
@@ -62,6 +65,11 @@ from app.services.scheduling.propose_slots_service import (
 
 # 改善とみなす最小効果 (分/週). config 化は Phase 3 (設計書 §2.1).
 IMPROVEMENT_THRESHOLD_MIN: int = 10
+
+# P4-A 設計メモ: 希望訪問スケジュール (within_preference) 候補の優遇は「並び順のみ」で
+# 実現する. sort キーの第 1 要素に ``not within_preference`` を置くことで希望内を先頭へ.
+# delta 自体は改変しない. 優遇度は改善閾値 (10 分) と同オーダー相当の意図だが、定数化は
+# 行わず効果量の比較ではなく純粋な順位付けとして実装している.
 
 # 患者 1 名あたりの最大提案件数.
 MAX_SUGGESTIONS_PER_PATIENT: int = 5
@@ -137,6 +145,65 @@ def compute_marginal_cost(
 
 
 # ---------------------------------------------------------------------------
+# 希望訪問スケジュール (weekly_pattern) 範囲内判定 — P4-A
+# ---------------------------------------------------------------------------
+
+
+def _slot_within_preference(
+    patient: Patient,
+    weekday: int,
+    start_time: time,
+    end_time: time,
+    *,
+    config: SchedulingConfig | None = None,
+) -> bool:
+    """候補スロットが患者の希望訪問スケジュール (``weekly_pattern``) の範囲内かを判定する.
+
+    「希望訪問スケジュール」= 患者から聞き取り済みの受け入れ可能範囲 (= 余白). 候補が
+    この範囲に収まるなら患者は元々 OK と言っているため、movability や曜日跨ぎに関係なく
+    患者確認不要で提案・スワップの権威となる (P4-A 3 層のうちの層 2).
+
+    判定規約は propose-slots / auto_allocator と同一 (コピー禁止・正典再利用):
+      - weekly_pattern の読み出しは ``_extract_weekly_entries`` (auto_allocator_v2) を再利用.
+        リスト形式 / サマリ形式・仮開始時刻の解釈もそのまま踏襲する.
+      - 該当 weekday の entry の time_type 制約充足は ``_time_type_allows``
+        (proposal_solver) を再利用する. ``_time_type_allows`` は ``Candidate`` を取るため、
+        entry から薄い ``Candidate`` アダプタを組んで正典判定に委譲する (出典: proposal_solver
+        :310-357). 意味論は「固定=preferred_start 一致 / 時間帯=[preferred_start,
+        preferred_end] 内に開始 / 午前=end<=12:00 / 午後=start>=13:00 / 終日・None=その曜日なら OK」.
+
+    entries が空 / 該当 weekday の entry 無し → False (層 3 = 現行 movability ルールに
+    フォールバックし、weekly_pattern 未登録患者の挙動は完全に不変).
+
+    Args:
+        patient: 判定対象の患者 (``weekly_pattern`` を読む). ``_extract_weekly_entries``
+            が ``Patient`` を要求するため、``weekly_pattern`` 単体ではなく患者オブジェクトを取る.
+        weekday: 候補スロットの曜日 (0=Mon..6=Sun).
+        start_time: 候補スロットの開始時刻.
+        end_time: 候補スロットの終了時刻.
+        config: 仮開始時刻・営業時間の注入用 (propose-slots と同一の config 規約).
+    """
+    for wd, pref_start, _sm, time_type, _ps_raw, pe_raw in _extract_weekly_entries(
+        patient, config=config
+    ):
+        if wd != weekday:
+            continue
+        # entry から time_type 判定用の薄い Candidate を組み、正典 _time_type_allows に委譲.
+        # 位置系フィールド (lat/lng/service_minutes) は time_type 判定に無関係のためダミー.
+        adapter = Candidate(
+            lat=0.0,
+            lng=0.0,
+            service_minutes=0,
+            time_type=time_type,
+            preferred_start=pref_start,
+            preferred_end=_parse_hhmm(pe_raw),
+        )
+        if _time_type_allows(adapter, start_time, end_time, config=config):
+            return True
+    return False
+
+
+# ---------------------------------------------------------------------------
 # 内部データ構造 (API schema に詰める前の内部表現)
 # ---------------------------------------------------------------------------
 
@@ -170,6 +237,8 @@ class ImprovementCandidateData:
     requires_patient_confirmation: bool
     changes: list[str]
     unchanged: list[str]
+    # P4-A: 候補枠 (swap では X の新位置) が患者の希望訪問スケジュール範囲内なら True.
+    within_preference: bool = False
     # kind='swap' のときのみ設定される相手患者 Y の情報 (P3-②). それ以外は None.
     swap_counterpart_patient_id: UUID | None = None
     swap_counterpart_name: str | None = None
@@ -178,6 +247,8 @@ class ImprovementCandidateData:
     swap_counterpart_new_weekday: int | None = None
     swap_counterpart_new_start: time | None = None
     swap_counterpart_requires_confirmation: bool = False
+    # P4-A: Y の新位置が Y 自身の希望訪問スケジュール範囲内なら True (swap のみ).
+    swap_counterpart_within_preference: bool = False
 
 
 @dataclass
@@ -186,6 +257,10 @@ class FilteredSummaryData:
 
     各カウンタの単位は ImprovementFilteredSummary の description を参照.
     カテゴリ間は重複しない (1 PFV / 候補は 1 カテゴリのみに計上).
+
+    P4-A: ``day_restricted`` は「希望外 (within_preference=False) かつ movability が同曜日限定」
+    の候補のみを数える. 希望訪問スケジュール範囲内の曜日跨ぎ候補は movability に関係なく
+    提案されるため day_restricted には計上されない (= 意味が「希望外の曜日制限」に狭まった).
 
     設計決定 D1: スワップ (kind='swap') 除外は現状カウント対象外.
     スワップ提案は「X+Y のペア」を単位として生成されるため、PFV 単位・候補スロット単位と
@@ -374,6 +449,7 @@ def _swap_candidates_for_pfv(
     buckets: dict[tuple[UUID, int, str], _CourseBucket],
     office_name_by_id: dict[UUID, str],
     pfv_by_pw: dict[tuple[UUID, int], PatientFixedVisit],
+    patient_by_id: dict[UUID, Patient],
     swap_dismissed: set[tuple[UUID, int]],
     config: SchedulingConfig | None,
 ) -> list[ImprovementCandidateData]:
@@ -429,15 +505,35 @@ def _swap_candidates_for_pfv(
             if weekday_changes and (y_pid, wx) in pfv_by_pw:
                 continue
 
-            # 双方の movability 尊重: 曜日が変わる側は day_flexible 必須.
+            # ---- P4-A 層 2: 各自の新位置が自分の希望訪問スケジュール範囲内か ----
+            # X は Y の旧位置 (wy, sy) へ、Y は X の旧位置 (wx, sx) へ移る.
+            within_pref_x = _slot_within_preference(
+                patient, wy, sy, _add_minutes(sy, x_duration), config=config
+            )
+            patient_y = patient_by_id.get(y_pid)
+            within_pref_y = (
+                _slot_within_preference(
+                    patient_y, wx, sx, _add_minutes(sx, y_duration), config=config
+                )
+                if patient_y is not None
+                else False
+            )
+
+            # 双方の movability 尊重. ただし新位置が希望範囲内 (層 2) の側は movability に
+            # 関係なく許可し患者確認も不要にする. 希望外の側は現行ルール (層 3):
+            # 曜日跨ぎは day_flexible 必須 / 同曜日は unknown=要確認.
             if weekday_changes:
-                if not x_day_flexible or y_movability != "day_flexible":
+                x_ok = x_day_flexible or within_pref_x
+                y_ok = (y_movability == "day_flexible") or within_pref_y
+                if not x_ok or not y_ok:
                     continue
+                # 許可される側は day_flexible (元々確認不要) か希望内 (確認不要) の
+                # いずれか → 曜日跨ぎではどちらも要確認は付かない.
                 x_conf = False
                 y_conf = False
             else:
-                x_conf = x_movability == "unknown"
-                y_conf = y_movability == "unknown"
+                x_conf = (x_movability == "unknown") and not within_pref_x
+                y_conf = (y_movability == "unknown") and not within_pref_y
 
             # Y 側の swap 却下指紋も尊重.
             if (y_pid, wy) in swap_dismissed:
@@ -566,6 +662,7 @@ def _swap_candidates_for_pfv(
                         bucket_y, patient.sex_restriction
                     ),
                     requires_patient_confirmation=x_conf,
+                    within_preference=within_pref_x,
                     changes=changes,
                     unchanged=unchanged,
                     swap_counterpart_patient_id=y_pid,
@@ -575,6 +672,7 @@ def _swap_candidates_for_pfv(
                     swap_counterpart_new_weekday=wx,
                     swap_counterpart_new_start=sx,
                     swap_counterpart_requires_confirmation=y_conf,
+                    swap_counterpart_within_preference=within_pref_y,
                 )
             )
     return out
@@ -670,6 +768,20 @@ async def find_improvement_candidates(
         for row in cand_pfvs:
             pfv_by_pw[(row.patient_id, row.weekday)] = row
 
+    # P4-A: swap 相手 Y の希望訪問スケジュール (weekly_pattern) 判定用に、バケットに現れる
+    # 全患者の Patient を 1 クエリでロードする (X 自身も含める).
+    patient_by_id: dict[UUID, Patient] = {patient.id: patient}
+    if bucket_pids:
+        other_patients = (
+            await db.scalars(
+                select(Patient).where(
+                    Patient.id.in_(bucket_pids - {patient.id})
+                )
+            )
+        ).all()
+        for prow in other_patients:
+            patient_by_id[prow.id] = prow
+
     # 昼休み window 算出パラメータ (propose-slots と同一. config 優先, 既定は module 定数).
     lunch_duration = (
         config.lunch_duration_min if config is not None else _LUNCH_DURATION_PREFERRED
@@ -728,13 +840,14 @@ async def find_improvement_candidates(
             patient_id=str(patient.id),
         )
 
-        # 却下指紋に一致する kind は先に抑制カウント (生成前).
+        # 却下指紋フラグ. カウントはループ内の実 blocking 時に行う (per kind × PFV = 最大各 1 回).
+        # P4-A 対応: 事前カウント方式では within_preference 経由の day_change 候補が
+        # dismissed で阻止されたときに計上漏れが起きるため、ループ内初回 blocking 時に加算する.
+        # (旧: day_change_allowed のときのみ事前カウント → within_pref 経路は条件外でカウントゼロ)
         time_dismissed = ("time_change", weekday) in dismissed_fp
         day_dismissed = ("day_change", weekday) in dismissed_fp
-        if time_dismissed:
-            summary.dismissed += 1
-        if day_change_allowed and day_dismissed:
-            summary.dismissed += 1
+        _time_dismissed_counted = False  # 初回 blocking で True にする (二重計上防止)
+        _day_dismissed_counted = False
 
         for (office_id, wd, course_code), bucket in buckets.items():
             existing = _bucket_existing_excluding(bucket, patient.id)
@@ -776,17 +889,31 @@ async def find_improvement_candidates(
                 delta_min = current.marginal_min - cand_min
                 delta_km = current.marginal_km - cand_km
 
+                # P4-A 層 2: 候補が患者の希望訪問スケジュール範囲内 (= 余白) なら、movability
+                # ゲートより前に権威づけする. 希望内なら曜日跨ぎでも患者確認不要で提案する.
+                within_pref = _slot_within_preference(
+                    patient, wd, slot.start, slot.end, config=config
+                )
+
                 # 曜日変更が許されない movability の場合、閾値超の改善は
                 # day_restricted として抑制カウント (黙って消さない).
-                if kind == "day_change" and not day_change_allowed:
+                # ただし希望内 (within_pref) の候補は movability に関係なく提案する (層 2 優先).
+                if kind == "day_change" and not day_change_allowed and not within_pref:
                     if delta_min >= IMPROVEMENT_THRESHOLD_MIN:
                         summary.day_restricted += 1
                     continue
 
-                # 却下指紋一致 (この kind は上で 1 回カウント済) → 生成しない.
+                # 却下指紋一致 → 生成しない. 初回 blocking 時のみ dismissed に加算
+                # (per kind × PFV で最大 1 回 = ImprovementFilteredSummary の粒度仕様通り).
                 if kind == "time_change" and time_dismissed:
+                    if not _time_dismissed_counted:
+                        summary.dismissed += 1
+                        _time_dismissed_counted = True
                     continue
                 if kind == "day_change" and day_dismissed:
+                    if not _day_dismissed_counted:
+                        summary.dismissed += 1
+                        _day_dismissed_counted = True
                     continue
 
                 if delta_min < IMPROVEMENT_THRESHOLD_MIN:
@@ -828,8 +955,11 @@ async def find_improvement_candidates(
                             bucket, patient.sex_restriction
                         ),
                         requires_patient_confirmation=(
-                            requires_confirmation and kind == "time_change"
+                            requires_confirmation
+                            and kind == "time_change"
+                            and not within_pref
                         ),
+                        within_preference=within_pref,
                         changes=changes,
                         unchanged=unchanged,
                     )
@@ -851,6 +981,7 @@ async def find_improvement_candidates(
                 buckets=buckets,
                 office_name_by_id=office_name_by_id,
                 pfv_by_pw=pfv_by_pw,
+                patient_by_id=patient_by_id,
                 swap_dismissed=swap_dismissed,
                 config=config,
             )
@@ -859,14 +990,27 @@ async def find_improvement_candidates(
     # スワップは患者あたり最大 MAX_SWAP_SUGGESTIONS_PER_PATIENT 件を delta 降順で採り、
     # 既存 move 提案の枠 (MAX_SUGGESTIONS_PER_PATIENT) に混ぜる. スワップが 0 件のとき
     # move の出力・順位はスワップ無効時と完全に同一 (追加のみ).
+    # P4-A: 希望内 (within_preference) を最優先し、その中で delta 降順. sort キー第 1 要素
+    # ``not c.within_preference`` により希望内 (True→False で先頭) を上位へ (delta は改変せず
+    # 並び順のみ優遇). 以降は delta 降順 → 距離降順 → 早い時刻で安定化.
     swap_candidates.sort(
-        key=lambda c: (-c.delta_minutes, -c.delta_km, _time_to_min(c.cand_start))
+        key=lambda c: (
+            not c.within_preference,
+            -c.delta_minutes,
+            -c.delta_km,
+            _time_to_min(c.cand_start),
+        )
     )
     candidates.extend(swap_candidates[:MAX_SWAP_SUGGESTIONS_PER_PATIENT])
 
-    # delta (分) 降順 → 同点は (距離降順, 早い時刻) で安定化. 患者あたり最大 N 件.
+    # 希望内優先 → delta (分) 降順 → 同点は (距離降順, 早い時刻) で安定化. 患者あたり最大 N 件.
     candidates.sort(
-        key=lambda c: (-c.delta_minutes, -c.delta_km, _time_to_min(c.cand_start))
+        key=lambda c: (
+            not c.within_preference,
+            -c.delta_minutes,
+            -c.delta_km,
+            _time_to_min(c.cand_start),
+        )
     )
     return candidates[:MAX_SUGGESTIONS_PER_PATIENT], summary
 

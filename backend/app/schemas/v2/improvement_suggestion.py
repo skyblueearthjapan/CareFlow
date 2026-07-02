@@ -111,6 +111,13 @@ class SwapCounterpart(BaseModel):
         default=False,
         description="Y の movability=unknown のとき Y 側にも付く要確認ラベル",
     )
+    within_preference: bool = Field(
+        default=False,
+        description=(
+            "P4-A: Y の移動先が Y の希望訪問スケジュール (weekly_pattern) の範囲内なら true. "
+            "true のとき Y 側は患者確認不要 (後方互換: 既定 false)."
+        ),
+    )
 
 
 class ImprovementSuggestion(BaseModel):
@@ -136,6 +143,14 @@ class ImprovementSuggestion(BaseModel):
     requires_patient_confirmation: bool = Field(
         default=False,
         description="movability=unknown の時刻提案に付く要確認ラベル",
+    )
+    within_preference: bool = Field(
+        default=False,
+        description=(
+            "P4-A: 候補枠が患者の希望訪問スケジュール (weekly_pattern) の範囲内なら true. "
+            "true のとき movability=unknown でも曜日跨ぎでも患者確認不要でスコア優遇される "
+            "(後方互換: 既定 false)."
+        ),
     )
     swap_counterpart: SwapCounterpart | None = Field(
         default=None,
@@ -195,7 +210,9 @@ class ImprovementFilteredSummary(BaseModel):
         ge=0,
         description=(
             "曜日変更による改善候補があったが movability が同曜日限定のため抑制した "
-            "候補スロット数 (候補単位). day_flexible に昇格すれば対象になる."
+            "候補スロット数 (候補単位). day_flexible に昇格すれば対象になる. "
+            "P4-A: 候補が患者の希望訪問スケジュール範囲内 (within_preference) の場合は "
+            "movability に関係なく提案されるため、本カウントは「希望外かつ movability 制限」のみになる."
         ),
     )
 
