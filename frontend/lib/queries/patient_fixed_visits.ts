@@ -26,11 +26,33 @@ import { toast } from 'sonner';
 import { useSession } from 'next-auth/react';
 
 import { fetcher } from '@/lib/api/fetcher';
-import type {
-  PatientFixedVisitMode,
-  PatientFixedVisitsBulkPut,
-  PatientFixedVisitV2Read,
+import {
+  parsePatientFixedVisitsBulkPutResponse,
+  type PatientFixedVisitMode,
+  type PatientFixedVisitsBulkPut,
+  type PatientFixedVisitsBulkPutResponse,
+  type PatientFixedVisitWarning,
+  type PatientFixedVisitV2Read,
 } from '@/lib/schemas/v2/patient_fixed_visit';
+
+// ─── PUT fixed-visits 警告トースト (共有) ─────────────────────────────────────
+
+/**
+ * P0-2 Commit 3: PUT /fixed-visits レスポンスの再検証 warnings を toast 表示する共有関数。
+ * 採用系 (PoolCandidateList / ProposeNewModal) と手動編集系 (PatientFixedVisitsPanel) で
+ * 同一の表示規則を使う。多数の場合は最初の 3 件 + 「他 N 件」に要約する。
+ * warnings が空 / undefined のときは何も出さない (成功パスの挙動不変)。
+ */
+export function toastFixedVisitWarnings(
+  warnings: readonly PatientFixedVisitWarning[] | undefined,
+): void {
+  if (!warnings || warnings.length === 0) return;
+  const shown = warnings.slice(0, 3);
+  for (const w of shown) toast.warning(w.message);
+  if (warnings.length > shown.length) {
+    toast.warning(`他 ${warnings.length - shown.length} 件の警告があります`);
+  }
+}
 
 // ─── Query key factory ───────────────────────────────────────────────────────
 
@@ -84,19 +106,23 @@ export function useFixedVisits(
  */
 export function useUpdateFixedVisits(
   patientId: string,
-): UseMutationResult<PatientFixedVisitV2Read[], Error, PatientFixedVisitsBulkPut> {
+): UseMutationResult<PatientFixedVisitsBulkPutResponse, Error, PatientFixedVisitsBulkPut> {
   const qc = useQueryClient();
   const { data: session } = useSession();
   const { accessToken, refreshToken } = authPair(session);
 
-  return useMutation<PatientFixedVisitV2Read[], Error, PatientFixedVisitsBulkPut>({
-    mutationFn: async (payload) =>
-      fetcher<PatientFixedVisitV2Read[]>(`/api/v1/patients/${patientId}/fixed-visits`, {
+  return useMutation<PatientFixedVisitsBulkPutResponse, Error, PatientFixedVisitsBulkPut>({
+    // P0-2 Commit 1 で PUT レスポンスが `{items, warnings}` エンベロープ化された。
+    // 寛容パースして呼出元 (PatientFixedVisitsPanel handleSave) が warnings を表示できるようにする。
+    mutationFn: async (payload) => {
+      const raw = await fetcher<unknown>(`/api/v1/patients/${patientId}/fixed-visits`, {
         method: 'PUT',
         body: JSON.stringify(payload),
         accessToken,
         refreshToken,
-      }),
+      });
+      return parsePatientFixedVisitsBulkPutResponse(raw);
+    },
     onSuccess: (_data, variables) => {
       // 当該モードのキャッシュを無効化
       void qc.invalidateQueries({

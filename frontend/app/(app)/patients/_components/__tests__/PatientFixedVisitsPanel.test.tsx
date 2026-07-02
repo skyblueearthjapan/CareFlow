@@ -30,6 +30,9 @@ vi.mock('@/lib/queries/patient_fixed_visits', () => ({
   useUpdateFixedVisits: vi.fn(),
   useDeleteFixedVisits: vi.fn(),
   useApplyFromWeek: vi.fn(),
+  // P0-2 Commit 3: 保存成功パスで呼ばれる警告トーストヘルパ (欠落すると
+  // undefined() の TypeError が catch に飲まれテストが嘘をつく)。
+  toastFixedVisitWarnings: vi.fn(),
 }));
 
 // ─── Mock course_templates query ──────────────────────────────────────────────

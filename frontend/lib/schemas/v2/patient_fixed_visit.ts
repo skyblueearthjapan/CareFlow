@@ -105,3 +105,53 @@ export const patientFixedVisitsBulkPutSchema = z.object({
 export type PatientFixedVisitV2Base = z.infer<typeof patientFixedVisitV2BaseSchema>;
 export type PatientFixedVisitV2Read = z.infer<typeof patientFixedVisitV2ReadSchema>;
 export type PatientFixedVisitsBulkPut = z.infer<typeof patientFixedVisitsBulkPutSchema>;
+
+/**
+ * P0-2 Commit 1 (BE `731884d`): PUT /patients/{id}/fixed-visits のレスポンスが
+ * `{items, warnings}` エンベロープに変更された。warnings 要素は再検証カーネル
+ * (`pfv_validator.py`) の `PfvValidationWarningOut` = {code, message, weekday, severity}。
+ *
+ * 寛容パース方針: code / severity は未知値を壊さないよう `z.string()` (enum 化しない)。
+ * weekday は nullable (曜日非依存の警告は null)。将来 BE が新フィールドを足しても
+ * FE 採用フローを止めないよう `.passthrough()` で余剰キーを許容する。
+ */
+export const patientFixedVisitWarningSchema = z
+  .object({
+    // 未知 code を壊さない寛容パース (enum 化しない).
+    code: z.string(),
+    message: z.string(),
+    // 曜日非依存の警告は null / 省略あり.
+    weekday: z.number().int().min(0).max(6).nullable().optional(),
+    // 'warning' | 'error' 等. 未知 severity も string で受ける.
+    severity: z.string(),
+  })
+  .passthrough();
+export type PatientFixedVisitWarning = z.infer<typeof patientFixedVisitWarningSchema>;
+
+/**
+ * PUT /patients/{id}/fixed-visits のエンベロープレスポンス。
+ * - items: 既存 Read スキーマで検証。要素 drift 時は `.catch([])` で items のみ空に落とし、
+ *   warnings 表示 (本 Commit の主目的) を巻き込まない。
+ * - warnings: 上記の寛容な warning スキーマ配列。
+ *
+ * 呼出側 (hook) は `.safeParse` でさらに包み、object でない等の致命ケースでも
+ * `{items:[], warnings:[]}` にフォールバックして採用フローを止めない。
+ */
+export const patientFixedVisitsBulkPutResponseSchema = z.object({
+  items: z.array(patientFixedVisitV2ReadSchema).catch([]),
+  warnings: z.array(patientFixedVisitWarningSchema).catch([]),
+});
+export type PatientFixedVisitsBulkPutResponse = z.infer<
+  typeof patientFixedVisitsBulkPutResponseSchema
+>;
+
+/**
+ * PUT fixed-visits レスポンスの寛容パース。parse 失敗 (object でない / null 等) でも
+ * throw せず `{items:[], warnings:[]}` を返し、採用・保存フローを止めない。
+ */
+export function parsePatientFixedVisitsBulkPutResponse(
+  raw: unknown,
+): PatientFixedVisitsBulkPutResponse {
+  const parsed = patientFixedVisitsBulkPutResponseSchema.safeParse(raw);
+  return parsed.success ? parsed.data : { items: [], warnings: [] };
+}

@@ -28,7 +28,7 @@ import { Button } from '@/components/ui/button';
 import { fetcher } from '@/lib/api/fetcher';
 import { useProposeSlots, proposeWarningLabel } from '@/lib/queries/fieldBoard';
 import { useConfirmFixedVisits } from '@/lib/queries/propose_confirm';
-import { useFixedVisits } from '@/lib/queries/patient_fixed_visits';
+import { useFixedVisits, toastFixedVisitWarnings } from '@/lib/queries/patient_fixed_visits';
 import { coerceWeeklyPattern, type PatientRead } from '@/lib/schemas/patient';
 import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
 import type { PatientFixedVisitsBulkPut } from '@/lib/schemas/v2/patient_fixed_visit';
@@ -283,11 +283,14 @@ export function PoolCandidateList({
     confirmMut.mutate(
       { patientId: patient.id, body: buildMergedPut(existing, slot) },
       {
-        onSuccess: () => {
+        onSuccess: (data) => {
           toast.success(
             `${patient.name} 様を ${WEEKDAY_LABELS[slot.weekday] ?? '?'} ` +
               `${trimSeconds(slot.start_time)} ${slot.course_label} に採用しました（他曜日は維持）`,
           );
+          // P0-2 Commit 3: 再検証 warnings (時間衝突 / 昼休み / 容量) があれば警告表示。
+          // 空なら従来どおり success トーストのみ (挙動不変)。
+          toastFixedVisitWarnings(data?.warnings);
           // MVP 制約: 同住所ペア候補でも相方 (slot_index=1) は自動作成しない.
           if (slot.is_pair) {
             toast.warning(

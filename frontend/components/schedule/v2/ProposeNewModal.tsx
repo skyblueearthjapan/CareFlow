@@ -70,7 +70,7 @@ import {
   proposeWarningLabel,
 } from '@/lib/queries/fieldBoard';
 import { useCreatePatient, usePatients } from '@/lib/queries/patients';
-import { useFixedVisits } from '@/lib/queries/patient_fixed_visits';
+import { useFixedVisits, toastFixedVisitWarnings } from '@/lib/queries/patient_fixed_visits';
 import { useConfirmFixedVisits } from '@/lib/queries/propose_confirm';
 import {
   coerceWeeklyPattern,
@@ -501,8 +501,10 @@ export function ProposeNewModal({
     confirmMut.mutate(
       { patientId: linkedPatient.id, body: buildBulkPutMerged(existingNormalVisits) },
       {
-        onSuccess: () => {
+        onSuccess: (data) => {
           toast.success(`${linkedPatient.name} 様の固定枠を確定しました（他曜日の既存枠は維持）`);
+          // P0-2 Commit 3: 再検証 warnings があれば警告表示 (空なら success のみ).
+          toastFixedVisitWarnings(data?.warnings);
           onClose();
         },
         onError: () => toast.error('固定枠の確定に失敗しました'),
@@ -563,8 +565,9 @@ export function ProposeNewModal({
     }
     // 2) 採用枠を normal PFV へ確定。ここで失敗した場合、患者は既に作成済みなので
     //    「登録済・固定枠のみ失敗」と明示し、再確定の導線を案内する。
+    let confirmRes: Awaited<ReturnType<typeof confirmMut.mutateAsync>>;
     try {
-      await confirmMut.mutateAsync({ patientId: created.id, body: buildBulkPutNew() });
+      confirmRes = await confirmMut.mutateAsync({ patientId: created.id, body: buildBulkPutNew() });
     } catch {
       toast.error(
         `${created.name} 様は登録されました。固定枠の確定のみ失敗しました。「既存患者を検索」タブから再度確定してください`,
@@ -573,6 +576,8 @@ export function ProposeNewModal({
       return;
     }
     toast.success(`${created.name} 様を登録し、固定枠を確定しました`);
+    // P0-2 Commit 3: 再検証 warnings があれば警告表示 (空なら success のみ).
+    toastFixedVisitWarnings(confirmRes?.warnings);
     onClose();
   };
 

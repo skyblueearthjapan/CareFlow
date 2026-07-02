@@ -68,7 +68,13 @@ import { useStaffList } from '@/lib/queries/staff';
 import { WeekdayScheduleCard, type CourseListItem } from '../WeekdayScheduleCard';
 import { FixedTimeEditModal } from './FixedTimeEditModal';
 import { ProposalWeekCalendar } from './ProposalWeekCalendar';
-import { formatDelta, formatErr, trimSeconds } from './_autoScheduleUtils';
+import {
+  applyIndividualWithLunchConfirm,
+  formatDelta,
+  formatErr,
+  toastApplyWarnings,
+  trimSeconds,
+} from './_autoScheduleUtils';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Constants / Helpers
@@ -423,6 +429,8 @@ export function FullOptimizeDialog({
         confirm: true,
       });
       toast.success(`${res.visits_created} 件の visits を反映しました (固定枠は変更なし)`);
+      // P0-2 Commit 3: apply-week-only の再検証 warnings (時間衝突 / 昼休み / 容量) を表示.
+      toastApplyWarnings(res.warnings);
       setStage('completed');
       onClose();
     } catch (err) {
@@ -456,15 +464,23 @@ export function FullOptimizeDialog({
   const handleApplyPatient = async (p: IndividualProposal) => {
     if (!result) return;
     try {
-      await applyMut.mutateAsync({
-        proposal_batch_id: result.proposal_batch_id,
-        patient_id: p.patient_id,
-        confirm: true,
-        iso_year: isoYear,
-        iso_week: isoWeek,
-        visit_plans: p.proposed_pfv,
-      });
+      // P0-2 Commit 3: H10 昼休み 422 のときは確認 → force_lunch=true で再送。
+      const res = await applyIndividualWithLunchConfirm(
+        (payload) => applyMut.mutateAsync(payload),
+        {
+          proposal_batch_id: result.proposal_batch_id,
+          patient_id: p.patient_id,
+          confirm: true,
+          iso_year: isoYear,
+          iso_week: isoWeek,
+          visit_plans: p.proposed_pfv,
+        },
+      );
+      // ユーザーが昼休み確認を拒否した場合は中止 (現在の患者に留まる).
+      if (!res) return;
       toast.success(`${p.patient_name} の固定枠を更新しました`);
+      // 再検証 warnings があれば警告表示.
+      toastApplyWarnings(res.warnings);
       setAppliedPatientIds((prev) => new Set(prev).add(p.patient_id));
       // 次の患者へ進む
       const next = remainingPatients.find((x) => x.patient_id !== p.patient_id);

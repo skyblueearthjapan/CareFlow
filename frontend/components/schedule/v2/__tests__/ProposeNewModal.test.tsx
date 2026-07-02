@@ -182,6 +182,7 @@ vi.mock('@/lib/queries/propose_confirm', () => ({
 
 vi.mock('@/lib/queries/patient_fixed_visits', () => ({
   useFixedVisits: vi.fn(),
+  toastFixedVisitWarnings: vi.fn(),
 }));
 
 import { useProposeSlots } from '@/lib/queries/fieldBoard';

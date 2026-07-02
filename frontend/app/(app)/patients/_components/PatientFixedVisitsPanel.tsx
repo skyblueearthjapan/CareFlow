@@ -50,6 +50,7 @@ import {
   useUpdateFixedVisits,
   useDeleteFixedVisits,
   useApplyFromWeek,
+  toastFixedVisitWarnings,
 } from '@/lib/queries/patient_fixed_visits';
 import { useCourseTemplates } from '@/lib/queries/course_templates';
 import { useOffices } from '@/lib/queries/offices';
@@ -812,8 +813,11 @@ function ModePanel({
     }
 
     try {
-      await updateMut.mutateAsync(result.data);
+      const res = await updateMut.mutateAsync(result.data);
       toast.success('固定枠を保存しました');
+      // P0-2 Commit 3: 再検証 warnings (時間衝突 / 昼休み / 容量) があれば警告表示。
+      // 空なら従来どおり success のみ (挙動不変)。
+      toastFixedVisitWarnings(res?.warnings);
     } catch (e) {
       const msg = e instanceof Error ? e.message : '保存に失敗しました';
       setFormError(msg);

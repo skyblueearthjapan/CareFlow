@@ -20,7 +20,11 @@ import { useMutation, useQueryClient, type UseMutationResult } from '@tanstack/r
 import { useSession } from 'next-auth/react';
 
 import { fetcher } from '@/lib/api/fetcher';
-import type { PatientFixedVisitsBulkPut } from '@/lib/schemas/v2/patient_fixed_visit';
+import {
+  parsePatientFixedVisitsBulkPutResponse,
+  type PatientFixedVisitsBulkPut,
+  type PatientFixedVisitsBulkPutResponse,
+} from '@/lib/schemas/v2/patient_fixed_visit';
 
 function authPair(session: ReturnType<typeof useSession>['data']): {
   accessToken: string | null;
@@ -45,19 +49,28 @@ export interface ConfirmFixedVisitsVars {
  * の形で患者を実行時に渡せるようにし、成功後に当該患者と全患者の fixed-visits /
  * patients / visits / courses クエリを invalidate して親機テーブルへ即時反映する。
  */
-export function useConfirmFixedVisits(): UseMutationResult<unknown, Error, ConfirmFixedVisitsVars> {
+export function useConfirmFixedVisits(): UseMutationResult<
+  PatientFixedVisitsBulkPutResponse,
+  Error,
+  ConfirmFixedVisitsVars
+> {
   const qc = useQueryClient();
   const { data: session } = useSession();
   const { accessToken, refreshToken } = authPair(session);
 
-  return useMutation<unknown, Error, ConfirmFixedVisitsVars>({
-    mutationFn: ({ patientId, body }) =>
-      fetcher<unknown>(`/api/v1/patients/${patientId}/fixed-visits`, {
+  return useMutation<PatientFixedVisitsBulkPutResponse, Error, ConfirmFixedVisitsVars>({
+    // P0-2 Commit 3: レスポンスを `{items, warnings}` エンベロープとして寛容パースし、
+    // onSuccess / mutateAsync の戻り値経由で呼出側が warnings を表示できるようにする。
+    // パース失敗時も throw せず空エンベロープにフォールバックし、採用フローは止めない。
+    mutationFn: async ({ patientId, body }) => {
+      const raw = await fetcher<unknown>(`/api/v1/patients/${patientId}/fixed-visits`, {
         method: 'PUT',
         body: JSON.stringify(body),
         accessToken,
         refreshToken,
-      }),
+      });
+      return parsePatientFixedVisitsBulkPutResponse(raw);
+    },
     onSuccess: (_data, vars) => {
       // 当該患者の固定枠キャッシュ。
       void qc.invalidateQueries({ queryKey: ['patients', vars.patientId, 'fixed-visits'] });

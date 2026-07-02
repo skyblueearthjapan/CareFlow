@@ -54,7 +54,11 @@ import type { PatientRead } from '@/lib/schemas/patient';
 
 import { ProposalCard, ProposalConfirmModal, adoptedVisitPlans } from './DiffAddProposalCard';
 import { PoolCandidateList } from './PoolCandidateList';
-import { formatErr } from './_autoScheduleUtils';
+import {
+  applyIndividualWithLunchConfirm,
+  formatErr,
+  toastApplyWarnings,
+} from './_autoScheduleUtils';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Props
@@ -138,15 +142,23 @@ export function DiffAddDialog({
       // BE は visit_plans の上書き (stateless) を要求. suggested_visits があれば
       // それを、無ければ suggested 1 件を送る (描画と同一ソース = 共有ヘルパー).
       const visitPlans = adoptedVisitPlans(p);
-      await applyMut.mutateAsync({
-        proposal_id: p.proposal_id,
-        patient_id: p.patient_id,
-        confirm: true,
-        iso_year: isoYear,
-        iso_week: isoWeek,
-        visit_plans: visitPlans,
-      });
+      // P0-2 Commit 3: H10 昼休み 422 のときは確認 → force_lunch=true で再送。
+      const res = await applyIndividualWithLunchConfirm(
+        (payload) => applyMut.mutateAsync(payload),
+        {
+          proposal_id: p.proposal_id,
+          patient_id: p.patient_id,
+          confirm: true,
+          iso_year: isoYear,
+          iso_week: isoWeek,
+          visit_plans: visitPlans,
+        },
+      );
+      // ユーザーが昼休み確認を拒否した場合は中止 (トースト無し・カードは残す).
+      if (!res) return;
       toast.success(`${p.patient_name} の固定枠を更新しました`);
+      // 再検証 warnings (時間衝突 / 昼休み / 容量) があれば警告表示.
+      toastApplyWarnings(res.warnings);
       // ローカルリストから該当カードを取り除く + モーダルを閉じる.
       setProposals((prev) => prev.filter((x) => x.proposal_id !== p.proposal_id));
       setConfirmTarget(null);

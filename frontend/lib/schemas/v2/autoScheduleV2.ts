@@ -422,6 +422,13 @@ export const applyIndividualRequestSchema = z.object({
   iso_week: z.number().int().min(1).max(53).optional(),
   /** 採用する visit 配置. patient_id の固定枠を全置換する. */
   visit_plans: z.array(v2VisitPlanSchema).default([]),
+  /**
+   * P0-2 Commit 2 (BE `1bdc862`): H10 昼休み重複の扱い.
+   * false (既定) = 現行どおり 422 でブロック / true = warning に降格して続行.
+   * FE (Commit 3) は 422 detail に「昼休み」を含む場合のみ確認のうえ true で再送する。
+   * 省略時 BE default=false のため既定挙動は不変。
+   */
+  force_lunch: z.boolean().optional(),
 });
 export type ApplyIndividualRequest = z.infer<typeof applyIndividualRequestSchema>;
 

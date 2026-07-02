@@ -20,6 +20,7 @@
 import { describe, it, expect } from 'vitest';
 
 import {
+  applyIndividualRequestSchema,
   diffAddProposalSchema,
   diffAddProposalSourceSchema,
   unassignedPatientSchema,
@@ -246,6 +247,40 @@ describe('diffAddProposalSchema (Phase G-92 FE)', () => {
       expect(diffAddProposalSourceSchema.safeParse(src).success).toBe(true);
     }
     expect(diffAddProposalSourceSchema.safeParse('xxx').success).toBe(false);
+  });
+});
+
+describe('applyIndividualRequestSchema (P0-2 Commit 3: force_lunch)', () => {
+  const base = {
+    proposal_id: PROPOSAL_ID,
+    patient_id: PATIENT_ID,
+    iso_year: 2026,
+    iso_week: 24,
+    visit_plans: [baseVisitPlan()],
+  };
+
+  it('force_lunch 省略時は payload に含まれない (BE default=false で挙動不変)', () => {
+    const result = applyIndividualRequestSchema.safeParse(base);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.force_lunch).toBeUndefined();
+    }
+  });
+
+  it('force_lunch=true を payload に載せられる (H10 迂回の再送)', () => {
+    const result = applyIndividualRequestSchema.safeParse({ ...base, force_lunch: true });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.force_lunch).toBe(true);
+      // confirm は BE 強制の literal(true).
+      expect(result.data.confirm).toBe(true);
+    }
+  });
+
+  it('force_lunch=false も受理する', () => {
+    const result = applyIndividualRequestSchema.safeParse({ ...base, force_lunch: false });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.force_lunch).toBe(false);
   });
 });
 

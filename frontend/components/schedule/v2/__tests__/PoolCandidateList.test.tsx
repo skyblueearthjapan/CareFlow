@@ -98,6 +98,14 @@ vi.mock('@/lib/queries/patient_fixed_visits', () => ({
     isFetching: false,
     isError: false,
   }),
+  toastFixedVisitWarnings: (warnings?: Array<{ message: string }>) => {
+    // 実挙動 (最初の3件 + 他N件) を模して sonner.toast.warning を呼ぶ.
+    if (!warnings || warnings.length === 0) return;
+    const shown = warnings.slice(0, 3);
+    for (const w of shown) mockToast.warning(w.message);
+    if (warnings.length > shown.length)
+      mockToast.warning(`他 ${warnings.length - shown.length} 件の警告があります`);
+  },
 }));
 
 vi.mock('@/lib/schemas/patient', () => ({
@@ -161,6 +169,7 @@ describe('PoolCandidateList (③ 単体MVP)', () => {
     mocks.existingFixedVisits = [];
     mockToast.success.mockReset();
     mockToast.error.mockReset();
+    mockToast.warning.mockReset();
   });
 
   it('初期はボタンのみ. 押すと当該患者で propose-slots を呼ぶ', () => {
@@ -291,6 +300,48 @@ describe('PoolCandidateList (③ 単体MVP)', () => {
     expect(tueSlot0[0]!.start_time).toBe('14:00:00');
     // 合計 4 件 (月/木/火slot1 保持 + 火slot0 置換).
     expect(items).toHaveLength(4);
+  });
+
+  it('PUT 成功時、レスポンス warnings が非空なら toast.warning を出す (P0-2 Commit 3)', async () => {
+    const slot = makeSlot();
+    mocks.proposeData = { slots: [slot], message: null };
+    // confirmMutate を「成功して onSuccess にエンベロープを渡す」実装にする.
+    mocks.confirmMutate.mockImplementation(
+      (_vars: unknown, opts?: { onSuccess?: (data: unknown) => void }) => {
+        opts?.onSuccess?.({
+          items: [],
+          warnings: [
+            {
+              code: 'time_conflict',
+              message: '他患者と時間が重複しています',
+              weekday: 1,
+              severity: 'warning',
+            },
+            {
+              code: 'lunch_break',
+              message: '昼休みと重複しています',
+              weekday: 1,
+              severity: 'warning',
+            },
+          ],
+        });
+      },
+    );
+    render(<PoolCandidateList {...COMMON} />);
+    fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
+    fireEvent.click(
+      screen.getByTestId(
+        `pool-candidate-adopt-${slot.office_id}-${slot.weekday}-${slot.course_code}-${slot.start_time}`,
+      ),
+    );
+    fireEvent.click(screen.getByTestId('pool-candidate-confirm-apply'));
+
+    await waitFor(() => expect(mocks.confirmMutate).toHaveBeenCalledTimes(1));
+    // success トーストは従来どおり 1 回.
+    expect(mockToast.success).toHaveBeenCalledTimes(1);
+    // warnings 2 件が個別に toast.warning される.
+    expect(mockToast.warning).toHaveBeenCalledWith('他患者と時間が重複しています');
+    expect(mockToast.warning).toHaveBeenCalledWith('昼休みと重複しています');
   });
 
   it('canEdit=false では採用ボタンを出さない', () => {
