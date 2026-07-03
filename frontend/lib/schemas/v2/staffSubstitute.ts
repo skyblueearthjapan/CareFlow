@@ -61,12 +61,61 @@ export const substituteVisitCandidatesSchema = z.object({
 });
 export type SubstituteVisitCandidates = z.infer<typeof substituteVisitCandidatesSchema>;
 
+// ---------------------------------------------------------------------------
+// P5: 引き継ぎプラン (層1-4)。設計書 docs/plans/p5-course-substitute-design.md §2。
+// BE 並行実装中のため、契約は設計書 §2 の SubstitutePlan スキーマを正とする。
+// tier_label / block / reason 等の文字列は寛容に z.string() で受ける。
+// ---------------------------------------------------------------------------
+
+/** プラン内の 1 担当者 (受け手)。visit_ids はこの担当者が引き継ぐ visit。 */
+export const substitutePlanAssigneeSchema = z.object({
+  staff_id: z.string().uuid(),
+  staff_name: z.string(),
+  staff_sex: z.string().nullish(),
+  /** 'full' | 'am' | 'pm' (層2 の分担境界)。寛容に string で受ける。 */
+  block: z.string().default('full'),
+  visit_ids: z.array(z.string().uuid()).default([]),
+  visit_count: z.number().int().nonnegative().default(0),
+  added_travel_minutes: z.number().default(0),
+  existing_load: z.number().default(0),
+});
+export type SubstitutePlanAssignee = z.infer<typeof substitutePlanAssigneeSchema>;
+
+/** プラン内で自動割当できず個別選択が必要な例外 visit。 */
+export const substitutePlanExceptionSchema = z.object({
+  visit_id: z.string().uuid(),
+  patient_id: z.string().uuid(),
+  patient_name: z.string(),
+  start_time: z.string(),
+  end_time: z.string(),
+  reason: z.string().nullish(),
+});
+export type SubstitutePlanException = z.infer<typeof substitutePlanExceptionSchema>;
+
+/** 引き継ぎプラン 1 件 (層1-4)。 */
+export const substitutePlanSchema = z.object({
+  plan_id: z.string(),
+  tier: z.number().int().min(1).max(4),
+  tier_label: z.string(),
+  course_id: z.string().uuid().nullish(),
+  course_code: z.string().nullish(),
+  assignees: z.array(substitutePlanAssigneeSchema).default([]),
+  total_visits: z.number().int().nonnegative().default(0),
+  exception_count: z.number().int().nonnegative().default(0),
+  exceptions: z.array(substitutePlanExceptionSchema).default([]),
+  score: z.number().default(0),
+  warnings: z.array(z.string()).default([]),
+});
+export type SubstitutePlan = z.infer<typeof substitutePlanSchema>;
+
 /** GET candidates レスポンス。 */
 export const substituteCandidatesResponseSchema = z.object({
   absent_staff_id: z.string().uuid(),
   absent_staff_name: z.string(),
   target_date: isoDateSchema,
   visits: z.array(substituteVisitCandidatesSchema).default([]),
+  /** P5: 引き継ぎプラン。旧 BE / plans なし環境では空配列 (従来 UI へ後退)。 */
+  plans: z.array(substitutePlanSchema).default([]),
 });
 export type SubstituteCandidatesResponse = z.infer<typeof substituteCandidatesResponseSchema>;
 
@@ -118,6 +167,8 @@ export const NO_CANDIDATE_REASON_LABEL_JA: Record<string, string> = {
   event_overlap: '予定重複 (±15分)',
   time_conflict: '時間衝突',
   trainee_solo: '新人単独不可',
+  // P5 層4: 誰も担えなかった visit の理由コード (unassignable).
+  no_feasible_staff: '候補なし',
 };
 
 export function noCandidateReasonLabel(code: string): string {

@@ -36,6 +36,9 @@ import {
 } from '@/lib/queries/staffSubstitute';
 import {
   noCandidateReasonLabel,
+  type SubstituteApplyItem,
+  type SubstitutePlan,
+  type SubstitutePlanAssignee,
   type SubstituteScoreBreakdown,
   type SubstituteVisitCandidates,
 } from '@/lib/schemas/v2/staffSubstitute';
@@ -64,6 +67,63 @@ export function formatScoreBreakdown(b: SubstituteScoreBreakdown): string {
   const load = Math.round(-b.load_penalty / 5);
   if (load > 0) parts.push(`当日${load}件`);
   return parts.length > 0 ? parts.join(' / ') : '—';
+}
+
+/** 層番号 → 表示バッジ文言 (tier_label のゆらぎに依らず一定表示にする)。 */
+const TIER_BADGE_LABEL: Record<number, string> = {
+  1: '丸ごと',
+  2: 'AM・PM分担',
+  3: 'マネージャー',
+  4: '分散',
+};
+
+/** 担当者 1 人分の「N件 / 移動+M分 / 当日L件」短縮メタ。 */
+export function formatAssigneeMeta(a: SubstitutePlanAssignee): string {
+  const parts: string[] = [`${a.visit_count}件`];
+  const addMin = Math.round(a.added_travel_minutes);
+  parts.push(addMin > 0 ? `移動+${addMin}分` : '移動なし');
+  if (a.existing_load > 0) parts.push(`当日${a.existing_load}件`);
+  return parts.join(' / ');
+}
+
+/** block コード → 表示ラベル。 */
+function blockLabel(block: string): string | null {
+  if (block === 'am') return 'AM';
+  if (block === 'pm') return 'PM';
+  return null;
+}
+
+/**
+ * 適用する差替え配列 (visit_id × staff_id) を組み立てる。設計書 §3.4。
+ * - planMode: 選択プランの assignees を展開 + 例外選択を合流。
+ * - 手動モード: 従来の visit 単位 selections。
+ */
+export function buildSubstitutions(params: {
+  planMode: boolean;
+  plan: SubstitutePlan | null;
+  exceptionSelections: Record<string, string>;
+  manualSelections: Record<string, string>;
+}): SubstituteApplyItem[] {
+  const { planMode, plan, exceptionSelections, manualSelections } = params;
+  if (!planMode) {
+    return Object.entries(manualSelections).map(([visit_id, substitute_staff_id]) => ({
+      visit_id,
+      substitute_staff_id,
+    }));
+  }
+  const out: SubstituteApplyItem[] = [];
+  if (plan) {
+    for (const a of plan.assignees) {
+      for (const visit_id of a.visit_ids) {
+        out.push({ visit_id, substitute_staff_id: a.staff_id });
+      }
+    }
+  }
+  // 例外 visit の個別選択分 (assignee.visit_ids には含まれない) を合流。
+  for (const [visit_id, substitute_staff_id] of Object.entries(exceptionSelections)) {
+    out.push({ visit_id, substitute_staff_id });
+  }
+  return out;
 }
 
 /** ApiError body から FastAPI detail 文言を取り出す (str / [{msg}] の両形)。 */
@@ -115,8 +175,12 @@ export function StaffSubstituteDialog({ open, onClose }: StaffSubstituteDialogPr
   const [targetDate, setTargetDate] = React.useState<string>(() => todayIso());
   // 「検索」で確定した検索条件 (これが変わると query が走る)。
   const [committed, setCommitted] = React.useState<{ staffId: string; date: string } | null>(null);
-  // visit_id → 選択された substitute_staff_id.
+  // visit_id → 選択された substitute_staff_id (手動モード用に温存)。
   const [selections, setSelections] = React.useState<Record<string, string>>({});
+  // P5: 選択中プラン / 例外 visit の個別選択 / 手動モード切替。
+  const [selectedPlanId, setSelectedPlanId] = React.useState<string | null>(null);
+  const [exceptionSelections, setExceptionSelections] = React.useState<Record<string, string>>({});
+  const [manualMode, setManualMode] = React.useState(false);
   // Step3 確認パネル表示中か。
   const [confirming, setConfirming] = React.useState(false);
   const [registerAbsence, setRegisterAbsence] = React.useState(false);
@@ -135,6 +199,9 @@ export function StaffSubstituteDialog({ open, onClose }: StaffSubstituteDialogPr
     setTargetDate(todayIso());
     setCommitted(null);
     setSelections({});
+    setSelectedPlanId(null);
+    setExceptionSelections({});
+    setManualMode(false);
     setConfirming(false);
     setRegisterAbsence(false);
   }, [open]);
@@ -157,6 +224,9 @@ export function StaffSubstituteDialog({ open, onClose }: StaffSubstituteDialogPr
       return;
     }
     setSelections({});
+    setSelectedPlanId(null);
+    setExceptionSelections({});
+    setManualMode(false);
     setConfirming(false);
     setCommitted({ staffId: absentStaffId, date: targetDate });
   };
@@ -173,7 +243,56 @@ export function StaffSubstituteDialog({ open, onClose }: StaffSubstituteDialogPr
     });
   };
 
-  const selectedCount = Object.keys(selections).length;
+  // プラン選択 (ラジオ)。プランを変えると例外選択はリセットする (例外はプラン固有)。
+  const handleSelectPlan = (planId: string) => {
+    if (planId === selectedPlanId) return;
+    setSelectedPlanId(planId);
+    setExceptionSelections({});
+  };
+
+  const handleSelectException = (visitId: string, staffId: string) => {
+    setExceptionSelections((prev) => {
+      if (prev[visitId] === staffId) {
+        const next = { ...prev };
+        delete next[visitId];
+        return next;
+      }
+      return { ...prev, [visitId]: staffId };
+    });
+  };
+
+  const data = candidatesQuery.data;
+  const plans = React.useMemo(() => data?.plans ?? [], [data]);
+  const planMode = plans.length > 0 && !manualMode;
+  const selectedPlan = React.useMemo(
+    () => plans.find((p) => p.plan_id === selectedPlanId) ?? null,
+    [plans, selectedPlanId],
+  );
+
+  // visit_id → visit (例外/分散の詳細表示・軽量候補の流用に使う)。
+  const visitById = React.useMemo(() => {
+    const m = new Map<string, SubstituteVisitCandidates>();
+    for (const v of data?.visits ?? []) m.set(v.visit_id, v);
+    return m;
+  }, [data]);
+
+  const substitutions = React.useMemo(
+    () =>
+      buildSubstitutions({
+        planMode,
+        plan: selectedPlan,
+        exceptionSelections,
+        manualSelections: selections,
+      }),
+    [planMode, selectedPlan, exceptionSelections, selections],
+  );
+  const selectedCount = substitutions.length;
+
+  // プランモードで未選択の例外 (今回の差し替えに含まれない) 件数。
+  const unselectedExceptionCount =
+    planMode && selectedPlan
+      ? selectedPlan.exceptions.filter((e) => !exceptionSelections[e.visit_id]).length
+      : 0;
 
   const handleRequestApply = () => {
     if (selectedCount === 0) {
@@ -189,10 +308,7 @@ export function StaffSubstituteDialog({ open, onClose }: StaffSubstituteDialogPr
       const res = await applyMut.mutateAsync({
         absent_staff_id: committed.staffId,
         target_date: committed.date,
-        substitutions: Object.entries(selections).map(([visit_id, substitute_staff_id]) => ({
-          visit_id,
-          substitute_staff_id,
-        })),
+        substitutions,
         register_absence: registerAbsence,
       });
       toast.success(`${res.applied.length} 件の訪問を差し替えました`);
@@ -212,8 +328,6 @@ export function StaffSubstituteDialog({ open, onClose }: StaffSubstituteDialogPr
       setConfirming(false);
     }
   };
-
-  const data = candidatesQuery.data;
 
   return (
     <Dialog open={open} onOpenChange={(o) => (!o ? handleClose() : undefined)}>
@@ -315,17 +429,68 @@ export function StaffSubstituteDialog({ open, onClose }: StaffSubstituteDialogPr
                   <span className="font-semibold text-text-primary">{data.absent_staff_name}</span>{' '}
                   さんの {data.target_date} の訪問 {data.visits.length} 件
                 </div>
-                <ul className="space-y-2">
-                  {data.visits.map((visit) => (
-                    <VisitCandidateCard
-                      key={visit.visit_id}
-                      visit={visit}
-                      selectedStaffId={selections[visit.visit_id] ?? null}
-                      onSelect={(staffId) => handleSelectCandidate(visit.visit_id, staffId)}
+
+                {planMode ? (
+                  <div className="space-y-3" data-testid="staff-substitute-plan-mode">
+                    <ul className="space-y-2" data-testid="staff-substitute-plan-list">
+                      {plans.map((plan) => (
+                        <PlanCard
+                          key={plan.plan_id}
+                          plan={plan}
+                          visitById={visitById}
+                          selected={selectedPlanId === plan.plan_id}
+                          onSelect={() => handleSelectPlan(plan.plan_id)}
+                          disabled={applyMut.isPending}
+                        />
+                      ))}
+                    </ul>
+
+                    {selectedPlan && selectedPlan.exceptions.length > 0 ? (
+                      <PlanExceptionList
+                        plan={selectedPlan}
+                        visitById={visitById}
+                        selections={exceptionSelections}
+                        onSelect={handleSelectException}
+                        disabled={applyMut.isPending}
+                      />
+                    ) : null}
+
+                    <button
+                      type="button"
+                      className="text-xs text-text-muted underline underline-offset-2 hover:text-text-secondary"
+                      onClick={() => setManualMode(true)}
                       disabled={applyMut.isPending}
-                    />
-                  ))}
-                </ul>
+                      data-testid="staff-substitute-manual-toggle"
+                    >
+                      個別に選択する（最終手段）
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-2" data-testid="staff-substitute-manual-mode">
+                    {plans.length > 0 ? (
+                      <button
+                        type="button"
+                        className="text-xs text-text-muted underline underline-offset-2 hover:text-text-secondary"
+                        onClick={() => setManualMode(false)}
+                        disabled={applyMut.isPending}
+                        data-testid="staff-substitute-plan-back-button"
+                      >
+                        ← プラン選択に戻る
+                      </button>
+                    ) : null}
+                    <ul className="space-y-2">
+                      {data.visits.map((visit) => (
+                        <VisitCandidateCard
+                          key={visit.visit_id}
+                          visit={visit}
+                          selectedStaffId={selections[visit.visit_id] ?? null}
+                          onSelect={(staffId) => handleSelectCandidate(visit.visit_id, staffId)}
+                          disabled={applyMut.isPending}
+                        />
+                      ))}
+                    </ul>
+                  </div>
+                )}
               </>
             ) : null}
           </div>
@@ -340,6 +505,14 @@ export function StaffSubstituteDialog({ open, onClose }: StaffSubstituteDialogPr
             <p className="mb-2 text-sm font-semibold text-text-primary">
               {selectedCount} 件を差し替えます。よろしいですか？
             </p>
+            {unselectedExceptionCount > 0 ? (
+              <p
+                className="mb-2 text-xs text-text-muted"
+                data-testid="staff-substitute-exception-note"
+              >
+                未選択の例外患者 {unselectedExceptionCount} 件は今回の差し替えに含まれません。
+              </p>
+            ) : null}
             <label className="mb-3 flex items-center gap-2 text-sm text-text-primary">
               <Checkbox
                 checked={registerAbsence}
@@ -403,6 +576,232 @@ export function StaffSubstituteDialog({ open, onClose }: StaffSubstituteDialogPr
         )}
       </DialogContent>
     </Dialog>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// PlanCard — 引き継ぎプラン 1 件 (ラジオ選択)。層4 は受け手ごとの束を時系列表示。
+// ─────────────────────────────────────────────────────────────────────────
+
+/** 担当者 1 人の見出し行 (名前・性別・block・メタ)。 */
+function AssigneeHeading({ a }: { a: SubstitutePlanAssignee }) {
+  const bl = blockLabel(a.block);
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-sm">
+      <span className="font-medium text-text-primary">{a.staff_name}</span>
+      {bl ? (
+        <Badge variant="outline" className="text-[10px] text-text-secondary">
+          {bl}
+        </Badge>
+      ) : null}
+      <span className="text-[11px] tabular-nums text-text-muted">{formatAssigneeMeta(a)}</span>
+    </div>
+  );
+}
+
+function PlanCard({
+  plan,
+  visitById,
+  selected,
+  onSelect,
+  disabled,
+}: {
+  plan: SubstitutePlan;
+  visitById: Map<string, SubstituteVisitCandidates>;
+  selected: boolean;
+  onSelect: () => void;
+  disabled: boolean;
+}) {
+  const isDistributed = plan.tier === 4;
+  return (
+    <li
+      className={`rounded-md border p-3 ${
+        selected ? 'border-brand-primary bg-brand-primary/5' : 'border-border-default'
+      } ${disabled ? '' : 'cursor-pointer'}`}
+      data-testid={`staff-substitute-plan-${plan.plan_id}`}
+      onClick={() => {
+        if (!disabled) onSelect();
+      }}
+    >
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <input
+          type="radio"
+          name="substitute-plan"
+          checked={selected}
+          onChange={() => {}}
+          disabled={disabled}
+          className="accent-brand-primary"
+          aria-label={TIER_BADGE_LABEL[plan.tier] ?? plan.tier_label}
+          data-testid={`staff-substitute-plan-radio-${plan.plan_id}`}
+        />
+        <Badge className="text-[10px]">{TIER_BADGE_LABEL[plan.tier] ?? plan.tier_label}</Badge>
+        {plan.course_code ? (
+          <span className="text-xs font-medium text-text-secondary">{plan.course_code}</span>
+        ) : null}
+        <span className="text-[11px] tabular-nums text-text-muted">{plan.total_visits}件</span>
+        {plan.exception_count > 0 ? (
+          <Badge variant="outline" className="text-[10px] text-warning-strong">
+            例外{plan.exception_count}件
+          </Badge>
+        ) : null}
+      </div>
+
+      {isDistributed ? (
+        // 層4: 受け手ごとの束を時系列 (start_time 昇順) で表示。
+        <div className="space-y-2">
+          {plan.assignees.map((a) => {
+            const visits = a.visit_ids
+              .map((id) => visitById.get(id))
+              .filter((v): v is SubstituteVisitCandidates => v != null)
+              .slice()
+              .sort((x, y) => x.start_time.localeCompare(y.start_time));
+            return (
+              <div
+                key={a.staff_id}
+                className="rounded border border-border-default/70 bg-bg-muted/40 p-2"
+                data-testid={`staff-substitute-plan-assignee-${plan.plan_id}-${a.staff_id}`}
+              >
+                <AssigneeHeading a={a} />
+                <ul className="mt-1 space-y-0.5">
+                  {visits.map((v) => (
+                    <li
+                      key={v.visit_id}
+                      className="flex flex-wrap items-center gap-2 text-[11px] text-text-secondary"
+                    >
+                      <span className="tabular-nums text-text-primary">
+                        {trimSeconds(v.start_time)}–{trimSeconds(v.end_time)}
+                      </span>
+                      <span>{v.patient_name}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="space-y-1">
+          {plan.assignees.map((a) => (
+            <div
+              key={a.staff_id}
+              data-testid={`staff-substitute-plan-assignee-${plan.plan_id}-${a.staff_id}`}
+            >
+              <AssigneeHeading a={a} />
+            </div>
+          ))}
+        </div>
+      )}
+
+      {plan.warnings.length > 0 ? (
+        <ul
+          className="mt-2 space-y-0.5 text-[11px] text-warning-strong"
+          data-testid={`staff-substitute-plan-warnings-${plan.plan_id}`}
+        >
+          {plan.warnings.map((w, i) => (
+            <li key={i}>⚠ {w}</li>
+          ))}
+        </ul>
+      ) : null}
+    </li>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// PlanExceptionList — 選択プランの例外 visit を個別選択 (軽量候補ラジオ)。
+// 候補データは既存 data.visits[] (VisitCandidateCard と同じ) を流用する。
+// ─────────────────────────────────────────────────────────────────────────
+
+function PlanExceptionList({
+  plan,
+  visitById,
+  selections,
+  onSelect,
+  disabled,
+}: {
+  plan: SubstitutePlan;
+  visitById: Map<string, SubstituteVisitCandidates>;
+  selections: Record<string, string>;
+  onSelect: (visitId: string, staffId: string) => void;
+  disabled: boolean;
+}) {
+  return (
+    <div
+      className="rounded-md border border-warning/40 bg-warning-bg/40 p-3"
+      data-testid="staff-substitute-plan-exceptions"
+    >
+      <p className="mb-2 text-xs font-semibold text-warning-strong">
+        例外患者の個別選択（{plan.exceptions.length} 件）
+      </p>
+      <ul className="space-y-2">
+        {plan.exceptions.map((ex) => {
+          const visit = visitById.get(ex.visit_id);
+          const candidates = visit?.candidates ?? [];
+          const groupName = `substitute-plan-exception-${ex.visit_id}`;
+          const selectedStaffId = selections[ex.visit_id] ?? null;
+          return (
+            <li
+              key={ex.visit_id}
+              className="rounded border border-border-default bg-bg-base p-2"
+              data-testid={`staff-substitute-plan-exception-visit-${ex.visit_id}`}
+            >
+              <div className="mb-1 flex flex-wrap items-center gap-2 text-sm">
+                <span className="tabular-nums font-medium text-text-primary">
+                  {trimSeconds(ex.start_time)}–{trimSeconds(ex.end_time)}
+                </span>
+                <span className="text-text-primary">{ex.patient_name}</span>
+                {ex.reason ? (
+                  // レビューMEDIUM: 生の英語コードでなく日本語ラベルで表示.
+                  <span className="text-[11px] text-text-muted">
+                    {noCandidateReasonLabel(ex.reason)}
+                  </span>
+                ) : null}
+              </div>
+              {candidates.length > 0 ? (
+                <div className="space-y-1">
+                  {candidates.map((c) => {
+                    const checked = selectedStaffId === c.staff_id;
+                    return (
+                      <label
+                        key={c.staff_id}
+                        className={`flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-sm ${
+                          checked ? 'bg-brand-primary/10' : 'hover:bg-bg-muted'
+                        }`}
+                        data-testid={`staff-substitute-plan-exception-${ex.visit_id}-${c.staff_id}`}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          if (!disabled) onSelect(ex.visit_id, c.staff_id);
+                        }}
+                      >
+                        <input
+                          type="radio"
+                          name={groupName}
+                          checked={checked}
+                          onChange={() => {}}
+                          disabled={disabled}
+                          className="accent-brand-primary"
+                          aria-label={c.staff_name}
+                        />
+                        <span className="text-text-primary">{c.staff_name}</span>
+                        <span className="text-[11px] tabular-nums text-text-muted">
+                          {formatScoreBreakdown(c.score_breakdown)}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div
+                  className="text-[11px] text-text-muted"
+                  data-testid={`staff-substitute-plan-exception-no-candidates-${ex.visit_id}`}
+                >
+                  候補なし
+                </div>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
   );
 }
 

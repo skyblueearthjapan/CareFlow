@@ -153,6 +153,8 @@ const VISIT_1 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const VISIT_2 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const PATIENT_1 = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const PATIENT_2 = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+const PLAN_1 = 'plan-tier1';
+const PLAN_4 = 'plan-tier4';
 
 function candidatesResponse() {
   return {
@@ -216,6 +218,103 @@ function openWithResults() {
   mocks.candidatesResult.data = candidatesResponse();
   render(<StaffSubstituteDialog open onClose={() => {}} />);
   // Step1: 欠勤スタッフを選び「検索」.
+  fireEvent.change(screen.getByTestId('staff-substitute-absent-select'), {
+    target: { value: STAFF_ABSENT },
+  });
+  fireEvent.click(screen.getByTestId('staff-substitute-search-button'));
+}
+
+/** plans 付きのレスポンス。VISIT_2 は例外 (候補に STAFF_SUB_B)。 */
+function candidatesResponseWithPlans() {
+  const base = candidatesResponse();
+  // 例外 visit として個別選択できるよう VISIT_2 に候補を 1 件与える。
+  base.visits[1].candidates = [
+    {
+      staff_id: STAFF_SUB_B,
+      staff_name: '代替 次郎',
+      staff_sex: 'male',
+      score: 30.0,
+      score_breakdown: { continuity_bonus: 0, travel_penalty: -3, load_penalty: -5 },
+    },
+  ];
+  base.visits[1].no_candidate_reasons = [];
+  return {
+    ...base,
+    plans: [
+      {
+        plan_id: PLAN_1,
+        tier: 1,
+        tier_label: '丸ごと引き継ぎ',
+        course_id: null,
+        course_code: 'C-01',
+        assignees: [
+          {
+            staff_id: STAFF_SUB_A,
+            staff_name: '代替 花子',
+            staff_sex: 'female',
+            block: 'full',
+            visit_ids: [VISIT_1],
+            visit_count: 1,
+            added_travel_minutes: 12,
+            existing_load: 3,
+          },
+        ],
+        total_visits: 2,
+        exception_count: 1,
+        exceptions: [
+          {
+            visit_id: VISIT_2,
+            patient_id: PATIENT_2,
+            patient_name: '患者 B',
+            start_time: '11:00',
+            end_time: '12:00',
+            reason: '時間衝突',
+          },
+        ],
+        score: 9500,
+        warnings: ['例外が 1 件あります'],
+      },
+      {
+        plan_id: PLAN_4,
+        tier: 4,
+        tier_label: '分散',
+        course_id: null,
+        course_code: null,
+        assignees: [
+          {
+            staff_id: STAFF_SUB_A,
+            staff_name: '代替 花子',
+            staff_sex: 'female',
+            block: 'full',
+            visit_ids: [VISIT_1],
+            visit_count: 1,
+            added_travel_minutes: 5,
+            existing_load: 2,
+          },
+          {
+            staff_id: STAFF_SUB_B,
+            staff_name: '代替 次郎',
+            staff_sex: 'male',
+            block: 'full',
+            visit_ids: [VISIT_2],
+            visit_count: 1,
+            added_travel_minutes: 8,
+            existing_load: 4,
+          },
+        ],
+        total_visits: 2,
+        exception_count: 0,
+        exceptions: [],
+        score: 100,
+        warnings: [],
+      },
+    ],
+  };
+}
+
+function openWithPlans() {
+  mocks.candidatesResult.data = candidatesResponseWithPlans();
+  render(<StaffSubstituteDialog open onClose={() => {}} />);
   fireEvent.change(screen.getByTestId('staff-substitute-absent-select'), {
     target: { value: STAFF_ABSENT },
   });
@@ -357,6 +456,83 @@ describe('StaffSubstituteDialog', () => {
     expect(applyBtn).toBeDisabled();
     expect(applyBtn).toHaveTextContent('0');
   });
+
+  // ─── P5 引き継ぎプラン UI ───────────────────────────────────────────────
+
+  it('20. plans あり → プランカード (層バッジ・担当・件数) が描画される', () => {
+    openWithPlans();
+    // プランモードに入り、両プランのカードが描画される。
+    expect(screen.getByTestId('staff-substitute-plan-mode')).toBeInTheDocument();
+    const card1 = screen.getByTestId(`staff-substitute-plan-${PLAN_1}`);
+    expect(card1).toHaveTextContent('丸ごと');
+    expect(card1).toHaveTextContent('代替 花子');
+    expect(card1).toHaveTextContent('C-01');
+    expect(card1).toHaveTextContent('例外1件');
+    // 層4 分散カードは受け手ごとの束を表示。
+    const card4 = screen.getByTestId(`staff-substitute-plan-${PLAN_4}`);
+    expect(card4).toHaveTextContent('分散');
+    expect(
+      screen.getByTestId(`staff-substitute-plan-assignee-${PLAN_4}-${STAFF_SUB_B}`),
+    ).toHaveTextContent('患者 B');
+    // 従来の visit 単位 UI は初期状態では出ない。
+    expect(screen.queryByTestId('staff-substitute-manual-mode')).not.toBeInTheDocument();
+  });
+
+  it('21. プラン選択 → 例外セクション + 例外候補ラジオが描画される', () => {
+    openWithPlans();
+    // 未選択のうちは例外セクションは出ない。
+    expect(screen.queryByTestId('staff-substitute-plan-exceptions')).not.toBeInTheDocument();
+    // 層1 プランを選択。
+    fireEvent.click(screen.getByTestId(`staff-substitute-plan-${PLAN_1}`));
+    const exSection = screen.getByTestId('staff-substitute-plan-exceptions');
+    expect(exSection).toHaveTextContent('患者 B');
+    // 例外 visit の候補ラジオ (STAFF_SUB_B) が流用表示される。
+    expect(
+      screen.getByTestId(`staff-substitute-plan-exception-${VISIT_2}-${STAFF_SUB_B}`),
+    ).toHaveTextContent('代替 次郎');
+  });
+
+  it('22. 最終手段切替 → 従来 UI → プラン選択に戻る', () => {
+    openWithPlans();
+    // 「個別に選択する」で従来 visit 単位 UI へ。
+    fireEvent.click(screen.getByTestId('staff-substitute-manual-toggle'));
+    expect(screen.getByTestId('staff-substitute-manual-mode')).toBeInTheDocument();
+    expect(screen.getByTestId(`staff-substitute-visit-${VISIT_1}`)).toBeInTheDocument();
+    expect(screen.queryByTestId('staff-substitute-plan-mode')).not.toBeInTheDocument();
+    // 「プラン選択に戻る」で復帰。
+    fireEvent.click(screen.getByTestId('staff-substitute-plan-back-button'));
+    expect(screen.getByTestId('staff-substitute-plan-mode')).toBeInTheDocument();
+  });
+
+  it('23. プラン選択 + 例外選択 → 展開 payload (assignees + 例外合流)', async () => {
+    mocks.applyMutateAsync.mockResolvedValue({ applied: [{}, {}], warnings: [] });
+    openWithPlans();
+
+    // 層1 プランを選択 (assignee: VISIT_1 → STAFF_SUB_A)。
+    fireEvent.click(screen.getByTestId(`staff-substitute-plan-${PLAN_1}`));
+    // 例外 VISIT_2 の候補 STAFF_SUB_B を選択。
+    selectRadio(`staff-substitute-plan-exception-${VISIT_2}-${STAFF_SUB_B}`);
+    // 適用 → 確認 → 差し替える。
+    fireEvent.click(screen.getByTestId('staff-substitute-apply-button'));
+    fireEvent.click(screen.getByTestId('staff-substitute-confirm-apply'));
+
+    expect(mocks.applyMutateAsync).toHaveBeenCalledTimes(1);
+    const payload = mocks.applyMutateAsync.mock.calls[0][0];
+    expect(payload.substitutions).toEqual([
+      { visit_id: VISIT_1, substitute_staff_id: STAFF_SUB_A },
+      { visit_id: VISIT_2, substitute_staff_id: STAFF_SUB_B },
+    ]);
+  });
+
+  it('24. plans 空 → 従来 UI のみ (後退なし)', () => {
+    openWithResults();
+    // plans が無いので visit 単位 UI が直接出る。
+    expect(screen.getByTestId('staff-substitute-manual-mode')).toBeInTheDocument();
+    expect(screen.getByTestId(`staff-substitute-visit-${VISIT_1}`)).toBeInTheDocument();
+    expect(screen.queryByTestId('staff-substitute-plan-mode')).not.toBeInTheDocument();
+    // プラン選択に戻るボタンも出ない (plans 空)。
+    expect(screen.queryByTestId('staff-substitute-plan-back-button')).not.toBeInTheDocument();
+  });
 });
 
 describe('staffSubstitute zod', () => {
@@ -374,6 +550,17 @@ describe('staffSubstitute zod', () => {
       substitutions: [],
     };
     expect(() => substituteApplyRequestSchema.parse(bad)).toThrow();
+  });
+
+  it('plans を parse でき、無いときは既定 [] になる', () => {
+    const withPlans = substituteCandidatesResponseSchema.parse(candidatesResponseWithPlans());
+    expect(withPlans.plans).toHaveLength(2);
+    expect(withPlans.plans[0].tier).toBe(1);
+    expect(withPlans.plans[0].assignees[0].visit_ids).toEqual([VISIT_1]);
+    expect(withPlans.plans[0].exceptions[0].visit_id).toBe(VISIT_2);
+    // plans なしのレスポンスは [] へ後退。
+    const noPlans = substituteCandidatesResponseSchema.parse(candidatesResponse());
+    expect(noPlans.plans).toEqual([]);
   });
 
   it('apply リクエストの register_absence は既定 false', () => {
