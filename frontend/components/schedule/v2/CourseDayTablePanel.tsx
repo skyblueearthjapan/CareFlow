@@ -33,7 +33,7 @@
  *   - admin / manager: 編集可 (ドロップ + 担当変更 + 主要 4 + 二次操作 + 個別 reset)
  *   - staff: 閲覧のみ
  */
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import {
   DndContext,
   DragOverlay,
@@ -139,7 +139,7 @@ import {
   buildPoolDraggableId,
   parsePoolDraggableId,
 } from './PoolPanel';
-import { PoolOverviewPane, type PoolOverviewPaneHandle } from './PoolOverviewPane';
+import { PoolOverviewPane } from './PoolOverviewPane';
 import type { SlotIndex } from '@/lib/schemas/v2/patient_fixed_visit';
 // Phase G-44: 「希望訪問パターン」 vs 「実 visit 数」 の共通 utility.
 import { countWeekVisits, getDesiredWeeklyVisitCount } from '@/lib/scheduling/preferred-visits';
@@ -1652,12 +1652,6 @@ export function CourseDayTablePanel({
   const [weeklyRitualGuideOpen, setWeeklyRitualGuideOpen] = useState(false);
   const isProcessing = generateWeekMut.isPending || assignStaffOnlyMut.isPending;
 
-  // Stage P-3: 「プール投入」ボタン → 右ペイン (PoolOverviewPane) へのスクロール＋ハイライト＋
-  // 「効果を計算」自動実行のための ref / state。
-  const poolOverviewRef = useRef<PoolOverviewPaneHandle>(null);
-  const poolPaneRef = useRef<HTMLElement>(null);
-  const [poolPaneHighlighted, setPoolPaneHighlighted] = useState(false);
-
   const handleGenerateWeek = async () => {
     if (!canEdit) {
       toast.warning('編集権限がありません');
@@ -1719,19 +1713,6 @@ export function CourseDayTablePanel({
       toast.error(`自動スタッフ割当に失敗しました: ${formatErr(err)}`);
     }
   };
-
-  // Stage P-3: 「プール投入」ボタン → 右ペイン (保留プール) へのスクロール＋ハイライト＋
-  // PoolOverviewPane の「効果を計算」自動実行。
-  // 既存の明示発火の原則は「ユーザーがボタンを押した」ことで満たされる。
-  // 連打時は前のタイマーをクリアしてハイライト 2 秒を仕切り直す。
-  const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const handleDiffAddClick = useCallback(() => {
-    poolPaneRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    setPoolPaneHighlighted(true);
-    if (highlightTimerRef.current !== undefined) clearTimeout(highlightTimerRef.current);
-    highlightTimerRef.current = setTimeout(() => setPoolPaneHighlighted(false), 2000);
-    poolOverviewRef.current?.triggerCompute();
-  }, []);
 
   // ─── 担当 dropdown 変更 (PATCH /courses/{id}) ───────────────────
   const updateCourseMut = useUpdateCourse();
@@ -2011,18 +1992,8 @@ export function CourseDayTablePanel({
                 <UserX className="mr-1 h-4 w-4" aria-hidden />
                 欠勤対応
               </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="default"
-                onClick={handleDiffAddClick}
-                disabled={isProcessing}
-                data-testid="diff-add-button"
-                title="保留プールから患者ごとに検討・投入します"
-              >
-                <Plus className="mr-1 h-4 w-4" aria-hidden />
-                プール投入
-              </Button>
+              {/* PO 指示 2026-07-03: 「プール投入」ボタンは削除。保留プールの
+                  「効果を表示」ボタン (PoolOverviewPane) が入口として十分なため。 */}
               <Button
                 type="button"
                 size="sm"
@@ -2443,8 +2414,7 @@ export function CourseDayTablePanel({
 
           {/* 右ペイン: 保留プール (sticky で追従) */}
           <aside
-            ref={poolPaneRef}
-            className={`sticky top-4 self-start max-h-[calc(100vh-2rem)] overflow-y-auto rounded${poolPaneHighlighted ? ' ring-2 ring-brand-primary' : ''}`}
+            className="sticky top-4 self-start max-h-[calc(100vh-2rem)] overflow-y-auto rounded"
             data-testid="course-day-pool-pane"
             // Wave 37 Phase 3-C: 配置済み slot マップを serialize してテスト・debug 用に露出.
             // 形式: "patientId:slot,...,patientId:slot"
@@ -2467,7 +2437,6 @@ export function CourseDayTablePanel({
                 「効果を計算」ボタン・delta バッジ・効果順ソートを追加する。
                 患者カードクリック→詳細ダイアログへの既存導線は変更しない。 */}
             <PoolOverviewPane
-              ref={poolOverviewRef}
               patients={poolPatients}
               disabled={!canEdit}
               assignedSlotsByPatient={assignedSlotsByPatient}

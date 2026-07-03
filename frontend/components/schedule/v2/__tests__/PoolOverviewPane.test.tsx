@@ -263,23 +263,24 @@ describe('PoolOverviewPane', () => {
     expect(screen.queryByTestId('pool-overview-no-slot-badge')).toBeNull();
   });
 
-  // ── 3-4. 効果順ソート / 計算前トグル無効 ──────────────────────────────────
+  // ── 3-4. 効果順自動ソート (PO 指示 2026-07-03: トグル廃止・結果表示後は常に効果順) ──
 
-  it('計算前はソートトグルが disabled', () => {
+  it('ソートトグルは描画されない (廃止)', () => {
     render(<PoolOverviewPane {...BASE_PROPS} patients={[makePatient('p1', '田中')]} />);
-    const toggle = screen.getByTestId('pool-overview-sort-toggle');
-    expect(toggle).toBeDisabled();
+    expect(screen.queryByTestId('pool-overview-sort-toggle')).toBeNull();
   });
 
-  it('計算後はソートトグルが有効になる', () => {
-    mockMutationState.isSuccess = true;
-    mockMutationState.data = { items: [] };
-
-    render(<PoolOverviewPane {...BASE_PROPS} patients={[makePatient('p1', '田中')]} />);
-    expect(screen.getByTestId('pool-overview-sort-toggle')).not.toBeDisabled();
+  it('計算前は従来順のまま (自動ソートは結果表示後のみ)', () => {
+    const patients = [makePatient('p2', '佐藤'), makePatient('p1', '田中')];
+    render(<PoolOverviewPane {...BASE_PROPS} patients={patients} />);
+    const cards = screen
+      .getAllByTestId(/^card-p/)
+      .map((el) => el.getAttribute('data-testid')!.replace('card-', ''));
+    expect(cards[0]).toBe('p2');
+    expect(cards[1]).toBe('p1');
   });
 
-  it('効果順ソート: best_delta_minutes 昇順 → null 末尾 → candidate_count=0 最後尾', () => {
+  it('結果表示後は自動で効果順: delta 昇順 → null 末尾 → candidate_count=0 最後尾', () => {
     mockMutationState.isSuccess = true;
     mockMutationState.data = {
       items: [
@@ -303,10 +304,7 @@ describe('PoolOverviewPane', () => {
 
     render(<PoolOverviewPane {...BASE_PROPS} patients={patients} />);
 
-    // ソート ON にする
-    fireEvent.click(screen.getByTestId('pool-overview-sort-toggle'));
-
-    // DOM 内のカード順を確認
+    // トグル操作なしで自動的に効果順に並ぶ。
     const cards = screen
       .getAllByTestId(/^card-p/)
       .map((el) => el.getAttribute('data-testid')!.replace('card-', ''));
@@ -316,33 +314,6 @@ describe('PoolOverviewPane', () => {
     expect(cards[1]).toBe('p2');
     expect(cards[2]).toBe('p3');
     expect(cards[3]).toBe('p4');
-  });
-
-  it('効果順ソート OFF に戻すと従来順に戻る', () => {
-    mockMutationState.isSuccess = true;
-    mockMutationState.data = {
-      items: [
-        { patient_id: 'p1', best_delta_minutes: 20, candidate_count: 1, top_excluded_reason: null, best_slot: null },
-        { patient_id: 'p2', best_delta_minutes: 5, candidate_count: 1, top_excluded_reason: null, best_slot: null },
-      ],
-    };
-    // 従来順: p1, p2
-    const patients = [makePatient('p1', '田中'), makePatient('p2', '佐藤')];
-    render(<PoolOverviewPane {...BASE_PROPS} patients={patients} />);
-
-    // ON にしてソート適用 (p2 が先)
-    fireEvent.click(screen.getByTestId('pool-overview-sort-toggle'));
-    let cards = screen
-      .getAllByTestId(/^card-p/)
-      .map((el) => el.getAttribute('data-testid')!.replace('card-', ''));
-    expect(cards[0]).toBe('p2');
-
-    // OFF に戻す (p1 が先の従来順)
-    fireEvent.click(screen.getByTestId('pool-overview-sort-toggle'));
-    cards = screen
-      .getAllByTestId(/^card-p/)
-      .map((el) => el.getAttribute('data-testid')!.replace('card-', ''));
-    expect(cards[0]).toBe('p1');
   });
 
   // ── 5. 50 件超過 ─────────────────────────────────────────────────────────

@@ -296,15 +296,15 @@ export function PoolGroupedByWeekday({
 
   return (
     <Card className="p-3">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <h2 className="flex shrink-0 items-center gap-1 text-sm font-semibold text-text-primary">
+      {/* PO 指示 2026-07-03: 患者数スパンを削除しヘッダを 1 行に収める
+          (320px ペインで headerAction と合わせて横スクロールが発生していた).
+          flex-wrap で最悪時も折返しにフォールバック. */}
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <h2 className="flex items-center gap-1 text-sm font-semibold text-text-primary">
           <Inbox className="h-4 w-4" aria-hidden />
-          保留プール (希望曜日別)
+          保留プール
         </h2>
-        <div className="flex items-center gap-2">
-          {headerAction ?? null}
-          <span className="tnum text-xs text-text-muted">{patients.length} 名</span>
-        </div>
+        {headerAction ?? null}
       </div>
       <div
         ref={setNodeRef}

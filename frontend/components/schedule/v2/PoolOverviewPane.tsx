@@ -4,9 +4,10 @@
  * PoolOverviewPane — Stage P-2 保留プール俯瞰パネル.
  *
  * PoolGroupedByWeekday を薄くラップし、以下の俯瞰機能を追加する:
- *   - ヘッダーの「効果を計算」ボタン (POST /v2/pool-overview を on-demand 実行)
+ *   - ヘッダーの「効果を表示」ボタン (POST /v2/pool-overview を on-demand 実行・緑)
  *   - 各患者行への delta バッジ (+N分) と「投入先なし」バッジ
- *   - 「効果順」ソートトグル (best_delta_minutes 昇順; null 末尾、candidate_count=0 最後尾)
+ *   - 結果表示後は自動で効果順に並ぶ (best_delta_minutes 昇順; null 末尾、
+ *     candidate_count=0 最後尾。ソートトグルは PO 指示 2026-07-03 で廃止)
  *
  * 設計上のルール:
  *   - 自動発火なし: ボタン押下でのみ pool-overview を実行する
@@ -17,7 +18,7 @@
  * (CourseDayTablePanel 内部だと単体テストが困難なため切り出し)
  */
 import * as React from 'react';
-import { Loader2, Sparkles, ArrowUpDown } from 'lucide-react';
+import { Loader2, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { Badge } from '@/components/ui/badge';
@@ -156,9 +157,6 @@ export const PoolOverviewPane = React.forwardRef<PoolOverviewPaneHandle, PoolOve
   /** 計算済みかどうか (ボタン押下後に true) */
   const hasResult = overviewMut.isSuccess;
 
-  /** 「効果順」ソート ON/OFF */
-  const [sortEnabled, setSortEnabled] = React.useState(false);
-
   /** 計算ボタン押下ハンドラ */
   const handleCompute = React.useCallback(() => {
     const ids = patients.map((p) => p.id);
@@ -194,11 +192,11 @@ export const PoolOverviewPane = React.forwardRef<PoolOverviewPaneHandle, PoolOve
   // imperative handle を設定する。ユーザーがボタンを押した扱いで計算を起動する。
   React.useImperativeHandle(ref, () => ({ triggerCompute: handleCompute }), [handleCompute]);
 
-  /** 効果順ソート適用後の patients */
+  /** 効果順ソート適用後の patients (結果があれば常に効果順・トグル廃止 PO 指示 2026-07-03) */
   const sortedPatients = React.useMemo<PatientRead[]>(() => {
-    if (!sortEnabled || !hasResult) return patients;
+    if (!hasResult) return patients;
     return [...patients].sort((a, b) => compareByEffect(a, b, overviewByPatient));
-  }, [patients, sortEnabled, hasResult, overviewByPatient]);
+  }, [patients, hasResult, overviewByPatient]);
 
   /** 各 PatientCard を delta/no-slot バッジでラップした renderCard */
   const augmentedRenderCard = React.useCallback(
@@ -224,39 +222,25 @@ export const PoolOverviewPane = React.forwardRef<PoolOverviewPaneHandle, PoolOve
     [renderCard, overviewByPatient],
   );
 
-  /** ヘッダーに注入するアクション領域 */
+  /** ヘッダーに注入するアクション領域 (PO 指示 2026-07-03: ボタン 1 つに集約し
+      横スクロールを解消。表示後は自動で効果順に並ぶためソートトグルは廃止). */
   const headerAction = (
-    <div className="flex items-center gap-1">
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        onClick={handleCompute}
-        disabled={overviewMut.isPending}
-        className="h-6 px-2 text-[11px]"
-        data-testid="pool-overview-compute-button"
-      >
-        {overviewMut.isPending ? (
-          <Loader2 className="mr-1 h-3 w-3 animate-spin" aria-hidden />
-        ) : (
-          <Sparkles className="mr-1 h-3 w-3" aria-hidden />
-        )}
-        効果を計算
-      </Button>
-      <Button
-        type="button"
-        variant={sortEnabled ? 'default' : 'ghost'}
-        size="sm"
-        onClick={() => setSortEnabled((prev) => !prev)}
-        disabled={!hasResult}
-        className="h-6 px-2 text-[11px]"
-        data-testid="pool-overview-sort-toggle"
-        title={hasResult ? '効果順に並べ替え' : '先に「効果を計算」を実行してください'}
-      >
-        <ArrowUpDown className="mr-1 h-3 w-3" aria-hidden />
-        効果順
-      </Button>
-    </div>
+    <Button
+      type="button"
+      variant="default"
+      size="sm"
+      onClick={handleCompute}
+      disabled={overviewMut.isPending}
+      className="h-6 px-2 text-[11px]"
+      data-testid="pool-overview-compute-button"
+    >
+      {overviewMut.isPending ? (
+        <Loader2 className="mr-1 h-3 w-3 animate-spin" aria-hidden />
+      ) : (
+        <Sparkles className="mr-1 h-3 w-3" aria-hidden />
+      )}
+      効果を表示
+    </Button>
   );
 
   return (
