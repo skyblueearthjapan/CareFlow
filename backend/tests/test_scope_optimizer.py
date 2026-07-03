@@ -608,3 +608,56 @@ async def test_same_address_same_time_pair_yields_no_phantom_step(db) -> None:
     ]
     # 前後メトリクスも不変.
     assert result.before == result.after
+
+
+# ---------------------------------------------------------------------------
+# §10 フォーカス最適化: 問題範囲 (focus) と探索範囲 (search) の分離
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_focus_search_separation_moves_out_of_focus(db) -> None:
+    """フォーカス=コースA・探索=拠点全体のとき、A の患者を B の好位置へ移せる.
+
+    - 従来 (探索=フォーカス) では B へ動けない (コース内の並べ替えのみ)。
+    - 分離後は移動先がフォーカス外でも可。ただし動かす対象はフォーカス内のみ
+      (B に movable な患者がいても動かさない)。
+    - フォーカスの負担が実際に減り、探索範囲全体も悪化しない。
+    """
+    office, p = await _sandwich_scenario(db, target_movability="time_flexible", alt_weekday=0)
+    # course B 側にも movable な PFV を与える (フォーカス外なので動かないことの検証用).
+    pb1 = (await db.scalars(select(Patient).where(Patient.code == "PB1"))).one()
+    await _seed_pfv(db, patient=pb1, weekday=0, start=time(9, 30), movability="time_flexible")
+    await db.commit()
+
+    focus = _scope(office, weekdays=[0], course_codes=["A"])
+
+    # 従来挙動 (search 省略 = フォーカスと同じ): B へは動けない.
+    r_same = await simulate_scope_optimization(
+        db, iso_year=ISO_YEAR, iso_week=ISO_WEEK, scope=focus, config=CONFIG
+    )
+    assert all(s.candidate.cand_course_code == "A" for s in r_same.steps)
+
+    # §10: 探索=拠点全体 → B の同住所隣 (低コスト枠) へ移せる.
+    r = await simulate_scope_optimization(
+        db,
+        iso_year=ISO_YEAR,
+        iso_week=ISO_WEEK,
+        scope=focus,
+        config=CONFIG,
+        search=_scope(office),
+    )
+    assert r.steps, r.excluded
+    first = r.steps[0]
+    assert first.patient_id == p.id
+    assert first.candidate.cand_course_code == "B"  # 移動先はフォーカス外
+    # 動かす対象はフォーカス内の枠のみ (B の PB1 は対象外).
+    assert {s.patient_id for s in r.steps} <= {p.id}
+    # フォーカスの負担が減り、探索範囲全体も悪化しない.
+    assert r.focus_before is not None and r.focus_after is not None
+    assert r.focus_after.travel_minutes < r.focus_before.travel_minutes
+    assert (r.before.travel_minutes + r.before.buffer_minutes) >= (
+        r.after.travel_minutes + r.after.buffer_minutes
+    )
+    # 従来挙動 (search=focus) では focus 合計 = 全体合計.
+    assert r_same.focus_before == r_same.before

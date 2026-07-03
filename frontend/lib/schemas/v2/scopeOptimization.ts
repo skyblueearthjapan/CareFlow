@@ -83,15 +83,21 @@ export type ScopeOptimizationExcludedSummary = z.infer<
   typeof scopeOptimizationExcludedSummarySchema
 >;
 
+/** フォーカス / 探索範囲の共通形 (BE `ScopeOptimizationScope`). */
+export const scopeOptimizationScopeSchema = z.object({
+  office_id: z.string().uuid(),
+  weekdays: z.array(z.number().int().min(0).max(6)).nullable().default(null),
+  course_codes: z.array(z.string()).nullable().default(null),
+});
+export type ScopeOptimizationScopeInput = z.input<typeof scopeOptimizationScopeSchema>;
+
 /** POST /v2/scope-optimization/simulate リクエスト (BE `ScopeOptimizationSimulateRequest`). */
 export const scopeOptimizationSimulateRequestSchema = z.object({
   iso_year: z.number().int(),
   iso_week: z.number().int(),
-  scope: z.object({
-    office_id: z.string().uuid(),
-    weekdays: z.array(z.number().int().min(0).max(6)).nullable().default(null),
-    course_codes: z.array(z.string()).nullable().default(null),
-  }),
+  scope: scopeOptimizationScopeSchema,
+  // §10: 探索範囲 (フォーカスを包含)。null/省略 = フォーカスと同じ (従来挙動).
+  search_scope: scopeOptimizationScopeSchema.nullable().optional(),
 });
 export type ScopeOptimizationSimulateRequest = z.input<
   typeof scopeOptimizationSimulateRequestSchema
@@ -104,13 +110,11 @@ export type ScopeOptimizationSimulateRequest = z.input<
 export const scopeOptimizationApplyRequestSchema = z.object({
   iso_year: z.number().int(),
   iso_week: z.number().int(),
-  scope: z.object({
-    office_id: z.string().uuid(),
-    weekdays: z.array(z.number().int().min(0).max(6)).nullable().default(null),
-    course_codes: z.array(z.string()).nullable().default(null),
-  }),
+  scope: scopeOptimizationScopeSchema,
   state_token: z.string().min(1),
   steps: z.array(scopeOptimizationStepSchema).min(1),
+  // §10: simulate 時と同じ探索範囲をエコーバック (state_token の再計算規約を一致させる).
+  search_scope: scopeOptimizationScopeSchema.nullable().optional(),
 });
 export type ScopeOptimizationApplyRequest = z.input<typeof scopeOptimizationApplyRequestSchema>;
 
@@ -155,6 +159,9 @@ export const scopeOptimizationSimulateResponseSchema = z.object({
   state_token: z.string(),
   // H2: コース別の実行後見通し (旧 BE 互換で空既定).
   courses: z.array(scopeOptimizationCourseBeforeAfterSchema).default([]),
+  // §10: フォーカスのみの前後合計 (旧 BE 互換で null 既定).
+  focus_before: scopeOptimizationMetricsSchema.nullable().default(null),
+  focus_after: scopeOptimizationMetricsSchema.nullable().default(null),
 });
 export type ScopeOptimizationSimulateResponse = z.infer<
   typeof scopeOptimizationSimulateResponseSchema

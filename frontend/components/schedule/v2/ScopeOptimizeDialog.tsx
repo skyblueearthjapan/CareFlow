@@ -283,6 +283,10 @@ export function ScopeOptimizeDialog({
   // 未選択 = 全部 (チップの「全曜日」「全コース」は選択クリアと同義).
   const [weekdaySel, setWeekdaySel] = React.useState<Set<number>>(new Set());
   const [courseSel, setCourseSel] = React.useState<Set<string>>(new Set());
+  // §10: 探索範囲 (移動先を探す範囲)。既定 = 拠点全体 (推奨).
+  const [searchMode, setSearchMode] = React.useState<'office' | 'same' | 'custom'>('office');
+  const [searchWeekdaySel, setSearchWeekdaySel] = React.useState<Set<number>>(new Set());
+  const [searchCourseSel, setSearchCourseSel] = React.useState<Set<string>>(new Set());
   const simulateMut = useScopeOptimizationSimulate();
   const applyMut = useScopeOptimizationApply();
   const [result, setResult] = React.useState<ScopeOptimizationSimulateResponse | null>(null);
@@ -291,9 +295,33 @@ export function ScopeOptimizeDialog({
   const [resultScope, setResultScope] = React.useState<{
     weekdays: number[] | null;
     courseCodes: string[] | null;
+    // §10: 計算に使った探索範囲 (null = フォーカスと同じ)。apply でエコーバックする.
+    search: { weekdays: number[] | null; courseCodes: string[] | null } | null;
   } | null>(null);
   // 適用する手数 (先頭から N 手。既定 = 全手).
   const [applyCount, setApplyCount] = React.useState(0);
+
+  /** §10: 現在の探索範囲選択から search 部分を組み立てる (null = フォーカスと同じ). */
+  const buildSearch = React.useCallback(
+    (
+      focusWeekdays: number[] | null,
+      focusCourses: string[] | null,
+    ): { weekdays: number[] | null; courseCodes: string[] | null } | null => {
+      if (searchMode === 'same') return null;
+      if (searchMode === 'office') return { weekdays: null, courseCodes: null };
+      // custom: フォーカスとの和集合を送る (探索 ⊇ フォーカスを UI 側でも保証).
+      const wd =
+        focusWeekdays === null || searchWeekdaySel.size === 0
+          ? null
+          : [...new Set([...focusWeekdays, ...searchWeekdaySel])].sort((a, b) => a - b);
+      const cc =
+        focusCourses === null || searchCourseSel.size === 0
+          ? null
+          : [...new Set([...focusCourses, ...searchCourseSel])].sort();
+      return { weekdays: wd, courseCodes: cc };
+    },
+    [searchMode, searchWeekdaySel, searchCourseSel],
+  );
 
   const runSimulate = React.useCallback(
     (
@@ -302,9 +330,14 @@ export function ScopeOptimizeDialog({
       // open 直後は manualOfficeId の setState が未反映のため、外部導線からの
       // 自動計算では拠点を明示的に受け取る (state 反映待ちの stale 回避).
       officeOverride?: string,
+      // 同様に searchMode の setState 未反映を避けるため明示指定できる
+      // (undefined = 現在の選択から組み立てる).
+      searchOverride?: { weekdays: number[] | null; courseCodes: string[] | null } | null,
     ) => {
       const oid = officeOverride ?? effectiveOfficeId;
       if (!oid) return;
+      const search =
+        searchOverride !== undefined ? searchOverride : buildSearch(weekdays, courseCodes);
       setResult(null);
       setResultScope(null);
       simulateMut.mutate(
@@ -312,11 +345,15 @@ export function ScopeOptimizeDialog({
           iso_year: isoYear,
           iso_week: isoWeek,
           scope: { office_id: oid, weekdays, course_codes: courseCodes },
+          // undefined ならフィールド自体が JSON から消える (旧 BE の extra=forbid にも透過).
+          search_scope: search
+            ? { office_id: oid, weekdays: search.weekdays, course_codes: search.courseCodes }
+            : undefined,
         },
         {
           onSuccess: (data) => {
             setResult(data);
-            setResultScope({ weekdays, courseCodes });
+            setResultScope({ weekdays, courseCodes, search });
             setApplyCount(data.steps.length);
           },
         },
@@ -324,7 +361,7 @@ export function ScopeOptimizeDialog({
     },
     // mutation オブジェクトは毎レンダーで変わるため mutate 呼出のみに依存を絞る.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [effectiveOfficeId, isoYear, isoWeek],
+    [effectiveOfficeId, isoYear, isoWeek, buildSearch],
   );
 
   // 開くたびにまっさらな状態から始める (前回の範囲・結果を持ち越さない).
@@ -342,6 +379,9 @@ export function ScopeOptimizeDialog({
     setManualOfficeId(initialOfficeId ?? null);
     setWeekdaySel(new Set(wd ?? []));
     setCourseSel(new Set(cc ?? []));
+    setSearchMode('office'); // §10: 探索範囲の既定は拠点全体 (推奨).
+    setSearchWeekdaySel(new Set());
+    setSearchCourseSel(new Set());
     setResult(null);
     setResultScope(null);
     setApplyCount(0);
@@ -349,8 +389,9 @@ export function ScopeOptimizeDialog({
     applyMut.reset();
     const autoOfficeId = officeId ?? initialOfficeId ?? null;
     if (initialScope && autoOfficeId) {
-      // manualOfficeId の setState はこの effect 内では未反映のため明示的に渡す.
-      runSimulate(wd, cc, autoOfficeId);
+      // manualOfficeId / searchMode の setState はこの effect 内では未反映のため
+      // 明示的に渡す (拠点=行の拠点・探索=拠点全体).
+      runSimulate(wd, cc, autoOfficeId, { weekdays: null, courseCodes: null });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
@@ -395,6 +436,14 @@ export function ScopeOptimizeDialog({
         },
         state_token: result.state_token,
         steps,
+        // §10: simulate と同じ探索範囲をエコーバック (state_token の再計算規約を一致).
+        search_scope: resultScope.search
+          ? {
+              office_id: effectiveOfficeId,
+              weekdays: resultScope.search.weekdays,
+              course_codes: resultScope.search.courseCodes,
+            }
+          : undefined,
       },
       {
         onSuccess: (data) => {
@@ -479,8 +528,11 @@ export function ScopeOptimizeDialog({
           </div>
         ) : (
           <div className="space-y-4 py-1">
-            {/* a. 範囲選択 */}
+            {/* a. 範囲選択 (§10: ①フォーカス → ②探索範囲 の 2 段階) */}
             <div className="space-y-2">
+              <div className="text-xs font-semibold text-text-primary">
+                ① 対策を練りたい範囲（フォーカス）
+              </div>
               {/* 全拠点モードでダイアログ内選択した場合のみ、拠点の切替チップを出す. */}
               {!officeId ? (
                 <div
@@ -539,9 +591,82 @@ export function ScopeOptimizeDialog({
                   </FilterChip>
                 ))}
               </div>
+              {/* §10 ②: 移動先・入れ替え相手を探す範囲. */}
+              <div className="pt-1 text-xs font-semibold text-text-primary">② 移動先を探す範囲</div>
+              <div
+                className="flex flex-wrap items-center gap-2"
+                data-testid="scope-optimize-search-filter"
+              >
+                <span className="w-14 text-xs text-text-muted">探索</span>
+                <FilterChip
+                  active={searchMode === 'office'}
+                  onClick={() => setSearchMode('office')}
+                >
+                  拠点全体（推奨）
+                </FilterChip>
+                <FilterChip active={searchMode === 'same'} onClick={() => setSearchMode('same')}>
+                  フォーカスと同じ
+                </FilterChip>
+                <FilterChip
+                  active={searchMode === 'custom'}
+                  onClick={() => setSearchMode('custom')}
+                >
+                  カスタム
+                </FilterChip>
+              </div>
+              {searchMode === 'custom' ? (
+                <div className="space-y-2 rounded border border-border-default bg-bg-muted p-2">
+                  <div className="text-[10px] text-text-muted">
+                    フォーカスに加えて探索に含める曜日・コース（未選択の軸は全体を探索）
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="w-14 text-xs text-text-muted">曜日</span>
+                    {SELECTABLE_WEEKDAYS.map((wd) => (
+                      <FilterChip
+                        key={`sw-${wd}`}
+                        active={searchWeekdaySel.has(wd)}
+                        onClick={() =>
+                          setSearchWeekdaySel((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(wd)) next.delete(wd);
+                            else next.add(wd);
+                            return next;
+                          })
+                        }
+                      >
+                        {WEEKDAY_LABELS[wd]}
+                      </FilterChip>
+                    ))}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="w-14 text-xs text-text-muted">コース</span>
+                    {SELECTABLE_COURSES.map((code) => (
+                      <FilterChip
+                        key={`sc-${code}`}
+                        active={searchCourseSel.has(code)}
+                        onClick={() =>
+                          setSearchCourseSel((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(code)) next.delete(code);
+                            else next.add(code);
+                            return next;
+                          })
+                        }
+                      >
+                        {code}
+                      </FilterChip>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
               <div className="flex items-center justify-between gap-2">
                 <span className="text-xs text-text-muted" data-testid="scope-optimize-scope-label">
-                  対象: {scopeLabel}
+                  フォーカス: {scopeLabel} ／ 探索:{' '}
+                  {searchMode === 'office'
+                    ? '拠点全体'
+                    : searchMode === 'same'
+                      ? 'フォーカスと同じ'
+                      : 'カスタム'}
                 </span>
                 <Button
                   type="button"
@@ -588,7 +713,26 @@ export function ScopeOptimizeDialog({
                 </div>
               ) : (
                 <div className="space-y-4" data-testid="scope-optimize-result">
-                  <MetricsTiles before={result.before} after={result.after} />
+                  {/* §10: 探索がフォーカスより広いときは、フォーカスの前後比較を主役にする. */}
+                  {resultScope?.search && result.focus_before && result.focus_after ? (
+                    <div className="space-y-1.5">
+                      <div className="text-xs font-semibold text-text-primary">
+                        フォーカス（対策対象）の見通し
+                      </div>
+                      <MetricsTiles before={result.focus_before} after={result.focus_after} />
+                      <div
+                        className="tabular-nums text-xs text-text-muted"
+                        data-testid="scope-optimize-global-line"
+                      >
+                        探索範囲全体: 移動 {result.before.travel_minutes}分 →{' '}
+                        {result.after.travel_minutes}分・{result.before.travel_km.toFixed(1)}km →{' '}
+                        {result.after.travel_km.toFixed(1)}km
+                        （フォーカス外へのしわ寄せは下のコース別見通しで確認できます）
+                      </div>
+                    </div>
+                  ) : (
+                    <MetricsTiles before={result.before} after={result.after} />
+                  )}
 
                   {/* H2: コース別の実行後見通し. */}
                   <CourseBeforeAfterList courses={result.courses} />

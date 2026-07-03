@@ -443,3 +443,25 @@ async def test_simulate_returns_course_before_after_and_reason(client, db) -> No
     # scope 合計との整合: courses の before 合計 = 全体 before の travel.
     assert sum(c["before"]["travel_minutes"] for c in courses) == data["before"]["travel_minutes"]
     assert sum(c["after"]["travel_minutes"] for c in courses) == data["after"]["travel_minutes"]
+
+
+@pytest.mark.asyncio
+async def test_simulate_search_scope_containment(client, db) -> None:
+    """§10: 探索範囲はフォーカスを包含 (違反 422)。全体探索は 200 + focus_* 付き."""
+    admin = await _make_user(db, email="so-admin13@example.com", role="admin")
+    office, _p = await _seed_sandwich_office(db)
+
+    # フォーカス (月) を含まない探索範囲 (火のみ) は 422.
+    bad = _body(office)
+    bad["search_scope"] = {"office_id": str(office.id), "weekdays": [1], "course_codes": None}
+    res = await client.post(_URL, headers=_bearer(admin), json=bad)
+    assert res.status_code == 422
+
+    # 探索=拠点全体は 200。focus_before/after が返り、全体 before と独立に持てる.
+    ok = _body(office)
+    ok["search_scope"] = {"office_id": str(office.id)}
+    res2 = await client.post(_URL, headers=_bearer(admin), json=ok)
+    assert res2.status_code == 200, res2.text
+    data = res2.json()
+    assert data["focus_before"] is not None and data["focus_after"] is not None
+    assert data["focus_before"]["travel_minutes"] >= data["focus_after"]["travel_minutes"]

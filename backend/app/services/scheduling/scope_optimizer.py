@@ -74,6 +74,7 @@ from app.services.scheduling.improvement_engine import (
     _swap_candidates_for_pfv,
     build_move_reason,
     compute_exact_marginal,
+    course_travel_buffer_total,
     snapshot_course_bucket,
 )
 from app.services.scheduling.proposal_solver import (
@@ -210,6 +211,10 @@ class ScopeOptimizationResult:
     state_token: str
     # H2: コース別の実行後見通し (weekday, course_code 昇順。変化なしコースも含む).
     courses: list[ScopeCourseBeforeAfterData] = field(default_factory=list)
+    # §10 フォーカス最適化: フォーカス範囲のみの前後合計 (探索範囲=フォーカスのときは
+    # before/after と同値)。before/after は探索範囲全体の合計。
+    focus_before: ScopeMetricsData | None = None
+    focus_after: ScopeMetricsData | None = None
 
 
 @dataclass
@@ -297,8 +302,13 @@ def compute_state_token(pfvs: list[PatientFixedVisit]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _metrics_of(sim: _SimState, *, config: SchedulingConfig) -> ScopeMetricsData:
-    """模擬バケット群の scope 内合計メトリクスを算出する.
+def _metrics_of(
+    sim: _SimState,
+    *,
+    config: SchedulingConfig,
+    keys: set[tuple[UUID, int, str]] | None = None,
+) -> ScopeMetricsData:
+    """模擬バケット群の合計メトリクスを算出する (``keys`` 指定でフォーカス部分集合).
 
     schedule_health の ``_compute_course_metrics`` に食わせるため、V2Visit →
     _HealthVisit の薄い変換のみ行う (計算式は健康診断と完全同一)。travel_km は
@@ -307,6 +317,8 @@ def _metrics_of(sim: _SimState, *, config: SchedulingConfig) -> ScopeMetricsData
     out = ScopeMetricsData()
     raw_km = 0.0
     for (office_id, weekday, code), bucket in sim.buckets.items():
+        if keys is not None and (office_id, weekday, code) not in keys:
+            continue
         if not bucket.visits:
             continue
         hc = _HealthCourse(
@@ -393,9 +405,59 @@ def _placement_of(
     return matched
 
 
+def _swap_focus_delta(
+    src_bucket: _CourseBucket,
+    x_pid: UUID,
+    c: ImprovementCandidateData,
+    sim: _SimState,
+    config: SchedulingConfig | None,
+) -> int:
+    """swap でフォーカス側バケット (X の現コース) の合計がどれだけ減るか (§10 条件2).
+
+    X が抜け、相手 Y が X の旧位置に入った後のフォーカス側合計を before と比較する。
+    Y の visit が見つからない場合は判定不能として 1 (許容) を返し、全体条件 (探索範囲
+    合計 delta ≥ 閾値) に委ねる。
+    """
+    if c.swap_counterpart_new_start is None or c.swap_counterpart_patient_id is None:
+        return 1
+    dst_bucket = sim.buckets.get((c.cand_office_id, c.cand_weekday, c.cand_course_code))
+    yv = None
+    if dst_bucket is not None:
+        yv = next(
+            (v for v in dst_bucket.visits if v.patient_id == c.swap_counterpart_patient_id),
+            None,
+        )
+    if yv is None:
+        return 1
+    bx = [
+        ExistingVisit(
+            start_time=v.start_time,
+            end_time=v.end_time,
+            lat=v.lat,
+            lng=v.lng,
+            service_minutes=v.service_minutes,
+            patient_id=str(v.patient_id),
+        )
+        for v in src_bucket.visits
+    ]
+    before_min, _bkm = course_travel_buffer_total(bx, config=config)
+    base = [e for e in bx if e.patient_id != str(x_pid)]
+    y_new = ExistingVisit(
+        start_time=c.swap_counterpart_new_start,
+        end_time=_add_min(c.swap_counterpart_new_start, yv.service_minutes),
+        lat=yv.lat,
+        lng=yv.lng,
+        service_minutes=yv.service_minutes,
+        patient_id=str(yv.patient_id),
+    )
+    after_min, _akm = course_travel_buffer_total([*base, y_new], config=config)
+    return before_min - after_min
+
+
 def _enumerate_step_candidates(
     sim: _SimState,
     *,
+    focus: OptimizationScope,
     patient_by_id: dict[UUID, Patient],
     office_name_by_id: dict[UUID, str],
     dismissed_fp: set[tuple[UUID, str, int]],
@@ -425,8 +487,11 @@ def _enumerate_step_candidates(
             continue
         placed = _placement_of(sim, pid, pfv)
         if placed is None:
-            continue  # scope 外配置 (or 配置なし)。会計は simulate 本体で実施済み.
+            continue  # 探索範囲外配置 (or 配置なし)。会計は simulate 本体で実施済み.
         src_key, src_bucket, src_visit = placed
+        # §10: 動かす対象は **フォーカス内** に配置がある枠のみ (探索範囲は移動先にのみ使う).
+        if not focus.contains(src_key[0], src_key[1], src_key[2]):
+            continue
         patient_coord = (float(patient.lat), float(patient.lng))
 
         # 現在枠の限界コスト (W3: 厳密計算 = コース合計の差。同時刻ペアも正しく扱う).
@@ -614,6 +679,13 @@ def _enumerate_step_candidates(
             ):
                 continue
             if s.delta_minutes < SCOPE_STEP_THRESHOLD_MIN:
+                continue
+            # §10 条件2: 相手コースがフォーカス外の swap は、フォーカス側の合計が
+            # 実際に減る場合のみ採用 (全体は改善してもフォーカスが悪化する手を弾く).
+            if (
+                not focus.contains(s.cand_office_id, s.cand_weekday, s.cand_course_code)
+                and _swap_focus_delta(src_bucket, pid, s, sim, config) <= 0
+            ):
                 continue
             candidates.append(_ScopeCandidate(patient_id=pid, patient_name=patient.name, data=s))
 
@@ -861,15 +933,21 @@ async def simulate_scope_optimization(
     iso_week: int,
     scope: OptimizationScope,
     config: SchedulingConfig,
+    search: OptimizationScope | None = None,
 ) -> ScopeOptimizationResult:
     """選択範囲の一括改善を貪欲反復で算出する (read-only).
 
+    §10 フォーカス最適化: ``scope`` = フォーカス (動かす対象の枠が属する範囲)、
+    ``search`` = 探索範囲 (移動先・入れ替え相手。None = フォーカスと同じ = 従来挙動)。
+    探索 ⊇ フォーカスは呼出側 (API) で検証済みの前提。
+
     Returns:
         手順列 (最大 SCOPE_MAX_STEPS 件・各手 SCOPE_STEP_THRESHOLD_MIN 分/週以上) と
-        前後メトリクス・除外内訳・state_token。
+        前後メトリクス (探索範囲全体 + フォーカス)・除外内訳・state_token。
     """
+    eff_search = search if search is not None else scope
     scope_buckets, office_name_by_id, pfv_rows = await _load_scope_buckets_and_pfvs(
-        db, iso_year=iso_year, iso_week=iso_week, scope=scope
+        db, iso_year=iso_year, iso_week=iso_week, scope=eff_search
     )
 
     sim = _SimState(buckets={key: _copy_bucket(b) for key, b in scope_buckets.items()})
@@ -886,6 +964,8 @@ async def simulate_scope_optimization(
             after=empty,
             excluded=excluded,
             state_token=compute_state_token([]),
+            focus_before=ScopeMetricsData(),
+            focus_after=ScopeMetricsData(),
         )
 
     state_token = compute_state_token(pfv_rows)
@@ -901,9 +981,17 @@ async def simulate_scope_optimization(
         )
         sim.occupied_weekdays.setdefault(row.patient_id, set()).add(row.weekday)
 
-    # movable 集合の会計 (scope 内に配置がある patient × weekday 単位で 1 回).
+    # §10: フォーカスに属するバケット集合 (movable 判定・フォーカス前後合計に使う).
+    focus_keys: set[tuple[UUID, int, str]] = {
+        key for key in sim.buckets if scope.contains(key[0], key[1], key[2])
+    }
+
+    # movable 集合の会計 (フォーカス内に配置がある patient × weekday 単位で 1 回).
     scope_weekday_pairs: set[tuple[UUID, int]] = {
-        (v.patient_id, b.weekday) for b in sim.buckets.values() for v in b.visits
+        (v.patient_id, b.weekday)
+        for key, b in sim.buckets.items()
+        if key in focus_keys
+        for v in b.visits
     }
     for pid, wd in sorted(scope_weekday_pairs, key=lambda x: (str(x[0]), x[1])):
         pfv = sim.pfv_by_pw.get((pid, wd))
@@ -941,6 +1029,7 @@ async def simulate_scope_optimization(
     }
 
     before = _metrics_of(sim, config=config)
+    focus_before = _metrics_of(sim, config=config, keys=focus_keys)
     # H2: コース別 before (実行後見通しの比較元) とラベル/担当を控える.
     course_before = {key: _bucket_metrics(key, b, config=config) for key, b in sim.buckets.items()}
     course_meta = {
@@ -955,6 +1044,7 @@ async def simulate_scope_optimization(
     while len(steps) < SCOPE_MAX_STEPS:
         candidates = _enumerate_step_candidates(
             sim,
+            focus=scope,
             patient_by_id=patient_by_id,
             office_name_by_id=office_name_by_id,
             dismissed_fp=dismissed_fp,
@@ -1013,6 +1103,7 @@ async def simulate_scope_optimization(
         excluded.truncated = True
 
     after = _metrics_of(sim, config=config)
+    focus_after = _metrics_of(sim, config=config, keys=focus_keys)
     # H2: コース別の実行後見通し (変化なしコースも含む。weekday→course_code 昇順).
     courses = [
         ScopeCourseBeforeAfterData(
@@ -1034,6 +1125,8 @@ async def simulate_scope_optimization(
         excluded=excluded,
         state_token=state_token,
         courses=courses,
+        focus_before=focus_before,
+        focus_after=focus_after,
     )
 
 

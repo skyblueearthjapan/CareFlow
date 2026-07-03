@@ -126,6 +126,9 @@ from app.schemas.v2.scope_optimization import (
     ScopeOptimizationStep,
     ScopeSnapshotVisit,
 )
+from app.schemas.v2.scope_optimization import (
+    ScopeOptimizationScope as ScopeOptimizationScopeSchema,
+)
 from app.schemas.v2.travel_estimate import (
     TravelEstimateRequest,
     TravelEstimateResponse,
@@ -2846,6 +2849,41 @@ def _scope_metrics_to_schema(m: ScopeMetricsData) -> ScopeOptimizationMetrics:
     )
 
 
+def _to_optimization_scope(s: ScopeOptimizationScopeSchema) -> OptimizationScope:
+    """API schema → エンジン内部表現 (frozenset 化)."""
+    return OptimizationScope(
+        office_id=s.office_id,
+        weekdays=frozenset(s.weekdays) if s.weekdays is not None else None,
+        course_codes=(frozenset(s.course_codes) if s.course_codes is not None else None),
+    )
+
+
+def _validate_search_contains_focus(
+    focus: ScopeOptimizationScopeSchema, search: ScopeOptimizationScopeSchema
+) -> None:
+    """§10: 探索範囲がフォーカスを包含することを検証する (違反は 422)."""
+    if search.office_id != focus.office_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="探索範囲はフォーカスと同一拠点である必要があります",
+        )
+
+    def _contains(sup: list | None, sub: list | None) -> bool:
+        if sup is None:  # None = 全部 → 何でも包含.
+            return True
+        if sub is None:  # フォーカスが全部なのに探索が限定 → 包含しない.
+            return False
+        return set(sub) <= set(sup)
+
+    if not _contains(search.weekdays, focus.weekdays) or not _contains(
+        search.course_codes, focus.course_codes
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="探索範囲はフォーカス (対策を練りたい範囲) を包含する必要があります",
+        )
+
+
 def _scope_snapshot_to_schema(
     s: ScopeCourseSnapshotData | None,
 ) -> ScopeCourseSnapshot | None:
@@ -2890,16 +2928,12 @@ async def scope_optimization_simulate_endpoint(
     if office is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Office not found")
 
-    scope = OptimizationScope(
-        office_id=payload.scope.office_id,
-        weekdays=(
-            frozenset(payload.scope.weekdays) if payload.scope.weekdays is not None else None
-        ),
-        course_codes=(
-            frozenset(payload.scope.course_codes)
-            if payload.scope.course_codes is not None
-            else None
-        ),
+    # §10: フォーカス (scope) と探索範囲 (search_scope) の分離。包含を検証する.
+    if payload.search_scope is not None:
+        _validate_search_contains_focus(payload.scope, payload.search_scope)
+    scope = _to_optimization_scope(payload.scope)
+    search = (
+        _to_optimization_scope(payload.search_scope) if payload.search_scope is not None else None
     )
 
     config = await load_scheduling_config(db)
@@ -2910,6 +2944,7 @@ async def scope_optimization_simulate_endpoint(
             iso_week=payload.iso_week,
             scope=scope,
             config=config,
+            search=search,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -2942,6 +2977,15 @@ async def scope_optimization_simulate_endpoint(
             truncated=result.excluded.truncated,
         ),
         state_token=result.state_token,
+        # §10: フォーカスのみの前後合計 (探索範囲=フォーカスのときは before/after と同値).
+        focus_before=(
+            _scope_metrics_to_schema(result.focus_before)
+            if result.focus_before is not None
+            else None
+        ),
+        focus_after=(
+            _scope_metrics_to_schema(result.focus_after) if result.focus_after is not None else None
+        ),
         # H2: コース別の実行後見通し.
         courses=[
             ScopeOptimizationCourseBeforeAfter(
@@ -3109,21 +3153,17 @@ async def scope_optimization_apply_endpoint(
     if office is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Office not found")
 
-    scope = OptimizationScope(
-        office_id=payload.scope.office_id,
-        weekdays=(
-            frozenset(payload.scope.weekdays) if payload.scope.weekdays is not None else None
-        ),
-        course_codes=(
-            frozenset(payload.scope.course_codes)
-            if payload.scope.course_codes is not None
-            else None
-        ),
+    # §10: state_token は探索範囲の患者集合から計算する (simulate と同一規約).
+    if payload.search_scope is not None:
+        _validate_search_contains_focus(payload.scope, payload.search_scope)
+    scope = _to_optimization_scope(payload.scope)
+    token_scope = (
+        _to_optimization_scope(payload.search_scope) if payload.search_scope is not None else scope
     )
 
     # 楽観ロック: simulate 時と同一規約で state_token を再計算.
     current_token = await compute_current_state_token(
-        db, iso_year=payload.iso_year, iso_week=payload.iso_week, scope=scope
+        db, iso_year=payload.iso_year, iso_week=payload.iso_week, scope=token_scope
     )
     if current_token != payload.state_token:
         raise HTTPException(

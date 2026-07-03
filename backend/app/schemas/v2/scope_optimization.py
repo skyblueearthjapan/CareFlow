@@ -61,6 +61,14 @@ class ScopeOptimizationSimulateRequest(BaseModel):
     iso_year: int = Field(..., ge=2020, le=2100)
     iso_week: int = Field(..., ge=1, le=53)
     scope: ScopeOptimizationScope
+    search_scope: ScopeOptimizationScope | None = Field(
+        default=None,
+        description=(
+            "§10 フォーカス最適化: 移動先・入れ替え相手を探す範囲。scope (フォーカス) を"
+            "包含すること (同一拠点・曜日/コースは上位集合)。None = フォーカスと同じ "
+            "(従来挙動・後方互換)。"
+        ),
+    )
 
 
 class ScopeOptimizationStep(BaseModel):
@@ -177,6 +185,11 @@ class ScopeOptimizationSimulateResponse(BaseModel):
         default_factory=list,
         description="H2: コース別の実行後見通し (変化なしコースも含む)",
     )
+    focus_before: ScopeOptimizationMetrics | None = Field(
+        default=None,
+        description="§10: フォーカス範囲のみの合計 (before/after は探索範囲全体)",
+    )
+    focus_after: ScopeOptimizationMetrics | None = Field(default=None)
 
 
 class ScopeOptimizationApplyRequest(BaseModel):
@@ -195,6 +208,13 @@ class ScopeOptimizationApplyRequest(BaseModel):
     scope: ScopeOptimizationScope
     state_token: str = Field(..., min_length=1)
     steps: list[ScopeOptimizationStep] = Field(..., min_length=1)
+    search_scope: ScopeOptimizationScope | None = Field(
+        default=None,
+        description=(
+            "simulate 時と同じ探索範囲 (state_token の再計算規約を一致させるため必須で"
+            "エコーバックする。None = フォーカスと同じ)。"
+        ),
+    )
 
 
 class ScopeOptimizationApplyResponse(BaseModel):
