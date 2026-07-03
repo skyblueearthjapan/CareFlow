@@ -46,25 +46,24 @@ interface MonitorTimelineProps {
 
 const HOURS = Array.from({ length: (TL_END_MIN - TL_START_MIN) / 60 + 1 }, (_, i) => 8 + i);
 
-/** マルチレーン時の 1 レーン高 (px)。2 レーンで 2×33=66px (= min-h-[66px] と一致)。 */
-const LANE_H_PX = 33;
+/**
+ * 1 レーンあたりの高さ (px) = 従来の 1 人分の行高 66px をそのまま使う。
+ * PO 指摘 (2026-07-04): 33px への圧縮はバー 7px・ラベル被りで見にくいため廃止。
+ * 重なりのある行はレーン数 × 66px に行を伸ばし、各レーンは 1 人行と同一レイアウト
+ * (= 文字サイズ・バー高とも縮小しない)。
+ */
+const LANE_H_PX = 66;
 
-/** レーン位置からバー/ラベルの top・height (px) を返す。 */
-function lanePos(lane: number, laneCount: number) {
-  if (laneCount <= 1) {
-    // 1 レーン: 既存の絶対位置を維持 (66px 行)。
-    return { labelTop: 4, planTop: 20, planH: 14, actTop: 38, actH: 15, distTop: 21 };
-  }
+/** レーン位置からバー/ラベルの top・height (px) を返す (全レーン共通レイアウト)。 */
+function lanePos(lane: number) {
   const off = lane * LANE_H_PX;
   return {
-    labelTop: off + 2,
-    planTop: off + 10,
-    planH: 7,
-    actTop: off + 20,
-    actH: 9,
-    // レビュー指摘: 実績バー (off+20) と同位置だと距離テキストが被るため
-    // 計画バー直下に置く。
-    distTop: off + 11,
+    labelTop: off + 4,
+    planTop: off + 20,
+    planH: 14,
+    actTop: off + 38,
+    actH: 15,
+    distTop: off + 21,
   };
 }
 
@@ -125,7 +124,7 @@ export function MonitorTimeline({
                 : 'hover:bg-bg-muted',
               hasSelection && !isSel ? 'opacity-40' : '',
             )}
-            style={rowLaneCount > 2 ? { minHeight: rowLaneCount * LANE_H_PX } : undefined}
+            style={rowLaneCount > 1 ? { minHeight: rowLaneCount * LANE_H_PX } : undefined}
           >
             {/* 左: 行番号 + スタッフ */}
             <div className="flex items-center gap-2 px-2 py-1.5">
@@ -182,7 +181,6 @@ export function MonitorTimeline({
                     key={v.visit_id}
                     visit={v}
                     lane={li.lane}
-                    laneCount={li.laneCount}
                     nowMinutes={nowMinutes}
                     isSelected={v.visit_id === selectedVisitId}
                     onSelect={onSelectVisit}
@@ -200,19 +198,17 @@ export function MonitorTimeline({
 function VisitBars({
   visit,
   lane,
-  laneCount,
   nowMinutes,
   isSelected,
   onSelect,
 }: {
   visit: MonitorVisit;
   lane: number;
-  laneCount: number;
   nowMinutes: number;
   isSelected: boolean;
   onSelect: (visitId: string) => void;
 }) {
-  const pos = lanePos(lane, laneCount);
+  const pos = lanePos(lane);
   const ps = hmToMinutes(visit.start_time);
   const pe = hmToMinutes(visit.end_time);
   const pL = minutesToPct(ps);
