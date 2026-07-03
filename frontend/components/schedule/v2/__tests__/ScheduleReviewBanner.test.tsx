@@ -8,7 +8,7 @@
  *   4. +19% (prior=100/recent=119) → shouldShow=false.
  *   5. データ薄週 (visit_count=0 が 3週以上) → 抑制 (非表示).
  *   6. [今週は非表示] → localStorage に記憶し即時に消える.
- *   7. [健康診断を開く] → onOpenHealth コールバックが呼ばれる.
+ *   7. [スケジュール診断を開く] → onOpenHealth コールバックが呼ばれる.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
@@ -61,32 +61,56 @@ function week(isoWeek: number, travel: number, visits: number): ScheduleHealthTr
 // 前4週 travel=100 (25*4), 直近4週 travel=130 → +30% (>= +20%). 全週 visit あり.
 function increasingWeeks(): ScheduleHealthTrendWeek[] {
   return [
-    week(13, 25, 5), week(14, 25, 5), week(15, 25, 5), week(16, 25, 5),
-    week(17, 30, 5), week(18, 32, 5), week(19, 33, 5), week(20, 35, 5),
+    week(13, 25, 5),
+    week(14, 25, 5),
+    week(15, 25, 5),
+    week(16, 25, 5),
+    week(17, 30, 5),
+    week(18, 32, 5),
+    week(19, 33, 5),
+    week(20, 35, 5),
   ];
 }
 
 // 前4週 travel=100, 直近4週 travel=105 → +5% (< +20%).
 function flatWeeks(): ScheduleHealthTrendWeek[] {
   return [
-    week(13, 25, 5), week(14, 25, 5), week(15, 25, 5), week(16, 25, 5),
-    week(17, 26, 5), week(18, 26, 5), week(19, 26, 5), week(20, 27, 5),
+    week(13, 25, 5),
+    week(14, 25, 5),
+    week(15, 25, 5),
+    week(16, 25, 5),
+    week(17, 26, 5),
+    week(18, 26, 5),
+    week(19, 26, 5),
+    week(20, 27, 5),
   ];
 }
 
 // 前4週 travel=100 (25*4), 直近4週 travel=120 (30*4) → ちょうど +20%.
 function exactThresholdWeeks(): ScheduleHealthTrendWeek[] {
   return [
-    week(13, 25, 5), week(14, 25, 5), week(15, 25, 5), week(16, 25, 5),
-    week(17, 30, 5), week(18, 30, 5), week(19, 30, 5), week(20, 30, 5),
+    week(13, 25, 5),
+    week(14, 25, 5),
+    week(15, 25, 5),
+    week(16, 25, 5),
+    week(17, 30, 5),
+    week(18, 30, 5),
+    week(19, 30, 5),
+    week(20, 30, 5),
   ];
 }
 
 // 前4週 travel=100, 直近4週 travel=119 (29+30+30+30) → +19% (< +20%).
 function belowThresholdWeeks(): ScheduleHealthTrendWeek[] {
   return [
-    week(13, 25, 5), week(14, 25, 5), week(15, 25, 5), week(16, 25, 5),
-    week(17, 29, 5), week(18, 30, 5), week(19, 30, 5), week(20, 30, 5),
+    week(13, 25, 5),
+    week(14, 25, 5),
+    week(15, 25, 5),
+    week(16, 25, 5),
+    week(17, 29, 5),
+    week(18, 30, 5),
+    week(19, 30, 5),
+    week(20, 30, 5),
   ];
 }
 
@@ -195,7 +219,7 @@ describe('ScheduleReviewBanner', () => {
     expect(screen.queryByTestId('schedule-review-banner')).toBeNull();
   });
 
-  it('[健康診断を開く] で onOpenHealth を呼ぶ', () => {
+  it('[スケジュール診断を開く] で onOpenHealth を呼ぶ', () => {
     trendMock.mockReturnValue({ data: { weeks: increasingWeeks() } });
     const onOpen = renderBanner();
     fireEvent.click(screen.getByTestId('schedule-review-open-health'));

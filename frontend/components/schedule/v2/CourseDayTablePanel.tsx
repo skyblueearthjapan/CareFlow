@@ -2016,7 +2016,7 @@ export function CourseDayTablePanel({
                 data-testid="schedule-health-button"
               >
                 <HeartPulse className="mr-1 h-4 w-4" aria-hidden />
-                健康診断
+                スケジュール診断
               </Button>
               <Button
                 type="button"

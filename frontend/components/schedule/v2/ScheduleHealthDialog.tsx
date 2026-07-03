@@ -512,7 +512,7 @@ export function ScheduleHealthDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <HeartPulse className="h-5 w-5 text-brand-primary" aria-hidden />
-            スケジュール健康診断
+            スケジュール診断
             <span className="tabular-nums text-sm font-normal text-text-muted">{weekLabel}</span>
           </DialogTitle>
           <DialogDescription>
@@ -524,7 +524,7 @@ export function ScheduleHealthDialog({
         {/* エラー */}
         {currentQuery.isError ? (
           <div className="py-6 text-center text-sm text-error" data-testid="schedule-health-error">
-            健康診断データの取得に失敗しました。
+            スケジュール診断データの取得に失敗しました。
           </div>
         ) : isLoading ? (
           /* ローディング */

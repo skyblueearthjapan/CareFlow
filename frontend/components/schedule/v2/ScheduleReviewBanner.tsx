@@ -90,7 +90,7 @@ export interface ScheduleReviewBannerProps {
   isoYear: number;
   isoWeek: number;
   officeId: string | null;
-  /** [健康診断を開く] 押下時. 既存 scheduleHealthOpen を開く. */
+  /** [スケジュール診断を開く] 押下時. 既存 scheduleHealthOpen を開く. */
   onOpenHealth: () => void;
 }
 
@@ -109,9 +109,7 @@ export function ScheduleReviewBanner({
   const [dismissed, setDismissed] = useState(false);
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    setDismissed(
-      window.localStorage.getItem(reviewDismissKey(officeId, isoYear, isoWeek)) === '1',
-    );
+    setDismissed(window.localStorage.getItem(reviewDismissKey(officeId, isoYear, isoWeek)) === '1');
   }, [officeId, isoYear, isoWeek]);
 
   if (dismissed) return null;
@@ -145,7 +143,7 @@ export function ScheduleReviewBanner({
           onClick={onOpenHealth}
           data-testid="schedule-review-open-health"
         >
-          健康診断を開く
+          スケジュール診断を開く
         </Button>
         <Button
           type="button"
