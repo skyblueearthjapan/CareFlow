@@ -564,3 +564,54 @@ describe('ImprovementSuggestionsSection', () => {
     expect(screen.getByTestId('improvement-effect')).toBeInTheDocument();
   });
 });
+
+describe('CourseMoveTimeline (UI 統一)', () => {
+  it('source_course 付きの提案はカード下にコースタイムラインを描画する', () => {
+    const withSnapshot = makeSuggestion({
+      source_course: {
+        office_id: '11111111-1111-4111-8111-111111111111',
+        weekday: 0,
+        course_code: 'A',
+        course_label: '稲A',
+        staff_name: '熊澤 妙子',
+        visits: [
+          {
+            patient_id: PATIENT.id,
+            patient_name: '中尾 要太',
+            start_time: '09:00',
+            end_time: '09:30',
+          },
+          {
+            patient_id: '44444444-4444-4444-8444-444444444444',
+            patient_name: '別の 患者',
+            start_time: '11:00',
+            end_time: '11:30',
+          },
+        ],
+      },
+      destination_course: null, // 同一コース内 → 1 枚のタイムライン
+    });
+    mocks.suggestionsResult = {
+      data: makeResponse([withSnapshot]),
+      isLoading: false,
+      isError: false,
+    };
+    renderSection();
+    const timeline = screen.getByTestId('course-move-timeline-single');
+    // 移動元 (打消し) 行と挿入 (← ここへ移動) 行が同居する.
+    expect(timeline).toHaveTextContent('コース内の動き（稲A・熊澤 妙子）');
+    expect(timeline).toHaveTextContent('別の 患者 様');
+    expect(timeline).toHaveTextContent('← ここへ移動');
+  });
+
+  it('source_course が無い (旧 BE) 提案はタイムラインを出さない', () => {
+    mocks.suggestionsResult = {
+      data: makeResponse([makeSuggestion()]),
+      isLoading: false,
+      isError: false,
+    };
+    renderSection();
+    expect(screen.queryByTestId('course-move-timeline-single')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('course-move-timeline-pair')).not.toBeInTheDocument();
+  });
+});

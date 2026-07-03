@@ -102,6 +102,29 @@ export const swapCounterpartSchema = z.object({
 });
 export type SwapCounterpart = z.infer<typeof swapCounterpartSchema>;
 
+/** コーススナップショットの 1 訪問 (提案生成時点の状態). BE `CourseSnapshotVisit` と 1:1. */
+export const courseSnapshotVisitSchema = z.object({
+  patient_id: z.string().uuid(),
+  patient_name: z.string(),
+  start_time: z.string(),
+  end_time: z.string(),
+});
+export type CourseSnapshotVisit = z.infer<typeof courseSnapshotVisitSchema>;
+
+/**
+ * 提案が触るコースのスナップショット (タイムライン表示用・UI 統一)。
+ * 範囲最適化の step と改善提案で共通の形。BE `CourseSnapshot` と 1:1。
+ */
+export const courseSnapshotSchema = z.object({
+  office_id: z.string().uuid(),
+  weekday: z.number().int().min(0).max(6),
+  course_code: z.string(),
+  course_label: z.string(),
+  staff_name: z.string().nullable().default(null),
+  visits: z.array(courseSnapshotVisitSchema).default([]),
+});
+export type CourseSnapshot = z.infer<typeof courseSnapshotSchema>;
+
 /** 改善提案 1 件. */
 export const improvementSuggestionSchema = z.object({
   kind: improvementKindSchema,
@@ -118,6 +141,9 @@ export const improvementSuggestionSchema = z.object({
   within_preference: z.boolean().default(false),
   // kind='swap' のときのみ相手患者 Y の情報を持つ (後方互換: 既定 null).
   swap_counterpart: swapCounterpartSchema.nullable().default(null),
+  // UI 統一: タイムライン表示用スナップショット (旧 BE 互換で null 既定).
+  source_course: courseSnapshotSchema.nullable().default(null),
+  destination_course: courseSnapshotSchema.nullable().default(null),
 });
 export type ImprovementSuggestion = z.infer<typeof improvementSuggestionSchema>;
 

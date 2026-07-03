@@ -58,6 +58,7 @@ import {
   improvementCandidateToFixedVisitItem,
   mergeAdoptedIntoNormalFixedVisits,
 } from './_proposeSlotUtils';
+import { CourseMoveTimeline } from './CourseMoveTimeline';
 import { DismissReasonDialog } from './DismissReasonDialog';
 import { ImprovementSuggestionCard } from './ImprovementSuggestionCard';
 
@@ -116,8 +117,9 @@ export function ImprovementSuggestionsSection({
   // 見送りダイアログの対象.
   const [dismissTarget, setDismissTarget] = React.useState<ImprovementSuggestion | null>(null);
   // スワップ採用の確認ダイアログの対象.
-  const [swapConfirmTarget, setSwapConfirmTarget] =
-    React.useState<ImprovementSuggestion | null>(null);
+  const [swapConfirmTarget, setSwapConfirmTarget] = React.useState<ImprovementSuggestion | null>(
+    null,
+  );
 
   // 患者・週が変わったらローカル状態をリセット.
   React.useEffect(() => {
@@ -334,28 +336,34 @@ export function ImprovementSuggestionsSection({
           改善提案を取得できませんでした。時間をおいて再度お試しください。
         </div>
       ) : visibleSuggestions.length > 0 ? (
-        <div className="space-y-2" data-testid="improvement-suggestions-list">
+        <div className="space-y-3" data-testid="improvement-suggestions-list">
           {visibleSuggestions.map((s) => (
-            <ImprovementSuggestionCard
-              key={fingerprint(s)}
-              suggestion={s}
-              canEdit={canEdit}
-              patientName={patient.name}
-              // 採用実行中は全カードを無効化 (レビューM2: 同一 existing スナップショット
-              // からの並行 PUT で先行採用が上書き消失するのを防ぐ)。
-              adopting={
-                adoptingFp === fingerprint(s) || confirmMut.isPending || applySwapMut.isPending
-              }
-              onAdopt={handleAdopt}
-              onDismiss={setDismissTarget}
-            />
+            <div key={fingerprint(s)} className="space-y-1">
+              <ImprovementSuggestionCard
+                suggestion={s}
+                canEdit={canEdit}
+                patientName={patient.name}
+                // 採用実行中は全カードを無効化 (レビューM2: 同一 existing スナップショット
+                // からの並行 PUT で先行採用が上書き消失するのを防ぐ)。
+                adopting={
+                  adoptingFp === fingerprint(s) || confirmMut.isPending || applySwapMut.isPending
+                }
+                onAdopt={handleAdopt}
+                onDismiss={setDismissTarget}
+              />
+              {/* UI 統一: 範囲最適化と同じコースタイムライン (同一コース=1枚/別コース=2枚並列). */}
+              <CourseMoveTimeline
+                suggestion={s}
+                targetPatientId={patient.id}
+                patientName={patient.name}
+                sourceCourse={s.source_course}
+                destinationCourse={s.destination_course}
+              />
+            </div>
           ))}
         </div>
       ) : (
-        <div
-          className="py-2 text-xs text-text-muted"
-          data-testid="improvement-suggestions-empty"
-        >
+        <div className="py-2 text-xs text-text-muted" data-testid="improvement-suggestions-empty">
           {(() => {
             const parts = filtered ? summarizeFiltered(filtered) : [];
             if (parts.length === 0) {
@@ -380,10 +388,7 @@ export function ImprovementSuggestionsSection({
           !o && !applySwapMut.isPending ? setSwapConfirmTarget(null) : undefined
         }
       >
-        <DialogContent
-          aria-describedby="swap-confirm-desc"
-          data-testid="swap-confirm-dialog"
-        >
+        <DialogContent aria-describedby="swap-confirm-desc" data-testid="swap-confirm-dialog">
           <DialogHeader>
             <DialogTitle>2名の枠を入れ替えますか？</DialogTitle>
             <DialogDescription id="swap-confirm-desc">
