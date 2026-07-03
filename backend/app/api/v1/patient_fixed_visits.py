@@ -586,6 +586,19 @@ async def from_week_bulk(
 # ---------------------------------------------------------------------------
 
 
+def _release_pin_lock(old_pinned: bool, new_pinned: bool, movability: str) -> str:
+    """P4-C: ピン留め解除 (True→False) 時にピン由来ロックを解放する.
+
+    ``is_pinned`` を True→False にする際、当該行の ``movability=='locked'`` なら
+    'unknown' にリセットして返す. ピン由来ロック (P2-A backfill / pfv_validator V6) の
+    解放であり、意図的な完全固定は解除後に可動域セレクタで再設定する運用.
+    False→False / True→True の冪等ケースや locked 以外の値は触らない (そのまま返す).
+    """
+    if old_pinned and not new_pinned and movability == "locked":
+        return "unknown"
+    return movability
+
+
 @router.patch(
     "/fixed-visits/{pfv_id}/pin",
     response_model=PatientFixedVisitV2Read,
@@ -600,6 +613,7 @@ async def update_pfv_pin(
     """Phase G-21: 単一 PFV 行の ``is_pinned`` を切替.
 
     audit_logs に ``action="pfv_pin_toggle"`` で before/after を記録する.
+    P4-C: ピン留め解除時にピン由来ロック (movability='locked') を解放する.
     """
     pfv = await db.scalar(select(PatientFixedVisit).where(PatientFixedVisit.id == pfv_id))
     if pfv is None:
@@ -609,7 +623,10 @@ async def update_pfv_pin(
 
     old_value = bool(pfv.is_pinned)
     new_value = bool(payload.is_pinned)
+    old_movability = pfv.movability
+    new_movability = _release_pin_lock(old_value, new_value, old_movability)
     pfv.is_pinned = new_value
+    pfv.movability = new_movability
 
     db.add(
         AuditLog(
@@ -617,8 +634,8 @@ async def update_pfv_pin(
             action="pfv_pin_toggle",
             target_table="patient_fixed_visits",
             target_id=str(pfv.id),
-            before={"is_pinned": old_value},
-            after={"is_pinned": new_value},
+            before={"is_pinned": old_value, "movability": old_movability},
+            after={"is_pinned": new_value, "movability": new_movability},
         )
     )
 
@@ -675,15 +692,19 @@ async def bulk_pin_pfvs(
         pfv = by_id[item.pfv_id]
         old_value = bool(pfv.is_pinned)
         new_value = bool(item.is_pinned)
+        old_movability = pfv.movability
+        # P4-C: ピン留め解除時にピン由来ロック (movability='locked') を解放する.
+        new_movability = _release_pin_lock(old_value, new_value, old_movability)
         pfv.is_pinned = new_value
+        pfv.movability = new_movability
         db.add(
             AuditLog(
                 actor_user_id=actor.id,
                 action="pfv_pin_toggle",
                 target_table="patient_fixed_visits",
                 target_id=str(pfv.id),
-                before={"is_pinned": old_value},
-                after={"is_pinned": new_value},
+                before={"is_pinned": old_value, "movability": old_movability},
+                after={"is_pinned": new_value, "movability": new_movability},
             )
         )
 

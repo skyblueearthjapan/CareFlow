@@ -203,8 +203,10 @@ async def test_t2_4_pin_toggle_writes_audit_log(client, db) -> None:
     row = rows[0]
     assert row.actor_user_id == admin.id
     assert row.target_table == "patient_fixed_visits"
-    assert row.before == {"is_pinned": False}
-    assert row.after == {"is_pinned": True}
+    # P4-C: audit に movability の before/after も含まれる形式に拡張された.
+    # (ピンON なので movability は 'unknown' のまま = 解放は解除時のみ)
+    assert row.before == {"is_pinned": False, "movability": "unknown"}
+    assert row.after == {"is_pinned": True, "movability": "unknown"}
 
 
 # ---------------------------------------------------------------------------

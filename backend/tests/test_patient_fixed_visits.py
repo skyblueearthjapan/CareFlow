@@ -25,6 +25,7 @@ from sqlalchemy import select
 
 from app.core.security import create_access_token, hash_password
 from app.models import Office, Patient, PatientFixedVisit, Staff, User, Visit
+from app.models.audit_log import AuditLog
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -676,3 +677,172 @@ async def test_put_conflict_returns_200_with_warning(client, db) -> None:
     assert len(body["items"]) == 1  # 適用は成功
     codes = {w["code"] for w in body["warnings"]}
     assert "patient_time_conflict" in codes
+
+
+# ---------------------------------------------------------------------------
+# P4-C: ピン留め解除時の可動域 (movability='locked') 解放
+# ---------------------------------------------------------------------------
+
+
+async def _make_pfv_with_movability(
+    db, *, patient: Patient, weekday: int, is_pinned: bool, movability: str
+) -> PatientFixedVisit:
+    pfv = PatientFixedVisit(
+        patient_id=patient.id,
+        mode="normal",
+        weekday=weekday,
+        start_time=time(9, 0),
+        duration_min=30,
+        slot_index=0,
+        is_pinned=is_pinned,
+        movability=movability,
+    )
+    db.add(pfv)
+    await db.commit()
+    await db.refresh(pfv)
+    return pfv
+
+
+@pytest.mark.asyncio
+async def test_p4c_patch_unpin_releases_locked_movability(client, db) -> None:
+    """PATCH で is_pinned True→False にすると movability='locked' が 'unknown' に解放される."""
+    admin = await _make_user(db, "p4c-unpin@example.com", "admin")
+    patient = await _make_patient(db, "P4C-U1")
+    pfv = await _make_pfv_with_movability(
+        db, patient=patient, weekday=0, is_pinned=True, movability="locked"
+    )
+
+    res = await client.patch(
+        f"/api/v1/patients/fixed-visits/{pfv.id}/pin",
+        headers=_bearer(admin),
+        json={"is_pinned": False},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["is_pinned"] is False
+    assert body["movability"] == "unknown"
+
+    await db.refresh(pfv)
+    assert pfv.is_pinned is False
+    assert pfv.movability == "unknown"
+
+    # audit_log に movability の before/after が含まれる (既存 is_pinned と同居).
+    row = await db.scalar(
+        select(AuditLog).where(
+            AuditLog.action == "pfv_pin_toggle",
+            AuditLog.target_id == str(pfv.id),
+        )
+    )
+    assert row is not None
+    assert row.before == {"is_pinned": True, "movability": "locked"}
+    assert row.after == {"is_pinned": False, "movability": "unknown"}
+
+
+@pytest.mark.asyncio
+async def test_p4c_patch_unpin_keeps_non_locked_movability(client, db) -> None:
+    """解除時、movability が locked 以外 (time_flexible) なら触らない."""
+    admin = await _make_user(db, "p4c-keep@example.com", "admin")
+    patient = await _make_patient(db, "P4C-U2")
+    pfv = await _make_pfv_with_movability(
+        db, patient=patient, weekday=1, is_pinned=True, movability="time_flexible"
+    )
+
+    res = await client.patch(
+        f"/api/v1/patients/fixed-visits/{pfv.id}/pin",
+        headers=_bearer(admin),
+        json={"is_pinned": False},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["movability"] == "time_flexible"
+
+    await db.refresh(pfv)
+    assert pfv.movability == "time_flexible"
+
+
+@pytest.mark.asyncio
+async def test_p4c_patch_pin_on_does_not_reset_movability(client, db) -> None:
+    """ピン ON (False→True) では movability を解放しない (V6 の locked 化は保存経路の責務)."""
+    admin = await _make_user(db, "p4c-on@example.com", "admin")
+    patient = await _make_patient(db, "P4C-U3")
+    pfv = await _make_pfv_with_movability(
+        db, patient=patient, weekday=2, is_pinned=False, movability="unknown"
+    )
+
+    res = await client.patch(
+        f"/api/v1/patients/fixed-visits/{pfv.id}/pin",
+        headers=_bearer(admin),
+        json={"is_pinned": True},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["is_pinned"] is True
+    assert res.json()["movability"] == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_p4c_patch_idempotent_false_to_false_untouched(client, db) -> None:
+    """False→False の冪等ケースでは locked でも触らない (old_pinned=False なので解放しない)."""
+    admin = await _make_user(db, "p4c-idem@example.com", "admin")
+    patient = await _make_patient(db, "P4C-U4")
+    pfv = await _make_pfv_with_movability(
+        db, patient=patient, weekday=3, is_pinned=False, movability="locked"
+    )
+
+    res = await client.patch(
+        f"/api/v1/patients/fixed-visits/{pfv.id}/pin",
+        headers=_bearer(admin),
+        json={"is_pinned": False},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["movability"] == "locked"
+
+    await db.refresh(pfv)
+    assert pfv.movability == "locked"
+
+
+@pytest.mark.asyncio
+async def test_p4c_bulk_unpin_releases_locked(client, db) -> None:
+    """bulk /pin: True→False で locked のみ解放、locked 以外/pin維持は触らない."""
+    admin = await _make_user(db, "p4c-bulk@example.com", "admin")
+    patient = await _make_patient(db, "P4C-B1")
+    # a: 解除対象で locked → unknown
+    pfv_a = await _make_pfv_with_movability(
+        db, patient=patient, weekday=0, is_pinned=True, movability="locked"
+    )
+    # b: 解除対象だが time_flexible → 維持
+    pfv_b = await _make_pfv_with_movability(
+        db, patient=patient, weekday=1, is_pinned=True, movability="time_flexible"
+    )
+    # c: pin ON 側 (False→True) → movability そのまま
+    pfv_c = await _make_pfv_with_movability(
+        db, patient=patient, weekday=2, is_pinned=False, movability="unknown"
+    )
+
+    res = await client.post(
+        "/api/v1/patients/fixed-visits/pin/bulk",
+        headers=_bearer(admin),
+        json=[
+            {"pfv_id": str(pfv_a.id), "is_pinned": False},
+            {"pfv_id": str(pfv_b.id), "is_pinned": False},
+            {"pfv_id": str(pfv_c.id), "is_pinned": True},
+        ],
+    )
+    assert res.status_code == 200, res.text
+    by_id = {row["id"]: row for row in res.json()}
+    assert by_id[str(pfv_a.id)]["movability"] == "unknown"
+    assert by_id[str(pfv_b.id)]["movability"] == "time_flexible"
+    assert by_id[str(pfv_c.id)]["movability"] == "unknown"
+
+    for pfv, expected in [(pfv_a, "unknown"), (pfv_b, "time_flexible"), (pfv_c, "unknown")]:
+        await db.refresh(pfv)
+        assert pfv.movability == expected
+
+    # a の audit に movability before/after が含まれる.
+    row_a = await db.scalar(
+        select(AuditLog).where(
+            AuditLog.action == "pfv_pin_toggle",
+            AuditLog.target_id == str(pfv_a.id),
+        )
+    )
+    assert row_a is not None
+    assert row_a.before == {"is_pinned": True, "movability": "locked"}
+    assert row_a.after == {"is_pinned": False, "movability": "unknown"}

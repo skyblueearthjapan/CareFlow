@@ -72,7 +72,7 @@ function fingerprint(s: ImprovementSuggestion): string {
 function summarizeFiltered(fs: ImprovementFilteredSummary): string[] {
   const parts: Array<[number, string]> = [
     [fs.pinned, `ピン留め${fs.pinned}件`],
-    [fs.locked, `完全固定${fs.locked}件`],
+    [fs.locked, `可動域が完全固定${fs.locked}件`],
     [fs.below_threshold, `効果が閾値未満${fs.below_threshold}件`],
     [fs.dismissed, `却下済み${fs.dismissed}件`],
     [fs.day_restricted, `曜日変更が未許可${fs.day_restricted}件`],

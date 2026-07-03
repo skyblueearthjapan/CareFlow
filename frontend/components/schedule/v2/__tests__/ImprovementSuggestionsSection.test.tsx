@@ -355,6 +355,17 @@ describe('ImprovementSuggestionsSection', () => {
     expect(empty).not.toHaveTextContent('却下済み');
   });
 
+  it('5b. (#P4-C) locked 内訳は「可動域が完全固定N件」と表示 (ピン留めと混同防止)', () => {
+    mocks.suggestionsResult = {
+      data: makeResponse([], { locked: 3 }),
+      isLoading: false,
+      isError: false,
+    };
+    renderSection();
+    const empty = screen.getByTestId('improvement-suggestions-empty');
+    expect(empty).toHaveTextContent('可動域が完全固定3件');
+  });
+
   it('6. fetch エラー時はエラーテキストのみ (セクションは生きる)', () => {
     mocks.suggestionsResult = { data: undefined, isLoading: false, isError: true };
     renderSection();

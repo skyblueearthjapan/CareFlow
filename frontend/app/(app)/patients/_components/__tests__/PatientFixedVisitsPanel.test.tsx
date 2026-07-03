@@ -1039,5 +1039,43 @@ describe('PatientFixedVisitsPanel', () => {
       });
       expect(parsed.movability).toBe('day_flexible');
     });
+
+    it('MV-7. (#P4-C) ピン留めを OFF にすると locked の可動域が unknown に解放される', async () => {
+      const updateFn = vi.fn().mockResolvedValue([]);
+      setupMocks({
+        reads: [
+          {
+            id: 'read-pin-p4c',
+            patient_id: PATIENT_ID,
+            weekday: 0,
+            start_time: '09:00',
+            duration_min: 30,
+            mode: 'normal',
+            course_template_id: null,
+            slot_index: 0,
+            is_pinned: true,
+            movability: 'locked',
+            created_at: '2026-01-01T00:00:00',
+            updated_at: '2026-01-01T00:00:00',
+          },
+        ],
+        updateFn,
+      });
+      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
+
+      // 初期は pinned 行 → 固定表示.
+      const pinCheckbox = await screen.findByTestId('pfv-pin-checkbox-0');
+      await userEvent.click(pinCheckbox); // OFF に切替.
+
+      // 保存: is_pinned=false かつ movability は locked から解放 (unknown).
+      const saveBtn = screen.getByRole('button', { name: '保存' });
+      await userEvent.click(saveBtn);
+      await waitFor(() => expect(updateFn).toHaveBeenCalledTimes(1));
+      const call = updateFn.mock.calls[0][0] as {
+        items: { movability?: string; is_pinned?: boolean }[];
+      };
+      expect(call.items[0]?.is_pinned).toBe(false);
+      expect(call.items[0]?.movability).toBe('unknown');
+    });
   });
 });

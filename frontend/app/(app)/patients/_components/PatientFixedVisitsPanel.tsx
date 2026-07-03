@@ -673,7 +673,16 @@ function WeekGrid({
                 >
                   <Checkbox
                     checked={row.is_pinned}
-                    onCheckedChange={(c) => update(wd, { is_pinned: c === true })}
+                    onCheckedChange={(c) => {
+                      const nextPinned = c === true;
+                      // P4-C: ピン留めを OFF にしたとき、ピン由来ロック (movability='locked')
+                      // なら 'unknown' に解放する. ON 時は従来通り (保存時に V6 が locked 化).
+                      const patch: Partial<DayRow> = { is_pinned: nextPinned };
+                      if (!nextPinned && row.movability === 'locked') {
+                        patch.movability = 'unknown';
+                      }
+                      update(wd, patch);
+                    }}
                     disabled={disabled}
                     aria-label={`${WEEKDAY_LABELS[wd]} ピン留め`}
                     data-testid={`pfv-pin-checkbox-${wd}`}

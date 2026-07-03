@@ -402,3 +402,44 @@ async def test_v6_no_correction_for_non_pinned(db) -> None:
 
     assert all(w.code != CODE_MOVABILITY_CORRECTED for w in result.warnings)
     assert result.corrected_items[0].movability == "time_flexible"
+
+
+# ---------------------------------------------------------------------------
+# P4-C: PATCH 解放 と V2 pinned 保護 (同一性規約) の非矛盾
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_p4c_movability_diff_does_not_trigger_pinned_error(db) -> None:
+    """V2 同一性タプルは movability を含まないため、pinned 行の movability 差異は保持=OK.
+
+    PATCH pin 経由での movability 解放 (locked→unknown) と PUT の pinned 保護が矛盾しない
+    ことの確認: 既存 pinned 行 (DB 上 movability='locked') を、同一 identity で movability
+    のみ異なる body で送っても CODE_PINNED error は出ない (保持扱い). V6 が locked に戻す.
+    """
+    p = await _make_patient(db, code="P4C-1")
+    await _add_pfv(db, patient=p, weekday=0, start=time(9, 0), duration=30, is_pinned=True)
+
+    # 同一 identity (weekday/slot/time/duration/office/course/is_pinned) だが movability だけ相違.
+    items = [_item(0, time(9, 0), 30, is_pinned=True, movability="time_flexible")]
+    result = await validate_pfv_changes(db, p.id, items, "normal", config=CFG)
+
+    assert not result.has_errors
+    assert all(w.code != CODE_PINNED for w in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_p4c_unpinned_row_movability_change_is_ok(db) -> None:
+    """PATCH で解除済み (is_pinned=False) の行は V2 保護対象外 → movability 変更も自由.
+
+    ピン解除後、当該行を non-pinned として PUT で再送しても pinned 保護は発火しない.
+    """
+    p = await _make_patient(db, code="P4C-2")
+    # 解除済みを模す: is_pinned=False の既存行 (P4-C の PATCH 解放後の DB 状態).
+    await _add_pfv(db, patient=p, weekday=0, start=time(9, 0), duration=30, is_pinned=False)
+
+    items = [_item(0, time(9, 0), 30, is_pinned=False, movability="unknown")]
+    result = await validate_pfv_changes(db, p.id, items, "normal", config=CFG)
+
+    assert not result.has_errors
+    assert all(w.code != CODE_PINNED for w in result.warnings)
