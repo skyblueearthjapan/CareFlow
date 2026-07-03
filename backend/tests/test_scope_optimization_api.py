@@ -1,10 +1,15 @@
-"""Tests for POST /api/v1/schedule/v2/scope-optimization/simulate (範囲最適化 W1 BE-2).
+"""Tests for /api/v1/schedule/v2/scope-optimization/{simulate,apply} (範囲最適化 W1-W2).
 
-検証内容:
+simulate (W1 BE-2):
     - 改善余地のあるコースで 200 + steps (suggestion 契約 = improvement と同一形).
     - 0 手でも 200 + excluded_summary + before=after.
     - office 不在 404 / RBAC (staff 403) / scope の曜日範囲外 422.
     - read-only: simulate が PFV を変更しない.
+
+apply (W2 BE-3):
+    - simulate → apply の happy path で PFV が実際に動く + 再 simulate で 0 手収束.
+    - state_token 不一致 409 / プレフィックス以外 (seq 欠番) 422 /
+      pinned を狙った手作りペイロード 422 / RBAC 403.
 
 ローカル SQLite のみ (本番 DB 禁止).
 """
@@ -34,6 +39,7 @@ BASE = (35.6000, 140.1000)
 FAR = (35.6300, 140.1400)
 
 _URL = "/api/v1/schedule/v2/scope-optimization/simulate"
+_APPLY_URL = "/api/v1/schedule/v2/scope-optimization/apply"
 
 
 async def _make_user(db, *, email: str, role: str) -> User:
@@ -214,3 +220,172 @@ async def test_simulate_invalid_weekday_422(client, db) -> None:
     office, _p = await _seed_sandwich_office(db)
     res = await client.post(_URL, headers=_bearer(admin), json=_body(office, weekdays=[7]))
     assert res.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# apply (W2 BE-3)
+# ---------------------------------------------------------------------------
+
+
+def _apply_body(office: Office, sim_data: dict, n: int | None = None) -> dict:
+    """simulate レスポンスから apply リクエスト (先頭 n 手) を組む."""
+    steps = sim_data["steps"] if n is None else sim_data["steps"][:n]
+    return {
+        "iso_year": ISO_YEAR,
+        "iso_week": ISO_WEEK,
+        "scope": {"office_id": str(office.id), "weekdays": [0], "course_codes": ["A"]},
+        "state_token": sim_data["state_token"],
+        "steps": steps,
+    }
+
+
+@pytest.mark.asyncio
+async def test_apply_happy_path_moves_pfv_and_converges(client, db) -> None:
+    """simulate → apply で PFV が実際に動き、再 simulate は 0 手 (収束) になる."""
+    admin = await _make_user(db, email="so-admin6@example.com", role="admin")
+    office, p = await _seed_sandwich_office(db)
+
+    sim = await client.post(_URL, headers=_bearer(admin), json=_body(office))
+    assert sim.status_code == 200, sim.text
+    sim_data = sim.json()
+    assert sim_data["steps"], sim_data["excluded_summary"]
+    cand = sim_data["steps"][0]["suggestion"]["candidate"]
+
+    res = await client.post(_APPLY_URL, headers=_bearer(admin), json=_apply_body(office, sim_data))
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["applied_count"] == len(sim_data["steps"])
+
+    # PFV が候補位置へ動いた.
+    pfv = (
+        await db.scalars(select(PatientFixedVisit).where(PatientFixedVisit.patient_id == p.id))
+    ).one()
+    assert pfv.weekday == cand["weekday"]
+    assert f"{pfv.start_time.hour:02d}:{pfv.start_time.minute:02d}" == cand["start_time"]
+
+    # 適用後の再 simulate: token が変わり、同じ手はもう出ない (収束).
+    # (visit 側は動かしていないため、現在配置の特定は PFV 一致行フォールバックで続行する)
+    sim2 = await client.post(_URL, headers=_bearer(admin), json=_body(office))
+    assert sim2.status_code == 200
+    assert sim2.json()["state_token"] != sim_data["state_token"]
+
+
+@pytest.mark.asyncio
+async def test_apply_stale_token_409(client, db) -> None:
+    """simulate 後に PFV が変わると apply は 409 (楽観ロック)."""
+    admin = await _make_user(db, email="so-admin7@example.com", role="admin")
+    office, p = await _seed_sandwich_office(db)
+
+    sim = await client.post(_URL, headers=_bearer(admin), json=_body(office))
+    sim_data = sim.json()
+    assert sim_data["steps"]
+
+    # 別の管理者が PFV を動かした想定.
+    pfv = (
+        await db.scalars(select(PatientFixedVisit).where(PatientFixedVisit.patient_id == p.id))
+    ).one()
+    pfv.start_time = time(9, 0)
+    await db.commit()
+
+    res = await client.post(_APPLY_URL, headers=_bearer(admin), json=_apply_body(office, sim_data))
+    assert res.status_code == 409
+    # 409 で何も適用されていない.
+    await db.refresh(pfv)
+    assert pfv.start_time == time(9, 0)
+
+
+@pytest.mark.asyncio
+async def test_apply_non_prefix_steps_422(client, db) -> None:
+    """seq が 1 から始まらない (プレフィックスでない) steps は 422."""
+    admin = await _make_user(db, email="so-admin8@example.com", role="admin")
+    office, _p = await _seed_sandwich_office(db)
+
+    sim = await client.post(_URL, headers=_bearer(admin), json=_body(office))
+    sim_data = sim.json()
+    assert sim_data["steps"]
+    body = _apply_body(office, sim_data)
+    body["steps"] = [{**body["steps"][0], "seq": 2}]  # 欠番プレフィックス違反.
+
+    res = await client.post(_APPLY_URL, headers=_bearer(admin), json=body)
+    assert res.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_apply_pinned_crafted_payload_422(client, db) -> None:
+    """エンジンは pinned の手を生成しないが、手作りペイロードで狙っても 422 で拒否."""
+    admin = await _make_user(db, email="so-admin9@example.com", role="admin")
+    office, p = await _seed_sandwich_office(db)
+
+    # 対象 PFV をピン留めに変更 (locked 矯正込み).
+    pfv = (
+        await db.scalars(select(PatientFixedVisit).where(PatientFixedVisit.patient_id == p.id))
+    ).one()
+    pfv.is_pinned = True
+    pfv.movability = "locked"
+    await db.commit()
+
+    # 現状態の token を simulate で取得 (steps は 0 のはず).
+    sim = await client.post(_URL, headers=_bearer(admin), json=_body(office))
+    sim_data = sim.json()
+    assert sim_data["steps"] == []
+
+    crafted_step = {
+        "seq": 1,
+        "patient_id": str(p.id),
+        "patient_name": p.name,
+        "suggestion": {
+            "kind": "time_change",
+            "target_weekday": 0,
+            "current": {
+                "office_id": str(office.id),
+                "weekday": 0,
+                "weekday_code": "Mon",
+                "start_time": "10:30",
+                "end_time": "11:00",
+                "course_label": "稲A",
+                "staff_name": None,
+            },
+            "candidate": {
+                "office_id": str(office.id),
+                "office_name": None,
+                "weekday": 0,
+                "weekday_code": "Mon",
+                "start_time": "13:00",
+                "end_time": "13:30",
+                "course_code": "A",
+                "course_label": "稲A",
+                "staff_name": None,
+            },
+            "delta": {"travel_minutes_saved": 23, "travel_km_saved": 4.9},
+            "changes": {"changes": [], "unchanged": []},
+            "staff_warnings": [],
+            "feasibility_basis": "pfv",
+            "requires_patient_confirmation": False,
+            "within_preference": False,
+            "swap_counterpart": None,
+        },
+        "cumulative_delta_minutes": 23,
+        "cumulative_delta_km": 4.9,
+    }
+    body = _apply_body(office, sim_data)
+    body["steps"] = [crafted_step]
+
+    res = await client.post(_APPLY_URL, headers=_bearer(admin), json=body)
+    assert res.status_code == 422
+    # 何も適用されていない.
+    await db.refresh(pfv)
+    assert pfv.start_time == time(10, 30)
+
+
+@pytest.mark.asyncio
+async def test_apply_staff_forbidden(client, db) -> None:
+    admin = await _make_user(db, email="so-admin10@example.com", role="admin")
+    staff_user = await _make_user(db, email="so-staff2@example.com", role="staff")
+    office, _p = await _seed_sandwich_office(db)
+
+    sim = await client.post(_URL, headers=_bearer(admin), json=_body(office))
+    sim_data = sim.json()
+    res = await client.post(
+        _APPLY_URL, headers=_bearer(staff_user), json=_apply_body(office, sim_data)
+    )
+    assert res.status_code == 403

@@ -26,7 +26,7 @@ import logging
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as time_cls
-from typing import Annotated, Any
+from typing import Annotated, Any, NoReturn
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -35,6 +35,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.core.deps import DbDep, require_role
 from app.models.audit_log import AuditLog
+from app.models.course_template import CourseTemplate
 from app.models.office import Office
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
@@ -113,6 +114,8 @@ from app.schemas.v2.schedule_health import (
     ScheduleHealthTrendResponse,
 )
 from app.schemas.v2.scope_optimization import (
+    ScopeOptimizationApplyRequest,
+    ScopeOptimizationApplyResponse,
     ScopeOptimizationExcludedSummary,
     ScopeOptimizationMetrics,
     ScopeOptimizationSimulateRequest,
@@ -194,6 +197,7 @@ from app.services.scheduling.schedule_health import (
 from app.services.scheduling.scope_optimizer import (
     OptimizationScope,
     ScopeMetricsData,
+    compute_current_state_token,
     simulate_scope_optimization,
 )
 
@@ -2864,6 +2868,310 @@ async def scope_optimization_simulate_endpoint(
             truncated=result.excluded.truncated,
         ),
         state_token=result.state_token,
+    )
+
+
+async def _resolve_course_template_id(db: DbDep, office_id: UUID, course_code: str) -> UUID | None:
+    """office + course code (label) から course_templates.id を解決する (無ければ None).
+
+    None は `_apply_pfv_move` の「省略 = 既存コース保持」に落ちるため、テンプレート
+    未整備の環境でも apply 自体は成立する (コースだけ据え置きになる)。
+    """
+    return await db.scalar(
+        select(CourseTemplate.id).where(
+            CourseTemplate.office_id == office_id,
+            CourseTemplate.label == course_code,
+            CourseTemplate.deleted_at.is_(None),
+        )
+    )
+
+
+async def _load_normal_pfvs(db: DbDep, patient_id: UUID) -> list[PatientFixedVisit]:
+    """患者の normal PFV 全行を取り直す.
+
+    先行 step の変更は `_validate_and_move_one` 末尾の flush で DB に反映済みのため、
+    後続 step の SELECT (identity map 経由の属性変更も含め) は逐次状態を参照する。
+    """
+    return list(
+        (
+            await db.scalars(
+                select(PatientFixedVisit).where(
+                    PatientFixedVisit.patient_id == patient_id,
+                    PatientFixedVisit.mode == "normal",
+                )
+            )
+        ).all()
+    )
+
+
+async def _abort_apply(db: DbDep, status_code: int, detail: object) -> NoReturn:
+    """途中 step で中断するとき、先行 step の ORM 変更を捨ててから HTTP エラーを返す."""
+    await db.rollback()
+    raise HTTPException(status_code=status_code, detail=detail)
+
+
+async def _validate_and_move_one(
+    db: DbDep,
+    *,
+    patient_id: UUID,
+    seq: int,
+    old_weekday: int,
+    old_start: time_cls,
+    new_weekday: int,
+    new_start: time_cls,
+    new_course: UUID | None,
+    config: SchedulingConfig,
+    warnings: list[str],
+) -> None:
+    """1 患者の slot0 移動を「検証 → 適用」する (scope apply の 1 手ぶん).
+
+    step ごとに PFV を取り直して逐次検証する (simulate の手順列は逐次状態を前提に
+    生成されている)。session は autoflush=False のため、適用後に明示 flush して
+    後続 step の SELECT へ DB レベルでも反映する (本関数末尾)。
+    """
+    rows = await _load_normal_pfvs(db, patient_id)
+    moving = next(
+        (r for r in rows if r.weekday == old_weekday and r.slot_index == 0),
+        None,
+    )
+    if moving is None or moving.start_time != old_start:
+        # state_token 一致下では起きないはずの不整合 (防御). 再計算を促す.
+        await _abort_apply(
+            db,
+            status.HTTP_409_CONFLICT,
+            f"手順{seq}の対象枠が見つかりません。スケジュールが変更された可能性が"
+            "あります。再計算してください",
+        )
+    if moving.is_pinned:
+        # エンジンは pinned の手を生成しない (手作りペイロード対策の防御).
+        await _abort_apply(
+            db,
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"手順{seq}: ピン留めされた枠は動かせません",
+        )
+
+    proposed = _proposed_with_move(
+        rows,
+        moving_id=moving.id,
+        new_weekday=new_weekday,
+        new_start=new_start,
+        new_course=new_course,
+    )
+    v = await validate_pfv_changes(db, patient_id, proposed, "normal", config=config)
+    if v.has_errors:
+        await _abort_apply(
+            db,
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            {
+                "message": f"手順{seq}の適用が固定枠の保護に違反します",
+                "violations": [
+                    {
+                        "code": w.code,
+                        "message": w.message,
+                        "weekday": w.weekday,
+                        "severity": w.severity,
+                    }
+                    for w in v.errors
+                ],
+            },
+        )
+    warnings.extend(f"手順{seq}: {w.message}" for w in v.warnings_only)
+
+    await _apply_pfv_move(
+        db,
+        moving_row=moving,
+        all_rows=rows,
+        new_weekday=new_weekday,
+        new_start=new_start,
+        new_course=new_course,
+    )
+    # autoflush=False のため明示 flush: 後続 step の SELECT / validate が
+    # この手の結果 (行の削除含む) を DB レベルで参照できるようにする.
+    await db.flush()
+
+
+@router.post(
+    "/v2/scope-optimization/apply",
+    response_model=ScopeOptimizationApplyResponse,
+    status_code=status.HTTP_200_OK,
+    summary="範囲最適化: simulate の手順列を先頭から N 手まとめて適用する (1 TX)",
+)
+async def scope_optimization_apply_endpoint(
+    payload: ScopeOptimizationApplyRequest,
+    db: DbDep,
+    actor: Annotated[User, Depends(require_role("admin", "manager"))],
+) -> ScopeOptimizationApplyResponse:
+    """simulate 結果の先頭から N 手を PFV へ適用する (all-or-nothing / 1 TX).
+
+    - **プレフィックスのみ**: steps は seq=1..N の連続区間。欠番・順序乱れは 422
+      (手順は前の手が空けた枠に依存するため)。
+    - **楽観ロック**: state_token をサーバで再計算し、不一致なら 409
+      (simulate 以降に scope 患者の固定枠が変わった)。
+    - 各 step は適用直前に pfv_validator (N-4) で再検証する。pinned 違反 (V2) は
+      422 で全体 rollback、V3-V5 は warnings で返しブロックしない (P0-2 と同じ扱い)。
+    """
+    # プレフィックス検証 (seq=1..N 連続).
+    seqs = [s.seq for s in payload.steps]
+    if seqs != list(range(1, len(seqs) + 1)):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="steps は simulate 結果の先頭からの連続区間 (seq=1..N) を送ってください",
+        )
+
+    office = await db.scalar(select(Office).where(Office.id == payload.scope.office_id))
+    if office is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Office not found")
+
+    scope = OptimizationScope(
+        office_id=payload.scope.office_id,
+        weekdays=(
+            frozenset(payload.scope.weekdays) if payload.scope.weekdays is not None else None
+        ),
+        course_codes=(
+            frozenset(payload.scope.course_codes)
+            if payload.scope.course_codes is not None
+            else None
+        ),
+    )
+
+    # 楽観ロック: simulate 時と同一規約で state_token を再計算.
+    current_token = await compute_current_state_token(
+        db, iso_year=payload.iso_year, iso_week=payload.iso_week, scope=scope
+    )
+    if current_token != payload.state_token:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="スケジュールが変更されました。再計算してください",
+        )
+
+    config = await load_scheduling_config(db)
+    warnings: list[str] = []
+
+    for step in payload.steps:
+        sug = step.suggestion
+        # _parse_hhmm は不正形式で ValueError を送出する (apply-swap と同じ 422 変換).
+        try:
+            old_start = _parse_hhmm(sug.current.start_time)
+            new_start = _parse_hhmm(sug.candidate.start_time)
+        except ValueError:
+            old_start = None
+            new_start = None
+        if old_start is None or new_start is None:
+            await _abort_apply(
+                db,
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"手順{step.seq}: start_time は HH:MM 必須です",
+            )
+
+        if sug.kind in ("time_change", "day_change"):
+            new_course = await _resolve_course_template_id(
+                db, sug.candidate.office_id, sug.candidate.course_code
+            )
+            await _validate_and_move_one(
+                db,
+                patient_id=step.patient_id,
+                seq=step.seq,
+                old_weekday=sug.current.weekday,
+                old_start=old_start,
+                new_weekday=sug.candidate.weekday,
+                new_start=new_start,
+                new_course=new_course,
+                config=config,
+                warnings=warnings,
+            )
+        elif sug.kind == "swap":
+            cp = sug.swap_counterpart
+            if cp is None:
+                await _abort_apply(
+                    db,
+                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    f"手順{step.seq}: swap には swap_counterpart が必要です",
+                )
+            try:
+                cp_new_start = _parse_hhmm(cp.new_start_time)
+                cp_old_start = _parse_hhmm(cp.current_start_time)
+            except ValueError:
+                cp_new_start = None
+                cp_old_start = None
+            if cp_new_start is None or cp_old_start is None:
+                await _abort_apply(
+                    db,
+                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    f"手順{step.seq}: swap_counterpart の start_time は HH:MM 必須です",
+                )
+            # Y は X の旧バケット (コース) へ移る: X の旧行のコースを先に控える.
+            x_rows = await _load_normal_pfvs(db, step.patient_id)
+            x_row = next(
+                (r for r in x_rows if r.weekday == sug.current.weekday and r.slot_index == 0),
+                None,
+            )
+            x_old_course = x_row.course_template_id if x_row is not None else None
+            x_new_course = await _resolve_course_template_id(
+                db, sug.candidate.office_id, sug.candidate.course_code
+            )
+            # X → Y の旧位置 (candidate).
+            await _validate_and_move_one(
+                db,
+                patient_id=step.patient_id,
+                seq=step.seq,
+                old_weekday=sug.current.weekday,
+                old_start=old_start,
+                new_weekday=sug.candidate.weekday,
+                new_start=new_start,
+                new_course=x_new_course,
+                config=config,
+                warnings=warnings,
+            )
+            # Y → X の旧位置 (コースは X の旧コースを引き継ぐ. None なら据え置き).
+            await _validate_and_move_one(
+                db,
+                patient_id=cp.patient_id,
+                seq=step.seq,
+                old_weekday=cp.current_weekday,
+                old_start=cp_old_start,
+                new_weekday=cp.new_weekday,
+                new_start=cp_new_start,
+                new_course=x_old_course,
+                config=config,
+                warnings=warnings,
+            )
+        else:
+            await _abort_apply(
+                db,
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"手順{step.seq}: 未知の kind '{sug.kind}' です",
+            )
+
+    # 監査ログ (適用サマリ).
+    db.add(
+        AuditLog(
+            actor_user_id=actor.id,
+            action="scope_optimization_apply",
+            target_table="patient_fixed_visits",
+            target_id=f"{payload.iso_year}-W{payload.iso_week}",
+            before={},
+            after={
+                "office_id": str(payload.scope.office_id),
+                "weekdays": payload.scope.weekdays,
+                "course_codes": payload.scope.course_codes,
+                "applied_count": len(payload.steps),
+                "cumulative_delta_minutes": payload.steps[-1].cumulative_delta_minutes,
+            },
+        )
+    )
+
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="適用が既存の固定枠と競合しました。再計算してください",
+        ) from exc
+
+    return ScopeOptimizationApplyResponse(
+        applied_count=len(payload.steps),
+        warnings=warnings,
     )
 
 

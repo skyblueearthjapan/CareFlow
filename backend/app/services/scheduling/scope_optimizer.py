@@ -699,6 +699,63 @@ def _apply_swap(sim: _SimState, sc: _ScopeCandidate) -> bool:
 # ---------------------------------------------------------------------------
 
 
+async def _load_scope_buckets_and_pfvs(
+    db: AsyncSession,
+    *,
+    iso_year: int,
+    iso_week: int,
+    scope: OptimizationScope,
+) -> tuple[
+    dict[tuple[UUID, int, str], _CourseBucket],
+    dict[UUID, str],
+    list[PatientFixedVisit],
+]:
+    """scope 内バケットと scope 患者の PFV (normal/slot0 全曜日) をロードする.
+
+    simulate と apply の state_token 再計算で **同一のロード規約** を共有するための
+    ヘルパ (集合がずれると楽観ロックが誤作動するため、必ずこれを使う)。
+    """
+    all_buckets, office_name_by_id, _office_codes = await load_week_course_buckets(
+        db, iso_year=iso_year, iso_week=iso_week, office_ids=[scope.office_id]
+    )
+    scope_buckets = {
+        key: b for key, b in all_buckets.items() if scope.contains(key[0], key[1], key[2])
+    }
+    scope_pids: set[UUID] = {v.patient_id for b in scope_buckets.values() for v in b.visits}
+    pfv_rows: list[PatientFixedVisit] = []
+    if scope_pids:
+        pfv_rows = list(
+            (
+                await db.scalars(
+                    select(PatientFixedVisit).where(
+                        PatientFixedVisit.patient_id.in_(scope_pids),
+                        PatientFixedVisit.mode == "normal",
+                        PatientFixedVisit.slot_index == 0,
+                    )
+                )
+            ).all()
+        )
+    return scope_buckets, office_name_by_id, pfv_rows
+
+
+async def compute_current_state_token(
+    db: AsyncSession,
+    *,
+    iso_year: int,
+    iso_week: int,
+    scope: OptimizationScope,
+) -> str:
+    """現時点の DB 状態から state_token を再計算する (apply の楽観ロック判定用).
+
+    simulate 時と同一のロード規約 (`_load_scope_buckets_and_pfvs`) で PFV 集合を
+    取り直すため、simulate 以降に scope 患者の PFV が 1 行でも変われば不一致になる。
+    """
+    _buckets, _names, pfv_rows = await _load_scope_buckets_and_pfvs(
+        db, iso_year=iso_year, iso_week=iso_week, scope=scope
+    )
+    return compute_state_token(pfv_rows)
+
+
 async def simulate_scope_optimization(
     db: AsyncSession,
     *,
@@ -713,17 +770,11 @@ async def simulate_scope_optimization(
         手順列 (最大 SCOPE_MAX_STEPS 件・各手 SCOPE_STEP_THRESHOLD_MIN 分/週以上) と
         前後メトリクス・除外内訳・state_token。
     """
-    all_buckets, office_name_by_id, _office_codes = await load_week_course_buckets(
-        db, iso_year=iso_year, iso_week=iso_week, office_ids=[scope.office_id]
+    scope_buckets, office_name_by_id, pfv_rows = await _load_scope_buckets_and_pfvs(
+        db, iso_year=iso_year, iso_week=iso_week, scope=scope
     )
 
-    sim = _SimState(
-        buckets={
-            key: _copy_bucket(b)
-            for key, b in all_buckets.items()
-            if scope.contains(key[0], key[1], key[2])
-        }
-    )
+    sim = _SimState(buckets={key: _copy_bucket(b) for key, b in scope_buckets.items()})
 
     excluded = ScopeExcludedSummaryData()
 
@@ -739,17 +790,7 @@ async def simulate_scope_optimization(
             state_token=compute_state_token([]),
         )
 
-    # scope 患者の PFV (normal/slot0) を全曜日ぶんロード (占有判定 + state_token 用).
-    pfv_rows = (
-        await db.scalars(
-            select(PatientFixedVisit).where(
-                PatientFixedVisit.patient_id.in_(scope_pids),
-                PatientFixedVisit.mode == "normal",
-                PatientFixedVisit.slot_index == 0,
-            )
-        )
-    ).all()
-    state_token = compute_state_token(list(pfv_rows))
+    state_token = compute_state_token(pfv_rows)
 
     for row in pfv_rows:
         sim.pfv_by_pw[(row.patient_id, row.weekday)] = _SimPfv(
@@ -879,6 +920,7 @@ __all__ = [
     "ScopeMetricsData",
     "ScopeOptimizationResult",
     "ScopeStepData",
+    "compute_current_state_token",
     "compute_state_token",
     "simulate_scope_optimization",
 ]

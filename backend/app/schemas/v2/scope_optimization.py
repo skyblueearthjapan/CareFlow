@@ -140,7 +140,39 @@ class ScopeOptimizationSimulateResponse(BaseModel):
     state_token: str = Field(..., description="apply 用の楽観ロック指紋 (sha256)")
 
 
+class ScopeOptimizationApplyRequest(BaseModel):
+    """``POST /v2/scope-optimization/apply`` リクエスト (W2).
+
+    ``steps`` は **simulate 結果の先頭からの連続区間** (seq=1..N) をそのまま送る
+    (プレフィックス適用のみ。途中の欠番は依存関係が壊れるため 422)。
+    ``state_token`` は simulate レスポンスの値。サーバが再計算して不一致なら 409
+    (simulate 以降に scope 患者の固定枠が変わった = 再計算が必要)。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    iso_year: int = Field(..., ge=2020, le=2100)
+    iso_week: int = Field(..., ge=1, le=53)
+    scope: ScopeOptimizationScope
+    state_token: str = Field(..., min_length=1)
+    steps: list[ScopeOptimizationStep] = Field(..., min_length=1)
+
+
+class ScopeOptimizationApplyResponse(BaseModel):
+    """``POST /v2/scope-optimization/apply`` レスポンス (all-or-nothing / 1 TX)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    applied_count: int = Field(..., ge=0, description="適用した手順数 (= len(steps))")
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="N-4 再検証で検出した非致命の警告 (現場向け日本語). ブロックしない.",
+    )
+
+
 __all__ = [
+    "ScopeOptimizationApplyRequest",
+    "ScopeOptimizationApplyResponse",
     "ScopeOptimizationExcludedSummary",
     "ScopeOptimizationMetrics",
     "ScopeOptimizationScope",
