@@ -13,14 +13,18 @@
  *   c. 手順カード列 (ImprovementSuggestionCard を表示専用 canEdit=false で流用)
  *   d. excluded_summary (N-6「黙って消さない」) と truncated 注記
  *
- * W1 は simulate 表示のみ (ワンクリック適用は W2)。手順は患者詳細の改善提案から
- * 個別採用するか、固定枠パネルで手動反映する運用。
+ * W2 (適用): 「先頭から N 手」のプレフィックス適用のみ。スライダーで N を選び、
+ * 選択外の手は薄く表示する。apply は state_token 楽観ロック付き 1 TX (BE §4.2)。
+ * 409 (simulate 以降に固定枠が変わった) は結果を破棄して再計算を促す。
+ * 健康診断からの導線 (initialScope) では開いた直後にその範囲で自動計算する。
  *
  * デザイン: Warm & Human トークンのみ。数字は tabular-nums。
- * RBAC: 呼出側 (CourseDayTablePanel) で admin/manager ガード済み。
+ * RBAC: ボタン表示は呼出側 (CourseDayTablePanel) で admin/manager ガード済み。
+ * 適用ボタンは canEdit のときのみ表示 (BE でも 403 担保)。
  */
 import * as React from 'react';
 import { Loader2, Route } from 'lucide-react';
+import { toast } from 'sonner';
 
 import { Button } from '@/components/ui/button';
 import {
@@ -32,7 +36,11 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { FilterChip } from '@/components/ui/filter-chip';
-import { useScopeOptimizationSimulate } from '@/lib/queries/scopeOptimization';
+import { ApiError } from '@/lib/api-client';
+import {
+  useScopeOptimizationApply,
+  useScopeOptimizationSimulate,
+} from '@/lib/queries/scopeOptimization';
 import type {
   ScopeOptimizationExcludedSummary,
   ScopeOptimizationMetrics,
@@ -54,6 +62,13 @@ export interface ScopeOptimizeDialogProps {
   officeId: string | null;
   /** ヘッダー表示用の週ラベル (例: "2026-W27"). */
   weekLabel: string;
+  /** admin / manager のみ適用可 (RBAC; BE でも担保). */
+  canEdit: boolean;
+  /**
+   * 健康診断など外部からの導線用の範囲プリセット。指定されていると、開いた直後に
+   * その範囲で自動計算する (null 要素 = 全部)。
+   */
+  initialScope?: { weekdays: number[] | null; courseCodes: string[] | null } | null;
 }
 
 /** 0=月..5=土 (日曜は稼働曜日外: 健康診断と同じ). */
@@ -187,24 +202,68 @@ export function ScopeOptimizeDialog({
   isoWeek,
   officeId,
   weekLabel,
+  canEdit,
+  initialScope = null,
 }: ScopeOptimizeDialogProps) {
   // 未選択 = 全部 (チップの「全曜日」「全コース」は選択クリアと同義).
   const [weekdaySel, setWeekdaySel] = React.useState<Set<number>>(new Set());
   const [courseSel, setCourseSel] = React.useState<Set<string>>(new Set());
   const simulateMut = useScopeOptimizationSimulate();
+  const applyMut = useScopeOptimizationApply();
   const [result, setResult] = React.useState<ScopeOptimizationSimulateResponse | null>(null);
+  // 結果 (result) を出したときの scope。適用は必ずこの scope で送る
+  // (計算後にチップを触っても適用対象が黙って変わらないように).
+  const [resultScope, setResultScope] = React.useState<{
+    weekdays: number[] | null;
+    courseCodes: string[] | null;
+  } | null>(null);
+  // 適用する手数 (先頭から N 手。既定 = 全手).
+  const [applyCount, setApplyCount] = React.useState(0);
+
+  const runSimulate = React.useCallback(
+    (weekdays: number[] | null, courseCodes: string[] | null) => {
+      if (!officeId) return;
+      setResult(null);
+      setResultScope(null);
+      simulateMut.mutate(
+        {
+          iso_year: isoYear,
+          iso_week: isoWeek,
+          scope: { office_id: officeId, weekdays, course_codes: courseCodes },
+        },
+        {
+          onSuccess: (data) => {
+            setResult(data);
+            setResultScope({ weekdays, courseCodes });
+            setApplyCount(data.steps.length);
+          },
+        },
+      );
+    },
+    // mutation オブジェクトは毎レンダーで変わるため mutate 呼出のみに依存を絞る.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [officeId, isoYear, isoWeek],
+  );
 
   // 開くたびにまっさらな状態から始める (前回の範囲・結果を持ち越さない).
+  // initialScope (健康診断からの導線) があればプリセットして自動計算する.
   React.useEffect(() => {
-    if (open) {
-      setWeekdaySel(new Set());
-      setCourseSel(new Set());
-      setResult(null);
-      simulateMut.reset();
+    if (!open) return;
+    const wd = initialScope?.weekdays ?? null;
+    const cc = initialScope?.courseCodes ?? null;
+    setWeekdaySel(new Set(wd ?? []));
+    setCourseSel(new Set(cc ?? []));
+    setResult(null);
+    setResultScope(null);
+    setApplyCount(0);
+    simulateMut.reset();
+    applyMut.reset();
+    if (initialScope && officeId) {
+      runSimulate(wd, cc);
     }
-    // simulateMut は毎レンダーで新オブジェクトのため依存に含めない (reset のみ).
+    // simulateMut / applyMut は毎レンダーで新オブジェクトのため依存に含めない.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, [open, initialScope, officeId, runSimulate]);
 
   const toggleWeekday = (wd: number) => {
     setWeekdaySel((prev) => {
@@ -224,19 +283,53 @@ export function ScopeOptimizeDialog({
   };
 
   const handleSimulate = () => {
-    if (!officeId || simulateMut.isPending) return;
-    setResult(null);
-    simulateMut.mutate(
+    if (!officeId || simulateMut.isPending || applyMut.isPending) return;
+    runSimulate(
+      weekdaySel.size > 0 ? [...weekdaySel].sort((a, b) => a - b) : null,
+      courseSel.size > 0 ? [...courseSel].sort() : null,
+    );
+  };
+
+  const handleApply = () => {
+    if (!officeId || !result || !resultScope || applyMut.isPending) return;
+    if (applyCount < 1 || result.steps.length === 0) return;
+    const steps = result.steps.slice(0, applyCount);
+    applyMut.mutate(
       {
         iso_year: isoYear,
         iso_week: isoWeek,
         scope: {
           office_id: officeId,
-          weekdays: weekdaySel.size > 0 ? [...weekdaySel].sort((a, b) => a - b) : null,
-          course_codes: courseSel.size > 0 ? [...courseSel].sort() : null,
+          weekdays: resultScope.weekdays,
+          course_codes: resultScope.courseCodes,
+        },
+        state_token: result.state_token,
+        steps,
+      },
+      {
+        onSuccess: (data) => {
+          toast.success(
+            `${data.applied_count}手を適用しました（−${steps[steps.length - 1]!.cumulative_delta_minutes}分/週）`,
+          );
+          for (const w of data.warnings.slice(0, 3)) toast.warning(w);
+          if (data.warnings.length > 3) {
+            toast.warning(`他 ${data.warnings.length - 3} 件の警告があります`);
+          }
+          // 適用後は最新状態で自動再計算 (残りの改善が見える).
+          runSimulate(resultScope.weekdays, resultScope.courseCodes);
+        },
+        onError: (err) => {
+          // 409 = state_token 不一致 (simulate 以降に固定枠が変わった)。
+          // fetcher の ApiError.message は detail を含まないため status で判定する。
+          if (err instanceof ApiError && err.status === 409) {
+            toast.error('スケジュールが変更されています。再計算します');
+            runSimulate(resultScope.weekdays, resultScope.courseCodes);
+          } else {
+            const msg = err instanceof Error ? err.message : '';
+            toast.error(`適用に失敗しました${msg ? `: ${msg}` : ''}`);
+          }
         },
       },
-      { onSuccess: setResult },
     );
   };
 
@@ -377,27 +470,95 @@ export function ScopeOptimizeDialog({
                       提案手順（上から順に適用する前提の
                       <span className="tabular-nums">{result.steps.length}</span>手）
                     </div>
-                    {result.steps.map((step) => (
-                      <div key={step.seq} className="space-y-1">
-                        <div className="flex items-baseline justify-between gap-2 text-xs">
-                          <span className="font-medium text-text-primary">
-                            手順{step.seq}: {step.patient_name} 様
-                          </span>
-                          <span className="tabular-nums text-text-muted">
-                            ここまでの累積 −{step.cumulative_delta_minutes}分/週
-                          </span>
+                    {result.steps.map((step) => {
+                      const included = step.seq <= applyCount;
+                      return (
+                        <div
+                          key={step.seq}
+                          className={`space-y-1 ${included ? '' : 'opacity-40'}`}
+                          data-testid={`scope-optimize-step-${step.seq}`}
+                          data-included={included ? 'true' : 'false'}
+                        >
+                          <div className="flex items-baseline justify-between gap-2 text-xs">
+                            <span className="font-medium text-text-primary">
+                              手順{step.seq}: {step.patient_name} 様
+                              {included ? '' : '（適用しない）'}
+                            </span>
+                            <span className="tabular-nums text-text-muted">
+                              ここまでの累積 −{step.cumulative_delta_minutes}分/週
+                            </span>
+                          </div>
+                          {/* カードは表示専用: canEdit=false で採用/見送りボタンは出ない. */}
+                          <ImprovementSuggestionCard
+                            suggestion={step.suggestion}
+                            canEdit={false}
+                            patientName={step.patient_name}
+                            onAdopt={() => undefined}
+                            onDismiss={() => undefined}
+                          />
                         </div>
-                        {/* 表示専用 (W1): canEdit=false で採用/見送りボタンは出ない. */}
-                        <ImprovementSuggestionCard
-                          suggestion={step.suggestion}
-                          canEdit={false}
-                          patientName={step.patient_name}
-                          onAdopt={() => undefined}
-                          onDismiss={() => undefined}
-                        />
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
+
+                  {/* 適用範囲スライダー + 適用ボタン (W2. プレフィックスのみ). */}
+                  {canEdit ? (
+                    <div
+                      className="space-y-2 rounded-lg border border-border-default bg-bg-muted p-3"
+                      data-testid="scope-optimize-apply-panel"
+                    >
+                      <div className="flex items-center justify-between gap-2 text-xs">
+                        <span className="font-medium text-text-primary">
+                          先頭から
+                          <span className="tabular-nums text-base font-semibold">{applyCount}</span>
+                          手を適用
+                        </span>
+                        <span
+                          className="tabular-nums text-success"
+                          data-testid="scope-optimize-apply-cumulative"
+                        >
+                          {applyCount > 0
+                            ? `−${result.steps[applyCount - 1]!.cumulative_delta_minutes}分/週（−${Math.abs(
+                                result.steps[applyCount - 1]!.cumulative_delta_km,
+                              ).toFixed(1)}km/週）`
+                            : '適用なし'}
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0}
+                        max={result.steps.length}
+                        step={1}
+                        value={applyCount}
+                        onChange={(e) => setApplyCount(Number(e.target.value))}
+                        disabled={applyMut.isPending}
+                        className="w-full accent-brand-primary"
+                        aria-label="適用する手数"
+                        data-testid="scope-optimize-apply-slider"
+                      />
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[11px] text-text-muted">
+                          手順は前の手が空けた枠を使うため、途中の手だけ選ぶことはできません。
+                        </span>
+                        <Button
+                          type="button"
+                          size="sm"
+                          onClick={handleApply}
+                          disabled={applyMut.isPending || applyCount < 1}
+                          data-testid="scope-optimize-apply-button"
+                        >
+                          {applyMut.isPending ? (
+                            <>
+                              <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
+                              適用中…
+                            </>
+                          ) : (
+                            `${applyCount}手を適用`
+                          )}
+                        </Button>
+                      </div>
+                    </div>
+                  ) : null}
 
                   {result.excluded_summary.truncated ? (
                     <div className="text-xs text-warning" data-testid="scope-optimize-truncated">
@@ -409,9 +570,9 @@ export function ScopeOptimizeDialog({
                       対象外: {excludedParts.join('・')}
                     </div>
                   ) : null}
-                  <div className="text-xs text-text-muted" data-testid="scope-optimize-w1-note">
-                    ※ この画面は提案の確認用です。反映は患者詳細の「改善提案」から採用するか、
-                    固定枠パネルで変更してください（ワンクリック適用は次の更新で提供予定）。
+                  <div className="text-xs text-text-muted" data-testid="scope-optimize-note">
+                    ※ 適用は固定訪問スケジュール（恒久パターン）に反映されます。今週の実予定へ
+                    反映するには「固定枠戻」を実行してください。
                   </div>
                 </div>
               )

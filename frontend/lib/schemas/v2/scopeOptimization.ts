@@ -83,6 +83,31 @@ export type ScopeOptimizationSimulateRequest = z.input<
   typeof scopeOptimizationSimulateRequestSchema
 >;
 
+/**
+ * POST /v2/scope-optimization/apply リクエスト (W2. BE `ScopeOptimizationApplyRequest`).
+ * steps は simulate レスポンスの先頭からの連続区間 (seq=1..N) をそのまま送る。
+ */
+export const scopeOptimizationApplyRequestSchema = z.object({
+  iso_year: z.number().int(),
+  iso_week: z.number().int(),
+  scope: z.object({
+    office_id: z.string().uuid(),
+    weekdays: z.array(z.number().int().min(0).max(6)).nullable().default(null),
+    course_codes: z.array(z.string()).nullable().default(null),
+  }),
+  state_token: z.string().min(1),
+  steps: z.array(scopeOptimizationStepSchema).min(1),
+});
+export type ScopeOptimizationApplyRequest = z.input<typeof scopeOptimizationApplyRequestSchema>;
+
+/** POST /v2/scope-optimization/apply レスポンス (all-or-nothing). */
+export const scopeOptimizationApplyResponseSchema = z.object({
+  applied_count: z.number().int().min(0),
+  // 寛容パース (warnings 系): 未知文言が混ざっても適用完了フローを止めない.
+  warnings: z.array(z.string()).catch([]),
+});
+export type ScopeOptimizationApplyResponse = z.infer<typeof scopeOptimizationApplyResponseSchema>;
+
 /** POST /v2/scope-optimization/simulate レスポンス. */
 export const scopeOptimizationSimulateResponseSchema = z.object({
   iso_year: z.number().int(),

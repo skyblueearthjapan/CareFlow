@@ -1634,8 +1634,13 @@ export function CourseDayTablePanel({
   const [proposeNewOpen, setProposeNewOpen] = useState(false);
   // スケジュール健康診断ダイアログ (Schedule Advisor Phase 1).
   const [scheduleHealthOpen, setScheduleHealthOpen] = useState(false);
-  // 範囲最適化ダイアログ (scope-optimization W1: simulate 表示のみ).
+  // 範囲最適化ダイアログ (scope-optimization W1-W2).
   const [scopeOptimizeOpen, setScopeOptimizeOpen] = useState(false);
+  // 健康診断からの導線用の範囲プリセット (ツールバーから開くときは null = 手動選択).
+  const [scopeOptimizeInitialScope, setScopeOptimizeInitialScope] = useState<{
+    weekdays: number[] | null;
+    courseCodes: string[] | null;
+  } | null>(null);
   // P3-⑥: 週次ガイドダイアログ (案内のみ・実行ボタンなし).
   const [weeklyRitualGuideOpen, setWeeklyRitualGuideOpen] = useState(false);
   const isProcessing = generateWeekMut.isPending || assignStaffOnlyMut.isPending;
@@ -2013,7 +2018,10 @@ export function CourseDayTablePanel({
                 type="button"
                 size="sm"
                 variant="outline"
-                onClick={() => setScopeOptimizeOpen(true)}
+                onClick={() => {
+                  setScopeOptimizeInitialScope(null); // ツールバーからは手動選択で開く.
+                  setScopeOptimizeOpen(true);
+                }}
                 data-testid="scope-optimize-button"
               >
                 <Route className="mr-1 h-4 w-4" aria-hidden />
@@ -2518,9 +2526,18 @@ export function CourseDayTablePanel({
           isoWeek={isoWeek}
           officeId={officeId}
           weekLabel={isoWeekLabel}
+          // scope-optimization W2: 「移動が多いコース」から範囲最適化へのワンクリック導線.
+          onOptimizeCourse={(courseCode, weekdayFilter) => {
+            setScheduleHealthOpen(false);
+            setScopeOptimizeInitialScope({
+              weekdays: weekdayFilter === 'all' ? null : [weekdayFilter],
+              courseCodes: [courseCode],
+            });
+            setScopeOptimizeOpen(true);
+          }}
         />
 
-        {/* scope-optimization W1: 範囲最適化ダイアログ (read-only simulate). */}
+        {/* scope-optimization W1-W2: 範囲最適化ダイアログ (simulate + 先頭N手適用). */}
         <ScopeOptimizeDialog
           open={scopeOptimizeOpen}
           onClose={() => setScopeOptimizeOpen(false)}
@@ -2528,6 +2545,8 @@ export function CourseDayTablePanel({
           isoWeek={isoWeek}
           officeId={officeId}
           weekLabel={isoWeekLabel}
+          canEdit={canEdit}
+          initialScope={scopeOptimizeInitialScope}
         />
 
         {/* Wave 41 v2 § 4 / §13.5.2: 全面最適化ダイアログ. */}

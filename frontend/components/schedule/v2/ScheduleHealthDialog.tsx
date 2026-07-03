@@ -21,7 +21,7 @@
  * RBAC: 呼出側 (CourseDayTablePanel) で admin/manager ガード済み.
  */
 import * as React from 'react';
-import { HeartPulse, TriangleAlert } from 'lucide-react';
+import { HeartPulse, Route, TriangleAlert } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import {
@@ -36,10 +36,7 @@ import { FilterChip } from '@/components/ui/filter-chip';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useScheduleHealth } from '@/lib/queries/scheduleHealth';
 import { previousIsoWeek } from '@/lib/format/isoWeek';
-import type {
-  ScheduleHealthOffice,
-  ScheduleHealthResponse,
-} from '@/lib/schemas/v2/scheduleHealth';
+import type { ScheduleHealthOffice, ScheduleHealthResponse } from '@/lib/schemas/v2/scheduleHealth';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Props
@@ -54,6 +51,12 @@ export interface ScheduleHealthDialogProps {
   officeId: string | null;
   /** ヘッダー表示用の週ラベル (例: "2026-W27"). */
   weekLabel: string;
+  /**
+   * scope-optimization W2: コース行の「最適化」ボタン押下時に呼ぶ (見える化→解決策の導線).
+   * 省略時はボタン自体を出さない (従来表示と完全互換)。weekdayFilter は現在の曜日フィルタ
+   * ('all' = 全曜日)。単一拠点フィルタ時のみ有効 (範囲最適化は拠点単位のため)。
+   */
+  onOptimizeCourse?: (courseCode: string, weekdayFilter: number | 'all') => void;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -149,8 +152,7 @@ interface DeltaDisplay {
 function formatDelta(current: number, previous: number, unit: '分' | 'km'): DeltaDisplay {
   const raw = current - previous;
   const rounded = unit === 'km' ? Math.round(raw * 10) / 10 : Math.round(raw);
-  const toneClass =
-    rounded > 0 ? 'text-warning' : rounded < 0 ? 'text-success' : 'text-text-muted';
+  const toneClass = rounded > 0 ? 'text-warning' : rounded < 0 ? 'text-success' : 'text-text-muted';
   const sign = rounded > 0 ? '+' : rounded < 0 ? '−' : '±';
   const abs = Math.abs(rounded);
   const value = unit === 'km' ? abs.toFixed(1) : String(abs);
@@ -178,10 +180,7 @@ interface SummaryTileProps {
 
 function SummaryTile({ label, value, delta, testId }: SummaryTileProps) {
   return (
-    <div
-      className="rounded-lg border border-border-default bg-bg-base p-3"
-      data-testid={testId}
-    >
+    <div className="rounded-lg border border-border-default bg-bg-base p-3" data-testid={testId}>
       <div className="text-xs text-text-muted">{label}</div>
       <div className="mt-1 text-2xl font-semibold tabular-nums text-text-primary">{value}</div>
       <div className="mt-1 text-xs tabular-nums">
@@ -207,25 +206,44 @@ interface CourseBarRowProps {
   bar: CourseBar;
   maxTravel: number;
   isHigh: boolean;
+  /** scope-optimization W2: このコースを範囲最適化で開く (省略時はボタン非表示). */
+  onOptimize?: (courseCode: string) => void;
 }
 
-function CourseBarRow({ bar, maxTravel, isHigh }: CourseBarRowProps) {
+function CourseBarRow({ bar, maxTravel, isHigh, onOptimize }: CourseBarRowProps) {
   const pct = maxTravel > 0 ? (bar.travelMinutes / maxTravel) * 100 : 0;
   // travel>0 なら最低 4% は見せてバーの存在を認識できるようにする.
   const width = bar.travelMinutes > 0 ? Math.max(pct, 4) : 0;
   const label = bar.staffName ? `${bar.courseCode}・${bar.staffName}` : bar.courseCode;
   return (
-    <div className="space-y-1" data-testid="schedule-health-bar" data-high={isHigh ? 'true' : 'false'}>
+    <div
+      className="space-y-1"
+      data-testid="schedule-health-bar"
+      data-high={isHigh ? 'true' : 'false'}
+    >
       <div className="flex items-center justify-between gap-2 text-xs">
         <span className="flex items-center gap-1 font-medium text-text-primary">
-          {isHigh ? (
-            <TriangleAlert className="h-3.5 w-3.5 text-warning" aria-hidden />
-          ) : null}
+          {isHigh ? <TriangleAlert className="h-3.5 w-3.5 text-warning" aria-hidden /> : null}
           {label}
         </span>
-        <span className="tabular-nums text-text-secondary">
-          移動{fmtMinutes(bar.travelMinutes)}・隙間{fmtMinutes(bar.gapMinutes)}・訪問
-          {bar.visitCount}件
+        <span className="flex items-center gap-2">
+          <span className="tabular-nums text-text-secondary">
+            移動{fmtMinutes(bar.travelMinutes)}・隙間{fmtMinutes(bar.gapMinutes)}・訪問
+            {bar.visitCount}件
+          </span>
+          {onOptimize ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-6 px-2 text-[11px]"
+              onClick={() => onOptimize(bar.courseCode)}
+              data-testid="schedule-health-optimize-button"
+            >
+              <Route className="mr-0.5 h-3 w-3" aria-hidden />
+              最適化
+            </Button>
+          ) : null}
         </span>
       </div>
       <div className="h-2.5 w-full overflow-hidden rounded-full bg-bg-muted">
@@ -249,6 +267,7 @@ export function ScheduleHealthDialog({
   isoWeek,
   officeId,
   weekLabel,
+  onOptimizeCourse,
 }: ScheduleHealthDialogProps) {
   const [weekdayFilter, setWeekdayFilter] = React.useState<number | 'all'>('all');
 
@@ -272,10 +291,7 @@ export function ScheduleHealthDialog({
 
   // サマリタイル: 当週 / 前週の office 横断合計.
   const currentTotals = React.useMemo(() => sumCrossOfficeTotals(currentData), [currentData]);
-  const prevTotals = React.useMemo(
-    () => sumCrossOfficeTotals(prevQuery.data),
-    [prevQuery.data],
-  );
+  const prevTotals = React.useMemo(() => sumCrossOfficeTotals(prevQuery.data), [prevQuery.data]);
   // 前週データが取得できて 1 拠点以上あれば delta を出す. なければ「前週データなし」.
   const hasPrev = prevQuery.isSuccess && (prevQuery.data?.offices.length ?? 0) > 0;
 
@@ -376,9 +392,7 @@ export function ScheduleHealthDialog({
                 label="移動距離 合計"
                 value={fmtKm(currentTotals.travelKm)}
                 delta={
-                  hasPrev
-                    ? formatDelta(currentTotals.travelKm, prevTotals.travelKm, 'km')
-                    : null
+                  hasPrev ? formatDelta(currentTotals.travelKm, prevTotals.travelKm, 'km') : null
                 }
                 testId="schedule-health-tile-km"
               />
@@ -413,9 +427,7 @@ export function ScheduleHealthDialog({
                 {officeBars.map((ob) =>
                   ob.bars.length === 0 ? null : (
                     <div key={ob.officeId} className="space-y-3">
-                      <div className="text-sm font-semibold text-text-primary">
-                        {ob.officeName}
-                      </div>
+                      <div className="text-sm font-semibold text-text-primary">{ob.officeName}</div>
                       <div className="space-y-3">
                         {ob.bars.map((bar) => (
                           <CourseBarRow
@@ -423,6 +435,12 @@ export function ScheduleHealthDialog({
                             bar={bar}
                             maxTravel={maxTravel}
                             isHigh={bar.travelMinutes > highThreshold}
+                            // 範囲最適化は拠点単位のため、単一拠点フィルタ時のみ導線を出す.
+                            onOptimize={
+                              onOptimizeCourse && officeId
+                                ? (code) => onOptimizeCourse(code, weekdayFilter)
+                                : undefined
+                            }
                           />
                         ))}
                       </div>

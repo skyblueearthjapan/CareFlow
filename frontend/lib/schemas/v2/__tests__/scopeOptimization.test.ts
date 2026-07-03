@@ -7,6 +7,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  scopeOptimizationApplyRequestSchema,
+  scopeOptimizationApplyResponseSchema,
   scopeOptimizationSimulateResponseSchema,
   tolerantStepsArraySchema,
 } from '../scopeOptimization';
@@ -124,5 +126,41 @@ describe('scopeOptimizationSimulateResponseSchema', () => {
     });
     expect(parsed.excluded_summary.truncated).toBe(false);
     expect(parsed.before.visit_count).toBe(0);
+  });
+});
+
+describe('scopeOptimizationApplyRequestSchema (W2)', () => {
+  it('simulate の steps をそのまま載せてパースできる', () => {
+    const parsed = scopeOptimizationApplyRequestSchema.parse({
+      iso_year: 2026,
+      iso_week: 27,
+      scope: { office_id: OFFICE_ID, weekdays: [0], course_codes: ['A'] },
+      state_token: 'abc123',
+      steps: [makeStep(1), makeStep(2)],
+    });
+    expect(parsed.steps).toHaveLength(2);
+    expect(parsed.state_token).toBe('abc123');
+  });
+
+  it('steps 空は拒否 (min 1)', () => {
+    const res = scopeOptimizationApplyRequestSchema.safeParse({
+      iso_year: 2026,
+      iso_week: 27,
+      scope: { office_id: OFFICE_ID },
+      state_token: 'abc123',
+      steps: [],
+    });
+    expect(res.success).toBe(false);
+  });
+});
+
+describe('scopeOptimizationApplyResponseSchema (W2)', () => {
+  it('warnings は寛容パース (.catch)', () => {
+    const parsed = scopeOptimizationApplyResponseSchema.parse({
+      applied_count: 3,
+      warnings: [123, 'ok'], // 不正混入 → catch で空配列
+    });
+    expect(parsed.applied_count).toBe(3);
+    expect(parsed.warnings).toEqual([]);
   });
 });
