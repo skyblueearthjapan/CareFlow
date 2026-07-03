@@ -7,10 +7,11 @@
 設計書: docs/plans/p2-improvement-mvp-design.md §2.
 
 方針 (Phase 0-1 / propose-slots の資産を再利用. コピー禁止):
-  - 限界コスト = ``travel(prev→X)+travel(X→next) − travel(prev→next)``. 先頭/末尾は
-    該当辺のみ. 同住所は 0. 距離/移動/バッファーは ``proposal_solver`` の
-    ``_travel_buffer_between`` / ``_is_same_address`` と ``auto_allocator_v2`` の
-    ``haversine_km`` をそのまま使う (= 健康診断 / 自動割当と同一物差し).
+  - 限界コスト = **コース合計 (travel+buffer) の差** (W3 で厳密計算化:
+    ``compute_exact_marginal``)。同住所・同時刻ペアの共有移動を誤計上しない。
+    距離/移動/バッファーは ``proposal_solver`` の ``_travel_buffer_between`` /
+    ``_is_same_address`` と ``auto_allocator_v2`` の ``haversine_km`` をそのまま使う
+    (= 健康診断 / 自動割当と同一物差し)。
   - 候補列挙は propose-slots と同じ週バケット (``load_week_course_buckets``) に対し、
     **自分の visit を除いた** existing で ``find_available_slots_for_candidate`` を呼ぶ.
   - スタッフ実態警告は P0-1 (propose-slots) の bucket 情報を流用する.
@@ -122,10 +123,15 @@ def compute_marginal_cost(
     *,
     config: SchedulingConfig | None = None,
 ) -> tuple[int, float]:
-    """限界コスト (分, km) を返す.
+    """限界コスト (分, km) を返す (隣接 2 点による近似式).
 
     ``marginal = travel(prev→target) + travel(target→next) − travel(prev→next)``.
     先頭 (prev=None) / 末尾 (next=None) は該当辺のみ (無い辺は 0). 同住所は 0.
+
+    Note (W3 修正): 同時刻開始の訪問 (同住所ペア等) があると prev/next の推定が
+    実態とずれ、効果を過大/過少計上する盲点があるため、提案生成の delta 算出は
+    本関数ではなく **厳密計算** (``compute_exact_marginal`` = コース合計の差) を
+    使うこと。本関数は既存 API 互換のため残す。
 
     Args:
         target: 対象訪問の (lat, lng).
@@ -142,6 +148,50 @@ def compute_marginal_cost(
     )
     km = _edge_km(prev, target) + _edge_km(target, next) - _edge_km(prev, next)
     return minutes, km
+
+
+def course_travel_buffer_total(
+    evs: list[ExistingVisit], *, config: SchedulingConfig | None = None
+) -> tuple[int, float]:
+    """コース内訪問列の travel+buffer 合計 (分) と直線距離合計 (km) を返す.
+
+    schedule_health `_compute_course_metrics` と同一規約:
+    start 昇順に整列した連続ペアごとに、同住所 (<=100m) は 0/0、異住所は
+    ``_travel_buffer_between`` (移動 + バッファー) と ``haversine_km``。
+    同時刻開始のペア (同住所 2 名連続訪問等) も「隣接ペア」として自然に扱われる。
+    """
+    sv = sorted(evs, key=lambda e: _time_to_min(e.start_time))
+    minutes = 0
+    km = 0.0
+    for i in range(1, len(sv)):
+        a = sv[i - 1]
+        b = sv[i]
+        minutes += _travel_buffer_between(a.lat, a.lng, b.lat, b.lng, config=config)
+        if not _is_same_address(a.lat, a.lng, b.lat, b.lng):
+            km += haversine_km(a.lat, a.lng, b.lat, b.lng)
+    return minutes, km
+
+
+def compute_exact_marginal(
+    existing: list[ExistingVisit],
+    member: ExistingVisit,
+    *,
+    config: SchedulingConfig | None = None,
+) -> tuple[int, float]:
+    """厳密な限界コスト = 「member を加えたコース合計 − 加えないコース合計」.
+
+    W3 修正 (実データ由来): 同住所・同時刻ペアの片割れを動かす提案で、共有している
+    移動 (前の患者→同住所) を「動かせば浮く」と誤計上する盲点があった (近似式は
+    同時刻の相方を隣とみなさないため)。コース合計の差で定義すれば、提案の delta と
+    健康診断 (before/after) の改善量が数学的に一致する。
+
+    Args:
+        existing: member を **含まない** コース内の既存訪問列.
+        member: 評価対象の訪問 (現在枠 or 候補枠).
+    """
+    base_min, base_km = course_travel_buffer_total(existing, config=config)
+    with_min, with_km = course_travel_buffer_total([*existing, member], config=config)
+    return with_min - base_min, with_km - base_km
 
 
 # ---------------------------------------------------------------------------
@@ -293,9 +343,7 @@ class _CurrentPlacement:
 # ---------------------------------------------------------------------------
 
 
-def _bucket_existing_excluding(
-    bucket: _CourseBucket, patient_id: UUID
-) -> list[ExistingVisit]:
+def _bucket_existing_excluding(bucket: _CourseBucket, patient_id: UUID) -> list[ExistingVisit]:
     """bucket の既存訪問から対象患者自身を除いた ExistingVisit 列 (start 昇順)."""
     out = [
         ExistingVisit(
@@ -311,21 +359,6 @@ def _bucket_existing_excluding(
     ]
     out.sort(key=lambda e: _time_to_min(e.start_time))
     return out
-
-
-def _neighbors_at(
-    existing_sorted: list[ExistingVisit], at_min: int
-) -> tuple[Coord | None, Coord | None]:
-    """時刻 ``at_min`` の直前 / 直後の既存訪問座標を返す (同時刻はどちらでもない)."""
-    prev: Coord | None = None
-    nxt: Coord | None = None
-    for e in existing_sorted:
-        sm = _time_to_min(e.start_time)
-        if sm < at_min:
-            prev = (e.lat, e.lng)
-        elif sm > at_min and nxt is None:
-            nxt = (e.lat, e.lng)
-    return prev, nxt
 
 
 def _find_current_placement(
@@ -357,10 +390,16 @@ def _find_current_placement(
         return None
     bucket, visit = matched
     existing = _bucket_existing_excluding(bucket, patient_id)
-    prev, nxt = _neighbors_at(existing, _time_to_min(visit.start_time))  # type: ignore[attr-defined]
-    marginal_min, marginal_km = compute_marginal_cost(
-        patient_coord, prev, nxt, config=config
+    # W3: 厳密計算 (コース合計の差)。同時刻ペアの共有移動を誤計上しない.
+    self_ev = ExistingVisit(
+        start_time=visit.start_time,  # type: ignore[attr-defined]
+        end_time=visit.end_time,  # type: ignore[attr-defined]
+        lat=patient_coord[0],
+        lng=patient_coord[1],
+        service_minutes=visit.service_minutes,  # type: ignore[attr-defined]
+        patient_id=str(patient_id),
     )
+    marginal_min, marginal_km = compute_exact_marginal(existing, self_ev, config=config)
     return _CurrentPlacement(
         bucket=bucket,
         office_code=bucket.office_code,
@@ -371,9 +410,7 @@ def _find_current_placement(
     )
 
 
-def _staff_warnings_for_bucket(
-    bucket: _CourseBucket, sex_restriction: str | None
-) -> list[str]:
+def _staff_warnings_for_bucket(bucket: _CourseBucket, sex_restriction: str | None) -> list[str]:
     """候補コースのスタッフ実態警告 (P0-1 の 3 コード). 除外はせず注意喚起のみ."""
     warnings: list[str] = []
     if bucket.assigned_staff_id is None:
@@ -472,7 +509,6 @@ def _swap_candidates_for_pfv(
     if (patient.id, wx) in swap_dismissed:
         return []
 
-    sx_min = _time_to_min(sx)
     out: list[ImprovementCandidateData] = []
 
     for (office_id_y, wy, course_code_y), bucket_y in buckets.items():
@@ -493,7 +529,6 @@ def _swap_candidates_for_pfv(
             y_movability = pfv_y.movability
             y_duration = vy.service_minutes  # type: ignore[attr-defined]
             sy = vy.start_time  # type: ignore[attr-defined]
-            sy_min = _time_to_min(sy)
             y_coord: Coord = (vy.lat, vy.lng)  # type: ignore[attr-defined]
 
             # 曜日跨ぎスワップ: 移動先曜日に既に PFV を持つ患者は apply 時に 422 になるため
@@ -595,35 +630,31 @@ def _swap_candidates_for_pfv(
             if _find_conflict(proposed_y, others_y, config=eff_config) is not None:
                 continue
 
-            # ---- delta = (X現在 + Y現在) − (X新 + Y新) ----
-            # Y 現在の限界コスト (現状: bucket_y から Y のみ除外, X は残す).
-            y_cur_existing = sorted(
-                (
-                    _ev_from_visit(v)
-                    for v in bucket_y.visits
-                    if v.patient_id != y_pid  # type: ignore[attr-defined]
-                ),
-                key=lambda e: _time_to_min(e.start_time),
-            )
-            yc_prev, yc_nxt = _neighbors_at(y_cur_existing, sy_min)
-            y_cur_min, y_cur_km = compute_marginal_cost(
-                y_coord, yc_prev, yc_nxt, config=config
-            )
-            # X 新 (sy, bucket_y): others_x の隣接.
-            ox_sorted = sorted(others_x, key=lambda e: _time_to_min(e.start_time))
-            xn_prev, xn_nxt = _neighbors_at(ox_sorted, sy_min)
-            x_new_min, x_new_km = compute_marginal_cost(
-                patient_coord, xn_prev, xn_nxt, config=config
-            )
-            # Y 新 (sx, bucket_x): others_y の隣接.
-            oy_sorted = sorted(others_y, key=lambda e: _time_to_min(e.start_time))
-            yn_prev, yn_nxt = _neighbors_at(oy_sorted, sx_min)
-            y_new_min, y_new_km = compute_marginal_cost(
-                y_coord, yn_prev, yn_nxt, config=config
-            )
+            # ---- delta = 入れ替え前後のコース合計の差 (W3: 厳密計算) ----
+            # 近似式 (隣接 2 点) は同時刻ペアで誤計上するため、対象バケット全体の
+            # travel+buffer 合計を before/after で直接比較する。
+            x_pid_str = str(patient.id)
+            y_pid_str = str(y_pid)
+            bx_evs = [_ev_from_visit(v) for v in current.bucket.visits]
+            if same_bucket:
+                before_min, before_km = course_travel_buffer_total(bx_evs, config=config)
+                base = [e for e in bx_evs if e.patient_id not in (x_pid_str, y_pid_str)]
+                after_min, after_km = course_travel_buffer_total(
+                    [*base, proposed_x, proposed_y], config=config
+                )
+            else:
+                by_evs = [_ev_from_visit(v) for v in bucket_y.visits]
+                bx_min, bx_km = course_travel_buffer_total(bx_evs, config=config)
+                by_min, by_km = course_travel_buffer_total(by_evs, config=config)
+                before_min, before_km = bx_min + by_min, bx_km + by_km
+                bx_base = [e for e in bx_evs if e.patient_id != x_pid_str]
+                by_base = [e for e in by_evs if e.patient_id != y_pid_str]
+                ax_min, ax_km = course_travel_buffer_total([*bx_base, proposed_y], config=config)
+                ay_min, ay_km = course_travel_buffer_total([*by_base, proposed_x], config=config)
+                after_min, after_km = ax_min + ay_min, ax_km + ay_km
 
-            delta_min = (current.marginal_min + y_cur_min) - (x_new_min + y_new_min)
-            delta_km = (current.marginal_km + y_cur_km) - (x_new_km + y_new_km)
+            delta_min = before_min - after_min
+            delta_km = before_km - after_km
             if delta_min < IMPROVEMENT_THRESHOLD_MIN:
                 continue
 
@@ -658,9 +689,7 @@ def _swap_candidates_for_pfv(
                     cand_staff_name=bucket_y.staff_name,
                     delta_minutes=delta_min,
                     delta_km=round(delta_km, 2),
-                    staff_warnings=_staff_warnings_for_bucket(
-                        bucket_y, patient.sex_restriction
-                    ),
+                    staff_warnings=_staff_warnings_for_bucket(bucket_y, patient.sex_restriction),
                     requires_patient_confirmation=x_conf,
                     within_preference=within_pref_x,
                     changes=changes,
@@ -725,9 +754,7 @@ async def find_improvement_candidates(
     now = datetime.now()
     dismissals = (
         await db.scalars(
-            select(SuggestionDismissal).where(
-                SuggestionDismissal.patient_id == patient.id
-            )
+            select(SuggestionDismissal).where(SuggestionDismissal.patient_id == patient.id)
         )
     ).all()
     dismissed_fp: set[tuple[str, int]] = {
@@ -739,9 +766,7 @@ async def find_improvement_candidates(
     # スワップ却下記憶 (kind='swap') は相手患者 Y の分も要るため全患者ぶんを読む.
     # 指紋 = (patient_id, target_weekday=現在枠曜日). 未失効のみ.
     swap_dismissal_rows = (
-        await db.scalars(
-            select(SuggestionDismissal).where(SuggestionDismissal.kind == "swap")
-        )
+        await db.scalars(select(SuggestionDismissal).where(SuggestionDismissal.kind == "swap"))
     ).all()
     swap_dismissed: set[tuple[UUID, int]] = {
         (d.patient_id, d.target_weekday)
@@ -751,9 +776,7 @@ async def find_improvement_candidates(
 
     # スワップ相手 Y の可動域 / pin 判定用: バケットに現れる全患者の PFV
     # (通常週・slot0) を (patient_id, weekday) で引けるよう 1 クエリでロードする.
-    bucket_pids: set[UUID] = {
-        v.patient_id for bucket in buckets.values() for v in bucket.visits
-    }
+    bucket_pids: set[UUID] = {v.patient_id for bucket in buckets.values() for v in bucket.visits}
     pfv_by_pw: dict[tuple[UUID, int], PatientFixedVisit] = {}
     if bucket_pids:
         cand_pfvs = (
@@ -773,22 +796,14 @@ async def find_improvement_candidates(
     patient_by_id: dict[UUID, Patient] = {patient.id: patient}
     if bucket_pids:
         other_patients = (
-            await db.scalars(
-                select(Patient).where(
-                    Patient.id.in_(bucket_pids - {patient.id})
-                )
-            )
+            await db.scalars(select(Patient).where(Patient.id.in_(bucket_pids - {patient.id})))
         ).all()
         for prow in other_patients:
             patient_by_id[prow.id] = prow
 
     # 昼休み window 算出パラメータ (propose-slots と同一. config 優先, 既定は module 定数).
-    lunch_duration = (
-        config.lunch_duration_min if config is not None else _LUNCH_DURATION_PREFERRED
-    )
-    lunch_window_start = (
-        config.lunch_window_start if config is not None else _LUNCH_EARLIEST_START
-    )
+    lunch_duration = config.lunch_duration_min if config is not None else _LUNCH_DURATION_PREFERRED
+    lunch_window_start = config.lunch_window_start if config is not None else _LUNCH_EARLIEST_START
     lunch_window_end = config.lunch_window_end if config is not None else _LUNCH_LATEST_END
 
     # 対象患者 X が占有している全曜日セット (multi-PFV デッドエンド防止 / MEDIUM-1).
@@ -824,9 +839,7 @@ async def find_improvement_candidates(
             # 当週 visit が未展開等で評価不能 (N-6 で明示する).
             summary.no_current_visit += 1
             continue
-        current_course_label = _course_label(
-            current.office_code, current.bucket.course_code
-        )
+        current_course_label = _course_label(current.office_code, current.bucket.course_code)
 
         # 候補走査用の Candidate. movability が可否の権威なので time_type は自由
         # (None) にして営業枠内を素直に探索する (固定希望に縛らない).
@@ -882,10 +895,17 @@ async def find_improvement_candidates(
                 ):
                     continue
 
-                prev, nxt = _neighbors_at(existing, _time_to_min(slot.start))
-                cand_min, cand_km = compute_marginal_cost(
-                    patient_coord, prev, nxt, config=config
+                # W3: 厳密計算 (コース合計の差)。同時刻ペア枠 (same_address_pair 等)
+                # への挿入も正しく 0 コスト評価される.
+                cand_ev = ExistingVisit(
+                    start_time=slot.start,
+                    end_time=slot.end,
+                    lat=patient_coord[0],
+                    lng=patient_coord[1],
+                    service_minutes=pfv.duration_min,
+                    patient_id=str(patient.id),
                 )
+                cand_min, cand_km = compute_exact_marginal(existing, cand_ev, config=config)
                 delta_min = current.marginal_min - cand_min
                 delta_km = current.marginal_km - cand_km
 
@@ -951,13 +971,9 @@ async def find_improvement_candidates(
                         cand_staff_name=bucket.staff_name,
                         delta_minutes=delta_min,
                         delta_km=round(delta_km, 2),
-                        staff_warnings=_staff_warnings_for_bucket(
-                            bucket, patient.sex_restriction
-                        ),
+                        staff_warnings=_staff_warnings_for_bucket(bucket, patient.sex_restriction),
                         requires_patient_confirmation=(
-                            requires_confirmation
-                            and kind == "time_change"
-                            and not within_pref
+                            requires_confirmation and kind == "time_change" and not within_pref
                         ),
                         within_preference=within_pref,
                         changes=changes,
@@ -1032,7 +1048,9 @@ __all__ = [
     "MAX_SUGGESTIONS_PER_PATIENT",
     "FilteredSummaryData",
     "ImprovementCandidateData",
+    "compute_exact_marginal",
     "compute_marginal_cost",
+    "course_travel_buffer_total",
     "find_improvement_candidates",
     "weekday_code",
 ]

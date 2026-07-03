@@ -555,3 +555,56 @@ def test_apply_swap_updates_sim_state() -> None:
     assert (x_pid, 2) in sim.pfv_by_pw and (y_pid, 0) in sim.pfv_by_pw
     assert sim.occupied_weekdays[x_pid] == {2}
     assert sim.occupied_weekdays[y_pid] == {0}
+
+
+# ---------------------------------------------------------------------------
+# W3 回帰: 同住所・同時刻ペアの見かけ倒し提案 (実データ由来のバグ修正)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_same_address_same_time_pair_yields_no_phantom_step(db) -> None:
+    """同住所・同時刻ペアの片割れの時刻ずらしは効果ゼロ → 提案しない.
+
+    実データ再現: 遠方の患者 (FAR) の後に、同住所ペア (BASE×2) が同時刻 15:30 に
+    入っているコース。旧・近似式は「ペアの片割れを 16:05 へずらすと FAR→BASE の
+    移動が浮く」と誤計上した (実際は相方が同住所に残るため 1 分も浮かない)。
+    厳密計算 (コース合計の差) では delta=0 になり、手順は生成されない。
+    """
+    office = await _seed_office(db)
+    s1 = await _seed_staff(db, office=office, name="S1")
+    await _seed_shift(db, staff=s1, weekday=0)
+    ca = await _seed_course(db, office=office, staff=s1, weekday=0, code="A")
+
+    far = await _seed_patient(db, office=office, code="FARP", lat=FAR[0], lng=FAR[1])
+    pair1 = await _seed_patient(db, office=office, code="PA1", lat=BASE[0], lng=BASE[1])
+    pair2 = await _seed_patient(db, office=office, code="PA2", lat=SAME[0], lng=SAME[1])
+
+    await _seed_visit(db, patient=far, course=ca, weekday=0, start=time(14, 0), end=time(14, 35))
+    # 同住所ペア: 同時刻 15:30 開始 (本番データと同型).
+    await _seed_visit(db, patient=pair1, course=ca, weekday=0, start=time(15, 30), end=time(16, 5))
+    await _seed_visit(db, patient=pair2, course=ca, weekday=0, start=time(15, 30), end=time(16, 5))
+    # 動かせるのはペアの片割れ (pair2) のみ.
+    await _seed_pfv(
+        db,
+        patient=pair2,
+        weekday=0,
+        start=time(15, 30),
+        duration_min=35,
+        movability="time_flexible",
+    )
+    await db.commit()
+
+    result = await simulate_scope_optimization(
+        db,
+        iso_year=ISO_YEAR,
+        iso_week=ISO_WEEK,
+        scope=_scope(office, weekdays=[0], course_codes=["A"]),
+        config=CONFIG,
+    )
+    # 同一コース内で時刻をずらしても相方が同住所に残る → 効果ゼロ → 手順なし.
+    assert result.steps == [], [
+        (s.candidate.kind, s.candidate.delta_minutes, s.candidate.cand_start) for s in result.steps
+    ]
+    # 前後メトリクスも不変.
+    assert result.before == result.after

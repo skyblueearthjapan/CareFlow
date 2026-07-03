@@ -9,8 +9,9 @@ swap (2 患者入れ替え) を **貪欲反復** で積み上げ、「手順 1: 
 
 方針 (正典再利用・コピー禁止):
   - 1 手の候補列挙 / 効果 / 実行可能性は improvement_engine の部品
-    (``compute_marginal_cost`` / ``_slot_within_preference`` / ``_swap_candidates_for_pfv``
-    / ``_bucket_existing_excluding`` / ``_neighbors_at``) と proposal_solver
+    (``compute_exact_marginal`` (W3: コース合計の差の厳密計算) /
+    ``_slot_within_preference`` / ``_swap_candidates_for_pfv`` /
+    ``_bucket_existing_excluding``) と proposal_solver
     (``find_available_slots_for_candidate``) をそのまま使う。
   - 前後メトリクスは schedule_health の ``_compute_course_metrics`` (純関数) を
     模擬バケットに適用する (= 健康診断と同一物差し)。
@@ -66,14 +67,14 @@ from app.services.scheduling.improvement_engine import (
     _bucket_existing_excluding,
     _build_changes,
     _CurrentPlacement,
-    _neighbors_at,
     _slot_within_preference,
     _staff_warnings_for_bucket,
     _swap_candidates_for_pfv,
-    compute_marginal_cost,
+    compute_exact_marginal,
 )
 from app.services.scheduling.proposal_solver import (
     Candidate,
+    ExistingVisit,
     find_available_slots_for_candidate,
 )
 from app.services.scheduling.propose_slots_service import (
@@ -133,11 +134,39 @@ class OptimizationScope:
 
 
 @dataclass
+class ScopeSnapshotVisitData:
+    """コーススナップショットの 1 訪問 (この手を適用する **前** の状態)."""
+
+    patient_id: UUID
+    patient_name: str
+    start_time: time
+    end_time: time
+
+
+@dataclass
+class ScopeCourseSnapshotData:
+    """この手が触るコースの適用前スナップショット (W3: タイムライン表示用).
+
+    FE は visits を start 昇順で描画し、step の patient_id (と swap 相手) に一致する
+    行をハイライト・移動矢印表示する。
+    """
+
+    office_id: UUID
+    weekday: int
+    course_code: str
+    course_label: str
+    staff_name: str | None
+    visits: list[ScopeSnapshotVisitData] = field(default_factory=list)
+
+
+@dataclass
 class ScopeStepData:
     """手順 1 件 (move または swap)。視点主の患者情報と累積効果つき.
 
     ``candidate`` は improvement_engine の 1 手表現をそのまま持つ (kind / 現在枠 /
     候補枠 / delta / within_preference / staff_warnings / swap_counterpart_*)。
+    ``source_course`` / ``destination_course`` はこの手を適用する前の対象コースの
+    スナップショット (同一コース内の移動は destination_course=None)。
     """
 
     seq: int  # 1 始まり
@@ -146,6 +175,8 @@ class ScopeStepData:
     candidate: ImprovementCandidateData
     cumulative_delta_minutes: int
     cumulative_delta_km: float
+    source_course: ScopeCourseSnapshotData | None = None
+    destination_course: ScopeCourseSnapshotData | None = None
 
 
 @dataclass
@@ -369,10 +400,17 @@ def _enumerate_step_candidates(
         src_key, src_bucket, src_visit = placed
         patient_coord = (float(patient.lat), float(patient.lng))
 
-        # 現在枠の限界コスト.
+        # 現在枠の限界コスト (W3: 厳密計算 = コース合計の差。同時刻ペアも正しく扱う).
         existing_src = _bucket_existing_excluding(src_bucket, pid)
-        prev, nxt = _neighbors_at(existing_src, _time_to_min(src_visit.start_time))
-        cur_min, cur_km = compute_marginal_cost(patient_coord, prev, nxt, config=config)
+        self_ev = ExistingVisit(
+            start_time=src_visit.start_time,
+            end_time=src_visit.end_time,
+            lat=patient_coord[0],
+            lng=patient_coord[1],
+            service_minutes=src_visit.service_minutes,
+            patient_id=str(pid),
+        )
+        cur_min, cur_km = compute_exact_marginal(existing_src, self_ev, config=config)
         current = _CurrentPlacement(
             bucket=src_bucket,
             office_code=src_bucket.office_code,
@@ -428,10 +466,15 @@ def _enumerate_step_candidates(
                 ):
                     continue
 
-                prev_c, nxt_c = _neighbors_at(existing, _time_to_min(slot.start))
-                cand_min, cand_km = compute_marginal_cost(
-                    patient_coord, prev_c, nxt_c, config=config
+                cand_ev = ExistingVisit(
+                    start_time=slot.start,
+                    end_time=slot.end,
+                    lat=patient_coord[0],
+                    lng=patient_coord[1],
+                    service_minutes=pfv.duration_min,
+                    patient_id=str(pid),
                 )
+                cand_min, cand_km = compute_exact_marginal(existing, cand_ev, config=config)
                 delta_min = cur_min - cand_min
                 delta_km = cur_km - cand_km
                 if delta_min < SCOPE_STEP_THRESHOLD_MIN:
@@ -551,6 +594,52 @@ def _enumerate_step_candidates(
 # ---------------------------------------------------------------------------
 # 手の適用 (模擬状態の更新)
 # ---------------------------------------------------------------------------
+
+
+def _snapshot_bucket(key: tuple[UUID, int, str], bucket: _CourseBucket) -> ScopeCourseSnapshotData:
+    """バケットの現在 (= この手を適用する前) の訪問列をスナップショットする."""
+    return ScopeCourseSnapshotData(
+        office_id=key[0],
+        weekday=key[1],
+        course_code=key[2],
+        course_label=_course_label(bucket.office_code, bucket.course_code),
+        staff_name=bucket.staff_name,
+        visits=[
+            ScopeSnapshotVisitData(
+                patient_id=v.patient_id,
+                patient_name=v.patient_name,
+                start_time=v.start_time,
+                end_time=v.end_time,
+            )
+            for v in sorted(bucket.visits, key=lambda x: _time_to_min(x.start_time))
+        ],
+    )
+
+
+def _capture_step_context(
+    sim: _SimState, sc: _ScopeCandidate
+) -> tuple[ScopeCourseSnapshotData | None, ScopeCourseSnapshotData | None]:
+    """この手が触るコースの適用前スナップショットを (移動元, 移動先) で返す.
+
+    同一コース内の手 (移動先 = 移動元) は destination=None (FE は 1 枚のタイムラインで
+    「ここへ移動」を描く)。別コースへの手は 2 枚を並列表示できるよう両方返す。
+    """
+    c = sc.data
+    src: ScopeCourseSnapshotData | None = None
+    src_key: tuple[UUID, int, str] | None = None
+    pfv = sim.pfv_by_pw.get((sc.patient_id, c.current_weekday))
+    if pfv is not None:
+        placed = _placement_of(sim, sc.patient_id, pfv)
+        if placed is not None:
+            src_key, src_bucket, _v = placed
+            src = _snapshot_bucket(src_key, src_bucket)
+    dst_key = (c.cand_office_id, c.cand_weekday, c.cand_course_code)
+    dst: ScopeCourseSnapshotData | None = None
+    if dst_key != src_key:
+        dst_bucket = sim.buckets.get(dst_key)
+        if dst_bucket is not None:
+            dst = _snapshot_bucket(dst_key, dst_bucket)
+    return src, dst
 
 
 def _remove_visit(bucket: _CourseBucket, pid: UUID, start: time) -> V2Visit | None:
@@ -872,6 +961,8 @@ async def simulate_scope_optimization(
         )
         applied = False
         for best in candidates:
+            # タイムライン表示用スナップショットは適用 **前** に取る (W3).
+            src_snap, dst_snap = _capture_step_context(sim, best)
             ok = _apply_swap(sim, best) if best.data.kind == "swap" else _apply_move(sim, best)
             if ok:
                 cum_min += best.data.delta_minutes
@@ -884,6 +975,8 @@ async def simulate_scope_optimization(
                         candidate=best.data,
                         cumulative_delta_minutes=cum_min,
                         cumulative_delta_km=round(cum_km, 2),
+                        source_course=src_snap,
+                        destination_course=dst_snap,
                     )
                 )
                 applied = True
@@ -916,9 +1009,11 @@ __all__ = [
     "SCOPE_MAX_STEPS",
     "SCOPE_STEP_THRESHOLD_MIN",
     "OptimizationScope",
+    "ScopeCourseSnapshotData",
     "ScopeExcludedSummaryData",
     "ScopeMetricsData",
     "ScopeOptimizationResult",
+    "ScopeSnapshotVisitData",
     "ScopeStepData",
     "compute_current_state_token",
     "compute_state_token",
