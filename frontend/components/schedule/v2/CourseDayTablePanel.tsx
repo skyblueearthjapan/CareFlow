@@ -45,7 +45,17 @@ import {
 import { useQueries } from '@tanstack/react-query';
 import { useSession } from 'next-auth/react';
 import { format } from 'date-fns';
-import { FlaskConical, HeartPulse, ListChecks, Loader2, Plus, RefreshCw, UserCheck, UserX } from 'lucide-react';
+import {
+  FlaskConical,
+  HeartPulse,
+  ListChecks,
+  Loader2,
+  Plus,
+  RefreshCw,
+  Route,
+  UserCheck,
+  UserX,
+} from 'lucide-react';
 import { toast } from 'sonner';
 
 import { Button } from '@/components/ui/button';
@@ -103,6 +113,7 @@ import { FullOptimizeDialog } from './FullOptimizeDialog';
 import { StaffSubstituteDialog } from './StaffSubstituteDialog';
 import { ProposeNewModal } from './ProposeNewModal';
 import { ScheduleHealthDialog } from './ScheduleHealthDialog';
+import { ScopeOptimizeDialog } from './ScopeOptimizeDialog';
 import { ScheduleReviewBanner } from './ScheduleReviewBanner';
 import { WeeklyRitualGuideDialog } from './WeeklyRitualGuideDialog';
 import { ResetToFixedButton } from './ResetToFixedButton';
@@ -1550,9 +1561,7 @@ export function CourseDayTablePanel({
           {
             onSuccess: () => {
               toast.success(
-                nextPinned
-                  ? 'ピン留めしました (Layer 2 は動かしません)'
-                  : 'ピン留めを外しました',
+                nextPinned ? 'ピン留めしました (Layer 2 は動かしません)' : 'ピン留めを外しました',
               );
             },
             onError: (err) => {
@@ -1625,6 +1634,8 @@ export function CourseDayTablePanel({
   const [proposeNewOpen, setProposeNewOpen] = useState(false);
   // スケジュール健康診断ダイアログ (Schedule Advisor Phase 1).
   const [scheduleHealthOpen, setScheduleHealthOpen] = useState(false);
+  // 範囲最適化ダイアログ (scope-optimization W1: simulate 表示のみ).
+  const [scopeOptimizeOpen, setScopeOptimizeOpen] = useState(false);
   // P3-⑥: 週次ガイドダイアログ (案内のみ・実行ボタンなし).
   const [weeklyRitualGuideOpen, setWeeklyRitualGuideOpen] = useState(false);
   const isProcessing = generateWeekMut.isPending || assignStaffOnlyMut.isPending;
@@ -1997,6 +2008,16 @@ export function CourseDayTablePanel({
               >
                 <HeartPulse className="mr-1 h-4 w-4" aria-hidden />
                 健康診断
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => setScopeOptimizeOpen(true)}
+                data-testid="scope-optimize-button"
+              >
+                <Route className="mr-1 h-4 w-4" aria-hidden />
+                範囲最適化
               </Button>
               <Button
                 type="button"
@@ -2493,6 +2514,16 @@ export function CourseDayTablePanel({
         <ScheduleHealthDialog
           open={scheduleHealthOpen}
           onClose={() => setScheduleHealthOpen(false)}
+          isoYear={isoYear}
+          isoWeek={isoWeek}
+          officeId={officeId}
+          weekLabel={isoWeekLabel}
+        />
+
+        {/* scope-optimization W1: 範囲最適化ダイアログ (read-only simulate). */}
+        <ScopeOptimizeDialog
+          open={scopeOptimizeOpen}
+          onClose={() => setScopeOptimizeOpen(false)}
           isoYear={isoYear}
           isoWeek={isoWeek}
           officeId={officeId}
