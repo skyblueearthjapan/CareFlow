@@ -525,6 +525,83 @@ async def test_build_monitor_office_filter(db) -> None:
 
 
 @pytest.mark.asyncio
+async def test_build_monitor_unassigned_split_by_course(db) -> None:
+    """担当未設定の visits はコース別に行が分かれる (PO 報告 2026-07-03).
+
+    従来は primary_staff_id=None を 1 行に集約していたため A-D コースの訪問が
+    混ざって「データが壊れた」ように見えた。コース別行 + コース無しは別 1 行。
+    """
+    from app.models import Course
+
+    office = Office(name="モニタ拠点")
+    db.add(office)
+    await db.commit()
+    await db.refresh(office)
+
+    course_a = Course(
+        iso_year=2026,
+        iso_week=27,
+        weekday=1,  # TARGET=2026-06-30 (火)
+        code="A",
+        course_status="course_fixed",
+        office_id=office.id,
+    )
+    course_b = Course(
+        iso_year=2026,
+        iso_week=27,
+        weekday=1,
+        code="B",
+        course_status="course_fixed",
+        office_id=office.id,
+    )
+    db.add_all([course_a, course_b])
+    await db.commit()
+    await db.refresh(course_a)
+    await db.refresh(course_b)
+
+    pa = await _make_patient(db, "UN-A")
+    pb = await _make_patient(db, "UN-B")
+    pc = await _make_patient(db, "UN-NONE")
+    staff = await _make_staff(db, "担当あり", office_id=office.id)
+    pd = await _make_patient(db, "AS-D")
+
+    # 未割当 × コース A / B / コース無し + 担当ありの通常 visit。
+    for patient, course_id, start in (
+        (pa, course_a.id, time(9, 0)),
+        (pb, course_b.id, time(10, 0)),
+        (pc, None, time(11, 0)),
+    ):
+        db.add(
+            Visit(
+                patient_id=patient.id,
+                primary_staff_id=None,
+                course_id=course_id,
+                visit_date=TARGET,
+                start_time=start,
+                end_time=time(start.hour, 35),
+                type="regular",
+                status="planned",
+            )
+        )
+    await db.commit()
+    await _make_visit(db, pd, staff)
+
+    resp = await build_monitor(db, TARGET, now=_utc(13, 30))
+
+    unassigned_rows = [r for r in resp.staff if r.staff_id is None]
+    # A / B / コース無し の 3 行に分かれる (従来は 1 行に集約されていた)。
+    assert len(unassigned_rows) == 3
+    labels = sorted((r.course_label or "") for r in unassigned_rows)
+    assert labels == ["", "Aコース", "Bコース"]
+    # 各行の visits は当該コースのみ。
+    for r in unassigned_rows:
+        assert len(r.visits) == 1
+    # 担当ありの行は従来どおり 1 行。
+    assigned_rows = [r for r in resp.staff if r.staff_id is not None]
+    assert len(assigned_rows) == 1
+
+
+@pytest.mark.asyncio
 async def test_nearby_returns_within_radius_sorted(db) -> None:
     await _make_patient(db, "N-near", lat=35.0001, lng=139.0000)  # ~11m
     await _make_patient(db, "N-mid", lat=35.0010, lng=139.0000)  # ~111m

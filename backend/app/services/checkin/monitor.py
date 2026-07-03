@@ -267,10 +267,18 @@ async def build_monitor(
         ).all():
             course_code[cid] = code
 
-    # スタッフごとにグルーピング (primary_staff_id; None は「担当未設定」行)。
-    by_staff: dict[UUID | None, list[Visit]] = defaultdict(list)
+    # スタッフごとにグルーピング (primary_staff_id)。
+    # 担当未設定 (None) を 1 行に集約すると A-D コースの訪問が混ざって
+    # 「データが壊れた」ように見える (PO 報告 2026-07-03) ため、
+    # 未設定はコース別に行を分ける (コースも無い visit は "" キーで 1 行)。
+    by_staff: dict[UUID | tuple[str, str], list[Visit]] = defaultdict(list)
     for v in visits:
-        by_staff[v.primary_staff_id].append(v)
+        if v.primary_staff_id is not None:
+            group_key: UUID | tuple[str, str] = v.primary_staff_id
+        else:
+            code = course_code.get(v.course_id) if v.course_id is not None else None
+            group_key = ("unassigned", code or "")
+        by_staff[group_key].append(v)
 
     # 拠点名解決 (staff.primary_office_id → office.name)。
     office_ids = {
@@ -286,7 +294,9 @@ async def build_monitor(
             office_name[oid] = name
 
     staff_rows: list[MonitorStaffRow] = []
-    for staff_id, staff_visits in by_staff.items():
+    for group_key, staff_visits in by_staff.items():
+        # tuple キー = 担当未設定のコース別行 (staff_id は None として出力する)。
+        staff_id = group_key if isinstance(group_key, UUID) else None
         staff = staff_visits[0].primary_staff if staff_id is not None else None
         oid = staff.primary_office_id if staff is not None else None
         # 拠点フィルタ: 指定があれば一致行のみ残す (担当未設定 / 他拠点は除外)。
@@ -410,8 +420,10 @@ async def build_monitor(
             )
         )
 
-    # 行の並び: 拠点名 → スタッフ名 (担当未設定は末尾)。
-    staff_rows.sort(key=lambda r: (r.office_name or "￿", r.staff_name or "￿"))
+    # 行の並び: 拠点名 → スタッフ名 → コース (担当未設定は末尾にコース順で並ぶ)。
+    staff_rows.sort(
+        key=lambda r: (r.office_name or "￿", r.staff_name or "￿", r.course_label or "￿")
+    )
 
     # フィルタチップ用の拠点一覧 (当日 visits に登場する拠点)。
     offices = sorted(
