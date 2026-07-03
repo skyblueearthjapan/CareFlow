@@ -137,10 +137,10 @@ import { PatientCard } from './PatientCard';
 import { PatientScheduleDetailDialog } from './PatientScheduleDetailDialog';
 import {
   POOL_DROPPABLE_ID,
-  PoolGroupedByWeekday,
   buildPoolDraggableId,
   parsePoolDraggableId,
 } from './PoolPanel';
+import { PoolOverviewPane } from './PoolOverviewPane';
 import type { SlotIndex } from '@/lib/schemas/v2/patient_fixed_visit';
 // Phase G-44: 「希望訪問パターン」 vs 「実 visit 数」 の共通 utility.
 import { countWeekVisits, getDesiredWeeklyVisitCount } from '@/lib/scheduling/preferred-visits';
@@ -2444,11 +2444,17 @@ export function CourseDayTablePanel({
                 に応じて slot 0 / slot 1 の片方のみ未配置のカードを残す。
                 draggableId に slot を含む。
             */}
-            <PoolGroupedByWeekday
+            {/* Stage P-2: PoolOverviewPane が PoolGroupedByWeekday をラップし、
+                「効果を計算」ボタン・delta バッジ・効果順ソートを追加する。
+                患者カードクリック→詳細ダイアログへの既存導線は変更しない。 */}
+            <PoolOverviewPane
               patients={poolPatients}
               disabled={!canEdit}
               assignedSlotsByPatient={assignedSlotsByPatient}
               partnerLocationByPatientSlot={partnerLocationByPatientSlot}
+              isoYear={isoYear}
+              isoWeek={isoWeek}
+              officeId={officeId}
               renderCard={(p, slotInfo) => {
                 const wp = coerceWeeklyPattern(p.weekly_pattern);
                 // Phase G-44: 不足表示用. 複数体制患者は slot 単位で表示しているので

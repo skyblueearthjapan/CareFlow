@@ -52,8 +52,9 @@ const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'] as cons
 /**
  * P-1b: 除外理由コードの日本語ラベル。
  * 未知コードは「その他の理由」として表示する (寛容パース規約)。
+ * Stage P-2: PoolOverviewPane からも再利用するため export。
  */
-const EXCLUDED_REASON_LABEL: Record<string, string> = {
+export const EXCLUDED_REASON_LABEL: Record<string, string> = {
   capacity_full: 'コース容量が上限',
   lunch_window: '昼休みの時間帯',
   travel_shortage: '移動時間が確保できず',

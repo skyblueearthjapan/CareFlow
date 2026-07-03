@@ -98,6 +98,12 @@ from app.schemas.v2.improvement_suggestion import (
     SwapCounterpart,
 )
 from app.schemas.v2.patient_fixed_visit import PatientFixedVisitV2Base
+from app.schemas.v2.pool_overview import (
+    PoolOverviewBestSlot,
+    PoolOverviewItem,
+    PoolOverviewRequest,
+    PoolOverviewResponse,
+)
 from app.schemas.v2.propose_slots import (
     WEEKDAY_CODE_TO_INT,
     WEEKDAY_INT_TO_CODE,
@@ -2083,6 +2089,217 @@ async def propose_slots_endpoint(
         excluded_summary=excluded_summary,
         message=message,
     )
+
+
+# ---------------------------------------------------------------------------
+# pool-overview (Stage P-2: プール患者ごとの最良候補を軽量計算し「効果順」一覧を返す)
+# ---------------------------------------------------------------------------
+
+# 候補の希望時刻種別 (propose_slots.ProposeTimeType と同一語彙).
+_POOL_TIME_TYPES: frozenset[str] = frozenset({"固定", "時間帯", "午前", "午後", "終日"})
+
+# top_excluded_reason の tie-break 優先度 (同数のとき代表理由を決定的に選ぶ).
+# capacity_full を最優先 (根本原因). course_closed は末尾 (曜日そのものが未開講).
+_POOL_EXCLUSION_PRIORITY: tuple[str, ...] = (
+    "capacity_full",
+    "travel_shortage",
+    "lunch_window",
+    "no_gap",
+    "course_closed",
+)
+
+
+def _patient_to_pool_candidate(patient: Patient) -> CandidateInput | None:
+    """プール患者 1 名を propose-slots と同じ ``CandidateInput`` に変換する.
+
+    導出は FE の個別プール提案 (``PoolCandidateList`` → coerceWeeklyPattern) と同一に揃え、
+    pool-overview の最良候補が個別 propose-slots 呼び出しの先頭候補と一致するようにする:
+        - service_minutes / time_type / preferred_weekdays は ``weekly_pattern`` サマリ形式
+          の top-level キーから取る.
+        - preferred_start は time_type∈(固定, 時間帯) のときのみ、preferred_end は
+          time_type=時間帯 のときのみ有効 (FE の showTimeRange / showEnd と同一ゲート).
+        - 座標は患者の lat/lng を使う. どちらか欠落なら None (ソルバが座標必須のため算出不能).
+    """
+    if patient.lat is None or patient.lng is None:
+        return None
+    wp = patient.weekly_pattern if isinstance(patient.weekly_pattern, dict) else {}
+
+    sm_raw = wp.get("service_minutes")
+    # float も許容 (JSONB 経路によっては 30.0 が混入しうる。FE coerceWeeklyPattern の
+    # Number() 解釈と一致させ、pool-overview と個別 propose-slots の食い違いを防ぐ).
+    service_minutes = (
+        int(sm_raw)
+        if isinstance(sm_raw, (int, float)) and not isinstance(sm_raw, bool) and sm_raw > 0
+        else 35
+    )
+
+    tt_raw = wp.get("time_type")
+    time_type = tt_raw if isinstance(tt_raw, str) and tt_raw in _POOL_TIME_TYPES else "終日"
+
+    show_time_range = time_type in ("固定", "時間帯")
+    show_end = time_type == "時間帯"
+    try:
+        preferred_start = _parse_hhmm(wp.get("preferred_start")) if show_time_range else None
+        preferred_end = _parse_hhmm(wp.get("preferred_end")) if show_end else None
+    except (ValueError, TypeError, AttributeError):
+        # 非文字列 (int 等) の混入でも 500 にしない (FE coerceWeeklyPattern の
+        # typeof === 'string' ガードと同じく null 扱いに揃える).
+        preferred_start = None
+        preferred_end = None
+
+    weekdays_raw = wp.get("preferred_weekdays")
+    preferred_weekdays = frozenset(
+        WEEKDAY_CODE_TO_INT[c]
+        for c in (weekdays_raw if isinstance(weekdays_raw, list) else [])
+        if isinstance(c, str) and c in WEEKDAY_CODE_TO_INT
+    )
+
+    return CandidateInput(
+        lat=float(patient.lat),
+        lng=float(patient.lng),
+        service_minutes=service_minutes,
+        time_type=time_type,
+        preferred_start=preferred_start,
+        preferred_end=preferred_end,
+        preferred_weekdays=preferred_weekdays,
+        requires_multiple_staff=bool(patient.requires_multiple_staff),
+        existing_patient_id=patient.id,
+        sex_restriction=patient.sex_restriction,
+    )
+
+
+def _pick_top_excluded_reason(excluded: list[ExcludedReasonSummary]) -> str | None:
+    """除外理由集約から最多 reason を選ぶ (同数は _POOL_EXCLUSION_PRIORITY で決定的)."""
+    if not excluded:
+        return None
+
+    def _priority_index(reason: str) -> int:
+        try:
+            return _POOL_EXCLUSION_PRIORITY.index(reason)
+        except ValueError:
+            return len(_POOL_EXCLUSION_PRIORITY)
+
+    # 最多 count → 同数は優先度が高い (index が小さい) reason を選ぶ.
+    best = max(excluded, key=lambda e: (e.count, -_priority_index(e.reason)))
+    return best.reason
+
+
+@router.post(
+    "/v2/pool-overview",
+    response_model=PoolOverviewResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Stage P-2: プール患者ごとの最良候補 (delta 最小) を軽量計算し効果順一覧を返す",
+)
+async def pool_overview_endpoint(
+    payload: PoolOverviewRequest,
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+) -> PoolOverviewResponse:
+    """保留プールの患者それぞれの「最良候補 1 件」を軽量計算して返す read-only API.
+
+    本 endpoint は **read-only**: DB を変更しない.
+
+    候補生成は propose-slots と完全に同一 (``compute_all_proposed_slots`` を再利用) で、
+    best_delta_minutes は propose-slots 単体呼び出しの先頭候補と一致する. 週バケット
+    (実 Visit / スタッフ実態) と事業所別設定はループ外で 1 回だけロードし、N 患者ぶんの
+    重複クエリを避ける (患者数に依らず DB クエリ回数はほぼ一定).
+    """
+    if not payload.patient_ids:
+        return PoolOverviewResponse(items=[])
+
+    office_ids: list[UUID] = [payload.office_id] if payload.office_id is not None else []
+
+    # 週バケット (実 Visit + スタッフ実態) を 1 回だけロード (propose-slots と同じローダ).
+    try:
+        buckets, office_name_by_id, office_code_by_id = await load_week_course_buckets(
+            db,
+            iso_year=payload.iso_year,
+            iso_week=payload.iso_week,
+            office_ids=office_ids,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    # 事業所別設定も 1 回だけロード (full-optimize / propose-slots と同一 config).
+    config = await load_scheduling_config(db)
+
+    # プール患者をまとめて 1 クエリでロード (存在するものだけ処理; 重複 id は 1 回に集約).
+    unique_ids = list(dict.fromkeys(payload.patient_ids))
+    patient_rows = (
+        await db.scalars(
+            select(Patient).where(
+                Patient.id.in_(unique_ids),
+                Patient.deleted_at.is_(None),
+            )
+        )
+    ).all()
+    patient_by_id: dict[UUID, Patient] = {p.id: p for p in patient_rows}
+
+    items: list[PoolOverviewItem] = []
+    # 重複 id は 1 回だけ計算する (unique_ids は入力順保存の dedup).
+    for pid in unique_ids:
+        patient = patient_by_id.get(pid)
+        if patient is None:
+            continue  # 存在しない / 削除済み患者は俯瞰対象外 (黙って除外).
+
+        candidate = _patient_to_pool_candidate(patient)
+        if candidate is None:
+            # 座標未確定 → 算出不能 (propose-slots の座標なし早期 return と同じく除外理由なし).
+            items.append(
+                PoolOverviewItem(
+                    patient_id=pid,
+                    best_slot=None,
+                    best_delta_minutes=None,
+                    candidate_count=0,
+                    top_excluded_reason=None,
+                )
+            )
+            continue
+
+        # propose-slots と同一の候補生成 (効率代替は付けない = 既定 False で propose と同挙動).
+        # 内部で上位 DELTA_EVAL_LIMIT 件のみ delta を厳密計算し delta 昇順に並ぶため、
+        # results[0] が最良 (delta 最小) 候補になる.
+        excluded_raw: list[ExcludedReasonSummary] = []
+        results = compute_all_proposed_slots(
+            buckets,
+            office_name_by_id,
+            candidate,
+            office_ids=office_ids,
+            office_code_by_id=office_code_by_id,
+            config=config,
+            exclusions_out=excluded_raw,
+        )
+
+        if not results:
+            items.append(
+                PoolOverviewItem(
+                    patient_id=pid,
+                    best_slot=None,
+                    best_delta_minutes=None,
+                    candidate_count=0,
+                    top_excluded_reason=_pick_top_excluded_reason(excluded_raw),
+                )
+            )
+            continue
+
+        best = results[0]
+        items.append(
+            PoolOverviewItem(
+                patient_id=pid,
+                best_slot=PoolOverviewBestSlot(
+                    weekday=best.weekday,
+                    course_code=best.course_code,
+                    office_id=best.office_id,
+                    start_time=f"{best.start.hour:02d}:{best.start.minute:02d}:{best.start.second:02d}",
+                    end_time=f"{best.end.hour:02d}:{best.end.minute:02d}:{best.end.second:02d}",
+                ),
+                best_delta_minutes=best.marginal_cost_minutes,
+                candidate_count=len(results),
+                top_excluded_reason=None,
+            )
+        )
+
+    return PoolOverviewResponse(items=items)
 
 
 # ---------------------------------------------------------------------------

@@ -198,6 +198,12 @@ export interface PoolGroupedByWeekdayProps {
    * 解決して渡す。通常患者 (requires_multiple_staff=false) のキーは含めない.
    */
   partnerLocationByPatientSlot?: Map<string, string>;
+  /**
+   * Stage P-2: ヘッダー右端に追加する React ノード（任意）。
+   * 「効果を計算」ボタン・効果順ソートトグル等を PoolOverviewPane から注入するために使う。
+   * 未指定時は従来どおり患者数スパンのみ描画される。
+   */
+  headerAction?: React.ReactNode;
 }
 
 /**
@@ -259,6 +265,7 @@ export function PoolGroupedByWeekday({
   disabled = false,
   assignedSlotsByPatient,
   partnerLocationByPatientSlot,
+  headerAction,
 }: PoolGroupedByWeekdayProps) {
   const { isOver, setNodeRef } = useDroppable({
     id: POOL_DROPPABLE_ID,
@@ -289,12 +296,15 @@ export function PoolGroupedByWeekday({
 
   return (
     <Card className="p-3">
-      <div className="mb-2 flex items-center justify-between">
-        <h2 className="flex items-center gap-1 text-sm font-semibold text-text-primary">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <h2 className="flex shrink-0 items-center gap-1 text-sm font-semibold text-text-primary">
           <Inbox className="h-4 w-4" aria-hidden />
           保留プール (希望曜日別)
         </h2>
-        <span className="tnum text-xs text-text-muted">{patients.length} 名</span>
+        <div className="flex items-center gap-2">
+          {headerAction ?? null}
+          <span className="tnum text-xs text-text-muted">{patients.length} 名</span>
+        </div>
       </div>
       <div
         ref={setNodeRef}
