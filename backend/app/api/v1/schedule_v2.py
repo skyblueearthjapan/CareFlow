@@ -103,6 +103,7 @@ from app.schemas.v2.propose_slots import (
     WEEKDAY_INT_TO_CODE,
     ProposeCoverage,
     ProposeCoverageDay,
+    ProposeExcludedReason,
     ProposeMiniScheduleEntry,
     ProposeSlotItem,
     ProposeSlotsRequest,
@@ -192,6 +193,7 @@ from app.services.scheduling.proposal_solver import (
 )
 from app.services.scheduling.propose_slots_service import (
     CandidateInput,
+    ExcludedReasonSummary,
     ProposedSlot,
     compute_all_proposed_slots,
     compute_coverage,
@@ -1924,6 +1926,7 @@ def _proposed_to_item(p: ProposedSlot) -> ProposeSlotItem:
             for e in p.mini_schedule
         ],
         is_efficiency_alternative=p.is_efficiency_alternative,
+        marginal_cost_minutes=p.marginal_cost_minutes,
     )
 
 
@@ -2004,6 +2007,9 @@ async def propose_slots_endpoint(
 
     # ランキング済み全スロットを 1 回算出し、slots[] (上位 limit) と coverage で共有.
     # P3-④: include_efficiency_alternatives=True 時は末尾に効率代替 (最大3件) が付く.
+    # P-1a: 上位候補に marginal_cost_minutes (厳密限界コスト) が付与され delta 昇順に並ぶ.
+    # P-1b: 候補 0 件時は excluded_raw に除外理由が集約される (非空を保証).
+    excluded_raw: list[ExcludedReasonSummary] = []
     all_proposed = compute_all_proposed_slots(
         buckets,
         office_name_by_id,
@@ -2012,6 +2018,7 @@ async def propose_slots_endpoint(
         office_code_by_id=office_code_by_id,
         config=config,
         include_efficiency_alternatives=payload.include_efficiency_alternatives,
+        exclusions_out=excluded_raw,
     )
     # P3-④: 通常候補で limit を消費し、効率代替は limit 外で最大3件付加する
     #   (通常候補が効率代替に押し出されないよう flag で分離). 既定 False では
@@ -2054,6 +2061,17 @@ async def propose_slots_endpoint(
 
     message = None if slots_out else "入れられる枠なし (実現可能な空き枠が見つかりませんでした)"
 
+    # P-1b: 除外理由集約を API schema へ (0 件時のみ非空. 候補があれば空).
+    excluded_summary = [
+        ProposeExcludedReason(
+            reason=e.reason,  # type: ignore[arg-type]
+            count=e.count,
+            weekday=e.weekday,
+            sample_course_code=e.sample_course_code,
+        )
+        for e in excluded_raw
+    ]
+
     return ProposeSlotsResponse(
         iso_year=payload.iso_year,
         iso_week=payload.iso_week,
@@ -2062,6 +2080,7 @@ async def propose_slots_endpoint(
         resolved_office_id=resolved_office_id,
         slots=slots_out,
         coverage=coverage,
+        excluded_summary=excluded_summary,
         message=message,
     )
 

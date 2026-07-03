@@ -86,6 +86,11 @@ _PAIR_BONUS: float = 1000.0
 # 近接スコアの飽和距離 (km). これ以上離れると近接スコア 0.
 _PROXIMITY_SAT_KM: float = 5.0
 
+# P-1a: 厳密限界コスト (delta) を計算する上位候補数. 従来の加点スコアで粗ランキングした
+# 上位 DELTA_EVAL_LIMIT 件のみ delta を厳密計算し、delta 昇順に再ソートする (計算量2段構え).
+# それ未満の下位候補は marginal_cost_minutes=None のまま従来順で末尾に残す.
+DELTA_EVAL_LIMIT: int = 20
+
 # Phase G-88: コース容量定数は ``constants`` に単一ソース化.
 # 既存ローカル名 (``_COURSE_MAX_MINUTES`` = 480 / ``_MAX_PATIENTS_PER_COURSE`` = 6) は
 # 上部の import 別名で維持される.
@@ -155,6 +160,52 @@ class ProposedSlot:
     # P3-④ (効率優先の代替枠): time_type/曜日のハード制約を外して再列挙し、通常候補と
     # 重複しない「希望外だが効率的」な枠を後付けしたものは True. 既定 False で従来と不変.
     is_efficiency_alternative: bool = False
+    # P-1a: 挿入の厳密限界コスト (分/週) = course_travel_buffer_total(挿入後) −
+    # (挿入前). improvement_engine の compute_exact_marginal 再利用 (正典・コピー禁止).
+    # 上位 DELTA_EVAL_LIMIT 件のみ厳密計算し、それ以外の下位候補は None のまま.
+    marginal_cost_minutes: float | None = None
+
+
+@dataclass(frozen=True)
+class _BucketExclusion:
+    """1 コース (office × weekday × course_code) が候補 0 件だった生の除外理由 (集約前)."""
+
+    reason: str
+    weekday: int
+    course_code: str
+
+
+@dataclass
+class ExcludedReasonSummary:
+    """P-1b: 候補 0 件時の除外理由の集約 1 件 (reason × weekday でグルーピング).
+
+    reason 語彙 (N-6「黙って消さない」): ``capacity_full`` (容量上限) / ``lunch_window``
+    (昼休み重複) / ``travel_shortage`` (移動時間不足) / ``no_gap`` (空きギャップなし) /
+    ``course_closed`` (希望曜日に開講コース無し).
+    """
+
+    reason: str
+    count: int
+    weekday: int
+    sample_course_code: str | None
+
+
+# 集約時の理由優先度 (1 コースが複数地点で候補を落とした場合、代表理由を決定的に選ぶ).
+# capacity_full を最優先: 容量上限は「そもそも走査に入れない」根本原因のため.
+_EXCLUSION_REASON_PRIORITY: tuple[str, ...] = (
+    "capacity_full",
+    "travel_shortage",
+    "lunch_window",
+    "no_gap",
+)
+
+
+def _pick_bucket_reason(sink: list[str]) -> str:
+    """1 コースの solver 除外コード列から代表理由を決定的に選ぶ (優先度順. 空なら no_gap)."""
+    for reason in _EXCLUSION_REASON_PRIORITY:
+        if reason in sink:
+            return reason
+    return "no_gap"
 
 
 async def load_week_course_buckets(
@@ -282,9 +333,7 @@ async def load_week_course_buckets(
     #      未設定 = 非番扱い. schedule-advisor N-3 の定義に従う).
     #   2) StaffWeeklyOverride(override_type='off') … 当週の休み (iso_year/iso_week/
     #      weekday). is_on=True のシフトでも当週 off なら非番になる.
-    staff_ids = {
-        b.assigned_staff_id for b in buckets.values() if b.assigned_staff_id is not None
-    }
+    staff_ids = {b.assigned_staff_id for b in buckets.values() if b.assigned_staff_id is not None}
     if staff_ids:
         shift_on_by_key: dict[tuple[UUID, int], bool] = {}
         shift_rows = await db.execute(
@@ -334,6 +383,38 @@ def _to_existing_visits(bucket: _CourseBucket) -> list[ExistingVisit]:
     ]
     out.sort(key=lambda e: _time_to_min(e.start_time))
     return out
+
+
+def _marginal_cost_minutes(
+    existing: list[ExistingVisit],
+    slot_start: time,
+    slot_end: time,
+    candidate: CandidateInput,
+    *,
+    config: SchedulingConfig | None,
+) -> float:
+    """挿入の厳密限界コスト (分/週) = course_travel_buffer_total(挿入後) − (挿入前).
+
+    正典 (improvement_engine ``compute_exact_marginal``) を import 再利用する
+    (コピー禁止・正規化ルール N 系). 診断 / 改善提案 / 範囲最適化と同一の物差し.
+
+    循環 import 回避のため関数内 import: improvement_engine は本モジュールを
+    module 直下で import しているため (import 方向: improvement → propose の一方向)、
+    本モジュールが improvement を module 直下で import すると循環になる. 呼び出し時
+    import なら両モジュール読込済みで安全.
+    """
+    from app.services.scheduling.improvement_engine import compute_exact_marginal
+
+    member = ExistingVisit(
+        start_time=slot_start,
+        end_time=slot_end,
+        lat=candidate.lat,
+        lng=candidate.lng,
+        service_minutes=candidate.service_minutes,
+        patient_id="__candidate__",
+    )
+    minutes, _km = compute_exact_marginal(existing, member, config=config)
+    return float(minutes)
 
 
 def _min_distance_km(bucket: _CourseBucket, lat: float, lng: float) -> float | None:
@@ -605,6 +686,7 @@ def _enumerate_candidate_slots(
     lunch_window_start: time,
     lunch_window_end: time,
     is_efficiency_alternative: bool = False,
+    exclusions_out: list[_BucketExclusion] | None = None,
 ) -> list[tuple[ProposedSlot, float]]:
     """1 候補 (solver_candidate) で全コース × target_weekdays を回し提案枠を列挙.
 
@@ -635,14 +717,26 @@ def _enumerate_candidate_slots(
             window_end=lunch_window_end,
         )
 
+        # P-1b: bucket ごとに除外理由を収集 (exclusions_out 指定時のみ). 純観測フックで
+        # solver の判定は不変. slot が 1 件でも出れば理由は集約しない (0 件時のみ意味を持つ).
+        bucket_sink: list[str] | None = [] if exclusions_out is not None else None
         slots = find_available_slots_for_candidate(
             existing,
             solver_candidate,
             lunch_window=lunch,
             weekday=weekday,
             config=config,
+            exclusion_sink=bucket_sink,
         )
         if not slots:
+            if exclusions_out is not None:
+                exclusions_out.append(
+                    _BucketExclusion(
+                        reason=_pick_bucket_reason(bucket_sink or []),
+                        weekday=weekday,
+                        course_code=course_code,
+                    )
+                )
             continue
 
         min_dist = _min_distance_km(bucket, candidate.lat, candidate.lng)
@@ -744,6 +838,103 @@ def _enumerate_candidate_slots(
     return results
 
 
+def _assign_marginal_and_resort(
+    results: list[ProposedSlot],
+    buckets: dict[tuple[UUID, int, str], _CourseBucket],
+    candidate: CandidateInput,
+    *,
+    config: SchedulingConfig | None,
+) -> None:
+    """P-1a: results (スコア降順済み) の上位 ``DELTA_EVAL_LIMIT`` 件に厳密限界コストを付与し、
+    delta 昇順を主キーに in-place 再ソートする.
+
+    delta を計算した上位群のみを再ソートし、それ未満の下位候補は
+    ``marginal_cost_minutes=None`` のまま従来 (スコア) 順で末尾に残す. 同値時は
+    従来スコア降順 → 開始時刻昇順 → course_code 昇順で決定的に並べる (最後に拠点/曜日で
+    完全決定化). 同住所ペアは delta≈0 になり自然に最上位へ来る.
+    """
+    if not results:
+        return
+    head = results[:DELTA_EVAL_LIMIT]
+    tail = results[DELTA_EVAL_LIMIT:]
+    # existing コース列はバケット単位で不変なので 1 回だけ構築してキャッシュする.
+    existing_cache: dict[tuple[UUID, int, str], list[ExistingVisit]] = {}
+    for ps in head:
+        key = (ps.office_id, ps.weekday, ps.course_code)
+        bucket = buckets.get(key)
+        if bucket is None:
+            continue
+        existing = existing_cache.get(key)
+        if existing is None:
+            existing = _to_existing_visits(bucket)
+            existing_cache[key] = existing
+        ps.marginal_cost_minutes = _marginal_cost_minutes(
+            existing, ps.start, ps.end, candidate, config=config
+        )
+    head.sort(
+        key=lambda r: (
+            r.marginal_cost_minutes if r.marginal_cost_minutes is not None else float("inf"),
+            -r.score,
+            _time_to_min(r.start),
+            r.course_code,
+            str(r.office_id),
+            r.weekday,
+        )
+    )
+    results[:] = head + tail
+
+
+def _aggregate_exclusions(
+    raw: list[_BucketExclusion],
+    buckets: dict[tuple[UUID, int, str], _CourseBucket],
+    *,
+    office_ids: list[UUID],
+    target_weekdays: frozenset[int],
+) -> list[ExcludedReasonSummary]:
+    """P-1b: 生の bucket 除外理由を ``reason × weekday`` で集約する (非空を保証).
+
+    希望曜日に開講コースが 1 つも無い曜日は ``course_closed`` を補完する. 最終的に空
+    (bucket も除外理由も無い異常系) なら汎用 ``no_gap`` を 1 件足して「黙って 0 件」を防ぐ.
+    """
+    records = list(raw)
+    # course_closed: scope 内で希望曜日に bucket が 1 つも無い曜日を補完.
+    present_weekdays = {wd for (oid, wd, _cc) in buckets if (not office_ids or oid in office_ids)}
+    for wd in sorted(target_weekdays):
+        if wd not in present_weekdays:
+            records.append(_BucketExclusion(reason="course_closed", weekday=wd, course_code=""))
+
+    counts: dict[tuple[str, int], int] = {}
+    samples: dict[tuple[str, int], str | None] = {}
+    order: list[tuple[str, int]] = []
+    for rec in records:
+        k = (rec.reason, rec.weekday)
+        if k not in counts:
+            counts[k] = 0
+            samples[k] = None
+            order.append(k)
+        counts[k] += 1
+        if samples[k] is None and rec.course_code:
+            samples[k] = rec.course_code
+
+    summaries = [
+        ExcludedReasonSummary(
+            reason=reason,
+            count=counts[(reason, wd)],
+            weekday=wd,
+            sample_course_code=samples[(reason, wd)],
+        )
+        for (reason, wd) in order
+    ]
+    if not summaries:
+        fallback_wd = min(target_weekdays) if target_weekdays else 0
+        summaries.append(
+            ExcludedReasonSummary(
+                reason="no_gap", count=0, weekday=fallback_wd, sample_course_code=None
+            )
+        )
+    return summaries
+
+
 def compute_all_proposed_slots(
     buckets: dict[tuple[UUID, int, str], _CourseBucket],
     office_name_by_id: dict[UUID, str],
@@ -754,6 +945,7 @@ def compute_all_proposed_slots(
     candidate_name: str = "(提案)",
     config: SchedulingConfig | None = None,
     include_efficiency_alternatives: bool = False,
+    exclusions_out: list[ExcludedReasonSummary] | None = None,
 ) -> list[ProposedSlot]:
     """全 (開講コース × 候補希望曜日) でソルバを回し、ランキング済み全スロットを返す.
 
@@ -770,7 +962,15 @@ def compute_all_proposed_slots(
     time_type / preferred_weekdays のハード制約を外した候補で再列挙し、通常候補と
     重複せず「proximity+balance > 通常候補の最高スコア」を満たす効率的な枠を最大 3 件、
     ``is_efficiency_alternative=True`` を付けて通常候補リストの後ろに追加する.
-    既定 (False) では従来と出力・順位とも完全に不変.
+
+    P-1a (物差し統一): 従来の加点スコアで粗ランキングした上位 ``DELTA_EVAL_LIMIT`` 件のみ
+    厳密限界コスト (``marginal_cost_minutes``) を計算し、**delta 昇順を主キー** に再ソート
+    する (同値は従来スコア降順 → 開始時刻昇順 → course_code 昇順で決定的). 下位候補は
+    ``marginal_cost_minutes=None`` のまま従来順で末尾に残る. 効率代替は delta 対象外で
+    従来どおり末尾に付く. **既定の並びが delta 主キーに変わるのは設計どおりの仕様変更**.
+
+    P-1b (N-6): ``exclusions_out`` に list を渡すと、通常候補が 0 件のとき除外理由を
+    ``reason × weekday`` で集約して append する (1 件でも候補があれば空のまま).
     """
     # 残容量 (件数) の上限: config 化. 残分 (COURSE_MAX_MINUTES) は据え置き.
     _max_patients = (
@@ -792,6 +992,8 @@ def compute_all_proposed_slots(
     )
 
     # 通常候補 (希望適合): 従来どおり希望 time_type / 希望曜日で列挙・ランキング.
+    # P-1b: 0 件時の除外理由収集用 sink (exclusions_out 指定時のみ).
+    raw_exclusions: list[_BucketExclusion] | None = [] if exclusions_out is not None else None
     normal = _enumerate_candidate_slots(
         buckets,
         office_name_by_id,
@@ -807,10 +1009,12 @@ def compute_all_proposed_slots(
         lunch_window_start=_lunch_window_start,
         lunch_window_end=_lunch_window_end,
         is_efficiency_alternative=False,
+        exclusions_out=raw_exclusions,
     )
     results: list[ProposedSlot] = [ps for ps, _eff in normal]
 
-    # 合成スコア降順 → 同点は (近さ, 早い時刻, 拠点, コード) で安定化.
+    # 粗ランキング: 合成スコア降順 → 同点は (近さ, 早い時刻, 拠点, コード) で安定化.
+    # (delta を厳密計算する上位 DELTA_EVAL_LIMIT 件の母集団選定に使う.)
     results.sort(
         key=lambda r: (
             -r.score,
@@ -821,8 +1025,25 @@ def compute_all_proposed_slots(
         )
     )
 
+    # P3-④ 効率代替の閾値 (通常候補の最高スコア) は delta 再ソート前に確定する.
+    max_normal_score = results[0].score if results else 0.0
+
+    # P-1a: 上位 DELTA_EVAL_LIMIT 件のみ厳密限界コストを計算し、delta 昇順に再ソート.
+    _assign_marginal_and_resort(results, buckets, candidate, config=config)
+
+    # P-1b: 通常候補 0 件のとき、除外理由を集約して exclusions_out へ (非空を保証).
+    if exclusions_out is not None and not results:
+        exclusions_out.extend(
+            _aggregate_exclusions(
+                raw_exclusions or [],
+                buckets,
+                office_ids=office_ids,
+                target_weekdays=target_weekdays,
+            )
+        )
+
     if not include_efficiency_alternatives or not results:
-        # 既定 (False) または通常候補ゼロ時は従来出力と完全一致 (効率代替を付けない).
+        # 既定 (False) または通常候補ゼロ時は効率代替を付けない.
         return results
 
     # P3-④ 効率優先の代替枠:
@@ -830,7 +1051,8 @@ def compute_all_proposed_slots(
     #   で再列挙し、通常候補と重複しない slot (office×weekday×course×start) のうち
     #   「proximity+balance 合計 > 通常候補の最高スコア」を満たすものを効率的とみなす.
     #   最大 3 件を通常候補リストの後ろに付加する (通常候補の順位は不変).
-    threshold = results[0].score  # results はスコア降順済み = 通常候補の最高スコア.
+    #   delta 再ソートで results[0] は最高スコアとは限らないため、事前確定した値を使う.
+    threshold = max_normal_score
     normal_keys = {(r.office_id, r.weekday, r.course_code, r.start) for r in results}
     alt_cand = Candidate(
         lat=candidate.lat,
@@ -971,9 +1193,11 @@ def compute_coverage(
 
 
 __all__ = [
+    "DELTA_EVAL_LIMIT",
     "CandidateInput",
     "Coverage",
     "CoverageDay",
+    "ExcludedReasonSummary",
     "ProposedSlot",
     "compute_all_proposed_slots",
     "compute_coverage",

@@ -162,6 +162,37 @@ class ProposeSlotItem(BaseModel):
     mini_schedule: list[ProposeMiniScheduleEntry] = Field(default_factory=list)
     # P3-④: 希望外だが効率的な「効率優先の代替枠」か (optional・後方互換で既定 False).
     is_efficiency_alternative: bool = Field(default=False)
+    # P-1a: 挿入の厳密限界コスト (分/週). 診断 / 改善提案 / 範囲最適化と同一の物差し
+    # (compute_exact_marginal). 上位 DELTA_EVAL_LIMIT 件のみ計算し、下位候補は null.
+    # 後方互換の追加フィールド (既定 None).
+    marginal_cost_minutes: float | None = Field(
+        default=None, description="挿入の厳密限界コスト (分/週). 未計算の下位候補は null"
+    )
+
+
+# P-1b: 除外理由コード (N-6「黙って消さない」). service (_pick_bucket_reason /
+# _aggregate_exclusions) が出力する語彙と 1:1.
+ExcludedReasonCode = Literal[
+    "capacity_full", "lunch_window", "travel_shortage", "no_gap", "course_closed"
+]
+
+
+class ProposeExcludedReason(BaseModel):
+    """P-1b: 候補 0 件時の除外理由集約 1 件 (reason × weekday).
+
+    候補が 1 件でも出れば空 (表示要否は FE 判断). 全候補 0 件のときは必ず非空になる.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: ExcludedReasonCode = Field(
+        ..., description="capacity_full / lunch_window / travel_shortage / no_gap / course_closed"
+    )
+    count: int = Field(..., ge=0, description="この reason × weekday で候補を落としたコース数")
+    weekday: int = Field(..., ge=0, le=6, description="0=Mon..6=Sun")
+    sample_course_code: str | None = Field(
+        default=None, description="代表コースコード (例示用. 無ければ null)"
+    )
 
 
 class ProposeCoverageDay(BaseModel):
@@ -215,14 +246,20 @@ class ProposeSlotsResponse(BaseModel):
     coverage: ProposeCoverage | None = Field(
         default=None, description="週N日カバレッジ (希望曜日ごとの実現可否)"
     )
+    excluded_summary: list[ProposeExcludedReason] = Field(
+        default_factory=list,
+        description="P-1b: 候補 0 件時の除外理由集約 (reason × weekday). 候補があれば空",
+    )
     message: str | None = Field(
         default=None, description="0 件時の「入れられる枠なし」メッセージ等"
     )
 
 
 __all__ = [
+    "ExcludedReasonCode",
     "ProposeCoverage",
     "ProposeCoverageDay",
+    "ProposeExcludedReason",
     "ProposeMiniScheduleEntry",
     "ProposeSlotItem",
     "ProposeSlotsRequest",

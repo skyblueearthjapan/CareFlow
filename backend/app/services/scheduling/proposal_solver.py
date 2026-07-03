@@ -430,6 +430,7 @@ def find_available_slots_for_candidate(
     course_capacity_used: int | None = None,
     course_minutes_used: int | None = None,
     config: SchedulingConfig | None = None,
+    exclusion_sink: list[str] | None = None,
 ) -> list[Slot]:
     """候補をコースの空きに入れられる開始時刻を列挙する (不可なら空リスト).
 
@@ -450,6 +451,10 @@ def find_available_slots_for_candidate(
         weekday: 0=Mon..6=Sun (現状ロジックでは未使用だが将来の曜日別制約に備え受領).
         course_capacity_used: 既存 visit 数. None なら ``len(existing_visits)``.
         course_minutes_used: 既存コース占有 (分). None なら既存列から算出.
+        exclusion_sink: P-1b (N-6「黙って消さない」) 用の除外理由レコーダ. ``None`` 以外の
+            list を渡すと、候補を落とした地点で理由コード (capacity_full / travel_shortage /
+            lunch_window / no_gap) を append する. **判定ロジックには一切影響しない** 純観測用
+            (呼び出し側が「なぜ 0 件か」を集約するためのフック).
 
     Returns:
         実現可能 ``Slot`` のリスト (start 昇順). 入れられなければ空リスト.
@@ -473,8 +478,19 @@ def find_available_slots_for_candidate(
 
     slots: list[Slot] = []
     if capacity_ok:
-        slots.extend(_scan_block(sv, candidate, lunch_window, "am", config=config))
-        slots.extend(_scan_block(sv, candidate, lunch_window, "pm", config=config))
+        slots.extend(
+            _scan_block(
+                sv, candidate, lunch_window, "am", config=config, exclusion_sink=exclusion_sink
+            )
+        )
+        slots.extend(
+            _scan_block(
+                sv, candidate, lunch_window, "pm", config=config, exclusion_sink=exclusion_sink
+            )
+        )
+    elif exclusion_sink is not None:
+        # 容量上限 (件数 or 分) で am/pm 走査自体をスキップした = capacity_full.
+        exclusion_sink.append("capacity_full")
 
     # 同住所ペア: 候補が既存の単独患者と同住所なら、その隣に同時刻で入れる.
     slots.extend(
@@ -533,8 +549,12 @@ def _scan_block(
     block: str,
     *,
     config: SchedulingConfig | None = None,
+    exclusion_sink: list[str] | None = None,
 ) -> list[Slot]:
     """1 営業枠 (am / pm) 内のギャップを走査し、収まる開始時刻を返す.
+
+    ``exclusion_sink`` (P-1b) は候補を落とした地点で理由コードを append するだけの
+    純観測フック. 判定ロジック (slot_feasible / 容量 / gap) には一切影響しない.
 
     各ギャップごとに「前 visit からの最早開始 (移動+バッファー+5分切上げ)」を
     起点に slot_feasible を試す. 候補が次 visit に被らない (= 候補↔次の移動+
@@ -611,6 +631,8 @@ def _scan_block(
                 if shortage > 0:
                     if shortage >= SHORTAGE_THRESHOLD_MIN:
                         # 物理不可能 → このギャップでは配置不可.
+                        if exclusion_sink is not None:
+                            exclusion_sink.append("travel_shortage")
                         continue
                     # 微小不足は許容 (固定時刻のまま配置、warning 付与).
                     fixed_warning = "travel_time_shortage"
@@ -625,11 +647,18 @@ def _scan_block(
             )
             latest_end = _add_minutes(nxt.start_time, -gap_after)
             if _time_to_min(end) > _time_to_min(latest_end):
+                if exclusion_sink is not None:
+                    exclusion_sink.append("no_gap")
                 continue
 
         if not slot_feasible(
             start, candidate, lunch_window=lunch_window, block=block, config=config
         ):
+            if exclusion_sink is not None:
+                # 判定は変えず、昼休み重複か否かで理由を分類する (純観測).
+                exclusion_sink.append(
+                    "lunch_window" if _lunch_overlaps(start, end, lunch_window) else "no_gap"
+                )
             continue
 
         results.append(

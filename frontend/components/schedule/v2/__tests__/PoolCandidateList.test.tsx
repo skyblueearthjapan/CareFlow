@@ -356,4 +356,141 @@ describe('PoolCandidateList (③ 単体MVP)', () => {
       ),
     ).not.toBeInTheDocument();
   });
+
+  // ── P-1a: delta バッジ ────────────────────────────────────────────────────
+
+  it('marginal_cost_minutes が正値のとき delta バッジ "+N分" が表示される', () => {
+    mocks.proposeData = {
+      slots: [makeSlot({ marginal_cost_minutes: 15.4 })],
+      message: null,
+    };
+    render(<PoolCandidateList {...COMMON} />);
+    fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
+    const badge = screen.getByTestId('pool-candidate-delta-badge');
+    expect(badge).toBeInTheDocument();
+    expect(badge).toHaveTextContent('コースの移動 +15分');
+    expect(badge).toHaveAttribute('title');
+  });
+
+  it('marginal_cost_minutes が 0 以下のとき delta バッジ "±0分" が表示される', () => {
+    mocks.proposeData = {
+      slots: [makeSlot({ marginal_cost_minutes: 0 })],
+      message: null,
+    };
+    render(<PoolCandidateList {...COMMON} />);
+    fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
+    const badge = screen.getByTestId('pool-candidate-delta-badge');
+    expect(badge).toBeInTheDocument();
+    expect(badge).toHaveTextContent('コースの移動 ±0分');
+  });
+
+  it('marginal_cost_minutes が null のとき delta バッジを表示しない', () => {
+    mocks.proposeData = {
+      slots: [makeSlot({ marginal_cost_minutes: null })],
+      message: null,
+    };
+    render(<PoolCandidateList {...COMMON} />);
+    fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
+    expect(screen.queryByTestId('pool-candidate-delta-badge')).not.toBeInTheDocument();
+  });
+
+  it('marginal_cost_minutes が undefined (旧BE) のとき delta バッジを表示しない', () => {
+    mocks.proposeData = {
+      slots: [makeSlot()], // marginal_cost_minutes を含まないデフォルト
+      message: null,
+    };
+    render(<PoolCandidateList {...COMMON} />);
+    fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
+    expect(screen.queryByTestId('pool-candidate-delta-badge')).not.toBeInTheDocument();
+  });
+
+  // ── P-1b: excluded_summary ───────────────────────────────────────────────
+
+  it('候補 0 件 + excluded_summary あり → 理由別に表示する', () => {
+    mocks.proposeData = {
+      slots: [],
+      message: null,
+      excluded_summary: [
+        { reason: 'capacity_full', count: 3, weekday: 1, sample_course_code: 'A' },
+        { reason: 'travel_shortage', count: 2, weekday: 3, sample_course_code: null },
+      ],
+    };
+    render(<PoolCandidateList {...COMMON} />);
+    fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
+    const summary = screen.getByTestId('pool-candidate-excluded-summary');
+    expect(summary).toBeInTheDocument();
+    expect(summary).toHaveTextContent('火曜');
+    expect(summary).toHaveTextContent('コース容量が上限');
+    expect(summary).toHaveTextContent('3件');
+    expect(summary).toHaveTextContent('木曜');
+    expect(summary).toHaveTextContent('移動時間が確保できず');
+    expect(summary).toHaveTextContent('2件');
+  });
+
+  it('未知 reason は「その他の理由」で件数表示する (寛容パース)', () => {
+    mocks.proposeData = {
+      slots: [],
+      message: null,
+      excluded_summary: [
+        { reason: 'unknown_future_reason', count: 1, weekday: 4, sample_course_code: null },
+      ],
+    };
+    render(<PoolCandidateList {...COMMON} />);
+    fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
+    const summary = screen.getByTestId('pool-candidate-excluded-summary');
+    expect(summary).toHaveTextContent('その他の理由');
+    expect(summary).toHaveTextContent('1件');
+  });
+
+  it('候補 0 件 + excluded_summary なし (旧BE) → 従来の「見つかりませんでした」フォールバック', () => {
+    mocks.proposeData = {
+      slots: [],
+      message: null,
+      // excluded_summary フィールド自体を含まない (旧BE)
+    };
+    render(<PoolCandidateList {...COMMON} />);
+    fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
+    expect(screen.queryByTestId('pool-candidate-excluded-summary')).not.toBeInTheDocument();
+    expect(screen.getByText(/実現可能な空き枠が見つかりませんでした/)).toBeInTheDocument();
+  });
+});
+
+// ── スキーマ: 旧 BE レスポンス (両フィールド欠落) でパースが通る ─────────────
+
+describe('proposeSlotsResponseSchema 寛容パース (P-1 後方互換)', () => {
+  // モック依存のない純粋なスキーマテストなので vi.mock は不要.
+  // vitest は同ファイル内で複数 describe を持てる.
+  it('旧 BE レスポンス (marginal_cost_minutes / excluded_summary 欠落) がパースに通る', async () => {
+    const { proposeSlotsResponseSchema } = await import('@/lib/schemas/v2/propose_slots');
+    const oldBePayload = {
+      iso_year: 2026,
+      iso_week: 24,
+      candidate_lat: null,
+      candidate_lng: null,
+      resolved_office_id: null,
+      slots: [
+        {
+          office_id: '11111111-1111-4111-8111-111111111111',
+          weekday: 1,
+          weekday_code: 'Tue',
+          course_code: 'A',
+          course_label: 'ALabel',
+          start_time: '09:00:00',
+          end_time: '09:30:00',
+          score: 90,
+          // marginal_cost_minutes フィールドなし (旧BE)
+        },
+      ],
+      // excluded_summary フィールドなし (旧BE)
+      message: null,
+    };
+    const result = proposeSlotsResponseSchema.safeParse(oldBePayload);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      // excluded_summary は [] にフォールバック
+      expect(result.data.excluded_summary).toEqual([]);
+      // marginal_cost_minutes は undefined (nullish)
+      expect(result.data.slots[0]!.marginal_cost_minutes).toBeUndefined();
+    }
+  });
 });

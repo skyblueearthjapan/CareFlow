@@ -88,6 +88,8 @@ export const proposeSlotItemSchema = z.object({
   mini_schedule: z.array(proposeMiniScheduleEntrySchema).default([]),
   // P3-④: 希望外だが効率的な「効率優先の代替枠」か (optional・旧BEは未送出 → default)。
   is_efficiency_alternative: z.boolean().default(false),
+  // P-1a: 挿入の厳密限界コスト (コース移動増分分). 旧BE未送出 → null (寛容パース)。
+  marginal_cost_minutes: z.number().nullish(),
 });
 export type ProposeSlotItem = z.infer<typeof proposeSlotItemSchema>;
 
@@ -109,6 +111,19 @@ export const proposeCoverageSchema = z.object({
 });
 export type ProposeCoverage = z.infer<typeof proposeCoverageSchema>;
 
+/**
+ * P-1b: 候補 0 件時の除外理由サマリ 1 件。
+ * reason 語彙: capacity_full / lunch_window / travel_shortage / no_gap / course_closed。
+ * 未知値も文字列のままパースする (寛容パース)。旧BE未送出 → [] で扱う。
+ */
+export const excludedSummaryItemSchema = z.object({
+  reason: z.string(),
+  count: z.number().int(),
+  weekday: z.number().int().min(0).max(6),
+  sample_course_code: z.string().nullish(),
+});
+export type ExcludedSummaryItem = z.infer<typeof excludedSummaryItemSchema>;
+
 /** POST /v2/propose-slots レスポンス (ランキング済み候補リスト + 週N日カバレッジ)。 */
 export const proposeSlotsResponseSchema = z.object({
   iso_year: z.number().int(),
@@ -119,6 +134,8 @@ export const proposeSlotsResponseSchema = z.object({
   slots: z.array(proposeSlotItemSchema).default([]),
   coverage: proposeCoverageSchema.nullish(),
   message: z.string().nullish(),
+  // P-1b: 候補 0 件時の除外理由サマリ. 旧BE未送出 → [] (寛容パース)。
+  excluded_summary: z.array(excludedSummaryItemSchema).default([]),
 });
 export type ProposeSlotsResponse = z.infer<typeof proposeSlotsResponseSchema>;
 

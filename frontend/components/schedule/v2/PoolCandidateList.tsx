@@ -33,6 +33,7 @@ import { coerceWeeklyPattern, type PatientRead } from '@/lib/schemas/patient';
 import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
 import type { PatientFixedVisitsBulkPut } from '@/lib/schemas/v2/patient_fixed_visit';
 import type {
+  ExcludedSummaryItem,
   ProposeMiniScheduleEntry,
   ProposeSlotItem,
   ProposeTimeType,
@@ -47,6 +48,22 @@ import {
 } from './_proposeSlotUtils';
 
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'] as const;
+
+/**
+ * P-1b: 除外理由コードの日本語ラベル。
+ * 未知コードは「その他の理由」として表示する (寛容パース規約)。
+ */
+const EXCLUDED_REASON_LABEL: Record<string, string> = {
+  capacity_full: 'コース容量が上限',
+  lunch_window: '昼休みの時間帯',
+  travel_shortage: '移動時間が確保できず',
+  no_gap: '空き時間なし',
+  course_closed: 'コースが存在しない',
+};
+
+function excludedReasonLabel(reason: string): string {
+  return EXCLUDED_REASON_LABEL[reason] ?? 'その他の理由';
+}
 
 function trimSeconds(t: string | null | undefined): string {
   if (!t) return '';
@@ -178,6 +195,11 @@ export function PoolCandidateList({
 
   const result = proposeMut.data;
   const slots = React.useMemo(() => result?.slots ?? [], [result]);
+  // P-1b: 除外理由サマリ。旧BEは未送出のため nullish → [] フォールバック (寛容パース規約)。
+  const excludedSummary = React.useMemo<ExcludedSummaryItem[]>(
+    () => result?.excluded_summary ?? [],
+    [result],
+  );
 
   // 採用枠 → course_template_id 解決のため、 候補に出現する拠点の course-templates を取得.
   const slotOfficeIds = React.useMemo(() => {
@@ -365,11 +387,33 @@ export function PoolCandidateList({
 
       {!proposeMut.isPending && result && slots.length === 0 ? (
         <div
-          className="py-3 text-center text-xs text-text-muted"
+          className="py-3 text-xs text-text-muted"
           data-testid="pool-candidate-empty"
         >
-          実現可能な空き枠が見つかりませんでした。
-          {result.message ? <div className="mt-1">{result.message}</div> : null}
+          {excludedSummary.length > 0 ? (
+            /* P-1b: 除外理由別の内訳表示 (N-6「黙って消さない」). */
+            <ul
+              className="space-y-0.5"
+              data-testid="pool-candidate-excluded-summary"
+            >
+              {excludedSummary.map((item, i) => (
+                <li key={i} className="flex items-center gap-1">
+                  <span className="font-medium">
+                    {WEEKDAY_LABELS[item.weekday] ?? '?'}曜:
+                  </span>
+                  <span>
+                    {excludedReasonLabel(item.reason)} ({item.count}件)
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            /* 除外理由がない場合のフォールバック (従来メッセージ). */
+            <div className="text-center">
+              実現可能な空き枠が見つかりませんでした。
+              {result.message ? <div className="mt-1">{result.message}</div> : null}
+            </div>
+          )}
         </div>
       ) : null}
 
@@ -396,6 +440,21 @@ export function PoolCandidateList({
                 {s.is_pair && s.pair_partner ? (
                   <Badge variant="info" className="text-[10px]">
                     同住所ペア: {s.pair_partner}
+                  </Badge>
+                ) : null}
+                {s.marginal_cost_minutes !== null &&
+                s.marginal_cost_minutes !== undefined ? (
+                  /* P-1a: 挿入の厳密限界コスト (診断・改善提案と同じ物差し). */
+                  <Badge
+                    variant="secondary"
+                    className="text-[10px]"
+                    data-testid="pool-candidate-delta-badge"
+                    title="診断・改善提案と同じ物差し（厳密限界コスト: コース全体の移動増分）"
+                  >
+                    コースの移動{' '}
+                    {Math.round(s.marginal_cost_minutes) <= 0
+                      ? '±0分'
+                      : `+${Math.round(s.marginal_cost_minutes)}分`}
                   </Badge>
                 ) : null}
                 <span className="tnum ml-auto text-[10px] text-text-muted">
