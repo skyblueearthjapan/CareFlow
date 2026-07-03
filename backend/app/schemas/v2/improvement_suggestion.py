@@ -28,9 +28,7 @@ from app.schemas.v2.propose_slots import WeekdayCode
 ImprovementKind = Literal["time_change", "day_change", "swap"]
 
 # 却下理由 (suggestion_dismissals.reason と同一値域).
-ImprovementDismissReason = Literal[
-    "day_immovable", "time_immovable", "staff_relation", "other"
-]
+ImprovementDismissReason = Literal["day_immovable", "time_immovable", "staff_relation", "other"]
 
 
 # ---------------------------------------------------------------------------
@@ -46,9 +44,7 @@ class ImprovementDelta(BaseModel):
     travel_minutes_saved: int = Field(
         ..., description="週あたり短縮できる移動 + バッファー (分). 正 = 改善."
     )
-    travel_km_saved: float = Field(
-        ..., description="週あたり短縮できる直線距離 (km). 正 = 改善."
-    )
+    travel_km_saved: float = Field(..., description="週あたり短縮できる直線距離 (km). 正 = 改善.")
 
 
 class ImprovementCurrentSlot(BaseModel):
@@ -103,9 +99,7 @@ class SwapCounterpart(BaseModel):
     patient_name: str
     current_weekday: int = Field(..., ge=0, le=6, description="Y の現在枠の曜日 (0=Mon)")
     current_start_time: str = Field(..., description="Y の現在枠 開始 HH:MM")
-    new_weekday: int = Field(
-        ..., ge=0, le=6, description="Y の移動先の曜日 (= X の現在枠の曜日)"
-    )
+    new_weekday: int = Field(..., ge=0, le=6, description="Y の移動先の曜日 (= X の現在枠の曜日)")
     new_start_time: str = Field(..., description="Y の移動先 開始 HH:MM (= X の現在開始)")
     requires_patient_confirmation: bool = Field(
         default=False,
@@ -120,15 +114,41 @@ class SwapCounterpart(BaseModel):
     )
 
 
+class CourseSnapshotVisit(BaseModel):
+    """コーススナップショットの 1 訪問 (提案生成時点の状態)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    patient_id: uuid.UUID
+    patient_name: str
+    start_time: str = Field(..., description="HH:MM")
+    end_time: str = Field(..., description="HH:MM")
+
+
+class CourseSnapshot(BaseModel):
+    """提案が触るコースのスナップショット (タイムライン表示用・UI 統一).
+
+    範囲最適化 (scope-optimization) の step と患者詳細の改善提案で共通の形。
+    FE は visits (start 昇順) を描画し、対象患者 / swap 相手の行をハイライトする。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    office_id: uuid.UUID
+    weekday: int = Field(..., ge=0, le=6, description="0=Mon..6=Sun")
+    course_code: str
+    course_label: str
+    staff_name: str | None = None
+    visits: list[CourseSnapshotVisit] = Field(default_factory=list)
+
+
 class ImprovementSuggestion(BaseModel):
     """改善提案 1 件."""
 
     model_config = ConfigDict(extra="forbid")
 
     kind: ImprovementKind
-    target_weekday: int = Field(
-        ..., ge=0, le=6, description="却下指紋の対象曜日 (= 現在枠の曜日)"
-    )
+    target_weekday: int = Field(..., ge=0, le=6, description="却下指紋の対象曜日 (= 現在枠の曜日)")
     current: ImprovementCurrentSlot
     candidate: ImprovementCandidateSlot
     delta: ImprovementDelta
@@ -154,9 +174,17 @@ class ImprovementSuggestion(BaseModel):
     )
     swap_counterpart: SwapCounterpart | None = Field(
         default=None,
+        description=("kind='swap' のときのみ相手患者 Y の情報を持つ (後方互換: 既定 None)."),
+    )
+    source_course: CourseSnapshot | None = Field(
+        default=None,
         description=(
-            "kind='swap' のときのみ相手患者 Y の情報を持つ (後方互換: 既定 None)."
+            "移動元コースのスナップショット (タイムライン表示用・UI 統一。後方互換: 既定 None)."
         ),
+    )
+    destination_course: CourseSnapshot | None = Field(
+        default=None,
+        description="移動先コースのスナップショット (同一コース内の提案は None).",
     )
 
 
@@ -226,9 +254,7 @@ class ImprovementSuggestionsResponse(BaseModel):
     iso_year: int
     iso_week: int
     suggestions: list[ImprovementSuggestion] = Field(default_factory=list)
-    filtered_summary: ImprovementFilteredSummary = Field(
-        default_factory=ImprovementFilteredSummary
-    )
+    filtered_summary: ImprovementFilteredSummary = Field(default_factory=ImprovementFilteredSummary)
 
 
 # ---------------------------------------------------------------------------
@@ -262,9 +288,7 @@ class ImprovementDismissResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     dismissal_id: uuid.UUID
-    movability_updated: bool = Field(
-        default=False, description="movability を実際に更新したか"
-    )
+    movability_updated: bool = Field(default=False, description="movability を実際に更新したか")
     new_movability: str | None = Field(
         default=None, description="更新後の movability (更新しなければ null)"
     )
@@ -335,6 +359,8 @@ class ApplySwapResponse(BaseModel):
 __all__ = [
     "ApplySwapRequest",
     "ApplySwapResponse",
+    "CourseSnapshot",
+    "CourseSnapshotVisit",
     "ImprovementCandidateSlot",
     "ImprovementChanges",
     "ImprovementCurrentSlot",

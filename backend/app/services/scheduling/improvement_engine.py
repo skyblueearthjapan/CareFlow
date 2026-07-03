@@ -20,7 +20,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, time
 from uuid import UUID
 
@@ -259,6 +259,64 @@ def _slot_within_preference(
 
 
 @dataclass
+class CourseSnapshotVisitData:
+    """コーススナップショットの 1 訪問 (提案生成時点の状態)."""
+
+    patient_id: UUID
+    patient_name: str
+    start_time: time
+    end_time: time
+
+
+@dataclass
+class CourseSnapshotData:
+    """提案が触るコースのスナップショット (タイムライン表示用・UI 統一).
+
+    FE は visits を start 昇順で描画し、対象患者 (と swap 相手) に一致する行を
+    ハイライト・移動矢印表示する (範囲最適化と同一の見せ方)。
+    """
+
+    office_id: UUID
+    weekday: int
+    course_code: str
+    course_label: str
+    staff_name: str | None
+    visits: list[CourseSnapshotVisitData] = field(default_factory=list)
+
+
+def _cached_snapshot(
+    cache: dict[tuple[UUID, int, str], CourseSnapshotData], bucket: _CourseBucket
+) -> CourseSnapshotData:
+    """バケット単位でスナップショットをキャッシュする (候補数が多くても 1 回だけ構築)."""
+    key = (bucket.office_id, bucket.weekday, bucket.course_code)
+    snap = cache.get(key)
+    if snap is None:
+        snap = snapshot_course_bucket(bucket)
+        cache[key] = snap
+    return snap
+
+
+def snapshot_course_bucket(bucket: _CourseBucket) -> CourseSnapshotData:
+    """バケットの現在の訪問列をスナップショットする (start 昇順)."""
+    return CourseSnapshotData(
+        office_id=bucket.office_id,
+        weekday=bucket.weekday,
+        course_code=bucket.course_code,
+        course_label=_course_label(bucket.office_code, bucket.course_code),
+        staff_name=bucket.staff_name,
+        visits=[
+            CourseSnapshotVisitData(
+                patient_id=v.patient_id,
+                patient_name=v.patient_name,
+                start_time=v.start_time,
+                end_time=v.end_time,
+            )
+            for v in sorted(bucket.visits, key=lambda x: _time_to_min(x.start_time))
+        ],
+    )
+
+
+@dataclass
 class ImprovementCandidateData:
     """改善提案 1 件 (内部表現)."""
 
@@ -299,6 +357,11 @@ class ImprovementCandidateData:
     swap_counterpart_requires_confirmation: bool = False
     # P4-A: Y の新位置が Y 自身の希望訪問スケジュール範囲内なら True (swap のみ).
     swap_counterpart_within_preference: bool = False
+    # UI 統一: 移動元 / 移動先コースのスナップショット (同一コース内は destination=None).
+    # 改善提案 (patient 詳細) の生成経路で populate。scope_optimizer は模擬状態から
+    # step 単位で別途キャプチャするため、そちらの経路では None のまま。
+    source_course: CourseSnapshotData | None = None
+    destination_course: CourseSnapshotData | None = None
 
 
 @dataclass
@@ -489,8 +552,12 @@ def _swap_candidates_for_pfv(
     patient_by_id: dict[UUID, Patient],
     swap_dismissed: set[tuple[UUID, int]],
     config: SchedulingConfig | None,
+    snapshot_cache: dict[tuple[UUID, int, str], CourseSnapshotData] | None = None,
 ) -> list[ImprovementCandidateData]:
     """X の 1 PFV について、同一 office の他患者 Y の枠との入れ替え候補を列挙する.
+
+    ``snapshot_cache`` が非 None のとき、タイムライン表示用のコーススナップショットを
+    候補へ付与する (scope_optimizer 経路は None = step 単位で別途キャプチャ)。
 
     双方向 feasibility (X が Y の位置に自分の duration で置け、かつ Y が X の位置に
     自分の duration で置ける) を ``_find_conflict`` で相互整合に判定し、閾値超の
@@ -702,6 +769,17 @@ def _swap_candidates_for_pfv(
                     swap_counterpart_new_start=sx,
                     swap_counterpart_requires_confirmation=y_conf,
                     swap_counterpart_within_preference=within_pref_y,
+                    # UI 統一: source=X のコース / destination=Y のコース (同一なら None).
+                    source_course=(
+                        _cached_snapshot(snapshot_cache, current.bucket)
+                        if snapshot_cache is not None
+                        else None
+                    ),
+                    destination_course=(
+                        _cached_snapshot(snapshot_cache, bucket_y)
+                        if snapshot_cache is not None and not same_bucket
+                        else None
+                    ),
                 )
             )
     return out
@@ -811,6 +889,8 @@ async def find_improvement_candidates(
 
     candidates: list[ImprovementCandidateData] = []
     swap_candidates: list[ImprovementCandidateData] = []
+    # UI 統一: タイムライン表示用のコーススナップショット (バケット単位でキャッシュ).
+    snap_cache: dict[tuple[UUID, int, str], CourseSnapshotData] = {}
 
     for pfv in pfvs:
         weekday = pfv.weekday
@@ -978,6 +1058,18 @@ async def find_improvement_candidates(
                         within_preference=within_pref,
                         changes=changes,
                         unchanged=unchanged,
+                        # UI 統一: タイムライン表示用スナップショット (同一コースは dest=None).
+                        source_course=_cached_snapshot(snap_cache, current.bucket),
+                        destination_course=(
+                            None
+                            if (office_id, wd, course_code)
+                            == (
+                                current.bucket.office_id,
+                                current.bucket.weekday,
+                                current.bucket.course_code,
+                            )
+                            else _cached_snapshot(snap_cache, bucket)
+                        ),
                     )
                 )
 
@@ -1000,6 +1092,7 @@ async def find_improvement_candidates(
                 patient_by_id=patient_by_id,
                 swap_dismissed=swap_dismissed,
                 config=config,
+                snapshot_cache=snap_cache,
             )
         )
 
@@ -1046,11 +1139,14 @@ def weekday_code(weekday: int) -> str:
 __all__ = [
     "IMPROVEMENT_THRESHOLD_MIN",
     "MAX_SUGGESTIONS_PER_PATIENT",
+    "CourseSnapshotData",
+    "CourseSnapshotVisitData",
     "FilteredSummaryData",
     "ImprovementCandidateData",
     "compute_exact_marginal",
     "compute_marginal_cost",
     "course_travel_buffer_total",
     "find_improvement_candidates",
+    "snapshot_course_bucket",
     "weekday_code",
 ]

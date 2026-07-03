@@ -63,6 +63,8 @@ from app.services.scheduling.auto_allocator_v2 import (
 from app.services.scheduling.config import SchedulingConfig
 from app.services.scheduling.improvement_engine import (
     IMPROVEMENT_THRESHOLD_MIN,
+    CourseSnapshotData,
+    CourseSnapshotVisitData,
     ImprovementCandidateData,
     _bucket_existing_excluding,
     _build_changes,
@@ -71,6 +73,7 @@ from app.services.scheduling.improvement_engine import (
     _staff_warnings_for_bucket,
     _swap_candidates_for_pfv,
     compute_exact_marginal,
+    snapshot_course_bucket,
 )
 from app.services.scheduling.proposal_solver import (
     Candidate,
@@ -133,30 +136,10 @@ class OptimizationScope:
         return True
 
 
-@dataclass
-class ScopeSnapshotVisitData:
-    """コーススナップショットの 1 訪問 (この手を適用する **前** の状態)."""
-
-    patient_id: UUID
-    patient_name: str
-    start_time: time
-    end_time: time
-
-
-@dataclass
-class ScopeCourseSnapshotData:
-    """この手が触るコースの適用前スナップショット (W3: タイムライン表示用).
-
-    FE は visits を start 昇順で描画し、step の patient_id (と swap 相手) に一致する
-    行をハイライト・移動矢印表示する。
-    """
-
-    office_id: UUID
-    weekday: int
-    course_code: str
-    course_label: str
-    staff_name: str | None
-    visits: list[ScopeSnapshotVisitData] = field(default_factory=list)
+# UI 統一: スナップショットの実体は improvement_engine の正典を共有する
+# (患者詳細の改善提案と範囲最適化で同一の表示データ構造)。旧名は互換エイリアス。
+ScopeSnapshotVisitData = CourseSnapshotVisitData
+ScopeCourseSnapshotData = CourseSnapshotData
 
 
 @dataclass
@@ -596,26 +579,6 @@ def _enumerate_step_candidates(
 # ---------------------------------------------------------------------------
 
 
-def _snapshot_bucket(key: tuple[UUID, int, str], bucket: _CourseBucket) -> ScopeCourseSnapshotData:
-    """バケットの現在 (= この手を適用する前) の訪問列をスナップショットする."""
-    return ScopeCourseSnapshotData(
-        office_id=key[0],
-        weekday=key[1],
-        course_code=key[2],
-        course_label=_course_label(bucket.office_code, bucket.course_code),
-        staff_name=bucket.staff_name,
-        visits=[
-            ScopeSnapshotVisitData(
-                patient_id=v.patient_id,
-                patient_name=v.patient_name,
-                start_time=v.start_time,
-                end_time=v.end_time,
-            )
-            for v in sorted(bucket.visits, key=lambda x: _time_to_min(x.start_time))
-        ],
-    )
-
-
 def _capture_step_context(
     sim: _SimState, sc: _ScopeCandidate
 ) -> tuple[ScopeCourseSnapshotData | None, ScopeCourseSnapshotData | None]:
@@ -632,13 +595,13 @@ def _capture_step_context(
         placed = _placement_of(sim, sc.patient_id, pfv)
         if placed is not None:
             src_key, src_bucket, _v = placed
-            src = _snapshot_bucket(src_key, src_bucket)
+            src = snapshot_course_bucket(src_bucket)
     dst_key = (c.cand_office_id, c.cand_weekday, c.cand_course_code)
     dst: ScopeCourseSnapshotData | None = None
     if dst_key != src_key:
         dst_bucket = sim.buckets.get(dst_key)
         if dst_bucket is not None:
-            dst = _snapshot_bucket(dst_key, dst_bucket)
+            dst = snapshot_course_bucket(dst_bucket)
     return src, dst
 
 

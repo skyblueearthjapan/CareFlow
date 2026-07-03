@@ -20,9 +20,18 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.schemas.v2.improvement_suggestion import ImprovementSuggestion
+from app.schemas.v2.improvement_suggestion import (
+    CourseSnapshot,
+    CourseSnapshotVisit,
+    ImprovementSuggestion,
+)
 
 Weekday = Annotated[int, Field(ge=0, le=6, description="0=Mon..6=Sun")]
+
+# UI 統一: スナップショットの正典は improvement_suggestion.py (改善提案と共有)。
+# 旧名は互換エイリアス (schedule_v2 の import / __all__ を壊さない)。
+ScopeSnapshotVisit = CourseSnapshotVisit
+ScopeCourseSnapshot = CourseSnapshot
 
 
 class ScopeOptimizationScope(BaseModel):
@@ -52,34 +61,6 @@ class ScopeOptimizationSimulateRequest(BaseModel):
     iso_year: int = Field(..., ge=2020, le=2100)
     iso_week: int = Field(..., ge=1, le=53)
     scope: ScopeOptimizationScope
-
-
-class ScopeSnapshotVisit(BaseModel):
-    """コーススナップショットの 1 訪問 (この手を適用する前の状態)."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    patient_id: uuid.UUID
-    patient_name: str
-    start_time: str = Field(..., description="HH:MM")
-    end_time: str = Field(..., description="HH:MM")
-
-
-class ScopeCourseSnapshot(BaseModel):
-    """この手が触るコースの適用前スナップショット (W3: タイムライン表示用).
-
-    FE は visits (start 昇順) を描画し、step の patient_id / swap 相手に一致する行を
-    ハイライト・移動表示する。
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    office_id: uuid.UUID
-    weekday: Weekday
-    course_code: str
-    course_label: str
-    staff_name: str | None = None
-    visits: list[ScopeSnapshotVisit] = Field(default_factory=list)
 
 
 class ScopeOptimizationStep(BaseModel):

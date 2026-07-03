@@ -106,17 +106,13 @@ async def _seed_office(db, *, code: str = "INAGE", name: str = "稲") -> Office:
 
 
 async def _seed_staff(db, *, office: Office, name: str, sex: str | None = None) -> Staff:
-    staff = Staff(
-        name=name, role="staff", is_trainee=False, primary_office_id=office.id, sex=sex
-    )
+    staff = Staff(name=name, role="staff", is_trainee=False, primary_office_id=office.id, sex=sex)
     db.add(staff)
     await db.flush()
     return staff
 
 
-async def _seed_patient(
-    db, *, office: Office, code: str, lat: float, lng: float, **kw
-) -> Patient:
+async def _seed_patient(db, *, office: Office, code: str, lat: float, lng: float, **kw) -> Patient:
     p = Patient(
         code=code,
         name=f"P-{code}",
@@ -218,21 +214,26 @@ async def _two_course_improvement_scenario(
     ca = await _seed_course(db, office=office, staff=s1, weekday=target_weekday, code="A")
     fa1 = await _seed_patient(db, office=office, code="FA1", lat=FAR[0], lng=FAR[1])
     fa2 = await _seed_patient(db, office=office, code="FA2", lat=FAR[0], lng=FAR[1])
-    await _seed_visit(db, patient=fa1, course=ca, weekday=target_weekday,
-                      start=time(9, 30), end=time(10, 0))
-    await _seed_visit(db, patient=p, course=ca, weekday=target_weekday,
-                      start=time(10, 30), end=time(11, 0))
-    await _seed_visit(db, patient=fa2, course=ca, weekday=target_weekday,
-                      start=time(11, 15), end=time(11, 45))
+    await _seed_visit(
+        db, patient=fa1, course=ca, weekday=target_weekday, start=time(9, 30), end=time(10, 0)
+    )
+    await _seed_visit(
+        db, patient=p, course=ca, weekday=target_weekday, start=time(10, 30), end=time(11, 0)
+    )
+    await _seed_visit(
+        db, patient=fa2, course=ca, weekday=target_weekday, start=time(11, 15), end=time(11, 45)
+    )
 
     # Course B (alt_weekday): SAME 相手 1 名のみ. P(BASE) は同住所で marginal ~0.
     cb = await _seed_course(db, office=office, staff=s2, weekday=alt_weekday, code="B")
     pb1 = await _seed_patient(db, office=office, code="PB1", lat=SAME[0], lng=SAME[1])
-    await _seed_visit(db, patient=pb1, course=cb, weekday=alt_weekday,
-                      start=time(9, 30), end=time(10, 0))
+    await _seed_visit(
+        db, patient=pb1, course=cb, weekday=alt_weekday, start=time(9, 30), end=time(10, 0)
+    )
 
-    await _seed_pfv(db, patient=p, weekday=target_weekday, start=time(10, 30),
-                    movability=target_movability)
+    await _seed_pfv(
+        db, patient=p, weekday=target_weekday, start=time(10, 30), movability=target_movability
+    )
     await db.commit()
     return office, p
 
@@ -262,8 +263,9 @@ async def test_pinned_pfv_excluded(db) -> None:
     ca = await _seed_course(db, office=office, staff=s1, weekday=0, code="A")
     await _seed_visit(db, patient=p, course=ca, weekday=0, start=time(10, 30), end=time(11, 0))
     # is_pinned=True (movability は locked backfill 相当) → pinned でカウントし除外.
-    await _seed_pfv(db, patient=p, weekday=0, start=time(10, 30),
-                    movability="locked", is_pinned=True)
+    await _seed_pfv(
+        db, patient=p, weekday=0, start=time(10, 30), movability="locked", is_pinned=True
+    )
     await db.commit()
 
     suggestions, summary = await find_improvement_candidates(
@@ -415,21 +417,22 @@ def test_within_preference_empty_pattern_is_false() -> None:
     """weekly_pattern 未登録 / 空 → 常に False (層 3 フォールバック = 挙動後退なし)."""
     assert _slot_within_preference(_pat(None), 0, time(10, 0), time(10, 30)) is False
     assert _slot_within_preference(_pat({}), 0, time(10, 0), time(10, 30)) is False
-    assert (
-        _slot_within_preference(
-            _pat({"entries": []}), 0, time(10, 0), time(10, 30)
-        )
-        is False
-    )
+    assert _slot_within_preference(_pat({"entries": []}), 0, time(10, 0), time(10, 30)) is False
 
 
 def test_within_preference_time_band() -> None:
     """時間帯: [preferred_start, preferred_end] 内に開始なら True. 別曜日は False."""
     p = _pat(
-        {"entries": [
-            {"weekday": 2, "time_type": "時間帯",
-             "preferred_start": "13:00", "preferred_end": "17:00"},
-        ]}
+        {
+            "entries": [
+                {
+                    "weekday": 2,
+                    "time_type": "時間帯",
+                    "preferred_start": "13:00",
+                    "preferred_end": "17:00",
+                },
+            ]
+        }
     )
     assert _slot_within_preference(p, 2, time(14, 0), time(14, 30)) is True
     assert _slot_within_preference(p, 2, time(12, 0), time(12, 30)) is False
@@ -438,9 +441,7 @@ def test_within_preference_time_band() -> None:
 
 def test_within_preference_fixed_requires_exact_start() -> None:
     """固定: start が preferred_start に厳密一致のときのみ True."""
-    p = _pat(
-        {"entries": [{"weekday": 0, "time_type": "固定", "preferred_start": "10:00"}]}
-    )
+    p = _pat({"entries": [{"weekday": 0, "time_type": "固定", "preferred_start": "10:00"}]})
     assert _slot_within_preference(p, 0, time(10, 0), time(10, 30)) is True
     assert _slot_within_preference(p, 0, time(10, 30), time(11, 0)) is False
 
@@ -607,3 +608,41 @@ async def test_within_preference_day_change_dismissed_counted(db) -> None:
     assert summary.dismissed >= 1
     # day_restricted には計上されない (希望内は層 2 = movability ゲートを通過したため).
     assert summary.day_restricted == 0
+
+
+# ---------------------------------------------------------------------------
+# UI 統一: コーススナップショット (タイムライン表示用)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_suggestions_carry_course_snapshots(db) -> None:
+    """改善提案には移動元 (と別コースなら移動先) のスナップショットが付く.
+
+    - source_course: 必ず付き、対象患者を含むコース全員の訪問列 (start 昇順)。
+    - destination_course: 候補が別コース (office×weekday×code が異なる) のときのみ。
+      同一コース内の候補は None (FE は 1 枚のタイムラインで移動を描く)。
+    """
+    _office, p = await _two_course_improvement_scenario(db, target_movability="time_flexible")
+    suggestions, _summary = await find_improvement_candidates(
+        db, patient=p, iso_year=ISO_YEAR, iso_week=ISO_WEEK
+    )
+    assert suggestions
+    for s in suggestions:
+        src = s.source_course
+        assert src is not None
+        assert any(v.patient_id == p.id for v in src.visits)
+        starts = [v.start_time for v in src.visits]
+        assert starts == sorted(starts)
+        same_course = (s.cand_office_id, s.cand_weekday, s.cand_course_code) == (
+            src.office_id,
+            src.weekday,
+            src.course_code,
+        )
+        if same_course:
+            assert s.destination_course is None
+        else:
+            assert s.destination_course is not None
+            assert s.destination_course.course_code == s.cand_course_code
+    # このシナリオは course B (別コース) への移動候補を含むはず.
+    assert any(s.destination_course is not None for s in suggestions)

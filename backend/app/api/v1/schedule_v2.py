@@ -2342,6 +2342,10 @@ def _improvement_to_schema(c: ImprovementCandidateData) -> ImprovementSuggestion
         requires_patient_confirmation=c.requires_patient_confirmation,
         within_preference=c.within_preference,
         swap_counterpart=_swap_counterpart_of(c),
+        # UI 統一: タイムライン表示用スナップショット (改善提案経路で populate。
+        # scope simulate 経路の candidate は None で、step 側のスナップショットを使う).
+        source_course=_scope_snapshot_to_schema(c.source_course),
+        destination_course=_scope_snapshot_to_schema(c.destination_course),
     )
 
 
