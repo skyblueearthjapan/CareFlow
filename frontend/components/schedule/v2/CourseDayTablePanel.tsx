@@ -69,6 +69,7 @@ import { fetcher } from '@/lib/api/fetcher';
 import {
   useAssignStaffOnly,
   useApplyStaffReview,
+  type AutoCommittedNotice,
   type ReviewItem,
 } from '@/lib/queries/assign_staff_only';
 import { useCourses, useUpdateCourse, type CourseV2Read } from '@/lib/queries/courses';
@@ -1632,6 +1633,8 @@ export function CourseDayTablePanel({
   const [assignWarningOpen, setAssignWarningOpen] = useState(false);
   const [reviewItems, setReviewItems] = useState<ReviewItem[]>([]);
   const [reviewApplying, setReviewApplying] = useState(false);
+  // Wave N-2: 体制上不可避な連続のお知らせ (自動確定済み).
+  const [autoCommittedNotices, setAutoCommittedNotices] = useState<AutoCommittedNotice[]>([]);
   // 統合提案モーダル「＋新規提案」(StageA+C+B). diff-add (プール投入) とは別 entry.
   const [proposeNewOpen, setProposeNewOpen] = useState(false);
   // スケジュール健康診断ダイアログ (Schedule Advisor Phase 1).
@@ -1679,16 +1682,32 @@ export function CourseDayTablePanel({
         iso_week: isoWeek,
         office_id: officeId,
       });
-      // Phase G-91: 確認レビューフロー。 問題コース (連続 / 性別) があれば
-      // レビューダイアログを開く。 クリーンなら従来どおり success toast のみ。
+      // Wave N-2: 確認レビューフロー＋お知らせを統合処理。
+      //   - review_items (要承認) または auto_committed_notices (確定済みお知らせ) が
+      //     1 件以上あればダイアログを開く。
+      //   - toast: review あり → warning (不可避件数があれば追記)
+      //            review 0 + notices あり → success (不可避件数つき)
+      //            どちらも 0 → success のみ (従来どおり)
       const items = res.review_items ?? [];
-      if (items.length > 0) {
+      const notices = res.auto_committed_notices ?? [];
+      if (items.length > 0 || notices.length > 0) {
         setReviewItems(items);
+        setAutoCommittedNotices(notices);
         setAssignWarningOpen(true);
-        toast.warning(
-          `自動スタッフ割当が完了しました (確定 ${res.courses_assigned} 件)。` +
-            `レビューが必要なコースが ${items.length} 件あります。`,
-        );
+        if (items.length > 0) {
+          const noticeSuffix =
+            notices.length > 0
+              ? `（うち体制上不可避の連続 ${notices.length} 件は確定済み）`
+              : '';
+          toast.warning(
+            `自動スタッフ割当が完了しました (確定 ${res.courses_assigned} 件)。` +
+              `レビューが必要なコースが ${items.length} 件あります。${noticeSuffix}`,
+          );
+        } else {
+          toast.success(
+            `自動スタッフ割当が完了しました (確定 ${res.courses_assigned} 件・うち体制上不可避の連続 ${notices.length} 件)`,
+          );
+        }
       } else {
         toast.success(`自動スタッフ割当が完了しました (確定 ${res.courses_assigned} 件)`);
       }
@@ -1739,6 +1758,7 @@ export function CourseDayTablePanel({
         toast.success(`レビュー内容を割り当てました (${approvedList.length} 件)`);
         setAssignWarningOpen(false);
         setReviewItems([]);
+        setAutoCommittedNotices([]);
       } else {
         // 成功した course のみ reviewItems から除去する (= 失敗分 + 未承認分は残す)。
         // 未承認カードを誤って消さないよう、 succeeded だけを取り除く。
@@ -2579,13 +2599,17 @@ export function CourseDayTablePanel({
           onClose={() => setStaffSubstituteOpen(false)}
         />
 
-        {/* Phase G-91: 自動スタッフ割当の確認レビューフロー (連続 / 性別). */}
+        {/* Phase G-91 / Wave N-2: 自動スタッフ割当の確認レビューフロー (連続 / 性別) + お知らせ. */}
         <AssignWarningDialog
           open={assignWarningOpen}
-          onClose={() => setAssignWarningOpen(false)}
+          onClose={() => {
+            setAssignWarningOpen(false);
+            setAutoCommittedNotices([]);
+          }}
           reviewItems={reviewItems}
           onApply={handleApplyReview}
           applying={reviewApplying}
+          notices={autoCommittedNotices}
         />
 
         {/* P3-⑥: 週次ガイドダイアログ (案内のみ・BE 変更なし). */}

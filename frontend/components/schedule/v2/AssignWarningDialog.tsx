@@ -37,7 +37,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import type { ReviewItem } from '@/lib/queries/assign_staff_only';
+import type { AutoCommittedNotice, ReviewItem } from '@/lib/queries/assign_staff_only';
 import { cn } from '@/lib/utils';
 
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'] as const;
@@ -74,6 +74,11 @@ export interface AssignWarningDialogProps {
   onApply: (approved: ApprovedReviewItem[]) => Promise<void> | void;
   /** apply 実行中フラグ (= ボタン無効化). */
   applying?: boolean;
+  /**
+   * Wave N-2: 体制上不可避な連続 (自動確定済み) のお知らせ.
+   * アクションボタンなし。折りたたみで表示。
+   */
+  notices?: AutoCommittedNotice[];
 }
 
 export function AssignWarningDialog({
@@ -82,17 +87,21 @@ export function AssignWarningDialog({
   reviewItems,
   onApply,
   applying = false,
+  notices = [],
 }: AssignWarningDialogProps) {
   // 承認済み course_id 集合 (= チェック / 確認モーダル通過分).
   const [approved, setApproved] = React.useState<Set<string>>(() => new Set());
   // 性別カードの確認モーダル対象 (= 「割り当てる」 を押したカード).
   const [confirmTarget, setConfirmTarget] = React.useState<ReviewItem | null>(null);
+  // Wave N-2: お知らせセクションの折りたたみ状態 (既定: 閉).
+  const [noticesOpen, setNoticesOpen] = React.useState(false);
 
   // ダイアログ open 時に承認状態をリセットする.
   React.useEffect(() => {
     if (open) {
       setApproved(new Set());
       setConfirmTarget(null);
+      setNoticesOpen(false);
     }
   }, [open]);
 
@@ -170,10 +179,17 @@ export function AssignWarningDialog({
               <span aria-hidden>📋</span>
               自動スタッフ割当のレビュー
             </DialogTitle>
-            <DialogDescription>
-              問題のないコースは自動で確定しました。 以下のコースは管理者の判断が必要です。
-              内容を確認し、 割り当てるコースを選んで「選んだ内容で割り当て」 を押してください。
-            </DialogDescription>
+            {reviewItems.length === 0 && notices.length > 0 ? (
+              <DialogDescription>
+                管理者の判断が必要なコースはありません。体制上避けられない連続{' '}
+                {notices.length} 件は理由つきで確定済みです。
+              </DialogDescription>
+            ) : (
+              <DialogDescription>
+                問題のないコースは自動で確定しました。 以下のコースは管理者の判断が必要です。
+                内容を確認し、 割り当てるコースを選んで「選んだ内容で割り当て」 を押してください。
+              </DialogDescription>
+            )}
           </DialogHeader>
 
           <div className="space-y-5 py-1">
@@ -229,7 +245,45 @@ export function AssignWarningDialog({
               </section>
             ) : null}
 
-            {reviewItems.length === 0 ? (
+            {/* 🔵 お知らせセクション (体制上不可避な連続・確定済み) */}
+            {notices.length > 0 ? (
+              <section data-testid="assign-notice-section">
+                <h3 className="mb-2 flex flex-wrap items-center gap-2 text-sm font-semibold text-text-primary">
+                  <span aria-hidden>🔵</span>
+                  体制上避けられない連続（{notices.length} 件・確定済み）
+                  <button
+                    type="button"
+                    className="ml-auto text-xs font-normal text-text-secondary hover:text-text-primary"
+                    onClick={() => setNoticesOpen((o) => !o)}
+                  >
+                    {noticesOpen ? '隠す ▲' : '理由を見る ▼'}
+                  </button>
+                </h3>
+                {noticesOpen ? (
+                  <ul className="space-y-1">
+                    {notices.map((n, i) => (
+                      <li
+                        key={`${n.course_id}-${i}`}
+                        className="flex flex-wrap items-center gap-1 rounded border border-border-default bg-bg-base px-2 py-1 text-xs text-text-secondary"
+                        data-testid="assign-notice-row"
+                      >
+                        <span>
+                          {n.office_name || '—'} / {n.course_code} / {fmtWeekday(n.weekday)}
+                        </span>
+                        <span className="text-text-muted">|</span>
+                        <span className="font-medium text-text-primary">{n.staff_name}</span>
+                        <span>→</span>
+                        <span>{n.cause_patient_names.join('・')}</span>
+                        <span className="text-text-muted">|</span>
+                        <span>{n.reason_text}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </section>
+            ) : null}
+
+            {reviewItems.length === 0 && notices.length === 0 ? (
               <div className="py-4 text-center text-xs text-text-muted">
                 レビュー対象はありません。
               </div>

@@ -121,6 +121,29 @@ export const reviewItemSchema = z.object({
 
 export type ReviewItem = z.infer<typeof reviewItemSchema>;
 
+// ---------------------------------------------------------------------------
+// Wave N-2: 体制上不可避な連続の「お知らせ」(自動確定済み) — BE スキーマとミラー
+// ---------------------------------------------------------------------------
+
+/**
+ * 不可避連続 1 件のお知らせ.
+ * reason_kind は将来拡張を考慮して z.string() で寛容に受け取る
+ * (未知の kind でもセクション全滅しない).
+ */
+export const autoCommittedNoticeSchema = z.object({
+  course_id: z.string(),
+  course_code: z.string(),
+  weekday: z.number().int().min(0).max(6),
+  office_name: z.string().nullable().optional(),
+  staff_name: z.string(),
+  cause_patient_names: z.array(z.string()).default([]),
+  // 'single_staff' | 'all_recent' — 未知値も弾かず z.string() で受容
+  reason_kind: z.string(),
+  reason_text: z.string(),
+});
+
+export type AutoCommittedNotice = z.infer<typeof autoCommittedNoticeSchema>;
+
 export const assignStaffOnlyResponseSchema = z.object({
   iso_year: z.number().int(),
   iso_week: z.number().int(),
@@ -133,6 +156,9 @@ export const assignStaffOnlyResponseSchema = z.object({
   unassigned_warnings: z.array(unassignedCourseWarningSchema).default([]),
   // Phase G-91: 確認レビューフロー (= 連続 index0 / 性別ブロック) のカード一覧.
   review_items: z.array(reviewItemSchema).default([]),
+  // Wave N-2: 不可避連続のお知らせ (自動確定済み / レビュー不要).
+  // 旧 BE は本フィールドを返さないため .default([]).catch([]) で寛容に受け取る.
+  auto_committed_notices: z.array(autoCommittedNoticeSchema).default([]).catch([]),
 });
 
 export type AssignStaffOnlyResponse = z.infer<typeof assignStaffOnlyResponseSchema>;

@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from datetime import date, time
+from datetime import UTC, date, datetime, time
 
 import pytest
 from sqlalchemy import select
@@ -18,8 +18,12 @@ from app.models.course import (
     COURSE_STATUS_COURSE_FIXED,
     COURSE_STATUS_STAFF_ASSIGNED,
 )
+from app.models.office_feature_flag import OfficeFeatureFlag
 from app.models.visit import VISIT_STATUS_PLANNED
-from app.services.scheduling.layer3_assignment import Layer3Assigner
+from app.services.scheduling.layer3_assignment import (
+    L3_FIX_PRIMARY_STAFF_FEATURE_KEY,
+    Layer3Assigner,
+)
 
 # fixture 用の ISO 週. 月曜 = 2026-05-25 (week 22).
 TEST_ISO_YEAR = 2026
@@ -112,6 +116,15 @@ async def test_build_fixed_assignments_includes_staff_assigned_for_tsuga_staff(d
     tsuga = Office(name="G26 都賀事業所", lat=35.6500, lng=140.1700)
     db.add(tsuga)
     await db.flush()
+    # Wave N-1: 名前ハードコードを廃止したため feature flag で有効化する.
+    db.add(
+        OfficeFeatureFlag(
+            office_id=tsuga.id,
+            feature_key=L3_FIX_PRIMARY_STAFF_FEATURE_KEY,
+            enabled_at=datetime.now(tz=UTC),
+        )
+    )
+    await db.flush()
 
     tsuga_staff = Staff(
         code="G26-T1",
@@ -197,6 +210,15 @@ async def test_build_fixed_assignments_mixed_status_both_picked(db) -> None:
     tsuga = Office(name="G26 都賀事業所 (mixed)", lat=35.6500, lng=140.1700)
     db.add(tsuga)
     await db.flush()
+    # Wave N-1: 名前ハードコードを廃止したため feature flag で有効化する.
+    db.add(
+        OfficeFeatureFlag(
+            office_id=tsuga.id,
+            feature_key=L3_FIX_PRIMARY_STAFF_FEATURE_KEY,
+            enabled_at=datetime.now(tz=UTC),
+        )
+    )
+    await db.flush()
 
     tsuga_staff = Staff(
         code="G26X-T1",
@@ -256,6 +278,15 @@ async def test_assign_staff_only_scenario_fixed_rules_apply_after_unassign(db) -
     inage = Office(name="G26E 稲毛事業所", lat=35.6383, lng=140.1041)
     tsuga = Office(name="G26E 都賀事業所", lat=35.6500, lng=140.1700)
     db.add_all([inage, tsuga])
+    await db.flush()
+    # Wave N-1: primary staff 固定割当フラグを有効化 (名前ハードコード廃止の移行).
+    db.add(
+        OfficeFeatureFlag(
+            office_id=tsuga.id,
+            feature_key=L3_FIX_PRIMARY_STAFF_FEATURE_KEY,
+            enabled_at=datetime.now(tz=UTC),
+        )
+    )
     await db.flush()
 
     manager = Staff(
@@ -452,6 +483,15 @@ async def test_build_fixed_assignments_preserves_admin_manual_tsuga_A_assignment
     """
     tsuga = Office(name="G26S2 都賀事業所", lat=35.6500, lng=140.1700)
     db.add(tsuga)
+    await db.flush()
+    # Wave N-1: primary staff 固定割当フラグを有効化.
+    db.add(
+        OfficeFeatureFlag(
+            office_id=tsuga.id,
+            feature_key=L3_FIX_PRIMARY_STAFF_FEATURE_KEY,
+            enabled_at=datetime.now(tz=UTC),
+        )
+    )
     await db.flush()
 
     primary_staff = Staff(

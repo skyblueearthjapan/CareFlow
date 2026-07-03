@@ -61,6 +61,7 @@ from app.models.course import (
     Course,
 )
 from app.models.office import Office
+from app.models.office_feature_flag import OfficeFeatureFlag
 from app.models.patient import Patient
 from app.models.staff import (
     Staff,
@@ -78,6 +79,11 @@ from app.services.scheduling.layer2_clustering import haversine_km
 # Phase G-45: 拠点稼働曜日デフォルト (= 月-土).
 # Phase G-88: 正準値は ``constants`` に単一ソース化. 既存ローカル名は別名で維持.
 _DEFAULT_OFFICE_OPERATING_WEEKDAYS: frozenset[int] = DEFAULT_OFFICE_OPERATING_WEEKDAYS
+
+# Wave N-1: primary staff 固定割当 (旧「都賀」拠点名ハードコードの設定化) の
+# OfficeFeatureFlag key. enabled_at IS NOT NULL の拠点で A コースへの primary staff
+# (active role=staff の code 昇順先頭 1 名) 固定割当が発動する.
+L3_FIX_PRIMARY_STAFF_FEATURE_KEY: str = "l3_fix_primary_staff"
 
 
 def _coerce_office_operating_weekdays(raw: object) -> set[int]:
@@ -394,6 +400,37 @@ class ReviewItem:
     linked_course_ids: list[UUID] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class AutoCommittedNotice:
+    """Wave N-1: 不可避連続の「お知らせ」(= レビュー無しで自動確定した連続コース).
+
+    設計書 R-2: ``rotation_conflicts`` の recent_index==0 連続のうち、 代替候補
+    (ハード制約 OK・当曜日未割当・原因患者の直近担当者でない・現候補本人以外) が
+    1 名も存在しない = 体制上避けられない連続を、 レビュー (承認ゲート) に出さず
+    クリーンコースと同一経路で自動確定したことを管理者へ伝える情報提示.
+
+    Attributes:
+        course_id: 自動確定した連続コースの ID.
+        course_code: コースコード (A/B/C/D/E/M).
+        weekday: 0=Mon..6=Sun.
+        office_name: コース所属拠点名 (表示用).
+        staff_name: 割り当てたスタッフ名 (= 連続担当になった本人).
+        cause_patient_names: 連続になる原因患者名の一覧 (表示用).
+        reason_kind: 'single_staff' (適格者が実質 1 名) |
+            'all_recent' (適格者複数だが全員が原因患者の直近担当者).
+        reason_text: BE で組み立てた日本語の理由文 (FE はそのまま表示).
+    """
+
+    course_id: UUID
+    course_code: str
+    weekday: int
+    office_name: str
+    staff_name: str
+    cause_patient_names: list[str]
+    reason_kind: str  # 'single_staff' | 'all_recent'
+    reason_text: str
+
+
 @dataclass
 class Layer3Result:
     """Layer 3 の総合出力."""
@@ -419,6 +456,11 @@ class Layer3Result:
     # clean で未 commit なのに確定カウントされる過大計上を防ぐ).
     # ``assign()`` のみが埋める (solve() 単体では空のまま). 既存呼出は default 空 list.
     committed_course_ids: list[UUID] = field(default_factory=list)
+    # Wave N-1: 不可避連続の「お知らせ」(= 代替候補 0 名でレビュー無し自動確定した連続).
+    # ``_build_review_items`` が連続 index0 コースを avoidable / unavoidable に分岐し、
+    # unavoidable を本 list に積む (= review_items には出さず committed に残す).
+    # 既存呼出は default の空 list で互換維持.
+    auto_committed_notices: list[AutoCommittedNotice] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -826,7 +868,7 @@ class Layer3Assigner:
         #   🔴 性別ブロック: gender で未割当 + 性別無視時の候補が居る
         #      → DB 未割当のまま. candidate は性別無視時の候補スタッフ.
         # ``review_items`` を埋め、 連続 index0 コースを ``_persist`` 対象から除外する.
-        review_items, exclude_course_ids = await self._build_review_items(
+        review_items, exclude_course_ids, auto_committed_notices = await self._build_review_items(
             db,
             course_targets=course_targets,
             result=result,
@@ -841,6 +883,8 @@ class Layer3Assigner:
             applied_staff_by_course=applied_staff_by_course,
         )
         result.review_items = review_items
+        # Wave N-1: 不可避連続の「お知らせ」(= 代替候補 0 名で自動確定した連続コース).
+        result.auto_committed_notices = auto_committed_notices
 
         # 連続 index0 コースは自動 commit しない (= DB 未割当のまま). visit_group
         # partner を含めた除外集合を使い、 _persist へ渡す assignments から落とす.
@@ -876,7 +920,7 @@ class Layer3Assigner:
         iso_week: int | None,
         patient_recent_staff: dict[UUID, list[UUID]],
         applied_staff_by_course: dict[UUID, UUID] | None = None,
-    ) -> tuple[list[ReviewItem], set[UUID]]:
+    ) -> tuple[list[ReviewItem], set[UUID], list[AutoCommittedNotice]]:
         """Phase G-91: 連続 index0 / 性別ブロックの ``ReviewItem`` を構築する.
 
         レビュー対象 2 種を判定し、 表示用メタ (拠点名 / 患者名 / 訪問時刻 /
@@ -911,9 +955,19 @@ class Layer3Assigner:
             (= committed に残し件数を正しく数える). assigned_staff_id=NULL (一斉未割当
             後) や候補と不一致のコースは従来どおり review に出す.
 
+        Wave N-1 (不可避連続の notice 化):
+            連続 index0 コースのうち「代替候補」(= ハード制約 OK・当曜日未割当・
+            原因患者の直近担当者でない・現候補本人以外) が 1 名も居ないものは
+            **不可避**とみなし、 review_items に出さず exclude にも入れず
+            (= クリーンコースと同一 ``_persist`` 経路で自動確定)、
+            ``AutoCommittedNotice`` として理由つきで返す (reason_kind='single_staff'
+            | 'all_recent'). 代替候補が 1 名以上なら従来どおり review_items.
+            制約判定は ``_cost_single_cell`` (< HUNGARIAN_INFINITY) を再利用する.
+
         Returns:
-            ``(review_items, exclude_course_ids)``.
+            ``(review_items, exclude_course_ids, auto_committed_notices)``.
             review_items は (weekday, course_code, 代表 start_time) で決定的ソート.
+            auto_committed_notices は (weekday, course_code) で決定的ソート.
         """
         targets_by_id: dict[UUID, CourseAssignmentTarget] = {
             ct.course_id: ct for ct in course_targets
@@ -979,8 +1033,34 @@ class Layer3Assigner:
                 continue  # 性別無視でも候補なし = 純粋人手不足 (レビュー対象外)
             gender_candidates[course_id] = candidate
 
-        if not consecutive_cause_patients and not gender_candidates:
-            return [], set()
+        # ----- Wave N-1: 不可避連続の判定 (代替候補 0 名 → review から外し自動確定+notice) -----
+        # 各連続 index0 コースについて「代替候補」(ハード制約 OK・当曜日未割当・原因患者の
+        # 直近担当者でない・現候補本人以外) の実在を検査. 0 名 = 不可避 → consecutive_cause_
+        # patients から外して committed に残し、 notice を積む. 1 名以上 = 従来どおり review.
+        # unavoidable_reason: course_id -> 'single_staff' | 'all_recent'.
+        unavoidable_reason = self._detect_unavoidable_consecutive(
+            consecutive_cause_patients=consecutive_cause_patients,
+            targets_by_id=targets_by_id,
+            result=result,
+            staff_pool=staff_pool,
+            assigned_staff_by_course=assigned_staff_by_course,
+            events_by_staff=events_by_staff,
+            week_monday=week_monday,
+            history=history,
+            iso_year=iso_year,
+            iso_week=iso_week,
+            patient_recent_staff=patient_recent_staff,
+        )
+        # notice の原因患者名組み立て用に不可避コースの cause patient を保存してから pop.
+        original_consecutive_cause_patients: dict[UUID, set[UUID]] = {
+            cid: set(consecutive_cause_patients.get(cid, set())) for cid in unavoidable_reason
+        }
+        # 不可避コースは連続 review 対象から除外 (= exclude にも入れず committed に残る).
+        for cid in unavoidable_reason:
+            consecutive_cause_patients.pop(cid, None)
+
+        if not consecutive_cause_patients and not gender_candidates and not unavoidable_reason:
+            return [], set(), []
 
         # ----- 🔗 修正4: 連続コースの visit_group partner を解決 -----
         # 連続コース X を非 commit にする際、 同 visit_group の partner course Y
@@ -1042,8 +1122,10 @@ class Layer3Assigner:
         review_course_ids = (
             set(consecutive_cause_patients) | set(gender_candidates) | partner_only_ids
         )
-        if not review_course_ids:
-            return [], exclude_course_ids
+        # Wave N-1: notice の理由文組み立て用に不可避コースの名前も一括ロードする.
+        name_course_ids = review_course_ids | set(unavoidable_reason)
+        if not name_course_ids:
+            return [], exclude_course_ids, []
 
         # ----- visit 情報 (patient_id, patient_name, start_time, sex_restriction) を一括ロード -----
         # course_id -> [(start_time, patient_id, patient_name, sex_restriction), ...]
@@ -1058,7 +1140,7 @@ class Layer3Assigner:
                 )
                 .join(Patient, Patient.id == Visit.patient_id)
                 .where(
-                    Visit.course_id.in_(list(review_course_ids)),
+                    Visit.course_id.in_(list(name_course_ids)),
                     Visit.status == VISIT_STATUS_PLANNED,
                     Visit.deleted_at.is_(None),
                     Patient.deleted_at.is_(None),
@@ -1076,7 +1158,7 @@ class Layer3Assigner:
         # ----- 拠点名 (office_id -> name) を一括ロード -----
         office_ids = {
             ct.office_id
-            for cid in review_course_ids
+            for cid in name_course_ids
             if (ct := targets_by_id.get(cid)) is not None and ct.office_id is not None
         }
         office_name_by_id: dict[UUID, str] = {}
@@ -1161,7 +1243,236 @@ class Layer3Assigner:
             return (item.weekday, item.course_code, rep)
 
         items.sort(key=_sort_key)
-        return items, exclude_course_ids
+
+        # ----- Wave N-1: 不可避連続の AutoCommittedNotice を構築 -----
+        notices = self._build_auto_committed_notices(
+            unavoidable_reason=unavoidable_reason,
+            original_cause_patients=original_consecutive_cause_patients,
+            targets_by_id=targets_by_id,
+            staff_by_id=staff_by_id,
+            assigned_staff_by_course=assigned_staff_by_course,
+            visits_by_course=visits_by_course,
+            office_name_by_id=office_name_by_id,
+        )
+        return items, exclude_course_ids, notices
+
+    # ------------------------------------------------------------------ #
+    # Wave N-1: 不可避連続の判定・自動確定 notice 構築
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _reconstruct_recent_before_weekday(
+        course_targets: list[CourseAssignmentTarget],
+        assignments: list[StaffAssignment],
+        patient_recent_staff: dict[UUID, list[UUID]],
+    ) -> dict[int, dict[UUID, list[UUID]]]:
+        """Wave N-1: 各曜日の割当直前 ``working_recent`` スナップショットを再構築する.
+
+        ``solve()`` は ``patient_recent_staff`` のコピーを曜日順に前進伝搬させ、
+        各曜日完了後に当日割当を各患者リストへ prepend する
+        (``layer3_assignment.solve`` の working_recent 更新ロジックと同一手順).
+        ローテ衝突検出は「当日割当を prepend する **前**」の状態を見るため、
+        本メソッドも各曜日の prepend 直前の状態を snapshot として返す
+        (= 代替候補が原因患者の直近担当者か判定する基準を衝突検出と一致させる).
+
+        Returns:
+            ``{weekday: {patient_id: [staff_id, ...]}}``. 割当のある曜日のみキーを持つ.
+        """
+        targets_by_id = {ct.course_id: ct for ct in course_targets}
+        assignments_by_weekday: dict[int, list[StaffAssignment]] = {}
+        for a in assignments:
+            assignments_by_weekday.setdefault(a.weekday, []).append(a)
+
+        working: dict[UUID, list[UUID]] = {
+            pid: list(staff_list) for pid, staff_list in patient_recent_staff.items()
+        }
+        snapshots: dict[int, dict[UUID, list[UUID]]] = {}
+        for weekday in sorted(assignments_by_weekday.keys()):
+            # 当日割当を prepend する前の状態を snapshot (= 衝突検出が見る状態).
+            snapshots[weekday] = {pid: list(lst) for pid, lst in working.items()}
+            for a in assignments_by_weekday[weekday]:
+                ct = targets_by_id.get(a.course_id)
+                if ct is None:
+                    continue
+                for pid in ct.patient_ids:
+                    recent = [sid for sid in working.get(pid, []) if sid != a.staff_id]
+                    recent.insert(0, a.staff_id)
+                    working[pid] = recent[:PATIENT_RECENT_DEPTH]
+        return snapshots
+
+    def _detect_unavoidable_consecutive(
+        self,
+        *,
+        consecutive_cause_patients: dict[UUID, set[UUID]],
+        targets_by_id: dict[UUID, CourseAssignmentTarget],
+        result: Layer3Result,
+        staff_pool: list[StaffInfo],
+        assigned_staff_by_course: dict[UUID, UUID],
+        events_by_staff: dict[UUID, list[StaffEvent]],
+        week_monday: date_cls | None,
+        history: list[tuple[int, str, UUID]],
+        iso_year: int | None,
+        iso_week: int | None,
+        patient_recent_staff: dict[UUID, list[UUID]],
+    ) -> dict[UUID, str]:
+        """Wave N-1: 連続 index0 コースを不可避 / 回避可能に分類する (設計書 R-2).
+
+        各コースについて「代替候補」の実在を検査する:
+            代替候補 = active staff のうち
+              ・ハード制約を全て満たす (勤務曜日 / 実効拠点一致 / 性別 AND /
+                StaffEvent 非重複 / 直近1週同コード除外)
+                 = ``_cost_single_cell(...) < HUNGARIAN_INFINITY`` の再利用で判定.
+              ・当該曜日の他コースに (この実行で) 割当済みでない
+              ・原因患者すべての直近担当者リスト (snapshot) に入っていない
+              ・現候補スタッフ本人でない
+
+        代替候補が 1 名以上 → 回避可能 (= 従来どおり review). 0 名 → 不可避.
+        不可避の reason_kind:
+            ・適格者 (ハード制約 OK + 当曜日空き, 現候補本人を含む) が実質 1 名 = single_staff
+            ・適格者が複数だが全員が原因患者の直近担当者 = all_recent
+
+        既知の edge case (レビュー記録・実害限定): 不可避コース X の visit_group
+        partner Y が「回避可能な連続」の場合、 X は自動確定・Y は review 残留となり
+        一時的に片割れ確定になる。 Y を review → apply すれば解消するため許容
+        (2 名体制かつ片方のみ不可避という条件自体が稀)。 頻発するなら partner を
+        不可避側に連動させる修正を検討する。
+
+        Returns:
+            ``{course_id: reason_kind}`` (不可避コースのみ). 空 dict = 全て回避可能.
+        """
+        if not consecutive_cause_patients:
+            return {}
+
+        snapshots = self._reconstruct_recent_before_weekday(
+            list(targets_by_id.values()), result.assignments, patient_recent_staff
+        )
+        # weekday -> その曜日に (この実行で) 割当済みの staff_id 集合 (= 代替に使えない).
+        assigned_by_weekday: dict[int, set[UUID]] = {}
+        for a in result.assignments:
+            assigned_by_weekday.setdefault(a.weekday, set()).add(a.staff_id)
+
+        unavoidable: dict[UUID, str] = {}
+        for course_id, cause_pids in consecutive_cause_patients.items():
+            course = targets_by_id.get(course_id)
+            if course is None:
+                continue
+            current_staff_id = assigned_staff_by_course.get(course_id)
+            if current_staff_id is None:
+                continue
+            weekday = course.weekday
+            snapshot = snapshots.get(weekday, {})
+            taken = assigned_by_weekday.get(weekday, set())
+            # 原因患者すべての直近担当者 (= このいずれかに入る候補は連続を作る).
+            cause_recent: set[UUID] = set()
+            for pid in cause_pids:
+                cause_recent.update(snapshot.get(pid, []))
+
+            # 適格者集合 (= 当該コースを実際に担当し得る staff). 現候補本人は必ず含む.
+            eligible_ids: set[UUID] = {current_staff_id}
+            alt_exists = False
+            for staff in staff_pool:
+                # manager は通常割付の候補にしない (solve の eligible_staff と整合).
+                if staff.role == "manager":
+                    continue
+                if staff.staff_id == current_staff_id:
+                    continue
+                # 当該曜日の他コースに割当済み = 空いていない (= 代替不可).
+                if staff.staff_id in taken:
+                    continue
+                # ハード制約 (勤務曜日 / 実効拠点 / 性別 AND / event 重複 / 直近1週同コード)
+                # を ``_cost_single_cell`` の再利用で判定 (< INF なら全ハード OK).
+                cost = self._cost_single_cell(
+                    weekday=weekday,
+                    course=course,
+                    staff=staff,
+                    history=history,
+                    prev_day_pairs=set(),
+                    events_by_staff=events_by_staff,
+                    week_monday=week_monday,
+                    iso_year=iso_year,
+                    iso_week=iso_week,
+                    patient_recent_staff=snapshot,
+                )
+                if cost >= HUNGARIAN_INFINITY:
+                    continue
+                eligible_ids.add(staff.staff_id)
+                # 代替候補 = 適格 かつ 原因患者の直近担当者でない (= 連続を作らない).
+                # 1 名見つかれば回避可能が確定する (eligible_ids は不可避時のみ参照
+                # されるため打ち切ってよい).
+                if staff.staff_id not in cause_recent:
+                    alt_exists = True
+                    break
+            if alt_exists:
+                continue  # 回避可能 → 従来どおり review
+            unavoidable[course_id] = "single_staff" if len(eligible_ids) <= 1 else "all_recent"
+        return unavoidable
+
+    @staticmethod
+    def _build_auto_committed_notices(
+        *,
+        unavoidable_reason: dict[UUID, str],
+        original_cause_patients: dict[UUID, set[UUID]],
+        targets_by_id: dict[UUID, CourseAssignmentTarget],
+        staff_by_id: dict[UUID, StaffInfo],
+        assigned_staff_by_course: dict[UUID, UUID],
+        visits_by_course: dict[UUID, list[tuple[time_cls, UUID, str, str | None]]],
+        office_name_by_id: dict[UUID, str],
+    ) -> list[AutoCommittedNotice]:
+        """Wave N-1: 不可避連続コードの ``AutoCommittedNotice`` を組み立てる.
+
+        理由文 (設計書 R-2) は BE 側で日本語を組み立てる (FE はそのまま表示):
+        - single_staff: 「この曜日に◯◯(拠点)で勤務できるスタッフが△△さん 1 名のため、
+          連続担当は避けられません」
+        - all_recent: 「対応可能なスタッフ全員がこの患者の直近担当者のため、
+          どなたが担当しても連続になります」
+
+        Returns:
+            (weekday, course_code) 昇順の ``AutoCommittedNotice`` リスト.
+        """
+        notices: list[AutoCommittedNotice] = []
+        for course_id, reason_kind in unavoidable_reason.items():
+            course = targets_by_id.get(course_id)
+            if course is None:
+                continue
+            staff_id = assigned_staff_by_course.get(course_id)
+            staff = staff_by_id.get(staff_id) if staff_id is not None else None
+            if staff is None:
+                continue
+            office_name = (
+                office_name_by_id.get(course.office_id, "") if course.office_id is not None else ""
+            )
+            # 原因患者名 (patient_id 昇順で決定的に).
+            cause_pids = original_cause_patients.get(course_id, set())
+            name_by_pid = {
+                p_id: p_name for (_st, p_id, p_name, _sr) in visits_by_course.get(course_id, [])
+            }
+            cause_patient_names = [name_by_pid.get(pid, "") for pid in sorted(cause_pids, key=str)]
+
+            if reason_kind == "single_staff":
+                reason_text = (
+                    f"この曜日に{office_name}で勤務できるスタッフが{staff.name}さん1名のため、"
+                    "連続担当は避けられません"
+                )
+            else:  # all_recent
+                reason_text = (
+                    "対応可能なスタッフ全員がこの患者の直近担当者のため、"
+                    "どなたが担当しても連続になります"
+                )
+
+            notices.append(
+                AutoCommittedNotice(
+                    course_id=course_id,
+                    course_code=course.course_code,
+                    weekday=course.weekday,
+                    office_name=office_name,
+                    staff_name=staff.name,
+                    cause_patient_names=cause_patient_names,
+                    reason_kind=reason_kind,
+                    reason_text=reason_text,
+                )
+            )
+        notices.sort(key=lambda n: (n.weekday, n.course_code))
+        return notices
 
     # ------------------------------------------------------------------ #
     # 純粋関数: solve()
@@ -2553,6 +2864,32 @@ class Layer3Assigner:
                 bucket.add(restriction)
         return {cid: frozenset(vals) for cid, vals in out.items()}
 
+    @staticmethod
+    async def _load_l3_fix_primary_staff_offices(
+        db: AsyncSession,
+        *,
+        office_ids: list[UUID],
+    ) -> set[UUID]:
+        """Wave N-1: ``l3_fix_primary_staff`` feature flag が enabled な拠点集合を返す.
+
+        ``OfficeFeatureFlag.enabled_at IS NOT NULL`` の office のみ、 primary staff
+        (active role=staff の code 昇順先頭 1 名) の A コース固定割当を発動する
+        (旧「都賀」拠点名ハードコードの設定化). enabled_at IS NULL は「未有効化」
+        として固定割当を発動しない.
+
+        ``auto_allocator_v2._load_g21_enabled_offices`` と同一の照会パターン.
+        """
+        if not office_ids:
+            return set()
+        rows = await db.scalars(
+            select(OfficeFeatureFlag.office_id).where(
+                OfficeFeatureFlag.office_id.in_(office_ids),
+                OfficeFeatureFlag.feature_key == L3_FIX_PRIMARY_STAFF_FEATURE_KEY,
+                OfficeFeatureFlag.enabled_at.is_not(None),
+            )
+        )
+        return set(rows.all())
+
     async def _build_fixed_assignments(
         self,
         db: AsyncSession,
@@ -2561,16 +2898,23 @@ class Layer3Assigner:
         iso_week: int,
         office_id: UUID | None = None,
     ) -> dict[UUID, UUID]:
-        """W16: 固定割当 (manager -> M / 都賀 staff -> 都賀 A) を構築する.
+        """W16: 固定割当 (manager -> M / primary staff -> A) を構築する.
 
         ロジック:
         1. role='manager' かつ status='active' の各スタッフ
            → そのスタッフの primary_office で M / M2 / .. の course (course_fixed)
               に当該スタッフを 1:1 で割り当てる
            → ラベル並びは M < M2 < M3 < ... の順 (= staff.code 昇順 + manager 順)
-        2. 拠点名に '都賀' を含む office の active staff (role='staff')
+        2. OfficeFeatureFlag ``l3_fix_primary_staff`` が enabled_at IS NOT NULL の
+           office の active staff (role='staff')
            → 当該 office の code='A' course にスタッフを 1 名固定
               (複数人居る場合は staff.code 昇順で先頭の 1 名)
+
+        Wave N-1: step 2 の対象拠点判定を「拠点名に '都賀' を含む」ハードコードから
+        OfficeFeatureFlag ``l3_fix_primary_staff`` (enabled_at IS NOT NULL) に置き換えた
+        (マルチテナント対応 = 他社事業所展開でも拠点名に依存せず設定で発動).
+        旧「都賀」拠点は migration 0051 で本フラグを INSERT し現行挙動を保存する.
+        スタッフ選定ロジック (active role=staff の code 昇順先頭 1 名) は不変.
 
         Phase G-26 fix: 対象 course の status 条件は
         ``course_fixed`` だけでなく ``staff_assigned`` も含める.
@@ -2603,6 +2947,11 @@ class Layer3Assigner:
             office_stmt = office_stmt.where(Office.id == office_id)
         offices = list((await db.scalars(office_stmt)).all())
         offices_by_id: dict[UUID, Office] = {o.id: o for o in offices}
+
+        # Wave N-1: primary staff 固定割当 (旧「都賀」) の対象拠点を feature flag で判定.
+        fix_primary_staff_office_ids = await self._load_l3_fix_primary_staff_offices(
+            db, office_ids=[o.id for o in offices]
+        )
 
         # ---------- 1) manager 固定割当 ----------
         for office in offices:
@@ -2685,9 +3034,12 @@ class Layer3Assigner:
                         continue
                     result[course.id] = mgr.id
 
-        # ---------- 2) 都賀 staff 固定割当 ----------
+        # ---------- 2) primary staff 固定割当 (旧「都賀」= l3_fix_primary_staff flag) ----------
+        # Wave N-1: 拠点名 '都賀' ハードコードを OfficeFeatureFlag に置換.
+        # フラグ enabled の拠点でのみ、 primary staff (active role=staff の code 昇順
+        # 先頭 1 名) を A コースに固定する (選定ロジック自体は不変).
         for office in offices:
-            if "都賀" not in (office.name or ""):
+            if office.id not in fix_primary_staff_office_ids:
                 continue
             tsuga_stmt = (
                 select(Staff)
@@ -2722,7 +3074,7 @@ class Layer3Assigner:
             tsuga_courses = list((await db.scalars(tsuga_course_stmt)).all())
 
             # Phase G-26 safe-guard: admin が手動で別 staff (= primary_staff 以外) を割当済の
-            # 都賀 A course は保護し、 primary_staff で上書きしない (W25 fix との整合).
+            # 固定対象 A course は保護し、 primary_staff で上書きしない (W25 fix との整合).
             # 「assigned_staff_id が NULL もしくは primary_staff.id」 に絞る.
             tsuga_courses = [
                 c
@@ -2730,8 +3082,8 @@ class Layer3Assigner:
                 if c.assigned_staff_id is None or c.assigned_staff_id == primary_staff.id
             ]
 
-            # Phase G-28: visits=0 の 都賀 A コースは固定対象から除外 (空コースに
-            # primary_staff を縛ると本名さんが無駄に消費され、 他拠点の他曜日 staff_pool
+            # Phase G-28: visits=0 の固定対象 A コースは固定対象から除外 (空コースに
+            # primary_staff を縛ると本人が無駄に消費され、 他拠点の他曜日 staff_pool
             # が圧迫されるため. ``_load_course_targets`` の空コース skip と整合).
             # Phase G-28 H1 fix: ヘルパー ``_count_planned_visits_by_courses`` で共通化.
             if tsuga_courses:
@@ -2742,7 +3094,7 @@ class Layer3Assigner:
                     c for c in tsuga_courses if tsuga_visit_count_by_course.get(c.id, 0) > 0
                 ]
 
-            # Phase 1: 都賀 A 固定割当も性別ハード制約をチェック (多重防御).
+            # Phase 1: primary staff A 固定割当も性別ハード制約をチェック (多重防御).
             # 違反するペアは result に入れず通常割付に回す.
             tsuga_restrictions = await self._load_gender_restrictions_by_courses(
                 db, [c.id for c in tsuga_courses]

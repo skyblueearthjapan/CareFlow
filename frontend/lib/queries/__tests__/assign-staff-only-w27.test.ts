@@ -14,6 +14,7 @@ import {
   applyStaffReviewResponseSchema,
   assignStaffOnlyResponseSchema,
   assignWarningSchema,
+  autoCommittedNoticeSchema,
   reviewItemSchema,
 } from '../assign_staff_only';
 
@@ -125,6 +126,73 @@ describe('reviewItemSchema (Phase G-91 確認レビューフロー)', () => {
   it('11. linked_course_ids は省略時 [] にデフォルト', () => {
     const r = reviewItemSchema.parse(validReviewItem);
     expect(r.linked_course_ids).toEqual([]);
+  });
+});
+
+describe('autoCommittedNoticeSchema / auto_committed_notices (Wave N-2)', () => {
+  const validNotice = {
+    course_id: 'ffffffff-ffff-ffff-ffff-ffffffffffff',
+    course_code: 'A',
+    weekday: 0,
+    office_name: '都賀拠点',
+    staff_name: '田中スタッフ',
+    cause_patient_names: ['患者A', '患者B'],
+    reason_kind: 'single_staff',
+    reason_text: 'この曜日に都賀拠点で勤務できるスタッフが田中スタッフ 1 名のため、連続担当は避けられません',
+  };
+
+  it('15. 正しい auto_committed_notice を parse できる', () => {
+    const n = autoCommittedNoticeSchema.parse(validNotice);
+    expect(n.course_code).toBe('A');
+    expect(n.reason_kind).toBe('single_staff');
+    expect(n.cause_patient_names).toHaveLength(2);
+  });
+
+  it('16. office_name が null でも parse 成功 (nullable)', () => {
+    const n = autoCommittedNoticeSchema.parse({ ...validNotice, office_name: null });
+    expect(n.office_name).toBeNull();
+  });
+
+  it('17. office_name が欠落でも parse 成功 (optional)', () => {
+    const withoutOffice = {
+      course_id: validNotice.course_id,
+      course_code: validNotice.course_code,
+      weekday: validNotice.weekday,
+      staff_name: validNotice.staff_name,
+      cause_patient_names: validNotice.cause_patient_names,
+      reason_kind: validNotice.reason_kind,
+      reason_text: validNotice.reason_text,
+      // office_name を意図的に省略
+    };
+    const n = autoCommittedNoticeSchema.parse(withoutOffice);
+    expect(n.office_name).toBeUndefined();
+  });
+
+  it('18. reason_kind が未知の値でも parse 成功 (z.string() で寛容)', () => {
+    const n = autoCommittedNoticeSchema.parse({ ...validNotice, reason_kind: 'future_kind' });
+    expect(n.reason_kind).toBe('future_kind');
+  });
+
+  it('19. auto_committed_notices は旧 BE レスポンス (フィールド欠落) で [] にフォールバック', () => {
+    const data = assignStaffOnlyResponseSchema.parse(baseResponse);
+    expect(data.auto_committed_notices).toEqual([]);
+  });
+
+  it('20. auto_committed_notices を含むレスポンスを parse できる', () => {
+    const data = assignStaffOnlyResponseSchema.parse({
+      ...baseResponse,
+      auto_committed_notices: [validNotice],
+    });
+    expect(data.auto_committed_notices).toHaveLength(1);
+    expect(data.auto_committed_notices[0]?.staff_name).toBe('田中スタッフ');
+  });
+
+  it('21. auto_committed_notices がパース不能な値でも [] にフォールバック (.catch([]))', () => {
+    const data = assignStaffOnlyResponseSchema.parse({
+      ...baseResponse,
+      auto_committed_notices: 'invalid',
+    });
+    expect(data.auto_committed_notices).toEqual([]);
   });
 });
 

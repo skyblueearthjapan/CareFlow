@@ -19,7 +19,7 @@
 
 from __future__ import annotations
 
-from datetime import date, time
+from datetime import UTC, date, datetime, time
 from uuid import UUID, uuid4
 
 import pytest
@@ -31,9 +31,11 @@ from app.models.course import (
     COURSE_STATUS_PROPOSED,
     COURSE_STATUS_STAFF_ASSIGNED,
 )
+from app.models.office_feature_flag import OfficeFeatureFlag
 from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.visit import VISIT_STATUS_PLANNED
 from app.services.scheduling.layer3_assignment import (
+    L3_FIX_PRIMARY_STAFF_FEATURE_KEY,
     CourseAssignmentTarget,
     Layer3Assigner,
     StaffInfo,
@@ -360,17 +362,15 @@ async def test_no_warnings_when_assignment_clean(client, db) -> None:
 
 @pytest.mark.asyncio
 async def test_rotation_warning_when_forced_repeat(client, db) -> None:
-    """直近担当者 (連続 index0) になるコース → 自動 commit せず review_items に入る.
+    """不可避連続 (代替候補なし) → review に出さず自動確定 + auto_committed_notices.
 
-    Phase G-91 (意図的変更): 確認レビューフローへの作り替えにより、 連続
-    (recent_index==0) のコースは **自動では割り付けず** (= DB 未割当 /
-    courses_assigned に数えない)、 review_items (reason='consecutive') として返す.
-    旧仕様 (Phase G-89) は「埋めて事後警告」 で courses_assigned==1 + rotation_warnings
-    だったが、 新仕様では管理者が後でレビューして apply する対象になる.
+    Wave N-1 (不可避連続の自動確定):
+    代替候補が 0 名の連続は review_items に出さず、 クリーンコースと同じ経路で
+    自動確定し auto_committed_notices として返す.
 
     前週 (lookback 内) に staff が当該患者を担当した履歴 (staff_assigned コース +
     VisitStaffAssignment) を seed し、 当該週は同 staff しか稼働させない.
-    → 連続 index0 のため自動割付されず、 review_items に candidate=その staff で出る.
+    → 代替候補 0 名 = 不可避連続 → 自動確定 (courses_assigned==1) + notice 1 件.
 
     注意: 前週コースは別コード (B) にする. 同コード (A) だと course_code 単位の
     rotation 履歴ハード除外 (ROTATION_EXCLUSION_WEEKS=1) が効いて staff が候補から
@@ -477,45 +477,25 @@ async def test_rotation_warning_when_forced_repeat(client, db) -> None:
     )
     assert res.status_code == 200, res.text
     body = res.json()
-    # Phase G-91: 連続 index0 は自動 commit しない (= DB 未割当 / courses_assigned=0).
-    assert body["courses_assigned"] == 0
-    # review_items に reason='consecutive' で 1 件入る.
-    items = body["review_items"]
-    assert len(items) == 1, f"レビュー 1 件想定だが {len(items)} 件: {items}"
-    item = items[0]
-    assert item["course_id"] == str(course.id)
-    assert item["reason"] == "consecutive"
-    assert item["course_code"] == "A"
-    assert item["weekday"] == 0
-    # candidate = 本来割り当たるはずだった (= 連続になる) staff.
-    assert item["candidate_staff_id"] == str(staff.id)
-    assert item["candidate_staff_name"] == "連続スタッフ"
-    # visits に原因患者が is_cause=True で入る.
-    assert len(item["visits"]) == 1
-    v = item["visits"][0]
-    assert v["patient_id"] == str(patient.id)
-    assert v["patient_name"] == "連続患者"
-    assert v["start_time"] == "09:00:00"
-    assert v["is_cause"] is True
+    # Wave N-1: 不可避連続 (代替候補 0 名) は自動確定 → courses_assigned==1.
+    assert body["courses_assigned"] == 1, (
+        f"不可避連続は自動確定されるはず (courses_assigned=1): {body['courses_assigned']}"
+    )
+    # review_items には出ない.
+    assert body["review_items"] == [], f"不可避連続は review_items に出ない: {body['review_items']}"
+    # auto_committed_notices に 1 件 (reason_kind='single_staff').
+    notices = body["auto_committed_notices"]
+    assert len(notices) == 1, f"notice 1 件想定だが {len(notices)} 件: {notices}"
+    notice = notices[0]
+    assert notice["course_id"] == str(course.id)
+    assert notice["course_code"] == "A"
+    assert notice["weekday"] == 0
+    assert notice["reason_kind"] == "single_staff"
+    assert notice["staff_name"] == "連続スタッフ"
+    assert "連続患者" in notice["cause_patient_names"]
+    assert "reason_text" in notice and notice["reason_text"]
     # 連続は未割当ではない (= 候補が存在する) ので unassigned_warnings には出ない.
     assert body["unassigned_warnings"] == []
-
-    # Phase G-91 (修正5): review 化したコースは rotation_warnings から除外する
-    # (= 同一事象の二重出力解消). この連続コースは review_items に出るので
-    # rotation_warnings は空になる.
-    assert body["rotation_warnings"] == [], (
-        f"review 化したコースは rotation_warnings に出さない: {body['rotation_warnings']}"
-    )
-
-    # DB 上は course が未割当のままであることを確認する.
-    from sqlalchemy import select as _select
-
-    course_id = course.id
-    db.expire_all()
-    assigned = (
-        await db.execute(_select(Course.assigned_staff_id).where(Course.id == course_id))
-    ).scalar_one()
-    assert assigned is None, "連続コースは DB 未割当のはず"
 
 
 @pytest.mark.asyncio
@@ -1307,11 +1287,11 @@ async def test_apply_review_secondary_resolves_when_partner_already_committed(cl
 
 @pytest.mark.asyncio
 async def test_fixed_course_consecutive_surfaces_to_review(client, db) -> None:
-    """Phase G-91 (修正3): 固定コース (都賀 A / 1 名拠点) の連続も review に出す.
+    """Wave N-1: 固定コース (l3_fix_primary_staff 拠点 / 1 名) の不可避連続は自動確定 + notice.
 
-    オーナー決定 B: 1 名拠点 (都賀=本名 1 名) でも連続は必ずレビューに出す.
-    旧仕様は固定コースの連続を自動 commit していたが、 新仕様では candidate=本名で
-    review_items (reason='consecutive') に出し、 DB 未割当のまま管理者が確認する.
+    設計書 R-2 (オーナー決定 B の上書き): 代替候補が 0 名 (= 不可避) な連続は
+    review に出さず自動確定し、 auto_committed_notices として理由を通知する.
+    (旧 G-91 修正3 では「1 名拠点でも連続は必ず review」 だったが N-1 で変更.)
     """
     from sqlalchemy import select as _select
 
@@ -1319,12 +1299,20 @@ async def test_fixed_course_consecutive_surfaces_to_review(client, db) -> None:
 
     admin = await _make_user(db, "g91-fixed@example.com")
 
-    # 拠点名に「都賀」 を含む → 都賀 A 固定割当の対象.
-    office = Office(name="都賀 G91 拠点", lat=35.65, lng=140.0)
+    # Wave N-1: feature flag で primary staff 固定割当を有効化した拠点.
+    office = Office(name="N1 固定 G91 拠点", lat=35.65, lng=140.0)
     db.add(office)
     await db.flush()
+    db.add(
+        OfficeFeatureFlag(
+            office_id=office.id,
+            feature_key=L3_FIX_PRIMARY_STAFF_FEATURE_KEY,
+            enabled_at=datetime.now(tz=UTC),
+        )
+    )
+    await db.flush()
 
-    # 都賀拠点の唯一の staff (= 本名 1 名).
+    # 拠点の唯一の staff (= 1 名).
     honmyo = Staff(
         code="G91-TSUGA",
         name="本名さん",
@@ -1415,18 +1403,22 @@ async def test_fixed_course_consecutive_surfaces_to_review(client, db) -> None:
     )
     assert res.status_code == 200, res.text
     body = res.json()
-    # 固定連続も review に出す → 自動 commit しない.
-    assert body["courses_assigned"] == 0
-    items = body["review_items"]
-    assert len(items) == 1, f"固定連続 review 1 件想定だが {len(items)} 件: {items}"
-    item = items[0]
-    assert item["course_id"] == str(course_id)
-    assert item["reason"] == "consecutive"
-    # candidate = 本名 (固定でも solve が割り当てた staff と同一).
-    assert item["candidate_staff_id"] == str(honmyo_id)
-    # DB 未割当のまま.
+    # Wave N-1: 代替候補 0 名 → 不可避連続は自動確定 (courses_assigned==1).
+    assert body["courses_assigned"] == 1, (
+        f"不可避固定連続は自動確定されるはず (courses_assigned=1): {body['courses_assigned']}"
+    )
+    # review_items には出ない.
+    assert body["review_items"] == [], f"不可避連続は review_items に出ない: {body['review_items']}"
+    # auto_committed_notices に 1 件.
+    notices = body["auto_committed_notices"]
+    assert len(notices) == 1, f"notice 1 件想定だが {len(notices)} 件: {notices}"
+    notice = notices[0]
+    assert notice["course_id"] == str(course_id)
+    assert notice["reason_kind"] in ("single_staff", "all_recent")
+    assert notice["staff_name"] == "本名さん"
+    # DB に確定済み.
     db.expire_all()
     assigned = (
         await db.execute(_select(Course.assigned_staff_id).where(Course.id == course_id))
     ).scalar_one()
-    assert assigned is None, "固定連続コースも DB 未割当のはず"
+    assert assigned == honmyo_id, f"自動確定済みなので DB に staff_id があるはず: {assigned}"

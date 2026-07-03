@@ -14,7 +14,7 @@ Phase G-28 修正:
 
 from __future__ import annotations
 
-from datetime import date, time
+from datetime import UTC, date, datetime, time
 
 import pytest
 from sqlalchemy import select
@@ -24,8 +24,12 @@ from app.models.course import (
     COURSE_STATUS_COURSE_FIXED,
     COURSE_STATUS_STAFF_ASSIGNED,
 )
+from app.models.office_feature_flag import OfficeFeatureFlag
 from app.models.visit import VISIT_STATUS_PLANNED
-from app.services.scheduling.layer3_assignment import Layer3Assigner
+from app.services.scheduling.layer3_assignment import (
+    L3_FIX_PRIMARY_STAFF_FEATURE_KEY,
+    Layer3Assigner,
+)
 
 # fixture 用の ISO 週. 月曜 = 2026-05-25 (week 22).
 TEST_ISO_YEAR = 2026
@@ -271,6 +275,15 @@ async def test_build_fixed_assignments_skips_empty_tsuga_A_course(db) -> None:  
     _build_fixed_assignments 実行 → 月のみ固定対象、 土は対象外."""
     tsuga = Office(name="G28-4 都賀事業所", lat=35.6500, lng=140.1700)
     db.add(tsuga)
+    await db.flush()
+    # Wave N-1: primary staff 固定割当フラグを有効化 (名前ハードコード廃止の移行).
+    db.add(
+        OfficeFeatureFlag(
+            office_id=tsuga.id,
+            feature_key=L3_FIX_PRIMARY_STAFF_FEATURE_KEY,
+            enabled_at=datetime.now(tz=UTC),
+        )
+    )
     await db.flush()
 
     tsuga_staff = Staff(

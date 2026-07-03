@@ -87,6 +87,7 @@ from app.services.scheduling.layer1_expander import (
 )
 from app.services.scheduling.layer3_assignment import (
     PATIENT_RECENT_DEPTH,
+    AutoCommittedNotice,
     Layer3Assigner,
     Layer3AssignmentError,
     Layer3Result,
@@ -1382,6 +1383,26 @@ class ReviewItemSchema(BaseModel):
     linked_course_ids: list[UUID] = Field(default_factory=list)
 
 
+class AutoCommittedNoticeSchema(BaseModel):
+    """Wave N-1: 不可避連続の「お知らせ」(= 代替候補 0 名でレビュー無し自動確定した連続コース).
+
+    設計書 R-2: 代替候補が存在しない連続 (体制上避けられない) は、 レビュー (承認ゲート)
+    に出さず自動確定し、 管理者に理由つきで伝える情報提示として返す.
+    ``review_items`` とは排他 (= 同一コースが両方に出ることはない).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    course_id: UUID
+    course_code: str
+    weekday: int = Field(ge=0, le=6)
+    office_name: str
+    staff_name: str
+    cause_patient_names: list[str] = Field(default_factory=list)
+    reason_kind: str  # 'single_staff' | 'all_recent'
+    reason_text: str
+
+
 class AssignStaffOnlyResponse(BaseModel):
     """``POST /api/v1/schedule/assign-staff-only`` のレスポンス (W17-BE-A2)."""
 
@@ -1401,6 +1422,9 @@ class AssignStaffOnlyResponse(BaseModel):
     # クリーンなコースは自動確定し、 本 list のコースは DB 未割当のまま管理者が
     # レビューして apply (= PATCH /courses/{id}) で最終判断する.
     review_items: list[ReviewItemSchema] = Field(default_factory=list)
+    # Wave N-1: 不可避連続の「お知らせ」(確定済み・アクション不要).
+    # 後方互換 (= 既存クライアントは本フィールドを無視できる).
+    auto_committed_notices: list[AutoCommittedNoticeSchema] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -1628,6 +1652,11 @@ async def assign_staff_only(
     # DB 読み). 連続 index0 コース + その partner は _persist 対象から除外済 (DB 未割当).
     review_items = _build_review_items_response(l3_result.review_items)
 
+    # Wave N-1: 不可避連続の「お知らせ」をスキーマ変換.
+    auto_committed_notices = _build_auto_committed_notices_response(
+        l3_result.auto_committed_notices
+    )
+
     # Phase G-91 (修正2): 自動確定 (commit) したコース数 = ``committed_course_ids``
     # (= _persist へ実際に渡した assignments の course). 連続コースだけでなく、
     # その visit_group partner (clean 含む) も非 commit のため、 単純な
@@ -1635,6 +1664,7 @@ async def assign_staff_only(
     # 構築する commit 実数 list を単一ソースにする.
     courses_assigned = len(l3_result.committed_course_ids)
     review_count = len(review_items)
+    notice_count = len(auto_committed_notices)
 
     return AssignStaffOnlyResponse(
         iso_year=payload.iso_year,
@@ -1642,14 +1672,16 @@ async def assign_staff_only(
         courses_assigned=courses_assigned,
         message=(
             f"Assigned staff to {courses_assigned} courses "
-            f"({review_count} courses need review) "
-            f"for ISO {payload.iso_year}-W{payload.iso_week}"
+            f"({review_count} courses need review"
+            + (f", {notice_count} unavoidable consecutive auto-committed" if notice_count else "")
+            + f") for ISO {payload.iso_year}-W{payload.iso_week}"
             + (f" (office {payload.office_id})" if payload.office_id else "")
         ),
         warnings=warnings,
         rotation_warnings=rotation_warnings,
         unassigned_warnings=unassigned_warnings,
         review_items=review_items,
+        auto_committed_notices=auto_committed_notices,
     )
 
 
@@ -1683,6 +1715,29 @@ def _build_review_items_response(items: list[ReviewItem]) -> list[ReviewItemSche
             linked_course_ids=item.linked_course_ids,
         )
         for item in items
+    ]
+
+
+def _build_auto_committed_notices_response(
+    notices: list[AutoCommittedNotice],
+) -> list[AutoCommittedNoticeSchema]:
+    """Wave N-1: Layer3 の ``AutoCommittedNotice`` dataclass をレスポンス schema へ変換.
+
+    純粋なフィールド写像 (= DB I/O なし). 並びは Layer3 側で (weekday, course_code)
+    昇順にソート済みなので保持する.
+    """
+    return [
+        AutoCommittedNoticeSchema(
+            course_id=n.course_id,
+            course_code=n.course_code,
+            weekday=n.weekday,
+            office_name=n.office_name,
+            staff_name=n.staff_name,
+            cause_patient_names=list(n.cause_patient_names),
+            reason_kind=n.reason_kind,
+            reason_text=n.reason_text,
+        )
+        for n in notices
     ]
 
 

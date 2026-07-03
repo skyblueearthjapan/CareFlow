@@ -14,10 +14,13 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-# ``feature_key`` は当面 ``g21_new_algorithm`` のみ. Literal で固定することで
-# タイポ (= 永久に有効化されない feature_key) を schema レベルで弾く. 新しい
-# key を追加する際は本 Literal を拡張する.
-FeatureKey = Literal["g21_new_algorithm"]
+# ``feature_key`` は Literal で固定することで タイポ (= 永久に有効化されない
+# feature_key) を schema レベルで弾く. 新しい key を追加する際は本 Literal を拡張する.
+#   - ``g21_new_algorithm``: Phase G-21 auto_allocator_v2 新ロジックの canary 切替.
+#   - ``l3_fix_primary_staff``: Wave N-1 — Layer 3 で当該拠点の primary staff
+#     (active role=staff の code 昇順先頭 1 名) を A コースに固定割当する
+#     (旧「都賀」拠点名ハードコードの設定化. 拠点名判定を廃し、フラグ enabled で発動).
+FeatureKey = Literal["g21_new_algorithm", "l3_fix_primary_staff"]
 
 
 class OfficeFeatureFlagBase(BaseModel):

@@ -7,13 +7,16 @@
  *   3. 性別 = 「割り当てる」 → 確認モーダル 1 回 → apply に渡る.
  *   4. 連続 = チェックで apply に渡る (追加モーダル無し).
  *   5. review_items 空なら open=false でダイアログ非表示.
+ *   6. Wave N-2: notices を渡すと折りたたみセクションが出る.
+ *   7. Wave N-2: notices のみ (reviewItems=[]) でも open 時に描画され、情報トーンの説明が出る.
+ *   8. Wave N-2: notices があっても apply ボタンの disabled 判定に影響しない.
  */
 import * as React from 'react';
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 
 import { AssignWarningDialog, type ApprovedReviewItem } from '../AssignWarningDialog';
-import type { ReviewItem } from '@/lib/queries/assign_staff_only';
+import type { AutoCommittedNotice, ReviewItem } from '@/lib/queries/assign_staff_only';
 
 function makeGender(over: Partial<ReviewItem> = {}): ReviewItem {
   return {
@@ -272,5 +275,119 @@ describe('AssignWarningDialog (Phase G-91 review flow)', () => {
       />,
     );
     expect(screen.queryByTestId('assign-warning-dialog')).not.toBeInTheDocument();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Wave N-2: auto_committed_notices セクションのテスト
+// ─────────────────────────────────────────────────────────────────────────
+
+function makeNotice(over: Partial<AutoCommittedNotice> = {}): AutoCommittedNotice {
+  return {
+    course_id: 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee',
+    course_code: 'A',
+    weekday: 0,
+    office_name: '都賀拠点',
+    staff_name: '田中スタッフ',
+    cause_patient_names: ['患者A', '患者B'],
+    reason_kind: 'single_staff',
+    reason_text: 'この曜日に都賀拠点で勤務できるスタッフが田中スタッフ 1 名のため、連続担当は避けられません',
+    ...over,
+  };
+}
+
+describe('AssignWarningDialog — Wave N-2 notices セクション', () => {
+  it('notices を渡すとお知らせセクションが描画される (既定は折りたたみ = 行非表示)', () => {
+    render(
+      <AssignWarningDialog
+        open
+        onClose={() => {}}
+        reviewItems={[]}
+        notices={[makeNotice()]}
+        onApply={() => {}}
+      />,
+    );
+    // セクション自体は表示される
+    expect(screen.getByTestId('assign-notice-section')).toBeInTheDocument();
+    // 既定は折りたたみ状態 = 行は見えない
+    expect(screen.queryByTestId('assign-notice-row')).not.toBeInTheDocument();
+  });
+
+  it('「理由を見る ▼」を押すと行が表示される', () => {
+    render(
+      <AssignWarningDialog
+        open
+        onClose={() => {}}
+        reviewItems={[]}
+        notices={[makeNotice()]}
+        onApply={() => {}}
+      />,
+    );
+    // トグルボタンをクリックして展開
+    fireEvent.click(screen.getByText('理由を見る ▼'));
+    // 行が表示される
+    const row = screen.getByTestId('assign-notice-row');
+    expect(row).toBeInTheDocument();
+    expect(row).toHaveTextContent('都賀拠点');
+    expect(row).toHaveTextContent('A');
+    expect(row).toHaveTextContent('月');
+    expect(row).toHaveTextContent('田中スタッフ');
+    expect(row).toHaveTextContent('患者A・患者B');
+  });
+
+  it('notices のみ (reviewItems=[]) でも open 時に描画され、情報トーンの説明が出る', () => {
+    render(
+      <AssignWarningDialog
+        open
+        onClose={() => {}}
+        reviewItems={[]}
+        notices={[makeNotice()]}
+        onApply={() => {}}
+      />,
+    );
+    expect(screen.getByTestId('assign-warning-dialog')).toBeInTheDocument();
+    // 情報トーンの説明文
+    expect(screen.getByText(/管理者の判断が必要なコースはありません/)).toBeInTheDocument();
+    expect(screen.getByText(/体制上避けられない連続.*件は理由つきで確定済み/)).toBeInTheDocument();
+  });
+
+  it('notices があっても apply ボタンは reviewItems 承認数のみで disabled 判定される', () => {
+    render(
+      <AssignWarningDialog
+        open
+        onClose={() => {}}
+        reviewItems={[]}
+        notices={[makeNotice()]}
+        onApply={() => {}}
+      />,
+    );
+    // reviewItems=[] なので approvedCount=0 → apply は disabled のまま
+    expect(screen.getByTestId('assign-review-apply')).toBeDisabled();
+  });
+
+  it('notices + reviewItems 両方ある場合は両セクションが並存する', () => {
+    render(
+      <AssignWarningDialog
+        open
+        onClose={() => {}}
+        reviewItems={[makeConsecutive()]}
+        notices={[makeNotice()]}
+        onApply={() => {}}
+      />,
+    );
+    expect(screen.getByTestId('assign-review-consecutive-section')).toBeInTheDocument();
+    expect(screen.getByTestId('assign-notice-section')).toBeInTheDocument();
+  });
+
+  it('notices なし (デフォルト) ではお知らせセクションが出ない', () => {
+    render(
+      <AssignWarningDialog
+        open
+        onClose={() => {}}
+        reviewItems={[makeConsecutive()]}
+        onApply={() => {}}
+      />,
+    );
+    expect(screen.queryByTestId('assign-notice-section')).not.toBeInTheDocument();
   });
 });
