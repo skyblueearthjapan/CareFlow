@@ -17,7 +17,14 @@ import 'leaflet/dist/leaflet.css';
 
 import type { MonitorStaffRow, MonitorVisit, NearbyPatient } from '@/lib/schemas/monitor';
 
-import { STATUS_COLOR, displayStatus, formatDistance } from './constants';
+import type { VisitWithCoords } from './constants';
+import {
+  STATUS_COLOR,
+  STATUS_LABEL,
+  displayStatus,
+  formatDistance,
+  groupStopsByCoord,
+} from './constants';
 import { haversineMeters } from '@/lib/geo';
 
 interface MonitorMapClientProps {
@@ -29,9 +36,7 @@ interface MonitorMapClientProps {
 
 type LatLng = [number, number];
 
-function hasCoords(
-  v: MonitorVisit,
-): v is MonitorVisit & { patient_lat: number; patient_lng: number } {
+function hasCoords(v: MonitorVisit): v is VisitWithCoords {
   return typeof v.patient_lat === 'number' && typeof v.patient_lng === 'number';
 }
 
@@ -46,6 +51,27 @@ const numIcon = (color: string, selected: boolean, num: number) =>
       selected ? 'outline:3px solid var(--text-primary);outline-offset:1px;' : ''
     }position:relative"><span style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);font-size:9px;font-weight:700;color:#fff">${num}</span></div>`,
   });
+
+/**
+ * ピル型アイコン: 同一座標に複数 stop がある場合に番号を「・」区切りで列挙。
+ * 配色・シャドウは numIcon と同一トークン（デザイン一貫性）。
+ */
+const pillIcon = (color: string, selected: boolean, label: string) => {
+  // label 幅を文字種で近似 (ASCII≈5px / 全角「・」等≈9px @9px font)。
+  // レビュー指摘: length×6 固定だと全角混在でアンカーが数 px ずれるため文字種考慮に。
+  const w = Math.max(
+    24,
+    [...label].reduce((s, c) => s + (c.charCodeAt(0) > 127 ? 9 : 5), 0) + 12,
+  );
+  return L.divIcon({
+    className: '',
+    iconSize: [w + 4, 18],
+    iconAnchor: [Math.floor((w + 4) / 2), 9],
+    html: `<div style="min-width:${w}px;height:16px;border-radius:100px;padding:0 5px;border:2px solid #fff;box-shadow:0 1px 4px rgba(28,25,23,.35);background:${color};${
+      selected ? 'outline:3px solid var(--text-primary);outline-offset:1px;' : ''
+    }display:inline-flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:#fff;white-space:nowrap">${label}</div>`,
+  });
+};
 
 const emojiIcon = (bg: string, txt: string) =>
   L.divIcon({
@@ -93,24 +119,30 @@ export default function MonitorMapClient({
     typeof selected.arrival?.lat === 'number' &&
     typeof selected.arrival?.lng === 'number';
 
+  // 同一座標グループ (複数 stop → ピルマーカー)。
+  const groups = useMemo(() => groupStopsByCoord(stops), [stops]);
+
+  // FitBounds 用: グループ単位の重複排除座標 + mismatch GPS + 近隣候補。
   const points: LatLng[] = useMemo(() => {
-    const pts: LatLng[] = stops.map((v) => [v.patient_lat, v.patient_lng]);
+    const pts: LatLng[] = groups.map((g): LatLng => [g.lat, g.lng]);
     if (selMismatch && selected?.arrival) {
       pts.push([selected.arrival.lat as number, selected.arrival.lng as number]);
     }
     for (const n of nearby) pts.push([n.lat, n.lng]);
     return pts;
-  }, [stops, selMismatch, selected, nearby]);
+  }, [groups, selMismatch, selected, nearby]);
 
-  // 順路ラインと区間距離。
+  // 順路ライン: グループ座標を結ぶ (同一座標間の 0m セグメントは生成しない)。
   const segments = useMemo(() => {
     const segs: { a: LatLng; b: LatLng; mid: LatLng; dist: number }[] = [];
-    for (let i = 0; i < stops.length - 1; i++) {
-      const cur = stops[i];
-      const nxt = stops[i + 1];
+    for (let i = 0; i < groups.length - 1; i++) {
+      const cur = groups[i];
+      const nxt = groups[i + 1];
       if (!cur || !nxt) continue;
-      const a: LatLng = [cur.patient_lat, cur.patient_lng];
-      const b: LatLng = [nxt.patient_lat, nxt.patient_lng];
+      const a: LatLng = [cur.lat, cur.lng];
+      const b: LatLng = [nxt.lat, nxt.lng];
+      // グループ間が同一座標のケースをスキップ (複数グループに同一座標は来ないが念のため)。
+      if (a[0] === b[0] && a[1] === b[1]) continue;
       segs.push({
         a,
         b,
@@ -119,7 +151,7 @@ export default function MonitorMapClient({
       });
     }
     return segs;
-  }, [stops]);
+  }, [groups]);
 
   const center: LatLng = points.length > 0 ? (points[0] as LatLng) : [35.61, 140.11];
 
@@ -143,28 +175,32 @@ export default function MonitorMapClient({
         />
       ))}
 
-      {/* コース目的地ピン */}
-      {stops.map((v, i) => {
-        const sel = v.visit_id === selectedVisitId;
-        const st = displayStatus(v);
+      {/* コース目的地ピン (同一座標は 1 グループ → ピルマーカー) */}
+      {groups.map((g) => {
+        const groupSelected = g.stops.some((v) => v.visit_id === selectedVisitId);
+        const label = g.numbers.join('・');
+        const icon =
+          g.stops.length === 1
+            ? numIcon(STATUS_COLOR[g.worstStatus], groupSelected, g.numbers[0]!)
+            : pillIcon(STATUS_COLOR[g.worstStatus], groupSelected, label);
         return (
-          <Marker
-            key={v.visit_id}
-            position={[v.patient_lat, v.patient_lng]}
-            icon={numIcon(STATUS_COLOR[st], sel, i + 1)}
-          >
+          <Marker key={g.coord} position={[g.lat, g.lng]} icon={icon}>
             <Popup>
-              <b>
-                {i + 1}. {v.patient_name ?? '—'}
-              </b>
-              <br />
-              {v.start_time}–{v.end_time}
-              {v.arrival?.distance_m != null && (
-                <>
-                  <br />
-                  距離 {Math.round(v.arrival.distance_m)}m
-                </>
-              )}
+              {g.stops.map((v, i) => {
+                const st = displayStatus(v);
+                return (
+                  <div key={v.visit_id}>
+                    <b>
+                      {g.numbers[i]}. {v.patient_name ?? '—'}
+                    </b>{' '}
+                    {v.start_time}–{v.end_time}{' '}
+                    <span style={{ color: STATUS_COLOR[st] }}>{STATUS_LABEL[st]}</span>
+                    {v.arrival?.distance_m != null && (
+                      <> (距離 {Math.round(v.arrival.distance_m)}m)</>
+                    )}
+                  </div>
+                );
+              })}
             </Popup>
           </Marker>
         );

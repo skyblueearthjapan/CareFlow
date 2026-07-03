@@ -94,6 +94,50 @@ describe('MonitorTimeline', () => {
     expect(onSelectVisit).toHaveBeenCalledWith(v.visit_id);
   });
 
+  it('同時刻 2 件で両方の患者名が可視・data-lane が 0/1 に振り分けられる', () => {
+    const v1 = makeVisit({ patient_name: '田中 一郎', start_time: '09:00', end_time: '10:00' });
+    const v2 = makeVisit({ patient_name: '鈴木 花子', start_time: '09:00', end_time: '10:00' });
+    const row = makeRow({ visits: [v1, v2] });
+    render(
+      <MonitorTimeline
+        rows={[row]}
+        selectedRowKey={null}
+        selectedVisitId={null}
+        nowMinutes={13 * 60 + 30}
+        onSelectRow={vi.fn()}
+        onSelectVisit={vi.fn()}
+      />,
+    );
+    // 両方の患者名が描画されていること。
+    expect(screen.getAllByText('田中 一郎').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('鈴木 花子').length).toBeGreaterThan(0);
+    // 予定バーの data-lane が 0/1 に分かれていること。
+    const bar1 = screen.getByTestId(`monitor-bar-plan-${v1.visit_id}`);
+    const bar2 = screen.getByTestId(`monitor-bar-plan-${v2.visit_id}`);
+    const lanes = new Set([bar1.getAttribute('data-lane'), bar2.getAttribute('data-lane')]);
+    expect(lanes).toEqual(new Set(['0', '1']));
+  });
+
+  it('重なりなし (連続) は 1 レーン → data-lane=0', () => {
+    const v1 = makeVisit({ patient_name: '田中 一郎', start_time: '09:00', end_time: '10:00' });
+    const v2 = makeVisit({ patient_name: '鈴木 花子', start_time: '10:00', end_time: '11:00' });
+    const row = makeRow({ visits: [v1, v2] });
+    render(
+      <MonitorTimeline
+        rows={[row]}
+        selectedRowKey={null}
+        selectedVisitId={null}
+        nowMinutes={-1}
+        onSelectRow={vi.fn()}
+        onSelectVisit={vi.fn()}
+      />,
+    );
+    const bar1 = screen.getByTestId(`monitor-bar-plan-${v1.visit_id}`);
+    const bar2 = screen.getByTestId(`monitor-bar-plan-${v2.visit_id}`);
+    expect(bar1.getAttribute('data-lane')).toBe('0');
+    expect(bar2.getAttribute('data-lane')).toBe('0');
+  });
+
   it('担当未設定の行もクリックで選択できる (rowKey=unassigned-コース)', () => {
     const v = makeVisit();
     const row = makeRow({ staff_id: null, staff_name: null, course_label: 'Aコース', visits: [v] });

@@ -17,6 +17,7 @@ import {
   STATUS_COLOR,
   TL_END_MIN,
   TL_START_MIN,
+  assignVisitLanes,
   displayStatus,
   formatDistance,
   hmToMinutes,
@@ -44,6 +45,28 @@ interface MonitorTimelineProps {
 }
 
 const HOURS = Array.from({ length: (TL_END_MIN - TL_START_MIN) / 60 + 1 }, (_, i) => 8 + i);
+
+/** マルチレーン時の 1 レーン高 (px)。2 レーンで 2×33=66px (= min-h-[66px] と一致)。 */
+const LANE_H_PX = 33;
+
+/** レーン位置からバー/ラベルの top・height (px) を返す。 */
+function lanePos(lane: number, laneCount: number) {
+  if (laneCount <= 1) {
+    // 1 レーン: 既存の絶対位置を維持 (66px 行)。
+    return { labelTop: 4, planTop: 20, planH: 14, actTop: 38, actH: 15, distTop: 21 };
+  }
+  const off = lane * LANE_H_PX;
+  return {
+    labelTop: off + 2,
+    planTop: off + 10,
+    planH: 7,
+    actTop: off + 20,
+    actH: 9,
+    // レビュー指摘: 実績バー (off+20) と同位置だと距離テキストが被るため
+    // 計画バー直下に置く。
+    distTop: off + 11,
+  };
+}
 
 export function MonitorTimeline({
   rows,
@@ -82,6 +105,9 @@ export function MonitorTimeline({
         const rowKey = monitorRowKey(row);
         const isSel = rowKey === selectedRowKey;
         const key = rowKey;
+        const laneMap = assignVisitLanes(row.visits);
+        // laneCount は全 visit で共通 (assignVisitLanes が統一値を返す)。
+        const rowLaneCount = laneMap.size > 0 ? laneMap.values().next().value!.laneCount : 1;
         return (
           <div
             key={key}
@@ -99,6 +125,7 @@ export function MonitorTimeline({
                 : 'hover:bg-bg-muted',
               hasSelection && !isSel ? 'opacity-40' : '',
             )}
+            style={rowLaneCount > 2 ? { minHeight: rowLaneCount * LANE_H_PX } : undefined}
           >
             {/* 左: 行番号 + スタッフ */}
             <div className="flex items-center gap-2 px-2 py-1.5">
@@ -148,15 +175,20 @@ export function MonitorTimeline({
                   </span>
                 </div>
               )}
-              {row.visits.map((v) => (
-                <VisitBars
-                  key={v.visit_id}
-                  visit={v}
-                  nowMinutes={nowMinutes}
-                  isSelected={v.visit_id === selectedVisitId}
-                  onSelect={onSelectVisit}
-                />
-              ))}
+              {row.visits.map((v) => {
+                const li = laneMap.get(v.visit_id) ?? { lane: 0, laneCount: 1 };
+                return (
+                  <VisitBars
+                    key={v.visit_id}
+                    visit={v}
+                    lane={li.lane}
+                    laneCount={li.laneCount}
+                    nowMinutes={nowMinutes}
+                    isSelected={v.visit_id === selectedVisitId}
+                    onSelect={onSelectVisit}
+                  />
+                );
+              })}
             </div>
           </div>
         );
@@ -167,15 +199,20 @@ export function MonitorTimeline({
 
 function VisitBars({
   visit,
+  lane,
+  laneCount,
   nowMinutes,
   isSelected,
   onSelect,
 }: {
   visit: MonitorVisit;
+  lane: number;
+  laneCount: number;
   nowMinutes: number;
   isSelected: boolean;
   onSelect: (visitId: string) => void;
 }) {
+  const pos = lanePos(lane, laneCount);
   const ps = hmToMinutes(visit.start_time);
   const pe = hmToMinutes(visit.end_time);
   const pL = minutesToPct(ps);
@@ -215,8 +252,8 @@ function VisitBars({
     <>
       {/* 患者名ラベル (ペア訪問は「2名」バッジ付き) */}
       <div
-        className="pointer-events-none absolute top-1 flex items-center gap-1 whitespace-nowrap text-[10px] font-semibold text-text-secondary [text-shadow:0_0_3px_#fff,0_0_3px_#fff]"
-        style={{ left: `${pL}%` }}
+        className="pointer-events-none absolute flex items-center gap-1 whitespace-nowrap text-[10px] font-semibold text-text-secondary [text-shadow:0_0_3px_#fff,0_0_3px_#fff]"
+        style={{ left: `${pL}%`, top: pos.labelTop }}
         title={visit.patient_name ?? undefined}
       >
         {visit.patient_name ?? '—'}
@@ -229,7 +266,8 @@ function VisitBars({
       {/* はみ出し印 (時間軸外の訪問) */}
       {overflowLeft && (
         <span
-          className="pointer-events-none absolute top-5 left-0 z-[3] text-[10px] font-bold text-text-muted"
+          className="pointer-events-none absolute left-0 z-[3] text-[10px] font-bold text-text-muted"
+          style={{ top: pos.planTop }}
           title={`${visit.start_time} 開始（表示範囲外）`}
         >
           ‹
@@ -237,7 +275,8 @@ function VisitBars({
       )}
       {overflowRight && (
         <span
-          className="pointer-events-none absolute top-5 right-0 z-[3] text-[10px] font-bold text-text-muted"
+          className="pointer-events-none absolute right-0 z-[3] text-[10px] font-bold text-text-muted"
+          style={{ top: pos.planTop }}
           title={`${visit.end_time} 終了（表示範囲外）`}
         >
           ›
@@ -246,30 +285,49 @@ function VisitBars({
       {/* 次までの距離 */}
       {dn != null && (
         <div
-          className="pointer-events-none absolute top-[21px] whitespace-nowrap text-[10px] text-text-muted [text-shadow:0_0_3px_#fff,0_0_3px_#fff]"
-          style={{ left: `${minutesToPct(pe)}%` }}
+          className="pointer-events-none absolute whitespace-nowrap text-[10px] text-text-muted [text-shadow:0_0_3px_#fff,0_0_3px_#fff]"
+          style={{ left: `${minutesToPct(pe)}%`, top: pos.distTop }}
         >
           →{formatDistance(dn)}
         </div>
       )}
-      {/* 予定バー (ハッチ) */}
+      {/* 予定バー (ハッチ)。isPair は 📍 でマーク。 */}
       {/* rounded-[5px]: 極小バーのためトークン(sm=8px)未満の例外 */}
       <button
         type="button"
         data-testid={`monitor-bar-plan-${visit.visit_id}`}
+        data-lane={lane}
         onClick={(e) => {
           e.stopPropagation();
           onSelect(visit.visit_id);
         }}
         title={`予定 ${visit.start_time}–${visit.end_time} ${visit.patient_name ?? ''}`}
-        className="absolute top-5 h-3.5 rounded-[5px] border opacity-90"
+        className="absolute rounded-[5px] border opacity-90"
         style={{
           left: `${pL}%`,
           width: `${pW}%`,
+          top: pos.planTop,
+          height: pos.planH,
           borderColor: PLAN_BAR_BORDER,
           backgroundImage: PLAN_BAR_BG,
         }}
-      />
+      >
+        {isPair && (
+          <span
+            style={{
+              position: 'absolute',
+              left: 1,
+              top: '50%',
+              transform: 'translateY(-50%)',
+              fontSize: 8,
+              lineHeight: 1,
+            }}
+            aria-hidden
+          >
+            📍
+          </span>
+        )}
+      </button>
       {/* 実績バー */}
       {/* rounded-[5px]: 極小バーのためトークン(sm=8px)未満の例外 */}
       {hasActual && (
@@ -277,12 +335,13 @@ function VisitBars({
           type="button"
           data-testid={`monitor-bar-actual-${visit.visit_id}`}
           data-status={status}
+          data-lane={lane}
           onClick={(e) => {
             e.stopPropagation();
             onSelect(visit.visit_id);
           }}
           className={cn(
-            'absolute top-[38px] flex h-[15px] items-center gap-0.5 overflow-hidden whitespace-nowrap rounded-[5px] px-1.5 text-[10px] font-semibold text-white',
+            'absolute flex items-center gap-0.5 overflow-hidden whitespace-nowrap rounded-[5px] px-1.5 text-[10px] font-semibold text-white',
             isSelected ? 'outline outline-2 outline-offset-1 outline-text-primary' : '',
             status === 'inprogress'
               ? '[background-image:repeating-linear-gradient(45deg,rgba(255,255,255,.25),rgba(255,255,255,.25)_4px,transparent_4px,transparent_8px)]'
@@ -296,8 +355,16 @@ function VisitBars({
                   left: `${pL}%`,
                   width: `${pW}%`,
                   backgroundImage: MISSING_BAR_BG,
+                  top: pos.actTop,
+                  height: pos.actH,
                 }
-              : { left: `${actLeft}%`, width: `${actWidth}%`, backgroundColor: color }
+              : {
+                  left: `${actLeft}%`,
+                  width: `${actWidth}%`,
+                  backgroundColor: color,
+                  top: pos.actTop,
+                  height: pos.actH,
+                }
           }
           title={`${visit.patient_name ?? ''} ${actLabel}${visit.reviewed ? ' ✓確認済' : ''}`}
         >

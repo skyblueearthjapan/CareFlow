@@ -1,9 +1,12 @@
 /** 実効状態の派生ヘルパのユニットテスト。 */
 import { describe, it, expect } from 'vitest';
 
+import type { VisitWithCoords } from '../constants';
 import {
+  assignVisitLanes,
   displayStatus,
   formatDistance,
+  groupStopsByCoord,
   groupVisits,
   isAlert,
   isLongInprogress,
@@ -88,6 +91,82 @@ describe('minutesToPct', () => {
     expect(minutesToPct(20 * 60)).toBe(100); // 20:00 > 19:00 → 100
     expect(minutesToPct(8 * 60)).toBe(0);
     expect(minutesToPct(19 * 60)).toBe(100);
+  });
+});
+
+describe('assignVisitLanes', () => {
+  it('重なりなし (連続) → 全部 lane=0, laneCount=1', () => {
+    const v1 = makeVisit({ start_time: '09:00', end_time: '10:00' });
+    const v2 = makeVisit({ start_time: '10:00', end_time: '11:00' }); // v1 終了 = v2 開始: 重ならない
+    const map = assignVisitLanes([v1, v2]);
+    expect(map.get(v1.visit_id)).toEqual({ lane: 0, laneCount: 1 });
+    expect(map.get(v2.visit_id)).toEqual({ lane: 0, laneCount: 1 });
+  });
+
+  it('同時刻 2 件 → lane 0/1, laneCount=2', () => {
+    const v1 = makeVisit({ start_time: '09:00', end_time: '10:00', patient_name: 'A 様' });
+    const v2 = makeVisit({ start_time: '09:00', end_time: '10:00', patient_name: 'B 様' });
+    const map = assignVisitLanes([v1, v2]);
+    const l1 = map.get(v1.visit_id)!;
+    const l2 = map.get(v2.visit_id)!;
+    expect(l1.laneCount).toBe(2);
+    expect(l2.laneCount).toBe(2);
+    expect(new Set([l1.lane, l2.lane])).toEqual(new Set([0, 1]));
+  });
+
+  it('3 件同時重なり → 3 レーン', () => {
+    const vs = [
+      makeVisit({ start_time: '09:00', end_time: '10:00', patient_name: 'A 様' }),
+      makeVisit({ start_time: '09:00', end_time: '10:00', patient_name: 'B 様' }),
+      makeVisit({ start_time: '09:00', end_time: '10:00', patient_name: 'C 様' }),
+    ];
+    const map = assignVisitLanes(vs);
+    const lanes = vs.map((v) => map.get(v.visit_id)!.lane);
+    expect(new Set(lanes)).toEqual(new Set([0, 1, 2]));
+    expect(map.get(vs[0]!.visit_id)!.laneCount).toBe(3);
+  });
+
+  it('空配列 → 空 Map を返す', () => {
+    expect(assignVisitLanes([])).toEqual(new Map());
+  });
+});
+
+describe('groupStopsByCoord', () => {
+  const makeStop = (lat: number, lng: number, overrides = {}) =>
+    ({ ...makeVisit(overrides), patient_lat: lat, patient_lng: lng }) as VisitWithCoords;
+
+  it('異なる座標の 2 件 → 2 グループ', () => {
+    const stops = [makeStop(35.61, 140.11), makeStop(35.62, 140.12)];
+    expect(groupStopsByCoord(stops)).toHaveLength(2);
+  });
+
+  it('同座標の 2 件 → 1 グループ・番号 [1,2]', () => {
+    const stops = [makeStop(35.61, 140.11), makeStop(35.61, 140.11)];
+    const groups = groupStopsByCoord(stops);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.numbers).toEqual([1, 2]);
+    expect(groups[0]!.stops).toHaveLength(2);
+  });
+
+  it('深刻度: match + mismatch → worstStatus=mismatch', () => {
+    const stops = [
+      makeStop(35.61, 140.11, { phase: 'done', alert_level: 'none' }),
+      makeStop(35.61, 140.11, { phase: 'done', alert_level: 'mismatch' }),
+    ];
+    expect(groupStopsByCoord(stops)[0]!.worstStatus).toBe('mismatch');
+  });
+
+  it('深刻度: missing が最重大 (missing < mismatch < review)', () => {
+    const stops = [
+      makeStop(35.61, 140.11, { phase: 'done', alert_level: 'review' }),
+      makeStop(35.61, 140.11, { phase: 'missing', alert_level: 'missing' }),
+      makeStop(35.61, 140.11, { phase: 'done', alert_level: 'mismatch' }),
+    ];
+    expect(groupStopsByCoord(stops)[0]!.worstStatus).toBe('missing');
+  });
+
+  it('空配列 → 空配列', () => {
+    expect(groupStopsByCoord([])).toEqual([]);
   });
 });
 

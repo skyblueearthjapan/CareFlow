@@ -226,3 +226,116 @@ export function minutesToPct(min: number): number {
   const pct = ((min - TL_START_MIN) / TL_SPAN_MIN) * 100;
   return Math.max(0, Math.min(100, pct));
 }
+
+// ---------------------------------------------------------------------------
+// レーン分割 (タイムライン: 同一行内で時間帯が重なる訪問を上下レーンに振り分ける)
+// ---------------------------------------------------------------------------
+
+export interface LaneInfo {
+  lane: number;
+  laneCount: number;
+}
+
+/**
+ * 同一行 (スタッフ) 内で時間帯が重なる訪問を貪欲にレーンへ振り分ける。
+ *
+ * ソート: start 昇順、同時刻は patient_name 昇順。
+ * 割当: 最初に空いているレーン（end <= start なら空き）を選ぶ。
+ * 純関数 — 副作用なし、単体テスト可能。
+ */
+export function assignVisitLanes(
+  visits: Pick<MonitorVisit, 'visit_id' | 'start_time' | 'end_time' | 'patient_name'>[],
+): Map<string, LaneInfo> {
+  const sorted = [...visits].sort((a, b) => {
+    const diff = hmToMinutes(a.start_time) - hmToMinutes(b.start_time);
+    return diff !== 0 ? diff : (a.patient_name ?? '').localeCompare(b.patient_name ?? '');
+  });
+
+  // laneEnds[i] = 最後にレーン i に割り当てた訪問の終了分。
+  const laneEnds: number[] = [];
+  const laneAssign = new Map<string, number>();
+
+  for (const v of sorted) {
+    const start = hmToMinutes(v.start_time);
+    const end = hmToMinutes(v.end_time);
+    // end <= start のレーンは空いている（次の訪問と重ならない）。
+    let assigned = laneEnds.findIndex((endMin) => endMin <= start);
+    if (assigned === -1) {
+      assigned = laneEnds.length;
+      laneEnds.push(end);
+    } else {
+      laneEnds[assigned] = end;
+    }
+    laneAssign.set(v.visit_id, assigned);
+  }
+
+  const laneCount = Math.max(1, laneEnds.length);
+  const result = new Map<string, LaneInfo>();
+  for (const [vid, lane] of laneAssign) {
+    result.set(vid, { lane, laneCount });
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// マップ: 同一座標グループ化 (同住所ペアを 1 マーカーにまとめる)
+// ---------------------------------------------------------------------------
+
+/** 座標付き MonitorVisit（hasCoords 型ガード通過済み）。 */
+export type VisitWithCoords = MonitorVisit & { patient_lat: number; patient_lng: number };
+
+/** DisplayStatus の重大度 (小さいほど重大)。groupStopsByCoord の worst 判定用。 */
+const STATUS_SEVERITY: Record<DisplayStatus, number> = {
+  missing: 0,
+  mismatch: 1,
+  review: 2,
+  inprogress: 3,
+  awaiting: 4,
+  future: 5,
+  match: 6,
+};
+
+export interface StopGroup {
+  /** `${lat.toFixed(6)},${lng.toFixed(6)}` */
+  coord: string;
+  lat: number;
+  lng: number;
+  stops: VisitWithCoords[];
+  /** stops 配列内の 1-based インデックス（マーカー番号）。 */
+  numbers: number[];
+  worstStatus: DisplayStatus;
+}
+
+/**
+ * 同一座標 (小数点 6 桁) の stops を 1 グループにまとめる。
+ * グループ順は最初の出現順を維持 (ルート順序を保持)。
+ * 純関数 — 副作用なし、単体テスト可能。
+ */
+export function groupStopsByCoord(stops: VisitWithCoords[]): StopGroup[] {
+  const order: string[] = [];
+  const map = new Map<string, StopGroup>();
+
+  stops.forEach((v, i) => {
+    const key = `${v.patient_lat.toFixed(6)},${v.patient_lng.toFixed(6)}`;
+    if (!map.has(key)) {
+      map.set(key, {
+        coord: key,
+        lat: v.patient_lat,
+        lng: v.patient_lng,
+        stops: [],
+        numbers: [],
+        worstStatus: displayStatus(v),
+      });
+      order.push(key);
+    }
+    const g = map.get(key)!;
+    g.stops.push(v);
+    g.numbers.push(i + 1);
+    const st = displayStatus(v);
+    if (STATUS_SEVERITY[st] < STATUS_SEVERITY[g.worstStatus]) {
+      g.worstStatus = st;
+    }
+  });
+
+  return order.map((k) => map.get(k)!);
+}
