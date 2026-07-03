@@ -17,7 +17,7 @@
  * デザイン: Warm & Human トークンのみ (bg/border/text/success/warning/brand-primary, tnum).
  */
 import * as React from 'react';
-import { ArrowLeftRight, Loader2 } from 'lucide-react';
+import { ArrowLeftRight, ArrowRight, Loader2 } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -31,17 +31,94 @@ function trimSeconds(t: string | null | undefined): string {
   return t.length >= 5 ? t.slice(0, 5) : t;
 }
 
-/** 曜日 + 時刻の短縮表記 (例: 月10:00). スワップの移動表示に使う. */
-function fmtWeekdayTime(weekday: number, start: string | null | undefined): string {
-  const wd = WEEKDAY_LABELS[weekday] ?? '?';
-  return `${wd}${trimSeconds(start)}`;
-}
-
 /** 効果の主役テキスト. 正 = 削減なので「−N分/週」で見せる (text-success). */
 function formatSaved(minutes: number, km: number): string {
   const min = `−${Math.abs(minutes)}分/週`;
   const dist = `−${Math.abs(km).toFixed(1)}km/週`;
   return `${min}（${dist}）`;
+}
+
+/**
+ * 移動元 / 移動先の枠チップ (現場フィードバック: 「どのコースからどこへ動くのか」が
+ * 一目で飛び込んでくるように、コースを色付きバッジ・曜日時刻を太字で見せる).
+ *   - from: 控えめ (muted 背景 + 枠線バッジ)
+ *   - to:   強調 (ブランド色の太枠 + 塗りつぶしバッジ + 太字)
+ */
+function SlotChip({
+  tone,
+  weekday,
+  time,
+  courseLabel,
+}: {
+  tone: 'from' | 'to';
+  weekday: number;
+  time: string;
+  courseLabel?: string | null;
+}) {
+  const isTo = tone === 'to';
+  return (
+    <span
+      className={
+        isTo
+          ? 'inline-flex items-center gap-1.5 rounded-md border-2 border-brand-primary bg-bg-base px-2 py-1'
+          : 'inline-flex items-center gap-1.5 rounded-md border border-border-default bg-bg-muted px-2 py-1'
+      }
+      data-testid={`improvement-slot-${tone}`}
+    >
+      {courseLabel ? (
+        <span
+          className={
+            isTo
+              ? 'rounded bg-brand-primary px-1.5 py-0.5 text-[11px] font-bold text-white'
+              : 'rounded border border-border-default bg-bg-base px-1.5 py-0.5 text-[11px] font-bold text-text-secondary'
+          }
+        >
+          {courseLabel}
+        </span>
+      ) : null}
+      <span
+        className={
+          isTo
+            ? 'tabular-nums text-sm font-bold text-brand-primary'
+            : 'tabular-nums text-sm font-bold text-text-secondary'
+        }
+      >
+        {WEEKDAY_LABELS[weekday] ?? '?'} {time}
+      </span>
+    </span>
+  );
+}
+
+/** from → to のチップ列 (move 1 行ぶん). label は swap 時の患者名など任意の接頭辞. */
+function MoveVisual({
+  label,
+  fromWeekday,
+  fromTime,
+  fromCourse,
+  toWeekday,
+  toTime,
+  toCourse,
+  testId,
+}: {
+  label?: string;
+  fromWeekday: number;
+  fromTime: string;
+  fromCourse?: string | null;
+  toWeekday: number;
+  toTime: string;
+  toCourse?: string | null;
+  testId?: string;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5" data-testid={testId}>
+      {label ? (
+        <span className="w-full text-xs font-bold text-text-primary sm:w-auto">{label}</span>
+      ) : null}
+      <SlotChip tone="from" weekday={fromWeekday} time={fromTime} courseLabel={fromCourse} />
+      <ArrowRight className="h-5 w-5 shrink-0 text-brand-primary" strokeWidth={2.5} aria-hidden />
+      <SlotChip tone="to" weekday={toWeekday} time={toTime} courseLabel={toCourse} />
+    </div>
+  );
 }
 
 export interface ImprovementSuggestionCardProps {
@@ -125,9 +202,6 @@ function SwapCard({
   const cp = suggestion.swap_counterpart!;
   const xName = patientName ? `${patientName} 様` : '対象の患者様';
   const yName = `${cp.patient_name} 様`;
-  // X: current → candidate (candidate = Y の旧枠). Y: 現在枠 → X の旧枠.
-  const xMove = `${fmtWeekdayTime(current.weekday, current.start_time)}→${fmtWeekdayTime(candidate.weekday, candidate.start_time)}`;
-  const yMove = `${fmtWeekdayTime(cp.current_weekday, cp.current_start_time)}→${fmtWeekdayTime(cp.new_weekday, cp.new_start_time)}`;
 
   return (
     <div
@@ -151,18 +225,31 @@ function SwapCard({
         </span>
       </div>
 
-      {/* 双方向の移動表示. */}
-      <ul
-        className="mt-1.5 list-disc space-y-0.5 pl-4 text-text-primary"
-        data-testid="improvement-swap-moves"
-      >
-        <li className="tnum">
-          {xName}: {xMove}
-        </li>
-        <li className="tnum">
-          {yName}: {yMove}
-        </li>
-      </ul>
+      {/* 双方向の移動表示 (チップ型: 誰が・どのコースの何時から・どこへ、が一目で分かる). */}
+      <div className="mt-2 space-y-2" data-testid="improvement-swap-moves">
+        {/* X: current → candidate (candidate = Y の旧枠). */}
+        <MoveVisual
+          label={xName}
+          fromWeekday={current.weekday}
+          fromTime={trimSeconds(current.start_time)}
+          fromCourse={current.course_label}
+          toWeekday={candidate.weekday}
+          toTime={trimSeconds(candidate.start_time)}
+          toCourse={candidate.course_label}
+          testId="improvement-swap-move-x"
+        />
+        {/* Y: 現在枠 (= candidate のコース) → X の旧枠 (= current のコース). */}
+        <MoveVisual
+          label={yName}
+          fromWeekday={cp.current_weekday}
+          fromTime={trimSeconds(cp.current_start_time)}
+          fromCourse={candidate.course_label}
+          toWeekday={cp.new_weekday}
+          toTime={trimSeconds(cp.new_start_time)}
+          toCourse={current.course_label}
+          testId="improvement-swap-move-y"
+        />
+      </div>
 
       {/* 双方の希望内 / 要確認バッジ (#P4-B).
           - 希望内 (within_preference=true) は success トーンで「ご希望の範囲内」= 確認不要の安心感.
@@ -260,8 +347,6 @@ export function ImprovementSuggestionCard({
     requires_patient_confirmation,
     within_preference,
   } = suggestion;
-  const curWd = WEEKDAY_LABELS[current.weekday] ?? '?';
-  const candWd = WEEKDAY_LABELS[candidate.weekday] ?? '?';
 
   return (
     <div
@@ -293,17 +378,16 @@ export function ImprovementSuggestionCard({
         ) : null}
       </div>
 
-      {/* 現在枠 → 候補枠 の見出し */}
-      <div className="mt-1.5 flex flex-wrap items-center gap-2 text-text-secondary">
-        <span className="tnum">
-          {curWd} {trimSeconds(current.start_time)}–{trimSeconds(current.end_time)}
-          {current.course_label ? `（${current.course_label}）` : ''}
-        </span>
-        <span aria-hidden="true">→</span>
-        <span className="tnum font-medium text-brand-primary">
-          {candWd} {trimSeconds(candidate.start_time)}–{trimSeconds(candidate.end_time)}
-          {candidate.course_label ? `（${candidate.course_label}）` : ''}
-        </span>
+      {/* 現在枠 → 候補枠 (チップ型: どのコースからどこへ動くのかが一目で分かる). */}
+      <div className="mt-2" data-testid="improvement-move-visual">
+        <MoveVisual
+          fromWeekday={current.weekday}
+          fromTime={`${trimSeconds(current.start_time)}–${trimSeconds(current.end_time)}`}
+          fromCourse={current.course_label}
+          toWeekday={candidate.weekday}
+          toTime={`${trimSeconds(candidate.start_time)}–${trimSeconds(candidate.end_time)}`}
+          toCourse={candidate.course_label}
+        />
       </div>
 
       {/* 変わるもの / 変わらないもの */}
@@ -315,9 +399,7 @@ export function ImprovementSuggestionCard({
         </ul>
       ) : null}
       {changes.unchanged.length > 0 ? (
-        <div className="mt-1 text-text-muted">
-          変わらないもの: {changes.unchanged.join(' / ')}
-        </div>
+        <div className="mt-1 text-text-muted">変わらないもの: {changes.unchanged.join(' / ')}</div>
       ) : null}
 
       {/* スタッフ警告 (P0-1 辞書を流用) */}

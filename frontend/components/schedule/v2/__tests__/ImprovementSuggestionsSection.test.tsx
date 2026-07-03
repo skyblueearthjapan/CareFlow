@@ -103,7 +103,10 @@ function makeSuggestion(over: Partial<ImprovementSuggestion> = {}): ImprovementS
       staff_name: null,
     },
     delta: { travel_minutes_saved: 18, travel_km_saved: 2.1 },
-    changes: { changes: ['開始時刻が 09:00 → 10:00 に変わります'], unchanged: ['曜日は月曜のまま'] },
+    changes: {
+      changes: ['開始時刻が 09:00 → 10:00 に変わります'],
+      unchanged: ['曜日は月曜のまま'],
+    },
     staff_warnings: [],
     feasibility_basis: 'pfv',
     requires_patient_confirmation: false,
@@ -193,7 +196,11 @@ describe('ImprovementSuggestionsSection', () => {
   });
 
   it('1. 効果 (−18分/週・−2.1km/週) を主役表示する', () => {
-    mocks.suggestionsResult = { data: makeResponse([makeSuggestion()]), isLoading: false, isError: false };
+    mocks.suggestionsResult = {
+      data: makeResponse([makeSuggestion()]),
+      isLoading: false,
+      isError: false,
+    };
     renderSection();
     expect(screen.getByTestId('improvement-effect')).toHaveTextContent('−18分/週（−2.1km/週）');
   });
@@ -217,9 +224,7 @@ describe('ImprovementSuggestionsSection', () => {
       isError: false,
     };
     renderSection();
-    expect(screen.getByTestId('improvement-within-preference')).toHaveTextContent(
-      'ご希望の範囲内',
-    );
+    expect(screen.getByTestId('improvement-within-preference')).toHaveTextContent('ご希望の範囲内');
   });
 
   it('2c. (#P4-B) within_preference=false のとき希望内バッジは出ない', () => {
@@ -243,9 +248,9 @@ describe('ImprovementSuggestionsSection', () => {
     };
     renderSection();
     expect(screen.getByTestId('improvement-within-preference')).toBeInTheDocument();
-    expect(
-      screen.getByTestId('improvement-swap-counterpart-within-preference'),
-    ).toHaveTextContent('佐藤 花子 様もご希望の範囲内');
+    expect(screen.getByTestId('improvement-swap-counterpart-within-preference')).toHaveTextContent(
+      '佐藤 花子 様もご希望の範囲内',
+    );
   });
 
   it('3. staff_warnings を proposeWarningLabel で表示', () => {
@@ -260,7 +265,9 @@ describe('ImprovementSuggestionsSection', () => {
 
   it('4. 採用 → confirm mutate が候補曜日の枠で呼ばれ、成功でカード消滅 + invalidate', async () => {
     mocks.suggestionsResult = {
-      data: makeResponse([makeSuggestion({ candidate: { ...makeSuggestion().candidate, weekday: 0 } })]),
+      data: makeResponse([
+        makeSuggestion({ candidate: { ...makeSuggestion().candidate, weekday: 0 } }),
+      ]),
       isLoading: false,
       isError: false,
     };
@@ -331,7 +338,11 @@ describe('ImprovementSuggestionsSection', () => {
     await userEvent.click(screen.getByTestId('improvement-adopt-button'));
 
     await waitFor(() => expect(mocks.confirmMutate).toHaveBeenCalledTimes(1));
-    const body = (mocks.confirmMutate.mock.calls[0][0] as { body: { items: Array<{ weekday: number; is_pinned?: boolean; movability?: string }> } }).body;
+    const body = (
+      mocks.confirmMutate.mock.calls[0][0] as {
+        body: { items: Array<{ weekday: number; is_pinned?: boolean; movability?: string }> };
+      }
+    ).body;
     const weekdays = body.items.map((i) => i.weekday).sort();
     // 元曜日 0 は消え、火(1)保持 + 候補水(2)追加.
     expect(weekdays).toEqual([1, 2]);
@@ -375,7 +386,11 @@ describe('ImprovementSuggestionsSection', () => {
   });
 
   it('7. canEdit=false で採用/見送りボタンを出さない', () => {
-    mocks.suggestionsResult = { data: makeResponse([makeSuggestion()]), isLoading: false, isError: false };
+    mocks.suggestionsResult = {
+      data: makeResponse([makeSuggestion()]),
+      isLoading: false,
+      isError: false,
+    };
     renderSection(false);
     expect(screen.queryByTestId('improvement-adopt-button')).not.toBeInTheDocument();
     expect(screen.queryByTestId('improvement-dismiss-button')).not.toBeInTheDocument();
@@ -391,11 +406,17 @@ describe('ImprovementSuggestionsSection', () => {
     expect(screen.getByTestId('improvement-swap-header')).toHaveTextContent(
       '佐藤 花子 様と入れ替え',
     );
-    const moves = screen.getByTestId('improvement-swap-moves');
+    // W3 UI改善: チップ型の双方向表示 (患者名 + from/to チップ)。
     // X (表示中患者) の移動: 月09:00 → 月14:00.
-    expect(moves).toHaveTextContent('中尾 要太 様: 月09:00→月14:00');
+    const moveX = screen.getByTestId('improvement-swap-move-x');
+    expect(moveX).toHaveTextContent('中尾 要太 様');
+    expect(moveX).toHaveTextContent('月 09:00');
+    expect(moveX).toHaveTextContent('月 14:00');
     // Y (counterpart) の移動: 月14:00 → 月09:00.
-    expect(moves).toHaveTextContent('佐藤 花子 様: 月14:00→月09:00');
+    const moveY = screen.getByTestId('improvement-swap-move-y');
+    expect(moveY).toHaveTextContent('佐藤 花子 様');
+    expect(moveY).toHaveTextContent('月 14:00');
+    expect(moveY).toHaveTextContent('月 09:00');
     // 効果は move カードと同じ主役表示.
     expect(screen.getByTestId('improvement-effect')).toHaveTextContent('−18分/週（−2.1km/週）');
   });
@@ -489,8 +510,8 @@ describe('ImprovementSuggestionsSection', () => {
       isLoading: false,
       isError: false,
     };
-    mocks.dismissMutate.mockImplementation(
-      (_vars: unknown, opts: { onSuccess?: () => void }) => opts.onSuccess?.(),
+    mocks.dismissMutate.mockImplementation((_vars: unknown, opts: { onSuccess?: () => void }) =>
+      opts.onSuccess?.(),
     );
     renderSection();
 
@@ -515,7 +536,10 @@ describe('ImprovementSuggestionsSection', () => {
   it('12. 未知 kind の要素は静かに除外され、既知カードは表示される (寛容化の施錠)', () => {
     const known = makeSuggestion();
     // BE が将来返しうる未知 kind の要素 (zod で除外される).
-    const unknown = { ...makeSuggestion(), kind: 'future_kind' } as unknown as ImprovementSuggestion;
+    const unknown = {
+      ...makeSuggestion(),
+      kind: 'future_kind',
+    } as unknown as ImprovementSuggestion;
     const parsed = improvementSuggestionsResponseSchema.parse({
       patient_id: PATIENT.id,
       iso_year: 2026,
