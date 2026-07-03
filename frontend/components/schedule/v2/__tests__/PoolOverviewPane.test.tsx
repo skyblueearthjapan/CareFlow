@@ -10,7 +10,7 @@
  */
 import * as React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, act } from '@testing-library/react';
 import type { PatientRead } from '@/lib/schemas/patient';
 
 // ─── Hoisted mock state ─────────────────────────────────────────────────────
@@ -131,7 +131,7 @@ function makePatient(id: string, name: string): PatientRead {
 
 // ─── Import after mocks ──────────────────────────────────────────────────────
 
-import { PoolOverviewPane } from '../PoolOverviewPane';
+import { PoolOverviewPane, type PoolOverviewPaneHandle } from '../PoolOverviewPane';
 import type { PoolCardSlotInfo } from '../PoolPanel';
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -367,5 +367,25 @@ describe('PoolOverviewPane', () => {
     expect(mockToast.warning).toHaveBeenCalledWith(
       expect.stringContaining('55 名'),
     );
+  });
+
+  // ── 6. Stage P-3: 外部トリガー (forwardRef / triggerCompute) ──────────────
+
+  it('forwardRef 経由の triggerCompute() 呼出で mutate が patient_ids 付きで実行される', () => {
+    const patients = [makePatient('p1', '田中'), makePatient('p2', '佐藤')];
+    const ref = React.createRef<PoolOverviewPaneHandle>();
+
+    render(<PoolOverviewPane {...BASE_PROPS} patients={patients} ref={ref} />);
+
+    act(() => {
+      ref.current?.triggerCompute();
+    });
+
+    expect(mockMutationState.mutate).toHaveBeenCalledOnce();
+    const [payload] = mockMutationState.mutate.mock.calls[0]!;
+    expect(payload.iso_year).toBe(2026);
+    expect(payload.iso_week).toBe(27);
+    expect(payload.office_id).toBe('office-1');
+    expect(payload.patient_ids).toEqual(['p1', 'p2']);
   });
 });

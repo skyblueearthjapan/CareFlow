@@ -105,7 +105,7 @@ function NoSlotBadge({ reason }: { reason: string | null | undefined }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Props
+// Props / Handle
 // ─────────────────────────────────────────────────────────────────────────
 
 export interface PoolOverviewPaneProps
@@ -115,20 +115,30 @@ export interface PoolOverviewPaneProps
   officeId: string | null;
 }
 
+/**
+ * Stage P-3: CourseDayTablePanel の「プール投入」ボタンから外部トリガーするための
+ * imperative handle。forwardRef 経由で ref に設定される。
+ */
+export interface PoolOverviewPaneHandle {
+  /** 「効果を計算」を外部から起動する（ユーザーがボタンを押した扱い）。 */
+  triggerCompute(): void;
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Component
 // ─────────────────────────────────────────────────────────────────────────
 
-export function PoolOverviewPane({
-  patients,
-  renderCard,
-  disabled,
-  assignedSlotsByPatient,
-  partnerLocationByPatientSlot,
-  isoYear,
-  isoWeek,
-  officeId,
-}: PoolOverviewPaneProps) {
+export const PoolOverviewPane = React.forwardRef<PoolOverviewPaneHandle, PoolOverviewPaneProps>(
+  function PoolOverviewPane({
+    patients,
+    renderCard,
+    disabled,
+    assignedSlotsByPatient,
+    partnerLocationByPatientSlot,
+    isoYear,
+    isoWeek,
+    officeId,
+  }: PoolOverviewPaneProps, ref) {
   const overviewMut = usePoolOverviewMutation();
   // useCallback の deps には mutate のみを入れる (React Query v5 で参照安定。
   // overviewMut オブジェクト全体は state 変化ごとに参照が変わりメモ化が無効になる).
@@ -179,6 +189,10 @@ export function PoolOverviewPane({
       },
     );
   }, [patients, isoYear, isoWeek, officeId, computeOverview]);
+
+  // Stage P-3: CourseDayTablePanel の「プール投入」ボタンから外部トリガーできるよう
+  // imperative handle を設定する。ユーザーがボタンを押した扱いで計算を起動する。
+  React.useImperativeHandle(ref, () => ({ triggerCompute: handleCompute }), [handleCompute]);
 
   /** 効果順ソート適用後の patients */
   const sortedPatients = React.useMemo<PatientRead[]>(() => {
@@ -255,4 +269,5 @@ export function PoolOverviewPane({
       headerAction={headerAction}
     />
   );
-}
+});
+PoolOverviewPane.displayName = 'PoolOverviewPane';

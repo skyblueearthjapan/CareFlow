@@ -33,7 +33,7 @@
  *   - admin / manager: 編集可 (ドロップ + 担当変更 + 主要 4 + 二次操作 + 個別 reset)
  *   - staff: 閲覧のみ
  */
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import {
   DndContext,
   DragOverlay,
@@ -110,7 +110,6 @@ import {
 import { AcceptanceLegend } from './AcceptanceLayer';
 import { BulkFixToPatternButton } from './BulkFixToPatternButton';
 import { BulkPinAllPfvsButton } from './BulkPinAllPfvsButton';
-import { DiffAddDialog } from './DiffAddDialog';
 import { AssignWarningDialog, type ApprovedReviewItem } from './AssignWarningDialog';
 import { FullOptimizeDialog } from './FullOptimizeDialog';
 import { StaffSubstituteDialog } from './StaffSubstituteDialog';
@@ -140,7 +139,7 @@ import {
   buildPoolDraggableId,
   parsePoolDraggableId,
 } from './PoolPanel';
-import { PoolOverviewPane } from './PoolOverviewPane';
+import { PoolOverviewPane, type PoolOverviewPaneHandle } from './PoolOverviewPane';
 import type { SlotIndex } from '@/lib/schemas/v2/patient_fixed_visit';
 // Phase G-44: 「希望訪問パターン」 vs 「実 visit 数」 の共通 utility.
 import { countWeekVisits, getDesiredWeeklyVisitCount } from '@/lib/scheduling/preferred-visits';
@@ -1625,7 +1624,6 @@ export function CourseDayTablePanel({
   //   pending 中の `isProcessing` は二次操作 (固定枠戻 / 一斉未割当) の多重実行抑止にも利用する.
   const generateWeekMut = useGenerateWeekOnly();
   const assignStaffOnlyMut = useAssignStaffOnly();
-  const [diffAddOpen, setDiffAddOpen] = useState(false);
   const [fullOptimizeOpen, setFullOptimizeOpen] = useState(false);
   // P3-①: 当日欠勤の代替スタッフ提案ダイアログ.
   const [staffSubstituteOpen, setStaffSubstituteOpen] = useState(false);
@@ -1635,7 +1633,7 @@ export function CourseDayTablePanel({
   const [reviewApplying, setReviewApplying] = useState(false);
   // Wave N-2: 体制上不可避な連続のお知らせ (自動確定済み).
   const [autoCommittedNotices, setAutoCommittedNotices] = useState<AutoCommittedNotice[]>([]);
-  // 統合提案モーダル「＋新規提案」(StageA+C+B). diff-add (プール投入) とは別 entry.
+  // 統合提案モーダル「＋新規提案」(StageA+C+B).
   const [proposeNewOpen, setProposeNewOpen] = useState(false);
   // スケジュール健康診断ダイアログ (Schedule Advisor Phase 1).
   const [scheduleHealthOpen, setScheduleHealthOpen] = useState(false);
@@ -1653,6 +1651,12 @@ export function CourseDayTablePanel({
   // P3-⑥: 週次ガイドダイアログ (案内のみ・実行ボタンなし).
   const [weeklyRitualGuideOpen, setWeeklyRitualGuideOpen] = useState(false);
   const isProcessing = generateWeekMut.isPending || assignStaffOnlyMut.isPending;
+
+  // Stage P-3: 「プール投入」ボタン → 右ペイン (PoolOverviewPane) へのスクロール＋ハイライト＋
+  // 「効果を計算」自動実行のための ref / state。
+  const poolOverviewRef = useRef<PoolOverviewPaneHandle>(null);
+  const poolPaneRef = useRef<HTMLElement>(null);
+  const [poolPaneHighlighted, setPoolPaneHighlighted] = useState(false);
 
   const handleGenerateWeek = async () => {
     if (!canEdit) {
@@ -1715,6 +1719,19 @@ export function CourseDayTablePanel({
       toast.error(`自動スタッフ割当に失敗しました: ${formatErr(err)}`);
     }
   };
+
+  // Stage P-3: 「プール投入」ボタン → 右ペイン (保留プール) へのスクロール＋ハイライト＋
+  // PoolOverviewPane の「効果を計算」自動実行。
+  // 既存の明示発火の原則は「ユーザーがボタンを押した」ことで満たされる。
+  // 連打時は前のタイマーをクリアしてハイライト 2 秒を仕切り直す。
+  const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const handleDiffAddClick = useCallback(() => {
+    poolPaneRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    setPoolPaneHighlighted(true);
+    if (highlightTimerRef.current !== undefined) clearTimeout(highlightTimerRef.current);
+    highlightTimerRef.current = setTimeout(() => setPoolPaneHighlighted(false), 2000);
+    poolOverviewRef.current?.triggerCompute();
+  }, []);
 
   // ─── 担当 dropdown 変更 (PATCH /courses/{id}) ───────────────────
   const updateCourseMut = useUpdateCourse();
@@ -1998,9 +2015,10 @@ export function CourseDayTablePanel({
                 type="button"
                 size="sm"
                 variant="default"
-                onClick={() => setDiffAddOpen(true)}
+                onClick={handleDiffAddClick}
                 disabled={isProcessing}
                 data-testid="diff-add-button"
+                title="保留プールから患者ごとに検討・投入します"
               >
                 <Plus className="mr-1 h-4 w-4" aria-hidden />
                 プール投入
@@ -2425,7 +2443,8 @@ export function CourseDayTablePanel({
 
           {/* 右ペイン: 保留プール (sticky で追従) */}
           <aside
-            className="sticky top-4 self-start max-h-[calc(100vh-2rem)] overflow-y-auto"
+            ref={poolPaneRef}
+            className={`sticky top-4 self-start max-h-[calc(100vh-2rem)] overflow-y-auto rounded${poolPaneHighlighted ? ' ring-2 ring-brand-primary' : ''}`}
             data-testid="course-day-pool-pane"
             // Wave 37 Phase 3-C: 配置済み slot マップを serialize してテスト・debug 用に露出.
             // 形式: "patientId:slot,...,patientId:slot"
@@ -2448,6 +2467,7 @@ export function CourseDayTablePanel({
                 「効果を計算」ボタン・delta バッジ・効果順ソートを追加する。
                 患者カードクリック→詳細ダイアログへの既存導線は変更しない。 */}
             <PoolOverviewPane
+              ref={poolOverviewRef}
               patients={poolPatients}
               disabled={!canEdit}
               assignedSlotsByPatient={assignedSlotsByPatient}
@@ -2533,18 +2553,7 @@ export function CourseDayTablePanel({
           />
         ) : null}
 
-        {/* Phase G-41: 主要 4 ボタン を本パネル Row 1 に戻したため、 対応する dialog も本パネルで描画する.
-            Wave 41 v2 § 3 / §13.5.1: 差分追加ダイアログ. */}
-        <DiffAddDialog
-          open={diffAddOpen}
-          onClose={() => setDiffAddOpen(false)}
-          isoYear={isoYear}
-          isoWeek={isoWeek}
-          officeId={officeId}
-          canEdit={canEdit}
-        />
-
-        {/* 統合提案モーダル「＋新規提案」(StageA+C+B). diff-add とは独立・併存. */}
+        {/* 統合提案モーダル「＋新規提案」(StageA+C+B). */}
         <ProposeNewModal
           open={proposeNewOpen}
           onClose={() => setProposeNewOpen(false)}
@@ -2635,8 +2644,7 @@ export function CourseDayTablePanel({
             isoWeek={isoWeek}
             canEdit={canEdit}
             // プール由来クリックのときだけプール投入提案セクションを表示する.
-            // office スコープは一括ダイアログ (DiffAddDialog) と揃え、同一患者が
-            // 両表示で同一提案になるようにする (ドリフト防止 / 同一 queryKey 共有).
+            // (Stage P-3 以降は個別フロー専用。DiffAddDialog は廃止済み)
             enablePoolProposal={patientDetailPoolMode}
             officeId={officeId}
           />
