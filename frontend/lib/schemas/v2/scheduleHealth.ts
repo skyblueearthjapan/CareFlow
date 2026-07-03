@@ -103,3 +103,53 @@ export const scheduleHealthTrendResponseSchema = z.object({
   weeks: z.array(scheduleHealthTrendWeekSchema).default([]),
 });
 export type ScheduleHealthTrendResponse = z.infer<typeof scheduleHealthTrendResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// H1: 原因ドリルダウン (GET /v2/schedule-health/course-detail)
+// BE `backend/app/schemas/v2/schedule_health.py` の CourseDetail* と 1:1。
+// ---------------------------------------------------------------------------
+
+/** コース内の連続する 2 訪問間の移動 1 件 (同住所=0/座標欠損=0 は健康診断と同一規約). */
+export const courseDetailTransitionSchema = z.object({
+  from_patient_id: z.string().uuid(),
+  from_patient_name: z.string(),
+  from_end_time: z.string(),
+  to_patient_id: z.string().uuid(),
+  to_patient_name: z.string(),
+  to_start_time: z.string(),
+  travel_minutes: z.number().int().min(0),
+  travel_km: z.number().min(0),
+});
+export type CourseDetailTransition = z.infer<typeof courseDetailTransitionSchema>;
+
+/** 患者 1 名の配置コスト (= W3 厳密限界コスト。抜くと浮く travel+buffer). */
+export const courseDetailPatientCostSchema = z.object({
+  patient_id: z.string().uuid(),
+  patient_name: z.string(),
+  start_time: z.string(),
+  marginal_minutes: z.number().int(),
+  marginal_km: z.number(),
+});
+export type CourseDetailPatientCost = z.infer<typeof courseDetailPatientCostSchema>;
+
+export const courseDetailWeekdaySchema = z.object({
+  weekday: z.number().int().min(0).max(6),
+  course_label: z.string(),
+  staff_name: z.string().nullable().default(null),
+  totals: z.object({
+    travel_minutes: z.number().int().min(0),
+    travel_km: z.number().min(0),
+  }),
+  transitions: z.array(courseDetailTransitionSchema).default([]),
+  patient_costs: z.array(courseDetailPatientCostSchema).default([]),
+});
+export type CourseDetailWeekday = z.infer<typeof courseDetailWeekdaySchema>;
+
+export const scheduleHealthCourseDetailResponseSchema = z.object({
+  office_id: z.string().uuid(),
+  course_code: z.string(),
+  weekdays: z.array(courseDetailWeekdaySchema).default([]),
+});
+export type ScheduleHealthCourseDetailResponse = z.infer<
+  typeof scheduleHealthCourseDetailResponseSchema
+>;

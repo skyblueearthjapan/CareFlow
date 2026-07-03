@@ -42,6 +42,7 @@ import {
   useScopeOptimizationSimulate,
 } from '@/lib/queries/scopeOptimization';
 import type {
+  ScopeOptimizationCourseBeforeAfter,
   ScopeOptimizationExcludedSummary,
   ScopeOptimizationMetrics,
   ScopeOptimizationSimulateResponse,
@@ -200,6 +201,64 @@ function MetricsTiles({
 
 const WEEKDAY_FULL = ['月', '火', '水', '木', '金', '土', '日'] as const;
 
+/**
+ * H2: コース別の実行後見通し (「稲B(火) 移動 92分→51分」)。
+ * 変化のあるコースのみ行で見せ、変化なしは件数で畳む。見通しは恒久パターン基準 (D-1)。
+ */
+function CourseBeforeAfterList({ courses }: { courses: ScopeOptimizationCourseBeforeAfter[] }) {
+  const changed = courses.filter(
+    (c) =>
+      c.before.travel_minutes !== c.after.travel_minutes ||
+      c.before.travel_km !== c.after.travel_km ||
+      c.before.gap_minutes !== c.after.gap_minutes,
+  );
+  const unchangedCount = courses.length - changed.length;
+  if (courses.length === 0) return null;
+  return (
+    <div
+      className="space-y-1 rounded-lg border border-border-default bg-bg-base p-3"
+      data-testid="scope-optimize-courses"
+    >
+      <div className="text-xs font-semibold text-text-primary">
+        コース別の見通し
+        <span className="ml-1 font-normal text-text-muted">（適用した場合・恒久パターン基準）</span>
+      </div>
+      {changed.length === 0 ? (
+        <div className="text-xs text-text-muted">変化するコースはありません。</div>
+      ) : (
+        changed.map((c) => {
+          const diff = c.after.travel_minutes - c.before.travel_minutes;
+          return (
+            <div
+              key={`${c.office_id}-${c.weekday}-${c.course_code}`}
+              className="flex flex-wrap items-baseline gap-1.5 text-xs tabular-nums"
+              data-testid="scope-optimize-course-row"
+            >
+              <span className="font-medium text-text-primary">
+                {c.course_label}（{WEEKDAY_FULL[c.weekday]}
+                {c.staff_name ? `・${c.staff_name}` : ''}）:
+              </span>
+              <span className="text-text-muted line-through">移動{c.before.travel_minutes}分</span>
+              <span aria-hidden>→</span>
+              <span className="font-bold text-text-primary">{c.after.travel_minutes}分</span>
+              <span className={diff < 0 ? 'text-success' : 'text-warning'}>
+                （{diff < 0 ? '−' : '+'}
+                {Math.abs(diff)}分）
+              </span>
+              <span className="text-[10px] text-text-muted">
+                {c.before.travel_km.toFixed(1)}km→{c.after.travel_km.toFixed(1)}km
+              </span>
+            </div>
+          );
+        })
+      )}
+      {unchangedCount > 0 ? (
+        <div className="text-[10px] text-text-muted">変化なし {unchangedCount} コース</div>
+      ) : null}
+    </div>
+  );
+}
+
 export function ScopeOptimizeDialog({
   open,
   onClose,
@@ -330,6 +389,8 @@ export function ScopeOptimizeDialog({
           if (data.warnings.length > 3) {
             toast.warning(`他 ${data.warnings.length - 3} 件の警告があります`);
           }
+          // D-1: 適用は恒久パターンに反映。今週の実予定への反映手段を案内する.
+          toast.info('今週の実予定へ反映するには「固定枠戻」を実行してください');
           // 適用後は最新状態で自動再計算 (残りの改善が見える).
           runSimulate(resultScope.weekdays, resultScope.courseCodes);
         },
@@ -512,6 +573,9 @@ export function ScopeOptimizeDialog({
               ) : (
                 <div className="space-y-4" data-testid="scope-optimize-result">
                   <MetricsTiles before={result.before} after={result.after} />
+
+                  {/* H2: コース別の実行後見通し. */}
+                  <CourseBeforeAfterList courses={result.courses} />
 
                   <div className="space-y-2" data-testid="scope-optimize-steps">
                     <div className="text-sm font-semibold text-text-primary">

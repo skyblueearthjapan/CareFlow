@@ -17,8 +17,10 @@ import { useSession } from 'next-auth/react';
 
 import { fetcher } from '@/lib/api/fetcher';
 import {
+  scheduleHealthCourseDetailResponseSchema,
   scheduleHealthResponseSchema,
   scheduleHealthTrendResponseSchema,
+  type ScheduleHealthCourseDetailResponse,
   type ScheduleHealthResponse,
   type ScheduleHealthTrendResponse,
 } from '@/lib/schemas/v2/scheduleHealth';
@@ -113,6 +115,49 @@ export function useScheduleHealthTrend(
         refreshToken,
       });
       return scheduleHealthTrendResponseSchema.parse(result);
+    },
+  });
+}
+
+export interface UseScheduleHealthCourseDetailParams {
+  isoYear: number;
+  isoWeek: number;
+  officeId: string;
+  courseCode: string;
+  /** false で fetch を止める (ドリルダウンを開いたときだけ取得). */
+  enabled?: boolean;
+}
+
+/**
+ * useScheduleHealthCourseDetail — H1 原因ドリルダウンの read-only query hook.
+ *
+ * GET /api/v1/schedule/v2/schedule-health/course-detail
+ * 「なぜこのコースが重いのか」= 遷移内訳 + 患者別配置コスト (厳密限界コスト)。
+ * コース行を展開したときだけ enabled=true で取得する。
+ */
+export function useScheduleHealthCourseDetail(
+  params: UseScheduleHealthCourseDetailParams,
+): UseQueryResult<ScheduleHealthCourseDetailResponse, Error> {
+  const { data: session, status } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+  const { isoYear, isoWeek, officeId, courseCode, enabled } = params;
+
+  const qs = new URLSearchParams();
+  qs.set('iso_year', String(isoYear));
+  qs.set('iso_week', String(isoWeek));
+  qs.set('office_id', officeId);
+  qs.set('course_code', courseCode);
+
+  return useQuery<ScheduleHealthCourseDetailResponse, Error>({
+    queryKey: ['schedule-health', 'course-detail', isoYear, isoWeek, officeId, courseCode],
+    enabled: status === 'authenticated' && (enabled ?? true) && Boolean(officeId && courseCode),
+    staleTime: 5 * 60 * 1000,
+    queryFn: async () => {
+      const result = await fetcher<unknown>(
+        `${SCHEDULE_HEALTH_PATH}/course-detail?${qs.toString()}`,
+        { accessToken, refreshToken },
+      );
+      return scheduleHealthCourseDetailResponseSchema.parse(result);
     },
   });
 }

@@ -144,6 +144,8 @@ export const improvementSuggestionSchema = z.object({
   // UI 統一: タイムライン表示用スナップショット (旧 BE 互換で null 既定).
   source_course: courseSnapshotSchema.nullable().default(null),
   destination_course: courseSnapshotSchema.nullable().default(null),
+  // H2: 理由文 (「原因→対策→効果」の 1 文。旧 BE 互換で null 既定).
+  reason: z.string().nullable().default(null),
 });
 export type ImprovementSuggestion = z.infer<typeof improvementSuggestionSchema>;
 

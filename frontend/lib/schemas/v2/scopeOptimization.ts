@@ -122,6 +122,20 @@ export const scopeOptimizationApplyResponseSchema = z.object({
 });
 export type ScopeOptimizationApplyResponse = z.infer<typeof scopeOptimizationApplyResponseSchema>;
 
+/** コース別の実行後見通し (H2: 恒久パターン基準のシミュレーション値). */
+export const scopeOptimizationCourseBeforeAfterSchema = z.object({
+  office_id: z.string().uuid(),
+  weekday: z.number().int().min(0).max(6),
+  course_code: z.string(),
+  course_label: z.string(),
+  staff_name: z.string().nullable().default(null),
+  before: scopeOptimizationMetricsSchema,
+  after: scopeOptimizationMetricsSchema,
+});
+export type ScopeOptimizationCourseBeforeAfter = z.infer<
+  typeof scopeOptimizationCourseBeforeAfterSchema
+>;
+
 /** POST /v2/scope-optimization/simulate レスポンス. */
 export const scopeOptimizationSimulateResponseSchema = z.object({
   iso_year: z.number().int(),
@@ -139,6 +153,8 @@ export const scopeOptimizationSimulateResponseSchema = z.object({
     truncated: false,
   }),
   state_token: z.string(),
+  // H2: コース別の実行後見通し (旧 BE 互換で空既定).
+  courses: z.array(scopeOptimizationCourseBeforeAfterSchema).default([]),
 });
 export type ScopeOptimizationSimulateResponse = z.infer<
   typeof scopeOptimizationSimulateResponseSchema

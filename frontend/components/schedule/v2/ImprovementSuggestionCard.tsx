@@ -251,6 +251,16 @@ function SwapCard({
         />
       </div>
 
+      {/* H2: 理由文 (swap は簡易文). */}
+      {suggestion.reason ? (
+        <div
+          className="mt-1.5 text-[11px] leading-relaxed text-text-secondary"
+          data-testid="improvement-reason"
+        >
+          {suggestion.reason}
+        </div>
+      ) : null}
+
       {/* 双方の希望内 / 要確認バッジ (#P4-B).
           - 希望内 (within_preference=true) は success トーンで「ご希望の範囲内」= 確認不要の安心感.
           - 希望外は従来どおり要確認 (warning) バッジ. */}
@@ -389,6 +399,16 @@ export function ImprovementSuggestionCard({
           toCourse={candidate.course_label}
         />
       </div>
+
+      {/* H2: 理由文 (原因→対策→効果の 1 文). */}
+      {suggestion.reason ? (
+        <div
+          className="mt-1.5 text-[11px] leading-relaxed text-text-secondary"
+          data-testid="improvement-reason"
+        >
+          {suggestion.reason}
+        </div>
+      ) : null}
 
       {/* 変わるもの / 変わらないもの */}
       {changes.changes.length > 0 ? (

@@ -43,8 +43,11 @@ vi.mock('@/components/ui/button', () => ({
 }));
 
 vi.mock('lucide-react', () => ({
+  ChevronDown: () => <span data-testid="icon-chevron-down" />,
+  ChevronRight: () => <span data-testid="icon-chevron-right" />,
   HeartPulse: () => <span data-testid="icon-heart-pulse" />,
   Loader2: () => <span />,
+  Route: () => <span data-testid="icon-route" />,
   TriangleAlert: () => <span data-testid="icon-triangle-alert" />,
 }));
 

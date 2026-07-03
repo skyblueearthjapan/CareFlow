@@ -21,7 +21,7 @@
  * RBAC: 呼出側 (CourseDayTablePanel) で admin/manager ガード済み.
  */
 import * as React from 'react';
-import { HeartPulse, Route, TriangleAlert } from 'lucide-react';
+import { ChevronDown, ChevronRight, HeartPulse, Loader2, Route, TriangleAlert } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import {
@@ -34,7 +34,7 @@ import {
 } from '@/components/ui/dialog';
 import { FilterChip } from '@/components/ui/filter-chip';
 import { Skeleton } from '@/components/ui/skeleton';
-import { useScheduleHealth } from '@/lib/queries/scheduleHealth';
+import { useScheduleHealth, useScheduleHealthCourseDetail } from '@/lib/queries/scheduleHealth';
 import { previousIsoWeek } from '@/lib/format/isoWeek';
 import type { ScheduleHealthOffice, ScheduleHealthResponse } from '@/lib/schemas/v2/scheduleHealth';
 
@@ -202,15 +202,159 @@ function SummaryTile({ label, value, delta, testId }: SummaryTileProps) {
 // コース別バー
 // ─────────────────────────────────────────────────────────────────────────
 
+/** 重い遷移とみなす割合 (コース移動合計に占める %). */
+const HEAVY_TRANSITION_SHARE = 33;
+
+/**
+ * H1: 原因ドリルダウンの中身 (行を展開したときだけ mount = fetch 発火).
+ * 「なぜこのコースが重いのか」= 重い移動 TOP3 + 配置コストが大きい患者 TOP3。
+ */
+function CourseCauseDetail({
+  isoYear,
+  isoWeek,
+  officeRowId,
+  courseCode,
+  weekdayFilter,
+  onOptimize,
+}: {
+  isoYear: number;
+  isoWeek: number;
+  officeRowId: string;
+  courseCode: string;
+  weekdayFilter: number | 'all';
+  onOptimize?: (courseCode: string) => void;
+}) {
+  const detailQuery = useScheduleHealthCourseDetail({
+    isoYear,
+    isoWeek,
+    officeId: officeRowId,
+    courseCode,
+  });
+
+  if (detailQuery.isLoading) {
+    return (
+      <div className="flex items-center gap-2 py-2 text-xs text-text-muted">
+        <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+        原因を計算中…
+      </div>
+    );
+  }
+  if (detailQuery.isError || !detailQuery.data) {
+    return (
+      <div className="py-2 text-xs text-text-muted" data-testid="schedule-health-cause-error">
+        原因の内訳を取得できませんでした。
+      </div>
+    );
+  }
+  const weekdays = detailQuery.data.weekdays.filter(
+    (wd) => weekdayFilter === 'all' || wd.weekday === weekdayFilter,
+  );
+  if (weekdays.length === 0) {
+    return (
+      <div className="py-2 text-xs text-text-muted" data-testid="schedule-health-cause-empty">
+        選択中の曜日にこのコースの訪問がありません。
+      </div>
+    );
+  }
+  return (
+    <div
+      className="space-y-3 rounded border border-border-default bg-bg-muted p-2"
+      data-testid="schedule-health-cause"
+    >
+      {weekdays.map((wd) => {
+        const heavy = [...wd.transitions]
+          .sort((a, b) => b.travel_minutes - a.travel_minutes)
+          .slice(0, 3)
+          .filter((t) => t.travel_minutes > 0);
+        const costs = wd.patient_costs.filter((c) => c.marginal_minutes > 0).slice(0, 3);
+        return (
+          <div key={wd.weekday} className="space-y-1.5">
+            <div className="text-[11px] font-medium text-text-secondary">
+              {WEEKDAY_LABELS[wd.weekday] ?? '?'}曜（{wd.course_label}
+              {wd.staff_name ? `・${wd.staff_name}` : ''}）移動 {wd.totals.travel_minutes}分・
+              {wd.totals.travel_km.toFixed(1)}km
+            </div>
+            {heavy.length > 0 ? (
+              <div className="space-y-0.5" data-testid="schedule-health-heavy-transitions">
+                <div className="text-[10px] text-text-muted">重い移動:</div>
+                {heavy.map((t, i) => {
+                  const share =
+                    wd.totals.travel_minutes > 0
+                      ? Math.round((t.travel_minutes / wd.totals.travel_minutes) * 100)
+                      : 0;
+                  const isHeavy = share >= HEAVY_TRANSITION_SHARE;
+                  return (
+                    <div
+                      key={`t-${i}`}
+                      className={`tabular-nums text-[11px] ${isHeavy ? 'font-bold text-warning' : 'text-text-primary'}`}
+                    >
+                      {t.from_patient_name} 様（{t.from_end_time}）→ {t.to_patient_name} 様（
+                      {t.to_start_time}）: {t.travel_minutes}分・{t.travel_km.toFixed(1)}km（
+                      {share}%）
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
+            {costs.length > 0 ? (
+              <div className="space-y-0.5" data-testid="schedule-health-patient-costs">
+                <div className="text-[10px] text-text-muted">配置コストが大きい患者様:</div>
+                {costs.map((c) => (
+                  <div
+                    // 同一患者が同曜日に複数枠を持つ場合があるため start_time まで含めて一意化.
+                    key={`${c.patient_id}-${c.start_time}`}
+                    className="tabular-nums text-[11px] text-text-primary"
+                  >
+                    {c.patient_name} 様（{c.start_time}）の配置で {c.marginal_minutes}分/週・
+                    {c.marginal_km.toFixed(1)}km
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        );
+      })}
+      {onOptimize ? (
+        <Button
+          type="button"
+          size="sm"
+          className="h-7 px-3 text-[11px]"
+          onClick={() => onOptimize(courseCode)}
+          data-testid="schedule-health-cause-optimize"
+        >
+          <Route className="mr-1 h-3.5 w-3.5" aria-hidden />
+          この原因を解消する対策を計算
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
 interface CourseBarRowProps {
   bar: CourseBar;
   maxTravel: number;
   isHigh: boolean;
+  isoYear: number;
+  isoWeek: number;
+  /** ドリルダウン fetch 用 (この行が属する拠点の id。全拠点モードでも有効). */
+  officeRowId: string;
+  weekdayFilter: number | 'all';
   /** scope-optimization W2: このコースを範囲最適化で開く (省略時はボタン非表示). */
   onOptimize?: (courseCode: string) => void;
 }
 
-function CourseBarRow({ bar, maxTravel, isHigh, onOptimize }: CourseBarRowProps) {
+function CourseBarRow({
+  bar,
+  maxTravel,
+  isHigh,
+  isoYear,
+  isoWeek,
+  officeRowId,
+  weekdayFilter,
+  onOptimize,
+}: CourseBarRowProps) {
+  // H1: 行クリックで原因ドリルダウンを展開する.
+  const [expanded, setExpanded] = React.useState(false);
   const pct = maxTravel > 0 ? (bar.travelMinutes / maxTravel) * 100 : 0;
   // travel>0 なら最低 4% は見せてバーの存在を認識できるようにする.
   const width = bar.travelMinutes > 0 ? Math.max(pct, 4) : 0;
@@ -222,10 +366,22 @@ function CourseBarRow({ bar, maxTravel, isHigh, onOptimize }: CourseBarRowProps)
       data-high={isHigh ? 'true' : 'false'}
     >
       <div className="flex items-center justify-between gap-2 text-xs">
-        <span className="flex items-center gap-1 font-medium text-text-primary">
+        {/* H1: ラベル部クリックで原因ドリルダウンを開閉する. */}
+        <button
+          type="button"
+          className="flex items-center gap-1 font-medium text-text-primary hover:text-brand-primary"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          data-testid="schedule-health-bar-toggle"
+        >
+          {expanded ? (
+            <ChevronDown className="h-3.5 w-3.5 text-text-muted" aria-hidden />
+          ) : (
+            <ChevronRight className="h-3.5 w-3.5 text-text-muted" aria-hidden />
+          )}
           {isHigh ? <TriangleAlert className="h-3.5 w-3.5 text-warning" aria-hidden /> : null}
           {label}
-        </span>
+        </button>
         <span className="flex items-center gap-2">
           <span className="tabular-nums text-text-secondary">
             移動{fmtMinutes(bar.travelMinutes)}・隙間{fmtMinutes(bar.gapMinutes)}・訪問
@@ -252,6 +408,17 @@ function CourseBarRow({ bar, maxTravel, isHigh, onOptimize }: CourseBarRowProps)
           style={{ width: `${width}%` }}
         />
       </div>
+      {/* H1: 原因ドリルダウン (展開時のみ mount = そのとき fetch). */}
+      {expanded ? (
+        <CourseCauseDetail
+          isoYear={isoYear}
+          isoWeek={isoWeek}
+          officeRowId={officeRowId}
+          courseCode={bar.courseCode}
+          weekdayFilter={weekdayFilter}
+          onOptimize={onOptimize}
+        />
+      ) : null}
     </div>
   );
 }
@@ -312,6 +479,19 @@ export function ScheduleHealthDialog({
 
   const hasAnyBar = officeBars.some((ob) => ob.bars.length > 0);
   const hasData = (currentData?.offices.length ?? 0) > 0;
+
+  // H3: 要対応コース (警告バー) の一覧 (移動時間降順).
+  const highBars = React.useMemo(
+    () =>
+      officeBars
+        .flatMap((ob) =>
+          ob.bars
+            .filter((b) => b.travelMinutes > highThreshold)
+            .map((bar) => ({ officeName: ob.officeName, officeId: ob.officeId, bar })),
+        )
+        .sort((a, b) => b.bar.travelMinutes - a.bar.travelMinutes),
+    [officeBars, highThreshold],
+  );
 
   return (
     <Dialog
@@ -398,6 +578,47 @@ export function ScheduleHealthDialog({
               />
             </div>
 
+            {/* H3: 要対応サマリ「今週の処方箋」(警告コースの列挙 + 対策導線). */}
+            {highBars.length > 0 ? (
+              <div
+                className="space-y-1.5 rounded-lg border border-warning bg-bg-muted p-3"
+                data-testid="schedule-health-attention"
+              >
+                <div className="flex items-center gap-1.5 text-xs font-semibold text-warning">
+                  <TriangleAlert className="h-4 w-4" aria-hidden />
+                  要対応コース（移動が表示中平均の1.5倍超）
+                </div>
+                {highBars.map(({ officeName, officeId: attnOfficeId, bar }) => (
+                  <div
+                    key={`attn-${attnOfficeId}-${bar.courseCode}`}
+                    className="flex flex-wrap items-center justify-between gap-2 text-xs"
+                  >
+                    <span className="tabular-nums font-medium text-text-primary">
+                      {officeName}
+                      {bar.courseCode}
+                      {bar.staffName ? `・${bar.staffName}` : ''}（移動
+                      {fmtMinutes(bar.travelMinutes)}・隙間{fmtMinutes(bar.gapMinutes)}）
+                    </span>
+                    {onOptimizeCourse && officeId ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        className="h-6 px-2 text-[11px]"
+                        onClick={() => onOptimizeCourse(bar.courseCode, weekdayFilter)}
+                        data-testid="schedule-health-attention-optimize"
+                      >
+                        <Route className="mr-0.5 h-3 w-3" aria-hidden />
+                        対策を計算
+                      </Button>
+                    ) : null}
+                  </div>
+                ))}
+                <div className="text-[10px] text-text-muted">
+                  下のコース名をクリックすると「なぜ重いのか」の内訳（重い移動・配置コスト）が開きます。
+                </div>
+              </div>
+            ) : null}
+
             {/* b. 曜日フィルタ */}
             <div className="flex flex-wrap gap-2" data-testid="schedule-health-weekday-filter">
               <FilterChip active={weekdayFilter === 'all'} onClick={() => setWeekdayFilter('all')}>
@@ -435,6 +656,10 @@ export function ScheduleHealthDialog({
                             bar={bar}
                             maxTravel={maxTravel}
                             isHigh={bar.travelMinutes > highThreshold}
+                            isoYear={isoYear}
+                            isoWeek={isoWeek}
+                            officeRowId={ob.officeId}
+                            weekdayFilter={weekdayFilter}
                             // 範囲最適化は拠点単位のため、単一拠点フィルタ時のみ導線を出す.
                             onOptimize={
                               onOptimizeCourse && officeId
