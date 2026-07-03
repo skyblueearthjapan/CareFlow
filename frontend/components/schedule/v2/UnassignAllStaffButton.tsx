@@ -1,10 +1,10 @@
 'use client';
 
 /**
- * UnassignAllStaffButton — Phase G-17 「一斉未割当」.
+ * UnassignAllStaffButton — Phase G-17 「一斉スタッフ未割当」 (旧称: 一斉未割当).
  *
  * 動作:
- *   1. 「一斉未割当」 クリック → 確認ダイアログ
+ *   1. 「一斉スタッフ未割当」 クリック → 確認ダイアログ
  *   2. OK → POST /api/v1/schedule/v2/unassign-all-staff
  *      - 表示中の週の全 ``courses.assigned_staff_id`` を NULL に
  *      - 同週の ``visit_staff_assignments`` を物理 delete
@@ -69,7 +69,7 @@ export function UnassignAllStaffButton({
       );
       setConfirmOpen(false);
     } catch (err) {
-      toast.error(`一斉未割当に失敗しました: ${formatErr(err)}`);
+      toast.error(`一斉スタッフ未割当に失敗しました: ${formatErr(err)}`);
     }
   };
 
@@ -88,7 +88,7 @@ export function UnassignAllStaffButton({
         ) : (
           <UserX className="mr-1 h-4 w-4" aria-hidden />
         )}
-        一斉未割当
+        一斉スタッフ未割当
       </Button>
 
       <Dialog
@@ -130,7 +130,7 @@ export function UnassignAllStaffButton({
               ) : (
                 <UserX className="mr-1 h-4 w-4" aria-hidden />
               )}
-              一斉未割当
+              一斉スタッフ未割当
             </Button>
           </DialogFooter>
         </DialogContent>

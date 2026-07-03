@@ -117,7 +117,7 @@ export function WeeklyRitualGuideDialog({ open, onClose }: WeeklyRitualGuideDial
               <>
                 曜日タブ行の右側にある{' '}
                 <span className="font-medium text-text-primary">「自動スタッフ割当」</span>
-                （緑ボタン・「一斉未割当」の左隣）をクリックします。コース別に最適なスタッフが
+                （緑ボタン・「一斉スタッフ未割当」の左隣）をクリックします。コース別に最適なスタッフが
                 自動で割り当てられ、問題のないコースはそのまま確定します。欠勤対応がある場合は
                 先に「欠勤対応」を実施してください。
               </>
