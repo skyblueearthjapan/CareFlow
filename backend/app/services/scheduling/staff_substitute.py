@@ -46,6 +46,9 @@ from app.schemas.v2.staff_substitute import (
     SubstituteCandidate,
     SubstituteCandidatesResponse,
     SubstituteNoCandidateReason,
+    SubstitutePlan,
+    SubstitutePlanAssignee,
+    SubstitutePlanException,
     SubstituteScoreBreakdown,
     SubstituteVisitCandidates,
 )
@@ -95,6 +98,36 @@ _CONTINUITY_BY_INDEX: dict[int, float] = {
     2: WEIGHT_CONTINUITY_3,
 }
 
+# ---------------------------------------------------------------------------
+# P5 引き継ぎプラン (設計書 docs/plans/p5-course-substitute-design.md §1)
+# ---------------------------------------------------------------------------
+TIER_WHOLE = 1  # 丸ごと引き継ぎ (一般スタッフ)
+TIER_AM_PM = 2  # AM/PM 分担 (一般 2 名)
+TIER_MANAGER = 3  # マネージャー丸ごと (層 1-2 全滅時)
+TIER_DISTRIBUTED = 4  # 分散 (層 1-3 全滅時)
+
+TIER_SCORE: dict[int, float] = {1: 10000.0, 2: 5000.0, 3: 2000.0, 4: 0.0}
+TIER_LABELS: dict[int, str] = {
+    1: "丸ごと引き継ぎ",
+    2: "AM/PM 分担",
+    3: "マネージャー丸ごと",
+    4: "分散",
+}
+
+# 例外閾値: 丸ごと引き継ぎで担えない visit がこの件数以下なら「例外付き」で成立.
+EXCEPTION_THRESHOLD = 2
+WEIGHT_EXCEPTION = -500.0  # 例外 1 件あたりのスコア減点
+
+# AM/PM 境界: start_time.hour < 13 を AM (12:00 台開始は保守的に AM).
+AM_PM_BOUNDARY_HOUR = 13
+
+# プラン上限 (設計書 §1): 層毎 2 / コース合計 5.
+PLANS_PER_TIER_CAP = 2
+PLANS_TOTAL_CAP = 5
+
+# 層 4 で誰も担えない visit の理由コード.
+REASON_NO_FEASIBLE_STAFF = "no_feasible_staff"
+
 
 class StaffSubstituteError(Exception):
     """代替提案 / 適用の業務エラー (HTTP status を保持).
@@ -133,6 +166,9 @@ class _VisitContext:
     is_secondary: bool
     # 当該グループの非欠勤メンバー (2 名体制で候補から除外する staff).
     partner_staff_id: UUID | None
+    # P5: コース単位プラン生成用 (course_id=NULL の visit は層 4 のみ対象).
+    course_id: UUID | None = None
+    course_code: str | None = None
 
 
 @dataclass
@@ -436,13 +472,17 @@ async def _load_absent_visit_contexts(
         ).all()
     }
     offices_by_course: dict[UUID, UUID] = {}
+    codes_by_course: dict[UUID, str] = {}
     if course_ids:
-        for cid, oid in (
+        for cid, oid, code in (
             await db.execute(
-                select(Course.id, Course.office_id).where(Course.id.in_(list(course_ids)))
+                select(Course.id, Course.office_id, Course.code).where(
+                    Course.id.in_(list(course_ids))
+                )
             )
         ).all():
             offices_by_course[cid] = oid
+            codes_by_course[cid] = code
 
     # visit_group ごとに代表 1 行へ集約 (同一 group の 2 行 = 同一患者 2 名体制).
     by_group: dict[object, list[Visit]] = {}
@@ -455,6 +495,7 @@ async def _load_absent_visit_contexts(
         rep = min(group_visits, key=lambda v: str(v.id))
         patient = patients.get(rep.patient_id)
         office_id = offices_by_course.get(rep.course_id) if rep.course_id is not None else None
+        course_code = codes_by_course.get(rep.course_id) if rep.course_id is not None else None
         is_secondary = rep.secondary_staff_id == absent_staff_id
         # 相方 = 当該グループの非欠勤メンバー.
         partner_staff_id: UUID | None = None
@@ -478,12 +519,482 @@ async def _load_absent_visit_contexts(
                 visit_group_id=rep.visit_group_id,
                 is_secondary=is_secondary,
                 partner_staff_id=partner_staff_id,
+                course_id=rep.course_id,
+                course_code=course_code,
             )
         )
 
     # 開始時刻順に並べる (UI 都合).
     contexts.sort(key=lambda c: (c.start_time, str(c.visit_id)))
     return contexts
+
+
+# ---------------------------------------------------------------------------
+# P5 引き継ぎプラン生成 (設計書 §1. 既存カーネル _hard_constraint_reason /
+# _score_candidate を完全再利用し、コース単位でプランを組む)
+# ---------------------------------------------------------------------------
+
+
+def _vc_to_existing(vc: _VisitContext) -> ExistingVisit | None:
+    """_VisitContext を intra-batch 衝突判定用 ExistingVisit へ (座標欠損は None)."""
+    if vc.patient_lat is None or vc.patient_lng is None:
+        return None
+    return ExistingVisit(
+        start_time=vc.start_time,
+        end_time=vc.end_time,
+        lat=vc.patient_lat,
+        lng=vc.patient_lng,
+        service_minutes=_duration_min(vc.start_time, vc.end_time),
+        patient_id=str(vc.patient_id),
+    )
+
+
+def _course_others(course_vcs: list[_VisitContext], exclude_visit_id: UUID) -> list[ExistingVisit]:
+    """コース内の他 visit を extra_others 列に変換 (intra-batch 衝突判定用)."""
+    out: list[ExistingVisit] = []
+    for o in course_vcs:
+        if o.visit_id == exclude_visit_id:
+            continue
+        ev = _vc_to_existing(o)
+        if ev is not None:
+            out.append(ev)
+    return out
+
+
+def _assignee_metrics(
+    staff: StaffInfo,
+    covered: list[_VisitContext],
+    ctx: _EvalContext,
+    *,
+    config: SchedulingConfig,
+) -> tuple[float, float, int]:
+    """受け手の (継続性合計, 追加移動合計[分], 当日既存負荷) を既存 _score_candidate で算出."""
+    existing_load = len(ctx.staff_visits.get(staff.staff_id, []))
+    continuity_total = 0.0
+    added_travel = 0.0
+    for vc in covered:
+        breakdown = _score_candidate(staff, vc, ctx, config=config)
+        continuity_total += breakdown.continuity_bonus
+        # travel_penalty = WEIGHT_TRAVEL(-1.0) * minutes → 反転して正の分数を積む.
+        added_travel += -breakdown.travel_penalty
+    return continuity_total, added_travel, existing_load
+
+
+def _continuity_of(staff: StaffInfo, vc: _VisitContext, ctx: _EvalContext) -> float:
+    recent = ctx.recent_by_patient.get(vc.patient_id, [])
+    for idx, sid in enumerate(recent):
+        if sid == staff.staff_id:
+            return _CONTINUITY_BY_INDEX.get(idx, 0.0)
+    return 0.0
+
+
+def _incremental_travel(
+    staff: StaffInfo,
+    vc: _VisitContext,
+    prior: list[_VisitContext],
+    ctx: _EvalContext,
+    *,
+    config: SchedulingConfig,
+) -> float:
+    """当日既存 + 束内既割当地点のうち最も近い点への移動時間 (分). 層 4 の貪欲用."""
+    if vc.patient_lat is None or vc.patient_lng is None:
+        return 0.0
+    points: list[tuple[float, float]] = [
+        (ev.lat, ev.lng) for ev in ctx.staff_visits.get(staff.staff_id, [])
+    ]
+    for pv in prior:
+        if pv.patient_lat is not None and pv.patient_lng is not None:
+            points.append((pv.patient_lat, pv.patient_lng))
+    if not points:
+        return 0.0
+    return float(
+        min(
+            haversine_minutes(
+                haversine_km(vc.patient_lat, vc.patient_lng, plat, plng),
+                speed_kmh=config.travel_speed_kmh,
+            )
+            for plat, plng in points
+        )
+    )
+
+
+def _plan_id(tier: int, course_code: str | None, staff_ids: list[UUID]) -> str:
+    cc = course_code or "null"
+    ids = "-".join(str(s) for s in staff_ids)
+    return f"{tier}-{cc}-{ids}"
+
+
+def _plan_sort_key(plan: SubstitutePlan) -> tuple[float, int, str]:
+    """設計書 §1: (-score, exception_count, plan_id) で安定ソート."""
+    return (-plan.score, plan.exception_count, plan.plan_id)
+
+
+def _make_plan(
+    *,
+    plan_id: str,
+    tier: int,
+    course_id: UUID | None,
+    course_code: str | None,
+    assignee_specs: list[tuple[StaffInfo, str, list[_VisitContext]]],
+    exception_specs: list[tuple[_VisitContext, str]],
+    ctx: _EvalContext,
+    config: SchedulingConfig,
+    warnings: list[str] | None = None,
+) -> SubstitutePlan:
+    """assignee / exception 仕様から SubstitutePlan を組みスコアを計算する.
+
+    スコア (設計書 §1): TIER_SCORE + 例外×(-500) + 追加移動合計×(-1) + 継続性 + 負荷×(-5).
+    """
+    assignees: list[SubstitutePlanAssignee] = []
+    continuity_total = 0.0
+    added_travel_total = 0.0
+    load_total = 0
+    covered_count = 0
+    for staff, block, covered in assignee_specs:
+        cont, travel, load = _assignee_metrics(staff, covered, ctx, config=config)
+        continuity_total += cont
+        added_travel_total += travel
+        load_total += load
+        covered_count += len(covered)
+        assignees.append(
+            SubstitutePlanAssignee(
+                staff_id=staff.staff_id,
+                staff_name=staff.name,
+                staff_sex=staff.sex,
+                block=block,  # type: ignore[arg-type]
+                visit_ids=[vc.visit_id for vc in covered],
+                visit_count=len(covered),
+                added_travel_minutes=travel,
+                existing_load=load,
+            )
+        )
+    exceptions = [
+        SubstitutePlanException(
+            visit_id=vc.visit_id,
+            patient_id=vc.patient_id,
+            patient_name=vc.patient_name,
+            start_time=_hhmm(vc.start_time),
+            end_time=_hhmm(vc.end_time),
+            reason=reason,
+        )
+        for vc, reason in exception_specs
+    ]
+    exception_count = len(exceptions)
+    score = (
+        TIER_SCORE[tier]
+        + exception_count * WEIGHT_EXCEPTION
+        + added_travel_total * WEIGHT_TRAVEL
+        + continuity_total
+        + load_total * WEIGHT_LOAD
+    )
+    return SubstitutePlan(
+        plan_id=plan_id,
+        tier=tier,
+        tier_label=TIER_LABELS[tier],
+        course_id=course_id,
+        course_code=course_code,
+        assignees=assignees,
+        total_visits=covered_count + exception_count,
+        exception_count=exception_count,
+        exceptions=exceptions,
+        score=score,
+        warnings=warnings or [],
+    )
+
+
+def _whole_handover_specs(
+    course_vcs: list[_VisitContext],
+    ctx: _EvalContext,
+    *,
+    absent_staff_id: UUID,
+    partner_ids: set[UUID],
+    config: SchedulingConfig,
+    manager: bool,
+) -> list[tuple[StaffInfo, list[_VisitContext], list[tuple[_VisitContext, str]]]]:
+    """1 スタッフがコース全 visit を担う候補を列挙 (例外 ≦ EXCEPTION_THRESHOLD).
+
+    各 visit に extra_others=コース内他 visit を渡して _hard_constraint_reason を一括適用
+    (intra-batch 衝突も既存パターンで捕捉). manager=True で role='manager' のみ、
+    False で一般スタッフ (role!='manager') のみを対象とする.
+    """
+    results: list[tuple[StaffInfo, list[_VisitContext], list[tuple[_VisitContext, str]]]] = []
+    for staff_id, staff in ctx.staff_pool.items():
+        if staff_id == absent_staff_id or staff_id in partner_ids:
+            continue
+        if (staff.role == "manager") != manager:
+            continue
+        covered: list[_VisitContext] = []
+        exceptions: list[tuple[_VisitContext, str]] = []
+        for vc in course_vcs:
+            extra = _course_others(course_vcs, vc.visit_id)
+            reason = _hard_constraint_reason(staff, vc, ctx, extra_others=extra, config=config)
+            if reason is None:
+                covered.append(vc)
+            else:
+                exceptions.append((vc, reason))
+        # covered が空 (= 全 visit を担えない) は引き継ぎとして無意味なので除外.
+        if covered and len(exceptions) <= EXCEPTION_THRESHOLD:
+            results.append((staff, covered, exceptions))
+    return results
+
+
+def _whole_tier_plans(
+    course_vcs: list[_VisitContext],
+    course_id: UUID | None,
+    course_code: str | None,
+    ctx: _EvalContext,
+    *,
+    tier: int,
+    absent_staff_id: UUID,
+    partner_ids: set[UUID],
+    config: SchedulingConfig,
+    manager: bool,
+) -> list[SubstitutePlan]:
+    """層 1 / 層 3 の丸ごと引き継ぎプランを生成 (層毎上限 2)."""
+    specs = _whole_handover_specs(
+        course_vcs,
+        ctx,
+        absent_staff_id=absent_staff_id,
+        partner_ids=partner_ids,
+        config=config,
+        manager=manager,
+    )
+    plans = [
+        _make_plan(
+            plan_id=_plan_id(tier, course_code, [staff.staff_id]),
+            tier=tier,
+            course_id=course_id,
+            course_code=course_code,
+            assignee_specs=[(staff, "full", covered)],
+            exception_specs=exceptions,
+            ctx=ctx,
+            config=config,
+        )
+        for staff, covered, exceptions in specs
+    ]
+    plans.sort(key=_plan_sort_key)
+    return plans[:PLANS_PER_TIER_CAP]
+
+
+def _block_sort_key(
+    spec: tuple[StaffInfo, list[_VisitContext]],
+    ctx: _EvalContext,
+    *,
+    config: SchedulingConfig,
+) -> tuple[float, str]:
+    staff, covered = spec
+    cont, travel, load = _assignee_metrics(staff, covered, ctx, config=config)
+    block_score = cont + travel * WEIGHT_TRAVEL + load * WEIGHT_LOAD
+    return (-block_score, str(staff.staff_id))
+
+
+def _tier2_plans(
+    course_vcs: list[_VisitContext],
+    course_id: UUID | None,
+    course_code: str | None,
+    ctx: _EvalContext,
+    *,
+    absent_staff_id: UUID,
+    partner_ids: set[UUID],
+    config: SchedulingConfig,
+) -> list[SubstitutePlan]:
+    """層 2: AM/PM 分担 (一般 2 名). コースが AM/PM 両方に跨るときのみ生成."""
+    am_vcs = [vc for vc in course_vcs if vc.start_time.hour < AM_PM_BOUNDARY_HOUR]
+    pm_vcs = [vc for vc in course_vcs if vc.start_time.hour >= AM_PM_BOUNDARY_HOUR]
+    if not am_vcs or not pm_vcs:
+        return []
+
+    # 各ブロックを漏れなく担える (例外 0) 一般スタッフのみを候補にする.
+    # 設計書 (p5-course-substitute-design.md) は combined 例外 ≦ 2 だが、
+    # 分担プランで AM/PM 両担当者に例外対応が跨るとUXが混乱するため
+    # 「各ブロック例外 0」に意図的に厳格化 (レビュー判定: 安全側逸脱で妥当)。
+    am_specs = [
+        (staff, covered)
+        for staff, covered, exc in _whole_handover_specs(
+            am_vcs, ctx, absent_staff_id=absent_staff_id, partner_ids=partner_ids,
+            config=config, manager=False,
+        )
+        if not exc
+    ]
+    pm_specs = [
+        (staff, covered)
+        for staff, covered, exc in _whole_handover_specs(
+            pm_vcs, ctx, absent_staff_id=absent_staff_id, partner_ids=partner_ids,
+            config=config, manager=False,
+        )
+        if not exc
+    ]
+    if not am_specs or not pm_specs:
+        return []
+
+    am_specs.sort(key=lambda sc: _block_sort_key(sc, ctx, config=config))
+    pm_specs.sort(key=lambda sc: _block_sort_key(sc, ctx, config=config))
+    am_top = am_specs[:3]
+    pm_top = pm_specs[:3]
+
+    plans: list[SubstitutePlan] = []
+    for a_staff, a_cov in am_top:
+        for p_staff, p_cov in pm_top:
+            if a_staff.staff_id == p_staff.staff_id:
+                continue  # AM/PM は別人 (同一なら層 1 相当)
+            plans.append(
+                _make_plan(
+                    plan_id=_plan_id(2, course_code, [a_staff.staff_id, p_staff.staff_id]),
+                    tier=2,
+                    course_id=course_id,
+                    course_code=course_code,
+                    assignee_specs=[(a_staff, "am", a_cov), (p_staff, "pm", p_cov)],
+                    exception_specs=[],
+                    ctx=ctx,
+                    config=config,
+                )
+            )
+    plans.sort(key=_plan_sort_key)
+    return plans[:PLANS_PER_TIER_CAP]
+
+
+def _tier4_plan(
+    course_vcs: list[_VisitContext],
+    course_id: UUID | None,
+    course_code: str | None,
+    ctx: _EvalContext,
+    *,
+    absent_staff_id: UUID,
+    partner_ids: set[UUID],
+    config: SchedulingConfig,
+) -> SubstitutePlan | None:
+    """層 4: 分散 (貪欲・移動最小). 時系列順に各 visit を最良の受け手へ束ねる.
+
+    受け手ごとに既割当を extra_others に加えて intra-batch 衝突を捕捉. 一般スタッフを
+    マネージャーより優先 (キー先頭 is_manager). 誰も担えない visit は unassignable として明示.
+    """
+    ordered = sorted(course_vcs, key=lambda vc: (vc.start_time, str(vc.visit_id)))
+    assigned: dict[UUID, list[_VisitContext]] = {}
+    unassignable: list[tuple[_VisitContext, str]] = []
+
+    for vc in ordered:
+        best_key: tuple[bool, float, float, str] | None = None
+        best_staff: UUID | None = None
+        last_reason = REASON_NO_FEASIBLE_STAFF
+        for staff_id, staff in ctx.staff_pool.items():
+            if staff_id == absent_staff_id or staff_id in partner_ids:
+                continue
+            prior = assigned.get(staff_id, [])
+            prior_evs = [ev for pv in prior if (ev := _vc_to_existing(pv)) is not None]
+            reason = _hard_constraint_reason(
+                staff, vc, ctx, extra_others=prior_evs, config=config
+            )
+            if reason is not None:
+                last_reason = reason
+                continue
+            travel = _incremental_travel(staff, vc, prior, ctx, config=config)
+            cont = _continuity_of(staff, vc, ctx)
+            key = (staff.role == "manager", travel, -cont, str(staff_id))
+            if best_key is None or key < best_key:
+                best_key = key
+                best_staff = staff_id
+        if best_staff is not None:
+            assigned.setdefault(best_staff, []).append(vc)
+        else:
+            unassignable.append((vc, last_reason))
+
+    if not assigned and not unassignable:
+        return None
+
+    # 受け手を最早開始時刻順に並べる.
+    receiver_ids = sorted(
+        assigned.keys(),
+        key=lambda sid: (min(v.start_time for v in assigned[sid]), str(sid)),
+    )
+    assignee_specs: list[tuple[StaffInfo, str, list[_VisitContext]]] = []
+    for sid in receiver_ids:
+        covered = sorted(assigned[sid], key=lambda vc: (vc.start_time, str(vc.visit_id)))
+        assignee_specs.append((ctx.staff_pool[sid], "full", covered))
+
+    warnings: list[str] = []
+    if unassignable:
+        warnings.append(f"割当不能 {len(unassignable)} 件 (個別選択が必要)")
+
+    return _make_plan(
+        plan_id=_plan_id(4, course_code, receiver_ids),
+        tier=4,
+        course_id=course_id,
+        course_code=course_code,
+        assignee_specs=assignee_specs,
+        exception_specs=unassignable,
+        ctx=ctx,
+        config=config,
+        warnings=warnings,
+    )
+
+
+def generate_substitute_plans(
+    visit_contexts: list[_VisitContext],
+    ctx: _EvalContext,
+    *,
+    absent_staff_id: UUID,
+    config: SchedulingConfig,
+) -> list[SubstitutePlan]:
+    """欠勤スタッフの当日 visit をコース単位でまとめ、引き継ぎプラン (層 1-4) を生成する.
+
+    設計書 §1:
+    - 複数コースは独立にプラン生成. course_id=NULL の visit は層 4 のみ対象.
+    - 層 1 (一般丸ごと) + 層 2 (AM/PM) を常に評価. 両者 0 件のとき層 3 (Mgr 丸ごと).
+      層 1-3 全滅で層 4 (分散).
+    - 上限: 層毎 2 / コース合計 5.
+    """
+    by_course: dict[UUID | None, list[_VisitContext]] = {}
+    for vc in visit_contexts:
+        by_course.setdefault(vc.course_id, []).append(vc)
+
+    def _course_order(item: tuple[UUID | None, list[_VisitContext]]) -> tuple[int, str, str]:
+        cid, vcs = item
+        if cid is None:
+            return (1, "", "")  # NULL コースは末尾
+        return (0, vcs[0].course_code or "", str(cid))
+
+    all_plans: list[SubstitutePlan] = []
+    for course_id, course_vcs in sorted(by_course.items(), key=_course_order):
+        course_code = course_vcs[0].course_code if course_id is not None else None
+        partner_ids = {vc.partner_staff_id for vc in course_vcs if vc.partner_staff_id is not None}
+
+        if course_id is None:
+            # NULL コース: 層 4 のみ.
+            plan = _tier4_plan(
+                course_vcs, None, None, ctx,
+                absent_staff_id=absent_staff_id, partner_ids=partner_ids, config=config,
+            )
+            course_plans = [plan] if plan is not None else []
+        else:
+            t1 = _whole_tier_plans(
+                course_vcs, course_id, course_code, ctx, tier=TIER_WHOLE,
+                absent_staff_id=absent_staff_id, partner_ids=partner_ids,
+                config=config, manager=False,
+            )
+            t2 = _tier2_plans(
+                course_vcs, course_id, course_code, ctx,
+                absent_staff_id=absent_staff_id, partner_ids=partner_ids, config=config,
+            )
+            course_plans = t1 + t2
+            if not course_plans:
+                # 層 1-2 全滅 → 層 3 (マネージャー丸ごと).
+                course_plans = _whole_tier_plans(
+                    course_vcs, course_id, course_code, ctx, tier=TIER_MANAGER,
+                    absent_staff_id=absent_staff_id, partner_ids=partner_ids,
+                    config=config, manager=True,
+                )
+            if not course_plans:
+                # 層 1-3 全滅 → 層 4 (分散).
+                plan = _tier4_plan(
+                    course_vcs, course_id, course_code, ctx,
+                    absent_staff_id=absent_staff_id, partner_ids=partner_ids, config=config,
+                )
+                course_plans = [plan] if plan is not None else []
+
+        course_plans.sort(key=_plan_sort_key)
+        all_plans.extend(course_plans[:PLANS_TOTAL_CAP])
+
+    return all_plans
 
 
 # ---------------------------------------------------------------------------
@@ -529,11 +1040,16 @@ async def find_substitute_candidates(
             )
         )
 
+    plans = generate_substitute_plans(
+        visit_contexts, ctx, absent_staff_id=absent_staff_id, config=config
+    )
+
     return SubstituteCandidatesResponse(
         absent_staff_id=absent_staff_id,
         absent_staff_name=absent.name,
         target_date=target_date,
         visits=visits_out,
+        plans=plans,
     )
 
 
@@ -799,4 +1315,5 @@ __all__ = [
     "StaffSubstituteError",
     "apply_substitutions",
     "find_substitute_candidates",
+    "generate_substitute_plans",
 ]

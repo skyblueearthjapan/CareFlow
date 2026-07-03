@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -83,6 +84,59 @@ class SubstituteVisitCandidates(BaseModel):
     no_candidate_reasons: list[SubstituteNoCandidateReason] = Field(default_factory=list)
 
 
+# ---------------------------------------------------------------------------
+# P5 引き継ぎプラン (設計書 docs/plans/p5-course-substitute-design.md §1-2)
+# ---------------------------------------------------------------------------
+
+
+class SubstitutePlanAssignee(BaseModel):
+    """プラン内の 1 受け手スタッフ + 担当ブロック / 件数 / 負荷."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    staff_id: uuid.UUID
+    staff_name: str
+    staff_sex: str | None = None
+    block: Literal["full", "am", "pm"] = Field(
+        ..., description="担当ブロック (full=丸ごと / am / pm)"
+    )
+    visit_ids: list[uuid.UUID] = Field(default_factory=list)
+    visit_count: int = Field(..., ge=0)
+    added_travel_minutes: float = Field(..., description="担当 visit 群の追加移動 (分, 合計)")
+    existing_load: int = Field(..., ge=0, description="当日既存 visit 件数")
+
+
+class SubstitutePlanException(BaseModel):
+    """プランで受け手が担えない visit (個別選択が必要)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    visit_id: uuid.UUID
+    patient_id: uuid.UUID
+    patient_name: str
+    start_time: str = Field(..., description="HH:MM")
+    end_time: str = Field(..., description="HH:MM")
+    reason: str = Field(..., description="ハード制約理由コード / no_feasible_staff")
+
+
+class SubstitutePlan(BaseModel):
+    """1 コース (または NULL コース) に対する引き継ぎプラン (層 1-4)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    plan_id: str
+    tier: int = Field(..., ge=1, le=4)
+    tier_label: str
+    course_id: uuid.UUID | None = None
+    course_code: str | None = None
+    assignees: list[SubstitutePlanAssignee] = Field(default_factory=list)
+    total_visits: int = Field(..., ge=0)
+    exception_count: int = Field(..., ge=0)
+    exceptions: list[SubstitutePlanException] = Field(default_factory=list)
+    score: float
+    warnings: list[str] = Field(default_factory=list)
+
+
 class SubstituteCandidatesResponse(BaseModel):
     """GET candidates レスポンス."""
 
@@ -92,6 +146,8 @@ class SubstituteCandidatesResponse(BaseModel):
     absent_staff_name: str
     target_date: date
     visits: list[SubstituteVisitCandidates] = Field(default_factory=list)
+    # P5: 引き継ぎプラン (後方互換: 旧 FE は無視). default [] で既存契約を破らない.
+    plans: list[SubstitutePlan] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +213,9 @@ __all__ = [
     "SubstituteCandidate",
     "SubstituteCandidatesResponse",
     "SubstituteNoCandidateReason",
+    "SubstitutePlan",
+    "SubstitutePlanAssignee",
+    "SubstitutePlanException",
     "SubstituteScoreBreakdown",
     "SubstituteVisitCandidates",
 ]
