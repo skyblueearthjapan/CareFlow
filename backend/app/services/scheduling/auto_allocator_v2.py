@@ -10548,6 +10548,25 @@ async def unassign_all_staff_for_week(
         )
         visit_assignments_removed = int(result.rowcount or 0)
 
+    # 4) visits.primary_staff_id / secondary_staff_id / manual_staff_override も解除する。
+    #    PO 報告 (2026-07-03): VSA だけ消して primary_staff_id を残すと、訪問モニター
+    #    (primary_staff_id でグルーピング) に旧担当が表示され続ける不整合が出ていた。
+    #    「一斉未割当」は担当の完全リセットなので、visit 本体の担当列と欠勤対応の
+    #    手動差し替え保護フラグも揃えて解除する。
+    if visit_ids:
+        from sqlalchemy import update as sa_update
+
+        await db.execute(
+            sa_update(Visit)
+            .where(
+                Visit.id.in_(visit_ids),
+                (Visit.primary_staff_id.is_not(None))
+                | (Visit.secondary_staff_id.is_not(None))
+                | (Visit.manual_staff_override.is_(True)),
+            )
+            .values(primary_staff_id=None, secondary_staff_id=None, manual_staff_override=False)
+        )
+
     await db.flush()
     return {
         "courses_unassigned": courses_unassigned,

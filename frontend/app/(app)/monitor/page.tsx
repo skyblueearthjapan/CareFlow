@@ -26,7 +26,7 @@ import {
 } from '@/lib/queries/monitor';
 import type { MonitorStaffRow, MonitorVisit, NearbyPatient } from '@/lib/schemas/monitor';
 
-import { MonitorTimeline } from '@/components/monitor/MonitorTimeline';
+import { MonitorTimeline, monitorRowKey } from '@/components/monitor/MonitorTimeline';
 import { MonitorAlertTray } from '@/components/monitor/MonitorAlertTray';
 import { MonitorDetailPanel } from '@/components/monitor/MonitorDetailPanel';
 import { MonitorMap } from '@/components/monitor/MonitorMap';
@@ -86,7 +86,8 @@ export default function MonitorPage() {
   const [date, setDate] = useState<string>(todayJst);
   const [officeId, setOfficeId] = useState<string | null>(null);
   const [only, setOnly] = useState<OnlyFilter>(null);
-  const [selectedStaffId, setSelectedStaffId] = useState<string | null>(null);
+  // 行キー選択 (monitorRowKey)。担当未設定の行も選択してマップ表示できる (PO 報告 2026-07-03)。
+  const [selectedRowKey, setSelectedRowKey] = useState<string | null>(null);
   const [selectedVisitId, setSelectedVisitId] = useState<string | null>(null);
 
   const monitorQuery = useMonitor({ date });
@@ -118,8 +119,8 @@ export default function MonitorPage() {
   }, [data, officeId, only]);
 
   const selectedRow = useMemo(
-    () => filteredRows.find((r) => r.staff_id != null && r.staff_id === selectedStaffId) ?? null,
-    [filteredRows, selectedStaffId],
+    () => filteredRows.find((r) => monitorRowKey(r) === selectedRowKey) ?? null,
+    [filteredRows, selectedRowKey],
   );
   const selectedVisit = useMemo<MonitorVisit | null>(() => {
     if (!selectedVisitId) return null;
@@ -149,14 +150,14 @@ export default function MonitorPage() {
     for (const r of data?.staff ?? []) {
       const v = r.visits.find((x) => x.visit_id === visitId);
       if (v) {
-        setSelectedStaffId(r.staff_id ?? null);
+        setSelectedRowKey(monitorRowKey(r));
         setSelectedVisitId(visitId);
         return;
       }
     }
   };
-  const onSelectStaff = (staffId: string | null) => {
-    setSelectedStaffId(staffId);
+  const onSelectRow = (rowKey: string) => {
+    setSelectedRowKey(rowKey);
     setSelectedVisitId(null);
   };
 
@@ -308,10 +309,10 @@ export default function MonitorPage() {
           ) : (
             <MonitorTimeline
               rows={filteredRows}
-              selectedStaffId={selectedStaffId}
+              selectedRowKey={selectedRowKey}
               selectedVisitId={selectedVisitId}
               nowMinutes={nowMinutes}
-              onSelectStaff={onSelectStaff}
+              onSelectRow={onSelectRow}
               onSelectVisit={onSelectVisit}
             />
           )}

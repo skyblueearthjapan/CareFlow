@@ -224,6 +224,44 @@ async def test_unassign_all_staff_clears_courses_and_visit_assignments(client, d
 
 
 # ---------------------------------------------------------------------------
+# ケース 1b: visits.primary/secondary_staff_id・manual_staff_override も解除される
+# (PO 報告 2026-07-03: VSA のみ削除で primary_staff_id が残り、訪問モニターに
+#  旧担当が表示され続けていた)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_unassign_all_staff_clears_visit_staff_columns(client, db) -> None:
+    admin = await _make_user(db, email="g17-admin2@example.com", role="admin")
+    office, staff = await _seed_office_with_staff(db, office_name="g17-office-2")
+    patient = await _seed_patient(db, office=office, code="G17-P2")
+
+    iso_year, iso_week = 2026, 21
+    week_monday = date.fromisocalendar(iso_year, iso_week, 1)
+    v = await _seed_visit_with_assignment(db, patient=patient, staff=staff, visit_date=week_monday)
+    # visit 本体の担当列と欠勤対応の保護フラグを立てておく (= 旧実装で残っていた状態)。
+    v.primary_staff_id = staff.id
+    v.secondary_staff_id = staff.id
+    v.manual_staff_override = True
+    await db.commit()
+    v_id = v.id
+
+    res = await client.post(
+        "/api/v1/schedule/v2/unassign-all-staff",
+        headers=_bearer(admin),
+        json={"iso_year": iso_year, "iso_week": iso_week, "office_ids": [str(office.id)]},
+    )
+    assert res.status_code == 200, res.text
+
+    db.expire_all()
+    refreshed = await db.scalar(select(Visit).where(Visit.id == v_id))
+    assert refreshed is not None
+    assert refreshed.primary_staff_id is None
+    assert refreshed.secondary_staff_id is None
+    assert refreshed.manual_staff_override is False
+
+
+# ---------------------------------------------------------------------------
 # ケース 2: RBAC (staff role で 403)
 # ---------------------------------------------------------------------------
 

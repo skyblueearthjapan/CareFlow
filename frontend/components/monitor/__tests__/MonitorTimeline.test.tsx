@@ -12,10 +12,10 @@ describe('MonitorTimeline', () => {
     render(
       <MonitorTimeline
         rows={[row]}
-        selectedStaffId={null}
+        selectedRowKey={null}
         selectedVisitId={null}
         nowMinutes={13 * 60 + 30}
-        onSelectStaff={vi.fn()}
+        onSelectRow={vi.fn()}
         onSelectVisit={vi.fn()}
       />,
     );
@@ -44,10 +44,10 @@ describe('MonitorTimeline', () => {
     render(
       <MonitorTimeline
         rows={[row]}
-        selectedStaffId={null}
+        selectedRowKey={null}
         selectedVisitId={null}
         nowMinutes={13 * 60 + 30}
-        onSelectStaff={vi.fn()}
+        onSelectRow={vi.fn()}
         onSelectVisit={vi.fn()}
       />,
     );
@@ -61,10 +61,10 @@ describe('MonitorTimeline', () => {
     render(
       <MonitorTimeline
         rows={[row]}
-        selectedStaffId={null}
+        selectedRowKey={null}
         selectedVisitId={null}
         nowMinutes={13 * 60 + 30}
-        onSelectStaff={vi.fn()}
+        onSelectRow={vi.fn()}
         onSelectVisit={vi.fn()}
       />,
     );
@@ -73,24 +73,42 @@ describe('MonitorTimeline', () => {
     expect(bar.textContent).toContain('未訪問');
   });
 
-  it('行クリックで onSelectStaff、バークリックで onSelectVisit', () => {
+  it('行クリックで onSelectRow、バークリックで onSelectVisit', () => {
     const v = makeVisit();
     const row = makeRow({ staff_id: 'staff-x', visits: [v] });
-    const onSelectStaff = vi.fn();
+    const onSelectRow = vi.fn();
     const onSelectVisit = vi.fn();
     render(
       <MonitorTimeline
         rows={[row]}
-        selectedStaffId={null}
+        selectedRowKey={null}
         selectedVisitId={null}
         nowMinutes={-1}
-        onSelectStaff={onSelectStaff}
+        onSelectRow={onSelectRow}
         onSelectVisit={onSelectVisit}
       />,
     );
     fireEvent.click(screen.getByTestId('monitor-row-0'));
-    expect(onSelectStaff).toHaveBeenCalledWith('staff-x');
+    expect(onSelectRow).toHaveBeenCalledWith('staff-x');
     fireEvent.click(screen.getByTestId(`monitor-bar-plan-${v.visit_id}`));
     expect(onSelectVisit).toHaveBeenCalledWith(v.visit_id);
+  });
+
+  it('担当未設定の行もクリックで選択できる (rowKey=unassigned-コース)', () => {
+    const v = makeVisit();
+    const row = makeRow({ staff_id: null, staff_name: null, course_label: 'Aコース', visits: [v] });
+    const onSelectRow = vi.fn();
+    render(
+      <MonitorTimeline
+        rows={[row]}
+        selectedRowKey={null}
+        selectedVisitId={null}
+        nowMinutes={-1}
+        onSelectRow={onSelectRow}
+        onSelectVisit={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('monitor-row-0'));
+    expect(onSelectRow).toHaveBeenCalledWith('unassigned-Aコース');
   });
 });

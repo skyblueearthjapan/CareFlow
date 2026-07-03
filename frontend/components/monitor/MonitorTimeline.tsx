@@ -24,13 +24,22 @@ import {
   minutesToPct,
 } from './constants';
 
+/**
+ * 行の安定キー (PO 報告 2026-07-03: 担当未設定行も選択してマップ表示できるように)。
+ * 担当あり = staff_id / 担当未設定 = コース別行なので course_label で識別する。
+ */
+export function monitorRowKey(row: Pick<MonitorStaffRow, 'staff_id' | 'course_label'>): string {
+  return row.staff_id ?? `unassigned-${row.course_label ?? ''}`;
+}
+
 interface MonitorTimelineProps {
   rows: MonitorStaffRow[];
-  selectedStaffId: string | null;
+  /** 選択中の行キー (monitorRowKey)。担当未設定行も選択可能。 */
+  selectedRowKey: string | null;
   selectedVisitId: string | null;
   /** 現在時刻 (分, JST)。「今」ライン用。 */
   nowMinutes: number;
-  onSelectStaff: (staffId: string | null) => void;
+  onSelectRow: (rowKey: string) => void;
   onSelectVisit: (visitId: string) => void;
 }
 
@@ -38,13 +47,13 @@ const HOURS = Array.from({ length: (TL_END_MIN - TL_START_MIN) / 60 + 1 }, (_, i
 
 export function MonitorTimeline({
   rows,
-  selectedStaffId,
+  selectedRowKey,
   selectedVisitId,
   nowMinutes,
-  onSelectStaff,
+  onSelectRow,
   onSelectVisit,
 }: MonitorTimelineProps) {
-  const hasSelection = selectedStaffId !== null;
+  const hasSelection = selectedRowKey !== null;
 
   return (
     <div className="min-w-[880px] select-none px-1 pb-4" data-testid="monitor-timeline">
@@ -70,17 +79,18 @@ export function MonitorTimeline({
       )}
 
       {rows.map((row, idx) => {
-        const isSel = row.staff_id != null && row.staff_id === selectedStaffId;
-        const key = row.staff_id ?? `unassigned-${idx}`;
+        const rowKey = monitorRowKey(row);
+        const isSel = rowKey === selectedRowKey;
+        const key = rowKey;
         return (
           <div
             key={key}
             role="button"
             tabIndex={0}
             data-testid={`monitor-row-${idx}`}
-            onClick={() => onSelectStaff(row.staff_id ?? null)}
+            onClick={() => onSelectRow(rowKey)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter') onSelectStaff(row.staff_id ?? null);
+              if (e.key === 'Enter') onSelectRow(rowKey);
             }}
             className={cn(
               'grid min-h-[66px] cursor-pointer grid-cols-[156px_1fr] border-b border-border-default/60 transition-[opacity,background] duration-150',
