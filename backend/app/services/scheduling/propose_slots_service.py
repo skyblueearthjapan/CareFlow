@@ -181,7 +181,8 @@ class ExcludedReasonSummary:
 
     reason 語彙 (N-6「黙って消さない」): ``capacity_full`` (容量上限) / ``lunch_window``
     (昼休み重複) / ``travel_shortage`` (移動時間不足) / ``no_gap`` (空きギャップなし) /
-    ``course_closed`` (希望曜日に開講コース無し).
+    ``course_closed`` (希望曜日に開講コース無し) / ``pair_blocked`` (I-11: pair_mode=blocked
+    のペア相手と同時間帯=90分同住所占有で重なるため除外).
     """
 
     reason: str
@@ -192,8 +193,10 @@ class ExcludedReasonSummary:
 
 # 集約時の理由優先度 (1 コースが複数地点で候補を落とした場合、代表理由を決定的に選ぶ).
 # capacity_full を最優先: 容量上限は「そもそも走査に入れない」根本原因のため.
+# I-11: pair_blocked は同住所同時刻ペアの hard 除外なので capacity_full の次に強い.
 _EXCLUSION_REASON_PRIORITY: tuple[str, ...] = (
     "capacity_full",
+    "pair_blocked",
     "travel_shortage",
     "lunch_window",
     "no_gap",
@@ -499,6 +502,14 @@ _WARN_STAFF_UNASSIGNED = "staff_unassigned"
 _WARN_STAFF_ABSENT = "staff_absent"
 _WARN_STAFF_SEX_MISMATCH = "staff_sex_mismatch"
 
+# I-07 (H5 受入カレンダー / N-6): diff-add (auto_allocator_v2._filter_unavailable_and_lunch)
+# は受入 × を enforce (除外) するが、propose-slots では **warning 方式** にする.
+# 理由 (N-6): enforce だと候補が全滅して「なぜ出ないか」が分からなくなる. warning なら
+# 管理者が判断できる. 判定ロジックは diff-add と同一データ源
+# (auto_allocator_v2._load_unavailable_slots が返す (office, weekday)->{time} の
+# set 到達判定) を再利用し、除外せず raw code で警告 + スコア降格する (FE が日本語化).
+_WARN_ACCEPTANCE_CALENDAR = "acceptance_calendar"
+
 # スコア降格ペナルティ. 既存重み (proximity 50 / preference 30 / balance 20 /
 # pair 1000) を基準にした相対値:
 #   ABSENT / SEX_MISMATCH = 60.0 … proximity 満点 (50) + preference 片側一致 (15)
@@ -509,6 +520,47 @@ _WARN_STAFF_SEX_MISMATCH = "staff_sex_mismatch"
 _PENALTY_STAFF_ABSENT: float = 60.0
 _PENALTY_STAFF_SEX_MISMATCH: float = 60.0
 _PENALTY_STAFF_UNASSIGNED: float = 20.0
+
+# I-07 (H5): 受入カレンダー × の降格幅. P0-1 の staff_absent と同じ機構・同じ幅 (60.0)
+# を使う (受入不可の枠を確実にクリーン候補より下位へ沈める). pair 1000 は超えないので
+# 同住所ペア最優先は維持. enforce ではないので候補は除外しない (warning + 降格のみ).
+_PENALTY_ACCEPTANCE_CALENDAR: float = 60.0
+
+
+def _pair_mode_of(pair_modes: dict[tuple[UUID, UUID], str], a: UUID, b: UUID) -> str | None:
+    """(a, b) の pair_mode を両順序で引く (DB 正規化 a<b に依存しない robust 参照).
+
+    auto_allocator_v2 の blocked 判定 (``_enforce_h2_split_overflow`` /
+    ``_enforce_same_address_pair_mode``) と同じく ``(a,b)`` / ``(b,a)`` 両引きする.
+    map に無い pair は暗黙 ``preferred`` (None 返し).
+    """
+    return pair_modes.get((a, b), pair_modes.get((b, a)))
+
+
+def _has_same_address_blocked_partner(
+    bucket: _CourseBucket,
+    candidate: CandidateInput,
+    pair_modes: dict[tuple[UUID, UUID], str],
+) -> bool:
+    """候補が bucket 内の同住所既存患者と pair_mode='blocked' 関係にあるか (I-11).
+
+    blocked ペアは PatientSameAddressLink 由来なので必ず同住所. 同住所ペア slot
+    (``same_address_pair=True``) は候補を同時刻・90分同住所占有で相手の隣に入れる枠
+    であり、blocked 相手とはこれが「同時間帯に重なる組合せ」になる. True のとき当該
+    bucket の同住所ペア slot を除外する (diff-add Stage3 の blocked=同 set 禁止と同義).
+    """
+    cand_pid = candidate.existing_patient_id
+    if cand_pid is None:
+        return False
+    cand_key = _address_bucket(candidate.lat, candidate.lng)
+    for v in bucket.visits:
+        if v.patient_id == cand_pid:
+            continue
+        if _address_bucket(v.lat, v.lng) != cand_key:
+            continue
+        if _pair_mode_of(pair_modes, cand_pid, v.patient_id) == "blocked":
+            return True
+    return False
 
 
 def _staff_sex_mismatch(staff_sex: str | None, sex_restriction: str | None) -> bool:
@@ -537,6 +589,7 @@ def _slot_reasons_and_warnings(
     staff_unassigned: bool = False,
     staff_absent: bool = False,
     staff_sex_mismatch: bool = False,
+    acceptance_blocked: bool = False,
     is_efficiency_alternative: bool = False,
 ) -> tuple[list[str], list[str]]:
     """スロットの理由バッジ + 警告ラベルを組み立てる.
@@ -582,6 +635,9 @@ def _slot_reasons_and_warnings(
         warnings.append(_WARN_STAFF_ABSENT)
     if staff_sex_mismatch:
         warnings.append(_WARN_STAFF_SEX_MISMATCH)
+    # I-07 (H5): 受入カレンダー × の時刻に該当する枠は除外せず警告のみ (N-6).
+    if acceptance_blocked:
+        warnings.append(_WARN_ACCEPTANCE_CALENDAR)
     return reasons, warnings
 
 
@@ -597,6 +653,7 @@ def _score_slot(
     staff_unassigned: bool = False,
     staff_absent: bool = False,
     staff_sex_mismatch: bool = False,
+    acceptance_blocked: bool = False,
 ) -> float:
     """合成スコア (降順用). 同住所ペアは大ボーナスで最優先.
 
@@ -631,6 +688,9 @@ def _score_slot(
         score -= _PENALTY_STAFF_SEX_MISMATCH
     if staff_unassigned:
         score -= _PENALTY_STAFF_UNASSIGNED
+    # I-07 (H5): 受入カレンダー × の枠は staff_absent と同じ幅で降格 (除外はしない).
+    if acceptance_blocked:
+        score -= _PENALTY_ACCEPTANCE_CALENDAR
     return score
 
 
@@ -687,6 +747,8 @@ def _enumerate_candidate_slots(
     lunch_window_end: time,
     is_efficiency_alternative: bool = False,
     exclusions_out: list[_BucketExclusion] | None = None,
+    unavailable_slots: dict[tuple[UUID, int], set[time]] | None = None,
+    pair_modes: dict[tuple[UUID, UUID], str] | None = None,
 ) -> list[tuple[ProposedSlot, float]]:
     """1 候補 (solver_candidate) で全コース × target_weekdays を回し提案枠を列挙.
 
@@ -728,6 +790,15 @@ def _enumerate_candidate_slots(
             config=config,
             exclusion_sink=bucket_sink,
         )
+        # I-11: pair_mode='blocked' のペア相手と同時間帯 (同住所同時刻=90分占有) に重なる
+        # 同住所ペア slot を除外する (diff-add Stage3 の blocked=同 set 禁止と同義).
+        # blocked 相手は必ず同住所なので、当該 bucket に同住所 blocked 相手が居れば
+        # same_address_pair slot 全てが対象. 非ペア slot (別時刻) は blocked に該当しない.
+        if pair_modes and _has_same_address_blocked_partner(bucket, candidate, pair_modes):
+            filtered = [s for s in slots if not s.same_address_pair]
+            if len(filtered) != len(slots) and bucket_sink is not None:
+                bucket_sink.append("pair_blocked")
+            slots = filtered
         if not slots:
             if exclusions_out is not None:
                 exclusions_out.append(
@@ -747,6 +818,13 @@ def _enumerate_candidate_slots(
         staff_unassigned = bucket.assigned_staff_id is None
         staff_absent = bucket.staff_absent
         staff_sex_mismatch = _staff_sex_mismatch(bucket.staff_sex, candidate.sex_restriction)
+        # I-07 (H5): 当該 (office, weekday) の受入 × 時刻集合 (diff-add と同一データ源).
+        # slot ごとに start が × 時刻に一致するかを判定する (診断は per-slot).
+        blocked_starts = (
+            unavailable_slots.get((office_id, weekday), set())
+            if unavailable_slots is not None
+            else set()
+        )
         # 効率代替は希望外なので希望適合フラグを無効化する.
         if is_efficiency_alternative:
             matched_weekday = False
@@ -782,6 +860,9 @@ def _enumerate_candidate_slots(
                         pair_partner = v.patient_name
                         break
 
+            # I-07 (H5): 同住所ペア枠は既存訪問の時刻を継ぐが、単独枠は slot.start を
+            # × 時刻集合と突合する (auto_allocator の v.start_time in blocked と同判定).
+            acceptance_blocked = slot.start in blocked_starts
             reasons, warnings = _slot_reasons_and_warnings(
                 slot,
                 candidate,
@@ -791,6 +872,7 @@ def _enumerate_candidate_slots(
                 staff_unassigned=staff_unassigned,
                 staff_absent=staff_absent,
                 staff_sex_mismatch=staff_sex_mismatch,
+                acceptance_blocked=acceptance_blocked,
                 is_efficiency_alternative=is_efficiency_alternative,
             )
             score = _score_slot(
@@ -804,6 +886,7 @@ def _enumerate_candidate_slots(
                 staff_unassigned=staff_unassigned,
                 staff_absent=staff_absent,
                 staff_sex_mismatch=staff_sex_mismatch,
+                acceptance_blocked=acceptance_blocked,
             )
             mini = _build_mini_schedule(
                 bucket,
@@ -946,6 +1029,8 @@ def compute_all_proposed_slots(
     config: SchedulingConfig | None = None,
     include_efficiency_alternatives: bool = False,
     exclusions_out: list[ExcludedReasonSummary] | None = None,
+    unavailable_slots: dict[tuple[UUID, int], set[time]] | None = None,
+    pair_modes: dict[tuple[UUID, UUID], str] | None = None,
 ) -> list[ProposedSlot]:
     """全 (開講コース × 候補希望曜日) でソルバを回し、ランキング済み全スロットを返す.
 
@@ -971,6 +1056,15 @@ def compute_all_proposed_slots(
 
     P-1b (N-6): ``exclusions_out`` に list を渡すと、通常候補が 0 件のとき除外理由を
     ``reason × weekday`` で集約して append する (1 件でも候補があれば空のまま).
+
+    I-07 (H5 warning): ``unavailable_slots`` (auto_allocator_v2._load_unavailable_slots
+    と同一データ源 = (office, weekday)->{受入× time}) を渡すと、slot.start が × 時刻に
+    一致する枠に警告 ``acceptance_calendar`` を付けスコア降格する (除外はしない = N-6).
+
+    I-11 (pair blocked): ``pair_modes`` (auto_allocator_v2._load_same_address_pair_modes
+    と同一データ源) を渡すと、候補 (existing_patient_id) と同住所 blocked ペア相手が
+    bucket に居るとき、その同住所ペア slot (同時刻90分占有) を除外し ``pair_blocked``
+    を excluded_summary に集約する (blocked=同時刻NG. diff-add Stage3 と同義).
     """
     # 残容量 (件数) の上限: config 化. 残分 (COURSE_MAX_MINUTES) は据え置き.
     _max_patients = (
@@ -1010,6 +1104,8 @@ def compute_all_proposed_slots(
         lunch_window_end=_lunch_window_end,
         is_efficiency_alternative=False,
         exclusions_out=raw_exclusions,
+        unavailable_slots=unavailable_slots,
+        pair_modes=pair_modes,
     )
     results: list[ProposedSlot] = [ps for ps, _eff in normal]
 
@@ -1078,6 +1174,8 @@ def compute_all_proposed_slots(
         lunch_window_start=_lunch_window_start,
         lunch_window_end=_lunch_window_end,
         is_efficiency_alternative=True,
+        unavailable_slots=unavailable_slots,
+        pair_modes=pair_modes,
     )
     picked: list[tuple[float, ProposedSlot]] = []
     for ps, eff in alt:

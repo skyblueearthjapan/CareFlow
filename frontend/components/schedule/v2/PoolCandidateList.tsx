@@ -60,6 +60,8 @@ export const EXCLUDED_REASON_LABEL: Record<string, string> = {
   travel_shortage: '移動時間が確保できず',
   no_gap: '空き時間なし',
   course_closed: 'コースが存在しない',
+  // I-11 (pair_mode 統合): 同住所ペアが「同時間帯NG」設定のため除外.
+  pair_blocked: '同住所ペアの設定（同時間帯NG）',
 };
 
 function excludedReasonLabel(reason: string): string {

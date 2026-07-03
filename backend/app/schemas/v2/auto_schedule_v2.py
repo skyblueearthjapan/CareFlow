@@ -561,6 +561,32 @@ class AutoScheduleV2ResetToFixedResponse(BaseModel):
     visits_to_skip_conflict: int = Field(default=0, ge=0)
 
 
+class AutoScheduleV2SyncFixedToWeekRequest(BaseModel):
+    """``POST /api/v1/schedule/v2/sync-fixed-to-week`` request (Wave U-0 §2.2-1).
+
+    1 患者の当該週 visits を patient_fixed_visits (PFV) ベースで再生成する
+    (= ``reset-to-fixed`` の 1 患者版). 反映先選択「A. 固定訪問週間に登録」で
+    PFV へ書込後、今週の表へ即反映する後段プリミティブ (U-1 で利用).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    iso_year: int = Field(ge=2020, le=2100)
+    iso_week: int = Field(ge=1, le=53)
+    patient_id: uuid.UUID
+
+
+class AutoScheduleV2SyncFixedToWeekResponse(BaseModel):
+    """``POST /api/v1/schedule/v2/sync-fixed-to-week`` response (Wave U-0 §2.2-1)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    patient_id: uuid.UUID
+    visits_regenerated: int = Field(ge=0)
+    visits_soft_deleted: int = Field(ge=0)
+    warnings: list[str] = Field(default_factory=list)
+
+
 # ---------------------------------------------------------------------------
 # 5) /apply-week-only (この週だけ反映)
 #

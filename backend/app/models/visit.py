@@ -56,6 +56,17 @@ VISIT_STATUS_IN_PROGRESS: VisitStatus = "in_progress"
 VISIT_STATUS_COMPLETED: VisitStatus = "completed"
 VISIT_STATUS_CANCELLED: VisitStatus = "cancelled"
 
+# Source constant (Wave U-0 / 変更反映先の統一 §2.2).
+# 「この週だけ反映」(B 選択) で書いた visit を示す source 値.
+# 保護規則:
+#   - Layer1 generate-week-only は ``source == 'auto'`` のみ削除 → ``manual_week`` は残る.
+#   - reset-to-fixed は ``_RESET_DELETABLE_SOURCES`` 列挙式の whitelist で削除 →
+#     ``manual_week`` は列挙外なので残る.
+# よって週生成・固定枠戻の両方でこの source は保護される (回帰テストで固定).
+# NOTE: Wave U-0 では値の定義と保護保証のみ. この source で **書く** 経路は U-1 で追加.
+# 長さは ``Visit.source`` の String(16) に収まる (= 11 文字).
+VISIT_SOURCE_MANUAL_WEEK: str = "manual_week"
+
 
 class Visit(Base, TimestampMixin):
     __tablename__ = "visits"

@@ -53,6 +53,8 @@ from app.schemas.v2.auto_schedule_v2 import (
     AutoScheduleV2FullOptimizeResponse,
     AutoScheduleV2ResetToFixedRequest,
     AutoScheduleV2ResetToFixedResponse,
+    AutoScheduleV2SyncFixedToWeekRequest,
+    AutoScheduleV2SyncFixedToWeekResponse,
     AutoScheduleV2UnassignAllRequest,
     AutoScheduleV2UnassignAllResponse,
     UnassignedPatient,
@@ -163,6 +165,8 @@ from app.services.scheduling.auto_allocator_v2 import (
     _add_minutes,
     _address_bucket,
     _is_in_lunch_break,
+    _load_same_address_pair_modes,
+    _load_unavailable_slots,
     apply_individual_proposal,
     apply_week_only,
     calc_h_violations,
@@ -1044,6 +1048,107 @@ async def reset_to_fixed_endpoint(
         visits_to_insert=int(result.get("visits_to_insert", 0)),
         visits_to_skip_protected=int(result.get("visits_to_skip_protected", 0)),
         visits_to_skip_conflict=int(result.get("visits_to_skip_conflict", 0)),
+    )
+
+
+# ---------------------------------------------------------------------------
+# 4b) POST /schedule/v2/sync-fixed-to-week (Wave U-0 §2.2-1: 1 患者版 型→週同期)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/v2/sync-fixed-to-week",
+    response_model=AutoScheduleV2SyncFixedToWeekResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Wave U-0: 1 患者の当該週 visits を PFV から再生成 (型→週同期)",
+)
+async def sync_fixed_to_week_endpoint(
+    payload: AutoScheduleV2SyncFixedToWeekRequest,
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+) -> AutoScheduleV2SyncFixedToWeekResponse:
+    """1 患者の当該週 visits を patient_fixed_visits ベースで再生成する.
+
+    反映先選択「A. 固定訪問週間に登録」の後段プリミティブ (§2.2-1). PFV へ書込後、
+    今週の表へ即反映するために呼ぶ. 内部は ``reset_visits_to_fixed`` の
+    ``patient_id`` フィルタ経路を再利用し、削除・再生成を当該 1 患者に限定する.
+
+    保護規則は全患者版と同一: ``source='manual'`` / ``status='completed'`` は
+    soft-delete しない, 衝突時は INSERT スキップ.
+    """
+    # ISO 週の妥当性検証 (reset_visits_to_fixed 内でも検証されるが早期に 400 で弾く).
+    try:
+        date.fromisocalendar(payload.iso_year, payload.iso_week, 1)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"invalid ISO week: year={payload.iso_year} week={payload.iso_week}",
+        ) from exc
+
+    # 患者存在検証 (soft-delete 済みは 404).
+    patient = await db.scalar(
+        select(Patient).where(Patient.id == payload.patient_id, Patient.deleted_at.is_(None))
+    )
+    if patient is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"patient_id={payload.patient_id} が見つかりません",
+        )
+
+    # office_ids を患者から導出する. reset_visits_to_fixed は serving office
+    # (sub_office / course_template office) を内部で解決するが、staff プールと
+    # active 患者ロードは office_ids に依存するため、primary + PFV.sub_office を含める.
+    office_ids: set[UUID] = set()
+    if patient.primary_office_id is not None:
+        office_ids.add(patient.primary_office_id)
+    sub_office_rows = await db.scalars(
+        select(PatientFixedVisit.sub_office_id)
+        .where(
+            PatientFixedVisit.patient_id == payload.patient_id,
+            PatientFixedVisit.sub_office_id.is_not(None),
+        )
+        .distinct()
+    )
+    for _oid in sub_office_rows.all():
+        if _oid is not None:
+            office_ids.add(_oid)
+
+    config = await load_scheduling_config(db)
+    try:
+        result = await reset_visits_to_fixed(
+            db,
+            iso_year=payload.iso_year,
+            iso_week=payload.iso_week,
+            office_ids=list(office_ids),
+            mode="legacy",
+            dry_run=False,
+            config=config,
+            patient_id=payload.patient_id,
+        )
+        await db.commit()
+    except ValueError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except IntegrityError as exc:
+        await db.rollback()
+        logger.warning(
+            "sync_fixed_to_week: integrity error (likely concurrent op): patient=%s err=%s",
+            payload.patient_id,
+            exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="他のユーザーが同じ週を処理中です。もう一度実行してください。",
+        ) from exc
+    except Exception:
+        await db.rollback()
+        raise
+
+    return AutoScheduleV2SyncFixedToWeekResponse(
+        patient_id=payload.patient_id,
+        visits_regenerated=int(result.get("visits_regenerated", 0)),
+        visits_soft_deleted=int(result.get("visits_soft_deleted", 0)),
+        warnings=list(result.get("warnings", [])),
     )
 
 
@@ -2011,6 +2116,21 @@ async def propose_slots_endpoint(
     # Phase G-88 Step3: full-optimize と同一の事業所別設定をロードして注入 (read-only).
     config = await load_scheduling_config(db)
 
+    # I-07 (H5 warning): 受入カレンダー × を diff-add と同一ローダで読む (read-only).
+    #   enforce ではなく warning: 該当時刻の枠に acceptance_calendar 警告 + スコア降格
+    #   を付けるだけで除外はしない (N-6「なぜ出ないか分かるように」).
+    unavailable_slots = await _load_unavailable_slots(db, office_ids=office_ids)
+    # I-11 (pair blocked): pair_mode='blocked' 判定用に same-address link を読む.
+    #   候補が既存患者 (existing_patient_id) のときのみ意味を持つ (blocked は候補と
+    #   既存訪問患者の関係). 新規候補 (None) では blocked 判定不要なので DB 参照を省く.
+    pair_modes: dict[tuple[uuid.UUID, uuid.UUID], str] = {}
+    if candidate.existing_patient_id is not None:
+        pair_patient_ids: set[uuid.UUID] = {candidate.existing_patient_id}
+        for _bucket in buckets.values():
+            for _v in _bucket.visits:
+                pair_patient_ids.add(_v.patient_id)
+        pair_modes = await _load_same_address_pair_modes(db, patient_ids=list(pair_patient_ids))
+
     # ランキング済み全スロットを 1 回算出し、slots[] (上位 limit) と coverage で共有.
     # P3-④: include_efficiency_alternatives=True 時は末尾に効率代替 (最大3件) が付く.
     # P-1a: 上位候補に marginal_cost_minutes (厳密限界コスト) が付与され delta 昇順に並ぶ.
@@ -2025,6 +2145,8 @@ async def propose_slots_endpoint(
         config=config,
         include_efficiency_alternatives=payload.include_efficiency_alternatives,
         exclusions_out=excluded_raw,
+        unavailable_slots=unavailable_slots,
+        pair_modes=pair_modes,
     )
     # P3-④: 通常候補で limit を消費し、効率代替は limit 外で最大3件付加する
     #   (通常候補が効率代替に押し出されないよう flag で分離). 既定 False では

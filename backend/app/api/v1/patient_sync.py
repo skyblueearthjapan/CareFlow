@@ -297,6 +297,13 @@ def _apply_sync_changes(
     """sync diff の changes を実 PFV に反映する (insert / update のみ).
 
     flush / commit は呼び出し側で制御する.
+
+    Wave U-0 (§2.2-3): INSERT 経路で ``is_pinned`` / ``movability`` を、同一
+    (weekday, start_time) の既存 PFV から引き継ぐ. 現行の diff ロジックでは同一
+    weekday の既存 PFV は UPDATE 経路 (= 行を in-place で更新するので pin は保持)
+    に振り分けられるため、この引き継ぎは防御的だが、pin 状態が silent に False へ
+    落ちる回帰を将来にわたって防ぐ. UPDATE 経路は元々 ``is_pinned`` /
+    ``movability`` を touch しないため保持済み.
     """
     for change in changes:
         if change.operation in ("unchanged", "skipped"):
@@ -304,6 +311,11 @@ def _apply_sync_changes(
         if change.new is None:
             continue
         if change.operation == "insert":
+            # 同一 weekday の既存 PFV (slot_index=0 の 1 行/weekday) があれば
+            # pin / 可動域を引き継ぐ.
+            prior = existing_by_wd.get(change.new.weekday)
+            inherit_pin = bool(prior.is_pinned) if prior is not None else False
+            inherit_mov = prior.movability if prior is not None else "unknown"
             new_pfv = PatientFixedVisit(
                 patient_id=patient_id,
                 mode="normal",
@@ -312,6 +324,8 @@ def _apply_sync_changes(
                 duration_min=change.new.duration_min,
                 slot_index=0,
                 course_template_id=change.new.course_template_id,
+                is_pinned=inherit_pin,
+                movability=inherit_mov,
             )
             db.add(new_pfv)
         elif change.operation == "update":

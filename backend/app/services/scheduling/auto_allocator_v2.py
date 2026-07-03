@@ -9562,6 +9562,7 @@ async def reset_visits_to_fixed(
     mode: Literal["legacy", "auto"] = "legacy",
     dry_run: bool = False,
     config: SchedulingConfig | None = None,
+    patient_id: UUID | None = None,
 ) -> dict[str, Any]:
     """機能 D: 対象週の visits を soft-delete → patient_fixed_visits から再生成.
 
@@ -9582,6 +9583,14 @@ async def reset_visits_to_fixed(
           ``apply_travel_corrections`` で移動時間補正を通す.
 
     Phase G-21 T3-5: ``dry_run=True`` の場合は DB を変更せず件数のみ返却する.
+
+    Wave U-0 (変更反映先の統一 §2.2-1): ``patient_id`` を指定すると、削除・再生成の
+    対象を当該 1 患者に限定する (= ``sync-fixed-to-week`` の 1 患者版). ``None``
+    (既定) の場合は従来どおり ``office_ids`` 範囲の全 active 患者を対象にする
+    (= 全患者版の挙動は一切変わらない). フィルタは ``patients_by_id`` (再生成側) と
+    ``delete_target_patient_ids`` (削除側) の両方に適用し、対称性を保つ. その他の
+    保護規則 (source='manual' / status='completed' 保護, 衝突 INSERT スキップ) は
+    全患者版と同一.
 
     本関数は ``await db.flush()`` のみ呼ぶ. commit は呼び出し側.
     """
@@ -9611,6 +9620,10 @@ async def reset_visits_to_fixed(
             }
 
     patients_by_id = await _load_active_patients(db, office_ids=office_ids)
+    # Wave U-0 (§2.2-1): patient_id 指定時は再生成対象を当該 1 患者に限定する.
+    # 全患者版 (patient_id=None) の挙動は不変.
+    if patient_id is not None:
+        patients_by_id = {pid: p for pid, p in patients_by_id.items() if pid == patient_id}
     patient_ids = list(patients_by_id.keys())
 
     # CareFlow 本番バグ修正 (Bug A): step1 の削除対象 patient 範囲を「status 不問 +
@@ -9622,6 +9635,10 @@ async def reset_visits_to_fixed(
     delete_target_patient_ids = await _load_visit_delete_target_patient_ids(
         db, office_ids=office_ids
     )
+    # Wave U-0 (§2.2-1): patient_id 指定時は削除対象も当該 1 患者に限定し、
+    # 再生成対象 (patients_by_id) と対称にする (誤って他患者 visit を消さない).
+    if patient_id is not None:
+        delete_target_patient_ids = delete_target_patient_ids & {patient_id}
 
     # 1) 対象週の active visits を取得 (削除対象 patient 範囲).
     # W41 v2 final cross-review (C-Codex-2): source / status で絞り、
@@ -10555,6 +10572,7 @@ __all__ = [
     "_load_before_visits_v2",
     "_load_g21_enabled_offices",
     "_load_same_address_pair_modes",
+    "_load_unavailable_slots",
     "apply_individual_proposal",
     "apply_travel_corrections",
     "apply_week_only",

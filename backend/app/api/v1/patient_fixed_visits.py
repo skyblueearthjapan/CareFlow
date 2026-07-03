@@ -18,7 +18,7 @@ UNIQUE (patient_id, mode, weekday) 違反は 409 Conflict。
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, time
 from typing import Annotated
 from uuid import UUID
 
@@ -258,12 +258,43 @@ def _weekday_groups_are_valid(visit_rows, *, requires_multi: bool) -> bool:
     return not _invalid_weekdays(visit_rows, requires_multi=requires_multi)
 
 
+async def _load_pfv_pin_partition(
+    db: AsyncSession,
+    *,
+    patient_id: UUID,
+    mode: str,
+) -> tuple[set[tuple[int, int]], dict[tuple[int, time], str]]:
+    """既存 PFV (patient, mode) を読み、ピン消失修正に必要な 2 つを返す.
+
+    Wave U-0 (§2.2-4, from-week-bulk ピン消失修正 / 既存バグ):
+      - ``pinned_slots``: 残存させる pinned 行の (weekday, slot_index) 集合.
+        週 visits からの再作成時、この slot と衝突する INSERT は skip する
+        (完全固定の pin を全件保存が上書きしないようにする).
+      - ``movability_by_wd_start``: (weekday, start_time) → movability. 非 pinned
+        行を置換した新行に、同一 (weekday, start_time) の旧行から movability を
+        引き継ぐために使う.
+    """
+    rows = (
+        await db.scalars(
+            select(PatientFixedVisit).where(
+                PatientFixedVisit.patient_id == patient_id,
+                PatientFixedVisit.mode == mode,
+            )
+        )
+    ).all()
+    pinned_slots = {(r.weekday, r.slot_index) for r in rows if r.is_pinned}
+    movability_by_wd_start = {(r.weekday, r.start_time): r.movability for r in rows}
+    return pinned_slots, movability_by_wd_start
+
+
 async def _insert_pfv_from_visits(
     db: AsyncSession,
     *,
     patient: Patient,
     mode: str,
     visit_rows,
+    pinned_slots: set[tuple[int, int]] | None = None,
+    movability_by_wd_start: dict[tuple[int, time], str] | None = None,
 ) -> None:
     """visits を PatientFixedVisit に書き戻す (slot_index を決定論的に割当).
 
@@ -272,9 +303,16 @@ async def _insert_pfv_from_visits(
       visit.id 昇順で sort して slot 0/1 を決定論的に割当てて 2 行 INSERT.
     - その他 (異常重複) は呼び出し前段で弾かれている前提.
 
+    Wave U-0 (§2.2-4): ``pinned_slots`` に含まれる (weekday, slot_index) は残存
+    pinned 行が占有しているため INSERT を skip する (重複防止 = UNIQUE 衝突回避 +
+    pin 保護). ``movability_by_wd_start`` があれば、同一 (weekday, start_time) の
+    旧行から movability を引き継ぐ (無ければ 'unknown').
+
     NOTE: course_template_id 順での sort も検討したが、course_id が NULL の visit が
           混じる場合に不安定になるため id 昇順を採用 (FE 側の visitsByGroupId と同一基準).
     """
+    pinned_slots = pinned_slots or set()
+    movability_by_wd_start = movability_by_wd_start or {}
     requires_multi = bool(patient.requires_multiple_staff)
     by_wd = _group_visits_by_weekday(visit_rows)
 
@@ -285,11 +323,22 @@ async def _insert_pfv_from_visits(
             # multi-staff ペア: visit.id 昇順で slot 0/1 を割当 (決定論).
             sorted_pair = sorted(visits, key=lambda v: str(v.id))
             for slot_idx, v in enumerate(sorted_pair):
-                await _add_one_pfv(db, patient=patient, mode=mode, visit=v, slot_index=slot_idx)
+                if (wd, slot_idx) in pinned_slots:
+                    # 残存 pinned 行と同一 slot → skip (重複 / pin 上書き防止).
+                    continue
+                mov = movability_by_wd_start.get((wd, v.start_time), "unknown")
+                await _add_one_pfv(
+                    db, patient=patient, mode=mode, visit=v, slot_index=slot_idx, movability=mov
+                )
         else:
             # 1 visit (通常パターン) — slot_index=0 で 1 行
             v = visits[0]
-            await _add_one_pfv(db, patient=patient, mode=mode, visit=v, slot_index=0)
+            if (wd, 0) in pinned_slots:
+                continue
+            mov = movability_by_wd_start.get((wd, v.start_time), "unknown")
+            await _add_one_pfv(
+                db, patient=patient, mode=mode, visit=v, slot_index=0, movability=mov
+            )
 
 
 async def _add_one_pfv(
@@ -299,8 +348,13 @@ async def _add_one_pfv(
     mode: str,
     visit,
     slot_index: int,
+    movability: str = "unknown",
 ) -> None:
-    """visit から 1 行の PatientFixedVisit を組み立てて add する."""
+    """visit から 1 行の PatientFixedVisit を組み立てて add する.
+
+    Wave U-0 (§2.2-4): ``movability`` を引き継ぐ (from-week-bulk ピン消失修正の
+    一部. 非 pinned 行の置換で旧行の可動域を維持する). 既定は 'unknown'.
+    """
     duration_min = int(
         (visit.end_time.hour * 60 + visit.end_time.minute)
         - (visit.start_time.hour * 60 + visit.start_time.minute)
@@ -322,6 +376,7 @@ async def _add_one_pfv(
             duration_min=duration_min,
             course_template_id=visit_course_template_id,
             slot_index=slot_index,
+            movability=movability,
         )
     )
 
@@ -383,9 +438,7 @@ async def put_fixed_visits(
     # トランザクションを汚さない. warning (患者間衝突 / 昼休み / 容量) は削除→INSERT 後に
     # レスポンスへ載せる.
     config = await load_scheduling_config(db)
-    validation = await validate_pfv_changes(
-        db, patient_id, body.items, body.mode, config=config
-    )
+    validation = await validate_pfv_changes(db, patient_id, body.items, body.mode, config=config)
     if validation.has_errors:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -500,7 +553,15 @@ async def from_week_bulk(
 ) -> dict:
     """全 active 患者に対し当該週 visits を patient_fixed_visits に書き戻す.
 
-    冪等性保証: 既存 (patient_id, mode) 全削除 → INSERT を 1 TX で実行。
+    冪等性保証: 既存 (patient_id, mode) の **非 pinned 行のみ** 削除 → INSERT を
+    1 TX で実行 (pinned 行は残す).
+
+    Wave U-0 (§2.2-4, 既存バグ修正): 旧実装は既存 PFV を無条件 DELETE →
+    is_pinned=False で再作成していたため、**全件保存でピン留めが消失**していた.
+    修正後は「全件保存しても pinned 行は残る」— is_pinned=True の行は削除せず、
+    週 visits からの再作成時に同一 (weekday, slot) となる行は INSERT を skip する.
+    非 pinned 行は従来どおり置換し、同一 (weekday, start_time) の旧行から
+    movability を引き継ぐ.
     """
     # 全 active 患者を取得
     patients_rows = (
@@ -551,20 +612,28 @@ async def from_week_bulk(
         ):
             continue
 
-        # 既存削除
+        # Wave U-0 (§2.2-4): 削除前に pinned 行 / movability を退避.
+        pinned_slots, movability_by_wd_start = await _load_pfv_pin_partition(
+            db, patient_id=patient.id, mode=effective_mode
+        )
+
+        # 既存削除 — ただし pinned 行 (is_pinned=True) は残す (ピン消失防止).
         await db.execute(
             delete(PatientFixedVisit).where(
                 PatientFixedVisit.patient_id == patient.id,
                 PatientFixedVisit.mode == effective_mode,
+                PatientFixedVisit.is_pinned.is_(False),
             )
         )
 
-        # INSERT (C-1: multi-staff slot 0/1 対応)
+        # INSERT (C-1: multi-staff slot 0/1 対応 / U-0: pinned slot skip + movability 引継ぎ)
         await _insert_pfv_from_visits(
             db,
             patient=patient,
             mode=effective_mode,
             visit_rows=visit_rows,
+            pinned_slots=pinned_slots,
+            movability_by_wd_start=movability_by_wd_start,
         )
 
         updated_patient_ids.append(patient.id)
@@ -740,8 +809,13 @@ async def from_week(
 
     mode 未指定: patient.special_week_active に当該週があれば 'special'、なければ 'normal'。
     visit_staff_assignments は読まない (時刻 + duration のみ)。
-    visits が 0 件 → 既存 fixed_visits を削除して空配列返す。
+    visits が 0 件 → 既存 fixed_visits の **非 pinned 行** を削除して残りを返す。
     同一 weekday に複数 visit → 409。
+
+    Wave U-0 (§2.2-4, from-week-bulk と同一のピン消失修正): pinned 行 (is_pinned=True)
+    は削除せず残す. 週 visits からの再作成時、同一 (weekday, slot) となる行は INSERT を
+    skip する. 非 pinned 行は従来どおり置換し、同一 (weekday, start_time) の旧行から
+    movability を引き継ぐ. — 全件保存 (from-week) してもピンが残る.
     """
     patient = await _ensure_patient_exists(db, patient_id)
 
@@ -786,20 +860,28 @@ async def from_week(
             ),
         )
 
-    # 1 TX: 既存削除 → INSERT
+    # Wave U-0 (§2.2-4): 削除前に pinned 行 / movability を退避.
+    pinned_slots, movability_by_wd_start = await _load_pfv_pin_partition(
+        db, patient_id=patient_id, mode=effective_mode
+    )
+
+    # 1 TX: 非 pinned 行のみ削除 → INSERT (pinned 行は残す = ピン消失防止)
     await db.execute(
         delete(PatientFixedVisit).where(
             PatientFixedVisit.patient_id == patient_id,
             PatientFixedVisit.mode == effective_mode,
+            PatientFixedVisit.is_pinned.is_(False),
         )
     )
 
-    # INSERT (C-1: multi-staff slot 0/1 対応)
+    # INSERT (C-1: multi-staff slot 0/1 対応 / U-0: pinned slot skip + movability 引継ぎ)
     await _insert_pfv_from_visits(
         db,
         patient=patient,
         mode=effective_mode,
         visit_rows=visit_rows,
+        pinned_slots=pinned_slots,
+        movability_by_wd_start=movability_by_wd_start,
     )
 
     await _commit_or_409(db)

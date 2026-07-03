@@ -172,8 +172,10 @@ class ProposeSlotItem(BaseModel):
 
 # P-1b: 除外理由コード (N-6「黙って消さない」). service (_pick_bucket_reason /
 # _aggregate_exclusions) が出力する語彙と 1:1.
+# I-11: pair_blocked は pair_mode='blocked' のペア相手と同住所同時刻 (90分占有) で
+# 重なるため除外した枠. FE 側は z.string() 寛容パースなので BE 追加のみで安全.
 ExcludedReasonCode = Literal[
-    "capacity_full", "lunch_window", "travel_shortage", "no_gap", "course_closed"
+    "capacity_full", "lunch_window", "travel_shortage", "no_gap", "course_closed", "pair_blocked"
 ]
 
 
@@ -186,7 +188,10 @@ class ProposeExcludedReason(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     reason: ExcludedReasonCode = Field(
-        ..., description="capacity_full / lunch_window / travel_shortage / no_gap / course_closed"
+        ...,
+        description=(
+            "capacity_full / lunch_window / travel_shortage / no_gap / course_closed / pair_blocked"
+        ),
     )
     count: int = Field(..., ge=0, description="この reason × weekday で候補を落としたコース数")
     weekday: int = Field(..., ge=0, le=6, description="0=Mon..6=Sun")
