@@ -199,7 +199,8 @@ Req: `{ iso_year, iso_week, scope, state_token, steps: simulate の先頭からN
 | W1 | FE-1 | ScopeOptimizeDialog（simulate 表示のみ・適用ボタンなし）＋範囲選択入口＋zod/クエリ |
 | W2 | BE-3 | POST apply（state_token/1TX/validator）＋テスト |
 | W2 | FE-2 | 適用スライダー＋apply 配線＋健康診断ダイアログからの導線 |
-| W3 | — | 「要確認の手も含める」トグル（D-2 後段）/ ④全体スコープの性能実測とガード / 閾値の現場調整 |
+| W3(実施済) | — | **限界コストの厳密計算化**（実データで発見した同住所・同時刻ペアの見かけ倒し提案を修正。`compute_exact_marginal`=コース合計 travel+buffer の差。improvement_engine 正典ごと修正し patient 詳細の改善提案にも波及）/ **手順カードのコースタイムライン**（step に適用前スナップショット source_course/destination_course を付与。同一コース=1枚で移動を視覚表示・別コース=2枚並列比較）/ **全拠点モードでもダイアログ内で拠点チップ選択可** |
+| W3後続 | — | 「要確認の手も含める」トグル（D-2 後段）/ ④全体スコープの性能実測とガード / 閾値の現場調整 |
 | W4(任意) | — | B案参考値の併記（auto_allocator_v2 範囲制限実行・数字のみ表示・適用不可） |
 
 W1 デプロイ時点で「無駄の指摘に対する具体的な手順列」が見える（適用は手動）。W2 で一括適用まで完成。

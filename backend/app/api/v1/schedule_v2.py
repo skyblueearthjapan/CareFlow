@@ -114,6 +114,7 @@ from app.schemas.v2.schedule_health import (
     ScheduleHealthTrendResponse,
 )
 from app.schemas.v2.scope_optimization import (
+    ScopeCourseSnapshot,
     ScopeOptimizationApplyRequest,
     ScopeOptimizationApplyResponse,
     ScopeOptimizationExcludedSummary,
@@ -121,6 +122,7 @@ from app.schemas.v2.scope_optimization import (
     ScopeOptimizationSimulateRequest,
     ScopeOptimizationSimulateResponse,
     ScopeOptimizationStep,
+    ScopeSnapshotVisit,
 )
 from app.schemas.v2.travel_estimate import (
     TravelEstimateRequest,
@@ -196,6 +198,7 @@ from app.services.scheduling.schedule_health import (
 )
 from app.services.scheduling.scope_optimizer import (
     OptimizationScope,
+    ScopeCourseSnapshotData,
     ScopeMetricsData,
     compute_current_state_token,
     simulate_scope_optimization,
@@ -2798,6 +2801,30 @@ def _scope_metrics_to_schema(m: ScopeMetricsData) -> ScopeOptimizationMetrics:
     )
 
 
+def _scope_snapshot_to_schema(
+    s: ScopeCourseSnapshotData | None,
+) -> ScopeCourseSnapshot | None:
+    """コーススナップショット (内部表現) を API schema へ変換 (None はそのまま)."""
+    if s is None:
+        return None
+    return ScopeCourseSnapshot(
+        office_id=s.office_id,
+        weekday=s.weekday,
+        course_code=s.course_code,
+        course_label=s.course_label,
+        staff_name=s.staff_name,
+        visits=[
+            ScopeSnapshotVisit(
+                patient_id=v.patient_id,
+                patient_name=v.patient_name,
+                start_time=_hhmm(v.start_time),
+                end_time=_hhmm(v.end_time),
+            )
+            for v in s.visits
+        ],
+    )
+
+
 @router.post(
     "/v2/scope-optimization/simulate",
     response_model=ScopeOptimizationSimulateResponse,
@@ -2854,6 +2881,8 @@ async def scope_optimization_simulate_endpoint(
                 suggestion=_improvement_to_schema(s.candidate),
                 cumulative_delta_minutes=s.cumulative_delta_minutes,
                 cumulative_delta_km=s.cumulative_delta_km,
+                source_course=_scope_snapshot_to_schema(s.source_course),
+                destination_course=_scope_snapshot_to_schema(s.destination_course),
             )
             for s in result.steps
         ],

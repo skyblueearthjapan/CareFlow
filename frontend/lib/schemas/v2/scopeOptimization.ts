@@ -20,6 +20,26 @@ import { z } from 'zod';
 
 import { improvementSuggestionSchema } from './improvementSuggestion';
 
+/** コーススナップショットの 1 訪問 (この手を適用する前の状態). */
+export const scopeSnapshotVisitSchema = z.object({
+  patient_id: z.string().uuid(),
+  patient_name: z.string(),
+  start_time: z.string(),
+  end_time: z.string(),
+});
+export type ScopeSnapshotVisit = z.infer<typeof scopeSnapshotVisitSchema>;
+
+/** この手が触るコースの適用前スナップショット (W3: タイムライン表示用). */
+export const scopeCourseSnapshotSchema = z.object({
+  office_id: z.string().uuid(),
+  weekday: z.number().int().min(0).max(6),
+  course_code: z.string(),
+  course_label: z.string(),
+  staff_name: z.string().nullable().default(null),
+  visits: z.array(scopeSnapshotVisitSchema).default([]),
+});
+export type ScopeCourseSnapshot = z.infer<typeof scopeCourseSnapshotSchema>;
+
 /** 手順 1 件 (move または swap)。suggestion は改善提案と同一契約. */
 export const scopeOptimizationStepSchema = z.object({
   seq: z.number().int().min(1),
@@ -28,6 +48,9 @@ export const scopeOptimizationStepSchema = z.object({
   suggestion: improvementSuggestionSchema,
   cumulative_delta_minutes: z.number().int(),
   cumulative_delta_km: z.number(),
+  // W3: 適用前スナップショット (旧 BE 互換で optional/null 既定).
+  source_course: scopeCourseSnapshotSchema.nullable().default(null),
+  destination_course: scopeCourseSnapshotSchema.nullable().default(null),
 });
 export type ScopeOptimizationStep = z.infer<typeof scopeOptimizationStepSchema>;
 

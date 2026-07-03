@@ -2537,7 +2537,8 @@ export function CourseDayTablePanel({
           }}
         />
 
-        {/* scope-optimization W1-W2: 範囲最適化ダイアログ (simulate + 先頭N手適用). */}
+        {/* scope-optimization W1-W3: 範囲最適化ダイアログ (simulate + 先頭N手適用 +
+            タイムライン表示。全拠点モードではダイアログ内で拠点を選べる). */}
         <ScopeOptimizeDialog
           open={scopeOptimizeOpen}
           onClose={() => setScopeOptimizeOpen(false)}
@@ -2547,6 +2548,7 @@ export function CourseDayTablePanel({
           weekLabel={isoWeekLabel}
           canEdit={canEdit}
           initialScope={scopeOptimizeInitialScope}
+          offices={offices.map((o) => ({ id: o.id, name: o.name }))}
         />
 
         {/* Wave 41 v2 § 4 / §13.5.2: 全面最適化ダイアログ. */}

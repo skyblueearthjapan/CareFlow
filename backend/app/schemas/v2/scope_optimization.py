@@ -54,11 +54,41 @@ class ScopeOptimizationSimulateRequest(BaseModel):
     scope: ScopeOptimizationScope
 
 
+class ScopeSnapshotVisit(BaseModel):
+    """コーススナップショットの 1 訪問 (この手を適用する前の状態)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    patient_id: uuid.UUID
+    patient_name: str
+    start_time: str = Field(..., description="HH:MM")
+    end_time: str = Field(..., description="HH:MM")
+
+
+class ScopeCourseSnapshot(BaseModel):
+    """この手が触るコースの適用前スナップショット (W3: タイムライン表示用).
+
+    FE は visits (start 昇順) を描画し、step の patient_id / swap 相手に一致する行を
+    ハイライト・移動表示する。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    office_id: uuid.UUID
+    weekday: Weekday
+    course_code: str
+    course_label: str
+    staff_name: str | None = None
+    visits: list[ScopeSnapshotVisit] = Field(default_factory=list)
+
+
 class ScopeOptimizationStep(BaseModel):
     """手順 1 件 (move または swap)。
 
     ``suggestion`` は改善提案と同一契約 (kind / current / candidate / delta /
     changes / staff_warnings / within_preference / swap_counterpart)。
+    ``source_course`` / ``destination_course`` は適用前のコーススナップショット
+    (同一コース内の手は destination_course=null。後方互換: 既定 null)。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -72,6 +102,13 @@ class ScopeOptimizationStep(BaseModel):
     )
     cumulative_delta_km: float = Field(
         ..., description="手順 1..seq まで適用したときの累積短縮 (km/週)"
+    )
+    source_course: ScopeCourseSnapshot | None = Field(
+        default=None, description="移動元コースの適用前スナップショット"
+    )
+    destination_course: ScopeCourseSnapshot | None = Field(
+        default=None,
+        description="移動先コースの適用前スナップショット (同一コース内は null)",
     )
 
 
@@ -171,6 +208,7 @@ class ScopeOptimizationApplyResponse(BaseModel):
 
 
 __all__ = [
+    "ScopeCourseSnapshot",
     "ScopeOptimizationApplyRequest",
     "ScopeOptimizationApplyResponse",
     "ScopeOptimizationExcludedSummary",
@@ -179,4 +217,5 @@ __all__ = [
     "ScopeOptimizationSimulateRequest",
     "ScopeOptimizationSimulateResponse",
     "ScopeOptimizationStep",
+    "ScopeSnapshotVisit",
 ]

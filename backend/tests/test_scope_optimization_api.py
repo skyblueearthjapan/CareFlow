@@ -389,3 +389,30 @@ async def test_apply_staff_forbidden(client, db) -> None:
         _APPLY_URL, headers=_bearer(staff_user), json=_apply_body(office, sim_data)
     )
     assert res.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_simulate_steps_include_course_snapshot(client, db) -> None:
+    """W3: 手順にはコースの適用前スナップショット (タイムライン表示用) が付く.
+
+    同一コース内の time_change は source_course のみ (destination_course=None)。
+    visits は start 昇順で、対象患者を含むコース全員が入る。
+    """
+    admin = await _make_user(db, email="so-admin11@example.com", role="admin")
+    office, p = await _seed_sandwich_office(db)
+
+    res = await client.post(_URL, headers=_bearer(admin), json=_body(office))
+    assert res.status_code == 200, res.text
+    step = res.json()["steps"][0]
+
+    src = step["source_course"]
+    assert src is not None
+    assert src["course_code"] == "A"
+    assert src["weekday"] == 0
+    names = [v["patient_name"] for v in src["visits"]]
+    assert p.name in names
+    assert len(names) == 3  # FA1 / TGT / FA2 全員
+    starts = [v["start_time"] for v in src["visits"]]
+    assert starts == sorted(starts)
+    # 同一コース内の移動 → destination は null.
+    assert step["destination_course"] is None

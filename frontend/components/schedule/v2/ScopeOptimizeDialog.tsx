@@ -42,9 +42,11 @@ import {
   useScopeOptimizationSimulate,
 } from '@/lib/queries/scopeOptimization';
 import type {
+  ScopeCourseSnapshot,
   ScopeOptimizationExcludedSummary,
   ScopeOptimizationMetrics,
   ScopeOptimizationSimulateResponse,
+  ScopeOptimizationStep,
 } from '@/lib/schemas/v2/scopeOptimization';
 
 import { ImprovementSuggestionCard } from './ImprovementSuggestionCard';
@@ -69,6 +71,11 @@ export interface ScopeOptimizeDialogProps {
    * その範囲で自動計算する (null 要素 = 全部)。
    */
   initialScope?: { weekdays: number[] | null; courseCodes: string[] | null } | null;
+  /**
+   * 拠点一覧 (全拠点モードでダイアログ内から拠点を選ぶためのチップ用)。
+   * officeId が指定されているときは使わない。
+   */
+  offices?: { id: string; name: string }[];
 }
 
 /** 0=月..5=土 (日曜は稼働曜日外: 健康診断と同じ). */
@@ -190,10 +197,167 @@ function MetricsTiles({
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Component
+// 手順のコースタイムライン (W3)
+//   同一コース内の手 = 1 枚のタイムラインで「元の位置 (打消し) → ここへ移動 (強調)」。
+//   別コースへの手 = 移動元 / 移動先の 2 枚を並列表示して比較できるようにする。
+//   swap は双方の抜き差しを両パネルに描く。
 // ─────────────────────────────────────────────────────────────────────────
 
 const WEEKDAY_FULL = ['月', '火', '水', '木', '金', '土', '日'] as const;
+
+function hhmmToMin(t: string): number {
+  const [h, m] = t.slice(0, 5).split(':').map(Number);
+  return (h ?? 0) * 60 + (m ?? 0);
+}
+
+function addMinutes(t: string, minutes: number): string {
+  const total = hhmmToMin(t) + minutes;
+  return `${String(Math.floor(total / 60) % 24).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+}
+
+interface TimelineRow {
+  key: string;
+  name: string;
+  start: string; // HH:MM
+  end: string; // HH:MM
+  kind: 'normal' | 'out' | 'in';
+}
+
+function TimelinePanel({
+  title,
+  rows,
+  testId,
+}: {
+  title: string;
+  rows: TimelineRow[];
+  testId: string;
+}) {
+  const sorted = [...rows].sort(
+    (a, b) => hhmmToMin(a.start) - hhmmToMin(b.start) || (a.kind === 'in' ? 1 : -1),
+  );
+  return (
+    <div
+      className="min-w-0 rounded border border-border-default bg-bg-base p-2"
+      data-testid={testId}
+    >
+      <div className="mb-1 text-[11px] font-medium text-text-secondary">{title}</div>
+      <div className="space-y-0.5">
+        {sorted.map((row) => (
+          <div
+            key={row.key}
+            className={
+              row.kind === 'in'
+                ? 'flex items-center gap-1.5 rounded border-l-2 border-brand-primary bg-bg-muted px-1.5 py-0.5 text-[11px] font-medium text-text-primary'
+                : row.kind === 'out'
+                  ? 'flex items-center gap-1.5 px-1.5 py-0.5 text-[11px] text-text-muted line-through'
+                  : 'flex items-center gap-1.5 px-1.5 py-0.5 text-[11px] text-text-primary'
+            }
+            data-kind={row.kind}
+          >
+            <span className="tabular-nums">
+              {row.start}–{row.end}
+            </span>
+            <span className="truncate">{row.name} 様</span>
+            {row.kind === 'in' ? (
+              <span className="ml-auto shrink-0 whitespace-nowrap text-[10px] text-brand-primary">
+                ← ここへ移動
+              </span>
+            ) : row.kind === 'out' ? (
+              <span className="ml-auto shrink-0 whitespace-nowrap text-[10px] no-underline">
+                移動元
+              </span>
+            ) : null}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** スナップショットから patient の所要分数を引く (見つからなければ fallback). */
+function durationOf(snapshot: ScopeCourseSnapshot, patientId: string, fallback: number): number {
+  const v = snapshot.visits.find((x) => x.patient_id === patientId);
+  if (!v) return fallback;
+  return Math.max(0, hhmmToMin(v.end_time) - hhmmToMin(v.start_time));
+}
+
+function StepCourseTimelines({ step }: { step: ScopeOptimizationStep }) {
+  const sug = step.suggestion;
+  const src = step.source_course;
+  if (!src) return null; // 旧 BE レスポンス互換: スナップショットが無ければ出さない.
+  const dst = step.destination_course;
+  const cp = sug.swap_counterpart;
+
+  // X (視点主) の新枠.
+  const xIn: TimelineRow = {
+    key: 'in-x',
+    name: step.patient_name,
+    start: sug.candidate.start_time.slice(0, 5),
+    end: sug.candidate.end_time.slice(0, 5),
+    kind: 'in',
+  };
+  // Y (swap 相手) の新枠 = X の旧コースへ。end はスナップショットの所要分数から導出.
+  const yIn: TimelineRow | null = cp
+    ? {
+        key: 'in-y',
+        name: cp.patient_name,
+        start: cp.new_start_time.slice(0, 5),
+        end: addMinutes(cp.new_start_time.slice(0, 5), durationOf(dst ?? src, cp.patient_id, 30)),
+        kind: 'in',
+      }
+    : null;
+
+  const srcRows: TimelineRow[] = src.visits.map((v) => ({
+    key: `s-${v.patient_id}-${v.start_time}`,
+    name: v.patient_name,
+    start: v.start_time.slice(0, 5),
+    end: v.end_time.slice(0, 5),
+    kind:
+      v.patient_id === step.patient_id || (!dst && cp && v.patient_id === cp.patient_id)
+        ? 'out'
+        : 'normal',
+  }));
+
+  if (!dst) {
+    // 同一コース内: 1 枚に out (旧位置) と in (新位置) を同居させる.
+    srcRows.push(xIn);
+    if (yIn) srcRows.push(yIn);
+    return (
+      <div data-testid="scope-step-timeline-single">
+        <TimelinePanel
+          title={`コース内の動き（${src.course_label}${src.staff_name ? `・${src.staff_name}` : ''}）`}
+          rows={srcRows}
+          testId="scope-step-timeline-src"
+        />
+      </div>
+    );
+  }
+
+  // 別コース: 移動元 / 移動先を並列表示.
+  if (yIn) srcRows.push(yIn); // swap: Y は X の旧コース (src) へ入る.
+  const dstRows: TimelineRow[] = dst.visits.map((v) => ({
+    key: `d-${v.patient_id}-${v.start_time}`,
+    name: v.patient_name,
+    start: v.start_time.slice(0, 5),
+    end: v.end_time.slice(0, 5),
+    kind: cp && v.patient_id === cp.patient_id ? 'out' : 'normal',
+  }));
+  dstRows.push(xIn);
+  return (
+    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2" data-testid="scope-step-timeline-pair">
+      <TimelinePanel
+        title={`移動元（${src.course_label}${src.staff_name ? `・${src.staff_name}` : ''}）`}
+        rows={srcRows}
+        testId="scope-step-timeline-src"
+      />
+      <TimelinePanel
+        title={`移動先（${dst.course_label}${dst.staff_name ? `・${dst.staff_name}` : ''}）`}
+        rows={dstRows}
+        testId="scope-step-timeline-dst"
+      />
+    </div>
+  );
+}
 
 export function ScopeOptimizeDialog({
   open,
@@ -204,7 +368,12 @@ export function ScopeOptimizeDialog({
   weekLabel,
   canEdit,
   initialScope = null,
+  offices = [],
 }: ScopeOptimizeDialogProps) {
+  // 全拠点モード (officeId=null) でダイアログ内から選ぶ拠点.
+  const [manualOfficeId, setManualOfficeId] = React.useState<string | null>(null);
+  // 実効拠点: ページ側フィルタ優先、無ければダイアログ内選択.
+  const effectiveOfficeId = officeId ?? manualOfficeId;
   // 未選択 = 全部 (チップの「全曜日」「全コース」は選択クリアと同義).
   const [weekdaySel, setWeekdaySel] = React.useState<Set<number>>(new Set());
   const [courseSel, setCourseSel] = React.useState<Set<string>>(new Set());
@@ -222,14 +391,14 @@ export function ScopeOptimizeDialog({
 
   const runSimulate = React.useCallback(
     (weekdays: number[] | null, courseCodes: string[] | null) => {
-      if (!officeId) return;
+      if (!effectiveOfficeId) return;
       setResult(null);
       setResultScope(null);
       simulateMut.mutate(
         {
           iso_year: isoYear,
           iso_week: isoWeek,
-          scope: { office_id: officeId, weekdays, course_codes: courseCodes },
+          scope: { office_id: effectiveOfficeId, weekdays, course_codes: courseCodes },
         },
         {
           onSuccess: (data) => {
@@ -242,7 +411,7 @@ export function ScopeOptimizeDialog({
     },
     // mutation オブジェクトは毎レンダーで変わるため mutate 呼出のみに依存を絞る.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [officeId, isoYear, isoWeek],
+    [effectiveOfficeId, isoYear, isoWeek],
   );
 
   // 開くたびにまっさらな状態から始める (前回の範囲・結果を持ち越さない).
@@ -251,6 +420,7 @@ export function ScopeOptimizeDialog({
     if (!open) return;
     const wd = initialScope?.weekdays ?? null;
     const cc = initialScope?.courseCodes ?? null;
+    setManualOfficeId(null);
     setWeekdaySel(new Set(wd ?? []));
     setCourseSel(new Set(cc ?? []));
     setResult(null);
@@ -283,7 +453,7 @@ export function ScopeOptimizeDialog({
   };
 
   const handleSimulate = () => {
-    if (!officeId || simulateMut.isPending || applyMut.isPending) return;
+    if (!effectiveOfficeId || simulateMut.isPending || applyMut.isPending) return;
     runSimulate(
       weekdaySel.size > 0 ? [...weekdaySel].sort((a, b) => a - b) : null,
       courseSel.size > 0 ? [...courseSel].sort() : null,
@@ -291,7 +461,7 @@ export function ScopeOptimizeDialog({
   };
 
   const handleApply = () => {
-    if (!officeId || !result || !resultScope || applyMut.isPending) return;
+    if (!effectiveOfficeId || !result || !resultScope || applyMut.isPending) return;
     if (applyCount < 1 || result.steps.length === 0) return;
     const steps = result.steps.slice(0, applyCount);
     applyMut.mutate(
@@ -299,7 +469,7 @@ export function ScopeOptimizeDialog({
         iso_year: isoYear,
         iso_week: isoWeek,
         scope: {
-          office_id: officeId,
+          office_id: effectiveOfficeId,
           weekdays: resultScope.weekdays,
           course_codes: resultScope.courseCodes,
         },
@@ -367,17 +537,50 @@ export function ScopeOptimizeDialog({
           </DialogDescription>
         </DialogHeader>
 
-        {!officeId ? (
-          <div
-            className="py-8 text-center text-sm text-text-muted"
-            data-testid="scope-optimize-no-office"
-          >
-            範囲最適化は拠点単位で行います。左上の拠点フィルタで拠点を選択してください。
+        {!effectiveOfficeId ? (
+          <div className="space-y-3 py-4" data-testid="scope-optimize-no-office">
+            <div className="text-sm text-text-secondary">
+              範囲最適化は拠点単位で行います。対象の拠点を選んでください。
+            </div>
+            <div className="flex flex-wrap gap-2" data-testid="scope-optimize-office-picker">
+              {offices.map((o) => (
+                <FilterChip key={o.id} active={false} onClick={() => setManualOfficeId(o.id)}>
+                  {o.name}
+                </FilterChip>
+              ))}
+              {offices.length === 0 ? (
+                <span className="text-xs text-text-muted">
+                  拠点情報を取得できませんでした。画面上部右側の「拠点」プルダウンで拠点を選んでから開き直してください。
+                </span>
+              ) : null}
+            </div>
           </div>
         ) : (
           <div className="space-y-4 py-1">
             {/* a. 範囲選択 */}
             <div className="space-y-2">
+              {/* 全拠点モードでダイアログ内選択した場合のみ、拠点の切替チップを出す. */}
+              {!officeId ? (
+                <div
+                  className="flex flex-wrap items-center gap-2"
+                  data-testid="scope-optimize-office-filter"
+                >
+                  <span className="w-14 text-xs text-text-muted">拠点</span>
+                  {offices.map((o) => (
+                    <FilterChip
+                      key={o.id}
+                      active={manualOfficeId === o.id}
+                      onClick={() => {
+                        setManualOfficeId(o.id);
+                        setResult(null);
+                        setResultScope(null);
+                      }}
+                    >
+                      {o.name}
+                    </FilterChip>
+                  ))}
+                </div>
+              ) : null}
               <div
                 className="flex flex-wrap items-center gap-2"
                 data-testid="scope-optimize-weekday-filter"
@@ -496,6 +699,8 @@ export function ScopeOptimizeDialog({
                             onAdopt={() => undefined}
                             onDismiss={() => undefined}
                           />
+                          {/* W3: コースタイムライン (同一コース=1枚 / 別コース=2枚並列). */}
+                          <StepCourseTimelines step={step} />
                         </div>
                       );
                     })}
