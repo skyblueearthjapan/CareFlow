@@ -3,7 +3,7 @@
 /**
  * WeeklyRitualGuideDialog — 週次スケジュール準備ガイド (P3-⑥ 導線).
  *
- * 週次5分の儀式 3ステップ（①枠生成 → ②自動スタッフ割り当て → ③レビュー承認）を
+ * 週次5分の儀式 3ステップ（①枠生成 → ②自動スタッフ割当 → ③レビュー承認）を
  * 案内するだけのダイアログ。実行ボタンは置かない（誤操作防止）。
  *
  * 起動: CourseDayTablePanel ツールバーの「週次ガイド」ボタン (variant="ghost")。
@@ -87,7 +87,7 @@ export function WeeklyRitualGuideDialog({ open, onClose }: WeeklyRitualGuideDial
             週次スケジュール準備（5分の儀式）
           </DialogTitle>
           <DialogDescription>
-            毎週はじめに 3ステップを順番に実行するだけで、スタッフ割り当てまで完了します。
+            毎週はじめに 3ステップを順番に実行するだけで、スタッフ割当まで完了します。
           </DialogDescription>
         </DialogHeader>
 
@@ -112,11 +112,11 @@ export function WeeklyRitualGuideDialog({ open, onClose }: WeeklyRitualGuideDial
 
           <StepCard
             step={2}
-            title="自動スタッフ割り当てを実行する"
+            title="自動スタッフ割当を実行する"
             description={
               <>
                 曜日タブ行の右側にある{' '}
-                <span className="font-medium text-text-primary">「自動スタッフ割り当て」</span>
+                <span className="font-medium text-text-primary">「自動スタッフ割当」</span>
                 （緑ボタン・「一斉未割当」の左隣）をクリックします。コース別に最適なスタッフが
                 自動で割り当てられ、問題のないコースはそのまま確定します。欠勤対応がある場合は
                 先に「欠勤対応」を実施してください。

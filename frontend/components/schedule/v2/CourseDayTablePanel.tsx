@@ -11,7 +11,7 @@
  *   │  ─── border-t ────────────────────                                            │
  *   │  Row 2 (曜日タブ + テーブル/リスト + 二次操作):                                  │
  *   │    [月][火][水][木][金][土][週] YYYY-Www                                       │
- *   │    [テーブル | リスト] │ [自動スタッフ割り当て 🟢][一斉未割当] │ [🔒][🔓]           │
+ *   │    [テーブル | リスト] │ [自動スタッフ割当 🟢][一斉未割当] │ [🔒][🔓]              │
  *   ├──────────────────────────────────────────────────────┤
  *   │  選択曜日のコーステーブル N 個 (縦並び)                 │
  *   │   - 本店 A / B / C / D / E / M + 都賀 A 等             │
@@ -24,8 +24,8 @@
  *   - 曜日タブで月〜土を切替 (capacity_<wd> > 0 の曜日のみ表示)
  *   - Phase G-41: 「週を生成」「自動スタッフ割付」「全面最適化」「プール投入」 を Row 1 (右寄せ) に再収容.
  *     mutation pending 状態は内部で算出し、二次操作 (固定枠戻 / 一斉未割当) を多重実行から保護する.
- *   - 2026-07: 「自動スタッフ割付」を「自動スタッフ割り当て」に改称し、Row 2 の
- *     Group γ (一斉未割当の左隣) へ移動 (リセット→再割り当ての操作動線を隣接させる).
+ *   - 2026-07: 「自動スタッフ割付」を「自動スタッフ割当」に改称し、Row 2 の
+ *     Group γ (一斉未割当の左隣) へ移動 (リセット→再割当の操作動線を隣接させる).
  *   - 各コーステーブルの担当 dropdown で PATCH /api/v1/courses/{id}
  *   - プールセル → コーステーブル行ドロップ → place-and-fix
  *
@@ -1686,14 +1686,14 @@ export function CourseDayTablePanel({
         setReviewItems(items);
         setAssignWarningOpen(true);
         toast.warning(
-          `自動スタッフ割り当てしました (確定 ${res.courses_assigned} 件)。` +
+          `自動スタッフ割当が完了しました (確定 ${res.courses_assigned} 件)。` +
             `レビューが必要なコースが ${items.length} 件あります。`,
         );
       } else {
-        toast.success(`自動スタッフ割り当てしました (確定 ${res.courses_assigned} 件)`);
+        toast.success(`自動スタッフ割当が完了しました (確定 ${res.courses_assigned} 件)`);
       }
     } catch (err) {
-      toast.error(`自動スタッフ割り当てに失敗しました: ${formatErr(err)}`);
+      toast.error(`自動スタッフ割当に失敗しました: ${formatErr(err)}`);
     }
   };
 
@@ -1931,11 +1931,11 @@ export function CourseDayTablePanel({
               左: 曜日タブ (月〜土 + 週) + iso week label.
               右 (ml-auto): 3 グループを縦区切り線で分離 (α | γ | δ).
                 α テーブル/リスト切替 (「週」タブ時のみ非表示)
-                γ 自動スタッフ割り当て 🟢 + 一斉未割当 (= 割り当て/リセットの対操作.
+                γ 自動スタッフ割当 🟢 + 一斉未割当 (= 割当/リセットの対操作.
                   2026-07: 「自動スタッフ割付」を改称して Row 1 から移動)
                 δ 🔒 全件ロック + 🔓 全件解除 (= 一括設定)
           ボタンは基本 variant="outline" size="sm" で統一感を担保し、
-          毎週必ず押す主要ボタン (自動スタッフ割り当て / プール投入) のみ variant="default" (= brand-primary 緑) で目立たせる.
+          毎週必ず押す主要ボタン (自動スタッフ割当 / プール投入) のみ variant="default" (= brand-primary 緑) で目立たせる.
         */}
         <Card className="p-3">
           {/* Row 1: 主要 4 ボタン + 固定枠戻 / 全件保存 をまとめて右寄せ (canEdit のみ).
@@ -2213,9 +2213,9 @@ export function CourseDayTablePanel({
                     />
                   ) : null}
 
-                  {/* Group γ: 自動スタッフ割り当て + リセット (一斉未割当).
-                      2026-07: 「自動スタッフ割付」を「自動スタッフ割り当て」に改称し
-                      Row 1 から一斉未割当の左隣へ移動 (割り当て⇄リセットの対操作を隣接). */}
+                  {/* Group γ: 自動スタッフ割当 + リセット (一斉未割当).
+                      2026-07: 「自動スタッフ割付」を「自動スタッフ割当」に改称し
+                      Row 1 から一斉未割当の左隣へ移動 (割当⇄リセットの対操作を隣接). */}
                   <div className="flex flex-wrap items-center gap-1.5">
                     <Button
                       type="button"
@@ -2230,7 +2230,7 @@ export function CourseDayTablePanel({
                       ) : (
                         <UserCheck className="mr-1 h-4 w-4" aria-hidden />
                       )}
-                      自動スタッフ割り当て
+                      自動スタッフ割当
                     </Button>
                     <UnassignAllStaffButton
                       isoYear={isoYear}
@@ -2579,7 +2579,7 @@ export function CourseDayTablePanel({
           onClose={() => setStaffSubstituteOpen(false)}
         />
 
-        {/* Phase G-91: 自動スタッフ割り当ての確認レビューフロー (連続 / 性別). */}
+        {/* Phase G-91: 自動スタッフ割当の確認レビューフロー (連続 / 性別). */}
         <AssignWarningDialog
           open={assignWarningOpen}
           onClose={() => setAssignWarningOpen(false)}

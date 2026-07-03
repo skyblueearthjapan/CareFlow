@@ -3,7 +3,7 @@
 /**
  * AssignWarningDialog — Phase G-91 (確認レビューフロー / コースカード型レビュー).
  *
- * 「自動スタッフ割り当て」 (旧称: 自動スタッフ割付) を、 問題のあるコースだけ管理者が
+ * 「自動スタッフ割当」 (旧称: 自動スタッフ割付) を、 問題のあるコースだけ管理者が
  * 最終判断する確認レビューフローに作り替えたダイアログ。
  * 直前の「埋めて事後警告」 (Phase G-89) を置換する。
  *
@@ -18,7 +18,7 @@
  *      誤操作リスクが高いため一斉承認の対象外 (従来どおり 2 ステップ個別承認)。
  *
  * apply = 承認されたカードを ``POST /api/v1/schedule/apply-staff-review`` で
- * 一括反映する (呼び出し側 onApply に委譲)。 自動スタッフ割り当てと同一の _persist
+ * 一括反映する (呼び出し側 onApply に委譲)。 自動スタッフ割当と同一の _persist
  * 経路で VSA / course_status / primary・secondary 同期 / 2 名体制 / trainee
  * companion を全て反映する (= 旧 PATCH /courses ループのリグレッションを解消)。
  *
@@ -168,7 +168,7 @@ export function AssignWarningDialog({
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <span aria-hidden>📋</span>
-              自動スタッフ割り当てのレビュー
+              自動スタッフ割当のレビュー
             </DialogTitle>
             <DialogDescription>
               問題のないコースは自動で確定しました。 以下のコースは管理者の判断が必要です。
