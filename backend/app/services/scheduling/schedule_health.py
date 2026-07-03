@@ -50,7 +50,12 @@ from app.models.visit import (
     Visit,
 )
 from app.schemas.v2.schedule_health import (
+    CourseDetailPatientCost,
+    CourseDetailTotals,
+    CourseDetailTransition,
+    CourseDetailWeekday,
     ScheduleHealthCourse,
+    ScheduleHealthCourseDetailResponse,
     ScheduleHealthOffice,
     ScheduleHealthResponse,
     ScheduleHealthTotals,
@@ -88,6 +93,8 @@ class _HealthVisit:
     end_time: time
     lat: float | None
     lng: float | None
+    # H1 (原因ドリルダウン) の表示用。集計計算では使わない (挙動不変).
+    patient_name: str = ""
 
 
 @dataclass
@@ -156,9 +163,7 @@ async def _load_health_buckets(
         patients_by_id = {p.id: p for p in prows.all()}
 
     # 拠点 name map (バケットに出た office + 明示要求 office).
-    office_ids_in_use: set[UUID] = {course.office_id for (_v, course, _s) in rows} | set(
-        office_ids
-    )
+    office_ids_in_use: set[UUID] = {course.office_id for (_v, course, _s) in rows} | set(office_ids)
     office_name_by_id: dict[UUID, str] = {}
     if office_ids_in_use:
         orows = await db.scalars(select(Office).where(Office.id.in_(office_ids_in_use)))
@@ -188,6 +193,7 @@ async def _load_health_buckets(
                 # 座標欠損はそのまま None を保持し、遷移計算で travel=0 扱いにする.
                 lat=float(patient.lat) if patient.lat is not None else None,
                 lng=float(patient.lng) if patient.lng is not None else None,
+                patient_name=patient.name,
             )
         )
 
@@ -215,9 +221,7 @@ def _compute_course_metrics(
     """
     sv = sorted(bucket.visits, key=lambda x: _time_to_min(x.start_time))
 
-    service_minutes = sum(
-        max(0, _time_to_min(v.end_time) - _time_to_min(v.start_time)) for v in sv
-    )
+    service_minutes = sum(max(0, _time_to_min(v.end_time) - _time_to_min(v.start_time)) for v in sv)
     patient_count = len({v.patient_id for v in sv})
 
     travel_minutes = 0
@@ -254,10 +258,7 @@ def _compute_course_metrics(
         buffer_minutes += pair_buffer
         # 「移動しても余る待ち時間」: 次開始 − 前終了 − 移動 − バッファー (負値は 0).
         raw_gap = (
-            _time_to_min(cur.start_time)
-            - _time_to_min(prev.end_time)
-            - pair_travel
-            - pair_buffer
+            _time_to_min(cur.start_time) - _time_to_min(prev.end_time) - pair_travel - pair_buffer
         )
         gap_minutes += max(0, raw_gap)
 
@@ -358,6 +359,134 @@ async def compute_schedule_health(
 
 
 # ---------------------------------------------------------------------------
+# H1: 原因ドリルダウン (健康診断→処方箋)
+#   「なぜこのコースが重いのか」を数字で示す: 連続遷移の内訳 + 患者別の配置コスト
+#   (= W3 の厳密限界コスト compute_exact_marginal を再利用)。
+#   設計書: docs/plans/health-prescription-design.md §1。
+# ---------------------------------------------------------------------------
+
+
+def _hhmm(t: time) -> str:
+    return f"{t.hour:02d}:{t.minute:02d}"
+
+
+async def compute_course_detail(
+    db: AsyncSession,
+    *,
+    iso_year: int,
+    iso_week: int,
+    office_id: UUID,
+    course_code: str,
+    config: SchedulingConfig,
+) -> ScheduleHealthCourseDetailResponse:
+    """対象コースの原因内訳 (曜日別の遷移と患者別配置コスト) を返す (read-only).
+
+    物差しは健康診断と完全同一 (`_load_health_buckets` / 同住所 0 / 座標欠損 travel 0)。
+    患者別配置コストは W3 正典 ``compute_exact_marginal`` (コース合計の差) を使う。
+    座標欠損の訪問は配置コストの existing から除外し、その患者はランキング対象外
+    (transitions には travel 0 として現れる)。該当コースが無い週は weekdays=[] の 200。
+    """
+    # 循環 import 回避のため関数内 import (improvement_engine は schedule_health を
+    # import しないが、モジュール読み込み順の結合を最小にする).
+    from app.services.scheduling.improvement_engine import compute_exact_marginal
+    from app.services.scheduling.proposal_solver import ExistingVisit
+    from app.services.scheduling.propose_slots_service import _course_label
+
+    buckets, _office_names = await _load_health_buckets(
+        db, iso_year=iso_year, iso_week=iso_week, office_ids=[office_id]
+    )
+    office = await db.scalar(select(Office).where(Office.id == office_id))
+    office_code = office.code if office is not None else None
+    label = _course_label(office_code, course_code)
+
+    weekdays: list[CourseDetailWeekday] = []
+    for (oid, weekday, code), bucket in sorted(buckets.items(), key=lambda kv: kv[0][1]):
+        if oid != office_id or code != course_code or not bucket.visits:
+            continue
+        sv = sorted(bucket.visits, key=lambda x: _time_to_min(x.start_time))
+
+        # 遷移内訳 (計算式は _compute_course_metrics と同一).
+        transitions: list[CourseDetailTransition] = []
+        total_min = 0
+        total_km = 0.0
+        for i in range(1, len(sv)):
+            prev = sv[i - 1]
+            cur = sv[i]
+            coords_known = (
+                prev.lat is not None
+                and prev.lng is not None
+                and cur.lat is not None
+                and cur.lng is not None
+            )
+            if not coords_known:
+                pair_travel, pair_km = 0, 0.0
+            elif _address_bucket(prev.lat, prev.lng) == _address_bucket(cur.lat, cur.lng):  # type: ignore[arg-type]
+                pair_travel, pair_km = 0, 0.0
+            else:
+                pair_km = haversine_km(prev.lat, prev.lng, cur.lat, cur.lng)  # type: ignore[arg-type]
+                pair_travel = haversine_minutes(pair_km, speed_kmh=config.travel_speed_kmh)
+            total_min += pair_travel
+            total_km += pair_km
+            transitions.append(
+                CourseDetailTransition(
+                    from_patient_id=prev.patient_id,
+                    from_patient_name=prev.patient_name,
+                    from_end_time=_hhmm(prev.end_time),
+                    to_patient_id=cur.patient_id,
+                    to_patient_name=cur.patient_name,
+                    to_start_time=_hhmm(cur.start_time),
+                    travel_minutes=pair_travel,
+                    travel_km=round(pair_km, 1),
+                )
+            )
+
+        # 患者別の配置コスト (座標のある訪問のみ).
+        coord_visits = [v for v in sv if v.lat is not None and v.lng is not None]
+        evs = [
+            ExistingVisit(
+                start_time=v.start_time,
+                end_time=v.end_time,
+                lat=v.lat,  # type: ignore[arg-type]
+                lng=v.lng,  # type: ignore[arg-type]
+                service_minutes=max(0, _time_to_min(v.end_time) - _time_to_min(v.start_time)),
+                patient_id=str(v.patient_id),
+            )
+            for v in coord_visits
+        ]
+        costs: list[CourseDetailPatientCost] = []
+        for idx, v in enumerate(coord_visits):
+            others = [e for j, e in enumerate(evs) if j != idx]
+            m_min, m_km = compute_exact_marginal(others, evs[idx], config=config)
+            costs.append(
+                CourseDetailPatientCost(
+                    patient_id=v.patient_id,
+                    patient_name=v.patient_name,
+                    start_time=_hhmm(v.start_time),
+                    marginal_minutes=m_min,
+                    marginal_km=round(m_km, 1),
+                )
+            )
+        costs.sort(key=lambda c: (-c.marginal_minutes, -c.marginal_km, c.start_time))
+
+        weekdays.append(
+            CourseDetailWeekday(
+                weekday=weekday,
+                course_label=label,
+                staff_name=bucket.staff_name,
+                totals=CourseDetailTotals(travel_minutes=total_min, travel_km=round(total_km, 1)),
+                transitions=transitions,
+                patient_costs=costs,
+            )
+        )
+
+    return ScheduleHealthCourseDetailResponse(
+        office_id=office_id,
+        course_code=course_code,
+        weekdays=weekdays,
+    )
+
+
+# ---------------------------------------------------------------------------
 # 見直しどきトレンド (schedule-advisor §3 Phase 3「見直しどき通知」)
 #   履歴テーブルは作らず、過去週の実 Visit に対し compute_schedule_health を
 #   週ごとに呼び直してトレンドを組み立てる (既存関数の挙動不変)。
@@ -433,6 +562,7 @@ async def compute_schedule_health_trend(
 
 __all__ = [
     "SCHEDULE_HEALTH_TREND_MAX_WEEKS",
+    "compute_course_detail",
     "compute_schedule_health",
     "compute_schedule_health_trend",
 ]

@@ -278,23 +278,40 @@ async def test_status_filter_excludes_cancelled_and_deleted(client, db) -> None:
     p1 = await _seed_patient(db, office=office, code="ST1", lat=BASE[0], lng=BASE[1])
     p2 = await _seed_patient(db, office=office, code="ST2", lat=FAR[0], lng=FAR[1])
     await _seed_visit(
-        db, patient=p1, course=course, start=time(9, 0), end=time(9, 30),
+        db,
+        patient=p1,
+        course=course,
+        start=time(9, 0),
+        end=time(9, 30),
         status=VISIT_STATUS_COMPLETED,
     )
     await _seed_visit(
-        db, patient=p2, course=course, start=time(10, 30), end=time(11, 0),
+        db,
+        patient=p2,
+        course=course,
+        start=time(10, 30),
+        end=time(11, 0),
         status=VISIT_STATUS_IN_PROGRESS,
     )
     # 除外: cancelled + deleted.
     p3 = await _seed_patient(db, office=office, code="ST3", lat=NEAR[0], lng=NEAR[1])
     p4 = await _seed_patient(db, office=office, code="ST4", lat=NEAR[0], lng=NEAR[1])
     await _seed_visit(
-        db, patient=p3, course=course, start=time(14, 0), end=time(14, 30),
+        db,
+        patient=p3,
+        course=course,
+        start=time(14, 0),
+        end=time(14, 30),
         status=VISIT_STATUS_CANCELLED,
     )
     await _seed_visit(
-        db, patient=p4, course=course, start=time(15, 0), end=time(15, 30),
-        status=VISIT_STATUS_PLANNED, deleted=True,
+        db,
+        patient=p4,
+        course=course,
+        start=time(15, 0),
+        end=time(15, 30),
+        status=VISIT_STATUS_PLANNED,
+        deleted=True,
     )
     await db.commit()
 
@@ -501,7 +518,13 @@ async def _seed_course_at(
 
 
 async def _seed_visit_at(
-    db, *, patient, course, visit_date, start: time, end: time,
+    db,
+    *,
+    patient,
+    course,
+    visit_date,
+    start: time,
+    end: time,
     status: str = VISIT_STATUS_PLANNED,
 ) -> Visit:
     visit = Visit(
@@ -529,11 +552,17 @@ async def _seed_cross_pair_week(
     期待メトリクス: travel_minutes=15, travel_km=4.9, gap=37, visit_count=2.
     """
     monday = date.fromisocalendar(iso_year, iso_week, 1)
-    course = await _seed_course_at(db, office=office, staff=staff, iso_year=iso_year, iso_week=iso_week)
+    course = await _seed_course_at(
+        db, office=office, staff=staff, iso_year=iso_year, iso_week=iso_week
+    )
     p1 = await _seed_patient(db, office=office, code=f"{tag}-1", lat=BASE[0], lng=BASE[1])
     p2 = await _seed_patient(db, office=office, code=f"{tag}-2", lat=FAR[0], lng=FAR[1])
-    await _seed_visit_at(db, patient=p1, course=course, visit_date=monday, start=time(9, 0), end=time(9, 30))
-    await _seed_visit_at(db, patient=p2, course=course, visit_date=monday, start=time(10, 30), end=time(11, 0))
+    await _seed_visit_at(
+        db, patient=p1, course=course, visit_date=monday, start=time(9, 0), end=time(9, 30)
+    )
+    await _seed_visit_at(
+        db, patient=p2, course=course, visit_date=monday, start=time(10, 30), end=time(11, 0)
+    )
 
 
 async def _trend(client, user: User, **params: Any) -> Any:
@@ -548,8 +577,12 @@ async def test_trend_walks_back_weeks_old_to_new(client, db) -> None:
     admin = await _make_user(db, email="tr-walk@example.com", role="admin")
     office, staff = await _seed_office_staff(db)
     # 指定週 (W20) と前週 (W19) に visit を入れ、W18 は空にする.
-    await _seed_cross_pair_week(db, office=office, staff=staff, iso_year=ISO_YEAR, iso_week=ISO_WEEK, tag="W20")
-    await _seed_cross_pair_week(db, office=office, staff=staff, iso_year=ISO_YEAR, iso_week=ISO_WEEK - 1, tag="W19")
+    await _seed_cross_pair_week(
+        db, office=office, staff=staff, iso_year=ISO_YEAR, iso_week=ISO_WEEK, tag="W20"
+    )
+    await _seed_cross_pair_week(
+        db, office=office, staff=staff, iso_year=ISO_YEAR, iso_week=ISO_WEEK - 1, tag="W19"
+    )
     await db.commit()
 
     res = await _trend(client, admin, office_id=str(office.id), weeks=3)
@@ -589,7 +622,10 @@ async def test_trend_empty_weeks_all_zero(client, db) -> None:
     assert [w["iso_week"] for w in weeks] == [ISO_WEEK - 3, ISO_WEEK - 2, ISO_WEEK - 1, ISO_WEEK]
     for w in weeks:
         assert w["totals"] == {
-            "visit_count": 0, "travel_minutes": 0, "travel_km": 0.0, "gap_minutes": 0,
+            "visit_count": 0,
+            "travel_minutes": 0,
+            "travel_km": 0.0,
+            "gap_minutes": 0,
         }
 
 
@@ -599,7 +635,9 @@ async def test_trend_year_crossing(client, db) -> None:
     admin = await _make_user(db, email="tr-yearcross@example.com", role="admin")
     office, staff = await _seed_office_staff(db)
     # 前年 2025-W52 に visit を入れる.
-    await _seed_cross_pair_week(db, office=office, staff=staff, iso_year=2025, iso_week=52, tag="Y52")
+    await _seed_cross_pair_week(
+        db, office=office, staff=staff, iso_year=2025, iso_week=52, tag="Y52"
+    )
     await db.commit()
 
     res = await _trend(client, admin, office_id=str(office.id), iso_year=2026, iso_week=1, weeks=3)
@@ -608,7 +646,9 @@ async def test_trend_year_crossing(client, db) -> None:
     assert len(weeks) == 3
     # 古→新: [2025-W51, 2025-W52, 2026-W01].
     assert [(w["iso_year"], w["iso_week"]) for w in weeks] == [
-        (2025, 51), (2025, 52), (2026, 1),
+        (2025, 51),
+        (2025, 52),
+        (2026, 1),
     ]
     assert weeks[1]["totals"]["visit_count"] == 2  # 2025-W52 に visit.
     assert weeks[1]["totals"]["travel_minutes"] == 15
@@ -621,8 +661,12 @@ async def test_trend_sums_across_offices(client, db) -> None:
     admin = await _make_user(db, email="tr-crossoffice@example.com", role="admin")
     office_a, staff_a = await _seed_office_staff(db, name="稲", code="INAGE")
     office_b, staff_b = await _seed_office_staff(db, name="津", code="TSUGA")
-    await _seed_cross_pair_week(db, office=office_a, staff=staff_a, iso_year=ISO_YEAR, iso_week=ISO_WEEK, tag="OA")
-    await _seed_cross_pair_week(db, office=office_b, staff=staff_b, iso_year=ISO_YEAR, iso_week=ISO_WEEK, tag="OB")
+    await _seed_cross_pair_week(
+        db, office=office_a, staff=staff_a, iso_year=ISO_YEAR, iso_week=ISO_WEEK, tag="OA"
+    )
+    await _seed_cross_pair_week(
+        db, office=office_b, staff=staff_b, iso_year=ISO_YEAR, iso_week=ISO_WEEK, tag="OB"
+    )
     await db.commit()
 
     res = await _trend(client, admin, weeks=1)
@@ -662,7 +706,103 @@ async def test_trend_rejects_staff_role(client, db) -> None:
 
 @pytest.mark.asyncio
 async def test_trend_rejects_no_auth(client, db) -> None:
-    res = await client.get(
-        TREND_PATH, params={"iso_year": ISO_YEAR, "iso_week": ISO_WEEK}
-    )
+    res = await client.get(TREND_PATH, params={"iso_year": ISO_YEAR, "iso_week": ISO_WEEK})
     assert res.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# H1: 原因ドリルダウン (GET /v2/schedule-health/course-detail)
+# ---------------------------------------------------------------------------
+
+
+async def _get_detail(client, user: User, office, course_code: str = "A") -> Any:
+    return await client.get(
+        "/api/v1/schedule/v2/schedule-health/course-detail",
+        headers=_bearer(user),
+        params=_params(office_id=str(office.id), course_code=course_code),
+    )
+
+
+@pytest.mark.asyncio
+async def test_course_detail_transitions_and_patient_costs(client, db) -> None:
+    """遷移内訳と患者別配置コストを返す (物差しは健康診断と同一・厳密限界コスト).
+
+    構成: BASE — FAR — BASE2(BASEと同住所)。
+      - 遷移: BASE→FAR (重い) / FAR→BASE2 (重い) の 2 件。
+      - 配置コスト: FAR の患者が最大 (抜くと BASE→BASE2 が同住所直結で全額浮く)。
+    """
+    admin = await _make_user(db, email="cd-admin1@example.com", role="admin")
+    office, staff = await _seed_office_staff(db)
+    course = await _seed_course(db, office=office, staff=staff)
+    p1 = await _seed_patient(db, office=office, code="D1", lat=BASE[0], lng=BASE[1])
+    p2 = await _seed_patient(db, office=office, code="D2", lat=FAR[0], lng=FAR[1], name="遠方 太郎")
+    p3 = await _seed_patient(db, office=office, code="D3", lat=SAME[0], lng=SAME[1])
+    await _seed_visit(db, patient=p1, course=course, start=time(9, 0), end=time(9, 30))
+    await _seed_visit(db, patient=p2, course=course, start=time(10, 30), end=time(11, 0))
+    await _seed_visit(db, patient=p3, course=course, start=time(12, 30), end=time(13, 0))
+    await db.commit()
+
+    res = await _get_detail(client, admin, office)
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["course_code"] == "A"
+    assert len(data["weekdays"]) == 1
+    wd = data["weekdays"][0]
+    assert wd["weekday"] == 0
+    assert wd["staff_name"] == "担当看護師"
+
+    # 遷移 2 件 (BASE→FAR / FAR→BASE2)。どちらも異住所で travel > 0。
+    trs = wd["transitions"]
+    assert len(trs) == 2
+    assert trs[0]["to_patient_name"] == "遠方 太郎"
+    assert trs[0]["travel_minutes"] > 0 and trs[1]["travel_minutes"] > 0
+    # 曜日合計 = 遷移の和。
+    assert wd["totals"]["travel_minutes"] == sum(t["travel_minutes"] for t in trs)
+
+    # 配置コスト: FAR 患者が最大 (BASE と BASE2 は同住所なので直結で 0 になる)。
+    costs = wd["patient_costs"]
+    assert costs[0]["patient_name"] == "遠方 太郎"
+    assert (
+        costs[0]["marginal_minutes"] == wd["totals"]["travel_minutes"] + 2 * 8
+    )  # 移動2辺+buffer2辺
+    assert all(costs[0]["marginal_minutes"] >= c["marginal_minutes"] for c in costs)
+
+
+@pytest.mark.asyncio
+async def test_course_detail_missing_coords_excluded_from_costs(client, db) -> None:
+    """座標欠損の患者は遷移では travel 0、配置コストのランキング対象外."""
+    admin = await _make_user(db, email="cd-admin2@example.com", role="admin")
+    office, staff = await _seed_office_staff(db)
+    course = await _seed_course(db, office=office, staff=staff)
+    p1 = await _seed_patient(db, office=office, code="M1", lat=BASE[0], lng=BASE[1])
+    p2 = await _seed_patient(db, office=office, code="M2", lat=None, lng=None, name="座標 なし")
+    await _seed_visit(db, patient=p1, course=course, start=time(9, 0), end=time(9, 30))
+    await _seed_visit(db, patient=p2, course=course, start=time(10, 0), end=time(10, 30))
+    await db.commit()
+
+    res = await _get_detail(client, admin, office)
+    assert res.status_code == 200
+    wd = res.json()["weekdays"][0]
+    assert len(wd["transitions"]) == 1
+    assert wd["transitions"][0]["travel_minutes"] == 0  # 座標欠損 → travel 0 (健康診断規約)
+    names = [c["patient_name"] for c in wd["patient_costs"]]
+    assert "座標 なし" not in names
+
+
+@pytest.mark.asyncio
+async def test_course_detail_unknown_course_returns_empty(client, db) -> None:
+    admin = await _make_user(db, email="cd-admin3@example.com", role="admin")
+    office, _staff = await _seed_office_staff(db)
+    await db.commit()
+    res = await _get_detail(client, admin, office, course_code="Z")
+    assert res.status_code == 200
+    assert res.json()["weekdays"] == []
+
+
+@pytest.mark.asyncio
+async def test_course_detail_staff_forbidden(client, db) -> None:
+    staff_user = await _make_user(db, email="cd-staff1@example.com", role="staff")
+    office, _staff = await _seed_office_staff(db)
+    await db.commit()
+    res = await _get_detail(client, staff_user, office)
+    assert res.status_code == 403

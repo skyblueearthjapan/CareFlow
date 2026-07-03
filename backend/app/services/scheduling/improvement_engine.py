@@ -316,6 +316,50 @@ def snapshot_course_bucket(bucket: _CourseBucket) -> CourseSnapshotData:
     )
 
 
+def _position_phrase(snap: CourseSnapshotData, exclude_pid: UUID, at: time) -> str:
+    """スナップショット内での位置を「◯◯様と△△様の間」等の日本語句にする (H2 理由文)."""
+    prev_name: str | None = None
+    next_name: str | None = None
+    at_min = _time_to_min(at)
+    for v in snap.visits:  # start 昇順
+        if v.patient_id == exclude_pid:
+            continue
+        if _time_to_min(v.start_time) <= at_min:
+            prev_name = v.patient_name
+        elif next_name is None:
+            next_name = v.patient_name
+    if prev_name and next_name:
+        return f"{prev_name}様と{next_name}様の間"
+    if prev_name:
+        return f"{prev_name}様の後"
+    if next_name:
+        return f"{next_name}様の前"
+    return "単独配置"
+
+
+def build_move_reason(
+    src: CourseSnapshotData,
+    dst: CourseSnapshotData | None,
+    pid: UUID,
+    old_start: time,
+    new_start: time,
+    delta_min: int,
+) -> str:
+    """move 提案の理由文 (H2): 現在の位置→移動先の位置と短縮量を 1 文で説明する.
+
+    「原因がこうだから、対策はこう、効果はこれだけ」を管理者向けに言語化する
+    (docs/plans/health-prescription-design.md §2.1)。
+    """
+    cur_pos = _position_phrase(src, pid, old_start)
+    to_snap = dst if dst is not None else src
+    new_pos = _position_phrase(to_snap, pid, new_start)
+    to_label = f"{to_snap.course_label}の" if dst is not None else ""
+    return (
+        f"現在の{cur_pos}への配置で回り道が生じています。"
+        f"{to_label}{new_pos}へ移すと移動が −{delta_min}分/週 短縮できます。"
+    )
+
+
 @dataclass
 class ImprovementCandidateData:
     """改善提案 1 件 (内部表現)."""
@@ -362,6 +406,9 @@ class ImprovementCandidateData:
     # step 単位で別途キャプチャするため、そちらの経路では None のまま。
     source_course: CourseSnapshotData | None = None
     destination_course: CourseSnapshotData | None = None
+    # H2: 理由文 (「原因→対策→効果」の 1 文)。move は build_move_reason で生成、
+    # swap は簡易文。scope_optimizer の move はステップ確定時に付与。
+    reason: str | None = None
 
 
 @dataclass
@@ -780,6 +827,11 @@ def _swap_candidates_for_pfv(
                         if snapshot_cache is not None and not same_bucket
                         else None
                     ),
+                    # H2: swap は簡易理由文 (双方向のため move 文とは別書式).
+                    reason=(
+                        f"{vy.patient_name}様と枠を入れ替え、双方の回り道を"  # type: ignore[attr-defined]
+                        f"同時に解消します（合計 −{delta_min}分/週）。"
+                    ),
                 )
             )
     return out
@@ -1031,6 +1083,18 @@ async def find_improvement_candidates(
                     cand_course_label=cand_label,
                     cand_staff_name=bucket.staff_name,
                 )
+                # UI 統一 (タイムライン) + H2 (理由文) 用のスナップショット.
+                src_snap = _cached_snapshot(snap_cache, current.bucket)
+                dst_snap = (
+                    None
+                    if (office_id, wd, course_code)
+                    == (
+                        current.bucket.office_id,
+                        current.bucket.weekday,
+                        current.bucket.course_code,
+                    )
+                    else _cached_snapshot(snap_cache, bucket)
+                )
                 candidates.append(
                     ImprovementCandidateData(
                         kind=kind,
@@ -1058,17 +1122,15 @@ async def find_improvement_candidates(
                         within_preference=within_pref,
                         changes=changes,
                         unchanged=unchanged,
-                        # UI 統一: タイムライン表示用スナップショット (同一コースは dest=None).
-                        source_course=_cached_snapshot(snap_cache, current.bucket),
-                        destination_course=(
-                            None
-                            if (office_id, wd, course_code)
-                            == (
-                                current.bucket.office_id,
-                                current.bucket.weekday,
-                                current.bucket.course_code,
-                            )
-                            else _cached_snapshot(snap_cache, bucket)
+                        source_course=src_snap,
+                        destination_course=dst_snap,
+                        reason=build_move_reason(
+                            src_snap,
+                            dst_snap,
+                            patient.id,
+                            current.start_time,
+                            slot.start,
+                            delta_min,
                         ),
                     )
                 )
@@ -1143,6 +1205,7 @@ __all__ = [
     "CourseSnapshotVisitData",
     "FilteredSummaryData",
     "ImprovementCandidateData",
+    "build_move_reason",
     "compute_exact_marginal",
     "compute_marginal_cost",
     "course_travel_buffer_total",

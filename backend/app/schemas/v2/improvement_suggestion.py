@@ -186,6 +186,12 @@ class ImprovementSuggestion(BaseModel):
         default=None,
         description="移動先コースのスナップショット (同一コース内の提案は None).",
     )
+    reason: str | None = Field(
+        default=None,
+        description=(
+            "H2: 理由文 (「原因→対策→効果」の 1 文。現場向け日本語)。後方互換: 既定 None."
+        ),
+    )
 
 
 class ImprovementFilteredSummary(BaseModel):

@@ -416,3 +416,30 @@ async def test_simulate_steps_include_course_snapshot(client, db) -> None:
     assert starts == sorted(starts)
     # 同一コース内の移動 → destination は null.
     assert step["destination_course"] is None
+
+
+@pytest.mark.asyncio
+async def test_simulate_returns_course_before_after_and_reason(client, db) -> None:
+    """H2: コース別の実行後見通し (courses[]) と手順の理由文 (reason) が付く."""
+    admin = await _make_user(db, email="so-admin12@example.com", role="admin")
+    office, _p = await _seed_sandwich_office(db)
+
+    res = await client.post(_URL, headers=_bearer(admin), json=_body(office))
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["steps"]
+
+    # 理由文: move 提案には「原因→対策→効果」の 1 文が付く.
+    reason = data["steps"][0]["suggestion"]["reason"]
+    assert reason
+    assert "様" in reason and "分/週" in reason
+
+    # コース別 before/after: 対象コース A の移動が改善方向.
+    courses = data["courses"]
+    assert courses, data
+    ca = next(c for c in courses if c["course_code"] == "A" and c["weekday"] == 0)
+    assert ca["before"]["travel_minutes"] > ca["after"]["travel_minutes"]
+    assert ca["course_label"]
+    # scope 合計との整合: courses の before 合計 = 全体 before の travel.
+    assert sum(c["before"]["travel_minutes"] for c in courses) == data["before"]["travel_minutes"]
+    assert sum(c["after"]["travel_minutes"] for c in courses) == data["after"]["travel_minutes"]

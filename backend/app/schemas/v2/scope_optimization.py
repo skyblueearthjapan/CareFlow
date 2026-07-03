@@ -137,6 +137,23 @@ class ScopeOptimizationExcludedSummary(BaseModel):
     )
 
 
+class ScopeOptimizationCourseBeforeAfter(BaseModel):
+    """コース別の実行後見通し (H2: 「稲Bが 92分→51分 になる」).
+
+    見通しは恒久パターン (PFV) 基準のシミュレーション値 (設計 D-1)。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    office_id: uuid.UUID
+    weekday: Weekday
+    course_code: str
+    course_label: str
+    staff_name: str | None = None
+    before: ScopeOptimizationMetrics
+    after: ScopeOptimizationMetrics
+
+
 class ScopeOptimizationSimulateResponse(BaseModel):
     """``POST /v2/scope-optimization/simulate`` レスポンス (read-only).
 
@@ -156,6 +173,10 @@ class ScopeOptimizationSimulateResponse(BaseModel):
         default_factory=ScopeOptimizationExcludedSummary
     )
     state_token: str = Field(..., description="apply 用の楽観ロック指紋 (sha256)")
+    courses: list[ScopeOptimizationCourseBeforeAfter] = Field(
+        default_factory=list,
+        description="H2: コース別の実行後見通し (変化なしコースも含む)",
+    )
 
 
 class ScopeOptimizationApplyRequest(BaseModel):
@@ -191,6 +212,7 @@ class ScopeOptimizationApplyResponse(BaseModel):
 __all__ = [
     "ScopeCourseSnapshot",
     "ScopeOptimizationApplyRequest",
+    "ScopeOptimizationCourseBeforeAfter",
     "ScopeOptimizationApplyResponse",
     "ScopeOptimizationExcludedSummary",
     "ScopeOptimizationMetrics",

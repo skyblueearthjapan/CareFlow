@@ -20,6 +20,70 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class CourseDetailTransition(BaseModel):
+    """コース内の連続する 2 訪問間の移動 1 件 (健康診断ドリルダウン H1).
+
+    同住所 (<=100m) は travel 0/0、座標欠損を含む遷移は travel 0 (健康診断と同一規約)。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    from_patient_id: UUID
+    from_patient_name: str
+    from_end_time: str = Field(..., description="前の訪問の終了 HH:MM")
+    to_patient_id: UUID
+    to_patient_name: str
+    to_start_time: str = Field(..., description="次の訪問の開始 HH:MM")
+    travel_minutes: int = Field(..., ge=0)
+    travel_km: float = Field(..., ge=0.0, description="小数1桁")
+
+
+class CourseDetailPatientCost(BaseModel):
+    """患者 1 名の配置コスト = 厳密限界コスト (その患者を抜くと浮く travel+buffer)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    patient_id: UUID
+    patient_name: str
+    start_time: str = Field(..., description="HH:MM")
+    marginal_minutes: int = Field(..., description="配置コスト (分/週相当。移動+バッファー)")
+    marginal_km: float = Field(..., description="配置コスト (km。小数1桁)")
+
+
+class CourseDetailTotals(BaseModel):
+    """ドリルダウン対象コース (曜日単位) の移動合計 (割合計算の分母)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    travel_minutes: int = Field(..., ge=0)
+    travel_km: float = Field(..., ge=0.0)
+
+
+class CourseDetailWeekday(BaseModel):
+    """対象コースの 1 曜日ぶんの原因内訳."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    weekday: int = Field(..., ge=0, le=6, description="0=Mon..6=Sun")
+    course_label: str = Field(..., description="拠点短縮 + コード (例: 稲B)")
+    staff_name: str | None = None
+    totals: CourseDetailTotals
+    transitions: list[CourseDetailTransition] = Field(default_factory=list)
+    patient_costs: list[CourseDetailPatientCost] = Field(
+        default_factory=list, description="配置コスト降順 (座標欠損の患者は対象外)"
+    )
+
+
+class ScheduleHealthCourseDetailResponse(BaseModel):
+    """``GET /v2/schedule-health/course-detail`` レスポンス (H1: 原因ドリルダウン)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    office_id: UUID
+    course_code: str
+    weekdays: list[CourseDetailWeekday] = Field(default_factory=list)
+
+
 class ScheduleHealthTotals(BaseModel):
     """曜日 / 週の集計小計 (コース横断の合算)."""
 

@@ -110,6 +110,7 @@ from app.schemas.v2.propose_slots import (
     _parse_hhmm,
 )
 from app.schemas.v2.schedule_health import (
+    ScheduleHealthCourseDetailResponse,
     ScheduleHealthResponse,
     ScheduleHealthTrendResponse,
 )
@@ -117,6 +118,7 @@ from app.schemas.v2.scope_optimization import (
     ScopeCourseSnapshot,
     ScopeOptimizationApplyRequest,
     ScopeOptimizationApplyResponse,
+    ScopeOptimizationCourseBeforeAfter,
     ScopeOptimizationExcludedSummary,
     ScopeOptimizationMetrics,
     ScopeOptimizationSimulateRequest,
@@ -193,6 +195,7 @@ from app.services.scheduling.propose_slots_service import (
     load_week_course_buckets,
 )
 from app.services.scheduling.schedule_health import (
+    compute_course_detail,
     compute_schedule_health,
     compute_schedule_health_trend,
 )
@@ -1811,6 +1814,43 @@ async def schedule_health_trend_endpoint(
     )
 
 
+@router.get(
+    "/v2/schedule-health/course-detail",
+    response_model=ScheduleHealthCourseDetailResponse,
+    status_code=status.HTTP_200_OK,
+    summary="H1: 対象コースの原因内訳 (重い遷移 + 患者別配置コスト) を返す (read-only)",
+)
+async def schedule_health_course_detail_endpoint(
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    iso_year: int = Query(..., ge=2020, le=2100),
+    iso_week: int = Query(..., ge=1, le=53),
+    office_id: UUID = Query(..., description="対象拠点"),
+    course_code: str = Query(..., min_length=1, max_length=8, description="対象コース (例: B)"),
+) -> ScheduleHealthCourseDetailResponse:
+    """健康診断→処方箋 (H1): 「なぜこのコースが重いのか」の内訳を返す.
+
+    - transitions: 連続訪問間の移動 (健康診断と同一物差し。同住所 0 / 座標欠損 0)。
+    - patient_costs: 患者別の配置コスト (W3 厳密限界コスト。座標欠損患者は対象外)。
+    該当コースの訪問が無い週は weekdays=[] の 200。read-only。
+    """
+    office = await db.scalar(select(Office).where(Office.id == office_id))
+    if office is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Office not found")
+    config = await load_scheduling_config(db)
+    try:
+        return await compute_course_detail(
+            db,
+            iso_year=iso_year,
+            iso_week=iso_week,
+            office_id=office_id,
+            course_code=course_code,
+            config=config,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
 # ---------------------------------------------------------------------------
 # propose-slots (Phase2-2: 候補患者の実現可能な空き枠を算出・ランキング)
 # ---------------------------------------------------------------------------
@@ -2346,6 +2386,7 @@ def _improvement_to_schema(c: ImprovementCandidateData) -> ImprovementSuggestion
         # scope simulate 経路の candidate は None で、step 側のスナップショットを使う).
         source_course=_scope_snapshot_to_schema(c.source_course),
         destination_course=_scope_snapshot_to_schema(c.destination_course),
+        reason=c.reason,
     )
 
 
@@ -2901,6 +2942,19 @@ async def scope_optimization_simulate_endpoint(
             truncated=result.excluded.truncated,
         ),
         state_token=result.state_token,
+        # H2: コース別の実行後見通し.
+        courses=[
+            ScopeOptimizationCourseBeforeAfter(
+                office_id=cba.office_id,
+                weekday=cba.weekday,
+                course_code=cba.course_code,
+                course_label=cba.course_label,
+                staff_name=cba.staff_name,
+                before=_scope_metrics_to_schema(cba.before),
+                after=_scope_metrics_to_schema(cba.after),
+            )
+            for cba in result.courses
+        ],
     )
 
 

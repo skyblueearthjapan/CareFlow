@@ -72,6 +72,7 @@ from app.services.scheduling.improvement_engine import (
     _slot_within_preference,
     _staff_warnings_for_bucket,
     _swap_candidates_for_pfv,
+    build_move_reason,
     compute_exact_marginal,
     snapshot_course_bucket,
 )
@@ -186,6 +187,19 @@ class ScopeExcludedSummaryData:
 
 
 @dataclass
+class ScopeCourseBeforeAfterData:
+    """コース別の before/after (H2:「稲Bが 92分→51分 になる」の実行後見通し)."""
+
+    office_id: UUID
+    weekday: int
+    course_code: str
+    course_label: str
+    staff_name: str | None
+    before: ScopeMetricsData
+    after: ScopeMetricsData
+
+
+@dataclass
 class ScopeOptimizationResult:
     """simulate の結果一式."""
 
@@ -194,6 +208,8 @@ class ScopeOptimizationResult:
     after: ScopeMetricsData
     excluded: ScopeExcludedSummaryData
     state_token: str
+    # H2: コース別の実行後見通し (weekday, course_code 昇順。変化なしコースも含む).
+    courses: list[ScopeCourseBeforeAfterData] = field(default_factory=list)
 
 
 @dataclass
@@ -317,6 +333,36 @@ def _metrics_of(sim: _SimState, *, config: SchedulingConfig) -> ScopeMetricsData
         raw_km += km
     out.travel_km = round(raw_km, 1)
     return out
+
+
+def _bucket_metrics(
+    key: tuple[UUID, int, str], bucket: _CourseBucket, *, config: SchedulingConfig
+) -> ScopeMetricsData:
+    """1 バケット (コース×曜日) の健康診断メトリクス (H2: コース別 before/after 用)."""
+    hc = _HealthCourse(
+        office_id=key[0],
+        weekday=key[1],
+        course_code=key[2],
+        staff_name=bucket.staff_name,
+        visits=[
+            _HealthVisit(
+                patient_id=v.patient_id,
+                start_time=v.start_time,
+                end_time=v.end_time,
+                lat=v.lat,
+                lng=v.lng,
+            )
+            for v in bucket.visits
+        ],
+    )
+    metrics, km = _compute_course_metrics(hc, config=config)
+    return ScopeMetricsData(
+        visit_count=metrics.visit_count,
+        travel_minutes=metrics.travel_minutes,
+        travel_km=round(km, 1),
+        buffer_minutes=metrics.buffer_minutes,
+        gap_minutes=metrics.gap_minutes,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -895,6 +941,12 @@ async def simulate_scope_optimization(
     }
 
     before = _metrics_of(sim, config=config)
+    # H2: コース別 before (実行後見通しの比較元) とラベル/担当を控える.
+    course_before = {key: _bucket_metrics(key, b, config=config) for key, b in sim.buckets.items()}
+    course_meta = {
+        key: (_course_label(b.office_code, b.course_code), b.staff_name)
+        for key, b in sim.buckets.items()
+    }
 
     # ---- 貪欲反復 (設計書 §3.4) ----
     steps: list[ScopeStepData] = []
@@ -926,6 +978,16 @@ async def simulate_scope_optimization(
         for best in candidates:
             # タイムライン表示用スナップショットは適用 **前** に取る (W3).
             src_snap, dst_snap = _capture_step_context(sim, best)
+            # H2: 理由文 (move のみ。swap は engine 側で生成済み)。適用前の状態で導出.
+            if best.data.kind != "swap" and best.data.reason is None and src_snap is not None:
+                best.data.reason = build_move_reason(
+                    src_snap,
+                    dst_snap,
+                    best.patient_id,
+                    best.data.current_start,
+                    best.data.cand_start,
+                    best.data.delta_minutes,
+                )
             ok = _apply_swap(sim, best) if best.data.kind == "swap" else _apply_move(sim, best)
             if ok:
                 cum_min += best.data.delta_minutes
@@ -951,6 +1013,19 @@ async def simulate_scope_optimization(
         excluded.truncated = True
 
     after = _metrics_of(sim, config=config)
+    # H2: コース別の実行後見通し (変化なしコースも含む。weekday→course_code 昇順).
+    courses = [
+        ScopeCourseBeforeAfterData(
+            office_id=key[0],
+            weekday=key[1],
+            course_code=key[2],
+            course_label=course_meta[key][0],
+            staff_name=course_meta[key][1],
+            before=course_before[key],
+            after=_bucket_metrics(key, sim.buckets[key], config=config),
+        )
+        for key in sorted(sim.buckets.keys(), key=lambda k: (k[1], k[2], str(k[0])))
+    ]
 
     return ScopeOptimizationResult(
         steps=steps,
@@ -958,6 +1033,7 @@ async def simulate_scope_optimization(
         after=after,
         excluded=excluded,
         state_token=state_token,
+        courses=courses,
     )
 
 
@@ -972,6 +1048,7 @@ __all__ = [
     "SCOPE_MAX_STEPS",
     "SCOPE_STEP_THRESHOLD_MIN",
     "OptimizationScope",
+    "ScopeCourseBeforeAfterData",
     "ScopeCourseSnapshotData",
     "ScopeExcludedSummaryData",
     "ScopeMetricsData",
