@@ -62,7 +62,7 @@ from app.services.proposed_visits_pfv import (
     _resolve_course_template_id,
     apply_proposed_visits_as_normal_pfv,
 )
-from app.services.scheduling.auto_allocator_v2 import MAX_PATIENTS_PER_COURSE
+from app.services.scheduling.config import load_scheduling_config
 
 logger = logging.getLogger(__name__)
 
@@ -917,7 +917,9 @@ async def _apply_visit_add_onetime(
 
     # 単発の精密 赤再判定 (恒常より強い): その週の対象 Course の実 Visit を読んで
     # time_overlap (区間 [start,end) 重複, 端点接触は除外) と capacity_full
-    # (≥ MAX_PATIENTS_PER_COURSE) を判定する.
+    # (≥ config.max_patients_per_course) を判定する.
+    # 設定値注入の是正: 定員上限は module 定数直参照ではなく事業所別設定 (DB) を尊重する.
+    config = await load_scheduling_config(db)
     existing_visits = (
         await db.scalars(
             select(Visit).where(
@@ -939,7 +941,7 @@ async def _apply_visit_add_onetime(
         if new_start_min < ev_end_min and ev_start_min < new_end_min:
             extra_red.append("time_overlap")
             break
-    if len(existing_visits) >= MAX_PATIENTS_PER_COURSE:
+    if len(existing_visits) >= config.max_patients_per_course:
         extra_red.append("capacity_full")
 
     # 赤警告があるのに override_reason 空なら 422 (クライアント申告 + サーバ再判定を合算).

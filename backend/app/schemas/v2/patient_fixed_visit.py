@@ -127,6 +127,11 @@ class PatientFixedVisitsBulkPut(BaseModel):
     iso_year: int | None = Field(default=None, ge=2020, le=2100)
     iso_week: int | None = Field(default=None, ge=1, le=53)
 
+    # 定員超過の管理者相談プロセス (方式b): 定員超過を承知で採用したときの理由 (監査用).
+    # 値があれば logger.info で記録するだけで、検証や挙動変更は一切しない
+    # (pfv_validator の容量チェックは既に warning-only). 後方互換の任意項目.
+    capacity_override_reason: str | None = Field(default=None, max_length=500)
+
     @model_validator(mode="after")
     def _no_duplicate_weekday_slot(self) -> PatientFixedVisitsBulkPut:
         keys = [(item.weekday, item.slot_index) for item in self.items]

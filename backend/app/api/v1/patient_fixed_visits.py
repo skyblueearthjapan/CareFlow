@@ -439,6 +439,15 @@ async def put_fixed_visits(
 ) -> PatientFixedVisitsBulkPutResponse:
     await _ensure_patient_exists(db, patient_id)
 
+    # 定員超過の管理者相談プロセス (方式b): 採用時の理由記録 (監査はミドルウェア任せ).
+    # 値があれば info ログに残すだけで、検証や挙動変更はしない (容量チェックは warning-only).
+    if body.capacity_override_reason:
+        logger.info(
+            "capacity_override on PUT fixed-visits: patient_id=%s reason=%s",
+            patient_id,
+            body.capacity_override_reason,
+        )
+
     # Wave U-1 (§2.2 A 経路): pattern_and_week は今週再生成のため iso_year/iso_week 必須.
     # 破壊的な DELETE→INSERT の前に 422 で弾く (欠落時にトランザクションを汚さない).
     if body.change_scope == "pattern_and_week" and (body.iso_year is None or body.iso_week is None):

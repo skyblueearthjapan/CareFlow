@@ -209,6 +209,7 @@ from app.services.scheduling.propose_slots_service import (
     ProposedSlot,
     compute_all_proposed_slots,
     compute_coverage,
+    compute_overcapacity_slots,
     load_week_course_buckets,
 )
 from app.services.scheduling.schedule_health import (
@@ -2040,6 +2041,7 @@ def _proposed_to_item(p: ProposedSlot) -> ProposeSlotItem:
         ],
         is_efficiency_alternative=p.is_efficiency_alternative,
         marginal_cost_minutes=p.marginal_cost_minutes,
+        overcapacity=p.overcapacity,
     )
 
 
@@ -2202,6 +2204,40 @@ async def propose_slots_endpoint(
         for e in excluded_raw
     ]
 
+    # 定員超過の管理者相談プロセス (方式b): 定員 +1 なら入る「定員超過候補」の照会.
+    #   - True: 定員 +1 で列挙し overcapacity_slots (別配列 / 上限 limit) を返す.
+    #   - False (既定): 通常候補が 0 件かつ capacity_full が理由に含まれるときのみ、
+    #     定員 +1 で件数だけ数えて overcapacity_available_count に載せる (それ以外は None).
+    # いずれも 1 回目の通常列挙 (compute_all_proposed_slots) の結果には手を触れない.
+    overcapacity_available_count: int | None = None
+    overcapacity_slots_out: list[ProposeSlotItem] = []
+    if payload.include_overcapacity:
+        over = compute_overcapacity_slots(
+            buckets,
+            office_name_by_id,
+            candidate,
+            office_ids=office_ids,
+            office_code_by_id=office_code_by_id,
+            config=config,
+            unavailable_slots=unavailable_slots,
+            pair_modes=pair_modes,
+        )
+        overcapacity_slots_out = [_proposed_to_item(p) for p in over[: payload.limit]]
+    elif not normal_proposed and any(e.reason == "capacity_full" for e in excluded_summary):
+        # 件数のみ (delta 計算はスキップ). +1 でも 0 件なら 0.
+        over_count = compute_overcapacity_slots(
+            buckets,
+            office_name_by_id,
+            candidate,
+            office_ids=office_ids,
+            office_code_by_id=office_code_by_id,
+            config=config,
+            unavailable_slots=unavailable_slots,
+            pair_modes=pair_modes,
+            assign_marginal=False,
+        )
+        overcapacity_available_count = len(over_count)
+
     return ProposeSlotsResponse(
         iso_year=payload.iso_year,
         iso_week=payload.iso_week,
@@ -2212,6 +2248,8 @@ async def propose_slots_endpoint(
         coverage=coverage,
         excluded_summary=excluded_summary,
         message=message,
+        overcapacity_available_count=overcapacity_available_count,
+        overcapacity_slots=overcapacity_slots_out,
     )
 
 

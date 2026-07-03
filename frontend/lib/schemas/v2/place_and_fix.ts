@@ -52,6 +52,8 @@ export const placeAndFixRequestSchema = z
     duration_min: z.number().int().min(1).max(480),
     staff_count: z.union([z.literal(1), z.literal(2)]).default(1),
     fix_pattern: z.boolean().default(true),
+    // 方式b: 定員超過採用時の管理者判断理由 (最大500字)。通常候補では null/省略。旧BE互換。
+    capacity_override_reason: z.string().max(500).nullish(),
   })
   .superRefine((data, ctx) => {
     const hasSingle = data.course_template_id !== null && data.course_template_id !== undefined;

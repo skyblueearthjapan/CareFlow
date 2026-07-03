@@ -34,12 +34,7 @@ export type SlotIndex = (typeof SLOT_INDEX_VALUES)[number];
  * unknown(既定・保守的) / time_flexible(同曜日内の時刻変更可) /
  * day_flexible(曜日も変更可) / locked(完全固定).
  */
-export const MOVABILITY_VALUES = [
-  'unknown',
-  'time_flexible',
-  'day_flexible',
-  'locked',
-] as const;
+export const MOVABILITY_VALUES = ['unknown', 'time_flexible', 'day_flexible', 'locked'] as const;
 export type Movability = (typeof MOVABILITY_VALUES)[number];
 
 export const patientFixedVisitV2BaseSchema = z.object({
@@ -139,6 +134,8 @@ export const patientFixedVisitsBulkPutSchema = z.object({
   iso_year: z.number().int().optional(),
   /** U-1: change_scope='pattern_and_week' のときの対象 ISO 週. */
   iso_week: z.number().int().min(1).max(53).optional(),
+  // 方式b: 定員超過採用時の管理者判断理由 (最大500字)。通常候補では null/省略。旧BE互換。
+  capacity_override_reason: z.string().max(500).nullish(),
 });
 
 export type PatientFixedVisitV2Base = z.infer<typeof patientFixedVisitV2BaseSchema>;

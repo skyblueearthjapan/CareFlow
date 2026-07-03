@@ -18,7 +18,7 @@
 import * as React from 'react';
 import { useQueries } from '@tanstack/react-query';
 import { useSession } from 'next-auth/react';
-import { CheckCircle2, Loader2, Plus, Sparkles, X } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Loader2, Plus, Sparkles, X } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -195,6 +195,10 @@ export function PoolCandidateList({
   const [pending, setPending] = React.useState<ProposeSlotItem | null>(null);
   // U-1: 反映先の選択 ('pattern' = A: 固定訪問週間に登録 / 'week' = B: この週だけ). 既定 A.
   const [scopeChoice, setScopeChoice] = React.useState<ChangeScopeValue>('pattern');
+  // 方式b: 定員超過候補を表示するモードか (「定員超過の候補を表示」ボタンで切替)。
+  const [overcapacityRequested, setOvercapacityRequested] = React.useState(false);
+  // 方式b: 超過候補採用時の管理者判断理由 (確認モーダルの必須テキストエリア)。
+  const [overcapacityReason, setOvercapacityReason] = React.useState('');
 
   const proposeMut = useProposeSlots();
   const confirmMut = useConfirmFixedVisits();
@@ -235,37 +239,43 @@ export function PoolCandidateList({
     [templatesDepKey],
   );
 
-  const handleRun = React.useCallback(() => {
-    setRequested(true);
-    setPending(null);
-    const wp = coerceWeeklyPattern(patient.weekly_pattern);
-    const showTimeRange = wp.time_type === '固定' || wp.time_type === '時間帯';
-    const showEnd = wp.time_type === '時間帯';
-    proposeMut.mutate(
-      {
-        address: patient.address ?? '',
-        lat: typeof patient.lat === 'number' ? patient.lat : null,
-        lng: typeof patient.lng === 'number' ? patient.lng : null,
-        service_minutes: wp.service_minutes,
-        time_type: wp.time_type as ProposeTimeType,
-        preferred_start: showTimeRange ? wp.preferred_start : null,
-        preferred_end: showEnd ? wp.preferred_end : null,
-        preferred_weekdays: wp.preferred_weekdays as WeekdayCode[],
-        visit_frequency: wp.visit_frequency ?? undefined,
-        frequency_per_week: wp.frequency_per_week,
-        requires_multiple_staff:
-          (patient as { requires_multiple_staff?: boolean | null }).requires_multiple_staff ===
-          true,
-        sex_restriction: (patient.sex_restriction as string | null | undefined) ?? null,
-        iso_year: isoYear,
-        iso_week: isoWeek,
-        office_ids: officeId ? [officeId] : [],
-        existing_patient_id: patient.id,
-        limit: 10,
-      },
-      { onError: () => toast.error('候補の取得に失敗しました') },
-    );
-  }, [patient, isoYear, isoWeek, officeId, proposeMut]);
+  const handleRun = React.useCallback(
+    (includeOvercapacity = false) => {
+      setRequested(true);
+      setOvercapacityRequested(includeOvercapacity);
+      setPending(null);
+      setOvercapacityReason('');
+      const wp = coerceWeeklyPattern(patient.weekly_pattern);
+      const showTimeRange = wp.time_type === '固定' || wp.time_type === '時間帯';
+      const showEnd = wp.time_type === '時間帯';
+      proposeMut.mutate(
+        {
+          address: patient.address ?? '',
+          lat: typeof patient.lat === 'number' ? patient.lat : null,
+          lng: typeof patient.lng === 'number' ? patient.lng : null,
+          service_minutes: wp.service_minutes,
+          time_type: wp.time_type as ProposeTimeType,
+          preferred_start: showTimeRange ? wp.preferred_start : null,
+          preferred_end: showEnd ? wp.preferred_end : null,
+          preferred_weekdays: wp.preferred_weekdays as WeekdayCode[],
+          visit_frequency: wp.visit_frequency ?? undefined,
+          frequency_per_week: wp.frequency_per_week,
+          requires_multiple_staff:
+            (patient as { requires_multiple_staff?: boolean | null }).requires_multiple_staff ===
+            true,
+          sex_restriction: (patient.sex_restriction as string | null | undefined) ?? null,
+          iso_year: isoYear,
+          iso_week: isoWeek,
+          office_ids: officeId ? [officeId] : [],
+          existing_patient_id: patient.id,
+          limit: 10,
+          include_overcapacity: includeOvercapacity,
+        },
+        { onError: () => toast.error('候補の取得に失敗しました') },
+      );
+    },
+    [patient, isoYear, isoWeek, officeId, proposeMut],
+  );
 
   // 主提案モード (単体プール詳細ダイアログ): 開いた時点 / 患者切替時に自動計算する.
   // 併設用途 (primary=false) は handleRun をボタンから呼ぶ従来の on-demand を維持.
@@ -309,7 +319,9 @@ export function PoolCandidateList({
         return;
       }
       if (existingFixedVisitsQuery.isError) {
-        toast.error('既存の固定枠の読み込みに失敗しました。他曜日の枠を保護できないため中止しました');
+        toast.error(
+          '既存の固定枠の読み込みに失敗しました。他曜日の枠を保護できないため中止しました',
+        );
         return;
       }
       const existing = existingFixedVisitsQuery.data ?? [];
@@ -318,6 +330,7 @@ export function PoolCandidateList({
         change_scope: 'pattern_and_week',
         iso_year: isoYear,
         iso_week: isoWeek,
+        ...(slot.overcapacity ? { capacity_override_reason: overcapacityReason } : {}),
       };
       confirmMut.mutate(
         { patientId: patient.id, body: putBody },
@@ -332,7 +345,8 @@ export function PoolCandidateList({
               );
             } else {
               toast.success(
-                `${patient.name} 様を採用しました。固定訪問週間に登録し、今週のスケジュールにも反映しました`,
+                `${patient.name} 様を採用しました。固定訪問週間に登録し、今週のスケジュールにも反映しました` +
+                  (slot.overcapacity ? '（定員超過を管理者判断で許可）' : ''),
               );
             }
             // P0-2 Commit 3: 再検証 warnings があれば警告表示 (A 経路で従来どおり).
@@ -345,6 +359,8 @@ export function PoolCandidateList({
             }
             setPending(null);
             setScopeChoice('pattern');
+            setOvercapacityReason('');
+            setOvercapacityRequested(false);
             onAdopted?.();
           },
           onError: () => toast.error('採用に失敗しました'),
@@ -370,14 +386,18 @@ export function PoolCandidateList({
           duration_min: duration,
           staff_count: 1,
           fix_pattern: false,
+          ...(slot.overcapacity ? { capacity_override_reason: overcapacityReason } : {}),
         },
         {
           onSuccess: () => {
             toast.success(
-              `${patient.name} 様を今週だけ配置しました（毎週の型は変更していません）`,
+              `${patient.name} 様を今週だけ配置しました（毎週の型は変更していません）` +
+                (slot.overcapacity ? '（定員超過を管理者判断で許可）' : ''),
             );
             setPending(null);
             setScopeChoice('pattern');
+            setOvercapacityReason('');
+            setOvercapacityRequested(false);
             onAdopted?.();
           },
           onError: () => toast.error('配置に失敗しました'),
@@ -398,7 +418,7 @@ export function PoolCandidateList({
           type="button"
           variant="outline"
           size="sm"
-          onClick={handleRun}
+          onClick={() => handleRun()}
           className="h-7 px-3 text-xs"
           data-testid="pool-candidate-run-button"
         >
@@ -425,7 +445,7 @@ export function PoolCandidateList({
             type="button"
             variant="ghost"
             size="sm"
-            onClick={handleRun}
+            onClick={() => handleRun()}
             disabled={isBusy}
             className="ml-auto h-6 px-2 text-[11px]"
             data-testid="pool-candidate-refresh-button"
@@ -445,21 +465,13 @@ export function PoolCandidateList({
       ) : null}
 
       {!proposeMut.isPending && result && slots.length === 0 ? (
-        <div
-          className="py-3 text-xs text-text-muted"
-          data-testid="pool-candidate-empty"
-        >
+        <div className="py-3 text-xs text-text-muted" data-testid="pool-candidate-empty">
           {excludedSummary.length > 0 ? (
             /* P-1b: 除外理由別の内訳表示 (N-6「黙って消さない」). */
-            <ul
-              className="space-y-0.5"
-              data-testid="pool-candidate-excluded-summary"
-            >
+            <ul className="space-y-0.5" data-testid="pool-candidate-excluded-summary">
               {excludedSummary.map((item, i) => (
                 <li key={i} className="flex items-center gap-1">
-                  <span className="font-medium">
-                    {WEEKDAY_LABELS[item.weekday] ?? '?'}曜:
-                  </span>
+                  <span className="font-medium">{WEEKDAY_LABELS[item.weekday] ?? '?'}曜:</span>
                   <span>
                     {excludedReasonLabel(item.reason)} ({item.count}件)
                   </span>
@@ -473,6 +485,31 @@ export function PoolCandidateList({
               {result.message ? <div className="mt-1">{result.message}</div> : null}
             </div>
           )}
+          {/* 方式b: 定員超過候補の呼びかけバナー (通常候補 0 件 + 定員超過で入れる枠がある場合). */}
+          {!overcapacityRequested && (result?.overcapacity_available_count ?? 0) >= 1 ? (
+            <div
+              className="mt-2 rounded border border-yellow-400 bg-yellow-50/50 px-3 py-2 dark:border-yellow-600 dark:bg-yellow-900/20"
+              data-testid="pool-overcapacity-callout"
+            >
+              <p className="text-xs font-semibold text-yellow-800 dark:text-yellow-300">
+                <strong>
+                  定員を +1 名許容すれば入る候補が {result?.overcapacity_available_count ?? 0}{' '}
+                  件あります。
+                </strong>
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => handleRun(true)}
+                className="mt-1.5 h-7 border-yellow-500 px-3 text-xs text-yellow-700 hover:bg-yellow-100 dark:border-yellow-600 dark:text-yellow-400"
+                data-testid="pool-overcapacity-show-button"
+              >
+                <AlertTriangle className="mr-1 h-3.5 w-3.5" aria-hidden />
+                定員超過の候補を表示
+              </Button>
+            </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -501,8 +538,7 @@ export function PoolCandidateList({
                     同住所ペア: {s.pair_partner}
                   </Badge>
                 ) : null}
-                {s.marginal_cost_minutes !== null &&
-                s.marginal_cost_minutes !== undefined ? (
+                {s.marginal_cost_minutes !== null && s.marginal_cost_minutes !== undefined ? (
                   /* P-1a: 挿入の厳密限界コスト (診断・改善提案と同じ物差し). */
                   <Badge
                     variant="secondary"
@@ -575,6 +611,117 @@ export function PoolCandidateList({
         </ul>
       ) : null}
 
+      {/* 方式b: 定員超過候補セクション (「定員超過の候補を表示」クリック後に表示). */}
+      {overcapacityRequested && (result?.overcapacity_slots ?? []).length > 0 ? (
+        <div className="mt-2" data-testid="pool-overcapacity-section">
+          <div className="mb-1.5 flex items-center gap-1 text-xs font-semibold text-yellow-700 dark:text-yellow-400">
+            <AlertTriangle className="h-3.5 w-3.5" aria-hidden />
+            定員超過（管理者判断）
+          </div>
+          <ul className="space-y-1.5">
+            {(result!.overcapacity_slots ?? []).map((s, i) => (
+              <li
+                key={`oc-${slotKey(s)}-${i}`}
+                className="rounded border border-yellow-400 bg-yellow-50/30 p-2 text-xs dark:border-yellow-600 dark:bg-yellow-900/10"
+                data-testid={`pool-overcapacity-${slotKey(s)}`}
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant="secondary" className="text-[10px]">
+                    #{i + 1}
+                  </Badge>
+                  <span className="tnum font-medium text-text-primary">
+                    {WEEKDAY_LABELS[s.weekday] ?? '?'} {trimSeconds(s.start_time)}–
+                    {trimSeconds(s.end_time)}
+                  </span>
+                  <span className="text-text-secondary">{s.course_label}</span>
+                  {s.staff_name ? (
+                    <span className="text-[11px] text-text-muted">担当: {s.staff_name}</span>
+                  ) : null}
+                  {/* 方式b: 定員超過警告バッジ */}
+                  <Badge
+                    variant="warning"
+                    className="text-[10px]"
+                    data-testid="pool-overcapacity-badge"
+                    title="このコースの定員(通常上限)を1名超えます。採用には理由の記録が必要です"
+                  >
+                    定員超過 +1名
+                  </Badge>
+                  {s.is_pair && s.pair_partner ? (
+                    <Badge variant="info" className="text-[10px]">
+                      同住所ペア: {s.pair_partner}
+                    </Badge>
+                  ) : null}
+                  {s.marginal_cost_minutes !== null && s.marginal_cost_minutes !== undefined ? (
+                    <Badge
+                      variant="secondary"
+                      className="text-[10px]"
+                      title="診断・改善提案と同じ物差し（厳密限界コスト: コース全体の移動増分）"
+                    >
+                      コースの移動{' '}
+                      {Math.round(s.marginal_cost_minutes) <= 0
+                        ? '±0分'
+                        : `+${Math.round(s.marginal_cost_minutes)}分`}
+                    </Badge>
+                  ) : null}
+                  <span className="tnum ml-auto text-[10px] text-text-muted">
+                    スコア {s.score.toFixed(0)}
+                  </span>
+                </div>
+
+                {s.reasons.length > 0 ? (
+                  <div className="mt-1 text-[11px] text-text-muted">{s.reasons.join(' / ')}</div>
+                ) : null}
+
+                {s.warnings.length > 0 ? (
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {s.warnings.map((w, wi) => (
+                      <Badge key={wi} variant="warning" className="text-[10px]">
+                        {proposeWarningLabel(w)}
+                      </Badge>
+                    ))}
+                  </div>
+                ) : null}
+
+                {s.mini_schedule.length > 0 ? (
+                  <div
+                    className="mt-1.5 rounded border border-border-default bg-bg-muted/20 p-2"
+                    data-testid={`pool-candidate-mini-${slotKey(s)}`}
+                  >
+                    <div className="mb-1 text-[10px] font-semibold text-text-muted">
+                      {s.course_label}
+                      {s.staff_name ? `（${s.staff_name}）` : ''} の{' '}
+                      {WEEKDAY_LABELS[s.weekday] ?? '?'}曜 ・ 既存{' '}
+                      {s.mini_schedule.filter((m) => !m.is_here).length} 件 + 提案枠
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      {s.mini_schedule.map((row, ri) => (
+                        <MiniRow key={ri} row={row} />
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                {canEdit ? (
+                  <div className="mt-1.5 flex items-center justify-end">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setPending(s)}
+                      disabled={isBusy}
+                      className="h-6 px-2 text-[11px]"
+                      data-testid={`pool-overcapacity-adopt-${slotKey(s)}`}
+                    >
+                      この枠で採用
+                    </Button>
+                  </div>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
       {/* 採用確認 (インライン). 他曜日を保持するマージ確定. U-1: A/B 選択付き. */}
       {pending ? (
         <div
@@ -596,6 +743,24 @@ export function PoolCandidateList({
               disabled={confirmMut.isPending || placeAndFixMut.isPending}
             />
           </div>
+          {/* 方式b: 定員超過候補の採用理由入力欄 (通常候補では出さない). */}
+          {pending.overcapacity ? (
+            <div className="mt-2">
+              <label className="mb-1 block text-xs font-semibold text-yellow-700 dark:text-yellow-400">
+                定員超過の採用理由（必須）
+              </label>
+              <textarea
+                className="w-full resize-none rounded border border-yellow-400 p-1.5 text-xs dark:border-yellow-600"
+                rows={2}
+                maxLength={500}
+                placeholder="例: ◯◯様の受け入れ希望が強く、スタッフ稼働に余裕があるため"
+                value={overcapacityReason}
+                onChange={(e) => setOvercapacityReason(e.target.value)}
+                disabled={confirmMut.isPending || placeAndFixMut.isPending}
+                data-testid="pool-overcapacity-reason-input"
+              />
+            </div>
+          ) : null}
           <div className="mt-2 flex items-center justify-end gap-2">
             <Button
               type="button"
@@ -604,6 +769,7 @@ export function PoolCandidateList({
               onClick={() => {
                 setPending(null);
                 setScopeChoice('pattern');
+                setOvercapacityReason('');
               }}
               disabled={confirmMut.isPending || placeAndFixMut.isPending}
               className="h-7 px-3 text-xs"
@@ -616,7 +782,11 @@ export function PoolCandidateList({
               type="button"
               size="sm"
               onClick={handleConfirmAdopt}
-              disabled={confirmMut.isPending || placeAndFixMut.isPending}
+              disabled={
+                confirmMut.isPending ||
+                placeAndFixMut.isPending ||
+                (pending.overcapacity === true && !overcapacityReason.trim())
+              }
               className="h-7 px-3 text-xs"
               data-testid="pool-candidate-confirm-apply"
             >

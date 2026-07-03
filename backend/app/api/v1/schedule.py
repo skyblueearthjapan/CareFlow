@@ -539,6 +539,9 @@ class PlaceAndFixRequest(BaseModel):
             "False: 今週のみ visit 作成 (固定枠を作らない)"
         ),
     )
+    # 定員超過の管理者相談プロセス (方式b): 定員超過を承知で配置したときの理由 (監査用).
+    # 値があれば logger.info で記録するだけで、検証や挙動変更は一切しない. 後方互換の任意項目.
+    capacity_override_reason: str | None = Field(default=None, max_length=500)
 
     @model_validator(mode="after")
     def _validate_course_templates_shape(self) -> PlaceAndFixRequest:
@@ -832,6 +835,15 @@ async def place_and_fix(
         後方互換: ``visit`` / ``fixed_visit`` (1 件目を入れる) と、
         新形式: ``visits`` / ``fixed_visits`` (配列) と ``visit_group_id``.
     """
+    # 定員超過の管理者相談プロセス (方式b): 配置時の理由記録 (監査はミドルウェア任せ).
+    # 値があれば info ログに残すだけで、検証や挙動変更はしない.
+    if body.capacity_override_reason:
+        logger.info(
+            "capacity_override on place-and-fix: patient_id=%s reason=%s",
+            body.patient_id,
+            body.capacity_override_reason,
+        )
+
     # ----- 入力検証 (Pydantic で済まない範囲) -----
     try:
         week_monday = date.fromisocalendar(body.iso_year, body.iso_week, 1)

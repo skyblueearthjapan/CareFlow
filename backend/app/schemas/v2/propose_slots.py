@@ -108,6 +108,16 @@ class ProposeSlotsRequest(BaseModel):
     # 既定 False で従来と完全に同一挙動 (通常候補のみ). ProposeNewModal のみ True を送る.
     include_efficiency_alternatives: bool = Field(default=False)
 
+    # 定員超過の管理者相談プロセス (方式b): base 定員では入らないが定員 +1 なら入る
+    # 「定員超過候補」を照会するか.
+    #   - 既定 False: 挙動完全不変. ただし通常候補が 0 件かつ excluded_summary に
+    #     capacity_full が含まれるときのみ、定員 +1 で件数のみ数え
+    #     ``overcapacity_available_count`` に載せる (通常候補があれば None のまま).
+    #   - True: 定員 +1 で列挙し「base 定員では入らないが +1 なら入る」候補を
+    #     ``overcapacity_slots`` (通常候補とは別配列) に overcapacity=True で返す.
+    # 時間系制約 (90分同住所占有 / 昼休み / 移動) は通常とまったく同じに効く.
+    include_overcapacity: bool = Field(default=False)
+
     @field_validator("preferred_start", "preferred_end")
     @classmethod
     def _validate_hhmm(cls, v: str | None) -> str | None:
@@ -168,6 +178,10 @@ class ProposeSlotItem(BaseModel):
     marginal_cost_minutes: float | None = Field(
         default=None, description="挿入の厳密限界コスト (分/週). 未計算の下位候補は null"
     )
+    # 定員超過の管理者相談プロセス (方式b): base 定員では入らないが定員 +1 なら入る
+    # 「定員超過候補」か. 後方互換の追加フィールド (既定 False). overcapacity_slots に
+    # 入る候補のみ True になる (通常 slots[] は常に False).
+    overcapacity: bool = Field(default=False)
 
 
 # P-1b: 除外理由コード (N-6「黙って消さない」). service (_pick_bucket_reason /
@@ -258,6 +272,14 @@ class ProposeSlotsResponse(BaseModel):
     message: str | None = Field(
         default=None, description="0 件時の「入れられる枠なし」メッセージ等"
     )
+    # 定員超過の管理者相談プロセス (方式b).
+    #   - ``overcapacity_available_count``: include_overcapacity=False の既定時、通常候補が
+    #     0 件かつ capacity_full が理由に含まれるときのみ「定員 +1 なら入る候補数」を載せる
+    #     (+1 でも 0 件なら 0). 通常候補があれば None (計算しない).
+    #   - ``overcapacity_slots``: include_overcapacity=True のとき「base 定員では入らないが
+    #     +1 なら入る」候補 (overcapacity=True) を通常候補とは別配列で返す (上限は limit).
+    overcapacity_available_count: int | None = Field(default=None)
+    overcapacity_slots: list[ProposeSlotItem] = Field(default_factory=list)
 
 
 __all__ = [

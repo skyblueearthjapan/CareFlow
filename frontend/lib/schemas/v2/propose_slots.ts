@@ -53,6 +53,10 @@ export const proposeSlotsRequestSchema = z.object({
   // P3-④: 効率優先の代替枠 (希望外だが近接/余裕が良い枠) を上乗せ提案するか。
   // 既定 false で従来と同一挙動 (通常候補のみ)。ProposeNewModal のみ true を送る。
   include_efficiency_alternatives: z.boolean().default(false),
+
+  // 方式b: 定員超過の候補も含めて提案するか。
+  // 既定 false (従来と同一挙動). true のとき BE は overcapacity_slots を返す。
+  include_overcapacity: z.boolean().default(false),
 });
 export type ProposeSlotsRequest = z.input<typeof proposeSlotsRequestSchema>;
 
@@ -90,6 +94,8 @@ export const proposeSlotItemSchema = z.object({
   is_efficiency_alternative: z.boolean().default(false),
   // P-1a: 挿入の厳密限界コスト (コース移動増分分). 旧BE未送出 → null (寛容パース)。
   marginal_cost_minutes: z.number().nullish(),
+  // 方式b: 定員超過候補フラグ (include_overcapacity=true 時のみ付く。旧BE未送出 → false)。
+  overcapacity: z.boolean().default(false),
 });
 export type ProposeSlotItem = z.infer<typeof proposeSlotItemSchema>;
 
@@ -136,6 +142,10 @@ export const proposeSlotsResponseSchema = z.object({
   message: z.string().nullish(),
   // P-1b: 候補 0 件時の除外理由サマリ. 旧BE未送出 → [] (寛容パース)。
   excluded_summary: z.array(excludedSummaryItemSchema).default([]),
+  // 方式b: 通常候補 0 件かつ定員起因のときに 1 以上の件数。旧BE未送出 → undefined/null (nullish)。
+  overcapacity_available_count: z.number().int().nullish(),
+  // 方式b: include_overcapacity=true のときの超過候補一覧。旧BE未送出 → [] (寛容パース)。
+  overcapacity_slots: z.array(proposeSlotItemSchema).default([]),
 });
 export type ProposeSlotsResponse = z.infer<typeof proposeSlotsResponseSchema>;
 

@@ -21,7 +21,7 @@ read-only: DB は読むだけ. 実現不能な時刻は一切返さない (ソ�
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, time
 from uuid import UUID
 
@@ -52,7 +52,7 @@ from app.services.scheduling.auto_allocator_v2 import (
 from app.services.scheduling.auto_allocator_v2 import (
     V2Visit as _V2Visit,
 )
-from app.services.scheduling.config import SchedulingConfig
+from app.services.scheduling.config import DEFAULT_SCHEDULING_CONFIG, SchedulingConfig
 from app.services.scheduling.constants import (
     COURSE_MAX_MINUTES as _COURSE_MAX_MINUTES,
 )
@@ -164,6 +164,9 @@ class ProposedSlot:
     # (挿入前). improvement_engine の compute_exact_marginal 再利用 (正典・コピー禁止).
     # 上位 DELTA_EVAL_LIMIT 件のみ厳密計算し、それ以外の下位候補は None のまま.
     marginal_cost_minutes: float | None = None
+    # 定員超過の管理者相談プロセス (方式b): base 定員では入らないが定員 +1 なら入る
+    # 「定員超過候補」か. ``compute_overcapacity_slots`` の結果のみ True になる.
+    overcapacity: bool = False
 
 
 @dataclass(frozen=True)
@@ -1227,6 +1230,94 @@ def compute_proposed_slots(
     )[:limit]
 
 
+def compute_overcapacity_slots(
+    buckets: dict[tuple[UUID, int, str], _CourseBucket],
+    office_name_by_id: dict[UUID, str],
+    candidate: CandidateInput,
+    *,
+    office_ids: list[UUID],
+    office_code_by_id: dict[UUID, str | None] | None = None,
+    candidate_name: str = "(提案)",
+    config: SchedulingConfig | None = None,
+    unavailable_slots: dict[tuple[UUID, int], set[time]] | None = None,
+    pair_modes: dict[tuple[UUID, UUID], str] | None = None,
+    assign_marginal: bool = True,
+) -> list[ProposedSlot]:
+    """定員超過の管理者相談プロセス (方式b): 定員 +1 なら入る「定員超過候補」を列挙する.
+
+    通常列挙 (``compute_all_proposed_slots``) とは独立した **2 回目の列挙**:
+        - ``config`` の ``max_patients_per_course`` を +1 したコピー (``dataclasses.replace``
+          で作り、元 ``config`` は一切 mutate しない) を solver へ渡し、容量判定だけを
+          1 名ぶん緩める. 時間系制約 (90分同住所占有 / 昼休み / 移動 / 営業枠 / 18:00 /
+          COURSE_MAX_MINUTES) は通常とまったく同一に効く (= 「時間は入る」保証はソルバが担保).
+        - 「base 定員では入らないが +1 なら入る」= 当該バケットの現在人数が **base 定員以上**
+          のバケットの slot のみを残す (base 定員未満のバケットは通常候補と同じ枠なので除外).
+        - 各 slot に ``overcapacity=True`` を付け、delta (``marginal_cost_minutes``) も通常候補と
+          同一の物差しで付与する (``assign_marginal=False`` のとき delta 計算はスキップ = 件数のみ).
+
+    1 回目の通常列挙・既存経路 (``compute_all_proposed_slots``) は一切変更しない.
+    """
+    base_max = config.max_patients_per_course if config is not None else _MAX_PATIENTS_PER_COURSE
+    base_config = config if config is not None else DEFAULT_SCHEDULING_CONFIG
+    over_config = replace(base_config, max_patients_per_course=base_max + 1)
+    over_max = base_max + 1
+
+    target_weekdays = candidate.preferred_weekdays or frozenset(range(7))
+    cand = Candidate(
+        lat=candidate.lat,
+        lng=candidate.lng,
+        service_minutes=candidate.service_minutes,
+        time_type=candidate.time_type,
+        preferred_start=candidate.preferred_start,
+        preferred_end=candidate.preferred_end,
+        patient_id=str(candidate.existing_patient_id) if candidate.existing_patient_id else None,
+    )
+
+    enumerated = _enumerate_candidate_slots(
+        buckets,
+        office_name_by_id,
+        candidate,
+        cand,
+        target_weekdays=target_weekdays,
+        office_ids=office_ids,
+        office_code_by_id=office_code_by_id,
+        candidate_name=candidate_name,
+        config=over_config,
+        max_patients=over_max,
+        lunch_duration=over_config.lunch_duration_min,
+        lunch_window_start=over_config.lunch_window_start,
+        lunch_window_end=over_config.lunch_window_end,
+        is_efficiency_alternative=False,
+        unavailable_slots=unavailable_slots,
+        pair_modes=pair_modes,
+    )
+
+    # 「base 定員では入らないが +1 なら入る」= バケットの現在人数が base 定員以上の枠のみ.
+    results: list[ProposedSlot] = []
+    for ps, _eff in enumerated:
+        bucket = buckets.get((ps.office_id, ps.weekday, ps.course_code))
+        if bucket is None:
+            continue
+        if len(bucket.visits) < base_max:
+            continue  # base 定員未満 = 通常候補で既に出る枠 (超過ではない).
+        ps.overcapacity = True
+        results.append(ps)
+
+    # 粗ランキング (通常候補と同じ物差し) → delta 昇順に再ソート.
+    results.sort(
+        key=lambda r: (
+            -r.score,
+            _time_to_min(r.start),
+            str(r.office_id),
+            r.weekday,
+            r.course_code,
+        )
+    )
+    if assign_marginal:
+        _assign_marginal_and_resort(results, buckets, candidate, config=config)
+    return results
+
+
 @dataclass
 class CoverageDay:
     """カバレッジ 1 曜日ぶん (実現可否 + その曜日の最良枠)."""
@@ -1299,6 +1390,7 @@ __all__ = [
     "ProposedSlot",
     "compute_all_proposed_slots",
     "compute_coverage",
+    "compute_overcapacity_slots",
     "compute_proposed_slots",
     "load_week_course_buckets",
 ]

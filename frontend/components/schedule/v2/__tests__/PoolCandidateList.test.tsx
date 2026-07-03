@@ -29,6 +29,7 @@ const { mockToast, mocks } = vi.hoisted(() => ({
 vi.mock('sonner', () => ({ toast: mockToast }));
 
 vi.mock('lucide-react', () => ({
+  AlertTriangle: () => <span />,
   CheckCircle2: () => <span />,
   Loader2: () => <span data-testid="loader" />,
   Plus: () => <span />,
@@ -561,6 +562,101 @@ describe('PoolCandidateList (③ 単体MVP)', () => {
   });
 });
 
+// ── 方式b: 定員超過候補 ──────────────────────────────────────────────────────
+
+describe('方式b: 定員超過候補 (overcapacity)', () => {
+  it('overcapacity_available_count > 0 のとき呼びかけバナーが出る', () => {
+    mocks.proposeData = {
+      slots: [],
+      message: null,
+      overcapacity_available_count: 3,
+    };
+    render(<PoolCandidateList {...COMMON} />);
+    fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
+    expect(screen.getByTestId('pool-overcapacity-callout')).toBeInTheDocument();
+    expect(screen.getByTestId('pool-overcapacity-show-button')).toBeInTheDocument();
+    expect(screen.getByText(/定員を \+1 名許容すれば入る候補が 3 件あります/)).toBeInTheDocument();
+  });
+
+  it('overcapacity_available_count が null・0・欠落のとき呼びかけを出さない', () => {
+    for (const count of [null, 0, undefined] as const) {
+      mocks.proposeData = { slots: [], message: null, overcapacity_available_count: count };
+      const { unmount } = render(<PoolCandidateList {...COMMON} />);
+      fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
+      expect(screen.queryByTestId('pool-overcapacity-callout')).not.toBeInTheDocument();
+      unmount();
+      mocks.proposeMutate.mockReset();
+    }
+  });
+
+  it('表示ボタン → include_overcapacity=true で再実行、超過セクションとバッジが出る', () => {
+    const overcapSlot = makeSlot({ overcapacity: true });
+    mocks.proposeData = {
+      slots: [],
+      message: null,
+      overcapacity_available_count: 2,
+      overcapacity_slots: [overcapSlot],
+    };
+    render(<PoolCandidateList {...COMMON} />);
+    fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
+
+    // 呼びかけバナーが出る
+    expect(screen.getByTestId('pool-overcapacity-callout')).toBeInTheDocument();
+
+    // 表示ボタンをクリック
+    fireEvent.click(screen.getByTestId('pool-overcapacity-show-button'));
+
+    // 2 回目の呼び出しが include_overcapacity=true で行われた
+    expect(mocks.proposeMutate).toHaveBeenCalledTimes(2);
+    const lastCall = mocks.proposeMutate.mock.calls[1][0];
+    expect(lastCall.include_overcapacity).toBe(true);
+
+    // 超過セクションとバッジが出る
+    expect(screen.getByTestId('pool-overcapacity-section')).toBeInTheDocument();
+    expect(screen.getByTestId('pool-overcapacity-badge')).toBeInTheDocument();
+  });
+
+  it('超過候補の採用: 理由未入力なら確定 disabled / 入力後 PUT body に capacity_override_reason が入る', async () => {
+    const overcapSlot = makeSlot({ overcapacity: true });
+    mocks.proposeData = {
+      slots: [],
+      message: null,
+      overcapacity_available_count: 1,
+      overcapacity_slots: [overcapSlot],
+    };
+    render(<PoolCandidateList {...COMMON} />);
+    fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
+
+    // 超過候補を表示
+    fireEvent.click(screen.getByTestId('pool-overcapacity-show-button'));
+
+    // 「この枠で採用」をクリック
+    const adoptBtn = screen.getByTestId(
+      `pool-overcapacity-adopt-${overcapSlot.office_id}-${overcapSlot.weekday}-${overcapSlot.course_code}-${overcapSlot.start_time}`,
+    );
+    fireEvent.click(adoptBtn);
+
+    // 確認パネルと理由入力欄が出る
+    expect(screen.getByTestId('pool-candidate-confirm')).toBeInTheDocument();
+    expect(screen.getByTestId('pool-overcapacity-reason-input')).toBeInTheDocument();
+
+    // 理由未入力 → 確定ボタン disabled
+    const confirmBtn = screen.getByTestId('pool-candidate-confirm-apply');
+    expect(confirmBtn).toBeDisabled();
+
+    // 理由を入力 → 確定ボタンが有効になる
+    const reasonInput = screen.getByTestId('pool-overcapacity-reason-input');
+    fireEvent.change(reasonInput, { target: { value: 'テスト理由' } });
+    expect(confirmBtn).not.toBeDisabled();
+
+    // 確定 → PUT body に capacity_override_reason が入る
+    fireEvent.click(confirmBtn);
+    await waitFor(() => expect(mocks.confirmMutate).toHaveBeenCalledTimes(1));
+    const arg = mocks.confirmMutate.mock.calls[0][0];
+    expect(arg.body.capacity_override_reason).toBe('テスト理由');
+  });
+});
+
 // ── スキーマ: 旧 BE レスポンス (両フィールド欠落) でパースが通る ─────────────
 
 describe('proposeSlotsResponseSchema 寛容パース (P-1 後方互換)', () => {
@@ -597,6 +693,42 @@ describe('proposeSlotsResponseSchema 寛容パース (P-1 後方互換)', () => 
       expect(result.data.excluded_summary).toEqual([]);
       // marginal_cost_minutes は undefined (nullish)
       expect(result.data.slots[0]!.marginal_cost_minutes).toBeUndefined();
+    }
+  });
+
+  it('旧 BE レスポンス (方式b 新フィールド欠落) がパースに通る', async () => {
+    const { proposeSlotsResponseSchema } = await import('@/lib/schemas/v2/propose_slots');
+    const oldBePayload = {
+      iso_year: 2026,
+      iso_week: 24,
+      candidate_lat: null,
+      candidate_lng: null,
+      resolved_office_id: null,
+      slots: [
+        {
+          office_id: '11111111-1111-4111-8111-111111111111',
+          weekday: 1,
+          weekday_code: 'Tue',
+          course_code: 'A',
+          course_label: 'ALabel',
+          start_time: '09:00:00',
+          end_time: '09:30:00',
+          score: 90,
+          // overcapacity フィールドなし (旧BE)
+        },
+      ],
+      message: null,
+      // overcapacity_available_count / overcapacity_slots フィールドなし (旧BE)
+    };
+    const result = proposeSlotsResponseSchema.safeParse(oldBePayload);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      // 旧BE: overcapacity_available_count は undefined (nullish: 欠落 → undefined)
+      expect(result.data.overcapacity_available_count == null).toBe(true);
+      // 旧BE: overcapacity_slots は [] (default)
+      expect(result.data.overcapacity_slots).toEqual([]);
+      // 旧BE: proposeSlotItem.overcapacity は false (default)
+      expect(result.data.slots[0]!.overcapacity).toBe(false);
     }
   });
 });
