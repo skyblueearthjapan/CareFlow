@@ -112,6 +112,13 @@ from app.schemas.v2.schedule_health import (
     ScheduleHealthResponse,
     ScheduleHealthTrendResponse,
 )
+from app.schemas.v2.scope_optimization import (
+    ScopeOptimizationExcludedSummary,
+    ScopeOptimizationMetrics,
+    ScopeOptimizationSimulateRequest,
+    ScopeOptimizationSimulateResponse,
+    ScopeOptimizationStep,
+)
 from app.schemas.v2.travel_estimate import (
     TravelEstimateRequest,
     TravelEstimateResponse,
@@ -183,6 +190,11 @@ from app.services.scheduling.propose_slots_service import (
 from app.services.scheduling.schedule_health import (
     compute_schedule_health,
     compute_schedule_health_trend,
+)
+from app.services.scheduling.scope_optimizer import (
+    OptimizationScope,
+    ScopeMetricsData,
+    simulate_scope_optimization,
 )
 
 logger = logging.getLogger(__name__)
@@ -2629,19 +2641,13 @@ async def improvement_apply_swap_endpoint(
         )
 
     pa = await db.scalar(
-        select(Patient).where(
-            Patient.id == payload.patient_a_id, Patient.deleted_at.is_(None)
-        )
+        select(Patient).where(Patient.id == payload.patient_a_id, Patient.deleted_at.is_(None))
     )
     pb = await db.scalar(
-        select(Patient).where(
-            Patient.id == payload.patient_b_id, Patient.deleted_at.is_(None)
-        )
+        select(Patient).where(Patient.id == payload.patient_b_id, Patient.deleted_at.is_(None))
     )
     if pa is None or pb is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
 
     # 各患者の旧枠曜日は相手の新枠曜日から導出する (swap 不変量).
     a_old_weekday = payload.b_new.weekday
@@ -2667,12 +2673,8 @@ async def improvement_apply_swap_endpoint(
             )
         ).all()
     )
-    a_row = next(
-        (r for r in a_all if r.weekday == a_old_weekday and r.slot_index == 0), None
-    )
-    b_row = next(
-        (r for r in b_all if r.weekday == b_old_weekday and r.slot_index == 0), None
-    )
+    a_row = next((r for r in a_all if r.weekday == a_old_weekday and r.slot_index == 0), None)
+    b_row = next((r for r in b_all if r.weekday == b_old_weekday and r.slot_index == 0), None)
     if a_row is None or b_row is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -2695,12 +2697,8 @@ async def improvement_apply_swap_endpoint(
         new_start=b_new_start,
         new_course=payload.b_new.course_template_id,
     )
-    va = await validate_pfv_changes(
-        db, payload.patient_a_id, a_proposed, "normal", config=config
-    )
-    vb = await validate_pfv_changes(
-        db, payload.patient_b_id, b_proposed, "normal", config=config
-    )
+    va = await validate_pfv_changes(db, payload.patient_a_id, a_proposed, "normal", config=config)
+    vb = await validate_pfv_changes(db, payload.patient_b_id, b_proposed, "normal", config=config)
     if va.has_errors or vb.has_errors:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -2750,9 +2748,7 @@ async def improvement_apply_swap_endpoint(
             _find_conflict(a_ev, [b_ev], config=config) is not None
             or _find_conflict(b_ev, [a_ev], config=config) is not None
         ):
-            warnings.append(
-                "入れ替え後の 2 枠が移動時間を含めて重なる可能性があります。"
-            )
+            warnings.append("入れ替え後の 2 枠が移動時間を含めて重なる可能性があります。")
 
     # 適用 (1 TX / all-or-nothing). 片方でも失敗すれば rollback.
     await _apply_pfv_move(
@@ -2781,6 +2777,94 @@ async def improvement_apply_swap_endpoint(
         ) from exc
 
     return ApplySwapResponse(applied=True, warnings=warnings)
+
+
+# ---------------------------------------------------------------------------
+# scope-optimization (範囲最適化 W1: 選択範囲の一括改善シミュレーション)
+# ---------------------------------------------------------------------------
+
+
+def _scope_metrics_to_schema(m: ScopeMetricsData) -> ScopeOptimizationMetrics:
+    return ScopeOptimizationMetrics(
+        visit_count=m.visit_count,
+        travel_minutes=m.travel_minutes,
+        travel_km=m.travel_km,
+        buffer_minutes=m.buffer_minutes,
+        gap_minutes=m.gap_minutes,
+    )
+
+
+@router.post(
+    "/v2/scope-optimization/simulate",
+    response_model=ScopeOptimizationSimulateResponse,
+    status_code=status.HTTP_200_OK,
+    summary="範囲最適化: 選択範囲 (コース/曜日/全体) の一括改善手順列を算出する (read-only)",
+)
+async def scope_optimization_simulate_endpoint(
+    payload: ScopeOptimizationSimulateRequest,
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+) -> ScopeOptimizationSimulateResponse:
+    """選択範囲の中で move / swap を貪欲反復で積み上げ、手順列と前後メトリクスを返す.
+
+    本 endpoint は **read-only**: DB を変更しない (適用は W2 の apply)。
+    0 手でも 200 + ``excluded_summary`` (N-6「黙って消さない」) を返す。
+    """
+    office = await db.scalar(select(Office).where(Office.id == payload.scope.office_id))
+    if office is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Office not found")
+
+    scope = OptimizationScope(
+        office_id=payload.scope.office_id,
+        weekdays=(
+            frozenset(payload.scope.weekdays) if payload.scope.weekdays is not None else None
+        ),
+        course_codes=(
+            frozenset(payload.scope.course_codes)
+            if payload.scope.course_codes is not None
+            else None
+        ),
+    )
+
+    config = await load_scheduling_config(db)
+    try:
+        result = await simulate_scope_optimization(
+            db,
+            iso_year=payload.iso_year,
+            iso_week=payload.iso_week,
+            scope=scope,
+            config=config,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    return ScopeOptimizationSimulateResponse(
+        iso_year=payload.iso_year,
+        iso_week=payload.iso_week,
+        office_id=payload.scope.office_id,
+        steps=[
+            ScopeOptimizationStep(
+                seq=s.seq,
+                patient_id=s.patient_id,
+                patient_name=s.patient_name,
+                suggestion=_improvement_to_schema(s.candidate),
+                cumulative_delta_minutes=s.cumulative_delta_minutes,
+                cumulative_delta_km=s.cumulative_delta_km,
+            )
+            for s in result.steps
+        ],
+        before=_scope_metrics_to_schema(result.before),
+        after=_scope_metrics_to_schema(result.after),
+        excluded_summary=ScopeOptimizationExcludedSummary(
+            pinned=result.excluded.pinned,
+            locked=result.excluded.locked,
+            no_current_visit=result.excluded.no_current_visit,
+            dismissed=result.excluded.dismissed,
+            confirmation_required_excluded=result.excluded.confirmation_required_excluded,
+            truncated=result.excluded.truncated,
+        ),
+        state_token=result.state_token,
+    )
 
 
 __all__ = ["router"]
