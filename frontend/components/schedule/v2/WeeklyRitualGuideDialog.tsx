@@ -3,7 +3,7 @@
 /**
  * WeeklyRitualGuideDialog — 週次スケジュール準備ガイド (P3-⑥ 導線).
  *
- * 週次5分の儀式 3ステップ（①枠生成 → ②自動スタッフ割付 → ③レビュー承認）を
+ * 週次5分の儀式 3ステップ（①枠生成 → ②自動スタッフ割り当て → ③レビュー承認）を
  * 案内するだけのダイアログ。実行ボタンは置かない（誤操作防止）。
  *
  * 起動: CourseDayTablePanel ツールバーの「週次ガイド」ボタン (variant="ghost")。
@@ -87,7 +87,7 @@ export function WeeklyRitualGuideDialog({ open, onClose }: WeeklyRitualGuideDial
             週次スケジュール準備（5分の儀式）
           </DialogTitle>
           <DialogDescription>
-            毎週はじめに 3ステップを順番に実行するだけで、スタッフ割付まで完了します。
+            毎週はじめに 3ステップを順番に実行するだけで、スタッフ割り当てまで完了します。
           </DialogDescription>
         </DialogHeader>
 
@@ -112,13 +112,14 @@ export function WeeklyRitualGuideDialog({ open, onClose }: WeeklyRitualGuideDial
 
           <StepCard
             step={2}
-            title="自動スタッフ割付を実行する"
+            title="自動スタッフ割り当てを実行する"
             description={
               <>
-                ツールバーの{' '}
-                <span className="font-medium text-text-primary">「自動スタッフ割付」</span>（緑ボタン）
-                をクリックします。コース別に最適なスタッフが自動で割り付けられ、問題のない
-                コースはそのまま確定します。欠勤対応がある場合は先に「欠勤対応」を実施してください。
+                曜日タブ行の右側にある{' '}
+                <span className="font-medium text-text-primary">「自動スタッフ割り当て」</span>
+                （緑ボタン・「一斉未割当」の左隣）をクリックします。コース別に最適なスタッフが
+                自動で割り当てられ、問題のないコースはそのまま確定します。欠勤対応がある場合は
+                先に「欠勤対応」を実施してください。
               </>
             }
             faq="欠勤者がいる場合は？ → 先に「欠勤対応」ボタンで代替スタッフを指定してから実行してください。"
@@ -129,25 +130,26 @@ export function WeeklyRitualGuideDialog({ open, onClose }: WeeklyRitualGuideDial
             title="レビューカードを確認して承認する"
             description={
               <>
-                割付後、要確認のコースは{' '}
+                割り当て後、要確認のコースは{' '}
                 <span className="font-medium text-text-primary">レビューダイアログ</span>に表示されます。
                 <br />
                 <span className="mt-1 inline-flex items-center gap-1">
                   <span className="inline-block h-2.5 w-2.5 rounded-full bg-yellow-400" aria-hidden />
                   <span className="font-medium">連続（黄）</span>
                 </span>
-                ：直近の担当が同一スタッフになるコース。チェックボックスで承認。
+                ：直近の担当が同一スタッフになるコース。チェックボックスで承認。件数が多いときは
+                「一斉承認」で全件まとめてチェックできます。
                 <br />
                 <span className="mt-0.5 inline-flex items-center gap-1">
                   <span className="inline-block h-2.5 w-2.5 rounded-full bg-red-500" aria-hidden />
                   <span className="font-medium">性別（赤）</span>
                 </span>
-                ：性別制限に適合しないスタッフの候補。「割り付ける」→ 確認して承認。
+                ：性別制限に適合しないスタッフの候補。「割り当てる」→ 確認して承認。
                 <br />
-                確認後「選んだ内容で割り付け」で完了です。
+                確認後「選んだ内容で割り当て」で完了です。
               </>
             }
-            faq="手動で差し替えた割付は消える？ → 欠勤対応で差し替えた分（代替スタッフ確定済み）は保護されます。"
+            faq="手動で差し替えた割り当ては消える？ → 欠勤対応で差し替えた分（代替スタッフ確定済み）は保護されます。"
           />
         </ol>
 

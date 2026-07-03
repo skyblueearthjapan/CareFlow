@@ -4,7 +4,7 @@
  * カバーするシナリオ:
  *   1. 性別カード (赤) を描画する (コード / 曜日 / 候補スタッフ / 原因患者マーク).
  *   2. 連続カード (黄) を描画する (チェックボックス).
- *   3. 性別 = 「割り付ける」 → 確認モーダル 1 回 → apply に渡る.
+ *   3. 性別 = 「割り当てる」 → 確認モーダル 1 回 → apply に渡る.
  *   4. 連続 = チェックで apply に渡る (追加モーダル無し).
  *   5. review_items 空なら open=false でダイアログ非表示.
  */
@@ -103,7 +103,7 @@ describe('AssignWarningDialog (Phase G-91 review flow)', () => {
     expect(screen.getByTestId('assign-review-consecutive-checkbox')).toBeInTheDocument();
   });
 
-  it('性別 = 「割り付ける」→ 確認モーダル 1 回 → apply に渡る', async () => {
+  it('性別 = 「割り当てる」→ 確認モーダル 1 回 → apply に渡る', async () => {
     const onApply = vi.fn<(a: ApprovedReviewItem[]) => void>();
     render(
       <AssignWarningDialog
@@ -113,12 +113,12 @@ describe('AssignWarningDialog (Phase G-91 review flow)', () => {
         onApply={onApply}
       />,
     );
-    // 1 回目の判断: 「割り付ける」 → 確認モーダルが開く.
+    // 1 回目の判断: 「割り当てる」 → 確認モーダルが開く.
     fireEvent.click(screen.getByTestId('assign-review-gender-approve'));
     expect(screen.getByTestId('assign-review-gender-confirm')).toBeInTheDocument();
     // 2 回目の判断: 確認モーダルで OK.
     fireEvent.click(screen.getByTestId('assign-review-gender-confirm-ok'));
-    // 「選んだ内容で割り付け」 → apply に承認カードが渡る.
+    // 「選んだ内容で割り当て」 → apply に承認カードが渡る.
     fireEvent.click(screen.getByTestId('assign-review-apply'));
     await waitFor(() => expect(onApply).toHaveBeenCalledTimes(1));
     expect(onApply).toHaveBeenCalledWith([
@@ -197,6 +197,69 @@ describe('AssignWarningDialog (Phase G-91 review flow)', () => {
     expect(applied).toHaveLength(2);
     expect(applied).toContainEqual({ course_id: xId, candidate_staff_id: xStaff });
     expect(applied).toContainEqual({ course_id: yId, candidate_staff_id: yStaff });
+  });
+
+  it('一斉承認 = 連続カードを全件まとめて承認して apply に渡る', async () => {
+    const c1 = makeConsecutive();
+    const c2 = makeConsecutive({
+      course_id: '77777777-7777-7777-7777-777777777777',
+      candidate_staff_id: '88888888-8888-8888-8888-888888888888',
+      candidate_staff_name: '佐藤一郎',
+    });
+    const onApply = vi.fn<(a: ApprovedReviewItem[]) => void>();
+    render(
+      <AssignWarningDialog open onClose={() => {}} reviewItems={[c1, c2]} onApply={onApply} />,
+    );
+    fireEvent.click(screen.getByTestId('assign-review-consecutive-approve-all'));
+    fireEvent.click(screen.getByTestId('assign-review-apply'));
+    await waitFor(() => expect(onApply).toHaveBeenCalledTimes(1));
+    const applied = onApply.mock.calls[0][0];
+    expect(applied).toHaveLength(2);
+    expect(applied).toContainEqual({
+      course_id: c1.course_id,
+      candidate_staff_id: c1.candidate_staff_id,
+    });
+    expect(applied).toContainEqual({
+      course_id: c2.course_id,
+      candidate_staff_id: c2.candidate_staff_id,
+    });
+  });
+
+  it('一斉承認は 🔴 性別カードを対象にしない (連続のみ)', () => {
+    render(
+      <AssignWarningDialog
+        open
+        onClose={() => {}}
+        reviewItems={[makeGender(), makeConsecutive()]}
+        onApply={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('assign-review-consecutive-approve-all'));
+    // 連続カードのみ承認され、性別カードは未承認のまま.
+    const cards = screen.getAllByTestId('assign-review-card');
+    const gender = cards.find((c) => c.getAttribute('data-reason') === 'gender');
+    const consecutive = cards.find((c) => c.getAttribute('data-reason') === 'consecutive');
+    expect(gender).toHaveAttribute('data-approved', 'false');
+    expect(consecutive).toHaveAttribute('data-approved', 'true');
+  });
+
+  it('全件承認済みのとき一斉承認ボタンはトグルで全件解除する', () => {
+    render(
+      <AssignWarningDialog
+        open
+        onClose={() => {}}
+        reviewItems={[makeConsecutive()]}
+        onApply={() => {}}
+      />,
+    );
+    const btn = screen.getByTestId('assign-review-consecutive-approve-all');
+    expect(btn).toHaveTextContent('一斉承認');
+    fireEvent.click(btn);
+    expect(btn).toHaveTextContent('一斉承認を解除');
+    fireEvent.click(btn);
+    expect(screen.getByTestId('assign-review-card')).toHaveAttribute('data-approved', 'false');
+    // 全解除で apply は再び無効化される.
+    expect(screen.getByTestId('assign-review-apply')).toBeDisabled();
   });
 
   it('open=false なら描画しない (= ダイアログを出さない)', () => {

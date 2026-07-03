@@ -3,18 +3,22 @@
 /**
  * AssignWarningDialog — Phase G-91 (確認レビューフロー / コースカード型レビュー).
  *
- * 「自動スタッフ割付」 を、 問題のあるコースだけ管理者が最終判断する確認レビュー
- * フローに作り替えたダイアログ。 直前の「埋めて事後警告」 (Phase G-89) を置換する。
+ * 「自動スタッフ割り当て」 (旧称: 自動スタッフ割付) を、 問題のあるコースだけ管理者が
+ * 最終判断する確認レビューフローに作り替えたダイアログ。
+ * 直前の「埋めて事後警告」 (Phase G-89) を置換する。
  *
  * 表示対象 (review_items) は 2 種:
  *   🔴 性別 (gender / 重度): 適合性別の同拠点スタッフが居ないコース。
- *      候補スタッフ (= 性別無視時の候補) を提示し、 「割り付ける」 ボタン →
+ *      候補スタッフ (= 性別無視時の候補) を提示し、 「割り当てる」 ボタン →
  *      確認モーダル 1 回 (= 計 2 ステップ) を踏んで承認する。
  *   🟡 連続 (consecutive / 軽度): 患者の直近担当者と同じになるコース。
  *      候補スタッフを提示し、 チェックボックスで承認する (追加モーダル無し)。
+ *      件数が多いときのために「一斉承認」ボタンで全件を一括チェックできる
+ *      (2026-07: 十数件を 1 件ずつチェックする手間の解消)。 性別 (重度) は
+ *      誤操作リスクが高いため一斉承認の対象外 (従来どおり 2 ステップ個別承認)。
  *
  * apply = 承認されたカードを ``POST /api/v1/schedule/apply-staff-review`` で
- * 一括反映する (呼び出し側 onApply に委譲)。 自動スタッフ割付と同一の _persist
+ * 一括反映する (呼び出し側 onApply に委譲)。 自動スタッフ割り当てと同一の _persist
  * 経路で VSA / course_status / primary・secondary 同期 / 2 名体制 / trainee
  * companion を全て反映する (= 旧 PATCH /courses ループのリグレッションを解消)。
  *
@@ -81,7 +85,7 @@ export function AssignWarningDialog({
 }: AssignWarningDialogProps) {
   // 承認済み course_id 集合 (= チェック / 確認モーダル通過分).
   const [approved, setApproved] = React.useState<Set<string>>(() => new Set());
-  // 性別カードの確認モーダル対象 (= 「割り付ける」 を押したカード).
+  // 性別カードの確認モーダル対象 (= 「割り当てる」 を押したカード).
   const [confirmTarget, setConfirmTarget] = React.useState<ReviewItem | null>(null);
 
   // ダイアログ open 時に承認状態をリセットする.
@@ -109,6 +113,21 @@ export function AssignWarningDialog({
       toggleApproved(confirmTarget.course_id, true);
       setConfirmTarget(null);
     }
+  };
+
+  // 一斉承認 (連続のみ): 🟡 連続カードを全件まとめてチェックする。
+  // 全件承認済みのときはトグルで全件解除に切り替わる。 🔴 性別は対象外。
+  const allConsecutiveApproved =
+    consecutiveItems.length > 0 && consecutiveItems.every((i) => approved.has(i.course_id));
+  const handleToggleAllConsecutive = () => {
+    setApproved((prev) => {
+      const s = new Set(prev);
+      for (const item of consecutiveItems) {
+        if (allConsecutiveApproved) s.delete(item.course_id);
+        else s.add(item.course_id);
+      }
+      return s;
+    });
   };
 
   const handleApply = async () => {
@@ -149,11 +168,11 @@ export function AssignWarningDialog({
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <span aria-hidden>📋</span>
-              自動スタッフ割付のレビュー
+              自動スタッフ割り当てのレビュー
             </DialogTitle>
             <DialogDescription>
               問題のないコースは自動で確定しました。 以下のコースは管理者の判断が必要です。
-              内容を確認し、 割り付けるコースを選んで「選んだ内容で割り付け」 を押してください。
+              内容を確認し、 割り当てるコースを選んで「選んだ内容で割り当て」 を押してください。
             </DialogDescription>
           </DialogHeader>
 
@@ -163,7 +182,7 @@ export function AssignWarningDialog({
               <section data-testid="assign-review-gender-section">
                 <h3 className="mb-2 flex items-center gap-2 text-sm font-semibold text-text-primary">
                   <span aria-hidden>🔴</span>
-                  性別 ({genderItems.length} 件) — 確認のうえ割り付け
+                  性別 ({genderItems.length} 件) — 確認のうえ割り当て
                 </h3>
                 <ul className="space-y-2">
                   {genderItems.map((item) => (
@@ -182,9 +201,20 @@ export function AssignWarningDialog({
             {/* 🟡 連続セクション */}
             {consecutiveItems.length > 0 ? (
               <section data-testid="assign-review-consecutive-section">
-                <h3 className="mb-2 flex items-center gap-2 text-sm font-semibold text-text-primary">
+                <h3 className="mb-2 flex flex-wrap items-center gap-2 text-sm font-semibold text-text-primary">
                   <span aria-hidden>🟡</span>
-                  連続 ({consecutiveItems.length} 件) — チェックで割り付け
+                  連続 ({consecutiveItems.length} 件) — チェックで割り当て
+                  {/* 一斉承認: 連続カードを全件まとめてチェック (全件承認済みならトグルで解除). */}
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="ml-auto"
+                    onClick={handleToggleAllConsecutive}
+                    data-testid="assign-review-consecutive-approve-all"
+                  >
+                    {allConsecutiveApproved ? '一斉承認を解除' : '一斉承認'}
+                  </Button>
                 </h3>
                 <ul className="space-y-2">
                   {consecutiveItems.map((item) => (
@@ -222,7 +252,7 @@ export function AssignWarningDialog({
               disabled={applying || approvedCount === 0}
               data-testid="assign-review-apply"
             >
-              選んだ内容で割り付け{approvedCount > 0 ? ` (${approvedCount})` : ''}
+              選んだ内容で割り当て{approvedCount > 0 ? ` (${approvedCount})` : ''}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -235,7 +265,7 @@ export function AssignWarningDialog({
       >
         <DialogContent className="max-w-md" data-testid="assign-review-gender-confirm">
           <DialogHeader>
-            <DialogTitle>本当に割り付けますか？</DialogTitle>
+            <DialogTitle>本当に割り当てますか？</DialogTitle>
             <DialogDescription>
               {confirmTarget ? (
                 <>
@@ -244,7 +274,7 @@ export function AssignWarningDialog({
                   <span className="font-medium text-text-primary">
                     {confirmTarget.candidate_staff_name}
                   </span>{' '}
-                  を割り付けます。 適合する性別のスタッフが居ないため、 管理者の判断で割り付けます。
+                  を割り当てます。 適合する性別のスタッフが居ないため、 管理者の判断で割り当てます。
                 </>
               ) : null}
             </DialogDescription>
@@ -263,7 +293,7 @@ export function AssignWarningDialog({
               onClick={handleConfirmGender}
               data-testid="assign-review-gender-confirm-ok"
             >
-              割り付ける
+              割り当てる
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -277,9 +307,9 @@ interface ReviewCardProps {
   approved: boolean;
   /** 🟡 連続: チェックボックス切替. */
   onToggleConsecutive?: (next: boolean) => void;
-  /** 🔴 性別: 「割り付ける」 ボタン (= 確認モーダルを開く). */
+  /** 🔴 性別: 「割り当てる」 ボタン (= 確認モーダルを開く). */
   onApproveGender?: () => void;
-  /** 🔴 性別: 承認解除 (= 「割り付ける」 後に取り消す). */
+  /** 🔴 性別: 承認解除 (= 「割り当てる」 後に取り消す). */
   onUnapprove?: () => void;
 }
 
@@ -357,7 +387,7 @@ function ReviewCard({
           approved ? (
             <div className="flex items-center gap-2">
               <Badge variant="success" className="text-[10px]">
-                割り付け予定
+                割り当て予定
               </Badge>
               <Button
                 type="button"
@@ -376,7 +406,7 @@ function ReviewCard({
               onClick={onApproveGender}
               data-testid="assign-review-gender-approve"
             >
-              割り付ける
+              割り当てる
             </Button>
           )
         ) : (
@@ -386,7 +416,7 @@ function ReviewCard({
               onCheckedChange={(c) => onToggleConsecutive?.(c === true)}
               data-testid="assign-review-consecutive-checkbox"
             />
-            このコースを割り付ける
+            このコースを割り当てる
           </label>
         )}
       </div>
