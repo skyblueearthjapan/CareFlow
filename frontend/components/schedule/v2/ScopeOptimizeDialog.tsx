@@ -72,6 +72,11 @@ export interface ScopeOptimizeDialogProps {
    */
   initialScope?: { weekdays: number[] | null; courseCodes: string[] | null } | null;
   /**
+   * 外部導線が引き継ぐ拠点 (処方箋フロー: 全拠点表示の健康診断からでも、クリックした
+   * 行の拠点で自動計算できる)。ページ側 officeId があればそちらが優先。
+   */
+  initialOfficeId?: string | null;
+  /**
    * 拠点一覧 (全拠点モードでダイアログ内から拠点を選ぶためのチップ用)。
    * officeId が指定されているときは使わない。
    */
@@ -268,6 +273,7 @@ export function ScopeOptimizeDialog({
   weekLabel,
   canEdit,
   initialScope = null,
+  initialOfficeId = null,
   offices = [],
 }: ScopeOptimizeDialogProps) {
   // 全拠点モード (officeId=null) でダイアログ内から選ぶ拠点.
@@ -290,15 +296,22 @@ export function ScopeOptimizeDialog({
   const [applyCount, setApplyCount] = React.useState(0);
 
   const runSimulate = React.useCallback(
-    (weekdays: number[] | null, courseCodes: string[] | null) => {
-      if (!effectiveOfficeId) return;
+    (
+      weekdays: number[] | null,
+      courseCodes: string[] | null,
+      // open 直後は manualOfficeId の setState が未反映のため、外部導線からの
+      // 自動計算では拠点を明示的に受け取る (state 反映待ちの stale 回避).
+      officeOverride?: string,
+    ) => {
+      const oid = officeOverride ?? effectiveOfficeId;
+      if (!oid) return;
       setResult(null);
       setResultScope(null);
       simulateMut.mutate(
         {
           iso_year: isoYear,
           iso_week: isoWeek,
-          scope: { office_id: effectiveOfficeId, weekdays, course_codes: courseCodes },
+          scope: { office_id: oid, weekdays, course_codes: courseCodes },
         },
         {
           onSuccess: (data) => {
@@ -325,7 +338,8 @@ export function ScopeOptimizeDialog({
     if (!open) return;
     const wd = initialScope?.weekdays ?? null;
     const cc = initialScope?.courseCodes ?? null;
-    setManualOfficeId(null);
+    // 外部導線 (健康診断) からの拠点引き継ぎ: 全拠点表示でも行の拠点で自動計算できる.
+    setManualOfficeId(initialOfficeId ?? null);
     setWeekdaySel(new Set(wd ?? []));
     setCourseSel(new Set(cc ?? []));
     setResult(null);
@@ -333,8 +347,10 @@ export function ScopeOptimizeDialog({
     setApplyCount(0);
     simulateMut.reset();
     applyMut.reset();
-    if (initialScope && officeId) {
-      runSimulate(wd, cc);
+    const autoOfficeId = officeId ?? initialOfficeId ?? null;
+    if (initialScope && autoOfficeId) {
+      // manualOfficeId の setState はこの effect 内では未反映のため明示的に渡す.
+      runSimulate(wd, cc, autoOfficeId);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);

@@ -1641,6 +1641,10 @@ export function CourseDayTablePanel({
     weekdays: number[] | null;
     courseCodes: string[] | null;
   } | null>(null);
+  // 健康診断の行が属する拠点 (全拠点表示でも対策計算へ引き継ぐ。処方箋フロー).
+  const [scopeOptimizeInitialOfficeId, setScopeOptimizeInitialOfficeId] = useState<string | null>(
+    null,
+  );
   // P3-⑥: 週次ガイドダイアログ (案内のみ・実行ボタンなし).
   const [weeklyRitualGuideOpen, setWeeklyRitualGuideOpen] = useState(false);
   const isProcessing = generateWeekMut.isPending || assignStaffOnlyMut.isPending;
@@ -2020,6 +2024,7 @@ export function CourseDayTablePanel({
                 variant="outline"
                 onClick={() => {
                   setScopeOptimizeInitialScope(null); // ツールバーからは手動選択で開く.
+                  setScopeOptimizeInitialOfficeId(null);
                   setScopeOptimizeOpen(true);
                 }}
                 data-testid="scope-optimize-button"
@@ -2527,12 +2532,14 @@ export function CourseDayTablePanel({
           officeId={officeId}
           weekLabel={isoWeekLabel}
           // scope-optimization W2: 「移動が多いコース」から範囲最適化へのワンクリック導線.
-          onOptimizeCourse={(courseCode, weekdayFilter) => {
+          // 行の拠点 (courseOfficeId) を引き継ぐため、全拠点表示からでも対策計算できる.
+          onOptimizeCourse={(courseCode, weekdayFilter, courseOfficeId) => {
             setScheduleHealthOpen(false);
             setScopeOptimizeInitialScope({
               weekdays: weekdayFilter === 'all' ? null : [weekdayFilter],
               courseCodes: [courseCode],
             });
+            setScopeOptimizeInitialOfficeId(courseOfficeId);
             setScopeOptimizeOpen(true);
           }}
         />
@@ -2548,6 +2555,7 @@ export function CourseDayTablePanel({
           weekLabel={isoWeekLabel}
           canEdit={canEdit}
           initialScope={scopeOptimizeInitialScope}
+          initialOfficeId={scopeOptimizeInitialOfficeId}
           offices={offices.map((o) => ({ id: o.id, name: o.name }))}
         />
 

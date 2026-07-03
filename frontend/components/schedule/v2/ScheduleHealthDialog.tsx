@@ -54,9 +54,14 @@ export interface ScheduleHealthDialogProps {
   /**
    * scope-optimization W2: コース行の「最適化」ボタン押下時に呼ぶ (見える化→解決策の導線).
    * 省略時はボタン自体を出さない (従来表示と完全互換)。weekdayFilter は現在の曜日フィルタ
-   * ('all' = 全曜日)。単一拠点フィルタ時のみ有効 (範囲最適化は拠点単位のため)。
+   * ('all' = 全曜日)。courseOfficeId はその行が属する拠点 — 全拠点表示でも各行の拠点が
+   * 分かるため、ページ側の拠点フィルタに関係なく対策計算へ引き継げる (処方箋フロー修正)。
    */
-  onOptimizeCourse?: (courseCode: string, weekdayFilter: number | 'all') => void;
+  onOptimizeCourse?: (
+    courseCode: string,
+    weekdayFilter: number | 'all',
+    courseOfficeId: string,
+  ) => void;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -599,12 +604,14 @@ export function ScheduleHealthDialog({
                       {bar.staffName ? `・${bar.staffName}` : ''}（移動
                       {fmtMinutes(bar.travelMinutes)}・隙間{fmtMinutes(bar.gapMinutes)}）
                     </span>
-                    {onOptimizeCourse && officeId ? (
+                    {onOptimizeCourse ? (
                       <Button
                         type="button"
                         size="sm"
                         className="h-6 px-2 text-[11px]"
-                        onClick={() => onOptimizeCourse(bar.courseCode, weekdayFilter)}
+                        onClick={() =>
+                          onOptimizeCourse(bar.courseCode, weekdayFilter, attnOfficeId)
+                        }
                         data-testid="schedule-health-attention-optimize"
                       >
                         <Route className="mr-0.5 h-3 w-3" aria-hidden />
@@ -660,10 +667,10 @@ export function ScheduleHealthDialog({
                             isoWeek={isoWeek}
                             officeRowId={ob.officeId}
                             weekdayFilter={weekdayFilter}
-                            // 範囲最適化は拠点単位のため、単一拠点フィルタ時のみ導線を出す.
+                            // 各行の拠点 (ob.officeId) を引き継ぐため全拠点表示でも導線を出す.
                             onOptimize={
-                              onOptimizeCourse && officeId
-                                ? (code) => onOptimizeCourse(code, weekdayFilter)
+                              onOptimizeCourse
+                                ? (code) => onOptimizeCourse(code, weekdayFilter, ob.officeId)
                                 : undefined
                             }
                           />
