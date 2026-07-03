@@ -19,6 +19,7 @@ export function makeVisit(overrides: Partial<MonitorVisit> = {}): MonitorVisit {
     end_time: '10:00',
     phase: 'done',
     alert_level: 'none',
+    pair_waiting: false,
     arrival: null,
     departure: null,
     no_show: null,

@@ -42,6 +42,7 @@ from app.models.visit import VISIT_STATUS_CANCELLED, Visit
 from app.models.visit_checkin import VisitCheckin
 from app.models.visit_review import VisitReview
 from app.services.checkin.judge import load_thresholds
+from app.services.checkin.monitor import compute_pair_effective_starts
 from app.utils.db import try_advisory_xact_lock
 
 logger = logging.getLogger(__name__)
@@ -214,6 +215,10 @@ async def run_check_missing(
                     Visit.status != VISIT_STATUS_CANCELLED,
                 )
                 .options(selectinload(Visit.patient), selectinload(Visit.primary_staff))
+                # 同一 session の identity map に既存 visit が居ても patient の eager load を
+                # 確実に反映する (直接呼び出しテスト対策; 本番は request-scoped session)。
+                # ペア補正が patient 座標を必要とするため必須。
+                .execution_options(populate_existing=True)
             )
         ).all()
     )
@@ -223,17 +228,25 @@ async def run_check_missing(
     arrived: set[UUID] = set()
     no_showed: set[UUID] = set()
     reviewed: set[UUID] = set()
+    # 同住所・同時刻ペア補正用: 到着/退出の最新 scanned_at マップ (JST)。
+    arrival_at: dict[UUID, datetime] = {}
+    departure_at: dict[UUID, datetime] = {}
     if visit_ids:
-        arrived = set(
-            (
-                await db.scalars(
-                    select(VisitCheckin.visit_id).where(
-                        VisitCheckin.visit_id.in_(visit_ids),
-                        VisitCheckin.kind == "arrival",
-                    )
+        arr_dep_rows = (
+            await db.scalars(
+                select(VisitCheckin)
+                .where(
+                    VisitCheckin.visit_id.in_(visit_ids),
+                    VisitCheckin.kind.in_(("arrival", "departure")),
                 )
-            ).all()
-        )
+                .order_by(VisitCheckin.scanned_at.desc())
+            )
+        ).all()
+        for r in arr_dep_rows:
+            target = arrival_at if r.kind == "arrival" else departure_at
+            if r.visit_id not in target:  # DESC 並びなので最初に出た = 最新。
+                target[r.visit_id] = _as_jst(r.scanned_at)
+        arrived = set(arrival_at.keys())
         no_showed = set(
             (
                 await db.scalars(
@@ -252,6 +265,9 @@ async def run_check_missing(
             ).all()
         )
 
+    # 同住所・同時刻ペア補正後起点 (相方に到着があれば B の missing 起点を後ろへ)。
+    pair_eff = compute_pair_effective_starts(visits, arrival_at, departure_at)
+
     users = await _active_admin_manager_users(db)
     missing = 0
     created = 0
@@ -260,7 +276,9 @@ async def run_check_missing(
         if v.id in arrived or v.id in reviewed:
             continue
         start_dt = datetime.combine(v.visit_date, v.start_time, tzinfo=JST)
-        is_missing = v.id in no_showed or now_jst >= start_dt + timedelta(minutes=grace)
+        # ペア補正が効いていれば補正後起点を、無ければ予定開始を missing 起点にする。
+        eff_start = pair_eff.get(v.id, start_dt)
+        is_missing = v.id in no_showed or now_jst >= eff_start + timedelta(minutes=grace)
         if not is_missing:
             continue
         missing += 1

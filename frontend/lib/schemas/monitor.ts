@@ -34,6 +34,8 @@ export const monitorVisitSchema = z.object({
   end_time: z.string(),
   phase: z.string(),
   alert_level: z.string(),
+  // 同住所・同時刻ペアの後攻が相方の完了を待っている間 (欠落は false 扱い)。
+  pair_waiting: z.boolean().default(false),
   arrival: monitorCheckinSchema.nullable().optional(),
   departure: monitorCheckinSchema.nullable().optional(),
   no_show: monitorCheckinSchema.nullable().optional(),

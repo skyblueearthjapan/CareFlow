@@ -228,6 +228,19 @@ function VisitDetail({
         />
       )}
 
+      {visit.pair_waiting && (
+        <div
+          className="mb-3 rounded border border-border-default bg-bg-muted p-3 text-[13px] leading-relaxed text-text-secondary"
+          data-testid="monitor-pair-waiting-note"
+        >
+          <span className="mb-1 flex items-center gap-1 text-[11px] font-bold">
+            <Clock className="h-3.5 w-3.5" />
+            ペア待ち
+          </span>
+          同住所・同時刻の相方を対応中のため到着待ちです（未訪問ではありません）。
+        </div>
+      )}
+
       {isLongInprogress(visit, maxInprogressMin) && (
         <div
           className="mb-3 rounded border border-border-warning bg-warning-bg p-3 text-[13px] leading-relaxed text-warning-strong"

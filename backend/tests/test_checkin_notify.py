@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, time
+from datetime import UTC, date, datetime, time
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -120,7 +120,9 @@ async def test_mismatch_checkin_notifies_admin_manager_once(client, db) -> None:
     assert res.json()["latest_checkin"]["match_status"] == "mismatch"
 
     # admin + manager に 1 行ずつ (= 2)。論理削除 admin は対象外。
-    assert await _count_notifications(db, reference_id=visit.id, reference_type=NOTIFY_MISMATCH) == 2
+    assert (
+        await _count_notifications(db, reference_id=visit.id, reference_type=NOTIFY_MISMATCH) == 2
+    )
     for u in (admin, manager):
         cnt = int(
             await db.scalar(
@@ -143,7 +145,9 @@ async def test_mismatch_checkin_notifies_admin_manager_once(client, db) -> None:
         json={"lat": 35.0, "lng": 139.1},
     )
     assert res2.status_code == 200, res2.text
-    assert await _count_notifications(db, reference_id=visit.id, reference_type=NOTIFY_MISMATCH) == 2
+    assert (
+        await _count_notifications(db, reference_id=visit.id, reference_type=NOTIFY_MISMATCH) == 2
+    )
 
     await db.rollback()
 
@@ -214,10 +218,17 @@ async def test_check_missing_notifies_only_missing_and_is_idempotent(db) -> None
     assert result["created"] == 2  # admin + manager に 1 行ずつ
 
     # 未訪問 visit のみ通知される。
-    assert await _count_notifications(db, reference_id=v_missing.id, reference_type=NOTIFY_MISSING) == 2
-    assert await _count_notifications(db, reference_id=v_arrived.id, reference_type=NOTIFY_MISSING) == 0
     assert (
-        await _count_notifications(db, reference_id=v_reviewed.id, reference_type=NOTIFY_MISSING) == 0
+        await _count_notifications(db, reference_id=v_missing.id, reference_type=NOTIFY_MISSING)
+        == 2
+    )
+    assert (
+        await _count_notifications(db, reference_id=v_arrived.id, reference_type=NOTIFY_MISSING)
+        == 0
+    )
+    assert (
+        await _count_notifications(db, reference_id=v_reviewed.id, reference_type=NOTIFY_MISSING)
+        == 0
     )
     # ターゲットは admin/manager 両方。
     assert {manager.id, admin.id} == set(
@@ -231,7 +242,10 @@ async def test_check_missing_notifies_only_missing_and_is_idempotent(db) -> None
     # 冪等: 再実行で新規生成 0。
     result2 = await run_check_missing(db, now=now)
     assert result2["created"] == 0
-    assert await _count_notifications(db, reference_id=v_missing.id, reference_type=NOTIFY_MISSING) == 2
+    assert (
+        await _count_notifications(db, reference_id=v_missing.id, reference_type=NOTIFY_MISSING)
+        == 2
+    )
 
 
 @pytest.mark.asyncio
@@ -291,6 +305,48 @@ async def test_arrival_checkin_resolves_missing_notifications(client, db) -> Non
         assert cnt == 0, f"user {u.email} should have no missing notification left"
 
     await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_check_missing_pair_correction(db) -> None:
+    """同住所・同時刻ペア: A 到着中は B に未訪問通知を作らず、起点超過後に作る."""
+    # admin + manager が通知ターゲット (created == 2 で検証)。
+    await _make_user(db, "pc-admin@example.com", "admin")
+    await _make_user(db, "pc-manager@example.com", "manager")
+    staff, _ = await _make_staff_user(db, "pc-staff@example.com")
+
+    # A / B 同住所 (同座標)・同 staff・同時刻 (09:00–10:00, 所要 60分)・別患者。
+    pa = await _make_patient(db, "PC-A", lat=35.0, lng=139.0)
+    pb = await _make_patient(db, "PC-B", lat=35.0, lng=139.0)
+    va = await _make_visit(db, pa.id, staff.id, start=time(9, 0))
+    vb = await _make_visit(db, pb.id, staff.id, start=time(9, 0))
+    # A は 09:00 到着 (退出なし)。A 完了見込 = 09:00 + 60 = 10:00。
+    db.add(
+        VisitCheckin(
+            visit_id=va.id,
+            patient_id=pa.id,
+            staff_id=staff.id,
+            kind="arrival",
+            scanned_at=datetime.combine(_today_jst(), time(9, 0), tzinfo=JST).astimezone(UTC),
+            match_status="match",
+            threshold_snapshot={"v": 1},
+        )
+    )
+    await db.commit()
+
+    # (1) now = 09:40 (予定 + grace 超過だが 補正後起点 10:00 + grace 内)。
+    #     B は未訪問通知されない (A の完了待ち)。
+    now_wait = datetime.combine(_today_jst(), time(9, 40), tzinfo=JST)
+    res_wait = await run_check_missing(db, now=now_wait)
+    assert res_wait["missing"] == 0
+    assert await _count_notifications(db, reference_id=vb.id, reference_type=NOTIFY_MISSING) == 0
+
+    # (2) now = 10:25 (補正後起点 10:00 + grace(20) = 10:20 を超過)。B は未訪問通知される。
+    now_over = datetime.combine(_today_jst(), time(10, 25), tzinfo=JST)
+    res_over = await run_check_missing(db, now=now_over)
+    assert res_over["missing"] == 1
+    assert res_over["created"] == 2  # admin + manager
+    assert await _count_notifications(db, reference_id=vb.id, reference_type=NOTIFY_MISSING) == 2
 
 
 # ---------------------------------------------------------------------------

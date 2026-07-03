@@ -372,6 +372,25 @@ function VisitBars({
           {status === 'missing' ? '未訪問' : actLabel}
         </button>
       )}
+      {/* ペア待ち: 同住所・同時刻の相方を対応中で未訪問扱いを保留している間。 */}
+      {/* 警告色ではなく muted/info トーン (未訪問と紛らわしくしない)。 */}
+      {/* rounded-[5px]: 極小バーのためトークン(sm=8px)未満の例外 */}
+      {visit.pair_waiting && (
+        <button
+          type="button"
+          data-testid={`monitor-pair-waiting-${visit.visit_id}`}
+          data-lane={lane}
+          onClick={(e) => {
+            e.stopPropagation();
+            onSelect(visit.visit_id);
+          }}
+          title={`ペア待ち（同住所の相方を対応中）${visit.patient_name ?? ''}`}
+          className="absolute flex items-center gap-0.5 overflow-hidden whitespace-nowrap rounded-[5px] border border-border-default bg-bg-muted px-1.5 text-[10px] font-semibold text-text-secondary"
+          style={{ left: `${pL}%`, width: `${pW}%`, top: pos.actTop, height: pos.actH }}
+        >
+          ペア待ち
+        </button>
+      )}
     </>
   );
 }

@@ -65,6 +65,10 @@ class MonitorVisit(BaseModel):
     # 実効状態 (集計時に合成). UI が色とバー形を決める。
     phase: str  # future | awaiting | inprogress | done | missing
     alert_level: str  # none | review | mismatch | missing
+    # 同住所・同時刻ペアの後攻が相方の完了を待っている間 (予定 + grace は過ぎたが
+    # ペア補正で awaiting に留まっている)。UI が「ペア待ち」バッジを出す。phase は
+    # awaiting のまま (列挙は増やさない)。
+    pair_waiting: bool = False
     arrival: MonitorCheckin | None = None
     departure: MonitorCheckin | None = None
     no_show: MonitorCheckin | None = None

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
+from collections.abc import Sequence
 from datetime import UTC, date, datetime, time, timedelta
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -89,15 +90,22 @@ def compute_phase(
     start_dt: datetime,
     now: datetime,
     grace_min: int,
+    effective_start_dt: datetime | None = None,
 ) -> str:
     """時間ベースの進捗を合成する (設計 §3 の合意アルゴリズム).
 
     全ての datetime は JST aware。``start_dt`` は visit_date + start_time。
+
+    ``effective_start_dt`` は同住所・同時刻ペアの補正後起点 (相方の退出時刻等)。
+    未訪問 (missing) 判定の起点だけをこの補正後起点に置き換える。future/awaiting
+    の切り替えは従来どおり ``start_dt`` (予定開始) を使う (補正で予定より前が
+    future に化けないように)。None なら ``start_dt`` と同一 = 従来挙動。
     """
+    eff_start = effective_start_dt if effective_start_dt is not None else start_dt
     if arrival_scanned is None:
         if has_no_show:
             return PHASE_MISSING
-        if now >= start_dt + timedelta(minutes=grace_min):
+        if now >= eff_start + timedelta(minutes=grace_min):
             return PHASE_MISSING
         if now < start_dt:
             return PHASE_FUTURE
@@ -117,6 +125,7 @@ def compute_alert(
     stay_minutes: int | None = None,
     max_inprogress_min: int = MAX_INPROGRESS_MIN,
     reviewed: bool = False,
+    effective_start_dt: datetime | None = None,
 ) -> str:
     """要対応レベルを合成する (位置判定 + 時間遅延の worst).
 
@@ -138,18 +147,95 @@ def compute_alert(
         return ALERT_NONE
     if arrival_match_status == "mismatch":
         return ALERT_MISMATCH
-    late = arrival_scanned is not None and (arrival_scanned - start_dt) >= timedelta(
+    # 到着遅延の起点は同住所・同時刻ペア補正後起点 (相方の退出時刻等)。None なら予定開始。
+    eff_start = effective_start_dt if effective_start_dt is not None else start_dt
+    late = arrival_scanned is not None and (arrival_scanned - eff_start) >= timedelta(
         minutes=late_min
     )
     # 退出忘れ: 到着済・退出未記録のまま長時間 inprogress (退出未記録の可能性)。
     long_inprogress = (
-        phase == PHASE_INPROGRESS
-        and stay_minutes is not None
-        and stay_minutes > max_inprogress_min
+        phase == PHASE_INPROGRESS and stay_minutes is not None and stay_minutes > max_inprogress_min
     )
     if arrival_match_status in ("review", "no_gps") or late or long_inprogress:
         return ALERT_REVIEW
     return ALERT_NONE
+
+
+def _visit_duration_min(v: Visit) -> int:
+    """visit の予定所要分 (end_time - start_time, JST 壁時計の分差)。負値は 0。"""
+    s = v.start_time.hour * 60 + v.start_time.minute
+    e = v.end_time.hour * 60 + v.end_time.minute
+    return max(0, e - s)
+
+
+def compute_pair_effective_starts(
+    visits: Sequence[Visit],
+    arrival_at: dict[UUID, datetime],
+    departure_at: dict[UUID, datetime],
+) -> dict[UUID, datetime]:
+    """同住所・同時刻ペアの「補正後起点」を visit_id ごとに返す (対称補正).
+
+    ペア定義 (PO 合意 / 現物調査で確定):
+      ``visit_group_id`` は **2 名体制 (同一患者に 2 スタッフ)** のキーであり
+      「同住所 2 患者ペア」ではない。同住所・同時刻ペアはこの codebase では
+      レスポンス時に座標で導出する概念のため、ここでは保守的に
+      **同 primary_staff_id (未割当同士は同 course_id)・同 start_time・患者座標一致
+      (lat/lng を小数 6 桁で丸め)・患者が別 (patient_id が異なる)** で束ねる。
+
+    補正: ペアの一方 B に到着 QR が無いとき、相方 A に到着があれば B の起点を
+      ``max(予定開始, A の退出時刻 ?? (A の到着時刻 + A の予定所要分))`` に置き換える。
+      対称: どちらが先に読まれても未読側が既読側を起点にする。B が既に到着済み
+      (遅延判定用) の場合は「B より前に到着した相方」のみ起点候補にする
+      (先攻の真の遅延を隠さないため)。
+
+    返却は **補正が実際に起点を後ろへ動かした visit のみ** (= 予定開始より後)。
+    それ以外 (相方未到着・非ペア) はキー無し = 従来どおり予定開始を使う。
+    """
+    # (staff_key, start_time, coord6) でグルーピング。
+    groups: dict[tuple[object, time, tuple[float, float]], list[Visit]] = defaultdict(list)
+    for v in visits:
+        p = v.patient
+        if p is None or p.lat is None or p.lng is None:
+            continue
+        coord = (round(float(p.lat), 6), round(float(p.lng), 6))
+        # レビュー指摘 (誤ペア化ガード): (0,0) は未設定の既定値でありうるため
+        # ペア判定に使わない (無関係患者を束ねて本物の未訪問を隠さない)。
+        if coord == (0.0, 0.0):
+            continue
+        staff_key: object = (
+            v.primary_staff_id if v.primary_staff_id is not None else ("course", v.course_id)
+        )
+        groups[(staff_key, v.start_time, coord)].append(v)
+
+    eff: dict[UUID, datetime] = {}
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        for v in members:
+            v_start = datetime.combine(v.visit_date, v.start_time, tzinfo=JST)
+            v_arr = arrival_at.get(v.id)
+            best_finish: datetime | None = None
+            for partner in members:
+                if partner.id == v.id or partner.patient_id == v.patient_id:
+                    continue
+                p_arr = arrival_at.get(partner.id)
+                if p_arr is None:
+                    continue
+                # v が到着済み (遅延判定) の場合は「v より先に来た相方」のみ起点候補。
+                # v が未到着 (未訪問判定) の場合はどの既読相方も起点候補。
+                if v_arr is not None and not (p_arr < v_arr):
+                    continue
+                p_dep = departure_at.get(partner.id)
+                finish = (
+                    p_dep
+                    if p_dep is not None
+                    else p_arr + timedelta(minutes=_visit_duration_min(partner))
+                )
+                if best_finish is None or finish > best_finish:
+                    best_finish = finish
+            if best_finish is not None and best_finish > v_start:
+                eff[v.id] = best_finish
+    return eff
 
 
 def _project_checkin(row: VisitCheckin) -> MonitorCheckin:
@@ -238,6 +324,16 @@ async def build_monitor(
             if key not in latest:  # DESC 並びなので最初に出た = 最新。
                 latest[key] = r
 
+    # 同住所・同時刻ペア補正: 到着/退出の実効時刻マップを組み、補正後起点を導出する。
+    arrival_at: dict[UUID, datetime] = {}
+    departure_at: dict[UUID, datetime] = {}
+    for (vid, kind), row in latest.items():
+        if kind == "arrival":
+            arrival_at[vid] = _as_jst(row.scanned_at)
+        elif kind == "departure":
+            departure_at[vid] = _as_jst(row.scanned_at)
+    pair_eff = compute_pair_effective_starts(visits, arrival_at, departure_at)
+
     # 「確認済み」(visit 単位の review) を 1 クエリで取得。確認者名は
     # users → staff を outer join で解決 (staff 未紐付け / 退職は email/None に fallback)。
     reviews: dict[UUID, tuple[VisitReview, str | None]] = {}
@@ -324,6 +420,8 @@ async def build_monitor(
             start_dt = datetime.combine(v.visit_date, v.start_time, tzinfo=JST)
             arr_scanned = _as_jst(arrival.scanned_at) if arrival is not None else None
             dep_scanned = _as_jst(departure.scanned_at) if departure is not None else None
+            # 同住所・同時刻ペア補正後起点 (無ければ予定開始と同一)。
+            effective_start = pair_eff.get(v.id)
 
             phase = compute_phase(
                 arrival_scanned=arr_scanned,
@@ -332,6 +430,7 @@ async def build_monitor(
                 start_dt=start_dt,
                 now=now_jst,
                 grace_min=thresholds["no_show_grace_min"],
+                effective_start_dt=effective_start,
             )
             stay = _stay_minutes(arr_p, dep_p, now_jst)
             review_entry = reviews.get(v.id)
@@ -345,6 +444,13 @@ async def build_monitor(
                 stay_minutes=stay,
                 max_inprogress_min=thresholds["max_inprogress_min"],
                 reviewed=reviewed,
+                effective_start_dt=effective_start,
+            )
+            # ペア待ち: 予定 + grace は過ぎたが、ペア補正で awaiting に留まっている間。
+            pair_waiting = (
+                phase == PHASE_AWAITING
+                and effective_start is not None
+                and now_jst >= start_dt + timedelta(minutes=thresholds["no_show_grace_min"])
             )
 
             arrival_delay_min = (
@@ -380,6 +486,7 @@ async def build_monitor(
                     end_time=_fmt_time(v.end_time),
                     phase=phase,
                     alert_level=alert_level,
+                    pair_waiting=pair_waiting,
                     arrival=arr_p,
                     departure=dep_p,
                     no_show=ns_p,
@@ -403,9 +510,7 @@ async def build_monitor(
                 and nxt.patient_lng is not None
             ):
                 cur.distance_to_next_m = round(
-                    haversine_m(
-                        cur.patient_lat, cur.patient_lng, nxt.patient_lat, nxt.patient_lng
-                    ),
+                    haversine_m(cur.patient_lat, cur.patient_lng, nxt.patient_lat, nxt.patient_lng),
                     1,
                 )
 

@@ -474,6 +474,178 @@ async def test_build_monitor_long_inprogress_review(db) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Integration: 同住所・同時刻ペア補正 (後攻の誤警告対策)
+# ---------------------------------------------------------------------------
+
+_PAIR_LAT = 35.0
+_PAIR_LNG = 139.0
+
+
+async def _make_pair(db, staff, label, *, start=time(9, 0), end=time(9, 45)):
+    """同住所・同時刻ペアの 2 visit (A, B) を作る (同 staff・同時刻・同座標・別患者)。"""
+    pa = await _make_patient(db, f"PR-A-{label}", lat=_PAIR_LAT, lng=_PAIR_LNG)
+    pb = await _make_patient(db, f"PR-B-{label}", lat=_PAIR_LAT, lng=_PAIR_LNG)
+    va = await _make_visit(db, pa, staff, start=start, end=end)
+    vb = await _make_visit(db, pb, staff, start=start, end=end)
+    return va, vb
+
+
+@pytest.mark.asyncio
+async def test_pair_second_not_missing_and_pair_waiting(db) -> None:
+    """A 到着済・B 未読・now=予定+30分 → B は missing にならず pair_waiting=True."""
+    staff = await _make_staff(db, "S-pair1")
+    va, vb = await _make_pair(db, staff, "1")  # 9:00–9:45
+    # A は定刻 9:00 到着 (退出なし)。A 完了見込 = 9:00 + 45 = 9:45。
+    await _add_checkin(db, va, staff, "arrival", scanned_at=_utc(9, 0), match_status="match")
+
+    resp = await build_monitor(db, TARGET, now=_utc(9, 30))
+    mvb = _find(resp, vb.id)
+    assert mvb.phase == PHASE_AWAITING
+    assert mvb.alert_level == ALERT_NONE
+    assert mvb.pair_waiting is True
+    # A 自身は到着済 (inprogress) で pair_waiting は付かない。
+    assert _find(resp, va.id).pair_waiting is False
+
+
+@pytest.mark.asyncio
+async def test_pair_second_missing_after_partner_departure_grace(db) -> None:
+    """B が A 退出 + grace を超過まで未読 → missing."""
+    staff = await _make_staff(db, "S-pair2")
+    va, vb = await _make_pair(db, staff, "2")  # 9:00–9:45
+    await _add_checkin(db, va, staff, "arrival", scanned_at=_utc(9, 0), match_status="match")
+    await _add_checkin(db, va, staff, "departure", scanned_at=_utc(9, 40), match_status="match")
+    # 補正後起点 = A 退出 9:40。9:40 + grace(20) = 10:00 を超過。
+    resp = await build_monitor(db, TARGET, now=_utc(10, 5))
+    mvb = _find(resp, vb.id)
+    assert mvb.phase == PHASE_MISSING
+    assert mvb.alert_level == ALERT_MISSING
+    assert mvb.pair_waiting is False
+
+
+@pytest.mark.asyncio
+async def test_pair_second_read_after_partner_departure_no_review(db) -> None:
+    """B を A 退出 + 10分に読む → 到着遅延 review が付かない (補正が効く)."""
+    staff = await _make_staff(db, "S-pair3")
+    va, vb = await _make_pair(db, staff, "3")  # 9:00–9:45
+    await _add_checkin(db, va, staff, "arrival", scanned_at=_utc(9, 0), match_status="match")
+    await _add_checkin(db, va, staff, "departure", scanned_at=_utc(9, 40), match_status="match")
+    # B は A 退出 (9:40) + 10分 = 9:50 に到着。予定比 +50分 だが補正後起点比 +10分。
+    await _add_checkin(db, vb, staff, "arrival", scanned_at=_utc(9, 50), match_status="match")
+
+    resp = await build_monitor(db, TARGET, now=_utc(10, 5))
+    mvb = _find(resp, vb.id)
+    assert mvb.phase == PHASE_INPROGRESS
+    assert mvb.alert_level == ALERT_NONE  # 補正後起点比 10分 < late_min(15)。
+
+
+@pytest.mark.asyncio
+async def test_pair_both_unread_both_missing(db) -> None:
+    """両方未読・予定 + grace 超過 → 両方 missing (従来どおり真の未訪問を検出)."""
+    staff = await _make_staff(db, "S-pair4")
+    va, vb = await _make_pair(db, staff, "4")  # 9:00–9:45
+    resp = await build_monitor(db, TARGET, now=_utc(9, 30))  # 9:00 + grace(20) 超過
+    assert _find(resp, va.id).phase == PHASE_MISSING
+    assert _find(resp, vb.id).phase == PHASE_MISSING
+    assert _find(resp, va.id).pair_waiting is False
+    assert _find(resp, vb.id).pair_waiting is False
+
+
+@pytest.mark.asyncio
+async def test_pair_both_read_on_time_all_none(db) -> None:
+    """両方即読み (定刻到着) → 補正不要・全 none."""
+    staff = await _make_staff(db, "S-pair5")
+    va, vb = await _make_pair(db, staff, "5")  # 9:00–9:45
+    await _add_checkin(db, va, staff, "arrival", scanned_at=_utc(9, 0), match_status="match")
+    await _add_checkin(db, vb, staff, "arrival", scanned_at=_utc(9, 0), match_status="match")
+
+    resp = await build_monitor(db, TARGET, now=_utc(9, 30))
+    for v in (va, vb):
+        mv = _find(resp, v.id)
+        assert mv.phase == PHASE_INPROGRESS
+        assert mv.alert_level == ALERT_NONE
+        assert mv.pair_waiting is False
+
+
+@pytest.mark.asyncio
+async def test_pair_symmetric_when_second_read_first(db) -> None:
+    """対称性: B 先読みでも A に同補正 (A が pair_waiting)."""
+    staff = await _make_staff(db, "S-pair6")
+    va, vb = await _make_pair(db, staff, "6")  # 9:00–9:45
+    # B が先に 9:00 到着 (退出なし)。A は未読。
+    await _add_checkin(db, vb, staff, "arrival", scanned_at=_utc(9, 0), match_status="match")
+
+    resp = await build_monitor(db, TARGET, now=_utc(9, 30))
+    mva = _find(resp, va.id)
+    assert mva.phase == PHASE_AWAITING
+    assert mva.pair_waiting is True
+    assert _find(resp, vb.id).pair_waiting is False
+
+
+@pytest.mark.asyncio
+async def test_pair_no_show_overrides_pair_waiting(db) -> None:
+    """no_show 手動行はペア補正より強い: A 到着済でも B は missing (レビュー LOW-2)."""
+    staff = await _make_staff(db, "S-pair8")
+    va, vb = await _make_pair(db, staff, "8")  # 9:00–9:45
+    await _add_checkin(db, va, staff, "arrival", scanned_at=_utc(9, 0), match_status="match")
+    await _add_checkin(
+        db, vb, staff, "no_show", scanned_at=_utc(9, 5), match_status="no_gps", reason="不在"
+    )
+
+    resp = await build_monitor(db, TARGET, now=_utc(9, 10))
+    mvb = _find(resp, vb.id)
+    assert mvb.phase == PHASE_MISSING
+    assert mvb.pair_waiting is False
+
+
+@pytest.mark.asyncio
+async def test_pair_three_members_all_waiting(db) -> None:
+    """3人同条件グループ: A 到着済 → B/C とも pair_waiting (レビュー LOW-3)."""
+    staff = await _make_staff(db, "S-pair9")
+    va, vb = await _make_pair(db, staff, "9")  # 9:00–9:45 同座標
+    # 3 人目 (同座標・同時刻・同担当・別患者)。_make_pair と同じ座標を使う。
+    pc = await _make_patient(db, "PAIR-9C", lat=_PAIR_LAT, lng=_PAIR_LNG)
+    vc = await _make_visit(db, pc, staff, start=time(9, 0), end=time(9, 45))
+    await _add_checkin(db, va, staff, "arrival", scanned_at=_utc(9, 0), match_status="match")
+
+    resp = await build_monitor(db, TARGET, now=_utc(9, 30))
+    assert _find(resp, vb.id).pair_waiting is True
+    assert _find(resp, vc.id).pair_waiting is True
+    assert _find(resp, va.id).pair_waiting is False
+
+
+@pytest.mark.asyncio
+async def test_pair_zero_coord_not_grouped(db) -> None:
+    """(0,0) 座標は未設定既定値でありうるためペア判定に使わない (誤ペア化ガード)."""
+    staff = await _make_staff(db, "S-pair10")
+    pa = await _make_patient(db, "ZERO-A", lat=0.0, lng=0.0)
+    pb = await _make_patient(db, "ZERO-B", lat=0.0, lng=0.0)
+    va = await _make_visit(db, pa, staff, start=time(9, 0), end=time(9, 45))
+    vb = await _make_visit(db, pb, staff, start=time(9, 0), end=time(9, 45))
+    await _add_checkin(db, va, staff, "arrival", scanned_at=_utc(9, 0), match_status="match")
+
+    resp = await build_monitor(db, TARGET, now=_utc(9, 30))
+    mvb = _find(resp, vb.id)
+    assert mvb.phase == PHASE_MISSING  # ペア扱いしない → 従来どおり missing。
+    assert mvb.pair_waiting is False
+
+
+@pytest.mark.asyncio
+async def test_non_pair_missing_unchanged_regression(db) -> None:
+    """非ペア (別住所・同 staff・同時刻) は補正されず従来どおり missing になる."""
+    staff = await _make_staff(db, "S-pair7")
+    pa = await _make_patient(db, "NP-A", lat=35.0, lng=139.0)
+    pb = await _make_patient(db, "NP-B", lat=35.5, lng=139.5)  # 別住所
+    va = await _make_visit(db, pa, staff, start=time(9, 0), end=time(9, 45))
+    vb = await _make_visit(db, pb, staff, start=time(9, 0), end=time(9, 45))
+    await _add_checkin(db, va, staff, "arrival", scanned_at=_utc(9, 0), match_status="match")
+
+    resp = await build_monitor(db, TARGET, now=_utc(9, 30))
+    mvb = _find(resp, vb.id)
+    assert mvb.phase == PHASE_MISSING  # 別住所なのでペア補正なし。
+    assert mvb.pair_waiting is False
+
+
+# ---------------------------------------------------------------------------
 # Integration: next distance / office filter / nearby
 # ---------------------------------------------------------------------------
 
@@ -651,10 +823,14 @@ async def test_nearby_api_rbac(client, db) -> None:
     manager_user = await _make_user(db, "nearby-mgr@example.com", "manager")
     params = {"lat": 35.0, "lng": 139.0}
 
-    res_staff = await client.get("/api/v1/monitor/nearby", params=params, headers=_bearer(staff_user))
+    res_staff = await client.get(
+        "/api/v1/monitor/nearby", params=params, headers=_bearer(staff_user)
+    )
     assert res_staff.status_code == 403, res_staff.text
 
-    res_mgr = await client.get("/api/v1/monitor/nearby", params=params, headers=_bearer(manager_user))
+    res_mgr = await client.get(
+        "/api/v1/monitor/nearby", params=params, headers=_bearer(manager_user)
+    )
     assert res_mgr.status_code == 200, res_mgr.text
 
 

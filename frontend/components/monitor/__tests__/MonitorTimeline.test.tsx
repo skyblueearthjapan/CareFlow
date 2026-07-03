@@ -138,6 +138,48 @@ describe('MonitorTimeline', () => {
     expect(bar2.getAttribute('data-lane')).toBe('0');
   });
 
+  it('pair_waiting の visit は「ペア待ち」バッジを表示し、未訪問バーは出さない', () => {
+    const v = makeVisit({
+      phase: 'awaiting',
+      alert_level: 'none',
+      pair_waiting: true,
+      arrival: null,
+    });
+    const row = makeRow({ visits: [v] });
+    render(
+      <MonitorTimeline
+        rows={[row]}
+        selectedRowKey={null}
+        selectedVisitId={null}
+        nowMinutes={13 * 60 + 30}
+        onSelectRow={vi.fn()}
+        onSelectVisit={vi.fn()}
+      />,
+    );
+    const badge = screen.getByTestId(`monitor-pair-waiting-${v.visit_id}`);
+    expect(badge.textContent).toContain('ペア待ち');
+    // 未訪問バーは出ない (誤警告にしない)。
+    expect(screen.queryByTestId(`monitor-bar-actual-${v.visit_id}`)).toBeNull();
+  });
+
+  it('pair_waiting バッジのクリックで onSelectVisit', () => {
+    const v = makeVisit({ phase: 'awaiting', alert_level: 'none', pair_waiting: true });
+    const row = makeRow({ visits: [v] });
+    const onSelectVisit = vi.fn();
+    render(
+      <MonitorTimeline
+        rows={[row]}
+        selectedRowKey={null}
+        selectedVisitId={null}
+        nowMinutes={13 * 60 + 30}
+        onSelectRow={vi.fn()}
+        onSelectVisit={onSelectVisit}
+      />,
+    );
+    fireEvent.click(screen.getByTestId(`monitor-pair-waiting-${v.visit_id}`));
+    expect(onSelectVisit).toHaveBeenCalledWith(v.visit_id);
+  });
+
   it('担当未設定の行もクリックで選択できる (rowKey=unassigned-コース)', () => {
     const v = makeVisit();
     const row = makeRow({ staff_id: null, staff_name: null, course_label: 'Aコース', visits: [v] });
