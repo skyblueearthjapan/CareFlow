@@ -24,6 +24,7 @@ from app.api.v1 import (
     notifications,
     office_feature_flags,
     offices,
+    op_log,
     patient_fixed_visits,
     patient_qr,
     patient_same_address_links,
@@ -159,6 +160,8 @@ api_router.include_router(schedule.router, prefix="/schedule", tags=["schedule"]
 # v1 (``/schedule/auto-allocate`` 等) は schedule.router にそのまま残し、UI 完成後の
 # 別 PR で削除する.
 api_router.include_router(schedule_v2.router, prefix="/schedule", tags=["schedule-v2"])
+# Wave U-3: 操作ジャーナル undo/redo エンドポイント (/schedule/v2/op-log/*)
+api_router.include_router(op_log.router, prefix="/schedule", tags=["op-log"])
 # P3-①: 当日欠勤の代替スタッフ提案 (candidates 提案 / apply 適用, admin/manager).
 api_router.include_router(
     staff_substitute.router, prefix="/schedule", tags=["staff-substitute"]

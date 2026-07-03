@@ -63,6 +63,7 @@ from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.patient_same_address_link import PatientSameAddressLink
 from app.models.staff import Staff, StaffSecondaryOffice, StaffShift, StaffWeeklyOverride
 from app.models.visit import (
+    VISIT_SOURCE_MANUAL_WEEK,
     VISIT_STATUS_COMPLETED,
     VISIT_STATUS_IN_PROGRESS,
     VISIT_STATUS_PLANNED,
@@ -9736,6 +9737,15 @@ async def reset_visits_to_fixed(
                 (v.patient_id, v.visit_date, v.start_time, v.visit_group_id)
             ] = v
 
+    # M-2 恒久対策 (Wave U-3): 生存 manual_week visit の (patient_id, visit_date) 集合。
+    # 再生成ループでこの集合にある日をスキップし、「この週だけの決定」が型スロットを
+    # 一時上書きする意味論を完成させる。削除側は変更しない（manual_week は U-0 で保護済み）。
+    manual_week_day_keys: set[tuple[UUID, date]] = {
+        (v.patient_id, v.visit_date)
+        for v in protected_existing_keys.values()
+        if v.source == VISIT_SOURCE_MANUAL_WEEK
+    }
+
     # 2) patient_fixed_visits から visits を再生成
     pfv_rows = await db.scalars(
         select(PatientFixedVisit).where(
@@ -10072,6 +10082,22 @@ async def reset_visits_to_fixed(
             corrected_start_r = v2.start_time
             corrected_end_r = v2.end_time
         visit_date = date.fromordinal(week_monday.toordinal() + meta["weekday"])
+        # M-2 恒久対策 (Wave U-3): 同 (patient_id, visit_date) に生存 manual_week visit
+        # がある日は再生成をスキップする（「この週だけの決定」が型スロットを上書き）。
+        if (meta["patient_id"], visit_date) in manual_week_day_keys:
+            patient_obj = patients_by_id.get(meta["patient_id"])
+            patient_name = (
+                patient_obj.name
+                if patient_obj is not None and patient_obj.name
+                else str(meta["patient_id"])
+            )
+            logger.info(
+                "reset_visits_to_fixed: M-2 skip: %s %s に manual_week visit が存在するため再生成スキップ",
+                patient_name,
+                visit_date,
+            )
+            visits_to_skip_protected += 1
+            continue
         # CareFlow 本番バグ修正 (Option A): 保護対象 active visit (status='confirmed' /
         # source='manual' / status='completed' 等) と unique key 衝突する場合は
         # INSERT スキップ + warning. PFV 由来 INSERT は visit_group_id=None 固定.

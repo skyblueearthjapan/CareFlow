@@ -53,7 +53,7 @@ from app.models.office import Office
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.staff import Staff
-from app.models.visit import Visit
+from app.models.visit import VISIT_SOURCE_MANUAL_WEEK, Visit
 
 logger = logging.getLogger(__name__)
 
@@ -811,6 +811,32 @@ class Layer1Expander:
         )
         return {(row.patient_id, row.visit_date, row.start_time) for row in rows}
 
+    async def _fetch_manual_week_dates(
+        self,
+        db: AsyncSession,
+        *,
+        patient_id: UUID,
+        week_monday: date,
+    ) -> set[date]:
+        """M-2 恒久対策 (Wave U-3): この患者のこの週で生存する source='manual_week'
+        visit の visit_date 集合を返す。
+
+        週生成の再生成ループでこの集合にある日をスキップすることで、
+        「この週だけの決定（manual_week）」が型スロット（auto 再生成）を
+        一時的に上書きする意味論を完成させる。削除側は変更しない。
+        """
+        week_sunday = date.fromordinal(week_monday.toordinal() + 6)
+        rows = await db.execute(
+            select(Visit.visit_date).where(
+                Visit.patient_id == patient_id,
+                Visit.source == VISIT_SOURCE_MANUAL_WEEK,
+                Visit.deleted_at.is_(None),
+                Visit.visit_date >= week_monday,
+                Visit.visit_date <= week_sunday,
+            )
+        )
+        return {row.visit_date for row in rows}
+
     async def _expand_fixed_visits_to_visits(
         self,
         db: AsyncSession,
@@ -908,9 +934,26 @@ class Layer1Expander:
             db, candidate_keys=candidate_keys_for_conflict
         )
 
+        # M-2 恒久対策 (Wave U-3): 同 (patient_id, visit_date) に生存 manual_week visit
+        # がある日は、その患者のその日の再生成をスキップする。
+        # 「この週だけの決定」が型スロットを一時上書きする意味論の完成。
+        manual_week_dates = await self._fetch_manual_week_dates(
+            db, patient_id=patient.id, week_monday=week_monday
+        )
+
         # ----- (3) weekday ごとに展開 -----
         for weekday in sorted(slots_by_weekday.keys()):
             day_slots = slots_by_weekday[weekday]
+
+            # M-2: この曜日に相当する日付に manual_week visit が生存していればスキップ
+            _vd_m2 = date.fromordinal(week_monday.toordinal() + weekday)
+            if _vd_m2 in manual_week_dates:
+                logger.info(
+                    "Layer1: M-2 skip (fixed): patient=%s visit_date=%s に manual_week visit が存在するため再生成スキップ",
+                    patient.id,
+                    _vd_m2,
+                )
+                continue
 
             slot0 = day_slots.get(0)
             slot1 = day_slots.get(1)
@@ -1203,6 +1246,11 @@ class Layer1Expander:
             db, candidate_keys=candidate_keys_entries
         )
 
+        # M-2 恒久対策 (Wave U-3): pattern パスでも同様に per-day スキップ
+        manual_week_dates_entries = await self._fetch_manual_week_dates(
+            db, patient_id=patient.id, week_monday=week_monday
+        )
+
         for entry in entries:
             weekday = _resolve_weekday(entry.get("weekday"))
             if weekday is None:
@@ -1248,6 +1296,15 @@ class Layer1Expander:
                 staff_count = 1
 
             visit_date = date.fromordinal(week_monday.toordinal() + weekday)
+
+            # M-2: per-day manual_week 保護 (Wave U-3)
+            if visit_date in manual_week_dates_entries:
+                logger.info(
+                    "Layer1: M-2 skip (pattern): patient=%s visit_date=%s に manual_week visit が存在するため再生成スキップ",
+                    patient.id,
+                    visit_date,
+                )
+                continue
 
             # W35: 既存 manual visit との衝突があれば auto INSERT をスキップ
             if (patient.id, visit_date, start_t) in manual_conflict_keys_entries:

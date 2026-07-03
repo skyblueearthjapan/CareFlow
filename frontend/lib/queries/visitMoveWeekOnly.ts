@@ -37,6 +37,11 @@ export const visitMoveWeekOnlyRequestSchema = z.object({
   new_start_time: timeStringSchema,
   /** 移動先コースの template id。省略時は BE 側で解決 (同拠点・容量から)。 */
   new_course_template_id: z.string().uuid().nullable().optional(),
+  /**
+   * Wave U-3: 1 ユーザー操作 = 1 UUID。同一操作の複数 API コールに同値を送り
+   * BE 側で op-log をグループ化する。省略可 (旧 BE 互換)。
+   */
+  op_group_id: z.string().uuid().nullish(),
 });
 export type VisitMoveWeekOnlyRequest = z.input<typeof visitMoveWeekOnlyRequestSchema>;
 

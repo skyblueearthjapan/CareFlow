@@ -263,6 +263,11 @@ export interface DeleteVisitVariables {
    * デフォルト false (= 固定枠は残す).
    */
   cascadeFixedVisit?: boolean;
+  /**
+   * Wave U-3: 1 ユーザー操作 = 1 UUID。同一操作の DELETE + place-and-fix に
+   * 同値を送ることで BE 側で op-log をグループ化する。省略可 (旧 BE 互換)。
+   */
+  op_group_id?: string | null;
 }
 
 export function useDeleteVisit(): UseMutationResult<void, Error, DeleteVisitVariables | string> {
@@ -273,9 +278,14 @@ export function useDeleteVisit(): UseMutationResult<void, Error, DeleteVisitVari
   return useMutation<void, Error, DeleteVisitVariables | string>({
     mutationFn: async (input) => {
       // 後方互換: 旧呼出 (id を string でそのまま渡す) も受ける.
-      const { id, cascadeFixedVisit } =
-        typeof input === 'string' ? { id: input, cascadeFixedVisit: false } : input;
-      const qs = cascadeFixedVisit ? '?cascade_fixed_visit=true' : '';
+      const { id, cascadeFixedVisit, op_group_id } =
+        typeof input === 'string'
+          ? { id: input, cascadeFixedVisit: false, op_group_id: undefined }
+          : input;
+      const params = new URLSearchParams();
+      if (cascadeFixedVisit) params.set('cascade_fixed_visit', 'true');
+      if (op_group_id) params.set('op_group_id', op_group_id);
+      const qs = params.toString() ? `?${params.toString()}` : '';
       await fetcher<void>(`${VISITS_BASE}/${id}${qs}`, {
         method: 'DELETE',
         accessToken,

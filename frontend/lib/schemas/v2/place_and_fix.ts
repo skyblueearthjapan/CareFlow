@@ -54,6 +54,11 @@ export const placeAndFixRequestSchema = z
     fix_pattern: z.boolean().default(true),
     // 方式b: 定員超過採用時の管理者判断理由 (最大500字)。通常候補では null/省略。旧BE互換。
     capacity_override_reason: z.string().max(500).nullish(),
+    /**
+     * Wave U-3: 1 ユーザー操作 = 1 UUID。同一操作の複数 API コール（place-and-fix +
+     * visit DELETE 等）に同値を送ることで BE 側で op-log をグループ化する。省略可 (旧 BE 互換)。
+     */
+    op_group_id: z.string().uuid().nullish(),
   })
   .superRefine((data, ctx) => {
     const hasSingle = data.course_template_id !== null && data.course_template_id !== undefined;

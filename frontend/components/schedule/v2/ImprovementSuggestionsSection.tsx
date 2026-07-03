@@ -42,6 +42,7 @@ import {
 } from '@/lib/queries/improvementSuggestions';
 import { useConfirmFixedVisits } from '@/lib/queries/propose_confirm';
 import { useVisitMoveWeekOnly } from '@/lib/queries/visitMoveWeekOnly';
+import { OP_LOG_STATE_KEY } from '@/lib/queries/opLog';
 import { useFixedVisits, toastFixedVisitWarnings } from '@/lib/queries/patient_fixed_visits';
 import { coerceWeeklyPattern, type PatientRead } from '@/lib/schemas/patient';
 import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
@@ -287,6 +288,7 @@ export function ImprovementSuggestionsSection({
     }
     const tplId = resolveCourseTemplateId(s.candidate.office_id, s.candidate.course_code);
     setAdoptingFp(fp);
+    const opGroupId = crypto.randomUUID();
     visitMoveWeekOnlyMut.mutate(
       {
         iso_year: isoYear,
@@ -297,6 +299,7 @@ export function ImprovementSuggestionsSection({
         new_weekday: s.candidate.weekday,
         new_start_time: s.candidate.start_time,
         ...(tplId ? { new_course_template_id: tplId } : {}),
+        op_group_id: opGroupId,
       },
       {
         onSuccess: () => {
@@ -307,6 +310,7 @@ export function ImprovementSuggestionsSection({
           setAdoptingFp(null);
           setMoveConfirmTarget(null);
           void qc.invalidateQueries({ queryKey: [IMPROVEMENT_SUGGESTIONS_KEY] });
+          void qc.invalidateQueries({ queryKey: [OP_LOG_STATE_KEY, isoYear, isoWeek] });
           onAdopted?.();
         },
         onError: () => {

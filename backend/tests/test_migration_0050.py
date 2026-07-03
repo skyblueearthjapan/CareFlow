@@ -126,9 +126,10 @@ def test_migration_0050_revision_chain(alembic_cfg: Config) -> None:
     assert rev.down_revision == "0049_swap_dismissal_kind", (
         f"0050 の down_revision は 0049 のはず, got {rev.down_revision}"
     )
+    # head は単一 (線形 chain) であること。後続 migration (0051, 0052, ...) が増えても
+    # 単一 head であれば良いため、特定リビジョン名には固定しない (0043 と同じ規約)。
     heads = list(script.get_heads())
     assert len(heads) == 1, f"単一 head のはず, got {heads}"
-    assert heads[0] == _MIGRATION_REVISION, f"head は 0050 のはず, got {heads}"
 
 
 # ---------------------------------------------------------------------------

@@ -85,6 +85,15 @@ vi.mock('lucide-react', () => ({
   Pin: () => <span data-testid="pin-icon" />,
   ArrowRight: () => <span />,
   CheckCircle2: () => <span />,
+  // Wave U-3: 戻る/進むアイコン
+  Undo2: () => <span data-testid="undo-icon" />,
+  Redo2: () => <span data-testid="redo-icon" />,
+  // 他の CourseDayTablePanel アイコン
+  HeartPulse: () => <span />,
+  FlaskConical: () => <span />,
+  ListChecks: () => <span />,
+  Route: () => <span />,
+  UserX: () => <span />,
 }));
 
 vi.mock('@/components/ui/card', () => ({
@@ -315,6 +324,21 @@ const baseTpl = {
 };
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
+
+// Wave U-3: op-log 関連フック (QueryClient 不要にするためモック)
+vi.mock('@/lib/queries/opLog', () => ({
+  useOpLogState: () => ({ data: undefined, isLoading: false }),
+  useUndoOpLog: () => ({
+    mutateAsync: vi.fn().mockResolvedValue(undefined),
+    isPending: false,
+  }),
+  useRedoOpLog: () => ({
+    mutateAsync: vi.fn().mockResolvedValue(undefined),
+    isPending: false,
+  }),
+  useInvalidateOpLog: () => vi.fn(),
+  OP_LOG_STATE_KEY: 'op-log-state',
+}));
 
 vi.mock('@/lib/api/patientSync', () => ({
   useBulkSyncWeekToFixedMutation: () => ({

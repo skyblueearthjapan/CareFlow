@@ -110,6 +110,11 @@ export interface CourseV2Update {
   note?: string | null;
   course_fixed_at?: string | null;
   staff_assigned_at?: string | null;
+  /**
+   * Wave U-3: 1 ユーザー操作 = 1 UUID。担当 dropdown 変更を op-log に記録するために
+   * 使用。省略可 (旧 BE 互換)。
+   */
+  op_group_id?: string | null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────

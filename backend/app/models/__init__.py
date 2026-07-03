@@ -23,6 +23,7 @@ from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.patient_same_address_link import PatientSameAddressLink
 from app.models.pending_request import PendingRequest
 from app.models.revoked_qr_token import RevokedQrToken
+from app.models.schedule_op_log import ScheduleOpLog
 from app.models.scheduling_settings import SchedulingSettings
 from app.models.shift_request import ShiftRequest
 from app.models.special_week import SpecialWeek, SpecialWeekItem
@@ -66,6 +67,7 @@ __all__ = [
     "PatientSameAddressLink",
     "PendingRequest",
     "RevokedQrToken",
+    "ScheduleOpLog",
     "SchedulingSettings",
     "ShiftRequest",
     "SpecialWeek",

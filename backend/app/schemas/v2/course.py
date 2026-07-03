@@ -77,6 +77,8 @@ class CourseV2Update(BaseModel):
     note: str | None = None
     course_fixed_at: datetime | None = None
     staff_assigned_at: datetime | None = None
+    # Wave U-3 操作ジャーナル: assigned_staff_id 変更時の undo/redo グループ ID
+    op_group_id: UUID | None = None
 
 
 class CourseV2Read(CourseV2Base):

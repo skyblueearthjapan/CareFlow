@@ -67,6 +67,7 @@ from app.schemas.v2.auto_allocate import (
 )
 from app.schemas.v2.patient_fixed_visit import PatientFixedVisitMode, PatientFixedVisitV2Read
 from app.schemas.v2.visit import VisitV2Read
+from app.services.op_log_service import fmt_time, fmt_weekday, record_op
 from app.services.schedule_fix_service import (
     FixedVisit,
     ScheduleFixError,
@@ -542,6 +543,11 @@ class PlaceAndFixRequest(BaseModel):
     # 定員超過の管理者相談プロセス (方式b): 定員超過を承知で配置したときの理由 (監査用).
     # 値があれば logger.info で記録するだけで、検証や挙動変更は一切しない. 後方互換の任意項目.
     capacity_override_reason: str | None = Field(default=None, max_length=500)
+    # Wave U-3 操作ジャーナル: FE が 1 ドラッグ = 1グループで同値を送る。省略時は単発グループ。
+    op_group_id: UUID | None = Field(
+        default=None,
+        description="操作グループ ID（FE が DnD の delete+place に同値を送る）。省略で自動発行。",
+    )
 
     @model_validator(mode="after")
     def _validate_course_templates_shape(self) -> PlaceAndFixRequest:
@@ -802,7 +808,7 @@ async def _get_or_create_course_for_template_week(
 async def place_and_fix(
     body: PlaceAndFixRequest,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    current_user: Annotated[User, Depends(require_role("admin", "manager"))],
 ) -> PlaceAndFixResponse:
     """新規 visit を作成し、必要に応じて patient_fixed_visits を upsert する.
 
@@ -1053,6 +1059,26 @@ async def place_and_fix(
 
     visits_read = [VisitV2Read.model_validate(v) for v in new_visits]
     fixed_visits_read = [PatientFixedVisitV2Read.model_validate(fv) for fv in new_fvs]
+
+    # Wave U-3: fix_pattern=False のみ操作ジャーナルに記録（ベストエフォート）
+    if not body.fix_pattern and new_visits:
+        visit_ids_str = [str(v.id) for v in new_visits]
+        _patient_name = getattr(patient, "name", None) or str(body.patient_id)
+        _wd_jp = fmt_weekday(body.weekday)
+        _st_str = fmt_time(body.start_time)
+        _label = f"{_patient_name}様を {_wd_jp}{_st_str} に配置（この週のみ）"
+        await record_op(
+            db,
+            user_id=current_user.id,
+            iso_year=body.iso_year,
+            iso_week=body.iso_week,
+            op_group_id=body.op_group_id,
+            op_kind="place_and_fix",
+            label=_label,
+            forward_payload={"op": "restore_visits", "visit_ids": visit_ids_str},
+            inverse_payload={"op": "soft_delete_visits", "visit_ids": visit_ids_str},
+        )
+        await db.commit()
 
     return PlaceAndFixResponse(
         # 後方互換: 1 件目をスカラフィールドにも入れる.

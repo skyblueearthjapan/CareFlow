@@ -105,8 +105,10 @@ def test_migration_0049_revision_chain(alembic_cfg: Config) -> None:
     assert rev.down_revision == "0048_visit_manual_staff_override", (
         f"0049 の down_revision は 0048 のはず, got {rev.down_revision}"
     )
+    # head は単一 (線形 chain) であること。後続 migration が増えても単一 head で
+    # あれば良いため、特定リビジョン名には固定しない (0043 と同じ規約)。
     heads = list(script.get_heads())
-    assert heads == [_MIGRATION_REVISION], f"単一 head 0049 のはず, got {heads}"
+    assert len(heads) == 1, f"単一 head のはず, got {heads}"
 
 
 def test_swap_kind_accepted_after_upgrade(upgraded_engine) -> None:

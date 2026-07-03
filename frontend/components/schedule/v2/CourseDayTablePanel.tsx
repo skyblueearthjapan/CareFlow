@@ -33,7 +33,7 @@
  *   - admin / manager: 編集可 (ドロップ + 担当変更 + 主要 4 + 二次操作 + 個別 reset)
  *   - staff: 閲覧のみ
  */
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   DndContext,
   DragOverlay,
@@ -53,8 +53,10 @@ import {
   ListChecks,
   Loader2,
   Plus,
+  Redo2,
   RefreshCw,
   Route,
+  Undo2,
   UserCheck,
   UserX,
 } from 'lucide-react';
@@ -76,6 +78,12 @@ import { useCourses, useUpdateCourse, type CourseV2Read } from '@/lib/queries/co
 import { useGenerateWeekOnly } from '@/lib/queries/generate_week';
 import { useOffices } from '@/lib/queries/offices';
 import { usePatients } from '@/lib/queries/patients';
+import {
+  useOpLogState,
+  useUndoOpLog,
+  useRedoOpLog,
+  useInvalidateOpLog,
+} from '@/lib/queries/opLog';
 import { usePlaceAndFix } from '@/lib/queries/place_and_fix';
 import { useStaffList } from '@/lib/queries/staff';
 import {
@@ -1120,6 +1128,12 @@ export function CourseDayTablePanel({
   const [activeVisitId, setActiveVisitId] = useState<string | null>(null);
   const placeAndFixMut = usePlaceAndFix();
   const deleteVisitMut = useDeleteVisit();
+  // ─── Wave U-3: 戻る/進む (undo/redo) ────────────────────────────────────
+  const opLogStateQuery = useOpLogState(isoYear, isoWeek);
+  const opLogState = opLogStateQuery.data;
+  const undoMut = useUndoOpLog();
+  const redoMut = useRedoOpLog();
+  const invalidateOpLog = useInvalidateOpLog();
   // Wave 39: D&D で event を移動 (時刻スライド + 担当者変更) するための mutation.
   const updateEventDragMut = useUpdateEventForDrag();
   // Wave U-2 (D-2 既定B): DnD は「この週だけ」で即時反映し、成功トーストの
@@ -1153,6 +1167,61 @@ export function CourseDayTablePanel({
     }),
     [promoteWeekToFixed],
   );
+
+  // ─── Wave U-3: undo/redo ハンドラ ──────────────────────────────────────
+  const handleUndo = useCallback(async () => {
+    try {
+      await undoMut.mutateAsync({ iso_year: isoYear, iso_week: isoWeek });
+    } catch (err) {
+      // 409 は useUndoOpLog の onError で toast.warning を表示済みなのでスキップ
+      if (!(err instanceof ApiError && err.status === 409)) {
+        toast.error(`操作の取り消しに失敗しました: ${formatErr(err)}`);
+      }
+    }
+  }, [undoMut, isoYear, isoWeek]);
+
+  const handleRedo = useCallback(async () => {
+    try {
+      await redoMut.mutateAsync({ iso_year: isoYear, iso_week: isoWeek });
+    } catch (err) {
+      if (!(err instanceof ApiError && err.status === 409)) {
+        toast.error(`操作のやり直しに失敗しました: ${formatErr(err)}`);
+      }
+    }
+  }, [redoMut, isoYear, isoWeek]);
+
+  // ─── Wave U-3: キーボードショートカット (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z) ──
+  useEffect(() => {
+    if (!canEdit) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // 入力要素にフォーカスがあるときは発火しない
+      const target = e.target as HTMLElement;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target.isContentEditable
+      ) {
+        return;
+      }
+      const undoRedoPending = undoMut.isPending || redoMut.isPending;
+      if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        if (opLogState?.can_undo && !undoRedoPending) {
+          void handleUndo();
+        }
+      } else if (
+        (e.ctrlKey && e.key.toLowerCase() === 'y') ||
+        (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'z')
+      ) {
+        e.preventDefault();
+        if (opLogState?.can_redo && !undoRedoPending) {
+          void handleRedo();
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [canEdit, opLogState, undoMut.isPending, redoMut.isPending, handleUndo, handleRedo]);
 
   // ─── Wave 37 Phase 3-C: 相方コース選択ダイアログの state ───────────────
   // requires_multiple_staff=true の患者を D&D したときにダイアログを表示する。
@@ -1363,6 +1432,7 @@ export function CourseDayTablePanel({
       // 通常患者 (1 名体制): Wave U-2 D-2 既定B = この週だけ配置 (fix_pattern=false)。
       // 型は変えず source=manual_week で今週のみ置く。トーストで昇格導線を出す。
       try {
+        const opGroupId = crypto.randomUUID();
         await placeAndFixMut.mutateAsync({
           patient_id: patientId,
           course_template_id: cell.courseTemplateId,
@@ -1373,7 +1443,9 @@ export function CourseDayTablePanel({
           duration_min: durationMin,
           staff_count: 1,
           fix_pattern: false,
+          op_group_id: opGroupId,
         });
+        invalidateOpLog(isoYear, isoWeek);
         const pname = patient?.name ?? patientId;
         toast.success(
           `${pname} を ${cell.time} に配置しました（今週のみ・毎週の型は変更していません）`,
@@ -1454,9 +1526,11 @@ export function CourseDayTablePanel({
           : null;
 
         try {
+          // Wave U-3: 1 ユーザー操作 (delete + place-and-fix) に同一 UUID を付与。
+          const opGroupId = crypto.randomUUID();
           // 1) 既存 visit を削除。Wave U-2 D-2 既定B: 型 (固定枠) は触らないため
           //    cascade=false (= PFV を残す)。今週の visit だけを付け替える。
-          await deleteVisitMut.mutateAsync({ id: visitId, cascadeFixedVisit: false });
+          await deleteVisitMut.mutateAsync({ id: visitId, cascadeFixedVisit: false, op_group_id: opGroupId });
           // 2) 新セルに place-and-fix (fix_pattern=false = この週だけ)
           try {
             await placeAndFixMut.mutateAsync({
@@ -1469,7 +1543,9 @@ export function CourseDayTablePanel({
               duration_min: durationMin,
               staff_count: 1,
               fix_pattern: false,
+              op_group_id: opGroupId,
             });
+            invalidateOpLog(isoYear, isoWeek);
             const pname = patient?.name ?? v.patient_id;
             toast.success(
               `${pname} を ${cell.time} に移動しました（今週のみ・毎週の型は変更していません）`,
@@ -1522,6 +1598,7 @@ export function CourseDayTablePanel({
     closePartnerDialog();
     const patient = patientById.get(ds.patientId);
     try {
+      const opGroupId = crypto.randomUUID();
       await placeAndFixMut.mutateAsync({
         patient_id: ds.patientId,
         // Wave 37 Phase 3-C: 新形式 (course_template_ids) を使う。
@@ -1536,7 +1613,9 @@ export function CourseDayTablePanel({
         // Wave U-2 D-2 既定B: この週だけ配置 (fix_pattern=false)。昇格は 1 患者の
         // 週→型同期で両 slot がまとめて上がる (bulk-sync は patient 単位)。
         fix_pattern: false,
+        op_group_id: opGroupId,
       });
+      invalidateOpLog(isoYear, isoWeek);
       const pname = patient?.name ?? ds.patientId;
       toast.success(
         `${pname} を ${ds.time} に 2 名体制で配置しました（今週のみ・毎週の型は変更していません）`,
@@ -1828,10 +1907,12 @@ export function CourseDayTablePanel({
       return;
     }
     try {
+      const opGroupId = crypto.randomUUID();
       await updateCourseMut.mutateAsync({
         id: courseId,
-        patch: { assigned_staff_id: staffId },
+        patch: { assigned_staff_id: staffId, op_group_id: opGroupId },
       });
+      invalidateOpLog(isoYear, isoWeek);
       toast.success(staffId ? '担当を更新しました' : '担当を未割当にしました');
     } catch (err) {
       const msg =
@@ -1969,6 +2050,9 @@ export function CourseDayTablePanel({
     courseCodesMax,
     officeLatLngById,
   ]);
+
+  // ─── Wave U-3: undo/redo 中は両ボタン disabled ─────────────────────────
+  const undoRedoPending = undoMut.isPending || redoMut.isPending;
 
   // ─── Render ──────────────────────────────────────────────────────
   if (officesQuery.isLoading || staffListQuery.isLoading) {
@@ -2272,10 +2356,53 @@ export function CourseDayTablePanel({
                     />
                   ) : null}
 
-                  {/* Group γ: 自動スタッフ割当 + リセット (一斉スタッフ未割当).
+                  {/* Group γ: ↶ 戻る / ↷ 進む (Wave U-3) + 自動スタッフ割当 + リセット.
                       2026-07: 「自動スタッフ割付」を「自動スタッフ割当」に改称し
-                      Row 1 から一斉スタッフ未割当の左隣へ移動 (割当⇄リセットの対操作を隣接). */}
+                      Row 1 から一斉スタッフ未割当の左隣へ移動 (割当⇄リセットの対操作を隣接).
+                      Wave U-3: 戻る/進むを自動スタッフ割当の左に追加。 */}
                   <div className="flex flex-wrap items-center gap-1.5">
+                    {/* Wave U-3: ↶ 戻る */}
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void handleUndo()}
+                      disabled={!opLogState?.can_undo || undoRedoPending}
+                      title={
+                        opLogState?.undo_label != null
+                          ? `戻す: ${opLogState.undo_label}`
+                          : '戻す'
+                      }
+                      data-testid="schedule-undo-button"
+                    >
+                      {undoRedoPending ? (
+                        <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
+                      ) : (
+                        <Undo2 className="mr-1 h-4 w-4" aria-hidden />
+                      )}
+                      戻る
+                    </Button>
+                    {/* Wave U-3: ↷ 進む */}
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void handleRedo()}
+                      disabled={!opLogState?.can_redo || undoRedoPending}
+                      title={
+                        opLogState?.redo_label != null
+                          ? `進む: ${opLogState.redo_label}`
+                          : '進む'
+                      }
+                      data-testid="schedule-redo-button"
+                    >
+                      {undoRedoPending ? (
+                        <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                      ) : (
+                        <Redo2 className="mr-1 h-4 w-4" aria-hidden />
+                      )}
+                      進む
+                    </Button>
                     <Button
                       type="button"
                       size="sm"

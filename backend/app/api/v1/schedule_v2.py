@@ -152,6 +152,7 @@ from app.services.geocoding.client import (
     geocode_address,
 )
 from app.services.office_assigner import OfficeAssigner
+from app.services.op_log_service import fmt_time, fmt_weekday, record_op
 from app.services.scheduling.auto_allocator_v2 import (
     _COURSE_CODES_MAX,
     # Wave 3 (#WAVE3): API 境界の H10 (lunch overlap) ガードは
@@ -1228,7 +1229,7 @@ async def sync_fixed_to_week_endpoint(
 async def visit_move_week_only_endpoint(
     payload: VisitMoveWeekOnlyRequest,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    current_user: Annotated[User, Depends(require_role("admin", "manager"))],
 ) -> VisitMoveWeekOnlyResponse:
     """改善提案 move の「この週だけ」経路 (§2.2 B). ``_apply_visit_move_week_only`` の薄い公開ラッパ.
 
@@ -1298,7 +1299,52 @@ async def visit_move_week_only_endpoint(
         await db.rollback()
         raise
 
-    return VisitMoveWeekOnlyResponse(visits_moved=int(counters["visits"]))
+    moved = int(counters["visits"])
+
+    # Wave U-3: 移動があった場合のみ操作ジャーナルに記録（ベストエフォート）
+    if moved > 0:
+        _patient_name = getattr(patient, "name", None) or str(payload.patient_id)
+        _old_wd = fmt_weekday(payload.old_weekday)
+        _old_st = payload.old_start_time.strftime("%H:%M")
+        _new_wd = fmt_weekday(payload.new_weekday)
+        _new_st = payload.new_start_time.strftime("%H:%M")
+        _label = f"{_patient_name}様を {_old_wd}{_old_st}→{_new_wd}{_new_st} に移動"
+        _iso_year = payload.iso_year
+        _iso_week = payload.iso_week
+        _old_start_str = fmt_time(payload.old_start_time)
+        _new_start_str = fmt_time(payload.new_start_time)
+        await record_op(
+            db,
+            user_id=current_user.id,
+            iso_year=_iso_year,
+            iso_week=_iso_week,
+            op_group_id=payload.op_group_id,
+            op_kind="move_visit_week_only",
+            label=_label,
+            forward_payload={
+                "op": "move_visit_week_only",
+                "patient_id": str(payload.patient_id),
+                "iso_year": _iso_year,
+                "iso_week": _iso_week,
+                "from_weekday": payload.old_weekday,
+                "from_start": _old_start_str,
+                "to_weekday": payload.new_weekday,
+                "to_start": _new_start_str,
+            },
+            inverse_payload={
+                "op": "move_visit_week_only",
+                "patient_id": str(payload.patient_id),
+                "iso_year": _iso_year,
+                "iso_week": _iso_week,
+                "from_weekday": payload.new_weekday,
+                "from_start": _new_start_str,
+                "to_weekday": payload.old_weekday,
+                "to_start": _old_start_str,
+            },
+        )
+        await db.commit()
+
+    return VisitMoveWeekOnlyResponse(visits_moved=moved)
 
 
 # ---------------------------------------------------------------------------

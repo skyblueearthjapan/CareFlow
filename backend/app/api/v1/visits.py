@@ -38,6 +38,7 @@ from app.schemas.visit import VisitCreate, VisitRead, VisitUpdate
 from app.schemas.visit_checkin import CheckinCreate
 from app.services.checkin.judge import judge_checkin
 from app.services.checkin.notify import notify_checkin_mismatch, resolve_checkin_missing
+from app.services.op_log_service import fmt_time, fmt_weekday, record_op
 
 router = APIRouter()
 
@@ -392,7 +393,7 @@ async def update_visit(
 async def delete_visit(
     visit_id: UUID,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    current_user: Annotated[User, Depends(require_role("admin", "manager"))],
     cascade_fixed_visit: Annotated[
         bool,
         Query(
@@ -414,6 +415,12 @@ async def delete_visit(
             ),
         ),
     ] = True,
+    op_group_id: Annotated[
+        UUID | None,
+        Query(
+            description="操作グループ ID（Wave U-3 undo/redo）。FE が DnD の delete+place に同値を送る。省略で自動発行。",
+        ),
+    ] = None,
 ) -> None:
     """visit を soft-delete する.
 
@@ -482,12 +489,35 @@ async def delete_visit(
             )
         )
 
+    # Wave U-3: op_log 用データを commit 前に確保
+    _op_patient_id = visit.patient_id
+    _op_visit_date = visit.visit_date
+    _op_start_time = visit.start_time
+    _op_all_visit_ids = [str(visit.id)] + [str(pv.id) for pv in partner_visits]
+
     # 当該 visit を soft-delete.
     visit.deleted_at = func.now()
     # partner visits も soft-delete (W37 Phase 2-A).
     for pv in partner_visits:
         pv.deleted_at = func.now()
     await db.commit()
+
+    # Wave U-3: 操作ジャーナルに記録（ベストエフォート）
+    _wd = _op_visit_date.weekday()
+    _label = f"訪問を削除（{fmt_weekday(_wd)}{fmt_time(_op_start_time)}）"
+    await record_op(
+        db,
+        user_id=current_user.id,
+        iso_year=_op_visit_date.isocalendar()[0],
+        iso_week=_op_visit_date.isocalendar()[1],
+        op_group_id=op_group_id,
+        op_kind="delete_visit",
+        label=_label,
+        forward_payload={"op": "soft_delete_visits", "visit_ids": _op_all_visit_ids},
+        inverse_payload={"op": "restore_visits", "visit_ids": _op_all_visit_ids},
+    )
+    await db.commit()
+
     return None
 
 

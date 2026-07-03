@@ -96,6 +96,17 @@
   対象 PFV/visits 集合）で記録
 - 対象外操作（週を生成等）が入った時点でスタックをクリアしボタン無効化
 
+### 3.1 U-3 v1 の範囲と既知制約（レビュー記録）
+- **v1 の undo/redo 対象** = 週内 visits 系の高頻度編集のみ: DnD 配置/移動（place-and-fix
+  fix_pattern=false ＋ visit DELETE）/ 担当変更（PATCH courses）/ visit-move-week-only。
+  **PFV 系（PUT fixed-visits・apply 系）と一括操作は v2**（スナップショット逆操作が必要）。
+- 既知制約（v1 で受容・発生確率低・v2 で見直し）:
+  (a) visit 復元 undo は同一スロットに他者が新規 visit を作っていた場合の衝突を検知しない
+  (b) 移動 undo は位置ベース照合（visit_ids 記録への移行は v2）
+  (c) verify→execute 間の TOCTOU（READ COMMITTED）: FOR UPDATE 化は v2
+  (d) record_op 後の commit 失敗は本体コミット済みでも 500 を返しうる（データは安全）
+- FE の opLogStateSchema は BE 安定後に .catch() の緩和度を見直す
+
 ## 4. Wave 分割（実装順）
 
 | Wave | 内容 | 価値 |

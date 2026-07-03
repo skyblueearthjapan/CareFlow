@@ -638,6 +638,11 @@ class VisitMoveWeekOnlyRequest(BaseModel):
         default=None,
         description="移動先の course_templates.id (任意). 省略時はコース据え置き.",
     )
+    # Wave U-3 操作ジャーナル: FE が 1 ドラッグ = 1グループで同値を送る。省略時は単発グループ。
+    op_group_id: uuid.UUID | None = Field(
+        default=None,
+        description="操作グループ ID（Wave U-3 undo/redo）。省略で自動発行。",
+    )
 
 
 class VisitMoveWeekOnlyResponse(BaseModel):

@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Annotated
 from uuid import UUID
 
@@ -36,6 +37,7 @@ from app.models.course import Course
 from app.models.user import User
 from app.schemas.course import CourseCreate, CourseRead, CourseUpdate
 from app.schemas.v2.enums import CourseStatus
+from app.services.op_log_service import record_op
 from app.services.scheduling import (
     CourseProposal,
     Layer2Clusterer,
@@ -44,6 +46,8 @@ from app.services.scheduling import (
     Layer3AssignmentError,
     StaffAssignment,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -302,7 +306,7 @@ async def update_course(
     course_id: UUID,
     payload: CourseUpdate,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    current_user: Annotated[User, Depends(require_role("admin", "manager"))],
 ) -> CourseRead:
     course = await db.scalar(
         select(Course).where(Course.id == course_id, Course.deleted_at.is_(None))
@@ -311,11 +315,60 @@ async def update_course(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
 
     update_data = payload.model_dump(mode="json", exclude_unset=True)
+    # Wave U-3: op_group_id は Course モデルに存在しない — 取り出してから適用
+    _op_group_id_raw: str | None = update_data.pop("op_group_id", None)
+    _op_group_id: UUID | None = UUID(_op_group_id_raw) if _op_group_id_raw else None
+
+    # model_dump(mode="json") で UUID が str 化されるため、ORM 列用に UUID オブジェクトへ戻す
+    # (create_course と同じ対応: PG_UUID(as_uuid=True) は uuid.UUID を要求する)
+    for uuid_field in ("assigned_staff_id", "office_id"):
+        val = update_data.get(uuid_field)
+        if isinstance(val, str):
+            try:
+                update_data[uuid_field] = UUID(val)
+            except (ValueError, TypeError):
+                # Pydantic で弾けるはずの不正 UUID。黙って null 化せず痕跡を残す
+                # (レビュー指摘・実害時の調査用)。
+                logger.warning("update_course: 不正な %s をスキップ: %r", uuid_field, val)
+                update_data[uuid_field] = None
+
+    # assigned_staff_id 変更を op_log に記録するため変更前の値を保存
+    _old_staff_id: UUID | None = course.assigned_staff_id
+    _staff_id_changing = "assigned_staff_id" in update_data
+
     for field, value in update_data.items():
         setattr(course, field, value)
 
     await _commit_or_409(db)
     await db.refresh(course)
+
+    # Wave U-3: assigned_staff_id 変更のみ記録（ベストエフォート）
+    if _staff_id_changing:
+        _new_staff_id = course.assigned_staff_id
+        _new_staff_str = str(_new_staff_id) if _new_staff_id else None
+        _old_staff_str = str(_old_staff_id) if _old_staff_id else None
+        _label = f"コース担当者を変更（→{'未割当' if _new_staff_str is None else _new_staff_str[:8] + '...'}）"
+        await record_op(
+            db,
+            user_id=current_user.id,
+            iso_year=course.iso_year,
+            iso_week=course.iso_week,
+            op_group_id=_op_group_id,
+            op_kind="patch_course_staff",
+            label=_label,
+            forward_payload={
+                "op": "set_course_staff",
+                "course_id": str(course_id),
+                "staff_id": _new_staff_str,
+            },
+            inverse_payload={
+                "op": "set_course_staff",
+                "course_id": str(course_id),
+                "staff_id": _old_staff_str,
+            },
+        )
+        await db.commit()
+
     return _to_read(course)
 
 
