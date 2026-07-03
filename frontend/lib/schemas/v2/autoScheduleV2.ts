@@ -429,6 +429,13 @@ export const applyIndividualRequestSchema = z.object({
    * 省略時 BE default=false のため既定挙動は不変。
    */
   force_lunch: z.boolean().optional(),
+  /**
+   * Wave U-2 (変更反映先統一): 反映先選択。
+   *   - 'pattern_and_week' (A): 型を更新し、今週のスケジュールにも即反映する。
+   *   - 'pattern_only' (既定・従来): 型のみ更新。
+   *   省略時は BE 側 default (pattern_only = 従来挙動) が適用される。
+   */
+  change_scope: z.enum(['pattern_only', 'pattern_and_week']).optional(),
 });
 export type ApplyIndividualRequest = z.infer<typeof applyIndividualRequestSchema>;
 
@@ -438,6 +445,17 @@ export const applyIndividualResponseSchema = z.object({
   fixed_visit_ids: z.array(z.string().uuid()).default([]),
   idempotent: z.boolean().default(false),
   warnings: z.array(z.string()).default([]),
+  // Wave U-2: change_scope=pattern_and_week のとき今週再生成の件数。
+  // 旧 BE では欠落 / 週再生成に失敗した場合は null。
+  week_sync: z
+    .object({
+      visits_regenerated: z.number().int(),
+      visits_soft_deleted: z.number().int(),
+    })
+    .nullable()
+    .optional()
+    .default(null)
+    .catch(null),
 });
 export type ApplyIndividualResponse = z.infer<typeof applyIndividualResponseSchema>;
 

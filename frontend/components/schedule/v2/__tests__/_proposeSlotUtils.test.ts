@@ -6,6 +6,7 @@ import { describe, it, expect } from 'vitest';
 
 import {
   buildCourseTemplateIdResolver,
+  buildWeekOnlyPlaceAndFixRequest,
   existingFixedVisitToItem,
   mergeAdoptedIntoNormalFixedVisits,
   proposedSlotToFixedVisitItem,
@@ -61,6 +62,57 @@ describe('proposedSlotToFixedVisitItem', () => {
 describe('slotDurationMin', () => {
   it('end<=start は null', () => {
     expect(slotDurationMin(slot({ start_time: '10:00', end_time: '10:00' }))).toBeNull();
+  });
+});
+
+describe('buildWeekOnlyPlaceAndFixRequest (Wave U-2)', () => {
+  const resolve = (oid: string, code: string) => (oid === OFFICE && code === 'C' ? 'tpl-c' : null);
+
+  it('fix_pattern=false でこの週だけリクエストを構築する', () => {
+    const req = buildWeekOnlyPlaceAndFixRequest(slot(), resolve, {
+      patientId: 'pat-1',
+      isoYear: 2026,
+      isoWeek: 27,
+      serviceFallbackMin: 35,
+    });
+    expect(req).not.toBeNull();
+    expect(req!.fix_pattern).toBe(false);
+    expect(req!.course_template_id).toBe('tpl-c');
+    expect(req!.iso_year).toBe(2026);
+    expect(req!.iso_week).toBe(27);
+    expect(req!.weekday).toBe(1);
+    expect(req!.start_time).toBe('16:00:00');
+    expect(req!.staff_count).toBe(1);
+    // 16:00-17:30 = 90 分
+    expect(req!.duration_min).toBe(90);
+  });
+
+  it('course_template_id を解決できないときは null を返す', () => {
+    const req = buildWeekOnlyPlaceAndFixRequest(slot(), noResolve, {
+      patientId: 'pat-1',
+      isoYear: 2026,
+      isoWeek: 27,
+      serviceFallbackMin: 35,
+    });
+    expect(req).toBeNull();
+  });
+
+  it('capacityOverrideReason 指定時のみ付与', () => {
+    const withReason = buildWeekOnlyPlaceAndFixRequest(slot(), resolve, {
+      patientId: 'pat-1',
+      isoYear: 2026,
+      isoWeek: 27,
+      serviceFallbackMin: 35,
+      capacityOverrideReason: '受入希望',
+    });
+    expect(withReason!.capacity_override_reason).toBe('受入希望');
+    const without = buildWeekOnlyPlaceAndFixRequest(slot(), resolve, {
+      patientId: 'pat-1',
+      isoYear: 2026,
+      isoWeek: 27,
+      serviceFallbackMin: 35,
+    });
+    expect(without!.capacity_override_reason).toBeUndefined();
   });
 });
 

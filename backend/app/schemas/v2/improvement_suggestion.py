@@ -348,6 +348,33 @@ class ApplySwapRequest(BaseModel):
             "現在の apply-swap ロジックでは直接参照しないが、FE 契約の安定のため削除しない."
         ),
     )
+    # Wave U-2 (§2.2 反映先の統一): 入れ替え結果をどこへ書くか.
+    #   pattern_only      = 型 (PFV) のみ入れ替え (既定・従来挙動; 後方互換).
+    #   pattern_and_week  = PFV 入れ替え後、両患者の今週 visits を PFV から再生成 (A).
+    #   week_only         = PFV は不変、両側の今週 visits を相互の新位置へ移動 (B; source='manual_week').
+    change_scope: Literal["pattern_only", "pattern_and_week", "week_only"] = Field(
+        default="pattern_only",
+        description=(
+            "反映先の統一 (Wave U-2). pattern_only=型のみ(既定) / "
+            "pattern_and_week=型+今週(A) / week_only=今週だけ(B)."
+        ),
+    )
+
+
+class SwapWeekSync(BaseModel):
+    """apply-swap の今週反映サマリ (Wave U-2). ``change_scope`` が pattern_only のとき null."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    patients: int = Field(default=0, ge=0, description="今週へ反映した患者数")
+    visits_regenerated: int = Field(
+        default=0,
+        ge=0,
+        description="A: PFV から再生成した visit 数 / B: 移動した visit 数",
+    )
+    visits_soft_deleted: int = Field(
+        default=0, ge=0, description="A: reset で soft-delete した visit 数 (B は 0)"
+    )
 
 
 class ApplySwapResponse(BaseModel):
@@ -359,6 +386,14 @@ class ApplySwapResponse(BaseModel):
     warnings: list[str] = Field(
         default_factory=list,
         description="N-4 再検証で検出した非致命の警告 (現場向け日本語). ブロックしない.",
+    )
+    # Wave U-2: 反映先の統一 (後方互換の追加のみ; 旧 FE は無視して従来動作).
+    change_scope: Literal["pattern_only", "pattern_and_week", "week_only"] = Field(
+        default="pattern_only", description="適用した反映先 (リクエストのエコーバック)."
+    )
+    week_sync: SwapWeekSync | None = Field(
+        default=None,
+        description="今週反映サマリ (A/B のとき付与。pattern_only は null).",
     )
 
 
@@ -380,4 +415,5 @@ __all__ = [
     "ImprovementSuggestionsResponse",
     "SwapCounterpart",
     "SwapNewSlot",
+    "SwapWeekSync",
 ]

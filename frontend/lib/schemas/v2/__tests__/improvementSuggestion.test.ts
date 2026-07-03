@@ -228,6 +228,39 @@ describe('applySwapRequestSchema / applySwapResponseSchema', () => {
     expect(parsed.applied).toBe(true);
     expect(parsed.warnings).toEqual([]);
   });
+
+  it('Wave U-2: request に change_scope を付与できる (省略時 undefined)', () => {
+    const withScope = applySwapRequestSchema.parse({
+      patient_a_id: '22222222-2222-4222-8222-222222222222',
+      patient_b_id: '33333333-3333-4333-8333-333333333333',
+      a_new: { weekday: 0, start_time: '14:00' },
+      b_new: { weekday: 0, start_time: '09:00' },
+      iso_year: 2026,
+      iso_week: 27,
+      change_scope: 'week_only',
+    });
+    expect(withScope.change_scope).toBe('week_only');
+    const without = applySwapRequestSchema.parse({
+      patient_a_id: '22222222-2222-4222-8222-222222222222',
+      patient_b_id: '33333333-3333-4333-8333-333333333333',
+      a_new: { weekday: 0, start_time: '14:00' },
+      b_new: { weekday: 0, start_time: '09:00' },
+      iso_year: 2026,
+      iso_week: 27,
+    });
+    expect(without.change_scope).toBeUndefined();
+  });
+
+  it('Wave U-2: response の week_sync は欠落なら null (寛容)、指定時はパースする', () => {
+    const missing = applySwapResponseSchema.parse({ applied: true, warnings: [] });
+    expect(missing.week_sync).toBeNull();
+    const present = applySwapResponseSchema.parse({
+      applied: true,
+      warnings: [],
+      week_sync: { visits_regenerated: 3, visits_soft_deleted: 1 },
+    });
+    expect(present.week_sync?.visits_regenerated).toBe(3);
+  });
 });
 
 describe('improvementDismissResponseSchema', () => {

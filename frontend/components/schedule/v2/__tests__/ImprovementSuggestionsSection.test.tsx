@@ -22,6 +22,7 @@ const { mockToast, mocks } = vi.hoisted(() => ({
     confirmMutate: vi.fn(),
     dismissMutate: vi.fn(),
     applySwapMutate: vi.fn(),
+    visitMoveWeekOnlyMutate: vi.fn(),
     existingFixedVisits: [] as unknown[],
     templatesQueries: [] as unknown[],
     invalidateQueries: vi.fn(),
@@ -49,6 +50,9 @@ vi.mock('@/lib/queries/improvementSuggestions', () => ({
 }));
 vi.mock('@/lib/queries/propose_confirm', () => ({
   useConfirmFixedVisits: () => ({ mutate: mocks.confirmMutate, isPending: false }),
+}));
+vi.mock('@/lib/queries/visitMoveWeekOnly', () => ({
+  useVisitMoveWeekOnly: () => ({ mutate: mocks.visitMoveWeekOnlyMutate, isPending: false }),
 }));
 vi.mock('@/lib/queries/patient_fixed_visits', () => ({
   useFixedVisits: () => ({
@@ -273,16 +277,21 @@ describe('ImprovementSuggestionsSection', () => {
     };
     renderSection();
 
+    // Wave U-2: 採用ボタン → 反映先の確認ダイアログ → (既定 A) 反映する.
     await userEvent.click(screen.getByTestId('improvement-adopt-button'));
+    await waitFor(() => expect(screen.getByTestId('move-confirm-dialog')).toBeInTheDocument());
+    await userEvent.click(screen.getByTestId('move-confirm-apply'));
 
     await waitFor(() => expect(mocks.confirmMutate).toHaveBeenCalledTimes(1));
     const vars = mocks.confirmMutate.mock.calls[0][0] as {
       patientId: string;
-      body: { mode: string; items: { weekday: number }[] };
+      body: { mode: string; items: { weekday: number }[]; change_scope?: string };
     };
     expect(vars.patientId).toBe(PATIENT.id);
     expect(vars.body.mode).toBe('normal');
     expect(vars.body.items[0]?.weekday).toBe(0);
+    // Wave U-2: 既定 A = 型 + 今週即反映.
+    expect(vars.body.change_scope).toBe('pattern_and_week');
 
     // 成功パスで警告トーストヘルパ + improvement-suggestions invalidate.
     expect(mocks.toastFixedVisitWarnings).toHaveBeenCalledTimes(1);
@@ -336,6 +345,8 @@ describe('ImprovementSuggestionsSection', () => {
     renderSection();
 
     await userEvent.click(screen.getByTestId('improvement-adopt-button'));
+    await waitFor(() => expect(screen.getByTestId('move-confirm-dialog')).toBeInTheDocument());
+    await userEvent.click(screen.getByTestId('move-confirm-apply'));
 
     await waitFor(() => expect(mocks.confirmMutate).toHaveBeenCalledTimes(1));
     const body = (

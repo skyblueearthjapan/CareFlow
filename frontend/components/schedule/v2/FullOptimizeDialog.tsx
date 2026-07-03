@@ -475,11 +475,22 @@ export function FullOptimizeDialog({
           iso_year: isoYear,
           iso_week: isoWeek,
           visit_plans: p.proposed_pfv,
+          // Wave U-2: 個別採用は「固定訪問週間に登録（今週にも反映）」= A 相当.
+          change_scope: 'pattern_and_week',
         },
       );
       // ユーザーが昼休み確認を拒否した場合は中止 (現在の患者に留まる).
       if (!res) return;
-      toast.success(`${p.patient_name} の固定枠を更新しました`);
+      // U-2 レビュー M-1: week_sync=null (旧BE / 週再生成のみ失敗) は「今週にも反映」と
+      // 言わず、他コンポーネントと同じ警告文で「週を生成」再実行を促す。
+      if (res.week_sync == null) {
+        toast.warning(
+          `${p.patient_name} を固定訪問週間に登録しましたが、今週のスケジュールへの反映は` +
+            `行われませんでした。「週を生成」を再実行すると反映されます`,
+        );
+      } else {
+        toast.success(`${p.patient_name} を固定訪問週間に登録し、今週にも反映しました`);
+      }
       // 再検証 warnings があれば警告表示.
       toastApplyWarnings(res.warnings);
       setAppliedPatientIds((prev) => new Set(prev).add(p.patient_id));
@@ -722,9 +733,7 @@ export function FullOptimizeDialog({
           role="note"
         >
           現在の固定スケジュールを白紙から組み直した場合の比較です。
-          <strong>
-            適用すると患者様との既存のお約束が大きく変わる可能性があります。
-          </strong>
+          <strong>適用すると患者様との既存のお約束が大きく変わる可能性があります。</strong>
           通常の改善は患者詳細の「改善提案」をご利用ください。
         </div>
 
@@ -920,8 +929,8 @@ export function FullOptimizeDialog({
           >
             <p className="mb-3 text-sm font-semibold text-text-primary">この提案を採用しますか？</p>
             <p className="mb-4 text-xs text-text-muted">
-              「この週だけ試す」を選ぶと固定枠は変更せず、その週の予定だけを一括で反映します。
-              「固定枠を更新する」を選ぶと、患者ごとに固定枠の更新を確認できます。
+              「この週だけ反映（毎週の型は変更しません）」を選ぶと固定枠は変更せず、その週の予定だけを一括で反映します。
+              「固定訪問週間に登録（今週にも反映）」を選ぶと、患者ごとに登録内容を確認できます。
             </p>
             <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-end">
               <Button
@@ -943,11 +952,13 @@ export function FullOptimizeDialog({
                 onClick={handleRequestWeekOnly}
                 disabled={isBusy || !result || result.individual_proposals.length === 0}
                 data-testid="full-optimize-week-only-button"
-                aria-label="この週だけ試す (固定枠は変更しない)"
+                aria-label="この週だけ反映する (毎週の型は変更しません)"
                 className="border-brand-primary/40 text-brand-primary hover:bg-brand-primary/5"
               >
                 <CalendarRange className="mr-2 h-4 w-4" aria-hidden />
-                この週だけ試す ({result?.individual_proposals.length ?? 0} 件)
+                この週だけ反映（毎週の型は変更しません）({result?.individual_proposals.length ??
+                  0}{' '}
+                件)
               </Button>
               <Button
                 type="button"
@@ -955,10 +966,10 @@ export function FullOptimizeDialog({
                 onClick={handleStartIndividualReview}
                 disabled={isBusy || !result || result.individual_proposals.length === 0}
                 data-testid="full-optimize-individual-button"
-                aria-label="固定枠を更新する (個別に確認していく)"
+                aria-label="固定訪問週間に登録する (今週にも反映・個別に確認していく)"
               >
                 <Pin className="mr-2 h-4 w-4" aria-hidden />
-                固定枠を更新する ({remainingPatients.length} 件)
+                固定訪問週間に登録（今週にも反映）({remainingPatients.length} 件)
                 <ArrowRight className="ml-2 h-4 w-4" aria-hidden />
               </Button>
             </div>
@@ -1914,14 +1925,14 @@ function IndividualPatientPopup({
               onClick={onApply}
               disabled={isApplying || proposal.proposed_pfv.length === 0}
               data-testid="full-optimize-popup-apply"
-              aria-label="この患者の変更を採用して次へ"
+              aria-label="この患者を固定訪問週間に登録して次へ (今週にも反映)"
             >
               {isApplying ? (
                 <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
               ) : (
                 <CheckCircle2 className="mr-1 h-4 w-4" aria-hidden />
               )}
-              この患者は変更する
+              固定訪問週間に登録（今週にも反映）
             </Button>
           </div>
         </DialogFooter>

@@ -66,6 +66,7 @@ import {
 import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
 import type { Office } from '@/lib/schemas/office';
 import type { WeeklyPattern } from '@/lib/schemas/patient';
+import { isoWeekFromLocalDate } from '@/lib/format/isoWeek';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -715,9 +716,7 @@ function WeekGrid({
                       <div className="mt-1 flex items-center gap-1">
                         <select
                           value={row.movability}
-                          onChange={(e) =>
-                            update(wd, { movability: e.target.value as Movability })
-                          }
+                          onChange={(e) => update(wd, { movability: e.target.value as Movability })}
                           disabled={disabled}
                           className="h-8 rounded border border-border-default bg-bg-base px-2 text-sm text-text-primary focus:outline-none focus:border-brand-primary"
                           aria-label={`${WEEKDAY_LABELS[wd]} 可動域`}
@@ -758,6 +757,12 @@ interface ModePanelProps {
   mode: PatientFixedVisitMode;
   weeklyPattern?: WeeklyPattern | null;
   readonly?: boolean;
+  /**
+   * Wave U-2: 保存時に今週へ即反映する対象 ISO 週 (change_scope='pattern_and_week').
+   * 週文脈が無い呼び出し (患者マスタ直) では現在の ISO 週を算出して使う。
+   */
+  isoYear?: number;
+  isoWeek?: number;
   /** W22: 当該患者の拠点に紐付く course_templates */
   courseTemplates: CourseTemplateRead[];
   /** W37 Phase 3-A: 複数スタッフ対応患者かどうか */
@@ -775,6 +780,8 @@ function ModePanel({
   mode,
   weeklyPattern,
   readonly,
+  isoYear,
+  isoWeek,
   courseTemplates,
   requiresMultipleStaff,
   offices,
@@ -878,7 +885,25 @@ function ModePanel({
     }
 
     const items = dayRowsToItems(rows, requiresMultipleStaff);
-    const result = patientFixedVisitsBulkPutSchema.safeParse({ mode, items });
+    // Wave U-2 (設計 §2.1): 固定枠編集の既定は A (型 + 今週即反映)。choice UI は出さない
+    //   (編集画面の文脈上、型を編集する意図が明確なため)。
+    //   週文脈が無い呼び出し (患者マスタ直) では現在の ISO 週を算出して使う。
+    //   'special' モードは今週が特別週とは限らないため今週反映は付けない (normal のみ)。
+    const applyToWeek = mode === 'normal';
+    const cur = isoWeekFromLocalDate(new Date());
+    const effIsoYear = isoYear ?? cur.isoYear;
+    const effIsoWeek = isoWeek ?? cur.isoWeek;
+    const result = patientFixedVisitsBulkPutSchema.safeParse(
+      applyToWeek
+        ? {
+            mode,
+            items,
+            change_scope: 'pattern_and_week',
+            iso_year: effIsoYear,
+            iso_week: effIsoWeek,
+          }
+        : { mode, items },
+    );
 
     if (!result.success) {
       const errs: Record<number, string> = {};
@@ -901,7 +926,19 @@ function ModePanel({
 
     try {
       const res = await updateMut.mutateAsync(result.data);
-      toast.success('固定枠を保存しました');
+      // Wave U-2: A 経路 (normal) は今週にも反映。week_sync 欠落時は U-1 と同じ警告。
+      if (applyToWeek) {
+        if (res?.week_sync == null) {
+          toast.warning(
+            '固定枠を保存しましたが、今週のスケジュールへの反映は行われませんでした。' +
+              '「週を生成」を再実行すると反映されます',
+          );
+        } else {
+          toast.success('固定枠を保存し、今週のスケジュールにも反映しました');
+        }
+      } else {
+        toast.success('固定枠を保存しました');
+      }
       // P0-2 Commit 3: 再検証 warnings (時間衝突 / 昼休み / 容量) があれば警告表示。
       // 空なら従来どおり success のみ (挙動不変)。
       toastFixedVisitWarnings(res?.warnings);
@@ -1102,6 +1139,13 @@ export interface PatientFixedVisitsPanelProps {
    * false の場合は従来どおり 1 セレクタ (slot_index=0) のみ.
    */
   requiresMultipleStaff?: boolean;
+  /**
+   * Wave U-2: 保存時に今週へ即反映する対象 ISO 週 (change_scope='pattern_and_week').
+   * 週を表示中のダイアログ (PatientScheduleDetailDialog) 経由では表示中の週を配線する。
+   * 患者マスタ直の呼び出しでは省略 (ModePanel が現在の ISO 週を算出する)。
+   */
+  isoYear?: number;
+  isoWeek?: number;
 }
 
 export function PatientFixedVisitsPanel({
@@ -1110,6 +1154,8 @@ export function PatientFixedVisitsPanel({
   primaryOfficeId,
   readOnly,
   requiresMultipleStaff = false,
+  isoYear,
+  isoWeek,
 }: PatientFixedVisitsPanelProps) {
   const { data: session } = useSession();
   const role = session?.user?.role;
@@ -1165,6 +1211,8 @@ export function PatientFixedVisitsPanel({
               mode={m}
               weeklyPattern={weeklyPattern}
               readonly={readonly}
+              isoYear={isoYear}
+              isoWeek={isoWeek}
               courseTemplates={courseTemplates}
               requiresMultipleStaff={requiresMultipleStaff}
               offices={offices}

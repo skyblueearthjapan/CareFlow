@@ -43,9 +43,9 @@ import type {
 
 import {
   buildCourseTemplateIdResolver,
+  buildWeekOnlyPlaceAndFixRequest,
   mergeAdoptedIntoNormalFixedVisits,
   proposedSlotToFixedVisitItem,
-  slotDurationMin,
   slotKey,
 } from './_proposeSlotUtils';
 import { ChangeScopeChoice, type ChangeScopeValue } from './ChangeScopeChoice';
@@ -368,41 +368,33 @@ export function PoolCandidateList({
       );
     } else {
       // ─── B 経路: place-and-fix (fix_pattern=false, 今週のみ) ─────────────────
-      const tplId = resolveCourseTemplateId(slot.office_id, slot.course_code);
-      if (tplId === null) {
+      // Wave U-2: 共通ヘルパ (ProposeNewModal と共有) で week-only リクエストを構築.
+      const wp = coerceWeeklyPattern(patient.weekly_pattern);
+      const req = buildWeekOnlyPlaceAndFixRequest(slot, resolveCourseTemplateId, {
+        patientId: patient.id,
+        isoYear,
+        isoWeek,
+        serviceFallbackMin: wp.service_minutes,
+        capacityOverrideReason: slot.overcapacity ? overcapacityReason : null,
+      });
+      if (req === null) {
         toast.error('コース情報を解決できませんでした。再読み込みしてお試しください');
         return;
       }
-      const wp = coerceWeeklyPattern(patient.weekly_pattern);
-      const duration = slotDurationMin(slot) ?? wp.service_minutes;
-      placeAndFixMut.mutate(
-        {
-          patient_id: patient.id,
-          course_template_id: tplId,
-          iso_year: isoYear,
-          iso_week: isoWeek,
-          weekday: slot.weekday,
-          start_time: slot.start_time,
-          duration_min: duration,
-          staff_count: 1,
-          fix_pattern: false,
-          ...(slot.overcapacity ? { capacity_override_reason: overcapacityReason } : {}),
+      placeAndFixMut.mutate(req, {
+        onSuccess: () => {
+          toast.success(
+            `${patient.name} 様を今週だけ配置しました（毎週の型は変更していません）` +
+              (slot.overcapacity ? '（定員超過を管理者判断で許可）' : ''),
+          );
+          setPending(null);
+          setScopeChoice('pattern');
+          setOvercapacityReason('');
+          setOvercapacityRequested(false);
+          onAdopted?.();
         },
-        {
-          onSuccess: () => {
-            toast.success(
-              `${patient.name} 様を今週だけ配置しました（毎週の型は変更していません）` +
-                (slot.overcapacity ? '（定員超過を管理者判断で許可）' : ''),
-            );
-            setPending(null);
-            setScopeChoice('pattern');
-            setOvercapacityReason('');
-            setOvercapacityRequested(false);
-            onAdopted?.();
-          },
-          onError: () => toast.error('配置に失敗しました'),
-        },
-      );
+        onError: () => toast.error('配置に失敗しました'),
+      });
     }
   };
 

@@ -484,6 +484,30 @@ class AutoScheduleV2ApplyIndividualRequest(BaseModel):
             "weekday × start_time が同じ既存 PFV は更新, 違うものは追加, 古いものは削除."
         ),
     )
+    # Wave U-2 (§2.2 反映先の統一): 採用結果をどこへ書くか.
+    #   pattern_only      = 型 (PFV) のみ更新 (既定・従来挙動; 後方互換).
+    #   pattern_and_week  = PFV 更新後、当該患者の今週 visits を PFV から再生成 (A).
+    # week_only は不要 (apply-week-only エンドポイントが既に B に相当).
+    change_scope: Literal["pattern_only", "pattern_and_week"] = Field(
+        default="pattern_only",
+        description=(
+            "反映先の統一 (Wave U-2). pattern_only=型のみ(既定) / "
+            "pattern_and_week=型+今週再生成(A). 後者は iso_year/iso_week 必須."
+        ),
+    )
+
+
+class ApplyIndividualWeekSync(BaseModel):
+    """apply-individual の change_scope=pattern_and_week で今週 visits を再生成した件数.
+
+    Wave U-2 (§2.2 A 経路). pattern_only のときは ``week_sync=null`` (後方互換).
+    週再生成のみ失敗した場合も ``week_sync=null`` の 200 を返す (PUT fixed-visits と同一).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    visits_regenerated: int = Field(ge=0, description="PFV から再生成した今週 visit 数")
+    visits_soft_deleted: int = Field(ge=0, description="再生成前に soft-delete した今週 visit 数")
 
 
 class AutoScheduleV2ApplyIndividualResponse(BaseModel):
@@ -497,6 +521,8 @@ class AutoScheduleV2ApplyIndividualResponse(BaseModel):
     # 既に同等の固定枠が存在し、no-op だった場合は ``idempotent=true`` を返す.
     idempotent: bool = False
     warnings: list[str] = Field(default_factory=list)
+    # Wave U-2: 反映先の統一 (後方互換の追加のみ; pattern_only は null).
+    week_sync: ApplyIndividualWeekSync | None = Field(default=None)
 
 
 # ---------------------------------------------------------------------------
@@ -585,6 +611,41 @@ class AutoScheduleV2SyncFixedToWeekResponse(BaseModel):
     visits_regenerated: int = Field(ge=0)
     visits_soft_deleted: int = Field(ge=0)
     warnings: list[str] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# 4c) /visit-move-week-only (Wave U-2 §2.2 B: 汎用「1 手の週だけ移動」)
+# ---------------------------------------------------------------------------
+
+
+class VisitMoveWeekOnlyRequest(BaseModel):
+    """``POST /api/v1/schedule/v2/visit-move-week-only`` request (Wave U-2).
+
+    改善提案 move の「この週だけ」経路. 当該患者の該当 visit (planned・2 名体制なら
+    全行) を新位置へ移動し ``source='manual_week'`` を刻む. PFV は一切変更しない.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    iso_year: int = Field(ge=2020, le=2100)
+    iso_week: int = Field(ge=1, le=53)
+    patient_id: uuid.UUID
+    old_weekday: int = Field(ge=0, le=6, description="移動元の曜日 (0=Mon..6=Sun)")
+    old_start_time: time_cls = Field(description="移動元 開始時刻")
+    new_weekday: int = Field(ge=0, le=6, description="移動先の曜日 (0=Mon..6=Sun)")
+    new_start_time: time_cls = Field(description="移動先 開始時刻")
+    new_course_template_id: uuid.UUID | None = Field(
+        default=None,
+        description="移動先の course_templates.id (任意). 省略時はコース据え置き.",
+    )
+
+
+class VisitMoveWeekOnlyResponse(BaseModel):
+    """``POST /api/v1/schedule/v2/visit-move-week-only`` response (Wave U-2)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    visits_moved: int = Field(ge=0, description="新位置へ移動した visit 行数 (0 = 対象なし)")
 
 
 # ---------------------------------------------------------------------------
@@ -780,6 +841,7 @@ class WeekdayStaffCapacityResponse(BaseModel):
 
 __all__ = [
     "AmPmV2",
+    "ApplyIndividualWeekSync",
     "AutoScheduleV2ApplyIndividualRequest",
     "AutoScheduleV2ApplyIndividualResponse",
     "AutoScheduleV2ApplyWeekOnlyRequest",
@@ -814,6 +876,8 @@ __all__ = [
     "V2WarningOut",
     "V2WarningTypeOut",
     "V2WeekdayBeforeAfter",
+    "VisitMoveWeekOnlyRequest",
+    "VisitMoveWeekOnlyResponse",
     "WeekdayStaffCapacityItem",
     "WeekdayStaffCapacityResponse",
 ]

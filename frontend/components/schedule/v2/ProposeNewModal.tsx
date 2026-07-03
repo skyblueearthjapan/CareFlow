@@ -73,6 +73,7 @@ import {
 import { useCreatePatient, usePatients } from '@/lib/queries/patients';
 import { useFixedVisits, toastFixedVisitWarnings } from '@/lib/queries/patient_fixed_visits';
 import { useConfirmFixedVisits } from '@/lib/queries/propose_confirm';
+import { usePlaceAndFix } from '@/lib/queries/place_and_fix';
 import {
   coerceWeeklyPattern,
   emptyPatientFormValues,
@@ -110,11 +111,13 @@ import type {
 
 import {
   buildCourseTemplateIdResolver,
+  buildWeekOnlyPlaceAndFixRequest,
   mergeAdoptedIntoNormalFixedVisits,
   proposedSlotToFixedVisitItem,
   slotKey,
   sortFixedVisitItems,
 } from './_proposeSlotUtils';
+import { ChangeScopeChoice, type ChangeScopeValue } from './ChangeScopeChoice';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -234,6 +237,9 @@ export function ProposeNewModal({
   const proposeMut = useProposeSlots();
   const createPatientMut = useCreatePatient();
   const confirmMut = useConfirmFixedVisits();
+  const placeAndFixMut = usePlaceAndFix();
+  // Wave U-2: 反映先の選択 (既定 A = 固定訪問週間に登録). 新規患者モードは A 固定.
+  const [scopeChoice, setScopeChoice] = React.useState<ChangeScopeValue>('pattern');
 
   // 既存/プール患者の現在の normal 固定枠を取得 (マージ確定用)。
   // backend PUT /fixed-visits は当該 (patient, normal) を全削除→INSERT する破壊的更新の
@@ -496,12 +502,43 @@ export function ProposeNewModal({
   });
 
   // ─── 確定: 既存 / プール (登録済) ───────────────────────────────────
-  const confirmExisting = () => {
+  const confirmExisting = async () => {
     if (!linkedPatient) return;
     if (adoptedCount === 0) {
       toast.warning('採用する枠を選んでください');
       return;
     }
+
+    if (scopeChoice === 'week') {
+      // ─── B 経路: この週だけ配置 (place-and-fix fix_pattern=false)。型は不変。 ───
+      const slots = Array.from(adopted.values());
+      const reqs = slots.map((s) =>
+        buildWeekOnlyPlaceAndFixRequest(s, courseTemplateId, {
+          patientId: linkedPatient.id,
+          isoYear,
+          isoWeek,
+          serviceFallbackMin: serviceMinutes,
+        }),
+      );
+      if (reqs.some((r) => r === null)) {
+        toast.error('コース情報を解決できませんでした。再読み込みしてお試しください');
+        return;
+      }
+      try {
+        for (const r of reqs) {
+          await placeAndFixMut.mutateAsync(r!);
+        }
+        toast.success(
+          `${linkedPatient.name} 様をこの週だけ配置しました（毎週の型は変更していません）`,
+        );
+        onClose();
+      } catch {
+        toast.error('この週だけの配置に失敗しました');
+      }
+      return;
+    }
+
+    // ─── A 経路: 型変更 + 今週即反映 ─────────────────────────────
     // 既存 normal 枠の取得が完了していない / 失敗していると、マージ元が欠落し
     // 他曜日の固定枠を消してしまう恐れがある。安全側に倒して確定を止める。
     if (existingFixedVisitsQuery.isLoading || existingFixedVisitsQuery.isFetching) {
@@ -512,11 +549,26 @@ export function ProposeNewModal({
       toast.error('既存の固定枠の読み込みに失敗しました。他曜日の枠を保護できないため中止しました');
       return;
     }
+    const putBody: PatientFixedVisitsBulkPut = {
+      ...buildBulkPutMerged(existingNormalVisits),
+      change_scope: 'pattern_and_week',
+      iso_year: isoYear,
+      iso_week: isoWeek,
+    };
     confirmMut.mutate(
-      { patientId: linkedPatient.id, body: buildBulkPutMerged(existingNormalVisits) },
+      { patientId: linkedPatient.id, body: putBody },
       {
         onSuccess: (data) => {
-          toast.success(`${linkedPatient.name} 様の固定枠を確定しました（他曜日の既存枠は維持）`);
+          if (data?.week_sync == null) {
+            toast.warning(
+              `${linkedPatient.name} 様の固定枠を確定しましたが、今週のスケジュールへの` +
+                `反映は行われませんでした。「週を生成」を再実行すると反映されます`,
+            );
+          } else {
+            toast.success(
+              `${linkedPatient.name} 様の固定枠を確定し、今週のスケジュールにも反映しました（他曜日の既存枠は維持）`,
+            );
+          }
           // P0-2 Commit 3: 再検証 warnings があれば警告表示 (空なら success のみ).
           toastFixedVisitWarnings(data?.warnings);
           onClose();
@@ -581,7 +633,14 @@ export function ProposeNewModal({
     //    「登録済・固定枠のみ失敗」と明示し、再確定の導線を案内する。
     let confirmRes: Awaited<ReturnType<typeof confirmMut.mutateAsync>>;
     try {
-      confirmRes = await confirmMut.mutateAsync({ patientId: created.id, body: buildBulkPutNew() });
+      // Wave U-2: 新規患者は A 固定 (型登録 + 今週反映).
+      const newBody: PatientFixedVisitsBulkPut = {
+        ...buildBulkPutNew(),
+        change_scope: 'pattern_and_week',
+        iso_year: isoYear,
+        iso_week: isoWeek,
+      };
+      confirmRes = await confirmMut.mutateAsync({ patientId: created.id, body: newBody });
     } catch {
       toast.error(
         `${created.name} 様は登録されました。固定枠の確定のみ失敗しました。「既存患者を検索」タブから再度確定してください`,
@@ -589,13 +648,21 @@ export function ProposeNewModal({
       onClose();
       return;
     }
-    toast.success(`${created.name} 様を登録し、固定枠を確定しました`);
+    if (confirmRes?.week_sync == null) {
+      toast.warning(
+        `${created.name} 様を登録し固定枠を確定しましたが、今週のスケジュールへの反映は` +
+          `行われませんでした。「週を生成」を再実行すると反映されます`,
+      );
+    } else {
+      toast.success(`${created.name} 様を登録し、固定枠を確定して今週にも反映しました`);
+    }
     // P0-2 Commit 3: 再検証 warnings があれば警告表示 (空なら success のみ).
     toastFixedVisitWarnings(confirmRes?.warnings);
     onClose();
   };
 
-  const isConfirming = createPatientMut.isPending || confirmMut.isPending;
+  const isConfirming =
+    createPatientMut.isPending || confirmMut.isPending || placeAndFixMut.isPending;
   const isBusy = proposeMut.isPending || isConfirming;
   // 既存/プール患者でのみ意味を持つ。マージ元 (現在の normal 枠) を読み込み中は確定不可。
   const existingFixedVisitsLoading =
@@ -810,6 +877,20 @@ export function ProposeNewModal({
                   patientName={linkedPatient?.name ?? karteName}
                   isExistingPatient={!isNew && !!linkedPatient}
                 />
+
+                {/* Wave U-2: 反映先の選択. 新規患者作成モードは A 固定 (disabled + 説明). */}
+                {adoptedCount > 0 ? (
+                  <div className="mt-2" data-testid="propose-new-scope">
+                    <ChangeScopeChoice
+                      value={isNew ? 'pattern' : scopeChoice}
+                      onChange={setScopeChoice}
+                      disabled={isNew || isConfirming}
+                      defaultNote={
+                        isNew ? '新規のご利用者様はまず固定訪問週間への登録が必要です' : undefined
+                      }
+                    />
+                  </div>
+                ) : null}
               </>
             )}
           </div>
@@ -846,16 +927,20 @@ export function ProposeNewModal({
             ) : (
               <Button
                 type="button"
-                onClick={confirmExisting}
-                disabled={adoptedCount === 0 || isBusy || existingFixedVisitsLoading}
+                onClick={() => void confirmExisting()}
+                disabled={
+                  adoptedCount === 0 ||
+                  isBusy ||
+                  (scopeChoice === 'pattern' && existingFixedVisitsLoading)
+                }
                 data-testid="propose-existing-confirm-button"
               >
-                {confirmMut.isPending ? (
+                {confirmMut.isPending || placeAndFixMut.isPending ? (
                   <Loader2 className="mr-1.5 h-4 w-4 animate-spin" aria-hidden />
                 ) : (
                   <CheckCircle2 className="mr-1.5 h-4 w-4" aria-hidden />
                 )}
-                固定枠を確定
+                {scopeChoice === 'week' ? 'この週だけ配置' : '固定枠を確定'}
               </Button>
             )
           ) : null}

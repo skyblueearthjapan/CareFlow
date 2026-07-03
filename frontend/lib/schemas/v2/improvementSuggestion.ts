@@ -227,6 +227,11 @@ export type SwapNewSlot = z.input<typeof swapNewSlotSchema>;
 /**
  * POST /v2/improvement-suggestions/apply-swap リクエスト. BE `ApplySwapRequest` と 1:1.
  * A は B の旧枠へ、B は A の旧枠へ移る (a_new = B の旧位置, b_new = A の旧位置).
+ *
+ * Wave U-2 (変更反映先統一): change_scope を追加。
+ *   - 'pattern_and_week' (A): 型を入れ替え、今週にも即反映する。
+ *   - 'week_only' (B): 今週の visits だけ入れ替える。型は不変。
+ *   省略時は BE 側 default (pattern_only = 従来挙動 = 型のみ) が適用される。
  */
 export const applySwapRequestSchema = z.object({
   patient_a_id: z.string().uuid(),
@@ -235,6 +240,8 @@ export const applySwapRequestSchema = z.object({
   b_new: swapNewSlotSchema,
   iso_year: z.number().int(),
   iso_week: z.number().int(),
+  /** Wave U-2: 反映先選択. 省略時 BE default (pattern_only). */
+  change_scope: z.enum(['pattern_only', 'pattern_and_week', 'week_only']).optional(),
 });
 export type ApplySwapRequest = z.input<typeof applySwapRequestSchema>;
 
@@ -243,5 +250,16 @@ export const applySwapResponseSchema = z.object({
   applied: z.boolean(),
   // 寛容パース (warnings 系): 未知コードが混ざっても適用完了フローを止めない.
   warnings: z.array(z.string()).catch([]),
+  // Wave U-2: change_scope=pattern_and_week のとき今週再生成の件数。
+  // 旧 BE では欠落 / 週再生成に失敗した場合は null (FE は「週を生成」再実行を案内する)。
+  week_sync: z
+    .object({
+      visits_regenerated: z.number().int(),
+      visits_soft_deleted: z.number().int(),
+    })
+    .nullable()
+    .optional()
+    .default(null)
+    .catch(null),
 });
 export type ApplySwapResponse = z.infer<typeof applySwapResponseSchema>;

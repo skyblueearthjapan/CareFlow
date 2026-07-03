@@ -35,6 +35,8 @@ const { mockToast, mocks } = vi.hoisted(() => ({
     confirmMutate: vi.fn(),
     confirmMutateAsync: vi.fn(),
     createMutateAsync: vi.fn(),
+    placeAndFixMutate: vi.fn(),
+    placeAndFixMutateAsync: vi.fn(),
   },
 }));
 
@@ -178,6 +180,14 @@ vi.mock('@/lib/queries/patients', () => ({
 
 vi.mock('@/lib/queries/propose_confirm', () => ({
   useConfirmFixedVisits: vi.fn(),
+}));
+
+vi.mock('@/lib/queries/place_and_fix', () => ({
+  usePlaceAndFix: () => ({
+    mutate: mocks.placeAndFixMutate,
+    mutateAsync: mocks.placeAndFixMutateAsync,
+    isPending: false,
+  }),
 }));
 
 vi.mock('@/lib/queries/patient_fixed_visits', () => ({
@@ -337,7 +347,12 @@ beforeEach(() => {
     id: '33333333-3333-3333-3333-333333333333',
     name: '新規 花子',
   });
-  mocks.confirmMutateAsync.mockResolvedValue({});
+  // Wave U-2: 新規確定は change_scope=pattern_and_week (A) で今週にも反映。
+  // week_sync ありで解決させ、成功トースト経路を通す (null 警告経路は別途カバー)。
+  mocks.confirmMutateAsync.mockResolvedValue({
+    week_sync: { visits_regenerated: 1, visits_soft_deleted: 0 },
+  });
+  mocks.placeAndFixMutateAsync.mockResolvedValue({});
 });
 
 describe('候補ソース切替', () => {
@@ -637,6 +652,22 @@ describe('採用 → 確定: 新規 (作成 + 確定)', () => {
     expect(mockToast.warning).not.toHaveBeenCalled();
   });
 
+  it('Wave U-2: 新規患者モードでは反映先が A 固定 (この週だけ は disabled)', () => {
+    setPropose(response());
+    renderModal();
+    fireEvent.click(screen.getByTestId('tab-new'));
+    fireEvent.change(screen.getByLabelText('氏名（必須）'), { target: { value: '新規 花子' } });
+    fireEvent.click(screen.getByTestId(`propose-adopt-${OFFICE_ID}-0-A-10:00`));
+
+    // ChangeScopeChoice が出て、B (この週だけ) は disabled、A が選択済み。
+    const scope = screen.getByTestId('propose-new-scope');
+    expect(scope).toBeInTheDocument();
+    const weekRadio = screen.getByTestId('change-scope-week') as HTMLButtonElement;
+    expect(weekRadio.disabled).toBe(true);
+    const patternRadio = screen.getByTestId('change-scope-pattern');
+    expect(patternRadio).toHaveAttribute('aria-checked', 'true');
+  });
+
   it('propose の candidate_lat/lng が create payload に lat/lng として乗る', async () => {
     setPropose(response({ candidate_lat: 35.123, candidate_lng: 140.456 }));
     renderModal();
@@ -819,8 +850,12 @@ describe('効率優先の代替枠 (P3-④)', () => {
     expect(
       within(normalList).queryByTestId(`propose-slot-${OFFICE_ID}-1-A-11:00`),
     ).not.toBeInTheDocument();
-    expect(within(normalList).getByTestId(`propose-slot-${OFFICE_ID}-0-A-10:00`)).toBeInTheDocument();
-    expect(within(normalList).getByTestId(`propose-slot-${OFFICE_ID}-4-B-14:00`)).toBeInTheDocument();
+    expect(
+      within(normalList).getByTestId(`propose-slot-${OFFICE_ID}-0-A-10:00`),
+    ).toBeInTheDocument();
+    expect(
+      within(normalList).getByTestId(`propose-slot-${OFFICE_ID}-4-B-14:00`),
+    ).toBeInTheDocument();
     // 「おすすめ枠」の件数は通常候補のみ (2 件)。
     expect(screen.getByText('おすすめ枠 2 件')).toBeInTheDocument();
   });

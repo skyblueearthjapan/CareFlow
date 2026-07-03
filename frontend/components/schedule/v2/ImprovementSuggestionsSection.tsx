@@ -41,6 +41,7 @@ import {
   useImprovementSuggestions,
 } from '@/lib/queries/improvementSuggestions';
 import { useConfirmFixedVisits } from '@/lib/queries/propose_confirm';
+import { useVisitMoveWeekOnly } from '@/lib/queries/visitMoveWeekOnly';
 import { useFixedVisits, toastFixedVisitWarnings } from '@/lib/queries/patient_fixed_visits';
 import { coerceWeeklyPattern, type PatientRead } from '@/lib/schemas/patient';
 import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
@@ -58,6 +59,7 @@ import {
   improvementCandidateToFixedVisitItem,
   mergeAdoptedIntoNormalFixedVisits,
 } from './_proposeSlotUtils';
+import { ChangeScopeChoice, type ChangeScopeValue } from './ChangeScopeChoice';
 import { CourseMoveTimeline } from './CourseMoveTimeline';
 import { DismissReasonDialog } from './DismissReasonDialog';
 import { ImprovementSuggestionCard } from './ImprovementSuggestionCard';
@@ -107,6 +109,7 @@ export function ImprovementSuggestionsSection({
   const suggestionsQuery = useImprovementSuggestions(patient.id, isoYear, isoWeek);
   const confirmMut = useConfirmFixedVisits();
   const applySwapMut = useApplySwap();
+  const visitMoveWeekOnlyMut = useVisitMoveWeekOnly();
   // マージ確定用に既存 normal 固定枠を取得 (採用しなかった曜日を保持するため).
   const existingFixedVisitsQuery = useFixedVisits(patient.id, 'normal');
 
@@ -120,6 +123,13 @@ export function ImprovementSuggestionsSection({
   const [swapConfirmTarget, setSwapConfirmTarget] = React.useState<ImprovementSuggestion | null>(
     null,
   );
+  // Wave U-2: move 採用の確認ダイアログの対象 (move も確認ステップで反映先を選ぶ).
+  const [moveConfirmTarget, setMoveConfirmTarget] = React.useState<ImprovementSuggestion | null>(
+    null,
+  );
+  // Wave U-2: 反映先の選択 (move / swap 共通・既定 A = 固定訪問週間に登録).
+  const [moveScope, setMoveScope] = React.useState<ChangeScopeValue>('pattern');
+  const [swapScope, setSwapScope] = React.useState<ChangeScopeValue>('pattern');
 
   // 患者・週が変わったらローカル状態をリセット.
   React.useEffect(() => {
@@ -127,6 +137,9 @@ export function ImprovementSuggestionsSection({
     setAdoptingFp(null);
     setDismissTarget(null);
     setSwapConfirmTarget(null);
+    setMoveConfirmTarget(null);
+    setMoveScope('pattern');
+    setSwapScope('pattern');
   }, [patient.id, isoYear, isoWeek]);
 
   const allSuggestions = React.useMemo(
@@ -191,13 +204,27 @@ export function ImprovementSuggestionsSection({
     [patient.weekly_pattern, resolveCourseTemplateId],
   );
 
-  const handleAdopt = React.useCallback(
-    (s: ImprovementSuggestion) => {
-      // スワップは専用の apply-swap フロー: まず確認ダイアログを開く (move の PUT 採用とは別経路).
-      if (s.kind === 'swap') {
-        setSwapConfirmTarget(s);
-        return;
-      }
+  // Wave U-2: 採用ボタン = 確認ステップを開く (move も swap も反映先 A/B を選ばせる).
+  const handleAdopt = React.useCallback((s: ImprovementSuggestion) => {
+    if (s.kind === 'swap') {
+      setSwapScope('pattern');
+      setSwapConfirmTarget(s);
+      return;
+    }
+    setMoveScope('pattern');
+    setMoveConfirmTarget(s);
+  }, []);
+
+  // Wave U-2: move 採用の確定 (反映先 A/B 付き).
+  //   A (pattern): PUT fixed-visits に change_scope='pattern_and_week' + iso を付与 (型 + 今週).
+  //   B (week):    visit-move-week-only で今週の visit だけ移す (型は不変).
+  const handleConfirmMove = React.useCallback(() => {
+    const s = moveConfirmTarget;
+    if (!s) return;
+    const fp = fingerprint(s);
+
+    if (moveScope === 'pattern') {
+      // ─── A 経路: 型変更 + 今週即反映 ─────────────────────────────
       if (existingFixedVisitsQuery.isLoading || existingFixedVisitsQuery.isFetching) {
         toast.warning('既存の固定枠を読み込み中です。少し待ってからお試しください');
         return;
@@ -214,22 +241,32 @@ export function ImprovementSuggestionsSection({
       }
       if (confirmMut.isPending) return; // レビューM2: 並行採用の二重ガード
       const existing = existingFixedVisitsQuery.data ?? [];
-      const fp = fingerprint(s);
       setAdoptingFp(fp);
+      const putBody: PatientFixedVisitsBulkPut = {
+        ...buildMergedPut(existing, s),
+        change_scope: 'pattern_and_week',
+        iso_year: isoYear,
+        iso_week: isoWeek,
+      };
       confirmMut.mutate(
-        { patientId: patient.id, body: buildMergedPut(existing, s) },
+        { patientId: patient.id, body: putBody },
         {
           onSuccess: (data) => {
             const candWd = WEEKDAY_LABELS[s.candidate.weekday] ?? '?';
-            toast.success(
-              `${patient.name} 様の枠を ${candWd} ${s.candidate.start_time.slice(0, 5)} に変更しました（他曜日は維持）`,
-            );
-            // P0-2 Commit 3: 再検証 warnings (時間衝突 / 昼休み / 容量) があれば警告表示。
+            if (data?.week_sync == null) {
+              toast.warning(
+                `${patient.name} 様の枠を ${candWd} ${s.candidate.start_time.slice(0, 5)} に変更しました（固定訪問週間に登録）が、` +
+                  `今週のスケジュールへの反映は行われませんでした。「週を生成」を再実行すると反映されます`,
+              );
+            } else {
+              toast.success(
+                `${patient.name} 様の枠を ${candWd} ${s.candidate.start_time.slice(0, 5)} に変更し、今週にも反映しました（他曜日は維持）`,
+              );
+            }
             toastFixedVisitWarnings(data?.warnings);
             setHandled((prev) => new Set(prev).add(fp));
             setAdoptingFp(null);
-            // useConfirmFixedVisits が patients/visits/courses を invalidate するが、
-            // 改善提案キャッシュは対象外なので明示的に invalidate してカードを更新.
+            setMoveConfirmTarget(null);
             void qc.invalidateQueries({ queryKey: [IMPROVEMENT_SUGGESTIONS_KEY] });
             onAdopted?.();
           },
@@ -239,18 +276,61 @@ export function ImprovementSuggestionsSection({
           },
         },
       );
-    },
-    [
-      existingFixedVisitsQuery,
-      templatesQueries,
-      patient.id,
-      patient.name,
-      confirmMut,
-      buildMergedPut,
-      qc,
-      onAdopted,
-    ],
-  );
+      return;
+    }
+
+    // ─── B 経路: この週だけ移動 (型は不変) ───────────────────────────
+    if (visitMoveWeekOnlyMut.isPending) return;
+    if (templatesQueries.some((q) => q.isLoading)) {
+      toast.warning('コース情報を読み込み中です。少し待ってからお試しください');
+      return;
+    }
+    const tplId = resolveCourseTemplateId(s.candidate.office_id, s.candidate.course_code);
+    setAdoptingFp(fp);
+    visitMoveWeekOnlyMut.mutate(
+      {
+        iso_year: isoYear,
+        iso_week: isoWeek,
+        patient_id: patient.id,
+        old_weekday: s.current.weekday,
+        old_start_time: s.current.start_time,
+        new_weekday: s.candidate.weekday,
+        new_start_time: s.candidate.start_time,
+        ...(tplId ? { new_course_template_id: tplId } : {}),
+      },
+      {
+        onSuccess: () => {
+          toast.success(
+            `${patient.name} 様の枠をこの週だけ反映しました（毎週の型は変更していません）`,
+          );
+          setHandled((prev) => new Set(prev).add(fp));
+          setAdoptingFp(null);
+          setMoveConfirmTarget(null);
+          void qc.invalidateQueries({ queryKey: [IMPROVEMENT_SUGGESTIONS_KEY] });
+          onAdopted?.();
+        },
+        onError: () => {
+          setAdoptingFp(null);
+          toast.error('この週だけの反映に失敗しました');
+        },
+      },
+    );
+  }, [
+    moveConfirmTarget,
+    moveScope,
+    existingFixedVisitsQuery,
+    templatesQueries,
+    patient.id,
+    patient.name,
+    confirmMut,
+    visitMoveWeekOnlyMut,
+    resolveCourseTemplateId,
+    buildMergedPut,
+    isoYear,
+    isoWeek,
+    qc,
+    onAdopted,
+  ]);
 
   const handleDismissed = React.useCallback(() => {
     if (dismissTarget) {
@@ -272,6 +352,8 @@ export function ImprovementSuggestionsSection({
     if (applySwapMut.isPending) return;
     const fp = fingerprint(s);
     const aTpl = resolveCourseTemplateId(s.candidate.office_id, s.candidate.course_code);
+    // Wave U-2: 反映先 A=型入替+今週 / B=今週だけ.
+    const changeScope = swapScope === 'pattern' ? 'pattern_and_week' : 'week_only';
     applySwapMut.mutate(
       {
         patient_a_id: patient.id,
@@ -287,10 +369,26 @@ export function ImprovementSuggestionsSection({
         },
         iso_year: isoYear,
         iso_week: isoWeek,
+        change_scope: changeScope,
       },
       {
         onSuccess: (data) => {
-          toast.success(`${patient.name} 様と ${cp.patient_name} 様の枠を入れ替えました`);
+          if (swapScope === 'pattern') {
+            if (data?.week_sync == null) {
+              toast.warning(
+                `${patient.name} 様と ${cp.patient_name} 様の枠を固定訪問週間で入れ替えましたが、` +
+                  `今週のスケジュールへの反映は行われませんでした。「週を生成」を再実行すると反映されます`,
+              );
+            } else {
+              toast.success(
+                `${patient.name} 様と ${cp.patient_name} 様の枠を入れ替え、今週にも反映しました`,
+              );
+            }
+          } else {
+            toast.success(
+              `${patient.name} 様と ${cp.patient_name} 様の枠をこの週だけ入れ替えました（毎週の型は変更していません）`,
+            );
+          }
           // apply-swap の warnings は現場向け日本語文字列配列 (非致命).
           const ws = data?.warnings ?? [];
           for (const w of ws.slice(0, 3)) toast.warning(w);
@@ -304,6 +402,7 @@ export function ImprovementSuggestionsSection({
     );
   }, [
     swapConfirmTarget,
+    swapScope,
     applySwapMut,
     resolveCourseTemplateId,
     patient.id,
@@ -346,7 +445,10 @@ export function ImprovementSuggestionsSection({
                 // 採用実行中は全カードを無効化 (レビューM2: 同一 existing スナップショット
                 // からの並行 PUT で先行採用が上書き消失するのを防ぐ)。
                 adopting={
-                  adoptingFp === fingerprint(s) || confirmMut.isPending || applySwapMut.isPending
+                  adoptingFp === fingerprint(s) ||
+                  confirmMut.isPending ||
+                  applySwapMut.isPending ||
+                  visitMoveWeekOnlyMut.isPending
                 }
                 onAdopt={handleAdopt}
                 onDismiss={setDismissTarget}
@@ -397,6 +499,14 @@ export function ImprovementSuggestionsSection({
                 : '2名の枠を同時に入れ替えます。'}
             </DialogDescription>
           </DialogHeader>
+          {/* Wave U-2: 反映先の選択 (既定 A). */}
+          <div className="py-1">
+            <ChangeScopeChoice
+              value={swapScope}
+              onChange={setSwapScope}
+              disabled={applySwapMut.isPending}
+            />
+          </div>
           <DialogFooter>
             <Button
               type="button"
@@ -420,6 +530,60 @@ export function ImprovementSuggestionsSection({
                 </>
               ) : (
                 '入れ替える'
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Wave U-2: move 採用の確認ダイアログ (反映先 A/B を選ぶ). */}
+      <Dialog
+        open={moveConfirmTarget != null}
+        onOpenChange={(o) =>
+          !o && !confirmMut.isPending && !visitMoveWeekOnlyMut.isPending
+            ? setMoveConfirmTarget(null)
+            : undefined
+        }
+      >
+        <DialogContent aria-describedby="move-confirm-desc" data-testid="move-confirm-dialog">
+          <DialogHeader>
+            <DialogTitle>枠の変更を反映しますか？</DialogTitle>
+            <DialogDescription id="move-confirm-desc">
+              {moveConfirmTarget
+                ? `${patient.name} 様の枠を ${WEEKDAY_LABELS[moveConfirmTarget.candidate.weekday] ?? '?'} ${moveConfirmTarget.candidate.start_time.slice(0, 5)} に変更します。反映先を選んでください。`
+                : '反映先を選んでください。'}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-1">
+            <ChangeScopeChoice
+              value={moveScope}
+              onChange={setMoveScope}
+              disabled={confirmMut.isPending || visitMoveWeekOnlyMut.isPending}
+            />
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setMoveConfirmTarget(null)}
+              disabled={confirmMut.isPending || visitMoveWeekOnlyMut.isPending}
+              data-testid="move-confirm-cancel"
+            >
+              キャンセル
+            </Button>
+            <Button
+              type="button"
+              onClick={handleConfirmMove}
+              disabled={confirmMut.isPending || visitMoveWeekOnlyMut.isPending}
+              data-testid="move-confirm-apply"
+            >
+              {confirmMut.isPending || visitMoveWeekOnlyMut.isPending ? (
+                <>
+                  <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
+                  反映中…
+                </>
+              ) : (
+                '反映する'
               )}
             </Button>
           </DialogFooter>

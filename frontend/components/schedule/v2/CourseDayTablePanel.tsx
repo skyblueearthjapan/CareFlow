@@ -85,6 +85,7 @@ import {
 } from '@/lib/queries/staff-events';
 import type { EventRead } from '@/lib/schemas/staff-events';
 import { useDeleteVisit, useVisits } from '@/lib/queries/visits';
+import { useBulkSyncWeekToFixedMutation } from '@/lib/api/patientSync';
 import { useBulkPinPfvs, useTogglePfvPin } from '@/lib/queries/g21';
 // Phase G-47: PinScope 型 (= 個別 🔒 toggle のスコープ '曜日のみ' / '全曜日').
 import type { PinScope } from './PinScopeMenu';
@@ -134,11 +135,7 @@ import { CourseWeekOverview, type WeekOverviewVisit } from './CourseWeekOverview
 import { PartnerCourseDialog } from './PartnerCourseDialog';
 import { PatientCard } from './PatientCard';
 import { PatientScheduleDetailDialog } from './PatientScheduleDetailDialog';
-import {
-  POOL_DROPPABLE_ID,
-  buildPoolDraggableId,
-  parsePoolDraggableId,
-} from './PoolPanel';
+import { POOL_DROPPABLE_ID, buildPoolDraggableId, parsePoolDraggableId } from './PoolPanel';
 import { PoolOverviewPane } from './PoolOverviewPane';
 import type { SlotIndex } from '@/lib/schemas/v2/patient_fixed_visit';
 // Phase G-44: 「希望訪問パターン」 vs 「実 visit 数」 の共通 utility.
@@ -848,6 +845,8 @@ export function CourseDayTablePanel({
         // Phase G-21 T4 reviewer C2: PFV lookup 結果 (= null なら 🔒 ボタンは disabled).
         fixed_visit_id: fixedVisitId,
         is_pinned: isPinned,
+        // Wave U-2: 「今週のみ」チップの根拠 (source='manual_week' でチップ表示).
+        source: (v as { source?: string | null }).source ?? null,
       });
       m.set(cid, arr);
     }
@@ -1123,6 +1122,37 @@ export function CourseDayTablePanel({
   const deleteVisitMut = useDeleteVisit();
   // Wave 39: D&D で event を移動 (時刻スライド + 担当者変更) するための mutation.
   const updateEventDragMut = useUpdateEventForDrag();
+  // Wave U-2 (D-2 既定B): DnD は「この週だけ」で即時反映し、成功トーストの
+  //   「毎週の型にも登録」アクションで昇格させる。昇格は 1 患者の週→型同期。
+  //   D&D は動的な患者を対象にするため (hooks 規則上バインド済みの単体版フックは
+  //   使えない)、patient_ids 配列を渡せる bulk 版フックを 1 患者で流用する。
+  const bulkSyncWeekToFixedMut = useBulkSyncWeekToFixedMutation();
+  const promoteWeekToFixed = useCallback(
+    (patientId: string, patientName: string) => {
+      bulkSyncWeekToFixedMut.mutate(
+        { patient_ids: [patientId], iso_year: isoYear, iso_week: isoWeek, dry_run: false },
+        {
+          onSuccess: (res) => {
+            if (res.transaction_applied) {
+              toast.success(`${patientName} の今週の配置を固定訪問週間（毎週の型）に登録しました`);
+            } else {
+              toast.warning(`${patientName} の固定訪問週間への登録は行われませんでした`);
+            }
+          },
+          onError: () => toast.error(`${patientName} の固定訪問週間への登録に失敗しました`),
+        },
+      );
+    },
+    [bulkSyncWeekToFixedMut, isoYear, isoWeek],
+  );
+  /** Wave U-2: 「この週だけ」配置の成功トーストに付ける昇格アクション。 */
+  const promoteToastAction = useCallback(
+    (patientId: string, patientName: string) => ({
+      label: '毎週の型にも登録',
+      onClick: () => promoteWeekToFixed(patientId, patientName),
+    }),
+    [promoteWeekToFixed],
+  );
 
   // ─── Wave 37 Phase 3-C: 相方コース選択ダイアログの state ───────────────
   // requires_multiple_staff=true の患者を D&D したときにダイアログを表示する。
@@ -1330,7 +1360,8 @@ export function CourseDayTablePanel({
         return;
       }
 
-      // 通常患者 (1 名体制): 従来挙動 = staff_count=1 + course_template_id (旧形式)
+      // 通常患者 (1 名体制): Wave U-2 D-2 既定B = この週だけ配置 (fix_pattern=false)。
+      // 型は変えず source=manual_week で今週のみ置く。トーストで昇格導線を出す。
       try {
         await placeAndFixMut.mutateAsync({
           patient_id: patientId,
@@ -1341,9 +1372,15 @@ export function CourseDayTablePanel({
           start_time: cell.time,
           duration_min: durationMin,
           staff_count: 1,
-          fix_pattern: true,
+          fix_pattern: false,
         });
-        toast.success(`${patient?.name ?? patientId} を ${cell.time} に固定枠化しました`);
+        const pname = patient?.name ?? patientId;
+        toast.success(
+          `${pname} を ${cell.time} に配置しました（今週のみ・毎週の型は変更していません）`,
+          {
+            action: promoteToastAction(patientId, pname),
+          },
+        );
       } catch (err) {
         toast.error(`配置に失敗しました: ${formatErr(err)}`);
       }
@@ -1417,9 +1454,10 @@ export function CourseDayTablePanel({
           : null;
 
         try {
-          // 1) 既存 visit を削除 (重大-2: cascade=true で旧曜日の固定枠も削除)
-          await deleteVisitMut.mutateAsync({ id: visitId, cascadeFixedVisit: true });
-          // 2) 新セルに place-and-fix
+          // 1) 既存 visit を削除。Wave U-2 D-2 既定B: 型 (固定枠) は触らないため
+          //    cascade=false (= PFV を残す)。今週の visit だけを付け替える。
+          await deleteVisitMut.mutateAsync({ id: visitId, cascadeFixedVisit: false });
+          // 2) 新セルに place-and-fix (fix_pattern=false = この週だけ)
           try {
             await placeAndFixMut.mutateAsync({
               patient_id: v.patient_id,
@@ -1430,11 +1468,17 @@ export function CourseDayTablePanel({
               start_time: cell.time,
               duration_min: durationMin,
               staff_count: 1,
-              fix_pattern: true,
+              fix_pattern: false,
             });
-            toast.success(`${patient?.name ?? v.patient_id} を ${cell.time} に移動しました`);
+            const pname = patient?.name ?? v.patient_id;
+            toast.success(
+              `${pname} を ${cell.time} に移動しました（今週のみ・毎週の型は変更していません）`,
+              {
+                action: promoteToastAction(v.patient_id, pname),
+              },
+            );
           } catch (e2) {
-            // step 2 失敗 → 元セルへの復元を試みる (中-1 リカバリー)
+            // step 2 失敗 → 元セルへの復元を試みる (中-1 リカバリー)。復元も週だけ。
             if (originalCourseTemplateId && originalWeekday != null && originalStartTime) {
               try {
                 await placeAndFixMut.mutateAsync({
@@ -1446,7 +1490,7 @@ export function CourseDayTablePanel({
                   start_time: originalStartTime,
                   duration_min: durationMin,
                   staff_count: 1,
-                  fix_pattern: true,
+                  fix_pattern: false,
                 });
                 toast.warning(
                   `移動先で失敗、元の位置 (${originalStartTime}) に復元しました: ${formatErr(e2)}`,
@@ -1489,9 +1533,17 @@ export function CourseDayTablePanel({
         start_time: ds.time,
         duration_min: ds.durationMin,
         staff_count: 2,
-        fix_pattern: true,
+        // Wave U-2 D-2 既定B: この週だけ配置 (fix_pattern=false)。昇格は 1 患者の
+        // 週→型同期で両 slot がまとめて上がる (bulk-sync は patient 単位)。
+        fix_pattern: false,
       });
-      toast.success(`${patient?.name ?? ds.patientId} を ${ds.time} に 2 名体制で固定枠化しました`);
+      const pname = patient?.name ?? ds.patientId;
+      toast.success(
+        `${pname} を ${ds.time} に 2 名体制で配置しました（今週のみ・毎週の型は変更していません）`,
+        {
+          action: promoteToastAction(ds.patientId, pname),
+        },
+      );
     } catch (err) {
       toast.error(`2 名体制配置に失敗しました: ${formatErr(err)}`);
     }
@@ -1694,9 +1746,7 @@ export function CourseDayTablePanel({
         setAssignWarningOpen(true);
         if (items.length > 0) {
           const noticeSuffix =
-            notices.length > 0
-              ? `（うち体制上不可避の連続 ${notices.length} 件は確定済み）`
-              : '';
+            notices.length > 0 ? `（うち体制上不可避の連続 ${notices.length} 件は確定済み）` : '';
           toast.warning(
             `自動スタッフ割当が完了しました (確定 ${res.courses_assigned} 件)。` +
               `レビューが必要なコースが ${items.length} 件あります。${noticeSuffix}`,
@@ -2397,6 +2447,7 @@ export function CourseDayTablePanel({
                           void handleDeleteVisit(visitId, patientName);
                         }}
                         onPatientClick={handleOpenPatientDetail}
+                        onPromoteWeekOnly={promoteWeekToFixed}
                         // Phase G-21 T4 reviewer C2: 🔒 完全固定 toggle を wire-up.
                         // CourseDayTable 側で canEdit=true && onTogglePin 指定時のみ
                         // button を描画する (= staff role は表示なし).

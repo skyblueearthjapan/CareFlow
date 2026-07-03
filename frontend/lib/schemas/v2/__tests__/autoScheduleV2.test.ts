@@ -21,6 +21,7 @@ import { describe, it, expect } from 'vitest';
 
 import {
   applyIndividualRequestSchema,
+  applyIndividualResponseSchema,
   diffAddProposalSchema,
   diffAddProposalSourceSchema,
   unassignedPatientSchema,
@@ -281,6 +282,36 @@ describe('applyIndividualRequestSchema (P0-2 Commit 3: force_lunch)', () => {
     const result = applyIndividualRequestSchema.safeParse({ ...base, force_lunch: false });
     expect(result.success).toBe(true);
     if (result.success) expect(result.data.force_lunch).toBe(false);
+  });
+
+  it('Wave U-2: change_scope を payload に載せられる (省略時は含まれない)', () => {
+    const withScope = applyIndividualRequestSchema.safeParse({
+      ...base,
+      change_scope: 'pattern_and_week',
+    });
+    expect(withScope.success).toBe(true);
+    if (withScope.success) expect(withScope.data.change_scope).toBe('pattern_and_week');
+    const without = applyIndividualRequestSchema.safeParse(base);
+    if (without.success) expect(without.data.change_scope).toBeUndefined();
+  });
+});
+
+describe('applyIndividualResponseSchema (Wave U-2: week_sync)', () => {
+  it('week_sync 欠落は null 既定 (旧 BE 互換)', () => {
+    const parsed = applyIndividualResponseSchema.parse({
+      patient_id: PATIENT_ID,
+      applied: true,
+    });
+    expect(parsed.week_sync).toBeNull();
+  });
+
+  it('week_sync 指定時はパースする', () => {
+    const parsed = applyIndividualResponseSchema.parse({
+      patient_id: PATIENT_ID,
+      applied: true,
+      week_sync: { visits_regenerated: 2, visits_soft_deleted: 0 },
+    });
+    expect(parsed.week_sync?.visits_regenerated).toBe(2);
   });
 });
 

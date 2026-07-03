@@ -229,6 +229,12 @@ export interface CourseGridVisit {
    * fixed_visit_id が無い場合は常に false.
    */
   is_pinned?: boolean | null;
+  /**
+   * Wave U-2: visit のソース (入力チャネル).
+   * 'manual_week' = この週だけの配置 (型に未反映)。「今週のみ」チップを出す根拠。
+   * 欠落 / その他の値ではチップを出さない (寛容)。
+   */
+  source?: string | null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -409,6 +415,12 @@ export interface CourseDayTableProps {
    */
   onPatientClick?: (patientId: string) => void;
   /**
+   * Wave U-2: 「今週のみ」チップ (source='manual_week') クリック時の昇格ハンドラ.
+   * 当該患者の今週配置を固定訪問週間 (毎週の型) に反映する。
+   * canEdit=true のときのみチップを操作可能にする。
+   */
+  onPromoteWeekOnly?: (patientId: string, patientName: string) => void;
+  /**
    * Phase G-21: 🔒 完全固定 toggle ハンドラ.
    * - visit.fixed_visit_id が無い場合は呼ばれない (button が disabled).
    * - canEdit=false の場合は呼ばれない (button が disabled).
@@ -454,6 +466,7 @@ export function CourseDayTable({
   isStaffMutating,
   onDeleteVisit,
   onPatientClick,
+  onPromoteWeekOnly,
   onTogglePin,
   officeNameById,
   capacity,
@@ -679,6 +692,7 @@ export function CourseDayTable({
               staffEventsByStaff={eventsMap}
               onDeleteVisit={onDeleteVisit}
               onPatientClick={onPatientClick}
+              onPromoteWeekOnly={onPromoteWeekOnly}
               onTogglePin={onTogglePin}
             />
           ))}
@@ -753,6 +767,8 @@ interface CourseTimeRowProps {
   onDeleteVisit?: (visitId: string, patientName: string) => void;
   /** 患者氏名横の info アイコンクリックハンドラ. */
   onPatientClick?: (patientId: string) => void;
+  /** Wave U-2: 「今週のみ」チップの昇格ハンドラ. */
+  onPromoteWeekOnly?: (patientId: string, patientName: string) => void;
   /** Phase G-21 / Phase G-47: 🔒 完全固定 toggle ハンドラ (scope + patientId 付き). */
   onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
 }
@@ -767,6 +783,7 @@ function CourseTimeRow({
   staffEventsByStaff,
   onDeleteVisit,
   onPatientClick,
+  onPromoteWeekOnly,
   onTogglePin,
 }: CourseTimeRowProps) {
   // Wave 27 Phase B-3: 担当スタッフがこのスロット時間帯にイベントを持つか判定
@@ -876,6 +893,7 @@ function CourseTimeRow({
                     canEdit={canEdit}
                     onDeleteVisit={onDeleteVisit}
                     onPatientClick={onPatientClick}
+                    onPromoteWeekOnly={onPromoteWeekOnly}
                     onTogglePin={onTogglePin}
                   />
                 ))}
@@ -956,6 +974,8 @@ interface OccupantPatientInfoProps {
   canEdit: boolean;
   onDeleteVisit?: (visitId: string, patientName: string) => void;
   onPatientClick?: (patientId: string) => void;
+  /** Wave U-2: 「今週のみ」チップの昇格ハンドラ. */
+  onPromoteWeekOnly?: (patientId: string, patientName: string) => void;
   /** Phase G-21 / Phase G-47: 🔒 完全固定 toggle ハンドラ (scope + patientId 付き). */
   onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
 }
@@ -965,6 +985,7 @@ function OccupantPatientInfo({
   canEdit,
   onDeleteVisit,
   onPatientClick,
+  onPromoteWeekOnly,
   onTogglePin,
 }: OccupantPatientInfoProps) {
   const timeCondition = formatTimeCondition({
@@ -999,9 +1020,7 @@ function OccupantPatientInfo({
       data-row-draggable-visit-id={visit.id}
       data-row-draggable-disabled={isPinnedVisit ? 'true' : undefined}
       title={
-        isPinnedVisit
-          ? 'ピン留め中のため移動できません. 先にピン留めを外してください.'
-          : undefined
+        isPinnedVisit ? 'ピン留め中のため移動できません. 先にピン留めを外してください.' : undefined
       }
       className={cn(
         'flex flex-row flex-wrap items-baseline gap-x-2 gap-y-0 min-w-0 touch-none select-none',
@@ -1052,6 +1071,38 @@ function OccupantPatientInfo({
           <span className="truncate">{sexText}</span>
         ) : null}
       </span>
+      {/* Wave U-2: 「今週のみ」チップ (source='manual_week' = この週だけの配置).
+          クリックで confirm → 固定訪問週間 (毎週の型) への昇格. canEdit=true のみ操作可. */}
+      {visit.source === 'manual_week' ? (
+        <button
+          type="button"
+          disabled={!canEdit || !onPromoteWeekOnly}
+          onClick={(e) => {
+            e.stopPropagation();
+            if (!canEdit || !onPromoteWeekOnly) return;
+            const pname = visit.patient_name ?? visit.patient_id;
+            if (window.confirm('この配置を固定訪問週間（毎週の型）に反映しますか？')) {
+              onPromoteWeekOnly(visit.patient_id, pname);
+            }
+          }}
+          onPointerDown={(e) => {
+            // 行 drag を抑止 (クリック先行).
+            e.stopPropagation();
+          }}
+          data-testid="visit-week-only-chip"
+          title={
+            canEdit
+              ? 'この週だけの配置です。クリックで固定訪問週間（毎週の型）に反映できます'
+              : 'この週だけの配置です'
+          }
+          className={cn(
+            'inline-flex flex-shrink-0 items-center rounded bg-amber-100 px-1 py-0.5 text-[9px] font-semibold text-amber-800 ring-1 ring-amber-300',
+            canEdit && onPromoteWeekOnly ? 'cursor-pointer hover:bg-amber-200' : 'cursor-default',
+          )}
+        >
+          今週のみ
+        </button>
+      ) : null}
       {/* Phase G-22: 🔒 完全固定 toggle — 時間条件 + 性別制限 の直後に配置 (= リスト表示と統一).
           Phase G-47: click 即時 toggle を廃し、 PinScopeMenu で「曜日のみ / 全曜日」 2 択へ. */}
       {canEdit && onTogglePin && (

@@ -178,11 +178,21 @@ describe('PatientFixedVisitsPanel', () => {
       expect(updateFn).toHaveBeenCalledTimes(1);
     });
 
-    const call = updateFn.mock.calls[0][0] as { mode: string; items: unknown[] };
+    const call = updateFn.mock.calls[0][0] as {
+      mode: string;
+      items: unknown[];
+      change_scope?: string;
+      iso_year?: number;
+      iso_week?: number;
+    };
     expect(call.mode).toBe('normal');
     expect(call.items).toHaveLength(1);
     expect((call.items[0] as { weekday: number; start_time: string }).weekday).toBe(0);
     expect((call.items[0] as { weekday: number; start_time: string }).start_time).toBe('14:00');
+    // Wave U-2 (設計 §2.1): normal 固定枠編集は既定 A = 型 + 今週即反映.
+    expect(call.change_scope).toBe('pattern_and_week');
+    expect(typeof call.iso_year).toBe('number');
+    expect(typeof call.iso_week).toBe('number');
   });
 
   it('3. 重複 weekday → zod エラーが表示される', async () => {

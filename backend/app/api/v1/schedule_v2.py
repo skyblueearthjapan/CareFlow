@@ -43,6 +43,7 @@ from app.models.suggestion_dismissal import SuggestionDismissal
 from app.models.user import User
 from app.models.visit import VISIT_SOURCE_MANUAL_WEEK, VISIT_STATUS_PLANNED, Visit
 from app.schemas.v2.auto_schedule_v2 import (
+    ApplyIndividualWeekSync,
     AutoScheduleV2ApplyIndividualRequest,
     AutoScheduleV2ApplyIndividualResponse,
     AutoScheduleV2ApplyWeekOnlyRequest,
@@ -73,6 +74,8 @@ from app.schemas.v2.auto_schedule_v2 import (
     V2VisitPlan,
     V2WarningOut,
     V2WeekdayBeforeAfter,
+    VisitMoveWeekOnlyRequest,
+    VisitMoveWeekOnlyResponse,
     WeekdayStaffCapacityItem,
     WeekdayStaffCapacityResponse,
 )
@@ -98,6 +101,7 @@ from app.schemas.v2.improvement_suggestion import (
     ImprovementSuggestion,
     ImprovementSuggestionsResponse,
     SwapCounterpart,
+    SwapWeekSync,
 )
 from app.schemas.v2.patient_fixed_visit import PatientFixedVisitV2Base
 from app.schemas.v2.pool_overview import (
@@ -816,6 +820,16 @@ async def apply_individual_endpoint(
             detail="visit_plans must not be empty",
         )
 
+    # Wave U-2 (§2.2 A 経路): pattern_and_week は今週再生成のため iso_year/iso_week 必須.
+    # PFV 更新前に 422 で弾く (PUT fixed-visits と同一契約).
+    if payload.change_scope == "pattern_and_week" and (
+        payload.iso_year is None or payload.iso_week is None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="change_scope=pattern_and_week のときは iso_year / iso_week が必須です",
+        )
+
     # Phase G-88 Step3: 確定再計算をプレビュー (propose/full-optimize) と同一 config で
     # 行い、確定スケジュールを設定どおりにする (read-only ロード).
     # Phase G-88 最終監査: H10 事前ゲートも config 窓を適用するため、ゲートより前に
@@ -923,12 +937,57 @@ async def apply_individual_endpoint(
         await db.rollback()
         raise
 
+    # Wave U-2 (§2.2 A 経路): PFV 更新コミット後、当該患者の今週 visits を PFV から
+    # 再生成する (reset_visits_to_fixed の 1 患者版). 部分失敗の扱いは PUT fixed-visits と
+    # 同一: 週再生成のみ失敗 → week_sync=null の 200 + logger.warning / IntegrityError → 409.
+    week_sync: ApplyIndividualWeekSync | None = None
+    if payload.change_scope == "pattern_and_week":
+        assert payload.iso_year is not None and payload.iso_week is not None  # 上で 422 済み
+        office_ids = await resolve_reset_office_ids(db, payload.patient_id)
+        try:
+            sync_result = await reset_visits_to_fixed(
+                db,
+                iso_year=payload.iso_year,
+                iso_week=payload.iso_week,
+                office_ids=office_ids,
+                mode="legacy",
+                dry_run=False,
+                config=config,
+                patient_id=payload.patient_id,
+            )
+            await db.commit()
+        except IntegrityError as exc:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="他のユーザーが同じ週を処理中です。もう一度実行してください。",
+            ) from exc
+        except Exception:
+            # PFV は既にコミット済みのため、ここで 500 を返すと「型には登録されたのに失敗」
+            # という紛らわしい状態になる。week_sync=None の 200 で返し、FE が「今週への反映は
+            # 未実施 → 週を生成を再実行」と案内する (visits 側は rollback 済みで無傷)。
+            await db.rollback()
+            logger.warning(
+                "apply-individual pattern_and_week: week sync failed after PFV commit "
+                "(patient_id=%s iso=%s-W%s)",
+                payload.patient_id,
+                payload.iso_year,
+                payload.iso_week,
+                exc_info=True,
+            )
+        else:
+            week_sync = ApplyIndividualWeekSync(
+                visits_regenerated=int(sync_result.get("visits_regenerated", 0)),
+                visits_soft_deleted=int(sync_result.get("visits_soft_deleted", 0)),
+            )
+
     return AutoScheduleV2ApplyIndividualResponse(
         patient_id=result["patient_id"],
         applied=bool(result["applied"]),
         fixed_visit_ids=result["fixed_visit_ids"],
         idempotent=bool(result.get("idempotent", False)),
         warnings=list(result.get("warnings", [])),
+        week_sync=week_sync,
     )
 
 
@@ -1153,6 +1212,93 @@ async def sync_fixed_to_week_endpoint(
         visits_soft_deleted=int(result.get("visits_soft_deleted", 0)),
         warnings=list(result.get("warnings", [])),
     )
+
+
+# ---------------------------------------------------------------------------
+# 4c) POST /schedule/v2/visit-move-week-only (Wave U-2 §2.2 B: 汎用「1 手の週だけ移動」)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/v2/visit-move-week-only",
+    response_model=VisitMoveWeekOnlyResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Wave U-2: 1 患者の該当 visit を今週だけ新位置へ移動 (PFV 不変)",
+)
+async def visit_move_week_only_endpoint(
+    payload: VisitMoveWeekOnlyRequest,
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+) -> VisitMoveWeekOnlyResponse:
+    """改善提案 move の「この週だけ」経路 (§2.2 B). ``_apply_visit_move_week_only`` の薄い公開ラッパ.
+
+    当該患者の該当 visit (planned・2 名体制なら全行) を新位置へ移動し
+    ``source='manual_week'`` を刻む. PFV は一切変更しない (週生成・固定枠戻で保護).
+    対象 visit が無ければ ``visits_moved=0`` の 200 (この週の表に元々出ていない)。
+
+    安全網 (改善提案 B 経路): 移動元 (patient, old_weekday, old_start_time) に一致する
+    ``is_pinned=True`` の PFV があれば 422 (ピン留め枠は週だけでも動かさない)。
+    """
+    # ISO 週の妥当性検証 (date 算出前に 400 で弾く).
+    try:
+        date.fromisocalendar(payload.iso_year, payload.iso_week, 1)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"invalid ISO week: year={payload.iso_year} week={payload.iso_week}",
+        ) from exc
+
+    # 患者存在検証 (soft-delete 済みは 404).
+    patient = await db.scalar(
+        select(Patient).where(Patient.id == payload.patient_id, Patient.deleted_at.is_(None))
+    )
+    if patient is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"patient_id={payload.patient_id} が見つかりません",
+        )
+
+    # 安全網: 移動元位置に一致する pinned PFV があれば 422 (U-1 scope pinned 検証と同水準).
+    pinned = await db.scalar(
+        select(PatientFixedVisit.id).where(
+            PatientFixedVisit.patient_id == payload.patient_id,
+            PatientFixedVisit.weekday == payload.old_weekday,
+            PatientFixedVisit.start_time == payload.old_start_time,
+            PatientFixedVisit.is_pinned.is_(True),
+        )
+    )
+    if pinned is not None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="ピン留めされた枠は「この週だけ」でも動かせません",
+        )
+
+    counters: dict[str, Any] = {"visits": 0, "patients": set()}
+    try:
+        await _apply_visit_move_week_only(
+            db,
+            patient_id=payload.patient_id,
+            old_weekday=payload.old_weekday,
+            old_start=payload.old_start_time,
+            new_weekday=payload.new_weekday,
+            new_start=payload.new_start_time,
+            new_course=payload.new_course_template_id,
+            iso_year=payload.iso_year,
+            iso_week=payload.iso_week,
+            counters=counters,
+        )
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="他のユーザーが同じ週を処理中です。もう一度実行してください。",
+        ) from exc
+    except Exception:
+        await db.rollback()
+        raise
+
+    return VisitMoveWeekOnlyResponse(visits_moved=int(counters["visits"]))
 
 
 # ---------------------------------------------------------------------------
@@ -3203,23 +3349,89 @@ async def improvement_apply_swap_endpoint(
         ):
             warnings.append("入れ替え後の 2 枠が移動時間を含めて重なる可能性があります。")
 
+    # Wave U-2 (§2.2 反映先の統一): week_only は PFV を触らず今週 visits にのみ反映する.
+    # pinned 検証 (va/vb) は上で全 scope 共通に実行済み.
+    week_only = payload.change_scope == "week_only"
+    week_counters: dict[str, Any] = {"visits": 0, "patients": set()}
+
     # 適用 (1 TX / all-or-nothing). 片方でも失敗すれば rollback.
-    await _apply_pfv_move(
-        db,
-        moving_row=a_row,
-        all_rows=a_all,
-        new_weekday=payload.a_new.weekday,
-        new_start=a_new_start,
-        new_course=payload.a_new.course_template_id,
-    )
-    await _apply_pfv_move(
-        db,
-        moving_row=b_row,
-        all_rows=b_all,
-        new_weekday=payload.b_new.weekday,
-        new_start=b_new_start,
-        new_course=payload.b_new.course_template_id,
-    )
+    if week_only:
+        # B: PFV は不変. 両側の今週 visit を相互の新位置へ移動 (source='manual_week').
+        await _apply_visit_move_week_only(
+            db,
+            patient_id=payload.patient_a_id,
+            old_weekday=a_old_weekday,
+            old_start=a_row.start_time,
+            new_weekday=payload.a_new.weekday,
+            new_start=a_new_start,
+            new_course=payload.a_new.course_template_id,
+            iso_year=payload.iso_year,
+            iso_week=payload.iso_week,
+            counters=week_counters,
+        )
+        await _apply_visit_move_week_only(
+            db,
+            patient_id=payload.patient_b_id,
+            old_weekday=b_old_weekday,
+            old_start=b_row.start_time,
+            new_weekday=payload.b_new.weekday,
+            new_start=b_new_start,
+            new_course=payload.b_new.course_template_id,
+            iso_year=payload.iso_year,
+            iso_week=payload.iso_week,
+            counters=week_counters,
+        )
+    else:
+        await _apply_pfv_move(
+            db,
+            moving_row=a_row,
+            all_rows=a_all,
+            new_weekday=payload.a_new.weekday,
+            new_start=a_new_start,
+            new_course=payload.a_new.course_template_id,
+        )
+        await _apply_pfv_move(
+            db,
+            moving_row=b_row,
+            all_rows=b_all,
+            new_weekday=payload.b_new.weekday,
+            new_start=b_new_start,
+            new_course=payload.b_new.course_template_id,
+        )
+
+    # Wave U-2 (§2.2 A = pattern_and_week): PFV 入れ替え後、両患者の今週 visits を
+    # PFV から再生成する (同一 TX / all-or-nothing). 先の PFV 変更を DB に反映するため flush.
+    week_sync: SwapWeekSync | None = None
+    if payload.change_scope == "pattern_and_week":
+        await db.flush()
+        total_regen = 0
+        total_del = 0
+        for pid in (payload.patient_a_id, payload.patient_b_id):
+            office_ids = await resolve_reset_office_ids(db, pid)
+            reset_result = await reset_visits_to_fixed(
+                db,
+                iso_year=payload.iso_year,
+                iso_week=payload.iso_week,
+                office_ids=office_ids,
+                mode="legacy",
+                dry_run=False,
+                config=config,
+                patient_id=pid,
+            )
+            total_regen += int(reset_result.get("visits_regenerated", 0))
+            total_del += int(reset_result.get("visits_soft_deleted", 0))
+        week_sync = SwapWeekSync(
+            patients=2,
+            visits_regenerated=total_regen,
+            visits_soft_deleted=total_del,
+        )
+    elif week_only:
+        week_sync = SwapWeekSync(
+            patients=len(week_counters["patients"]),
+            visits_regenerated=int(week_counters["visits"]),
+            visits_soft_deleted=0,
+        )
+
     try:
         await db.commit()
     except IntegrityError as exc:
@@ -3229,7 +3441,12 @@ async def improvement_apply_swap_endpoint(
             detail="入れ替え適用が既存の固定枠と競合しました",
         ) from exc
 
-    return ApplySwapResponse(applied=True, warnings=warnings)
+    return ApplySwapResponse(
+        applied=True,
+        warnings=warnings,
+        change_scope=payload.change_scope,
+        week_sync=week_sync,
+    )
 
 
 # ---------------------------------------------------------------------------

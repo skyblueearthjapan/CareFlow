@@ -16,6 +16,7 @@ import type {
   PatientFixedVisitV2Base,
   PatientFixedVisitV2Read,
 } from '@/lib/schemas/v2/patient_fixed_visit';
+import type { PlaceAndFixRequest } from '@/lib/schemas/v2/place_and_fix';
 import type { ProposeSlotItem } from '@/lib/schemas/v2/propose_slots';
 
 /** 候補スロットの一意キー (office × weekday × course × start). */
@@ -116,6 +117,43 @@ export function improvementCandidateToFixedVisitItem(
     duration_min: duration,
     slot_index: 0,
     ...(tplId ? { course_template_id: tplId } : {}),
+  };
+}
+
+/**
+ * Wave U-2 (この週だけ配置): 採用枠 1 件 → place-and-fix(fix_pattern=false) リクエスト.
+ *
+ * B「この週だけ反映」経路で propose-slots 候補を今週の visit だけとして置く共通ビルダ.
+ * ProposeNewModal / PoolCandidateList の両方から使い、二重メンテを防ぐ.
+ * course_template_id を解決できない場合は null を返す (呼出側が toast する).
+ */
+export function buildWeekOnlyPlaceAndFixRequest(
+  s: ProposeSlotItem,
+  resolveCourseTemplateId: CourseTemplateIdResolver,
+  args: {
+    patientId: string;
+    isoYear: number;
+    isoWeek: number;
+    serviceFallbackMin: number;
+    capacityOverrideReason?: string | null;
+  },
+): PlaceAndFixRequest | null {
+  const tplId = resolveCourseTemplateId(s.office_id, s.course_code);
+  if (tplId === null) return null;
+  const duration = slotDurationMin(s) ?? args.serviceFallbackMin;
+  return {
+    patient_id: args.patientId,
+    course_template_id: tplId,
+    iso_year: args.isoYear,
+    iso_week: args.isoWeek,
+    weekday: s.weekday,
+    start_time: s.start_time,
+    duration_min: duration,
+    staff_count: 1,
+    fix_pattern: false,
+    ...(args.capacityOverrideReason
+      ? { capacity_override_reason: args.capacityOverrideReason }
+      : {}),
   };
 }
 
