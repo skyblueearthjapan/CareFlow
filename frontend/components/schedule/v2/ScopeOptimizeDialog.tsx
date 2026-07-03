@@ -416,6 +416,11 @@ export function ScopeOptimizeDialog({
 
   // 開くたびにまっさらな状態から始める (前回の範囲・結果を持ち越さない).
   // initialScope (健康診断からの導線) があればプリセットして自動計算する.
+  //
+  // 依存は **open のみ** に固定する (本番 hotfix)。runSimulate を deps に含めると、
+  // 拠点チップ選択 → effectiveOfficeId 変化 → runSimulate 再生成 → 本 effect が
+  // 再発火して setManualOfficeId(null) で選択が即座に取り消される
+  // (= チップを押しても何も起きないように見える) ループになる。
   React.useEffect(() => {
     if (!open) return;
     const wd = initialScope?.weekdays ?? null;
@@ -431,9 +436,8 @@ export function ScopeOptimizeDialog({
     if (initialScope && officeId) {
       runSimulate(wd, cc);
     }
-    // simulateMut / applyMut は毎レンダーで新オブジェクトのため依存に含めない.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, initialScope, officeId, runSimulate]);
+  }, [open]);
 
   const toggleWeekday = (wd: number) => {
     setWeekdaySel((prev) => {
