@@ -27,6 +27,7 @@ import { Button } from '@/components/ui/button';
 
 import { fetcher } from '@/lib/api/fetcher';
 import { useProposeSlots, proposeWarningLabel } from '@/lib/queries/fieldBoard';
+import { usePlaceAndFix } from '@/lib/queries/place_and_fix';
 import { useConfirmFixedVisits } from '@/lib/queries/propose_confirm';
 import { useFixedVisits, toastFixedVisitWarnings } from '@/lib/queries/patient_fixed_visits';
 import { coerceWeeklyPattern, type PatientRead } from '@/lib/schemas/patient';
@@ -44,8 +45,10 @@ import {
   buildCourseTemplateIdResolver,
   mergeAdoptedIntoNormalFixedVisits,
   proposedSlotToFixedVisitItem,
+  slotDurationMin,
   slotKey,
 } from './_proposeSlotUtils';
+import { ChangeScopeChoice, type ChangeScopeValue } from './ChangeScopeChoice';
 
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'] as const;
 
@@ -190,9 +193,12 @@ export function PoolCandidateList({
   const [requested, setRequested] = React.useState(false);
   // 採用確認対象の候補. null = 未確認.
   const [pending, setPending] = React.useState<ProposeSlotItem | null>(null);
+  // U-1: 反映先の選択 ('pattern' = A: 固定訪問週間に登録 / 'week' = B: この週だけ). 既定 A.
+  const [scopeChoice, setScopeChoice] = React.useState<ChangeScopeValue>('pattern');
 
   const proposeMut = useProposeSlots();
   const confirmMut = useConfirmFixedVisits();
+  const placeAndFixMut = usePlaceAndFix();
   // マージ確定用に既存 normal 固定枠を取得 (採用しなかった曜日を保持するため).
   const existingFixedVisitsQuery = useFixedVisits(patient.id, 'normal');
 
@@ -290,47 +296,97 @@ export function PoolCandidateList({
   const handleConfirmAdopt = () => {
     const slot = pending;
     if (!slot) return;
-    if (existingFixedVisitsQuery.isLoading || existingFixedVisitsQuery.isFetching) {
-      toast.warning('既存の固定枠を読み込み中です。少し待ってからお試しください');
-      return;
-    }
-    if (existingFixedVisitsQuery.isError) {
-      toast.error('既存の固定枠の読み込みに失敗しました。他曜日の枠を保護できないため中止しました');
-      return;
-    }
-    // course_template_id 解決のための course-templates がまだ読み込み中なら待つ
-    // (未解決のまま確定すると course 紐付かない PFV になり配置がずれるため).
+    // course_template_id 解決のための course-templates がまだ読み込み中なら待つ.
     if (templatesQueries.some((q) => q.isLoading)) {
       toast.warning('コース情報を読み込み中です。少し待ってからお試しください');
       return;
     }
-    const existing = existingFixedVisitsQuery.data ?? [];
-    confirmMut.mutate(
-      { patientId: patient.id, body: buildMergedPut(existing, slot) },
-      {
-        onSuccess: (data) => {
-          toast.success(
-            `${patient.name} 様を ${WEEKDAY_LABELS[slot.weekday] ?? '?'} ` +
-              `${trimSeconds(slot.start_time)} ${slot.course_label} に採用しました（他曜日は維持）`,
-          );
-          // P0-2 Commit 3: 再検証 warnings (時間衝突 / 昼休み / 容量) があれば警告表示。
-          // 空なら従来どおり success トーストのみ (挙動不変)。
-          toastFixedVisitWarnings(data?.warnings);
-          // MVP 制約: 同住所ペア候補でも相方 (slot_index=1) は自動作成しない.
-          if (slot.is_pair) {
-            toast.warning(
-              '同住所ペアの相方枠は自動作成されません。必要に応じて個別に追加してください',
-            );
-          }
-          setPending(null);
-          onAdopted?.();
+
+    if (scopeChoice === 'pattern') {
+      // ─── A 経路: PUT fixed-visits (型変更 + 今週即反映) ─────────────────────
+      if (existingFixedVisitsQuery.isLoading || existingFixedVisitsQuery.isFetching) {
+        toast.warning('既存の固定枠を読み込み中です。少し待ってからお試しください');
+        return;
+      }
+      if (existingFixedVisitsQuery.isError) {
+        toast.error('既存の固定枠の読み込みに失敗しました。他曜日の枠を保護できないため中止しました');
+        return;
+      }
+      const existing = existingFixedVisitsQuery.data ?? [];
+      const putBody: PatientFixedVisitsBulkPut = {
+        ...buildMergedPut(existing, slot),
+        change_scope: 'pattern_and_week',
+        iso_year: isoYear,
+        iso_week: isoWeek,
+      };
+      confirmMut.mutate(
+        { patientId: patient.id, body: putBody },
+        {
+          onSuccess: (data) => {
+            // week_sync が無い = 今週への反映が行われなかった (旧 BE / 週再生成の失敗)。
+            // 型には登録済みなので、正確に伝えて「週を生成」の再実行を促す。
+            if (data?.week_sync == null) {
+              toast.warning(
+                `${patient.name} 様を固定訪問週間に登録しましたが、今週のスケジュールへの` +
+                  `反映は行われませんでした。「週を生成」を再実行すると反映されます`,
+              );
+            } else {
+              toast.success(
+                `${patient.name} 様を採用しました。固定訪問週間に登録し、今週のスケジュールにも反映しました`,
+              );
+            }
+            // P0-2 Commit 3: 再検証 warnings があれば警告表示 (A 経路で従来どおり).
+            toastFixedVisitWarnings(data?.warnings);
+            // MVP 制約: 同住所ペア候補でも相方 (slot_index=1) は自動作成しない.
+            if (slot.is_pair) {
+              toast.warning(
+                '同住所ペアの相方枠は自動作成されません。必要に応じて個別に追加してください',
+              );
+            }
+            setPending(null);
+            setScopeChoice('pattern');
+            onAdopted?.();
+          },
+          onError: () => toast.error('採用に失敗しました'),
         },
-        onError: () => toast.error('採用に失敗しました'),
-      },
-    );
+      );
+    } else {
+      // ─── B 経路: place-and-fix (fix_pattern=false, 今週のみ) ─────────────────
+      const tplId = resolveCourseTemplateId(slot.office_id, slot.course_code);
+      if (tplId === null) {
+        toast.error('コース情報を解決できませんでした。再読み込みしてお試しください');
+        return;
+      }
+      const wp = coerceWeeklyPattern(patient.weekly_pattern);
+      const duration = slotDurationMin(slot) ?? wp.service_minutes;
+      placeAndFixMut.mutate(
+        {
+          patient_id: patient.id,
+          course_template_id: tplId,
+          iso_year: isoYear,
+          iso_week: isoWeek,
+          weekday: slot.weekday,
+          start_time: slot.start_time,
+          duration_min: duration,
+          staff_count: 1,
+          fix_pattern: false,
+        },
+        {
+          onSuccess: () => {
+            toast.success(
+              `${patient.name} 様を今週だけ配置しました（毎週の型は変更していません）`,
+            );
+            setPending(null);
+            setScopeChoice('pattern');
+            onAdopted?.();
+          },
+          onError: () => toast.error('配置に失敗しました'),
+        },
+      );
+    }
   };
 
-  const isBusy = proposeMut.isPending || confirmMut.isPending;
+  const isBusy = proposeMut.isPending || confirmMut.isPending || placeAndFixMut.isPending;
 
   // ─── Render ───────────────────────────────────────────────────────
   // primary (主提案) は自動実行のためボタン待ち state を出さない. 併設 (on-demand) は
@@ -519,7 +575,7 @@ export function PoolCandidateList({
         </ul>
       ) : null}
 
-      {/* 採用確認 (インライン). 他曜日を保持するマージ確定. */}
+      {/* 採用確認 (インライン). 他曜日を保持するマージ確定. U-1: A/B 選択付き. */}
       {pending ? (
         <div
           className="mt-2 rounded border border-brand-primary/40 bg-brand-primary/5 p-2 text-xs"
@@ -531,15 +587,25 @@ export function PoolCandidateList({
               {WEEKDAY_LABELS[pending.weekday] ?? '?'} {trimSeconds(pending.start_time)}{' '}
               {pending.course_label}
             </span>{' '}
-            に固定枠として追加します（他曜日の固定枠は維持されます）。
+            に追加します。反映先を選んでください（他曜日の固定枠は維持されます）。
+          </div>
+          <div className="mt-2">
+            <ChangeScopeChoice
+              value={scopeChoice}
+              onChange={setScopeChoice}
+              disabled={confirmMut.isPending || placeAndFixMut.isPending}
+            />
           </div>
           <div className="mt-2 flex items-center justify-end gap-2">
             <Button
               type="button"
               variant="outline"
               size="sm"
-              onClick={() => setPending(null)}
-              disabled={confirmMut.isPending}
+              onClick={() => {
+                setPending(null);
+                setScopeChoice('pattern');
+              }}
+              disabled={confirmMut.isPending || placeAndFixMut.isPending}
               className="h-7 px-3 text-xs"
               data-testid="pool-candidate-confirm-cancel"
             >
@@ -550,11 +616,11 @@ export function PoolCandidateList({
               type="button"
               size="sm"
               onClick={handleConfirmAdopt}
-              disabled={confirmMut.isPending}
+              disabled={confirmMut.isPending || placeAndFixMut.isPending}
               className="h-7 px-3 text-xs"
               data-testid="pool-candidate-confirm-apply"
             >
-              {confirmMut.isPending ? (
+              {confirmMut.isPending || placeAndFixMut.isPending ? (
                 <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" aria-hidden />
               ) : (
                 <CheckCircle2 className="mr-1 h-3.5 w-3.5" aria-hidden />

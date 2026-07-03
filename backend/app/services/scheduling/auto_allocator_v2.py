@@ -9553,6 +9553,33 @@ async def apply_week_only(
     }
 
 
+async def resolve_reset_office_ids(db: AsyncSession, patient_id: UUID) -> list[UUID]:
+    """1 患者の型→週同期 (``reset_visits_to_fixed``) に渡す office_ids を導出する.
+
+    Wave U-1 (§2.2 A 経路の共通部品): ``reset_visits_to_fixed`` は serving office を
+    内部解決するが、対象患者を ``patients_by_id`` に載せるには primary_office_id と
+    PFV.sub_office_id を office_ids に含める必要がある. ``sync-fixed-to-week`` endpoint
+    と同一の導出規則を共有し、プール採用 (PUT fixed-visits A) / 範囲最適化 apply A から
+    再利用する.
+    """
+    office_ids: set[UUID] = set()
+    patient = await db.scalar(select(Patient).where(Patient.id == patient_id))
+    if patient is not None and patient.primary_office_id is not None:
+        office_ids.add(patient.primary_office_id)
+    sub_rows = await db.scalars(
+        select(PatientFixedVisit.sub_office_id)
+        .where(
+            PatientFixedVisit.patient_id == patient_id,
+            PatientFixedVisit.sub_office_id.is_not(None),
+        )
+        .distinct()
+    )
+    for oid in sub_rows.all():
+        if oid is not None:
+            office_ids.add(oid)
+    return list(office_ids)
+
+
 async def reset_visits_to_fixed(
     db: AsyncSession,
     *,

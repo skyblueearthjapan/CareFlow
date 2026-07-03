@@ -29,7 +29,9 @@ VisitTypeV2 = Literal["regular", "spot", "training", "other"]
 VisitStatusV2 = Literal["planned", "completed", "cancelled", "no_show"]
 
 # 入力チャネル (v1 と同じ):
-VisitSourceV2 = Literal["manual", "auto", "import", "ai"]
+#   Wave U-1 (§2.2): "manual_week" = 「この週だけ反映」(B) で書いた visit.
+#   週生成・固定枠戻の両方で保護される (models/visit.py VISIT_SOURCE_MANUAL_WEEK).
+VisitSourceV2 = Literal["manual", "auto", "import", "ai", "manual_week"]
 
 
 class VisitV2Base(BaseModel):

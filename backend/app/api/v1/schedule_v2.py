@@ -41,7 +41,7 @@ from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.suggestion_dismissal import SuggestionDismissal
 from app.models.user import User
-from app.models.visit import VISIT_STATUS_PLANNED, Visit
+from app.models.visit import VISIT_SOURCE_MANUAL_WEEK, VISIT_STATUS_PLANNED, Visit
 from app.schemas.v2.auto_schedule_v2 import (
     AutoScheduleV2ApplyIndividualRequest,
     AutoScheduleV2ApplyIndividualResponse,
@@ -133,6 +133,7 @@ from app.schemas.v2.scope_optimization import (
     ScopeOptimizationSimulateRequest,
     ScopeOptimizationSimulateResponse,
     ScopeOptimizationStep,
+    ScopeOptimizationWeekSync,
     ScopeSnapshotVisit,
 )
 from app.schemas.v2.scope_optimization import (
@@ -175,6 +176,7 @@ from app.services.scheduling.auto_allocator_v2 import (
     count_active_staff_per_weekday,
     haversine_km,
     reset_visits_to_fixed,
+    resolve_reset_office_ids,
     run_v2_pipeline,
     unassign_all_staff_for_week,
 )
@@ -3399,6 +3401,84 @@ async def _abort_apply(db: DbDep, status_code: int, detail: object) -> NoReturn:
     raise HTTPException(status_code=status_code, detail=detail)
 
 
+async def _apply_visit_move_week_only(
+    db: DbDep,
+    *,
+    patient_id: UUID,
+    old_weekday: int,
+    old_start: time_cls,
+    new_weekday: int,
+    new_start: time_cls,
+    new_course: UUID | None,
+    iso_year: int,
+    iso_week: int,
+    counters: dict[str, Any],
+) -> None:
+    """Wave U-1 (§2.2 B = week_only): 1 手ぶんの移動を今週の visits にのみ反映する.
+
+    PFV は一切変更しない (呼び出し側で ``_apply_pfv_move`` を呼ばない). 当該患者の
+    今週 (old_weekday) の該当 visit を探し、new_weekday/new_start へ更新して
+    ``source='manual_week'`` を刻む (週生成・固定枠戻で保護される値・U-0 保証)。
+    コース (course_id) は移動先曜日の Course を解決/生成して更新する
+    (``new_course`` = course_template_id。解決不能なら据え置き = _apply_pfv_move と同義)。
+
+    今週の該当 visit が無い step は no-op (この週の表に元々出ていないため反映不要)。
+    ``counters`` に更新した visit 数と患者集合を積む (week_sync サマリ用)。
+    """
+    # 循環 import を避けるため関数内 import (schedule.py は schedule_v2 を import しない).
+    from app.api.v1.schedule import _get_or_create_course_for_template_week
+
+    week_monday = date.fromisocalendar(iso_year, iso_week, 1)
+    old_date = week_monday + timedelta(days=old_weekday)
+    new_date = week_monday + timedelta(days=new_weekday)
+
+    visits = list(
+        (
+            await db.scalars(
+                select(Visit).where(
+                    Visit.patient_id == patient_id,
+                    Visit.visit_date == old_date,
+                    Visit.start_time == old_start,
+                    Visit.deleted_at.is_(None),
+                    # レビュー指摘 (U-1 LOW): 完了済み visit は動かさない (simulate は
+                    # planned のみ提案するが防御的にフィルタ).
+                    Visit.status == "planned",
+                )
+            )
+        ).all()
+    )
+    if not visits:
+        return
+
+    # 移動先曜日の Course を解決 (course_template_id が取れたときのみ course_id を更新).
+    new_course_id: UUID | None = None
+    if new_course is not None:
+        course = await _get_or_create_course_for_template_week(
+            db,
+            course_template_id=new_course,
+            iso_year=iso_year,
+            iso_week=iso_week,
+            weekday=new_weekday,
+        )
+        new_course_id = course.id
+
+    for v in visits:
+        dur_min = (v.end_time.hour * 60 + v.end_time.minute) - (
+            v.start_time.hour * 60 + v.start_time.minute
+        )
+        if dur_min <= 0:
+            dur_min = 30
+        end_minutes = new_start.hour * 60 + new_start.minute + dur_min
+        v.visit_date = new_date
+        v.start_time = new_start
+        v.end_time = time_cls(min(end_minutes // 60, 23), end_minutes % 60)
+        if new_course_id is not None:
+            v.course_id = new_course_id
+        v.source = VISIT_SOURCE_MANUAL_WEEK
+        counters["visits"] += 1
+        counters["patients"].add(patient_id)
+
+
 async def _validate_and_move_one(
     db: DbDep,
     *,
@@ -3411,12 +3491,20 @@ async def _validate_and_move_one(
     new_course: UUID | None,
     config: SchedulingConfig,
     warnings: list[str],
+    week_only: bool = False,
+    iso_year: int | None = None,
+    iso_week: int | None = None,
+    week_counters: dict[str, Any] | None = None,
 ) -> None:
     """1 患者の slot0 移動を「検証 → 適用」する (scope apply の 1 手ぶん).
 
     step ごとに PFV を取り直して逐次検証する (simulate の手順列は逐次状態を前提に
     生成されている)。session は autoflush=False のため、適用後に明示 flush して
     後続 step の SELECT へ DB レベルでも反映する (本関数末尾)。
+
+    Wave U-1 (§2.2 B): ``week_only=True`` のときは pinned/安全網の再検証 (A と同一) は
+    そのまま実行しつつ、適用先を PFV ではなく今週の visits に切替える
+    (``_apply_visit_move_week_only``)。PFV は不変。
     """
     rows = await _load_normal_pfvs(db, patient_id)
     moving = next(
@@ -3466,14 +3554,30 @@ async def _validate_and_move_one(
         )
     warnings.extend(f"手順{seq}: {w.message}" for w in v.warnings_only)
 
-    await _apply_pfv_move(
-        db,
-        moving_row=moving,
-        all_rows=rows,
-        new_weekday=new_weekday,
-        new_start=new_start,
-        new_course=new_course,
-    )
+    if week_only:
+        # B: PFV は動かさず、今週の visits にのみ反映する.
+        assert iso_year is not None and iso_week is not None and week_counters is not None
+        await _apply_visit_move_week_only(
+            db,
+            patient_id=patient_id,
+            old_weekday=old_weekday,
+            old_start=old_start,
+            new_weekday=new_weekday,
+            new_start=new_start,
+            new_course=new_course,
+            iso_year=iso_year,
+            iso_week=iso_week,
+            counters=week_counters,
+        )
+    else:
+        await _apply_pfv_move(
+            db,
+            moving_row=moving,
+            all_rows=rows,
+            new_weekday=new_weekday,
+            new_start=new_start,
+            new_course=new_course,
+        )
     # autoflush=False のため明示 flush: 後続 step の SELECT / validate が
     # この手の結果 (行の削除含む) を DB レベルで参照できるようにする.
     await db.flush()
@@ -3532,8 +3636,15 @@ async def scope_optimization_apply_endpoint(
     config = await load_scheduling_config(db)
     warnings: list[str] = []
 
+    # Wave U-1 (§2.2 反映先の統一): week_only は PFV を触らず今週 visits にのみ反映する.
+    week_only = payload.change_scope == "week_only"
+    week_counters: dict[str, Any] = {"visits": 0, "patients": set()}
+    # pattern_and_week 用: 影響を受けた患者集合 (move 対象 + swap 相手) を集める.
+    affected_patient_ids: set[UUID] = set()
+
     for step in payload.steps:
         sug = step.suggestion
+        affected_patient_ids.add(step.patient_id)
         # _parse_hhmm は不正形式で ValueError を送出する (apply-swap と同じ 422 変換).
         try:
             old_start = _parse_hhmm(sug.current.start_time)
@@ -3563,6 +3674,10 @@ async def scope_optimization_apply_endpoint(
                 new_course=new_course,
                 config=config,
                 warnings=warnings,
+                week_only=week_only,
+                iso_year=payload.iso_year,
+                iso_week=payload.iso_week,
+                week_counters=week_counters,
             )
         elif sug.kind == "swap":
             cp = sug.swap_counterpart
@@ -3584,6 +3699,7 @@ async def scope_optimization_apply_endpoint(
                     status.HTTP_422_UNPROCESSABLE_ENTITY,
                     f"手順{step.seq}: swap_counterpart の start_time は HH:MM 必須です",
                 )
+            affected_patient_ids.add(cp.patient_id)
             # Y は X の旧バケット (コース) へ移る: X の旧行のコースを先に控える.
             x_rows = await _load_normal_pfvs(db, step.patient_id)
             x_row = next(
@@ -3606,6 +3722,10 @@ async def scope_optimization_apply_endpoint(
                 new_course=x_new_course,
                 config=config,
                 warnings=warnings,
+                week_only=week_only,
+                iso_year=payload.iso_year,
+                iso_week=payload.iso_week,
+                week_counters=week_counters,
             )
             # Y → X の旧位置 (コースは X の旧コースを引き継ぐ. None なら据え置き).
             await _validate_and_move_one(
@@ -3619,6 +3739,10 @@ async def scope_optimization_apply_endpoint(
                 new_course=x_old_course,
                 config=config,
                 warnings=warnings,
+                week_only=week_only,
+                iso_year=payload.iso_year,
+                iso_week=payload.iso_week,
+                week_counters=week_counters,
             )
         else:
             await _abort_apply(
@@ -3626,6 +3750,38 @@ async def scope_optimization_apply_endpoint(
                 status.HTTP_422_UNPROCESSABLE_ENTITY,
                 f"手順{step.seq}: 未知の kind '{sug.kind}' です",
             )
+
+    # Wave U-1 (§2.2 A = pattern_and_week): PFV 移動が全 step 反映 (flush 済) された後、
+    # 影響を受けた患者それぞれの今週 visits を PFV から再生成する (同一 TX で commit).
+    week_sync: ScopeOptimizationWeekSync | None = None
+    if payload.change_scope == "pattern_and_week":
+        total_regen = 0
+        total_del = 0
+        for pid in affected_patient_ids:
+            office_ids = await resolve_reset_office_ids(db, pid)
+            reset_result = await reset_visits_to_fixed(
+                db,
+                iso_year=payload.iso_year,
+                iso_week=payload.iso_week,
+                office_ids=office_ids,
+                mode="legacy",
+                dry_run=False,
+                config=config,
+                patient_id=pid,
+            )
+            total_regen += int(reset_result.get("visits_regenerated", 0))
+            total_del += int(reset_result.get("visits_soft_deleted", 0))
+        week_sync = ScopeOptimizationWeekSync(
+            patients=len(affected_patient_ids),
+            visits_regenerated=total_regen,
+            visits_soft_deleted=total_del,
+        )
+    elif payload.change_scope == "week_only":
+        week_sync = ScopeOptimizationWeekSync(
+            patients=len(week_counters["patients"]),
+            visits_regenerated=int(week_counters["visits"]),
+            visits_soft_deleted=0,
+        )
 
     # 監査ログ (適用サマリ).
     db.add(
@@ -3641,6 +3797,7 @@ async def scope_optimization_apply_endpoint(
                 "course_codes": payload.scope.course_codes,
                 "applied_count": len(payload.steps),
                 "cumulative_delta_minutes": payload.steps[-1].cumulative_delta_minutes,
+                "change_scope": payload.change_scope,
             },
         )
     )
@@ -3657,6 +3814,8 @@ async def scope_optimization_apply_endpoint(
     return ScopeOptimizationApplyResponse(
         applied_count=len(payload.steps),
         warnings=warnings,
+        change_scope=payload.change_scope,
+        week_sync=week_sync,
     )
 
 

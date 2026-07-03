@@ -58,7 +58,7 @@ from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.staff import Staff, StaffEvent
 from app.models.user import User
-from app.models.visit import VISIT_STATUS_PLANNED, Visit
+from app.models.visit import VISIT_SOURCE_MANUAL_WEEK, VISIT_STATUS_PLANNED, Visit
 from app.schemas.v2.auto_allocate import (
     AutoAllocateRequest,
     AutoAllocateResponse,
@@ -940,6 +940,12 @@ async def place_and_fix(
         # uq_visits_pds_group_active (visit_group_id 込み) を通過させる.
         # 1 名体制 (旧挙動) では visit_group_id=None.
         shared_visit_group_id: UUID | None = uuid.uuid4() if body.staff_count == 2 else None
+        # Wave U-1 (§2.2 反映先の統一 B 経路 = プール採用「この週だけ配置」):
+        #   - fix_pattern=True (型も更新)  → source='manual' (従来どおり).
+        #   - fix_pattern=False (今週だけ) → source='manual_week'. 週生成・固定枠戻の
+        #     両方で保護される値 (U-0 で保証) なので、来週は元の固定枠に戻る一方、
+        #     今週は消えない. FE は現状 fix_pattern=true 固定送信のため既存挙動は不変.
+        visit_source = "manual" if body.fix_pattern else VISIT_SOURCE_MANUAL_WEEK
         new_visits: list[Visit] = []
         for course in courses:
             v = Visit(
@@ -949,7 +955,7 @@ async def place_and_fix(
                 end_time=end_time,
                 type="regular",
                 status="planned",
-                source="manual",
+                source=visit_source,
                 required_staff_count=body.staff_count,
                 course_id=course.id,
                 visit_group_id=shared_visit_group_id,

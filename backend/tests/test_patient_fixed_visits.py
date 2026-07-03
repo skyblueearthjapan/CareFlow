@@ -451,7 +451,11 @@ async def test_put_unique_violation_rolls_back(client, db) -> None:
 
 @pytest.mark.asyncio
 async def test_put_response_is_envelope(client, db) -> None:
-    """P0-2: PUT レスポンスは {items, warnings} エンベロープ."""
+    """P0-2: PUT レスポンスは {items, warnings} エンベロープ.
+
+    Wave U-1: 反映先の統一で week_sync (追加フィールド) が加わる. change_scope
+    省略時 (pattern_only) は null.
+    """
     admin = await _make_user(db, "pfv-env@example.com", "admin")
     patient = await _make_patient(db, "PFV-ENV")
 
@@ -462,9 +466,10 @@ async def test_put_response_is_envelope(client, db) -> None:
     )
     assert res.status_code == 200, res.text
     body = res.json()
-    assert set(body.keys()) == {"items", "warnings"}
+    assert set(body.keys()) == {"items", "warnings", "week_sync"}
     assert len(body["items"]) == 1
     assert body["warnings"] == []
+    assert body["week_sync"] is None
 
 
 @pytest.mark.asyncio

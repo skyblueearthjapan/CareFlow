@@ -101,6 +101,12 @@ export const patientFixedVisitV2ReadSchema = patientFixedVisitV2BaseSchema.exten
  * W37 Phase 1: bulk PUT は (weekday, slot_index) のペアで重複を検出する。
  * 1 名体制では従来どおり weekday ごとに 1 件のみだが、
  * 複数スタッフ対応では同じ weekday で slot_index 0/1 の 2 件を許容する。
+ *
+ * U-1 (変更反映先統一): change_scope / iso_year / iso_week を追加。
+ *   - change_scope='pattern_only' (既定・従来): 固定訪問週間（型）のみ変更。
+ *   - change_scope='pattern_and_week': 型を変え、今週のスケジュールにも即反映する
+ *     (sync-fixed-to-week を 1 TX 後段実行)。iso_year / iso_week は必須。
+ *   旧 BE 互換: フィールド省略時は BE 側 default (pattern_only = 従来挙動) が適用される。
  */
 export const patientFixedVisitsBulkPutSchema = z.object({
   mode: z.enum(PATIENT_FIXED_VISIT_MODES),
@@ -124,6 +130,15 @@ export const patientFixedVisitsBulkPutSchema = z.object({
         seen.set(key, i);
       });
     }),
+  /**
+   * U-1: 反映先選択。省略時は BE 側 default (pattern_only = 従来挙動)。
+   * 'pattern_and_week' 選択時は iso_year / iso_week も送る。
+   */
+  change_scope: z.enum(['pattern_only', 'pattern_and_week']).optional(),
+  /** U-1: change_scope='pattern_and_week' のときの対象 ISO 年. */
+  iso_year: z.number().int().optional(),
+  /** U-1: change_scope='pattern_and_week' のときの対象 ISO 週. */
+  iso_week: z.number().int().min(1).max(53).optional(),
 });
 
 export type PatientFixedVisitV2Base = z.infer<typeof patientFixedVisitV2BaseSchema>;
@@ -164,6 +179,17 @@ export type PatientFixedVisitWarning = z.infer<typeof patientFixedVisitWarningSc
 export const patientFixedVisitsBulkPutResponseSchema = z.object({
   items: z.array(patientFixedVisitV2ReadSchema).catch([]),
   warnings: z.array(patientFixedVisitWarningSchema).catch([]),
+  // Wave U-1: change_scope=pattern_and_week のとき今週再生成の件数。
+  // 旧 BE では欠落 / 週再生成に失敗した場合は null (FE は「週を生成」再実行を案内する)。
+  week_sync: z
+    .object({
+      visits_regenerated: z.number().int(),
+      visits_soft_deleted: z.number().int(),
+    })
+    .nullable()
+    .optional()
+    .default(null)
+    .catch(null),
 });
 export type PatientFixedVisitsBulkPutResponse = z.infer<
   typeof patientFixedVisitsBulkPutResponseSchema
@@ -177,5 +203,5 @@ export function parsePatientFixedVisitsBulkPutResponse(
   raw: unknown,
 ): PatientFixedVisitsBulkPutResponse {
   const parsed = patientFixedVisitsBulkPutResponseSchema.safeParse(raw);
-  return parsed.success ? parsed.data : { items: [], warnings: [] };
+  return parsed.success ? parsed.data : { items: [], warnings: [], week_sync: null };
 }

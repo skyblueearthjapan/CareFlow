@@ -106,6 +106,12 @@ export type ScopeOptimizationSimulateRequest = z.input<
 /**
  * POST /v2/scope-optimization/apply リクエスト (W2. BE `ScopeOptimizationApplyRequest`).
  * steps は simulate レスポンスの先頭からの連続区間 (seq=1..N) をそのまま送る。
+ *
+ * U-1: change_scope を追加。
+ *   - 'pattern_and_week' (= A): 型変更 + 今週スケジュールへ即反映 (既定)。
+ *   - 'week_only'        (= B): 今週のスケジュールのみ変更。型は不変。
+ *   - 'pattern_only'         : 型のみ変更 (従来挙動・省略時は BE 側 default)。
+ *   旧 BE 互換: 省略時は BE 側 default (pattern_only) が適用される。
  */
 export const scopeOptimizationApplyRequestSchema = z.object({
   iso_year: z.number().int(),
@@ -115,6 +121,8 @@ export const scopeOptimizationApplyRequestSchema = z.object({
   steps: z.array(scopeOptimizationStepSchema).min(1),
   // §10: simulate 時と同じ探索範囲をエコーバック (state_token の再計算規約を一致させる).
   search_scope: scopeOptimizationScopeSchema.nullable().optional(),
+  // U-1: 反映先選択 (旧 BE 互換で optional)。
+  change_scope: z.enum(['pattern_only', 'pattern_and_week', 'week_only']).optional(),
 });
 export type ScopeOptimizationApplyRequest = z.input<typeof scopeOptimizationApplyRequestSchema>;
 
@@ -123,6 +131,14 @@ export const scopeOptimizationApplyResponseSchema = z.object({
   applied_count: z.number().int().min(0),
   // 寛容パース (warnings 系): 未知文言が混ざっても適用完了フローを止めない.
   warnings: z.array(z.string()).catch([]),
+  // U-1: 週同期サマリ (旧 BE 互換で欠落を許容)。
+  week_sync: z
+    .object({
+      visits_regenerated: z.number().int(),
+      visits_soft_deleted: z.number().int(),
+    })
+    .nullable()
+    .optional(),
 });
 export type ScopeOptimizationApplyResponse = z.infer<typeof scopeOptimizationApplyResponseSchema>;
 

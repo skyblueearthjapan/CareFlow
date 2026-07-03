@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -215,6 +215,33 @@ class ScopeOptimizationApplyRequest(BaseModel):
             "エコーバックする。None = フォーカスと同じ)。"
         ),
     )
+    # Wave U-1 (§2.2 反映先の統一): 適用結果をどこへ書くか.
+    #   pattern_only      = 型 (PFV) のみ変更 (既定・従来挙動; 後方互換).
+    #   pattern_and_week  = PFV 移動後、影響患者の今週 visits を PFV から再生成 (A).
+    #   week_only         = PFV は不変、今週の visits にのみ反映 (B; source='manual_week').
+    change_scope: Literal["pattern_only", "pattern_and_week", "week_only"] = Field(
+        default="pattern_only",
+        description=(
+            "反映先の統一 (Wave U-1). pattern_only=型のみ(既定) / "
+            "pattern_and_week=型+今週(A) / week_only=今週だけ(B)."
+        ),
+    )
+
+
+class ScopeOptimizationWeekSync(BaseModel):
+    """apply の今週反映サマリ (Wave U-1). ``change_scope`` が pattern_only のとき null."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    patients: int = Field(default=0, ge=0, description="今週へ反映した患者数")
+    visits_regenerated: int = Field(
+        default=0,
+        ge=0,
+        description="A: PFV から再生成した visit 数 / B: 移動した visit 数",
+    )
+    visits_soft_deleted: int = Field(
+        default=0, ge=0, description="A: reset で soft-delete した visit 数 (B は 0)"
+    )
 
 
 class ScopeOptimizationApplyResponse(BaseModel):
@@ -226,6 +253,14 @@ class ScopeOptimizationApplyResponse(BaseModel):
     warnings: list[str] = Field(
         default_factory=list,
         description="N-4 再検証で検出した非致命の警告 (現場向け日本語). ブロックしない.",
+    )
+    # Wave U-1: 反映先の統一 (後方互換の追加のみ; 旧 FE は無視して従来動作).
+    change_scope: Literal["pattern_only", "pattern_and_week", "week_only"] = Field(
+        default="pattern_only", description="適用した反映先 (リクエストのエコーバック)."
+    )
+    week_sync: ScopeOptimizationWeekSync | None = Field(
+        default=None,
+        description="今週反映サマリ (A/B のとき付与。pattern_only は null).",
     )
 
 
@@ -240,5 +275,6 @@ __all__ = [
     "ScopeOptimizationSimulateRequest",
     "ScopeOptimizationSimulateResponse",
     "ScopeOptimizationStep",
+    "ScopeOptimizationWeekSync",
     "ScopeSnapshotVisit",
 ]

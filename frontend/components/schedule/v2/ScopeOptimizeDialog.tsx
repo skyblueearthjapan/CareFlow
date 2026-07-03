@@ -48,6 +48,7 @@ import type {
   ScopeOptimizationSimulateResponse,
 } from '@/lib/schemas/v2/scopeOptimization';
 
+import { ChangeScopeChoice, type ChangeScopeValue } from './ChangeScopeChoice';
 import { CourseMoveTimeline } from './CourseMoveTimeline';
 import { ImprovementSuggestionCard } from './ImprovementSuggestionCard';
 
@@ -300,6 +301,8 @@ export function ScopeOptimizeDialog({
   } | null>(null);
   // 適用する手数 (先頭から N 手。既定 = 全手).
   const [applyCount, setApplyCount] = React.useState(0);
+  // U-1: 反映先の選択 ('pattern' = A: 固定訪問週間に登録 + 今週即反映 / 'week' = B: この週だけ). 既定 A.
+  const [changeScopeChoice, setChangeScopeChoice] = React.useState<ChangeScopeValue>('pattern');
 
   /** §10: 現在の探索範囲選択から search 部分を組み立てる (null = フォーカスと同じ). */
   const buildSearch = React.useCallback(
@@ -385,6 +388,7 @@ export function ScopeOptimizeDialog({
     setResult(null);
     setResultScope(null);
     setApplyCount(0);
+    setChangeScopeChoice('pattern');
     simulateMut.reset();
     applyMut.reset();
     const autoOfficeId = officeId ?? initialOfficeId ?? null;
@@ -444,18 +448,24 @@ export function ScopeOptimizeDialog({
               course_codes: resultScope.search.courseCodes,
             }
           : undefined,
+        // U-1: 反映先選択 ('pattern_and_week' = A / 'week_only' = B).
+        change_scope: changeScopeChoice === 'pattern' ? 'pattern_and_week' : 'week_only',
       },
       {
         onSuccess: (data) => {
-          toast.success(
-            `${data.applied_count}手を適用しました（−${steps[steps.length - 1]!.cumulative_delta_minutes}分/週）`,
-          );
+          if (changeScopeChoice === 'week') {
+            // B 経路: この週だけ反映
+            toast.success('この週だけ反映しました。来週は従来の型で生成されます');
+          } else {
+            // A 経路: 型 + 今週即反映 (固定枠戻の案内は不要: BE が今週へも自動反映)
+            toast.success(
+              `${data.applied_count}手を適用しました（−${steps[steps.length - 1]!.cumulative_delta_minutes}分/週）`,
+            );
+          }
           for (const w of data.warnings.slice(0, 3)) toast.warning(w);
           if (data.warnings.length > 3) {
             toast.warning(`他 ${data.warnings.length - 3} 件の警告があります`);
           }
-          // D-1: 適用は恒久パターンに反映。今週の実予定への反映手段を案内する.
-          toast.info('今週の実予定へ反映するには「固定枠戻」を実行してください');
           // 適用後は最新状態で自動再計算 (残りの改善が見える).
           runSimulate(resultScope.weekdays, resultScope.courseCodes);
         },
@@ -781,7 +791,7 @@ export function ScopeOptimizeDialog({
                     })}
                   </div>
 
-                  {/* 適用範囲スライダー + 適用ボタン (W2. プレフィックスのみ). */}
+                  {/* 適用範囲スライダー + 反映先選択 + 適用ボタン (W2. プレフィックスのみ). */}
                   {canEdit ? (
                     <div
                       className="space-y-2 rounded-lg border border-border-default bg-bg-muted p-3"
@@ -816,6 +826,12 @@ export function ScopeOptimizeDialog({
                         aria-label="適用する手数"
                         data-testid="scope-optimize-apply-slider"
                       />
+                      {/* U-1: 反映先の2択 (既定 A). */}
+                      <ChangeScopeChoice
+                        value={changeScopeChoice}
+                        onChange={setChangeScopeChoice}
+                        disabled={applyMut.isPending}
+                      />
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-[11px] text-text-muted">
                           手順は前の手が空けた枠を使うため、途中の手だけ選ぶことはできません。
@@ -837,6 +853,12 @@ export function ScopeOptimizeDialog({
                           )}
                         </Button>
                       </div>
+                      {/* U-1: 反映先の説明 (選択に応じて動的に変更). */}
+                      <div className="text-[11px] text-text-muted" data-testid="scope-optimize-note">
+                        {changeScopeChoice === 'pattern'
+                          ? '※ 固定訪問週間（毎週の型）と今週のスケジュールの両方に反映されます。'
+                          : '※ 今週のスケジュールのみ変更します。毎週の型（固定訪問週間）は変わりません。'}
+                      </div>
                     </div>
                   ) : null}
 
@@ -850,10 +872,6 @@ export function ScopeOptimizeDialog({
                       対象外: {excludedParts.join('・')}
                     </div>
                   ) : null}
-                  <div className="text-xs text-text-muted" data-testid="scope-optimize-note">
-                    ※ 適用は固定訪問スケジュール（恒久パターン）に反映されます。今週の実予定へ
-                    反映するには「固定枠戻」を実行してください。
-                  </div>
                 </div>
               )
             ) : null}

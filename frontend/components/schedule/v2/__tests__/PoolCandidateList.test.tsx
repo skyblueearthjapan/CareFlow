@@ -18,7 +18,11 @@ const { mockToast, mocks } = vi.hoisted(() => ({
     proposeMutate: vi.fn(),
     proposeData: undefined as unknown,
     confirmMutate: vi.fn(),
+    placeAndFixMutate: vi.fn(),
     existingFixedVisits: [] as unknown[],
+    // course-templates 並列取得。空 = resolver が null を返す (A 経路では許容)。
+    // B 経路テストでは有効なテンプレートを設定してから呼ぶこと。
+    templatesQueries: [] as unknown[],
   },
 }));
 
@@ -40,11 +44,15 @@ vi.mock('next-auth/react', () => ({
 }));
 
 vi.mock('@tanstack/react-query', () => ({
-  // course-templates 並列取得は本テストでは空 (course_template_id 解決は null).
-  useQueries: () => [],
+  // course-templates 並列取得は動的 mock (B 経路テストでのみ有効データを設定).
+  useQueries: () => mocks.templatesQueries,
 }));
 
 vi.mock('@/lib/api/fetcher', () => ({ fetcher: vi.fn() }));
+
+vi.mock('@/lib/queries/place_and_fix', () => ({
+  usePlaceAndFix: () => ({ mutate: mocks.placeAndFixMutate, isPending: false }),
+}));
 
 vi.mock('@/components/ui/alert', () => ({
   Alert: ({ children, ...rest }: React.HTMLAttributes<HTMLDivElement>) => (
@@ -165,8 +173,10 @@ describe('PoolCandidateList (③ 単体MVP)', () => {
   beforeEach(() => {
     mocks.proposeMutate.mockReset();
     mocks.confirmMutate.mockReset();
+    mocks.placeAndFixMutate.mockReset();
     mocks.proposeData = undefined;
     mocks.existingFixedVisits = [];
+    mocks.templatesQueries = [];
     mockToast.success.mockReset();
     mockToast.error.mockReset();
     mockToast.warning.mockReset();
@@ -324,6 +334,9 @@ describe('PoolCandidateList (③ 単体MVP)', () => {
               severity: 'warning',
             },
           ],
+          // U-1: week_sync が null だと「今週未反映」warning トーストに切り替わるため、
+          // 本テスト (success 経路) では今週反映済みのレスポンスを模す。
+          week_sync: { visits_regenerated: 1, visits_soft_deleted: 0 },
         });
       },
     );
@@ -452,6 +465,99 @@ describe('PoolCandidateList (③ 単体MVP)', () => {
     fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
     expect(screen.queryByTestId('pool-candidate-excluded-summary')).not.toBeInTheDocument();
     expect(screen.getByText(/実現可能な空き枠が見つかりませんでした/)).toBeInTheDocument();
+  });
+
+  // ── U-1: A/B 反映先選択 ───────────────────────────────────────────────────
+
+  it('U-1: 採用確認パネルに ChangeScopeChoice が表示される（既定 A 選択）', () => {
+    const slot = makeSlot();
+    mocks.proposeData = { slots: [slot], message: null };
+    render(<PoolCandidateList {...COMMON} />);
+    fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
+    fireEvent.click(
+      screen.getByTestId(
+        `pool-candidate-adopt-${slot.office_id}-${slot.weekday}-${slot.course_code}-${slot.start_time}`,
+      ),
+    );
+    // 確認パネルが出る
+    expect(screen.getByTestId('pool-candidate-confirm')).toBeInTheDocument();
+    // ChangeScopeChoice が表示される
+    expect(screen.getByTestId('change-scope-choice')).toBeInTheDocument();
+    // 既定は A (pattern) が選択済み
+    expect(screen.getByTestId('change-scope-pattern')).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByTestId('change-scope-week')).toHaveAttribute('aria-checked', 'false');
+  });
+
+  it('U-1 A 経路 (既定): confirmMutate に change_scope=pattern_and_week + iso_year/iso_week が付く', async () => {
+    const slot = makeSlot();
+    mocks.proposeData = { slots: [slot], message: null };
+    render(<PoolCandidateList {...COMMON} />);
+    fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
+    fireEvent.click(
+      screen.getByTestId(
+        `pool-candidate-adopt-${slot.office_id}-${slot.weekday}-${slot.course_code}-${slot.start_time}`,
+      ),
+    );
+    // A が既定なのでそのまま確定
+    fireEvent.click(screen.getByTestId('pool-candidate-confirm-apply'));
+
+    await waitFor(() => expect(mocks.confirmMutate).toHaveBeenCalledTimes(1));
+    const arg = mocks.confirmMutate.mock.calls[0][0];
+    expect(arg.patientId).toBe(PATIENT.id);
+    expect(arg.body.mode).toBe('normal');
+    // U-1: change_scope が付いている
+    expect(arg.body.change_scope).toBe('pattern_and_week');
+    expect(arg.body.iso_year).toBe(2026);
+    expect(arg.body.iso_week).toBe(24);
+    // place-and-fix は呼ばれない
+    expect(mocks.placeAndFixMutate).not.toHaveBeenCalled();
+  });
+
+  it('U-1 B 経路: B 選択後に確定すると place-and-fix(fix_pattern=false) が呼ばれ PUT は呼ばれない', async () => {
+    const slot = makeSlot();
+    mocks.proposeData = { slots: [slot], message: null };
+    // B 経路では course_template_id を解決するためテンプレートが必要
+    mocks.templatesQueries = [
+      {
+        data: [
+          {
+            id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            office_id: '11111111-1111-4111-8111-111111111111',
+            label: 'C',
+            deleted_at: null,
+          },
+        ],
+        status: 'success',
+        isLoading: false,
+        dataUpdatedAt: Date.now(),
+      },
+    ];
+    render(<PoolCandidateList {...COMMON} />);
+    fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
+    fireEvent.click(
+      screen.getByTestId(
+        `pool-candidate-adopt-${slot.office_id}-${slot.weekday}-${slot.course_code}-${slot.start_time}`,
+      ),
+    );
+    // B を選択
+    fireEvent.click(screen.getByTestId('change-scope-week'));
+    expect(screen.getByTestId('change-scope-week')).toHaveAttribute('aria-checked', 'true');
+
+    fireEvent.click(screen.getByTestId('pool-candidate-confirm-apply'));
+
+    await waitFor(() => expect(mocks.placeAndFixMutate).toHaveBeenCalledTimes(1));
+    const req = mocks.placeAndFixMutate.mock.calls[0][0];
+    // fix_pattern=false が付いている
+    expect(req.fix_pattern).toBe(false);
+    // patient_id が付いている
+    expect(req.patient_id).toBe(PATIENT.id);
+    // iso_year/iso_week が付いている
+    expect(req.iso_year).toBe(2026);
+    expect(req.iso_week).toBe(24);
+    // weekday が付いている
+    expect(req.weekday).toBe(slot.weekday);
+    // PUT (confirmMutate) は呼ばれない
+    expect(mocks.confirmMutate).not.toHaveBeenCalled();
   });
 });
 

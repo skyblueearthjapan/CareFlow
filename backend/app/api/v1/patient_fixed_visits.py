@@ -18,6 +18,7 @@ UNIQUE (patient_id, mode, weekday) 違反は 409 Conflict。
 
 from __future__ import annotations
 
+import logging
 from datetime import date, time
 from typing import Annotated
 from uuid import UUID
@@ -46,10 +47,17 @@ from app.schemas.v2.patient_fixed_visit import (
     PatientFixedVisitV2Base,
     PatientFixedVisitV2Read,
     PfvValidationWarningOut,
+    PfvWeekSyncOut,
+)
+from app.services.scheduling.auto_allocator_v2 import (
+    reset_visits_to_fixed,
+    resolve_reset_office_ids,
 )
 from app.services.scheduling.config import load_scheduling_config
 from app.services.scheduling.layer1_expander import _is_special_week_active
 from app.services.scheduling.pfv_validator import validate_pfv_changes
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -431,6 +439,14 @@ async def put_fixed_visits(
 ) -> PatientFixedVisitsBulkPutResponse:
     await _ensure_patient_exists(db, patient_id)
 
+    # Wave U-1 (§2.2 A 経路): pattern_and_week は今週再生成のため iso_year/iso_week 必須.
+    # 破壊的な DELETE→INSERT の前に 422 で弾く (欠落時にトランザクションを汚さない).
+    if body.change_scope == "pattern_and_week" and (body.iso_year is None or body.iso_week is None):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="change_scope=pattern_and_week のときは iso_year / iso_week が必須です",
+        )
+
     # Phase E-5 (項目 ⑥B): sub_office_id 関連の事前検証.
     await _validate_sub_office_items(db, body.items)
 
@@ -488,6 +504,53 @@ async def put_fixed_visits(
         )
     await _commit_or_409(db)
 
+    # Wave U-1 (§2.2 A 経路 = プール採用): PFV 置換コミット後、同一エンドポイント内で
+    # 当該患者の今週 visits を PFV から再生成する (reset_visits_to_fixed の 1 患者版).
+    # source='manual' / status='completed' 保護は全患者版と同一. mode=body.mode に
+    # 依らず reset は normal PFV から再生成する (プール採用は normal 前提).
+    week_sync: PfvWeekSyncOut | None = None
+    if body.change_scope == "pattern_and_week":
+        assert body.iso_year is not None and body.iso_week is not None  # 上で 422 済み
+        office_ids = await resolve_reset_office_ids(db, patient_id)
+        try:
+            sync_result = await reset_visits_to_fixed(
+                db,
+                iso_year=body.iso_year,
+                iso_week=body.iso_week,
+                office_ids=office_ids,
+                mode="legacy",
+                dry_run=False,
+                config=config,
+                patient_id=patient_id,
+            )
+            await db.commit()
+        except IntegrityError as exc:
+            # 同時実行の衝突は再試行可能 (PUT は同一 body で冪等) → 409。
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="他のユーザーが同じ週を処理中です。もう一度実行してください。",
+            ) from exc
+        except Exception:
+            # レビュー指摘 (U-1 MEDIUM): PFV は既にコミット済みのため、ここで 500 を返すと
+            # 「型には登録されたのに失敗と表示される」二重に紛らわしい状態になる。
+            # week_sync=None の 200 で返し、FE が「固定訪問週間に登録済み・今週への反映は
+            # 未実施 → 週を生成を再実行」と正確に案内する (visits 側は rollback 済みで無傷)。
+            await db.rollback()
+            logger.warning(
+                "PUT fixed-visits pattern_and_week: week sync failed after PFV commit "
+                "(patient_id=%s iso=%s-W%s)",
+                patient_id,
+                body.iso_year,
+                body.iso_week,
+                exc_info=True,
+            )
+        else:
+            week_sync = PfvWeekSyncOut(
+                visits_regenerated=int(sync_result.get("visits_regenerated", 0)),
+                visits_soft_deleted=int(sync_result.get("visits_soft_deleted", 0)),
+            )
+
     rows = (
         await db.scalars(
             select(PatientFixedVisit)
@@ -509,6 +572,7 @@ async def put_fixed_visits(
             )
             for w in validation.warnings_only
         ],
+        week_sync=week_sync,
     )
 
 

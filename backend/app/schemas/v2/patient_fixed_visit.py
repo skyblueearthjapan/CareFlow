@@ -20,9 +20,7 @@ PatientFixedVisitMode = Literal["normal", "special"]
 # P2-A: 可動域フラグ = 提案の可否 (改善提案 MVP).
 # unknown(既定・保守的) / time_flexible(同曜日内の時刻変更可) /
 # day_flexible(曜日も変更可) / locked(完全固定).
-PatientFixedVisitMovability = Literal[
-    "unknown", "time_flexible", "day_flexible", "locked"
-]
+PatientFixedVisitMovability = Literal["unknown", "time_flexible", "day_flexible", "locked"]
 
 
 class PatientFixedVisitV2Base(BaseModel):
@@ -114,6 +112,20 @@ class PatientFixedVisitsBulkPut(BaseModel):
         max_length=14,
         description=("0〜14 件 (7 曜日 × slot 0/1)。(weekday, slot_index) 重複は不可。"),
     )
+    # Wave U-1 (§2.2 反映先の統一 / プール採用 A 経路):
+    #   pattern_only      = 型 (PFV) のみ上書き (既定・従来挙動; 後方互換).
+    #   pattern_and_week  = PFV 上書き後、同一リクエスト内で当該患者の今週 visits を
+    #                       PFV から再生成する (= sync-fixed-to-week 相当).
+    change_scope: Literal["pattern_only", "pattern_and_week"] = Field(
+        default="pattern_only",
+        description=(
+            "反映先の統一 (Wave U-1). pattern_only=型のみ(既定) / "
+            "pattern_and_week=型+今週再生成(A). 後者は iso_year/iso_week 必須."
+        ),
+    )
+    # pattern_and_week のとき再生成する対象週 (必須). pattern_only では無視.
+    iso_year: int | None = Field(default=None, ge=2020, le=2100)
+    iso_week: int | None = Field(default=None, ge=1, le=53)
 
     @model_validator(mode="after")
     def _no_duplicate_weekday_slot(self) -> PatientFixedVisitsBulkPut:
@@ -144,17 +156,33 @@ class PfvValidationWarningOut(BaseModel):
     severity: str = Field(description='"warning" (続行可) / "error" (422 対象).')
 
 
+class PfvWeekSyncOut(BaseModel):
+    """PUT /fixed-visits の change_scope=pattern_and_week で今週 visits を再生成した件数.
+
+    Wave U-1 (§2.2 A 経路). pattern_only のときは ``week_sync=null`` (後方互換).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    visits_regenerated: int = Field(ge=0, description="PFV から再生成した今週 visit 数")
+    visits_soft_deleted: int = Field(ge=0, description="再生成前に soft-delete した今週 visit 数")
+
+
 class PatientFixedVisitsBulkPutResponse(BaseModel):
     """PUT /patients/{id}/fixed-visits のエンベロープレスポンス (P0-2).
 
     ``items`` は従来どおり確定後の全 PFV 行. ``warnings`` は再検証で検出した
     非致命の指摘 (患者間衝突 / 昼休み / 容量). FE 未パースのため BE 先行デプロイ安全.
+
+    Wave U-1: ``week_sync`` は change_scope=pattern_and_week のときのみ非 null
+    (今週 visits 再生成の件数). 追加フィールドのみで後方互換.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     items: list[PatientFixedVisitV2Read]
     warnings: list[PfvValidationWarningOut] = Field(default_factory=list)
+    week_sync: PfvWeekSyncOut | None = Field(default=None)
 
 
 # ---------------------------------------------------------------------------
