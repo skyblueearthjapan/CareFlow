@@ -1,6 +1,6 @@
 # 引き継ぎ書：プール一括投入（再構築）＋新規提案廃止セッション
 
-作成 2026-07-04 / **本番HEAD = `9b367ce`** / DB = migration 0052（本セッションで migration 追加なし）/ healthz 正常。
+作成 2026-07-04 / **本番HEAD = `ace1e49`**（W-5 追記時に更新）/ DB = migration 0052（本セッションで migration 追加なし）/ healthz 正常。
 前セッションの引き継ぎ: `docs/plans/change-scope-unification-HANDOFF.md` → `docs/HANDOFF.md`（プロジェクト基本）。
 設計書（正典）: **`docs/plans/pool-bulk-insert-design.md`**（PO決定 D-1〜D-4・実装時判断の追記込み）。
 
@@ -33,6 +33,7 @@ Ctrl+Shift+R が必要。
 | W-2 | `5c26b52` | /v2/pool-bulk-apply（1TX・409・union visit_plans・AuditLog）＋ BulkPoolInsertDialog＋「見せる」4点＋週次ガイド§7 | BE/FE とも APPROVE（M/L 反映） |
 | W-3 | `be60024` | PoolCandidateList へ効率代替移植＋希望未登録チップ | APPROVE（M=誘導文言反映） |
 | W-4 | `9b367ce` | ProposeNewModal 削除＋RegisterPatientButton/CreatePatientDialog＋運用マニュアル書き換え | APPROVE（M=disabled 伝播反映） |
+| W-5 | `ace1e49` | 定員超過の個別相談への橋渡し（A案・設計書§3.6）: 最終sim基準の overcapacity_available_count＋「定員+1名なら入る候補あり」バッジ＋done画面から方式bへの導線 | APPROVE（M=案内文2行化反映） |
 
 ## 3. アーキテクチャ要点（次エージェント向け）
 
