@@ -37,7 +37,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import type { AutoCommittedNotice, ReviewItem } from '@/lib/queries/assign_staff_only';
+import type {
+  AutoCommittedNotice,
+  ReviewItem,
+  UnresolvedGenderWarning,
+} from '@/lib/queries/assign_staff_only';
 import { cn } from '@/lib/utils';
 
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'] as const;
@@ -79,6 +83,12 @@ export interface AssignWarningDialogProps {
    * アクションボタンなし。折りたたみで表示。
    */
   notices?: AutoCommittedNotice[];
+  /**
+   * W-11: 性別制約を満たす候補ゼロで残った違反の警告.
+   * 承認/確定ではなくアクション不能の警告 (= 管理者に手動調整を促す)。
+   * このダイアログでは approve 対象外・常時表示。
+   */
+  unresolvedWarnings?: UnresolvedGenderWarning[];
 }
 
 export function AssignWarningDialog({
@@ -88,6 +98,7 @@ export function AssignWarningDialog({
   onApply,
   applying = false,
   notices = [],
+  unresolvedWarnings = [],
 }: AssignWarningDialogProps) {
   // 承認済み course_id 集合 (= チェック / 確認モーダル通過分).
   const [approved, setApproved] = React.useState<Set<string>>(() => new Set());
@@ -179,10 +190,19 @@ export function AssignWarningDialog({
               <span aria-hidden>📋</span>
               自動スタッフ割当のレビュー
             </DialogTitle>
-            {reviewItems.length === 0 && notices.length > 0 ? (
+            {reviewItems.length === 0 ? (
+              // W-11: review が 0 件でも notices / 残留違反があるときは実態を反映する
+              // (= 「管理者の判断が必要なコースはありません」と誤誘導しない)。
               <DialogDescription>
-                管理者の判断が必要なコースはありません。体制上避けられない連続{' '}
-                {notices.length} 件は理由つきで確定済みです。
+                {notices.length > 0
+                  ? `体制上避けられない連続が ${notices.length} 件あり、理由つきで確定済みです。`
+                  : null}
+                {unresolvedWarnings.length > 0
+                  ? `性別制約を満たすスタッフが見つからない残留が ${unresolvedWarnings.length} 件あります。理由をご確認のうえ手動で調整してください。`
+                  : null}
+                {notices.length === 0 && unresolvedWarnings.length === 0
+                  ? 'レビュー対象はありません。'
+                  : null}
               </DialogDescription>
             ) : (
               <DialogDescription>
@@ -283,7 +303,36 @@ export function AssignWarningDialog({
               </section>
             ) : null}
 
-            {reviewItems.length === 0 && notices.length === 0 ? (
+            {/* 🟧 残留違反セクション (W-11: 性別候補ゼロ・手動調整が必要・承認不可) */}
+            {unresolvedWarnings.length > 0 ? (
+              <section data-testid="assign-unresolved-section">
+                <h3 className="mb-2 flex flex-wrap items-center gap-2 text-sm font-semibold text-text-primary">
+                  <span aria-hidden>🟧</span>
+                  性別制約を満たせない残留（{unresolvedWarnings.length} 件・要手動調整）
+                </h3>
+                <ul className="space-y-1">
+                  {unresolvedWarnings.map((w, i) => (
+                    <li
+                      key={`${w.course_id}-${i}`}
+                      className="flex flex-wrap items-center gap-1 rounded border border-warning/40 bg-warning/5 px-2 py-1 text-xs text-text-secondary"
+                      data-testid="assign-unresolved-row"
+                    >
+                      <span>
+                        {w.office_name || '—'} / {w.course_code} / {fmtWeekday(w.weekday)}
+                      </span>
+                      <span className="text-text-muted">|</span>
+                      <span className="font-medium text-text-primary">{w.current_staff_name}</span>
+                      <span className="text-text-muted">|</span>
+                      <span>{w.reason_text}</span>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            ) : null}
+
+            {reviewItems.length === 0 &&
+            notices.length === 0 &&
+            unresolvedWarnings.length === 0 ? (
               <div className="py-4 text-center text-xs text-text-muted">
                 レビュー対象はありません。
               </div>

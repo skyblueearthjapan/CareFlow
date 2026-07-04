@@ -335,7 +335,7 @@ describe('AssignWarningDialog — Wave N-2 notices セクション', () => {
     expect(row).toHaveTextContent('患者A・患者B');
   });
 
-  it('notices のみ (reviewItems=[]) でも open 時に描画され、情報トーンの説明が出る', () => {
+  it('notices のみ (reviewItems=[]) でも open 時に描画され、実態を反映した説明が出る', () => {
     render(
       <AssignWarningDialog
         open
@@ -346,9 +346,10 @@ describe('AssignWarningDialog — Wave N-2 notices セクション', () => {
       />,
     );
     expect(screen.getByTestId('assign-warning-dialog')).toBeInTheDocument();
-    // 情報トーンの説明文
-    expect(screen.getByText(/管理者の判断が必要なコースはありません/)).toBeInTheDocument();
-    expect(screen.getByText(/体制上避けられない連続.*件は理由つきで確定済み/)).toBeInTheDocument();
+    // W-11: 「管理者の判断が必要なコースはありません」で誤誘導しない.
+    expect(screen.queryByText(/管理者の判断が必要なコースはありません/)).not.toBeInTheDocument();
+    // 確定済みお知らせがある実態を反映する説明文.
+    expect(screen.getByText(/体制上避けられない連続が.*件あり.*確定済み/)).toBeInTheDocument();
   });
 
   it('notices があっても apply ボタンは reviewItems 承認数のみで disabled 判定される', () => {
@@ -389,5 +390,104 @@ describe('AssignWarningDialog — Wave N-2 notices セクション', () => {
       />,
     );
     expect(screen.queryByTestId('assign-notice-section')).not.toBeInTheDocument();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// W-11: unresolved_warnings (性別候補ゼロの残留違反) セクションのテスト
+// ─────────────────────────────────────────────────────────────────────────
+
+function makeUnresolved(
+  over: Partial<import('@/lib/queries/assign_staff_only').UnresolvedGenderWarning> = {},
+): import('@/lib/queries/assign_staff_only').UnresolvedGenderWarning {
+  return {
+    course_id: 'ffffffff-ffff-ffff-ffff-ffffffffffff',
+    course_code: 'B',
+    weekday: 3,
+    office_name: '稲毛拠点',
+    current_staff_name: '違反 太郎',
+    reason_text:
+      '性別制約を満たす候補が見つかりません。現在の担当（違反 太郎）は性別制約を満たしていません — 手動で調整してください',
+    ...over,
+  };
+}
+
+describe('AssignWarningDialog — W-11 unresolved_warnings セクション', () => {
+  it('unresolvedWarnings を渡すと残留違反セクションが常時表示される (折りたたみ無し)', () => {
+    render(
+      <AssignWarningDialog
+        open
+        onClose={() => {}}
+        reviewItems={[]}
+        unresolvedWarnings={[makeUnresolved()]}
+        onApply={() => {}}
+      />,
+    );
+    expect(screen.getByTestId('assign-unresolved-section')).toBeInTheDocument();
+    const row = screen.getByTestId('assign-unresolved-row');
+    expect(row).toBeInTheDocument();
+    expect(row).toHaveTextContent('稲毛拠点');
+    expect(row).toHaveTextContent('B');
+    expect(row).toHaveTextContent('木');
+    expect(row).toHaveTextContent('違反 太郎');
+    expect(row).toHaveTextContent('手動で調整してください');
+  });
+
+  it('残留違反は承認対象外 (apply ボタンは reviewItems=0 で disabled のまま)', () => {
+    render(
+      <AssignWarningDialog
+        open
+        onClose={() => {}}
+        reviewItems={[]}
+        unresolvedWarnings={[makeUnresolved()]}
+        onApply={() => {}}
+      />,
+    );
+    expect(screen.getByTestId('assign-review-apply')).toBeDisabled();
+  });
+
+  it('残留違反のみ (reviewItems=[]・notices=[]) でも説明文が実態を反映し誤誘導しない', () => {
+    render(
+      <AssignWarningDialog
+        open
+        onClose={() => {}}
+        reviewItems={[]}
+        unresolvedWarnings={[makeUnresolved()]}
+        onApply={() => {}}
+      />,
+    );
+    expect(screen.queryByText(/管理者の判断が必要なコースはありません/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/レビュー対象はありません/)).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/性別制約を満たすスタッフが見つからない残留が.*件あります/),
+    ).toBeInTheDocument();
+  });
+
+  it('残留違反なし (デフォルト) では残留違反セクションが出ない', () => {
+    render(
+      <AssignWarningDialog
+        open
+        onClose={() => {}}
+        reviewItems={[makeConsecutive()]}
+        onApply={() => {}}
+      />,
+    );
+    expect(screen.queryByTestId('assign-unresolved-section')).not.toBeInTheDocument();
+  });
+
+  it('notices + 残留違反 + reviewItems が並存できる', () => {
+    render(
+      <AssignWarningDialog
+        open
+        onClose={() => {}}
+        reviewItems={[makeConsecutive()]}
+        notices={[makeNotice()]}
+        unresolvedWarnings={[makeUnresolved()]}
+        onApply={() => {}}
+      />,
+    );
+    expect(screen.getByTestId('assign-review-consecutive-section')).toBeInTheDocument();
+    expect(screen.getByTestId('assign-notice-section')).toBeInTheDocument();
+    expect(screen.getByTestId('assign-unresolved-section')).toBeInTheDocument();
   });
 });

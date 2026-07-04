@@ -431,6 +431,38 @@ class AutoCommittedNotice:
     reason_text: str
 
 
+@dataclass(frozen=True)
+class UnresolvedGenderWarning:
+    """W-11: 性別制約を満たす候補ゼロで自動解消できなかった残留違反の警告.
+
+    性別ブロックで未割当になったコースについて、 ``_compute_gender_candidate_for_course``
+    が候補 (性別を無視した override 候補) を 1 名も返せない (= 純粋人手不足) 場合、
+    従来は review にも notice にも出さず黙って continue していた。 その結果、 過去の
+    自動割付で残った **性別制約違反の assigned_staff_id** が誰にも気づかれないまま
+    「割当済み」に見え続ける問題があった (PO 報告 W-11 原因B)。
+
+    本警告は「黙って消さない」原則のもと、 自動クリアはせず **可視化のみ** を行う:
+    現在の担当が性別制約を満たしていないことを管理者に伝え、 手動調整を促す。
+    ``review_items`` (承認可) とも ``auto_committed_notices`` (確定済みお知らせ) とも
+    別枠の「未解決警告」として API レスポンスの ``unresolved_warnings`` に載せる。
+
+    Attributes:
+        course_id: 残留違反が残っているコースの ID.
+        course_code: コースコード (A/B/C/D/E/M).
+        weekday: 0=Mon..6=Sun.
+        office_name: コース所属拠点名 (表示用).
+        current_staff_name: 現在割り当てられている (性別制約違反の) スタッフ名.
+        reason_text: BE で組み立てた日本語の理由文 (FE はそのまま表示).
+    """
+
+    course_id: UUID
+    course_code: str
+    weekday: int
+    office_name: str
+    current_staff_name: str
+    reason_text: str
+
+
 @dataclass
 class Layer3Result:
     """Layer 3 の総合出力."""
@@ -461,6 +493,11 @@ class Layer3Result:
     # unavoidable を本 list に積む (= review_items には出さず committed に残す).
     # 既存呼出は default の空 list で互換維持.
     auto_committed_notices: list[AutoCommittedNotice] = field(default_factory=list)
+    # W-11: 性別制約を満たす候補ゼロで自動解消できなかった残留違反の警告一覧.
+    # ``_build_review_items`` が「性別ブロック未割当 + 候補なし + 現担当が性別制約違反」
+    # のコースを検出して積む (= review にも notice にも出さず、 可視化のみ・自動クリアなし).
+    # 既存呼出は default の空 list で互換維持.
+    unresolved_warnings: list[UnresolvedGenderWarning] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -868,7 +905,12 @@ class Layer3Assigner:
         #   🔴 性別ブロック: gender で未割当 + 性別無視時の候補が居る
         #      → DB 未割当のまま. candidate は性別無視時の候補スタッフ.
         # ``review_items`` を埋め、 連続 index0 コースを ``_persist`` 対象から除外する.
-        review_items, exclude_course_ids, auto_committed_notices = await self._build_review_items(
+        (
+            review_items,
+            exclude_course_ids,
+            auto_committed_notices,
+            unresolved_warnings,
+        ) = await self._build_review_items(
             db,
             course_targets=course_targets,
             result=result,
@@ -885,6 +927,8 @@ class Layer3Assigner:
         result.review_items = review_items
         # Wave N-1: 不可避連続の「お知らせ」(= 代替候補 0 名で自動確定した連続コース).
         result.auto_committed_notices = auto_committed_notices
+        # W-11: 性別制約を満たす候補ゼロで自動解消できなかった残留違反の警告.
+        result.unresolved_warnings = unresolved_warnings
 
         # 連続 index0 コースは自動 commit しない (= DB 未割当のまま). visit_group
         # partner を含めた除外集合を使い、 _persist へ渡す assignments から落とす.
@@ -920,7 +964,12 @@ class Layer3Assigner:
         iso_week: int | None,
         patient_recent_staff: dict[UUID, list[UUID]],
         applied_staff_by_course: dict[UUID, UUID] | None = None,
-    ) -> tuple[list[ReviewItem], set[UUID], list[AutoCommittedNotice]]:
+    ) -> tuple[
+        list[ReviewItem],
+        set[UUID],
+        list[AutoCommittedNotice],
+        list[UnresolvedGenderWarning],
+    ]:
         """Phase G-91: 連続 index0 / 性別ブロックの ``ReviewItem`` を構築する.
 
         レビュー対象 2 種を判定し、 表示用メタ (拠点名 / 患者名 / 訪問時刻 /
@@ -964,10 +1013,20 @@ class Layer3Assigner:
             | 'all_recent'). 代替候補が 1 名以上なら従来どおり review_items.
             制約判定は ``_cost_single_cell`` (< HUNGARIAN_INFINITY) を再利用する.
 
+        W-11 (性別残留違反の可視化):
+            性別ブロック未割当コースで ``_compute_gender_candidate_for_course`` が
+            候補を 1 名も返せない (= 純粋人手不足) 場合、 従来は黙って continue して
+            いたが、 そのコースの現在の ``assigned_staff_id`` が非 null かつ性別制約を
+            満たしていない (= 過去の割付で残った違反) ときは ``UnresolvedGenderWarning``
+            として返す (自動クリアはしない = 「黙って消さない」原則). 現担当が性別制約を
+            満たす / assigned_staff_id が null (純粋未割当) のときは従来どおり何も出さない.
+
         Returns:
-            ``(review_items, exclude_course_ids, auto_committed_notices)``.
+            ``(review_items, exclude_course_ids, auto_committed_notices,
+            unresolved_warnings)``.
             review_items は (weekday, course_code, 代表 start_time) で決定的ソート.
             auto_committed_notices は (weekday, course_code) で決定的ソート.
+            unresolved_warnings は (weekday, course_code) で決定的ソート.
         """
         targets_by_id: dict[UUID, CourseAssignmentTarget] = {
             ct.course_id: ct for ct in course_targets
@@ -1010,6 +1069,9 @@ class Layer3Assigner:
         # ----- 🔴 性別ブロック コース (候補が居るもののみ) -----
         # course_id -> candidate StaffInfo.
         gender_candidates: dict[UUID, StaffInfo] = {}
+        # W-11: 性別ブロック未割当 + override 候補ゼロ (純粋人手不足) のコース集合.
+        # このうち「現担当が非 null かつ性別制約違反」のものを後段で残留違反警告にする.
+        gender_blocked_no_candidate: set[UUID] = set()
         for course_id in result.unassigned_course_ids:
             course = targets_by_id.get(course_id)
             if course is None:
@@ -1030,8 +1092,27 @@ class Layer3Assigner:
                 patient_recent_staff=patient_recent_staff,
             )
             if candidate is None:
-                continue  # 性別無視でも候補なし = 純粋人手不足 (レビュー対象外)
+                # W-11: 性別無視でも候補なし = 純粋人手不足. 従来は黙って continue して
+                # いたが、 現担当が性別制約違反のまま残っている可能性があるため観測ログを
+                # 残し、 後段 (_build_unresolved_gender_warnings) で残留違反を可視化する.
+                gender_blocked_no_candidate.add(course_id)
+                logger.warning(
+                    "gender_blocked_no_candidate: course_id=%s weekday=%s office_id=%s",
+                    course_id,
+                    course.weekday,
+                    course.office_id,
+                )
+                continue
             gender_candidates[course_id] = candidate
+
+        # W-11: 性別残留違反警告を構築 (= 現担当が非 null かつ性別制約違反のみ).
+        # DB I/O を伴うため review 早期 return より前で 1 度だけ実行し、 全 return
+        # パスで返す (= 純粋人手不足で他に何も無いケースでも警告だけは届ける).
+        unresolved_warnings = await self._build_unresolved_gender_warnings(
+            db,
+            course_ids=gender_blocked_no_candidate,
+            targets_by_id=targets_by_id,
+        )
 
         # ----- Wave N-1: 不可避連続の判定 (代替候補 0 名 → review から外し自動確定+notice) -----
         # 各連続 index0 コースについて「代替候補」(ハード制約 OK・当曜日未割当・原因患者の
@@ -1060,7 +1141,8 @@ class Layer3Assigner:
             consecutive_cause_patients.pop(cid, None)
 
         if not consecutive_cause_patients and not gender_candidates and not unavoidable_reason:
-            return [], set(), []
+            # W-11: review/notice が無くても残留違反警告だけは返す.
+            return [], set(), [], unresolved_warnings
 
         # ----- 🔗 修正4: 連続コースの visit_group partner を解決 -----
         # 連続コース X を非 commit にする際、 同 visit_group の partner course Y
@@ -1125,7 +1207,7 @@ class Layer3Assigner:
         # Wave N-1: notice の理由文組み立て用に不可避コースの名前も一括ロードする.
         name_course_ids = review_course_ids | set(unavoidable_reason)
         if not name_course_ids:
-            return [], exclude_course_ids, []
+            return [], exclude_course_ids, [], unresolved_warnings
 
         # ----- visit 情報 (patient_id, patient_name, start_time, sex_restriction) を一括ロード -----
         # course_id -> [(start_time, patient_id, patient_name, sex_restriction), ...]
@@ -1254,7 +1336,80 @@ class Layer3Assigner:
             visits_by_course=visits_by_course,
             office_name_by_id=office_name_by_id,
         )
-        return items, exclude_course_ids, notices
+        return items, exclude_course_ids, notices, unresolved_warnings
+
+    # ------------------------------------------------------------------ #
+    # W-11: 性別残留違反 (候補ゼロ) の可視化警告構築
+    # ------------------------------------------------------------------ #
+
+    async def _build_unresolved_gender_warnings(
+        self,
+        db: AsyncSession,
+        *,
+        course_ids: set[UUID],
+        targets_by_id: dict[UUID, CourseAssignmentTarget],
+    ) -> list[UnresolvedGenderWarning]:
+        """W-11: 性別ブロック未割当 + 候補ゼロのコースの残留違反を可視化する.
+
+        ``course_ids`` = 性別制限つき未割当 + ``_compute_gender_candidate_for_course``
+        が候補を返せなかったコース集合. このうち現在の ``assigned_staff_id`` が
+        非 null かつその担当が性別制約を **満たしていない** (= 過去の割付で残った違反)
+        ものだけを ``UnresolvedGenderWarning`` にする。 自動クリアはしない (可視化のみ)。
+
+        判定に使う担当スタッフは ``status`` を問わず Staff 行から解決する (= 既に退職
+        した違反担当も名前を表示できるようにするため). 現担当が性別制約を満たす /
+        assigned_staff_id が null のコースは警告に含めない (= 純粋人手不足のみ).
+
+        Returns:
+            (weekday, course_code) 昇順の ``UnresolvedGenderWarning`` list.
+            ``course_ids`` が空なら空 list.
+        """
+        if not course_ids:
+            return []
+
+        rows = (
+            await db.execute(
+                select(
+                    Course.id,
+                    Course.assigned_staff_id,
+                    Staff.name,
+                    Staff.sex,
+                    Office.name,
+                )
+                .join(Staff, Staff.id == Course.assigned_staff_id)
+                .outerjoin(Office, Office.id == Course.office_id)
+                .where(
+                    Course.id.in_(list(course_ids)),
+                    Course.assigned_staff_id.isnot(None),
+                )
+            )
+        ).all()
+
+        warnings: list[UnresolvedGenderWarning] = []
+        for c_id, _staff_id, staff_name, staff_sex, office_name in rows:
+            course = targets_by_id.get(c_id)
+            if course is None:
+                continue
+            # 現担当が性別制約を満たしていれば残留違反ではない (= 警告不要).
+            if _sex_satisfies_restrictions(staff_sex, course.gender_restrictions):
+                continue
+            name = staff_name or "不明"
+            warnings.append(
+                UnresolvedGenderWarning(
+                    course_id=c_id,
+                    course_code=course.course_code,
+                    weekday=course.weekday,
+                    office_name=office_name or "",
+                    current_staff_name=name,
+                    reason_text=(
+                        f"性別制約を満たす候補が見つかりません。現在の担当（{name}）は"
+                        "性別制約を満たしていません — 手動で調整してください"
+                    ),
+                )
+            )
+
+        warnings.sort(key=lambda w: (w.weekday, w.course_code))
+        return warnings
 
     # ------------------------------------------------------------------ #
     # Wave N-1: 不可避連続の判定・自動確定 notice 構築

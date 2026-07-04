@@ -144,6 +144,27 @@ export const autoCommittedNoticeSchema = z.object({
 
 export type AutoCommittedNotice = z.infer<typeof autoCommittedNoticeSchema>;
 
+// ---------------------------------------------------------------------------
+// W-11: 性別制約を満たす候補ゼロで残った違反の警告 — BE スキーマとミラー
+// ---------------------------------------------------------------------------
+
+/**
+ * 性別残留違反 1 件の警告.
+ * 性別ブロック未割当 + override 候補ゼロ + 現担当が性別制約違反のコースに出る。
+ * 承認/確定ではなくアクション不能の警告 (= 管理者に手動調整を促す)。
+ */
+export const unresolvedGenderWarningSchema = z.object({
+  course_id: z.string(),
+  course_code: z.string(),
+  weekday: z.number().int().min(0).max(6),
+  // BE は常に string を送る ("" フォールバック込み)。null は将来変更への防御のみ。
+  office_name: z.string().nullable(),
+  current_staff_name: z.string(),
+  reason_text: z.string(),
+});
+
+export type UnresolvedGenderWarning = z.infer<typeof unresolvedGenderWarningSchema>;
+
 export const assignStaffOnlyResponseSchema = z.object({
   iso_year: z.number().int(),
   iso_week: z.number().int(),
@@ -159,6 +180,9 @@ export const assignStaffOnlyResponseSchema = z.object({
   // Wave N-2: 不可避連続のお知らせ (自動確定済み / レビュー不要).
   // 旧 BE は本フィールドを返さないため .default([]).catch([]) で寛容に受け取る.
   auto_committed_notices: z.array(autoCommittedNoticeSchema).default([]).catch([]),
+  // W-11: 性別残留違反の警告 (候補ゼロ・手動調整を促す).
+  // 旧 BE は本フィールドを返さないため .default([]).catch([]) で寛容に受け取る.
+  unresolved_warnings: z.array(unresolvedGenderWarningSchema).default([]).catch([]),
 });
 
 export type AssignStaffOnlyResponse = z.infer<typeof assignStaffOnlyResponseSchema>;

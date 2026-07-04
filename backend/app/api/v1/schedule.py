@@ -95,6 +95,7 @@ from app.services.scheduling.layer3_assignment import (
     ReviewItem,
     RotationConflict,
     StaffAssignment,
+    UnresolvedGenderWarning,
 )
 
 logger = logging.getLogger(__name__)
@@ -1457,6 +1458,26 @@ class AutoCommittedNoticeSchema(BaseModel):
     reason_text: str
 
 
+class UnresolvedGenderWarningSchema(BaseModel):
+    """W-11: 性別制約を満たす候補ゼロで自動解消できなかった残留違反の警告.
+
+    性別ブロックで未割当になったコースに override 候補が 1 名も居らず、 かつ現在の
+    ``assigned_staff_id`` が性別制約を満たしていない (= 過去の割付で残った違反) 場合、
+    「黙って消さない」原則のもと自動クリアはせず可視化のみを行う。 ``review_items``
+    (承認可) とも ``auto_committed_notices`` (確定済みお知らせ) とも別枠で、
+    管理者に手動調整を促すアクション不能の警告として返す。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    course_id: UUID
+    course_code: str
+    weekday: int = Field(ge=0, le=6)
+    office_name: str
+    current_staff_name: str
+    reason_text: str
+
+
 class AssignStaffOnlyResponse(BaseModel):
     """``POST /api/v1/schedule/assign-staff-only`` のレスポンス (W17-BE-A2)."""
 
@@ -1479,6 +1500,9 @@ class AssignStaffOnlyResponse(BaseModel):
     # Wave N-1: 不可避連続の「お知らせ」(確定済み・アクション不要).
     # 後方互換 (= 既存クライアントは本フィールドを無視できる).
     auto_committed_notices: list[AutoCommittedNoticeSchema] = Field(default_factory=list)
+    # W-11: 性別制約を満たす候補ゼロで残った違反 (アクション不能・手動調整を促す警告).
+    # 後方互換 (= 既存クライアントは本フィールドを無視できる).
+    unresolved_warnings: list[UnresolvedGenderWarningSchema] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -1711,6 +1735,9 @@ async def assign_staff_only(
         l3_result.auto_committed_notices
     )
 
+    # W-11: 性別残留違反 (候補ゼロ) の警告をスキーマ変換.
+    unresolved_warnings = _build_unresolved_warnings_response(l3_result.unresolved_warnings)
+
     # Phase G-91 (修正2): 自動確定 (commit) したコース数 = ``committed_course_ids``
     # (= _persist へ実際に渡した assignments の course). 連続コースだけでなく、
     # その visit_group partner (clean 含む) も非 commit のため、 単純な
@@ -1736,6 +1763,7 @@ async def assign_staff_only(
         unassigned_warnings=unassigned_warnings,
         review_items=review_items,
         auto_committed_notices=auto_committed_notices,
+        unresolved_warnings=unresolved_warnings,
     )
 
 
@@ -1792,6 +1820,27 @@ def _build_auto_committed_notices_response(
             reason_text=n.reason_text,
         )
         for n in notices
+    ]
+
+
+def _build_unresolved_warnings_response(
+    warnings: list[UnresolvedGenderWarning],
+) -> list[UnresolvedGenderWarningSchema]:
+    """W-11: Layer3 の ``UnresolvedGenderWarning`` dataclass をレスポンス schema へ変換.
+
+    純粋なフィールド写像 (= DB I/O なし). 並びは Layer3 側で (weekday, course_code)
+    昇順にソート済みなので保持する.
+    """
+    return [
+        UnresolvedGenderWarningSchema(
+            course_id=w.course_id,
+            course_code=w.course_code,
+            weekday=w.weekday,
+            office_name=w.office_name,
+            current_staff_name=w.current_staff_name,
+            reason_text=w.reason_text,
+        )
+        for w in warnings
     ]
 
 
