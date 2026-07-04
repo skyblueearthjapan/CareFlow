@@ -1,6 +1,6 @@
 # 引き継ぎ書：プール一括投入（再構築）＋新規提案廃止セッション
 
-作成 2026-07-04 / **本番HEAD = `8a402be`**（W-7 追記時に更新）/ DB = **migration 0053**（office_area_prompt_dismissals）/ healthz 正常。
+作成 2026-07-04 / **本番HEAD = `f574c49`**（W-5b 追記時に更新）/ DB = **migration 0053**（office_area_prompt_dismissals）/ healthz 正常。
 前セッションの引き継ぎ: `docs/plans/change-scope-unification-HANDOFF.md` → `docs/HANDOFF.md`（プロジェクト基本）。
 設計書（正典）: **`docs/plans/pool-bulk-insert-design.md`**（PO決定 D-1〜D-4・実装時判断の追記込み）。
 
@@ -34,6 +34,7 @@ Ctrl+Shift+R が必要。
 | W-3 | `be60024` | PoolCandidateList へ効率代替移植＋希望未登録チップ | APPROVE（M=誘導文言反映） |
 | W-4 | `9b367ce` | ProposeNewModal 削除＋RegisterPatientButton/CreatePatientDialog＋運用マニュアル書き換え | APPROVE（M=disabled 伝播反映） |
 | W-5 | `ace1e49` | 定員超過の個別相談への橋渡し（A案・設計書§3.6）: 最終sim基準の overcapacity_available_count＋「定員+1名なら入る候補あり」バッジ＋done画面から方式bへの導線 | APPROVE（M=案内文2行化反映） |
+| W-5b | `f574c49` | 定員超過相談への直行化（PO実機フィードバック起点）: 完了画面のバッジもクリック可・個別相談で超過候補まで自動展開（ref ガード1回・採用は理由必須不変）・プレビューに「適用後に移動できます」ヒント | APPROVE（M=フォーカスリング/L=防御的リセット反映） |
 | W-6 | `ec42622` | 拠点まわり6項目: ①一括投入の拠点自動グループ化（拠点タブ・混入修正・拠点未設定分離・「拠点を選択してから」廃止）②スケジュール最適化の拠点画面スキップ ③改名「範囲最適化」→「スケジュール最適化」④拠点未設定の採用ガード422（place-and-fix/apply_individual_proposal）＋simulate の no_primary_office/office_mismatch ⑤患者編集の拠点自動上書きバグ修正（編集時 officeMode=manual）⑥担当エリア欄に「入口のヒント」説明文 | APPROVE（M=適用中ESCガード反映・L=dark配色反映） |
 
 **W-6 の背景調査（2026-07-04・会話内レポート・要点はメモリ careflow-office-region-model）**:
