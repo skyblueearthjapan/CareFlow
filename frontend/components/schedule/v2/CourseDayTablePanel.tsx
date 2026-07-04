@@ -4,11 +4,10 @@
  * CourseDayTablePanel — Wave 17 Phase B-2 メインパネル.
  *
  * Excel スケジュール枠組みに完全準拠した 1 画面構造
- * (Phase G-43 で Row 1 を flex justify-end 単一 toolbar 化し、主要 4 と固定枠戻を隣接させた。
- *  W-9 で「週を生成」と「週次ガイド」を対のペアとして隣接配置に並べ替えた):
+ * (Phase G-43 で Row 1 を flex 単一 toolbar 化。W-9/W-9b で両端配置に変更):
  *   ┌─ ヘッダー ────────────────────────────────────────────┐
- *   │  Row 1 (右寄せ 1 行 toolbar, admin/manager only):                              │
- *   │     [週を生成][週次ガイド][欠勤対応][新規患者登録][診断][最適化] │ [固定枠戻][全件保存] │
+ *   │  Row 1 (両端配置 toolbar, admin/manager only):                                 │
+ *   │  [週を生成][週次ガイド]   [欠勤対応][新規患者登録][診断][最適化] │ [固定枠戻][全件保存] │
  *   │  ─── border-t ────────────────────                                            │
  *   │  Row 2 (曜日タブ + テーブル/リスト + 二次操作):                                  │
  *   │    [月][火][水][木][金][土][週] YYYY-Www                                       │
@@ -2086,119 +2085,122 @@ export function CourseDayTablePanel({
     <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
       <section className="space-y-3" data-testid="course-day-table-panel">
         {/*
-          Phase G-43: Row 1 を flex justify-end の単一行 toolbar に再構成.
-          G-42 の 3-column grid (1fr_auto_1fr) では中央セルと右端セルの間に左 spacer が挟まり、
-          「主要 4」と「固定枠戻 / 全件保存」が視覚的に離れて見えていたため、
-          全要素を 1 つの flex container に並べて全部右寄せ + 主要 4 と固定枠戻の間に縦区切り線を配置する.
-            Row 1 (admin/manager only, flex justify-end):
-              [週を生成][プール投入 🟢] │ [固定枠戻][全件保存]
-              ※ 主要ボタン群と固定枠戻/全件保存の間に縦区切り線で視覚的セパレーション.
-              ※ Row 1 は最上段なので border-t 不要.
+          W-9b: Row 1 を justify-between の両端配置に変更。
+            左グループ: [週を生成][週次ガイド]  ← 週次操作の入口ペアを左端 (曜日タブ真上) に配置.
+            右グループ: [欠勤対応][新規患者登録][診断][最適化] │ [固定枠戻][全件保存].
+            ※ Row 1 は最上段なので border-t 不要.
             Row 2 (曜日タブ + テーブル/リスト + 二次操作):
               左: 曜日タブ (月〜土 + 週) + iso week label.
               右 (ml-auto): 3 グループを縦区切り線で分離 (α | γ | δ).
                 α テーブル/リスト切替 (「週」タブ時のみ非表示)
-                γ 自動スタッフ割当 🟢 + 一斉スタッフ未割当 (= 割当/リセットの対操作.
-                  2026-07: 「自動スタッフ割付」を改称して Row 1 から移動)
+                γ 自動スタッフ割当 🟢 + 一斉スタッフ未割当 (= 割当/リセットの対操作)
                 δ 🔒 全件ロック + 🔓 全件解除 (= 一括設定)
           ボタンは基本 variant="outline" size="sm" で統一感を担保し、
           毎週必ず押す主要ボタン (自動スタッフ割当) のみ variant="default" (= brand-primary 緑) で目立たせる.
         */}
         <Card className="p-3">
-          {/* Row 1: 主要 4 ボタン + 固定枠戻 / 全件保存 をまとめて右寄せ (canEdit のみ).
-              Phase G-43: flex flex-wrap justify-end で単一 toolbar 化し、主要 4 と固定枠戻の境界に
-              縦区切り線を入れる. 狭幅では flex-wrap で折り返す. */}
+          {/* Row 1: 両端配置 toolbar (canEdit のみ).
+              W-9b: justify-between で左右グループに分割。
+                左グループ = [週を生成][週次ガイド] (週次操作の入口ペアを曜日タブ真上・左端に配置).
+                右グループ = [欠勤対応][新規患者登録][診断][最適化] │ [固定枠戻][全件保存].
+              狭幅では flex-wrap で左グループ→右グループ順に折り返す. */}
           {canEdit ? (
             <div
-              className="flex flex-wrap items-center justify-end gap-2"
+              className="flex flex-wrap items-center justify-between gap-2"
               role="toolbar"
               aria-label="スケジュール主要操作"
               data-testid="schedule-main-action-toolbar"
             >
-              {/* 主要 4 ボタン. */}
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={handleGenerateWeek}
-                disabled={generateWeekMut.isPending}
-                data-testid="generate-week-button"
-              >
-                {generateWeekMut.isPending ? (
-                  <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
-                ) : (
-                  <RefreshCw className="mr-1 h-4 w-4" aria-hidden />
-                )}
-                週を生成
-              </Button>
-              {/* PO 指示 (W-9): 「週次ガイド」を「週を生成」の右隣に配置する。
-                  週次操作の入口 (週を生成) とその手順書 (週次ガイド) を対のペアとして隣接させる。
-                  P3-⑥: 週次ガイド (案内のみ・variant=ghost で目立たせすぎない). */}
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                onClick={() => setWeeklyRitualGuideOpen(true)}
-                data-testid="weekly-ritual-guide-button"
-              >
-                <ListChecks className="mr-1 h-4 w-4" aria-hidden />
-                週次ガイド
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={() => setStaffSubstituteOpen(true)}
-                data-testid="staff-substitute-button"
-              >
-                <UserX className="mr-1 h-4 w-4" aria-hidden />
-                欠勤対応
-              </Button>
-              {/* PO 指示 2026-07-03: 「プール投入」ボタンは削除。保留プールの
-                  「効果を表示」ボタン (PoolOverviewPane) が入口として十分なため。 */}
-              {/* W-4 (D-4): 旧「＋新規提案」を「＋新規患者登録」に置換。患者マスタの
-                  登録フォームを再利用し、登録→希望登録→プール流入の入口を一本化する。 */}
-              <RegisterPatientButton disabled={isProcessing} />
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={() => setScheduleHealthOpen(true)}
-                data-testid="schedule-health-button"
-              >
-                <HeartPulse className="mr-1 h-4 w-4" aria-hidden />
-                スケジュール診断
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={() => {
-                  setScopeOptimizeInitialScope(null); // ツールバーからは手動選択で開く.
-                  setScopeOptimizeInitialOfficeId(null);
-                  setScopeOptimizeOpen(true);
-                }}
-                data-testid="scope-optimize-button"
-              >
-                <Route className="mr-1 h-4 w-4" aria-hidden />
-                スケジュール最適化
-              </Button>
+              {/* 左グループ: 週次操作の起点ペア (W-9b PO 指示). */}
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={handleGenerateWeek}
+                  disabled={generateWeekMut.isPending}
+                  data-testid="generate-week-button"
+                >
+                  {generateWeekMut.isPending ? (
+                    <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
+                  ) : (
+                    <RefreshCw className="mr-1 h-4 w-4" aria-hidden />
+                  )}
+                  週を生成
+                </Button>
+                {/* PO 指示 (W-9): 「週次ガイド」を「週を生成」の右隣に配置。
+                    週次操作の入口とその手順書を対のペアとして隣接。
+                    P3-⑥: 案内のみ・variant=ghost で目立たせすぎない. */}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setWeeklyRitualGuideOpen(true)}
+                  data-testid="weekly-ritual-guide-button"
+                >
+                  <ListChecks className="mr-1 h-4 w-4" aria-hidden />
+                  週次ガイド
+                </Button>
+              </div>
 
-              {/* 主要ボタン群と「固定枠戻 / 全件保存」 の区切り線. */}
-              <span
-                aria-hidden
-                className="h-5 w-px bg-border-default"
-                data-testid="course-day-button-divider"
-              />
+              {/* 右グループ: その他操作 + 書き戻し系. */}
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setStaffSubstituteOpen(true)}
+                  data-testid="staff-substitute-button"
+                >
+                  <UserX className="mr-1 h-4 w-4" aria-hidden />
+                  欠勤対応
+                </Button>
+                {/* PO 指示 2026-07-03: 「プール投入」ボタンは削除。保留プールの
+                    「効果を表示」ボタン (PoolOverviewPane) が入口として十分なため。 */}
+                {/* W-4 (D-4): 旧「＋新規提案」を「＋新規患者登録」に置換。患者マスタの
+                    登録フォームを再利用し、登録→希望登録→プール流入の入口を一本化する。 */}
+                <RegisterPatientButton disabled={isProcessing} />
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setScheduleHealthOpen(true)}
+                  data-testid="schedule-health-button"
+                >
+                  <HeartPulse className="mr-1 h-4 w-4" aria-hidden />
+                  スケジュール診断
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    setScopeOptimizeInitialScope(null); // ツールバーからは手動選択で開く.
+                    setScopeOptimizeInitialOfficeId(null);
+                    setScopeOptimizeOpen(true);
+                  }}
+                  data-testid="scope-optimize-button"
+                >
+                  <Route className="mr-1 h-4 w-4" aria-hidden />
+                  スケジュール最適化
+                </Button>
 
-              {/* 固定枠戻 + 全件保存 (= データ書き戻し系). */}
-              <ResetToFixedButton
-                isoYear={isoYear}
-                isoWeek={isoWeek}
-                officeId={officeId}
-                disabled={isProcessing}
-              />
-              <BulkFixToPatternButton canEdit={canEdit} isoYear={isoYear} isoWeek={isoWeek} />
+                {/* 主要ボタン群と「固定枠戻 / 全件保存」 の区切り線. */}
+                <span
+                  aria-hidden
+                  className="h-5 w-px bg-border-default"
+                  data-testid="course-day-button-divider"
+                />
+
+                {/* 固定枠戻 + 全件保存 (= データ書き戻し系). */}
+                <ResetToFixedButton
+                  isoYear={isoYear}
+                  isoWeek={isoWeek}
+                  officeId={officeId}
+                  disabled={isProcessing}
+                />
+                <BulkFixToPatternButton canEdit={canEdit} isoYear={isoYear} isoWeek={isoWeek} />
+              </div>
             </div>
           ) : null}
 
