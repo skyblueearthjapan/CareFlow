@@ -1,6 +1,6 @@
 # 引き継ぎ書：プール一括投入（再構築）＋新規提案廃止セッション
 
-作成 2026-07-04 / **本番HEAD = `ec42622`**（W-6 追記時に更新）/ DB = migration 0052（本セッションで migration 追加なし）/ healthz 正常。
+作成 2026-07-04 / **本番HEAD = `8a402be`**（W-7 追記時に更新）/ DB = **migration 0053**（office_area_prompt_dismissals）/ healthz 正常。
 前セッションの引き継ぎ: `docs/plans/change-scope-unification-HANDOFF.md` → `docs/HANDOFF.md`（プロジェクト基本）。
 設計書（正典）: **`docs/plans/pool-bulk-insert-design.md`**（PO決定 D-1〜D-4・実装時判断の追記込み）。
 
@@ -41,10 +41,13 @@ Ctrl+Shift+R が必要。
 スケジュール計算は不参照）。担当エリア変更は既存患者に不追随（登録時スナップショット）・
 同一City二重登録は created_at 先勝ち・City は静的seed393件で患者登録では増えない。
 
-**次の Wave（PO合意済み・未着手）: W-7 地域ルールの学習** — 患者登録で「拠点エリア外」→手動で
-拠点を選んだ瞬間に「この地域を〇〇拠点の担当地域として登録しますか？ [登録する] [今回だけ]」を
-一度だけ提示（今回だけ=地域単位で記憶して二度と聞かない・suggestion_dismissals 方式）。
-脅迫的警告は作らない（グローバルバナー・繰り返しトースト禁止）が設計原則。
+**W-7 完了（2026-07-04・本番稼働）**: 地域ルールの学習 — コミット `8a402be`・migration **0053**・
+設計書 `docs/plans/region-rule-learning-design.md`。患者登録で「拠点エリア外」→手動拠点選択の瞬間に
+一度だけ呼びかけ（[担当地域に登録する]=office_cities に1件追加＋却下記憶の自動解除 /
+[今回だけ]=City単位で記憶し二度と聞かない）。resolve 拡張は confidence=none 時のみ
+matched_city+prompt_dismissed を返す後方互換。レビュー APPROVE
+（MEDIUM=bg-warning/10 CSS不生成罠→実値トークンで修正 / LOW=却下APIの404→反映）。
+City を特定できない住所（表記ゆれ・マスタ外）は呼びかけを出さない=v1 の既知制約（設計書§4）。
 
 ## 3. アーキテクチャ要点（次エージェント向け）
 
