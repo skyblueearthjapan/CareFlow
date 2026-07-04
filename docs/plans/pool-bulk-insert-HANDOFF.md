@@ -1,6 +1,6 @@
 # 引き継ぎ書：プール一括投入（再構築）＋新規提案廃止セッション
 
-作成 2026-07-04 / **本番HEAD = `f574c49`**（W-5b 追記時に更新）/ DB = **migration 0053**（office_area_prompt_dismissals）/ healthz 正常。
+作成 2026-07-04 / **本番HEAD = `61d0fb4`**（W-8 追記時に更新）/ DB = **migration 0053**（office_area_prompt_dismissals）/ healthz 正常。
 前セッションの引き継ぎ: `docs/plans/change-scope-unification-HANDOFF.md` → `docs/HANDOFF.md`（プロジェクト基本）。
 設計書（正典）: **`docs/plans/pool-bulk-insert-design.md`**（PO決定 D-1〜D-4・実装時判断の追記込み）。
 
@@ -41,6 +41,14 @@ Ctrl+Shift+R が必要。
 主担当拠点=運用の正典（全エンジン参照）/ 担当エリア=入口のヒント（新規患者の自動判定のみ・
 スケジュール計算は不参照）。担当エリア変更は既存患者に不追随（登録時スナップショット）・
 同一City二重登録は created_at 先勝ち・City は静的seed393件で患者登録では増えない。
+
+**W-8 完了（2026-07-04・本番稼働）**: シミュレーション（旧・全面最適化 FullOptimizeDialog）UI 廃止 —
+コミット `61d0fb4`。PO 判断「確認不要、畳んでよし」。理由 = アドバイザー4機能と物差し不統一・
+説明不能・行動不能な問い・残存適用経路（W41 一括固定時間変更含む）が反映先統一以前の事故再発口。
+BE /v2/full-optimize は残置。孤児 hook 3件削除・共有部品（ProposalWeekCalendar 等）無傷。
+**残レガシー（次の掃除 Wave 候補）**: DiffAddDialog.tsx（useApplyIndividualMutation 経由で生存中の残置）・
+FixedTimeEditModal.tsx＋useUpdateFixedTime系（W-8 で完全孤児化・未削除）・
+CourseDayTablePanel 系テストの死蔵 mock・BE /v2/full-optimize・/v2/diff-add。
 
 **W-7 完了（2026-07-04・本番稼働）**: 地域ルールの学習 — コミット `8a402be`・migration **0053**・
 設計書 `docs/plans/region-rule-learning-design.md`。患者登録で「拠点エリア外」→手動拠点選択の瞬間に
