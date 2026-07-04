@@ -1180,7 +1180,7 @@ describe('W-12d: 詰まり解消相談 (unblock)', () => {
     expect(screen.getByText(/既存の訪問を少しずらせば入る手/)).toBeInTheDocument();
   });
 
-  it('capacity_full のみ (時間起因なし) では呼びかけを出さない', () => {
+  it('W-15: capacity_full のみでも「ずらせば入る手」呼びかけと探索ボタンが出る', () => {
     mocks.proposeData = {
       slots: [],
       message: null,
@@ -1188,8 +1188,29 @@ describe('W-12d: 詰まり解消相談 (unblock)', () => {
     };
     render(<PoolCandidateList {...COMMON} />);
     fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
-    expect(screen.queryByTestId('unblock-callout')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('unblock-search-button')).not.toBeInTheDocument();
+    // W-15: 定員起因でもブロッカーを他コースへ退避させる手を探せる。
+    expect(screen.getByTestId('unblock-callout')).toBeInTheDocument();
+    expect(screen.getByTestId('unblock-search-button')).toBeInTheDocument();
+    // 定員超過候補 (方式b) は無いので方式b callout は出ない（区切りも出ない）。
+    expect(screen.queryByTestId('pool-overcapacity-callout')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('pool-consult-divider')).not.toBeInTheDocument();
+  });
+
+  it('W-15: 定員起因で定員超過候補もあるとき 方式b と unblock の両呼びかけが並列表示される', () => {
+    mocks.proposeData = {
+      slots: [],
+      message: null,
+      overcapacity_available_count: 2,
+      excluded_summary: [{ reason: 'capacity_full', count: 3, weekday: 1, sample_course_code: 'A' }],
+    };
+    render(<PoolCandidateList {...COMMON} />);
+    fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
+    // 方式b（+1名相談）の呼びかけ。
+    expect(screen.getByTestId('pool-overcapacity-callout')).toBeInTheDocument();
+    // unblock（ずらす）の呼びかけ。
+    expect(screen.getByTestId('unblock-callout')).toBeInTheDocument();
+    // 両方出るとき軽い区切りが方式b → unblock の間に挟まる。
+    expect(screen.getByTestId('pool-consult-divider')).toBeInTheDocument();
   });
 
   it('探索ボタン: propose-unblock を当該患者・拠点・limit=5 で呼ぶ', () => {
@@ -1226,6 +1247,27 @@ describe('W-12d: 詰まり解消相談 (unblock)', () => {
     expect(screen.getByText(/合計 \+5分\/週・動くのは 1名/)).toBeInTheDocument();
     // 発動ボタン。
     expect(screen.getByTestId('unblock-plan-apply')).toBeInTheDocument();
+  });
+
+  it('W-15: frees_capacity=true のプランに「定員内に収まります」バッジが出る', () => {
+    mocks.proposeData = TIME_BLOCKER_PROPOSE;
+    mocks.unblockData = makeUnblockResult({
+      plans: [makeUnblockPlan({ frees_capacity: true })],
+    });
+    render(<PoolCandidateList {...COMMON} />);
+    fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
+    expect(screen.getByTestId('unblock-plan-frees-capacity')).toBeInTheDocument();
+    expect(screen.getByText('定員内に収まります')).toBeInTheDocument();
+  });
+
+  it('W-15: frees_capacity=false のプランにはバッジを出さない', () => {
+    mocks.proposeData = TIME_BLOCKER_PROPOSE;
+    mocks.unblockData = makeUnblockResult({
+      plans: [makeUnblockPlan({ frees_capacity: false })],
+    });
+    render(<PoolCandidateList {...COMMON} />);
+    fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
+    expect(screen.queryByTestId('unblock-plan-frees-capacity')).not.toBeInTheDocument();
   });
 
   it('確認ダイアログ: 未チェックでは確定不可・チェックで有効化 (gating)', () => {
@@ -1373,7 +1415,7 @@ describe('W-14: autoRequestUnblock (詰まり解消探索の自動発火)', () =
     expect(screen.getByTestId('unblock-callout')).toBeInTheDocument();
   });
 
-  it('primary + autoRequestUnblock: 時間起因なし (capacity_full のみ) では自動発火しない', () => {
+  it('W-15: primary + autoRequestUnblock: 定員起因 (capacity_full) でも探索が自動発火する', () => {
     mocks.proposeData = {
       slots: [],
       message: null,
@@ -1382,7 +1424,7 @@ describe('W-14: autoRequestUnblock (詰まり解消探索の自動発火)', () =
       ],
     };
     render(<PoolCandidateList {...COMMON} primary autoRequestUnblock />);
-    // 時間起因がないので UnblockConsult は mount されず自動発火もしない。
-    expect(mocks.unblockMutate).not.toHaveBeenCalled();
+    // W-15: capacity_full も発動理由。UnblockConsult が mount され autoFire で 1 回発火する。
+    expect(mocks.unblockMutate).toHaveBeenCalledTimes(1);
   });
 });

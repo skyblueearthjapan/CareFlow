@@ -54,6 +54,10 @@ from app.services.scheduling.auto_allocator_v2 import (
     compute_lunch_window,
 )
 from app.services.scheduling.config import SchedulingConfig
+from app.services.scheduling.constants import (
+    COURSE_MAX_MINUTES,
+    MAX_PATIENTS_PER_COURSE,
+)
 from app.services.scheduling.improvement_engine import (
     CourseSnapshotData,
     CourseSnapshotVisitData,
@@ -65,6 +69,7 @@ from app.services.scheduling.improvement_engine import (
 from app.services.scheduling.proposal_solver import (
     Candidate,
     ExistingVisit,
+    _course_total_minutes_from_existing,
     _is_same_address,
     find_available_slots_for_candidate,
 )
@@ -72,6 +77,7 @@ from app.services.scheduling.propose_slots_service import (
     CandidateInput,
     ProposedSlot,
     _CourseBucket,
+    _to_existing_visits,
     compute_all_proposed_slots,
     load_week_course_buckets,
 )
@@ -151,6 +157,10 @@ class UnblockPlan:
     insert: UnblockInsert
     total_delta_minutes: int
     moved_count: int
+    # W-15: 定員起因 (capacity_full) の詰まりを「ブロッカーの他バケット退避で定員を空けて」
+    # 開通したプランか (FE の「ずらす」vs「+1名」表示分岐用)。時間起因プランは False。
+    # 後方互換のため既定 False。
+    frees_capacity: bool = False
     # W-13b: 影響コースの before/after ((weekday, course_code) 昇順・重複排除)。既定 [].
     courses: list[UnblockCourseSnapshotData] = field(default_factory=list)
 
@@ -236,6 +246,31 @@ def _add_retreated_visit(
         staff_absent=base.staff_absent,
         visits=base.visits + [retreated],
     )
+
+
+def _bucket_capacity_blocked(
+    bucket: _CourseBucket,
+    candidate: CandidateInput,
+    *,
+    config: SchedulingConfig,
+) -> bool:
+    """対象患者にとって bucket が定員起因 (件数上限 or 分数上限) で満杯か (W-15).
+
+    判定は proposal_solver の ``find_available_slots_for_candidate`` の容量ガード
+    (``used_count < max_patients`` かつ ``used_minutes + service <= COURSE_MAX_MINUTES``) と
+    厳密に同一。すなわち「そもそも am/pm 走査に入れない = capacity_full」の条件そのもの。
+
+    定員起因の詰まりは訪問を **他バケットへ** 退避して初めて枠が空く。同一バケット内の時間
+    ずらしは件数も使用分も一切変えず定員を空けないため、定員起因では退避先を他バケット限定に
+    する (呼出側で ``exclude_same_bucket=True`` にする根拠)。
+    """
+    max_patients = (
+        config.max_patients_per_course if config is not None else MAX_PATIENTS_PER_COURSE
+    )
+    if len(bucket.visits) >= max_patients:
+        return True
+    used_minutes = _course_total_minutes_from_existing(_to_existing_visits(bucket), config=config)
+    return used_minutes + int(candidate.service_minutes) > COURSE_MAX_MINUTES
 
 
 def _is_pair_half(v: V2Visit, bucket: _CourseBucket) -> bool:
@@ -576,8 +611,19 @@ def _plan_id(moves: list[UnblockMove], insert: UnblockInsert, target_id: UUID | 
     )
 
 
-def _make_plan(moves: list[UnblockMove], ps: ProposedSlot, target_id: UUID | None) -> UnblockPlan:
-    """moves + 対象枠 (ProposedSlot) からプランを組む (moves は決定的順にソート)."""
+def _make_plan(
+    moves: list[UnblockMove],
+    ps: ProposedSlot,
+    target_id: UUID | None,
+    *,
+    frees_capacity: bool = False,
+) -> UnblockPlan:
+    """moves + 対象枠 (ProposedSlot) からプランを組む (moves は決定的順にソート).
+
+    ``frees_capacity`` は定員起因の詰まりを他バケット退避で開通したプランに立てる (W-15)。
+    plan_id には含めない (内容ハッシュは moves+insert のみ = apply 側と一致させるため。
+    frees_capacity は moves+insert から決定的に導かれるので冪等性を損なわない)。
+    """
     ordered = sorted(
         moves, key=lambda m: (m.from_weekday, _time_to_min(m.from_start), str(m.patient_id))
     )
@@ -594,6 +640,7 @@ def _make_plan(moves: list[UnblockMove], ps: ProposedSlot, target_id: UUID | Non
         insert=insert,
         total_delta_minutes=sum(m.delta_minutes for m in ordered),
         moved_count=len(ordered),
+        frees_capacity=frees_capacity,
     )
 
 
@@ -779,9 +826,13 @@ async def search_unblock_plans(
             bucket_code=bucket_code,
         )
 
-    def _finalize(moves: list[UnblockMove], ps: ProposedSlot) -> UnblockPlan:
+    def _finalize(
+        moves: list[UnblockMove], ps: ProposedSlot, *, frees_capacity: bool = False
+    ) -> UnblockPlan:
         """plan を組み立て、影響コースの before/after スナップショット (W-13b) を付与する."""
-        plan = _make_plan(moves, ps, candidate.existing_patient_id)
+        plan = _make_plan(
+            moves, ps, candidate.existing_patient_id, frees_capacity=frees_capacity
+        )
         courses = _build_plan_courses(
             plan.moves,
             plan.insert,
@@ -802,6 +853,11 @@ async def search_unblock_plans(
             # 既に入るなら詰まっていない (unblock 不要).
             if _fits(wd_buckets, b_code) is not None:
                 continue
+
+            # W-15: このバケットが対象患者にとって定員起因 (件数/分の上限) で詰まっているか。
+            # 定員起因なら退避先は他バケット限定 (同一バケット内の時間ずらしは件数も使用分も
+            # 変えず定員を空けないため) とし、成立プランに frees_capacity=True を付ける。
+            cap_blocked = _bucket_capacity_blocked(bucket, candidate, config=config)
 
             visits_sorted = sorted(
                 bucket.visits, key=lambda v: (_time_to_min(v.start_time), str(v.patient_id))
@@ -826,10 +882,13 @@ async def search_unblock_plans(
                     dismissed_fp=dismissed_fp,
                     config=config,
                     summary=summary,
+                    # W-15: 定員起因は他バケット退避のみが枠を空ける (同一バケット退避は除外).
+                    exclude_same_bucket=cap_blocked,
                 )
                 if move is not None:
                     # 同一バケット退避の最終状態検証: ブロッカーを退避時刻に仮配置した状態で
                     # 対象患者の開通を再確認する。退避先が対象の挿入枠を再占有するケースは弾く。
+                    # (定員起因では exclude_same_bucket により同一バケット退避は生じない = 時間起因のみ到達)
                     if move.to_weekday == b_key[1] and move.to_course_code == b_key[2]:
                         final_sub = dict(wd_buckets)
                         final_sub[b_key] = _add_retreated_visit(
@@ -855,7 +914,7 @@ async def search_unblock_plans(
                             )
                             if move is None:
                                 continue  # 有効な退避先なし → このブロッカーはスキップ.
-                    plans.append(_finalize([move], ps))
+                    plans.append(_finalize([move], ps, frees_capacity=cap_blocked))
                     depth1_found = True
 
             # ---- 深さ 2: 深さ 1 で開通しなかったバケットのみ (同一バケット内 2 visit) ----
@@ -868,6 +927,7 @@ async def search_unblock_plans(
                 if ps is None:
                     continue  # 2 件除いても入らない.
                 # 深さ 2 は会計しない (深さ 1 で同じブロッカーを会計済 / 二重計上防止).
+                # W-15: 定員起因は他バケット退避のみが枠を空ける (同一バケット退避は除外).
                 move_v = _evaluate_blocker(
                     v,
                     b_key,
@@ -879,6 +939,7 @@ async def search_unblock_plans(
                     dismissed_fp=dismissed_fp,
                     config=config,
                     summary=None,
+                    exclude_same_bucket=cap_blocked,
                 )
                 move_w = _evaluate_blocker(
                     w,
@@ -891,6 +952,7 @@ async def search_unblock_plans(
                     dismissed_fp=dismissed_fp,
                     config=config,
                     summary=None,
+                    exclude_same_bucket=cap_blocked,
                 )
                 if move_v is not None and move_w is not None:
                     # 深さ 2 でも同一バケット退避がある場合は最終状態で再検証.
@@ -951,7 +1013,7 @@ async def search_unblock_plans(
                             # 両方とも他バケット退避 → ps (sub = Mon A without v,w) が正しい.
                         else:
                             ps = ps_check
-                    plans.append(_finalize([move_v, move_w], ps))
+                    plans.append(_finalize([move_v, move_w], ps, frees_capacity=cap_blocked))
 
     # ランキング + dedup (同一 plan_id).
     plans.sort(

@@ -995,6 +995,164 @@ async def test_w13b_two_staff_partner_course_included(client, db) -> None:
 
 
 # ---------------------------------------------------------------------------
+# W-15: 定員起因 (capacity_full) の詰まりを他バケット退避で開通する
+# ---------------------------------------------------------------------------
+
+
+async def _seed_capacity_full_bucket(
+    db,
+    *,
+    blocker_movability: str = "day_flexible",
+    blocker_is_pinned: bool = False,
+) -> tuple[Office, Patient, Patient]:
+    """Mon A を 6 名 (定員満杯) にし、10:00 の 1 名だけ可動なブロッカーにする.
+
+    - 定員を占有する 5 名は locked filler (別時刻・別住所) = real-blocker にならない。
+    - 10:00 の可動ブロッカーを **他バケットへ** 退避すれば定員が 1 件空き、対象 (固定 10:00)
+      が Mon A に入る。同一バケット内の時間ずらしは件数を変えず定員を空けない。
+    - 退避先 = Tue A (day_change) を用意する。
+    """
+    office, staff = await _mk_office_staff(db)
+    ct_a = await _mk_template(db, office, "A")
+    mon_a = await _mk_course(db, office, staff, 0, "A", ct_a)
+    tue_a = await _mk_course(db, office, staff, 1, "A", ct_a)
+
+    lock_starts = [time(8, 0), time(8, 30), time(9, 0), time(13, 0), time(13, 45)]
+    lock_coords = [(35.602 + i * 0.004, 140.100) for i in range(5)]
+    fillers = [_patient(f"L{i}", lock_coords[i], office.id) for i in range(5)]
+    tue_fill = _patient("TF", FILL, office.id)
+    blocker = _patient("BLK", V_COORD, office.id)
+    candidate = _patient("TGT", BASE, office.id)
+    db.add_all([*fillers, tue_fill, blocker, candidate])
+    await db.flush()
+
+    for i, p in enumerate(fillers):
+        await _add_visit_and_pfv(
+            db, p, mon_a, staff, weekday=0, start=lock_starts[i], movability="locked"
+        )
+    await _add_visit_and_pfv(
+        db,
+        blocker,
+        mon_a,
+        staff,
+        weekday=0,
+        start=time(10, 0),
+        movability=blocker_movability,
+        is_pinned=blocker_is_pinned,
+    )
+    await _add_visit_and_pfv(
+        db, tue_fill, tue_a, staff, weekday=1, start=time(9, 30), movability="locked"
+    )
+    await db.commit()
+    return office, candidate, blocker
+
+
+@pytest.mark.asyncio
+async def test_w15_capacity_full_cross_retreat_frees_capacity(client, db) -> None:
+    """定員満杯 (6 名) コースで 1 名を他コースへ退避 → 対象が入るプラン (frees_capacity=True)."""
+    admin = await _make_user(db, email="w15cap@example.com")
+    office, candidate, blocker = await _seed_capacity_full_bucket(db)
+
+    res = await client.post(_URL, headers=_bearer(admin), json=_candidate_body(office, candidate))
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["plans"], data["unmovable_summary"]
+    plan = data["plans"][0]
+    assert plan["frees_capacity"] is True, "定員起因の開通は frees_capacity=True"
+    assert plan["moved_count"] == 1
+    mv = plan["moves"][0]
+    assert mv["patient_id"] == str(blocker.id)
+    # 退避先は他バケット (Tue A) = 定員が空く手. 同一バケット退避は含まれない.
+    assert mv["from"]["weekday"] == 0 and mv["to"]["weekday"] == 1
+    assert plan["insert"]["weekday"] == 0 and plan["insert"]["course_code"] == "A"
+    assert plan["insert"]["start_time"] == "10:00"
+
+
+@pytest.mark.asyncio
+async def test_w15_no_same_bucket_move_when_capacity(client, db) -> None:
+    """定員起因では同一バケット退避が候補にならない (件数を空けないため).
+
+    対照: 時間起因の ``test_same_bucket_time_shift_opens_slot`` は同じ time_flexible でも
+    同一バケット退避プランを出す。定員起因では同一バケット退避が除外され、time_flexible は
+    曜日跨ぎ (Tue A) へ退避できないため有効な退避先がなく plans==[] になる。
+    """
+    admin = await _make_user(db, email="w15same@example.com")
+    office, candidate, _blk = await _seed_capacity_full_bucket(db, blocker_movability="time_flexible")
+
+    res = await client.post(_URL, headers=_bearer(admin), json=_candidate_body(office, candidate))
+    assert res.status_code == 200, res.text
+    data = res.json()
+    # 同一バケット退避は定員を空けないため除外 → 他バケット (Tue A) は time_flexible で不可
+    #   → 有効な退避先なし → プランは出ない。
+    assert data["plans"] == [], data["plans"]
+    # どのプランにも同一バケット退避 (from==to) は現れない (定員起因では常に除外).
+    assert all(
+        not (
+            m["from"]["weekday"] == m["to"]["weekday"]
+            and m["from"]["course_code"] == m["to"]["course_code"]
+        )
+        for p in data["plans"]
+        for m in p["moves"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_w15_time_caused_plan_frees_capacity_false(client, db) -> None:
+    """時間起因の詰まり (定員に余裕あり) は従来どおり frees_capacity=False."""
+    admin = await _make_user(db, email="w15time@example.com")
+    office, candidate, _blk = await _seed_single_blocker(db)
+    res = await client.post(_URL, headers=_bearer(admin), json=_candidate_body(office, candidate))
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["plans"], data["unmovable_summary"]
+    assert all(p["frees_capacity"] is False for p in data["plans"]), (
+        "時間起因プランは frees_capacity=False のまま (従来挙動不変)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_w15_same_bucket_shift_plan_frees_capacity_false(client, db) -> None:
+    """同一バケット時間ずらし (時間起因) プランも frees_capacity=False (定員は空けていない)."""
+    admin = await _make_user(db, email="w15sbfalse@example.com")
+    office, staff = await _mk_office_staff(db)
+    ct_a = await _mk_template(db, office, "A")
+    mon_a = await _mk_course(db, office, staff, 0, "A", ct_a)
+
+    blocker = _patient("BLK", V_COORD, office.id)
+    candidate = _patient("TGT", BASE, office.id)
+    db.add_all([blocker, candidate])
+    await db.flush()
+    await _add_visit_and_pfv(
+        db, blocker, mon_a, staff, weekday=0, start=time(10, 0), movability="time_flexible"
+    )
+    await db.commit()
+
+    body = _candidate_body(office, candidate, preferred_start="10:30")
+    res = await client.post(_URL, headers=_bearer(admin), json=body)
+    assert res.status_code == 200, res.text
+    plan = res.json()["plans"][0]
+    # 同一コース内の時間ずらし = 時間起因 → frees_capacity=False.
+    mv = plan["moves"][0]
+    assert mv["from"]["weekday"] == mv["to"]["weekday"] == 0
+    assert mv["from"]["course_code"] == mv["to"]["course_code"] == "A"
+    assert plan["frees_capacity"] is False
+
+
+@pytest.mark.asyncio
+async def test_w15_pinned_blocker_respected_under_capacity(client, db) -> None:
+    """定員起因でも不可侵リスト (pinned) は守られる: 唯一の枠開けがピン留めなら plans==[]."""
+    admin = await _make_user(db, email="w15pin@example.com")
+    office, candidate, _blk = await _seed_capacity_full_bucket(
+        db, blocker_movability="locked", blocker_is_pinned=True
+    )
+    res = await client.post(_URL, headers=_bearer(admin), json=_candidate_body(office, candidate))
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["plans"] == [], data["plans"]
+    assert data["unmovable_summary"]["pinned"] >= 1
+
+
+# ---------------------------------------------------------------------------
 # RBAC / 404
 # ---------------------------------------------------------------------------
 

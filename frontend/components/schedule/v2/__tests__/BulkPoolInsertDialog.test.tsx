@@ -246,6 +246,19 @@ function unplacedTimeEntry(reason = 'no_gap') {
   };
 }
 
+/**
+ * W-15: 発動理由でも超過候補でもない中立の投入不能エントリ (ヒント/バッジのどれも出ない)。
+ * capacity_full は W-15 で発動理由に加わったため、no_coordinates 等の非発動理由を使う。
+ */
+function unplacedNeutralEntry(reason = 'no_coordinates') {
+  return {
+    patient_id: 'p-2',
+    patient_name: '患者 B',
+    reason,
+    overcapacity_available_count: 0,
+  };
+}
+
 // ─── テスト ──────────────────────────────────────────────────────────────────
 
 describe('BulkPoolInsertDialog (W-2)', () => {
@@ -567,8 +580,8 @@ describe('BulkPoolInsertDialog (W-2)', () => {
     expect(screen.getByTestId('bulk-pool-insert-overcap-hint')).toBeInTheDocument();
     unmount();
 
-    // overcap なし。
-    mocks.simulateAsync.mockResolvedValue(makeSimulateResult({ unplaced: [unplacedEntry(0)] }));
+    // overcap なし・発動理由なし (W-15: capacity_full は発動理由になったため中立理由を使う)。
+    mocks.simulateAsync.mockResolvedValue(makeSimulateResult({ unplaced: [unplacedNeutralEntry()] }));
     render(<BulkPoolInsertDialog {...BASE_PROPS} />);
     await waitFor(() =>
       expect(screen.getByTestId('bulk-pool-insert-preview')).toBeInTheDocument(),
@@ -615,10 +628,50 @@ describe('BulkPoolInsertDialog (W-2)', () => {
     expect(onOpenPatientDetail).toHaveBeenCalledWith('p-2', { autoUnblock: true });
   });
 
-  it('W-14: done 画面の定員起因のみ患者には「ずらせば入る手」ボタンを出さない', async () => {
+  it('W-15: done 画面の定員起因のみ患者に overcap と unblock の両ボタンが併存する (更新済み4象限)', async () => {
+    // reason=capacity_full かつ overcap>=1 は W-15 で両導線 (定員+1 / ずらす) を提示する。
     const onOpenPatientDetail = vi.fn();
+    const onClose = vi.fn();
     mocks.simulateAsync.mockResolvedValue(
       makeSimulateResult({ unplaced: [unplacedEntry(2)] }),
+    );
+    mocks.applyAsync.mockResolvedValue({
+      applied_patients: 1,
+      applied_slots: 1,
+      warnings: [],
+    });
+    render(
+      <BulkPoolInsertDialog
+        {...BASE_PROPS}
+        onClose={onClose}
+        onOpenPatientDetail={onOpenPatientDetail}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId('bulk-pool-insert-preview')).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByTestId('bulk-pool-insert-confirm-checkbox'));
+    fireEvent.click(screen.getByTestId('bulk-pool-insert-apply-button'));
+    await waitFor(() =>
+      expect(screen.getByTestId('bulk-pool-insert-done')).toBeInTheDocument(),
+    );
+
+    // W-15: 定員起因は「定員+1名」と「ずらせば入る手」の両ボタンが揃う。
+    expect(screen.getByTestId('bulk-pool-insert-done-overcap-button')).toBeInTheDocument();
+    expect(screen.getByTestId('bulk-pool-insert-done-unblock-button')).toBeInTheDocument();
+
+    // それぞれ独立に個別導線を呼ぶ (autoOvercapacity / autoUnblock)。
+    fireEvent.click(screen.getByTestId('bulk-pool-insert-done-unblock-button'));
+    expect(onOpenPatientDetail).toHaveBeenCalledWith('p-2', { autoUnblock: true });
+  });
+
+  it('W-15: done 画面の定員起因のみ患者 (overcap=0) は unblock ボタンのみ出る', async () => {
+    // capacity_full だが +1 候補が無い (overcap=0) → 方式b は出ず、ずらす導線のみ。
+    const onOpenPatientDetail = vi.fn();
+    mocks.simulateAsync.mockResolvedValue(
+      makeSimulateResult({ unplaced: [unplacedEntry(0)] }),
     );
     mocks.applyAsync.mockResolvedValue({
       applied_patients: 1,
@@ -639,11 +692,11 @@ describe('BulkPoolInsertDialog (W-2)', () => {
       expect(screen.getByTestId('bulk-pool-insert-done')).toBeInTheDocument(),
     );
 
-    // 定員超過ボタンは出るが、詰まり解消ボタンは出ない。
-    expect(screen.getByTestId('bulk-pool-insert-done-overcap-button')).toBeInTheDocument();
+    // 方式b ボタンは出ない (overcap=0)、ずらす導線は出る (capacity_full は発動理由)。
     expect(
-      screen.queryByTestId('bulk-pool-insert-done-unblock-button'),
+      screen.queryByTestId('bulk-pool-insert-done-overcap-button'),
     ).not.toBeInTheDocument();
+    expect(screen.getByTestId('bulk-pool-insert-done-unblock-button')).toBeInTheDocument();
   });
 
   it('W-14: 両方該当患者 (no_gap + overcap) はプレビューで複合ヒントが出て、done 画面で overcap/unblock 両ボタンが揃う', async () => {

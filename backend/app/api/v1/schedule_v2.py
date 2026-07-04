@@ -4559,6 +4559,7 @@ def _unblock_plan_to_schema(p: Any) -> UnblockPlanItem:
         ),
         total_delta_minutes=p.total_delta_minutes,
         moved_count=p.moved_count,
+        frees_capacity=p.frees_capacity,
         courses=[_unblock_course_to_schema(c) for c in p.courses],
     )
 

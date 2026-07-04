@@ -138,6 +138,10 @@ export const unblockPlanSchema = z.object({
   moved_count: z.number().int().default(0),
   // W-13b: 影響する全コース (移動元・移動先・配置先) の before/after。旧 BE 未送出 → []。
   courses: tolerantArray(unblockCourseBeforeAfterSchema).default([]),
+  // W-15: 定員起因 (capacity_full) の探索で、ブロッカーを他コースへ退避させて定員を
+  // 空けるプランなら true。FE は小バッジ「定員内に収まります」で明示する。
+  // 旧 BE / 時間起因プラン (未送出) → false (寛容パース)。
+  frees_capacity: z.boolean().default(false),
 });
 export type UnblockPlan = z.infer<typeof unblockPlanSchema>;
 

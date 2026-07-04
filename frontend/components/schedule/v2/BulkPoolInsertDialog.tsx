@@ -98,12 +98,14 @@ function overcapCount(entry: { overcapacity_available_count?: number }): number 
 }
 
 /**
- * W-14: 詰まり解消相談を発動する時間起因の除外理由。
- * PoolCandidateList.UNBLOCK_TRIGGER_REASONS と同一 (設計書 unblock-consult-design.md §3・
- * この3件のみ)。BulkPoolInsertDialog.test が PoolCandidateList を mock するため、import せず
+ * W-14/W-15: 詰まり解消相談を発動する除外理由。
+ * PoolCandidateList.UNBLOCK_TRIGGER_REASONS と同一 (設計書 unblock-consult-design.md §3 / §4.5
+ * W-15・この4件)。BulkPoolInsertDialog.test が PoolCandidateList を mock するため、import せず
  * ここに複製する (単一の正典は設計書。新 reason 追加時は両方要更新)。
+ * W-15: capacity_full を追加。定員起因の患者は方式b の「定員+1名」バッジ (W-5b) と併存して
+ * 「ずらせば入る手を探せます」バッジも表示し、管理者が両導線から選べるようにする。
  */
-const UNBLOCK_TRIGGER_REASONS = ['no_gap', 'no_pair_slot', 'travel_shortage'] as const;
+const UNBLOCK_TRIGGER_REASONS = ['no_gap', 'no_pair_slot', 'travel_shortage', 'capacity_full'] as const;
 
 function isTimeBlockerReason(reason: string): boolean {
   return (UNBLOCK_TRIGGER_REASONS as readonly string[]).includes(reason);

@@ -89,11 +89,14 @@ function excludedReasonLabel(reason: string): string {
 }
 
 /**
- * W-12d: 詰まり解消相談を発動する時間起因の除外理由。
+ * W-12d: 詰まり解消相談を発動する除外理由。
  * これらを excluded_summary に含むとき「ずらせば入る手を探す」呼びかけを出す。
+ * W-15: capacity_full を追加。定員起因でもブロッカーを他コースへ退避させて定員を空ける手を
+ * 探索する（同一バケット退避は定員を空けないため BE 側で対象外）。定員起因のときは方式b
+ * （+1名相談）の呼びかけと並列に出し、管理者が「ずらす」か「+1名」かを選べる。
  */
-// 設計書 unblock-consult-design.md §3: この3件のみが発動条件（新 reason 追加時は要更新）。
-const UNBLOCK_TRIGGER_REASONS = ['no_gap', 'no_pair_slot', 'travel_shortage'] as const;
+// 設計書 unblock-consult-design.md §3 / §4.5 W-15: この4件が発動条件（新 reason 追加時は要更新）。
+const UNBLOCK_TRIGGER_REASONS = ['no_gap', 'no_pair_slot', 'travel_shortage', 'capacity_full'] as const;
 
 /** W-12d: unmovable_summary キーの訳語 (設計書 §3・「動かせない事情」)。 */
 const UNMOVABLE_LABEL: Record<keyof UnblockUnmovableSummary, string> = {
@@ -439,8 +442,19 @@ function UnblockPlanCard({
         </details>
       ) : null}
       <div className="mt-1.5 flex items-center justify-between gap-2">
-        <span className="text-[11px] text-text-muted">
+        <span className="flex flex-wrap items-center gap-1.5 text-[11px] text-text-muted">
           合計 {formatDeltaMinutes(plan.total_delta_minutes)}/週・動くのは {plan.moved_count}名
+          {/* W-15: 定員を空ける手のとき「定員内に収まります」を落ち着いた既存トーンで明示。 */}
+          {plan.frees_capacity ? (
+            <Badge
+              variant="secondary"
+              className="text-[10px]"
+              title="このコースの定員内に収まる手です（ブロッカーを他コースへ退避させて定員を空けます）"
+              data-testid="unblock-plan-frees-capacity"
+            >
+              定員内に収まります
+            </Badge>
+          ) : null}
         </span>
         {canEdit ? (
           <Button
@@ -897,7 +911,8 @@ export function PoolCandidateList({
     () => result?.excluded_summary ?? [],
     [result],
   );
-  // W-12d: 時間起因 (no_gap / no_pair_slot / travel_shortage) を含むなら詰まり解消相談を出す。
+  // W-12d/W-15: 発動理由 (no_gap / no_pair_slot / travel_shortage / capacity_full) を
+  // 含むなら詰まり解消相談を出す。定員起因 (capacity_full) のときは方式b callout と並列になる。
   const hasTimeBlocker = React.useMemo(
     () =>
       excludedSummary.some((it) =>
@@ -905,6 +920,9 @@ export function PoolCandidateList({
       ),
     [excludedSummary],
   );
+  // 方式b (定員超過) の呼びかけを出すか。W-15: unblock の区切り判定でも再利用する。
+  const showOvercapacityCallout =
+    !overcapacityRequested && (result?.overcapacity_available_count ?? 0) >= 1;
 
   // 採用枠 → course_template_id 解決のため、 候補に出現する拠点の course-templates を取得.
   const slotOfficeIds = React.useMemo(() => {
@@ -1207,8 +1225,9 @@ export function PoolCandidateList({
               ご希望に合致する枠は見つかりませんでしたが、下の「効率優先の代替枠」をご確認ください。
             </div>
           )}
-          {/* 方式b: 定員超過候補の呼びかけバナー (通常候補 0 件 + 定員超過で入れる枠がある場合). */}
-          {!overcapacityRequested && (result?.overcapacity_available_count ?? 0) >= 1 ? (
+          {/* 方式b: 定員超過候補の呼びかけバナー (通常候補 0 件 + 定員超過で入れる枠がある場合).
+              W-15: 定員起因のときは下の unblock 呼びかけと並列に出る (方式b → unblock の順)。 */}
+          {showOvercapacityCallout ? (
             <div
               className="mt-2 rounded border border-yellow-400 bg-yellow-50/50 px-3 py-2 dark:border-yellow-600 dark:bg-yellow-900/20"
               data-testid="pool-overcapacity-callout"
@@ -1232,17 +1251,26 @@ export function PoolCandidateList({
               </Button>
             </div>
           ) : null}
-          {/* W-12d: 詰まり解消相談 (時間の重なりで入らない状態のとき)。方式b callout と並ぶ。 */}
+          {/* W-12d/W-15: 詰まり解消相談 (時間の重なり or 定員起因で入らない状態のとき)。
+              方式b callout の直下に並べ、両方出るときは軽い区切りを挟む (方式b → unblock)。 */}
           {hasTimeBlocker ? (
-            <UnblockConsult
-              patient={patient}
-              isoYear={isoYear}
-              isoWeek={isoWeek}
-              officeId={officeId}
-              canEdit={canEdit}
-              onAdopted={onAdopted}
-              autoFire={autoRequestUnblock && primary}
-            />
+            <>
+              {showOvercapacityCallout ? (
+                <div
+                  className="mt-2 border-t border-border-default/40"
+                  data-testid="pool-consult-divider"
+                />
+              ) : null}
+              <UnblockConsult
+                patient={patient}
+                isoYear={isoYear}
+                isoWeek={isoWeek}
+                officeId={officeId}
+                canEdit={canEdit}
+                onAdopted={onAdopted}
+                autoFire={autoRequestUnblock && primary}
+              />
+            </>
           ) : null}
         </div>
       ) : null}

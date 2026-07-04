@@ -193,6 +193,13 @@ class UnblockPlanItem(BaseModel):
     insert: UnblockInsertItem
     total_delta_minutes: int = Field(default=0, description="全手の delta 合計 (分/週)")
     moved_count: int = Field(default=0, ge=0, description="動かす既存訪問の数 (= len(moves))")
+    frees_capacity: bool = Field(
+        default=False,
+        description=(
+            "W-15: 定員起因 (capacity_full) の詰まりをブロッカーの他バケット退避で定員を "
+            "空けて開通したプランか。FE の「ずらす」vs「+1名」表示分岐用。時間起因は False。"
+        ),
+    )
     courses: list[UnblockCourseSnapshot] = Field(
         default_factory=list,
         description=(
