@@ -518,6 +518,92 @@ async def test_bulk_rejects_no_auth(client, db) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 10. overcapacity_available_count (A 案・方式b 橋渡し)
+#     一括の先行患者がコース定員を埋めた「最終 sim 状態」基準で +1 判定すること.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_bulk_overcapacity_count_when_filled_by_earlier(client, db) -> None:
+    """A 案: 一括の先行患者がコース定員 (6) を埋めた結果 capacity_full になった後続患者に
+    overcapacity_available_count>=1 (定員 +1 なら入る候補) が付く.
+
+    初期 DB では空き (既存 5 名) があるが、一括の 1 人目が 6 枠目を埋める →
+    2 人目は capacity_full → 「最終 sim 状態」基準で +1 判定 → 同住所で時間は空くため count>=1.
+    (= 「一括で先に埋まった枠」を考慮した最終状態基準であることの検証).
+    """
+    admin = await _make_user(db, email="pb-overcap1@example.com", role="admin")
+    office, staff = await _seed_office_staff(db, name="稲OC", code="OCOFF")
+    course = await _seed_course(db, office=office, staff=staff, weekday=0, code="A")
+    # 既存 5 名 (同住所 NEAR で co-locate → 時間はブロッカーにならず、定員のみが効く).
+    starts = [time(9, 0), time(9, 30), time(10, 0), time(10, 30), time(11, 0)]
+    for i, st in enumerate(starts):
+        ex = await _seed_patient(db, office=office, code=f"OCEX{i}", lat=NEAR[0], lng=NEAR[1])
+        end = time(st.hour, st.minute + 30) if st.minute < 30 else time(st.hour + 1, st.minute - 30)
+        await _seed_visit(db, patient=ex, course=course, start=st, end=end)
+    # プール 2 名 (同住所 NEAR, Mon 週1). 1 人目が 6 枠目 → 2 人目 capacity_full.
+    wp = _pool_wp()
+    pa = await _seed_patient(
+        db, office=office, code="OCPA", lat=NEAR[0], lng=NEAR[1], weekly_pattern=wp
+    )
+    pb = await _seed_patient(
+        db, office=office, code="OCPB", lat=NEAR[0], lng=NEAR[1], weekly_pattern=wp
+    )
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/pool-bulk-simulate",
+        headers=_bearer(admin),
+        json=_simulate_payload(office, [str(pa.id), str(pb.id)]),
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    # 1 人だけ入り、もう 1 人は capacity_full で投入不能.
+    assert len(body["placements"]) == 1, body
+    cap_unplaced = [u for u in body["unplaced"] if u["reason"] == "capacity_full"]
+    assert len(cap_unplaced) == 1, body
+    # 最終 sim 状態 (6 枠埋まり) に対する +1 判定で「定員 +1 なら入る候補」が 1 件以上ある.
+    assert cap_unplaced[0]["overcapacity_available_count"] >= 1, body
+
+
+@pytest.mark.asyncio
+async def test_bulk_overcapacity_count_zero_when_no_time(client, db) -> None:
+    """capacity_full だが「定員 +1 でも時間が物理的に無い」患者は count=0 のまま.
+
+    コース定員 6 を既存 6 名で満杯にし、投入不能患者は超長時間 (service 400 分) 希望 →
+    +1 で定員を緩めても course の残時間に収まらず候補ゼロ = overcapacity_available_count==0.
+    """
+    admin = await _make_user(db, email="pb-overcap2@example.com", role="admin")
+    office, staff = await _seed_office_staff(db, name="稲OC0", code="OC0OFF")
+    course = await _seed_course(db, office=office, staff=staff, weekday=0, code="A")
+    # 既存 6 名 (同住所 NEAR, 定員ちょうど満杯).
+    starts = [time(9, 0), time(9, 30), time(10, 0), time(10, 30), time(11, 0), time(11, 30)]
+    for i, st in enumerate(starts):
+        ex = await _seed_patient(db, office=office, code=f"OC0EX{i}", lat=NEAR[0], lng=NEAR[1])
+        end = time(st.hour, st.minute + 30) if st.minute < 30 else time(st.hour + 1, st.minute - 30)
+        await _seed_visit(db, patient=ex, course=course, start=st, end=end)
+    # プール 1 名: 同住所だが service 400 分 (course 残時間に +1 でも収まらない).
+    wp = _pool_wp(service_minutes=400)
+    p = await _seed_patient(
+        db, office=office, code="OC0P", lat=NEAR[0], lng=NEAR[1], weekly_pattern=wp
+    )
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/pool-bulk-simulate",
+        headers=_bearer(admin),
+        json=_simulate_payload(office, [str(p.id)]),
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    mine = [u for u in body["unplaced"] if u["patient_id"] == str(p.id)]
+    assert len(mine) == 1, body
+    assert mine[0]["reason"] == "capacity_full", body
+    # +1 でも時間が無い → 候補ゼロ → count は既定 0 のまま.
+    assert mine[0]["overcapacity_available_count"] == 0, body
+
+
+# ---------------------------------------------------------------------------
 # 11. 同曜日二重投入防止 (既存 visit がある曜日への再挿入を防ぐ)
 # ---------------------------------------------------------------------------
 

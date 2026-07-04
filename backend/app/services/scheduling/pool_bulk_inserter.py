@@ -50,6 +50,7 @@ from app.services.scheduling.propose_slots_service import (
     _marginal_cost_minutes,
     _to_existing_visits,
     compute_all_proposed_slots,
+    compute_overcapacity_slots,
     load_week_course_buckets,
 )
 
@@ -135,6 +136,9 @@ class BulkPartial:
     placed_days: int
     missing_days: int
     unplaced_reasons: dict[int, str]  # weekday -> reason
+    # 定員起因 (capacity_full) の未充足曜日に「定員 +1 なら入る候補」が何件あるか (方式b 橋渡し用).
+    # A 案 (2026-07-04 PO 承認): 一括に超過は組み込まず、個別の相談フロー (方式b) へ橋渡しする.
+    overcapacity_available_count: int = 0
 
 
 @dataclass
@@ -142,6 +146,8 @@ class BulkUnplaced:
     patient_id: UUID
     patient_name: str
     reason: str
+    # capacity_full で投入不能な患者に「定員 +1 なら入る候補」が何件あるか (方式b 橋渡し用).
+    overcapacity_available_count: int = 0
 
 
 @dataclass
@@ -333,6 +339,41 @@ def _weekday_exclusion_reason(
         if s.weekday == weekday:
             return s.reason
     return excl[0].reason if excl else "no_gap"
+
+
+def _overcapacity_available_count(
+    buckets: dict[tuple[UUID, int, str], _CourseBucket],
+    office_name_by_id: dict[UUID, str],
+    candidate: CandidateInput,
+    *,
+    office_ids: list[UUID],
+    office_code_by_id: dict[UUID, str | None] | None,
+    config: SchedulingConfig,
+    weekdays: frozenset[int] | None = None,
+) -> int:
+    """最終 sim バケットに対する「定員 +1 なら入る候補」の件数を数える (方式b 橋渡し用).
+
+    ``compute_overcapacity_slots`` を **import 再利用** する (コピー禁止). ``assign_marginal=False``
+    で件数のみ (delta 計算はスキップ). 数え方は propose-slots endpoint の
+    ``overcapacity_available_count`` と同一 = 返る slot 件数 (``len``). 一括の逐次シミュレーション
+    で先行患者が枠を埋めた **最終状態** の buckets を渡すことで、「一括で先に埋まった枠」を考慮した
+    +1 判定になる (現在人数 >= base 定員のバケットの枠のみ compute_overcapacity_slots が残す).
+
+    Args:
+        weekdays: 指定時はこの曜日のみに絞って列挙する (部分投入の capacity_full 未充足曜日限定).
+            None なら候補の希望曜日すべて (投入不能患者用).
+    """
+    cand = candidate if weekdays is None else replace(candidate, preferred_weekdays=weekdays)
+    over = compute_overcapacity_slots(
+        buckets,
+        office_name_by_id,
+        cand,
+        office_ids=office_ids,
+        office_code_by_id=office_code_by_id,
+        config=config,
+        assign_marginal=False,
+    )
+    return len(over)
 
 
 def _insert_placement(
@@ -591,6 +632,43 @@ async def simulate_pool_bulk_insert(
             )
 
     result.placed_slots = len(result.placements)
+
+    # 4b. 定員起因の未投入について「定員 +1 なら入る候補」件数を最終 sim 状態で算出 (A 案・方式b 橋渡し).
+    #     ここまでで sim は全仮確定を含む最終状態 = 「一括で先に埋まった枠」を織り込んだ +1 判定になる.
+    #     一括自体は超過を採用しない (D-2 の設計原則: 超過は 1 人ずつ・理由必須の個別フローで扱う).
+    candidate_by_pid: dict[UUID, CandidateInput] = {p.id: c for p, c in orderable}
+    for u in result.unplaced:
+        if u.reason != "capacity_full":
+            continue
+        cand = candidate_by_pid.get(u.patient_id)
+        if cand is None:
+            continue
+        u.overcapacity_available_count = _overcapacity_available_count(
+            sim,
+            office_name_by_id,
+            cand,
+            office_ids=office_ids,
+            office_code_by_id=office_code_by_id,
+            config=config,
+        )
+    for pt in result.partial:
+        cap_wds = frozenset(
+            wd for wd, reason in pt.unplaced_reasons.items() if reason == "capacity_full"
+        )
+        if not cap_wds:
+            continue
+        cand = candidate_by_pid.get(pt.patient_id)
+        if cand is None:
+            continue
+        pt.overcapacity_available_count = _overcapacity_available_count(
+            sim,
+            office_name_by_id,
+            cand,
+            office_ids=office_ids,
+            office_code_by_id=office_code_by_id,
+            config=config,
+            weekdays=cap_wds,
+        )
 
     # 5. 後状態のメトリクス + after visit 列.
     result.travel_minutes_after, result.travel_km_after = _compute_travel_totals(sim, config=config)

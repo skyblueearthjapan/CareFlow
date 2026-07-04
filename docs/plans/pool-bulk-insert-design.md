@@ -78,6 +78,13 @@ PO 方針（2026-07-04 対話で確定）: **尖らせる機能は尖らせ、�
 - 投入成功: N名 / M枠、部分投入: n名、投入不能: k名（理由別内訳）
 - 週全体の移動時間・距離の before → after（schedule_health の `_compute_course_metrics` を模擬バケットに適用 — scope_optimizer `_metrics_of` と同パターン）
 
+### 3.6 定員超過の扱い — A 案（超過は一括に組み込まず個別へ橋渡し・PO 承認 2026-07-04）
+
+一括投入（pool-bulk）は **定員超過（+1 名許容）を扱わない** 方針を維持する。超過採用は「1 人ずつ・理由必須」が設計原則（方式b: `PoolCandidateList` の overcapacity callout → 理由必須採用）であり、一括に自動で組み込むと「誰が・なぜ超過を選んだか」の説明可能性が崩れるため。代わりに、simulate は定員起因で投入できなかった患者へ「定員 +1 名なら入る候補あり」を提示し、既存の個別の相談フローへ橋渡しする（W-5）:
+
+- **BE**: 逐次シミュレーション完了後、`unplaced`（reason=`capacity_full`）と `partial`（`unplaced_reasons` に `capacity_full` を含む）の各患者について、**最終 sim バケット（全仮確定を含む状態）** に対し `compute_overcapacity_slots`（方式b の +1 列挙・コピー禁止 import 再利用）を `assign_marginal=False` で実行し、`overcapacity_available_count`（= 返る slot 件数。propose-slots endpoint の同名フィールドと同一の数え方）を算出する。partial は capacity_full の未充足曜日のみに絞る（`dataclasses.replace` で `preferred_weekdays` を限定）。**「一括で先に埋まった枠」を考慮した最終状態基準**であることが要点（初期 DB では空きがあっても、先行患者が埋めれば capacity_full → +1 判定は最終状態で行う）。read-only 厳守で既存エンジンの挙動は不変（`compute_overcapacity_slots` のシグネチャ拡張もなし）。
+- **FE**: previewing 画面は count>=1 の投入不能/部分投入行にアンバーの情報バッジ「定員+1名なら入る候補あり」を表示（クリック不可。プレビュー段階は未適用なので個別フローへ飛ばすと基準がずれる）。done 画面は同バッジ＋患者名をクリック可能にし、一括ダイアログを閉じてから患者詳細（→ `PoolCandidateList` → 方式b callout）を開く（`onOpenPatientDetail` prop）。案内文は2行構成（W-5 レビュー MEDIUM 反映）: 「投入できなかった方は保留プールに残っています。患者名を開くと個別の候補を確認できます。」＋ count>=1 の患者が1人でもいる場合のみ「『定員+1名なら入る候補あり』の方は、個別画面で定員+1名の相談（理由を入れて採用）ができます。」を追加表示（定員以外の理由の患者に +1 相談を誤示唆しない）。
+
 ## 4. API 契約
 
 ### POST /v2/pool-bulk-simulate（read-only）
@@ -95,8 +102,11 @@ PO 方針（2026-07-04 対話で確定）: **尖らせる機能は尖らせ、�
                     "weekday": 1, "course_code": "B", "start_time": "10:15",
                     "service_minutes": 35, "delta_minutes": 4, "warnings": ["staff_absent"] } ],
   "partial": [ { "patient_id": "…", "placed_days": 2, "missing_days": 1,
-                 "unplaced_reasons": { "3": "capacity_full" } } ],
-  "unplaced": [ { "patient_id": "…", "reason": "no_gap" } ],
+                 "unplaced_reasons": { "3": "capacity_full" },
+                 "overcapacity_available_count": 1 } ],   // §3.6 A案: capacity_full の未充足曜日の +1 候補数
+  "unplaced": [ { "patient_id": "…", "reason": "no_gap",
+                  "overcapacity_available_count": 0 } ],   // §3.6 A案: capacity_full のときのみ >=1 になりうる
+
   "week_before_after": { /* V2WeekdayBeforeAfter[] — ProposalWeekCalendar 互換 */ },
   "kpi": { "placed_patients": 12, "placed_slots": 27, "travel_minutes_before": 512,
            "travel_minutes_after": 574, "travel_km_before": 96.2, "travel_km_after": 108.4 },
@@ -175,3 +185,4 @@ PO 方針（2026-07-04 対話で確定）: **尖らせる機能は尖らせ、�
 - 一括投入の非同期ジョブ化（N>100）
 - ordering の選択肢公開（delta_asc / candidate_count_asc）— 現場から要望が出たら
 - 投入結果から「自動スタッフ割当」への導線（一括投入→割当→レビューの立ち上げ一気通貫）
+- 一括 done → 方式b（定員 +1 相談）で採用した超過の **承認記憶（蒸し返し防止）**（W-5 A 案の橋渡し先。方式b 側の未実装バックログと統合する）

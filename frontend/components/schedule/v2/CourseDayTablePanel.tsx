@@ -2756,6 +2756,7 @@ export function CourseDayTablePanel({
           isoWeek={isoWeek}
           officeId={officeId}
           patientIds={poolPatients.map((p) => p.id)}
+          onOpenPatientDetail={handleOpenPoolPatientDetail}
         />
 
         {/* P3-①: 当日欠勤の代替スタッフ提案ダイアログ. */}

@@ -97,6 +97,13 @@ class PoolBulkPartial(BaseModel):
         default_factory=dict,
         description="投入できなかった希望曜日 (str) → 理由コード (excluded_summary と同語彙)",
     )
+    # A 案 (2026-07-04 PO 承認): 超過は一括に組み込まず個別の相談フロー (方式b) へ橋渡しする.
+    overcapacity_available_count: int = Field(
+        default=0,
+        ge=0,
+        description="定員起因 (capacity_full) の未充足曜日に「定員 +1 なら入る候補」がある件数 "
+        "(>=1 なら方式b の相談で採用可能)",
+    )
 
 
 class PoolBulkUnplaced(BaseModel):
@@ -110,6 +117,13 @@ class PoolBulkUnplaced(BaseModel):
         ...,
         description="理由コード (capacity_full/travel_shortage/lunch_window/no_gap/"
         "course_closed/no_coordinates)",
+    )
+    # A 案 (2026-07-04 PO 承認): capacity_full のとき「定員 +1 なら入る候補」件数を載せ、個別フローへ橋渡し.
+    overcapacity_available_count: int = Field(
+        default=0,
+        ge=0,
+        description="capacity_full で投入不能な患者に「定員 +1 なら入る候補」がある件数 "
+        "(>=1 なら方式b の相談で採用可能)",
     )
 
 

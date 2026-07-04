@@ -87,6 +87,27 @@ function bulkReasonLabel(reason: string): string {
   return EXCLUDED_REASON_LABEL[reason] ?? BULK_EXTRA_REASON_LABEL[reason] ?? reason;
 }
 
+/** overcapacity_available_count を寛容に読む (mock 等で欠落しても NaN にしない)。 */
+function overcapCount(entry: { overcapacity_available_count?: number }): number {
+  return entry.overcapacity_available_count ?? 0;
+}
+
+/**
+ * A 案 (方式b 橋渡し): 「定員 +1 名なら入る候補あり」アンバーバッジ。
+ * プレビュー段階は情報表示のみ (クリック不可)。done 画面では患者名クリックで個別フローへ導く。
+ */
+function OvercapacityBadge() {
+  return (
+    <Badge
+      variant="outline"
+      className="border-amber-400 bg-amber-50 text-[9px] text-amber-800"
+      data-testid="bulk-pool-insert-overcap-badge"
+    >
+      定員+1名なら入る候補あり
+    </Badge>
+  );
+}
+
 type DialogStage = 'idle' | 'simulating' | 'previewing' | 'applying' | 'done';
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -101,6 +122,12 @@ export interface BulkPoolInsertDialogProps {
   officeId: string | null;
   /** プール患者 id 列 (親が抽出して渡す)。51 名以上は先頭 50 名を対象にする。 */
   patientIds: string[];
+  /**
+   * A 案 (2026-07-04 PO 承認): done 画面で投入できなかった患者名クリック時に、
+   * 一括ダイアログを閉じてから患者詳細 (→ PoolCandidateList → 方式b の定員+1 相談) を開く導線。
+   * 未指定なら名前はクリック不可 (バッジ表示のみ)。
+   */
+  onOpenPatientDetail?: (patientId: string) => void;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -114,6 +141,7 @@ export function BulkPoolInsertDialog({
   isoWeek,
   officeId,
   patientIds,
+  onOpenPatientDetail,
 }: BulkPoolInsertDialogProps) {
   const simulateMut = usePoolBulkSimulateMutation();
   const applyMut = usePoolBulkApplyMutation();
@@ -193,6 +221,18 @@ export function BulkPoolInsertDialog({
     if (isBusy) return;
     onClose();
   };
+
+  /**
+   * A 案: 投入できなかった患者名クリックで一括ダイアログを閉じてから患者詳細を開く
+   * (→ PoolCandidateList → 方式b の定員+1 相談)。基準がずれないよう done 画面のみで導線を出す。
+   */
+  const openPatientDetail = React.useCallback(
+    (patientId: string) => {
+      onClose();
+      onOpenPatientDetail?.(patientId);
+    },
+    [onClose, onOpenPatientDetail],
+  );
 
   // 投入枠 (patient_id|weekday) のハイライトキー集合 (After 週ビューの強調用)。
   const insertedKeys = React.useMemo(() => {
@@ -274,7 +314,7 @@ export function BulkPoolInsertDialog({
         {/* ── done: 結果サマリ ── */}
         {stage === 'done' && appliedSummary ? (
           <div
-            className="flex flex-col items-center justify-center gap-3 py-12 text-center"
+            className="flex flex-col items-center justify-center gap-3 py-8 text-center"
             data-testid="bulk-pool-insert-done"
           >
             <CheckCircle2 className="h-10 w-10 text-emerald-600" aria-hidden />
@@ -285,6 +325,12 @@ export function BulkPoolInsertDialog({
               固定訪問週間（毎週の型）に登録され、今週のスケジュールにも反映されました。
               ダイアログを閉じると画面に反映されます。
             </p>
+
+            {/* A 案: 投入できなかった患者を個別フロー (方式b の定員+1 相談) へ橋渡し。 */}
+            <DoneRemainingList
+              result={result}
+              onOpenPatientDetail={onOpenPatientDetail ? openPatientDetail : undefined}
+            />
           </div>
         ) : null}
 
@@ -517,8 +563,11 @@ function InsertListColumn({ result }: { result: PoolBulkSimulateResponse }) {
           <ul className="divide-y divide-amber-200">
             {result.partial.map((p) => (
               <li key={p.patient_id} className="px-2 py-1.5 text-[11px] text-amber-900">
-                <div className="font-medium">
-                  {p.patient_name}（{p.placed_days}枠投入 / {p.missing_days}枠不足）
+                <div className="flex flex-wrap items-center gap-1 font-medium">
+                  <span>
+                    {p.patient_name}（{p.placed_days}枠投入 / {p.missing_days}枠不足）
+                  </span>
+                  {overcapCount(p) >= 1 ? <OvercapacityBadge /> : null}
                 </div>
                 {Object.entries(p.unplaced_reasons).length > 0 ? (
                   <ul className="mt-0.5 ml-3 list-disc text-[10px] text-amber-700">
@@ -550,7 +599,10 @@ function InsertListColumn({ result }: { result: PoolBulkSimulateResponse }) {
                 key={p.patient_id}
                 className="flex flex-wrap items-center justify-between gap-1 px-2 py-1.5 text-[11px]"
               >
-                <span className="text-text-primary">{p.patient_name}</span>
+                <span className="flex flex-wrap items-center gap-1">
+                  <span className="text-text-primary">{p.patient_name}</span>
+                  {overcapCount(p) >= 1 ? <OvercapacityBadge /> : null}
+                </span>
                 <span className="text-text-muted">{bulkReasonLabel(p.reason)}</span>
               </li>
             ))}
@@ -590,6 +642,95 @@ function PlacementRow({ placement: p }: { placement: PoolBulkPlacement }) {
         </div>
       ) : null}
     </li>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// DoneRemainingList — done 画面: 投入できなかった患者を個別フロー (方式b) へ橋渡し.
+// 患者名クリックで一括ダイアログを閉じ、患者詳細 → PoolCandidateList → 定員+1 相談へ。
+// ─────────────────────────────────────────────────────────────────────────
+
+interface RemainingEntry {
+  patientId: string;
+  patientName: string;
+  overcapCount: number;
+  isPartial: boolean;
+}
+
+function DoneRemainingList({
+  result,
+  onOpenPatientDetail,
+}: {
+  result: PoolBulkSimulateResponse | null;
+  onOpenPatientDetail?: (patientId: string) => void;
+}) {
+  const entries: RemainingEntry[] = React.useMemo(() => {
+    if (!result) return [];
+    const rows: RemainingEntry[] = [];
+    for (const u of result.unplaced) {
+      rows.push({
+        patientId: u.patient_id,
+        patientName: u.patient_name,
+        overcapCount: overcapCount(u),
+        isPartial: false,
+      });
+    }
+    for (const p of result.partial) {
+      rows.push({
+        patientId: p.patient_id,
+        patientName: p.patient_name,
+        overcapCount: overcapCount(p),
+        isPartial: true,
+      });
+    }
+    return rows;
+  }, [result]);
+
+  if (entries.length === 0) return null;
+
+  const hasOvercapCandidate = entries.some((e) => e.overcapCount >= 1);
+
+  return (
+    <div
+      className="mt-2 w-full max-w-md rounded-lg border border-amber-300 bg-amber-50 p-3 text-left"
+      data-testid="bulk-pool-insert-done-remaining"
+    >
+      <p className="mb-2 text-xs text-amber-900">
+        投入できなかった方は保留プールに残っています。患者名を開くと個別の候補を確認できます。
+        {hasOvercapCandidate ? (
+          <>
+            <br />
+            「定員+1名なら入る候補あり」の方は、個別画面で定員+1名の相談（理由を入れて採用）ができます。
+          </>
+        ) : null}
+      </p>
+      <ul className="divide-y divide-amber-200">
+        {entries.map((e) => (
+          <li
+            key={e.patientId}
+            className="flex flex-wrap items-center justify-between gap-1 py-1.5 text-[11px]"
+          >
+            {onOpenPatientDetail ? (
+              <button
+                type="button"
+                className="font-medium text-amber-900 underline underline-offset-2 hover:text-amber-700"
+                onClick={() => onOpenPatientDetail(e.patientId)}
+                data-testid="bulk-pool-insert-done-patient-button"
+              >
+                {e.patientName}
+                {e.isPartial ? '（部分投入）' : ''}
+              </button>
+            ) : (
+              <span className="font-medium text-amber-900">
+                {e.patientName}
+                {e.isPartial ? '（部分投入）' : ''}
+              </span>
+            )}
+            {e.overcapCount >= 1 ? <OvercapacityBadge /> : null}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

@@ -2740,6 +2740,7 @@ async def pool_bulk_simulate_endpoint(
                 placed_days=pt.placed_days,
                 missing_days=pt.missing_days,
                 unplaced_reasons={str(wd): reason for wd, reason in pt.unplaced_reasons.items()},
+                overcapacity_available_count=pt.overcapacity_available_count,
             )
             for pt in result.partial
         ],
@@ -2748,6 +2749,7 @@ async def pool_bulk_simulate_endpoint(
                 patient_id=u.patient_id,
                 patient_name=u.patient_name,
                 reason=u.reason,
+                overcapacity_available_count=u.overcapacity_available_count,
             )
             for u in result.unplaced
         ],

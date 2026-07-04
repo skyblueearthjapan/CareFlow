@@ -169,7 +169,7 @@ const BASE_PROPS = {
 } as const;
 
 /** 1 枠投入できる最小 simulate レスポンス */
-function makeSimulateResult() {
+function makeSimulateResult(overrides: Record<string, unknown> = {}) {
   return {
     placements: [
       {
@@ -197,6 +197,17 @@ function makeSimulateResult() {
       travel_km_after: 11,
     },
     state_token: 'token-abc',
+    ...overrides,
+  };
+}
+
+/** capacity_full で投入不能 + 定員+1候補あり の unplaced エントリ */
+function unplacedEntry(overcapCount: number) {
+  return {
+    patient_id: 'p-2',
+    patient_name: '患者 B',
+    reason: 'capacity_full',
+    overcapacity_available_count: overcapCount,
   };
 }
 
@@ -267,5 +278,67 @@ describe('BulkPoolInsertDialog (W-2)', () => {
     const recompute = screen.getByTestId('bulk-pool-insert-recompute-button');
     fireEvent.click(recompute);
     await waitFor(() => expect(mocks.simulateAsync).toHaveBeenCalledTimes(2));
+  });
+
+  it('A 案: overcapacity_available_count>=1 の投入不能行に「定員+1」バッジを表示する', async () => {
+    mocks.simulateAsync.mockResolvedValue(
+      makeSimulateResult({ unplaced: [unplacedEntry(2)] }),
+    );
+    render(<BulkPoolInsertDialog {...BASE_PROPS} />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('bulk-pool-insert-preview')).toBeInTheDocument(),
+    );
+    // Badge モックは props を落とすため文言で存在を検証。
+    expect(screen.getByText('定員+1名なら入る候補あり')).toBeInTheDocument();
+  });
+
+  it('A 案: overcapacity_available_count=0 ではバッジを表示しない', async () => {
+    mocks.simulateAsync.mockResolvedValue(
+      makeSimulateResult({ unplaced: [unplacedEntry(0)] }),
+    );
+    render(<BulkPoolInsertDialog {...BASE_PROPS} />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('bulk-pool-insert-preview')).toBeInTheDocument(),
+    );
+    expect(screen.queryByText('定員+1名なら入る候補あり')).not.toBeInTheDocument();
+  });
+
+  it('A 案: done 画面の患者名クリックで onOpenPatientDetail が呼ばれダイアログが閉じる', async () => {
+    const onOpenPatientDetail = vi.fn();
+    const onClose = vi.fn();
+    mocks.simulateAsync.mockResolvedValue(
+      makeSimulateResult({ unplaced: [unplacedEntry(1)] }),
+    );
+    mocks.applyAsync.mockResolvedValue({
+      applied_patients: 1,
+      applied_slots: 1,
+      warnings: [],
+    });
+    render(
+      <BulkPoolInsertDialog
+        {...BASE_PROPS}
+        onClose={onClose}
+        onOpenPatientDetail={onOpenPatientDetail}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId('bulk-pool-insert-preview')).toBeInTheDocument(),
+    );
+
+    // チェックして適用 → done 画面へ
+    fireEvent.click(screen.getByTestId('bulk-pool-insert-confirm-checkbox'));
+    fireEvent.click(screen.getByTestId('bulk-pool-insert-apply-button'));
+    await waitFor(() =>
+      expect(screen.getByTestId('bulk-pool-insert-done')).toBeInTheDocument(),
+    );
+
+    // done 画面の患者名クリック → ダイアログを閉じてから個別導線を呼ぶ
+    const patientButton = screen.getByTestId('bulk-pool-insert-done-patient-button');
+    fireEvent.click(patientButton);
+    expect(onClose).toHaveBeenCalled();
+    expect(onOpenPatientDetail).toHaveBeenCalledWith('p-2');
   });
 });

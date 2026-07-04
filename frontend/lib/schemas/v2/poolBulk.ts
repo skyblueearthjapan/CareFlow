@@ -67,6 +67,11 @@ export const poolBulkPartialSchema = z.object({
   missing_days: z.number().int(),
   /** 投入できなかった希望曜日 (str) → 理由コード (excluded_summary と同語彙). */
   unplaced_reasons: z.record(z.string(), z.string()).catch({}),
+  /**
+   * A 案 (2026-07-04 PO 承認): capacity_full の未充足曜日に「定員 +1 なら入る候補」が
+   * ある件数。>=1 で個別フロー (方式b) へ橋渡しするバッジを出す。drift 吸収に .default(0)。
+   */
+  overcapacity_available_count: z.number().int().catch(0).default(0),
 });
 export type PoolBulkPartial = z.infer<typeof poolBulkPartialSchema>;
 
@@ -76,6 +81,11 @@ export const poolBulkUnplacedSchema = z.object({
   patient_name: z.string(),
   /** 理由コード (capacity_full/travel_shortage/lunch_window/no_gap/course_closed/no_coordinates). */
   reason: z.string(),
+  /**
+   * A 案: capacity_full で投入不能な患者に「定員 +1 なら入る候補」がある件数。
+   * >=1 で個別フロー (方式b) へ橋渡しするバッジを出す。drift 吸収に .default(0)。
+   */
+  overcapacity_available_count: z.number().int().catch(0).default(0),
 });
 export type PoolBulkUnplaced = z.infer<typeof poolBulkUnplacedSchema>;
 
