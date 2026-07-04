@@ -162,6 +162,8 @@ from app.schemas.v2.unblock import (
     ProposeUnblockApplyResponse,
     ProposeUnblockRequest,
     ProposeUnblockResponse,
+    UnblockCourseSnapshot,
+    UnblockCourseVisit,
     UnblockInsertItem,
     UnblockMoveItem,
     UnblockPlanItem,
@@ -4479,6 +4481,52 @@ def _unblock_candidate_input(
     )
 
 
+async def _resolve_unblock_office_id(
+    db: DbDep,
+    *,
+    explicit_office_id: UUID | None,
+    patient_id: UUID | None,
+    missing_detail: str,
+) -> UUID:
+    """W-13a: 詰まり解消の対象拠点を確定する.
+
+    明示指定があれば尊重 (患者の拠点と食い違っても指定を優先 = 既存挙動不変)。省略時は
+    対象患者 (``patient_id``) の ``primary_office_id`` から解決する。患者が見つからない /
+    主担当拠点が未設定なら 422 (W-6 採用ガードと同文言系)。
+    """
+    if explicit_office_id is not None:
+        return explicit_office_id
+    patient: Patient | None = None
+    if patient_id is not None:
+        patient = await db.scalar(
+            select(Patient).where(Patient.id == patient_id, Patient.deleted_at.is_(None))
+        )
+    if patient is None or patient.primary_office_id is None:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=missing_detail)
+    return patient.primary_office_id
+
+
+def _unblock_course_to_schema(c: Any) -> UnblockCourseSnapshot:
+    """内部 ``UnblockCourseSnapshotData`` を API schema へ変換 (W-13b)."""
+
+    def _visit(v: Any) -> UnblockCourseVisit:
+        return UnblockCourseVisit(
+            patient_id=v.patient_id,
+            patient_name=v.patient_name,
+            start_time=_hhmm(v.start_time),
+            end_time=_hhmm(v.end_time),
+        )
+
+    return UnblockCourseSnapshot(
+        office_name=c.office_name,
+        weekday=c.weekday,
+        course_code=c.course_code,
+        course_label=c.course_label,
+        before=[_visit(v) for v in c.before],
+        after=[_visit(v) for v in c.after],
+    )
+
+
 def _unblock_plan_to_schema(p: Any) -> UnblockPlanItem:
     """内部 ``UnblockPlan`` を API schema ``UnblockPlanItem`` へ変換."""
     return UnblockPlanItem(
@@ -4511,6 +4559,7 @@ def _unblock_plan_to_schema(p: Any) -> UnblockPlanItem:
         ),
         total_delta_minutes=p.total_delta_minutes,
         moved_count=p.moved_count,
+        courses=[_unblock_course_to_schema(c) for c in p.courses],
     )
 
 
@@ -4530,7 +4579,16 @@ async def propose_unblock_endpoint(
     本 endpoint は **read-only**: DB を変更しない (適用は /propose-unblock/apply)。
     0 件でも 200 + ``unmovable_summary`` (N-6「黙って諦めない」) + ``state_token`` を返す。
     """
-    office = await db.scalar(select(Office).where(Office.id == payload.office_id))
+    # W-13a: office_id 省略時は対象患者 (existing_patient_id) の主担当拠点から解決する.
+    office_id = await _resolve_unblock_office_id(
+        db,
+        explicit_office_id=payload.office_id,
+        patient_id=payload.existing_patient_id,
+        missing_detail=(
+            "主担当拠点が未設定のため探索できません。患者マスタで主担当拠点を設定してください。"
+        ),
+    )
+    office = await db.scalar(select(Office).where(Office.id == office_id))
     if office is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Office not found")
 
@@ -4541,10 +4599,13 @@ async def propose_unblock_endpoint(
             db,
             iso_year=payload.iso_year,
             iso_week=payload.iso_week,
-            scope=OptimizationScope(office_id=payload.office_id),
+            scope=OptimizationScope(office_id=office_id),
         )
         return ProposeUnblockResponse(
-            plans=[], unmovable_summary=UnblockUnmovableSummary(), state_token=token
+            plans=[],
+            unmovable_summary=UnblockUnmovableSummary(),
+            state_token=token,
+            resolved_office_id=office_id,
         )
 
     candidate = _unblock_candidate_input(payload, cand_lat, cand_lng)
@@ -4553,7 +4614,7 @@ async def propose_unblock_endpoint(
         result = await search_unblock_plans(
             db,
             candidate=candidate,
-            office_id=payload.office_id,
+            office_id=office_id,
             iso_year=payload.iso_year,
             iso_week=payload.iso_week,
             config=config,
@@ -4574,6 +4635,7 @@ async def propose_unblock_endpoint(
             confirmation_required=s.confirmation_required,
         ),
         state_token=result.state_token,
+        resolved_office_id=office_id,
     )
 
 
@@ -4720,7 +4782,16 @@ async def propose_unblock_apply_endpoint(
       手動上書き visit は本エンドポイントで消えない。
     - 適用は型レベル (pattern_and_week) 固定 (設計 P-6)。監査は AuditLog のみ (op_log 非汚染)。
     """
-    office = await db.scalar(select(Office).where(Office.id == payload.office_id))
+    # W-13a: office_id 省略時は target_patient_id の主担当拠点から解決する.
+    office_id = await _resolve_unblock_office_id(
+        db,
+        explicit_office_id=payload.office_id,
+        patient_id=payload.target_patient_id,
+        missing_detail=(
+            "主担当拠点が未設定のため適用できません。患者マスタで主担当拠点を設定してください。"
+        ),
+    )
+    office = await db.scalar(select(Office).where(Office.id == office_id))
     if office is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Office not found")
 
@@ -4798,7 +4869,7 @@ async def propose_unblock_apply_endpoint(
         db,
         iso_year=payload.iso_year,
         iso_week=payload.iso_week,
-        scope=OptimizationScope(office_id=payload.office_id),
+        scope=OptimizationScope(office_id=office_id),
     )
     if current_token != payload.state_token:
         raise HTTPException(
@@ -4823,7 +4894,7 @@ async def propose_unblock_apply_endpoint(
                 db, status.HTTP_422_UNPROCESSABLE_ENTITY, f"手順{idx}: start_time は HH:MM 必須です"
             )
         affected_patient_ids.add(m.patient_id)
-        new_course = await _resolve_course_template_id(db, payload.office_id, m.to.course_code)
+        new_course = await _resolve_course_template_id(db, office_id, m.to.course_code)
         await _validate_and_move_one(
             db,
             patient_id=m.patient_id,
@@ -4844,7 +4915,7 @@ async def propose_unblock_apply_endpoint(
         insert=plan.insert,
         service_minutes=insert_duration,
         requires_multiple_staff=insert_requires_multiple_staff,
-        office_id=payload.office_id,
+        office_id=office_id,
         config=config,
         warnings=warnings,
     )
@@ -4872,7 +4943,7 @@ async def propose_unblock_apply_endpoint(
             target_id=f"{payload.iso_year}-W{payload.iso_week}",
             before={},
             after={
-                "office_id": str(payload.office_id),
+                "office_id": str(office_id),
                 "target_patient_id": str(target.id),
                 "plan_id": plan.plan_id,
                 "applied_moves": len(plan.moves),

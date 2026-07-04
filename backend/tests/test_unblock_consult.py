@@ -783,6 +783,218 @@ async def test_same_bucket_retreat_reoccupy_target_slot_rejected(client, db) -> 
 
 
 # ---------------------------------------------------------------------------
+# W-13a: office_id の自動解決 (対象患者の primary_office_id から)
+# ---------------------------------------------------------------------------
+
+
+def _body_without_office(office: Office, candidate: Patient, **overrides) -> dict:
+    """office_id を省いた候補ボディ (W-13a の自動解決を検証する)."""
+    body = _candidate_body(office, candidate, **overrides)
+    body.pop("office_id", None)
+    return body
+
+
+@pytest.mark.asyncio
+async def test_w13a_office_omitted_resolves_from_patient(client, db) -> None:
+    """office_id 省略時は対象患者 (existing_patient_id) の主担当拠点から解決して探索する."""
+    admin = await _make_user(db, email="w13a_omit@example.com")
+    office, candidate, _blk = await _seed_single_blocker(db)
+    # candidate.primary_office_id は office.id (seed で設定済み).
+    res = await client.post(
+        _URL, headers=_bearer(admin), json=_body_without_office(office, candidate)
+    )
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["plans"], data["unmovable_summary"]
+    assert data["plans"][0]["moved_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_w13a_office_missing_patient_office_422(client, db) -> None:
+    """対象患者の主担当拠点が未設定なら 422 (W-6 と同文言系)."""
+    admin = await _make_user(db, email="w13a_422@example.com")
+    office, _staff = await _mk_office_staff(db)
+    # 主担当拠点なしの候補患者.
+    candidate = _patient("TGT", BASE, office.id)
+    candidate.primary_office_id = None
+    db.add(candidate)
+    await db.commit()
+
+    res = await client.post(
+        _URL, headers=_bearer(admin), json=_body_without_office(office, candidate)
+    )
+    assert res.status_code == 422, res.text
+    assert "主担当拠点" in res.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_w13a_explicit_office_respected(client, db) -> None:
+    """明示指定した office_id は対象患者の拠点と食い違っても尊重される (既存挙動不変)."""
+    admin = await _make_user(db, email="w13a_explicit@example.com")
+    office, candidate, _blk = await _seed_single_blocker(db)
+    # 候補の主担当拠点を別 (ダミー) 拠点にすり替える. 明示指定が優先されるなら探索は成立する.
+    other = Office(name="別", code="OTHER")
+    db.add(other)
+    await db.flush()
+    candidate.primary_office_id = other.id
+    await db.commit()
+
+    # 明示 office_id = ブロッカーが居る office.id.
+    res = await client.post(_URL, headers=_bearer(admin), json=_candidate_body(office, candidate))
+    assert res.status_code == 200, res.text
+    assert res.json()["plans"], "明示 office_id が尊重され探索が成立するはず"
+
+
+@pytest.mark.asyncio
+async def test_w13a_resolved_office_id_returned(client, db) -> None:
+    """propose-unblock は探索に用いた拠点を resolved_office_id で返す (省略時=患者拠点 / 明示=echo)."""
+    admin = await _make_user(db, email="w13a_resolved@example.com")
+    office, candidate, _blk = await _seed_single_blocker(db)
+
+    # 省略時: 患者の主担当拠点 (office.id) が解決されて返る.
+    r_omit = await client.post(
+        _URL, headers=_bearer(admin), json=_body_without_office(office, candidate)
+    )
+    assert r_omit.status_code == 200, r_omit.text
+    assert r_omit.json()["resolved_office_id"] == str(office.id)
+
+    # 明示時: 指定値がそのまま echo される.
+    r_explicit = await client.post(
+        _URL, headers=_bearer(admin), json=_candidate_body(office, candidate)
+    )
+    assert r_explicit.status_code == 200, r_explicit.text
+    assert r_explicit.json()["resolved_office_id"] == str(office.id)
+
+
+@pytest.mark.asyncio
+async def test_w13a_apply_office_omitted_resolves(client, db) -> None:
+    """apply も office_id 省略時は target_patient_id の主担当拠点から解決して適用できる."""
+    admin = await _make_user(db, email="w13a_apply@example.com")
+    office, candidate, blocker = await _seed_single_blocker(db)
+
+    sim = await client.post(
+        _URL, headers=_bearer(admin), json=_body_without_office(office, candidate)
+    )
+    sim_data = sim.json()
+    assert sim_data["plans"]
+
+    apply_body = _apply_body(office, sim_data, candidate)
+    apply_body.pop("office_id", None)  # apply も省略.
+    res = await client.post(_APPLY_URL, headers=_bearer(admin), json=apply_body)
+    assert res.status_code == 200, res.text
+    assert res.json()["inserted"] is True
+
+
+# ---------------------------------------------------------------------------
+# W-13b: プランへのコース before/after スナップショット
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_w13b_same_bucket_shift_one_course(client, db) -> None:
+    """同一コース時間ずらしプラン = 影響コース 1 件 (before/after で移動が見える)."""
+    admin = await _make_user(db, email="w13b_same@example.com")
+    office, staff = await _mk_office_staff(db)
+    ct_a = await _mk_template(db, office, "A")
+    mon_a = await _mk_course(db, office, staff, 0, "A", ct_a)
+
+    blocker = _patient("BLK", V_COORD, office.id)
+    candidate = _patient("TGT", BASE, office.id)
+    db.add_all([blocker, candidate])
+    await db.flush()
+    await _add_visit_and_pfv(
+        db, blocker, mon_a, staff, weekday=0, start=time(10, 0), movability="time_flexible"
+    )
+    await db.commit()
+
+    body = _candidate_body(office, candidate, preferred_start="10:30")
+    res = await client.post(_URL, headers=_bearer(admin), json=body)
+    assert res.status_code == 200, res.text
+    plan = res.json()["plans"][0]
+    courses = plan["courses"]
+    assert len(courses) == 1, courses
+    c = courses[0]
+    assert c["weekday"] == 0 and c["course_code"] == "A"
+    assert c["office_name"] == "稲"
+    # before: ブロッカーが 10:00 に居る.
+    assert any(v["patient_id"] == str(blocker.id) and v["start_time"] == "10:00" for v in c["before"])
+    # after: ブロッカーは別時刻へ退避 + 対象患者が 10:30 に新規配置.
+    blk_after = [v for v in c["after"] if v["patient_id"] == str(blocker.id)]
+    assert blk_after and blk_after[0]["start_time"] != "10:00"
+    assert any(
+        v["patient_id"] == str(candidate.id) and v["start_time"] == "10:30" for v in c["after"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_w13b_cross_course_retreat_two_courses(client, db) -> None:
+    """別コース退避プラン = 影響コース 2 件 (移動元/配置先 Mon A + 退避先 Tue A)."""
+    admin = await _make_user(db, email="w13b_cross@example.com")
+    office, candidate, blocker = await _seed_single_blocker(db)
+    res = await client.post(_URL, headers=_bearer(admin), json=_candidate_body(office, candidate))
+    assert res.status_code == 200, res.text
+    plan = res.json()["plans"][0]
+    courses = plan["courses"]
+    # (weekday, course_code) 昇順・重複排除: Mon A (= 移動元 + 配置先) と Tue A (退避先).
+    keys = [(c["weekday"], c["course_code"]) for c in courses]
+    assert keys == [(0, "A"), (1, "A")], keys
+    mon_a = next(c for c in courses if c["weekday"] == 0)
+    tue_a = next(c for c in courses if c["weekday"] == 1)
+    # Mon A after: ブロッカーは消え、対象患者が入る.
+    assert not any(v["patient_id"] == str(blocker.id) for v in mon_a["after"])
+    assert any(v["patient_id"] == str(candidate.id) for v in mon_a["after"])
+    # Tue A after: ブロッカーが退避してくる.
+    assert any(v["patient_id"] == str(blocker.id) for v in tue_a["after"])
+    # entries の形が improvement 系と一致 (patient_id/patient_name/start_time/end_time).
+    assert set(mon_a["before"][0].keys()) == {
+        "patient_id",
+        "patient_name",
+        "start_time",
+        "end_time",
+    }
+
+
+@pytest.mark.asyncio
+async def test_w13b_two_staff_partner_course_included(client, db) -> None:
+    """2 名体制ターゲット = 相方コース (B) も影響コースに含まれ、after に対象が両コースへ入る."""
+    admin = await _make_user(db, email="w13b_2s@example.com")
+    office, staff = await _mk_office_staff(db)
+    ct_a = await _mk_template(db, office, "A")
+    ct_b = await _mk_template(db, office, "B")
+    mon_a = await _mk_course(db, office, staff, 0, "A", ct_a)
+    mon_b = await _mk_course(db, office, staff, 0, "B", ct_b)
+    tue_a = await _mk_course(db, office, staff, 1, "A", ct_a)
+
+    blocker = _patient("BLK", V_COORD, office.id)
+    b_fill = _patient("BF", FILL, office.id)
+    tue_fill = _patient("TF", FILL, office.id)
+    candidate = _patient("TGT", BASE, office.id, requires_multiple_staff=True)
+    db.add_all([blocker, b_fill, tue_fill, candidate])
+    await db.flush()
+    await _add_visit_and_pfv(db, blocker, mon_a, staff, weekday=0, start=time(10, 0))
+    await _add_visit_and_pfv(
+        db, b_fill, mon_b, staff, weekday=0, start=time(8, 30), movability="locked"
+    )
+    await _add_visit_and_pfv(
+        db, tue_fill, tue_a, staff, weekday=1, start=time(9, 30), movability="locked"
+    )
+    await db.commit()
+
+    body = _candidate_body(office, candidate, requires_multiple_staff=True)
+    res = await client.post(_URL, headers=_bearer(admin), json=body)
+    assert res.status_code == 200, res.text
+    pair_plans = [p for p in res.json()["plans"] if p["insert"]["partner_course_code"] == "B"]
+    assert pair_plans, "ペア開通プランが出るはず"
+    courses = pair_plans[0]["courses"]
+    codes = {(c["weekday"], c["course_code"]) for c in courses}
+    # 配置先 A + 相方 B が両方影響コースに含まれる.
+    assert (0, "A") in codes and (0, "B") in codes, codes
+    # 相方コース B の after に対象患者が入る.
+    course_b = next(c for c in courses if c["weekday"] == 0 and c["course_code"] == "B")
+    assert any(v["patient_id"] == str(candidate.id) for v in course_b["after"])
+
+
+# ---------------------------------------------------------------------------
 # RBAC / 404
 # ---------------------------------------------------------------------------
 

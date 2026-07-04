@@ -28,15 +28,15 @@ function addMinutes(t: string, minutes: number): string {
   return `${String(Math.floor(total / 60) % 24).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
 }
 
-interface TimelineRow {
+export interface TimelineRow {
   key: string;
   name: string;
   start: string; // HH:MM
-  end: string; // HH:MM
+  end?: string; // HH:MM (無ければ開始時刻のみ表示: mini_schedule は終了時刻を持たない)
   kind: 'normal' | 'out' | 'in';
 }
 
-function TimelinePanel({
+export function TimelinePanel({
   title,
   rows,
   testId,
@@ -68,7 +68,7 @@ function TimelinePanel({
             data-kind={row.kind}
           >
             <span className="tabular-nums">
-              {row.start}–{row.end}
+              {row.end ? `${row.start}–${row.end}` : row.start}
             </span>
             <span className="truncate">{row.name} 様</span>
             {row.kind === 'in' ? (
@@ -183,6 +183,36 @@ export function CourseMoveTimeline({
         rows={dstRows}
         testId="course-move-timeline-dst"
       />
+    </div>
+  );
+}
+
+/**
+ * BeforeAfterCourseTimeline — 「変更前 → 変更後」の 2 列タイムライン (UI 統一・W-13b)。
+ *
+ * CourseMoveTimeline は改善提案 (ImprovementSuggestion) 起点の move を描くのに対し、
+ * こちらは **任意の before/after 行列** を受け取り同じ視覚言語で 2 列に描く汎用版:
+ *   - 詰まり解消プランカード: 影響コースの before/after スナップショット (patient_id で差分)
+ *   - 個別配置提案の採用確認パネル: mini_schedule の before(是入前)/after(是入後)
+ * kind (out=打消し / in=強調 / normal) は **呼び出し側が確定** して渡す
+ * (差分ロジックはデータ形により異なるため)。色・レイアウト・「← ここへ移動」表現は共有。
+ */
+export function BeforeAfterCourseTimeline({
+  title,
+  beforeRows,
+  afterRows,
+  testIdPrefix,
+}: {
+  /** コース見出し (例: 稲B・火曜・山田)。変更前/変更後の () 内に出す。 */
+  title: string;
+  beforeRows: TimelineRow[];
+  afterRows: TimelineRow[];
+  testIdPrefix: string;
+}) {
+  return (
+    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2" data-testid={testIdPrefix}>
+      <TimelinePanel title={`変更前（${title}）`} rows={beforeRows} testId={`${testIdPrefix}-before`} />
+      <TimelinePanel title={`変更後（${title}）`} rows={afterRows} testId={`${testIdPrefix}-after`} />
     </div>
   );
 }

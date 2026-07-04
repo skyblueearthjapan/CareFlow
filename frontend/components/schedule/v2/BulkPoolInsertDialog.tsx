@@ -1134,14 +1134,14 @@ function WeekdayBeforeAfter({
       data-testid={`bulk-pool-insert-before-after-${weekday}`}
     >
       <WeekdayScheduleCard
-        title="Before"
+        title="変更前"
         totalSummary={`${beforeTotal.visits}件 / ${beforeTotal.distance.toFixed(1)}km`}
         tone="muted"
         courses={beforeItems}
         maxVisitsPerCourse={8}
       />
       <WeekdayScheduleCard
-        title="After（⊕ = 今回の投入枠）"
+        title="変更後（⊕ = 今回の投入枠）"
         totalSummary={`${afterTotal.visits}件 / ${afterTotal.distance.toFixed(1)}km`}
         tone="primary"
         courses={afterItems}

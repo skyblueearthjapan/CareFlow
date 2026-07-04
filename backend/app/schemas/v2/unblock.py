@@ -65,7 +65,12 @@ class _UnblockCandidateBase(BaseModel):
     # --- 対象週 / 拠点 ---
     iso_year: int = Field(..., ge=2020, le=2100)
     iso_week: int = Field(..., ge=1, le=53)
-    office_id: uuid.UUID = Field(..., description="詰まり解消の対象拠点 (office スコープ)")
+    # W-13a: 省略時は対象患者 (existing_patient_id) の primary_office_id から解決する
+    # (ページの拠点フィルタに依存しない)。明示指定は従来どおり尊重 (後方互換)。
+    office_id: uuid.UUID | None = Field(
+        default=None,
+        description="詰まり解消の対象拠点 (office スコープ)。省略時は対象患者の主担当拠点。",
+    )
 
     @field_validator("preferred_start", "preferred_end")
     @classmethod
@@ -135,6 +140,44 @@ class UnblockInsertItem(BaseModel):
     partner_course_label: str | None = Field(default=None, description="相方コースの表示ラベル")
 
 
+class UnblockCourseVisit(BaseModel):
+    """コーススナップショットの 1 訪問 (W-13b).
+
+    形は改善提案の正典 ``CourseSnapshotVisit`` (improvement_suggestion.py) と整合させる
+    (patient_id / patient_name / start_time / end_time)。CourseMoveTimeline の正典部品が
+    読める形。plan は apply でエコーバックされるため ``extra="ignore"`` (FE 追加フィールド許容)。
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    patient_id: uuid.UUID
+    patient_name: str
+    start_time: str = Field(..., description="HH:MM")
+    end_time: str = Field(..., description="HH:MM")
+
+
+class UnblockCourseSnapshot(BaseModel):
+    """プランが影響するコースの before/after スナップショット (W-13b).
+
+    ``before`` = 現状 / ``after`` = プラン (moves 適用 + insert 配置) 後の最終状態。FE は
+    両者を突き合わせて移動 (is_moved) / 新規配置 (is_new) を描画する (CourseMoveTimeline 統一)。
+    影響コース = 各 move の移動元/移動先 + insert の配置先 (+ 2 名体制なら相方コース)。
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    office_name: str | None = Field(default=None, description="拠点名")
+    weekday: int = Field(..., ge=0, le=6, description="0=Mon..6=Sun")
+    course_code: str = Field(..., description="A..E / M..M9")
+    course_label: str = Field(..., description="拠点名 + コード (例: 稲A)")
+    before: list[UnblockCourseVisit] = Field(
+        default_factory=list, description="現状の訪問列 (start 昇順)"
+    )
+    after: list[UnblockCourseVisit] = Field(
+        default_factory=list, description="プラン適用後の訪問列 (start 昇順)"
+    )
+
+
 class UnblockPlanItem(BaseModel):
     """開通プラン 1 件 (moves を適用 → insert に対象を配置).
 
@@ -150,6 +193,13 @@ class UnblockPlanItem(BaseModel):
     insert: UnblockInsertItem
     total_delta_minutes: int = Field(default=0, description="全手の delta 合計 (分/週)")
     moved_count: int = Field(default=0, ge=0, description="動かす既存訪問の数 (= len(moves))")
+    courses: list[UnblockCourseSnapshot] = Field(
+        default_factory=list,
+        description=(
+            "W-13b: プランが影響する全コースの before/after スナップショット "
+            "((weekday, course_code) 昇順・重複排除)。後方互換のため既定 []。"
+        ),
+    )
 
 
 class UnblockUnmovableSummary(BaseModel):
@@ -177,6 +227,11 @@ class ProposeUnblockResponse(BaseModel):
     plans: list[UnblockPlanItem] = Field(default_factory=list)
     unmovable_summary: UnblockUnmovableSummary = Field(default_factory=UnblockUnmovableSummary)
     state_token: str = Field(..., description="apply 用の楽観ロック指紋 (sha256, office スコープ)")
+    # W-13a: BE が実際に探索した拠点。office_id 省略時は対象患者の primary_office_id から解決した
+    # 値、明示指定時はその値の echo。FE は apply の office_id に流用する (後方互換: 既定 None)。
+    resolved_office_id: uuid.UUID | None = Field(
+        default=None, description="探索に用いた拠点 (省略時は患者の主担当拠点から解決した値)"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -195,7 +250,11 @@ class ProposeUnblockApplyRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    office_id: uuid.UUID
+    # W-13a: 省略時は target_patient_id の primary_office_id から解決 (後方互換)。
+    office_id: uuid.UUID | None = Field(
+        default=None,
+        description="対象拠点 (office スコープ)。省略時は target_patient_id の主担当拠点。",
+    )
     iso_year: int = Field(..., ge=2020, le=2100)
     iso_week: int = Field(..., ge=1, le=53)
     plan: UnblockPlanItem
@@ -229,6 +288,8 @@ __all__ = [
     "ProposeUnblockApplyResponse",
     "ProposeUnblockRequest",
     "ProposeUnblockResponse",
+    "UnblockCourseSnapshot",
+    "UnblockCourseVisit",
     "UnblockInsertItem",
     "UnblockMoveItem",
     "UnblockPlanItem",

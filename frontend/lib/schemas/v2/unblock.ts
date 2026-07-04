@@ -57,7 +57,9 @@ export const proposeUnblockRequestSchema = z.object({
   existing_patient_id: z.string().uuid().nullish(),
 
   // 対象週 / 拠点 (単一)。
-  office_id: z.string().uuid(),
+  // W-13a: office_id は省略可能。省略時 BE は対象患者の主担当拠点 (primary_office_id)
+  // から自動解決する。ページで拠点選択中はそれを送る (従来どおり)。
+  office_id: z.string().uuid().nullish(),
   iso_year: z.number().int().min(2020).max(2100),
   iso_week: z.number().int().min(1).max(53),
 
@@ -103,6 +105,30 @@ export const unblockInsertSchema = z.object({
 });
 export type UnblockInsert = z.infer<typeof unblockInsertSchema>;
 
+/**
+ * W-13b: 影響コースの before/after スナップショット 1 件 (BE が plan ごとに返す)。
+ * entries は improvement 系スナップショット (CourseSnapshotVisit) と同形。
+ * before/after を CourseMoveTimeline 系の正典部品で「変更前 → 変更後」の 2 列表示する。
+ * 旧 BE (courses 未送出) でも壊れないよう寛容パース。
+ */
+export const unblockCourseEntrySchema = z.object({
+  patient_id: z.string(),
+  patient_name: z.string(),
+  start_time: z.string(),
+  end_time: z.string(),
+});
+export type UnblockCourseEntry = z.infer<typeof unblockCourseEntrySchema>;
+
+export const unblockCourseBeforeAfterSchema = z.object({
+  office_name: z.string().nullish(),
+  weekday: z.number().int().min(0).max(6),
+  course_code: z.string(),
+  course_label: z.string().nullish(),
+  before: tolerantArray(unblockCourseEntrySchema).default([]),
+  after: tolerantArray(unblockCourseEntrySchema).default([]),
+});
+export type UnblockCourseBeforeAfter = z.infer<typeof unblockCourseBeforeAfterSchema>;
+
 /** 開通プラン 1 件 (moves ≤ 2 + insert 1)。乱れの小さい順にランキング済み。 */
 export const unblockPlanSchema = z.object({
   plan_id: z.string(),
@@ -110,6 +136,8 @@ export const unblockPlanSchema = z.object({
   insert: unblockInsertSchema,
   total_delta_minutes: z.number().default(0),
   moved_count: z.number().int().default(0),
+  // W-13b: 影響する全コース (移動元・移動先・配置先) の before/after。旧 BE 未送出 → []。
+  courses: tolerantArray(unblockCourseBeforeAfterSchema).default([]),
 });
 export type UnblockPlan = z.infer<typeof unblockPlanSchema>;
 
@@ -139,6 +167,11 @@ export const proposeUnblockResponseSchema = z.object({
   unmovable_summary: unblockUnmovableSummarySchema.catch(EMPTY_UNMOVABLE).default(EMPTY_UNMOVABLE),
   /** 楽観ロック用指紋 (apply で再計算し不一致なら 409)。scope-opt と同じ PFV 指紋。 */
   state_token: z.string(),
+  /**
+   * W-13a: office_id 省略時に BE が主担当拠点から解決した拠点 ID (apply の office スコープに使う)。
+   * 旧 BE 未送出 → null。FE は apply 時 officeId ?? resolved_office_id の順で解決する。
+   */
+  resolved_office_id: z.string().uuid().nullish(),
 });
 export type ProposeUnblockResponse = z.infer<typeof proposeUnblockResponseSchema>;
 
@@ -154,7 +187,8 @@ export type ProposeUnblockResponse = z.infer<typeof proposeUnblockResponseSchema
  *   - 反映先は pattern_and_week 固定 (v1・P-6)。change_scope は持たせない。
  */
 export const unblockApplyRequestSchema = z.object({
-  office_id: z.string(),
+  // W-13a: office_id 省略時は BE が対象患者の主担当拠点から再解決する (探索と同じ挙動)。
+  office_id: z.string().nullish(),
   iso_year: z.number().int(),
   iso_week: z.number().int().min(1).max(53),
   /** 対象患者 UUID (BE の指紋照合に使用)。 */

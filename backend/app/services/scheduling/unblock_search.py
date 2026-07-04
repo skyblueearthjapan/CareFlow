@@ -28,7 +28,7 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from dataclasses import replace as _dc_replace
 from datetime import datetime, time
 from itertools import combinations
@@ -55,9 +55,12 @@ from app.services.scheduling.auto_allocator_v2 import (
 )
 from app.services.scheduling.config import SchedulingConfig
 from app.services.scheduling.improvement_engine import (
+    CourseSnapshotData,
+    CourseSnapshotVisitData,
     _bucket_existing_excluding,
     _slot_within_preference,
     compute_exact_marginal,
+    snapshot_course_bucket,
 )
 from app.services.scheduling.proposal_solver import (
     Candidate,
@@ -124,6 +127,22 @@ class UnblockInsert:
 
 
 @dataclass(frozen=True)
+class UnblockCourseSnapshotData:
+    """プランが影響するコースの before/after スナップショット (W-13b).
+
+    entries は improvement_engine の正典 ``CourseSnapshotVisitData`` と同形。
+    before=現状 / after=プラン (moves 適用 + insert 配置) 後の最終状態 (共に start 昇順)。
+    """
+
+    office_name: str | None
+    weekday: int
+    course_code: str
+    course_label: str
+    before: list[CourseSnapshotVisitData]
+    after: list[CourseSnapshotVisitData]
+
+
+@dataclass(frozen=True)
 class UnblockPlan:
     """開通プラン 1 件 (moves を適用 → insert に対象を配置)."""
 
@@ -132,6 +151,8 @@ class UnblockPlan:
     insert: UnblockInsert
     total_delta_minutes: int
     moved_count: int
+    # W-13b: 影響コースの before/after ((weekday, course_code) 昇順・重複排除)。既定 [].
+    courses: list[UnblockCourseSnapshotData] = field(default_factory=list)
 
 
 @dataclass
@@ -576,6 +597,85 @@ def _make_plan(moves: list[UnblockMove], ps: ProposedSlot, target_id: UUID | Non
     )
 
 
+def _build_plan_courses(
+    moves: list[UnblockMove],
+    insert: UnblockInsert,
+    *,
+    buckets: dict[tuple[UUID, int, str], _CourseBucket],
+    office_id: UUID,
+    office_name_by_id: dict[UUID, str],
+    target_patient_id: UUID,
+    target_patient_name: str,
+) -> list[UnblockCourseSnapshotData]:
+    """プランが影響する全コースの before/after スナップショットを構築する (W-13b).
+
+    影響コース = 各 move の移動元/移動先 + insert の配置先 (+ 2 名体制なら相方コース)。
+    ``before`` は現状バケットの正典スナップショット (``snapshot_course_bucket``)。``after`` は
+    「move の患者を移動元から除去し移動先へ配置 + insert 枠へ対象患者を追加」した最終状態。
+    entries は improvement_engine の ``CourseSnapshotVisitData`` (時刻・患者名) と同形。
+    """
+    keys: set[tuple[int, str]] = set()
+    for m in moves:
+        keys.add((m.from_weekday, m.from_course_code))
+        keys.add((m.to_weekday, m.to_course_code))
+    keys.add((insert.weekday, insert.course_code))
+    if insert.partner_course_code is not None:
+        keys.add((insert.weekday, insert.partner_course_code))
+
+    office_name = office_name_by_id.get(office_id)
+    out: list[UnblockCourseSnapshotData] = []
+    for wd, code in sorted(keys):
+        bucket = buckets.get((office_id, wd, code))
+        if bucket is None:
+            # 影響コースだが当週バケット無し (空コース) はスナップショット不能なので skip.
+            continue
+        snap: CourseSnapshotData = snapshot_course_bucket(bucket)
+        before = list(snap.visits)
+
+        # after: このコースが移動元となる move の患者を除去 → 移動先となる move / insert を追加.
+        removed_pids = {
+            m.patient_id for m in moves if m.from_weekday == wd and m.from_course_code == code
+        }
+        after = [v for v in before if v.patient_id not in removed_pids]
+        for m in moves:
+            if m.to_weekday == wd and m.to_course_code == code:
+                after.append(
+                    CourseSnapshotVisitData(
+                        patient_id=m.patient_id,
+                        patient_name=m.patient_name,
+                        start_time=m.to_start,
+                        end_time=m.to_end,
+                    )
+                )
+        is_insert_course = (insert.weekday, insert.course_code) == (wd, code)
+        is_partner_course = insert.partner_course_code is not None and (
+            insert.weekday,
+            insert.partner_course_code,
+        ) == (wd, code)
+        if is_insert_course or is_partner_course:
+            after.append(
+                CourseSnapshotVisitData(
+                    patient_id=target_patient_id,
+                    patient_name=target_patient_name,
+                    start_time=insert.start,
+                    end_time=insert.end,
+                )
+            )
+        after.sort(key=lambda v: _time_to_min(v.start_time))
+
+        out.append(
+            UnblockCourseSnapshotData(
+                office_name=office_name,
+                weekday=wd,
+                course_code=code,
+                course_label=snap.course_label,
+                before=before,
+                after=after,
+            )
+        )
+    return out
+
+
 # ---------------------------------------------------------------------------
 # メイン
 # ---------------------------------------------------------------------------
@@ -650,6 +750,17 @@ async def search_unblock_plans(
         and d.kind in ("time_change", "day_change")
     }
 
+    # W-13b: after スナップショットの insert 行に載せる対象患者名/ID を解決する.
+    # 対象患者 (プール患者) はバケットに未配置なので patient_by_id に居ないことがある.
+    target_pid: UUID = candidate.existing_patient_id or UUID(int=0)
+    target_name = "対象患者"
+    if candidate.existing_patient_id is not None:
+        tp = patient_by_id.get(candidate.existing_patient_id)
+        if tp is None:
+            tp = await db.scalar(select(Patient).where(Patient.id == candidate.existing_patient_id))
+        if tp is not None:
+            target_name = tp.name
+
     # weekday ごとにバケットをグルーピング (対象患者の開通判定は単一 weekday スコープで行う).
     weekday_groups: dict[int, dict[tuple[UUID, int, str], _CourseBucket]] = {}
     for key, b in buckets.items():
@@ -667,6 +778,20 @@ async def search_unblock_plans(
             config=config,
             bucket_code=bucket_code,
         )
+
+    def _finalize(moves: list[UnblockMove], ps: ProposedSlot) -> UnblockPlan:
+        """plan を組み立て、影響コースの before/after スナップショット (W-13b) を付与する."""
+        plan = _make_plan(moves, ps, candidate.existing_patient_id)
+        courses = _build_plan_courses(
+            plan.moves,
+            plan.insert,
+            buckets=buckets,
+            office_id=office_id,
+            office_name_by_id=office_name_by_id,
+            target_patient_id=target_pid,
+            target_patient_name=target_name,
+        )
+        return _dc_replace(plan, courses=courses)
 
     for wd in sorted(weekday_groups):
         wd_buckets = weekday_groups[wd]
@@ -730,7 +855,7 @@ async def search_unblock_plans(
                             )
                             if move is None:
                                 continue  # 有効な退避先なし → このブロッカーはスキップ.
-                    plans.append(_make_plan([move], ps, candidate.existing_patient_id))
+                    plans.append(_finalize([move], ps))
                     depth1_found = True
 
             # ---- 深さ 2: 深さ 1 で開通しなかったバケットのみ (同一バケット内 2 visit) ----
@@ -826,7 +951,7 @@ async def search_unblock_plans(
                             # 両方とも他バケット退避 → ps (sub = Mon A without v,w) が正しい.
                         else:
                             ps = ps_check
-                    plans.append(_make_plan([move_v, move_w], ps, candidate.existing_patient_id))
+                    plans.append(_finalize([move_v, move_w], ps))
 
     # ランキング + dedup (同一 plan_id).
     plans.sort(
@@ -861,6 +986,7 @@ def _as_naive(dt: datetime) -> datetime:
 
 __all__ = [
     "DEFAULT_UNBLOCK_LIMIT",
+    "UnblockCourseSnapshotData",
     "UnblockInsert",
     "UnblockMove",
     "UnblockPlan",

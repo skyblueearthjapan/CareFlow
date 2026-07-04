@@ -110,7 +110,7 @@ export function ProposalWeekCalendar({
       data-testid={`proposal-week-calendar-${side}`}
     >
       <div className={cn('border-b px-2 py-1 text-[11px] font-semibold', sideHeaderCls)}>
-        {side === 'after' ? 'After 週ビュー' : 'Before 週ビュー'}
+        {side === 'after' ? '変更後 週ビュー' : '変更前 週ビュー'}
       </div>
       <div className="overflow-x-auto">
         <table className="w-full border-collapse text-[10px]">

@@ -47,6 +47,7 @@ import type {
   WeekdayCode,
 } from '@/lib/schemas/v2/propose_slots';
 import type {
+  UnblockCourseBeforeAfter,
   UnblockMoveEndpoint,
   UnblockPlan,
   UnblockUnmovableSummary,
@@ -62,6 +63,7 @@ import {
   slotKey,
 } from './_proposeSlotUtils';
 import { ChangeScopeChoice, type ChangeScopeValue } from './ChangeScopeChoice';
+import { BeforeAfterCourseTimeline, type TimelineRow } from './CourseMoveTimeline';
 
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'] as const;
 
@@ -118,6 +120,71 @@ function formatDeltaMinutes(v: number | null | undefined): string {
 function formatEndpoint(ep: UnblockMoveEndpoint): string {
   const wd = WEEKDAY_LABELS[ep.weekday] ?? '?';
   return `${wd} ${trimSeconds(ep.start_time)} ${ep.course_label ?? ep.course_code}`;
+}
+
+/**
+ * W-13b: 影響コースの before/after を差分し「変更前 → 変更後」の TimelineRow 化。
+ * patient_id × 開始時刻でキーを作り、片側にしか無い訪問を out(移動元)/in(移動先) に、
+ * 両側にある訪問を normal に振り分ける (CourseMoveTimeline と同じ視覚言語)。
+ * 前提: unblock の move は必ず start_time が変わる (end_time だけ変わる手は存在しない)
+ * ため、このキーで移動を漏れなく検出できる。end_time のみの変化は検出しない。
+ */
+function unblockCourseKey(e: { patient_id: string; start_time: string }): string {
+  return `${e.patient_id}@${trimSeconds(e.start_time)}`;
+}
+
+function buildCourseBeforeAfterRows(course: UnblockCourseBeforeAfter): {
+  before: TimelineRow[];
+  after: TimelineRow[];
+  title: string;
+} {
+  const courseBefore = course.before ?? [];
+  const courseAfter = course.after ?? [];
+  const beforeKeys = new Set(courseBefore.map(unblockCourseKey));
+  const afterKeys = new Set(courseAfter.map(unblockCourseKey));
+  const before: TimelineRow[] = courseBefore.map((v): TimelineRow => ({
+    key: `b-${v.patient_id}-${v.start_time}`,
+    name: v.patient_name,
+    start: trimSeconds(v.start_time),
+    end: trimSeconds(v.end_time),
+    kind: afterKeys.has(unblockCourseKey(v)) ? 'normal' : 'out',
+  }));
+  const after: TimelineRow[] = courseAfter.map((v): TimelineRow => ({
+    key: `a-${v.patient_id}-${v.start_time}`,
+    name: v.patient_name,
+    start: trimSeconds(v.start_time),
+    end: trimSeconds(v.end_time),
+    kind: beforeKeys.has(unblockCourseKey(v)) ? 'normal' : 'in',
+  }));
+  const wd = WEEKDAY_LABELS[course.weekday] ?? '?';
+  const title = `${course.course_label ?? course.course_code}・${wd}曜`;
+  return { before, after, title };
+}
+
+/**
+ * W-13b: mini_schedule から before(採用前=is_here 行を除外)/after(採用後=全行) を構築。
+ * is_here 行 = 対象患者の採用枠 (after 側で 'in' 強調)。純粋な追加なので差分は不要。
+ * mini_schedule は終了時刻を持たないため start のみ (TimelineRow.end は省略)。
+ */
+function buildMiniBeforeAfterRows(
+  mini: ProposeMiniScheduleEntry[],
+  insertName: string,
+): { before: TimelineRow[]; after: TimelineRow[] } {
+  const before: TimelineRow[] = mini
+    .filter((r) => !r.is_here)
+    .map((r, i): TimelineRow => ({
+      key: `mb-${i}`,
+      name: r.name,
+      start: trimSeconds(r.time),
+      kind: 'normal',
+    }));
+  const after: TimelineRow[] = mini.map((r, i): TimelineRow => ({
+    key: `ma-${i}`,
+    name: r.is_here ? insertName : r.name,
+    start: trimSeconds(r.time),
+    kind: r.is_here ? 'in' : 'normal',
+  }));
+  return { before, after };
 }
 
 /**
@@ -213,6 +280,40 @@ function MiniRow({ row }: { row: ProposeMiniScheduleEntry }) {
   );
 }
 
+/**
+ * W-13b: 採用確認パネルの before/after (「どこからどこへ」を正典の視覚言語で)。
+ * 主コースの mini_schedule から採用前(is_here 除外)/採用後(全行) を組み、ペア候補は
+ * 相方コース (partner_mini_schedule) を 2 組目として並べる。
+ */
+function AdoptBeforeAfter({ slot, insertName }: { slot: ProposeSlotItem; insertName: string }) {
+  const wd = WEEKDAY_LABELS[slot.weekday] ?? '?';
+  const main = buildMiniBeforeAfterRows(slot.mini_schedule, insertName);
+  const mainTitle = `${slot.course_label}${slot.staff_name ? `・${slot.staff_name}` : ''}・${wd}曜`;
+  const partnerMini = slot.partner_mini_schedule ?? [];
+  const showPartner = isTwoStaffPairSlot(slot) && partnerMini.length > 0;
+  const partner = showPartner ? buildMiniBeforeAfterRows(partnerMini, insertName) : null;
+  return (
+    <div className="mt-2 space-y-2" data-testid="pool-candidate-before-after">
+      <BeforeAfterCourseTimeline
+        title={mainTitle}
+        beforeRows={main.before}
+        afterRows={main.after}
+        testIdPrefix="pool-candidate-course-ba"
+      />
+      {showPartner && partner ? (
+        <BeforeAfterCourseTimeline
+          title={`${slot.partner_course_label ?? slot.partner_course_code}${
+            slot.partner_staff_name ? `・${slot.partner_staff_name}` : ''
+          }・${wd}曜（相方）`}
+          beforeRows={partner.before}
+          afterRows={partner.after}
+          testIdPrefix="pool-candidate-partner-course-ba"
+        />
+      ) : null}
+    </div>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // W-12d: 詰まり解消相談 (propose-unblock)
 //
@@ -253,15 +354,20 @@ function UnblockPlanCard({
   plan,
   canEdit,
   disabled,
+  defaultCoursesOpen,
   onSelect,
 }: {
   plan: UnblockPlan;
   canEdit: boolean;
   disabled: boolean;
+  /** W-13b: 影響コース before/after を既定展開するか (先頭プランのみ true)。 */
+  defaultCoursesOpen: boolean;
   onSelect: () => void;
 }) {
   const insert = plan.insert;
   const insertStep = plan.moves.length; // 手順番号 (moves の後)。
+  // 旧 BE (courses 未送出) でも壊れないよう空配列にフォールバック (テスト要件)。
+  const courses = plan.courses ?? [];
   const insertCourse = insert.course_label ?? insert.course_code;
   const partnerCourse = insert.partner_course_label ?? insert.partner_course_code;
   return (
@@ -306,6 +412,32 @@ function UnblockPlanCard({
           ) : null}
         </li>
       </ol>
+      {/* W-13b: 影響コースの before/after 一覧 (「どこからどこへずらすか」を正典部品で)。 */}
+      {courses.length > 0 ? (
+        <details
+          className="mt-2 rounded border border-border-default/70 bg-bg-muted/20 p-1.5"
+          open={defaultCoursesOpen}
+          data-testid="unblock-plan-courses"
+        >
+          <summary className="cursor-pointer select-none text-[11px] font-medium text-text-secondary">
+            変更されるコースの一覧（変更前 → 変更後・{courses.length}コース）
+          </summary>
+          <div className="mt-1.5 space-y-2">
+            {courses.map((c, ci) => {
+              const { before, after, title } = buildCourseBeforeAfterRows(c);
+              return (
+                <BeforeAfterCourseTimeline
+                  key={`${c.office_name ?? ''}-${c.course_code}-${c.weekday}-${ci}`}
+                  title={title}
+                  beforeRows={before}
+                  afterRows={after}
+                  testIdPrefix="unblock-plan-course-ba"
+                />
+              );
+            })}
+          </div>
+        </details>
+      ) : null}
       <div className="mt-1.5 flex items-center justify-between gap-2">
         <span className="text-[11px] text-text-muted">
           合計 {formatDeltaMinutes(plan.total_delta_minutes)}/週・動くのは {plan.moved_count}名
@@ -450,10 +582,8 @@ function UnblockConsult({
   const summary = result?.unmovable_summary;
 
   const runSearch = React.useCallback(() => {
-    if (!officeId) {
-      toast.error('拠点を選択してから探索してください');
-      return;
-    }
+    // W-13a: office_id は省略可能。拠点選択中はそれを送り、全拠点なら null を送って
+    // BE に主担当拠点から自動解決させる (「拠点を選択してから探索」トーストは撤廃)。
     setPendingPlan(null);
     setConfirmed(false);
     setNeedsReSearch(false);
@@ -477,12 +607,26 @@ function UnblockConsult({
           true,
         sex_restriction: (patient.sex_restriction as string | null | undefined) ?? null,
         existing_patient_id: patient.id,
-        office_id: officeId,
+        office_id: officeId ?? null,
         iso_year: isoYear,
         iso_week: isoWeek,
         limit: 5,
       },
-      { onError: () => toast.error('開通手順の探索に失敗しました') },
+      {
+        onError: (err) => {
+          // W-13a: BE 422 のうち「主担当拠点未設定」だけを特定案内にする
+          // (バリデーション由来の 422 を誤って同じ文言にしないよう detail を確認)。
+          const detail =
+            err instanceof ApiError && typeof (err.body as { detail?: unknown })?.detail === 'string'
+              ? ((err.body as { detail: string }).detail ?? '')
+              : '';
+          if (err instanceof ApiError && err.status === 422 && detail.includes('主担当拠点')) {
+            toast.error('この方の主担当拠点が未設定のため探索できません。患者情報で拠点を設定してください');
+          } else {
+            toast.error('開通手順の探索に失敗しました');
+          }
+        },
+      },
     );
   }, [patient, isoYear, isoWeek, officeId, unblockMut]);
 
@@ -490,12 +634,15 @@ function UnblockConsult({
     const plan = pendingPlan;
     const token = result?.state_token;
     if (!plan || !confirmed) return;
-    if (!officeId || !token) {
+    if (!token) {
       toast.error('状態が変わりました。再探索してください');
       return;
     }
+    // W-13a: 探索で office_id を省略した場合、BE が解決した拠点 (resolved_office_id) を
+    // apply に引き継ぐ。どちらも無ければ null を送り BE に再解決させる。
+    const applyOfficeId = officeId ?? result?.resolved_office_id ?? null;
     applyMut.mutate(
-      { office_id: officeId, iso_year: isoYear, iso_week: isoWeek, target_patient_id: patient.id, plan, state_token: token },
+      { office_id: applyOfficeId, iso_year: isoYear, iso_week: isoWeek, target_patient_id: patient.id, plan, state_token: token },
       {
         onSuccess: (data) => {
           toast.success(`${plan.moved_count}名の訪問をずらして ${patient.name} 様を配置しました`);
@@ -588,12 +735,13 @@ function UnblockConsult({
             <Sparkles className="h-3.5 w-3.5" aria-hidden />
             既存の訪問をずらせば入る手（{plans.length}件）
           </div>
-          {plans.map((plan) => (
+          {plans.map((plan, pi) => (
             <UnblockPlanCard
               key={plan.plan_id}
               plan={plan}
               canEdit={canEdit}
               disabled={applying}
+              defaultCoursesOpen={pi === 0}
               onSelect={() => {
                 setPendingPlan(plan);
                 setConfirmed(false);
@@ -1453,6 +1601,10 @@ export function PoolCandidateList({
             </span>{' '}
             に追加します。反映先を選んでください（他曜日の固定枠は維持されます）。
           </div>
+          {/* W-13b: 採用前後のコース before/after (mini_schedule から構築。ペアは 2 組)。 */}
+          {pending.mini_schedule.length > 0 ? (
+            <AdoptBeforeAfter slot={pending} insertName={patient.name} />
+          ) : null}
           <div className="mt-2">
             <ChangeScopeChoice
               value={scopeChoice}
