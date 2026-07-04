@@ -122,7 +122,7 @@ PO 方針（2026-07-04 対話で確定）: **尖らせる機能は尖らせ、�
 - state_token 再計算 → 不一致は **409**（simulate 後に誰かがスケジュールを触ったら必ずやり直し）。
 - **1トランザクション**で全患者分を処理: 患者ごとに PFV upsert（既存 apply-individual の内部ロジックを再利用）→ `pfv_validator`（V2 pinned / V3 衝突 / V4 昼休み / V5 容量）→ `reset_visits_to_fixed(patient_id=…)` で今週再生成。V2 違反は 422 で全体 rollback、V3-V5 は warnings。
 - change_scope は **pattern_and_week 固定**（D-2）。リクエストに change_scope フィールドを持たせない（選ばせない＝仕様として固定）。
-- 監査: 適用サマリを `schedule_op_log` に記録する（op_group_id=1適用1グループ、**undoable=false**。Ctrl+Z 対象外は undo v2 バックログの既定方針どおり）。
+- 監査: **実装時判断（W-2）で `AuditLog(action="pool_bulk_apply")` 方式に変更**。理由: `schedule_op_log` には undoable 列がなく、undo/redo クエリは (user, week) の undone=False 全行を拾うため、記録すると Ctrl+Z スタックを汚染する（migration 追加は本 Wave のスコープ外）。scope-optimization apply と同じ監査ログ方式とし、テストで「op_log 非汚染（can_undo=false のまま）＋ AuditLog 1行記録」を保証。op_log への統合は undo v2（スナップショット undo）実装時に再検討。
 
 ## 5. UI 設計
 
@@ -169,6 +169,9 @@ PO 方針（2026-07-04 対話で確定）: **尖らせる機能は尖らせ、�
 
 ## 8. 将来バックログ（本設計から派生）
 
+- pinned PFV を持つ患者が simulate に載ると apply が必ず 422 全ロールバックになる UX ギャップ
+  （W-2 レビュー LOW 指摘。安全側に倒れており実害はないが、simulate 段階での除外 or
+  内容同一再書込の V2 免除のどちらかで解消する）
 - 一括投入の非同期ジョブ化（N>100）
 - ordering の選択肢公開（delta_asc / candidate_count_asc）— 現場から要望が出たら
 - 投入結果から「自動スタッフ割当」への導線（一括投入→割当→レビューの立ち上げ一気通貫）

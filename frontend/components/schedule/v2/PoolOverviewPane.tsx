@@ -18,7 +18,7 @@
  * (CourseDayTablePanel 内部だと単体テストが困難なため切り出し)
  */
 import * as React from 'react';
-import { Loader2, Sparkles } from 'lucide-react';
+import { Layers, Loader2, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { Badge } from '@/components/ui/badge';
@@ -114,6 +114,11 @@ export interface PoolOverviewPaneProps
   isoYear: number;
   isoWeek: number;
   officeId: string | null;
+  /**
+   * 「一括投入」ボタン押下ハンドラ (BulkPoolInsertDialog を親で開く)。
+   * 未指定ならボタンを描画しない (後方互換)。
+   */
+  onBulkInsert?: () => void;
 }
 
 /**
@@ -139,6 +144,7 @@ export const PoolOverviewPane = React.forwardRef<PoolOverviewPaneHandle, PoolOve
     isoYear,
     isoWeek,
     officeId,
+    onBulkInsert,
   }: PoolOverviewPaneProps, ref) {
   const overviewMut = usePoolOverviewMutation();
   // useCallback の deps には mutate のみを入れる (React Query v5 で参照安定。
@@ -222,25 +228,48 @@ export const PoolOverviewPane = React.forwardRef<PoolOverviewPaneHandle, PoolOve
     [renderCard, overviewByPatient],
   );
 
-  /** ヘッダーに注入するアクション領域 (PO 指示 2026-07-03: ボタン 1 つに集約し
-      横スクロールを解消。表示後は自動で効果順に並ぶためソートトグルは廃止). */
+  /** 一括投入対象がプール上限を超えているか (先頭 50 名のみ対象) */
+  const bulkTruncated = patients.length > POOL_OVERVIEW_LIMIT;
+
+  /** ヘッダーに注入するアクション領域 (「効果を表示」の隣に「一括投入」を小さく併置). */
   const headerAction = (
-    <Button
-      type="button"
-      variant="default"
-      size="sm"
-      onClick={handleCompute}
-      disabled={overviewMut.isPending}
-      className="h-6 px-2 text-[11px]"
-      data-testid="pool-overview-compute-button"
-    >
-      {overviewMut.isPending ? (
-        <Loader2 className="mr-1 h-3 w-3 animate-spin" aria-hidden />
-      ) : (
-        <Sparkles className="mr-1 h-3 w-3" aria-hidden />
-      )}
-      効果を表示
-    </Button>
+    <div className="flex gap-1">
+      <Button
+        type="button"
+        variant="default"
+        size="sm"
+        onClick={handleCompute}
+        disabled={overviewMut.isPending}
+        className="h-6 px-2 text-[11px]"
+        data-testid="pool-overview-compute-button"
+      >
+        {overviewMut.isPending ? (
+          <Loader2 className="mr-1 h-3 w-3 animate-spin" aria-hidden />
+        ) : (
+          <Sparkles className="mr-1 h-3 w-3" aria-hidden />
+        )}
+        効果を表示
+      </Button>
+      {onBulkInsert ? (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={onBulkInsert}
+          disabled={disabled || patients.length === 0}
+          className="h-6 px-2 text-[11px]"
+          data-testid="pool-overview-bulk-insert-button"
+          title={
+            bulkTruncated
+              ? `プール患者が ${patients.length} 名います。一括投入は先頭 ${POOL_OVERVIEW_LIMIT} 名が対象です。`
+              : '保留プールの患者をまとめて固定訪問週間に投入します'
+          }
+        >
+          <Layers className="mr-1 h-3 w-3" aria-hidden />
+          一括投入
+        </Button>
+      ) : null}
+    </div>
   );
 
   return (

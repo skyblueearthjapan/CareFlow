@@ -105,6 +105,8 @@ from app.schemas.v2.improvement_suggestion import (
 )
 from app.schemas.v2.patient_fixed_visit import PatientFixedVisitV2Base
 from app.schemas.v2.pool_bulk import (
+    PoolBulkApplyRequest,
+    PoolBulkApplyResponse,
     PoolBulkKpi,
     PoolBulkPartial,
     PoolBulkPlacement,
@@ -211,7 +213,10 @@ from app.services.scheduling.pfv_validator import (
     _find_conflict,
     validate_pfv_changes,
 )
-from app.services.scheduling.pool_bulk_inserter import simulate_pool_bulk_insert
+from app.services.scheduling.pool_bulk_inserter import (
+    compute_bulk_state_token,
+    simulate_pool_bulk_insert,
+)
 from app.services.scheduling.proposal_solver import (
     VISIT_BUFFER_MINUTES,
     ExistingVisit,
@@ -2756,6 +2761,197 @@ async def pool_bulk_simulate_endpoint(
             travel_km_after=result.travel_km_after,
         ),
         state_token=result.state_token,
+    )
+
+
+# ---------------------------------------------------------------------------
+# pool-bulk-apply (W-2: プール一括投入の 1TX 適用)
+# ---------------------------------------------------------------------------
+
+
+def _parse_placement_start(s: str) -> time_cls:
+    """placement の start_time ("HH:MM:SS" / "HH:MM") を time に変換する.
+
+    simulate の placements は ``"%H:%M:%S"`` 形式 (pool-bulk-simulate 出力) だが、
+    "HH:MM" も許容する (秒は 0 埋め). 不正形式は ValueError → 422 変換.
+    """
+    parts = s.split(":")
+    if len(parts) < 2:
+        raise ValueError(f"start_time は HH:MM(:SS) 形式が必要です: {s!r}")
+    h = int(parts[0])
+    m = int(parts[1])
+    sec = int(parts[2]) if len(parts) > 2 else 0
+    return time_cls(h, m, sec)
+
+
+@router.post(
+    "/v2/pool-bulk-apply",
+    response_model=PoolBulkApplyResponse,
+    status_code=status.HTTP_200_OK,
+    summary="W-2: プール一括投入の placements を固定訪問週間に 1TX で登録する",
+)
+async def pool_bulk_apply_endpoint(
+    payload: PoolBulkApplyRequest,
+    db: DbDep,
+    actor: Annotated[User, Depends(require_role("admin", "manager"))],
+) -> PoolBulkApplyResponse:
+    """simulate の placements を **1 トランザクション**で固定訪問週間 (PFV) に登録する.
+
+    設計書 §4 / D-2 (反映先 = pattern_and_week 固定):
+
+    - **楽観ロック**: ``compute_bulk_state_token`` を再計算し、不一致なら 409
+      (simulate 後にスケジュールが変わったら必ずやり直し).
+    - **1TX / all-or-nothing**: 患者ごとに 既存 normal PFV を保持したまま placements の枠を
+      **追加** (全置換ではない) → ``apply_individual_proposal`` (V2 pinned 違反=422 で全体
+      rollback / V3-V5 は warnings) → ``reset_visits_to_fixed`` で今週 visits を再生成 →
+      明示 flush. 1 人でも 422 なら全体を rollback する.
+    - **監査**: 適用サマリを ``AuditLog`` に記録する. 一括投入は Ctrl+Z (undo) 対象外
+      (設計書 §7・§5.3 バナー) のため ``schedule_op_log`` (undo/redo スタック) には記録しない
+      — 同モデルは「undo 不可エントリ」を構造的に表現できず (undoable 列が無い / migration
+      追加禁止)、記録すると undo API がこれを誤って undo 対象として拾ってしまうため、
+      scope-optimization apply と同じ ``AuditLog`` 監査方式に統一する.
+    - session は autoflush=False のため、患者ごとに明示 flush して後続患者の SELECT へ
+      DB レベルで反映する (逐次適用の教訓).
+    """
+    config = await load_scheduling_config(db)
+
+    # 1. 楽観ロック: simulate 時と同一規約で state_token を再計算し、不一致なら 409.
+    current_token = await compute_bulk_state_token(
+        db,
+        iso_year=payload.iso_year,
+        iso_week=payload.iso_week,
+        office_id=payload.office_id,
+    )
+    if current_token != payload.state_token:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="シミュレーション後にスケジュールが変更されました。再計算してください",
+        )
+
+    if not payload.placements:
+        # 適用対象なし (空 placements). read-only ではないが no-op で 200 を返す.
+        return PoolBulkApplyResponse(applied_patients=0, applied_slots=0, warnings=[])
+
+    # 2. placements を患者ごとにまとめる (入力順を保持した決定的グルーピング).
+    by_patient: dict[UUID, list[PoolBulkPlacement]] = {}
+    name_by_patient: dict[UUID, str] = {}
+    for pl in payload.placements:
+        by_patient.setdefault(pl.patient_id, []).append(pl)
+        name_by_patient.setdefault(pl.patient_id, pl.patient_name)
+
+    warnings: list[str] = []
+    applied_patients = 0
+    applied_slots = 0
+
+    try:
+        for patient_id, pls in by_patient.items():
+            # 既存 normal PFV (slot_index=0) を保持したまま追加するため、既存曜日を
+            # visit_plans に含めて全置換を防ぐ (apply_individual_proposal は visit_plans を
+            # PFV の全集合として扱い、含まれない曜日を削除するため).
+            existing_rows = (
+                await db.scalars(
+                    select(PatientFixedVisit).where(
+                        PatientFixedVisit.patient_id == patient_id,
+                        PatientFixedVisit.mode == "normal",
+                        PatientFixedVisit.slot_index == 0,
+                    )
+                )
+            ).all()
+            proposed_by_wd: dict[int, tuple[time_cls, int]] = {
+                r.weekday: (r.start_time, r.duration_min) for r in existing_rows
+            }
+            # placements の枠を追加 (同曜日に既存 PFV があれば apply-individual の規約どおり
+            # 上書き = upsert).
+            for pl in pls:
+                st = _parse_placement_start(pl.start_time)
+                proposed_by_wd[pl.weekday] = (st, pl.service_minutes)
+
+            visit_plans = [
+                {"weekday": wd, "start_time": st, "duration_min": dur}
+                for wd, (st, dur) in sorted(proposed_by_wd.items())
+            ]
+            result = await apply_individual_proposal(
+                db, patient_id=patient_id, visit_plans=visit_plans, config=config
+            )
+            p_name = name_by_patient.get(patient_id, str(patient_id))
+            warnings.extend(f"{p_name}: {w}" for w in result.get("warnings", []))
+
+            # 今週 visits を PFV から再生成する (reset_visits_to_fixed の 1 患者版).
+            office_ids = await resolve_reset_office_ids(db, patient_id)
+            await reset_visits_to_fixed(
+                db,
+                iso_year=payload.iso_year,
+                iso_week=payload.iso_week,
+                office_ids=office_ids,
+                mode="legacy",
+                dry_run=False,
+                config=config,
+                patient_id=patient_id,
+            )
+            # autoflush=False のため明示 flush: 後続患者の SELECT / 容量調停へ反映する.
+            await db.flush()
+            applied_patients += 1
+            applied_slots += len(pls)
+
+        # 監査ログ (適用サマリ). undo 対象外のため schedule_op_log ではなく AuditLog.
+        db.add(
+            AuditLog(
+                actor_user_id=actor.id,
+                action="pool_bulk_apply",
+                target_table="patient_fixed_visits",
+                target_id=f"{payload.iso_year}-W{payload.iso_week}",
+                before={},
+                after={
+                    "office_id": str(payload.office_id),
+                    "applied_patients": applied_patients,
+                    "applied_slots": applied_slots,
+                    "change_scope": "pattern_and_week",
+                },
+            )
+        )
+        await db.commit()
+    except HTTPException:
+        # apply_individual_proposal の pinned 違反 (422) 等は全体 rollback (all-or-nothing).
+        await db.rollback()
+        raise
+    except CrossAddressTimeConflictError as exc:
+        await db.rollback()
+        logger.warning(
+            "pool_bulk_apply: unresolvable same-time conflict (missing coord): conflicts=%d",
+            len(exc.conflicts),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "same_time_conflict_with_other_patient",
+                "message": (
+                    f"{len(exc.conflicts)} 件の解消不能な同時刻衝突を検出, 一括投入を中止しました. "
+                    "対象患者の座標 (lat/lng) または primary_office を確認してください。"
+                ),
+                "conflicts": exc.conflicts[:10],
+            },
+        ) from exc
+    except IntegrityError as exc:
+        await db.rollback()
+        logger.warning("pool_bulk_apply: integrity error (likely concurrent apply): %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="他のユーザーが同じスケジュールを処理中です。もう一度実行してください。",
+        ) from exc
+    except ValueError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    except Exception:
+        await db.rollback()
+        raise
+
+    logger.info("pool_bulk_apply: success patients=%d slots=%d", applied_patients, applied_slots)
+    return PoolBulkApplyResponse(
+        applied_patients=applied_patients,
+        applied_slots=applied_slots,
+        warnings=warnings,
     )
 
 

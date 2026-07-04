@@ -120,6 +120,7 @@ import { AcceptanceLegend } from './AcceptanceLayer';
 import { BulkFixToPatternButton } from './BulkFixToPatternButton';
 import { BulkPinAllPfvsButton } from './BulkPinAllPfvsButton';
 import { AssignWarningDialog, type ApprovedReviewItem } from './AssignWarningDialog';
+import { BulkPoolInsertDialog } from './BulkPoolInsertDialog';
 import { FullOptimizeDialog } from './FullOptimizeDialog';
 import { StaffSubstituteDialog } from './StaffSubstituteDialog';
 import { ProposeNewModal } from './ProposeNewModal';
@@ -1766,6 +1767,8 @@ export function CourseDayTablePanel({
   const [autoCommittedNotices, setAutoCommittedNotices] = useState<AutoCommittedNotice[]>([]);
   // 統合提案モーダル「＋新規提案」(StageA+C+B).
   const [proposeNewOpen, setProposeNewOpen] = useState(false);
+  // プール一括投入ダイアログ (W-2). PoolOverviewPane の「一括投入」ボタンから開く.
+  const [bulkPoolInsertOpen, setBulkPoolInsertOpen] = useState(false);
   // スケジュール健康診断ダイアログ (Schedule Advisor Phase 1).
   const [scheduleHealthOpen, setScheduleHealthOpen] = useState(false);
   // 範囲最適化ダイアログ (scope-optimization W1-W2).
@@ -2622,6 +2625,7 @@ export function CourseDayTablePanel({
               isoYear={isoYear}
               isoWeek={isoWeek}
               officeId={officeId}
+              onBulkInsert={canEdit ? () => setBulkPoolInsertOpen(true) : undefined}
               renderCard={(p, slotInfo) => {
                 const wp = coerceWeeklyPattern(p.weekly_pattern);
                 // Phase G-44: 不足表示用. 複数体制患者は slot 単位で表示しているので
@@ -2753,6 +2757,16 @@ export function CourseDayTablePanel({
           isoYear={isoYear}
           isoWeek={isoWeek}
           officeId={officeId}
+        />
+
+        {/* W-2: プール一括投入ダイアログ (simulate → 見せる4点 → apply). */}
+        <BulkPoolInsertDialog
+          open={bulkPoolInsertOpen}
+          onClose={() => setBulkPoolInsertOpen(false)}
+          isoYear={isoYear}
+          isoWeek={isoWeek}
+          officeId={officeId}
+          patientIds={poolPatients.map((p) => p.id)}
         />
 
         {/* P3-①: 当日欠勤の代替スタッフ提案ダイアログ. */}

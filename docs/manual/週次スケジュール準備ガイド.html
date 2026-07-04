@@ -141,6 +141,7 @@
       <li><a href="#review-cards">レビューカードの意味</a></li>
       <li><a href="#pin-protect">ピン留めと手動確定の保護</a></li>
       <li><a href="#absence">欠勤対応との組み合わせ</a></li>
+      <li><a href="#bulk-pool">プール一括投入</a></li>
       <li><a href="#trouble">トラブル時の対処</a></li>
     </ol>
   </nav>
@@ -449,9 +450,98 @@
       </div>
     </section>
 
+    <!-- ===== プール一括投入 ===== -->
+    <section id="bulk-pool">
+      <h2><span class="num">7</span> プール一括投入
+        <span class="roles"><span class="role admin">管理者</span><span class="role manager">マネージャー</span></span>
+      </h2>
+
+      <p>
+        保留プール（希望回数に対して今週の訪問が不足している患者の一覧）に患者が多くたまっているとき、
+        <b>一人ずつ投入する代わりにまとめて投入</b>できる機能です。
+        右側の保留プール上部にある
+        <span class="btn-label">▤ 一括投入</span>
+        ボタン（「効果を表示」の隣）から開きます。
+      </p>
+
+      <h3>いつ使うか</h3>
+      <ul class="plain">
+        <li><b>立ち上げ時</b>：患者を50〜100名まとめて登録し、希望訪問スケジュールを入れた直後で、プールに大量の枠需要がある状態。</li>
+        <li><b>プールが多数たまったとき</b>：個別に一つずつ入れるのが大変な規模になったとき。</li>
+      </ul>
+
+      <div class="callout info">
+        一括投入は <b>先頭50名</b>までが1回の対象です。51名以上いる場合はボタンに対象人数が表示され、
+        投入後に残りをもう一度実行してください（黙って切り捨てはしません）。
+      </div>
+
+      <h3>投入の順序（何から入るか）</h3>
+      <p>
+        システムは <b>「選択肢のない方を先に確保し、残りを効果順に投入」</b>します。
+        入れられる枠が1つしかない患者を先に押さえ、余裕のある患者はコース全体の移動が少なくなる順に投入します。
+        個別の「効果を表示」と<b>同じ物差し</b>（コース全体の移動増分＝分/週）で判断するため、結果を人が説明できます。
+      </p>
+
+      <h3>プレビューで確認できること</h3>
+      <ul class="plain">
+        <li><b>投入リスト</b>：誰が・何曜日のどのコース・何時に入るか、順番（seq）と効果（＋◯分）つき。</li>
+        <li><b>部分投入</b>：希望曜日の一部だけ入った患者と、入らなかった曜日の理由。</li>
+        <li><b>投入不能</b>：1枠も入らなかった患者と理由（容量が上限／移動時間が確保できず／座標未登録 など）。</li>
+        <li><b>全体・曜日タブ</b>：投入前後（Before / After）の週ビュー。After 側で <b>⊕</b> が付いた枠が今回の投入分です。</li>
+      </ul>
+
+      <div class="callout danger">
+        <b>A固定（毎週の型に登録されます）：</b>
+        一括投入は1件ずつ反映先を選べないため、<b>全件が「固定訪問週間（毎週の型）」に登録</b>され、
+        <b>今週のスケジュールにも即反映</b>されます。この操作は
+        <span class="kbd">Ctrl</span>+<span class="kbd">Z</span>（元に戻す）の<b>対象外</b>です。
+      </div>
+
+      <h3>適用の手順</h3>
+      <ol class="ritual-steps">
+        <li class="ritual-step">
+          <div class="snum" style="font-size:13px;">①</div>
+          <div class="scard">
+            <div class="st">プレビュー内容を確認する</div>
+            <div class="sd">投入リスト・部分投入・投入不能と、Before / After の週ビューを確認します。</div>
+          </div>
+        </li>
+        <li class="ritual-step">
+          <div class="snum" style="font-size:13px;">②</div>
+          <div class="scard">
+            <div class="st">確認チェックを入れる</div>
+            <div class="sd">
+              「固定訪問週間（毎週の型）が変わることを確認しました」に<b>チェックを入れるまで、適用ボタンは押せません</b>。
+            </div>
+          </div>
+        </li>
+        <li class="ritual-step">
+          <div class="snum" style="font-size:13px;">③</div>
+          <div class="scard">
+            <div class="st">「固定訪問週間に登録する」を押す</div>
+            <div class="sd">
+              ボタンには対象人数と枠数（例：◯名・◯枠）が表示されます。押すと1回の処理でまとめて登録され、
+              完了後に「◯名 ◯枠を固定訪問週間に登録しました」と表示されます。
+            </div>
+          </div>
+        </li>
+      </ol>
+
+      <div class="callout warn">
+        プレビューを開いてから他の人がスケジュールを変更した場合、適用時に
+        <b>「シミュレーション後にスケジュールが変更されました」</b>と表示されます。
+        ダイアログの<b>「再計算」</b>ボタンを押して、最新の状態でやり直してください。
+      </div>
+
+      <div class="callout tip">
+        一括投入で入りきらなかった患者（部分投入・投入不能）は保留プールに残ります。
+        個別に患者カードを開き「他の空き枠（候補一覧）」から手動で調整するか、状況を見て再度一括投入してください。
+      </div>
+    </section>
+
     <!-- ===== トラブル時 ===== -->
     <section id="trouble">
-      <h2><span class="num">7</span> トラブル時の対処</h2>
+      <h2><span class="num">8</span> トラブル時の対処</h2>
 
       <h3>画面が固まった・ボタンが反応しない</h3>
       <p>

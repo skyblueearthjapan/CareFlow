@@ -141,8 +141,51 @@ class PoolBulkSimulateResponse(BaseModel):
     state_token: str
 
 
+# ---------------------------------------------------------------------------
+# Apply (W-2)
+# ---------------------------------------------------------------------------
+
+
+class PoolBulkApplyRequest(BaseModel):
+    """``POST /v2/pool-bulk-apply`` リクエスト (設計書 §4).
+
+    simulate の ``placements`` をそのまま送る. **change_scope フィールドは持たせない**:
+    一括投入は 1 件ずつ聞けないため反映先は pattern_and_week 固定 (D-2). state_token を
+    サーバで再計算し、不一致なら 409 (simulate 後にスケジュールが変わったら必ずやり直し).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    iso_year: int = Field(..., ge=2020, le=2100)
+    iso_week: int = Field(..., ge=1, le=53)
+    office_id: uuid.UUID = Field(..., description="対象拠点 (単一・state_token の単位)")
+    # simulate の placements をそのまま (プレフィックス選択は v1 なし = 全件).
+    placements: list[PoolBulkPlacement] = Field(
+        default_factory=list,
+        max_length=350,
+        description="投入対象の配置リスト (上限 350 = 最大 50 患者 × 7 曜日).",
+    )
+    # 楽観ロック用指紋 (simulate が返したもの). サーバ再計算と不一致なら 409.
+    state_token: str
+
+
+class PoolBulkApplyResponse(BaseModel):
+    """``POST /v2/pool-bulk-apply`` レスポンス (適用サマリ)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    applied_patients: int = Field(..., ge=0, description="固定枠を登録できた患者数")
+    applied_slots: int = Field(..., ge=0, description="登録した固定枠 (placements) の合計数")
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="pfv_validator V3-V5 (衝突/昼休み/容量) の warning 文言 (ブロックしない)",
+    )
+
+
 __all__ = [
     "POOL_BULK_MAX_PATIENTS",
+    "PoolBulkApplyRequest",
+    "PoolBulkApplyResponse",
     "PoolBulkKpi",
     "PoolBulkPartial",
     "PoolBulkPlacement",
