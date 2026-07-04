@@ -792,3 +792,75 @@ describe('W-3: 効率優先の代替枠 (efficiency alternatives)', () => {
     expect(screen.getByTestId(`pool-efficiency-${effSlot.office_id}-${effSlot.weekday}-${effSlot.course_code}-${effSlot.start_time}`)).toBeInTheDocument();
   });
 });
+
+// ── W-5b: autoRequestOvercapacity ───────────────────────────────────────────
+
+describe('W-5b: autoRequestOvercapacity (超過候補の自動展開)', () => {
+  beforeEach(() => {
+    mocks.proposeMutate.mockReset();
+    mocks.confirmMutate.mockReset();
+    mocks.placeAndFixMutate.mockReset();
+    mocks.proposeData = undefined;
+    mocks.existingFixedVisits = [];
+    mocks.templatesQueries = [];
+    mockToast.success.mockReset();
+    mockToast.error.mockReset();
+    mockToast.warning.mockReset();
+  });
+
+  it('primary + autoRequestOvercapacity: 通常候補0件 + 超過候補ありで include_overcapacity=true が自動発火する', () => {
+    // propose-slots がマウント時に 1 回呼ばれた後、結果 (data) に overcapacity_available_count>=1 がある。
+    mocks.proposeData = {
+      slots: [],
+      message: null,
+      overcapacity_available_count: 2,
+      overcapacity_slots: [makeSlot({ overcapacity: true })],
+    };
+    render(<PoolCandidateList {...COMMON} primary autoRequestOvercapacity />);
+
+    // 通常 (1 回目) + 自動 overcapacity (2 回目) の 2 回呼ばれるはず。
+    expect(mocks.proposeMutate).toHaveBeenCalledTimes(2);
+    // 1 回目: 通常リクエスト (include_overcapacity=false)。
+    expect(mocks.proposeMutate.mock.calls[0][0].include_overcapacity).toBe(false);
+    // 2 回目: 自動 overcapacity リクエスト (include_overcapacity=true)。
+    expect(mocks.proposeMutate.mock.calls[1][0].include_overcapacity).toBe(true);
+  });
+
+  it('primary + autoRequestOvercapacity: 通常候補がある場合は自動発火しない', () => {
+    mocks.proposeData = {
+      slots: [makeSlot()], // 通常候補が 1 件ある
+      message: null,
+      overcapacity_available_count: 2,
+    };
+    render(<PoolCandidateList {...COMMON} primary autoRequestOvercapacity />);
+
+    // 通常 1 回のみ (overcapacity は自動発火しない)。
+    expect(mocks.proposeMutate).toHaveBeenCalledTimes(1);
+    expect(mocks.proposeMutate.mock.calls[0][0].include_overcapacity).toBe(false);
+  });
+
+  it('primary + autoRequestOvercapacity: 超過候補がない (count=0) 場合は自動発火しない', () => {
+    mocks.proposeData = {
+      slots: [],
+      message: null,
+      overcapacity_available_count: 0,
+    };
+    render(<PoolCandidateList {...COMMON} primary autoRequestOvercapacity />);
+
+    // 通常 1 回のみ。
+    expect(mocks.proposeMutate).toHaveBeenCalledTimes(1);
+  });
+
+  it('primary + autoRequestOvercapacity なし: 自動発火しない (従来挙動維持)', () => {
+    mocks.proposeData = {
+      slots: [],
+      message: null,
+      overcapacity_available_count: 3,
+    };
+    render(<PoolCandidateList {...COMMON} primary />);
+
+    // autoRequestOvercapacity=false (デフォルト) では自動発火しない。
+    expect(mocks.proposeMutate).toHaveBeenCalledTimes(1);
+    expect(mocks.proposeMutate.mock.calls[0][0].include_overcapacity).toBe(false);
+  });
+});

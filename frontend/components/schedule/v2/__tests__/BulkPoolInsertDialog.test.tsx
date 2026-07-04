@@ -360,11 +360,12 @@ describe('BulkPoolInsertDialog (W-2)', () => {
       expect(screen.getByTestId('bulk-pool-insert-done')).toBeInTheDocument(),
     );
 
-    // done 画面の患者名クリック → ダイアログを閉じてから個別導線を呼ぶ
+    // done 画面の患者名クリック → ダイアログを閉じてから個別導線を呼ぶ (opts は未設定)。
     const patientButton = screen.getByTestId('bulk-pool-insert-done-patient-button');
     fireEvent.click(patientButton);
     expect(onClose).toHaveBeenCalled();
-    expect(onOpenPatientDetail).toHaveBeenCalledWith('p-2');
+    // opts は undefined (患者名クリック = 通常導線; バッジクリックのみ autoOvercapacity を渡す)。
+    expect(onOpenPatientDetail).toHaveBeenCalledWith('p-2', undefined);
   });
 
   // ── W-6: 拠点グループ化 ──────────────────────────────────────────────────
@@ -473,5 +474,95 @@ describe('BulkPoolInsertDialog (W-2)', () => {
     expect(mocks.simulateAsync).toHaveBeenLastCalledWith(
       expect.objectContaining({ office_id: OFFICE_ID_2, patient_ids: ['p-3'] }),
     );
+  });
+
+  // ── W-5b: done 画面の OvercapacityBadge クリック + プレビューヒント ──────────
+
+  it('done 画面: overcapCount>=1 の患者の OvercapacityBadge がクリック可能で autoOvercapacity:true が渡る', async () => {
+    const onOpenPatientDetail = vi.fn();
+    const onClose = vi.fn();
+    mocks.simulateAsync.mockResolvedValue(
+      makeSimulateResult({ unplaced: [unplacedEntry(2)] }),
+    );
+    mocks.applyAsync.mockResolvedValue({
+      applied_patients: 1,
+      applied_slots: 1,
+      warnings: [],
+    });
+    render(
+      <BulkPoolInsertDialog
+        {...BASE_PROPS}
+        onClose={onClose}
+        onOpenPatientDetail={onOpenPatientDetail}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId('bulk-pool-insert-preview')).toBeInTheDocument(),
+    );
+
+    // チェックして適用 → done 画面へ。
+    fireEvent.click(screen.getByTestId('bulk-pool-insert-confirm-checkbox'));
+    fireEvent.click(screen.getByTestId('bulk-pool-insert-apply-button'));
+    await waitFor(() =>
+      expect(screen.getByTestId('bulk-pool-insert-done')).toBeInTheDocument(),
+    );
+
+    // OvercapacityBadge ボタンをクリック → autoOvercapacity:true で呼ばれる。
+    const badgeButton = screen.getByTestId('bulk-pool-insert-done-overcap-button');
+    fireEvent.click(badgeButton);
+    expect(onClose).toHaveBeenCalled();
+    expect(onOpenPatientDetail).toHaveBeenCalledWith('p-2', { autoOvercapacity: true });
+  });
+
+  it('done 画面: overcapCount=0 の患者には OvercapacityBadge ボタンを表示しない', async () => {
+    const onOpenPatientDetail = vi.fn();
+    mocks.simulateAsync.mockResolvedValue(
+      makeSimulateResult({ unplaced: [unplacedEntry(0)] }),
+    );
+    mocks.applyAsync.mockResolvedValue({
+      applied_patients: 1,
+      applied_slots: 1,
+      warnings: [],
+    });
+    render(
+      <BulkPoolInsertDialog
+        {...BASE_PROPS}
+        onOpenPatientDetail={onOpenPatientDetail}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId('bulk-pool-insert-preview')).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByTestId('bulk-pool-insert-confirm-checkbox'));
+    fireEvent.click(screen.getByTestId('bulk-pool-insert-apply-button'));
+    await waitFor(() =>
+      expect(screen.getByTestId('bulk-pool-insert-done')).toBeInTheDocument(),
+    );
+
+    expect(screen.queryByTestId('bulk-pool-insert-done-overcap-button')).not.toBeInTheDocument();
+  });
+
+  it('プレビュー: overcap エントリありでヒント行が表示される / なしで非表示', async () => {
+    // overcap あり。
+    mocks.simulateAsync.mockResolvedValue(
+      makeSimulateResult({ unplaced: [unplacedEntry(2)] }),
+    );
+    const { unmount } = render(<BulkPoolInsertDialog {...BASE_PROPS} />);
+    await waitFor(() =>
+      expect(screen.getByTestId('bulk-pool-insert-preview')).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId('bulk-pool-insert-overcap-hint')).toBeInTheDocument();
+    unmount();
+
+    // overcap なし。
+    mocks.simulateAsync.mockResolvedValue(makeSimulateResult({ unplaced: [unplacedEntry(0)] }));
+    render(<BulkPoolInsertDialog {...BASE_PROPS} />);
+    await waitFor(() =>
+      expect(screen.getByTestId('bulk-pool-insert-preview')).toBeInTheDocument(),
+    );
+    expect(screen.queryByTestId('bulk-pool-insert-overcap-hint')).not.toBeInTheDocument();
   });
 });

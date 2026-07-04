@@ -1659,16 +1659,25 @@ export function CourseDayTablePanel({
   // Wave Next 1 H5: useMemo は値メモ化用途. ハンドラは useCallback が正解.
   const handleOpenPatientDetail = useCallback((pid: string) => {
     setPatientDetailPoolMode(false);
+    // W-5b: 直行フラグの取り残し防止 (非プール経路では常に自動展開しない)。
+    setPatientDetailAutoOvercapacity(false);
     setPatientDetailId(pid);
   }, []);
   // 保留プールの患者カードクリック専用. プール投入提案セクションを有効化して開く.
-  const handleOpenPoolPatientDetail = useCallback((pid: string) => {
-    setPatientDetailPoolMode(true);
-    setPatientDetailId(pid);
-  }, []);
+  // W-5b: 定員超過候補まで自動展開するか (BulkPoolInsertDialog done 画面からの直行専用).
+  const [patientDetailAutoOvercapacity, setPatientDetailAutoOvercapacity] = useState(false);
+  const handleOpenPoolPatientDetail = useCallback(
+    (pid: string, opts?: { autoOvercapacity?: boolean }) => {
+      setPatientDetailPoolMode(true);
+      setPatientDetailAutoOvercapacity(opts?.autoOvercapacity ?? false);
+      setPatientDetailId(pid);
+    },
+    [],
+  );
   const handleClosePatientDetail = useCallback(() => {
     setPatientDetailId(null);
     setPatientDetailPoolMode(false);
+    setPatientDetailAutoOvercapacity(false);
   }, []);
 
   // ─── Phase G-21 T4 reviewer C2: 🔒 完全固定 toggle handler ────────────
@@ -2803,6 +2812,7 @@ export function CourseDayTablePanel({
             // (Stage P-3 以降は個別フロー専用。DiffAddDialog は廃止済み)
             enablePoolProposal={patientDetailPoolMode}
             officeId={officeId}
+            autoRequestOvercapacity={patientDetailAutoOvercapacity}
           />
         ) : null}
       </section>

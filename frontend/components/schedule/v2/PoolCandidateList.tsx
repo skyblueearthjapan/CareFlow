@@ -174,6 +174,13 @@ export interface PoolCandidateListProps {
    * ケースのクエリバーストを避けるため、 こちらはボタン押下で初めて実行する).
    */
   primary?: boolean;
+  /**
+   * W-5b: 定員超過候補まで自動展開するか (BulkPoolInsertDialog done 画面からの直行専用).
+   * primary=true かつ通常候補 0 件 + overcapacity_available_count>=1 のとき、
+   * 「定員超過の候補を表示」ボタンと同等の再リクエスト (include_overcapacity=true) を
+   * 自動実行し、超過候補一覧が開いた状態にする。自動実行は 1 回だけ (ref ガード)。
+   */
+  autoRequestOvercapacity?: boolean;
 }
 
 export function PoolCandidateList({
@@ -184,6 +191,7 @@ export function PoolCandidateList({
   canEdit,
   onAdopted,
   primary = false,
+  autoRequestOvercapacity = false,
 }: PoolCandidateListProps) {
   const { data: session, status: sessionStatus } = useSession();
   const accessToken = session?.accessToken ?? null;
@@ -284,11 +292,30 @@ export function PoolCandidateList({
 
   // 主提案モード (単体プール詳細ダイアログ): 開いた時点 / 患者切替時に自動計算する.
   // 併設用途 (primary=false) は handleRun をボタンから呼ぶ従来の on-demand を維持.
+  // autoFiredRef もリセットして、新患者/週/拠点では再度 auto-overcapacity を許可する.
+  const autoFiredRef = React.useRef(false);
   React.useEffect(() => {
-    if (primary) handleRun();
+    if (primary) {
+      autoFiredRef.current = false;
+      handleRun();
+    }
     // patient 切替・週変更・拠点変更でのみ再実行 (handleRun 同値依存は除外).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [primary, patient.id, isoYear, isoWeek, officeId]);
+
+  // W-5b: autoRequestOvercapacity — 通常候補 0 件 + 超過候補あり なら自動展開 (1 回限り).
+  // primary の自動 propose 結果が返ったあとにこの effect が動く (result 変化で起動).
+  React.useEffect(() => {
+    if (!autoRequestOvercapacity || !primary) return;
+    if (autoFiredRef.current) return;
+    if (!result) return;
+    if (normalSlots.length === 0 && (result.overcapacity_available_count ?? 0) >= 1) {
+      autoFiredRef.current = true;
+      handleRun(true);
+    }
+    // result / normalSlots.length 変化でのみ起動; ref ガードで 1 回だけ実行.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [result, normalSlots.length]);
 
   // 選択候補 1 件を既存 normal 枠にマージ (採用曜日の slot_index=0 を置換, 他は保持).
   // 採用枠の item 化・マージは共有 _proposeSlotUtils (ProposeNewModal と共通) を使う.

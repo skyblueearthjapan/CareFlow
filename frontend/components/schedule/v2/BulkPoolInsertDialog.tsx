@@ -139,9 +139,10 @@ export interface BulkPoolInsertDialogProps {
   /**
    * A 案 (2026-07-04 PO 承認): done 画面で投入できなかった患者名クリック時に、
    * 一括ダイアログを閉じてから患者詳細 (→ PoolCandidateList → 方式b の定員+1 相談) を開く導線。
+   * W-5b: opts.autoOvercapacity=true で呼ぶと PoolCandidateList が超過候補まで自動展開する。
    * 未指定なら名前はクリック不可 (バッジ表示のみ)。
    */
-  onOpenPatientDetail?: (patientId: string) => void;
+  onOpenPatientDetail?: (patientId: string, opts?: { autoOvercapacity?: boolean }) => void;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -439,7 +440,7 @@ function OfficeBulkPanel({
   patientIds: string[];
   onClose: () => void;
   onBusyChange?: (officeId: string, busy: boolean) => void;
-  onOpenPatientDetail?: (patientId: string) => void;
+  onOpenPatientDetail?: (patientId: string, opts?: { autoOvercapacity?: boolean }) => void;
 }) {
   const simulateMut = usePoolBulkSimulateMutation();
   const applyMut = usePoolBulkApplyMutation();
@@ -536,9 +537,9 @@ function OfficeBulkPanel({
    * (→ PoolCandidateList → 方式b の定員+1 相談)。基準がずれないよう done 画面のみで導線を出す。
    */
   const openPatientDetail = React.useCallback(
-    (patientId: string) => {
+    (patientId: string, opts?: { autoOvercapacity?: boolean }) => {
       onClose();
-      onOpenPatientDetail?.(patientId);
+      onOpenPatientDetail?.(patientId, opts);
     },
     [onClose, onOpenPatientDetail],
   );
@@ -814,6 +815,11 @@ function OfficeBulkPanel({
 // ─────────────────────────────────────────────────────────────────────────
 
 function InsertListColumn({ result }: { result: PoolBulkSimulateResponse }) {
+  // W-5b: 部分投入/投入不能に定員超過候補がある場合にヒントを表示する。
+  const hasOvercapEntry =
+    result.partial.some((p) => overcapCount(p) >= 1) ||
+    result.unplaced.some((u) => overcapCount(u) >= 1);
+
   return (
     <div className="space-y-2" data-testid="bulk-pool-insert-list">
       {/* 順序の説明文言 (D-1). */}
@@ -897,6 +903,16 @@ function InsertListColumn({ result }: { result: PoolBulkSimulateResponse }) {
           </ul>
         </div>
       ) : null}
+
+      {/* W-5b: 定員超過候補があるときのヒント行 (適用後の個別相談導線を案内)。 */}
+      {hasOvercapEntry ? (
+        <p
+          className="text-[10px] text-amber-800 dark:text-amber-300"
+          data-testid="bulk-pool-insert-overcap-hint"
+        >
+          定員+1名の個別相談は、適用後にこの画面の患者名から移動できます
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -950,7 +966,7 @@ function DoneRemainingList({
   onOpenPatientDetail,
 }: {
   result: PoolBulkSimulateResponse | null;
-  onOpenPatientDetail?: (patientId: string) => void;
+  onOpenPatientDetail?: (patientId: string, opts?: { autoOvercapacity?: boolean }) => void;
 }) {
   const entries: RemainingEntry[] = React.useMemo(() => {
     if (!result) return [];
@@ -1014,7 +1030,22 @@ function DoneRemainingList({
                 {e.isPartial ? '（部分投入）' : ''}
               </span>
             )}
-            {e.overcapCount >= 1 ? <OvercapacityBadge /> : null}
+            {/* W-5b: 定員超過バッジ — count>=1 かつ onOpenPatientDetail ありなら
+                バッジ自体もクリック可能にして autoOvercapacity=true で直行する。 */}
+            {e.overcapCount >= 1 ? (
+              onOpenPatientDetail ? (
+                <button
+                  type="button"
+                  onClick={() => onOpenPatientDetail(e.patientId, { autoOvercapacity: true })}
+                  className="cursor-pointer rounded hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
+                  data-testid="bulk-pool-insert-done-overcap-button"
+                >
+                  <OvercapacityBadge />
+                </button>
+              ) : (
+                <OvercapacityBadge />
+              )
+            ) : null}
           </li>
         ))}
       </ul>

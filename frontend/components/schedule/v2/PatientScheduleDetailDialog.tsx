@@ -261,6 +261,12 @@ export interface PatientScheduleDetailDialogProps {
    * 同じ値を渡すこと (同一患者が両表示で同一提案 = ドリフト防止)。null = 全拠点。
    */
   officeId?: string | null;
+  /**
+   * W-5b: BulkPoolInsertDialog done 画面から「定員超過候補を直接開く」導線用.
+   * true のとき PoolCandidateList が通常候補 0 件 + 超過候補あり を検知して
+   * 自動で include_overcapacity 再リクエストを発火する。1 回だけ (ref ガード済み)。
+   */
+  autoRequestOvercapacity?: boolean;
 }
 
 type ApplyStage = 'idle' | 'preview' | 'applying';
@@ -274,6 +280,7 @@ export function PatientScheduleDetailDialog({
   canEdit = true,
   enablePoolProposal = false,
   officeId = null,
+  autoRequestOvercapacity = false,
 }: PatientScheduleDetailDialogProps) {
   // 週 範囲 (ISO Mon..Sun)
   // Wave Next 1 M2: ISO W53 が存在しない年 (e.g. 2025-W53) を検出.
@@ -581,6 +588,7 @@ export function PatientScheduleDetailDialog({
                     canEdit={canEdit}
                     onAdopted={() => setPoolAdopted(true)}
                     primary
+                    autoRequestOvercapacity={autoRequestOvercapacity}
                   />
                 ) : null}
               </section>
