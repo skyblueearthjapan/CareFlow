@@ -51,7 +51,7 @@ export const proposeSlotsRequestSchema = z.object({
   limit: z.number().int().min(1).max(50).default(10),
 
   // P3-④: 効率優先の代替枠 (希望外だが近接/余裕が良い枠) を上乗せ提案するか。
-  // 既定 false で従来と同一挙動 (通常候補のみ)。ProposeNewModal のみ true を送る。
+  // 既定 false で従来と同一挙動 (通常候補のみ)。PoolCandidateList が true を送る。
   include_efficiency_alternatives: z.boolean().default(false),
 
   // 方式b: 定員超過の候補も含めて提案するか。

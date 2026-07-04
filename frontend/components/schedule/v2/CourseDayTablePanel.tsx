@@ -52,7 +52,6 @@ import {
   HeartPulse,
   ListChecks,
   Loader2,
-  Plus,
   Redo2,
   RefreshCw,
   Route,
@@ -123,7 +122,7 @@ import { AssignWarningDialog, type ApprovedReviewItem } from './AssignWarningDia
 import { BulkPoolInsertDialog } from './BulkPoolInsertDialog';
 import { FullOptimizeDialog } from './FullOptimizeDialog';
 import { StaffSubstituteDialog } from './StaffSubstituteDialog';
-import { ProposeNewModal } from './ProposeNewModal';
+import { RegisterPatientButton } from './RegisterPatientButton';
 import { ScheduleHealthDialog } from './ScheduleHealthDialog';
 import { ScopeOptimizeDialog } from './ScopeOptimizeDialog';
 import { ScheduleReviewBanner } from './ScheduleReviewBanner';
@@ -1773,8 +1772,6 @@ export function CourseDayTablePanel({
   const [reviewApplying, setReviewApplying] = useState(false);
   // Wave N-2: 体制上不可避な連続のお知らせ (自動確定済み).
   const [autoCommittedNotices, setAutoCommittedNotices] = useState<AutoCommittedNotice[]>([]);
-  // 統合提案モーダル「＋新規提案」(StageA+C+B).
-  const [proposeNewOpen, setProposeNewOpen] = useState(false);
   // プール一括投入ダイアログ (W-2). PoolOverviewPane の「一括投入」ボタンから開く.
   const [bulkPoolInsertOpen, setBulkPoolInsertOpen] = useState(false);
   // スケジュール健康診断ダイアログ (Schedule Advisor Phase 1).
@@ -2139,17 +2136,9 @@ export function CourseDayTablePanel({
               </Button>
               {/* PO 指示 2026-07-03: 「プール投入」ボタンは削除。保留プールの
                   「効果を表示」ボタン (PoolOverviewPane) が入口として十分なため。 */}
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={() => setProposeNewOpen(true)}
-                disabled={isProcessing}
-                data-testid="propose-new-button"
-              >
-                <Plus className="mr-1 h-4 w-4" aria-hidden />
-                新規提案
-              </Button>
+              {/* W-4 (D-4): 旧「＋新規提案」を「＋新規患者登録」に置換。患者マスタの
+                  登録フォームを再利用し、登録→希望登録→プール流入の入口を一本化する。 */}
+              <RegisterPatientButton disabled={isProcessing} />
               <Button
                 type="button"
                 size="sm"
@@ -2713,16 +2702,6 @@ export function CourseDayTablePanel({
             onCancel={() => closePartnerDialog()}
           />
         ) : null}
-
-        {/* 統合提案モーダル「＋新規提案」(StageA+C+B). */}
-        <ProposeNewModal
-          open={proposeNewOpen}
-          onClose={() => setProposeNewOpen(false)}
-          isoYear={isoYear}
-          isoWeek={isoWeek}
-          officeId={officeId}
-          poolPatients={poolPatients}
-        />
 
         {/* Schedule Advisor Phase 1: スケジュール健康診断ダイアログ (read-only). */}
         <ScheduleHealthDialog

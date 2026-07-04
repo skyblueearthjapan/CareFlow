@@ -562,43 +562,41 @@
 
       <!-- NEW -->
       <div class="only-new">
-        <h3>A-1 「新規提案」で登録＋予定化を一気通貫（最短・おすすめ）</h3>
-        <p>スケジュール画面の <b>「新規提案」</b> から、空き枠の提案 → 採用 → 患者登録 → 型の確定 までを <b>一度に</b>行えます（承認不要）。</p>
+        <h3>A-1 スケジュール画面から患者登録（おすすめ）</h3>
+        <p>スケジュール画面のツールバー <b>「＋新規患者登録」</b> から、患者マスタと同等の登録フォームを <b>その場で開けます</b>（別タブ不要・承認不要）。希望訪問パターン（週回数・希望曜日・サービス時間など）も同じフォームで入力でき、登録後すぐに保留プールへ反映されます。</p>
         <ol class="steps">
-          <li>対象の週を開き、ツールバーの <b>「新規提案」</b> を押す。</li>
-          <li>上部タブで <b>「新規の方」</b> を選ぶ。</li>
-          <li><b>氏名・住所</b>と<b>希望</b>（週回数・曜日・サービス時間・時間帯・性別制限・2名体制）を入力。</li>
-          <li><b>「提案する」</b>で入れられる空き枠が提案される（この時点では未保存）。</li>
-          <li>採用する枠を選び <b>「登録へ進む」</b>→確認して <b>確定</b>。患者登録と型の確定が同時完了。</li>
+          <li>対象の週を開き、ツールバーの <b>「＋新規患者登録」</b> を押す。</li>
+          <li>登録ダイアログで <b>氏名・住所・希望訪問パターン</b>（週回数・希望曜日・サービス時間・時間帯・性別制限・2名体制）を入力し <b>「登録」</b>。</li>
+          <li>登録成功後、<b>保留プール</b> に自動表示される（希望回数 ≥ 1 が条件）。</li>
+          <li>保留プールから <b>個別提案</b>（プール候補リスト）または <b>一括投入</b> で空き枠へ配置。</li>
           <li>必要に応じて <b>「自動スタッフ割付」</b> で担当を付ける。</li>
         </ol>
         <div class="mock-wrap">
           <div class="browser">
-            <div class="bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="url">.../schedule ▶ 新規提案</span></div>
+            <div class="bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="url">.../schedule ▶ 新規患者登録ダイアログ</span></div>
             <div class="body">
-              <div style="font-weight:800;font-size:14px">新規提案 — ここに入れますか</div>
-              <div class="ftabs" style="margin-top:8px"><span>プールから選ぶ</span><span>既存患者を検索</span><span class="on">新規の方</span></div>
+              <div style="font-weight:800;font-size:14px">患者 新規登録</div>
+              <div style="font-size:11px;color:#555;margin-bottom:8px">基本情報・希望訪問パターンを登録します。希望訪問スケジュールを入れると保留プールに表示されます。</div>
               <div class="two-col" style="gap:12px">
                 <div><div class="field"><label>氏名<span class="req">必須</span></label><div class="inp">山田 花子</div></div>
                   <div class="field"><label>保険区分</label><div class="inp">介護 ▾</div></div></div>
-                <div><div class="field"><label>ご住所<span class="req">必須</span></label><div class="inp">千葉市稲毛区…</div></div>
-                  <div class="field"><label>希望曜日 / 時間</label><div class="inp">月・水・金 / 午前60分</div></div></div>
+                <div><div class="field"><label>ご住所</label><div class="inp">千葉市稲毛区…</div></div>
+                  <div class="field"><label>希望曜日 / 時間（週間パターン）</label><div class="inp">月・水・金 / 午前60分</div></div></div>
               </div>
-              <div style="text-align:right;margin-top:8px"><button class="btn pink sm">提案する</button></div>
+              <div style="text-align:right;margin-top:8px"><button class="btn pink sm">登録</button></div>
             </div>
           </div>
-          <div class="mock-caption">「新規提案」→「新規の方」タブ（イメージ）</div>
+          <div class="mock-caption">「＋新規患者登録」ダイアログ（イメージ）</div>
         </div>
-        <div class="callout info"><b>2名体制</b>の患者さんの空き判定は1名前提です。採用後に相方の枠を別途確認してください。</div>
+        <div class="callout info">一括投入の詳細は <b>週次スケジュール準備ガイド §7</b> を参照してください。</div>
 
-        <h3>A-2 じっくり登録（新規登録フォーム）</h3>
+        <h3>A-2 患者マスタから登録（じっくり登録）</h3>
         <ol class="steps">
-          <li>「患者」→ <b>「新規登録」</b>（<code>/patients/new</code>）で氏名・住所などを入力し <b>「登録」</b>。</li>
-          <li>患者詳細で <b>固定訪問パターン</b> を作成（「希望から自動生成」で一括入力できる）。</li>
-          <li>スケジュール画面で <b>「週を生成」</b>。型のない患者は <b>保留プール</b> に入るので <b>「プール投入」</b> で空き枠へ配置。</li>
+          <li>「患者」→ <b>「新規登録」</b>（<code>/patients/new</code>）で氏名・住所・希望訪問パターンなどを入力し <b>「登録」</b>。</li>
+          <li>スケジュール画面で <b>「週を生成」</b>。希望パターンが登録済みの患者は <b>保留プール</b> に入るので <b>個別提案</b> または <b>一括投入</b> で空き枠へ配置。</li>
           <li><b>「自動スタッフ割付」</b> で担当を付けて完了。</li>
         </ol>
-        <div class="callout key"><b>登録しただけでは予定に入りません。</b>「新規提案」なら同時に完了、フォーム登録なら「週を生成」「プール投入」で予定化します。</div>
+        <div class="callout key"><b>登録しただけでは予定に入りません。</b>「＋新規患者登録」または患者マスタで登録し、希望訪問パターンを設定 → 保留プールに表示 → 個別提案／一括投入で予定化します。</div>
 
         <h3>A-3 Excelカルテで登録</h3>
         <ol class="steps">
@@ -824,7 +822,7 @@
           <div class="t">管理者が空きを確認し判断</div><p>PCで空き枠（2章）を確認し、スタッフ稼働・移動も踏まえて可否を判断（3章）。</p></div></div>
         <div class="flow-step"><div class="no">4</div><div class="card"><div class="who"><span class="role manager">マネージャー</span><span class="role admin">管理者</span></div>
           <div class="t">管理者がPCで反映</div>
-          <p><span class="only-new">新規は <b>「新規提案」</b>などで登録＋予定化（5章）。</span><span class="only-existing">既存は <b>ドラッグ移動</b>や <b>型を直して週を生成</b>（5章）。</span></p></div></div>
+          <p><span class="only-new">新規は <b>「＋新規患者登録」</b>（スケジュール画面）または患者マスタで登録し、保留プールから配置（5章）。</span><span class="only-existing">既存は <b>ドラッグ移動</b>や <b>型を直して週を生成</b>（5章）。</span></p></div></div>
         <div class="flow-step"><div class="no">5</div><div class="card"><div class="who"><span class="role manager">マネージャー</span><span class="role admin">管理者</span> → <span class="role staff">現場スタッフ</span></div>
           <div class="t">結果を現場・患者へ連絡</div><p>可否と日時を共有。担当スタッフはスマホの「今日／今週」で確認できます。</p></div></div>
       </div>
@@ -845,8 +843,8 @@
       <div class="only-new">
         <table>
           <tr><th>手段</th><th>場所</th><th>特徴</th><th>権限</th></tr>
-          <tr><td>新規提案（一気通貫）</td><td>PC スケジュール</td><td>提案→採用→登録→型確定。<b>最短</b></td><td>管理者/マネージャー</td></tr>
-          <tr><td>新規登録フォーム</td><td>PC /patients/new</td><td>先に登録→週生成→プール投入</td><td>管理者/マネージャー</td></tr>
+          <tr><td>＋新規患者登録（スケジュール画面）</td><td>PC スケジュール</td><td>登録→希望入力→プール表示→個別/一括投入。<b>おすすめ</b></td><td>管理者/マネージャー</td></tr>
+          <tr><td>新規登録フォーム（患者マスタ）</td><td>PC /patients/new</td><td>先に登録→希望パターン設定→週生成→プール投入</td><td>管理者/マネージャー</td></tr>
           <tr><td>Excelカルテ</td><td>PC 患者画面</td><td>印刷→現場記入→取込</td><td>管理者/マネージャー</td></tr>
           <tr><td>現場ボード 患者管理</td><td>スマホ 現場ボード</td><td>その場で直接登録（即時）</td><td>管理者/マネージャー</td></tr>
           <tr><td>情報収集して持ち帰り</td><td>現場</td><td>スタッフはこれ。登録は管理者</td><td>スタッフ→管理者</td></tr>
@@ -866,7 +864,7 @@
       <h3>よくある質問</h3>
       <table>
         <tr><th>質問</th><th>答え</th></tr>
-        <tr><td>登録・変更したのに予定が変わらない</td><td>型を変えたら <b>「週を生成」</b> が必要（新規の「新規提案」は同時反映）。</td></tr>
+        <tr><td>登録・変更したのに予定が変わらない</td><td>型を変えたら <b>「週を生成」</b> が必要。新規患者は登録後に保留プールから <b>個別提案／一括投入</b> で予定化します。</td></tr>
         <tr><td>動かしたい時間に空きがない</td><td>そのコースが満員。別コース・別の空き時間を2章で探すか管理者が調整。</td></tr>
         <tr><td>現場スタッフが相談を受けた</td><td>スタッフは変更・登録不可。<b>シート/メモで持ち帰り</b>、管理者が反映（6章）。</td></tr>
         <tr class="only-new"><td>新規で最低限なにを入れる？</td><td><b>氏名</b>だけでも登録可。予定化には <b>住所</b> がほぼ必須（座標・拠点が自動設定）。</td></tr>
@@ -889,7 +887,7 @@
       <div class="callout key">
         <b>この1冊の要点</b><br>
         ① 予定は「希望→型→実際の予定」。<b>型を変えたら「週を生成」。</b><br>
-        ② <span class="only-new"><b>新規はカルテ作成から。最短は「新規提案」で登録＋予定化を一気通貫。</b></span>
+        ② <span class="only-new"><b>新規はカルテ作成から。「＋新規患者登録」または患者マスタで登録し、希望パターン設定 → 保留プール → 個別提案／一括投入で予定化。</b></span>
             <span class="only-existing"><b>既存は今回だけ＝ドラッグ／今後ずっと＝型を直して週を生成。</b></span><br>
         ③ <b>変更・登録は管理者・マネージャー。</b>現場スタッフは確認・ヒアリングして持ち帰り。
       </div>
