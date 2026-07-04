@@ -1,6 +1,6 @@
 # 引き継ぎ書：プール一括投入（再構築）＋新規提案廃止セッション
 
-作成 2026-07-04 / **本番HEAD = `ace1e49`**（W-5 追記時に更新）/ DB = migration 0052（本セッションで migration 追加なし）/ healthz 正常。
+作成 2026-07-04 / **本番HEAD = `ec42622`**（W-6 追記時に更新）/ DB = migration 0052（本セッションで migration 追加なし）/ healthz 正常。
 前セッションの引き継ぎ: `docs/plans/change-scope-unification-HANDOFF.md` → `docs/HANDOFF.md`（プロジェクト基本）。
 設計書（正典）: **`docs/plans/pool-bulk-insert-design.md`**（PO決定 D-1〜D-4・実装時判断の追記込み）。
 
@@ -34,6 +34,17 @@ Ctrl+Shift+R が必要。
 | W-3 | `be60024` | PoolCandidateList へ効率代替移植＋希望未登録チップ | APPROVE（M=誘導文言反映） |
 | W-4 | `9b367ce` | ProposeNewModal 削除＋RegisterPatientButton/CreatePatientDialog＋運用マニュアル書き換え | APPROVE（M=disabled 伝播反映） |
 | W-5 | `ace1e49` | 定員超過の個別相談への橋渡し（A案・設計書§3.6）: 最終sim基準の overcapacity_available_count＋「定員+1名なら入る候補あり」バッジ＋done画面から方式bへの導線 | APPROVE（M=案内文2行化反映） |
+| W-6 | `ec42622` | 拠点まわり6項目: ①一括投入の拠点自動グループ化（拠点タブ・混入修正・拠点未設定分離・「拠点を選択してから」廃止）②スケジュール最適化の拠点画面スキップ ③改名「範囲最適化」→「スケジュール最適化」④拠点未設定の採用ガード422（place-and-fix/apply_individual_proposal）＋simulate の no_primary_office/office_mismatch ⑤患者編集の拠点自動上書きバグ修正（編集時 officeMode=manual）⑥担当エリア欄に「入口のヒント」説明文 | APPROVE（M=適用中ESCガード反映・L=dark配色反映） |
+
+**W-6 の背景調査（2026-07-04・会話内レポート・要点はメモリ careflow-office-region-model）**:
+主担当拠点=運用の正典（全エンジン参照）/ 担当エリア=入口のヒント（新規患者の自動判定のみ・
+スケジュール計算は不参照）。担当エリア変更は既存患者に不追随（登録時スナップショット）・
+同一City二重登録は created_at 先勝ち・City は静的seed393件で患者登録では増えない。
+
+**次の Wave（PO合意済み・未着手）: W-7 地域ルールの学習** — 患者登録で「拠点エリア外」→手動で
+拠点を選んだ瞬間に「この地域を〇〇拠点の担当地域として登録しますか？ [登録する] [今回だけ]」を
+一度だけ提示（今回だけ=地域単位で記憶して二度と聞かない・suggestion_dismissals 方式）。
+脅迫的警告は作らない（グローバルバナー・繰り返しトースト禁止）が設計原則。
 
 ## 3. アーキテクチャ要点（次エージェント向け）
 
