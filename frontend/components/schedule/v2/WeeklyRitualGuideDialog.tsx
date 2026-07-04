@@ -3,7 +3,7 @@
 /**
  * WeeklyRitualGuideDialog — 週次スケジュール準備ガイド (P3-⑥ 導線).
  *
- * 週次5分の儀式 3ステップ（①枠生成 → ②自動スタッフ割当 → ③レビュー承認）を
+ * 週次スケジュール準備の 3ステップ（①枠生成 → ②自動スタッフ割当 → ③レビュー承認、約5分）を
  * 案内するだけのダイアログ。実行ボタンは置かない（誤操作防止）。
  *
  * 起動: CourseDayTablePanel ツールバーの「週次ガイド」ボタン (variant="ghost")。
@@ -84,10 +84,10 @@ export function WeeklyRitualGuideDialog({ open, onClose }: WeeklyRitualGuideDial
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <ListChecks className="h-5 w-5 text-brand-primary" aria-hidden />
-            週次スケジュール準備（5分の儀式）
+            週次スケジュール準備ガイド
           </DialogTitle>
           <DialogDescription>
-            毎週はじめに 3ステップを順番に実行するだけで、スタッフ割当まで完了します。
+            毎週はじめに 3ステップ（約5分）を順番に実行するだけで、スタッフ割当まで完了します。
           </DialogDescription>
         </DialogHeader>
 

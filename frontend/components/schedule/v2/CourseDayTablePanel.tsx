@@ -4,10 +4,11 @@
  * CourseDayTablePanel — Wave 17 Phase B-2 メインパネル.
  *
  * Excel スケジュール枠組みに完全準拠した 1 画面構造
- * (Phase G-43 で Row 1 を flex justify-end 単一 toolbar 化し、主要 4 と固定枠戻を隣接させた):
+ * (Phase G-43 で Row 1 を flex justify-end 単一 toolbar 化し、主要 4 と固定枠戻を隣接させた。
+ *  W-9 で「週を生成」と「週次ガイド」を対のペアとして隣接配置に並べ替えた):
  *   ┌─ ヘッダー ────────────────────────────────────────────┐
  *   │  Row 1 (右寄せ 1 行 toolbar, admin/manager only):                              │
- *   │     [週を生成][欠勤対応][新規患者登録][診断][最適化][週次ガイド] │ [固定枠戻][全件保存] │
+ *   │     [週を生成][週次ガイド][欠勤対応][新規患者登録][診断][最適化] │ [固定枠戻][全件保存] │
  *   │  ─── border-t ────────────────────                                            │
  *   │  Row 2 (曜日タブ + テーブル/リスト + 二次操作):                                  │
  *   │    [月][火][水][木][金][土][週] YYYY-Www                                       │
@@ -2130,6 +2131,19 @@ export function CourseDayTablePanel({
                 )}
                 週を生成
               </Button>
+              {/* PO 指示 (W-9): 「週次ガイド」を「週を生成」の右隣に配置する。
+                  週次操作の入口 (週を生成) とその手順書 (週次ガイド) を対のペアとして隣接させる。
+                  P3-⑥: 週次ガイド (案内のみ・variant=ghost で目立たせすぎない). */}
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                onClick={() => setWeeklyRitualGuideOpen(true)}
+                data-testid="weekly-ritual-guide-button"
+              >
+                <ListChecks className="mr-1 h-4 w-4" aria-hidden />
+                週次ガイド
+              </Button>
               <Button
                 type="button"
                 size="sm"
@@ -2168,17 +2182,6 @@ export function CourseDayTablePanel({
               >
                 <Route className="mr-1 h-4 w-4" aria-hidden />
                 スケジュール最適化
-              </Button>
-              {/* P3-⑥: 週次ガイド (案内のみ・variant=ghost で目立たせすぎない). */}
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                onClick={() => setWeeklyRitualGuideOpen(true)}
-                data-testid="weekly-ritual-guide-button"
-              >
-                <ListChecks className="mr-1 h-4 w-4" aria-hidden />
-                週次ガイド
               </Button>
 
               {/* 主要ボタン群と「固定枠戻 / 全件保存」 の区切り線. */}
