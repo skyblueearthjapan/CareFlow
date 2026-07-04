@@ -1,6 +1,17 @@
 # 引き継ぎ書：プール一括投入（再構築）＋新規提案廃止セッション
 
-作成 2026-07-04 / **本番HEAD = `9f79662`**（W-12a 追記時に更新）/ DB = **migration 0053**（office_area_prompt_dismissals）/ healthz 正常。
+作成 2026-07-04 / **本番HEAD = `359322a`**（W-12d 追記時に更新）/ DB = **migration 0053**（office_area_prompt_dismissals）/ healthz 正常。
+
+**W-12d 完了（2026-07-05・本番稼働）**: 詰まり解消相談 — コミット `359322a`。
+設計書 = `docs/plans/unblock-consult-design.md` / **思想の正典 = `docs/plans/schedule-advisor-design.md` §6**
+（余白の原則・予防/保全/救急の分業 — PO「本ソフトの要」。将来拡張は「一括投入橋渡し」
+「定員起因」の2件のみ承認・これ以外に広げない）。
+候補0件＋時間起因のとき「ずらせば入る手を探す」→ ブロッカー除去テスト（深さ1＋同一バケット深さ2・
+同コース時間ずらし対応=PO原体験）→ 希望の余白のみで退避 → 上位5プラン → 明示確認 → 1TX 原子適用
+（target_patient_id＋plan_id 指紋照合・409/422）。
+レビュー: REQUEST_CHANGES（CRITICAL=plan_id密輸・HIGH=同コースずらし除外）→修正→APPROVE。
+既知メモ: test_ai_interpret/test_patients_v2 等の環境依存 fail は base HEAD 再現の
+SQLAlchemy/Python3.14 互換問題（既存 fail リストに追加）。
 
 **W-12a 完了（2026-07-05・本番稼働）**: 2名体制のペア探索＋原子採用（I-12/N-7 解消）。
 設計書 = **`docs/plans/two-staff-pairing-design.md`**（D-1〜D-7・後続 W-12b/c/d のロードマップ込み）。
