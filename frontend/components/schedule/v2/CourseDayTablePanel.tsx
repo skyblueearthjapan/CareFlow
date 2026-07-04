@@ -7,7 +7,7 @@
  * (Phase G-43 で Row 1 を flex justify-end 単一 toolbar 化し、主要 4 と固定枠戻を隣接させた):
  *   ┌─ ヘッダー ────────────────────────────────────────────┐
  *   │  Row 1 (右寄せ 1 行 toolbar, admin/manager only):                              │
- *   │     [週を生成][全面最適化 🟢][プール投入 🟢] │ [固定枠戻][全件保存] │
+ *   │     [週を生成][欠勤対応][新規患者登録][診断][最適化][週次ガイド] │ [固定枠戻][全件保存] │
  *   │  ─── border-t ────────────────────                                            │
  *   │  Row 2 (曜日タブ + テーブル/リスト + 二次操作):                                  │
  *   │    [月][火][水][木][金][土][週] YYYY-Www                                       │
@@ -48,7 +48,6 @@ import { useQueries } from '@tanstack/react-query';
 import { useSession } from 'next-auth/react';
 import { format } from 'date-fns';
 import {
-  FlaskConical,
   HeartPulse,
   ListChecks,
   Loader2,
@@ -120,7 +119,6 @@ import { BulkFixToPatternButton } from './BulkFixToPatternButton';
 import { BulkPinAllPfvsButton } from './BulkPinAllPfvsButton';
 import { AssignWarningDialog, type ApprovedReviewItem } from './AssignWarningDialog';
 import { BulkPoolInsertDialog } from './BulkPoolInsertDialog';
-import { FullOptimizeDialog } from './FullOptimizeDialog';
 import { StaffSubstituteDialog } from './StaffSubstituteDialog';
 import { RegisterPatientButton } from './RegisterPatientButton';
 import { ScheduleHealthDialog } from './ScheduleHealthDialog';
@@ -1767,12 +1765,11 @@ export function CourseDayTablePanel({
     [canEdit, pfvByVisitKey, togglePfvPin, bulkPinPfvs],
   );
 
-  // ─── Phase G-41: 主要 4 ボタン (週生成 / 自動スタッフ割付 / 全面最適化 / プール投入) を本 panel Row 1 に再収容 ───
+  // ─── Phase G-41 起源: 主要ボタン群を本 panel Row 1 に再収容 (現在は 週生成/欠勤対応/新規患者登録/診断/最適化/週次ガイド) ───
   //   page 側 (Card 1) に置いた G-40 構成から戻し、 mutation/state/dialog を全部 panel 内で抱える.
   //   pending 中の `isProcessing` は二次操作 (固定枠戻 / 一斉未割当) の多重実行抑止にも利用する.
   const generateWeekMut = useGenerateWeekOnly();
   const assignStaffOnlyMut = useAssignStaffOnly();
-  const [fullOptimizeOpen, setFullOptimizeOpen] = useState(false);
   // P3-①: 当日欠勤の代替スタッフ提案ダイアログ.
   const [staffSubstituteOpen, setStaffSubstituteOpen] = useState(false);
   // Phase G-91: 確認レビューフローのダイアログ (連続 / 性別).
@@ -2093,7 +2090,7 @@ export function CourseDayTablePanel({
           「主要 4」と「固定枠戻 / 全件保存」が視覚的に離れて見えていたため、
           全要素を 1 つの flex container に並べて全部右寄せ + 主要 4 と固定枠戻の間に縦区切り線を配置する.
             Row 1 (admin/manager only, flex justify-end):
-              [週を生成][全面最適化 🟢][プール投入 🟢] │ [固定枠戻][全件保存]
+              [週を生成][プール投入 🟢] │ [固定枠戻][全件保存]
               ※ 主要ボタン群と固定枠戻/全件保存の間に縦区切り線で視覚的セパレーション.
               ※ Row 1 は最上段なので border-t 不要.
             Row 2 (曜日タブ + テーブル/リスト + 二次操作):
@@ -2104,7 +2101,7 @@ export function CourseDayTablePanel({
                   2026-07: 「自動スタッフ割付」を改称して Row 1 から移動)
                 δ 🔒 全件ロック + 🔓 全件解除 (= 一括設定)
           ボタンは基本 variant="outline" size="sm" で統一感を担保し、
-          毎週必ず押す主要ボタン (自動スタッフ割当 / プール投入) のみ variant="default" (= brand-primary 緑) で目立たせる.
+          毎週必ず押す主要ボタン (自動スタッフ割当) のみ variant="default" (= brand-primary 緑) で目立たせる.
         */}
         <Card className="p-3">
           {/* Row 1: 主要 4 ボタン + 固定枠戻 / 全件保存 をまとめて右寄せ (canEdit のみ).
@@ -2171,17 +2168,6 @@ export function CourseDayTablePanel({
               >
                 <Route className="mr-1 h-4 w-4" aria-hidden />
                 スケジュール最適化
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={() => setFullOptimizeOpen(true)}
-                disabled={isProcessing}
-                data-testid="full-optimize-button"
-              >
-                <FlaskConical className="mr-1 h-4 w-4" aria-hidden />
-                シミュレーション
               </Button>
               {/* P3-⑥: 週次ガイド (案内のみ・variant=ghost で目立たせすぎない). */}
               <Button
@@ -2746,15 +2732,6 @@ export function CourseDayTablePanel({
           initialScope={scopeOptimizeInitialScope}
           initialOfficeId={scopeOptimizeInitialOfficeId}
           offices={offices.map((o) => ({ id: o.id, name: o.name }))}
-        />
-
-        {/* Wave 41 v2 § 4 / §13.5.2: 全面最適化ダイアログ. */}
-        <FullOptimizeDialog
-          open={fullOptimizeOpen}
-          onClose={() => setFullOptimizeOpen(false)}
-          isoYear={isoYear}
-          isoWeek={isoWeek}
-          officeId={officeId}
         />
 
         {/* W-2: プール一括投入ダイアログ (simulate → 見せる4点 → apply). */}

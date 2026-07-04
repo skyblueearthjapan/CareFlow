@@ -705,20 +705,18 @@
               <div class="grp">希望なし（1）</div>
               <div class="pcard"><span class="nm">山本 健</span><span class="bdg new">新規</span><span class="grab">⋮⋮ ドラッグ</span></div>
             </div>
-            <div class="mock-caption">保留プール（イメージ）。ドラッグでテーブルへ／「プール投入」で自動提案</div>
+            <div class="mock-caption">保留プール（イメージ）。ドラッグでテーブルへ／患者カードをクリックで候補を自動提案</div>
           </div>
           <div>
-            <p style="font-size:13px"><b>入れ方は2通り：</b></p>
+            <p style="font-size:13px"><b>入れ方は3通り：</b></p>
             <ul class="plain" style="font-size:13px">
               <li><b>ドラッグ</b>：プールのカードを曜日テーブルの空き枠へ。</li>
-              <li><b>「プール投入」ボタン</b>：システムが空き枠を自動で探して提案。下のカードで <b>「この枠で採用」</b> を1件ずつ。</li>
+              <li><b>患者カードをクリック</b>：システムが空き枠の候補を自動提案（移動時間への影響つき）。<b>「採用」を1件ずつ</b>、反映先（毎週の型／この週だけ）を選んで確定。</li>
+              <li><b>「一括投入」ボタン</b>：プールの患者様をまとめて投入（拠点ごと・プレビューで確認してから登録）。詳しくは週次スケジュール準備ガイドへ。</li>
             </ul>
-            <div class="prop ok"><span class="adopt">この枠で採用</span><div class="ph"><span class="src">✅ 固定枠</span> 田中 太郎 様</div><div class="sub">固定枠で入れられます（水 10:00 稲A）</div></div>
-            <div class="prop pref"><span class="adopt">この枠で採用</span><div class="ph"><span class="src">🟡 希望枠</span> 佐藤 花 様</div><div class="sub">希望枠で入れられます（金 13:30 稲B）</div></div>
-            <div class="prop ng"><div class="ph"><span class="src">🔴 固定枠NG</span> 山本 健 様</div><div class="sub">固定枠は「容量満」で不可 → 🟡 希望枠なら 木 11:00</div></div>
           </div>
         </div>
-        <div class="callout teal"><b>「プール投入」の提案は色で分かります：</b> ✅ 固定枠どおりに入る／🟡 希望枠なら入る／🔴 固定枠では不可（理由表示）。採用は <b>確認のうえ1件ずつ</b>。</div>
+        <div class="callout teal"><b>候補には効果と注意が表示されます：</b> 移動時間の増分（+N分）／スタッフ非番などの注意バッジ／候補が出ない場合は理由（容量上限・空きなし 等）。コース定員がいっぱいのときは <b>「定員+1名なら入る」相談</b> が出ることがあります（採用には理由の入力が必要）。採用は <b>確認のうえ1件ずつ</b>。</div>
 
         <h3>⑤ Excelで変更する：全体一覧／個別カルテ <span class="tag-forever">今後ずっと</span></h3>
         <p>大量の患者をまとめて直すなら <b>全体一覧Excel</b>、1人分を紙で集めるなら <b>個別カルテExcel</b>。編集して取り込み、最後に <b>「週を生成」</b> で反映します。</p>
@@ -802,7 +800,7 @@
           <tr><td>固定枠に戻す</td><td>その週を型から作り直す（<b>その週の手動変更は消える</b>）。</td></tr>
           <tr><td>全患者固定枠を一括保存</td><td>今の並びを「毎週の型」として確定。</td></tr>
         </table>
-        <div class="callout teal"><b>ツールバーの主なボタン：</b> 週を生成／自動スタッフ割付／全面最適化／プール投入｜固定枠に戻す／全患者固定枠を一括保存。曜日タブは 月〜土＋「週」。</div>
+        <div class="callout teal"><b>ツールバーの主なボタン：</b> 週を生成／欠勤対応／新規患者登録／自動スタッフ割当／スケジュール診断／スケジュール最適化／週次ガイド｜固定枠に戻す／全患者固定枠を一括保存。曜日タブは 月〜土＋「週」。</div>
       </div>
     </section>
 
