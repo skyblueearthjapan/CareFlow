@@ -1,6 +1,10 @@
 # 引き継ぎ書：プール一括投入（再構築）＋新規提案廃止セッション
 
-作成 2026-07-04 / **本番HEAD = `61d0fb4`**（W-8 追記時に更新）/ DB = **migration 0053**（office_area_prompt_dismissals）/ healthz 正常。
+作成 2026-07-04 / **本番HEAD = `b75c58f`**（W-9 追記時に更新）/ DB = **migration 0053**（office_area_prompt_dismissals）/ healthz 正常。
+
+**W-9 完了（2026-07-04・本番稼働）**: 週次ガイドを「週を生成」の右隣に対配置（PO発案）＋
+「（5分の儀式）」等の儀式表現をユーザー可視文言から全廃（「約5分」の事実表記に）＋
+マニュアル2種の旧称「自動スタッフ割付」15箇所を「自動スタッフ割当」に統一。コミット `b75c58f`。
 前セッションの引き継ぎ: `docs/plans/change-scope-unification-HANDOFF.md` → `docs/HANDOFF.md`（プロジェクト基本）。
 設計書（正典）: **`docs/plans/pool-bulk-insert-design.md`**（PO決定 D-1〜D-4・実装時判断の追記込み）。
 
