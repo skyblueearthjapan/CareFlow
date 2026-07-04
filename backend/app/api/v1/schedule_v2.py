@@ -2216,6 +2216,24 @@ async def _resolve_candidate_coords(
     return payload.lat, payload.lng, resolved_office_id
 
 
+def _mini_entries(mini: list[dict[str, object]] | None) -> list[ProposeMiniScheduleEntry] | None:
+    """ミニスケジュールの dict 列を schema entry 列へ変換 (None はそのまま None)."""
+    if mini is None:
+        return None
+    return [
+        ProposeMiniScheduleEntry(
+            time=str(e["time"]),
+            name=str(e["name"]),
+            ins=e["ins"],  # type: ignore[arg-type]
+            is_here=bool(e["is_here"]),
+            is_pair=bool(e["is_pair"]),
+            sex_restriction=e.get("sex_restriction"),  # type: ignore[arg-type]
+            is_multi_staff=bool(e.get("is_multi_staff", False)),
+        )
+        for e in mini
+    ]
+
+
 def _proposed_to_item(p: ProposedSlot) -> ProposeSlotItem:
     """内部表現 ``ProposedSlot`` を API schema ``ProposeSlotItem`` へ変換."""
     return ProposeSlotItem(
@@ -2233,21 +2251,15 @@ def _proposed_to_item(p: ProposedSlot) -> ProposeSlotItem:
         warnings=p.warnings,
         is_pair=p.is_pair,
         pair_partner=p.pair_partner,
-        mini_schedule=[
-            ProposeMiniScheduleEntry(
-                time=str(e["time"]),
-                name=str(e["name"]),
-                ins=e["ins"],  # type: ignore[arg-type]
-                is_here=bool(e["is_here"]),
-                is_pair=bool(e["is_pair"]),
-                sex_restriction=e.get("sex_restriction"),  # type: ignore[arg-type]
-                is_multi_staff=bool(e.get("is_multi_staff", False)),
-            )
-            for e in p.mini_schedule
-        ],
+        mini_schedule=_mini_entries(p.mini_schedule) or [],
         is_efficiency_alternative=p.is_efficiency_alternative,
         marginal_cost_minutes=p.marginal_cost_minutes,
         overcapacity=p.overcapacity,
+        partner_course_code=p.partner_course_code,
+        partner_course_label=p.partner_course_label,
+        partner_course_template_id=p.partner_course_template_id,
+        partner_staff_name=p.partner_staff_name,
+        partner_mini_schedule=_mini_entries(p.partner_mini_schedule),
     )
 
 
@@ -3936,6 +3948,7 @@ async def scope_optimization_simulate_endpoint(
             no_current_visit=result.excluded.no_current_visit,
             dismissed=result.excluded.dismissed,
             confirmation_required_excluded=result.excluded.confirmation_required_excluded,
+            two_staff=result.excluded.two_staff,
             truncated=result.excluded.truncated,
         ),
         state_token=result.state_token,

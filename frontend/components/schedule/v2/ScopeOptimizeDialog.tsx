@@ -127,6 +127,8 @@ function summarizeExcluded(ex: ScopeOptimizationExcludedSummary): string[] {
     [ex.dismissed, `却下済み${ex.dismissed}件`],
     [ex.confirmation_required_excluded, `要確認のため除外${ex.confirmation_required_excluded}件`],
     [ex.no_current_visit, `固定枠と対応不明${ex.no_current_visit}件`],
+    // W-12a (D-5): 2名体制患者は当面 movable から除外 (保護).
+    [ex.two_staff, `2名体制のため保護${ex.two_staff}件`],
   ];
   return parts.filter(([n]) => n > 0).map(([, label]) => label);
 }

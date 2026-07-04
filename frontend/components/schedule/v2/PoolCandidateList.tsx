@@ -32,7 +32,10 @@ import { useConfirmFixedVisits } from '@/lib/queries/propose_confirm';
 import { useFixedVisits, toastFixedVisitWarnings } from '@/lib/queries/patient_fixed_visits';
 import { coerceWeeklyPattern, type PatientRead } from '@/lib/schemas/patient';
 import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
-import type { PatientFixedVisitsBulkPut } from '@/lib/schemas/v2/patient_fixed_visit';
+import type {
+  PatientFixedVisitsBulkPut,
+  PatientFixedVisitV2Base,
+} from '@/lib/schemas/v2/patient_fixed_visit';
 import type {
   ExcludedSummaryItem,
   ProposeMiniScheduleEntry,
@@ -44,7 +47,9 @@ import type {
 import {
   buildCourseTemplateIdResolver,
   buildWeekOnlyPlaceAndFixRequest,
+  buildWeekOnlyPlaceAndFixRequestPair,
   mergeAdoptedIntoNormalFixedVisits,
+  proposedSlotPartnerToFixedVisitItem,
   proposedSlotToFixedVisitItem,
   slotKey,
 } from './_proposeSlotUtils';
@@ -65,10 +70,20 @@ export const EXCLUDED_REASON_LABEL: Record<string, string> = {
   course_closed: 'コースが存在しない',
   // I-11 (pair_mode 統合): 同住所ペアが「同時間帯NG」設定のため除外.
   pair_blocked: '同住所ペアの設定（同時間帯NG）',
+  // W-12a (D-2): 2名体制で slot0 は入るが、同時刻に相方コースが全滅した曜日.
+  no_pair_slot: '同時刻に入れる2コースの組が見つかりません',
 };
 
 function excludedReasonLabel(reason: string): string {
   return EXCLUDED_REASON_LABEL[reason] ?? 'その他の理由';
+}
+
+/**
+ * W-12a: 2名体制ペア候補か (BE が partner_course_code を付けた候補)。
+ * 同住所ペア (`is_pair`) とは別概念。ペア候補は採用時に slot0+slot1 を原子書き込みする。
+ */
+function isTwoStaffPairSlot(s: ProposeSlotItem): boolean {
+  return s.partner_course_code != null && s.partner_course_code !== '';
 }
 
 function trimSeconds(t: string | null | undefined): string {
@@ -322,14 +337,18 @@ export function PoolCandidateList({
   const buildMergedPut = React.useCallback(
     (existing: Parameters<typeof mergeAdoptedIntoNormalFixedVisits>[0], s: ProposeSlotItem) => {
       const wp = coerceWeeklyPattern(patient.weekly_pattern);
-      const adoptedItem = proposedSlotToFixedVisitItem(
-        s,
-        resolveCourseTemplateId,
-        wp.service_minutes,
-      );
+      const adoptedItems: PatientFixedVisitV2Base[] = [
+        proposedSlotToFixedVisitItem(s, resolveCourseTemplateId, wp.service_minutes),
+      ];
+      // W-12a (D-3 A経路): 2名体制ペア候補は相方 (slot_index=1) も同時刻・別コースで
+      // 同時に載せる (2行原子)。partner_course_template_id は BE 確定済のため直接使う。
+      if (isTwoStaffPairSlot(s)) {
+        const partner = proposedSlotPartnerToFixedVisitItem(s, wp.service_minutes);
+        if (partner) adoptedItems.push(partner);
+      }
       return {
         mode: 'normal',
-        items: mergeAdoptedIntoNormalFixedVisits(existing, [adoptedItem]),
+        items: mergeAdoptedIntoNormalFixedVisits(existing, adoptedItems),
       } satisfies PatientFixedVisitsBulkPut;
     },
     [patient.weekly_pattern, resolveCourseTemplateId],
@@ -401,14 +420,19 @@ export function PoolCandidateList({
     } else {
       // ─── B 経路: place-and-fix (fix_pattern=false, 今週のみ) ─────────────────
       // Wave U-2: 共通ヘルパ (ProposeNewModal と共有) で week-only リクエストを構築.
+      // W-12a (D-3 B経路): 2名体制ペア候補は staff_count=2 + course_template_ids で
+      // slot0+slot1 を同時刻・別コースの原子配置にする (place-and-fix multi-staff 対応済)。
       const wp = coerceWeeklyPattern(patient.weekly_pattern);
-      const req = buildWeekOnlyPlaceAndFixRequest(slot, resolveCourseTemplateId, {
+      const builderArgs = {
         patientId: patient.id,
         isoYear,
         isoWeek,
         serviceFallbackMin: wp.service_minutes,
         capacityOverrideReason: slot.overcapacity ? overcapacityReason : null,
-      });
+      };
+      const req = isTwoStaffPairSlot(slot)
+        ? buildWeekOnlyPlaceAndFixRequestPair(slot, resolveCourseTemplateId, builderArgs)
+        : buildWeekOnlyPlaceAndFixRequest(slot, resolveCourseTemplateId, builderArgs);
       if (req === null) {
         toast.error('コース情報を解決できませんでした。再読み込みしてお試しください');
         return;
@@ -544,7 +568,14 @@ export function PoolCandidateList({
 
       {normalSlots.length > 0 ? (
         <ul className="space-y-1.5" data-testid="pool-candidate-slots">
-          {normalSlots.map((s, i) => (
+          {normalSlots.map((s, i) => {
+            // W-12a: 2名体制ペア候補は 2 コースチップ・担当2名・合計 delta を出し、
+            // two_staff_not_guaranteed 警告 (相方は保証済のため) は非表示にする。
+            const pair = isTwoStaffPairSlot(s);
+            const displayWarnings = pair
+              ? s.warnings.filter((w) => w !== 'two_staff_not_guaranteed')
+              : s.warnings;
+            return (
             <li
               key={`${slotKey(s)}-${i}`}
               className="rounded border border-border-default bg-bg-base p-2 text-xs"
@@ -558,24 +589,42 @@ export function PoolCandidateList({
                   {WEEKDAY_LABELS[s.weekday] ?? '?'} {trimSeconds(s.start_time)}–
                   {trimSeconds(s.end_time)}
                 </span>
-                <span className="text-text-secondary">{s.course_label}</span>
+                {pair ? (
+                  /* W-12a: 2名体制の 2 コースチップ (主 + 相方). */
+                  <span
+                    className="flex flex-wrap items-center gap-1"
+                    data-testid="pool-candidate-pair-badge"
+                  >
+                    <Badge variant="info" className="text-[10px]">
+                      2名体制
+                    </Badge>
+                    <span className="text-text-secondary">
+                      {s.course_label} と {s.partner_course_label ?? s.partner_course_code}
+                    </span>
+                  </span>
+                ) : (
+                  <span className="text-text-secondary">{s.course_label}</span>
+                )}
                 {s.staff_name ? (
                   <span className="text-[11px] text-text-muted">担当: {s.staff_name}</span>
                 ) : null}
-                {s.is_pair && s.pair_partner ? (
+                {pair && s.partner_staff_name ? (
+                  <span className="text-[11px] text-text-muted">相方: {s.partner_staff_name}</span>
+                ) : null}
+                {!pair && s.is_pair && s.pair_partner ? (
                   <Badge variant="info" className="text-[10px]">
                     同住所ペア: {s.pair_partner}
                   </Badge>
                 ) : null}
                 {s.marginal_cost_minutes !== null && s.marginal_cost_minutes !== undefined ? (
-                  /* P-1a: 挿入の厳密限界コスト (診断・改善提案と同じ物差し). */
+                  /* P-1a: 挿入の厳密限界コスト. ペアは 2 コース合計 delta (BE 算出). */
                   <Badge
                     variant="secondary"
                     className="text-[10px]"
                     data-testid="pool-candidate-delta-badge"
                     title="診断・改善提案と同じ物差し（厳密限界コスト: コース全体の移動増分）"
                   >
-                    コースの移動{' '}
+                    {pair ? '2名合計の移動 ' : 'コースの移動 '}
                     {Math.round(s.marginal_cost_minutes) <= 0
                       ? '±0分'
                       : `+${Math.round(s.marginal_cost_minutes)}分`}
@@ -586,13 +635,20 @@ export function PoolCandidateList({
                 </span>
               </div>
 
+              {pair ? (
+                <div className="mt-1 text-[11px] text-brand-primary" data-testid="pool-candidate-pair-desc">
+                  {s.course_label} と {s.partner_course_label ?? s.partner_course_code} の{' '}
+                  {trimSeconds(s.start_time)} に同時配置（2名体制・別スタッフ）
+                </div>
+              ) : null}
+
               {s.reasons.length > 0 ? (
                 <div className="mt-1 text-[11px] text-text-muted">{s.reasons.join(' / ')}</div>
               ) : null}
 
-              {s.warnings.length > 0 ? (
+              {displayWarnings.length > 0 ? (
                 <div className="mt-1 flex flex-wrap gap-1">
-                  {s.warnings.map((w, wi) => (
+                  {displayWarnings.map((w, wi) => (
                     <Badge key={wi} variant="warning" className="text-[10px]">
                       {proposeWarningLabel(w)}
                     </Badge>
@@ -620,6 +676,25 @@ export function PoolCandidateList({
                 </div>
               ) : null}
 
+              {/* W-12a: ペア候補の相方コース分ミニスケジュール (来れば 2 段目・無ければ省略). */}
+              {pair && (s.partner_mini_schedule?.length ?? 0) > 0 ? (
+                <div
+                  className="mt-1.5 rounded border border-border-default bg-bg-muted/20 p-2"
+                  data-testid={`pool-candidate-partner-mini-${slotKey(s)}`}
+                >
+                  <div className="mb-1 text-[10px] font-semibold text-text-muted">
+                    {s.partner_course_label ?? s.partner_course_code}
+                    {s.partner_staff_name ? `（${s.partner_staff_name}）` : ''} の{' '}
+                    {WEEKDAY_LABELS[s.weekday] ?? '?'}曜（相方コース）
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    {s.partner_mini_schedule!.map((row, ri) => (
+                      <MiniRow key={ri} row={row} />
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
               {canEdit ? (
                 <div className="mt-1.5 flex items-center justify-end">
                   <Button
@@ -636,7 +711,8 @@ export function PoolCandidateList({
                 </div>
               ) : null}
             </li>
-          ))}
+            );
+          })}
         </ul>
       ) : null}
 

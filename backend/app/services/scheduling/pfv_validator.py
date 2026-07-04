@@ -6,8 +6,10 @@ PUT /patients/{id}/fixed-visits（手動系統＋候補採用系統）の削除�
 検証項目 (設計書 docs/plans/p0-2-apply-safety-net-design.md §2):
     - V2  pinned 保護（同一性規約: 保持=OK / 変更・削除=422）      → error
     - V3  患者間時間衝突（同コース同曜日・90分占有込み・前方/後方制約） → warning
+          (W-12a: slot0 に加え slot1 も他患者衝突検査対象に含める)
     - V4  H10 昼休み重複（``_is_in_lunch_break`` + config lunch 窓）  → warning
     - V5  コース容量 480 分 / 6 名 超過                              → warning
+    - V7  2名体制の相方枠なし（W-12a: 片肺の曜日・非ブロッキング）    → warning
 
 設計方針:
     - 距離・移動・バッファー・同住所・90 分占有・昼休み・容量のプリミティブは
@@ -53,6 +55,7 @@ CODE_PATIENT_CONFLICT = "patient_time_conflict"  # V3 (warning)
 CODE_LUNCH = "lunch_break_overlap"  # V4 (warning)
 CODE_CAPACITY = "course_capacity_exceeded"  # V5 (warning)
 CODE_MOVABILITY_CORRECTED = "movability_corrected"  # V6 (warning)
+CODE_MULTI_STAFF_INCOMPLETE_PAIR = "multi_staff_incomplete_pair"  # V7 (warning)
 
 _WEEKDAY_JP: tuple[str, ...] = ("月", "火", "水", "木", "金", "土", "日")
 
@@ -192,9 +195,7 @@ def _find_conflict(
             continue
         if _is_same_address(proposed.lat, proposed.lng, e.lat, e.lng):
             continue  # 同住所ペアは許容
-        travel = _travel_buffer_between(
-            proposed.lat, proposed.lng, e.lat, e.lng, config=config
-        )
+        travel = _travel_buffer_between(proposed.lat, proposed.lng, e.lat, e.lng, config=config)
         e_start = _time_to_min(e.start_time)
         e_occ_end = _time_to_min(_existing_occupancy_end(e, all_visits))
         if p_start >= e_start:
@@ -333,6 +334,30 @@ async def validate_pfv_changes(
     # --- V3 / V5: 他患者 PFV との衝突・容量 (座標・拠点が必要) --------------
     # Q2: 対象患者 (lat/lng/primary_office_id).
     patient = await db.scalar(select(Patient).where(Patient.id == patient_id))
+
+    # --- V7: 2 名体制の相方枠なし (非ブロッキング警告・座標不要) -----------
+    # W-12a (D-4): normal mode で requires_multiple_staff 患者の稼働曜日に slot0/slot1 の
+    # 片方しか無い (片肺) → warning. 採用 UI が常に両 slot を送れば発生しないが、手動編集で
+    # 片肺になった場合に「黙って visit が生成されない」を防ぐための注意喚起 (N-7).
+    if mode == "normal" and patient is not None and bool(patient.requires_multiple_staff):
+        slots_by_weekday: dict[int, set[int]] = {}
+        for item in proposed_items:
+            slots_by_weekday.setdefault(item.weekday, set()).add(item.slot_index)
+        for wd in sorted(slots_by_weekday):
+            if {0, 1} <= slots_by_weekday[wd]:
+                continue  # slot0/slot1 揃い = 貫通する.
+            warnings.append(
+                PfvValidationWarning(
+                    code=CODE_MULTI_STAFF_INCOMPLETE_PAIR,
+                    message=(
+                        f"{_wd_name(wd)}曜は 2 名体制ですが相方の枠が揃っていません。"
+                        "2 名分 (同時刻・別コース) を登録してください。"
+                    ),
+                    weekday=wd,
+                    severity="warning",
+                )
+            )
+
     if (
         patient is not None
         and patient.primary_office_id is not None
@@ -356,15 +381,17 @@ async def validate_pfv_changes(
             key: CourseKey = (item.weekday, item.course_template_id)
             proposed_by_course.setdefault(key, []).append(ev)
 
-        # Q3: 同一拠点・同 mode の他患者 PFV (slot_index=0) を 1 クエリで取得.
+        # Q3: 同一拠点・同 mode の他患者 PFV を 1 クエリで取得.
         # apply_individual_proposal と同等パターン (Patient を join して座標を解決).
+        # W-12a: slot_index=0 に限定せず slot1 も衝突検査対象に含める (2 名体制の相方枠を
+        # 見落とさない). 他患者の slot0/slot1 は別コース (course_template_id 別) なので、
+        # 下記 others_by_course の (weekday, course_template_id) 単位で自然に振り分く.
         other_rows = (
             await db.execute(
                 select(PatientFixedVisit, Patient)
                 .join(Patient, Patient.id == PatientFixedVisit.patient_id)
                 .where(
                     PatientFixedVisit.mode == mode,
-                    PatientFixedVisit.slot_index == 0,
                     PatientFixedVisit.patient_id != patient_id,
                     Patient.primary_office_id == patient.primary_office_id,
                     Patient.deleted_at.is_(None),

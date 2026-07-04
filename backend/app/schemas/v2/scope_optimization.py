@@ -139,6 +139,11 @@ class ScopeOptimizationExcludedSummary(BaseModel):
             "(希望外かつ movability が確認不要で許さない手)"
         ),
     )
+    two_staff: int = Field(
+        default=0,
+        ge=0,
+        description="W-12a: 2名体制で保護 (movable 除外) した patient×weekday 数",
+    )
     truncated: bool = Field(
         default=False,
         description="手順数が上限 (SCOPE_MAX_STEPS) に達し打ち切ったか",

@@ -96,6 +96,15 @@ export const proposeSlotItemSchema = z.object({
   marginal_cost_minutes: z.number().nullish(),
   // 方式b: 定員超過候補フラグ (include_overcapacity=true 時のみ付く。旧BE未送出 → false)。
   overcapacity: z.boolean().default(false),
+  // W-12a: 2名体制ペア候補。主コース (この slot) と同時刻・別コースの相方枠が両立する
+  // ときのみ BE が付与する (partner_course_code が非 null ならペア候補)。旧BE未送出 →
+  // undefined (寛容パース)。採用時は slot_index=1 として partner_course_template_id を書く。
+  partner_course_code: z.string().nullish(),
+  partner_course_label: z.string().nullish(),
+  partner_course_template_id: z.string().uuid().nullish(),
+  partner_staff_name: z.string().nullish(),
+  // 相方コース当日のミニスケジュール (来れば 2 段表示・無ければ省略)。旧BE未送出 → undefined。
+  partner_mini_schedule: z.array(proposeMiniScheduleEntrySchema).nullish(),
 });
 export type ProposeSlotItem = z.infer<typeof proposeSlotItemSchema>;
 

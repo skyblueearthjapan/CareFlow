@@ -84,6 +84,8 @@ const BULK_EXTRA_REASON_LABEL: Record<string, string> = {
   // BE (place-and-fix / pool-bulk-simulate) の拠点フィルタ reason.
   no_primary_office: '主担当拠点が未設定',
   office_mismatch: '他拠点の患者',
+  // W-12a (D-6): 一括投入は v1 で 2名体制を対象外 (個別提案から配置)。
+  two_staff_pending: '2名体制（個別提案から配置してください）',
 };
 
 function bulkReasonLabel(reason: string): string {

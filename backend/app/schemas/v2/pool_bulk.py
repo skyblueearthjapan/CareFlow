@@ -116,7 +116,7 @@ class PoolBulkUnplaced(BaseModel):
     reason: str = Field(
         ...,
         description="理由コード (capacity_full/travel_shortage/lunch_window/no_gap/"
-        "course_closed/no_coordinates)",
+        "course_closed/no_coordinates/no_primary_office/office_mismatch/two_staff_pending)",
     )
     # A 案 (2026-07-04 PO 承認): capacity_full のとき「定員 +1 なら入る候補」件数を載せ、個別フローへ橋渡し.
     overcapacity_available_count: int = Field(

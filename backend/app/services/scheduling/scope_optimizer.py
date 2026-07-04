@@ -184,6 +184,9 @@ class ScopeExcludedSummaryData:
     no_current_visit: int = 0
     dismissed: int = 0
     confirmation_required_excluded: int = 0
+    # W-12a (D-5): requires_multiple_staff 患者は当面「保護」(片肺 move で全曜日 visit 消滅を
+    # 防ぐ). movable から除外して黙って消さず、この会計に計上する. 原子ペア move は W-12c.
+    two_staff: int = 0
     truncated: bool = False
 
 
@@ -484,6 +487,10 @@ def _enumerate_step_candidates(
             continue  # movable 集合の会計は simulate 本体で実施済み.
         patient = patient_by_id.get(pid)
         if patient is None or patient.lat is None or patient.lng is None:
+            continue
+        # W-12a (D-5): 2 名体制患者は当面「保護」(片肺 move 防止). 会計 (excluded.two_staff)
+        # は simulate 本体で実施済み. 原子ペア move は W-12c で解禁する.
+        if bool(patient.requires_multiple_staff):
             continue
         placed = _placement_of(sim, pid, pfv)
         if placed is None:
@@ -986,6 +993,11 @@ async def simulate_scope_optimization(
         key for key in sim.buckets if scope.contains(key[0], key[1], key[2])
     }
 
+    # Patient (weekly_pattern / 座標 / sex_restriction / requires_multiple_staff) を 1 クエリで
+    # ロード. 会計 (two_staff 保護) で参照するため movable 集合の会計より前に取得する.
+    patient_rows = (await db.scalars(select(Patient).where(Patient.id.in_(scope_pids)))).all()
+    patient_by_id: dict[UUID, Patient] = {p.id: p for p in patient_rows}
+
     # movable 集合の会計 (フォーカス内に配置がある patient × weekday 単位で 1 回).
     scope_weekday_pairs: set[tuple[UUID, int]] = {
         (v.patient_id, b.weekday)
@@ -995,16 +1007,16 @@ async def simulate_scope_optimization(
     }
     for pid, wd in sorted(scope_weekday_pairs, key=lambda x: (str(x[0]), x[1])):
         pfv = sim.pfv_by_pw.get((pid, wd))
+        patient = patient_by_id.get(pid)
         if pfv is None:
             excluded.no_current_visit += 1  # visit はあるが PFV 対応が取れず評価不能.
         elif pfv.is_pinned:
             excluded.pinned += 1
         elif pfv.movability == "locked":
             excluded.locked += 1
-
-    # Patient (weekly_pattern / 座標 / sex_restriction) を 1 クエリでロード.
-    patient_rows = (await db.scalars(select(Patient).where(Patient.id.in_(scope_pids)))).all()
-    patient_by_id: dict[UUID, Patient] = {p.id: p for p in patient_rows}
+        elif patient is not None and bool(patient.requires_multiple_staff):
+            # D-5: 2 名体制は保護 (_enumerate_step_candidates も同順で skip する).
+            excluded.two_staff += 1
 
     # 却下記憶 (D-3)。move 指紋は scope 患者ぶん / swap 指紋は正典と同じ全患者ぶん.
     now = datetime.now()

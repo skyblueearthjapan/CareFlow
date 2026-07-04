@@ -182,14 +182,36 @@ class ProposeSlotItem(BaseModel):
     # 「定員超過候補」か. 後方互換の追加フィールド (既定 False). overcapacity_slots に
     # 入る候補のみ True になる (通常 slots[] は常に False).
     overcapacity: bool = Field(default=False)
+    # W-12a (2 名体制ペア D-1/D-2): slot0+slot1 同時刻・別コースの原子ペア候補なら相方 (slot1)
+    # 情報を持つ (後方互換 optional・非ペア候補は全て None). A経路採用は self の
+    # (office_id, weekday, course_code) を slot0、partner_course_template_id を slot1 として
+    # 同時刻の 2 行を書く. marginal_cost_minutes は 2 コース合計 delta.
+    partner_course_code: str | None = Field(
+        default=None, description="相方コード(slot1). 2名体制ペア候補のみ非 null"
+    )
+    partner_course_label: str | None = Field(default=None, description="相方コースの表示ラベル")
+    partner_course_template_id: uuid.UUID | None = Field(
+        default=None, description="相方コースの course_template_id (A経路で slot1 採用に使う)"
+    )
+    partner_staff_name: str | None = Field(default=None, description="相方コースの担当スタッフ名")
+    partner_mini_schedule: list[ProposeMiniScheduleEntry] | None = Field(
+        default=None, description="相方コース当日のミニスケジュール (2名体制ペアのみ)"
+    )
 
 
 # P-1b: 除外理由コード (N-6「黙って消さない」). service (_pick_bucket_reason /
 # _aggregate_exclusions) が出力する語彙と 1:1.
 # I-11: pair_blocked は pair_mode='blocked' のペア相手と同住所同時刻 (90分占有) で
 # 重なるため除外した枠. FE 側は z.string() 寛容パースなので BE 追加のみで安全.
+# W-12a: no_pair_slot は 2 名体制で slot0 は入るが同時刻に入れる相方コースが無い枠.
 ExcludedReasonCode = Literal[
-    "capacity_full", "lunch_window", "travel_shortage", "no_gap", "course_closed", "pair_blocked"
+    "capacity_full",
+    "lunch_window",
+    "travel_shortage",
+    "no_gap",
+    "course_closed",
+    "pair_blocked",
+    "no_pair_slot",
 ]
 
 
@@ -204,7 +226,8 @@ class ProposeExcludedReason(BaseModel):
     reason: ExcludedReasonCode = Field(
         ...,
         description=(
-            "capacity_full / lunch_window / travel_shortage / no_gap / course_closed / pair_blocked"
+            "capacity_full / lunch_window / travel_shortage / no_gap / course_closed / "
+            "pair_blocked / no_pair_slot"
         ),
     )
     count: int = Field(..., ge=0, description="この reason × weekday で候補を落としたコース数")

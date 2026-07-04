@@ -77,6 +77,9 @@ export const scopeOptimizationExcludedSummarySchema = z.object({
   no_current_visit: z.number().int().min(0).default(0),
   dismissed: z.number().int().min(0).default(0),
   confirmation_required_excluded: z.number().int().min(0).default(0),
+  // W-12a (D-5): 2名体制患者の PFV を movable から除外した数 (黙って消さない会計)。
+  // 旧BE未送出 → 0 (default)。
+  two_staff: z.number().int().min(0).default(0),
   truncated: z.boolean().default(false),
 });
 export type ScopeOptimizationExcludedSummary = z.infer<
@@ -170,6 +173,7 @@ export const scopeOptimizationSimulateResponseSchema = z.object({
     no_current_visit: 0,
     dismissed: 0,
     confirmation_required_excluded: 0,
+    two_staff: 0,
     truncated: false,
   }),
   state_token: z.string(),

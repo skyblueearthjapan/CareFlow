@@ -864,3 +864,183 @@ describe('W-5b: autoRequestOvercapacity (超過候補の自動展開)', () => {
     expect(mocks.proposeMutate.mock.calls[0][0].include_overcapacity).toBe(false);
   });
 });
+
+// ── W-12a: 2名体制ペア候補 ───────────────────────────────────────────────────
+
+const PARTNER_TPL_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const PRIMARY_TPL_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+
+/** 2名体制ペア候補 (partner_* を持つ). 既定は主コース C + 相方コース D の同時刻ペア. */
+function makePairSlot(over: Record<string, unknown> = {}) {
+  return makeSlot({
+    partner_course_code: 'D',
+    partner_course_label: '稲D',
+    partner_course_template_id: PARTNER_TPL_ID,
+    partner_staff_name: '佐藤',
+    ...over,
+  });
+}
+
+describe('W-12a: 2名体制ペア候補 (PoolCandidateList)', () => {
+  beforeEach(() => {
+    mocks.proposeMutate.mockReset();
+    mocks.confirmMutate.mockReset();
+    mocks.placeAndFixMutate.mockReset();
+    mocks.proposeData = undefined;
+    mocks.existingFixedVisits = [];
+    mocks.templatesQueries = [];
+    mockToast.success.mockReset();
+    mockToast.error.mockReset();
+    mockToast.warning.mockReset();
+  });
+
+  it('ペア候補は 2 コースチップ・相方担当・同時配置説明を表示する', () => {
+    mocks.proposeData = { slots: [makePairSlot()], message: null };
+    render(<PoolCandidateList {...COMMON} />);
+    fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
+
+    // 2名体制チップ + 2 コース表記.
+    const badge = screen.getByTestId('pool-candidate-pair-badge');
+    expect(badge).toBeInTheDocument();
+    expect(badge).toHaveTextContent('2名体制');
+    expect(badge).toHaveTextContent('稲C と 稲D');
+    // 主担当 + 相方担当の 2 名.
+    expect(screen.getByText(/担当: 山田/)).toBeInTheDocument();
+    expect(screen.getByText(/相方: 佐藤/)).toBeInTheDocument();
+    // 同時配置説明.
+    expect(screen.getByTestId('pool-candidate-pair-desc')).toHaveTextContent(
+      /稲C と 稲D の 14:00 に同時配置/,
+    );
+  });
+
+  it('採用 (A経路): PUT body に slot0+slot1 の2行 (同時刻・別 course_template_id) が入る', async () => {
+    const slot = makePairSlot();
+    mocks.proposeData = { slots: [slot], message: null };
+    // 主コース C の course_template_id を解決させる (相方は partner_course_template_id を直接使う).
+    mocks.templatesQueries = [
+      {
+        data: [
+          {
+            id: PRIMARY_TPL_ID,
+            office_id: '11111111-1111-4111-8111-111111111111',
+            label: 'C',
+            deleted_at: null,
+          },
+        ],
+        status: 'success',
+        isLoading: false,
+        dataUpdatedAt: Date.now(),
+      },
+    ];
+    render(<PoolCandidateList {...COMMON} />);
+    fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
+    fireEvent.click(
+      screen.getByTestId(
+        `pool-candidate-adopt-${slot.office_id}-${slot.weekday}-${slot.course_code}-${slot.start_time}`,
+      ),
+    );
+    fireEvent.click(screen.getByTestId('pool-candidate-confirm-apply'));
+
+    await waitFor(() => expect(mocks.confirmMutate).toHaveBeenCalledTimes(1));
+    const items = mocks.confirmMutate.mock.calls[0][0].body.items as Array<{
+      weekday: number;
+      slot_index: number;
+      start_time: string;
+      course_template_id?: string;
+    }>;
+    // slot0 (主) + slot1 (相方) の 2 行.
+    expect(items).toHaveLength(2);
+    const slot0 = items.find((i) => i.slot_index === 0)!;
+    const slot1 = items.find((i) => i.slot_index === 1)!;
+    expect(slot0).toBeTruthy();
+    expect(slot1).toBeTruthy();
+    // 同時刻・同曜日.
+    expect(slot0.weekday).toBe(1);
+    expect(slot1.weekday).toBe(1);
+    expect(slot0.start_time).toBe('14:00:00');
+    expect(slot1.start_time).toBe('14:00:00');
+    // 別 course_template_id (主 = 解決値 / 相方 = partner_course_template_id).
+    expect(slot0.course_template_id).toBe(PRIMARY_TPL_ID);
+    expect(slot1.course_template_id).toBe(PARTNER_TPL_ID);
+    expect(slot0.course_template_id).not.toBe(slot1.course_template_id);
+    // place-and-fix は呼ばれない (A経路).
+    expect(mocks.placeAndFixMutate).not.toHaveBeenCalled();
+  });
+
+  it('採用 (B経路): place-and-fix が staff_count=2 + course_template_ids[主,相方] で呼ばれる', async () => {
+    const slot = makePairSlot();
+    mocks.proposeData = { slots: [slot], message: null };
+    mocks.templatesQueries = [
+      {
+        data: [
+          {
+            id: PRIMARY_TPL_ID,
+            office_id: '11111111-1111-4111-8111-111111111111',
+            label: 'C',
+            deleted_at: null,
+          },
+        ],
+        status: 'success',
+        isLoading: false,
+        dataUpdatedAt: Date.now(),
+      },
+    ];
+    render(<PoolCandidateList {...COMMON} />);
+    fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
+    fireEvent.click(
+      screen.getByTestId(
+        `pool-candidate-adopt-${slot.office_id}-${slot.weekday}-${slot.course_code}-${slot.start_time}`,
+      ),
+    );
+    // B (今週だけ) を選択.
+    fireEvent.click(screen.getByTestId('change-scope-week'));
+    fireEvent.click(screen.getByTestId('pool-candidate-confirm-apply'));
+
+    await waitFor(() => expect(mocks.placeAndFixMutate).toHaveBeenCalledTimes(1));
+    const req = mocks.placeAndFixMutate.mock.calls[0][0];
+    expect(req.staff_count).toBe(2);
+    expect(req.fix_pattern).toBe(false);
+    expect(req.course_template_ids).toEqual([PRIMARY_TPL_ID, PARTNER_TPL_ID]);
+    // 旧形式の単一 course_template_id は送らない.
+    expect(req.course_template_id).toBeUndefined();
+    // PUT (confirmMutate) は呼ばれない.
+    expect(mocks.confirmMutate).not.toHaveBeenCalled();
+  });
+
+  it('two_staff_not_guaranteed 警告はペア候補では表示しない', () => {
+    mocks.proposeData = {
+      slots: [makePairSlot({ warnings: ['two_staff_not_guaranteed'] })],
+      message: null,
+    };
+    render(<PoolCandidateList {...COMMON} />);
+    fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
+    // proposeWarningLabel は mock で code をそのまま返すため、非表示なら該当テキストが無い.
+    expect(screen.queryByText('two_staff_not_guaranteed')).not.toBeInTheDocument();
+  });
+
+  it('two_staff_not_guaranteed 警告は非ペア候補では従来どおり表示する', () => {
+    mocks.proposeData = {
+      slots: [makeSlot({ warnings: ['two_staff_not_guaranteed'] })],
+      message: null,
+    };
+    render(<PoolCandidateList {...COMMON} />);
+    fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
+    expect(screen.getByText('two_staff_not_guaranteed')).toBeInTheDocument();
+  });
+
+  it('no_pair_slot 除外理由が訳語表示される', () => {
+    mocks.proposeData = {
+      slots: [],
+      message: null,
+      excluded_summary: [
+        { reason: 'no_pair_slot', count: 2, weekday: 1, sample_course_code: 'C' },
+      ],
+    };
+    render(<PoolCandidateList {...COMMON} />);
+    fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
+    const summary = screen.getByTestId('pool-candidate-excluded-summary');
+    expect(summary).toHaveTextContent('火曜');
+    expect(summary).toHaveTextContent('同時刻に入れる2コースの組が見つかりません');
+    expect(summary).toHaveTextContent('2件');
+  });
+});

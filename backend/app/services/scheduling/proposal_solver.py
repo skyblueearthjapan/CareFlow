@@ -741,12 +741,72 @@ def _same_address_pair_slots(
     return results
 
 
+def slot_fits_exact(
+    existing_visits: list[ExistingVisit],
+    candidate: Candidate,
+    target_start: time,
+    *,
+    lunch_window: tuple[time, time] | None,
+    config: SchedulingConfig | None = None,
+) -> bool:
+    """候補を ``target_start`` ちょうどに配置できるか (時刻系 + 前後移動制約).
+
+    W-12a (2 名体制ペア): 主コースの slot0 候補時刻 T に、別コースで slot1 を同時刻配置
+    できるかを点検するための「特定時刻 T ちょうど」判定. ``find_available_slots_for_candidate``
+    は各ギャップの最早開始のみを列挙するため任意 T は出せない. 本関数は:
+        1. ``slot_feasible`` (営業枠 / 昼休み / 18:00 / time_type) を T で確認.
+        2. 既存訪問との前後移動制約 (travel + buffer 分離。同住所同時刻は許容) を
+           ``pfv_validator._find_conflict`` と同一規則で確認.
+    **容量は呼出側で別途点検する** (bucket 単位のため本関数の対象外).
+    """
+    block = "am" if _time_to_min(target_start) < _time_to_min(PM_BLOCK_START) else "pm"
+    if not slot_feasible(
+        target_start, candidate, lunch_window=lunch_window, block=block, config=config
+    ):
+        return False
+    end = _add_minutes(target_start, candidate.service_minutes)
+    p_start = _time_to_min(target_start)
+    p_end = _time_to_min(end)
+    proposed = ExistingVisit(
+        start_time=target_start,
+        end_time=end,
+        lat=candidate.lat,
+        lng=candidate.lng,
+        service_minutes=candidate.service_minutes,
+        patient_id=candidate.patient_id,
+    )
+    all_visits = [*existing_visits, proposed]
+    for e in existing_visits:
+        if (
+            e.patient_id is not None
+            and candidate.patient_id is not None
+            and e.patient_id == candidate.patient_id
+        ):
+            continue
+        if _is_same_address(candidate.lat, candidate.lng, e.lat, e.lng):
+            continue  # 同住所同時刻は許容 (前方/後方制約と同一規則).
+        travel = _travel_buffer_between(candidate.lat, candidate.lng, e.lat, e.lng, config=config)
+        e_start = _time_to_min(e.start_time)
+        e_occ_end = _time_to_min(_existing_occupancy_end(e, all_visits))
+        if p_start >= e_start:
+            # 候補が後方: 前 visit の占有終端 + 移動 が候補 start を超えたら衝突.
+            if e_occ_end + travel > p_start:
+                return False
+        else:
+            # 候補が前方: 候補 end + 移動 が 次 visit.start を超えたら衝突.
+            if p_end + travel > e_start:
+                return False
+    return True
+
+
 # 後方互換 / 明示 export.
 __all__ = [
     "Candidate",
     "ExistingVisit",
     "Slot",
+    "_course_total_minutes_from_existing",
     "compute_earliest_start_after",
     "find_available_slots_for_candidate",
     "slot_feasible",
+    "slot_fits_exact",
 ]

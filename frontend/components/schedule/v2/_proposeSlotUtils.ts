@@ -84,6 +84,31 @@ export function proposedSlotToFixedVisitItem(
 }
 
 /**
+ * W-12a: 2名体制ペア候補の相方枠 (slot_index=1) → bulk PUT item.
+ *
+ * 主コース (slot_index=0) と**同時刻・同 duration**で、相方コース
+ * (`partner_course_template_id`) を slot_index=1 として書き込む。相方の
+ * course_template_id は BE がペア成立判定時に確定済みのため resolver を介さず
+ * 直接使う。`partner_course_template_id` が無い (= 非ペア候補) なら null を返す。
+ */
+export function proposedSlotPartnerToFixedVisitItem(
+  s: ProposeSlotItem,
+  serviceFallbackMin: number,
+): PatientFixedVisitV2Base | null {
+  const partnerTplId = s.partner_course_template_id;
+  if (!partnerTplId) return null;
+  // 主枠と同一の duration 算出 (proposedSlotToFixedVisitItem と同規約: is_pair は実サービス分)。
+  const duration = s.is_pair ? serviceFallbackMin : (slotDurationMin(s) ?? serviceFallbackMin);
+  return {
+    weekday: s.weekday,
+    start_time: s.start_time,
+    duration_min: duration,
+    slot_index: 1,
+    course_template_id: partnerTplId,
+  };
+}
+
+/**
  * 改善提案の採用可能な候補 (weekday/start_time/end_time/course_code/office_id) の
  * 構造的最小型. `proposedSlotToFixedVisitItem` は ProposeSlotItem 全体を要求するため、
  * 改善提案 candidate 用に薄いアダプタを別途用意する.
@@ -157,6 +182,47 @@ export function buildWeekOnlyPlaceAndFixRequest(
   };
 }
 
+/**
+ * W-12a (D-3 B経路): 2名体制ペア候補 → place-and-fix(staff_count=2, fix_pattern=false).
+ *
+ * 主コース (resolveCourseTemplateId で解決) と相方コース
+ * (`partner_course_template_id`) の 2 枠を同時刻・別コースで今週だけ原子配置する。
+ * BE の place-and-fix は course_template_ids=[主, 相方] + staff_count=2 で
+ * visit_group_id 共有の 2 visit を作る (test_place_and_fix_multi_staff で担保)。
+ * 解決不能 / 相方欠落 / 主=相方が同一 のときは null (呼出側が toast)。
+ */
+export function buildWeekOnlyPlaceAndFixRequestPair(
+  s: ProposeSlotItem,
+  resolveCourseTemplateId: CourseTemplateIdResolver,
+  args: {
+    patientId: string;
+    isoYear: number;
+    isoWeek: number;
+    serviceFallbackMin: number;
+    capacityOverrideReason?: string | null;
+  },
+): PlaceAndFixRequest | null {
+  const primaryTplId = resolveCourseTemplateId(s.office_id, s.course_code);
+  const partnerTplId = s.partner_course_template_id ?? null;
+  if (primaryTplId === null || !partnerTplId) return null;
+  if (primaryTplId === partnerTplId) return null; // 同一コース 2 枠は不可 (BE 422)。
+  const duration = s.is_pair ? args.serviceFallbackMin : (slotDurationMin(s) ?? args.serviceFallbackMin);
+  return {
+    patient_id: args.patientId,
+    course_template_ids: [primaryTplId, partnerTplId],
+    iso_year: args.isoYear,
+    iso_week: args.isoWeek,
+    weekday: s.weekday,
+    start_time: s.start_time,
+    duration_min: duration,
+    staff_count: 2,
+    fix_pattern: false,
+    ...(args.capacityOverrideReason
+      ? { capacity_override_reason: args.capacityOverrideReason }
+      : {}),
+  };
+}
+
 /** 既存 normal 固定枠 1 件 → bulk PUT item (slot_index / course_template_id 等を引き継ぐ). */
 export function existingFixedVisitToItem(v: PatientFixedVisitV2Read): PatientFixedVisitV2Base {
   return {
@@ -183,17 +249,22 @@ export function sortFixedVisitItems(items: PatientFixedVisitV2Base[]): PatientFi
 
 /**
  * 採用枠 (item 化済) を既存 normal 枠にマージする.
- *   - 採用曜日の slot_index=0 は採用枠で置換.
- *   - 採用しなかった曜日 / 同曜日の slot_index!=0 (2名体制相方等) は保持.
+ *   - 採用した (曜日, slot_index) は採用枠で置換.
+ *   - それ以外の (曜日, slot_index) は保持.
  * backend PUT /fixed-visits の全削除→INSERT で他曜日の枠が消えるのを防ぐ.
+ *
+ * W-12a: (weekday, slot_index) ペア単位で置換する。
+ *   - 単枠採用 (slot_index=0): 従来と同一挙動 (採用曜日の slot0 のみ置換、slot1 相方は保持)。
+ *   - 2名体制ペア採用 (slot_index=0 と 1 の 2 件): 同曜日の slot0/slot1 を両方置換し、
+ *     既存 slot1 が重複残存して UNIQUE(weekday, slot_index) を破らないようにする。
  */
 export function mergeAdoptedIntoNormalFixedVisits(
   existing: PatientFixedVisitV2Read[],
   adoptedItems: PatientFixedVisitV2Base[],
 ): PatientFixedVisitV2Base[] {
-  const adoptedWeekdays = new Set(adoptedItems.map((i) => i.weekday));
+  const adoptedKeys = new Set(adoptedItems.map((i) => `${i.weekday}-${i.slot_index ?? 0}`));
   const preserved = existing
-    .filter((v) => !adoptedWeekdays.has(v.weekday) || (v.slot_index ?? 0) !== 0)
+    .filter((v) => !adoptedKeys.has(`${v.weekday}-${v.slot_index ?? 0}`))
     .map(existingFixedVisitToItem);
   return sortFixedVisitItems([...preserved, ...adoptedItems]);
 }

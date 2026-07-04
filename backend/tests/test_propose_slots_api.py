@@ -143,9 +143,7 @@ async def _seed_visit(
     return visit
 
 
-async def _seed_shift(
-    db, *, staff: Staff, weekday: int, is_on: bool = True
-) -> StaffShift:
+async def _seed_shift(db, *, staff: Staff, weekday: int, is_on: bool = True) -> StaffShift:
     """指定曜日の固定シフト行を作る (is_on で在番/非番)."""
     sh = StaffShift(staff_id=staff.id, weekday=weekday, is_on=is_on)
     db.add(sh)
@@ -238,9 +236,12 @@ async def test_propose_returns_feasible_slots_ranked(client, db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_propose_two_staff_emits_warning(client, db) -> None:
-    """課題1 (2名体制): requires_multiple_staff=True の候補には two_staff_not_guaranteed
-    警告が付く (propose-slots はコース=1スタッフモデルで2人目を保証しないため明示する)."""
+async def test_propose_two_staff_single_course_no_pair(client, db) -> None:
+    """W-12a (D-2): 2名体制候補は片肺提案を出さない.
+
+    開講コースが 1 つしか無い拠点では相方 (slot1) の同時刻枠が作れないため候補 0 件になり、
+    excluded_summary に no_pair_slot が集約される (旧: two_staff_not_guaranteed 警告付きで
+    slot0 のみ返していた挙動を D-1/D-2 で恒久是正)."""
     admin = await _make_user(db, email="ps-2staff@example.com", role="admin")
     office, staff = await _seed_office_staff(db)
     course = await _seed_course(db, office=office, staff=staff)
@@ -255,8 +256,9 @@ async def test_propose_two_staff_emits_warning(client, db) -> None:
     )
     assert res.status_code == 200, res.text
     body = res.json()
-    assert body["slots"], body
-    assert all("two_staff_not_guaranteed" in s["warnings"] for s in body["slots"]), body["slots"]
+    # 片肺は出さない → 候補 0 件 + no_pair_slot.
+    assert body["slots"] == [], body
+    assert any(e["reason"] == "no_pair_slot" for e in body["excluded_summary"]), body
 
 
 @pytest.mark.asyncio

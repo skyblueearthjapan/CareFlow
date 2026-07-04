@@ -21,6 +21,7 @@ read-only: DB は読むだけ. 実現不能な時刻は一切返さない (ソ�
 
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass, field, replace
 from datetime import date, time
 from uuid import UUID
@@ -45,6 +46,7 @@ from app.services.scheduling.auto_allocator_v2 import (
 )
 from app.services.scheduling.auto_allocator_v2 import (
     NOON_HOUR,
+    _add_minutes,
     _address_bucket,
     compute_lunch_window,
     haversine_km,
@@ -71,7 +73,9 @@ from app.services.scheduling.proposal_solver import (
     Candidate,
     ExistingVisit,
     Slot,
+    _course_total_minutes_from_existing,
     find_available_slots_for_candidate,
+    slot_fits_exact,
 )
 
 # ランキング合成スコアの重み.
@@ -83,6 +87,9 @@ _W_PREFERENCE: float = 30.0
 _W_BALANCE: float = 20.0
 # 同住所ペア成立は最優先で大きなボーナスを与える.
 _PAIR_BONUS: float = 1000.0
+# W-12a: 2 名体制ペア成立ボーナス. 同住所ペア (1000) より下位・通常候補より上位に置き、
+# 同住所ペアとの併発時は同住所が勝つ既存序列を維持する.
+_TWO_STAFF_BONUS: float = 800.0
 # 近接スコアの飽和距離 (km). これ以上離れると近接スコア 0.
 _PROXIMITY_SAT_KM: float = 5.0
 
@@ -113,6 +120,9 @@ class _CourseBucket:
     course_code: str
     office_code: str | None = None
     staff_name: str | None = None
+    # W-12a: 2 名体制ペアの相方 slot1 採用 (A経路) で FE が使う course_template_id.
+    # Course.template_id を load 時に控える (無ければ None). 後方互換 default None.
+    course_template_id: UUID | None = None
     # N-3: 割付スタッフ実態判定用. assigned_staff_id が None なら staff_unassigned.
     # staff_sex は性別不適合判定 (candidate.sex_restriction と突合) に使う.
     # staff_absent は当該 weekday の非番/当週休みを load 時に事前計算した結果.
@@ -167,6 +177,15 @@ class ProposedSlot:
     # 定員超過の管理者相談プロセス (方式b): base 定員では入らないが定員 +1 なら入る
     # 「定員超過候補」か. ``compute_overcapacity_slots`` の結果のみ True になる.
     overcapacity: bool = False
+    # W-12a (2 名体制ペア D-1/D-2): このスロットが slot0+slot1 同時刻・別コースの原子ペア
+    # 候補なら相方 (slot1) 情報を持つ (後方互換 optional・非ペア候補は全て None).
+    # A経路採用は self の course_template_id を slot0、partner_course_template_id を slot1 と
+    # して同時刻の2行を書く. delta は 2コース独立 compute_exact_marginal の合計.
+    partner_course_code: str | None = None
+    partner_course_label: str | None = None
+    partner_course_template_id: UUID | None = None
+    partner_staff_name: str | None = None
+    partner_mini_schedule: list[dict[str, object]] | None = None
 
 
 @dataclass(frozen=True)
@@ -185,7 +204,8 @@ class ExcludedReasonSummary:
     reason 語彙 (N-6「黙って消さない」): ``capacity_full`` (容量上限) / ``lunch_window``
     (昼休み重複) / ``travel_shortage`` (移動時間不足) / ``no_gap`` (空きギャップなし) /
     ``course_closed`` (希望曜日に開講コース無し) / ``pair_blocked`` (I-11: pair_mode=blocked
-    のペア相手と同時間帯=90分同住所占有で重なるため除外).
+    のペア相手と同時間帯=90分同住所占有で重なるため除外) / ``no_pair_slot`` (W-12a D-2:
+    2 名体制で slot0 は入るが同時刻に入れる相方コースが見つからない).
     """
 
     reason: str
@@ -197,11 +217,13 @@ class ExcludedReasonSummary:
 # 集約時の理由優先度 (1 コースが複数地点で候補を落とした場合、代表理由を決定的に選ぶ).
 # capacity_full を最優先: 容量上限は「そもそも走査に入れない」根本原因のため.
 # I-11: pair_blocked は同住所同時刻ペアの hard 除外なので capacity_full の次に強い.
+# W-12a: no_pair_slot は「slot0 は入るが相方全滅」= 2 名体制固有の詰まりなので no_gap の上.
 _EXCLUSION_REASON_PRIORITY: tuple[str, ...] = (
     "capacity_full",
     "pair_blocked",
     "travel_shortage",
     "lunch_window",
+    "no_pair_slot",
     "no_gap",
 )
 
@@ -300,6 +322,7 @@ async def load_week_course_buckets(
                 course_code=code,
                 office_code=office_code_by_id.get(course.office_id),
                 staff_name=staff.name if staff is not None else None,
+                course_template_id=course.template_id,
                 # N-3: staff 実態判定用. assigned_staff_id は Course 属性
                 # (visit の primary_staff_id ではなくコース割付を正とする).
                 assigned_staff_id=course.assigned_staff_id,
@@ -594,6 +617,7 @@ def _slot_reasons_and_warnings(
     staff_sex_mismatch: bool = False,
     acceptance_blocked: bool = False,
     is_efficiency_alternative: bool = False,
+    suppress_two_staff: bool = False,
 ) -> tuple[list[str], list[str]]:
     """スロットの理由バッジ + 警告ラベルを組み立てる.
 
@@ -629,7 +653,9 @@ def _slot_reasons_and_warnings(
     # 課題1 (2名体制): propose-slots ソルバは「コース=1スタッフ」モデルで 2 人目の
     # スタッフ確保までは判定しない (auto_allocator も警告のみ). 2 名体制患者には
     # 「2 人目要確認」の警告を付け、 自動で 2 名確保済とは誤認させない.
-    if candidate.requires_multiple_staff:
+    # W-12a: ただしペア候補 (slot0+slot1 同時刻・別コースで 2 名確保済) では相方が保証
+    # されるため付けない (suppress_two_staff=True で抑制. §2.3 の FE 契約).
+    if candidate.requires_multiple_staff and not suppress_two_staff:
         warnings.append("two_staff_not_guaranteed")
     # N-3: 割付スタッフ実態の警告 (除外はせず注意喚起のみ). FE が日本語ラベル化する.
     if staff_unassigned:
@@ -924,6 +950,260 @@ def _enumerate_candidate_slots(
     return results
 
 
+def _build_pair_proposed_slot(
+    *,
+    primary_bucket: _CourseBucket,
+    partner_bucket: _CourseBucket,
+    office_id: UUID,
+    weekday: int,
+    start: time,
+    candidate: CandidateInput,
+    candidate_name: str,
+    office_code_by_id: dict[UUID, str | None] | None,
+    office_name_by_id: dict[UUID, str],
+    max_patients: int,
+    unavailable_slots: dict[tuple[UUID, int], set[time]] | None = None,
+) -> ProposedSlot:
+    """成立した 2 名体制ペア (primary=slot0 / partner=slot1) を 1 件の ProposedSlot 化する.
+
+    score / reasons / warnings は primary コースの bucket 指標で組み立て (通常候補と同一物差し)、
+    ``_TWO_STAFF_BONUS`` を上乗せする. two_staff_not_guaranteed 警告は付けない (相方保証済).
+    delta (marginal_cost_minutes) は後段 ``_assign_marginal_and_resort`` が 2 コース合計で付与する.
+
+    W-12a review FIX-1: staff_unassigned / staff_absent / staff_sex_mismatch はどちらかの
+    コースで該当すれば警告 / ペナルティを出す (OR 合成).
+    W-12a review FIX-2: アンカー時刻 T が受入カレンダー × なら acceptance_blocked=True.
+    """
+    service = int(candidate.service_minutes)
+    end = _add_minutes(start, service)
+    block = "am" if start.hour < NOON_HOUR else "pm"
+    slot = Slot(start=start, end=end, block=block, same_address_pair=False)
+
+    min_dist = _min_distance_km(primary_bucket, candidate.lat, candidate.lng)
+    remaining_count = max(0, max_patients - len(primary_bucket.visits))
+    used_minutes = sum(v.service_minutes for v in primary_bucket.visits)
+    remaining_minutes = max(0, _COURSE_MAX_MINUTES - used_minutes)
+    matched_weekday = bool(candidate.preferred_weekdays) and weekday in candidate.preferred_weekdays
+    matched_time_type = candidate.time_type in ("固定", "時間帯", "午前", "午後")
+    # FIX-1: OR 合成 — primary か partner どちらか一方でも該当すれば警告/ペナルティを付与する.
+    staff_unassigned = (primary_bucket.assigned_staff_id is None) or (
+        partner_bucket.assigned_staff_id is None
+    )
+    staff_absent = primary_bucket.staff_absent or partner_bucket.staff_absent
+    staff_sex_mismatch = _staff_sex_mismatch(
+        primary_bucket.staff_sex, candidate.sex_restriction
+    ) or _staff_sex_mismatch(partner_bucket.staff_sex, candidate.sex_restriction)
+    # FIX-2: 受入カレンダー × — primary/partner は同 office/weekday グループなので 1 回だけ判定.
+    blocked_set = unavailable_slots.get((office_id, weekday), set()) if unavailable_slots else set()
+    acceptance_blocked = start in blocked_set
+
+    reasons, warnings = _slot_reasons_and_warnings(
+        slot,
+        candidate,
+        min_dist_km=min_dist,
+        remaining_count=remaining_count,
+        matched_weekday=matched_weekday,
+        staff_unassigned=staff_unassigned,
+        staff_absent=staff_absent,
+        staff_sex_mismatch=staff_sex_mismatch,
+        acceptance_blocked=acceptance_blocked,
+        suppress_two_staff=True,
+    )
+    score = (
+        _score_slot(
+            slot,
+            min_dist_km=min_dist,
+            remaining_count=remaining_count,
+            remaining_minutes=remaining_minutes,
+            matched_weekday=matched_weekday,
+            matched_time_type=matched_time_type,
+            max_patients=max_patients,
+            staff_unassigned=staff_unassigned,
+            staff_absent=staff_absent,
+            staff_sex_mismatch=staff_sex_mismatch,
+            acceptance_blocked=acceptance_blocked,
+        )
+        + _TWO_STAFF_BONUS
+    )
+
+    office_name = office_name_by_id.get(office_id)
+    office_code = primary_bucket.office_code
+    if office_code is None and office_code_by_id is not None:
+        office_code = office_code_by_id.get(office_id)
+    label = _course_label(office_code, primary_bucket.course_code)
+    partner_label = _course_label(office_code, partner_bucket.course_code)
+
+    mini = _build_mini_schedule(
+        primary_bucket,
+        slot,
+        candidate_name=candidate_name,
+        pair_partner=None,
+        candidate_sex_restriction=candidate.sex_restriction,
+        candidate_requires_multiple_staff=candidate.requires_multiple_staff,
+    )
+    partner_mini = _build_mini_schedule(
+        partner_bucket,
+        Slot(start=start, end=end, block=block, same_address_pair=False),
+        candidate_name=candidate_name,
+        pair_partner=None,
+        candidate_sex_restriction=candidate.sex_restriction,
+        candidate_requires_multiple_staff=candidate.requires_multiple_staff,
+    )
+
+    return ProposedSlot(
+        office_id=office_id,
+        office_name=office_name,
+        weekday=weekday,
+        course_code=primary_bucket.course_code,
+        course_label=label,
+        staff_name=primary_bucket.staff_name,
+        start=start,
+        end=end,
+        score=round(score, 4),
+        reasons=reasons,
+        warnings=warnings,
+        is_pair=False,
+        pair_partner=None,
+        mini_schedule=mini,
+        partner_course_code=partner_bucket.course_code,
+        partner_course_label=partner_label,
+        partner_course_template_id=partner_bucket.course_template_id,
+        partner_staff_name=partner_bucket.staff_name,
+        partner_mini_schedule=partner_mini,
+    )
+
+
+def _enumerate_pair_slots(
+    buckets: dict[tuple[UUID, int, str], _CourseBucket],
+    office_name_by_id: dict[UUID, str],
+    candidate: CandidateInput,
+    solver_candidate: Candidate,
+    *,
+    target_weekdays: frozenset[int],
+    office_ids: list[UUID],
+    office_code_by_id: dict[UUID, str | None] | None,
+    candidate_name: str,
+    config: SchedulingConfig | None,
+    max_patients: int,
+    lunch_duration: int,
+    lunch_window_start: time,
+    lunch_window_end: time,
+    exclusions_out: list[_BucketExclusion] | None = None,
+    unavailable_slots: dict[tuple[UUID, int], set[time]] | None = None,
+) -> list[tuple[ProposedSlot, float]]:
+    """W-12a D-1/D-2: 2 名体制候補のペア (slot0+slot1 同時刻・別コース) を列挙する.
+
+    主従アンカー方式: 各コースで slot0 候補時刻を既存ソルバで列挙 → 同 office・同 weekday の
+    他コースでその時刻ちょうどに相方 (slot1) が入るか (``slot_fits_exact`` + 容量) を点検 →
+    両立時刻のみペア化する. 逆走査 union は「両コースの feasible 時刻集合の和集合を anchor に
+    両側を ``slot_fits_exact`` で点検」することで対称に達成し、(T, {X,Y}) 無順序キーの重複は
+    course_code 昇順の unordered pair 走査で自然排除する (決定性: course_code 昇順 → 時刻昇順).
+
+    片肺 (slot0 は入るが相方全滅) は候補化しない (D-2). ``exclusions_out`` 指定時、slot0 が
+    1 件でも入る曜日で 1 組もペアが成立しなければ ``no_pair_slot`` を記録する (N-6).
+    戻り値は ``(ProposedSlot, 効率指標=0.0)`` のタプル列 (未ソート・効率代替は 2 名体制で非対象).
+    """
+    # bucket ごとに slot0 feasible 時刻 / 容量 / メタを集め、(office, weekday) でグルーピング.
+    groups: dict[
+        tuple[UUID, int],
+        list[
+            tuple[
+                str, _CourseBucket, list[ExistingVisit], tuple[time, time] | None, set[time], bool
+            ]
+        ],
+    ] = defaultdict(list)
+    for (office_id, weekday, course_code), bucket in buckets.items():
+        if office_ids and office_id not in office_ids:
+            continue
+        if weekday not in target_weekdays:
+            continue
+        existing = _to_existing_visits(bucket)
+        lunch = compute_lunch_window(
+            bucket.visits,
+            warnings=None,
+            weekday=weekday,
+            duration=lunch_duration,
+            window_start=lunch_window_start,
+            window_end=lunch_window_end,
+        )
+        bucket_sink: list[str] | None = [] if exclusions_out is not None else None
+        slots = find_available_slots_for_candidate(
+            existing,
+            solver_candidate,
+            lunch_window=lunch,
+            weekday=weekday,
+            config=config,
+            exclusion_sink=bucket_sink,
+        )
+        feasible_starts = {s.start for s in slots if not s.same_address_pair}
+        used_minutes = _course_total_minutes_from_existing(existing, config=config)
+        cap_ok = (
+            len(bucket.visits) < max_patients
+            and used_minutes + int(candidate.service_minutes) <= _COURSE_MAX_MINUTES
+        )
+        # slot0 自体が入らないコースは通常の除外理由 (capacity_full / no_gap 等) を記録.
+        if exclusions_out is not None and not feasible_starts:
+            exclusions_out.append(
+                _BucketExclusion(
+                    reason=_pick_bucket_reason(bucket_sink or []),
+                    weekday=weekday,
+                    course_code=course_code,
+                )
+            )
+        groups[(office_id, weekday)].append(
+            (course_code, bucket, existing, lunch, feasible_starts, cap_ok)
+        )
+
+    results: list[tuple[ProposedSlot, float]] = []
+    for (office_id, weekday), items in groups.items():
+        items.sort(key=lambda it: it[0])  # course_code 昇順で primary/partner を決定的化.
+        any_slot0 = any(it[4] for it in items)
+        pair_formed = False
+        for xi in range(len(items)):
+            for yi in range(xi + 1, len(items)):
+                x_code, x_bucket, x_existing, x_lunch, x_starts, x_cap = items[xi]
+                y_code, y_bucket, y_existing, y_lunch, y_starts, y_cap = items[yi]
+                if not (x_cap and y_cap):
+                    continue
+                for anchor in sorted(x_starts | y_starts, key=_time_to_min):
+                    x_ok = anchor in x_starts or slot_fits_exact(
+                        x_existing, solver_candidate, anchor, lunch_window=x_lunch, config=config
+                    )
+                    if not x_ok:
+                        continue
+                    y_ok = anchor in y_starts or slot_fits_exact(
+                        y_existing, solver_candidate, anchor, lunch_window=y_lunch, config=config
+                    )
+                    if not y_ok:
+                        continue
+                    results.append(
+                        (
+                            _build_pair_proposed_slot(
+                                primary_bucket=x_bucket,
+                                partner_bucket=y_bucket,
+                                office_id=office_id,
+                                weekday=weekday,
+                                start=anchor,
+                                candidate=candidate,
+                                candidate_name=candidate_name,
+                                office_code_by_id=office_code_by_id,
+                                office_name_by_id=office_name_by_id,
+                                max_patients=max_patients,
+                                unavailable_slots=unavailable_slots,
+                            ),
+                            0.0,
+                        )
+                    )
+                    pair_formed = True
+        # D-2: slot0 は入るが相方全滅 → no_pair_slot (曜日別).
+        if exclusions_out is not None and any_slot0 and not pair_formed:
+            sample_code = next((it[0] for it in items if it[4]), "")
+            exclusions_out.append(
+                _BucketExclusion(reason="no_pair_slot", weekday=weekday, course_code=sample_code)
+            )
+    return results
+
+
 def _assign_marginal_and_resort(
     results: list[ProposedSlot],
     buckets: dict[tuple[UUID, int, str], _CourseBucket],
@@ -954,9 +1234,20 @@ def _assign_marginal_and_resort(
         if existing is None:
             existing = _to_existing_visits(bucket)
             existing_cache[key] = existing
-        ps.marginal_cost_minutes = _marginal_cost_minutes(
-            existing, ps.start, ps.end, candidate, config=config
-        )
+        delta = _marginal_cost_minutes(existing, ps.start, ps.end, candidate, config=config)
+        # W-12a: 2 名体制ペアは相方コースの delta も独立に加算 (別コース = 相互作用なし).
+        if ps.partner_course_code is not None:
+            pkey = (ps.office_id, ps.weekday, ps.partner_course_code)
+            pbucket = buckets.get(pkey)
+            if pbucket is not None:
+                pexisting = existing_cache.get(pkey)
+                if pexisting is None:
+                    pexisting = _to_existing_visits(pbucket)
+                    existing_cache[pkey] = pexisting
+                delta += _marginal_cost_minutes(
+                    pexisting, ps.start, ps.end, candidate, config=config
+                )
+        ps.marginal_cost_minutes = delta
     head.sort(
         key=lambda r: (
             r.marginal_cost_minutes if r.marginal_cost_minutes is not None else float("inf"),
@@ -1091,25 +1382,47 @@ def compute_all_proposed_slots(
     # 通常候補 (希望適合): 従来どおり希望 time_type / 希望曜日で列挙・ランキング.
     # P-1b: 0 件時の除外理由収集用 sink (exclusions_out 指定時のみ).
     raw_exclusions: list[_BucketExclusion] | None = [] if exclusions_out is not None else None
-    normal = _enumerate_candidate_slots(
-        buckets,
-        office_name_by_id,
-        candidate,
-        cand,
-        target_weekdays=target_weekdays,
-        office_ids=office_ids,
-        office_code_by_id=office_code_by_id,
-        candidate_name=candidate_name,
-        config=config,
-        max_patients=_max_patients,
-        lunch_duration=_lunch_duration,
-        lunch_window_start=_lunch_window_start,
-        lunch_window_end=_lunch_window_end,
-        is_efficiency_alternative=False,
-        exclusions_out=raw_exclusions,
-        unavailable_slots=unavailable_slots,
-        pair_modes=pair_modes,
-    )
+    # W-12a (D-1/D-2): 2 名体制候補はペア (slot0+slot1 同時刻・別コース) のみを列挙する.
+    # 片肺提案は出さない (相方が入る時刻がなければ候補 0 件 → no_pair_slot). include_overcapacity
+    # 経路 (compute_overcapacity_slots) はこの分岐を通らず従来挙動不変 (設計書 §2.1).
+    if candidate.requires_multiple_staff:
+        normal = _enumerate_pair_slots(
+            buckets,
+            office_name_by_id,
+            candidate,
+            cand,
+            target_weekdays=target_weekdays,
+            office_ids=office_ids,
+            office_code_by_id=office_code_by_id,
+            candidate_name=candidate_name,
+            config=config,
+            max_patients=_max_patients,
+            lunch_duration=_lunch_duration,
+            lunch_window_start=_lunch_window_start,
+            lunch_window_end=_lunch_window_end,
+            exclusions_out=raw_exclusions,
+            unavailable_slots=unavailable_slots,
+        )
+    else:
+        normal = _enumerate_candidate_slots(
+            buckets,
+            office_name_by_id,
+            candidate,
+            cand,
+            target_weekdays=target_weekdays,
+            office_ids=office_ids,
+            office_code_by_id=office_code_by_id,
+            candidate_name=candidate_name,
+            config=config,
+            max_patients=_max_patients,
+            lunch_duration=_lunch_duration,
+            lunch_window_start=_lunch_window_start,
+            lunch_window_end=_lunch_window_end,
+            is_efficiency_alternative=False,
+            exclusions_out=raw_exclusions,
+            unavailable_slots=unavailable_slots,
+            pair_modes=pair_modes,
+        )
     results: list[ProposedSlot] = [ps for ps, _eff in normal]
 
     # 粗ランキング: 合成スコア降順 → 同点は (近さ, 早い時刻, 拠点, コード) で安定化.
@@ -1141,8 +1454,8 @@ def compute_all_proposed_slots(
             )
         )
 
-    if not include_efficiency_alternatives or not results:
-        # 既定 (False) または通常候補ゼロ時は効率代替を付けない.
+    if not include_efficiency_alternatives or not results or candidate.requires_multiple_staff:
+        # 既定 (False) / 通常候補ゼロ / 2 名体制 (ペアのみ) 時は効率代替を付けない.
         return results
 
     # P3-④ 効率優先の代替枠:

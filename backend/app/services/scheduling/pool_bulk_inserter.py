@@ -503,6 +503,13 @@ async def simulate_pool_bulk_insert(
                 BulkUnplaced(patient_id=pid, patient_name=patient.name, reason="office_mismatch")
             )
             continue
+        # W-12a (D-6): 2 名体制患者は v1 では一括投入の対象外 (ペアの一括原子挿入は後続).
+        # no_primary_office と同じ入口フィルタ流儀で明示分離する (黙って片肺配置しない).
+        if bool(patient.requires_multiple_staff):
+            result.unplaced.append(
+                BulkUnplaced(patient_id=pid, patient_name=patient.name, reason="two_staff_pending")
+            )
+            continue
         candidate = candidate_of(patient)
         if candidate is None:
             result.unplaced.append(
