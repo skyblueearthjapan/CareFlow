@@ -1,6 +1,18 @@
 # 引き継ぎ書：プール一括投入（再構築）＋新規提案廃止セッション
 
-作成 2026-07-04 / **本番HEAD = `359322a`**（W-12d 追記時に更新）/ DB = **migration 0053**（office_area_prompt_dismissals）/ healthz 正常。
+作成 2026-07-04 / **本番HEAD = `cd4abcb`**（W-15 完了時に更新）/ DB = **migration 0053**（office_area_prompt_dismissals）/ healthz 正常。
+
+**🏁 W-13〜W-15 完了（2026-07-05・本番稼働）— PO 指示「一気通貫でゴールまで」達成**:
+- W-13a `343fc49`: unblock の拠点自動解決（患者の primary_office_id・resolved_office_id 返却・拠点エラー撤廃）
+- W-13b 同: 操作感の統一 —「変更前/変更後」コース一覧で管理者が判断（unblock プランに影響コースの
+  BE スナップショット＋BeforeAfterCourseTimeline・採用確認パネル・一括投入の表記統一。
+  ①最適化②改善提案は既対応・全5箇所で統一完了）
+- W-14 `9e852a5`: 一括投入→詰まり解消の橋渡し（時間起因の投入不能患者に autoUnblock 直行。W-5b と対）
+- W-15 `cd4abcb`: 定員起因への拡張（他コース退避で定員を空ける手を方式bと並列表示・
+  frees_capacity バッジ「定員内に収まります」・方式b/時間起因は完全不変）
+これで詰まり解消相談の PO 承認済み拡張2件がすべて完結。**適用範囲はこれ以上広げない**
+（思想の正典 schedule-advisor-design.md §6）。
+残バックログ: unblock-consult-design.md §5（分数上限×深さ2テスト・玉突き連鎖・週限定・要確認トグル等）。
 
 **W-12d 完了（2026-07-05・本番稼働）**: 詰まり解消相談 — コミット `359322a`。
 設計書 = `docs/plans/unblock-consult-design.md` / **思想の正典 = `docs/plans/schedule-advisor-design.md` §6**
