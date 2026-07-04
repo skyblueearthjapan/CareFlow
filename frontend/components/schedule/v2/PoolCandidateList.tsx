@@ -24,12 +24,15 @@ import { toast } from 'sonner';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
 
+import { ApiError } from '@/lib/api-client';
 import { fetcher } from '@/lib/api/fetcher';
 import { useProposeSlots, proposeWarningLabel } from '@/lib/queries/fieldBoard';
 import { usePlaceAndFix } from '@/lib/queries/place_and_fix';
 import { useConfirmFixedVisits } from '@/lib/queries/propose_confirm';
 import { useFixedVisits, toastFixedVisitWarnings } from '@/lib/queries/patient_fixed_visits';
+import { useProposeUnblockMutation, useUnblockApplyMutation } from '@/lib/queries/unblock';
 import { coerceWeeklyPattern, type PatientRead } from '@/lib/schemas/patient';
 import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
 import type {
@@ -43,6 +46,11 @@ import type {
   ProposeTimeType,
   WeekdayCode,
 } from '@/lib/schemas/v2/propose_slots';
+import type {
+  UnblockMoveEndpoint,
+  UnblockPlan,
+  UnblockUnmovableSummary,
+} from '@/lib/schemas/v2/unblock';
 
 import {
   buildCourseTemplateIdResolver,
@@ -76,6 +84,40 @@ export const EXCLUDED_REASON_LABEL: Record<string, string> = {
 
 function excludedReasonLabel(reason: string): string {
   return EXCLUDED_REASON_LABEL[reason] ?? 'その他の理由';
+}
+
+/**
+ * W-12d: 詰まり解消相談を発動する時間起因の除外理由。
+ * これらを excluded_summary に含むとき「ずらせば入る手を探す」呼びかけを出す。
+ */
+// 設計書 unblock-consult-design.md §3: この3件のみが発動条件（新 reason 追加時は要更新）。
+const UNBLOCK_TRIGGER_REASONS = ['no_gap', 'no_pair_slot', 'travel_shortage'] as const;
+
+/** W-12d: unmovable_summary キーの訳語 (設計書 §3・「動かせない事情」)。 */
+const UNMOVABLE_LABEL: Record<keyof UnblockUnmovableSummary, string> = {
+  pinned: 'ピン留め',
+  locked: '固定（可動域）',
+  two_staff: '2名体制',
+  pair: '同住所ペア',
+  dismissed: '見送り済みの提案',
+  confirmation_required: '患者確認が必要',
+};
+
+const CIRCLED_STEPS = ['①', '②', '③', '④', '⑤'] as const;
+
+/** 分/週の増分を「同じ物差し」で表示 (＋N分 / ±0分 / −N分)。 */
+function formatDeltaMinutes(v: number | null | undefined): string {
+  if (v == null) return '±0分';
+  const r = Math.round(v);
+  if (r > 0) return `+${r}分`;
+  if (r < 0) return `${r}分`;
+  return '±0分';
+}
+
+/** 手の始点/終点を「{曜}{時刻} {コース}」の 1 行にする (course_label 優先)。 */
+function formatEndpoint(ep: UnblockMoveEndpoint): string {
+  const wd = WEEKDAY_LABELS[ep.weekday] ?? '?';
+  return `${wd} ${trimSeconds(ep.start_time)} ${ep.course_label ?? ep.course_code}`;
 }
 
 /**
@@ -171,6 +213,445 @@ function MiniRow({ row }: { row: ProposeMiniScheduleEntry }) {
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// W-12d: 詰まり解消相談 (propose-unblock)
+//
+// 方式b (定員超過相談) と対をなす第2の相談型。通常候補 0 件かつ時間起因の除外理由
+// (no_gap / no_pair_slot / travel_shortage) があるとき、「既存の訪問を少しずらせば
+// 入る手」を静かに呼びかける。押したときだけ探索する (普段は黙っている)。
+// 適用は pattern_and_week 固定 (v1・Ctrl+Z 対象外)。動く患者を明示した確認を経て
+// 1 クリック原子適用。409 は再探索導線。
+// ─────────────────────────────────────────────────────────────────────────
+
+/** 動かせない事情の内訳 (黙って諦めない)。0 件のキーは出さない。 */
+function UnmovableSummaryList({ summary }: { summary: UnblockUnmovableSummary }) {
+  const entries = (Object.keys(UNMOVABLE_LABEL) as (keyof UnblockUnmovableSummary)[])
+    .map((k) => ({ key: k, label: UNMOVABLE_LABEL[k], count: summary[k] ?? 0 }))
+    .filter((e) => e.count > 0);
+  if (entries.length === 0) {
+    return (
+      <p className="mt-1 text-[11px] text-warning-strong">
+        動かせる既存の訪問がありませんでした。
+      </p>
+    );
+  }
+  return (
+    <div className="mt-1 text-[11px] text-warning-strong" data-testid="unblock-unmovable-detail">
+      <span className="font-medium">動かせない事情:</span>{' '}
+      {entries.map((e, i) => (
+        <span key={e.key}>
+          {i > 0 ? '・' : ''}
+          {e.label} {e.count}件
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/** 開通プラン 1 件のカード (手順リスト + フッター + 発動ボタン)。 */
+function UnblockPlanCard({
+  plan,
+  canEdit,
+  disabled,
+  onSelect,
+}: {
+  plan: UnblockPlan;
+  canEdit: boolean;
+  disabled: boolean;
+  onSelect: () => void;
+}) {
+  const insert = plan.insert;
+  const insertStep = plan.moves.length; // 手順番号 (moves の後)。
+  const insertCourse = insert.course_label ?? insert.course_code;
+  const partnerCourse = insert.partner_course_label ?? insert.partner_course_code;
+  return (
+    <div
+      className="rounded border border-border-warning bg-bg-base p-2 text-xs"
+      data-testid="unblock-plan-card"
+    >
+      <ol className="space-y-1">
+        {plan.moves.map((m, i) => (
+          <li
+            key={`${m.patient_id}-${i}`}
+            className="flex flex-wrap items-center gap-1"
+            data-testid="unblock-plan-step"
+          >
+            <span className="font-semibold text-warning-strong">
+              {CIRCLED_STEPS[i] ?? `${i + 1}.`}
+            </span>
+            <span className="font-medium text-text-primary">{m.patient_name}</span>
+            <span className="tnum text-text-secondary">{formatEndpoint(m.from)}</span>
+            <span className="text-text-muted">→</span>
+            <span className="tnum font-medium text-text-primary">{formatEndpoint(m.to)}</span>
+            <Badge variant="secondary" className="text-[10px]">
+              移動 {formatDeltaMinutes(m.delta_minutes)}
+            </Badge>
+            {m.within_preference ? (
+              <Badge variant="info" className="text-[10px]">
+                希望範囲内
+              </Badge>
+            ) : null}
+          </li>
+        ))}
+        <li className="flex flex-wrap items-center gap-1" data-testid="unblock-plan-step">
+          <span className="font-semibold text-warning-strong">
+            {CIRCLED_STEPS[insertStep] ?? `${insertStep + 1}.`}
+          </span>
+          <span className="font-medium text-brand-primary">この枠に配置:</span>
+          <span className="tnum font-medium text-text-primary">
+            {WEEKDAY_LABELS[insert.weekday] ?? '?'} {trimSeconds(insert.start_time)} {insertCourse}
+          </span>
+          {insert.partner_course_code ? (
+            <span className="text-text-secondary">（＋相方: {partnerCourse} 同時刻）</span>
+          ) : null}
+        </li>
+      </ol>
+      <div className="mt-1.5 flex items-center justify-between gap-2">
+        <span className="text-[11px] text-text-muted">
+          合計 {formatDeltaMinutes(plan.total_delta_minutes)}/週・動くのは {plan.moved_count}名
+        </span>
+        {canEdit ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={onSelect}
+            disabled={disabled}
+            className="h-6 px-2 text-[11px]"
+            data-testid="unblock-plan-apply"
+          >
+            この手順で配置する
+          </Button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+/** 適用確認 (動く患者を太字で明示 + Ctrl+Z 対象外バナー + 必須チェック)。 */
+function UnblockConfirm({
+  plan,
+  confirmed,
+  onConfirmedChange,
+  applying,
+  onCancel,
+  onApply,
+}: {
+  plan: UnblockPlan;
+  confirmed: boolean;
+  onConfirmedChange: (v: boolean) => void;
+  applying: boolean;
+  onCancel: () => void;
+  onApply: () => void;
+}) {
+  const movedCount = plan.moved_count;
+  const moveRows = plan.moves.length;
+  return (
+    <div
+      className="mt-2 rounded border border-border-warning bg-warning-bg p-2 text-xs text-warning-strong"
+      data-testid="unblock-confirm"
+    >
+      {/* 動く患者の一覧を太字で明示。 */}
+      <div>
+        次の方の毎週の型を動かして配置します:
+        <ul className="mt-1 space-y-0.5">
+          {plan.moves.map((m, i) => (
+            <li key={`${m.patient_id}-${i}`}>
+              <strong>{m.patient_name}</strong>: {formatEndpoint(m.from)} → {formatEndpoint(m.to)}
+            </li>
+          ))}
+        </ul>
+      </div>
+      {/* Ctrl+Z 対象外バナー (pool-bulk の見せる流儀)。 */}
+      <div
+        className="mt-2 flex items-start gap-1.5 rounded border border-border-warning px-2 py-1.5"
+        data-testid="unblock-confirm-banner"
+      >
+        <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+        <p>
+          適用すると{' '}
+          <strong>{movedCount}名の毎週の型（固定訪問週間）が変わり、今週にも反映</strong>
+          されます。この操作は Ctrl+Z の対象外です。
+        </p>
+      </div>
+      {/* 必須チェック。 */}
+      <label className="mt-2 flex items-start gap-2">
+        <Checkbox
+          checked={confirmed}
+          onCheckedChange={(v) => onConfirmedChange(v === true)}
+          className="mt-0.5"
+          data-testid="unblock-confirm-checkbox"
+        />
+        <span>内容を確認しました</span>
+      </label>
+      <div className="mt-2 flex items-center justify-end gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={onCancel}
+          disabled={applying}
+          className="h-7 px-3 text-xs"
+          data-testid="unblock-confirm-cancel"
+        >
+          <X className="mr-1 h-3.5 w-3.5" aria-hidden />
+          やめる
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          onClick={onApply}
+          disabled={applying || !confirmed}
+          className="h-7 px-3 text-xs"
+          data-testid="unblock-confirm-apply"
+        >
+          {applying ? (
+            <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" aria-hidden />
+          ) : (
+            <CheckCircle2 className="mr-1 h-3.5 w-3.5" aria-hidden />
+          )}
+          この手順で登録する（移動{moveRows}件＋配置）
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 詰まり解消相談の本体。通常候補 0 件 + 時間起因のときに親から mount される。
+ * 自前で探索/適用の mutation とローカル state を持つ (方式b と対の見た目・トーン)。
+ */
+function UnblockConsult({
+  patient,
+  isoYear,
+  isoWeek,
+  officeId,
+  canEdit,
+  onAdopted,
+}: {
+  patient: PatientRead;
+  isoYear: number;
+  isoWeek: number;
+  officeId: string | null;
+  canEdit: boolean;
+  onAdopted?: () => void;
+}) {
+  const unblockMut = useProposeUnblockMutation();
+  const applyMut = useUnblockApplyMutation();
+  // 適用確認対象のプラン (null = 未確認)。
+  const [pendingPlan, setPendingPlan] = React.useState<UnblockPlan | null>(null);
+  // 確認チェック (必須 gating)。
+  const [confirmed, setConfirmed] = React.useState(false);
+  // 409 後に再探索を促す状態。
+  const [needsReSearch, setNeedsReSearch] = React.useState(false);
+
+  const result = unblockMut.data;
+  const plans = result?.plans ?? [];
+  const summary = result?.unmovable_summary;
+
+  const runSearch = React.useCallback(() => {
+    if (!officeId) {
+      toast.error('拠点を選択してから探索してください');
+      return;
+    }
+    setPendingPlan(null);
+    setConfirmed(false);
+    setNeedsReSearch(false);
+    const wp = coerceWeeklyPattern(patient.weekly_pattern);
+    const showTimeRange = wp.time_type === '固定' || wp.time_type === '時間帯';
+    const showEnd = wp.time_type === '時間帯';
+    unblockMut.mutate(
+      {
+        address: patient.address ?? '',
+        lat: typeof patient.lat === 'number' ? patient.lat : null,
+        lng: typeof patient.lng === 'number' ? patient.lng : null,
+        service_minutes: wp.service_minutes,
+        time_type: wp.time_type as ProposeTimeType,
+        preferred_start: showTimeRange ? wp.preferred_start : null,
+        preferred_end: showEnd ? wp.preferred_end : null,
+        preferred_weekdays: wp.preferred_weekdays as WeekdayCode[],
+        visit_frequency: wp.visit_frequency ?? undefined,
+        frequency_per_week: wp.frequency_per_week,
+        requires_multiple_staff:
+          (patient as { requires_multiple_staff?: boolean | null }).requires_multiple_staff ===
+          true,
+        sex_restriction: (patient.sex_restriction as string | null | undefined) ?? null,
+        existing_patient_id: patient.id,
+        office_id: officeId,
+        iso_year: isoYear,
+        iso_week: isoWeek,
+        limit: 5,
+      },
+      { onError: () => toast.error('開通手順の探索に失敗しました') },
+    );
+  }, [patient, isoYear, isoWeek, officeId, unblockMut]);
+
+  const handleApply = () => {
+    const plan = pendingPlan;
+    const token = result?.state_token;
+    if (!plan || !confirmed) return;
+    if (!officeId || !token) {
+      toast.error('状態が変わりました。再探索してください');
+      return;
+    }
+    applyMut.mutate(
+      { office_id: officeId, iso_year: isoYear, iso_week: isoWeek, target_patient_id: patient.id, plan, state_token: token },
+      {
+        onSuccess: (data) => {
+          toast.success(`${plan.moved_count}名の訪問をずらして ${patient.name} 様を配置しました`);
+          for (const w of (data.warnings ?? []).slice(0, 3)) toast.warning(w);
+          setPendingPlan(null);
+          setConfirmed(false);
+          onAdopted?.();
+        },
+        onError: (err) => {
+          // 409 = state_token 不一致 (探索後にスケジュールが変わった)。
+          // ApiError.message は detail を含まないため status で判定する (過去の教訓)。
+          if (err instanceof ApiError && err.status === 409) {
+            toast.error('スケジュールが変わりました。再探索してください');
+            setPendingPlan(null);
+            setConfirmed(false);
+            setNeedsReSearch(true);
+          } else {
+            toast.error('配置に失敗しました');
+          }
+        },
+      },
+    );
+  };
+
+  const applying = applyMut.isPending;
+
+  // ── 409 後: 再探索導線 ──
+  if (needsReSearch) {
+    return (
+      <div
+        className="mt-2 rounded border border-border-warning bg-warning-bg px-3 py-2 text-warning-strong"
+        data-testid="unblock-research"
+      >
+        <p className="text-xs font-semibold">スケジュールが変わりました。再探索してください</p>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={runSearch}
+          disabled={unblockMut.isPending}
+          className="mt-1.5 h-7 border-border-warning px-3 text-xs text-warning-strong"
+          data-testid="unblock-research-button"
+        >
+          {unblockMut.isPending ? (
+            <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" aria-hidden />
+          ) : null}
+          もう一度探す
+        </Button>
+      </div>
+    );
+  }
+
+  // ── 探索前: 静かな呼びかけ ──
+  if (!result) {
+    return (
+      <div
+        className="mt-2 rounded border border-border-warning bg-warning-bg px-3 py-2 text-warning-strong"
+        data-testid="unblock-callout"
+      >
+        <p className="text-xs">
+          時間の重なりで入らない状態です。
+          <strong>既存の訪問を少しずらせば入る手</strong>を探せます。
+        </p>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={runSearch}
+          disabled={unblockMut.isPending}
+          className="mt-1.5 h-7 border-border-warning px-3 text-xs text-warning-strong"
+          data-testid="unblock-search-button"
+        >
+          {unblockMut.isPending ? (
+            <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" aria-hidden />
+          ) : (
+            <Sparkles className="mr-1 h-3.5 w-3.5" aria-hidden />
+          )}
+          ずらせば入る手を探す
+        </Button>
+      </div>
+    );
+  }
+
+  // ── 探索後: プラン or 動かせない事情 ──
+  return (
+    <div className="mt-2" data-testid="unblock-result">
+      {plans.length > 0 ? (
+        <div className="space-y-2" data-testid="unblock-plans">
+          <div className="flex items-center gap-1.5 text-xs font-semibold text-warning-strong">
+            <Sparkles className="h-3.5 w-3.5" aria-hidden />
+            既存の訪問をずらせば入る手（{plans.length}件）
+          </div>
+          {plans.map((plan) => (
+            <UnblockPlanCard
+              key={plan.plan_id}
+              plan={plan}
+              canEdit={canEdit}
+              disabled={applying}
+              onSelect={() => {
+                setPendingPlan(plan);
+                setConfirmed(false);
+              }}
+            />
+          ))}
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={runSearch}
+            disabled={unblockMut.isPending || applying}
+            className="h-6 px-2 text-[11px]"
+            data-testid="unblock-research-inline-button"
+          >
+            もう一度探す
+          </Button>
+        </div>
+      ) : (
+        // ── plans 0 件: 動かせない事情 (黙って諦めない) ──
+        <div
+          className="rounded border border-border-warning bg-warning-bg px-3 py-2 text-warning-strong"
+          data-testid="unblock-unmovable-summary"
+        >
+          <p className="text-xs font-semibold">ずらして入る手は見つかりませんでした</p>
+          {summary ? <UnmovableSummaryList summary={summary} /> : null}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={runSearch}
+            disabled={unblockMut.isPending}
+            className="mt-1.5 h-7 border-border-warning px-3 text-xs text-warning-strong"
+            data-testid="unblock-research-inline-button"
+          >
+            もう一度探す
+          </Button>
+        </div>
+      )}
+
+      {/* 適用確認 (動く患者を明示 + Ctrl+Z 対象外バナー + 必須チェック)。 */}
+      {pendingPlan ? (
+        <UnblockConfirm
+          plan={pendingPlan}
+          confirmed={confirmed}
+          onConfirmedChange={setConfirmed}
+          applying={applying}
+          onCancel={() => {
+            setPendingPlan(null);
+            setConfirmed(false);
+          }}
+          onApply={handleApply}
+        />
+      ) : null}
+    </div>
+  );
+}
+
 export interface PoolCandidateListProps {
   patient: PatientRead;
   isoYear: number;
@@ -238,6 +719,14 @@ export function PoolCandidateList({
   const excludedSummary = React.useMemo<ExcludedSummaryItem[]>(
     () => result?.excluded_summary ?? [],
     [result],
+  );
+  // W-12d: 時間起因 (no_gap / no_pair_slot / travel_shortage) を含むなら詰まり解消相談を出す。
+  const hasTimeBlocker = React.useMemo(
+    () =>
+      excludedSummary.some((it) =>
+        (UNBLOCK_TRIGGER_REASONS as readonly string[]).includes(it.reason),
+      ),
+    [excludedSummary],
   );
 
   // 採用枠 → course_template_id 解決のため、 候補に出現する拠点の course-templates を取得.
@@ -562,6 +1051,17 @@ export function PoolCandidateList({
                 定員超過の候補を表示
               </Button>
             </div>
+          ) : null}
+          {/* W-12d: 詰まり解消相談 (時間の重なりで入らない状態のとき)。方式b callout と並ぶ。 */}
+          {hasTimeBlocker ? (
+            <UnblockConsult
+              patient={patient}
+              isoYear={isoYear}
+              isoWeek={isoWeek}
+              officeId={officeId}
+              canEdit={canEdit}
+              onAdopted={onAdopted}
+            />
           ) : null}
         </div>
       ) : null}

@@ -23,6 +23,12 @@ const { mockToast, mocks } = vi.hoisted(() => ({
     // course-templates 並列取得。空 = resolver が null を返す (A 経路では許容)。
     // B 経路テストでは有効なテンプレートを設定してから呼ぶこと。
     templatesQueries: [] as unknown[],
+    // W-12d: 詰まり解消相談 (propose-unblock) の探索/適用 mutation。
+    unblockMutate: vi.fn(),
+    unblockData: undefined as unknown,
+    unblockPending: false,
+    unblockApplyMutate: vi.fn(),
+    unblockApplyPending: false,
   },
 }));
 
@@ -51,6 +57,53 @@ vi.mock('@tanstack/react-query', () => ({
 }));
 
 vi.mock('@/lib/api/fetcher', () => ({ fetcher: vi.fn() }));
+
+// W-12d: ApiError を実クラスで提供 (409 判定 `err instanceof ApiError` を成立させる)。
+vi.mock('@/lib/api-client', () => {
+  class ApiError extends Error {
+    status: number;
+    body: unknown;
+    constructor(message: string, status: number, body: unknown) {
+      super(message);
+      this.name = 'ApiError';
+      this.status = status;
+      this.body = body;
+    }
+  }
+  return { ApiError };
+});
+
+vi.mock('@/components/ui/checkbox', () => ({
+  Checkbox: ({
+    checked,
+    onCheckedChange,
+    ...rest
+  }: {
+    checked?: boolean;
+    onCheckedChange?: (v: boolean) => void;
+    [k: string]: unknown;
+  }) => (
+    <input
+      type="checkbox"
+      checked={checked}
+      onChange={(e) => onCheckedChange?.(e.target.checked)}
+      {...rest}
+    />
+  ),
+}));
+
+vi.mock('@/lib/queries/unblock', () => ({
+  useProposeUnblockMutation: () => ({
+    mutate: mocks.unblockMutate,
+    reset: vi.fn(),
+    isPending: mocks.unblockPending,
+    data: mocks.unblockData,
+  }),
+  useUnblockApplyMutation: () => ({
+    mutate: mocks.unblockApplyMutate,
+    isPending: mocks.unblockApplyPending,
+  }),
+}));
 
 vi.mock('@/lib/queries/place_and_fix', () => ({
   usePlaceAndFix: () => ({ mutate: mocks.placeAndFixMutate, isPending: false }),
@@ -129,6 +182,8 @@ vi.mock('@/lib/schemas/patient', () => ({
     preferred_end: null,
   }),
 }));
+
+import { ApiError } from '@/lib/api-client';
 
 import { PoolCandidateList } from '../PoolCandidateList';
 
@@ -1042,5 +1097,224 @@ describe('W-12a: 2名体制ペア候補 (PoolCandidateList)', () => {
     expect(summary).toHaveTextContent('火曜');
     expect(summary).toHaveTextContent('同時刻に入れる2コースの組が見つかりません');
     expect(summary).toHaveTextContent('2件');
+  });
+});
+
+// ── W-12d: 詰まり解消相談 (propose-unblock) ───────────────────────────────────
+
+/** 時間起因の候補0 (詰まり解消相談の発動条件を満たす propose-slots レスポンス)。 */
+const TIME_BLOCKER_PROPOSE = {
+  slots: [],
+  message: null,
+  excluded_summary: [{ reason: 'no_gap', count: 2, weekday: 1, sample_course_code: 'B' }],
+};
+
+function makeUnblockPlan(over: Record<string, unknown> = {}) {
+  return {
+    plan_id: 'plan-1',
+    moves: [
+      {
+        patient_id: 'p-move-1',
+        patient_name: '田中',
+        from: { weekday: 1, course_code: 'B', course_label: '稲B', start_time: '16:00:00' },
+        to: { weekday: 1, course_code: 'B', course_label: '稲B', start_time: '15:30:00' },
+        delta_minutes: 3,
+        within_preference: true,
+      },
+    ],
+    insert: {
+      weekday: 1,
+      course_code: 'B',
+      course_label: '稲B',
+      start_time: '16:00:00',
+      end_time: '16:35:00',
+      partner_course_code: null,
+      partner_course_label: null,
+    },
+    total_delta_minutes: 5,
+    moved_count: 1,
+    ...over,
+  };
+}
+
+function makeUnblockResult(over: Record<string, unknown> = {}) {
+  return {
+    plans: [makeUnblockPlan()],
+    unmovable_summary: {
+      pinned: 0,
+      locked: 0,
+      two_staff: 0,
+      pair: 0,
+      dismissed: 0,
+      confirmation_required: 0,
+    },
+    state_token: 'tok-abc',
+    ...over,
+  };
+}
+
+describe('W-12d: 詰まり解消相談 (unblock)', () => {
+  beforeEach(() => {
+    mocks.proposeMutate.mockReset();
+    mocks.confirmMutate.mockReset();
+    mocks.placeAndFixMutate.mockReset();
+    mocks.unblockMutate.mockReset();
+    mocks.unblockApplyMutate.mockReset();
+    mocks.proposeData = undefined;
+    mocks.unblockData = undefined;
+    mocks.unblockPending = false;
+    mocks.unblockApplyPending = false;
+    mocks.existingFixedVisits = [];
+    mocks.templatesQueries = [];
+    mockToast.success.mockReset();
+    mockToast.error.mockReset();
+    mockToast.warning.mockReset();
+  });
+
+  it('発動条件: 候補0 + 時間起因 (no_gap) のとき呼びかけと探索ボタンが出る', () => {
+    mocks.proposeData = TIME_BLOCKER_PROPOSE;
+    render(<PoolCandidateList {...COMMON} />);
+    fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
+    expect(screen.getByTestId('unblock-callout')).toBeInTheDocument();
+    expect(screen.getByTestId('unblock-search-button')).toBeInTheDocument();
+    expect(screen.getByText(/既存の訪問を少しずらせば入る手/)).toBeInTheDocument();
+  });
+
+  it('capacity_full のみ (時間起因なし) では呼びかけを出さない', () => {
+    mocks.proposeData = {
+      slots: [],
+      message: null,
+      excluded_summary: [{ reason: 'capacity_full', count: 3, weekday: 1, sample_course_code: 'A' }],
+    };
+    render(<PoolCandidateList {...COMMON} />);
+    fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
+    expect(screen.queryByTestId('unblock-callout')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('unblock-search-button')).not.toBeInTheDocument();
+  });
+
+  it('探索ボタン: propose-unblock を当該患者・拠点・limit=5 で呼ぶ', () => {
+    mocks.proposeData = TIME_BLOCKER_PROPOSE;
+    render(<PoolCandidateList {...COMMON} />);
+    fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
+    fireEvent.click(screen.getByTestId('unblock-search-button'));
+    expect(mocks.unblockMutate).toHaveBeenCalledTimes(1);
+    const req = mocks.unblockMutate.mock.calls[0][0];
+    expect(req.existing_patient_id).toBe(PATIENT.id);
+    expect(req.office_id).toBe(COMMON.officeId);
+    expect(req.iso_year).toBe(2026);
+    expect(req.iso_week).toBe(24);
+    expect(req.limit).toBe(5);
+    // 固定希望なので preferred_start が乗る。
+    expect(req.preferred_start).toBe('16:00');
+  });
+
+  it('プランカード: 手順・希望範囲内バッジ・フッター・配置行を表示する', () => {
+    mocks.proposeData = TIME_BLOCKER_PROPOSE;
+    mocks.unblockData = makeUnblockResult();
+    render(<PoolCandidateList {...COMMON} />);
+    fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
+
+    expect(screen.getByTestId('unblock-plans')).toBeInTheDocument();
+    expect(screen.getByTestId('unblock-plan-card')).toBeInTheDocument();
+    // 手順ステップ: 移動 1 件 + 配置 1 件 = 2 ステップ。
+    expect(screen.getAllByTestId('unblock-plan-step')).toHaveLength(2);
+    // 移動患者名 + 希望範囲内バッジ。
+    expect(screen.getByText('田中')).toBeInTheDocument();
+    expect(screen.getByText('希望範囲内')).toBeInTheDocument();
+    // 配置行 + フッター。
+    expect(screen.getByText('この枠に配置:')).toBeInTheDocument();
+    expect(screen.getByText(/合計 \+5分\/週・動くのは 1名/)).toBeInTheDocument();
+    // 発動ボタン。
+    expect(screen.getByTestId('unblock-plan-apply')).toBeInTheDocument();
+  });
+
+  it('確認ダイアログ: 未チェックでは確定不可・チェックで有効化 (gating)', () => {
+    mocks.proposeData = TIME_BLOCKER_PROPOSE;
+    mocks.unblockData = makeUnblockResult();
+    render(<PoolCandidateList {...COMMON} />);
+    fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
+    fireEvent.click(screen.getByTestId('unblock-plan-apply'));
+
+    // 確認ダイアログ + Ctrl+Z 対象外バナー。
+    expect(screen.getByTestId('unblock-confirm')).toBeInTheDocument();
+    const banner = screen.getByTestId('unblock-confirm-banner');
+    expect(banner).toHaveTextContent(/毎週の型（固定訪問週間）が変わり/);
+    expect(banner).toHaveTextContent(/Ctrl\+Z の対象外/);
+    // 動く患者の明示。
+    expect(screen.getByTestId('unblock-confirm')).toHaveTextContent('田中');
+
+    // 未チェック → 確定 disabled。
+    const applyBtn = screen.getByTestId('unblock-confirm-apply');
+    expect(applyBtn).toBeDisabled();
+
+    // チェック → 有効化。
+    fireEvent.click(screen.getByTestId('unblock-confirm-checkbox'));
+    expect(applyBtn).not.toBeDisabled();
+  });
+
+  it('適用: plan と state_token をそのまま送る', async () => {
+    mocks.proposeData = TIME_BLOCKER_PROPOSE;
+    mocks.unblockData = makeUnblockResult();
+    render(<PoolCandidateList {...COMMON} />);
+    fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
+    fireEvent.click(screen.getByTestId('unblock-plan-apply'));
+    fireEvent.click(screen.getByTestId('unblock-confirm-checkbox'));
+    fireEvent.click(screen.getByTestId('unblock-confirm-apply'));
+
+    await waitFor(() => expect(mocks.unblockApplyMutate).toHaveBeenCalledTimes(1));
+    const arg = mocks.unblockApplyMutate.mock.calls[0][0];
+    expect(arg.office_id).toBe(COMMON.officeId);
+    expect(arg.iso_year).toBe(2026);
+    expect(arg.iso_week).toBe(24);
+    // target_patient_id: BE の指紋照合に使う患者 UUID (設計書 §2.2)。
+    expect(arg.target_patient_id).toBe(PATIENT.id);
+    expect(arg.state_token).toBe('tok-abc');
+    // plan はそのまま (探索結果の plan を無改変で送る)。
+    expect(arg.plan).toEqual(makeUnblockPlan());
+  });
+
+  it('409: 再探索メッセージと再探索ボタンを出す', async () => {
+    mocks.proposeData = TIME_BLOCKER_PROPOSE;
+    mocks.unblockData = makeUnblockResult();
+    mocks.unblockApplyMutate.mockImplementation(
+      (_vars: unknown, opts?: { onError?: (err: unknown) => void }) => {
+        opts?.onError?.(new ApiError('conflict', 409, null));
+      },
+    );
+    render(<PoolCandidateList {...COMMON} />);
+    fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
+    fireEvent.click(screen.getByTestId('unblock-plan-apply'));
+    fireEvent.click(screen.getByTestId('unblock-confirm-checkbox'));
+    fireEvent.click(screen.getByTestId('unblock-confirm-apply'));
+
+    await waitFor(() => expect(screen.getByTestId('unblock-research')).toBeInTheDocument());
+    expect(screen.getByTestId('unblock-research-button')).toBeInTheDocument();
+    expect(mockToast.error).toHaveBeenCalledWith('スケジュールが変わりました。再探索してください');
+  });
+
+  it('plans 0 件: unmovable_summary を「動かせない事情」として表示する', () => {
+    mocks.proposeData = TIME_BLOCKER_PROPOSE;
+    mocks.unblockData = makeUnblockResult({
+      plans: [],
+      unmovable_summary: {
+        pinned: 2,
+        locked: 1,
+        two_staff: 0,
+        pair: 1,
+        dismissed: 0,
+        confirmation_required: 3,
+      },
+    });
+    render(<PoolCandidateList {...COMMON} />);
+    fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
+
+    const summary = screen.getByTestId('unblock-unmovable-summary');
+    expect(summary).toBeInTheDocument();
+    expect(summary).toHaveTextContent('ピン留め 2件');
+    expect(summary).toHaveTextContent('固定（可動域） 1件');
+    expect(summary).toHaveTextContent('同住所ペア 1件');
+    expect(summary).toHaveTextContent('患者確認が必要 3件');
+    // 0 件のキー (2名体制・見送り済み) は出さない。
+    expect(summary).not.toHaveTextContent('2名体制');
   });
 });

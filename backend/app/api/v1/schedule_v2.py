@@ -157,6 +157,17 @@ from app.schemas.v2.travel_estimate import (
     TravelEstimateRequest,
     TravelEstimateResponse,
 )
+from app.schemas.v2.unblock import (
+    ProposeUnblockApplyRequest,
+    ProposeUnblockApplyResponse,
+    ProposeUnblockRequest,
+    ProposeUnblockResponse,
+    UnblockInsertItem,
+    UnblockMoveItem,
+    UnblockPlanItem,
+    UnblockSlotRef,
+    UnblockUnmovableSummary,
+)
 from app.services.geocoding.client import (
     GeocodingServiceError,
     geocode_address,
@@ -242,6 +253,10 @@ from app.services.scheduling.scope_optimizer import (
     ScopeMetricsData,
     compute_current_state_token,
     simulate_scope_optimization,
+)
+from app.services.scheduling.unblock_search import (
+    compute_plan_id,
+    search_unblock_plans,
 )
 
 logger = logging.getLogger(__name__)
@@ -4431,6 +4446,459 @@ async def scope_optimization_apply_endpoint(
         warnings=warnings,
         change_scope=payload.change_scope,
         week_sync=week_sync,
+    )
+
+
+# ---------------------------------------------------------------------------
+# propose-unblock (W-12d 詰まり解消相談: 「この方をずらせば入ります」)
+# ---------------------------------------------------------------------------
+
+
+def _unblock_candidate_input(
+    payload: ProposeUnblockRequest,
+    lat: float,
+    lng: float,
+) -> CandidateInput:
+    """propose-unblock リクエスト → 対象患者の CandidateInput (propose-slots と同形)."""
+    weekdays = frozenset(
+        WEEKDAY_CODE_TO_INT[code]
+        for code in payload.preferred_weekdays
+        if code in WEEKDAY_CODE_TO_INT
+    )
+    return CandidateInput(
+        lat=lat,
+        lng=lng,
+        service_minutes=payload.service_minutes,
+        time_type=payload.time_type,
+        preferred_start=_parse_hhmm(payload.preferred_start),
+        preferred_end=_parse_hhmm(payload.preferred_end),
+        preferred_weekdays=weekdays,
+        requires_multiple_staff=payload.requires_multiple_staff,
+        existing_patient_id=payload.existing_patient_id,
+        sex_restriction=payload.sex_restriction,
+    )
+
+
+def _unblock_plan_to_schema(p: Any) -> UnblockPlanItem:
+    """内部 ``UnblockPlan`` を API schema ``UnblockPlanItem`` へ変換."""
+    return UnblockPlanItem(
+        plan_id=p.plan_id,
+        moves=[
+            UnblockMoveItem(
+                patient_id=m.patient_id,
+                patient_name=m.patient_name,
+                from_=UnblockSlotRef(
+                    weekday=m.from_weekday,
+                    course_code=m.from_course_code,
+                    start_time=_hhmm(m.from_start),
+                ),
+                to=UnblockSlotRef(
+                    weekday=m.to_weekday,
+                    course_code=m.to_course_code,
+                    start_time=_hhmm(m.to_start),
+                ),
+                delta_minutes=m.delta_minutes,
+                within_preference=m.within_preference,
+            )
+            for m in p.moves
+        ],
+        insert=UnblockInsertItem(
+            weekday=p.insert.weekday,
+            course_code=p.insert.course_code,
+            start_time=_hhmm(p.insert.start),
+            end_time=_hhmm(p.insert.end),
+            partner_course_code=p.insert.partner_course_code,
+        ),
+        total_delta_minutes=p.total_delta_minutes,
+        moved_count=p.moved_count,
+    )
+
+
+@router.post(
+    "/v2/propose-unblock",
+    response_model=ProposeUnblockResponse,
+    status_code=status.HTTP_200_OK,
+    summary="W-12d: 候補0件のとき『既存を1〜2手ずらせば入る』開通手順を提案 (read-only)",
+)
+async def propose_unblock_endpoint(
+    payload: ProposeUnblockRequest,
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+) -> ProposeUnblockResponse:
+    """対象患者 (候補 0 件) を入れるための開通手順を、乱れの小さい順に提案する.
+
+    本 endpoint は **read-only**: DB を変更しない (適用は /propose-unblock/apply)。
+    0 件でも 200 + ``unmovable_summary`` (N-6「黙って諦めない」) + ``state_token`` を返す。
+    """
+    office = await db.scalar(select(Office).where(Office.id == payload.office_id))
+    if office is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Office not found")
+
+    # 座標確定 (address → geocode / lat-lng フォールバック). 座標無しでは判定不能.
+    cand_lat, cand_lng, _resolved = await _resolve_candidate_coords(db, payload)  # type: ignore[arg-type]
+    if cand_lat is None or cand_lng is None:
+        token = await compute_current_state_token(
+            db,
+            iso_year=payload.iso_year,
+            iso_week=payload.iso_week,
+            scope=OptimizationScope(office_id=payload.office_id),
+        )
+        return ProposeUnblockResponse(
+            plans=[], unmovable_summary=UnblockUnmovableSummary(), state_token=token
+        )
+
+    candidate = _unblock_candidate_input(payload, cand_lat, cand_lng)
+    config = await load_scheduling_config(db)
+    try:
+        result = await search_unblock_plans(
+            db,
+            candidate=candidate,
+            office_id=payload.office_id,
+            iso_year=payload.iso_year,
+            iso_week=payload.iso_week,
+            config=config,
+            limit=payload.limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    s = result.unmovable_summary
+    return ProposeUnblockResponse(
+        plans=[_unblock_plan_to_schema(p) for p in result.plans],
+        unmovable_summary=UnblockUnmovableSummary(
+            pinned=s.pinned,
+            locked=s.locked,
+            two_staff=s.two_staff,
+            pair=s.pair,
+            dismissed=s.dismissed,
+            confirmation_required=s.confirmation_required,
+        ),
+        state_token=result.state_token,
+    )
+
+
+async def _insert_target_pfv(
+    db: DbDep,
+    *,
+    target: Patient,
+    insert: UnblockInsertItem,
+    service_minutes: int,
+    requires_multiple_staff: bool,
+    office_id: UUID,
+    config: SchedulingConfig,
+    warnings: list[str],
+) -> bool:
+    """対象患者の PFV を insert 枠に配置する (2 名体制は slot0+slot1 原子).
+
+    W-2 の union 教訓: **既存曜日 (他の PFV 行) を消さない**。insert 曜日の slot0
+    (2 名体制なら slot1 も) だけを UPSERT し、他曜日・他 slot は保全する。
+    pinned 保護は validate_pfv_changes (V2) で再検証し、違反は 422 全ロールバック。
+    """
+    try:
+        start = _parse_hhmm(insert.start_time)
+    except ValueError:
+        start = None
+    if start is None:
+        await _abort_apply(
+            db, status.HTTP_422_UNPROCESSABLE_ENTITY, "insert.start_time は HH:MM 必須です"
+        )
+    wd = insert.weekday
+    slot0_course = await _resolve_course_template_id(db, office_id, insert.course_code)
+    slot1_course: UUID | None = None
+    if requires_multiple_staff and insert.partner_course_code is not None:
+        slot1_course = await _resolve_course_template_id(db, office_id, insert.partner_course_code)
+
+    existing_rows = list(
+        (
+            await db.scalars(
+                select(PatientFixedVisit).where(
+                    PatientFixedVisit.patient_id == target.id,
+                    PatientFixedVisit.mode == "normal",
+                )
+            )
+        ).all()
+    )
+    existing_by_ws: dict[tuple[int, int], PatientFixedVisit] = {
+        (r.weekday, r.slot_index): r for r in existing_rows
+    }
+
+    # --- 再検証入力 (最終形): 既存行を base に、insert 対象 slot を差し替え/追加する ---
+    desired: dict[tuple[int, int], PatientFixedVisitV2Base] = {
+        (r.weekday, r.slot_index): _pfv_to_base(r) for r in existing_rows
+    }
+    ex0 = existing_by_ws.get((wd, 0))
+    desired[(wd, 0)] = PatientFixedVisitV2Base(
+        weekday=wd,
+        start_time=start,
+        duration_min=service_minutes,
+        course_template_id=slot0_course if slot0_course is not None else None,
+        slot_index=0,
+        is_pinned=ex0.is_pinned if ex0 is not None else False,
+        movability=ex0.movability if ex0 is not None else "unknown",
+    )
+    if requires_multiple_staff and slot1_course is not None:
+        ex1 = existing_by_ws.get((wd, 1))
+        desired[(wd, 1)] = PatientFixedVisitV2Base(
+            weekday=wd,
+            start_time=start,
+            duration_min=service_minutes,
+            course_template_id=slot1_course,
+            slot_index=1,
+            is_pinned=ex1.is_pinned if ex1 is not None else False,
+            movability=ex1.movability if ex1 is not None else "unknown",
+        )
+
+    v = await validate_pfv_changes(db, target.id, list(desired.values()), "normal", config=config)
+    if v.has_errors:
+        await _abort_apply(
+            db,
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            {
+                "message": "対象患者の配置が固定枠の保護に違反します",
+                "violations": [
+                    {
+                        "code": w.code,
+                        "message": w.message,
+                        "weekday": w.weekday,
+                        "severity": w.severity,
+                    }
+                    for w in v.errors
+                ],
+            },
+        )
+    warnings.extend(f"配置: {w.message}" for w in v.warnings_only)
+
+    # --- 適用 (insert 対象 slot のみ UPSERT。他曜日・他 slot は保全) ---
+    def _upsert(slot_index: int, course: UUID | None) -> None:
+        ex = existing_by_ws.get((wd, slot_index))
+        if ex is not None:
+            ex.start_time = start
+            ex.duration_min = service_minutes
+            if course is not None:
+                ex.course_template_id = course
+        else:
+            db.add(
+                PatientFixedVisit(
+                    patient_id=target.id,
+                    mode="normal",
+                    weekday=wd,
+                    slot_index=slot_index,
+                    start_time=start,
+                    duration_min=service_minutes,
+                    course_template_id=course,
+                )
+            )
+
+    _upsert(0, slot0_course)
+    if requires_multiple_staff and slot1_course is not None:
+        _upsert(1, slot1_course)
+    await db.flush()
+    return True
+
+
+@router.post(
+    "/v2/propose-unblock/apply",
+    response_model=ProposeUnblockApplyResponse,
+    status_code=status.HTTP_200_OK,
+    summary="W-12d: 開通手順 (退避 + 配置) を 1 TX で適用する (all-or-nothing)",
+)
+async def propose_unblock_apply_endpoint(
+    payload: ProposeUnblockApplyRequest,
+    db: DbDep,
+    actor: Annotated[User, Depends(require_role("admin", "manager"))],
+) -> ProposeUnblockApplyResponse:
+    """プランの退避 (moves) を逐次適用 → 対象患者を配置 → 影響患者の今週 visits を再生成.
+
+    - **楽観ロック**: state_token をサーバで再計算し、不一致なら 409 (詰まり状況が変わった)。
+    - **plan_id 検証**: plan_id 先頭 UUID == target_patient_id、かつサーバ側で moves+insert+
+      target_patient_id から再導出した plan_id と照合する (改竄・患者すり替え防止)。
+    - **1 TX**: moves を scope apply の ``_validate_and_move_one`` (pfv_validator・明示 flush)
+      で逐次適用 → 対象 PFV 配置 (2 名体制は slot0+slot1 原子) → 影響患者の
+      reset_visits_to_fixed (pattern_and_week) → commit。V2 pinned 違反は 422 全ロールバック。
+    - **manual_week 保護**: ``reset_visits_to_fixed`` は U-3 M-2 恒久対策により、同
+      (patient_id, visit_date) に生存 manual_week visit がある日の再生成をスキップする。
+      手動上書き visit は本エンドポイントで消えない。
+    - 適用は型レベル (pattern_and_week) 固定 (設計 P-6)。監査は AuditLog のみ (op_log 非汚染)。
+    """
+    office = await db.scalar(select(Office).where(Office.id == payload.office_id))
+    if office is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Office not found")
+
+    plan = payload.plan
+    # ① plan_id 先頭 UUID が target_patient_id と一致するか確認 (対象患者すり替え検出).
+    prefix_raw = plan.plan_id.split(":", 1)[0]
+    try:
+        plan_prefix_id = UUID(prefix_raw)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="plan_id から対象患者を特定できません",
+        ) from None
+    if plan_prefix_id != payload.target_patient_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="plan_id の対象患者が target_patient_id と一致しません",
+        )
+    # ② plan 内容 (moves + insert + target_patient_id) から plan_id を再導出して指紋照合.
+    move_tuples = [
+        (
+            m.patient_id,
+            m.from_.weekday,
+            m.from_.start_time,
+            m.to.weekday,
+            m.to.course_code,
+            m.to.start_time,
+        )
+        for m in plan.moves
+    ]
+    expected_plan_id = compute_plan_id(
+        move_tuples,
+        plan.insert.weekday,
+        plan.insert.course_code,
+        plan.insert.start_time,
+        plan.insert.partner_course_code,
+        payload.target_patient_id,
+    )
+    if plan.plan_id != expected_plan_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="plan_id の指紋が plan 内容と一致しません",
+        )
+    target = await db.scalar(
+        select(Patient).where(Patient.id == payload.target_patient_id, Patient.deleted_at.is_(None))
+    )
+    if target is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
+
+    # 配置時間 (service_minutes) は insert 枠の end−start、2 名体制の別は partner_course_code
+    # の有無から復元する (candidate 情報を request に持たないため plan から自足させる)。
+    try:
+        ins_start = _parse_hhmm(plan.insert.start_time)
+        ins_end = _parse_hhmm(plan.insert.end_time)
+    except ValueError:
+        ins_start = None
+        ins_end = None
+    if ins_start is None or ins_end is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="insert.start_time / end_time は HH:MM 必須です",
+        )
+    insert_duration = (ins_end.hour * 60 + ins_end.minute) - (
+        ins_start.hour * 60 + ins_start.minute
+    )
+    if insert_duration <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="insert.end_time は start_time より後である必要があります",
+        )
+    insert_requires_multiple_staff = plan.insert.partner_course_code is not None
+
+    # 楽観ロック: simulate 時と同一規約 (office スコープ PFV 指紋) で再計算.
+    current_token = await compute_current_state_token(
+        db,
+        iso_year=payload.iso_year,
+        iso_week=payload.iso_week,
+        scope=OptimizationScope(office_id=payload.office_id),
+    )
+    if current_token != payload.state_token:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="詰まり状況が変更されました。再探索してください",
+        )
+
+    config = await load_scheduling_config(db)
+    warnings: list[str] = []
+    affected_patient_ids: set[UUID] = set()
+
+    # --- 退避 (moves) を逐次適用 (scope apply と同一機構) ---
+    for idx, m in enumerate(plan.moves, start=1):
+        try:
+            old_start = _parse_hhmm(m.from_.start_time)
+            new_start = _parse_hhmm(m.to.start_time)
+        except ValueError:
+            old_start = None
+            new_start = None
+        if old_start is None or new_start is None:
+            await _abort_apply(
+                db, status.HTTP_422_UNPROCESSABLE_ENTITY, f"手順{idx}: start_time は HH:MM 必須です"
+            )
+        affected_patient_ids.add(m.patient_id)
+        new_course = await _resolve_course_template_id(db, payload.office_id, m.to.course_code)
+        await _validate_and_move_one(
+            db,
+            patient_id=m.patient_id,
+            seq=idx,
+            old_weekday=m.from_.weekday,
+            old_start=old_start,
+            new_weekday=m.to.weekday,
+            new_start=new_start,
+            new_course=new_course,
+            config=config,
+            warnings=warnings,
+        )
+
+    # --- 対象患者を配置 (moves の flush 済み状態に対して) ---
+    inserted = await _insert_target_pfv(
+        db,
+        target=target,
+        insert=plan.insert,
+        service_minutes=insert_duration,
+        requires_multiple_staff=insert_requires_multiple_staff,
+        office_id=payload.office_id,
+        config=config,
+        warnings=warnings,
+    )
+    affected_patient_ids.add(target.id)
+
+    # --- 影響患者の今週 visits を PFV から再生成 (pattern_and_week・同一 TX) ---
+    for pid in affected_patient_ids:
+        office_ids = await resolve_reset_office_ids(db, pid)
+        await reset_visits_to_fixed(
+            db,
+            iso_year=payload.iso_year,
+            iso_week=payload.iso_week,
+            office_ids=office_ids,
+            mode="legacy",
+            dry_run=False,
+            config=config,
+            patient_id=pid,
+        )
+
+    db.add(
+        AuditLog(
+            actor_user_id=actor.id,
+            action="propose_unblock_apply",
+            target_table="patient_fixed_visits",
+            target_id=f"{payload.iso_year}-W{payload.iso_week}",
+            before={},
+            after={
+                "office_id": str(payload.office_id),
+                "target_patient_id": str(target.id),
+                "plan_id": plan.plan_id,
+                "applied_moves": len(plan.moves),
+                "insert": {
+                    "weekday": plan.insert.weekday,
+                    "course_code": plan.insert.course_code,
+                    "start_time": plan.insert.start_time,
+                    "partner_course_code": plan.insert.partner_course_code,
+                },
+            },
+        )
+    )
+
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="適用が既存の固定枠と競合しました。再探索してください",
+        ) from exc
+
+    return ProposeUnblockApplyResponse(
+        applied_moves=len(plan.moves),
+        inserted=inserted,
+        warnings=warnings,
     )
 
 
