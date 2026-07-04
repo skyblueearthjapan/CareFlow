@@ -7,7 +7,7 @@
  * (Phase G-43 で Row 1 を flex 単一 toolbar 化。W-9/W-9b で両端配置に変更):
  *   ┌─ ヘッダー ────────────────────────────────────────────┐
  *   │  Row 1 (両端配置 toolbar, admin/manager only):                                 │
- *   │  [週を生成][週次ガイド]   [欠勤対応][新規患者登録][診断][最適化] │ [固定枠戻][全件保存] │
+ *   │  [週を生成][週次ガイド]   [新規患者登録][診断][最適化] │ [固定枠戻][全件保存] │
  *   │  ─── border-t ────────────────────                                            │
  *   │  Row 2 (曜日タブ + テーブル/リスト + 二次操作):                                  │
  *   │    [月][火][水][木][金][土][週] YYYY-Www                                       │
@@ -56,7 +56,6 @@ import {
   Route,
   Undo2,
   UserCheck,
-  UserX,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -119,7 +118,6 @@ import { BulkFixToPatternButton } from './BulkFixToPatternButton';
 import { BulkPinAllPfvsButton } from './BulkPinAllPfvsButton';
 import { AssignWarningDialog, type ApprovedReviewItem } from './AssignWarningDialog';
 import { BulkPoolInsertDialog } from './BulkPoolInsertDialog';
-import { StaffSubstituteDialog } from './StaffSubstituteDialog';
 import { RegisterPatientButton } from './RegisterPatientButton';
 import { ScheduleHealthDialog } from './ScheduleHealthDialog';
 import { ScopeOptimizeDialog } from './ScopeOptimizeDialog';
@@ -1765,13 +1763,11 @@ export function CourseDayTablePanel({
     [canEdit, pfvByVisitKey, togglePfvPin, bulkPinPfvs],
   );
 
-  // ─── Phase G-41 起源: 主要ボタン群を本 panel Row 1 に再収容 (現在は 週生成/欠勤対応/新規患者登録/診断/最適化/週次ガイド) ───
+  // ─── Phase G-41 起源: 主要ボタン群を本 panel Row 1 に再収容 (現在は 週生成/新規患者登録/診断/最適化/週次ガイド) ───
   //   page 側 (Card 1) に置いた G-40 構成から戻し、 mutation/state/dialog を全部 panel 内で抱える.
   //   pending 中の `isProcessing` は二次操作 (固定枠戻 / 一斉未割当) の多重実行抑止にも利用する.
   const generateWeekMut = useGenerateWeekOnly();
   const assignStaffOnlyMut = useAssignStaffOnly();
-  // P3-①: 当日欠勤の代替スタッフ提案ダイアログ.
-  const [staffSubstituteOpen, setStaffSubstituteOpen] = useState(false);
   // Phase G-91: 確認レビューフローのダイアログ (連続 / 性別).
   const [assignWarningOpen, setAssignWarningOpen] = useState(false);
   const [reviewItems, setReviewItems] = useState<ReviewItem[]>([]);
@@ -2087,7 +2083,7 @@ export function CourseDayTablePanel({
         {/*
           W-9b: Row 1 を justify-between の両端配置に変更。
             左グループ: [週を生成][週次ガイド]  ← 週次操作の入口ペアを左端 (曜日タブ真上) に配置.
-            右グループ: [欠勤対応][新規患者登録][診断][最適化] │ [固定枠戻][全件保存].
+            右グループ: [新規患者登録][診断][最適化] │ [固定枠戻][全件保存].
             ※ Row 1 は最上段なので border-t 不要.
             Row 2 (曜日タブ + テーブル/リスト + 二次操作):
               左: 曜日タブ (月〜土 + 週) + iso week label.
@@ -2102,7 +2098,7 @@ export function CourseDayTablePanel({
           {/* Row 1: 両端配置 toolbar (canEdit のみ).
               W-9b: justify-between で左右グループに分割。
                 左グループ = [週を生成][週次ガイド] (週次操作の入口ペアを曜日タブ真上・左端に配置).
-                右グループ = [欠勤対応][新規患者登録][診断][最適化] │ [固定枠戻][全件保存].
+                右グループ = [新規患者登録][診断][最適化] │ [固定枠戻][全件保存].
               狭幅では flex-wrap で左グループ→右グループ順に折り返す. */}
           {canEdit ? (
             <div
@@ -2145,16 +2141,6 @@ export function CourseDayTablePanel({
 
               {/* 右グループ: その他操作 + 書き戻し系. */}
               <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setStaffSubstituteOpen(true)}
-                  data-testid="staff-substitute-button"
-                >
-                  <UserX className="mr-1 h-4 w-4" aria-hidden />
-                  欠勤対応
-                </Button>
                 {/* PO 指示 2026-07-03: 「プール投入」ボタンは削除。保留プールの
                     「効果を表示」ボタン (PoolOverviewPane) が入口として十分なため。 */}
                 {/* W-4 (D-4): 旧「＋新規提案」を「＋新規患者登録」に置換。患者マスタの
@@ -2753,12 +2739,6 @@ export function CourseDayTablePanel({
           }))}
           offices={offices.map((o) => ({ id: o.id, name: o.name }))}
           onOpenPatientDetail={handleOpenPoolPatientDetail}
-        />
-
-        {/* P3-①: 当日欠勤の代替スタッフ提案ダイアログ. */}
-        <StaffSubstituteDialog
-          open={staffSubstituteOpen}
-          onClose={() => setStaffSubstituteOpen(false)}
         />
 
         {/* Phase G-91 / Wave N-2: 自動スタッフ割当の確認レビューフロー (連続 / 性別) + お知らせ. */}

@@ -140,7 +140,6 @@
       <li><a href="#step3">ステップ③：レビュー承認</a></li>
       <li><a href="#review-cards">レビューカードの意味</a></li>
       <li><a href="#pin-protect">ピン留めと手動確定の保護</a></li>
-      <li><a href="#absence">欠勤対応との組み合わせ</a></li>
       <li><a href="#bulk-pool">プール一括投入</a></li>
       <li><a href="#trouble">トラブル時の対処</a></li>
     </ol>
@@ -241,7 +240,7 @@
 
       <h3>事前確認</h3>
       <ul class="plain">
-        <li>欠勤対応が必要な場合は、<b>先に</b>「欠勤対応」ボタンで代替スタッフを指定してから本ボタンを押してください。</li>
+        <li>欠勤が出た場合は、コースの担当変更でスタッフを差し替えてください。</li>
         <li>スタッフの稼働情報（勤務・休暇）が登録されていると精度が上がります。</li>
       </ul>
 
@@ -364,13 +363,6 @@
         今週だけ時間や場所を変えた訪問を保護するために使います。
       </p>
 
-      <h3>欠勤対応で差し替えた割付の保護</h3>
-      <p>
-        「欠勤対応」ボタンで代替スタッフを確定した場合、そのコースの担当は
-        <b>自動スタッフ割当から保護</b> されます。
-        欠勤対応後に自動スタッフ割当を実行しても、確定済みの代替担当は上書きされません。
-      </p>
-
       <table>
         <tr>
           <th>操作の種類</th>
@@ -381,11 +373,6 @@
           <td>🔒 ピン留め（完全固定）した訪問</td>
           <td><b style="color:var(--gold-deep)">保護される</b></td>
           <td>「週を生成」でも上書きされない</td>
-        </tr>
-        <tr>
-          <td>欠勤対応で確定した代替担当</td>
-          <td><b style="color:var(--gold-deep)">保護される</b></td>
-          <td>「自動スタッフ割当」でも上書きされない</td>
         </tr>
         <tr>
           <td>ドラッグで手動移動した訪問（ピンなし）</td>
@@ -403,56 +390,13 @@
         <b>週次の順番が大切：</b>
         ①「週を生成」→ ②「自動スタッフ割当」 の順に行えば、
         手動で担当 dropdown を変えた後に自動割付で上書きされる、という誤操作を防げます。
-        欠勤対応は ② の前、または ② の直後（欠勤対応で確定すれば上書きから保護されるため）に行ってください。
-      </div>
-    </section>
-
-    <!-- ===== 欠勤対応との組み合わせ ===== -->
-    <section id="absence">
-      <h2><span class="num">6</span> 欠勤対応との組み合わせ</h2>
-
-      <p>
-        欠勤が発生した場合は、以下の順序で対応してください。
-      </p>
-
-      <ol class="ritual-steps">
-        <li class="ritual-step">
-          <div class="snum" style="font-size:13px;">①</div>
-          <div class="scard">
-            <div class="st">「週を生成」を実行する（まだの場合）</div>
-            <div class="sd">今週の訪問予定が作成されていない場合は先に実行します。</div>
-          </div>
-        </li>
-        <li class="ritual-step">
-          <div class="snum" style="font-size:13px;">②</div>
-          <div class="scard">
-            <div class="st">「欠勤対応」で代替スタッフを指定する</div>
-            <div class="sd">
-              ツールバーの「欠勤対応」ボタンを押し、欠勤スタッフと対象曜日・代替スタッフを指定して確定します。
-              確定した割付は以後の「自動スタッフ割当」から保護されます。
-            </div>
-          </div>
-        </li>
-        <li class="ritual-step">
-          <div class="snum" style="font-size:13px;">③</div>
-          <div class="scard">
-            <div class="st">「自動スタッフ割当」を実行する</div>
-            <div class="sd">
-              欠勤対応で確定した担当を保護したまま、残りのコースに最適なスタッフが割り付けられます。
-            </div>
-          </div>
-        </li>
-      </ol>
-
-      <div class="callout info">
-        欠勤対応後に自動スタッフ割当を実行しても、<b>欠勤対応で確定したコースは上書きされません</b>。
-        安心して通常の週次手順を続けてください。
+        欠勤が出た場合は、コースの担当変更でスタッフを差し替えてください。
       </div>
     </section>
 
     <!-- ===== プール一括投入 ===== -->
     <section id="bulk-pool">
-      <h2><span class="num">7</span> プール一括投入
+      <h2><span class="num">6</span> プール一括投入
         <span class="roles"><span class="role admin">管理者</span><span class="role manager">マネージャー</span></span>
       </h2>
 
@@ -548,7 +492,7 @@
 
     <!-- ===== トラブル時 ===== -->
     <section id="trouble">
-      <h2><span class="num">8</span> トラブル時の対処</h2>
+      <h2><span class="num">7</span> トラブル時の対処</h2>
 
       <h3>画面が固まった・ボタンが反応しない</h3>
       <p>

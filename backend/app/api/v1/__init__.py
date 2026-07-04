@@ -43,7 +43,6 @@ from app.api.v1 import (
     staff_excel,
     staff_overrides,
     staff_shifts,
-    staff_substitute,
     visit_monitor,
     visit_photos,
     visit_review,
@@ -162,10 +161,6 @@ api_router.include_router(schedule.router, prefix="/schedule", tags=["schedule"]
 api_router.include_router(schedule_v2.router, prefix="/schedule", tags=["schedule-v2"])
 # Wave U-3: 操作ジャーナル undo/redo エンドポイント (/schedule/v2/op-log/*)
 api_router.include_router(op_log.router, prefix="/schedule", tags=["op-log"])
-# P3-①: 当日欠勤の代替スタッフ提案 (candidates 提案 / apply 適用, admin/manager).
-api_router.include_router(
-    staff_substitute.router, prefix="/schedule", tags=["staff-substitute"]
-)
 # Phase G-21 T2: 同住所紐付け CRUD (blocked / required の link 行管理).
 api_router.include_router(
     patient_same_address_links.router,
