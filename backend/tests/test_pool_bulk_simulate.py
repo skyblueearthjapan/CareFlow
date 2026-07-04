@@ -642,3 +642,80 @@ async def test_bulk_no_double_weekday_insertion(client, db) -> None:
     # 不足なく 1 枠入るので partial も unplaced も空.
     assert body["partial"] == []
     assert body["unplaced"] == []
+
+
+# ---------------------------------------------------------------------------
+# 12. W-6: 患者×拠点フィルタ (未設定 / 他拠点は配置計算から除外)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_bulk_office_filter_excludes_null_and_mismatch(client, db) -> None:
+    """primary_office_id が未設定 (no_primary_office) / 指定拠点と不一致 (office_mismatch)
+    の患者は座標チェックより先に unplaced へ落ち、同拠点患者のみ従来どおり配置される."""
+    admin = await _make_user(db, email="pb-admin-ofil@example.com", role="admin")
+    office, staff = await _seed_office_staff(db, name="稲OFIL", code="OFILOFF")
+    await _seed_anchor_course(db, office=office, staff=staff, weekday=0, code="A", anchor_xy=NEAR)
+
+    other_office = Office(name="他拠点OFIL", code="OTHOFF")
+    db.add(other_office)
+    await db.flush()
+
+    wp = _pool_wp()
+    # 同拠点患者 (配置される).
+    p_ok = await _seed_patient(
+        db, office=office, code="OK", lat=BASE[0], lng=BASE[1], weekly_pattern=wp
+    )
+    # 主担当拠点が NULL の患者 (no_primary_office).
+    p_null = Patient(
+        code="NULLOFF",
+        name="P-NULLOFF",
+        status="active",
+        lat=BASE[0],
+        lng=BASE[1],
+        primary_office_id=None,
+        weekly_pattern=wp,
+    )
+    db.add(p_null)
+    # 他拠点の患者 (office_mismatch).
+    p_other = Patient(
+        code="OTHERP",
+        name="P-OTHERP",
+        status="active",
+        lat=BASE[0],
+        lng=BASE[1],
+        primary_office_id=other_office.id,
+        weekly_pattern=wp,
+    )
+    db.add(p_other)
+    await db.commit()
+
+    ids = [str(p_ok.id), str(p_null.id), str(p_other.id)]
+    res = await client.post(
+        "/api/v1/schedule/v2/pool-bulk-simulate",
+        headers=_bearer(admin),
+        json=_simulate_payload(office, ids),
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+
+    unplaced_by_pid = {u["patient_id"]: u for u in body["unplaced"]}
+    assert unplaced_by_pid[str(p_null.id)]["reason"] == "no_primary_office", body
+    assert unplaced_by_pid[str(p_null.id)]["overcapacity_available_count"] == 0, body
+    assert unplaced_by_pid[str(p_other.id)]["reason"] == "office_mismatch", body
+    assert unplaced_by_pid[str(p_other.id)]["overcapacity_available_count"] == 0, body
+
+    # 同拠点患者は従来どおり配置され、除外された 2 名は placements に現れない.
+    placed_pids = {pl["patient_id"] for pl in body["placements"]}
+    assert str(p_ok.id) in placed_pids, body
+    assert str(p_null.id) not in placed_pids, body
+    assert str(p_other.id) not in placed_pids, body
+
+    # 決定性維持 (同一入力 2 回で一致).
+    res2 = await client.post(
+        "/api/v1/schedule/v2/pool-bulk-simulate",
+        headers=_bearer(admin),
+        json=_simulate_payload(office, ids),
+    )
+    assert res2.status_code == 200, res2.text
+    assert res2.json() == body, "拠点フィルタ適用時に非決定性"

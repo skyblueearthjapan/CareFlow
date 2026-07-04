@@ -290,6 +290,53 @@ async def test_apply_individual_creates_pfv(client, db) -> None:
 
 
 @pytest.mark.asyncio
+async def test_apply_individual_null_primary_office_returns_422(client, db) -> None:
+    """W-6: 主担当拠点が未設定の患者は週次生成から除外されるため、apply-individual を
+    422 でブロックし PFV を作らない."""
+    admin = await _make_user(db, email="v2-ap-nulloff@example.com", role="admin")
+    office, _ = await _seed_office_with_staff(db)
+    # primary_office_id 未設定 (NULL) の患者を直接生成.
+    p = Patient(
+        code="AP-NULLOFF",
+        name="P-AP-NULLOFF",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        primary_office_id=None,
+    )
+    db.add(p)
+    await db.commit()
+    await db.refresh(p)
+
+    res = await client.post(
+        "/api/v1/schedule/v2/apply-individual",
+        headers=_bearer(admin),
+        json={
+            "patient_id": str(p.id),
+            "confirm": True,
+            "visit_plans": [
+                {
+                    "weekday": 0,
+                    "start_time": "10:00",
+                    "end_time": "10:30",
+                    "duration_min": 30,
+                    "course_code": "A",
+                    "office_id": str(office.id),
+                    "am_pm": "am",
+                }
+            ],
+        },
+    )
+    assert res.status_code == 422, res.text
+    assert "主担当拠点が未設定" in res.text
+    # PFV は作られない.
+    pfv_rows = (
+        await db.scalars(select(PatientFixedVisit).where(PatientFixedVisit.patient_id == p.id))
+    ).all()
+    assert len(pfv_rows) == 0
+
+
+@pytest.mark.asyncio
 async def test_apply_individual_is_idempotent(client, db) -> None:
     admin = await _make_user(db, email="v2-id-admin@example.com", role="admin")
     office, _ = await _seed_office_with_staff(db)

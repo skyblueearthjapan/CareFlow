@@ -2161,7 +2161,7 @@ export function CourseDayTablePanel({
                 data-testid="scope-optimize-button"
               >
                 <Route className="mr-1 h-4 w-4" aria-hidden />
-                範囲最適化
+                スケジュール最適化
               </Button>
               <Button
                 type="button"
@@ -2755,7 +2755,12 @@ export function CourseDayTablePanel({
           isoYear={isoYear}
           isoWeek={isoWeek}
           officeId={officeId}
-          patientIds={poolPatients.map((p) => p.id)}
+          poolPatients={poolPatients.map((p) => ({
+            id: p.id,
+            name: p.name,
+            primary_office_id: p.primary_office_id ?? null,
+          }))}
+          offices={offices.map((o) => ({ id: o.id, name: o.name }))}
           onOpenPatientDetail={handleOpenPoolPatientDetail}
         />
 

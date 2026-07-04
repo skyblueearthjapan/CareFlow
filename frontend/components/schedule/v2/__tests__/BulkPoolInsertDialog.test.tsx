@@ -66,8 +66,25 @@ vi.mock('../../WeekdayScheduleCard', () => ({
 }));
 
 vi.mock('@/components/ui/dialog', () => ({
-  Dialog: ({ open, children }: { open: boolean; children: React.ReactNode }) =>
-    open ? <div data-testid="dialog">{children}</div> : null,
+  Dialog: ({
+    open,
+    onOpenChange,
+    children,
+  }: {
+    open: boolean;
+    onOpenChange?: (o: boolean) => void;
+    children: React.ReactNode;
+  }) =>
+    open ? (
+      <div data-testid="dialog">
+        {/* テスト用: backdrop クリック相当 (onOpenChange(false) を直接発火させる)。 */}
+        <button
+          data-testid="mock-dialog-open-change-false"
+          onClick={() => onOpenChange?.(false)}
+        />
+        {children}
+      </div>
+    ) : null,
   DialogContent: ({ children }: { children: React.ReactNode }) => (
     <div data-testid="dialog-content">{children}</div>
   ),
@@ -158,6 +175,7 @@ import { BulkPoolInsertDialog } from '../BulkPoolInsertDialog';
 import { ApiError } from '@/lib/api-client';
 
 const OFFICE_ID = '11111111-1111-4111-8111-111111111111';
+const OFFICE_ID_2 = '22222222-2222-4222-8222-222222222222';
 
 const BASE_PROPS = {
   open: true,
@@ -165,7 +183,14 @@ const BASE_PROPS = {
   isoYear: 2026,
   isoWeek: 27,
   officeId: OFFICE_ID,
-  patientIds: ['p-1', 'p-2'],
+  poolPatients: [
+    { id: 'p-1', name: '患者 A', primary_office_id: OFFICE_ID },
+    { id: 'p-2', name: '患者 B', primary_office_id: OFFICE_ID },
+  ],
+  offices: [
+    { id: OFFICE_ID, name: '本店' },
+    { id: OFFICE_ID_2, name: '都賀' },
+  ],
 } as const;
 
 /** 1 枠投入できる最小 simulate レスポンス */
@@ -340,5 +365,113 @@ describe('BulkPoolInsertDialog (W-2)', () => {
     fireEvent.click(patientButton);
     expect(onClose).toHaveBeenCalled();
     expect(onOpenPatientDetail).toHaveBeenCalledWith('p-2');
+  });
+
+  // ── W-6: 拠点グループ化 ──────────────────────────────────────────────────
+
+  it('混入修正: 単一拠点選択時、他拠点の患者は simulate に送られない', async () => {
+    mocks.simulateAsync.mockResolvedValue(makeSimulateResult());
+    render(
+      <BulkPoolInsertDialog
+        {...BASE_PROPS}
+        officeId={OFFICE_ID}
+        poolPatients={[
+          { id: 'p-1', name: '患者 A', primary_office_id: OFFICE_ID },
+          { id: 'p-3', name: '患者 C', primary_office_id: OFFICE_ID_2 },
+        ]}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId('bulk-pool-insert-preview')).toBeInTheDocument(),
+    );
+    // 他拠点 (p-3) は patient_ids に含まれない。
+    expect(mocks.simulateAsync).toHaveBeenCalledTimes(1);
+    expect(mocks.simulateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ office_id: OFFICE_ID, patient_ids: ['p-1'] }),
+    );
+    // 「他拠点の患者 1名は対象外」の明示。
+    expect(screen.getByTestId('bulk-pool-insert-other-office-note')).toHaveTextContent(
+      '他拠点の患者 1名は対象外',
+    );
+  });
+
+  it('拠点未設定の患者は simulate に送らず「拠点未設定」セクションへ分離する', async () => {
+    mocks.simulateAsync.mockResolvedValue(makeSimulateResult());
+    render(
+      <BulkPoolInsertDialog
+        {...BASE_PROPS}
+        officeId={OFFICE_ID}
+        poolPatients={[
+          { id: 'p-1', name: '患者 A', primary_office_id: OFFICE_ID },
+          { id: 'p-9', name: '拠点なし 花子', primary_office_id: null },
+        ]}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId('bulk-pool-insert-preview')).toBeInTheDocument(),
+    );
+    // 拠点未設定セクションに患者名が出る。
+    const noOffice = screen.getByTestId('bulk-pool-insert-no-office');
+    expect(noOffice).toHaveTextContent('拠点未設定 1名');
+    expect(noOffice).toHaveTextContent('拠点なし 花子');
+    // simulate には拠点設定済みの p-1 のみ (p-9 は送らない)。
+    expect(mocks.simulateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ patient_ids: ['p-1'] }),
+    );
+  });
+
+  it('applying 中は onOpenChange(false) を受けても onClose が呼ばれない (busy ガード)', async () => {
+    const onClose = vi.fn();
+    // apply は永遠に pending のまま (applying 状態を保持させる)。
+    mocks.simulateAsync.mockResolvedValue(makeSimulateResult());
+    mocks.applyAsync.mockReturnValue(new Promise(() => {}));
+    render(<BulkPoolInsertDialog {...BASE_PROPS} onClose={onClose} />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('bulk-pool-insert-preview')).toBeInTheDocument(),
+    );
+
+    // チェックして適用 → applying 状態へ。
+    fireEvent.click(screen.getByTestId('bulk-pool-insert-confirm-checkbox'));
+    fireEvent.click(screen.getByTestId('bulk-pool-insert-apply-button'));
+
+    // applying 中に Dialog の onOpenChange(false) を発火させる。
+    fireEvent.click(screen.getByTestId('mock-dialog-open-change-false'));
+
+    // busy ガードにより onClose は呼ばれないこと。
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('全拠点表示 (officeId=null): 拠点タブが出て、アクティブなタブのみ自動 simulate する', async () => {
+    mocks.simulateAsync.mockResolvedValue(makeSimulateResult());
+    render(
+      <BulkPoolInsertDialog
+        {...BASE_PROPS}
+        officeId={null}
+        poolPatients={[
+          { id: 'p-1', name: '患者 A', primary_office_id: OFFICE_ID },
+          { id: 'p-3', name: '患者 C', primary_office_id: OFFICE_ID_2 },
+        ]}
+      />,
+    );
+
+    // 両拠点のタブが表示される。
+    expect(screen.getByTestId(`bulk-pool-insert-office-tab-${OFFICE_ID}`)).toBeInTheDocument();
+    expect(screen.getByTestId(`bulk-pool-insert-office-tab-${OFFICE_ID_2}`)).toBeInTheDocument();
+
+    // 先頭タブ (本店) のみ自動 simulate (全タブ一斉には走らせない)。
+    await waitFor(() => expect(mocks.simulateAsync).toHaveBeenCalledTimes(1));
+    expect(mocks.simulateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ office_id: OFFICE_ID, patient_ids: ['p-1'] }),
+    );
+
+    // 2 つ目のタブを開くと、そのタブの拠点で simulate が走る。
+    fireEvent.click(screen.getByTestId(`bulk-pool-insert-office-tab-${OFFICE_ID_2}`));
+    await waitFor(() => expect(mocks.simulateAsync).toHaveBeenCalledTimes(2));
+    expect(mocks.simulateAsync).toHaveBeenLastCalledWith(
+      expect.objectContaining({ office_id: OFFICE_ID_2, patient_ids: ['p-3'] }),
+    );
   });
 });

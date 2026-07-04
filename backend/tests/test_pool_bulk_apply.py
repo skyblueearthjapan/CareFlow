@@ -363,6 +363,48 @@ async def test_apply_pinned_violation_rolls_back_all(client, db) -> None:
     assert len(p2_pfvs) == 1 and p2_pfvs[0].weekday == 4, p2_pfvs
 
 
+@pytest.mark.asyncio
+async def test_apply_null_primary_office_rolls_back_all(client, db) -> None:
+    """W-6: placements に主担当拠点未設定の患者が混ざると apply-individual の入口ガードで
+    422 になり、先行患者を含め全体 rollback される (all-or-nothing)."""
+    admin = await _make_user(db, email="pba-admin-nulloff@example.com", role="admin")
+    office, staff = await _seed_office_staff(db, name="稲NUL", code="NULOFF")
+    await _seed_anchor_course(db, office=office, staff=staff, weekday=0, code="A", anchor_xy=NEAR)
+    # p1: 正常な同拠点患者. p2: 主担当拠点が NULL → apply-individual が 422.
+    p1 = await _seed_patient(
+        db, office=office, code="NUL1", lat=BASE[0], lng=BASE[1], weekly_pattern=_pool_wp()
+    )
+    p2 = Patient(
+        code="NUL2",
+        name="P-NUL2",
+        status="active",
+        lat=NEAR[0],
+        lng=NEAR[1],
+        primary_office_id=None,
+        weekly_pattern=_pool_wp(),
+    )
+    db.add(p2)
+    await db.commit()
+
+    token = await compute_bulk_state_token(
+        db, iso_year=ISO_YEAR, iso_week=ISO_WEEK, office_id=office.id
+    )
+    placements = [
+        _placement(p1, office, weekday=0, seq=1),
+        _placement(p2, office, weekday=0, seq=2),
+    ]
+
+    res = await client.post(
+        APPLY_URL, headers=_bearer(admin), json=_apply_payload(office, placements, token)
+    )
+    assert res.status_code == 422, res.text
+    assert "主担当拠点が未設定" in res.text
+
+    # 全体 rollback: p1 の PFV も作られていない (all-or-nothing).
+    assert await _normal_pfvs(db, p1.id) == []
+    assert await _normal_pfvs(db, p2.id) == []
+
+
 # ---------------------------------------------------------------------------
 # 4. warnings: V5 容量超過気味の配置は warnings で通る (200)
 # ---------------------------------------------------------------------------

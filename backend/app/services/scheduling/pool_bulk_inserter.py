@@ -491,6 +491,18 @@ async def simulate_pool_bulk_insert(
         patient = patient_by_id.get(pid)
         if patient is None:
             continue
+        # W-6: 患者×拠点フィルタ (座標チェックより先). 主担当拠点が未設定/他拠点の患者は
+        # 週次生成から除外されるか本拠点のコース対象外なので、配置計算から除外する.
+        if patient.primary_office_id is None:
+            result.unplaced.append(
+                BulkUnplaced(patient_id=pid, patient_name=patient.name, reason="no_primary_office")
+            )
+            continue
+        if patient.primary_office_id != office_id:
+            result.unplaced.append(
+                BulkUnplaced(patient_id=pid, patient_name=patient.name, reason="office_mismatch")
+            )
+            continue
         candidate = candidate_of(patient)
         if candidate is None:
             result.unplaced.append(

@@ -112,6 +112,7 @@ vi.mock('@/components/ui/checkbox', () => ({
 // ─── Imports after mocks ──────────────────────────────────────────────────────
 import { useSession } from 'next-auth/react';
 import { useOffices, useResolveOffice } from '@/lib/queries/offices';
+import { emptyPatientFormValues } from '@/lib/schemas/patient';
 import { PatientForm } from '../PatientForm';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -397,6 +398,64 @@ describe('PatientForm — W12-FE 住所→拠点自動判定', () => {
     // resolve は呼ばれているが、手動選択値が上書きされない
     expect(mutateAsync).toHaveBeenCalledWith('千葉県千葉市若葉区');
     // combobox はユーザー手動選択の値のまま
+    expect(combobox.value).toBe('office-uuid-1');
+  });
+
+  // ─── W-6 項目4: 編集ページの拠点自動上書きバグ修正 ──────────────────────────
+
+  it('項目4: 編集モード (primary_office_id 既設定) は manual 初期化で住所 watch が上書きしない', async () => {
+    const mutateAsync = vi.fn().mockResolvedValue({
+      office_id: 'office-uuid-1',
+      office_name: '稲毛拠点',
+      matched_city_id: 'cccccccc-0000-0000-0000-000000000001',
+      confidence: 'exact',
+    });
+    setupMocks(mutateAsync);
+
+    render(
+      <PatientForm
+        onSubmit={vi.fn()}
+        defaultValues={{
+          ...emptyPatientFormValues,
+          name: '既存 患者',
+          address: '千葉県千葉市稲毛区',
+          primary_office_id: 'office-uuid-2',
+        }}
+      />,
+    );
+
+    // 編集モードは manual 初期化 → 最初から「自動判定に戻す」リンクが出る。
+    expect(screen.getByText('自動判定に戻す')).toBeInTheDocument();
+
+    // 住所 watch の初回発火で resolve は走るが、手動設定済みの拠点は上書きされない。
+    await flushDebounceAndMutation();
+    expect(mutateAsync).toHaveBeenCalled();
+    const combobox = screen.getByTestId('office-combobox') as HTMLSelectElement;
+    expect(combobox.value).toBe('office-uuid-2');
+  });
+
+  it('項目4: 新規作成 (defaultValues 無し) は auto 初期化で住所から自動セットされる', async () => {
+    const mutateAsync = vi.fn().mockResolvedValue({
+      office_id: 'office-uuid-1',
+      office_name: '稲毛拠点',
+      matched_city_id: 'cccccccc-0000-0000-0000-000000000001',
+      confidence: 'exact',
+    });
+    setupMocks(mutateAsync);
+
+    render(<PatientForm onSubmit={vi.fn()} />);
+
+    // 手動選択していないので「自動判定に戻す」は出ない (= auto)。
+    expect(screen.queryByText('自動判定に戻す')).not.toBeInTheDocument();
+
+    const addressInput = screen.getByTestId('address-input');
+    act(() => {
+      fireEvent.change(addressInput, { target: { value: '千葉県千葉市稲毛区穴川' } });
+    });
+    await flushDebounceAndMutation();
+
+    // auto なので resolve 結果で自動セットされる。
+    const combobox = screen.getByTestId('office-combobox') as HTMLSelectElement;
     expect(combobox.value).toBe('office-uuid-1');
   });
 });

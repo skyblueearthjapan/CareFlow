@@ -206,6 +206,10 @@ export function OfficeForm({
       </Field>
 
       <Field label="担当エリア (cities)">
+        {/* W-6 項目5 (PO 要望): 担当エリアの用途を明示する案内文。 */}
+        <p className="mb-2 text-xs text-text-muted">
+          担当エリアは、新しい患者様を登録するときに、住所からこの拠点を主担当として自動でご案内するための設定です（入口のヒント）。ここに登録した地域の住所であれば、患者登録時に拠点が自動で選ばれます。すでに登録済みの患者様の主担当拠点や、スケジュールの計算には影響しません。
+        </p>
         <Input
           placeholder="市区町村を検索"
           value={cityFilter}

@@ -353,6 +353,54 @@ describe('ScopeOptimizeDialog (U-1: 反映先選択)', () => {
     // リセットされて A が選択されている
     expect(screen.getByTestId('change-scope-pattern')).toHaveAttribute('aria-checked', 'true');
   });
+
+  // ── W-6 項目2/3: 拠点画面スキップ + 改名 ──────────────────────────────────
+
+  it('項目3: ダイアログタイトルが「スケジュール最適化」', () => {
+    render(<ScopeOptimizeDialog {...BASE_PROPS} />);
+    expect(screen.getByText('スケジュール最適化')).toBeInTheDocument();
+  });
+
+  it('項目2: 全拠点表示 (officeId=null) でも先頭拠点が既定選択され、拠点ピッカー画面を飛ばす', () => {
+    render(
+      <ScopeOptimizeDialog
+        {...BASE_PROPS}
+        officeId={null}
+        offices={[{ id: OFFICE_ID, name: '本店' }]}
+      />,
+    );
+    // 拠点ピッカー画面 (no-office) は出ない。
+    expect(screen.queryByTestId('scope-optimize-no-office')).not.toBeInTheDocument();
+    // 即「対策を絞りたい範囲」画面 (曜日フィルタ) が出る。
+    expect(screen.getByTestId('scope-optimize-weekday-filter')).toBeInTheDocument();
+    // 全拠点モードなので拠点切替チップが出る。
+    expect(screen.getByTestId('scope-optimize-office-filter')).toBeInTheDocument();
+  });
+
+  it('項目2: offices が空なら従来の拠点ピッカー画面をフォールバックとして出す', () => {
+    render(<ScopeOptimizeDialog {...BASE_PROPS} officeId={null} offices={[]} />);
+    expect(screen.getByTestId('scope-optimize-no-office')).toBeInTheDocument();
+  });
+
+  it('項目2: 診断導線 (initialOfficeId/initialScope) が優先され offices[0] で上書きされない', async () => {
+    mocks.simulateMutate = makeSimulateWithResult(makeSimulateResult(1));
+    const OTHER_OFFICE = '99999999-9999-4999-8999-999999999999';
+    render(
+      <ScopeOptimizeDialog
+        {...BASE_PROPS}
+        officeId={null}
+        offices={[{ id: OFFICE_ID, name: '本店' }]}
+        initialOfficeId={OTHER_OFFICE}
+        initialScope={{ weekdays: [0], courseCodes: null }}
+      />,
+    );
+    // initialScope があるので開いた直後に initialOfficeId の拠点で自動計算する。
+    await waitFor(() => expect(mocks.simulateMutate).toHaveBeenCalledTimes(1));
+    const payload = mocks.simulateMutate.mock.calls[0][0] as {
+      scope: { office_id: string };
+    };
+    expect(payload.scope.office_id).toBe(OTHER_OFFICE);
+  });
 });
 
 // ── スキーマ: week_sync 欠落の旧 BE レスポンスで寛容パースが通る ────────────

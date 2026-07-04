@@ -155,6 +155,8 @@ async def test_place_and_fix_creates_visit_and_fixed_visit(client, db) -> None:
     patient = await _make_patient(db, "PAF-001")
     office = await _make_office(db, "事業所PAF1")
     tpl = await _make_template(db, office.id, label="A")
+    patient.primary_office_id = office.id
+    await db.commit()
 
     res = await client.post(
         "/api/v1/schedule/place-and-fix",
@@ -231,6 +233,8 @@ async def test_place_and_fix_without_pattern_creates_visit_only(client, db) -> N
     patient = await _make_patient(db, "PAF-002")
     office = await _make_office(db, "事業所PAF2")
     tpl = await _make_template(db, office.id, label="A")
+    patient.primary_office_id = office.id
+    await db.commit()
 
     res = await client.post(
         "/api/v1/schedule/place-and-fix",
@@ -321,6 +325,8 @@ async def test_place_and_fix_upserts_existing_fixed_visit(client, db) -> None:
     patient = await _make_patient(db, "PAF-006")
     office = await _make_office(db, "事業所PAF6")
     tpl = await _make_template(db, office.id, label="A")
+    patient.primary_office_id = office.id
+    await db.commit()
 
     # 1 回目
     r1 = await client.post(
@@ -385,6 +391,8 @@ async def test_place_and_fix_iso_week_53(client, db) -> None:
     patient = await _make_patient(db, "PAF-007")
     office = await _make_office(db, "事業所PAF7")
     tpl = await _make_template(db, office.id, label="A")
+    patient.primary_office_id = office.id
+    await db.commit()
 
     res = await client.post(
         "/api/v1/schedule/place-and-fix",
@@ -420,6 +428,8 @@ async def test_place_and_fix_special_mode(client, db) -> None:
     )
     office = await _make_office(db, "事業所PAF8")
     tpl = await _make_template(db, office.id, label="A")
+    patient.primary_office_id = office.id
+    await db.commit()
 
     res = await client.post(
         "/api/v1/schedule/place-and-fix",
@@ -552,6 +562,9 @@ async def test_place_and_fix_reuses_existing_course(client, db) -> None:
     p2 = await _make_patient(db, "PAF-014b")
     office = await _make_office(db, "事業所PAF14")
     tpl = await _make_template(db, office.id, label="A")
+    p1.primary_office_id = office.id
+    p2.primary_office_id = office.id
+    await db.commit()
 
     r1 = await client.post(
         "/api/v1/schedule/place-and-fix",
@@ -725,6 +738,8 @@ async def test_place_and_fix_recovers_from_w16_code_label_mismatch(client, db) -
     office = await _make_office(db, "事業所PAF16")
     tpl_e = await _make_template(db, office.id, label="E")
     tpl_m = await _make_template(db, office.id, label="M")
+    patient.primary_office_id = office.id
+    await db.commit()
 
     # W16 残骸を直接 INSERT: template-E から派生したが code='M' で保存された不整合行.
     bad_course = Course(
@@ -939,8 +954,9 @@ async def test_place_and_fix_same_office_succeeds(client, db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_place_and_fix_null_primary_office_skips_check(client, db) -> None:
-    """patient.primary_office_id が NULL の場合はチェック対象外 (中-4: 任意設定運用)."""
+async def test_place_and_fix_null_primary_office_returns_422(client, db) -> None:
+    """W-6: patient.primary_office_id が NULL の患者は週次生成から除外されるため、
+    place-and-fix で 422 ブロックする (旧: skip して 200 → 新: 明確に拒否)."""
     admin = await _make_user(db, "paf-cross-3@example.com", "admin")
     office = await _make_office(db, "事業所null")
 
@@ -967,8 +983,9 @@ async def test_place_and_fix_null_primary_office_skips_check(client, db) -> None
             duration_min=30,
         ),
     )
-    # primary_office_id が None なら check が skip され通常通り成功
-    assert res.status_code == 200, res.text
+    # primary_office_id が None → 422 で明確にブロック
+    assert res.status_code == 422, res.text
+    assert "主担当拠点が未設定" in res.text
 
 
 # ---------------------------------------------------------------------------
@@ -984,6 +1001,8 @@ async def test_place_and_fix_saves_course_template_id_on_pfv(client, db) -> None
     patient = await _make_patient(db, "PAF-W22-1")
     office = await _make_office(db, "事業所W22-1")
     tpl = await _make_template(db, office.id, label="A")
+    patient.primary_office_id = office.id
+    await db.commit()
 
     res = await client.post(
         "/api/v1/schedule/place-and-fix",
@@ -1018,6 +1037,8 @@ async def test_place_and_fix_no_pattern_does_not_save_course_template_id(client,
     patient = await _make_patient(db, "PAF-W22-2")
     office = await _make_office(db, "事業所W22-2")
     tpl = await _make_template(db, office.id, label="A")
+    patient.primary_office_id = office.id
+    await db.commit()
 
     res = await client.post(
         "/api/v1/schedule/place-and-fix",

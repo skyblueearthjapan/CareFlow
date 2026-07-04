@@ -81,6 +81,9 @@ function fmtWd(weekday: number): string {
  */
 const BULK_EXTRA_REASON_LABEL: Record<string, string> = {
   no_coordinates: '座標未登録 (住所のジオコーディング未完了)',
+  // BE (place-and-fix / pool-bulk-simulate) の拠点フィルタ reason.
+  no_primary_office: '主担当拠点が未設定',
+  office_mismatch: '他拠点の患者',
 };
 
 function bulkReasonLabel(reason: string): string {
@@ -100,7 +103,7 @@ function OvercapacityBadge() {
   return (
     <Badge
       variant="outline"
-      className="border-amber-400 bg-amber-50 text-[9px] text-amber-800"
+      className="border-amber-400 bg-amber-50 text-[9px] text-amber-800 dark:border-amber-600 dark:bg-amber-950 dark:text-amber-200"
       data-testid="bulk-pool-insert-overcap-badge"
     >
       定員+1名なら入る候補あり
@@ -114,14 +117,25 @@ type DialogStage = 'idle' | 'simulating' | 'previewing' | 'applying' | 'done';
 // Props
 // ─────────────────────────────────────────────────────────────────────────
 
+/** 一括投入ダイアログが受け取るプール患者の最小情報 (拠点グループ化に使う)。 */
+export interface BulkPoolPatient {
+  id: string;
+  name: string;
+  /** 主担当拠点。null / 未設定なら「拠点未設定」セクションへ分離する。 */
+  primary_office_id: string | null;
+}
+
 export interface BulkPoolInsertDialogProps {
   open: boolean;
   onClose: () => void;
   isoYear: number;
   isoWeek: number;
+  /** ページで選択中の拠点 (null = 全拠点表示 → 拠点タブ UI)。 */
   officeId: string | null;
-  /** プール患者 id 列 (親が抽出して渡す)。51 名以上は先頭 50 名を対象にする。 */
-  patientIds: string[];
+  /** 保留プール患者 (id / name / primary_office_id)。親が抽出して渡す。 */
+  poolPatients: BulkPoolPatient[];
+  /** 拠点一覧 (タブ名・グループ表示用)。 */
+  offices: { id: string; name: string }[];
   /**
    * A 案 (2026-07-04 PO 承認): done 画面で投入できなかった患者名クリック時に、
    * 一括ダイアログを閉じてから患者詳細 (→ PoolCandidateList → 方式b の定員+1 相談) を開く導線。
@@ -131,7 +145,15 @@ export interface BulkPoolInsertDialogProps {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Component
+// Component (outer) — 拠点グループ化 + タブ/単一拠点の振り分け
+//
+// W-6: プール患者を primary_office_id でグループ化する。
+//   - ページで拠点選択中 (officeId 非 null) → その拠点の患者のみを 1 パネルで扱う
+//     (混入修正)。他拠点/拠点未設定は対象外として明示する。
+//   - 全拠点表示 (officeId null) → 拠点タブ。各タブが独立に simulate → 適用する
+//     (= OfficeBulkPanel インスタンスごとに stage/result/confirmed/appliedSummary を保持)。
+//     アクティブになった初回のみ自動 simulate (全タブ一斉実行を避ける)。
+//   - primary_office_id 未設定の患者は simulate に送らず「拠点未設定」セクションへ分離。
 // ─────────────────────────────────────────────────────────────────────────
 
 export function BulkPoolInsertDialog({
@@ -140,9 +162,285 @@ export function BulkPoolInsertDialog({
   isoYear,
   isoWeek,
   officeId,
-  patientIds,
+  poolPatients,
+  offices,
   onOpenPatientDetail,
 }: BulkPoolInsertDialogProps) {
+  const officeNameById = React.useMemo(() => {
+    const m = new Map<string, string>();
+    for (const o of offices) m.set(o.id, o.name);
+    return m;
+  }, [offices]);
+
+  // 主担当拠点でグループ化 (未設定は別枠へ分離)。
+  const { byOffice, noOfficePatients } = React.useMemo(() => {
+    const grouped = new Map<string, BulkPoolPatient[]>();
+    const noOffice: BulkPoolPatient[] = [];
+    for (const p of poolPatients) {
+      if (!p.primary_office_id) {
+        noOffice.push(p);
+        continue;
+      }
+      const arr = grouped.get(p.primary_office_id) ?? [];
+      arr.push(p);
+      grouped.set(p.primary_office_id, arr);
+    }
+    return { byOffice: grouped, noOfficePatients: noOffice };
+  }, [poolPatients]);
+
+  // 全拠点モードの拠点タブ (患者のいる拠点のみ)。offices 順 + 未知拠点は末尾。
+  const officeTabs = React.useMemo(() => {
+    const tabs: { id: string; name: string; patients: BulkPoolPatient[] }[] = [];
+    const seen = new Set<string>();
+    for (const o of offices) {
+      const pats = byOffice.get(o.id);
+      if (pats && pats.length > 0) {
+        tabs.push({ id: o.id, name: o.name, patients: pats });
+        seen.add(o.id);
+      }
+    }
+    for (const [oid, pats] of byOffice) {
+      if (!seen.has(oid) && pats.length > 0) {
+        tabs.push({
+          id: oid,
+          name: officeNameById.get(oid) ?? `拠点 ${oid.slice(0, 6)}`,
+          patients: pats,
+        });
+      }
+    }
+    return tabs;
+  }, [offices, byOffice, officeNameById]);
+
+  // 全拠点モードのアクティブタブ。
+  const [activeTab, setActiveTab] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    if (!open) return;
+    // 開いた時 / タブ構成が変わった時に、有効な選択が無ければ先頭タブを既定にする。
+    setActiveTab((prev) =>
+      prev && officeTabs.some((t) => t.id === prev) ? prev : (officeTabs[0]?.id ?? null),
+    );
+  }, [open, officeTabs]);
+
+  // busy 状態を各パネルから受け取り、ESC/backdrop クローズをガードする。
+  const busyOfficesRef = React.useRef<Set<string>>(new Set());
+  const [anyBusy, setAnyBusy] = React.useState(false);
+  const handleBusyChange = React.useCallback((panelOfficeId: string, busy: boolean) => {
+    if (busy) {
+      busyOfficesRef.current.add(panelOfficeId);
+    } else {
+      busyOfficesRef.current.delete(panelOfficeId);
+    }
+    setAnyBusy(busyOfficesRef.current.size > 0);
+  }, []);
+
+  const handleClose = () => {
+    if (anyBusy) return;
+    onClose();
+  };
+
+  // 単一拠点モード (ページで拠点選択中): その拠点の患者のみを対象 (混入修正)。
+  const singleOffice = officeId != null;
+  const targetPatients = singleOffice ? (byOffice.get(officeId) ?? []) : [];
+  const otherOfficeCount = singleOffice
+    ? poolPatients.filter((p) => p.primary_office_id && p.primary_office_id !== officeId).length
+    : 0;
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => (!o ? handleClose() : undefined)}>
+      <DialogContent
+        className="max-h-[92vh] max-w-5xl overflow-y-auto"
+        data-testid="bulk-pool-insert-dialog"
+        onEscapeKeyDown={(e) => { if (anyBusy) e.preventDefault(); }}
+        onInteractOutside={(e) => { if (anyBusy) e.preventDefault(); }}
+      >
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Layers className="h-5 w-5 text-brand-primary" aria-hidden />
+            プール一括投入
+          </DialogTitle>
+          <DialogDescription>
+            保留プールの患者をまとめて固定訪問週間（毎週の型）に投入します。
+            選択肢のない方から確保し、残りは効果順に投入します。
+          </DialogDescription>
+        </DialogHeader>
+
+        {singleOffice ? (
+          // ── 単一拠点モード ──
+          <div className="space-y-3">
+            {otherOfficeCount > 0 ? (
+              <div
+                className="text-xs text-text-muted"
+                data-testid="bulk-pool-insert-other-office-note"
+              >
+                他拠点の患者 {otherOfficeCount}名は対象外です（各拠点を選んで投入してください）。
+              </div>
+            ) : null}
+            {targetPatients.length > 0 ? (
+              <OfficeBulkPanel
+                key={officeId}
+                open={open}
+                active
+                isoYear={isoYear}
+                isoWeek={isoWeek}
+                officeId={officeId}
+                patientIds={targetPatients.map((p) => p.id)}
+                onClose={handleClose}
+                onBusyChange={handleBusyChange}
+                onOpenPatientDetail={onOpenPatientDetail}
+              />
+            ) : (
+              <div
+                className="rounded border border-border-default bg-bg-muted px-3 py-6 text-center text-sm text-text-muted"
+                data-testid="bulk-pool-insert-empty-office"
+              >
+                この拠点に投入対象の保留患者はいません。
+              </div>
+            )}
+          </div>
+        ) : officeTabs.length > 0 ? (
+          // ── 全拠点モード: 拠点タブ ──
+          <div className="space-y-3">
+            <div
+              className="flex flex-wrap gap-1 border-b border-border-default pb-2"
+              data-testid="bulk-pool-insert-office-tabs"
+              role="tablist"
+            >
+              {officeTabs.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab === t.id}
+                  onClick={() => setActiveTab(t.id)}
+                  data-testid={`bulk-pool-insert-office-tab-${t.id}`}
+                  data-active={activeTab === t.id ? 'true' : 'false'}
+                  className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                    activeTab === t.id
+                      ? 'bg-brand-primary text-white'
+                      : 'bg-bg-muted text-text-secondary hover:bg-bg-muted/70'
+                  }`}
+                >
+                  {t.name}
+                  <span className="tnum ml-1 text-[11px] opacity-80">{t.patients.length}名</span>
+                </button>
+              ))}
+            </div>
+            {/* 各拠点パネルは常時マウントし hidden で出し分ける (= タブを戻ってもステート保持)。 */}
+            {officeTabs.map((t) => (
+              <div key={t.id} hidden={activeTab !== t.id}>
+                <OfficeBulkPanel
+                  open={open}
+                  active={activeTab === t.id}
+                  isoYear={isoYear}
+                  isoWeek={isoWeek}
+                  officeId={t.id}
+                  patientIds={t.patients.map((p) => p.id)}
+                  onClose={handleClose}
+                  onBusyChange={handleBusyChange}
+                  onOpenPatientDetail={onOpenPatientDetail}
+                />
+              </div>
+            ))}
+          </div>
+        ) : noOfficePatients.length === 0 ? (
+          <div
+            className="rounded border border-border-default bg-bg-muted px-3 py-8 text-center text-sm text-text-muted"
+            data-testid="bulk-pool-insert-empty"
+          >
+            保留プールに投入対象の患者がいません。
+          </div>
+        ) : null}
+
+        {/* 拠点未設定患者の分離 (simulate 対象外; 患者マスタで設定するよう案内)。 */}
+        <NoOfficeSection
+          patients={noOfficePatients}
+          onOpenPatientDetail={onOpenPatientDetail}
+          onClose={handleClose}
+        />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// NoOfficeSection — 主担当拠点が未設定の患者リスト (simulate に送らない)。
+// 患者名クリックでダイアログを閉じてから患者詳細を開く (拠点設定を促す)。
+// ─────────────────────────────────────────────────────────────────────────
+
+function NoOfficeSection({
+  patients,
+  onOpenPatientDetail,
+  onClose,
+}: {
+  patients: BulkPoolPatient[];
+  onOpenPatientDetail?: (patientId: string) => void;
+  onClose: () => void;
+}) {
+  if (patients.length === 0) return null;
+  const openDetail = (id: string) => {
+    onClose();
+    onOpenPatientDetail?.(id);
+  };
+  return (
+    <div
+      className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 dark:border-amber-600 dark:bg-amber-950"
+      data-testid="bulk-pool-insert-no-office"
+    >
+      <div className="mb-1 text-xs font-semibold text-amber-900 dark:text-amber-200">
+        拠点未設定 {patients.length}名
+      </div>
+      <p className="mb-2 text-[11px] text-amber-800 dark:text-amber-300">
+        患者マスタで主担当拠点を設定すると一括投入の対象になります。
+      </p>
+      <ul className="flex flex-wrap gap-x-3 gap-y-1">
+        {patients.map((p) => (
+          <li key={p.id} className="text-[11px]">
+            {onOpenPatientDetail ? (
+              <button
+                type="button"
+                className="text-amber-900 underline underline-offset-2 hover:text-amber-700 dark:text-amber-200 dark:hover:text-amber-400"
+                onClick={() => openDetail(p.id)}
+                data-testid="bulk-pool-insert-no-office-patient"
+              >
+                {p.name}
+              </button>
+            ) : (
+              <span className="text-amber-900 dark:text-amber-200">{p.name}</span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// OfficeBulkPanel — 単一拠点分の一括投入フロー (5 段ステート)。
+// 拠点タブごとに 1 インスタンス = 独立したステート (stage/result/confirmed/appliedSummary)。
+// `active` が true になった初回のみ自動 simulate する (全タブ一斉実行を避ける)。
+// ─────────────────────────────────────────────────────────────────────────
+
+function OfficeBulkPanel({
+  open,
+  active,
+  isoYear,
+  isoWeek,
+  officeId,
+  patientIds,
+  onClose,
+  onBusyChange,
+  onOpenPatientDetail,
+}: {
+  open: boolean;
+  active: boolean;
+  isoYear: number;
+  isoWeek: number;
+  officeId: string;
+  patientIds: string[];
+  onClose: () => void;
+  onBusyChange?: (officeId: string, busy: boolean) => void;
+  onOpenPatientDetail?: (patientId: string) => void;
+}) {
   const simulateMut = usePoolBulkSimulateMutation();
   const applyMut = usePoolBulkApplyMutation();
   const { mutateAsync: simulate, reset: resetSimulate } = simulateMut;
@@ -163,20 +461,14 @@ export function BulkPoolInsertDialog({
     () => patientIds.slice(0, POOL_BULK_MAX_PATIENTS).join(','),
     [patientIds],
   );
-  // 総数は ref で常に最新を参照 (ダイアログ表示中にプールが増えても切り捨てトーストが正しく出る)。
+  // 総数は ref で常に最新を参照 (表示中にプールが増えても切り捨てトーストが正しく出る)。
   const totalPatientCountRef = React.useRef(patientIds.length);
   totalPatientCountRef.current = patientIds.length;
 
-  /** simulate 実行 (open 時 + 再計算ボタン)。 */
+  /** simulate 実行 (アクティブ初回 + 再計算ボタン)。 */
   const runSimulate = React.useCallback(async () => {
-    if (!officeId) {
-      toast.error('拠点を選択してから一括投入してください');
-      setStage('idle');
-      return;
-    }
     const targetIds = targetIdsKey ? targetIdsKey.split(',') : [];
     if (targetIds.length === 0) {
-      toast.info('保留プールに投入対象の患者がいません');
       setStage('idle');
       return;
     }
@@ -204,18 +496,35 @@ export function BulkPoolInsertDialog({
       toast.error(`一括投入のシミュレーションに失敗しました: ${formatErr(err)}`);
       setStage('idle');
     }
-  }, [officeId, targetIdsKey, isoYear, isoWeek, simulate]);
+  }, [targetIdsKey, isoYear, isoWeek, officeId, simulate]);
 
-  // open のたびにリセット + 自動 simulate。
+  // アクティブになった初回に自動 simulate。simKey が同じ間は再計算しない
+  // (= タブを戻ってもステートを保持する。全タブ一斉実行も避けられる)。
+  const simKey = `${isoYear}|${isoWeek}|${officeId}|${targetIdsKey}`;
+  const simulatedKeyRef = React.useRef<string | null>(null);
   React.useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      simulatedKeyRef.current = null;
+      return;
+    }
+    if (!active) return;
+    if (simulatedKeyRef.current === simKey) return;
+    simulatedKeyRef.current = simKey;
     resetSimulate();
     resetApply();
     void runSimulate();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, isoYear, isoWeek, officeId, targetIdsKey]);
+  }, [open, active, simKey]);
 
   const isBusy = stage === 'simulating' || stage === 'applying';
+
+  // 親コンポーネントに busy 状態を伝える (ESC/backdrop ガード用)。
+  React.useEffect(() => {
+    onBusyChange?.(officeId, isBusy);
+    return () => {
+      onBusyChange?.(officeId, false);
+    };
+  }, [isBusy, officeId, onBusyChange]);
 
   const handleClose = () => {
     if (isBusy) return;
@@ -246,7 +555,7 @@ export function BulkPoolInsertDialog({
 
   /** 適用実行 (pattern_and_week 固定・全件)。 */
   const handleApply = async () => {
-    if (!result || !officeId || !confirmed) return;
+    if (!result || !confirmed) return;
     setStage('applying');
     try {
       const res = await apply({
@@ -279,29 +588,9 @@ export function BulkPoolInsertDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={(o) => (!o ? handleClose() : undefined)}>
-      <DialogContent
-        className="max-h-[92vh] max-w-5xl overflow-y-auto"
-        data-testid="bulk-pool-insert-dialog"
-      >
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Layers className="h-5 w-5 text-brand-primary" aria-hidden />
-            プール一括投入
-            {stage === 'previewing' && result ? (
-              <Badge variant="secondary" className="ml-2 text-[10px]">
-                {placedPatients}名 / {placedSlots}枠
-              </Badge>
-            ) : null}
-          </DialogTitle>
-          <DialogDescription>
-            保留プールの患者をまとめて固定訪問週間（毎週の型）に投入します。
-            選択肢のない方から確保し、残りは効果順に投入します。
-          </DialogDescription>
-        </DialogHeader>
-
-        {/* ── simulating: spinner ── */}
-        {stage === 'simulating' ? (
+    <>
+      {/* ── simulating: spinner ── */}
+      {stage === 'simulating' ? (
           <div
             className="flex flex-col items-center justify-center gap-2 py-16 text-sm text-text-muted"
             data-testid="bulk-pool-insert-loading"
@@ -516,8 +805,7 @@ export function BulkPoolInsertDialog({
             </div>
           </DialogFooter>
         ) : null}
-      </DialogContent>
-    </Dialog>
+    </>
   );
 }
 
@@ -554,15 +842,15 @@ function InsertListColumn({ result }: { result: PoolBulkSimulateResponse }) {
       {/* 部分投入. */}
       {result.partial.length > 0 ? (
         <div
-          className="rounded border border-amber-300 bg-amber-50"
+          className="rounded border border-amber-300 bg-amber-50 dark:border-amber-600 dark:bg-amber-950"
           data-testid="bulk-pool-insert-partial"
         >
-          <div className="border-b border-amber-200 px-2 py-1 text-[11px] font-semibold text-amber-900">
+          <div className="border-b border-amber-200 px-2 py-1 text-[11px] font-semibold text-amber-900 dark:border-amber-700 dark:text-amber-200">
             部分投入（{result.partial.length} 名）
           </div>
-          <ul className="divide-y divide-amber-200">
+          <ul className="divide-y divide-amber-200 dark:divide-amber-700">
             {result.partial.map((p) => (
-              <li key={p.patient_id} className="px-2 py-1.5 text-[11px] text-amber-900">
+              <li key={p.patient_id} className="px-2 py-1.5 text-[11px] text-amber-900 dark:text-amber-200">
                 <div className="flex flex-wrap items-center gap-1 font-medium">
                   <span>
                     {p.patient_name}（{p.placed_days}枠投入 / {p.missing_days}枠不足）
@@ -570,7 +858,7 @@ function InsertListColumn({ result }: { result: PoolBulkSimulateResponse }) {
                   {overcapCount(p) >= 1 ? <OvercapacityBadge /> : null}
                 </div>
                 {Object.entries(p.unplaced_reasons).length > 0 ? (
-                  <ul className="mt-0.5 ml-3 list-disc text-[10px] text-amber-700">
+                  <ul className="mt-0.5 ml-3 list-disc text-[10px] text-amber-700 dark:text-amber-400">
                     {Object.entries(p.unplaced_reasons).map(([wd, reason]) => (
                       <li key={wd}>
                         {fmtWd(Number.parseInt(wd, 10))}曜日: {bulkReasonLabel(reason)}
@@ -692,10 +980,10 @@ function DoneRemainingList({
 
   return (
     <div
-      className="mt-2 w-full max-w-md rounded-lg border border-amber-300 bg-amber-50 p-3 text-left"
+      className="mt-2 w-full max-w-md rounded-lg border border-amber-300 bg-amber-50 p-3 text-left dark:border-amber-600 dark:bg-amber-950"
       data-testid="bulk-pool-insert-done-remaining"
     >
-      <p className="mb-2 text-xs text-amber-900">
+      <p className="mb-2 text-xs text-amber-900 dark:text-amber-200">
         投入できなかった方は保留プールに残っています。患者名を開くと個別の候補を確認できます。
         {hasOvercapCandidate ? (
           <>
@@ -704,7 +992,7 @@ function DoneRemainingList({
           </>
         ) : null}
       </p>
-      <ul className="divide-y divide-amber-200">
+      <ul className="divide-y divide-amber-200 dark:divide-amber-700">
         {entries.map((e) => (
           <li
             key={e.patientId}
@@ -713,7 +1001,7 @@ function DoneRemainingList({
             {onOpenPatientDetail ? (
               <button
                 type="button"
-                className="font-medium text-amber-900 underline underline-offset-2 hover:text-amber-700"
+                className="font-medium text-amber-900 underline underline-offset-2 hover:text-amber-700 dark:text-amber-200 dark:hover:text-amber-400"
                 onClick={() => onOpenPatientDetail(e.patientId)}
                 data-testid="bulk-pool-insert-done-patient-button"
               >
@@ -721,7 +1009,7 @@ function DoneRemainingList({
                 {e.isPartial ? '（部分投入）' : ''}
               </button>
             ) : (
-              <span className="font-medium text-amber-900">
+              <span className="font-medium text-amber-900 dark:text-amber-200">
                 {e.patientName}
                 {e.isPartial ? '（部分投入）' : ''}
               </span>

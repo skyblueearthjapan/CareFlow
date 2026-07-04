@@ -379,7 +379,10 @@ export function ScopeOptimizeDialog({
     const wd = initialScope?.weekdays ?? null;
     const cc = initialScope?.courseCodes ?? null;
     // 外部導線 (健康診断) からの拠点引き継ぎ: 全拠点表示でも行の拠点で自動計算できる.
-    setManualOfficeId(initialOfficeId ?? null);
+    // W-6 項目2: 通常起動 (initialOfficeId 無し) でも先頭拠点を既定選択し、拠点ピッカー
+    // 画面を飛ばして即「対策を絞りたい範囲」画面を開く。拠点は上部チップで変更可能。
+    // offices が空のときのみ null のまま = 従来のピッカーがフォールバックとして出る。
+    setManualOfficeId(initialOfficeId ?? offices[0]?.id ?? null);
     setWeekdaySel(new Set(wd ?? []));
     setCourseSel(new Set(cc ?? []));
     setSearchMode('office'); // §10: 探索範囲の既定は拠点全体 (推奨).
@@ -509,7 +512,7 @@ export function ScopeOptimizeDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Route className="h-5 w-5 text-brand-primary" aria-hidden />
-            範囲最適化
+            スケジュール最適化
             <span className="tabular-nums text-sm font-normal text-text-muted">{weekLabel}</span>
           </DialogTitle>
           <DialogDescription>
@@ -521,7 +524,7 @@ export function ScopeOptimizeDialog({
         {!effectiveOfficeId ? (
           <div className="space-y-3 py-4" data-testid="scope-optimize-no-office">
             <div className="text-sm text-text-secondary">
-              範囲最適化は拠点単位で行います。対象の拠点を選んでください。
+              スケジュール最適化は拠点単位で行います。対象の拠点を選んでください。
             </div>
             <div className="flex flex-wrap gap-2" data-testid="scope-optimize-office-picker">
               {offices.map((o) => (

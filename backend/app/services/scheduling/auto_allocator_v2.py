@@ -10196,6 +10196,22 @@ async def apply_individual_proposal(
     Idempotent: 既に同じ内容の PFV があれば変更ゼロで ``idempotent=true`` を返す.
     """
     warnings: list[str] = []
+
+    # W-6: 主担当拠点が未設定 (NULL) の患者は週次 visit 生成から除外されるため、
+    # 固定枠 (PFV) を確定させても毎週現れない「ねじれ」になる. 入口で 422 ブロックする.
+    # pool-bulk-apply も本サービスを再利用するため、ここに置くと両経路をカバーできる.
+    guard_patient = await db.scalar(select(Patient).where(Patient.id == patient_id))
+    if guard_patient is not None and guard_patient.primary_office_id is None:
+        from fastapi import HTTPException as _HTTPException
+        from fastapi import status as _status
+
+        raise _HTTPException(
+            status_code=_status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "主担当拠点が未設定のため配置できません。患者マスタで主担当拠点を設定してください。"
+            ),
+        )
+
     # 既存 PFV (mode='normal') を取得.
     # C2: 同一患者を 2 セッションが同時に採用すると、SELECT → INSERT の
     #     between で race が起きて重複 PFV ができる. with_for_update() で

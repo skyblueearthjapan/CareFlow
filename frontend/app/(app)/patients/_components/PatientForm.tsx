@@ -109,8 +109,15 @@ export function PatientForm({
 
   // ── W12-FE: 住所から主担当拠点を自動判定 ───────────────────────────────────
   /** 'auto': 住所変更に応じて primary_office_id を自動セット
-   *  'manual': ユーザーが手動で選択した → 以降は自動セットしない */
-  const [officeMode, setOfficeMode] = React.useState<'auto' | 'manual'>('auto');
+   *  'manual': ユーザーが手動で選択した → 以降は自動セットしない
+   *
+   * W-6 項目4: 編集モード (defaultValues に primary_office_id が既に入っている) では
+   * 'manual' 初期化する。これにより編集ページを開いた直後の住所 watch 初回発火で、
+   * 手動設定済みの主担当拠点が resolve 結果に上書きされるのを防ぐ。
+   * 新規作成 / 拠点未設定の患者は従来どおり 'auto' (住所から自動ご案内)。 */
+  const [officeMode, setOfficeMode] = React.useState<'auto' | 'manual'>(() =>
+    defaultValues?.primary_office_id ? 'manual' : 'auto',
+  );
   const [resolveResult, setResolveResult] = React.useState<OfficeResolveResponse | null>(null);
   const resolveMut = useResolveOffice();
 

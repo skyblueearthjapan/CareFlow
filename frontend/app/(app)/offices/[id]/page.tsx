@@ -131,6 +131,7 @@ export default function OfficeDetailPage() {
             <Field
               label="担当エリア (cities)"
               value={allowed.length > 0 ? allowed.join(' / ') : '未設定'}
+              hint="新規患者登録時に住所からこの拠点を自動でご案内するための設定（入口のヒント）です。登録済み患者やスケジュール計算には影響しません。"
               wide
             />
             <Field label="メモ" value={office.note ?? '--'} wide />
@@ -141,11 +142,22 @@ export default function OfficeDetailPage() {
   );
 }
 
-function Field({ label, value, wide }: { label: string; value: string; wide?: boolean }) {
+function Field({
+  label,
+  value,
+  hint,
+  wide,
+}: {
+  label: string;
+  value: string;
+  hint?: string;
+  wide?: boolean;
+}) {
   return (
     <div className={wide ? 'sm:col-span-2' : ''}>
       <dt className="text-xs font-medium text-text-secondary">{label}</dt>
       <dd className="mt-1 text-sm text-text-primary">{value}</dd>
+      {hint ? <p className="mt-1 text-xs text-text-muted">{hint}</p> : null}
     </div>
   );
 }

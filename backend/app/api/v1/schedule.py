@@ -919,17 +919,27 @@ async def place_and_fix(
                 )
             templates_by_id[tpl_id] = tpl
 
-        if patient.primary_office_id is not None:
-            for tpl_id, tpl in templates_by_id.items():
-                if tpl.office_id != patient.primary_office_id:
-                    raise HTTPException(
-                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                        detail=(
-                            "patient.primary_office_id と course_template.office_id "
-                            f"が一致しません (template={tpl_id}, "
-                            "cross-office drop is not allowed)"
-                        ),
-                    )
+        # W-6: 主担当拠点が未設定 (NULL) の患者は週次 visit 生成から除外されるため、
+        # place-and-fix で固定配置を確定させても毎週現れない「ねじれ」になる.
+        # NULL のときは cross-office チェックをスキップせず、明確に 422 でブロックする.
+        if patient.primary_office_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    "主担当拠点が未設定のため配置できません。"
+                    "患者マスタで主担当拠点を設定してください。"
+                ),
+            )
+        for tpl_id, tpl in templates_by_id.items():
+            if tpl.office_id != patient.primary_office_id:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=(
+                        "patient.primary_office_id と course_template.office_id "
+                        f"が一致しません (template={tpl_id}, "
+                        "cross-office drop is not allowed)"
+                    ),
+                )
 
         # ----- W37 Phase 2-A: staff_count=2 のとき既存 slot_index=1 行と衝突しないか先行チェック -----
         # 既存に slot_index=1 がある状態で「新たに staff_count=2 で別 weekday/time に
