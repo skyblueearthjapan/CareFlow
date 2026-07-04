@@ -1,6 +1,14 @@
 # 引き継ぎ書：プール一括投入（再構築）＋新規提案廃止セッション
 
-作成 2026-07-04 / **本番HEAD = `b9dae5f`**（W-11 追記時に更新）/ DB = **migration 0053**（office_area_prompt_dismissals）/ healthz 正常。
+作成 2026-07-04 / **本番HEAD = `9f79662`**（W-12a 追記時に更新）/ DB = **migration 0053**（office_area_prompt_dismissals）/ healthz 正常。
+
+**W-12a 完了（2026-07-05・本番稼働）**: 2名体制のペア探索＋原子採用（I-12/N-7 解消）。
+設計書 = **`docs/plans/two-staff-pairing-design.md`**（D-1〜D-7・後続 W-12b/c/d のロードマップ込み）。
+主従アンカー方式のペア候補（同時刻・別コース・警告は主/相方 OR 合成）・no_pair_slot・
+A/B 両経路の2行原子採用・V7警告・V3 slot1 拡張・scope保護（two_staff会計）・bulk除外。
+コミット `9f79662`。レビュー REQUEST_CHANGES（HIGH=相方警告欠落）→修正→APPROVE。
+**次: W-12b（生成テスト補強）→ W-12c（scope の原子ペア move）→ W-12d（詰まり解消相談 —
+候補0件時に既存訪問の1〜3手ずらしで開通させる汎用相談。PO 方向性承認済み）**
 
 **W-11 完了（2026-07-04・本番稼働）**: 自動割当の警告不表示バグ修正（PO報告・tracer 6仮説競合で原因特定）。
 原因A=notices-only 時の成功トースト＋「判断不要」表示の誤誘導→warning化＋説明文実態化 /
