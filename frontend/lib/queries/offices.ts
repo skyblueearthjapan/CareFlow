@@ -153,3 +153,58 @@ export function useResolveOffice() {
     // 失敗時は toast 出さず silent (ユーザー手動選択にフォールバック)
   });
 }
+
+/** POST /api/v1/offices/{office_id}/area-cities レスポンス — W-7. */
+export interface OfficeAreaCityResult {
+  office_id: string;
+  city_id: string;
+  city_name: string;
+}
+
+/**
+ * POST /api/v1/offices/{office_id}/area-cities — W-7 (地域ルールの学習).
+ *
+ * office_cities に 1 件だけ追加する additive API。冪等 (既存なら 200)。
+ * 拠点フォーム全体を触らせずに患者登録の途中で担当地域を学習させる。
+ */
+export function useAddOfficeAreaCity() {
+  const { data: session } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+  const qc = useQueryClient();
+
+  return useMutation<OfficeAreaCityResult, Error, { officeId: string; cityId: string }>({
+    mutationFn: ({ officeId, cityId }) =>
+      fetcher<OfficeAreaCityResult>(`/api/v1/offices/${officeId}/area-cities`, {
+        method: 'POST',
+        body: JSON.stringify({ city_id: cityId }),
+        accessToken,
+        refreshToken,
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['offices'] });
+    },
+  });
+}
+
+/**
+ * POST /api/v1/offices/area-prompt-dismissals — W-7 (地域ルールの学習).
+ *
+ * その City について「今回だけ」= 二度と呼びかけない、を組織全体で記憶する。
+ * 冪等 (既に却下済みでも 204)。
+ */
+export function useDismissAreaPrompt() {
+  const { data: session } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+
+  return useMutation<void, Error, string>({
+    mutationFn: (cityId: string) =>
+      fetcher<void>('/api/v1/offices/area-prompt-dismissals', {
+        method: 'POST',
+        body: JSON.stringify({ city_id: cityId }),
+        accessToken,
+        refreshToken,
+      }),
+  });
+}

@@ -99,12 +99,33 @@ export type OfficeV2Read = z.infer<typeof officeV2ReadSchema>;
 export const RESOLVE_CONFIDENCE = ['exact', 'fuzzy', 'none'] as const;
 export type ResolveConfidence = (typeof RESOLVE_CONFIDENCE)[number];
 
-/** POST /api/v1/offices/resolve レスポンス. */
+/**
+ * W-7: resolve が特定できた市区町村 (どの拠点にも紐付いていない場合の学習用).
+ *
+ * `id` を厳密な uuid にすると BE の暫定値でパースが落ちるため寛容に string で受ける。
+ */
+export const matchedCitySchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  prefecture: z.string().nullable().optional(),
+});
+export type MatchedCity = z.infer<typeof matchedCitySchema>;
+
+/**
+ * POST /api/v1/offices/resolve レスポンス.
+ *
+ * W-7: `matched_city` / `prompt_dismissed` は BE 並行実装中。旧レスポンス
+ * (これらのキーが無い) でも壊れないよう寛容に default を持たせる。
+ */
 export const officeResolveResponseSchema = z.object({
   office_id: z.string().uuid().nullable(),
   office_name: z.string().nullable(),
   matched_city_id: z.string().uuid().nullable(),
   confidence: z.enum(RESOLVE_CONFIDENCE),
+  /** W-7: 住所から特定できた市区町村 (拠点未紐付でも返る). 欠落時は null. */
+  matched_city: matchedCitySchema.nullable().optional().default(null),
+  /** W-7: その City が却下済みか. 欠落時は false. */
+  prompt_dismissed: z.boolean().optional().default(false),
 });
 export type OfficeResolveResponse = z.infer<typeof officeResolveResponseSchema>;
 

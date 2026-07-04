@@ -26,6 +26,13 @@ vi.mock('next-auth/react', () => ({
 vi.mock('@/lib/queries/offices', () => ({
   useOffices: vi.fn(),
   useResolveOffice: vi.fn(),
+  useAddOfficeAreaCity: vi.fn(),
+  useDismissAreaPrompt: vi.fn(),
+}));
+
+// ─── Mock toast (sonner) ──────────────────────────────────────────────────────
+vi.mock('@/components/ui/sonner', () => ({
+  toast: { success: vi.fn(), error: vi.fn() },
 }));
 
 // ─── Mock AddressGeocodeField (住所入力 input を直接レンダー) ────────────────
@@ -111,7 +118,13 @@ vi.mock('@/components/ui/checkbox', () => ({
 
 // ─── Imports after mocks ──────────────────────────────────────────────────────
 import { useSession } from 'next-auth/react';
-import { useOffices, useResolveOffice } from '@/lib/queries/offices';
+import {
+  useOffices,
+  useResolveOffice,
+  useAddOfficeAreaCity,
+  useDismissAreaPrompt,
+} from '@/lib/queries/offices';
+import { toast } from '@/components/ui/sonner';
 import { emptyPatientFormValues } from '@/lib/schemas/patient';
 import { PatientForm } from '../PatientForm';
 
@@ -126,10 +139,54 @@ function makeSession() {
 
 function setupMocks(mutateAsync: Mock = vi.fn().mockResolvedValue(null)) {
   (useSession as Mock).mockReturnValue(makeSession());
-  (useOffices as Mock).mockReturnValue({ offices: [], isLoading: false });
+  // W-7: 選択拠点名の解決に使うため combobox の option id と一致させて offices を返す。
+  (useOffices as Mock).mockReturnValue({
+    offices: [
+      { id: 'office-uuid-1', name: '稲毛拠点' },
+      { id: 'office-uuid-2', name: '都賀拠点' },
+    ],
+    isLoading: false,
+  });
   (useResolveOffice as Mock).mockReturnValue({
     mutateAsync,
     isPending: false,
+  });
+  const addAreaCity = vi.fn().mockResolvedValue({
+    office_id: 'office-uuid-1',
+    city_id: 'city-1',
+    city_name: '千葉市美浜区',
+  });
+  const dismissArea = vi.fn().mockResolvedValue(undefined);
+  (useAddOfficeAreaCity as Mock).mockReturnValue({ mutateAsync: addAreaCity, isPending: false });
+  (useDismissAreaPrompt as Mock).mockReturnValue({ mutateAsync: dismissArea, isPending: false });
+  return { addAreaCity, dismissArea };
+}
+
+/** resolve 結果に W-7 の matched_city を含めたモック値を作る。 */
+function noneWithCity(overrides: Record<string, unknown> = {}) {
+  return {
+    office_id: null,
+    office_name: null,
+    matched_city_id: 'city-1',
+    confidence: 'none',
+    matched_city: { id: 'city-1', name: '千葉市美浜区', prefecture: '千葉県' },
+    prompt_dismissed: false,
+    ...overrides,
+  };
+}
+
+/** 発火4条件を揃える: 住所入力→resolve(none+city)→拠点を手動選択。callout を出す。 */
+async function renderWithCalloutFired(mutateAsync: Mock) {
+  render(<PatientForm onSubmit={vi.fn()} />);
+  const addressInput = screen.getByTestId('address-input');
+  act(() => {
+    fireEvent.change(addressInput, { target: { value: '千葉県千葉市美浜区' } });
+  });
+  await flushDebounceAndMutation();
+  // 拠点を手動選択 (officeMode='manual' かつ値あり)
+  const combobox = screen.getByTestId('office-combobox') as HTMLSelectElement;
+  act(() => {
+    fireEvent.change(combobox, { target: { value: 'office-uuid-1' } });
   });
 }
 
@@ -457,5 +514,113 @@ describe('PatientForm — W12-FE 住所→拠点自動判定', () => {
     // auto なので resolve 結果で自動セットされる。
     const combobox = screen.getByTestId('office-combobox') as HTMLSelectElement;
     expect(combobox.value).toBe('office-uuid-1');
+  });
+
+  // ─── W-7: 地域ルールの学習 (未カバー地域の呼びかけ) ──────────────────────────
+
+  describe('W-7 地域ルール呼びかけ', () => {
+    it('発火4条件が揃うと callout が表示される', async () => {
+      const mutateAsync = vi.fn().mockResolvedValue(noneWithCity());
+      setupMocks(mutateAsync);
+
+      await renderWithCalloutFired(mutateAsync);
+
+      const callout = screen.getByTestId('region-rule-callout');
+      expect(callout).toBeInTheDocument();
+      expect(callout.textContent).toContain('千葉市美浜区');
+      expect(callout.textContent).toContain('稲毛拠点');
+    });
+
+    it('confidence=exact なら callout は出ない', async () => {
+      const mutateAsync = vi.fn().mockResolvedValue(
+        noneWithCity({ confidence: 'exact', office_id: 'office-uuid-1', office_name: '稲毛拠点' }),
+      );
+      setupMocks(mutateAsync);
+
+      render(<PatientForm onSubmit={vi.fn()} />);
+      const addressInput = screen.getByTestId('address-input');
+      act(() => {
+        fireEvent.change(addressInput, { target: { value: '千葉県千葉市稲毛区' } });
+      });
+      await flushDebounceAndMutation();
+      const combobox = screen.getByTestId('office-combobox') as HTMLSelectElement;
+      act(() => {
+        fireEvent.change(combobox, { target: { value: 'office-uuid-1' } });
+      });
+
+      expect(screen.queryByTestId('region-rule-callout')).not.toBeInTheDocument();
+    });
+
+    it('prompt_dismissed=true なら callout は出ない', async () => {
+      const mutateAsync = vi.fn().mockResolvedValue(noneWithCity({ prompt_dismissed: true }));
+      setupMocks(mutateAsync);
+
+      await renderWithCalloutFired(mutateAsync);
+
+      expect(screen.queryByTestId('region-rule-callout')).not.toBeInTheDocument();
+    });
+
+    it('matched_city=null なら callout は出ない', async () => {
+      const mutateAsync = vi.fn().mockResolvedValue(noneWithCity({ matched_city: null }));
+      setupMocks(mutateAsync);
+
+      await renderWithCalloutFired(mutateAsync);
+
+      expect(screen.queryByTestId('region-rule-callout')).not.toBeInTheDocument();
+    });
+
+    it('拠点未選択なら callout は出ない (手動選択していない)', async () => {
+      const mutateAsync = vi.fn().mockResolvedValue(noneWithCity());
+      setupMocks(mutateAsync);
+
+      render(<PatientForm onSubmit={vi.fn()} />);
+      const addressInput = screen.getByTestId('address-input');
+      act(() => {
+        fireEvent.change(addressInput, { target: { value: '千葉県千葉市美浜区' } });
+      });
+      await flushDebounceAndMutation();
+
+      // 拠点を選んでいない → 発火しない
+      expect(screen.queryByTestId('region-rule-callout')).not.toBeInTheDocument();
+    });
+
+    it('[担当地域に登録する] → area-cities mutation が呼ばれ callout が消える', async () => {
+      const mutateAsync = vi.fn().mockResolvedValue(noneWithCity());
+      const { addAreaCity } = setupMocks(mutateAsync);
+
+      await renderWithCalloutFired(mutateAsync);
+      expect(screen.getByTestId('region-rule-callout')).toBeInTheDocument();
+
+      const registerBtn = screen.getByTestId('region-rule-register');
+      await act(async () => {
+        fireEvent.click(registerBtn);
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(addAreaCity).toHaveBeenCalledWith({ officeId: 'office-uuid-1', cityId: 'city-1' });
+      expect(toast.success as Mock).toHaveBeenCalled();
+      expect(screen.queryByTestId('region-rule-callout')).not.toBeInTheDocument();
+    });
+
+    it('[今回だけ] → dismissals mutation が呼ばれ callout が消える', async () => {
+      const mutateAsync = vi.fn().mockResolvedValue(noneWithCity());
+      const { dismissArea } = setupMocks(mutateAsync);
+
+      await renderWithCalloutFired(mutateAsync);
+      expect(screen.getByTestId('region-rule-callout')).toBeInTheDocument();
+
+      const dismissBtn = screen.getByTestId('region-rule-dismiss');
+      await act(async () => {
+        fireEvent.click(dismissBtn);
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(dismissArea).toHaveBeenCalledWith('city-1');
+      expect(screen.queryByTestId('region-rule-callout')).not.toBeInTheDocument();
+    });
   });
 });

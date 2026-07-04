@@ -37,8 +37,14 @@ import {
   patientFormSchema,
   type PatientFormValues,
 } from '@/lib/schemas/patient';
-import { useResolveOffice } from '@/lib/queries/offices';
+import {
+  useResolveOffice,
+  useOffices,
+  useAddOfficeAreaCity,
+  useDismissAreaPrompt,
+} from '@/lib/queries/offices';
 import type { OfficeResolveResponse } from '@/lib/schemas/office';
+import { toast } from '@/components/ui/sonner';
 
 import { WeeklyPatternEditor } from './WeeklyPatternEditor';
 
@@ -122,6 +128,64 @@ export function PatientForm({
   const resolveMut = useResolveOffice();
 
   const watchedAddress = watch('address');
+
+  // ── W-7: 地域ルールの学習 (未カバー地域を手動選択した瞬間に一度だけ聞く) ──────
+  const watchedOfficeId = watch('primary_office_id');
+  const { offices } = useOffices({ limit: 500 });
+  const addAreaCityMut = useAddOfficeAreaCity();
+  const dismissAreaMut = useDismissAreaPrompt();
+  /** このセッション中に登録/却下して閉じた City id (再表示しないため) */
+  const [handledCityIds, setHandledCityIds] = React.useState<Set<string>>(() => new Set());
+
+  const selectedOfficeName = React.useMemo(
+    () => offices.find((o) => o.id === watchedOfficeId)?.name ?? '',
+    [offices, watchedOfficeId],
+  );
+
+  const matchedCity = resolveResult?.matched_city ?? null;
+  // 発火4条件: confidence=none × City 特定済 × 未却下 × 手動で拠点選択済
+  const showRegionCallout =
+    resolveResult?.confidence === 'none' &&
+    matchedCity != null &&
+    resolveResult.prompt_dismissed !== true &&
+    officeMode === 'manual' &&
+    !!watchedOfficeId &&
+    !handledCityIds.has(matchedCity.id);
+
+  const closeRegionCallout = React.useCallback((cityId: string) => {
+    setHandledCityIds((prev) => {
+      const next = new Set(prev);
+      next.add(cityId);
+      return next;
+    });
+  }, []);
+
+  const handleRegisterRegion = React.useCallback(async () => {
+    if (!matchedCity || !watchedOfficeId) return;
+    try {
+      await addAreaCityMut.mutateAsync({ officeId: watchedOfficeId, cityId: matchedCity.id });
+      toast.success(
+        `${matchedCity.name}を${selectedOfficeName || 'この拠点'}の担当地域に登録しました。次からこの地域は自動で振り分けられます。`,
+      );
+      closeRegionCallout(matchedCity.id);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : '不明なエラー';
+      // callout は残して再試行できるようにする
+      toast.error(`担当地域の登録に失敗しました: ${msg}`);
+    }
+  }, [matchedCity, watchedOfficeId, selectedOfficeName, addAreaCityMut, closeRegionCallout]);
+
+  const handleDismissRegion = React.useCallback(async () => {
+    if (!matchedCity) return;
+    try {
+      await dismissAreaMut.mutateAsync(matchedCity.id);
+      closeRegionCallout(matchedCity.id);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : '不明なエラー';
+      toast.error(`設定の保存に失敗しました: ${msg}`);
+    }
+  }, [matchedCity, dismissAreaMut, closeRegionCallout]);
+  // ── /W-7 ─────────────────────────────────────────────────────────────────────
 
   // M-1 fix: officeMode を ref で参照することで debounce タイマー中の手動選択を反映する
   // (タイマー設定時点の officeMode を closure に閉じ込めると、debounce 中にユーザーが
@@ -273,6 +337,40 @@ export function PatientForm({
             )}
             {resolveResult && resolveResult.confidence === 'none' && (
               <p className="text-xs text-warning">⚠ 拠点エリア外: 手動で選択してください</p>
+            )}
+            {/* W-7: 地域ルールの学習 — 静かなインフォ調の呼びかけ (アンバー系) */}
+            {showRegionCallout && matchedCity && (
+              <div
+                data-testid="region-rule-callout"
+                className="mt-2 rounded-md border border-border-warning bg-warning-bg p-3 text-xs text-warning-strong"
+              >
+                <p className="leading-relaxed">
+                  この地域（{matchedCity.name}）は、まだどの拠点の担当エリアにも登録されていません。
+                  {selectedOfficeName || '選択中の拠点'}
+                  の担当地域として登録しますか？ 次からこの地域の患者様は自動で振り分けられます。
+                </p>
+                <div className="mt-2 flex items-center gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    data-testid="region-rule-register"
+                    disabled={addAreaCityMut.isPending}
+                    onClick={() => void handleRegisterRegion()}
+                  >
+                    担当地域に登録する
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    data-testid="region-rule-dismiss"
+                    disabled={dismissAreaMut.isPending}
+                    onClick={() => void handleDismissRegion()}
+                  >
+                    今回だけ
+                  </Button>
+                </div>
+              </div>
             )}
             {officeMode === 'manual' && (
               <button

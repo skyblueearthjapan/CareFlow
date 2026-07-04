@@ -17,6 +17,7 @@ from app.models.geocoding_cache import GeocodingCache
 from app.models.kaipoke_job import KaipokeJob, KaipokeJobItem
 from app.models.notification import Notification
 from app.models.office import Office, OfficeCity
+from app.models.office_area_prompt_dismissal import OfficeAreaPromptDismissal
 from app.models.office_feature_flag import OfficeFeatureFlag
 from app.models.patient import Patient, PatientAllowedOffice
 from app.models.patient_fixed_visit import PatientFixedVisit
@@ -59,6 +60,7 @@ __all__ = [
     "KaipokeJobItem",
     "Notification",
     "Office",
+    "OfficeAreaPromptDismissal",
     "OfficeCity",
     "OfficeFeatureFlag",
     "Patient",

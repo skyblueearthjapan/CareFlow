@@ -191,6 +191,9 @@ class OfficeResolution:
 
     - `office`: 該当した Office インスタンス（なければ None）
     - `matched_city_id`: 突合に使った city の UUID（なければ None）
+    - `matched_city_name` / `matched_city_prefecture`: 突合した city の表示情報.
+      `matched_city_id` が非 None のときのみ意味を持つ（office_cities への
+      紐付けの有無に関係なく、住所パースで City を特定できたら埋まる）.
     - `confidence`: `exact` / `fuzzy` / `none`
         - `exact`: 都道府県 + 市区町村名で完全一致
         - `fuzzy`: 都道府県の指定がない／前方一致のみ等の条件付きマッチ
@@ -200,6 +203,8 @@ class OfficeResolution:
     office: Office | None
     matched_city_id: UUID | None
     confidence: Literal["exact", "fuzzy", "none"]
+    matched_city_name: str | None = None
+    matched_city_prefecture: str | None = None
 
 
 class OfficeAssigner:
@@ -289,6 +294,8 @@ class OfficeAssigner:
                 office=None,
                 matched_city_id=best_city.id,
                 confidence="none",
+                matched_city_name=best_city.name,
+                matched_city_prefecture=best_city.prefecture,
             )
 
         if len(offices) > 1:
@@ -308,6 +315,8 @@ class OfficeAssigner:
             office=offices[0],
             matched_city_id=best_city.id,
             confidence=confidence,
+            matched_city_name=best_city.name,
+            matched_city_prefecture=best_city.prefecture,
         )
 
 
