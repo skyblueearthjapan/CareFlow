@@ -104,6 +104,14 @@ from app.schemas.v2.improvement_suggestion import (
     SwapWeekSync,
 )
 from app.schemas.v2.patient_fixed_visit import PatientFixedVisitV2Base
+from app.schemas.v2.pool_bulk import (
+    PoolBulkKpi,
+    PoolBulkPartial,
+    PoolBulkPlacement,
+    PoolBulkSimulateRequest,
+    PoolBulkSimulateResponse,
+    PoolBulkUnplaced,
+)
 from app.schemas.v2.pool_overview import (
     PoolOverviewBestSlot,
     PoolOverviewItem,
@@ -203,6 +211,7 @@ from app.services.scheduling.pfv_validator import (
     _find_conflict,
     validate_pfv_changes,
 )
+from app.services.scheduling.pool_bulk_inserter import simulate_pool_bulk_insert
 from app.services.scheduling.proposal_solver import (
     VISIT_BUFFER_MINUTES,
     ExistingVisit,
@@ -2654,6 +2663,100 @@ async def pool_overview_endpoint(
         )
 
     return PoolOverviewResponse(items=items)
+
+
+# ---------------------------------------------------------------------------
+# pool-bulk-simulate (W-1: プール一括投入の逐次シミュレーション / read-only)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/v2/pool-bulk-simulate",
+    response_model=PoolBulkSimulateResponse,
+    status_code=status.HTTP_200_OK,
+    summary="W-1: プール患者列を逐次シミュレーションで積み投入プレビューを返す (read-only)",
+)
+async def pool_bulk_simulate_endpoint(
+    payload: PoolBulkSimulateRequest,
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+) -> PoolBulkSimulateResponse:
+    """プール一括投入の read-only プレビュー (設計書 §3-4).
+
+    本 endpoint は **read-only**: DB を変更しない (apply=W-2 と完全分離).
+
+    候補生成・delta は個別提案 (propose-slots) と同一 (``compute_all_proposed_slots`` 再利用)
+    で、1 人目の投入先は pool-overview の best と厳密一致する. 患者を D-1 ハイブリッド順序で
+    1 人ずつメモリ内バケットに積み、先行患者が埋めた枠は後続患者のソルバ走査で自然に弾かれる
+    (= 調停の実体). 上限 (POOL_BULK_MAX_PATIENTS=50) 超過は schema validator が 422.
+    """
+    config = await load_scheduling_config(db)
+
+    try:
+        result = await simulate_pool_bulk_insert(
+            db,
+            iso_year=payload.iso_year,
+            iso_week=payload.iso_week,
+            office_id=payload.office_id,
+            patient_ids=payload.patient_ids,
+            config=config,
+            candidate_of=_patient_to_pool_candidate,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    # before/after 週ビューは既存 full-optimize と同一ヘルパで組む (ProposalWeekCalendar 互換).
+    week_before_after = _build_weekday_before_after(
+        result.before_visits,
+        result.after_visits,
+        office_name_by_id=result.office_name_by_id,
+    )
+
+    return PoolBulkSimulateResponse(
+        placements=[
+            PoolBulkPlacement(
+                seq=p.seq,
+                patient_id=p.patient_id,
+                patient_name=p.patient_name,
+                weekday=p.weekday,
+                course_code=p.course_code,
+                office_id=p.office_id,
+                start_time=f"{p.start.hour:02d}:{p.start.minute:02d}:{p.start.second:02d}",
+                service_minutes=p.service_minutes,
+                delta_minutes=p.delta_minutes,
+                warnings=p.warnings,
+            )
+            for p in result.placements
+        ],
+        partial=[
+            PoolBulkPartial(
+                patient_id=pt.patient_id,
+                patient_name=pt.patient_name,
+                placed_days=pt.placed_days,
+                missing_days=pt.missing_days,
+                unplaced_reasons={str(wd): reason for wd, reason in pt.unplaced_reasons.items()},
+            )
+            for pt in result.partial
+        ],
+        unplaced=[
+            PoolBulkUnplaced(
+                patient_id=u.patient_id,
+                patient_name=u.patient_name,
+                reason=u.reason,
+            )
+            for u in result.unplaced
+        ],
+        week_before_after=week_before_after,
+        kpi=PoolBulkKpi(
+            placed_patients=result.placed_patients,
+            placed_slots=result.placed_slots,
+            travel_minutes_before=result.travel_minutes_before,
+            travel_minutes_after=result.travel_minutes_after,
+            travel_km_before=result.travel_km_before,
+            travel_km_after=result.travel_km_after,
+        ),
+        state_token=result.state_token,
+    )
 
 
 # ---------------------------------------------------------------------------
