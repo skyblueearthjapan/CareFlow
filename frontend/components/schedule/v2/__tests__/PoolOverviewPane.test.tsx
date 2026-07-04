@@ -42,10 +42,31 @@ vi.mock('@dnd-kit/core', () => ({
 }));
 
 vi.mock('lucide-react', () => ({
+  AlertTriangle: () => <span />,
   Inbox: () => <span aria-hidden />,
+  Layers: () => <span />,
   Loader2: () => <span data-testid="loader" />,
   Sparkles: () => <span />,
   ArrowUpDown: () => <span />,
+}));
+
+vi.mock('@/components/ui/popover', () => ({
+  Popover: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  PopoverTrigger: ({ children, asChild }: { children: React.ReactNode; asChild?: boolean }) =>
+    asChild ? <>{children}</> : <div>{children}</div>,
+  PopoverContent: ({
+    children,
+    'data-testid': testId,
+    ...rest
+  }: {
+    children: React.ReactNode;
+    'data-testid'?: string;
+    [k: string]: unknown;
+  }) => (
+    <div data-testid={testId} {...rest}>
+      {children}
+    </div>
+  ),
 }));
 
 vi.mock('@/components/ui/card', () => ({
@@ -358,5 +379,55 @@ describe('PoolOverviewPane', () => {
     expect(payload.iso_week).toBe(27);
     expect(payload.office_id).toBe('office-1');
     expect(payload.patient_ids).toEqual(['p1', 'p2']);
+  });
+
+  // ── W-3: 希望未登録チップ ────────────────────────────────────────────────
+
+  it('W-3: unregisteredPatients が 1 名以上のとき「希望未登録 N名」チップが表示される', () => {
+    const unregistered = [makePatient('u1', '未登録太郎'), makePatient('u2', '未登録花子')];
+    render(
+      <PoolOverviewPane
+        {...BASE_PROPS}
+        patients={[makePatient('p1', '田中')]}
+        unregisteredPatients={unregistered}
+      />,
+    );
+    const chip = screen.getByTestId('pool-unregistered-chip');
+    expect(chip).toBeInTheDocument();
+    expect(chip).toHaveTextContent('希望未登録 2名');
+  });
+
+  it('W-3: チップ内に注意文言と患者名が表示され、クリックで onClickUnregisteredPatient が呼ばれる', () => {
+    const unregistered = [makePatient('u1', '未登録太郎')];
+    const onClickMock = vi.fn();
+    render(
+      <PoolOverviewPane
+        {...BASE_PROPS}
+        patients={[makePatient('p1', '田中')]}
+        unregisteredPatients={unregistered}
+        onClickUnregisteredPatient={onClickMock}
+      />,
+    );
+    // ポップオーバーコンテンツが DOM に存在する (モック: Popover=常時展開)
+    expect(screen.getByTestId('pool-unregistered-popover')).toBeInTheDocument();
+    // 注意文言
+    expect(screen.getByText(/希望訪問スケジュール未登録のため/)).toBeInTheDocument();
+    // 患者名ボタン
+    const btn = screen.getByTestId('pool-unregistered-patient-u1');
+    expect(btn).toBeInTheDocument();
+    expect(btn).toHaveTextContent('未登録太郎');
+    fireEvent.click(btn);
+    expect(onClickMock).toHaveBeenCalledWith('u1');
+  });
+
+  it('W-3: unregisteredPatients が 0 名のときチップを表示しない', () => {
+    render(
+      <PoolOverviewPane
+        {...BASE_PROPS}
+        patients={[makePatient('p1', '田中')]}
+        unregisteredPatients={[]}
+      />,
+    );
+    expect(screen.queryByTestId('pool-unregistered-chip')).not.toBeInTheDocument();
   });
 });

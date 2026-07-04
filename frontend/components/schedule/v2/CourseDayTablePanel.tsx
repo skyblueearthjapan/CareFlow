@@ -993,6 +993,14 @@ export function CourseDayTablePanel({
       .slice(0, 200);
   }, [allPatients, patientShortageById]);
 
+  // W-3: 希望未登録 active 患者 (weekly_pattern 未設定 / frequency_per_week<=0)。
+  // プールには載らないが存在する患者を可視化するための安全網。
+  const unregisteredActivePatients = useMemo(() => {
+    return allPatients.filter(
+      (p) => p.status === 'active' && getDesiredWeeklyVisitCount(p) === 0,
+    );
+  }, [allPatients]);
+
   // ─── visit lookup (Wave 18 Phase B-5: 配置済みドラッグ用) ──────────
   const visitById = useMemo(() => {
     const m = new Map<string, (typeof weekVisits)[number]>();
@@ -2626,6 +2634,8 @@ export function CourseDayTablePanel({
               isoWeek={isoWeek}
               officeId={officeId}
               onBulkInsert={canEdit ? () => setBulkPoolInsertOpen(true) : undefined}
+              unregisteredPatients={unregisteredActivePatients}
+              onClickUnregisteredPatient={handleOpenPoolPatientDetail}
               renderCard={(p, slotInfo) => {
                 const wp = coerceWeeklyPattern(p.weekly_pattern);
                 // Phase G-44: 不足表示用. 複数体制患者は slot 単位で表示しているので

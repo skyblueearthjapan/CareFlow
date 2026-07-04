@@ -18,11 +18,12 @@
  * (CourseDayTablePanel 内部だと単体テストが困難なため切り出し)
  */
 import * as React from 'react';
-import { Layers, Loader2, Sparkles } from 'lucide-react';
+import { AlertTriangle, Layers, Loader2, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { usePoolOverviewMutation } from '@/lib/queries/poolOverview';
 import { EXCLUDED_REASON_LABEL } from './PoolCandidateList';
 import {
@@ -119,6 +120,16 @@ export interface PoolOverviewPaneProps
    * 未指定ならボタンを描画しない (後方互換)。
    */
   onBulkInsert?: () => void;
+  /**
+   * W-3: 希望未登録 (weekly_pattern 未設定 / frequency_per_week<=0) の active 患者一覧。
+   * 1 名以上のとき「希望未登録 N名」チップを表示する。未指定 → 非表示。
+   */
+  unregisteredPatients?: PatientRead[];
+  /**
+   * W-3: 希望未登録チップ内の患者名クリック時のハンドラ。
+   * handleOpenPoolPatientDetail と同じ導線 (patient_id を渡す)。
+   */
+  onClickUnregisteredPatient?: (patientId: string) => void;
 }
 
 /**
@@ -145,6 +156,8 @@ export const PoolOverviewPane = React.forwardRef<PoolOverviewPaneHandle, PoolOve
     isoWeek,
     officeId,
     onBulkInsert,
+    unregisteredPatients = [],
+    onClickUnregisteredPatient,
   }: PoolOverviewPaneProps, ref) {
   const overviewMut = usePoolOverviewMutation();
   // useCallback の deps には mutate のみを入れる (React Query v5 で参照安定。
@@ -231,9 +244,9 @@ export const PoolOverviewPane = React.forwardRef<PoolOverviewPaneHandle, PoolOve
   /** 一括投入対象がプール上限を超えているか (先頭 50 名のみ対象) */
   const bulkTruncated = patients.length > POOL_OVERVIEW_LIMIT;
 
-  /** ヘッダーに注入するアクション領域 (「効果を表示」の隣に「一括投入」を小さく併置). */
+  /** ヘッダーに注入するアクション領域 (「効果を表示」の隣に「一括投入」・「希望未登録」を小さく併置). */
   const headerAction = (
-    <div className="flex gap-1">
+    <div className="flex flex-wrap gap-1">
       <Button
         type="button"
         variant="default"
@@ -268,6 +281,56 @@ export const PoolOverviewPane = React.forwardRef<PoolOverviewPaneHandle, PoolOve
           <Layers className="mr-1 h-3 w-3" aria-hidden />
           一括投入
         </Button>
+      ) : null}
+      {/* W-3: 希望未登録チップ (N>=1 のときのみ表示). */}
+      {unregisteredPatients.length > 0 ? (
+        <Popover>
+          <PopoverTrigger asChild>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-6 border-warning px-2 text-[11px] text-warning hover:bg-warning-bg"
+              data-testid="pool-unregistered-chip"
+            >
+              <AlertTriangle className="mr-1 h-3 w-3" aria-hidden />
+              希望未登録 {unregisteredPatients.length}名
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent
+            align="end"
+            side="bottom"
+            sideOffset={4}
+            className="w-72 p-3"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+            data-testid="pool-unregistered-popover"
+          >
+            <p className="mb-2 text-xs text-text-muted">
+              希望訪問スケジュール未登録のため保留プールに表示されない患者が{' '}
+              <span className="font-semibold text-warning">{unregisteredPatients.length}名</span>{' '}
+              います
+            </p>
+            <ul className="space-y-0.5">
+              {unregisteredPatients.map((p) => (
+                <li key={p.id}>
+                  {onClickUnregisteredPatient ? (
+                    <button
+                      type="button"
+                      className="w-full rounded px-2 py-0.5 text-left text-xs text-text-primary hover:bg-bg-muted focus:bg-bg-muted focus:outline-none"
+                      onClick={() => onClickUnregisteredPatient(p.id)}
+                      data-testid={`pool-unregistered-patient-${p.id}`}
+                    >
+                      {p.name}
+                    </button>
+                  ) : (
+                    <span className="px-2 py-0.5 text-xs text-text-primary">{p.name}</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </PopoverContent>
+        </Popover>
       ) : null}
     </div>
   );

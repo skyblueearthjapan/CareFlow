@@ -31,6 +31,7 @@ vi.mock('sonner', () => ({ toast: mockToast }));
 vi.mock('lucide-react', () => ({
   AlertTriangle: () => <span />,
   CheckCircle2: () => <span />,
+  Lightbulb: () => <span />,
   Loader2: () => <span data-testid="loader" />,
   Plus: () => <span />,
   Sparkles: () => <span />,
@@ -730,5 +731,64 @@ describe('proposeSlotsResponseSchema 寛容パース (P-1 後方互換)', () => 
       // 旧BE: proposeSlotItem.overcapacity は false (default)
       expect(result.data.slots[0]!.overcapacity).toBe(false);
     }
+  });
+});
+
+// ── W-3: 効率優先の代替枠 ────────────────────────────────────────────────────
+
+describe('W-3: 効率優先の代替枠 (efficiency alternatives)', () => {
+  beforeEach(() => {
+    mocks.proposeMutate.mockReset();
+    mocks.confirmMutate.mockReset();
+    mocks.placeAndFixMutate.mockReset();
+    mocks.proposeData = undefined;
+    mocks.existingFixedVisits = [];
+    mocks.templatesQueries = [];
+    mockToast.success.mockReset();
+    mockToast.error.mockReset();
+    mockToast.warning.mockReset();
+  });
+
+  it('propose-slots リクエストに include_efficiency_alternatives: true が付く', () => {
+    render(<PoolCandidateList {...COMMON} />);
+    fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
+    expect(mocks.proposeMutate).toHaveBeenCalledTimes(1);
+    const req = mocks.proposeMutate.mock.calls[0][0];
+    expect(req.include_efficiency_alternatives).toBe(true);
+  });
+
+  it('is_efficiency_alternative=true のスロットが折りたたみセクションに表示される', () => {
+    const normalSlot = makeSlot({ is_efficiency_alternative: false });
+    const effSlot = makeSlot({
+      weekday: 3, // 木
+      weekday_code: 'Thu',
+      course_code: 'D',
+      start_time: '09:00:00',
+      end_time: '09:35:00',
+      is_efficiency_alternative: true,
+      reasons: ['近接高効率'],
+    });
+    mocks.proposeData = {
+      slots: [normalSlot, effSlot],
+      message: null,
+    };
+    render(<PoolCandidateList {...COMMON} />);
+    fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
+
+    // 通常候補リストが出る
+    expect(screen.getByTestId('pool-candidate-slots')).toBeInTheDocument();
+
+    // 効率代替セクションが出る (折りたたみ = details 要素)
+    const effSection = screen.getByTestId('pool-efficiency-section');
+    expect(effSection).toBeInTheDocument();
+
+    // 件数バッジが 1件
+    expect(screen.getByTestId('pool-efficiency-count')).toHaveTextContent('1件');
+
+    // セクション内に効率スロットが含まれる
+    expect(screen.getByTestId('pool-efficiency-slot-list')).toBeInTheDocument();
+
+    // 効率スロットのラベルが存在する (details が open でないと hidden になるが DOM には存在する)
+    expect(screen.getByTestId(`pool-efficiency-${effSlot.office_id}-${effSlot.weekday}-${effSlot.course_code}-${effSlot.start_time}`)).toBeInTheDocument();
   });
 });

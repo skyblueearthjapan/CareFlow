@@ -18,7 +18,7 @@
 import * as React from 'react';
 import { useQueries } from '@tanstack/react-query';
 import { useSession } from 'next-auth/react';
-import { AlertTriangle, CheckCircle2, Loader2, Plus, Sparkles, X } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Lightbulb, Loader2, Plus, Sparkles, X } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -208,6 +208,9 @@ export function PoolCandidateList({
 
   const result = proposeMut.data;
   const slots = React.useMemo(() => result?.slots ?? [], [result]);
+  // W-3: 通常候補 (希望適合) と効率優先の代替枠 (希望外) を分離。
+  const normalSlots = React.useMemo(() => slots.filter((s) => !s.is_efficiency_alternative), [slots]);
+  const efficiencySlots = React.useMemo(() => slots.filter((s) => s.is_efficiency_alternative), [slots]);
   // P-1b: 除外理由サマリ。旧BEは未送出のため nullish → [] フォールバック (寛容パース規約)。
   const excludedSummary = React.useMemo<ExcludedSummaryItem[]>(
     () => result?.excluded_summary ?? [],
@@ -269,6 +272,8 @@ export function PoolCandidateList({
           office_ids: officeId ? [officeId] : [],
           existing_patient_id: patient.id,
           limit: 10,
+          // W-3: 効率優先の代替枠 (希望外だが近接/余裕が良い枠) を上乗せ提案する。
+          include_efficiency_alternatives: true,
           include_overcapacity: includeOvercapacity,
         },
         { onError: () => toast.error('候補の取得に失敗しました') },
@@ -456,7 +461,7 @@ export function PoolCandidateList({
         </Alert>
       ) : null}
 
-      {!proposeMut.isPending && result && slots.length === 0 ? (
+      {!proposeMut.isPending && result && normalSlots.length === 0 ? (
         <div className="py-3 text-xs text-text-muted" data-testid="pool-candidate-empty">
           {excludedSummary.length > 0 ? (
             /* P-1b: 除外理由別の内訳表示 (N-6「黙って消さない」). */
@@ -470,11 +475,16 @@ export function PoolCandidateList({
                 </li>
               ))}
             </ul>
-          ) : (
-            /* 除外理由がない場合のフォールバック (従来メッセージ). */
+          ) : efficiencySlots.length === 0 ? (
+            /* 除外理由がない場合のフォールバック (効率代替もなければ表示). */
             <div className="text-center">
               実現可能な空き枠が見つかりませんでした。
               {result.message ? <div className="mt-1">{result.message}</div> : null}
+            </div>
+          ) : (
+            /* 通常候補 0 件でも効率代替がある場合は行き止まりにしない誘導. */
+            <div className="text-center">
+              ご希望に合致する枠は見つかりませんでしたが、下の「効率優先の代替枠」をご確認ください。
             </div>
           )}
           {/* 方式b: 定員超過候補の呼びかけバナー (通常候補 0 件 + 定員超過で入れる枠がある場合). */}
@@ -505,9 +515,9 @@ export function PoolCandidateList({
         </div>
       ) : null}
 
-      {slots.length > 0 ? (
+      {normalSlots.length > 0 ? (
         <ul className="space-y-1.5" data-testid="pool-candidate-slots">
-          {slots.map((s, i) => (
+          {normalSlots.map((s, i) => (
             <li
               key={`${slotKey(s)}-${i}`}
               className="rounded border border-border-default bg-bg-base p-2 text-xs"
@@ -601,6 +611,118 @@ export function PoolCandidateList({
             </li>
           ))}
         </ul>
+      ) : null}
+
+      {/* W-3: 効率優先の代替枠 (希望外だが近接/余裕が良い枠). 既定閉じた折りたたみ. */}
+      {efficiencySlots.length > 0 ? (
+        <details
+          className="mt-2 rounded border border-brand-primary/30 text-xs"
+          data-testid="pool-efficiency-section"
+        >
+          <summary className="flex cursor-pointer select-none items-center gap-1.5 rounded px-2 py-1.5 text-xs font-semibold text-text-secondary hover:bg-bg-muted">
+            <Lightbulb className="h-3.5 w-3.5 text-brand-primary" aria-hidden />
+            効率優先の代替枠（ご希望とは異なります）
+            <Badge variant="secondary" className="ml-1 text-[10px]" data-testid="pool-efficiency-count">
+              {efficiencySlots.length}件
+            </Badge>
+          </summary>
+          <div className="rounded-b border-t border-brand-primary/20 bg-brand-primary/5 p-2">
+            <p className="mb-1.5 text-[11px] text-text-muted">
+              ご希望の曜日・時間帯とは異なりますが、移動効率や空きの余裕がより良い枠です。
+            </p>
+            <ul className="space-y-1.5" data-testid="pool-efficiency-slot-list">
+              {efficiencySlots.map((s, i) => (
+                <li
+                  key={`eff-${slotKey(s)}-${i}`}
+                  className="rounded border border-border-default bg-bg-base p-2"
+                  data-testid={`pool-efficiency-${slotKey(s)}`}
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant="secondary" className="text-[10px]">
+                      #{normalSlots.length + i + 1}
+                    </Badge>
+                    <span className="tnum font-medium text-text-primary">
+                      {WEEKDAY_LABELS[s.weekday] ?? '?'} {trimSeconds(s.start_time)}–
+                      {trimSeconds(s.end_time)}
+                    </span>
+                    <span className="text-text-secondary">{s.course_label}</span>
+                    {s.staff_name ? (
+                      <span className="text-[11px] text-text-muted">担当: {s.staff_name}</span>
+                    ) : null}
+                    {s.is_pair && s.pair_partner ? (
+                      <Badge variant="info" className="text-[10px]">
+                        同住所ペア: {s.pair_partner}
+                      </Badge>
+                    ) : null}
+                    {s.marginal_cost_minutes !== null && s.marginal_cost_minutes !== undefined ? (
+                      <Badge
+                        variant="secondary"
+                        className="text-[10px]"
+                        title="診断・改善提案と同じ物差し（厳密限界コスト: コース全体の移動増分）"
+                      >
+                        コースの移動{' '}
+                        {Math.round(s.marginal_cost_minutes) <= 0
+                          ? '±0分'
+                          : `+${Math.round(s.marginal_cost_minutes)}分`}
+                      </Badge>
+                    ) : null}
+                    <span className="tnum ml-auto text-[10px] text-text-muted">
+                      スコア {s.score.toFixed(0)}
+                    </span>
+                  </div>
+
+                  {s.reasons.length > 0 ? (
+                    <div className="mt-1 text-[11px] text-text-muted">{s.reasons.join(' / ')}</div>
+                  ) : null}
+
+                  {s.warnings.length > 0 ? (
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {s.warnings.map((w, wi) => (
+                        <Badge key={wi} variant="warning" className="text-[10px]">
+                          {proposeWarningLabel(w)}
+                        </Badge>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  {s.mini_schedule.length > 0 ? (
+                    <div
+                      className="mt-1.5 rounded border border-border-default bg-bg-muted/20 p-2"
+                    >
+                      <div className="mb-1 text-[10px] font-semibold text-text-muted">
+                        {s.course_label}
+                        {s.staff_name ? `（${s.staff_name}）` : ''} の{' '}
+                        {WEEKDAY_LABELS[s.weekday] ?? '?'}曜 ・ 既存{' '}
+                        {s.mini_schedule.filter((m) => !m.is_here).length} 件 + 提案枠
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        {s.mini_schedule.map((row, ri) => (
+                          <MiniRow key={ri} row={row} />
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {canEdit ? (
+                    <div className="mt-1.5 flex items-center justify-end">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setPending(s)}
+                        disabled={isBusy}
+                        className="h-6 px-2 text-[11px]"
+                        data-testid={`pool-efficiency-adopt-${slotKey(s)}`}
+                      >
+                        この枠で採用
+                      </Button>
+                    </div>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </details>
       ) : null}
 
       {/* 方式b: 定員超過候補セクション (「定員超過の候補を表示」クリック後に表示). */}
