@@ -267,6 +267,12 @@ export interface PatientScheduleDetailDialogProps {
    * 自動で include_overcapacity 再リクエストを発火する。1 回だけ (ref ガード済み)。
    */
   autoRequestOvercapacity?: boolean;
+  /**
+   * W-14: BulkPoolInsertDialog done 画面「ずらせば入る手を探せます」からの直行専用.
+   * true のとき PoolCandidateList が通常候補 0 件 + 時間起因の除外理由を検知して
+   * 詰まり解消探索 (propose-unblock) を 1 回だけ自動発火する (ref ガード済み)。
+   */
+  autoRequestUnblock?: boolean;
 }
 
 type ApplyStage = 'idle' | 'preview' | 'applying';
@@ -281,6 +287,7 @@ export function PatientScheduleDetailDialog({
   enablePoolProposal = false,
   officeId = null,
   autoRequestOvercapacity = false,
+  autoRequestUnblock = false,
 }: PatientScheduleDetailDialogProps) {
   // 週 範囲 (ISO Mon..Sun)
   // Wave Next 1 M2: ISO W53 が存在しない年 (e.g. 2025-W53) を検出.
@@ -589,6 +596,7 @@ export function PatientScheduleDetailDialog({
                     onAdopted={() => setPoolAdopted(true)}
                     primary
                     autoRequestOvercapacity={autoRequestOvercapacity}
+                    autoRequestUnblock={autoRequestUnblock}
                   />
                 ) : null}
               </section>

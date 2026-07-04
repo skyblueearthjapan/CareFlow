@@ -1658,15 +1658,20 @@ export function CourseDayTablePanel({
     setPatientDetailPoolMode(false);
     // W-5b: 直行フラグの取り残し防止 (非プール経路では常に自動展開しない)。
     setPatientDetailAutoOvercapacity(false);
+    // W-14: 詰まり解消の自動探索フラグも非プール経路ではリセットする。
+    setPatientDetailAutoUnblock(false);
     setPatientDetailId(pid);
   }, []);
   // 保留プールの患者カードクリック専用. プール投入提案セクションを有効化して開く.
   // W-5b: 定員超過候補まで自動展開するか (BulkPoolInsertDialog done 画面からの直行専用).
   const [patientDetailAutoOvercapacity, setPatientDetailAutoOvercapacity] = useState(false);
+  // W-14: 詰まり解消探索を自動発火するか (同 done 画面「ずらせば入る手を探せます」導線).
+  const [patientDetailAutoUnblock, setPatientDetailAutoUnblock] = useState(false);
   const handleOpenPoolPatientDetail = useCallback(
-    (pid: string, opts?: { autoOvercapacity?: boolean }) => {
+    (pid: string, opts?: { autoOvercapacity?: boolean; autoUnblock?: boolean }) => {
       setPatientDetailPoolMode(true);
       setPatientDetailAutoOvercapacity(opts?.autoOvercapacity ?? false);
+      setPatientDetailAutoUnblock(opts?.autoUnblock ?? false);
       setPatientDetailId(pid);
     },
     [],
@@ -1675,6 +1680,7 @@ export function CourseDayTablePanel({
     setPatientDetailId(null);
     setPatientDetailPoolMode(false);
     setPatientDetailAutoOvercapacity(false);
+    setPatientDetailAutoUnblock(false);
   }, []);
 
   // ─── Phase G-21 T4 reviewer C2: 🔒 完全固定 toggle handler ────────────
@@ -2797,6 +2803,7 @@ export function CourseDayTablePanel({
             enablePoolProposal={patientDetailPoolMode}
             officeId={officeId}
             autoRequestOvercapacity={patientDetailAutoOvercapacity}
+            autoRequestUnblock={patientDetailAutoUnblock}
           />
         ) : null}
       </section>

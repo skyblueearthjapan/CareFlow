@@ -1318,3 +1318,71 @@ describe('W-12d: 詰まり解消相談 (unblock)', () => {
     expect(summary).not.toHaveTextContent('2名体制');
   });
 });
+
+// ── W-14: autoRequestUnblock (詰まり解消探索の自動発火) ───────────────────────
+
+describe('W-14: autoRequestUnblock (詰まり解消探索の自動発火)', () => {
+  beforeEach(() => {
+    mocks.proposeMutate.mockReset();
+    mocks.confirmMutate.mockReset();
+    mocks.placeAndFixMutate.mockReset();
+    mocks.unblockMutate.mockReset();
+    mocks.unblockApplyMutate.mockReset();
+    mocks.proposeData = undefined;
+    mocks.unblockData = undefined;
+    mocks.unblockPending = false;
+    mocks.unblockApplyPending = false;
+    mocks.existingFixedVisits = [];
+    mocks.templatesQueries = [];
+    mockToast.success.mockReset();
+    mockToast.error.mockReset();
+    mockToast.warning.mockReset();
+  });
+
+  it('primary + autoRequestUnblock: 候補0 + 時間起因で探索が自動発火する (1 回だけ)', () => {
+    mocks.proposeData = TIME_BLOCKER_PROPOSE;
+    const { rerender } = render(
+      <PoolCandidateList {...COMMON} primary autoRequestUnblock />,
+    );
+    // mount 直後に propose-unblock (runSearch) が 1 回だけ自動発火する。
+    expect(mocks.unblockMutate).toHaveBeenCalledTimes(1);
+    const req = mocks.unblockMutate.mock.calls[0][0];
+    expect(req.existing_patient_id).toBe(PATIENT.id);
+    expect(req.limit).toBe(5);
+    // 再レンダーしても ref ガードで再発火しない。
+    rerender(<PoolCandidateList {...COMMON} primary autoRequestUnblock />);
+    expect(mocks.unblockMutate).toHaveBeenCalledTimes(1);
+  });
+
+  it('primary + autoRequestUnblock: 通常候補があるときは自動発火しない', () => {
+    // 通常候補が 1 件あると UnblockConsult 自体が mount されない。
+    mocks.proposeData = {
+      slots: [makeSlot()],
+      message: null,
+      excluded_summary: [{ reason: 'no_gap', count: 1, weekday: 1, sample_course_code: 'B' }],
+    };
+    render(<PoolCandidateList {...COMMON} primary autoRequestUnblock />);
+    expect(mocks.unblockMutate).not.toHaveBeenCalled();
+  });
+
+  it('primary + autoRequestUnblock なし: 自動発火しない (従来どおり呼びかけのみ)', () => {
+    mocks.proposeData = TIME_BLOCKER_PROPOSE;
+    render(<PoolCandidateList {...COMMON} primary />);
+    // 自動発火せず、静かな呼びかけボタンのみ出る。
+    expect(mocks.unblockMutate).not.toHaveBeenCalled();
+    expect(screen.getByTestId('unblock-callout')).toBeInTheDocument();
+  });
+
+  it('primary + autoRequestUnblock: 時間起因なし (capacity_full のみ) では自動発火しない', () => {
+    mocks.proposeData = {
+      slots: [],
+      message: null,
+      excluded_summary: [
+        { reason: 'capacity_full', count: 3, weekday: 1, sample_course_code: 'A' },
+      ],
+    };
+    render(<PoolCandidateList {...COMMON} primary autoRequestUnblock />);
+    // 時間起因がないので UnblockConsult は mount されず自動発火もしない。
+    expect(mocks.unblockMutate).not.toHaveBeenCalled();
+  });
+});

@@ -98,6 +98,28 @@ function overcapCount(entry: { overcapacity_available_count?: number }): number 
 }
 
 /**
+ * W-14: 詰まり解消相談を発動する時間起因の除外理由。
+ * PoolCandidateList.UNBLOCK_TRIGGER_REASONS と同一 (設計書 unblock-consult-design.md §3・
+ * この3件のみ)。BulkPoolInsertDialog.test が PoolCandidateList を mock するため、import せず
+ * ここに複製する (単一の正典は設計書。新 reason 追加時は両方要更新)。
+ */
+const UNBLOCK_TRIGGER_REASONS = ['no_gap', 'no_pair_slot', 'travel_shortage'] as const;
+
+function isTimeBlockerReason(reason: string): boolean {
+  return (UNBLOCK_TRIGGER_REASONS as readonly string[]).includes(reason);
+}
+
+/** unplaced (単一 reason) が時間起因か。 */
+function unplacedHasTimeBlocker(entry: { reason: string }): boolean {
+  return isTimeBlockerReason(entry.reason);
+}
+
+/** partial (曜日→reason マップ) のいずれかが時間起因か。 */
+function partialHasTimeBlocker(entry: { unplaced_reasons: Record<string, string> }): boolean {
+  return Object.values(entry.unplaced_reasons).some(isTimeBlockerReason);
+}
+
+/**
  * A 案 (方式b 橋渡し): 「定員 +1 名なら入る候補あり」アンバーバッジ。
  * プレビュー段階は情報表示のみ (クリック不可)。done 画面では患者名クリックで個別フローへ導く。
  */
@@ -109,6 +131,23 @@ function OvercapacityBadge() {
       data-testid="bulk-pool-insert-overcap-badge"
     >
       定員+1名なら入る候補あり
+    </Badge>
+  );
+}
+
+/**
+ * W-14 (詰まり解消橋渡し): 「ずらせば入る手を探せます」アンバーバッジ。
+ * OvercapacityBadge と同じ視覚言語 (アンバー系実値トークン)。プレビューは情報表示のみ、
+ * done 画面ではボタンで包み autoUnblock=true で個別の詰まり解消探索へ直行する。
+ */
+function UnblockBadge() {
+  return (
+    <Badge
+      variant="outline"
+      className="border-amber-400 bg-amber-50 text-[9px] text-amber-800 dark:border-amber-600 dark:bg-amber-950 dark:text-amber-200"
+      data-testid="bulk-pool-insert-unblock-badge"
+    >
+      ずらせば入る手を探せます
     </Badge>
   );
 }
@@ -142,9 +181,13 @@ export interface BulkPoolInsertDialogProps {
    * A 案 (2026-07-04 PO 承認): done 画面で投入できなかった患者名クリック時に、
    * 一括ダイアログを閉じてから患者詳細 (→ PoolCandidateList → 方式b の定員+1 相談) を開く導線。
    * W-5b: opts.autoOvercapacity=true で呼ぶと PoolCandidateList が超過候補まで自動展開する。
+   * W-14: opts.autoUnblock=true で呼ぶと PoolCandidateList が詰まり解消探索を自動発火する。
    * 未指定なら名前はクリック不可 (バッジ表示のみ)。
    */
-  onOpenPatientDetail?: (patientId: string, opts?: { autoOvercapacity?: boolean }) => void;
+  onOpenPatientDetail?: (
+    patientId: string,
+    opts?: { autoOvercapacity?: boolean; autoUnblock?: boolean },
+  ) => void;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -442,7 +485,10 @@ function OfficeBulkPanel({
   patientIds: string[];
   onClose: () => void;
   onBusyChange?: (officeId: string, busy: boolean) => void;
-  onOpenPatientDetail?: (patientId: string, opts?: { autoOvercapacity?: boolean }) => void;
+  onOpenPatientDetail?: (
+    patientId: string,
+    opts?: { autoOvercapacity?: boolean; autoUnblock?: boolean },
+  ) => void;
 }) {
   const simulateMut = usePoolBulkSimulateMutation();
   const applyMut = usePoolBulkApplyMutation();
@@ -539,7 +585,7 @@ function OfficeBulkPanel({
    * (→ PoolCandidateList → 方式b の定員+1 相談)。基準がずれないよう done 画面のみで導線を出す。
    */
   const openPatientDetail = React.useCallback(
-    (patientId: string, opts?: { autoOvercapacity?: boolean }) => {
+    (patientId: string, opts?: { autoOvercapacity?: boolean; autoUnblock?: boolean }) => {
       onClose();
       onOpenPatientDetail?.(patientId, opts);
     },
@@ -821,6 +867,10 @@ function InsertListColumn({ result }: { result: PoolBulkSimulateResponse }) {
   const hasOvercapEntry =
     result.partial.some((p) => overcapCount(p) >= 1) ||
     result.unplaced.some((u) => overcapCount(u) >= 1);
+  // W-14: 部分投入/投入不能に時間起因 (no_gap 等) がある場合も同じヒント行で案内する。
+  const hasTimeBlockerEntry =
+    result.partial.some(partialHasTimeBlocker) ||
+    result.unplaced.some(unplacedHasTimeBlocker);
 
   return (
     <div className="space-y-2" data-testid="bulk-pool-insert-list">
@@ -864,6 +914,8 @@ function InsertListColumn({ result }: { result: PoolBulkSimulateResponse }) {
                     {p.patient_name}（{p.placed_days}枠投入 / {p.missing_days}枠不足）
                   </span>
                   {overcapCount(p) >= 1 ? <OvercapacityBadge /> : null}
+                  {/* W-14: プレビューは情報バッジのみ (クリック不可・適用後に基準確定)。 */}
+                  {partialHasTimeBlocker(p) ? <UnblockBadge /> : null}
                 </div>
                 {Object.entries(p.unplaced_reasons).length > 0 ? (
                   <ul className="mt-0.5 ml-3 list-disc text-[10px] text-amber-700 dark:text-amber-400">
@@ -898,6 +950,8 @@ function InsertListColumn({ result }: { result: PoolBulkSimulateResponse }) {
                 <span className="flex flex-wrap items-center gap-1">
                   <span className="text-text-primary">{p.patient_name}</span>
                   {overcapCount(p) >= 1 ? <OvercapacityBadge /> : null}
+                  {/* W-14: プレビューは情報バッジのみ (クリック不可・適用後に基準確定)。 */}
+                  {unplacedHasTimeBlocker(p) ? <UnblockBadge /> : null}
                 </span>
                 <span className="text-text-muted">{bulkReasonLabel(p.reason)}</span>
               </li>
@@ -906,13 +960,19 @@ function InsertListColumn({ result }: { result: PoolBulkSimulateResponse }) {
         </div>
       ) : null}
 
-      {/* W-5b: 定員超過候補があるときのヒント行 (適用後の個別相談導線を案内)。 */}
-      {hasOvercapEntry ? (
+      {/* W-5b/W-14: 定員超過候補・ずらして入る手があるときのヒント行
+          (適用後にのみ個別相談へ移動できることを案内。適用前は基準がずれるため)。 */}
+      {hasOvercapEntry || hasTimeBlockerEntry ? (
         <p
           className="text-[10px] text-amber-800 dark:text-amber-300"
+          // overcap/unblock 両方のヒントを兼ねる（歴史的経緯で testid 名は overcap のまま）
           data-testid="bulk-pool-insert-overcap-hint"
         >
-          定員+1名の個別相談は、適用後にこの画面の患者名から移動できます
+          {hasOvercapEntry && hasTimeBlockerEntry
+            ? '定員+1名の個別相談・ずらして入る手は、適用後にこの画面の患者名から探せます'
+            : hasOvercapEntry
+              ? '定員+1名の個別相談は、適用後にこの画面の患者名から移動できます'
+              : 'ずらして入る手も、適用後にこの画面の患者名から探せます'}
         </p>
       ) : null}
     </div>
@@ -960,6 +1020,8 @@ interface RemainingEntry {
   patientId: string;
   patientName: string;
   overcapCount: number;
+  /** W-14: 投入不能/部分投入の理由が時間起因 (no_gap 等) を含むか。 */
+  hasTimeBlocker: boolean;
   isPartial: boolean;
 }
 
@@ -968,7 +1030,10 @@ function DoneRemainingList({
   onOpenPatientDetail,
 }: {
   result: PoolBulkSimulateResponse | null;
-  onOpenPatientDetail?: (patientId: string, opts?: { autoOvercapacity?: boolean }) => void;
+  onOpenPatientDetail?: (
+    patientId: string,
+    opts?: { autoOvercapacity?: boolean; autoUnblock?: boolean },
+  ) => void;
 }) {
   const entries: RemainingEntry[] = React.useMemo(() => {
     if (!result) return [];
@@ -978,6 +1043,7 @@ function DoneRemainingList({
         patientId: u.patient_id,
         patientName: u.patient_name,
         overcapCount: overcapCount(u),
+        hasTimeBlocker: unplacedHasTimeBlocker(u),
         isPartial: false,
       });
     }
@@ -986,6 +1052,7 @@ function DoneRemainingList({
         patientId: p.patient_id,
         patientName: p.patient_name,
         overcapCount: overcapCount(p),
+        hasTimeBlocker: partialHasTimeBlocker(p),
         isPartial: true,
       });
     }
@@ -995,6 +1062,7 @@ function DoneRemainingList({
   if (entries.length === 0) return null;
 
   const hasOvercapCandidate = entries.some((e) => e.overcapCount >= 1);
+  const hasTimeBlockerCandidate = entries.some((e) => e.hasTimeBlocker);
 
   return (
     <div
@@ -1007,6 +1075,12 @@ function DoneRemainingList({
           <>
             <br />
             「定員+1名なら入る候補あり」の方は、個別画面で定員+1名の相談（理由を入れて採用）ができます。
+          </>
+        ) : null}
+        {hasTimeBlockerCandidate ? (
+          <>
+            <br />
+            「ずらせば入る手を探せます」の方は、個別画面で既存の訪問を少しずらして入れる手を探せます。
           </>
         ) : null}
       </p>
@@ -1032,21 +1106,40 @@ function DoneRemainingList({
                 {e.isPartial ? '（部分投入）' : ''}
               </span>
             )}
-            {/* W-5b: 定員超過バッジ — count>=1 かつ onOpenPatientDetail ありなら
-                バッジ自体もクリック可能にして autoOvercapacity=true で直行する。 */}
-            {e.overcapCount >= 1 ? (
-              onOpenPatientDetail ? (
-                <button
-                  type="button"
-                  onClick={() => onOpenPatientDetail(e.patientId, { autoOvercapacity: true })}
-                  className="cursor-pointer rounded hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
-                  data-testid="bulk-pool-insert-done-overcap-button"
-                >
-                  <OvercapacityBadge />
-                </button>
-              ) : (
-                <OvercapacityBadge />
-              )
+            {/* W-5b/W-14: 定員超過・詰まり解消バッジ — 該当かつ onOpenPatientDetail ありなら
+                バッジ自体もクリック可能にして autoOvercapacity / autoUnblock=true で直行する。
+                両方該当する患者は両方表示 (並ぶ位置・同じ視覚言語)。 */}
+            {e.overcapCount >= 1 || e.hasTimeBlocker ? (
+              <span className="flex flex-wrap items-center gap-1">
+                {e.overcapCount >= 1 ? (
+                  onOpenPatientDetail ? (
+                    <button
+                      type="button"
+                      onClick={() => onOpenPatientDetail(e.patientId, { autoOvercapacity: true })}
+                      className="cursor-pointer rounded hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
+                      data-testid="bulk-pool-insert-done-overcap-button"
+                    >
+                      <OvercapacityBadge />
+                    </button>
+                  ) : (
+                    <OvercapacityBadge />
+                  )
+                ) : null}
+                {e.hasTimeBlocker ? (
+                  onOpenPatientDetail ? (
+                    <button
+                      type="button"
+                      onClick={() => onOpenPatientDetail(e.patientId, { autoUnblock: true })}
+                      className="cursor-pointer rounded hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
+                      data-testid="bulk-pool-insert-done-unblock-button"
+                    >
+                      <UnblockBadge />
+                    </button>
+                  ) : (
+                    <UnblockBadge />
+                  )
+                ) : null}
+              </span>
             ) : null}
           </li>
         ))}

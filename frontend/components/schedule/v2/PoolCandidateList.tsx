@@ -560,6 +560,7 @@ function UnblockConsult({
   officeId,
   canEdit,
   onAdopted,
+  autoFire = false,
 }: {
   patient: PatientRead;
   isoYear: number;
@@ -567,6 +568,13 @@ function UnblockConsult({
   officeId: string | null;
   canEdit: boolean;
   onAdopted?: () => void;
+  /**
+   * W-14: BulkPoolInsertDialog done 画面「ずらせば入る手を探せます」からの直行専用。
+   * true のとき mount 直後に runSearch を 1 回だけ自動発火する (ref ガード)。
+   * この component は「候補0 + 時間起因」のときにのみ親から mount されるため、
+   * mount = 発動条件成立。事前計算はしない (探索は重いためボタン相当を 1 回だけ叩く)。
+   */
+  autoFire?: boolean;
 }) {
   const unblockMut = useProposeUnblockMutation();
   const applyMut = useUnblockApplyMutation();
@@ -629,6 +637,18 @@ function UnblockConsult({
       },
     );
   }, [patient, isoYear, isoWeek, officeId, unblockMut]);
+
+  // W-14: autoFire=true なら mount 直後に探索を 1 回だけ自動発火 (ボタン押下相当)。
+  // mount 時点で発動条件 (候補0 + 時間起因) は親が担保済み。result があれば発火しない。
+  const autoFiredRef = React.useRef(false);
+  React.useEffect(() => {
+    if (!autoFire) return;
+    if (autoFiredRef.current) return;
+    if (result) return;
+    autoFiredRef.current = true;
+    runSearch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoFire]);
 
   const handleApply = () => {
     const plan = pendingPlan;
@@ -825,6 +845,14 @@ export interface PoolCandidateListProps {
    * 自動実行し、超過候補一覧が開いた状態にする。自動実行は 1 回だけ (ref ガード)。
    */
   autoRequestOvercapacity?: boolean;
+  /**
+   * W-14: BulkPoolInsertDialog done 画面「ずらせば入る手を探せます」からの直行専用。
+   * primary=true かつ初回 propose 結果が「通常候補 0 件 + 時間起因の除外理由あり」なら、
+   * UnblockConsult (詰まり解消探索) を 1 回だけ自動発火する。事前計算はしない。
+   * autoRequestOvercapacity と両立: 両方 true かつ時間起因なら unblock を優先し、
+   * 超過 callout は従来表示のまま (自動展開しない)。定員起因のみなら従来どおり超過を自動展開。
+   */
+  autoRequestUnblock?: boolean;
 }
 
 export function PoolCandidateList({
@@ -836,6 +864,7 @@ export function PoolCandidateList({
   onAdopted,
   primary = false,
   autoRequestOvercapacity = false,
+  autoRequestUnblock = false,
 }: PoolCandidateListProps) {
   const { data: session, status: sessionStatus } = useSession();
   const accessToken = session?.accessToken ?? null;
@@ -961,6 +990,9 @@ export function PoolCandidateList({
     if (!autoRequestOvercapacity || !primary) return;
     if (autoFiredRef.current) return;
     if (!result) return;
+    // W-14: unblock と両立。両方 true かつ時間起因なら unblock を優先し、超過は
+    // 自動展開しない (callout は従来表示のまま)。UnblockConsult 側が autoFire で発火する。
+    if (autoRequestUnblock && hasTimeBlocker) return;
     if (normalSlots.length === 0 && (result.overcapacity_available_count ?? 0) >= 1) {
       autoFiredRef.current = true;
       handleRun(true);
@@ -1209,6 +1241,7 @@ export function PoolCandidateList({
               officeId={officeId}
               canEdit={canEdit}
               onAdopted={onAdopted}
+              autoFire={autoRequestUnblock && primary}
             />
           ) : null}
         </div>
