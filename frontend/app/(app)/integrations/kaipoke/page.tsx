@@ -100,6 +100,10 @@ export default function KaipokeIntegrationPage() {
         />
       </div>
 
+      {/* ライブ進捗ゲージ（実行中のみ）— モニターの直下に置き、週ビューが開いても
+          スクロールせずモニターと一緒に見える位置に保つ */}
+      {running && live && <JobProgressCard live={live} />}
+
       {/* 実行中ジョブの非常停止 */}
       {running && latestJob && (
         <div className="flex items-center justify-between rounded-lg border border-border-warning bg-warning-bg px-4 py-3">
@@ -115,9 +119,6 @@ export default function KaipokeIntegrationPage() {
 
       {/* 週次反映ワークフロー（①展開 →②差分 →③確認 →④反映 を集約） */}
       <WeeklyApplyPanel busy={running} />
-
-      {/* ライブ進捗（実行中のみ） */}
-      {running && live && <JobProgressCard live={live} />}
 
       {/* 実行ログ */}
       {live && live.logs.length > 0 && <ExecutionLogViewer lines={live.logs} />}

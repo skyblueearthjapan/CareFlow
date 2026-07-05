@@ -174,30 +174,8 @@ export function WeeklyApplyPanel({ busy }: { busy: boolean }) {
         </div>
       </div>
 
-      {/* この週の予定（コース別・常時・週切替で連動） */}
-      <div className="mb-5">
-        <div className="mb-2 flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-text-primary">この週の予定（コース別）</h3>
-          <span className="text-xs text-text-muted">
-            {schedule.isLoading ? '読み込み中…' : `${scheduleRows.length}件`}
-          </span>
-        </div>
-        {schedule.isLoading ? (
-          <Skeleton className="h-40 w-full" />
-        ) : scheduleRows.length === 0 ? (
-          <Alert>
-            <AlertTitle>この週の予定はありません</AlertTitle>
-            <AlertDescription>
-              CareFlow でこの週のスケジュールを生成し、スタッフ割当まで済ませてください。
-            </AlertDescription>
-          </Alert>
-        ) : (
-          <WeekScheduleView weekStart={weekStart} rows={scheduleRows} />
-        )}
-      </div>
-
-      {/* ステップ ①〜④ */}
-      <div className="space-y-2 border-t border-border-subtle pt-4">
+      {/* ステップ ①〜④ (週セレクタの直下・モニターの見える範囲に集約) */}
+      <div className="space-y-2">
         {/* ① 展開 */}
         <Step no="01" title={`スケジュール展開（月: ${month}）`}>
           <div className="flex flex-wrap items-center gap-2">
@@ -336,6 +314,29 @@ export function WeeklyApplyPanel({ busy }: { busy: boolean }) {
             </div>
           )}
         </Step>
+      </div>
+
+      {/* この週の予定（コース別・週切替で連動）— 操作ボタンの下に配置し、
+          ボタン/ゲージがモニターの見える範囲から押し出されないようにする */}
+      <div className="mt-5 border-t border-border-subtle pt-4">
+        <div className="mb-2 flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-text-primary">この週の予定（コース別）</h3>
+          <span className="text-xs text-text-muted">
+            {schedule.isLoading ? '読み込み中…' : `${scheduleRows.length}件`}
+          </span>
+        </div>
+        {schedule.isLoading ? (
+          <Skeleton className="h-40 w-full" />
+        ) : scheduleRows.length === 0 ? (
+          <Alert>
+            <AlertTitle>この週の予定はありません</AlertTitle>
+            <AlertDescription>
+              CareFlow でこの週のスケジュールを生成し、スタッフ割当まで済ませてください。
+            </AlertDescription>
+          </Alert>
+        ) : (
+          <WeekScheduleView weekStart={weekStart} rows={scheduleRows} />
+        )}
       </div>
 
       {/* 確認ダイアログ */}
