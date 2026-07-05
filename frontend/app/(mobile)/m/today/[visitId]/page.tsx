@@ -91,6 +91,16 @@ function shortTime(t: string): string {
   return t.length >= 5 ? t.slice(0, 5) : t;
 }
 
+/**
+ * visit.note のうち、スケジューラが書き込む内部メタデータは現場に見せない。
+ *   - "Layer1: fixed pattern" 等 (layer1_expander)
+ *   - "reset_to_fixed_v2 iso_year=... iso_week=..." (auto_allocator_v2)
+ * それ以外 (特別訪問週間: / [2名体制…] など人間向けの日本語 note) は表示する。
+ */
+function isInternalNote(note: string): boolean {
+  return /^(Layer1:|reset_to_fixed)/.test(note.trim());
+}
+
 function statusLabel(status: string): {
   label: string;
   variant: 'default' | 'secondary' | 'success' | 'warning' | 'info';
@@ -708,7 +718,7 @@ export default function MobileVisitDetailPage() {
                   {shortTime(visit.start_time)} - {shortTime(visit.end_time)}
                 </span>
               </div>
-              {visit.note && (
+              {visit.note && !isInternalNote(visit.note) && (
                 <div className="flex items-start gap-2 text-text-secondary">
                   <StickyNote className="h-4 w-4 shrink-0 mt-0.5" />
                   <span className="whitespace-pre-wrap">{visit.note}</span>

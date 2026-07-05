@@ -37,6 +37,28 @@ export interface QrScannerProps {
 
 const SCANNER_ELEMENT_ID = 'qr-scanner-region';
 
+/**
+ * html5-qrcode の stop() を安全に呼ぶ。
+ *
+ * 重要: html5-qrcode は「既に停止中/未走行」のとき Promise の reject ではなく
+ * **生の文字列を同期 throw** する ("Cannot stop, scanner is not running or
+ * paused.")。`stop().catch()` だけでは同期 throw を握れず、unmount 中に
+ * 例外が漏れて React が `_componentStack` を文字列に付与しようとして
+ * TypeError → アプリ全体がエラー境界落ちする (本番で実証済み)。
+ * 同期 throw と非同期 reject の両方をここで吸収する。
+ */
+function safeStop(scanner: { stop: () => Promise<void> } | null): void {
+  if (!scanner) return;
+  try {
+    const p = scanner.stop();
+    if (p && typeof p.catch === 'function') {
+      void p.catch(() => undefined);
+    }
+  } catch {
+    // 停止済み/未走行の同期 throw — 正常系として無視する。
+  }
+}
+
 export function QrScanner({ onScan, onCancel, onManual, targetLabel }: QrScannerProps) {
   const regionRef = useRef<HTMLDivElement | null>(null);
   // 多重発火防止: 最初の有効読取 / 手入力だけを採用する。
@@ -56,6 +78,8 @@ export function QrScanner({ onScan, onCancel, onManual, targetLabel }: QrScanner
     let cancelled = false;
     // html5-qrcode のインスタンス (型は実体ロード後にのみ判明するため unknown 経由)。
     let scanner: { stop: () => Promise<void>; clear: () => void } | null = null;
+    // 読取成功時に stop 済みなら cleanup での二重 stop を避ける。
+    let stopInitiated = false;
 
     async function start() {
       try {
@@ -71,8 +95,9 @@ export function QrScanner({ onScan, onCancel, onManual, targetLabel }: QrScanner
             const token = extractQrToken(decodedText);
             if (!token) return; // 別サイト QR 等は無視してスキャンを続ける。
             handledRef.current = true;
-            // 読取後すぐカメラを止めてからコールバック。
-            void instance.stop().catch(() => undefined);
+            // 読取後すぐカメラを止めてからコールバック (同期 throw も吸収)。
+            stopInitiated = true;
+            safeStop(instance);
             onScan(token);
           },
           // フレーム毎のデコード失敗は正常 (無視)。
@@ -89,9 +114,10 @@ export function QrScanner({ onScan, onCancel, onManual, targetLabel }: QrScanner
 
     return () => {
       cancelled = true;
-      if (scanner) {
-        // stop() は走行中のみ成功する。停止済みでも例外を握りつぶす。
-        void scanner.stop().catch(() => undefined);
+      // 読取成功時は既に stop 済み — 二重 stop は html5-qrcode が
+      // 「文字列を同期 throw」するため呼ばない (safeStop でも防護)。
+      if (!stopInitiated) {
+        safeStop(scanner);
       }
     };
     // onScan は呼び出し側で安定参照を渡す前提 (再マウントで再スキャン)。

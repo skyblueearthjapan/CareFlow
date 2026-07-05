@@ -69,6 +69,13 @@ services:
       APP_ENV: production
     ports:
       - "127.0.0.1:18001:8000"
+    volumes:
+      # 訪問写真の永続化 (W4-D visit_photos)。この mount が無いと container 内の
+      # /opt/carelink/data が存在せず POST /visits/{id}/photos が 500 になる
+      # (2026-07-05 本番障害)。container は非 root (app uid=999) で動くため、
+      # ホスト側は `mkdir -p /opt/carelink/data/visit_photos && chown -R 999:999
+      # /opt/carelink/data/visit_photos` で所有者を合わせること。
+      - /opt/carelink/data/visit_photos:/opt/carelink/data/visit_photos
     depends_on:
       postgres:
         condition: service_healthy
