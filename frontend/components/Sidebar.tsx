@@ -30,9 +30,9 @@ const NAV_ITEMS = [
   { href: '/monitor', label: '訪問モニター', icon: MapPin, adminOnly: true },
   // 現場ボード (/m) は PC 盤(親機サイドバー)では不要のため非表示。
   // モバイル現場ビュー自体は /m に存在し、モバイル導線 (MobileShell) から開ける。
-  { href: '/patients', label: '患者', icon: Users },
-  { href: '/staff', label: 'スタッフ', icon: UserCircle2 },
   { href: '/offices', label: '拠点', icon: Building2 },
+  { href: '/staff', label: 'スタッフ', icon: UserCircle2 },
+  { href: '/patients', label: '患者', icon: Users },
   // 「連携」= カイポケ ジョブセンター（操作卓）を直接開く。Geocoding/AI ログ等の
   // 管理ユーティリティはジョブセンター画面内のリンクから /integrations へ。
   { href: '/integrations/kaipoke', label: '連携', icon: Plug, adminOnly: true },
