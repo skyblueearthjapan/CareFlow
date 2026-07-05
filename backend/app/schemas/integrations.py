@@ -183,7 +183,9 @@ class IntegrationDiffRequest(BaseModel):
 class IntegrationApplyRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
     sheet_id: UUID = Field(alias="sheetId")
-    dry_run: bool = Field(default=False, alias="dryRun")
+    # 不可逆な外部書込のため既定は dry_run=True (安全側)。実書込は明示的に
+    # dryRun:false を送った時だけ。フィールド送り忘れで実書込が走らないようにする。
+    dry_run: bool = Field(default=True, alias="dryRun")
 
 
 class JobAccepted(BaseModel):

@@ -381,6 +381,18 @@ async def _reconcile_latest_job(
             trimmed = {k: v for k, v in result.items() if k != "csv_content"}
             job.result_summary = {**(job.result_summary or {}), "result": trimmed}
     job.completed_at = datetime.now(UTC)
+
+    # apply(実書込)ジョブが決着したら CorrectionSheet の状態も同期させる:
+    # applying → completed で applied / failed で failed。早計な applied を避け、
+    # 実際にカイポケ処理が終わってから確定する。
+    params = job.params or {}
+    if params.get("op") == "apply" and not params.get("dry_run") and params.get("sheet_id"):
+        sheet = await db.scalar(
+            select(CorrectionSheet).where(CorrectionSheet.id == _safe_uuid(params.get("sheet_id")))
+        )
+        if sheet is not None and sheet.status == "applying":
+            sheet.status = "applied" if job.status == "completed" else "failed"
+
     await _commit_or_409(db)
 
     # commit() expires the instance; re-select with items eagerly loaded so the
@@ -894,12 +906,23 @@ async def trigger_apply(
     if sheet is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="sheet not found")
 
+    # 二重書込ガード (不可逆): 適用済みは常に拒否、適用中は実書込を拒否。
+    # dry-run(状態変更なし)は applying でなければ許可。
+    if sheet.status == "applied":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="sheet already applied")
+    if sheet.status == "applying" and not payload.dry_run:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="apply already in progress"
+        )
+
     selected = [it for it in sheet.items if it.include]
     if not selected:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="No items selected (include=true)",
         )
+
+    from app.services.kaipoke.local_diff import item_to_kaipoke_correction
 
     job = KaipokeJob(
         job_type="push",
@@ -911,21 +934,19 @@ async def trigger_apply(
     db.add(job)
     await db.flush()
 
+    # CorrectionSheetItem(before/after dict) → カイポケ /api/apply の平坦 Correction 形式。
+    # カイポケ側は Correction(**item) で復元するためキーを厳密一致させる (item_to_kaipoke_correction)。
+    correction_data = [
+        item_to_kaipoke_correction(it.action, it.before, it.after) for it in selected
+    ]
+    # 安全: 職員1が空(未割当)の修正数を数え、監査に残す (カイポケでは '-' 登録になる)。
+    unassigned = sum(1 for c in correction_data if not c["staff1_to"] and c["action"] != "delete")
+
     body = {
-        "sheetId": str(sheet.id),
+        "correction_data": correction_data,
         "month": sheet.target_month,
-        "dryRun": payload.dry_run,
-        "items": [
-            {
-                "id": str(it.id),
-                "action": it.action,
-                "patient_id": str(it.patient_id) if it.patient_id else None,
-                "visit_id": str(it.visit_id) if it.visit_id else None,
-                "before": it.before,
-                "after": it.after,
-            }
-            for it in selected
-        ],
+        "dry_run": payload.dry_run,
+        "headed": True,
     }
 
     try:
@@ -941,9 +962,17 @@ async def trigger_apply(
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
     await _persist_job_after_kaipoke_call(db, job=job, kaipoke_response=upstream)
+    job.result_summary = {
+        **(job.result_summary or {}),
+        "correction_count": len(correction_data),
+        "unassigned_staff": unassigned,
+        "dry_run": payload.dry_run,
+    }
     if not payload.dry_run:
-        sheet.status = "applied"
-        await _commit_or_409(db)
+        # 非同期のため投入時は中間状態。実際の完了は _reconcile_latest_job が
+        # job 完了を観測して applied/failed へ遷移させる (早計な applied を避ける)。
+        sheet.status = "applying"
+    await _commit_or_409(db)
 
     return JobAccepted(
         job_id=job.id,

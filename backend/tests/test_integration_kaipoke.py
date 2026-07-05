@@ -257,6 +257,76 @@ async def test_apply_requires_selected_items(client, db, stub_kaipoke) -> None:
     assert res.status_code == 422, res.text
 
 
+# --- 4b. apply payload bridge (K-2d) --------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apply_sends_flat_correction_data(client, db, stub_kaipoke) -> None:
+    """apply が CorrectionSheet を カイポケ平坦 correction_data 形式へ橋渡しする。"""
+    admin = await _make_user(db, "wave-apply-bridge@example.com", "admin")
+    # diff-local で sheet を作る (現況に1件・CareFlow空 → delete 差分)。
+    current = (
+        _KAIPOKE_18COL_HEADER
+        + "\n"
+        + "看護A,看護師,,,,,,,よりより,3,金,患者Z,医療保険,精神基本療養費Ⅰ・正看,"
+        + "09:00,09:35,35,\n"
+    )
+    stub_kaipoke.responses["export"] = {"result": {"csv_content": current}}
+    diff = await client.post(
+        "/api/v1/integrations/diff-local",
+        headers=_bearer(admin),
+        json={"month": "2026-07"},
+    )
+    sheet_id = diff.json()["sheetId"]
+
+    stub_kaipoke.responses["apply"] = {"async": True}
+    res = await client.post(
+        "/api/v1/integrations/apply",
+        headers=_bearer(admin),
+        json={"sheetId": sheet_id, "dryRun": True},
+    )
+    assert res.status_code == 202, res.text
+
+    # apply 呼び出しの payload を検証。
+    apply_calls = [p for (name, p) in stub_kaipoke.calls if name == "apply"]
+    assert apply_calls, "apply が呼ばれていない"
+    body = apply_calls[-1]
+    assert body["dry_run"] is True
+    assert "correction_data" in body and "items" not in body
+    cd = body["correction_data"]
+    assert cd, "correction_data が空"
+    first = cd[0]
+    # カイポケ Correction(**item) が復元できるフィールド名が揃っていること。
+    for key in ("user_name", "date_from", "date_to", "staff1_to", "action", "business_type"):
+        assert key in first, f"欠落: {key}"
+    assert first["action"] == "delete"
+    assert first["date_from"] == "3"  # delete は before(現況) の日付
+
+
+@pytest.mark.asyncio
+async def test_apply_rejects_already_applied_sheet(client, db, stub_kaipoke) -> None:
+    """二重書込ガード: applied 済みシートへの apply は 409。"""
+    from app.models.correction_sheet import CorrectionSheet, CorrectionSheetItem
+
+    admin = await _make_user(db, "wave-apply-dup@example.com", "admin")
+    sheet = CorrectionSheet(target_month="2026-07", status="applied", created_by_user_id=admin.id)
+    db.add(sheet)
+    await db.flush()
+    db.add(
+        CorrectionSheetItem(
+            sheet_id=sheet.id, action="delete", before={"date": "1"}, after=None, include=True
+        )
+    )
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/integrations/apply",
+        headers=_bearer(admin),
+        json={"sheetId": str(sheet.id), "dryRun": False},
+    )
+    assert res.status_code == 409, res.text
+
+
 # --- 5. correction items PATCH ---------------------------------------------
 
 

@@ -147,3 +147,43 @@ def correction_before_after(c: Correction) -> tuple[dict[str, str], dict[str, st
         "remarks": c.remarks,
     }
     return before, after
+
+
+# CorrectionSheetItem の before/after キー → カイポケ Correction の *_from/*_to キー。
+# correction_before_after() の逆変換。apply でカイポケへ送る平坦形式を作る。
+def item_to_kaipoke_correction(
+    action: str, before: dict[str, Any] | None, after: dict[str, Any] | None
+) -> dict[str, str]:
+    """CorrectionSheetItem(before/after dict) → カイポケ /api/apply の Correction dict。
+
+    カイポケ側は ``Correction(**item)`` で復元するため、キーは Correction dataclass の
+    フィールド名 (user_name / date_from / date_to / *_from / *_to / action /
+    business_type / service_type / remarks) と厳密一致させる。
+    """
+    b = before or {}
+    a = after or {}
+
+    def pick(key: str) -> str:
+        """after 優先で取得 (空なら before)。user_name/service_type 等の共通フィールド用。"""
+        val = a.get(key)
+        if val is not None and val != "":
+            return str(val)
+        return str(b.get(key) or "")
+
+    return {
+        "user_name": pick("user_name"),
+        "date_from": str(b.get("date") or ""),
+        "date_to": str(a.get("date") or ""),
+        "start_time_from": str(b.get("start_time") or ""),
+        "start_time_to": str(a.get("start_time") or ""),
+        "end_time_from": str(b.get("end_time") or ""),
+        "end_time_to": str(a.get("end_time") or ""),
+        "staff1_from": str(b.get("staff1") or ""),
+        "staff1_to": str(a.get("staff1") or ""),
+        "staff2_from": str(b.get("staff2") or ""),
+        "staff2_to": str(a.get("staff2") or ""),
+        "service_type": pick("service_type"),
+        "action": action,
+        "business_type": pick("business_type"),
+        "remarks": pick("remarks"),
+    }
