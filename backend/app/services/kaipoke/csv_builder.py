@@ -261,7 +261,11 @@ async def resolve_month_rows(db: AsyncSession, opts: BuildOptions) -> list[Kaipo
                 primary=primary,
                 secondary=slot2,
                 tertiary=slot3,
-                remarks=v.note or "",
+                # 備考は空にする。visit.note は CareFlow 内部メタデータ
+                # (例: "reset_to_fixed_v2 iso_year=... iso_week=...") で、実カイポケの
+                # 備考列は常に空。転記すると内部文字列がカイポケを汚染し差分も濁るため
+                # 出さない (カイポケ向け備考が必要になれば専用フィールドを別途設ける)。
+                remarks="",
             )
         )
     return result
