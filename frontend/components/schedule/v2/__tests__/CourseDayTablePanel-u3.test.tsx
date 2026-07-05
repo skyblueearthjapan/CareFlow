@@ -28,32 +28,43 @@ import { ApiError } from '@/lib/api-client';
 // ─── hoisted 変数 ──────────────────────────────────────────────────────────
 // vi.mock の factory は hoisting されるため、factory 内で参照する変数も hoisted が必要。
 
-const { mockOpLogStore, mockUndoMutateAsync, mockRedoMutateAsync, mockInvalidate, mockToast, dndState } =
-  vi.hoisted(() => ({
-    mockOpLogStore: {
-      state: undefined as
-        | { can_undo: boolean; can_redo: boolean; undo_label: string | null; redo_label: string | null }
-        | undefined,
-      undoIsPending: false,
-      redoIsPending: false,
-    },
-    mockUndoMutateAsync: vi.fn<[{ iso_year: number; iso_week: number }], Promise<unknown>>().mockResolvedValue(
-      undefined,
-    ),
-    mockRedoMutateAsync: vi.fn<[{ iso_year: number; iso_week: number }], Promise<unknown>>().mockResolvedValue(
-      undefined,
-    ),
-    mockInvalidate: vi.fn(),
-    mockToast: {
-      warning: vi.fn(),
-      success: vi.fn(),
-      error: vi.fn(),
-      info: vi.fn(),
-    },
-    dndState: {
-      capturedHandlers: { onDragEnd: undefined as undefined | ((e: unknown) => Promise<void>) },
-    },
-  }));
+const {
+  mockOpLogStore,
+  mockUndoMutateAsync,
+  mockRedoMutateAsync,
+  mockInvalidate,
+  mockToast,
+  dndState,
+} = vi.hoisted(() => ({
+  mockOpLogStore: {
+    state: undefined as
+      | {
+          can_undo: boolean;
+          can_redo: boolean;
+          undo_label: string | null;
+          redo_label: string | null;
+        }
+      | undefined,
+    undoIsPending: false,
+    redoIsPending: false,
+  },
+  mockUndoMutateAsync: vi
+    .fn<[{ iso_year: number; iso_week: number }], Promise<unknown>>()
+    .mockResolvedValue(undefined),
+  mockRedoMutateAsync: vi
+    .fn<[{ iso_year: number; iso_week: number }], Promise<unknown>>()
+    .mockResolvedValue(undefined),
+  mockInvalidate: vi.fn(),
+  mockToast: {
+    warning: vi.fn(),
+    success: vi.fn(),
+    error: vi.fn(),
+    info: vi.fn(),
+  },
+  dndState: {
+    capturedHandlers: { onDragEnd: undefined as undefined | ((e: unknown) => Promise<void>) },
+  },
+}));
 
 // ─── モック ───────────────────────────────────────────────────────────────
 
@@ -432,44 +443,45 @@ describe('CourseDayTablePanel — Wave U-3 戻る/進みボタン・キーボー
   describe('ボタン disabled 状態', () => {
     it('U3-1. opLogState=undefined → 両ボタンが disabled', () => {
       mockOpLogStore.state = undefined;
-      setupHooks({ templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }] });
+      setupHooks({
+        templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
+      });
       renderWithClient(
-        <CourseDayTablePanel
-          weekStart={WEEK_START}
-          officeId={null}
-          canEdit={true}
-          showAcceptanceLayer={false}
-        />,
+        <CourseDayTablePanel weekStart={WEEK_START} officeId={null} canEdit={true} />,
       );
       expect(screen.getByTestId('schedule-undo-button')).toBeDisabled();
       expect(screen.getByTestId('schedule-redo-button')).toBeDisabled();
     });
 
     it('U3-2. can_undo=true, can_redo=false → 戻るのみ有効、進むは disabled', () => {
-      mockOpLogStore.state = { can_undo: true, can_redo: false, undo_label: null, redo_label: null };
-      setupHooks({ templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }] });
+      mockOpLogStore.state = {
+        can_undo: true,
+        can_redo: false,
+        undo_label: null,
+        redo_label: null,
+      };
+      setupHooks({
+        templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
+      });
       renderWithClient(
-        <CourseDayTablePanel
-          weekStart={WEEK_START}
-          officeId={null}
-          canEdit={true}
-          showAcceptanceLayer={false}
-        />,
+        <CourseDayTablePanel weekStart={WEEK_START} officeId={null} canEdit={true} />,
       );
       expect(screen.getByTestId('schedule-undo-button')).not.toBeDisabled();
       expect(screen.getByTestId('schedule-redo-button')).toBeDisabled();
     });
 
     it('U3-3. can_undo=false, can_redo=true → 進むのみ有効、戻るは disabled', () => {
-      mockOpLogStore.state = { can_undo: false, can_redo: true, undo_label: null, redo_label: null };
-      setupHooks({ templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }] });
+      mockOpLogStore.state = {
+        can_undo: false,
+        can_redo: true,
+        undo_label: null,
+        redo_label: null,
+      };
+      setupHooks({
+        templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
+      });
       renderWithClient(
-        <CourseDayTablePanel
-          weekStart={WEEK_START}
-          officeId={null}
-          canEdit={true}
-          showAcceptanceLayer={false}
-        />,
+        <CourseDayTablePanel weekStart={WEEK_START} officeId={null} canEdit={true} />,
       );
       expect(screen.getByTestId('schedule-undo-button')).toBeDisabled();
       expect(screen.getByTestId('schedule-redo-button')).not.toBeDisabled();
@@ -479,14 +491,11 @@ describe('CourseDayTablePanel — Wave U-3 戻る/進みボタン・キーボー
       mockOpLogStore.state = { can_undo: true, can_redo: true, undo_label: null, redo_label: null };
       mockOpLogStore.undoIsPending = true;
       mockOpLogStore.redoIsPending = false; // undo pending だけで両方 disabled になる
-      setupHooks({ templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }] });
+      setupHooks({
+        templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
+      });
       renderWithClient(
-        <CourseDayTablePanel
-          weekStart={WEEK_START}
-          officeId={null}
-          canEdit={true}
-          showAcceptanceLayer={false}
-        />,
+        <CourseDayTablePanel weekStart={WEEK_START} officeId={null} canEdit={true} />,
       );
       // undoRedoPending = undoMut.isPending || redoMut.isPending → true
       expect(screen.getByTestId('schedule-undo-button')).toBeDisabled();
@@ -500,16 +509,16 @@ describe('CourseDayTablePanel — Wave U-3 戻る/進みボタン・キーボー
         undo_label: '田中様を移動',
         redo_label: null,
       };
-      setupHooks({ templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }] });
+      setupHooks({
+        templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
+      });
       renderWithClient(
-        <CourseDayTablePanel
-          weekStart={WEEK_START}
-          officeId={null}
-          canEdit={true}
-          showAcceptanceLayer={false}
-        />,
+        <CourseDayTablePanel weekStart={WEEK_START} officeId={null} canEdit={true} />,
       );
-      expect(screen.getByTestId('schedule-undo-button')).toHaveAttribute('title', '戻す: 田中様を移動');
+      expect(screen.getByTestId('schedule-undo-button')).toHaveAttribute(
+        'title',
+        '戻す: 田中様を移動',
+      );
     });
   });
 
@@ -519,15 +528,17 @@ describe('CourseDayTablePanel — Wave U-3 戻る/進みボタン・キーボー
 
   describe('ボタンクリック → mutation', () => {
     it('U3-5. 戻るボタンクリック → useUndoOpLog.mutateAsync が iso_year/iso_week 付きで呼ばれる', async () => {
-      mockOpLogStore.state = { can_undo: true, can_redo: false, undo_label: null, redo_label: null };
-      setupHooks({ templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }] });
+      mockOpLogStore.state = {
+        can_undo: true,
+        can_redo: false,
+        undo_label: null,
+        redo_label: null,
+      };
+      setupHooks({
+        templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
+      });
       renderWithClient(
-        <CourseDayTablePanel
-          weekStart={WEEK_START}
-          officeId={null}
-          canEdit={true}
-          showAcceptanceLayer={false}
-        />,
+        <CourseDayTablePanel weekStart={WEEK_START} officeId={null} canEdit={true} />,
       );
       await act(async () => {
         fireEvent.click(screen.getByTestId('schedule-undo-button'));
@@ -537,15 +548,17 @@ describe('CourseDayTablePanel — Wave U-3 戻る/進みボタン・キーボー
     });
 
     it('U3-6. 進むボタンクリック → useRedoOpLog.mutateAsync が iso_year/iso_week 付きで呼ばれる', async () => {
-      mockOpLogStore.state = { can_undo: false, can_redo: true, undo_label: null, redo_label: null };
-      setupHooks({ templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }] });
+      mockOpLogStore.state = {
+        can_undo: false,
+        can_redo: true,
+        undo_label: null,
+        redo_label: null,
+      };
+      setupHooks({
+        templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
+      });
       renderWithClient(
-        <CourseDayTablePanel
-          weekStart={WEEK_START}
-          officeId={null}
-          canEdit={true}
-          showAcceptanceLayer={false}
-        />,
+        <CourseDayTablePanel weekStart={WEEK_START} officeId={null} canEdit={true} />,
       );
       await act(async () => {
         fireEvent.click(screen.getByTestId('schedule-redo-button'));
@@ -561,16 +574,18 @@ describe('CourseDayTablePanel — Wave U-3 戻る/進みボタン・キーボー
 
   describe('エラーハンドリング', () => {
     it('U3-7. mutateAsync が 409 ApiError を投げても toast.error は呼ばれない', async () => {
-      mockOpLogStore.state = { can_undo: true, can_redo: false, undo_label: null, redo_label: null };
+      mockOpLogStore.state = {
+        can_undo: true,
+        can_redo: false,
+        undo_label: null,
+        redo_label: null,
+      };
       mockUndoMutateAsync.mockRejectedValue(new ApiError('Conflict', 409, null));
-      setupHooks({ templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }] });
+      setupHooks({
+        templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
+      });
       renderWithClient(
-        <CourseDayTablePanel
-          weekStart={WEEK_START}
-          officeId={null}
-          canEdit={true}
-          showAcceptanceLayer={false}
-        />,
+        <CourseDayTablePanel weekStart={WEEK_START} officeId={null} canEdit={true} />,
       );
       await act(async () => {
         fireEvent.click(screen.getByTestId('schedule-undo-button'));
@@ -580,22 +595,26 @@ describe('CourseDayTablePanel — Wave U-3 戻る/進みボタン・キーボー
     });
 
     it('U3-8. mutateAsync が汎用エラーを投げると toast.error が呼ばれる', async () => {
-      mockOpLogStore.state = { can_undo: true, can_redo: false, undo_label: null, redo_label: null };
+      mockOpLogStore.state = {
+        can_undo: true,
+        can_redo: false,
+        undo_label: null,
+        redo_label: null,
+      };
       mockUndoMutateAsync.mockRejectedValue(new Error('Network error'));
-      setupHooks({ templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }] });
+      setupHooks({
+        templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
+      });
       renderWithClient(
-        <CourseDayTablePanel
-          weekStart={WEEK_START}
-          officeId={null}
-          canEdit={true}
-          showAcceptanceLayer={false}
-        />,
+        <CourseDayTablePanel weekStart={WEEK_START} officeId={null} canEdit={true} />,
       );
       await act(async () => {
         fireEvent.click(screen.getByTestId('schedule-undo-button'));
       });
       expect(mockToast.error).toHaveBeenCalledOnce();
-      expect(mockToast.error).toHaveBeenCalledWith(expect.stringContaining('操作の取り消しに失敗しました'));
+      expect(mockToast.error).toHaveBeenCalledWith(
+        expect.stringContaining('操作の取り消しに失敗しました'),
+      );
     });
   });
 
@@ -605,39 +624,47 @@ describe('CourseDayTablePanel — Wave U-3 戻る/進みボタン・キーボー
 
   describe('Ctrl+Z/Y キーボードショートカット', () => {
     it('U3-9. Ctrl+Z → can_undo=true で mutateAsync が呼ばれる', async () => {
-      mockOpLogStore.state = { can_undo: true, can_redo: false, undo_label: null, redo_label: null };
-      setupHooks({ templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }] });
+      mockOpLogStore.state = {
+        can_undo: true,
+        can_redo: false,
+        undo_label: null,
+        redo_label: null,
+      };
+      setupHooks({
+        templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
+      });
       renderWithClient(
-        <CourseDayTablePanel
-          weekStart={WEEK_START}
-          officeId={null}
-          canEdit={true}
-          showAcceptanceLayer={false}
-        />,
+        <CourseDayTablePanel weekStart={WEEK_START} officeId={null} canEdit={true} />,
       );
       await act(async () => {
-        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
+        window.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }),
+        );
       });
       expect(mockUndoMutateAsync).toHaveBeenCalledOnce();
       expect(mockUndoMutateAsync).toHaveBeenCalledWith({ iso_year: ISO_YEAR, iso_week: ISO_WEEK });
     });
 
     it('U3-10. Ctrl+Z → input にフォーカス時は発火しない', async () => {
-      mockOpLogStore.state = { can_undo: true, can_redo: false, undo_label: null, redo_label: null };
-      setupHooks({ templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }] });
+      mockOpLogStore.state = {
+        can_undo: true,
+        can_redo: false,
+        undo_label: null,
+        redo_label: null,
+      };
+      setupHooks({
+        templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
+      });
       renderWithClient(
-        <CourseDayTablePanel
-          weekStart={WEEK_START}
-          officeId={null}
-          canEdit={true}
-          showAcceptanceLayer={false}
-        />,
+        <CourseDayTablePanel weekStart={WEEK_START} officeId={null} canEdit={true} />,
       );
       // input 要素を追加してそこからイベントを発火 → e.target が HTMLInputElement
       const input = document.body.appendChild(document.createElement('input'));
       try {
         await act(async () => {
-          input.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
+          input.dispatchEvent(
+            new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }),
+          );
         });
         expect(mockUndoMutateAsync).not.toHaveBeenCalled();
       } finally {
@@ -646,33 +673,39 @@ describe('CourseDayTablePanel — Wave U-3 戻る/進みボタン・キーボー
     });
 
     it('U3-11. Ctrl+Y → can_redo=true で mutateAsync が呼ばれる', async () => {
-      mockOpLogStore.state = { can_undo: false, can_redo: true, undo_label: null, redo_label: null };
-      setupHooks({ templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }] });
+      mockOpLogStore.state = {
+        can_undo: false,
+        can_redo: true,
+        undo_label: null,
+        redo_label: null,
+      };
+      setupHooks({
+        templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
+      });
       renderWithClient(
-        <CourseDayTablePanel
-          weekStart={WEEK_START}
-          officeId={null}
-          canEdit={true}
-          showAcceptanceLayer={false}
-        />,
+        <CourseDayTablePanel weekStart={WEEK_START} officeId={null} canEdit={true} />,
       );
       await act(async () => {
-        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'y', ctrlKey: true, bubbles: true }));
+        window.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'y', ctrlKey: true, bubbles: true }),
+        );
       });
       expect(mockRedoMutateAsync).toHaveBeenCalledOnce();
       expect(mockRedoMutateAsync).toHaveBeenCalledWith({ iso_year: ISO_YEAR, iso_week: ISO_WEEK });
     });
 
     it('U3-12. Ctrl+Shift+Z → can_redo=true で mutateAsync が呼ばれる', async () => {
-      mockOpLogStore.state = { can_undo: false, can_redo: true, undo_label: null, redo_label: null };
-      setupHooks({ templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }] });
+      mockOpLogStore.state = {
+        can_undo: false,
+        can_redo: true,
+        undo_label: null,
+        redo_label: null,
+      };
+      setupHooks({
+        templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
+      });
       renderWithClient(
-        <CourseDayTablePanel
-          weekStart={WEEK_START}
-          officeId={null}
-          canEdit={true}
-          showAcceptanceLayer={false}
-        />,
+        <CourseDayTablePanel weekStart={WEEK_START} officeId={null} canEdit={true} />,
       );
       await act(async () => {
         window.dispatchEvent(
@@ -683,18 +716,22 @@ describe('CourseDayTablePanel — Wave U-3 戻る/進みボタン・キーボー
     });
 
     it('U3-13. can_undo=false のとき Ctrl+Z は mutateAsync を呼ばない', async () => {
-      mockOpLogStore.state = { can_undo: false, can_redo: false, undo_label: null, redo_label: null };
-      setupHooks({ templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }] });
+      mockOpLogStore.state = {
+        can_undo: false,
+        can_redo: false,
+        undo_label: null,
+        redo_label: null,
+      };
+      setupHooks({
+        templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
+      });
       renderWithClient(
-        <CourseDayTablePanel
-          weekStart={WEEK_START}
-          officeId={null}
-          canEdit={true}
-          showAcceptanceLayer={false}
-        />,
+        <CourseDayTablePanel weekStart={WEEK_START} officeId={null} canEdit={true} />,
       );
       await act(async () => {
-        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
+        window.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }),
+        );
       });
       expect(mockUndoMutateAsync).not.toHaveBeenCalled();
     });
@@ -720,12 +757,7 @@ describe('CourseDayTablePanel — Wave U-3 戻る/進みボタン・キーボー
         ],
       });
       renderWithClient(
-        <CourseDayTablePanel
-          weekStart={WEEK_START}
-          officeId="office-honten"
-          canEdit={true}
-          showAcceptanceLayer={false}
-        />,
+        <CourseDayTablePanel weekStart={WEEK_START} officeId="office-honten" canEdit={true} />,
       );
       expect(dndState.capturedHandlers.onDragEnd).toBeDefined();
       await act(async () => {
@@ -787,12 +819,7 @@ describe('CourseDayTablePanel — Wave U-3 戻る/進みボタン・キーボー
         ],
       });
       renderWithClient(
-        <CourseDayTablePanel
-          weekStart={WEEK_START}
-          officeId="office-honten"
-          canEdit={true}
-          showAcceptanceLayer={false}
-        />,
+        <CourseDayTablePanel weekStart={WEEK_START} officeId="office-honten" canEdit={true} />,
       );
       expect(dndState.capturedHandlers.onDragEnd).toBeDefined();
       await act(async () => {

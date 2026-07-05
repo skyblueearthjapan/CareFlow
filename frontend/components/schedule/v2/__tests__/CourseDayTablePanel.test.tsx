@@ -371,14 +371,7 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
 
   it('1. 表示対象コースが 0 件のとき案内文を表示する', () => {
     setupHooks({ templates: [] });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId={null}
-        canEdit={true}
-        showAcceptanceLayer={false}
-      />,
-    );
+    render(<CourseDayTablePanel weekStart={monday(2026, 5, 4)} officeId={null} canEdit={true} />);
     expect(screen.getByText(/表示対象コースがありません/)).toBeInTheDocument();
   });
 
@@ -389,14 +382,7 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
         { id: 'tpl-B', office_id: 'office-honten', label: 'B', ...baseTpl },
       ],
     });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId={null}
-        canEdit={true}
-        showAcceptanceLayer={false}
-      />,
-    );
+    render(<CourseDayTablePanel weekStart={monday(2026, 5, 4)} officeId={null} canEdit={true} />);
     // activeWeekday=0 (月)
     expect(screen.getByTestId('course-day-table-0-tpl-A')).toBeInTheDocument();
     expect(screen.getByTestId('course-day-table-0-tpl-B')).toBeInTheDocument();
@@ -411,14 +397,7 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
     setupHooks({
       templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
     });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId={null}
-        canEdit={true}
-        showAcceptanceLayer={false}
-      />,
-    );
+    render(<CourseDayTablePanel weekStart={monday(2026, 5, 4)} officeId={null} canEdit={true} />);
     // 代表値: 09:30 / 12:00 / 18:00
     expect(screen.getAllByText('09:30').length).toBeGreaterThan(0);
     expect(screen.getAllByText('12:00').length).toBeGreaterThan(0);
@@ -431,14 +410,7 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
 
   it('8. 月〜土の 6 つの曜日タブが描画される (日曜なし)', () => {
     setupHooks({ templates: [] });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId={null}
-        canEdit={true}
-        showAcceptanceLayer={false}
-      />,
-    );
+    render(<CourseDayTablePanel weekStart={monday(2026, 5, 4)} officeId={null} canEdit={true} />);
     expect(screen.getByTestId('course-day-tab-0')).toBeInTheDocument();
     expect(screen.getByTestId('course-day-tab-1')).toBeInTheDocument();
     expect(screen.getByTestId('course-day-tab-2')).toBeInTheDocument();
@@ -489,14 +461,7 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
         },
       ],
     });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId={null}
-        canEdit={true}
-        showAcceptanceLayer={false}
-      />,
-    );
+    render(<CourseDayTablePanel weekStart={monday(2026, 5, 4)} officeId={null} canEdit={true} />);
     expect(screen.getAllByText('鈴木 一郎').length).toBeGreaterThan(0);
     // CareFlow #UX-2026W21: 住所は '📍 千葉県千葉市' 形式で表示されるため部分一致.
     expect(screen.getAllByText(/千葉県千葉市/).length).toBeGreaterThan(0);
@@ -521,7 +486,6 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
         weekStart={monday(2026, 5, 4)}
         officeId="office-honten"
         canEdit={true}
-        showAcceptanceLayer={false}
       />,
     );
     expect(dndState.capturedHandlers.onDragEnd).toBeDefined();
@@ -602,14 +566,7 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
         },
       ],
     });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId={null}
-        canEdit={true}
-        showAcceptanceLayer={false}
-      />,
-    );
+    render(<CourseDayTablePanel weekStart={monday(2026, 5, 4)} officeId={null} canEdit={true} />);
     // 両 occupant の氏名/住所が独立要素として描画される
     expect(screen.getByTestId('course-occupant-name-v-1')).toHaveTextContent('鈴木 一郎');
     expect(screen.getByTestId('course-occupant-name-v-2')).toHaveTextContent('佐藤 次郎');
@@ -662,14 +619,7 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
         },
       ],
     });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId={null}
-        canEdit={true}
-        showAcceptanceLayer={false}
-      />,
-    );
+    render(<CourseDayTablePanel weekStart={monday(2026, 5, 4)} officeId={null} canEdit={true} />);
     expect(screen.getAllByText('複数').length).toBeGreaterThan(0);
   });
 
@@ -716,14 +666,7 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
         },
       ],
     });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId={null}
-        canEdit={true}
-        showAcceptanceLayer={false}
-      />,
-    );
+    render(<CourseDayTablePanel weekStart={monday(2026, 5, 4)} officeId={null} canEdit={true} />);
     // 「複数」が表示されないことを確認 (occupant-multi セルが空)
     const multiCell = screen.getByTestId('course-occupant-multi-v-1');
     expect(multiCell.textContent).toBe('');
@@ -780,14 +723,7 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
         },
       ],
     });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId={null}
-        canEdit={true}
-        showAcceptanceLayer={false}
-      />,
-    );
+    render(<CourseDayTablePanel weekStart={monday(2026, 5, 4)} officeId={null} canEdit={true} />);
     const cond = screen.getByTestId('course-occupant-condition-v-1');
     // patient.sex_restriction が表示される
     expect(cond.textContent).toContain('女性のみ');
@@ -848,14 +784,7 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
         },
       ],
     });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId={null}
-        canEdit={true}
-        showAcceptanceLayer={false}
-      />,
-    );
+    render(<CourseDayTablePanel weekStart={monday(2026, 5, 4)} officeId={null} canEdit={true} />);
     const cond = screen.getByTestId('course-occupant-condition-v-1');
     // template.notes='男性のみ' でも出ない
     expect(cond.textContent).not.toContain('男性のみ');
@@ -913,14 +842,7 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
         },
       ],
     });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId={null}
-        canEdit={true}
-        showAcceptanceLayer={false}
-      />,
-    );
+    render(<CourseDayTablePanel weekStart={monday(2026, 5, 4)} officeId={null} canEdit={true} />);
     const cond = screen.getByTestId('course-occupant-condition-v-1');
     expect(cond.textContent).toBe('');
   });
@@ -965,7 +887,6 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
         weekStart={monday(2026, 5, 4)}
         officeId="office-honten"
         canEdit={true}
-        showAcceptanceLayer={false}
       />,
     );
     expect(dndState.capturedHandlers.onDragEnd).toBeDefined();
@@ -1034,7 +955,6 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
         weekStart={monday(2026, 5, 4)}
         officeId="office-honten"
         canEdit={true}
-        showAcceptanceLayer={false}
       />,
     );
     await dndState.capturedHandlers.onDragEnd!({
@@ -1097,7 +1017,6 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
         weekStart={monday(2026, 5, 4)}
         officeId="office-honten"
         canEdit={true}
-        showAcceptanceLayer={false}
       />,
     );
     await dndState.capturedHandlers.onDragEnd!({
@@ -1147,7 +1066,6 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
         weekStart={monday(2026, 5, 4)}
         officeId="office-honten"
         canEdit={false}
-        showAcceptanceLayer={false}
       />,
     );
     await dndState.capturedHandlers.onDragEnd!({
@@ -1163,14 +1081,7 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
     setupHooks({
       templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
     });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId={null}
-        canEdit={true}
-        showAcceptanceLayer={false}
-      />,
-    );
+    render(<CourseDayTablePanel weekStart={monday(2026, 5, 4)} officeId={null} canEdit={true} />);
     // 「週」タブが存在
     const weekTab = screen.getByTestId('course-day-tab-week');
     expect(weekTab).toBeInTheDocument();
@@ -1217,7 +1128,6 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
         weekStart={monday(2026, 5, 4)}
         officeId="office-honten"
         canEdit={true}
-        showAcceptanceLayer={false}
       />,
     );
     const select = screen.getByTestId('course-staff-select-0-tpl-A') as HTMLSelectElement;
@@ -1233,27 +1143,13 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
 
   it('W19-1. 2 ペイン構造でレンダーされる (course-day-two-pane が存在)', () => {
     setupHooks({ templates: [] });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId={null}
-        canEdit={true}
-        showAcceptanceLayer={false}
-      />,
-    );
+    render(<CourseDayTablePanel weekStart={monday(2026, 5, 4)} officeId={null} canEdit={true} />);
     expect(screen.getByTestId('course-day-two-pane')).toBeInTheDocument();
   });
 
   it('W19-2. プールが右ペイン (course-day-pool-pane) に表示される', () => {
     setupHooks({ templates: [] });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId={null}
-        canEdit={true}
-        showAcceptanceLayer={false}
-      />,
-    );
+    render(<CourseDayTablePanel weekStart={monday(2026, 5, 4)} officeId={null} canEdit={true} />);
     const poolPane = screen.getByTestId('course-day-pool-pane');
     expect(poolPane).toBeInTheDocument();
     // プールコンポーネントが右ペイン内に含まれる

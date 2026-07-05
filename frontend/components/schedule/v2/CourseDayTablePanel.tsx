@@ -76,12 +76,7 @@ import { useCourses, useUpdateCourse, type CourseV2Read } from '@/lib/queries/co
 import { useGenerateWeekOnly } from '@/lib/queries/generate_week';
 import { useOffices } from '@/lib/queries/offices';
 import { usePatients } from '@/lib/queries/patients';
-import {
-  useOpLogState,
-  useUndoOpLog,
-  useRedoOpLog,
-  useInvalidateOpLog,
-} from '@/lib/queries/opLog';
+import { useOpLogState, useUndoOpLog, useRedoOpLog, useInvalidateOpLog } from '@/lib/queries/opLog';
 import { usePlaceAndFix } from '@/lib/queries/place_and_fix';
 import { useStaffList } from '@/lib/queries/staff';
 import {
@@ -114,7 +109,6 @@ import {
   type CourseListItem as ScheduleCourseListItem,
   type VisitListItem as ScheduleVisitListItem,
 } from '../WeekdayScheduleCard';
-import { AcceptanceLegend } from './AcceptanceLayer';
 import { BulkFixToPatternButton } from './BulkFixToPatternButton';
 import { BulkPinAllPfvsButton } from './BulkPinAllPfvsButton';
 import { AssignWarningDialog, type ApprovedReviewItem } from './AssignWarningDialog';
@@ -251,20 +245,13 @@ export interface CourseDayTablePanelProps {
   /** null = 全拠点モード, それ以外は単一拠点フィルタ. */
   officeId: string | null;
   canEdit: boolean;
-  /** 受入目安レイヤー ON/OFF (フッター凡例のみ). */
-  showAcceptanceLayer: boolean;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
 // Main component
 // ─────────────────────────────────────────────────────────────────────────
 
-export function CourseDayTablePanel({
-  weekStart,
-  officeId,
-  canEdit,
-  showAcceptanceLayer,
-}: CourseDayTablePanelProps) {
+export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayTablePanelProps) {
   const { isoYear, isoWeek } = useMemo(() => isoWeekFromLocalDate(weekStart), [weekStart]);
 
   // ─── 曜日タブ state (Wave 18 Phase B-6: 'week' = 週間ビュー) ─────
@@ -992,9 +979,7 @@ export function CourseDayTablePanel({
   // W-3: 希望未登録 active 患者 (weekly_pattern 未設定 / frequency_per_week<=0)。
   // プールには載らないが存在する患者を可視化するための安全網。
   const unregisteredActivePatients = useMemo(() => {
-    return allPatients.filter(
-      (p) => p.status === 'active' && getDesiredWeeklyVisitCount(p) === 0,
-    );
+    return allPatients.filter((p) => p.status === 'active' && getDesiredWeeklyVisitCount(p) === 0);
   }, [allPatients]);
 
   // ─── visit lookup (Wave 18 Phase B-5: 配置済みドラッグ用) ──────────
@@ -1535,7 +1520,11 @@ export function CourseDayTablePanel({
           const opGroupId = crypto.randomUUID();
           // 1) 既存 visit を削除。Wave U-2 D-2 既定B: 型 (固定枠) は触らないため
           //    cascade=false (= PFV を残す)。今週の visit だけを付け替える。
-          await deleteVisitMut.mutateAsync({ id: visitId, cascadeFixedVisit: false, op_group_id: opGroupId });
+          await deleteVisitMut.mutateAsync({
+            id: visitId,
+            cascadeFixedVisit: false,
+            op_group_id: opGroupId,
+          });
           // 2) 新セルに place-and-fix (fix_pattern=false = この週だけ)
           try {
             await placeAndFixMut.mutateAsync({
@@ -1848,7 +1837,8 @@ export function CourseDayTablePanel({
         setAssignWarningOpen(true);
         if (items.length > 0) {
           const suffixParts: string[] = [];
-          if (notices.length > 0) suffixParts.push(`体制上不可避の連続 ${notices.length} 件は確定済み`);
+          if (notices.length > 0)
+            suffixParts.push(`体制上不可避の連続 ${notices.length} 件は確定済み`);
           if (unresolved.length > 0)
             suffixParts.push(`性別制約を満たせない残留 ${unresolved.length} 件`);
           const suffix = suffixParts.length > 0 ? `（うち${suffixParts.join('・')}）` : '';
@@ -2379,9 +2369,7 @@ export function CourseDayTablePanel({
                       onClick={() => void handleUndo()}
                       disabled={!opLogState?.can_undo || undoRedoPending}
                       title={
-                        opLogState?.undo_label != null
-                          ? `戻す: ${opLogState.undo_label}`
-                          : '戻す'
+                        opLogState?.undo_label != null ? `戻す: ${opLogState.undo_label}` : '戻す'
                       }
                       data-testid="schedule-undo-button"
                     >
@@ -2400,9 +2388,7 @@ export function CourseDayTablePanel({
                       onClick={() => void handleRedo()}
                       disabled={!opLogState?.can_redo || undoRedoPending}
                       title={
-                        opLogState?.redo_label != null
-                          ? `進む: ${opLogState.redo_label}`
-                          : '進む'
+                        opLogState?.redo_label != null ? `進む: ${opLogState.redo_label}` : '進む'
                       }
                       data-testid="schedule-redo-button"
                     >
@@ -2595,9 +2581,6 @@ export function CourseDayTablePanel({
                 )}
               </div>
             )}
-
-            {/* 受入目安レイヤー凡例 (任意) */}
-            {showAcceptanceLayer ? <AcceptanceLegend /> : null}
           </div>
 
           {/* 右ペイン: 保留プール (sticky で追従) */}

@@ -443,7 +443,6 @@ describe('CourseDayTablePanel — Wave 38 「相方の現在地」可視化', ()
         weekStart={monday(2026, 5, 4)}
         officeId="office-honten"
         canEdit={true}
-        showAcceptanceLayer={false}
       />,
     );
     // v-pair-A セル → 相方は course-B (label B) → "相方: 本店-B 10:00"
@@ -504,7 +503,6 @@ describe('CourseDayTablePanel — Wave 38 「相方の現在地」可視化', ()
         weekStart={monday(2026, 5, 4)}
         officeId="office-honten"
         canEdit={true}
-        showAcceptanceLayer={false}
       />,
     );
     const partnerEl = screen.getByTestId('course-occupant-partner-location-v-orphan');
@@ -562,7 +560,6 @@ describe('CourseDayTablePanel — Wave 38 「相方の現在地」可視化', ()
         weekStart={monday(2026, 5, 4)}
         officeId="office-honten"
         canEdit={true}
-        showAcceptanceLayer={false}
       />,
     );
     // プール残カード = slot 1 (slot 0 が配置済)。
@@ -620,7 +617,6 @@ describe('CourseDayTablePanel — Wave 38 「相方の現在地」可視化', ()
         weekStart={monday(2026, 5, 4)}
         officeId="office-honten"
         canEdit={true}
-        showAcceptanceLayer={false}
       />,
     );
     // 注記なし

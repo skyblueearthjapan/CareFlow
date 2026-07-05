@@ -10,7 +10,7 @@
  * レイアウト (Phase G-41 で Card 1 は表示制御 only に再整理):
  *   ┌──────────────────────────────────────────────────────────────┐
  *   │ Card 1 (表示制御 only)                                        │
- *   │  < 今週 > YYYY-Www      拠点 ▼      ☐ 受入目安               │
+ *   │  < 今週 > YYYY-Www      拠点 ▼                                │
  *   ├──────────────────────────────────────────────────────────────┤
  *   │ CourseDayTablePanel (Card 2: 操作 + 曜日 + テーブル/リスト)    │
  *   │  Row 1: 主要 4 ボタン (右寄せ)                                 │
@@ -28,7 +28,6 @@ import { useMemo, useState } from 'react';
 import { CourseDayTablePanel } from '@/components/schedule/v2/CourseDayTablePanel';
 import { WeekSelector, toWeekStart } from '@/components/schedule/WeekSelector';
 import { Card } from '@/components/ui/card';
-import { Checkbox } from '@/components/ui/checkbox';
 import { useOffices } from '@/lib/queries/offices';
 import { isoWeekFromLocalDate } from '@/lib/format/isoWeek';
 import { useSession } from 'next-auth/react';
@@ -50,9 +49,6 @@ export default function SchedulePage() {
   const [officeId, setOfficeId] = useState<string | null>(null);
   const officesQuery = useOffices({ limit: 50 });
 
-  // 受入目安レイヤー (フッター凡例 ON/OFF; 表示のみ.)
-  const [showAcceptance, setShowAcceptance] = useState(false);
-
   const isoWeekLabel = `${isoYear}-W${String(isoWeek).padStart(2, '0')}`;
 
   return (
@@ -66,7 +62,7 @@ export default function SchedulePage() {
 
       {/* Phase G-41: Card 1 は表示制御のみ.
           左: WeekSelector + iso week label.
-          右 (ml-auto): 拠点フィルタ + 受入目安.
+          右 (ml-auto): 拠点フィルタ.
           主要 4 ボタン (週を生成 / 自動割付 / 全面最適化 / プール投入) は CourseDayTablePanel Row 1 へ移設. */}
       <Card className="flex flex-wrap items-center gap-3 p-3">
         <div className="flex flex-wrap items-center gap-3">
@@ -74,7 +70,7 @@ export default function SchedulePage() {
           <span className="tnum text-xs text-text-muted">{isoWeekLabel}</span>
         </div>
 
-        {/* ml-auto で右端に拠点/受入目安を寄せる. */}
+        {/* ml-auto で右端に拠点フィルタを寄せる. */}
         <div className="ml-auto flex flex-wrap items-center gap-3">
           {/* 拠点フィルタ */}
           <label className="flex items-center gap-1 text-xs text-text-secondary">
@@ -93,27 +89,12 @@ export default function SchedulePage() {
               ))}
             </select>
           </label>
-
-          {/* 受入目安レイヤー (凡例フッター) */}
-          <label className="flex items-center gap-1.5 rounded border border-border-default bg-bg-muted px-2 py-1 text-xs text-text-secondary">
-            <Checkbox
-              checked={showAcceptance}
-              onCheckedChange={(v) => setShowAcceptance(v === true)}
-              aria-label="受入目安凡例"
-            />
-            <span>受入目安</span>
-          </label>
         </div>
       </Card>
 
       {/* メイン: CourseDayTablePanel (Card 2).
           Phase G-41: 主要 4 ボタン + 曜日タブ + テーブル/リスト + 二次操作を 1 つの Card にまとめる. */}
-      <CourseDayTablePanel
-        weekStart={weekStart}
-        officeId={officeId}
-        canEdit={canEdit}
-        showAcceptanceLayer={showAcceptance}
-      />
+      <CourseDayTablePanel weekStart={weekStart} officeId={officeId} canEdit={canEdit} />
     </section>
   );
 }

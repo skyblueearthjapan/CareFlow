@@ -434,7 +434,6 @@ describe('CourseDayTablePanel — Wave 39 event D&D', () => {
         weekStart={monday(2026, 5, 4)}
         officeId="office-honten"
         canEdit={true}
-        showAcceptanceLayer={false}
       />,
     );
     // event を tpl-A (担当 STAFF_OLD) → tpl-B (担当 STAFF_NEW) の 13:00 にドロップ
@@ -460,7 +459,6 @@ describe('CourseDayTablePanel — Wave 39 event D&D', () => {
         weekStart={monday(2026, 5, 4)}
         officeId="office-honten"
         canEdit={true}
-        showAcceptanceLayer={false}
       />,
     );
     // event の date は月曜 (weekday=0) なのに weekday=2 (水曜) のセルへドロップ
@@ -528,7 +526,6 @@ describe('CourseDayTablePanel — Wave 39 event D&D', () => {
         weekStart={monday(2026, 5, 4)}
         officeId="office-honten"
         canEdit={true}
-        showAcceptanceLayer={false}
       />,
     );
     await dndState.capturedHandlers.onDragEnd!({
@@ -610,7 +607,6 @@ describe('CourseDayTablePanel — Wave 39 event D&D', () => {
         weekStart={monday(2026, 5, 4)}
         officeId="office-honten"
         canEdit={true}
-        showAcceptanceLayer={false}
       />,
     );
     await dndState.capturedHandlers.onDragEnd!({
@@ -694,7 +690,6 @@ describe('CourseDayTablePanel — Wave 39 event D&D', () => {
         weekStart={monday(2026, 5, 4)}
         officeId="office-honten"
         canEdit={true}
-        showAcceptanceLayer={false}
       />,
     );
     // event を 13:00 (-14:00) に move → STAFF_NEW 担当の visit (13:15-14:00) と重複
@@ -749,7 +744,6 @@ describe('CourseDayTablePanel — Wave 39 event D&D', () => {
         weekStart={monday(2026, 5, 4)}
         officeId="office-honten"
         canEdit={true}
-        showAcceptanceLayer={false}
       />,
     );
     // 同じ tpl-A (担当 STAFF_OLD) の 14:00 にドロップ → スライドのみ

@@ -461,7 +461,6 @@ describe('CourseDayTablePanel — Phase G-44 「希望 vs 実」 pool 判定', (
         weekStart={monday(2026, 5, 25)}
         officeId="office-honten"
         canEdit={true}
-        showAcceptanceLayer={false}
       />,
     );
     // 不足バッジ
@@ -528,7 +527,6 @@ describe('CourseDayTablePanel — Phase G-44 「希望 vs 実」 pool 判定', (
         weekStart={monday(2026, 5, 25)}
         officeId="office-honten"
         canEdit={true}
-        showAcceptanceLayer={false}
       />,
     );
     // pool 内に PatientCard 自体が描画されない (= pool 対象外).
@@ -556,7 +554,6 @@ describe('CourseDayTablePanel — Phase G-44 「希望 vs 実」 pool 判定', (
         weekStart={monday(2026, 5, 25)}
         officeId="office-honten"
         canEdit={true}
-        showAcceptanceLayer={false}
       />,
     );
     // pool に表示されない (= shortage 表示の testid が存在しない).
@@ -583,7 +580,6 @@ describe('CourseDayTablePanel — Phase G-44 「希望 vs 実」 pool 判定', (
         weekStart={monday(2026, 5, 25)}
         officeId="office-honten"
         canEdit={true}
-        showAcceptanceLayer={false}
       />,
     );
     // 複数体制患者は slot 単位 (slot-0, slot-1) で別カード描画され、
@@ -613,7 +609,6 @@ describe('CourseDayTablePanel — Phase G-44 「希望 vs 実」 pool 判定', (
         weekStart={monday(2026, 5, 25)}
         officeId="office-honten"
         canEdit={true}
-        showAcceptanceLayer={false}
       />,
     );
     const badge = screen.getByTestId(`patient-card-shortage-badge-${SHORTAGE_PID}`);

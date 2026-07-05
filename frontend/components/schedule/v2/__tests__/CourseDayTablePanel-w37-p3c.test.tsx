@@ -407,7 +407,6 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
         weekStart={monday(2026, 5, 4)}
         officeId="office-honten"
         canEdit={true}
-        showAcceptanceLayer={false}
       />,
     );
     await dndState.capturedHandlers.onDragEnd!({
@@ -446,7 +445,6 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
         weekStart={monday(2026, 5, 4)}
         officeId="office-honten"
         canEdit={true}
-        showAcceptanceLayer={false}
       />,
     );
     await act(async () => {
@@ -495,7 +493,6 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
         weekStart={monday(2026, 5, 4)}
         officeId="office-honten"
         canEdit={true}
-        showAcceptanceLayer={false}
       />,
     );
     await act(async () => {
@@ -546,7 +543,6 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
         weekStart={monday(2026, 5, 4)}
         officeId="office-honten"
         canEdit={true}
-        showAcceptanceLayer={false}
       />,
     );
     await act(async () => {
@@ -612,7 +608,6 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
         weekStart={monday(2026, 5, 4)}
         officeId="office-honten"
         canEdit={true}
-        showAcceptanceLayer={false}
       />,
     );
     await dndState.capturedHandlers.onDragEnd!({
@@ -684,7 +679,6 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
         weekStart={monday(2026, 5, 4)}
         officeId="office-honten"
         canEdit={true}
-        showAcceptanceLayer={false}
       />,
     );
     await dndState.capturedHandlers.onDragEnd!({
@@ -797,7 +791,6 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
         weekStart={monday(2026, 5, 4)}
         officeId="office-honten"
         canEdit={true}
-        showAcceptanceLayer={false}
       />,
     );
     const pane = screen.getByTestId('course-day-pool-pane');
@@ -888,7 +881,6 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
         weekStart={monday(2026, 5, 4)}
         officeId="office-honten"
         canEdit={true}
-        showAcceptanceLayer={false}
       />,
     );
     const badge1 = screen.getByTestId('course-occupant-group-badge-aaaa-pair');
@@ -953,7 +945,6 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
         weekStart={monday(2026, 5, 4)}
         officeId="office-honten"
         canEdit={true}
-        showAcceptanceLayer={false}
       />,
     );
     const multiCell = screen.getByTestId('course-occupant-multi-v-orphan');
@@ -1046,7 +1037,6 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
         weekStart={monday(2026, 5, 4)}
         officeId="office-honten"
         canEdit={true}
-        showAcceptanceLayer={false}
       />,
     );
     // course.code 順なので zzzz-pair (course A) → ①, aaaa-pair (course B) → ②
@@ -1112,7 +1102,6 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
         weekStart={monday(2026, 5, 4)}
         officeId="office-honten"
         canEdit={true}
-        showAcceptanceLayer={false}
       />,
     );
     // pool drop (over.id === 'pool')
