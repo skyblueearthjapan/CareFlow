@@ -89,7 +89,23 @@ export function QrScanner({ onScan, onCancel, onManual, targetLabel }: QrScanner
         scanner = instance as unknown as typeof scanner;
         await instance.start(
           { facingMode: 'environment' },
-          { fps: 10, qrbox: { width: 212, height: 212 } },
+          {
+            // 読み取りやすさ改善 (2026-07-05 現場フィードバック):
+            // - fps 10→15 でデコード試行を増やす
+            // - qrbox をビューの 75% に拡大 (小さい枠は位置合わせがシビア)
+            // - カメラ解像度を 1280x720 要求 (既定の低解像度だと画面上の
+            //   QR やラミネート印刷が潰れてデコードできないことがある)
+            fps: 15,
+            qrbox: (viewfinderWidth: number, viewfinderHeight: number) => {
+              const size = Math.floor(Math.min(viewfinderWidth, viewfinderHeight) * 0.75);
+              return { width: size, height: size };
+            },
+            videoConstraints: {
+              facingMode: 'environment',
+              width: { ideal: 1280 },
+              height: { ideal: 720 },
+            },
+          },
           (decodedText: string) => {
             if (handledRef.current) return;
             const token = extractQrToken(decodedText);
@@ -144,11 +160,12 @@ export function QrScanner({ onScan, onCancel, onManual, targetLabel }: QrScanner
           </div>
         ) : (
           <>
-            {/* html5-qrcode が映像とスキャン枠をこの要素に描画する。 */}
+            {/* html5-qrcode が映像とスキャン枠をこの要素に描画する。
+                表示領域を広げるほど位置合わせが楽になる (旧 212px は狭すぎた)。 */}
             <div
               id={SCANNER_ELEMENT_ID}
               ref={regionRef}
-              className="aspect-square w-[212px] overflow-hidden rounded-xl"
+              className="aspect-square w-[min(80vw,320px)] overflow-hidden rounded-xl"
             />
             <p className="mt-4 px-6 text-center text-xs leading-relaxed text-stone-400">
               患者宅のQRコードを枠内に合わせてください。

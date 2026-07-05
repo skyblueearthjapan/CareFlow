@@ -43,6 +43,7 @@ import { toast } from '@/components/ui/sonner';
 import { CheckInButton } from '@/components/mobile/CheckInButton';
 import { MobileSection } from '@/components/mobile/MobileSection';
 import { QrScanner } from '@/components/mobile/QrScanner';
+import { AuthedPhoto } from '@/components/mobile/AuthedPhoto';
 import {
   useCheckIn,
   useCheckOut,
@@ -59,7 +60,13 @@ import { CHECKIN_PUBLIC_FALLBACK } from '@/lib/schemas/checkinSettings';
 type ScanMode = 'arrival' | 'departure';
 
 /** Best-effort browser geolocation result (empty fields on failure). */
-type Geo = { lat?: number; lng?: number; accuracy?: number };
+type Geo = {
+  lat?: number;
+  lng?: number;
+  accuracy?: number;
+  /** GeolocationPositionError.code (1=権限拒否 2=測位不能 3=タイムアウト)。 */
+  errorCode?: number;
+};
 
 /**
  * Transient overlay flow layered on top of the base visit-detail view.
@@ -195,7 +202,7 @@ function fmtElapsed(ms: number): string {
 function getGeolocation(): Promise<Geo> {
   return new Promise((resolve) => {
     if (typeof navigator === 'undefined' || !navigator.geolocation) {
-      resolve({});
+      resolve({ errorCode: 2 });
       return;
     }
     navigator.geolocation.getCurrentPosition(
@@ -205,10 +212,25 @@ function getGeolocation(): Promise<Geo> {
           lng: pos.coords.longitude,
           accuracy: pos.coords.accuracy,
         }),
-      () => resolve({}),
+      // 失敗理由 (権限拒否/測位不能/タイムアウト) をプレビューの案内に使う。
+      (err) => resolve({ errorCode: err.code }),
       { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
     );
   });
+}
+
+/** 測位失敗コード → 現場向けの対処ヒント。 */
+function geoErrorHint(code: number | undefined): string | null {
+  switch (code) {
+    case 1:
+      return '位置情報の利用が許可されていません。端末の設定でこのサイト（ブラウザ）の位置情報を「許可」にしてから「位置を再取得」を押してください。';
+    case 3:
+      return '測位がタイムアウトしました。屋外や窓際で「位置を再取得」をお試しください。';
+    case 2:
+      return '端末が位置を測位できませんでした。電波状況を確認して「位置を再取得」をお試しください。';
+    default:
+      return null;
+  }
 }
 
 /** Project a Geo into the payload coord fields (omitting undefined). */
@@ -346,6 +368,8 @@ export default function MobileVisitDetailPage() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const { data: photos } = useVisitPhotos(visitId);
   const uploadPhoto = useUploadPhoto(visitId);
+  // 写真の拡大表示 (認証付き blob の objectURL)。
+  const [photoViewerUrl, setPhotoViewerUrl] = useState<string | null>(null);
 
   // Live elapsed timer for the in-progress screen.
   const [nowTs, setNowTs] = useState(() => Date.now());
@@ -745,6 +769,7 @@ export default function MobileVisitDetailPage() {
               status={flow.status}
               matchM={matchM}
               reviewM={reviewM}
+              geoErrorCode={flow.geo.errorCode}
               mismatchReason={mismatchReason}
               onMismatchReasonChange={setMismatchReason}
               onRecord={recordPreview}
@@ -853,22 +878,17 @@ export default function MobileVisitDetailPage() {
 
               {photos && photos.length > 0 && (
                 <div className="grid grid-cols-3 gap-2 pt-1">
+                  {/* download API は Bearer 必須 — 素の <img src>/<a href> だと
+                      {"detail":"Authentication required"} になるため認証付き fetch で表示。 */}
                   {photos.map((p) => (
-                    <a
+                    <AuthedPhoto
                       key={p.id}
-                      href={p.download_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
+                      url={p.download_url}
+                      accessToken={accessToken}
+                      alt={p.caption ?? '訪問写真'}
                       className="aspect-square overflow-hidden rounded-md border border-border-default bg-bg-muted"
-                    >
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={p.download_url}
-                        alt={p.caption ?? '訪問写真'}
-                        className="h-full w-full object-cover"
-                        loading="lazy"
-                      />
-                    </a>
+                      onOpen={setPhotoViewerUrl}
+                    />
                   ))}
                 </div>
               )}
@@ -926,6 +946,23 @@ export default function MobileVisitDetailPage() {
           )}
         </>
       )}
+
+      {/* ---- 写真の拡大表示 (タップで閉じる) --------------------------- */}
+      {photoViewerUrl && (
+        <button
+          type="button"
+          aria-label="拡大表示を閉じる"
+          onClick={() => setPhotoViewerUrl(null)}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-stone-950/85 p-4"
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={photoViewerUrl}
+            alt="訪問写真の拡大表示"
+            className="max-h-full max-w-full rounded-lg object-contain"
+          />
+        </button>
+      )}
     </MobileSection>
   );
 }
@@ -942,6 +979,8 @@ interface PreviewPanelProps {
   status: CheckinMatchStatus;
   matchM: number;
   reviewM: number;
+  /** 測位失敗時の GeolocationPositionError.code (成功時 undefined)。 */
+  geoErrorCode?: number;
   mismatchReason: string;
   onMismatchReasonChange: (v: string) => void;
   onRecord: () => void;
@@ -954,6 +993,7 @@ function PreviewPanel({
   status,
   matchM,
   reviewM,
+  geoErrorCode,
   mismatchReason,
   onMismatchReasonChange,
   onRecord,
@@ -1001,6 +1041,13 @@ function PreviewPanel({
       </div>
 
       <p className="text-xs text-text-muted">{info.hint}</p>
+
+      {/* 測位失敗の理由別ヒント (権限オフ/タイムアウト/測位不能)。 */}
+      {status === 'no_gps' && geoErrorHint(geoErrorCode) && (
+        <p className="rounded-md bg-warning/10 px-3 py-2 text-xs text-warning">
+          {geoErrorHint(geoErrorCode)}
+        </p>
+      )}
 
       {showReason && (
         <div className="space-y-2">
