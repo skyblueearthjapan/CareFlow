@@ -30,7 +30,10 @@ export function MobileShell({ children }: MobileShellProps) {
   // 現場ボード (/m) は全ロールが閲覧できる (staff は閲覧専用・編集系はボード内で出さない)。
   const showFieldBoard = !!session;
   return (
-    <div className="flex h-screen w-screen flex-col bg-bg-app">
+    // h-screen(100vh) はモバイルブラウザの URL バー表示時に可視領域より高くなり、
+    // 最下行が固定下タブの裏に隠れる。dvh 対応ブラウザでは動的ビューポート高
+    // (100dvh) を使い、可視領域とスクロール範囲を一致させる (非対応は 100vh のまま)。
+    <div className="flex h-screen w-screen flex-col bg-bg-app supports-[height:100dvh]:h-dvh">
       {showFieldBoard && (
         <Link
           href="/m"
@@ -43,7 +46,8 @@ export function MobileShell({ children }: MobileShellProps) {
       )}
       <main
         className="flex-1 overflow-y-auto p-4"
-        style={{ paddingBottom: 'calc(64px + env(safe-area-inset-bottom))' }}
+        // 下タブ (h-16=64px + safe-area) + 視認用の余白 16px を常に確保する。
+        style={{ paddingBottom: 'calc(64px + env(safe-area-inset-bottom) + 16px)' }}
       >
         {children}
       </main>
