@@ -169,8 +169,10 @@ class IntegrationExportRequest(BaseModel):
 
 
 class IntegrationDiffRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
     month: str = Field(pattern=r"^\d{4}-\d{2}$")
+    # K-2b ローカル差分で対象拠点を絞る (None=全拠点)。従来の /diff では未使用。
+    office_id: UUID | None = Field(default=None, alias="officeId")
 
 
 class IntegrationApplyRequest(BaseModel):

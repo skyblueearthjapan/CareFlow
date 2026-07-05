@@ -766,6 +766,110 @@ def _safe_uuid(v: Any) -> UUID | None:
 
 
 @router.post(
+    "/diff-local",
+    response_model=DiffAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="CareFlow visits vs kaipoke 現況のローカル差分→CorrectionSheet (admin)",
+)
+async def trigger_diff_local(
+    payload: IntegrationDiffRequest,
+    db: DbDep,
+    user: Annotated[User, Depends(require_role("admin"))],
+    kaipoke: Annotated[KaipokeClient, Depends(_kaipoke_dep)],
+) -> DiffAccepted:
+    """差分の「正」を CareFlow に一本化する統合エンドポイント (K-2b)。
+
+    現況(kaipoke同期export) と 最適化(CareFlow visits生成) を CareFlow 内で突合し、
+    Correction を CorrectionSheet 化する。利用者名は name_match で patient へ解決
+    (未解決は patient_id=None のまま可視化)。同期 export のため ~50s かかる。
+    """
+    from collections import defaultdict
+
+    from app.models.patient import Patient
+    from app.services.kaipoke.local_diff import build_local_diff, correction_before_after
+    from app.services.kaipoke.name_match import build_name_index, match_name
+
+    job = KaipokeJob(
+        job_type="fetch",
+        week_start=_month_to_week_start(payload.month),
+        params={"op": "diff-local", "month": payload.month},
+        status="pending",
+        created_by_user_id=user.id,
+    )
+    db.add(job)
+    await db.flush()
+
+    try:
+        corrections, meta = await build_local_diff(
+            db, month=payload.month, kaipoke=kaipoke, office_id=payload.office_id
+        )
+    except KaipokeBusyError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="kaipoke busy") from exc
+    except KaipokeApiError as exc:
+        job.status = "failed"
+        job.completed_at = datetime.now(UTC)
+        job.result_summary = {"error": str(exc), "body": exc.body}
+        await _commit_or_409(db)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except Exception as exc:
+        # CSV生成/差分中の予期しない例外もジョブに監査記録してから 500。
+        await db.rollback()
+        db.add(job)
+        job.status = "failed"
+        job.completed_at = datetime.now(UTC)
+        job.result_summary = {"error": f"local diff failed: {exc}"}
+        await _commit_or_409(db)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="local diff failed"
+        ) from exc
+
+    # 利用者名 → patient_id の索引 (active のみ)。
+    patients = (await db.scalars(select(Patient).where(Patient.deleted_at.is_(None)))).all()
+    pindex = build_name_index({str(p.id): p.name for p in patients})
+
+    sheet = CorrectionSheet(
+        target_month=payload.month,
+        status="ready",
+        created_by_user_id=user.id,
+    )
+    db.add(sheet)
+    await db.flush()
+
+    summary: dict[str, int] = defaultdict(int)
+    items: list[CorrectionSheetItem] = []
+    unresolved = 0
+    for c in corrections:
+        pid_str = match_name(c.user_name, pindex)
+        pid = UUID(pid_str) if pid_str else None
+        if pid is None:
+            unresolved += 1
+        before, after = correction_before_after(c)
+        items.append(
+            CorrectionSheetItem(
+                sheet_id=sheet.id,
+                patient_id=pid,
+                visit_id=None,
+                action=c.action,
+                before=before,
+                after=after,
+                include=True,
+            )
+        )
+        summary[c.action] += 1
+    summary["total"] = len(items)
+    summary["unresolved_patient"] = unresolved
+    db.add_all(items)
+
+    job.status = "completed"
+    job.completed_at = datetime.now(UTC)
+    job.result_summary = {"sheet_id": str(sheet.id), "summary": dict(summary), **meta}
+    await _commit_or_409(db)
+
+    return DiffAccepted(job_id=job.id, sheet_id=sheet.id, summary=dict(summary))
+
+
+@router.post(
     "/apply",
     response_model=JobAccepted,
     status_code=status.HTTP_202_ACCEPTED,

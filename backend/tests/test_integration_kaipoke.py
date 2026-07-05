@@ -53,7 +53,9 @@ class StubKaipokeClient:
     async def expand(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._dispatch("expand", payload)
 
-    async def export(self, payload: dict[str, Any]) -> dict[str, Any]:
+    async def export(
+        self, payload: dict[str, Any], *, timeout: float | None = None
+    ) -> dict[str, Any]:
         return self._dispatch("export", payload)
 
     async def diff(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -391,6 +393,121 @@ async def test_live_requires_admin(client, db, stub_kaipoke) -> None:
     assert res.status_code == 403, res.text
 
 
+# --- 6d. local diff (K-2b) ------------------------------------------------
+
+# 18列カイポケCSV (ヘッダ + 1行)。現況として stub export が返す。
+_KAIPOKE_18COL_HEADER = (
+    "職員名１,職種１,職員名２,職種２,同行２,職員名３,職種３,同行３,"
+    "事業所名,日付,曜日,利用者,業務種別,サービス内容,開始時間,終了時間,提供時間（分）,備考"
+)
+
+
+@pytest.mark.asyncio
+async def test_diff_local_builds_sheet_from_current_vs_generated(client, db, stub_kaipoke) -> None:
+    admin = await _make_user(db, "wave-difflocal@example.com", "admin")
+    # 現況(kaipoke): 山田 太郎 が 09:00-09:35 で入っている。
+    current = (
+        _KAIPOKE_18COL_HEADER
+        + "\n"
+        + "看護A,看護師,,,,,,,よりより,1,水,山田　太郎,医療保険,精神基本療養費Ⅰ・正看,"
+        + "09:00,09:35,35,\n"
+    )
+    stub_kaipoke.responses["export"] = {"result": {"csv_content": current}}
+
+    res = await client.post(
+        "/api/v1/integrations/diff-local",
+        headers=_bearer(admin),
+        json={"month": "2026-07"},
+    )
+    assert res.status_code == 202, res.text
+    body = res.json()
+    assert body["sheetId"]
+    # CareFlow 側 visits は空 → 現況の1件は delete 差分になるはず。
+    assert body["summary"]["total"] >= 1
+    assert body["summary"]["delete"] >= 1
+    # 山田太郎 は patient マスタに無い → 未解決としてカウント。
+    assert body["summary"]["unresolved_patient"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_diff_local_before_carries_user_name(client, db, stub_kaipoke) -> None:
+    admin = await _make_user(db, "wave-difflocal-un@example.com", "admin")
+    current = (
+        _KAIPOKE_18COL_HEADER
+        + "\n"
+        + "看護A,看護師,,,,,,,よりより,3,金,佐藤　花子,医療保険,精神基本療養費Ⅰ・正看,"
+        + "13:00,13:35,35,\n"
+    )
+    stub_kaipoke.responses["export"] = {"result": {"csv_content": current}}
+    res = await client.post(
+        "/api/v1/integrations/diff-local",
+        headers=_bearer(admin),
+        json={"month": "2026-07"},
+    )
+    assert res.status_code == 202, res.text
+    sheet_id = res.json()["sheetId"]
+    items = await client.get(
+        f"/api/v1/integrations/correction-sheets/{sheet_id}/items",
+        headers=_bearer(admin),
+    )
+    # patient 未解決でも before に利用者名が残る (可視化の完全性)。
+    first = items.json()["items"][0]
+    assert first["before"]["user_name"] == "佐藤　花子"
+
+
+@pytest.mark.asyncio
+async def test_diff_local_office_filter_excludes_other_office(client, db, stub_kaipoke) -> None:
+    from app.models.office import Office
+
+    admin = await _make_user(db, "wave-difflocal-off@example.com", "admin")
+    office = Office(name="稲毛", code="INAGE", kaipoke_name="よりより本店")
+    db.add(office)
+    await db.commit()
+    await db.refresh(office)
+
+    # 現況に2拠点の行。office_id=INAGE を指定 → 都賀支店の行は差分対象外。
+    current = (
+        _KAIPOKE_18COL_HEADER
+        + "\n"
+        + "看護A,看護師,,,,,,,よりより本店,1,水,患者甲,医療保険,精神基本療養費Ⅰ・正看,"
+        + "09:00,09:35,35,\n"
+        + "看護B,看護師,,,,,,,都賀支店,1,水,患者乙,医療保険,精神基本療養費Ⅰ・正看,"
+        + "10:00,10:35,35,\n"
+    )
+    stub_kaipoke.responses["export"] = {"result": {"csv_content": current}}
+    res = await client.post(
+        "/api/v1/integrations/diff-local",
+        headers=_bearer(admin),
+        json={"month": "2026-07", "officeId": str(office.id)},
+    )
+    assert res.status_code == 202, res.text
+    # 本店の1件のみ delete 差分 (都賀支店は現況フィルタで除外)。
+    assert res.json()["summary"]["total"] == 1
+
+
+@pytest.mark.asyncio
+async def test_diff_local_requires_admin(client, db, stub_kaipoke) -> None:
+    manager = await _make_user(db, "wave-difflocal-mgr@example.com", "manager")
+    res = await client.post(
+        "/api/v1/integrations/diff-local",
+        headers=_bearer(manager),
+        json={"month": "2026-07"},
+    )
+    assert res.status_code == 403, res.text
+
+
+@pytest.mark.asyncio
+async def test_diff_local_upstream_error_returns_502(client, db, stub_kaipoke) -> None:
+    admin = await _make_user(db, "wave-difflocal-err@example.com", "admin")
+    stub_kaipoke.errors["export"] = kc_module.KaipokeApiError(500, {"err": "boom"})
+    res = await client.post(
+        "/api/v1/integrations/diff-local",
+        headers=_bearer(admin),
+        json={"month": "2026-07"},
+    )
+    assert res.status_code == 502, res.text
+
+
 # --- 6c. generated CSV (K-2a) ---------------------------------------------
 
 
@@ -439,6 +556,7 @@ async def test_generated_csv_rejects_bad_month(client, db, stub_kaipoke) -> None
         ("GET", "/api/v1/integrations/live", None),
         ("GET", "/api/v1/integrations/monitor-url", None),
         ("GET", "/api/v1/integrations/generated-csv?month=2026-07", None),
+        ("POST", "/api/v1/integrations/diff-local", {"month": "2026-07"}),
         ("POST", "/api/v1/integrations/expand", {"month": "2026-05"}),
         ("POST", "/api/v1/integrations/diff", {"month": "2026-05"}),
     ],

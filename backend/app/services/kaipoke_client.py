@@ -77,8 +77,12 @@ class KaipokeClient:
     async def expand(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         return await self._request("POST", "/api/expand", json=payload)
 
-    async def export(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        return await self._request("POST", "/api/export", json=payload)
+    async def export(
+        self, payload: Mapping[str, Any], *, timeout: float | None = None
+    ) -> dict[str, Any]:
+        # 同期 export (async:false) は ~50s ブロックするため、呼び出し側で
+        # timeout を延長できるようにする (既定 30s では足りない)。
+        return await self._request("POST", "/api/export", json=payload, timeout=timeout)
 
     async def diff(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         return await self._request("POST", "/api/diff", json=payload)
@@ -127,10 +131,14 @@ class KaipokeClient:
         *,
         json: Mapping[str, Any] | None = None,
         retry: bool = True,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         url = f"{self._base_url}{path}"
+        kwargs: dict[str, Any] = {"json": json, "headers": self._headers()}
+        if timeout is not None:
+            kwargs["timeout"] = timeout
         try:
-            resp = await self._client.request(method, url, json=json, headers=self._headers())
+            resp = await self._client.request(method, url, **kwargs)
         except httpx.TimeoutException as exc:
             raise KaipokeApiError(504, {"error": "timeout"}, message=str(exc)) from exc
         except httpx.RequestError as exc:
@@ -139,7 +147,7 @@ class KaipokeClient:
         if resp.status_code >= 500 and retry:
             # Single retry with brief backoff on 5xx.
             await asyncio.sleep(0.25)
-            return await self._request(method, path, json=json, retry=False)
+            return await self._request(method, path, json=json, retry=False, timeout=timeout)
 
         body: Any
         try:
