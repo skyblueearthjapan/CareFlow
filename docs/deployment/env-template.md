@@ -63,9 +63,6 @@ JWT_REFRESH_TTL_SECONDS=2592000
 
 # --- External APIs ---
 GOOGLE_MAPS_API_KEY=__SET_IF_USED__
-GEMINI_API_KEY=__SET_IF_USED__
-# Gemini model id (Google が定期的に旧モデルを 404 にするため pin しておく)
-GEMINI_MODEL=gemini-2.0-flash
 
 # --- Integrations forward target (D4 worker, Phase 2) ---
 INTEGRATION_BASE_URL=http://integrations:8001

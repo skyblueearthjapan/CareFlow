@@ -2,7 +2,7 @@
  * TanStack Query hooks for /api/v1/integrations/* — Phase 5-1 Wave 2-B + 4-A.
  *
  * Covers Kaipoke jobs (list/detail/create/cancel), geocoding cache (admin),
- * AI interpret logs (admin), kaipoke status + relay (expand/export/diff/apply),
+ * kaipoke status + relay (expand/export/diff/apply),
  * and correction-sheet editing. Mirrors backend `api/v1/integrations.py`.
  */
 'use client';
@@ -12,7 +12,6 @@ import { useSession } from 'next-auth/react';
 
 import { fetcher } from '@/lib/api/fetcher';
 import type {
-  AiInterpretLog,
   ApplyRequest,
   CorrectionItem,
   CorrectionItemUpdate,
@@ -158,16 +157,6 @@ export function useGeocodingCache(params: UseGeocodingCacheParams = {}) {
     },
     enabled: status === 'authenticated',
   });
-}
-
-// --- AI interpret logs ----------------------------------------------------
-
-export interface UseAiInterpretLogsParams {
-  since?: string;
-  until?: string;
-  model?: string;
-  limit?: number;
-  offset?: number;
 }
 
 // --- Wave 4-A: kaipoke status + relay -------------------------------------
@@ -438,37 +427,5 @@ export function useBulkUpdateItems() {
       void qc.invalidateQueries({ queryKey: ['integrations', 'correction-items'] });
       void qc.invalidateQueries({ queryKey: ['integrations', 'correction-sheets'] });
     },
-  });
-}
-
-export function useAiInterpretLogs(params: UseAiInterpretLogsParams = {}) {
-  const { data: session, status } = useSession();
-  const accessToken = session?.accessToken ?? null;
-  const refreshToken = session?.refreshToken ?? null;
-
-  const { since, until, model, limit = 100, offset = 0 } = params;
-
-  return useQuery<Paginated<AiInterpretLog>>({
-    queryKey: [
-      'integrations',
-      'ai',
-      'logs',
-      since ?? null,
-      until ?? null,
-      model ?? null,
-      limit,
-      offset,
-    ],
-    queryFn: () => {
-      const usp = new URLSearchParams({ limit: String(limit), offset: String(offset) });
-      if (since) usp.set('since', since);
-      if (until) usp.set('until', until);
-      if (model) usp.set('model', model);
-      return fetcher<Paginated<AiInterpretLog>>(`/api/v1/integrations/ai/logs?${usp.toString()}`, {
-        accessToken,
-        refreshToken,
-      });
-    },
-    enabled: status === 'authenticated',
   });
 }

@@ -131,7 +131,7 @@ export default function KaipokeIntegrationPage() {
 
       {/* 管理ユーティリティへの導線 */}
       <p className="text-xs text-text-muted">
-        Geocoding キャッシュ・AI 解釈ログは{' '}
+        Geocoding キャッシュは{' '}
         <Link className="text-brand-primary hover:underline" href="/integrations">
           連携ユーティリティ
         </Link>{' '}

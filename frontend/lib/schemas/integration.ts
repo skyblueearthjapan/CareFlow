@@ -91,18 +91,6 @@ export const GeocodingCacheReadSchema = z.object({
 });
 export type GeocodingCache = z.infer<typeof GeocodingCacheReadSchema>;
 
-export const AiInterpretLogReadSchema = z.object({
-  id: z.string().uuid(),
-  prompt: z.string(),
-  response: z.record(z.unknown()).default({}),
-  model: z.string(),
-  latency_ms: z.number().int(),
-  user_id: z.string().uuid().nullable().optional(),
-  created_at: z.string(),
-  updated_at: z.string(),
-});
-export type AiInterpretLog = z.infer<typeof AiInterpretLogReadSchema>;
-
 // --- Wave 4-A: kaipoke status + relay --------------------------------------
 
 export const KaipokeStatusSchema = z.object({

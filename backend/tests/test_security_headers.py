@@ -33,7 +33,6 @@ async def test_content_security_policy_locks_origins(client) -> None:
     csp = res.headers.get("content-security-policy", "")
     # Sanity-check that the production origins we depend on are listed.
     assert "default-src 'self'" in csp
-    assert "https://generativelanguage.googleapis.com" in csp
     assert "https://maps.googleapis.com" in csp
     # And that we have NOT accidentally widened script-src to wildcard.
     assert "script-src 'self' 'unsafe-inline'" in csp

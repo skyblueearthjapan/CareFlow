@@ -6,7 +6,6 @@ Alembic autogenerate can see them.
 
 from app.models.acceptance_calendar import AcceptanceCalendar
 from app.models.acceptance_calendar_week import AcceptanceCalendarWeek
-from app.models.ai_interpret_log import AiInterpretLog
 from app.models.audit_log import AuditLog
 from app.models.checkin_settings import CheckinSettings
 from app.models.city import City
@@ -47,7 +46,6 @@ from app.models.visit_staff_assignment import VisitStaffAssignment
 __all__ = [
     "AcceptanceCalendar",
     "AcceptanceCalendarWeek",
-    "AiInterpretLog",
     "AuditLog",
     "CheckinSettings",
     "City",

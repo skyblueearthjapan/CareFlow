@@ -5,7 +5,7 @@ v2 で確定した型 (`app.schemas.v2.pending_request`) をそのまま再エ�
 業務 API (`app/api/v1/pending_requests.py`) はこのモジュールから読み込む。
 
 監査要件 (§3.5.3):
-  AI 経由の **即時反映** の場合も `status="approved"` で同時作成し、業務反映と
+  **即時反映** の場合も `status="approved"` で同時作成し、業務反映と
   同一トランザクションで処理する (冪等性確保) — 詳細は ``PendingRequestApplier`` 参照。
 """
 
@@ -16,7 +16,6 @@ from typing import TypeVar
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.v2.enums import (
-    AiContextType,
     RequestScope,
     RequestStatus,
     RequestType,
@@ -45,7 +44,6 @@ class PaginatedPendingRequest[T](BaseModel):
 
 
 __all__ = [
-    "AiContextType",
     "PaginatedPendingRequest",
     "PendingRequestApprove",
     "PendingRequestReject",

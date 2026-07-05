@@ -3,7 +3,6 @@
 Covers:
   - KaipokeJob / KaipokeJobItem (fetch/push background jobs)
   - GeocodingCache (admin read-only listing)
-  - AiInterpretLog (admin read-only listing)
   - Wave 4-A: kaipoke status + relay (expand/export/diff/apply/stop)
               + correction sheets / items (差分プレビュー)
 """
@@ -75,22 +74,6 @@ class GeocodingCacheRead(BaseModel):
     lng: float
     provider: str
     looked_up_at: datetime
-    created_at: datetime
-    updated_at: datetime
-
-
-# --- AI interpret logs -----------------------------------------------------
-
-
-class AiInterpretLogRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True, extra="forbid")
-
-    id: UUID
-    prompt: str
-    response: dict[str, Any] = Field(default_factory=dict)
-    model: str
-    latency_ms: int
-    user_id: UUID | None = None
     created_at: datetime
     updated_at: datetime
 

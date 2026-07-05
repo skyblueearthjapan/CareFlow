@@ -33,7 +33,7 @@ from app.db.base import Base
 # ---------------------------------------------------------------------------
 # Cross-dialect JSONB shim (SQLite test runner safety net).
 #
-# 既存モデル (ai_interpret_logs / audit_logs / kaipoke_jobs / correction_sheets
+# 既存モデル (audit_logs / kaipoke_jobs / correction_sheets
 # 等) の一部はカラム型に PostgreSQL 専用 ``JSONB`` をそのまま使っており、
 # SQLite (CI / pytest) では ``Compiler ... can't render element of type JSONB``
 # で ``create_all`` が失敗する。W1-BE1 では patient.py に ``JSONB().with_variant(JSON())``

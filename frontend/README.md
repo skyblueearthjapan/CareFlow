@@ -44,7 +44,6 @@ components/
   Sidebar.tsx
   Header.tsx
   MobileShell.tsx      768px未満のボトムタブ用シェル
-  AiFab.tsx            右下固定FAB（Gemini入力）
   ui/                  Button / Input / Card 雛形
 lib/
   auth.ts              NextAuth options
@@ -67,4 +66,3 @@ types/
 - 実データ取得は `// TODO: fetch from BACKEND_API_BASE_URL` レベル
 - shadcn/ui は CLI で取り込まず、Button/Input/Card 3点を直接コードで配置
 - 2名体制以降のフローや週ビュー DnD 等は D3 担当
-- AI 入力 FAB はガワだけ（モーダル本体は D4）

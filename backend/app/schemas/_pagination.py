@@ -1,7 +1,7 @@
 """Generic paginated response wrapper — Wave 2-B revise (M7).
 
-Used by integrations list endpoints (Kaipoke jobs / geocoding cache / AI
-logs) so clients can render `total` + drive offset-based paging without
+Used by integrations list endpoints (Kaipoke jobs / geocoding cache)
+so clients can render `total` + drive offset-based paging without
 relying on naked array length. New endpoints in later waves should adopt
 the same shape.
 """

@@ -14,7 +14,6 @@
   CourseStatus enum                    - 設計書 §4.5
   RequestType enum                     - 設計書 §4.4
   RequestStatus enum                   - 設計書 §3.5.4
-  AiContextType enum                   - 設計書 §3.5.2
 """
 
 from __future__ import annotations
@@ -67,7 +66,6 @@ from app.schemas.v2.course_template import (
     CourseTemplateUpdate,
 )
 from app.schemas.v2.enums import (
-    AiContextType,
     CourseStatus,
     RequestScope,
     RequestStatus,
@@ -167,7 +165,6 @@ __all__ = [
     "V2VisitPlan",
     "V2WeekdayBeforeAfter",
     # enums
-    "AiContextType",
     "CourseCodeV2",
     "CourseStatus",
     "CourseTemplateBase",

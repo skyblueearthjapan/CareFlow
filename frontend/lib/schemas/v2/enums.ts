@@ -4,7 +4,6 @@
  * 設計仕様書 v0.9:
  *   - §4.5: CourseStatus (`proposed` / `course_fixed` / `staff_assigned`)
  *   - §4.4: RequestType / RequestStatus / RequestScope
- *   - §3.5: AiContextType
  *
  * これらは backend `app/schemas/v2/enums.py` と **完全一致** させる
  * (API 契約の前提)。値を増減する場合は両方同時に更新する。
@@ -21,9 +20,7 @@ export type CourseStatus = z.infer<typeof courseStatusEnum>;
 
 // ─────────────────────────────────────────────────────────────────────────
 // RequestType (§4.4)
-//   9 種類。`patient_special_week_on` / `_off` は別 request_type だが
-//   AI 側の context_type では `patient_special_week` に集約される。
-//   (`docs/plans/v2-api-contracts.md` §9 対応表参照)
+//   9 種類 (`docs/plans/v2-api-contracts.md` §9 対応表参照)
 // ─────────────────────────────────────────────────────────────────────────
 export const REQUEST_TYPE_VALUES = [
   'staff_off',
@@ -58,27 +55,3 @@ export type RequestStatus = z.infer<typeof requestStatusEnum>;
 export const REQUEST_SCOPE_VALUES = ['one_time', 'permanent'] as const;
 export const requestScopeEnum = z.enum(REQUEST_SCOPE_VALUES);
 export type RequestScope = z.infer<typeof requestScopeEnum>;
-
-// ─────────────────────────────────────────────────────────────────────────
-// AiContextType (§3.5.2)
-//   pending_requests.request_type と 1:1 対応する 9 種類 +
-//   `patient_special_week` (on/off を AI 側では区別しない) +
-//   `general` (フォールバック) +
-//   `out_of_scope` (AI が対応外と判定したときに返す)。
-// ─────────────────────────────────────────────────────────────────────────
-export const AI_CONTEXT_TYPE_VALUES = [
-  'staff_off',
-  'staff_event',
-  'staff_mentor',
-  'staff_create',
-  'patient_create',
-  'patient_cancel',
-  'patient_reschedule',
-  'patient_special_week',
-  'staff_status_update',
-  'patient_status_update',
-  'general',
-  'out_of_scope',
-] as const;
-export const aiContextTypeEnum = z.enum(AI_CONTEXT_TYPE_VALUES);
-export type AiContextType = z.infer<typeof aiContextTypeEnum>;

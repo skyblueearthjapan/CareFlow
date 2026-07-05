@@ -88,7 +88,7 @@ openssl rand -base64 32     # 例出力: <your-jwt-secret>
 # POSTGRES_PASSWORD (24 chars 英数)
 openssl rand -base64 18 | tr -d '/+=' | cut -c1-24    # 例: <your-pg-password>
 
-# 外部 API token (GEMINI_API_KEY / GOOGLE_MAPS_API_KEY) は各コンソールで発行 → コピペ
+# 外部 API token (GOOGLE_MAPS_API_KEY) は各コンソールで発行 → コピペ
 # KAIPOKE_API_TOKEN は kaipoke-api 側で発行された値を使用
 ```
 

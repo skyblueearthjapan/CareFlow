@@ -1,14 +1,7 @@
 """PendingRequest (申請履歴) — v2 W2-BE5.
 
 設計仕様書 v0.9 §3.5 / §4.4 に対応する申請履歴テーブル。
-
-責務分離 (`docs/plans/v2-allocation-redesign.md` §4.4):
-  - ``ai_interpret_logs``  : Gemini API 呼び出しのデバッグ記録 (既存)
-  - ``pending_requests``   : 業務上の承認ワークフロー記録 (本テーブル, 新規)
-
-監査要件 (§3.5.3):
-  AI 経由の **即時反映** の場合も ``status="approved"`` で同時作成し、
-  業務反映と同一トランザクションで処理する (冪等性確保)。
+業務上の承認ワークフロー記録 (`docs/plans/v2-allocation-redesign.md` §4.4)。
 
 JSONB クロスダイアレクト方針:
   本番は PostgreSQL JSONB、テストは SQLite の JSON にフォールバックする。
@@ -62,8 +55,6 @@ class PendingRequest(Base, TimestampMixin):
     """業務申請 (§4.4).
 
     ``payload`` JSONB に request_type ごとの依頼内容を構造化して格納する。
-    AI 解釈経由の場合は ``ai_interpret_log_id`` でソースログを参照可能。
-    手動入力の場合は ``ai_interpret_log_id = NULL``。
     """
 
     __tablename__ = "pending_requests"
@@ -128,13 +119,6 @@ class PendingRequest(Base, TimestampMixin):
 
     # ----- 編集して承認の場合 -----
     edited_payload: Mapped[dict | None] = mapped_column(JSONBish, nullable=True)
-
-    # ----- AI 解釈ログ参照 -----
-    ai_interpret_log_id: Mapped[uuid.UUID | None] = mapped_column(
-        PG_UUID(as_uuid=True),
-        ForeignKey("ai_interpret_logs.id", ondelete="SET NULL"),
-        nullable=True,
-    )
 
     __table_args__ = (
         Index("ix_pending_requests_status_created_at", "status", "created_at"),

@@ -30,7 +30,7 @@ W41 レビュー対応 (Critical C1/C2, High H1〜H5, Medium M1〜M4):
 スコープ外 (v1.0):
     - Mode 2 (全面最適化) は NotImplementedError
     - 新人同行 (Pattern A) は is_trainee=false のみで割当
-    - TSP (P5) / AI 要約 / Justification ポップアップ
+    - TSP (P5) / Justification ポップアップ
     - acceptance_calendar の △ ペナルティ (v1.1 で重み調整)
 
 トランザクション境界:

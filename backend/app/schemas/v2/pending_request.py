@@ -1,14 +1,7 @@
 """PendingRequestV2 schemas (Wave 0-C).
 
 設計仕様書 v0.9 §3.5 / §4.4 に基づく申請履歴 (`pending_requests`) v2。
-
-責務分離:
-  - `ai_interpret_logs`: Gemini API 呼び出しのデバッグ記録 (既存)
-  - `pending_requests`:  業務上の承認ワークフロー記録 (本テーブル, 新規)
-
-監査要件 (§3.5.3):
-  AI 経由の **即時反映** の場合も `status="approved"` で同時作成し、
-  業務反映と同一トランザクションで処理する (冪等性確保)。
+業務上の承認ワークフロー記録。
 """
 
 from __future__ import annotations
@@ -26,8 +19,6 @@ class PendingRequestV2Base(BaseModel):
     """申請 (pending_request) v2 (§4.4).
 
     `payload` JSONB に request_type ごとの依頼内容を構造化して格納する。
-    AI 解釈経由の場合は `ai_interpret_log_id` でソースログを参照可能。
-    手動入力の場合は `ai_interpret_log_id = NULL`。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -35,7 +26,7 @@ class PendingRequestV2Base(BaseModel):
     request_type: RequestType = Field(description="9 種類 (§4.4 / API 契約 §9 対応表)")
     payload: dict[str, Any] = Field(
         default_factory=dict,
-        description="構造化された依頼内容 (AI 解釈結果 or 手動入力)",
+        description="構造化された依頼内容 (手動入力)",
     )
 
     target_staff_id: UUID | None = Field(
@@ -56,11 +47,6 @@ class PendingRequestV2Base(BaseModel):
             "適用範囲. patient_reschedule のときのみ必須 (§3.5.6). "
             "それ以外の request_type では NULL"
         ),
-    )
-
-    ai_interpret_log_id: UUID | None = Field(
-        default=None,
-        description="AI 解釈経由の場合のソースログ (NULL = 手動入力)",
     )
 
 

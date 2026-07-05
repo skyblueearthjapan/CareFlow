@@ -33,7 +33,7 @@ const NAV_ITEMS = [
   { href: '/offices', label: '拠点', icon: Building2 },
   { href: '/staff', label: 'スタッフ', icon: UserCircle2 },
   { href: '/patients', label: '患者', icon: Users },
-  // 「連携」= カイポケ ジョブセンター（操作卓）を直接開く。Geocoding/AI ログ等の
+  // 「連携」= カイポケ ジョブセンター（操作卓）を直接開く。Geocoding キャッシュ等の
   // 管理ユーティリティはジョブセンター画面内のリンクから /integrations へ。
   { href: '/integrations/kaipoke', label: '連携', icon: Plug, adminOnly: true },
   { href: '/admin/pending-requests', label: '申請履歴', icon: Inbox, adminOnly: true },

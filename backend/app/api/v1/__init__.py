@@ -8,7 +8,6 @@ from app.api.v1 import (
     admin,
     admin_checkin,
     admin_geocoding,
-    ai,
     allocate,
     audit_logs,
     auth,
@@ -136,8 +135,6 @@ api_router.include_router(dashboard.router, prefix="/dashboard", tags=["dashboar
 api_router.include_router(integrations.router, prefix="/integrations", tags=["integrations"])
 # Geocoding relay: POST /geocode + GET /geocoding/cache (Wave 4-C).
 api_router.include_router(geocoding.router, tags=["geocoding"])
-# Gemini-backed AI interpret + audit logs (Wave 4-B / D4 Phase E).
-api_router.include_router(ai.router, prefix="/ai", tags=["ai"])
 # W6-MIG2: /special-weeks API は廃止（special_weekly_pattern を patients に統合済）.
 # 旧ルーターは削除し、`/api/v1/special-weeks*` は FastAPI の既定 404 で応答する。
 # Wave 4-F: HTTP audit-log read API (admin only).
@@ -148,7 +145,7 @@ api_router.include_router(notifications.router, prefix="/notifications", tags=["
 api_router.include_router(
     shift_requests.status_router, prefix="/shift-requests", tags=["shift-requests"]
 )
-# W2-BE5: pending_requests (AI 入力 / 手動申請 + 承認フロー).
+# W2-BE5: pending_requests (手動申請 + 承認フロー).
 api_router.include_router(
     pending_requests.router, prefix="/pending-requests", tags=["pending-requests"]
 )

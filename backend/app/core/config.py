@@ -43,12 +43,6 @@ class Settings(BaseSettings):
 
     # --- External APIs ---
     google_maps_api_key: str = Field(default="")
-    gemini_api_key: str = Field(default="")
-    # Default Gemini model. `gemini-1.5-flash` was retired from public
-    # `v1beta` (returns 404 on generateContent); 2.0-flash is the current
-    # default with comparable price/perf. Override per env when Google
-    # rolls newer GA models (2.5-flash etc.).
-    gemini_model: str = Field(default="gemini-2.0-flash", validation_alias="GEMINI_MODEL")
 
     # --- Integrations forward target ---
     integration_base_url: str = Field(default="http://integrations:8001")

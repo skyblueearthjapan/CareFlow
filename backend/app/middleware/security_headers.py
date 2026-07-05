@@ -3,7 +3,7 @@
 Adds a baseline set of hardening headers to every HTTP response. Values are
 tuned for the CareLink production deployment, which sits behind Cloudflare
 Tunnel (TLS terminated upstream) and serves a single first-party SPA that
-talks to Google Maps and the Gemini API.
+talks to Google Maps.
 
 Header rationale
 ----------------
@@ -17,7 +17,7 @@ Header rationale
   edge, but we set it for defense-in-depth in case the SPA is ever served
   off-edge during incident response.
 - ``Content-Security-Policy`` — locks script/style/img/connect origins to
-  ``self`` plus the two third-party APIs we actually call. ``unsafe-inline``
+  ``self`` plus the third-party API we actually call. ``unsafe-inline``
   is required because the React build emits inline boot styles and the
   Vite dev hydration script. Adjust when the bundle migrates to nonces.
 """
@@ -33,8 +33,7 @@ _DEFAULT_CSP = (
     "img-src 'self' data: https:; "
     "script-src 'self' 'unsafe-inline'; "
     "style-src 'self' 'unsafe-inline'; "
-    "connect-src 'self' https://generativelanguage.googleapis.com "
-    "https://maps.googleapis.com"
+    "connect-src 'self' https://maps.googleapis.com"
 )
 
 

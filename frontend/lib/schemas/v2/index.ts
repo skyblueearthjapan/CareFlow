@@ -15,7 +15,6 @@
  *   CourseStatus enum                             - 設計書 §4.5
  *   RequestType enum                              - 設計書 §4.4
  *   RequestStatus enum                            - 設計書 §3.5.4
- *   AiContextType enum                            - 設計書 §3.5.2
  *
  * 既存 schema との関係 (実装手順書 §1 0-C):
  *   既存 `frontend/lib/schemas/{patient,staff,office}.ts` は Wave 1 完了時に

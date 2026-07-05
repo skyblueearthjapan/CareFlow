@@ -2,14 +2,7 @@
  * PendingRequestV2 zod schemas (Wave 0-C).
  *
  * 設計仕様書 v0.9 §3.5 / §4.4 に基づく申請履歴 (`pending_requests`) v2。
- *
- * 責務分離:
- *   - `ai_interpret_logs`: Gemini API 呼び出しのデバッグ記録 (既存)
- *   - `pending_requests`:  業務上の承認ワークフロー記録 (本テーブル, 新規)
- *
- * 監査要件 (§3.5.3):
- *   AI 経由の **即時反映** の場合も `status="approved"` で同時作成し、
- *   業務反映と同一トランザクションで処理する (冪等性確保)。
+ * 業務上の承認ワークフロー記録。
  *
  * Backend `backend/app/schemas/v2/pending_request.py` の Pydantic schema と
  * **完全一致** させる。
@@ -21,8 +14,6 @@ import { requestScopeEnum, requestStatusEnum, requestTypeEnum } from './enums';
  * 申請 (pending_request) v2 (§4.4).
  *
  * `payload` JSONB に request_type ごとの依頼内容を構造化して格納する。
- * AI 解釈経由の場合は `ai_interpret_log_id` でソースログを参照可能。
- * 手動入力の場合は `ai_interpret_log_id = null`。
  */
 export const pendingRequestV2BaseSchema = z.object({
   request_type: requestTypeEnum,
@@ -39,9 +30,6 @@ export const pendingRequestV2BaseSchema = z.object({
    * それ以外の request_type では null。
    */
   scope: requestScopeEnum.nullable().optional(),
-
-  /** AI 解釈経由の場合のソースログ (null = 手動入力) */
-  ai_interpret_log_id: z.string().uuid().nullable().optional(),
 });
 export type PendingRequestV2Base = z.infer<typeof pendingRequestV2BaseSchema>;
 

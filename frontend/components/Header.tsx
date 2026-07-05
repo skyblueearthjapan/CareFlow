@@ -8,7 +8,6 @@ import {
   BellOff,
   Check,
   Heart,
-  HelpCircle,
   KeyRound,
   LogOut,
   Menu,
@@ -51,7 +50,6 @@ export function Header({ title = 'CareFlow', onToggleSidebar }: HeaderProps) {
         <SchedulingSettingsButton />
         <AdminUsersButton />
         <AuditLogsButton />
-        <AiHelpButton />
       </div>
     </header>
   );
@@ -286,7 +284,7 @@ function AdminUsersButton() {
 }
 
 // ============================================================
-// 監査ログ / AIヘルプ — Sidebar から移設したクイックアクセス
+// 監査ログ — Sidebar から移設したクイックアクセス
 // 申請履歴はサイドバーの連携の下に移設済 (Sidebar.tsx 参照)
 // ============================================================
 
@@ -320,16 +318,6 @@ function AuditLogsButton() {
     <Button variant="ghost" size="icon" asChild aria-label="監査ログ" title="監査ログ">
       <Link href="/admin/audit-logs">
         <ScrollText className="h-5 w-5" strokeWidth={1.75} />
-      </Link>
-    </Button>
-  );
-}
-
-function AiHelpButton() {
-  return (
-    <Button variant="ghost" size="icon" asChild aria-label="AIヘルプ" title="AIヘルプ">
-      <Link href="/help/ai">
-        <HelpCircle className="h-5 w-5" strokeWidth={1.75} />
       </Link>
     </Button>
   );

@@ -1,7 +1,7 @@
 """Integrations / 連携センター endpoints — Phase 5-1 Wave 2-B + Wave 4-A.
 
 Exposes Kaipoke fetch/push job management plus admin-only views over the
-geocoding cache and the AI interpret audit log. Wave 4-A adds the actual
+geocoding cache. Wave 4-A adds the actual
 relay endpoints to the existing kaipoke-api (Flask + Playwright) so the
 連携センター画面 can drive expand/export/diff/apply jobs end-to-end.
 """
@@ -19,14 +19,12 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import get_settings
 from app.core.deps import DbDep, require_role
-from app.models.ai_interpret_log import AiInterpretLog
 from app.models.correction_sheet import CorrectionSheet, CorrectionSheetItem
 from app.models.geocoding_cache import GeocodingCache
 from app.models.kaipoke_job import KaipokeJob, KaipokeJobItem
 from app.models.user import User
 from app.schemas._pagination import Paginated
 from app.schemas.integrations import (
-    AiInterpretLogRead,
     CorrectionBulkSelect,
     CorrectionItemRead,
     CorrectionItemUpdate,
@@ -1456,45 +1454,3 @@ async def bulk_update_correction_items(
     res = await db.execute(stmt)
     await _commit_or_409(db)
     return {"updated": int(res.rowcount or 0)}
-
-
-# --- AI interpret logs (admin only) ---------------------------------------
-
-
-@router.get(
-    "/ai/logs",
-    response_model=Paginated[AiInterpretLogRead],
-    summary="List AI interpret logs (admin)",
-)
-async def list_ai_interpret_logs(
-    db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin"))],
-    since: Annotated[datetime | None, Query(description="created_at >= since")] = None,
-    until: Annotated[datetime | None, Query(description="created_at <  until")] = None,
-    model: Annotated[str | None, Query(description="Exact model id filter")] = None,
-    limit: Annotated[int, Query(ge=1, le=500)] = 100,
-    offset: Annotated[int, Query(ge=0)] = 0,
-) -> Paginated[AiInterpretLogRead]:
-    conditions = []
-    if since is not None:
-        conditions.append(AiInterpretLog.created_at >= since)
-    if until is not None:
-        conditions.append(AiInterpretLog.created_at < until)
-    if model is not None:
-        conditions.append(AiInterpretLog.model == model)
-
-    base = select(AiInterpretLog)
-    count_stmt = select(func.count()).select_from(AiInterpretLog)
-    if conditions:
-        base = base.where(and_(*conditions))
-        count_stmt = count_stmt.where(and_(*conditions))
-
-    stmt = base.order_by(AiInterpretLog.created_at.desc()).limit(limit).offset(offset)
-    rows = (await db.scalars(stmt)).all()
-    total = (await db.scalar(count_stmt)) or 0
-    return Paginated[AiInterpretLogRead](
-        items=[AiInterpretLogRead.model_validate(r, from_attributes=True) for r in rows],
-        total=int(total),
-        limit=limit,
-        offset=offset,
-    )

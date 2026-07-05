@@ -331,7 +331,6 @@ def _build_pending_request_row(
         target_patient_id=payload.target_patient_id,
         target_date=payload.target_date,
         scope=payload.scope.value if payload.scope is not None else None,
-        ai_interpret_log_id=payload.ai_interpret_log_id,
         status=initial_status,
     )
 
@@ -383,7 +382,7 @@ async def create_and_apply_pending_request(
 ) -> PendingRequestV2Read:
     """申請作成 + applier による業務反映を **同一トランザクション** で実行する.
 
-    Codex Must-fix #3: AI 申請履歴フローで POST + PATCH の 2 HTTP call により
+    Codex Must-fix #3: 申請履歴フローで POST + PATCH の 2 HTTP call により
     TX が分裂していた問題を解消する。本エンドポイントは 1 リクエストで:
 
       1. PendingRequest を作成 (ただし db.flush のみで commit はしない)

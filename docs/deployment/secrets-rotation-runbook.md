@@ -15,7 +15,7 @@
 |---|---|---|---|---|
 | 1 | `JWT_SECRET` | `/opt/carelink/.env` | **90 日** | コード/.env 漏洩疑い、admin の不正アクセス検知 |
 | 2 | `KAIPOKE_API_TOKEN` | `/opt/carelink/.env` | **180 日** | kaipoke-api 側で revoke 通知、token 漏洩疑い |
-| 3 | `GEMINI_API_KEY` | `/opt/carelink/.env` | **90 日** | quota 異常、Google Cloud Console アラート |
+| 3 | (欠番 — GEMINI_API_KEY は AI機能撤去 2026-07-05 により廃止) | — | — | — |
 | 4 | `GOOGLE_MAPS_API_KEY` | `/opt/carelink/.env` | **90 日** | quota 異常、不明 referer からの呼び出し検知 |
 | 5 | `POSTGRES_PASSWORD` | `/opt/carelink/.env` | **365 日** | DB ホスト侵害疑い、退職者あり |
 | 6 | `NEXTAUTH_SECRET` | `/opt/carelink/.env` | **90 日** | session token 漏洩疑い |
@@ -107,34 +107,10 @@ curl -fsS http://127.0.0.1:18001/api/v1/kaipoke/patients -H "Authorization: Bear
 
 ---
 
-## 3. `GEMINI_API_KEY` (90 日)
+## 3. `GEMINI_API_KEY` — 廃止 (2026-07-05)
 
-**影響範囲**: 自然言語入力 → 構造化 (W4-B) のみ。Gemini API 呼び出しが新キー反映まで 401/403。
-
-```bash
-# 1) Google AI Studio (https://aistudio.google.com/app/apikey) で新キー生成
-#    プロジェクトと既存キーを確認、同じ Cloud project に紐づけ
-#    → 旧キーは **削除せず**、並行運用 24 時間後に削除
-
-# 2) VPS で .env 更新
-ssh root@72.60.211.213
-cd /opt/carelink
-sudo cp .env .env.bak.$(date +%Y%m%d-%H%M)
-sudo sed -i "s|^GEMINI_API_KEY=.*|GEMINI_API_KEY=<new-key-here>|" .env
-sudo grep '^GEMINI_API_KEY=' .env
-sudo chmod 600 .env
-
-# 3) backend recreate (Gemini key は backend のみ使用)
-docker compose -f docs/deployment/docker-compose.production.yml --env-file .env up -d --force-recreate backend
-
-# 4) 動作確認
-curl -fsS http://127.0.0.1:18001/api/v1/healthz
-# UI 側で Gemini 自然言語入力フォーム経由で 1 件 parse させて成功確認
-
-# 5) 24 時間 monitor 後、AI Studio で旧キーを削除
-```
-
-**戻し方**: `.env.bak.*` から復元 + backend recreate。
+AI 入力機能 (Gemini) の全撤去に伴い廃止。`.env` から行を削除し、
+Google AI Studio 側でキー自体を削除すること。ローテーション対象外。
 
 ---
 

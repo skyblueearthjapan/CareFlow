@@ -138,15 +138,8 @@ export function usePendingRequests(
 /**
  * POST /api/v1/pending-requests — 申請作成.
  *
- * UI からの直接利用は **W3-FE6 では非ターゲット**（履歴ビューは閲覧 / 承認 /
- * 却下が中心）。ただしファイル所有が同一のため、後続 (W5-FE11) で AI 解釈結果
- * を pending に流し込むユースケースに備えて API を提供しておく。
- *
- * **W5-FE11 利用ノート**: `<SubmitToPendingHandler />` (`components/ai/`)
- * から AI 解釈結果を `pending` として作成するために本フックを利用する。
- * 直後に PC admin/manager のみ {@link useApproveRequest} を呼ぶ 2 ステップで
- * §3.5.3 の「即時反映 + approved 履歴」を実現する（POST 単独ではサーバが
- * 常に `pending` で作成する仕様のため）。
+ * 現場ボードの手動申請（新規カルテ提案・配置シート）から `pending` として
+ * 作成するために利用する（サーバは常に `pending` で作成する仕様）。
  *
  * Backend の RBAC (`_enforce_staff_self_scope`) に依存するため、フロント側では
  * Staff の自分軸チェックは行わない（403 が返ったら toast 表示で十分）。
@@ -248,50 +241,6 @@ export function useApproveWithEdit(): UseMutationResult<
       const raw = await fetcher<unknown>(`${PENDING_REQUESTS_BASE}/${id}/approve-with-edit`, {
         method: 'PATCH',
         body: JSON.stringify(body),
-        accessToken,
-        refreshToken,
-      });
-      return pendingRequestV2ReadSchema.parse(raw);
-    },
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: PENDING_REQUESTS_KEY });
-    },
-  });
-}
-
-// ─────────────────────────────────────────────────────────────────────────
-// Create-and-Apply (single TX, admin/manager only)
-// ─────────────────────────────────────────────────────────────────────────
-
-/**
- * POST /api/v1/pending-requests/create-and-apply — 申請作成 + 即時反映 (単一 TX).
- *
- * W7-BE3 で導入された single-TX エンドポイント。PC admin/manager の AI 即時反映
- * フローで使用する (W8-FE1 Codex 再レビュー Must-fix #1)。
- *
- * 旧来の useCreatePendingRequest + useApproveRequest の 2 コールでは、
- * applier 失敗時に申請レコードだけが残ってしまう不整合が生じていた。
- * 本フックは create → apply → approved 遷移を **同一トランザクション** で実行し、
- * 失敗時は全体を rollback するため整合性を保証する。
- *
- * RBAC: admin / manager のみ (Backend 側でも require_role("admin", "manager") で
- * ガードされており、staff が呼んだ場合は 403 が返る)。
- */
-export function useCreateAndApplyPendingRequest(): UseMutationResult<
-  PendingRequestV2Read,
-  Error,
-  PendingRequestV2Create
-> {
-  const qc = useQueryClient();
-  const { data: session } = useSession();
-  const { accessToken, refreshToken } = authPair(session);
-
-  return useMutation<PendingRequestV2Read, Error, PendingRequestV2Create>({
-    mutationFn: async (values) => {
-      const parsed = pendingRequestV2CreateSchema.parse(values);
-      const raw = await fetcher<unknown>(`${PENDING_REQUESTS_BASE}/create-and-apply`, {
-        method: 'POST',
-        body: JSON.stringify(parsed),
         accessToken,
         refreshToken,
       });

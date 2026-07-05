@@ -26,7 +26,6 @@ v1 → v2 移行手順とリリース内容は `docs/RELEASE-NOTES-v2.md` を参
 - **デプロイ**: Hostinger Malaysia VPS（既存 kaipoke-api と同居）
 - **公開URL**: `https://carelink.kaipoke-api.net`（Cloudflare Tunnel）
 - **認証**: NextAuth.js + メール/パスワード
-- **AI**: Gemini API（自然言語入力 → 構造化）
 - **デザイン**: Warm & Human（Teal #0D9488 + Terracotta #D97706 + Cream #FAF7F2）
 
 ## ディレクトリ構造
@@ -60,7 +59,7 @@ CareFlow/
   home address / skill_level など) + special_weeks + 構造化 WeeklyPattern
   エディタ + 初期データ import スクリプト 8 本
 - **Wave 4**: kaipoke-api 中継 14 endpoints + 差分プレビュー / Gemini 自然
-  言語入力 / Google Maps Geocoding / モバイル 3 機能補完 / Combobox 化 +
+  言語入力 (2026-07-05 に AI 機能ごと撤去済) / Google Maps Geocoding / モバイル 3 機能補完 / Combobox 化 +
   zodResolver / AuditLog middleware + /admin/users CRUD / Security headers
   + CORS guard
 - **Wave 5 進行中**: GitHub Actions CI/CD (W5-A 完了) + 監視・バックアップ
@@ -159,9 +158,7 @@ rm -f .tmp_dummy_secret_test.txt
 
 ## 既知の TODO / 移行課題
 
-- **Gemini SDK 移行**: `backend/app/services/gemini_client.py` は現在
-  `google-generativeai` (deprecated) を使用。新 SDK `google-genai` への
-  移行は別 sprint で検討予定。詳細は同ファイル冒頭 docstring を参照。
+- （2026-07-05: AI 入力機能・Gemini SDK は全撤去済み）
 
 ## ライセンス
 
