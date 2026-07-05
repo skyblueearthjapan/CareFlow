@@ -1,14 +1,18 @@
 'use client';
 
 /**
- * LiveMonitorCard — カイポケ RPA のライブモニター（noVNC）。
+ * LiveMonitorCard — カイポケ RPA のライブモニター（noVNC 埋め込み）。
  *
- * 実ブラウザ（Playwright）の操作画面を noVNC で目視するための導線。
- * 画面は Cloudflare Access（管理者 OTP）＋別ウィンドウで開く。ページ内
- * iframe 埋め込みは第三者 Cookie 制約の解消後に対応予定（K-3 Step 2）。
+ * 実ブラウザ（Playwright）の操作画面を noVNC で **ページ内に埋め込んで** 目視する
+ * (K-3 Step 2)。novnc.kaipoke-api.net は carelink と同一サイト (kaipoke-api.net) の
+ * ため Cloudflare Access の Cookie が iframe 内でも送られ、CSP frame-ancestors も
+ * noVNC 側には無いので埋め込み可能。初回は Cloudflare ログインが要るため、空欄時は
+ * 「別ウィンドウ」で一度ログインする導線を残す。
  */
-import { Card } from '@/components/ui/card';
+import { useState } from 'react';
+
 import { Button } from '@/components/ui/button';
+import { Card } from '@/components/ui/card';
 
 import { LiveStatusDot } from './LiveStatusDot';
 
@@ -20,6 +24,8 @@ interface Props {
 }
 
 export function LiveMonitorCard({ monitorUrl, running, reachable, commandLabel }: Props) {
+  const [shown, setShown] = useState(true);
+
   const tone = !reachable ? 'error' : running ? 'running' : 'idle';
   const statusLabel = !reachable
     ? '到達不可'
@@ -27,67 +33,69 @@ export function LiveMonitorCard({ monitorUrl, running, reachable, commandLabel }
       ? `実行中${commandLabel ? ` — ${commandLabel}` : ''}`
       : '待機中';
 
-  const open = () => {
-    if (monitorUrl) window.open(monitorUrl, 'kaipoke-monitor', 'noopener,noreferrer');
+  // noVNC 自動接続 + 画面スケール + 切断時の自動再接続。
+  const embedUrl = monitorUrl ? `${monitorUrl}?autoconnect=true&resize=scale&reconnect=true` : null;
+
+  const openWindow = () => {
+    if (embedUrl) window.open(embedUrl, 'kaipoke-monitor', 'noopener,noreferrer');
   };
 
   return (
     <Card className="flex flex-col overflow-hidden p-0">
       <div className="flex items-center justify-between border-b border-border-subtle px-5 py-3">
         <h2 className="font-serif text-lg font-bold text-text-primary">ライブモニター</h2>
-        <LiveStatusDot tone={tone} label={statusLabel} />
+        <div className="flex items-center gap-3">
+          <LiveStatusDot tone={tone} label={statusLabel} />
+          <button
+            type="button"
+            onClick={() => setShown((v) => !v)}
+            className="text-xs font-medium text-text-secondary hover:text-brand-primary"
+          >
+            {shown ? '隠す' : '表示'}
+          </button>
+        </div>
       </div>
 
-      {/* モニタープレビュー面 — 実画面は別ウィンドウで開く */}
-      <div className="relative flex flex-1 items-center justify-center bg-stone-950 px-6 py-10">
-        <div className="pointer-events-none absolute inset-0 opacity-[0.07]">
-          <div
-            className="h-full w-full"
-            style={{
-              backgroundImage:
-                'radial-gradient(circle at 1px 1px, var(--text-inverted) 1px, transparent 0)',
-              backgroundSize: '18px 18px',
-            }}
+      {shown && embedUrl ? (
+        <div className="relative bg-stone-950">
+          <iframe
+            src={embedUrl}
+            title="カイポケ ライブモニター"
+            className="block aspect-video w-full border-0"
+            allow="clipboard-read; clipboard-write"
           />
+          {running && (
+            <span className="pointer-events-none absolute left-3 top-3 inline-flex items-center gap-1.5 rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-medium text-white/90 backdrop-blur">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-brand-primary" />
+              実行中
+            </span>
+          )}
         </div>
-        <div className="relative flex flex-col items-center gap-4 text-center">
-          <div className="flex h-14 w-14 items-center justify-center rounded-full border border-white/15 bg-white/5">
-            {/* モニターアイコン */}
-            <svg
-              width="26"
-              height="26"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.6"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              className="text-white/80"
-              aria-hidden
-            >
-              <rect x="2" y="3" width="20" height="14" rx="2" />
-              <path d="M8 21h8M12 17v4" />
-            </svg>
+      ) : (
+        <div className="flex flex-1 items-center justify-center bg-stone-950 px-6 py-12 text-center">
+          <div className="space-y-3">
+            <p className="text-sm text-white/70">ライブ画面は非表示です</p>
+            <Button variant="outline" onClick={() => setShown(true)} disabled={!embedUrl}>
+              ライブ画面を表示
+            </Button>
           </div>
-          <div className="space-y-1">
-            <p className="text-sm font-medium text-white/90">
-              {running ? '実ブラウザを操作中です' : 'カイポケ実ブラウザのライブ画面'}
-            </p>
-            <p className="max-w-xs text-xs leading-relaxed text-white/55">
-              {running
-                ? '別ウィンドウで操作の様子をリアルタイムに確認できます。'
-                : 'ジョブ実行中は、この画面で操作の様子を目視できます。'}
-            </p>
-          </div>
-          <Button onClick={open} disabled={!monitorUrl} className="mt-1">
-            ライブモニターを開く
-          </Button>
         </div>
-      </div>
+      )}
 
-      <p className="border-t border-border-subtle px-5 py-2.5 text-[11px] leading-relaxed text-text-muted">
-        モニターは別ウィンドウで開きます（管理者ログインが必要）。監視のみで、画面からの手操作は行わないでください。
-      </p>
+      <div className="flex items-center justify-between gap-3 border-t border-border-subtle px-5 py-2.5">
+        <p className="text-[11px] leading-relaxed text-text-muted">
+          画面が空欄の場合は初回の Cloudflare ログインが必要です。
+          <button
+            type="button"
+            onClick={openWindow}
+            disabled={!embedUrl}
+            className="ml-1 font-medium text-brand-primary hover:underline disabled:opacity-50"
+          >
+            別ウィンドウで開く
+          </button>
+          。監視のみ（画面から手操作しない）。
+        </p>
+      </div>
     </Card>
   );
 }
