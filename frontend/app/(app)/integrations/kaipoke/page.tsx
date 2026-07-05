@@ -34,6 +34,7 @@ import { JobResultCard } from './_components/JobResultCard';
 import { LiveMonitorCard } from './_components/LiveMonitorCard';
 import { LiveStatusDot } from './_components/LiveStatusDot';
 import { OperationMenuCard } from './_components/OperationMenuCard';
+import { WeeklyApplyPanel } from './_components/WeeklyApplyPanel';
 
 function defaultMonth(): string {
   const d = new Date();
@@ -158,6 +159,9 @@ export default function KaipokeIntegrationPage() {
         )}
       </div>
 
+      {/* 週単位の反映（週選択→差分→週ビュー確認→apply） */}
+      <WeeklyApplyPanel />
+
       {/* ライブ進捗（実行中のみ） */}
       {running && live && <JobProgressCard live={live} />}
 
@@ -167,7 +171,7 @@ export default function KaipokeIntegrationPage() {
       {/* 直近の実行結果（完了時） */}
       {finishedJob && <JobResultCard job={finishedJob} />}
 
-      {/* 差分プレビュー */}
+      {/* 差分プレビュー（月単位・従来） */}
       <CorrectionSheetView month={month} />
 
       {/* ジョブ履歴 */}

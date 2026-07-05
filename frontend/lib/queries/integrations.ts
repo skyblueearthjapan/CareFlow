@@ -18,6 +18,7 @@ import type {
   CorrectionItemUpdate,
   CorrectionSheet,
   DiffAccepted,
+  DiffLocalRequest,
   DiffRequest,
   ExpandRequest,
   ExportRequest,
@@ -243,6 +244,10 @@ export function useStartExport() {
 
 export function useStartDiff() {
   return useRelayMutation<DiffRequest, DiffAccepted>('diff');
+}
+
+export function useStartDiffLocal() {
+  return useRelayMutation<DiffLocalRequest, DiffAccepted>('diff-local');
 }
 
 export function useStartApply() {

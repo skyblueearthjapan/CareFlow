@@ -164,6 +164,21 @@ export const DiffRequestSchema = z.object({
 });
 export type DiffRequest = z.infer<typeof DiffRequestSchema>;
 
+// K-2b/2c: CareFlow 内ローカル差分 (週スコープ対応)。
+export const DiffLocalRequestSchema = z.object({
+  month: z.string().regex(/^\d{4}-\d{2}$/, 'YYYY-MM で入力してください'),
+  officeId: z.string().uuid().optional(),
+  weekStart: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .optional(),
+  weekEnd: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .optional(),
+});
+export type DiffLocalRequest = z.infer<typeof DiffLocalRequestSchema>;
+
 export const ApplyRequestSchema = z.object({
   sheetId: z.string().uuid(),
   dryRun: z.boolean().optional(),
