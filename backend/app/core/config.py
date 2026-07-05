@@ -58,6 +58,11 @@ class Settings(BaseSettings):
     kaipoke_api_token: str = Field(default="")
     kaipoke_export_dir: str = Field(default="/tmp/carelink/exports")
     kaipoke_export_ttl_seconds: int = Field(default=1800)  # 30 minutes
+    # Live noVNC monitor URL. NOTE: this is the *websockify* host (port 6080),
+    # NOT the Flask host — kaipoke-api's own /api/kaipoke/vnc-url returns a
+    # kaipoke-api.net/novnc/... URL that hits Flask (port 5000) and does not
+    # serve noVNC. Both hosts sit behind Cloudflare Access (manager OTP).
+    kaipoke_novnc_url: str = Field(default="https://novnc.kaipoke-api.net/vnc.html")
 
     @field_validator("cors_origins")
     @classmethod

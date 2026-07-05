@@ -17,6 +17,7 @@ from sqlalchemy import and_, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
+from app.core.config import get_settings
 from app.core.deps import DbDep, require_role
 from app.models.ai_interpret_log import AiInterpretLog
 from app.models.correction_sheet import CorrectionSheet, CorrectionSheetItem
@@ -41,6 +42,7 @@ from app.schemas.integrations import (
     KaipokeJobCreate,
     KaipokeJobRead,
     KaipokeStatusRead,
+    LiveSnapshotRead,
 )
 from app.services.kaipoke_client import (
     KaipokeApiError,
@@ -337,6 +339,151 @@ async def get_integration_status(
     )
 
 
+_ACTIVE_JOB_STATUSES = ("pending", "running")
+
+
+async def _reconcile_latest_job(
+    db, *, kaipoke_idle: bool, result_payload: dict[str, Any] | None
+) -> KaipokeJob | None:
+    """Close the newest still-open job once kaipoke reports idle.
+
+    kaipoke-api is single-slot and has no per-job callback, so the DB job stays
+    `running` until a poll observes the worker gone idle. This lazily settles it
+    to completed/failed using the worker's last result summary. Idempotent: only
+    pending/running rows are touched, and a no-op returns the row unchanged.
+    """
+    job = await db.scalar(
+        select(KaipokeJob)
+        .options(selectinload(KaipokeJob.items))
+        .order_by(KaipokeJob.created_at.desc())
+        .limit(1)
+    )
+    if job is None or job.status not in _ACTIVE_JOB_STATUSES:
+        return job
+    if not kaipoke_idle:
+        return job
+
+    payload = result_payload or {}
+    if payload.get("status") == "error" or payload.get("error"):
+        job.status = "failed"
+        job.result_summary = {**(job.result_summary or {}), "error": payload.get("error")}
+    elif not payload:
+        # Worker idle but no result surfaced (result lost from the ring buffer,
+        # or the op — e.g. expand — has no /result endpoint). Mark completed but
+        # flag it so the UI/audit can tell "confirmed done" from "assumed done".
+        job.status = "completed"
+        job.result_summary = {**(job.result_summary or {}), "result_unknown": True}
+    else:
+        job.status = "completed"
+        result = payload.get("result")
+        if isinstance(result, dict):
+            trimmed = {k: v for k, v in result.items() if k != "csv_content"}
+            job.result_summary = {**(job.result_summary or {}), "result": trimmed}
+    job.completed_at = datetime.now(UTC)
+    await _commit_or_409(db)
+    return job
+
+
+@router.get(
+    "/live",
+    response_model=LiveSnapshotRead,
+    summary="Live single-slot worker snapshot for the monitor UI (admin)",
+)
+async def get_live_snapshot(
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin"))],
+    kaipoke: Annotated[KaipokeClient, Depends(_kaipoke_dep)],
+    tail: Annotated[int, Query(ge=1, le=1000)] = 60,
+) -> LiveSnapshotRead:
+    settings = get_settings()
+
+    try:
+        raw = await kaipoke.status()
+    except KaipokeApiError as exc:
+        return LiveSnapshotRead(reachable=False, error=str(exc), monitor_url=None)
+
+    task = raw.get("current_task") or {}
+    command = task.get("command")
+    running = bool(task.get("running"))
+
+    phase = processed = total = current_name = None
+    success = failed = skipped = None
+    result_payload: dict[str, Any] | None = None
+
+    # Pull richer progress/result for the op-specific poll endpoints.
+    try:
+        if command == "apply" or (not running):
+            ap = await kaipoke.apply_result()
+            if ap.get("status") == "running":
+                prog = ap.get("progress") or {}
+                phase = prog.get("phase")
+                processed = prog.get("processed")
+                total = prog.get("total")
+                current_name = prog.get("current_name")
+                success, failed, skipped = (
+                    prog.get("success"),
+                    prog.get("failed"),
+                    prog.get("skipped"),
+                )
+            elif ap.get("status") in {"completed", "error"}:
+                result_payload = ap
+                res = ap.get("result") or {}
+                success, failed, skipped = (
+                    res.get("success"),
+                    res.get("failed"),
+                    res.get("skipped"),
+                )
+        if command == "export" or (result_payload is None and not running):
+            ep = await kaipoke.export_result()
+            if ep.get("status") in {"completed", "error"} and result_payload is None:
+                result_payload = ep
+    except KaipokeApiError:
+        pass
+
+    log_lines: list[str] = []
+    try:
+        log_resp = await kaipoke.logs(tail=tail)
+        raw_lines = log_resp.get("lines")
+        if isinstance(raw_lines, list):
+            log_lines = [str(x) for x in raw_lines]
+    except KaipokeApiError:
+        pass
+
+    latest = await _reconcile_latest_job(
+        db, kaipoke_idle=not running, result_payload=result_payload
+    )
+
+    return LiveSnapshotRead(
+        reachable=True,
+        running=running,
+        command=command,
+        phase=phase,
+        processed=processed,
+        total=total,
+        current_name=current_name,
+        success=success,
+        failed=failed,
+        skipped=skipped,
+        logs=log_lines,
+        monitor_url=settings.kaipoke_novnc_url,
+        latest_job=(
+            KaipokeJobRead.model_validate(latest, from_attributes=True) if latest else None
+        ),
+        error=None,
+    )
+
+
+@router.get(
+    "/monitor-url",
+    response_model=dict,
+    summary="noVNC live monitor URL (admin)",
+)
+async def get_monitor_url(
+    _user: Annotated[User, Depends(require_role("admin"))],
+) -> dict[str, str]:
+    return {"url": get_settings().kaipoke_novnc_url}
+
+
 @router.post(
     "/expand",
     response_model=JobAccepted,
@@ -401,8 +548,13 @@ async def trigger_export(
     db.add(job)
     await db.flush()
 
+    # async=true: kaipoke returns immediately and runs export in a background
+    # thread (a sync export blocks ~50s, over the client's 30s timeout). The
+    # UI then polls GET /integrations/live for progress + completion.
     try:
-        upstream = await kaipoke.export({"month": payload.month, "format": payload.format})
+        upstream = await kaipoke.export(
+            {"month": payload.month, "format": payload.format, "async": True}
+        )
     except KaipokeBusyError as exc:
         await db.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="kaipoke busy") from exc
@@ -695,13 +847,12 @@ async def stop_integration_job(
             detail=f"Cannot stop job in status '{job.status}'",
         )
 
-    upstream_id = (job.result_summary or {}).get("kaipoke_job_id")
-    if upstream_id:
-        try:
-            await kaipoke.stop(str(upstream_id))
-        except KaipokeApiError:
-            # Best-effort: mark cancelled locally even if upstream stop call failed.
-            pass
+    # kaipoke-api is single-slot: /api/stop halts the one running task (no id).
+    # Best-effort — we still mark the DB job cancelled even if the call fails.
+    try:
+        await kaipoke.stop()
+    except KaipokeApiError:
+        pass
 
     job.status = "cancelled"
     job.completed_at = datetime.now(UTC)

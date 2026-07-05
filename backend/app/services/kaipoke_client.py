@@ -86,11 +86,31 @@ class KaipokeClient:
     async def apply(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         return await self._request("POST", "/api/apply", json=payload)
 
-    async def job_status(self, job_id: str) -> dict[str, Any]:
-        return await self._request("GET", f"/api/jobs/{job_id}")
+    async def export_result(self) -> dict[str, Any]:
+        """Poll the (single-slot) export result.
 
-    async def stop(self, job_id: str) -> dict[str, Any]:
-        return await self._request("POST", f"/api/jobs/{job_id}/stop")
+        Returns {status: running|completed|error|no_result, result?, error?}.
+        """
+        return await self._request("GET", "/api/export/result")
+
+    async def apply_result(self) -> dict[str, Any]:
+        """Poll the (single-slot) apply result incl. live progress.
+
+        Returns {status: running|completed|error|no_result, progress?, result?}.
+        """
+        return await self._request("GET", "/api/apply/result")
+
+    async def logs(self, tail: int = 200) -> dict[str, Any]:
+        """Tail the kaipoke ring-buffer log (`{ok, lines[], total}`)."""
+        return await self._request("GET", f"/api/kaipoke/logs?tail={int(tail)}")
+
+    async def stop(self) -> dict[str, Any]:
+        """Request a graceful emergency stop.
+
+        kaipoke-api is single-slot: `/api/stop` takes no job id and halts the
+        one running Playwright task after its current record completes.
+        """
+        return await self._request("POST", "/api/stop")
 
     # --- Internals --------------------------------------------------------
 

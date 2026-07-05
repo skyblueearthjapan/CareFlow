@@ -26,6 +26,7 @@ import type {
   KaipokeJob,
   KaipokeJobCreate,
   KaipokeStatus,
+  LiveSnapshot,
   Paginated,
 } from '@/lib/schemas/integration';
 
@@ -185,6 +186,28 @@ export function useKaipokeStatus(refetchMs = 60_000) {
   });
 }
 
+/**
+ * Live single-slot worker snapshot for the monitor UI. Polls adaptively:
+ * fast (2s) while a job is running, relaxed (15s) when idle — so the progress
+ * panel feels live during execution without hammering the relay at rest.
+ */
+export function useKaipokeLive(enabled = true) {
+  const { data: session, status } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+
+  return useQuery<LiveSnapshot>({
+    queryKey: ['integrations', 'live'],
+    queryFn: () =>
+      fetcher<LiveSnapshot>('/api/v1/integrations/live?tail=60', {
+        accessToken,
+        refreshToken,
+      }),
+    enabled: enabled && status === 'authenticated' && session?.user?.role === 'admin',
+    refetchInterval: (query) => (query.state.data?.running ? 2_000 : 15_000),
+  });
+}
+
 function useRelayMutation<TReq, TRes>(path: string) {
   const { data: session } = useSession();
   const accessToken = session?.accessToken ?? null;
@@ -203,6 +226,9 @@ function useRelayMutation<TReq, TRes>(path: string) {
       void qc.invalidateQueries({ queryKey: ['integrations', 'kaipoke', 'jobs'] });
       void qc.invalidateQueries({ queryKey: ['integrations', 'status'] });
       void qc.invalidateQueries({ queryKey: ['integrations', 'jobs'] });
+      // Refresh the live snapshot immediately so the monitor reflects the new
+      // job without waiting out the 15s idle poll interval.
+      void qc.invalidateQueries({ queryKey: ['integrations', 'live'] });
     },
   });
 }

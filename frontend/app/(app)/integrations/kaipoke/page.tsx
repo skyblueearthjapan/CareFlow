@@ -1,25 +1,23 @@
 'use client';
 
 /**
- * 連携センター - kaipoke 操作画面 (Wave 4-A).
+ * 連携センター — カイポケ ジョブセンター (K-3).
  *
- * Replaces the read-only stub with the live control panel:
- *   - Live status (kaipoke /status + DB last job)
- *   - Action buttons: expand / export / diff / apply (admin only)
- *   - Differential preview (CorrectionSheetView)
- *   - Job history (KaipokeJobsList) below
+ * カイポケ RPA (Playwright) をモニタリングしながら CareFlow の UI から
+ * 操作する統合画面。旧 GAS サイドバーの上位互換:
+ *   - 稼働状況 + ライブモニター (noVNC)
+ *   - 操作メニュー (展開 / エクスポート / 差分) + 非常停止
+ *   - 実行中ジョブのライブ進捗 + 実行ログ
+ *   - 直近の実行結果 (成功/失敗/スキップ) + 差分プレビュー + ジョブ履歴
  */
 import { useMemo, useState } from 'react';
 import { useSession } from 'next-auth/react';
 
 import { Card } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import {
-  useIntegrationJobs,
-  useKaipokeStatus,
+  useKaipokeLive,
   useStartDiff,
   useStartExpand,
   useStartExport,
@@ -28,6 +26,13 @@ import {
 
 import { KaipokeJobsList } from '../_components/KaipokeJobsList';
 import { CorrectionSheetView } from './CorrectionSheetView';
+import { EmergencyStopButton } from './_components/EmergencyStopButton';
+import { ExecutionLogViewer } from './_components/ExecutionLogViewer';
+import { JobProgressCard, commandLabel } from './_components/JobProgressCard';
+import { JobResultCard } from './_components/JobResultCard';
+import { LiveMonitorCard } from './_components/LiveMonitorCard';
+import { LiveStatusDot } from './_components/LiveStatusDot';
+import { OperationMenuCard } from './_components/OperationMenuCard';
 
 function defaultMonth(): string {
   const d = new Date();
@@ -40,153 +45,146 @@ export default function KaipokeIntegrationPage() {
 
   const [month, setMonth] = useState<string>(defaultMonth());
 
-  const statusQuery = useKaipokeStatus();
-  const recentJobs = useIntegrationJobs(10);
+  const liveQuery = useKaipokeLive();
+  const live = liveQuery.data;
   const expand = useStartExpand();
   const exportJob = useStartExport();
   const diff = useStartDiff();
   const stop = useStopJob();
 
-  const runningJob = statusQuery.data?.runningJob ?? null;
-  const loginRemain = statusQuery.data?.loginRemainSec ?? null;
-  const loginWarn = typeof loginRemain === 'number' && loginRemain < 300;
+  const running = Boolean(live?.running);
+  const reachable = live?.reachable ?? true;
+  const latestJob = live?.latestJob ?? null;
+  const finishedJob =
+    latestJob && !running && ['completed', 'failed', 'cancelled'].includes(latestJob.status)
+      ? latestJob
+      : null;
 
-  const lastError = useMemo(() => {
-    return expand.error || exportJob.error || diff.error || stop.error || null;
-  }, [expand.error, exportJob.error, diff.error, stop.error]);
+  const busy = running || expand.isPending || exportJob.isPending || diff.isPending;
+
+  const lastError = useMemo(
+    () => expand.error || exportJob.error || diff.error || stop.error || null,
+    [expand.error, exportJob.error, diff.error, stop.error],
+  );
+
+  if (!isAdmin) {
+    return (
+      <section className="space-y-6">
+        <Header />
+        <Alert>
+          <AlertTitle>管理者専用</AlertTitle>
+          <AlertDescription>カイポケ連携の操作は管理者のみ利用できます。</AlertDescription>
+        </Alert>
+      </section>
+    );
+  }
+
+  const statusTone = !reachable ? 'error' : running ? 'running' : 'idle';
 
   return (
     <section className="space-y-6">
-      <header>
-        <h1 className="font-serif text-2xl font-bold text-text-primary">連携センター - Kaipoke</h1>
-        <p className="text-sm text-text-secondary">
-          kaipoke-api (Playwright) を経由したスケジュール展開 / エクスポート / 差分 /
-          適用を実行します
-        </p>
-      </header>
+      <Header />
 
-      <Card className="p-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
+      {/* 稼働状況 + ライブモニター */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <Card className="p-5">
+          <div className="mb-3 flex items-center justify-between">
             <h2 className="font-serif text-lg font-bold text-text-primary">稼働状況</h2>
-            {statusQuery.isLoading ? (
-              <Skeleton className="mt-2 h-5 w-40" />
-            ) : statusQuery.isError ? (
-              <p className="text-sm text-text-warning">kaipoke-api に到達できません</p>
-            ) : (
-              <ul className="mt-1 text-sm text-text-secondary">
-                <li>到達: {statusQuery.data?.reachable ? 'OK' : 'NG'}</li>
-                <li>
-                  ログイン残り:{' '}
-                  <span className={loginWarn ? 'text-text-warning' : ''}>
-                    {loginRemain !== null && loginRemain !== undefined
-                      ? `${loginRemain} 秒`
-                      : '不明'}
-                  </span>
-                </li>
-                <li>最終同期: {statusQuery.data?.lastSyncAt ?? '--'}</li>
-                <li>
-                  実行中ジョブ:{' '}
-                  {runningJob
-                    ? `${runningJob.job_type} / ${runningJob.status} (${runningJob.id.slice(0, 8)})`
-                    : 'なし'}
-                </li>
-              </ul>
-            )}
+            <LiveStatusDot
+              tone={statusTone}
+              label={!reachable ? '到達不可' : running ? '実行中' : '待機中'}
+            />
           </div>
-          {isAdmin && runningJob && (
-            <Button
-              variant="destructive"
-              onClick={() => stop.mutate(runningJob.id)}
-              disabled={stop.isPending}
-            >
-              現在のジョブを停止
-            </Button>
+          {liveQuery.isLoading ? (
+            <Skeleton className="h-20 w-full" />
+          ) : !reachable ? (
+            <Alert variant="destructive">
+              <AlertTitle>kaipoke-api に到達できません</AlertTitle>
+              <AlertDescription className="break-all">
+                {live?.error ?? '接続を確認してください'}
+              </AlertDescription>
+            </Alert>
+          ) : (
+            <dl className="grid grid-cols-2 gap-y-2 text-sm">
+              <dt className="text-text-secondary">現在の状態</dt>
+              <dd className="text-text-primary">
+                {running ? (commandLabel(live?.command) ?? '実行中') : '待機中'}
+              </dd>
+              <dt className="text-text-secondary">直近ジョブ</dt>
+              <dd className="text-text-primary">
+                {latestJob ? `${latestJob.job_type} / ${latestJob.status}` : 'なし'}
+              </dd>
+            </dl>
           )}
-        </div>
-      </Card>
+        </Card>
 
-      <Card className="p-4">
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <label className="text-sm">
-            <span className="mb-1 block text-xs text-text-secondary">対象月 (YYYY-MM)</span>
-            <Input type="month" value={month} onChange={(e) => setMonth(e.target.value)} />
-          </label>
-          {isAdmin && (
-            <div className="flex flex-wrap items-end gap-2">
-              <Button
-                onClick={() => expand.mutate({ month })}
-                disabled={expand.isPending || !month}
-              >
-                スケジュール展開 (Expand)
-              </Button>
-              <Button
-                variant="outline"
-                onClick={() => exportJob.mutate({ month, format: 'csv' })}
-                disabled={exportJob.isPending || !month}
-              >
-                CSV エクスポート
-              </Button>
-              <Button
-                variant="outline"
-                onClick={() => diff.mutate({ month })}
-                disabled={diff.isPending || !month}
-              >
-                差分計算
-              </Button>
-            </div>
-          )}
-        </div>
+        <LiveMonitorCard
+          monitorUrl={live?.monitorUrl}
+          running={running}
+          reachable={reachable}
+          commandLabel={commandLabel(live?.command)}
+        />
+      </div>
+
+      {/* 操作メニュー + 非常停止 */}
+      <div className="space-y-3">
+        <OperationMenuCard
+          month={month}
+          onMonthChange={setMonth}
+          busy={busy}
+          onExpand={() => expand.mutate({ month })}
+          onExport={() => exportJob.mutate({ month, format: 'csv' })}
+          onDiff={() => diff.mutate({ month })}
+        />
+        {running && latestJob && (
+          <div className="flex items-center justify-between rounded-lg border border-border-warning bg-warning-bg px-4 py-3">
+            <p className="text-sm text-warning-strong">
+              ジョブが実行中です。必要な場合は安全に停止できます。
+            </p>
+            <EmergencyStopButton
+              pending={stop.isPending}
+              onConfirm={() => stop.mutate(latestJob.id)}
+            />
+          </div>
+        )}
         {lastError && (
-          <Alert variant="destructive" className="mt-3">
+          <Alert variant="destructive">
             <AlertTitle>操作に失敗しました</AlertTitle>
             <AlertDescription>
               {lastError instanceof Error ? lastError.message : '不明なエラー'}
             </AlertDescription>
           </Alert>
         )}
-      </Card>
+      </div>
 
+      {/* ライブ進捗（実行中のみ） */}
+      {running && live && <JobProgressCard live={live} />}
+
+      {/* 実行ログ */}
+      {live && live.logs.length > 0 && <ExecutionLogViewer lines={live.logs} />}
+
+      {/* 直近の実行結果（完了時） */}
+      {finishedJob && <JobResultCard job={finishedJob} />}
+
+      {/* 差分プレビュー */}
       <CorrectionSheetView month={month} />
 
-      <Card className="p-4">
-        <h2 className="mb-2 font-serif text-lg font-bold text-text-primary">直近ジョブ (10件)</h2>
-        {recentJobs.isLoading ? (
-          <Skeleton className="h-24 w-full" />
-        ) : recentJobs.isError ? (
-          <Alert variant="destructive">
-            <AlertTitle>取得に失敗</AlertTitle>
-            <AlertDescription>
-              {recentJobs.error instanceof Error ? recentJobs.error.message : 'エラー'}
-            </AlertDescription>
-          </Alert>
-        ) : (
-          <table className="w-full text-sm">
-            <thead className="border-b border-border-default text-left text-text-secondary">
-              <tr>
-                <th className="px-2 py-1 font-medium">種類</th>
-                <th className="px-2 py-1 font-medium">op</th>
-                <th className="px-2 py-1 font-medium">状態</th>
-                <th className="px-2 py-1 font-medium">作成</th>
-              </tr>
-            </thead>
-            <tbody>
-              {recentJobs.data?.items.map((job) => (
-                <tr key={job.id} className="border-b border-border-default last:border-0">
-                  <td className="px-2 py-1">{job.job_type}</td>
-                  <td className="px-2 py-1 text-text-secondary">
-                    {((job.params as Record<string, unknown>)?.op as string) ?? '--'}
-                  </td>
-                  <td className="px-2 py-1">{job.status}</td>
-                  <td className="px-2 py-1 text-text-secondary">{job.created_at}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </Card>
-
+      {/* ジョブ履歴 */}
       <KaipokeJobsList />
     </section>
+  );
+}
+
+function Header() {
+  return (
+    <header>
+      <h1 className="font-serif text-2xl font-bold text-text-primary">
+        連携センター — カイポケ ジョブセンター
+      </h1>
+      <p className="mt-1 text-sm text-text-secondary">
+        カイポケの実ブラウザをライブで見守りながら、スケジュールの展開・エクスポート・差分適用を
+        CareFlow から実行します。
+      </p>
+    </header>
   );
 }

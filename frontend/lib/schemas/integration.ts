@@ -115,6 +115,24 @@ export const KaipokeStatusSchema = z.object({
 });
 export type KaipokeStatus = z.infer<typeof KaipokeStatusSchema>;
 
+export const LiveSnapshotSchema = z.object({
+  reachable: z.boolean().default(true),
+  running: z.boolean().default(false),
+  command: z.string().nullable().optional(),
+  phase: z.string().nullable().optional(),
+  processed: z.number().int().nullable().optional(),
+  total: z.number().int().nullable().optional(),
+  currentName: z.string().nullable().optional(),
+  success: z.number().int().nullable().optional(),
+  failed: z.number().int().nullable().optional(),
+  skipped: z.number().int().nullable().optional(),
+  logs: z.array(z.string()).default([]),
+  monitorUrl: z.string().nullable().optional(),
+  latestJob: KaipokeJobReadSchema.nullable().optional(),
+  error: z.string().nullable().optional(),
+});
+export type LiveSnapshot = z.infer<typeof LiveSnapshotSchema>;
+
 export const JobAcceptedSchema = z.object({
   jobId: z.string().uuid(),
   kaipokeJobId: z.string().nullable().optional(),

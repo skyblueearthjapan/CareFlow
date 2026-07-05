@@ -62,11 +62,17 @@ class StubKaipokeClient:
     async def apply(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._dispatch("apply", payload)
 
-    async def job_status(self, job_id: str) -> dict[str, Any]:
-        return self._dispatch("job_status", job_id)
+    async def export_result(self) -> dict[str, Any]:
+        return self._dispatch("export_result", None)
 
-    async def stop(self, job_id: str) -> dict[str, Any]:
-        return self._dispatch("stop", job_id)
+    async def apply_result(self) -> dict[str, Any]:
+        return self._dispatch("apply_result", None)
+
+    async def logs(self, tail: int = 200) -> dict[str, Any]:
+        return self._dispatch("logs", tail)
+
+    async def stop(self) -> dict[str, Any]:
+        return self._dispatch("stop", None)
 
     def _dispatch(self, name: str, payload: Any) -> dict[str, Any]:
         self.calls.append((name, payload))
@@ -307,6 +313,84 @@ async def test_jobs_listing_alias_returns_paginated(client, db, stub_kaipoke) ->
     assert isinstance(body["items"], list)
 
 
+# --- 6b. live snapshot (monitor) ------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_live_running_apply_exposes_progress(client, db, stub_kaipoke) -> None:
+    admin = await _make_user(db, "wave4-live-run@example.com", "admin")
+    stub_kaipoke.responses["status"] = {
+        "current_task": {"running": True, "command": "apply"},
+    }
+    stub_kaipoke.responses["apply_result"] = {
+        "status": "running",
+        "progress": {"processed": 12, "total": 40, "current_name": "山田 太郎"},
+    }
+    stub_kaipoke.responses["logs"] = {"lines": ["10:00:00 apply 開始"], "total": 1}
+
+    res = await client.get("/api/v1/integrations/live", headers=_bearer(admin))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["reachable"] is True
+    assert body["running"] is True
+    assert body["command"] == "apply"
+    assert body["processed"] == 12
+    assert body["total"] == 40
+    assert body["currentName"] == "山田 太郎"
+    assert body["monitorUrl"].endswith("/vnc.html")
+    assert body["logs"] == ["10:00:00 apply 開始"]
+
+
+@pytest.mark.asyncio
+async def test_live_idle_reconciles_running_job_to_completed(client, db, stub_kaipoke) -> None:
+    admin = await _make_user(db, "wave4-live-idle@example.com", "admin")
+    # Seed a running export job via the relay.
+    stub_kaipoke.responses["export"] = {"ok": True, "async": True}
+    await client.post(
+        "/api/v1/integrations/export",
+        headers=_bearer(admin),
+        json={"month": "2026-07", "format": "csv"},
+    )
+
+    # Worker now idle and export result completed → job should settle.
+    stub_kaipoke.responses["status"] = {"current_task": {"running": False, "command": None}}
+    stub_kaipoke.responses["apply_result"] = {"status": "no_result"}
+    stub_kaipoke.responses["export_result"] = {
+        "status": "completed",
+        "result": {"success": True, "row_count": 578, "csv_content": "SECRET,rows"},
+    }
+    stub_kaipoke.responses["logs"] = {"lines": [], "total": 0}
+
+    res = await client.get("/api/v1/integrations/live", headers=_bearer(admin))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["running"] is False
+    assert body["latestJob"]["status"] == "completed"
+    # csv_content must be stripped from the persisted summary.
+    summary = body["latestJob"]["result_summary"]
+    assert "csv_content" not in summary.get("result", {})
+    assert summary["result"]["row_count"] == 578
+
+
+@pytest.mark.asyncio
+async def test_live_unreachable_returns_reachable_false(client, db, stub_kaipoke) -> None:
+    admin = await _make_user(db, "wave4-live-down@example.com", "admin")
+    stub_kaipoke.errors["status"] = kc_module.KaipokeApiError(502, {"error": "network"})
+
+    res = await client.get("/api/v1/integrations/live", headers=_bearer(admin))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["reachable"] is False
+    assert body["error"]
+
+
+@pytest.mark.asyncio
+async def test_live_requires_admin(client, db, stub_kaipoke) -> None:
+    manager = await _make_user(db, "wave4-live-mgr@example.com", "manager")
+    res = await client.get("/api/v1/integrations/live", headers=_bearer(manager))
+    assert res.status_code == 403, res.text
+
+
 # --- 7. RBAC: anonymous on every relay endpoint ---------------------------
 
 
@@ -315,6 +399,8 @@ async def test_jobs_listing_alias_returns_paginated(client, db, stub_kaipoke) ->
     "method,path,body",
     [
         ("GET", "/api/v1/integrations/status", None),
+        ("GET", "/api/v1/integrations/live", None),
+        ("GET", "/api/v1/integrations/monitor-url", None),
         ("POST", "/api/v1/integrations/expand", {"month": "2026-05"}),
         ("POST", "/api/v1/integrations/diff", {"month": "2026-05"}),
     ],

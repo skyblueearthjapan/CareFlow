@@ -114,6 +114,34 @@ class KaipokeStatusRead(BaseModel):
     error: str | None = None
 
 
+class LiveSnapshotRead(BaseModel):
+    """Merged live view of the single-slot kaipoke worker for the monitor UI.
+
+    Combines kaipoke `/api/status` with the running command's progress
+    (`/api/apply/result` while applying) and the tail of the ring-buffer log,
+    plus the noVNC monitor URL. Polled by the ジョブセンター画面.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    reachable: bool = True
+    running: bool = False
+    command: str | None = Field(
+        default=None, description="Running op: expand|export|apply|diff, or null when idle"
+    )
+    phase: str | None = None
+    processed: int | None = None
+    total: int | None = None
+    current_name: str | None = Field(default=None, alias="currentName")
+    success: int | None = None
+    failed: int | None = None
+    skipped: int | None = None
+    logs: list[str] = Field(default_factory=list)
+    monitor_url: str | None = Field(default=None, alias="monitorUrl")
+    latest_job: KaipokeJobRead | None = Field(default=None, alias="latestJob")
+    error: str | None = None
+
+
 class IntegrationExpandRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
     month: str = Field(pattern=r"^\d{4}-\d{2}$")
