@@ -44,6 +44,8 @@ from app.schemas.integrations import (
     KaipokeJobRead,
     KaipokeStatusRead,
     LiveSnapshotRead,
+    WeekScheduleRead,
+    WeekScheduleRow,
 )
 from app.services.kaipoke_client import (
     KaipokeApiError,
@@ -528,6 +530,54 @@ async def get_generated_csv(
     # 行数 = ヘッダー除く (空末尾行を除去)。
     row_count = max(0, len([ln for ln in text.splitlines() if ln.strip()]) - 1)
     return GeneratedCsvRead(month=month, row_count=row_count, csv_content=text)
+
+
+@router.get(
+    "/week-schedule",
+    response_model=WeekScheduleRead,
+    summary="対象週の CareFlow スケジュール (週ビュー表示用・admin)",
+)
+async def get_week_schedule(
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin"))],
+    week_start: Annotated[str, Query(pattern=r"^\d{4}-\d{2}-\d{2}$", alias="weekStart")],
+    week_end: Annotated[str, Query(pattern=r"^\d{4}-\d{2}-\d{2}$", alias="weekEnd")],
+    office_id: Annotated[UUID | None, Query(alias="officeId")] = None,
+) -> WeekScheduleRead:
+    """対象週の確定 visits を週ビュー用の構造化データで返す (read-only)。
+
+    csv_builder の解決ロジック (resolve_month_rows) を再利用し、対象週の日付
+    レンジに絞って返す。週をまたぐ月境界も両月を解決してカバーする。
+    """
+    from app.services.kaipoke.csv_builder import BuildOptions, resolve_month_rows
+
+    ws = date.fromisoformat(week_start)
+    we = date.fromisoformat(week_end)
+
+    # 週が跨る月を集める (通常1つ・月境界週で2つ)。
+    months = {(ws.year, ws.month), (we.year, we.month)}
+    all_rows = []
+    for year, mon in months:
+        all_rows.extend(
+            await resolve_month_rows(db, BuildOptions(year=year, month=mon, office_id=office_id))
+        )
+
+    rows = [
+        WeekScheduleRow(
+            visit_date=r.visit_date.isoformat(),
+            start_time=f"{r.start_time.hour:02d}:{r.start_time.minute:02d}",
+            end_time=f"{r.end_time.hour:02d}:{r.end_time.minute:02d}",
+            patient_name=r.patient_name,
+            staff1=r.primary.name,
+            staff2=r.secondary.name if r.secondary else "",
+            business_type=r.business_type,
+            service_content=r.service_content,
+        )
+        for r in all_rows
+        if ws <= r.visit_date <= we
+    ]
+    rows.sort(key=lambda x: (x.visit_date, x.start_time))
+    return WeekScheduleRead(week_start=week_start, week_end=week_end, rows=rows)
 
 
 @router.post(

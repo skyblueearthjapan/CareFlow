@@ -142,6 +142,31 @@ class LiveSnapshotRead(BaseModel):
     error: str | None = None
 
 
+class WeekScheduleRow(BaseModel):
+    """週スケジュール表示用の1訪問 (CareFlow 確定 visits 由来・K-2 UI)。"""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    visit_date: str = Field(alias="visitDate")  # YYYY-MM-DD
+    start_time: str = Field(alias="startTime")  # HH:MM
+    end_time: str = Field(alias="endTime")  # HH:MM
+    patient_name: str = Field(alias="patientName")
+    staff1: str = ""
+    staff2: str = ""
+    business_type: str = Field(default="", alias="businessType")
+    service_content: str = Field(default="", alias="serviceContent")
+
+
+class WeekScheduleRead(BaseModel):
+    """対象週の CareFlow スケジュール (週ビュー表示用)。"""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    week_start: str = Field(alias="weekStart")
+    week_end: str = Field(alias="weekEnd")
+    rows: list[WeekScheduleRow] = Field(default_factory=list)
+
+
 class GeneratedCsvRead(BaseModel):
     """CareFlow visits から生成したカイポケ18列CSV (K-2a)。
 

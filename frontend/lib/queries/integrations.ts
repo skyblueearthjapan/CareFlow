@@ -29,6 +29,7 @@ import type {
   KaipokeStatus,
   LiveSnapshot,
   Paginated,
+  WeekSchedule,
 } from '@/lib/schemas/integration';
 
 // --- Kaipoke jobs ---------------------------------------------------------
@@ -248,6 +249,30 @@ export function useStartDiff() {
 
 export function useStartDiffLocal() {
   return useRelayMutation<DiffLocalRequest, DiffAccepted>('diff-local');
+}
+
+/** 対象週の CareFlow スケジュール (週ビュー表示用)。週が変わると自動で切り替わる。 */
+export function useWeekSchedule(weekStart: string | null, weekEnd: string | null) {
+  const { data: session, status } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+
+  return useQuery<WeekSchedule>({
+    queryKey: ['integrations', 'week-schedule', weekStart, weekEnd],
+    queryFn: () => {
+      const usp = new URLSearchParams({ weekStart: weekStart!, weekEnd: weekEnd! });
+      return fetcher<WeekSchedule>(`/api/v1/integrations/week-schedule?${usp.toString()}`, {
+        accessToken,
+        refreshToken,
+      });
+    },
+    enabled:
+      status === 'authenticated' &&
+      session?.user?.role === 'admin' &&
+      Boolean(weekStart) &&
+      Boolean(weekEnd),
+    staleTime: 60_000,
+  });
 }
 
 export function useStartApply() {

@@ -1,14 +1,14 @@
 'use client';
 
 /**
- * 連携センター — カイポケ ジョブセンター (K-3).
+ * カイポケ連携 — CareFlow の週次スケジュールをカイポケへ反映する統合画面。
  *
- * カイポケ RPA (Playwright) をモニタリングしながら CareFlow の UI から
- * 操作する統合画面。旧 GAS サイドバーの上位互換:
- *   - 稼働状況 + ライブモニター (noVNC)
+ * 構成:
+ *   - 反映の手順ガイド (1.展開 → 2.export → 3.差分 → 4.反映)
+ *   - 稼働状況 + ライブモニター (noVNC 埋め込み)
  *   - 操作メニュー (展開 / エクスポート / 差分) + 非常停止
- *   - 実行中ジョブのライブ進捗 + 実行ログ
- *   - 直近の実行結果 (成功/失敗/スキップ) + 差分プレビュー + ジョブ履歴
+ *   - 週単位の反映 (週選択 → 週スケジュール表示 → 差分 → dry-run/本番 apply)
+ *   - ライブ進捗 / 実行ログ / 直近結果 / ジョブ履歴
  */
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
@@ -34,6 +34,7 @@ import { JobResultCard } from './_components/JobResultCard';
 import { LiveMonitorCard } from './_components/LiveMonitorCard';
 import { LiveStatusDot } from './_components/LiveStatusDot';
 import { OperationMenuCard } from './_components/OperationMenuCard';
+import { ProcedureGuide } from './_components/ProcedureGuide';
 import { WeeklyApplyPanel } from './_components/WeeklyApplyPanel';
 
 function defaultMonth(): string {
@@ -86,6 +87,9 @@ export default function KaipokeIntegrationPage() {
   return (
     <section className="space-y-6">
       <Header />
+
+      {/* 反映の手順ガイド */}
+      <ProcedureGuide />
 
       {/* 稼働状況 + ライブモニター */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
@@ -192,12 +196,10 @@ export default function KaipokeIntegrationPage() {
 function Header() {
   return (
     <header>
-      <h1 className="font-serif text-2xl font-bold text-text-primary">
-        連携センター — カイポケ ジョブセンター
-      </h1>
+      <h1 className="font-serif text-2xl font-bold text-text-primary">カイポケ連携</h1>
       <p className="mt-1 text-sm text-text-secondary">
-        カイポケの実ブラウザをライブで見守りながら、スケジュールの展開・エクスポート・差分適用を
-        CareFlow から実行します。
+        カイポケの実ブラウザをライブで見守りながら、CareFlow
+        の週次スケジュールをカイポケへ反映します。
       </p>
     </header>
   );

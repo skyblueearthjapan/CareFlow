@@ -22,9 +22,15 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
-import { useCorrectionItems, useStartApply, useStartDiffLocal } from '@/lib/queries/integrations';
+import {
+  useCorrectionItems,
+  useStartApply,
+  useStartDiffLocal,
+  useWeekSchedule,
+} from '@/lib/queries/integrations';
 
 import { WeekDiffView } from './WeekDiffView';
+import { WeekScheduleView } from './WeekScheduleView';
 
 const WEEKDAY = ['日', '月', '火', '水', '木', '金', '土'];
 
@@ -62,6 +68,10 @@ export function WeeklyApplyPanel() {
     e.setDate(e.getDate() + 6);
     return e;
   }, [weekStart]);
+
+  // 対象週の CareFlow スケジュール (週を変えると自動で切り替わる)。
+  const schedule = useWeekSchedule(fmtDate(weekStart), fmtDate(weekEnd));
+  const scheduleRows = schedule.data?.rows ?? [];
 
   const label = `${weekStart.getMonth() + 1}/${weekStart.getDate()}（${WEEKDAY[weekStart.getDay()]}）〜 ${weekEnd.getMonth() + 1}/${weekEnd.getDate()}（${WEEKDAY[weekEnd.getDay()]}）`;
 
@@ -138,8 +148,32 @@ export function WeeklyApplyPanel() {
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-3">
-        <Button onClick={runDiff} disabled={diffLocal.isPending}>
+      {/* この週の CareFlow スケジュール (週を切り替えると連動) */}
+      <div className="mb-4">
+        <div className="mb-2 flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-text-primary">
+            この週の予定（CareFlow → カイポケへ反映）
+          </h3>
+          <span className="text-xs text-text-muted">
+            {schedule.isLoading ? '読み込み中…' : `${scheduleRows.length}件`}
+          </span>
+        </div>
+        {schedule.isLoading ? (
+          <Skeleton className="h-40 w-full" />
+        ) : scheduleRows.length === 0 ? (
+          <Alert>
+            <AlertTitle>この週の予定はありません</AlertTitle>
+            <AlertDescription>
+              CareFlow でこの週のスケジュールを生成し、スタッフ割当まで済ませてください。
+            </AlertDescription>
+          </Alert>
+        ) : (
+          <WeekScheduleView weekStart={weekStart} rows={scheduleRows} />
+        )}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-3 border-t border-border-subtle pt-4">
+        <Button onClick={runDiff} disabled={diffLocal.isPending || scheduleRows.length === 0}>
           {diffLocal.isPending ? 'カイポケ現況を取得して計算中…（約1分）' : 'この週の差分を計算'}
         </Button>
         {sheetId && (
@@ -166,9 +200,12 @@ export function WeeklyApplyPanel() {
         </Alert>
       )}
 
-      {/* 週ビュー */}
+      {/* 変更内容（差分） */}
       {sheetId && (
         <div className="mt-4">
+          <h3 className="mb-2 text-sm font-semibold text-text-primary">
+            変更内容（カイポケ現況との差分）
+          </h3>
           {itemsQuery.isLoading ? (
             <Skeleton className="h-40 w-full" />
           ) : total === 0 ? (
