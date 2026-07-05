@@ -3127,7 +3127,8 @@ def _board_course_to_schema(
 )
 async def board_endpoint(
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    # 現場ボードは全ロール閲覧可 (staff は FE 側で閲覧専用 UI)。編集系 API は別途 admin/manager。
+    _user: Annotated[User, Depends(require_role("admin", "manager", "staff"))],
     iso_year: int = Query(..., ge=2020, le=2100),
     iso_week: int = Query(..., ge=1, le=53),
     office_id: UUID | None = Query(

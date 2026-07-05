@@ -11,7 +11,7 @@
  *   4. 患者カード click → カルテシートが開く (患者詳細の実 API 値)
  *   5. 「提案」ボタン click → 提案シートが開く
  *   6. ローディング中はスピナー文言を出す
- *   7. staff セッションでは /m/home へリダイレクトし、ボードを描画しない
+ *   7. staff セッションでもボードを閲覧できる (編集系 UI は非表示)
  *   8. レイアウト切替 UI (radio) は無い
  *   9. 全拠点を 1 ボードに 稲毛→都賀 / code 順で結合表示する (拠点プルダウン廃止)
  *  10. 曜日ヘッダーの訪問/空き集計が全拠点合算になる
@@ -64,6 +64,12 @@ vi.mock('@/lib/queries/geocoding', () => ({
 
 vi.mock('@/lib/queries/offices', () => ({
   useResolveOffice: vi.fn(),
+}));
+
+// Phase G-88 で FieldBoard に追加された営業時間設定フック。未モックだと
+// QueryClientProvider 無しの本テスト環境で例外になる (フォールバック枠で十分)。
+vi.mock('@/lib/queries/schedulingSettings', () => ({
+  useSchedulingSettings: () => ({ data: undefined, isLoading: false, isError: false }),
 }));
 
 import { useSession } from 'next-auth/react';
@@ -397,11 +403,15 @@ describe('/m 現場ボード (実データ)', () => {
     expect(screen.queryByText('週全体')).not.toBeInTheDocument();
   });
 
-  it('staff セッションでは /m/home へリダイレクトし、ボードを描画しない', () => {
+  it('staff セッションでもボードを閲覧できる (リダイレクトしない・編集ボタンは出ない)', () => {
     setSession('staff');
     render(<FieldBoardPage />);
-    expect(mockReplace).toHaveBeenCalledWith('/m/home');
-    expect(screen.queryByText('現場ボード')).not.toBeInTheDocument();
+    expect(mockReplace).not.toHaveBeenCalledWith('/m/home');
+    expect(screen.getByText('現場ボード')).toBeInTheDocument();
+    // 編集系 (提案・承認・患者管理) は staff には出ない。
+    expect(screen.queryByRole('button', { name: /提案/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /承認/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '患者の登録・編集' })).not.toBeInTheDocument();
   });
 
   it('全拠点が 1 ボードに 稲毛→都賀 / code 順 (稲A→稲M→津A) で結合表示される', () => {
@@ -777,13 +787,13 @@ describe('/m カルテ 編集ボタンの認可', () => {
     expect(screen.getByRole('button', { name: 'カルテを編集' })).toBeInTheDocument();
   });
 
-  // staff は /m ページ自体がリダイレクトされるため、ボード (=カルテ) を描画しない。
-  // → staff には編集 UI が一切到達しないことを担保する。
-  it('staff ではボード自体が描画されず、カルテ・編集 UI に到達しない', () => {
+  // staff はボードを閲覧できるが、カルテは閲覧専用 (編集ボタンを出さない)。
+  it('staff ではカルテを開けるが「カルテを編集」ボタンは出ない', () => {
     setSession('staff');
     render(<FieldBoardPage />);
-    expect(mockReplace).toHaveBeenCalledWith('/m/home');
-    expect(screen.queryByText('青柳 あい')).not.toBeInTheDocument();
+    openKarte();
+    // カルテシートが開いた (ボードカード + シート見出しで氏名が 2 箇所に出る)。
+    expect(screen.getAllByText('青柳 あい').length).toBeGreaterThanOrEqual(2);
     expect(screen.queryByRole('button', { name: 'カルテを編集' })).not.toBeInTheDocument();
   });
 });
@@ -863,7 +873,7 @@ describe('/m カルテ 編集 → 保存', () => {
 //
 // 提案を介さない新規登録 + 検索編集ハブ (PatientManageSheet) の入口。
 // ヘッダ「患者」ボタンは manager/admin (canEditKarte) のみ表示し、押下で
-// PatientManageSheet を開く。staff には /m 自体が到達しない。
+// PatientManageSheet を開く。staff はボード閲覧のみ (ボタン非表示)。
 
 describe('/m ヘッダ 患者ボタン (Phase G-87)', () => {
   it('manager では「患者」ボタンを表示する', () => {
@@ -878,10 +888,10 @@ describe('/m ヘッダ 患者ボタン (Phase G-87)', () => {
     expect(screen.getByRole('button', { name: '患者の登録・編集' })).toBeInTheDocument();
   });
 
-  it('staff ではボード自体が描画されず、患者ボタンに到達しない', () => {
+  it('staff ではボードは見えるが患者ボタンは出ない', () => {
     setSession('staff');
     render(<FieldBoardPage />);
-    expect(mockReplace).toHaveBeenCalledWith('/m/home');
+    expect(screen.getByText('現場ボード')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '患者の登録・編集' })).not.toBeInTheDocument();
   });
 

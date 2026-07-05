@@ -11,7 +11,7 @@
     - 休講曜日 (staff 0) は courses 空 + closed=True.
     - 空ボード (visit なし).
     - insurance (med/care) / patient_kana の伝播.
-    - 認証 (staff 403 / no-auth 401).
+    - 認証 (staff は閲覧可 200 / no-auth 401).
 
 ローカル SQLite のみ (本番 DB 禁止).
 
@@ -418,14 +418,15 @@ async def test_board_weekday_headers(client, db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_board_rejects_staff_role(client, db) -> None:
+async def test_board_allows_staff_role(client, db) -> None:
+    """staff も現場ボードを閲覧できる (読み取り専用・編集系 API は別途 admin/manager)。"""
     staff_user = await _make_user(db, email="board-staff@example.com", role="staff")
     res = await client.get(
         "/api/v1/schedule/v2/board",
         headers=_bearer(staff_user),
         params={"iso_year": ISO_YEAR, "iso_week": ISO_WEEK},
     )
-    assert res.status_code == 403
+    assert res.status_code == 200
 
 
 @pytest.mark.asyncio

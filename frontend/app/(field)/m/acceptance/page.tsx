@@ -3,29 +3,19 @@
 /**
  * /m/acceptance — CareFlow Mobile 受け入れ枠マトリックス (P3)。
  *
- * 認証ガードは /m (現場ボード) と同一: manager / admin のみ。staff は /m/home へ。
+ * 認証ガードは /m (現場ボード) と同一: ログイン済みの全ロールが閲覧できる
+ * (モバイル版マトリックスはもともと読み取り専用)。
  * (field) レイアウトのフルスクリーン・フォントスコープをそのまま継承する。
  */
 
-import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
-import { useEffect } from 'react';
 
 import { AcceptanceFieldView } from '@/components/field/AcceptanceFieldView';
 
 export default function FieldAcceptancePage() {
-  const router = useRouter();
-  const { data: session, status } = useSession();
-  const role = session?.user?.role;
-  const allowed = role === 'admin' || role === 'manager';
+  const { status } = useSession();
 
-  useEffect(() => {
-    if (status === 'authenticated' && !allowed) {
-      router.replace('/m/home');
-    }
-  }, [status, allowed, router]);
-
-  if (status !== 'authenticated' || !allowed) {
+  if (status !== 'authenticated') {
     return null;
   }
 

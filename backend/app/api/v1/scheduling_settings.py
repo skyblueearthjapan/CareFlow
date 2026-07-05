@@ -74,11 +74,13 @@ def _build_read(row: SchedulingSettings | None) -> SchedulingSettingsRead:
 @router.get(
     "",
     response_model=SchedulingSettingsRead,
-    summary="Phase G-88: 最適化設定の有効値取得 (admin/manager)",
+    summary="Phase G-88: 最適化設定の有効値取得 (全ロール・read-only)",
 )
 async def get_scheduling_settings(
     db: DbDep,
-    _actor: Annotated[User, Depends(require_role("admin", "manager"))],
+    # 閲覧系画面 (PC スケジュール・現場ボード) が営業時間等の表示に使うため
+    # staff にも read を許可する。更新 (PUT) は引き続き admin/manager のみ。
+    _actor: Annotated[User, Depends(require_role("admin", "manager", "staff"))],
 ) -> SchedulingSettingsRead:
     row = await load_scheduling_settings_row(db)
     return _build_read(row)

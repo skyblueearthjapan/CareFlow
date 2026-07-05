@@ -27,9 +27,8 @@ interface MobileShellProps {
 export function MobileShell({ children }: MobileShellProps) {
   const pathname = usePathname();
   const { data: session } = useSession();
-  // 現場ボード (/m) は manager/admin 専用。staff には導線を出さない
-  // (Sidebar の adminOnly と同じ role!=='staff' 判定に揃える)。
-  const showFieldBoard = !!session && session.user?.role !== 'staff';
+  // 現場ボード (/m) は全ロールが閲覧できる (staff は閲覧専用・編集系はボード内で出さない)。
+  const showFieldBoard = !!session;
   return (
     <div className="flex h-screen w-screen flex-col bg-bg-app">
       {showFieldBoard && (

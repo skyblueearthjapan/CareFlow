@@ -333,17 +333,17 @@ async def test_api_put_time_order_422_after_null_reset(client, db) -> None:
 
 @pytest.mark.asyncio
 async def test_api_rbac(client, db) -> None:
-    """GET / PUT は admin / manager OK, staff は 403, 未認証 401."""
+    """GET は全ロール OK (閲覧系画面で使用), PUT は admin / manager のみ, 未認証 401."""
     manager = await _make_user(db, email="sc-rbac-m@example.com", role="manager")
     staff = await _make_user(db, email="sc-rbac-s@example.com", role="staff")
 
-    # GET
+    # GET (staff も read 可 — 現場ボード/PC スケジュールの営業時間表示に使用)
     assert (
         await client.get("/api/v1/scheduling-settings", headers=_bearer(manager))
     ).status_code == 200
     assert (
         await client.get("/api/v1/scheduling-settings", headers=_bearer(staff))
-    ).status_code == 403
+    ).status_code == 200
     assert (await client.get("/api/v1/scheduling-settings")).status_code == 401
 
     # PUT

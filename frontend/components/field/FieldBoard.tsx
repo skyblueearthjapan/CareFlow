@@ -209,8 +209,8 @@ export function FieldBoard() {
   const [weekStart, setWeekStart] = useState<Date>(() => toWeekStart(new Date()));
   const { isoYear, isoWeek } = useMemo(() => toIsoYearWeek(weekStart), [weekStart]);
 
-  // カルテ編集の認可: manager / admin のみ編集ボタンを出す (staff は閲覧専用)。
-  // /m ページ自体が manager/admin ガード済みだが、二重で role を見て安全側に倒す。
+  // 編集系の認可: manager / admin のみ編集 UI (提案・承認・患者管理・直接配置・
+  // カルテ編集) を出す。staff は閲覧専用でボード自体は見られる。
   const { data: session } = useSession();
   const canEditKarte = session?.user?.role === 'admin' || session?.user?.role === 'manager';
 
@@ -339,6 +339,7 @@ export function FieldBoard() {
         setApprove={setApprove}
         pendingCount={pendingCount}
         onNew={() => setSheet(true)}
+        canEdit={canEditKarte}
         canManagePatients={canEditKarte}
         onManage={() => setManage(true)}
       />
@@ -376,7 +377,10 @@ export function FieldBoard() {
             sameAddressGroups={sameAddressGroups}
             businessBlocks={businessBlocks}
             onKarte={setKarte}
-            onEmpty={setPlacement}
+            // 直接配置 (Phase G-84) は manager/admin のみ。staff には閲覧専用の旨を伝える。
+            onEmpty={
+              canEditKarte ? setPlacement : () => showToast('閲覧専用です (配置は管理者のみ)')
+            }
           />
         )}
         <div style={{ height: 28 }} />
@@ -547,6 +551,8 @@ interface HeaderProps {
   setApprove: (fn: (a: boolean) => boolean) => void;
   pendingCount: number;
   onNew: () => void;
+  /** 編集系ボタン (提案 + 承認) を出すか。manager/admin のみ true (staff は閲覧専用)。 */
+  canEdit: boolean;
   /** 患者管理ボタン (新規登録 + 検索編集) を出すか。manager/admin のみ true。 */
   canManagePatients: boolean;
   onManage: () => void;
@@ -557,6 +563,7 @@ function Header({
   setApprove,
   pendingCount,
   onNew,
+  canEdit,
   canManagePatients,
   onManage,
 }: HeaderProps) {
@@ -644,46 +651,51 @@ function Header({
                 <UserPlus size={16} />
               </button>
             )}
-            <button
-              onClick={onNew}
-              style={{ ...hdrAct, ...hdrActCompact, background: '#fff', color: accentInk }}
-            >
-              <Plus size={15} /> 提案
-            </button>
-            <button
-              onClick={() => setApprove((a) => !a)}
-              style={{
-                ...hdrAct,
-                ...hdrActCompact,
-                background: approve ? '#fff' : 'rgba(255,255,255,0.16)',
-                color: approve ? accentInk : '#fff',
-                position: 'relative',
-              }}
-            >
-              <ClipboardCheck size={15} /> 承認
-              {pendingCount > 0 && (
-                <span
+            {/* 提案・承認は編集系 (manager/admin のみ)。staff は閲覧専用のため出さない。 */}
+            {canEdit && (
+              <>
+                <button
+                  onClick={onNew}
+                  style={{ ...hdrAct, ...hdrActCompact, background: '#fff', color: accentInk }}
+                >
+                  <Plus size={15} /> 提案
+                </button>
+                <button
+                  onClick={() => setApprove((a) => !a)}
                   style={{
-                    position: 'absolute',
-                    top: -6,
-                    right: -6,
-                    minWidth: 18,
-                    height: 18,
-                    padding: '0 5px',
-                    background: '#E1657F',
-                    color: '#fff',
-                    fontSize: 11,
-                    fontWeight: 700,
-                    borderRadius: 999,
-                    display: 'grid',
-                    placeItems: 'center',
-                    border: '2px solid #fff',
+                    ...hdrAct,
+                    ...hdrActCompact,
+                    background: approve ? '#fff' : 'rgba(255,255,255,0.16)',
+                    color: approve ? accentInk : '#fff',
+                    position: 'relative',
                   }}
                 >
-                  {pendingCount}
-                </span>
-              )}
-            </button>
+                  <ClipboardCheck size={15} /> 承認
+                  {pendingCount > 0 && (
+                    <span
+                      style={{
+                        position: 'absolute',
+                        top: -6,
+                        right: -6,
+                        minWidth: 18,
+                        height: 18,
+                        padding: '0 5px',
+                        background: '#E1657F',
+                        color: '#fff',
+                        fontSize: 11,
+                        fontWeight: 700,
+                        borderRadius: 999,
+                        display: 'grid',
+                        placeItems: 'center',
+                        border: '2px solid #fff',
+                      }}
+                    >
+                      {pendingCount}
+                    </span>
+                  )}
+                </button>
+              </>
+            )}
           </div>
         </div>
       </div>
