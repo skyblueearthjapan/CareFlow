@@ -346,6 +346,50 @@ async def get_integration_status(
 _ACTIVE_JOB_STATUSES = ("pending", "running")
 
 
+async def _notify_apply_result(db, job: KaipokeJob) -> None:
+    """apply(本番反映)が失敗/スキップを含んで決着したら管理者へ通知を残す。
+
+    非同期の apply は完了時に実行者が別画面にいる可能性が高い。トースト(揮発)では
+    見逃すため、既存の通知基盤(ベル+未読バッジ)に恒久的な通知を1件作る。
+    reference_id=job.id で冪等 (reconcile が複数回走っても1件)。成功のみの時は作らない。
+    """
+    from app.services.checkin.notify import _active_admin_manager_users, _create_idempotent
+
+    result = (job.result_summary or {}).get("result") or {}
+    failed = int(result.get("failed") or 0)
+    skipped = int(result.get("skipped") or 0)
+    is_failed = job.status == "failed"
+    if not (is_failed or failed > 0 or skipped > 0):
+        return  # 全件成功 → 通知不要 (要対応がある時だけ通知する)
+
+    month = (job.params or {}).get("month") or ""
+    if is_failed:
+        title = "カイポケ反映が失敗しました"
+        body = f"{month} の反映がエラーで終了しました。カイポケ連携画面で確認してください。"
+    else:
+        parts = []
+        if failed > 0:
+            parts.append(f"失敗{failed}件")
+        if skipped > 0:
+            parts.append(f"スキップ{skipped}件")
+        title = f"カイポケ反映に要確認（{'・'.join(parts)}）"
+        body = (
+            f"{month} の反映は完了しましたが {('・'.join(parts))} があります。"
+            "未登録のまま放置しないよう、カイポケ連携画面で内訳を確認してください。"
+        )
+
+    users = await _active_admin_manager_users(db)
+    await _create_idempotent(
+        db,
+        users=users,
+        type_="kaipoke_apply_result",
+        reference_type="kaipoke_apply",
+        reference_id=job.id,
+        title=title,
+        body=body,
+    )
+
+
 async def _reconcile_latest_job(
     db, *, kaipoke_idle: bool, result_payload: dict[str, Any] | None
 ) -> KaipokeJob | None:
@@ -389,12 +433,18 @@ async def _reconcile_latest_job(
     # applying → completed で applied / failed で failed。早計な applied を避け、
     # 実際にカイポケ処理が終わってから確定する。
     params = job.params or {}
-    if params.get("op") == "apply" and not params.get("dry_run") and params.get("sheet_id"):
-        sheet = await db.scalar(
-            select(CorrectionSheet).where(CorrectionSheet.id == _safe_uuid(params.get("sheet_id")))
-        )
-        if sheet is not None and sheet.status == "applying":
-            sheet.status = "applied" if job.status == "completed" else "failed"
+    if params.get("op") == "apply" and not params.get("dry_run"):
+        if params.get("sheet_id"):
+            sheet = await db.scalar(
+                select(CorrectionSheet).where(
+                    CorrectionSheet.id == _safe_uuid(params.get("sheet_id"))
+                )
+            )
+            if sheet is not None and sheet.status == "applying":
+                sheet.status = "applied" if job.status == "completed" else "failed"
+        # 失敗/スキップがあれば実行管理者(admin/manager)へ通知を残す。反映後の
+        # 失敗/スキップを見逃して放置しないための恒久的な気づき (トーストと違い消えない)。
+        await _notify_apply_result(db, job)
 
     await _commit_or_409(db)
 
@@ -504,6 +554,47 @@ async def get_monitor_url(
     _user: Annotated[User, Depends(require_role("admin"))],
 ) -> dict[str, str]:
     return {"url": get_settings().kaipoke_novnc_url}
+
+
+@router.post(
+    "/reconcile-jobs",
+    response_model=dict,
+    summary="実行中ジョブの決着を確定し失敗/スキップを通知 (定期 cron 用・admin)",
+)
+async def reconcile_jobs(
+    db: DbDep,
+    _admin: Annotated[User, Depends(require_role("admin"))],
+    kaipoke: Annotated[KaipokeClient, Depends(_kaipoke_dep)],
+) -> dict[str, Any]:
+    """kaipoke が idle なら未決着ジョブを completed/failed へ確定し、apply の
+    失敗/スキップを管理者へ通知する (VPS cron 用)。
+
+    連携画面を開いていなくても通知が確実に作られるよう、/live ポーリングに
+    依存しない経路として cron から数分毎に叩く。冪等 (何度呼んでも二重通知しない)。
+    """
+    try:
+        raw = await kaipoke.status()
+    except KaipokeApiError as exc:
+        return {"reachable": False, "settled": False, "error": str(exc)}
+
+    task = raw.get("current_task") or {}
+    running = bool(task.get("running"))
+    result_payload: dict[str, Any] | None = None
+    if not running:
+        try:
+            ap = await kaipoke.apply_result()
+            if ap.get("status") in {"completed", "error"}:
+                result_payload = ap
+            else:
+                ep = await kaipoke.export_result()
+                if ep.get("status") in {"completed", "error"}:
+                    result_payload = ep
+        except KaipokeApiError:
+            pass
+
+    job = await _reconcile_latest_job(db, kaipoke_idle=not running, result_payload=result_payload)
+    settled = job is not None and job.status not in _ACTIVE_JOB_STATUSES
+    return {"reachable": True, "running": running, "settled": settled}
 
 
 @router.get(

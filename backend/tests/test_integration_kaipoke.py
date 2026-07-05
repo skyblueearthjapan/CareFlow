@@ -480,6 +480,22 @@ async def test_live_requires_admin(client, db, stub_kaipoke) -> None:
     assert res.status_code == 403, res.text
 
 
+@pytest.mark.asyncio
+async def test_reconcile_jobs_unreachable(client, db, stub_kaipoke) -> None:
+    admin = await _make_user(db, "wave-recon@example.com", "admin")
+    stub_kaipoke.errors["status"] = kc_module.KaipokeApiError(502, {"error": "network"})
+    res = await client.post("/api/v1/integrations/reconcile-jobs", headers=_bearer(admin))
+    assert res.status_code == 200, res.text
+    assert res.json()["reachable"] is False
+
+
+@pytest.mark.asyncio
+async def test_reconcile_jobs_requires_admin(client, db, stub_kaipoke) -> None:
+    manager = await _make_user(db, "wave-recon-mgr@example.com", "manager")
+    res = await client.post("/api/v1/integrations/reconcile-jobs", headers=_bearer(manager))
+    assert res.status_code == 403, res.text
+
+
 # --- 6d. local diff (K-2b) ------------------------------------------------
 
 # 18列カイポケCSV (ヘッダ + 1行)。現況として stub export が返す。

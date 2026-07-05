@@ -30,6 +30,12 @@ export function JobResultCard({ job }: { job: KaipokeJob }) {
   const errorMsg = typeof summary.error === 'string' ? summary.error : null;
   const hasBreakdown = success !== null || failed !== null || skipped !== null;
 
+  // 失敗/スキップの個別明細 (どの訪問が未登録か)。カイポケ result.details 由来。
+  const details = Array.isArray(result.details)
+    ? (result.details as Array<Record<string, unknown>>)
+    : [];
+  const problems = details.filter((d) => typeof d.status === 'string' && d.status !== 'success');
+
   const statusVariant =
     job.status === 'completed'
       ? 'success'
@@ -65,6 +71,54 @@ export function JobResultCard({ job }: { job: KaipokeJob }) {
         </p>
       ) : (
         <p className="text-sm text-text-muted">この実行に詳細サマリはありません。</p>
+      )}
+
+      {/* 要対応: 失敗/スキップの明細 (カイポケに未登録の可能性) */}
+      {problems.length > 0 && (
+        <div className="mt-4 rounded-lg border border-border-warning bg-warning-bg p-3">
+          <p className="mb-2 text-sm font-semibold text-warning-strong">
+            要対応 — 失敗・スキップ {problems.length}件（カイポケに未登録の可能性）
+          </p>
+          <div className="max-h-56 overflow-y-auto rounded border border-border-warning bg-bg-base">
+            <table className="w-full text-xs">
+              <thead className="sticky top-0 bg-bg-muted text-left text-text-secondary">
+                <tr>
+                  <th className="px-2 py-1 font-medium">利用者/職員</th>
+                  <th className="px-2 py-1 font-medium">日</th>
+                  <th className="px-2 py-1 font-medium">操作</th>
+                  <th className="px-2 py-1 font-medium">状態</th>
+                  <th className="px-2 py-1 font-medium">理由</th>
+                </tr>
+              </thead>
+              <tbody>
+                {problems.map((d, i) => (
+                  <tr key={i} className="border-t border-border-subtle">
+                    <td className="px-2 py-1 text-text-primary">
+                      {String(d.user ?? d.staff ?? '—')}
+                    </td>
+                    <td className="px-2 py-1 tabular-nums text-text-secondary">
+                      {String(d.date ?? '')}
+                    </td>
+                    <td className="px-2 py-1 text-text-secondary">{String(d.action ?? '')}</td>
+                    <td className="px-2 py-1">
+                      <span
+                        className={
+                          d.status === 'skipped' ? 'text-warning-strong' : 'font-medium text-error'
+                        }
+                      >
+                        {d.status === 'skipped' ? 'スキップ' : '失敗'}
+                      </span>
+                    </td>
+                    <td className="px-2 py-1 text-text-muted">{String(d.reason ?? '')}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="mt-2 text-xs text-warning-strong">
+            上記はカイポケに未登録の可能性があります。カイポケ画面で手動確認・登録してください。
+          </p>
+        </div>
       )}
 
       {job.completed_at && <p className="mt-3 text-xs text-text-muted">完了: {job.completed_at}</p>}
