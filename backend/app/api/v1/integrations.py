@@ -32,6 +32,7 @@ from app.schemas.integrations import (
     CorrectionItemUpdate,
     CorrectionSheetRead,
     DiffAccepted,
+    ExpandStatusRead,
     GeneratedCsvRead,
     GeocodingCacheRead,
     IntegrationApplyRequest,
@@ -546,38 +547,122 @@ async def get_week_schedule(
 ) -> WeekScheduleRead:
     """対象週の確定 visits を週ビュー用の構造化データで返す (read-only)。
 
-    csv_builder の解決ロジック (resolve_month_rows) を再利用し、対象週の日付
-    レンジに絞って返す。週をまたぐ月境界も両月を解決してカバーする。
+    現場が見慣れたコース別表示 (行=コース × 列=曜日) のため、visit.course_id →
+    courses.code (A/B/..) と office 名を join して各行に付与する。
     """
-    from app.services.kaipoke.csv_builder import BuildOptions, resolve_month_rows
+    from app.models.course import Course
+    from app.models.office import Office
+    from app.models.staff import Staff
+    from app.models.visit import Visit
 
     ws = date.fromisoformat(week_start)
     we = date.fromisoformat(week_end)
 
-    # 週が跨る月を集める (通常1つ・月境界週で2つ)。
-    months = {(ws.year, ws.month), (we.year, we.month)}
-    all_rows = []
-    for year, mon in months:
-        all_rows.extend(
-            await resolve_month_rows(db, BuildOptions(year=year, month=mon, office_id=office_id))
+    stmt = (
+        select(Visit)
+        .where(
+            Visit.deleted_at.is_(None),
+            Visit.visit_date >= ws,
+            Visit.visit_date <= we,
+            Visit.status != "cancelled",
         )
+        .options(selectinload(Visit.patient))
+        .order_by(Visit.visit_date, Visit.start_time)
+    )
+    visits = list((await db.scalars(stmt)).all())
 
-    rows = [
-        WeekScheduleRow(
-            visit_date=r.visit_date.isoformat(),
-            start_time=f"{r.start_time.hour:02d}:{r.start_time.minute:02d}",
-            end_time=f"{r.end_time.hour:02d}:{r.end_time.minute:02d}",
-            patient_name=r.patient_name,
-            staff1=r.primary.name,
-            staff2=r.secondary.name if r.secondary else "",
-            business_type=r.business_type,
-            service_content=r.service_content,
+    # 一括ロード: staff / office / course。
+    staff_ids = {sid for v in visits for sid in (v.primary_staff_id, v.secondary_staff_id) if sid}
+    staff_map = {}
+    if staff_ids:
+        staff_map = {
+            s.id: s for s in (await db.scalars(select(Staff).where(Staff.id.in_(staff_ids)))).all()
+        }
+    course_ids = {v.course_id for v in visits if v.course_id}
+    course_map: dict = {}
+    if course_ids:
+        course_map = {
+            c.id: c
+            for c in (await db.scalars(select(Course).where(Course.id.in_(course_ids)))).all()
+        }
+    office_ids = {c.office_id for c in course_map.values() if c.office_id}
+    office_ids |= {v.patient.primary_office_id for v in visits if v.patient}
+    office_ids.discard(None)
+    office_map: dict = {}
+    if office_ids:
+        office_map = {
+            o.id: o
+            for o in (await db.scalars(select(Office).where(Office.id.in_(office_ids)))).all()
+        }
+
+    def _name(sid) -> str:
+        s = staff_map.get(sid)
+        return s.name if s else ""
+
+    rows: list[WeekScheduleRow] = []
+    for v in visits:
+        patient = v.patient
+        if patient is None or v.primary_staff_id is None:
+            continue
+        if office_id is not None and patient.primary_office_id != office_id:
+            continue
+        course = course_map.get(v.course_id)
+        course_code = course.code if course else ""
+        office = (
+            office_map.get(course.office_id)
+            if course
+            else office_map.get(patient.primary_office_id)
         )
-        for r in all_rows
-        if ws <= r.visit_date <= we
-    ]
-    rows.sort(key=lambda x: (x.visit_date, x.start_time))
+        office_name = office.name if office else ""
+        rows.append(
+            WeekScheduleRow(
+                visit_date=v.visit_date.isoformat(),
+                weekday=v.visit_date.weekday(),
+                start_time=f"{v.start_time.hour:02d}:{v.start_time.minute:02d}",
+                end_time=f"{v.end_time.hour:02d}:{v.end_time.minute:02d}",
+                patient_name=patient.name,
+                staff1=_name(v.primary_staff_id),
+                staff2=_name(v.secondary_staff_id),
+                course_code=course_code,
+                office_name=office_name,
+            )
+        )
     return WeekScheduleRead(week_start=week_start, week_end=week_end, rows=rows)
+
+
+@router.get(
+    "/expand-status",
+    response_model=ExpandStatusRead,
+    summary="対象月の展開状況 (展開は月1回・2回目ブロック判定用・admin)",
+)
+async def get_expand_status(
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin"))],
+    month: Annotated[str, Query(pattern=r"^\d{4}-\d{2}$")],
+) -> ExpandStatusRead:
+    """CareFlow の実行履歴 (KaipokeJob) から、その月が展開済みかを判定する。
+
+    展開は月1回・2回目は既存を上書きするため、UI 側で再展開をブロックする判断に使う。
+    完了済みの expand ジョブ (params.op=expand, params.month=month) があれば展開済み。
+    """
+    # pending も含める: 展開ジョブは作成直後 pending で flush される。二重展開を
+    # 防ぐため、投入直後でも「展開済み」扱いにする（安全側）。
+    job = await db.scalar(
+        select(KaipokeJob)
+        .where(
+            KaipokeJob.params["op"].astext == "expand",
+            KaipokeJob.params["month"].astext == month,
+            KaipokeJob.status.in_(("completed", "running", "pending")),
+        )
+        .order_by(KaipokeJob.created_at.desc())
+        .limit(1)
+    )
+    return ExpandStatusRead(
+        month=month,
+        expanded=job is not None,
+        expanded_at=(job.completed_at or job.started_at) if job else None,
+        job_id=job.id if job else None,
+    )
 
 
 @router.post(

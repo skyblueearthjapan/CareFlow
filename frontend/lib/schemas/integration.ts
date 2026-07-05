@@ -185,16 +185,17 @@ export const ApplyRequestSchema = z.object({
 });
 export type ApplyRequest = z.infer<typeof ApplyRequestSchema>;
 
-// K-2 UI: 週スケジュール表示 (CareFlow 確定 visits 由来)。
+// K-2 UI: 週スケジュール表示 (CareFlow 確定 visits 由来・コース別)。
 export const WeekScheduleRowSchema = z.object({
   visitDate: z.string(),
+  weekday: z.number().int().default(0), // 0=月..6=日
   startTime: z.string(),
   endTime: z.string(),
   patientName: z.string(),
   staff1: z.string().default(''),
   staff2: z.string().default(''),
-  businessType: z.string().default(''),
-  serviceContent: z.string().default(''),
+  courseCode: z.string().default(''),
+  officeName: z.string().default(''),
 });
 export type WeekScheduleRow = z.infer<typeof WeekScheduleRowSchema>;
 
@@ -204,6 +205,14 @@ export const WeekScheduleSchema = z.object({
   rows: z.array(WeekScheduleRowSchema).default([]),
 });
 export type WeekSchedule = z.infer<typeof WeekScheduleSchema>;
+
+export const ExpandStatusSchema = z.object({
+  month: z.string(),
+  expanded: z.boolean(),
+  expandedAt: z.string().nullable().optional(),
+  jobId: z.string().uuid().nullable().optional(),
+});
+export type ExpandStatus = z.infer<typeof ExpandStatusSchema>;
 
 // --- Wave 4-A: correction sheets / items (Phase C) -------------------------
 

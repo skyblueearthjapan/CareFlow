@@ -26,6 +26,7 @@ import type {
   JobAccepted,
   KaipokeJob,
   KaipokeJobCreate,
+  ExpandStatus,
   KaipokeStatus,
   LiveSnapshot,
   Paginated,
@@ -249,6 +250,23 @@ export function useStartDiff() {
 
 export function useStartDiffLocal() {
   return useRelayMutation<DiffLocalRequest, DiffAccepted>('diff-local');
+}
+
+/** 対象月の展開状況 (展開は月1回・2回目ブロック判定用)。 */
+export function useExpandStatus(month: string | null) {
+  const { data: session, status } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+
+  return useQuery<ExpandStatus>({
+    queryKey: ['integrations', 'expand-status', month],
+    queryFn: () =>
+      fetcher<ExpandStatus>(`/api/v1/integrations/expand-status?month=${month}`, {
+        accessToken,
+        refreshToken,
+      }),
+    enabled: status === 'authenticated' && session?.user?.role === 'admin' && Boolean(month),
+  });
 }
 
 /** 対象週の CareFlow スケジュール (週ビュー表示用)。週が変わると自動で切り替わる。 */

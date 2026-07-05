@@ -148,13 +148,25 @@ class WeekScheduleRow(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     visit_date: str = Field(alias="visitDate")  # YYYY-MM-DD
+    weekday: int = 0  # 0=月..6=日
     start_time: str = Field(alias="startTime")  # HH:MM
     end_time: str = Field(alias="endTime")  # HH:MM
     patient_name: str = Field(alias="patientName")
     staff1: str = ""
     staff2: str = ""
-    business_type: str = Field(default="", alias="businessType")
-    service_content: str = Field(default="", alias="serviceContent")
+    course_code: str = Field(default="", alias="courseCode")  # A/B/C/D..
+    office_name: str = Field(default="", alias="officeName")
+
+
+class ExpandStatusRead(BaseModel):
+    """対象月の展開状況 (展開=月1回・上書きのため2回目ブロック判定に使う)。"""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    month: str
+    expanded: bool
+    expanded_at: datetime | None = Field(default=None, alias="expandedAt")
+    job_id: UUID | None = Field(default=None, alias="jobId")
 
 
 class WeekScheduleRead(BaseModel):
