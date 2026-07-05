@@ -32,6 +32,7 @@ from app.schemas.integrations import (
     CorrectionItemUpdate,
     CorrectionSheetRead,
     DiffAccepted,
+    GeneratedCsvRead,
     GeocodingCacheRead,
     IntegrationApplyRequest,
     IntegrationDiffRequest,
@@ -488,6 +489,33 @@ async def get_monitor_url(
     _user: Annotated[User, Depends(require_role("admin"))],
 ) -> dict[str, str]:
     return {"url": get_settings().kaipoke_novnc_url}
+
+
+@router.get(
+    "/generated-csv",
+    response_model=GeneratedCsvRead,
+    summary="CareFlow visits から生成したカイポケ18列CSV (admin)",
+)
+async def get_generated_csv(
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin"))],
+    month: Annotated[str, Query(pattern=r"^\d{4}-\d{2}$")],
+    office_id: Annotated[UUID | None, Query()] = None,
+) -> GeneratedCsvRead:
+    """対象月の確定 visits を18列CSV へ生成して返す (差分適用の最適化CSV側)。
+
+    read-only (DB 書込なし)。utf-8-sig で返し UI プレビュー/DL に使う (実 apply 時の
+    kaipoke 転記は別途 cp932)。将来のローカル差分の入力にもなる。
+    """
+    from app.services.kaipoke.csv_builder import BuildOptions, build_month_csv
+
+    year, mon = int(month[:4]), int(month[5:7])
+    opts = BuildOptions(year=year, month=mon, office_id=office_id)
+    data = await build_month_csv(db, opts, encoding="utf-8-sig")
+    text = data.decode("utf-8-sig")
+    # 行数 = ヘッダー除く (空末尾行を除去)。
+    row_count = max(0, len([ln for ln in text.splitlines() if ln.strip()]) - 1)
+    return GeneratedCsvRead(month=month, row_count=row_count, csv_content=text)
 
 
 @router.post(

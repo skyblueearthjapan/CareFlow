@@ -391,6 +391,43 @@ async def test_live_requires_admin(client, db, stub_kaipoke) -> None:
     assert res.status_code == 403, res.text
 
 
+# --- 6c. generated CSV (K-2a) ---------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_generated_csv_empty_month_returns_header_only(client, db, stub_kaipoke) -> None:
+    admin = await _make_user(db, "wave-gencsv@example.com", "admin")
+    res = await client.get(
+        "/api/v1/integrations/generated-csv?month=2026-07",
+        headers=_bearer(admin),
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["month"] == "2026-07"
+    assert body["rowCount"] == 0  # visits 無し → ヘッダーのみ
+    assert body["csvContent"].startswith("職員名")
+
+
+@pytest.mark.asyncio
+async def test_generated_csv_requires_admin(client, db, stub_kaipoke) -> None:
+    manager = await _make_user(db, "wave-gencsv-mgr@example.com", "manager")
+    res = await client.get(
+        "/api/v1/integrations/generated-csv?month=2026-07",
+        headers=_bearer(manager),
+    )
+    assert res.status_code == 403, res.text
+
+
+@pytest.mark.asyncio
+async def test_generated_csv_rejects_bad_month(client, db, stub_kaipoke) -> None:
+    admin = await _make_user(db, "wave-gencsv-bad@example.com", "admin")
+    res = await client.get(
+        "/api/v1/integrations/generated-csv?month=2026-7",
+        headers=_bearer(admin),
+    )
+    assert res.status_code == 422, res.text
+
+
 # --- 7. RBAC: anonymous on every relay endpoint ---------------------------
 
 
@@ -401,6 +438,7 @@ async def test_live_requires_admin(client, db, stub_kaipoke) -> None:
         ("GET", "/api/v1/integrations/status", None),
         ("GET", "/api/v1/integrations/live", None),
         ("GET", "/api/v1/integrations/monitor-url", None),
+        ("GET", "/api/v1/integrations/generated-csv?month=2026-07", None),
         ("POST", "/api/v1/integrations/expand", {"month": "2026-05"}),
         ("POST", "/api/v1/integrations/diff", {"month": "2026-05"}),
     ],

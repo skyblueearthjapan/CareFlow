@@ -142,6 +142,20 @@ class LiveSnapshotRead(BaseModel):
     error: str | None = None
 
 
+class GeneratedCsvRead(BaseModel):
+    """CareFlow visits から生成したカイポケ18列CSV (K-2a)。
+
+    差分適用の「最適化CSV」側を CareFlow が供給するための出力。UI プレビュー
+    および将来のローカル差分 (compare_schedules_from_content) の入力になる。
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    month: str
+    row_count: int = Field(alias="rowCount")
+    csv_content: str = Field(alias="csvContent")
+
+
 class IntegrationExpandRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
     month: str = Field(pattern=r"^\d{4}-\d{2}$")
