@@ -33,7 +33,9 @@ const NAV_ITEMS = [
   { href: '/patients', label: '患者', icon: Users },
   { href: '/staff', label: 'スタッフ', icon: UserCircle2 },
   { href: '/offices', label: '拠点', icon: Building2 },
-  { href: '/integrations', label: '連携', icon: Plug, adminOnly: true },
+  // 「連携」= カイポケ ジョブセンター（操作卓）を直接開く。Geocoding/AI ログ等の
+  // 管理ユーティリティはジョブセンター画面内のリンクから /integrations へ。
+  { href: '/integrations/kaipoke', label: '連携', icon: Plug, adminOnly: true },
   { href: '/admin/pending-requests', label: '申請履歴', icon: Inbox, adminOnly: true },
   // Wave 4-F: admin audit logs (admin role only). User management was moved
   // to the header rightmost button so admins can reach it from any screen.

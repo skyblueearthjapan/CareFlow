@@ -11,6 +11,7 @@
  *   - 直近の実行結果 (成功/失敗/スキップ) + 差分プレビュー + ジョブ履歴
  */
 import { useMemo, useState } from 'react';
+import Link from 'next/link';
 import { useSession } from 'next-auth/react';
 
 import { Card } from '@/components/ui/card';
@@ -171,6 +172,15 @@ export default function KaipokeIntegrationPage() {
 
       {/* ジョブ履歴 */}
       <KaipokeJobsList />
+
+      {/* 管理ユーティリティへの導線 */}
+      <p className="text-xs text-text-muted">
+        Geocoding キャッシュ・AI 解釈ログは{' '}
+        <Link className="text-brand-primary hover:underline" href="/integrations">
+          連携ユーティリティ
+        </Link>{' '}
+        から。
+      </p>
     </section>
   );
 }
