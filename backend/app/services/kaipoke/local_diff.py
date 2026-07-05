@@ -17,6 +17,7 @@ from __future__ import annotations
 import csv
 import io
 import uuid
+from datetime import date, timedelta
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
@@ -61,11 +62,17 @@ async def build_local_diff(
     month: str,
     kaipoke: KaipokeClient,
     office_id: uuid.UUID | None = None,
+    week_start: date | None = None,
+    week_end: date | None = None,
 ) -> tuple[list[Correction], dict[str, Any]]:
     """現況(kaipoke) と 最適化(CareFlow生成) の差分を CareFlow 内で計算する。
 
-    Returns ``(corrections, meta)``。meta には行数などの観測値を入れる。
-    kaipoke への同期 export は csv_content を直接返す (async=false)。
+    week_start 指定時は「週スコープ」: 現況(月まるごと)と最適化の両方を対象週の
+    日(1-31)で絞ってから比較する。これにより **対象週外のカイポケ既存予定は比較
+    集合から消え、delete 差分にならない** (旧GASの週次運用と同じ安全設計)。
+    週外を消さないための核心はこの両側フィルタ (diff/engine が target_week_* で実施)。
+
+    Returns ``(corrections, meta)``。同期 export は csv_content を直接返す (async=false)。
     """
     year, mon = int(month[:4]), int(month[5:7])
 
@@ -86,13 +93,30 @@ async def build_local_diff(
     )
     optimized_csv = optimized_bytes.decode("utf-8-sig")
 
-    corrections = compare_schedules_from_content(current_csv, optimized_csv)
+    # 週スコープ: 対象週の「日」(1-31) を diff/engine の週フィルタへ渡す。
+    # diff/engine は current/optimized の両方をこのレンジに絞り、月境界の折返し
+    # (start>end) も処理する。CSVの日付列が「日のみ」の設計なので day 比較で成立。
+    week_start_day = week_start.day if week_start else None
+    if week_start and not week_end:
+        week_end = week_start + timedelta(days=6)  # 月曜起点の7日 (旧GAS getWeekRange_ 相当)
+    week_end_day = week_end.day if week_end else None
+
+    corrections = compare_schedules_from_content(
+        current_csv,
+        optimized_csv,
+        target_week_start=week_start_day,
+        target_week_end=week_end_day,
+    )
 
     meta = {
         "current_row_count": max(0, current_csv.count("\n") - 1),
         "optimized_row_count": max(0, optimized_csv.count("\n") - 1),
         "correction_count": len(corrections),
+        "scope": "week" if week_start else "month",
     }
+    if week_start:
+        meta["week_start"] = week_start.isoformat()
+        meta["week_end"] = week_end.isoformat() if week_end else None
     return corrections, meta
 
 

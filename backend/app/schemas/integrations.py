@@ -173,6 +173,11 @@ class IntegrationDiffRequest(BaseModel):
     month: str = Field(pattern=r"^\d{4}-\d{2}$")
     # K-2b ローカル差分で対象拠点を絞る (None=全拠点)。従来の /diff では未使用。
     office_id: UUID | None = Field(default=None, alias="officeId")
+    # K-2c 週スコープ (毎週運用): 対象週の開始日 (通常は月曜)。指定時は現況・最適化の
+    # 両方をこの週レンジに絞り、対象週外のカイポケ既存予定を delete 差分にしない。
+    # week_end 省略時は week_start + 6日 (月曜〜日曜の7日)。未指定なら月全体 (要注意)。
+    week_start: date | None = Field(default=None, alias="weekStart")
+    week_end: date | None = Field(default=None, alias="weekEnd")
 
 
 class IntegrationApplyRequest(BaseModel):

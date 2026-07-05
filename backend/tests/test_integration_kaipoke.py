@@ -430,6 +430,33 @@ async def test_diff_local_builds_sheet_from_current_vs_generated(client, db, stu
 
 
 @pytest.mark.asyncio
+async def test_diff_local_week_scope_excludes_other_weeks(client, db, stub_kaipoke) -> None:
+    """週スコープ: 対象週外のカイポケ既存予定を delete 差分にしない (核心の安全保証)。"""
+    admin = await _make_user(db, "wave-difflocal-week@example.com", "admin")
+    # 現況: 1日(週A・対象外) と 8日(週B・対象) に1件ずつ。CareFlow visits は空。
+    current = (
+        _KAIPOKE_18COL_HEADER
+        + "\n"
+        + "看護A,看護師,,,,,,,よりより,1,水,患者A,医療保険,精神基本療養費Ⅰ・正看,"
+        + "09:00,09:35,35,\n"
+        + "看護B,看護師,,,,,,,よりより,8,水,患者B,医療保険,精神基本療養費Ⅰ・正看,"
+        + "10:00,10:35,35,\n"
+    )
+    stub_kaipoke.responses["export"] = {"result": {"csv_content": current}}
+    # 対象週 = 7/6(月)〜7/12(日) → 日 6..12。8日は含む、1日は含まない。
+    res = await client.post(
+        "/api/v1/integrations/diff-local",
+        headers=_bearer(admin),
+        json={"month": "2026-07", "weekStart": "2026-07-06"},
+    )
+    assert res.status_code == 202, res.text
+    summary = res.json()["summary"]
+    # 8日の1件のみ delete。1日(週外)は触らない → total=1。
+    assert summary["total"] == 1
+    assert summary["delete"] == 1
+
+
+@pytest.mark.asyncio
 async def test_diff_local_before_carries_user_name(client, db, stub_kaipoke) -> None:
     admin = await _make_user(db, "wave-difflocal-un@example.com", "admin")
     current = (

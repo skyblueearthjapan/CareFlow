@@ -801,7 +801,12 @@ async def trigger_diff_local(
 
     try:
         corrections, meta = await build_local_diff(
-            db, month=payload.month, kaipoke=kaipoke, office_id=payload.office_id
+            db,
+            month=payload.month,
+            kaipoke=kaipoke,
+            office_id=payload.office_id,
+            week_start=payload.week_start,
+            week_end=payload.week_end,
         )
     except KaipokeBusyError as exc:
         await db.rollback()
