@@ -23,7 +23,12 @@ export const viewport: Viewport = {
 
 // Static SW registration script (no dynamic content; safe to inline).
 // `afterInteractive` Script strategy already runs post-load — no extra `load` listener needed.
-const SW_REGISTER_SRC = `if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(console.error);}`;
+//
+// controllerchange → reload: 新ビルドの SW が有効化 (skipWaiting + clients.claim) されると
+// 旧ビルドのタブは「旧チャンク 404 → Application error」で固まるため、制御が切り替わった
+// 瞬間に 1 回だけ自動リロードして新ビルドへ乗り換える。初回インストール時
+// (直前まで controller 無し) はリロードしない。
+const SW_REGISTER_SRC = `if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(console.error);var hadController=!!navigator.serviceWorker.controller;var reloaded=false;navigator.serviceWorker.addEventListener('controllerchange',function(){if(!hadController||reloaded)return;reloaded=true;window.location.reload();});}`;
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
