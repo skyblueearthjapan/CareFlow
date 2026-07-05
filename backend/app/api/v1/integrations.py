@@ -381,7 +381,13 @@ async def _reconcile_latest_job(
             job.result_summary = {**(job.result_summary or {}), "result": trimmed}
     job.completed_at = datetime.now(UTC)
     await _commit_or_409(db)
-    return job
+
+    # commit() expires the instance; re-select with items eagerly loaded so the
+    # caller can model_validate() without triggering a lazy load outside the
+    # async greenlet (would raise MissingGreenlet during serialization).
+    return await db.scalar(
+        select(KaipokeJob).where(KaipokeJob.id == job.id).options(selectinload(KaipokeJob.items))
+    )
 
 
 @router.get(
