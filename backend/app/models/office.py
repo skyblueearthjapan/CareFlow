@@ -21,6 +21,9 @@ class Office(Base, TimestampMixin):
     )
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     code: Mapped[str | None] = mapped_column(String(32), unique=True, nullable=True)
+    # K-1b: カイポケ18列CSV「事業所名」列の正式名。name は短縮名 (稲毛/都賀) のため
+    # 別途保持する (例: 訪問看護ステーションよりより / (ST)…都賀支店)。NULL時は name で代替。
+    kaipoke_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     prefecture: Mapped[str | None] = mapped_column(String(32), nullable=True)
     address: Mapped[str | None] = mapped_column(String(255), nullable=True)
     lat: Mapped[float | None] = mapped_column(Numeric(10, 7), nullable=True)

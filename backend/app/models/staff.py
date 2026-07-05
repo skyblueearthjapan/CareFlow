@@ -48,6 +48,9 @@ class Staff(Base, TimestampMixin):
     sex: Mapped[str | None] = mapped_column(String(8), nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
     role: Mapped[str] = mapped_column(String(16), nullable=False, default="staff")
+    # K-1b: カイポケ18列CSV「職種」列の値 (看護師/准看護師/理学療法士…)。
+    # role (admin/manager/staff = システム権限) とは独立。カイポケ転記専用。
+    qualification: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     primary_office_id: Mapped[uuid.UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),

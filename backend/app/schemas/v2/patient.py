@@ -181,6 +181,11 @@ class PatientV2Base(BaseModel):
 
     # 保険・拠点
     insurance: InsuranceV2 | None = Field(default=None, description="医療/介護")
+    kaipoke_service_content: str | None = Field(
+        default=None,
+        max_length=64,
+        description="K-1b カイポケ「サービス内容」列 (例: 精神基本療養費Ⅰ・正看)。NULL時は事業所既定",
+    )
     primary_office_id: UUID | None = Field(
         default=None,
         description=(
@@ -266,6 +271,7 @@ class PatientV2Update(BaseModel):
     lat: float | None = Field(default=None, ge=-90, le=90)
     lng: float | None = Field(default=None, ge=-180, le=180)
     insurance: InsuranceV2 | None = None
+    kaipoke_service_content: str | None = Field(default=None, max_length=64)
     primary_office_id: UUID | None = None
     sex_restriction: SexRestrictionV2 | None = None
     # W18 Phase A: 患者単位の複数スタッフ必須フラグ. None=未指定 (PATCH 時に touch しない)

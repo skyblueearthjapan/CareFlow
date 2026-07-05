@@ -28,6 +28,9 @@ StaffStatusV2 = Literal["active", "on_leave", "retired"]
 # 性別 (§4.2):
 SexV2 = Literal["male", "female", "unknown"]
 
+# K-1b カイポケ「職種」列の看護/リハ資格。role (システム権限) とは独立。
+QualificationV2 = Literal["看護師", "准看護師", "理学療法士", "作業療法士", "言語聴覚士"]
+
 
 class StaffV2Base(BaseModel):
     """スタッフマスタ v2 (§4.2 残す項目).
@@ -70,6 +73,10 @@ class StaffV2Base(BaseModel):
         default=False,
         description="新人フラグ。True の場合は同行スタッフ (companion) と一緒に訪問",
     )
+    qualification: QualificationV2 | None = Field(
+        default=None,
+        description="K-1b カイポケ「職種」列 (看護師/准看護師…)。カイポケ転記専用",
+    )
 
 
 class StaffV2Create(StaffV2Base):
@@ -93,6 +100,7 @@ class StaffV2Update(BaseModel):
     primary_office_id: UUID | None = None
     note: str | None = None
     is_trainee: bool | None = None
+    qualification: QualificationV2 | None = None
 
 
 class StaffV2Read(StaffV2Base):

@@ -66,6 +66,9 @@ class Patient(Base, TimestampMixin):
     sex: Mapped[str | None] = mapped_column(String(8), nullable=True)  # male/female/unknown
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
     insurance: Mapped[str | None] = mapped_column(String(16), nullable=True)  # medical/care
+    # K-1b: カイポケ18列CSV「サービス内容」列の値 (例: 精神基本療養費Ⅰ・正看)。
+    # 実データ上ほぼ定数のため患者単位の文字列で保持し、NULL時は事業所既定へフォールバック。
+    kaipoke_service_content: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     address: Mapped[str | None] = mapped_column(String(255), nullable=True)
     lat: Mapped[float | None] = mapped_column(Numeric(10, 7), nullable=True)

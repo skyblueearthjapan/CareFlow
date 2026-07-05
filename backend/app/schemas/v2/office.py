@@ -35,6 +35,11 @@ class OfficeV2Base(BaseModel):
     )
     lat: float | None = Field(default=None, ge=-90, le=90, description="距離計算の起点緯度")
     lng: float | None = Field(default=None, ge=-180, le=180, description="距離計算の起点経度")
+    kaipoke_name: str | None = Field(
+        default=None,
+        max_length=120,
+        description="K-1b カイポケ「事業所名」列の正式名 (例: 訪問看護ステーションよりより)。NULL時は name",
+    )
     note: str | None = Field(default=None, description="自由記述")
 
 
@@ -62,6 +67,7 @@ class OfficeV2Update(BaseModel):
     address: str | None = None
     lat: float | None = Field(default=None, ge=-90, le=90)
     lng: float | None = Field(default=None, ge=-180, le=180)
+    kaipoke_name: str | None = Field(default=None, max_length=120)
     note: str | None = None
     allowed_cities: list[UUID] | None = None
 
