@@ -50,7 +50,9 @@ class StubKaipokeClient:
     async def status(self) -> dict[str, Any]:
         return self._dispatch("status", None)
 
-    async def expand(self, payload: dict[str, Any]) -> dict[str, Any]:
+    async def expand(
+        self, payload: dict[str, Any], *, timeout: float | None = None
+    ) -> dict[str, Any]:
         return self._dispatch("expand", payload)
 
     async def export(
@@ -164,6 +166,21 @@ async def test_expand_upstream_failure_returns_502(client, db, stub_kaipoke) -> 
         json={"month": "2026-05"},
     )
     assert res.status_code == 502, res.text
+
+
+@pytest.mark.asyncio
+async def test_expand_timeout_is_tolerated_as_running(client, db, stub_kaipoke) -> None:
+    """展開の長時間ブロックによる 504 タイムアウトは running 扱い (エラーにしない)。"""
+    admin = await _make_user(db, "wave4-expand-timeout@example.com", "admin")
+    stub_kaipoke.errors["expand"] = kc_module.KaipokeApiError(504, {"error": "timeout"})
+
+    res = await client.post(
+        "/api/v1/integrations/expand",
+        headers=_bearer(admin),
+        json={"month": "2026-10"},
+    )
+    assert res.status_code == 202, res.text
+    assert res.json()["status"] == "running"
 
 
 # --- 3. diff + correction sheet -------------------------------------------

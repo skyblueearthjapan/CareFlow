@@ -74,8 +74,12 @@ class KaipokeClient:
     async def status(self) -> dict[str, Any]:
         return await self._request("GET", "/api/status")
 
-    async def expand(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        return await self._request("POST", "/api/expand", json=payload)
+    async def expand(
+        self, payload: Mapping[str, Any], *, timeout: float | None = None
+    ) -> dict[str, Any]:
+        # /api/expand は同期で 15-20 分ブロックする。呼び出し側は短い timeout を
+        # 渡し、Timeout(504) を「起動した」とみなす (kaipoke 側は走り続ける)。
+        return await self._request("POST", "/api/expand", json=payload, timeout=timeout)
 
     async def export(
         self, payload: Mapping[str, Any], *, timeout: float | None = None

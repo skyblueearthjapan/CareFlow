@@ -552,12 +552,25 @@ async def trigger_expand(
     db.add(job)
     await db.flush()
 
+    # /api/expand は同期で 15-20 分ブロックし、frontend→backend は Cloudflare の
+    # ~100s 制限もある。短い timeout で投げ、Timeout(504) は「起動した」とみなして
+    # 202 running を返す (kaipoke は走り続け、ライブモニターが完了を reconcile する)。
+    # 旧GAS の「524→status ポーリング」パターンの移植。
     try:
-        upstream = await kaipoke.expand({"month": payload.month, "dryRun": payload.dry_run})
+        upstream = await kaipoke.expand(
+            {"month": payload.month, "dryRun": payload.dry_run}, timeout=25.0
+        )
     except KaipokeBusyError as exc:
         await db.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="kaipoke busy") from exc
     except KaipokeApiError as exc:
+        if exc.status_code == 504:
+            # タイムアウト = 展開はバックグラウンドで継続中。エラーにせず running 扱い。
+            job.status = "running"
+            job.started_at = datetime.now(UTC)
+            job.result_summary = {"note": "expand running (timeout tolerated)"}
+            await _commit_or_409(db)
+            return JobAccepted(job_id=job.id, kaipoke_job_id=None, status="running")
         job.status = "failed"
         job.completed_at = datetime.now(UTC)
         job.result_summary = {"error": str(exc), "body": exc.body}
