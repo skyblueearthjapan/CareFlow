@@ -4,6 +4,7 @@ import { ChevronRight, MapPin } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Card } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
+import { displayVisitNote } from '@/lib/visit-note';
 import type { MyVisit } from '@/lib/queries/me';
 
 /** Map backend `status` → Japanese label + Badge variant. */
@@ -42,6 +43,8 @@ interface MobileVisitCardProps {
 
 export function MobileVisitCard({ visit, address, highlight }: MobileVisitCardProps) {
   const meta = statusMeta(visit.status);
+  // 内部メタデータ (Layer1: 等) は現場に見せない。
+  const note = displayVisitNote(visit.note);
   return (
     <Link
       href={`/m/today/${visit.id}`}
@@ -73,7 +76,7 @@ export function MobileVisitCard({ visit, address, highlight }: MobileVisitCardPr
               <span className="truncate">{address}</span>
             </p>
           )}
-          {visit.note && <p className="mt-1 text-xs text-text-secondary truncate">{visit.note}</p>}
+          {note && <p className="mt-1 text-xs text-text-secondary truncate">{note}</p>}
         </div>
         <ChevronRight className="h-4 w-4 shrink-0 text-text-muted" />
       </Card>

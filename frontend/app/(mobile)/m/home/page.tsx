@@ -16,6 +16,7 @@ import {
   currentWeekStartIso,
   nextMonthStartIso,
   todayIso,
+  useMyShifts,
   useMyVisits,
 } from '@/lib/queries/me';
 import { useUnreadNotificationCount } from '@/lib/queries/notifications';
@@ -44,7 +45,10 @@ function StatCard({
 
 export default function MobileHomePage() {
   const { data: session } = useSession();
-  const userName = session?.user?.name ?? 'スタッフ';
+  // 挨拶はスタッフの氏名で。session.user.name はログインコード (例: s002) の
+  // ことがあるため、紐付くスタッフレコードの氏名を優先する (取得中はコードで代替)。
+  const { data: myShifts } = useMyShifts();
+  const userName = myShifts?.staff?.name ?? session?.user?.name ?? 'スタッフ';
 
   const today = todayIso();
   const weekStart = currentWeekStartIso();

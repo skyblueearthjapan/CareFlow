@@ -20,7 +20,6 @@ import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import Link from 'next/link';
 import { useSession } from 'next-auth/react';
 import {
-  Heart,
   ChevronLeft,
   ChevronRight,
   ChevronDown,
@@ -332,15 +331,14 @@ export function FieldBoard() {
         fontFamily: 'var(--font-sans)',
       }}
     >
-      <BackToAppBar />
-
-      <Header
-        approve={approve}
-        setApprove={setApprove}
-        pendingCount={pendingCount}
-        onNew={() => setSheet(true)}
+      {/* 旧ブランドヘッダー (CareFlow 現場ボード カード) は撤去し、操作ボタンは
+          最上部バーへ集約 — スケジュール表示の縦スペースを優先する (2026-07-05 PO要望)。 */}
+      <BackToAppBar
         canEdit={canEditKarte}
-        canManagePatients={canEditKarte}
+        approve={approve}
+        pendingCount={pendingCount}
+        onToggleApprove={() => setApprove((a) => !a)}
+        onNew={() => setSheet(true)}
         onManage={() => setManage(true)}
       />
 
@@ -479,7 +477,41 @@ function buildSameAddressGroups(courses: BoardCourse[]): SameAddressGroups {
 // - safe-area: 最上部がこのバーになるため、ノッチぶんの余白 (env(safe-area-inset-top))
 //   はこのバーの上 padding で吸収する (Teal ヘッダ側では二重に空けない)。
 
-function BackToAppBar() {
+interface BackToAppBarProps {
+  /** 編集系 (患者管理/提案/承認) を出すか。manager/admin のみ true (staff は閲覧専用)。 */
+  canEdit: boolean;
+  approve: boolean;
+  pendingCount: number;
+  onToggleApprove: () => void;
+  onNew: () => void;
+  onManage: () => void;
+}
+
+/** トップバー右側の丸ピル (受け入れ枠と同じ意匠のボタン版)。 */
+const barPill: CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 4,
+  padding: '5px 10px',
+  borderRadius: 999,
+  border: `1px solid ${LINE}`,
+  background: '#fff',
+  color: TEAL_DEEP,
+  fontFamily: 'var(--font-serif)',
+  fontSize: 12,
+  fontWeight: 700,
+  lineHeight: 1,
+  whiteSpace: 'nowrap',
+};
+
+function BackToAppBar({
+  canEdit,
+  approve,
+  pendingCount,
+  onToggleApprove,
+  onNew,
+  onManage,
+}: BackToAppBarProps) {
   return (
     <div
       style={{
@@ -492,7 +524,7 @@ function BackToAppBar() {
         paddingTop: 'calc(env(safe-area-inset-top) + 6px)',
         paddingBottom: 6,
         paddingLeft: 14,
-        paddingRight: 14,
+        paddingRight: 10,
         background: CREAM,
         borderBottom: `1px solid ${LINE}`,
         position: 'relative',
@@ -515,215 +547,73 @@ function BackToAppBar() {
         }}
       >
         <ArrowLeft size={13} strokeWidth={2.4} />
-        モバイルアプリへ
+        戻る
       </Link>
-      {/* 受け入れ枠マトリックス導線 (P3)。BackToAppBar の右側余白を活用。 */}
-      <Link
-        href="/m/acceptance"
-        aria-label="受け入れ枠マトリックスを開く"
-        style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: 5,
-          padding: '4px 10px',
-          borderRadius: 999,
-          border: `1px solid ${LINE}`,
-          background: '#fff',
-          color: TEAL_DEEP,
-          fontFamily: 'var(--font-serif)',
-          fontSize: 12,
-          fontWeight: 700,
-          lineHeight: 1,
-          whiteSpace: 'nowrap',
-        }}
-      >
-        <Grid3x3 size={12} strokeWidth={2.2} />
-        受け入れ枠
-      </Link>
-    </div>
-  );
-}
 
-// ============================ Header ============================
-
-interface HeaderProps {
-  approve: boolean;
-  setApprove: (fn: (a: boolean) => boolean) => void;
-  pendingCount: number;
-  onNew: () => void;
-  /** 編集系ボタン (提案 + 承認) を出すか。manager/admin のみ true (staff は閲覧専用)。 */
-  canEdit: boolean;
-  /** 患者管理ボタン (新規登録 + 検索編集) を出すか。manager/admin のみ true。 */
-  canManagePatients: boolean;
-  onManage: () => void;
-}
-
-function Header({
-  approve,
-  setApprove,
-  pendingCount,
-  onNew,
-  canEdit,
-  canManagePatients,
-  onManage,
-}: HeaderProps) {
-  const bg = approve
-    ? 'linear-gradient(135deg, #E0A21A 0%, #B5790A 100%)'
-    : `linear-gradient(135deg, ${TEAL} 0%, ${TEAL_DEEP} 100%)`;
-  const accentInk = approve ? '#9A6700' : TEAL_DEEP;
-  return (
-    <div
-      style={{
-        flex: '0 0 auto',
-        // 浮きカード: 上・左右に小さめ余白を取り、周囲のクリーム背景を覗かせる。
-        // safe-area / 最上部余白は BackToAppBar 側が吸収するため、ここは固定の小さな
-        // 上余白 (6px) のみ (二重に空けず縦増分を抑える)。
-        padding: '6px 8px 0',
-        position: 'relative',
-        zIndex: 20,
-      }}
-    >
-      <div
-        style={{
-          background: bg,
-          color: '#fff',
-          padding: '9px 14px',
-          // 四隅すべて角丸の浮きカード。
-          borderRadius: 16,
-          boxShadow: '0 5px 14px rgba(13,148,136,0.18)',
-          position: 'relative',
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '0 0 auto' }}>
-            {/* 「← モバイルアプリへ」導線はヘッダから撤去し、最上部の独立バー
-                (BackToAppBar) に移設済み (Phase G-48)。ここはロゴ頭に戻す。 */}
-            <div
+      {/* 右クラスタ: 受け入れ枠 + (manager/admin) 患者管理/提案/承認。
+          旧ブランドヘッダーの操作をここへ集約し縦スペースを節約。 */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <Link href="/m/acceptance" aria-label="受け入れ枠マトリックスを開く" style={barPill}>
+          <Grid3x3 size={12} strokeWidth={2.2} />
+          受け入れ枠
+        </Link>
+        {canEdit && (
+          <>
+            <button
+              onClick={onManage}
+              aria-label="患者の登録・編集"
+              title="患者の登録・編集"
+              style={barPill}
+            >
+              <UserPlus size={13} strokeWidth={2.2} />
+            </button>
+            <button onClick={onNew} aria-label="配置の提案" title="配置の提案" style={barPill}>
+              <Plus size={13} strokeWidth={2.4} />
+              提案
+            </button>
+            <button
+              onClick={onToggleApprove}
+              aria-label="申請の承認"
+              title="申請の承認"
               style={{
-                width: 26,
-                height: 26,
-                borderRadius: 8,
-                background: '#fff',
-                color: accentInk,
-                display: 'grid',
-                placeItems: 'center',
-                boxShadow: '0 2px 6px rgba(0,0,0,0.14)',
+                ...barPill,
+                position: 'relative',
+                ...(approve
+                  ? { background: '#B5790A', borderColor: '#B5790A', color: '#fff' }
+                  : {}),
               }}
             >
-              <Heart size={14} strokeWidth={2.4} />
-            </div>
-            <div
-              style={{
-                fontFamily: 'var(--font-serif)',
-                fontSize: 15,
-                fontWeight: 700,
-                lineHeight: 1,
-                letterSpacing: '-0.01em',
-              }}
-            >
-              CareFlow
-              <span style={{ fontSize: 9, opacity: 0.85, fontWeight: 500, marginLeft: 4 }}>
-                現場ボード
-              </span>
-            </div>
-          </div>
-          {/* ロゴ(左) と 提案/承認(右) の間を埋めるスペーサ。拠点プルダウンは廃止 (全拠点結合)。
-              狭幅(375px)でも縮められるよう minWidth は 0。 */}
-          <span style={{ flex: '1 1 auto', minWidth: 0 }} />
-          <div style={{ display: 'flex', gap: 6, flex: '0 0 auto' }}>
-            {/* 患者管理 (Phase G-87): 提案を介さない新規登録 + 検索編集。
-                manager/admin のみ・狭幅 (375px) で収まるよう提案/承認よりコンパクトに。 */}
-            {canManagePatients && (
-              <button
-                onClick={onManage}
-                aria-label="患者の登録・編集"
-                title="患者の登録・編集"
-                style={{
-                  ...hdrAct,
-                  ...hdrActCompact,
-                  // アイコンのみ (👤+) でヘッダ幅を節約 (承認のはみ出し対策・Phase G-87b)。
-                  padding: '7px 10px',
-                  gap: 0,
-                  background: '#fff',
-                  color: accentInk,
-                }}
-              >
-                <UserPlus size={16} />
-              </button>
-            )}
-            {/* 提案・承認は編集系 (manager/admin のみ)。staff は閲覧専用のため出さない。 */}
-            {canEdit && (
-              <>
-                <button
-                  onClick={onNew}
-                  style={{ ...hdrAct, ...hdrActCompact, background: '#fff', color: accentInk }}
-                >
-                  <Plus size={15} /> 提案
-                </button>
-                <button
-                  onClick={() => setApprove((a) => !a)}
+              <ClipboardCheck size={13} strokeWidth={2.2} />
+              承認
+              {pendingCount > 0 && (
+                <span
                   style={{
-                    ...hdrAct,
-                    ...hdrActCompact,
-                    background: approve ? '#fff' : 'rgba(255,255,255,0.16)',
-                    color: approve ? accentInk : '#fff',
-                    position: 'relative',
+                    position: 'absolute',
+                    top: -6,
+                    right: -6,
+                    minWidth: 16,
+                    height: 16,
+                    padding: '0 4px',
+                    background: '#E1657F',
+                    color: '#fff',
+                    fontSize: 10,
+                    fontWeight: 700,
+                    borderRadius: 999,
+                    display: 'grid',
+                    placeItems: 'center',
+                    border: '2px solid #fff',
                   }}
                 >
-                  <ClipboardCheck size={15} /> 承認
-                  {pendingCount > 0 && (
-                    <span
-                      style={{
-                        position: 'absolute',
-                        top: -6,
-                        right: -6,
-                        minWidth: 18,
-                        height: 18,
-                        padding: '0 5px',
-                        background: '#E1657F',
-                        color: '#fff',
-                        fontSize: 11,
-                        fontWeight: 700,
-                        borderRadius: 999,
-                        display: 'grid',
-                        placeItems: 'center',
-                        border: '2px solid #fff',
-                      }}
-                    >
-                      {pendingCount}
-                    </span>
-                  )}
-                </button>
-              </>
-            )}
-          </div>
-        </div>
+                  {pendingCount}
+                </span>
+              )}
+            </button>
+          </>
+        )}
       </div>
     </div>
   );
 }
-
-const hdrAct: CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: 5,
-  padding: '7px 13px',
-  minHeight: 35,
-  borderRadius: 12,
-  fontSize: 13,
-  fontWeight: 600,
-  fontFamily: 'var(--font-serif)',
-  boxShadow: '0 2px 6px rgba(0,0,0,0.10)',
-};
-
-/**
- * 患者/提案/承認 の 3 ボタンを 375px 幅に収めるためのコンパクト上書き
- * (Phase G-87)。横 padding と gap を詰める。
- */
-const hdrActCompact: CSSProperties = {
-  gap: 4,
-  padding: '7px 10px',
-};
 
 // ============================ Day stepper (週送り + 曜日送り 統合) ============================
 
