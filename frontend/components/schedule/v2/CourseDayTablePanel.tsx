@@ -229,6 +229,12 @@ export function findCourseForTemplate(args: {
     if (labelUp === 'M' && /^M\d+$/.test(codeUp)) {
       return true;
     }
+    // 2b) 臨時コース fallback (カイポケ取り込み R-3): code='臨2'..'臨9' を
+    //     label='臨時' (先頭 '臨') の template に流す。'臨' 自体は 3) で拾われる。
+    //     codeUp/labelFirst は toUpperCase 済みだが CJK には no-op (無害)。
+    if (labelFirst === '臨' && /^臨\d$/.test(codeUp)) {
+      return true;
+    }
     // 3) legacy 1-char fallback (label='Aコース' → code='A' 等)
     if (codeUp.length === 1 && codeUp === labelFirst) return true;
     return false;
@@ -508,6 +514,12 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         (/^M\d+$/.test(codeUp)
           ? templates.find(
               (t) => t.office_id === c.office_id && (t.label || '').trim().toUpperCase() === 'M',
+            )
+          : undefined) ??
+        // 2b) 臨時コース (臨2..臨9) → label 先頭 '臨' template fallback (R-3)
+        (/^臨\d$/.test(codeUp)
+          ? templates.find(
+              (t) => t.office_id === c.office_id && (t.label || '').trim().slice(0, 1) === '臨',
             )
           : undefined) ??
         // 3) legacy 1-char fallback

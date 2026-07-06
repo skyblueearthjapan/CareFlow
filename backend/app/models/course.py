@@ -67,6 +67,8 @@ COURSE_STATUS_STAFF_ASSIGNED: str = "staff_assigned"
 # CareFlow Wave Next 2 cross-review [H1]: overflow set を全て "M" に集約すると
 # travel time / capacity 判定が 1 ルートとして扱ってしまうため、M2-M9 を許容して
 # 物理ルートを分散させる. migration 0034 で旧 CHECK ('A'..'E','M') を拡張する.
+# R-3 (kaipoke-reverse-sync-design.md §8): 臨 / 臨2-臨9 = カイポケ取り込み由来の
+# 臨時コース (その日だけ1人のスタッフが対応する回り)。migration 0057 で CHECK 拡張。
 COURSE_CODE_VALUES: tuple[str, ...] = (
     "A",
     "B",
@@ -82,6 +84,15 @@ COURSE_CODE_VALUES: tuple[str, ...] = (
     "M7",
     "M8",
     "M9",
+    "臨",
+    "臨2",
+    "臨3",
+    "臨4",
+    "臨5",
+    "臨6",
+    "臨7",
+    "臨8",
+    "臨9",
 )
 
 
@@ -181,8 +192,10 @@ class Course(Base, TimestampMixin):
         # ('A','B','C','D','E','M') に再構築.
         # CareFlow Wave Next 2 cross-review [H1]: M overflow を M2..M9 に分散.
         # migration 0034 で M2..M9 を追加.
+        # migration 0057 で 臨/臨2-臨9 (カイポケ取り込みの臨時コース) を追加。
         CheckConstraint(
-            "code IN ('A', 'B', 'C', 'D', 'E', 'M', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9')",
+            "code IN ('A', 'B', 'C', 'D', 'E', 'M', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', "
+            "'M8', 'M9', '臨', '臨2', '臨3', '臨4', '臨5', '臨6', '臨7', '臨8', '臨9')",
             name="ck_courses_code_v2",
         ),
         # 状態は 3 値のみ (§4.5)

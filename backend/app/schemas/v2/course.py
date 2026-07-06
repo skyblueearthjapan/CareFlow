@@ -29,7 +29,32 @@ from app.schemas.v2.enums import CourseStatus
 #   M = マネージャー枠 (4 コース外のオーバーフロー専用)
 #   M2..M9 = M overflow 分散 (Wave Next 2 migration 0034 で追加、
 #            manager 数を超えない範囲で発番)
-CourseCodeV2 = Literal["A", "B", "C", "D", "E", "M", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9"]
+CourseCodeV2 = Literal[
+    "A",
+    "B",
+    "C",
+    "D",
+    "E",
+    "M",
+    "M2",
+    "M3",
+    "M4",
+    "M5",
+    "M6",
+    "M7",
+    "M8",
+    "M9",
+    # R-3: カイポケ取り込み由来の臨時コース (migration 0057)。
+    "臨",
+    "臨2",
+    "臨3",
+    "臨4",
+    "臨5",
+    "臨6",
+    "臨7",
+    "臨8",
+    "臨9",
+]
 
 
 class CourseV2Base(BaseModel):

@@ -270,7 +270,13 @@ export const ApplyInboundRequestSchema = z.object({
 });
 export type ApplyInboundRequest = z.infer<typeof ApplyInboundRequestSchema>;
 
-export const APPLY_INBOUND_OUTCOMES = ['cancelled', 'updated', 'skipped', 'failed'] as const;
+export const APPLY_INBOUND_OUTCOMES = [
+  'cancelled',
+  'updated',
+  'added',
+  'skipped',
+  'failed',
+] as const;
 
 export const ApplyInboundResultItemSchema = z.object({
   itemId: z.string().uuid(),
@@ -287,6 +293,7 @@ export const ApplyInboundResultSchema = z.object({
   dryRun: z.boolean(),
   cancelled: z.number().int().default(0),
   updated: z.number().int().default(0),
+  added: z.number().int().default(0),
   skipped: z.number().int().default(0),
   failed: z.number().int().default(0),
   results: z.array(ApplyInboundResultItemSchema).default([]),

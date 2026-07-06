@@ -19,6 +19,8 @@ from sqlalchemy import select
 from app.core.security import create_access_token, hash_password
 from app.models import User
 from app.models.correction_sheet import CorrectionSheet
+from app.models.course import COURSE_STATUS_STAFF_ASSIGNED, Course
+from app.models.course_template import CourseTemplate
 from app.models.kaipoke_job import KaipokeJob
 from app.models.office import Office
 from app.models.patient import Patient
@@ -161,17 +163,51 @@ def _kaipoke_csv(*rows: KaipokeCsvRow) -> str:
     return build_csv(list(rows), encoding="utf-8-sig").decode("utf-8-sig")
 
 
-def _kp_row(d: date, start: time, end: time) -> KaipokeCsvRow:
+def _kp_row(
+    d: date,
+    start: time,
+    end: time,
+    *,
+    patient_name: str = PATIENT_NAME,
+    staff_name: str = STAFF_NAME,
+) -> KaipokeCsvRow:
     return KaipokeCsvRow(
-        patient_name=PATIENT_NAME,
+        patient_name=patient_name,
         visit_date=d,
         start_time=start,
         end_time=end,
         office_name="稲毛",
         business_type="医療保険",
         service_content=SERVICE,
-        primary=StaffCell(name=STAFF_NAME, qualification="看護師"),
+        primary=StaffCell(name=staff_name, qualification="看護師"),
     )
+
+
+async def _seed_course(db, *, office, staff, weekday: int, code: str) -> Course:
+    """対象週 (WEEK_START の ISO 週) にスタッフ担当のコースを作る。"""
+    iso = WEEK_START.isocalendar()
+    course = Course(
+        iso_year=iso[0],
+        iso_week=iso[1],
+        weekday=weekday,
+        code=code,
+        course_status=COURSE_STATUS_STAFF_ASSIGNED,
+        assigned_staff_id=staff.id,
+        office_id=office.id,
+    )
+    db.add(course)
+    await db.commit()
+    await db.refresh(course)
+    return course
+
+
+async def _seed_second_staff(db, office, name: str = "佐藤　次郎") -> Staff:
+    staff = Staff(name=name, role="staff", primary_office_id=office.id)
+    staff.qualification = "看護師"
+    db.add(staff)
+    await db.commit()
+    await db.refresh(staff)
+    return staff
 
 
 def _default_kaipoke_state() -> str:
@@ -392,3 +428,230 @@ async def test_direction_guards(client, db, stub_kaipoke) -> None:
         json={"sheetId": str(outbound.id)},
     )
     assert res.status_code == 422, res.text
+
+
+# --- 4. R-3: スタッフ変更 = コースの変更 --------------------------------------
+
+
+async def _diff_with_state(client, stub_kaipoke, admin, csv_text: str) -> dict[str, Any]:
+    stub_kaipoke.responses["export"] = {"result": {"csv_content": csv_text}}
+    res = await client.post(
+        "/api/v1/integrations/diff-inbound",
+        headers=_bearer(admin),
+        json={"month": MONTH, "weekStart": WEEK_START.isoformat()},
+    )
+    assert res.status_code == 202, res.text
+    return res.json()
+
+
+def _staff_changed_state(staff_name: str) -> str:
+    """火曜の担当だけ差し替え、水・木は不変のカイポケ現況。"""
+    return _kaipoke_csv(
+        _kp_row(date(2026, 7, 7), time(10, 0), time(10, 35), staff_name=staff_name),
+        _kp_row(date(2026, 7, 8), time(11, 0), time(11, 35)),
+        _kp_row(date(2026, 7, 9), time(9, 0), time(9, 35)),
+    )
+
+
+@pytest.mark.asyncio
+async def test_staff_change_moves_visit_to_new_staff_course(client, db, stub_kaipoke) -> None:
+    """単発の担当変更 → 新担当がその日持っているコースへ訪問を移動する。"""
+    seeded = await _seed_week(db)
+    await _seed_real_apply(db)
+    admin = await _make_admin(db)
+    await _seed_course(db, office=seeded["office"], staff=seeded["staff"], weekday=1, code="A")
+    sato = await _seed_second_staff(db, seeded["office"])
+    course_b = await _seed_course(db, office=seeded["office"], staff=sato, weekday=1, code="B")
+
+    body = await _diff_with_state(client, stub_kaipoke, admin, _staff_changed_state("佐藤　次郎"))
+    assert body["summary"]["edit"] == 1
+
+    res = await client.post(
+        "/api/v1/integrations/apply-inbound",
+        headers=_bearer(admin),
+        json={"sheetId": body["sheetId"], "dryRun": False},
+    )
+    assert res.status_code == 200, res.text
+    out = res.json()
+    assert out["updated"] == 1 and out["failed"] == 0
+
+    await db.refresh(seeded["tue"])
+    assert seeded["tue"].course_id == course_b.id
+    assert seeded["tue"].primary_staff_id == sato.id
+    assert seeded["tue"].source == "manual_week"
+    assert "担当" in (seeded["tue"].note or "")
+
+
+@pytest.mark.asyncio
+async def test_staff_change_creates_temp_course(client, db, stub_kaipoke) -> None:
+    """新担当がその日コースを持たない → 臨時コース (臨・テンプレ「臨時」) を新設。"""
+    seeded = await _seed_week(db)
+    await _seed_real_apply(db)
+    admin = await _make_admin(db)
+    sato = await _seed_second_staff(db, seeded["office"])
+
+    body = await _diff_with_state(client, stub_kaipoke, admin, _staff_changed_state("佐藤　次郎"))
+
+    # dry-run では臨時コースを作らない。
+    res = await client.post(
+        "/api/v1/integrations/apply-inbound",
+        headers=_bearer(admin),
+        json={"sheetId": body["sheetId"]},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["updated"] == 1
+    assert (await db.scalar(select(Course).where(Course.code == "臨"))) is None
+
+    res = await client.post(
+        "/api/v1/integrations/apply-inbound",
+        headers=_bearer(admin),
+        json={"sheetId": body["sheetId"], "dryRun": False},
+    )
+    assert res.status_code == 200, res.text
+
+    temp = await db.scalar(select(Course).where(Course.code == "臨"))
+    assert temp is not None
+    assert temp.assigned_staff_id == sato.id
+    assert temp.weekday == 1  # 火曜
+    tpl = await db.scalar(select(CourseTemplate).where(CourseTemplate.id == temp.template_id))
+    assert tpl is not None and tpl.label == "臨時"
+    await db.refresh(seeded["tue"])
+    assert seeded["tue"].course_id == temp.id
+    assert seeded["tue"].primary_staff_id == sato.id
+
+
+@pytest.mark.asyncio
+async def test_course_takeover_changes_course_staff(client, db, stub_kaipoke) -> None:
+    """コースの planned 全訪問が同じ新担当へ → コース担当の丸ごと交代。"""
+    seeded = await _seed_week(db)
+    await _seed_real_apply(db)
+    admin = await _make_admin(db)
+    course_a = await _seed_course(
+        db, office=seeded["office"], staff=seeded["staff"], weekday=1, code="A"
+    )
+    sato = await _seed_second_staff(db, seeded["office"])
+
+    # 火曜のコースAに2患者を乗せる (既存 tue + 患者2)。
+    p2 = Patient(
+        code="PT-INB-2",
+        name="鈴木　一郎",
+        status="active",
+        insurance="medical",
+        primary_office_id=seeded["office"].id,
+    )
+    db.add(p2)
+    await db.flush()
+    v2 = Visit(
+        patient_id=p2.id,
+        visit_date=date(2026, 7, 7),
+        start_time=time(11, 0),
+        end_time=time(11, 35),
+        type="regular",
+        status="planned",
+        source="auto",
+        required_staff_count=1,
+        primary_staff_id=seeded["staff"].id,
+        course_id=course_a.id,
+    )
+    seeded["tue"].course_id = course_a.id
+    db.add(v2)
+    await db.commit()
+    await db.refresh(v2)
+
+    state = _kaipoke_csv(
+        _kp_row(date(2026, 7, 7), time(10, 0), time(10, 35), staff_name="佐藤　次郎"),
+        _kp_row(
+            date(2026, 7, 7),
+            time(11, 0),
+            time(11, 35),
+            patient_name="鈴木　一郎",
+            staff_name="佐藤　次郎",
+        ),
+        _kp_row(date(2026, 7, 8), time(11, 0), time(11, 35)),
+        _kp_row(date(2026, 7, 9), time(9, 0), time(9, 35)),
+    )
+    body = await _diff_with_state(client, stub_kaipoke, admin, state)
+    assert body["summary"]["edit"] == 2
+
+    res = await client.post(
+        "/api/v1/integrations/apply-inbound",
+        headers=_bearer(admin),
+        json={"sheetId": body["sheetId"], "dryRun": False},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["updated"] == 2
+
+    await db.refresh(course_a)
+    await db.refresh(seeded["tue"])
+    await db.refresh(v2)
+    assert course_a.assigned_staff_id == sato.id  # コース丸ごと交代。
+    assert seeded["tue"].course_id == course_a.id  # 訪問はコースに残る。
+    assert v2.course_id == course_a.id
+    assert seeded["tue"].primary_staff_id == sato.id
+    assert v2.primary_staff_id == sato.id
+    assert "丸ごと交代" in (seeded["tue"].note or "")
+
+
+# --- 5. R-3: add = カイポケにのみ存在する予定の取り込み ------------------------
+
+
+@pytest.mark.asyncio
+async def test_add_inserts_visit_with_temp_course(client, db, stub_kaipoke) -> None:
+    seeded = await _seed_week(db)
+    await _seed_real_apply(db)
+    admin = await _make_admin(db)
+
+    state = _kaipoke_csv(
+        _kp_row(date(2026, 7, 7), time(10, 0), time(10, 35)),
+        _kp_row(date(2026, 7, 8), time(11, 0), time(11, 35)),
+        _kp_row(date(2026, 7, 9), time(9, 0), time(9, 35)),
+        _kp_row(date(2026, 7, 10), time(15, 0), time(15, 35)),  # 金曜に追加された予定。
+    )
+    body = await _diff_with_state(client, stub_kaipoke, admin, state)
+    assert body["summary"]["add"] == 1
+    assert body["summary"]["auto_selected"] == 1  # 患者・担当が解決できた add は既定ON。
+
+    # dry-run: visit もコースも作られない。
+    res = await client.post(
+        "/api/v1/integrations/apply-inbound",
+        headers=_bearer(admin),
+        json={"sheetId": body["sheetId"]},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["added"] == 1
+    assert (await db.scalar(select(Visit).where(Visit.visit_date == date(2026, 7, 10)))) is None
+
+    res = await client.post(
+        "/api/v1/integrations/apply-inbound",
+        headers=_bearer(admin),
+        json={"sheetId": body["sheetId"], "dryRun": False},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["added"] == 1 and res.json()["failed"] == 0
+
+    new_visit = await db.scalar(select(Visit).where(Visit.visit_date == date(2026, 7, 10)))
+    assert new_visit is not None
+    assert new_visit.source == "import"
+    assert new_visit.start_time == time(15, 0)
+    assert new_visit.primary_staff_id == seeded["staff"].id
+    assert "カイポケ側で追加された予定" in (new_visit.note or "")
+    temp = await db.scalar(select(Course).where(Course.id == new_visit.course_id))
+    assert temp is not None and temp.code == "臨" and temp.weekday == 4  # 金曜。
+
+
+@pytest.mark.asyncio
+async def test_add_with_unresolved_staff_defaults_off(client, db, stub_kaipoke) -> None:
+    """担当が名寄せできない add は既定OFF (取り込み対象外) のまま可視化。"""
+    await _seed_week(db)
+    await _seed_real_apply(db)
+    admin = await _make_admin(db)
+
+    state = _kaipoke_csv(
+        _kp_row(date(2026, 7, 7), time(10, 0), time(10, 35)),
+        _kp_row(date(2026, 7, 8), time(11, 0), time(11, 35)),
+        _kp_row(date(2026, 7, 9), time(9, 0), time(9, 35)),
+        _kp_row(date(2026, 7, 10), time(15, 0), time(15, 35), staff_name="実在　しない"),
+    )
+    body = await _diff_with_state(client, stub_kaipoke, admin, state)
+    assert body["summary"]["add"] == 1
+    assert body["summary"]["auto_selected"] == 0

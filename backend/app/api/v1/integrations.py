@@ -1288,6 +1288,7 @@ async def trigger_diff_inbound(
     from app.models.patient import Patient
     from app.services.kaipoke.inbound import (
         day_to_date,
+        load_staff_name_index,
         load_week_visit_index,
         parse_hhmm,
         real_apply_record,
@@ -1354,9 +1355,10 @@ async def trigger_diff_inbound(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="inbound diff failed"
         ) from exc
 
-    # 利用者名 → patient_id、(patient, date, start) → visit_id の解決。
+    # 利用者名 → patient_id、担当名 → staff_id、(patient, date, start) → visit_id の解決。
     patients = (await db.scalars(select(Patient).where(Patient.deleted_at.is_(None)))).all()
     pindex = build_name_index({str(p.id): p.name for p in patients})
+    sindex, _smap = await load_staff_name_index(db)
     visit_index = await load_week_visit_index(db, week_start, week_end)
 
     sheet = CorrectionSheet(
@@ -1393,9 +1395,15 @@ async def trigger_diff_inbound(
                 v = visit_index.get((pid, target_date, start))
                 visit_id = v.id if v is not None else None
 
-        # 既定 include: キャンセル/変更で対象 visit まで特定できたものだけ ON。
-        # add (カイポケにのみ存在) と未解決は OFF で可視化 (人が判断して R-3 以降)。
-        include = c.action in ("delete", "edit", "date_change") and visit_id is not None
+        # 既定 include (設計 §8): キャンセル/変更 = 対象 visit まで特定できたもの。
+        # add = 患者と担当が名寄せ解決できたもの (コースは臨時新設で常に解決可能)。
+        # 未解決は OFF で可視化 (人が判断)。
+        if c.action == "add":
+            include = pid is not None and bool(
+                match_name(str((after or {}).get("staff1") or ""), sindex)
+            )
+        else:
+            include = c.action in ("delete", "edit", "date_change") and visit_id is not None
         items.append(
             CorrectionSheetItem(
                 sheet_id=sheet.id,
@@ -1530,6 +1538,7 @@ async def trigger_apply_inbound(
         dry_run=payload.dry_run,
         cancelled=summary.cancelled,
         updated=summary.updated,
+        added=summary.added,
         skipped=summary.skipped,
         failed=summary.failed,
         results=[InboundItemResultRead(**r.__dict__) for r in summary.results],

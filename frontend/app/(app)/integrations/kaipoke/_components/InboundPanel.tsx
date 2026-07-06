@@ -56,6 +56,7 @@ const ACTION_META: Record<string, { label: string; cls: string }> = {
 const OUTCOME_META: Record<string, { label: string; cls: string }> = {
   cancelled: { label: 'キャンセル', cls: 'bg-error-bg text-error' },
   updated: { label: '更新', cls: 'bg-success-bg text-success' },
+  added: { label: '追加', cls: 'bg-info-bg text-info' },
   skipped: { label: 'スキップ', cls: 'bg-bg-muted text-text-muted' },
   failed: { label: '失敗', cls: 'bg-error-bg text-error' },
 };
@@ -202,7 +203,7 @@ export function InboundPanel({ busy }: { busy: boolean }) {
         setDryRunResult(res);
       } else {
         toast.success(
-          `取り込み完了: キャンセル ${res.cancelled}件 / 更新 ${res.updated}件 / スキップ ${res.skipped}件`,
+          `取り込み完了: キャンセル ${res.cancelled}件 / 更新 ${res.updated}件 / 追加 ${res.added}件 / スキップ ${res.skipped}件`,
         );
         resetDiff();
       }
@@ -448,8 +449,9 @@ export function InboundPanel({ busy }: { busy: boolean }) {
                   </tbody>
                 </table>
                 <div className="border-t border-border-default bg-bg-muted px-3 py-2 text-xs text-text-secondary">
-                  キャンセル: {dryRunResult.cancelled} / 更新: {dryRunResult.updated} / スキップ:{' '}
-                  {dryRunResult.skipped} / 失敗: {dryRunResult.failed}
+                  キャンセル: {dryRunResult.cancelled} / 更新: {dryRunResult.updated} / 追加:{' '}
+                  {dryRunResult.added} / スキップ: {dryRunResult.skipped} / 失敗:{' '}
+                  {dryRunResult.failed}
                 </div>
               </div>
             )}

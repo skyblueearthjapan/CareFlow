@@ -241,7 +241,7 @@ class InboundItemResultRead(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
     item_id: str = Field(alias="itemId")
     action: str
-    outcome: Literal["cancelled", "updated", "skipped", "failed"]
+    outcome: Literal["cancelled", "updated", "added", "skipped", "failed"]
     detail: str = ""
     patient_name: str = Field(default="", alias="patientName")
     date: str = ""
@@ -253,6 +253,7 @@ class InboundApplyResult(BaseModel):
     dry_run: bool = Field(alias="dryRun")
     cancelled: int = 0
     updated: int = 0
+    added: int = 0
     skipped: int = 0
     failed: int = 0
     results: list[InboundItemResultRead] = Field(default_factory=list)

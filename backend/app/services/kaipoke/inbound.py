@@ -21,10 +21,17 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
+from sqlalchemy.exc import IntegrityError
 
+from app.models.course import COURSE_STATUS_STAFF_ASSIGNED, Course
+from app.models.course_template import CourseTemplate
 from app.models.kaipoke_job import KaipokeJob
+from app.models.patient import Patient
+from app.models.staff import Staff
 from app.models.visit import VISIT_STATUS_CANCELLED, Visit
+from app.models.visit_staff_assignment import VisitStaffAssignment
+from app.services.kaipoke.name_match import build_name_index, match_name
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,6 +41,13 @@ if TYPE_CHECKING:
 # 取り込みの実績刻印 (visit.note に追記する行の接頭辞)。人間向け日本語のため
 # モバイルの内部note非表示 (lib/visit-note.ts) の対象外 = 現場にも表示される。
 NOTE_STAMP_PREFIX = "カイポケ取込"
+
+# R-3 臨時コース (設計 §8-1・PO合意): 新担当がその日コースを持たない場合に
+# 「その日だけ1人で対応する回り」を新設する。コード=臨/臨2..臨9 (migration 0057)、
+# テンプレート=各拠点の「臨時」(無ければ作る)。コースは週×曜日インスタンスなので
+# 他の週には残らない。
+TEMP_COURSE_CODES: tuple[str, ...] = ("臨", "臨2", "臨3", "臨4", "臨5", "臨6", "臨7", "臨8", "臨9")
+TEMP_TEMPLATE_LABEL = "臨時"
 
 
 async def real_apply_record(db: AsyncSession, week_start: date) -> KaipokeJob | None:
@@ -119,11 +133,142 @@ def _stamp_note(visit: Visit, message: str, today: date) -> None:
     visit.note = f"{visit.note}\n{line}" if visit.note else line
 
 
+# --- R-3: スタッフ名寄せ・コース解決 ----------------------------------------
+
+
+async def load_staff_name_index(
+    db: AsyncSession,
+) -> tuple[dict[str, list[str]], dict[uuid.UUID, Staff]]:
+    """スタッフ名 → staff.id の名寄せ索引 (患者と同じ match_name 機構を流用)。
+
+    削除済みは除外。同姓同名や退職者との正規化キー衝突は match_name が
+    None (=要確認) に落とすため取り違えは起きない。
+    """
+    rows = await db.scalars(select(Staff).where(Staff.deleted_at.is_(None)))
+    staff_map = {s.id: s for s in rows.all()}
+    return build_name_index({str(s.id): s.name for s in staff_map.values()}), staff_map
+
+
+@dataclass
+class WeekCourseIndex:
+    """対象週のコース索引 (スタッフ変更/追加のコース解決に使う)。"""
+
+    iso_year: int
+    iso_week: int
+    by_id: dict[uuid.UUID, Course] = field(default_factory=dict)
+    # (weekday, office_id, staff_id) → その日その拠点でそのスタッフが担当するコース
+    # (複数あればコード昇順の先頭 = 通常コース優先)。
+    by_staff: dict[tuple[int, uuid.UUID, uuid.UUID], Course] = field(default_factory=dict)
+    codes_in_use: dict[tuple[int, uuid.UUID], set[str]] = field(default_factory=dict)
+
+    def register(self, course: Course) -> None:
+        self.by_id[course.id] = course
+        key = (course.weekday, course.office_id)
+        self.codes_in_use.setdefault(key, set()).add(course.code)
+        if course.assigned_staff_id is not None:
+            skey = (course.weekday, course.office_id, course.assigned_staff_id)
+            cur = self.by_staff.get(skey)
+            if cur is None or course.code < cur.code:
+                self.by_staff[skey] = course
+
+
+async def load_week_course_index(db: AsyncSession, week_start: date) -> WeekCourseIndex:
+    iso = week_start.isocalendar()
+    idx = WeekCourseIndex(iso_year=iso[0], iso_week=iso[1])
+    rows = await db.scalars(
+        select(Course).where(
+            Course.iso_year == iso[0],
+            Course.iso_week == iso[1],
+            Course.deleted_at.is_(None),
+            Course.course_status != "proposed",
+        )
+    )
+    for c in rows.all():
+        idx.register(c)
+    return idx
+
+
+async def _ensure_temp_template(db: AsyncSession, office_id: uuid.UUID) -> CourseTemplate:
+    tpl = await db.scalar(
+        select(CourseTemplate).where(
+            CourseTemplate.office_id == office_id,
+            CourseTemplate.label == TEMP_TEMPLATE_LABEL,
+            CourseTemplate.deleted_at.is_(None),
+        )
+    )
+    if tpl is not None:
+        return tpl
+    tpl = CourseTemplate(
+        office_id=office_id,
+        label=TEMP_TEMPLATE_LABEL,
+        notes="カイポケ取り込み由来の臨時コース用テンプレート (自動作成)",
+    )
+    db.add(tpl)
+    await db.flush()
+    return tpl
+
+
+async def ensure_temp_course(
+    db: AsyncSession,
+    idx: WeekCourseIndex,
+    *,
+    weekday: int,
+    office_id: uuid.UUID,
+    staff_id: uuid.UUID,
+    now: datetime,
+) -> Course | None:
+    """臨時コースを取得または新設する (同一スタッフ・同一日の2件目は相乗り)。
+
+    臨/臨2..臨9 が全て使用済みなら None (呼び出し側で failed 扱い)。
+    """
+    # 既に同スタッフの臨時コースがあれば相乗り (コース乱立防止)。
+    for c in idx.by_id.values():
+        if (
+            c.weekday == weekday
+            and c.office_id == office_id
+            and c.assigned_staff_id == staff_id
+            and c.code in TEMP_COURSE_CODES
+        ):
+            return c
+    used = idx.codes_in_use.get((weekday, office_id), set())
+    free = next((code for code in TEMP_COURSE_CODES if code not in used), None)
+    if free is None:
+        return None
+    tpl = await _ensure_temp_template(db, office_id)
+    course = Course(
+        iso_year=idx.iso_year,
+        iso_week=idx.iso_week,
+        weekday=weekday,
+        code=free,
+        course_status=COURSE_STATUS_STAFF_ASSIGNED,
+        assigned_staff_id=staff_id,
+        staff_assigned_at=now,
+        template_id=tpl.id,
+        office_id=office_id,
+        note="カイポケ取込による臨時コース",
+    )
+    db.add(course)
+    await db.flush()
+    idx.register(course)
+    return course
+
+
+async def _replace_assignments(db: AsyncSession, visit: Visit, staff_ids: list[uuid.UUID]) -> None:
+    """visit_staff_assignments を新しい担当セットへ置き換える (v1/v2整合)。
+
+    staff1=staff2 のような重複入力でも (visit_id, staff_id) 複合PKに
+    衝突しないよう順序保持で重複除去する。
+    """
+    await db.execute(delete(VisitStaffAssignment).where(VisitStaffAssignment.visit_id == visit.id))
+    for sid in dict.fromkeys(staff_ids):
+        db.add(VisitStaffAssignment(visit_id=visit.id, staff_id=sid))
+
+
 @dataclass
 class InboundItemResult:
     item_id: str
     action: str
-    outcome: str  # cancelled / updated / skipped / failed
+    outcome: str  # cancelled / updated / added / skipped / failed
     detail: str = ""
     patient_name: str = ""
     date: str = ""
@@ -133,6 +278,7 @@ class InboundItemResult:
 class InboundApplySummary:
     cancelled: int = 0
     updated: int = 0
+    added: int = 0
     skipped: int = 0
     failed: int = 0
     results: list[InboundItemResult] = field(default_factory=list)
@@ -141,6 +287,7 @@ class InboundApplySummary:
         return {
             "cancelled": self.cancelled,
             "updated": self.updated,
+            "added": self.added,
             "skipped": self.skipped,
             "failed": self.failed,
             "results": [r.__dict__ for r in self.results],
@@ -161,13 +308,82 @@ async def apply_inbound_items(
 
     days 指定時はその日付の item だけを対象にする (曜日チップの複数選択)。
     dry_run=True では一切 mutate せず、予定される結果だけを返す。
-    R-2 スコープ: delete(→キャンセル)・edit/date_change(→時刻/日付変更)。
-    add (カイポケにのみ存在) とスタッフのみの変更は skipped として可視化 (R-3)。
+
+    対応 (R-2/R-3):
+      * delete → キャンセル (status='cancelled'・グループ丸ごと)
+      * edit / date_change → 時刻・日付の変更 (source='manual_week')
+      * スタッフ変更 → **コースの変更**として扱う (設計 §8-1・PO合意):
+        コース丸ごと交代 → Course.assigned_staff_id 変更 /
+        単発 → 新担当のその日のコースへ移動 / コース無し → 臨時コース新設
+      * add → visit INSERT (source='import'・コースは担当のコース or 臨時)
     """
     summary = InboundApplySummary()
     index = await load_week_visit_index(db, week_start, week_end)
+    staff_index, _staff_map = await load_staff_name_index(db)
+    course_idx = await load_week_course_index(db, week_start)
     today = now.date()
     day_set = set(days) if days else None
+
+    # 患者 → 拠点 (コース解決に使う)。
+    pids = {it.patient_id for it in items if it.patient_id is not None}
+    patient_office: dict[uuid.UUID, uuid.UUID] = {}
+    if pids:
+        prows = await db.scalars(select(Patient).where(Patient.id.in_(pids)))
+        patient_office = {
+            p.id: p.primary_office_id for p in prows.all() if p.primary_office_id is not None
+        }
+
+    async def _resolve_visit(item: CorrectionSheetItem, target_date: date) -> Visit | None:
+        b = item.before or {}
+        st = parse_hhmm(str(b.get("start_time") or ""))
+        visit: Visit | None = None
+        if item.visit_id is not None:
+            visit = await db.get(Visit, item.visit_id)
+            if visit is not None and visit.deleted_at is not None:
+                visit = None
+        if visit is None and st is not None and item.patient_id is not None:
+            visit = index.get((item.patient_id, target_date, st))
+        return visit
+
+    # --- コース丸ごと交代の検出 (事前パス・設計 §8-1 パターンA) --------------
+    # 同じコース×日の planned 全訪問が「同じ新担当への変更」を示していれば、
+    # 訪問を動かさずコースの担当を替える (現実 = その日の回りを丸ごと交代)。
+    planned_by_course: dict[tuple[uuid.UUID, date], set[uuid.UUID]] = {}
+    for v in index.values():
+        if v.status == "planned" and v.course_id is not None:
+            planned_by_course.setdefault((v.course_id, v.visit_date), set()).add(v.id)
+
+    takeover_votes: dict[tuple[uuid.UUID, date], dict[uuid.UUID, set[uuid.UUID]]] = {}
+    for it in items:
+        if it.action != "edit" or it.patient_id is None:
+            continue
+        b, a = it.before or {}, it.after or {}
+        if (b.get("staff1") or "") == (a.get("staff1") or "") or not (a.get("staff1") or ""):
+            continue
+        try:
+            d = int(str(b.get("date") or a.get("date")))
+        except (TypeError, ValueError):
+            continue
+        td = day_to_date(d, week_start, week_end)
+        if td is None or (day_set is not None and td not in day_set):
+            continue
+        vv = await _resolve_visit(it, td)
+        if vv is None or vv.course_id is None:
+            continue
+        sid_str = match_name(str(a.get("staff1")), staff_index)
+        if not sid_str:
+            continue
+        takeover_votes.setdefault((vv.course_id, td), {}).setdefault(uuid.UUID(sid_str), set()).add(
+            vv.id
+        )
+
+    takeover: dict[tuple[uuid.UUID, date], uuid.UUID] = {}
+    for tkey, votes in takeover_votes.items():
+        if len(votes) != 1:
+            continue
+        sid, vids = next(iter(votes.items()))
+        if vids and vids == planned_by_course.get(tkey, set()):
+            takeover[tkey] = sid
 
     for item in items:
         before = item.before or {}
@@ -196,6 +412,8 @@ async def apply_inbound_items(
                 summary.cancelled += 1
             elif outcome == "updated":
                 summary.updated += 1
+            elif outcome == "added":
+                summary.added += 1
             elif outcome == "skipped":
                 summary.skipped += 1
             else:
@@ -217,23 +435,105 @@ async def apply_inbound_items(
         if day_set is not None and target_date not in day_set:
             continue  # 選択外の曜日 — 結果にも数えない (対象外)。
 
-        # --- R-3 送り (追加はまだ取り込まない) ------------------------------
+        # --- add: カイポケにのみ存在する予定 → visit INSERT (R-3b) -----------
         if item.action == "add":
-            _finish("skipped", "カイポケにのみ存在する予定の追加は未対応 (R-3)", target_date)
+            if item.patient_id is None:
+                _finish("failed", "利用者名を CareFlow 患者に解決できませんでした", target_date)
+                continue
+            start_new = parse_hhmm(str(after.get("start_time") or ""))
+            end_new = parse_hhmm(str(after.get("end_time") or ""))
+            if start_new is None or end_new is None:
+                _finish("failed", "追加予定の時刻が解釈できません", target_date)
+                continue
+            existing = index.get((item.patient_id, target_date, start_new))
+            if existing is not None:
+                # cancelled も UNIQUE 枠 (0026: deleted_at IS NULL) を占有する。
+                if existing.status == VISIT_STATUS_CANCELLED:
+                    msg = "同時刻にキャンセル済みの予定が残っています（手動で整理してください）"
+                else:
+                    msg = "同時刻の予定が既にあります（差分を取り直してください）"
+                _finish("failed", msg, target_date)
+                continue
+            staff1_name = str(after.get("staff1") or "")
+            sid_str = match_name(staff1_name, staff_index) if staff1_name else None
+            if not sid_str:
+                _finish("failed", f"担当「{staff1_name}」を解決できませんでした", target_date)
+                continue
+            sid = uuid.UUID(sid_str)
+            staff2_name = str(after.get("staff2") or "")
+            sid2: uuid.UUID | None = None
+            staff2_note = ""
+            if staff2_name:
+                sid2_str = match_name(staff2_name, staff_index)
+                if sid2_str:
+                    sid2 = uuid.UUID(sid2_str)
+                else:
+                    staff2_note = f"／担当2「{staff2_name}」未解決（1名で登録）"
+            office_id = patient_office.get(item.patient_id)
+            if office_id is None:
+                _finish("failed", "患者の主担当拠点が特定できません", target_date)
+                continue
+            weekday = target_date.weekday()
+            course = course_idx.by_staff.get((weekday, office_id, sid))
+            course_note = f"コース{course.code}" if course is not None else "臨時コース新設"
+            detail = (
+                f"{target_date.month}/{target_date.day} {after.get('start_time')} を追加"
+                f"（担当 {staff1_name}・{course_note}）{staff2_note}"
+            )
+            if not dry_run:
+                if course is None:
+                    course = await ensure_temp_course(
+                        db,
+                        course_idx,
+                        weekday=weekday,
+                        office_id=office_id,
+                        staff_id=sid,
+                        now=now,
+                    )
+                    if course is None:
+                        _finish("failed", "臨時コース枠（臨〜臨9）が満杯です", target_date)
+                        continue
+                new_visit = Visit(
+                    patient_id=item.patient_id,
+                    visit_date=target_date,
+                    start_time=start_new,
+                    end_time=end_new,
+                    type="regular",
+                    status="planned",
+                    # 取込由来として識別・週再生成からも保護される。
+                    source="import",
+                    required_staff_count=2 if sid2 is not None else 1,
+                    primary_staff_id=sid,
+                    secondary_staff_id=sid2,
+                    course_id=course.id,
+                )
+                _stamp_note(new_visit, "カイポケ側で追加された予定", today)
+                # 索引が万一古くても UNIQUE 衝突を savepoint で item 単位の failed に
+                # 留める (バッチ全体を巻き添えにしない)。
+                try:
+                    async with db.begin_nested():
+                        db.add(new_visit)
+                        await db.flush()
+                        await _replace_assignments(
+                            db, new_visit, [s for s in (sid, sid2) if s is not None]
+                        )
+                except IntegrityError:
+                    _finish(
+                        "failed",
+                        "同時刻の予定と衝突しました（差分を取り直してください）",
+                        target_date,
+                    )
+                    continue
+                index[(item.patient_id, target_date, start_new)] = new_visit
+                item.visit_id = new_visit.id
+            _finish("added", detail, target_date)
             continue
 
         # --- 対象 visit の特定 ----------------------------------------------
         if item.patient_id is None:
             _finish("failed", "利用者名を CareFlow 患者に解決できませんでした", target_date)
             continue
-        start_before = parse_hhmm(str(before.get("start_time") or ""))
-        visit = None
-        if item.visit_id is not None:
-            visit = await db.get(Visit, item.visit_id)
-            if visit is not None and visit.deleted_at is not None:
-                visit = None
-        if visit is None and start_before is not None:
-            visit = index.get((item.patient_id, target_date, start_before))
+        visit = await _resolve_visit(item, target_date)
         if visit is None:
             _finish("failed", "対象の訪問が CareFlow に見つかりません", target_date)
             continue
@@ -276,19 +576,45 @@ async def apply_inbound_items(
             end_after is not None and end_after != visit.end_time
         )
         date_changed = new_date is not None and new_date != visit.visit_date
-        staff_changed = (before.get("staff1") or "") != (after.get("staff1") or "") or (
-            before.get("staff2") or ""
-        ) != (after.get("staff2") or "")
+        final_date = new_date if (date_changed and new_date is not None) else target_date
+        weekday = final_date.weekday()
 
-        if not time_changed and not date_changed:
-            if staff_changed:
-                _finish(
-                    "skipped",
-                    "スタッフのみの変更は取り込み対象外 (CareFlow 側で手動確認)",
-                    target_date,
-                )
+        # --- スタッフ変更の解決 (R-3a: 「コースの変更」として扱う・設計 §8-1) --
+        staff1_before_name = str(before.get("staff1") or "")
+        staff1_after_name = str(after.get("staff1") or "")
+        staff1_changed = staff1_before_name != staff1_after_name
+        staff2_before_name = str(before.get("staff2") or "")
+        staff2_after_name = str(after.get("staff2") or "")
+        staff2_changed = staff2_before_name != staff2_after_name
+
+        notes: list[str] = []
+        new_sid: uuid.UUID | None = None
+        if staff1_changed:
+            if not staff1_after_name:
+                notes.append("担当が空に変更（未対応・要手動確認）")
             else:
-                _finish("skipped", "変更点なし", target_date)
+                sid_str = match_name(staff1_after_name, staff_index)
+                if sid_str:
+                    new_sid = uuid.UUID(sid_str)
+                else:
+                    notes.append(f"担当「{staff1_after_name}」未解決（担当変更は未反映）")
+
+        # 担当2: 解決できたときだけ反映 (解除 = 空文字も反映)。
+        staff2_update = False
+        new_sid2: uuid.UUID | None = None
+        if staff2_changed:
+            if not staff2_after_name:
+                staff2_update = True  # 2人目の解除。
+            else:
+                sid2_str = match_name(staff2_after_name, staff_index)
+                if sid2_str:
+                    new_sid2 = uuid.UUID(sid2_str)
+                    staff2_update = True
+                else:
+                    notes.append(f"担当2「{staff2_after_name}」未解決（未反映）")
+
+        if not time_changed and not date_changed and new_sid is None and not staff2_update:
+            _finish("skipped", "・".join(notes) or "変更点なし", target_date)
             continue
 
         changes: list[str] = []
@@ -298,11 +624,69 @@ async def apply_inbound_items(
             )
         if time_changed and start_after is not None:
             changes.append(f"{visit.start_time.strftime('%H:%M')}→{start_after.strftime('%H:%M')}")
-        detail = "・".join(changes)
-        if staff_changed:
-            detail += "（スタッフ変更は未反映・要手動確認）"
+
+        # コース解決: 丸ごと交代 / 既存コースへ移動 / 臨時コース新設。
+        course_takeover = False
+        target_course: Course | None = None
+        need_temp_course = False
+        if new_sid is not None:
+            cur_course = course_idx.by_id.get(visit.course_id) if visit.course_id else None
+            tkey = (visit.course_id, target_date) if visit.course_id is not None else None
+            office_id = patient_office.get(item.patient_id)
+            if tkey is not None and takeover.get(tkey) == new_sid:
+                course_takeover = True
+                cur_code = cur_course.code if cur_course else "?"
+                changes.append(
+                    f"担当 {staff1_before_name or '−'}→{staff1_after_name}"
+                    f"（コース{cur_code}を丸ごと交代）"
+                )
+            elif office_id is None:
+                notes.append("患者の主担当拠点が特定できず担当変更は未反映")
+                new_sid = None
+            else:
+                target_course = course_idx.by_staff.get((weekday, office_id, new_sid))
+                cur_code = cur_course.code if cur_course else "−"
+                if target_course is not None:
+                    changes.append(
+                        f"担当 {staff1_before_name or '−'}→{staff1_after_name}"
+                        f"（コース{cur_code}→{target_course.code}）"
+                    )
+                else:
+                    need_temp_course = True
+                    changes.append(
+                        f"担当 {staff1_before_name or '−'}→{staff1_after_name}（臨時コース新設）"
+                    )
+        if staff2_update:
+            changes.append(f"担当2 →{staff2_after_name}" if new_sid2 is not None else "担当2を解除")
+
+        if not changes:
+            _finish("skipped", "・".join(notes) or "変更点なし", target_date)
+            continue
+        detail = "・".join(changes + notes)
 
         if not dry_run:
+            if need_temp_course and new_sid is not None:
+                office_id = patient_office.get(item.patient_id)
+                if office_id is None:
+                    # 上流の分岐で除外済みだが、リファクタで壊れないよう明示ガード。
+                    _finish("failed", "患者の主担当拠点が特定できません", target_date)
+                    continue
+                target_course = await ensure_temp_course(
+                    db,
+                    course_idx,
+                    weekday=weekday,
+                    office_id=office_id,
+                    staff_id=new_sid,
+                    now=now,
+                )
+                if target_course is None:
+                    _finish("failed", "臨時コース枠（臨〜臨9）が満杯です", target_date)
+                    continue
+            if course_takeover and new_sid is not None and visit.course_id is not None:
+                course = course_idx.by_id.get(visit.course_id)
+                if course is not None and course.assigned_staff_id != new_sid:
+                    course.assigned_staff_id = new_sid
+                    course.staff_assigned_at = now
             for v in partners:
                 if date_changed and new_date is not None:
                     v.visit_date = new_date
@@ -311,9 +695,22 @@ async def apply_inbound_items(
                         v.start_time = start_after
                     if end_after is not None:
                         v.end_time = end_after
+                if new_sid is not None:
+                    if target_course is not None and not course_takeover:
+                        v.course_id = target_course.id
+                    v.primary_staff_id = new_sid
+                if staff2_update:
+                    v.secondary_staff_id = new_sid2
+                    v.required_staff_count = 2 if new_sid2 is not None else 1
                 # その週限りの変更として週再生成から保護する。
                 v.source = "manual_week"
                 _stamp_note(v, detail, today)
+                if new_sid is not None or staff2_update:
+                    primary = new_sid if new_sid is not None else v.primary_staff_id
+                    secondary = new_sid2 if staff2_update else v.secondary_staff_id
+                    await _replace_assignments(
+                        db, v, [s for s in (primary, secondary) if s is not None]
+                    )
         _finish("updated", detail, target_date)
 
     return summary
