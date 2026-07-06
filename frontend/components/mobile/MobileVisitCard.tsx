@@ -55,6 +55,7 @@ export function MobileVisitCard({ visit, address, highlight }: MobileVisitCardPr
         className={cn(
           'flex items-center gap-3 p-4 transition-colors hover:bg-bg-muted',
           highlight && 'border-l-4 border-l-warning',
+          visit.status === 'cancelled' && 'opacity-60 bg-bg-muted',
         )}
       >
         <div className="flex flex-col items-center justify-center w-14 shrink-0">

@@ -38,6 +38,7 @@ export const boardVisitSchema = z.object({
   same_address_group_id: z.string().nullish(),
   mode: boardVisitModeSchema.default('normal'),
   slot_index: z.number().int().nonnegative(),
+  status: z.string().default('planned'),
 });
 export type BoardVisit = z.infer<typeof boardVisitSchema>;
 

@@ -33,7 +33,7 @@ from app.core.security import create_access_token, hash_password
 from app.models import Office, Patient, User
 from app.models.course import COURSE_STATUS_STAFF_ASSIGNED, Course
 from app.models.staff import Staff, StaffShift
-from app.models.visit import VISIT_STATUS_PLANNED, Visit
+from app.models.visit import VISIT_STATUS_CANCELLED, VISIT_STATUS_PLANNED, Visit
 
 ISO_YEAR = 2026
 ISO_WEEK = 20
@@ -436,3 +436,73 @@ async def test_board_rejects_no_auth(client, db) -> None:
         params={"iso_year": ISO_YEAR, "iso_week": ISO_WEEK},
     )
     assert res.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# キャンセル表示 (R-2: status='cancelled' は表示するが定員から除外)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_board_cancelled_visit_shown_but_not_counted(client, db) -> None:
+    """cancelled visit はボードに status='cancelled' で含まれるが、
+    capacity.filled / cell.patient_count / weekdays[].patient_count に加算しない。
+    """
+    admin = await _make_user(db, email="board-cancel1@example.com", role="admin")
+    office = await _seed_office(db, name="稲毛")
+    staff = await _seed_staff(db, office=office)
+    course = await _seed_course(db, office=office, staff=staff, weekday=0, code="A")
+    p_planned = await _seed_patient(db, office=office, code="CP1", lat=NEAR[0], lng=NEAR[1])
+    p_cancelled = await _seed_patient(db, office=office, code="CC1", lat=FAR[0], lng=FAR[1])
+
+    # planned visit (09:30-10:00).
+    await _seed_visit(db, patient=p_planned, course=course, start=time(9, 30), end=time(10, 0))
+    # cancelled visit (13:00-13:30) — 直接 Insert で status を 'cancelled' に.
+    cancelled_v = Visit(
+        patient_id=p_cancelled.id,
+        visit_date=WEEK_MONDAY,
+        start_time=time(13, 0),
+        end_time=time(13, 30),
+        type="regular",
+        status=VISIT_STATUS_CANCELLED,
+        source="auto",
+        required_staff_count=1,
+        course_id=course.id,
+        primary_staff_id=course.assigned_staff_id,
+    )
+    db.add(cancelled_v)
+    await db.commit()
+
+    res = await client.get(
+        "/api/v1/schedule/v2/board",
+        headers=_bearer(admin),
+        params={"iso_year": ISO_YEAR, "iso_week": ISO_WEEK, "office_id": str(office.id)},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+
+    cell = _cell(body, str(office.id), 0)
+
+    # cancelled visit が visits[] に含まれ、status フィールドが返る.
+    crs = cell["courses"][0]
+    assert len(crs["visits"]) == 2
+    statuses = {v["patient_id"]: v["status"] for v in crs["visits"]}
+    assert statuses[str(p_planned.id)] == "planned"
+    assert statuses[str(p_cancelled.id)] == "cancelled"
+
+    # planned が先、cancelled が後.
+    assert crs["visits"][0]["status"] == "planned"
+    assert crs["visits"][1]["status"] == "cancelled"
+
+    # capacity.filled は planned のみ (= 1), remaining = 5.
+    cap = crs["capacity"]
+    assert cap["filled"] == 1
+    assert cap["remaining"] == 5
+    assert cap["total_minutes"] == 30
+
+    # cell.patient_count も cancelled を除外 (= 1).
+    assert cell["patient_count"] == 1
+
+    # weekdays[].patient_count も cancelled を除外 (= 1).
+    wd_map = {w["weekday"]: w for w in body["weekdays"]}
+    assert wd_map[0]["patient_count"] == 1

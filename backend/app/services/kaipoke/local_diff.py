@@ -64,6 +64,7 @@ async def build_local_diff(
     office_id: uuid.UUID | None = None,
     week_start: date | None = None,
     week_end: date | None = None,
+    direction: str = "outbound",
 ) -> tuple[list[Correction], dict[str, Any]]:
     """現況(kaipoke) と 最適化(CareFlow生成) の差分を CareFlow 内で計算する。
 
@@ -71,6 +72,13 @@ async def build_local_diff(
     日(1-31)で絞ってから比較する。これにより **対象週外のカイポケ既存予定は比較
     集合から消え、delete 差分にならない** (旧GASの週次運用と同じ安全設計)。
     週外を消さないための核心はこの両側フィルタ (diff/engine が target_week_* で実施)。
+
+    direction:
+      * "outbound" (既定) — current=カイポケ現況 / optimized=CareFlow。
+        Correction は「カイポケを CareFlow 確定形へ寄せる修正」(= /apply で押す内容)。
+      * "inbound" — 引数を入れ替えて比較する。Correction は「CareFlow をカイポケ現況へ
+        寄せる修正」= 提供中の週にカイポケ側で入った直し込みの取り込み内容になる。
+        (delete=CareFlow にだけ残っている→キャンセル扱い / add=カイポケにだけある)
 
     Returns ``(corrections, meta)``。同期 export は csv_content を直接返す (async=false)。
     """
@@ -101,9 +109,15 @@ async def build_local_diff(
         week_end = week_start + timedelta(days=6)  # 月曜起点の7日 (旧GAS getWeekRange_ 相当)
     week_end_day = week_end.day if week_end else None
 
+    # inbound は current/optimized を入れ替える (「正」がカイポケ側に移った週の取り込み)。
+    if direction == "inbound":
+        compare_current, compare_target = optimized_csv, current_csv
+    else:
+        compare_current, compare_target = current_csv, optimized_csv
+
     corrections = compare_schedules_from_content(
-        current_csv,
-        optimized_csv,
+        compare_current,
+        compare_target,
         target_week_start=week_start_day,
         target_week_end=week_end_day,
     )
@@ -113,6 +127,7 @@ async def build_local_diff(
         "optimized_row_count": max(0, optimized_csv.count("\n") - 1),
         "correction_count": len(corrections),
         "scope": "week" if week_start else "month",
+        "direction": direction,
     }
     if week_start:
         meta["week_start"] = week_start.isoformat()

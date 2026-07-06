@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import uuid
+from datetime import date
 
-from sqlalchemy import Boolean, ForeignKey, Index, String, Text
+from sqlalchemy import Boolean, Date, ForeignKey, Index, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin
+
+# 差分の向き: outbound = CareFlow→カイポケ (既存の週次反映) /
+# inbound = カイポケ→CareFlow (逆反映・提供中の週の追いかけ)。
+CORRECTION_DIRECTIONS = ("outbound", "inbound")
 
 
 class CorrectionSheet(Base, TimestampMixin):
@@ -19,6 +24,10 @@ class CorrectionSheet(Base, TimestampMixin):
         PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     target_month: Mapped[str] = mapped_column(String(7), nullable=False)  # YYYY-MM
+    direction: Mapped[str] = mapped_column(String(8), nullable=False, default="outbound")
+    # 差分計算時の週レンジ (apply実績ゲートの判定材料。月スコープ計算時は NULL)。
+    week_start: Mapped[date | None] = mapped_column(Date, nullable=True)
+    week_end: Mapped[date | None] = mapped_column(Date, nullable=True)
     created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
         ForeignKey("users.id", ondelete="SET NULL"),
@@ -35,6 +44,7 @@ class CorrectionSheet(Base, TimestampMixin):
     __table_args__ = (
         Index("ix_correction_sheets_month", "target_month"),
         Index("ix_correction_sheets_status", "status"),
+        Index("ix_correction_sheets_direction_week", "direction", "week_start"),
     )
 
 

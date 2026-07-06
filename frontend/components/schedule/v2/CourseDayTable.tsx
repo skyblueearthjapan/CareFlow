@@ -235,6 +235,11 @@ export interface CourseGridVisit {
    * 欠落 / その他の値ではチップを出さない (寛容)。
    */
   source?: string | null;
+  /**
+   * R-2: キャンセル表示。'cancelled' のとき grey + 打消し線 + バッジで表示する。
+   * 欠落 / その他の値は planned 扱い (寛容)。
+   */
+  status?: string | null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -1004,9 +1009,10 @@ function OccupantPatientInfo({
   // Phase G-21 final C1: pinned visit (= is_pinned=true) は D&D 経路で
   // 動かせなくする (= 物理削除 + 再作成で is_pinned=false 化されるバイパス防止).
   const isPinnedVisit = visit.is_pinned === true;
+  const isCancelled = visit.status === 'cancelled';
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: visitDraggableId(visit.id),
-    disabled: !canEdit || isPinnedVisit,
+    disabled: !canEdit || isPinnedVisit || isCancelled,
     data: { kind: 'placed-visit', visitId: visit.id },
   });
 
@@ -1024,11 +1030,18 @@ function OccupantPatientInfo({
       }
       className={cn(
         'flex flex-row flex-wrap items-baseline gap-x-2 gap-y-0 min-w-0 touch-none select-none',
-        canEdit && !isPinnedVisit ? 'cursor-grab active:cursor-grabbing' : '',
+        canEdit && !isPinnedVisit && !isCancelled ? 'cursor-grab active:cursor-grabbing' : '',
         isPinnedVisit ? 'cursor-not-allowed' : '',
         isDragging ? 'opacity-40' : '',
+        isCancelled ? 'opacity-50 line-through' : '',
       )}
     >
+      {/* R-2: キャンセル badge — 打消し線の影響を受けないよう no-underline を付与 */}
+      {isCancelled ? (
+        <span className="inline-flex flex-shrink-0 items-center rounded bg-bg-muted px-1 py-0.5 text-[9px] font-semibold text-text-muted ring-1 ring-border [text-decoration:none]">
+          キャンセル
+        </span>
+      ) : null}
       {/* 氏名 — drag handle + 詳細 / 削除ボタン */}
       <OccupantNameDraggable
         visitId={visit.id}

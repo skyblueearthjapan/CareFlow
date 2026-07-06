@@ -243,3 +243,52 @@ export const CorrectionBulkSelectSchema = z.object({
   patch: CorrectionItemUpdateSchema,
 });
 export type CorrectionBulkSelect = z.infer<typeof CorrectionBulkSelectSchema>;
+
+// --- Inbound sync (カイポケ → CareFlow) ------------------------------------
+
+export const InboundEligibilitySchema = z.object({
+  weekStart: z.string(),
+  eligible: z.boolean(),
+  lastAppliedAt: z.string().nullable(),
+});
+export type InboundEligibility = z.infer<typeof InboundEligibilitySchema>;
+
+export const DiffInboundRequestSchema = z.object({
+  month: z.string().regex(/^\d{4}-\d{2}$/, 'YYYY-MM で入力してください'),
+  weekStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'YYYY-MM-DD で入力してください'),
+});
+export type DiffInboundRequest = z.infer<typeof DiffInboundRequestSchema>;
+
+// BE は diff-local と同じ DiffAccepted レスポンスを返すため型を共有する。
+export const DiffInboundAcceptedSchema = DiffAcceptedSchema;
+export type DiffInboundAccepted = DiffAccepted;
+
+export const ApplyInboundRequestSchema = z.object({
+  sheetId: z.string().uuid(),
+  dryRun: z.boolean().optional(),
+  days: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).optional(),
+});
+export type ApplyInboundRequest = z.infer<typeof ApplyInboundRequestSchema>;
+
+export const APPLY_INBOUND_OUTCOMES = ['cancelled', 'updated', 'skipped', 'failed'] as const;
+
+export const ApplyInboundResultItemSchema = z.object({
+  itemId: z.string().uuid(),
+  action: z.string(),
+  outcome: z.enum(APPLY_INBOUND_OUTCOMES),
+  detail: z.string().nullable().optional(),
+  patientName: z.string().nullable().optional(),
+  date: z.string().nullable().optional(),
+});
+export type ApplyInboundResultItem = z.infer<typeof ApplyInboundResultItemSchema>;
+
+export const ApplyInboundResultSchema = z.object({
+  jobId: z.string().uuid().nullable(),
+  dryRun: z.boolean(),
+  cancelled: z.number().int().default(0),
+  updated: z.number().int().default(0),
+  skipped: z.number().int().default(0),
+  failed: z.number().int().default(0),
+  results: z.array(ApplyInboundResultItemSchema).default([]),
+});
+export type ApplyInboundResult = z.infer<typeof ApplyInboundResultSchema>;

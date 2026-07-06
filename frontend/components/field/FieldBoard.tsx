@@ -782,23 +782,43 @@ function PatientCard({
 }) {
   const k = cc(courseCode);
   const timeLabel = startOverride ?? visitTimeLabel(visit);
+  const isCancelled = visit.status === 'cancelled';
   return (
     <button
       onClick={() => onKarte(visit)}
       style={{
         width: '100%',
         textAlign: 'left',
-        background: inPair ? '#fff' : k.soft,
+        background: isCancelled ? '#e5e7eb' : inPair ? '#fff' : k.soft,
         borderRadius: 12,
-        borderLeft: `5px solid ${k.c}`,
+        borderLeft: `5px solid ${isCancelled ? '#9ca3af' : k.c}`,
         padding: '9px 12px',
         display: 'flex',
         flexDirection: 'column',
         gap: 2,
         position: 'relative',
         boxShadow: '0 1px 2px rgba(28,25,23,0.05)',
+        opacity: isCancelled ? 0.7 : 1,
       }}
     >
+      {/* R-2: キャンセル badge */}
+      {isCancelled && (
+        <span
+          style={{
+            position: 'absolute',
+            top: 7,
+            left: 12,
+            fontSize: 9.5,
+            color: '#6b7280',
+            fontWeight: 700,
+            background: '#d1d5db',
+            borderRadius: 4,
+            padding: '1px 5px',
+          }}
+        >
+          キャンセル
+        </span>
+      )}
       <span
         style={{
           position: 'absolute',
@@ -1115,7 +1135,9 @@ function CourseSlots({
   // あっても「この時間空いてますよ」カードを一切出さない (空きなし)。remaining>0 のときのみ表示。
   if (co.capacity.remaining > 0) {
     // そのコースの既存 visit 占有 (時刻重複の赤判定用)。start 昇順。
+    // R-2: キャンセル visit は occupied から除外 (= 空き扱いなので重複判定に影響させない).
     const occupied = co.visits
+      .filter((v) => v.status !== 'cancelled')
       .map((v) => ({ startTime: v.start_time, endTime: v.end_time }))
       .filter((v) => parseHM(v.startTime) !== null && parseHM(v.endTime) !== null)
       .sort((a, b) => (parseHM(a.startTime) ?? 0) - (parseHM(b.startTime) ?? 0));
@@ -1126,10 +1148,13 @@ function CourseSlots({
     // 同住所 2 名 (同 lat/lng・同 start) の 90 分占有を空き時間に反映するため、各 visit に
     // same_address_key (lat/lng 由来) を付与して computeFreeGaps へ渡す (PC 盤と同規約)。
     // BoardVisit は lat/lng を持つので buildSameAddressKey でキー化できる。
-    const visitsForGaps = co.visits.map((v) => ({
-      ...v,
-      same_address_key: buildSameAddressKey(v.lat, v.lng),
-    }));
+    // R-2: キャンセル visit は空き計算から除外 (= 空き扱い).
+    const visitsForGaps = co.visits
+      .filter((v) => v.status !== 'cancelled')
+      .map((v) => ({
+        ...v,
+        same_address_key: buildSameAddressKey(v.lat, v.lng),
+      }));
     const gaps = courseToken === null ? [] : computeFreeGaps(visitsForGaps, businessBlocks);
     for (const gap of gaps) {
       // gap 直前 / 直後の visit を実時刻位置から解決する (移動時間 / 表示用)。

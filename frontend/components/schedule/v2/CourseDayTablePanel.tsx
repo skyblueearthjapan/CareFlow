@@ -839,6 +839,8 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         is_pinned: isPinned,
         // Wave U-2: 「今週のみ」チップの根拠 (source='manual_week' でチップ表示).
         source: (v as { source?: string | null }).source ?? null,
+        // R-2: キャンセル表示 ('cancelled' のとき grey + 打消し線 + バッジ).
+        status: (v as { status?: string | null }).status ?? null,
       });
       m.set(cid, arr);
     }
@@ -873,6 +875,8 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     for (const v of weekVisits) {
       const cid = v.course_id ?? null;
       if (!cid) continue;
+      // R-2: キャンセル visit は空き計算から除外 (= 空き扱い).
+      if ((v as { status?: string | null }).status === 'cancelled') continue;
       const arr = rawByCourse.get(cid) ?? [];
       arr.push({
         start_time: v.start_time ?? '',
@@ -2049,13 +2053,16 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
       );
       const freeGaps = course ? (freeGapsByCourse.get(course.id) ?? []) : [];
 
+      const plannedVisits = visits.filter(
+        (v) => (v as { status?: string | null }).status !== 'cancelled',
+      );
       out.push({
         key: `${template.id}:${activeWeekday}`,
         title: `${officeName ? `${officeName} ` : ''}${template.label} コース`,
-        summary: `${visits.length}件`,
+        summary: `${plannedVisits.length}件`,
         visits,
         freeGaps,
-        capacity: { filled: visits.length, max: capMax },
+        capacity: { filled: plannedVisits.length, max: capMax },
       });
     }
     return out;
@@ -2539,7 +2546,11 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                       staffCountFor(template.office_id, activeWeekday),
                       courseCodesMax,
                     );
-                    const capacityInfo = { filled: visits.length, max: capMax };
+                    // R-2: キャンセル visit は定員の filled から除外 (= 空き扱い).
+                    const capacityInfo = {
+                      filled: visits.filter((v) => v.status !== 'cancelled').length,
+                      max: capMax,
+                    };
                     // 空き時間帯 (≥60分) は course が生成済みのときのみ算出済みマップから引く。
                     const freeGaps = course ? (freeGapsByCourse.get(course.id) ?? []) : [];
                     return (

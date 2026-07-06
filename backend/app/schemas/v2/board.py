@@ -59,6 +59,7 @@ class BoardVisit(BaseModel):
     )
     mode: BoardVisitMode = Field(default="normal")
     slot_index: int = Field(..., ge=0, description="コース内 start 昇順での 0 始まり連番")
+    status: str = Field(default="planned", description="planned / cancelled")
 
 
 class BoardCapacity(BaseModel):

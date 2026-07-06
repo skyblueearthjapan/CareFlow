@@ -30,7 +30,7 @@ from app.models.course import Course
 from app.models.office import Office
 from app.models.patient import Patient
 from app.models.staff import Staff
-from app.models.visit import VISIT_STATUS_PLANNED, Visit
+from app.models.visit import VISIT_STATUS_CANCELLED, VISIT_STATUS_PLANNED, Visit
 from app.services.patient_excel.schema import OFFICE_CODE_TO_SHORT
 from app.services.scheduling.auto_allocator_v2 import (
     MAX_PATIENTS_PER_COURSE,
@@ -89,6 +89,7 @@ class BoardVisitData:
     lat: float | None
     lng: float | None
     mode: str  # normal/special
+    status: str = VISIT_STATUS_PLANNED  # planned / cancelled
     same_address_group_id: str | None = None
     slot_index: int = 0
 
@@ -112,6 +113,7 @@ async def load_board_buckets(
     iso_year: int,
     iso_week: int,
     office_ids: list[UUID],
+    include_cancelled: bool = False,
 ) -> tuple[dict[tuple[UUID, int, str], BoardCourseData], dict[UUID, str], dict[UUID, str | None]]:
     """対象週 × 拠点の実 Visit を 1 回ロードし、コース単位に集計する.
 
@@ -131,13 +133,17 @@ async def load_board_buckets(
         raise ValueError(f"無効な ISO 週: {iso_year}-W{iso_week}") from exc
     week_upper = week_sunday + timedelta(days=1)
 
+    allowed_statuses = [VISIT_STATUS_PLANNED]
+    if include_cancelled:
+        allowed_statuses.append(VISIT_STATUS_CANCELLED)
+
     stmt = (
         select(Visit, Course, Staff)
         .join(Course, Course.id == Visit.course_id)
         .outerjoin(Staff, Staff.id == Course.assigned_staff_id)
         .where(
             Visit.deleted_at.is_(None),
-            Visit.status == VISIT_STATUS_PLANNED,
+            Visit.status.in_(allowed_statuses),
             Visit.visit_date >= week_monday,
             Visit.visit_date < week_upper,
             Course.deleted_at.is_(None),
@@ -208,12 +214,20 @@ async def load_board_buckets(
                 lat=float(patient.lat) if patient.lat is not None else None,
                 lng=float(patient.lng) if patient.lng is not None else None,
                 mode="normal" if v.type == "regular" else "special",
+                status=v.status,
             )
         )
 
     # 各コース内を start 昇順に整列 + slot_index を付与.
+    # cancelled は planned の後ろに寄せる (0=planned, 1=cancelled).
     for bucket in buckets.values():
-        bucket.visits.sort(key=lambda x: (_time_to_min(x.start_time), str(x.visit_id)))
+        bucket.visits.sort(
+            key=lambda x: (
+                0 if x.status == VISIT_STATUS_PLANNED else 1,
+                _time_to_min(x.start_time),
+                str(x.visit_id),
+            )
+        )
         for idx, bv in enumerate(bucket.visits):
             bv.slot_index = idx
 

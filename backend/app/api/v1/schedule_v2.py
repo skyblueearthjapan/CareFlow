@@ -3082,7 +3082,10 @@ async def travel_estimate_endpoint(
 def _board_course_to_schema(
     course: BoardCourseData,
 ) -> BoardCourse:
-    """``BoardCourseData`` → API schema ``BoardCourse`` (実時刻 + 容量集計)."""
+    """``BoardCourseData`` → API schema ``BoardCourse`` (実時刻 + 容量集計).
+
+    cancelled は visits[] に含まれるが、定員 (filled/total_minutes/remaining) からは除外する。
+    """
     visits_out = [
         BoardVisit(
             visit_id=bv.visit_id,
@@ -3099,11 +3102,14 @@ def _board_course_to_schema(
             same_address_group_id=bv.same_address_group_id,
             mode=bv.mode,  # type: ignore[arg-type]
             slot_index=bv.slot_index,
+            status=bv.status,
         )
         for bv in course.visits
     ]
-    filled = len(visits_out)
-    total_minutes = sum(bv.service_minutes for bv in course.visits)
+    # cancelled は定員・時間合計に含めない (枠は空き扱い).
+    planned_visits = [bv for bv in course.visits if bv.status != "cancelled"]
+    filled = len(planned_visits)
+    total_minutes = sum(bv.service_minutes for bv in planned_visits)
     return BoardCourse(
         course_id=course.course_id,
         course_code=course.course_code,
@@ -3149,12 +3155,14 @@ async def board_endpoint(
         office_ids = list(rows.all())
 
     # 実 Visit を 1 回ロードしてコース単位に集計 (同住所 group_id 付与済).
+    # include_cancelled=True: キャンセル済み visit もボードに表示する（表示のみ・定員除外）.
     try:
         buckets, office_name_by_id, _office_code_by_id = await load_board_buckets(
             db,
             iso_year=iso_year,
             iso_week=iso_week,
             office_ids=office_ids,
+            include_cancelled=True,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -3186,11 +3194,12 @@ async def board_endpoint(
         for oid in offices_sorted
     ]
 
-    # weekdays[] (曜日ヘッダー: 日付 + 全拠点合計患者数).
+    # weekdays[] (曜日ヘッダー: 日付 + 全拠点合計患者数). cancelled は除外.
     week_monday = date.fromisocalendar(iso_year, iso_week, 1)
     patients_per_weekday: dict[int, int] = {}
     for b in buckets.values():
-        patients_per_weekday[b.weekday] = patients_per_weekday.get(b.weekday, 0) + len(b.visits)
+        planned_count = sum(1 for v in b.visits if v.status != "cancelled")
+        patients_per_weekday[b.weekday] = patients_per_weekday.get(b.weekday, 0) + planned_count
     weekdays_out = [
         BoardWeekday(
             weekday=wd,
@@ -3218,7 +3227,10 @@ async def board_endpoint(
                 _board_course_to_schema(c)
                 for c in sorted(cell_courses, key=lambda c: (c.course_code,))
             ]
-            patient_count = sum(len(c.visits) for c in cell_courses)
+            # cancelled を patient_count に含めない (枠は空き扱い).
+            patient_count = sum(
+                sum(1 for v in c.visits if v.status != "cancelled") for c in cell_courses
+            )
             board_out.append(
                 BoardCell(
                     office_id=oid,

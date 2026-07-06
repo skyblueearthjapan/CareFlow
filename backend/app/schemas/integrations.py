@@ -215,6 +215,49 @@ class JobAccepted(BaseModel):
     status: KaipokeJobStatus
 
 
+# --- 逆反映 (カイポケ→CareFlow・R-1/R-2) -----------------------------------
+
+
+class InboundEligibilityRead(BaseModel):
+    """apply実績ゲートの判定結果 (週単位)。eligible=false の週は取り込み不可。"""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    week_start: date = Field(alias="weekStart")
+    eligible: bool
+    # 直近の実apply 完了日時 (eligible=true のとき)。UI の説明表示用。
+    last_applied_at: datetime | None = Field(default=None, alias="lastAppliedAt")
+
+
+class InboundApplyRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    sheet_id: UUID = Field(alias="sheetId")
+    # 逆反映も既定は dry_run=True (安全側)。実適用は明示的に dryRun:false。
+    dry_run: bool = Field(default=True, alias="dryRun")
+    # 取り込む日付 (曜日チップの複数選択)。None/空 = シートの週全体。
+    days: list[date] | None = None
+
+
+class InboundItemResultRead(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    item_id: str = Field(alias="itemId")
+    action: str
+    outcome: Literal["cancelled", "updated", "skipped", "failed"]
+    detail: str = ""
+    patient_name: str = Field(default="", alias="patientName")
+    date: str = ""
+
+
+class InboundApplyResult(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    job_id: UUID | None = Field(default=None, alias="jobId")
+    dry_run: bool = Field(alias="dryRun")
+    cancelled: int = 0
+    updated: int = 0
+    skipped: int = 0
+    failed: int = 0
+    results: list[InboundItemResultRead] = Field(default_factory=list)
+
+
 class DiffAccepted(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
     job_id: UUID = Field(alias="jobId")
@@ -260,6 +303,9 @@ class CorrectionSheetRead(BaseModel):
     id: UUID
     target_month: str
     status: str
+    direction: str = "outbound"
+    week_start: date | None = None
+    week_end: date | None = None
     created_by_user_id: UUID | None = None
     created_at: datetime
     updated_at: datetime

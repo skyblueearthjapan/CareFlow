@@ -23,6 +23,7 @@ import { JobProgressCard, commandLabel } from './_components/JobProgressCard';
 import { JobResultCard } from './_components/JobResultCard';
 import { LiveMonitorCard } from './_components/LiveMonitorCard';
 import { LiveStatusDot } from './_components/LiveStatusDot';
+import { InboundPanel } from './_components/InboundPanel';
 import { WeeklyApplyPanel } from './_components/WeeklyApplyPanel';
 
 export default function KaipokeIntegrationPage() {
@@ -119,6 +120,16 @@ export default function KaipokeIntegrationPage() {
 
       {/* 週次反映ワークフロー（①展開 →②差分 →③確認 →④反映 を集約） */}
       <WeeklyApplyPanel busy={running} />
+
+      {/* 区切り: 送る（CF→カイポケ）/ 取り込む（カイポケ→CF） */}
+      <div className="flex items-center gap-3" aria-hidden="true">
+        <div className="h-px flex-1 bg-border-default" />
+        <span className="text-xs font-medium text-text-muted">↕ 送る / 取り込む</span>
+        <div className="h-px flex-1 bg-border-default" />
+      </div>
+
+      {/* 取り込みパネル（カイポケ → CareFlow・逆方向同期） */}
+      <InboundPanel busy={running} />
 
       {/* 実行ログ */}
       {live && live.logs.length > 0 && <ExecutionLogViewer lines={live.logs} />}

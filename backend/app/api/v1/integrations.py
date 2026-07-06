@@ -8,7 +8,7 @@ relay endpoints to the existing kaipoke-api (Flask + Playwright) so the
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -33,6 +33,10 @@ from app.schemas.integrations import (
     ExpandStatusRead,
     GeneratedCsvRead,
     GeocodingCacheRead,
+    InboundApplyRequest,
+    InboundApplyResult,
+    InboundEligibilityRead,
+    InboundItemResultRead,
     IntegrationApplyRequest,
     IntegrationDiffRequest,
     IntegrationExpandRequest,
@@ -1082,9 +1086,16 @@ async def trigger_diff_local(
     patients = (await db.scalars(select(Patient).where(Patient.deleted_at.is_(None)))).all()
     pindex = build_name_index({str(p.id): p.name for p in patients})
 
+    # apply実績ゲート (逆反映) の判定材料として週レンジをシートに刻む。
+    sheet_week_end = payload.week_end or (
+        payload.week_start + timedelta(days=6) if payload.week_start else None
+    )
     sheet = CorrectionSheet(
         target_month=payload.month,
         status="ready",
+        direction="outbound",
+        week_start=payload.week_start,
+        week_end=sheet_week_end,
         created_by_user_id=user.id,
     )
     db.add(sheet)
@@ -1142,6 +1153,12 @@ async def trigger_apply(
     )
     if sheet is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="sheet not found")
+    if sheet.direction == "inbound":
+        # 逆反映シートをカイポケへ押すと取り込み内容が往復して壊れる。専用APIへ。
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="inbound sheet must be applied via /integrations/apply-inbound",
+        )
 
     # 二重書込ガード (不可逆): 適用済みは常に拒否、適用中は実書込を拒否。
     # dry-run(状態変更なし)は applying でなければ許可。
@@ -1163,8 +1180,14 @@ async def trigger_apply(
 
     job = KaipokeJob(
         job_type="push",
-        week_start=date.fromisoformat(f"{sheet.target_month}-01"),
-        params={"op": "apply", "sheet_id": str(sheet.id), "dry_run": payload.dry_run},
+        week_start=sheet.week_start or date.fromisoformat(f"{sheet.target_month}-01"),
+        params={
+            "op": "apply",
+            "sheet_id": str(sheet.id),
+            "dry_run": payload.dry_run,
+            # apply実績ゲート (逆反映・real_apply_record) の判定キー。
+            "week_start": sheet.week_start.isoformat() if sheet.week_start else None,
+        },
         status="pending",
         created_by_user_id=user.id,
     )
@@ -1215,6 +1238,301 @@ async def trigger_apply(
         job_id=job.id,
         kaipoke_job_id=str(upstream.get("jobId") or upstream.get("job_id") or "") or None,
         status="running",
+    )
+
+
+# --- 逆反映: カイポケ → CareFlow (R-1/R-2) ----------------------------------
+# docs/plans/kaipoke-reverse-sync-design.md — 「週のバトンリレー」の取り込み側。
+
+
+@router.get(
+    "/inbound-eligibility",
+    response_model=InboundEligibilityRead,
+    summary="対象週が取り込み可能か (apply実績ゲート) を判定 (admin)",
+)
+async def inbound_eligibility(
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin"))],
+    week_start: date = Query(..., alias="weekStart"),
+) -> InboundEligibilityRead:
+    """「CareFlow から実apply した週」だけ取り込みを開放する (PO決定・唯一の条件)。"""
+    from app.services.kaipoke.inbound import real_apply_record
+
+    job = await real_apply_record(db, week_start)
+    return InboundEligibilityRead(
+        week_start=week_start,
+        eligible=job is not None,
+        last_applied_at=job.completed_at if job else None,
+    )
+
+
+@router.post(
+    "/diff-inbound",
+    response_model=DiffAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="カイポケ現況 → CareFlow の逆向き差分を計算 (read-only・admin)",
+)
+async def trigger_diff_inbound(
+    payload: IntegrationDiffRequest,
+    db: DbDep,
+    user: Annotated[User, Depends(require_role("admin"))],
+    kaipoke: Annotated[KaipokeClient, Depends(_kaipoke_dep)],
+) -> DiffAccepted:
+    """提供中の週にカイポケ側で入った直し込みを差分として可視化する (書込なし)。
+
+    diff-local の逆向き: before=CareFlow / after=カイポケ現況。
+    apply実績ゲートを通った週のみ許可。visit_id まで解決して inbound シートに永続化。
+    """
+    from collections import defaultdict
+
+    from app.models.patient import Patient
+    from app.services.kaipoke.inbound import (
+        day_to_date,
+        load_week_visit_index,
+        parse_hhmm,
+        real_apply_record,
+    )
+    from app.services.kaipoke.local_diff import build_local_diff, correction_before_after
+    from app.services.kaipoke.name_match import build_name_index, match_name
+
+    if payload.week_start is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="weekStart is required for inbound diff",
+        )
+    week_start = payload.week_start
+    week_end = payload.week_end or (week_start + timedelta(days=6))
+
+    # apply実績ゲート: 実apply していない週の正はまだ CareFlow 側にある。
+    if await real_apply_record(db, week_start) is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="この週はまだカイポケへ反映されていません (先に④反映を実行してください)",
+        )
+
+    job = KaipokeJob(
+        job_type="fetch",
+        week_start=week_start,
+        params={
+            "op": "diff-inbound",
+            "month": payload.month,
+            "week_start": week_start.isoformat(),
+        },
+        status="pending",
+        created_by_user_id=user.id,
+    )
+    db.add(job)
+    await db.flush()
+
+    try:
+        corrections, meta = await build_local_diff(
+            db,
+            month=payload.month,
+            kaipoke=kaipoke,
+            office_id=payload.office_id,
+            week_start=week_start,
+            week_end=week_end,
+            direction="inbound",
+        )
+    except KaipokeBusyError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="kaipoke busy") from exc
+    except KaipokeApiError as exc:
+        job.status = "failed"
+        job.completed_at = datetime.now(UTC)
+        job.result_summary = {"error": str(exc), "body": exc.body}
+        await _commit_or_409(db)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except Exception as exc:
+        await db.rollback()
+        db.add(job)
+        job.status = "failed"
+        job.completed_at = datetime.now(UTC)
+        job.result_summary = {"error": f"inbound diff failed: {exc}"}
+        await _commit_or_409(db)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="inbound diff failed"
+        ) from exc
+
+    # 利用者名 → patient_id、(patient, date, start) → visit_id の解決。
+    patients = (await db.scalars(select(Patient).where(Patient.deleted_at.is_(None)))).all()
+    pindex = build_name_index({str(p.id): p.name for p in patients})
+    visit_index = await load_week_visit_index(db, week_start, week_end)
+
+    sheet = CorrectionSheet(
+        target_month=payload.month,
+        status="ready",
+        direction="inbound",
+        week_start=week_start,
+        week_end=week_end,
+        created_by_user_id=user.id,
+    )
+    db.add(sheet)
+    await db.flush()
+
+    summary: dict[str, int] = defaultdict(int)
+    items: list[CorrectionSheetItem] = []
+    unresolved = 0
+    for c in corrections:
+        pid_str = match_name(c.user_name, pindex)
+        pid = UUID(pid_str) if pid_str else None
+        if pid is None:
+            unresolved += 1
+        before, after = correction_before_after(c)
+
+        # before 側 (CareFlow の現在地) から対象 visit を解決する。
+        visit_id = None
+        if pid is not None and c.action != "add":
+            try:
+                day = int(str(before.get("date")))
+            except (TypeError, ValueError):
+                day = -1
+            target_date = day_to_date(day, week_start, week_end) if day > 0 else None
+            start = parse_hhmm(str(before.get("start_time") or ""))
+            if target_date is not None and start is not None:
+                v = visit_index.get((pid, target_date, start))
+                visit_id = v.id if v is not None else None
+
+        # 既定 include: キャンセル/変更で対象 visit まで特定できたものだけ ON。
+        # add (カイポケにのみ存在) と未解決は OFF で可視化 (人が判断して R-3 以降)。
+        include = c.action in ("delete", "edit", "date_change") and visit_id is not None
+        items.append(
+            CorrectionSheetItem(
+                sheet_id=sheet.id,
+                patient_id=pid,
+                visit_id=visit_id,
+                action=c.action,
+                before=before,
+                after=after,
+                include=include,
+            )
+        )
+        summary[c.action] += 1
+    summary["total"] = len(items)
+    summary["unresolved_patient"] = unresolved
+    summary["auto_selected"] = sum(1 for it in items if it.include)
+    db.add_all(items)
+
+    job.status = "completed"
+    job.completed_at = datetime.now(UTC)
+    job.result_summary = {"sheet_id": str(sheet.id), "summary": dict(summary), **meta}
+    await _commit_or_409(db)
+
+    return DiffAccepted(job_id=job.id, sheet_id=sheet.id, summary=dict(summary))
+
+
+@router.post(
+    "/apply-inbound",
+    response_model=InboundApplyResult,
+    summary="inbound シートを CareFlow visits へ適用 (キャンセル/時刻変更・admin)",
+)
+async def trigger_apply_inbound(
+    payload: InboundApplyRequest,
+    db: DbDep,
+    user: Annotated[User, Depends(require_role("admin"))],
+) -> InboundApplyResult:
+    """カイポケ側の直し込みを CareFlow の予定表へ書き写す (同期・ローカル・RPA不使用)。
+
+    dry_run=True (既定) は一切書き込まず予定される結果だけ返す。
+    実適用はキャンセル (status='cancelled') と時刻/日付変更 (source='manual_week') のみ。
+    days 指定で曜日チップの複数選択 (指定日以外は対象外)。
+    """
+    from app.services.kaipoke.inbound import apply_inbound_items
+
+    sheet = await db.scalar(
+        select(CorrectionSheet)
+        .where(CorrectionSheet.id == payload.sheet_id)
+        .options(selectinload(CorrectionSheet.items))
+        # applied チェックの TOCTOU (同時2リクエストの二重適用) を行ロックで防ぐ。
+        .with_for_update(of=CorrectionSheet)
+    )
+    if sheet is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="sheet not found")
+    if sheet.direction != "inbound":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="outbound sheet must be applied via /integrations/apply",
+        )
+    if sheet.status == "applied":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="sheet already applied")
+    if sheet.week_start is None or sheet.week_end is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="sheet has no week range"
+        )
+
+    selected = [it for it in sheet.items if it.include]
+    if not selected:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="No items selected (include=true)",
+        )
+
+    now = datetime.now(UTC)
+    summary = await apply_inbound_items(
+        db,
+        items=selected,
+        week_start=sheet.week_start,
+        week_end=sheet.week_end,
+        days=payload.days,
+        dry_run=payload.dry_run,
+        now=now,
+    )
+
+    job_id: UUID | None = None
+    if payload.dry_run:
+        # dry-run は mutate しない (apply_inbound_items も no-write)。明示 rollback。
+        await db.rollback()
+    else:
+        # 同期・ローカル適用のためジョブは即 completed で監査記録する。
+        job = KaipokeJob(
+            job_type="fetch",
+            week_start=sheet.week_start,
+            params={
+                "op": "apply-inbound",
+                "sheet_id": str(sheet.id),
+                "week_start": sheet.week_start.isoformat(),
+                "days": [d.isoformat() for d in payload.days] if payload.days else None,
+            },
+            status="completed",
+            started_at=now,
+            completed_at=now,
+            created_by_user_id=user.id,
+        )
+        job.result_summary = {k: v for k, v in summary.as_dict().items() if k != "results"}
+        db.add(job)
+        sheet.status = "applied"
+        # 失敗を含む決着は恒久通知も残す (実行者以外の管理者への周知・監査)。
+        # 同期実行のため実行者は画面で結果を見るが、outbound apply と同じ基盤に揃える。
+        if summary.failed > 0:
+            from app.services.checkin.notify import (
+                _active_admin_manager_users,
+                _create_idempotent,
+            )
+
+            users = await _active_admin_manager_users(db)
+            await _create_idempotent(
+                db,
+                users=users,
+                type_="kaipoke_import_result",
+                reference_type="kaipoke_import",
+                reference_id=job.id,
+                title=f"カイポケ取り込みに要確認（失敗{summary.failed}件）",
+                body=(
+                    f"{sheet.target_month} 週 {sheet.week_start.isoformat()} の取り込みで "
+                    f"失敗{summary.failed}件があります。カイポケ連携画面で内訳を確認してください。"
+                ),
+            )
+        await _commit_or_409(db)
+        job_id = job.id
+
+    return InboundApplyResult(
+        job_id=job_id,
+        dry_run=payload.dry_run,
+        cancelled=summary.cancelled,
+        updated=summary.updated,
+        skipped=summary.skipped,
+        failed=summary.failed,
+        results=[InboundItemResultRead(**r.__dict__) for r in summary.results],
     )
 
 

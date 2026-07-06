@@ -779,7 +779,14 @@ export default function MobileVisitDetailPage() {
           {/* ---- Base actions (only when no overlay is active) ----------- */}
           {flow.step === 'none' && (
             <div className="space-y-2">
-              {!effectiveCheckedIn && !effectiveCompleted && (
+              {/* R-2: キャンセル済み訪問はチェックイン・写真UPを封鎖 */}
+              {visit.status === 'cancelled' && (
+                <Alert>
+                  <AlertTitle>この訪問はキャンセルされました</AlertTitle>
+                  <AlertDescription>チェックインや写真の登録はできません。</AlertDescription>
+                </Alert>
+              )}
+              {visit.status !== 'cancelled' && !effectiveCheckedIn && !effectiveCompleted && (
                 <>
                   <CheckInButton onClick={() => startScan('arrival')}>
                     <QrCode className="h-5 w-5" />
@@ -799,7 +806,7 @@ export default function MobileVisitDetailPage() {
                 </>
               )}
 
-              {effectiveCheckedIn && !effectiveCompleted && (
+              {visit.status !== 'cancelled' && effectiveCheckedIn && !effectiveCompleted && (
                 <>
                   <Card className="space-y-3 p-4">
                     <div className="text-center">
@@ -837,7 +844,7 @@ export default function MobileVisitDetailPage() {
                 </>
               )}
 
-              {effectiveCompleted && (
+              {visit.status !== 'cancelled' && effectiveCompleted && (
                 <Alert>
                   <AlertTitle>訪問完了</AlertTitle>
                   <AlertDescription>この訪問はチェックアウト済みです。</AlertDescription>
@@ -845,7 +852,7 @@ export default function MobileVisitDetailPage() {
               )}
 
               {/* Photo capture (existing visit-photos backend). */}
-              {!effectiveCompleted && (
+              {visit.status !== 'cancelled' && !effectiveCompleted && (
                 <>
                   <button
                     type="button"

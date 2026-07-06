@@ -12,16 +12,21 @@ import { useSession } from 'next-auth/react';
 
 import { fetcher } from '@/lib/api/fetcher';
 import type {
+  ApplyInboundRequest,
+  ApplyInboundResult,
   ApplyRequest,
   CorrectionItem,
   CorrectionItemUpdate,
   CorrectionSheet,
   DiffAccepted,
+  DiffInboundAccepted,
+  DiffInboundRequest,
   DiffLocalRequest,
   DiffRequest,
   ExpandRequest,
   ExportRequest,
   GeocodingCache,
+  InboundEligibility,
   JobAccepted,
   KaipokeJob,
   KaipokeJobCreate,
@@ -426,6 +431,58 @@ export function useBulkUpdateItems() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['integrations', 'correction-items'] });
       void qc.invalidateQueries({ queryKey: ['integrations', 'correction-sheets'] });
+    },
+  });
+}
+
+// --- Inbound sync (カイポケ → CareFlow) ------------------------------------
+
+/** apply 実績ゲート確認: 対象週に dry_run=false の apply 完了ジョブが存在するか。 */
+export function useInboundEligibility(weekStart: string | null) {
+  const { data: session, status } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+
+  return useQuery<InboundEligibility>({
+    queryKey: ['integrations', 'inbound-eligibility', weekStart],
+    queryFn: () =>
+      fetcher<InboundEligibility>(
+        `/api/v1/integrations/inbound-eligibility?weekStart=${weekStart}`,
+        { accessToken, refreshToken },
+      ),
+    enabled: status === 'authenticated' && session?.user?.role === 'admin' && Boolean(weekStart),
+  });
+}
+
+/** カイポケ現況を export → 逆向き CorrectionSheet を作成する（〜1分）。 */
+export function useStartDiffInbound() {
+  return useRelayMutation<DiffInboundRequest, DiffInboundAccepted>('diff-inbound');
+}
+
+/**
+ * 逆向きシートを CareFlow visits へ適用する（dry_run 既定 true）。
+ * apply 成功後に board/visits 系クエリを invalidate する。
+ */
+export function useApplyInbound() {
+  const { data: session } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+  const qc = useQueryClient();
+
+  return useMutation<ApplyInboundResult, Error, ApplyInboundRequest>({
+    mutationFn: (payload) =>
+      fetcher<ApplyInboundResult>('/api/v1/integrations/apply-inbound', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+        accessToken,
+        refreshToken,
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['integrations', 'kaipoke', 'jobs'] });
+      void qc.invalidateQueries({ queryKey: ['integrations', 'live'] });
+      // 取り込み後は visits / board 系を再取得して最新状態を反映する。
+      void qc.invalidateQueries({ queryKey: ['visits'] });
+      void qc.invalidateQueries({ queryKey: ['board'] });
     },
   });
 }
