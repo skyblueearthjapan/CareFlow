@@ -161,11 +161,14 @@ export function QrScanner({ onScan, onCancel, onManual, targetLabel }: QrScanner
         ) : (
           <>
             {/* html5-qrcode が映像とスキャン枠をこの要素に描画する。
-                表示領域を広げるほど位置合わせが楽になる (旧 212px は狭すぎた)。 */}
+                高さを固定して切り抜く (旧 aspect-square + overflow-hidden) と、
+                カメラ映像の一部が画面外に隠れる一方でスキャン枠のシェーディングは
+                映像全体基準で描かれるため、「見えている中央」と「実際に読める位置」が
+                ズレる (現場報告: 枠の左下隅でしか読めない)。映像は必ず全体を表示する。 */}
             <div
               id={SCANNER_ELEMENT_ID}
               ref={regionRef}
-              className="aspect-square w-[min(80vw,320px)] overflow-hidden rounded-xl"
+              className="w-[min(88vw,360px)] overflow-hidden rounded-xl"
             />
             <p className="mt-4 px-6 text-center text-xs leading-relaxed text-stone-400">
               患者宅のQRコードを枠内に合わせてください。
