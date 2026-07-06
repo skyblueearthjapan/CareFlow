@@ -215,6 +215,32 @@ class JobAccepted(BaseModel):
     status: KaipokeJobStatus
 
 
+# --- 接続設定: カイポケ ログイン情報 (C-1・汎用化) ---------------------------
+
+
+class KaipokeCredentialsRead(BaseModel):
+    """設定状態の読み出し。パスワードは絶対に返さない (書き込み専用)。"""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    configured: bool
+    corp_id: str | None = Field(default=None, alias="corpId")
+    user_id: str | None = Field(default=None, alias="userId")
+    updated_at: datetime | None = Field(default=None, alias="updatedAt")
+
+
+class KaipokeCredentialsUpdate(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    corp_id: str = Field(alias="corpId", min_length=1, max_length=32)
+    user_id: str = Field(alias="userId", min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=128)
+
+
+class KaipokeLoginTestResult(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    ok: bool
+    message: str = ""
+
+
 # --- 逆反映 (カイポケ→CareFlow・R-1/R-2) -----------------------------------
 
 

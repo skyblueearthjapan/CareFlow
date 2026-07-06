@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     # --- Kaipoke API (Wave 4-A) ---
     kaipoke_api_base_url: str = Field(default="https://kaipoke-api.net")
     kaipoke_api_token: str = Field(default="")
+    # カイポケ ログイン情報の暗号化鍵 (C-1)。未設定時は jwt_secret から導出する
+    # (services/kaipoke/credentials.py)。鍵を変えると保存済みパスワードは復号
+    # 不能になり UI で再設定が必要。
+    kaipoke_cred_secret: str | None = Field(default=None)
     kaipoke_export_dir: str = Field(default="/tmp/carelink/exports")
     kaipoke_export_ttl_seconds: int = Field(default=1800)  # 30 minutes
     # Live noVNC monitor URL. NOTE: this is the *websockify* host (port 6080),

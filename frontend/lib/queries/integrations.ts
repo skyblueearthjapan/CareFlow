@@ -28,12 +28,15 @@ import type {
   GeocodingCache,
   InboundEligibility,
   JobAccepted,
+  KaipokeCredentials,
   KaipokeJob,
   KaipokeJobCreate,
   ExpandStatus,
   KaipokeStatus,
   LiveSnapshot,
   Paginated,
+  SaveKaipokeCredentialsBody,
+  TestKaipokeCredentialsResult,
   WeekSchedule,
 } from '@/lib/schemas/integration';
 
@@ -484,5 +487,65 @@ export function useApplyInbound() {
       void qc.invalidateQueries({ queryKey: ['visits'] });
       void qc.invalidateQueries({ queryKey: ['board'] });
     },
+  });
+}
+
+// --- Credentials (カイポケ接続設定・admin専用) ---------------------------------
+
+/** カイポケ接続設定を取得する（パスワードは絶対に返らない）。admin専用。 */
+export function useKaipokeCredentials() {
+  const { data: session, status } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+
+  return useQuery<KaipokeCredentials>({
+    queryKey: ['integrations', 'credentials'],
+    queryFn: () =>
+      fetcher<KaipokeCredentials>('/api/v1/integrations/credentials', {
+        accessToken,
+        refreshToken,
+      }),
+    enabled: status === 'authenticated' && session?.user?.role === 'admin',
+  });
+}
+
+/** カイポケ接続設定を保存する（PUT）。成功後に GET を invalidate。 */
+export function useSaveKaipokeCredentials() {
+  const { data: session } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+  const qc = useQueryClient();
+
+  return useMutation<KaipokeCredentials, Error, SaveKaipokeCredentialsBody>({
+    mutationFn: (payload) =>
+      fetcher<KaipokeCredentials>('/api/v1/integrations/credentials', {
+        method: 'PUT',
+        body: JSON.stringify(payload),
+        accessToken,
+        refreshToken,
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['integrations', 'credentials'] });
+    },
+  });
+}
+
+/**
+ * カイポケ接続テストを実行する（実ログイン試行・約60秒）。
+ * タイムアウトは90秒に設定。409(busy)・422(未設定)はエラーとして伝播する。
+ */
+export function useTestKaipokeCredentials() {
+  const { data: session } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+
+  return useMutation<TestKaipokeCredentialsResult, Error, void>({
+    mutationFn: () =>
+      fetcher<TestKaipokeCredentialsResult>('/api/v1/integrations/credentials/test', {
+        method: 'POST',
+        accessToken,
+        refreshToken,
+        signal: AbortSignal.timeout(90_000),
+      }),
   });
 }

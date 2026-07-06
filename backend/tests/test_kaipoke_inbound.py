@@ -421,7 +421,11 @@ async def test_direction_guards(client, db, stub_kaipoke) -> None:
 
     outbound = CorrectionSheet(target_month=MONTH, status="ready", direction="outbound")
     db.add(outbound)
-    await db.commit()
+    # NOTE: ここは commit ではなく flush にする。テストは StaticPool の単一共有
+    # 接続なので flush で app セッションからも見える。commit だと Python 3.14 +
+    # aiosqlite のカーソル解放タイミングにより "cannot commit - SQL statements
+    # in progress" のフレークが ~1/3 で発生する (本番 PG では起きない環境問題)。
+    await db.flush()
     res = await client.post(
         "/api/v1/integrations/apply-inbound",
         headers=_bearer(admin),

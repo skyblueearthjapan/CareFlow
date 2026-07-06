@@ -43,8 +43,11 @@ from app.schemas.integrations import (
     IntegrationExportRequest,
     JobAccepted,
     JobItemPatch,
+    KaipokeCredentialsRead,
+    KaipokeCredentialsUpdate,
     KaipokeJobCreate,
     KaipokeJobRead,
+    KaipokeLoginTestResult,
     KaipokeStatusRead,
     LiveSnapshotRead,
     WeekScheduleRead,
@@ -262,6 +265,23 @@ def _kaipoke_dep() -> KaipokeClient:
     Pulled out so that tests can override via `app.dependency_overrides`.
     """
     return get_kaipoke_client()
+
+
+async def _kaipoke_credentials(db) -> dict[str, str] | None:
+    """アプリ内設定のカイポケ認証情報 (C-1)。未設定は None (RPA は env フォールバック)。"""
+    from app.services.kaipoke.credentials import get_credentials_payload
+
+    return await get_credentials_payload(db)
+
+
+def _attach_credentials(body: dict[str, Any], creds: dict[str, str] | None) -> None:
+    """RPA への HTTP body にのみ認証情報を同梱する。
+
+    **KaipokeJob.params には絶対に入れない** (DB に平文が残るため)。
+    audit ミドルウェアは password キーを redact 済み。
+    """
+    if creds:
+        body["credentials"] = creds
 
 
 def _month_to_week_start(month: str) -> date:
@@ -784,10 +804,10 @@ async def trigger_expand(
     # ~100s 制限もある。短い timeout で投げ、Timeout(504) は「起動した」とみなして
     # 202 running を返す (kaipoke は走り続け、ライブモニターが完了を reconcile する)。
     # 旧GAS の「524→status ポーリング」パターンの移植。
+    body: dict[str, Any] = {"month": payload.month, "dryRun": payload.dry_run}
+    _attach_credentials(body, await _kaipoke_credentials(db))
     try:
-        upstream = await kaipoke.expand(
-            {"month": payload.month, "dryRun": payload.dry_run}, timeout=25.0
-        )
+        upstream = await kaipoke.expand(body, timeout=25.0)
     except KaipokeBusyError as exc:
         await db.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="kaipoke busy") from exc
@@ -838,10 +858,10 @@ async def trigger_export(
     # async=true: kaipoke returns immediately and runs export in a background
     # thread (a sync export blocks ~50s, over the client's 30s timeout). The
     # UI then polls GET /integrations/live for progress + completion.
+    export_body: dict[str, Any] = {"month": payload.month, "format": payload.format, "async": True}
+    _attach_credentials(export_body, await _kaipoke_credentials(db))
     try:
-        upstream = await kaipoke.export(
-            {"month": payload.month, "format": payload.format, "async": True}
-        )
+        upstream = await kaipoke.export(export_body)
     except KaipokeBusyError as exc:
         await db.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="kaipoke busy") from exc
@@ -882,8 +902,10 @@ async def trigger_diff(
     db.add(job)
     await db.flush()
 
+    diff_body: dict[str, Any] = {"month": payload.month}
+    _attach_credentials(diff_body, await _kaipoke_credentials(db))
     try:
-        upstream = await kaipoke.diff({"month": payload.month})
+        upstream = await kaipoke.diff(diff_body)
     except KaipokeBusyError as exc:
         await db.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="kaipoke busy") from exc
@@ -1060,6 +1082,7 @@ async def trigger_diff_local(
             office_id=payload.office_id,
             week_start=payload.week_start,
             week_end=payload.week_end,
+            credentials=await _kaipoke_credentials(db),
         )
     except KaipokeBusyError as exc:
         await db.rollback()
@@ -1208,6 +1231,7 @@ async def trigger_apply(
         "dry_run": payload.dry_run,
         "headed": True,
     }
+    _attach_credentials(body, await _kaipoke_credentials(db))
 
     try:
         upstream = await kaipoke.apply(body)
@@ -1239,6 +1263,110 @@ async def trigger_apply(
         kaipoke_job_id=str(upstream.get("jobId") or upstream.get("job_id") or "") or None,
         status="running",
     )
+
+
+# --- 接続設定: カイポケ ログイン情報 (C-1・汎用化) ---------------------------
+# docs/plans/kaipoke-credentials-config-design.md — ログイン情報をアプリ内設定に。
+
+
+@router.get(
+    "/credentials",
+    response_model=KaipokeCredentialsRead,
+    summary="カイポケ ログイン情報の設定状態 (パスワード非返却・admin)",
+)
+async def get_kaipoke_credentials(
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin"))],
+) -> KaipokeCredentialsRead:
+    from app.services.kaipoke.credentials import read_credential
+
+    row = await read_credential(db)
+    if row is None:
+        return KaipokeCredentialsRead(configured=False)
+    return KaipokeCredentialsRead(
+        configured=True,
+        corp_id=row.corp_id,
+        user_id=row.user_id,
+        updated_at=row.updated_at,
+    )
+
+
+@router.put(
+    "/credentials",
+    response_model=KaipokeCredentialsRead,
+    summary="カイポケ ログイン情報を暗号化保存 (admin)",
+)
+async def put_kaipoke_credentials(
+    payload: KaipokeCredentialsUpdate,
+    db: DbDep,
+    user: Annotated[User, Depends(require_role("admin"))],
+) -> KaipokeCredentialsRead:
+    from app.services.kaipoke.credentials import read_credential, upsert_credential
+
+    await upsert_credential(
+        db,
+        corp_id=payload.corp_id.strip(),
+        user_id=payload.user_id.strip(),
+        password=payload.password,
+        updated_by_user_id=user.id,
+    )
+    await _commit_or_409(db)
+    # commit 後の期限切れ属性 (server onupdate の updated_at) への同期アクセスは
+    # MissingGreenlet を起こすため re-select する (K-1a の既出パターン)。
+    row = await read_credential(db)
+    return KaipokeCredentialsRead(
+        configured=row is not None,
+        corp_id=row.corp_id if row else None,
+        user_id=row.user_id if row else None,
+        updated_at=row.updated_at if row else None,
+    )
+
+
+@router.post(
+    "/credentials/test",
+    response_model=KaipokeLoginTestResult,
+    summary="保存済みログイン情報でカイポケへ実ログインを試す (同期 ~60s・admin)",
+)
+async def test_kaipoke_credentials(
+    db: DbDep,
+    user: Annotated[User, Depends(require_role("admin"))],
+    kaipoke: Annotated[KaipokeClient, Depends(_kaipoke_dep)],
+) -> KaipokeLoginTestResult:
+    """RPA の単一スロットを短時間占有して実ログインを1回試す (noVNC で目視可)。"""
+    creds = await _kaipoke_credentials(db)
+    if creds is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="ログイン情報が未設定です (先に保存してください)",
+        )
+    job = KaipokeJob(
+        job_type="fetch",
+        week_start=datetime.now(UTC).date(),
+        params={"op": "login-test"},
+        status="pending",
+        created_by_user_id=user.id,
+    )
+    db.add(job)
+    await db.flush()
+    try:
+        upstream = await kaipoke.login_test({"credentials": creds}, timeout=120.0)
+    except KaipokeBusyError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="kaipoke busy") from exc
+    except KaipokeApiError as exc:
+        job.status = "failed"
+        job.completed_at = datetime.now(UTC)
+        job.result_summary = {"error": str(exc), "body": exc.body}
+        await _commit_or_409(db)
+        return KaipokeLoginTestResult(ok=False, message=f"接続テスト失敗: {exc}")
+
+    ok = bool(upstream.get("ok") or upstream.get("status") == "ok")
+    message = str(upstream.get("message") or ("ログイン成功" if ok else "ログイン失敗"))
+    job.status = "completed" if ok else "failed"
+    job.completed_at = datetime.now(UTC)
+    job.result_summary = {"ok": ok, "message": message}
+    await _commit_or_409(db)
+    return KaipokeLoginTestResult(ok=ok, message=message)
 
 
 # --- 逆反映: カイポケ → CareFlow (R-1/R-2) ----------------------------------
@@ -1334,6 +1462,7 @@ async def trigger_diff_inbound(
             week_start=week_start,
             week_end=week_end,
             direction="inbound",
+            credentials=await _kaipoke_credentials(db),
         )
     except KaipokeBusyError as exc:
         await db.rollback()

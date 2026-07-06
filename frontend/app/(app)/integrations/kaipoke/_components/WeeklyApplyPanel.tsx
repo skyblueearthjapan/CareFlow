@@ -59,7 +59,13 @@ function nextWeekMonday(): Date {
   return m;
 }
 
-export function WeeklyApplyPanel({ busy }: { busy: boolean }) {
+export function WeeklyApplyPanel({
+  busy,
+  credentialsConfigured = true,
+}: {
+  busy: boolean;
+  credentialsConfigured?: boolean;
+}) {
   const [weekStart, setWeekStart] = useState<Date>(() => nextWeekMonday());
   const [sheetId, setSheetId] = useState<string | null>(null);
   const [summary, setSummary] = useState<Record<string, number> | null>(null);
@@ -174,6 +180,13 @@ export function WeeklyApplyPanel({ busy }: { busy: boolean }) {
         </div>
       </div>
 
+      {/* 接続設定未完了の案内 */}
+      {!credentialsConfigured && (
+        <div className="mb-3 rounded-md border border-amber-500/50 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          先に接続設定（上のカード）を完了してください。
+        </div>
+      )}
+
       {/* ステップ ①〜④ (週セレクタの直下・モニターの見える範囲に集約) */}
       <div className="space-y-2">
         {/* ① 展開 */}
@@ -204,7 +217,7 @@ export function WeeklyApplyPanel({ busy }: { busy: boolean }) {
               <Button
                 size="sm"
                 onClick={() => setConfirm('expand')}
-                disabled={busy || expand.isPending}
+                disabled={!credentialsConfigured || busy || expand.isPending}
               >
                 展開する
               </Button>
@@ -221,7 +234,9 @@ export function WeeklyApplyPanel({ busy }: { busy: boolean }) {
             <Button
               size="sm"
               onClick={runDiff}
-              disabled={diffLocal.isPending || scheduleRows.length === 0 || busy}
+              disabled={
+                !credentialsConfigured || diffLocal.isPending || scheduleRows.length === 0 || busy
+              }
             >
               {diffLocal.isPending
                 ? 'カイポケ現況を取得して計算中…（約1分）'
@@ -297,14 +312,19 @@ export function WeeklyApplyPanel({ busy }: { busy: boolean }) {
             </p>
           ) : (
             <div className="flex flex-wrap items-center gap-2">
-              <Button variant="outline" size="sm" onClick={() => setConfirm('dry')} disabled={busy}>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setConfirm('dry')}
+                disabled={!credentialsConfigured || busy}
+              >
                 dry-run で確認（書込なし）
               </Button>
               <Button
                 variant="destructive"
                 size="sm"
                 onClick={() => setConfirm('real')}
-                disabled={busy}
+                disabled={!credentialsConfigured || busy}
               >
                 この週で本番反映
               </Button>

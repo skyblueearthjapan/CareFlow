@@ -13,6 +13,7 @@ from app.models.correction_sheet import CorrectionSheet, CorrectionSheetItem
 from app.models.course import Course
 from app.models.course_template import CourseTemplate
 from app.models.geocoding_cache import GeocodingCache
+from app.models.kaipoke_credential import KaipokeCredential
 from app.models.kaipoke_job import KaipokeJob, KaipokeJobItem
 from app.models.notification import Notification
 from app.models.office import Office, OfficeCity
@@ -51,6 +52,7 @@ __all__ = [
     "City",
     "CorrectionSheet",
     "CorrectionSheetItem",
+    "KaipokeCredential",
     "Course",
     "CourseTemplate",
     "GeocodingCache",

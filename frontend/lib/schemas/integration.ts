@@ -299,3 +299,26 @@ export const ApplyInboundResultSchema = z.object({
   results: z.array(ApplyInboundResultItemSchema).default([]),
 });
 export type ApplyInboundResult = z.infer<typeof ApplyInboundResultSchema>;
+
+// --- Credentials (カイポケ接続設定・admin専用) ---------------------------------
+
+export const KaipokeCredentialsSchema = z.object({
+  configured: z.boolean(),
+  corpId: z.string().nullable(),
+  userId: z.string().nullable(),
+  updatedAt: z.string().nullable(),
+});
+export type KaipokeCredentials = z.infer<typeof KaipokeCredentialsSchema>;
+
+export const SaveKaipokeCredentialsBodySchema = z.object({
+  corpId: z.string().min(1, '法人IDを入力してください'),
+  userId: z.string().min(1, 'ユーザーIDを入力してください'),
+  password: z.string().min(1, 'パスワードを入力してください'),
+});
+export type SaveKaipokeCredentialsBody = z.infer<typeof SaveKaipokeCredentialsBodySchema>;
+
+export const TestKaipokeCredentialsResultSchema = z.object({
+  ok: z.boolean(),
+  message: z.string(),
+});
+export type TestKaipokeCredentialsResult = z.infer<typeof TestKaipokeCredentialsResultSchema>;

@@ -91,6 +91,12 @@ class KaipokeClient:
     async def diff(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         return await self._request("POST", "/api/diff", json=payload)
 
+    async def login_test(
+        self, payload: Mapping[str, Any], *, timeout: float | None = None
+    ) -> dict[str, Any]:
+        """接続テスト (C-1): payload の認証情報で実ログインを1回試す (同期 ~60s)。"""
+        return await self._request("POST", "/api/login-test", json=payload, timeout=timeout)
+
     async def apply(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         return await self._request("POST", "/api/apply", json=payload)
 

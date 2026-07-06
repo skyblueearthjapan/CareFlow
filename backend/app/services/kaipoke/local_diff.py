@@ -65,6 +65,7 @@ async def build_local_diff(
     week_start: date | None = None,
     week_end: date | None = None,
     direction: str = "outbound",
+    credentials: dict[str, str] | None = None,
 ) -> tuple[list[Correction], dict[str, Any]]:
     """現況(kaipoke) と 最適化(CareFlow生成) の差分を CareFlow 内で計算する。
 
@@ -84,7 +85,11 @@ async def build_local_diff(
     """
     year, mon = int(month[:4]), int(month[5:7])
 
-    resp = await kaipoke.export({"month": month, "async": False}, timeout=_SYNC_EXPORT_TIMEOUT)
+    export_payload: dict[str, Any] = {"month": month, "async": False}
+    if credentials:
+        # アプリ内設定の認証情報 (C-1)。HTTP body のみに載せ、永続化はしない。
+        export_payload["credentials"] = credentials
+    resp = await kaipoke.export(export_payload, timeout=_SYNC_EXPORT_TIMEOUT)
     result = resp.get("result") or {}
     current_csv = result.get("csv_content") or ""
 

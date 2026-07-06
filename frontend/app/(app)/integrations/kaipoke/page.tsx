@@ -14,9 +14,10 @@ import { useSession } from 'next-auth/react';
 import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { useKaipokeLive, useStopJob } from '@/lib/queries/integrations';
+import { useKaipokeLive, useKaipokeCredentials, useStopJob } from '@/lib/queries/integrations';
 
 import { KaipokeJobsList } from '../_components/KaipokeJobsList';
+import { ConnectionSettingsCard } from './_components/ConnectionSettingsCard';
 import { EmergencyStopButton } from './_components/EmergencyStopButton';
 import { ExecutionLogViewer } from './_components/ExecutionLogViewer';
 import { JobProgressCard, commandLabel } from './_components/JobProgressCard';
@@ -33,6 +34,10 @@ export default function KaipokeIntegrationPage() {
   const liveQuery = useKaipokeLive();
   const live = liveQuery.data;
   const stop = useStopJob();
+  const credQuery = useKaipokeCredentials();
+  // 読込中 (data 未着) は true 扱いにして「未設定」バナーの誤フラッシュを防ぐ
+  // (明示的に configured=false と判った時だけガードを出す。BE 側は常に安全)。
+  const credentialsConfigured = credQuery.data ? credQuery.data.configured : true;
 
   const running = Boolean(live?.running);
   const reachable = live?.reachable ?? true;
@@ -118,8 +123,11 @@ export default function KaipokeIntegrationPage() {
         </div>
       )}
 
+      {/* 接続設定カード（WeeklyApplyPanel の上に配置） */}
+      <ConnectionSettingsCard />
+
       {/* 週次反映ワークフロー（①展開 →②差分 →③確認 →④反映 を集約） */}
-      <WeeklyApplyPanel busy={running} />
+      <WeeklyApplyPanel busy={running} credentialsConfigured={credentialsConfigured} />
 
       {/* 区切り: 送る（CF→カイポケ）/ 取り込む（カイポケ→CF） */}
       <div className="flex items-center gap-3" aria-hidden="true">
@@ -129,7 +137,7 @@ export default function KaipokeIntegrationPage() {
       </div>
 
       {/* 取り込みパネル（カイポケ → CareFlow・逆方向同期） */}
-      <InboundPanel busy={running} />
+      <InboundPanel busy={running} credentialsConfigured={credentialsConfigured} />
 
       {/* 実行ログ */}
       {live && live.logs.length > 0 && <ExecutionLogViewer lines={live.logs} />}

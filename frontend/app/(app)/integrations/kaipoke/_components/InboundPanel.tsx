@@ -96,7 +96,13 @@ function field(obj: unknown, key: string): string {
 
 type WeekOption = 'this' | 'next';
 
-export function InboundPanel({ busy }: { busy: boolean }) {
+export function InboundPanel({
+  busy,
+  credentialsConfigured = true,
+}: {
+  busy: boolean;
+  credentialsConfigured?: boolean;
+}) {
   const thisMonday = useMemo(() => mondayOf(new Date()), []);
   const nextMonday = useMemo(() => {
     const m = mondayOf(new Date());
@@ -233,6 +239,13 @@ export function InboundPanel({ busy }: { busy: boolean }) {
         を直します（定期パターンは変わりません）。
       </p>
 
+      {/* 接続設定未完了の案内 */}
+      {!credentialsConfigured && (
+        <div className="mb-4 rounded-md border border-amber-500/50 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          先に接続設定（上のカード）を完了してください。
+        </div>
+      )}
+
       {/* ── 週選択チップ ── */}
       <div className="mb-5">
         <p className="mb-2 text-xs font-medium text-text-secondary">対象週</p>
@@ -278,7 +291,7 @@ export function InboundPanel({ busy }: { busy: boolean }) {
           <Button
             size="sm"
             onClick={() => void runDiff()}
-            disabled={!eligible || diffInbound.isPending || busy}
+            disabled={!credentialsConfigured || !eligible || diffInbound.isPending || busy}
           >
             {diffInbound.isPending
               ? 'カイポケ現況を取得中…（約1分）'
@@ -397,7 +410,9 @@ export function InboundPanel({ busy }: { busy: boolean }) {
                 variant="outline"
                 size="sm"
                 onClick={() => void runApply(true)}
-                disabled={!hasSelectedDays || applyInbound.isPending || busy}
+                disabled={
+                  !credentialsConfigured || !hasSelectedDays || applyInbound.isPending || busy
+                }
               >
                 {applyInbound.isPending && !dryRunResult ? '実行中…' : '❸ dry-run で確認'}
               </Button>
