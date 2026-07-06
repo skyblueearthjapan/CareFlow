@@ -1,6 +1,14 @@
 # 設計検討書：カイポケ ログイン情報の汎用化（アプリ内設定化）
 
-作成 2026-07-07 / ステータス: **調査完了・設計たたき台（PO認識合わせ前・実装未着手）**
+作成 2026-07-07 / 更新 2026-07-07
+ステータス: **C-1〜C-4 全完了・本番稼働（CareFlow HEAD 480b647 / DB 0058・
+PlaywrightTest1 側もコミット済み）**。独立レビュー APPROVE（CRIT/HIGH 0・MED3/LOW4 全反映）。
+現行ログイン情報は移行登録済み・**接続テスト（実ログイン）成功**。
+
+残メモ:
+- RPA側 .env の KAIPOKE_* 3キーはフォールバックとして当面残置（安定運用後に削除可）
+- カイポケ側パスワードローテーションは PO 検討中（変更後は接続設定カードで更新するだけ）
+- 本番 .env に KAIPOKE_CRED_SECRET 設定済み（バックアップ .env.bak.add-cred-secret-*）
 関連正典: `docs/plans/kaipoke-rpa-revival-HANDOFF.md` / `docs/plans/kaipoke-reverse-sync-design.md`
 
 ---
