@@ -1,8 +1,9 @@
 # 設計検討書：カイポケ → CareFlow 逆反映（双方向同期）
 
-作成 2026-07-06 / 更新 2026-07-07（R-0〜R-2 本番稼働）
-ステータス: **R-0〜R-2 完了・本番デプロイ済み（HEAD 9190a55 / DB 0056）**。
-独立レビュー APPROVE（CRIT/HIGH 0・MED 2 / LOW 5 全反映）。R-3 は残作業（§6）。
+作成 2026-07-06 / 更新 2026-07-07（R-3 本番稼働）
+ステータス: **R-0〜R-3 全完了・本番デプロイ済み（HEAD 20ad5da / DB 0057）**。
+独立レビュー: R-1/2 APPROVE（MED2/LOW5 全反映）・R-3 REQUEST_CHANGES→HIGH1/MED3/LOW2
+全反映後確定。機能面の残作業なし。運用開始条件 = 初回実apply（§6 注記）。
 前提正典: `docs/plans/kaipoke-rpa-revival-HANDOFF.md` / `docs/plans/kaipoke-csv-generation-design.md` /
 思想 `docs/plans/schedule-advisor-design.md` §6
 
@@ -178,7 +179,7 @@
 | R-0 | 2名体制の実データ確認＋apply実績ゲート判定 | ✅ 完了。**本番CareFlowに2名体制visitは0件**（visit_group/secondary/mentor/フラグ全て0）→ CSV1行⇔visit1行で成立。ゲートは KaipokeJob.week_start(索引)+params 判定 |
 | R-1 | diff-inbound（read-only・逆向きシート）＋取り込みカードUI | ✅ 完了・本番稼働（9190a55） |
 | R-2 | apply-inbound（キャンセル/時刻変更）＋キャンセル表示＋失敗通知 | ✅ 完了・本番稼働。キャンセル表示=PCコース表/現場ボード/モバイル/訪問詳細 |
-| R-3 | add（カイポケにのみ存在する予定）のvisit INSERT・スタッフ変更の反映・2名体制行の取り込み | ⬜ 残作業。現状これらは差分に「取り込み対象外」として可視化されskip |
+| R-3 | スタッフ変更=コースの変更（丸ごと交代/コース移動/臨時コース新設・migration 0057）・add の visit INSERT・担当2の反映 | ✅ 完了・本番稼働（20ad5da）。詳細 §8 |
 
 **運用開始の前提（重要）**: apply実績ゲートは「実apply(dry_run=false)の記録」で開く。
 実applyは本番未実施（カイポケRPA側の残作業 §7 参照）のため、**初回実applyを行うまで
