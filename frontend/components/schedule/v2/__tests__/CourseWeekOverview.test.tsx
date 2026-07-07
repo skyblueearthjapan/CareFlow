@@ -41,6 +41,7 @@ vi.mock('@/lib/utils', () => ({
 
 import { CourseWeekOverview, type WeekOverviewVisit } from '../CourseWeekOverview';
 import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
+import { genderPalette } from '@/lib/scheduling/timeline';
 
 const baseTpl = {
   capacity_mon: 4,
@@ -481,5 +482,101 @@ describe('CourseWeekOverview (B-6)', () => {
     );
     // 1 人目に拠点→患者の距離が出る。
     expect(screen.getByTestId('course-week-overview-visit-distance-v1')).toHaveTextContent(/km/);
+  });
+
+  it('各患者行の行頭に性別ドットが出る (患者sex→genderPalette・日リストと同じ視覚言語)', () => {
+    const tpl = makeTemplate('tpl-A', 'A', 'o1');
+    const visits: WeekOverviewVisit[] = [
+      {
+        id: 'v-m',
+        patient_id: 'p-m',
+        patient_name: '男性患者',
+        weekday: 0,
+        course_template_id: 'tpl-A',
+        start_time: '09:00',
+        patient_sex: 'male',
+      },
+      {
+        id: 'v-f',
+        patient_id: 'p-f',
+        patient_name: '女性患者',
+        weekday: 0,
+        course_template_id: 'tpl-A',
+        start_time: '10:00',
+        patient_sex: 'female',
+      },
+      {
+        id: 'v-u',
+        patient_id: 'p-u',
+        patient_name: '未設定患者',
+        weekday: 0,
+        course_template_id: 'tpl-A',
+        start_time: '11:00',
+        // patient_sex 欠落 (旧データ) → 中立色で描画され落ちない。
+      },
+    ];
+    render(
+      <CourseWeekOverview
+        templates={[tpl]}
+        officeNameById={new Map([['o1', '本店']])}
+        visits={visits}
+        onJumpToDay={vi.fn()}
+        staffCountFor={fullStaff}
+      />,
+    );
+    const dotM = screen.getByTestId('course-week-overview-gender-dot-v-m');
+    const dotF = screen.getByTestId('course-week-overview-gender-dot-v-f');
+    const dotU = screen.getByTestId('course-week-overview-gender-dot-v-u');
+    expect(dotM.style.background).toBe(genderPalette('male').bar);
+    expect(dotF.style.background).toBe(genderPalette('female').bar);
+    expect(dotU.style.background).toBe(genderPalette(null).bar);
+    // 男女で色が異なることも確認 (パレット退行防止)。
+    expect(dotM.style.background).not.toBe(dotF.style.background);
+  });
+
+  it('同住所ペア囲みの中の行にも性別ドットが出る', () => {
+    const tpl = makeTemplate('tpl-A', 'A', 'o1');
+    const visits: WeekOverviewVisit[] = [
+      {
+        id: 'v-pa',
+        patient_id: 'p-pair-a',
+        patient_name: 'ペア甲',
+        weekday: 0,
+        course_template_id: 'tpl-A',
+        start_time: '09:00',
+        patient_sex: 'female',
+      },
+      {
+        id: 'v-pb',
+        patient_id: 'p-pair-b',
+        patient_name: 'ペア乙',
+        weekday: 0,
+        course_template_id: 'tpl-A',
+        start_time: '09:00',
+        patient_sex: 'male',
+      },
+    ];
+    const sameAddressKeyByPatientId = new Map<string, string | null>([
+      ['p-pair-a', 'lat-lng-bucket-1'],
+      ['p-pair-b', 'lat-lng-bucket-1'],
+    ]);
+    render(
+      <CourseWeekOverview
+        templates={[tpl]}
+        officeNameById={new Map([['o1', '本店']])}
+        visits={visits}
+        onJumpToDay={vi.fn()}
+        staffCountFor={fullStaff}
+        sameAddressKeyByPatientId={sameAddressKeyByPatientId}
+      />,
+    );
+    // pair cluster として描画されつつ、両行の行頭に性別ドットが付く。
+    expect(screen.getAllByTestId(/^course-week-overview-pair-/)).toHaveLength(1);
+    expect(screen.getByTestId('course-week-overview-gender-dot-v-pa').style.background).toBe(
+      genderPalette('female').bar,
+    );
+    expect(screen.getByTestId('course-week-overview-gender-dot-v-pb').style.background).toBe(
+      genderPalette('male').bar,
+    );
   });
 });

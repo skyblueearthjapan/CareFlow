@@ -25,6 +25,7 @@ import {
 import type { EventRead } from '@/lib/schemas/staff-events';
 import type { StaffRead } from '@/lib/schemas/staff';
 import type { FreeGap } from '@/lib/scheduling/freeGaps';
+import { genderPalette } from '@/lib/scheduling/timeline';
 import { PushPin, PushPinOff } from '@/components/ui/push-pin';
 import { haversineKm } from '../WeekdayScheduleCard';
 import { formatEventLabelLines, getStaffEventsForWeekday } from './CourseDayTable';
@@ -386,6 +387,8 @@ export function CourseWeekOverview({
                         fixedVisitId: string | null;
                         /** Phase G-22: PFV.is_pinned. */
                         isPinned: boolean;
+                        /** 患者性別 (male/female/unknown)。行頭ドット (日リストと同じ視覚言語)。 */
+                        patientSex: string | null;
                       }
                     | {
                         kind: 'event';
@@ -421,6 +424,7 @@ export function CourseWeekOverview({
                         sexRestriction: v.patient_sex_restriction ?? null,
                         fixedVisitId: v.fixed_visit_id ?? null,
                         isPinned: v.is_pinned === true,
+                        patientSex: v.patient_sex ?? null,
                       };
                     }),
                     ...staffDayEvents.map((e) => {
@@ -587,6 +591,13 @@ export function CourseWeekOverview({
                                       title={item.label}
                                       data-testid={`course-week-overview-name-${item.id}`}
                                     >
+                                      {/* 行頭の性別ドット (日リストと同じ視覚言語: 患者sex→genderPalette)。 */}
+                                      <i
+                                        className="h-1.5 w-1.5 shrink-0 rounded-full"
+                                        style={{ background: genderPalette(item.patientSex).bar }}
+                                        data-testid={`course-week-overview-gender-dot-${item.id}`}
+                                        aria-hidden="true"
+                                      />
                                       <span className="min-w-0 flex-1 truncate">
                                         {/* 患者名 (click 可) + 開始時刻 + 🔒. */}
                                         {item.time ? (
@@ -676,6 +687,13 @@ export function CourseWeekOverview({
                                           data-testid={`course-week-overview-name-${v.id}`}
                                           data-same-address-group="true"
                                         >
+                                          {/* 行頭の性別ドット (pair cluster 内も単独行と同じ)。 */}
+                                          <i
+                                            className="h-1.5 w-1.5 shrink-0 rounded-full"
+                                            style={{ background: genderPalette(v.patientSex).bar }}
+                                            data-testid={`course-week-overview-gender-dot-${v.id}`}
+                                            aria-hidden="true"
+                                          />
                                           <span className="min-w-0 flex-1 truncate">
                                             {v.time ? (
                                               <span className="mr-1 tnum text-text-muted">
