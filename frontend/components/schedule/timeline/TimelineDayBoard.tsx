@@ -6,7 +6,8 @@
  * docs/plans/schedule-timeline-redesign-design.md / docs/mockups/timeline-mock.html。
  * 列=コース (ヘッダ=担当スタッフ主・コース記号従)、縦=時間軸 9:00〜18:00・30分格子、
  * カード高さ=所要時間に比例、地色=患者性別、勤務外=斜線、空き=「＋n分空き」、
- * 会議・イベント=全幅の藤色帯 (カイポケ反映外)、現在時刻ライン。
+ * 会議・イベント=担当スタッフの列内の藤色帯 (カイポケ反映外・クリックで編集/削除)、
+ * 現在時刻ライン。
  *
  * T-1 は読み取り専用: カード / 空き枠クリックで既存の患者詳細 (onPatientClick) を開くのみ。
  * T-2 ②-a: 空き枠クリック→登録 (onFreeSlotClick) を解禁。ハンドラ未指定 (read-only ロール)
@@ -139,7 +140,7 @@ function VisitCard({
       type="button"
       onClick={onClick}
       data-testid={`tl-visit-${visit.id}`}
-      className="absolute flex flex-col gap-px overflow-hidden rounded-lg border border-l-[3px] px-2 py-[3px] text-left shadow-[var(--shadow-xs)] transition-shadow hover:z-[4] hover:shadow-[var(--shadow-md)] focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary"
+      className="absolute z-[2] flex flex-col gap-px overflow-hidden rounded-lg border border-l-[3px] px-2 py-[3px] text-left shadow-[var(--shadow-xs)] transition-shadow hover:z-[4] hover:shadow-[var(--shadow-md)] focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary"
       style={{
         top,
         height,
@@ -289,7 +290,7 @@ function PairBox({
   return (
     <div
       data-testid={`tl-pair-${item.id}`}
-      className="absolute flex flex-col overflow-hidden rounded-lg border-2 border-amber-400 bg-amber-50/40 shadow-[var(--shadow-xs)]"
+      className="absolute z-[2] flex flex-col overflow-hidden rounded-lg border-2 border-amber-400 bg-amber-50/40 shadow-[var(--shadow-xs)]"
       style={{ top, height: boxH, ...laneStyle }}
     >
       <div className="flex items-center gap-1 px-1.5 pt-0.5 text-[9px] font-bold text-amber-700">
@@ -429,8 +430,10 @@ function TimelineColumn({
           borderColor: 'var(--sched-event-ln)',
           borderLeftColor: 'var(--sched-event-bar)',
         };
+        // z-[1]: 訪問カード (z-[2]) の下に敷く。重なった時間帯でもカードのクリックを塞がない
+        // (帯自体はカードに覆われていない領域でクリック可能)。
         const bandClass =
-          'absolute left-1 right-1 z-[3] flex items-center gap-1.5 overflow-hidden rounded-lg border border-l-[3px] px-2 py-[3px] shadow-[var(--shadow-sm)]';
+          'absolute left-1 right-1 z-[1] flex items-center gap-1.5 overflow-hidden rounded-lg border border-l-[3px] px-2 py-[3px] shadow-[var(--shadow-sm)]';
         const bandInner = (
           <>
             <span className="shrink-0 text-[12px]" style={{ color: 'var(--sched-event-bar)' }}>
