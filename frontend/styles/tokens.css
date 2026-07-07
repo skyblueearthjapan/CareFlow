@@ -71,6 +71,31 @@
   --status-future: var(--border-strong);
   --status-awaiting: var(--text-muted);
 
+  /* === スケジュール縦タイムライン: 性別パレット (T-1) ===
+     カード地色=患者 sex / アバター縁=スタッフ sex。未設定(unknown/null)=中立(砂色)。
+     穏やかな色調 (docs/mockups/timeline-mock.html 準拠)。 */
+  --sched-male-bg: #edf4fa;
+  --sched-male-bar: #6d9ec9;
+  --sched-male-ink: #31597e;
+  --sched-male-ln: #d8e6f1;
+  --sched-female-bg: #fbeff2;
+  --sched-female-bar: #d48ba0;
+  --sched-female-ink: #96475e;
+  --sched-female-ln: #f2dae1;
+  --sched-neutral-bg: #f4f1ea;
+  --sched-neutral-bar: #b4a895;
+  --sched-neutral-ink: #6b6258;
+  --sched-neutral-ln: #e8e1d4;
+  /* 会議・イベント帯 (藤色) */
+  --sched-event-bg: #f1eef9;
+  --sched-event-bar: #9384c4;
+  --sched-event-ink: #584a87;
+  --sched-event-ln: #e2dcf0;
+  /* 勤務外ハッチ */
+  --sched-offduty-bg: #f5f1ea;
+  --sched-offduty-hatch: #efe9df;
+  --sched-offduty-ink: #b4a895;
+
   /* === Typography === */
   --font-sans: 'Inter', 'Hiragino Sans', 'Noto Sans JP', -apple-system, system-ui, sans-serif;
   --font-serif: 'Noto Serif JP', 'Hiragino Mincho ProN', serif;

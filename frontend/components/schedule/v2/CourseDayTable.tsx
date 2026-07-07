@@ -240,6 +240,15 @@ export interface CourseGridVisit {
    * 欠落 / その他の値は planned 扱い (寛容)。
    */
   status?: string | null;
+  /**
+   * T-1 縦タイムライン用 (schedule-timeline-redesign-design.md)。テーブル表示は
+   * `start_slot` (15分丸め) を使うが、タイムラインは時間比例のため実時刻が要る。
+   * いずれも省略可 (欠落時タイムラインはその訪問を描かない・テーブルには無影響)。
+   */
+  start_time?: string | null;
+  end_time?: string | null;
+  /** T-1: 患者の性別 (patient.sex: male/female/unknown)。カード地色に使う。 */
+  patient_sex?: string | null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────

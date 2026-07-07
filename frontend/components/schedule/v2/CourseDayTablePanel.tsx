@@ -123,6 +123,7 @@ import { UnassignAllStaffButton } from './UnassignAllStaffButton';
 import {
   CourseDayTable,
   floorToCourseSlot,
+  getStaffEventsForWeekday,
   parseCourseDayCellId,
   parseEventDraggableId,
   parseVisitDraggableId,
@@ -131,6 +132,10 @@ import {
   type PartnerLocation,
 } from './CourseDayTable';
 import { CourseWeekOverview, type WeekOverviewVisit } from './CourseWeekOverview';
+import {
+  TimelineDayBoard,
+  type TimelineCourseColumn,
+} from '@/components/schedule/timeline/TimelineDayBoard';
 import { PartnerCourseDialog } from './PartnerCourseDialog';
 import { PatientCard } from './PatientCard';
 import { PatientScheduleDetailDialog } from './PatientScheduleDetailDialog';
@@ -267,8 +272,10 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
 
   // ─── 2026-W20: 月-土タブの表示モード ─────────────────────────
   // table = Excel 形式時刻グリッド (既存挙動 / DnD 編集可能).
-  // list  = Before/After 形式 (時刻順 visit リスト / 視覚言語統一・閲覧専用).
-  const [weekdayViewMode, setWeekdayViewMode] = useState<'table' | 'list'>('table');
+  // list     = Before/After 形式 (時刻順 visit リスト / 視覚言語統一・閲覧専用).
+  // timeline  = 縦タイムライン (T-1・時間比例カード / 読み取り専用).
+  //   docs/plans/schedule-timeline-redesign-design.md。既定は table (現場の日常を変えない)。
+  const [weekdayViewMode, setWeekdayViewMode] = useState<'table' | 'list' | 'timeline'>('table');
 
   // ─── Master data ────────────────────────────────────────────────────
   const officesQuery = useOffices({ limit: 50 });
@@ -853,6 +860,10 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         source: (v as { source?: string | null }).source ?? null,
         // R-2: キャンセル表示 ('cancelled' のとき grey + 打消し線 + バッジ).
         status: (v as { status?: string | null }).status ?? null,
+        // T-1 縦タイムライン: 実時刻 (時間比例描画) + 患者性別 (カード地色).
+        start_time: v.start_time ?? null,
+        end_time: v.end_time ?? null,
+        patient_sex: (patient?.sex as string | null | undefined) ?? null,
       });
       m.set(cid, arr);
     }
@@ -2094,6 +2105,79 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     officeLatLngById,
   ]);
 
+  // ─── T-1: 縦タイムライン用の列データ (schedule-timeline-redesign-design.md) ──
+  //   テーブルと同じ per-course データ (visits / freeGaps / capacity) をタイムライン列へ
+  //   変換するだけ (表示専用・API 不変)。担当スタッフの sex はアバター色に使う。
+  const timelineColumns = useMemo<TimelineCourseColumn[]>(() => {
+    if (weekdayViewMode !== 'timeline') return [];
+    const out: TimelineCourseColumn[] = [];
+    for (const { template, officeName } of courseTablesForActiveDay) {
+      const course = findCourseForTemplate({
+        template,
+        weekday: activeWeekday,
+        isoYear,
+        isoWeek,
+        courses,
+      });
+      const visits = course ? (visitsByCourse.get(course.id) ?? []) : [];
+      const assignedStaff = course?.assigned_staff_id
+        ? (staffMap.get(course.assigned_staff_id) ?? null)
+        : null;
+      const capMax = effectiveCapacity(
+        template,
+        activeWeekday,
+        staffCountFor(template.office_id, activeWeekday),
+        courseCodesMax,
+      );
+      const freeGaps = course ? (freeGapsByCourse.get(course.id) ?? []) : [];
+      const staffEvents = assignedStaff
+        ? getStaffEventsForWeekday(assignedStaff.id, activeWeekday, staffEventsByStaff)
+        : [];
+      out.push({
+        key: `${template.id}:${activeWeekday}`,
+        template,
+        course,
+        officeName,
+        visits,
+        assignedStaff,
+        freeGaps,
+        capacity: {
+          filled: visits.filter((v) => v.status !== 'cancelled').length,
+          max: capMax,
+        },
+        staffEvents,
+      });
+    }
+    return out;
+  }, [
+    weekdayViewMode,
+    courseTablesForActiveDay,
+    activeWeekday,
+    isoYear,
+    isoWeek,
+    courses,
+    visitsByCourse,
+    staffMap,
+    freeGapsByCourse,
+    staffEventsByStaff,
+    staffCountFor,
+    courseCodesMax,
+  ]);
+
+  // ─── T-1: 現在時刻ライン (表示中の曜日が「今日」のときだけ出す) ──────────
+  const timelineNowMinutes = useMemo<number | null>(() => {
+    if (weekdayViewMode !== 'timeline') return null;
+    const now = new Date();
+    // 表示中の曜日の実日付 (週の月曜 + activeWeekday) が今日かどうか。
+    const activeDate = addDays(weekStart, activeWeekday);
+    const sameDay =
+      activeDate.getFullYear() === now.getFullYear() &&
+      activeDate.getMonth() === now.getMonth() &&
+      activeDate.getDate() === now.getDate();
+    if (!sameDay) return null;
+    return now.getHours() * 60 + now.getMinutes();
+  }, [weekdayViewMode, weekStart, activeWeekday]);
+
   // ─── Wave U-3: undo/redo 中は両ボタン disabled ─────────────────────────
   const undoRedoPending = undoMut.isPending || redoMut.isPending;
 
@@ -2335,16 +2419,16 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                 >
                   <button
                     type="button"
-                    onClick={() => setWeekdayViewMode('table')}
-                    aria-pressed={weekdayViewMode === 'table'}
-                    data-testid="course-day-mode-table"
+                    onClick={() => setWeekdayViewMode('timeline')}
+                    aria-pressed={weekdayViewMode === 'timeline'}
+                    data-testid="course-day-mode-timeline"
                     className={
-                      weekdayViewMode === 'table'
+                      weekdayViewMode === 'timeline'
                         ? 'bg-brand-primary px-2 py-1 text-white'
                         : 'bg-bg-base px-2 py-1 text-text-secondary hover:bg-bg-muted'
                     }
                   >
-                    テーブル
+                    タイムライン
                   </button>
                   <button
                     type="button"
@@ -2358,6 +2442,19 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                     }
                   >
                     リスト
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setWeekdayViewMode('table')}
+                    aria-pressed={weekdayViewMode === 'table'}
+                    data-testid="course-day-mode-table"
+                    className={
+                      weekdayViewMode === 'table'
+                        ? 'bg-brand-primary px-2 py-1 text-white'
+                        : 'bg-bg-base px-2 py-1 text-text-secondary hover:bg-bg-muted'
+                    }
+                  >
+                    テーブル
                   </button>
                 </div>
               ) : null}
@@ -2519,6 +2616,16 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                     {WEEKDAY_LABELS[activeWeekday]}曜日の表示対象コースがありません。 拠点マスタの
                     コーステンプレート (定員) を確認してください。
                   </Card>
+                ) : weekdayViewMode === 'timeline' ? (
+                  /* T-1: 縦タイムライン (時間比例カード・読み取り専用). */
+                  <div data-testid="course-day-timeline-view">
+                    <TimelineDayBoard
+                      columns={timelineColumns}
+                      weekdayLabel={WEEKDAY_LABELS[activeWeekday] ?? ''}
+                      onPatientClick={handleOpenPatientDetail}
+                      nowMinutes={timelineNowMinutes}
+                    />
+                  </div>
                 ) : weekdayViewMode === 'list' ? (
                   /* 2026-W20: Before/After 形式の閲覧専用リスト. */
                   <div data-testid="course-day-list-view">
