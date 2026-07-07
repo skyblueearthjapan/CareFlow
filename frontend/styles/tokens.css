@@ -71,21 +71,23 @@
   --status-future: var(--border-strong);
   --status-awaiting: var(--text-muted);
 
-  /* === スケジュール縦タイムライン: 性別パレット (T-1) ===
+  /* === スケジュール縦タイムライン: 性別パレット (T-1 / 本番トーン適合) ===
      カード地色=患者 sex / アバター縁=スタッフ sex。未設定(unknown/null)=中立(砂色)。
-     穏やかな色調 (docs/mockups/timeline-mock.html 準拠)。 */
-  --sched-male-bg: #edf4fa;
+     本番の薄塗り流儀に合わせ、地色(-bg)は白に寄せた淡いウォッシュにして周囲の
+     テーブル/リスト(brand-primary の 5〜10 percent tint)と馴染ませる。性別の識別は
+     明度を保った左バー(-bar)と文字色(-ink)が担う。罫線(-ln)も一段淡く。 */
+  --sched-male-bg: #f3f8fc;
   --sched-male-bar: #6d9ec9;
   --sched-male-ink: #31597e;
-  --sched-male-ln: #d8e6f1;
-  --sched-female-bg: #fbeff2;
+  --sched-male-ln: #e2edf6;
+  --sched-female-bg: #fdf5f7;
   --sched-female-bar: #d48ba0;
   --sched-female-ink: #96475e;
-  --sched-female-ln: #f2dae1;
-  --sched-neutral-bg: #f4f1ea;
+  --sched-female-ln: #f4e2e8;
+  --sched-neutral-bg: #f7f4ee;
   --sched-neutral-bar: #b4a895;
   --sched-neutral-ink: #6b6258;
-  --sched-neutral-ln: #e8e1d4;
+  --sched-neutral-ln: #ebe5da;
   /* 会議・イベント帯 (藤色) */
   --sched-event-bg: #f1eef9;
   --sched-event-bar: #9384c4;
@@ -95,6 +97,8 @@
   --sched-offduty-bg: #f5f1ea;
   --sched-offduty-hatch: #efe9df;
   --sched-offduty-ink: #b4a895;
+  /* 現在時刻ライン (テラコッタ = --brand-accent と同系) */
+  --sched-now: #d2683c;
 
   /* === Typography === */
   --font-sans: 'Inter', 'Hiragino Sans', 'Noto Sans JP', -apple-system, system-ui, sans-serif;

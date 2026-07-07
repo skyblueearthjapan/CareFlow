@@ -297,7 +297,7 @@ export function TimelineDayBoard({
 
   if (columns.length === 0) {
     return (
-      <div className="rounded-lg border border-border-default bg-bg-surface p-4 text-sm text-text-muted">
+      <div className="rounded-lg border border-border-default bg-bg-muted p-4 text-sm text-text-muted">
         {weekdayLabel}曜日の表示対象コースがありません。
       </div>
     );
@@ -312,7 +312,7 @@ export function TimelineDayBoard({
       data-testid="timeline-day-board"
     >
       {/* 列ヘッダ (担当スタッフ主・コース記号従) */}
-      <div className="sticky top-0 z-[6] flex min-w-fit border-b border-border-default bg-bg-surface">
+      <div className="sticky top-0 z-[6] flex min-w-fit border-b border-border-default bg-bg-muted">
         <div style={{ width: TIME_RAIL_W, flex: `0 0 ${TIME_RAIL_W}px` }} />
         {columns.map((col) => {
           const gk = genderKey(col.assignedStaff?.sex);
@@ -348,7 +348,7 @@ export function TimelineDayBoard({
                     {col.officeName}
                     {col.template.label}
                   </span>
-                  <span className={cn('tnum font-bold', full && 'text-status-mismatch')}>
+                  <span className={cn('tnum font-bold', full && 'text-warning')}>
                     {col.capacity.filled}/{col.capacity.max}件
                   </span>
                 </div>
@@ -425,11 +425,11 @@ export function TimelineDayBoard({
           <div
             data-testid="timeline-now-line"
             className="pointer-events-none absolute left-0 right-0 z-[5] border-t-2"
-            style={{ top: minutesToY(nowMinutes), borderColor: 'var(--now, #d2683c)' }}
+            style={{ top: minutesToY(nowMinutes), borderColor: 'var(--sched-now)' }}
           >
             <span
               className="tnum absolute left-0.5 -top-[9px] rounded px-1.5 py-px text-[9px] font-bold text-white"
-              style={{ background: 'var(--now, #d2683c)' }}
+              style={{ background: 'var(--sched-now)' }}
             >
               {String(Math.floor(nowMinutes / 60)).padStart(2, '0')}:
               {String(nowMinutes % 60).padStart(2, '0')}
