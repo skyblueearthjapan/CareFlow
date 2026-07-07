@@ -26,6 +26,8 @@ import {
   TL_DAY_END_MIN,
   TL_DAY_START_MIN,
   TL_MIN_CARD_PX,
+  TL_SHOW_ADDR_PX,
+  TL_SHOW_PILLS_PX,
   TL_SHOW_SVC_PX,
   TL_WEEK_ROW_PX,
 } from '@/lib/scheduling/timeline';
@@ -101,6 +103,12 @@ function WeekCard({
   const top = minutesToYScaled(cs, ROW_PX) + 1;
   const h = Math.max(durationToHeightScaled(ce - cs, ROW_PX) - 2, TL_MIN_CARD_PX);
   const isMulti = v.patient_requires_multiple_staff === true;
+  const durMin = e - s;
+  // 日ビューカードと同じ条件ピル (性別制限 / 2名)。
+  const pills: string[] = [];
+  if (v.patient_sex_restriction === 'female_only') pills.push('女性のみ');
+  if (v.patient_sex_restriction === 'male_only') pills.push('男性のみ');
+  if (isMulti) pills.push('2名');
   // 重なり時のみ左右に分割 (MED-2)。laneCount=1 は全幅。
   const lanes = laneInfo?.laneCount ?? 1;
   const lane = laneInfo?.lane ?? 0;
@@ -117,6 +125,7 @@ function WeekCard({
       type="button"
       onClick={onClick}
       data-testid={`wtl-visit-${v.id}`}
+      title={v.patient_address ?? undefined}
       className="absolute flex flex-col gap-px overflow-hidden rounded-md border border-l-[3px] px-1.5 py-0.5 text-left shadow-[var(--shadow-xs)] transition-shadow hover:z-[4] hover:shadow-[var(--shadow-md)] focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary"
       style={{
         top,
@@ -144,10 +153,31 @@ function WeekCard({
           {v.patient_name ?? '—'}
         </span>
       </span>
-      {/* 2行目: 時刻 (高さがあるとき)。 */}
+      {/* 2行目: 時刻・所要分 (日ビューと同じ構成)。 */}
       {h >= TL_SHOW_SVC_PX && (
         <span className="tnum text-[9.5px] font-semibold opacity-75">
-          {(v.start_time ?? '').slice(0, 5)}
+          {(v.start_time ?? '').slice(0, 5)}・{durMin}分
+        </span>
+      )}
+      {/* 3行目: 📍住所 (日ビューと情報統一・30分カードから表示)。 */}
+      {v.patient_address && h >= TL_SHOW_ADDR_PX && (
+        <span className="flex min-w-0 items-center gap-0.5 text-[9px] opacity-75">
+          <span className="shrink-0">📍</span>
+          <span className="truncate">{v.patient_address}</span>
+        </span>
+      )}
+      {/* 条件ピル (性別制限 / 2名・日ビューと同じ)。 */}
+      {pills.length > 0 && h >= TL_SHOW_PILLS_PX && (
+        <span className="mt-auto flex flex-wrap gap-[3px] pb-px">
+          {pills.map((p) => (
+            <span
+              key={p}
+              className="rounded-full px-1.5 py-px text-[8px] font-bold text-white"
+              style={{ background: pal.bar }}
+            >
+              {p}
+            </span>
+          ))}
         </span>
       )}
     </button>

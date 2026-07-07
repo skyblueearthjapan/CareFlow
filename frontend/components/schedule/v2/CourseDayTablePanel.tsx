@@ -308,6 +308,19 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
   // T-3: 週タブの見え方。overview=既存の全コース俯瞰(既定・全機能温存) / timeline=週タイムライン(全コース縦積み)。
   const [weekViewMode, setWeekViewMode] = useState<'overview' | 'timeline'>('overview');
 
+  // 上部ツールバー (sticky) の実測高。プール aside の top / max-height に連動させる
+  // (ツールバーは折返しで高さが変わるため ResizeObserver で追従)。
+  const [toolbarEl, setToolbarEl] = useState<HTMLDivElement | null>(null);
+  const [stickyTopPx, setStickyTopPx] = useState(140);
+  useEffect(() => {
+    if (!toolbarEl) return;
+    const update = () => setStickyTopPx(toolbarEl.offsetHeight + 16);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(toolbarEl);
+    return () => ro.disconnect();
+  }, [toolbarEl]);
+
   // ─── Master data ────────────────────────────────────────────────────
   const officesQuery = useOffices({ limit: 50 });
   const offices = officesQuery.allOffices;
@@ -1111,6 +1124,8 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
             ?.requires_multiple_staff === true,
         // 週タイムラインの同住所・同時刻ペア (90分占有ボックス) 判定用。
         same_address_key: sameAddressKeyByPatientId.get(v.patient_id) ?? null,
+        // 週カードの📍住所行 (日ビューと情報統一・PO要望)。
+        patient_address: patient?.address ?? null,
       });
     }
     return out;
@@ -1482,6 +1497,9 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         }
         setTlMoveState(null);
       } catch (err) {
+        // ペアの2件目で失敗した場合も、1件目の op-log を undo バーへ即時反映する
+        // (レビューMED対応。Ctrl+Z で復旧可能)。
+        invalidateOpLog(isoYear, isoWeek);
         toast.error(`移動に失敗しました: ${formatErr(err)}`);
       }
     },
@@ -2601,7 +2619,9 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
           ボタンは基本 variant="outline" size="sm" で統一感を担保し、
           毎週必ず押す主要ボタン (自動スタッフ割当) のみ variant="default" (= brand-primary 緑) で目立たせる.
         */}
-        <Card className="p-3">
+        {/* 上部ツールバーは固定 (sticky)。プール aside の張り付き位置は実測高で連動
+            (PO要望 2026-07-08: ボタン群までスクロールで消えないように)。 */}
+        <Card ref={setToolbarEl} className="sticky top-2 z-30 p-3 shadow-[var(--shadow-sm)]">
           {/* Row 1: 両端配置 toolbar (canEdit のみ).
               W-9b: justify-between で左右グループに分割。
                 左グループ = [週を生成][週次ガイド] (週次操作の入口ペアを曜日タブ真上・左端に配置).
@@ -3151,7 +3171,9 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
 
           {/* 右ペイン: 保留プール (sticky で追従) */}
           <aside
-            className="sticky top-4 self-start max-h-[calc(100vh-2rem)] overflow-y-auto rounded"
+            className="sticky self-start overflow-y-auto rounded"
+            // ツールバー (sticky) の実測高ぶん下から張り付き、残り高さの中でプールだけスクロール。
+            style={{ top: stickyTopPx, maxHeight: `calc(100vh - ${stickyTopPx + 8}px)` }}
             data-testid="course-day-pool-pane"
             // Wave 37 Phase 3-C: 配置済み slot マップを serialize してテスト・debug 用に露出.
             // 形式: "patientId:slot,...,patientId:slot"

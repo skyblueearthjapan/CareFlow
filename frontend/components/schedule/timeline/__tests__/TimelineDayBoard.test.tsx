@@ -338,7 +338,7 @@ describe('TimelineDayBoard', () => {
     expect(ghost.querySelector('[data-icon="push-pin"]')).not.toBeNull();
   });
 
-  it('住所は45分以上のカードに📍行で出て、title でも読める (A-1)', () => {
+  it('住所は30分カードから📍行で出て、極小カードは title で読める (A-1)', () => {
     render(
       <TimelineDayBoard
         columns={[
@@ -346,9 +346,9 @@ describe('TimelineDayBoard', () => {
             key: 'c1',
             visits: [
               visit({
-                id: 'long',
+                id: 'std30',
                 start_time: '09:30:00',
-                end_time: '10:30:00',
+                end_time: '10:00:00',
                 patient_address: '稲毛区小仲台2-5',
               }),
               visit({
@@ -363,7 +363,7 @@ describe('TimelineDayBoard', () => {
         weekdayLabel="月"
       />,
     );
-    // 60分カード → 📍住所行が見える (2行目との重複はしない = 1回だけ)。
+    // 30分カード (高さ49px) でも 📍住所行が見える (重複なし = 1回だけ・PO要望)。
     expect(screen.getAllByText('稲毛区小仲台2-5')).toHaveLength(1);
     // 15分の極小カード (高さ30px) → 行は出ないが title で読める。
     expect(screen.queryByText('稲毛区園生町100')).toBeNull();

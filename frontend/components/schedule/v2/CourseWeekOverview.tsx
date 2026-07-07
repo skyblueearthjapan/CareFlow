@@ -77,6 +77,8 @@ export interface WeekOverviewVisit {
    * 90分占有ペアボックス」判定に使う。null/欠落 = グルーピング対象外。
    */
   same_address_key?: string | null;
+  /** 患者住所。週タイムラインのカード📍行 (日ビューと情報統一・PO要望)。 */
+  patient_address?: string | null;
 }
 
 export interface CourseWeekOverviewProps {

@@ -191,6 +191,29 @@ describe('WeekTimelineBoard (全コース縦積み)', () => {
     expect(x.style.left).not.toBe(y.style.left);
   });
 
+  it('週カードも日ビューと同じ情報構成 (時刻・分/📍住所/条件ピル)', () => {
+    render(
+      <WeekTimelineBoard
+        options={[OPTIONS[0]!]}
+        visits={[
+          wv({
+            id: 'a',
+            weekday: 0,
+            start_time: '09:30:00',
+            end_time: '10:30:00', // 60分 → 住所・ピルまで表示
+            patient_address: '稲毛区小仲台2-5',
+            patient_sex_restriction: 'female_only',
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText(/09:30・60分/)).toBeInTheDocument();
+    expect(screen.getByText('稲毛区小仲台2-5')).toBeInTheDocument();
+    expect(screen.getByText('女性のみ')).toBeInTheDocument();
+    // title でも住所が読める (小カード補完・日ビューと同じ)。
+    expect(screen.getByTestId('wtl-visit-a').getAttribute('title')).toBe('稲毛区小仲台2-5');
+  });
+
   it('カードクリックで onPatientClick(patientId) を呼ぶ', () => {
     const onClick = vi.fn();
     render(

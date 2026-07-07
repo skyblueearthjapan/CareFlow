@@ -201,8 +201,8 @@ export function durationToHeightScaled(durationMin: number, rowPx: number): numb
 /** 所要分の見た目下限 (px)。短時間訪問でも氏名が1行フルで読める最小高さ。 */
 export const TL_MIN_CARD_PX = 30;
 
-/** カード高がこれ以上のとき住所行 (📍) を出す (45分カード=75px から表示)。 */
-export const TL_SHOW_ADDR_PX = 64;
+/** カード高がこれ以上のとき住所行 (📍) を出す (30分カード=49px から表示・PO要望)。 */
+export const TL_SHOW_ADDR_PX = 46;
 
 /** カード内の情報量しきい (px): これ以上で 時刻・サービス行 / ピル行 を出す。 */
 export const TL_SHOW_SVC_PX = 46;

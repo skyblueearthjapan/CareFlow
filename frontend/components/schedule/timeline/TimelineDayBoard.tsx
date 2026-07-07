@@ -267,23 +267,18 @@ function VisitCard({
           {visit.patient_name ?? '—'}
         </span>
       </span>
-      {/* 2行目: 時刻・所要分 ＋ サービス (高さがあるとき)。住所は3行目が出るときは重複させない。 */}
+      {/* 2行目: 時刻・所要分 ＋ サービス種別 (高さがあるとき)。住所は常に3行目 (重複させない)。 */}
       {height >= TL_SHOW_SVC_PX && (
         <span className="flex min-w-0 items-center gap-1.5 text-[10px] opacity-80">
           <span className="tnum shrink-0 font-semibold">
             {(visit.start_time ?? '').slice(0, 5)}・{durMin}分
           </span>
           <span className="truncate">
-            {isCancelled
-              ? 'キャンセル'
-              : (visit.patient_time_type ??
-                (visit.patient_address && height >= TL_SHOW_ADDR_PX
-                  ? ''
-                  : (visit.patient_address ?? '')))}
+            {isCancelled ? 'キャンセル' : (visit.patient_time_type ?? '')}
           </span>
         </span>
       )}
-      {/* 3行目: 住所 (高さがあるとき。小カードは title ツールチップで補完)。 */}
+      {/* 3行目: 住所 (30分カードから表示・PO要望。極小カードは title ツールチップで補完)。 */}
       {visit.patient_address && height >= TL_SHOW_ADDR_PX && (
         <span className="flex min-w-0 items-center gap-0.5 text-[9.5px] opacity-75">
           <span className="shrink-0">📍</span>
@@ -546,6 +541,7 @@ function PairBox({
 }) {
   const [shake, setShake] = useState(false);
   const anyPinned = item.visits.some((v) => v.is_pinned === true);
+  const anyGroup = item.visits.some((v) => Boolean(v.visit_group_id));
   const cs = Math.max(item.startMin, TL_DAY_START_MIN);
   const ce = Math.min(item.endMin, TL_DAY_END_MIN);
   if (ce <= cs) return null;
@@ -571,7 +567,7 @@ function PairBox({
       // (別プロップで書くと後勝ち上書きでドラッグが死ぬ — 64acdef の教訓)。
       {...(drag
         ? drag.disabled
-          ? anyPinned
+          ? anyPinned || anyGroup
             ? { onPointerDown: () => setShake(true) }
             : {}
           : { ...drag.listeners, ...drag.attributes }
@@ -581,7 +577,9 @@ function PairBox({
         drag?.disabled
           ? anyPinned
             ? 'ピン留めを含むため移動できません（ピンを解除してから移動）'
-            : 'キャンセル済みを含むため移動できません'
+            : anyGroup
+              ? '2名体制（ペア配置）を含むため移動できません'
+              : 'キャンセル済みを含むため移動できません'
           : drag
             ? '2名セットで移動します（個別の移動はテーブルビューから）'
             : undefined
