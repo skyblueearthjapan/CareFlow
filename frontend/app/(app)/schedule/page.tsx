@@ -52,8 +52,14 @@ export default function SchedulePage() {
   const isoWeekLabel = `${isoYear}-W${String(isoWeek).padStart(2, '0')}`;
 
   return (
-    <section className="space-y-3" data-testid="schedule-page-course-day">
-      <header className="space-y-1">
+    // lg 以上ではページ自体をスクロールさせず (h-full 固定)、Panel 内の
+    // タイムライン領域とプールだけを内部スクロールにする (sticky のような
+    // 「張り付くまで一瞬上がる」挙動を根絶するため・PO指摘 2026-07-08)。
+    <section
+      className="flex flex-col gap-3 lg:h-full lg:min-h-0"
+      data-testid="schedule-page-course-day"
+    >
+      <header className="space-y-1 lg:shrink-0">
         <h1 className="font-serif text-2xl font-bold text-text-primary">スケジュール</h1>
         <p className="text-sm text-text-secondary">
           (曜日 × コース) テーブルで週次スケジュールを管理します。
@@ -64,7 +70,7 @@ export default function SchedulePage() {
           左: WeekSelector + iso week label.
           右 (ml-auto): 拠点フィルタ.
           主要 4 ボタン (週を生成 / 自動割付 / 全面最適化 / プール投入) は CourseDayTablePanel Row 1 へ移設. */}
-      <Card className="flex flex-wrap items-center gap-3 p-3">
+      <Card className="flex flex-wrap items-center gap-3 p-3 lg:shrink-0">
         <div className="flex flex-wrap items-center gap-3">
           <WeekSelector weekStart={weekStart} onChange={setWeekStart} />
           <span className="tnum text-xs text-text-muted">{isoWeekLabel}</span>

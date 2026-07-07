@@ -191,10 +191,6 @@ import { useSchedulingSettings } from '@/lib/queries/schedulingSettings';
 export const DISPLAY_WEEKDAYS = [0, 1, 2, 3, 4, 5] as const;
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土'] as const;
 
-/** sticky ツールバーの上端オフセットとプール aside との間隔 (連動値はここだけで変える)。 */
-const TOOLBAR_STICKY_TOP_PX = 8;
-const TOOLBAR_POOL_GAP_PX = 8;
-
 // ─────────────────────────────────────────────────────────────────────────
 // dnd-kit helpers (プール用 draggable id)
 //
@@ -311,20 +307,6 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
   const [weekdayViewMode, setWeekdayViewMode] = useState<'table' | 'list' | 'timeline'>('table');
   // T-3: 週タブの見え方。overview=既存の全コース俯瞰(既定・全機能温存) / timeline=週タイムライン(全コース縦積み)。
   const [weekViewMode, setWeekViewMode] = useState<'overview' | 'timeline'>('overview');
-
-  // 上部ツールバー (sticky) の実測高。プール aside の top / max-height に連動させる
-  // (ツールバーは折返しで高さが変わるため ResizeObserver で追従)。
-  const [toolbarEl, setToolbarEl] = useState<HTMLDivElement | null>(null);
-  const [stickyTopPx, setStickyTopPx] = useState(140);
-  useEffect(() => {
-    if (!toolbarEl) return;
-    const update = () =>
-      setStickyTopPx(TOOLBAR_STICKY_TOP_PX + toolbarEl.offsetHeight + TOOLBAR_POOL_GAP_PX);
-    update();
-    const ro = new ResizeObserver(update);
-    ro.observe(toolbarEl);
-    return () => ro.disconnect();
-  }, [toolbarEl]);
 
   // ─── Master data ────────────────────────────────────────────────────
   const officesQuery = useOffices({ limit: 50 });
@@ -2609,7 +2591,12 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
 
   return (
     <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
-      <section className="space-y-3" data-testid="course-day-table-panel">
+      {/* lg 以上は flex 高さチェーン (ページ非スクロール)。ツールバー等は固定行、
+          タイムライン領域とプールだけが内部スクロールする。 */}
+      <section
+        className="flex flex-col gap-3 lg:min-h-0 lg:flex-1"
+        data-testid="course-day-table-panel"
+      >
         {/*
           W-9b: Row 1 を justify-between の両端配置に変更。
             左グループ: [週を生成][週次ガイド]  ← 週次操作の入口ペアを左端 (曜日タブ真上) に配置.
@@ -2624,13 +2611,9 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
           ボタンは基本 variant="outline" size="sm" で統一感を担保し、
           毎週必ず押す主要ボタン (自動スタッフ割当) のみ variant="default" (= brand-primary 緑) で目立たせる.
         */}
-        {/* 上部ツールバーは固定 (sticky)。プール aside の張り付き位置は実測高で連動
-            (PO要望 2026-07-08: ボタン群までスクロールで消えないように)。 */}
-        <Card
-          ref={setToolbarEl}
-          className="sticky z-30 p-3 shadow-[var(--shadow-sm)]"
-          style={{ top: TOOLBAR_STICKY_TOP_PX }}
-        >
+        {/* 上部ツールバーは常時固定 (親がページ非スクロールの flex 列のため sticky 不要。
+            PO指摘 2026-07-08: sticky の「張り付くまで一瞬上がる」挙動を根絶)。 */}
+        <Card className="p-3 lg:shrink-0">
           {/* Row 1: 両端配置 toolbar (canEdit のみ).
               W-9b: justify-between で左右グループに分割。
                 左グループ = [週を生成][週次ガイド] (週次操作の入口ペアを曜日タブ真上・左端に配置).
@@ -3021,13 +3004,14 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
           />
         ) : null}
 
-        {/* Wave 19: 2 ペイン レイアウト — メイン (1fr) + プール (320px固定 sticky) */}
+        {/* Wave 19: 2 ペイン レイアウト — メイン (1fr) + プール (320px)。
+            lg 以上は残り高さを占有し、左右それぞれが内部スクロール。 */}
         <div
-          className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_320px]"
+          className="grid grid-cols-1 gap-4 lg:min-h-0 lg:flex-1 lg:grid-cols-[1fr_320px]"
           data-testid="course-day-two-pane"
         >
-          {/* 左ペイン: コーステーブル群 */}
-          <div className="space-y-3 min-w-0">
+          {/* 左ペイン: コーステーブル群 (lg 以上はこの中だけ縦スクロール) */}
+          <div className="space-y-3 min-w-0 lg:min-h-0 lg:overflow-y-auto">
             {/* Wave 18 Phase B-6: 「週」タブ選択時は CourseWeekOverview を表示 */}
             {activeTab === 'week' ? (
               <div
@@ -3180,9 +3164,8 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
 
           {/* 右ペイン: 保留プール (sticky で追従) */}
           <aside
-            className="sticky self-start overflow-y-auto rounded"
-            // ツールバー (sticky) の実測高ぶん下から張り付き、残り高さの中でプールだけスクロール。
-            style={{ top: stickyTopPx, maxHeight: `calc(100vh - ${stickyTopPx + 8}px)` }}
+            // lg 以上は左ペインと同じ高さに固定され、プールの中だけスクロールする。
+            className="rounded lg:min-h-0 lg:overflow-y-auto"
             data-testid="course-day-pool-pane"
             // Wave 37 Phase 3-C: 配置済み slot マップを serialize してテスト・debug 用に露出.
             // 形式: "patientId:slot,...,patientId:slot"
