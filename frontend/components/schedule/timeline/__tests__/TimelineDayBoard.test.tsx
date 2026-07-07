@@ -1,5 +1,5 @@
 import { DndContext } from '@dnd-kit/core';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { CourseGridVisit } from '@/components/schedule/v2/CourseDayTable';
@@ -371,6 +371,36 @@ describe('TimelineDayBoard', () => {
     expect(screen.getByTestId('tl-visit-pair').getAttribute('data-tl-drag')).toBe('disabled');
     // 列 droppable レイヤが張られる。
     expect(screen.getByTestId('tl-col-drop-c1')).toBeInTheDocument();
+  });
+
+  it('ピン留めカードを掴もうとすると shake で拒否を伝える (T-2 ②-c)', () => {
+    render(
+      <DndContext>
+        <TimelineDayBoard
+          columns={[
+            column({
+              key: 'c1',
+              visits: [
+                visit({ id: 'pin', start_time: '09:30:00', end_time: '10:15:00', is_pinned: true }),
+                visit({ id: 'norm', start_time: '11:00:00', end_time: '11:45:00' }),
+              ],
+            }),
+          ]}
+          weekdayLabel="月"
+          dndEnabled
+        />
+      </DndContext>,
+    );
+    const pinned = screen.getByTestId('tl-visit-pin');
+    fireEvent.pointerDown(pinned);
+    expect(pinned.className).toContain('tl-shake');
+    // アニメーション終了で解除 (再度掴んだらまた shake できる)。
+    fireEvent.animationEnd(pinned);
+    expect(pinned.className).not.toContain('tl-shake');
+    // 通常カードは pointerdown しても shake しない。
+    const norm = screen.getByTestId('tl-visit-norm');
+    fireEvent.pointerDown(norm);
+    expect(norm.className).not.toContain('tl-shake');
   });
 
   it('dndEnabled なし (read-only) のときカードは従来どおり非ドラッグ・droppable レイヤなし', () => {

@@ -1341,7 +1341,11 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         const pname = patient?.name ?? patientId;
         toast.success(
           `${pname} を ${startHM} に配置しました（今週のみ・毎週の型は変更していません）`,
-          { action: promoteToastAction(patientId, pname) },
+          {
+            action: promoteToastAction(patientId, pname),
+            // ②-c: op-log 記録済みのためトーストから直接 undo できる。
+            cancel: { label: '元に戻す', onClick: () => void handleUndo() },
+          },
         );
         setSlotRegState(null);
       } catch (err) {
@@ -1357,6 +1361,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
       activeWeekday,
       invalidateOpLog,
       promoteToastAction,
+      handleUndo,
     ],
   );
 
@@ -1433,7 +1438,11 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         } else {
           toast.success(
             `${pname} を ${fmtHM(st.newStartMin)} に移動しました（今週のみ・毎週の型は変更していません）`,
-            { action: promoteToastAction(st.visit.patient_id, pname) },
+            {
+              action: promoteToastAction(st.visit.patient_id, pname),
+              // ②-c: op-log 記録済みのためトーストから直接 undo できる。
+              cancel: { label: '元に戻す', onClick: () => void handleUndo() },
+            },
           );
         }
         setTlMoveState(null);
@@ -1451,6 +1460,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
       invalidateOpLog,
       promoteWeekToFixed,
       promoteToastAction,
+      handleUndo,
     ],
   );
 

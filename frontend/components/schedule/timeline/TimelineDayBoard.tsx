@@ -15,6 +15,8 @@
  * 一切持たない (CourseDayTablePanel が組んだ CourseGridVisit をそのまま受け取る = 表示専用)。
  */
 
+import { useState } from 'react';
+
 import { useDraggable, useDroppable } from '@dnd-kit/core';
 
 import type { CourseGridVisit } from '@/components/schedule/v2/CourseDayTable';
@@ -146,6 +148,9 @@ function VisitCard({
   /** T-2 ②-b: DnD 有効時のみ DraggableVisitCard が渡す。無指定=従来の表示/クリック専用。 */
   drag?: DragBindings;
 }) {
+  // T-2 ②-c: ピン留めカードを掴もうとしたら shake で「不可侵」を伝える (ドラッグは
+  // disabled で始まらないため、pointerdown を合図に演出だけ出す)。
+  const [shake, setShake] = useState(false);
   const startMin = parseHM(visit.start_time);
   const endMin = parseHM(visit.end_time);
   if (startMin === null || endMin === null || endMin <= startMin) return null;
@@ -184,6 +189,10 @@ function VisitCard({
       onClick={onClick}
       {...(drag && !drag.disabled ? drag.listeners : {})}
       {...(drag && !drag.disabled ? drag.attributes : {})}
+      // ②-c: ピン留めは掴めない + shake で拒否を可視化 (disabled 時は listeners 未装着
+      // のため onPointerDown は衝突しない)。
+      onPointerDown={drag?.disabled && visit.is_pinned === true ? () => setShake(true) : undefined}
+      onAnimationEnd={shake ? () => setShake(false) : undefined}
       data-testid={`tl-visit-${visit.id}`}
       data-tl-drag={drag ? (drag.disabled ? 'disabled' : 'enabled') : undefined}
       title={
@@ -201,6 +210,7 @@ function VisitCard({
         'absolute z-[2] flex flex-col gap-px overflow-hidden rounded-lg border border-l-[3px] px-2 py-[3px] text-left shadow-[var(--shadow-xs)] transition-shadow hover:z-[4] hover:shadow-[var(--shadow-md)] focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary',
         drag && !drag.disabled && 'cursor-grab touch-none active:cursor-grabbing',
         drag?.isDragging && 'opacity-40',
+        shake && 'tl-shake',
       )}
       style={{
         top,
