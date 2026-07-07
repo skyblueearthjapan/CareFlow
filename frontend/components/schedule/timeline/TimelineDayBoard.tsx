@@ -187,11 +187,16 @@ function VisitCard({
       type="button"
       ref={drag?.setNodeRef}
       onClick={onClick}
-      {...(drag && !drag.disabled ? drag.listeners : {})}
-      {...(drag && !drag.disabled ? drag.attributes : {})}
-      // ②-c: ピン留めは掴めない + shake で拒否を可視化 (disabled 時は listeners 未装着
-      // のため onPointerDown は衝突しない)。
-      onPointerDown={drag?.disabled && visit.is_pinned === true ? () => setShake(true) : undefined}
+      // DnD 有効カード = dnd-kit の listeners/attributes、ピン留め = shake ハンドラ、を
+      // 1 つの spread に合成する。別プロップで onPointerDown を書くと undefined でも
+      // 後勝ちで listeners の onPointerDown を上書きし、ドラッグが死ぬ (②-c で実バグ化)。
+      {...(drag
+        ? drag.disabled
+          ? visit.is_pinned === true
+            ? { onPointerDown: () => setShake(true) }
+            : {}
+          : { ...drag.listeners, ...drag.attributes }
+        : {})}
       onAnimationEnd={shake ? () => setShake(false) : undefined}
       data-testid={`tl-visit-${visit.id}`}
       data-tl-drag={drag ? (drag.disabled ? 'disabled' : 'enabled') : undefined}

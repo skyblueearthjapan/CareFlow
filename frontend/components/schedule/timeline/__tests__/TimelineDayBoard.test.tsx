@@ -373,6 +373,37 @@ describe('TimelineDayBoard', () => {
     expect(screen.getByTestId('tl-col-drop-c1')).toBeInTheDocument();
   });
 
+  it('通常カードは pointerdown+move で実際にドラッグが始まる (onPointerDown 上書き回帰防止)', async () => {
+    // ②-c で onPointerDown={undefined} が listeners spread を後勝ちで上書きし
+    // ドラッグが死んだ実バグの回帰テスト。DndContext の onDragStart 発火まで確認する。
+    const onDragStart = vi.fn();
+    render(
+      <DndContext onDragStart={onDragStart}>
+        <TimelineDayBoard
+          columns={[
+            column({
+              key: 'c1',
+              visits: [visit({ id: 'norm', start_time: '09:30:00', end_time: '10:15:00' })],
+            }),
+          ]}
+          weekdayLabel="月"
+          dndEnabled
+        />
+      </DndContext>,
+    );
+    const card = screen.getByTestId('tl-visit-norm');
+    // jsdom には PointerEvent が無いため MouseEvent を pointerdown として偽装し、
+    // PointerSensor の activator 条件 (isPrimary && button===0) を満たす。
+    const down = new MouseEvent('pointerdown', { bubbles: true, cancelable: true, button: 0 });
+    Object.defineProperty(down, 'isPrimary', { value: true });
+    card.dispatchEvent(down);
+    await vi.waitFor(() => {
+      expect(onDragStart).toHaveBeenCalledTimes(1);
+      expect(String(onDragStart.mock.calls[0]![0].active.id)).toBe('tl-visit:norm');
+    });
+    fireEvent.pointerUp(document);
+  });
+
   it('ピン留めカードを掴もうとすると shake で拒否を伝える (T-2 ②-c)', () => {
     render(
       <DndContext>
