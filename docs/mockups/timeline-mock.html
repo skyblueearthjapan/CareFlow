@@ -1,0 +1,1058 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<title>CareFlow スケジュール — 縦タイムライン 本格プロトタイプ</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    color-scheme: light;
+    --cream:#FAF7F2; --panel:#FFFFFF; --line:#EAE3D8; --line-soft:#F1ECE3;
+    --ink:#2A2622; --ink2:#6B6258; --ink3:#9A8E80;
+    --teal:#0E8472; --teal-d:#0B6E5E; --teal-bg:#E7F4F0; --teal-ln:#CDE8E0;
+    --m-bg:#EDF4FA; --m-bar:#6D9EC9; --m-ink:#31597E; --m-ln:#D8E6F1;
+    --f-bg:#FBEFF2; --f-bar:#D48BA0; --f-ink:#96475E; --f-ln:#F2DAE1;
+    --n-bg:#F4F1EA; --n-bar:#B4A895; --n-ink:#6B6258; --n-ln:#E8E1D4;
+    --ev-bg:#F1EEF9; --ev-bar:#9384C4; --ev-ink:#584A87; --ev-ln:#E2DCF0;
+    --off-bg:#F5F1EA; --off-ink:#B4A895;
+    --now:#D2683C; --ng:#C0483B; --ng-bg:#FBEAE7;
+    --serif:"Georgia","Hiragino Mincho ProN","Yu Mincho","BIZ UDMincho",serif;
+    --sans:"Hiragino Sans","Hiragino Kaku Gothic ProN","Yu Gothic UI","Meiryo",system-ui,sans-serif;
+    --row:34px;
+    --shadow-card:0 1px 2px rgba(28,25,23,.05);
+    --shadow-pop:0 18px 44px rgba(28,25,23,.22);
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; padding:0; background:var(--cream); color:var(--ink);
+    font-family:var(--sans); font-size:14px; -webkit-font-smoothing:antialiased; }
+  button { font-family:inherit; cursor:pointer; border:none; background:none; color:inherit; padding:0; }
+  :focus-visible { outline:2px solid var(--teal); outline-offset:2px; border-radius:4px; }
+  .tnum { font-variant-numeric:tabular-nums; }
+  .scroll::-webkit-scrollbar { width:9px; height:9px; }
+  .scroll::-webkit-scrollbar-thumb { background:rgba(42,38,34,.16); border-radius:5px; }
+  .scroll::-webkit-scrollbar-track { background:transparent; }
+  @media (prefers-reduced-motion: reduce) { *,*::before,*::after { transition:none !important; animation:none !important; } }
+
+  .mast { max-width:1720px; margin:0 auto; padding:24px 26px 12px; display:flex; align-items:baseline; gap:16px; flex-wrap:wrap; }
+  .mast h1 { font-family:var(--serif); font-size:23px; font-weight:700; margin:0; letter-spacing:-.01em; }
+  .mast h1 em { font-style:normal; color:var(--teal); }
+  .mast .sub { font-size:12px; color:var(--ink3); }
+  .decisions { max-width:1720px; margin:0 auto; padding:0 26px 12px; display:flex; gap:7px; flex-wrap:wrap; }
+  .dchip { font-size:11px; font-weight:600; color:var(--ink2); background:var(--panel); border:1px solid var(--line); border-radius:999px; padding:4px 11px; }
+  .dchip b { color:var(--teal); font-weight:700; }
+
+  .frame { max-width:1720px; margin:0 auto 24px; padding:0 26px; }
+  .app { background:var(--panel); border:1px solid var(--line); border-radius:16px; overflow:hidden;
+    box-shadow:0 10px 34px rgba(42,38,34,.08); height:min(90vh, 940px); display:flex; flex-direction:column; }
+
+  .bar { flex:0 0 auto; display:flex; align-items:center; gap:11px; padding:12px 16px 10px;
+    background:var(--panel); border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  .bar .ttl { font-family:var(--serif); font-size:19px; font-weight:700; }
+  .navgrp { display:flex; align-items:center; gap:4px; }
+  .icobtn { width:30px; height:30px; border-radius:9px; border:1px solid var(--line); background:#fff;
+    display:grid; place-items:center; color:var(--ink2); font-size:13px; transition:background .12s; }
+  .icobtn:hover { background:var(--cream); }
+  .datelabel { font-family:var(--serif); font-size:15px; font-weight:700; padding:0 6px; white-space:nowrap; }
+  .datelabel .dow { color:var(--teal); }
+  .todaybtn { height:30px; padding:0 12px; border-radius:9px; border:1px solid var(--teal-ln);
+    background:var(--teal-bg); color:var(--teal); font-size:12px; font-weight:700; }
+  .seg { display:flex; background:var(--cream); border:1px solid var(--line); border-radius:10px; padding:3px; }
+  .seg button { padding:5px 13px; border-radius:7px; font-size:12.5px; font-weight:700; color:var(--ink3); transition:all .12s; }
+  .seg button.on { background:#fff; color:var(--teal); box-shadow:0 1px 3px rgba(28,25,23,.1); }
+  .legend { display:flex; gap:10px; font-size:11px; color:var(--ink2); align-items:center; margin-left:auto; flex-wrap:wrap; }
+  .legend i { width:10px; height:10px; border-radius:3px; display:inline-block; vertical-align:-1px; margin-right:4px; }
+  .poolbtn { height:34px; padding:0 14px; border-radius:11px; border:1px solid var(--line); background:#fff;
+    color:var(--ink2); font-size:12.5px; font-weight:700; display:flex; align-items:center; gap:6px; }
+  .poolbtn.on { border-color:var(--teal); color:var(--teal); background:var(--teal-bg); }
+  .poolbtn .cnt { background:var(--teal); color:#fff; border-radius:999px; font-size:10px; padding:1px 7px; }
+  .addbtn { height:34px; padding:0 15px; border-radius:11px; background:linear-gradient(135deg,var(--teal),var(--teal-d));
+    color:#fff; font-size:12.5px; font-weight:700; display:flex; align-items:center; gap:6px;
+    box-shadow:0 4px 12px rgba(14,132,114,.3); transition:transform .12s; }
+  .addbtn:hover { transform:translateY(-1px); }
+
+  .body { flex:1; display:flex; min-height:0; }
+  aside.rail { width:184px; flex:0 0 184px; background:var(--panel); border-right:1px solid var(--line);
+    padding:13px 11px; overflow:auto; }
+  .rail .cap { font-size:10.5px; font-weight:700; color:var(--ink3); letter-spacing:.08em; margin:2px 0 8px; }
+  .rail .grp { font-size:11.5px; font-weight:700; color:var(--ink2); padding:6px 4px 4px; border-bottom:1px solid var(--line-soft); margin-bottom:4px; }
+  .rail label { display:flex; align-items:center; gap:7px; padding:5px 4px; font-size:12.5px; border-radius:8px; cursor:pointer; }
+  .rail label:hover { background:var(--cream); }
+  .ck { width:15px; height:15px; border-radius:4px; flex:0 0 15px; background:var(--teal-bg); border:1.5px solid var(--teal);
+    display:grid; place-items:center; color:var(--teal); font-size:10px; font-weight:800; }
+  .ck.offck { background:#fff; border-color:var(--line); color:transparent; }
+  .gdot { width:8px; height:8px; border-radius:50%; flex:0 0 8px; }
+  .cchip { font-size:9px; font-weight:800; color:#fff; border-radius:5px; padding:1px 6px; margin-left:auto; }
+  .railnote { margin-top:13px; font-size:10.5px; line-height:1.7; color:var(--ink3);
+    background:var(--cream); border:1px solid var(--line-soft); border-radius:10px; padding:9px 11px; }
+
+  .gridwrap { flex:1; overflow:auto; background:var(--panel); position:relative; }
+  .headrow { display:flex; position:sticky; top:0; z-index:6; background:var(--cream); border-bottom:1px solid var(--line); min-width:fit-content; }
+  .timespacer { width:54px; flex:0 0 54px; }
+  .colhead { flex:1; min-width:170px; padding:8px 10px; border-left:1px solid var(--line-soft); display:flex; align-items:center; gap:8px; }
+  .avatar { width:28px; height:28px; border-radius:50%; display:grid; place-items:center; font-size:11px; font-weight:700; flex:0 0 28px; border:1.5px solid; }
+  .colhead .nm { font-size:12.5px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .colhead .meta { font-size:9.5px; color:var(--ink3); display:flex; gap:6px; align-items:center; }
+  .capbadge { font-weight:700; }
+  .bodyrow { display:flex; position:relative; min-width:fit-content; }
+  .timerail { width:54px; flex:0 0 54px; position:relative; }
+  .timerail span { position:absolute; right:8px; font-size:10px; color:var(--ink3); font-variant-numeric:tabular-nums; transform:translateY(-7px); }
+  .col { flex:1; min-width:170px; position:relative; border-left:1px solid var(--line-soft); }
+  .col.droptarget { background:rgba(14,132,114,.035); }
+  .rowline { position:absolute; left:0; right:0; height:var(--row); }
+  .rowline.h { border-top:1px solid var(--line); }
+  .rowline.half { border-top:1px dashed var(--line-soft); }
+  .offband { position:absolute; left:0; right:0;
+    background:repeating-linear-gradient(-45deg, var(--off-bg) 0 6px, #EFE9DF 6px 12px); }
+  .offband .offlabel { position:absolute; top:8px; left:0; right:0; text-align:center; font-size:10px; color:var(--off-ink); font-weight:600; }
+
+  .vcard { position:absolute; left:3px; right:3px; border-radius:8px; padding:3px 8px; overflow:hidden;
+    cursor:grab; display:flex; flex-direction:column; gap:1px; border:1px solid; border-left-width:3px;
+    box-shadow:var(--shadow-card); transition:box-shadow .12s; text-align:left; user-select:none; touch-action:none; }
+  .vcard:hover { box-shadow:0 4px 14px rgba(28,25,23,.14); z-index:4; }
+  .vcard.dragging { opacity:.35; cursor:grabbing; }
+  .vcard.pinnedcard { cursor:pointer; }
+  .vcard .l1 { display:flex; align-items:center; gap:4px; min-width:0; }
+  .vcard .nm { font-size:11.5px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .vcard .tm { font-size:9px; opacity:.75; margin-left:auto; font-variant-numeric:tabular-nums; flex-shrink:0; }
+  .vcard .svc { font-size:9.5px; opacity:.8; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .vcard .pills { display:flex; gap:3px; margin-top:auto; padding-bottom:1px; flex-wrap:wrap; }
+  .pill { font-size:8.5px; font-weight:700; color:#fff; border-radius:999px; padding:1px 6px; white-space:nowrap; }
+  .personrow { display:inline-flex; gap:1px; flex-shrink:0; }
+  .person { width:9px; height:9px; display:inline-block; }
+  .pinmark { font-size:9px; flex-shrink:0; }
+  @keyframes shake { 0%,100%{transform:translateX(0)} 25%{transform:translateX(-3px)} 75%{transform:translateX(3px)} }
+  .vcard.deny { animation:shake .3s; }
+
+  .slot { position:absolute; left:4px; right:4px; border:1.5px dashed transparent; border-radius:8px;
+    display:flex; align-items:center; justify-content:center; gap:5px; color:var(--teal);
+    font-size:11px; font-weight:700; cursor:pointer; opacity:0; transition:opacity .15s, background .15s; }
+  .slot .plus { width:18px; height:18px; border-radius:50%; background:var(--teal); color:#fff;
+    display:grid; place-items:center; font-size:13px; line-height:1; }
+  .col:hover .slot { opacity:1; border-color:var(--teal); background:rgba(14,132,114,.05); }
+  .slot .gapmin { font-size:9.5px; font-weight:600; color:var(--ink3); }
+
+  .evband { position:absolute; border-radius:9px; padding:5px 12px; display:flex; align-items:center; gap:9px;
+    z-index:3; background:var(--ev-bg); border:1px solid var(--ev-ln); border-left:3px solid var(--ev-bar);
+    box-shadow:0 2px 6px rgba(88,74,135,.1); }
+  .evband .et { font-size:12px; font-weight:700; color:var(--ev-ink); }
+  .evband .em { font-size:10.5px; color:var(--ev-ink); opacity:.72; font-variant-numeric:tabular-nums; }
+  .evtag { font-size:8.5px; font-weight:700; color:var(--ev-ink); background:#fff; border:1px solid var(--ev-ln);
+    border-radius:999px; padding:1px 7px; margin-left:auto; white-space:nowrap; }
+
+  .nowline { position:absolute; left:0; right:0; height:0; border-top:2px solid var(--now); z-index:5; pointer-events:none; }
+  .nowline::before { content:""; position:absolute; left:46px; top:-5px; width:8px; height:8px; border-radius:50%; background:var(--now); }
+  .nowlabel { position:absolute; left:2px; top:-9px; font-size:9px; font-weight:700; color:#fff; background:var(--now);
+    border-radius:4px; padding:1px 5px; font-variant-numeric:tabular-nums; }
+
+  /* drag ghost & proposal ghost */
+  #ghost { position:fixed; width:160px; border-radius:8px; padding:4px 9px; z-index:90; pointer-events:none;
+    border:1.5px solid var(--teal); background:var(--teal-bg); color:var(--teal-d);
+    font-size:11.5px; font-weight:700; box-shadow:0 10px 26px rgba(14,132,114,.3); display:none; }
+  #ghost .gt { font-size:9.5px; font-weight:600; opacity:.8; }
+  #ghost.ng { border-color:var(--ng); background:var(--ng-bg); color:var(--ng); box-shadow:0 10px 26px rgba(192,72,59,.25); }
+  .dropghost { position:absolute; left:3px; right:3px; border-radius:8px; z-index:5; pointer-events:none;
+    border:1.5px dashed var(--teal); background:rgba(14,132,114,.13); }
+  .dropghost.ng { border-color:var(--ng); background:rgba(192,72,59,.12); }
+  .dropghost .dgt { position:absolute; top:2px; left:7px; font-size:9.5px; font-weight:700; color:var(--teal-d); }
+  .dropghost.ng .dgt { color:var(--ng); }
+  .proghost { position:absolute; left:3px; right:3px; border-radius:8px; z-index:5; pointer-events:none;
+    border:2px dashed var(--teal); background:rgba(14,132,114,.14);
+    display:flex; align-items:center; justify-content:center; font-size:10.5px; font-weight:700; color:var(--teal-d);
+    box-shadow:0 0 0 3px rgba(14,132,114,.14); }
+  .strikeover { position:absolute; left:3px; right:3px; border-radius:8px; z-index:5; pointer-events:none;
+    background:repeating-linear-gradient(-45deg, rgba(192,72,59,.1) 0 6px, transparent 6px 12px);
+    border:1.5px dashed var(--ng); display:flex; align-items:center; justify-content:center;
+    font-size:9.5px; font-weight:700; color:var(--ng); }
+
+  /* pool / proposal side panel */
+  aside.pool { width:262px; flex:0 0 262px; background:var(--cream); border-left:1px solid var(--line);
+    display:flex; flex-direction:column; min-height:0; }
+  .pool .ph { padding:12px 14px 9px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:8px; }
+  .pool .ph .t { font-family:var(--serif); font-size:14.5px; font-weight:700; }
+  .pool .ph .n { font-size:10px; color:#fff; background:var(--teal); border-radius:999px; padding:1px 8px; font-weight:700; }
+  .pool .list { flex:1; overflow:auto; padding:11px 12px; display:flex; flex-direction:column; gap:9px; }
+  .pcard { background:#fff; border:1px solid var(--line); border-radius:12px; padding:9px 11px; cursor:grab;
+    box-shadow:var(--shadow-card); user-select:none; touch-action:none; border-left:3px solid; }
+  .pcard .pn { font-size:12.5px; font-weight:700; display:flex; align-items:center; gap:6px; }
+  .pcard .pw { font-size:10.5px; color:var(--ink2); margin-top:2px; line-height:1.6; }
+  .pcard .pact { display:flex; gap:6px; margin-top:7px; }
+  .pbtn { height:26px; padding:0 11px; border-radius:8px; font-size:10.5px; font-weight:700;
+    border:1px solid var(--teal-ln); background:var(--teal-bg); color:var(--teal); }
+  .pbtn.ghosty { border-color:var(--line); background:#fff; color:var(--ink3); cursor:grab; }
+  .poolnote { padding:10px 14px 12px; font-size:10px; line-height:1.7; color:var(--ink3); border-top:1px solid var(--line-soft); }
+
+  /* proposal panel */
+  .prop { display:flex; flex-direction:column; min-height:0; height:100%; }
+  .prop .bk { font-size:11px; color:var(--teal); font-weight:700; }
+  .cand { background:#fff; border:1.5px solid var(--line); border-radius:12px; padding:10px 12px; cursor:pointer;
+    box-shadow:var(--shadow-card); transition:border-color .12s, box-shadow .12s; }
+  .cand:hover, .cand.sel { border-color:var(--teal); box-shadow:0 4px 14px rgba(14,132,114,.16); }
+  .cand .c1 { display:flex; align-items:center; gap:7px; font-size:12.5px; font-weight:700; }
+  .cand .score { margin-left:auto; font-size:10px; font-weight:700; color:var(--teal); background:var(--teal-bg);
+    border-radius:999px; padding:2px 9px; }
+  .cand .reasons { display:flex; gap:4px; flex-wrap:wrap; margin-top:6px; }
+  .rchip { font-size:9.5px; font-weight:600; color:var(--ink2); background:var(--cream); border:1px solid var(--line-soft);
+    border-radius:999px; padding:2px 8px; }
+  .cand .adopt { margin-top:8px; width:100%; height:29px; border-radius:9px; font-size:11px; font-weight:700;
+    background:linear-gradient(135deg,var(--teal),var(--teal-d)); color:#fff; }
+
+  /* list view */
+  .listwrap { flex:1; overflow:auto; background:var(--panel); padding:14px 18px; }
+  .lgroup { margin-bottom:18px; }
+  .lgh { display:flex; align-items:center; gap:8px; padding:6px 2px; border-bottom:2px solid var(--line); margin-bottom:2px; }
+  .lgh .nm { font-size:13px; font-weight:700; }
+  .lrow { display:grid; grid-template-columns:86px 1fr 60px 150px 1fr 90px; gap:10px; align-items:center;
+    padding:7px 8px; border-bottom:1px solid var(--line-soft); font-size:12px; border-left:3px solid transparent; border-radius:4px; cursor:pointer; }
+  .lrow:hover { background:var(--cream); }
+  .lrow .lt { font-weight:700; font-variant-numeric:tabular-nums; }
+  .lrow .ln { font-weight:700; display:flex; align-items:center; gap:6px; }
+  .lrow .lmuted { color:var(--ink3); font-size:11px; }
+  .lhead { display:grid; grid-template-columns:86px 1fr 60px 150px 1fr 90px; gap:10px; padding:2px 8px 6px;
+    font-size:10px; color:var(--ink3); font-weight:700; letter-spacing:.05em; }
+
+  .weekbar { display:flex; gap:6px; padding:10px 16px; border-bottom:1px solid var(--line-soft); background:var(--panel);
+    align-items:center; flex-wrap:wrap; }
+  .weekbar .wcap { font-size:11px; color:var(--ink3); font-weight:700; margin-right:2px; }
+  .cpill { height:26px; padding:0 12px; border-radius:999px; border:1px solid var(--line); background:#fff;
+    font-size:11.5px; font-weight:700; color:var(--ink2); display:flex; align-items:center; gap:6px; }
+  .cpill.on { border-color:var(--teal); background:var(--teal-bg); color:var(--teal); }
+  .cpill i { width:8px; height:8px; border-radius:3px; display:inline-block; }
+  .dayhead { font-size:12px; font-weight:700; padding:7px 10px; border-left:1px solid var(--line-soft); flex:1; min-width:150px; }
+  .dayhead .dnum { color:var(--ink3); font-weight:600; font-size:10.5px; margin-left:5px; }
+
+  /* modal */
+  .overlay { position:fixed; inset:0; background:rgba(42,38,34,.38); backdrop-filter:blur(2px);
+    display:none; place-items:center; z-index:60; padding:20px; }
+  .overlay.open { display:grid; }
+  .modal { width:min(460px, 94vw); background:#fff; border-radius:18px; box-shadow:var(--shadow-pop); overflow:hidden; }
+  .modal .mh { padding:17px 22px 0; }
+  .modal .mt { font-family:var(--serif); font-size:17px; font-weight:700; }
+  .modal .ms { font-size:11.5px; color:var(--ink3); margin-top:3px; }
+  .mtabs { display:flex; gap:6px; background:var(--cream); border:1px solid var(--line); border-radius:11px; padding:4px; margin-top:12px; }
+  .mtabs button { flex:1; padding:8px 0; border-radius:8px; font-size:12.5px; font-weight:700; color:var(--ink3); }
+  .mtabs button.on { background:#fff; color:var(--teal); box-shadow:0 1px 3px rgba(28,25,23,.1); }
+  .mgrid { padding:14px 22px 4px; display:grid; grid-template-columns:88px 1fr; gap:11px 12px; font-size:12.5px; align-items:center; }
+  .mgrid .k { color:var(--ink3); font-size:11.5px; }
+  .mfield { min-height:36px; border:1px solid var(--line); border-radius:10px; display:flex; align-items:center; padding:0 12px; gap:8px; background:#fff; }
+  .gpill { font-size:9.5px; font-weight:700; color:#fff; border-radius:999px; padding:2px 8px; margin-left:auto; }
+  .mnote { margin:12px 22px 0; font-size:11px; line-height:1.7; color:var(--ev-ink); background:var(--ev-bg);
+    border:1px solid var(--ev-ln); border-radius:10px; padding:9px 12px; display:none; }
+  .mnote.show { display:block; }
+  .mfoot { padding:16px 22px 18px; display:flex; gap:10px; justify-content:flex-end; }
+  .btn-ghost { height:38px; padding:0 16px; border-radius:11px; border:1px solid var(--line); background:#fff; font-size:12.5px; font-weight:700; color:var(--ink2); }
+  .btn-primary { height:38px; padding:0 20px; border-radius:11px; background:linear-gradient(135deg,var(--teal),var(--teal-d));
+    color:#fff; font-size:12.5px; font-weight:700; box-shadow:0 4px 12px rgba(14,132,114,.3); }
+
+  /* choice popover (この週だけ/固定パターン) */
+  .choice { position:fixed; width:270px; background:#fff; border-radius:14px; box-shadow:var(--shadow-pop);
+    border:1px solid var(--line); z-index:70; display:none; overflow:hidden; }
+  .choice.open { display:block; }
+  .choice .ct { font-size:12px; font-weight:700; padding:12px 15px 4px; }
+  .choice .cs { font-size:10.5px; color:var(--ink3); padding:0 15px 9px; line-height:1.6; }
+  .choice button.opt { display:block; width:calc(100% - 20px); margin:0 10px 7px; text-align:left; padding:9px 12px;
+    border:1px solid var(--line); border-radius:10px; font-size:12px; font-weight:700; transition:border-color .1s, background .1s; }
+  .choice button.opt:hover { border-color:var(--teal); background:var(--teal-bg); }
+  .choice button.opt .d { display:block; font-size:10px; font-weight:500; color:var(--ink3); margin-top:2px; }
+  .choice .ccl { display:block; margin:2px auto 11px; font-size:11px; color:var(--ink3); font-weight:700; }
+
+  /* detail popover */
+  .pop { position:fixed; width:min(330px, 92vw); background:#fff; border-radius:15px; box-shadow:var(--shadow-pop);
+    border:1px solid var(--line); z-index:55; display:none; overflow:hidden; }
+  .pop.open { display:block; }
+  .pop .ph2 { padding:13px 16px 10px; border-bottom:1px solid var(--line-soft); display:flex; align-items:center; gap:9px; }
+  .pop .pn2 { font-family:var(--serif); font-size:15px; font-weight:700; }
+  .pop .pb { padding:11px 16px 14px; display:grid; gap:8px; font-size:12px; }
+  .pop .kv { display:flex; gap:10px; align-items:center; }
+  .pop .kv .k { color:var(--ink3); font-size:11px; width:64px; flex:0 0 64px; }
+  .gseg { display:flex; gap:4px; }
+  .gseg button { height:24px; padding:0 11px; border-radius:7px; font-size:10.5px; font-weight:700; border:1px solid var(--line); background:#fff; color:var(--ink3); }
+  .gseg button.gm { border-color:var(--m-bar); background:var(--m-bg); color:var(--m-ink); }
+  .gseg button.gf { border-color:var(--f-bar); background:var(--f-bg); color:var(--f-ink); }
+  .gseg button.gn { border-color:var(--n-bar); background:var(--n-bg); color:var(--n-ink); }
+  .pinrow { display:flex; align-items:center; gap:8px; }
+  .pintoggle { height:26px; padding:0 12px; border-radius:999px; border:1px solid var(--line); background:#fff;
+    font-size:11px; font-weight:700; color:var(--ink3); }
+  .pintoggle.on { border-color:var(--teal); background:var(--teal-bg); color:var(--teal); }
+  .pop .plink { color:var(--teal); font-weight:700; font-size:11.5px; }
+  .sugg { border:1.5px solid var(--teal-ln); background:var(--teal-bg); border-radius:11px; padding:9px 11px; }
+  .sugg .st { font-size:11.5px; font-weight:700; color:var(--teal-d); }
+  .sugg .sd { font-size:10.5px; color:var(--ink2); margin-top:3px; line-height:1.6; }
+  .sugg .sa { display:flex; gap:6px; margin-top:7px; }
+
+  #toast { position:fixed; left:50%; bottom:26px; transform:translateX(-50%) translateY(8px); background:var(--ink);
+    color:#fff; font-size:12px; font-weight:600; border-radius:11px; padding:10px 16px; opacity:0; pointer-events:none;
+    transition:opacity .18s, transform .18s; z-index:95; max-width:90vw; text-align:center; display:flex; gap:12px; align-items:center; }
+  #toast.show { opacity:.97; transform:translateX(-50%) translateY(0); pointer-events:auto; }
+  #toast button { color:#7FD4C3; font-weight:800; font-size:12px; white-space:nowrap; }
+
+  .notes { max-width:1720px; margin:0 auto 38px; padding:0 26px; display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:13px; }
+  .note { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:17px 19px; }
+  .note h3 { font-family:var(--serif); font-size:15px; margin:0 0 8px; }
+  .note h3 span { color:var(--teal); }
+  .note p, .note li { font-size:12px; line-height:1.85; color:var(--ink2); margin:0; }
+  .note ul { margin:0; padding-left:17px; }
+</style>
+
+<div class="mast">
+  <h1>CareFlow スケジュール <em>縦タイムライン</em> 本格プロトタイプ</h1>
+  <span class="sub">v2 — 現行CareFlowの仕組みに完全適合（ドラッグ移動・ピン・プール投入・最適配置提案・リスト）</span>
+</div>
+<div class="decisions">
+  <span class="dchip">🖱️ カードを<b>ドラッグ</b>=15分刻みで移動（この週だけ/固定パターンの二択つき）</span>
+  <span class="dchip">🔒 <b>ピン</b>=不可侵（動かせない・詳細から切替）</span>
+  <span class="dchip">📥 右の<b>プール</b>からドラッグ投入 or <b>最適配置の提案</b></span>
+  <span class="dchip">💡 カード詳細から<b>この患者の改善提案</b></span>
+  <span class="dchip">↩︎ 変更は<b>元に戻す</b>可（op-log準拠）</span>
+</div>
+
+<div class="frame">
+<div class="app">
+  <div class="bar">
+    <div class="ttl">スケジュール</div>
+    <div class="navgrp">
+      <button class="icobtn" aria-label="前日">‹</button>
+      <div class="datelabel tnum">7月7日 <span class="dow">(月)</span></div>
+      <button class="icobtn" aria-label="翌日">›</button>
+      <button class="todaybtn">今日</button>
+    </div>
+    <div class="seg" id="periodSeg">
+      <button class="on" data-p="day">日</button>
+      <button data-p="week">週</button>
+    </div>
+    <div class="seg" id="viewSeg">
+      <button class="on" data-v="tl">タイムライン</button>
+      <button data-v="list">リスト</button>
+      <button data-legacy="テーブル">テーブル</button>
+    </div>
+    <div class="legend">
+      <span><i style="background:var(--m-bar)"></i>男性</span>
+      <span><i style="background:var(--f-bar)"></i>女性</span>
+      <span><i style="background:var(--n-bar)"></i>未設定</span>
+      <span><i style="background:var(--ev-bar)"></i>会議</span>
+    </div>
+    <button class="poolbtn on" id="poolToggle">📥 プール <span class="cnt" id="poolCnt">3</span></button>
+    <button class="addbtn" onclick="openModal('新規','時間帯を選択してください')"><span style="font-size:15px;line-height:1">＋</span>予定を登録</button>
+  </div>
+
+  <div class="body">
+    <aside class="rail scroll">
+      <div class="cap">表示コース</div>
+      <div id="railList"></div>
+      <div class="railnote">🖱️ カードは<b>つかんで移動</b>できます。🔒ピン留めは動きません（不可侵）。会議帯・勤務外・他の訪問への重なりは自動でブロックされます。</div>
+    </aside>
+
+    <div class="gridwrap scroll" id="dayView"></div>
+    <div class="listwrap scroll" id="listView" style="display:none"></div>
+    <div class="gridwrap scroll" id="weekView" style="display:none"></div>
+
+    <aside class="pool" id="poolPanel">
+      <div id="poolHome" class="prop">
+        <div class="ph"><span class="t">保留プール</span><span class="n" id="poolCnt2">3</span></div>
+        <div class="list" id="poolList"></div>
+        <div class="poolnote">💡 カードを<b>タイムラインへドラッグ</b>して直接配置、または「<b>最適配置の提案</b>」で候補から選べます（本番の propose-slots と同じ流れ）。候補が0件のときは「詰まり解消相談」へつながります。</div>
+      </div>
+      <div id="propPanel" class="prop" style="display:none">
+        <div class="ph">
+          <button class="bk" onclick="closeProposals()">← プールへ戻る</button>
+        </div>
+        <div style="padding:11px 14px 5px">
+          <div style="font-family:var(--serif);font-size:14px;font-weight:700" id="propTitle">—</div>
+          <div style="font-size:10.5px;color:var(--ink3);margin-top:2px">候補にマウスを乗せると配置先が光ります</div>
+        </div>
+        <div class="list" id="candList"></div>
+        <div class="poolnote">スコアは移動時間・希望適合・余白の残り方から算出（本番ソルバと同基準）。</div>
+      </div>
+    </aside>
+  </div>
+</div>
+</div>
+
+<div class="notes">
+  <div class="note">
+    <h3><span>ドラッグ移動</span> — 本番と同じ二択</h3>
+    <p>カードを離すと「<b>この週だけ移動</b>」か「<b>固定パターンごと変更</b>」かを選びます（既存 fix-or-pattern API と同じ契約）。ピン留め🔒は掴めず、重なり・会議帯・勤務外へは置けません。すべての変更は「元に戻す」できます（op-log 準拠）。</p>
+  </div>
+  <div class="note">
+    <h3><span>プール投入</span> — 手でも、提案でも</h3>
+    <p>右パネルの患者をタイムラインへ直接ドラッグ（place-and-fix 相当）、または「最適配置の提案」で候補3件から選択（propose-slots 相当）。候補にマウスを乗せると<b>配置先の枠がタイムライン上で光り</b>、採用すると同じ二択（固定枠として/この週だけ）で確定します。</p>
+  </div>
+  <div class="note">
+    <h3><span>患者ごとの改善提案</span> — 詳細ポップから</h3>
+    <p>カードをクリック → 「この患者の改善提案」で、移動時間が縮む再配置案を提示。<b>提案にマウスを乗せると移動先が光り、現在地に取り消し斜線</b>が出ます。採用は1クリック（apply-individual 相当・undo可）。</p>
+  </div>
+</div>
+
+<!-- modal -->
+<div class="overlay" id="ov" onclick="if(event.target===this)closeModal()">
+  <div class="modal" role="dialog" aria-modal="true" aria-label="予定を登録">
+    <div class="mh">
+      <div class="mt">予定を登録</div>
+      <div class="ms" id="mctx">—</div>
+      <div class="mtabs">
+        <button class="on" id="tabVisit" onclick="setTab('visit')">訪問</button>
+        <button id="tabEvent" onclick="setTab('event')">会議・イベント</button>
+      </div>
+    </div>
+    <div class="mgrid" id="visitForm">
+      <span class="k">利用者</span>
+      <div class="mfield"><span style="color:var(--ink3)">🔍</span><span>柴田 恵</span><span class="gpill" style="background:var(--f-bar)">女性</span></div>
+      <span class="k">時間</span>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <div class="mfield tnum" style="min-width:74px" id="mstart">12:00</div><span style="color:var(--ink3)">〜</span>
+        <div class="mfield tnum" style="min-width:74px" id="mend">12:35</div>
+        <div style="display:flex;gap:4px"><button class="cpill on">35分</button><button class="cpill">60分</button></div>
+      </div>
+      <span class="k">サービス</span>
+      <div class="mfield" style="justify-content:space-between">医療・訪看Ⅰ3 <span style="color:var(--ink3)">▾</span></div>
+    </div>
+    <div class="mgrid" id="eventForm" style="display:none">
+      <span class="k">タイトル</span><div class="mfield">カンファレンス</div>
+      <span class="k">対象</span>
+      <div style="display:flex;gap:4px"><button class="cpill on">全体</button><button class="cpill">コース指定</button><button class="cpill">個人</button></div>
+      <span class="k">時間</span>
+      <div style="display:flex;gap:8px;align-items:center">
+        <div class="mfield tnum" style="min-width:74px">13:00</div><span style="color:var(--ink3)">〜</span>
+        <div class="mfield tnum" style="min-width:74px">13:45</div>
+      </div>
+    </div>
+    <div class="mnote" id="evNote">この予定は<b>カイポケへの反映対象外</b>です。週次反映・取り込みの差分には現れず、CareFlow内の時間確保としてだけ扱われます。</div>
+    <div class="mfoot">
+      <button class="btn-ghost" onclick="closeModal()">キャンセル</button>
+      <button class="btn-primary" onclick="closeModal();toast('モックです — 登録は実装フェーズ(T-2)で動きます')">この枠に登録</button>
+    </div>
+  </div>
+</div>
+
+<!-- choice popover -->
+<div class="choice" id="choice">
+  <div class="ct" id="chT">どの範囲に反映しますか？</div>
+  <div class="cs" id="chS">—</div>
+  <button class="opt" id="chA"><span id="chAt">この週だけ移動</span><span class="d" id="chAd">来週の自動生成には影響しません（manual_week 保護）</span></button>
+  <button class="opt" id="chB"><span id="chBt">固定パターンごと変更</span><span class="d" id="chBd">毎週のこの時間が変わります（PFV 更新）</span></button>
+  <button class="ccl" onclick="cancelChoice()">キャンセル</button>
+</div>
+
+<!-- detail popover -->
+<div class="pop" id="pop">
+  <div class="ph2">
+    <span class="avatar" id="popAv"></span>
+    <div>
+      <div class="pn2" id="popName">—</div>
+      <div style="font-size:10.5px;color:var(--ink3)" id="popSvc">—</div>
+    </div>
+    <button class="icobtn" style="margin-left:auto" onclick="closePop()" aria-label="閉じる">×</button>
+  </div>
+  <div class="pb">
+    <div class="kv"><span class="k">時間</span><span class="tnum" id="popTime">—</span></div>
+    <div class="kv"><span class="k">担当</span><span id="popStaff">—</span></div>
+    <div class="kv"><span class="k">条件</span><span id="popFlags">—</span></div>
+    <div class="kv"><span class="k">性別</span>
+      <div class="gseg" id="popGseg"><button>男性</button><button>女性</button><button>未設定</button></div>
+    </div>
+    <div class="kv"><span class="k">ピン留め</span>
+      <div class="pinrow"><button class="pintoggle" id="popPin" onclick="togglePin()">🔒 ピン留めする</button>
+      <span style="font-size:10px;color:var(--ink3)">ピン中は移動不可</span></div>
+    </div>
+    <div id="popSugg"></div>
+    <div style="display:flex;gap:14px;margin-top:2px">
+      <button class="plink" onclick="toast('患者詳細ダイアログ（既存）を開きます — 実装フェーズ')">患者詳細を開く →</button>
+      <button class="plink" id="suggBtn" onclick="showSuggestion()">💡 この患者の改善提案</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" role="status"><span id="toastMsg"></span><button id="toastUndo" style="display:none" onclick="doUndo()">元に戻す</button></div>
+<div id="ghost"><div id="ghostName">—</div><div class="gt tnum" id="ghostTime">—</div></div>
+
+<script>
+/* ═══════ 基盤 ═══════ */
+const START = 9*60, END = 18*60, ROW = 34;
+const y = m => (m - START) / 30 * ROW;
+const h = min => min / 30 * ROW;
+const hm = s => { const [a,b] = s.split(':').map(Number); return a*60+b; };
+const fmt = m => String(Math.floor(m/60)).padStart(2,'0') + ':' + String(m%60).padStart(2,'0');
+const esc = s => String(s).replace(/[&<>"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]));
+
+const G = {
+  m: { bg:'var(--m-bg)', bar:'var(--m-bar)', ink:'var(--m-ink)', ln:'var(--m-ln)' },
+  f: { bg:'var(--f-bg)', bar:'var(--f-bar)', ink:'var(--f-ink)', ln:'var(--f-ln)' },
+  n: { bg:'var(--n-bg)', bar:'var(--n-bar)', ink:'var(--n-ink)', ln:'var(--n-ln)' },
+};
+const CCOLOR = { A:'#0D8478', B:'#2F6FB0', C:'#8B5C9E', D:'#C75C77', E:'#B0831F', M:'#D97706' };
+
+const COURSES = [
+  { id:'iA', office:'稲毛', code:'A', staff:'田中 一郎', sg:'m', off:[] },
+  { id:'iB', office:'稲毛', code:'B', staff:'佐藤 花子', sg:'f', off:[] },
+  { id:'iC', office:'稲毛', code:'C', staff:'重城 美恵', sg:'f', off:[['09:00','09:30']] },
+  { id:'iD', office:'稲毛', code:'D', staff:'石川 健',   sg:'m', off:[] },
+  { id:'tA', office:'都賀', code:'A', staff:'大野 結衣', sg:'f', off:[['15:30','18:00']] },
+  { id:'tB', office:'都賀', code:'B', staff:'内村 昌也', sg:'m', off:[] },
+];
+
+let seq = 1;
+const V = (c,t,d,p,g,svc,extra={}) => ({ id:'v'+(seq++), c, t, d, p, g, svc, ...extra });
+let VISITS = [
+  V('iA','09:30',35,'青柳 あい','f','医療・訪看Ⅰ3',{flags:['特'],pin:true}),
+  V('iA','10:30',35,'飯塚 誠','m','医療・点滴'),
+  V('iA','13:50',60,'上野 俊夫','m','介護・訪看Ⅰ3',{cond:'14時以降'}),
+  V('iA','15:30',35,'江口 真由美','f','医療・訪看Ⅰ3'),
+  V('iA','16:30',35,'太田 実','m','医療・処置'),
+  V('iB','09:30',35,'岡本 美穂','f','医療・訪看Ⅰ3',{flags:['女性のみ']}),
+  V('iB','10:30',60,'加藤 静江','f','介護・入浴介助',{two:'重城',flags:['2名']}),
+  V('iB','14:00',35,'木村 拓也','m','医療・点滴'),
+  V('iB','16:00',35,'小島 貴子','f','医療・訪看Ⅰ3',{pin:true}),
+  V('iC','09:40',35,'斎藤 実','m','介護・訪看Ⅰ3'),
+  V('iC','10:40',35,'柴田 恵','f','医療・処置'),
+  V('iC','14:00',90,'鈴木 一郎','m','医療・訪看Ⅰ4',{addr:'鈴木 うめ と同住所'}),
+  V('iC','16:00',35,'高津 静',null,'医療・訪看Ⅰ3'),
+  V('iD','09:30',35,'高橋 幸三','m','医療・訪看Ⅰ3'),
+  V('iD','11:00',35,'田村 節子','f','介護・訪看Ⅰ3',{cond:'午前のみ'}),
+  V('iD','14:00',90,'鈴木 うめ','f','医療・訪看Ⅰ4',{addr:'鈴木 一郎 と同住所'}),
+  V('iD','16:30',35,'内藤 洋','m','医療・点滴'),
+  V('tA','09:30',35,'西村 ふみ','f','医療・訪看Ⅰ3',{flags:['女性のみ']}),
+  V('tA','10:30',60,'野田 三郎','m','介護・リハ'),
+  V('tA','14:00',35,'萩原 巌','m','医療・訪看Ⅰ3'),
+  V('tB','10:00',35,'久松 由紀','f','医療・訪看Ⅰ3'),
+  V('tB','11:00',35,'藤井 誠二','m','医療・点滴'),
+  V('tB','14:30',60,'細川 とし','f','介護・訪看Ⅰ3',{pin:true}),
+  V('tB','16:30',35,'前田 昭','m','医療・処置'),
+];
+let POOL = [
+  { id:'p1', p:'松本 清',   g:'m', d:35, wish:'週2回・午前を希望', svc:'医療・訪看Ⅰ3' },
+  { id:'p2', p:'吉岡 花',   g:'f', d:60, wish:'女性スタッフのみ・入浴介助', svc:'介護・入浴介助' },
+  { id:'p3', p:'渡辺 剛',   g:'m', d:35, wish:'時間指定なし（余白どこでも）', svc:'医療・点滴' },
+];
+const EVENTS = [ { t:'13:00', d:45, title:'カンファレンス（全体）', who:'全スタッフ' } ];
+const NOW = hm('14:05'), CAP = 6;
+let visibleCourses = new Set(COURSES.map(c=>c.id));
+let undoStack = [];
+
+const personSvg = color => '<svg class="person" viewBox="0 0 10 10" aria-hidden="true"><circle cx="5" cy="3" r="2.1" fill="'+color+'"/><path d="M1.2 9.4c.5-2 2-3 3.8-3s3.3 1 3.8 3z" fill="'+color+'"/></svg>';
+
+/* 空き計算（本番 computeFreeGaps 相当） */
+function blocksFor(courseId, excludeId) {
+  const c = COURSES.find(x=>x.id===courseId);
+  return VISITS.filter(v=>v.c===courseId && v.id!==excludeId).map(v=>[hm(v.t), hm(v.t)+v.d])
+    .concat(EVENTS.map(e=>[hm(e.t), hm(e.t)+e.d]))
+    .concat(c.off.map(([a,b])=>[hm(a),hm(b)]))
+    .sort((a,b)=>a[0]-b[0]);
+}
+function gapsFor(courseId) {
+  const gaps = []; let cur = START;
+  for (const [s,e] of blocksFor(courseId)) { if (s - cur >= 30) gaps.push([cur, s]); cur = Math.max(cur, e); }
+  if (END - cur >= 30) gaps.push([cur, END]);
+  return gaps;
+}
+function fits(courseId, startMin, dur, excludeId) {
+  if (startMin < START || startMin + dur > END) return false;
+  for (const [s,e] of blocksFor(courseId, excludeId)) if (startMin < e && startMin + dur > s) return false;
+  return true;
+}
+
+/* ═══════ 日ビュー描画 ═══════ */
+function renderDay() {
+  const cs = COURSES.filter(c=>visibleCourses.has(c.id));
+  const H = (END-START)/30*ROW;
+  let hd = '<div class="headrow"><div class="timespacer"></div>';
+  for (const c of cs) {
+    const n = VISITS.filter(v=>v.c===c.id).length, gg = G[c.sg];
+    hd += '<div class="colhead"><span class="avatar" style="background:'+gg.bg+';border-color:'+gg.bar+';color:'+gg.ink+'">'+esc(c.staff[0])+'</span>'
+        + '<div style="min-width:0"><div class="nm">'+esc(c.staff)+'</div>'
+        + '<div class="meta"><span class="cchip" style="background:'+CCOLOR[c.code]+'">'+esc(c.office)+c.code+'</span>'
+        + '<span class="capbadge tnum"'+(n>=CAP?' style="color:var(--now)"':'')+'>'+n+'/'+CAP+'件</span></div></div></div>';
+  }
+  hd += '</div>';
+  let rail = '<div class="timerail">';
+  for (let m=START; m<=END; m+=60) rail += '<span style="top:'+y(m)+'px">'+fmt(m)+'</span>';
+  rail += '<div style="height:'+H+'px"></div></div>';
+
+  let cols = '';
+  for (const c of cs) {
+    let col = '<div class="col" data-cid="'+c.id+'">';
+    for (let m=START; m<END; m+=30)
+      col += '<div class="rowline '+(m%60===0?'h':'half')+'" style="top:'+y(m)+'px"></div>';
+    for (const [a,b] of c.off)
+      col += '<div class="offband" style="top:'+y(hm(a))+'px;height:'+h(hm(b)-hm(a))+'px">'+(hm(b)-hm(a)>=60?'<span class="offlabel">勤務外</span>':'')+'</div>';
+    for (const [gs,ge] of gapsFor(c.id))
+      col += '<button class="slot" style="top:'+(y(gs)+2)+'px;height:'+(h(ge-gs)-5)+'px" data-cid="'+c.id+'" data-gs="'+gs+'" data-ge="'+ge+'">'
+           + '<span class="plus">＋</span>ここに追加 <span class="gapmin tnum">'+(ge-gs)+'分空き</span></button>';
+    for (const v of VISITS.filter(v=>v.c===c.id)) col += vcardHtml(v, c);
+    col += '<div style="height:'+H+'px"></div></div>';
+    cols += col;
+  }
+  let evs = '';
+  for (const e of EVENTS)
+    evs += '<div class="evband" style="top:'+(y(hm(e.t))+1)+'px;left:58px;right:10px;height:'+(h(e.d)-3)+'px">'
+         + '<span style="color:var(--ev-bar);font-size:13px">👥</span><span class="et">'+esc(e.title)+'</span>'
+         + '<span class="em tnum">'+e.t+'〜 '+e.d+'分 ・ '+esc(e.who)+'</span><span class="evtag">カイポケ反映外</span></div>';
+  const now = '<div class="nowline" style="top:'+y(NOW)+'px"><span class="nowlabel tnum">'+fmt(NOW)+'</span></div>';
+  document.getElementById('dayView').innerHTML = hd + '<div class="bodyrow" id="boardBody">' + rail + cols + evs + now + '</div>';
+  renderList();
+}
+
+function vcardHtml(v, c) {
+  const gg = G[v.g || 'n'];
+  const top = y(hm(v.t))+1, ht = h(v.d)-3;
+  const pills = [];
+  if (v.flags) for (const f of v.flags) pills.push('<span class="pill" style="background:'+gg.bar+'">'+esc(f)+'</span>');
+  if (v.cond) pills.push('<span class="pill" style="background:'+gg.bar+'">🕐'+esc(v.cond)+'</span>');
+  if (v.addr) pills.push('<span class="pill" style="background:'+gg.bar+'">📍同住所</span>');
+  const persons = v.two ? '<span class="personrow">'+personSvg('var(--teal)')+personSvg('var(--teal)')+'</span>' : '';
+  return '<div class="vcard'+(v.pin?' pinnedcard':'')+'" data-vid="'+v.id+'" tabindex="0" '
+    + 'style="top:'+top+'px;height:'+ht+'px;background:'+gg.bg+';border-color:'+gg.ln+';border-left-color:'+gg.bar+';color:'+gg.ink+'">'
+    + '<span class="l1">'+(v.pin?'<span class="pinmark">🔒</span>':'')+persons
+    + '<span class="nm">'+esc(v.p)+'</span><span class="tm">'+v.t+'・'+v.d+'分</span></span>'
+    + (ht>=44 ? '<span class="svc">'+esc(v.svc)+(v.two?'（'+esc(c.staff.split(' ')[0])+'+'+esc(v.two)+'）':'')+'</span>' : '')
+    + (pills.length && ht>=64 ? '<span class="pills">'+pills.join('')+'</span>' : '')
+    + '</div>';
+}
+
+/* ═══════ リストビュー ═══════ */
+function renderList() {
+  const cs = COURSES.filter(c=>visibleCourses.has(c.id));
+  let out = '';
+  for (const c of cs) {
+    const vs = VISITS.filter(v=>v.c===c.id).sort((a,b)=>hm(a.t)-hm(b.t));
+    out += '<div class="lgroup"><div class="lgh"><span class="cchip" style="background:'+CCOLOR[c.code]+';font-size:10px;padding:2px 8px">'+esc(c.office)+c.code+'</span>'
+        + '<span class="nm">'+esc(c.staff)+'</span><span style="font-size:10.5px;color:var(--ink3)" class="tnum">'+vs.length+'/'+CAP+'件</span></div>'
+        + '<div class="lhead"><span>時刻</span><span>利用者</span><span>時間</span><span>サービス</span><span>条件・メモ</span><span></span></div>';
+    for (const v of vs) {
+      const gg = G[v.g||'n'];
+      const flags = [(v.pin?'🔒':null),(v.cond?'🕐'+v.cond:null),...(v.flags||[]),(v.addr?'📍同住所':null)].filter(Boolean).join(' / ') || '—';
+      out += '<div class="lrow" style="border-left-color:'+gg.bar+'" data-vid="'+v.id+'">'
+          + '<span class="lt">'+v.t+'〜'+fmt(hm(v.t)+v.d)+'</span>'
+          + '<span class="ln"><i class="gdot" style="background:'+gg.bar+'"></i>'+esc(v.p)+(v.two?' <span class="personrow">'+personSvg('var(--teal)')+personSvg('var(--teal)')+'</span>':'')+'</span>'
+          + '<span class="tnum">'+v.d+'分</span><span class="lmuted">'+esc(v.svc)+'</span>'
+          + '<span class="lmuted">'+esc(flags)+'</span><span class="lmuted" style="text-align:right">詳細 →</span></div>';
+    }
+    out += '</div>';
+  }
+  document.getElementById('listView').innerHTML = out;
+}
+
+/* ═══════ 週ビュー ═══════ */
+const DOWS = ['月','火','水','木','金','土'];
+let weekCourse = 'iA';
+function weekVisits(courseId, di) {
+  return VISITS.filter(v=>v.c===courseId).filter((_,i)=>((i+di)%5)!==4).map((v,i)=>{
+    const shift = ((i+di)%3-1)*30;
+    const t = Math.min(Math.max(hm(v.t)+shift, START), END-v.d);
+    return {...v, t:fmt(t)};
+  });
+}
+function renderWeek() {
+  const H = (END-START)/30*ROW*0.72;
+  const yw = m => (m-START)/30*ROW*0.72, hw = min => min/30*ROW*0.72;
+  let pills = '<div class="weekbar"><span class="wcap">コース</span>';
+  for (const cc of COURSES)
+    pills += '<button class="cpill'+(cc.id===weekCourse?' on':'')+'" onclick="weekCourse=\''+cc.id+'\';renderWeek()"><i style="background:'+CCOLOR[cc.code]+'"></i>'+esc(cc.office)+cc.code+'・'+esc(cc.staff.split(' ')[0])+'</button>';
+  pills += '<span style="margin-left:auto;font-size:10.5px;color:var(--ink3)">週タイムライン（T-3）— 一週間の形と余白を俯瞰</span></div>';
+  let hd = '<div class="headrow"><div class="timespacer"></div>';
+  DOWS.forEach((d,i)=>{ hd += '<div class="dayhead">'+d+'<span class="dnum tnum">7/'+(7+i)+'</span></div>'; });
+  hd += '</div>';
+  let rail = '<div class="timerail">';
+  for (let m=START; m<=END; m+=120) rail += '<span style="top:'+yw(m)+'px">'+fmt(m)+'</span>';
+  rail += '<div style="height:'+H+'px"></div></div>';
+  let cols = '';
+  DOWS.forEach((d,di)=>{
+    let col = '<div class="col">';
+    for (let m=START; m<END; m+=60) col += '<div class="rowline h" style="top:'+yw(m)+'px"></div>';
+    for (const v of weekVisits(weekCourse, di)) {
+      const gg = G[v.g||'n'];
+      col += '<div class="vcard" style="top:'+(yw(hm(v.t))+1)+'px;height:'+(hw(v.d)-3)+'px;background:'+gg.bg+';border-color:'+gg.ln+';border-left-color:'+gg.bar+';color:'+gg.ink+';cursor:default">'
+           + '<span class="l1"><span class="nm">'+esc(v.p)+'</span><span class="tm">'+v.t+'</span></span></div>';
+    }
+    col += '<div style="height:'+H+'px"></div></div>';
+    cols += col;
+  });
+  document.getElementById('weekView').innerHTML = pills + hd + '<div class="bodyrow">'+rail+cols+'</div>';
+}
+
+/* ═══════ 左レール ═══════ */
+function renderRail() {
+  let out = '', lastOffice = '';
+  for (const c of COURSES) {
+    if (c.office !== lastOffice) { out += '<div class="grp">▾ '+esc(c.office)+'</div>'; lastOffice = c.office; }
+    const on = visibleCourses.has(c.id);
+    out += '<label><span class="ck'+(on?'':' offck')+'">✓</span><span class="gdot" style="background:'+(G[c.sg].bar)+'"></span>'
+        + esc(c.staff)+'<span class="cchip" style="background:'+CCOLOR[c.code]+'">'+c.code+'</span>'
+        + '<input type="checkbox" hidden '+(on?'checked':'')+' onchange="toggleCourse(\''+c.id+'\')"></label>';
+  }
+  document.getElementById('railList').innerHTML = out;
+}
+function toggleCourse(id) {
+  visibleCourses.has(id) ? visibleCourses.delete(id) : visibleCourses.add(id);
+  if (!visibleCourses.size) visibleCourses.add(id);
+  renderRail(); renderDay();
+}
+
+/* ═══════ プール ═══════ */
+function renderPool() {
+  document.getElementById('poolCnt').textContent = POOL.length;
+  document.getElementById('poolCnt2').textContent = POOL.length;
+  let out = '';
+  for (const p of POOL) {
+    const gg = G[p.g||'n'];
+    out += '<div class="pcard" data-pid="'+p.id+'" style="border-left-color:'+gg.bar+'">'
+        + '<div class="pn"><i class="gdot" style="background:'+gg.bar+'"></i>'+esc(p.p)+'<span style="margin-left:auto;font-size:10px;color:var(--ink3)" class="tnum">'+p.d+'分</span></div>'
+        + '<div class="pw">'+esc(p.wish)+'<br><span style="color:var(--ink3)">'+esc(p.svc)+'</span></div>'
+        + '<div class="pact"><button class="pbtn" onclick="openProposals(\''+p.id+'\')">✨ 最適配置の提案</button>'
+        + '<button class="pbtn ghosty">🖱️ ドラッグで配置</button></div></div>';
+  }
+  document.getElementById('poolList').innerHTML = out || '<div style="font-size:11.5px;color:var(--ink3);text-align:center;padding:20px 0">プールは空です 🎉</div>';
+}
+document.getElementById('poolToggle').addEventListener('click', () => {
+  const p = document.getElementById('poolPanel');
+  const show = p.style.display === 'none';
+  p.style.display = show ? '' : 'none';
+  document.getElementById('poolToggle').classList.toggle('on', show);
+});
+
+/* ═══════ 最適配置の提案（propose-slots 相当） ═══════ */
+let propGhostEls = [], currentProposal = null;
+function openProposals(pid) {
+  const p = POOL.find(x=>x.id===pid); if (!p) return;
+  currentProposal = p;
+  document.getElementById('poolHome').style.display = 'none';
+  document.getElementById('propPanel').style.display = '';
+  document.getElementById('propTitle').textContent = p.p + ' さんの最適配置候補';
+  // 候補生成: 表示コースの空きから適合順に3件（希望・性別条件を考慮するモック規則）
+  const cands = [];
+  for (const c of COURSES.filter(c=>visibleCourses.has(c.id))) {
+    for (const [gs,ge] of gapsFor(c.id)) {
+      for (let s = gs; s + p.d <= ge; s += 30) {
+        if (p.id==='p2' && G[c.sg] !== G.f) continue;            // 女性のみ希望 → 女性スタッフ
+        if (p.id==='p1' && s >= hm('12:00')) continue;            // 午前希望
+        const slack = (ge - gs) - p.d;
+        const score = 92 - cands.length*7 - Math.max(0, (s-START))/60;
+        cands.push({ c, s, slack, score: Math.round(Math.max(60, score)) });
+        break;
+      }
+      if (cands.length >= 6) break;
+    }
+    if (cands.length >= 6) break;
+  }
+  cands.sort((a,b)=>b.score-a.score);
+  const top = cands.slice(0,3);
+  let out = '';
+  if (!top.length) {
+    out = '<div style="font-size:11.5px;color:var(--ink2);line-height:1.8;padding:6px 2px">候補が見つかりません。<br><button class="pbtn" style="margin-top:6px" onclick="toast(\'詰まり解消相談（救急・本番機能）へつながります\')">🚑 詰まり解消相談へ</button></div>';
+  }
+  top.forEach((cd,i)=>{
+    const reasons = [
+      '空き'+(cd.slack + currentProposal.d)+'分の枠',
+      '移動 +'+(3+i*2)+'分で最短',
+      (currentProposal.id==='p1'?'午前希望に適合': currentProposal.id==='p2'?'女性スタッフ条件に適合':'余白を最も残す配置'),
+    ];
+    out += '<div class="cand" data-i="'+i+'" onmouseenter="showPropGhost('+i+')" onmouseleave="hidePropGhost()">'
+        + '<div class="c1"><span class="cchip" style="background:'+CCOLOR[cd.c.code]+'">'+esc(cd.c.office)+cd.c.code+'</span>'
+        + esc(cd.c.staff)+'<span class="score tnum">適合 '+cd.score+'</span></div>'
+        + '<div style="font-size:12px;font-weight:700;margin-top:5px" class="tnum">'+fmt(cd.s)+'〜'+fmt(cd.s+currentProposal.d)+'（'+currentProposal.d+'分）</div>'
+        + '<div class="reasons">'+reasons.map(r=>'<span class="rchip">'+esc(r)+'</span>').join('')+'</div>'
+        + '<button class="adopt" onclick="adoptCandidate('+i+')">この枠に配置</button></div>';
+  });
+  document.getElementById('candList').innerHTML = out;
+  window._cands = top;
+}
+function closeProposals() {
+  hidePropGhost(); currentProposal = null;
+  document.getElementById('propPanel').style.display = 'none';
+  document.getElementById('poolHome').style.display = '';
+}
+function showPropGhost(i) {
+  hidePropGhost();
+  const cd = window._cands[i]; if (!cd || !currentProposal) return;
+  const col = document.querySelector('.col[data-cid="'+cd.c.id+'"]'); if (!col) return;
+  const el = document.createElement('div');
+  el.className = 'proghost';
+  el.style.top = (y(cd.s)+1)+'px'; el.style.height = (h(currentProposal.d)-3)+'px';
+  el.textContent = currentProposal.p + ' ' + fmt(cd.s);
+  col.appendChild(el); propGhostEls.push(el);
+  el.scrollIntoView({block:'nearest', behavior:'smooth'});
+}
+function hidePropGhost() { propGhostEls.forEach(e=>e.remove()); propGhostEls = []; }
+function adoptCandidate(i) {
+  const cd = window._cands[i], p = currentProposal; if (!cd || !p) return;
+  openChoice({
+    title: p.p + ' さんをここに配置',
+    sub: cd.c.office+cd.c.code+'・'+cd.c.staff+' / '+fmt(cd.s)+'〜'+fmt(cd.s+p.d),
+    aT:'固定枠として配置', aD:'毎週この時間に定期訪問（place-and-fix）',
+    bT:'この週だけ配置', bD:'今週限りのスポット（manual_week）',
+    at: { x: innerWidth/2-135, y: innerHeight/2-90 },
+    onPick: (mode) => {
+      placeFromPool(p, cd.c.id, cd.s, mode);
+      closeProposals();
+    },
+  });
+}
+function placeFromPool(p, courseId, s, mode) {
+  const nv = V(courseId, fmt(s), p.d, p.p, p.g, p.svc);
+  VISITS.push(nv);
+  const idx = POOL.indexOf(p); POOL.splice(idx, 1);
+  renderPool(); renderDay();
+  pushUndo(p.p+' さんの配置', () => {
+    VISITS = VISITS.filter(x=>x.id!==nv.id); POOL.splice(idx, 0, p);
+    renderPool(); renderDay();
+  });
+  toast('📥 '+p.p+' さんを '+fmt(s)+' に配置しました（'+(mode==='a'?'固定枠':'この週だけ')+'）', true);
+}
+
+/* ═══════ ドラッグ&ドロップ（訪問カード・プールカード） ═══════ */
+let drag = null;
+document.addEventListener('pointerdown', e => {
+  if (e.target.closest('button')) return;                    // ボタンはクリック優先
+  const card = e.target.closest('.vcard[data-vid]');
+  const pcard = e.target.closest('.pcard[data-pid]');
+  if (!card && !pcard) return;
+  if (card && !document.getElementById('dayView').contains(card)) return;
+  const isPool = !!pcard;
+  const v = isPool ? POOL.find(x=>x.id===pcard.dataset.pid) : VISITS.find(x=>x.id===card.dataset.vid);
+  if (!v) return;
+  drag = { v, isPool, el: card||pcard, sx:e.clientX, sy:e.clientY, moved:false, denied:false };
+});
+document.addEventListener('pointermove', e => {
+  if (!drag) return;
+  if (!drag.moved && Math.hypot(e.clientX-drag.sx, e.clientY-drag.sy) < 6) return;
+  if (!drag.moved) {
+    if (!drag.isPool && drag.v.pin) {                       // ピンは不可侵
+      drag.el.classList.add('deny');
+      setTimeout(()=>drag && drag.el.classList.remove('deny'), 350);
+      toast('🔒 ピン留め中は動かせません — 詳細からピンを外してください');
+      drag.denied = true; drag.moved = true;
+    } else {
+      drag.moved = true;
+      drag.el.classList.add('dragging');
+      const g = document.getElementById('ghost');
+      document.getElementById('ghostName').textContent = drag.v.p + '（'+drag.v.d+'分）';
+      g.style.display = 'block';
+    }
+  }
+  if (drag.denied) return;
+  const g = document.getElementById('ghost');
+  g.style.left = (e.clientX+14)+'px'; g.style.top = (e.clientY+10)+'px';
+  clearDropGhost();
+  const col = document.elementsFromPoint(e.clientX, e.clientY).find(el=>el.classList && el.classList.contains('col') && el.dataset.cid);
+  document.querySelectorAll('.col.droptarget').forEach(x=>x.classList.remove('droptarget'));
+  if (!col) { document.getElementById('ghostTime').textContent = 'タイムラインへドロップ'; g.classList.add('ng'); return; }
+  col.classList.add('droptarget');
+  const rect = col.getBoundingClientRect();
+  let mins = START + Math.round(((e.clientY - rect.top) / (ROW/30)) / 15) * 15;
+  mins = Math.max(START, Math.min(mins, END - drag.v.d));
+  const ok = fits(col.dataset.cid, mins, drag.v.d, drag.isPool ? null : drag.v.id);
+  drag.target = ok ? { cid: col.dataset.cid, mins } : null;
+  document.getElementById('ghostTime').textContent = fmt(mins) + '〜' + fmt(mins+drag.v.d) + (ok?'':' — 置けません（重なり/勤務外/会議）');
+  g.classList.toggle('ng', !ok);
+  const dg = document.createElement('div');
+  dg.className = 'dropghost'+(ok?'':' ng');
+  dg.style.top = (y(mins)+1)+'px'; dg.style.height = (h(drag.v.d)-3)+'px';
+  dg.innerHTML = '<span class="dgt tnum">'+fmt(mins)+'</span>';
+  dg.id = 'dropghost';
+  col.appendChild(dg);
+});
+function clearDropGhost(){ const d = document.getElementById('dropghost'); if (d) d.remove(); }
+document.addEventListener('pointerup', e => {
+  if (!drag) return;
+  const d = drag; drag = null;
+  document.getElementById('ghost').style.display = 'none';
+  document.getElementById('ghost').classList.remove('ng');
+  document.querySelectorAll('.col.droptarget').forEach(x=>x.classList.remove('droptarget'));
+  clearDropGhost();
+  d.el.classList.remove('dragging');
+  if (!d.moved) { if (!d.isPool) openPopById(d.v.id, e); return; }   // クリック=詳細
+  if (d.denied || !d.target) return;
+  const { cid, mins } = d.target;
+  if (d.isPool) {
+    const c = COURSES.find(x=>x.id===cid);
+    openChoice({
+      title: d.v.p + ' さんをここに配置',
+      sub: c.office+c.code+'・'+c.staff+' / '+fmt(mins)+'〜'+fmt(mins+d.v.d),
+      aT:'固定枠として配置', aD:'毎週この時間に定期訪問（place-and-fix）',
+      bT:'この週だけ配置', bD:'今週限りのスポット（manual_week）',
+      at: { x:e.clientX, y:e.clientY },
+      onPick: () => placeFromPool(d.v, cid, mins),
+    });
+  } else {
+    if (cid === d.v.c && fmt(mins) === d.v.t) return;
+    const c = COURSES.find(x=>x.id===cid);
+    const from = { c: d.v.c, t: d.v.t };
+    openChoice({
+      title: d.v.p + ' さんを移動',
+      sub: fmt(hm(d.v.t))+' → '+fmt(mins)+'（'+c.office+c.code+'・'+c.staff+'）',
+      aT:'この週だけ移動', aD:'来週の自動生成には影響しません（manual_week 保護）',
+      bT:'固定パターンごと変更', bD:'毎週のこの時間が変わります（PFV 更新）',
+      at: { x:e.clientX, y:e.clientY },
+      onPick: (mode) => {
+        d.v.c = cid; d.v.t = fmt(mins);
+        renderDay();
+        pushUndo(d.v.p+' さんの移動', () => { d.v.c = from.c; d.v.t = from.t; renderDay(); });
+        toast('🖱️ '+d.v.p+' さんを '+fmt(mins)+' へ移動（'+(mode==='a'?'この週だけ':'固定パターンも変更')+'）', true);
+      },
+    });
+  }
+});
+
+/* ═══════ 二択ポップ（fix-or-pattern / place-and-fix 契約） ═══════ */
+let choiceCb = null;
+function openChoice({title, sub, aT, aD, bT, bD, at, onPick}) {
+  const c = document.getElementById('choice');
+  document.getElementById('chT').textContent = title;
+  document.getElementById('chS').textContent = sub;
+  document.getElementById('chAt').textContent = aT; document.getElementById('chAd').textContent = aD;
+  document.getElementById('chBt').textContent = bT; document.getElementById('chBd').textContent = bD;
+  choiceCb = onPick;
+  c.style.left = Math.min(Math.max(10, at.x - 130), innerWidth-290)+'px';
+  c.style.top  = Math.min(Math.max(10, at.y + 8), innerHeight-210)+'px';
+  c.classList.add('open');
+}
+function cancelChoice(){ document.getElementById('choice').classList.remove('open'); choiceCb = null; renderDay(); }
+document.getElementById('chA').onclick = () => { const cb = choiceCb; cancelChoice(); cb && cb('a'); };
+document.getElementById('chB').onclick = () => { const cb = choiceCb; cancelChoice(); cb && cb('b'); };
+
+/* ═══════ 詳細ポップ・ピン・改善提案 ═══════ */
+let popVisit = null, suggGhostEls = [];
+function openPopById(vid, ev) {
+  const v = VISITS.find(x=>x.id===vid); if (!v) return;
+  popVisit = v;
+  const c = COURSES.find(x=>x.id===v.c), gg = G[v.g||'n'];
+  const pop = document.getElementById('pop');
+  document.getElementById('popName').textContent = v.p;
+  document.getElementById('popSvc').textContent = v.svc + ' ・ ' + c.office + c.code;
+  const av = document.getElementById('popAv');
+  av.textContent = v.p[0]; av.style.background = gg.bg; av.style.borderColor = gg.bar; av.style.color = gg.ink;
+  document.getElementById('popTime').textContent = v.t+'〜'+fmt(hm(v.t)+v.d)+'（'+v.d+'分）';
+  document.getElementById('popStaff').textContent = c.staff + (v.two ? ' ＋ '+v.two+'（2名体制）' : '');
+  document.getElementById('popFlags').textContent =
+    [(v.cond?'🕐'+v.cond:null),...(v.flags||[]),(v.addr||null)].filter(Boolean).join(' / ') || 'なし';
+  const seg = document.getElementById('popGseg');
+  const cur = v.g==='m'?0 : v.g==='f'?1 : 2;
+  [...seg.children].forEach((b,i)=>{
+    b.className = i===cur ? (i===0?'gm':i===1?'gf':'gn') : '';
+    b.onclick = () => { v.g = i===0?'m':i===1?'f':null; renderDay(); openPopById(vid, ev); toast('性別を保存しました（患者マスタへ・実装時）'); };
+  });
+  const pinBtn = document.getElementById('popPin');
+  pinBtn.classList.toggle('on', !!v.pin);
+  pinBtn.textContent = v.pin ? '🔒 ピン留め中（解除する）' : '🔓 ピン留めする';
+  document.getElementById('popSugg').innerHTML = '';
+  const r = (ev && ev.clientX) ? {left:ev.clientX, top:ev.clientY} : {left:innerWidth/2, top:innerHeight/2};
+  pop.style.top = Math.min(r.top, innerHeight-330)+'px';
+  pop.style.left = Math.min(r.left+12, innerWidth-346)+'px';
+  pop.classList.add('open');
+}
+function togglePin() {
+  if (!popVisit) return;
+  popVisit.pin = !popVisit.pin;
+  renderDay();
+  toast(popVisit.pin ? '🔒 ピン留めしました — この訪問は不可侵になり、自動最適化・ドラッグの対象外です'
+                     : '🔓 ピンを外しました — 移動できるようになりました');
+  openPopById(popVisit.id, {clientX: parseInt(document.getElementById('pop').style.left), clientY: parseInt(document.getElementById('pop').style.top)});
+}
+function showSuggestion() {
+  if (!popVisit) return;
+  const v = popVisit;
+  // 同コース内でより早い空きを探す（improvement 相当のモック）
+  let best = null;
+  for (const [gs,ge] of gapsFor(v.c)) {
+    for (let s=gs; s+v.d<=ge; s+=15) { if (s < hm(v.t)) { best = s; break; } }
+    if (best!==null) break;
+  }
+  const box = document.getElementById('popSugg');
+  if (v.pin) { box.innerHTML = '<div class="sugg"><div class="st">🔒 ピン留め中のため提案対象外です</div><div class="sd">余白の原則: ピン=不可侵。提案が動かせるのは余白だけです。</div></div>'; return; }
+  if (best===null) { box.innerHTML = '<div class="sugg"><div class="st">現状が最適です 🎉</div><div class="sd">この患者を良くする再配置は見つかりませんでした。</div></div>'; return; }
+  const save = Math.round((hm(v.t)-best)/10)+2;
+  box.innerHTML = '<div class="sugg" onmouseenter="showSuggGhost('+best+')" onmouseleave="hideSuggGhost()">'
+    + '<div class="st">💡 '+fmt(best)+' へ前倒しできます</div>'
+    + '<div class="sd">'+v.t+' → '+fmt(best)+'（同コース内）。移動時間 −'+save+'分/日・午後の余白が広がります。<br>マウスを乗せると移動先が光ります。</div>'
+    + '<div class="sa"><button class="pbtn" onclick="adoptSuggestion('+best+')">採用する</button>'
+    + '<button class="pbtn ghosty" onclick="this.closest(\'.sugg\').remove()">見送る</button></div></div>';
+}
+function showSuggGhost(s) {
+  hideSuggGhost();
+  const v = popVisit; if (!v) return;
+  const col = document.querySelector('.col[data-cid="'+v.c+'"]'); if (!col) return;
+  const g1 = document.createElement('div');
+  g1.className = 'proghost'; g1.style.top = (y(s)+1)+'px'; g1.style.height = (h(v.d)-3)+'px';
+  g1.textContent = '→ '+fmt(s);
+  const g2 = document.createElement('div');
+  g2.className = 'strikeover'; g2.style.top = (y(hm(v.t))+1)+'px'; g2.style.height = (h(v.d)-3)+'px';
+  g2.textContent = '現在 '+v.t;
+  col.appendChild(g1); col.appendChild(g2); suggGhostEls.push(g1,g2);
+}
+function hideSuggGhost(){ suggGhostEls.forEach(e=>e.remove()); suggGhostEls = []; }
+function adoptSuggestion(s) {
+  const v = popVisit; if (!v) return;
+  hideSuggGhost(); closePop();
+  const from = v.t; v.t = fmt(s); renderDay();
+  pushUndo(v.p+' さんの改善提案の採用', () => { v.t = from; renderDay(); });
+  toast('💡 改善提案を採用: '+v.p+' さんを '+fmt(s)+' へ（apply-individual 相当・undo可）', true);
+}
+function closePop(){ document.getElementById('pop').classList.remove('open'); hideSuggGhost(); popVisit = null; }
+document.addEventListener('click', e => {
+  if (!e.target.closest('.pop') && !e.target.closest('.vcard') && !e.target.closest('.lrow')) closePop();
+});
+document.addEventListener('keydown', e => { if (e.key==='Escape'){ closeModal(); closePop(); cancelChoice(); } });
+
+/* ═══════ 空き枠クリック → 登録モーダル ═══════ */
+document.getElementById('dayView').addEventListener('click', e => {
+  const slot = e.target.closest('.slot');
+  if (slot) {
+    const c = COURSES.find(x=>x.id===slot.dataset.cid);
+    openModal(c.staff+' ('+c.office+c.code+')', fmt(+slot.dataset.gs)+'〜'+fmt(Math.min(+slot.dataset.gs+35, +slot.dataset.ge))+' の空き枠');
+  }
+});
+document.getElementById('listView').addEventListener('click', e => {
+  const row = e.target.closest('.lrow');
+  if (row) openPopById(row.dataset.vid, e);
+});
+
+/* ═══════ 切替・モーダル・トースト ═══════ */
+document.getElementById('periodSeg').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  document.querySelectorAll('#periodSeg button').forEach(x=>x.classList.toggle('on', x===b));
+  const week = b.dataset.p === 'week';
+  document.getElementById('weekView').style.display = week?'':'none';
+  const tl = document.querySelector('#viewSeg button.on')?.dataset.v !== 'list';
+  document.getElementById('dayView').style.display = (!week && tl)?'':'none';
+  document.getElementById('listView').style.display = (!week && !tl)?'':'none';
+  if (week) renderWeek();
+});
+document.getElementById('viewSeg').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  if (b.dataset.legacy) { toast(b.dataset.legacy+'（従来表示）へ切替 — 移行期は併存し、定着後に統合予定'); return; }
+  document.querySelectorAll('#viewSeg button').forEach(x=>x.classList.toggle('on', x===b));
+  document.querySelector('#periodSeg button[data-p="day"]').click();
+  const isList = b.dataset.v === 'list';
+  document.getElementById('dayView').style.display = isList?'none':'';
+  document.getElementById('listView').style.display = isList?'':'none';
+});
+function openModal(who, ctx) {
+  document.getElementById('mctx').textContent = who + ' ・ 7月7日(月) ' + ctx;
+  setTab('visit');
+  document.getElementById('ov').classList.add('open');
+}
+function closeModal(){ document.getElementById('ov').classList.remove('open'); }
+function setTab(t) {
+  const isV = t==='visit';
+  document.getElementById('tabVisit').classList.toggle('on', isV);
+  document.getElementById('tabEvent').classList.toggle('on', !isV);
+  document.getElementById('visitForm').style.display = isV?'':'none';
+  document.getElementById('eventForm').style.display = isV?'none':'';
+  document.getElementById('evNote').classList.toggle('show', !isV);
+}
+function pushUndo(desc, revert) { undoStack.push({desc, revert}); }
+function doUndo() {
+  const u = undoStack.pop(); if (!u) return;
+  u.revert();
+  document.getElementById('toast').classList.remove('show');
+  setTimeout(()=>toast('↩︎ 元に戻しました: '+u.desc), 60);
+}
+let toastTimer;
+function toast(msg, withUndo) {
+  const t = document.getElementById('toast');
+  document.getElementById('toastMsg').textContent = msg;
+  document.getElementById('toastUndo').style.display = withUndo ? '' : 'none';
+  t.classList.add('show');
+  clearTimeout(toastTimer); toastTimer = setTimeout(()=>t.classList.remove('show'), withUndo?6000:3400);
+}
+
+renderRail(); renderDay(); renderPool();
+</script>
+</html>
