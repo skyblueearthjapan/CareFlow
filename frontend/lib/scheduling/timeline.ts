@@ -18,10 +18,20 @@ import { parseHM } from '@/lib/scheduling/freeGaps';
 export const TL_DAY_START_MIN = 9 * 60;
 /** タイムライン終了 (0 時起点の分)。18:00。 */
 export const TL_DAY_END_MIN = 18 * 60;
-/** 30 分あたりの高さ (px)。モック v2 と一致。 */
-export const TL_ROW_PX = 34;
+/**
+ * 30 分あたりの高さ (px)。日タイムライン。縦をたっぷり使い、カードを大きくして
+ * 患者名がフル表示できるように余裕を持たせる (2026-07-07 現場要望で 34→52 に拡大)。
+ * 9:00〜18:00 = 18行 → 全高 936px。
+ */
+export const TL_ROW_PX = 52;
 /** 1 分あたりの高さ (px)。 */
 export const TL_PX_PER_MIN = TL_ROW_PX / 30;
+/**
+ * 週タイムラインの 30 分あたり高さ (px)。6 曜日を横に並べるが縦は圧縮せず、
+ * 画面の高さをいっぱいに使う (旧: 日×0.72 の圧縮をやめ、専用の余裕ある行高に)。
+ * 9:00〜18:00 = 18行 → 全高 792px。
+ */
+export const TL_WEEK_ROW_PX = 44;
 
 /** 全高 (px)。時間軸レール・列の height に使う。 */
 export function timelineHeightPx(
@@ -143,13 +153,7 @@ export function assignLanes(blocks: ReadonlyArray<TimelineBlock>): Map<string, L
   return out;
 }
 
-/**
- * 週タイムライン用の圧縮スケール (0.72)。6曜日を横に並べるため縦を詰める。
- * 週の Y/高さ計算はこの係数を掛けた rowPx で行う (日と同じ算法・密度だけ変える)。
- */
-export const TL_WEEK_SCALE = 0.72;
-
-/** スケール指定の Y 座標 (px)。週タイムライン (rowPx = TL_ROW_PX * TL_WEEK_SCALE) 用。 */
+/** スケール指定の Y 座標 (px)。週タイムライン (rowPx = TL_WEEK_ROW_PX) 用。 */
 export function minutesToYScaled(
   min: number,
   rowPx: number,
@@ -163,9 +167,9 @@ export function durationToHeightScaled(durationMin: number, rowPx: number): numb
   return (durationMin / 30) * rowPx;
 }
 
-/** 所要分の見た目下限 (px)。短時間訪問でも氏名が読める最小高さ。 */
-export const TL_MIN_CARD_PX = 22;
+/** 所要分の見た目下限 (px)。短時間訪問でも氏名が1行フルで読める最小高さ。 */
+export const TL_MIN_CARD_PX = 30;
 
-/** カード内の情報量しきい (px): これ以上でサービス名・ピルを出す。 */
-export const TL_SHOW_SVC_PX = 44;
-export const TL_SHOW_PILLS_PX = 64;
+/** カード内の情報量しきい (px): これ以上で 時刻・サービス行 / ピル行 を出す。 */
+export const TL_SHOW_SVC_PX = 46;
+export const TL_SHOW_PILLS_PX = 74;

@@ -163,9 +163,10 @@ function VisitCard({
         opacity: isCancelled ? 0.7 : 1,
       }}
     >
+      {/* 1行目: アイコン + 患者名 (名前に行を専有させフル表示。切れにくくする)。 */}
       <span className="flex min-w-0 items-center gap-1">
         {visit.is_pinned && (
-          <span className="shrink-0 text-[9px]" aria-label="ピン留め">
+          <span className="shrink-0 text-[10px]" aria-label="ピン留め">
             🔒
           </span>
         )}
@@ -175,16 +176,24 @@ function VisitCard({
             <PersonMark />
           </span>
         )}
-        <span className={cn('truncate text-[11.5px] font-bold', isCancelled && 'line-through')}>
+        <span
+          className={cn(
+            'truncate text-[13px] font-bold leading-tight',
+            isCancelled && 'line-through',
+          )}
+        >
           {visit.patient_name ?? '—'}
         </span>
-        <span className="tnum ml-auto shrink-0 text-[9px] opacity-75">
-          {(visit.start_time ?? '').slice(0, 5)}・{durMin}分
-        </span>
       </span>
+      {/* 2行目: 時刻・所要分 ＋ サービス (高さがあるとき)。 */}
       {height >= TL_SHOW_SVC_PX && (
-        <span className="truncate text-[9.5px] opacity-80">
-          {isCancelled ? 'キャンセル' : (visit.patient_time_type ?? '')}
+        <span className="flex min-w-0 items-center gap-1.5 text-[10px] opacity-80">
+          <span className="tnum shrink-0 font-semibold">
+            {(visit.start_time ?? '').slice(0, 5)}・{durMin}分
+          </span>
+          <span className="truncate">
+            {isCancelled ? 'キャンセル' : (visit.patient_time_type ?? visit.patient_address ?? '')}
+          </span>
         </span>
       )}
       {pills.length > 0 && height >= TL_SHOW_PILLS_PX && (

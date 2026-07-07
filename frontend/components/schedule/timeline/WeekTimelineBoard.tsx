@@ -6,7 +6,7 @@
  * docs/plans/schedule-timeline-redesign-design.md / schedule-timeline-production-fit.md。
  * 原則「時間は下へ・列は比べたいもの」の週版: **列=曜日(月〜土)・縦=時間(9:00〜18:00)**、
  * 1コースを選んで一週間の形と余白を俯瞰する。日タイムラインと同じ視覚言語・同じ算法
- * (密度だけ TL_WEEK_SCALE で圧縮)。
+ * (行高は TL_WEEK_ROW_PX。縦は圧縮せず画面の高さをいっぱいに使う)。
  *
  * 週の「全コース・全拠点の受入可能数俯瞰/開講判定」は既存の CourseWeekOverview(一覧)が
  * 担い続ける。本コンポーネントは「1コースの深掘り」に徹する (2枚持ち)。
@@ -25,15 +25,15 @@ import {
   TL_DAY_END_MIN,
   TL_DAY_START_MIN,
   TL_MIN_CARD_PX,
-  TL_ROW_PX,
-  TL_WEEK_SCALE,
+  TL_SHOW_SVC_PX,
+  TL_WEEK_ROW_PX,
 } from '@/lib/scheduling/timeline';
 import { cn } from '@/lib/utils';
 
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土'] as const;
 const COL_MIN_W = 150;
 const TIME_RAIL_W = 50;
-const ROW_PX = TL_ROW_PX * TL_WEEK_SCALE; // 週は縦を圧縮
+const ROW_PX = TL_WEEK_ROW_PX; // 週も縦を圧縮せず余裕を持たせる
 
 export interface WeekTimelineOption {
   templateId: string;
@@ -109,7 +109,7 @@ function WeekCard({
       type="button"
       onClick={onClick}
       data-testid={`wtl-visit-${v.id}`}
-      className="absolute flex items-center gap-1 overflow-hidden rounded-md border border-l-[3px] px-1.5 py-px text-left shadow-[var(--shadow-xs)] transition-shadow hover:z-[4] hover:shadow-[var(--shadow-md)] focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary"
+      className="absolute flex flex-col gap-px overflow-hidden rounded-md border border-l-[3px] px-1.5 py-0.5 text-left shadow-[var(--shadow-xs)] transition-shadow hover:z-[4] hover:shadow-[var(--shadow-md)] focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary"
       style={{
         top,
         height: h,
@@ -120,20 +120,28 @@ function WeekCard({
         color: pal.ink,
       }}
     >
-      {v.is_pinned && (
-        <span className="shrink-0 text-[8px]" aria-label="ピン留め">
-          🔒
+      {/* 1行目: アイコン + 患者名 (フル表示)。 */}
+      <span className="flex min-w-0 items-center gap-0.5">
+        {v.is_pinned && (
+          <span className="shrink-0 text-[9px]" aria-label="ピン留め">
+            🔒
+          </span>
+        )}
+        {isMulti && (
+          <span className="inline-flex shrink-0 text-brand-primary" aria-label="2名体制">
+            <PersonMark />
+          </span>
+        )}
+        <span className="truncate text-[12px] font-bold leading-tight">
+          {v.patient_name ?? '—'}
         </span>
-      )}
-      {isMulti && (
-        <span className="inline-flex shrink-0 text-brand-primary" aria-label="2名体制">
-          <PersonMark />
-        </span>
-      )}
-      <span className="truncate text-[10.5px] font-bold">{v.patient_name ?? '—'}</span>
-      <span className="tnum ml-auto shrink-0 text-[8.5px] opacity-75">
-        {(v.start_time ?? '').slice(0, 5)}
       </span>
+      {/* 2行目: 時刻 (高さがあるとき)。 */}
+      {h >= TL_SHOW_SVC_PX && (
+        <span className="tnum text-[9.5px] font-semibold opacity-75">
+          {(v.start_time ?? '').slice(0, 5)}
+        </span>
+      )}
     </button>
   );
 }
