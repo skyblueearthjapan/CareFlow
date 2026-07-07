@@ -4,20 +4,20 @@
  * WeekTimelineBoard — 週タイムライン (T-3・読み取り専用)。
  *
  * docs/plans/schedule-timeline-redesign-design.md / schedule-timeline-production-fit.md。
- * 原則「時間は下へ・列は比べたいもの」の週版: **列=曜日(月〜土)・縦=時間(9:00〜18:00)**、
- * 1コースを選んで一週間の形と余白を俯瞰する。日タイムラインと同じ視覚言語・同じ算法
- * (行高は TL_WEEK_ROW_PX。縦は圧縮せず画面の高さをいっぱいに使う)。
+ * 原則「時間は下へ・列は比べたいもの」の週版: **列=曜日(月〜土)・縦=時間(9:00〜18:00)**。
+ * 全コース (稲毛A/B/C…) を縦積みし、縦スクロールで一元閲覧する (PO要望 2026-07-08。
+ * 旧: コース切替セレクタで1コース深掘り)。日タイムラインと同じ視覚言語・同じ算法
+ * (行高は TL_WEEK_ROW_PX・曜日ヘッダ=性別色アバター+太字名・同住所同時刻2名=90分占有ペア)。
  *
  * 週の「全コース・全拠点の受入可能数俯瞰/開講判定」は既存の CourseWeekOverview(一覧)が
- * 担い続ける。本コンポーネントは「1コースの深掘り」に徹する (2枚持ち)。
- * 表示専用: カードクリックで既存の患者詳細を開くのみ。API/ソルバは持たない。
+ * 担い続ける。表示専用: カードクリックで既存の患者詳細を開くのみ。API/ソルバは持たない。
  */
 
 import { useMemo } from 'react';
 
 import type { WeekOverviewVisit } from '@/components/schedule/v2/CourseWeekOverview';
 import { PushPin } from '@/components/ui/push-pin';
-import { parseHM } from '@/lib/scheduling/freeGaps';
+import { parseHM, SAME_ADDRESS_PAIR_MIN_OCCUPANCY } from '@/lib/scheduling/freeGaps';
 import {
   assignLanes,
   durationToHeightScaled,
@@ -42,23 +42,25 @@ export interface WeekTimelineOption {
 }
 
 export interface WeekTimelineBoardProps {
-  /** 選択中コースの course_template_id。 */
-  selectedTemplateId: string;
+  /** 表示する全コース (拠点順)。全コースを縦積みで一望する (PO要望・切替セレクタ廃止)。 */
   options: WeekTimelineOption[];
-  onSelectTemplate: (templateId: string) => void;
-  /** 全曜日 × 全 template の visits (フラット)。本盤は selectedTemplateId で絞る。 */
+  /** 全曜日 × 全 template の visits (フラット)。各セクションが templateId で絞る。 */
   visits: WeekOverviewVisit[];
   /** 曜日ヘッダの日付ラベル (0=Mon..5=Sat)。省略時は曜日のみ。 */
   weekdayDates?: (string | null)[];
   /** カードクリック → 患者詳細 (既存ダイアログ)。 */
   onPatientClick?: (patientId: string) => void;
-  /** 週の容量 (曜日ごとの受入可能数)。ヘッダの「n/N件」に使う。省略可。 */
-  capacityByWeekday?: (weekday: number) => number;
+  /** 週の容量 (コース×曜日の受入可能数)。ヘッダの「n/N件」に使う。省略可。 */
+  capacityByWeekday?: (templateId: string, weekday: number) => number;
   /**
-   * 選択中コースの各曜日の担当スタッフ名。曜日ごとに担当が異なり得るため関数で受け取る
-   * (例: 稲毛B は 月=田中 / 火=佐藤)。null = 未割当。省略可。
+   * コース×曜日の担当スタッフ (名前+性別)。曜日ごとに担当が異なり得るため関数で受け取る
+   * (例: 稲毛B は 月=田中 / 火=佐藤)。性別は日ビューヘッダと同じ色付きアバターに使う。
+   * null = 未割当。省略可。
    */
-  staffNameByWeekday?: (weekday: number) => string | null;
+  staffByWeekday?: (
+    templateId: string,
+    weekday: number,
+  ) => { name: string; sex?: string | null } | null;
 }
 
 function PersonMark() {
@@ -152,59 +154,216 @@ function WeekCard({
   );
 }
 
+/** 描画単位: 単独訪問 or 同住所・同時刻2名の90分占有ペア (日ビューと同じ規則)。 */
+type WeekRenderItem =
+  | { kind: 'single'; id: string; v: WeekOverviewVisit; startMin: number; endMin: number }
+  | { kind: 'pair'; id: string; visits: WeekOverviewVisit[]; startMin: number; endMin: number };
+
+/**
+ * 同住所・同時刻の 2 名 (別患者・同 same_address_key・同 start) を 1 つの
+ * 「90分占有ペア」にまとめる (日ビュー buildRenderItems と同じ規則の週版)。
+ */
+function buildWeekRenderItems(visits: ReadonlyArray<WeekOverviewVisit>): WeekRenderItem[] {
+  const sorted = [...visits].sort(
+    (a, b) => (parseHM(a.start_time) ?? 0) - (parseHM(b.start_time) ?? 0),
+  );
+  const used = new Set<string>();
+  const items: WeekRenderItem[] = [];
+  for (const v of sorted) {
+    if (used.has(v.id)) continue;
+    const s = parseHM(v.start_time);
+    const e = parseHM(v.end_time) ?? (s !== null ? s + 35 : null);
+    if (s === null || e === null || e <= s) continue;
+    const gid = v.same_address_key ?? null;
+    if (gid) {
+      const mate = sorted.find(
+        (o) =>
+          o.id !== v.id &&
+          !used.has(o.id) &&
+          (o.same_address_key ?? null) === gid &&
+          o.patient_id !== v.patient_id &&
+          parseHM(o.start_time) === s,
+      );
+      if (mate) {
+        used.add(v.id);
+        used.add(mate.id);
+        const meEnd = parseHM(mate.end_time) ?? s + 35;
+        const endMin = Math.max(s + SAME_ADDRESS_PAIR_MIN_OCCUPANCY, e, meEnd);
+        items.push({
+          kind: 'pair',
+          id: `pair:${v.id}:${mate.id}`,
+          visits: [v, mate],
+          startMin: s,
+          endMin,
+        });
+        continue;
+      }
+    }
+    used.add(v.id);
+    items.push({ kind: 'single', id: v.id, v, startMin: s, endMin: e });
+  }
+  return items;
+}
+
+/** 同住所ペアの90分占有ボックス (上下2段・日ビュー PairBox の週版)。 */
+function WeekPairBox({
+  item,
+  laneInfo,
+  onPatientClick,
+}: {
+  item: Extract<WeekRenderItem, { kind: 'pair' }>;
+  laneInfo?: CardLane;
+  onPatientClick?: (patientId: string) => void;
+}) {
+  const cs = Math.max(item.startMin, TL_DAY_START_MIN);
+  const ce = Math.min(item.endMin, TL_DAY_END_MIN);
+  if (ce <= cs) return null;
+  const top = minutesToYScaled(cs, ROW_PX) + 1;
+  const boxH = Math.max(durationToHeightScaled(ce - cs, ROW_PX) - 2, TL_MIN_CARD_PX * 2);
+  const lanes = laneInfo?.laneCount ?? 1;
+  const lane = laneInfo?.lane ?? 0;
+  const laneStyle =
+    lanes > 1
+      ? {
+          left: `calc(2px + ${(lane / lanes) * 100}% - ${(lane / lanes) * 4}px)`,
+          width: `calc(${100 / lanes}% - ${4 / lanes}px)`,
+          right: 'auto' as const,
+        }
+      : { left: '2px', right: '2px' };
+  const durMin = item.endMin - item.startMin;
+  return (
+    <div
+      data-testid={`wtl-pair-${item.id}`}
+      className="absolute z-[2] flex flex-col overflow-hidden rounded-md border-2 border-amber-400 bg-amber-50/40 shadow-[var(--shadow-xs)]"
+      style={{ top, height: boxH, ...laneStyle }}
+    >
+      <div className="flex items-center gap-1 px-1 pt-0.5 text-[8.5px] font-bold text-amber-700">
+        📍 同住所 {durMin}分占有
+      </div>
+      <div className="flex min-h-0 flex-1 flex-col gap-0.5 px-1 pb-1">
+        {item.visits.map((v) => {
+          const pal = genderPalette(v.patient_sex);
+          return (
+            <button
+              key={v.id}
+              type="button"
+              data-testid={`wtl-visit-${v.id}`}
+              onClick={onPatientClick ? () => onPatientClick(v.patient_id) : undefined}
+              className="flex min-h-0 flex-1 items-center gap-1 overflow-hidden rounded border border-l-[3px] px-1 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary"
+              style={{
+                background: pal.bg,
+                borderColor: pal.ln,
+                borderLeftColor: pal.bar,
+                color: pal.ink,
+              }}
+            >
+              {v.is_pinned && (
+                <span className="shrink-0" aria-label="ピン留め">
+                  <PushPin className="h-2.5 w-2.5" />
+                </span>
+              )}
+              <span className="truncate text-[11px] font-bold leading-tight">
+                {v.patient_name ?? '—'}
+              </span>
+              <span className="tnum ml-auto shrink-0 text-[8.5px] opacity-75">
+                {(v.start_time ?? '').slice(0, 5)}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 全コースを縦積みで一望する (PO要望 2026-07-08)。旧: コース切替セレクタで 1 コース
+ * 深掘り → 新: 稲毛A/B/C… を縦に並べ、縦スクロールで一元閲覧する。
+ * 各コース 1 セクション (= 旧 1 コース盤そのまま)。
+ */
 export function WeekTimelineBoard({
-  selectedTemplateId,
   options,
-  onSelectTemplate,
   visits,
   weekdayDates,
   onPatientClick,
   capacityByWeekday,
-  staffNameByWeekday,
+  staffByWeekday,
 }: WeekTimelineBoardProps) {
+  if (options.length === 0) {
+    return (
+      <div
+        className="rounded-lg border border-border-default bg-bg-muted p-4 text-sm text-text-muted"
+        data-testid="week-timeline-board"
+      >
+        表示対象コースがありません。
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-4" data-testid="week-timeline-board">
+      {options.map((o) => (
+        <CourseWeekSection
+          key={o.templateId}
+          option={o}
+          visits={visits}
+          weekdayDates={weekdayDates}
+          onPatientClick={onPatientClick}
+          capacityByWeekday={capacityByWeekday}
+          staffByWeekday={staffByWeekday}
+        />
+      ))}
+    </div>
+  );
+}
+
+/** 1 コースぶんの週タイムライン (曜日列 × 時間)。旧 WeekTimelineBoard の盤面そのまま。 */
+function CourseWeekSection({
+  option,
+  visits,
+  weekdayDates,
+  onPatientClick,
+  capacityByWeekday,
+  staffByWeekday,
+}: {
+  option: WeekTimelineOption;
+  visits: WeekOverviewVisit[];
+  weekdayDates?: (string | null)[];
+  onPatientClick?: (patientId: string) => void;
+  capacityByWeekday?: (templateId: string, weekday: number) => number;
+  staffByWeekday?: (
+    templateId: string,
+    weekday: number,
+  ) => { name: string; sex?: string | null } | null;
+}) {
   const H = height();
   const hours: number[] = [];
   for (let m = TL_DAY_START_MIN; m <= TL_DAY_END_MIN; m += 120) hours.push(m);
 
-  // selectedTemplate の visits を曜日ごとに束ねる。
+  // このコースの visits を曜日ごとに束ねる。
   const byWeekday = useMemo(() => {
     const map = new Map<number, WeekOverviewVisit[]>();
     for (let wd = 0; wd < 6; wd++) map.set(wd, []);
     for (const v of visits) {
-      if (v.course_template_id !== selectedTemplateId) continue;
+      if (v.course_template_id !== option.templateId) continue;
       if (v.weekday < 0 || v.weekday > 5) continue;
       map.get(v.weekday)!.push(v);
     }
     return map;
-  }, [visits, selectedTemplateId]);
+  }, [visits, option.templateId]);
 
   const rows: number[] = [];
   for (let m = TL_DAY_START_MIN; m < TL_DAY_END_MIN; m += 60) rows.push(m);
 
-  const selected = options.find((o) => o.templateId === selectedTemplateId);
-
   return (
     <div
       className="overflow-hidden rounded-lg border border-border-default bg-bg-base"
-      data-testid="week-timeline-board"
+      data-testid={`wtl-section-${option.templateId}`}
     >
-      {/* コース選択 (縦スペースを消費しない薄い1行) */}
+      {/* コース見出し (縦積みの区切り) */}
       <div className="flex flex-wrap items-center gap-2 border-b border-border-default bg-bg-muted px-3 py-1.5">
-        <span className="text-[10.5px] font-bold text-text-muted">コース</span>
-        <select
-          value={selectedTemplateId}
-          onChange={(ev) => onSelectTemplate(ev.target.value)}
-          data-testid="week-timeline-course-select"
-          className="rounded-md border border-border-default bg-bg-base px-2.5 py-1 text-xs font-bold text-brand-primary focus:border-brand-primary focus:outline-none focus:ring-2 focus:ring-brand-primary-light"
-        >
-          {options.map((o) => (
-            <option key={o.templateId} value={o.templateId}>
-              {o.label}
-            </option>
-          ))}
-        </select>
+        <span className="text-[12px] font-bold text-brand-primary">{option.label}</span>
         <span className="ml-auto text-[10.5px] text-text-muted">
-          {selected?.label ?? ''} の一週間 — 曜日を横に、時間を縦に俯瞰
+          一週間 — 曜日を横に、時間を縦に俯瞰
         </span>
       </div>
 
@@ -214,12 +373,13 @@ export function WeekTimelineBoard({
           <div style={{ width: TIME_RAIL_W, flex: `0 0 ${TIME_RAIL_W}px` }} />
           {WEEKDAY_LABELS.map((d, wd) => {
             const n = byWeekday.get(wd)?.length ?? 0;
-            const cap = capacityByWeekday?.(wd);
-            const staffName = staffNameByWeekday?.(wd) ?? null;
+            const cap = capacityByWeekday?.(option.templateId, wd);
+            const staff = staffByWeekday?.(option.templateId, wd) ?? null;
+            const pal = genderPalette(staff?.sex);
             return (
               <div
                 key={d}
-                className="border-l border-[var(--border-subtle)] px-2.5 py-1.5"
+                className="border-l border-[var(--border-subtle)] px-2 py-1.5"
                 style={{ flex: 1, minWidth: COL_MIN_W }}
               >
                 <div className="text-[12px] font-bold text-text-primary">
@@ -230,13 +390,28 @@ export function WeekTimelineBoard({
                     </span>
                   )}
                 </div>
-                {/* 曜日ごとの担当スタッフ名 (稲毛B でも 月=田中 / 火=佐藤 のように異なり得る)。 */}
-                <div className="truncate text-[11px] font-semibold text-text-secondary">
-                  {staffName ?? '（未割当）'}
-                </div>
-                <div className="tnum text-[9.5px] text-text-muted">
-                  {n}
-                  {cap != null ? `/${cap}` : ''}件
+                {/* 曜日ごとの担当スタッフ: 日ビューヘッダと同じ性別色アバター + 太字名。 */}
+                <div className="mt-0.5 flex items-center gap-1.5">
+                  <span
+                    className="grid h-6 w-6 shrink-0 place-items-center rounded-full border-[1.5px] text-[10px] font-bold"
+                    style={{
+                      background: pal.bg,
+                      borderColor: pal.bar,
+                      color: pal.ink,
+                    }}
+                    data-testid={`wtl-staff-avatar-${option.templateId}-${wd}`}
+                  >
+                    {staff?.name?.[0] ?? '—'}
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block truncate text-[11.5px] font-bold text-text-primary">
+                      {staff?.name ?? '（未割当）'}
+                    </span>
+                    <span className="tnum block text-[9.5px] leading-tight text-text-muted">
+                      {n}
+                      {cap != null ? `/${cap}` : ''}件
+                    </span>
+                  </span>
                 </div>
               </div>
             );
@@ -263,7 +438,7 @@ export function WeekTimelineBoard({
               key={d}
               className="relative border-l border-[var(--border-subtle)]"
               style={{ flex: 1, minWidth: COL_MIN_W }}
-              data-testid={`wtl-col-${wd}`}
+              data-testid={`wtl-col-${option.templateId}-${wd}`}
             >
               {rows.map((m) => (
                 <div
@@ -273,31 +448,29 @@ export function WeekTimelineBoard({
                 />
               ))}
               {(() => {
-                const dayVisits = (byWeekday.get(wd) ?? [])
-                  .slice()
-                  .sort((a, b) => (parseHM(a.start_time) ?? 0) - (parseHM(b.start_time) ?? 0));
-                // 重なり訪問を左右レーンに分割 (相互に隠さない・MED-2)。
+                // 同住所・同時刻2名は90分占有ペアに束ね、描画単位 (単独/ペア) 同士で
+                // 重なるときのみ左右レーンに分割 (日ビューと同じ規則)。
+                const items = buildWeekRenderItems(byWeekday.get(wd) ?? []);
                 const lanes = assignLanes(
-                  dayVisits
-                    .map((v) => {
-                      const s = parseHM(v.start_time);
-                      const e = parseHM(v.end_time) ?? (s !== null ? s + 35 : null);
-                      return s !== null && e !== null && e > s
-                        ? { id: v.id, startMin: s, endMin: e }
-                        : null;
-                    })
-                    .filter(
-                      (b): b is { id: string; startMin: number; endMin: number } => b !== null,
-                    ),
+                  items.map((it) => ({ id: it.id, startMin: it.startMin, endMin: it.endMin })),
                 );
-                return dayVisits.map((v) => (
-                  <WeekCard
-                    key={v.id}
-                    v={v}
-                    laneInfo={lanes.get(v.id)}
-                    onClick={onPatientClick ? () => onPatientClick(v.patient_id) : undefined}
-                  />
-                ));
+                return items.map((it) =>
+                  it.kind === 'pair' ? (
+                    <WeekPairBox
+                      key={it.id}
+                      item={it}
+                      laneInfo={lanes.get(it.id)}
+                      onPatientClick={onPatientClick}
+                    />
+                  ) : (
+                    <WeekCard
+                      key={it.id}
+                      v={it.v}
+                      laneInfo={lanes.get(it.id)}
+                      onClick={onPatientClick ? () => onPatientClick(it.v.patient_id) : undefined}
+                    />
+                  ),
+                );
               })()}
               <div style={{ height: H }} />
             </div>

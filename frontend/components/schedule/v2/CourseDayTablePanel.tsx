@@ -33,7 +33,7 @@
  *   - admin / manager: 編集可 (ドロップ + 担当変更 + 主要 4 + 二次操作 + 個別 reset)
  *   - staff: 閲覧のみ
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   DndContext,
   DragOverlay,
@@ -134,8 +134,10 @@ import {
 import { CourseWeekOverview, type WeekOverviewVisit } from './CourseWeekOverview';
 import {
   parseTlColDroppableId,
+  parseTlPairDraggableId,
   parseTlVisitDraggableId,
   TimelineDayBoard,
+  TlPairDragGhost,
   TlVisitDragGhost,
   type TimelineCourseColumn,
 } from '@/components/schedule/timeline/TimelineDayBoard';
@@ -144,7 +146,7 @@ import {
   type WeekTimelineOption,
 } from '@/components/schedule/timeline/WeekTimelineBoard';
 import { PartnerCourseDialog } from './PartnerCourseDialog';
-import { PatientCard } from './PatientCard';
+import { PatientCard, type PatientCardData } from './PatientCard';
 import { PatientScheduleDetailDialog } from './PatientScheduleDetailDialog';
 import { POOL_DROPPABLE_ID, buildPoolDraggableId, parsePoolDraggableId } from './PoolPanel';
 import { PoolOverviewPane } from './PoolOverviewPane';
@@ -158,6 +160,7 @@ import {
   BUSINESS_BLOCKS,
   fmtHM,
   parseHM,
+  SAME_ADDRESS_PAIR_MIN_OCCUPANCY,
   type FreeGap,
 } from '@/lib/scheduling/freeGaps';
 // T-2 ②-b: タイムラインカード DnD (15分スナップ) → 二択 (この週だけ/固定パターン)。
@@ -302,10 +305,8 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
   // timeline  = 縦タイムライン (T-1・時間比例カード / 読み取り専用).
   //   docs/plans/schedule-timeline-redesign-design.md。既定は table (現場の日常を変えない)。
   const [weekdayViewMode, setWeekdayViewMode] = useState<'table' | 'list' | 'timeline'>('table');
-  // T-3: 週タブの見え方。overview=既存の全コース俯瞰(既定・全機能温存) / timeline=週タイムライン(1コース深掘り)。
+  // T-3: 週タブの見え方。overview=既存の全コース俯瞰(既定・全機能温存) / timeline=週タイムライン(全コース縦積み)。
   const [weekViewMode, setWeekViewMode] = useState<'overview' | 'timeline'>('overview');
-  // 週タイムラインで選択中のコース (course_template_id)。
-  const [weekTimelineTemplateId, setWeekTimelineTemplateId] = useState<string | null>(null);
 
   // ─── Master data ────────────────────────────────────────────────────
   const officesQuery = useOffices({ limit: 50 });
@@ -1108,10 +1109,20 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         patient_requires_multiple_staff:
           (patient as { requires_multiple_staff?: boolean | null } | undefined)
             ?.requires_multiple_staff === true,
+        // 週タイムラインの同住所・同時刻ペア (90分占有ボックス) 判定用。
+        same_address_key: sameAddressKeyByPatientId.get(v.patient_id) ?? null,
       });
     }
     return out;
-  }, [weekVisits, courseTemplateByCourseId, courses, patientById, pfvByVisitKey, visitsByGroupId]);
+  }, [
+    weekVisits,
+    courseTemplateByCourseId,
+    courses,
+    patientById,
+    pfvByVisitKey,
+    visitsByGroupId,
+    sameAddressKeyByPatientId,
+  ]);
 
   const officeNameById = useMemo(() => {
     const m = new Map<string, string>();
@@ -1181,6 +1192,13 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
   const [activeVisitId, setActiveVisitId] = useState<string | null>(null);
   // タイムラインカードのドラッグ中はカード実寸ゴーストを DragOverlay に出す。
   const [activeTlVisit, setActiveTlVisit] = useState<CourseGridVisit | null>(null);
+  // 同住所ペア (2名セット) ドラッグ中のペアボックス実寸ゴースト。
+  const [activeTlPairVisits, setActiveTlPairVisits] = useState<CourseGridVisit[] | null>(null);
+  // プールカードのゴースト用: renderCard が描画のたびに「draggableId → 表示中の
+  // PatientCardData」を記録し、ドラッグ開始時にそのまま流用する (= 掴んだカードと
+  // 完全に同じ情報でゴーストを出す。ref への書込は冪等でレンダーに影響しない)。
+  const poolCardDataRef = useRef(new Map<string, PatientCardData>());
+  const [activePoolCard, setActivePoolCard] = useState<PatientCardData | null>(null);
   const placeAndFixMut = usePlaceAndFix();
   const deleteVisitMut = useDeleteVisit();
   // ─── Wave U-3: 戻る/進む (undo/redo) ────────────────────────────────────
@@ -1196,19 +1214,20 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
   //   D&D は動的な患者を対象にするため (hooks 規則上バインド済みの単体版フックは
   //   使えない)、patient_ids 配列を渡せる bulk 版フックを 1 患者で流用する。
   const bulkSyncWeekToFixedMut = useBulkSyncWeekToFixedMutation();
+  // 同住所ペアの2名セット移動でも一括昇格できるよう patient_ids 配列を受ける。
   const promoteWeekToFixed = useCallback(
-    (patientId: string, patientName: string) => {
+    (patientIds: string[], label: string) => {
       bulkSyncWeekToFixedMut.mutate(
-        { patient_ids: [patientId], iso_year: isoYear, iso_week: isoWeek, dry_run: false },
+        { patient_ids: patientIds, iso_year: isoYear, iso_week: isoWeek, dry_run: false },
         {
           onSuccess: (res) => {
             if (res.transaction_applied) {
-              toast.success(`${patientName} の今週の配置を固定訪問週間（毎週の型）に登録しました`);
+              toast.success(`${label} の今週の配置を固定訪問週間（毎週の型）に登録しました`);
             } else {
-              toast.warning(`${patientName} の固定訪問週間への登録は行われませんでした`);
+              toast.warning(`${label} の固定訪問週間への登録は行われませんでした`);
             }
           },
-          onError: () => toast.error(`${patientName} の固定訪問週間への登録に失敗しました`),
+          onError: () => toast.error(`${label} の固定訪問週間への登録に失敗しました`),
         },
       );
     },
@@ -1216,9 +1235,9 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
   );
   /** Wave U-2: 「この週だけ」配置の成功トーストに付ける昇格アクション。 */
   const promoteToastAction = useCallback(
-    (patientId: string, patientName: string) => ({
+    (patientIds: string[], label: string) => ({
       label: '毎週の型にも登録',
-      onClick: () => promoteWeekToFixed(patientId, patientName),
+      onClick: () => promoteWeekToFixed(patientIds, label),
     }),
     [promoteWeekToFixed],
   );
@@ -1350,7 +1369,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         toast.success(
           `${pname} を ${startHM} に配置しました（今週のみ・毎週の型は変更していません）`,
           {
-            action: promoteToastAction(patientId, pname),
+            action: promoteToastAction([patientId], pname),
             // ②-c: op-log 記録済みのためトーストから直接 undo できる。
             cancel: { label: '元に戻す', onClick: () => void handleUndo() },
           },
@@ -1410,44 +1429,52 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
   // week = 既存 visit-move-week-only をそのまま叩く (PFV 不変・op-log 記録・BE ピン422)。
   // pattern = 同じ移動 + 週→型同期 (promoteWeekToFixed = 既存トースト昇格と同義)。
   const visitMoveWeekOnlyMut = useVisitMoveWeekOnly();
+  // visits は 1 件 (単独カード) or 2 件 (同住所ペア = 2名セット移動)。
   const [tlMoveState, setTlMoveState] = useState<{
-    visit: CourseGridVisit;
+    visits: CourseGridVisit[];
     fromCol: TimelineCourseColumn;
     toCol: TimelineCourseColumn;
     newStartMin: number;
+    /** 表示用の占有分 (ペアは90分占有)。 */
     durationMin: number;
   } | null>(null);
 
   const handleTlMoveConfirm = useCallback(
     async (scope: ChangeScopeValue) => {
       const st = tlMoveState;
-      if (!st) return;
-      const pname =
-        patientById.get(st.visit.patient_id)?.name ?? st.visit.patient_name ?? st.visit.patient_id;
+      if (!st || st.visits.length === 0) return;
+      const names = st.visits.map(
+        (v) => patientById.get(v.patient_id)?.name ?? v.patient_name ?? v.patient_id,
+      );
+      const label = st.visits.length >= 2 ? `${names.join('・')}（同住所2名）` : names[0]!;
+      const patientIds = st.visits.map((v) => v.patient_id);
       const courseChanged = st.toCol.template.id !== st.fromCol.template.id;
       try {
+        // 2名セットは同一 op_group_id で連続移動 (undo で両方まとめて戻る)。
         const opGroupId = crypto.randomUUID();
-        await visitMoveWeekOnlyMut.mutateAsync({
-          iso_year: isoYear,
-          iso_week: isoWeek,
-          patient_id: st.visit.patient_id,
-          old_weekday: activeWeekday,
-          old_start_time: (st.visit.start_time ?? '').slice(0, 5),
-          new_weekday: activeWeekday,
-          new_start_time: fmtHM(st.newStartMin),
-          ...(courseChanged ? { new_course_template_id: st.toCol.template.id } : {}),
-          op_group_id: opGroupId,
-        });
+        for (const v of st.visits) {
+          await visitMoveWeekOnlyMut.mutateAsync({
+            iso_year: isoYear,
+            iso_week: isoWeek,
+            patient_id: v.patient_id,
+            old_weekday: activeWeekday,
+            old_start_time: (v.start_time ?? '').slice(0, 5),
+            new_weekday: activeWeekday,
+            new_start_time: fmtHM(st.newStartMin),
+            ...(courseChanged ? { new_course_template_id: st.toCol.template.id } : {}),
+            op_group_id: opGroupId,
+          });
+        }
         invalidateOpLog(isoYear, isoWeek);
         if (scope === 'pattern') {
           // 週→型同期の成功/失敗トーストは promoteWeekToFixed 側が出す。
-          toast.success(`${pname} を ${fmtHM(st.newStartMin)} に移動しました`);
-          promoteWeekToFixed(st.visit.patient_id, pname);
+          toast.success(`${label} を ${fmtHM(st.newStartMin)} に移動しました`);
+          promoteWeekToFixed(patientIds, label);
         } else {
           toast.success(
-            `${pname} を ${fmtHM(st.newStartMin)} に移動しました（今週のみ・毎週の型は変更していません）`,
+            `${label} を ${fmtHM(st.newStartMin)} に移動しました（今週のみ・毎週の型は変更していません）`,
             {
-              action: promoteToastAction(st.visit.patient_id, pname),
+              action: promoteToastAction(patientIds, label),
               // ②-c: op-log 記録済みのためトーストから直接 undo できる。
               cancel: { label: '元に戻す', onClick: () => void handleUndo() },
             },
@@ -1498,6 +1525,8 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     const id = String(e.active.id);
     setActivePatientId(parsePatientDraggableId(id));
     setActiveVisitId(parseVisitDraggableId(id));
+    // プールカード: 表示中と同一のデータでカード実寸ゴーストを出す (情報を落とさない)。
+    setActivePoolCard(poolCardDataRef.current.get(id) ?? null);
     // T-2 ②-b改: タイムラインカードはカード実寸ゴースト (TlVisitDragGhost) を出すため
     // visit オブジェクトごと保持する (時間=面積のままドラッグ・A-1 PO要望)。
     const tlId = parseTlVisitDraggableId(id);
@@ -1514,6 +1543,17 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     } else {
       setActiveTlVisit(null);
     }
+    // 同住所ペア (2名セット) のドラッグはペアボックス実寸ゴースト。
+    const pairIds = parseTlPairDraggableId(id);
+    if (pairIds) {
+      const col = timelineColumns.find((c) => c.visits.some((v) => v.id === pairIds[0]));
+      const vs = pairIds
+        .map((vid) => col?.visits.find((v) => v.id === vid))
+        .filter((v): v is CourseGridVisit => v != null);
+      setActiveTlPairVisits(vs.length === 2 ? vs : null);
+    } else {
+      setActiveTlPairVisits(null);
+    }
   };
 
   /**
@@ -1527,6 +1567,8 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     setActivePatientId(null);
     setActiveVisitId(null);
     setActiveTlVisit(null);
+    setActiveTlPairVisits(null);
+    setActivePoolCard(null);
     const { active, over } = e;
     if (!over) return;
     const activeId = String(active.id);
@@ -1547,29 +1589,41 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     // 既存テーブル DnD (visit:/course-day-cell:) とは id 名前空間で分離。
     // ドロップ位置 = カードの translated top − 列 rect top → snapYOffsetToMinutes。
     const tlVisitId = parseTlVisitDraggableId(activeId);
-    if (tlVisitId) {
+    const tlPairIds = parseTlPairDraggableId(activeId);
+    if (tlVisitId || tlPairIds) {
       const colKey = parseTlColDroppableId(overId);
       if (!colKey) return; // タイムライン外へのドロップは無効 (何もしない)
       const toCol = timelineColumns.find((c) => c.key === colKey);
-      const fromCol = timelineColumns.find((c) => c.visits.some((v) => v.id === tlVisitId));
-      const visit = fromCol?.visits.find((v) => v.id === tlVisitId);
-      if (!toCol || !fromCol || !visit) return;
-      const oldStartMin = parseHM(visit.start_time);
-      const oldEndMin = parseHM(visit.end_time);
-      if (oldStartMin === null || oldEndMin === null || oldEndMin <= oldStartMin) return;
-      const durationMin = oldEndMin - oldStartMin;
+      const wantIds = tlPairIds ?? [tlVisitId!];
+      const fromCol = timelineColumns.find((c) => c.visits.some((v) => v.id === wantIds[0]));
+      const visits = wantIds
+        .map((id) => fromCol?.visits.find((v) => v.id === id))
+        .filter((v): v is CourseGridVisit => v != null);
+      if (!toCol || !fromCol || visits.length !== wantIds.length) return;
+      const oldStartMin = parseHM(visits[0]!.start_time);
+      if (oldStartMin === null) return;
+      // 占有分: 単独=実所要 / 同住所ペア=90分占有 (実所要が超えるならそちら)。
+      let occupancyMin = 0;
+      for (const v of visits) {
+        const e = parseHM(v.end_time);
+        if (e === null || e <= oldStartMin) return;
+        occupancyMin = Math.max(occupancyMin, e - oldStartMin);
+      }
+      if (visits.length >= 2) {
+        occupancyMin = Math.max(occupancyMin, SAME_ADDRESS_PAIR_MIN_OCCUPANCY);
+      }
       const translatedTop = active.rect.current.translated?.top ?? null;
       const overTop = over.rect?.top ?? null;
       if (translatedTop === null || overTop === null) return;
       const newStartMin = snapYOffsetToMinutes(translatedTop - overTop);
-      // 置けない場所 = 営業時間レンジ外 (9:00〜18:00 に収まらない)。
-      if (newStartMin < TL_DAY_START_MIN || newStartMin + durationMin > TL_DAY_END_MIN) {
+      // 置けない場所 = 営業時間レンジ外 (ペアは90分占有ぶんで判定)。
+      if (newStartMin < TL_DAY_START_MIN || newStartMin + occupancyMin > TL_DAY_END_MIN) {
         toast.warning('この位置には置けません（9:00〜18:00 の範囲に収まるように移動してください）');
         return;
       }
       // 同一コース・同時刻へのドロップは noop。
       if (toCol.key === fromCol.key && newStartMin === oldStartMin) return;
-      setTlMoveState({ visit, fromCol, toCol, newStartMin, durationMin });
+      setTlMoveState({ visits, fromCol, toCol, newStartMin, durationMin: occupancyMin });
       return;
     }
 
@@ -1746,7 +1800,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         toast.success(
           `${pname} を ${cell.time} に配置しました（今週のみ・毎週の型は変更していません）`,
           {
-            action: promoteToastAction(patientId, pname),
+            action: promoteToastAction([patientId], pname),
           },
         );
       } catch (err) {
@@ -1850,7 +1904,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
             toast.success(
               `${pname} を ${cell.time} に移動しました（今週のみ・毎週の型は変更していません）`,
               {
-                action: promoteToastAction(v.patient_id, pname),
+                action: promoteToastAction([v.patient_id], pname),
               },
             );
           } catch (e2) {
@@ -1920,7 +1974,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
       toast.success(
         `${pname} を ${ds.time} に 2 名体制で配置しました（今週のみ・毎週の型は変更していません）`,
         {
-          action: promoteToastAction(ds.patientId, pname),
+          action: promoteToastAction([ds.patientId], pname),
         },
       );
     } catch (err) {
@@ -2483,34 +2537,27 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
       });
   }, [templates, offices, officeNameById]);
 
-  // 選択中コースの既定値 (未選択・無効なら先頭にフォールバック)。
-  const effectiveWeekTemplateId = useMemo(
-    () =>
-      weekTimelineTemplateId &&
-      weekTimelineOptions.some((o) => o.templateId === weekTimelineTemplateId)
-        ? weekTimelineTemplateId
-        : (weekTimelineOptions[0]?.templateId ?? ''),
-    [weekTimelineTemplateId, weekTimelineOptions],
-  );
-
-  // 週タイムライン: 選択中コースの各曜日の実効定員 (週ビュー固有価値=受入可能数を移植).
+  // 週タイムライン (全コース縦積み): コース×曜日の実効定員 (受入可能数)。
   const weekTimelineCapacityByWeekday = useCallback(
-    (weekday: number): number => {
-      const t = templates.find((tpl) => tpl.id === effectiveWeekTemplateId);
+    (templateId: string, weekday: number): number => {
+      const t = templates.find((tpl) => tpl.id === templateId);
       if (!t) return 0;
       return effectiveCapacity(t, weekday, staffCountFor(t.office_id, weekday), courseCodesMax);
     },
-    [templates, effectiveWeekTemplateId, staffCountFor, courseCodesMax],
+    [templates, staffCountFor, courseCodesMax],
   );
 
-  // 週タイムライン: 選択中コースの各曜日の担当スタッフ名 (曜日ごとに担当が異なり得る).
-  const weekTimelineStaffNameByWeekday = useCallback(
-    (weekday: number): string | null => {
-      const staffId = assignedStaffByTemplateWeekday.get(`${effectiveWeekTemplateId}:${weekday}`);
+  // 週タイムライン: コース×曜日の担当スタッフ (曜日ごとに担当が異なり得る)。
+  // 日ビューヘッダと同じ性別色アバターを出すため name + sex を返す。
+  const weekTimelineStaffByWeekday = useCallback(
+    (templateId: string, weekday: number): { name: string; sex?: string | null } | null => {
+      const staffId = assignedStaffByTemplateWeekday.get(`${templateId}:${weekday}`);
       if (!staffId) return null;
-      return staffMap.get(staffId)?.name ?? null;
+      const staff = staffMap.get(staffId);
+      if (!staff) return null;
+      return { name: staff.name, sex: (staff as { sex?: string | null }).sex ?? null };
     },
-    [assignedStaffByTemplateWeekday, effectiveWeekTemplateId, staffMap],
+    [assignedStaffByTemplateWeekday, staffMap],
   );
 
   // 週の曜日ヘッダ日付 (0=Mon..5=Sat)。
@@ -2962,16 +3009,14 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                 className="space-y-2"
               >
                 {weekViewMode === 'timeline' ? (
-                  /* T-3: 週タイムライン (曜日列・1コース深掘り). 全コース俯瞰は「一覧」が担う. */
+                  /* T-3改: 週タイムライン (全コース縦積み・縦スクロールで一元閲覧). */
                   <WeekTimelineBoard
-                    selectedTemplateId={effectiveWeekTemplateId}
                     options={weekTimelineOptions}
-                    onSelectTemplate={setWeekTimelineTemplateId}
                     visits={overviewVisits}
                     weekdayDates={weekdayDates}
                     onPatientClick={handleOpenPatientDetail}
                     capacityByWeekday={weekTimelineCapacityByWeekday}
-                    staffNameByWeekday={weekTimelineStaffNameByWeekday}
+                    staffByWeekday={weekTimelineStaffByWeekday}
                   />
                 ) : (
                   <CourseWeekOverview
@@ -3089,7 +3134,9 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                           void handleDeleteVisit(visitId, patientName);
                         }}
                         onPatientClick={handleOpenPatientDetail}
-                        onPromoteWeekOnly={promoteWeekToFixed}
+                        onPromoteWeekOnly={(patientId, patientName) =>
+                          promoteWeekToFixed([patientId], patientName)
+                        }
                         // Phase G-21 T4 reviewer C2: 🔒 完全固定 toggle を wire-up.
                         // CourseDayTable 側で canEdit=true && onTogglePin 指定時のみ
                         // button を描画する (= staff role は表示なし).
@@ -3148,31 +3195,34 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                   !isMultiStaff && patientShortageById.has(p.id)
                     ? (patientShortageById.get(p.id) ?? null)
                     : null;
+                const draggableId = buildPoolDraggableId(p.id, slotInfo.slotIndex);
+                const cardData: PatientCardData = {
+                  id: p.id,
+                  name: p.name,
+                  // タイムラインカードと同じ性別ウォッシュ意匠 (A-1 PO要望)。
+                  sex: (p as { sex?: string | null }).sex ?? null,
+                  caption: p.kana ?? undefined,
+                  preferredTimeLabel: formatPreferredTimeLabel(wp),
+                  serviceMinutes: wp.service_minutes ?? undefined,
+                  sexRestriction:
+                    (p.sex_restriction as 'female_only' | 'male_only' | null | undefined) ?? null,
+                  requiresMultipleStaff:
+                    (p as { requires_multiple_staff?: boolean | null }).requires_multiple_staff ??
+                    null,
+                  patientStatus: p.status ?? null,
+                  slotIndex: slotInfo.slotIndex,
+                  partnerAssigned: slotInfo.partnerAssigned,
+                  // Wave 38: 相方の現在地ラベル ("本店-A 15:00" など) を素通しする.
+                  partnerLocationLabel: slotInfo.partnerLocationLabel ?? null,
+                  // Phase G-44: 「希望 N、配置 X、不足 Y」 のラベル表示.
+                  shortageInfo,
+                };
+                // ドラッグ開始時にゴーストへ流用するため「表示中のデータ」を記録。
+                poolCardDataRef.current.set(draggableId, cardData);
                 return (
                   <PatientCard
-                    draggableId={buildPoolDraggableId(p.id, slotInfo.slotIndex)}
-                    patient={{
-                      id: p.id,
-                      name: p.name,
-                      // タイムラインカードと同じ性別ウォッシュ意匠 (A-1 PO要望)。
-                      sex: (p as { sex?: string | null }).sex ?? null,
-                      caption: p.kana ?? undefined,
-                      preferredTimeLabel: formatPreferredTimeLabel(wp),
-                      serviceMinutes: wp.service_minutes ?? undefined,
-                      sexRestriction:
-                        (p.sex_restriction as 'female_only' | 'male_only' | null | undefined) ??
-                        null,
-                      requiresMultipleStaff:
-                        (p as { requires_multiple_staff?: boolean | null })
-                          .requires_multiple_staff ?? null,
-                      patientStatus: p.status ?? null,
-                      slotIndex: slotInfo.slotIndex,
-                      partnerAssigned: slotInfo.partnerAssigned,
-                      // Wave 38: 相方の現在地ラベル ("本店-A 15:00" など) を素通しする.
-                      partnerLocationLabel: slotInfo.partnerLocationLabel ?? null,
-                      // Phase G-44: 「希望 N、配置 X、不足 Y」 のラベル表示.
-                      shortageInfo,
-                    }}
+                    draggableId={draggableId}
+                    patient={cardData}
                     disabled={!canEdit}
                     // 保留プールの患者カードクリックで詳細 + プール投入提案を開く.
                     onCardClick={() => handleOpenPoolPatientDetail(p.id)}
@@ -3186,26 +3236,35 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         <DragOverlay>
           {/* タイムラインカード: カード実寸ゴースト (時間=面積のまま動く)。 */}
           {activeTlVisit ? <TlVisitDragGhost visit={activeTlVisit} /> : null}
-          {activePatientId
-            ? (() => {
-                // プールカード: タイムラインと同じ性別ウォッシュのカード実寸ゴースト。
-                const p = patientById.get(activePatientId);
-                const pal = genderPalette((p as { sex?: string | null } | undefined)?.sex);
-                return (
-                  <div
-                    className="flex h-full w-full cursor-grabbing items-center rounded-lg border border-l-[3px] px-2 py-1 text-xs font-bold shadow-[var(--shadow-md)]"
-                    style={{
-                      background: pal.bg,
-                      borderColor: pal.ln,
-                      borderLeftColor: pal.bar,
-                      color: pal.ink,
-                    }}
-                  >
-                    {p?.name ?? activePatientId}
-                  </div>
-                );
-              })()
-            : null}
+          {/* 同住所ペア: 2名セットのままペアボックス実寸ゴースト。 */}
+          {activeTlPairVisits ? <TlPairDragGhost visits={activeTlPairVisits} /> : null}
+          {activePoolCard ? (
+            // プールカード: 表示中と同一情報のカード実寸ゴースト (PatientCard 流用)。
+            <PatientCard
+              ghost
+              draggableId={buildPoolDraggableId(activePoolCard.id, activePoolCard.slotIndex)}
+              patient={activePoolCard}
+            />
+          ) : activePatientId ? (
+            (() => {
+              // フォールバック (ref 未登録時): 性別ウォッシュの簡易ゴースト。
+              const p = patientById.get(activePatientId);
+              const pal = genderPalette((p as { sex?: string | null } | undefined)?.sex);
+              return (
+                <div
+                  className="flex h-full w-full cursor-grabbing items-center rounded-lg border border-l-[3px] px-2 py-1 text-xs font-bold shadow-[var(--shadow-md)]"
+                  style={{
+                    background: pal.bg,
+                    borderColor: pal.ln,
+                    borderLeftColor: pal.bar,
+                    color: pal.ink,
+                  }}
+                >
+                  {p?.name ?? activePatientId}
+                </div>
+              );
+            })()
+          ) : null}
           {activeVisitId
             ? (() => {
                 const v = visitById.get(activeVisitId);
@@ -3271,14 +3330,18 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
           context={
             tlMoveState
               ? {
-                  patientName:
-                    patientById.get(tlMoveState.visit.patient_id)?.name ??
-                    tlMoveState.visit.patient_name ??
-                    tlMoveState.visit.patient_id,
+                  patientName: (() => {
+                    const names = tlMoveState.visits.map(
+                      (v) => patientById.get(v.patient_id)?.name ?? v.patient_name ?? v.patient_id,
+                    );
+                    return tlMoveState.visits.length >= 2
+                      ? `${names.join('・')}（同住所2名セット）`
+                      : (names[0] ?? '');
+                  })(),
                   fromLabel: `${tlMoveState.fromCol.officeName}${tlMoveState.fromCol.template.label}`,
                   toLabel: `${tlMoveState.toCol.officeName}${tlMoveState.toCol.template.label}`,
                   weekdayLabel: WEEKDAY_LABELS[activeWeekday] ?? '',
-                  oldTimeHM: (tlMoveState.visit.start_time ?? '').slice(0, 5),
+                  oldTimeHM: (tlMoveState.visits[0]?.start_time ?? '').slice(0, 5),
                   newTimeHM: fmtHM(tlMoveState.newStartMin),
                   durationMin: tlMoveState.durationMin,
                   courseChanged: tlMoveState.toCol.template.id !== tlMoveState.fromCol.template.id,

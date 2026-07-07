@@ -124,6 +124,12 @@ export interface PatientCardProps {
    * 未指定ならクリックは無反応 (従来どおり D&D 専用)。
    */
   onCardClick?: () => void;
+  /**
+   * DragOverlay 用ゴーストモード。true のとき draggable として機能せず
+   * (id は ghost- 接頭辞・disabled)、オーバーレイいっぱい (h-full/w-full) に
+   * カードと同じ内容を描く。ドラッグ中も表示情報を 1 つも落とさないための流用。
+   */
+  ghost?: boolean;
 }
 
 /**
@@ -142,10 +148,13 @@ export function PatientCard({
   disabled = false,
   compact = false,
   onCardClick,
+  ghost = false,
 }: PatientCardProps) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
-    id: draggableId,
-    disabled,
+    // ghost は DragOverlay 内の描画専用。実 draggable と id が衝突しないよう接頭辞を付け
+    // disabled で登録だけに留める (hooks は無条件呼び出しが必要なため分岐しない)。
+    id: ghost ? `ghost-overlay:${draggableId}` : draggableId,
+    disabled: disabled || ghost,
     data: { patientId: patient.id, staffCount },
   });
 
@@ -192,8 +201,8 @@ export function PatientCard({
   const pal = !isPlaced && patient.sex !== undefined ? genderPalette(patient.sex) : null;
 
   const style: React.CSSProperties = {
-    transform: CSS.Translate.toString(transform),
-    opacity: isDragging ? 0.4 : 1,
+    transform: ghost ? undefined : CSS.Translate.toString(transform),
+    opacity: !ghost && isDragging ? 0.4 : 1,
     ...(pal
       ? isMultiSlotCardEarly
         ? { background: pal.bg, color: pal.ink }
@@ -251,7 +260,11 @@ export function PatientCard({
             ),
         // W37 Phase 3-B: 2 名体制カードはペアで同色の左ボーダーを強調表示
         isMultiSlotCard && 'border-l-4 border-l-brand-primary',
-        disabled ? 'cursor-not-allowed opacity-60' : 'cursor-grab active:cursor-grabbing',
+        ghost
+          ? 'h-full w-full cursor-grabbing shadow-[var(--shadow-md)]'
+          : disabled
+            ? 'cursor-not-allowed opacity-60'
+            : 'cursor-grab active:cursor-grabbing',
       )}
       {...listeners}
       {...attributes}

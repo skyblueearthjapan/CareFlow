@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { CourseGridVisit } from '@/components/schedule/v2/CourseDayTable';
 import {
   TimelineDayBoard,
+  TlPairDragGhost,
   TlVisitDragGhost,
   type TimelineCourseColumn,
 } from '@/components/schedule/timeline/TimelineDayBoard';
@@ -335,6 +336,107 @@ describe('TimelineDayBoard', () => {
     expect(screen.getByText('青柳 あい')).toBeInTheDocument();
     expect(screen.getByText(/09:30・45分/)).toBeInTheDocument();
     expect(ghost.querySelector('[data-icon="push-pin"]')).not.toBeNull();
+  });
+
+  it('住所は45分以上のカードに📍行で出て、title でも読める (A-1)', () => {
+    render(
+      <TimelineDayBoard
+        columns={[
+          column({
+            key: 'c1',
+            visits: [
+              visit({
+                id: 'long',
+                start_time: '09:30:00',
+                end_time: '10:30:00',
+                patient_address: '稲毛区小仲台2-5',
+              }),
+              visit({
+                id: 'short',
+                start_time: '11:00:00',
+                end_time: '11:15:00',
+                patient_address: '稲毛区園生町100',
+              }),
+            ],
+          }),
+        ]}
+        weekdayLabel="月"
+      />,
+    );
+    // 60分カード → 📍住所行が見える (2行目との重複はしない = 1回だけ)。
+    expect(screen.getAllByText('稲毛区小仲台2-5')).toHaveLength(1);
+    // 15分の極小カード (高さ30px) → 行は出ないが title で読める。
+    expect(screen.queryByText('稲毛区園生町100')).toBeNull();
+    expect(screen.getByTestId('tl-visit-short').getAttribute('title')).toBe('稲毛区園生町100');
+  });
+
+  it('同住所ペアボックスは dndEnabled で2名セットのまま掴める (ピン含みは不可)', () => {
+    render(
+      <DndContext>
+        <TimelineDayBoard
+          columns={[
+            column({
+              key: 'c1',
+              visits: [
+                visit({
+                  id: 'pa',
+                  start_time: '09:30:00',
+                  end_time: '10:05:00',
+                  same_address_group_id: 'g1',
+                  patient_id: 'p-pa',
+                }),
+                visit({
+                  id: 'pb',
+                  start_time: '09:30:00',
+                  end_time: '10:05:00',
+                  same_address_group_id: 'g1',
+                  patient_id: 'p-pb',
+                }),
+                visit({
+                  id: 'qa',
+                  start_time: '13:00:00',
+                  end_time: '13:35:00',
+                  same_address_group_id: 'g2',
+                  patient_id: 'p-qa',
+                  is_pinned: true,
+                }),
+                visit({
+                  id: 'qb',
+                  start_time: '13:00:00',
+                  end_time: '13:35:00',
+                  same_address_group_id: 'g2',
+                  patient_id: 'p-qb',
+                }),
+              ],
+            }),
+          ]}
+          weekdayLabel="月"
+          dndEnabled
+        />
+      </DndContext>,
+    );
+    const okPair = screen.getByTestId('tl-pair-pair:pa:pb');
+    expect(okPair.getAttribute('data-tl-drag')).toBe('enabled');
+    // ピンを含むペアは掴めない + shake で拒否。
+    const pinnedPair = screen.getByTestId('tl-pair-pair:qa:qb');
+    expect(pinnedPair.getAttribute('data-tl-drag')).toBe('disabled');
+    fireEvent.pointerDown(pinnedPair);
+    expect(pinnedPair.className).toContain('tl-shake');
+  });
+
+  it('TlPairDragGhost は2名セットのまま描く', () => {
+    render(
+      <TlPairDragGhost
+        visits={[
+          visit({ id: 'g1', patient_name: '安永 一', patient_sex: 'female' }),
+          visit({ id: 'g2', patient_name: '菅原 二', patient_sex: 'male' }),
+        ]}
+      />,
+    );
+    expect(screen.getByTestId('tl-pair-drag-ghost')).toBeInTheDocument();
+    expect(screen.getByText('安永 一')).toBeInTheDocument();
+    expect(screen.getByText('菅原 二')).toBeInTheDocument();
+    expect(screen.getByText(/同住所 2名セット/)).toBeInTheDocument();
   });
 
   it('コース0件は案内を出す', () => {

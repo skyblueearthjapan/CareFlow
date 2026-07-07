@@ -6,6 +6,7 @@ import {
   WeekTimelineBoard,
   type WeekTimelineOption,
 } from '@/components/schedule/timeline/WeekTimelineBoard';
+import { genderPalette } from '@/lib/scheduling/timeline';
 
 const OPTIONS: WeekTimelineOption[] = [
   { templateId: 't1', label: '稲毛A・田中 一郎' },
@@ -22,13 +23,20 @@ function wv(over: Partial<WeekOverviewVisit> & { id: string; weekday: number }):
   } as WeekOverviewVisit;
 }
 
-describe('WeekTimelineBoard', () => {
-  it('曜日ヘッダ(月〜土)と日付を出す', () => {
+describe('WeekTimelineBoard (全コース縦積み)', () => {
+  it('全コースが縦積みでセクション表示される (切替セレクタなし)', () => {
+    render(<WeekTimelineBoard options={OPTIONS} visits={[]} />);
+    expect(screen.getByTestId('wtl-section-t1')).toBeInTheDocument();
+    expect(screen.getByTestId('wtl-section-t2')).toBeInTheDocument();
+    expect(screen.getByText('稲毛A・田中 一郎')).toBeInTheDocument();
+    expect(screen.getByText('稲毛B・佐藤 花子')).toBeInTheDocument();
+    expect(screen.queryByTestId('week-timeline-course-select')).toBeNull();
+  });
+
+  it('曜日ヘッダ(月〜土)と日付を出す (各セクション)', () => {
     render(
       <WeekTimelineBoard
-        selectedTemplateId="t1"
-        options={OPTIONS}
-        onSelectTemplate={() => {}}
+        options={[OPTIONS[0]!]}
         visits={[]}
         weekdayDates={['7/7', '7/8', '7/9', '7/10', '7/11', '7/12']}
       />,
@@ -39,30 +47,25 @@ describe('WeekTimelineBoard', () => {
     expect(screen.getByText('7/7')).toBeInTheDocument();
   });
 
-  it('選択中コースの訪問だけを曜日列に描く', () => {
+  it('訪問は自コースのセクションにだけ描かれる', () => {
     render(
       <WeekTimelineBoard
-        selectedTemplateId="t1"
         options={OPTIONS}
-        onSelectTemplate={() => {}}
         visits={[
           wv({ id: 'a', weekday: 0, course_template_id: 't1' }),
-          wv({ id: 'b', weekday: 2, course_template_id: 't1' }),
-          wv({ id: 'other', weekday: 0, course_template_id: 't2' }), // 別コース → 出ない
+          wv({ id: 'other', weekday: 0, course_template_id: 't2' }),
         ]}
       />,
     );
+    // 両コース分のセクションがあり、それぞれの visit が 1 回ずつ描かれる。
     expect(screen.getByTestId('wtl-visit-a')).toBeInTheDocument();
-    expect(screen.getByTestId('wtl-visit-b')).toBeInTheDocument();
-    expect(screen.queryByTestId('wtl-visit-other')).toBeNull();
+    expect(screen.getByTestId('wtl-visit-other')).toBeInTheDocument();
   });
 
   it('性別でカード地色が変わる', () => {
     render(
       <WeekTimelineBoard
-        selectedTemplateId="t1"
-        options={OPTIONS}
-        onSelectTemplate={() => {}}
+        options={[OPTIONS[0]!]}
         visits={[
           wv({ id: 'm', weekday: 0, patient_sex: 'male', end_time: '10:00:00' }),
           wv({ id: 'f', weekday: 1, patient_sex: 'female', end_time: '10:00:00' }),
@@ -73,18 +76,29 @@ describe('WeekTimelineBoard', () => {
     expect(screen.getByTestId('wtl-visit-f').style.background).toBe('var(--sched-female-bg)');
   });
 
-  it('曜日ごとの担当スタッフ名を出す (曜日で担当が異なり得る)', () => {
+  it('曜日ヘッダの担当は性別色アバター + 太字名 (日ビューと同じ視覚言語)', () => {
     render(
       <WeekTimelineBoard
-        selectedTemplateId="t1"
-        options={OPTIONS}
-        onSelectTemplate={() => {}}
+        options={[OPTIONS[0]!]}
         visits={[]}
-        staffNameByWeekday={(wd) => (wd === 0 ? '田中 一郎' : wd === 1 ? '佐藤 花子' : null)}
+        staffByWeekday={(tid, wd) =>
+          wd === 0
+            ? { name: '川名 千恵', sex: 'female' }
+            : wd === 1
+              ? { name: '田中 一郎', sex: 'male' }
+              : null
+        }
       />,
     );
+    expect(screen.getByText('川名 千恵')).toBeInTheDocument();
     expect(screen.getByText('田中 一郎')).toBeInTheDocument();
-    expect(screen.getByText('佐藤 花子')).toBeInTheDocument();
+    // アバターは頭文字 + 性別色 (女性=female パレット)。
+    const avatarF = screen.getByTestId('wtl-staff-avatar-t1-0');
+    expect(avatarF.textContent).toBe('川');
+    expect(avatarF.style.background).toBe(genderPalette('female').bg);
+    const avatarM = screen.getByTestId('wtl-staff-avatar-t1-1');
+    expect(avatarM.textContent).toBe('田');
+    expect(avatarM.style.background).toBe(genderPalette('male').bg);
     // 担当なしの曜日は「（未割当）」。
     expect(screen.getAllByText('（未割当）').length).toBeGreaterThan(0);
   });
@@ -92,9 +106,7 @@ describe('WeekTimelineBoard', () => {
   it('capacityByWeekday を渡すと n/N件 表示になる', () => {
     render(
       <WeekTimelineBoard
-        selectedTemplateId="t1"
-        options={OPTIONS}
-        onSelectTemplate={() => {}}
+        options={[OPTIONS[0]!]}
         visits={[wv({ id: 'a', weekday: 0, end_time: '10:00:00' })]}
         capacityByWeekday={() => 6}
       />,
@@ -102,12 +114,70 @@ describe('WeekTimelineBoard', () => {
     expect(screen.getByText('1/6件')).toBeInTheDocument();
   });
 
+  it('同住所・同時刻の2名は上下重ねの90分占有ペアボックスにまとまる', () => {
+    render(
+      <WeekTimelineBoard
+        options={[OPTIONS[0]!]}
+        visits={[
+          wv({
+            id: 'pa',
+            weekday: 0,
+            start_time: '09:30:00',
+            end_time: '10:05:00',
+            same_address_key: 'addr1',
+            patient_sex: 'female',
+          }),
+          wv({
+            id: 'pb',
+            weekday: 0,
+            start_time: '09:30:00',
+            end_time: '10:05:00',
+            same_address_key: 'addr1',
+            patient_sex: 'male',
+          }),
+        ]}
+      />,
+    );
+    const box = screen.getByTestId('wtl-pair-pair:pa:pb');
+    expect(box).toBeInTheDocument();
+    expect(screen.getByText(/同住所 90分占有/)).toBeInTheDocument();
+    // 2名とも箱の中に上下で入る (左右半分割ではない)。
+    expect(screen.getByTestId('wtl-visit-pa')).toBeInTheDocument();
+    expect(screen.getByTestId('wtl-visit-pb')).toBeInTheDocument();
+    // ペアボックスは全幅 (レーン分割されない)。
+    expect(box.style.left).toBe('2px');
+    expect(box.style.right).toBe('2px');
+  });
+
+  it('同住所でも時刻が違えばペアにしない', () => {
+    render(
+      <WeekTimelineBoard
+        options={[OPTIONS[0]!]}
+        visits={[
+          wv({
+            id: 'x',
+            weekday: 0,
+            start_time: '09:30:00',
+            end_time: '10:00:00',
+            same_address_key: 'addr1',
+          }),
+          wv({
+            id: 'y',
+            weekday: 0,
+            start_time: '13:00:00',
+            end_time: '13:30:00',
+            same_address_key: 'addr1',
+          }),
+        ]}
+      />,
+    );
+    expect(screen.queryByTestId(/^wtl-pair-/)).toBeNull();
+  });
+
   it('時間帯が重なる訪問は左右レーンに分かれる', () => {
     render(
       <WeekTimelineBoard
-        selectedTemplateId="t1"
-        options={OPTIONS}
-        onSelectTemplate={() => {}}
+        options={[OPTIONS[0]!]}
         visits={[
           wv({ id: 'x', weekday: 0, start_time: '09:30:00', end_time: '10:30:00' }),
           wv({ id: 'y', weekday: 0, start_time: '10:00:00', end_time: '11:00:00' }),
@@ -121,29 +191,11 @@ describe('WeekTimelineBoard', () => {
     expect(x.style.left).not.toBe(y.style.left);
   });
 
-  it('コース選択で onSelectTemplate を呼ぶ', () => {
-    const onSel = vi.fn();
-    render(
-      <WeekTimelineBoard
-        selectedTemplateId="t1"
-        options={OPTIONS}
-        onSelectTemplate={onSel}
-        visits={[]}
-      />,
-    );
-    const sel = screen.getByTestId('week-timeline-course-select') as HTMLSelectElement;
-    sel.value = 't2';
-    sel.dispatchEvent(new Event('change', { bubbles: true }));
-    expect(onSel).toHaveBeenCalledWith('t2');
-  });
-
   it('カードクリックで onPatientClick(patientId) を呼ぶ', () => {
     const onClick = vi.fn();
     render(
       <WeekTimelineBoard
-        selectedTemplateId="t1"
-        options={OPTIONS}
-        onSelectTemplate={() => {}}
+        options={[OPTIONS[0]!]}
         visits={[wv({ id: 'a', weekday: 0, end_time: '10:05:00' })]}
         onPatientClick={onClick}
       />,
@@ -155,12 +207,15 @@ describe('WeekTimelineBoard', () => {
   it('終了時刻が無い訪問も既定35分で描く(落ちない)', () => {
     render(
       <WeekTimelineBoard
-        selectedTemplateId="t1"
-        options={OPTIONS}
-        onSelectTemplate={() => {}}
+        options={[OPTIONS[0]!]}
         visits={[wv({ id: 'noend', weekday: 3, start_time: '11:00:00', end_time: null })]}
       />,
     );
     expect(screen.getByTestId('wtl-visit-noend')).toBeInTheDocument();
+  });
+
+  it('コース0件は案内を出す', () => {
+    render(<WeekTimelineBoard options={[]} visits={[]} />);
+    expect(screen.getByText(/表示対象コースがありません/)).toBeInTheDocument();
   });
 });

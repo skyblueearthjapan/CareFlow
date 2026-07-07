@@ -72,6 +72,11 @@ export interface WeekOverviewVisit {
   patient_sex?: string | null;
   /** 患者マスタの 2 名体制フラグ (人マーク表示用)。 */
   patient_requires_multiple_staff?: boolean;
+  /**
+   * 同住所バケット key (lat/lng 丸め)。週タイムラインの「同住所・同時刻2名 =
+   * 90分占有ペアボックス」判定に使う。null/欠落 = グルーピング対象外。
+   */
+  same_address_key?: string | null;
 }
 
 export interface CourseWeekOverviewProps {

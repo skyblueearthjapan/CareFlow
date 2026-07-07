@@ -37,6 +37,7 @@ import {
   TL_DAY_START_MIN,
   TL_MIN_CARD_PX,
   TL_ROW_PX,
+  TL_SHOW_ADDR_PX,
   TL_SHOW_PILLS_PX,
   TL_SHOW_SVC_PX,
   timelineHeightPx,
@@ -59,6 +60,21 @@ export function tlVisitDraggableId(visitId: string): string {
 
 export function parseTlVisitDraggableId(id: string): string | null {
   return id.startsWith(TL_VISIT_PREFIX) ? id.slice(TL_VISIT_PREFIX.length) : null;
+}
+
+/** 同住所ペアボックス (2名セット移動)。id には両 visit id を埋める。 */
+const TL_PAIR_PREFIX = 'tl-pair:';
+
+export function tlPairDraggableId(visitId1: string, visitId2: string): string {
+  return `${TL_PAIR_PREFIX}${visitId1}:${visitId2}`;
+}
+
+export function parseTlPairDraggableId(id: string): [string, string] | null {
+  if (!id.startsWith(TL_PAIR_PREFIX)) return null;
+  const rest = id.slice(TL_PAIR_PREFIX.length);
+  const sep = rest.indexOf(':');
+  if (sep <= 0 || sep >= rest.length - 1) return null;
+  return [rest.slice(0, sep), rest.slice(sep + 1)];
 }
 
 /** 列 droppable id。colKey = `${template.id}:${weekday}` (TimelineCourseColumn.key)。 */
@@ -209,8 +225,8 @@ function VisitCard({
               ? '2名体制（ペア配置）のため個別移動できません'
               : visit.status === 'cancelled'
                 ? 'キャンセル済みのため移動できません'
-                : undefined
-          : undefined
+                : (visit.patient_address ?? undefined)
+          : (visit.patient_address ?? undefined)
       }
       className={cn(
         'absolute z-[2] flex flex-col gap-px overflow-hidden rounded-lg border border-l-[3px] px-2 py-[3px] text-left shadow-[var(--shadow-xs)] transition-shadow hover:z-[4] hover:shadow-[var(--shadow-md)] focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary',
@@ -251,15 +267,27 @@ function VisitCard({
           {visit.patient_name ?? '—'}
         </span>
       </span>
-      {/* 2行目: 時刻・所要分 ＋ サービス (高さがあるとき)。 */}
+      {/* 2行目: 時刻・所要分 ＋ サービス (高さがあるとき)。住所は3行目が出るときは重複させない。 */}
       {height >= TL_SHOW_SVC_PX && (
         <span className="flex min-w-0 items-center gap-1.5 text-[10px] opacity-80">
           <span className="tnum shrink-0 font-semibold">
             {(visit.start_time ?? '').slice(0, 5)}・{durMin}分
           </span>
           <span className="truncate">
-            {isCancelled ? 'キャンセル' : (visit.patient_time_type ?? visit.patient_address ?? '')}
+            {isCancelled
+              ? 'キャンセル'
+              : (visit.patient_time_type ??
+                (visit.patient_address && height >= TL_SHOW_ADDR_PX
+                  ? ''
+                  : (visit.patient_address ?? '')))}
           </span>
+        </span>
+      )}
+      {/* 3行目: 住所 (高さがあるとき。小カードは title ツールチップで補完)。 */}
+      {visit.patient_address && height >= TL_SHOW_ADDR_PX && (
+        <span className="flex min-w-0 items-center gap-0.5 text-[9.5px] opacity-75">
+          <span className="shrink-0">📍</span>
+          <span className="truncate">{visit.patient_address}</span>
         </span>
       )}
       {pills.length > 0 && height >= TL_SHOW_PILLS_PX && (
@@ -312,6 +340,78 @@ function DraggableVisitCard({
 }
 
 /**
+ * 同住所ペアの2名セットドラッグ (PO要望: 基本は2名一緒に動かす)。
+ * 掴めない条件 = どちらかがピン留め or キャンセル。個別移動は将来対応
+ * (どこを掴むと1名/2名かの UI 区分けが必要なため。当面は個別=テーブルビュー)。
+ */
+function DraggablePairBox({
+  item,
+  laneInfo,
+  onPatientClick,
+}: {
+  item: Extract<RenderItem, { kind: 'pair' }>;
+  laneInfo?: CardLane;
+  onPatientClick?: (patientId: string) => void;
+}) {
+  const dragDisabled = item.visits.some(
+    (v) => v.is_pinned === true || v.status === 'cancelled' || Boolean(v.visit_group_id),
+  );
+  const [id1, id2] = [item.visits[0]!.id, item.visits[1]?.id ?? item.visits[0]!.id];
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+    id: tlPairDraggableId(id1, id2),
+    disabled: dragDisabled,
+    data: { kind: 'tl-pair', visitIds: [id1, id2] },
+  });
+  return (
+    <PairBox
+      item={item}
+      laneInfo={laneInfo}
+      onPatientClick={onPatientClick}
+      drag={{ attributes, listeners, setNodeRef, isDragging, disabled: dragDisabled }}
+    />
+  );
+}
+
+/** DragOverlay 用: ペアボックス実寸ゴースト (2名セットのまま動く)。 */
+export function TlPairDragGhost({ visits }: { visits: CourseGridVisit[] }) {
+  return (
+    <div
+      className="flex h-full w-full cursor-grabbing flex-col overflow-hidden rounded-lg border-2 border-amber-400 bg-amber-50/70 shadow-[var(--shadow-md)]"
+      data-testid="tl-pair-drag-ghost"
+    >
+      <div className="flex items-center gap-1 px-1.5 pt-0.5 text-[9px] font-bold text-amber-700">
+        📍 同住所 2名セット
+      </div>
+      <div className="flex min-h-0 flex-1 flex-col gap-0.5 px-1 pb-1">
+        {visits.map((v) => {
+          const pal = genderPalette(v.patient_sex);
+          return (
+            <div
+              key={v.id}
+              className="flex min-h-0 flex-1 items-center gap-1 overflow-hidden rounded-md border border-l-[3px] px-1.5"
+              style={{
+                background: pal.bg,
+                borderColor: pal.ln,
+                borderLeftColor: pal.bar,
+                color: pal.ink,
+              }}
+            >
+              {v.is_pinned && <PushPin className="h-2.5 w-2.5 shrink-0" />}
+              <span className="truncate text-[12px] font-bold leading-tight">
+                {v.patient_name ?? '—'}
+              </span>
+              <span className="tnum ml-auto shrink-0 text-[9px] opacity-75">
+                {(v.start_time ?? '').slice(0, 5)}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/**
  * T-2 ②-b: 列全体を 1 つの droppable にする透明レイヤ。ドロップ位置は Panel 側で
  * 「カードの translated top − 列 rect top」から 15 分スナップで算出する
  * (テーブルの15分固定行セルの代替 = 連続時間軸)。pointer-events は不要
@@ -360,6 +460,12 @@ export function TlVisitDragGhost({ visit }: { visit: CourseGridVisit }) {
       {durMin !== null && (
         <span className="tnum text-[10px] font-semibold opacity-80">
           {(visit.start_time ?? '').slice(0, 5)}・{durMin}分
+        </span>
+      )}
+      {visit.patient_address && (
+        <span className="flex min-w-0 items-center gap-0.5 text-[9.5px] opacity-75">
+          <span className="shrink-0">📍</span>
+          <span className="truncate">{visit.patient_address}</span>
         </span>
       )}
     </div>
@@ -430,11 +536,16 @@ function PairBox({
   item,
   laneInfo,
   onPatientClick,
+  drag,
 }: {
   item: Extract<RenderItem, { kind: 'pair' }>;
   laneInfo?: CardLane;
   onPatientClick?: (patientId: string) => void;
+  /** 2名セット移動 (PO要望: 基本は2名一緒に動かす)。個別移動は将来対応。 */
+  drag?: DragBindings;
 }) {
+  const [shake, setShake] = useState(false);
+  const anyPinned = item.visits.some((v) => v.is_pinned === true);
   const cs = Math.max(item.startMin, TL_DAY_START_MIN);
   const ce = Math.min(item.endMin, TL_DAY_END_MIN);
   if (ce <= cs) return null;
@@ -453,8 +564,34 @@ function PairBox({
   const durMin = item.endMin - item.startMin;
   return (
     <div
+      ref={drag?.setNodeRef}
       data-testid={`tl-pair-${item.id}`}
-      className="absolute z-[2] flex flex-col overflow-hidden rounded-lg border-2 border-amber-400 bg-amber-50/40 shadow-[var(--shadow-xs)]"
+      data-tl-drag={drag ? (drag.disabled ? 'disabled' : 'enabled') : undefined}
+      // DnD 有効ペア = listeners/attributes、ピン含み = shake、を単一 spread に合成
+      // (別プロップで書くと後勝ち上書きでドラッグが死ぬ — 64acdef の教訓)。
+      {...(drag
+        ? drag.disabled
+          ? anyPinned
+            ? { onPointerDown: () => setShake(true) }
+            : {}
+          : { ...drag.listeners, ...drag.attributes }
+        : {})}
+      onAnimationEnd={shake ? () => setShake(false) : undefined}
+      title={
+        drag?.disabled
+          ? anyPinned
+            ? 'ピン留めを含むため移動できません（ピンを解除してから移動）'
+            : 'キャンセル済みを含むため移動できません'
+          : drag
+            ? '2名セットで移動します（個別の移動はテーブルビューから）'
+            : undefined
+      }
+      className={cn(
+        'absolute z-[2] flex flex-col overflow-hidden rounded-lg border-2 border-amber-400 bg-amber-50/40 shadow-[var(--shadow-xs)]',
+        drag && !drag.disabled && 'cursor-grab touch-none active:cursor-grabbing',
+        drag?.isDragging && 'opacity-40',
+        shake && 'tl-shake',
+      )}
       style={{ top, height: boxH, ...laneStyle }}
     >
       <div className="flex items-center gap-1 px-1.5 pt-0.5 text-[9px] font-bold text-amber-700">
@@ -664,12 +801,21 @@ function TimelineColumn({
       {/* 訪問カード (単独 or 同住所90分ペアボックス)。DnD 有効時は単独カードが draggable。 */}
       {items.map((it) =>
         it.kind === 'pair' ? (
-          <PairBox
-            key={it.id}
-            item={it}
-            laneInfo={lanes.get(it.id)}
-            onPatientClick={onPatientClick}
-          />
+          dndEnabled ? (
+            <DraggablePairBox
+              key={it.id}
+              item={it}
+              laneInfo={lanes.get(it.id)}
+              onPatientClick={onPatientClick}
+            />
+          ) : (
+            <PairBox
+              key={it.id}
+              item={it}
+              laneInfo={lanes.get(it.id)}
+              onPatientClick={onPatientClick}
+            />
+          )
         ) : dndEnabled ? (
           <DraggableVisitCard
             key={it.id}
