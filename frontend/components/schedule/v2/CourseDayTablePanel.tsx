@@ -191,6 +191,10 @@ import { useSchedulingSettings } from '@/lib/queries/schedulingSettings';
 export const DISPLAY_WEEKDAYS = [0, 1, 2, 3, 4, 5] as const;
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土'] as const;
 
+/** sticky ツールバーの上端オフセットとプール aside との間隔 (連動値はここだけで変える)。 */
+const TOOLBAR_STICKY_TOP_PX = 8;
+const TOOLBAR_POOL_GAP_PX = 8;
+
 // ─────────────────────────────────────────────────────────────────────────
 // dnd-kit helpers (プール用 draggable id)
 //
@@ -314,7 +318,8 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
   const [stickyTopPx, setStickyTopPx] = useState(140);
   useEffect(() => {
     if (!toolbarEl) return;
-    const update = () => setStickyTopPx(toolbarEl.offsetHeight + 16);
+    const update = () =>
+      setStickyTopPx(TOOLBAR_STICKY_TOP_PX + toolbarEl.offsetHeight + TOOLBAR_POOL_GAP_PX);
     update();
     const ro = new ResizeObserver(update);
     ro.observe(toolbarEl);
@@ -2621,7 +2626,11 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         */}
         {/* 上部ツールバーは固定 (sticky)。プール aside の張り付き位置は実測高で連動
             (PO要望 2026-07-08: ボタン群までスクロールで消えないように)。 */}
-        <Card ref={setToolbarEl} className="sticky top-2 z-30 p-3 shadow-[var(--shadow-sm)]">
+        <Card
+          ref={setToolbarEl}
+          className="sticky z-30 p-3 shadow-[var(--shadow-sm)]"
+          style={{ top: TOOLBAR_STICKY_TOP_PX }}
+        >
           {/* Row 1: 両端配置 toolbar (canEdit のみ).
               W-9b: justify-between で左右グループに分割。
                 左グループ = [週を生成][週次ガイド] (週次操作の入口ペアを曜日タブ真上・左端に配置).

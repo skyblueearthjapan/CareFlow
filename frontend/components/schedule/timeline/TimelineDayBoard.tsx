@@ -278,9 +278,10 @@ function VisitCard({
           </span>
         </span>
       )}
-      {/* 3行目: 住所 (30分カードから表示・PO要望。極小カードは title ツールチップで補完)。 */}
+      {/* 3行目: 住所 (30分カードから表示・PO要望。極小カードは title ツールチップで補完)。
+          30分カード(49px)は3行でほぼ満杯のため 9px + leading-tight で見切れを防ぐ。 */}
       {visit.patient_address && height >= TL_SHOW_ADDR_PX && (
-        <span className="flex min-w-0 items-center gap-0.5 text-[9.5px] opacity-75">
+        <span className="flex min-w-0 items-center gap-0.5 text-[9px] leading-tight opacity-75">
           <span className="shrink-0">📍</span>
           <span className="truncate">{visit.patient_address}</span>
         </span>
