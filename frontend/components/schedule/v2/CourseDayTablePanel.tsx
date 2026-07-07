@@ -103,12 +103,12 @@ import {
 import { isoWeekFromLocalDate } from '@/lib/format/isoWeek';
 
 import {
-  WeekdayScheduleCard,
   buildSameAddressKey,
   haversineKm,
   type CourseListItem as ScheduleCourseListItem,
   type VisitListItem as ScheduleVisitListItem,
 } from '../WeekdayScheduleCard';
+import { TimelineDayList } from '@/components/schedule/timeline/TimelineDayList';
 import { BulkFixToPatternButton } from './BulkFixToPatternButton';
 import { BulkPinAllPfvsButton } from './BulkPinAllPfvsButton';
 import { AssignWarningDialog, type ApprovedReviewItem } from './AssignWarningDialog';
@@ -2075,6 +2075,8 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
           // Phase G-21 T4 reviewer C2: list view にも pin 状態を流し込む.
           fixed_visit_id: cv.fixed_visit_id ?? null,
           is_pinned: cv.is_pinned === true,
+          // T-1L: タイムライン兄弟リスト用の患者性別 (行頭ドット・左色帯).
+          patient_sex: (patient?.sex as string | null | undefined) ?? null,
         };
       });
 
@@ -2093,6 +2095,9 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
       const plannedVisits = visits.filter(
         (v) => (v as { status?: string | null }).status !== 'cancelled',
       );
+      const listStaffName = course?.assigned_staff_id
+        ? (staffMap.get(course.assigned_staff_id)?.name ?? null)
+        : null;
       out.push({
         key: `${template.id}:${activeWeekday}`,
         title: `${officeName ? `${officeName} ` : ''}${template.label} コース`,
@@ -2100,6 +2105,10 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         visits,
         freeGaps,
         capacity: { filled: plannedVisits.length, max: capMax },
+        // T-1L: TimelineDayList のグループ見出し用.
+        office_name: officeName ?? null,
+        course_code: template.label ?? null,
+        staff_name: listStaffName,
       });
     }
     return out;
@@ -2117,6 +2126,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     staffCountFor,
     courseCodesMax,
     officeLatLngById,
+    staffMap,
   ]);
 
   // ─── T-1: 縦タイムライン用の列データ (schedule-timeline-redesign-design.md) ──
@@ -2745,23 +2755,13 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                     />
                   </div>
                 ) : weekdayViewMode === 'list' ? (
-                  /* 2026-W20: Before/After 形式の閲覧専用リスト. */
+                  /* T-1L: タイムライン兄弟の日リスト (モック意匠の整列グリッド・全情報保持).
+                     共有コア WeekdayScheduleCard は提案ダイアログ専用に温存. */
                   <div data-testid="course-day-list-view">
-                    <WeekdayScheduleCard
-                      title={`${WEEKDAY_LABELS[activeWeekday]}曜日 コース一覧`}
-                      totalSummary={`${weekdayListCourses.reduce(
-                        (n, c) => n + c.visits.length,
-                        0,
-                      )}件`}
-                      tone="muted"
+                    <TimelineDayList
                       courses={weekdayListCourses}
-                      testIdPrefix={`course-day-list-${activeWeekday}`}
                       onPatientClick={handleOpenPatientDetail}
-                      // Phase G-21 T4 reviewer C2: list view にも 🔒 toggle を渡す
-                      // (= admin/manager 時のみ button が描画される).
                       onTogglePin={canEdit ? handleTogglePin : undefined}
-                      // 距離は「ここに来るまでの移動 (前の患者/拠点から)」を全員ぶん表示.
-                      distanceMode="to_reach"
                     />
                   </div>
                 ) : (

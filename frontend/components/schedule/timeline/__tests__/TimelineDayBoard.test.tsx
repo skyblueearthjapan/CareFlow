@@ -196,6 +196,80 @@ describe('TimelineDayBoard', () => {
     expect(Number.parseFloat(card.style.top)).toBeGreaterThan(0);
   });
 
+  it('同住所・同時刻の2名は90分占有のペアボックスにまとまり上下2段で並ぶ', () => {
+    render(
+      <TimelineDayBoard
+        columns={[
+          column({
+            key: 'c1',
+            visits: [
+              visit({
+                id: 'sa1',
+                patient_id: 'pa',
+                patient_name: '安永 一',
+                start_time: '16:00:00',
+                end_time: '16:35:00',
+                same_address_group_id: 'g1',
+              }),
+              visit({
+                id: 'sa2',
+                patient_id: 'pb',
+                patient_name: '菅原 二',
+                start_time: '16:00:00',
+                end_time: '16:35:00',
+                same_address_group_id: 'g1',
+              }),
+            ],
+          }),
+        ]}
+        weekdayLabel="月"
+      />,
+    );
+    // ペアボックスが出て、2名とも内部に描かれる。
+    const box = screen.getByTestId('tl-pair-pair:sa1:sa2');
+    expect(box).toBeInTheDocument();
+    // 90分占有 (16:00→17:30) の高さ = durationToHeight(90) 相当。
+    expect(box.style.height).toBe(`${durationToHeight(90) - 3}px`);
+    expect(screen.getByText('安永 一')).toBeInTheDocument();
+    expect(screen.getByText('菅原 二')).toBeInTheDocument();
+    expect(screen.getByText(/同住所 90分占有/)).toBeInTheDocument();
+  });
+
+  it('同住所ペアと重ならない単体カードは全幅のまま', () => {
+    render(
+      <TimelineDayBoard
+        columns={[
+          column({
+            key: 'c1',
+            visits: [
+              visit({
+                id: 'sa1',
+                patient_id: 'pa',
+                start_time: '09:00:00',
+                end_time: '09:35:00',
+                same_address_group_id: 'g1',
+              }),
+              visit({
+                id: 'sa2',
+                patient_id: 'pb',
+                start_time: '09:00:00',
+                end_time: '09:35:00',
+                same_address_group_id: 'g1',
+              }),
+              // ペア(9:00-10:30占有)と重ならない単体。
+              visit({ id: 'solo', start_time: '11:00:00', end_time: '11:35:00' }),
+            ],
+          }),
+        ]}
+        weekdayLabel="月"
+      />,
+    );
+    const solo = screen.getByTestId('tl-visit-solo');
+    // laneCount=1 なので left:3px / right:3px (全幅)。
+    expect(solo.style.left).toBe('3px');
+    expect(solo.style.right).toBe('3px');
+  });
+
   it('コース0件は案内を出す', () => {
     render(<TimelineDayBoard columns={[]} weekdayLabel="日" />);
     expect(screen.getByText(/表示対象コースがありません/)).toBeInTheDocument();

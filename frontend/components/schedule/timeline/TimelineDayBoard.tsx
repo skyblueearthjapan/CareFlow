@@ -21,7 +21,7 @@ import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
 import type { StaffRead } from '@/lib/schemas/staff';
 import type { EventRead } from '@/lib/schemas/staff-events';
 import type { FreeGap } from '@/lib/scheduling/freeGaps';
-import { parseHM } from '@/lib/scheduling/freeGaps';
+import { parseHM, SAME_ADDRESS_PAIR_MIN_OCCUPANCY } from '@/lib/scheduling/freeGaps';
 import {
   assignLanes,
   durationToHeight,
@@ -213,6 +213,132 @@ function VisitCard({
   );
 }
 
+/** 描画単位: 単独訪問 or 同住所・同時刻の 2 名ペア (90分占有ボックス)。 */
+type RenderItem =
+  | { kind: 'single'; id: string; v: CourseGridVisit; startMin: number; endMin: number }
+  | {
+      kind: 'pair';
+      id: string;
+      visits: CourseGridVisit[];
+      startMin: number;
+      endMin: number;
+    };
+
+/**
+ * 同住所・同時刻の 2 名 (別患者・同 same_address_group_id・同 start) を 1 つの
+ * 「90分占有ペア」にまとめる。1 スタッフが連続で回るため実占有は 90 分
+ * (SAME_ADDRESS_PAIR_MIN_OCCUPANCY)。タイムライン上でも 90 分ぶんの高さで描く。
+ * それ以外は単独訪問。開始時刻が不正/範囲外の訪問は除外 (カード側でも null)。
+ */
+function buildRenderItems(visits: ReadonlyArray<CourseGridVisit>): RenderItem[] {
+  const sorted = [...visits].sort(
+    (a, b) => (parseHM(a.start_time) ?? 0) - (parseHM(b.start_time) ?? 0),
+  );
+  const used = new Set<string>();
+  const items: RenderItem[] = [];
+  for (const v of sorted) {
+    if (used.has(v.id)) continue;
+    const s = parseHM(v.start_time);
+    const e = parseHM(v.end_time);
+    if (s === null || e === null || e <= s) continue;
+    const gid = v.same_address_group_id ?? null;
+    if (gid) {
+      const mate = sorted.find(
+        (o) =>
+          o.id !== v.id &&
+          !used.has(o.id) &&
+          (o.same_address_group_id ?? null) === gid &&
+          o.patient_id !== v.patient_id &&
+          parseHM(o.start_time) === s,
+      );
+      if (mate) {
+        used.add(v.id);
+        used.add(mate.id);
+        const me = parseHM(mate.end_time) ?? e;
+        const endMin = Math.max(s + SAME_ADDRESS_PAIR_MIN_OCCUPANCY, e, me);
+        items.push({
+          kind: 'pair',
+          id: `pair:${v.id}:${mate.id}`,
+          visits: [v, mate],
+          startMin: s,
+          endMin,
+        });
+        continue;
+      }
+    }
+    used.add(v.id);
+    items.push({ kind: 'single', id: v.id, v, startMin: s, endMin: e });
+  }
+  return items;
+}
+
+/** 同住所・同時刻ペアの 90分占有ボックス (上下2段に2名を並べ、大枠で囲む)。 */
+function PairBox({
+  item,
+  laneInfo,
+  onPatientClick,
+}: {
+  item: Extract<RenderItem, { kind: 'pair' }>;
+  laneInfo?: CardLane;
+  onPatientClick?: (patientId: string) => void;
+}) {
+  const cs = Math.max(item.startMin, TL_DAY_START_MIN);
+  const ce = Math.min(item.endMin, TL_DAY_END_MIN);
+  if (ce <= cs) return null;
+  const top = minutesToY(cs) + 1;
+  const boxH = Math.max(durationToHeight(ce - cs) - 3, TL_MIN_CARD_PX * 2);
+  const lanes = laneInfo?.laneCount ?? 1;
+  const lane = laneInfo?.lane ?? 0;
+  const laneStyle =
+    lanes > 1
+      ? {
+          left: `calc(3px + ${(lane / lanes) * 100}% - ${(lane / lanes) * 6}px)`,
+          width: `calc(${100 / lanes}% - ${6 / lanes}px)`,
+          right: 'auto' as const,
+        }
+      : { left: '3px', right: '3px' };
+  const durMin = item.endMin - item.startMin;
+  return (
+    <div
+      data-testid={`tl-pair-${item.id}`}
+      className="absolute flex flex-col overflow-hidden rounded-lg border-2 border-amber-400 bg-amber-50/40 shadow-[var(--shadow-xs)]"
+      style={{ top, height: boxH, ...laneStyle }}
+    >
+      <div className="flex items-center gap-1 px-1.5 pt-0.5 text-[9px] font-bold text-amber-700">
+        📍 同住所 {durMin}分占有
+      </div>
+      <div className="flex min-h-0 flex-1 flex-col gap-0.5 px-1 pb-1">
+        {item.visits.map((v) => {
+          const pal = genderPalette(v.patient_sex);
+          return (
+            <button
+              key={v.id}
+              type="button"
+              data-testid={`tl-visit-${v.id}`}
+              onClick={onPatientClick ? () => onPatientClick(v.patient_id) : undefined}
+              className="flex min-h-0 flex-1 items-center gap-1 overflow-hidden rounded-md border border-l-[3px] px-1.5 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary"
+              style={{
+                background: pal.bg,
+                borderColor: pal.ln,
+                borderLeftColor: pal.bar,
+                color: pal.ink,
+              }}
+            >
+              {v.is_pinned && <span className="shrink-0 text-[9px]">🔒</span>}
+              <span className="truncate text-[12px] font-bold leading-tight">
+                {v.patient_name ?? '—'}
+              </span>
+              <span className="tnum ml-auto shrink-0 text-[9px] opacity-75">
+                {(v.start_time ?? '').slice(0, 5)}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function TimelineColumn({
   col,
   onPatientClick,
@@ -226,15 +352,11 @@ function TimelineColumn({
   const rows: number[] = [];
   for (let m = TL_DAY_START_MIN; m < TL_DAY_END_MIN; m += 30) rows.push(m);
 
-  // 時間帯が重なる訪問 (2名同時刻など) を左右レーンに分けて相互に隠さない (MED-1)。
+  // 同住所・同時刻の2名は 90分占有ペアに束ね、それ以外は単独として描画単位化。
+  const items = buildRenderItems(col.visits);
+  // 描画単位 (単独 or ペアボックス) 同士で時間帯が重なる場合のみ左右レーンに分割 (MED-1)。
   const lanes = assignLanes(
-    col.visits
-      .map((v) => {
-        const s = parseHM(v.start_time);
-        const e = parseHM(v.end_time);
-        return s !== null && e !== null && e > s ? { id: v.id, startMin: s, endMin: e } : null;
-      })
-      .filter((b): b is { id: string; startMin: number; endMin: number } => b !== null),
+    items.map((it) => ({ id: it.id, startMin: it.startMin, endMin: it.endMin })),
   );
 
   return (
@@ -278,15 +400,24 @@ function TimelineColumn({
         );
       })}
 
-      {/* 訪問カード */}
-      {col.visits.map((v) => (
-        <VisitCard
-          key={v.id}
-          visit={v}
-          laneInfo={lanes.get(v.id)}
-          onClick={onPatientClick ? () => onPatientClick(v.patient_id) : undefined}
-        />
-      ))}
+      {/* 訪問カード (単独 or 同住所90分ペアボックス) */}
+      {items.map((it) =>
+        it.kind === 'pair' ? (
+          <PairBox
+            key={it.id}
+            item={it}
+            laneInfo={lanes.get(it.id)}
+            onPatientClick={onPatientClick}
+          />
+        ) : (
+          <VisitCard
+            key={it.id}
+            visit={it.v}
+            laneInfo={lanes.get(it.id)}
+            onClick={onPatientClick ? () => onPatientClick(it.v.patient_id) : undefined}
+          />
+        ),
+      )}
 
       <div style={{ height }} />
     </div>

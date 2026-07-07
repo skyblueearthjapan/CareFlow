@@ -83,6 +83,12 @@ export interface VisitListItem {
   fixed_visit_id?: string | null;
   /** Phase G-21: PFV.is_pinned のミラー値. true で 🔒 active 表示. */
   is_pinned?: boolean | null;
+  /**
+   * T-1L: タイムライン兄弟リスト (TimelineDayList) 用の患者性別 (patient.sex:
+   * male/female/unknown)。行頭の性別ドット・左色帯に使う。既存 WeekdayScheduleCard は
+   * 未使用 (加算のみ・無影響)。
+   */
+  patient_sex?: string | null;
 }
 
 /** 1 コース分のサマリ. */
@@ -109,6 +115,13 @@ export interface CourseListItem {
    * (= freeGaps だけ渡しても capacity 無しでは非表示 = 後方互換)。
    */
   capacity?: { filled: number; max: number };
+  /**
+   * T-1L: TimelineDayList のグループ見出し用 (拠点名+コード のチップ / 担当スタッフ名)。
+   * 既存 WeekdayScheduleCard は title/summary を使うため未使用 (加算のみ・無影響)。
+   */
+  office_name?: string | null;
+  course_code?: string | null;
+  staff_name?: string | null;
 }
 
 export interface WeekdayScheduleCardProps {
@@ -750,7 +763,7 @@ interface PinToggleButtonProps {
  * 全 UI 共通の PushPin/PushPinOff アイコン (@/components/ui/push-pin) を使用し、
  * スケジュール表・週ビュー・リスト表示で「ピン留め」の見た目を統一する.
  */
-function PinToggleButton({ visit, onTogglePin }: PinToggleButtonProps) {
+export function PinToggleButton({ visit, onTogglePin }: PinToggleButtonProps) {
   const isPinned = visit.is_pinned === true;
   const pfvId = visit.fixed_visit_id ?? null;
   // Phase G-47: bulk (全曜日) スコープには patient_id が必須.
@@ -798,11 +811,7 @@ function PinToggleButton({ visit, onTogglePin }: PinToggleButtonProps) {
             disabled ? 'cursor-not-allowed opacity-30' : '',
           )}
         >
-          {isPinned ? (
-            <PushPin className="h-3.5 w-3.5" />
-          ) : (
-            <PushPinOff className="h-3.5 w-3.5" />
-          )}
+          {isPinned ? <PushPin className="h-3.5 w-3.5" /> : <PushPinOff className="h-3.5 w-3.5" />}
         </button>
       )}
     </PinScopeMenu>
