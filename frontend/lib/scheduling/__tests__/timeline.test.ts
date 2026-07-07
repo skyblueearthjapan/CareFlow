@@ -85,4 +85,35 @@ describe('assignLanes', () => {
     expect(r.get('a')?.lane).toBe(0);
     expect(r.get('b')?.lane).toBe(0);
   });
+
+  it('重なる2名ペアの後に続く単体は laneCount=1 (全幅) — 現場報告バグの修正', () => {
+    const r = assignLanes([
+      // 9:00-10:00 に重なる2名ペア (半分ずつ)
+      { id: 'pairA', startMin: 540, endMin: 600 },
+      { id: 'pairB', startMin: 540, endMin: 600 },
+      // その後の単体 (重ならない) は全幅であるべき
+      { id: 'solo1', startMin: 660, endMin: 695 },
+      { id: 'solo2', startMin: 720, endMin: 755 },
+    ]);
+    expect(r.get('pairA')?.laneCount).toBe(2);
+    expect(r.get('pairB')?.laneCount).toBe(2);
+    expect(r.get('pairA')?.lane).not.toBe(r.get('pairB')?.lane);
+    // ペアと重ならない単体は全幅 (laneCount=1)。
+    expect(r.get('solo1')?.laneCount).toBe(1);
+    expect(r.get('solo2')?.laneCount).toBe(1);
+  });
+
+  it('別々に重なる2つの塊は独立して数える (3件塊と2件塊)', () => {
+    const r = assignLanes([
+      { id: 'a', startMin: 540, endMin: 640 },
+      { id: 'b', startMin: 560, endMin: 660 },
+      { id: 'c', startMin: 580, endMin: 680 }, // a,b,c が数珠つなぎ → 3レーン
+      { id: 'x', startMin: 720, endMin: 780 },
+      { id: 'y', startMin: 740, endMin: 800 }, // x,y → 2レーン
+    ]);
+    expect(r.get('a')?.laneCount).toBe(3);
+    expect(r.get('c')?.laneCount).toBe(3);
+    expect(r.get('x')?.laneCount).toBe(2);
+    expect(r.get('y')?.laneCount).toBe(2);
+  });
 });

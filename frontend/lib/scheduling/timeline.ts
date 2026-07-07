@@ -128,15 +128,34 @@ export interface LanePlacement {
 
 /**
  * 同一列 (コース) 内で時間帯が重なる訪問を貪欲にレーンへ振り分ける。
- * monitor の `assignVisitLanes` と同じ貪欲法 (start 昇順・最初に空くレーン)。
- * 縦タイムラインでは lane を「横方向の分割」に使う (重なり時のみ幅を分ける)。
+ * start 昇順・最初に空くレーンへ割当。
+ *
+ * **重要 (2026-07-07 修正)**: laneCount は「連続して重なる塊 (クラスタ)」ごとに
+ * 数える。同住所2名ペア等で一部が重なっても、**その後に続く重ならない単体の訪問は
+ * laneCount=1 (全幅)** になる。旧実装は列全体の最大レーン数を全員へ一律適用していたため、
+ * 1組でも重なりがあると列の全カードが半分幅になっていた (現場報告のバグ)。
  * 純関数。
  */
 export function assignLanes(blocks: ReadonlyArray<TimelineBlock>): Map<string, LanePlacement> {
   const sorted = [...blocks].sort((a, b) => a.startMin - b.startMin || a.id.localeCompare(b.id));
-  const laneEnds: number[] = [];
-  const laneOf = new Map<string, number>();
+  const out = new Map<string, LanePlacement>();
+
+  // 現在のクラスタ (時間帯が数珠つなぎに重なる塊) を貯め、途切れたら確定する。
+  let cluster: Array<{ id: string; lane: number }> = [];
+  let laneEnds: number[] = [];
+  let clusterMaxEnd = -Infinity;
+
+  const flush = () => {
+    const laneCount = Math.max(1, laneEnds.length);
+    for (const c of cluster) out.set(c.id, { lane: c.lane, laneCount });
+    cluster = [];
+    laneEnds = [];
+    clusterMaxEnd = -Infinity;
+  };
+
   for (const b of sorted) {
+    // 直前のクラスタの終端に達していれば (重ならない) クラスタを確定して切る。
+    if (cluster.length > 0 && b.startMin >= clusterMaxEnd) flush();
     let lane = laneEnds.findIndex((end) => end <= b.startMin);
     if (lane === -1) {
       lane = laneEnds.length;
@@ -144,12 +163,10 @@ export function assignLanes(blocks: ReadonlyArray<TimelineBlock>): Map<string, L
     } else {
       laneEnds[lane] = b.endMin;
     }
-    laneOf.set(b.id, lane);
+    cluster.push({ id: b.id, lane });
+    clusterMaxEnd = Math.max(clusterMaxEnd, b.endMin);
   }
-  // 実際に重なりに関与したレーン数を全体で共有する (モック同様、単純化して全体最大)。
-  const laneCount = Math.max(1, laneEnds.length);
-  const out = new Map<string, LanePlacement>();
-  for (const [id, lane] of laneOf) out.set(id, { lane, laneCount });
+  flush();
   return out;
 }
 
