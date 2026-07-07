@@ -115,29 +115,74 @@ describe('TimelineDayBoard', () => {
     expect(onClick).toHaveBeenCalledWith('p-v1');
   });
 
-  it('会議・イベントを全幅帯 + カイポケ反映外バッジで描く', () => {
+  it('会議・イベントは担当スタッフの列内にだけ帯を描く (全幅ではない)', () => {
+    const ev = {
+      id: 'e1',
+      date: '2026-07-07',
+      title: '接遇研修',
+      start_time: '13:00',
+      end_time: '13:45',
+      type: '研修',
+    } as TimelineCourseColumn['staffEvents'][number];
     render(
       <TimelineDayBoard
         columns={[
-          column({
-            key: 'c1',
-            staffEvents: [
-              {
-                id: 'e1',
-                date: '2026-07-07',
-                title: '接遇研修',
-                start_time: '13:00',
-                end_time: '13:45',
-                type: '研修',
-              } as TimelineCourseColumn['staffEvents'][number],
-            ],
-          }),
+          column({ key: 'c1', staffEvents: [ev] }),
+          // イベントを持たない別コース列 — こちらには帯が出ないこと。
+          column({ key: 'c2', staffEvents: [] }),
         ]}
         weekdayLabel="月"
       />,
     );
     expect(screen.getByText('研修: 接遇研修')).toBeInTheDocument();
     expect(screen.getByText('カイポケ反映外')).toBeInTheDocument();
+    // 帯はイベント所有者の列 (c1) にだけ描かれる。
+    expect(screen.getByTestId('tl-event-c1-e1')).toBeInTheDocument();
+    expect(screen.queryByTestId('tl-event-c2-e1')).toBeNull();
+    // 所有列内の帯 (per-column) — 描画は 1 箇所のみ。
+    expect(screen.getAllByText(/接遇研修/)).toHaveLength(1);
+  });
+
+  it('onEventClick ありのときイベント帯はボタンになり (ev, col) で発火する', () => {
+    const onEventClick = vi.fn();
+    const ev = {
+      id: 'e1',
+      date: '2026-07-07',
+      title: '全体会議',
+      start_time: '13:00',
+      end_time: '14:00',
+      type: 'イベント',
+    } as TimelineCourseColumn['staffEvents'][number];
+    render(
+      <TimelineDayBoard
+        columns={[column({ key: 'c1', staffEvents: [ev] })]}
+        weekdayLabel="月"
+        onEventClick={onEventClick}
+      />,
+    );
+    const band = screen.getByTestId('tl-event-c1-e1');
+    expect(band.tagName).toBe('BUTTON');
+    band.click();
+    expect(onEventClick).toHaveBeenCalledTimes(1);
+    expect(onEventClick.mock.calls[0]![0].id).toBe('e1');
+    expect(onEventClick.mock.calls[0]![1].key).toBe('c1');
+  });
+
+  it('onEventClick なし (read-only) のときイベント帯は pointer-events-none の div', () => {
+    const ev = {
+      id: 'e1',
+      date: '2026-07-07',
+      title: '全体会議',
+      start_time: '13:00',
+      end_time: '14:00',
+      type: 'イベント',
+    } as TimelineCourseColumn['staffEvents'][number];
+    render(
+      <TimelineDayBoard columns={[column({ key: 'c1', staffEvents: [ev] })]} weekdayLabel="月" />,
+    );
+    const band = screen.getByTestId('tl-event-c1-e1');
+    expect(band.tagName).toBe('DIV');
+    expect(band.className).toContain('pointer-events-none');
   });
 
   it('現在時刻ラインは nowMinutes 指定時のみ出る', () => {

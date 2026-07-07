@@ -162,6 +162,7 @@ import {
   type SlotPatientOption,
 } from '@/components/schedule/timeline/SlotRegisterDialog';
 import { EventAddDialog } from '@/app/(app)/staff/[id]/_components/EventAddDialog';
+import { EventEditDialog } from '@/app/(app)/staff/[id]/_components/EventEditDialog';
 // Phase G-88: 営業時間設定を空き枠表示に反映 (取得前/失敗時は既定枠にフォールバック).
 import { useSchedulingSettings } from '@/lib/queries/schedulingSettings';
 
@@ -1366,6 +1367,23 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     });
     setSlotRegState(null);
   }, [slotRegState, weekStart, activeWeekday]);
+
+  // イベント帯クリック → 既存 EventEditDialog (編集+削除)。帯は担当スタッフの列内表示
+  // (全幅帯で「全員に入った」ように誤読された PO 指摘 2026-07-08 の対応)。
+  const [tlEventEdit, setTlEventEdit] = useState<{
+    staffId: string;
+    event: EventRead;
+  } | null>(null);
+
+  const handleTimelineEventClick = useCallback(
+    (ev: EventRead, col: TimelineCourseColumn) => {
+      if (!canEdit) return;
+      const staff = col.assignedStaff;
+      if (!staff) return;
+      setTlEventEdit({ staffId: staff.id, event: ev });
+    },
+    [canEdit],
+  );
 
   // ─── Wave 37 Phase 3-C: 相方コース選択ダイアログの state ───────────────
   // requires_multiple_staff=true の患者を D&D したときにダイアログを表示する。
@@ -2867,6 +2885,8 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                       nowMinutes={timelineNowMinutes}
                       // T-2 ②-a: canEdit のときだけ空き枠クリック登録を解禁。
                       onFreeSlotClick={canEdit ? handleFreeSlotClick : undefined}
+                      // イベント帯クリック → 編集/削除 (canEdit のみ)。
+                      onEventClick={canEdit ? handleTimelineEventClick : undefined}
                     />
                   </div>
                 ) : weekdayViewMode === 'list' ? (
@@ -3077,6 +3097,17 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
             defaultDate={slotEventState.date}
             defaultStart={slotEventState.startHM}
             defaultEnd={slotEventState.endHM}
+          />
+        ) : null}
+        {/* イベント帯クリック → 編集/削除 (既存 EventEditDialog 流用) */}
+        {tlEventEdit ? (
+          <EventEditDialog
+            staffId={tlEventEdit.staffId}
+            event={tlEventEdit.event}
+            open
+            onOpenChange={(o) => {
+              if (!o) setTlEventEdit(null);
+            }}
           />
         ) : null}
 

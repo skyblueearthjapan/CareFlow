@@ -14,8 +14,6 @@
  * 一切持たない (CourseDayTablePanel が組んだ CourseGridVisit をそのまま受け取る = 表示専用)。
  */
 
-import { useMemo } from 'react';
-
 import type { CourseGridVisit } from '@/components/schedule/v2/CourseDayTable';
 import type { CourseV2Read } from '@/lib/queries/courses';
 import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
@@ -68,34 +66,18 @@ export interface TimelineDayBoardProps {
    * (未指定 = read-only ロール = 従来の表示専用のまま)。
    */
   onFreeSlotClick?: (col: TimelineCourseColumn, gap: FreeGap) => void;
+  /**
+   * イベント帯クリック → 編集/削除ダイアログ (既存 EventEditDialog)。canEdit のときだけ
+   * Panel が渡す。未指定時は従来どおり表示専用 (pointer-events-none)。
+   */
+  onEventClick?: (ev: EventRead, col: TimelineCourseColumn) => void;
 }
 
-/** 会議・イベント (訪問ではないスタッフ予定) を全幅帯として時間帯で描く。 */
-interface EventBand {
-  key: string;
-  startMin: number;
-  endMin: number;
-  label: string;
-}
-
-function eventBandsOf(columns: TimelineCourseColumn[]): EventBand[] {
-  // 全コース共通で出す「全体」会議はモックの全幅帯に相当。ここでは各スタッフの
-  // イベントを時間帯で重複排除し、全幅の帯として描く (T-1 は表示のみ)。
-  const seen = new Map<string, EventBand>();
-  for (const col of columns) {
-    for (const ev of col.staffEvents) {
-      const s = parseHM(ev.start_time);
-      const e = parseHM(ev.end_time);
-      if (s === null || e === null || e <= s) continue;
-      const key = `${ev.start_time}-${ev.end_time}-${ev.title ?? ev.type}`;
-      if (!seen.has(key)) {
-        const label = ev.title ? `${ev.type}: ${ev.title}` : ev.type;
-        seen.set(key, { key, startMin: s, endMin: e, label });
-      }
-    }
-  }
-  return [...seen.values()].sort((a, b) => a.startMin - b.startMin);
-}
+/**
+ * 会議・イベント帯は「そのイベントを持つ担当スタッフの列」にだけ描く (TimelineColumn 内)。
+ * 旧実装は全列共通の全幅帯 (モックの全社会議相当) だったが、実データは per-staff の
+ * staff_events であり「全員に入った」ように誤読されるため列内表示へ改めた (PO指摘 2026-07-08)。
+ */
 
 function PersonMark() {
   return (
@@ -349,10 +331,12 @@ function TimelineColumn({
   col,
   onPatientClick,
   onFreeSlotClick,
+  onEventClick,
 }: {
   col: TimelineCourseColumn;
   onPatientClick?: (patientId: string) => void;
   onFreeSlotClick?: (col: TimelineCourseColumn, gap: FreeGap) => void;
+  onEventClick?: (ev: EventRead, col: TimelineCourseColumn) => void;
 }) {
   const height = timelineHeightPx();
   // 勤務外バンド: スタッフイベント以外に、コース未生成/担当なしを表す薄いハッチは出さない
@@ -432,6 +416,75 @@ function TimelineColumn({
         );
       })}
 
+      {/* 会議・イベント帯 (担当スタッフの列内・藤色・カイポケ反映外)。クリックで編集/削除。 */}
+      {col.staffEvents.map((ev) => {
+        const s = parseHM(ev.start_time);
+        const e = parseHM(ev.end_time);
+        if (s === null || e === null || e <= s) return null;
+        const evLabel = ev.title ? `${ev.type}: ${ev.title}` : ev.type;
+        const bandStyle = {
+          top: minutesToY(s) + 1,
+          height: Math.max(durationToHeight(e - s) - 3, 22),
+          background: 'var(--sched-event-bg)',
+          borderColor: 'var(--sched-event-ln)',
+          borderLeftColor: 'var(--sched-event-bar)',
+        };
+        const bandClass =
+          'absolute left-1 right-1 z-[3] flex items-center gap-1.5 overflow-hidden rounded-lg border border-l-[3px] px-2 py-[3px] shadow-[var(--shadow-sm)]';
+        const bandInner = (
+          <>
+            <span className="shrink-0 text-[12px]" style={{ color: 'var(--sched-event-bar)' }}>
+              👥
+            </span>
+            <span
+              className="min-w-0 truncate text-[11px] font-bold"
+              style={{ color: 'var(--sched-event-ink)' }}
+            >
+              {evLabel}
+            </span>
+            <span
+              className="tnum shrink-0 text-[9.5px] opacity-75"
+              style={{ color: 'var(--sched-event-ink)' }}
+            >
+              {String(Math.floor(s / 60)).padStart(2, '0')}:{String(s % 60).padStart(2, '0')}〜
+            </span>
+            <span
+              className="ml-auto shrink-0 whitespace-nowrap rounded-full border bg-bg-base px-1.5 py-px text-[8.5px] font-bold"
+              style={{ color: 'var(--sched-event-ink)', borderColor: 'var(--sched-event-ln)' }}
+            >
+              カイポケ反映外
+            </span>
+          </>
+        );
+        return onEventClick ? (
+          <button
+            key={`ev-${ev.id}`}
+            type="button"
+            data-testid={`tl-event-${col.key}-${ev.id}`}
+            className={cn(
+              bandClass,
+              'cursor-pointer text-left transition-shadow hover:shadow-[var(--shadow-md)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary',
+            )}
+            style={bandStyle}
+            onClick={() => onEventClick(ev, col)}
+            title={`${evLabel} をクリックで編集・削除`}
+            aria-label={`イベント ${evLabel} を編集`}
+          >
+            {bandInner}
+          </button>
+        ) : (
+          <div
+            key={`ev-${ev.id}`}
+            data-testid={`tl-event-${col.key}-${ev.id}`}
+            // 表示専用時は下の訪問カードのクリック/hover を透過。
+            className={cn(bandClass, 'pointer-events-none')}
+            style={bandStyle}
+          >
+            {bandInner}
+          </div>
+        );
+      })}
+
       {/* 訪問カード (単独 or 同住所90分ペアボックス) */}
       {items.map((it) =>
         it.kind === 'pair' ? (
@@ -462,9 +515,9 @@ export function TimelineDayBoard({
   onPatientClick,
   nowMinutes,
   onFreeSlotClick,
+  onEventClick,
 }: TimelineDayBoardProps) {
   const height = timelineHeightPx();
-  const events = useMemo(() => eventBandsOf(columns), [columns]);
   const hours: number[] = [];
   for (let m = TL_DAY_START_MIN; m <= TL_DAY_END_MIN; m += 60) hours.push(m);
 
@@ -552,51 +605,9 @@ export function TimelineDayBoard({
             col={col}
             onPatientClick={onPatientClick}
             onFreeSlotClick={onFreeSlotClick}
+            onEventClick={onEventClick}
           />
         ))}
-
-        {/* 会議・イベント帯 (全幅・藤色・カイポケ反映外) */}
-        {events.map((ev) => {
-          const top = minutesToY(ev.startMin) + 1;
-          const h = durationToHeight(ev.endMin - ev.startMin) - 3;
-          return (
-            <div
-              key={ev.key}
-              data-testid={`tl-event-${ev.key}`}
-              // T-1 は表示専用のため pointer-events-none (下の訪問カードのクリック/hover を透過)。
-              className="pointer-events-none absolute z-[3] flex items-center gap-2 rounded-lg border border-l-[3px] px-3 py-[5px] shadow-[var(--shadow-sm)]"
-              style={{
-                top,
-                left: TIME_RAIL_W + 4,
-                right: 10,
-                height: Math.max(h, 22),
-                background: 'var(--sched-event-bg)',
-                borderColor: 'var(--sched-event-ln)',
-                borderLeftColor: 'var(--sched-event-bar)',
-              }}
-            >
-              <span className="text-[13px]" style={{ color: 'var(--sched-event-bar)' }}>
-                👥
-              </span>
-              <span className="text-[12px] font-bold" style={{ color: 'var(--sched-event-ink)' }}>
-                {ev.label}
-              </span>
-              <span
-                className="tnum text-[10.5px] opacity-75"
-                style={{ color: 'var(--sched-event-ink)' }}
-              >
-                {String(Math.floor(ev.startMin / 60)).padStart(2, '0')}:
-                {String(ev.startMin % 60).padStart(2, '0')}〜 {ev.endMin - ev.startMin}分
-              </span>
-              <span
-                className="ml-auto whitespace-nowrap rounded-full border bg-bg-base px-1.5 py-px text-[8.5px] font-bold"
-                style={{ color: 'var(--sched-event-ink)', borderColor: 'var(--sched-event-ln)' }}
-              >
-                カイポケ反映外
-              </span>
-            </div>
-          );
-        })}
 
         {/* 現在時刻ライン */}
         {showNow && nowMinutes != null && (
