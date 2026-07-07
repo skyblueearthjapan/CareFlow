@@ -61,6 +61,16 @@ export interface WeekOverviewVisit {
   /** 患者の緯度経度 (距離算出用). null = 未登録 → 距離は出さない. */
   lat?: number | null;
   lng?: number | null;
+  /**
+   * T-3 週タイムライン用 (schedule-timeline-redesign-design.md)。週ビュー(一覧)は
+   * start_time のみ使うが、週タイムラインは時間比例のため終了時刻・患者性別・2名判定が要る。
+   * いずれも省略可 (欠落時タイムラインはその訪問を描かない・一覧には無影響)。
+   */
+  end_time?: string | null;
+  /** 患者の性別 (patient.sex: male/female/unknown)。カード地色に使う。 */
+  patient_sex?: string | null;
+  /** 患者マスタの 2 名体制フラグ (人マーク表示用)。 */
+  patient_requires_multiple_staff?: boolean;
 }
 
 export interface CourseWeekOverviewProps {

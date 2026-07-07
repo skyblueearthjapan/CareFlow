@@ -143,6 +143,26 @@ export function assignLanes(blocks: ReadonlyArray<TimelineBlock>): Map<string, L
   return out;
 }
 
+/**
+ * 週タイムライン用の圧縮スケール (0.72)。6曜日を横に並べるため縦を詰める。
+ * 週の Y/高さ計算はこの係数を掛けた rowPx で行う (日と同じ算法・密度だけ変える)。
+ */
+export const TL_WEEK_SCALE = 0.72;
+
+/** スケール指定の Y 座標 (px)。週タイムライン (rowPx = TL_ROW_PX * TL_WEEK_SCALE) 用。 */
+export function minutesToYScaled(
+  min: number,
+  rowPx: number,
+  startMin: number = TL_DAY_START_MIN,
+): number {
+  return ((min - startMin) / 30) * rowPx;
+}
+
+/** スケール指定のカード高さ (px)。 */
+export function durationToHeightScaled(durationMin: number, rowPx: number): number {
+  return (durationMin / 30) * rowPx;
+}
+
 /** 所要分の見た目下限 (px)。短時間訪問でも氏名が読める最小高さ。 */
 export const TL_MIN_CARD_PX = 22;
 

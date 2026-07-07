@@ -136,6 +136,10 @@ import {
   TimelineDayBoard,
   type TimelineCourseColumn,
 } from '@/components/schedule/timeline/TimelineDayBoard';
+import {
+  WeekTimelineBoard,
+  type WeekTimelineOption,
+} from '@/components/schedule/timeline/WeekTimelineBoard';
 import { PartnerCourseDialog } from './PartnerCourseDialog';
 import { PatientCard } from './PatientCard';
 import { PatientScheduleDetailDialog } from './PatientScheduleDetailDialog';
@@ -276,6 +280,10 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
   // timeline  = 縦タイムライン (T-1・時間比例カード / 読み取り専用).
   //   docs/plans/schedule-timeline-redesign-design.md。既定は table (現場の日常を変えない)。
   const [weekdayViewMode, setWeekdayViewMode] = useState<'table' | 'list' | 'timeline'>('table');
+  // T-3: 週タブの見え方。overview=既存の全コース俯瞰(既定・全機能温存) / timeline=週タイムライン(1コース深掘り)。
+  const [weekViewMode, setWeekViewMode] = useState<'overview' | 'timeline'>('overview');
+  // 週タイムラインで選択中のコース (course_template_id)。
+  const [weekTimelineTemplateId, setWeekTimelineTemplateId] = useState<string | null>(null);
 
   // ─── Master data ────────────────────────────────────────────────────
   const officesQuery = useOffices({ limit: 50 });
@@ -1072,6 +1080,12 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         // 週ビューの距離算出用 (コース合計 + 次までの距離).
         lat: (patient as { lat?: number | null } | undefined)?.lat ?? null,
         lng: (patient as { lng?: number | null } | undefined)?.lng ?? null,
+        // T-3 週タイムライン: 実時刻 (時間比例) + 患者性別 (カード地色) + 2名判定.
+        end_time: v.end_time ?? null,
+        patient_sex: (patient?.sex as string | null | undefined) ?? null,
+        patient_requires_multiple_staff:
+          (patient as { requires_multiple_staff?: boolean | null } | undefined)
+            ?.requires_multiple_staff === true,
       });
     }
     return out;
@@ -2178,6 +2192,50 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     return now.getHours() * 60 + now.getMinutes();
   }, [weekdayViewMode, weekStart, activeWeekday]);
 
+  // ─── T-3: 週タイムラインのコース選択肢 (拠点順・担当名つき) ──────────────
+  const weekTimelineOptions = useMemo<WeekTimelineOption[]>(() => {
+    const officeOrder = new Map(offices.map((o, i) => [o.id, i]));
+    return templates
+      .slice()
+      .sort((a, b) => {
+        const oa = officeOrder.get(a.office_id) ?? 99;
+        const ob = officeOrder.get(b.office_id) ?? 99;
+        return oa !== ob ? oa - ob : (a.label ?? '').localeCompare(b.label ?? '');
+      })
+      .map((t) => {
+        const officeName = officeNameById.get(t.office_id) ?? '';
+        return { templateId: t.id, label: `${officeName}${t.label}` };
+      });
+  }, [templates, offices, officeNameById]);
+
+  // 選択中コースの既定値 (未選択・無効なら先頭にフォールバック)。
+  const effectiveWeekTemplateId = useMemo(
+    () =>
+      weekTimelineTemplateId &&
+      weekTimelineOptions.some((o) => o.templateId === weekTimelineTemplateId)
+        ? weekTimelineTemplateId
+        : (weekTimelineOptions[0]?.templateId ?? ''),
+    [weekTimelineTemplateId, weekTimelineOptions],
+  );
+
+  // 週タイムライン: 選択中コースの各曜日の実効定員 (週ビュー固有価値=受入可能数を移植).
+  const weekTimelineCapacityByWeekday = useCallback(
+    (weekday: number): number => {
+      const t = templates.find((tpl) => tpl.id === effectiveWeekTemplateId);
+      if (!t) return 0;
+      return effectiveCapacity(t, weekday, staffCountFor(t.office_id, weekday), courseCodesMax);
+    },
+    [templates, effectiveWeekTemplateId, staffCountFor, courseCodesMax],
+  );
+
+  // 週の曜日ヘッダ日付 (0=Mon..5=Sat)。
+  const weekdayDates = useMemo<(string | null)[]>(() => {
+    return Array.from({ length: 6 }, (_, wd) => {
+      const d = addDays(weekStart, wd);
+      return `${d.getMonth() + 1}/${d.getDate()}`;
+    });
+  }, [weekStart]);
+
   // ─── Wave U-3: undo/redo 中は両ボタン disabled ─────────────────────────
   const undoRedoPending = undoMut.isPending || redoMut.isPending;
 
@@ -2457,7 +2515,43 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                     テーブル
                   </button>
                 </div>
-              ) : null}
+              ) : (
+                /* T-3: 「週」タブ時は 一覧 / タイムライン の切替を出す (縦スペース不消費). */
+                <div
+                  role="group"
+                  aria-label="週タブ 表示モード切替"
+                  className="inline-flex items-center gap-2"
+                >
+                  <div className="inline-flex overflow-hidden rounded border border-border-default text-xs">
+                    <button
+                      type="button"
+                      onClick={() => setWeekViewMode('timeline')}
+                      aria-pressed={weekViewMode === 'timeline'}
+                      data-testid="course-week-mode-timeline"
+                      className={
+                        weekViewMode === 'timeline'
+                          ? 'bg-brand-primary px-2 py-1 text-white'
+                          : 'bg-bg-base px-2 py-1 text-text-secondary hover:bg-bg-muted'
+                      }
+                    >
+                      タイムライン
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setWeekViewMode('overview')}
+                      aria-pressed={weekViewMode === 'overview'}
+                      data-testid="course-week-mode-overview"
+                      className={
+                        weekViewMode === 'overview'
+                          ? 'bg-brand-primary px-2 py-1 text-white'
+                          : 'bg-bg-base px-2 py-1 text-text-secondary hover:bg-bg-muted'
+                      }
+                    >
+                      一覧
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {canEdit ? (
                 <>
@@ -2582,24 +2676,37 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                 data-testid="course-week-overview-panel"
                 className="space-y-2"
               >
-                <CourseWeekOverview
-                  templates={templates}
-                  officeNameById={officeNameById}
-                  visits={overviewVisits}
-                  onJumpToDay={(wd) => setActiveTab(wd)}
-                  staffEventsByStaff={staffEventsByStaff}
-                  assignedStaffByTemplateWeekday={assignedStaffByTemplateWeekday}
-                  staffMap={staffMap}
-                  sameAddressKeyByPatientId={sameAddressKeyByPatientId}
-                  onPatientClick={handleOpenPatientDetail}
-                  onTogglePin={canEdit ? handleTogglePin : undefined}
-                  staffCountFor={staffCountFor}
-                  courseCodesMax={courseCodesMax}
-                  managerCountFor={managerCountFor}
-                  staffSummaryOffices={staffSummaryOffices}
-                  freeGapsByCell={freeGapsByCell}
-                  officeLatLngById={officeLatLngById}
-                />
+                {weekViewMode === 'timeline' ? (
+                  /* T-3: 週タイムライン (曜日列・1コース深掘り). 全コース俯瞰は「一覧」が担う. */
+                  <WeekTimelineBoard
+                    selectedTemplateId={effectiveWeekTemplateId}
+                    options={weekTimelineOptions}
+                    onSelectTemplate={setWeekTimelineTemplateId}
+                    visits={overviewVisits}
+                    weekdayDates={weekdayDates}
+                    onPatientClick={handleOpenPatientDetail}
+                    capacityByWeekday={weekTimelineCapacityByWeekday}
+                  />
+                ) : (
+                  <CourseWeekOverview
+                    templates={templates}
+                    officeNameById={officeNameById}
+                    visits={overviewVisits}
+                    onJumpToDay={(wd) => setActiveTab(wd)}
+                    staffEventsByStaff={staffEventsByStaff}
+                    assignedStaffByTemplateWeekday={assignedStaffByTemplateWeekday}
+                    staffMap={staffMap}
+                    sameAddressKeyByPatientId={sameAddressKeyByPatientId}
+                    onPatientClick={handleOpenPatientDetail}
+                    onTogglePin={canEdit ? handleTogglePin : undefined}
+                    staffCountFor={staffCountFor}
+                    courseCodesMax={courseCodesMax}
+                    managerCountFor={managerCountFor}
+                    staffSummaryOffices={staffSummaryOffices}
+                    freeGapsByCell={freeGapsByCell}
+                    officeLatLngById={officeLatLngById}
+                  />
+                )}
               </div>
             ) : (
               /* メイン: 当該曜日のコーステーブル N 個 */
