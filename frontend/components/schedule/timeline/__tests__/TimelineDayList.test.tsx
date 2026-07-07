@@ -130,8 +130,11 @@ describe('TimelineDayList', () => {
         ]}
       />,
     );
-    expect(screen.getByTestId('tdl-sameaddr-0')).toBeInTheDocument();
-    expect(screen.getByText(/同住所（2名/)).toBeInTheDocument();
+    const box = screen.getByTestId('tdl-sameaddr-0');
+    expect(box).toBeInTheDocument();
+    // 見出し行は廃止 (高さ節約)。内訳は囲みの title と各行の📍チップで伝える。
+    expect(box.getAttribute('title')).toContain('同住所（2名');
+    expect(screen.getAllByText('📍同住所')).toHaveLength(2);
   });
 
   it('移動警告のある行は薄い赤背景＋行ツールチップになる (M-2)', () => {
@@ -153,6 +156,12 @@ describe('TimelineDayList', () => {
     const row = screen.getByTestId('tdl-row-w');
     expect(row.className).toContain('bg-error-bg/40');
     expect(row.getAttribute('title')).toBe('移動が厳しい');
+  });
+
+  it('訪問行は列見出しと同じ6列グリッドで1行に並ぶ (縦積み回帰防止)', () => {
+    render(<TimelineDayList courses={[course({ key: 'c1', visits: [v({ key: 'a' })] })]} />);
+    // grid-template-columns が無いと display:grid は1列になり、セルが縦に積まれてしまう。
+    expect(screen.getByTestId('tdl-row-a').className).toContain('grid-cols-[');
   });
 
   it('性別ドット/左帯の色が患者性別で変わる', () => {

@@ -79,7 +79,8 @@ function VisitRow({
   return (
     <div
       className={cn(
-        'grid items-center gap-2.5 rounded border-l-[3px] px-2 py-1.5 text-[12px] transition-colors',
+        'grid items-center gap-2.5 rounded border-l-[3px] px-2 py-1 text-[12px] transition-colors',
+        GRID_COLS,
         // M-2: 移動警告は行全体を薄い赤で強調 (旧リストの赤枠相当)。
         warn ? 'bg-error-bg/40 hover:bg-error-bg/60' : 'hover:bg-bg-muted',
         // L-3: ピン留め行は薄い琥珀背景で強調 (旧リスト踏襲)。
@@ -126,10 +127,10 @@ function VisitRow({
         {v.duration_min ? formatDuration(v.duration_min) : '—'}
       </span>
 
-      <span className="flex min-w-0 flex-wrap items-center gap-1 text-[11px] text-text-muted">
-        {/* M-4: 警告と area_label は排他にせず両方出す。 */}
+      <span className="flex min-w-0 flex-nowrap items-center gap-1 overflow-hidden text-[11px] text-text-muted">
+        {/* M-4: 警告と area_label は排他にせず両方出す (1行厳守・全文は行 title で読める)。 */}
         {warn ? (
-          <span className="shrink-0 rounded bg-error-bg px-1 py-px text-[10px] font-bold text-error">
+          <span className="min-w-0 truncate rounded bg-error-bg px-1 py-px text-[10px] font-bold text-error">
             ⚠ {warn.message ?? '移動警告'}
           </span>
         ) : null}
@@ -141,7 +142,7 @@ function VisitRow({
         {!warn && !v.area_label ? '—' : null}
       </span>
 
-      <span className="truncate text-[11px] text-text-muted">
+      <span className="min-w-0 truncate text-[11px] text-text-muted">
         {v.address ?? ''}
         {v.same_address_group_id ? (
           <span className="ml-1 text-[10px] font-semibold text-amber-700">📍同住所</span>
@@ -166,7 +167,7 @@ function VisitRow({
 function FreeGapRow({ gap }: { gap: FreeGap }) {
   return (
     <div
-      className={cn('grid items-center gap-2.5 px-2 py-1', GRID_COLS)}
+      className={cn('grid items-center gap-2.5 px-2 py-0.5', GRID_COLS)}
       data-testid={`tdl-gap-${gap.startMin}`}
     >
       <span className="tnum text-[11px] font-semibold text-brand-primary">
@@ -254,13 +255,13 @@ function fmtHMFromStart(start: string, durationMin: number): string {
 
 export function TimelineDayList({ courses, onPatientClick, onTogglePin }: TimelineDayListProps) {
   return (
-    <div className="space-y-4" data-testid="timeline-day-list">
+    <div className="space-y-3" data-testid="timeline-day-list">
       {courses.map((c) => {
         const rows = interleave(c);
         return (
-          <div key={c.key} className="rounded-lg border border-border-default bg-bg-base p-3">
+          <div key={c.key} className="rounded-lg border border-border-default bg-bg-base px-3 py-2">
             {/* グループ見出し: 拠点+コードのチップ / 担当スタッフ名 / n/N件 */}
-            <div className="mb-1 flex items-center gap-2 border-b-2 border-border-default pb-1.5">
+            <div className="flex items-center gap-2 border-b-2 border-border-default pb-1">
               <span
                 className="rounded px-1.5 py-0.5 text-[10px] font-extrabold text-white"
                 style={{ background: courseColor(c.course_code) }}
@@ -288,7 +289,7 @@ export function TimelineDayList({ courses, onPatientClick, onTogglePin }: Timeli
             {/* 列見出し */}
             <div
               className={cn(
-                'grid gap-2.5 px-2 pb-1.5 pt-1 text-[10px] font-bold tracking-wide text-text-muted',
+                'grid gap-2.5 px-2 pb-1 pt-1 text-[10px] font-bold tracking-wide text-text-muted',
                 GRID_COLS,
               )}
             >
@@ -309,14 +310,13 @@ export function TimelineDayList({ courses, onPatientClick, onTogglePin }: Timeli
                 groupSameAddress(rows).map((grp, gi) =>
                   grp.kind === 'sameaddr' ? (
                     // M-1: 同住所ペアは琥珀の囲みでひと目で分かるように (旧リスト踏襲)。
+                    // 見出し行は置かず高さを節約 (各行の📍同住所チップ + title で内訳が分かる)。
                     <div
                       key={`sa-${gi}`}
-                      className="my-1 rounded-md border-2 border-amber-400 bg-amber-50/50"
+                      className="my-0.5 overflow-hidden rounded-md border border-amber-400 bg-amber-50/50"
+                      title={`同住所（${grp.rows.length}名・同時刻帯に連続訪問）`}
                       data-testid={`tdl-sameaddr-${gi}`}
                     >
-                      <div className="px-2 pt-1 text-[10px] font-bold text-amber-700">
-                        📍 同住所（{grp.rows.length}名・同時刻帯に連続訪問）
-                      </div>
                       <div className="divide-y divide-amber-200/70">
                         {grp.rows.map((v) => (
                           <VisitRow
