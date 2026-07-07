@@ -1,0 +1,471 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<title>CareFlow スケジュール — 完成形の全体像（比較モック）</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root{
+    --cream:#FAF7F2; --panel:#FFFFFF; --line:#EAE3D8; --line-soft:#F1ECE3;
+    --ink:#2A2622; --ink2:#6B6258; --ink3:#9A8E80;
+    --teal:#0E8472; --teal-d:#0B6E5E; --teal-bg:#E7F4F0; --teal-ln:#CDE8E0;
+    --m-bg:#EDF4FA; --m-bar:#6D9EC9; --m-ink:#31597E; --m-ln:#D8E6F1;
+    --f-bg:#FBEFF2; --f-bar:#D48BA0; --f-ink:#96475E; --f-ln:#F2DAE1;
+    --n-bg:#F4F1EA; --n-bar:#B4A895; --n-ink:#6B6258; --n-ln:#E8E1D4;
+    --ev-bg:#F1EEF9; --ev-bar:#9384C4; --ev-ink:#584A87; --ev-ln:#E2DCF0;
+    --off-bg:#F5F1EA; --now:#D2683C;
+    --serif:"Georgia","Hiragino Mincho ProN","Yu Mincho","BIZ UDMincho",serif;
+    --sans:"Hiragino Sans","Hiragino Kaku Gothic ProN","Yu Gothic UI","Meiryo",system-ui,sans-serif;
+    --row:34px;
+    --shadow-card:0 1px 2px rgba(28,25,23,.05);
+    --shadow-pop:0 18px 44px rgba(28,25,23,.22);
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;background:var(--cream);color:var(--ink);font-family:var(--sans);font-size:14px;-webkit-font-smoothing:antialiased;}
+  button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit;padding:0;}
+  :focus-visible{outline:2px solid var(--teal);outline-offset:2px;border-radius:4px;}
+  .tnum{font-variant-numeric:tabular-nums;}
+  .scroll::-webkit-scrollbar{width:9px;height:9px;}
+  .scroll::-webkit-scrollbar-thumb{background:rgba(42,38,34,.16);border-radius:5px;}
+  .scroll::-webkit-scrollbar-track{background:transparent;}
+  @media(prefers-reduced-motion:reduce){*,*::before,*::after{transition:none!important;animation:none!important;}}
+
+  /* thesis banner */
+  .mast{max-width:1680px;margin:0 auto;padding:24px 26px 8px;}
+  .mast h1{font-family:var(--serif);font-size:23px;font-weight:700;margin:0;letter-spacing:-.01em;}
+  .mast h1 em{font-style:normal;color:var(--teal);}
+  .mast .sub{font-size:12.5px;color:var(--ink3);margin-top:4px;}
+  .thesis{max-width:1680px;margin:10px auto 0;padding:0 26px;}
+  .thesis .box{display:flex;gap:18px;align-items:center;flex-wrap:wrap;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:13px 18px;}
+  .thesis .rule{font-family:var(--serif);font-size:15px;font-weight:700;color:var(--ink);}
+  .thesis .rule b{color:var(--teal);}
+  .thesis .axis{display:flex;gap:14px;flex-wrap:wrap;font-size:11.5px;color:var(--ink2);}
+  .thesis .axis span{background:var(--cream);border:1px solid var(--line-soft);border-radius:999px;padding:4px 11px;}
+  .thesis .axis b{color:var(--teal);}
+
+  /* app frame */
+  .frame{max-width:1680px;margin:14px auto 22px;padding:0 26px;}
+  .app{background:var(--panel);border:1px solid var(--line);border-radius:16px;overflow:hidden;box-shadow:0 10px 34px rgba(42,38,34,.08);height:min(84vh,860px);display:flex;flex-direction:column;}
+  .bar{flex:0 0 auto;display:flex;align-items:center;gap:11px;padding:12px 16px 10px;background:var(--panel);border-bottom:1px solid var(--line);flex-wrap:wrap;}
+  .bar .ttl{font-family:var(--serif);font-size:19px;font-weight:700;}
+  .navgrp{display:flex;align-items:center;gap:4px;}
+  .icobtn{width:30px;height:30px;border-radius:9px;border:1px solid var(--line);background:#fff;display:grid;place-items:center;color:var(--ink2);font-size:13px;}
+  .icobtn:hover{background:var(--cream);}
+  .datelabel{font-family:var(--serif);font-size:15px;font-weight:700;padding:0 6px;white-space:nowrap;}
+  .datelabel .dow{color:var(--teal);}
+  .seg{display:flex;background:var(--cream);border:1px solid var(--line);border-radius:10px;padding:3px;}
+  .seg button{padding:5px 15px;border-radius:7px;font-size:12.5px;font-weight:700;color:var(--ink3);transition:all .12s;}
+  .seg button.on{background:#fff;color:var(--teal);box-shadow:0 1px 3px rgba(28,25,23,.1);}
+  .seg .lbl{font-size:9.5px;color:var(--ink3);font-weight:700;letter-spacing:.06em;padding:0 6px;align-self:center;}
+  .coursesel{display:flex;align-items:center;gap:2px;background:var(--cream);border:1px solid var(--line);border-radius:10px;padding:3px 3px 3px 0;}
+  .coursesel .lbl{font-size:9.5px;color:var(--ink3);font-weight:700;letter-spacing:.06em;padding:0 6px;}
+  .coursesel select{border:1px solid var(--line);background:#fff;border-radius:7px;padding:5px 10px;font-size:12.5px;font-weight:700;color:var(--teal);cursor:pointer;}
+  .legend{display:flex;gap:10px;font-size:11px;color:var(--ink2);align-items:center;margin-left:auto;flex-wrap:wrap;}
+  .legend i{width:10px;height:10px;border-radius:3px;display:inline-block;vertical-align:-1px;margin-right:4px;}
+
+  .body{flex:1;display:flex;min-height:0;}
+  .gridwrap{flex:1;overflow:auto;background:var(--panel);position:relative;}
+  .headrow{display:flex;position:sticky;top:0;z-index:6;background:var(--cream);border-bottom:1px solid var(--line);min-width:fit-content;}
+  .timespacer{width:52px;flex:0 0 52px;}
+  .colhead{flex:1;min-width:158px;padding:8px 10px;border-left:1px solid var(--line-soft);display:flex;align-items:center;gap:8px;}
+  .colhead.dayhead{display:block;}
+  .avatar{width:27px;height:27px;border-radius:50%;display:grid;place-items:center;font-size:11px;font-weight:700;flex:0 0 27px;border:1.5px solid;}
+  .colhead .nm{font-size:12.5px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .colhead .meta{font-size:9.5px;color:var(--ink3);display:flex;gap:6px;align-items:center;}
+  .cchip{font-size:9px;font-weight:800;color:#fff;border-radius:5px;padding:1px 6px;}
+  .dnum{color:var(--ink3);font-weight:600;font-size:10.5px;margin-left:5px;}
+  .capbadge{font-weight:700;}
+  .bodyrow{display:flex;position:relative;min-width:fit-content;}
+  .timerail{width:52px;flex:0 0 52px;position:relative;}
+  .timerail span{position:absolute;right:8px;font-size:10px;color:var(--ink3);font-variant-numeric:tabular-nums;transform:translateY(-7px);}
+  .col{flex:1;min-width:158px;position:relative;border-left:1px solid var(--line-soft);}
+  .rowline{position:absolute;left:0;right:0;height:var(--row);}
+  .rowline.h{border-top:1px solid var(--line);}
+  .rowline.half{border-top:1px dashed var(--line-soft);}
+  .offband{position:absolute;left:0;right:0;background:repeating-linear-gradient(-45deg,var(--off-bg) 0 6px,#EFE9DF 6px 12px);}
+  .offband .offlabel{position:absolute;top:8px;left:0;right:0;text-align:center;font-size:10px;color:var(--ink3);font-weight:600;}
+  .vcard{position:absolute;left:3px;right:3px;border-radius:8px;padding:3px 8px;overflow:hidden;cursor:pointer;display:flex;flex-direction:column;gap:1px;border:1px solid;border-left-width:3px;box-shadow:var(--shadow-card);transition:box-shadow .12s,transform .1s;text-align:left;}
+  .vcard:hover{box-shadow:0 6px 16px rgba(28,25,23,.16);transform:translateY(-1px);z-index:8;}
+  .vcard .l1{display:flex;align-items:center;gap:4px;min-width:0;}
+  .vcard .nm{font-size:11.5px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .vcard .tm{font-size:9px;opacity:.75;margin-left:auto;font-variant-numeric:tabular-nums;flex-shrink:0;}
+  .vcard .svc{font-size:9.5px;opacity:.8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .pinmark{font-size:9px;flex-shrink:0;}
+  .personrow{display:inline-flex;gap:1px;flex-shrink:0;}
+  .slot{position:absolute;left:4px;right:4px;border:1.5px dashed transparent;border-radius:8px;display:flex;align-items:center;justify-content:center;gap:5px;color:var(--teal);font-size:11px;font-weight:700;opacity:0;transition:opacity .15s;}
+  .slot .plus{width:18px;height:18px;border-radius:50%;background:var(--teal);color:#fff;display:grid;place-items:center;font-size:13px;line-height:1;}
+  .col:hover .slot{opacity:1;border-color:var(--teal);background:rgba(14,132,114,.05);}
+  .slot .gapmin{font-size:9.5px;font-weight:600;color:var(--ink3);}
+  .evband{position:absolute;border-radius:9px;padding:5px 12px;display:flex;align-items:center;gap:9px;z-index:3;background:var(--ev-bg);border:1px solid var(--ev-ln);border-left:3px solid var(--ev-bar);box-shadow:0 2px 6px rgba(88,74,135,.1);pointer-events:none;}
+  .evband .et{font-size:12px;font-weight:700;color:var(--ev-ink);}
+  .evband .em{font-size:10.5px;color:var(--ev-ink);opacity:.72;font-variant-numeric:tabular-nums;}
+  .evtag{font-size:8.5px;font-weight:700;color:var(--ev-ink);background:#fff;border:1px solid var(--ev-ln);border-radius:999px;padding:1px 7px;margin-left:auto;white-space:nowrap;}
+  .nowline{position:absolute;left:0;right:0;height:0;border-top:2px solid var(--now);z-index:5;pointer-events:none;}
+  .nowlabel{position:absolute;left:2px;top:-9px;font-size:9px;font-weight:700;color:#fff;background:var(--now);border-radius:4px;padding:1px 5px;font-variant-numeric:tabular-nums;}
+
+  /* list view */
+  .listwrap{flex:1;overflow:auto;background:var(--panel);padding:14px 20px;}
+  .lgroup{margin-bottom:16px;}
+  .lgh{display:flex;align-items:center;gap:8px;padding:6px 2px;border-bottom:2px solid var(--line);margin-bottom:2px;}
+  .lgh .nm{font-size:13px;font-weight:700;}
+  .lhead,.lrow{display:grid;grid-template-columns:82px 1.3fr 54px 1fr 1.2fr 88px;gap:10px;align-items:center;}
+  .lhead{padding:3px 8px 6px;font-size:10px;color:var(--ink3);font-weight:700;letter-spacing:.05em;}
+  .lrow{padding:7px 8px;border-bottom:1px solid var(--line-soft);font-size:12px;border-left:3px solid transparent;border-radius:4px;cursor:pointer;}
+  .lrow:hover{background:var(--cream);}
+  .lrow .lt{font-weight:700;font-variant-numeric:tabular-nums;}
+  .lrow .ln{font-weight:700;display:flex;align-items:center;gap:6px;min-width:0;}
+  .lrow .ln .nmtx{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .lrow .lmuted{color:var(--ink3);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .gdot{width:8px;height:8px;border-radius:50%;flex:0 0 8px;}
+  /* week list = weekday columns of dense chips */
+  .wl-head,.wl-row{display:grid;grid-template-columns:120px repeat(6,1fr);gap:6px;}
+  .wl-head{padding:4px 2px 8px;font-size:11px;font-weight:700;color:var(--ink2);border-bottom:2px solid var(--line);}
+  .wl-head .d{text-align:center;}
+  .wl-row{padding:8px 2px;border-bottom:1px solid var(--line-soft);align-items:start;}
+  .wl-row .cell{display:flex;flex-direction:column;gap:3px;min-height:34px;}
+  .wl-chip{border-radius:7px;padding:3px 7px;font-size:10.5px;font-weight:700;border:1px solid;border-left-width:3px;cursor:pointer;}
+  .wl-chip .t{font-size:9px;opacity:.75;font-variant-numeric:tabular-nums;}
+  .wl-course{font-size:12px;font-weight:700;display:flex;align-items:center;gap:6px;}
+
+  /* rich hover detail card */
+  #detail{position:fixed;width:296px;background:#fff;border-radius:15px;box-shadow:var(--shadow-pop);border:1px solid var(--line);z-index:60;display:none;overflow:hidden;pointer-events:none;}
+  #detail.show{display:block;}
+  #detail .dh{display:flex;align-items:center;gap:9px;padding:12px 15px 10px;border-bottom:1px solid var(--line-soft);}
+  #detail .dav{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;font-size:13px;font-weight:700;border:1.5px solid;flex:0 0 34px;}
+  #detail .dn{font-family:var(--serif);font-size:15.5px;font-weight:700;line-height:1.2;}
+  #detail .dsub{font-size:10.5px;color:var(--ink3);margin-top:2px;}
+  #detail .db{padding:10px 15px 13px;display:grid;gap:7px;font-size:12px;}
+  #detail .kv{display:grid;grid-template-columns:66px 1fr;gap:8px;align-items:baseline;}
+  #detail .kv .k{color:var(--ink3);font-size:10.5px;font-weight:700;}
+  #detail .kv .v{color:var(--ink);line-height:1.45;}
+  #detail .tags{display:flex;flex-wrap:wrap;gap:4px;margin-top:2px;}
+  #detail .tag{font-size:9.5px;font-weight:700;border-radius:999px;padding:2px 8px;}
+  #detail .foot{border-top:1px solid var(--line-soft);padding:8px 15px;font-size:10px;color:var(--ink3);background:var(--cream);}
+
+  .notes{max-width:1680px;margin:0 auto 40px;padding:0 26px;display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:13px;}
+  .note{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:17px 19px;}
+  .note h3{font-family:var(--serif);font-size:15px;margin:0 0 8px;}
+  .note h3 span{color:var(--teal);}
+  .note p,.note li{font-size:12px;line-height:1.85;color:var(--ink2);margin:0;}
+  .note ul{margin:0;padding-left:17px;}
+</style>
+
+<div class="mast">
+  <h1>CareFlow スケジュール — <em>完成形の全体像</em></h1>
+  <div class="sub">比較モック：日／週 × タイムライン／リスト を一枚で。実物アプリは未変更（本番は安全なまま）。カードにマウスを乗せると全情報が出ます。</div>
+</div>
+<div class="thesis">
+  <div class="box">
+    <span class="rule">貫く原則 — <b>時間はいつも下へ流れる。列は「比べたいもの」を置く。</b></span>
+    <span class="axis">
+      <span>日ビュー: 列 = <b>コース</b>（人ごとに比べる）</span>
+      <span>週ビュー: 列 = <b>曜日</b>（一週間を比べる・コースは選ぶ）</span>
+      <span>リスト = <b>精読の相棒</b>（配置が違って当然）</span>
+    </span>
+  </div>
+</div>
+
+<div class="frame">
+<div class="app">
+  <div class="bar">
+    <div class="ttl">スケジュール</div>
+    <div class="navgrp">
+      <button class="icobtn" aria-label="前へ">‹</button>
+      <div class="datelabel tnum" id="dateLabel">7月7日 <span class="dow">(月)</span></div>
+      <button class="icobtn" aria-label="次へ">›</button>
+    </div>
+    <div class="seg" id="periodSeg">
+      <span class="lbl">期間</span>
+      <button class="on" data-p="day">日</button>
+      <button data-p="week">週</button>
+    </div>
+    <div class="seg" id="viewSeg">
+      <span class="lbl">見え方</span>
+      <button class="on" data-v="timeline">タイムライン</button>
+      <button data-v="list">リスト</button>
+    </div>
+    <!-- 週タイムライン専用: コース選択をツールバー内にインライン配置 (縦スペースを消費しない) -->
+    <div class="coursesel" id="courseSel" style="display:none">
+      <span class="lbl">コース</span>
+      <select id="courseDropdown"></select>
+    </div>
+    <div class="legend">
+      <span><i style="background:var(--m-bar)"></i>男性</span>
+      <span><i style="background:var(--f-bar)"></i>女性</span>
+      <span><i style="background:var(--n-bar)"></i>未設定</span>
+      <span><i style="background:var(--ev-bar)"></i>会議</span>
+    </div>
+  </div>
+
+  <div class="body">
+    <div class="gridwrap scroll" id="view"></div>
+  </div>
+</div>
+</div>
+
+<!-- rich hover detail card -->
+<div id="detail">
+  <div class="dh">
+    <span class="dav" id="dAv"></span>
+    <div><div class="dn" id="dName">—</div><div class="dsub" id="dSub">—</div></div>
+  </div>
+  <div class="db" id="dBody"></div>
+  <div class="foot">クリックで患者詳細（固定枠 vs 今週の比較）を開きます</div>
+</div>
+
+<div class="notes">
+  <div class="note">
+    <h3><span>向きの矛盾</span>は、こう消えます</h3>
+    <p>日はコースが<b>列</b>、週は曜日が<b>列</b>。どちらも「時間は下・列は比べたいもの」。旧テーブル（コースを縦積み）と旧週ビュー（コース=行・曜日=列で時間が隠れる）だけが別の流儀なので、<b>撤去</b>すれば矛盾は消えます（T-6）。</p>
+  </div>
+  <div class="note">
+    <h3><span>リスト</span>は違って当然（残す）</h3>
+    <p>タイムラインは「余白と流れ」、リストは「漏れなく精読」。答える問いが違うので配置も違ってよい。日リストは時刻順の密な表、週リストは曜日×コースの一覧。<b>精読の相棒</b>として残します。</p>
+  </div>
+  <div class="note">
+    <h3><span>カードの情報量</span>は詰め込まない</h3>
+    <p>カード＝ひと目（氏名・時刻・色=性別・アイコン）。<b>全情報はホバー（この詳細カード）</b>。住所・移動距離・時間条件・2名の相方位置・同住所・サービスまで一手先で出ます。精読はリスト。三段で受けるので狭さと戦わずに済みます。</p>
+  </div>
+</div>
+
+<script>
+/* ───── geometry ───── */
+const START=9*60, END=18*60, ROW=34;
+const y=m=>(m-START)/30*ROW, hgt=min=>min/30*ROW;
+const hm=s=>{const[a,b]=s.split(':').map(Number);return a*60+b;};
+const fmt=m=>String(Math.floor(m/60)).padStart(2,'0')+':'+String(m%60).padStart(2,'0');
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const G={m:{bg:'var(--m-bg)',bar:'var(--m-bar)',ink:'var(--m-ink)',ln:'var(--m-ln)'},f:{bg:'var(--f-bg)',bar:'var(--f-bar)',ink:'var(--f-ink)',ln:'var(--f-ln)'},n:{bg:'var(--n-bg)',bar:'var(--n-bar)',ink:'var(--n-ink)',ln:'var(--n-ln)'}};
+const CC={A:'#0D8478',B:'#2F6FB0',C:'#8B5C9E',D:'#C75C77',E:'#B0831F',M:'#D97706'};
+const personSvg=c=>'<svg width="9" height="9" viewBox="0 0 10 10" aria-hidden="true" style="display:inline-block"><circle cx="5" cy="3" r="2.1" fill="'+c+'"/><path d="M1.2 9.4c.5-2 2-3 3.8-3s3.3 1 3.8 3z" fill="'+c+'"/></svg>';
+
+/* ───── data ───── */
+const COURSES=[
+  {id:'iA',office:'稲毛',code:'A',staff:'田中 一郎',sg:'m',off:[]},
+  {id:'iB',office:'稲毛',code:'B',staff:'佐藤 花子',sg:'f',off:[]},
+  {id:'iC',office:'稲毛',code:'C',staff:'重城 美恵',sg:'f',off:[['09:00','09:30']]},
+  {id:'iD',office:'稲毛',code:'D',staff:'石川 健',sg:'m',off:[]},
+  {id:'tA',office:'都賀',code:'A',staff:'大野 結衣',sg:'f',off:[['15:30','18:00']]},
+  {id:'tB',office:'都賀',code:'B',staff:'内村 昌也',sg:'m',off:[]},
+];
+let V=(c,t,d,p,g,svc,x={})=>({c,t,d,p,g,svc,...x});
+const VISITS=[
+  V('iA','09:30',35,'青柳 あい','f','医療・訪看Ⅰ3',{addr:'稲毛区小仲台2-5',cond:'',pin:true,dist:'—（初回）'}),
+  V('iA','10:30',35,'飯塚 誠','m','医療・点滴',{addr:'稲毛区宮野木町580',dist:'8分 2.1km'}),
+  V('iA','13:50',60,'上野 俊夫','m','介護・訪看Ⅰ3',{addr:'稲毛区園生町1103',cond:'14時以降',dist:'14分 3.4km'}),
+  V('iA','15:30',35,'江口 真由美','f','医療・訪看Ⅰ3',{addr:'稲毛区長沼町330',dist:'6分 1.5km'}),
+  V('iA','16:30',35,'太田 実','m','医療・処置',{addr:'稲毛区六方町77',dist:'9分 2.6km'}),
+  V('iB','09:30',35,'岡本 美穂','f','医療・訪看Ⅰ3',{addr:'稲毛区天台1-8',cond:'',restrict:'女性のみ',dist:'—（初回）'}),
+  V('iB','10:30',60,'加藤 静江','f','介護・入浴介助',{addr:'稲毛区轟町3-2',two:'重城 美恵',dist:'5分 1.2km'}),
+  V('iB','14:00',35,'木村 拓也','m','医療・点滴',{addr:'稲毛区弥生町12',dist:'20分 5.1km'}),
+  V('iB','16:00',35,'小島 貴子','f','医療・訪看Ⅰ3',{addr:'稲毛区作草部2-9',pin:true,dist:'7分 1.9km'}),
+  V('iC','09:40',35,'斎藤 実','m','介護・訪看Ⅰ3',{addr:'稲毛区穴川4-1',dist:'—（初回）'}),
+  V('iC','10:40',35,'柴田 恵','f','医療・処置',{addr:'稲毛区園生町802',dist:'11分 2.8km'}),
+  V('iC','14:00',90,'鈴木 一郎','m','医療・訪看Ⅰ4',{addr:'稲毛区小中台町1500',same:'鈴木 うめ と同住所',dist:'16分 4.0km'}),
+  V('iC','16:00',35,'高津 静',null,'医療・訪看Ⅰ3',{addr:'稲毛区長沼原町731',dist:'8分 2.2km'}),
+  V('iD','09:30',35,'高橋 幸三','m','医療・訪看Ⅰ3',{addr:'稲毛区あやめ台20',dist:'—（初回）'}),
+  V('iD','11:00',35,'田村 節子','f','介護・訪看Ⅰ3',{addr:'稲毛区緑町1-14',cond:'午前のみ',dist:'12分 3.0km'}),
+  V('iD','14:00',90,'鈴木 うめ','f','医療・訪看Ⅰ4',{addr:'稲毛区小中台町1500',same:'鈴木 一郎 と同住所',dist:'18分 4.5km'}),
+  V('iD','16:30',35,'内藤 洋','m','医療・点滴',{addr:'稲毛区柏台1-3',dist:'10分 2.7km'}),
+  V('tA','09:30',35,'西村 ふみ','f','医療・訪看Ⅰ3',{addr:'若葉区都賀3-7',restrict:'女性のみ',dist:'—（初回）'}),
+  V('tA','10:30',60,'野田 三郎','m','介護・リハ',{addr:'若葉区西都賀5-1',dist:'6分 1.4km'}),
+  V('tA','14:00',35,'萩原 巌','m','医療・訪看Ⅰ3',{addr:'若葉区桜木町18',dist:'13分 3.3km'}),
+  V('tB','10:00',35,'久松 由紀','f','医療・訪看Ⅰ3',{addr:'若葉区貝塚町44',dist:'—（初回）'}),
+  V('tB','11:00',35,'藤井 誠二','m','医療・点滴',{addr:'若葉区若松町2000',dist:'15分 3.8km'}),
+  V('tB','14:30',60,'細川 とし','f','介護・訪看Ⅰ3',{addr:'若葉区みつわ台1-9',pin:true,dist:'9分 2.4km'}),
+  V('tB','16:30',35,'前田 昭','m','医療・処置',{addr:'若葉区桜木北3-5',dist:'11分 2.9km'}),
+];
+const EVENTS=[{t:'13:00',d:45,title:'カンファレンス（全体）',who:'全スタッフ'}];
+const NOW=hm('14:05'), CAP=6, DOWS=['月','火','水','木','金','土'];
+let period='day', view='timeline', weekCourse='iA';
+
+/* ───── free gaps ───── */
+function gaps(cid){
+  const c=COURSES.find(x=>x.id===cid);
+  const b=VISITS.filter(v=>v.c===cid).map(v=>[hm(v.t),hm(v.t)+v.d])
+    .concat(EVENTS.map(e=>[hm(e.t),hm(e.t)+e.d]))
+    .concat(c.off.map(([a,z])=>[hm(a),hm(z)])).sort((a,z)=>a[0]-z[0]);
+  const out=[];let cur=START;
+  for(const[s,e]of b){if(s-cur>=60)out.push([cur,s]);cur=Math.max(cur,e);}
+  if(END-cur>=60)out.push([cur,END]);
+  return out;
+}
+
+/* ───── day timeline ───── */
+function renderDayTimeline(){
+  const H=(END-START)/30*ROW;
+  let hd='<div class="headrow"><div class="timespacer"></div>';
+  for(const c of COURSES){
+    const n=VISITS.filter(v=>v.c===c.id).length, gg=G[c.sg];
+    hd+='<div class="colhead"><span class="avatar" style="background:'+gg.bg+';border-color:'+gg.bar+';color:'+gg.ink+'">'+esc(c.staff[0])+'</span>'
+      +'<div style="min-width:0"><div class="nm">'+esc(c.staff)+'</div><div class="meta"><span class="cchip" style="background:'+CC[c.code]+'">'+esc(c.office)+c.code+'</span><span class="capbadge tnum"'+(n>=CAP?' style="color:var(--now)"':'')+'>'+n+'/'+CAP+'件</span></div></div></div>';
+  }
+  hd+='</div>';
+  let rail='<div class="timerail">';
+  for(let m=START;m<=END;m+=60)rail+='<span style="top:'+y(m)+'px">'+fmt(m)+'</span>';
+  rail+='<div style="height:'+H+'px"></div></div>';
+  let cols='';
+  for(const c of COURSES){
+    let col='<div class="col">';
+    for(let m=START;m<END;m+=30)col+='<div class="rowline '+(m%60===0?'h':'half')+'" style="top:'+y(m)+'px"></div>';
+    for(const[a,z]of c.off)col+='<div class="offband" style="top:'+y(hm(a))+'px;height:'+hgt(hm(z)-hm(a))+'px">'+(hm(z)-hm(a)>=60?'<span class="offlabel">勤務外</span>':'')+'</div>';
+    for(const[gs,ge]of gaps(c.id))col+='<button class="slot" style="top:'+(y(gs)+2)+'px;height:'+(hgt(ge-gs)-5)+'px"><span class="plus">＋</span>ここに追加 <span class="gapmin tnum">'+(ge-gs)+'分空き</span></button>';
+    for(const v of VISITS.filter(v=>v.c===c.id))col+=vcard(v,c);
+    col+='<div style="height:'+H+'px"></div></div>';cols+=col;
+  }
+  let evs='';
+  for(const e of EVENTS)evs+='<div class="evband" style="top:'+(y(hm(e.t))+1)+'px;left:56px;right:10px;height:'+(hgt(e.d)-3)+'px"><span style="color:var(--ev-bar);font-size:13px">👥</span><span class="et">'+esc(e.title)+'</span><span class="em tnum">'+e.t+'〜 '+e.d+'分</span><span class="evtag">カイポケ反映外</span></div>';
+  const now='<div class="nowline" style="top:'+y(NOW)+'px"><span class="nowlabel tnum">'+fmt(NOW)+'</span></div>';
+  document.getElementById('view').innerHTML=hd+'<div class="bodyrow">'+rail+cols+evs+now+'</div>';
+}
+function vcard(v,c){
+  const gg=G[v.g||'n'], top=y(hm(v.t))+1, h=hgt(v.d)-3;
+  const persons=v.two?'<span class="personrow">'+personSvg('var(--teal)')+personSvg('var(--teal)')+'</span>':'';
+  return '<div class="vcard" data-vid="'+cardId(v)+'" style="top:'+top+'px;height:'+h+'px;background:'+gg.bg+';border-color:'+gg.ln+';border-left-color:'+gg.bar+';color:'+gg.ink+'">'
+    +'<span class="l1">'+(v.pin?'<span class="pinmark">🔒</span>':'')+persons+'<span class="nm">'+esc(v.p)+'</span><span class="tm">'+v.t+'・'+v.d+'分</span></span>'
+    +(h>=44?'<span class="svc">'+esc(v.svc)+'</span>':'')+'</div>';
+}
+
+/* ───── week timeline (weekday columns, one course) ───── */
+function weekVisits(cid,di){
+  return VISITS.filter(v=>v.c===cid).filter((_,i)=>((i+di)%5)!==4).map((v,i)=>{
+    const shift=((i+di)%3-1)*30, t=Math.min(Math.max(hm(v.t)+shift,START),END-v.d);
+    return {...v,t:fmt(t)};
+  });
+}
+function renderCourseDropdown(){
+  const sel=document.getElementById('courseDropdown');
+  sel.innerHTML=COURSES.map(c=>'<option value="'+c.id+'"'+(c.id===weekCourse?' selected':'')+'>'+esc(c.office)+c.code+'・'+esc(c.staff)+'</option>').join('');
+}
+function renderWeekTimeline(){
+  const c=COURSES.find(x=>x.id===weekCourse);
+  const yw=m=>(m-START)/30*ROW*.72, hw=min=>min/30*ROW*.72, H=(END-START)/30*ROW*.72;
+  let hd='<div class="headrow"><div class="timespacer"></div>';
+  DOWS.forEach((d,i)=>{const n=weekVisits(weekCourse,i).length;hd+='<div class="colhead dayhead"><div class="nm">'+d+'<span class="dnum tnum">7/'+(7+i)+'</span></div><div class="meta"><span class="capbadge tnum">'+n+'/'+CAP+'件</span></div></div>';});
+  hd+='</div>';
+  let rail='<div class="timerail">';
+  for(let m=START;m<=END;m+=120)rail+='<span style="top:'+yw(m)+'px">'+fmt(m)+'</span>';
+  rail+='<div style="height:'+H+'px"></div></div>';
+  let cols='';
+  DOWS.forEach((d,di)=>{
+    let col='<div class="col">';
+    for(let m=START;m<END;m+=60)col+='<div class="rowline h" style="top:'+yw(m)+'px"></div>';
+    for(const v of weekVisits(weekCourse,di)){
+      const gg=G[v.g||'n'];
+      col+='<div class="vcard" data-vid="'+cardId(v)+'" style="top:'+(yw(hm(v.t))+1)+'px;height:'+(hw(v.d)-3)+'px;background:'+gg.bg+';border-color:'+gg.ln+';border-left-color:'+gg.bar+';color:'+gg.ink+'"><span class="l1">'+(v.pin?'<span class="pinmark">🔒</span>':'')+'<span class="nm">'+esc(v.p)+'</span><span class="tm">'+v.t+'</span></span></div>';
+    }
+    col+='<div style="height:'+H+'px"></div></div>';cols+=col;
+  });
+  document.getElementById('view').innerHTML=hd+'<div class="bodyrow">'+rail+cols+'</div>';
+}
+
+/* ───── day list ───── */
+function renderDayList(){
+  let out='<div class="listwrap scroll">';
+  for(const c of COURSES){
+    const vs=VISITS.filter(v=>v.c===c.id).sort((a,b)=>hm(a.t)-hm(b.t));
+    out+='<div class="lgroup"><div class="lgh"><span class="cchip" style="background:'+CC[c.code]+';font-size:10px;padding:2px 8px">'+esc(c.office)+c.code+'</span><span class="nm">'+esc(c.staff)+'</span><span style="font-size:10.5px;color:var(--ink3)" class="tnum">'+vs.length+'/'+CAP+'件</span></div>'
+      +'<div class="lhead"><span>時刻</span><span>利用者</span><span>時間</span><span>サービス</span><span>住所 / 条件</span><span>次まで</span></div>';
+    for(const v of vs){
+      const gg=G[v.g||'n'];
+      const cond=[v.pin?'🔒':'',v.cond?'🕐'+v.cond:'',v.restrict||'',v.same?'📍同住所':'',v.two?'2名':''].filter(Boolean).join(' ');
+      out+='<div class="lrow" data-vid="'+cardId(v)+'" style="border-left-color:'+gg.bar+'">'
+        +'<span class="lt">'+v.t+'〜'+fmt(hm(v.t)+v.d)+'</span>'
+        +'<span class="ln"><i class="gdot" style="background:'+gg.bar+'"></i><span class="nmtx">'+esc(v.p)+(v.two?' '+personSvg('var(--teal)')+personSvg('var(--teal)'):'')+'</span></span>'
+        +'<span class="tnum">'+v.d+'分</span><span class="lmuted">'+esc(v.svc)+'</span>'
+        +'<span class="lmuted">'+esc(v.addr||'')+(cond?' ・ '+cond:'')+'</span><span class="lmuted tnum">'+esc(v.dist||'—')+'</span></div>';
+    }
+    out+='</div>';
+  }
+  out+='</div>';
+  document.getElementById('view').outerHTML='<div class="gridwrap scroll" id="view">'+out+'</div>';
+}
+
+/* ───── week list (weekday columns) ───── */
+function renderWeekList(){
+  let out='<div class="listwrap scroll"><div class="wl-head"><div>コース</div>'+DOWS.map((d,i)=>'<div class="d">'+d+'<span class="dnum tnum">7/'+(7+i)+'</span></div>').join('')+'</div>';
+  for(const c of COURSES){
+    out+='<div class="wl-row"><div class="wl-course"><span class="cchip" style="background:'+CC[c.code]+';font-size:9px">'+esc(c.office)+c.code+'</span>'+esc(c.staff.split(' ')[0])+'</div>';
+    DOWS.forEach((d,di)=>{
+      const vs=weekVisits(c.id,di).sort((a,b)=>hm(a.t)-hm(b.t));
+      out+='<div class="cell">';
+      for(const v of vs){const gg=G[v.g||'n'];out+='<div class="wl-chip" data-vid="'+cardId(v)+'" style="background:'+gg.bg+';border-color:'+gg.ln+';border-left-color:'+gg.bar+';color:'+gg.ink+'"><span class="t">'+v.t+'</span> '+esc(v.p)+'</div>';}
+      out+='</div>';
+    });
+    out+='</div>';
+  }
+  out+='</div>';
+  document.getElementById('view').outerHTML='<div class="gridwrap scroll" id="view">'+out+'</div>';
+}
+
+/* ───── detail hover ───── */
+const cardKey=v=>v.c+'|'+v.p; // モック用の一意キー (時刻は週でずれるので患者+コースで引く)
+function cardId(v){return encodeURIComponent(cardKey(v));}
+function findVisit(id){const k=decodeURIComponent(id);return VISITS.find(v=>cardKey(v)===k);}
+function showDetail(v,ev){
+  const gg=G[v.g||'n'], c=COURSES.find(x=>x.id===v.c);
+  document.getElementById('dName').textContent=v.p;
+  document.getElementById('dSub').textContent=v.svc+' ・ '+c.office+c.code+'（'+c.staff+'）';
+  const av=document.getElementById('dAv');av.textContent=v.p[0];av.style.background=gg.bg;av.style.borderColor=gg.bar;av.style.color=gg.ink;
+  const rows=[
+    ['時間',v.t+'〜'+fmt(hm(v.t)+v.d)+'（'+v.d+'分）'],
+    ['担当',c.staff+(v.two?' ＋ '+v.two+'（2名体制）':'')],
+    ['住所',v.addr||'—'],
+    ['前から',v.dist||'—'],
+    ['サービス',v.svc],
+  ];
+  let body=rows.map(([k,val])=>'<div class="kv"><span class="k">'+k+'</span><span class="v">'+esc(val)+'</span></div>').join('');
+  const tags=[];
+  if(v.pin)tags.push(['🔒 ピン留め（不可侵）','var(--teal-bg)','var(--teal-d)','var(--teal-ln)']);
+  if(v.cond)tags.push(['🕐 '+v.cond,'#FCEBD6','#9A5B12','#F3D9B5']);
+  if(v.restrict)tags.push(['👩 '+v.restrict,'var(--f-bg)','var(--f-ink)','var(--f-ln)']);
+  if(v.same)tags.push(['📍 '+v.same,'#FDECEC','#9A3B3B','#F3D2D2']);
+  if(v.two)tags.push(['👥 2名体制','var(--ev-bg)','var(--ev-ink)','var(--ev-ln)']);
+  if(tags.length)body+='<div class="tags">'+tags.map(([t,bg,ink,ln])=>'<span class="tag" style="background:'+bg+';color:'+ink+';border:1px solid '+ln+'">'+esc(t)+'</span>').join('')+'</div>';
+  document.getElementById('dBody').innerHTML=body;
+  const d=document.getElementById('detail');d.classList.add('show');
+  const pad=12, w=296, h=d.offsetHeight||280;
+  let left=ev.clientX+16, top=ev.clientY-10;
+  if(left+w>innerWidth-pad)left=ev.clientX-w-16;
+  if(top+h>innerHeight-pad)top=innerHeight-h-pad;
+  if(top<pad)top=pad;
+  d.style.left=left+'px';d.style.top=top+'px';
+}
+function hideDetail(){document.getElementById('detail').classList.remove('show');}
+
+/* ───── render dispatch ───── */
+function render(){
+  // コース選択はツールバー内にインライン表示 (週タイムラインのときだけ・縦スペース不消費)。
+  document.getElementById('courseSel').style.display=(period==='week'&&view==='timeline')?'':'none';
+  if(period==='day'&&view==='timeline')renderDayTimeline();
+  else if(period==='day'&&view==='list')renderDayList();
+  else if(period==='week'&&view==='timeline'){renderCourseDropdown();renderWeekTimeline();}
+  else renderWeekList();
+  bindHover();
+}
+function bindHover(){
+  document.querySelectorAll('[data-vid]').forEach(el=>{
+    el.addEventListener('mousemove',e=>{const v=findVisit(el.dataset.vid);if(v)showDetail(v,e);});
+    el.addEventListener('mouseleave',hideDetail);
+  });
+}
+
+document.getElementById('periodSeg').addEventListener('click',e=>{
+  const b=e.target.closest('button[data-p]');if(!b)return;
+  period=b.dataset.p;
+  document.querySelectorAll('#periodSeg button').forEach(x=>x.classList.toggle('on',x===b));
+  document.getElementById('dateLabel').innerHTML=period==='day'?'7月7日 <span class="dow">(月)</span>':'7/7 <span class="dow">〜 7/12</span>';
+  render();
+});
+document.getElementById('viewSeg').addEventListener('click',e=>{
+  const b=e.target.closest('button[data-v]');if(!b)return;
+  view=b.dataset.v;
+  document.querySelectorAll('#viewSeg button').forEach(x=>x.classList.toggle('on',x===b));
+  render();
+});
+document.getElementById('courseDropdown').addEventListener('change',e=>{
+  weekCourse=e.target.value;render();
+});
+
+render();
+</script>
+</html>
