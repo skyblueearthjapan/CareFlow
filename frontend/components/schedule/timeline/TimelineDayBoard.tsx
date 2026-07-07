@@ -9,8 +9,9 @@
  * 会議・イベント=全幅の藤色帯 (カイポケ反映外)、現在時刻ライン。
  *
  * T-1 は読み取り専用: カード / 空き枠クリックで既存の患者詳細 (onPatientClick) を開くのみ。
- * ドラッグ移動・クリック登録は T-2 で解禁する。データ変換・API・ソルバは一切持たない
- * (CourseDayTablePanel が組んだ CourseGridVisit をそのまま受け取る = 表示専用)。
+ * T-2 ②-a: 空き枠クリック→登録 (onFreeSlotClick) を解禁。ハンドラ未指定 (read-only ロール)
+ * では従来どおり表示のみ。ドラッグ移動は ②-b で解禁する。データ変換・API・ソルバは
+ * 一切持たない (CourseDayTablePanel が組んだ CourseGridVisit をそのまま受け取る = 表示専用)。
  */
 
 import { useMemo } from 'react';
@@ -62,6 +63,11 @@ export interface TimelineDayBoardProps {
   onPatientClick?: (patientId: string) => void;
   /** 現在時刻ライン (0時起点の分)。当日でないときは null で非表示。 */
   nowMinutes?: number | null;
+  /**
+   * T-2 ②-a: 空き枠クリック → 登録モーダル。canEdit のときだけ Panel が渡す
+   * (未指定 = read-only ロール = 従来の表示専用のまま)。
+   */
+  onFreeSlotClick?: (col: TimelineCourseColumn, gap: FreeGap) => void;
 }
 
 /** 会議・イベント (訪問ではないスタッフ予定) を全幅帯として時間帯で描く。 */
@@ -342,9 +348,11 @@ function PairBox({
 function TimelineColumn({
   col,
   onPatientClick,
+  onFreeSlotClick,
 }: {
   col: TimelineCourseColumn;
   onPatientClick?: (patientId: string) => void;
+  onFreeSlotClick?: (col: TimelineCourseColumn, gap: FreeGap) => void;
 }) {
   const height = timelineHeightPx();
   // 勤務外バンド: スタッフイベント以外に、コース未生成/担当なしを表す薄いハッチは出さない
@@ -378,24 +386,48 @@ function TimelineColumn({
         />
       ))}
 
-      {/* 空き時間帯 (≥60分・remaining>0 のときだけ Panel が gap を渡す) */}
+      {/* 空き時間帯 (≥60分・remaining>0 のときだけ Panel が gap を渡す)。
+          T-2 ②-a: ハンドラがあるときはクリック可能な「＋ここに追加」ボタンになる。 */}
       {col.freeGaps.map((g) => {
         const top = minutesToY(g.startMin) + 2;
         const h = durationToHeight(g.endMin - g.startMin) - 5;
         if (h < 14) return null;
-        return (
-          <div
-            key={`gap-${g.startMin}`}
-            data-testid={`tl-gap-${col.key}-${g.startMin}`}
-            className="absolute left-1 right-1 flex items-center justify-center gap-1.5 rounded-lg border border-dashed border-transparent text-[11px] font-bold text-brand-primary opacity-0 transition-opacity hover:border-brand-primary hover:bg-[color-mix(in_srgb,var(--brand-primary)_5%,transparent)] hover:opacity-100"
-            style={{ top, height: h }}
-          >
+        const gapClass =
+          'absolute left-1 right-1 flex items-center justify-center gap-1.5 rounded-lg border border-dashed border-transparent text-[11px] font-bold text-brand-primary opacity-0 transition-opacity hover:border-brand-primary hover:bg-[color-mix(in_srgb,var(--brand-primary)_5%,transparent)] hover:opacity-100';
+        const inner = (
+          <>
             <span className="grid h-[18px] w-[18px] place-items-center rounded-full bg-brand-primary text-[13px] leading-none text-white">
               ＋
             </span>
+            {onFreeSlotClick ? <span>ここに追加</span> : null}
             <span className="tnum text-[9.5px] font-semibold text-text-muted">
               {g.endMin - g.startMin}分空き
             </span>
+          </>
+        );
+        return onFreeSlotClick ? (
+          <button
+            key={`gap-${g.startMin}`}
+            type="button"
+            data-testid={`tl-gap-${col.key}-${g.startMin}`}
+            className={cn(
+              gapClass,
+              'cursor-pointer focus-visible:border-brand-primary focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary',
+            )}
+            style={{ top, height: h }}
+            onClick={() => onFreeSlotClick(col, g)}
+            aria-label={`空き時間 ${g.endMin - g.startMin}分に追加`}
+          >
+            {inner}
+          </button>
+        ) : (
+          <div
+            key={`gap-${g.startMin}`}
+            data-testid={`tl-gap-${col.key}-${g.startMin}`}
+            className={gapClass}
+            style={{ top, height: h }}
+          >
+            {inner}
           </div>
         );
       })}
@@ -429,6 +461,7 @@ export function TimelineDayBoard({
   weekdayLabel,
   onPatientClick,
   nowMinutes,
+  onFreeSlotClick,
 }: TimelineDayBoardProps) {
   const height = timelineHeightPx();
   const events = useMemo(() => eventBandsOf(columns), [columns]);
@@ -514,7 +547,12 @@ export function TimelineDayBoard({
         </div>
 
         {columns.map((col) => (
-          <TimelineColumn key={col.key} col={col} onPatientClick={onPatientClick} />
+          <TimelineColumn
+            key={col.key}
+            col={col}
+            onPatientClick={onPatientClick}
+            onFreeSlotClick={onFreeSlotClick}
+          />
         ))}
 
         {/* 会議・イベント帯 (全幅・藤色・カイポケ反映外) */}

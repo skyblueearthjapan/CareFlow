@@ -153,8 +153,15 @@ import {
   computeFreeGaps,
   businessBlocksFromHours,
   BUSINESS_BLOCKS,
+  fmtHM,
   type FreeGap,
 } from '@/lib/scheduling/freeGaps';
+// T-2 ②-a: 空き枠クリック → 登録モーダル (訪問=place-and-fix / イベント=EventAddDialog 流用).
+import {
+  SlotRegisterDialog,
+  type SlotPatientOption,
+} from '@/components/schedule/timeline/SlotRegisterDialog';
+import { EventAddDialog } from '@/app/(app)/staff/[id]/_components/EventAddDialog';
 // Phase G-88: 営業時間設定を空き枠表示に反映 (取得前/失敗時は既定枠にフォールバック).
 import { useSchedulingSettings } from '@/lib/queries/schedulingSettings';
 
@@ -1253,6 +1260,112 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [canEdit, opLogState, undoMut.isPending, redoMut.isPending, handleUndo, handleRedo]);
+
+  // ─── T-2 ②-a: 空き枠クリック → 登録モーダル ──────────────────────────
+  // タイムラインの空き枠クリックで開く。訪問=place-and-fix (fix_pattern=false =
+  // この週だけ・プールDnDと同じ契約/トースト昇格)、会議・イベント=既存 EventAddDialog
+  // (担当スタッフ宛・カイポケ反映外) へ切替。canEdit のときだけ配線する。
+  const [slotRegState, setSlotRegState] = useState<{
+    col: TimelineCourseColumn;
+    gap: FreeGap;
+  } | null>(null);
+  const [slotEventState, setSlotEventState] = useState<{
+    staffId: string;
+    date: string;
+    startHM: string;
+    endHM: string;
+  } | null>(null);
+
+  const handleFreeSlotClick = useCallback(
+    (col: TimelineCourseColumn, gap: FreeGap) => {
+      if (!canEdit) return;
+      setSlotRegState({ col, gap });
+    },
+    [canEdit],
+  );
+
+  // 配置候補 = プール患者 (不足あり)。2名体制はプールDnD (相方コース選択) に委譲。
+  const slotPatientOptions = useMemo<SlotPatientOption[]>(() => {
+    if (!slotRegState) return [];
+    return poolPatients
+      .filter(
+        (p) => (p as { requires_multiple_staff?: boolean | null }).requires_multiple_staff !== true,
+      )
+      .map((p) => {
+        const wp = (p.weekly_pattern ?? null) as { service_minutes?: number } | null;
+        return {
+          id: p.id,
+          name: p.name,
+          defaultDurationMin: Math.max(1, Number(wp?.service_minutes ?? 60)),
+          shortage: patientShortageById.get(p.id)?.shortage ?? 0,
+        };
+      });
+  }, [slotRegState, poolPatients, patientShortageById]);
+
+  const handleSlotRegisterVisit = useCallback(
+    async ({
+      patientId,
+      startHM,
+      durationMin,
+    }: {
+      patientId: string;
+      startHM: string;
+      durationMin: number;
+    }) => {
+      if (!slotRegState) return;
+      const patient = patientById.get(patientId);
+      try {
+        const opGroupId = crypto.randomUUID();
+        await placeAndFixMut.mutateAsync({
+          patient_id: patientId,
+          course_template_id: slotRegState.col.template.id,
+          iso_year: isoYear,
+          iso_week: isoWeek,
+          weekday: activeWeekday,
+          start_time: startHM,
+          duration_min: durationMin,
+          staff_count: 1,
+          fix_pattern: false,
+          op_group_id: opGroupId,
+        });
+        invalidateOpLog(isoYear, isoWeek);
+        const pname = patient?.name ?? patientId;
+        toast.success(
+          `${pname} を ${startHM} に配置しました（今週のみ・毎週の型は変更していません）`,
+          { action: promoteToastAction(patientId, pname) },
+        );
+        setSlotRegState(null);
+      } catch (err) {
+        toast.error(`配置に失敗しました: ${formatErr(err)}`);
+      }
+    },
+    [
+      slotRegState,
+      patientById,
+      placeAndFixMut,
+      isoYear,
+      isoWeek,
+      activeWeekday,
+      invalidateOpLog,
+      promoteToastAction,
+    ],
+  );
+
+  const handleSlotSwitchToEvent = useCallback(() => {
+    if (!slotRegState) return;
+    const staff = slotRegState.col.assignedStaff;
+    if (!staff) {
+      toast.warning('担当スタッフが未割当のコースにはイベントを登録できません');
+      return;
+    }
+    setSlotEventState({
+      staffId: staff.id,
+      date: format(addDays(weekStart, activeWeekday), 'yyyy-MM-dd'),
+      startHM: fmtHM(slotRegState.gap.startMin),
+      endHM: fmtHM(slotRegState.gap.endMin),
+    });
+    setSlotRegState(null);
+  }, [slotRegState, weekStart, activeWeekday]);
 
   // ─── Wave 37 Phase 3-C: 相方コース選択ダイアログの state ───────────────
   // requires_multiple_staff=true の患者を D&D したときにダイアログを表示する。
@@ -2752,6 +2865,8 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                       weekdayLabel={WEEKDAY_LABELS[activeWeekday] ?? ''}
                       onPatientClick={handleOpenPatientDetail}
                       nowMinutes={timelineNowMinutes}
+                      // T-2 ②-a: canEdit のときだけ空き枠クリック登録を解禁。
+                      onFreeSlotClick={canEdit ? handleFreeSlotClick : undefined}
                     />
                   </div>
                 ) : weekdayViewMode === 'list' ? (
@@ -2930,6 +3045,40 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
               })()
             : null}
         </DragOverlay>
+
+        {/* T-2 ②-a: 空き枠クリック → 登録モーダル (訪問 / 会議・イベント切替) */}
+        <SlotRegisterDialog
+          open={slotRegState != null}
+          context={
+            slotRegState
+              ? {
+                  courseLabel: `${slotRegState.col.officeName}${slotRegState.col.template.label}`,
+                  staffName: slotRegState.col.assignedStaff?.name ?? null,
+                  weekdayLabel: WEEKDAY_LABELS[activeWeekday] ?? '',
+                  gapStartMin: slotRegState.gap.startMin,
+                  gapEndMin: slotRegState.gap.endMin,
+                  canRegisterEvent: slotRegState.col.assignedStaff != null,
+                }
+              : null
+          }
+          patients={slotPatientOptions}
+          busy={placeAndFixMut.isPending}
+          onRegisterVisit={(args) => void handleSlotRegisterVisit(args)}
+          onSwitchToEvent={handleSlotSwitchToEvent}
+          onClose={() => setSlotRegState(null)}
+        />
+        {slotEventState ? (
+          <EventAddDialog
+            staffId={slotEventState.staffId}
+            open
+            onOpenChange={(o) => {
+              if (!o) setSlotEventState(null);
+            }}
+            defaultDate={slotEventState.date}
+            defaultStart={slotEventState.startHM}
+            defaultEnd={slotEventState.endHM}
+          />
+        ) : null}
 
         {/* Wave 37 Phase 3-C: 相方コース選択ダイアログ */}
         {partnerDialogState ? (

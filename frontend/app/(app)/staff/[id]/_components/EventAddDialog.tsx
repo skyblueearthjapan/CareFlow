@@ -47,6 +47,9 @@ interface EventAddDialogProps {
   onOpenChange: (open: boolean) => void;
   /** Optional default date (yyyy-MM-dd) to prefill — e.g. today. */
   defaultDate?: string;
+  /** T-2 ②-a: タイムライン空き枠からの起動時に開始/終了時刻をプレフィルする。 */
+  defaultStart?: string;
+  defaultEnd?: string;
 }
 
 function todayIso(): string {
@@ -57,7 +60,14 @@ function todayIso(): string {
   return `${y}-${m}-${day}`;
 }
 
-export function EventAddDialog({ staffId, open, onOpenChange, defaultDate }: EventAddDialogProps) {
+export function EventAddDialog({
+  staffId,
+  open,
+  onOpenChange,
+  defaultDate,
+  defaultStart,
+  defaultEnd,
+}: EventAddDialogProps) {
   const create = useCreateEvent(staffId);
 
   const form = useForm<EventCreate>({
@@ -67,26 +77,26 @@ export function EventAddDialog({ staffId, open, onOpenChange, defaultDate }: Eve
     defaultValues: {
       date: defaultDate ?? todayIso(),
       title: '',
-      start_time: '09:00',
-      end_time: '17:00',
+      start_time: defaultStart ?? '09:00',
+      end_time: defaultEnd ?? '17:00',
       type: '研修',
       note: '',
     },
   });
 
-  // Reset whenever the dialog re-opens (defaultDate may have changed).
+  // Reset whenever the dialog re-opens (defaults may have changed).
   useEffect(() => {
     if (open) {
       form.reset({
         date: defaultDate ?? todayIso(),
         title: '',
-        start_time: '09:00',
-        end_time: '17:00',
+        start_time: defaultStart ?? '09:00',
+        end_time: defaultEnd ?? '17:00',
         type: '研修',
         note: '',
       });
     }
-  }, [open, defaultDate, form]);
+  }, [open, defaultDate, defaultStart, defaultEnd, form]);
 
   const onSubmit = async (values: EventCreate) => {
     try {

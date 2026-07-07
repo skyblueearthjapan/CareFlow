@@ -274,4 +274,37 @@ describe('TimelineDayBoard', () => {
     render(<TimelineDayBoard columns={[]} weekdayLabel="日" />);
     expect(screen.getByText(/表示対象コースがありません/)).toBeInTheDocument();
   });
+
+  it('onFreeSlotClick ありのとき空き枠がボタンになり (col, gap) で発火する (T-2 ②-a)', () => {
+    const onClick = vi.fn();
+    const col = column({
+      key: 'c1',
+      freeGaps: [{ startMin: 13 * 60, endMin: 14 * 60, label: '13:00〜14:00' }],
+    });
+    render(<TimelineDayBoard columns={[col]} weekdayLabel="月" onFreeSlotClick={onClick} />);
+    const gapEl = screen.getByTestId('tl-gap-c1-780');
+    expect(gapEl.tagName).toBe('BUTTON');
+    expect(screen.getByText('ここに追加')).toBeInTheDocument();
+    gapEl.click();
+    expect(onClick).toHaveBeenCalledTimes(1);
+    expect(onClick.mock.calls[0]![0].key).toBe('c1');
+    expect(onClick.mock.calls[0]![1].startMin).toBe(780);
+  });
+
+  it('onFreeSlotClick なし (read-only) のとき空き枠は従来の表示専用 div のまま', () => {
+    render(
+      <TimelineDayBoard
+        columns={[
+          column({
+            key: 'c1',
+            freeGaps: [{ startMin: 13 * 60, endMin: 14 * 60, label: '13:00〜14:00' }],
+          }),
+        ]}
+        weekdayLabel="月"
+      />,
+    );
+    const gapEl = screen.getByTestId('tl-gap-c1-780');
+    expect(gapEl.tagName).toBe('DIV');
+    expect(screen.queryByText('ここに追加')).toBeNull();
+  });
 });
