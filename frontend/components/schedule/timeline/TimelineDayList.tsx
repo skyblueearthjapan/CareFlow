@@ -18,6 +18,7 @@
 
 import type { CourseListItem, VisitListItem } from '@/components/schedule/WeekdayScheduleCard';
 import { formatTimeCondition, PinToggleButton } from '@/components/schedule/WeekdayScheduleCard';
+import { PushPin } from '@/components/ui/push-pin';
 import type { PinScope } from '@/components/schedule/v2/PinScopeMenu';
 import { trimSeconds } from '@/components/schedule/v2/_autoScheduleUtils';
 import { formatDuration } from '@/lib/format/duration';
@@ -71,10 +72,9 @@ function VisitRow({
       : v.sex_restriction === 'male_only'
         ? '👨男性のみ'
         : null;
-  // 条件ビット (ピン / 時間条件 / 性別制限)。同住所はペア囲みで表現するのでここでは出さない。
-  const condBits = [v.is_pinned ? '🔒' : '', cond ?? '', restrictLabel ?? '']
-    .filter(Boolean)
-    .join(' ');
+  // 条件ビット (時間条件 / 性別制限)。ピンは PushPin アイコンで別描画 (🔒→ピン統一)。
+  // 同住所はペア囲みで表現するのでここでは出さない。
+  const condBits = [cond ?? '', restrictLabel ?? ''].filter(Boolean).join(' ');
 
   return (
     <div
@@ -146,6 +146,9 @@ function VisitRow({
         {v.address ?? ''}
         {v.same_address_group_id ? (
           <span className="ml-1 text-[10px] font-semibold text-amber-700">📍同住所</span>
+        ) : null}
+        {v.is_pinned ? (
+          <PushPin className="ml-1 inline-block h-3 w-3 align-text-bottom" aria-label="ピン留め" />
         ) : null}
         {condBits ? <span className="ml-1 text-text-secondary">{condBits}</span> : null}
       </span>

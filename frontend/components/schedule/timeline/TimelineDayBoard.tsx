@@ -25,6 +25,7 @@ import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
 import type { StaffRead } from '@/lib/schemas/staff';
 import type { EventRead } from '@/lib/schemas/staff-events';
 import type { FreeGap } from '@/lib/scheduling/freeGaps';
+import { PushPin } from '@/components/ui/push-pin';
 import { parseHM, SAME_ADDRESS_PAIR_MIN_OCCUPANCY } from '@/lib/scheduling/freeGaps';
 import {
   assignLanes,
@@ -203,7 +204,7 @@ function VisitCard({
       title={
         drag?.disabled
           ? visit.is_pinned
-            ? 'ピン留め中のため移動できません（🔒を解除してから移動）'
+            ? 'ピン留め中のため移動できません（ピンを解除してから移動）'
             : visit.visit_group_id
               ? '2名体制（ペア配置）のため個別移動できません'
               : visit.status === 'cancelled'
@@ -231,8 +232,8 @@ function VisitCard({
       {/* 1行目: アイコン + 患者名 (名前に行を専有させフル表示。切れにくくする)。 */}
       <span className="flex min-w-0 items-center gap-1">
         {visit.is_pinned && (
-          <span className="shrink-0 text-[10px]" aria-label="ピン留め">
-            🔒
+          <span className="shrink-0" aria-label="ピン留め">
+            <PushPin className="h-3 w-3" />
           </span>
         )}
         {isMulti && (
@@ -331,6 +332,37 @@ function ColumnDropLayer({ colKey }: { colKey: string }) {
       data-testid={`tl-col-drop-${colKey}`}
       aria-hidden="true"
     />
+  );
+}
+
+/**
+ * DragOverlay 用のカード実寸ゴースト。dnd-kit の DragOverlay は掴んだノードと同じ
+ * 幅・高さになるため、h-full/w-full で埋めると「時間=面積」のままカードごと動く。
+ * (旧: 小さな名前チップ → カードのサイズ感が失われる、の PO 指摘対応)
+ */
+export function TlVisitDragGhost({ visit }: { visit: CourseGridVisit }) {
+  const pal = genderPalette(visit.patient_sex);
+  const s = parseHM(visit.start_time);
+  const e = parseHM(visit.end_time);
+  const durMin = s !== null && e !== null && e > s ? e - s : null;
+  return (
+    <div
+      className="flex h-full w-full cursor-grabbing flex-col gap-px overflow-hidden rounded-lg border border-l-[3px] px-2 py-[3px] shadow-[var(--shadow-md)]"
+      style={{ background: pal.bg, borderColor: pal.ln, borderLeftColor: pal.bar, color: pal.ink }}
+      data-testid="tl-drag-ghost"
+    >
+      <span className="flex min-w-0 items-center gap-1">
+        {visit.is_pinned && <PushPin className="h-3 w-3 shrink-0" />}
+        <span className="truncate text-[13px] font-bold leading-tight">
+          {visit.patient_name ?? '—'}
+        </span>
+      </span>
+      {durMin !== null && (
+        <span className="tnum text-[10px] font-semibold opacity-80">
+          {(visit.start_time ?? '').slice(0, 5)}・{durMin}分
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -445,7 +477,11 @@ function PairBox({
                 color: pal.ink,
               }}
             >
-              {v.is_pinned && <span className="shrink-0 text-[9px]">🔒</span>}
+              {v.is_pinned && (
+                <span className="shrink-0" aria-label="ピン留め">
+                  <PushPin className="h-2.5 w-2.5" />
+                </span>
+              )}
               <span className="truncate text-[12px] font-bold leading-tight">
                 {v.patient_name ?? '—'}
               </span>

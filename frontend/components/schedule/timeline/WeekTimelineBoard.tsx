@@ -16,6 +16,7 @@
 import { useMemo } from 'react';
 
 import type { WeekOverviewVisit } from '@/components/schedule/v2/CourseWeekOverview';
+import { PushPin } from '@/components/ui/push-pin';
 import { parseHM } from '@/lib/scheduling/freeGaps';
 import {
   assignLanes,
@@ -128,8 +129,8 @@ function WeekCard({
       {/* 1行目: アイコン + 患者名 (フル表示)。 */}
       <span className="flex min-w-0 items-center gap-0.5">
         {v.is_pinned && (
-          <span className="shrink-0 text-[9px]" aria-label="ピン留め">
-            🔒
+          <span className="shrink-0" aria-label="ピン留め">
+            <PushPin className="h-2.5 w-2.5" />
           </span>
         )}
         {isMulti && (

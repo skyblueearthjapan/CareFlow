@@ -22,11 +22,18 @@ import { CSS } from '@dnd-kit/utilities';
 import { Plus, User, Users, X } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
+import { genderPalette } from '@/lib/scheduling/timeline';
 import { cn } from '@/lib/utils';
 
 export interface PatientCardData {
   id: string;
   name: string;
+  /**
+   * 患者の性別 (patient.sex: male/female/unknown)。指定するとプールカードが
+   * タイムラインの訪問カードと同じ視覚言語 (性別ウォッシュ地 + 左色帯) になる。
+   * 未指定 = 従来意匠 (後方互換)。
+   */
+  sex?: string | null;
   /** 表示用の追加メタ (kana / 保険など). 任意. */
   caption?: string | null;
   /**
@@ -172,12 +179,32 @@ export function PatientCard({
     [onCardClick],
   );
 
+  const isPlaced = staffCount !== undefined;
+
+  // W37 Phase 3-B: 複数スタッフ対応のスロット表示 (style 計算より先に判定が要る)。
+  const slotIndexEarly = patient.slotIndex;
+  const isMultiSlotCardEarly = slotIndexEarly === 0 || slotIndexEarly === 1;
+
+  // タイムラインの訪問カードと同じ視覚言語 (性別ウォッシュ地 + 左色帯 + ink 文字色)。
+  // sex が渡されたプールカードのみ適用 (配置済みカード/旧呼び出しは従来意匠のまま)。
+  // 2名体制スロットカードは左帯 = brand-primary が識別マークなので、枠色は性別で
+  // 上書きせず地色のみ性別ウォッシュにする (inline style は class に勝つため)。
+  const pal = !isPlaced && patient.sex !== undefined ? genderPalette(patient.sex) : null;
+
   const style: React.CSSProperties = {
     transform: CSS.Translate.toString(transform),
     opacity: isDragging ? 0.4 : 1,
+    ...(pal
+      ? isMultiSlotCardEarly
+        ? { background: pal.bg, color: pal.ink }
+        : {
+            background: pal.bg,
+            borderColor: pal.ln,
+            borderLeftColor: pal.bar,
+            color: pal.ink,
+          }
+      : {}),
   };
-
-  const isPlaced = staffCount !== undefined;
 
   // Wave 20: バッジ表示フラグ
   const femaleOnly = patient.sexRestriction === 'female_only';
@@ -210,11 +237,18 @@ export function PatientCard({
       data-slot-index={isMultiSlotCard ? slotIndex : undefined}
       data-testid={isMultiSlotCard ? `patient-card-slot-${slotIndex}-${patient.id}` : undefined}
       className={cn(
-        'group flex items-start justify-between gap-1 rounded border px-2 py-1 text-xs',
+        'group flex items-start justify-between gap-1 border px-2 py-1 text-xs',
         'select-none touch-none',
-        isPlaced
-          ? 'border-brand-primary/40 bg-brand-primary/5 text-text-primary'
-          : 'border-border-default bg-bg-base text-text-primary hover:bg-bg-muted',
+        // 性別ウォッシュ適用時はタイムラインカードと同じ丸み/左帯/影ホバー
+        // (inline style の background が hover:bg-* に勝つため hover は影で表現)。
+        pal
+          ? 'rounded-lg border-l-[3px] shadow-[var(--shadow-xs)] transition-shadow hover:shadow-[var(--shadow-md)]'
+          : cn(
+              'rounded',
+              isPlaced
+                ? 'border-brand-primary/40 bg-brand-primary/5 text-text-primary'
+                : 'border-border-default bg-bg-base text-text-primary hover:bg-bg-muted',
+            ),
         // W37 Phase 3-B: 2 名体制カードはペアで同色の左ボーダーを強調表示
         isMultiSlotCard && 'border-l-4 border-l-brand-primary',
         disabled ? 'cursor-not-allowed opacity-60' : 'cursor-grab active:cursor-grabbing',
@@ -234,7 +268,7 @@ export function PatientCard({
           ) : (
             <User className="h-3 w-3 shrink-0 text-text-muted" aria-hidden />
           )}
-          <span className="truncate font-medium" title={patient.name}>
+          <span className={cn('truncate', pal ? 'font-bold' : 'font-medium')} title={patient.name}>
             {patient.name}
           </span>
           {/* W37 Phase 3-B: スロット番号 (①/②) を氏名直後に表示 */}

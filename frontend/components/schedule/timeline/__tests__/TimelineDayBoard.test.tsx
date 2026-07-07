@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { CourseGridVisit } from '@/components/schedule/v2/CourseDayTable';
 import {
   TimelineDayBoard,
+  TlVisitDragGhost,
   type TimelineCourseColumn,
 } from '@/components/schedule/timeline/TimelineDayBoard';
 import { durationToHeight, minutesToY } from '@/lib/scheduling/timeline';
@@ -316,6 +317,26 @@ describe('TimelineDayBoard', () => {
     expect(solo.style.right).toBe('3px');
   });
 
+  it('TlVisitDragGhost はカードと同じ視覚言語 (性別地色・名前・時刻/分) で描く', () => {
+    render(
+      <TlVisitDragGhost
+        visit={visit({
+          id: 'g1',
+          patient_name: '青柳 あい',
+          patient_sex: 'female',
+          start_time: '09:30:00',
+          end_time: '10:15:00',
+          is_pinned: true,
+        })}
+      />,
+    );
+    const ghost = screen.getByTestId('tl-drag-ghost');
+    expect(ghost.style.background).toContain('female');
+    expect(screen.getByText('青柳 あい')).toBeInTheDocument();
+    expect(screen.getByText(/09:30・45分/)).toBeInTheDocument();
+    expect(ghost.querySelector('[data-icon="push-pin"]')).not.toBeNull();
+  });
+
   it('コース0件は案内を出す', () => {
     render(<TimelineDayBoard columns={[]} weekdayLabel="日" />);
     expect(screen.getByText(/表示対象コースがありません/)).toBeInTheDocument();
@@ -423,6 +444,8 @@ describe('TimelineDayBoard', () => {
       </DndContext>,
     );
     const pinned = screen.getByTestId('tl-visit-pin');
+    // ピン表示は 🔒 ではなく赤丸頭の PushPin アイコン (PO要望で全UI統一)。
+    expect(pinned.querySelector('[data-icon="push-pin"]')).not.toBeNull();
     fireEvent.pointerDown(pinned);
     expect(pinned.className).toContain('tl-shake');
     // アニメーション終了で解除 (再度掴んだらまた shake できる)。

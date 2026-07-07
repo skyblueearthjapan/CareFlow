@@ -136,6 +136,7 @@ import {
   parseTlColDroppableId,
   parseTlVisitDraggableId,
   TimelineDayBoard,
+  TlVisitDragGhost,
   type TimelineCourseColumn,
 } from '@/components/schedule/timeline/TimelineDayBoard';
 import {
@@ -160,7 +161,12 @@ import {
   type FreeGap,
 } from '@/lib/scheduling/freeGaps';
 // T-2 ②-b: タイムラインカード DnD (15分スナップ) → 二択 (この週だけ/固定パターン)。
-import { snapYOffsetToMinutes, TL_DAY_END_MIN, TL_DAY_START_MIN } from '@/lib/scheduling/timeline';
+import {
+  genderPalette,
+  snapYOffsetToMinutes,
+  TL_DAY_END_MIN,
+  TL_DAY_START_MIN,
+} from '@/lib/scheduling/timeline';
 import { TimelineMoveDialog } from '@/components/schedule/timeline/TimelineMoveDialog';
 import { useVisitMoveWeekOnly } from '@/lib/queries/visitMoveWeekOnly';
 import type { ChangeScopeValue } from '@/components/schedule/v2/ChangeScopeChoice';
@@ -1173,6 +1179,8 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
   );
   const [activePatientId, setActivePatientId] = useState<string | null>(null);
   const [activeVisitId, setActiveVisitId] = useState<string | null>(null);
+  // タイムラインカードのドラッグ中はカード実寸ゴーストを DragOverlay に出す。
+  const [activeTlVisit, setActiveTlVisit] = useState<CourseGridVisit | null>(null);
   const placeAndFixMut = usePlaceAndFix();
   const deleteVisitMut = useDeleteVisit();
   // ─── Wave U-3: 戻る/進む (undo/redo) ────────────────────────────────────
@@ -1489,8 +1497,23 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
   const handleDragStart = (e: DragStartEvent) => {
     const id = String(e.active.id);
     setActivePatientId(parsePatientDraggableId(id));
-    // T-2 ②-b: タイムラインカード (tl-visit:) も既存の visit オーバーレイを流用する。
-    setActiveVisitId(parseVisitDraggableId(id) ?? parseTlVisitDraggableId(id));
+    setActiveVisitId(parseVisitDraggableId(id));
+    // T-2 ②-b改: タイムラインカードはカード実寸ゴースト (TlVisitDragGhost) を出すため
+    // visit オブジェクトごと保持する (時間=面積のままドラッグ・A-1 PO要望)。
+    const tlId = parseTlVisitDraggableId(id);
+    if (tlId) {
+      let found: CourseGridVisit | null = null;
+      for (const c of timelineColumns) {
+        const v = c.visits.find((x) => x.id === tlId);
+        if (v) {
+          found = v;
+          break;
+        }
+      }
+      setActiveTlVisit(found);
+    } else {
+      setActiveTlVisit(null);
+    }
   };
 
   /**
@@ -1503,6 +1526,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
   const handleDragEnd = async (e: DragEndEvent) => {
     setActivePatientId(null);
     setActiveVisitId(null);
+    setActiveTlVisit(null);
     const { active, over } = e;
     if (!over) return;
     const activeId = String(active.id);
@@ -3130,6 +3154,8 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                     patient={{
                       id: p.id,
                       name: p.name,
+                      // タイムラインカードと同じ性別ウォッシュ意匠 (A-1 PO要望)。
+                      sex: (p as { sex?: string | null }).sex ?? null,
                       caption: p.kana ?? undefined,
                       preferredTimeLabel: formatPreferredTimeLabel(wp),
                       serviceMinutes: wp.service_minutes ?? undefined,
@@ -3158,11 +3184,28 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         </div>
 
         <DragOverlay>
-          {activePatientId ? (
-            <div className="rounded border border-brand-primary bg-brand-primary/10 px-2 py-1 text-xs shadow-lg">
-              {patientById.get(activePatientId)?.name ?? activePatientId}
-            </div>
-          ) : null}
+          {/* タイムラインカード: カード実寸ゴースト (時間=面積のまま動く)。 */}
+          {activeTlVisit ? <TlVisitDragGhost visit={activeTlVisit} /> : null}
+          {activePatientId
+            ? (() => {
+                // プールカード: タイムラインと同じ性別ウォッシュのカード実寸ゴースト。
+                const p = patientById.get(activePatientId);
+                const pal = genderPalette((p as { sex?: string | null } | undefined)?.sex);
+                return (
+                  <div
+                    className="flex h-full w-full cursor-grabbing items-center rounded-lg border border-l-[3px] px-2 py-1 text-xs font-bold shadow-[var(--shadow-md)]"
+                    style={{
+                      background: pal.bg,
+                      borderColor: pal.ln,
+                      borderLeftColor: pal.bar,
+                      color: pal.ink,
+                    }}
+                  >
+                    {p?.name ?? activePatientId}
+                  </div>
+                );
+              })()
+            : null}
           {activeVisitId
             ? (() => {
                 const v = visitById.get(activeVisitId);
