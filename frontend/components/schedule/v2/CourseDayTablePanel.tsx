@@ -133,6 +133,8 @@ import {
 } from './CourseDayTable';
 import { CourseWeekOverview, type WeekOverviewVisit } from './CourseWeekOverview';
 import {
+  parseTlColDroppableId,
+  parseTlVisitDraggableId,
   TimelineDayBoard,
   type TimelineCourseColumn,
 } from '@/components/schedule/timeline/TimelineDayBoard';
@@ -154,8 +156,14 @@ import {
   businessBlocksFromHours,
   BUSINESS_BLOCKS,
   fmtHM,
+  parseHM,
   type FreeGap,
 } from '@/lib/scheduling/freeGaps';
+// T-2 ②-b: タイムラインカード DnD (15分スナップ) → 二択 (この週だけ/固定パターン)。
+import { snapYOffsetToMinutes, TL_DAY_END_MIN, TL_DAY_START_MIN } from '@/lib/scheduling/timeline';
+import { TimelineMoveDialog } from '@/components/schedule/timeline/TimelineMoveDialog';
+import { useVisitMoveWeekOnly } from '@/lib/queries/visitMoveWeekOnly';
+import type { ChangeScopeValue } from '@/components/schedule/v2/ChangeScopeChoice';
 // T-2 ②-a: 空き枠クリック → 登録モーダル (訪問=place-and-fix / イベント=EventAddDialog 流用).
 import {
   SlotRegisterDialog,
@@ -1385,6 +1393,67 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     [canEdit],
   );
 
+  // ─── T-2 ②-b: タイムラインカード DnD → 二択 (この週だけ / 固定パターン) ──
+  // week = 既存 visit-move-week-only をそのまま叩く (PFV 不変・op-log 記録・BE ピン422)。
+  // pattern = 同じ移動 + 週→型同期 (promoteWeekToFixed = 既存トースト昇格と同義)。
+  const visitMoveWeekOnlyMut = useVisitMoveWeekOnly();
+  const [tlMoveState, setTlMoveState] = useState<{
+    visit: CourseGridVisit;
+    fromCol: TimelineCourseColumn;
+    toCol: TimelineCourseColumn;
+    newStartMin: number;
+    durationMin: number;
+  } | null>(null);
+
+  const handleTlMoveConfirm = useCallback(
+    async (scope: ChangeScopeValue) => {
+      const st = tlMoveState;
+      if (!st) return;
+      const pname =
+        patientById.get(st.visit.patient_id)?.name ?? st.visit.patient_name ?? st.visit.patient_id;
+      const courseChanged = st.toCol.template.id !== st.fromCol.template.id;
+      try {
+        const opGroupId = crypto.randomUUID();
+        await visitMoveWeekOnlyMut.mutateAsync({
+          iso_year: isoYear,
+          iso_week: isoWeek,
+          patient_id: st.visit.patient_id,
+          old_weekday: activeWeekday,
+          old_start_time: (st.visit.start_time ?? '').slice(0, 5),
+          new_weekday: activeWeekday,
+          new_start_time: fmtHM(st.newStartMin),
+          ...(courseChanged ? { new_course_template_id: st.toCol.template.id } : {}),
+          op_group_id: opGroupId,
+        });
+        invalidateOpLog(isoYear, isoWeek);
+        if (scope === 'pattern') {
+          // 週→型同期の成功/失敗トーストは promoteWeekToFixed 側が出す。
+          toast.success(`${pname} を ${fmtHM(st.newStartMin)} に移動しました`);
+          promoteWeekToFixed(st.visit.patient_id, pname);
+        } else {
+          toast.success(
+            `${pname} を ${fmtHM(st.newStartMin)} に移動しました（今週のみ・毎週の型は変更していません）`,
+            { action: promoteToastAction(st.visit.patient_id, pname) },
+          );
+        }
+        setTlMoveState(null);
+      } catch (err) {
+        toast.error(`移動に失敗しました: ${formatErr(err)}`);
+      }
+    },
+    [
+      tlMoveState,
+      patientById,
+      visitMoveWeekOnlyMut,
+      isoYear,
+      isoWeek,
+      activeWeekday,
+      invalidateOpLog,
+      promoteWeekToFixed,
+      promoteToastAction,
+    ],
+  );
+
   // ─── Wave 37 Phase 3-C: 相方コース選択ダイアログの state ───────────────
   // requires_multiple_staff=true の患者を D&D したときにダイアログを表示する。
   // 確定後に staff_count=2 + course_template_ids: [primary, secondary] で
@@ -1410,7 +1479,8 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
   const handleDragStart = (e: DragStartEvent) => {
     const id = String(e.active.id);
     setActivePatientId(parsePatientDraggableId(id));
-    setActiveVisitId(parseVisitDraggableId(id));
+    // T-2 ②-b: タイムラインカード (tl-visit:) も既存の visit オーバーレイを流用する。
+    setActiveVisitId(parseVisitDraggableId(id) ?? parseTlVisitDraggableId(id));
   };
 
   /**
@@ -1438,6 +1508,36 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     const eventId = parseEventDraggableId(activeId);
     const cell = parseCourseDayCellId(overId);
     const isPoolDrop = overId === POOL_DROPPABLE_ID;
+
+    // ─── T-2 ②-b: タイムラインカード → 列 (連続時間軸の15分スナップ移動) ───
+    // 既存テーブル DnD (visit:/course-day-cell:) とは id 名前空間で分離。
+    // ドロップ位置 = カードの translated top − 列 rect top → snapYOffsetToMinutes。
+    const tlVisitId = parseTlVisitDraggableId(activeId);
+    if (tlVisitId) {
+      const colKey = parseTlColDroppableId(overId);
+      if (!colKey) return; // タイムライン外へのドロップは無効 (何もしない)
+      const toCol = timelineColumns.find((c) => c.key === colKey);
+      const fromCol = timelineColumns.find((c) => c.visits.some((v) => v.id === tlVisitId));
+      const visit = fromCol?.visits.find((v) => v.id === tlVisitId);
+      if (!toCol || !fromCol || !visit) return;
+      const oldStartMin = parseHM(visit.start_time);
+      const oldEndMin = parseHM(visit.end_time);
+      if (oldStartMin === null || oldEndMin === null || oldEndMin <= oldStartMin) return;
+      const durationMin = oldEndMin - oldStartMin;
+      const translatedTop = active.rect.current.translated?.top ?? null;
+      const overTop = over.rect?.top ?? null;
+      if (translatedTop === null || overTop === null) return;
+      const newStartMin = snapYOffsetToMinutes(translatedTop - overTop);
+      // 置けない場所 = 営業時間レンジ外 (9:00〜18:00 に収まらない)。
+      if (newStartMin < TL_DAY_START_MIN || newStartMin + durationMin > TL_DAY_END_MIN) {
+        toast.warning('この位置には置けません（9:00〜18:00 の範囲に収まるように移動してください）');
+        return;
+      }
+      // 同一コース・同時刻へのドロップは noop。
+      if (toCol.key === fromCol.key && newStartMin === oldStartMin) return;
+      setTlMoveState({ visit, fromCol, toCol, newStartMin, durationMin });
+      return;
+    }
 
     // ─── Wave 39: スタッフイベント drop (時刻スライド + 担当者変更) ───
     // 案 X (同曜日内のみ) + 案 Q (drop 先 course の assigned_staff_id を新所有者に)
@@ -2887,6 +2987,8 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                       onFreeSlotClick={canEdit ? handleFreeSlotClick : undefined}
                       // イベント帯クリック → 編集/削除 (canEdit のみ)。
                       onEventClick={canEdit ? handleTimelineEventClick : undefined}
+                      // T-2 ②-b: カード DnD (15分スナップ移動) は canEdit のみ。
+                      dndEnabled={canEdit}
                     />
                   </div>
                 ) : weekdayViewMode === 'list' ? (
@@ -3110,6 +3212,30 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
             }}
           />
         ) : null}
+        {/* T-2 ②-b: カード DnD 後の二択 (この週だけ / 固定パターン) */}
+        <TimelineMoveDialog
+          open={tlMoveState != null}
+          context={
+            tlMoveState
+              ? {
+                  patientName:
+                    patientById.get(tlMoveState.visit.patient_id)?.name ??
+                    tlMoveState.visit.patient_name ??
+                    tlMoveState.visit.patient_id,
+                  fromLabel: `${tlMoveState.fromCol.officeName}${tlMoveState.fromCol.template.label}`,
+                  toLabel: `${tlMoveState.toCol.officeName}${tlMoveState.toCol.template.label}`,
+                  weekdayLabel: WEEKDAY_LABELS[activeWeekday] ?? '',
+                  oldTimeHM: (tlMoveState.visit.start_time ?? '').slice(0, 5),
+                  newTimeHM: fmtHM(tlMoveState.newStartMin),
+                  durationMin: tlMoveState.durationMin,
+                  courseChanged: tlMoveState.toCol.template.id !== tlMoveState.fromCol.template.id,
+                }
+              : null
+          }
+          busy={visitMoveWeekOnlyMut.isPending || bulkSyncWeekToFixedMut.isPending}
+          onConfirm={(scope) => void handleTlMoveConfirm(scope)}
+          onClose={() => setTlMoveState(null)}
+        />
 
         {/* Wave 37 Phase 3-C: 相方コース選択ダイアログ */}
         {partnerDialogState ? (

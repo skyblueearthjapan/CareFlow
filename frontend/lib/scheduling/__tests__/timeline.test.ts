@@ -6,6 +6,7 @@ import {
   genderKey,
   genderPalette,
   minutesToY,
+  snapYOffsetToMinutes,
   TL_DAY_END_MIN,
   TL_DAY_START_MIN,
   TL_ROW_PX,
@@ -115,5 +116,27 @@ describe('assignLanes', () => {
     expect(r.get('c')?.laneCount).toBe(3);
     expect(r.get('x')?.laneCount).toBe(2);
     expect(r.get('y')?.laneCount).toBe(2);
+  });
+});
+
+describe('snapYOffsetToMinutes (T-2 ②-b: ドロップ位置→15分スナップ)', () => {
+  const pxPerMin = TL_ROW_PX / 30; // 52/30
+
+  it('オフセット0 = 9:00 (タイムライン起点)', () => {
+    expect(snapYOffsetToMinutes(0)).toBe(TL_DAY_START_MIN);
+  });
+
+  it('30分ぶんのオフセットで 9:30 になる', () => {
+    expect(snapYOffsetToMinutes(30 * pxPerMin)).toBe(TL_DAY_START_MIN + 30);
+  });
+
+  it('中途半端な位置は最寄りの15分に丸める', () => {
+    // 22分相当 → 15分。23分相当 → 30分 (四捨五入)。
+    expect(snapYOffsetToMinutes(22 * pxPerMin)).toBe(TL_DAY_START_MIN + 15);
+    expect(snapYOffsetToMinutes(23 * pxPerMin)).toBe(TL_DAY_START_MIN + 30);
+  });
+
+  it('負のオフセット (列上端より上) はクランプせずそのまま返す (呼び出し側で範囲チェック)', () => {
+    expect(snapYOffsetToMinutes(-30 * pxPerMin)).toBe(TL_DAY_START_MIN - 30);
   });
 });

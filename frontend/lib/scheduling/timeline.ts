@@ -51,6 +51,20 @@ export function durationToHeight(durationMin: number): number {
   return (durationMin / 30) * TL_ROW_PX;
 }
 
+/**
+ * T-2 ②-b: ドロップ位置 (列上端からの px オフセット) → 15分スナップの開始分。
+ * 連続時間軸のスナップ (テーブルの15分固定行の代替)。クランプはしない (呼び出し側で
+ * 範囲チェックして警告する)。
+ */
+export function snapYOffsetToMinutes(
+  offsetPx: number,
+  snapMin = 15,
+  startMin: number = TL_DAY_START_MIN,
+): number {
+  const raw = startMin + offsetPx / TL_PX_PER_MIN;
+  return Math.round(raw / snapMin) * snapMin;
+}
+
 /** 'HH:MM' / 'HH:MM:SS' → Y 座標 (px)。不正値は null。 */
 export function timeToY(
   hm: string | null | undefined,

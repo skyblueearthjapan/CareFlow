@@ -1,3 +1,4 @@
+import { DndContext } from '@dnd-kit/core';
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -334,6 +335,58 @@ describe('TimelineDayBoard', () => {
     expect(onClick).toHaveBeenCalledTimes(1);
     expect(onClick.mock.calls[0]![0].key).toBe('c1');
     expect(onClick.mock.calls[0]![1].startMin).toBe(780);
+  });
+
+  it('dndEnabled のとき単独カードは draggable・ピン留め/ペアは掴めない (T-2 ②-b)', () => {
+    render(
+      <DndContext>
+        <TimelineDayBoard
+          columns={[
+            column({
+              key: 'c1',
+              visits: [
+                visit({ id: 'norm', start_time: '09:30:00', end_time: '10:15:00' }),
+                visit({
+                  id: 'pin',
+                  start_time: '11:00:00',
+                  end_time: '11:45:00',
+                  is_pinned: true,
+                }),
+                visit({
+                  id: 'pair',
+                  start_time: '13:00:00',
+                  end_time: '13:45:00',
+                  visit_group_id: 'g1',
+                }),
+              ],
+            }),
+          ]}
+          weekdayLabel="月"
+          dndEnabled
+        />
+      </DndContext>,
+    );
+    expect(screen.getByTestId('tl-visit-norm').getAttribute('data-tl-drag')).toBe('enabled');
+    expect(screen.getByTestId('tl-visit-pin').getAttribute('data-tl-drag')).toBe('disabled');
+    expect(screen.getByTestId('tl-visit-pair').getAttribute('data-tl-drag')).toBe('disabled');
+    // 列 droppable レイヤが張られる。
+    expect(screen.getByTestId('tl-col-drop-c1')).toBeInTheDocument();
+  });
+
+  it('dndEnabled なし (read-only) のときカードは従来どおり非ドラッグ・droppable レイヤなし', () => {
+    render(
+      <TimelineDayBoard
+        columns={[
+          column({
+            key: 'c1',
+            visits: [visit({ id: 'v1', start_time: '09:30:00', end_time: '10:15:00' })],
+          }),
+        ]}
+        weekdayLabel="月"
+      />,
+    );
+    expect(screen.getByTestId('tl-visit-v1').getAttribute('data-tl-drag')).toBeNull();
+    expect(screen.queryByTestId('tl-col-drop-c1')).toBeNull();
   });
 
   it('onFreeSlotClick なし (read-only) のとき空き枠は従来の表示専用 div のまま', () => {

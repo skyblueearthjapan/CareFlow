@@ -15,6 +15,8 @@
  * 一切持たない (CourseDayTablePanel が組んだ CourseGridVisit をそのまま受け取る = 表示専用)。
  */
 
+import { useDraggable, useDroppable } from '@dnd-kit/core';
+
 import type { CourseGridVisit } from '@/components/schedule/v2/CourseDayTable';
 import type { CourseV2Read } from '@/lib/queries/courses';
 import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
@@ -40,6 +42,36 @@ import { cn } from '@/lib/utils';
 
 const COL_MIN_W = 172;
 const TIME_RAIL_W = 54;
+
+// ─────────────────────────────────────────────────────────────────────────
+// T-2 ②-b: DnD id 規約 (既存の visit:/pool-patient:/course-day-cell: と非衝突)
+// ─────────────────────────────────────────────────────────────────────────
+
+const TL_VISIT_PREFIX = 'tl-visit:';
+const TL_COL_PREFIX = 'tl-col:';
+
+export function tlVisitDraggableId(visitId: string): string {
+  return `${TL_VISIT_PREFIX}${visitId}`;
+}
+
+export function parseTlVisitDraggableId(id: string): string | null {
+  return id.startsWith(TL_VISIT_PREFIX) ? id.slice(TL_VISIT_PREFIX.length) : null;
+}
+
+/** 列 droppable id。colKey = `${template.id}:${weekday}` (TimelineCourseColumn.key)。 */
+export function tlColDroppableId(colKey: string): string {
+  return `${TL_COL_PREFIX}${colKey}`;
+}
+
+export function parseTlColDroppableId(id: string): string | null {
+  return id.startsWith(TL_COL_PREFIX) ? id.slice(TL_COL_PREFIX.length) : null;
+}
+
+/** VisitCard へ渡すドラッグ束 (DraggableVisitCard が組む)。 */
+type DragBindings = Pick<
+  ReturnType<typeof useDraggable>,
+  'attributes' | 'listeners' | 'setNodeRef' | 'isDragging'
+> & { disabled: boolean };
 
 export interface TimelineCourseColumn {
   key: string;
@@ -72,6 +104,13 @@ export interface TimelineDayBoardProps {
    * Panel が渡す。未指定時は従来どおり表示専用 (pointer-events-none)。
    */
   onEventClick?: (ev: EventRead, col: TimelineCourseColumn) => void;
+  /**
+   * T-2 ②-b: カード DnD (15分スナップ移動)。true のとき単独カードが draggable になり
+   * 列が droppable になる (親 Panel の DndContext / handleDragEnd が tl-visit:/tl-col: を
+   * 解釈)。canEdit のときだけ Panel が true を渡す。同住所ペアボックス内のカードは
+   * 現段階では対象外 (テーブル経由で移動可・将来対応)。
+   */
+  dndEnabled?: boolean;
 }
 
 /**
@@ -99,10 +138,13 @@ function VisitCard({
   visit,
   onClick,
   laneInfo,
+  drag,
 }: {
   visit: CourseGridVisit;
   onClick?: () => void;
   laneInfo?: CardLane;
+  /** T-2 ②-b: DnD 有効時のみ DraggableVisitCard が渡す。無指定=従来の表示/クリック専用。 */
+  drag?: DragBindings;
 }) {
   const startMin = parseHM(visit.start_time);
   const endMin = parseHM(visit.end_time);
@@ -138,9 +180,28 @@ function VisitCard({
   return (
     <button
       type="button"
+      ref={drag?.setNodeRef}
       onClick={onClick}
+      {...(drag && !drag.disabled ? drag.listeners : {})}
+      {...(drag && !drag.disabled ? drag.attributes : {})}
       data-testid={`tl-visit-${visit.id}`}
-      className="absolute z-[2] flex flex-col gap-px overflow-hidden rounded-lg border border-l-[3px] px-2 py-[3px] text-left shadow-[var(--shadow-xs)] transition-shadow hover:z-[4] hover:shadow-[var(--shadow-md)] focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary"
+      data-tl-drag={drag ? (drag.disabled ? 'disabled' : 'enabled') : undefined}
+      title={
+        drag?.disabled
+          ? visit.is_pinned
+            ? 'ピン留め中のため移動できません（🔒を解除してから移動）'
+            : visit.visit_group_id
+              ? '2名体制（ペア配置）のため個別移動できません'
+              : visit.status === 'cancelled'
+                ? 'キャンセル済みのため移動できません'
+                : undefined
+          : undefined
+      }
+      className={cn(
+        'absolute z-[2] flex flex-col gap-px overflow-hidden rounded-lg border border-l-[3px] px-2 py-[3px] text-left shadow-[var(--shadow-xs)] transition-shadow hover:z-[4] hover:shadow-[var(--shadow-md)] focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary',
+        drag && !drag.disabled && 'cursor-grab touch-none active:cursor-grabbing',
+        drag?.isDragging && 'opacity-40',
+      )}
       style={{
         top,
         height,
@@ -199,6 +260,62 @@ function VisitCard({
         </span>
       )}
     </button>
+  );
+}
+
+/**
+ * T-2 ②-b: ドラッグ可能な訪問カード。掴めない条件 = ピン留め / キャンセル / 2名ペア
+ * (visit_group_id)。既存テーブル (OccupantNameDraggable) と同じガード。
+ * dnd-kit の DndContext は親 (CourseDayTablePanel) が持つ — dndEnabled のときのみ
+ * このコンポーネントが描画されるため、テスト等の DndContext 外では VisitCard を直接使う。
+ */
+function DraggableVisitCard({
+  visit,
+  onClick,
+  laneInfo,
+}: {
+  visit: CourseGridVisit;
+  onClick?: () => void;
+  laneInfo?: CardLane;
+}) {
+  const dragDisabled =
+    visit.is_pinned === true || visit.status === 'cancelled' || Boolean(visit.visit_group_id);
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+    id: tlVisitDraggableId(visit.id),
+    disabled: dragDisabled,
+    data: { kind: 'tl-visit', visitId: visit.id },
+  });
+  return (
+    <VisitCard
+      visit={visit}
+      onClick={onClick}
+      laneInfo={laneInfo}
+      drag={{ attributes, listeners, setNodeRef, isDragging, disabled: dragDisabled }}
+    />
+  );
+}
+
+/**
+ * T-2 ②-b: 列全体を 1 つの droppable にする透明レイヤ。ドロップ位置は Panel 側で
+ * 「カードの translated top − 列 rect top」から 15 分スナップで算出する
+ * (テーブルの15分固定行セルの代替 = 連続時間軸)。pointer-events は不要
+ * (dnd-kit の衝突判定は rect ベース)。
+ */
+function ColumnDropLayer({ colKey }: { colKey: string }) {
+  const { setNodeRef, isOver } = useDroppable({
+    id: tlColDroppableId(colKey),
+    data: { colKey },
+  });
+  return (
+    <div
+      ref={setNodeRef}
+      className={cn(
+        'pointer-events-none absolute inset-0 z-[1] rounded transition-colors',
+        isOver && 'bg-brand-primary/5 ring-2 ring-inset ring-brand-primary/60',
+      )}
+      data-testid={`tl-col-drop-${colKey}`}
+      aria-hidden="true"
+    />
   );
 }
 
@@ -333,11 +450,13 @@ function TimelineColumn({
   onPatientClick,
   onFreeSlotClick,
   onEventClick,
+  dndEnabled,
 }: {
   col: TimelineCourseColumn;
   onPatientClick?: (patientId: string) => void;
   onFreeSlotClick?: (col: TimelineCourseColumn, gap: FreeGap) => void;
   onEventClick?: (ev: EventRead, col: TimelineCourseColumn) => void;
+  dndEnabled?: boolean;
 }) {
   const height = timelineHeightPx();
   // 勤務外バンド: スタッフイベント以外に、コース未生成/担当なしを表す薄いハッチは出さない
@@ -358,6 +477,9 @@ function TimelineColumn({
       style={{ flex: 1, minWidth: COL_MIN_W }}
       data-testid={`tl-col-${col.key}`}
     >
+      {/* T-2 ②-b: DnD 有効時のみ列全体を droppable にする (isOver ハイライト付き)。 */}
+      {dndEnabled ? <ColumnDropLayer colKey={col.key} /> : null}
+
       {rows.map((m) => (
         <div
           key={m}
@@ -488,7 +610,7 @@ function TimelineColumn({
         );
       })}
 
-      {/* 訪問カード (単独 or 同住所90分ペアボックス) */}
+      {/* 訪問カード (単独 or 同住所90分ペアボックス)。DnD 有効時は単独カードが draggable。 */}
       {items.map((it) =>
         it.kind === 'pair' ? (
           <PairBox
@@ -496,6 +618,13 @@ function TimelineColumn({
             item={it}
             laneInfo={lanes.get(it.id)}
             onPatientClick={onPatientClick}
+          />
+        ) : dndEnabled ? (
+          <DraggableVisitCard
+            key={it.id}
+            visit={it.v}
+            laneInfo={lanes.get(it.id)}
+            onClick={onPatientClick ? () => onPatientClick(it.v.patient_id) : undefined}
           />
         ) : (
           <VisitCard
@@ -519,6 +648,7 @@ export function TimelineDayBoard({
   nowMinutes,
   onFreeSlotClick,
   onEventClick,
+  dndEnabled,
 }: TimelineDayBoardProps) {
   const height = timelineHeightPx();
   const hours: number[] = [];
@@ -609,6 +739,7 @@ export function TimelineDayBoard({
             onPatientClick={onPatientClick}
             onFreeSlotClick={onFreeSlotClick}
             onEventClick={onEventClick}
+            dndEnabled={dndEnabled}
           />
         ))}
 
