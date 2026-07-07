@@ -28,10 +28,10 @@ export const TL_ROW_PX = 52;
 export const TL_PX_PER_MIN = TL_ROW_PX / 30;
 /**
  * 週タイムラインの 30 分あたり高さ (px)。6 曜日を横に並べるが縦は圧縮せず、
- * 画面の高さをいっぱいに使う (旧: 日×0.72 の圧縮をやめ、専用の余裕ある行高に)。
- * 9:00〜18:00 = 18行 → 全高 792px。
+ * 日タイムラインと同じ行高で画面の高さをいっぱいに使う (2026-07-07 現場要望で
+ * 44→52 に拡大し日と統一)。9:00〜18:00 = 18行 → 全高 936px。
  */
-export const TL_WEEK_ROW_PX = 44;
+export const TL_WEEK_ROW_PX = 52;
 
 /** 全高 (px)。時間軸レール・列の height に使う。 */
 export function timelineHeightPx(

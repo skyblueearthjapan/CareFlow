@@ -53,6 +53,11 @@ export interface WeekTimelineBoardProps {
   onPatientClick?: (patientId: string) => void;
   /** 週の容量 (曜日ごとの受入可能数)。ヘッダの「n/N件」に使う。省略可。 */
   capacityByWeekday?: (weekday: number) => number;
+  /**
+   * 選択中コースの各曜日の担当スタッフ名。曜日ごとに担当が異なり得るため関数で受け取る
+   * (例: 稲毛B は 月=田中 / 火=佐藤)。null = 未割当。省略可。
+   */
+  staffNameByWeekday?: (weekday: number) => string | null;
 }
 
 function PersonMark() {
@@ -154,6 +159,7 @@ export function WeekTimelineBoard({
   weekdayDates,
   onPatientClick,
   capacityByWeekday,
+  staffNameByWeekday,
 }: WeekTimelineBoardProps) {
   const H = height();
   const hours: number[] = [];
@@ -208,6 +214,7 @@ export function WeekTimelineBoard({
           {WEEKDAY_LABELS.map((d, wd) => {
             const n = byWeekday.get(wd)?.length ?? 0;
             const cap = capacityByWeekday?.(wd);
+            const staffName = staffNameByWeekday?.(wd) ?? null;
             return (
               <div
                 key={d}
@@ -221,6 +228,10 @@ export function WeekTimelineBoard({
                       {weekdayDates[wd]}
                     </span>
                   )}
+                </div>
+                {/* 曜日ごとの担当スタッフ名 (稲毛B でも 月=田中 / 火=佐藤 のように異なり得る)。 */}
+                <div className="truncate text-[11px] font-semibold text-text-secondary">
+                  {staffName ?? '（未割当）'}
                 </div>
                 <div className="tnum text-[9.5px] text-text-muted">
                   {n}

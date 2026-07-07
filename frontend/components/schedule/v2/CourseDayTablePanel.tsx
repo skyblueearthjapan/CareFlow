@@ -2228,6 +2228,16 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     [templates, effectiveWeekTemplateId, staffCountFor, courseCodesMax],
   );
 
+  // 週タイムライン: 選択中コースの各曜日の担当スタッフ名 (曜日ごとに担当が異なり得る).
+  const weekTimelineStaffNameByWeekday = useCallback(
+    (weekday: number): string | null => {
+      const staffId = assignedStaffByTemplateWeekday.get(`${effectiveWeekTemplateId}:${weekday}`);
+      if (!staffId) return null;
+      return staffMap.get(staffId)?.name ?? null;
+    },
+    [assignedStaffByTemplateWeekday, effectiveWeekTemplateId, staffMap],
+  );
+
   // 週の曜日ヘッダ日付 (0=Mon..5=Sat)。
   const weekdayDates = useMemo<(string | null)[]>(() => {
     return Array.from({ length: 6 }, (_, wd) => {
@@ -2686,6 +2696,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                     weekdayDates={weekdayDates}
                     onPatientClick={handleOpenPatientDetail}
                     capacityByWeekday={weekTimelineCapacityByWeekday}
+                    staffNameByWeekday={weekTimelineStaffNameByWeekday}
                   />
                 ) : (
                   <CourseWeekOverview

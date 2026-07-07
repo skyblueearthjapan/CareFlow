@@ -73,6 +73,22 @@ describe('WeekTimelineBoard', () => {
     expect(screen.getByTestId('wtl-visit-f').style.background).toBe('var(--sched-female-bg)');
   });
 
+  it('曜日ごとの担当スタッフ名を出す (曜日で担当が異なり得る)', () => {
+    render(
+      <WeekTimelineBoard
+        selectedTemplateId="t1"
+        options={OPTIONS}
+        onSelectTemplate={() => {}}
+        visits={[]}
+        staffNameByWeekday={(wd) => (wd === 0 ? '田中 一郎' : wd === 1 ? '佐藤 花子' : null)}
+      />,
+    );
+    expect(screen.getByText('田中 一郎')).toBeInTheDocument();
+    expect(screen.getByText('佐藤 花子')).toBeInTheDocument();
+    // 担当なしの曜日は「（未割当）」。
+    expect(screen.getAllByText('（未割当）').length).toBeGreaterThan(0);
+  });
+
   it('capacityByWeekday を渡すと n/N件 表示になる', () => {
     render(
       <WeekTimelineBoard
