@@ -142,6 +142,7 @@ export default function AdminUsersPage() {
               <p>
                 <span className="font-medium">{resetResult.email}</span> —
                 次回ログイン時にパスワード変更が必須となります。
+                共通パスワード運用に戻すには、本人の初回変更画面で共通パスワードを設定してください。
               </p>
               <code className="block rounded bg-bg-muted px-3 py-2 font-mono text-sm">
                 {resetResult.tempPassword}
@@ -215,8 +216,18 @@ export default function AdminUsersPage() {
                           <Button
                             variant="ghost"
                             size="sm"
-                            disabled={isDeleted}
-                            onClick={() => resetPw.mutate(u.id)}
+                            disabled={isDeleted || resetPw.isPending}
+                            onClick={() => {
+                              const label = u.email ?? u.username ?? u.staff_name ?? u.id;
+                              if (
+                                window.confirm(
+                                  `${label} のパスワードをリセットします。\n` +
+                                    '共通パスワードではログインできなくなり、新しい仮パスワード＋次回ログイン時の変更必須に切り替わります。よろしいですか？',
+                                )
+                              ) {
+                                resetPw.mutate(u.id);
+                              }
+                            }}
                             title="パスワードリセット"
                           >
                             <KeyRound className="h-4 w-4" />

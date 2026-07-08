@@ -95,6 +95,33 @@ describe('decideRoute', () => {
     });
   });
 
+  // PW運用 (2026-07-08): 共通パスワードのため自己変更ページは admin のみ。
+  it('redirects non-admin away from /settings/password (共通パスワード運用)', () => {
+    const managerSession = { user: { role: 'manager' as const, mustChangePassword: false } };
+    expect(decideRoute({ pathname: '/settings/password', session: staffSession })).toEqual({
+      kind: 'redirect',
+      to: '/dashboard',
+    });
+    expect(decideRoute({ pathname: '/settings/password', session: managerSession })).toEqual({
+      kind: 'redirect',
+      to: '/dashboard',
+    });
+    expect(decideRoute({ pathname: '/settings/password', session: adminSession })).toEqual({
+      kind: 'next',
+    });
+  });
+
+  it('still forces the forced-password page for staff with mustChangePassword', () => {
+    // 新規アカウントの共通パスワード設定フロー (マニュアル6.1) を壊さないこと。
+    expect(decideRoute({ pathname: '/dashboard', session: forcedSession })).toEqual({
+      kind: 'redirect',
+      to: FORCED_PASSWORD_PATH,
+    });
+    expect(decideRoute({ pathname: FORCED_PASSWORD_PATH, session: forcedSession })).toEqual({
+      kind: 'next',
+    });
+  });
+
   it('lets staff access /dashboard', () => {
     expect(decideRoute({ pathname: '/dashboard', session: staffSession })).toEqual({
       kind: 'next',

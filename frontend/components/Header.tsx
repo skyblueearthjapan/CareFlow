@@ -239,17 +239,22 @@ function UserMenuButton() {
               )}
             </div>
             <div className="p-2">
-              <Button
-                type="button"
-                variant="ghost"
-                className="w-full justify-start text-sm"
-                asChild
-              >
-                <Link href="/settings/password" onClick={() => setOpen(false)}>
-                  <KeyRound className="mr-2 h-4 w-4" strokeWidth={1.75} />
-                  パスワード変更
-                </Link>
-              </Button>
+              {/* PW運用 (PO決定 2026-07-08): パスワードは全員共通のため、自己変更の
+                  入口は admin のみに限定 (誤変更で共通PWから外れるのを防ぐ)。
+                  センシティブ系と同じく「非表示」で統一 (RBAC UI統一の例外カテゴリ)。 */}
+              {role === 'admin' && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="w-full justify-start text-sm"
+                  asChild
+                >
+                  <Link href="/settings/password" onClick={() => setOpen(false)}>
+                    <KeyRound className="mr-2 h-4 w-4" strokeWidth={1.75} />
+                    パスワード変更
+                  </Link>
+                </Button>
+              )}
               <Button
                 type="button"
                 variant="ghost"

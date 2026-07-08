@@ -50,6 +50,14 @@ export function decideRoute({ pathname, session }: RouteContext): RouteDecision 
     return { kind: 'redirect', to: '/dashboard' };
   }
 
+  // PW運用 (PO決定 2026-07-08): パスワードは全員共通のため、自己変更ページは
+  // admin のみ。強制変更ページ (FORCED_PASSWORD_PATH) は上で処理済みなので
+  // ここに来る /settings/password/forced は mustChangePassword=false の離脱リダイレクト後だけ。
+  // 直リンク対策として非 forced の /settings/password を admin 以外から遮断する。
+  if (pathname === '/settings/password' && role !== 'admin') {
+    return { kind: 'redirect', to: '/dashboard' };
+  }
+
   // 申請履歴はページ実装が admin+manager 想定 (サイドバーも両者に表示) のため例外。
   // 旧: /admin 一括ガードで manager が弾かれる矛盾があった (RB 2026-07-08 修正)。
   const isPendingRequests = pathname.startsWith('/admin/pending-requests');
