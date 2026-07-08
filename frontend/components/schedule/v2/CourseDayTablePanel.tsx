@@ -146,6 +146,7 @@ import {
   type WeekTimelineOption,
 } from '@/components/schedule/timeline/WeekTimelineBoard';
 import { PartnerCourseDialog } from './PartnerCourseDialog';
+import { cn } from '@/lib/utils';
 import { PatientCard, type PatientCardData } from './PatientCard';
 import { PatientScheduleDetailDialog } from './PatientScheduleDetailDialog';
 import { POOL_DROPPABLE_ID, buildPoolDraggableId, parsePoolDraggableId } from './PoolPanel';
@@ -3010,8 +3011,18 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
           className="grid grid-cols-1 gap-4 lg:min-h-0 lg:flex-1 lg:grid-cols-[1fr_320px]"
           data-testid="course-day-two-pane"
         >
-          {/* 左ペイン: コーステーブル群 (lg 以上はこの中だけ縦スクロール) */}
-          <div className="space-y-3 min-w-0 lg:min-h-0 lg:overflow-y-auto">
+          {/* 左ペイン: コーステーブル群 (lg 以上はこの中だけ縦スクロール)。
+              日タイムラインだけは盤面内部でスクロールさせる (列ヘッダ固定のため)。 */}
+          <div
+            className={cn(
+              'min-w-0 space-y-3 lg:min-h-0',
+              // 日タイムライン表示中はペインを固定高にして盤面へスクロールを委譲
+              // (列ヘッダ sticky が盤面スクロールで効く)。他モードは従来のペインスクロール。
+              activeTab !== 'week' && weekdayViewMode === 'timeline'
+                ? 'lg:flex lg:flex-col lg:overflow-hidden'
+                : 'lg:overflow-y-auto',
+            )}
+          >
             {/* Wave 18 Phase B-6: 「週」タブ選択時は CourseWeekOverview を表示 */}
             {activeTab === 'week' ? (
               <div
@@ -3069,7 +3080,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                   </Card>
                 ) : weekdayViewMode === 'timeline' ? (
                   /* T-1: 縦タイムライン (時間比例カード・読み取り専用). */
-                  <div data-testid="course-day-timeline-view">
+                  <div data-testid="course-day-timeline-view" className="lg:min-h-0 lg:flex-1">
                     <TimelineDayBoard
                       columns={timelineColumns}
                       weekdayLabel={WEEKDAY_LABELS[activeWeekday] ?? ''}

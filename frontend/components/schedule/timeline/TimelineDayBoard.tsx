@@ -888,7 +888,9 @@ export function TimelineDayBoard({
 
   return (
     <div
-      className="overflow-auto rounded-lg border border-border-default bg-bg-base"
+      // lg 以上は親 (course-day-timeline-view) の高さいっぱいで盤面内スクロール。
+      // 列ヘッダ (sticky top-0) はこのスクロールコンテナ基準で固定される (PO要望)。
+      className="overflow-auto rounded-lg border border-border-default bg-bg-base lg:h-full"
       data-testid="timeline-day-board"
     >
       {/* 列ヘッダ (担当スタッフ主・コース記号従) */}
