@@ -594,7 +594,13 @@ export function CourseWeekOverview({
                                   return item.kind === 'visit' ? (
                                     <li
                                       key={item.id}
-                                      className="flex items-center gap-1 text-[10px] text-text-primary"
+                                      // タイムラインカードと同じ視覚言語の縦幅狭カード行 (PO要望)。
+                                      className="flex items-center gap-1 rounded border border-l-[3px] px-1 py-0.5 text-[10px] text-text-primary"
+                                      style={{
+                                        background: genderPalette(item.patientSex).bg,
+                                        borderColor: genderPalette(item.patientSex).ln,
+                                        borderLeftColor: genderPalette(item.patientSex).bar,
+                                      }}
                                       title={item.label}
                                       data-testid={`course-week-overview-name-${item.id}`}
                                     >
@@ -685,11 +691,17 @@ export function CourseWeekOverview({
                                     <div className="mb-0.5 text-[9px] font-semibold text-yellow-700">
                                       📍 同住所 ({cluster.visits.length} 名)
                                     </div>
-                                    <ul className="divide-y divide-yellow-200/70">
+                                    <ul>
                                       {cluster.visits.map((v) => (
                                         <li
                                           key={v.id}
-                                          className="flex items-center gap-1 py-0.5 text-[10px] text-text-primary"
+                                          // pair 囲み内もカード行 (タイムラインのペアボックスと同じ)。
+                                          className="my-0.5 flex items-center gap-1 rounded border border-l-[3px] px-1 py-0.5 text-[10px] text-text-primary"
+                                          style={{
+                                            background: genderPalette(v.patientSex).bg,
+                                            borderColor: genderPalette(v.patientSex).ln,
+                                            borderLeftColor: genderPalette(v.patientSex).bar,
+                                          }}
                                           title={v.label}
                                           data-testid={`course-week-overview-name-${v.id}`}
                                           data-same-address-group="true"

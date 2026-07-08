@@ -593,19 +593,27 @@ function PairBox({
       )}
       style={{ top, height: boxH, ...laneStyle }}
     >
-      <div className="flex items-center gap-1 px-1.5 pt-0.5 text-[9px] font-bold text-amber-700">
-        📍 同住所 {durMin}分占有
+      {/* 見出し: 同住所は1つなので実住所をここに出す (行では繰り返さない)。 */}
+      <div className="flex min-w-0 items-center gap-1 px-1.5 pt-0.5 text-[9px] font-bold text-amber-700">
+        <span className="shrink-0">📍</span>
+        <span className="truncate">
+          同住所 {durMin}分占有
+          {item.visits[0]?.patient_address ? `・${item.visits[0].patient_address}` : ''}
+        </span>
       </div>
       <div className="flex min-h-0 flex-1 flex-col gap-0.5 px-1 pb-1">
         {item.visits.map((v) => {
           const pal = genderPalette(v.patient_sex);
+          const s = parseHM(v.start_time);
+          const e = parseHM(v.end_time);
+          const dm = s !== null && e !== null && e > s ? e - s : null;
           return (
             <button
               key={v.id}
               type="button"
               data-testid={`tl-visit-${v.id}`}
               onClick={onPatientClick ? () => onPatientClick(v.patient_id) : undefined}
-              className="flex min-h-0 flex-1 items-center gap-1 overflow-hidden rounded-md border border-l-[3px] px-1.5 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary"
+              className="flex min-h-0 flex-1 flex-col justify-center gap-px overflow-hidden rounded-md border border-l-[3px] px-1.5 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary"
               style={{
                 background: pal.bg,
                 borderColor: pal.ln,
@@ -613,17 +621,34 @@ function PairBox({
                 color: pal.ink,
               }}
             >
-              {v.is_pinned && (
-                <span className="shrink-0" aria-label="ピン留め">
-                  <PushPin className="h-2.5 w-2.5" />
+              <span className="flex min-w-0 items-center gap-1">
+                {v.is_pinned && (
+                  <span className="shrink-0" aria-label="ピン留め">
+                    <PushPin className="h-2.5 w-2.5" />
+                  </span>
+                )}
+                <span className="truncate text-[12px] font-bold leading-tight">
+                  {v.patient_name ?? '—'}
+                </span>
+                <span className="tnum ml-auto shrink-0 text-[9px] opacity-75">
+                  {(v.start_time ?? '').slice(0, 5)}
+                  {dm !== null ? `・${dm}分` : ''}
+                </span>
+              </span>
+              {/* 2行目: 条件 (単独カードと同じ情報)。 */}
+              {(v.patient_sex_restriction_label || v.patient_time_type) && (
+                <span className="flex min-w-0 items-center gap-1 text-[9px] opacity-80">
+                  {v.patient_sex_restriction_label ? (
+                    <span
+                      className="shrink-0 rounded-full px-1 py-px text-[8px] font-bold text-white"
+                      style={{ background: pal.bar }}
+                    >
+                      {v.patient_sex_restriction_label}
+                    </span>
+                  ) : null}
+                  <span className="truncate">{v.patient_time_type ?? ''}</span>
                 </span>
               )}
-              <span className="truncate text-[12px] font-bold leading-tight">
-                {v.patient_name ?? '—'}
-              </span>
-              <span className="tnum ml-auto shrink-0 text-[9px] opacity-75">
-                {(v.start_time ?? '').slice(0, 5)}
-              </span>
             </button>
           );
         })}

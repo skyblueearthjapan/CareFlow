@@ -267,19 +267,27 @@ function WeekPairBox({
       className="absolute z-[2] flex flex-col overflow-hidden rounded-md border-2 border-amber-400 bg-amber-50/40 shadow-[var(--shadow-xs)]"
       style={{ top, height: boxH, ...laneStyle }}
     >
-      <div className="flex items-center gap-1 px-1 pt-0.5 text-[8.5px] font-bold text-amber-700">
-        📍 同住所 {durMin}分占有
+      {/* 見出し: 同住所は1つなので実住所をここに出す (日ビューと同じ)。 */}
+      <div className="flex min-w-0 items-center gap-1 px-1 pt-0.5 text-[8.5px] font-bold text-amber-700">
+        <span className="shrink-0">📍</span>
+        <span className="truncate">
+          同住所 {durMin}分占有
+          {item.visits[0]?.patient_address ? `・${item.visits[0].patient_address}` : ''}
+        </span>
       </div>
       <div className="flex min-h-0 flex-1 flex-col gap-0.5 px-1 pb-1">
         {item.visits.map((v) => {
           const pal = genderPalette(v.patient_sex);
+          const s = parseHM(v.start_time);
+          const e = parseHM(v.end_time) ?? (s !== null ? s + 35 : null);
+          const dm = s !== null && e !== null && e > s ? e - s : null;
           return (
             <button
               key={v.id}
               type="button"
               data-testid={`wtl-visit-${v.id}`}
               onClick={onPatientClick ? () => onPatientClick(v.patient_id) : undefined}
-              className="flex min-h-0 flex-1 items-center gap-1 overflow-hidden rounded border border-l-[3px] px-1 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary"
+              className="flex min-h-0 flex-1 flex-col justify-center gap-px overflow-hidden rounded border border-l-[3px] px-1 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary"
               style={{
                 background: pal.bg,
                 borderColor: pal.ln,
@@ -287,17 +295,30 @@ function WeekPairBox({
                 color: pal.ink,
               }}
             >
-              {v.is_pinned && (
-                <span className="shrink-0" aria-label="ピン留め">
-                  <PushPin className="h-2.5 w-2.5" />
+              <span className="flex min-w-0 items-center gap-1">
+                {v.is_pinned && (
+                  <span className="shrink-0" aria-label="ピン留め">
+                    <PushPin className="h-2.5 w-2.5" />
+                  </span>
+                )}
+                <span className="truncate text-[11px] font-bold leading-tight">
+                  {v.patient_name ?? '—'}
+                </span>
+                <span className="tnum ml-auto shrink-0 text-[8.5px] opacity-75">
+                  {(v.start_time ?? '').slice(0, 5)}
+                  {dm !== null ? `・${dm}分` : ''}
+                </span>
+              </span>
+              {/* 2行目: 条件 (単独カードと同じ情報)。 */}
+              {(v.patient_sex_restriction === 'female_only' ||
+                v.patient_sex_restriction === 'male_only') && (
+                <span
+                  className="w-fit shrink-0 rounded-full px-1 py-px text-[7.5px] font-bold text-white"
+                  style={{ background: pal.bar }}
+                >
+                  {v.patient_sex_restriction === 'female_only' ? '女性のみ' : '男性のみ'}
                 </span>
               )}
-              <span className="truncate text-[11px] font-bold leading-tight">
-                {v.patient_name ?? '—'}
-              </span>
-              <span className="tnum ml-auto shrink-0 text-[8.5px] opacity-75">
-                {(v.start_time ?? '').slice(0, 5)}
-              </span>
             </button>
           );
         })}

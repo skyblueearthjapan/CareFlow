@@ -79,14 +79,21 @@ function VisitRow({
   return (
     <div
       className={cn(
-        'grid items-center gap-2.5 rounded border-l-[3px] px-2 py-1 text-[12px] transition-colors',
+        // タイムラインカードと同じ視覚言語 (性別ウォッシュ地 + 左帯 + 角丸) の
+        // 「縦幅の狭いカード行」(PO要望: 日/週リストをカードUIへ統一)。
+        'grid items-center gap-2.5 rounded-md border border-l-[3px] px-2 py-1 text-[12px] shadow-[var(--shadow-xs)] transition-shadow hover:shadow-[var(--shadow-sm)]',
         GRID_COLS,
-        // M-2: 移動警告は行全体を薄い赤で強調 (旧リストの赤枠相当)。
-        warn ? 'bg-error-bg/40 hover:bg-error-bg/60' : 'hover:bg-bg-muted',
-        // L-3: ピン留め行は薄い琥珀背景で強調 (旧リスト踏襲)。
-        !warn && v.is_pinned && 'bg-amber-50/50',
+        // M-2: 移動警告は行全体を薄い赤で強調 (性別ウォッシュより優先)。
+        warn && 'bg-error-bg/40 hover:bg-error-bg/60',
+        // L-3: ピン留め行は薄い琥珀背景で強調 (性別ウォッシュより優先)。
+        !warn && v.is_pinned && 'bg-amber-50/60',
       )}
-      style={{ borderLeftColor: pal.bar }}
+      style={{
+        borderColor: pal.ln,
+        borderLeftColor: pal.bar,
+        // 警告/ピンの背景クラスを潰さないよう、通常行だけ性別ウォッシュを敷く。
+        ...(warn || v.is_pinned ? {} : { background: pal.bg }),
+      }}
       title={warn?.message ?? undefined}
       data-testid={`tdl-row-${v.key}`}
     >
@@ -304,7 +311,7 @@ export function TimelineDayList({ courses, onPatientClick, onTogglePin }: Timeli
               <span className="text-right">前から</span>
             </div>
 
-            <div className="divide-y divide-border-subtle">
+            <div className="space-y-1 pt-0.5">
               {rows.length === 0 ? (
                 <div className="px-2 py-3 text-[12px] text-text-muted">
                   この日の予定はありません。
@@ -320,7 +327,7 @@ export function TimelineDayList({ courses, onPatientClick, onTogglePin }: Timeli
                       title={`同住所（${grp.rows.length}名・同時刻帯に連続訪問）`}
                       data-testid={`tdl-sameaddr-${gi}`}
                     >
-                      <div className="divide-y divide-amber-200/70">
+                      <div className="space-y-0.5 p-0.5">
                         {grp.rows.map((v) => (
                           <VisitRow
                             key={v.key}
