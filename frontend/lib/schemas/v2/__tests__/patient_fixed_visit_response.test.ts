@@ -75,8 +75,10 @@ describe('patientFixedVisitsBulkPutResponseSchema (P0-2 Commit 3)', () => {
   });
 
   it('parsePatientFixedVisitsBulkPutResponse は object でない値でも throw せず空を返す', () => {
-    expect(parsePatientFixedVisitsBulkPutResponse(null)).toEqual({ items: [], warnings: [] });
-    expect(parsePatientFixedVisitsBulkPutResponse('boom')).toEqual({ items: [], warnings: [] });
-    expect(parsePatientFixedVisitsBulkPutResponse(undefined)).toEqual({ items: [], warnings: [] });
+    // week_sync は後から追加されたフィールド (フォールバックは null)。
+    const empty = { items: [], warnings: [], week_sync: null };
+    expect(parsePatientFixedVisitsBulkPutResponse(null)).toEqual(empty);
+    expect(parsePatientFixedVisitsBulkPutResponse('boom')).toEqual(empty);
+    expect(parsePatientFixedVisitsBulkPutResponse(undefined)).toEqual(empty);
   });
 });

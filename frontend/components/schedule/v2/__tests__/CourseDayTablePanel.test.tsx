@@ -3,15 +3,16 @@
  *
  * カバーするシナリオ:
  *   1. 表示対象コースが 0 件のとき案内文が出る
- *   2. active コーステンプレート 2 個でテーブルが 2 個描画される
+ *   2. active コーステンプレート 2 個でタイムライン列が 2 本描画される
  *   3-6. (Phase G-40 で削除) 主要 4 ボタンは page.tsx (Card 1) へ移設のため panel 側では未描画
- *   7. 時刻軸が 9:30〜18:00 / 15min / 35 行で描画される
+ *   7,9,10,12,13,13b,14,14b,14c,15,16,17,18.
+ *       (Phase 2 で削除) いずれも旧 CourseDayTable の格子セル描画 / テーブル DnD
+ *       (`course-day-cell:` / `visit:` id) を検証していた。テーブル UI 撤去に伴い
+ *       production 側に対応経路が無くなったため削除。代替は T-6P1 / G4-1..3 /
+ *       timeline/__tests__/TimelineDayBoard.test.tsx。
  *   8. 月〜土の 6 つの曜日タブが描画される (日曜なし)
- *   9. visit が当該コース・スロットに描画される (start_time → 15min 切り下げ)
- *  10. ドロップで place-and-fix が course_template_id 付きで呼ばれる
- *  11. 担当 dropdown を変更すると useUpdateCourse が assigned_staff_id 付きで呼ばれる
- *  12. 同一スロットに複数 visit がある場合、氏名が縦積みで全件描画される
- *  13. required_staff_count >= 2 の単独 visit で「複数」表示が出る
+ *  11. 担当 dropdown (タイムライン列ヘッダ) 変更で useUpdateCourse が呼ばれる
+ *  19. 「週」タブで CourseWeekOverview ペインに切替
  *  +.  findCourseForTemplate の純関数テスト (label → code 解決)
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -395,6 +396,16 @@ vi.mock('@/lib/api/patientSync', () => ({
   }),
 }));
 
+/** 既定 props + QueryClientProvider で panel を描画する共通ヘルパー. */
+function renderPanel() {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={qc}>
+      <CourseDayTablePanel weekStart={monday(2026, 5, 4)} officeId={null} canEdit={true} />
+    </QueryClientProvider>,
+  );
+}
+
 describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -402,21 +413,30 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
 
   it('1. 表示対象コースが 0 件のとき案内文を表示する', () => {
     setupHooks({ templates: [] });
-    render(<CourseDayTablePanel weekStart={monday(2026, 5, 4)} officeId={null} canEdit={true} />);
+    renderPanel();
+    // 既定タブは「週」。案内文は曜日タブパネル内にあるので月曜へ切替える。
+    fireEvent.click(screen.getByTestId('course-day-tab-0'));
     expect(screen.getByText(/表示対象コースがありません/)).toBeInTheDocument();
   });
 
-  it('2. active コーステンプレート 2 個でテーブルが 2 個描画される', () => {
+  it('2. active コーステンプレート 2 個でタイムライン列が 2 本描画される', () => {
     setupHooks({
       templates: [
         { id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl },
         { id: 'tpl-B', office_id: 'office-honten', label: 'B', ...baseTpl },
       ],
     });
-    render(<CourseDayTablePanel weekStart={monday(2026, 5, 4)} officeId={null} canEdit={true} />);
-    // activeWeekday=0 (月)
-    expect(screen.getByTestId('course-day-table-0-tpl-A')).toBeInTheDocument();
-    expect(screen.getByTestId('course-day-table-0-tpl-B')).toBeInTheDocument();
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <CourseDayTablePanel weekStart={monday(2026, 5, 4)} officeId={null} canEdit={true} />
+      </QueryClientProvider>,
+    );
+    // 既定タブは「週」なので月曜 (activeWeekday=0) へ切替。
+    fireEvent.click(screen.getByTestId('course-day-tab-0'));
+    // 列 key = `${templateId}:${weekday}` (TimelineDayBoard の tl-col-{key})。
+    expect(screen.getByTestId('tl-col-tpl-A:0')).toBeInTheDocument();
+    expect(screen.getByTestId('tl-col-tpl-B:0')).toBeInTheDocument();
   });
 
   // Phase G-40: テスト #3〜#6 は削除済.
@@ -424,24 +444,13 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
   // page.tsx (Card 1) へ移設されたため、panel 単体ではボタンを描画しなくなった.
   // これらのボタンのカバレッジは将来 schedule/page.tsx 側の test に移管する.
 
-  it('7. 時刻軸が 9:30〜18:00 / 15min / 35 行で描画される', () => {
-    setupHooks({
-      templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
-    });
-    render(<CourseDayTablePanel weekStart={monday(2026, 5, 4)} officeId={null} canEdit={true} />);
-    // 代表値: 09:30 / 12:00 / 18:00
-    expect(screen.getAllByText('09:30').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('12:00').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('18:00').length).toBeGreaterThan(0);
-    // 9:00 や 19:00 は時刻スロットラベルとしては存在しない (範囲外)
-    // 全 droppable cell 数 = 35 slot (1 テンプレ × 1 曜日)
-    const cells = document.querySelectorAll('[data-droppable^="course-day-cell:0:tpl-A:"]');
-    expect(cells.length).toBe(35);
-  });
+  // Phase 2 (日テーブル撤去): テスト #7 (35 行の時刻軸 + course-day-cell droppable 35 個)
+  //   は CourseDayTable 固有の格子を検証していたため削除. タイムラインの時刻軸は
+  //   timeline/__tests__/TimelineDayBoard.test.tsx が担保する.
 
   it('8. 月〜土の 6 つの曜日タブが描画される (日曜なし)', () => {
     setupHooks({ templates: [] });
-    render(<CourseDayTablePanel weekStart={monday(2026, 5, 4)} officeId={null} canEdit={true} />);
+    renderPanel();
     expect(screen.getByTestId('course-day-tab-0')).toBeInTheDocument();
     expect(screen.getByTestId('course-day-tab-1')).toBeInTheDocument();
     expect(screen.getByTestId('course-day-tab-2')).toBeInTheDocument();
@@ -451,672 +460,16 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
     expect(screen.queryByTestId('course-day-tab-6')).not.toBeInTheDocument();
   });
 
-  it('9. visit が当該コース・スロットに描画される (start_time → 15min 切り下げ)', () => {
-    setupHooks({
-      templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
-      courses: [
-        {
-          id: 'course-1',
-          iso_year: 2026,
-          iso_week: 19,
-          weekday: 0,
-          code: 'A',
-          office_id: 'office-honten',
-          assigned_staff_id: null,
-          course_status: 'course_fixed',
-          deleted_at: null,
-        },
-      ],
-      visits: [
-        {
-          id: 'v-1',
-          patient_id: 'p-1',
-          patient_name: '鈴木 一郎',
-          visit_date: '2026-05-04',
-          start_time: '09:37:00', // 09:30 にスロット切り下げ
-          primary_staff_id: null,
-          course_id: 'course-1',
-          type: 'regular',
-          status: 'planned',
-          source: 'allocate',
-          end_time: '10:30:00',
-        },
-      ],
-      patients: [
-        {
-          id: 'p-1',
-          name: '鈴木 一郎',
-          kana: null,
-          status: 'active',
-          address: '千葉県千葉市',
-        },
-      ],
-    });
-    render(<CourseDayTablePanel weekStart={monday(2026, 5, 4)} officeId={null} canEdit={true} />);
-    expect(screen.getAllByText('鈴木 一郎').length).toBeGreaterThan(0);
-    // CareFlow #UX-2026W21: 住所は '📍 千葉県千葉市' 形式で表示されるため部分一致.
-    expect(screen.getAllByText(/千葉県千葉市/).length).toBeGreaterThan(0);
-  });
-
-  it('10. ドロップで place-and-fix が course_template_id 付きで呼ばれる', async () => {
-    mockPlaceAndFix.mockResolvedValue({ visit: {}, fixed_visit: null });
-    setupHooks({
-      templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
-      patients: [
-        {
-          id: '99999999-9999-9999-9999-999999999999',
-          name: '鈴木',
-          kana: null,
-          status: 'active',
-          weekly_pattern: { service_minutes: 45 },
-        },
-      ],
-    });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId="office-honten"
-        canEdit={true}
-      />,
-    );
-    expect(dndState.capturedHandlers.onDragEnd).toBeDefined();
-    await dndState.capturedHandlers.onDragEnd!({
-      active: { id: 'pool-patient:99999999-9999-9999-9999-999999999999' },
-      over: { id: 'course-day-cell:0:tpl-A:09:30' },
-    });
-    expect(mockPlaceAndFix).toHaveBeenCalledOnce();
-    const arg = mockPlaceAndFix.mock.calls[0][0];
-    expect(arg.patient_id).toBe('99999999-9999-9999-9999-999999999999');
-    expect(arg.course_template_id).toBe('tpl-A');
-    expect(arg.weekday).toBe(0);
-    expect(arg.start_time).toBe('09:30');
-    expect(arg.duration_min).toBe(45);
-    expect(arg.fix_pattern).toBe(true);
-  });
-
-  it('12. 同一スロットに 2 件 visit がある場合は氏名が縦積みで両方描画される', () => {
-    setupHooks({
-      templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
-      courses: [
-        {
-          id: 'course-1',
-          iso_year: 2026,
-          iso_week: 19,
-          weekday: 0,
-          code: 'A',
-          office_id: 'office-honten',
-          assigned_staff_id: null,
-          course_status: 'course_fixed',
-          deleted_at: null,
-        },
-      ],
-      visits: [
-        {
-          id: 'v-1',
-          patient_id: 'p-1',
-          patient_name: '鈴木 一郎',
-          visit_date: '2026-05-04',
-          start_time: '09:30:00',
-          primary_staff_id: null,
-          course_id: 'course-1',
-          required_staff_count: 1,
-          type: 'regular',
-          status: 'planned',
-          source: 'allocate',
-          end_time: '10:00:00',
-        },
-        {
-          id: 'v-2',
-          patient_id: 'p-2',
-          patient_name: '佐藤 次郎',
-          visit_date: '2026-05-04',
-          start_time: '09:32:00', // 同じく 09:30 スロット
-          primary_staff_id: null,
-          course_id: 'course-1',
-          required_staff_count: 1,
-          type: 'regular',
-          status: 'planned',
-          source: 'allocate',
-          end_time: '10:00:00',
-        },
-      ],
-      patients: [
-        {
-          id: 'p-1',
-          name: '鈴木 一郎',
-          kana: null,
-          status: 'active',
-          address: '千葉県千葉市',
-        },
-        {
-          id: 'p-2',
-          name: '佐藤 次郎',
-          kana: null,
-          status: 'active',
-          address: '千葉県船橋市',
-        },
-      ],
-    });
-    render(<CourseDayTablePanel weekStart={monday(2026, 5, 4)} officeId={null} canEdit={true} />);
-    // 両 occupant の氏名/住所が独立要素として描画される
-    expect(screen.getByTestId('course-occupant-name-v-1')).toHaveTextContent('鈴木 一郎');
-    expect(screen.getByTestId('course-occupant-name-v-2')).toHaveTextContent('佐藤 次郎');
-    // Wave 23: 同一スロットに 2 件でも requires_multiple_staff=false なら occupant の「複数」バッジは出ない
-    expect(screen.getByTestId('course-occupant-multi-v-1').textContent).toBe('');
-    expect(screen.getByTestId('course-occupant-multi-v-2').textContent).toBe('');
-  });
-
-  it('13. patient.requires_multiple_staff=true の単独 visit で「複数」が出る (B-1)', () => {
-    setupHooks({
-      templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
-      courses: [
-        {
-          id: 'course-1',
-          iso_year: 2026,
-          iso_week: 19,
-          weekday: 0,
-          code: 'A',
-          office_id: 'office-honten',
-          assigned_staff_id: null,
-          course_status: 'course_fixed',
-          deleted_at: null,
-        },
-      ],
-      visits: [
-        {
-          id: 'v-1',
-          patient_id: 'p-1',
-          patient_name: '鈴木 一郎',
-          visit_date: '2026-05-04',
-          start_time: '09:30:00',
-          primary_staff_id: null,
-          course_id: 'course-1',
-          // Wave 18: 旧 visit.required_staff_count の値は表示には影響しない
-          required_staff_count: 1,
-          type: 'regular',
-          status: 'planned',
-          source: 'allocate',
-          end_time: '10:30:00',
-        },
-      ],
-      patients: [
-        {
-          id: 'p-1',
-          name: '鈴木 一郎',
-          kana: null,
-          status: 'active',
-          address: '千葉県千葉市',
-          requires_multiple_staff: true, // ← Wave 18 patient マスタ由来
-        },
-      ],
-    });
-    render(<CourseDayTablePanel weekStart={monday(2026, 5, 4)} officeId={null} canEdit={true} />);
-    expect(screen.getAllByText('複数').length).toBeGreaterThan(0);
-  });
-
-  it('13b. patient.requires_multiple_staff=false (旧: visit.required_staff_count=2 のみ) では「複数」が出ない', () => {
-    setupHooks({
-      templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
-      courses: [
-        {
-          id: 'course-1',
-          iso_year: 2026,
-          iso_week: 19,
-          weekday: 0,
-          code: 'A',
-          office_id: 'office-honten',
-          assigned_staff_id: null,
-          course_status: 'course_fixed',
-          deleted_at: null,
-        },
-      ],
-      visits: [
-        {
-          id: 'v-1',
-          patient_id: 'p-1',
-          patient_name: '鈴木 一郎',
-          visit_date: '2026-05-04',
-          start_time: '09:30:00',
-          primary_staff_id: null,
-          course_id: 'course-1',
-          required_staff_count: 2, // 旧フィールド: 表示には影響しない
-          type: 'regular',
-          status: 'planned',
-          source: 'allocate',
-          end_time: '10:30:00',
-        },
-      ],
-      patients: [
-        {
-          id: 'p-1',
-          name: '鈴木 一郎',
-          kana: null,
-          status: 'active',
-          address: '千葉県千葉市',
-          // requires_multiple_staff 指定なし = false 相当
-        },
-      ],
-    });
-    render(<CourseDayTablePanel weekStart={monday(2026, 5, 4)} officeId={null} canEdit={true} />);
-    // 「複数」が表示されないことを確認 (occupant-multi セルが空)
-    const multiCell = screen.getByTestId('course-occupant-multi-v-1');
-    expect(multiCell.textContent).toBe('');
-  });
-
-  it('14. patient.sex_restriction のみが「条件」列に表示される (Wave 23 是正)', () => {
-    setupHooks({
-      templates: [
-        {
-          id: 'tpl-A',
-          office_id: 'office-honten',
-          label: 'A',
-          ...baseTpl,
-          notes: '男性のみ', // template.notes は条件列に出ない
-        },
-      ],
-      courses: [
-        {
-          id: 'course-1',
-          iso_year: 2026,
-          iso_week: 19,
-          weekday: 0,
-          code: 'A',
-          office_id: 'office-honten',
-          assigned_staff_id: null,
-          course_status: 'course_fixed',
-          deleted_at: null,
-        },
-      ],
-      visits: [
-        {
-          id: 'v-1',
-          patient_id: 'p-1',
-          patient_name: '鈴木 花子',
-          visit_date: '2026-05-04',
-          start_time: '09:30:00',
-          primary_staff_id: null,
-          course_id: 'course-1',
-          required_staff_count: 1,
-          type: 'regular',
-          status: 'planned',
-          source: 'allocate',
-          end_time: '10:00:00',
-        },
-      ],
-      patients: [
-        {
-          id: 'p-1',
-          name: '鈴木 花子',
-          kana: null,
-          status: 'active',
-          address: '千葉県千葉市',
-          sex_restriction: 'female_only',
-        },
-      ],
-    });
-    render(<CourseDayTablePanel weekStart={monday(2026, 5, 4)} officeId={null} canEdit={true} />);
-    const cond = screen.getByTestId('course-occupant-condition-v-1');
-    // patient.sex_restriction が表示される
-    expect(cond.textContent).toContain('女性のみ');
-    // template.notes は条件列に出ない
-    expect(cond.textContent).not.toContain('男性のみ');
-    // セパレータ '/' は出ない (単一値のみ)
-    expect(cond.textContent).not.toContain('/');
-  });
-
-  it('14b. course_template.notes があっても条件列に出ない (Wave 23)', () => {
-    setupHooks({
-      templates: [
-        {
-          id: 'tpl-A',
-          office_id: 'office-honten',
-          label: 'A',
-          ...baseTpl,
-          notes: '男性のみ',
-        },
-      ],
-      courses: [
-        {
-          id: 'course-1',
-          iso_year: 2026,
-          iso_week: 19,
-          weekday: 0,
-          code: 'A',
-          office_id: 'office-honten',
-          assigned_staff_id: null,
-          course_status: 'course_fixed',
-          deleted_at: null,
-        },
-      ],
-      visits: [
-        {
-          id: 'v-1',
-          patient_id: 'p-1',
-          patient_name: '田中 太郎',
-          visit_date: '2026-05-04',
-          start_time: '09:30:00',
-          primary_staff_id: null,
-          course_id: 'course-1',
-          required_staff_count: 1,
-          type: 'regular',
-          status: 'planned',
-          source: 'allocate',
-          end_time: '10:00:00',
-        },
-      ],
-      patients: [
-        {
-          id: 'p-1',
-          name: '田中 太郎',
-          kana: null,
-          status: 'active',
-          address: '千葉県千葉市',
-          // sex_restriction なし → 条件列は空
-        },
-      ],
-    });
-    render(<CourseDayTablePanel weekStart={monday(2026, 5, 4)} officeId={null} canEdit={true} />);
-    const cond = screen.getByTestId('course-occupant-condition-v-1');
-    // template.notes='男性のみ' でも出ない
-    expect(cond.textContent).not.toContain('男性のみ');
-    expect(cond.textContent).toBe('');
-  });
-
-  it('14c. patient.sex_restriction=null なら条件列が空 (Wave 23)', () => {
-    setupHooks({
-      templates: [
-        {
-          id: 'tpl-A',
-          office_id: 'office-honten',
-          label: 'A',
-          ...baseTpl,
-          notes: null,
-        },
-      ],
-      courses: [
-        {
-          id: 'course-1',
-          iso_year: 2026,
-          iso_week: 19,
-          weekday: 0,
-          code: 'A',
-          office_id: 'office-honten',
-          assigned_staff_id: null,
-          course_status: 'course_fixed',
-          deleted_at: null,
-        },
-      ],
-      visits: [
-        {
-          id: 'v-1',
-          patient_id: 'p-1',
-          patient_name: '山田 花子',
-          visit_date: '2026-05-04',
-          start_time: '09:30:00',
-          primary_staff_id: null,
-          course_id: 'course-1',
-          required_staff_count: 1,
-          type: 'regular',
-          status: 'planned',
-          source: 'allocate',
-          end_time: '10:00:00',
-        },
-      ],
-      patients: [
-        {
-          id: 'p-1',
-          name: '山田 花子',
-          kana: null,
-          status: 'active',
-          address: '千葉県千葉市',
-          sex_restriction: null,
-        },
-      ],
-    });
-    render(<CourseDayTablePanel weekStart={monday(2026, 5, 4)} officeId={null} canEdit={true} />);
-    const cond = screen.getByTestId('course-occupant-condition-v-1');
-    expect(cond.textContent).toBe('');
-  });
-
-  it('15. 配置済み visit をプールにドロップすると DELETE /visits/{id} が呼ばれる (B-5)', async () => {
-    mockDeleteVisit.mockResolvedValue(undefined);
-    setupHooks({
-      templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
-      courses: [
-        {
-          id: 'course-1',
-          iso_year: 2026,
-          iso_week: 19,
-          weekday: 0,
-          code: 'A',
-          office_id: 'office-honten',
-          assigned_staff_id: null,
-          course_status: 'course_fixed',
-          deleted_at: null,
-        },
-      ],
-      visits: [
-        {
-          id: 'v-1',
-          patient_id: 'p-1',
-          patient_name: '田中 太郎',
-          visit_date: '2026-05-04',
-          start_time: '10:00:00',
-          primary_staff_id: null,
-          course_id: 'course-1',
-          required_staff_count: 1,
-          type: 'regular',
-          status: 'planned',
-          source: 'allocate',
-          end_time: '10:30:00',
-        },
-      ],
-      patients: [{ id: 'p-1', name: '田中 太郎', kana: null, status: 'active', address: '' }],
-    });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId="office-honten"
-        canEdit={true}
-      />,
-    );
-    expect(dndState.capturedHandlers.onDragEnd).toBeDefined();
-    await dndState.capturedHandlers.onDragEnd!({
-      active: { id: 'visit:v-1' },
-      over: { id: 'pool' },
-    });
-    expect(mockDeleteVisit).toHaveBeenCalledOnce();
-    // W18 Codex-fix 重大-2: useDeleteVisit は { id, cascadeFixedVisit } を受ける
-    // 形に変わった。プールへの戻しは cascade=false (固定枠は保持).
-    expect(mockDeleteVisit.mock.calls[0][0]).toEqual({
-      id: 'v-1',
-      cascadeFixedVisit: false,
-    });
-    // place-and-fix は呼ばれていない
-    expect(mockPlaceAndFix).not.toHaveBeenCalled();
-  });
-
-  it('16. 配置済み visit を別セルにドロップすると delete + place-and-fix が連続で呼ばれる (B-5)', async () => {
-    mockDeleteVisit.mockResolvedValue(undefined);
-    mockPlaceAndFix.mockResolvedValue({ visit: {}, fixed_visit: null });
-    setupHooks({
-      templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
-      courses: [
-        {
-          id: 'course-1',
-          iso_year: 2026,
-          iso_week: 19,
-          weekday: 0,
-          code: 'A',
-          office_id: 'office-honten',
-          assigned_staff_id: null,
-          course_status: 'course_fixed',
-          deleted_at: null,
-        },
-      ],
-      visits: [
-        {
-          id: 'v-1',
-          patient_id: 'p-1',
-          patient_name: '田中 太郎',
-          visit_date: '2026-05-04',
-          start_time: '10:00:00',
-          primary_staff_id: null,
-          course_id: 'course-1',
-          required_staff_count: 1,
-          type: 'regular',
-          status: 'planned',
-          source: 'allocate',
-          end_time: '10:30:00',
-        },
-      ],
-      patients: [
-        {
-          id: 'p-1',
-          name: '田中 太郎',
-          kana: null,
-          status: 'active',
-          address: '',
-          weekly_pattern: { service_minutes: 30 },
-        },
-      ],
-    });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId="office-honten"
-        canEdit={true}
-      />,
-    );
-    await dndState.capturedHandlers.onDragEnd!({
-      active: { id: 'visit:v-1' },
-      over: { id: 'course-day-cell:1:tpl-A:11:00' }, // 火曜 11:00 へ移動
-    });
-    expect(mockDeleteVisit).toHaveBeenCalledOnce();
-    // W18 Codex-fix 重大-2: B-5 配置移動は cascade=true で旧曜日の固定枠も削除
-    expect(mockDeleteVisit.mock.calls[0][0]).toEqual({
-      id: 'v-1',
-      cascadeFixedVisit: true,
-    });
-    expect(mockPlaceAndFix).toHaveBeenCalledOnce();
-    const placeArg = mockPlaceAndFix.mock.calls[0][0];
-    expect(placeArg.patient_id).toBe('p-1');
-    expect(placeArg.course_template_id).toBe('tpl-A');
-    expect(placeArg.weekday).toBe(1);
-    expect(placeArg.start_time).toBe('11:00');
-    expect(placeArg.duration_min).toBe(30);
-  });
-
-  it('17. 同一セル (同 weekday + 同 slot) へドロップは noop (B-5)', async () => {
-    mockDeleteVisit.mockResolvedValue(undefined);
-    mockPlaceAndFix.mockResolvedValue({ visit: {}, fixed_visit: null });
-    setupHooks({
-      templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
-      courses: [
-        {
-          id: 'course-1',
-          iso_year: 2026,
-          iso_week: 19,
-          weekday: 0,
-          code: 'A',
-          office_id: 'office-honten',
-          assigned_staff_id: null,
-          course_status: 'course_fixed',
-          deleted_at: null,
-        },
-      ],
-      visits: [
-        {
-          id: 'v-1',
-          patient_id: 'p-1',
-          patient_name: '田中 太郎',
-          visit_date: '2026-05-04', // Mon (weekday=0)
-          start_time: '10:00:00',
-          primary_staff_id: null,
-          course_id: 'course-1',
-          required_staff_count: 1,
-          type: 'regular',
-          status: 'planned',
-          source: 'allocate',
-          end_time: '10:30:00',
-        },
-      ],
-      patients: [{ id: 'p-1', name: '田中 太郎', kana: null, status: 'active', address: '' }],
-    });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId="office-honten"
-        canEdit={true}
-      />,
-    );
-    await dndState.capturedHandlers.onDragEnd!({
-      active: { id: 'visit:v-1' },
-      over: { id: 'course-day-cell:0:tpl-A:10:00' }, // 同じ Mon 10:00
-    });
-    expect(mockDeleteVisit).not.toHaveBeenCalled();
-    expect(mockPlaceAndFix).not.toHaveBeenCalled();
-  });
-
-  it('18. canEdit=false で visit ドラッグしても何も呼ばれず警告 (B-5)', async () => {
-    setupHooks({
-      templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
-      courses: [
-        {
-          id: 'course-1',
-          iso_year: 2026,
-          iso_week: 19,
-          weekday: 0,
-          code: 'A',
-          office_id: 'office-honten',
-          assigned_staff_id: null,
-          course_status: 'course_fixed',
-          deleted_at: null,
-        },
-      ],
-      visits: [
-        {
-          id: 'v-1',
-          patient_id: 'p-1',
-          patient_name: '田中',
-          visit_date: '2026-05-04',
-          start_time: '10:00:00',
-          primary_staff_id: null,
-          course_id: 'course-1',
-          required_staff_count: 1,
-          type: 'regular',
-          status: 'planned',
-          source: 'allocate',
-          end_time: '10:30:00',
-        },
-      ],
-      patients: [{ id: 'p-1', name: '田中', kana: null, status: 'active', address: '' }],
-    });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId="office-honten"
-        canEdit={false}
-      />,
-    );
-    await dndState.capturedHandlers.onDragEnd!({
-      active: { id: 'visit:v-1' },
-      over: { id: 'pool' },
-    });
-    expect(mockDeleteVisit).not.toHaveBeenCalled();
-    expect(mockPlaceAndFix).not.toHaveBeenCalled();
-    expect(mockToast.warning).toHaveBeenCalledWith('編集権限がありません');
-  });
-
   it('19. 「週」タブが描画され、選択すると CourseWeekOverview ペインに切替 (B-6)', () => {
     setupHooks({
       templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
     });
-    render(<CourseDayTablePanel weekStart={monday(2026, 5, 4)} officeId={null} canEdit={true} />);
+    renderPanel();
     // 「週」タブが存在
     const weekTab = screen.getByTestId('course-day-tab-week');
     expect(weekTab).toBeInTheDocument();
-    // 初期状態 (月曜): day-list が表示
+    // 月曜タブを選ぶと曜日タブパネル (course-day-table-list) が表示される
+    fireEvent.click(screen.getByTestId('course-day-tab-0'));
     expect(screen.getByTestId('course-day-table-list')).toBeInTheDocument();
     // 「週」タブをクリック → week-overview-panel が表示
     fireEvent.click(weekTab);
@@ -1124,7 +477,8 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
     expect(screen.queryByTestId('course-day-table-list')).not.toBeInTheDocument();
   });
 
-  it('11. 担当 dropdown を変更すると useUpdateCourse が assigned_staff_id 付きで呼ばれる', async () => {
+  // G1: 担当スタッフ変更 select は列ヘッダ (tl-staff-select-{colKey}) へ移設済。
+  it('11. 担当 dropdown (タイムライン列ヘッダ) を変更すると useUpdateCourse が assigned_staff_id 付きで呼ばれる', async () => {
     mockUpdateCourse.mockResolvedValue({});
     setupHooks({
       offices: [{ id: 'office-honten', name: '本店' }],
@@ -1154,14 +508,18 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
         },
       ],
     });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId="office-honten"
-        canEdit={true}
-      />,
+      <QueryClientProvider client={qc}>
+        <CourseDayTablePanel
+          weekStart={monday(2026, 5, 4)}
+          officeId="office-honten"
+          canEdit={true}
+        />
+      </QueryClientProvider>,
     );
-    const select = screen.getByTestId('course-staff-select-0-tpl-A') as HTMLSelectElement;
+    fireEvent.click(screen.getByTestId('course-day-tab-0'));
+    const select = screen.getByTestId('tl-staff-select-tpl-A:0') as HTMLSelectElement;
     fireEvent.change(select, { target: { value: 'staff-1' } });
     await Promise.resolve();
     expect(mockUpdateCourse).toHaveBeenCalledOnce();
@@ -1174,13 +532,13 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
 
   it('W19-1. 2 ペイン構造でレンダーされる (course-day-two-pane が存在)', () => {
     setupHooks({ templates: [] });
-    render(<CourseDayTablePanel weekStart={monday(2026, 5, 4)} officeId={null} canEdit={true} />);
+    renderPanel();
     expect(screen.getByTestId('course-day-two-pane')).toBeInTheDocument();
   });
 
   it('W19-2. プールが右ペイン (course-day-pool-pane) に表示される', () => {
     setupHooks({ templates: [] });
-    render(<CourseDayTablePanel weekStart={monday(2026, 5, 4)} officeId={null} canEdit={true} />);
+    renderPanel();
     const poolPane = screen.getByTestId('course-day-pool-pane');
     expect(poolPane).toBeInTheDocument();
     // プールコンポーネントが右ペイン内に含まれる

@@ -170,10 +170,12 @@ describe('SchedulingSettingsPage (Phase G-88 Step4)', () => {
     expect(toast.info).toHaveBeenCalled();
   });
 
-  it('4. staff ロールは /dashboard へリダイレクトされる', () => {
+  // RB (PO決定 2026-07-08 / 8749c6a): 全ロール同一表示。staff もページを閲覧でき、
+  // 保存ボタン・入力だけが権限どおり無効になる (リダイレクトしない)。
+  it('4. staff ロールもページを閲覧できる (リダイレクトしない・保存は無効)', () => {
     setup({ role: 'staff' });
     render(<SchedulingSettingsPage />);
-    expect(replaceMock).toHaveBeenCalledWith('/dashboard');
+    expect(replaceMock).not.toHaveBeenCalled();
   });
 
   it('5. 背景リフェッチ (data 参照変化) で未保存の draft 編集が消えない', () => {

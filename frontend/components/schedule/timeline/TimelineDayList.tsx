@@ -24,6 +24,7 @@ import { trimSeconds } from '@/components/schedule/v2/_autoScheduleUtils';
 import { formatDuration } from '@/lib/format/duration';
 import { fmtHM, type FreeGap } from '@/lib/scheduling/freeGaps';
 import { genderPalette } from '@/lib/scheduling/timeline';
+import { partnerInfo } from './TimelineDayBoard';
 import { cn } from '@/lib/utils';
 
 export interface TimelineDayListProps {
@@ -93,6 +94,8 @@ function VisitRow({
   // 条件ビット (時間条件 / 性別制限)。ピンは PushPin アイコンで別描画 (🔒→ピン統一)。
   // 同住所はペア囲みで表現するのでここでは出さない。
   const condBits = [cond ?? '', restrictLabel ?? ''].filter(Boolean).join(' ');
+  // T-6撤去: 旧テーブルの ①/② と「相方: ...」注記を移設 (相方プール残存は警告色)。
+  const partner = partnerInfo(v);
 
   return (
     <div
@@ -143,6 +146,19 @@ function VisitRow({
         ) : (
           <span className="truncate text-text-primary">{v.patient_name}</span>
         )}
+        {/* T-6撤去: ①/② = 2名体制の slot。相方未配置なら警告色 (旧テーブルから移設)。 */}
+        {partner.slotMark ? (
+          <span
+            data-testid={`tdl-slot-mark-${v.key}`}
+            aria-label={`2名体制 ${partner.slotMark}`}
+            className={cn(
+              'shrink-0 text-[11px] leading-none',
+              partner.warn ? 'text-error' : 'text-text-secondary',
+            )}
+          >
+            {partner.slotMark}
+          </span>
+        ) : null}
         {onTogglePin ? (
           <span className="shrink-0">
             <PinToggleButton visit={v} onTogglePin={onTogglePin} />
@@ -174,12 +190,25 @@ function VisitRow({
             ⚠ {warn.message ?? '移動警告'}
           </span>
         ) : null}
+        {/* T-6撤去: 相方の現在地 (旧テーブルの注記)。プール残存 = 片側未配置 → 警告色。 */}
+        {partner.text ? (
+          <span
+            data-testid={`tdl-partner-note-${v.key}`}
+            title={partner.tooltip ?? undefined}
+            className={cn(
+              'min-w-0 truncate rounded px-1 text-[10px]',
+              partner.warn ? 'bg-error-bg font-bold text-error' : 'text-text-muted',
+            )}
+          >
+            👥 {partner.text}
+          </span>
+        ) : null}
         {v.area_label ? (
           <span className="shrink-0 rounded bg-brand-primary/10 px-1 text-[10px] text-brand-primary">
             {v.area_label}
           </span>
         ) : null}
-        {!warn && !v.area_label ? '—' : null}
+        {!warn && !partner.text && !v.area_label ? '—' : null}
       </span>
 
       <span className="min-w-0 truncate text-[11px] text-text-muted">

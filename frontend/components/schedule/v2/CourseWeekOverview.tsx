@@ -28,7 +28,7 @@ import type { FreeGap } from '@/lib/scheduling/freeGaps';
 import { genderPalette } from '@/lib/scheduling/timeline';
 import { PushPin, PushPinOff } from '@/components/ui/push-pin';
 import { haversineKm } from '../WeekdayScheduleCard';
-import { formatEventLabelLines, getStaffEventsForWeekday } from './CourseDayTable';
+import { formatEventLabelLines, getStaffEventsForWeekday } from './courseGrid';
 import { PinScopeMenu, type PinScope } from './PinScopeMenu';
 
 const WEEKDAYS = [0, 1, 2, 3, 4, 5] as const;

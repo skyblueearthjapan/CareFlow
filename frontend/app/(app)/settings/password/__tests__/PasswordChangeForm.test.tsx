@@ -18,12 +18,15 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 // next-auth.useSession を mock (Form 内では useChangePassword 経由でしか触らないが
-// 念のため tokens を握れるようにしておく)
+// 念のため tokens を握れるようにしておく)。
+// signOut も必須: fetcher は「refresh 後の再試行でも 401」のとき signOut() を呼ぶため、
+// 未定義だと TypeError になり ApiError(401) がフォームまで届かない。
 vi.mock('next-auth/react', () => ({
   useSession: vi.fn(() => ({
     data: { accessToken: 'access-tok', refreshToken: 'refresh-tok' },
     status: 'authenticated',
   })),
+  signOut: vi.fn(),
 }));
 
 // sonner の toast は今回 form 側では使わないが、page 側からの呼び出し互換のため

@@ -1,6 +1,12 @@
 /**
  * CourseDayTablePanel — Wave 37 Phase 3-C テスト.
  *
+ * Phase 2 (日テーブル撤去): プールカードのドロップ先は `course-day-cell:` から
+ *   タイムライン列 `tl-col:{templateId}:{weekday}` + Y オフセットへ移行した
+ *   (`dropPatientOnColumn` ヘルパー参照). 配置フロー本体は不変。
+ *   テーブル固有だった P3C-5 / P3C-6 / P3C-8 / P3C-9 / M1 / M3 は削除 (末尾の
+ *   コメントに根拠を記載)。
+ *
  * カバーするシナリオ:
  *  P3C-1. 通常患者 (requires_multiple_staff=false) の D&D → staff_count=1 +
  *         course_template_id (旧形式単数) で place-and-fix 呼出 (regression)
@@ -9,16 +15,15 @@
  *  P3C-3. ダイアログで相方を確定 → staff_count=2 + course_template_ids: [a, b]
  *         配列形式で place-and-fix 呼出
  *  P3C-4. 同 office に他 template が無い → ダイアログにエラー文が出て確定不可
- *  P3C-5. visit_group_id 持ちの visit を D&D 移動しようとする → toast 警告で阻止
- *  P3C-6. visit_group_id なしの通常 visit の移動は既存挙動維持 (regression)
  *  P3C-7. assignedSlotsByPatient マップ (data 属性 シリアライズ) が正しく構築:
  *         - visit_group_id 持ち (2 件) → slot 0/1 両方埋まり
  *         - 単独 visit → slot 0 のみ
- *  P3C-8. visit_group_id 持ちの occupant に ①/② バッジが描画される
- *  P3C-9. requires_multiple_staff=true で partner 不在 → 「複数 ① のみ」表示
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, act } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+
+import { timeToY } from '@/lib/scheduling/timeline';
 
 // ─── モック (CourseDayTablePanel.test.tsx と同じ構成) ────────────────────────
 
@@ -70,25 +75,28 @@ vi.mock('next-auth/react', () => ({
   useSession: () => ({ data: null, status: 'unauthenticated' }),
 }));
 
-vi.mock('lucide-react', () => ({
-  ChevronLeft: () => <span />,
-  ChevronRight: () => <span />,
-  Inbox: () => <span />,
-  AlertTriangle: () => <span />,
-  Info: () => <span />,
-  User: () => <span />,
-  Users: () => <span />,
-  X: () => <span />,
-  Plus: () => <span />,
-  ChevronDown: () => <span />,
-  Star: () => <span />,
-  Loader2: () => <span data-testid="loader" />,
-  RefreshCw: () => <span data-testid="refresh-icon" />,
-  UserCheck: () => <span data-testid="user-check-icon" />,
-  Pin: () => <span data-testid="pin-icon" />,
-  ArrowRight: () => <span />,
-  CheckCircle2: () => <span />,
-}));
+vi.mock('lucide-react', () => {
+  const named: Record<string, () => React.ReactElement> = {
+    Loader2: () => <span data-testid="loader" />,
+    RefreshCw: () => <span data-testid="refresh-icon" />,
+    UserCheck: () => <span data-testid="user-check-icon" />,
+    Pin: () => <span data-testid="pin-icon" />,
+    Undo2: () => <span data-testid="undo-icon" />,
+    Redo2: () => <span data-testid="redo-icon" />,
+  };
+  return new Proxy(named, {
+    get: (target, prop) => {
+      if (prop === '__esModule') return true;
+      // 'then' 等に関数を返すとモジュールが thenable 扱いされ await import が
+      // 永久に解決しない。アイコン名 (PascalCase) だけ自動生成する。
+      if (typeof prop !== 'string' || !/^[A-Z]/.test(prop)) return undefined;
+      // 毎回新しい関数を返すと React がコンポーネント型の変更とみなして
+      // 再マウントを繰り返すため、初回生成をキャッシュして識別性を安定させる。
+      if (!(prop in target)) target[prop] = () => <span />;
+      return target[prop];
+    },
+  });
+});
 
 vi.mock('@/components/ui/card', () => ({
   Card: ({
@@ -208,6 +216,8 @@ vi.mock('@/lib/queries/offices', () => ({
 }));
 vi.mock('@/lib/queries/patients', () => ({
   usePatients: (...args: unknown[]) => mockPatients(...args),
+  // CreatePatientDialog (RegisterPatientButton 経由) が使用. noop で十分.
+  useCreatePatient: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 vi.mock('@/lib/queries/staff', () => ({
   useStaffList: (...args: unknown[]) => mockStaffList(...args),
@@ -229,6 +239,8 @@ vi.mock('@/lib/queries/generate_week', () => ({
 }));
 vi.mock('@/lib/queries/assign_staff_only', () => ({
   useAssignStaffOnly: () => ({ mutateAsync: mockAssignStaffOnly, isPending: false }),
+  // Phase G-91: panel が useApplyStaffReview を直接呼ぶため noop mock が必要.
+  useApplyStaffReview: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 // Phase G-21 T4: useTogglePfvPin は内部で useMutation を呼ぶため必須.
 vi.mock('@/lib/queries/g21', () => ({
@@ -275,6 +287,42 @@ vi.mock('@/lib/queries/autoScheduleV2', () => ({
     error: null,
     isSuccess: false,
   }),
+  // UnassignAllStaffButton (toolbar) が使用. noop で十分.
+  useUnassignAllStaffMutation: () => ({
+    mutateAsync: vi.fn(),
+    reset: vi.fn(),
+    isPending: false,
+    error: null,
+    isSuccess: false,
+  }),
+}));
+vi.mock('@/lib/queries/opLog', () => ({
+  useOpLogState: () => ({ data: undefined, isLoading: false }),
+  useUndoOpLog: () => ({
+    mutateAsync: vi.fn().mockResolvedValue(undefined),
+    isPending: false,
+  }),
+  useRedoOpLog: () => ({
+    mutateAsync: vi.fn().mockResolvedValue(undefined),
+    isPending: false,
+  }),
+  useInvalidateOpLog: () => vi.fn(),
+  OP_LOG_STATE_KEY: 'op-log-state',
+}));
+
+vi.mock('@/lib/queries/schedulingSettings', () => ({
+  useSchedulingSettings: () => ({ data: undefined, isLoading: false }),
+  useUpdateSchedulingSettings: () => ({ mutateAsync: vi.fn(), isPending: false }),
+}));
+
+vi.mock('@/lib/queries/visitMoveWeekOnly', () => ({
+  useVisitMoveWeekOnly: () => ({ mutateAsync: vi.fn(), isPending: false }),
+}));
+
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn(), refresh: vi.fn(), back: vi.fn() }),
+  usePathname: () => '/schedule',
+  useSearchParams: () => new URLSearchParams(),
 }));
 // Wave 39: staff-events モック (W39 で useUpdateEventForDrag が追加されたため必須).
 const mockUpdateEventDrag = vi.fn();
@@ -373,6 +421,32 @@ vi.mock('@/lib/api/patientSync', () => ({
   }),
 }));
 
+/** 全テスト共通: QueryClientProvider 配下で panel を描画する. */
+function renderPanel() {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={qc}>
+      <CourseDayTablePanel weekStart={monday(2026, 5, 4)} officeId="office-honten" canEdit={true} />
+    </QueryClientProvider>,
+  );
+}
+
+/**
+ * プールカード → タイムライン列 (`tl-col:{templateId}:{weekday}`) のドロップ引数を作る.
+ * Phase 2 で日テーブル (`course-day-cell:` droppable) を撤去したため、ドロップ先の
+ * 時刻は「列 rect 上端からの Y オフセット」で表現する (snapYOffsetToMinutes の逆算)。
+ */
+function dropPatientOnColumn(patientId: string, templateId: string, weekday: number, hm: string) {
+  const overTop = 10;
+  return {
+    active: {
+      id: `pool-patient:${patientId}`,
+      rect: { current: { translated: { top: overTop + (timeToY(hm) ?? 0) } } },
+    },
+    over: { id: `tl-col:${templateId}:${weekday}`, rect: { top: overTop } },
+  };
+}
+
 describe('CourseDayTablePanel — W37 Phase 3-C', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -402,16 +476,9 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
         },
       ],
     });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId="office-honten"
-        canEdit={true}
-      />,
-    );
+    renderPanel();
     await dndState.capturedHandlers.onDragEnd!({
-      active: { id: `pool-patient:${PATIENT_UUID}` },
-      over: { id: 'course-day-cell:0:tpl-A:09:30' },
+      ...dropPatientOnColumn(PATIENT_UUID, 'tpl-A', 0, '09:30'),
     });
     expect(mockPlaceAndFix).toHaveBeenCalledOnce();
     const arg = mockPlaceAndFix.mock.calls[0][0];
@@ -440,17 +507,10 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
         },
       ],
     });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId="office-honten"
-        canEdit={true}
-      />,
-    );
+    renderPanel();
     await act(async () => {
       await dndState.capturedHandlers.onDragEnd!({
-        active: { id: `pool-patient:${PATIENT_UUID}` },
-        over: { id: 'course-day-cell:0:tpl-A:10:00' },
+        ...dropPatientOnColumn(PATIENT_UUID, 'tpl-A', 0, '10:00'),
       });
     });
     // ダイアログが表示される
@@ -488,17 +548,10 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
         },
       ],
     });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId="office-honten"
-        canEdit={true}
-      />,
-    );
+    renderPanel();
     await act(async () => {
       await dndState.capturedHandlers.onDragEnd!({
-        active: { id: `pool-patient:${PATIENT_UUID}` },
-        over: { id: 'course-day-cell:0:tpl-A:10:00' },
+        ...dropPatientOnColumn(PATIENT_UUID, 'tpl-A', 0, '10:00'),
       });
     });
     expect(screen.getByTestId('partner-course-dialog')).toBeInTheDocument();
@@ -521,7 +574,9 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
     expect(arg.weekday).toBe(0);
     expect(arg.start_time).toBe('10:00');
     expect(arg.duration_min).toBe(90);
-    expect(arg.fix_pattern).toBe(true);
+    // Wave U-2 D-2 既定B: 「この週だけ配置」なので型 (固定枠) は作らない。
+    // 昇格は toast の導線 or 週→型同期 (bulk-sync) で行う。
+    expect(arg.fix_pattern).toBe(false);
   });
 
   it('P3C-4. 同 office に他 template が無い → ダイアログにエラー文 + 確定不可', async () => {
@@ -538,17 +593,10 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
         },
       ],
     });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId="office-honten"
-        canEdit={true}
-      />,
-    );
+    renderPanel();
     await act(async () => {
       await dndState.capturedHandlers.onDragEnd!({
-        active: { id: `pool-patient:${PATIENT_UUID}` },
-        over: { id: 'course-day-cell:0:tpl-A:10:00' },
+        ...dropPatientOnColumn(PATIENT_UUID, 'tpl-A', 0, '10:00'),
       });
     });
     expect(screen.getByTestId('partner-course-dialog')).toBeInTheDocument();
@@ -560,137 +608,11 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
     expect(confirmBtn).toBeDisabled();
   });
 
-  it('P3C-5. visit_group_id 持ちの visit を D&D 移動しようとする → toast 警告で阻止', async () => {
-    setupHooks({
-      templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
-      courses: [
-        {
-          id: 'course-1',
-          iso_year: 2026,
-          iso_week: 19,
-          weekday: 0,
-          code: 'A',
-          office_id: 'office-honten',
-          assigned_staff_id: null,
-          course_status: 'course_fixed',
-          deleted_at: null,
-        },
-      ],
-      visits: [
-        {
-          id: 'v-pair-1',
-          patient_id: PATIENT_UUID,
-          patient_name: '田中 太郎',
-          visit_date: '2026-05-04',
-          start_time: '10:00:00',
-          primary_staff_id: null,
-          course_id: 'course-1',
-          required_staff_count: 2,
-          visit_group_id: 'grp-1',
-          type: 'regular',
-          status: 'planned',
-          source: 'allocate',
-          end_time: '11:00:00',
-        },
-      ],
-      patients: [
-        {
-          id: PATIENT_UUID,
-          name: '田中 太郎',
-          kana: null,
-          status: 'active',
-          requires_multiple_staff: true,
-        },
-      ],
-    });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId="office-honten"
-        canEdit={true}
-      />,
-    );
-    await dndState.capturedHandlers.onDragEnd!({
-      active: { id: 'visit:v-pair-1' },
-      over: { id: 'course-day-cell:1:tpl-A:11:00' },
-    });
-    // toast.warning が呼ばれて止まる
-    expect(mockToast.warning).toHaveBeenCalled();
-    expect(mockToast.warning.mock.calls[0][0]).toMatch(/2 名体制/);
-    // delete も place-and-fix も呼ばれない
-    expect(mockDeleteVisit).not.toHaveBeenCalled();
-    expect(mockPlaceAndFix).not.toHaveBeenCalled();
-  });
-
-  it('P3C-6. visit_group_id なしの通常 visit の移動 → 既存挙動 (delete + place-and-fix)', async () => {
-    mockDeleteVisit.mockResolvedValue(undefined);
-    mockPlaceAndFix.mockResolvedValue({
-      visit: {},
-      fixed_visit: null,
-      visits: [],
-      fixed_visits: [],
-      visit_group_id: null,
-    });
-    setupHooks({
-      templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
-      courses: [
-        {
-          id: 'course-1',
-          iso_year: 2026,
-          iso_week: 19,
-          weekday: 0,
-          code: 'A',
-          office_id: 'office-honten',
-          assigned_staff_id: null,
-          course_status: 'course_fixed',
-          deleted_at: null,
-        },
-      ],
-      visits: [
-        {
-          id: 'v-1',
-          patient_id: PATIENT_UUID,
-          patient_name: '田中 太郎',
-          visit_date: '2026-05-04',
-          start_time: '10:00:00',
-          primary_staff_id: null,
-          course_id: 'course-1',
-          required_staff_count: 1,
-          visit_group_id: null,
-          type: 'regular',
-          status: 'planned',
-          source: 'allocate',
-          end_time: '10:30:00',
-        },
-      ],
-      patients: [
-        {
-          id: PATIENT_UUID,
-          name: '田中 太郎',
-          kana: null,
-          status: 'active',
-          requires_multiple_staff: false,
-          weekly_pattern: { service_minutes: 30 },
-        },
-      ],
-    });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId="office-honten"
-        canEdit={true}
-      />,
-    );
-    await dndState.capturedHandlers.onDragEnd!({
-      active: { id: 'visit:v-1' },
-      over: { id: 'course-day-cell:1:tpl-A:11:00' },
-    });
-    expect(mockDeleteVisit).toHaveBeenCalledOnce();
-    expect(mockPlaceAndFix).toHaveBeenCalledOnce();
-    const placeArg = mockPlaceAndFix.mock.calls[0][0];
-    expect(placeArg.staff_count).toBe(1);
-    expect(placeArg.course_template_id).toBe('tpl-A');
-  });
+  // Phase 2 (日テーブル撤去) で削除したテスト:
+  //   P3C-5 / P3C-6 : `visit:` → `course-day-cell:` のテーブル間移動 (D&D 移動 /
+  //     visit_group_id ガード)。production から当該 id 名前空間ごと消滅した。
+  //     ペア visit のプール戻しガードは CourseDayTablePanel.test.tsx の G4-1/G4-2
+  //     (tl-visit / tl-pair → プール) が担保する。
 
   it('P3C-7. assignedSlotsByPatient: visit_group_id 持ちペア → slot 0/1 両方埋まり、単独 visit → slot 0 のみ', () => {
     setupHooks({
@@ -786,13 +708,7 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
         },
       ],
     });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId="office-honten"
-        canEdit={true}
-      />,
-    );
+    renderPanel();
     const pane = screen.getByTestId('course-day-pool-pane');
     const serialized = pane.getAttribute('data-assigned-slots') ?? '';
     // 田中 (PATIENT_UUID) → slot 0 と 1
@@ -803,316 +719,9 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
     expect(serialized).not.toContain(`${PATIENT_UUID_2}:1`);
   });
 
-  it('P3C-8. visit_group_id 持ちの occupant に ①/② バッジが描画される', () => {
-    setupHooks({
-      templates: [
-        { id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl },
-        { id: 'tpl-B', office_id: 'office-honten', label: 'B', ...baseTpl },
-      ],
-      courses: [
-        {
-          id: 'course-A',
-          iso_year: 2026,
-          iso_week: 19,
-          weekday: 0,
-          code: 'A',
-          office_id: 'office-honten',
-          assigned_staff_id: null,
-          course_status: 'course_fixed',
-          deleted_at: null,
-        },
-        {
-          id: 'course-B',
-          iso_year: 2026,
-          iso_week: 19,
-          weekday: 0,
-          code: 'B',
-          office_id: 'office-honten',
-          assigned_staff_id: null,
-          course_status: 'course_fixed',
-          deleted_at: null,
-        },
-      ],
-      visits: [
-        {
-          // id 文字列の昇順で 1 番目 → slot 1 (①)
-          id: 'aaaa-pair',
-          patient_id: PATIENT_UUID,
-          patient_name: '田中 太郎',
-          visit_date: '2026-05-04',
-          start_time: '10:00:00',
-          primary_staff_id: null,
-          course_id: 'course-A',
-          required_staff_count: 2,
-          visit_group_id: 'grp-1',
-          type: 'regular',
-          status: 'planned',
-          source: 'allocate',
-          end_time: '11:00:00',
-        },
-        {
-          // id 文字列の昇順で 2 番目 → slot 2 (②)
-          id: 'zzzz-pair',
-          patient_id: PATIENT_UUID,
-          patient_name: '田中 太郎',
-          visit_date: '2026-05-04',
-          start_time: '10:00:00',
-          primary_staff_id: null,
-          course_id: 'course-B',
-          required_staff_count: 2,
-          visit_group_id: 'grp-1',
-          type: 'regular',
-          status: 'planned',
-          source: 'allocate',
-          end_time: '11:00:00',
-        },
-      ],
-      patients: [
-        {
-          id: PATIENT_UUID,
-          name: '田中 太郎',
-          status: 'active',
-          requires_multiple_staff: true,
-        },
-      ],
-    });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId="office-honten"
-        canEdit={true}
-      />,
-    );
-    const badge1 = screen.getByTestId('course-occupant-group-badge-aaaa-pair');
-    const badge2 = screen.getByTestId('course-occupant-group-badge-zzzz-pair');
-    expect(badge1.textContent).toBe('①');
-    expect(badge2.textContent).toBe('②');
-    // CareFlow #UX-2026W21: 「複数」列はアイコン (👥) 表記 + title/aria-label に ①/② を持つ.
-    const multi1 = screen.getByTestId('course-occupant-multi-aaaa-pair');
-    expect(multi1.textContent).toBe('👥');
-    expect(multi1.getAttribute('data-multi-staff')).toBe('true');
-    expect(multi1.getAttribute('title')).toContain('①');
-    const multi2 = screen.getByTestId('course-occupant-multi-zzzz-pair');
-    expect(multi2.textContent).toBe('👥');
-    expect(multi2.getAttribute('data-multi-staff')).toBe('true');
-    expect(multi2.getAttribute('title')).toContain('②');
-  });
-
-  it('P3C-9. requires_multiple_staff=true で partner 不在 (group_id なし) → 「複数 ① のみ」 + 警告色', () => {
-    setupHooks({
-      templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
-      courses: [
-        {
-          id: 'course-A',
-          iso_year: 2026,
-          iso_week: 19,
-          weekday: 0,
-          code: 'A',
-          office_id: 'office-honten',
-          assigned_staff_id: null,
-          course_status: 'course_fixed',
-          deleted_at: null,
-        },
-      ],
-      visits: [
-        {
-          id: 'v-orphan',
-          patient_id: PATIENT_UUID,
-          patient_name: '山田 花子',
-          visit_date: '2026-05-04',
-          start_time: '10:00:00',
-          primary_staff_id: null,
-          course_id: 'course-A',
-          required_staff_count: 1, // BE が 1 で書いた未完成の片割れ
-          visit_group_id: null,
-          type: 'regular',
-          status: 'planned',
-          source: 'allocate',
-          end_time: '11:00:00',
-        },
-      ],
-      patients: [
-        {
-          id: PATIENT_UUID,
-          name: '山田 花子',
-          status: 'active',
-          requires_multiple_staff: true, // 患者マスタは 2 名体制
-        },
-      ],
-    });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId="office-honten"
-        canEdit={true}
-      />,
-    );
-    const multiCell = screen.getByTestId('course-occupant-multi-v-orphan');
-    // CareFlow #UX-2026W21: 「複数」列は印 (👥) + data-attribute + title 表記.
-    expect(multiCell.textContent).toContain('👥');
-    expect(multiCell.getAttribute('data-multi-staff')).toBe('true');
-    expect(multiCell.getAttribute('data-partner-missing')).toBe('true');
-    expect(multiCell.getAttribute('title')).toContain('複数 ① のみ');
-    // 警告色クラス (text-warning) が付与される
-    expect(multiCell.className).toContain('text-warning');
-  });
-
-  // ─── W37 hotfix M-3: slot 0/1 順は course.code 順で決定論 ───────────
-  it('M3. visit_group 内 slot 0/1 は course.code 順 (A→①, B→②) — id 文字列順とは独立', () => {
-    setupHooks({
-      templates: [
-        { id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl },
-        { id: 'tpl-B', office_id: 'office-honten', label: 'B', ...baseTpl },
-      ],
-      courses: [
-        {
-          id: 'course-A',
-          iso_year: 2026,
-          iso_week: 19,
-          weekday: 0,
-          code: 'A',
-          office_id: 'office-honten',
-          assigned_staff_id: null,
-          course_status: 'course_fixed',
-          deleted_at: null,
-        },
-        {
-          id: 'course-B',
-          iso_year: 2026,
-          iso_week: 19,
-          weekday: 0,
-          code: 'B',
-          office_id: 'office-honten',
-          assigned_staff_id: null,
-          course_status: 'course_fixed',
-          deleted_at: null,
-        },
-      ],
-      visits: [
-        // 意図的に id 順 ≠ course.code 順 のケース.
-        // id "aaaa-pair" を course-B (code=B) に, "zzzz-pair" を course-A (code=A) に.
-        // id-sort なら aaaa→①, zzzz→② だが、code-sort では zzzz(A)→①, aaaa(B)→② になる.
-        {
-          id: 'aaaa-pair',
-          patient_id: PATIENT_UUID,
-          patient_name: '田中 太郎',
-          visit_date: '2026-05-04',
-          start_time: '10:00:00',
-          primary_staff_id: null,
-          course_id: 'course-B',
-          required_staff_count: 2,
-          visit_group_id: 'grp-1',
-          type: 'regular',
-          status: 'planned',
-          source: 'allocate',
-          end_time: '11:00:00',
-        },
-        {
-          id: 'zzzz-pair',
-          patient_id: PATIENT_UUID,
-          patient_name: '田中 太郎',
-          visit_date: '2026-05-04',
-          start_time: '10:00:00',
-          primary_staff_id: null,
-          course_id: 'course-A',
-          required_staff_count: 2,
-          visit_group_id: 'grp-1',
-          type: 'regular',
-          status: 'planned',
-          source: 'allocate',
-          end_time: '11:00:00',
-        },
-      ],
-      patients: [
-        {
-          id: PATIENT_UUID,
-          name: '田中 太郎',
-          status: 'active',
-          requires_multiple_staff: true,
-        },
-      ],
-    });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId="office-honten"
-        canEdit={true}
-      />,
-    );
-    // course.code 順なので zzzz-pair (course A) → ①, aaaa-pair (course B) → ②
-    const badgeZ = screen.getByTestId('course-occupant-group-badge-zzzz-pair');
-    expect(badgeZ.textContent).toBe('①');
-    const badgeA = screen.getByTestId('course-occupant-group-badge-aaaa-pair');
-    expect(badgeA.textContent).toBe('②');
-    // 「複数」列も同様 (CareFlow #UX-2026W21: 印 + title で slot 識別).
-    const multiZ = screen.getByTestId('course-occupant-multi-zzzz-pair');
-    expect(multiZ.textContent).toContain('👥');
-    expect(multiZ.getAttribute('title')).toContain('複数訪問 ①');
-    const multiA = screen.getByTestId('course-occupant-multi-aaaa-pair');
-    expect(multiA.textContent).toContain('👥');
-    expect(multiA.getAttribute('title')).toContain('複数訪問 ②');
-  });
-
-  // ─── W37 hotfix M-1: visit_group_id 持ち visit を pool drop しても block ───
-  it('M1. visit_group_id 持ちの visit を pool ドロップ → toast 警告で阻止 (delete 呼ばれない)', async () => {
-    setupHooks({
-      templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
-      courses: [
-        {
-          id: 'course-1',
-          iso_year: 2026,
-          iso_week: 19,
-          weekday: 0,
-          code: 'A',
-          office_id: 'office-honten',
-          assigned_staff_id: null,
-          course_status: 'course_fixed',
-          deleted_at: null,
-        },
-      ],
-      visits: [
-        {
-          id: 'v-pair-1',
-          patient_id: PATIENT_UUID,
-          patient_name: '田中 太郎',
-          visit_date: '2026-05-04',
-          start_time: '10:00:00',
-          primary_staff_id: null,
-          course_id: 'course-1',
-          required_staff_count: 2,
-          visit_group_id: 'grp-1',
-          type: 'regular',
-          status: 'planned',
-          source: 'allocate',
-          end_time: '11:00:00',
-        },
-      ],
-      patients: [
-        {
-          id: PATIENT_UUID,
-          name: '田中 太郎',
-          kana: null,
-          status: 'active',
-          requires_multiple_staff: true,
-        },
-      ],
-    });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId="office-honten"
-        canEdit={true}
-      />,
-    );
-    // pool drop (over.id === 'pool')
-    await dndState.capturedHandlers.onDragEnd!({
-      active: { id: 'visit:v-pair-1' },
-      over: { id: 'pool' },
-    });
-    // toast.warning が呼ばれて止まる
-    expect(mockToast.warning).toHaveBeenCalled();
-    expect(mockToast.warning.mock.calls[0][0]).toMatch(/プール|ペア配置/);
-    // delete は呼ばれない (= partner が誤って削除されない)
-    expect(mockDeleteVisit).not.toHaveBeenCalled();
-  });
+  // Phase 2 (日テーブル撤去) で削除したテスト:
+  //   P3C-8 / P3C-9 / M3 : `course-occupant-multi-*` セル DOM (①/② バッジ・
+  //     「複数 ① のみ」警告色) の描画検証。テーブル固有の表示で、タイムライン /
+  //     日リストには対応表示が無いため移行先が存在しない。
+  //   M1 : `visit:` id のプールドロップガード。G4-1/G4-2 (tl-visit/tl-pair) が担保。
 });

@@ -1,5 +1,5 @@
 /**
- * Phase G-6: CourseDayTable の detectSameAddressPair (同住所×同時刻ペア判定) の
+ * Phase G-6: courseGrid の detectSameAddressPair (同住所×同時刻ペア判定) の
  * pure 関数 unit test.
  *
  * 仕様:
@@ -10,7 +10,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { detectSameAddressPair } from '@/components/schedule/v2/CourseDayTable';
+import { detectSameAddressPair } from '@/components/schedule/v2/courseGrid';
 
 type Occupant = { patient_id: string; same_address_group_id?: string | null };
 

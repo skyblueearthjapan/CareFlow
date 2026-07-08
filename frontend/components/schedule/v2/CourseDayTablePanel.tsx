@@ -9,16 +9,20 @@
  *   │  Row 1 (両端配置 toolbar, admin/manager only):                                 │
  *   │  [週を生成][週次ガイド]   [新規患者登録][診断][最適化] │ [固定枠戻][全件保存] │
  *   │  ─── border-t ────────────────────                                            │
- *   │  Row 2 (曜日タブ + テーブル/リスト + 二次操作):                                  │
+ *   │  Row 2 (曜日タブ + 表示モード + 二次操作):                                      │
  *   │    [月][火][水][木][金][土][週] YYYY-Www                                       │
- *   │    [テーブル | リスト] │ [自動スタッフ割当 🟢][一斉スタッフ未割当] │ [🔒][🔓]        │
+ *   │    [タイムライン | リスト] │ [自動スタッフ割当 🟢][一斉スタッフ未割当] │ [🔒][🔓] │
  *   ├──────────────────────────────────────────────────────┤
- *   │  選択曜日のコーステーブル N 個 (縦並び)                 │
+ *   │  選択曜日の盤面 (縦タイムライン or 日リスト)             │
  *   │   - 本店 A / B / C / D / E / M + 都賀 A 等             │
- *   │   - 各テーブル 5 列 × 35 行 (15min, 9:30〜18:00)        │
+ *   │   - タイムラインは 9:00〜18:00 の時間比例カード          │
  *   ├──────────────────────────────────────────────────────┤
  *   │  保留プール (DnD ソース)                                │
  *   └──────────────────────────────────────────────────────┘
+ *
+ * Phase 2 (2026-07): 旧「テーブル」表示 (CourseDayTable) を撤去し、日タブは
+ *   [タイムライン | リスト] の 2 モードのみ。テーブルにしか無かった 4 機能
+ *   (担当変更 / 訪問削除 / 「今週のみ」昇格 / プールへの DnD) は移設済み。
  *
  * 主な機能:
  *   - 曜日タブで月〜土を切替 (capacity_<wd> > 0 の曜日のみ表示)
@@ -26,8 +30,8 @@
  *     mutation pending 状態は内部で算出し、二次操作 (固定枠戻 / 一斉未割当) を多重実行から保護する.
  *   - 2026-07: 「自動スタッフ割付」を「自動スタッフ割当」に改称し、Row 2 の
  *     Group γ (一斉未割当の左隣) へ移動 (リセット→再割当の操作動線を隣接させる).
- *   - 各コーステーブルの担当 dropdown で PATCH /api/v1/courses/{id}
- *   - プールセル → コーステーブル行ドロップ → place-and-fix
+ *   - タイムライン列ヘッダの担当 dropdown で PATCH /api/v1/courses/{id}
+ *   - プールカード → タイムライン列ドロップ → place-and-fix
  *
  * RBAC:
  *   - admin / manager: 編集可 (ドロップ + 担当変更 + 主要 4 + 二次操作 + 個別 reset)
@@ -121,16 +125,13 @@ import { WeeklyRitualGuideDialog } from './WeeklyRitualGuideDialog';
 import { ResetToFixedButton } from './ResetToFixedButton';
 import { UnassignAllStaffButton } from './UnassignAllStaffButton';
 import {
-  CourseDayTable,
   floorToCourseSlot,
   getStaffEventsForWeekday,
-  parseCourseDayCellId,
   parseEventDraggableId,
-  parseVisitDraggableId,
   toMinutes,
   type CourseGridVisit,
   type PartnerLocation,
-} from './CourseDayTable';
+} from './courseGrid';
 import { CourseWeekOverview, type WeekOverviewVisit } from './CourseWeekOverview';
 import {
   parseTlColDroppableId,
@@ -208,6 +209,16 @@ function parsePatientDraggableId(id: string): string | null {
   const parsed = parsePoolDraggableId(id);
   return parsed ? parsed.patientId : null;
 }
+
+/**
+ * ドロップ先の論理位置 (曜日 × コース × 時刻).
+ *
+ * Phase 2 で日テーブル (`course-day-cell:` droppable) を撤去したあとは、
+ * タイムライン列 (`tl-col:`) へのドロップ Y 座標から合成する「仮想セル」だけが
+ * この形を作る。プール配置 (パリティ①) / イベント移動 (パリティ②) の双方が
+ * 旧テーブルと同一の後段フローを共有するための中間表現。
+ */
+type DropCell = { weekday: number; courseTemplateId: string; time: string };
 
 // ─────────────────────────────────────────────────────────────────────────
 // Error helpers
@@ -302,13 +313,13 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
   const activeWeekday = typeof activeTab === 'number' ? activeTab : 0;
 
   // ─── 2026-W20: 月-土タブの表示モード ─────────────────────────
-  // table = Excel 形式時刻グリッド (既存挙動 / DnD 編集可能).
-  // list     = Before/After 形式 (時刻順 visit リスト / 視覚言語統一・閲覧専用).
-  // timeline  = 縦タイムライン (T-1・時間比例カード / 読み取り専用).
-  //   docs/plans/schedule-timeline-redesign-design.md。既定は table (現場の日常を変えない)。
-  // 既定=タイムライン (PO指示 2026-07-08。旧既定=テーブルは移行期の足場としてタブに残置)。
-  const [weekdayViewMode, setWeekdayViewMode] = useState<'table' | 'list' | 'timeline'>('timeline');
+  // timeline = 縦タイムライン (T-1・時間比例カード / DnD 編集可能). 既定.
+  // list     = 時刻順 visit リスト (視覚言語統一).
+  //   docs/plans/schedule-timeline-redesign-design.md
+  // Phase 2 (2026-07): 旧 'table' (Excel 形式時刻グリッド) は撤去済み。
+  const [weekdayViewMode, setWeekdayViewMode] = useState<'list' | 'timeline'>('timeline');
   // T-3: 週タブの見え方。overview=既存の全コース俯瞰(既定・全機能温存) / timeline=週タイムライン(全コース縦積み)。
+  // ラベルは overview="リスト" (PO指示 2026-07-08。内部値は据置)。
   const [weekViewMode, setWeekViewMode] = useState<'overview' | 'timeline'>('overview');
 
   // ─── Master data ────────────────────────────────────────────────────
@@ -1213,7 +1224,6 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 5 } }),
   );
   const [activePatientId, setActivePatientId] = useState<string | null>(null);
-  const [activeVisitId, setActiveVisitId] = useState<string | null>(null);
   // タイムラインカードのドラッグ中はカード実寸ゴーストを DragOverlay に出す。
   const [activeTlVisit, setActiveTlVisit] = useState<CourseGridVisit | null>(null);
   // 同住所ペア (2名セット) ドラッグ中のペアボックス実寸ゴースト。
@@ -1549,7 +1559,6 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
   const handleDragStart = (e: DragStartEvent) => {
     const id = String(e.active.id);
     setActivePatientId(parsePatientDraggableId(id));
-    setActiveVisitId(parseVisitDraggableId(id));
     // プールカード: 表示中と同一のデータでカード実寸ゴーストを出す (情報を落とさない)。
     setActivePoolCard(poolCardDataRef.current.get(id) ?? null);
     // T-2 ②-b改: タイムラインカードはカード実寸ゴースト (TlVisitDragGhost) を出すため
@@ -1582,17 +1591,19 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
   };
 
   /**
-   * Wave 18 Phase B-5:
-   *   - pool-patient → cell:   既存の place-and-fix を呼ぶ。
+   * DnD の受け口 (Phase 2 でテーブル DnD 撤去後の全経路):
    *   - pool-patient → tl-col: (T-6 パリティ①) スナップ位置から仮想セルを合成して
-   *                             cell と同じ配置フローへ合流 (2名体制=相方選択も同一)。
-   *   - visit → cell:           移動 = delete + place-and-fix の 2 段階で代替実装
-   *                             (atomic 化は Wave 19 BE PATCH で対応)。
-   *   - visit → pool:           visit を delete (= プールに戻る)。
+   *                             配置フローへ流す (2名体制=相方選択ダイアログも同一)。
+   *   - tl-visit / tl-pair → tl-col:  15 分スナップ移動 (delete + place-and-fix)。
+   *   - tl-visit / tl-pair → pool:    visit を delete (= プールに戻る)。
+   *   - event → tl-col:        (T-6 パリティ②) 仮想セル合成 → 時刻スライド + 担当者変更。
+   *
+   * NOTE: 旧テーブル由来の id 名前空間 (`visit:` / `course-day-cell:`) は
+   *       もはやどのコンポーネントも生成しないため、該当ブランチは削除済み。
+   *       仮想セル ({weekday, courseTemplateId, time}) の合成は残す。
    */
   const handleDragEnd = async (e: DragEndEvent) => {
     setActivePatientId(null);
-    setActiveVisitId(null);
     setActiveTlVisit(null);
     setActiveTlPairVisits(null);
     setActivePoolCard(null);
@@ -1607,13 +1618,10 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     }
 
     const patientId = parsePatientDraggableId(activeId);
-    const visitId = parseVisitDraggableId(activeId);
     const eventId = parseEventDraggableId(activeId);
-    const cell = parseCourseDayCellId(overId);
     const isPoolDrop = overId === POOL_DROPPABLE_ID;
 
     // ─── T-2 ②-b: タイムラインカード → 列 (連続時間軸の15分スナップ移動) ───
-    // 既存テーブル DnD (visit:/course-day-cell:) とは id 名前空間で分離。
     // ドロップ位置 = カードの translated top − 列 rect top → snapYOffsetToMinutes。
     const tlVisitId = parseTlVisitDraggableId(activeId);
     const tlPairIds = parseTlPairDraggableId(activeId);
@@ -1706,10 +1714,10 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     }
 
     // ─── T-6 パリティ②: イベント帯 → タイムライン列 (連続時間軸の15分スナップ移動) ───
-    // テーブルセルと同じ移動フロー (案X 同曜日 / 案Q 担当者変更 / 案K 衝突拒否) を
+    // 旧テーブルセルと同じ移動フロー (案X 同曜日 / 案Q 担当者変更 / 案K 衝突拒否) を
     // 流用するため、スナップ位置から仮想セルを合成して下の分岐へ流す (パリティ①と同型)。
-    let eventCell = cell;
-    if (eventId && !eventCell) {
+    let eventCell: DropCell | null = null;
+    if (eventId) {
       const colKey = parseTlColDroppableId(overId);
       const toCol = colKey ? timelineColumns.find((c) => c.key === colKey) : undefined;
       const translatedTop = active.rect.current.translated?.top ?? null;
@@ -1741,7 +1749,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     // 案 X (同曜日内のみ) + 案 Q (drop 先 course の assigned_staff_id を新所有者に)
     // + 案 K (衝突時 rollback / 移動禁止) を実装する。
     if (eventId && eventCell) {
-      const cell = eventCell; // 以下はテーブルセルと共通のイベント移動フロー。
+      const cell = eventCell; // 以下は旧テーブルセルと共通のイベント移動フロー。
       const eventEntry = eventById.get(eventId);
       if (!eventEntry) {
         toast.error('対象のイベントが見つかりません');
@@ -1842,17 +1850,17 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
       return;
     }
 
-    // ─── プール患者 → セル ─────────────────────────────────────────
+    // ─── プール患者 → タイムライン列 ───────────────────────────────
     // Wave 37 Phase 3-C: patient.requires_multiple_staff=true なら相方コース
     //   選択ダイアログを開き、確定後に staff_count=2 で place-and-fix を呼ぶ。
     //   従来通常患者 (false) は staff_count=1 + course_template_id (旧形式) で呼ぶ。
     // ─── T-6 パリティ①: プールカード → タイムライン列 (連続時間軸の15分スナップ配置) ───
-    // テーブルセル (course-day-cell) と完全に同じ配置フローを流用するため、ドロップの
+    // 旧テーブルセル (course-day-cell) と完全に同じ配置フローを流用するため、ドロップの
     // スナップ位置から仮想セル {weekday, courseTemplateId, time} を合成して下の分岐へ流す。
     // これで 2名体制=相方コース選択ダイアログ / 通常=この週だけ place-and-fix +
-    // 昇格トースト + undo、がテーブルと同一挙動になる。
-    let poolCell = cell;
-    if (patientId && !poolCell) {
+    // 昇格トースト + undo、が旧テーブルと同一挙動になる。
+    let poolCell: DropCell | null = null;
+    if (patientId) {
       const colKey = parseTlColDroppableId(overId);
       const toCol = colKey ? timelineColumns.find((c) => c.key === colKey) : undefined;
       const translatedTop = active.rect.current.translated?.top ?? null;
@@ -1877,7 +1885,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     }
 
     if (patientId && poolCell) {
-      const cell = poolCell; // 以下はテーブルセルと共通の配置フロー。
+      const cell = poolCell; // 以下は旧テーブルセルと共通の配置フロー。
       const patient = patientById.get(patientId);
       const wp = (patient?.weekly_pattern ?? null) as { service_minutes?: number } | null;
       const durationMin = Math.max(1, Number(wp?.service_minutes ?? 60));
@@ -1949,139 +1957,6 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         toast.error(`配置に失敗しました: ${formatErr(err)}`);
       }
       return;
-    }
-
-    // ─── 配置済み visit ドラッグ ─────────────────────────────────
-    if (visitId) {
-      const v = visitById.get(visitId);
-      if (!v) return;
-
-      // Wave 37 Phase 3-C / W37 hotfix M-1: visit_group_id 持ち visit (= 2 名体制ペア) の
-      // D&D 操作 (セル間 move + プール戻し両方) は禁止. プール戻しは BE
-      // useDeleteVisit の default cascade_partner=true でペア両方が削除されてしまい、
-      // 意図せず 2 visit を消すため. partner との連動移動は将来 Wave 対応.
-      // 本フェーズは × ボタン削除 → 再配置の手順をユーザに案内する.
-      const visitGroupId = (v as { visit_group_id?: string | null }).visit_group_id ?? null;
-      if (visitGroupId) {
-        toast.warning(
-          '2 名体制 (ペア配置済) の visit はプールへ戻せません / 別セルへ移動できません。× ボタンで一括削除してから再配置してください。',
-        );
-        return;
-      }
-
-      // visit → プール: delete のみ (cascade=false; 固定枠は保持)
-      if (isPoolDrop) {
-        try {
-          await deleteVisitMut.mutateAsync({ id: visitId, cascadeFixedVisit: false });
-          toast.success(`${v.patient_name ?? v.patient_id} をプールに戻しました`);
-        } catch (err) {
-          toast.error(`プールへの戻しに失敗しました: ${formatErr(err)}`);
-        }
-        return;
-      }
-
-      // visit → セル: 移動 (delete + place-and-fix). 同一セルへの移動は noop。
-      if (cell) {
-        // 同一 weekday + 同一 slot の場合は noop (course_template_id は visit に
-        // 無いので簡易判定。誤検知低リスク。厳密判定は Wave 19 で BE PATCH 化時に)。
-        const visitWeekday = v.visit_date
-          ? // visit_date (yyyy-MM-dd) → weekStart からのオフセット (0=Mon..)
-            // T00:00:00 を付与してローカル時刻として解釈し、UTCとの境界ズレを防ぐ。
-            (() => {
-              const d = new Date(v.visit_date + 'T00:00:00');
-              const dow = (d.getDay() + 6) % 7; // Mon=0
-              return dow;
-            })()
-          : null;
-        const sameSlot = v.start_time != null && floorToCourseSlot(v.start_time) === cell.time;
-        // TODO(Wave 19): noop 判定に course_template_id を含めて、同一曜日・同一時刻でも
-        // 異なるコース間のドロップは move として扱う。現状 (Wave 18) は delete+place-and-fix
-        // の 2 段階のため、course_template_id を含めると不要な delete が走る可能性があり、
-        // PATCH /api/v1/visits/{id} (atomic 化) と組合わせて Wave 19 で対応予定。
-        if (sameSlot && visitWeekday === cell.weekday) {
-          return;
-        }
-        const patient = patientById.get(v.patient_id);
-        const wp = (patient?.weekly_pattern ?? null) as { service_minutes?: number } | null;
-        const durationMin = Math.max(1, Number(wp?.service_minutes ?? 60));
-
-        // Wave 18 Codex-fix 中-1 + 重大-2: 中間失敗時の rollback リカバリー.
-        // 元位置 (旧 visit の weekday + start_time) を退避しておき、step 2 失敗時に
-        // 元セルへ place-and-fix し直す (= delete されたユーザーデータの復元試行).
-        const originalWeekday = visitWeekday;
-        const originalStartTime = v.start_time != null ? floorToCourseSlot(v.start_time) : null;
-        // 元 visit の course_template_id は visit に無いので、courseTemplateByCourseId
-        // から逆引き。逆引きできない (course_id 無し) ケースでは復元を試みず
-        // ユーザーに手動再配置を促す。
-        const originalCourseTemplateId = v.course_id
-          ? (courseTemplateByCourseId.get(v.course_id) ?? null)
-          : null;
-
-        try {
-          // Wave U-3: 1 ユーザー操作 (delete + place-and-fix) に同一 UUID を付与。
-          const opGroupId = crypto.randomUUID();
-          // 1) 既存 visit を削除。Wave U-2 D-2 既定B: 型 (固定枠) は触らないため
-          //    cascade=false (= PFV を残す)。今週の visit だけを付け替える。
-          await deleteVisitMut.mutateAsync({
-            id: visitId,
-            cascadeFixedVisit: false,
-            op_group_id: opGroupId,
-          });
-          // 2) 新セルに place-and-fix (fix_pattern=false = この週だけ)
-          try {
-            await placeAndFixMut.mutateAsync({
-              patient_id: v.patient_id,
-              course_template_id: cell.courseTemplateId,
-              iso_year: isoYear,
-              iso_week: isoWeek,
-              weekday: cell.weekday,
-              start_time: cell.time,
-              duration_min: durationMin,
-              staff_count: 1,
-              fix_pattern: false,
-              op_group_id: opGroupId,
-            });
-            invalidateOpLog(isoYear, isoWeek);
-            const pname = patient?.name ?? v.patient_id;
-            toast.success(
-              `${pname} を ${cell.time} に移動しました（今週のみ・毎週の型は変更していません）`,
-              {
-                action: promoteToastAction([v.patient_id], pname),
-              },
-            );
-          } catch (e2) {
-            // step 2 失敗 → 元セルへの復元を試みる (中-1 リカバリー)。復元も週だけ。
-            if (originalCourseTemplateId && originalWeekday != null && originalStartTime) {
-              try {
-                await placeAndFixMut.mutateAsync({
-                  patient_id: v.patient_id,
-                  course_template_id: originalCourseTemplateId,
-                  iso_year: isoYear,
-                  iso_week: isoWeek,
-                  weekday: originalWeekday,
-                  start_time: originalStartTime,
-                  duration_min: durationMin,
-                  staff_count: 1,
-                  fix_pattern: false,
-                });
-                toast.warning(
-                  `移動先で失敗、元の位置 (${originalStartTime}) に復元しました: ${formatErr(e2)}`,
-                );
-              } catch (e3) {
-                toast.error(`移動も復元も失敗しました。手動で再配置してください: ${formatErr(e3)}`);
-              }
-            } else {
-              toast.error(
-                `移動に失敗しました。元位置情報が取得できないため復元できません。手動で再配置してください: ${formatErr(e2)}`,
-              );
-            }
-          }
-        } catch (e1) {
-          // step 1 (delete) 失敗 → ユーザーデータは無傷
-          toast.error(`元 visit の削除に失敗しました: ${formatErr(e1)}`);
-        }
-        return;
-      }
     }
   };
 
@@ -2541,6 +2416,10 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
           // G2/G3: 日リストの × (訪問削除) と「今週のみ」チップ (固定昇格) の根拠.
           visit_id: cv.id,
           source: cv.source ?? null,
+          // T-6撤去: 旧テーブルの ①/② バッジと「相方: ...」注記を日リストへ移設.
+          group_slot_label: cv.group_slot_label,
+          partner_location: cv.partner_location ?? null,
+          partner_label: cv.partner_label ?? null,
         };
       });
 
@@ -2950,7 +2829,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
 
             <span className="tnum text-[11px] text-text-muted">{isoWeekLabel}</span>
 
-            {/* Row 2 右半: テーブル/リスト + 二次操作 を 3 グループ (α/γ/δ) に分けて
+            {/* Row 2 右半: 表示モード + 二次操作 を 3 グループ (α/γ/δ) に分けて
                 縦区切り線で分離. ml-auto を持つ最初の見える要素で右寄せを担保 (= α が出ていれば α、
                 「週」タブで α 非表示時は γ にフォールバックして右寄せを維持).
                 Phase G-42: 旧 β group (= 固定枠戻 + 全件保存) は Row 1 右端へ移動. */}
@@ -2958,7 +2837,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
               className="ml-auto flex flex-wrap items-center gap-3"
               data-testid="course-day-row2-right-toolbar"
             >
-              {/* Group α: テーブル/リスト切替 (「週」タブ時は非表示). */}
+              {/* Group α: タイムライン/リスト切替 (「週」タブ時は非表示). */}
               {activeTab !== 'week' ? (
                 <div
                   role="group"
@@ -2991,22 +2870,9 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                   >
                     リスト
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => setWeekdayViewMode('table')}
-                    aria-pressed={weekdayViewMode === 'table'}
-                    data-testid="course-day-mode-table"
-                    className={
-                      weekdayViewMode === 'table'
-                        ? 'bg-brand-primary px-2 py-1 text-white'
-                        : 'bg-bg-base px-2 py-1 text-text-secondary hover:bg-bg-muted'
-                    }
-                  >
-                    テーブル
-                  </button>
                 </div>
               ) : (
-                /* T-3: 「週」タブ時は 一覧 / タイムライン の切替を出す (縦スペース不消費). */
+                /* T-3: 「週」タブ時は タイムライン / リスト の切替を出す (縦スペース不消費). */
                 <div
                   role="group"
                   aria-label="週タブ 表示モード切替"
@@ -3037,7 +2903,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                           : 'bg-bg-base px-2 py-1 text-text-secondary hover:bg-bg-muted'
                       }
                     >
-                      一覧
+                      リスト
                     </button>
                   </div>
                 </div>
@@ -3159,14 +3025,14 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
           className="grid grid-cols-1 gap-4 lg:min-h-0 lg:flex-1 lg:grid-cols-[1fr_320px] lg:grid-rows-[minmax(0,1fr)]"
           data-testid="course-day-two-pane"
         >
-          {/* 左ペイン: コーステーブル群 (lg 以上はこの中だけ縦スクロール)。
+          {/* 左ペイン: 当該曜日の盤面 (lg 以上はこの中だけ縦スクロール)。
               日タイムラインだけは盤面内部でスクロールさせる (列ヘッダ固定のため)。 */}
           <div
             className={cn(
               'min-w-0 space-y-3 lg:min-h-0',
-              // 日タイムライン/週一覧はペインを固定高にして内部スクロールへ委譲
+              // 日タイムライン/週リストはペインを固定高にして内部スクロールへ委譲
               // (ヘッダ行 sticky が内部スクロールで効く)。週タイムライン(縦積み)や
-              // リスト/テーブルは従来のペインスクロール。
+              // 日リストは従来のペインスクロール。
               (activeTab !== 'week' && weekdayViewMode === 'timeline') ||
                 (activeTab === 'week' && weekViewMode === 'overview')
                 ? 'lg:flex lg:flex-col lg:overflow-hidden'
@@ -3182,7 +3048,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                 data-testid="course-week-overview-panel"
                 className={cn(
                   'space-y-2',
-                  // 週一覧は内部スクロール (曜日ヘッダ固定) のため高さを委譲する。
+                  // 週リストは内部スクロール (曜日ヘッダ固定) のため高さを委譲する。
                   weekViewMode === 'overview' && 'lg:flex lg:min-h-0 lg:flex-1 lg:flex-col',
                 )}
               >
@@ -3218,7 +3084,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                 )}
               </div>
             ) : (
-              /* メイン: 当該曜日のコーステーブル N 個 */
+              /* メイン: 当該曜日の盤面 (タイムライン or リスト) */
               <div
                 id={`course-day-panel-${activeWeekday}`}
                 role="tabpanel"
@@ -3233,7 +3099,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                 )}
                 data-testid="course-day-table-list"
               >
-                {/* Phase G-36: 表示モード切替 (テーブル ⇄ リスト) は Card 2 の独立 Row 3 へ移設済. */}
+                {/* Phase G-36: 表示モード切替 (タイムライン ⇄ リスト) は Card 2 の Row 2 へ移設済. */}
                 {courseTablesForActiveDay.length === 0 ? (
                   <Card className="p-4 text-sm text-text-muted">
                     {WEEKDAY_LABELS[activeWeekday]}曜日の表示対象コースがありません。 拠点マスタの
@@ -3284,7 +3150,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                       }
                     />
                   </div>
-                ) : weekdayViewMode === 'list' ? (
+                ) : (
                   /* T-1L: タイムライン兄弟の日リスト (モック意匠の整列グリッド・全情報保持).
                      共有コア WeekdayScheduleCard は提案ダイアログ専用に温存. */
                   <div data-testid="course-day-list-view">
@@ -3308,70 +3174,6 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                       }
                     />
                   </div>
-                ) : (
-                  courseTablesForActiveDay.map(({ template, officeName }) => {
-                    const course = findCourseForTemplate({
-                      template,
-                      weekday: activeWeekday,
-                      isoYear,
-                      isoWeek,
-                      courses,
-                    });
-                    const visits = course ? (visitsByCourse.get(course.id) ?? []) : [];
-                    const staffOptions = staffByOffice.get(template.office_id) ?? [];
-                    // Phase G-55: 実効定員 (= 親機が既に週ビューで使う effectiveCapacity を流用)。
-                    //   A-E は開講判定で 6 / M系は静的 capacity。filled は配置済み visit 件数。
-                    const capMax = effectiveCapacity(
-                      template,
-                      activeWeekday,
-                      staffCountFor(template.office_id, activeWeekday),
-                      courseCodesMax,
-                    );
-                    // R-2: キャンセル visit は定員の filled から除外 (= 空き扱い).
-                    const capacityInfo = {
-                      filled: visits.filter((v) => v.status !== 'cancelled').length,
-                      max: capMax,
-                    };
-                    // 空き時間帯 (≥60分) は course が生成済みのときのみ算出済みマップから引く。
-                    const freeGaps = course ? (freeGapsByCourse.get(course.id) ?? []) : [];
-                    return (
-                      <CourseDayTable
-                        key={`${template.id}:${activeWeekday}`}
-                        weekday={activeWeekday}
-                        template={template}
-                        course={course}
-                        officeName={officeName}
-                        visits={visits}
-                        staffOptions={staffOptions}
-                        staffEventsByStaff={staffEventsByStaff}
-                        canEdit={canEdit}
-                        isStaffMutating={updateCourseMut.isPending}
-                        officeNameById={officeNameById}
-                        capacity={capacityInfo}
-                        freeGaps={freeGaps}
-                        onChangeAssignedStaff={(staffId) => {
-                          if (!course) {
-                            toast.warning(
-                              '先に「週を生成」を押してコースを作成してから担当を設定してください',
-                            );
-                            return;
-                          }
-                          void handleChangeAssignedStaff(course.id, staffId);
-                        }}
-                        onDeleteVisit={(visitId, patientName) => {
-                          void handleDeleteVisit(visitId, patientName);
-                        }}
-                        onPatientClick={handleOpenPatientDetail}
-                        onPromoteWeekOnly={(patientId, patientName) =>
-                          promoteWeekToFixed([patientId], patientName)
-                        }
-                        // Phase G-21 T4 reviewer C2: 🔒 完全固定 toggle を wire-up.
-                        // CourseDayTable 側で canEdit=true && onTogglePin 指定時のみ
-                        // button を描画する (= staff role は表示なし).
-                        onTogglePin={canEdit ? handleTogglePin : undefined}
-                      />
-                    );
-                  })
                 )}
               </div>
             )}
@@ -3494,19 +3296,6 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
               );
             })()
           ) : null}
-          {activeVisitId
-            ? (() => {
-                const v = visitById.get(activeVisitId);
-                const name = v
-                  ? (patientById.get(v.patient_id)?.name ?? v.patient_name ?? v.patient_id)
-                  : activeVisitId;
-                return (
-                  <div className="rounded border border-warning bg-warning/10 px-2 py-1 text-xs shadow-lg">
-                    {name} <span className="text-text-muted">(移動)</span>
-                  </div>
-                );
-              })()
-            : null}
         </DragOverlay>
 
         {/* T-2 ②-a: 空き枠クリック → 登録モーダル (訪問 / 会議・イベント切替) */}

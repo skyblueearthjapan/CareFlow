@@ -2,7 +2,7 @@ import { DndContext } from '@dnd-kit/core';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { CourseGridVisit } from '@/components/schedule/v2/CourseDayTable';
+import type { CourseGridVisit } from '@/components/schedule/v2/courseGrid';
 import {
   TimelineDayBoard,
   TlPairDragGhost,
@@ -958,6 +958,104 @@ describe('TimelineDayBoard', () => {
         />,
       );
       expect(screen.queryByTestId('tl-week-only-chip-v1')).toBeNull();
+    });
+  });
+
+  /**
+   * T-6撤去: 旧 CourseDayTable にしか無かった 2 名体制の運用情報
+   * (①/② スロット・相方の現在地・「相方未配置」警告) がカードへ移設されたことの担保。
+   * これが無いとテーブル撤去で「片側しか置けていない」事故に気付けなくなる。
+   */
+  describe('2名体制の相方情報 (T-6撤去に伴う移設)', () => {
+    const tallVisit = (over: Partial<CourseGridVisit>) =>
+      visit({ id: 'v1', start_time: '09:30:00', end_time: '11:00:00', ...over });
+
+    it('相方が別セルに配置済みなら「相方: 本店-A 15:00」を通常色で出す', () => {
+      render(
+        <TimelineDayBoard
+          columns={[
+            column({
+              key: 'c1',
+              visits: [
+                tallVisit({
+                  patient_requires_multiple_staff: true,
+                  group_slot_label: 1,
+                  partner_location: { kind: 'cell', cellLabel: '本店-A', time: '15:00' },
+                }),
+              ],
+            }),
+          ]}
+          weekdayLabel="月"
+        />,
+      );
+      expect(screen.getByTestId('tl-slot-mark-v1')).toHaveTextContent('①');
+      const note = screen.getByTestId('tl-partner-note-v1');
+      expect(note).toHaveTextContent('相方: 本店-A 15:00');
+      expect(note.className).not.toContain('text-error');
+    });
+
+    it('相方がプール残存なら「複数 ① のみ (相方未配置)」を警告色で出す', () => {
+      render(
+        <TimelineDayBoard
+          columns={[
+            column({
+              key: 'c1',
+              visits: [
+                tallVisit({
+                  patient_requires_multiple_staff: true,
+                  group_slot_label: 1,
+                  partner_location: { kind: 'pool' },
+                }),
+              ],
+            }),
+          ]}
+          weekdayLabel="月"
+        />,
+      );
+      const note = screen.getByTestId('tl-partner-note-v1');
+      expect(note).toHaveTextContent('複数 ① のみ (相方未配置)');
+      expect(note.className).toContain('text-error');
+      expect(screen.getByTestId('tl-slot-mark-v1').className).toContain('text-error');
+    });
+
+    it('小さいカードでも相方情報は title ツールチップで補完される', () => {
+      render(
+        <TimelineDayBoard
+          columns={[
+            column({
+              key: 'c1',
+              // 15分カード = 注記行を出す高さが無い
+              visits: [
+                visit({
+                  id: 'v1',
+                  start_time: '09:30:00',
+                  end_time: '09:45:00',
+                  patient_requires_multiple_staff: true,
+                  group_slot_label: 2,
+                  partner_label: '山田 花子',
+                  partner_location: { kind: 'pool' },
+                }),
+              ],
+            }),
+          ]}
+          weekdayLabel="月"
+        />,
+      );
+      expect(screen.queryByTestId('tl-partner-note-v1')).toBeNull();
+      const title = screen.getByTestId('tl-visit-v1').getAttribute('title') ?? '';
+      expect(title).toContain('相方: プール');
+      expect(title).toContain('ペア: 山田 花子');
+    });
+
+    it('通常患者 (相方なし) には ①/② も注記も出ない', () => {
+      render(
+        <TimelineDayBoard
+          columns={[column({ key: 'c1', visits: [tallVisit({})] })]}
+          weekdayLabel="月"
+        />,
+      );
+      expect(screen.queryByTestId('tl-slot-mark-v1')).toBeNull();
+      expect(screen.queryByTestId('tl-partner-note-v1')).toBeNull();
     });
   });
 });

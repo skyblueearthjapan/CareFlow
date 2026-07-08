@@ -8,7 +8,7 @@
  */
 import * as React from 'react';
 import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 
 vi.mock('next-auth/react', () => ({
   useSession: vi.fn(),
@@ -54,9 +54,29 @@ describe('Header — 最適化ルール設定ボタン (Phase G-88)', () => {
     expect(screen.getByRole('link', { name: '最適化ルール設定' })).toBeInTheDocument();
   });
 
-  it('3. staff → ⚙ ボタンは表示されない', () => {
+  // RB (PO決定 2026-07-08 / 8749c6a): PC版は全ロール同一表示。設定は staff も閲覧でき、
+  // 保存操作だけが権限どおり無効になる。
+  it('3. staff → ⚙ ボタンも表示される (全ロール同一表示)', () => {
     setRole('staff');
     render(<Header onToggleSidebar={vi.fn()} />);
-    expect(screen.queryByRole('link', { name: '最適化ルール設定' })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '最適化ルール設定' })).toBeInTheDocument();
+  });
+
+  // PW運用 (PO決定 2026-07-08 / 1bd2daa): パスワードは全員共通のため、自己変更の入口は
+  // admin のみ。誤って共通パスワードから外れるのを防ぐ。
+  // (メニューはユーザーメニューの Popover 内にあるので開いてから確認する)
+  it('4. パスワード変更メニューは admin にだけ出る', async () => {
+    setRole('admin');
+    const { unmount } = render(<Header onToggleSidebar={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'ユーザーメニュー' }));
+    expect(await screen.findByText('パスワード変更')).toBeInTheDocument();
+    unmount();
+
+    setRole('staff');
+    render(<Header onToggleSidebar={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'ユーザーメニュー' }));
+    // ログアウトは出る = Popover は開いている。その上でパスワード変更だけ無いことを見る。
+    expect(await screen.findByText('ログアウト')).toBeInTheDocument();
+    expect(screen.queryByText('パスワード変更')).not.toBeInTheDocument();
   });
 });

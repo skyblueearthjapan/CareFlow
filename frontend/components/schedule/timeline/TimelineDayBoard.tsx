@@ -24,7 +24,11 @@ import {
 
 import { useDraggable, useDroppable } from '@dnd-kit/core';
 
-import { eventDraggableId, type CourseGridVisit } from '@/components/schedule/v2/CourseDayTable';
+import {
+  eventDraggableId,
+  type CourseGridVisit,
+  type PartnerLocation,
+} from '@/components/schedule/v2/courseGrid';
 import type { CourseV2Read } from '@/lib/queries/courses';
 import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
 import type { StaffRead } from '@/lib/schemas/staff';
@@ -263,6 +267,34 @@ function cardKeyDownHandler(onClick?: () => void) {
  * staff_events であり「全員に入った」ように誤読されるため列内表示へ改めた (PO指摘 2026-07-08)。
  */
 
+/**
+ * T-6 撤去に伴う移設: 2 名体制 visit の「相方の現在地」と ①/② スロット。
+ *
+ * 旧 CourseDayTable (Wave 37 P3-C / Wave 38) がセル下部に出していた情報で、
+ * タイムライン/日リストには無かった。テーブル撤去でこの運用情報が失われるのを防ぐ。
+ *   - kind='cell' → 相方は別セルに配置済み ("相方: 本店-A 15:00")
+ *   - kind='pool' → 相方がプール残存 = 片側しか置けていない ⇒ 警告 ("複数 ① のみ")
+ */
+export function partnerInfo(visit: {
+  group_slot_label?: 1 | 2;
+  partner_location?: PartnerLocation | null;
+  partner_label?: string | null;
+}): {
+  slotMark: string | null;
+  text: string | null;
+  warn: boolean;
+  tooltip: string | null;
+} {
+  const slotMark = visit.group_slot_label === 1 ? '①' : visit.group_slot_label === 2 ? '②' : null;
+  const loc = visit.partner_location ?? null;
+  if (!loc) return { slotMark, text: null, warn: false, tooltip: null };
+  const warn = loc.kind === 'pool';
+  const where = loc.kind === 'cell' ? `${loc.cellLabel} ${loc.time}` : 'プール';
+  const text = warn && slotMark ? `複数 ${slotMark} のみ (相方未配置)` : `相方: ${where}`;
+  const pairName = visit.partner_label ? `ペア: ${visit.partner_label} / ` : '';
+  return { slotMark, text, warn, tooltip: `${pairName}相方: ${where}` };
+}
+
 function PersonMark() {
   return (
     <svg viewBox="0 0 10 10" width="9" height="9" aria-hidden="true" className="inline-block">
@@ -312,6 +344,9 @@ function VisitCard({
   const height = Math.max(rawH, TL_MIN_CARD_PX);
   const durMin = endMin - startMin;
   const isMulti = visit.patient_requires_multiple_staff || visit.group_slot_label != null;
+  // T-6撤去: 旧テーブルにしか無かった 2 名体制の運用情報をカードへ移設。
+  //   ①/② = visit_group 内の slot、相方の現在地 = 別セル配置済み or プール残存 (= 未配置)。
+  const partner = partnerInfo(visit);
 
   // 重なり時のみ左右に分割 (MED-1)。laneCount=1 は全幅 (従来どおり)。
   const lanes = laneInfo?.laneCount ?? 1;
@@ -356,16 +391,22 @@ function VisitCard({
       onAnimationEnd={shake ? () => setShake(false) : undefined}
       data-testid={`tl-visit-${visit.id}`}
       data-tl-drag={drag ? (drag.disabled ? 'disabled' : 'enabled') : undefined}
+      // 小さいカードは行が出ないため、相方情報はツールチップで必ず補完する。
       title={
-        drag?.disabled
-          ? visit.is_pinned
-            ? 'ピン留め中のため移動できません（ピンを解除してから移動）'
-            : visit.visit_group_id
-              ? '2名体制（ペア配置）のため個別移動できません'
-              : visit.status === 'cancelled'
-                ? 'キャンセル済みのため移動できません'
-                : (visit.patient_address ?? undefined)
-          : (visit.patient_address ?? undefined)
+        [
+          drag?.disabled
+            ? visit.is_pinned
+              ? 'ピン留め中のため移動できません（ピンを解除してから移動）'
+              : visit.visit_group_id
+                ? '2名体制（ペア配置）のため個別移動できません'
+                : visit.status === 'cancelled'
+                  ? 'キャンセル済みのため移動できません'
+                  : visit.patient_address
+            : visit.patient_address,
+          partner.tooltip,
+        ]
+          .filter(Boolean)
+          .join(' / ') || undefined
       }
       className={cn(
         // group: × ボタンを hover / focus-within で出すため (G2)。
@@ -403,6 +444,19 @@ function VisitCard({
         >
           {visit.patient_name ?? '—'}
         </span>
+        {/* ①/② = 2名体制の slot (旧テーブルから移設)。相方未配置なら警告色。 */}
+        {partner.slotMark && (
+          <span
+            data-testid={`tl-slot-mark-${visit.id}`}
+            aria-label={`2名体制 ${partner.slotMark}`}
+            className={cn(
+              'shrink-0 text-[11px] font-bold leading-none',
+              partner.warn ? 'text-error' : 'opacity-70',
+            )}
+          >
+            {partner.slotMark}
+          </span>
+        )}
       </span>
       {/* 2行目: 時刻・所要分 ＋ サービス種別 (高さがあるとき)。住所は常に3行目 (重複させない)。 */}
       {height >= TL_SHOW_SVC_PX && (
@@ -421,6 +475,21 @@ function VisitCard({
         <span className="flex min-w-0 items-center gap-0.5 text-[9px] leading-tight opacity-75">
           <span className="shrink-0">📍</span>
           <span className="truncate">{visit.patient_address}</span>
+        </span>
+      )}
+      {/* 相方の現在地 (旧テーブルの「相方: 本店-A 15:00」注記を移設)。
+          プール残存 = 片側しか配置できていない運用エラーなので警告色で出す。
+          小さいカードは title ツールチップ側で補完する。 */}
+      {partner.text && height >= TL_SHOW_ADDR_PX && (
+        <span
+          data-testid={`tl-partner-note-${visit.id}`}
+          className={cn(
+            'flex min-w-0 items-center gap-0.5 text-[9px] leading-tight',
+            partner.warn ? 'font-bold text-error' : 'opacity-75',
+          )}
+        >
+          <span className="shrink-0">👥</span>
+          <span className="truncate">{partner.text}</span>
         </span>
       )}
       {(pills.length > 0 || isWeekOnly) && height >= TL_SHOW_PILLS_PX && (

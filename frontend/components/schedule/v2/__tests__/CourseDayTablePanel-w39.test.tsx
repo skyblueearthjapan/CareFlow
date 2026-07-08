@@ -3,10 +3,14 @@
  *
  * 「スタッフイベント D&D で時刻スライド + 担当者変更」のハンドラ分岐検証.
  *
+ * Phase 2 (日テーブル撤去): ドロップ先は `course-day-cell:` から
+ *   タイムライン列 `tl-col:{templateId}:{weekday}` + Y オフセットへ移行した
+ *   (`dropEventOnColumn` ヘルパー参照). ハンドラの後段 (案 X/Q/K) は不変。
+ *
  * カバーするシナリオ:
  *   W39-D-1. event drop / 同曜日 / 担当割当済み → PATCH に new_staff_id +
  *            start_time/end_time (duration 維持) が含まれる
- *   W39-D-2. 別曜日 (案 X) → toast 警告 + PATCH 呼ばれない
+ *   W39-D-2. 表示中の曜日に無い列 (案 X) → PATCH 呼ばれない
  *   W39-D-3. 担当未割当 (案 Q) → toast 警告 + PATCH 呼ばれない
  *   W39-D-4. 衝突 — 同 staff の他 event 重複 → toast 警告 + PATCH 呼ばれない (案 K)
  *   W39-D-5. 衝突 — 同 staff 担当 visit と重複 → toast 警告 + PATCH 呼ばれない (案 K)
@@ -14,6 +18,9 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+
+import { timeToY } from '@/lib/scheduling/timeline';
 
 const { dndState, mockToast } = vi.hoisted(() => ({
   dndState: {
@@ -63,25 +70,31 @@ vi.mock('next-auth/react', () => ({
   useSession: () => ({ data: null, status: 'unauthenticated' }),
 }));
 
-vi.mock('lucide-react', () => ({
-  ChevronLeft: () => <span />,
-  ChevronRight: () => <span />,
-  Inbox: () => <span />,
-  AlertTriangle: () => <span />,
-  Info: () => <span />,
-  User: () => <span />,
-  Users: () => <span />,
-  X: () => <span />,
-  Plus: () => <span />,
-  ChevronDown: () => <span />,
-  Star: () => <span />,
-  Loader2: () => <span data-testid="loader" />,
-  RefreshCw: () => <span data-testid="refresh-icon" />,
-  UserCheck: () => <span data-testid="user-check-icon" />,
-  Pin: () => <span data-testid="pin-icon" />,
-  ArrowRight: () => <span />,
-  CheckCircle2: () => <span />,
+// CreatePatientDialog が useRouter を呼ぶ (App Router 未マウントの jsdom では例外)。
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn(), refresh: vi.fn(), back: vi.fn() }),
+  usePathname: () => '/schedule',
+  useSearchParams: () => new URLSearchParams(),
 }));
+
+// アイコンは追加のたびにモック不足で落ちるため、testid が必要なものだけ明示し
+// 残りは Proxy フォールバックで自動的に空 span を返す (Panel.test.tsx と同方式)。
+vi.mock('lucide-react', () => {
+  const named: Record<string, () => React.ReactElement> = {
+    Loader2: () => <span data-testid="loader" />,
+    RefreshCw: () => <span data-testid="refresh-icon" />,
+    UserCheck: () => <span data-testid="user-check-icon" />,
+    Pin: () => <span data-testid="pin-icon" />,
+  };
+  return new Proxy(named, {
+    get: (target, prop) => {
+      if (prop === '__esModule') return true;
+      if (typeof prop !== 'string' || !/^[A-Z]/.test(prop)) return undefined;
+      if (!(prop in target)) target[prop] = () => <span />;
+      return target[prop];
+    },
+  });
+});
 
 vi.mock('@/components/ui/card', () => ({
   Card: ({
@@ -203,6 +216,8 @@ vi.mock('@/lib/queries/offices', () => ({
 }));
 vi.mock('@/lib/queries/patients', () => ({
   usePatients: (...args: unknown[]) => mockPatients(...args),
+  // CreatePatientDialog (RegisterPatientButton 経由) が使用. noop で十分.
+  useCreatePatient: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 vi.mock('@/lib/queries/staff', () => ({
   useStaffList: (...args: unknown[]) => mockStaffList(...args),
@@ -224,6 +239,7 @@ vi.mock('@/lib/queries/generate_week', () => ({
 }));
 vi.mock('@/lib/queries/assign_staff_only', () => ({
   useAssignStaffOnly: () => ({ mutateAsync: mockAssignStaffOnly, isPending: false }),
+  useApplyStaffReview: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 // Phase G-21 T4: useTogglePfvPin は内部で useMutation を呼ぶため必須.
 vi.mock('@/lib/queries/g21', () => ({
@@ -270,6 +286,36 @@ vi.mock('@/lib/queries/autoScheduleV2', () => ({
     error: null,
     isSuccess: false,
   }),
+  // UnassignAllStaffButton (toolbar) が使用. noop で十分.
+  useUnassignAllStaffMutation: () => ({
+    mutateAsync: vi.fn(),
+    reset: vi.fn(),
+    isPending: false,
+    error: null,
+    isSuccess: false,
+  }),
+}));
+vi.mock('@/lib/queries/opLog', () => ({
+  useOpLogState: () => ({ data: undefined, isLoading: false }),
+  useUndoOpLog: () => ({
+    mutateAsync: vi.fn().mockResolvedValue(undefined),
+    isPending: false,
+  }),
+  useRedoOpLog: () => ({
+    mutateAsync: vi.fn().mockResolvedValue(undefined),
+    isPending: false,
+  }),
+  useInvalidateOpLog: () => vi.fn(),
+  OP_LOG_STATE_KEY: 'op-log-state',
+}));
+
+vi.mock('@/lib/queries/schedulingSettings', () => ({
+  useSchedulingSettings: () => ({ data: undefined, isLoading: false }),
+  useUpdateSchedulingSettings: () => ({ mutateAsync: vi.fn(), isPending: false }),
+}));
+
+vi.mock('@/lib/queries/visitMoveWeekOnly', () => ({
+  useVisitMoveWeekOnly: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 vi.mock('@/lib/queries/staff-events', () => ({
   useWeekStaffEvents: () => ({ data: [], isLoading: false }),
@@ -419,6 +465,32 @@ vi.mock('@/lib/api/patientSync', () => ({
   }),
 }));
 
+/** 全テスト共通: QueryClientProvider 配下で panel を描画する. */
+function renderPanel() {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={qc}>
+      <CourseDayTablePanel weekStart={monday(2026, 5, 4)} officeId="office-honten" canEdit={true} />
+    </QueryClientProvider>,
+  );
+}
+
+/**
+ * イベント帯 → タイムライン列 (`tl-col:{templateId}:{weekday}`) のドロップ引数を作る.
+ * Phase 2 で日テーブル (`course-day-cell:` droppable) を撤去したため、ドロップ先の
+ * 時刻は「列 rect 上端からの Y オフセット」で表現する (snapYOffsetToMinutes の逆算)。
+ */
+function dropEventOnColumn(eventId: string, templateId: string, weekday: number, hm: string) {
+  const overTop = 10;
+  return {
+    active: {
+      id: `event:${eventId}`,
+      rect: { current: { translated: { top: overTop + (timeToY(hm) ?? 0) } } },
+    },
+    over: { id: `tl-col:${templateId}:${weekday}`, rect: { top: overTop } },
+  };
+}
+
 describe('CourseDayTablePanel — Wave 39 event D&D', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -429,17 +501,10 @@ describe('CourseDayTablePanel — Wave 39 event D&D', () => {
   it('W39-D-1. event drop (同曜日 + 担当割当済み) → PATCH に new_staff_id + 時刻が含まれる', async () => {
     defaultSetupForEventDrag();
     mockUpdateEventDrag.mockResolvedValue({});
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId="office-honten"
-        canEdit={true}
-      />,
-    );
+    renderPanel();
     // event を tpl-A (担当 STAFF_OLD) → tpl-B (担当 STAFF_NEW) の 13:00 にドロップ
     await dndState.capturedHandlers.onDragEnd!({
-      active: { id: `event:${EVENT_ID}` },
-      over: { id: 'course-day-cell:0:tpl-B:13:00' },
+      ...dropEventOnColumn(EVENT_ID, 'tpl-B', 0, '13:00'),
     });
     expect(mockUpdateEventDrag).toHaveBeenCalledOnce();
     const call = mockUpdateEventDrag.mock.calls[0][0];
@@ -452,22 +517,17 @@ describe('CourseDayTablePanel — Wave 39 event D&D', () => {
     expect(mockToast.success).toHaveBeenCalled();
   });
 
-  it('W39-D-2. 別曜日への drop (案 X) → 警告 + PATCH 呼ばれない', async () => {
+  it('W39-D-2. 表示中の曜日に無い列への drop → PATCH 呼ばれない (案 X)', async () => {
     defaultSetupForEventDrag();
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId="office-honten"
-        canEdit={true}
-      />,
-    );
-    // event の date は月曜 (weekday=0) なのに weekday=2 (水曜) のセルへドロップ
+    renderPanel();
+    // Phase 2: 日テーブル撤去後、ドロップ先は「表示中の曜日のタイムライン列」だけ。
+    // 列 id に別曜日 (weekday=2) を指定しても該当列が存在せず仮想セルが合成されないため
+    // 何も起きない (= 案 X「同じ曜日内でのみスライド可能」が構造的に保証される)。
+    // 旧テーブルはどの曜日のセルにも落とせたため toast 警告で弾く必要があった。
     await dndState.capturedHandlers.onDragEnd!({
-      active: { id: `event:${EVENT_ID}` },
-      over: { id: 'course-day-cell:2:tpl-B:13:00' },
+      ...dropEventOnColumn(EVENT_ID, 'tpl-B', 2, '13:00'),
     });
     expect(mockUpdateEventDrag).not.toHaveBeenCalled();
-    expect(mockToast.warning).toHaveBeenCalledWith(expect.stringMatching(/別の曜日|同じ曜日/));
   });
 
   it('W39-D-3. drop 先 course の担当未割当 (案 Q) → 警告 + PATCH 呼ばれない', async () => {
@@ -521,16 +581,9 @@ describe('CourseDayTablePanel — Wave 39 event D&D', () => {
         ],
       ]),
     });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId="office-honten"
-        canEdit={true}
-      />,
-    );
+    renderPanel();
     await dndState.capturedHandlers.onDragEnd!({
-      active: { id: `event:${EVENT_ID}` },
-      over: { id: 'course-day-cell:0:tpl-B:13:00' },
+      ...dropEventOnColumn(EVENT_ID, 'tpl-B', 0, '13:00'),
     });
     expect(mockUpdateEventDrag).not.toHaveBeenCalled();
     expect(mockToast.warning).toHaveBeenCalledWith(expect.stringMatching(/未割当/));
@@ -602,16 +655,9 @@ describe('CourseDayTablePanel — Wave 39 event D&D', () => {
         ],
       ]),
     });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId="office-honten"
-        canEdit={true}
-      />,
-    );
+    renderPanel();
     await dndState.capturedHandlers.onDragEnd!({
-      active: { id: `event:${EVENT_ID}` },
-      over: { id: 'course-day-cell:0:tpl-B:13:00' },
+      ...dropEventOnColumn(EVENT_ID, 'tpl-B', 0, '13:00'),
     });
     expect(mockUpdateEventDrag).not.toHaveBeenCalled();
     expect(mockToast.warning).toHaveBeenCalledWith(expect.stringMatching(/他のイベント/));
@@ -685,17 +731,10 @@ describe('CourseDayTablePanel — Wave 39 event D&D', () => {
         ],
       ]),
     });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId="office-honten"
-        canEdit={true}
-      />,
-    );
+    renderPanel();
     // event を 13:00 (-14:00) に move → STAFF_NEW 担当の visit (13:15-14:00) と重複
     await dndState.capturedHandlers.onDragEnd!({
-      active: { id: `event:${EVENT_ID}` },
-      over: { id: 'course-day-cell:0:tpl-B:13:00' },
+      ...dropEventOnColumn(EVENT_ID, 'tpl-B', 0, '13:00'),
     });
     expect(mockUpdateEventDrag).not.toHaveBeenCalled();
     expect(mockToast.warning).toHaveBeenCalledWith(expect.stringMatching(/訪問予定/));
@@ -739,17 +778,10 @@ describe('CourseDayTablePanel — Wave 39 event D&D', () => {
       ]),
     });
     mockUpdateEventDrag.mockResolvedValue({});
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 4)}
-        officeId="office-honten"
-        canEdit={true}
-      />,
-    );
+    renderPanel();
     // 同じ tpl-A (担当 STAFF_OLD) の 14:00 にドロップ → スライドのみ
     await dndState.capturedHandlers.onDragEnd!({
-      active: { id: `event:${EVENT_ID}` },
-      over: { id: 'course-day-cell:0:tpl-A:14:00' },
+      ...dropEventOnColumn(EVENT_ID, 'tpl-A', 0, '14:00'),
     });
     expect(mockUpdateEventDrag).toHaveBeenCalledOnce();
     const call = mockUpdateEventDrag.mock.calls[0][0];

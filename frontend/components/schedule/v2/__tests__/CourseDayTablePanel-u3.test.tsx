@@ -15,8 +15,8 @@
  *  U3-11 Ctrl+Y → can_redo=true で mutateAsync が呼ばれる
  *  U3-12 Ctrl+Shift+Z → can_redo=true で mutateAsync が呼ばれる
  *  U3-13 can_undo=false のとき Ctrl+Z は mutateAsync を呼ばない
- *  U3-14 プール→テーブル DnD: placeAndFix に有効 UUID が渡される
- *  U3-15 テーブル→テーブル DnD: delete と placeAndFix が同一 UUID を共有
+ *  U3-14 プール→タイムライン列 DnD: placeAndFix に有効 UUID が渡される
+ *  (U3-15 は Phase 2 の日テーブル撤去で削除。末尾コメント参照)
  */
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -24,6 +24,7 @@ import { render, screen, fireEvent, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import { ApiError } from '@/lib/api-client';
+import { timeToY } from '@/lib/scheduling/timeline';
 
 // ─── hoisted 変数 ──────────────────────────────────────────────────────────
 // vi.mock の factory は hoisting されるため、factory 内で参照する変数も hoisted が必要。
@@ -332,6 +333,16 @@ vi.mock('@/lib/queries/opLog', () => ({
   }),
   useInvalidateOpLog: () => mockInvalidate,
   OP_LOG_STATE_KEY: 'op-log-state',
+}));
+
+vi.mock('@/lib/queries/visitMoveWeekOnly', () => ({
+  useVisitMoveWeekOnly: () => ({ mutateAsync: vi.fn(), isPending: false }),
+}));
+
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn(), refresh: vi.fn(), back: vi.fn() }),
+  usePathname: () => '/schedule',
+  useSearchParams: () => new URLSearchParams(),
 }));
 vi.mock('@/lib/queries/schedulingSettings', () => ({
   useSchedulingSettings: () => ({ data: undefined, isLoading: false }),
@@ -742,7 +753,7 @@ describe('CourseDayTablePanel — Wave U-3 戻る/進みボタン・キーボー
   // ────────────────────────────────────────────────────────────
 
   describe('DnD op_group_id ペイロード', () => {
-    it('U3-14. プール→テーブル DnD: placeAndFix に有効 UUID が渡される', async () => {
+    it('U3-14. プール→タイムライン列 DnD: placeAndFix に有効 UUID が渡される', async () => {
       mockPlaceAndFix.mockResolvedValue({ visit: {}, fixed_visit: null });
       setupHooks({
         templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
@@ -759,11 +770,16 @@ describe('CourseDayTablePanel — Wave U-3 戻る/進みボタン・キーボー
       renderWithClient(
         <CourseDayTablePanel weekStart={WEEK_START} officeId="office-honten" canEdit={true} />,
       );
+      // 既定タブは「週」。日タイムライン列 (tl-col) を出すため月曜タブへ切替える。
+      fireEvent.click(screen.getByTestId('course-day-tab-0'));
       expect(dndState.capturedHandlers.onDragEnd).toBeDefined();
       await act(async () => {
         await dndState.capturedHandlers.onDragEnd!({
-          active: { id: 'pool-patient:99999999-9999-9999-9999-999999999999' },
-          over: { id: 'course-day-cell:0:tpl-A:09:30' },
+          active: {
+            id: 'pool-patient:99999999-9999-9999-9999-999999999999',
+            rect: { current: { translated: { top: 10 + (timeToY('09:30') ?? 0) } } },
+          },
+          over: { id: 'tl-col:tpl-A:0', rect: { top: 10 } },
         });
       });
       expect(mockPlaceAndFix).toHaveBeenCalledOnce();
@@ -773,71 +789,11 @@ describe('CourseDayTablePanel — Wave U-3 戻る/進みボタン・キーボー
       expect(arg.op_group_id).toMatch(UUID_RE);
     });
 
-    it('U3-15. テーブル→テーブル DnD: delete と placeAndFix が同一 UUID を共有する', async () => {
-      mockDeleteVisit.mockResolvedValue(undefined);
-      mockPlaceAndFix.mockResolvedValue({ visit: {}, fixed_visit: null });
-      setupHooks({
-        templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
-        courses: [
-          {
-            id: 'course-1',
-            iso_year: ISO_YEAR,
-            iso_week: ISO_WEEK,
-            weekday: 0,
-            code: 'A',
-            office_id: 'office-honten',
-            assigned_staff_id: null,
-            course_status: 'course_fixed',
-            deleted_at: null,
-          },
-        ],
-        visits: [
-          {
-            id: 'v-1',
-            patient_id: 'p-1',
-            patient_name: '田中 太郎',
-            visit_date: '2026-05-04',
-            start_time: '10:00:00',
-            primary_staff_id: null,
-            course_id: 'course-1',
-            required_staff_count: 1,
-            type: 'regular',
-            status: 'planned',
-            source: 'allocate',
-            end_time: '10:30:00',
-          },
-        ],
-        patients: [
-          {
-            id: 'p-1',
-            name: '田中 太郎',
-            kana: null,
-            status: 'active',
-            address: '',
-            weekly_pattern: { service_minutes: 30 },
-          },
-        ],
-      });
-      renderWithClient(
-        <CourseDayTablePanel weekStart={WEEK_START} officeId="office-honten" canEdit={true} />,
-      );
-      expect(dndState.capturedHandlers.onDragEnd).toBeDefined();
-      await act(async () => {
-        await dndState.capturedHandlers.onDragEnd!({
-          active: { id: 'visit:v-1' },
-          over: { id: 'course-day-cell:1:tpl-A:11:00' }, // 火曜 11:00 へ移動
-        });
-      });
-      expect(mockDeleteVisit).toHaveBeenCalledOnce();
-      expect(mockPlaceAndFix).toHaveBeenCalledOnce();
-
-      const deleteArg = mockDeleteVisit.mock.calls[0][0] as Record<string, unknown>;
-      const placeArg = mockPlaceAndFix.mock.calls[0][0] as Record<string, unknown>;
-
-      // 両コールが同一の UUID を持つ
-      expect(typeof deleteArg.op_group_id).toBe('string');
-      expect(deleteArg.op_group_id).toMatch(UUID_RE);
-      expect(placeArg.op_group_id).toBe(deleteArg.op_group_id);
-    });
+    // U3-15 (テーブル→テーブル DnD: delete + placeAndFix が同一 UUID) は削除した.
+    //   Phase 2 で日テーブルを撤去し、`visit:` → `course-day-cell:` の
+    //   「delete + place-and-fix」経路そのものが production から消えたため
+    //   (タイムラインの移動は useVisitMoveWeekOnly の単一 BE 呼出で 2 段階 mutation ではない)。
+    //   「1 ユーザー操作 = 1 op_group_id」の担保は CourseDayTablePanel.test.tsx の G4-2
+    //   (tl-pair をプールへドロップ → 2 件の delete が同一 op_group_id を共有) が継承する。
   });
 });

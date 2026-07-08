@@ -1,5 +1,5 @@
 /**
- * Wave 27 Phase B-2/B-3: CourseDayTable event helpers 単体テスト.
+ * Wave 27 Phase B-2/B-3: courseGrid event helpers 単体テスト.
  *
  * カバーするシナリオ:
  *   1. getStaffEventsForWeekday — 月曜(0) に月曜日付の event を返す
@@ -12,7 +12,7 @@
  */
 import { describe, it, expect } from 'vitest';
 
-import { getStaffEventsForWeekday, hasEventConflict } from '../CourseDayTable';
+import { getStaffEventsForWeekday, hasEventConflict } from '../courseGrid';
 import type { EventRead } from '@/lib/schemas/staff-events';
 
 const makeEvent = (overrides: Partial<EventRead>): EventRead => ({

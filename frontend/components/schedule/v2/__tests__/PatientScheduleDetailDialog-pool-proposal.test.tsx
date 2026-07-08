@@ -15,6 +15,7 @@
 import * as React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 // ─── 共通モック ─────────────────────────────────────────────────────────────
 
@@ -25,6 +26,12 @@ const { mockToast, poolCandidateProps } = vi.hoisted(() => ({
 }));
 
 vi.mock('sonner', () => ({ toast: mockToast }));
+
+// enablePoolProposal=false 経路は BulkFixToPatternButton 系 (useSession 参照) まで
+// 描画に到達するため、SessionProvider の代わりにフックをモックする。
+vi.mock('next-auth/react', () => ({
+  useSession: () => ({ data: null, status: 'unauthenticated' }),
+}));
 
 vi.mock('lucide-react', () => ({
   Loader2: () => <span data-testid="loader" />,
@@ -173,8 +180,15 @@ describe('PatientScheduleDetailDialog プール投入提案 (Pool-detail 統合)
     expect(screen.queryByTestId('pool-candidate-stub')).not.toBeInTheDocument();
   });
 
-  it('enablePoolProposal=false (通常テーブル由来) ではセクションを出さない', () => {
-    render(<PatientScheduleDetailDialog {...COMMON_PROPS} enablePoolProposal={false} />);
+  // enablePoolProposal=false の分岐は「一括固定」ボタン群 (react-query 利用) まで
+  // 描画が進むため QueryClientProvider が要る。プール由来の他ケースは到達しない。
+  it('enablePoolProposal=false (プール由来でない場合) ではセクションを出さない', () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <PatientScheduleDetailDialog {...COMMON_PROPS} enablePoolProposal={false} />
+      </QueryClientProvider>,
+    );
 
     expect(screen.queryByTestId('patient-schedule-pool-proposal')).not.toBeInTheDocument();
     expect(screen.queryByTestId('pool-candidate-stub')).not.toBeInTheDocument();

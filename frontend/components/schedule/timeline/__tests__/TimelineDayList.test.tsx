@@ -272,4 +272,49 @@ describe('TimelineDayList', () => {
       expect(screen.getByTestId('tdl-week-only-chip-a').tagName).toBe('SPAN');
     });
   });
+
+  /** T-6撤去: 旧テーブルの ①/② と「相方: ...」注記が日リストへ移設されたことの担保。 */
+  describe('2名体制の相方情報 (T-6撤去に伴う移設)', () => {
+    it('相方が別セルなら通常色、プール残存なら警告色で出す', () => {
+      const { rerender } = render(
+        <TimelineDayList
+          courses={[
+            course({
+              key: 'c1',
+              visits: [
+                v({
+                  key: 'a',
+                  group_slot_label: 1,
+                  partner_location: { kind: 'cell', cellLabel: '本店-A', time: '15:00' },
+                }),
+              ],
+            }),
+          ]}
+        />,
+      );
+      expect(screen.getByTestId('tdl-slot-mark-a')).toHaveTextContent('①');
+      expect(screen.getByTestId('tdl-partner-note-a')).toHaveTextContent('相方: 本店-A 15:00');
+      expect(screen.getByTestId('tdl-partner-note-a').className).not.toContain('text-error');
+
+      rerender(
+        <TimelineDayList
+          courses={[
+            course({
+              key: 'c1',
+              visits: [v({ key: 'a', group_slot_label: 1, partner_location: { kind: 'pool' } })],
+            }),
+          ]}
+        />,
+      );
+      const note = screen.getByTestId('tdl-partner-note-a');
+      expect(note).toHaveTextContent('複数 ① のみ (相方未配置)');
+      expect(note.className).toContain('text-error');
+    });
+
+    it('通常患者には ①/② も注記も出ない', () => {
+      render(<TimelineDayList courses={[course({ key: 'c1', visits: [v({ key: 'a' })] })]} />);
+      expect(screen.queryByTestId('tdl-slot-mark-a')).toBeNull();
+      expect(screen.queryByTestId('tdl-partner-note-a')).toBeNull();
+    });
+  });
 });

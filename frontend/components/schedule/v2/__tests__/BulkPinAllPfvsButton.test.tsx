@@ -170,9 +170,12 @@ describe('BulkPinAllPfvsButton (Phase G-34)', () => {
     vi.clearAllMocks();
   });
 
-  it('1. canEdit=false のときボタンが描画されない', () => {
-    const { container } = render(<BulkPinAllPfvsButton canEdit={false} />);
-    expect(container.firstChild).toBeNull();
+  // RB (PO決定 2026-07-08): 全ロール同一表示・操作は権限どおり (8749c6a)。
+  it('1. canEdit=false のときボタンは描画されるが disabled', () => {
+    render(<BulkPinAllPfvsButton canEdit={false} />);
+    const buttons = screen.getAllByRole('button');
+    expect(buttons.length).toBeGreaterThan(0);
+    buttons.forEach((b) => expect(b).toBeDisabled());
   });
 
   it('2. canEdit=true → 全件ピン留め / 全件ピン留め解除 ボタンが描画される', () => {

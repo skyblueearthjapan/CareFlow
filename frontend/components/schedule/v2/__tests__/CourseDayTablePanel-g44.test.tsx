@@ -11,6 +11,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 const { dndState, mockToast } = vi.hoisted(() => ({
   dndState: {
@@ -62,37 +63,26 @@ vi.mock('next-auth/react', () => ({
 
 // CourseDayTablePanel と間接 import の icon を網羅 (Proxy はワーカークラッシュするため明示列挙).
 vi.mock('lucide-react', () => {
-  const Stub = () => <span />;
-  return {
-    ChevronLeft: Stub,
-    ChevronRight: Stub,
-    Inbox: Stub,
-    AlertTriangle: Stub,
-    Info: Stub,
-    User: Stub,
-    Users: Stub,
-    X: Stub,
-    Plus: Stub,
-    ChevronDown: Stub,
-    Star: Stub,
-    Loader2: Stub,
-    RefreshCw: Stub,
-    UserCheck: Stub,
-    Pin: Stub,
-    ArrowRight: Stub,
-    CheckCircle2: Stub,
-    DatabaseZap: Stub,
-    Lock: Stub,
-    Unlock: Stub,
-    Sparkles: Stub,
-    Pencil: Stub,
-    Bell: Stub,
-    Check: Stub,
-    ExternalLink: Stub,
-    UserX: Stub,
-    CalendarRange: Stub,
-    ListChecks: Stub,
+  const named: Record<string, () => React.ReactElement> = {
+    Loader2: () => <span data-testid="loader" />,
+    RefreshCw: () => <span data-testid="refresh-icon" />,
+    UserCheck: () => <span data-testid="user-check-icon" />,
+    Pin: () => <span data-testid="pin-icon" />,
+    Undo2: () => <span data-testid="undo-icon" />,
+    Redo2: () => <span data-testid="redo-icon" />,
   };
+  return new Proxy(named, {
+    get: (target, prop) => {
+      if (prop === '__esModule') return true;
+      // 'then' 等に関数を返すとモジュールが thenable 扱いされ await import が
+      // 永久に解決しない。アイコン名 (PascalCase) だけ自動生成する。
+      if (typeof prop !== 'string' || !/^[A-Z]/.test(prop)) return undefined;
+      // 毎回新しい関数を返すと React がコンポーネント型の変更とみなして
+      // 再マウントを繰り返すため、初回生成をキャッシュして識別性を安定させる。
+      if (!(prop in target)) target[prop] = () => <span />;
+      return target[prop];
+    },
+  });
 });
 
 vi.mock('@/components/ui/card', () => ({
@@ -227,6 +217,8 @@ vi.mock('@/lib/queries/offices', () => ({
 }));
 vi.mock('@/lib/queries/patients', () => ({
   usePatients: (...args: unknown[]) => mockPatients(...args),
+  // CreatePatientDialog (RegisterPatientButton 経由) が使用. noop で十分.
+  useCreatePatient: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 vi.mock('@/lib/queries/staff', () => ({
   useStaffList: (...args: unknown[]) => mockStaffList(...args),
@@ -248,6 +240,8 @@ vi.mock('@/lib/queries/generate_week', () => ({
 }));
 vi.mock('@/lib/queries/assign_staff_only', () => ({
   useAssignStaffOnly: () => ({ mutateAsync: mockAssignStaffOnly, isPending: false }),
+  // Phase G-91: panel が useApplyStaffReview を直接呼ぶため noop mock が必要.
+  useApplyStaffReview: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 vi.mock('@/lib/queries/g21', () => ({
   useTogglePfvPin: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
@@ -306,6 +300,7 @@ vi.mock('@/lib/queries/autoScheduleV2', () => ({
     error: null,
     isSuccess: false,
   }),
+  // UnassignAllStaffButton (toolbar) が使用. noop で十分.
   useUnassignAllStaffMutation: () => ({
     mutateAsync: vi.fn(),
     reset: vi.fn(),
@@ -313,6 +308,34 @@ vi.mock('@/lib/queries/autoScheduleV2', () => ({
     error: null,
     isSuccess: false,
   }),
+}));
+vi.mock('@/lib/queries/opLog', () => ({
+  useOpLogState: () => ({ data: undefined, isLoading: false }),
+  useUndoOpLog: () => ({
+    mutateAsync: vi.fn().mockResolvedValue(undefined),
+    isPending: false,
+  }),
+  useRedoOpLog: () => ({
+    mutateAsync: vi.fn().mockResolvedValue(undefined),
+    isPending: false,
+  }),
+  useInvalidateOpLog: () => vi.fn(),
+  OP_LOG_STATE_KEY: 'op-log-state',
+}));
+
+vi.mock('@/lib/queries/schedulingSettings', () => ({
+  useSchedulingSettings: () => ({ data: undefined, isLoading: false }),
+  useUpdateSchedulingSettings: () => ({ mutateAsync: vi.fn(), isPending: false }),
+}));
+
+vi.mock('@/lib/queries/visitMoveWeekOnly', () => ({
+  useVisitMoveWeekOnly: () => ({ mutateAsync: vi.fn(), isPending: false }),
+}));
+
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn(), refresh: vi.fn(), back: vi.fn() }),
+  usePathname: () => '/schedule',
+  useSearchParams: () => new URLSearchParams(),
 }));
 const mockUpdateEventDrag = vi.fn();
 vi.mock('@/lib/queries/staff-events', () => ({
@@ -419,6 +442,20 @@ const COMMON_COURSE = {
   deleted_at: null,
 };
 
+/** 全テスト共通: QueryClientProvider 配下で panel を描画する. */
+function renderPanel() {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={qc}>
+      <CourseDayTablePanel
+        weekStart={monday(2026, 5, 25)}
+        officeId="office-honten"
+        canEdit={true}
+      />
+    </QueryClientProvider>,
+  );
+}
+
 describe('CourseDayTablePanel — Phase G-44 「希望 vs 実」 pool 判定', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -456,13 +493,7 @@ describe('CourseDayTablePanel — Phase G-44 「希望 vs 実」 pool 判定', (
         },
       ],
     });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 25)}
-        officeId="office-honten"
-        canEdit={true}
-      />,
-    );
+    renderPanel();
     // 不足バッジ
     const badge = screen.getByTestId(`patient-card-shortage-badge-${SHORTAGE_PID}`);
     expect(badge.textContent).toMatch(/不足 2/);
@@ -522,13 +553,7 @@ describe('CourseDayTablePanel — Phase G-44 「希望 vs 実」 pool 判定', (
         },
       ],
     });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 25)}
-        officeId="office-honten"
-        canEdit={true}
-      />,
-    );
+    renderPanel();
     // pool 内に PatientCard 自体が描画されない (= pool 対象外).
     // shortage badge / label が無いことで間接検証.
     expect(screen.queryByTestId(`patient-card-shortage-${FULFILLED_PID}`)).toBeNull();
@@ -549,13 +574,7 @@ describe('CourseDayTablePanel — Phase G-44 「希望 vs 実」 pool 判定', (
         },
       ],
     });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 25)}
-        officeId="office-honten"
-        canEdit={true}
-      />,
-    );
+    renderPanel();
     // pool に表示されない (= shortage 表示の testid が存在しない).
     expect(screen.queryByTestId(`patient-card-shortage-${NO_DESIRE_PID}`)).toBeNull();
   });
@@ -575,13 +594,7 @@ describe('CourseDayTablePanel — Phase G-44 「希望 vs 実」 pool 判定', (
         },
       ],
     });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 25)}
-        officeId="office-honten"
-        canEdit={true}
-      />,
-    );
+    renderPanel();
     // 複数体制患者は slot 単位 (slot-0, slot-1) で別カード描画され、
     // shortage コンテナは出ない.
     expect(screen.queryByTestId(`patient-card-shortage-${MULTI_PID}`)).toBeNull();
@@ -604,13 +617,7 @@ describe('CourseDayTablePanel — Phase G-44 「希望 vs 実」 pool 判定', (
         },
       ],
     });
-    render(
-      <CourseDayTablePanel
-        weekStart={monday(2026, 5, 25)}
-        officeId="office-honten"
-        canEdit={true}
-      />,
-    );
+    renderPanel();
     const badge = screen.getByTestId(`patient-card-shortage-badge-${SHORTAGE_PID}`);
     expect(badge.textContent).toMatch(/不足 3/);
     const label = screen.getByTestId(`patient-card-shortage-label-${SHORTAGE_PID}`);

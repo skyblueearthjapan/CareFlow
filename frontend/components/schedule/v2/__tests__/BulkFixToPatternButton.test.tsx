@@ -120,11 +120,13 @@ describe('BulkFixToPatternButton (W9-FE2)', () => {
     vi.clearAllMocks();
   });
 
-  it('1. canEdit=false のとき (staff ロール相当) ボタンが描画されない', () => {
-    const { container } = render(
-      <BulkFixToPatternButton canEdit={false} isoYear={2026} isoWeek={20} />,
-    );
-    expect(container.firstChild).toBeNull();
+  // RB (PO決定 2026-07-08): 全ロール同一表示・操作は権限どおり。
+  // 旧仕様の「staff には描画しない」から「描画して disabled」へ変更 (8749c6a)。
+  it('1. canEdit=false のとき (staff ロール相当) ボタンは描画されるが disabled', () => {
+    render(<BulkFixToPatternButton canEdit={false} isoYear={2026} isoWeek={20} />);
+    const btn = screen.getByRole('button');
+    expect(btn).toBeInTheDocument();
+    expect(btn).toBeDisabled();
   });
 
   it('2. canEdit=true → ボタン → ダイアログ → 「実行」で from-week-bulk が呼ばれる', async () => {

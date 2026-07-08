@@ -32,6 +32,7 @@ import { genderPalette } from '@/lib/scheduling/timeline';
 import { CornerPushPin, PushPin, PushPinOff } from '@/components/ui/push-pin';
 import { VisitArrow } from './v2/VisitArrow';
 import { trimSeconds } from './v2/_autoScheduleUtils';
+import type { PartnerLocation } from './v2/courseGrid';
 import { PinScopeMenu, type PinScope } from './v2/PinScopeMenu';
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -101,6 +102,14 @@ export interface VisitListItem {
    * TimelineDayList に「今週のみ」チップを出す。既存 WeekdayScheduleCard は未使用。
    */
   source?: string | null;
+  /**
+   * T-6撤去: 2 名体制の slot (①/②) と相方の現在地。旧 CourseDayTable がセル下部に
+   * 出していた運用情報で、テーブル撤去に伴い日リスト/日タイムラインへ移設した。
+   * 提案系 (WeekdayScheduleCard) は未使用 (加算のみ)。
+   */
+  group_slot_label?: 1 | 2;
+  partner_location?: PartnerLocation | null;
+  partner_label?: string | null;
 }
 
 /** 1 コース分のサマリ. */
