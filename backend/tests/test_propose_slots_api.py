@@ -83,6 +83,7 @@ async def _seed_patient(
     lng: float,
     name: str | None = None,
     sex_restriction: str | None = None,
+    sex: str | None = None,
     requires_multiple_staff: bool = False,
 ) -> Patient:
     p = Patient(
@@ -93,6 +94,7 @@ async def _seed_patient(
         lng=lng,
         primary_office_id=office.id,
         sex_restriction=sex_restriction,
+        sex=sex,
         requires_multiple_staff=requires_multiple_staff,
     )
     db.add(p)
@@ -197,6 +199,7 @@ async def test_propose_returns_feasible_slots_ranked(client, db) -> None:
         lat=NEAR[0],
         lng=NEAR[1],
         sex_restriction="female_only",
+        sex="female",
     )
     await _seed_visit(db, patient=pn, course=course, start=time(9, 30), end=time(10, 0))
     await db.commit()
@@ -229,8 +232,14 @@ async def test_propose_returns_feasible_slots_ranked(client, db) -> None:
     for e in top["mini_schedule"]:
         assert "sex_restriction" in e
         assert "is_multi_staff" in e
+        # T-4: 性別ウォッシュ用フィールド (male/female/unknown/None).
+        assert "sex" in e
     ex1_row = next(e for e in top["mini_schedule"] if e["name"] == "P-EX1")
     assert ex1_row["sex_restriction"] == "female_only"
+    assert ex1_row["sex"] == "female"
+    # 提案行 (is_here) の sex は None 固定 (FE が対象患者マスタから補完する).
+    here_row = next(e for e in top["mini_schedule"] if e["is_here"])
+    assert here_row["sex"] is None
     # 課題1 (2名体制): 通常候補 (requires_multiple_staff 未指定) には 2名体制警告は出ない.
     assert all("two_staff_not_guaranteed" not in s["warnings"] for s in body["slots"])
 

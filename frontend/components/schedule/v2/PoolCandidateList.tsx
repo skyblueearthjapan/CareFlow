@@ -219,6 +219,8 @@ function buildMiniBeforeAfterRows(
         start: trimSeconds(r.time),
         kind: 'normal',
         condLabel: miniCondLabel(r),
+        // T-4: 性別ウォッシュ (BE が entry に載せる sex。旧BEは null=中立色)。
+        sex: r.sex ?? null,
       }),
     );
   const after: TimelineRow[] = mini.map(
@@ -227,6 +229,8 @@ function buildMiniBeforeAfterRows(
       name: r.is_here ? insertName : r.name,
       start: trimSeconds(r.time),
       kind: r.is_here ? 'in' : 'normal',
+      sex: r.sex ?? null,
+      // is_here 行 (採用対象) は患者マスタ由来の insertMeta (sex/address) が正。
       ...(r.is_here ? (insertMeta ?? {}) : {}),
       // entry 由来のピル (2名 含む) を優先。旧BE (未送出=null) は insertMeta 側で補完。
       condLabel: miniCondLabel(r) ?? (r.is_here ? (insertMeta?.condLabel ?? null) : null),
@@ -308,9 +312,9 @@ function MiniRow({ row }: { row: ProposeMiniScheduleEntry }) {
     );
   }
   // T-4: 既存訪問行はタイムラインのカード視覚言語 (角丸 + 左帯[3px] + ドット)。
-  // mini_schedule は patient_id を持たないため、隣の変更前→変更後パネルと同じく
-  // 中立色ウォッシュ (性別不明=砂色) で描く。
-  const pal = genderPalette(null);
+  // 性別ウォッシュは BE が entry に載せる sex (male/female/unknown) から。
+  // 旧BE (未送出) は中立色 (砂色) に劣化。
+  const pal = genderPalette(row.sex ?? null);
   return (
     <div className="flex items-center gap-2">
       <span className="tnum w-11 shrink-0 text-[11px] text-text-muted">

@@ -146,6 +146,9 @@ class ProposeMiniScheduleEntry(BaseModel):
         default=None, description="'female_only' | 'male_only' | None"
     )
     is_multi_staff: bool = Field(default=False, description="2名体制 (requires_multiple_staff) か")
+    # T-4: タイムラインのカード視覚言語 (性別ウォッシュ) 用。提案行 (is_here) は
+    # None 固定 (FE が対象患者マスタから補完する)。
+    sex: str | None = Field(default=None, description="'male' | 'female' | 'unknown' | None")
 
 
 class ProposeSlotItem(BaseModel):

@@ -352,6 +352,8 @@ async def load_week_course_buckets(
                 # (性別制限・2名体制) を出すため患者属性を流す.
                 sex_restriction=patient.sex_restriction,
                 requires_multiple_staff=bool(patient.requires_multiple_staff),
+                # T-4: 性別ウォッシュ (タイムラインのカード視覚言語) 用.
+                sex=patient.sex,
             )
         )
 
@@ -491,6 +493,8 @@ def _build_mini_schedule(
                 "is_pair": bool(pair_partner is not None and v.patient_name == pair_partner),
                 "sex_restriction": v.sex_restriction,
                 "is_multi_staff": bool(v.requires_multiple_staff),
+                # T-4: 性別ウォッシュ用 (male/female/unknown/None).
+                "sex": v.sex,
                 "_sort": _time_to_min(v.start_time),
             }
         )
@@ -503,6 +507,8 @@ def _build_mini_schedule(
             "is_pair": slot.same_address_pair,
             "sex_restriction": candidate_sex_restriction,
             "is_multi_staff": bool(candidate_requires_multiple_staff),
+            # T-4: 提案行 (is_here) の性別は FE が対象患者マスタから補完する (None 固定).
+            "sex": None,
             "_sort": _time_to_min(slot.start),
         }
     )

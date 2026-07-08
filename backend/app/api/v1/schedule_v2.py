@@ -2246,6 +2246,7 @@ def _mini_entries(mini: list[dict[str, object]] | None) -> list[ProposeMiniSched
             is_pair=bool(e["is_pair"]),
             sex_restriction=e.get("sex_restriction"),  # type: ignore[arg-type]
             is_multi_staff=bool(e.get("is_multi_staff", False)),
+            sex=e.get("sex"),  # type: ignore[arg-type]
         )
         for e in mini
     ]

@@ -70,6 +70,9 @@ export const proposeMiniScheduleEntrySchema = z.object({
   // 表示統一: 通常リストと同じ色分け用 (性別制限・2名体制). 旧BEは未送出 → default。
   sex_restriction: z.string().nullish(),
   is_multi_staff: z.boolean().default(false),
+  // T-4: 性別ウォッシュ用 (male/female/unknown)。提案行 (is_here) は BE が None 固定
+  // (FE が対象患者マスタから補完)。旧BEは未送出 → nullish。
+  sex: z.string().nullish(),
 });
 export type ProposeMiniScheduleEntry = z.infer<typeof proposeMiniScheduleEntrySchema>;
 

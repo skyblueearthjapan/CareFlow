@@ -42,10 +42,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 import { ApiError } from '@/lib/api-client';
 import { proposeWarningLabel } from '@/lib/queries/fieldBoard';
-import {
-  usePoolBulkApplyMutation,
-  usePoolBulkSimulateMutation,
-} from '@/lib/queries/poolBulk';
+import { usePoolBulkApplyMutation, usePoolBulkSimulateMutation } from '@/lib/queries/poolBulk';
+import { usePatients } from '@/lib/queries/patients';
 import { useStaffList } from '@/lib/queries/staff';
 import type {
   V2CourseSummary,
@@ -105,7 +103,12 @@ function overcapCount(entry: { overcapacity_available_count?: number }): number 
  * W-15: capacity_full を追加。定員起因の患者は方式b の「定員+1名」バッジ (W-5b) と併存して
  * 「ずらせば入る手を探せます」バッジも表示し、管理者が両導線から選べるようにする。
  */
-const UNBLOCK_TRIGGER_REASONS = ['no_gap', 'no_pair_slot', 'travel_shortage', 'capacity_full'] as const;
+const UNBLOCK_TRIGGER_REASONS = [
+  'no_gap',
+  'no_pair_slot',
+  'travel_shortage',
+  'capacity_full',
+] as const;
 
 function isTimeBlockerReason(reason: string): boolean {
   return (UNBLOCK_TRIGGER_REASONS as readonly string[]).includes(reason);
@@ -298,8 +301,12 @@ export function BulkPoolInsertDialog({
       <DialogContent
         className="max-h-[92vh] max-w-5xl overflow-y-auto"
         data-testid="bulk-pool-insert-dialog"
-        onEscapeKeyDown={(e) => { if (anyBusy) e.preventDefault(); }}
-        onInteractOutside={(e) => { if (anyBusy) e.preventDefault(); }}
+        onEscapeKeyDown={(e) => {
+          if (anyBusy) e.preventDefault();
+        }}
+        onInteractOutside={(e) => {
+          if (anyBusy) e.preventDefault();
+        }}
       >
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
@@ -617,9 +624,7 @@ function OfficeBulkPanel({
         state_token: result.state_token,
       });
       setAppliedSummary({ patients: res.applied_patients, slots: res.applied_slots });
-      toast.success(
-        `${res.applied_patients}名 ${res.applied_slots}枠を固定訪問週間に登録しました`,
-      );
+      toast.success(`${res.applied_patients}名 ${res.applied_slots}枠を固定訪問週間に登録しました`);
       for (const w of res.warnings.slice(0, 3)) toast.warning(w);
       if (res.warnings.length > 3) {
         toast.warning(`他 ${res.warnings.length - 3} 件の警告があります`);
@@ -642,220 +647,224 @@ function OfficeBulkPanel({
     <>
       {/* ── simulating: spinner ── */}
       {stage === 'simulating' ? (
-          <div
-            className="flex flex-col items-center justify-center gap-2 py-16 text-sm text-text-muted"
-            data-testid="bulk-pool-insert-loading"
-          >
-            <Loader2 className="h-6 w-6 animate-spin" aria-hidden />
-            プールの投入シミュレーションを計算中…（数秒かかる場合があります）
-          </div>
-        ) : null}
+        <div
+          className="flex flex-col items-center justify-center gap-2 py-16 text-sm text-text-muted"
+          data-testid="bulk-pool-insert-loading"
+        >
+          <Loader2 className="h-6 w-6 animate-spin" aria-hidden />
+          プールの投入シミュレーションを計算中…（数秒かかる場合があります）
+        </div>
+      ) : null}
 
-        {/* ── done: 結果サマリ ── */}
-        {stage === 'done' && appliedSummary ? (
-          <div
-            className="flex flex-col items-center justify-center gap-3 py-8 text-center"
-            data-testid="bulk-pool-insert-done"
+      {/* ── done: 結果サマリ ── */}
+      {stage === 'done' && appliedSummary ? (
+        <div
+          className="flex flex-col items-center justify-center gap-3 py-8 text-center"
+          data-testid="bulk-pool-insert-done"
+        >
+          <CheckCircle2 className="h-10 w-10 text-emerald-600" aria-hidden />
+          <div className="text-base font-semibold text-text-primary">
+            {appliedSummary.patients}名 {appliedSummary.slots}枠を固定訪問週間に登録しました
+          </div>
+          <p className="max-w-md text-xs text-text-muted">
+            固定訪問週間（毎週の型）に登録され、今週のスケジュールにも反映されました。
+            ダイアログを閉じると画面に反映されます。
+          </p>
+
+          {/* A 案: 投入できなかった患者を個別フロー (方式b の定員+1 相談) へ橋渡し。 */}
+          <DoneRemainingList
+            result={result}
+            onOpenPatientDetail={onOpenPatientDetail ? openPatientDetail : undefined}
+          />
+        </div>
+      ) : null}
+
+      {/* ── previewing / applying: プレビュー本体 (適用中も表示し続ける) ── */}
+      {(stage === 'previewing' || stage === 'applying') && result ? (
+        <div className="space-y-3 py-2" data-testid="bulk-pool-insert-preview">
+          {/* 「見せる」1: 常時アンバーバナー (閉じられない). */}
+          <Alert variant="warning" data-testid="bulk-pool-insert-banner">
+            <AlertTriangle className="h-4 w-4" aria-hidden />
+            <AlertTitle>この操作は元に戻せません（Ctrl+Z 対象外）</AlertTitle>
+            <AlertDescription>
+              適用すると{' '}
+              <strong>
+                {placedPatients}名 {placedSlots}枠が固定訪問週間（毎週の型）に登録
+              </strong>
+              され、<strong>今週のスケジュールにも即反映</strong>されます。
+              この操作は元に戻す（Ctrl+Z）の対象外です。
+            </AlertDescription>
+          </Alert>
+
+          {/* KPI タイル (投入 / 部分 / 投入不能 / 移動時間). */}
+          <section
+            className="grid grid-cols-2 gap-2 sm:grid-cols-4"
+            data-testid="bulk-pool-insert-kpi"
           >
-            <CheckCircle2 className="h-10 w-10 text-emerald-600" aria-hidden />
-            <div className="text-base font-semibold text-text-primary">
-              {appliedSummary.patients}名 {appliedSummary.slots}枠を固定訪問週間に登録しました
+            <div className="rounded border border-border-default p-2">
+              <div className="text-[10px] text-text-muted">投入</div>
+              <div className="tnum text-sm font-semibold text-text-primary">
+                {placedPatients}名 / {placedSlots}枠
+              </div>
             </div>
-            <p className="max-w-md text-xs text-text-muted">
-              固定訪問週間（毎週の型）に登録され、今週のスケジュールにも反映されました。
-              ダイアログを閉じると画面に反映されます。
-            </p>
-
-            {/* A 案: 投入できなかった患者を個別フロー (方式b の定員+1 相談) へ橋渡し。 */}
-            <DoneRemainingList
-              result={result}
-              onOpenPatientDetail={onOpenPatientDetail ? openPatientDetail : undefined}
-            />
-          </div>
-        ) : null}
-
-        {/* ── previewing / applying: プレビュー本体 (適用中も表示し続ける) ── */}
-        {(stage === 'previewing' || stage === 'applying') && result ? (
-          <div className="space-y-3 py-2" data-testid="bulk-pool-insert-preview">
-            {/* 「見せる」1: 常時アンバーバナー (閉じられない). */}
-            <Alert variant="warning" data-testid="bulk-pool-insert-banner">
-              <AlertTriangle className="h-4 w-4" aria-hidden />
-              <AlertTitle>この操作は元に戻せません（Ctrl+Z 対象外）</AlertTitle>
-              <AlertDescription>
-                適用すると <strong>{placedPatients}名 {placedSlots}枠が固定訪問週間（毎週の型）に登録</strong>
-                され、<strong>今週のスケジュールにも即反映</strong>されます。
-                この操作は元に戻す（Ctrl+Z）の対象外です。
-              </AlertDescription>
-            </Alert>
-
-            {/* KPI タイル (投入 / 部分 / 投入不能 / 移動時間). */}
-            <section
-              className="grid grid-cols-2 gap-2 sm:grid-cols-4"
-              data-testid="bulk-pool-insert-kpi"
-            >
-              <div className="rounded border border-border-default p-2">
-                <div className="text-[10px] text-text-muted">投入</div>
-                <div className="tnum text-sm font-semibold text-text-primary">
-                  {placedPatients}名 / {placedSlots}枠
-                </div>
+            <div className="rounded border border-border-default p-2">
+              <div className="text-[10px] text-text-muted">部分投入</div>
+              <div className="tnum text-sm font-semibold text-text-primary">
+                {result.partial.length}名
               </div>
-              <div className="rounded border border-border-default p-2">
-                <div className="text-[10px] text-text-muted">部分投入</div>
-                <div className="tnum text-sm font-semibold text-text-primary">
-                  {result.partial.length}名
-                </div>
+            </div>
+            <div className="rounded border border-border-default p-2">
+              <div className="text-[10px] text-text-muted">投入不能</div>
+              <div className="tnum text-sm font-semibold text-text-primary">
+                {result.unplaced.length}名
               </div>
-              <div className="rounded border border-border-default p-2">
-                <div className="text-[10px] text-text-muted">投入不能</div>
-                <div className="tnum text-sm font-semibold text-text-primary">
-                  {result.unplaced.length}名
-                </div>
+            </div>
+            <div className="rounded border border-border-default p-2">
+              <div className="text-[10px] text-text-muted">移動時間 (分)</div>
+              <div className="tnum text-sm font-semibold text-text-primary">
+                {result.kpi.travel_minutes_before} → {result.kpi.travel_minutes_after}
               </div>
-              <div className="rounded border border-border-default p-2">
-                <div className="text-[10px] text-text-muted">移動時間 (分)</div>
-                <div className="tnum text-sm font-semibold text-text-primary">
-                  {result.kpi.travel_minutes_before} → {result.kpi.travel_minutes_after}
-                </div>
-                <div className="tnum text-[10px] text-text-muted">
-                  {result.kpi.travel_km_before.toFixed(1)} → {result.kpi.travel_km_after.toFixed(1)} km
-                </div>
+              <div className="tnum text-[10px] text-text-muted">
+                {result.kpi.travel_km_before.toFixed(1)} → {result.kpi.travel_km_after.toFixed(1)}{' '}
+                km
               </div>
-            </section>
+            </div>
+          </section>
 
-            <div className="grid grid-cols-1 gap-3 lg:grid-cols-[300px_1fr]">
-              {/* 左カラム: 投入リスト + 部分/不能. */}
-              <InsertListColumn result={result} />
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-[300px_1fr]">
+            {/* 左カラム: 投入リスト + 部分/不能. */}
+            <InsertListColumn result={result} />
 
-              {/* 右カラム: 全体 + 曜日タブ (Before/After). */}
-              <div className="min-w-0">
-                <Tabs value={activeTab} onValueChange={setActiveTab}>
-                  <TabsList className="flex w-full flex-wrap gap-1 bg-bg-muted">
-                    <TabsTrigger value="all" data-testid="bulk-pool-insert-tab-all">
-                      全体
+            {/* 右カラム: 全体 + 曜日タブ (Before/After). */}
+            <div className="min-w-0">
+              <Tabs value={activeTab} onValueChange={setActiveTab}>
+                <TabsList className="flex w-full flex-wrap gap-1 bg-bg-muted">
+                  <TabsTrigger value="all" data-testid="bulk-pool-insert-tab-all">
+                    全体
+                  </TabsTrigger>
+                  {DISPLAY_WEEKDAYS.map((wd) => (
+                    <TabsTrigger
+                      key={wd}
+                      value={String(wd)}
+                      data-testid={`bulk-pool-insert-tab-${wd}`}
+                    >
+                      {WEEKDAY_LABELS[wd]}
                     </TabsTrigger>
-                    {DISPLAY_WEEKDAYS.map((wd) => (
-                      <TabsTrigger
-                        key={wd}
-                        value={String(wd)}
-                        data-testid={`bulk-pool-insert-tab-${wd}`}
-                      >
-                        {WEEKDAY_LABELS[wd]}
-                      </TabsTrigger>
-                    ))}
-                  </TabsList>
+                  ))}
+                </TabsList>
 
-                  <TabsContent value="all" data-testid="bulk-pool-insert-panel-all">
-                    <AllWeekBeforeAfter proposals={result.week_before_after} />
-                  </TabsContent>
+                <TabsContent value="all" data-testid="bulk-pool-insert-panel-all">
+                  <AllWeekBeforeAfter proposals={result.week_before_after} />
+                </TabsContent>
 
-                  {DISPLAY_WEEKDAYS.map((wd) => {
-                    const wp = result.week_before_after.find((w) => w.weekday === wd);
-                    return (
-                      <TabsContent
-                        key={wd}
-                        value={String(wd)}
-                        data-testid={`bulk-pool-insert-panel-${wd}`}
-                      >
-                        {wp ? (
-                          <WeekdayBeforeAfter
-                            weekday={wd}
-                            proposal={wp}
-                            insertedKeys={insertedKeys}
-                          />
-                        ) : (
-                          <div className="py-6 text-center text-xs text-text-muted">
-                            {WEEKDAY_LABELS[wd]}曜日の投入はありません
-                          </div>
-                        )}
-                      </TabsContent>
-                    );
-                  })}
-                </Tabs>
-              </div>
+                {DISPLAY_WEEKDAYS.map((wd) => {
+                  const wp = result.week_before_after.find((w) => w.weekday === wd);
+                  return (
+                    <TabsContent
+                      key={wd}
+                      value={String(wd)}
+                      data-testid={`bulk-pool-insert-panel-${wd}`}
+                    >
+                      {wp ? (
+                        <WeekdayBeforeAfter
+                          weekday={wd}
+                          proposal={wp}
+                          insertedKeys={insertedKeys}
+                        />
+                      ) : (
+                        <div className="py-6 text-center text-xs text-text-muted">
+                          {WEEKDAY_LABELS[wd]}曜日の投入はありません
+                        </div>
+                      )}
+                    </TabsContent>
+                  );
+                })}
+              </Tabs>
             </div>
           </div>
-        ) : null}
+        </div>
+      ) : null}
 
-        {/* ── フッター: ステージ別 ── */}
-        {(stage === 'previewing' || stage === 'applying') && result ? (
-          <div
-            className="mt-4 rounded-lg border border-border-default bg-bg-muted p-4"
-            data-testid="bulk-pool-insert-footer"
-          >
-            {/* 「見せる」2: 必須チェックボックス. */}
-            <label className="mb-3 flex items-start gap-2 text-sm text-text-primary">
-              <Checkbox
-                checked={confirmed}
-                onCheckedChange={(v) => setConfirmed(v === true)}
-                className="mt-0.5"
-                data-testid="bulk-pool-insert-confirm-checkbox"
-              />
-              <span>固定訪問週間（毎週の型）が変わることを確認しました</span>
-            </label>
-            <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => void runSimulate()}
-                disabled={isBusy}
-                data-testid="bulk-pool-insert-recompute-button"
-              >
-                <RefreshCw className="mr-1 h-4 w-4" aria-hidden />
-                再計算
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={handleClose}
-                disabled={isBusy}
-                data-testid="bulk-pool-insert-cancel-button"
-              >
-                閉じる
-              </Button>
-              {/* 「見せる」3: 適用ボタン文言に登録内容を明記. */}
-              <Button
-                type="button"
-                onClick={() => void handleApply()}
-                disabled={!confirmed || isBusy || placedSlots === 0}
-                data-testid="bulk-pool-insert-apply-button"
-              >
-                {stage === 'applying' ? (
-                  <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
-                ) : (
-                  <CalendarRange className="mr-1 h-4 w-4" aria-hidden />
-                )}
-                固定訪問週間に登録する（{placedPatients}名・{placedSlots}枠）
-              </Button>
-            </div>
-          </div>
-        ) : stage === 'done' ? (
-          <DialogFooter>
+      {/* ── フッター: ステージ別 ── */}
+      {(stage === 'previewing' || stage === 'applying') && result ? (
+        <div
+          className="mt-4 rounded-lg border border-border-default bg-bg-muted p-4"
+          data-testid="bulk-pool-insert-footer"
+        >
+          {/* 「見せる」2: 必須チェックボックス. */}
+          <label className="mb-3 flex items-start gap-2 text-sm text-text-primary">
+            <Checkbox
+              checked={confirmed}
+              onCheckedChange={(v) => setConfirmed(v === true)}
+              className="mt-0.5"
+              data-testid="bulk-pool-insert-confirm-checkbox"
+            />
+            <span>固定訪問週間（毎週の型）が変わることを確認しました</span>
+          </label>
+          <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
             <Button
               type="button"
+              variant="outline"
+              onClick={() => void runSimulate()}
+              disabled={isBusy}
+              data-testid="bulk-pool-insert-recompute-button"
+            >
+              <RefreshCw className="mr-1 h-4 w-4" aria-hidden />
+              再計算
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
               onClick={handleClose}
-              data-testid="bulk-pool-insert-done-close-button"
+              disabled={isBusy}
+              data-testid="bulk-pool-insert-cancel-button"
             >
               閉じる
             </Button>
-          </DialogFooter>
-        ) : stage === 'idle' ? (
-          <DialogFooter>
-            <div className="flex gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => void runSimulate()}
-                data-testid="bulk-pool-insert-recompute-button"
-              >
-                <RefreshCw className="mr-1 h-4 w-4" aria-hidden />
-                再計算
-              </Button>
-              <Button type="button" variant="outline" onClick={handleClose}>
-                閉じる
-              </Button>
-            </div>
-          </DialogFooter>
-        ) : null}
+            {/* 「見せる」3: 適用ボタン文言に登録内容を明記. */}
+            <Button
+              type="button"
+              onClick={() => void handleApply()}
+              disabled={!confirmed || isBusy || placedSlots === 0}
+              data-testid="bulk-pool-insert-apply-button"
+            >
+              {stage === 'applying' ? (
+                <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
+              ) : (
+                <CalendarRange className="mr-1 h-4 w-4" aria-hidden />
+              )}
+              固定訪問週間に登録する（{placedPatients}名・{placedSlots}枠）
+            </Button>
+          </div>
+        </div>
+      ) : stage === 'done' ? (
+        <DialogFooter>
+          <Button
+            type="button"
+            onClick={handleClose}
+            data-testid="bulk-pool-insert-done-close-button"
+          >
+            閉じる
+          </Button>
+        </DialogFooter>
+      ) : stage === 'idle' ? (
+        <DialogFooter>
+          <div className="flex gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => void runSimulate()}
+              data-testid="bulk-pool-insert-recompute-button"
+            >
+              <RefreshCw className="mr-1 h-4 w-4" aria-hidden />
+              再計算
+            </Button>
+            <Button type="button" variant="outline" onClick={handleClose}>
+              閉じる
+            </Button>
+          </div>
+        </DialogFooter>
+      ) : null}
     </>
   );
 }
@@ -871,8 +880,7 @@ function InsertListColumn({ result }: { result: PoolBulkSimulateResponse }) {
     result.unplaced.some((u) => overcapCount(u) >= 1);
   // W-14: 部分投入/投入不能に時間起因 (no_gap 等) がある場合も同じヒント行で案内する。
   const hasTimeBlockerEntry =
-    result.partial.some(partialHasTimeBlocker) ||
-    result.unplaced.some(unplacedHasTimeBlocker);
+    result.partial.some(partialHasTimeBlocker) || result.unplaced.some(unplacedHasTimeBlocker);
 
   return (
     <div className="space-y-2" data-testid="bulk-pool-insert-list">
@@ -910,7 +918,10 @@ function InsertListColumn({ result }: { result: PoolBulkSimulateResponse }) {
           </div>
           <ul className="divide-y divide-amber-200 dark:divide-amber-700">
             {result.partial.map((p) => (
-              <li key={p.patient_id} className="px-2 py-1.5 text-[11px] text-amber-900 dark:text-amber-200">
+              <li
+                key={p.patient_id}
+                className="px-2 py-1.5 text-[11px] text-amber-900 dark:text-amber-200"
+              >
                 <div className="flex flex-wrap items-center gap-1 font-medium">
                   <span>
                     {p.patient_name}（{p.placed_days}枠投入 / {p.missing_days}枠不足）
@@ -993,7 +1004,8 @@ function PlacementRow({ placement: p }: { placement: PoolBulkPlacement }) {
         </span>
         {p.delta_minutes != null ? (
           <Badge variant="secondary" className="tnum text-[9px]">
-            コースの移動 {Math.round(p.delta_minutes) <= 0 ? '±0' : `+${Math.round(p.delta_minutes)}`}分
+            コースの移動{' '}
+            {Math.round(p.delta_minutes) <= 0 ? '±0' : `+${Math.round(p.delta_minutes)}`}分
           </Badge>
         ) : null}
       </div>
@@ -1171,6 +1183,8 @@ function toCourseListItems(
   courses: V2CourseSummary[],
   weekday: number,
   insertedKeys: Set<string>,
+  // T-4: 患者 ID → 性別 (患者マスタ FE join)。性別ウォッシュ表示用。
+  sexOf?: (patientId: string) => string | null,
 ): CourseListItem[] {
   const sorted = [...courses].sort((a, b) => {
     const ofA = a.office_name ?? a.office_id;
@@ -1199,6 +1213,8 @@ function toCourseListItems(
         same_address_group_id: v.same_address_group_id,
         distance_to_next_km: v.distance_to_next_km,
         duration_min: v.duration_min,
+        // T-4: 性別ウォッシュ (simulate レスポンスに sex が無いため患者マスタから補完)。
+        patient_sex: sexOf?.(v.patient_id) ?? null,
       };
     }),
   }));
@@ -1213,15 +1229,28 @@ function WeekdayBeforeAfter({
   proposal: V2WeekdayBeforeAfter;
   insertedKeys: Set<string>;
 }) {
+  // T-4: 性別ウォッシュ用の患者マスタ FE join。simulate レスポンスは sex を持たない。
+  // Panel と同一キー (usePatients limit=500) のため React Query がキャッシュ共有する
+  // (AllWeekBeforeAfter の useStaffList と同方針)。
+  const patientsQuery = usePatients({ limit: 500 });
+  const sexByPatientId = React.useMemo(() => {
+    const m = new Map<string, string | null>();
+    for (const p of patientsQuery.data?.items ?? []) m.set(p.id, p.sex ?? null);
+    return m;
+  }, [patientsQuery.data]);
+  const sexOf = React.useCallback(
+    (patientId: string) => sexByPatientId.get(patientId) ?? null,
+    [sexByPatientId],
+  );
   const beforeTotal = totalsFor(proposal.before.courses);
   const afterTotal = totalsFor(proposal.after.courses);
   const beforeItems = React.useMemo(
-    () => toCourseListItems(proposal.before.courses, weekday, new Set()),
-    [proposal.before.courses, weekday],
+    () => toCourseListItems(proposal.before.courses, weekday, new Set(), sexOf),
+    [proposal.before.courses, weekday, sexOf],
   );
   const afterItems = React.useMemo(
-    () => toCourseListItems(proposal.after.courses, weekday, insertedKeys),
-    [proposal.after.courses, weekday, insertedKeys],
+    () => toCourseListItems(proposal.after.courses, weekday, insertedKeys, sexOf),
+    [proposal.after.courses, weekday, insertedKeys, sexOf],
   );
   return (
     <div

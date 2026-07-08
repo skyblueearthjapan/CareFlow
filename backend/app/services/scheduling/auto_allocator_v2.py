@@ -526,6 +526,10 @@ class V2Visit:
     # sex_restriction="female_only"/"male_only"/None.
     time_type: str | None = None
     sex_restriction: str | None = None
+    # T-4 (2026-07-08): 患者性別 (male/female/unknown)。提案系タイムラインの性別
+    # ウォッシュ表示用。現状 populate するのは propose_slots_service のみ (他経路は
+    # None のまま = FE が中立色で描く)。
+    sex: str | None = None
     # W41 v2 (H2 視覚化): 同住所グループ id. UI で「📍 同住所 (N 名)」表示用.
     # API レスポンス構築時に _assign_same_address_groups で割当てる.
     same_address_group_id: str | None = None
