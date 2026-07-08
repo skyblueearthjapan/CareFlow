@@ -776,9 +776,11 @@ function EventBandView({
   const durMin = e - s;
   const bandH = Math.max(durationToHeight(e - s) - 3, 22);
   // 高さに応じて情報を段階表示 (訪問カードと同じ方針・PO要望 2026-07-08: 情報を増やす)。
-  // 1段 = 種別/タイトル + 時刻レンジ / 2段目 = 時刻・所要分 + 参加者名 / 3段目 = 備考。
+  // 1段目 = タイトル (+低い帯は開始時刻) / 2段目 = 時刻・所要分・種別・担当 /
+  // 3段目 = 備考 + カイポケ反映外バッジ。バッジは 1・2段目に置かない
+  // (固定幅要素が並ぶと狭い列ではみ出して欠ける — PO指摘 2026-07-08 第2報)。
   const showTimeRow = bandH >= 40;
-  const showNoteRow = bandH >= TL_SHOW_ADDR_PX + 14 && Boolean(ev.note);
+  const showMetaRow = bandH >= 48;
   const bandStyle = {
     top: minutesToY(s) + 1,
     height: bandH,
@@ -804,22 +806,14 @@ function EventBandView({
         >
           {evLabel}
         </span>
-        {/* 低い帯 (2行目なし) だけ開始時刻とバッジを1行目に置く (タイトル優先で truncate)。 */}
+        {/* 低い帯 (2行目なし) だけ開始時刻を1行目末尾に置く (タイトル優先で truncate)。 */}
         {!showTimeRow && (
-          <>
-            <span
-              className="tnum shrink-0 text-[9.5px] opacity-80"
-              style={{ color: 'var(--sched-event-ink)' }}
-            >
-              {fmt(s)}〜
-            </span>
-            <span
-              className="shrink-0 whitespace-nowrap rounded-full border bg-bg-base px-1 py-px text-[8.5px] font-bold"
-              style={{ color: 'var(--sched-event-ink)', borderColor: 'var(--sched-event-ln)' }}
-            >
-              反映外
-            </span>
-          </>
+          <span
+            className="tnum shrink-0 text-[9.5px] opacity-80"
+            style={{ color: 'var(--sched-event-ink)' }}
+          >
+            {fmt(s)}〜
+          </span>
         )}
       </span>
       {showTimeRow && (
@@ -833,20 +827,27 @@ function EventBandView({
           <span className="min-w-0 truncate">
             {ev.type}・担当: {col.assignedStaff?.name ?? '（未割当）'}
           </span>
+        </span>
+      )}
+      {/* 3段目: 備考 (伸縮・truncate) + カイポケ反映外バッジ (この行にだけ置く)。
+          固定幅はバッジのみなので狭い列でもはみ出さない。低い帯ではバッジ非表示
+          (ツールチップに常に明記)。 */}
+      {showMetaRow && (
+        <span className="flex min-w-0 items-center gap-1.5">
+          {ev.note ? (
+            <span
+              className="min-w-0 truncate text-[9px] opacity-75"
+              style={{ color: 'var(--sched-event-ink)' }}
+            >
+              📝 {ev.note}
+            </span>
+          ) : null}
           <span
             className="ml-auto shrink-0 whitespace-nowrap rounded-full border bg-bg-base px-1.5 py-px text-[8.5px] font-bold"
             style={{ color: 'var(--sched-event-ink)', borderColor: 'var(--sched-event-ln)' }}
           >
             カイポケ反映外
           </span>
-        </span>
-      )}
-      {showNoteRow && (
-        <span
-          className="min-w-0 truncate text-[9px] opacity-75"
-          style={{ color: 'var(--sched-event-ink)' }}
-        >
-          📝 {ev.note}
         </span>
       )}
     </>
