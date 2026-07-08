@@ -13,7 +13,12 @@ export function AppShell({ children }: AppShellProps) {
   const setSidebarCollapsed = useUIStore((s) => s.setSidebarCollapsed);
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-bg-window p-[14px]">
+    // 100dvh: WebView/PWA では 100vh がビューポート実寸より大きく計算され下端が
+    // 画面外に欠けるため、対応環境では dvh を優先する (非対応は h-screen にフォールバック)。
+    <div
+      className="flex h-screen w-screen overflow-hidden bg-bg-window p-[14px]"
+      style={{ height: '100dvh' }}
+    >
       <div className="flex h-full w-full overflow-hidden rounded-xl bg-bg-base shadow-md">
         <Sidebar collapsed={collapsed} />
         <div className="flex flex-1 flex-col overflow-hidden">

@@ -3009,7 +3009,9 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         {/* Wave 19: 2 ペイン レイアウト — メイン (1fr) + プール (320px)。
             lg 以上は残り高さを占有し、左右それぞれが内部スクロール。 */}
         <div
-          className="grid grid-cols-1 gap-4 lg:min-h-0 lg:flex-1 lg:grid-cols-[1fr_320px]"
+          // lg:grid-rows-[minmax(0,1fr)]: 行トラックを内容高でなくコンテナ高に固定する
+          // (これが無いと行が内容ぶん伸びて下端がはみ出し、内部スクロールが効かない)。
+          className="grid grid-cols-1 gap-4 lg:min-h-0 lg:flex-1 lg:grid-cols-[1fr_320px] lg:grid-rows-[minmax(0,1fr)]"
           data-testid="course-day-two-pane"
         >
           {/* 左ペイン: コーステーブル群 (lg 以上はこの中だけ縦スクロール)。
