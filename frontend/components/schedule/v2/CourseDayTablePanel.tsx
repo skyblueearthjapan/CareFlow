@@ -175,12 +175,12 @@ import {
 import { TimelineMoveDialog } from '@/components/schedule/timeline/TimelineMoveDialog';
 import { useVisitMoveWeekOnly } from '@/lib/queries/visitMoveWeekOnly';
 import type { ChangeScopeValue } from '@/components/schedule/v2/ChangeScopeChoice';
-// T-2 ②-a: 空き枠クリック → 登録モーダル (訪問=place-and-fix / イベント=EventAddDialog 流用).
+// T-2 ②-a: 空き枠クリック → 登録モーダル (訪問=place-and-fix / イベント=複数スタッフ一括登録).
 import {
   SlotRegisterDialog,
   type SlotPatientOption,
 } from '@/components/schedule/timeline/SlotRegisterDialog';
-import { EventAddDialog } from '@/app/(app)/staff/[id]/_components/EventAddDialog';
+import { TimelineEventAddDialog } from '@/components/schedule/timeline/TimelineEventAddDialog';
 import { EventEditDialog } from '@/app/(app)/staff/[id]/_components/EventEditDialog';
 // Phase G-88: 営業時間設定を空き枠表示に反映 (取得前/失敗時は既定枠にフォールバック).
 import { useSchedulingSettings } from '@/lib/queries/schedulingSettings';
@@ -1323,14 +1323,15 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
 
   // ─── T-2 ②-a: 空き枠クリック → 登録モーダル ──────────────────────────
   // タイムラインの空き枠クリックで開く。訪問=place-and-fix (fix_pattern=false =
-  // この週だけ・プールDnDと同じ契約/トースト昇格)、会議・イベント=既存 EventAddDialog
-  // (担当スタッフ宛・カイポケ反映外) へ切替。canEdit のときだけ配線する。
+  // この週だけ・プールDnDと同じ契約/トースト昇格)、会議・イベント=TimelineEventAddDialog
+  // (D-1: 全スタッフから複数選択・カイポケ反映外) へ切替。canEdit のときだけ配線する。
   const [slotRegState, setSlotRegState] = useState<{
     col: TimelineCourseColumn;
     gap: FreeGap;
   } | null>(null);
   const [slotEventState, setSlotEventState] = useState<{
-    staffId: string;
+    /** 起動元の列の担当 (既定選択)。未割当列からは null = 選択なしで開く。 */
+    staffId: string | null;
     date: string;
     startHM: string;
     endHM: string;
@@ -1418,13 +1419,10 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
 
   const handleSlotSwitchToEvent = useCallback(() => {
     if (!slotRegState) return;
-    const staff = slotRegState.col.assignedStaff;
-    if (!staff) {
-      toast.warning('担当スタッフが未割当のコースにはイベントを登録できません');
-      return;
-    }
+    // D-1: 複数スタッフ選択ダイアログになったため、未割当コースからも起動できる
+    // (既定選択なしで開く)。担当がいれば既定でチェックしておく。
     setSlotEventState({
-      staffId: staff.id,
+      staffId: slotRegState.col.assignedStaff?.id ?? null,
       date: format(addDays(weekStart, activeWeekday), 'yyyy-MM-dd'),
       startHM: fmtHM(slotRegState.gap.startMin),
       endHM: fmtHM(slotRegState.gap.endMin),
@@ -3429,12 +3427,14 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
           onClose={() => setSlotRegState(null)}
         />
         {slotEventState ? (
-          <EventAddDialog
-            staffId={slotEventState.staffId}
+          <TimelineEventAddDialog
             open
-            onOpenChange={(o) => {
-              if (!o) setSlotEventState(null);
-            }}
+            onClose={() => setSlotEventState(null)}
+            // D-1: 全登録スタッフ (他コース担当・管理職含む・在籍中のみ) から複数選択。
+            staffOptions={allStaff
+              .filter((s) => s.status === 'active')
+              .map((s) => ({ id: s.id, name: s.name }))}
+            defaultStaffIds={slotEventState.staffId ? [slotEventState.staffId] : []}
             defaultDate={slotEventState.date}
             defaultStart={slotEventState.startHM}
             defaultEnd={slotEventState.endHM}

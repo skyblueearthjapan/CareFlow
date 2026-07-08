@@ -4,13 +4,13 @@
  * SlotRegisterDialog — T-2 ②-a: 日タイムラインの空き枠クリック → 登録モーダル。
  *
  * docs/plans/session-2026-07-07-HANDOFF.md §4 A-2。訪問の配置は既存 place-and-fix を
- * 叩くだけ (新規API・ソルバなし)。会議・イベントは既存 EventAddDialog へ切り替える
+ * 叩くだけ (新規API・ソルバなし)。会議・イベントは TimelineEventAddDialog へ切り替える
  * (onSwitchToEvent — カイポケ反映外である旨を本ダイアログで明示する)。
  *
  * 表示専用コンポーネントの原則に従い、API/mutation は持たない:
  *   - onRegisterVisit({patientId, startHM, durationMin}) — Panel が place-and-fix
  *     (fix_pattern=false = この週だけ) を呼ぶ。
- *   - onSwitchToEvent() — Panel が EventAddDialog (担当スタッフ宛) を開く。
+ *   - onSwitchToEvent() — Panel が TimelineEventAddDialog (D-1: 全スタッフから複数選択) を開く。
  *
  * 配置候補 = プール患者 (不足あり・active)。2名体制患者はプールからの D&D 経路
  * (相方コース選択ダイアログ) に委ねるため、ここでは対象外 (注記を出す)。

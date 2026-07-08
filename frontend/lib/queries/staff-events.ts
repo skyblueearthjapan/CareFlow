@@ -154,6 +154,38 @@ export function useCreateEvent(staffId: string): UseMutationResult<EventRead, Er
   });
 }
 
+/**
+ * D-1: 任意スタッフ宛のイベント作成 (staffId を variables で受ける)。
+ * タイムラインの「スタッフの打合せ追加」が選択スタッフ (他コース担当・管理職含む)
+ * ごとに呼ぶ。useCreateEvent はフックが staffId 固定のため複数選択に使えない。
+ * 成功時は staff/events 全体を invalidate (useUpdateEventForDrag と同方針 —
+ * 週タイムラインの帯が即時更新される)。
+ */
+export function useCreateEventForStaff(): UseMutationResult<
+  EventRead,
+  Error,
+  { staffId: string; payload: EventCreate }
+> {
+  const qc = useQueryClient();
+  const { data: session } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+
+  return useMutation<EventRead, Error, { staffId: string; payload: EventCreate }>({
+    mutationFn: async ({ staffId, payload }) => {
+      const parsed = eventCreateSchema.parse(payload);
+      return fetcher<EventRead>(staffEventsBase(staffId), {
+        method: 'POST',
+        body: JSON.stringify(parsed),
+        accessToken,
+        refreshToken,
+      });
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: STAFF_EVENTS_KEY });
+    },
+  });
+}
+
 interface UpdateEventVariables {
   eventId: string;
   payload: EventUpdate;
