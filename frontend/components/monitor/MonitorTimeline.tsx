@@ -12,6 +12,8 @@
  * 行クリックでコース選択 (地図に順路)、カード/レールクリックで訪問詳細。
  * 性別・住所・スタッフ性別・イベントは optional props (未指定 = 中立色/帯なし)。
  */
+import { useEffect, useRef } from 'react';
+
 import { cn } from '@/lib/utils';
 import type { MonitorStaffRow, MonitorVisit } from '@/lib/schemas/monitor';
 import type { EventRead } from '@/lib/schemas/staff-events';
@@ -64,6 +66,17 @@ interface MonitorTimelineProps {
 const HOURS = Array.from({ length: (TL_END_MIN - TL_START_MIN) / 60 + 1 }, (_, i) => 8 + i);
 
 /**
+ * M-4c (PO決定 2026-07-08): 時間軸を固定スケールに広げて横スクロールにする。
+ * 従来は画面幅に比例圧縮され、35分枠で患者名が苗字までしか見えなかった。
+ * 216px/時 → 35分カード ≈ 126px = フルネーム+時刻/住所が常に読める。
+ * スタッフ列は sticky で左に固定し、当日は「今」へ自動スクロールする。
+ */
+const PX_PER_HOUR = 216;
+const TRACK_W = ((TL_END_MIN - TL_START_MIN) / 60) * PX_PER_HOUR;
+const LABEL_COL_W = 156;
+const GRID_COLS_STYLE = { gridTemplateColumns: `${LABEL_COL_W}px ${TRACK_W}px` } as const;
+
+/**
  * 1 レーンあたりの高さ (px) = 従来の 1 人分の行高 66px をそのまま使う。
  * PO 指摘 (2026-07-04): 33px への圧縮はバー 7px・ラベル被りで見にくいため廃止。
  * 重なりのある行はレーン数 × 66px に行を伸ばし、各レーンは 1 人行と同一レイアウト
@@ -99,13 +112,28 @@ export function MonitorTimeline({
   eventsByStaffId,
 }: MonitorTimelineProps) {
   const hasSelection = selectedRowKey !== null;
+  // M-4c: 初回表示時に「今」を画面中央へ (横スクロール化に伴う迷子防止・当日のみ)。
+  const nowMarkerRef = useRef<HTMLSpanElement | null>(null);
+  const didAutoScroll = useRef(false);
+  useEffect(() => {
+    if (didAutoScroll.current) return;
+    if (nowMinutes < TL_START_MIN || nowMinutes > TL_END_MIN) return;
+    didAutoScroll.current = true;
+    // jsdom 未実装のため optional call。
+    nowMarkerRef.current?.scrollIntoView?.({ inline: 'center', block: 'nearest' });
+  }, [nowMinutes]);
 
   return (
-    <div className="min-w-[880px] select-none px-1 pb-4" data-testid="monitor-timeline">
-      {/* 時間軸ヘッダ */}
-      <div className="sticky top-0 z-[5] grid grid-cols-[156px_1fr] border-b border-border-default bg-bg-base">
-        <div className="p-2 text-[11px] text-text-muted">#／スタッフ</div>
-        <div className="flex">
+    <div className="w-max select-none px-1 pb-4" data-testid="monitor-timeline">
+      {/* 時間軸ヘッダ (縦 sticky。#／スタッフ セルは横にも sticky) */}
+      <div
+        className="sticky top-0 z-[5] grid border-b border-border-default bg-bg-base"
+        style={GRID_COLS_STYLE}
+      >
+        <div className="sticky left-0 z-[6] border-r border-border-default bg-bg-base p-2 text-[11px] text-text-muted">
+          #／スタッフ
+        </div>
+        <div className="relative flex">
           {HOURS.map((h) => (
             <span
               key={h}
@@ -114,6 +142,15 @@ export function MonitorTimeline({
               {h}
             </span>
           ))}
+          {/* 「今」への自動スクロール用マーカー (不可視・当日のみ意味を持つ) */}
+          {nowMinutes >= TL_START_MIN && nowMinutes <= TL_END_MIN && (
+            <span
+              ref={nowMarkerRef}
+              aria-hidden
+              className="pointer-events-none absolute top-0 h-px w-px"
+              style={{ left: `${minutesToPct(nowMinutes)}%` }}
+            />
+          )}
         </div>
       </div>
 
@@ -141,16 +178,25 @@ export function MonitorTimeline({
               if (e.key === 'Enter') onSelectRow(rowKey);
             }}
             className={cn(
-              'grid min-h-[66px] cursor-pointer grid-cols-[156px_1fr] border-b border-border-default/60 transition-[opacity,background] duration-150',
+              'group grid min-h-[66px] cursor-pointer border-b border-border-default/60 transition-[opacity,background] duration-150',
               isSel
                 ? 'bg-brand-primary-light shadow-[inset_5px_0_0_var(--brand-primary)]'
                 : 'hover:bg-bg-muted',
               hasSelection && !isSel ? 'opacity-40' : '',
             )}
-            style={rowLaneCount > 1 ? { minHeight: rowLaneCount * LANE_H_PX } : undefined}
+            style={{
+              ...GRID_COLS_STYLE,
+              ...(rowLaneCount > 1 ? { minHeight: rowLaneCount * LANE_H_PX } : {}),
+            }}
           >
-            {/* 左: 行番号 (M-4a: 非選択時はスタッフ性別色のバッジ) + スタッフ */}
-            <div className="flex items-center gap-2 px-2 py-1.5">
+            {/* 左: 行番号 (M-4a: 非選択時はスタッフ性別色のバッジ) + スタッフ。
+                M-4c: 横スクロールしても見失わないよう左に sticky (不透明背景必須)。 */}
+            <div
+              className={cn(
+                'sticky left-0 z-[3] flex items-center gap-2 border-r border-border-default/60 px-2 py-1.5',
+                isSel ? 'bg-brand-primary-light' : 'bg-bg-base group-hover:bg-bg-muted',
+              )}
+            >
               <span
                 className={cn(
                   'flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[11px] font-bold tabular-nums',
