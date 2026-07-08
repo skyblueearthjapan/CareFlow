@@ -875,6 +875,8 @@ function EventBandView({
       // 表示専用時は下の訪問カードのクリック/hover を透過。
       className={cn(bandClass, 'pointer-events-none')}
       style={bandStyle}
+      // 防御的: 現状は pointer-events-none で hover 不発だが、将来解除しても全情報が読める。
+      title={fullTitle}
     >
       {bandInner}
     </div>
