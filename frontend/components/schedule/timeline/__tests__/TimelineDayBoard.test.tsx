@@ -497,6 +497,92 @@ describe('TimelineDayBoard', () => {
     expect(screen.getByTestId('tl-col-drop-c1')).toBeInTheDocument();
   });
 
+  it('同住所ペアの各行に ⠿ ハンドルが出て個別 draggable・ピン行はハンドル無し (T-6 パリティ③)', () => {
+    render(
+      <DndContext>
+        <TimelineDayBoard
+          columns={[
+            column({
+              key: 'c1',
+              visits: [
+                visit({
+                  id: 'sa1',
+                  patient_id: 'pa',
+                  start_time: '16:00:00',
+                  end_time: '16:35:00',
+                  same_address_group_id: 'g1',
+                }),
+                visit({
+                  id: 'sa2',
+                  patient_id: 'pb',
+                  start_time: '16:00:00',
+                  end_time: '16:35:00',
+                  same_address_group_id: 'g1',
+                  is_pinned: true,
+                }),
+              ],
+            }),
+          ]}
+          weekdayLabel="月"
+          dndEnabled
+        />
+      </DndContext>,
+    );
+    // 非ピンの行 = ハンドルあり・個別 draggable。
+    expect(screen.getByTestId('tl-pair-member-handle-sa1')).toBeInTheDocument();
+    expect(screen.getByTestId('tl-visit-sa1').getAttribute('data-tl-member-drag')).toBe('enabled');
+    // ピン留めの行 = ハンドル無し (disabled)。
+    expect(screen.queryByTestId('tl-pair-member-handle-sa2')).toBeNull();
+    expect(screen.getByTestId('tl-visit-sa2').getAttribute('data-tl-member-drag')).toBe('disabled');
+    // 箱自体はピン留めを含むため 2名セット移動が disabled のまま (既存契約)。
+    expect(screen.getByTestId('tl-pair-pair:sa1:sa2').getAttribute('data-tl-drag')).toBe(
+      'disabled',
+    );
+  });
+
+  it('⠿ ハンドルからのドラッグは tl-visit として発火し、箱の2名セットドラッグにならない', async () => {
+    const onDragStart = vi.fn();
+    render(
+      <DndContext onDragStart={onDragStart}>
+        <TimelineDayBoard
+          columns={[
+            column({
+              key: 'c1',
+              visits: [
+                visit({
+                  id: 'sa1',
+                  patient_id: 'pa',
+                  start_time: '16:00:00',
+                  end_time: '16:35:00',
+                  same_address_group_id: 'g1',
+                }),
+                visit({
+                  id: 'sa2',
+                  patient_id: 'pb',
+                  start_time: '16:00:00',
+                  end_time: '16:35:00',
+                  same_address_group_id: 'g1',
+                }),
+              ],
+            }),
+          ]}
+          weekdayLabel="月"
+          dndEnabled
+        />
+      </DndContext>,
+    );
+    const handle = screen.getByTestId('tl-pair-member-handle-sa1');
+    const down = new MouseEvent('pointerdown', { bubbles: true, cancelable: true, button: 0 });
+    Object.defineProperty(down, 'isPrimary', { value: true });
+    handle.dispatchEvent(down);
+    await vi.waitFor(() => {
+      expect(onDragStart).toHaveBeenCalledTimes(1);
+      // 個別移動 (tl-visit:) であって 2名セット (tl-pair:) ではない。
+      expect(String(onDragStart.mock.calls[0]![0].active.id)).toBe('tl-visit:sa1');
+    });
+    fireEvent.pointerUp(document);
+  });
+
   it('通常カードは pointerdown+move で実際にドラッグが始まる (onPointerDown 上書き回帰防止)', async () => {
     // ②-c で onPointerDown={undefined} が listeners spread を後勝ちで上書きし
     // ドラッグが死んだ実バグの回帰テスト。DndContext の onDragStart 発火まで確認する。

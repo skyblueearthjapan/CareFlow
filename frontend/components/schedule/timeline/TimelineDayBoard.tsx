@@ -15,7 +15,11 @@
  * 一切持たない (CourseDayTablePanel が組んだ CourseGridVisit をそのまま受け取る = 表示専用)。
  */
 
-import { useState } from 'react';
+import {
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
 
 import { useDraggable, useDroppable } from '@dnd-kit/core';
 
@@ -126,8 +130,8 @@ export interface TimelineDayBoardProps {
   /**
    * T-2 ②-b: カード DnD (15分スナップ移動)。true のとき単独カードが draggable になり
    * 列が droppable になる (親 Panel の DndContext / handleDragEnd が tl-visit:/tl-col: を
-   * 解釈)。canEdit のときだけ Panel が true を渡す。同住所ペアボックス内のカードは
-   * 現段階では対象外 (テーブル経由で移動可・将来対応)。
+   * 解釈)。canEdit のときだけ Panel が true を渡す。同住所ペアボックスは
+   * 余白=2名セット移動・各行の ⠿ ハンドル=1名ずつ個別移動 (T-6 パリティ③)。
    */
   dndEnabled?: boolean;
 }
@@ -361,6 +365,8 @@ function DraggablePairBox({
       laneInfo={laneInfo}
       onPatientClick={onPatientClick}
       drag={{ attributes, listeners, setNodeRef, isDragging, disabled: dragDisabled }}
+      // T-6 パリティ③: 各行の ⠿ ハンドルから 1 名ずつ個別移動できる。
+      memberDndEnabled
     />
   );
 }
@@ -524,18 +530,153 @@ function buildRenderItems(visits: ReadonlyArray<CourseGridVisit>): RenderItem[] 
   return items;
 }
 
+/**
+ * 同住所ペアの行 1 枚 (T-6 パリティ③)。drag 指定時は行頭の ⠿ ハンドルから
+ * 1 名だけ個別に移動できる (行本体クリック=患者詳細・箱の余白=2名セット移動と共存)。
+ * ハンドルは pointerdown/click を箱・行へバブリングさせない (Capture 側の別名
+ * プロップで stopPropagation — dnd listeners の onPointerDown を上書きしない。
+ * 64acdef の教訓)。
+ */
+function PairMemberRowView({
+  v,
+  onPatientClick,
+  drag,
+}: {
+  v: CourseGridVisit;
+  onPatientClick?: (patientId: string) => void;
+  drag?: DragBindings;
+}) {
+  const pal = genderPalette(v.patient_sex);
+  const s = parseHM(v.start_time);
+  const e = parseHM(v.end_time);
+  const dm = s !== null && e !== null && e > s ? e - s : null;
+  const showHandle = drag != null && !drag.disabled;
+  return (
+    <button
+      type="button"
+      ref={drag?.setNodeRef}
+      data-testid={`tl-visit-${v.id}`}
+      data-tl-member-drag={drag ? (drag.disabled ? 'disabled' : 'enabled') : undefined}
+      onClick={onPatientClick ? () => onPatientClick(v.patient_id) : undefined}
+      className={cn(
+        'relative flex min-h-0 flex-1 flex-col justify-center gap-px rounded-md border border-l-[3px] px-1.5 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary',
+        showHandle && 'pl-4',
+        drag?.isDragging && 'opacity-40',
+      )}
+      style={{
+        background: pal.bg,
+        borderColor: pal.ln,
+        borderLeftColor: pal.bar,
+        color: pal.ink,
+      }}
+    >
+      {v.is_pinned && <CornerPushPin />}
+      {showHandle ? (
+        <span
+          data-testid={`tl-pair-member-handle-${v.id}`}
+          title="この1名だけ移動（ドラッグ）"
+          className="absolute bottom-0 left-0 top-0 flex w-4 cursor-grab touch-none items-center justify-center text-[11px] leading-none opacity-50 hover:opacity-100 active:cursor-grabbing"
+          // dnd の activator (listeners.onPointerDown) を呼んでから伝播を止める。
+          // Capture 側の stopPropagation は React 合成イベントでは同一要素の bubble
+          // ハンドラ (= activator) まで止めてしまうため不可。意図的な同名上書きだが
+          // 原本を必ず呼ぶ (64acdef の教訓は「undefined での事故上書き」の禁止)。
+          {...(drag
+            ? {
+                ...drag.attributes,
+                ...drag.listeners,
+                onPointerDown: (ev: ReactPointerEvent<HTMLSpanElement>) => {
+                  (
+                    drag.listeners as
+                      | { onPointerDown?: (e: ReactPointerEvent<HTMLSpanElement>) => void }
+                      | undefined
+                  )?.onPointerDown?.(ev);
+                  // 箱の 2 名セット drag へバブリングさせない。
+                  ev.stopPropagation();
+                },
+                onClick: (ev: ReactMouseEvent) => {
+                  // 行クリック (患者詳細) をハンドルでは発火させない。
+                  ev.preventDefault();
+                  ev.stopPropagation();
+                },
+              }
+            : {})}
+        >
+          ⠿
+        </span>
+      ) : null}
+      <span className="flex min-w-0 items-center gap-1">
+        <span className="truncate text-[12px] font-bold leading-tight">
+          {v.patient_name ?? '—'}
+        </span>
+        <span className="tnum ml-auto shrink-0 text-[9px] opacity-75">
+          {(v.start_time ?? '').slice(0, 5)}
+          {dm !== null ? `・${dm}分` : ''}
+        </span>
+      </span>
+      {/* 2行目: 📍住所 (通常カードと同じ配置。同住所なので2行とも同じ住所・PO要望)。 */}
+      {v.patient_address && (
+        <span className="flex min-w-0 items-center gap-0.5 text-[9px] opacity-75">
+          <span className="shrink-0">📍</span>
+          <span className="truncate">{v.patient_address}</span>
+        </span>
+      )}
+      {/* 3行目: 条件 (単独カードと同じ情報)。 */}
+      {(v.patient_sex_restriction_label || v.patient_time_type) && (
+        <span className="flex min-w-0 items-center gap-1 text-[9px] opacity-80">
+          {v.patient_sex_restriction_label ? (
+            <span
+              className="shrink-0 rounded-full px-1 py-px text-[8px] font-bold text-white"
+              style={{ background: pal.bar }}
+            >
+              {v.patient_sex_restriction_label}
+            </span>
+          ) : null}
+          <span className="truncate">{v.patient_time_type ?? ''}</span>
+        </span>
+      )}
+    </button>
+  );
+}
+
+/** DnD 有効時のみ mount する個別移動ラッパ (id 名前空間は単独カードと同じ tl-visit:)。 */
+function DraggablePairMemberRow({
+  v,
+  onPatientClick,
+}: {
+  v: CourseGridVisit;
+  onPatientClick?: (patientId: string) => void;
+}) {
+  const dragDisabled =
+    v.is_pinned === true || v.status === 'cancelled' || Boolean(v.visit_group_id);
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+    id: tlVisitDraggableId(v.id),
+    disabled: dragDisabled,
+    data: { kind: 'tl-visit', visitId: v.id },
+  });
+  return (
+    <PairMemberRowView
+      v={v}
+      onPatientClick={onPatientClick}
+      drag={{ attributes, listeners, setNodeRef, isDragging, disabled: dragDisabled }}
+    />
+  );
+}
+
 /** 同住所・同時刻ペアの 90分占有ボックス (上下2段に2名を並べ、大枠で囲む)。 */
 function PairBox({
   item,
   laneInfo,
   onPatientClick,
   drag,
+  memberDndEnabled,
 }: {
   item: Extract<RenderItem, { kind: 'pair' }>;
   laneInfo?: CardLane;
   onPatientClick?: (patientId: string) => void;
-  /** 2名セット移動 (PO要望: 基本は2名一緒に動かす)。個別移動は将来対応。 */
+  /** 2名セット移動 (PO要望: 基本は2名一緒に動かす)。 */
   drag?: DragBindings;
+  /** T-6 パリティ③: 各行の ⠿ ハンドルから 1 名ずつ個別移動を解禁する。 */
+  memberDndEnabled?: boolean;
 }) {
   const [shake, setShake] = useState(false);
   const anyPinned = item.visits.some((v) => v.is_pinned === true);
@@ -579,7 +720,7 @@ function PairBox({
               ? '2名体制（ペア配置）を含むため移動できません'
               : 'キャンセル済みを含むため移動できません'
           : drag
-            ? '2名セットで移動します（個別の移動はテーブルビューから）'
+            ? '2名セットで移動します（1名だけ動かすときは行頭の ⠿ をドラッグ）'
             : undefined
       }
       className={cn(
@@ -596,59 +737,13 @@ function PairBox({
         <span className="truncate">同住所 {durMin}分占有</span>
       </div>
       <div className="flex min-h-0 flex-1 flex-col gap-0.5 px-1 pb-1">
-        {item.visits.map((v) => {
-          const pal = genderPalette(v.patient_sex);
-          const s = parseHM(v.start_time);
-          const e = parseHM(v.end_time);
-          const dm = s !== null && e !== null && e > s ? e - s : null;
-          return (
-            <button
-              key={v.id}
-              type="button"
-              data-testid={`tl-visit-${v.id}`}
-              onClick={onPatientClick ? () => onPatientClick(v.patient_id) : undefined}
-              className="relative flex min-h-0 flex-1 flex-col justify-center gap-px rounded-md border border-l-[3px] px-1.5 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary"
-              style={{
-                background: pal.bg,
-                borderColor: pal.ln,
-                borderLeftColor: pal.bar,
-                color: pal.ink,
-              }}
-            >
-              {v.is_pinned && <CornerPushPin />}
-              <span className="flex min-w-0 items-center gap-1">
-                <span className="truncate text-[12px] font-bold leading-tight">
-                  {v.patient_name ?? '—'}
-                </span>
-                <span className="tnum ml-auto shrink-0 text-[9px] opacity-75">
-                  {(v.start_time ?? '').slice(0, 5)}
-                  {dm !== null ? `・${dm}分` : ''}
-                </span>
-              </span>
-              {/* 2行目: 📍住所 (通常カードと同じ配置。同住所なので2行とも同じ住所・PO要望)。 */}
-              {v.patient_address && (
-                <span className="flex min-w-0 items-center gap-0.5 text-[9px] opacity-75">
-                  <span className="shrink-0">📍</span>
-                  <span className="truncate">{v.patient_address}</span>
-                </span>
-              )}
-              {/* 3行目: 条件 (単独カードと同じ情報)。 */}
-              {(v.patient_sex_restriction_label || v.patient_time_type) && (
-                <span className="flex min-w-0 items-center gap-1 text-[9px] opacity-80">
-                  {v.patient_sex_restriction_label ? (
-                    <span
-                      className="shrink-0 rounded-full px-1 py-px text-[8px] font-bold text-white"
-                      style={{ background: pal.bar }}
-                    >
-                      {v.patient_sex_restriction_label}
-                    </span>
-                  ) : null}
-                  <span className="truncate">{v.patient_time_type ?? ''}</span>
-                </span>
-              )}
-            </button>
-          );
-        })}
+        {item.visits.map((v) =>
+          memberDndEnabled ? (
+            <DraggablePairMemberRow key={v.id} v={v} onPatientClick={onPatientClick} />
+          ) : (
+            <PairMemberRowView key={v.id} v={v} onPatientClick={onPatientClick} />
+          ),
+        )}
       </div>
     </div>
   );
