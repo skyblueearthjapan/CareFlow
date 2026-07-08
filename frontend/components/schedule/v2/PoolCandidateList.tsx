@@ -62,6 +62,8 @@ import {
   proposedSlotToFixedVisitItem,
   slotKey,
 } from './_proposeSlotUtils';
+import { genderPalette } from '@/lib/scheduling/timeline';
+
 import { ChangeScopeChoice, type ChangeScopeValue } from './ChangeScopeChoice';
 import {
   BeforeAfterCourseTimeline,
@@ -305,12 +307,24 @@ function MiniRow({ row }: { row: ProposeMiniScheduleEntry }) {
       </div>
     );
   }
+  // T-4: 既存訪問行はタイムラインのカード視覚言語 (角丸 + 左帯[3px] + ドット)。
+  // mini_schedule は patient_id を持たないため、隣の変更前→変更後パネルと同じく
+  // 中立色ウォッシュ (性別不明=砂色) で描く。
+  const pal = genderPalette(null);
   return (
     <div className="flex items-center gap-2">
       <span className="tnum w-11 shrink-0 text-[11px] text-text-muted">
         {trimSeconds(row.time)}
       </span>
-      <div className="flex flex-1 flex-wrap items-center gap-1.5 rounded border-l-2 border-brand-primary/50 bg-bg-muted/50 px-2 py-1 text-[11px]">
+      <div
+        className="flex flex-1 flex-wrap items-center gap-1.5 rounded-md border border-l-[3px] px-2 py-1 text-[11px]"
+        style={{ borderColor: pal.ln, borderLeftColor: pal.bar, background: pal.bg }}
+      >
+        <i
+          className="h-2 w-2 shrink-0 rounded-full"
+          style={{ background: pal.bar }}
+          aria-hidden="true"
+        />
         <span
           className={sexNameColor(row.sex_restriction) ? undefined : 'text-text-primary'}
           style={{
