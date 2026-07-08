@@ -593,13 +593,10 @@ function PairBox({
       )}
       style={{ top, height: boxH, ...laneStyle }}
     >
-      {/* 見出し: 同住所は1つなので実住所をここに出す (行では繰り返さない)。 */}
+      {/* 見出し: 占有時間のみ。住所は各カード行に出す (通常カードと同じ情報配置・PO要望)。 */}
       <div className="flex min-w-0 items-center gap-1 px-1.5 pt-0.5 text-[9px] font-bold text-amber-700">
         <span className="shrink-0">📍</span>
-        <span className="truncate">
-          同住所 {durMin}分占有
-          {item.visits[0]?.patient_address ? `・${item.visits[0].patient_address}` : ''}
-        </span>
+        <span className="truncate">同住所 {durMin}分占有</span>
       </div>
       <div className="flex min-h-0 flex-1 flex-col gap-0.5 px-1 pb-1">
         {item.visits.map((v) => {
@@ -635,7 +632,14 @@ function PairBox({
                   {dm !== null ? `・${dm}分` : ''}
                 </span>
               </span>
-              {/* 2行目: 条件 (単独カードと同じ情報)。 */}
+              {/* 2行目: 📍住所 (通常カードと同じ配置。同住所なので2行とも同じ住所・PO要望)。 */}
+              {v.patient_address && (
+                <span className="flex min-w-0 items-center gap-0.5 text-[9px] opacity-75">
+                  <span className="shrink-0">📍</span>
+                  <span className="truncate">{v.patient_address}</span>
+                </span>
+              )}
+              {/* 3行目: 条件 (単独カードと同じ情報)。 */}
               {(v.patient_sex_restriction_label || v.patient_time_type) && (
                 <span className="flex min-w-0 items-center gap-1 text-[9px] opacity-80">
                   {v.patient_sex_restriction_label ? (

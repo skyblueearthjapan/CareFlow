@@ -126,6 +126,7 @@ describe('WeekTimelineBoard (全コース縦積み)', () => {
             end_time: '10:05:00',
             same_address_key: 'addr1',
             patient_sex: 'female',
+            patient_address: '稲毛区小仲台2-5',
           }),
           wv({
             id: 'pb',
@@ -134,6 +135,7 @@ describe('WeekTimelineBoard (全コース縦積み)', () => {
             end_time: '10:05:00',
             same_address_key: 'addr1',
             patient_sex: 'male',
+            patient_address: '稲毛区小仲台2-5',
           }),
         ]}
       />,
@@ -141,6 +143,8 @@ describe('WeekTimelineBoard (全コース縦積み)', () => {
     const box = screen.getByTestId('wtl-pair-pair:pa:pb');
     expect(box).toBeInTheDocument();
     expect(screen.getByText(/同住所 90分占有/)).toBeInTheDocument();
+    // 住所は各カード行に出す (2行とも同じ住所・通常カードと同じ配置)。
+    expect(screen.getAllByText('稲毛区小仲台2-5')).toHaveLength(2);
     // 2名とも箱の中に上下で入る (左右半分割ではない)。
     expect(screen.getByTestId('wtl-visit-pa')).toBeInTheDocument();
     expect(screen.getByTestId('wtl-visit-pb')).toBeInTheDocument();

@@ -269,13 +269,10 @@ function WeekPairBox({
       className="absolute z-[2] flex flex-col overflow-hidden rounded-md border-2 border-amber-400 bg-amber-50/40 shadow-[var(--shadow-xs)]"
       style={{ top, height: boxH, ...laneStyle }}
     >
-      {/* 見出し: 同住所は1つなので実住所をここに出す (日ビューと同じ)。 */}
+      {/* 見出し: 占有時間のみ。住所は各カード行に出す (日ビューと同じ・PO要望)。 */}
       <div className="flex min-w-0 items-center gap-1 px-1 pt-0.5 text-[8.5px] font-bold text-amber-700">
         <span className="shrink-0">📍</span>
-        <span className="truncate">
-          同住所 {durMin}分占有
-          {item.visits[0]?.patient_address ? `・${item.visits[0].patient_address}` : ''}
-        </span>
+        <span className="truncate">同住所 {durMin}分占有</span>
       </div>
       <div className="flex min-h-0 flex-1 flex-col gap-0.5 px-1 pb-1">
         {item.visits.map((v) => {
@@ -311,7 +308,14 @@ function WeekPairBox({
                   {dm !== null ? `・${dm}分` : ''}
                 </span>
               </span>
-              {/* 2行目: 条件 (単独カードと同じ情報)。 */}
+              {/* 2行目: 📍住所 (通常カードと同じ配置。同住所なので2行とも同じ住所・PO要望)。 */}
+              {v.patient_address && (
+                <span className="flex min-w-0 items-center gap-0.5 text-[8.5px] opacity-75">
+                  <span className="shrink-0">📍</span>
+                  <span className="truncate">{v.patient_address}</span>
+                </span>
+              )}
+              {/* 3行目: 条件 (単独カードと同じ情報)。 */}
               {(v.patient_sex_restriction === 'female_only' ||
                 v.patient_sex_restriction === 'male_only') && (
                 <span
