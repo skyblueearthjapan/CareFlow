@@ -3,17 +3,22 @@
 /**
  * 訪問モニター タイムライン (ガント) — スタッフ×時刻 (8–19h)。
  *
- * 各コース行に予定バー (患者名) + 実績バー (alert_level 色) を重ねる。行クリックで
- * コース選択 (地図に順路)、バークリックで訪問詳細。選択行は強調 + 他行ディム。
- * 「今」ラインと次までの距離も表示 (pc-proto.html 準拠)。
+ * M-4 (2026-07-08 PO要望): スケジュール画面のカード視覚言語へ統一。
+ *   - 予定 = 灰ハッチバー → **性別ウォッシュのミニカード** (2行: 性別ドット+患者名 /
+ *     時刻 tnum+📍住所)。縦の余白 (旧: 行高66pxの半分が空白) をカードに使う
+ *   - 実績 = カード下辺の **状態色レール** (色の意味体系 --status-* は不変)
+ *   - 行ヘッダの番号バッジ = 担当スタッフの性別色 / 今ライン = --sched-now /
+ *     会議・イベント = 藤色帯 (カイポケ反映外・表示専用)
+ * 行クリックでコース選択 (地図に順路)、カード/レールクリックで訪問詳細。
+ * 性別・住所・スタッフ性別・イベントは optional props (未指定 = 中立色/帯なし)。
  */
 import { cn } from '@/lib/utils';
 import type { MonitorStaffRow, MonitorVisit } from '@/lib/schemas/monitor';
+import type { EventRead } from '@/lib/schemas/staff-events';
+import { genderPalette } from '@/lib/scheduling/timeline';
 
 import {
   MISSING_BAR_BG,
-  PLAN_BAR_BG,
-  PLAN_BAR_BORDER,
   STATUS_COLOR,
   TL_END_MIN,
   TL_START_MIN,
@@ -24,6 +29,12 @@ import {
   isoToHm,
   minutesToPct,
 } from './constants';
+
+/** M-4a: 予定カードの性別ウォッシュ・📍住所用メタ (患者マスタ FE join・未指定=中立色)。 */
+export interface MonitorPatientMeta {
+  sex?: string | null;
+  address?: string | null;
+}
 
 /**
  * 行の安定キー (PO 報告 2026-07-03: 担当未設定行も選択してマップ表示できるように)。
@@ -42,6 +53,12 @@ interface MonitorTimelineProps {
   nowMinutes: number;
   onSelectRow: (rowKey: string) => void;
   onSelectVisit: (visitId: string) => void;
+  /** M-4a: 患者 ID → 性別/住所 (予定カードのウォッシュ・📍住所)。未指定=中立色。 */
+  patientMetaById?: ReadonlyMap<string, MonitorPatientMeta>;
+  /** M-4a: スタッフ ID → 性別 (行ヘッダの番号バッジ色)。未指定=中立色。 */
+  staffSexById?: ReadonlyMap<string, string | null | undefined>;
+  /** M-4b: スタッフ ID → 当日のイベント (藤色帯・表示専用・カイポケ反映外)。 */
+  eventsByStaffId?: ReadonlyMap<string, EventRead[]>;
 }
 
 const HOURS = Array.from({ length: (TL_END_MIN - TL_START_MIN) / 60 + 1 }, (_, i) => 8 + i);
@@ -54,16 +71,19 @@ const HOURS = Array.from({ length: (TL_END_MIN - TL_START_MIN) / 60 + 1 }, (_, i
  */
 const LANE_H_PX = 66;
 
-/** レーン位置からバー/ラベルの top・height (px) を返す (全レーン共通レイアウト)。 */
+/**
+ * レーン位置からカード/レールの top・height (px) を返す (全レーン共通レイアウト)。
+ * M-4a: 旧「浮きラベル+予定バー14px+実績バー15px」→「予定カード40px (2行) +
+ * 実績レール14px」。縦の余白をカードの情報量に使う (PO指摘 2026-07-08)。
+ */
 function lanePos(lane: number) {
   const off = lane * LANE_H_PX;
   return {
-    labelTop: off + 4,
-    planTop: off + 20,
-    planH: 14,
-    actTop: off + 38,
-    actH: 15,
-    distTop: off + 21,
+    cardTop: off + 4,
+    cardH: 40,
+    actTop: off + 47,
+    actH: 14,
+    distTop: off + 16,
   };
 }
 
@@ -74,6 +94,9 @@ export function MonitorTimeline({
   nowMinutes,
   onSelectRow,
   onSelectVisit,
+  patientMetaById,
+  staffSexById,
+  eventsByStaffId,
 }: MonitorTimelineProps) {
   const hasSelection = selectedRowKey !== null;
 
@@ -126,13 +149,23 @@ export function MonitorTimeline({
             )}
             style={rowLaneCount > 1 ? { minHeight: rowLaneCount * LANE_H_PX } : undefined}
           >
-            {/* 左: 行番号 + スタッフ */}
+            {/* 左: 行番号 (M-4a: 非選択時はスタッフ性別色のバッジ) + スタッフ */}
             <div className="flex items-center gap-2 px-2 py-1.5">
               <span
                 className={cn(
                   'flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[11px] font-bold tabular-nums',
-                  isSel ? 'bg-brand-primary text-white' : 'bg-bg-muted text-text-secondary',
+                  isSel ? 'bg-brand-primary text-white' : 'border-[1.5px]',
                 )}
+                style={
+                  isSel
+                    ? undefined
+                    : (() => {
+                        const sp = genderPalette(
+                          row.staff_id ? (staffSexById?.get(row.staff_id) ?? null) : null,
+                        );
+                        return { background: sp.bg, borderColor: sp.bar, color: sp.ink };
+                      })()
+                }
               >
                 {idx + 1}
               </span>
@@ -162,18 +195,68 @@ export function MonitorTimeline({
                   <i key={h} className="flex-1 border-l border-border-default/40" />
                 ))}
               </div>
-              {/* 今ライン */}
+              {/* 今ライン (M-4a: スケジュールと同じ --sched-now に統一) */}
               {nowMinutes >= TL_START_MIN && nowMinutes <= TL_END_MIN && (
                 <div
-                  className="absolute bottom-0 top-0 z-[4] w-0.5 bg-brand-accent"
-                  style={{ left: `${minutesToPct(nowMinutes)}%` }}
+                  className="absolute bottom-0 top-0 z-[4] w-0.5"
+                  style={{ left: `${minutesToPct(nowMinutes)}%`, background: 'var(--sched-now)' }}
                   aria-hidden
                 >
-                  <span className="absolute -top-px left-1 text-[10px] font-bold text-brand-accent">
+                  <span
+                    className="absolute -top-px left-1 text-[10px] font-bold"
+                    style={{ color: 'var(--sched-now)' }}
+                  >
                     今
                   </span>
                 </div>
               )}
+              {/* M-4b: 会議・イベント帯 (藤色・表示専用・カイポケ反映外)。
+                  空き時間の「なぜ空いているか」を説明する。カード (z-[2]) の下。 */}
+              {row.staff_id
+                ? eventsByStaffId?.get(row.staff_id)?.map((ev) => {
+                    const es = hmToMinutes(ev.start_time.slice(0, 5));
+                    const ee = hmToMinutes(ev.end_time.slice(0, 5));
+                    if (ee <= TL_START_MIN || es >= TL_END_MIN || ee <= es) return null;
+                    const eL = minutesToPct(es);
+                    const eW = Math.max(minutesToPct(ee) - eL, 1.5);
+                    return (
+                      <div
+                        key={`ev-${ev.id}`}
+                        data-testid={`monitor-event-${ev.id}`}
+                        className="pointer-events-none absolute z-[1] flex items-center gap-1 overflow-hidden rounded-md border border-l-[3px] px-1.5"
+                        style={{
+                          left: `${eL}%`,
+                          width: `${eW}%`,
+                          top: 4,
+                          height: rowLaneCount * LANE_H_PX - 9,
+                          background: 'var(--sched-event-bg)',
+                          borderColor: 'var(--sched-event-ln)',
+                          borderLeftColor: 'var(--sched-event-bar)',
+                        }}
+                        title={`${ev.type}${ev.title ? `: ${ev.title}` : ''}（${ev.start_time.slice(0, 5)}〜${ev.end_time.slice(0, 5)}・カイポケ反映外）`}
+                      >
+                        <span
+                          className="shrink-0 text-[11px]"
+                          style={{ color: 'var(--sched-event-bar)' }}
+                        >
+                          👥
+                        </span>
+                        <span
+                          className="min-w-0 truncate text-[10px] font-bold"
+                          style={{ color: 'var(--sched-event-ink)' }}
+                        >
+                          {ev.title && ev.title.trim() !== '' ? ev.title : ev.type}
+                        </span>
+                        <span
+                          className="tnum shrink-0 text-[9px] opacity-75"
+                          style={{ color: 'var(--sched-event-ink)' }}
+                        >
+                          {ev.start_time.slice(0, 5)}〜
+                        </span>
+                      </div>
+                    );
+                  })
+                : null}
               {row.visits.map((v) => {
                 const li = laneMap.get(v.visit_id) ?? { lane: 0, laneCount: 1 };
                 return (
@@ -184,6 +267,7 @@ export function MonitorTimeline({
                     nowMinutes={nowMinutes}
                     isSelected={v.visit_id === selectedVisitId}
                     onSelect={onSelectVisit}
+                    meta={patientMetaById?.get(v.patient_id)}
                   />
                 );
               })}
@@ -201,12 +285,15 @@ function VisitBars({
   nowMinutes,
   isSelected,
   onSelect,
+  meta,
 }: {
   visit: MonitorVisit;
   lane: number;
   nowMinutes: number;
   isSelected: boolean;
   onSelect: (visitId: string) => void;
+  /** M-4a: 性別ウォッシュ・📍住所 (未指定=中立色)。 */
+  meta?: MonitorPatientMeta;
 }) {
   const pos = lanePos(lane);
   const ps = hmToMinutes(visit.start_time);
@@ -243,27 +330,16 @@ function VisitBars({
   }
 
   const dn = visit.distance_to_next_m;
+  // M-4a: 予定カードの性別ウォッシュ (患者マスタ FE join。未指定/未登録=中立色)。
+  const pal = genderPalette(meta?.sex ?? null);
 
   return (
     <>
-      {/* 患者名ラベル (ペア訪問は「2名」バッジ付き) */}
-      <div
-        className="pointer-events-none absolute flex items-center gap-1 whitespace-nowrap text-[10px] font-semibold text-text-secondary [text-shadow:0_0_3px_#fff,0_0_3px_#fff]"
-        style={{ left: `${pL}%`, top: pos.labelTop }}
-        title={visit.patient_name ?? undefined}
-      >
-        {visit.patient_name ?? '—'}
-        {isPair && (
-          <span className="rounded-full bg-c-coupled-bg px-1 py-px text-[10px] font-bold text-c-coupled [text-shadow:none]">
-            2名
-          </span>
-        )}
-      </div>
       {/* はみ出し印 (時間軸外の訪問) */}
       {overflowLeft && (
         <span
           className="pointer-events-none absolute left-0 z-[3] text-[10px] font-bold text-text-muted"
-          style={{ top: pos.planTop }}
+          style={{ top: pos.cardTop }}
           title={`${visit.start_time} 開始（表示範囲外）`}
         >
           ‹
@@ -272,13 +348,13 @@ function VisitBars({
       {overflowRight && (
         <span
           className="pointer-events-none absolute right-0 z-[3] text-[10px] font-bold text-text-muted"
-          style={{ top: pos.planTop }}
+          style={{ top: pos.cardTop }}
           title={`${visit.end_time} 終了（表示範囲外）`}
         >
           ›
         </span>
       )}
-      {/* 次までの距離 */}
+      {/* 次までの距離 (カード右横) */}
       {dn != null && (
         <div
           className="pointer-events-none absolute whitespace-nowrap text-[10px] text-text-muted [text-shadow:0_0_3px_#fff,0_0_3px_#fff]"
@@ -287,8 +363,8 @@ function VisitBars({
           →{formatDistance(dn)}
         </div>
       )}
-      {/* 予定バー (ハッチ)。isPair は 📍 でマーク。 */}
-      {/* rounded-[5px]: 極小バーのためトークン(sm=8px)未満の例外 */}
+      {/* 予定カード (M-4a): スケジュールと同じ性別ウォッシュ+左帯+角丸の2行カード。
+          1行目=性別ドット+患者名+2名ピル / 2行目=時刻 tnum+📍住所。 */}
       <button
         type="button"
         data-testid={`monitor-bar-plan-${visit.visit_id}`}
@@ -297,35 +373,45 @@ function VisitBars({
           e.stopPropagation();
           onSelect(visit.visit_id);
         }}
-        title={`予定 ${visit.start_time}–${visit.end_time} ${visit.patient_name ?? ''}`}
-        className="absolute rounded-[5px] border opacity-90"
+        title={`予定 ${visit.start_time}–${visit.end_time} ${visit.patient_name ?? ''}${
+          meta?.address ? `｜📍${meta.address}` : ''
+        }`}
+        className="absolute z-[2] flex flex-col justify-center gap-px overflow-hidden rounded-md border border-l-[3px] px-1.5 text-left shadow-[var(--shadow-xs)] transition-shadow hover:shadow-[var(--shadow-sm)]"
         style={{
           left: `${pL}%`,
           width: `${pW}%`,
-          top: pos.planTop,
-          height: pos.planH,
-          borderColor: PLAN_BAR_BORDER,
-          backgroundImage: PLAN_BAR_BG,
+          top: pos.cardTop,
+          height: pos.cardH,
+          background: pal.bg,
+          borderColor: pal.ln,
+          borderLeftColor: pal.bar,
+          color: pal.ink,
         }}
       >
-        {isPair && (
-          <span
-            style={{
-              position: 'absolute',
-              left: 1,
-              top: '50%',
-              transform: 'translateY(-50%)',
-              fontSize: 8,
-              lineHeight: 1,
-            }}
-            aria-hidden
-          >
-            📍
+        <span className="flex min-w-0 items-center gap-1">
+          <i
+            className="h-1.5 w-1.5 shrink-0 rounded-full"
+            style={{ background: pal.bar }}
+            aria-hidden="true"
+          />
+          <span className="min-w-0 truncate text-[11px] font-bold leading-tight">
+            {visit.patient_name ?? '—'}
           </span>
-        )}
+          {isPair && (
+            <span className="shrink-0 rounded-full bg-c-coupled-bg px-1 py-px text-[9px] font-bold text-c-coupled">
+              2名
+            </span>
+          )}
+        </span>
+        <span className="flex min-w-0 items-center gap-1 text-[9px] leading-tight opacity-80">
+          <span className="tnum shrink-0 font-semibold">
+            {visit.start_time}–{visit.end_time}
+          </span>
+          {meta?.address ? <span className="min-w-0 truncate">📍{meta.address}</span> : null}
+        </span>
       </button>
-      {/* 実績バー */}
-      {/* rounded-[5px]: 極小バーのためトークン(sm=8px)未満の例外 */}
+      {/* 実績レール (M-4a: カード下辺・状態色の意味体系 --status-* は不変) */}
+      {/* rounded-[5px]: 極小レールのためトークン(sm=8px)未満の例外 */}
       {hasActual && (
         <button
           type="button"
@@ -337,7 +423,7 @@ function VisitBars({
             onSelect(visit.visit_id);
           }}
           className={cn(
-            'absolute flex items-center gap-0.5 overflow-hidden whitespace-nowrap rounded-[5px] px-1.5 text-[10px] font-semibold text-white',
+            'absolute z-[2] flex items-center gap-0.5 overflow-hidden whitespace-nowrap rounded-[5px] px-1.5 text-[10px] font-semibold text-white',
             isSelected ? 'outline outline-2 outline-offset-1 outline-text-primary' : '',
             status === 'inprogress'
               ? '[background-image:repeating-linear-gradient(45deg,rgba(255,255,255,.25),rgba(255,255,255,.25)_4px,transparent_4px,transparent_8px)]'

@@ -32,6 +32,18 @@ vi.mock('@/components/monitor/MonitorMap', () => ({
   MonitorMap: () => <div data-testid="mock-map" />,
 }));
 
+// M-4a/b: カード視覚言語用の FE join フック (QueryClient 不要の noop)。
+vi.mock('@/lib/queries/patients', () => ({
+  usePatients: () => ({ data: { items: [] }, isLoading: false }),
+}));
+vi.mock('@/lib/queries/staff', () => ({
+  useStaffList: () => ({ data: [], isLoading: false }),
+}));
+vi.mock('@/lib/queries/staff-events', () => ({
+  useWeekStaffEvents: () => ({ data: [], isLoading: false }),
+  buildStaffEventsMap: () => new Map(),
+}));
+
 import MonitorPage from '../page';
 
 beforeEach(() => {

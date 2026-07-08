@@ -25,20 +25,28 @@ import {
   useUnreviewVisit,
 } from '@/lib/queries/monitor';
 import type { MonitorStaffRow, MonitorVisit, NearbyPatient } from '@/lib/schemas/monitor';
+import type { EventRead } from '@/lib/schemas/staff-events';
 
-import { MonitorTimeline, monitorRowKey } from '@/components/monitor/MonitorTimeline';
+import {
+  MonitorTimeline,
+  monitorRowKey,
+  type MonitorPatientMeta,
+} from '@/components/monitor/MonitorTimeline';
 import { MonitorAlertTray } from '@/components/monitor/MonitorAlertTray';
 import { MonitorDetailPanel } from '@/components/monitor/MonitorDetailPanel';
 import { MonitorMap } from '@/components/monitor/MonitorMap';
 import {
   MISSING_BAR_BG,
-  PLAN_BAR_BG,
-  PLAN_BAR_BORDER,
   displayStatus,
   groupVisits,
   hmToMinutes,
   isoToHm,
 } from '@/components/monitor/constants';
+// M-4a/b: カード視覚言語 (性別ウォッシュ・イベント帯) 用の FE join。
+import { usePatients } from '@/lib/queries/patients';
+import { useStaffList } from '@/lib/queries/staff';
+import { buildStaffEventsMap, useWeekStaffEvents } from '@/lib/queries/staff-events';
+import { genderPalette } from '@/lib/scheduling/timeline';
 
 type OnlyFilter = null | 'anomaly' | 'missing';
 
@@ -97,6 +105,48 @@ export default function MonitorPage() {
     if (!data?.now) return -1;
     return hmToMinutes(isoToHm(data.now));
   }, [data?.now]);
+
+  // ─── M-4a: カード視覚言語用の FE join (スケジュール側と同一キー = キャッシュ共有) ───
+  // 予定カードの性別ウォッシュ・📍住所 (患者マスタ) と行番号バッジのスタッフ性別。
+  const patientsQuery = usePatients({ limit: 500 });
+  const patientMetaById = useMemo(() => {
+    const m = new Map<string, MonitorPatientMeta>();
+    for (const p of patientsQuery.data?.items ?? []) {
+      m.set(p.id, { sex: p.sex ?? null, address: p.address ?? null });
+    }
+    return m;
+  }, [patientsQuery.data]);
+  const staffListQuery = useStaffList({ limit: 200 });
+  const staffSexById = useMemo(() => {
+    const m = new Map<string, string | null | undefined>();
+    for (const s of staffListQuery.data ?? []) m.set(s.id, s.sex ?? null);
+    return m;
+  }, [staffListQuery.data]);
+
+  // ─── M-4b: 当日の会議・イベント帯 (藤色・カイポケ反映外・表示専用) ───
+  const monitorStaffIds = useMemo(
+    () => (data?.staff ?? []).map((r) => r.staff_id).filter((id): id is string => id != null),
+    [data?.staff],
+  );
+  // Date.UTC で構築する: useWeekStaffEvents は内部で toISOString() (UTC) から
+  // from/to を作るため、ローカルTZ (JST) 解釈の Date だと前日にズレて
+  // イベントが 1 件も取れなくなる (レビューHIGH対応・addDays と同方針)。
+  const dateObj = useMemo(() => {
+    const [y, m, d] = parseYmd(date);
+    return new Date(Date.UTC(y, m - 1, d));
+  }, [date]);
+  const { data: staffEventsData } = useWeekStaffEvents(monitorStaffIds, dateObj, dateObj);
+  const eventsByStaffId = useMemo(() => {
+    const all = buildStaffEventsMap(monitorStaffIds, staffEventsData);
+    // 当日分だけに絞る (フックは日単位でも配列を返すため防御的にフィルタ)。
+    const m = new Map<string, EventRead[]>();
+    for (const [sid, events] of all.entries()) {
+      const todays = events.filter((ev) => ev.date === date);
+      if (todays.length > 0) m.set(sid, todays);
+    }
+    return m;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [monitorStaffIds.join(','), staffEventsData, date]);
 
   // クライアント側フィルタ (拠点チップ / 異常のみ・未訪問のみ)。offices チップを
   // 常に全件出すため拠点フィルタもクライアントで行う (サーバ refetch なし)。
@@ -283,13 +333,29 @@ export default function MonitorPage() {
         />
       )}
 
-      {/* 凡例 */}
+      {/* 凡例 (M-4a: 予定=性別ウォッシュのカード・実績=状態色レール) */}
       <div className="flex flex-wrap gap-3.5 px-5 pb-2 text-xs text-text-secondary">
-        <Legend swatch={PLAN_BAR_BG} label="予定（患者名）" border />
+        <span className="inline-flex items-center gap-1.5">
+          <span className="inline-flex gap-0.5">
+            {(['male', 'female', 'unknown'] as const).map((sx) => {
+              const pal = genderPalette(sx);
+              return (
+                <span
+                  key={sx}
+                  // rounded-[3px]: 10x14px の極小スウォッチのためトークン(sm=8px)未満の例外
+                  className="inline-block h-2.5 w-3.5 rounded-[3px] border border-l-[2px]"
+                  style={{ background: pal.bg, borderColor: pal.ln, borderLeftColor: pal.bar }}
+                />
+              );
+            })}
+          </span>
+          予定カード（地色＝患者性別）
+        </span>
         <Legend swatch="var(--status-match)" label="一致" />
         <Legend swatch="var(--status-review)" label="要確認" />
         <Legend swatch="var(--status-mismatch)" label="不一致" />
         <Legend swatch={MISSING_BAR_BG} label="未訪問" />
+        <Legend swatch="var(--sched-event-bg)" label="会議・イベント" border />
         <span className="text-text-muted">→1.2km 次までの距離</span>
       </div>
 
@@ -314,6 +380,9 @@ export default function MonitorPage() {
               nowMinutes={nowMinutes}
               onSelectRow={onSelectRow}
               onSelectVisit={onSelectVisit}
+              patientMetaById={patientMetaById}
+              staffSexById={staffSexById}
+              eventsByStaffId={eventsByStaffId}
             />
           )}
         </div>
@@ -377,7 +446,10 @@ function Legend({ swatch, label, border }: { swatch: string; label: string; bord
       <span
         // rounded-[3px]: 10x20px の極小スウォッチのためトークン(sm=8px)未満の例外
         className="inline-block h-2.5 w-5 rounded-[3px]"
-        style={{ background: swatch, border: border ? `1px solid ${PLAN_BAR_BORDER}` : undefined }}
+        style={{
+          background: swatch,
+          border: border ? '1px solid var(--sched-event-ln)' : undefined,
+        }}
       />
       {label}
     </span>
