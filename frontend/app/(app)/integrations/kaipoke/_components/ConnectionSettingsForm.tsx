@@ -1,7 +1,11 @@
 'use client';
 
 /**
- * ConnectionSettingsCard — カイポケ接続設定カード（admin専用）。
+ * ConnectionSettingsForm — カイポケ接続設定の本体（admin専用）。
+ *
+ * PO要望 (2026-07-09): 認証情報 (法人ID / ユーザーID / パスワード) が常時ページ表側に
+ * 出ているのはセキュリティ上こわい、という理由で「設定」メニュー内のダイアログへ格納した。
+ * そのため本コンポーネントは Card / 見出しを持たず、ダイアログ本文としてのみ描画される。
  *
  * 設定済み: コンパクト表示（法人ID / ユーザーID / 更新日）＋「変更する」でフォーム展開。
  * 未設定:   フォームを最初から展開＋アンバー注意バナー。
@@ -13,7 +17,6 @@ import { toast } from 'sonner';
 import { ApiError } from '@/lib/api-client';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
@@ -35,7 +38,7 @@ function fmtUpdatedAt(iso: string): string {
 
 // --- メインコンポーネント ---
 
-export function ConnectionSettingsCard() {
+export function ConnectionSettingsForm() {
   const credQuery = useKaipokeCredentials();
   const cred = credQuery.data;
   const configured = credQuery.isSuccess && (cred?.configured ?? false);
@@ -102,12 +105,7 @@ export function ConnectionSettingsCard() {
   };
 
   return (
-    <Card className="p-5">
-      <h2 className="mb-1 font-serif text-lg font-bold text-text-primary">接続設定</h2>
-      <p className="mb-4 text-sm text-text-secondary">
-        カイポケへのログイン情報です。この設定だけで他の事業所様でも利用できます。
-      </p>
-
+    <div>
       {/* 読み込み中 */}
       {credQuery.isLoading && <Skeleton className="h-20 w-full" />}
 
@@ -247,6 +245,6 @@ export function ConnectionSettingsCard() {
           </p>
         )}
       </div>
-    </Card>
+    </div>
   );
 }

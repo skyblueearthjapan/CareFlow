@@ -17,7 +17,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { useKaipokeLive, useKaipokeCredentials, useStopJob } from '@/lib/queries/integrations';
 
 import { KaipokeJobsList } from '../_components/KaipokeJobsList';
-import { ConnectionSettingsCard } from './_components/ConnectionSettingsCard';
+import { IntegrationSettingsMenu } from './_components/IntegrationSettingsMenu';
 import { EmergencyStopButton } from './_components/EmergencyStopButton';
 import { ExecutionLogViewer } from './_components/ExecutionLogViewer';
 import { JobProgressCard, commandLabel } from './_components/JobProgressCard';
@@ -59,11 +59,27 @@ export default function KaipokeIntegrationPage() {
     );
   }
 
+  // 接続設定はダイアログの中に隠したため、未設定のときはページ側で気づけるようにする。
+  const credentialsMissing = credQuery.isSuccess && !credentialsConfigured;
+
   const statusTone = !reachable ? 'error' : running ? 'running' : 'idle';
 
   return (
     <section className="space-y-6">
-      <Header />
+      {/* 右上に「設定」→「接続設定」を格納 (PO要望: 認証情報を表側に出さない)。 */}
+      <div className="flex items-start justify-between gap-4">
+        <Header />
+        <IntegrationSettingsMenu needsAttention={credentialsMissing} />
+      </div>
+
+      {credentialsMissing && (
+        <Alert variant="warning">
+          <AlertTitle>接続設定が未設定です</AlertTitle>
+          <AlertDescription>
+            右上の「設定」→「接続設定」から、カイポケのログイン情報を登録してください。
+          </AlertDescription>
+        </Alert>
+      )}
 
       {/* 稼働状況 + ライブモニター */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
@@ -123,21 +139,18 @@ export default function KaipokeIntegrationPage() {
         </div>
       )}
 
-      {/* 接続設定カード（WeeklyApplyPanel の上に配置） */}
-      <ConnectionSettingsCard />
-
-      {/* 週次反映ワークフロー（①展開 →②差分 →③確認 →④反映 を集約） */}
-      <WeeklyApplyPanel busy={running} credentialsConfigured={credentialsConfigured} />
-
-      {/* 区切り: 送る（CF→カイポケ）/ 取り込む（カイポケ→CF） */}
-      <div className="flex items-center gap-3" aria-hidden="true">
-        <div className="h-px flex-1 bg-border-default" />
-        <span className="text-xs font-medium text-text-muted">↕ 送る / 取り込む</span>
-        <div className="h-px flex-1 bg-border-default" />
+      {/* 送る（CF→カイポケ）と 取り込む（カイポケ→CF）を左右に並べ、上下方向を節約する
+          (PO要望 2026-07-09)。lg 未満は従来どおり縦積み。
+          各列に min-w-0 を付けないと、パネル内部の overflow-x-auto (取り込みの週プレビュー等)
+          が効かず grid 列が押し広げられる。 */}
+      <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-2">
+        <div className="min-w-0">
+          <WeeklyApplyPanel busy={running} credentialsConfigured={credentialsConfigured} />
+        </div>
+        <div className="min-w-0">
+          <InboundPanel busy={running} credentialsConfigured={credentialsConfigured} />
+        </div>
       </div>
-
-      {/* 取り込みパネル（カイポケ → CareFlow・逆方向同期） */}
-      <InboundPanel busy={running} credentialsConfigured={credentialsConfigured} />
 
       {/* 実行ログ */}
       {live && live.logs.length > 0 && <ExecutionLogViewer lines={live.logs} />}
