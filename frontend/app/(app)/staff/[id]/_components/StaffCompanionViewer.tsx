@@ -222,17 +222,26 @@ export function StaffCompanionViewer({ staffId, canEdit }: StaffCompanionViewerP
         <p className="text-sm text-text-muted">同行スタッフはまだ登録されていません</p>
       )}
 
-      {/* 編集リンク (admin/manager のみ) */}
-      {canEdit && (
-        <div>
+      {/* 編集リンク — RB (PO決定 2026-07-08): 全ロール同一表示・操作は権限どおり。
+          staff には無効テキストとして見せる (Link は disabled にできないため span に落とす)。 */}
+      <div>
+        {canEdit ? (
           <Link
             href={`/staff/${staffId}/edit#companion`}
             className="text-xs font-medium text-brand-primary underline-offset-2 hover:underline"
           >
             編集 →
           </Link>
-        </div>
-      )}
+        ) : (
+          <span
+            aria-disabled="true"
+            title="編集権限がありません"
+            className="cursor-not-allowed text-xs font-medium text-text-muted opacity-50"
+          >
+            編集 →
+          </span>
+        )}
+      </div>
     </div>
   );
 }

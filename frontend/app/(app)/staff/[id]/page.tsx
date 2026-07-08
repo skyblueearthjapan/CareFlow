@@ -171,12 +171,19 @@ export default function StaffDetailPage() {
           )}
         </div>
         <div className="flex gap-2 lg:justify-end">
-          {canEdit && (
+          {/* RB (PO決定 2026-07-08): 全ロール同一表示・操作は権限どおり (disabled)。
+              編集は staff にも見せて無効化。削除は admin 限定センシティブのため非表示のまま。 */}
+          {canEdit ? (
             <Button asChild variant="outline" size="sm">
               <Link href={`/staff/${data.id}/edit`}>
                 <Pencil className="h-4 w-4" />
                 編集
               </Link>
+            </Button>
+          ) : (
+            <Button variant="outline" size="sm" disabled title="編集権限がありません">
+              <Pencil className="h-4 w-4" />
+              編集
             </Button>
           )}
           {canDelete && (
@@ -288,12 +295,17 @@ function ShiftsCard({ staffId, canEdit }: { staffId: string; canEdit: boolean })
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
         <CardTitle>週間シフト</CardTitle>
-        {canEdit && (
-          <Button type="button" variant="outline" size="sm" onClick={() => setOpen(true)}>
-            <Pencil className="h-4 w-4" />
-            編集
-          </Button>
-        )}
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={!canEdit}
+          title={canEdit ? undefined : '編集権限がありません'}
+          onClick={() => setOpen(true)}
+        >
+          <Pencil className="h-4 w-4" />
+          編集
+        </Button>
       </CardHeader>
       <CardContent>
         {isLoading ? (
@@ -365,12 +377,17 @@ function OverridesCard({ staffId, canEdit }: { staffId: string; canEdit: boolean
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
         <CardTitle>今後の休み・時間変更</CardTitle>
-        {canEdit && (
-          <Button type="button" variant="outline" size="sm" onClick={() => setAddOpen(true)}>
-            <Plus className="h-4 w-4" />
-            追加
-          </Button>
-        )}
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={!canEdit}
+          title={canEdit ? undefined : '編集権限がありません'}
+          onClick={() => setAddOpen(true)}
+        >
+          <Plus className="h-4 w-4" />
+          追加
+        </Button>
       </CardHeader>
       <CardContent>
         {isLoading ? (
@@ -408,12 +425,17 @@ function OverridesCard({ staffId, canEdit }: { staffId: string; canEdit: boolean
                   )}
                   {o.note && <div className="text-xs text-text-muted">{o.note}</div>}
                 </div>
-                {canEdit && (
-                  <Button type="button" variant="outline" size="sm" onClick={() => setEditing(o)}>
-                    <Pencil className="h-4 w-4" />
-                    編集
-                  </Button>
-                )}
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={!canEdit}
+                  title={canEdit ? undefined : '編集権限がありません'}
+                  onClick={() => setEditing(o)}
+                >
+                  <Pencil className="h-4 w-4" />
+                  編集
+                </Button>
               </li>
             ))}
           </ul>
@@ -454,12 +476,17 @@ function EventsCard({ staffId, canEdit }: { staffId: string; canEdit: boolean })
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
         <CardTitle>研修日 / イベント</CardTitle>
-        {canEdit && (
-          <Button type="button" variant="outline" size="sm" onClick={() => setAddOpen(true)}>
-            <Plus className="h-4 w-4" />
-            追加
-          </Button>
-        )}
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={!canEdit}
+          title={canEdit ? undefined : '編集権限がありません'}
+          onClick={() => setAddOpen(true)}
+        >
+          <Plus className="h-4 w-4" />
+          追加
+        </Button>
       </CardHeader>
       <CardContent>
         {isLoading ? (
@@ -495,12 +522,17 @@ function EventsCard({ staffId, canEdit }: { staffId: string; canEdit: boolean })
                   </div>
                   {e.note && <div className="text-xs text-text-muted">{e.note}</div>}
                 </div>
-                {canEdit && (
-                  <Button type="button" variant="outline" size="sm" onClick={() => setEditing(e)}>
-                    <Pencil className="h-4 w-4" />
-                    編集
-                  </Button>
-                )}
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={!canEdit}
+                  title={canEdit ? undefined : '編集権限がありません'}
+                  onClick={() => setEditing(e)}
+                >
+                  <Pencil className="h-4 w-4" />
+                  編集
+                </Button>
               </li>
             ))}
           </ul>
