@@ -3017,9 +3017,11 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
           <div
             className={cn(
               'min-w-0 space-y-3 lg:min-h-0',
-              // 日タイムライン表示中はペインを固定高にして盤面へスクロールを委譲
-              // (列ヘッダ sticky が盤面スクロールで効く)。他モードは従来のペインスクロール。
-              activeTab !== 'week' && weekdayViewMode === 'timeline'
+              // 日タイムライン/週一覧はペインを固定高にして内部スクロールへ委譲
+              // (ヘッダ行 sticky が内部スクロールで効く)。週タイムライン(縦積み)や
+              // リスト/テーブルは従来のペインスクロール。
+              (activeTab !== 'week' && weekdayViewMode === 'timeline') ||
+                (activeTab === 'week' && weekViewMode === 'overview')
                 ? 'lg:flex lg:flex-col lg:overflow-hidden'
                 : 'lg:overflow-y-auto',
             )}
@@ -3031,7 +3033,11 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                 role="tabpanel"
                 aria-labelledby="course-day-tab-week"
                 data-testid="course-week-overview-panel"
-                className="space-y-2"
+                className={cn(
+                  'space-y-2',
+                  // 週一覧は内部スクロール (曜日ヘッダ固定) のため高さを委譲する。
+                  weekViewMode === 'overview' && 'lg:flex lg:min-h-0 lg:flex-1 lg:flex-col',
+                )}
               >
                 {weekViewMode === 'timeline' ? (
                   /* T-3改: 週タイムライン (全コース縦積み・縦スクロールで一元閲覧). */

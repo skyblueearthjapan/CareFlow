@@ -233,14 +233,19 @@ export function CourseWeekOverview({
   const gridCols = `144px repeat(${WEEKDAYS.length}, minmax(120px, 1fr))`;
 
   return (
-    <Card className="overflow-hidden p-0" data-testid="course-week-overview">
-      <div className="overflow-x-auto">
+    // lg 以上は親 (Panel の週パネル) の高さいっぱいで内部スクロールし、
+    // 曜日ヘッダ行は sticky で常時固定する (PO要望 2026-07-08)。
+    <Card
+      className="flex flex-col overflow-hidden p-0 lg:min-h-0 lg:flex-1"
+      data-testid="course-week-overview"
+    >
+      <div className="min-h-0 flex-1 overflow-auto">
         <div
           className="grid border-b border-border-default text-[11px]"
           style={{ gridTemplateColumns: gridCols }}
         >
-          {/* ヘッダー行: コーナー + 曜日ラベル */}
-          <div className="border-b border-r border-border-default bg-bg-muted px-2 py-1 text-[10px] font-semibold text-text-muted">
+          {/* ヘッダー行: コーナー + 曜日ラベル (縦スクロールで固定)。 */}
+          <div className="sticky top-0 z-10 border-b border-r border-border-default bg-bg-muted px-2 py-1 text-[10px] font-semibold text-text-muted">
             コース \ 曜日
           </div>
           {WEEKDAYS.map((wd) => {
@@ -261,7 +266,7 @@ export function CourseWeekOverview({
                 key={`h-${wd}`}
                 type="button"
                 onClick={() => onJumpToDay(wd)}
-                className="flex flex-col items-center gap-0.5 border-b border-r border-border-default bg-bg-muted px-2 py-1 text-center text-[10px] font-semibold text-text-secondary hover:bg-brand-primary/10"
+                className="sticky top-0 z-10 flex flex-col items-center gap-0.5 border-b border-r border-border-default bg-bg-muted px-2 py-1 text-center text-[10px] font-semibold text-text-secondary hover:bg-brand-primary/10"
                 data-testid={`course-week-overview-header-${wd}`}
                 aria-label={`${WEEKDAY_LABELS[wd]}曜日タブにジャンプ (患者 ${patientTotal} / 受入 ${acceptCapacity} 名)`}
                 title={`${WEEKDAY_LABELS[wd]}曜日タブにジャンプ`}
