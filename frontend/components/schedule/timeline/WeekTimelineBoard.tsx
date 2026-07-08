@@ -37,6 +37,8 @@ const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土'] as const;
 const COL_MIN_W = 150;
 const TIME_RAIL_W = 50;
 const ROW_PX = TL_WEEK_ROW_PX; // 週も縦を圧縮せず余裕を持たせる
+/** 終了時刻が無い訪問を描くときの既定所要分 (週ビューは終了を持たない訪問に寛容)。 */
+const WTL_DEFAULT_SERVICE_MIN = 35;
 
 export interface WeekTimelineOption {
   templateId: string;
@@ -94,7 +96,7 @@ function WeekCard({
 }) {
   const s = parseHM(v.start_time);
   // 終了が無い場合は既定 35 分で描く (週ビューは終了を持たない訪問もあるため寛容)。
-  const e = parseHM(v.end_time) ?? (s !== null ? s + 35 : null);
+  const e = parseHM(v.end_time) ?? (s !== null ? s + WTL_DEFAULT_SERVICE_MIN : null);
   if (s === null || e === null || e <= s) return null;
   const cs = Math.max(s, TL_DAY_START_MIN);
   const ce = Math.min(e, TL_DAY_END_MIN);
@@ -202,7 +204,7 @@ function buildWeekRenderItems(visits: ReadonlyArray<WeekOverviewVisit>): WeekRen
   for (const v of sorted) {
     if (used.has(v.id)) continue;
     const s = parseHM(v.start_time);
-    const e = parseHM(v.end_time) ?? (s !== null ? s + 35 : null);
+    const e = parseHM(v.end_time) ?? (s !== null ? s + WTL_DEFAULT_SERVICE_MIN : null);
     if (s === null || e === null || e <= s) continue;
     const gid = v.same_address_key ?? null;
     if (gid) {
@@ -217,7 +219,7 @@ function buildWeekRenderItems(visits: ReadonlyArray<WeekOverviewVisit>): WeekRen
       if (mate) {
         used.add(v.id);
         used.add(mate.id);
-        const meEnd = parseHM(mate.end_time) ?? s + 35;
+        const meEnd = parseHM(mate.end_time) ?? s + WTL_DEFAULT_SERVICE_MIN;
         const endMin = Math.max(s + SAME_ADDRESS_PAIR_MIN_OCCUPANCY, e, meEnd);
         items.push({
           kind: 'pair',
@@ -279,7 +281,7 @@ function WeekPairBox({
         {item.visits.map((v) => {
           const pal = genderPalette(v.patient_sex);
           const s = parseHM(v.start_time);
-          const e = parseHM(v.end_time) ?? (s !== null ? s + 35 : null);
+          const e = parseHM(v.end_time) ?? (s !== null ? s + WTL_DEFAULT_SERVICE_MIN : null);
           const dm = s !== null && e !== null && e > s ? e - s : null;
           return (
             <button

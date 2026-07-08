@@ -591,15 +591,29 @@ export function CourseWeekOverview({
                                       </li>
                                     );
                                   }
-                                  return item.kind === 'visit' ? (
+                                  if (item.kind !== 'visit') {
+                                    return (
+                                      <li
+                                        key={item.id}
+                                        className="text-[10px] leading-tight text-yellow-700"
+                                        title={`${item.titleLine} ${item.timeLine}`}
+                                        data-testid={`course-week-overview-event-${item.id}`}
+                                      >
+                                        <div className="truncate">{item.titleLine}</div>
+                                        <div className="text-text-muted">{item.timeLine}</div>
+                                      </li>
+                                    );
+                                  }
+                                  const pal = genderPalette(item.patientSex);
+                                  return (
                                     <li
                                       key={item.id}
                                       // タイムラインカードと同じ視覚言語の縦幅狭カード行 (PO要望)。
                                       className="flex items-center gap-1 rounded border border-l-[3px] px-1 py-0.5 text-[10px] text-text-primary"
                                       style={{
-                                        background: genderPalette(item.patientSex).bg,
-                                        borderColor: genderPalette(item.patientSex).ln,
-                                        borderLeftColor: genderPalette(item.patientSex).bar,
+                                        background: pal.bg,
+                                        borderColor: pal.ln,
+                                        borderLeftColor: pal.bar,
                                       }}
                                       title={item.label}
                                       data-testid={`course-week-overview-name-${item.id}`}
@@ -607,7 +621,7 @@ export function CourseWeekOverview({
                                       {/* 行頭の性別ドット (日リストと同じ視覚言語: 患者sex→genderPalette)。 */}
                                       <i
                                         className="h-1.5 w-1.5 shrink-0 rounded-full"
-                                        style={{ background: genderPalette(item.patientSex).bar }}
+                                        style={{ background: pal.bar }}
                                         data-testid={`course-week-overview-gender-dot-${item.id}`}
                                         aria-hidden="true"
                                       />
@@ -667,16 +681,6 @@ export function CourseWeekOverview({
                                         </span>
                                       ) : null}
                                     </li>
-                                  ) : (
-                                    <li
-                                      key={item.id}
-                                      className="text-[10px] leading-tight text-yellow-700"
-                                      title={`${item.titleLine} ${item.timeLine}`}
-                                      data-testid={`course-week-overview-event-${item.id}`}
-                                    >
-                                      <div className="truncate">{item.titleLine}</div>
-                                      <div className="text-text-muted">{item.timeLine}</div>
-                                    </li>
                                   );
                                 }
                                 // pair cluster — 2 名を 1 つの黄色囲みで wrap.
@@ -692,82 +696,85 @@ export function CourseWeekOverview({
                                       📍 同住所 ({cluster.visits.length} 名)
                                     </div>
                                     <ul>
-                                      {cluster.visits.map((v) => (
-                                        <li
-                                          key={v.id}
-                                          // pair 囲み内もカード行 (タイムラインのペアボックスと同じ)。
-                                          className="my-0.5 flex items-center gap-1 rounded border border-l-[3px] px-1 py-0.5 text-[10px] text-text-primary"
-                                          style={{
-                                            background: genderPalette(v.patientSex).bg,
-                                            borderColor: genderPalette(v.patientSex).ln,
-                                            borderLeftColor: genderPalette(v.patientSex).bar,
-                                          }}
-                                          title={v.label}
-                                          data-testid={`course-week-overview-name-${v.id}`}
-                                          data-same-address-group="true"
-                                        >
-                                          {/* 行頭の性別ドット (pair cluster 内も単独行と同じ)。 */}
-                                          <i
-                                            className="h-1.5 w-1.5 shrink-0 rounded-full"
-                                            style={{ background: genderPalette(v.patientSex).bar }}
-                                            data-testid={`course-week-overview-gender-dot-${v.id}`}
-                                            aria-hidden="true"
-                                          />
-                                          <span className="min-w-0 flex-1 truncate">
-                                            {v.time ? (
-                                              <span className="mr-1 tnum text-text-muted">
-                                                {v.time.slice(0, 5)}
+                                      {cluster.visits.map((v) => {
+                                        const pal = genderPalette(v.patientSex);
+                                        return (
+                                          <li
+                                            key={v.id}
+                                            // pair 囲み内もカード行 (タイムラインのペアボックスと同じ)。
+                                            className="my-0.5 flex items-center gap-1 rounded border border-l-[3px] px-1 py-0.5 text-[10px] text-text-primary"
+                                            style={{
+                                              background: pal.bg,
+                                              borderColor: pal.ln,
+                                              borderLeftColor: pal.bar,
+                                            }}
+                                            title={v.label}
+                                            data-testid={`course-week-overview-name-${v.id}`}
+                                            data-same-address-group="true"
+                                          >
+                                            {/* 行頭の性別ドット (pair cluster 内も単独行と同じ)。 */}
+                                            <i
+                                              className="h-1.5 w-1.5 shrink-0 rounded-full"
+                                              style={{ background: pal.bar }}
+                                              data-testid={`course-week-overview-gender-dot-${v.id}`}
+                                              aria-hidden="true"
+                                            />
+                                            <span className="min-w-0 flex-1 truncate">
+                                              {v.time ? (
+                                                <span className="mr-1 tnum text-text-muted">
+                                                  {v.time.slice(0, 5)}
+                                                </span>
+                                              ) : null}
+                                              {(() => {
+                                                // Phase G-15: 性別制限色 (pair cluster 内)
+                                                const sexStyle: React.CSSProperties =
+                                                  v.sexRestriction === 'female_only'
+                                                    ? { color: '#dc2626', fontWeight: 600 }
+                                                    : v.sexRestriction === 'male_only'
+                                                      ? { color: '#2563eb', fontWeight: 600 }
+                                                      : {};
+                                                return onPatientClick ? (
+                                                  <button
+                                                    type="button"
+                                                    className="underline-offset-2 hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary"
+                                                    style={sexStyle}
+                                                    onClick={(e) => {
+                                                      e.stopPropagation();
+                                                      onPatientClick(v.patient_id);
+                                                    }}
+                                                    aria-label={`${v.label} の詳細を開く`}
+                                                  >
+                                                    {v.label}
+                                                  </button>
+                                                ) : (
+                                                  <span style={sexStyle}>{v.label}</span>
+                                                );
+                                              })()}
+                                              {/* Phase G-22 / G-47: 🔒 完全固定 toggle (週ビュー pair cluster) — scope 選択メニュー化 */}
+                                              {onTogglePin && (
+                                                <PinIconButton
+                                                  fixedVisitId={v.fixedVisitId}
+                                                  isPinned={v.isPinned}
+                                                  label={v.label}
+                                                  patientId={v.patient_id}
+                                                  onTogglePin={onTogglePin}
+                                                  testIdPrefix="course-week-overview-pin"
+                                                  visitId={v.id}
+                                                />
+                                              )}
+                                            </span>
+                                            {distByVisitId.get(v.id) != null ? (
+                                              <span
+                                                className="shrink-0 tnum text-[9px] text-text-muted"
+                                                data-testid={`course-week-overview-visit-distance-${v.id}`}
+                                                title="前の患者/拠点からここまでの移動距離 (概算)"
+                                              >
+                                                {distByVisitId.get(v.id)!.toFixed(1)}km
                                               </span>
                                             ) : null}
-                                            {(() => {
-                                              // Phase G-15: 性別制限色 (pair cluster 内)
-                                              const sexStyle: React.CSSProperties =
-                                                v.sexRestriction === 'female_only'
-                                                  ? { color: '#dc2626', fontWeight: 600 }
-                                                  : v.sexRestriction === 'male_only'
-                                                    ? { color: '#2563eb', fontWeight: 600 }
-                                                    : {};
-                                              return onPatientClick ? (
-                                                <button
-                                                  type="button"
-                                                  className="underline-offset-2 hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary"
-                                                  style={sexStyle}
-                                                  onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    onPatientClick(v.patient_id);
-                                                  }}
-                                                  aria-label={`${v.label} の詳細を開く`}
-                                                >
-                                                  {v.label}
-                                                </button>
-                                              ) : (
-                                                <span style={sexStyle}>{v.label}</span>
-                                              );
-                                            })()}
-                                            {/* Phase G-22 / G-47: 🔒 完全固定 toggle (週ビュー pair cluster) — scope 選択メニュー化 */}
-                                            {onTogglePin && (
-                                              <PinIconButton
-                                                fixedVisitId={v.fixedVisitId}
-                                                isPinned={v.isPinned}
-                                                label={v.label}
-                                                patientId={v.patient_id}
-                                                onTogglePin={onTogglePin}
-                                                testIdPrefix="course-week-overview-pin"
-                                                visitId={v.id}
-                                              />
-                                            )}
-                                          </span>
-                                          {distByVisitId.get(v.id) != null ? (
-                                            <span
-                                              className="shrink-0 tnum text-[9px] text-text-muted"
-                                              data-testid={`course-week-overview-visit-distance-${v.id}`}
-                                              title="前の患者/拠点からここまでの移動距離 (概算)"
-                                            >
-                                              {distByVisitId.get(v.id)!.toFixed(1)}km
-                                            </span>
-                                          ) : null}
-                                        </li>
-                                      ))}
+                                          </li>
+                                        );
+                                      })}
                                     </ul>
                                   </li>
                                 );
