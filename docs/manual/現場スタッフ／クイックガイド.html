@@ -31,6 +31,14 @@
   .page.ex .head .logo{background:linear-gradient(135deg,var(--teal),var(--teal-deep));}
   .page.ex .head .url b{color:var(--teal-deep);}
   .page.ex .card h2 .n{background:var(--teal);}
+  /* QRチェックインページ＝ブルー */
+  .page.qr .head{border-bottom-color:var(--blue);}
+  .page.qr .head h1{color:#1d4ed8;}
+  .page.qr .head .logo{background:linear-gradient(135deg,var(--blue),#1d4ed8);}
+  .page.qr .head .url b{color:#1d4ed8;}
+  .page.qr .card h2 .n{background:var(--blue);}
+  .page.qr .steps-inline li::before{background:var(--blue);}
+  .note.blu{background:#eef4ff;border-color:#cdddfb;color:#1e3a8a;} .note.blu::before{content:"📍";}
 
   /* 共通ページ＝金色 */
   .head{display:flex;align-items:center;gap:12px;border-bottom:3px solid var(--gold);padding-bottom:10px;margin-bottom:14px;}
@@ -134,7 +142,7 @@
 
 <div class="toolbar">
   <button onclick="window.print()">🖨 印刷 / PDFで保存</button>
-  <p>このページは A4・3枚での印刷を想定しています（ブラウザの「印刷」→「PDFに保存」でも配布できます）。</p>
+  <p>このページは A4・4枚での印刷を想定しています（ブラウザの「印刷」→「PDFに保存」でも配布できます）。</p>
 </div>
 
 <!-- ================= PAGE 1 : 基本 ================= -->
@@ -217,7 +225,7 @@
     </div>
   </div>
 
-  <div class="foot"><span>CareFlow 現場スタッフ クイックガイド</span><span>1 / 3</span></div>
+  <div class="foot"><span>CareFlow 現場スタッフ クイックガイド</span><span>1 / 4</span></div>
 </div>
 
 <!-- ================= PAGE 2 : 既存患者の予定変更 ================= -->
@@ -267,7 +275,7 @@
     </div>
   </div>
 
-  <div class="foot"><span>既存の患者さんの予定変更</span><span>2 / 3</span></div>
+  <div class="foot"><span>既存の患者さんの予定変更</span><span>2 / 4</span></div>
 </div>
 
 <!-- ================= PAGE 3 : 新規患者の受け入れ ================= -->
@@ -329,6 +337,7 @@
         <li><b>開く</b> … carelink.kaipoke-api.net（ホーム画面に追加が便利）</li>
         <li><b>入る</b> … スタッフID＋共通パスワード（変更しない）</li>
         <li><b>確認</b> … 「今日」「今週」で自分の訪問</li>
+        <li><b>到着・退出</b> … 訪問を開いてQRで記録（4枚目）</li>
         <li><b>空き</b> … 受け入れ枠 ○＝可 △＝相談 ×＝なし</li>
         <li><b>既存の変更相談</b> … 変えずにメモして管理者へ</li>
         <li><b>新規の相談</b> … ヒアリングシートを埋めて管理者へ</li>
@@ -337,7 +346,87 @@
     </div>
   </div>
 
-  <div class="foot"><span>不明点は管理者・マネージャーまで</span><span>3 / 3</span></div>
+  <div class="foot"><span>不明点は管理者・マネージャーまで</span><span>3 / 4</span></div>
+</div>
+
+<!-- ================= PAGE 4 : QRチェックイン ================= -->
+<div class="page qr">
+  <div class="head">
+    <div class="logo">C</div>
+    <div>
+      <h1>QRチェックイン（到着・退出の記録）</h1>
+      <div class="sub">訪問看護スケジューリング ／ 4枚目：訪問先でのQR読み込みとGPSの準備</div>
+    </div>
+    <div class="url">ログイン先<br><b>carelink.kaipoke-api.net</b></div>
+  </div>
+
+  <div class="grid">
+    <div class="card span2">
+      <h2><span class="n">9</span>準備：Chrome で位置情報（GPS）を使えるようにする</h2>
+      <p class="small">QRチェックインでは、<b>正しい場所で記録されたか</b>を確認するために位置情報を使います。初回利用の前に、お使いのスマホで <b>Chrome アプリの位置情報を有効化</b>してください（1回設定すればOK）。</p>
+      <div class="acc-row">
+        <div class="col">
+          <p><b>iPhone（Chrome アプリ）</b></p>
+          <ol class="steps-inline">
+            <li>ホームの <b>「設定」</b> を開く</li>
+            <li><b>プライバシーとセキュリティ</b> → <b>位置情報サービス</b> を <b>オン</b></li>
+            <li>下のアプリ一覧から <b>Chrome</b> を選ぶ</li>
+            <li><b>「このアプリの使用中」</b> を選び、<b>「正確な位置情報」もオン</b></li>
+            <li>Chrome で CareFlow を開き、「位置情報の使用を許可しますか？」と出たら <b>「許可」</b></li>
+          </ol>
+        </div>
+        <div class="col">
+          <p><b>Android（Chrome アプリ）</b></p>
+          <ol class="steps-inline">
+            <li><b>「設定」</b> → <b>アプリ</b> → <b>Chrome</b> を開く</li>
+            <li><b>権限</b> → <b>位置情報</b> をタップ</li>
+            <li><b>「アプリの使用中のみ許可」</b> を選び、<b>「正確な位置情報を使用」もオン</b></li>
+            <li>Chrome で CareFlow を開き、「位置情報の使用を許可しますか？」と出たら <b>「許可」</b></li>
+          </ol>
+          <p class="small">※機種により文言が少し異なります（例：権限→「位置情報」が「許可」の中にある等）。</p>
+        </div>
+      </div>
+      <div class="note warn">アプリ内で「<b>位置情報の利用が許可されていません</b>」と表示されたら、この設定を見直してから画面の <b>「位置を再取得」</b> を押してください。あわせて <b>カメラの許可</b>（QR読み取りに必要）も、聞かれたら「許可」を選んでください。</div>
+    </div>
+
+    <div class="card">
+      <h2><span class="n">10</span>到着したら（入室時のQR読み込み）</h2>
+      <ol class="steps-inline">
+        <li>下メニュー <b>「今日」</b> → 該当の訪問をタップ</li>
+        <li><b>「QRで到着を記録」</b> をタップ（カメラが起動）</li>
+        <li>患者様宅に掲示された <b>QRコードを枠内に</b>合わせる</li>
+        <li>「到着の確認」画面で位置の判定を確認し、<b>「到着を記録する」</b> をタップ</li>
+        <li>「到着を記録しました」と出て、状態が <b>訪問中</b> に変わる</li>
+      </ol>
+      <div class="note blu">位置が「<b>登録住所と一致</b>」なら緑表示。大きく離れている場合（目安300m超）は<b>理由の入力が必須</b>になり、「理由を付けて到着を記録」で記録します。</div>
+      <p class="small">GPSが取れないとき（「測位不良」）も<b>そのまま記録できます</b>。「位置を再取得」で測り直しも可能。</p>
+    </div>
+
+    <div class="card">
+      <h2><span class="n">11</span>帰るとき（退出時のQR読み込み）</h2>
+      <ol class="steps-inline">
+        <li>訪問中の画面で <b>「QRで退出を記録」</b> をタップ</li>
+        <li><b>同じQRコード</b>を枠内に合わせる（到着と共通です）</li>
+        <li>位置を確認して記録 → 「訪問を完了しました」と出て、状態が <b>完了</b> に変わる</li>
+      </ol>
+      <div class="note tip">訪問中は <b>サービスメモ</b>（端末内の下書き）と <b>「写真を撮影 / 選択」</b> が使えます。写真は<b>退出前</b>にアップロードしてください（完了後は追加できません）。</div>
+    </div>
+
+    <div class="card span2">
+      <h2><span class="n">12</span>QRチェックインで困ったとき</h2>
+      <ul class="small" style="columns:2;column-gap:24px;margin:0">
+        <li><b>カメラが起動しない</b> → カメラ許可を確認。急ぐときは <b>「QRなしで記録」</b> でも記録できます（位置情報は記録されます）。</li>
+        <li><b>「このQRは無効です」</b> → 管理者にQRの再発行を依頼。</li>
+        <li><b>「このQRは別の患者のものです」</b> → 読み取ったQRが正しい患者様宅のものか確認。</li>
+        <li><b>「このQRは更新されています」</b> → 古いQRが貼られたままです。管理者へ連絡し、新しいQRに貼り替え。</li>
+        <li><b>「測位がタイムアウトしました」</b> → 屋外や窓際で <b>「位置を再取得」</b>。</li>
+        <li><b>電波がない・送信に失敗</b> → 「<b>未送信として保存しました</b>」と出れば、電波が戻り次第<b>自動で再送</b>されます。そのまま次へ移動してOK。</li>
+      </ul>
+      <div class="note tip"><b>QRコードは患者様ごとに1枚</b>（玄関などに掲示・到着/退出共通）。印刷・再発行は管理者が患者詳細ページから行います。</div>
+    </div>
+  </div>
+
+  <div class="foot"><span>QRチェックイン（到着・退出）</span><span>4 / 4</span></div>
 </div>
 
 </body>
