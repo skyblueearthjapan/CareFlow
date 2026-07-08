@@ -134,7 +134,10 @@ export function MonitorTimeline({
           #／スタッフ
         </div>
         <div className="relative flex">
-          {HOURS.map((h) => (
+          {/* 8時ラベルは左端に絶対配置し、残り11時間を目盛線 (行側と同じ11分割) に揃える。
+              旧: 12分割 flex-1 で目盛線から最大180pxドリフトしていた (レビューLOW対応)。 */}
+          <span className="absolute left-0 top-0 py-2 pl-0.5 text-[11px] text-text-muted">8</span>
+          {HOURS.slice(1).map((h) => (
             <span
               key={h}
               className="flex-1 border-l border-border-default py-2 pl-0.5 text-[11px] text-text-muted"
@@ -155,7 +158,7 @@ export function MonitorTimeline({
       </div>
 
       {rows.length === 0 && (
-        <div className="px-4 py-10 text-center text-sm text-text-muted">
+        <div className="sticky left-0 w-[calc(100vw-460px)] min-w-[320px] px-4 py-10 text-center text-sm text-text-muted">
           この日の訪問はありません。
         </div>
       )}
@@ -179,9 +182,7 @@ export function MonitorTimeline({
             }}
             className={cn(
               'group grid min-h-[66px] cursor-pointer border-b border-border-default/60 transition-[opacity,background] duration-150',
-              isSel
-                ? 'bg-brand-primary-light shadow-[inset_5px_0_0_var(--brand-primary)]'
-                : 'hover:bg-bg-muted',
+              isSel ? 'bg-brand-primary-light' : 'hover:bg-bg-muted',
               hasSelection && !isSel ? 'opacity-40' : '',
             )}
             style={{
@@ -194,7 +195,10 @@ export function MonitorTimeline({
             <div
               className={cn(
                 'sticky left-0 z-[3] flex items-center gap-2 border-r border-border-default/60 px-2 py-1.5',
-                isSel ? 'bg-brand-primary-light' : 'bg-bg-base group-hover:bg-bg-muted',
+                // 選択アクセント線はセル側に置く (行側だと不透明な sticky セルに隠れる)。
+                isSel
+                  ? 'bg-brand-primary-light shadow-[inset_5px_0_0_var(--brand-primary)]'
+                  : 'bg-bg-base group-hover:bg-bg-muted',
               )}
             >
               <span
