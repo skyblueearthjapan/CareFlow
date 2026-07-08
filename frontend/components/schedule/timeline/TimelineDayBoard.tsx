@@ -389,7 +389,7 @@ export function TlPairDragGhost({ visits }: { visits: CourseGridVisit[] }) {
                 color: pal.ink,
               }}
             >
-              {v.is_pinned && <CornerPushPin className="h-3.5 w-3.5" />}
+              {v.is_pinned && <CornerPushPin />}
               <span className="truncate text-[12px] font-bold leading-tight">
                 {v.patient_name ?? '—'}
               </span>
@@ -615,7 +615,7 @@ function PairBox({
                 color: pal.ink,
               }}
             >
-              {v.is_pinned && <CornerPushPin className="h-3.5 w-3.5" />}
+              {v.is_pinned && <CornerPushPin />}
               <span className="flex min-w-0 items-center gap-1">
                 <span className="truncate text-[12px] font-bold leading-tight">
                   {v.patient_name ?? '—'}

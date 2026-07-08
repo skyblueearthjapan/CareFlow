@@ -291,7 +291,7 @@ function WeekPairBox({
                 color: pal.ink,
               }}
             >
-              {v.is_pinned && <CornerPushPin className="h-3.5 w-3.5" />}
+              {v.is_pinned && <CornerPushPin className="h-4 w-4" />}
               <span className="flex min-w-0 items-center gap-1">
                 <span className="truncate text-[11px] font-bold leading-tight">
                   {v.patient_name ?? '—'}
