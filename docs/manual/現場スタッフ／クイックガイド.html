@@ -40,6 +40,64 @@
   .page.qr .steps-inline li::before{background:var(--blue);}
   .note.blu{background:#eef4ff;border-color:#cdddfb;color:#1e3a8a;} .note.blu::before{content:"📍";}
 
+  /* ---- QRチェックイン 画面イメージ（4枚目） ---- */
+  .qrfigs{display:flex;gap:8px;align-items:stretch;justify-content:center;}
+  .qrfig{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;gap:5px;}
+  .qrfig .cap{font-size:10.5px;color:var(--ink2);text-align:center;line-height:1.45;}
+  .qrfig .cap b{color:#1d4ed8;}
+  .qrarrow{flex:0 0 auto;align-self:center;font-size:17px;color:#93a8c9;padding-bottom:34px;}
+  .qrphone{width:150px;flex:0 0 auto;border:6px solid #2b2620;border-radius:20px;overflow:hidden;background:#fff;box-shadow:0 3px 10px rgba(0,0,0,.16);}
+  .qrphone .qtop{height:10px;background:#2b2620;}
+  .qrphone .qscr{min-height:212px;background:var(--bg);display:flex;flex-direction:column;}
+  /* 読み込み前＝訪問詳細ミニ画面 */
+  .qv-hd{background:linear-gradient(135deg,var(--blue),#1d4ed8);color:#fff;padding:5px 8px;font-size:9px;font-weight:700;}
+  .qv-body{padding:7px 8px;flex:1;display:flex;flex-direction:column;gap:5px;}
+  .qv-name{font-weight:800;font-size:11.5px;}
+  .qv-meta{font-size:8.5px;color:var(--ink2);}
+  .qv-badge{display:inline-block;font-size:8px;font-weight:700;background:var(--amber-50);color:var(--amber);border-radius:999px;padding:1px 7px;}
+  .qv-addr{font-size:8px;color:var(--ink3);}
+  .qv-btn{margin-top:auto;background:var(--blue);color:#fff;border-radius:7px;padding:6px 4px;font-size:9.5px;font-weight:800;text-align:center;position:relative;box-shadow:0 0 0 3px #dbe7ff;}
+  .qv-btn .tap{position:absolute;right:-7px;bottom:-11px;font-size:16px;transform:rotate(-12deg);}
+  .qv-btn.ghost{background:#fff;color:var(--ink2);font-weight:600;box-shadow:none;border:1px solid var(--line);}
+  /* 読み込み中＝スキャナミニ画面 */
+  .qs-scr{min-height:212px;background:#191d24;display:flex;flex-direction:column;color:#fff;}
+  .qs-hd{padding:5px 8px;font-size:8.5px;font-weight:700;background:#10131a;display:flex;justify-content:space-between;align-items:center;}
+  .qs-hd .x{color:#9aa3b2;font-weight:400;}
+  .qs-cam{flex:1;position:relative;display:grid;place-items:center;overflow:hidden;background:radial-gradient(circle at 50% 42%,#3a4252,#20242e 70%);}
+  .qs-frame{width:84px;height:84px;position:relative;border-radius:8px;box-shadow:0 0 0 200px rgba(10,12,17,.45);display:grid;place-items:center;}
+  .qs-frame::before{content:"";position:absolute;inset:-3px;border:2.5px solid rgba(255,255,255,.95);border-radius:10px;
+    -webkit-mask:linear-gradient(#000,#000) top left/24px 24px no-repeat,linear-gradient(#000,#000) top right/24px 24px no-repeat,linear-gradient(#000,#000) bottom left/24px 24px no-repeat,linear-gradient(#000,#000) bottom right/24px 24px no-repeat;
+            mask:linear-gradient(#000,#000) top left/24px 24px no-repeat,linear-gradient(#000,#000) top right/24px 24px no-repeat,linear-gradient(#000,#000) bottom left/24px 24px no-repeat,linear-gradient(#000,#000) bottom right/24px 24px no-repeat;}
+  .qs-frame svg{width:64px;height:64px;background:#fff;border-radius:4px;padding:4px;}
+  .qs-line{position:absolute;left:8px;right:8px;top:55%;height:2px;border-radius:2px;background:linear-gradient(90deg,transparent,#4ade80 20%,#4ade80 80%,transparent);box-shadow:0 0 6px #4ade80;animation:qrscan 2.2s ease-in-out infinite alternate;}
+  @keyframes qrscan{from{top:16%}to{top:80%}}
+  .qs-guide{font-size:7.5px;color:#cbd5e1;text-align:center;padding:5px 8px 2px;}
+  .qs-foot{display:flex;gap:5px;padding:5px 7px 7px;}
+  .qs-foot div{flex:1;text-align:center;font-size:8px;border:1px solid #3d4657;border-radius:6px;padding:4px 2px;color:#dbe3ee;}
+  /* シーンイラスト */
+  .qr-scene{width:100%;max-width:225px;}
+  @media print{
+    .qs-line{animation:none;top:55%;}
+    .qrphone{box-shadow:none;width:110px;border-width:5px;border-radius:16px;}
+    .qrphone .qscr,.qs-scr{min-height:150px;}
+    .qs-frame{width:68px;height:68px;}
+    .qs-frame svg{width:52px;height:52px;}
+    .qr-scene{max-width:158px;}
+    .qrfig .cap{font-size:9px;line-height:1.35;}
+    .qrfigs{gap:6px;}
+    .qrarrow{font-size:14px;padding-bottom:26px;}
+    .page.qr{padding:6mm 8mm 5mm;zoom:.86;}
+    .qs-hd .x{display:none;}
+    .page.qr .grid{gap:7px;}
+    .page.qr .card{padding:7px 10px;}
+    .page.qr .card h2{margin-bottom:4px;font-size:14px;}
+    .page.qr .steps-inline li{padding:2px 0 2px 23px;}
+    .page.qr .note{margin:4px 0;padding:5px 8px 5px 28px;font-size:11px;}
+    .page.qr .small{font-size:10.5px;}
+    .page.qr .head{margin-bottom:7px;padding-bottom:5px;}
+    .qv-btn.ghost{display:none;}
+  }
+
   /* 共通ページ＝金色 */
   .head{display:flex;align-items:center;gap:12px;border-bottom:3px solid var(--gold);padding-bottom:10px;margin-bottom:14px;}
   .head .logo{width:42px;height:42px;border-radius:11px;background:linear-gradient(135deg,var(--gold),var(--gold-deep));display:grid;place-items:center;color:#fff;font-size:22px;font-weight:800;flex:0 0 auto;}
@@ -387,6 +445,110 @@
         </div>
       </div>
       <div class="note warn">アプリ内で「<b>位置情報の利用が許可されていません</b>」と表示されたら、この設定を見直してから画面の <b>「位置を再取得」</b> を押してください。あわせて <b>カメラの許可</b>（QR読み取りに必要）も、聞かれたら「許可」を選んでください。</div>
+    </div>
+
+    <div class="card span2">
+      <h2><span class="n">📷</span>画面イメージ：QRチェックインの流れ</h2>
+      <div class="qrfigs">
+        <!-- ① 読み込み前：訪問詳細 -->
+        <div class="qrfig">
+          <div class="qrphone">
+            <div class="qtop"></div>
+            <div class="qscr">
+              <div class="qv-hd">今日の訪問 ＞ 詳細</div>
+              <div class="qv-body">
+                <div>
+                  <div class="qv-name">佐藤 一郎 様</div>
+                  <div class="qv-meta">09:00〜09:40 ・ <span class="qv-badge">未訪問</span></div>
+                </div>
+                <div class="qv-addr">📍 千葉市稲毛区○○ 1-2-3</div>
+                <div class="qv-btn">📷 QRで到着を記録<span class="tap">👆</span></div>
+                <div class="qv-btn ghost">患者情報を見る</div>
+              </div>
+            </div>
+          </div>
+          <div class="cap"><b>① 読み込み前</b><br>訪問を開いて<br>「QRで到着を記録」をタップ</div>
+        </div>
+        <div class="qrarrow">▶</div>
+        <!-- ② 読み込み中：スキャナ -->
+        <div class="qrfig">
+          <div class="qrphone">
+            <div class="qtop"></div>
+            <div class="qs-scr">
+              <div class="qs-hd"><span>佐藤 一郎 様 ／ 到着</span><span class="x">× 閉じる</span></div>
+              <div class="qs-cam">
+                <div class="qs-frame">
+                  <svg viewBox="0 0 25 25" aria-hidden="true">
+                    <defs>
+                      <g id="qrm">
+                        <rect width="25" height="25" fill="#fff"/>
+                        <g fill="#1f2937">
+                          <rect x="0" y="0" width="7" height="7"/><rect x="1" y="1" width="5" height="5" fill="#fff"/><rect x="2" y="2" width="3" height="3"/>
+                          <rect x="18" y="0" width="7" height="7"/><rect x="19" y="1" width="5" height="5" fill="#fff"/><rect x="20" y="2" width="3" height="3"/>
+                          <rect x="0" y="18" width="7" height="7"/><rect x="1" y="19" width="5" height="5" fill="#fff"/><rect x="2" y="20" width="3" height="3"/>
+                          <rect x="9" y="1" width="1" height="1"/><rect x="11" y="0" width="1" height="1"/><rect x="13" y="1" width="1" height="1"/><rect x="15" y="0" width="1" height="1"/><rect x="16" y="2" width="1" height="1"/>
+                          <rect x="9" y="3" width="1" height="1"/><rect x="12" y="4" width="1" height="1"/><rect x="14" y="3" width="1" height="1"/><rect x="10" y="5" width="1" height="1"/><rect x="15" y="6" width="1" height="1"/>
+                          <rect x="1" y="9" width="1" height="1"/><rect x="4" y="9" width="1" height="1"/><rect x="6" y="10" width="1" height="1"/><rect x="0" y="12" width="1" height="1"/><rect x="3" y="11" width="1" height="1"/><rect x="5" y="13" width="1" height="1"/><rect x="2" y="14" width="1" height="1"/>
+                          <rect x="8" y="9" width="1" height="1"/><rect x="10" y="10" width="1" height="1"/><rect x="12" y="9" width="1" height="1"/><rect x="14" y="11" width="1" height="1"/><rect x="16" y="10" width="1" height="1"/><rect x="18" y="9" width="1" height="1"/><rect x="20" y="10" width="1" height="1"/><rect x="22" y="9" width="1" height="1"/><rect x="24" y="11" width="1" height="1"/>
+                          <rect x="9" y="13" width="1" height="1"/><rect x="11" y="12" width="1" height="1"/><rect x="13" y="14" width="1" height="1"/><rect x="15" y="13" width="1" height="1"/><rect x="17" y="12" width="1" height="1"/><rect x="19" y="14" width="1" height="1"/><rect x="21" y="13" width="1" height="1"/><rect x="23" y="12" width="1" height="1"/>
+                          <rect x="10" y="15" width="1" height="1"/><rect x="12" y="16" width="1" height="1"/><rect x="14" y="15" width="1" height="1"/><rect x="16" y="16" width="1" height="1"/><rect x="18" y="17" width="1" height="1"/><rect x="20" y="15" width="1" height="1"/><rect x="22" y="17" width="1" height="1"/><rect x="24" y="16" width="1" height="1"/>
+                          <rect x="9" y="18" width="1" height="1"/><rect x="11" y="19" width="1" height="1"/><rect x="13" y="18" width="1" height="1"/><rect x="15" y="20" width="1" height="1"/><rect x="17" y="19" width="1" height="1"/><rect x="19" y="18" width="1" height="1"/><rect x="21" y="20" width="1" height="1"/><rect x="23" y="19" width="1" height="1"/>
+                          <rect x="10" y="21" width="1" height="1"/><rect x="12" y="22" width="1" height="1"/><rect x="14" y="21" width="1" height="1"/><rect x="16" y="23" width="1" height="1"/><rect x="18" y="22" width="1" height="1"/><rect x="20" y="21" width="1" height="1"/><rect x="22" y="23" width="1" height="1"/>
+                          <rect x="9" y="24" width="1" height="1"/><rect x="13" y="24" width="1" height="1"/><rect x="17" y="24" width="1" height="1"/><rect x="21" y="24" width="1" height="1"/>
+                        </g>
+                      </g>
+                    </defs>
+                    <use href="#qrm"/>
+                  </svg>
+                  <div class="qs-line"></div>
+                </div>
+              </div>
+              <div class="qs-guide">患者宅のQRコードを枠内に合わせてください。</div>
+              <div class="qs-foot"><div>⌨ QRなしで記録</div></div>
+            </div>
+          </div>
+          <div class="cap"><b>② 読み込み中</b><br>カメラが起動。<br>QRを枠内に合わせる</div>
+        </div>
+        <div class="qrarrow">▶</div>
+        <!-- ③ 玄関でかざすシーン -->
+        <div class="qrfig">
+          <svg class="qr-scene" viewBox="0 0 240 210" aria-hidden="true">
+            <rect x="0" y="192" width="240" height="5" rx="2.5" fill="#e2dacd"/>
+            <rect x="14" y="16" width="100" height="178" rx="5" fill="#e8e1d4"/>
+            <rect x="22" y="24" width="84" height="170" rx="4" fill="#0b6e5e"/>
+            <rect x="32" y="36" width="64" height="62" rx="3" fill="none" stroke="#2a8a77" stroke-width="2.5"/>
+            <rect x="32" y="112" width="64" height="68" rx="3" fill="none" stroke="#2a8a77" stroke-width="2.5"/>
+            <circle cx="98" cy="106" r="4.5" fill="#e8c56b"/>
+            <!-- QRプレート -->
+            <rect x="126" y="66" width="48" height="60" rx="5" fill="#fff" stroke="#d9d0c3"/>
+            <path d="M126 71a5 5 0 0 1 5-5h38a5 5 0 0 1 5 5v7h-48z" fill="#0d9488"/>
+            <text x="150" y="75" font-size="6.5" fill="#fff" text-anchor="middle" font-weight="bold" font-family="sans-serif">CareFlow</text>
+            <use href="#qrm" transform="translate(131.5,82) scale(1.48)"/>
+            <!-- 読み取り成功 -->
+            <rect x="128" y="36" width="36" height="18" rx="9" fill="#fff" stroke="#2563eb" stroke-width="1.5"/>
+            <path d="M154 54 l5 8 l2 -9" fill="#fff" stroke="#2563eb" stroke-width="1.5" stroke-linejoin="round"/>
+            <text x="146" y="49" font-size="10" fill="#1d4ed8" text-anchor="middle" font-weight="bold" font-family="sans-serif">ピッ</text>
+            <circle cx="176" cy="62" r="8.5" fill="#16a34a"/>
+            <path d="M172 62 l3 3.5 l5.5 -7" stroke="#fff" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+            <!-- スマホを持つ手 -->
+            <path d="M182 96 C166 88 158 86 152 88" fill="none" stroke="#2563eb" stroke-width="1.6" stroke-dasharray="4 3" opacity=".75"/>
+            <path d="M182 134 C166 138 158 132 152 122" fill="none" stroke="#2563eb" stroke-width="1.6" stroke-dasharray="4 3" opacity=".75"/>
+            <rect x="200" y="168" width="36" height="42" rx="11" fill="#0d9488"/>
+            <ellipse cx="207" cy="158" rx="21" ry="13" fill="#f1c9a3"/>
+            <ellipse cx="190" cy="144" rx="6" ry="11" fill="#f1c9a3" transform="rotate(-22 190 144)"/>
+            <rect x="182" y="72" width="46" height="86" rx="9" fill="#2b2620"/>
+            <rect x="187" y="78" width="36" height="70" rx="4" fill="#10131a"/>
+            <rect x="192" y="92" width="26" height="26" rx="3" fill="none" stroke="#fff" stroke-width="1.6"/>
+            <rect x="196" y="96" width="5" height="5" fill="#e5e7eb"/>
+            <rect x="209" y="96" width="5" height="5" fill="#e5e7eb"/>
+            <rect x="196" y="109" width="5" height="5" fill="#e5e7eb"/>
+            <rect x="204" y="103" width="4" height="4" fill="#9ca3af"/>
+            <rect x="193" y="104" width="24" height="1.8" fill="#4ade80"/>
+          </svg>
+          <div class="cap"><b>③ 玄関でかざすイメージ</b><br>「ピッ」と読めたら<br>位置を確認して記録</div>
+        </div>
+      </div>
+      <p class="small" style="margin:6px 0 0;text-align:center">※実際の画面とは細部が異なる場合があります。退出のときも同じ流れです（「QRで退出を記録」）。</p>
     </div>
 
     <div class="card">
