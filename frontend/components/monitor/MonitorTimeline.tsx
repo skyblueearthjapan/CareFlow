@@ -12,7 +12,7 @@
  * 行クリックでコース選択 (地図に順路)、カード/レールクリックで訪問詳細。
  * 性別・住所・スタッフ性別・イベントは optional props (未指定 = 中立色/帯なし)。
  */
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, type PointerEvent as ReactPointerEvent } from 'react';
 
 import { cn } from '@/lib/utils';
 import type { MonitorStaffRow, MonitorVisit } from '@/lib/schemas/monitor';
@@ -123,8 +123,37 @@ export function MonitorTimeline({
     nowMarkerRef.current?.scrollIntoView?.({ inline: 'center', block: 'nearest' });
   }, [nowMinutes]);
 
+  // M-4c改: 時刻バー (目盛り帯) をつかんで左右にドラッグでパン (PO要望 2026-07-08:
+  // 下端のスクロールバーより直感的な横移動手段)。行側はクリック/選択があるため
+  // ハンドラは時刻バーだけに付ける。Shift+ホイールの横スクロールはブラウザ標準。
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const panState = useRef<{ startX: number; startLeft: number; el: HTMLElement } | null>(null);
+  const findHScrollParent = (): HTMLElement | null => {
+    let el: HTMLElement | null = rootRef.current?.parentElement ?? null;
+    while (el) {
+      if (el.scrollWidth > el.clientWidth + 1) return el;
+      el = el.parentElement;
+    }
+    return null;
+  };
+  const onAxisPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    const el = findHScrollParent();
+    if (!el) return;
+    panState.current = { startX: e.clientX, startLeft: el.scrollLeft, el };
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+  };
+  const onAxisPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const p = panState.current;
+    if (!p) return;
+    p.el.scrollLeft = p.startLeft - (e.clientX - p.startX);
+  };
+  const onAxisPointerEnd = () => {
+    panState.current = null;
+  };
+
   return (
-    <div className="w-max select-none px-1 pb-4" data-testid="monitor-timeline">
+    <div ref={rootRef} className="w-max select-none px-1 pb-4" data-testid="monitor-timeline">
       {/* 時間軸ヘッダ (縦 sticky。#／スタッフ セルは横にも sticky) */}
       <div
         className="sticky top-0 z-[5] grid border-b border-border-default bg-bg-base"
@@ -133,7 +162,15 @@ export function MonitorTimeline({
         <div className="sticky left-0 z-[6] border-r border-border-default bg-bg-base p-2 text-[11px] text-text-muted">
           #／スタッフ
         </div>
-        <div className="relative flex">
+        <div
+          className="relative flex cursor-grab touch-none active:cursor-grabbing"
+          data-testid="monitor-time-axis"
+          title="ドラッグで横スクロール（Shift+ホイールでも動かせます）"
+          onPointerDown={onAxisPointerDown}
+          onPointerMove={onAxisPointerMove}
+          onPointerUp={onAxisPointerEnd}
+          onPointerCancel={onAxisPointerEnd}
+        >
           {/* 8時ラベルは左端に絶対配置し、残り11時間を目盛線 (行側と同じ11分割) に揃える。
               旧: 12分割 flex-1 で目盛線から最大180pxドリフトしていた (レビューLOW対応)。 */}
           <span className="absolute left-0 top-0 py-2 pl-0.5 text-[11px] text-text-muted">8</span>

@@ -361,7 +361,11 @@ export default function MonitorPage() {
 
       {/* 本体: タイムライン + 詳細/地図 */}
       <div className="flex min-h-0 flex-1">
-        <div className="flex-1 overflow-auto">
+        {/* M-4c改: self-start + max-h-full で高さを内容にフィットさせ、横スクロールバーが
+            「最後のスタッフ行の直下」に来るようにする (旧: flex stretch で常に画面下端に
+            張り付き、行から遠かった — PO指摘 2026-07-08)。行が多い日は max-h-full で
+            従来どおり画面内に収まり、バーは可視行のすぐ下になる。 */}
+        <div className="max-h-full min-w-0 flex-1 self-start overflow-auto">
           {monitorQuery.isLoading ? (
             <div className="space-y-2 p-5">
               <Skeleton className="h-16 w-full" />
