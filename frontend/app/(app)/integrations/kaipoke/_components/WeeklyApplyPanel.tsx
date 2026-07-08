@@ -154,7 +154,7 @@ export function WeeklyApplyPanel({
     sheetId != null && total > 0 && (summary?.add ?? 0) === total && !isExpanded;
 
   return (
-    <Card className="p-5">
+    <Card className="h-full p-5">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <h2 className="font-serif text-lg font-bold text-text-primary">週次反映ワークフロー</h2>
         <div className="flex items-center gap-1.5">

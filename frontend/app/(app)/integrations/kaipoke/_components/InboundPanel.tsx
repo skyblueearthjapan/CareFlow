@@ -225,7 +225,7 @@ export function InboundPanel({
     .join('・');
 
   return (
-    <Card className="p-5">
+    <Card className="h-full p-5">
       {/* ── ヘッダー ── */}
       <div className="mb-3 flex flex-wrap items-center gap-3">
         <h2 className="font-serif text-lg font-bold text-text-primary">カイポケから取り込む</h2>

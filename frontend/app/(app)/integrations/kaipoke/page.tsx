@@ -143,7 +143,9 @@ export default function KaipokeIntegrationPage() {
           (PO要望 2026-07-09)。lg 未満は従来どおり縦積み。
           各列に min-w-0 を付けないと、パネル内部の overflow-x-auto (取り込みの週プレビュー等)
           が効かず grid 列が押し広げられる。 */}
-      <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        {/* items-stretch (grid 既定) + Card h-full で 2 カラムの高さを揃える
+            (PO要望 2026-07-09: 取り込み側の枠が余白にならないよう、送る側の高さに合わせる)。 */}
         <div className="min-w-0">
           <WeeklyApplyPanel busy={running} credentialsConfigured={credentialsConfigured} />
         </div>
