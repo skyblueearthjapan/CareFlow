@@ -18,6 +18,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
+import { snapYOffsetToMinutes } from '@/lib/scheduling/timeline';
+
 // ─── モック ──────────────────────────────────────────────────────────────────
 
 const { dndState, mockToast } = vi.hoisted(() => ({
@@ -1225,6 +1227,53 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
     const listTabpanel = screen.getByTestId('course-day-table-list');
     expect(listTabpanel.className).not.toContain('lg:flex');
     expect((listTabpanel.parentElement as HTMLElement).className).toContain('lg:overflow-y-auto');
+  });
+
+  // ─── T-6 パリティ①: プールカード → タイムライン列の直接ドロップ配置 ────────
+  it('T-6P1. プールカードをタイムライン列へドロップすると15分スナップ位置で place-and-fix が呼ばれる', async () => {
+    setupHooks({
+      templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
+      patients: [
+        {
+          id: 'p-tl',
+          name: 'タイムライン 太郎',
+          weekly_pattern: { service_minutes: 30 },
+          requires_multiple_staff: false,
+        },
+      ],
+    });
+    mockPlaceAndFix.mockResolvedValue({});
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <CourseDayTablePanel weekStart={monday(2026, 5, 4)} officeId={null} canEdit={true} />
+      </QueryClientProvider>,
+    );
+    fireEvent.click(screen.getByTestId('course-day-tab-0'));
+    expect(screen.getByTestId('course-day-timeline-view')).toBeInTheDocument();
+
+    // 列 droppable (tl-col:{templateId}:{weekday}) へ、盤面上端から 130px の位置に
+    // プールカードをドロップ。snapYOffsetToMinutes と同じ算法で期待値を導出する。
+    const expectedMin = snapYOffsetToMinutes(130 - 10);
+    const hh = String(Math.floor(expectedMin / 60)).padStart(2, '0');
+    const mm = String(expectedMin % 60).padStart(2, '0');
+    await dndState.capturedHandlers.onDragEnd!({
+      active: {
+        id: 'pool-patient:p-tl',
+        rect: { current: { translated: { top: 130 } } },
+      },
+      over: { id: 'tl-col:tpl-A:0', rect: { top: 10 } },
+    });
+    expect(mockPlaceAndFix).toHaveBeenCalledWith(
+      expect.objectContaining({
+        patient_id: 'p-tl',
+        course_template_id: 'tpl-A',
+        weekday: 0,
+        start_time: `${hh}:${mm}`,
+        duration_min: 30,
+        fix_pattern: false,
+      }),
+    );
   });
 });
 

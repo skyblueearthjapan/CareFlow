@@ -1586,6 +1586,8 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
   /**
    * Wave 18 Phase B-5:
    *   - pool-patient → cell:   既存の place-and-fix を呼ぶ。
+   *   - pool-patient → tl-col: (T-6 パリティ①) スナップ位置から仮想セルを合成して
+   *                             cell と同じ配置フローへ合流 (2名体制=相方選択も同一)。
    *   - visit → cell:           移動 = delete + place-and-fix の 2 段階で代替実装
    *                             (atomic 化は Wave 19 BE PATCH で対応)。
    *   - visit → pool:           visit を delete (= プールに戻る)。
@@ -1762,7 +1764,38 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     // Wave 37 Phase 3-C: patient.requires_multiple_staff=true なら相方コース
     //   選択ダイアログを開き、確定後に staff_count=2 で place-and-fix を呼ぶ。
     //   従来通常患者 (false) は staff_count=1 + course_template_id (旧形式) で呼ぶ。
-    if (patientId && cell) {
+    // ─── T-6 パリティ①: プールカード → タイムライン列 (連続時間軸の15分スナップ配置) ───
+    // テーブルセル (course-day-cell) と完全に同じ配置フローを流用するため、ドロップの
+    // スナップ位置から仮想セル {weekday, courseTemplateId, time} を合成して下の分岐へ流す。
+    // これで 2名体制=相方コース選択ダイアログ / 通常=この週だけ place-and-fix +
+    // 昇格トースト + undo、がテーブルと同一挙動になる。
+    let poolCell = cell;
+    if (patientId && !poolCell) {
+      const colKey = parseTlColDroppableId(overId);
+      const toCol = colKey ? timelineColumns.find((c) => c.key === colKey) : undefined;
+      const translatedTop = active.rect.current.translated?.top ?? null;
+      const overTop = over.rect?.top ?? null;
+      if (toCol && translatedTop !== null && overTop !== null) {
+        const startMin = snapYOffsetToMinutes(translatedTop - overTop);
+        const patient = patientById.get(patientId);
+        const wp = (patient?.weekly_pattern ?? null) as { service_minutes?: number } | null;
+        const durationMin = Math.max(1, Number(wp?.service_minutes ?? 60));
+        if (startMin < TL_DAY_START_MIN || startMin + durationMin > TL_DAY_END_MIN) {
+          toast.warning(
+            'この位置には置けません（9:00〜18:00 の範囲に収まるように配置してください）',
+          );
+          return;
+        }
+        poolCell = {
+          weekday: activeWeekday,
+          courseTemplateId: toCol.template.id,
+          time: formatHHMM(startMin),
+        };
+      }
+    }
+
+    if (patientId && poolCell) {
+      const cell = poolCell; // 以下はテーブルセルと共通の配置フロー。
       const patient = patientById.get(patientId);
       const wp = (patient?.weekly_pattern ?? null) as { service_minutes?: number } | null;
       const durationMin = Math.max(1, Number(wp?.service_minutes ?? 60));
