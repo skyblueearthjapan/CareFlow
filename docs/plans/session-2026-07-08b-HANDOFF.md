@@ -95,6 +95,7 @@
 - D-3. ペア移動のBEバッチ化（現状 visit-move-week-only×2連続・undo回復可）
 - D-4. ~~Panelテスト 20 fail~~ → **完了** ✅ (5d3ccd8。FE全体 1094 pass / 0 fail)
 - D-10.（新）e2e (Playwright) が vitest 実行に混ざり常時 FAIL 表示。`--exclude e2e/**` 運用中。vitest 設定で除外すべき
+- D-11.（新）`BulkPoolInsertDialog.test.tsx` にフルスイート時のみ稀に落ちる**間欠フレーク**（毎回別テストが落ちる・単体/2ファイル同時実行では常に通る・連続2回のフルスイートは 1097 pass）。done画面クリック系の await 不足が疑わしい。要ハードニング
 - D-5. 30分カードの住所行の高さ余裕（PO指摘があれば py 調整）
 - D-6.（新）mini_schedule に patient_id 加算案 — 現状プール候補ミニ行は sex はBE加算済みだが住所ウォッシュ不可。必要になったら sex と同じ前例パターンで
 - D-7.（新）患者500名超で提案系/モニターの性別色が中立化（PATIENT_LIST_HARD_CAP 500・現状実害なし）
