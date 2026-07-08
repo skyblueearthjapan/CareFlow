@@ -305,7 +305,8 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
   // list     = Before/After 形式 (時刻順 visit リスト / 視覚言語統一・閲覧専用).
   // timeline  = 縦タイムライン (T-1・時間比例カード / 読み取り専用).
   //   docs/plans/schedule-timeline-redesign-design.md。既定は table (現場の日常を変えない)。
-  const [weekdayViewMode, setWeekdayViewMode] = useState<'table' | 'list' | 'timeline'>('table');
+  // 既定=タイムライン (PO指示 2026-07-08。旧既定=テーブルは移行期の足場としてタブに残置)。
+  const [weekdayViewMode, setWeekdayViewMode] = useState<'table' | 'list' | 'timeline'>('timeline');
   // T-3: 週タブの見え方。overview=既存の全コース俯瞰(既定・全機能温存) / timeline=週タイムライン(全コース縦積み)。
   const [weekViewMode, setWeekViewMode] = useState<'overview' | 'timeline'>('overview');
 
