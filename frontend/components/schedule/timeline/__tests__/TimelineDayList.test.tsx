@@ -180,4 +180,96 @@ describe('TimelineDayList', () => {
     expect(rm.style.borderLeftColor).toBe(genderPalette('male').bar);
     expect(rf.style.borderLeftColor).toBe(genderPalette('female').bar);
   });
+
+  // ─── G2: 訪問削除 (行末の ×) ────────────────────────────────────────────
+  describe('G2. 訪問削除 (×)', () => {
+    it('× クリックで onDeleteVisit(visitId, patientName) が呼ばれ、患者名クリックは発火しない', () => {
+      const onDelete = vi.fn();
+      const onPatientClick = vi.fn();
+      render(
+        <TimelineDayList
+          courses={[
+            course({
+              key: 'c1',
+              visits: [v({ key: 'a', visit_id: 'vis-a', patient_name: '青柳 あい' })],
+            }),
+          ]}
+          onPatientClick={onPatientClick}
+          onDeleteVisit={onDelete}
+        />,
+      );
+      screen.getByTestId('tdl-delete-visit-a').click();
+      expect(onDelete).toHaveBeenCalledWith('vis-a', '青柳 あい');
+      expect(onPatientClick).not.toHaveBeenCalled();
+    });
+
+    it('onDeleteVisit 未指定 (read-only) / visit_id 欠落では × を出さない', () => {
+      const { rerender } = render(
+        <TimelineDayList
+          courses={[course({ key: 'c1', visits: [v({ key: 'a', visit_id: 'vis-a' })] })]}
+        />,
+      );
+      expect(screen.queryByTestId('tdl-delete-visit-a')).toBeNull();
+      rerender(
+        <TimelineDayList
+          courses={[course({ key: 'c1', visits: [v({ key: 'a' })] })]}
+          onDeleteVisit={vi.fn()}
+        />,
+      );
+      expect(screen.queryByTestId('tdl-delete-visit-a')).toBeNull();
+    });
+  });
+
+  // ─── G3: 「今週のみ」チップ → 固定昇格 ──────────────────────────────────
+  describe('G3. 「今週のみ」チップ', () => {
+    it('source=manual_week のときチップが出て、クリック (confirm OK) で onPromoteWeekOnly が呼ばれる', () => {
+      const onPromote = vi.fn();
+      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+      render(
+        <TimelineDayList
+          courses={[
+            course({
+              key: 'c1',
+              visits: [v({ key: 'a', source: 'manual_week', patient_name: '青柳 あい' })],
+            }),
+          ]}
+          onPromoteWeekOnly={onPromote}
+        />,
+      );
+      screen.getByTestId('tdl-week-only-chip-a').click();
+      expect(onPromote).toHaveBeenCalledWith('p-a', '青柳 あい');
+      confirmSpy.mockRestore();
+    });
+
+    it('confirm キャンセルでは昇格しない / source が違えばチップを出さない', () => {
+      const onPromote = vi.fn();
+      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+      const { rerender } = render(
+        <TimelineDayList
+          courses={[course({ key: 'c1', visits: [v({ key: 'a', source: 'manual_week' })] })]}
+          onPromoteWeekOnly={onPromote}
+        />,
+      );
+      screen.getByTestId('tdl-week-only-chip-a').click();
+      expect(onPromote).not.toHaveBeenCalled();
+      confirmSpy.mockRestore();
+
+      rerender(
+        <TimelineDayList
+          courses={[course({ key: 'c1', visits: [v({ key: 'a', source: 'allocate' })] })]}
+          onPromoteWeekOnly={onPromote}
+        />,
+      );
+      expect(screen.queryByTestId('tdl-week-only-chip-a')).toBeNull();
+    });
+
+    it('onPromoteWeekOnly 未指定 (read-only) では非クリックの表示専用チップ', () => {
+      render(
+        <TimelineDayList
+          courses={[course({ key: 'c1', visits: [v({ key: 'a', source: 'manual_week' })] })]}
+        />,
+      );
+      expect(screen.getByTestId('tdl-week-only-chip-a').tagName).toBe('SPAN');
+    });
+  });
 });

@@ -1364,6 +1364,191 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
     // 既定実装 (空 Map) へ戻す (後続テストへの漏れ防止)。
     mockBuildStaffEventsMap.mockImplementation(() => new Map());
   });
+
+  // ─── G4: タイムラインカード → プールへドロップして外す ─────────────────────
+  const tlCourse = {
+    id: 'course-1',
+    iso_year: 2026,
+    iso_week: 19,
+    weekday: 0,
+    code: 'A',
+    office_id: 'office-honten',
+    assigned_staff_id: null,
+    course_status: 'course_fixed' as const,
+    deleted_at: null,
+  };
+
+  it('G4-1. tl-visit をプールへドロップすると DELETE /visits/{id} (cascade=false) が呼ばれる', async () => {
+    mockDeleteVisit.mockResolvedValue(undefined);
+    setupHooks({
+      templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
+      courses: [tlCourse],
+      visits: [
+        {
+          id: 'v-1',
+          patient_id: 'p-1',
+          patient_name: '田中 太郎',
+          visit_date: '2026-05-04',
+          start_time: '10:00:00',
+          primary_staff_id: null,
+          course_id: 'course-1',
+          required_staff_count: 1,
+          type: 'regular',
+          status: 'planned',
+          source: 'allocate',
+          end_time: '10:30:00',
+        },
+      ],
+      patients: [{ id: 'p-1', name: '田中 太郎', kana: null, status: 'active', address: '' }],
+    });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <CourseDayTablePanel
+          weekStart={monday(2026, 5, 4)}
+          officeId="office-honten"
+          canEdit={true}
+        />
+      </QueryClientProvider>,
+    );
+    fireEvent.click(screen.getByTestId('course-day-tab-0'));
+    expect(screen.getByTestId('course-day-timeline-view')).toBeInTheDocument();
+
+    await dndState.capturedHandlers.onDragEnd!({
+      active: { id: 'tl-visit:v-1' },
+      over: { id: 'pool' },
+    });
+    expect(mockDeleteVisit).toHaveBeenCalledOnce();
+    expect(mockDeleteVisit.mock.calls[0][0]).toEqual(
+      expect.objectContaining({ id: 'v-1', cascadeFixedVisit: false }),
+    );
+    // プール戻しは delete のみ (再配置しない)。
+    expect(mockPlaceAndFix).not.toHaveBeenCalled();
+    expect(mockToast.success).toHaveBeenCalledWith('田中 太郎 をプールに戻しました');
+  });
+
+  it('G4-2. tl-pair (同住所2名) をプールへドロップすると 2 件とも同一 op_group_id で削除される', async () => {
+    mockDeleteVisit.mockResolvedValue(undefined);
+    setupHooks({
+      templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
+      courses: [tlCourse],
+      visits: [
+        {
+          id: 'v-1',
+          patient_id: 'p-1',
+          patient_name: '田中 太郎',
+          visit_date: '2026-05-04',
+          start_time: '10:00:00',
+          primary_staff_id: null,
+          course_id: 'course-1',
+          required_staff_count: 1,
+          type: 'regular',
+          status: 'planned',
+          source: 'allocate',
+          end_time: '10:30:00',
+        },
+        {
+          id: 'v-2',
+          patient_id: 'p-2',
+          patient_name: '田中 花子',
+          visit_date: '2026-05-04',
+          start_time: '10:00:00',
+          primary_staff_id: null,
+          course_id: 'course-1',
+          required_staff_count: 1,
+          type: 'regular',
+          status: 'planned',
+          source: 'allocate',
+          end_time: '10:30:00',
+        },
+      ],
+      patients: [
+        {
+          id: 'p-1',
+          name: '田中 太郎',
+          kana: null,
+          status: 'active',
+          address: '同じ家',
+          lat: 35.6,
+          lng: 140.1,
+        },
+        {
+          id: 'p-2',
+          name: '田中 花子',
+          kana: null,
+          status: 'active',
+          address: '同じ家',
+          lat: 35.6,
+          lng: 140.1,
+        },
+      ],
+    });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <CourseDayTablePanel
+          weekStart={monday(2026, 5, 4)}
+          officeId="office-honten"
+          canEdit={true}
+        />
+      </QueryClientProvider>,
+    );
+    fireEvent.click(screen.getByTestId('course-day-tab-0'));
+
+    await dndState.capturedHandlers.onDragEnd!({
+      active: { id: 'tl-pair:v-1:v-2' },
+      over: { id: 'pool' },
+    });
+    expect(mockDeleteVisit).toHaveBeenCalledTimes(2);
+    const c0 = mockDeleteVisit.mock.calls[0][0] as Record<string, unknown>;
+    const c1 = mockDeleteVisit.mock.calls[1][0] as Record<string, unknown>;
+    expect(c0).toEqual(expect.objectContaining({ id: 'v-1', cascadeFixedVisit: false }));
+    expect(c1).toEqual(expect.objectContaining({ id: 'v-2', cascadeFixedVisit: false }));
+    // 1 ユーザー操作 = 同一 op_group_id (undo でまとめて戻る)。
+    expect(c0.op_group_id).toBeTruthy();
+    expect(c0.op_group_id).toBe(c1.op_group_id);
+  });
+
+  it('G4-3. tl-visit をタイムライン外 (プールでも列でもない場所) に落としても何も起きない', async () => {
+    mockDeleteVisit.mockResolvedValue(undefined);
+    setupHooks({
+      templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
+      courses: [tlCourse],
+      visits: [
+        {
+          id: 'v-1',
+          patient_id: 'p-1',
+          patient_name: '田中 太郎',
+          visit_date: '2026-05-04',
+          start_time: '10:00:00',
+          primary_staff_id: null,
+          course_id: 'course-1',
+          required_staff_count: 1,
+          type: 'regular',
+          status: 'planned',
+          source: 'allocate',
+          end_time: '10:30:00',
+        },
+      ],
+      patients: [{ id: 'p-1', name: '田中 太郎', kana: null, status: 'active', address: '' }],
+    });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <CourseDayTablePanel
+          weekStart={monday(2026, 5, 4)}
+          officeId="office-honten"
+          canEdit={true}
+        />
+      </QueryClientProvider>,
+    );
+    fireEvent.click(screen.getByTestId('course-day-tab-0'));
+    await dndState.capturedHandlers.onDragEnd!({
+      active: { id: 'tl-visit:v-1' },
+      over: { id: 'something-else' },
+    });
+    expect(mockDeleteVisit).not.toHaveBeenCalled();
+  });
 });
 
 // ─── pure helper unit tests ─────────────────────────────────────────────────

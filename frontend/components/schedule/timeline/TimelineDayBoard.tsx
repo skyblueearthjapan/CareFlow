@@ -17,6 +17,7 @@
 
 import {
   useState,
+  type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from 'react';
@@ -50,6 +51,16 @@ import { cn } from '@/lib/utils';
 
 const COL_MIN_W = 172;
 const TIME_RAIL_W = 54;
+
+/**
+ * G2: 訪問削除 (×) を出す最小カード高さ。極小カード (15分 = TL_MIN_CARD_PX まで
+ * クランプされる) では × が名前を潰すため出さない (リスト表示に削除導線がある)。
+ * 30分カード (49px) には出る。
+ */
+const TL_SHOW_DELETE_PX = 40;
+
+/** G3: 「今週のみ」→ 固定昇格の確認文 (CourseDayTable と同一文言)。 */
+const PROMOTE_WEEK_ONLY_CONFIRM = 'この配置を固定訪問週間（毎週の型）に反映しますか？';
 
 // ─────────────────────────────────────────────────────────────────────────
 // T-2 ②-b: DnD id 規約 (既存の visit:/pool-patient:/course-day-cell: と非衝突)
@@ -108,6 +119,8 @@ export interface TimelineCourseColumn {
   capacity: { filled: number; max: number };
   /** 当該コース担当スタッフの当日イベント (勤務外/会議帯として描く元)。 */
   staffEvents: EventRead[];
+  /** G1: 列ヘッダの担当スタッフ変更 <select> の選択肢 (拠点スコープ済み)。 */
+  staffOptions: StaffRead[];
 }
 
 export interface TimelineDayBoardProps {
@@ -134,6 +147,114 @@ export interface TimelineDayBoardProps {
    * 余白=2名セット移動・各行の ⠿ ハンドル=1名ずつ個別移動 (T-6 パリティ③)。
    */
   dndEnabled?: boolean;
+  /**
+   * G1 (T-6 パリティ): 列ヘッダの担当スタッフ変更。canEdit のときだけ Panel が渡す。
+   * 未指定 (= read-only ロール) では従来どおり担当名のテキスト表示のまま。
+   */
+  onChangeAssignedStaff?: (col: TimelineCourseColumn, staffId: string | null) => void;
+  /** 担当変更 mutation 実行中 (select を一時 disable する)。 */
+  isStaffMutating?: boolean;
+  /**
+   * G2 (T-6 パリティ): 訪問削除 (カード右下の ×)。canEdit のときだけ Panel が渡す。
+   * 未指定なら × を描画しない。確認ダイアログは Panel 側 (handleDeleteVisit) が持つ。
+   */
+  onDeleteVisit?: (visitId: string, patientName: string) => void;
+  /**
+   * G3 (T-6 パリティ): source='manual_week' のカードに出す「今週のみ」チップの昇格。
+   * 未指定なら非クリックの表示専用チップになる (テーブルの read-only 表示と同じ)。
+   */
+  onPromoteWeekOnly?: (patientId: string, patientName: string) => void;
+}
+
+/** カード / ペア行の右下に置く訪問削除 (×) ボタン (G2)。 */
+function DeleteVisitButton({
+  visit,
+  onDeleteVisit,
+}: {
+  visit: CourseGridVisit;
+  onDeleteVisit: (visitId: string, patientName: string) => void;
+}) {
+  const label = visit.patient_name ?? visit.patient_id;
+  return (
+    <button
+      type="button"
+      data-testid={`tl-delete-visit-${visit.id}`}
+      aria-label={`${label} の訪問を削除`}
+      title="この訪問を削除"
+      className="absolute bottom-0.5 right-0.5 z-[3] grid h-[15px] w-[15px] place-items-center rounded-full border border-transparent bg-bg-base/80 text-[11px] font-bold leading-none text-error opacity-0 transition-opacity hover:border-error hover:bg-error-bg group-focus-within:opacity-100 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-error"
+      onClick={(ev) => {
+        // カード本体の onClick (患者詳細) を発火させない。
+        ev.stopPropagation();
+        onDeleteVisit(visit.id, label);
+      }}
+      onPointerDown={(ev) => {
+        // dnd-kit の activator (カード側 listeners.onPointerDown) へ伝播させない。
+        ev.stopPropagation();
+      }}
+    >
+      ×
+    </button>
+  );
+}
+
+/**
+ * 「今週のみ」チップ (G3)。source='manual_week' = この週だけの配置。
+ * onPromoteWeekOnly 指定時のみクリック可 (confirm → 固定訪問週間へ昇格)。
+ */
+function WeekOnlyChip({
+  visit,
+  onPromoteWeekOnly,
+  className,
+}: {
+  visit: CourseGridVisit;
+  onPromoteWeekOnly?: (patientId: string, patientName: string) => void;
+  className?: string;
+}) {
+  const base = cn(
+    'shrink-0 rounded-full bg-amber-100 px-1.5 py-px text-[8.5px] font-bold text-amber-800 ring-1 ring-amber-300',
+    className,
+  );
+  if (!onPromoteWeekOnly) {
+    return (
+      <span
+        data-testid={`tl-week-only-chip-${visit.id}`}
+        className={base}
+        title="この週だけの配置です"
+      >
+        今週のみ
+      </span>
+    );
+  }
+  return (
+    <button
+      type="button"
+      data-testid={`tl-week-only-chip-${visit.id}`}
+      className={cn(base, 'cursor-pointer hover:bg-amber-200')}
+      title="この週だけの配置です。クリックで固定訪問週間（毎週の型）に反映できます"
+      onClick={(ev) => {
+        ev.stopPropagation();
+        if (window.confirm(PROMOTE_WEEK_ONLY_CONFIRM)) {
+          onPromoteWeekOnly(visit.patient_id, visit.patient_name ?? visit.patient_id);
+        }
+      }}
+      onPointerDown={(ev) => {
+        ev.stopPropagation();
+      }}
+    >
+      今週のみ
+    </button>
+  );
+}
+
+/** カードルート (div role=button) のキーボード操作 = Enter/Space で onClick 相当。 */
+function cardKeyDownHandler(onClick?: () => void) {
+  if (!onClick) return undefined;
+  return (ev: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (ev.key !== 'Enter' && ev.key !== ' ') return;
+    // Space のページスクロール / Enter のフォーム送信を抑止。
+    ev.preventDefault();
+    onClick();
+  };
 }
 
 /**
@@ -162,12 +283,18 @@ function VisitCard({
   onClick,
   laneInfo,
   drag,
+  onDeleteVisit,
+  onPromoteWeekOnly,
 }: {
   visit: CourseGridVisit;
   onClick?: () => void;
   laneInfo?: CardLane;
   /** T-2 ②-b: DnD 有効時のみ DraggableVisitCard が渡す。無指定=従来の表示/クリック専用。 */
   drag?: DragBindings;
+  /** G2: 訪問削除 (×)。未指定なら描画しない。 */
+  onDeleteVisit?: (visitId: string, patientName: string) => void;
+  /** G3: 「今週のみ」チップの昇格ハンドラ。未指定でもチップ自体は表示する。 */
+  onPromoteWeekOnly?: (patientId: string, patientName: string) => void;
 }) {
   // T-2 ②-c: ピン留めカードを掴もうとしたら shake で「不可侵」を伝える (ドラッグは
   // disabled で始まらないため、pointerdown を合図に演出だけ出す)。
@@ -202,10 +329,15 @@ function VisitCard({
   if (visit.patient_sex_restriction_label) pills.push(visit.patient_sex_restriction_label);
   if (isMulti) pills.push('2名');
   if (visit.same_address_group_id) pills.push('📍同住所');
+  const isWeekOnly = visit.source === 'manual_week';
 
   return (
-    <button
-      type="button"
+    // G2: 内部に × ボタンを置くため、ルートは <button> ではなく div role=button。
+    // (button in button は無効 HTML。キーボード操作は onKeyDown で維持する)
+    // dnd-kit の setNodeRef / listeners / attributes はルートのまま = DnD 不変。
+    <div
+      role="button"
+      tabIndex={0}
       ref={drag?.setNodeRef}
       onClick={onClick}
       // DnD 有効カード = dnd-kit の listeners/attributes、ピン留め = shake ハンドラ、を
@@ -218,6 +350,9 @@ function VisitCard({
             : {}
           : { ...drag.listeners, ...drag.attributes }
         : {})}
+      // onKeyDown は spread の「後」に置く (後勝ち)。将来 KeyboardSensor を足しても
+      // listeners.onKeyDown に黙って上書きされずキーボード操作が生き残る (レビューMED)。
+      onKeyDown={cardKeyDownHandler(onClick)}
       onAnimationEnd={shake ? () => setShake(false) : undefined}
       data-testid={`tl-visit-${visit.id}`}
       data-tl-drag={drag ? (drag.disabled ? 'disabled' : 'enabled') : undefined}
@@ -233,7 +368,8 @@ function VisitCard({
           : (visit.patient_address ?? undefined)
       }
       className={cn(
-        'absolute z-[2] flex flex-col gap-px rounded-lg border border-l-[3px] px-2 py-[3px] text-left shadow-[var(--shadow-xs)] transition-shadow hover:z-[4] hover:shadow-[var(--shadow-md)] focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary',
+        // group: × ボタンを hover / focus-within で出すため (G2)。
+        'group absolute z-[2] flex flex-col gap-px rounded-lg border border-l-[3px] px-2 py-[3px] text-left shadow-[var(--shadow-xs)] transition-shadow hover:z-[4] hover:shadow-[var(--shadow-md)] focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary',
         drag && !drag.disabled && 'cursor-grab touch-none active:cursor-grabbing',
         drag?.isDragging && 'opacity-40',
         shake && 'tl-shake',
@@ -287,8 +423,10 @@ function VisitCard({
           <span className="truncate">{visit.patient_address}</span>
         </span>
       )}
-      {pills.length > 0 && height >= TL_SHOW_PILLS_PX && (
-        <span className="mt-auto flex flex-wrap gap-[3px] pb-px">
+      {(pills.length > 0 || isWeekOnly) && height >= TL_SHOW_PILLS_PX && (
+        <span className="mt-auto flex flex-wrap items-center gap-[3px] pb-px">
+          {/* G3: 「今週のみ」= この週だけの配置。クリックで毎週の型へ昇格 (confirm あり)。 */}
+          {isWeekOnly && <WeekOnlyChip visit={visit} onPromoteWeekOnly={onPromoteWeekOnly} />}
           {pills.map((p) => (
             <span
               key={p}
@@ -300,7 +438,12 @@ function VisitCard({
           ))}
         </span>
       )}
-    </button>
+      {/* G2: 訪問削除 (×)。右上は CornerPushPin が刺さっているため右下に置く。
+          極小カード (< TL_SHOW_DELETE_PX) では潰れるので出さない。 */}
+      {onDeleteVisit && height >= TL_SHOW_DELETE_PX && (
+        <DeleteVisitButton visit={visit} onDeleteVisit={onDeleteVisit} />
+      )}
+    </div>
   );
 }
 
@@ -314,10 +457,14 @@ function DraggableVisitCard({
   visit,
   onClick,
   laneInfo,
+  onDeleteVisit,
+  onPromoteWeekOnly,
 }: {
   visit: CourseGridVisit;
   onClick?: () => void;
   laneInfo?: CardLane;
+  onDeleteVisit?: (visitId: string, patientName: string) => void;
+  onPromoteWeekOnly?: (patientId: string, patientName: string) => void;
 }) {
   const dragDisabled =
     visit.is_pinned === true || visit.status === 'cancelled' || Boolean(visit.visit_group_id);
@@ -332,6 +479,8 @@ function DraggableVisitCard({
       onClick={onClick}
       laneInfo={laneInfo}
       drag={{ attributes, listeners, setNodeRef, isDragging, disabled: dragDisabled }}
+      onDeleteVisit={onDeleteVisit}
+      onPromoteWeekOnly={onPromoteWeekOnly}
     />
   );
 }
@@ -345,10 +494,14 @@ function DraggablePairBox({
   item,
   laneInfo,
   onPatientClick,
+  onDeleteVisit,
+  onPromoteWeekOnly,
 }: {
   item: Extract<RenderItem, { kind: 'pair' }>;
   laneInfo?: CardLane;
   onPatientClick?: (patientId: string) => void;
+  onDeleteVisit?: (visitId: string, patientName: string) => void;
+  onPromoteWeekOnly?: (patientId: string, patientName: string) => void;
 }) {
   const dragDisabled = item.visits.some(
     (v) => v.is_pinned === true || v.status === 'cancelled' || Boolean(v.visit_group_id),
@@ -367,6 +520,8 @@ function DraggablePairBox({
       drag={{ attributes, listeners, setNodeRef, isDragging, disabled: dragDisabled }}
       // T-6 パリティ③: 各行の ⠿ ハンドルから 1 名ずつ個別移動できる。
       memberDndEnabled
+      onDeleteVisit={onDeleteVisit}
+      onPromoteWeekOnly={onPromoteWeekOnly}
     />
   );
 }
@@ -541,26 +696,38 @@ function PairMemberRowView({
   v,
   onPatientClick,
   drag,
+  onDeleteVisit,
+  onPromoteWeekOnly,
 }: {
   v: CourseGridVisit;
   onPatientClick?: (patientId: string) => void;
   drag?: DragBindings;
+  /** G2: ペア行からも訪問削除できる (テーブルの × と同じ機能パリティ)。 */
+  onDeleteVisit?: (visitId: string, patientName: string) => void;
+  /** G3: ペア行の「今週のみ」チップ。 */
+  onPromoteWeekOnly?: (patientId: string, patientName: string) => void;
 }) {
   const pal = genderPalette(v.patient_sex);
   const s = parseHM(v.start_time);
   const e = parseHM(v.end_time);
   const dm = s !== null && e !== null && e > s ? e - s : null;
   const showHandle = drag != null && !drag.disabled;
+  const onRowClick = onPatientClick ? () => onPatientClick(v.patient_id) : undefined;
   return (
-    <button
-      type="button"
+    // G2: 行内に × ボタン (と 今週のみ チップ) を置くため div role=button 化。
+    // drag の setNodeRef / listeners はルートのまま = ペア行の個別移動は不変。
+    <div
+      role="button"
+      tabIndex={0}
       ref={drag?.setNodeRef}
       data-testid={`tl-visit-${v.id}`}
       data-tl-member-drag={drag ? (drag.disabled ? 'disabled' : 'enabled') : undefined}
-      onClick={onPatientClick ? () => onPatientClick(v.patient_id) : undefined}
+      onClick={onRowClick}
+      onKeyDown={cardKeyDownHandler(onRowClick)}
       className={cn(
-        'relative flex min-h-0 flex-1 flex-col justify-center gap-px rounded-md border border-l-[3px] px-1.5 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary',
+        'group relative flex min-h-0 flex-1 flex-col justify-center gap-px rounded-md border border-l-[3px] px-1.5 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary',
         showHandle && 'pl-4',
+        onDeleteVisit && 'pr-4',
         drag?.isDragging && 'opacity-40',
       )}
       style={{
@@ -620,9 +787,12 @@ function PairMemberRowView({
           <span className="truncate">{v.patient_address}</span>
         </span>
       )}
-      {/* 3行目: 条件 (単独カードと同じ情報)。 */}
-      {(v.patient_sex_restriction_label || v.patient_time_type) && (
+      {/* 3行目: 条件 (単独カードと同じ情報) + 「今週のみ」チップ (G3)。 */}
+      {(v.patient_sex_restriction_label || v.patient_time_type || v.source === 'manual_week') && (
         <span className="flex min-w-0 items-center gap-1 text-[9px] opacity-80">
+          {v.source === 'manual_week' ? (
+            <WeekOnlyChip visit={v} onPromoteWeekOnly={onPromoteWeekOnly} />
+          ) : null}
           {v.patient_sex_restriction_label ? (
             <span
               className="shrink-0 rounded-full px-1 py-px text-[8px] font-bold text-white"
@@ -634,7 +804,9 @@ function PairMemberRowView({
           <span className="truncate">{v.patient_time_type ?? ''}</span>
         </span>
       )}
-    </button>
+      {/* G2: 訪問削除 (×)。ペア行は高さが小さいので常に出す (hover で可視化)。 */}
+      {onDeleteVisit && <DeleteVisitButton visit={v} onDeleteVisit={onDeleteVisit} />}
+    </div>
   );
 }
 
@@ -642,9 +814,13 @@ function PairMemberRowView({
 function DraggablePairMemberRow({
   v,
   onPatientClick,
+  onDeleteVisit,
+  onPromoteWeekOnly,
 }: {
   v: CourseGridVisit;
   onPatientClick?: (patientId: string) => void;
+  onDeleteVisit?: (visitId: string, patientName: string) => void;
+  onPromoteWeekOnly?: (patientId: string, patientName: string) => void;
 }) {
   const dragDisabled =
     v.is_pinned === true || v.status === 'cancelled' || Boolean(v.visit_group_id);
@@ -658,6 +834,8 @@ function DraggablePairMemberRow({
       v={v}
       onPatientClick={onPatientClick}
       drag={{ attributes, listeners, setNodeRef, isDragging, disabled: dragDisabled }}
+      onDeleteVisit={onDeleteVisit}
+      onPromoteWeekOnly={onPromoteWeekOnly}
     />
   );
 }
@@ -669,6 +847,8 @@ function PairBox({
   onPatientClick,
   drag,
   memberDndEnabled,
+  onDeleteVisit,
+  onPromoteWeekOnly,
 }: {
   item: Extract<RenderItem, { kind: 'pair' }>;
   laneInfo?: CardLane;
@@ -677,6 +857,8 @@ function PairBox({
   drag?: DragBindings;
   /** T-6 パリティ③: 各行の ⠿ ハンドルから 1 名ずつ個別移動を解禁する。 */
   memberDndEnabled?: boolean;
+  onDeleteVisit?: (visitId: string, patientName: string) => void;
+  onPromoteWeekOnly?: (patientId: string, patientName: string) => void;
 }) {
   const [shake, setShake] = useState(false);
   const anyPinned = item.visits.some((v) => v.is_pinned === true);
@@ -739,9 +921,21 @@ function PairBox({
       <div className="flex min-h-0 flex-1 flex-col gap-0.5 px-1 pb-1">
         {item.visits.map((v) =>
           memberDndEnabled ? (
-            <DraggablePairMemberRow key={v.id} v={v} onPatientClick={onPatientClick} />
+            <DraggablePairMemberRow
+              key={v.id}
+              v={v}
+              onPatientClick={onPatientClick}
+              onDeleteVisit={onDeleteVisit}
+              onPromoteWeekOnly={onPromoteWeekOnly}
+            />
           ) : (
-            <PairMemberRowView key={v.id} v={v} onPatientClick={onPatientClick} />
+            <PairMemberRowView
+              key={v.id}
+              v={v}
+              onPatientClick={onPatientClick}
+              onDeleteVisit={onDeleteVisit}
+              onPromoteWeekOnly={onPromoteWeekOnly}
+            />
           ),
         )}
       </div>
@@ -919,12 +1113,16 @@ function TimelineColumn({
   onFreeSlotClick,
   onEventClick,
   dndEnabled,
+  onDeleteVisit,
+  onPromoteWeekOnly,
 }: {
   col: TimelineCourseColumn;
   onPatientClick?: (patientId: string) => void;
   onFreeSlotClick?: (col: TimelineCourseColumn, gap: FreeGap) => void;
   onEventClick?: (ev: EventRead, col: TimelineCourseColumn) => void;
   dndEnabled?: boolean;
+  onDeleteVisit?: (visitId: string, patientName: string) => void;
+  onPromoteWeekOnly?: (patientId: string, patientName: string) => void;
 }) {
   const height = timelineHeightPx();
   // 勤務外バンド: スタッフイベント以外に、コース未生成/担当なしを表す薄いハッチは出さない
@@ -1026,6 +1224,8 @@ function TimelineColumn({
               item={it}
               laneInfo={lanes.get(it.id)}
               onPatientClick={onPatientClick}
+              onDeleteVisit={onDeleteVisit}
+              onPromoteWeekOnly={onPromoteWeekOnly}
             />
           ) : (
             <PairBox
@@ -1033,6 +1233,8 @@ function TimelineColumn({
               item={it}
               laneInfo={lanes.get(it.id)}
               onPatientClick={onPatientClick}
+              onDeleteVisit={onDeleteVisit}
+              onPromoteWeekOnly={onPromoteWeekOnly}
             />
           )
         ) : dndEnabled ? (
@@ -1041,6 +1243,8 @@ function TimelineColumn({
             visit={it.v}
             laneInfo={lanes.get(it.id)}
             onClick={onPatientClick ? () => onPatientClick(it.v.patient_id) : undefined}
+            onDeleteVisit={onDeleteVisit}
+            onPromoteWeekOnly={onPromoteWeekOnly}
           />
         ) : (
           <VisitCard
@@ -1048,6 +1252,8 @@ function TimelineColumn({
             visit={it.v}
             laneInfo={lanes.get(it.id)}
             onClick={onPatientClick ? () => onPatientClick(it.v.patient_id) : undefined}
+            onDeleteVisit={onDeleteVisit}
+            onPromoteWeekOnly={onPromoteWeekOnly}
           />
         ),
       )}
@@ -1065,6 +1271,10 @@ export function TimelineDayBoard({
   onFreeSlotClick,
   onEventClick,
   dndEnabled,
+  onChangeAssignedStaff,
+  isStaffMutating,
+  onDeleteVisit,
+  onPromoteWeekOnly,
 }: TimelineDayBoardProps) {
   const height = timelineHeightPx();
   const hours: number[] = [];
@@ -1113,10 +1323,39 @@ export function TimelineDayBoard({
               >
                 {staffName[0]}
               </span>
-              <div className="min-w-0">
-                <div className="truncate text-[12.5px] font-bold text-text-primary">
-                  {staffName}
-                </div>
+              <div className="min-w-0 flex-1">
+                {/* G1: 担当スタッフ変更 (テーブルのヘッダ dropdown と同機能)。
+                    onChangeAssignedStaff 未指定 (= read-only ロール) は従来のテキスト表示。
+                    列ヘッダは droppable/draggable ではないため stopPropagation 不要。 */}
+                {onChangeAssignedStaff ? (
+                  <select
+                    value={col.course?.assigned_staff_id ?? ''}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      onChangeAssignedStaff(col, v === '' ? null : v);
+                    }}
+                    disabled={isStaffMutating === true}
+                    data-testid={`tl-staff-select-${col.key}`}
+                    aria-label={`${col.officeName}${col.template.label} コースの担当スタッフ`}
+                    title={
+                      col.course
+                        ? '担当スタッフを変更します'
+                        : '「週を生成」を実行するとコースが作成され担当を変更できます'
+                    }
+                    className="w-full max-w-full truncate rounded border border-border-default bg-bg-base px-1 py-px text-[12px] font-bold text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <option value="">（未割当）</option>
+                    {col.staffOptions.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <div className="truncate text-[12.5px] font-bold text-text-primary">
+                    {staffName}
+                  </div>
+                )}
                 <div className="flex items-center gap-1.5 text-[9.5px] text-text-muted">
                   <span
                     className="rounded px-1.5 py-px text-[9px] font-extrabold text-white"
@@ -1158,6 +1397,8 @@ export function TimelineDayBoard({
             onFreeSlotClick={onFreeSlotClick}
             onEventClick={onEventClick}
             dndEnabled={dndEnabled}
+            onDeleteVisit={onDeleteVisit}
+            onPromoteWeekOnly={onPromoteWeekOnly}
           />
         ))}
 

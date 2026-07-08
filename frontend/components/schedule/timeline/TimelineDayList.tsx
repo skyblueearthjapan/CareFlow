@@ -30,7 +30,21 @@ export interface TimelineDayListProps {
   courses: CourseListItem[];
   onPatientClick?: (patientId: string) => void;
   onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
+  /**
+   * G2 (T-6 パリティ): 訪問削除 (行末の ×)。canEdit のときだけ Panel が渡す。
+   * 未指定なら × を描画しない。確認ダイアログは Panel 側 (handleDeleteVisit) が持つ。
+   * visit_id を持たない行 (提案系のダミー行) には出さない。
+   */
+  onDeleteVisit?: (visitId: string, patientName: string) => void;
+  /**
+   * G3 (T-6 パリティ): source='manual_week' 行の「今週のみ」チップ → 固定昇格。
+   * 未指定なら非クリックの表示専用チップになる。
+   */
+  onPromoteWeekOnly?: (patientId: string, patientName: string) => void;
 }
+
+/** G3: 「今週のみ」→ 固定昇格の確認文 (CourseDayTable / TimelineDayBoard と同一文言)。 */
+const PROMOTE_WEEK_ONLY_CONFIRM = 'この配置を固定訪問週間（毎週の型）に反映しますか？';
 
 const CC_COLOR: Record<string, string> = {
   A: '#0D8478',
@@ -54,10 +68,14 @@ function VisitRow({
   v,
   onPatientClick,
   onTogglePin,
+  onDeleteVisit,
+  onPromoteWeekOnly,
 }: {
   v: VisitListItem;
   onPatientClick?: (patientId: string) => void;
   onTogglePin?: TimelineDayListProps['onTogglePin'];
+  onDeleteVisit?: TimelineDayListProps['onDeleteVisit'];
+  onPromoteWeekOnly?: TimelineDayListProps['onPromoteWeekOnly'];
 }) {
   const pal = genderPalette(v.patient_sex);
   const cond = formatTimeCondition({
@@ -130,6 +148,19 @@ function VisitRow({
             <PinToggleButton visit={v} onTogglePin={onTogglePin} />
           </span>
         ) : null}
+        {/* G2: 訪問削除 (×) — ピン留めトグルの隣。visit_id が無い行には出さない。 */}
+        {onDeleteVisit && v.visit_id ? (
+          <button
+            type="button"
+            data-testid={`tdl-delete-visit-${v.key}`}
+            aria-label={`${v.patient_name} の訪問を削除`}
+            title="この訪問を削除"
+            className="shrink-0 rounded p-0.5 text-[11px] font-bold leading-none text-error opacity-40 transition-opacity hover:bg-error-bg hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-error"
+            onClick={() => onDeleteVisit(v.visit_id!, v.patient_name)}
+          >
+            ×
+          </button>
+        ) : null}
       </span>
 
       <span className="tnum text-text-secondary">
@@ -157,6 +188,8 @@ function VisitRow({
           <span className="ml-1 text-[10px] font-semibold text-amber-700">📍同住所</span>
         ) : null}
         {condBits ? <span className="ml-1 text-text-secondary">{condBits}</span> : null}
+        {/* G3: 「今週のみ」= この週だけの配置。クリックで毎週の型へ昇格 (confirm あり)。 */}
+        {v.source === 'manual_week' ? <WeekOnlyChip v={v} onPromote={onPromoteWeekOnly} /> : null}
       </span>
 
       <span
@@ -169,6 +202,48 @@ function VisitRow({
         {v.distance_to_next_km != null ? `${v.distance_to_next_km.toFixed(1)}km` : '—'}
       </span>
     </div>
+  );
+}
+
+/**
+ * 「今週のみ」チップ (G3)。onPromote 指定時のみクリック可
+ * (confirm → 固定訪問週間 = 毎週の型 へ昇格)。patient_id 未設定の行では出さない。
+ */
+function WeekOnlyChip({
+  v,
+  onPromote,
+}: {
+  v: VisitListItem;
+  onPromote?: TimelineDayListProps['onPromoteWeekOnly'];
+}) {
+  if (!v.patient_id) return null;
+  const base =
+    'ml-1 inline-flex flex-shrink-0 items-center rounded bg-amber-100 px-1 py-0.5 text-[9px] font-semibold text-amber-800 ring-1 ring-amber-300';
+  if (!onPromote) {
+    return (
+      <span
+        data-testid={`tdl-week-only-chip-${v.key}`}
+        className={base}
+        title="この週だけの配置です"
+      >
+        今週のみ
+      </span>
+    );
+  }
+  return (
+    <button
+      type="button"
+      data-testid={`tdl-week-only-chip-${v.key}`}
+      className={cn(base, 'cursor-pointer hover:bg-amber-200')}
+      title="この週だけの配置です。クリックで固定訪問週間（毎週の型）に反映できます"
+      onClick={() => {
+        if (window.confirm(PROMOTE_WEEK_ONLY_CONFIRM)) {
+          onPromote(v.patient_id!, v.patient_name);
+        }
+      }}
+    >
+      今週のみ
+    </button>
   );
 }
 
@@ -262,7 +337,13 @@ function fmtHMFromStart(start: string, durationMin: number): string {
   return fmtHM(hhmmToMin(start) + durationMin);
 }
 
-export function TimelineDayList({ courses, onPatientClick, onTogglePin }: TimelineDayListProps) {
+export function TimelineDayList({
+  courses,
+  onPatientClick,
+  onTogglePin,
+  onDeleteVisit,
+  onPromoteWeekOnly,
+}: TimelineDayListProps) {
   return (
     <div className="space-y-3" data-testid="timeline-day-list">
       {courses.map((c) => {
@@ -333,6 +414,8 @@ export function TimelineDayList({ courses, onPatientClick, onTogglePin }: Timeli
                             v={v}
                             onPatientClick={onPatientClick}
                             onTogglePin={onTogglePin}
+                            onDeleteVisit={onDeleteVisit}
+                            onPromoteWeekOnly={onPromoteWeekOnly}
                           />
                         ))}
                       </div>
@@ -345,6 +428,8 @@ export function TimelineDayList({ courses, onPatientClick, onTogglePin }: Timeli
                       v={grp.v}
                       onPatientClick={onPatientClick}
                       onTogglePin={onTogglePin}
+                      onDeleteVisit={onDeleteVisit}
+                      onPromoteWeekOnly={onPromoteWeekOnly}
                     />
                   ),
                 )

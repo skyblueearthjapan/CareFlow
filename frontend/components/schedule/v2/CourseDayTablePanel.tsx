@@ -1618,10 +1618,61 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     const tlVisitId = parseTlVisitDraggableId(activeId);
     const tlPairIds = parseTlPairDraggableId(activeId);
     if (tlVisitId || tlPairIds) {
+      const wantIds = tlPairIds ?? [tlVisitId!];
+
+      // ─── G4: タイムラインカード → プール (訪問を外す) ───────────────────
+      // 既存テーブルの visit→プールと同じ semantics: delete のみ (cascade=false =
+      // 固定枠は保持)。同住所ペア (tl-pair) は 2 件とも外す (同一 op_group_id で
+      // 1 操作 = undo でまとめて戻る。tlMove の作法に倣う)。
+      if (isPoolDrop) {
+        const srcCol = timelineColumns.find((c) => c.visits.some((v) => v.id === wantIds[0]));
+        const poolVisits = wantIds
+          .map((id) => srcCol?.visits.find((v) => v.id === id))
+          .filter((v): v is CourseGridVisit => v != null);
+        if (poolVisits.length !== wantIds.length) return;
+        // 2 名体制 (visit_group_id) は BE の cascade_partner で相方まで消えるため禁止
+        // (既存テーブル visit→プールと同じガード)。
+        if (poolVisits.some((v) => Boolean(v.visit_group_id))) {
+          toast.warning(
+            '2 名体制 (ペア配置済) の visit はプールへ戻せません / 別セルへ移動できません。× ボタンで一括削除してから再配置してください。',
+          );
+          return;
+        }
+        const names = poolVisits.map(
+          (v) => patientById.get(v.patient_id)?.name ?? v.patient_name ?? v.patient_id,
+        );
+        const label = poolVisits.length >= 2 ? `${names.join('・')}（同住所2名）` : names[0]!;
+        // catch から参照するため try の外で数える (部分成功の件数を toast に出す)。
+        let doneCount = 0;
+        try {
+          const opGroupId = crypto.randomUUID();
+          for (const v of poolVisits) {
+            await deleteVisitMut.mutateAsync({
+              id: v.id,
+              cascadeFixedVisit: false,
+              op_group_id: opGroupId,
+            });
+            doneCount += 1;
+          }
+          invalidateOpLog(isoYear, isoWeek);
+          toast.success(`${label} をプールに戻しました`);
+        } catch (err) {
+          // ペアの 2 件目で失敗しても 1 件目の op-log を undo バーへ即時反映する。
+          invalidateOpLog(isoYear, isoWeek);
+          // 部分成功を隠さない: 「何も起きていない」と誤読して undo を試さないのを防ぐ
+          // (レビューMED)。doneCount は catch までに成功した削除件数。
+          toast.error(
+            doneCount > 0
+              ? `プールへの戻しが途中で失敗しました（${doneCount}件は削除済み）。取り消すには「元に戻す」を使ってください: ${formatErr(err)}`
+              : `プールへの戻しに失敗しました: ${formatErr(err)}`,
+          );
+        }
+        return;
+      }
+
       const colKey = parseTlColDroppableId(overId);
       if (!colKey) return; // タイムライン外へのドロップは無効 (何もしない)
       const toCol = timelineColumns.find((c) => c.key === colKey);
-      const wantIds = tlPairIds ?? [tlVisitId!];
       const fromCol = timelineColumns.find((c) => c.visits.some((v) => v.id === wantIds[0]));
       const visits = wantIds
         .map((id) => fromCol?.visits.find((v) => v.id === id))
@@ -2487,6 +2538,9 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
           is_pinned: cv.is_pinned === true,
           // T-1L: タイムライン兄弟リスト用の患者性別 (行頭ドット・左色帯).
           patient_sex: (patient?.sex as string | null | undefined) ?? null,
+          // G2/G3: 日リストの × (訪問削除) と「今週のみ」チップ (固定昇格) の根拠.
+          visit_id: cv.id,
+          source: cv.source ?? null,
         };
       });
 
@@ -2580,6 +2634,8 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
           max: capMax,
         },
         staffEvents,
+        // G1: 列ヘッダの担当スタッフ変更 select の選択肢 (テーブルと同じ供給元)。
+        staffOptions: staffByOffice.get(template.office_id) ?? [],
       });
     }
     return out;
@@ -2596,6 +2652,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     staffEventsByStaff,
     staffCountFor,
     courseCodesMax,
+    staffByOffice,
   ]);
 
   // ─── T-1: 現在時刻ライン (表示中の曜日が「今日」のときだけ出す) ──────────
@@ -3196,6 +3253,35 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                       onEventClick={canEdit ? handleTimelineEventClick : undefined}
                       // T-2 ②-b: カード DnD (15分スナップ移動) は canEdit のみ。
                       dndEnabled={canEdit}
+                      // G1: 列ヘッダの担当スタッフ変更 (テーブルの dropdown と同機能)。
+                      onChangeAssignedStaff={
+                        canEdit
+                          ? (col, staffId) => {
+                              if (!col.course) {
+                                toast.warning(
+                                  '先に「週を生成」を押してコースを作成してから担当を設定してください',
+                                );
+                                return;
+                              }
+                              void handleChangeAssignedStaff(col.course.id, staffId);
+                            }
+                          : undefined
+                      }
+                      isStaffMutating={updateCourseMut.isPending}
+                      // G2: カード右下の × (訪問削除)。確認ダイアログは既存ハンドラが持つ。
+                      onDeleteVisit={
+                        canEdit
+                          ? (visitId, patientName) => {
+                              void handleDeleteVisit(visitId, patientName);
+                            }
+                          : undefined
+                      }
+                      // G3: 「今週のみ」チップ → 固定訪問週間 (毎週の型) へ昇格。
+                      onPromoteWeekOnly={
+                        canEdit
+                          ? (patientId, patientName) => promoteWeekToFixed([patientId], patientName)
+                          : undefined
+                      }
                     />
                   </div>
                 ) : weekdayViewMode === 'list' ? (
@@ -3206,6 +3292,20 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                       courses={weekdayListCourses}
                       onPatientClick={handleOpenPatientDetail}
                       onTogglePin={canEdit ? handleTogglePin : undefined}
+                      // G2: 行末の × (訪問削除)。確認ダイアログは既存ハンドラが持つ。
+                      onDeleteVisit={
+                        canEdit
+                          ? (visitId, patientName) => {
+                              void handleDeleteVisit(visitId, patientName);
+                            }
+                          : undefined
+                      }
+                      // G3: 「今週のみ」チップ → 固定訪問週間 (毎週の型) へ昇格。
+                      onPromoteWeekOnly={
+                        canEdit
+                          ? (patientId, patientName) => promoteWeekToFixed([patientId], patientName)
+                          : undefined
+                      }
                     />
                   </div>
                 ) : (

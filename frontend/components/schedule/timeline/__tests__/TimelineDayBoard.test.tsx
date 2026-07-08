@@ -38,8 +38,20 @@ function column(over: Partial<TimelineCourseColumn> & { key: string }): Timeline
     freeGaps: [],
     capacity: { filled: 0, max: 6 },
     staffEvents: [],
+    staffOptions: [],
     ...over,
   };
+}
+
+/**
+ * ドラッグ終了。dnd-kit の PointerSensor は drag 開始時に document へ capture 段の
+ * click 抑止リスナー (stopPropagation) を張り、drag 終了後 `setTimeout(..., 50)` で
+ * 外す (core.cjs AbstractPointerSensor.detach)。同期で次のテストへ進むと後続の
+ * `.click()` が全部飲まれるため、ここで確実にフラッシュしてから抜ける。
+ */
+async function endDragAndFlush() {
+  fireEvent.pointerUp(document);
+  await new Promise((resolve) => setTimeout(resolve, 60));
 }
 
 describe('TimelineDayBoard', () => {
@@ -582,7 +594,7 @@ describe('TimelineDayBoard', () => {
       // 個別移動 (tl-visit:) であって 2名セット (tl-pair:) ではない。
       expect(String(onDragStart.mock.calls[0]![0].active.id)).toBe('tl-visit:sa1');
     });
-    fireEvent.pointerUp(document);
+    await endDragAndFlush();
   });
 
   it('通常カードは pointerdown+move で実際にドラッグが始まる (onPointerDown 上書き回帰防止)', async () => {
@@ -613,7 +625,7 @@ describe('TimelineDayBoard', () => {
       expect(onDragStart).toHaveBeenCalledTimes(1);
       expect(String(onDragStart.mock.calls[0]![0].active.id)).toBe('tl-visit:norm');
     });
-    fireEvent.pointerUp(document);
+    await endDragAndFlush();
   });
 
   it('ピン留めカードを掴もうとすると shake で拒否を伝える (T-2 ②-c)', () => {
@@ -679,5 +691,273 @@ describe('TimelineDayBoard', () => {
     const gapEl = screen.getByTestId('tl-gap-c1-780');
     expect(gapEl.tagName).toBe('DIV');
     expect(screen.queryByText('ここに追加')).toBeNull();
+  });
+
+  // ─── G1: 列ヘッダの担当スタッフ変更 dropdown (テーブルからの移設) ──────────
+  describe('G1. 担当スタッフ変更 dropdown', () => {
+    const staffOptions = [
+      { id: 's1', name: '田中 一郎', sex: 'male' },
+      { id: 's2', name: '佐藤 花子', sex: 'female' },
+    ] as TimelineCourseColumn['staffOptions'];
+
+    it('onChangeAssignedStaff 指定 (canEdit) のとき列ヘッダに select が出て、変更でハンドラが呼ばれる', () => {
+      const onChange = vi.fn();
+      render(
+        <TimelineDayBoard
+          columns={[column({ key: 'c1', staffOptions })]}
+          weekdayLabel="月"
+          onChangeAssignedStaff={onChange}
+        />,
+      );
+      const select = screen.getByTestId('tl-staff-select-c1') as HTMLSelectElement;
+      // course.assigned_staff_id='s1' が初期選択。
+      expect(select.value).toBe('s1');
+      fireEvent.change(select, { target: { value: 's2' } });
+      expect(onChange).toHaveBeenCalledTimes(1);
+      expect(onChange.mock.calls[0]![0].key).toBe('c1');
+      expect(onChange.mock.calls[0]![1]).toBe('s2');
+      // 「（未割当）」= 空 option → null で通知する。
+      fireEvent.change(select, { target: { value: '' } });
+      expect(onChange.mock.calls[1]![1]).toBeNull();
+    });
+
+    it('onChangeAssignedStaff 未指定 (read-only) のとき select は出ず担当名のテキスト表示のまま', () => {
+      render(
+        <TimelineDayBoard columns={[column({ key: 'c1', staffOptions })]} weekdayLabel="月" />,
+      );
+      expect(screen.queryByTestId('tl-staff-select-c1')).toBeNull();
+      expect(screen.getByText('田中 一郎')).toBeInTheDocument();
+    });
+
+    it('isStaffMutating のとき select は disabled', () => {
+      render(
+        <TimelineDayBoard
+          columns={[column({ key: 'c1', staffOptions })]}
+          weekdayLabel="月"
+          onChangeAssignedStaff={vi.fn()}
+          isStaffMutating
+        />,
+      );
+      expect((screen.getByTestId('tl-staff-select-c1') as HTMLSelectElement).disabled).toBe(true);
+    });
+  });
+
+  // ─── G2: 訪問削除 (カード右下の ×) ───────────────────────────────────────
+  describe('G2. 訪問削除 (×)', () => {
+    it('× クリックで onDeleteVisit が呼ばれ、カードの onClick (患者詳細) は呼ばれない', () => {
+      const onDelete = vi.fn();
+      const onPatientClick = vi.fn();
+      render(
+        <TimelineDayBoard
+          columns={[
+            column({
+              key: 'c1',
+              visits: [visit({ id: 'v1', start_time: '09:30:00', end_time: '10:15:00' })],
+            }),
+          ]}
+          weekdayLabel="月"
+          onPatientClick={onPatientClick}
+          onDeleteVisit={onDelete}
+        />,
+      );
+      screen.getByTestId('tl-delete-visit-v1').click();
+      expect(onDelete).toHaveBeenCalledWith('v1', '患者v1');
+      expect(onPatientClick).not.toHaveBeenCalled();
+    });
+
+    it('onDeleteVisit 未指定 (read-only) では × を描画しない', () => {
+      render(
+        <TimelineDayBoard
+          columns={[
+            column({
+              key: 'c1',
+              visits: [visit({ id: 'v1', start_time: '09:30:00', end_time: '10:15:00' })],
+            }),
+          ]}
+          weekdayLabel="月"
+        />,
+      );
+      expect(screen.queryByTestId('tl-delete-visit-v1')).toBeNull();
+    });
+
+    it('極小カード (15分) には × を出さない / キャンセル済みには出す', () => {
+      render(
+        <TimelineDayBoard
+          columns={[
+            column({
+              key: 'c1',
+              visits: [
+                visit({ id: 'tiny', start_time: '09:30:00', end_time: '09:45:00' }),
+                visit({
+                  id: 'cxl',
+                  start_time: '11:00:00',
+                  end_time: '11:45:00',
+                  status: 'cancelled',
+                }),
+              ],
+            }),
+          ]}
+          weekdayLabel="月"
+          onDeleteVisit={vi.fn()}
+        />,
+      );
+      expect(screen.queryByTestId('tl-delete-visit-tiny')).toBeNull();
+      expect(screen.getByTestId('tl-delete-visit-cxl')).toBeInTheDocument();
+    });
+
+    it('× 追加後もカードのドラッグは生きている (div 化の回帰防止)', async () => {
+      const onDragStart = vi.fn();
+      render(
+        <DndContext onDragStart={onDragStart}>
+          <TimelineDayBoard
+            columns={[
+              column({
+                key: 'c1',
+                visits: [visit({ id: 'norm', start_time: '09:30:00', end_time: '10:15:00' })],
+              }),
+            ]}
+            weekdayLabel="月"
+            dndEnabled
+            onDeleteVisit={vi.fn()}
+          />
+        </DndContext>,
+      );
+      const card = screen.getByTestId('tl-visit-norm');
+      expect(card.tagName).toBe('DIV');
+      expect(card.getAttribute('role')).toBe('button');
+      const down = new MouseEvent('pointerdown', { bubbles: true, cancelable: true, button: 0 });
+      Object.defineProperty(down, 'isPrimary', { value: true });
+      card.dispatchEvent(down);
+      await vi.waitFor(() => {
+        expect(onDragStart).toHaveBeenCalledTimes(1);
+        expect(String(onDragStart.mock.calls[0]![0].active.id)).toBe('tl-visit:norm');
+      });
+      await endDragAndFlush();
+    });
+
+    it('× の pointerdown はカードのドラッグを開始させない', async () => {
+      const onDragStart = vi.fn();
+      render(
+        <DndContext onDragStart={onDragStart}>
+          <TimelineDayBoard
+            columns={[
+              column({
+                key: 'c1',
+                visits: [visit({ id: 'norm', start_time: '09:30:00', end_time: '10:15:00' })],
+              }),
+            ]}
+            weekdayLabel="月"
+            dndEnabled
+            onDeleteVisit={vi.fn()}
+          />
+        </DndContext>,
+      );
+      const del = screen.getByTestId('tl-delete-visit-norm');
+      const down = new MouseEvent('pointerdown', { bubbles: true, cancelable: true, button: 0 });
+      Object.defineProperty(down, 'isPrimary', { value: true });
+      del.dispatchEvent(down);
+      expect(onDragStart).not.toHaveBeenCalled();
+      await endDragAndFlush();
+    });
+
+    it('カードは Enter / Space で onClick (患者詳細) 相当が発火する (button → div のキーボード維持)', () => {
+      const onPatientClick = vi.fn();
+      render(
+        <TimelineDayBoard
+          columns={[
+            column({
+              key: 'c1',
+              visits: [visit({ id: 'v1', start_time: '09:30:00', end_time: '10:15:00' })],
+            }),
+          ]}
+          weekdayLabel="月"
+          onPatientClick={onPatientClick}
+        />,
+      );
+      const card = screen.getByTestId('tl-visit-v1');
+      expect(card.getAttribute('tabindex')).toBe('0');
+      fireEvent.keyDown(card, { key: 'Enter' });
+      fireEvent.keyDown(card, { key: ' ' });
+      fireEvent.keyDown(card, { key: 'Escape' });
+      expect(onPatientClick).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  // ─── G3: 「今週のみ」チップ → 固定昇格 ──────────────────────────────────
+  describe('G3. 「今週のみ」チップ', () => {
+    const weekOnly = visit({
+      id: 'wk',
+      start_time: '09:30:00',
+      end_time: '11:00:00', // pills 行が出る高さ (>= TL_SHOW_PILLS_PX)
+      source: 'manual_week',
+    });
+
+    it('source=manual_week のときチップが出て、クリック (confirm OK) で onPromoteWeekOnly が呼ばれる', () => {
+      const onPromote = vi.fn();
+      const onPatientClick = vi.fn();
+      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+      render(
+        <TimelineDayBoard
+          columns={[column({ key: 'c1', visits: [weekOnly] })]}
+          weekdayLabel="月"
+          onPatientClick={onPatientClick}
+          onPromoteWeekOnly={onPromote}
+        />,
+      );
+      screen.getByTestId('tl-week-only-chip-wk').click();
+      expect(onPromote).toHaveBeenCalledWith('p-wk', '患者wk');
+      // カード本体の onClick (患者詳細) は発火しない。
+      expect(onPatientClick).not.toHaveBeenCalled();
+      confirmSpy.mockRestore();
+    });
+
+    it('confirm キャンセルでは昇格しない', () => {
+      const onPromote = vi.fn();
+      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+      render(
+        <TimelineDayBoard
+          columns={[column({ key: 'c1', visits: [weekOnly] })]}
+          weekdayLabel="月"
+          onPromoteWeekOnly={onPromote}
+        />,
+      );
+      screen.getByTestId('tl-week-only-chip-wk').click();
+      expect(onPromote).not.toHaveBeenCalled();
+      confirmSpy.mockRestore();
+    });
+
+    it('onPromoteWeekOnly 未指定 (read-only) では非クリックの表示専用チップ', () => {
+      render(
+        <TimelineDayBoard
+          columns={[column({ key: 'c1', visits: [weekOnly] })]}
+          weekdayLabel="月"
+        />,
+      );
+      const chip = screen.getByTestId('tl-week-only-chip-wk');
+      expect(chip.tagName).toBe('SPAN');
+    });
+
+    it('source が manual_week でないカードにはチップを出さない', () => {
+      render(
+        <TimelineDayBoard
+          columns={[
+            column({
+              key: 'c1',
+              visits: [
+                visit({
+                  id: 'v1',
+                  start_time: '09:30:00',
+                  end_time: '11:00:00',
+                  source: 'allocate',
+                }),
+              ],
+            }),
+          ]}
+          weekdayLabel="月"
+          onPromoteWeekOnly={vi.fn()}
+        />,
+      );
+      expect(screen.queryByTestId('tl-week-only-chip-v1')).toBeNull();
+    });
   });
 });

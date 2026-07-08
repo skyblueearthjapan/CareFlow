@@ -90,6 +90,17 @@ export interface VisitListItem {
    * 未使用 (加算のみ・無影響)。
    */
   patient_sex?: string | null;
+  /**
+   * G2: 実 visit の id。TimelineDayList の × (訪問削除) が使う。`key` は提案系では
+   * patient_id+slot 等になり得るため、削除対象は必ずこのフィールドで受け取る。
+   * 未指定の行には × を出さない。既存 WeekdayScheduleCard は未使用 (加算のみ)。
+   */
+  visit_id?: string | null;
+  /**
+   * G3: visit のソース (Wave U-2)。'manual_week' = この週だけの配置 →
+   * TimelineDayList に「今週のみ」チップを出す。既存 WeekdayScheduleCard は未使用。
+   */
+  source?: string | null;
 }
 
 /** 1 コース分のサマリ. */
