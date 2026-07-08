@@ -1656,10 +1656,43 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
       return;
     }
 
+    // ─── T-6 パリティ②: イベント帯 → タイムライン列 (連続時間軸の15分スナップ移動) ───
+    // テーブルセルと同じ移動フロー (案X 同曜日 / 案Q 担当者変更 / 案K 衝突拒否) を
+    // 流用するため、スナップ位置から仮想セルを合成して下の分岐へ流す (パリティ①と同型)。
+    let eventCell = cell;
+    if (eventId && !eventCell) {
+      const colKey = parseTlColDroppableId(overId);
+      const toCol = colKey ? timelineColumns.find((c) => c.key === colKey) : undefined;
+      const translatedTop = active.rect.current.translated?.top ?? null;
+      const overTop = over.rect?.top ?? null;
+      if (toCol && translatedTop !== null && overTop !== null) {
+        const startMin = snapYOffsetToMinutes(translatedTop - overTop);
+        const entry = eventById.get(eventId);
+        const evDur = entry
+          ? Math.max(
+              (toMinutes(entry.event.end_time) ?? 0) - (toMinutes(entry.event.start_time) ?? 0),
+              0,
+            )
+          : 0;
+        if (startMin < TL_DAY_START_MIN || startMin + evDur > TL_DAY_END_MIN) {
+          toast.warning(
+            'この位置には置けません（9:00〜18:00 の範囲に収まるように移動してください）',
+          );
+          return;
+        }
+        eventCell = {
+          weekday: activeWeekday,
+          courseTemplateId: toCol.template.id,
+          time: formatHHMM(startMin),
+        };
+      }
+    }
+
     // ─── Wave 39: スタッフイベント drop (時刻スライド + 担当者変更) ───
     // 案 X (同曜日内のみ) + 案 Q (drop 先 course の assigned_staff_id を新所有者に)
     // + 案 K (衝突時 rollback / 移動禁止) を実装する。
-    if (eventId && cell) {
+    if (eventId && eventCell) {
+      const cell = eventCell; // 以下はテーブルセルと共通のイベント移動フロー。
       const eventEntry = eventById.get(eventId);
       if (!eventEntry) {
         toast.error('対象のイベントが見つかりません');

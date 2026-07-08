@@ -274,10 +274,12 @@ vi.mock('@/lib/queries/autoScheduleV2', () => ({
   }),
 }));
 // Wave 39: staff-events モック (W39 で useUpdateEventForDrag が追加されたため必須).
+// T-6P2: イベント DnD テスト用に buildStaffEventsMap を差し替え可能にする (既定=空 Map)。
 const mockUpdateEventDrag = vi.fn();
+const mockBuildStaffEventsMap = vi.fn(() => new Map());
 vi.mock('@/lib/queries/staff-events', () => ({
   useWeekStaffEvents: () => ({ data: [], isLoading: false }),
-  buildStaffEventsMap: () => new Map(),
+  buildStaffEventsMap: (...args: unknown[]) => mockBuildStaffEventsMap(...args),
   useUpdateEventForDrag: () => ({ mutateAsync: mockUpdateEventDrag, isPending: false }),
 }));
 
@@ -1274,6 +1276,93 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
         fix_pattern: false,
       }),
     );
+  });
+
+  // ─── T-6 パリティ②: イベント帯 → タイムライン列の DnD 移動 ────────────────
+  it('T-6P2. イベント帯をタイムライン列へドロップすると15分スナップ位置で update が呼ばれる', async () => {
+    mockUpdateEventDrag.mockResolvedValue({});
+    // buildStaffEventsMap は再レンダー毎に呼ばれるため Once では 2 回目以降が空に戻る。
+    // 恒常差し替え + finally で既定実装 (空 Map) へ戻す (後続テストへの漏れ防止)。
+    mockBuildStaffEventsMap.mockReturnValue(
+      new Map([
+        [
+          'staff-1',
+          [
+            {
+              id: 'ev-1',
+              date: '2026-05-04', // 月曜 (weekday 0) — 案X の同曜日チェックを通す
+              start_time: '10:00',
+              end_time: '11:00',
+              type: '会議',
+              title: null,
+            },
+          ],
+        ],
+      ]),
+    );
+    setupHooks({
+      staff: [
+        {
+          id: 'staff-1',
+          name: '田中 一郎',
+          kana: 'タナカイチロウ',
+          status: 'active',
+          role: 'staff',
+          primary_office_id: 'office-honten',
+          is_trainee: false,
+        },
+      ],
+      templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
+      courses: [
+        {
+          id: 'course-1',
+          iso_year: 2026,
+          iso_week: 19,
+          weekday: 0,
+          code: 'A',
+          office_id: 'office-honten',
+          assigned_staff_id: 'staff-1', // 案Q: drop 先コースの担当 (= 移動先 staff)
+          course_status: 'course_fixed',
+          deleted_at: null,
+        },
+      ],
+    });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <CourseDayTablePanel weekStart={monday(2026, 5, 4)} officeId={null} canEdit={true} />
+      </QueryClientProvider>,
+    );
+    fireEvent.click(screen.getByTestId('course-day-tab-0'));
+
+    const expectedMin = snapYOffsetToMinutes(130 - 10);
+    const hh = String(Math.floor(expectedMin / 60)).padStart(2, '0');
+    const mm = String(expectedMin % 60).padStart(2, '0');
+    const endMin = expectedMin + 60; // duration 60分 維持
+    const eh = String(Math.floor(endMin / 60)).padStart(2, '0');
+    const em = String(endMin % 60).padStart(2, '0');
+    await dndState.capturedHandlers.onDragEnd!({
+      active: {
+        id: 'event:ev-1',
+        rect: { current: { translated: { top: 130 } } },
+      },
+      over: { id: 'tl-col:tpl-A:0', rect: { top: 10 } },
+    });
+    expect(mockUpdateEventDrag).toHaveBeenCalledWith(
+      expect.objectContaining({
+        staffId: 'staff-1',
+        eventId: 'ev-1',
+        payload: expect.objectContaining({
+          start_time: `${hh}:${mm}`,
+          end_time: `${eh}:${em}`,
+        }),
+      }),
+    );
+    // 同一スタッフのため new_staff_id は送らない (時刻スライドのみ)。
+    const payload = mockUpdateEventDrag.mock.calls[0]![0].payload as Record<string, unknown>;
+    expect(payload.new_staff_id).toBeUndefined();
+    // 既定実装 (空 Map) へ戻す (後続テストへの漏れ防止)。
+    mockBuildStaffEventsMap.mockImplementation(() => new Map());
   });
 });
 

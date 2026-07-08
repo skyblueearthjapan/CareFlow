@@ -19,7 +19,7 @@ import { useState } from 'react';
 
 import { useDraggable, useDroppable } from '@dnd-kit/core';
 
-import type { CourseGridVisit } from '@/components/schedule/v2/CourseDayTable';
+import { eventDraggableId, type CourseGridVisit } from '@/components/schedule/v2/CourseDayTable';
 import type { CourseV2Read } from '@/lib/queries/courses';
 import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
 import type { StaffRead } from '@/lib/schemas/staff';
@@ -654,6 +654,111 @@ function PairBox({
   );
 }
 
+/**
+ * イベント帯 1 本の描画 (表示専用/クリック編集/DnD 共用ビュー)。
+ * drag 指定時は掴んだ帯自体が transform で動く (T-6 パリティ②)。
+ */
+function EventBandView({
+  ev,
+  col,
+  onEventClick,
+  drag,
+}: {
+  ev: EventRead;
+  col: TimelineCourseColumn;
+  onEventClick?: (ev: EventRead, col: TimelineCourseColumn) => void;
+  drag?: ReturnType<typeof useDraggable>;
+}) {
+  const s = parseHM(ev.start_time);
+  const e = parseHM(ev.end_time);
+  if (s === null || e === null || e <= s) return null;
+  const evLabel = ev.title ? `${ev.type}: ${ev.title}` : ev.type;
+  const bandStyle = {
+    top: minutesToY(s) + 1,
+    height: Math.max(durationToHeight(e - s) - 3, 22),
+    background: 'var(--sched-event-bg)',
+    borderColor: 'var(--sched-event-ln)',
+    borderLeftColor: 'var(--sched-event-bar)',
+  };
+  // z-[1]: 訪問カード (z-[2]) の下に敷く。重なった時間帯でもカードのクリックを塞がない
+  // (帯自体はカードに覆われていない領域でクリック可能)。ドラッグ中は最前面へ。
+  const bandClass =
+    'absolute left-1 right-1 z-[1] flex items-center gap-1.5 overflow-hidden rounded-lg border border-l-[3px] px-2 py-[3px] shadow-[var(--shadow-sm)]';
+  const bandInner = (
+    <>
+      <span className="shrink-0 text-[12px]" style={{ color: 'var(--sched-event-bar)' }}>
+        👥
+      </span>
+      <span
+        className="min-w-0 truncate text-[11px] font-bold"
+        style={{ color: 'var(--sched-event-ink)' }}
+      >
+        {evLabel}
+      </span>
+      <span
+        className="tnum shrink-0 text-[9.5px] opacity-75"
+        style={{ color: 'var(--sched-event-ink)' }}
+      >
+        {String(Math.floor(s / 60)).padStart(2, '0')}:{String(s % 60).padStart(2, '0')}〜
+      </span>
+      <span
+        className="ml-auto shrink-0 whitespace-nowrap rounded-full border bg-bg-base px-1.5 py-px text-[8.5px] font-bold"
+        style={{ color: 'var(--sched-event-ink)', borderColor: 'var(--sched-event-ln)' }}
+      >
+        カイポケ反映外
+      </span>
+    </>
+  );
+  return onEventClick ? (
+    <button
+      type="button"
+      ref={drag?.setNodeRef}
+      data-testid={`tl-event-${col.key}-${ev.id}`}
+      className={cn(
+        bandClass,
+        'cursor-pointer text-left transition-shadow hover:shadow-[var(--shadow-md)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary',
+        drag && 'touch-none',
+        drag?.isDragging && 'z-[5] opacity-90 shadow-[var(--shadow-md)]',
+      )}
+      style={{
+        ...bandStyle,
+        ...(drag?.transform
+          ? { transform: `translate3d(${drag.transform.x}px, ${drag.transform.y}px, 0)` }
+          : {}),
+      }}
+      onClick={() => onEventClick(ev, col)}
+      title={`${evLabel} をクリックで編集・削除${drag ? '・ドラッグで移動' : ''}`}
+      aria-label={`イベント ${evLabel} を編集`}
+      {...(drag ? { ...drag.listeners, ...drag.attributes } : {})}
+    >
+      {bandInner}
+    </button>
+  ) : (
+    <div
+      data-testid={`tl-event-${col.key}-${ev.id}`}
+      // 表示専用時は下の訪問カードのクリック/hover を透過。
+      className={cn(bandClass, 'pointer-events-none')}
+      style={bandStyle}
+    >
+      {bandInner}
+    </div>
+  );
+}
+
+/** DnD 有効時のみ mount する draggable ラッパ (read-only 描画では useDraggable を呼ばない)。 */
+function DraggableEventBand({
+  ev,
+  col,
+  onEventClick,
+}: {
+  ev: EventRead;
+  col: TimelineCourseColumn;
+  onEventClick: (ev: EventRead, col: TimelineCourseColumn) => void;
+}) {
+  const drag = useDraggable({ id: eventDraggableId(ev.id) });
+  return <EventBandView ev={ev} col={col} onEventClick={onEventClick} drag={drag} />;
+}
+
 function TimelineColumn({
   col,
   onPatientClick,
@@ -748,76 +853,15 @@ function TimelineColumn({
         );
       })}
 
-      {/* 会議・イベント帯 (担当スタッフの列内・藤色・カイポケ反映外)。クリックで編集/削除。 */}
-      {col.staffEvents.map((ev) => {
-        const s = parseHM(ev.start_time);
-        const e = parseHM(ev.end_time);
-        if (s === null || e === null || e <= s) return null;
-        const evLabel = ev.title ? `${ev.type}: ${ev.title}` : ev.type;
-        const bandStyle = {
-          top: minutesToY(s) + 1,
-          height: Math.max(durationToHeight(e - s) - 3, 22),
-          background: 'var(--sched-event-bg)',
-          borderColor: 'var(--sched-event-ln)',
-          borderLeftColor: 'var(--sched-event-bar)',
-        };
-        // z-[1]: 訪問カード (z-[2]) の下に敷く。重なった時間帯でもカードのクリックを塞がない
-        // (帯自体はカードに覆われていない領域でクリック可能)。
-        const bandClass =
-          'absolute left-1 right-1 z-[1] flex items-center gap-1.5 overflow-hidden rounded-lg border border-l-[3px] px-2 py-[3px] shadow-[var(--shadow-sm)]';
-        const bandInner = (
-          <>
-            <span className="shrink-0 text-[12px]" style={{ color: 'var(--sched-event-bar)' }}>
-              👥
-            </span>
-            <span
-              className="min-w-0 truncate text-[11px] font-bold"
-              style={{ color: 'var(--sched-event-ink)' }}
-            >
-              {evLabel}
-            </span>
-            <span
-              className="tnum shrink-0 text-[9.5px] opacity-75"
-              style={{ color: 'var(--sched-event-ink)' }}
-            >
-              {String(Math.floor(s / 60)).padStart(2, '0')}:{String(s % 60).padStart(2, '0')}〜
-            </span>
-            <span
-              className="ml-auto shrink-0 whitespace-nowrap rounded-full border bg-bg-base px-1.5 py-px text-[8.5px] font-bold"
-              style={{ color: 'var(--sched-event-ink)', borderColor: 'var(--sched-event-ln)' }}
-            >
-              カイポケ反映外
-            </span>
-          </>
-        );
-        return onEventClick ? (
-          <button
-            key={`ev-${ev.id}`}
-            type="button"
-            data-testid={`tl-event-${col.key}-${ev.id}`}
-            className={cn(
-              bandClass,
-              'cursor-pointer text-left transition-shadow hover:shadow-[var(--shadow-md)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary',
-            )}
-            style={bandStyle}
-            onClick={() => onEventClick(ev, col)}
-            title={`${evLabel} をクリックで編集・削除`}
-            aria-label={`イベント ${evLabel} を編集`}
-          >
-            {bandInner}
-          </button>
+      {/* 会議・イベント帯 (担当スタッフの列内・藤色・カイポケ反映外)。クリックで編集/削除。
+          T-6 パリティ②: DnD 有効時は draggable (15分スナップ移動・掴んだ帯自体が動く)。 */}
+      {col.staffEvents.map((ev) =>
+        dndEnabled && onEventClick ? (
+          <DraggableEventBand key={`ev-${ev.id}`} ev={ev} col={col} onEventClick={onEventClick} />
         ) : (
-          <div
-            key={`ev-${ev.id}`}
-            data-testid={`tl-event-${col.key}-${ev.id}`}
-            // 表示専用時は下の訪問カードのクリック/hover を透過。
-            className={cn(bandClass, 'pointer-events-none')}
-            style={bandStyle}
-          >
-            {bandInner}
-          </div>
-        );
-      })}
+          <EventBandView key={`ev-${ev.id}`} ev={ev} col={col} onEventClick={onEventClick} />
+        ),
+      )}
 
       {/* 訪問カード (単独 or 同住所90分ペアボックス)。DnD 有効時は単独カードが draggable。 */}
       {items.map((it) =>
