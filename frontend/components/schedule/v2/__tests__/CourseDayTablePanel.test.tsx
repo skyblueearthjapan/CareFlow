@@ -16,6 +16,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 // ─── モック ──────────────────────────────────────────────────────────────────
 
@@ -67,34 +68,37 @@ vi.mock('next-auth/react', () => ({
   useSession: () => ({ data: null, status: 'unauthenticated' }),
 }));
 
-vi.mock('lucide-react', () => ({
-  ChevronLeft: () => <span />,
-  ChevronRight: () => <span />,
-  Inbox: () => <span />,
-  AlertTriangle: () => <span />,
-  Info: () => <span />,
-  User: () => <span />,
-  Users: () => <span />,
-  X: () => <span />,
-  Plus: () => <span />,
-  ChevronDown: () => <span />,
-  Star: () => <span />,
-  Loader2: () => <span data-testid="loader" />,
-  RefreshCw: () => <span data-testid="refresh-icon" />,
-  UserCheck: () => <span data-testid="user-check-icon" />,
-  Pin: () => <span data-testid="pin-icon" />,
-  ArrowRight: () => <span />,
-  CheckCircle2: () => <span />,
-  // Wave U-3: 戻る/進むアイコン
-  Undo2: () => <span data-testid="undo-icon" />,
-  Redo2: () => <span data-testid="redo-icon" />,
-  // 他の CourseDayTablePanel アイコン
-  HeartPulse: () => <span />,
-  FlaskConical: () => <span />,
-  ListChecks: () => <span />,
-  Route: () => <span />,
-  UserX: () => <span />,
+// CreatePatientDialog が useRouter を呼ぶ (App Router 未マウントの jsdom では例外)。
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn(), refresh: vi.fn(), back: vi.fn() }),
+  usePathname: () => '/schedule',
+  useSearchParams: () => new URLSearchParams(),
 }));
+
+// アイコンは追加のたびにモック不足で落ちるため、testid が必要なものだけ明示し
+// 残りは Proxy フォールバックで自動的に空 span を返す。
+vi.mock('lucide-react', () => {
+  const named: Record<string, () => React.ReactElement> = {
+    Loader2: () => <span data-testid="loader" />,
+    RefreshCw: () => <span data-testid="refresh-icon" />,
+    UserCheck: () => <span data-testid="user-check-icon" />,
+    Pin: () => <span data-testid="pin-icon" />,
+    Undo2: () => <span data-testid="undo-icon" />,
+    Redo2: () => <span data-testid="redo-icon" />,
+  };
+  return new Proxy(named, {
+    get: (target, prop) => {
+      if (prop === '__esModule') return true;
+      // 'then' 等に関数を返すとモジュールが thenable 扱いされ await import が
+      // 永久に解決しない。アイコン名 (PascalCase) だけ自動生成する。
+      if (typeof prop !== 'string' || !/^[A-Z]/.test(prop)) return undefined;
+      // 毎回新しい関数を返すと React がコンポーネント型の変更とみなして
+      // 再マウントを繰り返すため、初回生成をキャッシュして識別性を安定させる。
+      if (!(prop in target)) target[prop] = () => <span />;
+      return target[prop];
+    },
+  });
+});
 
 vi.mock('@/components/ui/card', () => ({
   Card: ({
@@ -184,6 +188,8 @@ vi.mock('@/lib/queries/offices', () => ({
 }));
 vi.mock('@/lib/queries/patients', () => ({
   usePatients: (...args: unknown[]) => mockPatients(...args),
+  // CreatePatientDialog (RegisterPatientButton 経由) が使用. noop で十分.
+  useCreatePatient: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 vi.mock('@/lib/queries/staff', () => ({
   useStaffList: (...args: unknown[]) => mockStaffList(...args),
@@ -205,6 +211,8 @@ vi.mock('@/lib/queries/generate_week', () => ({
 }));
 vi.mock('@/lib/queries/assign_staff_only', () => ({
   useAssignStaffOnly: () => ({ mutateAsync: mockAssignStaffOnly, isPending: false }),
+  // Phase G-91: panel が useApplyStaffReview を直接呼ぶため noop mock が必要.
+  useApplyStaffReview: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 // Phase G-21 T4: useTogglePfvPin は内部で useMutation を呼ぶため、
 // QueryClientProvider 無しのテスト環境で例外になる. ボタンを叩かないテストでは
@@ -248,6 +256,14 @@ vi.mock('@/lib/queries/autoScheduleV2', () => ({
     isSuccess: false,
   }),
   useApplyWeekOnlyMutation: () => ({
+    mutateAsync: vi.fn(),
+    reset: vi.fn(),
+    isPending: false,
+    error: null,
+    isSuccess: false,
+  }),
+  // UnassignAllStaffButton (toolbar) が使用. noop で十分.
+  useUnassignAllStaffMutation: () => ({
     mutateAsync: vi.fn(),
     reset: vi.fn(),
     isPending: false,
@@ -338,6 +354,17 @@ vi.mock('@/lib/queries/opLog', () => ({
   }),
   useInvalidateOpLog: () => vi.fn(),
   OP_LOG_STATE_KEY: 'op-log-state',
+}));
+
+// T-2 ②-b: タイムライン DnD 移動 (この週だけ) の mutation.
+vi.mock('@/lib/queries/visitMoveWeekOnly', () => ({
+  useVisitMoveWeekOnly: () => ({ mutateAsync: vi.fn(), isPending: false }),
+}));
+
+// スケジューリング設定 (useQuery 直呼び). data undefined で既定挙動になる.
+vi.mock('@/lib/queries/schedulingSettings', () => ({
+  useSchedulingSettings: () => ({ data: undefined, isLoading: false }),
+  useUpdateSchedulingSettings: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 
 vi.mock('@/lib/api/patientSync', () => ({
@@ -1154,6 +1181,50 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
     expect(poolPane).toBeInTheDocument();
     // プールコンポーネントが右ペイン内に含まれる
     expect(poolPane.querySelector('[data-testid="pool-grouped-by-weekday"]')).toBeInTheDocument();
+  });
+
+  // ─── 日タイムラインの高さチェーン (下端切れ回帰・2026-07-08) ──────────────
+  // 左ペイン (lg:overflow-hidden) → タブパネル → course-day-timeline-view →
+  // 盤面 (lg:h-full) の全リンクに flex チェーンが必要。1 つでも欠けると盤面が
+  // 内容高で描画され、下端が overflow-hidden に切り捨てられてスクロール不能になる。
+  // jsdom はレイアウト計算をしないため className 契約で担保する。
+  it('T-2S. 日タイムライン表示時にタブパネルが高さチェーンを繋ぐ', () => {
+    setupHooks({
+      templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
+    });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <CourseDayTablePanel weekStart={monday(2026, 5, 4)} officeId={null} canEdit={true} />
+      </QueryClientProvider>,
+    );
+    // 既定 activeTab='week' → 月曜タブへ切替 (weekdayViewMode 既定='timeline')
+    fireEvent.click(screen.getByTestId('course-day-tab-0'));
+    const view = screen.getByTestId('course-day-timeline-view');
+    for (const cls of ['lg:min-h-0', 'lg:flex-1']) {
+      expect(view.className).toContain(cls);
+    }
+    // 中間のタブパネル (flex チェーン欠落が下端切れの正体だったリンク)
+    const tabpanel = screen.getByTestId('course-day-table-list');
+    for (const cls of ['lg:flex', 'lg:min-h-0', 'lg:flex-1', 'lg:flex-col']) {
+      expect(tabpanel.className).toContain(cls);
+    }
+    // 左ペイン = タブパネルの親。盤面へスクロール委譲する固定高ペイン
+    const pane = tabpanel.parentElement as HTMLElement;
+    for (const cls of ['lg:flex', 'lg:flex-col', 'lg:overflow-hidden', 'lg:min-h-0']) {
+      expect(pane.className).toContain(cls);
+    }
+    // 盤面自身は内部スクロール + 親高さいっぱい
+    const board = screen.getByTestId('timeline-day-board');
+    expect(board.className).toContain('overflow-auto');
+    expect(board.className).toContain('lg:h-full');
+
+    // 負のケース: リストモードではペインスクロール (lg:overflow-y-auto) に戻り、
+    // タブパネルに flex チェーンを付けない (無条件付与への退行を防ぐ)。
+    fireEvent.click(screen.getByTestId('course-day-mode-list'));
+    const listTabpanel = screen.getByTestId('course-day-table-list');
+    expect(listTabpanel.className).not.toContain('lg:flex');
+    expect((listTabpanel.parentElement as HTMLElement).className).toContain('lg:overflow-y-auto');
   });
 });
 

@@ -3078,7 +3078,14 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                 id={`course-day-panel-${activeWeekday}`}
                 role="tabpanel"
                 aria-labelledby={`course-day-tab-${activeWeekday}`}
-                className="space-y-3"
+                className={cn(
+                  'space-y-3',
+                  // 日タイムラインは盤面内部スクロール (lg:h-full) のため、左ペイン
+                  // (lg:overflow-hidden) からの高さチェーンをここでも繋ぐ必要がある。
+                  // これが無いと盤面が内容高で描画され、下端がペインに切り捨てられて
+                  // スクロール不能になる (2026-07-08 下端切れの正体)。
+                  weekdayViewMode === 'timeline' && 'lg:flex lg:min-h-0 lg:flex-1 lg:flex-col',
+                )}
                 data-testid="course-day-table-list"
               >
                 {/* Phase G-36: 表示モード切替 (テーブル ⇄ リスト) は Card 2 の独立 Row 3 へ移設済. */}
