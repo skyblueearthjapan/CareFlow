@@ -128,7 +128,7 @@ function WeekCard({
       onClick={onClick}
       data-testid={`wtl-visit-${v.id}`}
       title={v.patient_address ?? undefined}
-      className="absolute flex flex-col gap-px overflow-hidden rounded-md border border-l-[3px] px-1.5 py-0.5 text-left shadow-[var(--shadow-xs)] transition-shadow hover:z-[4] hover:shadow-[var(--shadow-md)] focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary"
+      className="absolute flex flex-col gap-px rounded-md border border-l-[3px] px-1.5 py-0.5 text-left shadow-[var(--shadow-xs)] transition-shadow hover:z-[4] hover:shadow-[var(--shadow-md)] focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary"
       style={{
         top,
         height: h,
@@ -263,7 +263,7 @@ function WeekPairBox({
   return (
     <div
       data-testid={`wtl-pair-${item.id}`}
-      className="absolute z-[2] flex flex-col overflow-hidden rounded-md border-2 border-amber-400 bg-amber-50/40 shadow-[var(--shadow-xs)]"
+      className="absolute z-[2] flex flex-col rounded-md border-2 border-amber-400 bg-amber-50/40 shadow-[var(--shadow-xs)]"
       style={{ top, height: boxH, ...laneStyle }}
     >
       {/* 見出し: 占有時間のみ。住所は各カード行に出す (日ビューと同じ・PO要望)。 */}
@@ -283,7 +283,7 @@ function WeekPairBox({
               type="button"
               data-testid={`wtl-visit-${v.id}`}
               onClick={onPatientClick ? () => onPatientClick(v.patient_id) : undefined}
-              className="relative flex min-h-0 flex-1 flex-col justify-center gap-px overflow-hidden rounded border border-l-[3px] px-1 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary"
+              className="relative flex min-h-0 flex-1 flex-col justify-center gap-px rounded border border-l-[3px] px-1 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary"
               style={{
                 background: pal.bg,
                 borderColor: pal.ln,

@@ -65,6 +65,9 @@ export function PushPin({ className, ...props }: PushPinIconProps) {
  * を持たせる。針はカード中央へ向く斜め描画。
  *
  * 使い方: カード側に relative (または absolute) を付け、子として置くだけ。
+ * **頭はカードの角から少しはみ出す** (translate で頭の中心≒角。PO要望 2026-07-08:
+ * 角丸+overflow-hidden で頭が欠けるのは NG・はみ出して見せる)。そのため
+ * ピンを置くカードは overflow-hidden を外すこと (truncate は各要素で担保)。
  * 位置・サイズは既定 (右上・h-5) を className で上書き可能。クリックは奪わない
  * (pointer-events-none)。操作用トグル (PinToggleButton / PinScopeMenu) は従来どおり。
  */
@@ -77,7 +80,8 @@ export function CornerPushPin({ className, ...props }: PushPinIconProps) {
       aria-label="ピン留め"
       data-icon="corner-push-pin"
       className={cn(
-        'pointer-events-none absolute right-0 top-0 z-[3] h-5 w-5',
+        // translate は自身サイズ比 → h-4/h-3.5 に縮めても「頭の中心≒カードの角」を維持。
+        'pointer-events-none absolute right-0 top-0 z-[3] h-5 w-5 translate-x-[36%] -translate-y-[29%]',
         'drop-shadow-[1px_2px_1.5px_rgba(74,52,38,0.35)]',
         className,
       )}

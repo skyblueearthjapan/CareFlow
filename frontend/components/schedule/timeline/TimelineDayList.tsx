@@ -322,7 +322,7 @@ export function TimelineDayList({ courses, onPatientClick, onTogglePin }: Timeli
                     // 見出し行は置かず高さを節約 (各行の📍同住所チップ + title で内訳が分かる)。
                     <div
                       key={`sa-${gi}`}
-                      className="my-0.5 overflow-hidden rounded-md border border-amber-400 bg-amber-50/50"
+                      className="my-0.5 rounded-md border border-amber-400 bg-amber-50/50"
                       title={`同住所（${grp.rows.length}名・同時刻帯に連続訪問）`}
                       data-testid={`tdl-sameaddr-${gi}`}
                     >

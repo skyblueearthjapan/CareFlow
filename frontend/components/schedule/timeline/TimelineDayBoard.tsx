@@ -229,7 +229,7 @@ function VisitCard({
           : (visit.patient_address ?? undefined)
       }
       className={cn(
-        'absolute z-[2] flex flex-col gap-px overflow-hidden rounded-lg border border-l-[3px] px-2 py-[3px] text-left shadow-[var(--shadow-xs)] transition-shadow hover:z-[4] hover:shadow-[var(--shadow-md)] focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary',
+        'absolute z-[2] flex flex-col gap-px rounded-lg border border-l-[3px] px-2 py-[3px] text-left shadow-[var(--shadow-xs)] transition-shadow hover:z-[4] hover:shadow-[var(--shadow-md)] focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary',
         drag && !drag.disabled && 'cursor-grab touch-none active:cursor-grabbing',
         drag?.isDragging && 'opacity-40',
         shake && 'tl-shake',
@@ -369,7 +369,7 @@ function DraggablePairBox({
 export function TlPairDragGhost({ visits }: { visits: CourseGridVisit[] }) {
   return (
     <div
-      className="flex h-full w-full cursor-grabbing flex-col overflow-hidden rounded-lg border-2 border-amber-400 bg-amber-50/70 shadow-[var(--shadow-md)]"
+      className="flex h-full w-full cursor-grabbing flex-col rounded-lg border-2 border-amber-400 bg-amber-50/70 shadow-[var(--shadow-md)]"
       data-testid="tl-pair-drag-ghost"
     >
       <div className="flex items-center gap-1 px-1.5 pt-0.5 text-[9px] font-bold text-amber-700">
@@ -381,7 +381,7 @@ export function TlPairDragGhost({ visits }: { visits: CourseGridVisit[] }) {
           return (
             <div
               key={v.id}
-              className="relative flex min-h-0 flex-1 items-center gap-1 overflow-hidden rounded-md border border-l-[3px] px-1.5"
+              className="relative flex min-h-0 flex-1 items-center gap-1 rounded-md border border-l-[3px] px-1.5"
               style={{
                 background: pal.bg,
                 borderColor: pal.ln,
@@ -440,7 +440,7 @@ export function TlVisitDragGhost({ visit }: { visit: CourseGridVisit }) {
   const durMin = s !== null && e !== null && e > s ? e - s : null;
   return (
     <div
-      className="relative flex h-full w-full cursor-grabbing flex-col gap-px overflow-hidden rounded-lg border border-l-[3px] px-2 py-[3px] shadow-[var(--shadow-md)]"
+      className="relative flex h-full w-full cursor-grabbing flex-col gap-px rounded-lg border border-l-[3px] px-2 py-[3px] shadow-[var(--shadow-md)]"
       style={{ background: pal.bg, borderColor: pal.ln, borderLeftColor: pal.bar, color: pal.ink }}
       data-testid="tl-drag-ghost"
     >
@@ -583,7 +583,7 @@ function PairBox({
             : undefined
       }
       className={cn(
-        'absolute z-[2] flex flex-col overflow-hidden rounded-lg border-2 border-amber-400 bg-amber-50/40 shadow-[var(--shadow-xs)]',
+        'absolute z-[2] flex flex-col rounded-lg border-2 border-amber-400 bg-amber-50/40 shadow-[var(--shadow-xs)]',
         drag && !drag.disabled && 'cursor-grab touch-none active:cursor-grabbing',
         drag?.isDragging && 'opacity-40',
         shake && 'tl-shake',
@@ -607,7 +607,7 @@ function PairBox({
               type="button"
               data-testid={`tl-visit-${v.id}`}
               onClick={onPatientClick ? () => onPatientClick(v.patient_id) : undefined}
-              className="relative flex min-h-0 flex-1 flex-col justify-center gap-px overflow-hidden rounded-md border border-l-[3px] px-1.5 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary"
+              className="relative flex min-h-0 flex-1 flex-col justify-center gap-px rounded-md border border-l-[3px] px-1.5 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary"
               style={{
                 background: pal.bg,
                 borderColor: pal.ln,
