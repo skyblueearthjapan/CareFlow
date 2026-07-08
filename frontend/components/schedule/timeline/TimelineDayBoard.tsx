@@ -768,9 +768,17 @@ function EventBandView({
   const e = parseHM(ev.end_time);
   if (s === null || e === null || e <= s) return null;
   const evLabel = ev.title ? `${ev.type}: ${ev.title}` : ev.type;
+  const fmt = (m: number) =>
+    `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+  const durMin = e - s;
+  const bandH = Math.max(durationToHeight(e - s) - 3, 22);
+  // 高さに応じて情報を段階表示 (訪問カードと同じ方針・PO要望 2026-07-08: 情報を増やす)。
+  // 1段 = 種別/タイトル + 時刻レンジ / 2段目 = 時刻・所要分 + 参加者名 / 3段目 = 備考。
+  const showTimeRow = bandH >= 40;
+  const showNoteRow = bandH >= TL_SHOW_ADDR_PX + 14 && Boolean(ev.note);
   const bandStyle = {
     top: minutesToY(s) + 1,
-    height: Math.max(durationToHeight(e - s) - 3, 22),
+    height: bandH,
     background: 'var(--sched-event-bg)',
     borderColor: 'var(--sched-event-ln)',
     borderLeftColor: 'var(--sched-event-bar)',
@@ -778,32 +786,64 @@ function EventBandView({
   // z-[1]: 訪問カード (z-[2]) の下に敷く。重なった時間帯でもカードのクリックを塞がない
   // (帯自体はカードに覆われていない領域でクリック可能)。ドラッグ中は最前面へ。
   const bandClass =
-    'absolute left-1 right-1 z-[1] flex items-center gap-1.5 overflow-hidden rounded-lg border border-l-[3px] px-2 py-[3px] shadow-[var(--shadow-sm)]';
+    'absolute left-1 right-1 z-[1] flex flex-col justify-center gap-px overflow-hidden rounded-lg border border-l-[3px] px-2 py-[3px] shadow-[var(--shadow-sm)]';
   const bandInner = (
     <>
-      <span className="shrink-0 text-[12px]" style={{ color: 'var(--sched-event-bar)' }}>
-        👥
+      <span className="flex min-w-0 items-center gap-1.5">
+        <span className="shrink-0 text-[12px]" style={{ color: 'var(--sched-event-bar)' }}>
+          👥
+        </span>
+        <span
+          className="min-w-0 truncate text-[11px] font-bold"
+          style={{ color: 'var(--sched-event-ink)' }}
+        >
+          {evLabel}
+        </span>
+        {/* 低い帯は時刻を1行目に畳み込む (従来は開始のみ→終了・所要分まで出す)。 */}
+        {!showTimeRow && (
+          <span
+            className="tnum shrink-0 text-[9.5px] opacity-80"
+            style={{ color: 'var(--sched-event-ink)' }}
+          >
+            {fmt(s)}〜{fmt(e)}・{durMin}分
+          </span>
+        )}
+        <span
+          className="ml-auto shrink-0 whitespace-nowrap rounded-full border bg-bg-base px-1.5 py-px text-[8.5px] font-bold"
+          style={{ color: 'var(--sched-event-ink)', borderColor: 'var(--sched-event-ln)' }}
+        >
+          カイポケ反映外
+        </span>
       </span>
-      <span
-        className="min-w-0 truncate text-[11px] font-bold"
-        style={{ color: 'var(--sched-event-ink)' }}
-      >
-        {evLabel}
-      </span>
-      <span
-        className="tnum shrink-0 text-[9.5px] opacity-75"
-        style={{ color: 'var(--sched-event-ink)' }}
-      >
-        {String(Math.floor(s / 60)).padStart(2, '0')}:{String(s % 60).padStart(2, '0')}〜
-      </span>
-      <span
-        className="ml-auto shrink-0 whitespace-nowrap rounded-full border bg-bg-base px-1.5 py-px text-[8.5px] font-bold"
-        style={{ color: 'var(--sched-event-ink)', borderColor: 'var(--sched-event-ln)' }}
-      >
-        カイポケ反映外
-      </span>
+      {showTimeRow && (
+        <span
+          className="flex min-w-0 items-center gap-1.5 text-[9.5px] opacity-85"
+          style={{ color: 'var(--sched-event-ink)' }}
+        >
+          <span className="tnum shrink-0 font-semibold">
+            {fmt(s)}〜{fmt(e)}・{durMin}分
+          </span>
+          <span className="truncate">担当: {col.assignedStaff?.name ?? '（未割当）'}</span>
+        </span>
+      )}
+      {showNoteRow && (
+        <span
+          className="min-w-0 truncate text-[9px] opacity-75"
+          style={{ color: 'var(--sched-event-ink)' }}
+        >
+          📝 {ev.note}
+        </span>
+      )}
     </>
   );
+  // hover ツールチップは高さに関係なく全情報を読めるようにする。
+  const fullTitle = [
+    `${evLabel}（${fmt(s)}〜${fmt(e)}・${durMin}分）`,
+    ev.note ? `備考: ${ev.note}` : null,
+    `クリックで編集・削除${drag ? '・ドラッグで移動' : ''}`,
+  ]
+    .filter(Boolean)
+    .join('\n');
   return onEventClick ? (
     <button
       type="button"
@@ -811,9 +851,10 @@ function EventBandView({
       data-testid={`tl-event-${col.key}-${ev.id}`}
       className={cn(
         bandClass,
-        'cursor-pointer text-left transition-shadow hover:shadow-[var(--shadow-md)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary',
-        drag && 'touch-none',
-        drag?.isDragging && 'z-[5] opacity-90 shadow-[var(--shadow-md)]',
+        'text-left transition-shadow hover:shadow-[var(--shadow-md)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary',
+        // PO要望 2026-07-08: ドラッグ可能は矢印でなく手のひらカーソルで伝える。
+        drag ? 'cursor-grab touch-none active:cursor-grabbing' : 'cursor-pointer',
+        drag?.isDragging && 'z-[5] cursor-grabbing opacity-90 shadow-[var(--shadow-md)]',
       )}
       style={{
         ...bandStyle,
@@ -822,7 +863,7 @@ function EventBandView({
           : {}),
       }}
       onClick={() => onEventClick(ev, col)}
-      title={`${evLabel} をクリックで編集・削除${drag ? '・ドラッグで移動' : ''}`}
+      title={fullTitle}
       aria-label={`イベント ${evLabel} を編集`}
       {...(drag ? { ...drag.listeners, ...drag.attributes } : {})}
     >
