@@ -13,10 +13,16 @@
  * スナップショットが無い場合 (旧 BE レスポンス等) は何も描かない (互換)。
  *
  * デザイン: Warm & Human トークンのみ。数字は tabular-nums。
+ * T-4 (2026-07-08): 行を日リスト (TimelineDayList.VisitRow) と同じカード視覚言語へ統一
+ * (性別ウォッシュ地 + 性別左帯 + 性別ドット + 角丸 + 条件ピル + 📍住所 + PushPin)。
+ * 性別等のメタは optional (patientMetaById) — 無い行は中立色でそのまま成立する。
  */
 import * as React from 'react';
 
+import { PushPin } from '@/components/ui/push-pin';
 import type { CourseSnapshot, ImprovementSuggestion } from '@/lib/schemas/v2/improvementSuggestion';
+import { genderPalette } from '@/lib/scheduling/timeline';
+import { cn } from '@/lib/utils';
 
 function hhmmToMin(t: string): number {
   const [h, m] = t.slice(0, 5).split(':').map(Number);
@@ -28,7 +34,22 @@ function addMinutes(t: string, minutes: number): string {
   return `${String(Math.floor(total / 60) % 24).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
 }
 
-export interface TimelineRow {
+/**
+ * T-4: タイムラインのカード視覚言語用メタ (すべて optional・後方互換)。
+ * 未指定の行は中立色 (性別不明=砂色) で描画される。
+ */
+export interface TimelineRowMeta {
+  /** 患者性別 (male/female/unknown)。ウォッシュ地・左帯・ドットの色。 */
+  sex?: string | null;
+  /** 条件ピル (例: 👩女性のみ / 🕐午前 / 2名)。表示文字列を呼び出し側で確定して渡す。 */
+  condLabel?: string | null;
+  /** 📍住所 (小さく truncate 表示)。 */
+  address?: string | null;
+  /** 完全固定 (PushPin 表示・読み取り専用)。 */
+  pinned?: boolean;
+}
+
+export interface TimelineRow extends TimelineRowMeta {
   key: string;
   name: string;
   start: string; // HH:MM
@@ -54,34 +75,65 @@ export function TimelinePanel({
       data-testid={testId}
     >
       <div className="mb-1 text-[11px] font-medium text-text-secondary">{title}</div>
-      <div className="space-y-0.5">
-        {sorted.map((row) => (
-          <div
-            key={row.key}
-            className={
-              row.kind === 'in'
-                ? 'flex items-center gap-1.5 rounded border-l-2 border-brand-primary bg-bg-muted px-1.5 py-0.5 text-[11px] font-medium text-text-primary'
-                : row.kind === 'out'
-                  ? 'flex items-center gap-1.5 px-1.5 py-0.5 text-[11px] text-text-muted line-through'
-                  : 'flex items-center gap-1.5 px-1.5 py-0.5 text-[11px] text-text-primary'
-            }
-            data-kind={row.kind}
-          >
-            <span className="tabular-nums">
-              {row.end ? `${row.start}–${row.end}` : row.start}
-            </span>
-            <span className="truncate">{row.name} 様</span>
-            {row.kind === 'in' ? (
-              <span className="ml-auto shrink-0 whitespace-nowrap text-[10px] text-brand-primary">
-                ← ここへ移動
+      <div className="space-y-1">
+        {sorted.map((row) => {
+          // T-4: 日リスト (TimelineDayList.VisitRow) と同じカード視覚言語。
+          // 性別ウォッシュ地 + 性別左帯 + 性別ドット。メタ無し行は中立色。
+          const pal = genderPalette(row.sex);
+          const isIn = row.kind === 'in';
+          const isOut = row.kind === 'out';
+          return (
+            <div
+              key={row.key}
+              className={cn(
+                'flex items-center gap-1.5 rounded-md border border-l-[3px] px-1.5 py-0.5 text-[11px]',
+                isIn && 'font-medium text-text-primary ring-1 ring-brand-primary',
+                isOut && 'text-text-muted line-through',
+                !isIn && !isOut && 'text-text-primary',
+              )}
+              style={
+                // 打消し行 (移動元の旧位置) はウォッシュを敷かず、退場感を出す。
+                isOut
+                  ? { borderColor: 'transparent', borderLeftColor: pal.bar }
+                  : { borderColor: pal.ln, borderLeftColor: pal.bar, background: pal.bg }
+              }
+              data-kind={row.kind}
+            >
+              <i
+                className="h-2 w-2 shrink-0 rounded-full"
+                style={{ background: pal.bar }}
+                aria-hidden="true"
+              />
+              <span className={cn('tabular-nums', !isOut && 'font-semibold')}>
+                {row.end ? `${row.start}–${row.end}` : row.start}
               </span>
-            ) : row.kind === 'out' ? (
-              <span className="ml-auto shrink-0 whitespace-nowrap text-[10px] no-underline">
-                移動元
-              </span>
-            ) : null}
-          </div>
-        ))}
+              <span className="truncate">{row.name} 様</span>
+              {row.pinned ? <PushPin className="h-3 w-3 shrink-0" aria-label="ピン留め" /> : null}
+              {row.condLabel ? (
+                <span className="shrink-0 text-[9px] no-underline text-text-secondary">
+                  {row.condLabel}
+                </span>
+              ) : null}
+              {row.address ? (
+                <span
+                  className="min-w-0 truncate text-[9px] no-underline text-text-muted"
+                  title={row.address}
+                >
+                  📍{row.address}
+                </span>
+              ) : null}
+              {row.kind === 'in' ? (
+                <span className="ml-auto shrink-0 whitespace-nowrap text-[10px] font-semibold text-brand-primary">
+                  ← ここへ移動
+                </span>
+              ) : row.kind === 'out' ? (
+                <span className="ml-auto shrink-0 whitespace-nowrap text-[10px] no-underline">
+                  移動元
+                </span>
+              ) : null}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -104,6 +156,11 @@ export interface CourseMoveTimelineProps {
   sourceCourse: CourseSnapshot | null | undefined;
   /** 移動先コースのスナップショット (同一コース内は null). */
   destinationCourse: CourseSnapshot | null | undefined;
+  /**
+   * T-4: 患者 ID → 表示メタ (性別ウォッシュ・条件ピル・住所)。optional —
+   * 未指定なら全行が中立色で描画される (旧呼び出し互換)。
+   */
+  patientMetaById?: ReadonlyMap<string, TimelineRowMeta>;
 }
 
 export function CourseMoveTimeline({
@@ -112,9 +169,11 @@ export function CourseMoveTimeline({
   patientName,
   sourceCourse: src,
   destinationCourse: dst,
+  patientMetaById,
 }: CourseMoveTimelineProps) {
   if (!src) return null; // 旧 BE レスポンス互換: スナップショットが無ければ出さない.
   const cp = sug.swap_counterpart;
+  const metaOf = (patientId: string): TimelineRowMeta => patientMetaById?.get(patientId) ?? {};
 
   // X (視点主) の新枠.
   const xIn: TimelineRow = {
@@ -123,6 +182,7 @@ export function CourseMoveTimeline({
     start: sug.candidate.start_time.slice(0, 5),
     end: sug.candidate.end_time.slice(0, 5),
     kind: 'in',
+    ...metaOf(targetPatientId),
   };
   // Y (swap 相手) の新枠 = X の旧コースへ。end はスナップショットの所要分数から導出.
   const yIn: TimelineRow | null = cp
@@ -132,6 +192,7 @@ export function CourseMoveTimeline({
         start: cp.new_start_time.slice(0, 5),
         end: addMinutes(cp.new_start_time.slice(0, 5), durationOf(dst ?? src, cp.patient_id, 30)),
         kind: 'in',
+        ...metaOf(cp.patient_id),
       }
     : null;
 
@@ -144,6 +205,7 @@ export function CourseMoveTimeline({
       v.patient_id === targetPatientId || (!dst && cp && v.patient_id === cp.patient_id)
         ? 'out'
         : 'normal',
+    ...metaOf(v.patient_id),
   }));
 
   if (!dst) {
@@ -169,6 +231,7 @@ export function CourseMoveTimeline({
     start: v.start_time.slice(0, 5),
     end: v.end_time.slice(0, 5),
     kind: cp && v.patient_id === cp.patient_id ? 'out' : 'normal',
+    ...metaOf(v.patient_id),
   }));
   dstRows.push(xIn);
   return (
@@ -211,8 +274,16 @@ export function BeforeAfterCourseTimeline({
 }) {
   return (
     <div className="grid grid-cols-1 gap-2 sm:grid-cols-2" data-testid={testIdPrefix}>
-      <TimelinePanel title={`変更前（${title}）`} rows={beforeRows} testId={`${testIdPrefix}-before`} />
-      <TimelinePanel title={`変更後（${title}）`} rows={afterRows} testId={`${testIdPrefix}-after`} />
+      <TimelinePanel
+        title={`変更前（${title}）`}
+        rows={beforeRows}
+        testId={`${testIdPrefix}-before`}
+      />
+      <TimelinePanel
+        title={`変更後（${title}）`}
+        rows={afterRows}
+        testId={`${testIdPrefix}-after`}
+      />
     </div>
   );
 }

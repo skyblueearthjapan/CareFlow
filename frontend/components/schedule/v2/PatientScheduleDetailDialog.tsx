@@ -48,6 +48,7 @@ import { useVisits } from '@/lib/queries/visits';
 import type { PatientFixedVisitV2Read } from '@/lib/schemas/v2/patient_fixed_visit';
 import type { VisitRead } from '@/lib/schemas/visit';
 
+import { type TimelineRowMeta } from './CourseMoveTimeline';
 import { ImprovementSuggestionsSection } from './ImprovementSuggestionsSection';
 import { PatientEditDialog } from './PatientEditDialog';
 import { PoolCandidateList } from './PoolCandidateList';
@@ -273,6 +274,11 @@ export interface PatientScheduleDetailDialogProps {
    * 詰まり解消探索 (propose-unblock) を 1 回だけ自動発火する (ref ガード済み)。
    */
   autoRequestUnblock?: boolean;
+  /**
+   * T-4: 患者 ID → 表示メタ (性別ウォッシュ・住所)。提案系タイムラインの
+   * カード視覚言語に使う。optional — 未指定でも各セクションが対象患者分を補完する。
+   */
+  patientMetaById?: ReadonlyMap<string, TimelineRowMeta>;
 }
 
 type ApplyStage = 'idle' | 'preview' | 'applying';
@@ -288,6 +294,7 @@ export function PatientScheduleDetailDialog({
   officeId = null,
   autoRequestOvercapacity = false,
   autoRequestUnblock = false,
+  patientMetaById,
 }: PatientScheduleDetailDialogProps) {
   // 週 範囲 (ISO Mon..Sun)
   // Wave Next 1 M2: ISO W53 が存在しない年 (e.g. 2025-W53) を検出.
@@ -565,6 +572,7 @@ export function PatientScheduleDetailDialog({
                 isoYear={isoYear}
                 isoWeek={isoWeek}
                 canEdit={canEdit}
+                patientMetaById={patientMetaById}
               />
             ) : null}
 
@@ -597,6 +605,7 @@ export function PatientScheduleDetailDialog({
                     primary
                     autoRequestOvercapacity={autoRequestOvercapacity}
                     autoRequestUnblock={autoRequestUnblock}
+                    patientMetaById={patientMetaById}
                   />
                 ) : null}
               </section>
@@ -700,7 +709,6 @@ export function PatientScheduleDetailDialog({
           canEdit={canEdit}
         />
       ) : null}
-
     </Dialog>
   );
 }

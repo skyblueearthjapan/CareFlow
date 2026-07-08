@@ -28,6 +28,7 @@ import * as React from 'react';
 import { cn } from '@/lib/utils';
 import { formatDuration } from '@/lib/format/duration';
 import { buildSameAddressKey, parseHM, type FreeGap } from '@/lib/scheduling/freeGaps';
+import { genderPalette } from '@/lib/scheduling/timeline';
 import { PushPin, PushPinOff } from '@/components/ui/push-pin';
 import { VisitArrow } from './v2/VisitArrow';
 import { trimSeconds } from './v2/_autoScheduleUtils';
@@ -534,14 +535,22 @@ function PairMemberRow({
   // CareFlow #101 FE: warning ありの visit は赤枠ハイライト + tooltip 表示.
   const warningInfo = collectVisitWarningInfo(visit);
   const isPinned = visit.is_pinned === true;
+  // T-4: 日リストと同じカード視覚言語 (性別ウォッシュ地 + 性別左帯 + 角丸)。
+  // 警告赤 / ピン琥珀の背景はウォッシュより優先 (inline bg は通常行のみ)。
+  const pal = genderPalette(visit.patient_sex);
   return (
     <li
       className={cn(
-        'flex flex-wrap items-center gap-1 py-0.5 text-[10px]',
-        warningInfo.hasWarning ? 'rounded border border-red-500 bg-red-50/40 px-1' : '',
+        'flex flex-wrap items-center gap-1 rounded-md border border-l-[3px] px-1 py-0.5 text-[10px]',
+        warningInfo.hasWarning ? 'bg-red-50/40' : '',
         // Phase G-21: 完全固定 visit は薄い黄色背景.
-        isPinned && !warningInfo.hasWarning ? 'rounded bg-yellow-50/60 px-1' : '',
+        isPinned && !warningInfo.hasWarning ? 'bg-yellow-50/60' : '',
       )}
+      style={{
+        borderColor: warningInfo.hasWarning ? '#ef4444' : pal.ln,
+        borderLeftColor: pal.bar,
+        ...(warningInfo.hasWarning || isPinned ? {} : { background: pal.bg }),
+      }}
       data-testid={testIdPrefix ? `${testIdPrefix}-visit-${visit.key}` : undefined}
       data-same-address-group-id={visit.same_address_group_id ?? undefined}
       data-pair-member="true"
@@ -581,14 +590,22 @@ function VisitRow({ visit, testIdPrefix, onPatientClick, weekView, onTogglePin }
   // CareFlow #101 FE: warning ありの visit は赤枠ハイライト + tooltip 表示.
   const warningInfo = collectVisitWarningInfo(visit);
   const isPinned = visit.is_pinned === true;
+  // T-4: 日リストと同じカード視覚言語 (性別ウォッシュ地 + 性別左帯 + 角丸)。
+  // 警告赤 / ピン琥珀の背景はウォッシュより優先 (inline bg は通常行のみ)。
+  const pal = genderPalette(visit.patient_sex);
   return (
     <li
       className={cn(
-        'flex flex-wrap items-center gap-1 text-[10px]',
-        warningInfo.hasWarning ? 'rounded border border-red-500 bg-red-50/40 px-1' : '',
+        'flex flex-wrap items-center gap-1 rounded-md border border-l-[3px] px-1 py-0.5 text-[10px]',
+        warningInfo.hasWarning ? 'bg-red-50/40' : '',
         // Phase G-21: 完全固定 visit は薄い黄色背景.
-        isPinned && !warningInfo.hasWarning ? 'rounded bg-yellow-50/60 px-1' : '',
+        isPinned && !warningInfo.hasWarning ? 'bg-yellow-50/60' : '',
       )}
+      style={{
+        borderColor: warningInfo.hasWarning ? '#ef4444' : pal.ln,
+        borderLeftColor: pal.bar,
+        ...(warningInfo.hasWarning || isPinned ? {} : { background: pal.bg }),
+      }}
       data-testid={testIdPrefix ? `${testIdPrefix}-visit-${visit.key}` : undefined}
       data-same-address-group-id={visit.same_address_group_id ?? undefined}
       data-visit-warning={warningInfo.hasWarning ? 'true' : undefined}
@@ -671,7 +688,13 @@ function VisitRowContent({
 
   return (
     <>
-      <span className="tnum text-text-muted">{trimSeconds(visit.start_time)}</span>
+      {/* T-4: 行頭の性別ドット (日リストと同じ視覚言語)。 */}
+      <i
+        className="inline-block h-2 w-2 shrink-0 rounded-full"
+        style={{ background: genderPalette(visit.patient_sex).bar }}
+        aria-hidden="true"
+      />
+      <span className="tnum font-semibold text-text-primary">{trimSeconds(visit.start_time)}</span>
       {(() => {
         // Phase G-15: 性別制限による患者名 色付け (inline style で確実反映)
         //   female_only → 赤 / male_only → 青 / その他 → 標準

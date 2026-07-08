@@ -61,7 +61,7 @@ import {
   mergeAdoptedIntoNormalFixedVisits,
 } from './_proposeSlotUtils';
 import { ChangeScopeChoice, type ChangeScopeValue } from './ChangeScopeChoice';
-import { CourseMoveTimeline } from './CourseMoveTimeline';
+import { CourseMoveTimeline, type TimelineRowMeta } from './CourseMoveTimeline';
 import { DismissReasonDialog } from './DismissReasonDialog';
 import { ImprovementSuggestionCard } from './ImprovementSuggestionCard';
 
@@ -93,6 +93,11 @@ export interface ImprovementSuggestionsSectionProps {
   canEdit: boolean;
   /** 採用確定後に親へ通知 (画面更新トリガ). */
   onAdopted?: () => void;
+  /**
+   * T-4: 患者 ID → 表示メタ (性別ウォッシュ・住所)。コースタイムラインの
+   * カード視覚言語に使う。optional — 未指定でも対象患者の分は自前で補完する。
+   */
+  patientMetaById?: ReadonlyMap<string, TimelineRowMeta>;
 }
 
 export function ImprovementSuggestionsSection({
@@ -101,7 +106,19 @@ export function ImprovementSuggestionsSection({
   isoWeek,
   canEdit,
   onAdopted,
+  patientMetaById,
 }: ImprovementSuggestionsSectionProps) {
+  // T-4: 対象患者の表示メタはマップ未指定でも patient から補完する。
+  const metaWithTarget = React.useMemo<ReadonlyMap<string, TimelineRowMeta>>(() => {
+    const m = new Map(patientMetaById ?? []);
+    if (!m.has(patient.id)) {
+      m.set(patient.id, {
+        sex: patient.sex ?? null,
+        address: patient.address ?? null,
+      });
+    }
+    return m;
+  }, [patientMetaById, patient.id, patient.sex, patient.address]);
   const { data: session, status: sessionStatus } = useSession();
   const accessToken = session?.accessToken ?? null;
   const refreshToken = session?.refreshToken ?? null;
@@ -464,6 +481,7 @@ export function ImprovementSuggestionsSection({
                 patientName={patient.name}
                 sourceCourse={s.source_course}
                 destinationCourse={s.destination_course}
+                patientMetaById={metaWithTarget}
               />
             </div>
           ))}

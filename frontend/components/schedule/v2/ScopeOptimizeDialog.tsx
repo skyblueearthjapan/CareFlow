@@ -49,7 +49,7 @@ import type {
 } from '@/lib/schemas/v2/scopeOptimization';
 
 import { ChangeScopeChoice, type ChangeScopeValue } from './ChangeScopeChoice';
-import { CourseMoveTimeline } from './CourseMoveTimeline';
+import { CourseMoveTimeline, type TimelineRowMeta } from './CourseMoveTimeline';
 import { ImprovementSuggestionCard } from './ImprovementSuggestionCard';
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -82,6 +82,11 @@ export interface ScopeOptimizeDialogProps {
    * officeId が指定されているときは使わない。
    */
   offices?: { id: string; name: string }[];
+  /**
+   * T-4: 患者 ID → 表示メタ (性別ウォッシュ・住所)。コースタイムラインの
+   * カード視覚言語に使う。optional — 未指定なら中立色で描画される。
+   */
+  patientMetaById?: ReadonlyMap<string, TimelineRowMeta>;
 }
 
 /** 0=月..5=土 (日曜は稼働曜日外: 健康診断と同じ). */
@@ -278,6 +283,7 @@ export function ScopeOptimizeDialog({
   initialScope = null,
   initialOfficeId = null,
   offices = [],
+  patientMetaById,
 }: ScopeOptimizeDialogProps) {
   // 全拠点モード (officeId=null) でダイアログ内から選ぶ拠点.
   const [manualOfficeId, setManualOfficeId] = React.useState<string | null>(null);
@@ -790,6 +796,7 @@ export function ScopeOptimizeDialog({
                             patientName={step.patient_name}
                             sourceCourse={step.source_course}
                             destinationCourse={step.destination_course}
+                            patientMetaById={patientMetaById}
                           />
                         </div>
                       );
@@ -859,7 +866,10 @@ export function ScopeOptimizeDialog({
                         </Button>
                       </div>
                       {/* U-1: 反映先の説明 (選択に応じて動的に変更). */}
-                      <div className="text-[11px] text-text-muted" data-testid="scope-optimize-note">
+                      <div
+                        className="text-[11px] text-text-muted"
+                        data-testid="scope-optimize-note"
+                      >
                         {changeScopeChoice === 'pattern'
                           ? '※ 固定訪問週間（毎週の型）と今週のスケジュールの両方に反映されます。'
                           : '※ 今週のスケジュールのみ変更します。毎週の型（固定訪問週間）は変わりません。'}

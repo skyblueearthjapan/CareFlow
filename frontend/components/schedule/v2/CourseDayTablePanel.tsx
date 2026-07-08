@@ -147,6 +147,7 @@ import {
 } from '@/components/schedule/timeline/WeekTimelineBoard';
 import { PartnerCourseDialog } from './PartnerCourseDialog';
 import { cn } from '@/lib/utils';
+import { type TimelineRowMeta } from './CourseMoveTimeline';
 import { PatientCard, type PatientCardData } from './PatientCard';
 import { PatientScheduleDetailDialog } from './PatientScheduleDetailDialog';
 import { POOL_DROPPABLE_ID, buildPoolDraggableId, parsePoolDraggableId } from './PoolPanel';
@@ -366,6 +367,25 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
   const patientById = useMemo(() => {
     const m = new Map<string, PatientRead>();
     for (const p of allPatients) m.set(p.id, p);
+    return m;
+  }, [allPatients]);
+  // T-4: 提案系タイムライン (CourseMoveTimeline 等) のカード視覚言語用メタ。
+  // 性別ウォッシュ・条件ピル・📍住所を患者マスタから FE join する (API 不変)。
+  // note: allPatients は limit=500 — 超過分の患者は中立色になるだけ (安全な劣化)。
+  const patientRowMetaById = useMemo(() => {
+    const m = new Map<string, TimelineRowMeta>();
+    for (const p of allPatients) {
+      m.set(p.id, {
+        sex: p.sex ?? null,
+        address: p.address ?? null,
+        condLabel:
+          p.sex_restriction === 'female_only'
+            ? '👩女性のみ'
+            : p.sex_restriction === 'male_only'
+              ? '👨男性のみ'
+              : null,
+      });
+    }
     return m;
   }, [allPatients]);
 
@@ -3441,6 +3461,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
           initialScope={scopeOptimizeInitialScope}
           initialOfficeId={scopeOptimizeInitialOfficeId}
           offices={offices.map((o) => ({ id: o.id, name: o.name }))}
+          patientMetaById={patientRowMetaById}
         />
 
         {/* W-2: プール一括投入ダイアログ (simulate → 見せる4点 → apply). */}
@@ -3498,6 +3519,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
             officeId={officeId}
             autoRequestOvercapacity={patientDetailAutoOvercapacity}
             autoRequestUnblock={patientDetailAutoUnblock}
+            patientMetaById={patientRowMetaById}
           />
         ) : null}
       </section>

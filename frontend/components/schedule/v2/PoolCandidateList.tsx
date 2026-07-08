@@ -63,7 +63,11 @@ import {
   slotKey,
 } from './_proposeSlotUtils';
 import { ChangeScopeChoice, type ChangeScopeValue } from './ChangeScopeChoice';
-import { BeforeAfterCourseTimeline, type TimelineRow } from './CourseMoveTimeline';
+import {
+  BeforeAfterCourseTimeline,
+  type TimelineRow,
+  type TimelineRowMeta,
+} from './CourseMoveTimeline';
 
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'] as const;
 
@@ -96,7 +100,12 @@ function excludedReasonLabel(reason: string): string {
  * （+1名相談）の呼びかけと並列に出し、管理者が「ずらす」か「+1名」かを選べる。
  */
 // 設計書 unblock-consult-design.md §3 / §4.5 W-15: この4件が発動条件（新 reason 追加時は要更新）。
-const UNBLOCK_TRIGGER_REASONS = ['no_gap', 'no_pair_slot', 'travel_shortage', 'capacity_full'] as const;
+const UNBLOCK_TRIGGER_REASONS = [
+  'no_gap',
+  'no_pair_slot',
+  'travel_shortage',
+  'capacity_full',
+] as const;
 
 /** W-12d: unmovable_summary キーの訳語 (設計書 §3・「動かせない事情」)。 */
 const UNMOVABLE_LABEL: Record<keyof UnblockUnmovableSummary, string> = {
@@ -136,7 +145,11 @@ function unblockCourseKey(e: { patient_id: string; start_time: string }): string
   return `${e.patient_id}@${trimSeconds(e.start_time)}`;
 }
 
-function buildCourseBeforeAfterRows(course: UnblockCourseBeforeAfter): {
+function buildCourseBeforeAfterRows(
+  course: UnblockCourseBeforeAfter,
+  // T-4: 患者 ID → 表示メタ (性別ウォッシュ等)。未指定/未ヒットは中立色。
+  metaOf?: (patientId: string) => TimelineRowMeta,
+): {
   before: TimelineRow[];
   after: TimelineRow[];
   title: string;
@@ -145,20 +158,26 @@ function buildCourseBeforeAfterRows(course: UnblockCourseBeforeAfter): {
   const courseAfter = course.after ?? [];
   const beforeKeys = new Set(courseBefore.map(unblockCourseKey));
   const afterKeys = new Set(courseAfter.map(unblockCourseKey));
-  const before: TimelineRow[] = courseBefore.map((v): TimelineRow => ({
-    key: `b-${v.patient_id}-${v.start_time}`,
-    name: v.patient_name,
-    start: trimSeconds(v.start_time),
-    end: trimSeconds(v.end_time),
-    kind: afterKeys.has(unblockCourseKey(v)) ? 'normal' : 'out',
-  }));
-  const after: TimelineRow[] = courseAfter.map((v): TimelineRow => ({
-    key: `a-${v.patient_id}-${v.start_time}`,
-    name: v.patient_name,
-    start: trimSeconds(v.start_time),
-    end: trimSeconds(v.end_time),
-    kind: beforeKeys.has(unblockCourseKey(v)) ? 'normal' : 'in',
-  }));
+  const before: TimelineRow[] = courseBefore.map(
+    (v): TimelineRow => ({
+      key: `b-${v.patient_id}-${v.start_time}`,
+      name: v.patient_name,
+      start: trimSeconds(v.start_time),
+      end: trimSeconds(v.end_time),
+      kind: afterKeys.has(unblockCourseKey(v)) ? 'normal' : 'out',
+      ...(metaOf?.(v.patient_id) ?? {}),
+    }),
+  );
+  const after: TimelineRow[] = courseAfter.map(
+    (v): TimelineRow => ({
+      key: `a-${v.patient_id}-${v.start_time}`,
+      name: v.patient_name,
+      start: trimSeconds(v.start_time),
+      end: trimSeconds(v.end_time),
+      kind: beforeKeys.has(unblockCourseKey(v)) ? 'normal' : 'in',
+      ...(metaOf?.(v.patient_id) ?? {}),
+    }),
+  );
   const wd = WEEKDAY_LABELS[course.weekday] ?? '?';
   const title = `${course.course_label ?? course.course_code}・${wd}曜`;
   return { before, after, title };
@@ -169,24 +188,48 @@ function buildCourseBeforeAfterRows(course: UnblockCourseBeforeAfter): {
  * is_here 行 = 対象患者の採用枠 (after 側で 'in' 強調)。純粋な追加なので差分は不要。
  * mini_schedule は終了時刻を持たないため start のみ (TimelineRow.end は省略)。
  */
+/** T-4: mini_schedule 行の条件ピル (性別制限 / 2名体制。旧BEは未送出 → null)。 */
+function miniCondLabel(r: ProposeMiniScheduleEntry): string | null {
+  const bits = [
+    r.sex_restriction === 'female_only'
+      ? '👩女性のみ'
+      : r.sex_restriction === 'male_only'
+        ? '👨男性のみ'
+        : null,
+    r.is_multi_staff ? '2名' : null,
+  ].filter(Boolean);
+  return bits.length > 0 ? bits.join(' ') : null;
+}
+
 function buildMiniBeforeAfterRows(
   mini: ProposeMiniScheduleEntry[],
   insertName: string,
+  // T-4: 採用対象患者 (is_here 行) の表示メタ。mini 行は patient_id を持たないため
+  // 既存行は中立色のまま (条件ピルのみ entry から補完)。
+  insertMeta?: TimelineRowMeta,
 ): { before: TimelineRow[]; after: TimelineRow[] } {
   const before: TimelineRow[] = mini
     .filter((r) => !r.is_here)
-    .map((r, i): TimelineRow => ({
-      key: `mb-${i}`,
-      name: r.name,
+    .map(
+      (r, i): TimelineRow => ({
+        key: `mb-${i}`,
+        name: r.name,
+        start: trimSeconds(r.time),
+        kind: 'normal',
+        condLabel: miniCondLabel(r),
+      }),
+    );
+  const after: TimelineRow[] = mini.map(
+    (r, i): TimelineRow => ({
+      key: `ma-${i}`,
+      name: r.is_here ? insertName : r.name,
       start: trimSeconds(r.time),
-      kind: 'normal',
-    }));
-  const after: TimelineRow[] = mini.map((r, i): TimelineRow => ({
-    key: `ma-${i}`,
-    name: r.is_here ? insertName : r.name,
-    start: trimSeconds(r.time),
-    kind: r.is_here ? 'in' : 'normal',
-  }));
+      kind: r.is_here ? 'in' : 'normal',
+      ...(r.is_here ? (insertMeta ?? {}) : {}),
+      // entry 由来のピル (2名 含む) を優先。旧BE (未送出=null) は insertMeta 側で補完。
+      condLabel: miniCondLabel(r) ?? (r.is_here ? (insertMeta?.condLabel ?? null) : null),
+    }),
+  );
   return { before, after };
 }
 
@@ -288,13 +331,24 @@ function MiniRow({ row }: { row: ProposeMiniScheduleEntry }) {
  * 主コースの mini_schedule から採用前(is_here 除外)/採用後(全行) を組み、ペア候補は
  * 相方コース (partner_mini_schedule) を 2 組目として並べる。
  */
-function AdoptBeforeAfter({ slot, insertName }: { slot: ProposeSlotItem; insertName: string }) {
+function AdoptBeforeAfter({
+  slot,
+  insertName,
+  insertMeta,
+}: {
+  slot: ProposeSlotItem;
+  insertName: string;
+  /** T-4: 採用対象患者の表示メタ (性別ウォッシュ・住所)。 */
+  insertMeta?: TimelineRowMeta;
+}) {
   const wd = WEEKDAY_LABELS[slot.weekday] ?? '?';
-  const main = buildMiniBeforeAfterRows(slot.mini_schedule, insertName);
+  const main = buildMiniBeforeAfterRows(slot.mini_schedule, insertName, insertMeta);
   const mainTitle = `${slot.course_label}${slot.staff_name ? `・${slot.staff_name}` : ''}・${wd}曜`;
   const partnerMini = slot.partner_mini_schedule ?? [];
   const showPartner = isTwoStaffPairSlot(slot) && partnerMini.length > 0;
-  const partner = showPartner ? buildMiniBeforeAfterRows(partnerMini, insertName) : null;
+  const partner = showPartner
+    ? buildMiniBeforeAfterRows(partnerMini, insertName, insertMeta)
+    : null;
   return (
     <div className="mt-2 space-y-2" data-testid="pool-candidate-before-after">
       <BeforeAfterCourseTimeline
@@ -334,9 +388,7 @@ function UnmovableSummaryList({ summary }: { summary: UnblockUnmovableSummary })
     .filter((e) => e.count > 0);
   if (entries.length === 0) {
     return (
-      <p className="mt-1 text-[11px] text-warning-strong">
-        動かせる既存の訪問がありませんでした。
-      </p>
+      <p className="mt-1 text-[11px] text-warning-strong">動かせる既存の訪問がありませんでした。</p>
     );
   }
   return (
@@ -359,6 +411,7 @@ function UnblockPlanCard({
   disabled,
   defaultCoursesOpen,
   onSelect,
+  metaOf,
 }: {
   plan: UnblockPlan;
   canEdit: boolean;
@@ -366,6 +419,8 @@ function UnblockPlanCard({
   /** W-13b: 影響コース before/after を既定展開するか (先頭プランのみ true)。 */
   defaultCoursesOpen: boolean;
   onSelect: () => void;
+  /** T-4: 患者 ID → 表示メタ (性別ウォッシュ等)。 */
+  metaOf?: (patientId: string) => TimelineRowMeta;
 }) {
   const insert = plan.insert;
   const insertStep = plan.moves.length; // 手順番号 (moves の後)。
@@ -427,7 +482,7 @@ function UnblockPlanCard({
           </summary>
           <div className="mt-1.5 space-y-2">
             {courses.map((c, ci) => {
-              const { before, after, title } = buildCourseBeforeAfterRows(c);
+              const { before, after, title } = buildCourseBeforeAfterRows(c, metaOf);
               return (
                 <BeforeAfterCourseTimeline
                   key={`${c.office_name ?? ''}-${c.course_code}-${c.weekday}-${ci}`}
@@ -515,8 +570,7 @@ function UnblockConfirm({
       >
         <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
         <p>
-          適用すると{' '}
-          <strong>{movedCount}名の毎週の型（固定訪問週間）が変わり、今週にも反映</strong>
+          適用すると <strong>{movedCount}名の毎週の型（固定訪問週間）が変わり、今週にも反映</strong>
           されます。この操作は Ctrl+Z の対象外です。
         </p>
       </div>
@@ -575,6 +629,7 @@ function UnblockConsult({
   canEdit,
   onAdopted,
   autoFire = false,
+  metaOf,
 }: {
   patient: PatientRead;
   isoYear: number;
@@ -582,6 +637,8 @@ function UnblockConsult({
   officeId: string | null;
   canEdit: boolean;
   onAdopted?: () => void;
+  /** T-4: 患者 ID → 表示メタ (性別ウォッシュ等)。プラン内の before/after 行に流す。 */
+  metaOf?: (patientId: string) => TimelineRowMeta;
   /**
    * W-14: BulkPoolInsertDialog done 画面「ずらせば入る手を探せます」からの直行専用。
    * true のとき mount 直後に runSearch を 1 回だけ自動発火する (ref ガード)。
@@ -639,11 +696,14 @@ function UnblockConsult({
           // W-13a: BE 422 のうち「主担当拠点未設定」だけを特定案内にする
           // (バリデーション由来の 422 を誤って同じ文言にしないよう detail を確認)。
           const detail =
-            err instanceof ApiError && typeof (err.body as { detail?: unknown })?.detail === 'string'
+            err instanceof ApiError &&
+            typeof (err.body as { detail?: unknown })?.detail === 'string'
               ? ((err.body as { detail: string }).detail ?? '')
               : '';
           if (err instanceof ApiError && err.status === 422 && detail.includes('主担当拠点')) {
-            toast.error('この方の主担当拠点が未設定のため探索できません。患者情報で拠点を設定してください');
+            toast.error(
+              'この方の主担当拠点が未設定のため探索できません。患者情報で拠点を設定してください',
+            );
           } else {
             toast.error('開通手順の探索に失敗しました');
           }
@@ -676,7 +736,14 @@ function UnblockConsult({
     // apply に引き継ぐ。どちらも無ければ null を送り BE に再解決させる。
     const applyOfficeId = officeId ?? result?.resolved_office_id ?? null;
     applyMut.mutate(
-      { office_id: applyOfficeId, iso_year: isoYear, iso_week: isoWeek, target_patient_id: patient.id, plan, state_token: token },
+      {
+        office_id: applyOfficeId,
+        iso_year: isoYear,
+        iso_week: isoWeek,
+        target_patient_id: patient.id,
+        plan,
+        state_token: token,
+      },
       {
         onSuccess: (data) => {
           toast.success(`${plan.moved_count}名の訪問をずらして ${patient.name} 様を配置しました`);
@@ -780,6 +847,7 @@ function UnblockConsult({
                 setPendingPlan(plan);
                 setConfirmed(false);
               }}
+              metaOf={metaOf}
             />
           ))}
           <Button
@@ -867,6 +935,11 @@ export interface PoolCandidateListProps {
    * 超過 callout は従来表示のまま (自動展開しない)。定員起因のみなら従来どおり超過を自動展開。
    */
   autoRequestUnblock?: boolean;
+  /**
+   * T-4: 患者 ID → 表示メタ (性別ウォッシュ・住所)。before/after タイムラインの
+   * カード視覚言語に使う。optional — 未指定でも対象患者 (patient) の分は自前で補完する。
+   */
+  patientMetaById?: ReadonlyMap<string, TimelineRowMeta>;
 }
 
 export function PoolCandidateList({
@@ -879,7 +952,22 @@ export function PoolCandidateList({
   primary = false,
   autoRequestOvercapacity = false,
   autoRequestUnblock = false,
+  patientMetaById,
 }: PoolCandidateListProps) {
+  // T-4: 対象患者の表示メタ (マップ未指定でも自前で構築できる)。
+  const targetMeta = React.useMemo<TimelineRowMeta>(
+    () =>
+      patientMetaById?.get(patient.id) ?? {
+        sex: patient.sex ?? null,
+        address: patient.address ?? null,
+      },
+    [patientMetaById, patient.id, patient.sex, patient.address],
+  );
+  const metaOf = React.useCallback(
+    (patientId: string): TimelineRowMeta =>
+      patientMetaById?.get(patientId) ?? (patientId === patient.id ? targetMeta : {}),
+    [patientMetaById, patient.id, targetMeta],
+  );
   const { data: session, status: sessionStatus } = useSession();
   const accessToken = session?.accessToken ?? null;
   const refreshToken = session?.refreshToken ?? null;
@@ -904,8 +992,14 @@ export function PoolCandidateList({
   const result = proposeMut.data;
   const slots = React.useMemo(() => result?.slots ?? [], [result]);
   // W-3: 通常候補 (希望適合) と効率優先の代替枠 (希望外) を分離。
-  const normalSlots = React.useMemo(() => slots.filter((s) => !s.is_efficiency_alternative), [slots]);
-  const efficiencySlots = React.useMemo(() => slots.filter((s) => s.is_efficiency_alternative), [slots]);
+  const normalSlots = React.useMemo(
+    () => slots.filter((s) => !s.is_efficiency_alternative),
+    [slots],
+  );
+  const efficiencySlots = React.useMemo(
+    () => slots.filter((s) => s.is_efficiency_alternative),
+    [slots],
+  );
   // P-1b: 除外理由サマリ。旧BEは未送出のため nullish → [] フォールバック (寛容パース規約)。
   const excludedSummary = React.useMemo<ExcludedSummaryItem[]>(
     () => result?.excluded_summary ?? [],
@@ -1269,6 +1363,7 @@ export function PoolCandidateList({
                 canEdit={canEdit}
                 onAdopted={onAdopted}
                 autoFire={autoRequestUnblock && primary}
+                metaOf={metaOf}
               />
             </>
           ) : null}
@@ -1285,141 +1380,146 @@ export function PoolCandidateList({
               ? s.warnings.filter((w) => w !== 'two_staff_not_guaranteed')
               : s.warnings;
             return (
-            <li
-              key={`${slotKey(s)}-${i}`}
-              className="rounded border border-border-default bg-bg-base p-2 text-xs"
-              data-testid={`pool-candidate-${slotKey(s)}`}
-            >
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge variant="secondary" className="text-[10px]">
-                  #{i + 1}
-                </Badge>
-                <span className="tnum font-medium text-text-primary">
-                  {WEEKDAY_LABELS[s.weekday] ?? '?'} {trimSeconds(s.start_time)}–
-                  {trimSeconds(s.end_time)}
-                </span>
-                {pair ? (
-                  /* W-12a: 2名体制の 2 コースチップ (主 + 相方). */
-                  <span
-                    className="flex flex-wrap items-center gap-1"
-                    data-testid="pool-candidate-pair-badge"
-                  >
-                    <Badge variant="info" className="text-[10px]">
-                      2名体制
-                    </Badge>
-                    <span className="text-text-secondary">
-                      {s.course_label} と {s.partner_course_label ?? s.partner_course_code}
-                    </span>
+              <li
+                key={`${slotKey(s)}-${i}`}
+                className="rounded border border-border-default bg-bg-base p-2 text-xs"
+                data-testid={`pool-candidate-${slotKey(s)}`}
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant="secondary" className="text-[10px]">
+                    #{i + 1}
+                  </Badge>
+                  <span className="tnum font-medium text-text-primary">
+                    {WEEKDAY_LABELS[s.weekday] ?? '?'} {trimSeconds(s.start_time)}–
+                    {trimSeconds(s.end_time)}
                   </span>
-                ) : (
-                  <span className="text-text-secondary">{s.course_label}</span>
-                )}
-                {s.staff_name ? (
-                  <span className="text-[11px] text-text-muted">担当: {s.staff_name}</span>
-                ) : null}
-                {pair && s.partner_staff_name ? (
-                  <span className="text-[11px] text-text-muted">相方: {s.partner_staff_name}</span>
-                ) : null}
-                {!pair && s.is_pair && s.pair_partner ? (
-                  <Badge variant="info" className="text-[10px]">
-                    同住所ペア: {s.pair_partner}
-                  </Badge>
-                ) : null}
-                {s.marginal_cost_minutes !== null && s.marginal_cost_minutes !== undefined ? (
-                  /* P-1a: 挿入の厳密限界コスト. ペアは 2 コース合計 delta (BE 算出). */
-                  <Badge
-                    variant="secondary"
-                    className="text-[10px]"
-                    data-testid="pool-candidate-delta-badge"
-                    title="診断・改善提案と同じ物差し（厳密限界コスト: コース全体の移動増分）"
-                  >
-                    {pair ? '2名合計の移動 ' : 'コースの移動 '}
-                    {Math.round(s.marginal_cost_minutes) <= 0
-                      ? '±0分'
-                      : `+${Math.round(s.marginal_cost_minutes)}分`}
-                  </Badge>
-                ) : null}
-                <span className="tnum ml-auto text-[10px] text-text-muted">
-                  スコア {s.score.toFixed(0)}
-                </span>
-              </div>
-
-              {pair ? (
-                <div className="mt-1 text-[11px] text-brand-primary" data-testid="pool-candidate-pair-desc">
-                  {s.course_label} と {s.partner_course_label ?? s.partner_course_code} の{' '}
-                  {trimSeconds(s.start_time)} に同時配置（2名体制・別スタッフ）
-                </div>
-              ) : null}
-
-              {s.reasons.length > 0 ? (
-                <div className="mt-1 text-[11px] text-text-muted">{s.reasons.join(' / ')}</div>
-              ) : null}
-
-              {displayWarnings.length > 0 ? (
-                <div className="mt-1 flex flex-wrap gap-1">
-                  {displayWarnings.map((w, wi) => (
-                    <Badge key={wi} variant="warning" className="text-[10px]">
-                      {proposeWarningLabel(w)}
+                  {pair ? (
+                    /* W-12a: 2名体制の 2 コースチップ (主 + 相方). */
+                    <span
+                      className="flex flex-wrap items-center gap-1"
+                      data-testid="pool-candidate-pair-badge"
+                    >
+                      <Badge variant="info" className="text-[10px]">
+                        2名体制
+                      </Badge>
+                      <span className="text-text-secondary">
+                        {s.course_label} と {s.partner_course_label ?? s.partner_course_code}
+                      </span>
+                    </span>
+                  ) : (
+                    <span className="text-text-secondary">{s.course_label}</span>
+                  )}
+                  {s.staff_name ? (
+                    <span className="text-[11px] text-text-muted">担当: {s.staff_name}</span>
+                  ) : null}
+                  {pair && s.partner_staff_name ? (
+                    <span className="text-[11px] text-text-muted">
+                      相方: {s.partner_staff_name}
+                    </span>
+                  ) : null}
+                  {!pair && s.is_pair && s.pair_partner ? (
+                    <Badge variant="info" className="text-[10px]">
+                      同住所ペア: {s.pair_partner}
                     </Badge>
-                  ))}
+                  ) : null}
+                  {s.marginal_cost_minutes !== null && s.marginal_cost_minutes !== undefined ? (
+                    /* P-1a: 挿入の厳密限界コスト. ペアは 2 コース合計 delta (BE 算出). */
+                    <Badge
+                      variant="secondary"
+                      className="text-[10px]"
+                      data-testid="pool-candidate-delta-badge"
+                      title="診断・改善提案と同じ物差し（厳密限界コスト: コース全体の移動増分）"
+                    >
+                      {pair ? '2名合計の移動 ' : 'コースの移動 '}
+                      {Math.round(s.marginal_cost_minutes) <= 0
+                        ? '±0分'
+                        : `+${Math.round(s.marginal_cost_minutes)}分`}
+                    </Badge>
+                  ) : null}
+                  <span className="tnum ml-auto text-[10px] text-text-muted">
+                    スコア {s.score.toFixed(0)}
+                  </span>
                 </div>
-              ) : null}
 
-              {/* このコース当日の全体スケジュール + 「ここに入れますか」挿入位置. */}
-              {s.mini_schedule.length > 0 ? (
-                <div
-                  className="mt-1.5 rounded border border-border-default bg-bg-muted/20 p-2"
-                  data-testid={`pool-candidate-mini-${slotKey(s)}`}
-                >
-                  <div className="mb-1 text-[10px] font-semibold text-text-muted">
-                    {s.course_label}
-                    {s.staff_name ? `（${s.staff_name}）` : ''} の{' '}
-                    {WEEKDAY_LABELS[s.weekday] ?? '?'}曜 ・ 既存{' '}
-                    {s.mini_schedule.filter((m) => !m.is_here).length} 件 + 提案枠
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    {s.mini_schedule.map((row, ri) => (
-                      <MiniRow key={ri} row={row} />
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-
-              {/* W-12a: ペア候補の相方コース分ミニスケジュール (来れば 2 段目・無ければ省略). */}
-              {pair && (s.partner_mini_schedule?.length ?? 0) > 0 ? (
-                <div
-                  className="mt-1.5 rounded border border-border-default bg-bg-muted/20 p-2"
-                  data-testid={`pool-candidate-partner-mini-${slotKey(s)}`}
-                >
-                  <div className="mb-1 text-[10px] font-semibold text-text-muted">
-                    {s.partner_course_label ?? s.partner_course_code}
-                    {s.partner_staff_name ? `（${s.partner_staff_name}）` : ''} の{' '}
-                    {WEEKDAY_LABELS[s.weekday] ?? '?'}曜（相方コース）
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    {s.partner_mini_schedule!.map((row, ri) => (
-                      <MiniRow key={ri} row={row} />
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-
-              {canEdit ? (
-                <div className="mt-1.5 flex items-center justify-end">
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    onClick={() => setPending(s)}
-                    disabled={isBusy}
-                    className="h-6 px-2 text-[11px]"
-                    data-testid={`pool-candidate-adopt-${slotKey(s)}`}
+                {pair ? (
+                  <div
+                    className="mt-1 text-[11px] text-brand-primary"
+                    data-testid="pool-candidate-pair-desc"
                   >
-                    この枠で採用
-                  </Button>
-                </div>
-              ) : null}
-            </li>
+                    {s.course_label} と {s.partner_course_label ?? s.partner_course_code} の{' '}
+                    {trimSeconds(s.start_time)} に同時配置（2名体制・別スタッフ）
+                  </div>
+                ) : null}
+
+                {s.reasons.length > 0 ? (
+                  <div className="mt-1 text-[11px] text-text-muted">{s.reasons.join(' / ')}</div>
+                ) : null}
+
+                {displayWarnings.length > 0 ? (
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {displayWarnings.map((w, wi) => (
+                      <Badge key={wi} variant="warning" className="text-[10px]">
+                        {proposeWarningLabel(w)}
+                      </Badge>
+                    ))}
+                  </div>
+                ) : null}
+
+                {/* このコース当日の全体スケジュール + 「ここに入れますか」挿入位置. */}
+                {s.mini_schedule.length > 0 ? (
+                  <div
+                    className="mt-1.5 rounded border border-border-default bg-bg-muted/20 p-2"
+                    data-testid={`pool-candidate-mini-${slotKey(s)}`}
+                  >
+                    <div className="mb-1 text-[10px] font-semibold text-text-muted">
+                      {s.course_label}
+                      {s.staff_name ? `（${s.staff_name}）` : ''} の{' '}
+                      {WEEKDAY_LABELS[s.weekday] ?? '?'}曜 ・ 既存{' '}
+                      {s.mini_schedule.filter((m) => !m.is_here).length} 件 + 提案枠
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      {s.mini_schedule.map((row, ri) => (
+                        <MiniRow key={ri} row={row} />
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                {/* W-12a: ペア候補の相方コース分ミニスケジュール (来れば 2 段目・無ければ省略). */}
+                {pair && (s.partner_mini_schedule?.length ?? 0) > 0 ? (
+                  <div
+                    className="mt-1.5 rounded border border-border-default bg-bg-muted/20 p-2"
+                    data-testid={`pool-candidate-partner-mini-${slotKey(s)}`}
+                  >
+                    <div className="mb-1 text-[10px] font-semibold text-text-muted">
+                      {s.partner_course_label ?? s.partner_course_code}
+                      {s.partner_staff_name ? `（${s.partner_staff_name}）` : ''} の{' '}
+                      {WEEKDAY_LABELS[s.weekday] ?? '?'}曜（相方コース）
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      {s.partner_mini_schedule!.map((row, ri) => (
+                        <MiniRow key={ri} row={row} />
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                {canEdit ? (
+                  <div className="mt-1.5 flex items-center justify-end">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setPending(s)}
+                      disabled={isBusy}
+                      className="h-6 px-2 text-[11px]"
+                      data-testid={`pool-candidate-adopt-${slotKey(s)}`}
+                    >
+                      この枠で採用
+                    </Button>
+                  </div>
+                ) : null}
+              </li>
             );
           })}
         </ul>
@@ -1434,7 +1534,11 @@ export function PoolCandidateList({
           <summary className="flex cursor-pointer select-none items-center gap-1.5 rounded px-2 py-1.5 text-xs font-semibold text-text-secondary hover:bg-bg-muted">
             <Lightbulb className="h-3.5 w-3.5 text-brand-primary" aria-hidden />
             効率優先の代替枠（ご希望とは異なります）
-            <Badge variant="secondary" className="ml-1 text-[10px]" data-testid="pool-efficiency-count">
+            <Badge
+              variant="secondary"
+              className="ml-1 text-[10px]"
+              data-testid="pool-efficiency-count"
+            >
               {efficiencySlots.length}件
             </Badge>
           </summary>
@@ -1498,9 +1602,7 @@ export function PoolCandidateList({
                   ) : null}
 
                   {s.mini_schedule.length > 0 ? (
-                    <div
-                      className="mt-1.5 rounded border border-border-default bg-bg-muted/20 p-2"
-                    >
+                    <div className="mt-1.5 rounded border border-border-default bg-bg-muted/20 p-2">
                       <div className="mb-1 text-[10px] font-semibold text-text-muted">
                         {s.course_label}
                         {s.staff_name ? `（${s.staff_name}）` : ''} の{' '}
@@ -1664,7 +1766,7 @@ export function PoolCandidateList({
           </div>
           {/* W-13b: 採用前後のコース before/after (mini_schedule から構築。ペアは 2 組)。 */}
           {pending.mini_schedule.length > 0 ? (
-            <AdoptBeforeAfter slot={pending} insertName={patient.name} />
+            <AdoptBeforeAfter slot={pending} insertName={patient.name} insertMeta={targetMeta} />
           ) : null}
           <div className="mt-2">
             <ChangeScopeChoice
