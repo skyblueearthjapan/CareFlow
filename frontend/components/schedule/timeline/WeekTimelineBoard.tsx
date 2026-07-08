@@ -353,7 +353,8 @@ export function WeekTimelineBoard({
     );
   }
   return (
-    <div className="space-y-4" data-testid="week-timeline-board">
+    // pb-6: 最後のコースの 18:00 端がスクロール端と密着して「切れて見える」のを防ぐ余白。
+    <div className="space-y-4 pb-6" data-testid="week-timeline-board">
       {options.map((o) => (
         <CourseWeekSection
           key={o.templateId}
