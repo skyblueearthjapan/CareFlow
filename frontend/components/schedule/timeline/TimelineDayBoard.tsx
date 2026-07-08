@@ -767,7 +767,10 @@ function EventBandView({
   const s = parseHM(ev.start_time);
   const e = parseHM(ev.end_time);
   if (s === null || e === null || e <= s) return null;
-  const evLabel = ev.title ? `${ev.type}: ${ev.title}` : ev.type;
+  // 帯上の主表示はタイトル (無ければ種別)。「イベント: 週次打合せ」の種別前置は
+  // 狭い列で種別だけ見えて「イベント…」に切れる (PO指摘 2026-07-08) ため廃止。
+  // 種別はツールチップ (と2行目のスペース次第) で読める。
+  const evLabel = ev.title && ev.title.trim() !== '' ? ev.title : ev.type;
   const fmt = (m: number) =>
     `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
   const durMin = e - s;
@@ -789,31 +792,35 @@ function EventBandView({
     'absolute left-1 right-1 z-[1] flex flex-col justify-center gap-px overflow-hidden rounded-lg border border-l-[3px] px-2 py-[3px] shadow-[var(--shadow-sm)]';
   const bandInner = (
     <>
+      {/* 1行目はタイトル最優先 (PO指摘 2026-07-08: バッジ/種別に潰されて「イベント…」化)。
+          2行目がある帯ではバッジ・時刻を2行目へ逃がし、タイトルに全幅を与える。 */}
       <span className="flex min-w-0 items-center gap-1.5">
         <span className="shrink-0 text-[12px]" style={{ color: 'var(--sched-event-bar)' }}>
           👥
         </span>
         <span
-          className="min-w-0 truncate text-[11px] font-bold"
+          className="min-w-0 flex-1 truncate text-[11px] font-bold"
           style={{ color: 'var(--sched-event-ink)' }}
         >
           {evLabel}
         </span>
-        {/* 低い帯は時刻を1行目に畳み込む (従来は開始のみ→終了・所要分まで出す)。 */}
+        {/* 低い帯 (2行目なし) だけ開始時刻とバッジを1行目に置く (タイトル優先で truncate)。 */}
         {!showTimeRow && (
-          <span
-            className="tnum shrink-0 text-[9.5px] opacity-80"
-            style={{ color: 'var(--sched-event-ink)' }}
-          >
-            {fmt(s)}〜{fmt(e)}・{durMin}分
-          </span>
+          <>
+            <span
+              className="tnum shrink-0 text-[9.5px] opacity-80"
+              style={{ color: 'var(--sched-event-ink)' }}
+            >
+              {fmt(s)}〜
+            </span>
+            <span
+              className="shrink-0 whitespace-nowrap rounded-full border bg-bg-base px-1 py-px text-[8.5px] font-bold"
+              style={{ color: 'var(--sched-event-ink)', borderColor: 'var(--sched-event-ln)' }}
+            >
+              反映外
+            </span>
+          </>
         )}
-        <span
-          className="ml-auto shrink-0 whitespace-nowrap rounded-full border bg-bg-base px-1.5 py-px text-[8.5px] font-bold"
-          style={{ color: 'var(--sched-event-ink)', borderColor: 'var(--sched-event-ln)' }}
-        >
-          カイポケ反映外
-        </span>
       </span>
       {showTimeRow && (
         <span
@@ -823,7 +830,15 @@ function EventBandView({
           <span className="tnum shrink-0 font-semibold">
             {fmt(s)}〜{fmt(e)}・{durMin}分
           </span>
-          <span className="truncate">担当: {col.assignedStaff?.name ?? '（未割当）'}</span>
+          <span className="min-w-0 truncate">
+            {ev.type}・担当: {col.assignedStaff?.name ?? '（未割当）'}
+          </span>
+          <span
+            className="ml-auto shrink-0 whitespace-nowrap rounded-full border bg-bg-base px-1.5 py-px text-[8.5px] font-bold"
+            style={{ color: 'var(--sched-event-ink)', borderColor: 'var(--sched-event-ln)' }}
+          >
+            カイポケ反映外
+          </span>
         </span>
       )}
       {showNoteRow && (
@@ -838,7 +853,7 @@ function EventBandView({
   );
   // hover ツールチップは高さに関係なく全情報を読めるようにする。
   const fullTitle = [
-    `${evLabel}（${fmt(s)}〜${fmt(e)}・${durMin}分）`,
+    `${ev.type}${ev.title ? `: ${ev.title}` : ''}（${fmt(s)}〜${fmt(e)}・${durMin}分・カイポケ反映外）`,
     ev.note ? `備考: ${ev.note}` : null,
     `クリックで編集・削除${drag ? '・ドラッグで移動' : ''}`,
   ]

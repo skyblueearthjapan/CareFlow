@@ -137,7 +137,9 @@ describe('TimelineDayBoard', () => {
         weekdayLabel="月"
       />,
     );
-    expect(screen.getByText('研修: 接遇研修')).toBeInTheDocument();
+    // PO指摘 2026-07-08: 帯の主表示はタイトルのみ (「研修: 」前置は狭い列で
+    // 種別だけ見えて切れるため廃止。種別はツールチップ/2行目)。
+    expect(screen.getByText('接遇研修')).toBeInTheDocument();
     expect(screen.getByText('カイポケ反映外')).toBeInTheDocument();
     // 帯はイベント所有者の列 (c1) にだけ描かれる。
     expect(screen.getByTestId('tl-event-c1-e1')).toBeInTheDocument();
