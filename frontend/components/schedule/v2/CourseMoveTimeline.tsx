@@ -14,12 +14,12 @@
  *
  * デザイン: Warm & Human トークンのみ。数字は tabular-nums。
  * T-4 (2026-07-08): 行を日リスト (TimelineDayList.VisitRow) と同じカード視覚言語へ統一
- * (性別ウォッシュ地 + 性別左帯 + 性別ドット + 角丸 + 条件ピル + 📍住所 + PushPin)。
+ * (性別ウォッシュ地 + 性別左帯 + 性別ドット + 角丸 + 条件ピル + 📍住所 + CornerPushPin)。
  * 性別等のメタは optional (patientMetaById) — 無い行は中立色でそのまま成立する。
  */
 import * as React from 'react';
 
-import { PushPin } from '@/components/ui/push-pin';
+import { CornerPushPin } from '@/components/ui/push-pin';
 import type { CourseSnapshot, ImprovementSuggestion } from '@/lib/schemas/v2/improvementSuggestion';
 import { genderPalette } from '@/lib/scheduling/timeline';
 import { cn } from '@/lib/utils';
@@ -86,7 +86,7 @@ export function TimelinePanel({
             <div
               key={row.key}
               className={cn(
-                'flex items-center gap-1.5 rounded-md border border-l-[3px] px-1.5 py-0.5 text-[11px]',
+                'relative flex items-center gap-1.5 rounded-md border border-l-[3px] px-1.5 py-0.5 text-[11px]',
                 isIn && 'font-medium text-text-primary ring-1 ring-brand-primary',
                 isOut && 'text-text-muted line-through',
                 !isIn && !isOut && 'text-text-primary',
@@ -108,7 +108,8 @@ export function TimelinePanel({
                 {row.end ? `${row.start}–${row.end}` : row.start}
               </span>
               <span className="truncate">{row.name} 様</span>
-              {row.pinned ? <PushPin className="h-3 w-3 shrink-0" aria-label="ピン留め" /> : null}
+              {/* ピン留め: 行右上に打ち込んだ画鋲 (📍住所と誤認しない・PO要望 2026-07-08)。 */}
+              {row.pinned ? <CornerPushPin className="h-3.5 w-3.5" /> : null}
               {row.condLabel ? (
                 <span className="shrink-0 text-[9px] no-underline text-text-secondary">
                   {row.condLabel}

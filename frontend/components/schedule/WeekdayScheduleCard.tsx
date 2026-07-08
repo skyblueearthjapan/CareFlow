@@ -29,7 +29,7 @@ import { cn } from '@/lib/utils';
 import { formatDuration } from '@/lib/format/duration';
 import { buildSameAddressKey, parseHM, type FreeGap } from '@/lib/scheduling/freeGaps';
 import { genderPalette } from '@/lib/scheduling/timeline';
-import { PushPin, PushPinOff } from '@/components/ui/push-pin';
+import { CornerPushPin, PushPin, PushPinOff } from '@/components/ui/push-pin';
 import { VisitArrow } from './v2/VisitArrow';
 import { trimSeconds } from './v2/_autoScheduleUtils';
 import { PinScopeMenu, type PinScope } from './v2/PinScopeMenu';
@@ -541,7 +541,7 @@ function PairMemberRow({
   return (
     <li
       className={cn(
-        'flex flex-wrap items-center gap-1 rounded-md border border-l-[3px] px-1 py-0.5 text-[10px]',
+        'relative flex flex-wrap items-center gap-1 rounded-md border border-l-[3px] px-1 py-0.5 text-[10px]',
         warningInfo.hasWarning ? 'bg-red-50/40' : '',
         // Phase G-21: 完全固定 visit は薄い黄色背景.
         isPinned && !warningInfo.hasWarning ? 'bg-yellow-50/60' : '',
@@ -559,6 +559,8 @@ function PairMemberRow({
       title={warningInfo.tooltip ?? undefined}
       aria-label={warningInfo.tooltip ?? undefined}
     >
+      {/* ピン留め: 行右上に打ち込んだ画鋲 (📍住所と誤認しない・PO要望 2026-07-08)。 */}
+      {isPinned ? <CornerPushPin className="h-3.5 w-3.5" /> : null}
       <VisitRowContent
         visit={visit}
         onPatientClick={onPatientClick}
@@ -596,7 +598,7 @@ function VisitRow({ visit, testIdPrefix, onPatientClick, weekView, onTogglePin }
   return (
     <li
       className={cn(
-        'flex flex-wrap items-center gap-1 rounded-md border border-l-[3px] px-1 py-0.5 text-[10px]',
+        'relative flex flex-wrap items-center gap-1 rounded-md border border-l-[3px] px-1 py-0.5 text-[10px]',
         warningInfo.hasWarning ? 'bg-red-50/40' : '',
         // Phase G-21: 完全固定 visit は薄い黄色背景.
         isPinned && !warningInfo.hasWarning ? 'bg-yellow-50/60' : '',
@@ -613,6 +615,8 @@ function VisitRow({ visit, testIdPrefix, onPatientClick, weekView, onTogglePin }
       title={warningInfo.tooltip ?? undefined}
       aria-label={warningInfo.tooltip ?? undefined}
     >
+      {/* ピン留め: 行右上に打ち込んだ画鋲 (📍住所と誤認しない・PO要望 2026-07-08)。 */}
+      {isPinned ? <CornerPushPin className="h-3.5 w-3.5" /> : null}
       <VisitRowContent
         visit={visit}
         onPatientClick={onPatientClick}

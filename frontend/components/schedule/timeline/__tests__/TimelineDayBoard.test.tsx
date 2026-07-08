@@ -335,7 +335,8 @@ describe('TimelineDayBoard', () => {
     expect(ghost.style.background).toContain('female');
     expect(screen.getByText('青柳 あい')).toBeInTheDocument();
     expect(screen.getByText(/09:30・45分/)).toBeInTheDocument();
-    expect(ghost.querySelector('[data-icon="push-pin"]')).not.toBeNull();
+    // ピン表示はカード右上に打ち込む CornerPushPin (PO要望 2026-07-08)。
+    expect(ghost.querySelector('[data-icon="corner-push-pin"]')).not.toBeNull();
   });
 
   it('住所は30分カードから📍行で出て、極小カードは title で読める (A-1)', () => {
@@ -546,8 +547,8 @@ describe('TimelineDayBoard', () => {
       </DndContext>,
     );
     const pinned = screen.getByTestId('tl-visit-pin');
-    // ピン表示は 🔒 ではなく赤丸頭の PushPin アイコン (PO要望で全UI統一)。
-    expect(pinned.querySelector('[data-icon="push-pin"]')).not.toBeNull();
+    // ピン表示はカード右上に打ち込む CornerPushPin (PO要望 2026-07-08: 📍住所と誤認しない)。
+    expect(pinned.querySelector('[data-icon="corner-push-pin"]')).not.toBeNull();
     fireEvent.pointerDown(pinned);
     expect(pinned.className).toContain('tl-shake');
     // アニメーション終了で解除 (再度掴んだらまた shake できる)。

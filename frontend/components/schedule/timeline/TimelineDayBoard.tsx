@@ -25,7 +25,7 @@ import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
 import type { StaffRead } from '@/lib/schemas/staff';
 import type { EventRead } from '@/lib/schemas/staff-events';
 import type { FreeGap } from '@/lib/scheduling/freeGaps';
-import { PushPin } from '@/components/ui/push-pin';
+import { CornerPushPin } from '@/components/ui/push-pin';
 import { parseHM, SAME_ADDRESS_PAIR_MIN_OCCUPANCY } from '@/lib/scheduling/freeGaps';
 import {
   assignLanes,
@@ -245,13 +245,10 @@ function VisitCard({
         opacity: isCancelled ? 0.7 : 1,
       }}
     >
+      {/* ピン留め: 右上に打ち込んだ画鋲 (📍住所と誤認しない・PO要望 2026-07-08)。 */}
+      {visit.is_pinned && <CornerPushPin />}
       {/* 1行目: アイコン + 患者名 (名前に行を専有させフル表示。切れにくくする)。 */}
       <span className="flex min-w-0 items-center gap-1">
-        {visit.is_pinned && (
-          <span className="shrink-0" aria-label="ピン留め">
-            <PushPin className="h-3 w-3" />
-          </span>
-        )}
         {isMulti && (
           <span className="inline-flex shrink-0 gap-px text-brand-primary" aria-label="2名体制">
             <PersonMark />
@@ -384,7 +381,7 @@ export function TlPairDragGhost({ visits }: { visits: CourseGridVisit[] }) {
           return (
             <div
               key={v.id}
-              className="flex min-h-0 flex-1 items-center gap-1 overflow-hidden rounded-md border border-l-[3px] px-1.5"
+              className="relative flex min-h-0 flex-1 items-center gap-1 overflow-hidden rounded-md border border-l-[3px] px-1.5"
               style={{
                 background: pal.bg,
                 borderColor: pal.ln,
@@ -392,7 +389,7 @@ export function TlPairDragGhost({ visits }: { visits: CourseGridVisit[] }) {
                 color: pal.ink,
               }}
             >
-              {v.is_pinned && <PushPin className="h-2.5 w-2.5 shrink-0" />}
+              {v.is_pinned && <CornerPushPin className="h-3.5 w-3.5" />}
               <span className="truncate text-[12px] font-bold leading-tight">
                 {v.patient_name ?? '—'}
               </span>
@@ -443,12 +440,12 @@ export function TlVisitDragGhost({ visit }: { visit: CourseGridVisit }) {
   const durMin = s !== null && e !== null && e > s ? e - s : null;
   return (
     <div
-      className="flex h-full w-full cursor-grabbing flex-col gap-px overflow-hidden rounded-lg border border-l-[3px] px-2 py-[3px] shadow-[var(--shadow-md)]"
+      className="relative flex h-full w-full cursor-grabbing flex-col gap-px overflow-hidden rounded-lg border border-l-[3px] px-2 py-[3px] shadow-[var(--shadow-md)]"
       style={{ background: pal.bg, borderColor: pal.ln, borderLeftColor: pal.bar, color: pal.ink }}
       data-testid="tl-drag-ghost"
     >
+      {visit.is_pinned && <CornerPushPin />}
       <span className="flex min-w-0 items-center gap-1">
-        {visit.is_pinned && <PushPin className="h-3 w-3 shrink-0" />}
         <span className="truncate text-[13px] font-bold leading-tight">
           {visit.patient_name ?? '—'}
         </span>
@@ -610,7 +607,7 @@ function PairBox({
               type="button"
               data-testid={`tl-visit-${v.id}`}
               onClick={onPatientClick ? () => onPatientClick(v.patient_id) : undefined}
-              className="flex min-h-0 flex-1 flex-col justify-center gap-px overflow-hidden rounded-md border border-l-[3px] px-1.5 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary"
+              className="relative flex min-h-0 flex-1 flex-col justify-center gap-px overflow-hidden rounded-md border border-l-[3px] px-1.5 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary"
               style={{
                 background: pal.bg,
                 borderColor: pal.ln,
@@ -618,12 +615,8 @@ function PairBox({
                 color: pal.ink,
               }}
             >
+              {v.is_pinned && <CornerPushPin className="h-3.5 w-3.5" />}
               <span className="flex min-w-0 items-center gap-1">
-                {v.is_pinned && (
-                  <span className="shrink-0" aria-label="ピン留め">
-                    <PushPin className="h-2.5 w-2.5" />
-                  </span>
-                )}
                 <span className="truncate text-[12px] font-bold leading-tight">
                   {v.patient_name ?? '—'}
                 </span>

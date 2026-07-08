@@ -54,6 +54,53 @@ export function PushPin({ className, ...props }: PushPinIconProps) {
   );
 }
 
+/**
+ * CornerPushPin — カード右上に「壁へ打ち込んだ」ピン留め表示 (PO要望 2026-07-08).
+ *
+ * 📍住所マーカーと行内の小さな PushPin が紛らわしい問題への回答:
+ * 状態表示のピンは行内アイコンをやめ、カードの右上隅に大きめの画鋲を
+ * 斜めに打ち込む (= メモを壁にピン留めした見た目)。上品/かわいい必須のため
+ *   - 赤いグロス頭 (fill-error) + 白リム + つやハイライト
+ *   - 柔らかい落ち影 (drop-shadow) で「刺さっている」立体感
+ * を持たせる。針はカード中央へ向く斜め描画。
+ *
+ * 使い方: カード側に relative (または absolute) を付け、子として置くだけ。
+ * 位置・サイズは既定 (右上・h-5) を className で上書き可能。クリックは奪わない
+ * (pointer-events-none)。操作用トグル (PinToggleButton / PinScopeMenu) は従来どおり。
+ */
+export function CornerPushPin({ className, ...props }: PushPinIconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      role="img"
+      aria-label="ピン留め"
+      data-icon="corner-push-pin"
+      className={cn(
+        'pointer-events-none absolute right-0 top-0 z-[3] h-5 w-5',
+        'drop-shadow-[1px_2px_1.5px_rgba(74,52,38,0.35)]',
+        className,
+      )}
+      {...props}
+    >
+      {/* 針: カード中央 (左下) へ向けて刺さる。先端に向けて視覚的に締まるよう round cap. */}
+      <line
+        x1="12.4"
+        y1="11.0"
+        x2="7.0"
+        y2="19.2"
+        stroke="#9b9289"
+        strokeWidth="1.9"
+        strokeLinecap="round"
+      />
+      {/* 頭: 赤いグロス玉 + 白リム (上品さ/かわいさの要)。 */}
+      <circle cx="15.3" cy="6.9" r="5.9" className="fill-error" stroke="#fff" strokeWidth="1.4" />
+      {/* つやハイライト。 */}
+      <circle cx="13.3" cy="4.9" r="1.7" fill="#fff" opacity="0.85" />
+    </svg>
+  );
+}
+
 /** 未ピン: 灰色アウトラインの丸頭 (塗りなし) + currentColor の針. */
 export function PushPinOff({ className, ...props }: PushPinIconProps) {
   return (

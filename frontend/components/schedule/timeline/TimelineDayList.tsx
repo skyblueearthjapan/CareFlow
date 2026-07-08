@@ -18,7 +18,7 @@
 
 import type { CourseListItem, VisitListItem } from '@/components/schedule/WeekdayScheduleCard';
 import { formatTimeCondition, PinToggleButton } from '@/components/schedule/WeekdayScheduleCard';
-import { PushPin } from '@/components/ui/push-pin';
+import { CornerPushPin } from '@/components/ui/push-pin';
 import type { PinScope } from '@/components/schedule/v2/PinScopeMenu';
 import { trimSeconds } from '@/components/schedule/v2/_autoScheduleUtils';
 import { formatDuration } from '@/lib/format/duration';
@@ -81,7 +81,7 @@ function VisitRow({
       className={cn(
         // タイムラインカードと同じ視覚言語 (性別ウォッシュ地 + 左帯 + 角丸) の
         // 「縦幅の狭いカード行」(PO要望: 日/週リストをカードUIへ統一)。
-        'grid items-center gap-2.5 rounded-md border border-l-[3px] px-2 py-1 text-[12px] shadow-[var(--shadow-xs)] transition-shadow hover:shadow-[var(--shadow-sm)]',
+        'relative grid items-center gap-2.5 rounded-md border border-l-[3px] px-2 py-1 text-[12px] shadow-[var(--shadow-xs)] transition-shadow hover:shadow-[var(--shadow-sm)]',
         GRID_COLS,
         // M-2: 移動警告は行全体を薄い赤で強調 (性別ウォッシュより優先)。
         warn && 'bg-error-bg/40 hover:bg-error-bg/60',
@@ -97,6 +97,8 @@ function VisitRow({
       title={warn?.message ?? undefined}
       data-testid={`tdl-row-${v.key}`}
     >
+      {/* ピン留め: 行右上に打ち込んだ画鋲 (📍住所と誤認しない・PO要望 2026-07-08)。 */}
+      {v.is_pinned ? <CornerPushPin className="h-4 w-4" /> : null}
       <span className="tnum font-bold text-text-primary">
         {trimSeconds(v.start_time)}
         {v.duration_min ? (
@@ -153,9 +155,6 @@ function VisitRow({
         {v.address ?? ''}
         {v.same_address_group_id ? (
           <span className="ml-1 text-[10px] font-semibold text-amber-700">📍同住所</span>
-        ) : null}
-        {v.is_pinned ? (
-          <PushPin className="ml-1 inline-block h-3 w-3 align-text-bottom" aria-label="ピン留め" />
         ) : null}
         {condBits ? <span className="ml-1 text-text-secondary">{condBits}</span> : null}
       </span>

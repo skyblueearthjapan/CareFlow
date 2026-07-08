@@ -16,7 +16,7 @@
 import { useMemo } from 'react';
 
 import type { WeekOverviewVisit } from '@/components/schedule/v2/CourseWeekOverview';
-import { PushPin } from '@/components/ui/push-pin';
+import { CornerPushPin } from '@/components/ui/push-pin';
 import { parseHM, SAME_ADDRESS_PAIR_MIN_OCCUPANCY } from '@/lib/scheduling/freeGaps';
 import {
   assignLanes,
@@ -139,13 +139,10 @@ function WeekCard({
         color: pal.ink,
       }}
     >
+      {/* ピン留め: 右上に打ち込んだ画鋲 (📍住所と誤認しない・PO要望 2026-07-08)。 */}
+      {v.is_pinned && <CornerPushPin className="h-4 w-4" />}
       {/* 1行目: アイコン + 患者名 (フル表示)。 */}
       <span className="flex min-w-0 items-center gap-0.5">
-        {v.is_pinned && (
-          <span className="shrink-0" aria-label="ピン留め">
-            <PushPin className="h-2.5 w-2.5" />
-          </span>
-        )}
         {isMulti && (
           <span className="inline-flex shrink-0 text-brand-primary" aria-label="2名体制">
             <PersonMark />
@@ -286,7 +283,7 @@ function WeekPairBox({
               type="button"
               data-testid={`wtl-visit-${v.id}`}
               onClick={onPatientClick ? () => onPatientClick(v.patient_id) : undefined}
-              className="flex min-h-0 flex-1 flex-col justify-center gap-px overflow-hidden rounded border border-l-[3px] px-1 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary"
+              className="relative flex min-h-0 flex-1 flex-col justify-center gap-px overflow-hidden rounded border border-l-[3px] px-1 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary"
               style={{
                 background: pal.bg,
                 borderColor: pal.ln,
@@ -294,12 +291,8 @@ function WeekPairBox({
                 color: pal.ink,
               }}
             >
+              {v.is_pinned && <CornerPushPin className="h-3.5 w-3.5" />}
               <span className="flex min-w-0 items-center gap-1">
-                {v.is_pinned && (
-                  <span className="shrink-0" aria-label="ピン留め">
-                    <PushPin className="h-2.5 w-2.5" />
-                  </span>
-                )}
                 <span className="truncate text-[11px] font-bold leading-tight">
                   {v.patient_name ?? '—'}
                 </span>
