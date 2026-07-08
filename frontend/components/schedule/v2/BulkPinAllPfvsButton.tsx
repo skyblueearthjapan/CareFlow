@@ -110,7 +110,7 @@ export function BulkPinAllPfvsButton({ canEdit }: BulkPinAllPfvsButtonProps) {
 
   const bulkPin = useBulkPinPfvs();
 
-  if (!canEdit) return null;
+  // RB (PO決定 2026-07-08): 全ロール同一表示。staff には disabled ボタンとして見せる。
 
   const isPending = bulkPin.isPending;
 
@@ -179,7 +179,7 @@ export function BulkPinAllPfvsButton({ canEdit }: BulkPinAllPfvsButtonProps) {
         variant="outline"
         size="sm"
         onClick={() => void handleClick(true)}
-        disabled={isLoading || isPending}
+        disabled={!canEdit || isLoading || isPending}
         className="gap-1.5"
         aria-label="全患者の固定枠を一括ピン留め"
         data-testid="bulk-pin-all-lock-button"
@@ -196,7 +196,7 @@ export function BulkPinAllPfvsButton({ canEdit }: BulkPinAllPfvsButtonProps) {
         variant="outline"
         size="sm"
         onClick={() => void handleClick(false)}
-        disabled={isLoading || isPending}
+        disabled={!canEdit || isLoading || isPending}
         className="gap-1.5"
         aria-label="全患者の固定枠を一括ピン留め解除"
         data-testid="bulk-pin-all-unlock-button"

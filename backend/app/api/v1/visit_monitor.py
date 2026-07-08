@@ -34,7 +34,7 @@ router = APIRouter()
 )
 async def get_monitor(
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin", "manager", "staff"))],
     date: Annotated[date_cls, Query(description="対象日 (YYYY-MM-DD)")],
     office_id: Annotated[UUID | None, Query(description="拠点 ID (未指定なら全拠点)")] = None,
 ) -> MonitorResponse:
@@ -49,7 +49,7 @@ async def get_monitor(
 )
 async def get_nearby(
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin", "manager", "staff"))],
     lat: Annotated[float, Query(ge=-90, le=90)],
     lng: Annotated[float, Query(ge=-180, le=180)],
     radius_m: Annotated[float, Query(ge=1, le=2000, description="探索半径 (m)")] = 150.0,

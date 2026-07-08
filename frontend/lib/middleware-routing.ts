@@ -50,7 +50,13 @@ export function decideRoute({ pathname, session }: RouteContext): RouteDecision 
     return { kind: 'redirect', to: '/dashboard' };
   }
 
-  if (pathname.startsWith(ADMIN_PREFIX) && role !== 'admin') {
+  // 申請履歴はページ実装が admin+manager 想定 (サイドバーも両者に表示) のため例外。
+  // 旧: /admin 一括ガードで manager が弾かれる矛盾があった (RB 2026-07-08 修正)。
+  const isPendingRequests = pathname.startsWith('/admin/pending-requests');
+  if (
+    pathname.startsWith(ADMIN_PREFIX) &&
+    (isPendingRequests ? !['admin', 'manager'].includes(role ?? '') : role !== 'admin')
+  ) {
     return { kind: 'redirect', to: '/dashboard' };
   }
 

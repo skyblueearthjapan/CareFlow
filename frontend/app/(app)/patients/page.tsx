@@ -10,6 +10,7 @@
 import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { useSession } from 'next-auth/react';
+import { cn } from '@/lib/utils';
 import { Plus } from 'lucide-react';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -90,24 +91,37 @@ export default function PatientsPage() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-2">
-          {canCreate ? (
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-medium text-text-muted">一括 (全患者)</span>
-              <PatientsExcelButtons />
-              {isAdmin ? <PatientsReplaceAllButton /> : null}
-            </div>
-          ) : null}
-          {canCreate ? (
-            <div className="flex items-center gap-2 border-l border-border-default pl-2">
-              <span className="text-xs font-medium text-text-muted">個別カルテ (1 患者)</span>
-              <PatientKarteButtons />
-            </div>
-          ) : null}
+          {/* RB (PO決定 2026-07-08): 全ロール同一表示。staff には無効化して見せる
+              (全患者置換のみ admin 限定のセンシティブ機能として非表示を維持)。 */}
+          <div
+            className={cn('flex items-center gap-2', !canCreate && 'opacity-50')}
+            aria-disabled={!canCreate}
+            inert={!canCreate || undefined}
+          >
+            <span className="text-xs font-medium text-text-muted">一括 (全患者)</span>
+            <PatientsExcelButtons />
+            {isAdmin ? <PatientsReplaceAllButton /> : null}
+          </div>
+          <div
+            className={cn(
+              'flex items-center gap-2 border-l border-border-default pl-2',
+              !canCreate && 'opacity-50',
+            )}
+            aria-disabled={!canCreate}
+            inert={!canCreate || undefined}
+          >
+            <span className="text-xs font-medium text-text-muted">個別カルテ (1 患者)</span>
+            <PatientKarteButtons />
+          </div>
           {canCreate ? (
             <Button asChild variant="outline">
               <Link href="/patients/qr-print?mode=bulk">QR一括印刷</Link>
             </Button>
-          ) : null}
+          ) : (
+            <Button variant="outline" disabled>
+              QR一括印刷
+            </Button>
+          )}
           {canCreate ? (
             <Button asChild>
               <Link href="/patients/new">
@@ -115,7 +129,12 @@ export default function PatientsPage() {
                 新規登録
               </Link>
             </Button>
-          ) : null}
+          ) : (
+            <Button disabled>
+              <Plus className="h-4 w-4" />
+              新規登録
+            </Button>
+          )}
         </div>
       </header>
 

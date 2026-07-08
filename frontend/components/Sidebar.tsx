@@ -26,8 +26,9 @@ const NAV_ITEMS = [
   { href: '/dashboard', label: 'ダッシュボード', icon: LayoutDashboard },
   { href: '/schedule', label: 'スケジュール', icon: CalendarDays },
   { href: '/acceptance', label: '受け入れ枠', icon: Grid3x3 },
-  // QR チェックイン Phase 3: PC 訪問モニター (admin/manager のみ = staff 非表示)。
-  { href: '/monitor', label: '訪問モニター', icon: MapPin, adminOnly: true },
+  // RB (PO決定 2026-07-08): PC版は全ロール同一表示。モニターは閲覧を staff にも開放
+  // (BE GET も staff 許可済み。確認済み操作等の書込みは admin/manager のまま)。
+  { href: '/monitor', label: '訪問モニター', icon: MapPin },
   // 現場ボード (/m) は PC 盤(親機サイドバー)では不要のため非表示。
   // モバイル現場ビュー自体は /m に存在し、モバイル導線 (MobileShell) から開ける。
   { href: '/offices', label: '拠点', icon: Building2 },
@@ -35,7 +36,9 @@ const NAV_ITEMS = [
   { href: '/patients', label: '患者', icon: Users },
   // 「連携」= カイポケ ジョブセンター（操作卓）を直接開く。Geocoding キャッシュ等の
   // 管理ユーティリティはジョブセンター画面内のリンクから /integrations へ。
-  { href: '/integrations/kaipoke', label: '連携', icon: Plug, adminOnly: true },
+  // 連携はページ側が admin 限定 (認証情報等のセンシティブ) のためメニューも admin のみに揃える
+  // (旧: manager にも表示されるが中身で拒否される矛盾があった)。
+  { href: '/integrations/kaipoke', label: '連携', icon: Plug, adminOnly: true, strictAdmin: true },
   { href: '/admin/pending-requests', label: '申請履歴', icon: Inbox, adminOnly: true },
   // Wave 4-F: admin audit logs (admin role only). User management was moved
   // to the header rightmost button so admins can reach it from any screen.

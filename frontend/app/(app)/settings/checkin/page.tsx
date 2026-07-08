@@ -17,7 +17,6 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import { MapPin, Clock, Settings, Info, RotateCcw } from 'lucide-react';
 
@@ -61,16 +60,11 @@ const VERDICT_META: Record<PreviewVerdict, { label: string; cls: string }> = {
 
 export default function CheckinSettingsPage() {
   const { data: session, status } = useSession();
-  const router = useRouter();
   const role = session?.user?.role;
   const canEdit = role === 'admin' || role === 'manager';
 
-  // Soft client-side guard; BE も RBAC を enforce する。
-  useEffect(() => {
-    if (status === 'authenticated' && !canEdit) {
-      router.replace('/dashboard');
-    }
-  }, [status, canEdit, router]);
+  // RB (PO決定 2026-07-08): 閲覧は全ロール (PC版の表示統一)。保存系は canEdit で
+  // disabled にし、BE の RBAC (PUT=admin/manager) が最終防衛する。
 
   const settingsQuery = useCheckinSettings();
   const updateMutation = useUpdateCheckinSettings();
@@ -139,7 +133,7 @@ export default function CheckinSettingsPage() {
     }
   };
 
-  if (status === 'loading' || (status === 'authenticated' && !canEdit)) {
+  if (status === 'loading') {
     return null;
   }
 
@@ -192,7 +186,7 @@ export default function CheckinSettingsPage() {
                 unit="m"
                 isDefault={isDefault?.match_m}
                 onChange={(n) => patch('match_m', n)}
-                disabled={updateMutation.isPending}
+                disabled={!canEdit || updateMutation.isPending}
               />
               <SliderField
                 id="review-m"
@@ -205,7 +199,7 @@ export default function CheckinSettingsPage() {
                 unit="m"
                 isDefault={isDefault?.review_m}
                 onChange={(n) => patch('review_m', n)}
-                disabled={updateMutation.isPending}
+                disabled={!canEdit || updateMutation.isPending}
               />
               {reviewLtMatch && (
                 <p className="text-xs font-medium text-error" data-testid="review-lt-match-warning">
@@ -223,7 +217,7 @@ export default function CheckinSettingsPage() {
                 unit="m"
                 isDefault={isDefault?.accuracy_m}
                 onChange={(n) => patch('accuracy_m', n)}
-                disabled={updateMutation.isPending}
+                disabled={!canEdit || updateMutation.isPending}
               />
 
               {/* プレビュー再判定 */}
@@ -274,7 +268,7 @@ export default function CheckinSettingsPage() {
                 unit="分"
                 isDefault={isDefault?.no_show_grace_min}
                 onChange={(n) => patch('no_show_grace_min', n)}
-                disabled={updateMutation.isPending}
+                disabled={!canEdit || updateMutation.isPending}
               />
               <SliderField
                 id="late-min"
@@ -287,7 +281,7 @@ export default function CheckinSettingsPage() {
                 unit="分"
                 isDefault={isDefault?.late_min}
                 onChange={(n) => patch('late_min', n)}
-                disabled={updateMutation.isPending}
+                disabled={!canEdit || updateMutation.isPending}
               />
               <SliderField
                 id="max-inprogress"
@@ -300,7 +294,7 @@ export default function CheckinSettingsPage() {
                 unit="分"
                 isDefault={isDefault?.max_inprogress_min}
                 onChange={(n) => patch('max_inprogress_min', n)}
-                disabled={updateMutation.isPending}
+                disabled={!canEdit || updateMutation.isPending}
               />
               <p className="flex items-start gap-1.5 text-xs text-text-muted">
                 <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" strokeWidth={1.75} />
@@ -319,7 +313,7 @@ export default function CheckinSettingsPage() {
             type="button"
             variant="outline"
             onClick={handleResetAll}
-            disabled={updateMutation.isPending}
+            disabled={!canEdit || updateMutation.isPending}
             data-testid="reset-all"
           >
             <RotateCcw className="mr-2 h-4 w-4" strokeWidth={1.75} />
@@ -328,7 +322,7 @@ export default function CheckinSettingsPage() {
           <Button
             type="button"
             onClick={handleSave}
-            disabled={!isDirty || reviewLtMatch || updateMutation.isPending}
+            disabled={!canEdit || !isDirty || reviewLtMatch || updateMutation.isPending}
             data-testid="save"
           >
             {updateMutation.isPending ? '保存中…' : '保存'}

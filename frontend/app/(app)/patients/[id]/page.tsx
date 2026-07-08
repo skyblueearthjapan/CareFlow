@@ -189,34 +189,40 @@ export default function PatientDetailPage() {
           )}
         </div>
         <div className="flex gap-2 lg:justify-end">
-          {canExportKarte ? (
-            <Button
-              variant="outline"
-              onClick={() => void handleExportKarte()}
-              disabled={isExportingKarte || !accessToken}
-            >
-              {isExportingKarte ? '出力中…' : '📄 カルテ出力'}
-            </Button>
-          ) : null}
+          {/* RB (PO決定 2026-07-08): 全ロール同一表示。staff には disabled で見せる
+              (削除のみ admin 限定のセンシティブ操作として非表示を維持)。 */}
+          <Button
+            variant="outline"
+            onClick={() => void handleExportKarte()}
+            disabled={!canExportKarte || isExportingKarte || !accessToken}
+          >
+            {isExportingKarte ? '出力中…' : '📄 カルテ出力'}
+          </Button>
           {canEdit && !data.deleted_at ? (
             <Button asChild variant="outline">
               <Link href={`/patients/qr-print?mode=single&patient=${id}`}>QRを印刷</Link>
             </Button>
-          ) : null}
-          {canEdit && !data.deleted_at ? (
-            <Button
-              variant="outline"
-              onClick={() => setQrRegenerateOpen(true)}
-              disabled={regenerateQr.isPending}
-            >
-              QR再発行
+          ) : (
+            <Button variant="outline" disabled>
+              QRを印刷
             </Button>
-          ) : null}
+          )}
+          <Button
+            variant="outline"
+            onClick={() => setQrRegenerateOpen(true)}
+            disabled={!canEdit || data.deleted_at != null || regenerateQr.isPending}
+          >
+            QR再発行
+          </Button>
           {canEdit && !data.deleted_at ? (
             <Button asChild variant="outline">
               <Link href={`/patients/${id}/edit`}>編集</Link>
             </Button>
-          ) : null}
+          ) : (
+            <Button variant="outline" disabled>
+              編集
+            </Button>
+          )}
           {canDelete && !data.deleted_at ? (
             <Button
               variant="destructive"

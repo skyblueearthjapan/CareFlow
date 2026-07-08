@@ -2705,7 +2705,10 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                 左グループ = [週を生成][週次ガイド] (週次操作の入口ペアを曜日タブ真上・左端に配置).
                 右グループ = [新規患者登録][診断][最適化] │ [固定枠戻][全件保存].
               狭幅では flex-wrap で左グループ→右グループ順に折り返す. */}
-          {canEdit ? (
+          {/* RB (PO決定 2026-07-08): 全ロール同一表示・操作は権限どおり。
+              旧: canEdit で Row1 丸ごと非表示 → staff だけ画面構成が変わっていた。
+              以後は常時表示し、編集系ボタンだけ disabled にする (BE RBAC は不変)。 */}
+          {
             <div
               className="flex flex-wrap items-center justify-between gap-2"
               role="toolbar"
@@ -2719,7 +2722,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                   size="sm"
                   variant="outline"
                   onClick={handleGenerateWeek}
-                  disabled={generateWeekMut.isPending}
+                  disabled={!canEdit || generateWeekMut.isPending}
                   data-testid="generate-week-button"
                 >
                   {generateWeekMut.isPending ? (
@@ -2750,12 +2753,13 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                     「効果を表示」ボタン (PoolOverviewPane) が入口として十分なため。 */}
                 {/* W-4 (D-4): 旧「＋新規提案」を「＋新規患者登録」に置換。患者マスタの
                     登録フォームを再利用し、登録→希望登録→プール流入の入口を一本化する。 */}
-                <RegisterPatientButton disabled={isProcessing} />
+                <RegisterPatientButton disabled={!canEdit || isProcessing} />
                 <Button
                   type="button"
                   size="sm"
                   variant="outline"
                   onClick={() => setScheduleHealthOpen(true)}
+                  disabled={!canEdit}
                   data-testid="schedule-health-button"
                 >
                   <HeartPulse className="mr-1 h-4 w-4" aria-hidden />
@@ -2770,6 +2774,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                     setScopeOptimizeInitialOfficeId(null);
                     setScopeOptimizeOpen(true);
                   }}
+                  disabled={!canEdit}
                   data-testid="scope-optimize-button"
                 >
                   <Route className="mr-1 h-4 w-4" aria-hidden />
@@ -2788,19 +2793,17 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                   isoYear={isoYear}
                   isoWeek={isoWeek}
                   officeId={officeId}
-                  disabled={isProcessing}
+                  disabled={!canEdit || isProcessing}
                 />
                 <BulkFixToPatternButton canEdit={canEdit} isoYear={isoYear} isoWeek={isoWeek} />
               </div>
             </div>
-          ) : null}
+          }
 
           {/* Row 2: 曜日タブ (左) + テーブル/リスト + 二次操作 (右、canEdit のみ).
               canEdit 時のみ Row 1 (主要操作) との間に border-t + mt-3 pt-3 で水平区切り線 + 余白. */}
           <div
-            className={`flex flex-wrap items-center gap-2${
-              canEdit ? ' mt-3 border-t border-border-default pt-3' : ''
-            }`}
+            className="mt-3 flex flex-wrap items-center gap-2 border-t border-border-default pt-3"
             data-testid="course-day-tab-row"
           >
             {/* 曜日タブ */}
@@ -2983,7 +2986,8 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                 </div>
               )}
 
-              {canEdit ? (
+              {/* RB (PO決定 2026-07-08): γ/δ も全ロール常時表示・編集ボタンは disabled。 */}
+              {
                 <>
                   {/* α / γ 間の区切り線 (α 表示時のみ).
                       Phase G-42: β group (= 固定枠戻 + 全件保存) を Row 1 へ移動した結果、
@@ -3007,7 +3011,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                       size="sm"
                       variant="outline"
                       onClick={() => void handleUndo()}
-                      disabled={!opLogState?.can_undo || undoRedoPending}
+                      disabled={!canEdit || !opLogState?.can_undo || undoRedoPending}
                       title={
                         opLogState?.undo_label != null ? `戻す: ${opLogState.undo_label}` : '戻す'
                       }
@@ -3026,7 +3030,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                       size="sm"
                       variant="outline"
                       onClick={() => void handleRedo()}
-                      disabled={!opLogState?.can_redo || undoRedoPending}
+                      disabled={!canEdit || !opLogState?.can_redo || undoRedoPending}
                       title={
                         opLogState?.redo_label != null ? `進む: ${opLogState.redo_label}` : '進む'
                       }
@@ -3044,7 +3048,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                       size="sm"
                       variant="default"
                       onClick={handleAssignStaff}
-                      disabled={assignStaffOnlyMut.isPending}
+                      disabled={!canEdit || assignStaffOnlyMut.isPending}
                       data-testid="assign-staff-only-button"
                     >
                       {assignStaffOnlyMut.isPending ? (
@@ -3058,7 +3062,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                       isoYear={isoYear}
                       isoWeek={isoWeek}
                       officeId={officeId}
-                      disabled={isProcessing}
+                      disabled={!canEdit || isProcessing}
                     />
                   </div>
 
@@ -3074,7 +3078,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                     <BulkPinAllPfvsButton canEdit={canEdit} />
                   </div>
                 </>
-              ) : null}
+              }
             </div>
           </div>
         </Card>

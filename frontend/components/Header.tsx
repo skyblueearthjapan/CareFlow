@@ -293,9 +293,7 @@ function AdminUsersButton() {
 // ============================================================
 
 function SchedulingSettingsButton() {
-  const { data: session } = useSession();
-  const role = session?.user?.role;
-  if (role !== 'admin' && role !== 'manager') return null;
+  // RB (PO決定 2026-07-08): 全ロール表示 (設定ページは閲覧可・保存は BE RBAC どおり)。
   return (
     <Button
       variant="ghost"

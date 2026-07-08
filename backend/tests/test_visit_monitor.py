@@ -798,11 +798,11 @@ async def test_monitor_api_rbac(client, db) -> None:
     staff_user = await _make_user(db, "mon-staff@example.com", "staff", staff_id=staff.id)
     manager_user = await _make_user(db, "mon-mgr@example.com", "manager")
 
-    # staff → 403。
+    # RB (2026-07-08): PC版の表示統一で閲覧 GET は staff にも開放 → 200。
     res_staff = await client.get(
         "/api/v1/monitor", params={"date": TARGET.isoformat()}, headers=_bearer(staff_user)
     )
-    assert res_staff.status_code == 403, res_staff.text
+    assert res_staff.status_code == 200, res_staff.text
 
     # manager → 200。
     res_mgr = await client.get(
@@ -817,7 +817,7 @@ async def test_monitor_api_rbac(client, db) -> None:
 
 @pytest.mark.asyncio
 async def test_nearby_api_rbac(client, db) -> None:
-    # /monitor/nearby も admin/manager 限定。staff → 403。
+    # RB (2026-07-08): /monitor/nearby も閲覧 GET として staff に開放 → 200。
     staff = await _make_staff(db, "S-nearby-rbac")
     staff_user = await _make_user(db, "nearby-staff@example.com", "staff", staff_id=staff.id)
     manager_user = await _make_user(db, "nearby-mgr@example.com", "manager")
@@ -826,7 +826,7 @@ async def test_nearby_api_rbac(client, db) -> None:
     res_staff = await client.get(
         "/api/v1/monitor/nearby", params=params, headers=_bearer(staff_user)
     )
-    assert res_staff.status_code == 403, res_staff.text
+    assert res_staff.status_code == 200, res_staff.text
 
     res_mgr = await client.get(
         "/api/v1/monitor/nearby", params=params, headers=_bearer(manager_user)

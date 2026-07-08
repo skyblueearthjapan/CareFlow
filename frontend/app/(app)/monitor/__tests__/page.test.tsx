@@ -52,11 +52,31 @@ beforeEach(() => {
 });
 
 describe('MonitorPage RBAC', () => {
-  it('staff ロールは /dashboard へリダイレクトし本体を描画しない', () => {
+  // RB (PO決定 2026-07-08): PC版は全ロール同一表示。staff もモニターを閲覧できる
+  // (BE GET も staff 許可済み。確認済み等の書込みは admin/manager のまま)。
+  it('staff ロールもモニター本体を閲覧できる (リダイレクトしない)', () => {
     useSession.mockReturnValue({ data: { user: { role: 'staff' } }, status: 'authenticated' });
-    const { container } = render(<MonitorPage />);
-    expect(replace).toHaveBeenCalledWith('/dashboard');
-    expect(container.textContent).toBe('');
+    useMonitor.mockReturnValue({
+      data: {
+        date: '2026-06-30',
+        now: '2026-06-30T04:30:00Z',
+        thresholds: {
+          match_m: 100,
+          review_m: 300,
+          accuracy_m: 50,
+          no_show_grace_min: 20,
+          late_min: 15,
+          max_inprogress_min: 240,
+        },
+        offices: [],
+        staff: [],
+      },
+      isLoading: false,
+      isError: false,
+    });
+    render(<MonitorPage />);
+    expect(replace).not.toHaveBeenCalled();
+    expect(screen.getByText('訪問モニター')).toBeInTheDocument();
   });
 
   it('manager ロールはモニター本体を描画する', () => {

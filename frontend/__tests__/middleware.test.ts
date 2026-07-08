@@ -74,6 +74,27 @@ describe('decideRoute', () => {
     });
   });
 
+  // RB (2026-07-08): 申請履歴はページ実装 (admin+manager) とサイドバー表示に合わせ、
+  // /admin 一括ガードの例外にする (旧: manager がクリックすると弾かれる矛盾)。
+  it('lets manager access /admin/pending-requests (RB: ページ実装が admin+manager 想定)', () => {
+    const managerSession = { user: { role: 'manager' as const, mustChangePassword: false } };
+    expect(decideRoute({ pathname: '/admin/pending-requests', session: managerSession })).toEqual({
+      kind: 'next',
+    });
+    // manager でも他の /admin/* は従来どおり不可。
+    expect(decideRoute({ pathname: '/admin/users', session: managerSession })).toEqual({
+      kind: 'redirect',
+      to: '/dashboard',
+    });
+  });
+
+  it('still redirects staff away from /admin/pending-requests', () => {
+    expect(decideRoute({ pathname: '/admin/pending-requests', session: staffSession })).toEqual({
+      kind: 'redirect',
+      to: '/dashboard',
+    });
+  });
+
   it('lets staff access /dashboard', () => {
     expect(decideRoute({ pathname: '/dashboard', session: staffSession })).toEqual({
       kind: 'next',

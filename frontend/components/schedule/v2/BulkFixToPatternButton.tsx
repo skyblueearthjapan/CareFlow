@@ -50,8 +50,8 @@ export function BulkFixToPatternButton({ canEdit, isoYear, isoWeek }: BulkFixToP
   const [isSpecial, setIsSpecial] = useState(false);
   const { mutateAsync, isPending } = useApplyFromWeekBulk();
 
-  // admin / manager のみ表示
-  if (!canEdit) return null;
+  // RB (PO決定 2026-07-08): 全ロール同一表示。staff には disabled ボタンとして見せる
+  // (実行は BE RBAC が 403 で防衛)。旧: return null で構成ごと消えていた。
 
   const isoWeekLabel = `${isoYear}-W${String(isoWeek).padStart(2, '0')}`;
 
@@ -83,6 +83,7 @@ export function BulkFixToPatternButton({ canEdit, isoYear, isoWeek }: BulkFixToP
         variant="outline"
         size="sm"
         onClick={() => setDialogOpen(true)}
+        disabled={!canEdit}
         className="gap-1.5"
         aria-label="全患者の固定枠を一括保存"
       >

@@ -3,15 +3,14 @@
 /**
  * /monitor — PC 訪問モニター (QR チェックイン Phase 3)。
  *
- * 管理者 (admin/manager) が当日の予定 vs 実績をリアルタイム (60s ポーリング) に把握
- * する。タイムライン (ガント) + 要対応アラートトレイ + 詳細パネル + 地図 (Leaflet)。
- * 非該当ロールは /dashboard へリダイレクト (settings/scheduling の作法に倣う)。
+ * 当日の予定 vs 実績をリアルタイム (60s ポーリング) に把握する。タイムライン (ガント)
+ * + 要対応アラートトレイ + 詳細パネル + 地図 (Leaflet)。
+ * RB (PO決定 2026-07-08): 閲覧は全ロール。確認済み等の書込みは admin/manager (canReview)。
  *
  * しきい値設定 (⚙) は専用ページ /settings/checkin へ遷移する (Phase 4)。
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import { Settings, TriangleAlert } from 'lucide-react';
 
@@ -81,15 +80,10 @@ function formatHeaderDate(ymd: string): string {
 
 export default function MonitorPage() {
   const { data: session, status } = useSession();
-  const router = useRouter();
   const role = session?.user?.role;
-  const canView = role === 'admin' || role === 'manager';
-
-  useEffect(() => {
-    if (status === 'authenticated' && !canView) {
-      router.replace('/dashboard');
-    }
-  }, [status, canView, router]);
+  // RB (PO決定 2026-07-08): 閲覧は全ロール (BE GET も staff 許可済み)。
+  // 確認済みトグル等の書込み操作だけ admin/manager (canReview)。
+  const canReview = role === 'admin' || role === 'manager';
 
   const [date, setDate] = useState<string>(todayJst);
   const [officeId, setOfficeId] = useState<string | null>(null);
@@ -237,7 +231,7 @@ export default function MonitorPage() {
 
   const isToday = date === todayJst();
 
-  if (status === 'loading' || (status === 'authenticated' && !canView)) {
+  if (status === 'loading') {
     return null;
   }
 
@@ -404,8 +398,8 @@ export default function MonitorPage() {
             row={selectedRow}
             onSelectVisit={onSelectVisit}
             maxInprogressMin={data?.thresholds.max_inprogress_min}
-            onReview={onReview}
-            onUnreview={onUnreview}
+            onReview={canReview ? onReview : undefined}
+            onUnreview={canReview ? onUnreview : undefined}
             reviewPending={reviewPending}
           />
         </aside>

@@ -17,7 +17,6 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import { Clock, Car, Building2, RotateCcw, Settings, Info } from 'lucide-react';
 
@@ -62,16 +61,11 @@ function toHMS(hm: string): string {
 
 export default function SchedulingSettingsPage() {
   const { data: session, status } = useSession();
-  const router = useRouter();
   const role = session?.user?.role;
   const canEdit = role === 'admin' || role === 'manager';
 
-  // Soft client-side guard; BE も RBAC を enforce する。
-  useEffect(() => {
-    if (status === 'authenticated' && !canEdit) {
-      router.replace('/dashboard');
-    }
-  }, [status, canEdit, router]);
+  // RB (PO決定 2026-07-08): 閲覧は全ロール (PC版の表示統一)。保存系は canEdit で
+  // disabled にし、BE の RBAC (PUT=admin/manager) が最終防衛する。
 
   const settingsQuery = useSchedulingSettings();
   const updateMutation = useUpdateSchedulingSettings();
@@ -144,7 +138,7 @@ export default function SchedulingSettingsPage() {
     }
   };
 
-  if (status === 'loading' || (status === 'authenticated' && !canEdit)) {
+  if (status === 'loading') {
     return null;
   }
 
@@ -197,7 +191,7 @@ export default function SchedulingSettingsPage() {
                 unit="分"
                 isDefault={isDefault?.visit_buffer_min}
                 onChange={(n) => patch('visit_buffer_min', n)}
-                disabled={updateMutation.isPending}
+                disabled={!canEdit || updateMutation.isPending}
               />
 
               {/* ③a 昼休み・標準の長さ */}
@@ -213,7 +207,7 @@ export default function SchedulingSettingsPage() {
                 unit="分"
                 isDefault={isDefault?.lunch_duration_min}
                 onChange={(n) => patch('lunch_duration_min', n)}
-                disabled={updateMutation.isPending}
+                disabled={!canEdit || updateMutation.isPending}
               />
 
               {/* ③b 昼休み・取得時間帯 */}
@@ -237,7 +231,7 @@ export default function SchedulingSettingsPage() {
                     aria-label="昼休み開始"
                     data-testid="lunch-window-start"
                     value={toHM(draft.lunch_window_start)}
-                    disabled={updateMutation.isPending}
+                    disabled={!canEdit || updateMutation.isPending}
                     onChange={(e) => patch('lunch_window_start', toHMS(e.target.value))}
                     className="h-9 w-32"
                   />
@@ -247,7 +241,7 @@ export default function SchedulingSettingsPage() {
                     aria-label="昼休み終了"
                     data-testid="lunch-window-end"
                     value={toHM(draft.lunch_window_end)}
-                    disabled={updateMutation.isPending}
+                    disabled={!canEdit || updateMutation.isPending}
                     onChange={(e) => patch('lunch_window_end', toHMS(e.target.value))}
                     className="h-9 w-32"
                   />
@@ -278,7 +272,7 @@ export default function SchedulingSettingsPage() {
                 unit="km/h"
                 isDefault={isDefault?.travel_speed_kmh}
                 onChange={(n) => patch('travel_speed_kmh', n)}
-                disabled={updateMutation.isPending}
+                disabled={!canEdit || updateMutation.isPending}
               />
               <p className="flex items-start gap-1.5 text-xs text-text-muted">
                 <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" strokeWidth={1.75} />
@@ -315,7 +309,7 @@ export default function SchedulingSettingsPage() {
                     aria-label="営業開始"
                     data-testid="business-start"
                     value={toHM(draft.business_start)}
-                    disabled={updateMutation.isPending}
+                    disabled={!canEdit || updateMutation.isPending}
                     onChange={(e) => patch('business_start', toHMS(e.target.value))}
                     className="h-9 w-32"
                   />
@@ -325,7 +319,7 @@ export default function SchedulingSettingsPage() {
                     aria-label="営業終了"
                     data-testid="business-end"
                     value={toHM(draft.business_end)}
-                    disabled={updateMutation.isPending}
+                    disabled={!canEdit || updateMutation.isPending}
                     onChange={(e) => patch('business_end', toHMS(e.target.value))}
                     className="h-9 w-32"
                   />
@@ -344,7 +338,7 @@ export default function SchedulingSettingsPage() {
                 unit="人"
                 isDefault={isDefault?.max_patients_per_course}
                 onChange={(n) => patch('max_patients_per_course', n)}
-                disabled={updateMutation.isPending}
+                disabled={!canEdit || updateMutation.isPending}
               />
             </CardContent>
           </Card>
@@ -358,7 +352,7 @@ export default function SchedulingSettingsPage() {
             type="button"
             variant="outline"
             onClick={handleResetAll}
-            disabled={updateMutation.isPending}
+            disabled={!canEdit || updateMutation.isPending}
             data-testid="reset-all"
           >
             <RotateCcw className="mr-2 h-4 w-4" strokeWidth={1.75} />
@@ -367,7 +361,7 @@ export default function SchedulingSettingsPage() {
           <Button
             type="button"
             onClick={handleSave}
-            disabled={!isDirty || updateMutation.isPending}
+            disabled={!canEdit || !isDirty || updateMutation.isPending}
             data-testid="save"
           >
             {updateMutation.isPending ? '保存中…' : '保存'}

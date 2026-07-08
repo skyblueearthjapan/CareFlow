@@ -11,6 +11,7 @@
  * (`./[id]`, `./new`, `./[id]/edit`).
  */
 import Link from 'next/link';
+import { cn } from '@/lib/utils';
 import { useSession } from 'next-auth/react';
 import { useMemo, useState } from 'react';
 import { Plus, Search } from 'lucide-react';
@@ -116,14 +117,27 @@ export default function StaffPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {canCreate && <StaffExcelButtons />}
+          {/* RB (PO決定 2026-07-08): 全ロール同一表示。staff には無効化して見せる
+              (全置換のみ admin 限定として非表示を維持)。 */}
+          <div
+            className={cn('flex items-center gap-2', !canCreate && 'opacity-50')}
+            aria-disabled={!canCreate}
+            inert={!canCreate || undefined}
+          >
+            <StaffExcelButtons />
+          </div>
           {isAdmin && <StaffReplaceAllButton />}
-          {canCreate && (
+          {canCreate ? (
             <Button asChild>
               <Link href="/staff/new">
                 <Plus className="h-4 w-4" />
                 新規スタッフ
               </Link>
+            </Button>
+          ) : (
+            <Button disabled>
+              <Plus className="h-4 w-4" />
+              新規スタッフ
             </Button>
           )}
         </div>

@@ -152,7 +152,8 @@ async def test_rbac_get_and_put_staff_forbidden(client, db) -> None:
     staff_user = await _make_user(db, "cs-staff@example.com", "staff", staff_id=staff.id)
     hdr = _bearer(staff_user)
 
-    assert (await client.get("/api/v1/checkin-settings", headers=hdr)).status_code == 403
+    # RB (2026-07-08): 閲覧 GET は staff にも開放 (PC版の表示統一)。PUT は従来どおり 403。
+    assert (await client.get("/api/v1/checkin-settings", headers=hdr)).status_code == 200
     assert (
         await client.put("/api/v1/checkin-settings", json={"match_m": 120}, headers=hdr)
     ).status_code == 403

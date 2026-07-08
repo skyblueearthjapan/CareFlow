@@ -110,8 +110,7 @@ function NoSlotBadge({ reason }: { reason: string | null | undefined }) {
 // Props / Handle
 // ─────────────────────────────────────────────────────────────────────────
 
-export interface PoolOverviewPaneProps
-  extends Omit<PoolGroupedByWeekdayProps, 'headerAction'> {
+export interface PoolOverviewPaneProps extends Omit<PoolGroupedByWeekdayProps, 'headerAction'> {
   isoYear: number;
   isoWeek: number;
   officeId: string | null;
@@ -146,130 +145,134 @@ export interface PoolOverviewPaneHandle {
 // ─────────────────────────────────────────────────────────────────────────
 
 export const PoolOverviewPane = React.forwardRef<PoolOverviewPaneHandle, PoolOverviewPaneProps>(
-  function PoolOverviewPane({
-    patients,
-    renderCard,
-    disabled,
-    assignedSlotsByPatient,
-    partnerLocationByPatientSlot,
-    isoYear,
-    isoWeek,
-    officeId,
-    onBulkInsert,
-    unregisteredPatients = [],
-    onClickUnregisteredPatient,
-  }: PoolOverviewPaneProps, ref) {
-  const overviewMut = usePoolOverviewMutation();
-  // useCallback の deps には mutate のみを入れる (React Query v5 で参照安定。
-  // overviewMut オブジェクト全体は state 変化ごとに参照が変わりメモ化が無効になる).
-  const { mutate: computeOverview } = overviewMut;
+  function PoolOverviewPane(
+    {
+      patients,
+      renderCard,
+      disabled,
+      assignedSlotsByPatient,
+      partnerLocationByPatientSlot,
+      isoYear,
+      isoWeek,
+      officeId,
+      onBulkInsert,
+      unregisteredPatients = [],
+      onClickUnregisteredPatient,
+    }: PoolOverviewPaneProps,
+    ref,
+  ) {
+    const overviewMut = usePoolOverviewMutation();
+    // useCallback の deps には mutate のみを入れる (React Query v5 で参照安定。
+    // overviewMut オブジェクト全体は state 変化ごとに参照が変わりメモ化が無効になる).
+    const { mutate: computeOverview } = overviewMut;
 
-  /** patient_id → PoolOverviewItem のルックアップ (計算後のみ非 null) */
-  const overviewByPatient = React.useMemo<Map<string, PoolOverviewItem>>(() => {
-    const m = new Map<string, PoolOverviewItem>();
-    for (const item of overviewMut.data?.items ?? []) {
-      m.set(item.patient_id, item);
-    }
-    return m;
-  }, [overviewMut.data]);
-
-  /** 計算済みかどうか (ボタン押下後に true) */
-  const hasResult = overviewMut.isSuccess;
-
-  /** 計算ボタン押下ハンドラ */
-  const handleCompute = React.useCallback(() => {
-    const ids = patients.map((p) => p.id);
-    let truncated = false;
-    let targetIds = ids;
-    if (ids.length > POOL_OVERVIEW_LIMIT) {
-      targetIds = ids.slice(0, POOL_OVERVIEW_LIMIT);
-      truncated = true;
-    }
-    computeOverview(
-      {
-        iso_year: isoYear,
-        iso_week: isoWeek,
-        office_id: officeId,
-        patient_ids: targetIds,
-      },
-      {
-        onSuccess: () => {
-          if (truncated) {
-            toast.warning(
-              `プール患者が ${ids.length} 名います。先頭 ${POOL_OVERVIEW_LIMIT} 名のみ計算しました。`,
-            );
-          }
-        },
-        onError: () => {
-          toast.error('効果計算に失敗しました');
-        },
-      },
-    );
-  }, [patients, isoYear, isoWeek, officeId, computeOverview]);
-
-  // Stage P-3: CourseDayTablePanel の「プール投入」ボタンから外部トリガーできるよう
-  // imperative handle を設定する。ユーザーがボタンを押した扱いで計算を起動する。
-  React.useImperativeHandle(ref, () => ({ triggerCompute: handleCompute }), [handleCompute]);
-
-  /** 効果順ソート適用後の patients (結果があれば常に効果順・トグル廃止 PO 指示 2026-07-03) */
-  const sortedPatients = React.useMemo<PatientRead[]>(() => {
-    if (!hasResult) return patients;
-    return [...patients].sort((a, b) => compareByEffect(a, b, overviewByPatient));
-  }, [patients, hasResult, overviewByPatient]);
-
-  /** 各 PatientCard を delta/no-slot バッジでラップした renderCard */
-  const augmentedRenderCard = React.useCallback(
-    (patient: PatientRead, slotInfo: PoolCardSlotInfo) => {
-      const item = overviewByPatient.get(patient.id);
-      const showDelta = item != null && item.best_delta_minutes != null;
-      const showNoSlot = item != null && item.candidate_count === 0;
-
-      if (!showDelta && !showNoSlot) {
-        return renderCard(patient, slotInfo);
+    /** patient_id → PoolOverviewItem のルックアップ (計算後のみ非 null) */
+    const overviewByPatient = React.useMemo<Map<string, PoolOverviewItem>>(() => {
+      const m = new Map<string, PoolOverviewItem>();
+      for (const item of overviewMut.data?.items ?? []) {
+        m.set(item.patient_id, item);
       }
+      return m;
+    }, [overviewMut.data]);
 
-      return (
-        <div>
-          {renderCard(patient, slotInfo)}
-          <div className="flex flex-wrap gap-1 px-1 pb-1 pt-0.5">
-            {showDelta ? <DeltaBadge minutes={item!.best_delta_minutes!} /> : null}
-            {showNoSlot ? <NoSlotBadge reason={item!.top_excluded_reason} /> : null}
-          </div>
-        </div>
+    /** 計算済みかどうか (ボタン押下後に true) */
+    const hasResult = overviewMut.isSuccess;
+
+    /** 計算ボタン押下ハンドラ */
+    const handleCompute = React.useCallback(() => {
+      const ids = patients.map((p) => p.id);
+      let truncated = false;
+      let targetIds = ids;
+      if (ids.length > POOL_OVERVIEW_LIMIT) {
+        targetIds = ids.slice(0, POOL_OVERVIEW_LIMIT);
+        truncated = true;
+      }
+      computeOverview(
+        {
+          iso_year: isoYear,
+          iso_week: isoWeek,
+          office_id: officeId,
+          patient_ids: targetIds,
+        },
+        {
+          onSuccess: () => {
+            if (truncated) {
+              toast.warning(
+                `プール患者が ${ids.length} 名います。先頭 ${POOL_OVERVIEW_LIMIT} 名のみ計算しました。`,
+              );
+            }
+          },
+          onError: () => {
+            toast.error('効果計算に失敗しました');
+          },
+        },
       );
-    },
-    [renderCard, overviewByPatient],
-  );
+    }, [patients, isoYear, isoWeek, officeId, computeOverview]);
 
-  /** 一括投入対象がプール上限を超えているか (先頭 50 名のみ対象) */
-  const bulkTruncated = patients.length > POOL_OVERVIEW_LIMIT;
+    // Stage P-3: CourseDayTablePanel の「プール投入」ボタンから外部トリガーできるよう
+    // imperative handle を設定する。ユーザーがボタンを押した扱いで計算を起動する。
+    React.useImperativeHandle(ref, () => ({ triggerCompute: handleCompute }), [handleCompute]);
 
-  /** ヘッダーに注入するアクション領域 (「効果を表示」の隣に「一括投入」・「希望未登録」を小さく併置). */
-  const headerAction = (
-    <div className="flex flex-wrap gap-1">
-      <Button
-        type="button"
-        variant="default"
-        size="sm"
-        onClick={handleCompute}
-        disabled={overviewMut.isPending}
-        className="h-6 px-2 text-[11px]"
-        data-testid="pool-overview-compute-button"
-      >
-        {overviewMut.isPending ? (
-          <Loader2 className="mr-1 h-3 w-3 animate-spin" aria-hidden />
-        ) : (
-          <Sparkles className="mr-1 h-3 w-3" aria-hidden />
-        )}
-        効果を表示
-      </Button>
-      {onBulkInsert ? (
+    /** 効果順ソート適用後の patients (結果があれば常に効果順・トグル廃止 PO 指示 2026-07-03) */
+    const sortedPatients = React.useMemo<PatientRead[]>(() => {
+      if (!hasResult) return patients;
+      return [...patients].sort((a, b) => compareByEffect(a, b, overviewByPatient));
+    }, [patients, hasResult, overviewByPatient]);
+
+    /** 各 PatientCard を delta/no-slot バッジでラップした renderCard */
+    const augmentedRenderCard = React.useCallback(
+      (patient: PatientRead, slotInfo: PoolCardSlotInfo) => {
+        const item = overviewByPatient.get(patient.id);
+        const showDelta = item != null && item.best_delta_minutes != null;
+        const showNoSlot = item != null && item.candidate_count === 0;
+
+        if (!showDelta && !showNoSlot) {
+          return renderCard(patient, slotInfo);
+        }
+
+        return (
+          <div>
+            {renderCard(patient, slotInfo)}
+            <div className="flex flex-wrap gap-1 px-1 pb-1 pt-0.5">
+              {showDelta ? <DeltaBadge minutes={item!.best_delta_minutes!} /> : null}
+              {showNoSlot ? <NoSlotBadge reason={item!.top_excluded_reason} /> : null}
+            </div>
+          </div>
+        );
+      },
+      [renderCard, overviewByPatient],
+    );
+
+    /** 一括投入対象がプール上限を超えているか (先頭 50 名のみ対象) */
+    const bulkTruncated = patients.length > POOL_OVERVIEW_LIMIT;
+
+    /** ヘッダーに注入するアクション領域 (「効果を表示」の隣に「一括投入」・「希望未登録」を小さく併置). */
+    const headerAction = (
+      <div className="flex flex-wrap gap-1">
+        <Button
+          type="button"
+          variant="default"
+          size="sm"
+          onClick={handleCompute}
+          disabled={overviewMut.isPending}
+          className="h-6 px-2 text-[11px]"
+          data-testid="pool-overview-compute-button"
+        >
+          {overviewMut.isPending ? (
+            <Loader2 className="mr-1 h-3 w-3 animate-spin" aria-hidden />
+          ) : (
+            <Sparkles className="mr-1 h-3 w-3" aria-hidden />
+          )}
+          効果を表示
+        </Button>
+        {/* RB (PO決定 2026-07-08): 全ロール同一表示。ハンドラ未配線 (staff) でも
+          disabled ボタンとして描画し、構成差を無くす。 */}
         <Button
           type="button"
           variant="outline"
           size="sm"
           onClick={onBulkInsert}
-          disabled={disabled || patients.length === 0}
+          disabled={disabled || !onBulkInsert || patients.length === 0}
           className="h-6 px-2 text-[11px]"
           data-testid="pool-overview-bulk-insert-button"
           title={
@@ -281,69 +284,69 @@ export const PoolOverviewPane = React.forwardRef<PoolOverviewPaneHandle, PoolOve
           <Layers className="mr-1 h-3 w-3" aria-hidden />
           一括投入
         </Button>
-      ) : null}
-      {/* W-3: 希望未登録チップ (N>=1 のときのみ表示). */}
-      {unregisteredPatients.length > 0 ? (
-        <Popover>
-          <PopoverTrigger asChild>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="h-6 border-warning px-2 text-[11px] text-warning hover:bg-warning-bg"
-              data-testid="pool-unregistered-chip"
+        {/* W-3: 希望未登録チップ (N>=1 のときのみ表示). */}
+        {unregisteredPatients.length > 0 ? (
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-6 border-warning px-2 text-[11px] text-warning hover:bg-warning-bg"
+                data-testid="pool-unregistered-chip"
+              >
+                <AlertTriangle className="mr-1 h-3 w-3" aria-hidden />
+                希望未登録 {unregisteredPatients.length}名
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent
+              align="end"
+              side="bottom"
+              sideOffset={4}
+              className="w-72 p-3"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+              data-testid="pool-unregistered-popover"
             >
-              <AlertTriangle className="mr-1 h-3 w-3" aria-hidden />
-              希望未登録 {unregisteredPatients.length}名
-            </Button>
-          </PopoverTrigger>
-          <PopoverContent
-            align="end"
-            side="bottom"
-            sideOffset={4}
-            className="w-72 p-3"
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={(e) => e.stopPropagation()}
-            data-testid="pool-unregistered-popover"
-          >
-            <p className="mb-2 text-xs text-text-muted">
-              希望訪問スケジュール未登録のため保留プールに表示されない患者が{' '}
-              <span className="font-semibold text-warning">{unregisteredPatients.length}名</span>{' '}
-              います
-            </p>
-            <ul className="space-y-0.5">
-              {unregisteredPatients.map((p) => (
-                <li key={p.id}>
-                  {onClickUnregisteredPatient ? (
-                    <button
-                      type="button"
-                      className="w-full rounded px-2 py-0.5 text-left text-xs text-text-primary hover:bg-bg-muted focus:bg-bg-muted focus:outline-none"
-                      onClick={() => onClickUnregisteredPatient(p.id)}
-                      data-testid={`pool-unregistered-patient-${p.id}`}
-                    >
-                      {p.name}
-                    </button>
-                  ) : (
-                    <span className="px-2 py-0.5 text-xs text-text-primary">{p.name}</span>
-                  )}
-                </li>
-              ))}
-            </ul>
-          </PopoverContent>
-        </Popover>
-      ) : null}
-    </div>
-  );
+              <p className="mb-2 text-xs text-text-muted">
+                希望訪問スケジュール未登録のため保留プールに表示されない患者が{' '}
+                <span className="font-semibold text-warning">{unregisteredPatients.length}名</span>{' '}
+                います
+              </p>
+              <ul className="space-y-0.5">
+                {unregisteredPatients.map((p) => (
+                  <li key={p.id}>
+                    {onClickUnregisteredPatient ? (
+                      <button
+                        type="button"
+                        className="w-full rounded px-2 py-0.5 text-left text-xs text-text-primary hover:bg-bg-muted focus:bg-bg-muted focus:outline-none"
+                        onClick={() => onClickUnregisteredPatient(p.id)}
+                        data-testid={`pool-unregistered-patient-${p.id}`}
+                      >
+                        {p.name}
+                      </button>
+                    ) : (
+                      <span className="px-2 py-0.5 text-xs text-text-primary">{p.name}</span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </PopoverContent>
+          </Popover>
+        ) : null}
+      </div>
+    );
 
-  return (
-    <PoolGroupedByWeekday
-      patients={sortedPatients}
-      renderCard={augmentedRenderCard}
-      disabled={disabled}
-      assignedSlotsByPatient={assignedSlotsByPatient}
-      partnerLocationByPatientSlot={partnerLocationByPatientSlot}
-      headerAction={headerAction}
-    />
-  );
-});
+    return (
+      <PoolGroupedByWeekday
+        patients={sortedPatients}
+        renderCard={augmentedRenderCard}
+        disabled={disabled}
+        assignedSlotsByPatient={assignedSlotsByPatient}
+        partnerLocationByPatientSlot={partnerLocationByPatientSlot}
+        headerAction={headerAction}
+      />
+    );
+  },
+);
 PoolOverviewPane.displayName = 'PoolOverviewPane';
