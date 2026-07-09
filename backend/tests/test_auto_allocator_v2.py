@@ -9996,3 +9996,83 @@ def test_g96_stage_a_different_address_not_treated_as_pair() -> None:
     )
     assert pool_pv.start_time < time(17, 30), "異住所に 90 分占有を適用していない"
     assert existing.start_time == time(16, 0)
+
+
+@pytest.mark.asyncio
+async def test_apply_week_only_syncs_legacy_primary_staff_id(db) -> None:
+    """apply_week_only: VSA だけでなく visits.primary_staff_id (レガシー欄) も同期する。
+
+    回帰 (PO報告 2026-07-09): この経路が VSA のみ書いていたため、訪問モニター
+    (primary_staff_id でグルーピング)・モバイル「今日の訪問」等で全訪問が
+    「未割り当て」扱いになっていた。
+    """
+    from datetime import date
+
+    from sqlalchemy import select
+
+    from app.models.visit import Visit
+    from app.models.visit_staff_assignment import VisitStaffAssignment
+    from app.services.scheduling.auto_allocator_v2 import apply_week_only
+
+    office = Office(name="awosync-office")
+    db.add(office)
+    await db.flush()
+    p = Patient(
+        code="AWOSYNC",
+        name="awosync-patient",
+        status="active",
+        lat=35.65,
+        lng=140.10,
+        primary_office_id=office.id,
+    )
+    db.add(p)
+    await db.flush()
+    s = Staff(name="awosync-staff", role="staff", is_trainee=False, primary_office_id=office.id)
+    db.add(s)
+    await db.flush()
+    db.add(StaffShift(staff_id=s.id, weekday=0, is_on=True))
+    await db.commit()
+
+    result = await apply_week_only(
+        db,
+        iso_year=2026,
+        iso_week=20,
+        office_ids=[office.id],
+        patient_visit_plans=[
+            {
+                "patient_id": p.id,
+                "visit_plans": [
+                    {
+                        "weekday": 0,
+                        "start_time": time(9, 0),
+                        "end_time": time(9, 30),
+                        "duration_min": 30,
+                        "course_code": "A",
+                        "office_id": office.id,
+                        "am_pm": "am",
+                        "assigned_staff_id": s.id,
+                    }
+                ],
+            }
+        ],
+    )
+    await db.commit()
+    assert result["visits_created"] == 1
+    assert result["visit_staff_assignments_created"] == 1
+
+    v = await db.scalar(
+        select(Visit).where(
+            Visit.patient_id == p.id,
+            Visit.visit_date == date(2026, 5, 11),
+            Visit.deleted_at.is_(None),
+        )
+    )
+    assert v is not None
+    # VSA (正典) と legacy 欄の両方が入っていること。
+    vsa = (
+        await db.scalars(select(VisitStaffAssignment).where(VisitStaffAssignment.visit_id == v.id))
+    ).all()
+    assert [a.staff_id for a in vsa] == [s.id]
+    assert v.primary_staff_id == s.id, (
+        "visits.primary_staff_id が同期されていない (モニター/モバイルが未割当表示になる)"
+    )

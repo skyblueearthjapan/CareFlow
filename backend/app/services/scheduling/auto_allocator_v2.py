@@ -9546,6 +9546,10 @@ async def apply_week_only(
     assignments_created = 0
     for visit, sid in new_visits_with_staff:
         db.add(VisitStaffAssignment(visit_id=visit.id, staff_id=sid))
+        # レガシー互換: 訪問モニター/モバイル「今日の訪問」/ダッシュボード等は
+        # visits.primary_staff_id を参照する。VSA だけ書くと「未割当」表示になる
+        # (PO報告 2026-07-09。逆パターンの前例 = 2026-07-03 の解除側と同根)。
+        visit.primary_staff_id = sid
         assignments_created += 1
     await db.flush()
 
@@ -10167,6 +10171,8 @@ async def reset_visits_to_fixed(
     # 2) staff assignments を一括 INSERT
     for visit, sid in new_visits_with_staff:
         db.add(VisitStaffAssignment(visit_id=visit.id, staff_id=sid))
+        # レガシー互換: visits.primary_staff_id も同期 (モニター/モバイル等が参照)。
+        visit.primary_staff_id = sid
     await db.flush()
 
     return {
