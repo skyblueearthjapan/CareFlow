@@ -8,6 +8,9 @@
  * 「この週で何が変わるか」を一目で確認してから apply するための画面。
  */
 import type { CorrectionItem } from '@/lib/schemas/integration';
+import { genderPalette } from '@/lib/scheduling/timeline';
+
+import { usePatientSexMap } from './usePatientSexMap';
 
 const WEEKDAY = ['月', '火', '水', '木', '金', '土', '日'];
 
@@ -39,6 +42,8 @@ function dayOf(item: CorrectionItem): number | null {
 }
 
 export function WeekDiffView({ weekStart, items }: { weekStart: Date; items: CorrectionItem[] }) {
+  // FE join: patientId → sex (本体スケジュールと同じカード意匠で塗るため)。
+  const sexMap = usePatientSexMap();
   const days = Array.from({ length: 7 }, (_, i) => {
     const d = new Date(weekStart);
     d.setDate(d.getDate() + i);
@@ -72,7 +77,13 @@ export function WeekDiffView({ weekStart, items }: { weekStart: Date; items: Cor
                 {list.length === 0 ? (
                   <p className="pt-6 text-center text-[11px] text-text-muted">—</p>
                 ) : (
-                  list.map((it) => <CorrectionCard key={it.id} item={it} />)
+                  list.map((it) => (
+                    <CorrectionCard
+                      key={it.id}
+                      item={it}
+                      sex={it.patient_id ? sexMap.get(it.patient_id) : null}
+                    />
+                  ))
                 )}
               </div>
             </div>
@@ -83,7 +94,7 @@ export function WeekDiffView({ weekStart, items }: { weekStart: Date; items: Cor
   );
 }
 
-function CorrectionCard({ item }: { item: CorrectionItem }) {
+function CorrectionCard({ item, sex }: { item: CorrectionItem; sex?: string | null }) {
   const meta = ACTION_META[item.action] ?? {
     label: item.action,
     cls: 'bg-bg-muted text-text-secondary',
@@ -96,9 +107,15 @@ function CorrectionCard({ item }: { item: CorrectionItem }) {
   const staffBefore = field(item.before, 'staff1');
   const isEdit = item.action === 'edit' || item.action === 'update';
   const unresolved = !item.patient_id;
+  // カード地は本体スケジュールと同じ性別ウォッシュ (inline style で purge 回避)。
+  // アクションバッジ/要確認は意味色のまま (ウォッシュより優先の情報)。
+  const pal = genderPalette(sex);
 
   return (
-    <div className="rounded-md border border-border-subtle bg-bg-base px-2 py-1.5 text-[11px] shadow-xs">
+    <div
+      className="rounded-md border border-l-[3px] px-2 py-1.5 text-[11px] shadow-xs"
+      style={{ background: pal.bg, borderColor: pal.ln, borderLeftColor: pal.bar, color: pal.ink }}
+    >
       <div className="mb-1 flex items-center justify-between gap-1">
         <span className={`inline-flex items-center rounded px-1.5 py-0.5 font-medium ${meta.cls}`}>
           {meta.label}
@@ -112,7 +129,12 @@ function CorrectionCard({ item }: { item: CorrectionItem }) {
           </span>
         )}
       </div>
-      <div className="truncate font-medium text-text-primary" title={name}>
+      <div className="flex items-center gap-1 truncate font-medium text-text-primary" title={name}>
+        <i
+          className="inline-block h-2 w-2 shrink-0 rounded-full"
+          style={{ background: pal.bar }}
+          aria-hidden="true"
+        />
         {name}
       </div>
       <div className="mt-0.5 text-text-secondary">

@@ -180,6 +180,9 @@ export const WeekScheduleRowSchema = z.object({
   startTime: z.string(),
   endTime: z.string(),
   patientName: z.string(),
+  // 患者性別 (male/female/unknown)。本体スケジュールと同じ性別ウォッシュ意匠で
+  // 週ビューのカードを塗る。BE 加算フィールド (nullish で後方互換)。
+  patientSex: z.string().nullish(),
   staff1: z.string().default(''),
   staff2: z.string().default(''),
   courseCode: z.string().default(''),

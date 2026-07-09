@@ -789,6 +789,7 @@ async def get_week_schedule(
                 start_time=f"{v.start_time.hour:02d}:{v.start_time.minute:02d}",
                 end_time=f"{v.end_time.hour:02d}:{v.end_time.minute:02d}",
                 patient_name=patient.name,
+                patient_sex=patient.sex,
                 staff1=staff1,
                 staff2=staff2,
                 course_code=course_code,

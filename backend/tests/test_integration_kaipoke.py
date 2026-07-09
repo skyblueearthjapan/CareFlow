@@ -733,7 +733,7 @@ async def test_week_schedule_shows_visits_without_legacy_primary_staff(
     await db.flush()
     patient = Patient(
         code="W28-1", name="患者 一郎", status="active", lat=35.6, lng=140.1,
-        primary_office_id=office.id,
+        primary_office_id=office.id, sex="female",
     )
     db.add(patient)
     await db.flush()
@@ -771,6 +771,8 @@ async def test_week_schedule_shows_visits_without_legacy_primary_staff(
     row = body["rows"][0]
     # レスポンスは alias (camelCase) でシリアライズされる。
     assert row["patientName"] == "患者 一郎"
+    # 週ビューのカード意匠統一 (性別ウォッシュ) 用に patient.sex を additive で載せる。
+    assert row["patientSex"] == "female"
     assert row["courseCode"] == "A"
     # 担当は primary_staff_id ではなく割当/コース担当から解決される。
     assert row["staff1"] == "担当 花子"

@@ -135,6 +135,9 @@ class WeekScheduleRow(BaseModel):
     start_time: str = Field(alias="startTime")  # HH:MM
     end_time: str = Field(alias="endTime")  # HH:MM
     patient_name: str = Field(alias="patientName")
+    # 患者性別 (male/female/unknown/None)。週ビューのカードを本体スケジュールと同じ
+    # 性別ウォッシュ意匠で塗るための additive フィールド (既存挙動は不変)。
+    patient_sex: str | None = Field(default=None, alias="patientSex")
     staff1: str = ""
     staff2: str = ""
     course_code: str = Field(default="", alias="courseCode")  # A/B/C/D..

@@ -9,6 +9,7 @@
  * 切り替わり、この表も連動する。
  */
 import type { WeekScheduleRow } from '@/lib/schemas/integration';
+import { genderPalette } from '@/lib/scheduling/timeline';
 
 const DAY_LABEL = ['月', '火', '水', '木', '金', '土']; // 月〜土 (既存画面と同じ・日曜除外)
 
@@ -87,23 +88,44 @@ export function WeekScheduleView({
               const list = cell(ck, wd);
               return (
                 <div key={wd} className="min-h-[52px] space-y-1 bg-bg-base p-1.5">
-                  {list.map((r, j) => (
-                    <div
-                      key={`${r.patientName}-${r.startTime}-${j}`}
-                      className="rounded border border-border-subtle bg-bg-muted/30 px-1.5 py-1 text-[11px] leading-tight"
-                    >
-                      <span className="font-mono tabular-nums text-text-secondary">
-                        {r.startTime}
-                      </span>{' '}
-                      <span className="font-medium text-text-primary">{r.patientName}</span>
-                      {r.staff1 && (
-                        <div className="truncate text-text-muted" title={r.staff1}>
-                          {r.staff1}
-                          {r.staff2 ? `・${r.staff2}` : ''}
-                        </div>
-                      )}
-                    </div>
-                  ))}
+                  {list.map((r, j) => {
+                    // 本体スケジュール (TimelineDayList) と同じカード視覚言語:
+                    // 性別ウォッシュ地 + 性別左帯 + 角丸。Tailwind purge 回避のため
+                    // 色は inline style で当てる (本体で確立済みの流儀)。sex 未設定は
+                    // genderPalette(null) の中立 (砂色)。
+                    const pal = genderPalette(r.patientSex);
+                    return (
+                      <div
+                        key={`${r.patientName}-${r.startTime}-${j}`}
+                        data-testid={`wsv-visit-${ck}-${wd}-${j}`}
+                        className="rounded-md border border-l-[3px] px-1.5 py-1 text-[11px] leading-tight"
+                        style={{
+                          background: pal.bg,
+                          borderColor: pal.ln,
+                          borderLeftColor: pal.bar,
+                          color: pal.ink,
+                        }}
+                      >
+                        <span className="flex items-center gap-1">
+                          <i
+                            className="inline-block h-2 w-2 shrink-0 rounded-full"
+                            style={{ background: pal.bar }}
+                            aria-hidden="true"
+                          />
+                          <span className="font-mono tabular-nums text-text-secondary">
+                            {r.startTime}
+                          </span>
+                          <span className="font-medium text-text-primary">{r.patientName}</span>
+                        </span>
+                        {r.staff1 && (
+                          <div className="truncate text-text-muted" title={r.staff1}>
+                            {r.staff1}
+                            {r.staff2 ? `・${r.staff2}` : ''}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               );
             })}

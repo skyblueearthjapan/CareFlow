@@ -8,8 +8,10 @@
  */
 import { Skeleton } from '@/components/ui/skeleton';
 import type { CorrectionItem } from '@/lib/schemas/integration';
+import { genderPalette } from '@/lib/scheduling/timeline';
 
 import { type InboundVm, WEEKDAYS, field } from './useInbound';
+import { usePatientSexMap } from './usePatientSexMap';
 
 const ACTION_META: Record<string, { label: string; cls: string }> = {
   add: { label: 'カイポケ追加', cls: 'bg-success-bg text-success' },
@@ -40,6 +42,8 @@ export function InboundCalendar({ vm }: { vm: InboundVm }) {
 
 /** 月〜土の6列グリッドに差分アイテムを日付で振り分けて表示。 */
 function InboundDiffView({ weekStart, items }: { weekStart: Date; items: CorrectionItem[] }) {
+  // FE join: patientId → sex (本体スケジュールと同じカード意匠で塗るため)。
+  const sexMap = usePatientSexMap();
   const days = Array.from({ length: 6 }, (_, i) => {
     const d = new Date(weekStart);
     d.setDate(d.getDate() + i);
@@ -73,7 +77,13 @@ function InboundDiffView({ weekStart, items }: { weekStart: Date; items: Correct
                 {list.length === 0 ? (
                   <p className="pt-4 text-center text-[11px] text-text-muted">—</p>
                 ) : (
-                  list.map((it) => <InboundCard key={it.id} item={it} />)
+                  list.map((it) => (
+                    <InboundCard
+                      key={it.id}
+                      item={it}
+                      sex={it.patient_id ? sexMap.get(it.patient_id) : null}
+                    />
+                  ))
                 )}
               </div>
             </div>
@@ -84,7 +94,7 @@ function InboundDiffView({ weekStart, items }: { weekStart: Date; items: Correct
   );
 }
 
-function InboundCard({ item }: { item: CorrectionItem }) {
+function InboundCard({ item, sex }: { item: CorrectionItem; sex?: string | null }) {
   const meta = ACTION_META[item.action] ?? {
     label: item.action,
     cls: 'bg-bg-muted text-text-secondary',
@@ -94,13 +104,21 @@ function InboundCard({ item }: { item: CorrectionItem }) {
   const timeBefore = field(item.before, 'start_time');
   const isEdit = item.action === 'edit' || item.action === 'update';
   const isExcluded = !item.include;
+  // カード地は本体スケジュールと同じ性別ウォッシュ。ただし「取り込み対象外」の
+  // グレーアウトはウォッシュより優先の情報なので薄グレーのまま (性別色は当てない)。
+  const pal = genderPalette(sex);
 
   return (
     <div
       className={[
-        'rounded-md border px-2 py-1.5 text-[11px] shadow-xs',
-        isExcluded ? 'border-border-subtle bg-bg-muted' : 'border-border-subtle bg-bg-base',
+        'rounded-md border border-l-[3px] px-2 py-1.5 text-[11px] shadow-xs',
+        isExcluded ? 'border-border-subtle bg-bg-muted' : '',
       ].join(' ')}
+      style={
+        isExcluded
+          ? undefined
+          : { background: pal.bg, borderColor: pal.ln, borderLeftColor: pal.bar, color: pal.ink }
+      }
     >
       <div className="mb-1 flex items-center justify-between gap-1">
         <span
@@ -118,11 +136,18 @@ function InboundCard({ item }: { item: CorrectionItem }) {
       </div>
       <div
         className={[
-          'truncate font-medium',
+          'flex items-center gap-1 truncate font-medium',
           isExcluded ? 'text-text-muted' : 'text-text-primary',
         ].join(' ')}
         title={name}
       >
+        {!isExcluded && (
+          <i
+            className="inline-block h-2 w-2 shrink-0 rounded-full"
+            style={{ background: pal.bar }}
+            aria-hidden="true"
+          />
+        )}
         {name}
       </div>
       <div className={['mt-0.5', isExcluded ? 'text-text-muted' : 'text-text-secondary'].join(' ')}>
