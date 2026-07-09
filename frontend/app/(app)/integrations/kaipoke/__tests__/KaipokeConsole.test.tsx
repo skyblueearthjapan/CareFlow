@@ -3,7 +3,7 @@
  *
  * ① 既定で「送る」タブのカレンダー（この週の予定）が見える
  * ② 「取り込みプレビュー」タブに切替でプレビュー領域（空状態）が見える
- * ③ 稼働状況が 1 行圧縮（現在/直近）で出る
+ * ③ 稼働状況カード（現在の状態/直近ジョブ）がモニター下に出る
  *
  * integrations の各 use*Query/Mutation はモックする（IntegrationSettingsMenu.test の流儀を踏襲）。
  */
@@ -70,11 +70,11 @@ describe('KaipokeConsole', () => {
     ).toBeInTheDocument();
   });
 
-  it('③ 稼働状況が 1 行圧縮（現在/直近）で出る', () => {
+  it('③ 稼働状況カード（現在の状態/直近ジョブ）がモニター下に出る', () => {
     render(<KaipokeConsole {...baseProps} />);
-    // 「現在: … ・ 直近: …」を 1 つのまとまり（1行）に圧縮して表示する。
-    expect(screen.getByText(/現在:/)).toBeInTheDocument();
-    expect(screen.getByText(/直近:/)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '稼働状況' })).toBeInTheDocument();
+    expect(screen.getByText('現在の状態')).toBeInTheDocument();
+    expect(screen.getByText('直近ジョブ')).toBeInTheDocument();
     expect(screen.getByText('diff / completed')).toBeInTheDocument();
   });
 });

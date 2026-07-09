@@ -3,7 +3,7 @@
 /**
  * KaipokeConsole — カイポケ連携の操作コンソール (PO確定レイアウト 2026-07-09)。
  *
- * 上段: 左=ライブモニター、右=縦積みで「稼働状況(1行圧縮)」「週次反映の操作」「取り込みの操作」。
+ * 上段: 左=ライブモニター+稼働状況(モニター下の空きに非圧縮)、右=週次反映/取り込みの操作。
  * 下段: 全幅の大きなカレンダー枠。タブで「送る（この週の予定）」「取り込みプレビュー」を切替。
  *
  * 送る側/取り込み側の状態はそれぞれ useWeeklyApply / useInbound フックが 1 回だけ持ち、
@@ -11,7 +11,9 @@
  */
 import { useEffect, useRef, useState } from 'react';
 
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Card } from '@/components/ui/card';
+import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import type { LiveSnapshot } from '@/lib/schemas/integration';
 import type { useStopJob } from '@/lib/queries/integrations';
@@ -68,7 +70,8 @@ export function KaipokeConsole({
     <div className="space-y-6">
       {/* ── 上段: 左=モニター / 右=稼働状況 + 操作パネル ── */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1.05fr_1fr]">
-        {/* 左カラム: ライブモニター + 実行中のみ進捗ゲージ / 非常停止 */}
+        {/* 左カラム: ライブモニター + 稼働状況(非圧縮・モニター下の空きスペースに) +
+            実行中のみ進捗ゲージ / 非常停止 */}
         <div className="min-w-0 space-y-4">
           <LiveMonitorCard
             monitorUrl={live?.monitorUrl}
@@ -76,6 +79,35 @@ export function KaipokeConsole({
             reachable={reachable}
             commandLabel={commandLabel(live?.command)}
           />
+
+          {/* 稼働状況（モニター直下・非圧縮）。旧レイアウトのカード表示に戻す。 */}
+          <Card className="p-5">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="font-serif text-lg font-bold text-text-primary">稼働状況</h2>
+              <LiveStatusDot tone={statusTone} label={statusLabel} />
+            </div>
+            {liveLoading ? (
+              <Skeleton className="h-20 w-full" />
+            ) : !reachable ? (
+              <Alert variant="destructive">
+                <AlertTitle>kaipoke-api に到達できません</AlertTitle>
+                <AlertDescription className="break-all">
+                  {live?.error ?? '接続を確認してください'}
+                </AlertDescription>
+              </Alert>
+            ) : (
+              <dl className="grid grid-cols-2 gap-y-2 text-sm">
+                <dt className="text-text-secondary">現在の状態</dt>
+                <dd className="text-text-primary">
+                  {running ? (commandLabel(live?.command) ?? '実行中') : '待機中'}
+                </dd>
+                <dt className="text-text-secondary">直近ジョブ</dt>
+                <dd className="text-text-primary">
+                  {latestJob ? `${latestJob.job_type} / ${latestJob.status}` : 'なし'}
+                </dd>
+              </dl>
+            )}
+          </Card>
 
           {/* ライブ進捗ゲージ（実行中のみ）— モニターの直下 */}
           {running && live && <JobProgressCard live={live} />}
@@ -94,34 +126,8 @@ export function KaipokeConsole({
           )}
         </div>
 
-        {/* 右カラム: 稼働状況(1行圧縮) + 週次反映の操作 + 取り込みの操作 */}
+        {/* 右カラム: 週次反映の操作 + 取り込みの操作 */}
         <div className="min-w-0 space-y-4">
-          {/* 稼働状況（1行に圧縮） */}
-          <Card className="p-3">
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
-              <LiveStatusDot tone={statusTone} label={statusLabel} />
-              {liveLoading ? (
-                <span className="text-text-muted">稼働状況を確認中…</span>
-              ) : !reachable ? (
-                <span className="break-all text-error">
-                  {live?.error ?? '接続を確認してください'}
-                </span>
-              ) : (
-                <span className="text-text-secondary">
-                  現在:{' '}
-                  <span className="font-medium text-text-primary">
-                    {running ? (commandLabel(live?.command) ?? '実行中') : '待機中'}
-                  </span>
-                  <span className="mx-1.5 text-text-muted">・</span>
-                  直近:{' '}
-                  <span className="font-medium text-text-primary">
-                    {latestJob ? `${latestJob.job_type} / ${latestJob.status}` : 'なし'}
-                  </span>
-                </span>
-              )}
-            </div>
-          </Card>
-
           {/* 週次反映ワークフロー — 操作 */}
           <Card className="p-5">
             <WeeklyApplyControls vm={weekly} />
@@ -134,7 +140,9 @@ export function KaipokeConsole({
         </div>
       </div>
 
-      {/* ── 下段: 全幅の大きなカレンダー枠（タブ切替） ── */}
+      {/* ── 下段: 全幅の大きなカレンダー枠（タブ切替） ──
+          min-h で常に大きな面積を確保し、1週間の予定が縦に潰れず全て見えるようにする
+          (PO要望 2026-07-09: 週の予定が縦に映りきらない → 縦幅を伸ばす)。 */}
       <Card className="p-5">
         <Tabs value={tab} onValueChange={(v) => setTab(v as 'send' | 'inbound')}>
           <TabsList>
@@ -145,10 +153,10 @@ export function KaipokeConsole({
               取り込みプレビュー
             </TabsTrigger>
           </TabsList>
-          <TabsContent value="send" className="mt-4">
+          <TabsContent value="send" className="mt-4 min-h-[460px]">
             <WeeklyApplyCalendar vm={weekly} />
           </TabsContent>
-          <TabsContent value="inbound" className="mt-4">
+          <TabsContent value="inbound" className="mt-4 min-h-[460px]">
             <InboundCalendar vm={inbound} />
           </TabsContent>
         </Tabs>
