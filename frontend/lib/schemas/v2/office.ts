@@ -83,6 +83,13 @@ export const officeV2ReadSchema = officeV2BaseSchema.extend({
   updated_at: z.string(),
   deleted_at: z.string().nullable().optional(),
   allowed_cities: z.array(z.string().uuid()).default([]),
+  /**
+   * 0059: 拠点マスタ駆動化 (PO決定「コードが事業所を特定しない」).
+   *  - sort_order: 現場ボード等の表示順. NULL は名前順で末尾.
+   *  - short_label: 短縮バッジ (例 稲/津). NULL は name 先頭 1 文字.
+   */
+  sort_order: z.number().int().nullish(),
+  short_label: z.string().nullish(),
 });
 export type OfficeV2Read = z.infer<typeof officeV2ReadSchema>;
 

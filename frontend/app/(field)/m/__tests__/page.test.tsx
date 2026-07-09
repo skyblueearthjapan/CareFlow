@@ -64,6 +64,15 @@ vi.mock('@/lib/queries/geocoding', () => ({
 
 vi.mock('@/lib/queries/offices', () => ({
   useResolveOffice: vi.fn(),
+  // 0059: FieldBoard は sort_order / short_label をマスタから引く (旧直書き定数を撤去)。
+  // backfill 相当の値 (稲毛=1/稲, 都賀=2/津) を返し、順序・トークンの現挙動を保つ。
+  useOffices: () => ({
+    allOffices: [
+      { id: 'o-inage', name: '稲毛', sort_order: 1, short_label: '稲' },
+      { id: 'o-tsuga', name: '都賀', sort_order: 2, short_label: '津' },
+    ],
+    isLoading: false,
+  }),
 }));
 
 // Phase G-88 で FieldBoard に追加された営業時間設定フック。未モックだと

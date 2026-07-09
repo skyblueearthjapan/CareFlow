@@ -70,6 +70,7 @@ from app.services.patient_excel.schema import (
     SHEET_WEEKLY,
     TIME_TYPE_VALUES,
     WEEKDAY_LABEL_TO_INT,
+    build_office_code_short_maps,
     parse_course_token,
 )
 
@@ -972,7 +973,11 @@ def _resolve_pfv_course_replace(
     """
     if token is None:
         return None
-    parsed = parse_course_token(token)
+    # 0059: 拠点マスタ (offices.short_label) 駆動で短縮名を解決する.
+    _, short_to_code = build_office_code_short_maps(
+        (o.code, o.short_label) for o in offices_by_code.values()
+    )
+    parsed = parse_course_token(token, short_to_code)
     if parsed is None:
         return None
     office_code, label = parsed

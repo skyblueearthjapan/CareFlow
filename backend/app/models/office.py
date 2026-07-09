@@ -5,7 +5,18 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, Numeric, String, Text, func, text
+from sqlalchemy import (
+    JSON,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -29,6 +40,13 @@ class Office(Base, TimestampMixin):
     lat: Mapped[float | None] = mapped_column(Numeric(10, 7), nullable=True)
     lng: Mapped[float | None] = mapped_column(Numeric(10, 7), nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # 0059: 拠点マスタ駆動化 (PO決定「コードが事業所を特定しない」).
+    #  - sort_order: 現場ボード等の表示順. NULL は名前順で末尾に回す.
+    #  - short_label: 拠点付きコーストークン等で使う短縮バッジ (例 稲/津).
+    #    NULL は name 先頭 1 文字にフォールバック.
+    sort_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    short_label: Mapped[str | None] = mapped_column(String(8), nullable=True)
 
     # Phase G-45: 拠点稼働曜日 (0=月..6=日 の int 配列).
     # default [0..5] (月-土). 休業曜日は V2Visit 生成を skip + staff 応援判定で

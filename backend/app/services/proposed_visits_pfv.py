@@ -38,7 +38,10 @@ from app.models.course_template import CourseTemplate
 from app.models.office import Office
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
-from app.services.patient_excel.schema import parse_course_token
+from app.services.patient_excel.schema import (
+    build_office_code_short_maps,
+    parse_course_token,
+)
 
 
 class ProposedVisitsError(Exception):
@@ -95,7 +98,16 @@ async def _resolve_course_template_id(
         return course_template_id
     if not course_code:
         return None
-    parsed = parse_course_token(course_code)
+    # 0059: 拠点マスタ (offices.short_label) 駆動で短縮名を解決する.
+    office_rows = (
+        await db.execute(
+            select(Office.code, Office.short_label).where(Office.deleted_at.is_(None))
+        )
+    ).all()
+    _, short_to_code = build_office_code_short_maps(
+        (row.code, row.short_label) for row in office_rows
+    )
+    parsed = parse_course_token(course_code, short_to_code)
     if parsed is None:
         return None
     office_code, label = parsed

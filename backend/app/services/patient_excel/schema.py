@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Final
 
 # ---------------------------------------------------------------------------
@@ -509,6 +510,12 @@ PFV_REQUIRED: Final[tuple[str, ...]] = (
 #
 # office_code → 短縮名 (1 文字). INAGE→稲 (稲毛), TSUGA→津 (都賀).
 
+# 0059: 拠点マスタ駆動化 (PO決定「コードが事業所を特定しない」).
+#   短縮名 ↔ office_code の対応は本来 offices マスタ (short_label / code) が「正」。
+#   このモジュールは DB を持たない純粋パーサなので、対応表は呼び出し側 (DB を持つ層)
+#   が offices から ``build_office_code_short_maps`` で構築して注入する。
+#   以下の定数は「注入されなかった / マスタ short_label 未設定」時の legacy fallback
+#   (稲毛/都賀 の既知 2 拠点。backfill 前 DB やテストの後方互換用)。
 OFFICE_CODE_TO_SHORT: Final[dict[str, str]] = {
     "INAGE": "稲",
     "TSUGA": "津",
@@ -518,24 +525,54 @@ OFFICE_SHORT_TO_CODE: Final[dict[str, str]] = {
 }
 
 
-def course_token(office_code: str | None, label: str | None) -> str | None:
+def build_office_code_short_maps(
+    pairs: Iterable[tuple[str | None, str | None]],
+) -> tuple[dict[str, str], dict[str, str]]:
+    """offices の (code, short_label) ペア列 → (code_to_short, short_to_code).
+
+    offices マスタ駆動 (PO決定「コードが事業所を特定しない」). legacy 既定
+    (OFFICE_CODE_TO_SHORT / OFFICE_SHORT_TO_CODE) を土台にし、マスタ値で上書きする
+    (short_label 未設定の既知拠点 稲毛/都賀 や backfill 前 DB でも解決できる後方互換)。
+    """
+    code_to_short = dict(OFFICE_CODE_TO_SHORT)
+    short_to_code = dict(OFFICE_SHORT_TO_CODE)
+    for code, short in pairs:
+        if code and short:
+            code_to_short[code] = short
+            short_to_code[short] = code
+    return code_to_short, short_to_code
+
+
+def course_token(
+    office_code: str | None,
+    label: str | None,
+    code_to_short: dict[str, str] | None = None,
+) -> str | None:
     """(office_code, label) → 拠点付きコーストークン (例 "稲A").
 
-    office_code が短縮名マップに無い / label が空の場合は None (= 書き出さない).
-    短縮名が無い拠点コードはそのままコードを使う (例 "FOOA"; 解析時も後方互換で対応).
+    ``code_to_short`` を渡すと offices マスタ駆動で短縮名を解決する。未指定時は
+    legacy 既定 (OFFICE_CODE_TO_SHORT) にフォールバック。
+    label が空の場合は None (= 書き出さない). 短縮名が無い拠点コードはそのまま
+    コードを使う (例 "FOOA"; 解析時も後方互換で対応).
     """
     if not label:
         return None
     if not office_code:
         return None
-    short = OFFICE_CODE_TO_SHORT.get(office_code, office_code)
+    mapping = OFFICE_CODE_TO_SHORT if code_to_short is None else code_to_short
+    short = mapping.get(office_code, office_code)
     return f"{short}{label}"
 
 
-def parse_course_token(token: str | None) -> tuple[str, str] | None:
+def parse_course_token(
+    token: str | None,
+    short_to_code: dict[str, str] | None = None,
+) -> tuple[str, str] | None:
     """拠点付きコーストークン (例 "稲A") → (office_code, label).
 
-    先頭の短縮名 (稲/津) を office_code に、残りを label に分解する.
+    先頭の短縮名 (稲/津 等) を office_code に、残りを label に分解する.
+    ``short_to_code`` を渡すと offices マスタ駆動で解決する。未指定時は legacy 既定
+    (OFFICE_SHORT_TO_CODE) にフォールバック。
     解析できない場合は None (= コース未解決として best-effort で扱う).
     後方互換: 短縮名でなく office_code そのもの始まり ("INAGEA") も受理する.
     """
@@ -544,15 +581,16 @@ def parse_course_token(token: str | None) -> tuple[str, str] | None:
     s = str(token).strip()
     if not s:
         return None
-    # 1 文字短縮名 (稲/津) 始まり.
+    mapping = OFFICE_SHORT_TO_CODE if short_to_code is None else short_to_code
+    # 1 文字短縮名 (稲/津 等) 始まり.
     head = s[0]
-    if head in OFFICE_SHORT_TO_CODE:
+    if head in mapping:
         label = s[1:].strip()
         if label:
-            return OFFICE_SHORT_TO_CODE[head], label
+            return mapping[head], label
         return None
     # 後方互換: office_code そのもの始まり (例 "INAGEA").
-    for code in OFFICE_CODE_VALUES:
+    for code in dict.fromkeys(mapping.values()):
         if s.startswith(code):
             label = s[len(code) :].strip()
             if label:

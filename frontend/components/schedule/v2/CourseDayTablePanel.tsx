@@ -65,6 +65,14 @@ import { toast } from 'sonner';
 
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
 import { addDays } from '@/components/schedule/WeekSelector';
 import { ApiError } from '@/lib/api-client';
@@ -2239,13 +2247,14 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
   );
   // P3-⑥: 週次ガイドダイアログ (案内のみ・実行ボタンなし).
   const [weeklyRitualGuideOpen, setWeeklyRitualGuideOpen] = useState(false);
+  // PO 2026-07-10: 既に生成済みの週へ「週を生成」を誤って再実行すると不都合
+  // (実施済み訪問がある週では 500 になる既知バグもある)。当週に訪問が実在する場合は
+  // 即実行せず確認ダイアログを挟む。訪問 0 件の週は従来どおり即実行 (挙動不変)。
+  const [generateWeekConfirmOpen, setGenerateWeekConfirmOpen] = useState(false);
   const isProcessing = generateWeekMut.isPending || assignStaffOnlyMut.isPending;
 
-  const handleGenerateWeek = async () => {
-    if (!canEdit) {
-      toast.warning('編集権限がありません');
-      return;
-    }
+  // 週生成の実処理 (mutation)。即実行と確認ダイアログの「再実行する」の両方から呼ぶ。
+  const runGenerateWeek = async () => {
     try {
       const res = await generateWeekMut.mutateAsync({
         iso_year: isoYear,
@@ -2256,6 +2265,24 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     } catch (err) {
       toast.error(`週の生成に失敗しました: ${formatErr(err)}`);
     }
+  };
+
+  const handleGenerateWeek = () => {
+    if (!canEdit) {
+      toast.warning('編集権限がありません');
+      return;
+    }
+    // 既に訪問がある週は再生成の誤操作対策として確認ダイアログを出す。
+    if (weekVisits.length > 0) {
+      setGenerateWeekConfirmOpen(true);
+      return;
+    }
+    void runGenerateWeek();
+  };
+
+  const handleConfirmGenerateWeek = async () => {
+    setGenerateWeekConfirmOpen(false);
+    await runGenerateWeek();
   };
 
   const handleAssignStaff = async () => {
@@ -3558,6 +3585,49 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
           open={weeklyRitualGuideOpen}
           onClose={() => setWeeklyRitualGuideOpen(false)}
         />
+
+        {/* PO 2026-07-10: 生成済みの週への「週を生成」再実行の誤操作対策。
+            当週に訪問が実在する場合のみ表示 (訪問 0 件は即実行で挙動不変)。 */}
+        <Dialog
+          open={generateWeekConfirmOpen}
+          onOpenChange={(o) => {
+            if (!o && !generateWeekMut.isPending) setGenerateWeekConfirmOpen(false);
+          }}
+        >
+          <DialogContent className="max-w-md" data-testid="generate-week-confirm">
+            <DialogHeader>
+              <DialogTitle>この週は既に生成されています。再実行しますか？</DialogTitle>
+              <DialogDescription>
+                この週には既に {weekVisits.length}{' '}
+                件の訪問があります。週の生成をやり直すと、自動生成された未実施の訪問が作り直されます（実施済み・手動作成分は保持されます）。予定の組み直しが目的なら、通常は「固定枠に戻す」を使ってください。
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setGenerateWeekConfirmOpen(false)}
+                disabled={generateWeekMut.isPending}
+              >
+                キャンセル
+              </Button>
+              <Button
+                type="button"
+                variant="destructive"
+                onClick={handleConfirmGenerateWeek}
+                disabled={generateWeekMut.isPending}
+                data-testid="generate-week-confirm-ok"
+              >
+                {generateWeekMut.isPending ? (
+                  <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
+                ) : (
+                  <RefreshCw className="mr-1 h-4 w-4" aria-hidden />
+                )}
+                再実行する
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         {/* 患者スケジュール詳細 (固定枠 vs 今週 + 個別反映)
             条件付きレンダリングで unmount を保証 (hooks の lazy 起動). */}

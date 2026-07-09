@@ -64,6 +64,7 @@ from app.services.patient_excel.schema import (
     STATUS_EN_TO_JA,
     TIME_TYPE_GREYOUT_VALUES,
     VISIT_FREQUENCY_EN_TO_JA,
+    build_office_code_short_maps,
     course_token,
     weekdays_en_to_yesno_cells,
 )
@@ -295,6 +296,7 @@ def _write_pfv_edit_patient_row(
     *,
     course_template_by_id: dict[UUID, CourseTemplate],
     office_code_by_id: dict[UUID, str],
+    code_to_short: dict[str, str] | None = None,
     crossoffice_warnings: list[str] | None = None,
 ) -> None:
     """Phase G-51: 患者 1 行 (月〜土 各曜日 時刻 + コース) を「編集用」シートに書く.
@@ -367,7 +369,7 @@ def _write_pfv_edit_patient_row(
             if ct is not None and ct.label:
                 office_code = office_code_by_id.get(ct.office_id)
                 if office_code:
-                    token = course_token(office_code, ct.label)
+                    token = course_token(office_code, ct.label, code_to_short)
                 if token is None:
                     msg = (
                         f"PFV course_template の拠点コードが解決できません "
@@ -416,6 +418,10 @@ def _course_token_dropdown_values(
     グリッドのブロック順と同じ規則で明示的に並べる (= 稲毛 A から始まる).
     """
     office_code_by_id: dict[UUID, str] = {o.id: o.code for o in offices if o.code}
+    # 0059: 拠点マスタ (offices.short_label) 駆動で短縮名を解決する.
+    code_to_short, _ = build_office_code_short_maps(
+        (o.code, o.short_label) for o in offices
+    )
     by_office: dict[str, set[str]] = {}
     for ct in course_templates:
         code = office_code_by_id.get(ct.office_id)
@@ -430,7 +436,7 @@ def _course_token_dropdown_values(
         ordered_labels = [lbl for lbl in GRID_COURSE_ORDER if lbl in labels]
         ordered_labels += sorted(lbl for lbl in labels if lbl not in GRID_COURSE_ORDER)
         for lbl in ordered_labels:
-            token = course_token(code, lbl)
+            token = course_token(code, lbl, code_to_short)
             if token is not None:
                 out.append(token)
     return out
@@ -724,6 +730,10 @@ def build_workbook(
         for office in offices
         if office.code  # コード未設定の拠点はスキップ
     }
+    # 0059: 拠点マスタ (offices.short_label) 駆動の code→短縮名 map (PFV 編集用シート).
+    code_to_short, _ = build_office_code_short_maps(
+        (office.code, office.short_label) for office in offices
+    )
     for i, patient in enumerate(patients, start=2):
         _write_patient_row(ws_p, i, patient, office_code_by_id=office_code_by_id)
     # Phase G-48/G-49: patient_id / 緯度 / 経度 / 拠点コード の派生列はグレー塗りで
@@ -776,6 +786,7 @@ def build_workbook(
             normal_pfvs_by_patient[pid],
             course_template_by_id=course_template_by_id,
             office_code_by_id=office_code_by_id,
+            code_to_short=code_to_short,
             crossoffice_warnings=crossoffice_warnings,
         )
         row_idx += 1

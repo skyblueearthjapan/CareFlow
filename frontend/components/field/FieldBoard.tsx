@@ -32,6 +32,7 @@ import {
 } from 'lucide-react';
 
 import { useFieldBoard, toWeekStart, toIsoYearWeek } from '@/lib/queries/fieldBoard';
+import { useOffices } from '@/lib/queries/offices';
 import { usePendingRequests } from '@/lib/queries/pending_requests';
 import type { BoardCell, BoardCourse, BoardOffice, BoardVisit } from '@/lib/schemas/v2/board';
 import {
@@ -118,42 +119,59 @@ const MD_FORMAT = (iso: string): string => {
 //
 // 親機 (CourseWeekOverview) と同様に全拠点を 1 ボードに結合表示する。
 // board API は cell に office_code を持たない (offices[].office_name のみ) ため、
-// 拠点順は office_name から導く: 稲毛 → 都賀 → その他 (名前順)。
-// その中で course_code を A,B,C,D,E,M の明示順で並べる (未知コードは末尾, code 昇順)。
+// 拠点順は office_name から導く。
+//
+// 0059: 拠点マスタ駆動化 (PO決定「コードが事業所を特定しない」)。旧来の直書き定数
+//   (OFFICE_ORDER: {稲毛:0,都賀:1} / OFFICE_NAME_TO_SHORT: {稲毛:'稲',都賀:'津'}) を撤去し、
+//   offices マスタの sort_order / short_label を useOffices で引いて map で注入する。
+//   フォールバックは現挙動維持 (sort_order NULL → 名前順末尾、short_label NULL → 名前先頭 1 文字)。
+//   その中で course_code を A,B,C,D,E,M の明示順で並べる (未知コードは末尾, code 昇順)。
 
-/** office_name → 拠点並び順 (小さいほど先頭)。マップ外は名前順で末尾に回す。 */
-const OFFICE_ORDER: Record<string, number> = { 稲毛: 0, 都賀: 1 };
-
-// 拠点付きコーストークン (applier の parse_course_token 規約) 用の短縮名。
-// backend `patient_excel/schema.py` OFFICE_SHORT_TO_CODE と対応: 稲毛→稲(INAGE)・都賀→津(TSUGA)。
-// board API は office_code を持たず office_name のみ返すため、ここで名前→短縮名へ写す。
-const OFFICE_NAME_TO_SHORT: Record<string, string> = { 稲毛: '稲', 都賀: '津' };
+/**
+ * office_name → 短縮バッジ (short_label)。マスタ未設定 (NULL) は name 先頭 1 文字。
+ * 拠点付きコーストークン (applier の parse_course_token 規約) に使う。
+ */
+export function officeShort(
+  officeName: string,
+  shortLabelByName: ReadonlyMap<string, string | null>,
+): string | null {
+  const s = shortLabelByName.get(officeName);
+  if (s) return s;
+  // フォールバック: short_label 未設定は name 先頭 1 文字 (現挙動維持)。
+  return officeName ? officeName.charAt(0) : null;
+}
 
 /**
  * 拠点付きコーストークン (例 "稲A") を組み立てる。applier はこのトークンを
  * `parse_course_token` で拠点 + コードに分解してコースを解決する (= 唯一の解決経路。
  * board は週次 Course.id しか返さず course_template_id は無いためトークンが頼り)。
  *
- * - board の course_code が既に短縮名始まり (稲/津) ならそのまま採用。
- * - 裸コード ("A") の場合は office_name から短縮名を前置する。
- * - 短縮名が解決できない拠点では拠点付きにできず、裸コードのままになる
- *   (この場合 applier の `parse_course_token` が拠点を特定できずコース解決に失敗する。
- *   現状の対象拠点は稲毛/都賀のみで必ず短縮名を引けるためトリガーしない)。
- *   呼び出し側 (CourseSlots) で拠点付きにできたかを判定し、できない枠は空き枠カードを
- *   出さない (= 配置不可) ことで、解決不能トークンの送出を防ぐ。
+ * - board の course_code が既に短縮名始まりならそのまま採用。
+ * - 裸コード ("A") の場合は office_name → 短縮名 (マスタ short_label) を前置する。
+ * - 短縮名が解決できない拠点 (name が空) では null (配置不可)。呼び出し側 (CourseSlots) で
+ *   拠点付きにできたかを判定し、できない枠は空き枠カードを出さない。
  */
-function buildCourseToken(officeName: string, courseCode: string): string | null {
+export function buildCourseToken(
+  officeName: string,
+  courseCode: string,
+  shortLabelByName: ReadonlyMap<string, string | null>,
+): string | null {
   const code = (courseCode || '').trim();
-  const short = OFFICE_NAME_TO_SHORT[officeName];
+  const short = officeShort(officeName, shortLabelByName);
   // 短縮名を引けない拠点は拠点付きトークン化できない → null (配置不可)。
   if (!short) return null;
-  if (code.startsWith('稲') || code.startsWith('津')) return code;
+  // board の course_code が既に短縮名始まりならそのまま採用 (二重付与しない)。
+  if (code.startsWith(short)) return code;
   return `${short}${code}`;
 }
 
-function officeRank(officeName: string): number {
-  const r = OFFICE_ORDER[officeName];
-  return r === undefined ? 100 : r;
+/** office_name → 表示順 (sort_order)。マスタ未設定 (NULL) は末尾 (名前順タイブレーク)。 */
+export function officeRank(
+  officeName: string,
+  sortOrderByName: ReadonlyMap<string, number | null>,
+): number {
+  const r = sortOrderByName.get(officeName);
+  return r === undefined || r === null ? 100 : r;
 }
 
 /** course_code → 並び順 (A,B,C,D,E,M)。マップ外は末尾 (code 昇順タイブレーク)。 */
@@ -176,10 +194,11 @@ export interface BoardCourseWithOffice {
  * 選択日 (weekday) の全拠点 cell を集約し、コースを
  * 拠点順 (稲毛→都賀) → course_code (A,B,C,D,E,M) で並べた配列を返す。
  */
-function collectDayCourses(
+export function collectDayCourses(
   cells: BoardCell[],
   weekday: number,
   officeNameById: Map<string, string>,
+  sortOrderByName: ReadonlyMap<string, number | null>,
 ): BoardCourseWithOffice[] {
   const out: BoardCourseWithOffice[] = [];
   for (const cell of cells) {
@@ -190,7 +209,8 @@ function collectDayCourses(
     }
   }
   out.sort((a, b) => {
-    const or = officeRank(a.officeName) - officeRank(b.officeName);
+    const or =
+      officeRank(a.officeName, sortOrderByName) - officeRank(b.officeName, sortOrderByName);
     if (or !== 0) return or;
     const on = a.officeName.localeCompare(b.officeName, 'ja');
     if (on !== 0) return on;
@@ -230,6 +250,23 @@ export function FieldBoard() {
 
   const offices: BoardOffice[] = useMemo(() => board?.offices ?? [], [board]);
 
+  // 0059: 拠点マスタ (offices) から sort_order / short_label を引く。board API は
+  // これらを返さない (office_name のみ) ため、別途 useOffices で取得して name で写す。
+  const officeMasterQuery = useOffices({ limit: 50 });
+  const officeMaster = officeMasterQuery.allOffices;
+  // office_name → sort_order (表示順)。NULL は officeRank 側で末尾扱い。
+  const sortOrderByName = useMemo(() => {
+    const m = new Map<string, number | null>();
+    for (const o of officeMaster) m.set(o.name, o.sort_order ?? null);
+    return m;
+  }, [officeMaster]);
+  // office_name → short_label (短縮バッジ)。NULL は officeShort 側で名前先頭 1 文字。
+  const shortLabelByName = useMemo(() => {
+    const m = new Map<string, string | null>();
+    for (const o of officeMaster) m.set(o.name, o.short_label ?? null);
+    return m;
+  }, [officeMaster]);
+
   // office_id → office_name の索引 (拠点並び順の解決に使う)。
   const officeNameById = useMemo(() => {
     const m = new Map<string, string>();
@@ -237,11 +274,11 @@ export function FieldBoard() {
     return m;
   }, [offices]);
 
-  // 選択日の全拠点コースを 拠点順 (稲毛→都賀) → course_code (A..M) で並べた配列。
+  // 選択日の全拠点コースを 拠点順 (sort_order) → course_code (A..M) で並べた配列。
   const dayCourses = useMemo<BoardCourseWithOffice[]>(() => {
     if (!board) return [];
-    return collectDayCourses(board.board, dayIdx, officeNameById);
-  }, [board, dayIdx, officeNameById]);
+    return collectDayCourses(board.board, dayIdx, officeNameById, sortOrderByName);
+  }, [board, dayIdx, officeNameById, sortOrderByName]);
 
   // 表示用のコース配列 (参照安定化のため dayCourses から導出)。
   const courses = useMemo(() => dayCourses.map((d) => d.course), [dayCourses]);
@@ -374,6 +411,7 @@ export function FieldBoard() {
             weekday={dayIdx}
             sameAddressGroups={sameAddressGroups}
             businessBlocks={businessBlocks}
+            shortLabelByName={shortLabelByName}
             onKarte={setKarte}
             // 直接配置 (Phase G-84) は manager/admin のみ。staff には閲覧専用の旨を伝える。
             onEmpty={
@@ -1068,6 +1106,7 @@ function CourseSlots({
   weekday,
   sameAddressGroups,
   businessBlocks,
+  shortLabelByName,
   onKarte,
   onEmpty,
 }: {
@@ -1079,6 +1118,8 @@ function CourseSlots({
   sameAddressGroups: SameAddressGroups;
   /** Phase G-88: 営業設定から算出した営業枠 (空き帯算出用)。 */
   businessBlocks: ReadonlyArray<readonly [number, number]>;
+  /** 0059: office_name → short_label (拠点付きトークン用). */
+  shortLabelByName: ReadonlyMap<string, string | null>;
   onKarte: (v: BoardVisit) => void;
   onEmpty: (ctx: SlotPlacementContext) => void;
 }) {
@@ -1141,7 +1182,7 @@ function CourseSlots({
       .map((v) => ({ startTime: v.start_time, endTime: v.end_time }))
       .filter((v) => parseHM(v.startTime) !== null && parseHM(v.endTime) !== null)
       .sort((a, b) => (parseHM(a.startTime) ?? 0) - (parseHM(b.startTime) ?? 0));
-    const courseToken = buildCourseToken(officeName, co.course_code);
+    const courseToken = buildCourseToken(officeName, co.course_code, shortLabelByName);
     // 拠点付きトークンにできない (= applier がコース解決できない) 場合は空き枠カードを
     // 出さない。解決不能トークンを承認に送ると PFV の course が NULL になるため配置不可とする。
     // 現状の対象拠点 (稲毛/都賀) では必ず解決できるため通常はトリガーしない。
@@ -1202,16 +1243,19 @@ function AgendaBoard({
   weekday,
   sameAddressGroups,
   businessBlocks,
+  shortLabelByName,
   onKarte,
   onEmpty,
 }: {
-  /** 拠点順 (稲毛→都賀) → course_code (A..M) で並んだ全拠点コース。 */
+  /** 拠点順 (sort_order) → course_code (A..M) で並んだ全拠点コース。 */
   dayCourses: BoardCourseWithOffice[];
   /** 選択日の曜日 (0=Mon..6=Sun)。直接配置の枠コンテキスト用。 */
   weekday: number;
   sameAddressGroups: SameAddressGroups;
   /** Phase G-88: 営業設定から算出した営業枠 (空き帯算出用)。 */
   businessBlocks: ReadonlyArray<readonly [number, number]>;
+  /** 0059: office_name → short_label (拠点付きトークン用). */
+  shortLabelByName: ReadonlyMap<string, string | null>;
   onKarte: (v: BoardVisit) => void;
   onEmpty: (ctx: SlotPlacementContext) => void;
 }) {
@@ -1329,6 +1373,7 @@ function AgendaBoard({
                   weekday={weekday}
                   sameAddressGroups={sameAddressGroups}
                   businessBlocks={businessBlocks}
+                  shortLabelByName={shortLabelByName}
                   onKarte={onKarte}
                   onEmpty={onEmpty}
                 />
