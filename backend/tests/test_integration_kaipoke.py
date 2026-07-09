@@ -697,3 +697,91 @@ async def test_relay_endpoints_require_auth(client, method, path, body) -> None:
     else:
         res = await client.post(path, json=body)
     assert res.status_code == 401, res.text
+
+
+# ---------------------------------------------------------------------------
+# week-schedule: 担当は visit_staff_assignments / courses.assigned_staff_id が正典。
+# visits.primary_staff_id が未同期(NULL)でも予定を落とさない (実データ W28 の再現)。
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_week_schedule_shows_visits_without_legacy_primary_staff(
+    client, db, stub_kaipoke
+) -> None:
+    """primary_staff_id が NULL でも、割当(visit_staff_assignments)/コース担当から解決して表示する。
+
+    回帰: 旧実装は `v.primary_staff_id is None` の visit を全スキップしていたため、
+    自動割当済みでも週の予定がほぼ空になっていた (W28 で 127 件中 1 件しか出ない)。
+    """
+    from datetime import date, time
+
+    from app.models.course import Course
+    from app.models.office import Office
+    from app.models.patient import Patient
+    from app.models.staff import Staff
+    from app.models.visit import VISIT_STATUS_PLANNED, Visit
+    from app.models.visit_staff_assignment import VisitStaffAssignment
+
+    admin = await _make_user(db, "wave-weeksched@example.com", "admin")
+
+    office = Office(name="稲毛")
+    db.add(office)
+    await db.flush()
+    staff = Staff(name="担当 花子", role="staff", is_trainee=False, primary_office_id=office.id)
+    db.add(staff)
+    await db.flush()
+    patient = Patient(
+        code="W28-1", name="患者 一郎", status="active", lat=35.6, lng=140.1,
+        primary_office_id=office.id,
+    )
+    db.add(patient)
+    await db.flush()
+    # 対象週 = 2026-07-06(月)〜07-12(日)。visit は 07-08(水)。
+    course = Course(
+        iso_year=2026, iso_week=28, weekday=2, code="A",
+        course_status="staff_assigned", assigned_staff_id=staff.id, office_id=office.id,
+    )
+    db.add(course)
+    await db.flush()
+    visit = Visit(
+        patient_id=patient.id,
+        course_id=course.id,
+        visit_date=date(2026, 7, 8),
+        start_time=time(9, 0),
+        end_time=time(9, 40),
+        type="regular",
+        status=VISIT_STATUS_PLANNED,
+        source="auto_alloc",
+        required_staff_count=1,
+        # primary_staff_id は敢えて未設定 (レガシー欄が NULL = W28 の状態)。
+    )
+    db.add(visit)
+    await db.flush()
+    db.add(VisitStaffAssignment(visit_id=visit.id, staff_id=staff.id))
+    await db.commit()
+
+    res = await client.get(
+        "/api/v1/integrations/week-schedule?weekStart=2026-07-06&weekEnd=2026-07-12",
+        headers=_bearer(admin),
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert len(body["rows"]) == 1, body
+    row = body["rows"][0]
+    # レスポンスは alias (camelCase) でシリアライズされる。
+    assert row["patientName"] == "患者 一郎"
+    assert row["courseCode"] == "A"
+    # 担当は primary_staff_id ではなく割当/コース担当から解決される。
+    assert row["staff1"] == "担当 花子"
+    assert row["startTime"] == "09:00"
+
+
+@pytest.mark.asyncio
+async def test_week_schedule_requires_admin(client, db, stub_kaipoke) -> None:
+    manager = await _make_user(db, "wave-weeksched-mgr@example.com", "manager")
+    res = await client.get(
+        "/api/v1/integrations/week-schedule?weekStart=2026-07-06&weekEnd=2026-07-12",
+        headers=_bearer(manager),
+    )
+    assert res.status_code == 403, res.text

@@ -667,6 +667,7 @@ async def get_week_schedule(
     from app.models.office import Office
     from app.models.staff import Staff
     from app.models.visit import Visit
+    from app.models.visit_staff_assignment import VisitStaffAssignment
 
     ws = date.fromisoformat(week_start)
     we = date.fromisoformat(week_end)
@@ -684,13 +685,22 @@ async def get_week_schedule(
     )
     visits = list((await db.scalars(stmt)).all())
 
-    # 一括ロード: staff / office / course。
-    staff_ids = {sid for v in visits for sid in (v.primary_staff_id, v.secondary_staff_id) if sid}
-    staff_map = {}
-    if staff_ids:
-        staff_map = {
-            s.id: s for s in (await db.scalars(select(Staff).where(Staff.id.in_(staff_ids)))).all()
-        }
+    visit_ids = [v.id for v in visits]
+
+    # 担当スタッフの正典は visit_staff_assignments + courses.assigned_staff_id。
+    # visits.primary_staff_id は「レガシー互換」欄で、自動割当の一部経路や一斉未割当で
+    # 未同期のことがある (実データ W28 は primary_staff_id がほぼ NULL・割当は
+    # visit_staff_assignments 側に存在)。本体スケジュール画面と同じソースで解決し、
+    # primary_staff_id は最後のフォールバックにする。
+    assignments_by_visit: dict = {}
+    if visit_ids:
+        for vsa in (
+            await db.scalars(
+                select(VisitStaffAssignment).where(VisitStaffAssignment.visit_id.in_(visit_ids))
+            )
+        ).all():
+            assignments_by_visit.setdefault(vsa.visit_id, []).append(vsa.staff_id)
+
     course_ids = {v.course_id for v in visits if v.course_id}
     course_map: dict = {}
     if course_ids:
@@ -698,6 +708,24 @@ async def get_week_schedule(
             c.id: c
             for c in (await db.scalars(select(Course).where(Course.id.in_(course_ids)))).all()
         }
+
+    # 全経路のスタッフ ID をまとめて一括ロード (割当 / コース担当 / レガシー欄)。
+    staff_ids: set = set()
+    for v in visits:
+        staff_ids |= set(assignments_by_visit.get(v.id, []))
+        if v.primary_staff_id:
+            staff_ids.add(v.primary_staff_id)
+        if v.secondary_staff_id:
+            staff_ids.add(v.secondary_staff_id)
+    for c in course_map.values():
+        if c.assigned_staff_id:
+            staff_ids.add(c.assigned_staff_id)
+    staff_map = {}
+    if staff_ids:
+        staff_map = {
+            s.id: s for s in (await db.scalars(select(Staff).where(Staff.id.in_(staff_ids)))).all()
+        }
+
     office_ids = {c.office_id for c in course_map.values() if c.office_id}
     office_ids |= {v.patient.primary_office_id for v in visits if v.patient}
     office_ids.discard(None)
@@ -712,10 +740,36 @@ async def get_week_schedule(
         s = staff_map.get(sid)
         return s.name if s else ""
 
+    def _resolve_staff(v, course) -> tuple[str, str]:
+        """visit の担当を (staff1, staff2) で解決。
+
+        優先順: ① visit_staff_assignments (正典) ② courses.assigned_staff_id
+        ③ visits.primary/secondary_staff_id (レガシー)。staff1 はコース担当を先頭に。
+        """
+        assigned = list(assignments_by_visit.get(v.id, []))
+        course_staff = course.assigned_staff_id if course else None
+        ordered: list = []
+        # コース担当を先頭 (本体スケジュールのコース担当表示と一致させる)。
+        if course_staff is not None:
+            ordered.append(course_staff)
+        for sid in assigned:
+            if sid not in ordered:
+                ordered.append(sid)
+        # 割当もコース担当も無ければレガシー欄にフォールバック。
+        if not ordered:
+            for sid in (v.primary_staff_id, v.secondary_staff_id):
+                if sid is not None and sid not in ordered:
+                    ordered.append(sid)
+        return (
+            _name(ordered[0]) if len(ordered) >= 1 else "",
+            _name(ordered[1]) if len(ordered) >= 2 else "",
+        )
+
     rows: list[WeekScheduleRow] = []
     for v in visits:
         patient = v.patient
-        if patient is None or v.primary_staff_id is None:
+        # primary_staff_id が未同期でも予定自体は表示する (担当は正典ソースで解決)。
+        if patient is None:
             continue
         if office_id is not None and patient.primary_office_id != office_id:
             continue
@@ -727,6 +781,7 @@ async def get_week_schedule(
             else office_map.get(patient.primary_office_id)
         )
         office_name = office.name if office else ""
+        staff1, staff2 = _resolve_staff(v, course)
         rows.append(
             WeekScheduleRow(
                 visit_date=v.visit_date.isoformat(),
@@ -734,8 +789,8 @@ async def get_week_schedule(
                 start_time=f"{v.start_time.hour:02d}:{v.start_time.minute:02d}",
                 end_time=f"{v.end_time.hour:02d}:{v.end_time.minute:02d}",
                 patient_name=patient.name,
-                staff1=_name(v.primary_staff_id),
-                staff2=_name(v.secondary_staff_id),
+                staff1=staff1,
+                staff2=staff2,
                 course_code=course_code,
                 office_name=office_name,
             )
