@@ -864,3 +864,26 @@ async def test_build_monitor_jst_midnight_same_day(db) -> None:
     assert mv is not None
     # 00:10 開始・00:30 現在・到着なし → 猶予 (20分) 境界。grace 20 で 00:30>=00:30 → missing。
     assert mv.phase == PHASE_MISSING
+
+
+# ---------------------------------------------------------------------------
+# 行の並び順 (PO要望 2026-07-10): 拠点 → コース (A,B,..) → スタッフ名。
+# スケジュール本体と同じ読み順にするためのソートキー関数の単体テスト。
+# ---------------------------------------------------------------------------
+
+
+def test_course_label_first_code_ordering() -> None:
+    from app.services.checkin.monitor import _course_label_first_code
+
+    # 単一コース
+    assert _course_label_first_code("Aコース") == "A"
+    assert _course_label_first_code("Mコース") == "M"
+    # 複数コース持ちは先頭コードで整列
+    assert _course_label_first_code("A/Bコース") == "A"
+    # コース無し (担当未設定) は末尾へ
+    assert _course_label_first_code(None) == "￿"
+    assert _course_label_first_code("") == "￿"
+    # 並び確認: A → B → C → M → (無し)
+    labels = ["Mコース", None, "Cコース", "A/Bコース", "Bコース"]
+    ordered = sorted(labels, key=_course_label_first_code)
+    assert ordered == ["A/Bコース", "Bコース", "Cコース", "Mコース", None]

@@ -276,6 +276,17 @@ def _stay_minutes(
     return max(0, round(minutes))
 
 
+def _course_label_first_code(label: str | None) -> str:
+    """course_label ("Aコース" / "A/Bコース") から並べ替え用の先頭コースコードを取り出す。
+
+    コース無し (担当未設定など) は "￿" を返し、拠点内の末尾に並ぶ。
+    行の並び (拠点 → コース → スタッフ名) をスケジュール本体と揃えるためのキー。
+    """
+    if not label:
+        return "￿"
+    return label.split("/", 1)[0].removesuffix("コース") or "￿"
+
+
 async def build_monitor(
     db: AsyncSession,
     target_date: date,
@@ -525,9 +536,15 @@ async def build_monitor(
             )
         )
 
-    # 行の並び: 拠点名 → スタッフ名 → コース (担当未設定は末尾にコース順で並ぶ)。
+    # 行の並び: 拠点名 → コース (A,B,C,..,M) → スタッフ名。
+    # スケジュール本体 (拠点 → コース順の列) と同じ読み順に揃える (PO要望 2026-07-10。
+    # 旧: 拠点 → スタッフ名 順で、コースで見ると順不同・両拠点の「A」が離れて見えた)。
     staff_rows.sort(
-        key=lambda r: (r.office_name or "￿", r.staff_name or "￿", r.course_label or "￿")
+        key=lambda r: (
+            r.office_name or "￿",
+            _course_label_first_code(r.course_label),
+            r.staff_name or "￿",
+        )
     )
 
     # フィルタチップ用の拠点一覧 (当日 visits に登場する拠点)。
