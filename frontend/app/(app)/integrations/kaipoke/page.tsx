@@ -4,28 +4,21 @@
  * カイポケ連携 — CareFlow の週次スケジュールをカイポケへ反映する統合画面。
  *
  * 構成:
- *   - 稼働状況 + ライブモニター (noVNC 埋め込み)
- *   - 週次反映ワークフロー (①展開 →②差分 →③確認(コース別週ビュー) →④反映 を集約)
- *   - ライブ進捗 / 実行ログ / 直近結果 / ジョブ履歴
+ *   - 操作コンソール (KaipokeConsole): ライブモニター + 稼働状況(圧縮) + 週次反映/取り込みの操作
+ *     + 下段タブ切替の大きなカレンダー枠
+ *   - 実行ログ / 直近結果 / ジョブ履歴 / Geocoding 導線
  */
 import Link from 'next/link';
 import { useSession } from 'next-auth/react';
 
-import { Card } from '@/components/ui/card';
-import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { useKaipokeLive, useKaipokeCredentials, useStopJob } from '@/lib/queries/integrations';
 
 import { KaipokeJobsList } from '../_components/KaipokeJobsList';
 import { IntegrationSettingsMenu } from './_components/IntegrationSettingsMenu';
-import { EmergencyStopButton } from './_components/EmergencyStopButton';
 import { ExecutionLogViewer } from './_components/ExecutionLogViewer';
-import { JobProgressCard, commandLabel } from './_components/JobProgressCard';
 import { JobResultCard } from './_components/JobResultCard';
-import { LiveMonitorCard } from './_components/LiveMonitorCard';
-import { LiveStatusDot } from './_components/LiveStatusDot';
-import { InboundPanel } from './_components/InboundPanel';
-import { WeeklyApplyPanel } from './_components/WeeklyApplyPanel';
+import { KaipokeConsole } from './_components/KaipokeConsole';
 
 export default function KaipokeIntegrationPage() {
   const { data: session } = useSession();
@@ -62,8 +55,6 @@ export default function KaipokeIntegrationPage() {
   // 接続設定はダイアログの中に隠したため、未設定のときはページ側で気づけるようにする。
   const credentialsMissing = credQuery.isSuccess && !credentialsConfigured;
 
-  const statusTone = !reachable ? 'error' : running ? 'running' : 'idle';
-
   return (
     <section className="space-y-6">
       {/* 右上に「設定」→「接続設定」を格納 (PO要望: 認証情報を表側に出さない)。 */}
@@ -81,78 +72,16 @@ export default function KaipokeIntegrationPage() {
         </Alert>
       )}
 
-      {/* 稼働状況 + ライブモニター */}
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <Card className="p-5">
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="font-serif text-lg font-bold text-text-primary">稼働状況</h2>
-            <LiveStatusDot
-              tone={statusTone}
-              label={!reachable ? '到達不可' : running ? '実行中' : '待機中'}
-            />
-          </div>
-          {liveQuery.isLoading ? (
-            <Skeleton className="h-20 w-full" />
-          ) : !reachable ? (
-            <Alert variant="destructive">
-              <AlertTitle>kaipoke-api に到達できません</AlertTitle>
-              <AlertDescription className="break-all">
-                {live?.error ?? '接続を確認してください'}
-              </AlertDescription>
-            </Alert>
-          ) : (
-            <dl className="grid grid-cols-2 gap-y-2 text-sm">
-              <dt className="text-text-secondary">現在の状態</dt>
-              <dd className="text-text-primary">
-                {running ? (commandLabel(live?.command) ?? '実行中') : '待機中'}
-              </dd>
-              <dt className="text-text-secondary">直近ジョブ</dt>
-              <dd className="text-text-primary">
-                {latestJob ? `${latestJob.job_type} / ${latestJob.status}` : 'なし'}
-              </dd>
-            </dl>
-          )}
-        </Card>
-
-        <LiveMonitorCard
-          monitorUrl={live?.monitorUrl}
-          running={running}
-          reachable={reachable}
-          commandLabel={commandLabel(live?.command)}
-        />
-      </div>
-
-      {/* ライブ進捗ゲージ（実行中のみ）— モニターの直下に置き、週ビューが開いても
-          スクロールせずモニターと一緒に見える位置に保つ */}
-      {running && live && <JobProgressCard live={live} />}
-
-      {/* 実行中ジョブの非常停止 */}
-      {running && latestJob && (
-        <div className="flex items-center justify-between rounded-lg border border-border-warning bg-warning-bg px-4 py-3">
-          <p className="text-sm text-warning-strong">
-            ジョブが実行中です。必要な場合は安全に停止できます。
-          </p>
-          <EmergencyStopButton
-            pending={stop.isPending}
-            onConfirm={() => stop.mutate(latestJob.id)}
-          />
-        </div>
-      )}
-
-      {/* 送る（CF→カイポケ）と 取り込む（カイポケ→CF）を左右に並べ、上下方向を節約する
-          (PO要望 2026-07-09)。lg 未満は従来どおり縦積み。
-          各列に min-w-0 を付けないと、パネル内部の overflow-x-auto (取り込みの週プレビュー等)
-          が効かず grid 列が押し広げられる。 */}
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        {/* items-stretch (grid 既定) + Card h-full で 2 カラムの高さを揃える
-            (PO要望 2026-07-09: 取り込み側の枠が余白にならないよう、送る側の高さに合わせる)。 */}
-        <div className="min-w-0">
-          <WeeklyApplyPanel busy={running} credentialsConfigured={credentialsConfigured} />
-        </div>
-        <div className="min-w-0">
-          <InboundPanel busy={running} credentialsConfigured={credentialsConfigured} />
-        </div>
-      </div>
+      {/* 操作コンソール（ライブモニター + 稼働状況 + 週次反映/取り込み操作 + タブ式カレンダー） */}
+      <KaipokeConsole
+        live={live}
+        liveLoading={liveQuery.isLoading}
+        running={running}
+        reachable={reachable}
+        latestJob={latestJob}
+        credentialsConfigured={credentialsConfigured}
+        stop={stop}
+      />
 
       {/* 実行ログ */}
       {live && live.logs.length > 0 && <ExecutionLogViewer lines={live.logs} />}

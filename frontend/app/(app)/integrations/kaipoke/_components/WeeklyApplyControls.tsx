@@ -1,22 +1,15 @@
 'use client';
 
 /**
- * WeeklyApplyPanel — 週次反映ワークフロー (集約・番号付き・K-UI 再設計)。
+ * WeeklyApplyControls — 週次反映ワークフロー (送る側) の操作部。
  *
- * 1画面・縦一列で ①展開 → ②差分計算 → ③確認(週ビュー) → ④反映 を完結させる。
- * 安全設計:
- *   - ① 展開は月1回・上書き。展開済みは再展開ボタンを無効化し、例外時のみ
- *     二重確認で解放 (取り消し/リセット用途)。
- *   - ④ 反映は不可逆書込のため dry-run → 本番の明示確認。
- *   - 週を変えると前の差分を無効化 (別週の誤反映防止)。
- * 週スケジュールはコース別表 (WeekScheduleView) で常時表示し週切替に連動。
+ * 週セレクタ + ステップ ①〜④ + 確認ダイアログ + 接続設定未完了の案内 を描く。
+ * 状態・ハンドラはすべて useWeeklyApply フックが持ち、ここは描画のみ (ロジック不変)。
  */
-import { type ReactNode, useMemo, useState } from 'react';
-import { toast } from 'sonner';
+import { type ReactNode } from 'react';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
 import {
   Dialog,
   DialogContent,
@@ -26,135 +19,44 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
-import {
-  useCorrectionItems,
-  useExpandStatus,
-  useStartApply,
-  useStartDiffLocal,
-  useStartExpand,
-  useWeekSchedule,
-} from '@/lib/queries/integrations';
 
 import { WeekDiffView } from './WeekDiffView';
-import { WeekScheduleView } from './WeekScheduleView';
+import { type WeeklyApplyVm, nextWeekMonday } from './useWeeklyApply';
 
-const WEEKDAY = ['日', '月', '火', '水', '木', '金', '土'];
-
-function mondayOf(d: Date): Date {
-  const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  const day = x.getDay();
-  const diff = day === 0 ? -6 : 1 - day;
-  x.setDate(x.getDate() + diff);
-  return x;
-}
-function fmtDate(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-function fmtMonth(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-}
-function nextWeekMonday(): Date {
-  const m = mondayOf(new Date());
-  m.setDate(m.getDate() + 7);
-  return m;
-}
-
-export function WeeklyApplyPanel({
-  busy,
-  credentialsConfigured = true,
-}: {
-  busy: boolean;
-  credentialsConfigured?: boolean;
-}) {
-  const [weekStart, setWeekStart] = useState<Date>(() => nextWeekMonday());
-  const [sheetId, setSheetId] = useState<string | null>(null);
-  const [summary, setSummary] = useState<Record<string, number> | null>(null);
-  const [confirm, setConfirm] = useState<null | 'dry' | 'real' | 'expand' | 'reexpand'>(null);
-  const [showDiffDetail, setShowDiffDetail] = useState(false);
-
-  const weekEnd = useMemo(() => {
-    const e = new Date(weekStart);
-    e.setDate(e.getDate() + 6);
-    return e;
-  }, [weekStart]);
-  const month = fmtMonth(weekStart);
-
-  const expandStatus = useExpandStatus(month);
-  const expand = useStartExpand();
-  const diffLocal = useStartDiffLocal();
-  const apply = useStartApply();
-  const schedule = useWeekSchedule(fmtDate(weekStart), fmtDate(weekEnd));
-  const itemsQuery = useCorrectionItems(sheetId ?? undefined, { limit: 500 });
-
-  const scheduleRows = schedule.data?.rows ?? [];
-  const items = itemsQuery.data?.items ?? [];
-  const total = summary?.total ?? 0;
-  const unresolved = summary?.unresolved_patient ?? 0;
-  const isExpanded = expandStatus.data?.expanded ?? false;
-
-  const label = `${weekStart.getMonth() + 1}/${weekStart.getDate()}（${WEEKDAY[weekStart.getDay()]}）〜 ${weekEnd.getMonth() + 1}/${weekEnd.getDate()}（${WEEKDAY[weekEnd.getDay()]}）`;
-
-  const resetDiff = () => {
-    setSheetId(null);
-    setSummary(null);
-    setShowDiffDetail(false);
-  };
-  const shiftWeek = (delta: number) => {
-    const n = new Date(weekStart);
-    n.setDate(n.getDate() + delta * 7);
-    setWeekStart(n);
-    resetDiff();
-  };
-
-  const runExpand = async () => {
-    setConfirm(null);
-    try {
-      await expand.mutateAsync({ month });
-      toast.success(
-        'スケジュール展開を開始しました。ライブモニターで進捗を確認してください（約15〜20分）。',
-      );
-      void expandStatus.refetch();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : '展開の開始に失敗しました');
-    }
-  };
-
-  const runDiff = async () => {
-    resetDiff();
-    try {
-      const res = await diffLocal.mutateAsync({
-        month,
-        weekStart: fmtDate(weekStart),
-        weekEnd: fmtDate(weekEnd),
-      });
-      setSheetId(res.sheetId);
-      setSummary(res.summary ?? {});
-    } catch {
-      // 下の Alert で表示。
-    }
-  };
-
-  const runApply = async (dryRun: boolean) => {
-    if (!sheetId) return;
-    setConfirm(null);
-    try {
-      await apply.mutateAsync({ sheetId, dryRun });
-      toast.success(
-        dryRun
-          ? 'dry-run を開始しました。ライブモニターで操作を確認できます（書込なし）。'
-          : '本番反映を開始しました。ライブモニターで進捗を確認してください。',
-      );
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : '実行に失敗しました');
-    }
-  };
-
-  // 差分が「追加ばかり」= カイポケがこの週空 → 展開忘れの可能性を警告。
-  const looksUnexpanded =
-    sheetId != null && total > 0 && (summary?.add ?? 0) === total && !isExpanded;
+export function WeeklyApplyControls({ vm }: { vm: WeeklyApplyVm }) {
+  const {
+    busy,
+    credentialsConfigured,
+    weekStart,
+    month,
+    label,
+    sheetId,
+    summary,
+    confirm,
+    setConfirm,
+    showDiffDetail,
+    setShowDiffDetail,
+    setWeekStart,
+    expandStatus,
+    expand,
+    diffLocal,
+    apply,
+    itemsQuery,
+    scheduleRows,
+    items,
+    total,
+    unresolved,
+    isExpanded,
+    looksUnexpanded,
+    resetDiff,
+    shiftWeek,
+    runExpand,
+    runDiff,
+    runApply,
+  } = vm;
 
   return (
-    <Card className="h-full p-5">
+    <div>
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <h2 className="font-serif text-lg font-bold text-text-primary">週次反映ワークフロー</h2>
         <div className="flex items-center gap-1.5">
@@ -336,29 +238,6 @@ export function WeeklyApplyPanel({
         </Step>
       </div>
 
-      {/* この週の予定（コース別・週切替で連動）— 操作ボタンの下に配置し、
-          ボタン/ゲージがモニターの見える範囲から押し出されないようにする */}
-      <div className="mt-5 border-t border-border-subtle pt-4">
-        <div className="mb-2 flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-text-primary">この週の予定（コース別）</h3>
-          <span className="text-xs text-text-muted">
-            {schedule.isLoading ? '読み込み中…' : `${scheduleRows.length}件`}
-          </span>
-        </div>
-        {schedule.isLoading ? (
-          <Skeleton className="h-40 w-full" />
-        ) : scheduleRows.length === 0 ? (
-          <Alert>
-            <AlertTitle>この週の予定はありません</AlertTitle>
-            <AlertDescription>
-              CareFlow でこの週のスケジュールを生成し、スタッフ割当まで済ませてください。
-            </AlertDescription>
-          </Alert>
-        ) : (
-          <WeekScheduleView weekStart={weekStart} rows={scheduleRows} />
-        )}
-      </div>
-
       {/* 確認ダイアログ */}
       <Dialog open={confirm !== null} onOpenChange={(o) => !o && setConfirm(null)}>
         <DialogContent>
@@ -429,7 +308,7 @@ export function WeeklyApplyPanel({
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </Card>
+    </div>
   );
 }
 
