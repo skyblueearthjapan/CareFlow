@@ -63,6 +63,20 @@ DEFAULT_SLOT_END = time(17, 0)
 DEFAULT_SERVICE_MINUTES = 60
 
 
+def _is_manager_course(code: str | None) -> bool:
+    """コードが M系 (M / M2..M9) = マネージャー予備枠かどうか.
+
+    受け入れ枠マトリックスの母集合から除外するために使う (常に空で ○ を汚染するため)。
+    'M' 単体と 'M' + 1桁数字のみ対象。'臨' 系 (臨時コース) は含めない。
+    """
+    if not code:
+        return False
+    up = code.strip().upper()
+    if up == "M":
+        return True
+    return len(up) == 2 and up[0] == "M" and up[1].isdigit()
+
+
 # ---------------------------------------------------------------------------
 # 時刻 / 区間ヘルパ (純関数)
 # ---------------------------------------------------------------------------
@@ -388,6 +402,11 @@ async def compute_acceptance_matrix(
             )
         )
     ).all()
+    # M系コース (M/M2..M9) はマネージャー予備枠で常に空のため、受け入れ枠の ○△× 対象
+    # から除外する (PO決定 2026-07-10「Mは受け入れ先になり得ない」)。除外しないと A-D が
+    # 満床でも空の M が「6名受けられる」と誤カウントし、満床の枠まで ○ になっていた。
+    # 臨時コース (臨..) は実訪問を持つ稼働コースなので除外しない。
+    course_rows = [c for c in course_rows if not _is_manager_course(c.code)]
     courses_by_day: dict[tuple[UUID, int], list[Course]] = {}
     course_id_to_key: dict[UUID, tuple[UUID, int]] = {}
     offices_with_courses: set[UUID] = set()

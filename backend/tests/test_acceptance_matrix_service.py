@@ -104,3 +104,17 @@ def test_metrics_aggregate_across_courses() -> None:
     assert res.status == "available"
     assert res.remaining_patients_total == 6 + 5
     assert res.available_course_count >= 1
+
+
+def test_is_manager_course_excludes_m_series_only() -> None:
+    """受け入れ枠の母集合から除外するのは M系 (M/M2..M9) のみ。
+
+    PO決定 2026-07-10: 空の M(マネージャー予備枠) が満床の A-D を ○ に汚染していた。
+    臨時コース (臨..) は実訪問を持つ稼働コースなので除外しない。
+    """
+    from app.services.scheduling.acceptance_matrix_service import _is_manager_course
+
+    for code in ("M", "M2", "M9"):
+        assert _is_manager_course(code) is True, code
+    for code in ("A", "B", "C", "D", "E", "臨", "臨2", "MM", "M10", None, ""):
+        assert _is_manager_course(code) is False, code
