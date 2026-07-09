@@ -95,8 +95,13 @@ import { useBulkPinPfvs, useTogglePfvPin } from '@/lib/queries/g21';
 // Phase G-47: PinScope 型 (= 個別 🔒 toggle のスコープ '曜日のみ' / '全曜日').
 import type { PinScope } from './PinScopeMenu';
 import type { PatientFixedVisitV2Read } from '@/lib/schemas/v2/patient_fixed_visit';
-import { effectiveCapacity, type CourseTemplateRead } from '@/lib/schemas/v2/course_template';
+import {
+  courseCodeIndex,
+  effectiveCapacity,
+  type CourseTemplateRead,
+} from '@/lib/schemas/v2/course_template';
 import { useWeekdayStaffCapacityLookup } from '@/lib/queries/weekday_staff_capacity';
+import { usePfvCoursePresenceLookup } from '@/lib/queries/pfv_course_presence';
 import {
   SEX_RESTRICTION_LABEL,
   coerceWeeklyPattern,
@@ -481,6 +486,11 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     office_id: officeId,
   });
 
+  // ─── PO 2026-07-09: PFV に含まれるコースを「正」として列を出す (和集合の根拠) ──
+  // (course_template_id, weekday) → PFV 件数. スタッフ数連動が 0 でも PFV があれば
+  // 列を隠さない (= 既存訪問を可視に保つ). effectiveCapacity と和集合で判定する.
+  const { pfvCountFor } = usePfvCoursePresenceLookup();
+
   // Phase G-25: 担当 dropdown は全拠点解放 (= 拠点を超えて配置可能).
   // 自動算出 (run_v2_pipeline) は引き続き拠点内のみだが、 手動 dropdown は全 active staff を表示.
   // 各 option には 「氏名 (拠点名)」 形式で所属を併記 (= CourseDayTable 側で format).
@@ -541,17 +551,44 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     return m;
   }, [staffEventsByStaff]);
 
-  // ─── 表示するコース一覧: 「拠点 × テンプレート」を活性曜日 capacity > 0 でフィルタ ──
+  // ─── 当該週に visit が実在する course_id の集合 (列の表示条件 ③ の根拠) ──
+  // course は曜日固定なので course_id を持つ visit があれば「その曜日に訪問実在」。
+  const courseIdsWithVisits = useMemo(() => {
+    const s = new Set<string>();
+    for (const v of weekVisits) {
+      const cid = v.course_id ?? null;
+      if (cid) s.add(cid);
+    }
+    return s;
+  }, [weekVisits]);
+
+  // ─── 表示するコース一覧: 「拠点 × テンプレート」を活性曜日で表示判定 (和集合) ──
+  // PO 2026-07-09: 列の表示条件は以下の和集合 (どれか 1 つでも真なら表示):
+  //   ① スタッフ数連動 effectiveCapacity>0 (A-E は staff_count, M系は静的 capacity)。
+  //   ② PFV presence: 固定訪問 (PFV) にこのテンプレ×曜日のコースが含まれる (= 正)。
+  //   ③ 当該曜日にこのテンプレのコースへ実在する visit がある。
+  // これによりスタッフ削除等で列ごと消えて既存訪問が管理画面から不可視になる事故を防ぐ。
   const courseTablesForActiveDay = useMemo(() => {
     const list: Array<{
       template: CourseTemplateRead;
       officeName: string;
     }> = [];
     for (const t of templates) {
-      // スタッフ数連動: A-E は staff_count で開講判定, M系は静的 capacity.
       const staffCount = staffCountFor(t.office_id, activeWeekday);
-      const cap = effectiveCapacity(t, activeWeekday, staffCount, courseCodesMax);
-      if (cap <= 0) continue;
+      const capacityOpen = effectiveCapacity(t, activeWeekday, staffCount, courseCodesMax) > 0;
+      const pfvOpen = pfvCountFor(t.id, activeWeekday) > 0;
+      let visitOpen = false;
+      if (!capacityOpen && !pfvOpen) {
+        const course = findCourseForTemplate({
+          template: t,
+          weekday: activeWeekday,
+          isoYear,
+          isoWeek,
+          courses,
+        });
+        visitOpen = course ? courseIdsWithVisits.has(course.id) : false;
+      }
+      if (!capacityOpen && !pfvOpen && !visitOpen) continue;
       const officeName = offices.find((o) => o.id === t.office_id)?.name ?? '';
       list.push({ template: t, officeName });
     }
@@ -562,7 +599,43 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
       return (a.template.label || '').localeCompare(b.template.label || '', 'ja');
     });
     return list;
-  }, [templates, offices, activeWeekday, staffCountFor, courseCodesMax]);
+  }, [
+    templates,
+    offices,
+    activeWeekday,
+    staffCountFor,
+    courseCodesMax,
+    pfvCountFor,
+    isoYear,
+    isoWeek,
+    courses,
+    courseIdsWithVisits,
+  ]);
+
+  // ─── PO 2026-07-09: スタッフ不足バナー (表示 A-E 列数 > 稼働スタッフ数) ──
+  // 列は PFV/visit の和集合でも出るため、稼働スタッフが足りない拠点を曜日単位で警告する。
+  // A-E コースのみ対象 (M系は静的定員なので除外)。拠点ごとに 1 行。
+  const staffShortageBanners = useMemo(() => {
+    const aeCountByOffice = new Map<string, number>();
+    for (const { template } of courseTablesForActiveDay) {
+      if (courseCodeIndex(template.label) === null) continue; // M系は対象外
+      aeCountByOffice.set(template.office_id, (aeCountByOffice.get(template.office_id) ?? 0) + 1);
+    }
+    const wdLabel = WEEKDAY_LABELS[activeWeekday] ?? '';
+    const out: Array<{ officeId: string; message: string }> = [];
+    for (const [oid, aeCount] of aeCountByOffice) {
+      const staff = staffCountFor(oid, activeWeekday);
+      if (aeCount > staff) {
+        const officeName = offices.find((o) => o.id === oid)?.name ?? '';
+        out.push({
+          officeId: oid,
+          message: `⚠ スタッフ不足: ${officeName} ${wdLabel}曜 は コース${aeCount}本 に対して稼働スタッフ ${staff}名 です。担当を確認してください。`,
+        });
+      }
+    }
+    out.sort((a, b) => a.message.localeCompare(b.message, 'ja'));
+    return out;
+  }, [courseTablesForActiveDay, staffCountFor, activeWeekday, offices]);
 
   // ─── Wave 18 Phase B-6 / Wave 37 P3-C: course_id → course_template_id の逆引き ──
   // (元 line 467 から移設: visitsByCourse / partner ラベル解決から参照されるため上に移動)
@@ -2441,6 +2514,9 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
       const listStaffName = course?.assigned_staff_id
         ? (staffMap.get(course.assigned_staff_id)?.name ?? null)
         : null;
+      // PO 2026-07-09: assigned_staff_id はあるが active 一覧に無い = 削除済み (stale)。
+      const listStaffMissing =
+        !!course?.assigned_staff_id && !staffMap.has(course.assigned_staff_id);
       out.push({
         key: `${template.id}:${activeWeekday}`,
         title: `${officeName ? `${officeName} ` : ''}${template.label} コース`,
@@ -2452,6 +2528,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         office_name: officeName ?? null,
         course_code: template.label ?? null,
         staff_name: listStaffName,
+        staff_missing: listStaffMissing,
       });
     }
     return out;
@@ -2490,6 +2567,9 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
       const assignedStaff = course?.assigned_staff_id
         ? (staffMap.get(course.assigned_staff_id) ?? null)
         : null;
+      // PO 2026-07-09: assigned_staff_id はあるが active 一覧に無い = 削除済み (stale)。
+      const assignedStaffMissing =
+        !!course?.assigned_staff_id && !staffMap.has(course.assigned_staff_id);
       const capMax = effectiveCapacity(
         template,
         activeWeekday,
@@ -2507,6 +2587,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         officeName,
         visits,
         assignedStaff,
+        assignedStaffMissing,
         freeGaps,
         capacity: {
           filled: visits.filter((v) => v.status !== 'cancelled').length,
@@ -3076,6 +3157,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                     onTogglePin={canEdit ? handleTogglePin : undefined}
                     staffCountFor={staffCountFor}
                     courseCodesMax={courseCodesMax}
+                    pfvCountFor={pfvCountFor}
                     managerCountFor={managerCountFor}
                     staffSummaryOffices={staffSummaryOffices}
                     freeGapsByCell={freeGapsByCell}
@@ -3099,6 +3181,21 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                 )}
                 data-testid="course-day-table-list"
               >
+                {/* PO 2026-07-09: スタッフ不足バナー (表示 A-E 列数 > 稼働スタッフ数)。
+                    列は PFV/visit の和集合でも出るため、担当が足りない拠点を曜日単位で警告。 */}
+                {staffShortageBanners.length > 0 ? (
+                  <div className="space-y-1.5" data-testid="staff-shortage-banner">
+                    {staffShortageBanners.map((b) => (
+                      <div
+                        key={b.officeId}
+                        role="alert"
+                        className="rounded border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning"
+                      >
+                        {b.message}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
                 {/* Phase G-36: 表示モード切替 (タイムライン ⇄ リスト) は Card 2 の Row 2 へ移設済. */}
                 {courseTablesForActiveDay.length === 0 ? (
                   <Card className="p-4 text-sm text-text-muted">

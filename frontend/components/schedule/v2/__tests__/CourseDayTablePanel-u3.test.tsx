@@ -219,6 +219,18 @@ vi.mock('@/lib/queries/weekday_staff_capacity', async (importOriginal) => {
     }),
   };
 });
+vi.mock('@/lib/queries/pfv_course_presence', async (importOriginal) => {
+  // eslint-disable-next-line @typescript-eslint/consistent-type-imports
+  type M = typeof import('@/lib/queries/pfv_course_presence');
+  const actual = await importOriginal<M>();
+  return {
+    ...actual,
+    usePfvCoursePresenceLookup: () => ({
+      pfvCountFor: () => 0,
+      isLoading: false,
+    }),
+  };
+});
 vi.mock('@/lib/queries/offices', async (importOriginal) => {
   // eslint-disable-next-line @typescript-eslint/consistent-type-imports
   type M = typeof import('@/lib/queries/offices');

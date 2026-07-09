@@ -844,6 +844,35 @@ class WeekdayStaffCapacityResponse(BaseModel):
     course_codes_max: int = Field(ge=1)
 
 
+class PfvCoursePresenceItem(BaseModel):
+    """``GET /api/v1/schedule/v2/pfv-course-presence`` の 1 要素.
+
+    ある (course_template_id, weekday) に紐付く固定訪問 (PFV) 行の件数.
+    PO 決定 (2026-07-09): 固定訪問スケジュール (PFV) に含まれるコースを「正」とし、
+    スタッフ数連動の開講判定と和集合で週/日ビューの列を出す (スタッフ不足で列ごと
+    消えて既存訪問が管理画面から不可視になる事故を防ぐ). frontend は
+    ``pfv_count > 0`` を「そのテンプレ×曜日を表示する根拠」に使う.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    course_template_id: uuid.UUID
+    weekday: int = Field(ge=0, le=6)
+    pfv_count: int = Field(ge=0)
+
+
+class PfvCoursePresenceResponse(BaseModel):
+    """``GET /api/v1/schedule/v2/pfv-course-presence`` response.
+
+    ``items`` は ``pfv_count > 0`` の (course_template_id, weekday) のみ含む.
+    course_template_id IS NULL の PFV / 削除済み患者の PFV は除外する.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[PfvCoursePresenceItem] = Field(default_factory=list)
+
+
 __all__ = [
     "AmPmV2",
     "ApplyIndividualWeekSync",
@@ -859,6 +888,8 @@ __all__ = [
     "AutoScheduleV2ResetToFixedResponse",
     "AutoScheduleV2UnassignAllRequest",
     "AutoScheduleV2UnassignAllResponse",
+    "PfvCoursePresenceItem",
+    "PfvCoursePresenceResponse",
     "UnassignedPatient",
     "UnassignedReasonOut",
     "UnassignedStageOut",

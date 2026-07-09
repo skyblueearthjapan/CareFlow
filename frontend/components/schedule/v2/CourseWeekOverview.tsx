@@ -135,6 +135,12 @@ export interface CourseWeekOverviewProps {
   /** A-E 発行上限 (API 由来の course_codes_max. 省略時は COURSE_CODES_MAX=5). */
   courseCodesMax?: number;
   /**
+   * PO 2026-07-09: (template_id, weekday) → 固定訪問 (PFV) 件数。
+   * スタッフ数連動が「休」(cap=0) でも PFV があるか visit が実在するセルは「休」で
+   * 隠さず内容を表示する (既存訪問を可視に保つ和集合)。未指定時は 0 扱い。
+   */
+  pfvCountFor?: (templateId: string, weekday: number) => number;
+  /**
    * Phase G-53: (office_id, weekday) → 稼働マネージャー数 (role='manager').
    * 曜日ヘッダーの「拠点別 S/M」表示で M の値に使う. 未指定時は 0 扱い.
    */
@@ -175,6 +181,7 @@ export function CourseWeekOverview({
   onTogglePin,
   staffCountFor,
   courseCodesMax = COURSE_CODES_MAX,
+  pfvCountFor,
   managerCountFor,
   staffSummaryOffices,
   freeGapsByCell,
@@ -312,6 +319,11 @@ export function CourseWeekOverview({
                     ? effectiveCapacity(tpl, wd, staffCountFor(tpl.office_id, wd), courseCodesMax)
                     : capacityForWeekday(tpl, wd);
                   const visitList = cellMap.get(`${tpl.id}:${wd}`) ?? [];
+                  // PO 2026-07-09: cap=0 (スタッフ不足) でも PFV があるか visit が実在する
+                  // セルは「休」で隠さず内容を表示する (既存訪問を管理画面から不可視に
+                  // しない和集合)。isRest=true のときのみ「休」表示にする。
+                  const pfvPresent = pfvCountFor ? pfvCountFor(tpl.id, wd) > 0 : false;
+                  const isRest = cap === 0 && !pfvPresent && visitList.length === 0;
 
                   // 距離: 各 visit に「そこに来るまでの移動距離」(前の患者から) を割当てる.
                   //   - 1 人目 = 拠点 → 最初の患者 (officeLatLngById があるとき).
@@ -505,13 +517,13 @@ export function CourseWeekOverview({
                       key={`c-${tpl.id}-${wd}`}
                       className={cn(
                         'border-b border-r border-border-default px-2 py-1 align-top',
-                        cap === 0 ? 'bg-bg-muted/40' : 'bg-bg-base',
+                        isRest ? 'bg-bg-muted/40' : 'bg-bg-base',
                       )}
                       data-testid={`course-week-overview-cell-${tpl.id}-${wd}`}
                       data-capacity={cap}
                       data-occupant-count={visitList.length}
                     >
-                      {cap === 0 ? (
+                      {isRest ? (
                         <span className="text-[10px] text-text-muted">休</span>
                       ) : (
                         <>

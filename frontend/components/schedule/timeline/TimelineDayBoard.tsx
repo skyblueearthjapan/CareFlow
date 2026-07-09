@@ -119,6 +119,12 @@ export interface TimelineCourseColumn {
   visits: CourseGridVisit[];
   /** 担当スタッフ (course.assigned_staff_id を解決したもの)。ヘッダのアバター色に sex を使う。 */
   assignedStaff: StaffRead | null;
+  /**
+   * PO 2026-07-09: course.assigned_staff_id が「削除済み staff」を指す (= active な
+   * staff 一覧に見つからない stale ID) 場合 true。列ヘッダで名前の代わりに
+   * （担当不在）を琥珀色で出す（担当 null の「（未割当）」とは区別する）。
+   */
+  assignedStaffMissing?: boolean;
   freeGaps: FreeGap[];
   capacity: { filled: number; max: number };
   /** 当該コース担当スタッフの当日イベント (勤務外/会議帯として描く元)。 */
@@ -1411,9 +1417,19 @@ export function TimelineDayBoard({
                         ? '担当スタッフを変更します'
                         : '「週を生成」を実行するとコースが作成され担当を変更できます'
                     }
-                    className="w-full max-w-full truncate rounded border border-border-default bg-bg-base px-1 py-px text-[12px] font-bold text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
+                    className={cn(
+                      'w-full max-w-full truncate rounded border bg-bg-base px-1 py-px text-[12px] font-bold disabled:cursor-not-allowed disabled:opacity-60',
+                      col.assignedStaffMissing
+                        ? 'border-warning text-warning'
+                        : 'border-border-default text-text-primary',
+                    )}
                   >
                     <option value="">（未割当）</option>
+                    {/* PO 2026-07-09: 担当が削除済み (stale ID) の場合、選択肢に無いため
+                        （担当不在）を現在値として表示する（再割当を促す）。 */}
+                    {col.assignedStaffMissing && col.course?.assigned_staff_id ? (
+                      <option value={col.course.assigned_staff_id}>（担当不在）</option>
+                    ) : null}
                     {col.staffOptions.map((s) => (
                       <option key={s.id} value={s.id}>
                         {s.name}
@@ -1421,8 +1437,13 @@ export function TimelineDayBoard({
                     ))}
                   </select>
                 ) : (
-                  <div className="truncate text-[12.5px] font-bold text-text-primary">
-                    {staffName}
+                  <div
+                    className={cn(
+                      'truncate text-[12.5px] font-bold',
+                      col.assignedStaffMissing ? 'text-warning' : 'text-text-primary',
+                    )}
+                  >
+                    {col.assignedStaffMissing ? '（担当不在）' : staffName}
                   </div>
                 )}
                 <div className="flex items-center gap-1.5 text-[9.5px] text-text-muted">

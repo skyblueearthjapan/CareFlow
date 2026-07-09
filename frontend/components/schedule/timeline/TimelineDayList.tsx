@@ -388,8 +388,13 @@ export function TimelineDayList({
                 {c.office_name ?? ''}
                 {c.course_code ?? ''}
               </span>
-              <span className="text-[13px] font-bold text-text-primary">
-                {c.staff_name ?? '（未割当）'}
+              <span
+                className={cn(
+                  'text-[13px] font-bold',
+                  c.staff_missing ? 'text-warning' : 'text-text-primary',
+                )}
+              >
+                {c.staff_missing ? '（担当不在）' : (c.staff_name ?? '（未割当）')}
               </span>
               {c.capacity ? (
                 <span

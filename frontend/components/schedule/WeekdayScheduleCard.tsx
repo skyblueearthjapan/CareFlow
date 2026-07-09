@@ -143,6 +143,12 @@ export interface CourseListItem {
   office_name?: string | null;
   course_code?: string | null;
   staff_name?: string | null;
+  /**
+   * PO 2026-07-09: 担当 (course.assigned_staff_id) が削除済み staff を指す (stale) 場合 true。
+   * コース見出しで staff_name の代わりに（担当不在）を琥珀色で出す（担当 null の
+   * 「（未割当）」とは区別）。
+   */
+  staff_missing?: boolean | null;
 }
 
 export interface WeekdayScheduleCardProps {

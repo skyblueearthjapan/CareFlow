@@ -186,6 +186,12 @@ vi.mock('@/lib/queries/weekday_staff_capacity', () => ({
     isLoading: false,
   }),
 }));
+vi.mock('@/lib/queries/pfv_course_presence', () => ({
+  usePfvCoursePresenceLookup: () => ({
+    pfvCountFor: () => 0,
+    isLoading: false,
+  }),
+}));
 vi.mock('@/lib/queries/offices', () => ({
   useOffices: (...args: unknown[]) => mockOffices(...args),
 }));

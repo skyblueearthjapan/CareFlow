@@ -30,7 +30,7 @@ from typing import Annotated, Any, NoReturn
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from app.core.deps import DbDep, require_role
@@ -58,6 +58,8 @@ from app.schemas.v2.auto_schedule_v2 import (
     AutoScheduleV2SyncFixedToWeekResponse,
     AutoScheduleV2UnassignAllRequest,
     AutoScheduleV2UnassignAllResponse,
+    PfvCoursePresenceItem,
+    PfvCoursePresenceResponse,
     UnassignedPatient,
     UpdateFixedTimeMasterRequest,
     UpdateFixedTimeMasterResponse,
@@ -2073,6 +2075,66 @@ async def weekday_staff_capacity_endpoint(
         items=items,
         course_codes_max=_COURSE_CODES_MAX,
     )
+
+
+# ---------------------------------------------------------------------------
+# pfv-course-presence (PO 2026-07-09: PFV に含まれるコースを「正」として列を出す)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/v2/pfv-course-presence",
+    response_model=PfvCoursePresenceResponse,
+    status_code=status.HTTP_200_OK,
+    summary="固定訪問(PFV)にコースが含まれる (course_template_id×曜日) の件数",
+)
+async def pfv_course_presence_endpoint(
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+) -> PfvCoursePresenceResponse:
+    """PO 決定 (2026-07-09): 固定訪問スケジュール (PFV) に含まれるコースを「正」とし、
+    スタッフ数連動の開講判定と和集合で週/日ビューの列を出すための read-only 集計.
+
+    スタッフ削除等で稼働 0 になっても PFV がコース指定済みなら列を隠さず (= 既存訪問を
+    可視に保ち) 別途警告を出す、という新原則の表示側根拠を提供する.
+
+    ``patient_fixed_visits`` を (course_template_id, weekday) で GROUP BY し件数を返す.
+      - ``course_template_id IS NULL`` は除外 (office フォールバックで解決される枠は
+        特定の course_template 列に紐付かないため).
+      - 削除済み患者 (``patients.deleted_at IS NOT NULL``) の PFV は除外.
+      - mode ('normal'/'special') は絞らず全 mode を集計する. 本 API は週非依存で
+        「その (テンプレ×曜日) に固定枠が存在するか」だけを見るため、normal/special の
+        いずれの固定枠でも「正」= 列を出す根拠になる (Layer1 は ``_select_pattern`` で
+        週ごとに mode を選ぶが、ここは存在判定のみ). 隠して不可視になる事故を防ぐ側に倒す.
+
+    RBAC: admin / manager のみ.
+    """
+    result = await db.execute(
+        select(
+            PatientFixedVisit.course_template_id,
+            PatientFixedVisit.weekday,
+            func.count(PatientFixedVisit.id),
+        )
+        .join(Patient, Patient.id == PatientFixedVisit.patient_id)
+        .where(
+            PatientFixedVisit.course_template_id.is_not(None),
+            Patient.deleted_at.is_(None),
+        )
+        .group_by(PatientFixedVisit.course_template_id, PatientFixedVisit.weekday)
+    )
+    items = [
+        PfvCoursePresenceItem(
+            course_template_id=ctid,
+            weekday=wd,
+            pfv_count=int(cnt),
+        )
+        for (ctid, wd, cnt) in result.all()
+        if ctid is not None
+    ]
+    # 安定した出力順 (course_template_id, weekday) でソート.
+    items.sort(key=lambda it: (str(it.course_template_id), it.weekday))
+
+    return PfvCoursePresenceResponse(items=items)
 
 
 # ---------------------------------------------------------------------------
