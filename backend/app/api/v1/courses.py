@@ -30,11 +30,13 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
+from sqlalchemy import update as sa_update
 from sqlalchemy.exc import IntegrityError
 
 from app.core.deps import DbDep, require_role
 from app.models.course import Course
 from app.models.user import User
+from app.models.visit import Visit
 from app.schemas.course import CourseCreate, CourseRead, CourseUpdate
 from app.schemas.v2.enums import CourseStatus
 from app.services.op_log_service import record_op
@@ -338,6 +340,25 @@ async def update_course(
 
     for field, value in update_data.items():
         setattr(course, field, value)
+
+    # 担当変更を「このコースの visits」へ伝播する。
+    # 訪問モニター / モバイル「今日の訪問」/ ダッシュボード等は visits.primary_staff_id を
+    # 参照するため、course.assigned_staff_id だけ変えると担当変更後に表示がズレる
+    # (PO報告 2026-07-09: モニターとスケジュールの担当が食い違う)。手動上書き visit は尊重。
+    if _staff_id_changing:
+        _new_staff_id: UUID | None = update_data.get("assigned_staff_id")
+        # モニター/モバイル/ダッシュボードが読む primary_staff_id を一括更新 (bulk UPDATE)。
+        # VSA(正典) は連携週スケジュール(コース担当優先)・layer3 再実行で吸収されるため
+        # ここでは触らない (相方や async セッションを巻き込まない・単純で確実)。
+        await db.execute(
+            sa_update(Visit)
+            .where(
+                Visit.course_id == course.id,
+                Visit.deleted_at.is_(None),
+                Visit.manual_staff_override.is_(False),
+            )
+            .values(primary_staff_id=_new_staff_id)
+        )
 
     await _commit_or_409(db)
     await db.refresh(course)

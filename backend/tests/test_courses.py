@@ -506,3 +506,78 @@ async def test_course_code_e_round_trip(client, db) -> None:
     assert list_res.status_code == 200, list_res.text
     codes = {item["code"] for item in list_res.json()}
     assert "E" in codes
+
+
+@pytest.mark.asyncio
+async def test_courses_patch_staff_propagates_to_visits(client, db) -> None:
+    """PATCH /courses で担当変更すると、そのコースの visits.primary_staff_id / VSA も追従する。
+
+    回帰 (PO報告 2026-07-09): 追従しないと訪問モニター/モバイル「今日の訪問」/
+    ダッシュボード (visits.primary_staff_id 参照) が担当変更後にスケジュールとズレる。
+    """
+    from datetime import date, time
+
+    from sqlalchemy import select
+
+    from app.models.patient import Patient
+    from app.models.staff import Staff
+    from app.models.visit import Visit
+
+    admin = await _make_user(db, "c-patch-staff@example.com", "admin")
+    office = await _make_office(db, "事業所-staffprop")
+    s_old = Staff(name="旧担当", role="staff", is_trainee=False, primary_office_id=office.id)
+    s_new = Staff(name="新担当", role="staff", is_trainee=False, primary_office_id=office.id)
+    db.add_all([s_old, s_new])
+    await db.flush()
+    p = Patient(
+        code="CPSPROP", name="患者", status="active", lat=35.6, lng=140.1,
+        primary_office_id=office.id,
+    )
+    db.add(p)
+    await db.flush()
+
+    create = await client.post(
+        "/api/v1/courses",
+        headers=_bearer(admin),
+        json=_course_payload(
+            office.id, weekday=3, code="A", course_status="staff_assigned",
+            assigned_staff_id=str(s_old.id),
+        ),
+    )
+    assert create.status_code == 201, create.text
+    cid = UUID(create.json()["id"])
+
+    # このコースに紐付く visit (旧担当で割当済み)。
+    v = Visit(
+        patient_id=p.id, course_id=cid, visit_date=date(2026, 5, 14),
+        start_time=time(9, 0), end_time=time(9, 40), type="regular",
+        status="planned", source="auto_alloc", required_staff_count=1,
+        primary_staff_id=s_old.id, manual_staff_override=False,
+    )
+    # 手動上書き visit は担当変更で触られないこと。
+    v_manual = Visit(
+        patient_id=p.id, course_id=cid, visit_date=date(2026, 5, 14),
+        start_time=time(10, 0), end_time=time(10, 40), type="regular",
+        status="planned", source="manual", required_staff_count=1,
+        primary_staff_id=s_old.id, manual_staff_override=True,
+    )
+    db.add_all([v, v_manual])
+    await db.commit()
+    vid, vid_manual = v.id, v_manual.id
+
+    # 担当を新担当へ変更。
+    res = await client.patch(
+        f"/api/v1/courses/{cid}",
+        headers=_bearer(admin),
+        json={"assigned_staff_id": str(s_new.id)},
+    )
+    assert res.status_code == 200, res.text
+
+    # PATCH は別セッションで DB を更新するため、テストセッションの識別マップを破棄して読み直す。
+    db.expunge_all()
+    refreshed = await db.scalar(select(Visit).where(Visit.id == vid))
+    assert refreshed is not None
+    assert refreshed.primary_staff_id == s_new.id, "primary_staff_id が新担当へ追従していない"
+    manual = await db.scalar(select(Visit).where(Visit.id == vid_manual))
+    assert manual is not None
+    assert manual.primary_staff_id == s_old.id, "手動上書き visit が誤って変更された"
