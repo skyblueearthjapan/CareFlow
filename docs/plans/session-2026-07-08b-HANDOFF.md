@@ -100,6 +100,21 @@
 - **拠点直書き2箇所のマスタ駆動化** — FieldBoard の OFFICE_ORDER/OFFICE_NAME_TO_SHORT・patient_excel の拠点対応表（office_feature_flags の前例方式）。他事業所展開の前までに
 - 過去週(W21/W27)とW42サンドボックスの courses.assigned_staff_id に関谷が残存（過去週=履歴として正。W42=生成し直しで解消可）
 
+## 1.8 追記4（2026-07-10・退職事故フォロー完了）
+- **PO決定 案α確定**: PFVがスタッフ数を超えても**警告のみ**（作成ブロックしない）。
+  ＝昨日入れたスタッフ不足バナー/担当不在表示が既に案αの実装。**追加実装なし**。
+  役割分担=PFV(需要・正)／スタッフマスタ(供給・充足チェック)／ズレは警告で可視化。
+- **提案エンジン調査結論**: propose-slots/範囲最適化/一括投入は既に「その週の生成済み全コース(PFV由来)」
+  母集合＝仮説B(PO希望どおり)。人数でコース本数を絞るのは自動生成の後段(auto_allocator Stage5)と
+  表示のみ。全体最適化ボタンは廃止済。**常用機能は作り替え不要**。
+- **ec7dfef 本番稼働(migration 0059適用済・DB head=0059)**: ①「週を生成」再実行確認ダイアログ
+  (訪問ありの週のみ・0件は即実行) ②拠点マスタ駆動化(offices.sort_order/short_label・稲毛1/稲・都賀2/津
+  backfill済。FieldBoard定数撤去・Excel取込は注入設計・legacy fallback残置)。
+- **デプロイ教訓**: docker build がキャッシュで新規ファイル(migration等)を取り込まない事象が発生。
+  **migration や新規ファイルを含むデプロイは該当サービスを `build --no-cache` する**こと。
+  今回 backend/frontend とも --no-cache 再ビルドで解消。migrationは `up` 前に upgrade head。
+- s003無効化・髙梨(s007)共通PW発行・モニター並び順(拠点→コース→スタッフ)も完了。
+
 ## 2. 残タスク（★徹底列挙・忘れず引き継ぐ）
 
 ### 【A. タイムライン刷新】✅ **完了**（2026-07-09 `5d3ccd8`）
