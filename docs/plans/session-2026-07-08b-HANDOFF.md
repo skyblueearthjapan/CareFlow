@@ -66,6 +66,30 @@
 
 **FEユニットテスト 1094 pass / 0 fail（109ファイル）** — D-4のPanel 20fail負債を含め全解消。
 
+## 1.7 追記3（2026-07-09 深夜・スタッフ退職事故と設計転換）
+
+関谷公佑さん退職（スタッフ論理削除）を起点に連鎖事故→根治まで:
+| commit | 内容 |
+|---|---|
+| `8ae82a4` | 週生成の自動割当が legacy `visits.primary_staff_id` を書かない同期漏れ修正＋本番backfill |
+| `561a626` | 連携の週スケジュールが primary_staff_id 必須で空になる修正（正典ソース解決） |
+| `937f511` | PATCH /courses の担当変更を visits.primary へ伝播（手動上書き尊重） |
+| `9910ff8` | **【設計転換・PO決定】コース列表示の正=PFV**。表示=開講判定∪PFV∪visit実在。⚠スタッフ不足バナー・（担当不在）琥珀表示。GET /v2/pfv-course-presence 新設 |
+
+**確定した設計原則（PO明言・今後の判断基準）**:
+1. PFV(固定訪問スケジュール)のコースが正 → 2. スタッフは後付け → 3. 不足は隠さず警告
+4. 特定事業所/スタッフをコードで認識しない。**マスタ駆動**（登録されれば使われ、消えれば使われない）
+
+**運用メモ**: W28はPO一斉未割当→再生成500失敗→assign-staff-onlyで復旧（26コース確定・primary同期済）。
+**表示の正典=courses.assigned_staff_id、primary_staff_idはそのミラー**（メモリ careflow-staff-assignment-source 参照）。
+
+### 新規残タスク（この事故から発生）
+- **P2: 生成/割当エンジンのPFV正転換** — auto_allocator Stage4 の A-E 発行数が今も稼働スタッフ数基準。表示(P1)と同じくPFV基準へ。設計相談から
+- **「週を生成」(generate-week-only) の 500 バグ** — 手動配置visitと再生成INSERTが uq_visits_pds_group_active 衝突（apply_week_only にはある保護スキップが generate 経路に無い）。**修正まで既存週への再生成は使わない**
+- **s003(関谷) ログインアカウント無効化** — PO確認待ち（共通PW運用で退職者がログイン可能な状態）
+- **拠点直書き2箇所のマスタ駆動化** — FieldBoard の OFFICE_ORDER/OFFICE_NAME_TO_SHORT・patient_excel の拠点対応表（office_feature_flags の前例方式）。他事業所展開の前までに
+- 過去週(W21/W27)とW42サンドボックスの courses.assigned_staff_id に関谷が残存（過去週=履歴として正。W42=生成し直しで解消可）
+
 ## 2. 残タスク（★徹底列挙・忘れず引き継ぐ）
 
 ### 【A. タイムライン刷新】✅ **完了**（2026-07-09 `5d3ccd8`）
