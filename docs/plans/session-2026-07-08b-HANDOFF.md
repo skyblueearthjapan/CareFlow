@@ -84,8 +84,18 @@
 **表示の正典=courses.assigned_staff_id、primary_staff_idはそのミラー**（メモリ careflow-staff-assignment-source 参照）。
 
 ### 新規残タスク（この事故から発生）
-- **P2: 生成/割当エンジンのPFV正転換** — auto_allocator Stage4 の A-E 発行数が今も稼働スタッフ数基準。表示(P1)と同じくPFV基準へ。設計相談から
-- **「週を生成」(generate-week-only) の 500 バグ** — 手動配置visitと再生成INSERTが uq_visits_pds_group_active 衝突（apply_week_only にはある保護スキップが generate 経路に無い）。**修正まで既存週への再生成は使わない**
+- **P2: 生成エンジンのPFV正転換 → 調査の結果ほぼ不要と判明（2026-07-10）**。
+  「週を生成」(Layer1) は**既にPFV正**（PFVの course_template_id どおりコース生成・スタッフ数制約なし。
+  layer1_expander.py:1075-1106/293-346）。スタッフ数でA-E本数を絞るのは auto_allocator_v2 Stage4
+  （自動最適化/プール投入の**新規提案**経路）のみで、超過分は警告/保留に流れる＝PO原則と整合。
+  残ウォッチ: Stage4 が PFV 指定コースを跨ぐ提案を絞る場面の妥当性のみ（実害報告なし・対応不要）
+- **「週を生成」(generate-week-only) の 500 バグ — 根因確定（2026-07-10）**:
+  冪等削除は「planned+auto」のみ削除、衝突スキップガードは「manual (source≠auto)」のみ保護
+  （layer1_expander.py:1030-1041/1157-1205）。**completed 済みの auto 訪問**（例: 海老澤 7/6 09:30）は
+  削除されず・ガードにも掛からず、同キー INSERT が uq_visits_pds_group_active 違反 → 500。
+  影響=**実施済み訪問が1件でもある週（今週・過去週）への再生成は必ず500**（トランザクションは
+  ロールバックされデータ無傷を実測確認）。未来週は安全。修正=ガードのキー集合を
+  「冪等削除で残る全 active visit（completed/cancelled/in_progress/非auto）」へ拡張（小規模）
 - **s003(関谷) ログインアカウント無効化** — PO確認待ち（共通PW運用で退職者がログイン可能な状態）
 - **拠点直書き2箇所のマスタ駆動化** — FieldBoard の OFFICE_ORDER/OFFICE_NAME_TO_SHORT・patient_excel の拠点対応表（office_feature_flags の前例方式）。他事業所展開の前までに
 - 過去週(W21/W27)とW42サンドボックスの courses.assigned_staff_id に関谷が残存（過去週=履歴として正。W42=生成し直しで解消可）
