@@ -126,15 +126,17 @@ export function KaipokeConsole({
           )}
         </div>
 
-        {/* 右カラム: 週次反映の操作 + 取り込みの操作 */}
-        <div className="min-w-0 space-y-4">
+        {/* 右カラム: 週次反映の操作 + 取り込みの操作。
+            flex-col にして最後の「取り込む」カードを flex-1 で下まで伸ばし、左カラム
+            (モニター+稼働状況) の下辺と揃える (PO要望 2026-07-09: 下辺のズレを解消)。 */}
+        <div className="flex min-w-0 flex-col gap-4">
           {/* 週次反映ワークフロー — 操作 */}
           <Card className="p-5">
             <WeeklyApplyControls vm={weekly} />
           </Card>
 
-          {/* カイポケから取り込む — 操作 */}
-          <Card className="p-5">
+          {/* カイポケから取り込む — 操作 (余白を許容して下辺を稼働状況カードに揃える) */}
+          <Card className="flex-1 p-5">
             <InboundControls vm={inbound} />
           </Card>
         </div>
