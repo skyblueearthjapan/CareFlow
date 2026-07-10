@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>らく助 ブランド適用モック — CareFlow リブランディング提案</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@500;700;800&family=Noto+Sans+JP:wght@400;500;700&family=Noto+Serif+JP:wght@600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    /* ===== らく助 ハイブリッドパレット（提案値） ===== */
+    --rk-primary: #E15A7F;        /* 操作系: ボタン/リンク/アクティブ（濃ピンク・白文字が読める濃度） */
+    --rk-primary-hover: #C94A6E;
+    --rk-identity: #F8B4C6;       /* シートのメインピンク: ロゴ/装飾/バッジ */
+    --rk-pink-light: #FFD6E0;
+    --rk-pink-pale: #FFEEF2;
+    --rk-pink-bg: #FFF7F9;
+    --rk-leaf: #78C888;           /* 芽のグリーン: 成功/ポジティブ */
+    --rk-leaf-dark: #4CAF6D;
+    --rk-brown: #8D6E63;          /* ロゴ文字ブラウン */
+    /* ===== 据え置き（機能層） ===== */
+    --bg-app: #FAF7F2;            /* 現行クリーム地は維持（ハイブリッド） */
+    --text-primary: #1C1917;
+    --text-secondary: #57534E;
+    --female: #FBCFE0;            /* 性別カード(女性) 現行イメージ */
+    --female-text: #BE447A;
+    --male: #C7DDF5;              /* 性別カード(男性) */
+    --male-text: #2D6CB0;
+    --status-amber: #D97706;      /* 警告/テラコッタは機能色として維持 */
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:'Noto Sans JP',sans-serif; background:#EFEAE4; color:var(--text-primary); padding:28px 24px 80px; }
+  .rounded-font { font-family:'M PLUS Rounded 1c','Noto Sans JP',sans-serif; }
+  h1 { font-family:'M PLUS Rounded 1c'; font-weight:800; font-size:26px; color:var(--rk-brown); }
+  h1 .pink { color:var(--rk-primary); }
+  .lead { color:var(--text-secondary); font-size:13px; margin:6px 0 26px; }
+  h2 { font-size:16px; font-weight:700; margin:38px 0 4px; display:flex; align-items:center; gap:8px; }
+  h2::before { content:''; width:10px; height:10px; border-radius:50%; background:var(--rk-identity); }
+  .h2note { font-size:12px; color:var(--text-secondary); margin-bottom:14px; }
+
+  /* パレット */
+  .palette { display:flex; flex-wrap:wrap; gap:10px; }
+  .swatch { width:132px; border-radius:12px; overflow:hidden; background:#fff; box-shadow:0 1px 4px rgba(0,0,0,.08); }
+  .swatch .chip { height:56px; display:flex; align-items:flex-end; padding:6px 8px; font-size:11px; font-weight:700; }
+  .swatch .meta { padding:7px 9px; font-size:11px; line-height:1.5; }
+  .swatch .meta code { font-size:10px; color:var(--text-secondary); }
+  .keep { outline:2px dashed #C8BFB4; outline-offset:2px; }
+  .keeplabel { font-size:10px; color:#8A8177; padding:0 9px 7px; }
+
+  /* デバイス枠 */
+  .devices { display:flex; gap:26px; flex-wrap:wrap; align-items:flex-start; }
+  .device-label { text-align:center; font-size:12px; font-weight:700; color:var(--text-secondary); margin-top:10px; }
+
+  /* ===== ログイン ===== */
+  .login-frame { width:390px; height:560px; background:linear-gradient(180deg, var(--rk-pink-bg) 0%, var(--rk-pink-pale) 100%); border-radius:18px; box-shadow:0 4px 18px rgba(0,0,0,.12); display:flex; flex-direction:column; align-items:center; justify-content:center; position:relative; overflow:hidden; }
+  .login-motifs { position:absolute; bottom:-6px; left:0; right:0; text-align:center; opacity:.55; }
+  .login-motifs img { width:92%; }
+  .login-card { position:relative; width:310px; background:#fff; border-radius:20px; padding:26px 26px 24px; box-shadow:0 6px 24px rgba(225,90,127,.14); text-align:center; }
+  .login-card .chara { width:110px; margin:-84px auto 4px; display:block; }
+  .login-card .logotype { width:170px; margin:2px auto 2px; display:block; }
+  .login-sub { font-size:11px; color:var(--rk-brown); font-weight:700; letter-spacing:.06em; margin-bottom:16px; }
+  .fld { text-align:left; margin-bottom:10px; }
+  .fld label { font-size:11px; font-weight:700; color:var(--text-secondary); }
+  .fld input { width:100%; margin-top:4px; padding:9px 12px; border:1.5px solid var(--rk-pink-light); border-radius:10px; font-size:13px; background:var(--rk-pink-bg); }
+  .btn-primary { width:100%; margin-top:8px; padding:11px; border:none; border-radius:12px; background:var(--rk-primary); color:#fff; font-size:14px; font-weight:700; font-family:'M PLUS Rounded 1c'; cursor:pointer; box-shadow:0 3px 0 var(--rk-primary-hover); }
+  .login-foot { margin-top:12px; font-size:10px; color:var(--text-secondary); }
+
+  /* ===== PC ===== */
+  .pc-frame { width:680px; height:440px; background:var(--bg-app); border-radius:14px; box-shadow:0 4px 18px rgba(0,0,0,.12); display:flex; overflow:hidden; }
+  .pc-side { width:176px; background:#fff; border-right:1px solid #F0E9E2; display:flex; flex-direction:column; }
+  .pc-brand { display:flex; align-items:center; gap:8px; padding:12px 14px 10px; border-bottom:1px solid var(--rk-pink-pale); }
+  .pc-brand img { width:34px; height:34px; border-radius:9px; }
+  .pc-brand .t1 { font-family:'M PLUS Rounded 1c'; font-weight:800; font-size:16px; color:var(--rk-brown); line-height:1.1; }
+  .pc-brand .t1 .p { color:var(--rk-primary); }
+  .pc-brand .t2 { font-size:8.5px; color:var(--text-secondary); }
+  .pc-nav { padding:10px 8px; display:flex; flex-direction:column; gap:2px; font-size:12.5px; }
+  .pc-nav a { display:flex; align-items:center; gap:8px; padding:8px 10px; border-radius:10px; color:var(--text-secondary); text-decoration:none; }
+  .pc-nav a.active { background:var(--rk-pink-pale); color:var(--rk-primary); font-weight:700; }
+  .pc-nav .ic { width:16px; text-align:center; }
+  .pc-main { flex:1; display:flex; flex-direction:column; }
+  .pc-header { height:48px; background:#fff; border-bottom:1px solid #F0E9E2; display:flex; align-items:center; padding:0 14px; gap:10px; }
+  .pc-header .burger { color:var(--text-secondary); font-size:15px; }
+  .pc-header .spacer { flex:1; }
+  .pc-header .hd-ic { position:relative; width:28px; height:28px; border-radius:8px; background:var(--rk-pink-bg); display:flex; align-items:center; justify-content:center; font-size:13px; }
+  .pc-header .hd-ic .badge { position:absolute; top:-5px; right:-5px; background:var(--rk-primary); color:#fff; border-radius:8px; font-size:8px; padding:1px 4px; font-weight:700; }
+  .pc-content { flex:1; padding:14px; overflow:hidden; }
+  .pc-content .ttl { font-family:'Noto Serif JP',serif; font-weight:700; font-size:15px; margin-bottom:10px; }
+  .sched-row { display:flex; gap:8px; margin-bottom:8px; }
+  .visit-card { flex:1; border-radius:10px; padding:8px 10px; font-size:11px; line-height:1.5; box-shadow:0 1px 3px rgba(0,0,0,.06); }
+  .visit-card .nm { font-weight:700; font-size:12px; }
+  .vc-f { background:var(--female); color:var(--female-text); }
+  .vc-m { background:var(--male); color:var(--male-text); }
+  .warn-banner { display:flex; align-items:center; gap:8px; background:#FEF3C7; border:1px solid var(--status-amber); color:#92400E; border-radius:10px; padding:7px 10px; font-size:11px; margin-bottom:10px; }
+  .pc-cta { display:inline-flex; align-items:center; gap:6px; background:var(--rk-primary); color:#fff; border-radius:10px; padding:8px 14px; font-size:12px; font-weight:700; font-family:'M PLUS Rounded 1c'; }
+
+  /* ===== モバイル ===== */
+  .mob-frame { width:300px; height:560px; background:var(--bg-app); border-radius:26px; box-shadow:0 4px 18px rgba(0,0,0,.12); display:flex; flex-direction:column; overflow:hidden; border:6px solid #3A3532; }
+  .mob-topbar { background:var(--rk-pink-pale); color:var(--rk-primary); font-size:10.5px; font-weight:700; text-align:center; padding:6px; }
+  .mob-body { flex:1; padding:14px 14px 0; overflow:hidden; }
+  .mob-greet { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
+  .mob-greet .g1 { font-family:'Noto Serif JP',serif; font-size:16px; font-weight:700; }
+  .mob-greet .g2 { font-size:10.5px; color:var(--text-secondary); margin-top:2px; }
+  .mob-greet img { width:64px; }
+  .stat-row { display:flex; gap:8px; margin-bottom:14px; }
+  .stat { flex:1; background:#fff; border-radius:14px; padding:9px 6px; text-align:center; box-shadow:0 1px 4px rgba(0,0,0,.05); }
+  .stat .n { font-family:'M PLUS Rounded 1c'; font-weight:800; font-size:19px; color:var(--rk-primary); }
+  .stat .l { font-size:9.5px; color:var(--text-secondary); }
+  .mob-cta { display:block; background:var(--rk-primary); color:#fff; border-radius:14px; padding:12px; text-align:center; font-size:13px; font-weight:700; font-family:'M PLUS Rounded 1c'; box-shadow:0 3px 0 var(--rk-primary-hover); margin-bottom:14px; }
+  .mob-empty { background:#fff; border-radius:16px; padding:18px 14px; text-align:center; box-shadow:0 1px 4px rgba(0,0,0,.05); }
+  .mob-empty img { width:84px; margin-bottom:6px; }
+  .mob-empty .e1 { font-size:12.5px; font-weight:700; }
+  .mob-empty .e2 { font-size:10.5px; color:var(--text-secondary); margin-top:3px; }
+  .mob-nav { background:#fff; border-top:1px solid var(--rk-pink-pale); display:flex; padding:6px 4px 10px; }
+  .mob-nav .tab { flex:1; text-align:center; font-size:9.5px; color:#A8A29E; }
+  .mob-nav .tab .tic { font-size:16px; display:block; margin-bottom:1px; }
+  .mob-nav .tab.active { color:var(--rk-primary); font-weight:700; }
+
+  /* ===== アイコン ===== */
+  .icon-row { display:flex; gap:26px; align-items:flex-end; flex-wrap:wrap; }
+  .icon-item { text-align:center; }
+  .icon-item .cap { font-size:11px; color:var(--text-secondary); margin-top:6px; }
+  .icon-item img.i192 { width:96px; border-radius:22px; box-shadow:0 3px 10px rgba(0,0,0,.15); }
+  .icon-item img.i48 { width:48px; border-radius:11px; box-shadow:0 2px 6px rgba(0,0,0,.15); }
+  .favtab { display:flex; align-items:center; gap:7px; background:#fff; border-radius:10px 10px 0 0; padding:7px 14px 7px 10px; box-shadow:0 -1px 6px rgba(0,0,0,.1); font-size:11.5px; width:fit-content; }
+  .favtab img { width:16px; height:16px; border-radius:3px; }
+
+  /* 論点 */
+  .notes { background:#fff; border-radius:14px; padding:18px 20px; max-width:900px; box-shadow:0 1px 5px rgba(0,0,0,.06); }
+  .notes li { font-size:12.5px; line-height:1.9; margin-left:18px; }
+  .notes b { color:var(--rk-primary-hover); }
+</style>
+</head>
+<body>
+
+<h1>らく助 <span class="pink">ブランド適用モック</span></h1>
+<p class="lead">CareFlow → らく助 リブランディング（ハイブリッド配色案）。ブランド層＝ピンク系へ刷新、機能層（性別カード・状態色・警告色）＝現行維持。実装前の見た目合意用。</p>
+
+<h2>提案パレット</h2>
+<p class="h2note">点線枠＝現行から据え置くもの。それ以外がらく助パレットからの導入。</p>
+<div class="palette">
+  <div class="swatch"><div class="chip" style="background:var(--rk-primary);color:#fff">操作ピンク</div><div class="meta">primary（ボタン/リンク/アクティブ）<br><code>#E15A7F</code> ※白文字が読める濃度に調整</div></div>
+  <div class="swatch"><div class="chip" style="background:var(--rk-identity)">アイデンティティ</div><div class="meta">ロゴ・装飾・バッジ<br><code>#F8B4C6</code>（シート原色）</div></div>
+  <div class="swatch"><div class="chip" style="background:var(--rk-pink-pale)">淡ピンク</div><div class="meta">選択面・ヘッダー地<br><code>#FFEEF2</code></div></div>
+  <div class="swatch"><div class="chip" style="background:var(--rk-leaf);color:#fff">芽グリーン</div><div class="meta">成功・ポジティブ<br><code>#78C888</code></div></div>
+  <div class="swatch"><div class="chip" style="background:var(--rk-brown);color:#fff">ロゴブラウン</div><div class="meta">見出し・ロゴ文字<br><code>#8D6E63</code></div></div>
+  <div class="swatch keep"><div class="chip" style="background:var(--bg-app)">クリーム地</div><div class="meta"><code>#FAF7F2</code></div><div class="keeplabel">据え置き（Warm &amp; Human）</div></div>
+  <div class="swatch keep"><div class="chip" style="background:var(--status-amber);color:#fff">警告アンバー</div><div class="meta"><code>#D97706</code></div><div class="keeplabel">据え置き（機能色）</div></div>
+  <div class="swatch keep"><div class="chip" style="background:linear-gradient(90deg,var(--female) 50%,var(--male) 50%)">性別カード</div><div class="meta">女性ピンク/男性ブルー</div><div class="keeplabel">据え置き（下の共存確認）</div></div>
+</div>
+
+<h2>3画面プレビュー</h2>
+<p class="h2note">左から: ログイン（フル適用）／ PC版管理（中程度）／ モバイル・スタッフ（フル適用）</p>
+<div class="devices">
+
+  <!-- ログイン -->
+  <div>
+    <div class="login-frame">
+      <div class="login-motifs"><img src="assets/rakusuke/rakusuke-motifs.png" alt=""></div>
+      <div class="login-card">
+        <img class="chara" src="assets/rakusuke/rakusuke-main.png" alt="らく助">
+        <img class="logotype" src="assets/rakusuke/rakusuke-logo-type.png" alt="らく助 訪問看護 楽々スケジュール">
+        <div class="fld"><label>ログインID</label><input value="s001" readonly></div>
+        <div class="fld"><label>パスワード</label><input type="password" value="●●●●●●●●" readonly></div>
+        <button class="btn-primary">ログイン</button>
+        <div class="login-foot">スタッフコードでログイン</div>
+      </div>
+    </div>
+    <div class="device-label">ログイン画面（フル適用）</div>
+  </div>
+
+  <!-- PC -->
+  <div>
+    <div class="pc-frame">
+      <div class="pc-side">
+        <div class="pc-brand">
+          <img src="assets/rakusuke/rakusuke-icon-round.png" alt="">
+          <div><div class="t1">らく<span class="p">助</span></div><div class="t2">訪問看護 楽々スケジュール</div></div>
+        </div>
+        <nav class="pc-nav">
+          <a href="#"><span class="ic">🏠</span>ダッシュボード</a>
+          <a href="#" class="active"><span class="ic">📅</span>スケジュール</a>
+          <a href="#"><span class="ic">🧑‍🦳</span>患者</a>
+          <a href="#"><span class="ic">👥</span>スタッフ</a>
+          <a href="#"><span class="ic">🔄</span>連携</a>
+          <a href="#"><span class="ic">⚙️</span>設定</a>
+        </nav>
+      </div>
+      <div class="pc-main">
+        <div class="pc-header">
+          <span class="burger">☰</span>
+          <span class="spacer"></span>
+          <div class="hd-ic">🔔<span class="badge">3</span></div>
+          <div class="hd-ic">👤</div>
+        </div>
+        <div class="pc-content">
+          <div class="ttl">週間スケジュール</div>
+          <div class="warn-banner">⚠ 稲毛: コース5本に対し稼働スタッフ2名（機能色の警告は現行のまま）</div>
+          <div class="sched-row">
+            <div class="visit-card vc-f"><div class="nm">田中 花子 様</div>10:00–11:00 ・ 稲毛A</div>
+            <div class="visit-card vc-m"><div class="nm">佐藤 一郎 様</div>11:30–12:30 ・ 稲毛A</div>
+          </div>
+          <div class="sched-row">
+            <div class="visit-card vc-f"><div class="nm">鈴木 芳江 様</div>14:00–15:00 ・ 稲毛B</div>
+            <div class="visit-card vc-f"><div class="nm">高橋 松代 様</div>15:30–16:30 ・ 稲毛B</div>
+          </div>
+          <span class="pc-cta">＋ 新しいスケジュールを作成</span>
+        </div>
+      </div>
+    </div>
+    <div class="device-label">PC版・管理（中程度: ロゴ/primary色のみ。イラスト多用しない）</div>
+  </div>
+
+  <!-- モバイル -->
+  <div>
+    <div class="mob-frame">
+      <div class="mob-topbar">現場ボードを開く →</div>
+      <div class="mob-body">
+        <div class="mob-greet">
+          <div><div class="g1">こんにちは、宇田川さん</div><div class="g2">7月10日（金）</div></div>
+          <img src="assets/rakusuke/rakusuke-pose-wave.png" alt="らく助">
+        </div>
+        <div class="stat-row">
+          <div class="stat"><div class="n">4</div><div class="l">今日</div></div>
+          <div class="stat"><div class="n">18</div><div class="l">今週</div></div>
+          <div class="stat"><div class="n">72</div><div class="l">今月</div></div>
+        </div>
+        <a class="mob-cta">今日の訪問へ →</a>
+        <div class="mob-empty">
+          <img src="assets/rakusuke/rakusuke-pose-joy.png" alt="">
+          <div class="e1">本日の訪問はありません</div>
+          <div class="e2">おつかれさまでした！ゆっくり休んでくださいね</div>
+        </div>
+      </div>
+      <div class="mob-nav">
+        <div class="tab active"><span class="tic">🏠</span>ホーム</div>
+        <div class="tab"><span class="tic">📋</span>今日</div>
+        <div class="tab"><span class="tic">📅</span>今週</div>
+        <div class="tab"><span class="tic">👤</span>マイページ</div>
+      </div>
+    </div>
+    <div class="device-label">モバイル・スタッフ（フル適用: マスコット/空状態）</div>
+  </div>
+</div>
+
+<h2>PWAアイコン・favicon</h2>
+<p class="h2note">現状 favicon は未設置。丸みスクエアを基準に 512/192/favicon を生成する。</p>
+<div class="icon-row">
+  <div class="icon-item"><img class="i192" src="assets/rakusuke/rakusuke-icon-round.png" alt=""><div class="cap">ホーム画面 (192/512)</div></div>
+  <div class="icon-item"><img class="i48" src="assets/rakusuke/rakusuke-icon-square.png" alt=""><div class="cap">通知など小サイズ</div></div>
+  <div class="icon-item">
+    <div class="favtab"><img src="assets/rakusuke/rakusuke-icon-circle.png" alt=""> らく助 — 訪問看護 楽々スケジュール</div>
+    <div class="cap">ブラウザタブ（favicon + title）</div>
+  </div>
+</div>
+
+<h2>実装時の論点メモ（このモックで確認したいこと）</h2>
+<div class="notes">
+  <ul>
+    <li><b>操作ピンクの濃度</b>: #E15A7F を仮置き。もっとシートの濃ヘッダー寄り（明るめ）にも、更に濃く（コントラスト重視）にも振れる。</li>
+    <li><b>性別カードとの共存</b>: PC画面プレビュー内で「UIのピンク」と「女性カードのピンク」が並んだ見え方を確認。濁って見えるなら女性カードの色味を微調整。</li>
+    <li><b>クリーム地 vs ピンク地</b>: 背景はハイブリッド案として現行クリーム #FAF7F2 を維持。ログインだけピンクグラデ。全画面をピンク地に寄せるかは要判断。</li>
+    <li><b>マスコットの出し所</b>: モバイル=挨拶横+空状態、ログイン=メイン1体、PC=ロゴのみ。過剰なら削る、足りなければ「提案・アドバイス」ポーズを提案UIへ追加。</li>
+    <li><b>名称変更の範囲</b>: manifest/タブ/ヘッダー/ログイン/オフライン画面は一括変更。患者宅QR印刷物は対外物のため別フェーズでPO確認後。</li>
+  </ul>
+</div>
+
+</body>
+</html>
