@@ -10,7 +10,6 @@ import {
   KeyRound,
   LogOut,
   Menu,
-  ScrollText,
   Settings,
   ShieldCheck,
   User,
@@ -49,7 +48,6 @@ export function Header({ title = 'らく助', onToggleSidebar }: HeaderProps) {
         <UserMenuButton />
         <SchedulingSettingsButton />
         <AdminUsersButton />
-        <AuditLogsButton />
       </div>
     </header>
   );
@@ -314,14 +312,4 @@ function SchedulingSettingsButton() {
   );
 }
 
-function AuditLogsButton() {
-  const { data: session } = useSession();
-  if (session?.user?.role !== 'admin') return null;
-  return (
-    <Button variant="ghost" size="icon" asChild aria-label="監査ログ" title="監査ログ">
-      <Link href="/admin/audit-logs">
-        <ScrollText className="h-5 w-5" strokeWidth={1.75} />
-      </Link>
-    </Button>
-  );
-}
+// AuditLogsButton は撤去 (PO要望 2026-07-10)。監査ログへの入口はサイドバーに一本化。
