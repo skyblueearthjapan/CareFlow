@@ -106,14 +106,25 @@ function CourseDetail({
 }) {
   return (
     <div className="p-4" data-testid="monitor-detail-course">
-      {/* 行=コース単位: 見出し=コース、担当は下段 (複数名は「・」連結)。 */}
+      {/* 行=コース単位: 見出し=コース、担当は下段 (スケジュールのコース担当を優先)。 */}
       <h3 className="m-0 text-[15px] font-bold text-text-primary">
         {row.course_label ?? row.staff_name ?? '（担当未設定）'}
       </h3>
-      <div className="mb-3.5 text-xs text-text-secondary">
-        {[row.office_name, row.staff_name ?? '担当未設定'].filter(Boolean).join(' ・ ')} ／ 訪問{' '}
-        {row.visits.length}件
+      <div className="mb-1 text-xs text-text-secondary">
+        {[row.office_name, row.course_staff_name ?? row.staff_name ?? '担当未設定']
+          .filter(Boolean)
+          .join(' ・ ')}{' '}
+        ／ 訪問 {row.visits.length}件
       </div>
+      {/* スケジュールの担当と実訪問の担当の食い違いは隠さず警告する (設計原則③)。 */}
+      {row.course_staff_id != null &&
+        ((row.staff_ids ?? []).length === 0 ||
+          (row.staff_ids ?? []).some((sid) => sid !== row.course_staff_id)) && (
+          <div className="mb-3 rounded-md border border-warning bg-warning-bg px-2 py-1.5 text-[11px] text-warning-strong">
+            ⚠ スケジュールの担当（{row.course_staff_name ?? '未設定'}）と実訪問の担当（
+            {row.staff_name ?? '未設定'}）が一致していません
+          </div>
+        )}
       <ul className="m-0 list-none p-0">
         {row.visits.map((v, i) => {
           const st = displayStatus(v);

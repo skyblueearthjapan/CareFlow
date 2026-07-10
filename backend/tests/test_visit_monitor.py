@@ -816,6 +816,11 @@ async def test_build_monitor_rows_grouped_by_course(db) -> None:
     p2 = await _make_patient(db, "CR-2")
     p3 = await _make_patient(db, "CR-3")
 
+    # スケジュール側のコース担当 (courses.assigned_staff_id): A のみ staff1 を設定。
+    course_a.assigned_staff_id = staff1.id
+    db.add(course_a)
+    await db.commit()
+
     # A コース: staff1 (9:00) + staff2 (10:00) の 2 名で回す。
     # B コース: staff1 (11:00) が掛け持ち。
     for patient, course_id, staff, start in (
@@ -847,10 +852,14 @@ async def test_build_monitor_rows_grouped_by_course(db) -> None:
     assert row_a.staff_id is None  # 複数名の行は単一 staff_id を持たない
     assert row_a.staff_name == "掛持一号・応援二号"
     assert row_a.office_id == office.id  # 拠点はコース由来
+    # スケジュール側のコース担当 (visits に依存せず courses.assigned から引く)。
+    assert row_a.course_staff_id == staff1.id
+    assert row_a.course_staff_name == "掛持一号"
 
     row_b = next(r for r in course_rows if r.course_label == "Bコース")
     assert row_b.staff_id == staff1.id
     assert row_b.staff_name == "掛持一号"
+    assert row_b.course_staff_id is None  # B は未割当のまま
 
     # visit 単位の担当 (モバイル「今日の訪問」と同一ソース) が入る。
     for r in course_rows:

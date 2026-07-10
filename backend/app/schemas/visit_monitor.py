@@ -101,6 +101,10 @@ class MonitorStaffRow(BaseModel):
     """
 
     course_id: UUID | None = None
+    # スケジュール側のコース担当 (= courses.assigned_staff_id。スケジュール画面と同一ソース)。
+    # 訪問側の担当 (staff_ids) と食い違う場合は UI が ⚠ を出す (原則③ ズレは隠さない)。
+    course_staff_id: UUID | None = None
+    course_staff_name: str | None = None
     staff_id: UUID | None = None
     staff_name: str | None = None
     # 行内の担当スタッフ id 集合 (イベント帯・性別バッジ用)。

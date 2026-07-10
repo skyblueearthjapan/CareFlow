@@ -39,6 +39,8 @@ export function makeRow(overrides: Partial<MonitorStaffRow> = {}): MonitorStaffR
   const staffId = overrides.staff_id !== undefined ? overrides.staff_id : uid();
   return {
     course_id: null,
+    course_staff_id: null,
+    course_staff_name: null,
     staff_id: staffId,
     staff_name: '田中 太郎',
     staff_ids: staffId ? [staffId] : [],

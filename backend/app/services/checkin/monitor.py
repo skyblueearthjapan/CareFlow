@@ -365,18 +365,33 @@ async def build_monitor(
             )
             reviews[review.visit_id] = (review, name)
 
-    # コース情報 (course_id → code / office_id)。行=コースの主キー情報。
+    # コース情報 (course_id → code / office_id / スケジュール側のコース担当)。
     course_ids = {v.course_id for v in visits if v.course_id is not None}
     course_code: dict[UUID, str] = {}
     course_office: dict[UUID, UUID] = {}
+    course_assigned: dict[UUID, UUID] = {}
     if course_ids:
-        for cid, code, coid in (
+        for cid, code, coid, asid in (
             await db.execute(
-                select(Course.id, Course.code, Course.office_id).where(Course.id.in_(course_ids))
+                select(
+                    Course.id, Course.code, Course.office_id, Course.assigned_staff_id
+                ).where(Course.id.in_(course_ids))
             )
         ).all():
             course_code[cid] = code
             course_office[cid] = coid
+            if asid is not None:
+                course_assigned[cid] = asid
+
+    # コース担当のスタッフ名 (visits に登場しないスタッフでも表示できるよう別引き)。
+    course_staff_names: dict[UUID, str] = {}
+    if course_assigned:
+        for sid, sname in (
+            await db.execute(
+                select(Staff.id, Staff.name).where(Staff.id.in_(set(course_assigned.values())))
+            )
+        ).all():
+            course_staff_names[sid] = sname
 
     # 行 = コース単位 (2026-07-10 PO要望。旧: スタッフ単位)。
     # 1 人が複数コースを掛け持ちしてもコースごとに 1 行になり、
@@ -564,9 +579,14 @@ async def build_monitor(
                         1,
                     )
 
+        course_staff_id = course_assigned.get(course_id) if course_id is not None else None
         staff_rows.append(
             MonitorStaffRow(
                 course_id=course_id,
+                course_staff_id=course_staff_id,
+                course_staff_name=(
+                    course_staff_names.get(course_staff_id) if course_staff_id is not None else None
+                ),
                 staff_id=staff_id,
                 staff_name=staff_name,
                 staff_ids=staff_ids,

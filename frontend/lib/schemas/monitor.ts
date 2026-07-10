@@ -58,6 +58,10 @@ export const monitorVisitSchema = z.object({
 // staff_id は行内の担当が 1 名のときのみ。staff_name は「・」連結の表示用。
 export const monitorStaffRowSchema = z.object({
   course_id: z.string().uuid().nullable().optional(),
+  // スケジュール側のコース担当 (= courses.assigned_staff_id)。訪問側 staff_ids と
+  // 食い違う場合は UI が ⚠ を出す (原則③ ズレは隠さない)。
+  course_staff_id: z.string().uuid().nullable().optional(),
+  course_staff_name: z.string().nullable().optional(),
   staff_id: z.string().uuid().nullable().optional(),
   staff_name: z.string().nullable().optional(),
   staff_ids: z.array(z.string().uuid()).default([]),

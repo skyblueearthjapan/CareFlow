@@ -209,6 +209,14 @@ export function MonitorTimeline({
         const laneMap = assignVisitLanes(row.visits);
         // laneCount は全 visit で共通 (assignVisitLanes が統一値を返す)。
         const rowLaneCount = laneMap.size > 0 ? laneMap.values().next().value!.laneCount : 1;
+        // スケジュール側のコース担当 (courses.assigned) と実訪問の担当 (visits.primary) の突合。
+        // 食い違いは隠さず ⚠ を出す (設計原則③)。
+        const scheduleStaff = row.course_staff_name ?? null;
+        const visitStaffIds = row.staff_ids ?? [];
+        const staffMismatch =
+          row.course_staff_id != null &&
+          (visitStaffIds.length === 0 ||
+            visitStaffIds.some((sid) => sid !== row.course_staff_id));
         return (
           <div
             key={key}
@@ -272,14 +280,29 @@ export function MonitorTimeline({
                   {row.course_label ?? row.staff_name ?? '（担当未設定）'}
                 </span>
                 <span className="block truncate text-[11px] text-text-muted">
-                  {isSel
-                    ? '● 選択中'
-                    : [
-                          row.office_name,
-                          row.course_label ? (row.staff_name ?? '担当未設定') : null,
-                        ]
+                  {isSel ? (
+                    '● 選択中'
+                  ) : (
+                    <>
+                      {/* 担当 = スケジュールのコース担当を優先表示 (無ければ実訪問の担当)。 */}
+                      {[
+                        row.office_name,
+                        row.course_label
+                          ? (scheduleStaff ?? row.staff_name ?? '担当未設定')
+                          : null,
+                      ]
                         .filter(Boolean)
                         .join(' ・ ') || '—'}
+                      {staffMismatch && (
+                        <span
+                          className="ml-1 font-bold text-warning"
+                          title={`スケジュールの担当（${scheduleStaff ?? '未設定'}）と実訪問の担当（${row.staff_name ?? '未設定'}）が一致していません`}
+                        >
+                          ⚠
+                        </span>
+                      )}
+                    </>
+                  )}
                 </span>
               </span>
             </div>
