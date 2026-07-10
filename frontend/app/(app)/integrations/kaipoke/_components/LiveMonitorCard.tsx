@@ -117,27 +117,23 @@ export function LiveMonitorCard({ monitorUrl, running, reachable, commandLabel }
       </div>
 
       {shown && embedUrl ? (
-        cfOk === false ? (
-          <div className="flex aspect-video w-full flex-col items-center justify-center gap-3 bg-stone-950 px-6 text-center">
-            <p className="text-sm font-medium text-white">
-              Cloudflare ログインの有効期限が切れています
-            </p>
-            <p className="max-w-md text-xs leading-relaxed text-white/70">
-              下のボタンから別ウィンドウでログイン（メール認証）してください。
-              完了すると、この画面は自動で再接続します（同じブラウザで開いてください。
-              シークレットウィンドウでは共有されません）。
-              自動で戻らない場合は「再接続」を押してください。
-            </p>
-            <div className="flex gap-2">
-              <Button variant="outline" onClick={openWindow}>
-                別ウィンドウでログインする
-              </Button>
-              <Button variant="outline" onClick={forceReconnect}>
+        <>
+          {/* 期限切れ「疑い」は iframe を塞がず注意バナーに格下げ (フェイルオープン)。
+              探針の誤検知 (アセット404等) でモニターが見られなくなる事故を防ぐ
+              (PO報告 2026-07-10: 他窓では接続できるのに期限切れ表示のまま)。 */}
+          {cfOk === false && (
+            <div className="flex flex-wrap items-center gap-2 border-b border-warning bg-warning-bg px-4 py-2 text-xs text-warning-strong">
+              <span className="font-medium">
+                ⚠ Cloudflare ログインの期限切れの可能性があります。下の画面が映っていればこのままで大丈夫です。
+              </span>
+              <button type="button" onClick={openWindow} className="font-bold underline">
+                別ウィンドウでログイン
+              </button>
+              <button type="button" onClick={forceReconnect} className="font-bold underline">
                 再接続
-              </Button>
+              </button>
             </div>
-          </div>
-        ) : (
+          )}
           <div className="relative bg-stone-950">
             <iframe
               key={iframeKey}
@@ -153,7 +149,7 @@ export function LiveMonitorCard({ monitorUrl, running, reachable, commandLabel }
               </span>
             )}
           </div>
-        )
+        </>
       ) : (
         <div className="flex flex-1 items-center justify-center bg-stone-950 px-6 py-12 text-center">
           <div className="space-y-3">
