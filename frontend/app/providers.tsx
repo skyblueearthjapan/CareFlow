@@ -8,6 +8,7 @@ import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
 import { getQueryClient } from '@/lib/query-client';
 import { Toaster } from '@/components/ui/sonner';
 import { SessionErrorGuard } from '@/components/SessionErrorGuard';
+import { CloudflareAccessBanner } from '@/components/CloudflareAccessBanner';
 
 interface ProvidersProps {
   children: React.ReactNode;
@@ -22,6 +23,8 @@ export function Providers({ children }: ProvidersProps) {
     <SessionProvider>
       <SessionErrorGuard>
         <QueryClientProvider client={queryClient}>
+          {/* Cloudflare Access 切れの再ログイン導線 — 全 UI (PC/現場ボード/モバイル) 共通 */}
+          <CloudflareAccessBanner />
           {children}
           {process.env.NODE_ENV === 'development' && (
             <ReactQueryDevtools initialIsOpen={false} buttonPosition="bottom-left" />

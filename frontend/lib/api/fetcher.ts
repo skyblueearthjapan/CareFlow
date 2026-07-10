@@ -15,6 +15,7 @@
 import { signOut } from 'next-auth/react';
 
 import { ApiError } from '@/lib/api-client';
+import { checkAccessSession, notifyAccessExpired, reportPossibleAccessIssue } from '@/lib/cfAccess';
 
 function resolveBaseUrl(): string {
   // In the browser, use relative URLs so requests hit the same origin (e.g.
@@ -74,7 +75,18 @@ export async function fetcher<T = unknown>(
     h.set('Authorization', `Bearer ${accessToken}`);
   }
 
-  const res = await fetch(url, { ...init, headers: h, cache: init.cache ?? 'no-store' });
+  let res: Response;
+  try {
+    res = await fetch(url, { ...init, headers: h, cache: init.cache ?? 'no-store' });
+  } catch (err) {
+    // ネットワーク層の失敗。Cloudflare Access の期限切れ (Access ログインへの
+    // クロスオリジン 302) でも TypeError になるため、探針で判定してバナー通知する
+    // (2026-07-11 handoff §6-3)。throw 自体はそのまま呼び出し側へ。
+    if (typeof window !== 'undefined') {
+      void reportPossibleAccessIssue();
+    }
+    throw err;
+  }
 
   if (res.status === 401 && !_retried && refreshToken) {
     const tokens = await refreshAccessToken(refreshToken);
@@ -87,10 +99,20 @@ export async function fetcher<T = unknown>(
         _retried: true,
       });
     }
-    // Refresh failed → clear session and bounce to login.
     if (typeof window !== 'undefined') {
-      void signOut({ callbackUrl: '/login' });
+      // Refresh 失敗が Cloudflare Access 起因なら signOut しない — /login への
+      // 遷移も Access に弾かれて悪化するだけなので、再ログインバナーへ誘導する。
+      if (await checkAccessSession()) {
+        // Access は生きている → 純粋にアプリ側のセッション切れ。従来どおり logout。
+        void signOut({ callbackUrl: '/login' });
+      } else {
+        notifyAccessExpired();
+      }
     }
+  } else if (res.status === 401 && typeof window !== 'undefined') {
+    // refresh 経路に乗らない 401 (トークン無し/リトライ後) も Access 切れの
+    // 可能性があるため throttle 付き探針に流す (Access 正常時は何もしない)。
+    void reportPossibleAccessIssue();
   }
 
   const text = await res.text();
