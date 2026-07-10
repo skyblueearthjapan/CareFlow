@@ -115,12 +115,18 @@ export default function MobileThisWeekPage() {
                   </span>
                   <span
                     className={cn(
-                      'min-w-0 truncate text-[12px] font-bold',
+                      'max-w-[55%] shrink-0 truncate text-[12px] font-bold',
                       v.status === 'cancelled' && 'line-through',
                     )}
                   >
                     {v.patient_name ?? '—'}
                   </span>
+                  {/* R-9d (PO要望): 縦1列化で空いた右側に住所 (名前より小さいフォント)。 */}
+                  {v.patient_address && (
+                    <span className="min-w-0 flex-1 truncate text-[10px] opacity-75">
+                      📍{v.patient_address}
+                    </span>
+                  )}
                 </div>
               ))}
             </div>
