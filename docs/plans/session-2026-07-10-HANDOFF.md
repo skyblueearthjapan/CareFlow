@@ -218,6 +218,30 @@
 - 根治: ①reset-to-fixed 実行時に courses.assigned をリセットor訪問側へ同期 ②assign-staff-only の
   二度押しガード（実行中ロック or 直近実行の解を再利用）。
 
+## 6. 次セッションの開始手順（2026-07-10深夜 追記・最優先=Cloudflare）
+
+**最初にやること: Cloudflare Access問題の根治**（POが毎日ログインを求められ、PWA版アプリで
+ライブモニター/APIが401になる。本番HEAD `96b825c` 時点の症状・経緯は §「LiveMonitorCard」コミット群参照）
+1. **POとCloudflareダッシュボードを開き**: Zero Trust → Access → Applications で
+   `carelink.kaipoke-api.net` / `novnc.kaipoke-api.net` の **Session Duration を延長**（推奨: 1週間〜1か月）。
+   保護パスの範囲（/api を含むか）とアプリ分割も確認。
+2. **GASとの違い（PO質問への回答・確定済みの理解）**: 旧GAS構成はGoogleサーバーから
+   カイポケへ直接通信しておりAccessの「人間ログイン」を通らなかった。現構成は
+   carelink/novnc/kaipoke-api を**人間用Accessで保護**しているためセッション期限に引っ張られる。
+   機械間通信は **Access Service Token（サービス認証）** に切り替えればログイン不要にできる。
+3. **アプリ内「Cloudflareに再ログイン」導線**: APIが401(Access起因)のとき画面上部バナー→
+   **トップレベル遷移**で認証フローへ（PWAはアドレスバーが無く自力復旧できないため必須）。
+   注意: iframe内へのAccessログインは frame-ancestors 'none' で不可能。必ず窓ごと遷移させる。
+4. ライブモニター探針の誤検知根因（novnc の app/images/connect.svg が実在するか）確認。
+
+**その他の残タスク（優先順）**: ①ESLint未使用import掃除（field系/this-week等・ビルド警告）
+②theme.ts の OfficeKey型残骸削除 ③reset-to-fixed のコース担当同期漏れ根治＋assign-staff-only
+二度押しガード（§4.7） ④R-10文言規約に「0件のとき断言しない」を設計書へ追記
+⑤tests/scripts/test_cleanup_w16 収集エラー修正 ⑥BE test_visits sqliteフレーク・FE D-11フレーク据え置き
+
+**このセッションの成果一覧はメモリ careflow-rakusuke-rebranding / careflow-monitor-course-rows と
+本ファイル§4.6系参照。R-1〜R-11すべて本番稼働済み（最終HEAD `96b825c`）。**
+
 ## 5. 参照
 
 - 設計原則・割当ソース: メモリ `careflow-staff-assignment-source.md`
