@@ -27,6 +27,7 @@
 import * as React from 'react';
 
 import { Badge } from '@/components/ui/badge';
+import { RakusukeSays } from '@/components/brand/Rakusuke';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import {
@@ -211,6 +212,16 @@ export function AssignWarningDialog({
               </DialogDescription>
             )}
           </DialogHeader>
+
+          {/* R-10: らく助アドバイザー (docs/plans/rakusuke-advisor-ux-design.md) */}
+          <RakusukeSays
+            pose={reviewItems.length === 0 && unresolvedWarnings.length === 0 ? 'cheer' : 'clap'}
+            message={
+              reviewItems.length === 0 && unresolvedWarnings.length === 0
+                ? 'スタッフの割当ができました！このまま確定して大丈夫です✨'
+                : `スタッフの割当ができました。${reviewItems.length > 0 ? `${reviewItems.length}件だけ一緒に確認させてください` : '残った気になる点を確認してください'}`
+            }
+          />
 
           <div className="space-y-5 py-1">
             {/* 🔴 性別セクション */}

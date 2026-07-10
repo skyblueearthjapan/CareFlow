@@ -25,6 +25,7 @@ import { useSession } from 'next-auth/react';
 import { Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 
+import { RakusukeSays } from '@/components/brand/Rakusuke';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -444,6 +445,12 @@ export function ImprovementSuggestionsSection({
       data-testid="improvement-suggestions-section"
     >
       <h3 className="mb-2 text-sm font-semibold text-text-primary">配置改善の提案</h3>
+
+      <RakusukeSays
+        pose="idea"
+        message="配置をこう変えると移動が楽になります"
+        className="mb-2"
+      />
 
       {isLoading ? (
         <div className="flex items-center gap-2 py-3 text-xs text-text-muted">

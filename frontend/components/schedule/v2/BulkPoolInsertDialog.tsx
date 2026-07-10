@@ -26,6 +26,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 
+import { RakusukeSays } from '@/components/brand/Rakusuke';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -318,6 +319,8 @@ export function BulkPoolInsertDialog({
             選択肢のない方から確保し、残りは効果順に投入します。
           </DialogDescription>
         </DialogHeader>
+
+        <RakusukeSays pose="idea" message="保留中の患者さん、入れそうな枠がありますよ" />
 
         {singleOffice ? (
           // ── 単一拠点モード ──

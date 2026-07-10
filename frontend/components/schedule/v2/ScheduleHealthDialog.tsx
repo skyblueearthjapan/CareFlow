@@ -23,6 +23,7 @@
 import * as React from 'react';
 import { ChevronDown, ChevronRight, HeartPulse, Loader2, Route, TriangleAlert } from 'lucide-react';
 
+import { RakusukeSays } from '@/components/brand/Rakusuke';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -551,6 +552,15 @@ export function ScheduleHealthDialog({
           </div>
         ) : (
           <div className="space-y-5 py-2">
+            <RakusukeSays
+              pose={highBars.length === 0 ? 'cheer' : 'puzzled'}
+              message={
+                highBars.length === 0
+                  ? '今週はいい感じです✨'
+                  : `診断しました！気になる点が${highBars.length}件あります`
+              }
+            />
+
             {/* a. サマリタイル 3 枚 */}
             <div className="grid grid-cols-3 gap-3">
               <SummaryTile

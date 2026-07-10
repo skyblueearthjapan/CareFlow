@@ -69,6 +69,62 @@ export function RakusukeTitle({ pose, title, subtitle, className }: RakusukeTitl
   );
 }
 
+interface RakusukeSaysProps {
+  pose: RakusukePose;
+  /** らく助の一言 (話し言葉・断定しない・警告でも責めない — R-10文言規約)。 */
+  message: React.ReactNode;
+  tone?: 'normal' | 'warn';
+  size?: 'sm' | 'md';
+  className?: string;
+  children?: React.ReactNode;
+}
+
+/**
+ * らく助の吹き出し (R-10 アドバイザーUX)。提案・診断ダイアログ/パネルのヘッダに
+ * 1つだけ置く。既存コンテンツは children にそのまま格納 (データ表示は不変)。
+ * 設計書: docs/plans/rakusuke-advisor-ux-design.md
+ */
+export function RakusukeSays({
+  pose,
+  message,
+  tone = 'normal',
+  size = 'md',
+  className,
+  children,
+}: RakusukeSaysProps) {
+  const warn = tone === 'warn';
+  return (
+    <div className={cn('flex items-start gap-2.5', className)}>
+      <Rakusuke pose={pose} className={cn('shrink-0', size === 'sm' ? 'h-12' : 'h-16')} />
+      <div
+        className={cn(
+          'relative min-w-0 flex-1 rounded-xl border px-3 py-2',
+          warn ? 'border-warning bg-warning-bg' : 'border-brand-primary-light bg-brand-primary-50',
+        )}
+      >
+        <span
+          aria-hidden
+          className={cn(
+            'absolute -left-1.5 top-4 h-3 w-3 rotate-45 border-b border-l',
+            warn
+              ? 'border-warning bg-warning-bg'
+              : 'border-brand-primary-light bg-brand-primary-50',
+          )}
+        />
+        <p
+          className={cn(
+            'text-sm font-bold',
+            warn ? 'text-warning-strong' : 'text-brand-primary-hover',
+          )}
+        >
+          {message}
+        </p>
+        {children && <div className="mt-1.5 text-sm text-text-primary">{children}</div>}
+      </div>
+    </div>
+  );
+}
+
 interface RakusukeNoteProps {
   pose: RakusukePose;
   /** 主文 (例: 「本日の訪問はありません」) */

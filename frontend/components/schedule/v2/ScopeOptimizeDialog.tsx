@@ -26,6 +26,7 @@ import * as React from 'react';
 import { Loader2, Route } from 'lucide-react';
 import { toast } from 'sonner';
 
+import { RakusukeSays } from '@/components/brand/Rakusuke';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -528,6 +529,8 @@ export function ScopeOptimizeDialog({
             手順として提案します。ピン留め・完全固定・却下済みの枠は動かしません。
           </DialogDescription>
         </DialogHeader>
+
+        <RakusukeSays pose="idea" message="もっと楽になる並びを見つけました！" />
 
         {!effectiveOfficeId ? (
           <div className="space-y-3 py-4" data-testid="scope-optimize-no-office">

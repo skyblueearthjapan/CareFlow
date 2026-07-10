@@ -21,6 +21,7 @@ import { useSession } from 'next-auth/react';
 import { AlertTriangle, CheckCircle2, Lightbulb, Loader2, Plus, Sparkles, X } from 'lucide-react';
 import { toast } from 'sonner';
 
+import { RakusukeSays } from '@/components/brand/Rakusuke';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -850,6 +851,10 @@ function UnblockConsult({
     <div className="mt-2" data-testid="unblock-result">
       {plans.length > 0 ? (
         <div className="space-y-2" data-testid="unblock-plans">
+          <RakusukeSays
+            pose="calendar"
+            message="少しずらすと入ります。どうしますか？"
+          />
           <div className="flex items-center gap-1.5 text-xs font-semibold text-warning-strong">
             <Sparkles className="h-3.5 w-3.5" aria-hidden />
             既存の訪問をずらせば入る手（{plans.length}件）
@@ -1302,6 +1307,15 @@ export function PoolCandidateList({
         )}
       </div>
 
+      {primary ? (
+        <RakusukeSays
+          pose="idea"
+          message="この方、ここに入れそうです"
+          size="sm"
+          className="mb-2"
+        />
+      ) : null}
+
       {proposeMut.isError ? (
         <Alert variant="destructive">
           <AlertTitle className="text-xs">候補の取得に失敗しました</AlertTitle>
@@ -1660,6 +1674,12 @@ export function PoolCandidateList({
       {/* 方式b: 定員超過候補セクション (「定員超過の候補を表示」クリック後に表示). */}
       {overcapacityRequested && (result?.overcapacity_slots ?? []).length > 0 ? (
         <div className="mt-2" data-testid="pool-overcapacity-section">
+          <RakusukeSays
+            pose="heart"
+            tone="warn"
+            message="定員を超えそうです。一緒に調整しましょう"
+            className="mb-2"
+          />
           <div className="mb-1.5 flex items-center gap-1 text-xs font-semibold text-yellow-700 dark:text-yellow-400">
             <AlertTriangle className="h-3.5 w-3.5" aria-hidden />
             定員超過（管理者判断）
