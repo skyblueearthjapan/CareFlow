@@ -178,6 +178,13 @@
   usePathname の追加が必要だった（29件全滅→モック1行で復旧）。旧戻りリンクの検証3箇所も
   「画面切替」検証へ更新済み。モバイル導線を変えるときはこのモックに注意。
 
+## 4.6e らく助 R-9（`5ce0d37` 本番稼働）モバイル訪問カードの性別ウォッシュ統一
+- 今日の訪問/今週の予定のカードを PC版と同じ視覚言語へ（地色=患者性別ウォッシュ・
+  左帯/性別ドット・時刻tnum・📍住所）。共通 MobileVisitCard を刷新。
+- BE: visits 一覧/詳細射影に patient_sex/patient_address を非破壊追加（VisitRead拡張）。
+- 既知: tests/scripts/test_cleanup_w16_course_code_mismatch.py は収集エラー（_apply_fix
+  import不整合・既存）。BE test_visits の sqlite "cannot commit" は再実行で消えるフレーク。
+
 ## 4.7 訪問モニター行のコース単位化＋コース⇔訪問担当の乖離調査（2026-07-10午後・`024217f` 本番稼働）
 
 **PO報告「稲毛A-D予定があるのにA,Bまでしか映らない」の調査と改修。**
