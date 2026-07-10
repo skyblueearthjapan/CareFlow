@@ -242,6 +242,30 @@
 **このセッションの成果一覧はメモリ careflow-rakusuke-rebranding / careflow-monitor-course-rows と
 本ファイル§4.6系参照。R-1〜R-11すべて本番稼働済み（最終HEAD `96b825c`）。**
 
+## 7. 2026-07-11 セッションでの消化状況（追記）
+
+上記「その他の残タスク」①〜⑤と Cloudflare §6-3/6-4 を消化:
+- **§6-3 アプリ内再ログイン導線 実装済み**: `lib/cfAccess.ts`（healthz 探針・throttle 30s）
+  + `components/CloudflareAccessBanner.tsx`（全UI共通・Providers マウント）
+  + `lib/api/fetcher.ts`（401/ネットワークエラー→探針→バナー。Access切れ時は signOut しない
+  — /login 遷移も Access に弾かれるため）。復旧は window.location.reload() の
+  **トップレベル遷移**（SW はナビゲーション network-only なのでキャッシュに阻まれない）。
+- **§6-4 探針誤検知の根因調査**: novnc の `app/images/connect.svg` は**実在**
+  （コンテナ直 curl で 200 / image/svg+xml、`/usr/share/novnc/app/images/` に確認）。
+  誤検知は一過性のネットワーク/エッジ要因 → フェイルオープン化(96b825c)で対処済みが正。
+- **①ESLint 警告ゼロ化**（未使用import・useMemo依存・import()型注釈は既存慣例の
+  disable コメント方式） **②OfficeKey 型残骸削除** **④R-10b 文言規約を設計書へ追記**
+  （rakusuke-advisor-ux-design.md） **⑤test_cleanup_w16 収集エラー修正**
+  （_apply_fix→_apply_all_fixes の API 追随。3 pass）。
+- **③根治**: reset-to-fixed のスタッフ選定を**コース担当優先**へ（courses.assigned_staff_id
+  が有効ならそれを visit に採用・無効/未割当ならローテーション結果を**コース側へ書き戻し**
+  = 乖離が構造的に残らない。auto_allocator_v2.py reset_visits_to_fixed）。
+  assign-staff-only に**週単位の実行中ロック**（重複リクエストは 409・schedule.py。
+  複数 worker 構成ではプロセス間非対応の注意コメントあり）。
+  回帰テスト = tests/test_reset_course_staff_sync.py。
+- **未消化（PO同席が必要）**: §6-1 Cloudflare ダッシュボードの Session Duration 延長、
+  §6-2 Service Token 化。⑥フレークは据え置き。
+
 ## 5. 参照
 
 - 設計原則・割当ソース: メモリ `careflow-staff-assignment-source.md`
