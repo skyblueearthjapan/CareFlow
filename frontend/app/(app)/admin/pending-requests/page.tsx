@@ -23,7 +23,7 @@ import { useSession } from 'next-auth/react';
 import { Filter, RefreshCw } from 'lucide-react';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { RakusukeNote } from '@/components/brand/Rakusuke';
+import { RakusukeNote, RakusukeTitle } from '@/components/brand/Rakusuke';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -265,12 +265,15 @@ export default function AdminPendingRequestsPage() {
   return (
     <section className="space-y-4">
       <header className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="font-serif text-2xl font-bold text-text-primary">モバイル申請履歴</h1>
-          <p className="text-sm text-text-secondary">
-            全 {total} 件 — モバイル経由の申請を管理者が承認・却下します
-          </p>
-        </div>
+        <RakusukeTitle
+          pose="clap"
+          title="モバイル申請履歴"
+          subtitle={
+            <>
+              全 {total} 件 — モバイル経由の申請を管理者が承認・却下します
+            </>
+          }
+        />
         <Button variant="outline" size="sm" onClick={() => void refetch()} disabled={isFetching}>
           <RefreshCw className={`h-4 w-4 ${isFetching ? 'animate-spin' : ''}`} />
           再読み込み

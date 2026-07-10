@@ -4,6 +4,7 @@ import { Suspense } from 'react';
 import Link from 'next/link';
 import { useSession } from 'next-auth/react';
 
+import { RakusukeTitle } from '@/components/brand/Rakusuke';
 import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 
@@ -42,8 +43,11 @@ function Header() {
           ← カイポケ ジョブセンター
         </Link>
       </p>
-      <h1 className="font-serif text-2xl font-bold text-text-primary">連携ユーティリティ</h1>
-      <p className="text-sm text-text-secondary">ジオコーディングキャッシュ（管理用）</p>
+      <RakusukeTitle
+        pose="idea"
+        title="連携ユーティリティ"
+        subtitle="ジオコーディングキャッシュ（管理用）"
+      />
     </header>
   );
 }

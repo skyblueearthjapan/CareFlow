@@ -22,6 +22,7 @@ import {
   AcceptanceMatrixLegend,
   type MatrixEditApi,
 } from '@/components/acceptance/AcceptanceMatrixBoard';
+import { RakusukeTitle } from '@/components/brand/Rakusuke';
 import { WeekSelector, toWeekStart, addDays } from '@/components/schedule/WeekSelector';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -77,12 +78,17 @@ export default function AcceptanceMatrixPage() {
   return (
     <section className="space-y-3">
       <header className="space-y-1 no-print">
-        <h1 className="font-serif text-2xl font-bold text-text-primary">受け入れ枠</h1>
-        <p className="text-sm text-text-secondary">
-          拠点ごとに全コースを統合した「曜日 × 時間帯」の受け入れ可能枠（おおよその目安）。
-          {canEdit &&
-            'セルをクリックで「この週だけ」または「毎週（継続）」の上書き・コメント登録ができます。'}
-        </p>
+        <RakusukeTitle
+          pose="heart"
+          title="受け入れ枠"
+          subtitle={
+            <>
+              拠点ごとに全コースを統合した「曜日 × 時間帯」の受け入れ可能枠（おおよその目安）。
+              {canEdit &&
+                'セルをクリックで「この週だけ」または「毎週（継続）」の上書き・コメント登録ができます。'}
+            </>
+          }
+        />
       </header>
 
       {/* 操作バー (印刷対象外) */}

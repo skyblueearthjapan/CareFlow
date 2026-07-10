@@ -2,6 +2,7 @@
 
 import { useRouter } from 'next/navigation';
 
+import { RakusukeTitle } from '@/components/brand/Rakusuke';
 import { OfficeForm } from '../_components/OfficeForm';
 import { Card } from '@/components/ui/card';
 import { useCreateOffice } from '@/lib/queries/offices';
@@ -19,8 +20,11 @@ export default function NewOfficePage() {
   return (
     <section className="space-y-4">
       <header>
-        <h1 className="font-serif text-2xl font-bold text-text-primary">拠点を新規作成</h1>
-        <p className="text-sm text-text-secondary">事業所情報と担当エリアを登録します</p>
+        <RakusukeTitle
+          pose="joy"
+          title="拠点を新規作成"
+          subtitle="事業所情報と担当エリアを登録します"
+        />
       </header>
 
       <Card className="p-5">

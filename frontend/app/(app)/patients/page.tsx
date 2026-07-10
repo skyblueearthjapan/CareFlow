@@ -14,7 +14,7 @@ import { cn } from '@/lib/utils';
 import { Plus } from 'lucide-react';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { RakusukeNote } from '@/components/brand/Rakusuke';
+import { RakusukeNote, RakusukeTitle } from '@/components/brand/Rakusuke';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -85,12 +85,11 @@ export default function PatientsPage() {
   return (
     <section className="space-y-4">
       <header className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="font-serif text-2xl font-bold text-text-primary">患者マスタ</h1>
-          <p className="text-sm text-text-secondary">
-            {total > 0 ? `全 ${total} 件` : '登録済み患者を一覧表示します'}
-          </p>
-        </div>
+        <RakusukeTitle
+          pose="heart"
+          title="患者マスタ"
+          subtitle={<>{total > 0 ? `全 ${total} 件` : '登録済み患者を一覧表示します'}</>}
+        />
         <div className="flex flex-wrap items-center gap-x-2 gap-y-2">
           {/* RB (PO決定 2026-07-08): 全ロール同一表示。staff には無効化して見せる
               (全患者置換のみ admin 限定のセンシティブ機能として非表示を維持)。 */}

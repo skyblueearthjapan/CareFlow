@@ -3,10 +3,10 @@
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
 
+import { RakusukeNote, RakusukeTitle } from '@/components/brand/Rakusuke';
 import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { RakusukeNote } from '@/components/brand/Rakusuke';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useOffices } from '@/lib/queries/offices';
@@ -29,10 +29,11 @@ export default function OfficesPage() {
   return (
     <section className="space-y-4">
       <header className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="font-serif text-2xl font-bold text-text-primary">拠点マスタ</h1>
-          <p className="text-sm text-text-secondary">事業所(拠点)一覧 / 担当エリア管理</p>
-        </div>
+        <RakusukeTitle
+          pose="joy"
+          title="拠点マスタ"
+          subtitle="事業所(拠点)一覧 / 担当エリア管理"
+        />
         <Button asChild>
           <Link href="/offices/new">新規作成</Link>
         </Button>

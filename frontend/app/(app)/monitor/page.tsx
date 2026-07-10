@@ -14,6 +14,7 @@ import Link from 'next/link';
 import { useSession } from 'next-auth/react';
 import { Settings, TriangleAlert } from 'lucide-react';
 
+import { RakusukeTitle } from '@/components/brand/Rakusuke';
 import { FilterChip } from '@/components/ui/filter-chip';
 import { Skeleton } from '@/components/ui/skeleton';
 import { cn } from '@/lib/utils';
@@ -246,12 +247,11 @@ export default function MonitorPage() {
     // flex 追従 (lg:h-full) にする (シェル余白と合わず約36pxはみ出していた)。
     <section className="flex flex-col gap-3 lg:h-full lg:min-h-0">
       <header className="flex flex-wrap items-end justify-between gap-3 lg:shrink-0">
-        <div className="space-y-1">
-          <h1 className="font-serif text-2xl font-bold text-text-primary">訪問モニター</h1>
-          <p className="text-sm text-text-secondary">
-            当日の予定と実績（QR打刻）をリアルタイムで見守ります。
-          </p>
-        </div>
+        <RakusukeTitle
+          pose="visit"
+          title="訪問モニター"
+          subtitle="当日の予定と実績（QR打刻）をリアルタイムで見守ります。"
+        />
         <div className="flex items-center gap-3">
           {isToday ? (
             <span className="inline-flex items-center gap-1.5 text-xs text-text-secondary">

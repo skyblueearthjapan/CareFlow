@@ -18,8 +18,9 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSession } from 'next-auth/react';
-import { Clock, Car, Building2, RotateCcw, Settings, Info } from 'lucide-react';
+import { Clock, Car, Building2, RotateCcw, Info } from 'lucide-react';
 
+import { RakusukeTitle } from '@/components/brand/Rakusuke';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -145,15 +146,19 @@ export default function SchedulingSettingsPage() {
   return (
     <section className="mx-auto w-full max-w-3xl space-y-6 pb-24">
       <header className="space-y-1">
-        <div className="flex items-center gap-2">
-          <Settings className="h-6 w-6 text-brand-primary" strokeWidth={1.75} />
-          <h1 className="font-serif text-2xl font-bold text-text-primary">最適化ルールの設定</h1>
-        </div>
-        <p className="text-sm text-text-secondary">
-          自動スケジュール最適化の前提となる事業所共通のルールです。
-          <span className="font-medium text-text-primary">変更は次回の最適化から反映されます</span>
-          （既存の確定スケジュールは変わりません）。
-        </p>
+        <RakusukeTitle
+          pose="think"
+          title="最適化ルールの設定"
+          subtitle={
+            <>
+              自動スケジュール最適化の前提となる事業所共通のルールです。
+              <span className="font-medium text-text-primary">
+                変更は次回の最適化から反映されます
+              </span>
+              （既存の確定スケジュールは変わりません）。
+            </>
+          }
+        />
       </header>
 
       {settingsQuery.isError && (

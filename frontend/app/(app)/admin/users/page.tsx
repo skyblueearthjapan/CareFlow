@@ -15,7 +15,7 @@ import { useSession } from 'next-auth/react';
 import { KeyRound, Pencil, Plus, Search, Trash2 } from 'lucide-react';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { RakusukeNote } from '@/components/brand/Rakusuke';
+import { RakusukeNote, RakusukeTitle } from '@/components/brand/Rakusuke';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -86,12 +86,15 @@ export default function AdminUsersPage() {
   return (
     <section className="space-y-4">
       <header className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="font-serif text-2xl font-bold text-text-primary">ユーザー管理</h1>
-          <p className="text-sm text-text-secondary">
-            登録 {data?.total ?? 0} 名 / 表示 {rows.length} 名
-          </p>
-        </div>
+        <RakusukeTitle
+          pose="think"
+          title="ユーザー管理"
+          subtitle={
+            <>
+              登録 {data?.total ?? 0} 名 / 表示 {rows.length} 名
+            </>
+          }
+        />
         <Button onClick={() => setCreateOpen(true)}>
           <Plus className="h-4 w-4" />
           新規ユーザー

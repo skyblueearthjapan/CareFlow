@@ -13,7 +13,7 @@ import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import { Filter } from 'lucide-react';
 
-import { RakusukeNote } from '@/components/brand/Rakusuke';
+import { RakusukeNote, RakusukeTitle } from '@/components/brand/Rakusuke';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -75,10 +75,15 @@ export default function AdminAuditLogsPage() {
   return (
     <section className="space-y-4">
       <header>
-        <h1 className="font-serif text-2xl font-bold text-text-primary">監査ログ</h1>
-        <p className="text-sm text-text-secondary">
-          全 {total} 件 — POST/PUT/PATCH/DELETE のすべてが記録されます
-        </p>
+        <RakusukeTitle
+          pose="think"
+          title="監査ログ"
+          subtitle={
+            <>
+              全 {total} 件 — POST/PUT/PATCH/DELETE のすべてが記録されます
+            </>
+          }
+        />
       </header>
 
       <Card className="p-4">

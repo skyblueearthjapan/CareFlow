@@ -25,6 +25,7 @@
  */
 import { useMemo, useState } from 'react';
 
+import { RakusukeTitle } from '@/components/brand/Rakusuke';
 import { CourseDayTablePanel } from '@/components/schedule/v2/CourseDayTablePanel';
 import { WeekSelector, toWeekStart } from '@/components/schedule/WeekSelector';
 import { Card } from '@/components/ui/card';
@@ -60,10 +61,11 @@ export default function SchedulePage() {
       data-testid="schedule-page-course-day"
     >
       <header className="space-y-1 lg:shrink-0">
-        <h1 className="font-serif text-2xl font-bold text-text-primary">スケジュール</h1>
-        <p className="text-sm text-text-secondary">
-          (曜日 × コース) テーブルで週次スケジュールを管理します。
-        </p>
+        <RakusukeTitle
+          pose="calendar"
+          title="スケジュール"
+          subtitle="(曜日 × コース) テーブルで週次スケジュールを管理します。"
+        />
       </header>
 
       {/* Phase G-41: Card 1 は表示制御のみ.

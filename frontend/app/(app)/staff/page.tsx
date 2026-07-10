@@ -19,7 +19,7 @@ import { Plus, Search } from 'lucide-react';
 import { StaffExcelButtons } from '@/components/staff/StaffExcelButtons';
 import { StaffReplaceAllButton } from '@/components/staff/StaffReplaceAllButton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { RakusukeNote } from '@/components/brand/Rakusuke';
+import { RakusukeNote, RakusukeTitle } from '@/components/brand/Rakusuke';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -111,12 +111,15 @@ export default function StaffPage() {
   return (
     <section className="space-y-4">
       <header className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="font-serif text-2xl font-bold text-text-primary">スタッフマスタ</h1>
-          <p className="text-sm text-text-secondary">
-            登録済み {allRows.length} 名 / 表示 {filtered.length} 名
-          </p>
-        </div>
+        <RakusukeTitle
+          pose="clap"
+          title="スタッフマスタ"
+          subtitle={
+            <>
+              登録済み {allRows.length} 名 / 表示 {filtered.length} 名
+            </>
+          }
+        />
         <div className="flex items-center gap-2">
           {/* RB (PO決定 2026-07-08): 全ロール同一表示。staff には無効化して見せる
               (全置換のみ admin 限定として非表示を維持)。 */}

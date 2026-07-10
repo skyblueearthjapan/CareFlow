@@ -3,6 +3,7 @@
 import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { RakusukeTitle } from '@/components/brand/Rakusuke';
 import { EmptyState } from '@/components/dashboard/EmptyState';
 import { KpiCard } from '@/components/dashboard/KpiCard';
 import { TrendChart } from '@/components/dashboard/TrendChart';
@@ -23,8 +24,11 @@ export default function DashboardPage() {
   return (
     <section className="space-y-6">
       <header>
-        <h1 className="font-serif text-2xl font-bold text-text-primary">ダッシュボード</h1>
-        <p className="mt-1 text-sm text-text-secondary">本日の概要と直近 7 日間の訪問トレンド</p>
+        <RakusukeTitle
+          pose="wave"
+          title="ダッシュボード"
+          subtitle="本日の概要と直近 7 日間の訪問トレンド"
+        />
       </header>
 
       {kpi.isError ? (

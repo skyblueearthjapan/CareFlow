@@ -10,8 +10,8 @@
 
 import { signOut } from 'next-auth/react';
 import { toast } from 'sonner';
-import { KeyRound } from 'lucide-react';
 
+import { RakusukeTitle } from '@/components/brand/Rakusuke';
 import { Card } from '@/components/ui/card';
 
 import { PasswordChangeForm } from './_components/PasswordChangeForm';
@@ -29,13 +29,11 @@ export default function PasswordSettingsPage() {
   return (
     <section className="mx-auto w-full max-w-md space-y-4">
       <header className="space-y-1">
-        <div className="flex items-center gap-2">
-          <KeyRound className="h-5 w-5 text-brand-primary" strokeWidth={1.75} />
-          <h1 className="font-serif text-2xl font-bold text-text-primary">パスワード変更</h1>
-        </div>
-        <p className="text-sm text-text-secondary">
-          現在のパスワードと新しいパスワードを入力してください。変更後は再度ログインが必要です。
-        </p>
+        <RakusukeTitle
+          pose="think"
+          title="パスワード変更"
+          subtitle="現在のパスワードと新しいパスワードを入力してください。変更後は再度ログインが必要です。"
+        />
       </header>
 
       <Card className="p-6">

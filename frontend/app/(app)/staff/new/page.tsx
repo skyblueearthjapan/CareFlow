@@ -15,6 +15,7 @@ import { useSession } from 'next-auth/react';
 import { useEffect, useState } from 'react';
 import { ArrowLeft } from 'lucide-react';
 
+import { RakusukeTitle } from '@/components/brand/Rakusuke';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -110,7 +111,7 @@ export default function StaffNewPage() {
             一覧へ
           </Link>
         </Button>
-        <h1 className="font-serif text-2xl font-bold text-text-primary">新規スタッフ</h1>
+        <RakusukeTitle pose="clap" title="新規スタッフ" />
       </header>
 
       {create.isError && (

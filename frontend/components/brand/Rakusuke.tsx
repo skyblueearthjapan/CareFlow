@@ -43,6 +43,32 @@ export function Rakusuke({ pose, className }: { pose: RakusukePose; className?: 
   );
 }
 
+interface RakusukeTitleProps {
+  pose: RakusukePose;
+  /** ページタイトル (h1・font-serif text-2xl。全ページ共通の型)。 */
+  title: React.ReactNode;
+  /** サブタイトル (text-sm text-text-secondary)。 */
+  subtitle?: React.ReactNode;
+  className?: string;
+}
+
+/**
+ * ページ上部のタイトルブロック: らく助 + h1 + サブタイトル (R-6・PO要望 2026-07-10)。
+ * 各ページの header 左側 (h1+p) をこのコンポーネントに置き換えて使う。
+ * ポーズはページの意味で選ぶ (POSE_SRC のコメント参照)。
+ */
+export function RakusukeTitle({ pose, title, subtitle, className }: RakusukeTitleProps) {
+  return (
+    <div className={cn('flex items-center gap-3', className)}>
+      <Rakusuke pose={pose} className="h-11 shrink-0" />
+      <div className="space-y-0.5">
+        <h1 className="font-serif text-2xl font-bold text-text-primary">{title}</h1>
+        {subtitle && <p className="text-sm text-text-secondary">{subtitle}</p>}
+      </div>
+    </div>
+  );
+}
+
 interface RakusukeNoteProps {
   pose: RakusukePose;
   /** 主文 (例: 「本日の訪問はありません」) */

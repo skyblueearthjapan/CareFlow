@@ -18,8 +18,9 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSession } from 'next-auth/react';
-import { MapPin, Clock, Settings, Info, RotateCcw } from 'lucide-react';
+import { MapPin, Clock, Info, RotateCcw } from 'lucide-react';
 
+import { RakusukeTitle } from '@/components/brand/Rakusuke';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -142,15 +143,11 @@ export default function CheckinSettingsPage() {
   return (
     <section className="mx-auto w-full max-w-3xl space-y-6 pb-24">
       <header className="space-y-1">
-        <div className="flex items-center gap-2">
-          <Settings className="h-6 w-6 text-brand-primary" strokeWidth={1.75} />
-          <h1 className="font-serif text-2xl font-bold text-text-primary">
-            チェックインしきい値の設定
-          </h1>
-        </div>
-        <p className="text-sm text-text-secondary">
-          QR 訪問チェックインの判定 (距離・遅延・退出忘れ) に使う全社一律のしきい値です。
-        </p>
+        <RakusukeTitle
+          pose="think"
+          title="チェックインしきい値の設定"
+          subtitle="QR 訪問チェックインの判定 (距離・遅延・退出忘れ) に使う全社一律のしきい値です。"
+        />
       </header>
 
       {settingsQuery.isError && (

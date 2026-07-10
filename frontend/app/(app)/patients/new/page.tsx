@@ -10,6 +10,7 @@ import { useRouter } from 'next/navigation';
 import { useMemo, useState } from 'react';
 import { useSession } from 'next-auth/react';
 
+import { RakusukeTitle } from '@/components/brand/Rakusuke';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { toast } from '@/components/ui/sonner';
 import { useCreatePatient } from '@/lib/queries/patients';
@@ -65,7 +66,7 @@ export default function NewPatientPage() {
             ← 患者一覧へ
           </Link>
         </p>
-        <h1 className="font-serif text-2xl font-bold text-text-primary">患者 新規登録</h1>
+        <RakusukeTitle pose="heart" title="患者 新規登録" />
       </header>
 
       <PatientForm

@@ -21,6 +21,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 
+import { RakusukeTitle } from '@/components/brand/Rakusuke';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -111,10 +112,11 @@ export default function AdminFeatureFlagsPage() {
   return (
     <section className="space-y-4" data-testid="admin-feature-flags-page">
       <header>
-        <h1 className="font-serif text-2xl font-bold text-text-primary">機能フラグ</h1>
-        <p className="text-sm text-text-secondary">
-          拠点ごとに新機能 (G-21 新アルゴリズム等) の有効/無効を切り替えます.
-        </p>
+        <RakusukeTitle
+          pose="think"
+          title="機能フラグ"
+          subtitle="拠点ごとに新機能 (G-21 新アルゴリズム等) の有効/無効を切り替えます."
+        />
       </header>
 
       {flagsError ? (

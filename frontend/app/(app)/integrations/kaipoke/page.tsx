@@ -11,6 +11,7 @@
 import Link from 'next/link';
 import { useSession } from 'next-auth/react';
 
+import { RakusukeTitle } from '@/components/brand/Rakusuke';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { useKaipokeLive, useKaipokeCredentials, useStopJob } from '@/lib/queries/integrations';
 
@@ -107,11 +108,16 @@ export default function KaipokeIntegrationPage() {
 function Header() {
   return (
     <header>
-      <h1 className="font-serif text-2xl font-bold text-text-primary">カイポケ連携</h1>
-      <p className="mt-1 text-sm text-text-secondary">
-        カイポケの実ブラウザをライブで見守りながら、らく助
-        の週次スケジュールをカイポケへ反映します。
-      </p>
+      <RakusukeTitle
+        pose="idea"
+        title="カイポケ連携"
+        subtitle={
+          <>
+            カイポケの実ブラウザをライブで見守りながら、らく助
+            の週次スケジュールをカイポケへ反映します。
+          </>
+        }
+      />
     </header>
   );
 }
