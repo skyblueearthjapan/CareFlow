@@ -5,6 +5,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { MobileSection } from '@/components/mobile/MobileSection';
 import { MobileVisitCard } from '@/components/mobile/MobileVisitCard';
+import { RakusukeNote } from '@/components/brand/Rakusuke';
 import { todayIso, useMyVisits, type MyVisit } from '@/lib/queries/me';
 
 function isUnvisited(v: MyVisit): boolean {
@@ -44,18 +45,12 @@ export default function MobileTodayPage() {
       )}
 
       {!isLoading && !isError && sorted.length === 0 && (
-        <Card className="p-6 text-center">
-          {/* eslint-disable-next-line @next/next/no-img-element -- らく助マスコット (装飾) */}
-          <img
-            src="/brand/rakusuke-pose-joy.png"
-            alt=""
-            aria-hidden
-            className="mx-auto mb-3 h-20 w-auto"
+        <Card className="p-6">
+          <RakusukeNote
+            pose="joy"
+            title="本日の訪問はありません"
+            comment="おつかれさまでした！ゆっくり休んでくださいね"
           />
-          <p className="text-sm font-medium text-text-primary">本日の訪問はありません</p>
-          <p className="mt-1 text-xs text-text-muted">
-            おつかれさまでした！ゆっくり休んでくださいね
-          </p>
         </Card>
       )}
 

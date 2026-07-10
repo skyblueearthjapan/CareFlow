@@ -9,13 +9,14 @@
  * tap target so it reads as a sheet on mobile.
  */
 import { useEffect } from 'react';
-import { Bell, BellOff, Check } from 'lucide-react';
+import { Bell, Check } from 'lucide-react';
 
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
+import { RakusukeNote } from '@/components/brand/Rakusuke';
 import { useMarkAllRead, useMarkRead, useNotifications } from '@/lib/queries/notifications';
 import type { NotificationRead } from '@/lib/schemas/notification';
 
@@ -125,9 +126,12 @@ export function NotificationListSheet({ open, onOpenChange }: NotificationListSh
           {isError && <p className="text-sm text-text-muted">通知の取得に失敗しました。</p>}
 
           {!isLoading && !isError && items.length === 0 && (
-            <div className="flex flex-col items-center justify-center gap-2 py-8 text-text-muted">
-              <BellOff className="h-6 w-6" />
-              <p className="text-sm">通知はありません</p>
+            <div className="py-6">
+              <RakusukeNote
+                pose="heart"
+                title="通知はありません"
+                comment="新しいお知らせが届いたら、ここに出ます"
+              />
             </div>
           )}
 

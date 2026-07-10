@@ -23,6 +23,7 @@ import { useSession } from 'next-auth/react';
 import { Filter, RefreshCw } from 'lucide-react';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { RakusukeNote } from '@/components/brand/Rakusuke';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -536,7 +537,7 @@ function RequestList({
   if (items.length === 0) {
     return (
       <Card className="p-5">
-        <p className="text-sm text-text-muted">{emptyMessage}</p>
+        <RakusukeNote pose="clap" size="sm" title={emptyMessage} comment="すべて対応済みです" />
       </Card>
     );
   }

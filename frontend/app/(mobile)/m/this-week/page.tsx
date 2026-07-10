@@ -4,6 +4,7 @@ import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { MobileSection } from '@/components/mobile/MobileSection';
+import { RakusukeNote } from '@/components/brand/Rakusuke';
 import { currentWeekStartIso, useMyVisits, type MyVisit } from '@/lib/queries/me';
 
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'] as const;
@@ -68,8 +69,12 @@ export default function MobileThisWeekPage() {
       )}
 
       {!isLoading && !isError && groups.length === 0 && (
-        <Card className="p-6 text-center">
-          <p className="text-sm text-text-muted">今週の訪問はありません。</p>
+        <Card className="p-6">
+          <RakusukeNote
+            pose="calendar"
+            title="今週の訪問はありません"
+            comment="新しい予定が入ったら、ここでお知らせしますね"
+          />
         </Card>
       )}
 

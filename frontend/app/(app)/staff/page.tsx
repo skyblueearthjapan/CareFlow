@@ -19,6 +19,7 @@ import { Plus, Search } from 'lucide-react';
 import { StaffExcelButtons } from '@/components/staff/StaffExcelButtons';
 import { StaffReplaceAllButton } from '@/components/staff/StaffReplaceAllButton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { RakusukeNote } from '@/components/brand/Rakusuke';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -220,7 +221,11 @@ export default function StaffPage() {
             </AlertDescription>
           </Alert>
         ) : paged.length === 0 ? (
-          <p className="text-sm text-text-muted">該当するスタッフがいません</p>
+          <RakusukeNote
+            pose="think"
+            title="該当するスタッフがいません"
+            comment="検索条件を変えてみてください"
+          />
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">

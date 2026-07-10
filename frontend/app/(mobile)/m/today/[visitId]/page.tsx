@@ -42,6 +42,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { toast } from '@/components/ui/sonner';
 import { CheckInButton } from '@/components/mobile/CheckInButton';
 import { MobileSection } from '@/components/mobile/MobileSection';
+import { Rakusuke } from '@/components/brand/Rakusuke';
 import { QrScanner } from '@/components/mobile/QrScanner';
 import { AuthedPhoto } from '@/components/mobile/AuthedPhoto';
 import { displayVisitNote } from '@/lib/visit-note';
@@ -771,6 +772,7 @@ export default function MobileVisitDetailPage() {
           {/* ---- Locating / submitting spinner overlay ------------------- */}
           {(flow.step === 'locating' || flow.step === 'submitting') && (
             <Card className="flex items-center gap-3 p-4 text-sm text-text-secondary">
+              <Rakusuke pose="visit" className="h-10 shrink-0" />
               <Loader2 className="h-5 w-5 animate-spin text-brand-primary" />
               {flow.step === 'locating' ? '位置情報を取得しています…' : '記録しています…'}
             </Card>
@@ -845,9 +847,14 @@ export default function MobileVisitDetailPage() {
               )}
 
               {visit.status !== 'cancelled' && effectiveCompleted && (
-                <Alert>
-                  <AlertTitle>訪問完了</AlertTitle>
-                  <AlertDescription>この訪問はチェックアウト済みです。</AlertDescription>
+                <Alert className="flex items-center gap-3">
+                  <Rakusuke pose="cheer" className="h-12 shrink-0" />
+                  <div>
+                    <AlertTitle>訪問完了</AlertTitle>
+                    <AlertDescription>
+                      この訪問はチェックアウト済みです。おつかれさまでした！
+                    </AlertDescription>
+                  </div>
                 </Alert>
               )}
 

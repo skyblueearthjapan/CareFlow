@@ -9,6 +9,7 @@
 import { type ReactNode } from 'react';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Rakusuke } from '@/components/brand/Rakusuke';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -181,9 +182,12 @@ export function WeeklyApplyControls({ vm }: { vm: WeeklyApplyVm }) {
           {!sheetId ? (
             <p className="text-xs text-text-muted">②で差分を計算すると、ここに変更内容が出ます。</p>
           ) : total === 0 ? (
-            <p className="text-sm text-success">
-              差分なし。カイポケの現況とらく助の予定は一致しています（反映不要）。
-            </p>
+            <div className="flex items-center gap-2">
+              <Rakusuke pose="cheer" className="h-10 shrink-0" />
+              <p className="text-sm text-success">
+                差分なし。カイポケの現況とらく助の予定は一致しています（反映不要）。
+              </p>
+            </div>
           ) : (
             <div>
               <button

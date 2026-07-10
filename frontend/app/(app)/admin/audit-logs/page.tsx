@@ -13,6 +13,8 @@ import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import { Filter } from 'lucide-react';
 
+import { RakusukeNote } from '@/components/brand/Rakusuke';
+
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -156,7 +158,12 @@ export default function AdminAuditLogsPage() {
             </AlertDescription>
           </Alert>
         ) : !data || data.items.length === 0 ? (
-          <p className="text-sm text-text-muted">該当するログがありません</p>
+          <RakusukeNote
+            pose="think"
+            size="sm"
+            title="該当するログがありません"
+            comment="期間や条件を変えてみてください"
+          />
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">

@@ -7,6 +7,7 @@
  * 分離した (中身は不変)。週切替は操作部 (WeeklyApplyControls) の週セレクタに連動する。
  */
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Rakusuke } from '@/components/brand/Rakusuke';
 import { Skeleton } from '@/components/ui/skeleton';
 
 import { WeekScheduleView } from './WeekScheduleView';
@@ -26,11 +27,14 @@ export function WeeklyApplyCalendar({ vm }: { vm: WeeklyApplyVm }) {
       {schedule.isLoading ? (
         <Skeleton className="h-40 w-full" />
       ) : scheduleRows.length === 0 ? (
-        <Alert>
-          <AlertTitle>この週の予定はありません</AlertTitle>
-          <AlertDescription>
-            らく助でこの週のスケジュールを生成し、スタッフ割当まで済ませてください。
-          </AlertDescription>
+        <Alert className="flex items-center gap-3">
+          <Rakusuke pose="calendar" className="h-12 shrink-0" />
+          <div>
+            <AlertTitle>この週の予定はありません</AlertTitle>
+            <AlertDescription>
+              らく助でこの週のスケジュールを生成し、スタッフ割当まで済ませてください。
+            </AlertDescription>
+          </div>
         </Alert>
       ) : (
         <WeekScheduleView weekStart={weekStart} rows={scheduleRows} />

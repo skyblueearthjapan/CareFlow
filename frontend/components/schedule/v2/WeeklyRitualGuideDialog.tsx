@@ -10,8 +10,8 @@
  * RBAC: 呼出側 (CourseDayTablePanel) で admin/manager ガード済み。
  */
 import * as React from 'react';
-import { ListChecks } from 'lucide-react';
 
+import { Rakusuke } from '@/components/brand/Rakusuke';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -83,7 +83,7 @@ export function WeeklyRitualGuideDialog({ open, onClose }: WeeklyRitualGuideDial
       >
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <ListChecks className="h-5 w-5 text-brand-primary" aria-hidden />
+            <Rakusuke pose="calendar" className="h-10" />
             週次スケジュール準備ガイド
           </DialogTitle>
           <DialogDescription>

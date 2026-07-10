@@ -63,6 +63,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 
+import { Rakusuke } from '@/components/brand/Rakusuke';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import {
@@ -3596,7 +3597,10 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         >
           <DialogContent className="max-w-md" data-testid="generate-week-confirm">
             <DialogHeader>
-              <DialogTitle>この週は既に生成されています。再実行しますか？</DialogTitle>
+              <DialogTitle className="flex items-center gap-2">
+                <Rakusuke pose="think" className="h-10 shrink-0" />
+                この週は既に生成されています。再実行しますか？
+              </DialogTitle>
               <DialogDescription>
                 この週には既に {weekVisits.length}{' '}
                 件の訪問があります。週の生成をやり直すと、自動生成された未実施の訪問が作り直されます（実施済み・手動作成分は保持されます）。予定の組み直しが目的なら、通常は「固定枠に戻す」を使ってください。

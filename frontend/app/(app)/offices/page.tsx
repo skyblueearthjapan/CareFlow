@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { RakusukeNote } from '@/components/brand/Rakusuke';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useOffices } from '@/lib/queries/offices';
@@ -63,7 +64,11 @@ export default function OfficesPage() {
             </AlertDescription>
           </Alert>
         ) : paged.length === 0 ? (
-          <p className="text-sm text-text-muted">該当する拠点はありません</p>
+          <RakusukeNote
+            pose="think"
+            title="該当する拠点はありません"
+            comment="検索条件を変えてみてください"
+          />
         ) : (
           <>
             <div className="overflow-x-auto">

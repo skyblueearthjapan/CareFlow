@@ -107,6 +107,7 @@ export default function DashboardPage() {
             <TrendChart data={trendItems} />
           ) : (
             <EmptyState
+              pose="calendar"
               title="表示できるデータがありません"
               description="直近 7 日間に登録された訪問はまだありません。"
             />

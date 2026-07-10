@@ -14,6 +14,7 @@ import { cn } from '@/lib/utils';
 import { Plus } from 'lucide-react';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { RakusukeNote } from '@/components/brand/Rakusuke';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -196,7 +197,11 @@ export default function PatientsPage() {
             </AlertDescription>
           </Alert>
         ) : items.length === 0 ? (
-          <p className="text-sm text-text-muted">患者が登録されていません</p>
+          <RakusukeNote
+            pose="heart"
+            title="患者が登録されていません"
+            comment="「新規登録」から最初の患者さんを迎えましょう"
+          />
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">

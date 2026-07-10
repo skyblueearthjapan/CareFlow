@@ -13,6 +13,8 @@
 
 import { useEffect, useState } from 'react';
 
+import { Rakusuke } from '@/components/brand/Rakusuke';
+
 const RELOAD_GUARD_KEY = 'cf-chunk-error-reloaded';
 
 function isChunkLoadError(error: unknown): boolean {
@@ -72,10 +74,11 @@ export default function RootError({
 
   return (
     <div className="flex min-h-[60vh] flex-col items-center justify-center gap-4 p-6 text-center">
+      <Rakusuke pose="puzzled" className="h-20" />
       <div className="space-y-1">
         <h2 className="font-serif text-lg font-bold text-text-primary">画面の表示に失敗しました</h2>
         <p className="text-sm text-text-secondary">
-          アプリが更新された可能性があります。再読み込みをお試しください。
+          ごめんなさい、アプリが更新された可能性があります。再読み込みをお試しください。
         </p>
       </div>
       <div className="flex gap-2">

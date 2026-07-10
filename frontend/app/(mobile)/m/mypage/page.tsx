@@ -13,6 +13,7 @@ import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/sonner';
 import { MobileSection } from '@/components/mobile/MobileSection';
+import { RakusukeNote } from '@/components/brand/Rakusuke';
 import { useUIStore } from '@/lib/stores/ui';
 import { useMyShifts } from '@/lib/queries/me';
 import { useCreateShiftRequest, useShiftRequests } from '@/lib/queries/shift-requests';
@@ -177,7 +178,13 @@ export default function MobileMyPage() {
             </div>
           )}
           {!historyLoading && history && history.length === 0 && (
-            <p className="mt-2 text-xs text-text-muted">まだ提出はありません。</p>
+            <RakusukeNote
+              pose="clap"
+              size="sm"
+              className="mt-2"
+              title="まだ提出はありません"
+              comment="提出すると、ここに履歴が並びます"
+            />
           )}
           {history && history.length > 0 && (
             <ul className="mt-2 space-y-2">
