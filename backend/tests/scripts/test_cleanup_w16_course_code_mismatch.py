@@ -3,8 +3,8 @@
 カバー範囲:
   1. _label_to_code: label → code 正規化
   2. _scan_mismatches: 不整合行を抽出 (整合行は無視)
-  3. _apply_fix: 1 件の UPDATE が成功する
-  4. dry-run vs apply の違い
+  3. _apply_all_fixes: UPDATE が成功し report.fixed に計上される
+  4. UNIQUE 衝突時は skip され report.skipped_collision に計上される
 """
 
 from __future__ import annotations
@@ -23,9 +23,10 @@ if str(_BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(_BACKEND_ROOT))
 
 from cleanup_w16_course_code_mismatch import (  # noqa: E402
-    _apply_fix,
+    _apply_all_fixes,
     _label_to_code,
     _Mismatch,
+    _Report,
     _scan_mismatches,
 )
 
@@ -116,9 +117,11 @@ async def test_scan_finds_mismatch_and_apply_fix(_engine, db) -> None:
     assert m.desired_code == "E"
     assert m.template_label == "E"
 
-    # apply: UPDATE が成功する
-    ok, msg = await _apply_fix(m)
-    assert ok, f"apply failed: {msg}"
+    # apply: UPDATE が成功し report.fixed に計上される
+    report = _Report()
+    await _apply_all_fixes(mismatches, report)
+    assert report.fixed == 1, f"apply failed: {report}"
+    assert report.skipped_collision == 0
 
     # 再 scan で 0 件 (冪等)
     again = await _scan_mismatches()
@@ -127,7 +130,7 @@ async def test_scan_finds_mismatch_and_apply_fix(_engine, db) -> None:
 
 @pytest.mark.asyncio
 async def test_apply_fix_skips_when_collision_detected(_engine, db) -> None:
-    """desired_code の row が既にあると _apply_fix は skip して False を返す."""
+    """desired_code の row が既にあると _apply_all_fixes は skip して collision に計上する."""
     from app.models.course import COURSE_STATUS_PROPOSED, Course
     from app.models.course_template import CourseTemplate
     from app.models.office import Office
@@ -187,6 +190,7 @@ async def test_apply_fix_skips_when_collision_detected(_engine, db) -> None:
         template_label="E",
         desired_code="E",
     )
-    ok, msg = await _apply_fix(m)
-    assert ok is False, f"collision should skip, got ok={ok} msg={msg}"
-    assert "collision" in msg
+    report = _Report()
+    await _apply_all_fixes([m], report)
+    assert report.fixed == 0, f"collision should skip, got {report}"
+    assert report.skipped_collision == 1
