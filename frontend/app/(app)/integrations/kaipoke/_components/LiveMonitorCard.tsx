@@ -84,11 +84,21 @@ export function LiveMonitorCard({ monitorUrl, running, reachable, commandLabel }
     };
     void run();
     const interval = window.setInterval(run, cfOk === false ? 4000 : 60000);
+    // 別窓ログインから戻った瞬間に即時再判定 (4秒待ちにしない・PO報告 2026-07-10)。
+    const onFocus = () => void run();
+    window.addEventListener('focus', onFocus);
     return () => {
       cancelled = true;
       window.clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
     };
   }, [embedUrl, shown, cfOk]);
+
+  // 手動再接続: 判定をリセットし iframe を作り直す (自動復帰が効かない時の逃げ道)。
+  const forceReconnect = () => {
+    setCfOk(null);
+    setIframeKey((k) => k + 1);
+  };
 
   return (
     <Card className="flex flex-col overflow-hidden p-0">
@@ -114,11 +124,18 @@ export function LiveMonitorCard({ monitorUrl, running, reachable, commandLabel }
             </p>
             <p className="max-w-md text-xs leading-relaxed text-white/70">
               下のボタンから別ウィンドウでログイン（メール認証）してください。
-              完了すると、この画面は自動で再接続します。
+              完了すると、この画面は自動で再接続します（同じブラウザで開いてください。
+              シークレットウィンドウでは共有されません）。
+              自動で戻らない場合は「再接続」を押してください。
             </p>
-            <Button variant="outline" onClick={openWindow}>
-              別ウィンドウでログインする
-            </Button>
+            <div className="flex gap-2">
+              <Button variant="outline" onClick={openWindow}>
+                別ウィンドウでログインする
+              </Button>
+              <Button variant="outline" onClick={forceReconnect}>
+                再接続
+              </Button>
+            </div>
           </div>
         ) : (
           <div className="relative bg-stone-950">
@@ -158,6 +175,14 @@ export function LiveMonitorCard({ monitorUrl, running, reachable, commandLabel }
             className="ml-1 font-medium text-brand-primary hover:underline disabled:opacity-50"
           >
             別ウィンドウで開く
+          </button>
+          <button
+            type="button"
+            onClick={forceReconnect}
+            disabled={!embedUrl}
+            className="ml-2 font-medium text-brand-primary hover:underline disabled:opacity-50"
+          >
+            再接続
           </button>
           。監視のみ（画面から手操作しない）。
         </p>
