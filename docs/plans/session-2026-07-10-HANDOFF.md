@@ -116,6 +116,29 @@
   修正後 月曜稲毛=全時間帯×/残0 を本番実測で確認。
 - 教訓: 受け入れ枠の「コース母集合」は表示側(P1のPFV正)とは別実装。**M系の扱いを両者で意識**。
 
+## 4.6 らく助リブランディング（2026-07-10・本番稼働 HEAD `879d079`）
+
+**PO決定: アプリを「CareFlow」→「らく助（訪問看護 楽々スケジュール）」へ改称・マスコット導入。**
+デザインシート正 = `Sampledata/らく助／アイコン最終.png`（1536x1024）。表記は「訪問看護」でOK（PO確認済）。
+
+- **方針 = ハイブリッド配色**（AskUserQuestionでPO選択）: ブランド層（primary系）のみピンクへ、
+  機能層（性別/状態/警告/info/現場ボードCF_THEME）は据え置き。
+  `tokens.css`: brand-primary `#e15a7f`（シート原色#f8b4c6から白文字コントラスト確保のため導出）/
+  hover `#c94a6e` / light `#ffd6e0` / 50 `#fff5f8`。identity `#f8b4c6`・leaf `#78c888` 追加。
+- **コミット**: `e779781`(R-1基盤: 配色/名称/アイコン/ログイン) `547ec8b`(R-2モバイル: 挨拶横マスコット+空状態)
+  `879d079`(docsモック+素材18点)。frontendのみ・migration無し。`build --no-cache` でデプロイ・healthz内外OK。
+- **素材パイプライン**: `Sampledata/extract_rakusuke.py`（シート→透過PNG18点切り出し。Codexに指示して作成、
+  座標は3回目視調整）→ `docs/mockups/assets/rakusuke/` → 使用5点を `frontend/public/brand/` へ。
+  PWA/favicon生成 = `frontend/scripts/gen-icons.py`（らく助タイル合成へ書き換え。favicon=app/icon.png 初設置）。
+- **合意モック** = `docs/mockups/rakusuke-brand-mock.html`（パレット/3画面/アイコン/論点）。
+- **ハマり所**: middleware.ts の matcher に `brand/`・`icon.png`・`apple-icon.png` を除外追加必須
+  （無いとログイン画面のロゴ画像が認証リダイレクトで読めない）。
+  MonitorMapClient.tsx はSVG直書き3箇所を brand-primary と手動同期（コメントどおり実施済）。
+- **据え置き（次回以降）**: ①QR印刷物（患者宅掲示の対外物・PO確認後に改称）②現場ボードの配色
+  （CF_THEME独立・field.css/themeColorもteal残置）③性別カード女性ピンクとUIピンクの識別チューニング
+  （PO実機の感想待ち）④スタッフ配布のログインカード staff-login-cards.html のブランド更新（ローカル）。
+- **ロールバック**: `git revert 547ec8b e779781` → push → frontend再ビルドで完全復元（DB無関係）。
+
 ## 5. 参照
 
 - 設計原則・割当ソース: メモリ `careflow-staff-assignment-source.md`
