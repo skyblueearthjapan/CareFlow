@@ -91,7 +91,8 @@ export default function MobileThisWeekPage() {
               </h2>
               <span className="text-xs text-text-muted">{g.items.length}件</span>
             </header>
-            <div className="grid grid-cols-2 gap-1.5">
+            {/* R-9c (PO決定): 2列→縦1列。 */}
+            <div className="grid grid-cols-1 gap-1.5">
               {g.items.map((v) => (
                 <div
                   key={v.id}
