@@ -104,7 +104,7 @@ export default function MobileMyPage() {
   }
 
   return (
-    <MobileSection title="マイページ">
+    <MobileSection pose="clap" title="マイページ">
       <Card className="p-4">
         <div className="flex items-center gap-3">
           <div className="flex h-12 w-12 items-center justify-center rounded-full bg-brand-primary/15 font-serif text-lg font-bold text-brand-primary">

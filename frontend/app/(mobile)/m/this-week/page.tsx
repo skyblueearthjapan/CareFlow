@@ -51,7 +51,7 @@ export default function MobileThisWeekPage() {
   const groups = groupByDate(visits ?? []);
 
   return (
-    <MobileSection title="今週の予定" subtitle={`${weekStart} 週`}>
+    <MobileSection pose="calendar" title="今週の予定" subtitle={`${weekStart} 週`}>
       {isLoading && (
         <div className="space-y-3">
           <Skeleton className="h-32 w-full" />

@@ -55,10 +55,10 @@ const wkArrowBtn: CSSProperties = {
   height: 32,
   flex: '0 0 auto',
   borderRadius: 9,
-  background: 'rgba(255,255,255,0.18)',
+  background: 'rgba(255,255,255,0.45)',
   display: 'grid',
   placeItems: 'center',
-  color: '#fff',
+  color: 'inherit',
   cursor: 'pointer',
 };
 
@@ -307,11 +307,12 @@ export function AcceptanceFieldView() {
       <div style={{ flex: '0 0 auto', padding: '6px 8px 0' }}>
         <div
           style={{
-            background: `linear-gradient(135deg, ${TEAL} 0%, ${TEAL_DEEP} 100%)`,
-            color: '#fff',
+            // らく助調 (2026-07-10 PO要望): 濃ピンク塗り→淡ピンク帯×深ピンク文字の上品トーンへ
+            background: 'linear-gradient(135deg, #FBD9E2 0%, #F8B4C6 100%)',
+            color: '#A6425F',
             padding: '11px 14px',
             borderRadius: 16,
-            boxShadow: '0 5px 14px rgba(13,148,136,0.18)',
+            boxShadow: '0 5px 14px rgba(225,90,127,0.16)',
           }}
         >
           <div
@@ -322,18 +323,27 @@ export function AcceptanceFieldView() {
               gap: 8,
             }}
           >
-            <div>
-              <div style={{ fontFamily: 'var(--font-serif)', fontSize: 16, fontWeight: 700 }}>
-                受け入れ枠
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              {/* eslint-disable-next-line @next/next/no-img-element -- らく助マスコット (装飾) */}
+              <img
+                src="/brand/rakusuke-pose-heart.png"
+                alt=""
+                aria-hidden
+                style={{ height: 34, width: 'auto', display: 'block' }}
+              />
+              <div>
+                <div style={{ fontFamily: 'var(--font-serif)', fontSize: 16, fontWeight: 700 }}>
+                  受け入れ枠
+                </div>
+                <div style={{ fontSize: 10, opacity: 0.85, marginTop: 2 }}>全コース統合の目安</div>
               </div>
-              <div style={{ fontSize: 10, opacity: 0.85, marginTop: 2 }}>全コース統合の目安</div>
             </div>
             <div
               style={{
                 display: 'flex',
                 alignItems: 'center',
                 gap: 2,
-                background: 'rgba(255,255,255,0.18)',
+                background: 'rgba(255,255,255,0.5)',
                 borderRadius: 999,
                 padding: 3,
               }}
@@ -395,7 +405,7 @@ export function AcceptanceFieldView() {
                       fontWeight: 700,
                       fontFamily: 'var(--font-serif)',
                       background: on ? '#fff' : 'transparent',
-                      color: on ? TEAL_DEEP : '#fff',
+                      color: on ? TEAL_DEEP : 'inherit',
                       boxShadow: on ? '0 2px 6px rgba(0,0,0,0.12)' : 'none',
                     }}
                   >
@@ -428,12 +438,13 @@ export function AcceptanceFieldView() {
             {/* エリア帯 */}
             <div
               style={{
-                background: 'linear-gradient(135deg, #0E8472 0%, #0B6E5E 100%)',
+                // らく助調: 濃緑塗り→芽グリーンの淡緑帯×深緑文字 (上のピンク帯と同じ濃度感)
+                background: 'linear-gradient(135deg, #E4F4E8 0%, #CBE9D3 100%)',
                 borderRadius: 16,
                 padding: '12px 16px',
-                color: '#fff',
+                color: '#2F6B47',
                 marginBottom: 14,
-                boxShadow: '0 6px 16px rgba(14,132,114,0.22)',
+                boxShadow: '0 6px 16px rgba(120,200,136,0.2)',
               }}
             >
               <div style={{ fontSize: 10.5, opacity: 0.85, fontWeight: 600 }}>

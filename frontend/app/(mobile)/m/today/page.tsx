@@ -26,7 +26,7 @@ export default function MobileTodayPage() {
   const sorted = [...(visits ?? [])].sort((a, b) => a.start_time.localeCompare(b.start_time));
 
   return (
-    <MobileSection title="今日の訪問" subtitle={`${today} ・ ${sorted.length}件`}>
+    <MobileSection pose="visit" title="今日の訪問" subtitle={`${today} ・ ${sorted.length}件`}>
       {isLoading && (
         <div className="space-y-2">
           <Skeleton className="h-20 w-full" />
