@@ -103,22 +103,31 @@ export default function MobileHomePage() {
       }
       subtitle={today}
       action={
-        <button
-          type="button"
-          aria-label={unreadCount > 0 ? `通知 (未読 ${unreadCount}件)` : '通知'}
-          onClick={() => setNotifOpen(true)}
-          className="relative inline-flex h-10 w-10 items-center justify-center rounded-full text-text-secondary hover:bg-bg-muted"
-        >
-          <Bell className="h-5 w-5" />
-          {unreadCount > 0 && (
-            <Badge
-              variant="destructive"
-              className="absolute -right-0.5 -top-0.5 h-4 min-w-[1rem] justify-center px-1 text-[10px]"
-            >
-              {unreadCount}
-            </Badge>
-          )}
-        </button>
+        <div className="flex items-center gap-1">
+          {/* eslint-disable-next-line @next/next/no-img-element -- らく助マスコット (装飾) */}
+          <img
+            src="/brand/rakusuke-pose-wave.png"
+            alt=""
+            aria-hidden
+            className="h-14 w-auto"
+          />
+          <button
+            type="button"
+            aria-label={unreadCount > 0 ? `通知 (未読 ${unreadCount}件)` : '通知'}
+            onClick={() => setNotifOpen(true)}
+            className="relative inline-flex h-10 w-10 items-center justify-center rounded-full text-text-secondary hover:bg-bg-muted"
+          >
+            <Bell className="h-5 w-5" />
+            {unreadCount > 0 && (
+              <Badge
+                variant="destructive"
+                className="absolute -right-0.5 -top-0.5 h-4 min-w-[1rem] justify-center px-1 text-[10px]"
+              >
+                {unreadCount}
+              </Badge>
+            )}
+          </button>
+        </div>
       }
     >
       {isError && (

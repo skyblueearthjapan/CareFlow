@@ -45,7 +45,17 @@ export default function MobileTodayPage() {
 
       {!isLoading && !isError && sorted.length === 0 && (
         <Card className="p-6 text-center">
-          <p className="text-sm text-text-muted">本日の訪問はありません。</p>
+          {/* eslint-disable-next-line @next/next/no-img-element -- らく助マスコット (装飾) */}
+          <img
+            src="/brand/rakusuke-pose-joy.png"
+            alt=""
+            aria-hidden
+            className="mx-auto mb-3 h-20 w-auto"
+          />
+          <p className="text-sm font-medium text-text-primary">本日の訪問はありません</p>
+          <p className="mt-1 text-xs text-text-muted">
+            おつかれさまでした！ゆっくり休んでくださいね
+          </p>
         </Card>
       )}
 
