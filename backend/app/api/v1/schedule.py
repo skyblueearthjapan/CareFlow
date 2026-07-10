@@ -33,6 +33,7 @@ HTTP 層。
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from datetime import UTC, date, datetime, time, timedelta
@@ -1606,6 +1607,23 @@ async def generate_week_only(
 # Endpoint: /assign-staff-only (W17-BE-A2)
 # ---------------------------------------------------------------------------
 
+# 2026-07-11 二度押しガード (handoff §4.7): assign-staff-only は再実行で別解を出す
+# 非冪等性があり、実行中にもう一度叩くと「1回目の割当済みスタッフを busy 扱いで除外
+# → manager/trainee に流れる」事故が起きた (2026-07-10 04:47 に 7 秒差で 2 回実行)。
+# 週単位のプロセス内ロックで実行中の重複リクエストを 409 で拒否する。
+# 注意: uvicorn 複数 worker 構成ではプロセス間を跨げない (現行本番は単一プロセス)。
+_assign_staff_only_locks: dict[tuple[int, int], asyncio.Lock] = {}
+
+
+def _get_assign_staff_only_lock(iso_year: int, iso_week: int) -> asyncio.Lock:
+    """(iso_year, iso_week) 単位のロックを返す (office 指定の有無に関わらず週全体で排他)."""
+    key = (iso_year, iso_week)
+    lock = _assign_staff_only_locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _assign_staff_only_locks[key] = lock
+    return lock
+
 
 @router.post(
     "/assign-staff-only",
@@ -1617,6 +1635,29 @@ async def assign_staff_only(
     payload: AssignStaffOnlyRequest,
     db: DbDep,
     _user: Annotated[User, Depends(require_role("admin", "manager"))],
+) -> AssignStaffOnlyResponse:
+    """assign-staff-only の HTTP 入口 — 週単位の二度押しガード付き (2026-07-11).
+
+    実行中の週に対する重複リクエストは 409 で即時拒否する (実装は
+    ``_assign_staff_only_impl``)。非冪等な再実行が 7 秒差で走って
+    コース担当が別解で上書きされた事故 (2026-07-10) の再発防止。
+    """
+    lock = _get_assign_staff_only_lock(payload.iso_year, payload.iso_week)
+    if lock.locked():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "自動スタッフ割当を実行中です。完了までお待ちください"
+                "（二度押し防止のため同じ週への同時実行はできません）。"
+            ),
+        )
+    async with lock:
+        return await _assign_staff_only_impl(payload, db)
+
+
+async def _assign_staff_only_impl(
+    payload: AssignStaffOnlyRequest,
+    db: AsyncSession,
 ) -> AssignStaffOnlyResponse:
     """Layer 3 のみ実行し既存 visits を保持したまま courses に staff を割付する (W17-BE-A2).
 

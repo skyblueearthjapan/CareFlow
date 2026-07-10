@@ -9878,6 +9878,24 @@ async def reset_visits_to_fixed(
                 continue
             staff_by_office_weekday.setdefault((s.primary_office_id, wd), []).append(s.id)
 
+    # 2026-07-11 根治 (handoff §4.7 第4の事故経路 = reset-to-fixed の同期漏れ):
+    # コース担当 (courses.assigned_staff_id = 表示の正典・原則⑥) の有効性判定用に
+    # 「生きている全スタッフ」の id 集合をロードする。ローテーション pool
+    # (role='staff'・非 trainee) より広く、assign-staff-only や手動変更で
+    # manager 等が担当になっているコースも正当として扱う。退職 (論理削除) や
+    # 非稼働スタッフが残置されたコース担当はここで無効と判定され、
+    # ローテーション結果でコース側ごと上書き修復される。
+    valid_staff_ids_reset: set[UUID] = set(
+        (
+            await db.scalars(
+                select(Staff.id).where(
+                    Staff.status == "active",
+                    Staff.deleted_at.is_(None),
+                )
+            )
+        ).all()
+    )
+
     # ローテーション用カウンタ
     rotation_idx: dict[tuple[UUID, int], int] = {}
     courses_used_keys: set[tuple[UUID, int, UUID]] = set()
@@ -9969,14 +9987,31 @@ async def reset_visits_to_fixed(
             warnings=warnings,
             dry_run=dry_run,
         )
-        # ローテーションで staff_id を選ぶ
-        pool = staff_by_office_weekday.get((office_id, pfv.weekday), [])
+        # スタッフ選定 (2026-07-11 根治・handoff §4.7 第4の事故経路):
+        # コース担当 (courses.assigned_staff_id = 表示の正典・原則⑥) を最優先で
+        # visit に採用し、スケジュール画面・モニター・モバイルの担当表示を
+        # 構造的に一致させる。コース担当が未割当または無効 (退職/削除済み) の
+        # ときのみ従来のローテーションで選び、選んだ結果をコース側へ書き戻して
+        # 「訪問側だけ再構築されてコース側が残置される」乖離を残さない。
         staff_id: UUID | None = None
-        if pool:
-            idx = rotation_idx.get((office_id, pfv.weekday), 0)
-            staff_id = pool[idx % len(pool)]
-            rotation_idx[(office_id, pfv.weekday)] = idx + 1
+        if (
+            course is not None
+            and course.assigned_staff_id is not None
+            and course.assigned_staff_id in valid_staff_ids_reset
+        ):
+            staff_id = course.assigned_staff_id
             courses_used_keys.add((office_id, pfv.weekday, staff_id))
+        else:
+            pool = staff_by_office_weekday.get((office_id, pfv.weekday), [])
+            if pool:
+                idx = rotation_idx.get((office_id, pfv.weekday), 0)
+                staff_id = pool[idx % len(pool)]
+                rotation_idx[(office_id, pfv.weekday)] = idx + 1
+                courses_used_keys.add((office_id, pfv.weekday, staff_id))
+            if course is not None and staff_id is not None and not dry_run:
+                # course_cache により同一コースの後続 PFV も同じ担当に揃う。
+                # 無効担当 (退職残置) もここで有効なローテーション結果に修復される。
+                course.assigned_staff_id = staff_id
         course_code_str = course.code if course is not None else "M"
         # V2Visit 構築. lat/lng None patient は補正対象外として metadata だけ蓄積.
         if patient.lat is None or patient.lng is None:
