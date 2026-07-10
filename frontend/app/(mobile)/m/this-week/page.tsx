@@ -4,6 +4,7 @@ import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { MobileSection } from '@/components/mobile/MobileSection';
+import { MobileVisitCard } from '@/components/mobile/MobileVisitCard';
 import { RakusukeNote } from '@/components/brand/Rakusuke';
 import { currentWeekStartIso, useMyVisits, type MyVisit } from '@/lib/queries/me';
 
@@ -79,27 +80,21 @@ export default function MobileThisWeekPage() {
       )}
 
       <div className="space-y-4">
+        {/* R-9: 独自の簡易リスト行を廃止し、今日の訪問と同じ性別ウォッシュカードへ統一。 */}
         {groups.map((g) => (
-          <Card key={g.date} className="p-4">
+          <section key={g.date}>
             <header className="mb-2 flex items-baseline justify-between">
               <h2 className="font-serif text-base font-bold text-text-primary">
                 {formatDateLabel(g.date)}
               </h2>
               <span className="text-xs text-text-muted">{g.items.length}件</span>
             </header>
-            <ul className="divide-y divide-border-default">
+            <div className="space-y-2">
               {g.items.map((v) => (
-                <li key={v.id} className="flex items-center gap-3 py-2 text-sm">
-                  <span className="font-mono tnum text-text-primary w-12 shrink-0">
-                    {shortTime(v.start_time)}
-                  </span>
-                  <span className="flex-1 truncate text-text-primary">
-                    {v.patient_name ?? '(患者名未設定)'}
-                  </span>
-                </li>
+                <MobileVisitCard key={v.id} visit={v} />
               ))}
-            </ul>
-          </Card>
+            </div>
+          </section>
         ))}
       </div>
     </MobileSection>

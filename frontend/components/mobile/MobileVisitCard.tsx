@@ -42,7 +42,7 @@ interface MobileVisitCardProps {
   highlight?: boolean;
 }
 
-export function MobileVisitCard({ visit, address, highlight }: MobileVisitCardProps) {
+export function MobileVisitCard({ visit, address }: MobileVisitCardProps) {
   const meta = statusMeta(visit.status);
   // 内部メタデータ (Layer1: 等) は現場に見せない。
   const note = displayVisitNote(visit.note);
@@ -62,9 +62,10 @@ export function MobileVisitCard({ visit, address, highlight }: MobileVisitCardPr
           visit.status === 'cancelled' && 'opacity-60',
         )}
         style={{
+          // 左帯は常に性別色 (PC版踏襲・PO要望 2026-07-10)。未訪問の区別はバッジが担う。
           background: pal.bg,
           borderColor: pal.ln,
-          borderLeftColor: highlight ? 'var(--warning)' : pal.bar,
+          borderLeftColor: pal.bar,
           color: pal.ink,
         }}
       >
