@@ -37,7 +37,7 @@ export function MobileShell({ children }: MobileShellProps) {
       {showFieldBoard && (
         <Link
           href="/m"
-          className="flex shrink-0 items-center justify-center gap-1.5 border-b border-border-default bg-bg-base px-4 py-2 text-xs font-medium text-brand-primary transition-colors hover:bg-bg-muted"
+          className="flex shrink-0 items-center justify-center gap-1.5 border-b border-brand-primary-light bg-brand-primary-50 px-4 py-2 text-xs font-medium text-brand-primary transition-colors hover:bg-brand-primary-light"
         >
           <LayoutGrid className="h-3.5 w-3.5" strokeWidth={2} />
           <span>現場ボードを開く</span>

@@ -18,7 +18,8 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: '#e15a7f',
+  // ブラウザ/PWAのトップバー色。操作色 #e15a7f より一段淡い上品ピンク (シート原色) — PO要望 2026-07-10
+  themeColor: '#f8b4c6',
 };
 
 // Static SW registration script (no dynamic content; safe to inline).

@@ -20,8 +20,11 @@ export type CourseColorKey = 'A' | 'B' | 'C' | 'D' | 'E' | 'M';
 // ── Warm & Human パレット ───────────────────────────────────────────────────
 
 export const CF_THEME = {
-  TEAL: '#0D9488',
-  TEAL_DEEP: '#0F766E',
+  // らく助リブランディング (2026-07-10): ブランドアクセントを teal → らく助ピンクへ。
+  // キー名は互換のため TEAL のまま (tokens.css の --brand-primary / -hover と同値に保つ)。
+  // 保険種別 (医療/介護) の青/緑は FieldBoard 側の直書きで、ここには依存しない (機能色は不変)。
+  TEAL: '#E15A7F',
+  TEAL_DEEP: '#C94A6E',
   TERRA: '#D97706',
   TERRA_DEEP: '#B45309',
   PLUM: '#8B5C9E',

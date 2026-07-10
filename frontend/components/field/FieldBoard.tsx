@@ -585,6 +585,13 @@ function BackToAppBar({
         }}
       >
         <ArrowLeft size={13} strokeWidth={2.4} />
+        {/* eslint-disable-next-line @next/next/no-img-element -- らく助ブランドマーク (装飾) */}
+        <img
+          src="/brand/rakusuke-icon-round.png"
+          alt=""
+          aria-hidden
+          style={{ height: 20, width: 'auto', display: 'block' }}
+        />
         戻る
       </Link>
 

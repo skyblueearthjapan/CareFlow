@@ -26,7 +26,7 @@ export const viewport: Viewport = {
   initialScale: 1,
   // 現場ボードは独立フルスクリーン: ピンチズーム抑止で誤操作を防ぐ。
   maximumScale: 1,
-  themeColor: '#0d9488',
+  themeColor: '#f8b4c6',
 };
 
 export default function FieldLayout({ children }: { children: React.ReactNode }) {
