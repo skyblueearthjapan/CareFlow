@@ -4,8 +4,9 @@ import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { MobileSection } from '@/components/mobile/MobileSection';
-import { MobileVisitCard } from '@/components/mobile/MobileVisitCard';
 import { RakusukeNote } from '@/components/brand/Rakusuke';
+import { cn } from '@/lib/utils';
+import { genderPalette } from '@/lib/scheduling/timeline';
 import { currentWeekStartIso, useMyVisits, type MyVisit } from '@/lib/queries/me';
 
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'] as const;
@@ -80,18 +81,46 @@ export default function MobileThisWeekPage() {
       )}
 
       <div className="space-y-4">
-        {/* R-9: 独自の簡易リスト行を廃止し、今日の訪問と同じ性別ウォッシュカードへ統一。 */}
+        {/* R-9b (PO要望): 今週は「見渡す」画面 — タップ不可の高密度チップを2列で敷き詰める。
+            時刻+性別ドット相当の左帯+患者名のみ (住所/詳細は今日の訪問側の役割)。 */}
         {groups.map((g) => (
           <section key={g.date}>
-            <header className="mb-2 flex items-baseline justify-between">
+            <header className="mb-1.5 flex items-baseline justify-between">
               <h2 className="font-serif text-base font-bold text-text-primary">
                 {formatDateLabel(g.date)}
               </h2>
               <span className="text-xs text-text-muted">{g.items.length}件</span>
             </header>
-            <div className="space-y-2">
+            <div className="grid grid-cols-2 gap-1.5">
               {g.items.map((v) => (
-                <MobileVisitCard key={v.id} visit={v} />
+                <div
+                  key={v.id}
+                  className={cn(
+                    'flex items-center gap-1.5 rounded-md border border-l-[3px] px-1.5 py-1',
+                    v.status === 'cancelled' && 'opacity-50',
+                  )}
+                  style={(() => {
+                    const pal = genderPalette(v.patient_sex ?? null);
+                    return {
+                      background: pal.bg,
+                      borderColor: pal.ln,
+                      borderLeftColor: pal.bar,
+                      color: pal.ink,
+                    };
+                  })()}
+                >
+                  <span className="tnum shrink-0 text-[11px] font-semibold">
+                    {shortTime(v.start_time)}
+                  </span>
+                  <span
+                    className={cn(
+                      'min-w-0 truncate text-[12px] font-bold',
+                      v.status === 'cancelled' && 'line-through',
+                    )}
+                  >
+                    {v.patient_name ?? '—'}
+                  </span>
+                </div>
               ))}
             </div>
           </section>
