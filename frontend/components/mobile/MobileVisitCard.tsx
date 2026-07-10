@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge';
 import { Card } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 import { displayVisitNote } from '@/lib/visit-note';
+import { genderPalette } from '@/lib/scheduling/timeline';
 import type { MyVisit } from '@/lib/queries/me';
 
 /** Map backend `status` → Japanese label + Badge variant. */
@@ -45,6 +46,10 @@ export function MobileVisitCard({ visit, address, highlight }: MobileVisitCardPr
   const meta = statusMeta(visit.status);
   // 内部メタデータ (Layer1: 等) は現場に見せない。
   const note = displayVisitNote(visit.note);
+  // R-9 (PO要望 2026-07-10): PC版スケジュール/モニターと同じカード視覚言語へ統一。
+  // 地色=患者性別ウォッシュ・左帯/性別ドット=性別色・時刻 tnum・📍住所。
+  const pal = genderPalette(visit.patient_sex ?? null);
+  const shownAddress = address ?? visit.patient_address ?? null;
   return (
     <Link
       href={`/m/today/${visit.id}`}
@@ -53,33 +58,39 @@ export function MobileVisitCard({ visit, address, highlight }: MobileVisitCardPr
     >
       <Card
         className={cn(
-          'flex items-center gap-3 p-4 transition-colors hover:bg-bg-muted',
-          highlight && 'border-l-4 border-l-warning',
-          visit.status === 'cancelled' && 'opacity-60 bg-bg-muted',
+          'flex items-center gap-3 rounded-md border border-l-4 p-4 shadow-[var(--shadow-xs)] transition-shadow hover:shadow-[var(--shadow-sm)]',
+          visit.status === 'cancelled' && 'opacity-60',
         )}
+        style={{
+          background: pal.bg,
+          borderColor: pal.ln,
+          borderLeftColor: highlight ? 'var(--warning)' : pal.bar,
+          color: pal.ink,
+        }}
       >
-        <div className="flex flex-col items-center justify-center w-14 shrink-0">
-          <span className="font-serif text-lg font-bold tnum text-text-primary">
-            {shortTime(visit.start_time)}
-          </span>
-          <span className="text-[11px] text-text-muted tnum">{shortTime(visit.end_time)}</span>
+        <div className="flex w-14 shrink-0 flex-col items-center justify-center">
+          <span className="font-serif text-lg font-bold tnum">{shortTime(visit.start_time)}</span>
+          <span className="text-[11px] opacity-70 tnum">{shortTime(visit.end_time)}</span>
         </div>
-        <div className="flex-1 min-w-0">
+        <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <p className="truncate font-medium text-text-primary">
-              {visit.patient_name ?? '(患者名未設定)'}
-            </p>
+            <i
+              className="h-2 w-2 shrink-0 rounded-full"
+              style={{ background: pal.bar }}
+              aria-hidden="true"
+            />
+            <p className="truncate font-bold">{visit.patient_name ?? '(患者名未設定)'}</p>
             <Badge variant={meta.variant}>{meta.label}</Badge>
           </div>
-          {address && (
-            <p className="mt-1 flex items-center gap-1 text-xs text-text-muted truncate">
+          {shownAddress && (
+            <p className="mt-1 flex items-center gap-1 truncate text-xs opacity-80">
               <MapPin className="h-3 w-3 shrink-0" />
-              <span className="truncate">{address}</span>
+              <span className="truncate">{shownAddress}</span>
             </p>
           )}
-          {note && <p className="mt-1 text-xs text-text-secondary truncate">{note}</p>}
+          {note && <p className="mt-1 truncate text-xs opacity-80">{note}</p>}
         </div>
-        <ChevronRight className="h-4 w-4 shrink-0 text-text-muted" />
+        <ChevronRight className="h-4 w-4 shrink-0 opacity-60" />
       </Card>
     </Link>
   );

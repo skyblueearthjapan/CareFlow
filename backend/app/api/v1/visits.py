@@ -174,6 +174,11 @@ def _serialize_visit(
             if visit.patient is not None and visit.patient.lng is not None
             else None
         ),
+        # モバイル訪問カードの性別ウォッシュ/📍住所用 (R-9)。patient 未ロードは None。
+        "patient_sex": getattr(visit.patient, "sex", None) if visit.patient is not None else None,
+        "patient_address": (
+            getattr(visit.patient, "address", None) if visit.patient is not None else None
+        ),
         "staff_assignments": assignments or [],
         # QR チェックイン (Phase 1) の最新打刻. 既存呼出は None のまま (非破壊).
         "latest_checkin": latest_checkin,

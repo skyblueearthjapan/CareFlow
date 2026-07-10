@@ -82,6 +82,9 @@ export interface MyVisit {
    */
   patient_lat?: number | null;
   patient_lng?: number | null;
+  /** R-9: 訪問カードの性別ウォッシュ/📍住所用 (非破壊追加・旧デプロイは undefined)。 */
+  patient_sex?: string | null;
+  patient_address?: string | null;
   /**
    * Latest checkin projection. Optional / nullable so older deployments that
    * don't yet send it (or list endpoints that omit it) keep type-checking.

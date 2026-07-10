@@ -112,6 +112,9 @@ class VisitRead(VisitBase):
     # (フロントは no_gps 相当としてプレビュー無しで POST 可能).
     patient_lat: float | None = None
     patient_lng: float | None = None
+    # モバイル訪問カードの性別ウォッシュ/📍住所用 (R-9・非破壊追加)。
+    patient_sex: str | None = None
+    patient_address: str | None = None
     # visit_staff_assignments 経由の割当スタッフ一覧 (§4.5)
     # 1 visit あたり 1 or 2 行 (required_staff_count による)
     staff_assignments: list[VisitStaffAssignmentRead] = Field(default_factory=list)
