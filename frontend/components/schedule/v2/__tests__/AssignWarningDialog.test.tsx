@@ -16,7 +16,11 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 
 import { AssignWarningDialog, type ApprovedReviewItem } from '../AssignWarningDialog';
-import type { AutoCommittedNotice, ReviewItem } from '@/lib/queries/assign_staff_only';
+import type {
+  AutoCommittedNotice,
+  ReviewItem,
+  UnresolvedGenderWarning,
+} from '@/lib/queries/assign_staff_only';
 
 function makeGender(over: Partial<ReviewItem> = {}): ReviewItem {
   return {
@@ -398,8 +402,8 @@ describe('AssignWarningDialog — Wave N-2 notices セクション', () => {
 // ─────────────────────────────────────────────────────────────────────────
 
 function makeUnresolved(
-  over: Partial<import('@/lib/queries/assign_staff_only').UnresolvedGenderWarning> = {},
-): import('@/lib/queries/assign_staff_only').UnresolvedGenderWarning {
+  over: Partial<UnresolvedGenderWarning> = {},
+): UnresolvedGenderWarning {
   return {
     course_id: 'ffffffff-ffff-ffff-ffff-ffffffffffff',
     course_code: 'B',

@@ -17,7 +17,6 @@
  */
 
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
-import Link from 'next/link';
 import { useSession } from 'next-auth/react';
 import {
   ChevronLeft,
@@ -26,9 +25,7 @@ import {
   Plus,
   ClipboardCheck,
   MapPin,
-  ArrowLeft,
   UserPlus,
-  Grid3x3,
 } from 'lucide-react';
 
 import { useFieldBoard, toWeekStart, toIsoYearWeek } from '@/lib/queries/fieldBoard';

@@ -64,7 +64,7 @@ export default function StaffPage() {
   const { data, isLoading, isError, error } = useStaffList({ limit: STAFF_LIMIT, offset: 0 });
   const { allOffices } = useOffices();
 
-  const allRows = data ?? [];
+  const allRows = useMemo(() => data ?? [], [data]);
 
   // id -> name lookup driven by the offices master (W1-C). Falls back to the
   // raw UUID prefix if the office hasn't been fetched yet (e.g. soft-deleted

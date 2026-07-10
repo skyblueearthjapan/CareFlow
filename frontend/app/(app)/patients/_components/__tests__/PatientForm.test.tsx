@@ -176,7 +176,7 @@ function noneWithCity(overrides: Record<string, unknown> = {}) {
 }
 
 /** 発火4条件を揃える: 住所入力→resolve(none+city)→拠点を手動選択。callout を出す。 */
-async function renderWithCalloutFired(mutateAsync: Mock) {
+async function renderWithCalloutFired(_mutateAsync: Mock) {
   render(<PatientForm onSubmit={vi.fn()} />);
   const addressInput = screen.getByTestId('address-input');
   act(() => {

@@ -11,11 +11,10 @@
  */
 
 import { useMemo, useState, type CSSProperties, type ReactNode } from 'react';
-import Link from 'next/link';
 
 import { format } from 'date-fns';
 import { ja } from 'date-fns/locale';
-import { ArrowLeft, ChevronLeft, ChevronRight } from 'lucide-react';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 
 import { toWeekStart, addDays } from '@/components/schedule/WeekSelector';
 import { useAcceptanceMatrix } from '@/lib/queries/acceptance_matrix';

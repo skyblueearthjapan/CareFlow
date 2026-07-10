@@ -20,9 +20,9 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import type { PatientRead } from '@/lib/schemas/patient';
 
 vi.mock('@/lib/queries/fieldBoard', async () => {
-  const actual = await vi.importActual<typeof import('@/lib/queries/fieldBoard')>(
-    '@/lib/queries/fieldBoard',
-  );
+  // eslint-disable-next-line @typescript-eslint/consistent-type-imports
+  type FieldBoardModule = typeof import('@/lib/queries/fieldBoard');
+  const actual = await vi.importActual<FieldBoardModule>('@/lib/queries/fieldBoard');
   return {
     ...actual,
     useProposeSlots: vi.fn(),

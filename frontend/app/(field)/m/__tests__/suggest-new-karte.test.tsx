@@ -23,9 +23,9 @@ import type {
 } from '@/lib/schemas/v2/propose_slots';
 
 vi.mock('@/lib/queries/fieldBoard', async () => {
-  const actual = await vi.importActual<typeof import('@/lib/queries/fieldBoard')>(
-    '@/lib/queries/fieldBoard',
-  );
+  // eslint-disable-next-line @typescript-eslint/consistent-type-imports
+  type FieldBoardModule = typeof import('@/lib/queries/fieldBoard');
+  const actual = await vi.importActual<FieldBoardModule>('@/lib/queries/fieldBoard');
   return {
     ...actual,
     useProposeSlots: vi.fn(),

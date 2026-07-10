@@ -12,7 +12,6 @@
 // ── 型定義 ──────────────────────────────────────────────────────────────────
 
 export type InsuranceKind = 'med' | 'care';
-export type OfficeKey = 'INAGE' | 'TSUGA';
 export type Dow = '月' | '火' | '水' | '木' | '金' | '土' | '日';
 
 export type CourseColorKey = 'A' | 'B' | 'C' | 'D' | 'E' | 'M';

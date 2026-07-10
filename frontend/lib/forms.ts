@@ -6,7 +6,7 @@ import {
   type UseFormProps,
   type UseFormReturn,
 } from 'react-hook-form';
-import { z, type ZodType, type ZodTypeDef } from 'zod';
+import type { z, ZodType, ZodTypeDef } from 'zod';
 
 /**
  * react-hook-form + zod 用ヘルパ。
