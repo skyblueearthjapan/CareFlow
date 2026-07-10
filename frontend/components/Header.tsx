@@ -44,10 +44,11 @@ export function Header({ title = 'らく助', onToggleSidebar }: HeaderProps) {
           <img src="/brand/rakusuke-icon-round.png" alt="" className="h-8 w-auto" />
           <span className="font-serif text-lg font-bold text-text-primary">{title}</span>
         </div>
+        {/* 並び順は PO 指定 (2026-07-10): 最適化ルール設定を最右端に。 */}
         <NotificationButton />
         <UserMenuButton />
-        <SchedulingSettingsButton />
         <AdminUsersButton />
+        <SchedulingSettingsButton />
       </div>
     </header>
   );
