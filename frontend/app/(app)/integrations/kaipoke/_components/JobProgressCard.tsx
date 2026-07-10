@@ -7,6 +7,7 @@
  * そのまま可視化する（processed/total と current_name、成功/失敗/スキップ）。
  */
 import { Card } from '@/components/ui/card';
+import { RakusukeWorking } from '@/components/brand/Rakusuke';
 
 import type { LiveSnapshot } from '@/lib/schemas/integration';
 
@@ -43,6 +44,13 @@ export function JobProgressCard({ live }: Props) {
           </span>
         )}
       </div>
+
+      {/* R-11: らく助が代わりに入力してくれている演出 (アニメーション付き) */}
+      <RakusukeWorking
+        className="mb-3"
+        message={`${label}を、らく助が代わりに進めています`}
+        sub="そのまま見守っていて大丈夫です。終わったら結果をお知らせします"
+      />
 
       {/* プログレスバー */}
       <div className="h-2 w-full overflow-hidden rounded-full bg-bg-muted">

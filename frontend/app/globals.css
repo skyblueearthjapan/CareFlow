@@ -91,3 +91,30 @@
 .tl-shake {
   animation: tl-shake 0.4s cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
 }
+
+/* らく助が働くアニメーション (R-11: 連携RPA実行中の演出) */
+@keyframes rakusuke-bob {
+  0%,
+  100% {
+    transform: translateY(0) rotate(-2deg);
+  }
+  50% {
+    transform: translateY(-4px) rotate(2deg);
+  }
+}
+.rakusuke-bob {
+  animation: rakusuke-bob 1.4s ease-in-out infinite;
+}
+@keyframes rakusuke-blink {
+  0%,
+  80%,
+  100% {
+    opacity: 0.2;
+  }
+  40% {
+    opacity: 1;
+  }
+}
+.rakusuke-dot {
+  animation: rakusuke-blink 1.2s ease-in-out infinite;
+}

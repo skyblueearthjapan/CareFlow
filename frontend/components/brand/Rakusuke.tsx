@@ -125,6 +125,52 @@ export function RakusukeSays({
   );
 }
 
+interface RakusukeWorkingProps {
+  /** らく助の一言 (例: 「カイポケに入力しています」)。 */
+  message: React.ReactNode;
+  /** 補足行 (例: 「そのまま見守っていて大丈夫です」)。 */
+  sub?: React.ReactNode;
+  pose?: RakusukePose;
+  className?: string;
+}
+
+/**
+ * らく助が作業中のアニメーション演出 (R-11)。連携RPAの実行中カード等に置く。
+ * ゆらゆら動くらく助 + 点滅する「…」で「代わりに入力してくれている」感を出す。
+ */
+export function RakusukeWorking({
+  message,
+  sub,
+  pose = 'calendar',
+  className,
+}: RakusukeWorkingProps) {
+  return (
+    <div className={cn('flex items-center gap-2.5', className)}>
+      <Rakusuke pose={pose} className="rakusuke-bob h-14 shrink-0" />
+      <div className="relative min-w-0 flex-1 rounded-xl border border-brand-primary-light bg-brand-primary-50 px-3 py-2">
+        <span
+          aria-hidden
+          className="absolute -left-1.5 top-4 h-3 w-3 rotate-45 border-b border-l border-brand-primary-light bg-brand-primary-50"
+        />
+        <p className="text-sm font-bold text-brand-primary-hover">
+          {message}
+          {[0, 1, 2].map((i) => (
+            <span
+              key={i}
+              className="rakusuke-dot"
+              style={{ animationDelay: `${i * 0.2}s` }}
+              aria-hidden
+            >
+              .
+            </span>
+          ))}
+        </p>
+        {sub && <p className="mt-0.5 text-xs text-text-secondary">{sub}</p>}
+      </div>
+    </div>
+  );
+}
+
 interface RakusukeNoteProps {
   pose: RakusukePose;
   /** 主文 (例: 「本日の訪問はありません」) */
