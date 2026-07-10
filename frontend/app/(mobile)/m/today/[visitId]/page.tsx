@@ -685,12 +685,14 @@ export default function MobileVisitDetailPage() {
     <MobileSection
       title="訪問詳細"
       action={
+        // 無言の矢印だけでは戻り先が分からない (PO要望 2026-07-10) → テキスト付きボタンへ
         <Link
           href="/m/today"
-          className="inline-flex h-10 w-10 items-center justify-center rounded-full text-text-secondary hover:bg-bg-muted"
-          aria-label="戻る"
+          className="inline-flex h-10 shrink-0 items-center gap-1.5 rounded-full border border-brand-primary-light bg-brand-primary-50 px-3 text-xs font-medium text-brand-primary hover:bg-brand-primary-light"
+          aria-label="今日の訪問に戻る"
         >
-          <ArrowLeft className="h-5 w-5" />
+          <ArrowLeft className="h-4 w-4" />
+          今日の訪問に戻る
         </Link>
       }
     >
