@@ -36,9 +36,12 @@ export function makeVisit(overrides: Partial<MonitorVisit> = {}): MonitorVisit {
 }
 
 export function makeRow(overrides: Partial<MonitorStaffRow> = {}): MonitorStaffRow {
+  const staffId = overrides.staff_id !== undefined ? overrides.staff_id : uid();
   return {
-    staff_id: uid(),
+    course_id: null,
+    staff_id: staffId,
     staff_name: '田中 太郎',
+    staff_ids: staffId ? [staffId] : [],
     office_id: uid(),
     office_name: '稲毛',
     course_label: 'Aコース',

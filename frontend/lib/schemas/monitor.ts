@@ -23,6 +23,9 @@ export const monitorCheckinSchema = z.object({
 
 export const monitorVisitSchema = z.object({
   visit_id: z.string().uuid(),
+  // 訪問の担当 (= visits.primary_staff_id)。モバイル「今日の訪問」と同一ソース。
+  staff_id: z.string().uuid().nullable().optional(),
+  staff_name: z.string().nullable().optional(),
   // 2 名体制のグルーピングキー。同一値の visit が 2 行 (各スタッフ 1 行)。通常は null。
   visit_group_id: z.string().uuid().nullable().optional(),
   patient_id: z.string().uuid(),
@@ -51,9 +54,13 @@ export const monitorVisitSchema = z.object({
   review_comment: z.string().nullable().optional(),
 });
 
+// 行 = コース単位 (2026-07-10 PO要望。旧: スタッフ単位)。
+// staff_id は行内の担当が 1 名のときのみ。staff_name は「・」連結の表示用。
 export const monitorStaffRowSchema = z.object({
+  course_id: z.string().uuid().nullable().optional(),
   staff_id: z.string().uuid().nullable().optional(),
   staff_name: z.string().nullable().optional(),
+  staff_ids: z.array(z.string().uuid()).default([]),
   office_id: z.string().uuid().nullable().optional(),
   office_name: z.string().nullable().optional(),
   course_label: z.string().nullable().optional(),

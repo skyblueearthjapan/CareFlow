@@ -51,6 +51,10 @@ class MonitorVisit(BaseModel):
     """1 訪問の予定 + 実績 + 実効状態."""
 
     visit_id: UUID
+    # 訪問の担当スタッフ (= visits.primary_staff_id)。モバイル「今日の訪問」と
+    # 同一ソースのため、モニターに出る担当とスタッフ端末の表示は常に一致する。
+    staff_id: UUID | None = None
+    staff_name: str | None = None
     # 2 名体制 (required_staff_count=2) のグルーピングキー。同一値の visit が 2 行。
     # 通常訪問は None。KPI / アラートはこの単位で 1 論理訪問に重複排除する。
     visit_group_id: UUID | None = None
@@ -89,10 +93,18 @@ class MonitorVisit(BaseModel):
 
 
 class MonitorStaffRow(BaseModel):
-    """スタッフ (= 1 日 1 コース) 単位の行."""
+    """行 = コース単位 (2026-07-10 PO要望でスタッフ単位から変更).
 
+    フィールド名は互換のため据え置き。``staff_id`` は行内の担当が 1 名のときのみ
+    その id (複数名の掛け持ち行は None)。``staff_name`` は「・」連結の表示用。
+    コース無し visit の行は従来どおり担当スタッフ単位で作る (course_id=None)。
+    """
+
+    course_id: UUID | None = None
     staff_id: UUID | None = None
     staff_name: str | None = None
+    # 行内の担当スタッフ id 集合 (イベント帯・性別バッジ用)。
+    staff_ids: list[UUID] = []
     office_id: UUID | None = None
     office_name: str | None = None
     course_label: str | None = None

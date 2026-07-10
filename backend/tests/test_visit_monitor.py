@@ -774,6 +774,92 @@ async def test_build_monitor_unassigned_split_by_course(db) -> None:
 
 
 @pytest.mark.asyncio
+async def test_build_monitor_rows_grouped_by_course(db) -> None:
+    """行 = コース単位 (PO要望 2026-07-10).
+
+    - 1 人が 2 コース掛け持ち → コースごとに 2 行に分かれる (旧: 1 行に集約)
+    - 1 コースを 2 名で回す → 1 行に集約され staff_ids に 2 名・staff_name は連結
+    - 行の拠点はコースの office_id 由来
+    - visit 単位の staff_name (= visits.primary_staff_id。モバイルと同一ソース) が入る
+    """
+    from app.models import Course
+
+    office = Office(name="コース行拠点")
+    db.add(office)
+    await db.commit()
+    await db.refresh(office)
+
+    course_a = Course(
+        iso_year=2026,
+        iso_week=27,
+        weekday=1,  # TARGET=2026-06-30 (火)
+        code="A",
+        course_status="course_fixed",
+        office_id=office.id,
+    )
+    course_b = Course(
+        iso_year=2026,
+        iso_week=27,
+        weekday=1,
+        code="B",
+        course_status="course_fixed",
+        office_id=office.id,
+    )
+    db.add_all([course_a, course_b])
+    await db.commit()
+    await db.refresh(course_a)
+    await db.refresh(course_b)
+
+    staff1 = await _make_staff(db, "掛持一号", office_id=office.id)
+    staff2 = await _make_staff(db, "応援二号", office_id=office.id)
+    p1 = await _make_patient(db, "CR-1")
+    p2 = await _make_patient(db, "CR-2")
+    p3 = await _make_patient(db, "CR-3")
+
+    # A コース: staff1 (9:00) + staff2 (10:00) の 2 名で回す。
+    # B コース: staff1 (11:00) が掛け持ち。
+    for patient, course_id, staff, start in (
+        (p1, course_a.id, staff1, time(9, 0)),
+        (p2, course_a.id, staff2, time(10, 0)),
+        (p3, course_b.id, staff1, time(11, 0)),
+    ):
+        db.add(
+            Visit(
+                patient_id=patient.id,
+                primary_staff_id=staff.id,
+                course_id=course_id,
+                visit_date=TARGET,
+                start_time=start,
+                end_time=time(start.hour, 35),
+                type="regular",
+                status="planned",
+            )
+        )
+    await db.commit()
+
+    resp = await build_monitor(db, TARGET, now=_utc(13, 30))
+    course_rows = [r for r in resp.staff if r.course_id is not None]
+    assert len(course_rows) == 2
+
+    row_a = next(r for r in course_rows if r.course_label == "Aコース")
+    assert len(row_a.visits) == 2
+    assert set(row_a.staff_ids) == {staff1.id, staff2.id}
+    assert row_a.staff_id is None  # 複数名の行は単一 staff_id を持たない
+    assert row_a.staff_name == "掛持一号・応援二号"
+    assert row_a.office_id == office.id  # 拠点はコース由来
+
+    row_b = next(r for r in course_rows if r.course_label == "Bコース")
+    assert row_b.staff_id == staff1.id
+    assert row_b.staff_name == "掛持一号"
+
+    # visit 単位の担当 (モバイル「今日の訪問」と同一ソース) が入る。
+    for r in course_rows:
+        for v in r.visits:
+            assert v.staff_id is not None
+            assert v.staff_name
+
+
+@pytest.mark.asyncio
 async def test_nearby_returns_within_radius_sorted(db) -> None:
     await _make_patient(db, "N-near", lat=35.0001, lng=139.0000)  # ~11m
     await _make_patient(db, "N-mid", lat=35.0010, lng=139.0000)  # ~111m

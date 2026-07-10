@@ -1,7 +1,7 @@
 """訪問モニター集計 (実効状態の合成) — QR チェックイン Phase 3.
 
-その日の visits を visit_checkins と突き合わせ、スタッフ (= 1 日 1 コース) ごとに
-予定 / 到着 / 退出 / 滞在 / 次距離 / 実効状態を組み立てる。
+その日の visits を visit_checkins と突き合わせ、コースごとに (2026-07-10 PO要望。
+旧: スタッフごと) 予定 / 到着 / 退出 / 滞在 / 次距離 / 実効状態を組み立てる。
 
 実効状態は **集計時に合成** する (過去 checkin の位置判定 ``match_status`` は不変):
 
@@ -365,30 +365,36 @@ async def build_monitor(
             )
             reviews[review.visit_id] = (review, name)
 
-    # コース名ラベル (course_id → "Xコース")。
+    # コース情報 (course_id → code / office_id)。行=コースの主キー情報。
     course_ids = {v.course_id for v in visits if v.course_id is not None}
     course_code: dict[UUID, str] = {}
+    course_office: dict[UUID, UUID] = {}
     if course_ids:
-        for cid, code in (
-            await db.execute(select(Course.id, Course.code).where(Course.id.in_(course_ids)))
+        for cid, code, coid in (
+            await db.execute(
+                select(Course.id, Course.code, Course.office_id).where(Course.id.in_(course_ids))
+            )
         ).all():
             course_code[cid] = code
+            course_office[cid] = coid
 
-    # スタッフごとにグルーピング (primary_staff_id)。
-    # 担当未設定 (None) を 1 行に集約すると A-D コースの訪問が混ざって
-    # 「データが壊れた」ように見える (PO 報告 2026-07-03) ため、
-    # 未設定はコース別に行を分ける (コースも無い visit は "" キーで 1 行)。
-    by_staff: dict[UUID | tuple[str, str], list[Visit]] = defaultdict(list)
+    # 行 = コース単位 (2026-07-10 PO要望。旧: スタッフ単位)。
+    # 1 人が複数コースを掛け持ちしてもコースごとに 1 行になり、
+    # スケジュール本体 (拠点→コース列) と同じ読み順で追える。
+    # コース無し visit は従来どおり担当スタッフ単位 (どちらも無ければ "" で 1 行)。
+    by_row: dict[tuple[str, UUID | str], list[Visit]] = defaultdict(list)
     for v in visits:
-        if v.primary_staff_id is not None:
-            group_key: UUID | tuple[str, str] = v.primary_staff_id
+        if v.course_id is not None:
+            group_key: tuple[str, UUID | str] = ("course", v.course_id)
+        elif v.primary_staff_id is not None:
+            group_key = ("staff", v.primary_staff_id)
         else:
-            code = course_code.get(v.course_id) if v.course_id is not None else None
-            group_key = ("unassigned", code or "")
-        by_staff[group_key].append(v)
+            group_key = ("none", "")
+        by_row[group_key].append(v)
 
-    # 拠点名解決 (staff.primary_office_id → office.name)。
-    office_ids = {
+    # 拠点名解決: コースの office_id ∪ スタッフの primary_office_id (フォールバック用)。
+    office_ids = set(course_office.values())
+    office_ids |= {
         v.primary_staff.primary_office_id
         for v in visits
         if v.primary_staff is not None and v.primary_staff.primary_office_id is not None
@@ -401,23 +407,42 @@ async def build_monitor(
             office_name[oid] = name
 
     staff_rows: list[MonitorStaffRow] = []
-    for group_key, staff_visits in by_staff.items():
-        # tuple キー = 担当未設定のコース別行 (staff_id は None として出力する)。
-        staff_id = group_key if isinstance(group_key, UUID) else None
-        staff = staff_visits[0].primary_staff if staff_id is not None else None
-        oid = staff.primary_office_id if staff is not None else None
-        # 拠点フィルタ: 指定があれば一致行のみ残す (担当未設定 / 他拠点は除外)。
-        if office_id is not None and oid != office_id:
-            continue
+    for group_key, staff_visits in by_row.items():
+        kind, ident = group_key
 
         # 時刻順 (next 距離計算のため)。
         staff_visits = sorted(staff_visits, key=lambda v: (v.start_time, v.end_time))
 
-        # course_label = 当該スタッフの visits に登場するコースコード (重複排除)。
-        codes = sorted(
-            {course_code[v.course_id] for v in staff_visits if v.course_id in course_code}
-        )
-        course_label = "/".join(f"{c}コース" for c in codes) if codes else None
+        # 行内の担当スタッフ (訪問の登場順で重複排除)。
+        # visits.primary_staff_id はモバイル「今日の訪問」と同一ソースのため、
+        # モニターの行に出る担当とスタッフ端末の表示は常に一致する。
+        row_staff: dict[UUID, Staff] = {}
+        for v in staff_visits:
+            if v.primary_staff_id is not None and v.primary_staff is not None:
+                row_staff.setdefault(v.primary_staff_id, v.primary_staff)
+
+        course_id: UUID | None = None
+        if kind == "course" and isinstance(ident, UUID):
+            course_id = ident
+            code = course_code.get(course_id)
+            course_label = f"{code}コース" if code else None
+            oid = course_office.get(course_id)
+        else:
+            codes = sorted(
+                {course_code[v.course_id] for v in staff_visits if v.course_id in course_code}
+            )
+            course_label = "/".join(f"{c}コース" for c in codes) if codes else None
+            first_staff = next(iter(row_staff.values()), None)
+            oid = first_staff.primary_office_id if first_staff is not None else None
+
+        # 拠点フィルタ: 指定があれば一致行のみ残す。
+        if office_id is not None and oid != office_id:
+            continue
+
+        staff_ids = list(row_staff.keys())
+        staff_names = [s.name for s in row_staff.values() if s.name]
+        staff_id = staff_ids[0] if len(staff_ids) == 1 else None
+        staff_name = "・".join(staff_names) if staff_names else None
 
         mvisits: list[MonitorVisit] = []
         for v in staff_visits:
@@ -479,6 +504,12 @@ async def build_monitor(
             mvisits.append(
                 MonitorVisit(
                     visit_id=v.id,
+                    staff_id=v.primary_staff_id,
+                    staff_name=(
+                        getattr(v.primary_staff, "name", None)
+                        if v.primary_staff is not None
+                        else None
+                    ),
                     visit_group_id=v.visit_group_id,
                     patient_id=v.patient_id,
                     patient_name=getattr(patient, "name", None) if patient is not None else None,
@@ -512,23 +543,33 @@ async def build_monitor(
             )
 
         # 次訪問までの距離 (時刻順で連続する患者宅間の haversine)。
-        for i in range(len(mvisits) - 1):
-            cur, nxt = mvisits[i], mvisits[i + 1]
-            if (
-                cur.patient_lat is not None
-                and cur.patient_lng is not None
-                and nxt.patient_lat is not None
-                and nxt.patient_lng is not None
-            ):
-                cur.distance_to_next_m = round(
-                    haversine_m(cur.patient_lat, cur.patient_lng, nxt.patient_lat, nxt.patient_lng),
-                    1,
-                )
+        # 行=コースでも従来の意味「同スタッフの次の訪問まで」を保つため、
+        # 行内を担当スタッフごとのチェーンに分けて計算する。
+        chains: dict[UUID | None, list[MonitorVisit]] = defaultdict(list)
+        for mv in mvisits:
+            chains[mv.staff_id].append(mv)
+        for chain in chains.values():
+            for i in range(len(chain) - 1):
+                cur, nxt = chain[i], chain[i + 1]
+                if (
+                    cur.patient_lat is not None
+                    and cur.patient_lng is not None
+                    and nxt.patient_lat is not None
+                    and nxt.patient_lng is not None
+                ):
+                    cur.distance_to_next_m = round(
+                        haversine_m(
+                            cur.patient_lat, cur.patient_lng, nxt.patient_lat, nxt.patient_lng
+                        ),
+                        1,
+                    )
 
         staff_rows.append(
             MonitorStaffRow(
+                course_id=course_id,
                 staff_id=staff_id,
-                staff_name=getattr(staff, "name", None) if staff is not None else None,
+                staff_name=staff_name,
+                staff_ids=staff_ids,
                 office_id=oid,
                 office_name=office_name.get(oid) if oid is not None else None,
                 course_label=course_label,

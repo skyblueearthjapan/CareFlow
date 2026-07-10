@@ -118,10 +118,15 @@ export default function MonitorPage() {
   }, [staffListQuery.data]);
 
   // ─── M-4b: 当日の会議・イベント帯 (藤色・カイポケ反映外・表示専用) ───
-  const monitorStaffIds = useMemo(
-    () => (data?.staff ?? []).map((r) => r.staff_id).filter((id): id is string => id != null),
-    [data?.staff],
-  );
+  // 行=コース単位 (2026-07-10): 行内の全担当 (staff_ids) を集めて重複排除する。
+  const monitorStaffIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const r of data?.staff ?? []) {
+      for (const sid of r.staff_ids ?? []) ids.add(sid);
+      if (r.staff_id) ids.add(r.staff_id);
+    }
+    return Array.from(ids);
+  }, [data?.staff]);
   // Date.UTC で構築する: useWeekStaffEvents は内部で toISOString() (UTC) から
   // from/to を作るため、ローカルTZ (JST) 解釈の Date だと前日にズレて
   // イベントが 1 件も取れなくなる (レビューHIGH対応・addDays と同方針)。

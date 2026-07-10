@@ -106,12 +106,13 @@ function CourseDetail({
 }) {
   return (
     <div className="p-4" data-testid="monitor-detail-course">
+      {/* 行=コース単位: 見出し=コース、担当は下段 (複数名は「・」連結)。 */}
       <h3 className="m-0 text-[15px] font-bold text-text-primary">
-        {row.staff_name ?? '（担当未設定）'}
+        {row.course_label ?? row.staff_name ?? '（担当未設定）'}
       </h3>
       <div className="mb-3.5 text-xs text-text-secondary">
-        {[row.office_name, row.course_label].filter(Boolean).join(' ')} ／ 訪問 {row.visits.length}
-        件
+        {[row.office_name, row.staff_name ?? '担当未設定'].filter(Boolean).join(' ・ ')} ／ 訪問{' '}
+        {row.visits.length}件
       </div>
       <ul className="m-0 list-none p-0">
         {row.visits.map((v, i) => {
@@ -132,6 +133,11 @@ function CourseDetail({
                 </span>
                 <span className="flex-1 text-[13px] font-semibold text-text-primary">
                   {i + 1}. {v.patient_name ?? '—'}
+                  {v.staff_name && (
+                    <span className="ml-1 text-[11px] font-normal text-text-muted">
+                      {v.staff_name}
+                    </span>
+                  )}
                 </span>
                 <span className="text-[11px]" style={{ color: STATUS_COLOR[st] }}>
                   {STATUS_LABEL[st]}
@@ -206,7 +212,14 @@ function VisitDetail({
         )}
       </h3>
       <div className="mb-3 text-xs text-text-secondary">
-        {[row?.staff_name, row?.office_name, row?.course_label].filter(Boolean).join(' ／ ')}
+        {/* 訪問単位の担当 (= モバイル「今日の訪問」と同一ソース) を優先表示。 */}
+        {[
+          visit.staff_name ? `担当: ${visit.staff_name}` : (row?.staff_name ?? null),
+          row?.office_name,
+          row?.course_label,
+        ]
+          .filter(Boolean)
+          .join(' ／ ')}
       </div>
 
       <div

@@ -39,11 +39,13 @@ export interface MonitorPatientMeta {
 }
 
 /**
- * 行の安定キー (PO 報告 2026-07-03: 担当未設定行も選択してマップ表示できるように)。
- * 担当あり = staff_id / 担当未設定 = コース別行なので course_label で識別する。
+ * 行の安定キー。行=コース単位 (2026-07-10) なので course_id が第一キー。
+ * コース無し行はスタッフ単位 (staff_id)、どちらも無ければ course_label で識別する。
  */
-export function monitorRowKey(row: Pick<MonitorStaffRow, 'staff_id' | 'course_label'>): string {
-  return row.staff_id ?? `unassigned-${row.course_label ?? ''}`;
+export function monitorRowKey(
+  row: Pick<MonitorStaffRow, 'course_id' | 'staff_id' | 'course_label'>,
+): string {
+  return row.course_id ?? row.staff_id ?? `unassigned-${row.course_label ?? ''}`;
 }
 
 interface MonitorTimelineProps {
@@ -160,7 +162,7 @@ export function MonitorTimeline({
         style={GRID_COLS_STYLE}
       >
         <div className="sticky left-0 z-[6] border-r border-border-default bg-bg-base p-2 text-[11px] text-text-muted">
-          #／スタッフ
+          #／コース
         </div>
         <div
           className="relative flex cursor-grab touch-none active:cursor-grabbing"
@@ -257,19 +259,27 @@ export function MonitorTimeline({
                 {idx + 1}
               </span>
               <span className="min-w-0 overflow-hidden">
+                {/* 行=コース単位: 1行目=コース (無ければ担当名) / 2行目=拠点・担当。 */}
                 <span
                   className={cn(
                     'block truncate text-[13px] font-semibold',
                     isSel ? 'text-brand-primary-hover' : 'text-text-primary',
                   )}
-                  title={row.staff_name ?? undefined}
+                  title={
+                    [row.course_label, row.staff_name].filter(Boolean).join(' ・ ') || undefined
+                  }
                 >
-                  {row.staff_name ?? '（担当未設定）'}
+                  {row.course_label ?? row.staff_name ?? '（担当未設定）'}
                 </span>
-                <span className="text-[11px] text-text-muted">
+                <span className="block truncate text-[11px] text-text-muted">
                   {isSel
                     ? '● 選択中'
-                    : [row.office_name, row.course_label].filter(Boolean).join(' ・ ') || '—'}
+                    : [
+                          row.office_name,
+                          row.course_label ? (row.staff_name ?? '担当未設定') : null,
+                        ]
+                        .filter(Boolean)
+                        .join(' ・ ') || '—'}
                 </span>
               </span>
             </div>
@@ -298,9 +308,11 @@ export function MonitorTimeline({
                 </div>
               )}
               {/* M-4b: 会議・イベント帯 (藤色・表示専用・カイポケ反映外)。
-                  空き時間の「なぜ空いているか」を説明する。カード (z-[2]) の下。 */}
-              {row.staff_id
-                ? eventsByStaffId?.get(row.staff_id)?.map((ev) => {
+                  空き時間の「なぜ空いているか」を説明する。カード (z-[2]) の下。
+                  行=コース単位: 行内の全担当 (staff_ids) のイベントを重ねる。 */}
+              {(row.staff_ids?.length ? row.staff_ids : row.staff_id ? [row.staff_id] : [])
+                .flatMap((sid) => eventsByStaffId?.get(sid) ?? [])
+                .map((ev) => {
                     const es = hmToMinutes(ev.start_time.slice(0, 5));
                     const ee = hmToMinutes(ev.end_time.slice(0, 5));
                     if (ee <= TL_START_MIN || es >= TL_END_MIN || ee <= es) return null;
@@ -342,8 +354,7 @@ export function MonitorTimeline({
                         </span>
                       </div>
                     );
-                  })
-                : null}
+                  })}
               {row.visits.map((v) => {
                 const li = laneMap.get(v.visit_id) ?? { lane: 0, laneCount: 1 };
                 return (
@@ -461,8 +472,8 @@ function VisitBars({
           onSelect(visit.visit_id);
         }}
         title={`予定 ${visit.start_time}–${visit.end_time} ${visit.patient_name ?? ''}${
-          meta?.address ? `｜📍${meta.address}` : ''
-        }`}
+          visit.staff_name ? `｜担当: ${visit.staff_name}` : ''
+        }${meta?.address ? `｜📍${meta.address}` : ''}`}
         className="absolute z-[2] flex flex-col justify-center gap-px overflow-hidden rounded-md border border-l-[3px] px-1.5 text-left shadow-[var(--shadow-xs)] transition-shadow hover:shadow-[var(--shadow-sm)]"
         style={{
           left: `${pL}%`,
