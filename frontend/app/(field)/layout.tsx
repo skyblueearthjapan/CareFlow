@@ -18,7 +18,7 @@ const FIELD_FONTS_HREF =
   'https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;600;700&family=Noto+Serif+JP:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap';
 
 export const metadata: Metadata = {
-  title: 'CareFlow — 現場ボード',
+  title: 'らく助 — 現場ボード',
 };
 
 export const viewport: Viewport = {

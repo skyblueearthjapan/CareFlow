@@ -9,7 +9,6 @@ import {
   UserCircle2,
   CalendarDays,
   Grid3x3,
-  Heart,
   Building2,
   Plug,
   ScrollText,
@@ -82,9 +81,17 @@ export function Sidebar({ collapsed }: SidebarProps) {
     >
       {/* Brand area: 60px to align with header */}
       <div className="flex h-[60px] items-center gap-2 border-b border-border-default px-4">
-        <Heart className="h-6 w-6 text-brand-primary" strokeWidth={1.75} />
+        {/* eslint-disable-next-line @next/next/no-img-element -- 静的ブランド画像 */}
+        <img src="/brand/rakusuke-icon-round.png" alt="らく助" className="h-9 w-auto shrink-0" />
         {!collapsed && (
-          <span className="font-serif text-lg font-bold text-text-primary">CareFlow</span>
+          <span className="min-w-0">
+            <span className="block font-serif text-lg font-bold leading-tight text-text-primary">
+              らく助
+            </span>
+            <span className="block truncate text-[10px] leading-tight text-text-muted">
+              訪問看護 楽々スケジュール
+            </span>
+          </span>
         )}
       </div>
 

@@ -1,14 +1,22 @@
 /*
- * CareFlow Design Tokens — Warm & Human
+ * らく助 Design Tokens — Warm & Human × らく助ブランド
  * 詳細は docs/design/01-design-system.md を参照
+ *
+ * 2026-07-10 リブランディング（ハイブリッド方針）:
+ *   ブランド層 (primary系) = らく助ピンクへ刷新。
+ *   機能層 (性別/状態/警告/info) = 従来色を維持。
+ *   #e15a7f はシートのメインピンク #f8b4c6 から白文字コントラストが
+ *   取れる濃度に導出した操作色。アイデンティティ色は --brand-identity。
  */
 
 :root {
-  /* === Brand === */
-  --brand-primary: #0d9488;
-  --brand-primary-hover: #0f766e;
-  --brand-primary-light: #ccfbf1;
-  --brand-primary-50: #f0fdfa;
+  /* === Brand (らく助ピンク) === */
+  --brand-primary: #e15a7f;
+  --brand-primary-hover: #c94a6e;
+  --brand-primary-light: #ffd6e0;
+  --brand-primary-50: #fff5f8;
+  --brand-identity: #f8b4c6; /* シート原色: ロゴ・装飾・バッジ用 */
+  --brand-leaf: #78c888; /* 芽グリーン: ポジティブ装飾用 */
   --brand-accent: #d97706;
   --brand-accent-light: #fef3c7;
 
@@ -119,7 +127,7 @@
   --shadow-lg: 0 12px 24px rgba(28, 25, 23, 0.08), 0 4px 8px rgba(28, 25, 23, 0.04);
   --shadow-xl: 0 24px 48px rgba(28, 25, 23, 0.1);
   --shadow-outer-card: 0 1px 2px rgba(28, 25, 23, 0.04), 0 8px 24px rgba(28, 25, 23, 0.05);
-  --shadow-fab: 0 8px 24px rgba(13, 148, 136, 0.4), 0 0 0 6px rgba(13, 148, 136, 0.1);
+  --shadow-fab: 0 8px 24px rgba(225, 90, 127, 0.4), 0 0 0 6px rgba(225, 90, 127, 0.1);
 }
 
 /* === Density === */

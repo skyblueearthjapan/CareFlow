@@ -7,7 +7,6 @@ import {
   Bell,
   BellOff,
   Check,
-  Heart,
   KeyRound,
   LogOut,
   Menu,
@@ -31,7 +30,7 @@ interface HeaderProps {
   onToggleSidebar: () => void;
 }
 
-export function Header({ title = 'CareFlow', onToggleSidebar }: HeaderProps) {
+export function Header({ title = 'らく助', onToggleSidebar }: HeaderProps) {
   return (
     <header className="flex h-[60px] items-center justify-between border-b border-border-default bg-bg-base px-4">
       <div className="flex items-center gap-3">
@@ -42,7 +41,8 @@ export function Header({ title = 'CareFlow', onToggleSidebar }: HeaderProps) {
 
       <div className="flex items-center gap-2">
         <div className="mr-2 flex items-center gap-2">
-          <Heart className="h-6 w-6 text-brand-primary" strokeWidth={1.75} />
+          {/* eslint-disable-next-line @next/next/no-img-element -- 静的ブランド画像 (AuthedPhoto と同じ素 img 流儀) */}
+          <img src="/brand/rakusuke-icon-round.png" alt="" className="h-8 w-auto" />
           <span className="font-serif text-lg font-bold text-text-primary">{title}</span>
         </div>
         <NotificationButton />

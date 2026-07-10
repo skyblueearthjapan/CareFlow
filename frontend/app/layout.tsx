@@ -7,18 +7,18 @@ import { Providers } from './providers';
 const inter = Inter({ subsets: ['latin'], variable: '--font-inter' });
 
 export const metadata: Metadata = {
-  title: 'CareFlow',
-  description: '訪問看護スケジューリング — Warm & Human',
-  applicationName: 'CareFlow',
+  title: 'らく助 — 訪問看護 楽々スケジュール',
+  description: '訪問看護のスケジュール管理をもっと楽しく、もっとスムーズに！',
+  applicationName: 'らく助',
   appleWebApp: {
     capable: true,
-    title: 'CareFlow',
+    title: 'らく助',
     statusBarStyle: 'default',
   },
 };
 
 export const viewport: Viewport = {
-  themeColor: '#0d9488',
+  themeColor: '#e15a7f',
 };
 
 // Static SW registration script (no dynamic content; safe to inline).

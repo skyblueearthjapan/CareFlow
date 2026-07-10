@@ -109,7 +109,7 @@ function Header() {
     <header>
       <h1 className="font-serif text-2xl font-bold text-text-primary">カイポケ連携</h1>
       <p className="mt-1 text-sm text-text-secondary">
-        カイポケの実ブラウザをライブで見守りながら、CareFlow
+        カイポケの実ブラウザをライブで見守りながら、らく助
         の週次スケジュールをカイポケへ反映します。
       </p>
     </header>

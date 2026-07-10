@@ -171,7 +171,7 @@ export default function MonitorMapClient({
         <Polyline
           key={`seg-${i}`}
           positions={[s.a, s.b]}
-          pathOptions={{ color: '#0d9488' /* = --brand-primary; SVG属性のためvar()不可、tokens.cssと同期 */, weight: 2, opacity: 0.45 }}
+          pathOptions={{ color: '#e15a7f' /* = --brand-primary; SVG属性のためvar()不可、tokens.cssと同期 */, weight: 2, opacity: 0.45 }}
         />
       ))}
 
@@ -213,10 +213,10 @@ export default function MonitorMapClient({
             center={[selected.patient_lat, selected.patient_lng]}
             radius={matchM}
             pathOptions={{
-              color: '#0d9488', // = --brand-primary; SVG属性のためvar()不可、tokens.cssと同期
+              color: '#e15a7f', // = --brand-primary; SVG属性のためvar()不可、tokens.cssと同期
               weight: 1,
               dashArray: '4',
-              fillColor: '#0d9488',
+              fillColor: '#e15a7f',
               fillOpacity: 0.06,
             }}
           />

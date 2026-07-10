@@ -19,7 +19,7 @@ import { Suspense } from 'react';
 import { useRouter } from 'next/navigation';
 import { signOut, useSession } from 'next-auth/react';
 import { toast } from 'sonner';
-import { Heart, LogOut, ShieldAlert } from 'lucide-react';
+import { LogOut, ShieldAlert } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -56,8 +56,9 @@ function ForcedPasswordContent() {
       <Card className="w-full max-w-md space-y-6 p-8">
         <header className="space-y-2">
           <div className="flex items-center gap-2">
-            <Heart className="h-6 w-6 text-brand-primary" strokeWidth={1.75} />
-            <span className="font-serif text-lg font-bold text-text-primary">CareFlow</span>
+            {/* eslint-disable-next-line @next/next/no-img-element -- 静的ブランド画像 */}
+            <img src="/brand/rakusuke-icon-round.png" alt="" className="h-8 w-auto" />
+            <span className="font-serif text-lg font-bold text-text-primary">らく助</span>
           </div>
           <div className="rounded-md border border-warning bg-warning/10 p-3 text-sm text-text-primary">
             <div className="flex items-start gap-2">

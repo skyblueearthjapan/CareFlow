@@ -83,11 +83,26 @@ function LoginForm() {
 
 export default function LoginPage() {
   return (
-    <main className="flex min-h-screen items-center justify-center bg-bg-app px-4">
-      <Card className="w-full max-w-sm p-8">
+    <main
+      className="flex min-h-screen items-center justify-center px-4"
+      style={{ background: 'linear-gradient(180deg, #fff7f9 0%, #ffeef2 100%)' }}
+    >
+      <Card className="w-full max-w-sm p-8 pt-6">
         <div className="mb-6 text-center">
-          <h1 className="font-serif text-2xl font-bold text-text-primary">CareFlow</h1>
-          <p className="mt-1 text-sm text-text-secondary">訪問看護スケジューリング</p>
+          {/* eslint-disable-next-line @next/next/no-img-element -- 静的ブランド画像 */}
+          <img
+            src="/brand/rakusuke-main.png"
+            alt=""
+            className="mx-auto h-32 w-auto"
+            aria-hidden
+          />
+          <h1 className="sr-only">らく助 — 訪問看護 楽々スケジュール</h1>
+          {/* eslint-disable-next-line @next/next/no-img-element -- 静的ブランド画像 */}
+          <img
+            src="/brand/rakusuke-logo-type.png"
+            alt="らく助 — 訪問看護 楽々スケジュール"
+            className="mx-auto mt-2 w-44"
+          />
         </div>
         <Suspense fallback={<div className="h-32" aria-hidden />}>
           <LoginForm />

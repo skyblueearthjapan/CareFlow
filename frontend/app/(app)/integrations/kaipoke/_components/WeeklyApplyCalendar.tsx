@@ -29,7 +29,7 @@ export function WeeklyApplyCalendar({ vm }: { vm: WeeklyApplyVm }) {
         <Alert>
           <AlertTitle>この週の予定はありません</AlertTitle>
           <AlertDescription>
-            CareFlow でこの週のスケジュールを生成し、スタッフ割当まで済ませてください。
+            らく助でこの週のスケジュールを生成し、スタッフ割当まで済ませてください。
           </AlertDescription>
         </Alert>
       ) : (

@@ -182,7 +182,7 @@ export function WeeklyApplyControls({ vm }: { vm: WeeklyApplyVm }) {
             <p className="text-xs text-text-muted">②で差分を計算すると、ここに変更内容が出ます。</p>
           ) : total === 0 ? (
             <p className="text-sm text-success">
-              差分なし。カイポケの現況と CareFlow の予定は一致しています（反映不要）。
+              差分なし。カイポケの現況とらく助の予定は一致しています（反映不要）。
             </p>
           ) : (
             <div>
@@ -281,7 +281,7 @@ export function WeeklyApplyControls({ vm }: { vm: WeeklyApplyVm }) {
                   )}
                   {unresolved > 0 && (
                     <span className="block text-warning-strong">
-                      ※ CareFlow 未登録の利用者 {unresolved} 件は安全にスキップされます。
+                      ※ らく助未登録の利用者 {unresolved} 件は安全にスキップされます。
                     </span>
                   )}
                 </>

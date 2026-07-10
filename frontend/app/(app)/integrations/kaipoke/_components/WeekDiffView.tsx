@@ -123,7 +123,7 @@ function CorrectionCard({ item, sex }: { item: CorrectionItem; sex?: string | nu
         {unresolved && (
           <span
             className="text-warning-strong"
-            title="CareFlow の患者マスタに未登録（apply時にスキップされます）"
+            title="らく助の患者マスタに未登録（apply時にスキップされます）"
           >
             要確認
           </span>

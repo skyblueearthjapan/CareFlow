@@ -27,7 +27,8 @@ export const config = {
   // /api/* と /login と Next.js 内部資産 + PWA assets は除外。
   // /api/auth/* (NextAuth signOut 等) も api 除外で守られるため、
   // 強制パスワード変更画面からログアウトできる。
+  // brand/ = らく助ブランド画像 (ログイン画面でも未認証で読めること)
   matcher: [
-    '/((?!api|_next/static|_next/image|favicon.ico|login|manifest.webmanifest|sw.js|offline.html|icons/).*)',
+    '/((?!api|_next/static|_next/image|favicon.ico|icon.png|apple-icon.png|login|manifest.webmanifest|sw.js|offline.html|icons/|brand/).*)',
   ],
 };

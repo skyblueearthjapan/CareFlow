@@ -72,7 +72,7 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
         </span>
       </div>
       <p className="mb-4 text-sm text-text-secondary">
-        カイポケでの直し込みを CareFlow に取り込みます。
+        カイポケでの直し込みをらく助に取り込みます。
         <strong className="text-text-primary">今週の予定表だけ</strong>
         を直します（定期パターンは変わりません）。
       </p>
@@ -305,7 +305,7 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
                 対象曜日: <span className="font-medium text-text-primary">{selectedDayLabels}</span>
               </span>
               <span className="block text-error">
-                CareFlow のスケジュールに実際に書き込まれます。この操作は Ctrl+Z
+                らく助のスケジュールに実際に書き込まれます。この操作は Ctrl+Z
                 の対象外です（定期パターンは変わりません）。
               </span>
             </DialogDescription>
