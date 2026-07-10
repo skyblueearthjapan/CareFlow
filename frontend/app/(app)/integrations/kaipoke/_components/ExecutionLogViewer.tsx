@@ -11,10 +11,13 @@ import { useEffect, useRef } from 'react';
 import { Card } from '@/components/ui/card';
 
 export function ExecutionLogViewer({ lines }: { lines: string[] }) {
-  const endRef = useRef<HTMLDivElement | null>(null);
+  const boxRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ block: 'end' });
+    // scrollIntoView はページ全体のスクロールも巻き込み、連携ページを開いた瞬間に
+    // ログ位置まで下がってしまう (PO報告 2026-07-10)。ログ枠内だけを末尾へ送る。
+    const el = boxRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
   }, [lines]);
 
   return (
@@ -23,7 +26,7 @@ export function ExecutionLogViewer({ lines }: { lines: string[] }) {
         <h2 className="font-serif text-lg font-bold text-text-primary">実行ログ</h2>
         <span className="text-xs text-text-muted">末尾 {lines.length} 行</span>
       </div>
-      <div className="max-h-56 overflow-y-auto bg-stone-950 px-5 py-3">
+      <div ref={boxRef} className="max-h-56 overflow-y-auto bg-stone-950 px-5 py-3">
         {lines.length === 0 ? (
           <p className="py-6 text-center text-xs text-white/40">ログはまだありません</p>
         ) : (
@@ -33,7 +36,6 @@ export function ExecutionLogViewer({ lines }: { lines: string[] }) {
                 {line}
               </div>
             ))}
-            <div ref={endRef} />
           </div>
         )}
       </div>
