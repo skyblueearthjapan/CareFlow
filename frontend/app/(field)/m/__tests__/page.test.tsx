@@ -31,6 +31,8 @@ vi.mock('next-auth/react', () => ({
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ replace: mockReplace, push: vi.fn() }),
+  // R-8: MobileSurfaceSwitcher (共通切替ピルバー) が usePathname を使う。
+  usePathname: () => '/m',
 }));
 
 vi.mock('@/lib/queries/fieldBoard', async () => {
@@ -355,8 +357,9 @@ describe('/m 現場ボード (実データ)', () => {
     setSession('manager');
     render(<FieldBoardPage />);
     // ブランドヘッダーは撤去済み — トップバー (戻る/受け入れ枠) がボードの目印。
-    expect(screen.getByLabelText('モバイルアプリに戻る')).toBeInTheDocument();
-    expect(screen.getByLabelText('受け入れ枠マトリックスを開く')).toBeInTheDocument();
+    expect(screen.getByLabelText('画面切替')).toBeInTheDocument();
+    // R-8: 受け入れ枠は共通切替バーのタブになった。
+    expect(screen.getByText('受け入れ枠')).toBeInTheDocument();
     // 実データのため DEMO チップは撤去済み。
     expect(screen.queryByText('DEMO')).not.toBeInTheDocument();
     // 拠点プルダウンは廃止。拠点は薄い小見出しとして表示され (稲毛)、月曜のコースが並ぶ。
@@ -417,7 +420,7 @@ describe('/m 現場ボード (実データ)', () => {
     setSession('staff');
     render(<FieldBoardPage />);
     expect(mockReplace).not.toHaveBeenCalledWith('/m/home');
-    expect(screen.getByLabelText('モバイルアプリに戻る')).toBeInTheDocument();
+    expect(screen.getByLabelText('画面切替')).toBeInTheDocument();
     // 編集系 (提案・承認・患者管理) は staff には出ない。
     expect(screen.queryByRole('button', { name: /提案/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /承認/ })).not.toBeInTheDocument();
@@ -901,7 +904,7 @@ describe('/m ヘッダ 患者ボタン (Phase G-87)', () => {
   it('staff ではボードは見えるが患者ボタンは出ない', () => {
     setSession('staff');
     render(<FieldBoardPage />);
-    expect(screen.getByLabelText('モバイルアプリに戻る')).toBeInTheDocument();
+    expect(screen.getByLabelText('画面切替')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '患者の登録・編集' })).not.toBeInTheDocument();
   });
 

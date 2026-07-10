@@ -48,6 +48,7 @@ import { useSchedulingSettings } from '@/lib/queries/schedulingSettings';
 import type { SlotPlacementContext } from '@/lib/field/patientCreate';
 
 import { CF_THEME, CF_DOWS, cc } from './theme';
+import { MobileSurfaceSwitcher } from '@/components/mobile/MobileSurfaceSwitcher';
 import { KarteSheet, SuggestSheet, PlacementSheet, PatientManageSheet, Toast } from './FieldSheets';
 import { ApprovePanel } from './ApprovePanel';
 
@@ -369,15 +370,19 @@ export function FieldBoard() {
       }}
     >
       {/* 旧ブランドヘッダー (CareFlow 現場ボード カード) は撤去し、操作ボタンは
-          最上部バーへ集約 — スケジュール表示の縦スペースを優先する (2026-07-05 PO要望)。 */}
-      <BackToAppBar
-        canEdit={canEditKarte}
-        approve={approve}
-        pendingCount={pendingCount}
-        onToggleApprove={() => setApprove((a) => !a)}
-        onNew={() => setSheet(true)}
-        onManage={() => setManage(true)}
-      />
+          最上部バーへ集約 — スケジュール表示の縦スペースを優先する (2026-07-05 PO要望)。
+          R-8: 最上部はらく助モバイル共通切替バー。編集操作バーは canEdit のみ表示。 */}
+      <MobileSurfaceSwitcher />
+      {canEditKarte && (
+        <BackToAppBar
+          canEdit={canEditKarte}
+          approve={approve}
+          pendingCount={pendingCount}
+          onToggleApprove={() => setApprove((a) => !a)}
+          onNew={() => setSheet(true)}
+          onManage={() => setManage(true)}
+        />
+      )}
 
       <DayStepper
         dayIdx={dayIdx}
@@ -569,39 +574,11 @@ function BackToAppBar({
         zIndex: 21,
       }}
     >
-      <Link
-        href="/"
-        aria-label="モバイルアプリに戻る"
-        style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: 5,
-          color: TEAL_DEEP,
-          fontFamily: 'var(--font-serif)',
-          fontSize: 12,
-          fontWeight: 600,
-          lineHeight: 1,
-          whiteSpace: 'nowrap',
-        }}
-      >
-        <ArrowLeft size={13} strokeWidth={2.4} />
-        {/* eslint-disable-next-line @next/next/no-img-element -- らく助ブランドマーク (装飾) */}
-        <img
-          src="/brand/rakusuke-icon-round.png"
-          alt=""
-          aria-hidden
-          style={{ height: 20, width: 'auto', display: 'block' }}
-        />
-        戻る
-      </Link>
+      {/* R-8: 左は共通切替バーへ委譲 (このバーは操作ボタン専用)。 */}
+      <div style={{ flex: 1 }} />
 
-      {/* 右クラスタ: 受け入れ枠 + (manager/admin) 患者管理/提案/承認。
-          旧ブランドヘッダーの操作をここへ集約し縦スペースを節約。 */}
+      {/* 右クラスタ: (manager/admin) 患者管理/提案/承認。 */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        <Link href="/m/acceptance" aria-label="受け入れ枠マトリックスを開く" style={barPill}>
-          <Grid3x3 size={12} strokeWidth={2.2} />
-          受け入れ枠
-        </Link>
         {canEdit && (
           <>
             <button

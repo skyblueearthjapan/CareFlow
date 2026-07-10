@@ -24,6 +24,7 @@ import { normalizeTimeSlot, type AcceptanceStatus } from '@/lib/schemas/v2/accep
 import type { MatrixCell, OfficeMatrix } from '@/lib/schemas/v2/acceptance_matrix';
 
 import { CF_THEME } from './theme';
+import { MobileSurfaceSwitcher } from '@/components/mobile/MobileSurfaceSwitcher';
 
 const { TEAL, TEAL_DEEP, INK, INK2, INK3, CREAM, LINE, PANEL } = CF_THEME;
 
@@ -278,30 +279,8 @@ export function AcceptanceFieldView() {
         overflow: 'hidden',
       }}
     >
-      {/* 戻るバー */}
-      <Link
-        href="/m"
-        aria-label="現場ボードに戻る"
-        style={{
-          flex: '0 0 auto',
-          display: 'flex',
-          alignItems: 'center',
-          gap: 5,
-          paddingTop: 'calc(env(safe-area-inset-top) + 6px)',
-          paddingBottom: 6,
-          paddingLeft: 14,
-          paddingRight: 14,
-          background: CREAM,
-          borderBottom: `1px solid ${LINE}`,
-          color: TEAL_DEEP,
-          fontFamily: 'var(--font-serif)',
-          fontSize: 12,
-          fontWeight: 600,
-        }}
-      >
-        <ArrowLeft size={13} strokeWidth={2.4} />
-        現場ボードへ
-      </Link>
+      {/* らく助モバイル共通切替バー (R-8: 旧「現場ボードへ」戻りリンクを置換) */}
+      <MobileSurfaceSwitcher />
 
       {/* ヘッダ帯: タイトル + 週送り + 拠点トグル */}
       <div style={{ flex: '0 0 auto', padding: '6px 8px 0' }}>

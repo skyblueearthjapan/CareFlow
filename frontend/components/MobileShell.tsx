@@ -3,15 +3,9 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useSession } from 'next-auth/react';
-import {
-  Home,
-  CalendarCheck,
-  CalendarRange,
-  UserCircle2,
-  LayoutGrid,
-  ChevronRight,
-} from 'lucide-react';
+import { Home, CalendarCheck, CalendarRange, UserCircle2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { MobileSurfaceSwitcher } from '@/components/mobile/MobileSurfaceSwitcher';
 
 const TABS = [
   { href: '/m/home', label: 'ホーム', icon: Home },
@@ -34,16 +28,7 @@ export function MobileShell({ children }: MobileShellProps) {
     // 最下行が固定下タブの裏に隠れる。dvh 対応ブラウザでは動的ビューポート高
     // (100dvh) を使い、可視領域とスクロール範囲を一致させる (非対応は 100vh のまま)。
     <div className="flex h-screen w-screen flex-col bg-bg-app supports-[height:100dvh]:h-dvh">
-      {showFieldBoard && (
-        <Link
-          href="/m"
-          className="flex shrink-0 items-center justify-center gap-1.5 border-b border-brand-primary-light bg-brand-primary-50 px-4 py-2 text-xs font-medium text-brand-primary transition-colors hover:bg-brand-primary-light"
-        >
-          <LayoutGrid className="h-3.5 w-3.5" strokeWidth={2} />
-          <span>現場ボードを開く</span>
-          <ChevronRight className="h-3.5 w-3.5" strokeWidth={2} />
-        </Link>
-      )}
+      {showFieldBoard && <MobileSurfaceSwitcher />}
       <main
         className="flex-1 overflow-y-auto p-4"
         // 下タブ (h-16=64px + safe-area) + 視認用の余白 16px を常に確保する。
