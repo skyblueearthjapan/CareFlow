@@ -320,7 +320,8 @@ export function BulkPoolInsertDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <RakusukeSays pose="idea" message="保留中の患者さん、入れそうな枠がありますよ" />
+        {/* R-10b: 計算前から「ありますよ」と断言しない (PO指摘)。結果の有無は各拠点パネルが示す。 */}
+        <RakusukeSays pose="idea" message="保留中の方が入れそうな枠を、一緒に探しましょう" />
 
         {singleOffice ? (
           // ── 単一拠点モード ──

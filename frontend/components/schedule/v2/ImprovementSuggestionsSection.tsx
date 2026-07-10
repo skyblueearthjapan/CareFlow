@@ -446,9 +446,18 @@ export function ImprovementSuggestionsSection({
     >
       <h3 className="mb-2 text-sm font-semibold text-text-primary">配置改善の提案</h3>
 
+      {/* R-10b: 提案の有無で正直に分岐 (0件なのに「楽になります」と言わない — PO指摘)。 */}
       <RakusukeSays
-        pose="idea"
-        message="配置をこう変えると移動が楽になります"
+        pose={!isLoading && !isError && visibleSuggestions.length > 0 ? 'idea' : 'think'}
+        message={
+          isLoading
+            ? 'もっと楽になる配置がないか探しています…'
+            : isError
+              ? '改善提案をうまく取得できませんでした'
+              : visibleSuggestions.length > 0
+                ? `配置をこう変えると移動が楽になります（${visibleSuggestions.length}件）`
+                : '今の配置で大丈夫そうです。ご提案できる改善はありませんでした'
+        }
         className="mb-2"
       />
 

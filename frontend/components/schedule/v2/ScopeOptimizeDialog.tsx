@@ -530,7 +530,8 @@ export function ScopeOptimizeDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <RakusukeSays pose="idea" message="もっと楽になる並びを見つけました！" />
+        {/* R-10b: 計算前から「見つけました」と断言しない (PO指摘)。結果は計算後の手順表示が示す。 */}
+        <RakusukeSays pose="idea" message="もっと楽になる並びがないか、一緒に探しましょう" />
 
         {!effectiveOfficeId ? (
           <div className="space-y-3 py-4" data-testid="scope-optimize-no-office">
