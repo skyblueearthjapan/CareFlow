@@ -54,13 +54,19 @@ interface StatusMeta {
   long: string;
 }
 
+// モバイル現場ボード側 (AcceptanceFieldView の STATUS_META) と同じ配色に統一
+// (PO要望 2026-07-10: ○=薄緑 / △=オレンジ / ×=簡素)。値を変えるときは両方同期すること。
 const STATUS_META: Record<AcceptanceStatus, StatusMeta> = {
   available: {
     glyph: '○',
-    cellClass: 'bg-brand-primary/10 text-brand-primary font-bold',
+    cellClass: 'bg-[#E7F4F0] text-[#0E8472] font-bold',
     long: '受け入れ可能',
   },
-  consult: { glyph: '△', cellClass: 'bg-warning/10 text-warning font-bold', long: '相談ください' },
+  consult: {
+    glyph: '△',
+    cellClass: 'bg-[#FBF1DD] text-[#B5790A] font-bold',
+    long: '相談ください',
+  },
   unavailable: { glyph: '×', cellClass: 'text-text-muted', long: '枠なし' },
 };
 
