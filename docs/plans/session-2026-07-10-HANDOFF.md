@@ -134,10 +134,16 @@
 - **ハマり所**: middleware.ts の matcher に `brand/`・`icon.png`・`apple-icon.png` を除外追加必須
   （無いとログイン画面のロゴ画像が認証リダイレクトで読めない）。
   MonitorMapClient.tsx はSVG直書き3箇所を brand-primary と手動同期（コメントどおり実施済）。
-- **据え置き（次回以降）**: ①QR印刷物（患者宅掲示の対外物・PO確認後に改称）②現場ボードの配色
-  （CF_THEME独立・field.css/themeColorもteal残置）③性別カード女性ピンクとUIピンクの識別チューニング
-  （PO実機の感想待ち）④スタッフ配布のログインカード staff-login-cards.html のブランド更新（ローカル）。
-- **ロールバック**: `git revert 547ec8b e779781` → push → frontend再ビルドで完全復元（DB無関係）。
+- **R-3（同日追補・`97c80f2` 本番稼働）**: ①theme_color（ブラウザ/PWAトップバー）3箇所を
+  #e15a7f→**#f8b4c6**（PO要望「薄く上品に」）②モバイル上部バー淡ピンクウォッシュ化
+  ③**現場ボード+受け入れ枠(/m系)もブランド統一**: CF_THEME.TEAL/TEAL_DEEP→#E15A7F/#C94A6E
+  （theme.ts一点・キー名TEALのまま。医療青/介護緑の保険種別色は直書きで不変）+field.cssフォーカス
+  +BackToAppBarにらく助マーク ④**ロゴ「ら」欠け修正（PO指摘）**: 矩形消去→左端接触かつy<270の
+  連結成分のみ除去（Codex改修・extract_rakusuke.py）。
+- **据え置き（次回以降）**: ①QR印刷物（患者宅掲示の対外物・PO確認後に改称）
+  ②性別カード女性ピンクとUIピンクの識別チューニング（PO実機の感想待ち）
+  ③スタッフ配布のログインカード staff-login-cards.html のブランド更新（ローカル）。
+- **ロールバック**: `git revert 97c80f2 547ec8b e779781` → push → frontend再ビルドで完全復元（DB無関係）。
 
 ## 5. 参照
 
