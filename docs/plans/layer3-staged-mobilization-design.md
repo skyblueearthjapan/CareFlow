@@ -1,7 +1,8 @@
 # 自動スタッフ割当 4段ソルバ（マネージャー動的動員＋ローテ緩和）設計書 v1.1
 
-作成 2026-07-12 / ステータス: **実装完了（Phase A/B/C 全消化・2026-07-12）・デプロイ待ち**
-実装実績: BE=Stage 2/3＋via＋通知（テスト105 pass）・FE=通知2セクション＋チップ（vitest 1197 pass / 0 fail・tsc 0）。
+作成 2026-07-12 / ステータス: **v1.1（Stage 1-3）は本番稼働済み `a695b1c`。v2.0 = §11 要件訂正（Q3全廃）＋拠点跨ぎ救援・実装中**
+★v2.0 の要件訂正により、§0.2欠陥2・§1決定3・§2 Stage 3・§7の該当記述は §11 が上書きする（履歴として残置）。
+v1.1 実績: BE=Stage 2/3＋via＋通知（テスト105 pass）・FE=通知2セクション＋チップ（vitest 1197 pass / 0 fail・tsc 0）。
 code-reviewer 最終レビュー CRITICAL/MAJOR 0（MINOR 3件は同日反映: Gini母集団の単一ソース化・
 テスト命名精密化・ガード意図コメント）。ディレクターレビュー指摘1件（通知の committed 絞り込み）反映済み。
 v1.1 変更点: criticレビュー（ACCEPT-WITH-RESERVATIONS→条件反映）— M-1 StaffAssignment実型
@@ -279,3 +280,149 @@ class StaffAssignment(BaseModel):
    上位互換。万一の差分は W28 再現テスト（テスト観点6）で検出する
 4. `_cost_single_cell` の引数追加は既存呼び出し（gender override :2363・不可避判定 :1537 含む）
    すべてデフォルト値 False で非破壊とする
+
+---
+
+## 11. v2.0（2026-07-12 夜）: 要件訂正による再設計 — Q3全廃＋拠点跨ぎ救援
+（criticレビュー REVISE → M-1〜M-6・MINOR・欠落事項をすべて反映した確定版）
+
+### 11.0 PO要件の訂正（最優先・本設計書の関連記述をすべて上書き）★
+
+- **「前週に担当したコースは翌週禁止」というルールはPO要件に存在しない**（PO明言 2026-07-12）。
+  Q3ハード除外は過去フェーズ実装のレガシーで、要件由来ではない。v1.1 §1決定3は
+  「ルールが存在する」前提の合意だったため**無効**（ルール自体を撤去する）。
+- 真の要件は「**同じ患者さんを連続で担当するのを避けたい。拠点をまたいででも**」のみ。
+  正しい実装は既存の**患者中心ローテペナルティ**（`COST_PATIENT_RECENT_1/2/3 = 1e6/5e5/2e5`・
+  患者ごとの直近担当3名を4週遡り・拠点無関係に追跡）＋連続レビューフロー。
+  criticレビューで定量検証済み: 4名体制でも DEPTH=3 により毎日ペナルティゼロの候補が最低1名残る
+  ＝Q3なしで日次・週次ローテが成立する。
+- 拠点跨ぎの追加確定（PO回答 2026-07-12）: ①**救援（レベル1）のみ** ②発動時は
+  **お知らせ・警告・報告を必ず表示** ③**スワップ許可** ④**マネージャーも対象**（同等）
+- 運用モデルの確定（criticレビューOpen Question裁定・ディレクター決定）:
+  跨ぎ救援は**自動確定＋警告表示**（Stage 2動員と同じ扱い。POの表現は「お知らせ・警告・報告」で
+  あり承認フローの要求ではない）。採用ガードは**未割当数のみ**で判定（コスト比較は持ち込まない
+  — スワップ許可の趣旨は「埋まるなら入れ替えてよい」）。
+
+### 11.1 変更一覧
+
+| # | 変更 | 詳細 |
+|---|---|---|
+| 1 | **Q3ハード除外を全廃** | `_cost_single_cell` の Q3 分岐（INF return / relax時の加算）を削除。`relax_rotation_exclusion` 引数を両関数（_cost_single_cell/_solve_matching）から削除。`COST_ROTATION_RELAXED_VIOLATION` 定数＋コメントブロック（:192-206相当）を削除 |
+| 2 | **βスキップも削除（criticレビューM-1裁定）** | βローテの `weeks_ago <= ROTATION_EXCLUSION_WEEKS: continue` ガードを削除 → weeks_ago=1 が weight 1.0（最重）で正しく減衰に乗る。これにより `ROTATION_EXCLUSION_WEEKS` は全参照が消えるため**定数ごと削除**。β自体・W16前日ペナルティは存置（微小タイブレーク） |
+| 3 | **旧Stage 3（ローテ緩和）を撤去** | `_solve_stage3_relaxed` メソッド本体・solve()内の呼び出し・`via='rotation_relaxed'`・`rotation_relaxed_notices`（BE schema/集計・FE Zod/セクション/チップ/トースト/開閉条件）を撤去。via docstring（StaffAssignment）・Giniコメント・`_detect_unavoidable_consecutive` docstring（「直近1週同コード除外」記述 :1500-1502, :2572相当）も追随更新 |
+| 4 | **新Stage 3 = 拠点跨ぎ救援** | §11.2 |
+| 5 | 通知・報告 | §11.3 |
+
+### 11.2 新Stage 3: 拠点跨ぎ救援（rescue re-solve）— 実装仕様（criticレビューM-2/M-3/M-4/M-6反映）
+
+**発動条件**: Stage 2（マネージャー動員）後も当該曜日に未割当コースが残る場合のみ。
+
+**solve() ループ内フロー（正確な挿入位置と置換セマンティクス）**:
+
+```python
+day_assignments = stage1結果      # fixed(via='fixed')＋Hungarian(via='hungarian')
+day_assignments += stage2結果     # via='manager_mobilized'
+rescue = self._solve_stage3_cross_office(
+    weekday=..., day_courses=..., day_assignments=day_assignments,
+    staff_pool=staff_pool, fixed_staff_by_course=..., ...)
+if rescue is not None:            # 採用ガード通過時のみ非None
+    rescue_swaps_all.extend(rescue.swaps)
+    day_assignments = rescue.assignments   # ★日全体を置換
+# ↓ 以降は既存コード不変。all_assignments への追加・prev_day_pairs・
+#   rotation_conflicts・working_recent は最終 day_assignments を読むため、
+#   置換がこの位置なら下流5経路すべて構造的に整合する（append後の巻き戻し不要）
+```
+
+**`_solve_stage3_cross_office` の中身**:
+1. **fixed の扱い（解釈A・criticレビュー曖昧性裁定）**: `fixed_staff_by_course` のうち
+   **Stage 1 で検証を通過して実際に割当済みのもの**（= day_assignments 内の via='fixed'）だけを
+   温存し、その (course, staff) を再解の対象から除外する。**検証に失敗して free に落ちた
+   fixed 指定（例: 都賀A木曜の性別失敗）は再解の対象に含める**（でないと木曜ケースが解けない）
+2. 再解: 温存fixed以外の**その曜日の全コース × 当日勤務の全要員**（非新人・staff+manager・
+   全拠点・温存fixedで消費済みの者は除外）を `_solve_matching(relax_office_constraint=True)` で解く
+3. **採用ガード**: 「温存fixed＋再解結果」の未割当コース数が、元の day_assignments の
+   未割当コース数より**厳密に少なく、かつ元々カバーされていた全コースが引き続きカバーされている
+   （退行なし）場合のみ採用**（None を返せば元を維持）。
+   これにより office_id=None（全拠点一括）でも per-office でも安全:
+   全体不足（コース数>要員数）の週では数が減らないため元の結果が維持され、無駄な入替は起きない。
+   また「再解が既存カバーを捨てて別のコースを充足する解」を無報告で採用することを防ぎ、
+   担当を失うコースが構造上発生しないためスワップ報告の網羅性も保証される
+4. **swaps の算出（criticレビューM-4）**: 採用時、元 day_assignments と採用結果を course_id で
+   突合し、staff_id が変わった行を `RescueSwap(course_id, weekday, course_code,
+   before_staff_id, after_staff_id)` として収集。**`Layer3Result` に
+   `rescue_swaps: list[RescueSwap] = []` フィールドを追加**して返す
+5. **via 判定（優先順）**: `effective_office_for_weekday(weekday) != course.office_id` →
+   `'cross_office'` ＞ role='manager' → `'manager_mobilized'` ＞ その他 `'hungarian'`。
+   温存fixedは `'fixed'` のまま
+6. 例外時は None 返却で Stage 1+2 結果を無傷維持（best-effort・既存Stageの流儀）
+
+**`relax_office_constraint` の配線（criticレビューM-2(b)）**:
+- `_cost_single_cell` と `_solve_matching` の両方に `relax_office_constraint: bool = False` を追加
+- True のとき Phase G-90 拠点チェック（:2339-2342相当）は INF ではなく
+  **`COST_CROSS_OFFICE_VIOLATION = 400_000`** をペナルティ変数に加算して続行
+  （性別・シフト・イベント・新人は従来どおり INF＝聖域）
+- 序列: 患者連続1回前(1e6) > 跨ぎ(4e5) > W16(100) > β(≦~20) > ジッタ(≦10)。
+  「同じ患者に連続で当てるくらいなら越境する」= PO表明と整合
+
+**既存応援ロジックとの関係（criticレビュー検証済み）**: `effective_office_for_weekday` の
+secondary転入（primary休業日のみ発火）と本救援（両拠点営業日でも発火）は条件が排他で二重加点なし。
+
+**呼び出しモードの注意（criticレビューM-6）**: 現運用（スケジュール画面の一括実行=office_id
+なし）は1回の解で全拠点を同時に見るため先行者利益問題なし。**per-office で順に実行すると
+先に実行した拠点が他拠点スタッフを消費し得る**——handoff に運用注意として記載し、
+跨ぎ救援を期待する週は全拠点一括実行を推奨とする（コードでの禁止はしない）。
+
+### 11.3 API/UI（お知らせ・警告・報告 = PO必須要件）
+
+- **`CrossOfficeNoticeSchema`（新設・既存StageAssignmentNoticeSchemaとは別型）**:
+  `{course_id, weekday, course_code, course_office_name, staff_id, staff_name,
+  staff_office_name}` → `cross_office_notices`（**警告**・越境した割当）
+- **`RescueSwapNoticeSchema`（新設）**: `{course_id, weekday, course_code,
+  before_staff_name, after_staff_name}` → `rescue_swap_notices`（**報告**・入替行。
+  before は同一実行内の Stage 1+2 解であり DB 既存値ではない旨を docstring 明記）
+- **両方とも committed_course_ids で絞る**（既存通知と同じ・レビュー送り分は載せない）。
+  office 名解決は offices テーブルから bulk load（Staff.name 解決と同様）
+- 削除: `rotation_relaxed_notices`（BE/FE両方。FE Zod は .catch があるため新旧互換とも安全）
+- FE Zod: 新2フィールドは既存パターン `.default([]).catch([])` で optional 追加
+- FE（AssignWarningDialog）: 「🚗 拠点をまたぐ応援（◯件・確定済み）」= **warning系トーン**
+  （既存🟧残留違反に近い強い意匠・POの「警告」要望）＋「🔄 応援による入れ替え（◯件）」=
+  お知らせトーン。🔁前週同コースセクション/チップ/州の開閉条件・トースト文言から
+  rotation_relaxed を撤去し、新2フィールドを開閉条件・トーストに追加
+- 文言は R-10b 規約準拠
+
+### 11.4 テスト観点と書き換え対象一覧（criticレビューM-5反映）
+
+**新規テスト**:
+1. Q3全廃: 前週同コードのスタッフが通常割当可能（旧挙動の反転）
+2. βスキップ削除: weeks_ago=1 が rotation_count に weight 1.0 で加算される
+3. 患者連続回避の主導（既存回帰維持）: recent持ちより他候補優先・不可避はauto-commit
+4. Stage 3発動条件: Stage 2まで埋まれば発動しない／採用ガード（減る時のみ採用・
+   減らなければ元と完全一致・全体不足週では発動しても不採用）／性別・シフト・イベントは
+   越境でもINF／新人除外・1日1コース・決定性
+5. **木曜都賀A再現fixture**: female_only患者×男性1名拠点＋隣接拠点に女性 →
+   スワップで全充足・via='cross_office' ≥1・rescue_swaps ≥1・通知が committed 絞り込み
+6. fixed温存: 検証通過fixedは再解でも不変／検証失敗fixedのコースは再解対象
+7. レスポンス: 新2フィールドのスキーマ・空配列デフォルト
+
+**書き換え対象の既存テスト**:
+
+| ファイル | 対象 | 措置 |
+|---|---|---|
+| `test_layer3_staged_mobilization.py` | 旧Stage3系（stage3_relaxes_q3/stage3_not_triggered 等）・via 4値検証・W28再現・スキーマ既定値の rotation_relaxed 参照（計~10箇所） | 旧Stage3テストは削除or跨ぎ救援テストへ置換。W28再現は「4/4割当・動員2・**緩和0・宇田川はStage 1のhungarianで入る**」へ書き換え。via検証は cross_office を含む4値へ |
+| `test_layer3.py` | `test_q3_hybrid_excludes_last_week_assignment` | 反転（前週同コードでも割当可能・βソフトのみ効く）へ書き換え |
+| `test_layer3_rotation_conflict.py` | Q3前提の前提コメント/回避fixture 2箇所 | fixture前提の調整（挙動アサーションは患者連続なので原則維持） |
+| `AssignWarningDialog.test.tsx` | rotation_relaxed セクション/チップ/開閉/既定値の4テスト | cross_office/swap セクションのテストへ置換 |
+
+### 11.5 本番W28への影響・移行・ロールバック
+
+- 確定済みW28割当は触らない。PO再実行で新ロジック（Q3なし）により解き直される
+- migrationなし・コードのみ。デプロイは標準手順・ユーザー指示待ち
+- ロールバック: git revert で v1.1（本番 a695b1c）へ復元可
+
+### 11.6 実装フェーズ
+
+| Phase | 内容 |
+|---|---|
+| A2 | BE: Q3全廃＋βスキップ削除＋旧Stage3撤去＋新Stage3（跨ぎ救援）＋Layer3Result.rescue_swaps＋通知＋テスト |
+| B2 | FE: rotation_relaxed撤去＋cross_office/swap 2セクション＋Zod＋テスト |
+| C2 | ディレクターレビュー→code-reviewer→handoff/メモリ更新 |

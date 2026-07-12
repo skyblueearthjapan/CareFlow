@@ -18,6 +18,8 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { AssignWarningDialog, type ApprovedReviewItem } from '../AssignWarningDialog';
 import type {
   AutoCommittedNotice,
+  CrossOfficeNotice,
+  RescueSwapNotice,
   ReviewItem,
   StageAssignmentNotice,
   UnresolvedGenderWarning,
@@ -498,7 +500,7 @@ describe('AssignWarningDialog — W-11 unresolved_warnings セクション', () 
 });
 
 // ─────────────────────────────────────────────────────────────────────────
-// 4段ソルバ Stage 2/3: manager_mobilized_notices / rotation_relaxed_notices セクションのテスト
+// 4段ソルバ Stage 2 + v2.0 新Stage 3: manager_mobilized_notices / cross_office_notices / rescue_swap_notices セクションのテスト
 // ─────────────────────────────────────────────────────────────────────────
 
 function makeMobilized(over: Partial<StageAssignmentNotice> = {}): StageAssignmentNotice {
@@ -512,18 +514,31 @@ function makeMobilized(over: Partial<StageAssignmentNotice> = {}): StageAssignme
   };
 }
 
-function makeRelaxed(over: Partial<StageAssignmentNotice> = {}): StageAssignmentNotice {
+function makeCrossOffice(over: Partial<CrossOfficeNotice> = {}): CrossOfficeNotice {
   return {
     course_id: 'b1111111-1111-1111-1111-111111111111',
     weekday: 0,
     course_code: 'A',
+    course_office_name: '都賀拠点',
     staff_id: 'b2222222-2222-2222-2222-222222222222',
     staff_name: '宇田川優莉',
+    staff_office_name: '稲毛拠点',
     ...over,
   };
 }
 
-describe('AssignWarningDialog — 4段ソルバ Stage 2/3 notices セクション', () => {
+function makeSwap(over: Partial<RescueSwapNotice> = {}): RescueSwapNotice {
+  return {
+    course_id: 'c1111111-1111-1111-1111-111111111111',
+    weekday: 1,
+    course_code: 'B',
+    before_staff_name: '高岡スタッフ',
+    after_staff_name: '宇田川優莉',
+    ...over,
+  };
+}
+
+describe('AssignWarningDialog — 4段ソルバ Stage 2 + v2.0 新Stage 3 notices セクション', () => {
   it('managerMobilizedNotices を渡すとセクションが描画される (既定は折りたたみ = 行非表示)', () => {
     render(
       <AssignWarningDialog
@@ -559,36 +574,70 @@ describe('AssignWarningDialog — 4段ソルバ Stage 2/3 notices セクショ�
     expect(row).toHaveTextContent('熊澤妙子');
   });
 
-  it('rotationRelaxedNotices を渡すとセクションが描画される (既定は折りたたみ = 行非表示)', () => {
+  it('crossOfficeNotices を渡すと警告系セクションが描画される（行は常時表示）', () => {
     render(
       <AssignWarningDialog
         open
         onClose={() => {}}
         reviewItems={[]}
-        rotationRelaxedNotices={[makeRelaxed()]}
+        crossOfficeNotices={[makeCrossOffice()]}
         onApply={() => {}}
       />,
     );
-    expect(screen.getByTestId('assign-rotation-relaxed-section')).toBeInTheDocument();
-    expect(screen.queryByTestId('assign-rotation-relaxed-row')).not.toBeInTheDocument();
-    expect(screen.getByText(/候補がいないため、前週と同じコースを許容して割り当てました/)).toBeInTheDocument();
+    expect(screen.getByTestId('assign-cross-office-section')).toBeInTheDocument();
+    // 警告系は折りたたみなし = 行が即時表示される
+    expect(screen.getByTestId('assign-cross-office-row')).toBeInTheDocument();
   });
 
-  it('「詳細を見る ▼」を押すと前週同コースの行が表示される', () => {
+  it('cross_office行 = 曜日/コード | スタッフ名（所属拠点 → 行き先拠点）を表示する', () => {
     render(
       <AssignWarningDialog
         open
         onClose={() => {}}
         reviewItems={[]}
-        rotationRelaxedNotices={[makeRelaxed()]}
+        crossOfficeNotices={[makeCrossOffice()]}
+        onApply={() => {}}
+      />,
+    );
+    const row = screen.getByTestId('assign-cross-office-row');
+    expect(row).toHaveTextContent('月');
+    expect(row).toHaveTextContent('A');
+    expect(row).toHaveTextContent('宇田川優莉');
+    expect(row).toHaveTextContent('稲毛拠点');
+    expect(row).toHaveTextContent('都賀拠点');
+  });
+
+  it('rescueSwapNotices を渡すとお知らせトーンのセクションが描画される（既定は折りたたみ = 行非表示）', () => {
+    render(
+      <AssignWarningDialog
+        open
+        onClose={() => {}}
+        reviewItems={[]}
+        rescueSwapNotices={[makeSwap()]}
+        onApply={() => {}}
+      />,
+    );
+    expect(screen.getByTestId('assign-rescue-swap-section')).toBeInTheDocument();
+    // 既定は折りたたみ = 行は非表示
+    expect(screen.queryByTestId('assign-rescue-swap-row')).not.toBeInTheDocument();
+  });
+
+  it('「詳細を見る ▼」を押すと rescue_swap の before→after 行が表示される', () => {
+    render(
+      <AssignWarningDialog
+        open
+        onClose={() => {}}
+        reviewItems={[]}
+        rescueSwapNotices={[makeSwap()]}
         onApply={() => {}}
       />,
     );
     fireEvent.click(screen.getByText('詳細を見る ▼'));
-    const row = screen.getByTestId('assign-rotation-relaxed-row');
+    const row = screen.getByTestId('assign-rescue-swap-row');
     expect(row).toBeInTheDocument();
-    expect(row).toHaveTextContent('月');
-    expect(row).toHaveTextContent('A');
+    expect(row).toHaveTextContent('火');
+    expect(row).toHaveTextContent('B');
+    expect(row).toHaveTextContent('高岡スタッフ');
     expect(row).toHaveTextContent('宇田川優莉');
   });
 
@@ -602,7 +651,8 @@ describe('AssignWarningDialog — 4段ソルバ Stage 2/3 notices セクショ�
       />,
     );
     expect(screen.queryByTestId('assign-manager-mobilized-section')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('assign-rotation-relaxed-section')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('assign-cross-office-section')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('assign-rescue-swap-section')).not.toBeInTheDocument();
   });
 
   it('managerMobilizedNotices のみ (reviewItems=[]) でも open 時に描画され説明文が出る', () => {
@@ -619,18 +669,18 @@ describe('AssignWarningDialog — 4段ソルバ Stage 2/3 notices セクショ�
     expect(screen.getByText(/マネージャー動員が.*件あり、確定済みです/)).toBeInTheDocument();
   });
 
-  it('rotationRelaxedNotices のみ (reviewItems=[]) でも open 時に描画され説明文が出る', () => {
+  it('crossOfficeNotices のみ (reviewItems=[]) でも open 時に描画され説明文が出る', () => {
     render(
       <AssignWarningDialog
         open
         onClose={() => {}}
         reviewItems={[]}
-        rotationRelaxedNotices={[makeRelaxed()]}
+        crossOfficeNotices={[makeCrossOffice()]}
         onApply={() => {}}
       />,
     );
     expect(screen.getByTestId('assign-warning-dialog')).toBeInTheDocument();
-    expect(screen.getByText(/前週と同じコースへの割り当てが.*件あり、確定済みです/)).toBeInTheDocument();
+    expect(screen.getByText(/拠点をまたぐ応援が.*件あり、確定済みです/)).toBeInTheDocument();
   });
 
   it('新 Stage 通知があっても apply ボタンは reviewItems 承認数のみで disabled 判定される', () => {
@@ -640,7 +690,8 @@ describe('AssignWarningDialog — 4段ソルバ Stage 2/3 notices セクショ�
         onClose={() => {}}
         reviewItems={[]}
         managerMobilizedNotices={[makeMobilized()]}
-        rotationRelaxedNotices={[makeRelaxed()]}
+        crossOfficeNotices={[makeCrossOffice()]}
+        rescueSwapNotices={[makeSwap()]}
         onApply={() => {}}
       />,
     );
@@ -668,23 +719,23 @@ describe('AssignWarningDialog — 4段ソルバ Stage 2/3 notices セクショ�
     expect(screen.getByTestId('chip-manager-mobilized')).toHaveTextContent('👔マネージャー動員');
   });
 
-  it('§4.1 チップ: auto_committed_notices と rotation_relaxed が同一 course_id のとき「🔁前週同コース」チップが出る', () => {
+  it('§4.1 チップ: auto_committed_notices と cross_office が同一 course_id のとき「🚗拠点またぎ」チップが出る', () => {
     const sharedCourseId = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee';
     const notice = makeNotice({ course_id: sharedCourseId });
-    const relaxed = makeRelaxed({ course_id: sharedCourseId });
+    const crossOffice = makeCrossOffice({ course_id: sharedCourseId });
     render(
       <AssignWarningDialog
         open
         onClose={() => {}}
         reviewItems={[]}
         notices={[notice]}
-        rotationRelaxedNotices={[relaxed]}
+        crossOfficeNotices={[crossOffice]}
         onApply={() => {}}
       />,
     );
     fireEvent.click(screen.getByText('理由を見る ▼'));
-    expect(screen.getByTestId('chip-rotation-relaxed')).toBeInTheDocument();
-    expect(screen.getByTestId('chip-rotation-relaxed')).toHaveTextContent('🔁前週同コース');
+    expect(screen.getByTestId('chip-cross-office')).toBeInTheDocument();
+    expect(screen.getByTestId('chip-cross-office')).toHaveTextContent('🚗拠点またぎ');
   });
 
   it('§4.1 チップ: course_id が異なる場合はチップが出ない', () => {
@@ -704,7 +755,7 @@ describe('AssignWarningDialog — 4段ソルバ Stage 2/3 notices セクショ�
     expect(screen.queryByTestId('chip-manager-mobilized')).not.toBeInTheDocument();
   });
 
-  it('全セクション (review + notices + unresolved + mobilized + relaxed) が並存できる', () => {
+  it('全セクション (review + notices + unresolved + mobilized + cross_office + swap) が並存できる', () => {
     render(
       <AssignWarningDialog
         open
@@ -713,7 +764,8 @@ describe('AssignWarningDialog — 4段ソルバ Stage 2/3 notices セクショ�
         notices={[makeNotice()]}
         unresolvedWarnings={[makeUnresolved()]}
         managerMobilizedNotices={[makeMobilized()]}
-        rotationRelaxedNotices={[makeRelaxed()]}
+        crossOfficeNotices={[makeCrossOffice()]}
+        rescueSwapNotices={[makeSwap()]}
         onApply={() => {}}
       />,
     );
@@ -721,6 +773,7 @@ describe('AssignWarningDialog — 4段ソルバ Stage 2/3 notices セクショ�
     expect(screen.getByTestId('assign-notice-section')).toBeInTheDocument();
     expect(screen.getByTestId('assign-unresolved-section')).toBeInTheDocument();
     expect(screen.getByTestId('assign-manager-mobilized-section')).toBeInTheDocument();
-    expect(screen.getByTestId('assign-rotation-relaxed-section')).toBeInTheDocument();
+    expect(screen.getByTestId('assign-cross-office-section')).toBeInTheDocument();
+    expect(screen.getByTestId('assign-rescue-swap-section')).toBeInTheDocument();
   });
 });

@@ -372,10 +372,10 @@ async def test_rotation_warning_when_forced_repeat(client, db) -> None:
     VisitStaffAssignment) を seed し、 当該週は同 staff しか稼働させない.
     → 代替候補 0 名 = 不可避連続 → 自動確定 (courses_assigned==1) + notice 1 件.
 
-    注意: 前週コースは別コード (B) にする. 同コード (A) だと course_code 単位の
-    rotation 履歴ハード除外 (ROTATION_EXCLUSION_WEEKS=1) が効いて staff が候補から
-    消え、 「連続」 ではなく「未割当」 になってしまうため (= patient 中心ローテの
-    衝突を観測するには course_code レベルの除外と切り離す必要がある).
+    注意: 前週コースは別コード (B) にする (= patient 中心ローテの衝突のみを純粋に
+    観測するため course_code を分離). v2.0 で前週同コードのハード除外 (旧 Q3) は全廃
+    されたため同コード (A) でも「連続」を観測できるが、 fixture 前提は従来どおり B の
+    まま維持する (挙動アサーションは患者連続なので不変).
     """
     from app.models.visit_staff_assignment import VisitStaffAssignment
 
@@ -413,9 +413,8 @@ async def test_rotation_warning_when_forced_repeat(client, db) -> None:
 
     # ----- 前週 (= 直近担当履歴) の staff_assigned コース + VSA -----
     prev_monday = date(2026, 6, 8)
-    # 前週は別コード (B) にして course_code 単位の rotation 履歴ハード除外
-    # (ROTATION_EXCLUSION_WEEKS=1) を回避し、 patient 中心ローテ (=直近担当者)
-    # の衝突のみを発生させる. 当該週は code='A'.
+    # 前週は別コード (B) にして patient 中心ローテ (=直近担当者) の衝突のみを
+    # 純粋に発生させる (v2.0 で前週同コードのハード除外は全廃済み). 当該週は code='A'.
     prev_course = Course(
         iso_year=2026,
         iso_week=24,

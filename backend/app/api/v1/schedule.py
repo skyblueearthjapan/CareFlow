@@ -1481,10 +1481,9 @@ class UnresolvedGenderWarningSchema(BaseModel):
 
 
 class StageAssignmentNoticeSchema(BaseModel):
-    """4段ソルバ: Stage 2 動員 / Stage 3 緩和で確定した割当のお知らせ 1 件.
+    """4段ソルバ Stage 2: マネージャー動員で確定した割当のお知らせ 1 件.
 
-    ``manager_mobilized_notices`` (= マネージャー不足救済) と
-    ``rotation_relaxed_notices`` (= 前週同コード緩和) の共通スキーマ. どちらも
+    ``manager_mobilized_notices`` (= マネージャー不足救済) のスキーマ.
     「誰がどのコースを埋めたか」を伝える情報通知 (確定済み・アクション不要).
     """
 
@@ -1495,6 +1494,42 @@ class StageAssignmentNoticeSchema(BaseModel):
     course_code: str
     staff_id: UUID
     staff_name: str
+
+
+class CrossOfficeNoticeSchema(BaseModel):
+    """4段ソルバ Stage 3: 拠点を跨いで救援に入った割当のお知らせ 1 件 (警告).
+
+    自拠点の要員だけでは埋まらないコースに、 隣接拠点の要員が越境して入ったことを
+    伝える. course の拠点名と staff の所属拠点名を併記し、 越境の事実を明示する
+    (= PO 必須要件「お知らせ・警告・報告」の警告).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    course_id: UUID
+    weekday: int = Field(ge=0, le=6)
+    course_code: str
+    course_office_name: str
+    staff_id: UUID
+    staff_name: str
+    staff_office_name: str
+
+
+class RescueSwapNoticeSchema(BaseModel):
+    """4段ソルバ Stage 3: 拠点跨ぎ救援に伴う担当の入れ替えお知らせ 1 件 (報告).
+
+    救援のため当日を全再解した結果、 担当が入れ替わったコースを 1 件 1 record で
+    報告する. ``before_staff_name`` は **同一実行内の Stage 1+2 暫定解** の担当であり、
+    DB の既存確定値ではない点に注意 (= 「今回の割付でこう入れ替えた」報告).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    course_id: UUID
+    weekday: int = Field(ge=0, le=6)
+    course_code: str
+    before_staff_name: str
+    after_staff_name: str
 
 
 class AssignStaffOnlyResponse(BaseModel):
@@ -1525,9 +1560,12 @@ class AssignStaffOnlyResponse(BaseModel):
     # 4段ソルバ Stage 2: スタッフ不足でマネージャーを動員して埋めたコース一覧.
     # 追加のみ (additive)・default 空配列で後方互換.
     manager_mobilized_notices: list[StageAssignmentNoticeSchema] = Field(default_factory=list)
-    # 4段ソルバ Stage 3: 候補ゼロで前週同コード除外を緩和して埋めたコース一覧.
+    # 4段ソルバ Stage 3: 拠点を跨いで救援に入った割当一覧 (警告).
     # 追加のみ (additive)・default 空配列で後方互換.
-    rotation_relaxed_notices: list[StageAssignmentNoticeSchema] = Field(default_factory=list)
+    cross_office_notices: list[CrossOfficeNoticeSchema] = Field(default_factory=list)
+    # 4段ソルバ Stage 3: 拠点跨ぎ救援に伴う担当入れ替え一覧 (報告).
+    # 追加のみ (additive)・default 空配列で後方互換.
+    rescue_swap_notices: list[RescueSwapNoticeSchema] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -1822,16 +1860,18 @@ async def _assign_staff_only_impl(
     # W-11: 性別残留違反 (候補ゼロ) の警告をスキーマ変換.
     unresolved_warnings = _build_unresolved_warnings_response(l3_result.unresolved_warnings)
 
-    # 4段ソルバ: Stage 2 動員 / Stage 3 緩和のお知らせを via 集計で構築 (commit 後・graceful).
-    # 事後お知らせは best-effort とし、構築失敗で確定済み割付を壊さない (空リストで 200).
+    # 4段ソルバ: Stage 2 動員 / Stage 3 跨ぎ救援のお知らせを via 集計で構築
+    # (commit 後・graceful). 事後お知らせは best-effort とし、構築失敗で確定済み割付を
+    # 壊さない (空リストで 200).
     try:
         (
             manager_mobilized_notices,
-            rotation_relaxed_notices,
+            cross_office_notices,
+            rescue_swap_notices,
         ) = await _build_stage_mobilization_notices(db, l3_result=l3_result)
     except Exception:
         logger.exception("stage mobilization notice build failed post-commit; returning empty")
-        manager_mobilized_notices, rotation_relaxed_notices = [], []
+        manager_mobilized_notices, cross_office_notices, rescue_swap_notices = [], [], []
 
     # Phase G-91 (修正2): 自動確定 (commit) したコース数 = ``committed_course_ids``
     # (= _persist へ実際に渡した assignments の course). 連続コースだけでなく、
@@ -1860,7 +1900,8 @@ async def _assign_staff_only_impl(
         auto_committed_notices=auto_committed_notices,
         unresolved_warnings=unresolved_warnings,
         manager_mobilized_notices=manager_mobilized_notices,
-        rotation_relaxed_notices=rotation_relaxed_notices,
+        cross_office_notices=cross_office_notices,
+        rescue_swap_notices=rescue_swap_notices,
     )
 
 
@@ -2327,56 +2368,114 @@ async def _build_stage_mobilization_notices(
     db: AsyncSession,
     *,
     l3_result: Layer3Result,
-) -> tuple[list[StageAssignmentNoticeSchema], list[StageAssignmentNoticeSchema]]:
-    """4段ソルバの Stage 2/3 割当を ``via`` で集計してお知らせ 2 リストへ変換する.
+) -> tuple[
+    list[StageAssignmentNoticeSchema],
+    list[CrossOfficeNoticeSchema],
+    list[RescueSwapNoticeSchema],
+]:
+    """4段ソルバの Stage 2/3 割当を ``via`` / ``rescue_swaps`` で集計してお知らせ化する.
 
-    ``l3_result.assignments`` の ``via`` フィールドで振り分ける:
-      - ``via='manager_mobilized'`` → ``manager_mobilized_notices``
-      - ``via='rotation_relaxed'``  → ``rotation_relaxed_notices``
+    振り分け:
+      - ``via='manager_mobilized'`` → ``manager_mobilized_notices`` (Stage 2 動員)
+      - ``via='cross_office'``      → ``cross_office_notices`` (Stage 3 越境救援・警告)
+      - ``l3_result.rescue_swaps``  → ``rescue_swap_notices`` (Stage 3 入れ替え・報告)
 
     確定済み（``_persist`` 済み）割当のみを通知する。
     ``l3_result.committed_course_ids`` に含まれない course_id はレビュー送り
-    （管理者が承認前）であり、本通知の対象外とする。
-    承認後に再実行される割付フローで改めて通知が生成される。
+    （管理者が承認前）であり、本通知の対象外とする（動員・越境・入替の全リストを
+    committed_course_ids で絞る）。承認後に再実行される割付フローで改めて生成される。
 
-    §4.1: BE は両リストを独立に返す (= それぞれ別の事実). 不可避連続やレビューとの
-    重複整理は FE 側で視覚的に行う. staff_name は既存 warnings と同じ手段 (Staff.name)
-    で解決する. commit 後の読み取り専用処理として best-effort で呼ばれる.
+    §11.3: BE は各リストを独立に返す (= それぞれ別の事実). 不可避連続やレビューとの
+    重複整理は FE 側で視覚的に行う. Staff.name / Office.name は bulk load で解決する.
+    commit 後の読み取り専用処理として best-effort で呼ばれる.
     """
     committed_set = set(l3_result.committed_course_ids)
     mobilized = [
         a for a in l3_result.assignments
         if a.via == "manager_mobilized" and a.course_id in committed_set
     ]
-    relaxed = [
+    cross = [
         a for a in l3_result.assignments
-        if a.via == "rotation_relaxed" and a.course_id in committed_set
+        if a.via == "cross_office" and a.course_id in committed_set
     ]
-    if not mobilized and not relaxed:
-        return [], []
+    swaps = [s for s in l3_result.rescue_swaps if s.course_id in committed_set]
+    if not mobilized and not cross and not swaps:
+        return [], [], []
 
-    staff_ids: set[UUID] = {a.staff_id for a in mobilized} | {a.staff_id for a in relaxed}
+    # ----- Staff 名 + 所属拠点 id を bulk load -----
+    staff_ids: set[UUID] = {a.staff_id for a in mobilized} | {a.staff_id for a in cross}
+    for s in swaps:
+        staff_ids.add(s.before_staff_id)
+        staff_ids.add(s.after_staff_id)
     staff_name_map: dict[UUID, str] = {}
+    staff_office_map: dict[UUID, UUID | None] = {}
     if staff_ids:
         srows = (await db.scalars(select(Staff).where(Staff.id.in_(list(staff_ids))))).all()
         staff_name_map = {s.id: s.name for s in srows}
+        staff_office_map = {s.id: s.primary_office_id for s in srows}
 
-    def _build(items: list[StaffAssignment]) -> list[StageAssignmentNoticeSchema]:
-        out = [
-            StageAssignmentNoticeSchema(
-                course_id=a.course_id,
-                weekday=a.weekday,
-                course_code=a.course_code,
-                staff_id=a.staff_id,
-                staff_name=staff_name_map.get(a.staff_id, ""),
-            )
-            for a in items
-        ]
-        # 決定的な並び: (weekday, course_code, staff_id).
-        out.sort(key=lambda n: (n.weekday, n.course_code, str(n.staff_id)))
-        return out
+    # ----- Course 拠点 id を bulk load (cross_office のコース所属拠点名解決用) -----
+    course_office_map: dict[UUID, UUID | None] = {}
+    cross_course_ids = {a.course_id for a in cross}
+    if cross_course_ids:
+        crows = (
+            await db.scalars(select(Course).where(Course.id.in_(list(cross_course_ids))))
+        ).all()
+        course_office_map = {c.id: c.office_id for c in crows}
 
-    return _build(mobilized), _build(relaxed)
+    # ----- Office 名を bulk load (course 拠点 + staff 所属拠点) -----
+    office_ids: set[UUID] = {
+        oid for oid in course_office_map.values() if oid is not None
+    } | {oid for oid in staff_office_map.values() if oid is not None}
+    office_name_map: dict[UUID, str] = {}
+    if office_ids:
+        orows = (await db.scalars(select(Office).where(Office.id.in_(list(office_ids))))).all()
+        office_name_map = {o.id: o.name for o in orows}
+
+    def _office_name(office_id: UUID | None) -> str:
+        if office_id is None:
+            return ""
+        return office_name_map.get(office_id, "")
+
+    mobilized_notices = [
+        StageAssignmentNoticeSchema(
+            course_id=a.course_id,
+            weekday=a.weekday,
+            course_code=a.course_code,
+            staff_id=a.staff_id,
+            staff_name=staff_name_map.get(a.staff_id, ""),
+        )
+        for a in mobilized
+    ]
+    mobilized_notices.sort(key=lambda n: (n.weekday, n.course_code, str(n.staff_id)))
+
+    cross_notices = [
+        CrossOfficeNoticeSchema(
+            course_id=a.course_id,
+            weekday=a.weekday,
+            course_code=a.course_code,
+            course_office_name=_office_name(course_office_map.get(a.course_id)),
+            staff_id=a.staff_id,
+            staff_name=staff_name_map.get(a.staff_id, ""),
+            staff_office_name=_office_name(staff_office_map.get(a.staff_id)),
+        )
+        for a in cross
+    ]
+    cross_notices.sort(key=lambda n: (n.weekday, n.course_code, str(n.staff_id)))
+
+    swap_notices = [
+        RescueSwapNoticeSchema(
+            course_id=s.course_id,
+            weekday=s.weekday,
+            course_code=s.course_code,
+            before_staff_name=staff_name_map.get(s.before_staff_id, ""),
+            after_staff_name=staff_name_map.get(s.after_staff_id, ""),
+        )
+        for s in swaps
+    ]
+    swap_notices.sort(key=lambda n: (n.weekday, n.course_code, str(n.course_id)))
+
+    return mobilized_notices, cross_notices, swap_notices
 
 
 async def _build_rotation_and_unassigned_warnings(

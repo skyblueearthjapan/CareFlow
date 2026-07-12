@@ -41,6 +41,8 @@ import {
 } from '@/components/ui/dialog';
 import type {
   AutoCommittedNotice,
+  CrossOfficeNotice,
+  RescueSwapNotice,
   ReviewItem,
   StageAssignmentNotice,
   UnresolvedGenderWarning,
@@ -94,14 +96,21 @@ export interface AssignWarningDialogProps {
   unresolvedWarnings?: UnresolvedGenderWarning[];
   /**
    * 4段ソルバ Stage 2: マネージャー動員で埋めたコースのお知らせ (確定済み・アクション不要).
-   * 折りたたみで表示。auto_committed_notices との重複はチップで視覚整理。
+   * 折りたたみで表示。同一コースが auto_committed_notices にも載る場合は、
+   * auto_committed 側の行に 👔 チップを併記して重複を視覚整理する (片方向)。
    */
   managerMobilizedNotices?: StageAssignmentNotice[];
   /**
-   * 4段ソルバ Stage 3: 前週同コード緩和で埋めたコースのお知らせ (確定済み・アクション不要).
-   * 折りたたみで表示。auto_committed_notices との重複はチップで視覚整理。
+   * v2.0 新Stage 3: 拠点をまたぐ救援割当の警告 (確定済み・アクション不要).
+   * 警告系トーンで常時表示。同一コースが auto_committed_notices にも載る場合は、
+   * auto_committed 側の行に 🚗 チップを併記して重複を視覚整理する (片方向)。
    */
-  rotationRelaxedNotices?: StageAssignmentNotice[];
+  crossOfficeNotices?: CrossOfficeNotice[];
+  /**
+   * v2.0 新Stage 3: 拠点跨ぎ救援で発生した割当入れ替えの報告 (確定済み・アクション不要).
+   * お知らせトーンで折りたたみ表示。
+   */
+  rescueSwapNotices?: RescueSwapNotice[];
 }
 
 export function AssignWarningDialog({
@@ -113,7 +122,8 @@ export function AssignWarningDialog({
   notices = [],
   unresolvedWarnings = [],
   managerMobilizedNotices = [],
-  rotationRelaxedNotices = [],
+  crossOfficeNotices = [],
+  rescueSwapNotices = [],
 }: AssignWarningDialogProps) {
   // 承認済み course_id 集合 (= チェック / 確認モーダル通過分).
   const [approved, setApproved] = React.useState<Set<string>>(() => new Set());
@@ -121,9 +131,9 @@ export function AssignWarningDialog({
   const [confirmTarget, setConfirmTarget] = React.useState<ReviewItem | null>(null);
   // Wave N-2: お知らせセクションの折りたたみ状態 (既定: 閉).
   const [noticesOpen, setNoticesOpen] = React.useState(false);
-  // 4段ソルバ Stage 2/3: 各セクションの折りたたみ状態 (既定: 閉).
+  // 4段ソルバ Stage 2 / v2.0 新Stage 3: 各セクションの折りたたみ状態 (既定: 閉).
   const [managerMobilizedOpen, setManagerMobilizedOpen] = React.useState(false);
-  const [rotationRelaxedOpen, setRotationRelaxedOpen] = React.useState(false);
+  const [rescueSwapOpen, setRescueSwapOpen] = React.useState(false);
 
   // ダイアログ open 時に承認状態をリセットする.
   React.useEffect(() => {
@@ -132,7 +142,7 @@ export function AssignWarningDialog({
       setConfirmTarget(null);
       setNoticesOpen(false);
       setManagerMobilizedOpen(false);
-      setRotationRelaxedOpen(false);
+      setRescueSwapOpen(false);
     }
   }, [open]);
 
@@ -141,7 +151,7 @@ export function AssignWarningDialog({
 
   // §4.1 チップ併記: auto_committed_notices と新 Stage 通知の重複を視覚整理するための course_id セット.
   const managerMobilizedIds = new Set(managerMobilizedNotices.map((n) => n.course_id));
-  const rotationRelaxedIds = new Set(rotationRelaxedNotices.map((n) => n.course_id));
+  const crossOfficeIds = new Set(crossOfficeNotices.map((n) => n.course_id));
 
   const toggleApproved = (courseId: string, next: boolean) => {
     setApproved((prev) => {
@@ -227,13 +237,17 @@ export function AssignWarningDialog({
                 {managerMobilizedNotices.length > 0
                   ? `マネージャー動員が ${managerMobilizedNotices.length} 件あり、確定済みです。`
                   : null}
-                {rotationRelaxedNotices.length > 0
-                  ? `前週と同じコースへの割り当てが ${rotationRelaxedNotices.length} 件あり、確定済みです。`
+                {crossOfficeNotices.length > 0
+                  ? `拠点をまたぐ応援が ${crossOfficeNotices.length} 件あり、確定済みです。`
+                  : null}
+                {rescueSwapNotices.length > 0
+                  ? `応援による入れ替えが ${rescueSwapNotices.length} 件あります。`
                   : null}
                 {notices.length === 0 &&
                 unresolvedWarnings.length === 0 &&
                 managerMobilizedNotices.length === 0 &&
-                rotationRelaxedNotices.length === 0
+                crossOfficeNotices.length === 0 &&
+                rescueSwapNotices.length === 0
                   ? 'レビュー対象はありません。'
                   : null}
               </DialogDescription>
@@ -251,7 +265,8 @@ export function AssignWarningDialog({
               reviewItems.length === 0 &&
               unresolvedWarnings.length === 0 &&
               managerMobilizedNotices.length === 0 &&
-              rotationRelaxedNotices.length === 0
+              crossOfficeNotices.length === 0 &&
+              rescueSwapNotices.length === 0
                 ? 'cheer'
                 : 'clap'
             }
@@ -259,7 +274,8 @@ export function AssignWarningDialog({
               reviewItems.length === 0 &&
               unresolvedWarnings.length === 0 &&
               managerMobilizedNotices.length === 0 &&
-              rotationRelaxedNotices.length === 0
+              crossOfficeNotices.length === 0 &&
+              rescueSwapNotices.length === 0
                 ? 'スタッフの割当ができました！このまま確定して大丈夫です✨'
                 : `スタッフの割当ができました。${reviewItems.length > 0 ? `${reviewItems.length}件だけ一緒に確認させてください` : '残った気になる点を確認してください'}`
             }
@@ -359,13 +375,13 @@ export function AssignWarningDialog({
                             👔マネージャー動員
                           </Badge>
                         ) : null}
-                        {rotationRelaxedIds.has(n.course_id) ? (
+                        {crossOfficeIds.has(n.course_id) ? (
                           <Badge
                             variant="outline"
                             className="text-[10px]"
-                            data-testid="chip-rotation-relaxed"
+                            data-testid="chip-cross-office"
                           >
-                            🔁前週同コース
+                            🚗拠点またぎ
                           </Badge>
                         ) : null}
                       </li>
@@ -412,36 +428,62 @@ export function AssignWarningDialog({
               </section>
             ) : null}
 
-            {/* 🔁 前週同コース緩和セクション (4段ソルバ Stage 3・確定済み) */}
-            {rotationRelaxedNotices.length > 0 ? (
-              <section data-testid="assign-rotation-relaxed-section">
+            {/* 🚗 拠点をまたぐ応援セクション (v2.0 新Stage 3・確定済み・警告系トーン) */}
+            {crossOfficeNotices.length > 0 ? (
+              <section data-testid="assign-cross-office-section">
                 <h3 className="mb-2 flex flex-wrap items-center gap-2 text-sm font-semibold text-text-primary">
-                  <span aria-hidden>🔁</span>
-                  前週と同じコース（{rotationRelaxedNotices.length} 件・確定済み）
+                  <span aria-hidden>🚗</span>
+                  拠点をまたぐ応援（{crossOfficeNotices.length} 件・確定済み）
+                </h3>
+                <ul className="space-y-1">
+                  {crossOfficeNotices.map((n, i) => (
+                    <li
+                      key={`${n.course_id}-${i}`}
+                      className="flex flex-wrap items-center gap-1 rounded border border-warning/40 bg-warning/5 px-2 py-1 text-xs text-text-secondary"
+                      data-testid="assign-cross-office-row"
+                    >
+                      <span>
+                        {fmtWeekday(n.weekday)} / {n.course_code}
+                      </span>
+                      <span className="text-text-muted">|</span>
+                      <span className="font-medium text-text-primary">
+                        {n.staff_name}（{n.staff_office_name} → {n.course_office_name}）
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            ) : null}
+
+            {/* 🔄 応援による入れ替えセクション (v2.0 新Stage 3・お知らせトーン・折りたたみ) */}
+            {rescueSwapNotices.length > 0 ? (
+              <section data-testid="assign-rescue-swap-section">
+                <h3 className="mb-2 flex flex-wrap items-center gap-2 text-sm font-semibold text-text-primary">
+                  <span aria-hidden>🔄</span>
+                  応援による入れ替え（{rescueSwapNotices.length} 件）
                   <button
                     type="button"
                     className="ml-auto text-xs font-normal text-text-secondary hover:text-text-primary"
-                    onClick={() => setRotationRelaxedOpen((o) => !o)}
+                    onClick={() => setRescueSwapOpen((o) => !o)}
                   >
-                    {rotationRelaxedOpen ? '隠す ▲' : '詳細を見る ▼'}
+                    {rescueSwapOpen ? '隠す ▲' : '詳細を見る ▼'}
                   </button>
                 </h3>
-                <p className="mb-1 text-xs text-text-secondary">
-                  候補がいないため、前週と同じコースを許容して割り当てました
-                </p>
-                {rotationRelaxedOpen ? (
+                {rescueSwapOpen ? (
                   <ul className="space-y-1">
-                    {rotationRelaxedNotices.map((n, i) => (
+                    {rescueSwapNotices.map((n, i) => (
                       <li
                         key={`${n.course_id}-${i}`}
                         className="flex flex-wrap items-center gap-1 rounded border border-border-default bg-bg-base px-2 py-1 text-xs text-text-secondary"
-                        data-testid="assign-rotation-relaxed-row"
+                        data-testid="assign-rescue-swap-row"
                       >
                         <span>
                           {fmtWeekday(n.weekday)} / {n.course_code}
                         </span>
                         <span className="text-text-muted">|</span>
-                        <span className="font-medium text-text-primary">{n.staff_name}</span>
+                        <span className="font-medium text-text-primary">{n.before_staff_name}</span>
+                        <span>→</span>
+                        <span className="font-medium text-text-primary">{n.after_staff_name}</span>
                       </li>
                     ))}
                   </ul>
@@ -480,7 +522,8 @@ export function AssignWarningDialog({
             notices.length === 0 &&
             unresolvedWarnings.length === 0 &&
             managerMobilizedNotices.length === 0 &&
-            rotationRelaxedNotices.length === 0 ? (
+            crossOfficeNotices.length === 0 &&
+            rescueSwapNotices.length === 0 ? (
               <div className="py-4 text-center text-xs text-text-muted">
                 レビュー対象はありません。
               </div>

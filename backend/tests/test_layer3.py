@@ -32,7 +32,6 @@ from app.models.course import (
 from app.models.visit import VISIT_STATUS_PLANNED
 from app.services.scheduling.layer3_assignment import (
     HUNGARIAN_INFINITY,
-    ROTATION_EXCLUSION_WEEKS,
     CourseAssignmentTarget,
     Layer3Assigner,
     StaffInfo,
@@ -277,26 +276,38 @@ def test_staff_with_no_work_days_never_assigned() -> None:
 
 
 def test_q3_hybrid_excludes_last_week_assignment() -> None:
-    """直近 1 週で同 course を担当したスタッフは強制除外される (Q3 ハイブリッド).
+    """v2.0 (§11): 前週同コード除外は全廃 (旧 Q3 ハード除外の反転).
 
-    fixture 履歴: week 21 (= 直近 1 週) で
-        A→S1, B→S2, C→S4, D→S3
-    なので current week (22) では同じ組み合わせが選ばれてはならない。
+    要件訂正 (PO 2026-07-12): 「前週に担当したコースは翌週禁止」ルールは要件に存在
+    しない. 前週同コード担当のスタッフでも割当可能 (β ソフトペナルティのみ効く).
+    唯一の候補が前週同コード担当でも、 ハード除外されず割り当てられる
+    (= 旧挙動なら INF で未割当だったが、 今は割り当たる).
     """
-    courses, staff_pool, history, _, _ = _build_fixture_inputs()
+    staff_id = uuid.uuid4()
+    course = CourseAssignmentTarget(
+        course_id=uuid.uuid4(),
+        weekday=0,
+        course_code="A",
+        centroid_lat=35.6,
+        centroid_lng=140.1,
+        gender_restrictions=frozenset(),
+        patient_ids=[uuid.uuid4()],
+    )
+    staff = StaffInfo(
+        staff_id=staff_id,
+        name="S1",
+        sex=None,
+        role="staff",
+        primary_office_lat=35.6,
+        primary_office_lng=140.1,
+        work_days=frozenset(range(7)),
+    )
     assigner = Layer3Assigner()
-    result = assigner.solve(courses, staff_pool, history=history)
-
-    # 直近 1 週のペアを禁止セットとして集める
-    forbidden = {
-        (course_code, staff_id)
-        for weeks_ago, course_code, staff_id in history
-        if weeks_ago <= ROTATION_EXCLUSION_WEEKS
-    }
-    for a in result.assignments:
-        assert (a.course_code, a.staff_id) not in forbidden, (
-            f"violation Q3: {a.course_code} re-assigned to last-week staff"
-        )
+    # 前週 (weeks_ago=1) 同コード A を担当 → 旧 Q3 なら INF で未割当. 今は割り当たる.
+    result = assigner.solve([course], [staff], history=[(1, "A", staff_id)])
+    assert len(result.assignments) == 1
+    assert result.assignments[0].staff_id == staff_id
+    assert result.assignments[0].course_code == "A"
 
 
 def test_q3_hybrid_soft_penalty_for_older_history() -> None:

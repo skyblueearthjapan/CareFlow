@@ -89,40 +89,51 @@ def _course(
 # ---------------------------------------------------------------------------
 
 
-def test_other_office_staff_never_assigned() -> None:
-    """office B の staff は office A のコースに絶対割り当たらない."""
+def test_other_office_staff_only_via_cross_office_rescue() -> None:
+    """office B の staff は Stage 1/2 では office A コースに割り当たらない.
+
+    v2.0 (§11): 拠点ハード制約は Stage 1/2 では絶対だが、 自拠点で埋まらない場合のみ
+    Stage 3 拠点跨ぎ救援で越境する (via='cross_office'). ここでは唯一の候補が他拠点
+    staff なので、 救援経由でのみ充足する (Stage 1/2 の hungarian では入らない).
+    """
     course_a = _course(code="A", office_id=OFFICE_A)
     staff_b = _staff(name="B-staff", primary_office_id=OFFICE_B)
 
     assigner = Layer3Assigner()
     result = assigner.solve([course_a], [staff_b])
 
-    # office B の staff のみ → office A のコースは割当不能 (未割当).
-    assert result.assignments == []
+    # Stage 1/2 (hungarian) では入らず、 Stage 3 救援 (cross_office) でのみ充足する.
+    assert len(result.assignments) == 1
+    assert result.assignments[0].via == "cross_office"
+    assert result.assignments[0].staff_id == staff_b.staff_id
 
 
-def test_short_office_a_leaves_course_unassigned() -> None:
-    """office A が短スタッフ (1 名) で 2 コースなら 1 コースが未割当.
+def test_short_office_a_local_first_then_cross_office_rescue() -> None:
+    """office A 短スタッフ (1 名) で 2 コース: 1 件は自拠点、 残りは Stage 3 越境救援.
 
-    office B の staff が余っていても office A のコースには入れない (= 漏れない).
+    v2.0 (§11): office B staff は Stage 1/2 では office A コースに入れない (= 漏れない)
+    が、 自拠点で埋まらない 1 件を Stage 3 拠点跨ぎ救援で越境充足する (via='cross_office').
+    自拠点 staff は Stage 1 の hungarian で優先される.
     """
     course_a1 = _course(code="A", office_id=OFFICE_A)
     course_a2 = _course(code="B", office_id=OFFICE_A)
     staff_a = _staff(name="A-staff", primary_office_id=OFFICE_A)
-    # office B の staff は余っているが office A コースには使えない.
     staff_b1 = _staff(name="B-staff1", primary_office_id=OFFICE_B)
     staff_b2 = _staff(name="B-staff2", primary_office_id=OFFICE_B)
 
     assigner = Layer3Assigner()
     result = assigner.solve([course_a1, course_a2], [staff_a, staff_b1, staff_b2])
 
-    # office A staff は 1 名 → A コース 2 つのうち 1 つしか埋まらない.
-    assert len(result.assignments) == 1
-    assert result.assignments[0].staff_id == staff_a.staff_id
-    # 割り当てられた staff は必ず office A.
-    assigned_ids = {a.staff_id for a in result.assignments}
-    assert staff_b1.staff_id not in assigned_ids
-    assert staff_b2.staff_id not in assigned_ids
+    # 2 コースとも充足 (自拠点 1 + 越境救援 1).
+    assert len(result.assignments) == 2
+    by_staff = {a.staff_id: a for a in result.assignments}
+    # 自拠点 staff は Stage 1 の hungarian で入る.
+    assert staff_a.staff_id in by_staff
+    assert by_staff[staff_a.staff_id].via == "hungarian"
+    # office B staff は Stage 1/2 では入れず、 越境救援 (cross_office) のみで 1 名入る.
+    cross = [a for a in result.assignments if a.via == "cross_office"]
+    assert len(cross) == 1
+    assert cross[0].staff_id in {staff_b1.staff_id, staff_b2.staff_id}
 
 
 def test_each_office_staff_serves_own_office() -> None:
@@ -174,9 +185,11 @@ def test_support_staff_assignable_to_secondary_when_primary_closed() -> None:
 
 
 def test_support_staff_not_assignable_to_primary_when_primary_closed() -> None:
-    """primary 休業曜日には primary office のコースには入れない (effective = secondary).
+    """primary 休業曜日には Stage 1/2 で primary office のコースには入れない.
 
-    効果検証の対称ケース: 同 staff は Mon に OFFICE_A コースへは入れない.
+    effect: Mon は effective=OFFICE_B なので OFFICE_A コースは Stage 1/2 では割当不能.
+    v2.0 (§11): 他に候補が居ないため Stage 3 拠点跨ぎ救援でのみ越境充足する
+    (via='cross_office'). Stage 1/2 の拠点ハード制約 (effective≠course で INF) は不変.
     """
     op_map = {
         OFFICE_A: frozenset({1, 2, 3, 4, 5}),  # Mon 休業
@@ -194,8 +207,10 @@ def test_support_staff_not_assignable_to_primary_when_primary_closed() -> None:
     assigner = Layer3Assigner()
     result = assigner.solve([course_a], [support])
 
-    # Mon は effective=OFFICE_B なので OFFICE_A コースは割当不能.
-    assert result.assignments == []
+    # Stage 1/2 (hungarian) では入らず、 Stage 3 救援 (cross_office) でのみ充足する.
+    assert len(result.assignments) == 1
+    assert result.assignments[0].via == "cross_office"
+    assert result.assignments[0].staff_id == support.staff_id
 
 
 # ---------------------------------------------------------------------------
@@ -314,21 +329,24 @@ def test_cost_cell_same_office_is_finite() -> None:
 
 
 def test_manager_fallback_respects_office() -> None:
-    """Stage 2 マネージャー動員も自拠点コースにのみ配置する (拠点ハード制約).
+    """Stage 2 マネージャー動員は自拠点コースにのみ配置する (拠点ハード制約).
 
     Stage 1 で割当できない office A コースに対し、 office B の manager は
-    Stage 2 でも配置されない (= 他拠点漏れ防止). 通常 staff は居ないので
-    office A コースは未割当のまま残る.
+    Stage 2 (manager_mobilized) では配置されない (= 他拠点漏れ防止).
+    v2.0 (§11): 他に候補が居ないため Stage 3 拠点跨ぎ救援でのみ越境する.
+    このとき via は cross_office (実効拠点≠コース拠点が manager 判定より優先).
     """
     assigner = Layer3Assigner()
     course_a = _course(code="A", office_id=OFFICE_A)
-    # office B の manager のみ (= office A コースには使えない).
+    # office B の manager のみ (= Stage 1/2 では office A コースに使えない).
     mgr_b = _staff(name="mgr-B", primary_office_id=OFFICE_B, role="manager")
 
     result = assigner.solve([course_a], [mgr_b])
 
-    # office B manager は office A コースに fallback 配置できない → 未割当.
-    assert result.assignments == []
+    # Stage 2 (manager_mobilized) では入らず、 Stage 3 救援 (cross_office) でのみ充足.
+    assert len(result.assignments) == 1
+    assert result.assignments[0].via == "cross_office"
+    assert result.assignments[0].staff_id == mgr_b.staff_id
 
 
 def test_manager_fallback_same_office_assigned() -> None:

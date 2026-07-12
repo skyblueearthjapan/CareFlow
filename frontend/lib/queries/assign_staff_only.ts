@@ -166,13 +166,12 @@ export const unresolvedGenderWarningSchema = z.object({
 export type UnresolvedGenderWarning = z.infer<typeof unresolvedGenderWarningSchema>;
 
 // ---------------------------------------------------------------------------
-// 4段ソルバ Stage 2/3: マネージャー動員 / ローテ緩和の情報通知 1 件 — BE スキーマとミラー
+// 4段ソルバ Stage 2: マネージャー動員の情報通知 1 件 — BE スキーマとミラー
 // ---------------------------------------------------------------------------
 
 /**
- * 4段ソルバ Stage 2（マネージャー動員）または Stage 3（前週同コード緩和）で
- * 確定した割当の情報通知 1 件.
- * manager_mobilized_notices / rotation_relaxed_notices 共通スキーマ.
+ * 4段ソルバ Stage 2（マネージャー動員）で確定した割当の情報通知 1 件.
+ * manager_mobilized_notices スキーマ.
  * 旧 BE は本フィールドを返さないため .default([]).catch([]) で寛容に受け取る.
  */
 export const stageAssignmentNoticeSchema = z.object({
@@ -184,6 +183,43 @@ export const stageAssignmentNoticeSchema = z.object({
 });
 
 export type StageAssignmentNotice = z.infer<typeof stageAssignmentNoticeSchema>;
+
+// ---------------------------------------------------------------------------
+// v2.0 Phase B2: 拠点跨ぎ救援 / 応援スワップの通知 — BE スキーマとミラー
+// ---------------------------------------------------------------------------
+
+/**
+ * 新Stage 3（拠点跨ぎ救援）で確定した越境割当の警告通知 1 件.
+ * cross_office_notices スキーマ（警告トーン）.
+ * 旧 BE は本フィールドを返さないため .default([]).catch([]) で寛容に受け取る.
+ */
+export const crossOfficeNoticeSchema = z.object({
+  course_id: z.string().uuid(),
+  weekday: z.number().int().min(0).max(6),
+  course_code: z.string(),
+  course_office_name: z.string(),
+  staff_id: z.string().uuid(),
+  staff_name: z.string(),
+  staff_office_name: z.string(),
+});
+
+export type CrossOfficeNotice = z.infer<typeof crossOfficeNoticeSchema>;
+
+/**
+ * 新Stage 3（拠点跨ぎ救援）で発生した割当入れ替えの報告通知 1 件.
+ * rescue_swap_notices スキーマ（お知らせトーン）.
+ * before は同一実行内の Stage 1+2 解であり DB 既存値ではない.
+ * 旧 BE は本フィールドを返さないため .default([]).catch([]) で寛容に受け取る.
+ */
+export const rescueSwapNoticeSchema = z.object({
+  course_id: z.string().uuid(),
+  weekday: z.number().int().min(0).max(6),
+  course_code: z.string(),
+  before_staff_name: z.string(),
+  after_staff_name: z.string(),
+});
+
+export type RescueSwapNotice = z.infer<typeof rescueSwapNoticeSchema>;
 
 export const assignStaffOnlyResponseSchema = z.object({
   iso_year: z.number().int(),
@@ -206,9 +242,12 @@ export const assignStaffOnlyResponseSchema = z.object({
   // 4段ソルバ Stage 2: スタッフ不足でマネージャーを動員して埋めたコース一覧.
   // 旧 BE は本フィールドを返さないため .default([]).catch([]) で寛容に受け取る.
   manager_mobilized_notices: z.array(stageAssignmentNoticeSchema).default([]).catch([]),
-  // 4段ソルバ Stage 3: 候補ゼロで前週同コード除外を緩和して埋めたコース一覧.
+  // v2.0 新Stage 3: 拠点をまたぐ救援割当の警告通知一覧（cross_office_notices）.
   // 旧 BE は本フィールドを返さないため .default([]).catch([]) で寛容に受け取る.
-  rotation_relaxed_notices: z.array(stageAssignmentNoticeSchema).default([]).catch([]),
+  cross_office_notices: z.array(crossOfficeNoticeSchema).default([]).catch([]),
+  // v2.0 新Stage 3: 拠点跨ぎ救援で発生した割当入れ替えの報告通知一覧（rescue_swap_notices）.
+  // 旧 BE は本フィールドを返さないため .default([]).catch([]) で寛容に受け取る.
+  rescue_swap_notices: z.array(rescueSwapNoticeSchema).default([]).catch([]),
 });
 
 export type AssignStaffOnlyResponse = z.infer<typeof assignStaffOnlyResponseSchema>;

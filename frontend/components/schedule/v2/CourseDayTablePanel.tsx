@@ -82,6 +82,8 @@ import {
   useAssignStaffOnly,
   useApplyStaffReview,
   type AutoCommittedNotice,
+  type CrossOfficeNotice,
+  type RescueSwapNotice,
   type ReviewItem,
   type StageAssignmentNotice,
   type UnresolvedGenderWarning,
@@ -2272,8 +2274,10 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
   const [unresolvedWarnings, setUnresolvedWarnings] = useState<UnresolvedGenderWarning[]>([]);
   // 4段ソルバ Stage 2: マネージャー動員のお知らせ (確定済み).
   const [managerMobilizedNotices, setManagerMobilizedNotices] = useState<StageAssignmentNotice[]>([]);
-  // 4段ソルバ Stage 3: 前週同コード緩和のお知らせ (確定済み).
-  const [rotationRelaxedNotices, setRotationRelaxedNotices] = useState<StageAssignmentNotice[]>([]);
+  // v2.0 新Stage 3: 拠点をまたぐ応援の警告 (確定済み).
+  const [crossOfficeNotices, setCrossOfficeNotices] = useState<CrossOfficeNotice[]>([]);
+  // v2.0 新Stage 3: 応援による入れ替えの報告 (確定済み).
+  const [rescueSwapNotices, setRescueSwapNotices] = useState<RescueSwapNotice[]>([]);
   // プール一括投入ダイアログ (W-2). PoolOverviewPane の「一括投入」ボタンから開く.
   const [bulkPoolInsertOpen, setBulkPoolInsertOpen] = useState(false);
   // スケジュール健康診断ダイアログ (Schedule Advisor Phase 1).
@@ -2340,11 +2344,12 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         iso_week: isoWeek,
         office_id: officeId,
       });
-      // Wave N-2 / W-11 / 4段ソルバ: 確認レビューフロー＋お知らせ＋残留違反＋Stage通知を統合処理。
+      // Wave N-2 / W-11 / 4段ソルバ v2.0: 確認レビューフロー＋お知らせ＋残留違反＋Stage通知を統合処理。
       //   - review_items (要承認) / auto_committed_notices (確定済みお知らせ) /
       //     unresolved_warnings (性別候補ゼロの残留違反・要手動調整) /
       //     manager_mobilized_notices (Stage 2 動員) /
-      //     rotation_relaxed_notices (Stage 3 ローテ緩和) のいずれかが
+      //     cross_office_notices (新Stage 3 拠点跨ぎ救援・警告) /
+      //     rescue_swap_notices (新Stage 3 入れ替え報告) のいずれかが
       //     1 件以上あればダイアログを開く。
       //   - toast:
       //       review あり                   → warning (不可避/残留/Stage件数を追記)
@@ -2354,19 +2359,22 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
       const notices = res.auto_committed_notices ?? [];
       const unresolved = res.unresolved_warnings ?? [];
       const mobilized = res.manager_mobilized_notices ?? [];
-      const relaxed = res.rotation_relaxed_notices ?? [];
+      const crossOffice = res.cross_office_notices ?? [];
+      const swaps = res.rescue_swap_notices ?? [];
       if (
         items.length > 0 ||
         notices.length > 0 ||
         unresolved.length > 0 ||
         mobilized.length > 0 ||
-        relaxed.length > 0
+        crossOffice.length > 0 ||
+        swaps.length > 0
       ) {
         setReviewItems(items);
         setAutoCommittedNotices(notices);
         setUnresolvedWarnings(unresolved);
         setManagerMobilizedNotices(mobilized);
-        setRotationRelaxedNotices(relaxed);
+        setCrossOfficeNotices(crossOffice);
+        setRescueSwapNotices(swaps);
         setAssignWarningOpen(true);
         if (items.length > 0) {
           const suffixParts: string[] = [];
@@ -2376,8 +2384,10 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
             suffixParts.push(`性別制約を満たせない残留 ${unresolved.length} 件`);
           if (mobilized.length > 0)
             suffixParts.push(`マネージャー動員 ${mobilized.length} 件確定済み`);
-          if (relaxed.length > 0)
-            suffixParts.push(`前週同コース緩和 ${relaxed.length} 件確定済み`);
+          if (crossOffice.length > 0)
+            suffixParts.push(`拠点をまたぐ応援 ${crossOffice.length} 件確定済み`);
+          if (swaps.length > 0)
+            suffixParts.push(`入れ替え ${swaps.length} 件`);
           const suffix = suffixParts.length > 0 ? `（うち${suffixParts.join('・')}）` : '';
           toast.warning(
             `自動スタッフ割当が完了しました (確定 ${res.courses_assigned} 件)。` +
@@ -2392,8 +2402,10 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
             parts.push(`性別制約を満たせない残留が ${unresolved.length} 件あります`);
           if (mobilized.length > 0)
             parts.push(`マネージャー動員 ${mobilized.length} 件を自動確定しました`);
-          if (relaxed.length > 0)
-            parts.push(`前週同コース緩和 ${relaxed.length} 件を自動確定しました`);
+          if (crossOffice.length > 0)
+            parts.push(`拠点をまたぐ応援 ${crossOffice.length} 件を自動確定しました`);
+          if (swaps.length > 0)
+            parts.push(`応援による入れ替えが ${swaps.length} 件あります`);
           toast.warning(
             `自動スタッフ割当が完了しました (確定 ${res.courses_assigned} 件)。` +
               `${parts.join('。')}。内容をご確認ください。`,
@@ -3819,12 +3831,13 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
           open={assignWarningOpen}
           onClose={() => {
             setAssignWarningOpen(false);
-            // W-11 / 4段ソルバ: 整合のため review/notices/残留違反/Stage通知すべてクリアする。
+            // W-11 / 4段ソルバ v2.0: 整合のため review/notices/残留違反/Stage通知すべてクリアする。
             setReviewItems([]);
             setAutoCommittedNotices([]);
             setUnresolvedWarnings([]);
             setManagerMobilizedNotices([]);
-            setRotationRelaxedNotices([]);
+            setCrossOfficeNotices([]);
+            setRescueSwapNotices([]);
           }}
           reviewItems={reviewItems}
           onApply={handleApplyReview}
@@ -3832,7 +3845,8 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
           notices={autoCommittedNotices}
           unresolvedWarnings={unresolvedWarnings}
           managerMobilizedNotices={managerMobilizedNotices}
-          rotationRelaxedNotices={rotationRelaxedNotices}
+          crossOfficeNotices={crossOfficeNotices}
+          rescueSwapNotices={rescueSwapNotices}
         />
 
         {/* P3-⑥: 週次ガイドダイアログ (案内のみ・BE 変更なし). */}

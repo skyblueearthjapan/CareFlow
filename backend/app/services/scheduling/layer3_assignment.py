@@ -136,9 +136,6 @@ COST_DELTA_WORK_DAY: float = math.inf
 # ローテーション履歴で参照する週数 (直近 N 週)
 ROTATION_HISTORY_WEEKS: int = 4
 
-# Q3 ハイブリッド: 直近 EXCLUSION_WEEKS 週の担当者は強制除外
-ROTATION_EXCLUSION_WEEKS: int = 1
-
 # W16: 前日と同じコースを同一スタッフが担当した場合のペナルティ
 # 距離 km 換算で十分大きい (=実用上ほぼ強制回避) ようにする。
 # ハード INF にしないのは「他に勤務可能なスタッフが居ない」場合の救済のため。
@@ -190,20 +187,18 @@ _PATIENT_RECENT_PENALTY_BY_INDEX: dict[int, float] = {
 COST_W5_ROTATION_MAX: float = 10.0
 
 # ---------------------------------------------------------------------------
-# 4段ソルバ (マネージャー動員 + ローテ緩和): Stage 3 の Q3 緩和ペナルティ
+# 4段ソルバ (マネージャー動員 + 拠点跨ぎ救援): Stage 3 の拠点跨ぎペナルティ
 # ---------------------------------------------------------------------------
-# Stage 3 (``_solve_stage3_relaxed``) で ``relax_rotation_exclusion=True`` のとき、
-# Q3「前週同一コースコード」ハード除外 (通常 HUNGARIAN_INFINITY) を、この
-# ソフト大ペナルティに差し替える (= 候補が 1 人も居ないときだけ「前週と同じコース」を
-# 許容して埋める). 他のハード制約 (性別・シフト・イベント・拠点) は INF のまま.
+# Stage 3 (``_solve_stage3_cross_office``) で ``relax_office_constraint=True`` の
+# とき、 Phase G-90 拠点ハード除外 (通常 HUNGARIAN_INFINITY) を、この
+# ソフト大ペナルティに差し替える (= 自拠点で埋まらないコースを隣接拠点の要員が
+# 越境して救援する). 他のハード制約 (性別・シフト・イベント・新人) は INF のまま.
 #
-# 根拠: 通常ソフトコスト (β≦~20・W16=100・ジッタ≦10) を確実に支配しつつ、
-#   患者中心ローテ最上位 COST_PATIENT_RECENT_1 (1e6) より小さい
-#   (=「同じ患者に直近と同じ担当」の回避を「前週同コード回避」より優先する既存序列を保つ).
-#   COST_PATIENT_RECENT_3 (2e5) と同水準 =「起きてよいが最後の手段」.
-# 注記: 同一セルで両方発生時は合算 400_000 だが COST_PATIENT_RECENT_1 (1e6) 未満のため
-#   序列逆転は起きない (criticレビュー MINOR-6 で確認済み).
-COST_ROTATION_RELAXED_VIOLATION: float = 200_000.0
+# 序列根拠: 患者連続 1 回前 (1e6) > 跨ぎ (4e5) > W16 前日 (100) > β (≦~20)
+#   > ジッタ (≦10). 「同じ患者に連続で当てるくらいなら拠点を越境する」= PO 表明
+#   (2026-07-12) と整合. 患者連続 (COST_PATIENT_RECENT_1) より小さいため、 越境より
+#   患者継続性の回避を優先する序列を保つ.
+COST_CROSS_OFFICE_VIOLATION: float = 400_000.0
 
 
 # ---------------------------------------------------------------------------
@@ -325,7 +320,7 @@ class StaffAssignment(BaseModel):
     #   "hungarian"          : Stage 1 の正規スタッフハンガリアン (既定).
     #   "fixed"              : W16 等の事前固定割当 (M コース固定など).
     #   "manager_mobilized"  : Stage 2 でマネージャーを動員して埋めた.
-    #   "rotation_relaxed"   : Stage 3 で前週同コード除外を緩和して埋めた.
+    #   "cross_office"       : Stage 3 で拠点を跨いで救援に入った (実効拠点 ≠ コース拠点).
     # DB には永続化しない (内部表現 + レスポンス集計用). デフォルト値つき追加のため
     # 既存生成箇所・既存テストの等価比較は非破壊 (両辺同デフォルト).
     via: str = "hungarian"
@@ -486,6 +481,29 @@ class UnresolvedGenderWarning:
     reason_text: str
 
 
+@dataclass(frozen=True)
+class RescueSwap:
+    """4段ソルバ Stage 3: 拠点跨ぎ救援で担当が入れ替わった 1 コースの記録 (報告用).
+
+    Stage 3 (``_solve_stage3_cross_office``) は未割当コースを埋めるため当日を全再解
+    する. 元の Stage 1+2 解 (= 同一実行内の暫定割当・DB 既存値ではない) と再解結果を
+    course_id で突合し、 担当 staff が変わった行を 1 件 1 record で収集する.
+
+    Attributes:
+        course_id: 入れ替わったコースの ID.
+        weekday: 0=Mon..6=Sun.
+        course_code: コースコード (A/B/C/D/E/M).
+        before_staff_id: 再解前 (Stage 1+2 解) の担当 staff_id.
+        after_staff_id: 再解後 (採用結果) の担当 staff_id.
+    """
+
+    course_id: UUID
+    weekday: int
+    course_code: str
+    before_staff_id: UUID
+    after_staff_id: UUID
+
+
 @dataclass
 class Layer3Result:
     """Layer 3 の総合出力."""
@@ -521,6 +539,10 @@ class Layer3Result:
     # のコースを検出して積む (= review にも notice にも出さず、 可視化のみ・自動クリアなし).
     # 既存呼出は default の空 list で互換維持.
     unresolved_warnings: list[UnresolvedGenderWarning] = field(default_factory=list)
+    # 4段ソルバ Stage 3 (拠点跨ぎ救援): 当日全再解で担当が入れ替わった行の記録 (報告用).
+    # ``solve()`` の曜日ループで ``_solve_stage3_cross_office`` 採用時に元との diff から
+    # 収集する. 既存呼出は default の空 list で互換維持.
+    rescue_swaps: list[RescueSwap] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -1498,7 +1520,7 @@ class Layer3Assigner:
         各コースについて「代替候補」の実在を検査する:
             代替候補 = active staff のうち
               ・ハード制約を全て満たす (勤務曜日 / 実効拠点一致 / 性別 AND /
-                StaffEvent 非重複 / 直近1週同コード除外)
+                StaffEvent 非重複)
                  = ``_cost_single_cell(...) < HUNGARIAN_INFINITY`` の再利用で判定.
               ・当該曜日の他コースに (この実行で) 割当済みでない
               ・原因患者すべての直近担当者リスト (snapshot) に入っていない
@@ -1557,7 +1579,7 @@ class Layer3Assigner:
                 # 当該曜日の他コースに割当済み = 空いていない (= 代替不可).
                 if staff.staff_id in taken:
                     continue
-                # ハード制約 (勤務曜日 / 実効拠点 / 性別 AND / event 重複 / 直近1週同コード)
+                # ハード制約 (勤務曜日 / 実効拠点 / 性別 AND / event 重複)
                 # を ``_cost_single_cell`` の再利用で判定 (< INF なら全ハード OK).
                 cost = self._cost_single_cell(
                     weekday=weekday,
@@ -1720,8 +1742,9 @@ class Layer3Assigner:
               ('female'/'male') に正規化してから比較する.
             - 4段ソルバ: Stage 1 (正規スタッフのハンガリアン) 後に未割当が残る日は
               Stage 2 (``_solve_stage2_managers`` = マネージャー動員ハンガリアン)、
-              なお残れば Stage 3 (``_solve_stage3_relaxed`` = 前週同コード除外を緩和した
-              ハンガリアン) の順で埋める. 各割当は ``StaffAssignment.via`` に経路を持つ.
+              なお残れば Stage 3 (``_solve_stage3_cross_office`` = 拠点跨ぎ救援・
+              当日を全再解して隣接拠点の要員で埋める) の順で埋める.
+              各割当は ``StaffAssignment.via`` に経路を持つ.
         """
         if history is None:
             history = []
@@ -1756,6 +1779,8 @@ class Layer3Assigner:
         total_distance = 0.0
         # Phase G-89: ローテ衝突 (= 直近担当者を再割り当てした) の記録先.
         rotation_conflicts: list[RotationConflict] = []
+        # 4段ソルバ Stage 3 (拠点跨ぎ救援): 全再解で担当が入れ替わった行の記録先.
+        rescue_swaps_all: list[RescueSwap] = []
 
         # W16: 「前日同コースペナルティ」用. (course_code, staff_id) を直前曜日
         # の割当から構築する.
@@ -1806,15 +1831,17 @@ class Layer3Assigner:
             )
             day_assignments = day_assignments + stage2
 
-            # ---------- Stage 3: ローテ緩和ハンガリアン ----------
-            # Stage 2 後もなお未割当コースが残る場合のみ、前週同コード除外を最後の手段
-            # として緩和し、当日フリー全員 (非新人) で 3 回目のハンガリアンを解く.
-            # 性別・シフト・イベント・拠点は緩和しない (INF のまま).
-            stage3 = self._solve_stage3_relaxed(
+            # ---------- Stage 3: 拠点跨ぎ救援 (rescue re-solve) ----------
+            # Stage 2 後もなお未割当コースが残る場合のみ、当日を全再解して隣接拠点の
+            # 要員で埋める (= スワップ許可). 拠点ハード除外だけをソフト大ペナルティに
+            # 緩和し、性別・シフト・イベント・新人は緩和しない (INF のまま).
+            # 採用ガードは「未割当コース数が厳密に減る場合のみ」= 全体不足週では元を維持.
+            rescue = self._solve_stage3_cross_office(
                 weekday=weekday,
                 day_courses=day_courses,
                 day_assignments=day_assignments,
                 staff_pool=staff_pool,
+                fixed_staff_by_course=fixed_staff_by_course,
                 history=history,
                 prev_day_pairs=prev_day_pairs if same_course_prev_day_penalty else set(),
                 events_by_staff=events_by_staff,
@@ -1823,7 +1850,13 @@ class Layer3Assigner:
                 iso_week=iso_week,
                 patient_recent_staff=working_recent,
             )
-            day_assignments = day_assignments + stage3
+            if rescue is not None:
+                rescue_assignments, rescue_swaps = rescue
+                rescue_swaps_all.extend(rescue_swaps)
+                # ★日全体を置換 (温存 fixed + 再解結果). 下流処理 (all_assignments
+                # 追加 / prev_day_pairs / rotation_conflicts / working_recent) は
+                # 最終 day_assignments を読むため、この位置での置換で構造的に整合する.
+                day_assignments = rescue_assignments
 
             for a in day_assignments:
                 all_assignments.append(a)
@@ -1881,7 +1914,7 @@ class Layer3Assigner:
         # 4段ソルバ: 分母 (rotatable_staff_count) は eligible_staff (= manager 除外)
         # から算出するため、分子も「分母に居るスタッフの割当」に限定して整合させる.
         # これで Stage 2 の manager 動員 (via='manager_mobilized') に加え、Stage 3 の
-        # Q3 緩和経由で manager が入った稀なケース (via='rotation_relaxed' だが分母不在)
+        # 拠点跨ぎ救援で manager が入った稀なケース (via='cross_office' だが分母不在)
         # も分子から除外される (= 分子/分母の母集団を単一ソース化. code-review MINOR-1).
         rotatable_staff_ids = {
             s.staff_id for s in eligible_staff if s.staff_id not in fixed_staff_ids
@@ -1902,6 +1935,7 @@ class Layer3Assigner:
             rotation_score=round(rotation_score, 6),
             total_distance_km=round(total_distance, 4),
             rotation_conflicts=rotation_conflicts,
+            rescue_swaps=rescue_swaps_all,
         )
 
     # ------------------------------------------------------------------ #
@@ -2051,22 +2085,22 @@ class Layer3Assigner:
         iso_year: int | None = None,
         iso_week: int | None = None,
         patient_recent_staff: dict[UUID, list[UUID]] | None = None,
-        relax_rotation_exclusion: bool = False,
+        relax_office_constraint: bool = False,
     ) -> list[StaffAssignment]:
         """``courses × pool`` のコスト行列を組んでハンガリアン法で最小コスト割当を解く.
 
         「コスト行列構築 → ``hungarian_min_cost`` → INF フィルタ」の純粋機構を
         単一ソース化したヘルパー (Stage 1 の free マッチング / Stage 2 マネージャー動員 /
-        Stage 3 ローテ緩和 の 3 経路が再利用する). 挙動は旧 ``_solve_one_day`` の
+        Stage 3 拠点跨ぎ救援 の 3 経路が再利用する). 挙動は旧 ``_solve_one_day`` の
         末尾ブロックと等価 (= 純リファクタ).
 
         Args:
             weekday: 0=Mon..6=Sun.
             courses: マッチング対象のコース list (= まだ未割当のコース).
             pool: 候補スタッフ list (= まだ当日未割当の要員).
-            relax_rotation_exclusion: True のとき Q3「前週同コード」除外をソフト
-                大ペナルティに緩和する (Stage 3 用). 性別・シフト・イベント・拠点は
-                緩和しない (INF のまま).
+            relax_office_constraint: True のとき Phase G-90 拠点ハード除外をソフト
+                大ペナルティ (COST_CROSS_OFFICE_VIOLATION) に緩和する (Stage 3 用).
+                性別・シフト・イベント・新人は緩和しない (INF のまま).
 
         Returns:
             割当 ``StaffAssignment`` の list. ``via`` は既定 "hungarian" のまま返す
@@ -2103,7 +2137,7 @@ class Layer3Assigner:
                     iso_year=iso_year,
                     iso_week=iso_week,
                     patient_recent_staff=patient_recent_staff,
-                    relax_rotation_exclusion=relax_rotation_exclusion,
+                    relax_office_constraint=relax_office_constraint,
                 )
         # ダミー行 (i >= n_courses): 全列コスト 0  → 「未割当の course/staff」を吸収
         # ダミー列 (j >= n_staff): 全行コスト 0
@@ -2155,12 +2189,12 @@ class Layer3Assigner:
 
         候補プール = ``role='manager'`` かつ ``is_trainee=False`` かつ 当日未割当
         (固定 M コース担当済みの manager は除外 = 1 staff 1 day 1 course). 未割当コース ×
-        候補マネージャーを ``_cost_single_cell`` (relax なし) で 2 回目のハンガリアンに
+        候補マネージャーを ``_cost_single_cell`` (拠点緩和なし) で 2 回目のハンガリアンに
         かける. これによりマネージャーにもローテ・患者継続性・履歴が効き、UUID 昇順
         タイブレークの固定偏り (川名/熊澤の偏り) が消える (PO 決定 2: マネージャー間同等).
 
         全マネージャーが当該コースにハード制約違反 (全セル INF) の場合、そのコースは
-        埋めずに Stage 3 へ送る (= 旧 greedy の「候補 None」 と同等).
+        埋めずに Stage 3 (拠点跨ぎ救援) へ送る (= 旧 greedy の「候補 None」 と同等).
 
         Args:
             day_assignments: Stage 1 の結果 (= このメソッドは非破壊で新規割当のみ返す).
@@ -2198,19 +2232,20 @@ class Layer3Assigner:
             iso_year=iso_year,
             iso_week=iso_week,
             patient_recent_staff=patient_recent_staff,
-            relax_rotation_exclusion=False,
+            relax_office_constraint=False,
         )
         for a in matched:
             a.via = "manager_mobilized"
         return matched
 
-    def _solve_stage3_relaxed(
+    def _solve_stage3_cross_office(
         self,
         *,
         weekday: int,
         day_courses: list[CourseAssignmentTarget],
         day_assignments: list[StaffAssignment],
         staff_pool: list[StaffInfo],
+        fixed_staff_by_course: dict[UUID, UUID],
         history: list[tuple[int, str, UUID]],
         prev_day_pairs: set[tuple[str, UUID]],
         events_by_staff: dict[UUID, list[StaffEvent]],
@@ -2218,61 +2253,140 @@ class Layer3Assigner:
         iso_year: int | None,
         iso_week: int | None,
         patient_recent_staff: dict[UUID, list[UUID]],
-    ) -> list[StaffAssignment]:
-        """Stage 3: ローテ緩和ハンガリアン (前週同コード除外を最後の手段で緩和).
+    ) -> tuple[list[StaffAssignment], list[RescueSwap]] | None:
+        """Stage 3: 拠点跨ぎ救援 (rescue re-solve).
 
-        PO 決定 3: 「候補が 1 人もいないときだけ」前週同コード除外をハード → ソフトに
-        緩和する. 性別・シフト・イベント・拠点は緩和しない (INF のまま).
+        PO 要件 (2026-07-12): 自拠点で埋まらないコースを、 隣接拠点の要員が越境して
+        救援する (レベル1 救援・スワップ許可・マネージャーも対象). 拠点ハード除外だけを
+        ソフト大ペナルティに緩和し、 性別・シフト・イベント・新人は緩和しない (INF のまま).
 
         発動条件 = Stage 2 完了後もなお未割当コースが残っている場合のみ.
-        候補プール = 当日未割当の全員 (正規スタッフ + マネージャー、非新人).
-        ``relax_rotation_exclusion=True`` で 3 回目のハンガリアンを解く.
 
-        via 判定は呼び出し側 (本メソッド) で Q3 条件を再評価する: history 内に
-        ``weeks_ago<=ROTATION_EXCLUSION_WEEKS`` かつ同 course_code・同 staff_id が
-        あれば緩和セル経由 (= ``via='rotation_relaxed'``)、無ければ ``via='hungarian'``.
+        セマンティクス (解釈A):
+        - fixed の温存: ``day_assignments`` 内の ``via='fixed'`` (= Stage 1 で検証を
+          通過して実割当済みの固定) だけを温存し、 その (course, staff) を再解対象から
+          除外する. 検証に失敗して free に落ちた fixed 指定 (例: 都賀A木曜の性別失敗) は
+          day_assignments に居ないため再解の対象に含まれる.
+        - 再解: 温存 fixed 以外の当該曜日全コース × 当日勤務の全要員 (非新人・staff+
+          manager・全拠点・温存 fixed で消費済みの者は除外) を
+          ``_solve_matching(relax_office_constraint=True)`` で解く.
+        - 採用ガード: 「温存 fixed + 再解結果」の未割当コース数が元より **厳密に少なく、
+          かつ元々カバーされていた全コースが引き続きカバーされている (退行なし)** 場合のみ
+          採用 (None を返せば元を維持). 全体不足週 (コース数>要員数) では数が減らないため
+          元が維持され、 無駄な入替は起きない. また「再解が既存カバーを捨てて別のコースを
+          充足する解」を無報告で採用することも防ぐ. これにより担当を失うコースが構造上
+          発生せず、 スワップ報告の網羅性も保証される.
+        - via 判定 (優先順): 実効拠点 ≠ コース拠点 → ``'cross_office'`` >
+          role='manager' → ``'manager_mobilized'`` > その他 ``'hungarian'``.
+          温存 fixed は ``'fixed'`` のまま.
 
         Returns:
-            Stage 3 で新規に確定した割当. 緩和セル経由は ``via='rotation_relaxed'``.
+            採用時: ``(採用 day_assignments 全体, RescueSwap のリスト)``.
+            非採用・例外時: ``None`` (呼び出し側は元の day_assignments を維持).
         """
-        assigned_course_ids = {a.course_id for a in day_assignments}
-        assigned_staff_ids = {a.staff_id for a in day_assignments}
-
-        unassigned = [c for c in day_courses if c.course_id not in assigned_course_ids]
-        if not unassigned:
-            return []
-
-        # 当日フリー全員 (正規スタッフ + マネージャー). 新人は全 Stage で除外.
-        free_pool = [
-            s for s in staff_pool if not s.is_trainee and s.staff_id not in assigned_staff_ids
-        ]
-        if not free_pool:
-            return []
-
-        matched = self._solve_matching(
-            weekday=weekday,
-            courses=unassigned,
-            pool=free_pool,
-            history=history,
-            prev_day_pairs=prev_day_pairs,
-            events_by_staff=events_by_staff,
-            week_monday=week_monday,
-            iso_year=iso_year,
-            iso_week=iso_week,
-            patient_recent_staff=patient_recent_staff,
-            relax_rotation_exclusion=True,
-        )
-
-        # via 判定: Q3 (前週同コード) を再評価し、緩和セル経由なら rotation_relaxed.
-        for a in matched:
-            relaxed = any(
-                weeks_ago <= ROTATION_EXCLUSION_WEEKS
-                and course_code == a.course_code
-                and staff_id == a.staff_id
-                for weeks_ago, course_code, staff_id in history
+        try:
+            covered_course_ids = {a.course_id for a in day_assignments}
+            original_unassigned = sum(
+                1 for c in day_courses if c.course_id not in covered_course_ids
             )
-            a.via = "rotation_relaxed" if relaxed else "hungarian"
-        return matched
+            if original_unassigned == 0:
+                return None
+
+            # 温存 fixed (via='fixed'): (course, staff) を再解から除外する.
+            preserved_fixed = [a for a in day_assignments if a.via == "fixed"]
+            preserved_course_ids = {a.course_id for a in preserved_fixed}
+            preserved_staff_ids = {a.staff_id for a in preserved_fixed}
+
+            # 再解対象コース = 温存 fixed 以外の当該曜日全コース.
+            resolve_courses = [
+                c for c in day_courses if c.course_id not in preserved_course_ids
+            ]
+            # 候補 = 当日勤務の全要員 (非新人・staff+manager・全拠点). 温存 fixed で
+            # 消費済みの者は除外 (1日1コース). 勤務曜日/性別/event は _cost_single_cell 判定.
+            resolve_pool = [
+                s
+                for s in staff_pool
+                if not s.is_trainee and s.staff_id not in preserved_staff_ids
+            ]
+            if not resolve_courses or not resolve_pool:
+                return None
+
+            matched = self._solve_matching(
+                weekday=weekday,
+                courses=resolve_courses,
+                pool=resolve_pool,
+                history=history,
+                prev_day_pairs=prev_day_pairs,
+                events_by_staff=events_by_staff,
+                week_monday=week_monday,
+                iso_year=iso_year,
+                iso_week=iso_week,
+                patient_recent_staff=patient_recent_staff,
+                relax_office_constraint=True,
+            )
+
+            # 採用ガード: 「温存 fixed + 再解結果」の未割当数が元より厳密に少なく、
+            # かつ元々カバーされていた全コースが引き続きカバーされていること (退行なし).
+            # 退行チェックを省くと「既存コースAを捨てて別のB/Cを充足する解」が採用され、
+            # Aが無報告で未割当化する (PO要件「お知らせ・報告」違反).
+            new_covered = preserved_course_ids | {a.course_id for a in matched}
+            new_unassigned = sum(
+                1 for c in day_courses if c.course_id not in new_covered
+            )
+            if new_unassigned >= original_unassigned:
+                return None
+            # 退行チェック: 元カバーが新カバーに完全に含まれること.
+            if not (covered_course_ids <= new_covered):
+                return None
+
+            # via 判定 (優先順): cross_office > manager_mobilized > hungarian.
+            staff_by_id = {s.staff_id: s for s in staff_pool}
+            course_by_id = {c.course_id: c for c in day_courses}
+            for a in matched:
+                staff = staff_by_id.get(a.staff_id)
+                course = course_by_id.get(a.course_id)
+                effective_office = (
+                    staff.effective_office_for_weekday(weekday) if staff is not None else None
+                )
+                if (
+                    course is not None
+                    and course.office_id is not None
+                    # effective_office=None (全拠点休業の矛盾データ) は「越境」ではない
+                    # ため cross_office に誤分類しない (work_days ハードで通常は到達不能).
+                    and effective_office is not None
+                    and effective_office != course.office_id
+                ):
+                    a.via = "cross_office"
+                elif staff is not None and staff.role == "manager":
+                    a.via = "manager_mobilized"
+                else:
+                    a.via = "hungarian"
+
+            adopted = preserved_fixed + matched
+
+            # スワップ算出: 元 day_assignments と採用結果を course_id で突合し、
+            # staff_id が変わった行を RescueSwap として収集する.
+            original_staff_by_course = {a.course_id: a.staff_id for a in day_assignments}
+            new_staff_by_course = {a.course_id: a.staff_id for a in adopted}
+            swaps: list[RescueSwap] = []
+            for course_id, before_staff_id in original_staff_by_course.items():
+                after_staff_id = new_staff_by_course.get(course_id)
+                if after_staff_id is not None and after_staff_id != before_staff_id:
+                    course = course_by_id.get(course_id)
+                    swaps.append(
+                        RescueSwap(
+                            course_id=course_id,
+                            weekday=weekday,
+                            course_code=course.course_code if course is not None else "",
+                            before_staff_id=before_staff_id,
+                            after_staff_id=after_staff_id,
+                        )
+                    )
+            swaps.sort(key=lambda s: (s.course_code, str(s.course_id)))
+            return adopted, swaps
+        except Exception:
+            logger.exception("stage3 cross-office rescue failed; keeping stage1+2 result")
+            return None
 
     def _cost_single_cell(
         self,
@@ -2287,7 +2401,7 @@ class Layer3Assigner:
         iso_year: int | None = None,
         iso_week: int | None = None,
         patient_recent_staff: dict[UUID, list[UUID]] | None = None,
-        relax_rotation_exclusion: bool = False,
+        relax_office_constraint: bool = False,
     ) -> float:
         """単一セル (course, staff) のコストを返す.
 
@@ -2305,6 +2419,10 @@ class Layer3Assigner:
 
         γ / δ / 拠点 / W27/W33 はハード制約なので INF 相当 (= ``HUNGARIAN_INFINITY``).
         Phase 2 / Wave 5 ペナルティはすべてソフト (= INF ではなく加算).
+
+        ``relax_office_constraint=True`` (Stage 3 拠点跨ぎ救援) のとき、 拠点ハード
+        除外だけを INF から ``COST_CROSS_OFFICE_VIOLATION`` (ソフト大ペナルティ) に
+        差し替える. 性別・シフト・イベント・新人は緩和しない (INF のまま).
 
         Phase G-90: 距離 (α) はコストから撤去した. スタッフは自拠点コースにのみ
         行く (拠点ハード制約) ため、 同拠点内では距離 (km) は割付に無関係.
@@ -2329,17 +2447,24 @@ class Layer3Assigner:
         if not _staff_satisfies_gender(staff, course):
             return HUNGARIAN_INFINITY
 
-        # ---------- Phase G-90: 拠点ハード制約 ----------
+        # ---------- Phase G-90: 拠点ハード制約 (Stage 3 では跨ぎ救援で緩和可) ----------
         # スタッフの実効拠点 (当該 weekday の effective office) ≠ コースの拠点なら
         # 割当不可 (= 他拠点漏れの防止). スタッフは住所で拠点が決まり、 自拠点の
         # コースにのみ行く (距離は無関係). primary 休業曜日は応援先 secondary が
         # effective になる (``effective_office_for_weekday`` の既存仕様).
         # ``course.office_id is None`` (= 合成テスト fixture) のときは制約 skip
         # (後方互換).
+        # Stage 3 (relax_office_constraint=True): 早期 return をやめてソフト大ペナルティ
+        # (COST_CROSS_OFFICE_VIOLATION) を加算し、後続のソフトコスト (β・W16・患者中心・
+        # ジッタ) も通常どおり評価する (= 自拠点で埋まらないときだけ越境救援を許容).
+        cross_office_penalty = 0.0
         if course.office_id is not None:
             eff = staff.effective_office_for_weekday(weekday)
             if eff != course.office_id:
-                return HUNGARIAN_INFINITY
+                if relax_office_constraint:
+                    cross_office_penalty = COST_CROSS_OFFICE_VIOLATION
+                else:
+                    return HUNGARIAN_INFINITY
 
         # ---------- W27/W33: StaffEvent 時間帯重複 + バッファ (ハード制約) ----------
         # W27: event 時間帯と course 内 visit 時間帯が重なる場合は除外。
@@ -2355,24 +2480,6 @@ class Layer3Assigner:
             ):
                 return HUNGARIAN_INFINITY
 
-        # ---------- Q3 ハイブリッド: 直近 1 週は強制除外 (Stage 3 では緩和可) ----------
-        # 通常 (relax_rotation_exclusion=False): 前週同一 course_code はハード除外.
-        # Stage 3 (relax_rotation_exclusion=True): 早期 return をやめてソフト大ペナルティ
-        # (COST_ROTATION_RELAXED_VIOLATION) を加算し、後続のソフトコスト (β・W16・患者中心・
-        # ジッタ) も通常どおり評価する (= 候補が居ないときだけ「前週と同じコース」を許容).
-        # 性別・シフト・イベント・拠点は上のブロックで既に INF 判定済み (緩和対象外).
-        rotation_relaxed_penalty = 0.0
-        for weeks_ago, course_code, staff_id in history:
-            if (
-                weeks_ago <= ROTATION_EXCLUSION_WEEKS
-                and course_code == course.course_code
-                and staff_id == staff.staff_id
-            ):
-                if relax_rotation_exclusion:
-                    rotation_relaxed_penalty = COST_ROTATION_RELAXED_VIOLATION
-                    break
-                return HUNGARIAN_INFINITY
-
         # ---------- Phase G-90: 距離はコストから撤去 ----------
         # スタッフは自拠点コースにのみ行く (上の拠点ハード制約). 同拠点内では
         # 距離 (km) は割付に無関係なので cost 項から除去した. ``_distance_km`` は
@@ -2380,13 +2487,13 @@ class Layer3Assigner:
 
         # ---------- β: ローテーションペナルティ (ソフト) ----------
         # 直近 ROTATION_HISTORY_WEEKS 週で同一 course_code を担当した回数
-        # (直近ほど重み大, weeks_ago=1 -> 重み 1.0, weeks_ago=4 -> 重み 0.25)
+        # (直近ほど重み大, weeks_ago=1 -> 重み 1.0, weeks_ago=4 -> 重み 0.25).
+        # v2.0: 前週同コード (weeks_ago=1) の除外を全廃したため、 weeks_ago=1 も
+        # weight 1.0 (最重) で正しく減衰に乗る (= 患者連続回避が真の要件・β は微小
+        # タイブレークとして存置).
         rotation_count = 0.0
         for weeks_ago, course_code, staff_id in history:
             if course_code == course.course_code and staff_id == staff.staff_id:
-                if weeks_ago <= ROTATION_EXCLUSION_WEEKS:
-                    # ハード除外で既に処理済み
-                    continue
                 if weeks_ago > ROTATION_HISTORY_WEEKS:
                     continue
                 weight = 1.0 / max(1, weeks_ago)
@@ -2440,7 +2547,7 @@ class Layer3Assigner:
             + prev_day_penalty
             + patient_rotation_penalty
             + rotation_random
-            + rotation_relaxed_penalty
+            + cross_office_penalty
         )
 
     def _distance_km(self, course: CourseAssignmentTarget, staff: StaffInfo) -> float:
@@ -3682,12 +3789,12 @@ __all__ = [
     "HUNGARIAN_INFINITY",
     "PATIENT_RECENT_DEPTH",
     "PATIENT_ROTATION_LOOKBACK_WEEKS",
-    "ROTATION_EXCLUSION_WEEKS",
     "ROTATION_HISTORY_WEEKS",
     "CourseAssignmentTarget",
     "Layer3Assigner",
     "Layer3AssignmentError",
     "Layer3Result",
+    "RescueSwap",
     "ReviewItem",
     "ReviewVisit",
     "RotationConflict",
