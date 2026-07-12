@@ -42,6 +42,24 @@ vi.mock('@/lib/utils', () => ({
 import { CourseWeekOverview, type WeekOverviewVisit } from '../CourseWeekOverview';
 import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
 import { genderPalette } from '@/lib/scheduling/timeline';
+import type { AccompanimentBinding } from '@/components/schedule/timeline/accompaniment/types';
+
+/** 新人同行 binding を手組み (§7.2)。over で個別/コース名を差し込む。 */
+function makeBinding(over: Partial<AccompanimentBinding> = {}): AccompanimentBinding {
+  return {
+    active: false,
+    isCourseSelected: () => false,
+    isVisitSelected: () => false,
+    isVisitInSelectedCourse: () => false,
+    isVisitOverlapping: () => false,
+    toggleCourse: vi.fn(),
+    toggleVisit: vi.fn(),
+    visitBadgeName: () => null,
+    courseBadgeName: () => null,
+    resolveCourseId: (t, wd) => `${t}:${wd}`,
+    ...over,
+  };
+}
 
 const baseTpl = {
   capacity_mon: 4,
@@ -578,5 +596,96 @@ describe('CourseWeekOverview (B-6)', () => {
     expect(screen.getByTestId('course-week-overview-gender-dot-v-pb').style.background).toBe(
       genderPalette('male').bar,
     );
+  });
+
+  // ─── 新人同行 (§7.2): 極小 👥 アイコン表示 ─────────────────────────────
+  describe('新人同行バッジ (案1: 極小アイコン)', () => {
+    const tpl = makeTemplate('tpl-A', 'A', 'o1');
+    const visits: WeekOverviewVisit[] = [
+      {
+        id: 'v-acc',
+        patient_id: 'p-acc',
+        patient_name: '田中',
+        weekday: 0,
+        course_template_id: 'tpl-A',
+        start_time: '09:30:00',
+      },
+    ];
+
+    it('個別リンク: visitBadgeName があれば行右端に極小 👥 (title に新人名)', () => {
+      render(
+        <CourseWeekOverview
+          templates={[tpl]}
+          officeNameById={new Map([['o1', '本店']])}
+          visits={visits}
+          onJumpToDay={vi.fn()}
+          staffCountFor={fullStaff}
+          accompaniment={makeBinding({
+            visitBadgeName: (id) => (id === 'v-acc' ? '髙梨' : null),
+          })}
+        />,
+      );
+      const dot = screen.getByTestId('course-week-overview-accompaniment-v-acc');
+      expect(dot).toHaveTextContent('👥');
+      // 省スペース最優先: 名前は出さず title のみ。
+      expect(dot).not.toHaveTextContent('髙梨');
+      expect(dot.getAttribute('title')).toBe('同行: 髙梨');
+    });
+
+    it('コース丸ごと: courseBadgeName があればセル上部に極小 👥 (title に新人名)', () => {
+      render(
+        <CourseWeekOverview
+          templates={[tpl]}
+          officeNameById={new Map([['o1', '本店']])}
+          visits={visits}
+          onJumpToDay={vi.fn()}
+          staffCountFor={fullStaff}
+          accompaniment={makeBinding({
+            // resolveCourseId('tpl-A', 0) = 'tpl-A:0'.
+            courseBadgeName: (cid) => (cid === 'tpl-A:0' ? '川名' : null),
+          })}
+        />,
+      );
+      const chip = screen.getByTestId('course-week-overview-course-accompaniment-tpl-A-0');
+      expect(chip).toHaveTextContent('👥');
+      expect(chip.getAttribute('title')).toBe('同行: 川名（新人）');
+    });
+
+    it('accompaniment 未指定なら 👥 を出さない (他利用箇所を壊さない)', () => {
+      render(
+        <CourseWeekOverview
+          templates={[tpl]}
+          officeNameById={new Map([['o1', '本店']])}
+          visits={visits}
+          onJumpToDay={vi.fn()}
+          staffCountFor={fullStaff}
+        />,
+      );
+      expect(screen.queryByTestId('course-week-overview-accompaniment-v-acc')).toBeNull();
+      expect(
+        screen.queryByTestId('course-week-overview-course-accompaniment-tpl-A-0'),
+      ).toBeNull();
+    });
+
+    it('同行モード中 (active) はリストにバッジを出さない (選択UIはタイムライン専用)', () => {
+      render(
+        <CourseWeekOverview
+          templates={[tpl]}
+          officeNameById={new Map([['o1', '本店']])}
+          visits={visits}
+          onJumpToDay={vi.fn()}
+          staffCountFor={fullStaff}
+          accompaniment={makeBinding({
+            active: true,
+            visitBadgeName: () => '髙梨',
+            courseBadgeName: () => '川名',
+          })}
+        />,
+      );
+      expect(screen.queryByTestId('course-week-overview-accompaniment-v-acc')).toBeNull();
+      expect(
+        screen.queryByTestId('course-week-overview-course-accompaniment-tpl-A-0'),
+      ).toBeNull();
+    });
   });
 });

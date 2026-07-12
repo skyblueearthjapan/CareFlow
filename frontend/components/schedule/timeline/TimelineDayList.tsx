@@ -25,12 +25,20 @@ import { formatDuration } from '@/lib/format/duration';
 import { fmtHM, type FreeGap } from '@/lib/scheduling/freeGaps';
 import { genderPalette } from '@/lib/scheduling/timeline';
 import { partnerInfo } from './TimelineDayBoard';
+import type { AccompanimentBinding } from './accompaniment/types';
 import { cn } from '@/lib/utils';
 
 export interface TimelineDayListProps {
   courses: CourseListItem[];
   onPatientClick?: (patientId: string) => void;
   onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
+  /**
+   * 新人同行モード binding (§7.2)。表示専用: `active=false` のときのみ inactive バッジ
+   * (個別=visitBadgeName / コース丸ごと=courseBadgeName ∘ resolveCourseId) を出す。
+   * リストには選択機能を足さない (選択UIはタイムライン専用)。未指定 / `active=true` では
+   * 何も出さない。親 (CourseDayTablePanel) が accompaniment.binding を渡す。
+   */
+  accompaniment?: AccompanimentBinding;
   /**
    * G2 (T-6 パリティ): 訪問削除 (行末の ×)。canEdit のときだけ Panel が渡す。
    * 未指定なら × を描画しない。確認ダイアログは Panel 側 (handleDeleteVisit) が持つ。
@@ -71,14 +79,21 @@ function VisitRow({
   onTogglePin,
   onDeleteVisit,
   onPromoteWeekOnly,
+  accompaniment,
 }: {
   v: VisitListItem;
   onPatientClick?: (patientId: string) => void;
   onTogglePin?: TimelineDayListProps['onTogglePin'];
   onDeleteVisit?: TimelineDayListProps['onDeleteVisit'];
   onPromoteWeekOnly?: TimelineDayListProps['onPromoteWeekOnly'];
+  accompaniment?: AccompanimentBinding;
 }) {
   const pal = genderPalette(v.patient_sex);
+  // 新人同行 (§7.2): inactive 時のみ、この訪問に紐づく同行新人名を出す。
+  const accName =
+    accompaniment && !accompaniment.active && v.visit_id
+      ? accompaniment.visitBadgeName(v.visit_id)
+      : null;
   const cond = formatTimeCondition({
     time_type: v.time_type,
     preferred_start: v.preferred_start,
@@ -146,6 +161,16 @@ function VisitRow({
         ) : (
           <span className="truncate text-text-primary">{v.patient_name}</span>
         )}
+        {/* 新人同行 (§7.2): タイムラインカードと同じ視覚言語の「👥新人名」info チップ。 */}
+        {accName ? (
+          <span
+            className="inline-flex max-w-[96px] shrink-0 items-center truncate rounded-full bg-info-bg px-1 text-[9px] font-bold text-info"
+            data-testid={`tdl-accompaniment-${v.key}`}
+            title={`同行: ${accName}（新人）`}
+          >
+            👥{accName}
+          </span>
+        ) : null}
         {/* T-6撤去: ①/② = 2名体制の slot。相方未配置なら警告色 (旧テーブルから移設)。 */}
         {partner.slotMark ? (
           <span
@@ -372,11 +397,21 @@ export function TimelineDayList({
   onTogglePin,
   onDeleteVisit,
   onPromoteWeekOnly,
+  accompaniment,
 }: TimelineDayListProps) {
+  // 新人同行 (§7.2): 選択UIはタイムライン専用のため、日リストは inactive バッジのみ出す。
+  const accInactive = accompaniment != null && !accompaniment.active;
   return (
     <div className="space-y-3" data-testid="timeline-day-list">
       {courses.map((c) => {
         const rows = interleave(c);
+        // コース丸ごと同行: (template_id, weekday) → courseId → 見出しの 👥新人名。
+        const courseAccName =
+          accInactive && c.course_template_id != null && c.weekday != null
+            ? accompaniment!.courseBadgeName(
+                accompaniment!.resolveCourseId(c.course_template_id, c.weekday),
+              )
+            : null;
         return (
           <div key={c.key} className="rounded-lg border border-border-default bg-bg-base px-3 py-2">
             {/* グループ見出し: 拠点+コードのチップ / 担当スタッフ名 / n/N件 */}
@@ -407,6 +442,16 @@ export function TimelineDayList({
                 </span>
               ) : c.summary ? (
                 <span className="tnum text-[11px] text-text-muted">{c.summary}</span>
+              ) : null}
+              {/* 新人同行 (§7.2): コース丸ごと同行 = 見出しの「👥新人名」info チップ。 */}
+              {courseAccName ? (
+                <span
+                  className="inline-flex shrink-0 items-center rounded-full bg-info-bg px-1.5 py-0.5 text-[10px] font-bold text-info"
+                  data-testid={`tdl-course-accompaniment-${c.key}`}
+                  title={`同行: ${courseAccName}（新人）`}
+                >
+                  👥{courseAccName}
+                </span>
               ) : null}
             </div>
 
@@ -450,6 +495,7 @@ export function TimelineDayList({
                             onTogglePin={onTogglePin}
                             onDeleteVisit={onDeleteVisit}
                             onPromoteWeekOnly={onPromoteWeekOnly}
+                            accompaniment={accompaniment}
                           />
                         ))}
                       </div>
@@ -464,6 +510,7 @@ export function TimelineDayList({
                       onTogglePin={onTogglePin}
                       onDeleteVisit={onDeleteVisit}
                       onPromoteWeekOnly={onPromoteWeekOnly}
+                      accompaniment={accompaniment}
                     />
                   ),
                 )

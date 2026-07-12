@@ -2563,6 +2563,9 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         course_code: template.label ?? null,
         staff_name: listStaffName,
         staff_missing: listStaffMissing,
+        // 新人同行 (§7.2): コース丸ごと同行バッジ解決用 (resolveCourseId の引数).
+        course_template_id: template.id,
+        weekday: activeWeekday,
       });
     }
     return out;
@@ -3298,6 +3301,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                     staffSummaryOffices={staffSummaryOffices}
                     freeGapsByCell={freeGapsByCell}
                     officeLatLngById={officeLatLngById}
+                    accompaniment={accompaniment.binding}
                   />
                 )}
               </div>
@@ -3414,6 +3418,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                           ? (patientId, patientName) => promoteWeekToFixed([patientId], patientName)
                           : undefined
                       }
+                      accompaniment={accompaniment.binding}
                     />
                   </div>
                 )}

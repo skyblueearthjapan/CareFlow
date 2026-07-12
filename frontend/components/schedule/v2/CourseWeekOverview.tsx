@@ -30,6 +30,7 @@ import { PushPin, PushPinOff } from '@/components/ui/push-pin';
 import { haversineKm } from '../WeekdayScheduleCard';
 import { formatEventLabelLines, getStaffEventsForWeekday } from './courseGrid';
 import { PinScopeMenu, type PinScope } from './PinScopeMenu';
+import type { AccompanimentBinding } from '../timeline/accompaniment/types';
 
 const WEEKDAYS = [0, 1, 2, 3, 4, 5] as const;
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土'] as const;
@@ -166,6 +167,13 @@ export interface CourseWeekOverviewProps {
    * にするために使う。未指定 / 座標欠損の拠点は 1 人目の距離を出さない。
    */
   officeLatLngById?: Map<string, { lat: number | null; lng: number | null }>;
+  /**
+   * 新人同行モード binding (§7.2)。表示専用: `active=false` のときのみ inactive バッジ
+   * (個別=visitBadgeName / コース丸ごと=courseBadgeName ∘ resolveCourseId) を極小 👥
+   * アイコンで出す。未指定 or `active=true` (選択UIはタイムライン専用) では何も出さない。
+   * 親 (CourseDayTablePanel) が accompaniment.binding を渡す。他利用箇所は未指定で無影響。
+   */
+  accompaniment?: AccompanimentBinding;
 }
 
 export function CourseWeekOverview({
@@ -186,7 +194,10 @@ export function CourseWeekOverview({
   staffSummaryOffices,
   freeGapsByCell,
   officeLatLngById,
+  accompaniment,
 }: CourseWeekOverviewProps) {
+  // 新人同行 (§7.2): 選択UIはタイムライン専用のため、週リストは inactive バッジのみ出す。
+  const accInactive = accompaniment != null && !accompaniment.active;
   // (template_id, weekday) → visits[] (start_time 昇順)
   const cellMap = React.useMemo(() => {
     const m = new Map<string, WeekOverviewVisit[]>();
@@ -319,6 +330,11 @@ export function CourseWeekOverview({
                     ? effectiveCapacity(tpl, wd, staffCountFor(tpl.office_id, wd), courseCodesMax)
                     : capacityForWeekday(tpl, wd);
                   const visitList = cellMap.get(`${tpl.id}:${wd}`) ?? [];
+                  // 新人同行 (§7.2): このセル (template×weekday) がコース丸ごと同行の
+                  // 対象なら、上部に極小 👥 を出す (名前は title のみ・高さ/幅は増やさない)。
+                  const courseAccName = accInactive
+                    ? accompaniment!.courseBadgeName(accompaniment!.resolveCourseId(tpl.id, wd))
+                    : null;
                   // PO 2026-07-09: cap=0 (スタッフ不足) でも PFV があるか visit が実在する
                   // セルは「休」で隠さず内容を表示する (既存訪問を管理画面から不可視に
                   // しない和集合)。isRest=true のときのみ「休」表示にする。
@@ -556,6 +572,17 @@ export function CourseWeekOverview({
                               {visitList.length} 名 / 上限 6
                             </span>
                             <span className="flex shrink-0 items-center gap-1">
+                              {/* 新人同行 (§7.2): コース丸ごと同行 = 極小 👥 (名前は title)。 */}
+                              {courseAccName ? (
+                                <span
+                                  className="shrink-0 text-[10px] leading-none text-info"
+                                  data-testid={`course-week-overview-course-accompaniment-${tpl.id}-${wd}`}
+                                  title={`同行: ${courseAccName}（新人）`}
+                                  aria-label={`同行: ${courseAccName}（新人）`}
+                                >
+                                  👥
+                                </span>
+                              ) : null}
                               {/* コース合計距離 (直線・概算). コース右端に表示. */}
                               {courseTotalKm > 0 ? (
                                 <span
@@ -697,6 +724,13 @@ export function CourseWeekOverview({
                                           {distByVisitId.get(item.id)!.toFixed(1)}km
                                         </span>
                                       ) : null}
+                                      {/* 新人同行 (§7.2): 患者個別リンク = 行右端の極小 👥。 */}
+                                      <AccompanimentDot
+                                        name={
+                                          accInactive ? accompaniment!.visitBadgeName(item.id) : null
+                                        }
+                                        testId={`course-week-overview-accompaniment-${item.id}`}
+                                      />
                                     </li>
                                   );
                                 }
@@ -789,6 +823,15 @@ export function CourseWeekOverview({
                                                 {distByVisitId.get(v.id)!.toFixed(1)}km
                                               </span>
                                             ) : null}
+                                            {/* 新人同行 (§7.2): pair cluster 内も行右端の極小 👥。 */}
+                                            <AccompanimentDot
+                                              name={
+                                                accInactive
+                                                  ? accompaniment!.visitBadgeName(v.id)
+                                                  : null
+                                              }
+                                              testId={`course-week-overview-accompaniment-${v.id}`}
+                                            />
                                           </li>
                                         );
                                       })}
@@ -882,5 +925,23 @@ function PinIconButton({
         </button>
       )}
     </PinScopeMenu>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// 新人同行 (§7.2): 患者個別リンクの極小 👥 (省スペース最優先・名前は title のみ)
+// ─────────────────────────────────────────────────────────────────────────
+
+function AccompanimentDot({ name, testId }: { name: string | null; testId: string }) {
+  if (!name) return null;
+  return (
+    <span
+      className="shrink-0 text-[10px] leading-none text-info"
+      data-testid={testId}
+      title={`同行: ${name}`}
+      aria-label={`同行: ${name}`}
+    >
+      👥
+    </span>
   );
 }

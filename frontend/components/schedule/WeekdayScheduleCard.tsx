@@ -149,6 +149,13 @@ export interface CourseListItem {
    * 「（未割当）」とは区別）。
    */
   staff_missing?: boolean | null;
+  /**
+   * 新人同行 (§7.2): TimelineDayList のコース見出し 👥 バッジ解決用
+   * (course_template_id, weekday) → resolveCourseId → courseBadgeName。
+   * 提案系 (WeekdayScheduleCard) は未使用 (加算のみ・無影響)。省略時は出さない。
+   */
+  course_template_id?: string | null;
+  weekday?: number | null;
 }
 
 export interface WeekdayScheduleCardProps {

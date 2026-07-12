@@ -4,6 +4,24 @@ import { describe, expect, it, vi } from 'vitest';
 import type { CourseListItem, VisitListItem } from '@/components/schedule/WeekdayScheduleCard';
 import { TimelineDayList } from '@/components/schedule/timeline/TimelineDayList';
 import { genderPalette } from '@/lib/scheduling/timeline';
+import type { AccompanimentBinding } from '@/components/schedule/timeline/accompaniment/types';
+
+/** 新人同行 binding を手組み (§7.2)。over で個別/コース名を差し込む。 */
+function makeBinding(over: Partial<AccompanimentBinding> = {}): AccompanimentBinding {
+  return {
+    active: false,
+    isCourseSelected: () => false,
+    isVisitSelected: () => false,
+    isVisitInSelectedCourse: () => false,
+    isVisitOverlapping: () => false,
+    toggleCourse: vi.fn(),
+    toggleVisit: vi.fn(),
+    visitBadgeName: () => null,
+    courseBadgeName: () => null,
+    resolveCourseId: (t, wd) => `${t}:${wd}`,
+    ...over,
+  };
+}
 
 function v(over: Partial<VisitListItem> & { key: string }): VisitListItem {
   return {
@@ -315,6 +333,89 @@ describe('TimelineDayList', () => {
       render(<TimelineDayList courses={[course({ key: 'c1', visits: [v({ key: 'a' })] })]} />);
       expect(screen.queryByTestId('tdl-slot-mark-a')).toBeNull();
       expect(screen.queryByTestId('tdl-partner-note-a')).toBeNull();
+    });
+  });
+
+  // ─── 新人同行 (§7.2): チップ表示 ──────────────────────────────────────
+  describe('新人同行チップ (案: 「👥新人名」info チップ)', () => {
+    it('患者行: visitBadgeName があれば「👥新人名」チップ (title に全文)', () => {
+      render(
+        <TimelineDayList
+          courses={[
+            course({
+              key: 'tpl-A:0',
+              visits: [v({ key: 'a', visit_id: 'vis-a', patient_name: '青柳 あい' })],
+            }),
+          ]}
+          accompaniment={makeBinding({
+            visitBadgeName: (id) => (id === 'vis-a' ? '髙梨' : null),
+          })}
+        />,
+      );
+      const chip = screen.getByTestId('tdl-accompaniment-a');
+      expect(chip).toHaveTextContent('髙梨');
+      expect(chip.getAttribute('title')).toBe('同行: 髙梨（新人）');
+    });
+
+    it('コース見出し: courseBadgeName があれば見出しに「👥新人名」チップ', () => {
+      render(
+        <TimelineDayList
+          courses={[
+            course({
+              key: 'tpl-A:0',
+              course_template_id: 'tpl-A',
+              weekday: 0,
+              visits: [v({ key: 'a', visit_id: 'vis-a' })],
+            }),
+          ]}
+          accompaniment={makeBinding({
+            // resolveCourseId('tpl-A', 0) = 'tpl-A:0'.
+            courseBadgeName: (cid) => (cid === 'tpl-A:0' ? '川名' : null),
+          })}
+        />,
+      );
+      const chip = screen.getByTestId('tdl-course-accompaniment-tpl-A:0');
+      expect(chip).toHaveTextContent('川名');
+      expect(chip.getAttribute('title')).toBe('同行: 川名（新人）');
+    });
+
+    it('accompaniment 未指定ならチップを出さない', () => {
+      render(
+        <TimelineDayList
+          courses={[
+            course({
+              key: 'tpl-A:0',
+              course_template_id: 'tpl-A',
+              weekday: 0,
+              visits: [v({ key: 'a', visit_id: 'vis-a' })],
+            }),
+          ]}
+        />,
+      );
+      expect(screen.queryByTestId('tdl-accompaniment-a')).toBeNull();
+      expect(screen.queryByTestId('tdl-course-accompaniment-tpl-A:0')).toBeNull();
+    });
+
+    it('同行モード中 (active) はリストにチップを出さない (選択UIはタイムライン専用)', () => {
+      render(
+        <TimelineDayList
+          courses={[
+            course({
+              key: 'tpl-A:0',
+              course_template_id: 'tpl-A',
+              weekday: 0,
+              visits: [v({ key: 'a', visit_id: 'vis-a' })],
+            }),
+          ]}
+          accompaniment={makeBinding({
+            active: true,
+            visitBadgeName: () => '髙梨',
+            courseBadgeName: () => '川名',
+          })}
+        />,
+      );
+      expect(screen.queryByTestId('tdl-accompaniment-a')).toBeNull();
+      expect(screen.queryByTestId('tdl-course-accompaniment-tpl-A:0')).toBeNull();
     });
   });
 });

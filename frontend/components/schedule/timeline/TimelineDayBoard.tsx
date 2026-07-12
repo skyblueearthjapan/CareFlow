@@ -1587,8 +1587,10 @@ export function TimelineDayBoard({
                 {/* G1: 担当スタッフ変更 (テーブルのヘッダ dropdown と同機能)。
                     onChangeAssignedStaff 未指定 (= read-only ロール) は従来のテキスト表示。
                     列ヘッダは droppable/draggable ではないため stopPropagation 不要。 */}
-                {/* コース丸ごと同行 (§7.2) はスタッフ名の右隣に 👥チップで併記する
-                    (別行に積むとこの列だけヘッダが縦に伸び、他コースと高さがズレるため・PO要望)。 */}
+                {/* コース丸ごと同行 (§7.2) はスタッフ名の右隣に 👥アイコンのみで併記する
+                    (別行に積むとこの列だけヘッダが縦に伸び、他コースと高さがズレるため・PO要望)。
+                    日タイムラインは select と同じ行のため、名前を出すと select が潰れる →
+                    アイコンのみに縮小し全文は title に保持 (PO指摘 2026-07-12)。 */}
                 <div className="flex min-w-0 items-center gap-1">
                   {onChangeAssignedStaff ? (
                     <select
@@ -1636,11 +1638,12 @@ export function TimelineDayBoard({
                   )}
                   {courseBadge && (
                     <span
-                      className="inline-flex max-w-[55%] shrink-0 items-center truncate rounded-full bg-info-bg px-1 text-[9px] font-bold text-info"
+                      className="inline-flex shrink-0 items-center rounded-full bg-info-bg px-1 text-[10px] font-bold text-info"
                       data-testid={`tl-course-accompaniment-${col.key}`}
                       title={`同行: ${courseBadge}（新人）`}
+                      aria-label={`同行: ${courseBadge}（新人）`}
                     >
-                      👥{courseBadge}
+                      👥
                     </span>
                   )}
                 </div>
