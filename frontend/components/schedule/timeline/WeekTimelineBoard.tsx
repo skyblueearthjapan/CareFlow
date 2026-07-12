@@ -178,11 +178,17 @@ function WeekCard({
           ✓
         </span>
       )}
-      {/* 常時表示 (モード外): 個別同行バッジ 👥新人名 (§7.2)。 */}
+      {/* 常時表示 (モード外): 個別同行バッジ 👥新人名 (§7.2)。
+          右上へ配置 (患者名との被り解消・PO要望)。名は左寄せ truncate なので右上は空く。
+          ピン留めカードは右上の画鋲 (CornerPushPin) を避けて少し左へ寄せる。 */}
       {accBadge && (
         <span
-          className="absolute left-0.5 top-0.5 z-[2] rounded-full bg-info-bg px-1 text-[8px] font-bold text-info"
+          className={cn(
+            'absolute top-0.5 z-[2] max-w-[70%] truncate rounded-full bg-info-bg px-1 text-[8px] font-bold text-info',
+            v.is_pinned ? 'right-[15px]' : 'right-0.5',
+          )}
           data-testid={`wtl-accompaniment-badge-${v.id}`}
+          title={`同行: ${accBadge}`}
         >
           👥{accBadge}
         </span>
@@ -374,14 +380,24 @@ function WeekPairBox({
               )}
               {accBadge && (
                 <span
-                  className="absolute left-0.5 top-0.5 z-[2] rounded-full bg-info-bg px-1 text-[7.5px] font-bold text-info"
+                  className={cn(
+                    'absolute top-0.5 z-[2] max-w-[46px] truncate rounded-full bg-info-bg px-1 text-[7.5px] font-bold text-info',
+                    v.is_pinned ? 'right-[15px]' : 'right-0.5',
+                  )}
                   data-testid={`wtl-accompaniment-badge-${v.id}`}
+                  title={`同行: ${accBadge}`}
                 >
                   👥{accBadge}
                 </span>
               )}
               {v.is_pinned && <CornerPushPin className="h-4 w-4" />}
-              <span className="flex min-w-0 items-center gap-1">
+              {/* 1行目: 右端の時刻が右上バッジと重ならないよう、バッジ有り時は右パディングで逃がす。 */}
+              <span
+                className={cn(
+                  'flex min-w-0 items-center gap-1',
+                  accBadge && (v.is_pinned ? 'pr-[64px]' : 'pr-[50px]'),
+                )}
+              >
                 <span className="truncate text-[11px] font-bold leading-tight">
                   {v.patient_name ?? '—'}
                 </span>
@@ -582,16 +598,9 @@ function CourseWeekSection({
                     </span>
                   )}
                 </div>
-                {/* 常時表示 (§7.2): コース丸ごと同行の曜日は「同行: ◯◯（新人）」。 */}
-                {courseBadge && (
-                  <div
-                    className="mt-0.5 w-fit rounded-full bg-info-bg px-1.5 py-px text-[9px] font-bold text-info"
-                    data-testid={`wtl-course-accompaniment-${option.templateId}-${wd}`}
-                  >
-                    同行: {courseBadge}（新人）
-                  </div>
-                )}
-                {/* 曜日ごとの担当スタッフ: 日ビューヘッダと同じ性別色アバター + 太字名。 */}
+                {/* 曜日ごとの担当スタッフ: 日ビューヘッダと同じ性別色アバター + 太字名。
+                    コース丸ごと同行 (§7.2) はスタッフ名の右隣に 👥チップで併記する
+                    (別行に積むとこの列だけヘッダが縦に伸び、他コースと高さがズレるため・PO要望)。 */}
                 <div className="mt-0.5 flex items-center gap-1.5">
                   <span
                     className="grid h-6 w-6 shrink-0 place-items-center rounded-full border-[1.5px] text-[10px] font-bold"
@@ -604,9 +613,20 @@ function CourseWeekSection({
                   >
                     {staff?.name?.[0] ?? '—'}
                   </span>
-                  <span className="min-w-0">
-                    <span className="block truncate text-[11.5px] font-bold text-text-primary">
-                      {staff?.name ?? '（未割当）'}
+                  <span className="min-w-0 flex-1">
+                    <span className="flex min-w-0 items-center gap-1">
+                      <span className="min-w-0 flex-1 truncate text-[11.5px] font-bold text-text-primary">
+                        {staff?.name ?? '（未割当）'}
+                      </span>
+                      {courseBadge && (
+                        <span
+                          className="inline-flex max-w-[55%] shrink-0 items-center truncate rounded-full bg-info-bg px-1 text-[9px] font-bold text-info"
+                          data-testid={`wtl-course-accompaniment-${option.templateId}-${wd}`}
+                          title={`同行: ${courseBadge}（新人）`}
+                        >
+                          👥{courseBadge}
+                        </span>
+                      )}
                     </span>
                     <span className="tnum block text-[9.5px] leading-tight text-text-muted">
                       {n}

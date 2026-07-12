@@ -475,10 +475,16 @@ function VisitCard({
           ✓
         </span>
       )}
+      {/* 個別同行バッジは右上へ (患者名との被り解消・PO要望)。名は左寄せ truncate なので
+          右上は空く。ピン留めカードは右上の画鋲を避けて少し左へ寄せる。 */}
       {accBadge && (
         <span
-          className="absolute left-0.5 top-0.5 z-[3] rounded-full bg-info-bg px-1 text-[8.5px] font-bold text-info"
+          className={cn(
+            'absolute top-0.5 z-[3] max-w-[70%] truncate rounded-full bg-info-bg px-1 text-[8.5px] font-bold text-info',
+            visit.is_pinned ? 'right-[16px]' : 'right-0.5',
+          )}
           data-testid={`tl-accompaniment-badge-${visit.id}`}
+          title={`同行: ${accBadge}`}
         >
           👥{accBadge}
         </span>
@@ -903,8 +909,12 @@ function PairMemberRowView({
       )}
       {accBadge && (
         <span
-          className="absolute left-0.5 top-0.5 z-[3] rounded-full bg-info-bg px-1 text-[7.5px] font-bold text-info"
+          className={cn(
+            'absolute top-0.5 z-[3] max-w-[46px] truncate rounded-full bg-info-bg px-1 text-[7.5px] font-bold text-info',
+            v.is_pinned ? 'right-[16px]' : 'right-0.5',
+          )}
           data-testid={`tl-accompaniment-badge-${v.id}`}
+          title={`同行: ${accBadge}`}
         >
           👥{accBadge}
         </span>
@@ -943,7 +953,13 @@ function PairMemberRowView({
           ⠿
         </span>
       ) : null}
-      <span className="flex min-w-0 items-center gap-1">
+      {/* 1行目: 右端の時刻が右上バッジと重ならないよう、バッジ有り時は右パディングで逃がす。 */}
+      <span
+        className={cn(
+          'flex min-w-0 items-center gap-1',
+          accBadge && (v.is_pinned ? 'pr-[64px]' : 'pr-[50px]'),
+        )}
+      >
         <span className="truncate text-[12px] font-bold leading-tight">
           {v.patient_name ?? '—'}
         </span>
@@ -1571,50 +1587,63 @@ export function TimelineDayBoard({
                 {/* G1: 担当スタッフ変更 (テーブルのヘッダ dropdown と同機能)。
                     onChangeAssignedStaff 未指定 (= read-only ロール) は従来のテキスト表示。
                     列ヘッダは droppable/draggable ではないため stopPropagation 不要。 */}
-                {onChangeAssignedStaff ? (
-                  <select
-                    value={col.course?.assigned_staff_id ?? ''}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      onChangeAssignedStaff(col, v === '' ? null : v);
-                    }}
-                    disabled={isStaffMutating === true}
-                    data-testid={`tl-staff-select-${col.key}`}
-                    aria-label={`${col.officeName}${col.template.label} コースの担当スタッフ`}
-                    title={
-                      col.course
-                        ? '担当スタッフを変更します'
-                        : '「週を生成」を実行するとコースが作成され担当を変更できます'
-                    }
-                    className={cn(
-                      'w-full max-w-full truncate rounded border bg-bg-base px-1 py-px text-[12px] font-bold disabled:cursor-not-allowed disabled:opacity-60',
-                      col.assignedStaffMissing
-                        ? 'border-warning text-warning'
-                        : 'border-border-default text-text-primary',
-                    )}
-                  >
-                    <option value="">（未割当）</option>
-                    {/* PO 2026-07-09: 担当が削除済み (stale ID) の場合、選択肢に無いため
-                        （担当不在）を現在値として表示する（再割当を促す）。 */}
-                    {col.assignedStaffMissing && col.course?.assigned_staff_id ? (
-                      <option value={col.course.assigned_staff_id}>（担当不在）</option>
-                    ) : null}
-                    {col.staffOptions.map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.name}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <div
-                    className={cn(
-                      'truncate text-[12.5px] font-bold',
-                      col.assignedStaffMissing ? 'text-warning' : 'text-text-primary',
-                    )}
-                  >
-                    {col.assignedStaffMissing ? '（担当不在）' : staffName}
-                  </div>
-                )}
+                {/* コース丸ごと同行 (§7.2) はスタッフ名の右隣に 👥チップで併記する
+                    (別行に積むとこの列だけヘッダが縦に伸び、他コースと高さがズレるため・PO要望)。 */}
+                <div className="flex min-w-0 items-center gap-1">
+                  {onChangeAssignedStaff ? (
+                    <select
+                      value={col.course?.assigned_staff_id ?? ''}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        onChangeAssignedStaff(col, v === '' ? null : v);
+                      }}
+                      disabled={isStaffMutating === true}
+                      data-testid={`tl-staff-select-${col.key}`}
+                      aria-label={`${col.officeName}${col.template.label} コースの担当スタッフ`}
+                      title={
+                        col.course
+                          ? '担当スタッフを変更します'
+                          : '「週を生成」を実行するとコースが作成され担当を変更できます'
+                      }
+                      className={cn(
+                        'min-w-0 flex-1 truncate rounded border bg-bg-base px-1 py-px text-[12px] font-bold disabled:cursor-not-allowed disabled:opacity-60',
+                        col.assignedStaffMissing
+                          ? 'border-warning text-warning'
+                          : 'border-border-default text-text-primary',
+                      )}
+                    >
+                      <option value="">（未割当）</option>
+                      {/* PO 2026-07-09: 担当が削除済み (stale ID) の場合、選択肢に無いため
+                          （担当不在）を現在値として表示する（再割当を促す）。 */}
+                      {col.assignedStaffMissing && col.course?.assigned_staff_id ? (
+                        <option value={col.course.assigned_staff_id}>（担当不在）</option>
+                      ) : null}
+                      {col.staffOptions.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <div
+                      className={cn(
+                        'min-w-0 flex-1 truncate text-[12.5px] font-bold',
+                        col.assignedStaffMissing ? 'text-warning' : 'text-text-primary',
+                      )}
+                    >
+                      {col.assignedStaffMissing ? '（担当不在）' : staffName}
+                    </div>
+                  )}
+                  {courseBadge && (
+                    <span
+                      className="inline-flex max-w-[55%] shrink-0 items-center truncate rounded-full bg-info-bg px-1 text-[9px] font-bold text-info"
+                      data-testid={`tl-course-accompaniment-${col.key}`}
+                      title={`同行: ${courseBadge}（新人）`}
+                    >
+                      👥{courseBadge}
+                    </span>
+                  )}
+                </div>
                 <div className="flex items-center gap-1.5 text-[9.5px] text-text-muted">
                   <span
                     className="rounded px-1.5 py-px text-[9px] font-extrabold text-white"
@@ -1627,15 +1656,6 @@ export function TimelineDayBoard({
                     {col.capacity.filled}/{col.capacity.max}件
                   </span>
                 </div>
-                {/* 常時表示 (§7.2): コース丸ごと同行の日は「同行: ◯◯（新人）」。 */}
-                {courseBadge && (
-                  <div
-                    className="mt-0.5 w-fit rounded-full bg-info-bg px-1.5 py-px text-[9px] font-bold text-info"
-                    data-testid={`tl-course-accompaniment-${col.key}`}
-                  >
-                    同行: {courseBadge}（新人）
-                  </div>
-                )}
               </div>
             </div>
           );

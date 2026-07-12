@@ -116,9 +116,11 @@ describe('WeekTimelineBoard 新人同行モード', () => {
       />,
     );
     expect(screen.getByTestId('wtl-accompaniment-badge-a').textContent).toContain('髙梨');
-    expect(screen.getByTestId('wtl-course-accompaniment-t1-0').textContent).toContain(
-      '同行: 川名（新人）',
-    );
+    // コース同行はスタッフ名の右隣に 👥短縮チップで併記 (別行に積まない=高さ不変・PO要望)。
+    // 「同行: 川名（新人）」の全文は title 属性に保持する。
+    const courseAcc = screen.getByTestId('wtl-course-accompaniment-t1-0');
+    expect(courseAcc.textContent).toContain('川名');
+    expect(courseAcc.getAttribute('title')).toBe('同行: 川名（新人）');
     // モード外では選択ヘッダ (button) は出ない。
     expect(screen.queryByTestId('wtl-course-header-t1-0')).toBeNull();
   });
