@@ -2007,6 +2007,29 @@ async def apply_staff_review(
     for it in payload.items:
         requested_staff_by_course.setdefault(it.course_id, it.staff_id)
 
+    # 新人同行 §8: payload の staff_id に新人 (is_trainee=true) が含まれる場合は 422。
+    # 新人はコースを持たない運用 (PO確定)。無検証で _persist に流すと手動レビュー承認
+    # 経由で新人がコース担当になり得る穴を塞ぐ。1 クエリでバッチ検証 (N+1 禁止)。
+    # 文言は PATCH /courses (courses.py) と統一。
+    _payload_staff_ids = set(requested_staff_by_course.values())
+    if _payload_staff_ids:
+        _trainee_staff_ids = set(
+            (
+                await db.scalars(
+                    select(Staff.id).where(
+                        Staff.id.in_(list(_payload_staff_ids)),
+                        Staff.is_trainee.is_(True),
+                        Staff.deleted_at.is_(None),
+                    )
+                )
+            ).all()
+        )
+        if _trainee_staff_ids:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="新人はコース担当にできません（同行で割り当ててください）",
+            )
+
     results: list[ApplyStaffReviewResultItem] = []
 
     try:

@@ -967,3 +967,103 @@ async def test_layer3_assign_does_not_reassign_staff_assigned_course(db) -> None
         f"(W25 fix の副作用): expected={s_locked.id}, got={refreshed.assigned_staff_id}"
     )
     assert refreshed.course_status == COURSE_STATUS_STAFF_ASSIGNED
+
+
+# ---------------------------------------------------------------------------
+# 新人同行 §8 (穴①/穴③): 新人 (is_trainee) はコース割付候補から除外される
+# ---------------------------------------------------------------------------
+
+
+def test_trainee_excluded_from_solve_assignment() -> None:
+    """穴①: 新人 (is_trainee=true) は solve の割付候補から除外される (設計 §8).
+
+    通常スタッフ 1 名 + 新人 1 名で 2 コースを解くと、 新人は候補から外れるため
+    通常スタッフのみが割り当たり (1 件)、 新人には 1 件も割り当たらない。
+    除外が無ければ 2 コース 2 スタッフで新人にも割り当たってしまう (= 回帰検出)。
+    """
+    normal = StaffInfo(
+        staff_id=uuid.uuid4(),
+        name="通常スタッフ",
+        sex=None,
+        role="staff",
+        primary_office_lat=None,
+        primary_office_lng=None,
+        work_days=frozenset({0}),
+        is_trainee=False,
+    )
+    trainee = StaffInfo(
+        staff_id=uuid.uuid4(),
+        name="新人スタッフ",
+        sex=None,
+        role="staff",
+        primary_office_lat=None,
+        primary_office_lng=None,
+        work_days=frozenset({0}),
+        is_trainee=True,
+    )
+    courses = [
+        CourseAssignmentTarget(
+            course_id=uuid.uuid4(),
+            weekday=0,
+            course_code=code,
+            centroid_lat=None,
+            centroid_lng=None,
+            gender_restrictions=frozenset(),
+        )
+        for code in ("A", "B")
+    ]
+    assigner = Layer3Assigner()
+    result = assigner.solve(courses, [normal, trainee], history=[])
+
+    assigned_ids = {a.staff_id for a in result.assignments}
+    assert trainee.staff_id not in assigned_ids, "新人が割り当てられた (§8 除外漏れ)"
+    assert assigned_ids == {normal.staff_id}
+    assert len(result.assignments) == 1
+
+
+@pytest.mark.asyncio
+async def test_apply_staff_review_rejects_trainee_staff_id(client, db) -> None:
+    """穴③: apply-staff-review payload に新人の staff_id があれば 422 (設計 §8)."""
+    admin = await _make_user(db, "l3-trainee-apply@example.com", "admin")
+
+    inage = Office(name="新人 apply 拠点", lat=35.6383, lng=140.1041)
+    db.add(inage)
+    await db.flush()
+
+    trainee = Staff(
+        code="TRAINEE-APPLY",
+        name="新人 太郎",
+        sex="female",
+        role="staff",
+        status="active",
+        is_trainee=True,
+        primary_office_id=inage.id,
+    )
+    db.add(trainee)
+    await db.flush()
+    db.add(StaffShift(staff_id=trainee.id, weekday=0, is_on=True))
+
+    course = Course(
+        iso_year=TEST_ISO_YEAR,
+        iso_week=TEST_ISO_WEEK,
+        weekday=0,
+        code="A",
+        course_status=COURSE_STATUS_COURSE_FIXED,
+        office_id=inage.id,
+    )
+    db.add(course)
+    await db.commit()
+    course_id = course.id
+    trainee_id = trainee.id
+
+    res = await client.post(
+        "/api/v1/schedule/apply-staff-review",
+        headers=_bearer(admin),
+        json={
+            "iso_year": TEST_ISO_YEAR,
+            "iso_week": TEST_ISO_WEEK,
+            "items": [{"course_id": str(course_id), "staff_id": str(trainee_id)}],
+        },
+    )
+    assert res.status_code == 422, res.text
+    assert "新人はコース担当にできません" in res.json()["detail"]

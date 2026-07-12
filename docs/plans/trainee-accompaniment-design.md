@@ -324,7 +324,10 @@ soft-delete 済み visit / course を参照する `trainee_accompaniments` 行�
 
 | 経路 | 対応 |
 |---|---|
-| 自動割当（assign-staff-only / auto_allocator） | **既存H8で除外済み**・維持（回帰テストで固定） |
+| 自動割当（auto_allocator / コース数K・reset の母集団） | **既存H8で除外済み**・維持（回帰テストで固定） |
+| 自動割当（assign-staff-only / Layer3 の割付候補） | H8はコース数K/resetの母集団除外であり、**Layer3のハンガリアン割付候補（solve の eligible_staff）・性別override候補（`_compute_gender_candidate_for_course`）には除外が入っていなかった**（穴①）。**本修正（2026-07-12）で `and not s.is_trainee` を追加**して割付候補から除外。母集団（`load_active_staff`）は他参照のため残し選定時のみ除外。回帰テストで固定（`test_layer3.py::test_trainee_excluded_from_solve_assignment`） |
+| 承認レビュー反映（apply-staff-review） | payloadの `staff_id` をコース存在チェックのみで `_persist` へ渡していた（穴③）。**本修正で payload に `is_trainee=true` があれば 422（`PATCH /courses` と同文言）**・1クエリでバッチ検証。回帰テスト `test_layer3.py::test_apply_staff_review_rejects_trainee_staff_id` |
+| カイポケ逆取込（inbound.py の担当1） | 担当1に trainee 判定が無く、新人が担当1として取り込まれ得た（穴②）。**本修正で edit経路＝担当1の変更を適用せず注記（他変更は適用）／add経路＝item を failed**（visit は primary 必須）。回帰テスト `test_kaipoke_accompaniment_phase3.py::test_inbound_edit_staff1_trainee_not_applied` / `::test_inbound_add_staff1_trainee_failed` |
 | 固定枠に戻す（reset_visits_to_fixed のローテーション） | ローテ母集団の trainee 除外を実装時に確認・不足なら追加 |
 | 手動（コース担当ドロップダウン） | FE候補から `is_trainee=true` を除外＋BE `PATCH /courses` で422（§6.4）。マスタ駆動なのでフラグOFFで自動復帰 |
 | `is_trainee` ON 操作時 | 当該スタッフが**今週以降のコース担当に残っている場合は警告表示**（自動解除はしない・警告主義原則③。管理者が固定枠に戻す/担当変更で解消） |

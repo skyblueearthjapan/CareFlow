@@ -676,3 +676,85 @@ async def test_inbound_edit_trainee_staff2_idempotent_reapply(db) -> None:
         )
     )
     assert count == 1  # 冪等: リンクは 1 件のまま。
+
+
+# --- E. 穴②: 担当1 (staff1) が新人のときの反映抑止 (設計 §8) -------------------
+
+
+@pytest.mark.asyncio
+async def test_inbound_edit_staff1_trainee_not_applied(db) -> None:
+    """穴②(edit): 担当1が新人へ変更されても担当変更は適用しない・注記のみ (設計 §8).
+
+    新人はコースを持たない運用 (PO確定)。担当1が新人へ変わる差分は未反映とし、
+    コース担当 (course.assigned_staff_id) と visit.primary_staff_id は先輩のまま。
+    他に変更点が無ければ注記つき skipped。
+    """
+    office = await _office(db)
+    mentor = await _staff(db, "先輩太郎", office)
+    await _staff(db, "新人花子", office, is_trainee=True)
+    patient = await _patient(db, "山田様", office)
+    course = await _course(db, office, mentor, weekday=1, code="A")
+    visit = await _visit(db, patient, mentor, course=course)
+    await db.commit()
+    mentor_id = mentor.id
+
+    common = {"user_name": patient.name, "date": "7", "start_time": "10:00", "end_time": "10:35"}
+    item = CorrectionSheetItem(
+        sheet_id=uuid.uuid4(),
+        patient_id=patient.id,
+        visit_id=visit.id,
+        action="edit",
+        before={**common, "staff1": "先輩太郎", "staff2": ""},
+        after={**common, "staff1": "新人花子", "staff2": ""},  # 担当1を新人へ変更。
+        include=True,
+    )
+    summary = await apply_inbound_items(
+        db,
+        items=[item],
+        week_start=WEEK_START,
+        week_end=WEEK_END,
+        days=None,
+        dry_run=False,
+        now=_now(),
+    )
+    await db.commit()
+    await db.refresh(visit)
+    await db.refresh(course)
+
+    # 担当1変更は未反映 — コース担当・primary は先輩のまま。
+    assert visit.primary_staff_id == mentor_id
+    assert course.assigned_staff_id == mentor_id
+    assert summary.skipped == 1  # 他に変更点なし → 注記つき skipped。
+    assert "新人" in summary.results[0].detail
+
+
+@pytest.mark.asyncio
+async def test_inbound_add_staff1_trainee_failed(db) -> None:
+    """穴②(add): 担当1が新人の追加予定は failed (visit は primary 必須のため作らない)."""
+    from sqlalchemy import func, select
+
+    office = await _office(db)
+    await _staff(db, "新人花子", office, is_trainee=True)
+    patient = await _patient(db, "山田様", office)
+    await db.commit()
+
+    item = _add_item(patient, staff1="新人花子", staff2="")
+    summary = await apply_inbound_items(
+        db,
+        items=[item],
+        week_start=WEEK_START,
+        week_end=WEEK_END,
+        days=None,
+        dry_run=False,
+        now=_now(),
+    )
+    await db.commit()
+
+    # visit は作られない。
+    count = await db.scalar(
+        select(func.count()).select_from(Visit).where(Visit.patient_id == patient.id)
+    )
+    assert count == 0
+    assert summary.added == 0
+    assert summary.failed == 1
+    assert "新人" in summary.results[0].detail

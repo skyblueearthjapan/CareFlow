@@ -1710,8 +1710,14 @@ class Layer3Assigner:
 
         # マネージャー除外 (§3.6.4) — ただし fixed 割当対象の manager は保持
         # (fixed 経路で M コースへの lookup に使用するため eligible_staff に残す必要がある)
+        # 新人同行 §8: 新人 (is_trainee=true) は「コースを持たない」運用 (PO確定) のため
+        # 割付候補から除外する (manager 除外と同列)。母集団 (load_active_staff) は
+        # 他参照のため残し、選定時のみ除外する方針。manager fallback は raw staff_pool を
+        # 別途受け取り、そこでも not is_trainee で弾く (2439)。
         eligible_staff = [
-            s for s in staff_pool if s.role != "manager" or s.staff_id in fixed_staff_ids
+            s
+            for s in staff_pool
+            if (s.role != "manager" or s.staff_id in fixed_staff_ids) and not s.is_trainee
         ]
 
         # 曜日でグルーピング
@@ -2318,6 +2324,11 @@ class Layer3Assigner:
         for staff in staff_pool:
             # manager は通常割付の候補にしない (M 固定 / fallback は別経路).
             if staff.role == "manager":
+                continue
+            # 新人同行 §8: 新人はコースを持たない運用のため override 候補にもしない
+            # (solve の eligible_staff 除外と同列。この関数は raw staff_pool を受けるため
+            # ここで明示除外する)。
+            if staff.is_trainee:
                 continue
             # 当日勤務 (ハード)
             if weekday not in staff.work_days:
