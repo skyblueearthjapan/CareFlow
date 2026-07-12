@@ -45,6 +45,18 @@ export const STATUS_COLOR: Record<DisplayStatus, string> = {
 };
 
 /**
+ * 地図マーカー専用のステータス色。マーカーは白抜き数字を載せるため、
+ * 淡色トークン (future=--border-strong / awaiting=--text-muted) のままだと
+ * 数字が読めない → 地図上のみ濃色へ差し替える (future より awaiting を一段淡く区別)。
+ * タイムライン等の面表示は従来どおり STATUS_COLOR を使う。
+ */
+export const MAP_MARKER_COLOR: Record<DisplayStatus, string> = {
+  ...STATUS_COLOR,
+  future: 'var(--text-secondary)', // #57534e — 白数字コントラスト約7:1
+  awaiting: '#78716c', // stone-500 — 白数字(太字)が読める下限の濃度
+};
+
+/**
  * 予定バーのハッチパターン背景。
  * repeating-linear-gradient 内は var() 使用可。
  * Leaflet pathOptions (SVG 属性) では不可だが、divIcon の html inline style では使用可。

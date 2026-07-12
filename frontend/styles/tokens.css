@@ -78,6 +78,9 @@
   --status-missing: var(--error);
   --status-future: var(--border-strong);
   --status-awaiting: var(--text-muted);
+  /* 地図 (Leaflet) の順路ライン。OSM 背景の幹線道路 (ピンク/オレンジ系) と
+     識別できる紺青。SVG 属性は var() 不可のため FE 側 (MonitorMapClient) と実値同期 */
+  --map-route: #2563eb;
 
   /* === スケジュール縦タイムライン: 性別パレット (T-1 / 本番トーン適合) ===
      カード地色=患者 sex / アバター縁=スタッフ sex。未設定(unknown/null)=中立(砂色)。

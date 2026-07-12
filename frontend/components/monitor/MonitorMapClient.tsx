@@ -19,7 +19,7 @@ import type { MonitorStaffRow, MonitorVisit, NearbyPatient } from '@/lib/schemas
 
 import type { VisitWithCoords } from './constants';
 import {
-  STATUS_COLOR,
+  MAP_MARKER_COLOR,
   STATUS_LABEL,
   displayStatus,
   formatDistance,
@@ -43,13 +43,13 @@ function hasCoords(v: MonitorVisit): v is VisitWithCoords {
 const numIcon = (color: string, selected: boolean, num: number) =>
   L.divIcon({
     className: '',
-    iconSize: [18, 18],
-    iconAnchor: [9, 9],
-    // 影は温色 rgba(28,25,23,.35)（デザインシステム 1-8 準拠）。
+    iconSize: [24, 24],
+    iconAnchor: [12, 12],
+    // 影は温色 rgba(28,25,23,.45)（視認性向上のためやや強め。デザインシステム 1-8 準拠の温色系）。
     // selected の outline は var(--text-primary) = #1c1917 と同値のため var() を使用可（html style 内）。
-    html: `<div style="width:16px;height:16px;border-radius:50%;border:2px solid #fff;box-shadow:0 1px 4px rgba(28,25,23,.35);background:${color};${
+    html: `<div style="width:22px;height:22px;border-radius:50%;border:2px solid #fff;box-shadow:0 1px 5px rgba(28,25,23,.45);background:${color};${
       selected ? 'outline:3px solid var(--text-primary);outline-offset:1px;' : ''
-    }position:relative"><span style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);font-size:9px;font-weight:700;color:#fff">${num}</span></div>`,
+    }position:relative"><span style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);font-size:12px;font-weight:700;color:#fff">${num}</span></div>`,
   });
 
 /**
@@ -57,19 +57,19 @@ const numIcon = (color: string, selected: boolean, num: number) =>
  * 配色・シャドウは numIcon と同一トークン（デザイン一貫性）。
  */
 const pillIcon = (color: string, selected: boolean, label: string) => {
-  // label 幅を文字種で近似 (ASCII≈5px / 全角「・」等≈9px @9px font)。
+  // label 幅を文字種で近似 (ASCII≈7px / 全角「・」等≈12px @12px font)。
   // レビュー指摘: length×6 固定だと全角混在でアンカーが数 px ずれるため文字種考慮に。
   const w = Math.max(
-    24,
-    [...label].reduce((s, c) => s + (c.charCodeAt(0) > 127 ? 9 : 5), 0) + 12,
+    30,
+    [...label].reduce((s, c) => s + (c.charCodeAt(0) > 127 ? 12 : 7), 0) + 14,
   );
   return L.divIcon({
     className: '',
-    iconSize: [w + 4, 18],
-    iconAnchor: [Math.floor((w + 4) / 2), 9],
-    html: `<div style="min-width:${w}px;height:16px;border-radius:100px;padding:0 5px;border:2px solid #fff;box-shadow:0 1px 4px rgba(28,25,23,.35);background:${color};${
+    iconSize: [w + 4, 24],
+    iconAnchor: [Math.floor((w + 4) / 2), 12],
+    html: `<div style="min-width:${w}px;height:22px;border-radius:100px;padding:0 6px;border:2px solid #fff;box-shadow:0 1px 5px rgba(28,25,23,.45);background:${color};${
       selected ? 'outline:3px solid var(--text-primary);outline-offset:1px;' : ''
-    }display:inline-flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:#fff;white-space:nowrap">${label}</div>`,
+    }display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#fff;white-space:nowrap">${label}</div>`,
   });
 };
 
@@ -166,12 +166,20 @@ export default function MonitorMapClient({
       <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" maxZoom={19} />
       <FitBounds points={points} />
 
-      {/* 順路ライン + 区間距離 */}
+      {/* 順路ライン: 白の縁取り + 紺青の本線 (OSM の幹線道路ピンク/オレンジと同化しない配色)。
+          旧 --brand-primary ピンクは高速道路の塗りと同化して不可視だった (PO報告 2026-07-13)。 */}
+      {segments.map((s, i) => (
+        <Polyline
+          key={`seg-casing-${i}`}
+          positions={[s.a, s.b]}
+          pathOptions={{ color: '#ffffff', weight: 7, opacity: 0.9 }}
+        />
+      ))}
       {segments.map((s, i) => (
         <Polyline
           key={`seg-${i}`}
           positions={[s.a, s.b]}
-          pathOptions={{ color: '#e15a7f' /* = --brand-primary; SVG属性のためvar()不可、tokens.cssと同期 */, weight: 2, opacity: 0.45 }}
+          pathOptions={{ color: '#2563eb' /* = --map-route; SVG属性のためvar()不可、tokens.cssと同期 */, weight: 3.5, opacity: 0.9 }}
         />
       ))}
 
@@ -181,8 +189,8 @@ export default function MonitorMapClient({
         const label = g.numbers.join('・');
         const icon =
           g.stops.length === 1
-            ? numIcon(STATUS_COLOR[g.worstStatus], groupSelected, g.numbers[0]!)
-            : pillIcon(STATUS_COLOR[g.worstStatus], groupSelected, label);
+            ? numIcon(MAP_MARKER_COLOR[g.worstStatus], groupSelected, g.numbers[0]!)
+            : pillIcon(MAP_MARKER_COLOR[g.worstStatus], groupSelected, label);
         return (
           <Marker key={g.coord} position={[g.lat, g.lng]} icon={icon}>
             <Popup>
@@ -194,7 +202,7 @@ export default function MonitorMapClient({
                       {g.numbers[i]}. {v.patient_name ?? '—'}
                     </b>{' '}
                     {v.start_time}–{v.end_time}{' '}
-                    <span style={{ color: STATUS_COLOR[st] }}>{STATUS_LABEL[st]}</span>
+                    <span style={{ color: MAP_MARKER_COLOR[st] }}>{STATUS_LABEL[st]}</span>
                     {v.arrival?.distance_m != null && (
                       <> (距離 {Math.round(v.arrival.distance_m)}m)</>
                     )}
@@ -213,10 +221,10 @@ export default function MonitorMapClient({
             center={[selected.patient_lat, selected.patient_lng]}
             radius={matchM}
             pathOptions={{
-              color: '#e15a7f', // = --brand-primary; SVG属性のためvar()不可、tokens.cssと同期
-              weight: 1,
+              color: '#0d9488', // = --info; SVG属性のためvar()不可、tokens.cssと同期 (旧ピンクは道路と同化)
+              weight: 2,
               dashArray: '4',
-              fillColor: '#e15a7f',
+              fillColor: '#0d9488',
               fillOpacity: 0.06,
             }}
           />
