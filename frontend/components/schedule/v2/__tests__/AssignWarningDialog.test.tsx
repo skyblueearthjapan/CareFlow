@@ -19,6 +19,7 @@ import { AssignWarningDialog, type ApprovedReviewItem } from '../AssignWarningDi
 import type {
   AutoCommittedNotice,
   ReviewItem,
+  StageAssignmentNotice,
   UnresolvedGenderWarning,
 } from '@/lib/queries/assign_staff_only';
 
@@ -493,5 +494,233 @@ describe('AssignWarningDialog — W-11 unresolved_warnings セクション', () 
     expect(screen.getByTestId('assign-review-consecutive-section')).toBeInTheDocument();
     expect(screen.getByTestId('assign-notice-section')).toBeInTheDocument();
     expect(screen.getByTestId('assign-unresolved-section')).toBeInTheDocument();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// 4段ソルバ Stage 2/3: manager_mobilized_notices / rotation_relaxed_notices セクションのテスト
+// ─────────────────────────────────────────────────────────────────────────
+
+function makeMobilized(over: Partial<StageAssignmentNotice> = {}): StageAssignmentNotice {
+  return {
+    course_id: 'a1111111-1111-1111-1111-111111111111',
+    weekday: 0,
+    course_code: 'B',
+    staff_id: 'a2222222-2222-2222-2222-222222222222',
+    staff_name: '熊澤妙子',
+    ...over,
+  };
+}
+
+function makeRelaxed(over: Partial<StageAssignmentNotice> = {}): StageAssignmentNotice {
+  return {
+    course_id: 'b1111111-1111-1111-1111-111111111111',
+    weekday: 0,
+    course_code: 'A',
+    staff_id: 'b2222222-2222-2222-2222-222222222222',
+    staff_name: '宇田川優莉',
+    ...over,
+  };
+}
+
+describe('AssignWarningDialog — 4段ソルバ Stage 2/3 notices セクション', () => {
+  it('managerMobilizedNotices を渡すとセクションが描画される (既定は折りたたみ = 行非表示)', () => {
+    render(
+      <AssignWarningDialog
+        open
+        onClose={() => {}}
+        reviewItems={[]}
+        managerMobilizedNotices={[makeMobilized()]}
+        onApply={() => {}}
+      />,
+    );
+    expect(screen.getByTestId('assign-manager-mobilized-section')).toBeInTheDocument();
+    // 既定は折りたたみ = 行は非表示
+    expect(screen.queryByTestId('assign-manager-mobilized-row')).not.toBeInTheDocument();
+    // 説明文が出る
+    expect(screen.getByText(/スタッフ不足のため、以下のコースにマネージャーを割り当てました/)).toBeInTheDocument();
+  });
+
+  it('「詳細を見る ▼」を押すとマネージャー動員の行が表示される', () => {
+    render(
+      <AssignWarningDialog
+        open
+        onClose={() => {}}
+        reviewItems={[]}
+        managerMobilizedNotices={[makeMobilized()]}
+        onApply={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByText('詳細を見る ▼'));
+    const row = screen.getByTestId('assign-manager-mobilized-row');
+    expect(row).toBeInTheDocument();
+    expect(row).toHaveTextContent('月');
+    expect(row).toHaveTextContent('B');
+    expect(row).toHaveTextContent('熊澤妙子');
+  });
+
+  it('rotationRelaxedNotices を渡すとセクションが描画される (既定は折りたたみ = 行非表示)', () => {
+    render(
+      <AssignWarningDialog
+        open
+        onClose={() => {}}
+        reviewItems={[]}
+        rotationRelaxedNotices={[makeRelaxed()]}
+        onApply={() => {}}
+      />,
+    );
+    expect(screen.getByTestId('assign-rotation-relaxed-section')).toBeInTheDocument();
+    expect(screen.queryByTestId('assign-rotation-relaxed-row')).not.toBeInTheDocument();
+    expect(screen.getByText(/候補がいないため、前週と同じコースを許容して割り当てました/)).toBeInTheDocument();
+  });
+
+  it('「詳細を見る ▼」を押すと前週同コースの行が表示される', () => {
+    render(
+      <AssignWarningDialog
+        open
+        onClose={() => {}}
+        reviewItems={[]}
+        rotationRelaxedNotices={[makeRelaxed()]}
+        onApply={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByText('詳細を見る ▼'));
+    const row = screen.getByTestId('assign-rotation-relaxed-row');
+    expect(row).toBeInTheDocument();
+    expect(row).toHaveTextContent('月');
+    expect(row).toHaveTextContent('A');
+    expect(row).toHaveTextContent('宇田川優莉');
+  });
+
+  it('0件のセクションは描画しない', () => {
+    render(
+      <AssignWarningDialog
+        open
+        onClose={() => {}}
+        reviewItems={[makeConsecutive()]}
+        onApply={() => {}}
+      />,
+    );
+    expect(screen.queryByTestId('assign-manager-mobilized-section')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('assign-rotation-relaxed-section')).not.toBeInTheDocument();
+  });
+
+  it('managerMobilizedNotices のみ (reviewItems=[]) でも open 時に描画され説明文が出る', () => {
+    render(
+      <AssignWarningDialog
+        open
+        onClose={() => {}}
+        reviewItems={[]}
+        managerMobilizedNotices={[makeMobilized()]}
+        onApply={() => {}}
+      />,
+    );
+    expect(screen.getByTestId('assign-warning-dialog')).toBeInTheDocument();
+    expect(screen.getByText(/マネージャー動員が.*件あり、確定済みです/)).toBeInTheDocument();
+  });
+
+  it('rotationRelaxedNotices のみ (reviewItems=[]) でも open 時に描画され説明文が出る', () => {
+    render(
+      <AssignWarningDialog
+        open
+        onClose={() => {}}
+        reviewItems={[]}
+        rotationRelaxedNotices={[makeRelaxed()]}
+        onApply={() => {}}
+      />,
+    );
+    expect(screen.getByTestId('assign-warning-dialog')).toBeInTheDocument();
+    expect(screen.getByText(/前週と同じコースへの割り当てが.*件あり、確定済みです/)).toBeInTheDocument();
+  });
+
+  it('新 Stage 通知があっても apply ボタンは reviewItems 承認数のみで disabled 判定される', () => {
+    render(
+      <AssignWarningDialog
+        open
+        onClose={() => {}}
+        reviewItems={[]}
+        managerMobilizedNotices={[makeMobilized()]}
+        rotationRelaxedNotices={[makeRelaxed()]}
+        onApply={() => {}}
+      />,
+    );
+    expect(screen.getByTestId('assign-review-apply')).toBeDisabled();
+  });
+
+  it('§4.1 チップ: auto_committed_notices と manager_mobilized が同一 course_id のとき「👔マネージャー動員」チップが出る', () => {
+    // 同一 course_id で notice + mobilized が重複するシナリオ
+    const sharedCourseId = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee';
+    const notice = makeNotice({ course_id: sharedCourseId });
+    const mobilized = makeMobilized({ course_id: sharedCourseId });
+    render(
+      <AssignWarningDialog
+        open
+        onClose={() => {}}
+        reviewItems={[]}
+        notices={[notice]}
+        managerMobilizedNotices={[mobilized]}
+        onApply={() => {}}
+      />,
+    );
+    // noticesセクションを展開
+    fireEvent.click(screen.getByText('理由を見る ▼'));
+    expect(screen.getByTestId('chip-manager-mobilized')).toBeInTheDocument();
+    expect(screen.getByTestId('chip-manager-mobilized')).toHaveTextContent('👔マネージャー動員');
+  });
+
+  it('§4.1 チップ: auto_committed_notices と rotation_relaxed が同一 course_id のとき「🔁前週同コース」チップが出る', () => {
+    const sharedCourseId = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee';
+    const notice = makeNotice({ course_id: sharedCourseId });
+    const relaxed = makeRelaxed({ course_id: sharedCourseId });
+    render(
+      <AssignWarningDialog
+        open
+        onClose={() => {}}
+        reviewItems={[]}
+        notices={[notice]}
+        rotationRelaxedNotices={[relaxed]}
+        onApply={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByText('理由を見る ▼'));
+    expect(screen.getByTestId('chip-rotation-relaxed')).toBeInTheDocument();
+    expect(screen.getByTestId('chip-rotation-relaxed')).toHaveTextContent('🔁前週同コース');
+  });
+
+  it('§4.1 チップ: course_id が異なる場合はチップが出ない', () => {
+    const notice = makeNotice({ course_id: 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee' });
+    const mobilized = makeMobilized({ course_id: 'a1111111-1111-1111-1111-111111111111' });
+    render(
+      <AssignWarningDialog
+        open
+        onClose={() => {}}
+        reviewItems={[]}
+        notices={[notice]}
+        managerMobilizedNotices={[mobilized]}
+        onApply={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByText('理由を見る ▼'));
+    expect(screen.queryByTestId('chip-manager-mobilized')).not.toBeInTheDocument();
+  });
+
+  it('全セクション (review + notices + unresolved + mobilized + relaxed) が並存できる', () => {
+    render(
+      <AssignWarningDialog
+        open
+        onClose={() => {}}
+        reviewItems={[makeConsecutive()]}
+        notices={[makeNotice()]}
+        unresolvedWarnings={[makeUnresolved()]}
+        managerMobilizedNotices={[makeMobilized()]}
+        rotationRelaxedNotices={[makeRelaxed()]}
+        onApply={() => {}}
+      />,
+    );
+    expect(screen.getByTestId('assign-review-consecutive-section')).toBeInTheDocument();
+    expect(screen.getByTestId('assign-notice-section')).toBeInTheDocument();
+    expect(screen.getByTestId('assign-unresolved-section')).toBeInTheDocument();
+    expect(screen.getByTestId('assign-manager-mobilized-section')).toBeInTheDocument();
+    expect(screen.getByTestId('assign-rotation-relaxed-section')).toBeInTheDocument();
   });
 });

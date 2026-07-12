@@ -165,6 +165,26 @@ export const unresolvedGenderWarningSchema = z.object({
 
 export type UnresolvedGenderWarning = z.infer<typeof unresolvedGenderWarningSchema>;
 
+// ---------------------------------------------------------------------------
+// 4段ソルバ Stage 2/3: マネージャー動員 / ローテ緩和の情報通知 1 件 — BE スキーマとミラー
+// ---------------------------------------------------------------------------
+
+/**
+ * 4段ソルバ Stage 2（マネージャー動員）または Stage 3（前週同コード緩和）で
+ * 確定した割当の情報通知 1 件.
+ * manager_mobilized_notices / rotation_relaxed_notices 共通スキーマ.
+ * 旧 BE は本フィールドを返さないため .default([]).catch([]) で寛容に受け取る.
+ */
+export const stageAssignmentNoticeSchema = z.object({
+  course_id: z.string().uuid(),
+  weekday: z.number().int().min(0).max(6),
+  course_code: z.string(),
+  staff_id: z.string().uuid(),
+  staff_name: z.string(),
+});
+
+export type StageAssignmentNotice = z.infer<typeof stageAssignmentNoticeSchema>;
+
 export const assignStaffOnlyResponseSchema = z.object({
   iso_year: z.number().int(),
   iso_week: z.number().int(),
@@ -183,6 +203,12 @@ export const assignStaffOnlyResponseSchema = z.object({
   // W-11: 性別残留違反の警告 (候補ゼロ・手動調整を促す).
   // 旧 BE は本フィールドを返さないため .default([]).catch([]) で寛容に受け取る.
   unresolved_warnings: z.array(unresolvedGenderWarningSchema).default([]).catch([]),
+  // 4段ソルバ Stage 2: スタッフ不足でマネージャーを動員して埋めたコース一覧.
+  // 旧 BE は本フィールドを返さないため .default([]).catch([]) で寛容に受け取る.
+  manager_mobilized_notices: z.array(stageAssignmentNoticeSchema).default([]).catch([]),
+  // 4段ソルバ Stage 3: 候補ゼロで前週同コード除外を緩和して埋めたコース一覧.
+  // 旧 BE は本フィールドを返さないため .default([]).catch([]) で寛容に受け取る.
+  rotation_relaxed_notices: z.array(stageAssignmentNoticeSchema).default([]).catch([]),
 });
 
 export type AssignStaffOnlyResponse = z.infer<typeof assignStaffOnlyResponseSchema>;

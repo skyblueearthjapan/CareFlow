@@ -340,6 +340,36 @@ Phase 3 `c4cb1cb`。各フェーズ code-reviewer(opus) レビュー済み（CRI
 7. 本番にはまだ**新人フラグONのスタッフが居ない可能性**（同行UIはis_trainee=trueのactiveスタッフが
    居るときだけ出現）。現場開始時はスタッフ編集で新人フラグONから
 
+## 10. 2026-07-12 セッション（続）: 自動スタッフ割当の4段ソルバ化（追記）
+
+**正典 = `docs/plans/layer3-staged-mobilization-design.md` v1.1**（調査事実→PO確定3点→設計→レビュー履歴まで網羅。次のエージェントはまずこれ）。
+
+### 10-1. 背景調査で確定した事実（本番DB実測・再調査不要）
+
+- **過去9週で自動割当の結果が残っているのはW21/W27の2週のみ**。直近12日で assign 25回/unassign-all 12回の「ガチャ」運用実態
+- **W28全解除の直接原因**: 7/12 17:25 の unassign-all が最後の操作（機能の失敗ではなくPO操作）
+- **旧マネージャー救済はUUID昇順固定** → 熊澤（`70727ae8…`<川名`89b9aeb9…`）ばかり毎日1コース・川名は9週で1件
+- **「前週同コードコード禁止」（Q3・曜日不問・週単位）が少人数拠点で数学的に破綻**: W27全埋め→W28で宇田川が全コード禁止（成功した週の翌週は必ず難航する振り子）
+- **熊澤氏はアカウント=スタッフ/スタッフマスタ=マネージャーの不一致**（7/9 12:00のPATCHで設定）。クライアント設定のため**変更しない**（PO決定・ロジック側で対応）
+
+### 10-2. 実装（4段ソルバ・全フェーズ完了）
+
+- **Stage 1**: 正規スタッフのハンガリアン（既存・不変）
+- **Stage 2**: 不足日のみマネージャー動員ハンガリアン（旧greedy `_apply_manager_fallback` は**完全撤去**。コスト関数を通るため川名/熊澤が履歴で自然交代・`via='manager_mobilized'`）
+- **Stage 3**: 候補全滅時のみQ3をソフト化（`COST_ROTATION_RELAXED_VIOLATION=200_000`・性別/シフト/イベント/拠点はINFのまま・`via='rotation_relaxed'`）
+- **Stage 4**: 既存レビューフロー不変
+- レスポンス追加: `manager_mobilized_notices` / `rotation_relaxed_notices`（**committed のみ**。レビュー送り分は載せない）。FE=AssignWarningDialog に👔/🔁セクション＋auto_committed との重複はチップ併記
+- テスト: BE 105 pass（W28実況再現 `test_w28_scenario_full_week_reproduction` 含む）/ FE 1197 pass / 0 fail
+- レビュー履歴: critic（設計・MAJOR3件反映）→ディレクター（committed絞り込み指摘）→code-reviewer（CRITICAL/MAJOR 0・MINOR3件同日反映）
+
+### 10-3. 次のエージェントへの注意
+
+1. **未デプロイ**。デプロイはユーザー/PO指示待ち（migrationなし・コードのみ・標準手順）
+2. デプロイ後の初回 assign-staff-only で W28 が1回で全埋めになるはず（設計書§2の予測）。動員2件/緩和1件/日程度の通知が出るのが正常
+3. Stage 3 経由でマネージャーが入った場合 via は `rotation_relaxed` になる（動員通知には載らず緩和通知に載る・仕様）
+4. スコープ外（未着手のPO相談事項）: 不足バナー分母の見直し・非冪等性・週またぎ先読み（設計書§6）
+5. 既存fail: `test_schedule_v2_api.py::test_reset_to_fixed_auto_shifts_cross_address_same_time_pair` / `::test_reset_to_fixed_same_address_pair_both_flex_aligned` の2件は**本改修前からの既存fail**（旧docs/HANDOFF.md §6にも記載の既知件）
+
 ## 5. 参照
 
 - 設計原則・割当ソース: メモリ `careflow-staff-assignment-source.md`

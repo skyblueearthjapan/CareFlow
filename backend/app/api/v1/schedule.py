@@ -1480,6 +1480,23 @@ class UnresolvedGenderWarningSchema(BaseModel):
     reason_text: str
 
 
+class StageAssignmentNoticeSchema(BaseModel):
+    """4段ソルバ: Stage 2 動員 / Stage 3 緩和で確定した割当のお知らせ 1 件.
+
+    ``manager_mobilized_notices`` (= マネージャー不足救済) と
+    ``rotation_relaxed_notices`` (= 前週同コード緩和) の共通スキーマ. どちらも
+    「誰がどのコースを埋めたか」を伝える情報通知 (確定済み・アクション不要).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    course_id: UUID
+    weekday: int = Field(ge=0, le=6)
+    course_code: str
+    staff_id: UUID
+    staff_name: str
+
+
 class AssignStaffOnlyResponse(BaseModel):
     """``POST /api/v1/schedule/assign-staff-only`` のレスポンス (W17-BE-A2)."""
 
@@ -1505,6 +1522,12 @@ class AssignStaffOnlyResponse(BaseModel):
     # W-11: 性別制約を満たす候補ゼロで残った違反 (アクション不能・手動調整を促す警告).
     # 後方互換 (= 既存クライアントは本フィールドを無視できる).
     unresolved_warnings: list[UnresolvedGenderWarningSchema] = Field(default_factory=list)
+    # 4段ソルバ Stage 2: スタッフ不足でマネージャーを動員して埋めたコース一覧.
+    # 追加のみ (additive)・default 空配列で後方互換.
+    manager_mobilized_notices: list[StageAssignmentNoticeSchema] = Field(default_factory=list)
+    # 4段ソルバ Stage 3: 候補ゼロで前週同コード除外を緩和して埋めたコース一覧.
+    # 追加のみ (additive)・default 空配列で後方互換.
+    rotation_relaxed_notices: list[StageAssignmentNoticeSchema] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -1799,6 +1822,17 @@ async def _assign_staff_only_impl(
     # W-11: 性別残留違反 (候補ゼロ) の警告をスキーマ変換.
     unresolved_warnings = _build_unresolved_warnings_response(l3_result.unresolved_warnings)
 
+    # 4段ソルバ: Stage 2 動員 / Stage 3 緩和のお知らせを via 集計で構築 (commit 後・graceful).
+    # 事後お知らせは best-effort とし、構築失敗で確定済み割付を壊さない (空リストで 200).
+    try:
+        (
+            manager_mobilized_notices,
+            rotation_relaxed_notices,
+        ) = await _build_stage_mobilization_notices(db, l3_result=l3_result)
+    except Exception:
+        logger.exception("stage mobilization notice build failed post-commit; returning empty")
+        manager_mobilized_notices, rotation_relaxed_notices = [], []
+
     # Phase G-91 (修正2): 自動確定 (commit) したコース数 = ``committed_course_ids``
     # (= _persist へ実際に渡した assignments の course). 連続コースだけでなく、
     # その visit_group partner (clean 含む) も非 commit のため、 単純な
@@ -1825,6 +1859,8 @@ async def _assign_staff_only_impl(
         review_items=review_items,
         auto_committed_notices=auto_committed_notices,
         unresolved_warnings=unresolved_warnings,
+        manager_mobilized_notices=manager_mobilized_notices,
+        rotation_relaxed_notices=rotation_relaxed_notices,
     )
 
 
@@ -2285,6 +2321,62 @@ async def _collect_event_visit_warnings(
 # ---------------------------------------------------------------------------
 # Phase G-89: ローテ衝突 / 未割当コース warnings 構築
 # ---------------------------------------------------------------------------
+
+
+async def _build_stage_mobilization_notices(
+    db: AsyncSession,
+    *,
+    l3_result: Layer3Result,
+) -> tuple[list[StageAssignmentNoticeSchema], list[StageAssignmentNoticeSchema]]:
+    """4段ソルバの Stage 2/3 割当を ``via`` で集計してお知らせ 2 リストへ変換する.
+
+    ``l3_result.assignments`` の ``via`` フィールドで振り分ける:
+      - ``via='manager_mobilized'`` → ``manager_mobilized_notices``
+      - ``via='rotation_relaxed'``  → ``rotation_relaxed_notices``
+
+    確定済み（``_persist`` 済み）割当のみを通知する。
+    ``l3_result.committed_course_ids`` に含まれない course_id はレビュー送り
+    （管理者が承認前）であり、本通知の対象外とする。
+    承認後に再実行される割付フローで改めて通知が生成される。
+
+    §4.1: BE は両リストを独立に返す (= それぞれ別の事実). 不可避連続やレビューとの
+    重複整理は FE 側で視覚的に行う. staff_name は既存 warnings と同じ手段 (Staff.name)
+    で解決する. commit 後の読み取り専用処理として best-effort で呼ばれる.
+    """
+    committed_set = set(l3_result.committed_course_ids)
+    mobilized = [
+        a for a in l3_result.assignments
+        if a.via == "manager_mobilized" and a.course_id in committed_set
+    ]
+    relaxed = [
+        a for a in l3_result.assignments
+        if a.via == "rotation_relaxed" and a.course_id in committed_set
+    ]
+    if not mobilized and not relaxed:
+        return [], []
+
+    staff_ids: set[UUID] = {a.staff_id for a in mobilized} | {a.staff_id for a in relaxed}
+    staff_name_map: dict[UUID, str] = {}
+    if staff_ids:
+        srows = (await db.scalars(select(Staff).where(Staff.id.in_(list(staff_ids))))).all()
+        staff_name_map = {s.id: s.name for s in srows}
+
+    def _build(items: list[StaffAssignment]) -> list[StageAssignmentNoticeSchema]:
+        out = [
+            StageAssignmentNoticeSchema(
+                course_id=a.course_id,
+                weekday=a.weekday,
+                course_code=a.course_code,
+                staff_id=a.staff_id,
+                staff_name=staff_name_map.get(a.staff_id, ""),
+            )
+            for a in items
+        ]
+        # 決定的な並び: (weekday, course_code, staff_id).
+        out.sort(key=lambda n: (n.weekday, n.course_code, str(n.staff_id)))
+        return out
+
+    return _build(mobilized), _build(relaxed)
 
 
 async def _build_rotation_and_unassigned_warnings(

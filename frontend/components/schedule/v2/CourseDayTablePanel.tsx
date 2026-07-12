@@ -83,6 +83,7 @@ import {
   useApplyStaffReview,
   type AutoCommittedNotice,
   type ReviewItem,
+  type StageAssignmentNotice,
   type UnresolvedGenderWarning,
 } from '@/lib/queries/assign_staff_only';
 import { useCourses, useUpdateCourse, type CourseV2Read } from '@/lib/queries/courses';
@@ -2269,6 +2270,10 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
   const [autoCommittedNotices, setAutoCommittedNotices] = useState<AutoCommittedNotice[]>([]);
   // W-11: 性別制約を満たす候補ゼロで残った違反の警告 (手動調整が必要・承認不可).
   const [unresolvedWarnings, setUnresolvedWarnings] = useState<UnresolvedGenderWarning[]>([]);
+  // 4段ソルバ Stage 2: マネージャー動員のお知らせ (確定済み).
+  const [managerMobilizedNotices, setManagerMobilizedNotices] = useState<StageAssignmentNotice[]>([]);
+  // 4段ソルバ Stage 3: 前週同コード緩和のお知らせ (確定済み).
+  const [rotationRelaxedNotices, setRotationRelaxedNotices] = useState<StageAssignmentNotice[]>([]);
   // プール一括投入ダイアログ (W-2). PoolOverviewPane の「一括投入」ボタンから開く.
   const [bulkPoolInsertOpen, setBulkPoolInsertOpen] = useState(false);
   // スケジュール健康診断ダイアログ (Schedule Advisor Phase 1).
@@ -2335,21 +2340,33 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         iso_week: isoWeek,
         office_id: officeId,
       });
-      // Wave N-2 / W-11: 確認レビューフロー＋お知らせ＋残留違反を統合処理。
+      // Wave N-2 / W-11 / 4段ソルバ: 確認レビューフロー＋お知らせ＋残留違反＋Stage通知を統合処理。
       //   - review_items (要承認) / auto_committed_notices (確定済みお知らせ) /
-      //     unresolved_warnings (性別候補ゼロの残留違反・要手動調整) のいずれかが
+      //     unresolved_warnings (性別候補ゼロの残留違反・要手動調整) /
+      //     manager_mobilized_notices (Stage 2 動員) /
+      //     rotation_relaxed_notices (Stage 3 ローテ緩和) のいずれかが
       //     1 件以上あればダイアログを開く。
       //   - toast:
-      //       review あり           → warning (不可避/残留件数を追記)
-      //       review 0 + notices/残留あり → warning (「確認してください」で誤誘導しない)
-      //       すべて 0              → success のみ (従来どおり)
+      //       review あり                   → warning (不可避/残留/Stage件数を追記)
+      //       review 0 + notices等あり      → warning (「確認してください」で誤誘導しない)
+      //       すべて 0                      → success のみ (従来どおり)
       const items = res.review_items ?? [];
       const notices = res.auto_committed_notices ?? [];
       const unresolved = res.unresolved_warnings ?? [];
-      if (items.length > 0 || notices.length > 0 || unresolved.length > 0) {
+      const mobilized = res.manager_mobilized_notices ?? [];
+      const relaxed = res.rotation_relaxed_notices ?? [];
+      if (
+        items.length > 0 ||
+        notices.length > 0 ||
+        unresolved.length > 0 ||
+        mobilized.length > 0 ||
+        relaxed.length > 0
+      ) {
         setReviewItems(items);
         setAutoCommittedNotices(notices);
         setUnresolvedWarnings(unresolved);
+        setManagerMobilizedNotices(mobilized);
+        setRotationRelaxedNotices(relaxed);
         setAssignWarningOpen(true);
         if (items.length > 0) {
           const suffixParts: string[] = [];
@@ -2357,18 +2374,26 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
             suffixParts.push(`体制上不可避の連続 ${notices.length} 件は確定済み`);
           if (unresolved.length > 0)
             suffixParts.push(`性別制約を満たせない残留 ${unresolved.length} 件`);
+          if (mobilized.length > 0)
+            suffixParts.push(`マネージャー動員 ${mobilized.length} 件確定済み`);
+          if (relaxed.length > 0)
+            suffixParts.push(`前週同コース緩和 ${relaxed.length} 件確定済み`);
           const suffix = suffixParts.length > 0 ? `（うち${suffixParts.join('・')}）` : '';
           toast.warning(
             `自動スタッフ割当が完了しました (確定 ${res.courses_assigned} 件)。` +
               `レビューが必要なコースが ${items.length} 件あります。${suffix}`,
           );
         } else {
-          // review は 0 だが notices / 残留違反があるため「問題なし」に見せない (W-11)。
+          // review は 0 だが notices / 残留違反 / Stage 通知があるため「問題なし」に見せない。
           const parts: string[] = [];
           if (notices.length > 0)
             parts.push(`体制上不可避の連続 ${notices.length} 件を自動確定しました`);
           if (unresolved.length > 0)
             parts.push(`性別制約を満たせない残留が ${unresolved.length} 件あります`);
+          if (mobilized.length > 0)
+            parts.push(`マネージャー動員 ${mobilized.length} 件を自動確定しました`);
+          if (relaxed.length > 0)
+            parts.push(`前週同コース緩和 ${relaxed.length} 件を自動確定しました`);
           toast.warning(
             `自動スタッフ割当が完了しました (確定 ${res.courses_assigned} 件)。` +
               `${parts.join('。')}。内容をご確認ください。`,
@@ -3794,16 +3819,20 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
           open={assignWarningOpen}
           onClose={() => {
             setAssignWarningOpen(false);
-            // W-11: 整合のため review/notices/残留違反すべてクリアする。
+            // W-11 / 4段ソルバ: 整合のため review/notices/残留違反/Stage通知すべてクリアする。
             setReviewItems([]);
             setAutoCommittedNotices([]);
             setUnresolvedWarnings([]);
+            setManagerMobilizedNotices([]);
+            setRotationRelaxedNotices([]);
           }}
           reviewItems={reviewItems}
           onApply={handleApplyReview}
           applying={reviewApplying}
           notices={autoCommittedNotices}
           unresolvedWarnings={unresolvedWarnings}
+          managerMobilizedNotices={managerMobilizedNotices}
+          rotationRelaxedNotices={rotationRelaxedNotices}
         />
 
         {/* P3-⑥: 週次ガイドダイアログ (案内のみ・BE 変更なし). */}

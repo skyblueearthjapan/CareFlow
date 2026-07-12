@@ -1,7 +1,7 @@
 """Phase 1: 固定割当ルートの性別ハード制約穴塞ぎテスト.
 
-背景: 通常ルート (``_cost_single_cell``) と manager fallback
-(``_try_fallback_manager_for_course``) は性別ハード制約が効くが、 固定割当ルート
+背景: 通常ルート (``_cost_single_cell`` = Stage 1/2/3 共通のハンガリアン) は
+性別ハード制約が効くが、 固定割当ルート
 (``_solve_one_day`` の fixed 処理 / ``_build_fixed_assignments``) は性別未チェック
 だった (= 患者安全の穴). 本テストは:
   1. ``_staff_satisfies_gender`` / ``_sex_satisfies_restrictions`` ヘルパーの単一ソース化

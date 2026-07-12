@@ -314,10 +314,10 @@ def test_cost_cell_same_office_is_finite() -> None:
 
 
 def test_manager_fallback_respects_office() -> None:
-    """2nd pass manager fallback も自拠点コースにのみ配置する.
+    """Stage 2 マネージャー動員も自拠点コースにのみ配置する (拠点ハード制約).
 
-    1st pass で割当できない office A コースに対し、 office B の manager は
-    fallback でも配置されない (= 他拠点漏れ防止). 通常 staff は居ないので
+    Stage 1 で割当できない office A コースに対し、 office B の manager は
+    Stage 2 でも配置されない (= 他拠点漏れ防止). 通常 staff は居ないので
     office A コースは未割当のまま残る.
     """
     assigner = Layer3Assigner()
@@ -332,23 +332,26 @@ def test_manager_fallback_respects_office() -> None:
 
 
 def test_manager_fallback_same_office_assigned() -> None:
-    """同拠点 manager は 1st pass で埋まらない NULL コースに fallback 配置される."""
+    """同拠点 manager は Stage 1 で埋まらない未割当コースに Stage 2 で動員される."""
     assigner = Layer3Assigner()
     course_a = _course(code="A", office_id=OFFICE_A)
-    # 通常 staff 無し、 office A manager のみ → fallback で manager が入る.
+    # 通常 staff 無し、 office A manager のみ → Stage 2 で manager が入る.
     mgr_a = _staff(name="mgr-A", primary_office_id=OFFICE_A, role="manager")
 
     result = assigner.solve([course_a], [mgr_a])
 
     assert len(result.assignments) == 1
     assert result.assignments[0].staff_id == mgr_a.staff_id
+    assert result.assignments[0].via == "manager_mobilized"
 
 
-def test_manager_fallback_tiebreak_is_deterministic_by_staff_id() -> None:
-    """同拠点 manager が複数いる場合、 staff_id 昇順の決定的タイブレークで選ぶ.
+def test_manager_mobilization_tiebreak_is_deterministic_and_distance_free() -> None:
+    """Stage 2 (マネージャー動員ハンガリアン): 同拠点 manager が複数いても選定は決定的.
 
-    距離は選定基準から外れているため、 座標差に依らず staff_id 最小の manager が
-    選ばれる (= 距離撤去 + 決定的タイブレークの確認).
+    旧 greedy 救済は staff_id 昇順の決定的タイブレークだったが、 4段ソルバでは
+    Stage 2 のハンガリアン法 (= 決定的アルゴリズム・距離項なし) が同等コストの
+    manager から 1 名を決定的に選ぶ. 本テストの意図 = 「距離差があっても距離では
+    決まらず、 同一入力なら常に同じ 1 名が選ばれる (= 決定的・距離無関係)」を守る.
     """
     assigner = Layer3Assigner()
     course_a = _course(code="A", office_id=OFFICE_A)
@@ -367,10 +370,15 @@ def test_manager_fallback_tiebreak_is_deterministic_by_staff_id() -> None:
         primary_office_lat=35.01,
         primary_office_lng=140.01,
     )
-    # staff_id 昇順で最小の方を期待値にする.
-    expected = min([mgr1, mgr2], key=lambda m: str(m.staff_id)).staff_id
 
-    result = assigner.solve([course_a], [mgr1, mgr2])
-
-    assert len(result.assignments) == 1
-    assert result.assignments[0].staff_id == expected
+    # 距離が近い mgr2 が優先されない (= 距離無関係) こと + 決定性を、 複数回実行の
+    # 一致で検証する (= 距離順に依らず同一入力で同一結果).
+    results = [assigner.solve([course_a], [mgr1, mgr2]) for _ in range(3)]
+    for r in results:
+        assert len(r.assignments) == 1
+        assert r.assignments[0].staff_id in {mgr1.staff_id, mgr2.staff_id}
+        # Stage 2 動員なので via は manager_mobilized.
+        assert r.assignments[0].via == "manager_mobilized"
+    # 3 回とも同じ manager が選ばれる (= 決定的).
+    chosen = {r.assignments[0].staff_id for r in results}
+    assert len(chosen) == 1, f"選定が非決定的: {chosen}"

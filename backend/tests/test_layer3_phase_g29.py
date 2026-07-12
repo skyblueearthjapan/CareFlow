@@ -1,9 +1,12 @@
-"""Phase G-29: Layer 3 manager fallback (2nd pass) テスト.
+"""Layer 3 マネージャー動員 (Stage 2) テスト (旧 Phase G-29 manager fallback).
 
 User 要望: 「割り当ての人がいなかった場合に manager を配置する。 最初からの
-割り当てロジックの中に manager を混ぜない」。 1st pass (Hungarian, manager
-除外) で NULL のまま残ったコースに対し、 work_days / 性別 / event 重複 /
-1 day 1 course の制約を満たす manager を greedy で配置する 2nd pass を検証する。
+割り当てロジックの中に manager を混ぜない」。 4段ソルバでは Stage 1 (Hungarian,
+manager 除外) で未割当のまま残ったコースに対し、 work_days / 性別 / event 重複 /
+拠点 / 1 day 1 course の制約を満たす manager を **Stage 2 の 2 回目ハンガリアン**
+で動員する (旧 greedy 救済の後継). 割当には ``via='manager_mobilized'`` が付く。
+本ファイルはハード制約 (性別・勤務・event・1日1コース) が Stage 2 でも効くこと、
+不足日のみ動員されることを検証する (= 旧 fallback テストの意図を保持)。
 """
 
 from __future__ import annotations
@@ -127,8 +130,8 @@ def _make_staff(
 
 
 def test_manager_fallback_assigns_when_no_staff_available() -> None:
-    """staff 1 名 + manager 1 名で月曜に 2 コース → 1st pass で 1 件のみ、
-    2nd pass で manager が NULL コースに fallback 配置される.
+    """staff 1 名 + manager 1 名で月曜に 2 コース → Stage 1 で 1 件のみ、
+    Stage 2 で manager が未割当コースに動員される.
     """
     assigner = Layer3Assigner()
     course_a = _make_course(code="A", weekday=0)
@@ -142,17 +145,21 @@ def test_manager_fallback_assigns_when_no_staff_available() -> None:
     )
 
     assert len(result.assignments) == 2, (
-        f"2 コース全てに割当されていない (2nd pass fallback 不発): assignments={result.assignments}"
+        f"2 コース全てに割当されていない (Stage 2 動員 不発): assignments={result.assignments}"
     )
     staff_ids = {a.staff_id for a in result.assignments}
     assert staff.staff_id in staff_ids, (
-        "通常 staff が 1st pass で割当されていない (regression): "
+        "通常 staff が Stage 1 で割当されていない (regression): "
         f"staff_ids={staff_ids}, expected_includes={staff.staff_id}"
     )
     assert manager.staff_id in staff_ids, (
-        "manager が 2nd pass fallback で割当されていない (Phase G-29 fix 不発): "
+        "manager が Stage 2 動員で割当されていない (動員 不発): "
         f"staff_ids={staff_ids}, expected_includes={manager.staff_id}"
     )
+    # 動員された manager の via は manager_mobilized、 通常 staff は hungarian.
+    via_by_staff = {a.staff_id: a.via for a in result.assignments}
+    assert via_by_staff[manager.staff_id] == "manager_mobilized", via_by_staff
+    assert via_by_staff[staff.staff_id] == "hungarian", via_by_staff
 
 
 # ---------------------------------------------------------------------------

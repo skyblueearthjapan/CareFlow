@@ -189,6 +189,22 @@ _PATIENT_RECENT_PENALTY_BY_INDEX: dict[int, float] = {
 # とする. 距離 km 換算で 0-10 km 程度の振れ幅. (Phase 2 でも補助として残す.)
 COST_W5_ROTATION_MAX: float = 10.0
 
+# ---------------------------------------------------------------------------
+# 4段ソルバ (マネージャー動員 + ローテ緩和): Stage 3 の Q3 緩和ペナルティ
+# ---------------------------------------------------------------------------
+# Stage 3 (``_solve_stage3_relaxed``) で ``relax_rotation_exclusion=True`` のとき、
+# Q3「前週同一コースコード」ハード除外 (通常 HUNGARIAN_INFINITY) を、この
+# ソフト大ペナルティに差し替える (= 候補が 1 人も居ないときだけ「前週と同じコース」を
+# 許容して埋める). 他のハード制約 (性別・シフト・イベント・拠点) は INF のまま.
+#
+# 根拠: 通常ソフトコスト (β≦~20・W16=100・ジッタ≦10) を確実に支配しつつ、
+#   患者中心ローテ最上位 COST_PATIENT_RECENT_1 (1e6) より小さい
+#   (=「同じ患者に直近と同じ担当」の回避を「前週同コード回避」より優先する既存序列を保つ).
+#   COST_PATIENT_RECENT_3 (2e5) と同水準 =「起きてよいが最後の手段」.
+# 注記: 同一セルで両方発生時は合算 400_000 だが COST_PATIENT_RECENT_1 (1e6) 未満のため
+#   序列逆転は起きない (criticレビュー MINOR-6 で確認済み).
+COST_ROTATION_RELAXED_VIOLATION: float = 200_000.0
+
 
 # ---------------------------------------------------------------------------
 # Errors
@@ -244,9 +260,9 @@ class StaffInfo:
 
         本 API は Phase G-45 で ``count_active_staff_per_weekday`` (= H6 制約 /
         応援 staff_count 算入) 用に導入されたが、 **Phase G-90 以降は拠点ハード
-        制約の唯一の権威** でもある: ``_cost_single_cell`` / manager fallback
-        (``_try_fallback_manager_for_course``) / 固定割当防御 (``_solve_one_day``
-        の c2) の 3 経路すべてが本 API を呼び、 ``effective_office_for_weekday
+        制約の唯一の権威** でもある: ``_cost_single_cell`` (= Stage 1/2/3 の
+        ハンガリアン共通) / 固定割当防御 (``_solve_one_day``
+        の c2) の経路が本 API を呼び、 ``effective_office_for_weekday
         (course.weekday) != course.office_id`` のセルを ``HUNGARIAN_INFINITY`` で
         除外する (= スタッフは自分の実効拠点のコースにしか割り当たらない).
 
@@ -305,6 +321,14 @@ class StaffAssignment(BaseModel):
     course_code: str
     course_id: UUID
     staff_id: UUID
+    # 4段ソルバ: この割当がどの経路で確定したか (= レスポンス集計・Gini 除外に使う).
+    #   "hungarian"          : Stage 1 の正規スタッフハンガリアン (既定).
+    #   "fixed"              : W16 等の事前固定割当 (M コース固定など).
+    #   "manager_mobilized"  : Stage 2 でマネージャーを動員して埋めた.
+    #   "rotation_relaxed"   : Stage 3 で前週同コード除外を緩和して埋めた.
+    # DB には永続化しない (内部表現 + レスポンス集計用). デフォルト値つき追加のため
+    # 既存生成箇所・既存テストの等価比較は非破壊 (両辺同デフォルト).
+    via: str = "hungarian"
 
 
 @dataclass(frozen=True)
@@ -560,8 +584,9 @@ def _sex_satisfies_restrictions(sex: str | None, restrictions: frozenset[str]) -
 def _staff_satisfies_gender(staff: StaffInfo, course: CourseAssignmentTarget) -> bool:
     """staff がコースの性別ハード制約を満たすなら True (= 割当可能).
 
-    既存の ``_cost_single_cell`` (γ ブロック) / ``_try_fallback_manager_for_course``
-    の性別判定ロジックの **単一ソース** (``_sex_satisfies_restrictions`` に委譲).
+    ``_cost_single_cell`` (γ ブロック = Stage 1/2/3 共通) / 固定割当ルート
+    (``_solve_one_day``) の性別判定ロジックの **単一ソース**
+    (``_sex_satisfies_restrictions`` に委譲).
     ``gender_restrictions`` の値 ('female_only'/'male_only') は
     ``_normalize_sex_restriction`` で staff.sex の形式 ('female'/'male') に
     正規化してから比較する (Phase G-27 fix と整合).
@@ -1693,8 +1718,10 @@ class Layer3Assigner:
             - Phase G-27: ``course.gender_restrictions`` の値 ('female_only'/'male_only') は
               cost 計算時に ``_normalize_sex_restriction`` で staff.sex の形式
               ('female'/'male') に正規化してから比較する.
-            - Phase G-29: 1st pass で NULL のまま残ったコースに対しては、
-              ``_apply_manager_fallback`` (2nd pass) で manager を greedy 配置する.
+            - 4段ソルバ: Stage 1 (正規スタッフのハンガリアン) 後に未割当が残る日は
+              Stage 2 (``_solve_stage2_managers`` = マネージャー動員ハンガリアン)、
+              なお残れば Stage 3 (``_solve_stage3_relaxed`` = 前週同コード除外を緩和した
+              ハンガリアン) の順で埋める. 各割当は ``StaffAssignment.via`` に経路を持つ.
         """
         if history is None:
             history = []
@@ -1712,8 +1739,8 @@ class Layer3Assigner:
         # (fixed 経路で M コースへの lookup に使用するため eligible_staff に残す必要がある)
         # 新人同行 §8: 新人 (is_trainee=true) は「コースを持たない」運用 (PO確定) のため
         # 割付候補から除外する (manager 除外と同列)。母集団 (load_active_staff) は
-        # 他参照のため残し、選定時のみ除外する方針。manager fallback は raw staff_pool を
-        # 別途受け取り、そこでも not is_trainee で弾く (2439)。
+        # 他参照のため残し、選定時のみ除外する方針。Stage 2/3 は raw staff_pool を
+        # 別途受け取り、そこでも not is_trainee で新人を弾く。
         eligible_staff = [
             s
             for s in staff_pool
@@ -1760,23 +1787,47 @@ class Layer3Assigner:
                 patient_recent_staff=working_recent,
             )
 
-            # ---------- Phase G-29: 2nd pass — manager fallback ----------
-            # 1st pass (Hungarian, manager 除外) 完了後、 当該曜日で NULL のまま
-            # 残ったコースに対し manager を greedy 配置する。
-            # User 仕様: 「割り当ての人がいなかった場合に manager を配置する。
-            # 最初からの割り当てロジックの中に manager を混ぜない」.
-            day_assignments = self._apply_manager_fallback(
+            # ---------- Stage 2: マネージャー動員ハンガリアン ----------
+            # Stage 1 (Hungarian, manager 除外) 後に未割当コースが残る「不足日」のみ、
+            # フリーマネージャーで 2 回目のハンガリアンを解く (= 旧 greedy 救済の後継).
+            # ローテ・患者継続性・履歴が効き、川名/熊澤の固定偏りが消える.
+            stage2 = self._solve_stage2_managers(
                 weekday=weekday,
                 day_courses=day_courses,
-                staff_pool=staff_pool,
                 day_assignments=day_assignments,
+                staff_pool=staff_pool,
+                history=history,
+                prev_day_pairs=prev_day_pairs if same_course_prev_day_penalty else set(),
                 events_by_staff=events_by_staff,
                 week_monday=week_monday,
+                iso_year=iso_year,
+                iso_week=iso_week,
+                patient_recent_staff=working_recent,
             )
+            day_assignments = day_assignments + stage2
+
+            # ---------- Stage 3: ローテ緩和ハンガリアン ----------
+            # Stage 2 後もなお未割当コースが残る場合のみ、前週同コード除外を最後の手段
+            # として緩和し、当日フリー全員 (非新人) で 3 回目のハンガリアンを解く.
+            # 性別・シフト・イベント・拠点は緩和しない (INF のまま).
+            stage3 = self._solve_stage3_relaxed(
+                weekday=weekday,
+                day_courses=day_courses,
+                day_assignments=day_assignments,
+                staff_pool=staff_pool,
+                history=history,
+                prev_day_pairs=prev_day_pairs if same_course_prev_day_penalty else set(),
+                events_by_staff=events_by_staff,
+                week_monday=week_monday,
+                iso_year=iso_year,
+                iso_week=iso_week,
+                patient_recent_staff=working_recent,
+            )
+            day_assignments = day_assignments + stage3
 
             for a in day_assignments:
                 all_assignments.append(a)
-                # 距離集計 — fallback で入った manager も staff_pool に居るので参照可
+                # 距離集計 — Stage 2/3 で入った要員も staff_pool に居るので参照可
                 course = next(c for c in day_courses if c.course_id == a.course_id)
                 staff = next(s for s in staff_pool if s.staff_id == a.staff_id)
                 total_distance += self._distance_km(course, staff)
@@ -1789,9 +1840,8 @@ class Layer3Assigner:
             # 同一状態 (= 当日割当を未だ反映していない). 各 assignment の course の
             # 各 patient について working_recent.get(pid) 内の staff_id index を引き、
             # ヒットしたら衝突として記録する (= 人手不足で直近担当者を再割り当て).
-            # Hungarian 経由は cost が使った recent index と一致する。 manager
-            # fallback 経由は cost 未評価のため、 本ループで実 recent 位置を新規算出する
-            # (= patient 安全上は同じ衝突として扱う).
+            # Stage 1/2/3 いずれも cost (= _cost_single_cell) を通過するので recent
+            # index と一致する (= 旧 greedy fallback の cost 未評価問題は解消).
             for a in day_assignments:
                 course = next(c for c in day_courses if c.course_id == a.course_id)
                 for pid in course.patient_ids:
@@ -1827,11 +1877,21 @@ class Layer3Assigner:
                     working_recent[pid] = recent[:PATIENT_RECENT_DEPTH]
 
         # ローテーション分散度 (Gini) — fixed 割当は分散度計算対象外
-        # (固定スタッフはローテーション対象ではないため)
-        rotatable_assignments = [a for a in all_assignments if a.staff_id not in fixed_staff_ids]
-        rotatable_staff_count = max(
-            1, len([s for s in eligible_staff if s.staff_id not in fixed_staff_ids])
-        )
+        # (固定スタッフはローテーション対象ではないため).
+        # 4段ソルバ: 分母 (rotatable_staff_count) は eligible_staff (= manager 除外)
+        # から算出するため、分子も「分母に居るスタッフの割当」に限定して整合させる.
+        # これで Stage 2 の manager 動員 (via='manager_mobilized') に加え、Stage 3 の
+        # Q3 緩和経由で manager が入った稀なケース (via='rotation_relaxed' だが分母不在)
+        # も分子から除外される (= 分子/分母の母集団を単一ソース化. code-review MINOR-1).
+        rotatable_staff_ids = {
+            s.staff_id for s in eligible_staff if s.staff_id not in fixed_staff_ids
+        }
+        rotatable_assignments = [
+            a
+            for a in all_assignments
+            if a.staff_id not in fixed_staff_ids and a.staff_id in rotatable_staff_ids
+        ]
+        rotatable_staff_count = max(1, len(rotatable_staff_ids))
         rotation_score = self._gini_index(
             [a.staff_id for a in rotatable_assignments],
             staff_count=rotatable_staff_count,
@@ -1944,6 +2004,7 @@ class Layer3Assigner:
                     course_code=course.course_code,
                     course_id=course.course_id,
                     staff_id=staff.staff_id,
+                    via="fixed",
                 )
             )
             valid_fixed_staff_ids.add(staff.staff_id)
@@ -1958,15 +2019,79 @@ class Layer3Assigner:
         if not free_courses or not free_staff:
             return result
 
-        n_courses = len(free_courses)
-        n_staff = len(free_staff)
+        # コスト行列構築 → ハンガリアン → INF フィルタは共有ヘルパーへ抽出した
+        # (Stage 2/3 も同じ機構を再利用する). fixed 割当分 (result) にマージして返す.
+        result.extend(
+            self._solve_matching(
+                weekday=weekday,
+                courses=free_courses,
+                pool=free_staff,
+                history=history,
+                prev_day_pairs=prev_day_pairs,
+                events_by_staff=events_by_staff,
+                week_monday=week_monday,
+                iso_year=iso_year,
+                iso_week=iso_week,
+                patient_recent_staff=patient_recent_staff,
+            )
+        )
+
+        return result
+
+    def _solve_matching(
+        self,
+        *,
+        weekday: int,
+        courses: list[CourseAssignmentTarget],
+        pool: list[StaffInfo],
+        history: list[tuple[int, str, UUID]],
+        prev_day_pairs: set[tuple[str, UUID]] | None = None,
+        events_by_staff: dict[UUID, list[StaffEvent]] | None = None,
+        week_monday: date_cls | None = None,
+        iso_year: int | None = None,
+        iso_week: int | None = None,
+        patient_recent_staff: dict[UUID, list[UUID]] | None = None,
+        relax_rotation_exclusion: bool = False,
+    ) -> list[StaffAssignment]:
+        """``courses × pool`` のコスト行列を組んでハンガリアン法で最小コスト割当を解く.
+
+        「コスト行列構築 → ``hungarian_min_cost`` → INF フィルタ」の純粋機構を
+        単一ソース化したヘルパー (Stage 1 の free マッチング / Stage 2 マネージャー動員 /
+        Stage 3 ローテ緩和 の 3 経路が再利用する). 挙動は旧 ``_solve_one_day`` の
+        末尾ブロックと等価 (= 純リファクタ).
+
+        Args:
+            weekday: 0=Mon..6=Sun.
+            courses: マッチング対象のコース list (= まだ未割当のコース).
+            pool: 候補スタッフ list (= まだ当日未割当の要員).
+            relax_rotation_exclusion: True のとき Q3「前週同コード」除外をソフト
+                大ペナルティに緩和する (Stage 3 用). 性別・シフト・イベント・拠点は
+                緩和しない (INF のまま).
+
+        Returns:
+            割当 ``StaffAssignment`` の list. ``via`` は既定 "hungarian" のまま返す
+            (Stage 2/3 では呼び出し側が上書きする).
+        """
+        # 現行の全呼び出し元 (Stage 1 の _solve_one_day / Stage 2 / Stage 3) は
+        # 非 None を渡すため以下のガードは保険 (= 将来の直接利用・テスト向けの防御).
+        if prev_day_pairs is None:
+            prev_day_pairs = set()
+        if events_by_staff is None:
+            events_by_staff = {}
+        if patient_recent_staff is None:
+            patient_recent_staff = {}
+        if not courses or not pool:
+            return []
+
+        n_courses = len(courses)
+        n_staff = len(pool)
         n = max(n_courses, n_staff)  # 正方化
 
         # cost[i][j] = (course i, staff j) のコスト. ダミー行/列は 0.0 で埋める.
         cost: list[list[float]] = [[0.0] * n for _ in range(n)]
 
-        for i, course in enumerate(free_courses):
-            for j, staff in enumerate(free_staff):
+        for i, course in enumerate(courses):
+            for j, staff in enumerate(pool):
                 cost[i][j] = self._cost_single_cell(
                     weekday=weekday,
                     course=course,
@@ -1978,6 +2103,7 @@ class Layer3Assigner:
                     iso_year=iso_year,
                     iso_week=iso_week,
                     patient_recent_staff=patient_recent_staff,
+                    relax_rotation_exclusion=relax_rotation_exclusion,
                 )
         # ダミー行 (i >= n_courses): 全列コスト 0  → 「未割当の course/staff」を吸収
         # ダミー列 (j >= n_staff): 全行コスト 0
@@ -1986,6 +2112,7 @@ class Layer3Assigner:
         assignment = hungarian_min_cost(cost)
 
         # 結果フィルタリング: 実コース × 実スタッフかつ INF 未満のもののみ採用
+        result: list[StaffAssignment] = []
         for i in range(n_courses):
             j = assignment[i]
             if j < 0 or j >= n_staff:
@@ -1993,8 +2120,8 @@ class Layer3Assigner:
             if cost[i][j] >= HUNGARIAN_INFINITY:
                 # ハード制約違反のセル — 割当不能
                 continue
-            course = free_courses[i]
-            staff = free_staff[j]
+            course = courses[i]
+            staff = pool[j]
             result.append(
                 StaffAssignment(
                     weekday=weekday,
@@ -2005,6 +2132,147 @@ class Layer3Assigner:
             )
 
         return result
+
+    def _solve_stage2_managers(
+        self,
+        *,
+        weekday: int,
+        day_courses: list[CourseAssignmentTarget],
+        day_assignments: list[StaffAssignment],
+        staff_pool: list[StaffInfo],
+        history: list[tuple[int, str, UUID]],
+        prev_day_pairs: set[tuple[str, UUID]],
+        events_by_staff: dict[UUID, list[StaffEvent]],
+        week_monday: date_cls | None,
+        iso_year: int | None,
+        iso_week: int | None,
+        patient_recent_staff: dict[UUID, list[UUID]],
+    ) -> list[StaffAssignment]:
+        """Stage 2: マネージャー動員ハンガリアン (旧 greedy 救済の後継).
+
+        PO 決定 1: マネージャー動員は「足りない日」だけ (= Stage 1 後に未割当コースが
+        残っている場合のみ発動). Stage 1 に最初から混ぜない思想を維持する.
+
+        候補プール = ``role='manager'`` かつ ``is_trainee=False`` かつ 当日未割当
+        (固定 M コース担当済みの manager は除外 = 1 staff 1 day 1 course). 未割当コース ×
+        候補マネージャーを ``_cost_single_cell`` (relax なし) で 2 回目のハンガリアンに
+        かける. これによりマネージャーにもローテ・患者継続性・履歴が効き、UUID 昇順
+        タイブレークの固定偏り (川名/熊澤の偏り) が消える (PO 決定 2: マネージャー間同等).
+
+        全マネージャーが当該コースにハード制約違反 (全セル INF) の場合、そのコースは
+        埋めずに Stage 3 へ送る (= 旧 greedy の「候補 None」 と同等).
+
+        Args:
+            day_assignments: Stage 1 の結果 (= このメソッドは非破壊で新規割当のみ返す).
+            staff_pool: 生の staff_pool (= manager を含む). Stage 1 の eligible_staff
+                (manager 除外済み) ではなく raw pool を渡すこと.
+
+        Returns:
+            Stage 2 で新規に確定した割当 (``via='manager_mobilized'``). 未割当のままなら空.
+        """
+        assigned_course_ids = {a.course_id for a in day_assignments}
+        assigned_staff_ids = {a.staff_id for a in day_assignments}
+
+        unassigned = [c for c in day_courses if c.course_id not in assigned_course_ids]
+        if not unassigned:
+            return []
+
+        # フリーマネージャー: role='manager', 非新人, 当日他コース未担当.
+        # work_days / 性別 / event / 拠点 のハード制約は _cost_single_cell 内で判定.
+        free_managers = [
+            s
+            for s in staff_pool
+            if s.role == "manager" and not s.is_trainee and s.staff_id not in assigned_staff_ids
+        ]
+        if not free_managers:
+            return []
+
+        matched = self._solve_matching(
+            weekday=weekday,
+            courses=unassigned,
+            pool=free_managers,
+            history=history,
+            prev_day_pairs=prev_day_pairs,
+            events_by_staff=events_by_staff,
+            week_monday=week_monday,
+            iso_year=iso_year,
+            iso_week=iso_week,
+            patient_recent_staff=patient_recent_staff,
+            relax_rotation_exclusion=False,
+        )
+        for a in matched:
+            a.via = "manager_mobilized"
+        return matched
+
+    def _solve_stage3_relaxed(
+        self,
+        *,
+        weekday: int,
+        day_courses: list[CourseAssignmentTarget],
+        day_assignments: list[StaffAssignment],
+        staff_pool: list[StaffInfo],
+        history: list[tuple[int, str, UUID]],
+        prev_day_pairs: set[tuple[str, UUID]],
+        events_by_staff: dict[UUID, list[StaffEvent]],
+        week_monday: date_cls | None,
+        iso_year: int | None,
+        iso_week: int | None,
+        patient_recent_staff: dict[UUID, list[UUID]],
+    ) -> list[StaffAssignment]:
+        """Stage 3: ローテ緩和ハンガリアン (前週同コード除外を最後の手段で緩和).
+
+        PO 決定 3: 「候補が 1 人もいないときだけ」前週同コード除外をハード → ソフトに
+        緩和する. 性別・シフト・イベント・拠点は緩和しない (INF のまま).
+
+        発動条件 = Stage 2 完了後もなお未割当コースが残っている場合のみ.
+        候補プール = 当日未割当の全員 (正規スタッフ + マネージャー、非新人).
+        ``relax_rotation_exclusion=True`` で 3 回目のハンガリアンを解く.
+
+        via 判定は呼び出し側 (本メソッド) で Q3 条件を再評価する: history 内に
+        ``weeks_ago<=ROTATION_EXCLUSION_WEEKS`` かつ同 course_code・同 staff_id が
+        あれば緩和セル経由 (= ``via='rotation_relaxed'``)、無ければ ``via='hungarian'``.
+
+        Returns:
+            Stage 3 で新規に確定した割当. 緩和セル経由は ``via='rotation_relaxed'``.
+        """
+        assigned_course_ids = {a.course_id for a in day_assignments}
+        assigned_staff_ids = {a.staff_id for a in day_assignments}
+
+        unassigned = [c for c in day_courses if c.course_id not in assigned_course_ids]
+        if not unassigned:
+            return []
+
+        # 当日フリー全員 (正規スタッフ + マネージャー). 新人は全 Stage で除外.
+        free_pool = [
+            s for s in staff_pool if not s.is_trainee and s.staff_id not in assigned_staff_ids
+        ]
+        if not free_pool:
+            return []
+
+        matched = self._solve_matching(
+            weekday=weekday,
+            courses=unassigned,
+            pool=free_pool,
+            history=history,
+            prev_day_pairs=prev_day_pairs,
+            events_by_staff=events_by_staff,
+            week_monday=week_monday,
+            iso_year=iso_year,
+            iso_week=iso_week,
+            patient_recent_staff=patient_recent_staff,
+            relax_rotation_exclusion=True,
+        )
+
+        # via 判定: Q3 (前週同コード) を再評価し、緩和セル経由なら rotation_relaxed.
+        for a in matched:
+            relaxed = any(
+                weeks_ago <= ROTATION_EXCLUSION_WEEKS
+                and course_code == a.course_code
+                and staff_id == a.staff_id
+                for weeks_ago, course_code, staff_id in history
+            )
+            a.via = "rotation_relaxed" if relaxed else "hungarian"
+        return matched
 
     def _cost_single_cell(
         self,
@@ -2019,6 +2287,7 @@ class Layer3Assigner:
         iso_year: int | None = None,
         iso_week: int | None = None,
         patient_recent_staff: dict[UUID, list[UUID]] | None = None,
+        relax_rotation_exclusion: bool = False,
     ) -> float:
         """単一セル (course, staff) のコストを返す.
 
@@ -2086,13 +2355,22 @@ class Layer3Assigner:
             ):
                 return HUNGARIAN_INFINITY
 
-        # ---------- Q3 ハイブリッド: 直近 1 週は強制除外 ----------
+        # ---------- Q3 ハイブリッド: 直近 1 週は強制除外 (Stage 3 では緩和可) ----------
+        # 通常 (relax_rotation_exclusion=False): 前週同一 course_code はハード除外.
+        # Stage 3 (relax_rotation_exclusion=True): 早期 return をやめてソフト大ペナルティ
+        # (COST_ROTATION_RELAXED_VIOLATION) を加算し、後続のソフトコスト (β・W16・患者中心・
+        # ジッタ) も通常どおり評価する (= 候補が居ないときだけ「前週と同じコース」を許容).
+        # 性別・シフト・イベント・拠点は上のブロックで既に INF 判定済み (緩和対象外).
+        rotation_relaxed_penalty = 0.0
         for weeks_ago, course_code, staff_id in history:
             if (
                 weeks_ago <= ROTATION_EXCLUSION_WEEKS
                 and course_code == course.course_code
                 and staff_id == staff.staff_id
             ):
+                if relax_rotation_exclusion:
+                    rotation_relaxed_penalty = COST_ROTATION_RELAXED_VIOLATION
+                    break
                 return HUNGARIAN_INFINITY
 
         # ---------- Phase G-90: 距離はコストから撤去 ----------
@@ -2162,6 +2440,7 @@ class Layer3Assigner:
             + prev_day_penalty
             + patient_rotation_penalty
             + rotation_random
+            + rotation_relaxed_penalty
         )
 
     def _distance_km(self, course: CourseAssignmentTarget, staff: StaffInfo) -> float:
@@ -2191,89 +2470,6 @@ class Layer3Assigner:
             course.centroid_lat,
             course.centroid_lng,
         )
-
-    # ------------------------------------------------------------------ #
-    # Phase G-29: manager fallback (2nd pass)
-    # ------------------------------------------------------------------ #
-
-    def _try_fallback_manager_for_course(
-        self,
-        *,
-        course: CourseAssignmentTarget,
-        free_managers: list[StaffInfo],
-        weekday: int,
-        events_by_staff: dict[UUID, list[StaffEvent]],
-        week_monday: date_cls | None,
-    ) -> StaffInfo | None:
-        """1 つの unassigned course に対し best manager を返す.
-
-        Phase G-29: 1st pass (Hungarian, manager 除外) で割当不能だったコースに
-        対する 2nd pass の helper. 制約 (拠点 / work_days / 性別 / 当日 event 重複)
-        を満たす manager のうち、 ``staff_id`` 昇順の決定的タイブレークで選ぶ。
-
-        Phase G-90: 拠点ハード制約を追加し、 距離を選定基準から撤去した.
-        manager も自拠点コースにのみ配置する (= 実効拠点 ≠ course 拠点なら skip).
-        同拠点内では距離 (km) は割付に無関係なので、 選定キーを
-        ``staff_id`` (UUID 文字列) 昇順の決定的タイブレークに変更した
-        (旧 ``(distance, staff_id)`` を置換).
-
-        Args:
-            course: 割当対象の NULL コース.
-            free_managers: まだ当該曜日で未使用の manager 候補リスト.
-            weekday: 0=Mon..6=Sun.
-            events_by_staff: ``staff_id -> [StaffEvent, ...]``. 重複判定用.
-            week_monday: 当該週月曜日 (event 重複判定に必要).
-
-        Returns:
-            適合 manager (= ``StaffInfo``) または None (適合者なし).
-
-        Notes:
-            - 選定は ``staff_id`` (UUID) 文字列の昇順で決定的に安定化する.
-              spec 上は ``staff.code`` 昇順だが ``StaffInfo`` に code フィールドが
-              無いため代理として ``staff_id`` を用いる.
-        """
-        best_mgr: StaffInfo | None = None
-        best_key: str | None = None
-
-        for mgr in free_managers:
-            # ---------- Phase G-90: 拠点ハード制約 ----------
-            # manager も自拠点コースにのみ配置する (= 他拠点漏れ防止).
-            # ``course.office_id is None`` (= 合成テスト fixture) では skip (後方互換).
-            if course.office_id is not None:
-                if mgr.effective_office_for_weekday(weekday) != course.office_id:
-                    continue
-
-            # ---------- 性別 check (ハード) ----------
-            # 1st pass の ``_cost_single_cell`` と同じ AND semantics に統一.
-            # Phase G-29 reviewer 指摘 HIGH-1: 元の OR semantics だと「female_only +
-            # male_only 両方を含むコース」で manager が誤割当される hard 制約違反の
-            # リスクがあった. Phase 1: ``_staff_satisfies_gender`` に単一ソース化.
-            if not _staff_satisfies_gender(mgr, course):
-                continue
-
-            # ---------- 当日勤務 check (ハード, work_days) ----------
-            if weekday not in mgr.work_days:
-                continue
-
-            # ---------- event 重複 check (ハード, W33 buffer) ----------
-            if events_by_staff and week_monday is not None and course.visits:
-                if _has_event_overlap_with_buffer(
-                    staff_id=mgr.staff_id,
-                    course=course,
-                    weekday=weekday,
-                    events_by_staff=events_by_staff,
-                    week_monday=week_monday,
-                ):
-                    continue
-
-            # ---------- Phase G-90: staff_id 昇順の決定的タイブレーク ----------
-            # 同拠点内なので距離は無意味. staff_id (UUID 文字列) 昇順で安定選択.
-            key = str(mgr.staff_id)
-            if best_key is None or key < best_key:
-                best_key = key
-                best_mgr = mgr
-
-        return best_mgr
 
     def _compute_gender_candidate_for_course(
         self,
@@ -2380,108 +2576,6 @@ class Layer3Assigner:
                 best_key = key
                 best_staff = staff
         return best_staff
-
-    def _apply_manager_fallback(
-        self,
-        *,
-        weekday: int,
-        day_courses: list[CourseAssignmentTarget],
-        staff_pool: list[StaffInfo],
-        day_assignments: list[StaffAssignment],
-        events_by_staff: dict[UUID, list[StaffEvent]],
-        week_monday: date_cls | None,
-    ) -> list[StaffAssignment]:
-        """Phase G-29: 1st pass 後、 NULL コースに manager を greedy 配置する.
-
-        User 要望: 「割り当ての人がいなかった場合に manager を配置する。 最初からの
-        割り当てロジックの中に manager を混ぜない」 = 1st pass は通常 staff (+ 固定
-        manager) のみ、 2nd pass で残った NULL コースに manager を fallback 配置する。
-
-        Manager 配置条件 (全て満たす):
-          1. role='manager' (= staff_pool に居る) かつ is_trainee=False
-          2. 当日勤務 (weekday ∈ manager.work_days)
-          3. 性別制限を満たす (``_normalize_sex_restriction`` で正規化後の集合に
-             manager.sex が含まれる)
-          4. 当日まだ他コース未担当 (= 1 staff 1 day 1 course を manager にも適用.
-             1st pass で M コース固定担当の manager は 2nd pass で再利用しない)
-          5. StaffEvent 時間帯重複なし (``_has_event_overlap_with_buffer``)
-          6. Phase G-90: 拠点ハード制約 (= 実効拠点 == course 拠点). 詳細は
-             ``_try_fallback_manager_for_course`` 参照.
-
-        複数 NULL コースがある場合は greedy: コースを 1 件ずつ巡回し、 残存
-        manager から best (= staff_id 昇順の決定的タイブレーク) を選ぶ。 1 度
-        割当てた manager は free_managers から除外する (= 1 day 1 course 制約).
-
-        Args:
-            weekday: 0=Mon..6=Sun.
-            day_courses: 当該曜日の全コース.
-            staff_pool: 全スタッフ (= manager 含む生の pool).
-            day_assignments: 1st pass の結果 (= solve_one_day の戻り値).
-            events_by_staff: ``staff_id -> [StaffEvent, ...]``.
-            week_monday: 当該週月曜日 (event 重複判定用).
-
-        Returns:
-            1st pass + 2nd pass を統合した最終 assignment list.
-
-        Notes:
-            - Phase G-90: 拠点ハード制約 + staff_id 昇順の決定的タイブレークで判定.
-              ローテ履歴 / W16 連続防止 / Wave 5 同患者ペナルティは 2nd pass では
-              考慮しない (= 「割当不能な救済」 という性質上、 副次的最適化より
-              配置できることを優先).
-        """
-        if not day_courses or not staff_pool:
-            return day_assignments
-
-        assigned_course_ids: set[UUID] = {a.course_id for a in day_assignments}
-        assigned_staff_ids: set[UUID] = {a.staff_id for a in day_assignments}
-
-        # NULL のままのコース
-        unassigned = [c for c in day_courses if c.course_id not in assigned_course_ids]
-        if not unassigned:
-            return day_assignments
-
-        # fallback 候補 manager: role='manager', is_trainee=False,
-        # 当日他コース未担当 (= 1st pass で固定 M を担当した manager は除外).
-        # work_days / 性別 / event は course 個別に判定するため
-        # ``_try_fallback_manager_for_course`` 内で行う。
-        free_managers = [
-            s
-            for s in staff_pool
-            if s.role == "manager" and not s.is_trainee and s.staff_id not in assigned_staff_ids
-        ]
-        if not free_managers:
-            return day_assignments
-
-        # greedy: 各 unassigned course に対し best manager を 1 件ずつ確定し、
-        # 確定した manager を free_managers から除く. 同一 course を複数 manager に
-        # 割り当てない (1 day 1 course 制約) + 同一 manager を複数 course に割り
-        # 当てない (1 staff 1 day 1 course 制約).
-        # コース処理順は day_courses の元順 (= _load_course_targets の order_by
-        # weekday, code に従う) で決定論的.
-        result = list(day_assignments)
-        for course in unassigned:
-            if not free_managers:
-                break
-            best_mgr = self._try_fallback_manager_for_course(
-                course=course,
-                free_managers=free_managers,
-                weekday=weekday,
-                events_by_staff=events_by_staff,
-                week_monday=week_monday,
-            )
-            if best_mgr is None:
-                continue
-            result.append(
-                StaffAssignment(
-                    weekday=weekday,
-                    course_code=course.course_code,
-                    course_id=course.course_id,
-                    staff_id=best_mgr.staff_id,
-                )
-            )
-            free_managers.remove(best_mgr)
-
-        return result
 
     def _gini_index(self, items: list[Any], *, staff_count: int) -> float:
         """ローテ分散度を Gini 係数で表現する.

@@ -42,6 +42,7 @@ import {
 import type {
   AutoCommittedNotice,
   ReviewItem,
+  StageAssignmentNotice,
   UnresolvedGenderWarning,
 } from '@/lib/queries/assign_staff_only';
 import { cn } from '@/lib/utils';
@@ -91,6 +92,16 @@ export interface AssignWarningDialogProps {
    * このダイアログでは approve 対象外・常時表示。
    */
   unresolvedWarnings?: UnresolvedGenderWarning[];
+  /**
+   * 4段ソルバ Stage 2: マネージャー動員で埋めたコースのお知らせ (確定済み・アクション不要).
+   * 折りたたみで表示。auto_committed_notices との重複はチップで視覚整理。
+   */
+  managerMobilizedNotices?: StageAssignmentNotice[];
+  /**
+   * 4段ソルバ Stage 3: 前週同コード緩和で埋めたコースのお知らせ (確定済み・アクション不要).
+   * 折りたたみで表示。auto_committed_notices との重複はチップで視覚整理。
+   */
+  rotationRelaxedNotices?: StageAssignmentNotice[];
 }
 
 export function AssignWarningDialog({
@@ -101,6 +112,8 @@ export function AssignWarningDialog({
   applying = false,
   notices = [],
   unresolvedWarnings = [],
+  managerMobilizedNotices = [],
+  rotationRelaxedNotices = [],
 }: AssignWarningDialogProps) {
   // 承認済み course_id 集合 (= チェック / 確認モーダル通過分).
   const [approved, setApproved] = React.useState<Set<string>>(() => new Set());
@@ -108,6 +121,9 @@ export function AssignWarningDialog({
   const [confirmTarget, setConfirmTarget] = React.useState<ReviewItem | null>(null);
   // Wave N-2: お知らせセクションの折りたたみ状態 (既定: 閉).
   const [noticesOpen, setNoticesOpen] = React.useState(false);
+  // 4段ソルバ Stage 2/3: 各セクションの折りたたみ状態 (既定: 閉).
+  const [managerMobilizedOpen, setManagerMobilizedOpen] = React.useState(false);
+  const [rotationRelaxedOpen, setRotationRelaxedOpen] = React.useState(false);
 
   // ダイアログ open 時に承認状態をリセットする.
   React.useEffect(() => {
@@ -115,11 +131,17 @@ export function AssignWarningDialog({
       setApproved(new Set());
       setConfirmTarget(null);
       setNoticesOpen(false);
+      setManagerMobilizedOpen(false);
+      setRotationRelaxedOpen(false);
     }
   }, [open]);
 
   const genderItems = reviewItems.filter((i) => i.reason === 'gender');
   const consecutiveItems = reviewItems.filter((i) => i.reason === 'consecutive');
+
+  // §4.1 チップ併記: auto_committed_notices と新 Stage 通知の重複を視覚整理するための course_id セット.
+  const managerMobilizedIds = new Set(managerMobilizedNotices.map((n) => n.course_id));
+  const rotationRelaxedIds = new Set(rotationRelaxedNotices.map((n) => n.course_id));
 
   const toggleApproved = (courseId: string, next: boolean) => {
     setApproved((prev) => {
@@ -193,7 +215,7 @@ export function AssignWarningDialog({
               自動スタッフ割当のレビュー
             </DialogTitle>
             {reviewItems.length === 0 ? (
-              // W-11: review が 0 件でも notices / 残留違反があるときは実態を反映する
+              // W-11: review が 0 件でも notices / 残留違反 / Stage 通知があるときは実態を反映する
               // (= 「管理者の判断が必要なコースはありません」と誤誘導しない)。
               <DialogDescription>
                 {notices.length > 0
@@ -202,7 +224,16 @@ export function AssignWarningDialog({
                 {unresolvedWarnings.length > 0
                   ? `性別制約を満たすスタッフが見つからない残留が ${unresolvedWarnings.length} 件あります。理由をご確認のうえ手動で調整してください。`
                   : null}
-                {notices.length === 0 && unresolvedWarnings.length === 0
+                {managerMobilizedNotices.length > 0
+                  ? `マネージャー動員が ${managerMobilizedNotices.length} 件あり、確定済みです。`
+                  : null}
+                {rotationRelaxedNotices.length > 0
+                  ? `前週と同じコースへの割り当てが ${rotationRelaxedNotices.length} 件あり、確定済みです。`
+                  : null}
+                {notices.length === 0 &&
+                unresolvedWarnings.length === 0 &&
+                managerMobilizedNotices.length === 0 &&
+                rotationRelaxedNotices.length === 0
                   ? 'レビュー対象はありません。'
                   : null}
               </DialogDescription>
@@ -216,9 +247,19 @@ export function AssignWarningDialog({
 
           {/* R-10: らく助アドバイザー (docs/plans/rakusuke-advisor-ux-design.md) */}
           <RakusukeSays
-            pose={reviewItems.length === 0 && unresolvedWarnings.length === 0 ? 'cheer' : 'clap'}
+            pose={
+              reviewItems.length === 0 &&
+              unresolvedWarnings.length === 0 &&
+              managerMobilizedNotices.length === 0 &&
+              rotationRelaxedNotices.length === 0
+                ? 'cheer'
+                : 'clap'
+            }
             message={
-              reviewItems.length === 0 && unresolvedWarnings.length === 0
+              reviewItems.length === 0 &&
+              unresolvedWarnings.length === 0 &&
+              managerMobilizedNotices.length === 0 &&
+              rotationRelaxedNotices.length === 0
                 ? 'スタッフの割当ができました！このまま確定して大丈夫です✨'
                 : `スタッフの割当ができました。${reviewItems.length > 0 ? `${reviewItems.length}件だけ一緒に確認させてください` : '残った気になる点を確認してください'}`
             }
@@ -308,6 +349,99 @@ export function AssignWarningDialog({
                         <span>{n.cause_patient_names.join('・')}</span>
                         <span className="text-text-muted">|</span>
                         <span>{n.reason_text}</span>
+                        {/* §4.1 チップ併記: 同一コースが Stage 通知にも掲載されている場合 */}
+                        {managerMobilizedIds.has(n.course_id) ? (
+                          <Badge
+                            variant="outline"
+                            className="text-[10px]"
+                            data-testid="chip-manager-mobilized"
+                          >
+                            👔マネージャー動員
+                          </Badge>
+                        ) : null}
+                        {rotationRelaxedIds.has(n.course_id) ? (
+                          <Badge
+                            variant="outline"
+                            className="text-[10px]"
+                            data-testid="chip-rotation-relaxed"
+                          >
+                            🔁前週同コース
+                          </Badge>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </section>
+            ) : null}
+
+            {/* 👔 マネージャー動員セクション (4段ソルバ Stage 2・確定済み) */}
+            {managerMobilizedNotices.length > 0 ? (
+              <section data-testid="assign-manager-mobilized-section">
+                <h3 className="mb-2 flex flex-wrap items-center gap-2 text-sm font-semibold text-text-primary">
+                  <span aria-hidden>👔</span>
+                  マネージャー動員（{managerMobilizedNotices.length} 件・確定済み）
+                  <button
+                    type="button"
+                    className="ml-auto text-xs font-normal text-text-secondary hover:text-text-primary"
+                    onClick={() => setManagerMobilizedOpen((o) => !o)}
+                  >
+                    {managerMobilizedOpen ? '隠す ▲' : '詳細を見る ▼'}
+                  </button>
+                </h3>
+                <p className="mb-1 text-xs text-text-secondary">
+                  スタッフ不足のため、以下のコースにマネージャーを割り当てました
+                </p>
+                {managerMobilizedOpen ? (
+                  <ul className="space-y-1">
+                    {managerMobilizedNotices.map((n, i) => (
+                      <li
+                        key={`${n.course_id}-${i}`}
+                        className="flex flex-wrap items-center gap-1 rounded border border-border-default bg-bg-base px-2 py-1 text-xs text-text-secondary"
+                        data-testid="assign-manager-mobilized-row"
+                      >
+                        <span>
+                          {fmtWeekday(n.weekday)} / {n.course_code}
+                        </span>
+                        <span className="text-text-muted">|</span>
+                        <span className="font-medium text-text-primary">{n.staff_name}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </section>
+            ) : null}
+
+            {/* 🔁 前週同コース緩和セクション (4段ソルバ Stage 3・確定済み) */}
+            {rotationRelaxedNotices.length > 0 ? (
+              <section data-testid="assign-rotation-relaxed-section">
+                <h3 className="mb-2 flex flex-wrap items-center gap-2 text-sm font-semibold text-text-primary">
+                  <span aria-hidden>🔁</span>
+                  前週と同じコース（{rotationRelaxedNotices.length} 件・確定済み）
+                  <button
+                    type="button"
+                    className="ml-auto text-xs font-normal text-text-secondary hover:text-text-primary"
+                    onClick={() => setRotationRelaxedOpen((o) => !o)}
+                  >
+                    {rotationRelaxedOpen ? '隠す ▲' : '詳細を見る ▼'}
+                  </button>
+                </h3>
+                <p className="mb-1 text-xs text-text-secondary">
+                  候補がいないため、前週と同じコースを許容して割り当てました
+                </p>
+                {rotationRelaxedOpen ? (
+                  <ul className="space-y-1">
+                    {rotationRelaxedNotices.map((n, i) => (
+                      <li
+                        key={`${n.course_id}-${i}`}
+                        className="flex flex-wrap items-center gap-1 rounded border border-border-default bg-bg-base px-2 py-1 text-xs text-text-secondary"
+                        data-testid="assign-rotation-relaxed-row"
+                      >
+                        <span>
+                          {fmtWeekday(n.weekday)} / {n.course_code}
+                        </span>
+                        <span className="text-text-muted">|</span>
+                        <span className="font-medium text-text-primary">{n.staff_name}</span>
                       </li>
                     ))}
                   </ul>
@@ -344,7 +478,9 @@ export function AssignWarningDialog({
 
             {reviewItems.length === 0 &&
             notices.length === 0 &&
-            unresolvedWarnings.length === 0 ? (
+            unresolvedWarnings.length === 0 &&
+            managerMobilizedNotices.length === 0 &&
+            rotationRelaxedNotices.length === 0 ? (
               <div className="py-4 text-center text-xs text-text-muted">
                 レビュー対象はありません。
               </div>
