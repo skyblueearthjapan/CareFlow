@@ -266,6 +266,30 @@
 - **未消化（PO同席が必要）**: §6-1 Cloudflare ダッシュボードの Session Duration 延長、
   §6-2 Service Token 化。⑥フレークは据え置き。
 
+## 8. 2026-07-12 セッション: 新人同行機能 全3フェーズ実装（追記）
+
+**正典 = `docs/plans/trainee-accompaniment-design.md` v1.1**（PO要件確定→criticレビュー反映済み。
+次のエージェントはまずこれ）。コミット: Phase 1 `6b9eaee`(mig 0060) / Phase 2 `362f9c1`(mig 0061) /
+Phase 3 `c4cb1cb`。各フェーズ code-reviewer(opus) レビュー済み（CRITICAL/MAJOR 0 で着地）。
+
+- **PO確定の運用モデル**: 紐付けの主体は新人（先輩のコース/患者に付く）・新人フラグON中はコースを
+  持たない・患者の枠は1つのまま・カイポケへは職員名2に正規スタッフとして反映（同行○なし）
+- **Phase 1**: `trainee_accompaniment_defaults`（毎週の既定）+`trainee_accompaniments`（週実効リンク・
+  唯一の正典）。既定展開は週生成/固定枠に戻す/assign-staff-only の3地点で冪等実行。
+  スケジュール「👥新人同行」モード（コース/患者の混在選択・時間重複は確定ブロック）。
+  可視性3経路（一覧/単体GET/checkin）対応=新人本人のモバイル表示・打刻OK
+- **Phase 2**: PATCH /courses の trainee 422 + FE候補除外。旧 staff_companion 機構を完全撤去
+  （テーブルDROP・Layer3注入撤去・pending staff_mentor は410 graceful reject）。
+  スタッフ詳細に同行サマリ・is_trainee OFF で今週以降リンク+既定削除（JST週境界）
+- **Phase 3**: csv_builder の職員名2/3 解決を secondary→同行→mentor へ拡張（週次diffへ自然波及・
+  Correction 2枠制限で3人目は週次では落ちる=月次では職員名3）。逆取込は同行新人集合への
+  membership 判定で secondary書き戻し/要2名化をスキップ（ラウンドトリップ汚染防止）
+- **RPA側は職員2欄対応済みを実査確認**（本番コンテナ `auto_apply.py` が `select#chargeStaff2Id1` 操作）
+- **既知の残課題（軽微）**: ①連携ページ WeekDiffView は staff2 差分を表示しない（applyには載る・
+  表示のみ未対応） ②要2名+同行の3人目は週次反映で落ちる（頻度を見て Correction staff3 拡張を判断）
+  ③test_integration_kaipoke の3failは既存（audit middleware の AttributeError 起因・同行と無関係）
+- **PO実機確認待ち**: 同行モードの操作感・新人モバイル表示・（Phase 3 は初回実applyで職員2反映を確認）
+
 ## 5. 参照
 
 - 設計原則・割当ソース: メモリ `careflow-staff-assignment-source.md`
