@@ -49,8 +49,11 @@ def test_migration_0039_revision_chain(alembic_cfg: Config) -> None:
     assert rev.down_revision == "0038_office_operating_weekdays", (
         f"0039 の down_revision は 0038 のはず, got {rev.down_revision}"
     )
+    # head の具体値は migration 追加のたびに変わるため決め打ちしない
+    # (旧: == ["0039_scheduling_settings"] — 0040 以降ずっと fail していた stale 断言)。
+    # このテストの意図は「ブランチ分岐がなく head が単一」の検証。
     heads = list(script.get_heads())
-    assert heads == ["0039_scheduling_settings"], f"head は単一のはず, got {heads}"
+    assert len(heads) == 1, f"head は単一のはず, got {heads}"
 
 
 def test_migration_0039_sqlite_roundtrip(tmp_path: Path) -> None:

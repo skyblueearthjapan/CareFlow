@@ -9885,12 +9885,15 @@ async def reset_visits_to_fixed(
     # manager 等が担当になっているコースも正当として扱う。退職 (論理削除) や
     # 非稼働スタッフが残置されたコース担当はここで無効と判定され、
     # ローテーション結果でコース側ごと上書き修復される。
+    # 新人同行 §8: is_trainee=true は「コースを持たない」ため valid 集合から除外する。
+    # レガシーで新人がコース担当に残っていても、reset でローテ (非 trainee) へ修復される。
     valid_staff_ids_reset: set[UUID] = set(
         (
             await db.scalars(
                 select(Staff.id).where(
                     Staff.status == "active",
                     Staff.deleted_at.is_(None),
+                    Staff.is_trainee.is_(False),
                 )
             )
         ).all()

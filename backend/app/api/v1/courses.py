@@ -35,6 +35,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.core.deps import DbDep, require_role
 from app.models.course import Course
+from app.models.staff import Staff
 from app.models.user import User
 from app.models.visit import Visit
 from app.schemas.course import CourseCreate, CourseRead, CourseUpdate
@@ -333,6 +334,19 @@ async def update_course(
                 # (レビュー指摘・実害時の調査用)。
                 logger.warning("update_course: 不正な %s をスキップ: %r", uuid_field, val)
                 update_data[uuid_field] = None
+
+    # 新人同行 §8: 新人 (is_trainee=true) はコース担当にできない。
+    # マスタ駆動なのでフラグ OFF で自動復帰する。担当は「同行」で割り当てる。
+    _new_assigned = update_data.get("assigned_staff_id")
+    if "assigned_staff_id" in update_data and _new_assigned is not None:
+        _cand = await db.scalar(
+            select(Staff).where(Staff.id == _new_assigned, Staff.deleted_at.is_(None))
+        )
+        if _cand is not None and _cand.is_trainee:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="新人はコース担当にできません（同行で割り当ててください）",
+            )
 
     # assigned_staff_id 変更を op_log に記録するため変更前の値を保存
     _old_staff_id: UUID | None = course.assigned_staff_id

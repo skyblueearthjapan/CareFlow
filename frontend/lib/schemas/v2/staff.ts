@@ -65,7 +65,8 @@ export const staffV2BaseSchema = z.object({
 
   // 詳細セクション (§4.2.x / Wave 10)
   /**
-   * 新人スタッフフラグ。true のとき同行スタッフ割付 (staff_companion_assignments) が必要。
+   * 新人スタッフフラグ。true のとき先輩の訪問に「同行」として付く運用
+   * (新人同行 v1.1・スケジュール画面の同行モードで設定)。
    * 旧 mentor_id は Wave 10 にて廃止 (§4.2.x / §13.1)。
    */
   is_trainee: z.boolean().default(false),

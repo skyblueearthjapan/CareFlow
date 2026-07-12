@@ -183,6 +183,46 @@ async def test_courses_patch_updates_status(client, db) -> None:
 
 
 @pytest.mark.asyncio
+async def test_courses_patch_trainee_assignee_returns_422(client, db) -> None:
+    """新人同行 §8: is_trainee=true をコース担当に指定すると 422 (同行で割り当てる)."""
+    from app.models import Staff
+
+    admin = await _make_user(db, "c-patch-trainee@example.com", "admin")
+    office = await _make_office(db, "事業所-trainee")
+    trainee = Staff(name="新人ハナコ", role="staff", status="active", is_trainee=True)
+    normal = Staff(name="先輩タロウ", role="staff", status="active", is_trainee=False)
+    db.add_all([trainee, normal])
+    await db.commit()
+    await db.refresh(trainee)
+    await db.refresh(normal)
+
+    create = await client.post(
+        "/api/v1/courses",
+        headers=_bearer(admin),
+        json=_course_payload(office.id, weekday=2, code="B"),
+    )
+    assert create.status_code == 201, create.text
+    cid = create.json()["id"]
+
+    # 新人を担当に指定 → 422
+    res = await client.patch(
+        f"/api/v1/courses/{cid}",
+        headers=_bearer(admin),
+        json={"assigned_staff_id": str(trainee.id)},
+    )
+    assert res.status_code == 422, res.text
+
+    # 通常スタッフは OK (回帰確認)
+    ok = await client.patch(
+        f"/api/v1/courses/{cid}",
+        headers=_bearer(admin),
+        json={"assigned_staff_id": str(normal.id)},
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["assigned_staff_id"] == str(normal.id)
+
+
+@pytest.mark.asyncio
 async def test_courses_delete_admin_returns_204(client, db) -> None:
     admin = await _make_user(db, "c-del-admin@example.com", "admin")
     office = await _make_office(db, "事業所-del")

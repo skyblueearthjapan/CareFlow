@@ -142,21 +142,6 @@ export const staffEventSchema = z.object({
 });
 export type StaffEvent = z.infer<typeof staffEventSchema>;
 
-/**
- * Wave 10: 同行スタッフ割付スキーマ (staff_companion_assignments テーブル / §4.2.x).
- * 旧 mentorAssignmentSchema は廃止。
- */
-export const companionAssignmentSchema = z.object({
-  id: z.string().uuid(),
-  trainee_staff_id: z.string().uuid(),
-  weekday: z.number().int().min(0).max(6),
-  part: z.enum(['am', 'pm', 'full']),
-  companion_staff_id: z.string().uuid(),
-  created_at: z.string(),
-  updated_at: z.string(),
-});
-export type CompanionAssignment = z.infer<typeof companionAssignmentSchema>;
-
 // ---------------------------------------------------------------------------
 // Helpers shared by list filters
 // ---------------------------------------------------------------------------

@@ -287,7 +287,8 @@ export type ApplyStaffReviewResponse = z.infer<typeof applyStaffReviewResponseSc
  * POST /api/v1/schedule/apply-staff-review — 確認レビュー承認カードを反映する mutation.
  *
  * 自動スタッフ割付と **同一の ``_persist`` 経路** で DB 反映する (= VSA INSERT /
- * course_status / primary・secondary 同期 / 2 名体制 / trainee companion を全て実施).
+ * course_status / primary・secondary 同期 / 2 名体制 を全て実施.
+ * 旧 trainee companion 注入は新人同行 Phase 2 で撤去済み).
  * 従来の PATCH /courses ループ (assigned_staff_id のみ) では起きていた
  * 「apply 済コースの visit が未割当表示・子アプリにスタッフが見えない」 リグレッションを解消.
  *

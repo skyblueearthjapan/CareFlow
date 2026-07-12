@@ -852,6 +852,156 @@ async def test_monitor_accompaniment_field(db) -> None:
 
 
 # ---------------------------------------------------------------------------
+# §7.5 / §8-4: defaults label 解決 / future 削除 / コース担当ガード
+# ---------------------------------------------------------------------------
+
+
+def _cur_week() -> tuple[int, int]:
+    iso = date.today().isocalendar()
+    return iso[0], iso[1]
+
+
+@pytest.mark.asyncio
+async def test_defaults_get_includes_template_label(client, db) -> None:
+    """§7.5: 既定 GET は course_template_label / office_id を解決して返す (サマリ用)."""
+    admin = await _make_user(db, "ta-lbl@example.com", "admin")
+    trainee = await _make_staff(db, "新人ラベル", is_trainee=True)
+    office = await _make_office(db, "拠点ラベル")
+    t = await _make_template(db, office, "K")
+
+    put = await client.put(
+        "/api/v1/trainee-accompaniment-defaults",
+        headers=_bearer(admin),
+        json={
+            "trainee_staff_id": str(trainee.id),
+            "items": [{"weekday": 1, "course_template_id": str(t.id)}],
+        },
+    )
+    assert put.status_code == 200, put.text
+    assert put.json()[0]["course_template_label"] == "K"
+    assert put.json()[0]["office_id"] == str(office.id)
+
+    get = await client.get(
+        f"/api/v1/trainee-accompaniment-defaults?trainee_staff_id={trainee.id}",
+        headers=_bearer(admin),
+    )
+    assert get.status_code == 200, get.text
+    assert get.json()[0]["course_template_label"] == "K"
+
+
+@pytest.mark.asyncio
+async def test_course_guard_reports_current_and_future_courses(client, db) -> None:
+    """§8-4: 新人が今週以降のコース担当に残っていれば count>0 を返す。過去週は含めない。"""
+    admin = await _make_user(db, "ta-guard@example.com", "admin")
+    trainee = await _make_staff(db, "新人ガード", is_trainee=True)
+    office = await _make_office(db, "拠点ガード")
+    cy, cw = _cur_week()
+
+    # 今週のコースを新人担当に (レガシー状態を模す)
+    await _make_course(
+        db, office, weekday=0, code="A", iso_year=cy, iso_week=cw,
+        assigned_staff_id=trainee.id,
+    )
+    # 過去週 (前年) のコース担当 — ガード対象外
+    await _make_course(
+        db, office, weekday=1, code="B", iso_year=cy - 1, iso_week=1,
+        assigned_staff_id=trainee.id,
+    )
+
+    res = await client.get(
+        f"/api/v1/trainee-accompaniments/course-guard?trainee_staff_id={trainee.id}",
+        headers=_bearer(admin),
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["count"] == 1
+    assert body["courses"][0]["code"] == "A"
+
+
+@pytest.mark.asyncio
+async def test_delete_future_removes_future_links_and_defaults_keeps_past(client, db) -> None:
+    """§7.5: future 削除は今週以降のリンク + 既定を消し、過去週リンクは残す (冪等)."""
+    admin = await _make_user(db, "ta-future@example.com", "admin")
+    trainee = await _make_staff(db, "新人フューチャ", is_trainee=True)
+    office = await _make_office(db, "拠点フューチャ")
+    t = await _make_template(db, office, "F")
+    cy, cw = _cur_week()
+
+    future_course = await _make_course(
+        db, office, weekday=0, code="A", template_id=t.id, iso_year=cy, iso_week=cw,
+    )
+    past_course = await _make_course(
+        db, office, weekday=1, code="B", iso_year=cy - 1, iso_week=1,
+    )
+
+    # 週リンク 2 件 (今週 + 過去週) を直接 INSERT。
+    db.add(
+        TraineeAccompaniment(
+            trainee_staff_id=trainee.id, target_type="course",
+            course_id=future_course.id, source="manual",
+        )
+    )
+    db.add(
+        TraineeAccompaniment(
+            trainee_staff_id=trainee.id, target_type="course",
+            course_id=past_course.id, source="manual",
+        )
+    )
+    # 既定も 1 件。
+    db.add(
+        TraineeAccompanimentDefault(
+            trainee_staff_id=trainee.id, weekday=0, course_template_id=t.id,
+        )
+    )
+    await db.commit()
+
+    res = await client.delete(
+        f"/api/v1/trainee-accompaniments/future?trainee_staff_id={trainee.id}",
+        headers=_bearer(admin),
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["deleted_links"] == 1
+    assert body["deleted_defaults"] == 1
+
+    # 過去週リンクは残る。
+    from sqlalchemy import func, select
+
+    remaining_links = await db.scalar(
+        select(func.count())
+        .select_from(TraineeAccompaniment)
+        .where(TraineeAccompaniment.trainee_staff_id == trainee.id)
+    )
+    assert remaining_links == 1
+    remaining_defaults = await db.scalar(
+        select(func.count())
+        .select_from(TraineeAccompanimentDefault)
+        .where(TraineeAccompanimentDefault.trainee_staff_id == trainee.id)
+    )
+    assert remaining_defaults == 0
+
+    # 冪等: 2 回目も成功 (0 件)。
+    res2 = await client.delete(
+        f"/api/v1/trainee-accompaniments/future?trainee_staff_id={trainee.id}",
+        headers=_bearer(admin),
+    )
+    assert res2.status_code == 200, res2.text
+    assert res2.json()["deleted_defaults"] == 0
+
+
+@pytest.mark.asyncio
+async def test_delete_future_rbac_staff_forbidden(client, db) -> None:
+    """future 削除は admin/manager のみ (staff は 403)."""
+    trainee = await _make_staff(db, "新人RBAC", is_trainee=True)
+    staff_user = await _make_user(db, "ta-future-staff@example.com", "staff", staff_id=trainee.id)
+    res = await client.delete(
+        f"/api/v1/trainee-accompaniments/future?trainee_staff_id={trainee.id}",
+        headers=_bearer(staff_user),
+    )
+    assert res.status_code == 403, res.text
+
+
+# ---------------------------------------------------------------------------
 # helper: ORM select for TA rows
 # ---------------------------------------------------------------------------
 

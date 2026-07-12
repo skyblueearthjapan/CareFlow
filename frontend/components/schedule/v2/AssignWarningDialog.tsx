@@ -19,8 +19,9 @@
  *
  * apply = 承認されたカードを ``POST /api/v1/schedule/apply-staff-review`` で
  * 一括反映する (呼び出し側 onApply に委譲)。 自動スタッフ割当と同一の _persist
- * 経路で VSA / course_status / primary・secondary 同期 / 2 名体制 / trainee
- * companion を全て反映する (= 旧 PATCH /courses ループのリグレッションを解消)。
+ * 経路で VSA / course_status / primary・secondary 同期 / 2 名体制 を全て反映する
+ * (= 旧 PATCH /courses ループのリグレッションを解消)。旧 trainee companion 注入は
+ * 新人同行 Phase 2 (trainee-accompaniment-design.md §3) で撤去済み。
  *
  * review_items が空なら呼び出し側でこのダイアログを出さず、 success toast のみ。
  */

@@ -115,12 +115,6 @@ from app.schemas.v2.staff import (
     StaffV2Read,
     StaffV2Update,
 )
-from app.schemas.v2.staff_companion_assignment import (
-    StaffCompanionAssignmentsBulkPut,
-    StaffCompanionAssignmentV2Base,
-    StaffCompanionAssignmentV2Read,
-    StaffCompanionPart,
-)
 from app.schemas.v2.visit import (
     VisitSourceV2,
     VisitStaffAssignmentV2Read,
@@ -196,11 +190,6 @@ __all__ = [
     "StaffV2Create",
     "StaffV2Read",
     "StaffV2Update",
-    # staff companion assignment
-    "StaffCompanionAssignmentsBulkPut",
-    "StaffCompanionAssignmentV2Base",
-    "StaffCompanionAssignmentV2Read",
-    "StaffCompanionPart",
     # office
     "OfficeV2Base",
     "OfficeV2Create",

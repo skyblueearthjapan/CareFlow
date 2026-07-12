@@ -9,7 +9,8 @@ areas / max_per_day / skill_level / assignment_volume の 6 + 3 項目。
 で厳密化 (DB は文字列のまま、Pydantic で Literal バリデート)。
 
 W10-BE1: mentor_id 廃止、is_trainee 追加。
-同行スタッフ管理は staff_companion_assignments テーブルへ移行。
+Phase 2 (新人同行 v1.1 §3): 旧 staff_companion_assignments 機構は撤去済み。
+同行は trainee_accompaniments (スケジュール画面の同行モード) が正典。
 """
 
 from __future__ import annotations

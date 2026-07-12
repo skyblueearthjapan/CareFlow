@@ -5,14 +5,14 @@ areas / max_per_day / skill_level / assignment_volume の 8 カラムを削除�
 (設計書 §4.2). 物理 DROP は migration 0010 で実施。
 
 W10-BE1: mentor_id / MentorAssignment 廃止。is_trainee 追加。
-同行スタッフ管理は staff_companion_assignments テーブルへ移行。
+Phase 2 (新人同行 v1.1 §3): 旧 staff_companion_assignments 機構を撤去。
+新人同行は trainee_accompaniments/defaults (mig 0060) が唯一の正典。
 """
 
 from __future__ import annotations
 
 import uuid
 from datetime import datetime, time
-from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     Boolean,
@@ -31,9 +31,6 @@ from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin
-
-if TYPE_CHECKING:
-    from app.models.staff_companion_assignment import StaffCompanionAssignment
 
 
 class Staff(Base, TimestampMixin):
@@ -71,20 +68,6 @@ class Staff(Base, TimestampMixin):
         "StaffShift",
         back_populates="staff",
         cascade="all, delete-orphan",
-    )
-    companion_assignments_as_trainee: Mapped[list[StaffCompanionAssignment]] = relationship(
-        "StaffCompanionAssignment",
-        foreign_keys="StaffCompanionAssignment.trainee_staff_id",
-        back_populates="trainee",
-        cascade="all, delete-orphan",
-    )
-    companion_assignments_as_companion: Mapped[list[StaffCompanionAssignment]] = relationship(
-        "StaffCompanionAssignment",
-        foreign_keys="StaffCompanionAssignment.companion_staff_id",
-        back_populates="companion",
-        # FK ondelete=CASCADE 側に削除を任せる。companion 側で
-        # delete-orphan を付けると削除が二重発火する恐れがあるため save-update のみ。
-        cascade="save-update, merge",
     )
 
     __table_args__ = (

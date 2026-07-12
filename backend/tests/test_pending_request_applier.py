@@ -19,7 +19,6 @@ from sqlalchemy import select
 from app.models import Patient, Staff, User
 from app.models.pending_request import PendingRequest
 from app.models.staff import StaffEvent, StaffWeeklyOverride
-from app.models.staff_companion_assignment import StaffCompanionAssignment
 from app.models.visit import VISIT_STATUS_CANCELLED, VISIT_STATUS_PLANNED, Visit
 from app.services.pending_request_applier import (
     PendingRequestApplier,
@@ -158,15 +157,21 @@ async def test_apply_staff_event_creates_event(db) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 3) staff_mentor
+# 3) staff_mentor (Phase 2 §3 で廃止・適用時は graceful reject)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_apply_staff_mentor_updates_is_trainee_only(db) -> None:
-    """W10-BE1 互換: mode A のみ (is_trainee=true) → フラグ更新のみ。回帰テスト。"""
-    user = await _make_user(db, "apl-mentor@example.com")
+async def test_apply_staff_mentor_is_gracefully_rejected(db) -> None:
+    """廃止済み staff_mentor 申請を適用しようとすると graceful reject (410)。
+
+    旧「曜日×午前/午後×同行者」機構は撤去済み。既存の未処理 staff_mentor 申請が
+    残っていても、承認 (適用) 時にここで明示的に 410 で弾く。副作用なし
+    (staff.is_trainee は変更されない)。一覧表示は enum 存続で壊れない。
+    """
+    user = await _make_user(db, "apl-mentor-deprecated@example.com")
     mentee = await _make_staff(db, name="新人")
+    assert mentee.is_trainee is False
 
     pr = await _make_pending(
         db,
@@ -177,396 +182,14 @@ async def test_apply_staff_mentor_updates_is_trainee_only(db) -> None:
     )
 
     applier = PendingRequestApplier()
-    await applier.apply(db, pr)
-    await db.commit()
+    with pytest.raises(PendingRequestApplyError) as exc_info:
+        await applier.apply(db, pr)
+    assert exc_info.value.http_status == 410
+
+    await db.rollback()
     await db.refresh(mentee)
-    assert mentee.is_trainee is True
-
-    # companion_assignments は一切触っていない
-    rows = (
-        await db.scalars(
-            select(StaffCompanionAssignment).where(
-                StaffCompanionAssignment.trainee_staff_id == mentee.id
-            )
-        )
-    ).all()
-    assert len(rows) == 0
-
-
-@pytest.mark.asyncio
-async def test_apply_staff_mentor_clears_is_trainee_when_false(db) -> None:
-    """W11-BE: mode A で is_trainee=false → 新人フラグを解除できる (Reviewer M-1 補完)."""
-    user = await _make_user(db, "apl-mentor-off@example.com")
-    # 既に新人フラグ ON のスタッフ
-    mentee = Staff(name="卒業予定", is_trainee=True)
-    db.add(mentee)
-    await db.commit()
-    await db.refresh(mentee)
-    assert mentee.is_trainee is True
-
-    pr = await _make_pending(
-        db,
-        requester=user,
-        request_type="staff_mentor",
-        payload={"staff_id": str(mentee.id), "is_trainee": False},
-        target_staff_id=mentee.id,
-    )
-
-    applier = PendingRequestApplier()
-    await applier.apply(db, pr)
-    await db.commit()
-    await db.refresh(mentee)
+    # 副作用なし: is_trainee は変わらない。
     assert mentee.is_trainee is False
-
-
-# ---------------------------------------------------------------------------
-# W11-BE: staff_mentor mode B (assignments[]) テスト
-# ---------------------------------------------------------------------------
-
-
-async def _make_active_staff(
-    db,
-    name: str,
-    *,
-    role: str = "staff",
-    status: str = "active",
-    is_trainee: bool = False,
-) -> Staff:
-    s = Staff(name=name, role=role, status=status, is_trainee=is_trainee)
-    db.add(s)
-    await db.commit()
-    await db.refresh(s)
-    return s
-
-
-@pytest.mark.asyncio
-async def test_apply_staff_mentor_assignments_single(db) -> None:
-    """mode B: assignments=[1件] → 1行INSERT + is_trainee 自動 true 化。"""
-    user = await _make_user(db, "apl-asgn1@example.com")
-    trainee = await _make_active_staff(db, "新人A")
-    companion = await _make_active_staff(db, "先輩A")
-    assert trainee.is_trainee is False
-
-    pr = await _make_pending(
-        db,
-        requester=user,
-        request_type="staff_mentor",
-        payload={
-            "staff_id": str(trainee.id),
-            "assignments": [{"weekday": 0, "part": "am", "companion_staff_id": str(companion.id)}],
-        },
-        target_staff_id=trainee.id,
-    )
-
-    applier = PendingRequestApplier()
-    await applier.apply(db, pr)
-    await db.commit()
-    await db.refresh(trainee)
-
-    # is_trainee 強制 true 化
-    assert trainee.is_trainee is True
-
-    rows = (
-        await db.scalars(
-            select(StaffCompanionAssignment).where(
-                StaffCompanionAssignment.trainee_staff_id == trainee.id
-            )
-        )
-    ).all()
-    assert len(rows) == 1
-    assert rows[0].weekday == 0
-    assert rows[0].part == "am"
-    assert rows[0].companion_staff_id == companion.id
-
-
-@pytest.mark.asyncio
-async def test_apply_staff_mentor_assignments_7_full(db) -> None:
-    """mode B: assignments=[7件 full] → 7行INSERT (全曜日終日)。"""
-    user = await _make_user(db, "apl-asgn7@example.com")
-    trainee = await _make_active_staff(db, "新人B")
-    companion = await _make_active_staff(db, "先輩B")
-
-    assignments = [
-        {"weekday": wd, "part": "full", "companion_staff_id": str(companion.id)} for wd in range(7)
-    ]
-
-    pr = await _make_pending(
-        db,
-        requester=user,
-        request_type="staff_mentor",
-        payload={"staff_id": str(trainee.id), "assignments": assignments},
-        target_staff_id=trainee.id,
-    )
-
-    applier = PendingRequestApplier()
-    await applier.apply(db, pr)
-    await db.commit()
-
-    rows = (
-        await db.scalars(
-            select(StaffCompanionAssignment).where(
-                StaffCompanionAssignment.trainee_staff_id == trainee.id
-            )
-        )
-    ).all()
-    assert len(rows) == 7
-    parts = {r.part for r in rows}
-    assert parts == {"full"}
-
-
-@pytest.mark.asyncio
-async def test_apply_staff_mentor_assignments_14_am_pm(db) -> None:
-    """mode B: assignments=[14件 am+pm 各曜日 別の人] → 14行INSERT。"""
-    user = await _make_user(db, "apl-asgn14@example.com")
-    trainee = await _make_active_staff(db, "新人C")
-    companion_am = await _make_active_staff(db, "先輩C_am")
-    companion_pm = await _make_active_staff(db, "先輩C_pm")
-
-    assignments = []
-    for wd in range(7):
-        assignments.append(
-            {"weekday": wd, "part": "am", "companion_staff_id": str(companion_am.id)}
-        )
-        assignments.append(
-            {"weekday": wd, "part": "pm", "companion_staff_id": str(companion_pm.id)}
-        )
-
-    pr = await _make_pending(
-        db,
-        requester=user,
-        request_type="staff_mentor",
-        payload={"staff_id": str(trainee.id), "assignments": assignments},
-        target_staff_id=trainee.id,
-    )
-
-    applier = PendingRequestApplier()
-    await applier.apply(db, pr)
-    await db.commit()
-
-    rows = (
-        await db.scalars(
-            select(StaffCompanionAssignment).where(
-                StaffCompanionAssignment.trainee_staff_id == trainee.id
-            )
-        )
-    ).all()
-    assert len(rows) == 14
-
-
-@pytest.mark.asyncio
-async def test_apply_staff_mentor_assignments_duplicate_weekday_part_raises(db) -> None:
-    """重複 (weekday, part) → 422。"""
-    user = await _make_user(db, "apl-dup@example.com")
-    trainee = await _make_active_staff(db, "新人D")
-    companion = await _make_active_staff(db, "先輩D")
-
-    pr = await _make_pending(
-        db,
-        requester=user,
-        request_type="staff_mentor",
-        payload={
-            "staff_id": str(trainee.id),
-            "assignments": [
-                {"weekday": 0, "part": "am", "companion_staff_id": str(companion.id)},
-                {"weekday": 0, "part": "am", "companion_staff_id": str(companion.id)},
-            ],
-        },
-        target_staff_id=trainee.id,
-    )
-
-    applier = PendingRequestApplier()
-    with pytest.raises(PendingRequestApplyError, match="duplicate"):
-        await applier.apply(db, pr)
-
-
-@pytest.mark.asyncio
-async def test_apply_staff_mentor_assignments_full_am_conflict_raises(db) -> None:
-    """同曜日 full と am 併存 → 422。"""
-    user = await _make_user(db, "apl-conflict@example.com")
-    trainee = await _make_active_staff(db, "新人E")
-    companion = await _make_active_staff(db, "先輩E")
-
-    pr = await _make_pending(
-        db,
-        requester=user,
-        request_type="staff_mentor",
-        payload={
-            "staff_id": str(trainee.id),
-            "assignments": [
-                {"weekday": 1, "part": "am", "companion_staff_id": str(companion.id)},
-                {"weekday": 1, "part": "full", "companion_staff_id": str(companion.id)},
-            ],
-        },
-        target_staff_id=trainee.id,
-    )
-
-    applier = PendingRequestApplier()
-    with pytest.raises(PendingRequestApplyError, match="full conflicts"):
-        await applier.apply(db, pr)
-
-
-@pytest.mark.asyncio
-async def test_apply_staff_mentor_assignments_self_companion_raises(db) -> None:
-    """companion = 自身 → 422。"""
-    user = await _make_user(db, "apl-self@example.com")
-    trainee = await _make_active_staff(db, "新人F")
-
-    pr = await _make_pending(
-        db,
-        requester=user,
-        request_type="staff_mentor",
-        payload={
-            "staff_id": str(trainee.id),
-            "assignments": [
-                {"weekday": 0, "part": "am", "companion_staff_id": str(trainee.id)},
-            ],
-        },
-        target_staff_id=trainee.id,
-    )
-
-    applier = PendingRequestApplier()
-    with pytest.raises(PendingRequestApplyError, match="self-companion"):
-        await applier.apply(db, pr)
-
-
-@pytest.mark.asyncio
-async def test_apply_staff_mentor_assignments_admin_companion_raises(db) -> None:
-    """companion が admin → 422 (role must be manager/staff)。"""
-    user = await _make_user(db, "apl-admincomp@example.com")
-    trainee = await _make_active_staff(db, "新人G")
-    admin_staff = await _make_active_staff(db, "管理者G", role="admin")
-
-    pr = await _make_pending(
-        db,
-        requester=user,
-        request_type="staff_mentor",
-        payload={
-            "staff_id": str(trainee.id),
-            "assignments": [
-                {"weekday": 0, "part": "am", "companion_staff_id": str(admin_staff.id)},
-            ],
-        },
-        target_staff_id=trainee.id,
-    )
-
-    applier = PendingRequestApplier()
-    with pytest.raises(PendingRequestApplyError, match="role must be manager/staff"):
-        await applier.apply(db, pr)
-
-
-@pytest.mark.asyncio
-async def test_apply_staff_mentor_assignments_retired_companion_raises(db) -> None:
-    """companion が退職者 (status=retired) → 422。"""
-    user = await _make_user(db, "apl-retired@example.com")
-    trainee = await _make_active_staff(db, "新人H")
-    retired = await _make_active_staff(db, "退職者H", status="retired")
-
-    pr = await _make_pending(
-        db,
-        requester=user,
-        request_type="staff_mentor",
-        payload={
-            "staff_id": str(trainee.id),
-            "assignments": [
-                {"weekday": 0, "part": "am", "companion_staff_id": str(retired.id)},
-            ],
-        },
-        target_staff_id=trainee.id,
-    )
-
-    applier = PendingRequestApplier()
-    with pytest.raises(PendingRequestApplyError, match="companion not active"):
-        await applier.apply(db, pr)
-
-
-@pytest.mark.asyncio
-async def test_apply_staff_mentor_assignments_idempotent_put(db) -> None:
-    """既存 assignments を含む staff に対し新 assignments PUT → 既存全削除 → INSERT (冪等)。"""
-    user = await _make_user(db, "apl-idem-asgn@example.com")
-    trainee = await _make_active_staff(db, "新人I", is_trainee=True)
-    companion1 = await _make_active_staff(db, "先輩I-1")
-    companion2 = await _make_active_staff(db, "先輩I-2")
-
-    # 事前に 2 行セット
-    db.add(
-        StaffCompanionAssignment(
-            trainee_staff_id=trainee.id, weekday=0, part="am", companion_staff_id=companion1.id
-        )
-    )
-    db.add(
-        StaffCompanionAssignment(
-            trainee_staff_id=trainee.id, weekday=1, part="am", companion_staff_id=companion1.id
-        )
-    )
-    await db.commit()
-
-    # 新しい assignments で全置換
-    pr = await _make_pending(
-        db,
-        requester=user,
-        request_type="staff_mentor",
-        payload={
-            "staff_id": str(trainee.id),
-            "assignments": [
-                {"weekday": 2, "part": "full", "companion_staff_id": str(companion2.id)},
-            ],
-        },
-        target_staff_id=trainee.id,
-    )
-
-    applier = PendingRequestApplier()
-    await applier.apply(db, pr)
-    await db.commit()
-
-    rows = (
-        await db.scalars(
-            select(StaffCompanionAssignment).where(
-                StaffCompanionAssignment.trainee_staff_id == trainee.id
-            )
-        )
-    ).all()
-    assert len(rows) == 1
-    assert rows[0].weekday == 2
-    assert rows[0].part == "full"
-    assert rows[0].companion_staff_id == companion2.id
-
-
-@pytest.mark.asyncio
-async def test_apply_staff_mentor_mode_a_and_b_combined(db) -> None:
-    """mode A + mode B 両方同時指定 → 両方反映される。"""
-    user = await _make_user(db, "apl-combo@example.com")
-    trainee = await _make_active_staff(db, "新人J")
-    companion = await _make_active_staff(db, "先輩J")
-    assert trainee.is_trainee is False
-
-    pr = await _make_pending(
-        db,
-        requester=user,
-        request_type="staff_mentor",
-        payload={
-            "staff_id": str(trainee.id),
-            "is_trainee": True,
-            "assignments": [
-                {"weekday": 0, "part": "am", "companion_staff_id": str(companion.id)},
-            ],
-        },
-        target_staff_id=trainee.id,
-    )
-
-    applier = PendingRequestApplier()
-    await applier.apply(db, pr)
-    await db.commit()
-    await db.refresh(trainee)
-
-    assert trainee.is_trainee is True
-    rows = (
-        await db.scalars(
-            select(StaffCompanionAssignment).where(
-                StaffCompanionAssignment.trainee_staff_id == trainee.id
-            )
-        )
-    ).all()
-    assert len(rows) == 1
 
 
 # ---------------------------------------------------------------------------

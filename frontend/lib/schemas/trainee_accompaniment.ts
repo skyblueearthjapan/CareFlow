@@ -137,11 +137,47 @@ export const traineeAccompanimentDefaultReadSchema = z.object({
   trainee_staff_id: z.string().uuid(),
   weekday: z.number().int().min(0).max(6),
   course_template_id: z.string().uuid(),
+  /** §7.5 サマリ用に BE が解決して載せるテンプレ情報 (任意)。 */
+  course_template_label: z.string().nullable().optional(),
+  office_id: z.string().uuid().nullable().optional(),
   created_at: z.string().nullable().optional(),
   updated_at: z.string().nullable().optional(),
 });
 export type TraineeAccompanimentDefaultRead = z.infer<
   typeof traineeAccompanimentDefaultReadSchema
+>;
+
+// ---------------------------------------------------------------------------
+// §8-4: 新人の「今週以降のコース担当」ガード (is_trainee ON 警告用)
+// ---------------------------------------------------------------------------
+
+export const traineeCourseGuardCourseSchema = z.object({
+  id: z.string().uuid(),
+  iso_year: z.number().int(),
+  iso_week: z.number().int(),
+  weekday: z.number().int().min(0).max(6),
+  code: z.string(),
+});
+export type TraineeCourseGuardCourse = z.infer<typeof traineeCourseGuardCourseSchema>;
+
+export const traineeCourseGuardResponseSchema = z.object({
+  trainee_staff_id: z.string().uuid(),
+  count: z.number().int(),
+  courses: z.array(traineeCourseGuardCourseSchema),
+});
+export type TraineeCourseGuardResponse = z.infer<typeof traineeCourseGuardResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// §7.5: is_trainee OFF 時の将来リンク + 既定の一括削除レスポンス
+// ---------------------------------------------------------------------------
+
+export const traineeAccompanimentFutureDeleteResponseSchema = z.object({
+  trainee_staff_id: z.string().uuid(),
+  deleted_links: z.number().int(),
+  deleted_defaults: z.number().int(),
+});
+export type TraineeAccompanimentFutureDeleteResponse = z.infer<
+  typeof traineeAccompanimentFutureDeleteResponseSchema
 >;
 
 /** PUT /trainee-accompaniment-defaults — 全置換ボディ。 */

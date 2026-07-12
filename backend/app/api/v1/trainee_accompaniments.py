@@ -17,12 +17,13 @@ RBAC 原則 (§6): 「全ロール同一表示・操作は権限どおり」= GE
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Annotated
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import delete, or_, select
+from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -42,9 +43,12 @@ from app.schemas.trainee_accompaniment import (
     AccompanimentVisitInfo,
     TraineeAccompanimentDefaultRead,
     TraineeAccompanimentDefaultsPut,
+    TraineeAccompanimentFutureDeleteResponse,
     TraineeAccompanimentRead,
     TraineeAccompanimentsListResponse,
     TraineeAccompanimentsPut,
+    TraineeCourseGuardCourse,
+    TraineeCourseGuardResponse,
 )
 from app.services.trainee_accompaniment import find_time_overlaps, load_effective_visits
 
@@ -82,6 +86,42 @@ def _require_is_trainee(staff: Staff) -> None:
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Staff {staff.id} is not marked as is_trainee=true",
         )
+
+
+async def _defaults_to_read(
+    db: AsyncSession, rows: list[TraineeAccompanimentDefault]
+) -> list[TraineeAccompanimentDefaultRead]:
+    """既定 ORM 行を、テンプレ label / office_id を解決した Read へ変換する (§7.5).
+
+    テンプレは高々数件のためバッチ 1 クエリで解決する。soft-delete 済みテンプレでも
+    label は表示できるよう deleted フィルタは掛けない (サマリの見た目のみ)。
+    """
+    tmpl_ids = {r.course_template_id for r in rows}
+    label_by_tmpl: dict[UUID, str] = {}
+    office_by_tmpl: dict[UUID, UUID] = {}
+    if tmpl_ids:
+        for tid, label, office_id in (
+            await db.execute(
+                select(CourseTemplate.id, CourseTemplate.label, CourseTemplate.office_id).where(
+                    CourseTemplate.id.in_(tmpl_ids)
+                )
+            )
+        ).all():
+            label_by_tmpl[tid] = label
+            office_by_tmpl[tid] = office_id
+    return [
+        TraineeAccompanimentDefaultRead(
+            id=r.id,
+            trainee_staff_id=r.trainee_staff_id,
+            weekday=r.weekday,
+            course_template_id=r.course_template_id,
+            course_template_label=label_by_tmpl.get(r.course_template_id),
+            office_id=office_by_tmpl.get(r.course_template_id),
+            created_at=r.created_at,
+            updated_at=r.updated_at,
+        )
+        for r in rows
+    ]
 
 
 async def _build_week_response(
@@ -439,7 +479,7 @@ async def list_trainee_accompaniment_defaults(
     db: DbDep,
     _user: CurrentActiveUser,
     trainee_staff_id: Annotated[UUID, Query()],
-) -> list[TraineeAccompanimentDefault]:
+) -> list[TraineeAccompanimentDefaultRead]:
     rows = (
         await db.scalars(
             select(TraineeAccompanimentDefault)
@@ -447,7 +487,7 @@ async def list_trainee_accompaniment_defaults(
             .order_by(TraineeAccompanimentDefault.weekday)
         )
     ).all()
-    return list(rows)
+    return await _defaults_to_read(db, list(rows))
 
 
 @router.put(
@@ -459,7 +499,7 @@ async def put_trainee_accompaniment_defaults(
     body: TraineeAccompanimentDefaultsPut,
     db: DbDep,
     user: Annotated[User, Depends(require_role("admin", "manager"))],
-) -> list[TraineeAccompanimentDefault]:
+) -> list[TraineeAccompanimentDefaultRead]:
     """当該新人の既定を全置換する (曜日×course_template の配列).
 
     - staff.is_trainee=True でなければ 409
@@ -519,4 +559,120 @@ async def put_trainee_accompaniment_defaults(
             .order_by(TraineeAccompanimentDefault.weekday)
         )
     ).all()
-    return list(rows)
+    return await _defaults_to_read(db, list(rows))
+
+
+# ---------------------------------------------------------------------------
+# §8-4: is_trainee ON 警告用「今週以降のコース担当」ガード
+# ---------------------------------------------------------------------------
+
+
+def _current_week() -> tuple[int, int, date]:
+    """今日 (JST) を含む ISO 週 (year, week, その週の月曜) を返す.
+
+    本番 backend コンテナは TZ 未設定 (UTC) のため `date.today()` を使うと
+    JST 月曜 00:00-09:00 の窓で前週判定になり、DELETE /future が
+    「実績履歴として保持」すべき直前週リンクまで消してしまう。
+    サーバ側で「今日」を評価するのは本モジュールの 2 EP のみなので JST に固定する。
+    """
+    today = datetime.now(ZoneInfo("Asia/Tokyo")).date()
+    iso = today.isocalendar()
+    monday = date.fromisocalendar(iso[0], iso[1], 1)
+    return iso[0], iso[1], monday
+
+
+@router.get(
+    "/trainee-accompaniments/course-guard",
+    response_model=TraineeCourseGuardResponse,
+    summary="新人が今週以降にコース担当として残っているか (全ロール・警告主義 §8-4)",
+)
+async def trainee_course_guard(
+    db: DbDep,
+    _user: CurrentActiveUser,
+    trainee_staff_id: Annotated[UUID, Query()],
+) -> TraineeCourseGuardResponse:
+    """当該スタッフが今週以降のコース担当 (courses.assigned_staff_id) に残っているか.
+
+    is_trainee を ON にする際の警告表示用。自動解除はしない (警告主義・§8-4)。
+    """
+    cur_year, cur_week, _monday = _current_week()
+    rows = (
+        await db.execute(
+            select(Course.id, Course.iso_year, Course.iso_week, Course.weekday, Course.code)
+            .where(
+                Course.assigned_staff_id == trainee_staff_id,
+                Course.deleted_at.is_(None),
+                or_(
+                    Course.iso_year > cur_year,
+                    and_(Course.iso_year == cur_year, Course.iso_week >= cur_week),
+                ),
+            )
+            .order_by(Course.iso_year, Course.iso_week, Course.weekday)
+        )
+    ).all()
+    courses = [
+        TraineeCourseGuardCourse(
+            id=cid, iso_year=iy, iso_week=iw, weekday=wd, code=code
+        )
+        for (cid, iy, iw, wd, code) in rows
+    ]
+    return TraineeCourseGuardResponse(
+        trainee_staff_id=trainee_staff_id,
+        count=len(courses),
+        courses=courses,
+    )
+
+
+# ---------------------------------------------------------------------------
+# §7.5: is_trainee OFF 時の将来リンク + 既定の一括削除
+# ---------------------------------------------------------------------------
+
+
+@router.delete(
+    "/trainee-accompaniments/future",
+    response_model=TraineeAccompanimentFutureDeleteResponse,
+    summary="今週以降の同行リンク + 毎週の既定を一括削除 (admin/manager・冪等)",
+)
+async def delete_future_trainee_accompaniments(
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    trainee_staff_id: Annotated[UUID, Query()],
+) -> TraineeAccompanimentFutureDeleteResponse:
+    """今週以降の週リンク (course/visit) を物理削除し、毎週の既定を全削除する (§7.5).
+
+    is_trainee OFF 操作の確認ダイアログから呼ぶ。過去週のリンクは実績履歴として残す。
+    冪等 (対象が無くても 0 件で成功)。
+    """
+    cur_year, cur_week, monday = _current_week()
+
+    # 今週以降のコースリンク: course が (iso_year, iso_week) >= 今週。
+    future_course_ids = select(Course.id).where(
+        or_(
+            Course.iso_year > cur_year,
+            and_(Course.iso_year == cur_year, Course.iso_week >= cur_week),
+        ),
+    )
+    # 今週以降の個別リンク: visit_date >= 今週の月曜。
+    future_visit_ids = select(Visit.id).where(Visit.visit_date >= monday)
+
+    res_links = await db.execute(
+        delete(TraineeAccompaniment).where(
+            TraineeAccompaniment.trainee_staff_id == trainee_staff_id,
+            or_(
+                TraineeAccompaniment.course_id.in_(future_course_ids),
+                TraineeAccompaniment.visit_id.in_(future_visit_ids),
+            ),
+        )
+    )
+    res_defaults = await db.execute(
+        delete(TraineeAccompanimentDefault).where(
+            TraineeAccompanimentDefault.trainee_staff_id == trainee_staff_id
+        )
+    )
+    await db.commit()
+
+    return TraineeAccompanimentFutureDeleteResponse(
+        trainee_staff_id=trainee_staff_id,
+        deleted_links=int(res_links.rowcount or 0),
+        deleted_defaults=int(res_defaults.rowcount or 0),
+    )

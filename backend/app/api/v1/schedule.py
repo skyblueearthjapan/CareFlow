@@ -2129,24 +2129,9 @@ async def apply_staff_review(
                 )
             )
 
-        # ----- trainee_staff_ids 構築 (apply 対象 staff の is_trainee から) -----
-        target_staff_ids = {a.staff_id for a in assignments}
-        trainee_ids: frozenset[UUID] = frozenset()
-        if target_staff_ids:
-            trainee_rows = (
-                await db.execute(
-                    select(Staff.id).where(
-                        Staff.id.in_(list(target_staff_ids)),
-                        Staff.is_trainee.is_(True),
-                        Staff.deleted_at.is_(None),
-                    )
-                )
-            ).all()
-            trainee_ids = frozenset(sid for (sid,) in trainee_rows)
-
         # ----- 自動割付と同一の _persist 経由で反映 -----
         assigner = Layer3Assigner()
-        await assigner._persist(db, assignments, trainee_staff_ids=trainee_ids)
+        await assigner._persist(db, assignments)
         await db.commit()
     except Exception:
         # 修正C: HTTPException / 想定外例外いずれも rollback して再 raise (挙動は同一)。

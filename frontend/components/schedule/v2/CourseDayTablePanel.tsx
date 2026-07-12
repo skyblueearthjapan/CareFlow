@@ -507,8 +507,10 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
   // 自動算出 (run_v2_pipeline) は引き続き拠点内のみだが、 手動 dropdown は全 active staff を表示.
   // 各 option には 「氏名 (拠点名)」 形式で所属を併記 (= CourseDayTable 側で format).
   const staffByOffice = useMemo(() => {
+    // 新人同行 §8: 新人 (is_trainee) はコース担当にできない → 担当 dropdown から除外。
+    // BE PATCH /courses でも 422 で二重防御。フラグ OFF で自動的に候補へ復帰する。
     const allActive = [...allStaff]
-      .filter((s) => s.status === 'active')
+      .filter((s) => s.status === 'active' && !s.is_trainee)
       .sort((a, b) => {
         // 主担当拠点 → kana/氏名 でソート
         const oa = a.primary_office_id ?? '';
@@ -2353,9 +2355,10 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
   // Phase G-91 (修正1): レビュー承認カードを apply する (= 専用 endpoint 1 回呼び出し).
   // 従来の PATCH /courses ループ (assigned_staff_id のみ) を廃し、
   // POST /apply-staff-review を 1 回呼ぶ。 BE が自動割付と同一の _persist 経由で
-  // VSA INSERT / course_status / primary・secondary 同期 / 2 名体制 / trainee
-  // companion を全て反映する (= apply 済コースの visit が未割当表示になる
-  // リグレッションを解消)。 監査はミドルウェアが POST を自動記録する。
+  // VSA INSERT / course_status / primary・secondary 同期 / 2 名体制 を全て反映する
+  // (= apply 済コースの visit が未割当表示になるリグレッションを解消)。
+  // 旧 trainee companion 注入は新人同行 Phase 2 で撤去済み。
+  // 監査はミドルウェアが POST を自動記録する。
   const applyStaffReviewMut = useApplyStaffReview();
 
   // Phase G-91 (修正5): 部分失敗時は成功済 course を reviewItems から除去し、

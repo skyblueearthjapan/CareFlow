@@ -3,21 +3,17 @@
 /**
  * Staff master — edit form (W10-FE1 Phase 3: 全部載せ).
  *
- * 5 セクション構成:
+ * 4 セクション構成:
  *   ① 基本情報  (PATCH /staff/{id})
  *   ② 週間シフト (PUT /staff/{id}/shifts — ShiftsEditDialog 流用)
  *   ③ オーバーライド (today+90 日)
  *   ④ イベント
- *   ⑤ 同行スタッフ割付 (is_trainee=true 時のみ — StaffCompanionPanel)
  *
- * 患者編集ページと同じ流派:
- *   上半分 = 1 form 一括 PATCH (基本情報)
- *   下半分 = 独立 PUT/POST/DELETE (シフト/オーバーライド/イベント/同行割付)
- *
- * is_trainee を OFF にした時:
- *   確認ダイアログ → 同行スタッフ割付を DELETE してから PATCH。
- *
- * メンター → 同行スタッフ ラベル変更 (W10-FE1 §4)。
+ * 新人同行 v1.1 §7.5 / §8-4:
+ *   - is_trainee を OFF にした時: 確認ダイアログ → 今週以降の同行リンク + 毎週の既定を
+ *     DELETE /trainee-accompaniments/future してから PATCH (過去週は履歴として残す)。
+ *   - is_trainee を ON にした時: 今週以降のコース担当に残っていれば警告表示
+ *     (自動解除はしない・警告主義)。同行はスケジュール画面で設定する。
  */
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
@@ -41,7 +37,10 @@ import { RecordNavigator, type NavigatorRecord } from '@/components/RecordNaviga
 import { useStaffEvents } from '@/lib/queries/staff-events';
 import { useStaffOverrides, type OverrideRange } from '@/lib/queries/staff-overrides';
 import { useStaffShifts } from '@/lib/queries/staff-shifts';
-import { useDeleteCompanionAssignments } from '@/lib/queries/staff_companion';
+import {
+  useDeleteTraineeAccompanimentsFuture,
+  useTraineeCourseGuard,
+} from '@/lib/queries/trainee_accompaniments';
 import { useDeleteStaff, useStaff, useStaffList, useUpdateStaff } from '@/lib/queries/staff';
 import type { OverrideRead } from '@/lib/schemas/staff-overrides';
 import {
@@ -62,7 +61,6 @@ import type { StaffShiftItem } from '@/lib/schemas/staff-shifts';
 import type { EventRead } from '@/lib/schemas/staff-events';
 
 import { DeleteConfirmModal } from '../../_components/DeleteConfirmModal';
-import { StaffCompanionPanel } from '../../_components/StaffCompanionPanel';
 import { StaffFormFields, type StaffFormState } from '../../_components/StaffFormFields';
 import { EventAddDialog } from '../_components/EventAddDialog';
 import { EventEditDialog } from '../_components/EventEditDialog';
@@ -180,7 +178,13 @@ export default function StaffEditPage() {
   const [traineeOffConfirmOpen, setTraineeOffConfirmOpen] = useState(false);
   const [pendingPayload, setPendingPayload] = useState<StaffUpdate | null>(null);
 
-  const deleteCompanion = useDeleteCompanionAssignments(id ?? '__none__');
+  const deleteFuture = useDeleteTraineeAccompanimentsFuture(id ?? '__none__');
+
+  // §8-4: 新人フラグ ON 中に「今週以降のコース担当」に残っていれば警告する
+  // (自動解除はしない・警告主義)。フラグ OFF の間はクエリを走らせない。
+  const traineeGuard = useTraineeCourseGuard(id, !!form?.is_trainee);
+  const traineeStillHoldsCourses =
+    !!form?.is_trainee && (traineeGuard.data?.count ?? 0) > 0;
 
   useEffect(() => {
     if (data && form === null) {
@@ -266,11 +270,12 @@ export default function StaffEditPage() {
   const confirmTraineeOff = async () => {
     if (!pendingPayload) return;
     try {
-      // 同行スタッフ割付を先に削除してから基本情報を PATCH
-      await deleteCompanion.mutateAsync();
+      // 今週以降の同行リンク + 毎週の既定を先に削除してから基本情報を PATCH。
+      // (過去週リンクは実績履歴として残す・§7.5)
+      await deleteFuture.mutateAsync();
       update.mutate({ id, payload: pendingPayload });
     } catch {
-      toast.error('同行スタッフ割付の削除に失敗しました');
+      toast.error('同行データの削除に失敗しました');
     } finally {
       setTraineeOffConfirmOpen(false);
       setPendingPayload(null);
@@ -327,6 +332,19 @@ export default function StaffEditPage() {
         </Alert>
       )}
 
+      {/* §8-4: 新人フラグ ON 中に今週以降のコース担当が残っている警告 (警告主義) */}
+      {traineeStillHoldsCourses && (
+        <Alert>
+          <AlertTitle>新人が今週以降のコース担当に残っています</AlertTitle>
+          <AlertDescription>
+            このスタッフは新人ですが、今週以降のコース担当（
+            {traineeGuard.data?.count ?? 0} 件）に残っています。新人はコースを持たない運用です。
+            スケジュール画面で「固定枠に戻す」か担当を変更して解消してください
+            （自動では解除しません）。
+          </AlertDescription>
+        </Alert>
+      )}
+
       {/* ① 基本情報 */}
       <Card>
         <CardHeader>
@@ -370,9 +388,6 @@ export default function StaffEditPage() {
       {/* ④ 研修日 / イベント */}
       <EventsCardInline staffId={id} canEdit={isPrivileged} />
 
-      {/* ⑤ 同行スタッフ割付 (is_trainee=true 時のみ) */}
-      {form.is_trainee && <StaffCompanionPanel staffId={id} />}
-
       {/* 削除確認ダイアログ */}
       {data && (
         <DeleteConfirmModal
@@ -392,8 +407,8 @@ export default function StaffEditPage() {
             <DialogTitle>新人フラグを解除しますか？</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-text-secondary">
-            新人フラグを OFF にすると、登録済みの同行スタッフ割付データが全て削除されます。
-            この操作は取り消せません。
+            今週以降の同行リンクと毎週の既定を削除します。よろしいですか？
+            （過去週の同行は実績履歴として残ります）
           </p>
           <DialogFooter>
             <Button
@@ -403,7 +418,7 @@ export default function StaffEditPage() {
                 setTraineeOffConfirmOpen(false);
                 setPendingPayload(null);
               }}
-              disabled={deleteCompanion.isPending}
+              disabled={deleteFuture.isPending}
             >
               キャンセル
             </Button>
@@ -411,9 +426,9 @@ export default function StaffEditPage() {
               type="button"
               variant="destructive"
               onClick={confirmTraineeOff}
-              disabled={deleteCompanion.isPending}
+              disabled={deleteFuture.isPending}
             >
-              {deleteCompanion.isPending ? '削除中…' : '解除して削除する'}
+              {deleteFuture.isPending ? '削除中…' : '解除して削除する'}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -7,7 +7,9 @@
  *   - Weekly shifts        (3-8)  GET/PUT  /api/v1/staff/:id/shifts
  *   - Weekly overrides     (3-9)  GET/POST/PATCH/DELETE /api/v1/staff/:id/overrides
  *   - Events / 研修日       (3-10) /api/v1/staff/:id/events
- *   - 同行スタッフ割付      (W10)  GET /api/v1/staff/:id/companion-assignments
+ *   - 新人同行サマリ        GET /api/v1/trainee-accompaniment-defaults ほか
+ *     (旧 W10 companion-assignments は新人同行 Phase 2 で撤去・後継は
+ *      TraineeAccompanimentSummary — docs/plans/trainee-accompaniment-design.md §7.5)
  *
  * W10-FE2 変更点:
  *   - 旧「メンター割付」セクション → 「同行スタッフ割付」(閲覧専用) に置換
@@ -47,7 +49,7 @@ import { EventEditDialog } from './_components/EventEditDialog';
 import { OverrideAddDialog } from './_components/OverrideAddDialog';
 import { OverrideEditDialog } from './_components/OverrideEditDialog';
 import { ShiftsEditDialog } from './_components/ShiftsEditDialog';
-import { StaffCompanionViewer } from './_components/StaffCompanionViewer';
+import { TraineeAccompanimentSummary } from './_components/TraineeAccompanimentSummary';
 
 /** Overrides default window: today through +90 days. */
 const OVERRIDES_RANGE_DAYS_FORWARD = 90;
@@ -212,8 +214,8 @@ export default function StaffDetailPage() {
 
       <EventsCard staffId={data.id} canEdit={canEdit} />
 
-      {/* 同行スタッフ割付 — is_trainee=true のときのみ表示 (§3.5.x) */}
-      {data.is_trainee && <CompanionCard staffId={data.id} canEdit={canEdit} />}
+      {/* 新人同行サマリ — is_trainee=true のときのみ表示 (§7.5・閲覧専用) */}
+      {data.is_trainee && <TraineeAccompanimentCard staffId={data.id} />}
 
       <DeleteConfirmModal
         open={confirmOpen}
@@ -557,17 +559,17 @@ function EventsCard({ staffId, canEdit }: { staffId: string; canEdit: boolean })
 }
 
 /**
- * 同行スタッフ割付カード (W10-FE2 / §3.5.x).
+ * 新人同行サマリカード (§7.5・閲覧専用).
  * is_trainee=true の場合のみ StaffDetailPage から呼び出される。
  */
-function CompanionCard({ staffId, canEdit }: { staffId: string; canEdit: boolean }) {
+function TraineeAccompanimentCard({ staffId }: { staffId: string }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>同行スタッフ割付</CardTitle>
+        <CardTitle>新人同行</CardTitle>
       </CardHeader>
       <CardContent>
-        <StaffCompanionViewer staffId={staffId} canEdit={canEdit} />
+        <TraineeAccompanimentSummary staffId={staffId} />
       </CardContent>
     </Card>
   );

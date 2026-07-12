@@ -133,7 +133,11 @@ class OverlapPair(BaseModel):
 
 
 class TraineeAccompanimentDefaultRead(BaseModel):
-    """既定 1 件."""
+    """既定 1 件.
+
+    ``course_template_label`` / ``office_id`` は §7.5 の閲覧サマリ用に解決済みの
+    テンプレ情報を非破壊で載せる (Phase 1 契約への追加・任意)。
+    """
 
     model_config = ConfigDict(from_attributes=True, extra="forbid")
 
@@ -141,6 +145,8 @@ class TraineeAccompanimentDefaultRead(BaseModel):
     trainee_staff_id: UUID
     weekday: int
     course_template_id: UUID
+    course_template_label: str | None = None
+    office_id: UUID | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -154,6 +160,48 @@ class TraineeAccompanimentDefaultsPut(BaseModel):
     items: list[AccompanimentDefaultItem] = Field(default_factory=list)
 
 
+# ---------------------------------------------------------------------------
+# §8-4: is_trainee ON 警告用の「今週以降のコース担当」ガードチェック
+# ---------------------------------------------------------------------------
+
+
+class TraineeCourseGuardCourse(BaseModel):
+    """新人が今週以降に担当として残っているコース 1 件."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: UUID
+    iso_year: int
+    iso_week: int
+    weekday: int
+    code: str
+
+
+class TraineeCourseGuardResponse(BaseModel):
+    """GET /trainee-accompaniments/course-guard レスポンス (§8-4 警告主義)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    trainee_staff_id: UUID
+    count: int
+    courses: list[TraineeCourseGuardCourse] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# §7.5: is_trainee OFF 時の将来リンク + 既定の一括削除
+# ---------------------------------------------------------------------------
+
+
+class TraineeAccompanimentFutureDeleteResponse(BaseModel):
+    """DELETE /trainee-accompaniments/future レスポンス (冪等)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    trainee_staff_id: UUID
+    deleted_links: int
+    deleted_defaults: int
+
+
 __all__ = [
     "AccompanimentCourseInfo",
     "AccompanimentDefaultItem",
@@ -163,7 +211,10 @@ __all__ = [
     "OverlapPatient",
     "TraineeAccompanimentDefaultRead",
     "TraineeAccompanimentDefaultsPut",
+    "TraineeAccompanimentFutureDeleteResponse",
     "TraineeAccompanimentRead",
     "TraineeAccompanimentsListResponse",
     "TraineeAccompanimentsPut",
+    "TraineeCourseGuardCourse",
+    "TraineeCourseGuardResponse",
 ]

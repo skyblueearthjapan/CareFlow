@@ -35,7 +35,6 @@ from app.models.staff import (
     StaffShift,
     StaffWeeklyOverride,
 )
-from app.models.staff_companion_assignment import StaffCompanionAssignment
 from app.models.suggestion_dismissal import SuggestionDismissal
 from app.models.trainee_accompaniment import (
     TraineeAccompaniment,
@@ -80,7 +79,6 @@ __all__ = [
     "SpecialWeekItem",
     "SuggestionDismissal",
     "Staff",
-    "StaffCompanionAssignment",
     "StaffEvent",
     "StaffSecondaryOffice",
     "StaffShift",

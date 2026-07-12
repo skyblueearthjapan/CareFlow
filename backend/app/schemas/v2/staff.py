@@ -5,7 +5,8 @@
 1日最大訪問数 / スキル / 割付ボリューム) は v2 schema には含めない。
 
 W10-BE1: mentor_id 廃止 → is_trainee 追加。
-同行スタッフ管理は staff_companion_assignments テーブルへ移行。
+Phase 2 (新人同行 v1.1 §3): 旧 staff_companion_assignments 機構は撤去済み。
+同行は trainee_accompaniments (スケジュール画面の同行モード) が正典。
 """
 
 from __future__ import annotations

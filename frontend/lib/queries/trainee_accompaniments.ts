@@ -27,15 +27,17 @@ import {
   traineeAccompanimentsResponseSchema,
   type TraineeAccompanimentDefaultRead,
   type TraineeAccompanimentDefaultsPut,
+  type TraineeAccompanimentFutureDeleteResponse,
   type TraineeAccompanimentItem,
   type TraineeAccompanimentsPut,
+  type TraineeCourseGuardResponse,
 } from '@/lib/schemas/trainee_accompaniment';
 
 const BASE = '/api/v1/trainee-accompaniments';
 const DEFAULTS_BASE = '/api/v1/trainee-accompaniment-defaults';
 
 // ---------------------------------------------------------------------------
-// Auth helper (mirrors pattern in lib/queries/staff_companion.ts)
+// Auth helper (mirrors pattern in lib/queries/staff.ts)
 // ---------------------------------------------------------------------------
 
 function useAuthTokens() {
@@ -60,6 +62,9 @@ export const traineeAccompanimentsKey = (
 
 export const traineeAccompanimentDefaultsKey = (traineeStaffId: string | null | undefined) =>
   ['trainee-accompaniment-defaults', traineeStaffId ?? '__none__'] as const;
+
+export const traineeCourseGuardKey = (traineeStaffId: string | null | undefined) =>
+  ['trainee-course-guard', traineeStaffId ?? '__none__'] as const;
 
 // ---------------------------------------------------------------------------
 // GET /trainee-accompaniments?iso_year=&iso_week=[&trainee_staff_id=]
@@ -196,6 +201,75 @@ export function useUpdateTraineeAccompanimentDefaults(
       void qc.invalidateQueries({
         queryKey: traineeAccompanimentDefaultsKey(variables.trainee_staff_id),
       });
+      options.onSuccess?.(data, variables, onMutateResult, context);
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// GET /trainee-accompaniments/course-guard?trainee_staff_id=  (§8-4 警告用)
+// ---------------------------------------------------------------------------
+
+/**
+ * 新人が「今週以降のコース担当」に残っているかを返す。
+ * is_trainee を ON にする際の警告表示に使う (自動解除はしない・警告主義)。
+ */
+export function useTraineeCourseGuard(
+  traineeStaffId: string | null | undefined,
+  enabled = true,
+) {
+  const { accessToken, refreshToken, isAuthenticated } = useAuthTokens();
+
+  return useQuery<TraineeCourseGuardResponse, Error>({
+    queryKey: traineeCourseGuardKey(traineeStaffId),
+    queryFn: () => {
+      if (!traineeStaffId) throw new Error('trainee_staff_id is required');
+      const qs = new URLSearchParams({ trainee_staff_id: traineeStaffId });
+      return fetcher<TraineeCourseGuardResponse>(
+        `${BASE}/course-guard?${qs.toString()}`,
+        { accessToken, refreshToken },
+      );
+    },
+    enabled: isAuthenticated && enabled && !!traineeStaffId,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// DELETE /trainee-accompaniments/future?trainee_staff_id=  (§7.5)
+// ---------------------------------------------------------------------------
+
+type DeleteFutureOptions = UseMutationOptions<
+  TraineeAccompanimentFutureDeleteResponse,
+  Error,
+  void
+>;
+
+/**
+ * is_trainee OFF の確認ダイアログから呼ぶ。今週以降の同行リンク + 毎週の既定を
+ * 一括削除する (過去週は実績履歴として残す・冪等)。
+ */
+export function useDeleteTraineeAccompanimentsFuture(
+  traineeStaffId: string,
+  options: DeleteFutureOptions = {},
+): UseMutationResult<TraineeAccompanimentFutureDeleteResponse, Error, void> {
+  const qc = useQueryClient();
+  const { accessToken, refreshToken } = useAuthTokens();
+
+  return useMutation<TraineeAccompanimentFutureDeleteResponse, Error, void>({
+    mutationFn: () => {
+      const qs = new URLSearchParams({ trainee_staff_id: traineeStaffId });
+      return fetcher<TraineeAccompanimentFutureDeleteResponse>(
+        `${BASE}/future?${qs.toString()}`,
+        { method: 'DELETE', accessToken, refreshToken },
+      );
+    },
+    ...options,
+    onSuccess: (data, variables, onMutateResult, context) => {
+      void qc.invalidateQueries({ queryKey: ['trainee-accompaniments'] });
+      void qc.invalidateQueries({
+        queryKey: traineeAccompanimentDefaultsKey(traineeStaffId),
+      });
+      void qc.invalidateQueries({ queryKey: traineeCourseGuardKey(traineeStaffId) });
       options.onSuccess?.(data, variables, onMutateResult, context);
     },
   });

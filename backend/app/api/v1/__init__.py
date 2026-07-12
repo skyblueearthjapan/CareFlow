@@ -36,8 +36,6 @@ from app.api.v1 import (
     scheduling_settings,
     shift_requests,
     staff,
-    staff_companion,
-    staff_companion_assignments,
     staff_events,
     staff_excel,
     staff_overrides,
@@ -93,12 +91,6 @@ api_router.include_router(
     prefix="/staff/import-export",
     tags=["staff-excel"],
 )
-# W10-BE1: companion-candidates must be registered BEFORE /{staff_id} sub-resource
-# routes to avoid UUID path collision on /staff/companion-candidates.
-api_router.include_router(staff_companion.router, prefix="/staff", tags=["staff-companion"])
-# W15-FE Phase 5 F-1: course-scoped GET + per-assignment PATCH (pair_role)
-# Registered without /staff prefix — uses /staff-companion-assignments root.
-api_router.include_router(staff_companion_assignments.router, tags=["staff-companion"])
 api_router.include_router(staff_shifts.router, prefix="/staff", tags=["staff-shifts"])
 api_router.include_router(staff_overrides.router, prefix="/staff", tags=["staff-overrides"])
 api_router.include_router(staff_events.router, prefix="/staff", tags=["staff-events"])
