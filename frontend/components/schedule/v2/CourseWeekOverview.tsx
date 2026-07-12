@@ -558,6 +558,18 @@ export function CourseWeekOverview({
                                 担当: 未割当
                               </span>
                             )}
+                            {/* 新人同行 (§7.2): コース丸ごと同行はスタッフ名と同じ行の
+                                空きスペースへ名前つきで表示 (PO要望 2026-07-12)。 */}
+                            {courseAccName ? (
+                              <span
+                                className="ml-1 text-info"
+                                data-testid={`course-week-overview-course-accompaniment-${tpl.id}-${wd}`}
+                                title={`同行: ${courseAccName}（新人）`}
+                                aria-label={`同行: ${courseAccName}（新人）`}
+                              >
+                                👥{courseAccName}
+                              </span>
+                            ) : null}
                           </div>
                           <div className="mb-0.5 flex items-center justify-between gap-1">
                             <span
@@ -572,17 +584,7 @@ export function CourseWeekOverview({
                               {visitList.length} 名 / 上限 6
                             </span>
                             <span className="flex shrink-0 items-center gap-1">
-                              {/* 新人同行 (§7.2): コース丸ごと同行 = 極小 👥 (名前は title)。 */}
-                              {courseAccName ? (
-                                <span
-                                  className="shrink-0 text-[10px] leading-none text-info"
-                                  data-testid={`course-week-overview-course-accompaniment-${tpl.id}-${wd}`}
-                                  title={`同行: ${courseAccName}（新人）`}
-                                  aria-label={`同行: ${courseAccName}（新人）`}
-                                >
-                                  👥
-                                </span>
-                              ) : null}
+                              {/* 新人同行のコース表示はスタッフ名行へ移設 (PO要望 2026-07-12)。 */}
                               {/* コース合計距離 (直線・概算). コース右端に表示. */}
                               {courseTotalKm > 0 ? (
                                 <span
