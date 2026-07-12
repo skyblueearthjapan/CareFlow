@@ -105,6 +105,26 @@ export function AccompanimentBar({
         </div>
       </div>
 
+      {/* 使い方ガイド (PO報告 2026-07-12: 何をクリックすればよいか分からない)。
+          未選択のうちは info トーンで大きめに、選択が始まったら控えめに残す。 */}
+      <p
+        className={cn(
+          'mt-2 rounded-md px-2.5 py-1.5 text-[11.5px] leading-relaxed',
+          courseCount + visitCount === 0
+            ? 'border border-info/40 bg-info-bg font-medium text-info'
+            : 'text-text-muted',
+        )}
+        data-testid="accompaniment-guide"
+      >
+        使い方: 上のタイムラインで
+        <span className="font-bold">コースの曜日ヘッダー</span>
+        （例: 稲毛A の「月」）をクリックすると
+        <span className="font-bold">その日のコースまるごと</span>、
+        <span className="font-bold">患者カード</span>をクリックすると
+        <span className="font-bold">その患者だけ</span>に同行が付きます。
+        もう一度クリックで解除 → 最後に［確定］を押してください。
+      </p>
+
       {/* 警告領域: 時間重複 (確定ブロック中)。 */}
       {warnings.length > 0 && (
         <ul

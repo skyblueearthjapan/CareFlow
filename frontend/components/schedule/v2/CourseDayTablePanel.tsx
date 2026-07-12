@@ -3036,11 +3036,18 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                     type="button"
                     onClick={() => setWeekdayViewMode('list')}
                     aria-pressed={weekdayViewMode === 'list'}
+                    // 同行モード中はリスト表示に選択操作が無いため切替を封じる。
+                    disabled={accompaniment.active}
+                    title={
+                      accompaniment.active
+                        ? '新人同行モード中はタイムライン表示のみ使えます'
+                        : undefined
+                    }
                     data-testid="course-day-mode-list"
                     className={
                       weekdayViewMode === 'list'
                         ? 'bg-brand-primary px-2 py-1 text-white'
-                        : 'bg-bg-base px-2 py-1 text-text-secondary hover:bg-bg-muted'
+                        : 'bg-bg-base px-2 py-1 text-text-secondary hover:bg-bg-muted disabled:cursor-not-allowed disabled:opacity-50'
                     }
                   >
                     リスト
@@ -3071,11 +3078,18 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                       type="button"
                       onClick={() => setWeekViewMode('overview')}
                       aria-pressed={weekViewMode === 'overview'}
+                      // 同行モード中はリスト表示に選択操作が無いため切替を封じる。
+                      disabled={accompaniment.active}
+                      title={
+                        accompaniment.active
+                          ? '新人同行モード中はタイムライン表示のみ使えます'
+                          : undefined
+                      }
                       data-testid="course-week-mode-overview"
                       className={
                         weekViewMode === 'overview'
                           ? 'bg-brand-primary px-2 py-1 text-white'
-                          : 'bg-bg-base px-2 py-1 text-text-secondary hover:bg-bg-muted'
+                          : 'bg-bg-base px-2 py-1 text-text-secondary hover:bg-bg-muted disabled:cursor-not-allowed disabled:opacity-50'
                       }
                     >
                       リスト
@@ -3168,7 +3182,15 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                         type="button"
                         size="sm"
                         variant="outline"
-                        onClick={accompaniment.enter}
+                        onClick={() => {
+                          // 同行の選択操作 (コース列ヘッダ/訪問カードのクリック) は
+                          // タイムライン表示にのみ結線されている。一覧/リスト表示のまま
+                          // モードに入ると「押しても何も起きない」ため、開始時に両タブの
+                          // 表示を強制的にタイムラインへ切り替える (PO報告 2026-07-12)。
+                          setWeekViewMode('timeline');
+                          setWeekdayViewMode('timeline');
+                          accompaniment.enter();
+                        }}
                         disabled={accompaniment.active}
                         data-testid="accompaniment-enter-button"
                         title="新人が先輩の訪問に同行する設定を編集します"
