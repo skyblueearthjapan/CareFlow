@@ -1,8 +1,8 @@
 # 引き継ぎ書：2026-07-09〜10 セッション総合（連携ページ刷新・スタッフ退職事故の根治・PFV正の設計転換）
 
-作成 2026-07-10 / **★最新状態は §10（2026-07-12深夜追記）: 本番 HEAD = `2c93ef1`・DB = 0061・healthz内外OK**
-（自動スタッフ割当4段ソルバ v2.0 本番稼働。§3以前のHEAD/DB記述は履歴）。
-**次のエージェントはまずこのファイル（§10→§9→§8の順）を読む。** 前正典 = `docs/plans/session-2026-07-08b-HANDOFF.md`（テーブル撤去・PW締め付け・RBAC統一まではそちら）。
+作成 2026-07-10 / **★最新状態は §11（2026-07-13追記）: 本番 HEAD = `c7b2dc9`・DB = 0061・healthz内外OK**
+（§11=モニター地図の視認性改善。4段ソルバ v2.0 は §10。§3以前のHEAD/DB記述は履歴）。
+**次のエージェントはまずこのファイル（§11→§10→§9→§8の順）を読む。** 前正典 = `docs/plans/session-2026-07-08b-HANDOFF.md`（テーブル撤去・PW締め付け・RBAC統一まではそちら）。
 
 ---
 
@@ -413,6 +413,42 @@ PO要件訂正で v2.0=`2c93ef1`（Q3全廃+跨ぎ救援）を実装・デプロ
    スタッフ実構成=稲毛: staff2(宇田川/高岡)+manager2(川名/熊澤)+新人1(髙梨)、都賀: 本名(男性)1名
 8. 残タスク（前セッションから継続）: Cloudflare Session Duration延長（PO側ダッシュボード作業・§9-3）・
    同行つき週の初回カイポケ実apply（PO監督）・untracked 3ファイルの扱い（§9-3④）
+
+## 11. 2026-07-13 セッション: 訪問モニター地図の視認性改善（追記）
+
+**本番 HEAD = `c7b2dc9` デプロイ済み・healthz内外OK・DB 0061のまま（frontendのみ・migration無し）。
+PO実機確認済み「めっちゃいい」＝本件クローズ。**
+
+### 11-1. 背景（PO報告）
+
+モニター右端の地図で、①順路の指示線がブランドピンク（#e15a7f・太さ2・不透明度0.45）のため
+**OSM背景の高速道路（ピンク系の塗り）と同化して不可視** ②番号マーカー（①②③…）が
+「予定」状態=薄グレー `--status-future`（#d6d3d1）の16px丸に白9px文字で**ほぼ読めない**。
+
+### 11-2. 修正内容（`c7b2dc9`・3ファイル）
+
+| 対象 | 旧 | 新 |
+|---|---|---|
+| 順路線 | ピンク #e15a7f・w2・op0.45 | **紺青 `#2563eb`（`--map-route` 新設）・w3.5・op0.9 ＋ 白縁取り線 w7 の2層描画**（地図アプリ標準の見た目） |
+| 番号マーカー | 16px丸・9px白文字 | **22px丸・12px太字白文字**・影強化。ピル型（同住所複数「1・2」）も同比率で拡大＋文字種別幅近似の係数更新 |
+| マーカー色 | `STATUS_COLOR`（future=#d6d3d1/awaiting=#a8a29e が淡すぎ） | **地図専用 `MAP_MARKER_COLOR` を新設**（constants.ts）: future=`var(--text-secondary)`(#57534e・コントラスト約7:1)/awaiting=#78716c。**タイムライン等の面表示 STATUS_COLOR は不変** |
+| 場所違いしきい値円 | ピンク・w1 | ティール `#0d9488`（--info）・w2（同じく道路と同化していたため） |
+
+- 変更ファイル: `frontend/components/monitor/MonitorMapClient.tsx` / `components/monitor/constants.ts` / `styles/tokens.css`
+- 検証: FE **1199 pass / 0 fail**（基準値どおり）・tsc/lint 警告0
+- リブランディング時の「MonitorMapClient のSVG直書きは brand-primary と手動同期」（§4.6）は
+  本件で**順路線・しきい値円がブランド色から独立**したため、以後の brand-primary 変更時の
+  同期対象は 🏠 emojiIcon（`var(--brand-primary)` 使用・var可のため自動追従）のみ
+
+### 11-3. 次のエージェントへ
+
+- 色味の再調整依頼が来たら触るのは2箇所だけ: **`MAP_MARKER_COLOR`**（constants.ts・マーカー/ポップアップ）と
+  **`--map-route`**（tokens.css。ただし Leaflet pathOptions は SVG属性で var() 不可のため
+  MonitorMapClient.tsx 内の実値 `#2563eb` と手動同期が必要）
+- 地図マーカーに新ステータスを足すときは STATUS_COLOR と MAP_MARKER_COLOR の**両方**に追加
+  （淡色トークンをそのまま使うと白数字が読めない事故が再発する）
+- 残タスクは §10-3 から変わらず: Cloudflare Session Duration延長（PO側）・同行つき週の
+  初回カイポケ実apply（PO監督）・瀧本さん sex_restriction 確認・untracked 3ファイルの扱い
 
 ## 5. 参照
 
