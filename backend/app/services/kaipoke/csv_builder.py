@@ -184,6 +184,7 @@ async def resolve_month_rows(db: AsyncSession, opts: BuildOptions) -> list[Kaipo
     from app.models.office import Office
     from app.models.staff import Staff
     from app.models.visit import Visit
+    from app.services.trainee_accompaniment import resolve_accompaniment_by_visit
 
     first = date(opts.year, opts.month, 1)
     last = date(opts.year, opts.month, monthrange(opts.year, opts.month)[1])
@@ -202,12 +203,20 @@ async def resolve_month_rows(db: AsyncSession, opts: BuildOptions) -> list[Kaipo
     )
     visits = list((await db.scalars(stmt)).all())
 
-    # スタッフを一括ロード (name/qualification 解決用)。
+    # 新人同行 (設計 §9): visit_id -> (trainee_staff_id, name) をバッチ解決 (N+1 回避)。
+    # 唯一の正典 trainee_accompaniments を live JOIN で引く。職員名2/3 の解決順は
+    # secondary(要2名の正規2人目) → 同行(新人) → mentor(レガシー)。
+    accompaniment_by_visit = await resolve_accompaniment_by_visit(db, visits)
+
+    # スタッフを一括ロード (name/qualification 解決用)。同行の新人も qualification
+    # 解決のため staff_ids に含める。
     staff_ids = set()
     for v in visits:
         for sid in (v.primary_staff_id, v.secondary_staff_id, v.mentor_staff_id):
             if sid:
                 staff_ids.add(sid)
+    for tsid, _tname in accompaniment_by_visit.values():
+        staff_ids.add(tsid)
     staff_map: dict[uuid.UUID, Staff] = {}
     if staff_ids:
         srows = (await db.scalars(select(Staff).where(Staff.id.in_(staff_ids)))).all()
@@ -244,10 +253,32 @@ async def resolve_month_rows(db: AsyncSession, opts: BuildOptions) -> list[Kaipo
             # 主担当未確定の訪問は転記対象外 (カイポケには職員必須)。
             continue
         secondary = _cell(v.secondary_staff_id, companion=False)
+        # 同行の新人 (設計決定事項#4): 職員名2 へ「正規スタッフとして」載せる。
+        # 同行フラグ等の特別扱いはしない (companion=False = 同行N列に ○ を付けない)。
+        accompaniment: StaffCell | None = None
+        accomp = accompaniment_by_visit.get(v.id)
+        if accomp is not None:
+            accompaniment = _cell(accomp[0], companion=False)
         mentor = _cell(v.mentor_staff_id, companion=opts.mentor_as_companion)
-        # 2 枠目は secondary 優先、無ければ mentor(同行)。
-        slot2 = secondary or mentor
-        slot3 = mentor if (secondary and mentor) else None
+        # 職員名2/3 の解決順: secondary → 同行(新人) → mentor(レガシー)。
+        # 先頭 2 名を slot2/slot3 に載せる。secondary+同行の 3 人ケースは職員名3=同行。
+        # 週次反映 (diff/apply) では Correction が 2 枠 (staff1/staff2) までのため slot3 は
+        # 落ちる (設計 §9 既知制限)。月次CSV では職員名3 として反映される。
+        # 同一人物が secondary/同行/mentor に重複して載らないよう staff_id でデデュープ
+        # (順序保持)。primary と同一人物も除外 (職員名1 との二重掲載防止)。
+        accomp_id = accomp[0] if accomp is not None else None
+        candidates: list[StaffCell] = []
+        seen_ids = {v.primary_staff_id}
+        for sid, cell in (
+            (v.secondary_staff_id, secondary),
+            (accomp_id, accompaniment),
+            (v.mentor_staff_id, mentor),
+        ):
+            if cell is not None and sid not in seen_ids:
+                seen_ids.add(sid)
+                candidates.append(cell)
+        slot2 = candidates[0] if candidates else None
+        slot3 = candidates[1] if len(candidates) >= 2 else None
 
         result.append(
             KaipokeCsvRow(

@@ -32,6 +32,10 @@ from app.models.staff import Staff
 from app.models.visit import VISIT_STATUS_CANCELLED, Visit
 from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.services.kaipoke.name_match import build_name_index, match_name
+from app.services.trainee_accompaniment import (
+    resolve_accompaniment_trainee_by_course,
+    resolve_accompaniment_trainees_by_visit,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -324,6 +328,22 @@ async def apply_inbound_items(
     today = now.date()
     day_set = set(days) if days else None
 
+    # 同行由来 staff2 のラウンドトリップ汚染防止 (設計 §9): CareFlow が職員名2 として
+    # カイポケへ送った「同行の新人」が逆取込で staff2 として返ってきたとき、それを
+    # 「要2名患者」として secondary_staff_id へ書き戻す/required_staff_count=2 へ昇格
+    # させると汚染が起きる。同行リンク済みの新人と一致する staff2 は同行由来とみなし
+    # 反映しない (同行は trainee_accompaniments が唯一の正典)。
+    # - edit/delete 経路: 実在 visit を visit_id で突合 (バッチ・N+1 回避)。
+    # - add 経路: 新設 visit が張り付くコースの course-level リンクで突合。
+    # いずれも「新人集合への membership 判定」(複数新人リンク時の last-wins 非決定性で
+    # 誤って secondary へ書き戻す汚染を防ぐ — Phase 3 レビュー MINOR-2)。
+    accompaniment_by_visit = await resolve_accompaniment_trainees_by_visit(
+        db, list(index.values())
+    )
+    accompaniment_by_course = await resolve_accompaniment_trainee_by_course(
+        db, list(course_idx.by_id.keys())
+    )
+
     # 患者 → 拠点 (コース解決に使う)。
     pids = {it.patient_id for it in items if it.patient_id is not None}
     patient_office: dict[uuid.UUID, uuid.UUID] = {}
@@ -475,6 +495,16 @@ async def apply_inbound_items(
                 continue
             weekday = target_date.weekday()
             course = course_idx.by_staff.get((weekday, office_id, sid))
+            # 同行由来 staff2 の突合 (設計 §9): 新設 visit が張り付くコースに同行リンクが
+            # あり staff2 がその新人と一致するなら、secondary へ書かず要2名化もしない
+            # (同行の新人が「要2名患者」として返ってくるラウンドトリップ汚染を防ぐ)。
+            if (
+                sid2 is not None
+                and course is not None
+                and sid2 in accompaniment_by_course.get(course.id, set())
+            ):
+                sid2 = None
+                staff2_note = "／担当2は同行のため未反映（要2名化しない）"
             course_note = f"コース{course.code}" if course is not None else "臨時コース新設"
             detail = (
                 f"{target_date.month}/{target_date.day} {after.get('start_time')} を追加"
@@ -609,7 +639,14 @@ async def apply_inbound_items(
                 sid2_str = match_name(staff2_after_name, staff_index)
                 if sid2_str:
                     new_sid2 = uuid.UUID(sid2_str)
-                    staff2_update = True
+                    # 同行由来 staff2 の突合 (設計 §9): この visit の同行新人と一致するなら
+                    # secondary へ書かず要2名化もしない (ラウンドトリップ汚染防止。同行は
+                    # trainee_accompaniments が唯一の正典)。
+                    if new_sid2 in accompaniment_by_visit.get(visit.id, set()):
+                        new_sid2 = None
+                        notes.append(f"担当2「{staff2_after_name}」は同行のため未反映（要2名化しない）")
+                    else:
+                        staff2_update = True
                 else:
                     notes.append(f"担当2「{staff2_after_name}」未解決（未反映）")
 

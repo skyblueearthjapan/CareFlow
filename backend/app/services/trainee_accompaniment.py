@@ -304,6 +304,86 @@ async def resolve_accompaniment_by_visit(
     return result
 
 
+async def resolve_accompaniment_trainee_by_course(
+    db: AsyncSession, course_ids: list[UUID]
+) -> dict[UUID, set[UUID]]:
+    """course_id -> 同行新人 staff_id の集合を解決する (live JOIN).
+
+    逆取込 (inbound) の add 経路が「新設 visit が張り付くコースに同行リンクがあり、
+    カイポケ側 staff2 がその同行新人と一致するか」を突合するための course-level
+    ヘルパー (設計 §9)。同行が無いコースはキーを含めない。
+
+    集合を返すのは、1 コースに複数新人が張られている場合 (UNIQUE は
+    (trainee, course) 単位のため可能) に単一値の last-wins だと突合が非決定的になり、
+    CSV が送った新人と別の新人を比較して「同行由来なのに secondary へ書き戻す」
+    汚染が起き得るため (Phase 3 レビュー MINOR-2)。membership 判定で構造的に防ぐ。
+    """
+    if not course_ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(
+                TraineeAccompaniment.course_id,
+                TraineeAccompaniment.trainee_staff_id,
+            )
+            .join(Course, TraineeAccompaniment.course_id == Course.id)
+            .where(
+                TraineeAccompaniment.course_id.in_(course_ids),
+                Course.deleted_at.is_(None),
+            )
+        )
+    ).all()
+    result: dict[UUID, set[UUID]] = {}
+    for cid, tsid in rows:
+        result.setdefault(cid, set()).add(tsid)
+    return result
+
+
+async def resolve_accompaniment_trainees_by_visit(
+    db: AsyncSession, visits: list[Visit]
+) -> dict[UUID, set[UUID]]:
+    """visit_id -> その訪問に同行する新人 staff_id の集合を解決する (live JOIN).
+
+    逆取込 (inbound) の edit 経路の同行由来 staff2 突合用 (設計 §9)。
+    表示用の resolve_accompaniment_by_visit は代表 1 名しか返さないため、
+    複数新人リンク時の突合が非決定的になる — こちらは直リンク ∪ course リンクの
+    全集合を返し、membership 判定でラウンドトリップ汚染を構造的に防ぐ
+    (Phase 3 レビュー MINOR-2)。同行が無い visit はキーを含めない。
+    """
+    if not visits:
+        return {}
+
+    visit_ids = [v.id for v in visits]
+    course_ids = {v.course_id for v in visits if v.course_id is not None}
+
+    course_sets: dict[UUID, set[UUID]] = (
+        await resolve_accompaniment_trainee_by_course(db, list(course_ids))
+        if course_ids
+        else {}
+    )
+
+    direct_sets: dict[UUID, set[UUID]] = {}
+    rows = (
+        await db.execute(
+            select(
+                TraineeAccompaniment.visit_id,
+                TraineeAccompaniment.trainee_staff_id,
+            ).where(TraineeAccompaniment.visit_id.in_(visit_ids))
+        )
+    ).all()
+    for vid, tsid in rows:
+        direct_sets.setdefault(vid, set()).add(tsid)
+
+    result: dict[UUID, set[UUID]] = {}
+    for v in visits:
+        merged = set(direct_sets.get(v.id, set()))
+        if v.course_id is not None:
+            merged |= course_sets.get(v.course_id, set())
+        if merged:
+            result[v.id] = merged
+    return result
+
+
 # ---------------------------------------------------------------------------
 # 重複判定 (PUT の確定ブロック) — 設計 §6.2 / §7
 # ---------------------------------------------------------------------------
