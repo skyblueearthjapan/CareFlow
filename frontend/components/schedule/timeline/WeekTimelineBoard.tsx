@@ -33,6 +33,8 @@ import {
 } from '@/lib/scheduling/timeline';
 import { cn } from '@/lib/utils';
 
+import type { AccompanimentBinding } from './accompaniment/types';
+
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土'] as const;
 const COL_MIN_W = 150;
 const TIME_RAIL_W = 50;
@@ -65,6 +67,11 @@ export interface WeekTimelineBoardProps {
     templateId: string,
     weekday: number,
   ) => { name: string; sex?: string | null } | null;
+  /**
+   * 新人同行 (§7.1/§7.2)。指定時、active ならコース列ヘッダ/カードが選択トグルになり
+   * (通常クリックは親が抑止)、inactive なら常時表示バッジを描く。
+   */
+  accompaniment?: AccompanimentBinding;
 }
 
 function PersonMark() {
@@ -89,11 +96,19 @@ function WeekCard({
   v,
   onClick,
   laneInfo,
+  accompaniment,
 }: {
   v: WeekOverviewVisit;
   onClick?: () => void;
   laneInfo?: CardLane;
+  accompaniment?: AccompanimentBinding;
 }) {
+  const accActive = accompaniment?.active === true;
+  const accSelected = accActive && accompaniment!.isVisitSelected(v.id);
+  const accInCourse = accActive && accompaniment!.isVisitInSelectedCourse(v.id);
+  const accOverlap = accActive && accompaniment!.isVisitOverlapping(v.id);
+  const accBadge =
+    accompaniment && !accompaniment.active ? accompaniment.visitBadgeName(v.id) : null;
   const s = parseHM(v.start_time);
   // 終了が無い場合は既定 35 分で描く (週ビューは終了を持たない訪問もあるため寛容)。
   const e = parseHM(v.end_time) ?? (s !== null ? s + WTL_DEFAULT_SERVICE_MIN : null);
@@ -122,23 +137,56 @@ function WeekCard({
           right: 'auto' as const,
         }
       : { left: '2px', right: '2px' };
+  // 同行モード中はカードクリック=選択トグル (選択済みコース内は個別トグル不可)。
+  const effectiveOnClick = accActive
+    ? accInCourse
+      ? undefined
+      : () => accompaniment!.toggleVisit(v.id)
+    : onClick;
   return (
     <button
       type="button"
-      onClick={onClick}
+      onClick={effectiveOnClick}
       data-testid={`wtl-visit-${v.id}`}
-      title={v.patient_address ?? undefined}
-      className="absolute flex flex-col gap-px rounded-md border border-l-[3px] px-1.5 py-0.5 text-left shadow-[var(--shadow-xs)] transition-shadow hover:z-[4] hover:shadow-[var(--shadow-md)] focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary"
+      data-accompaniment-selected={accSelected ? 'true' : undefined}
+      title={
+        accInCourse
+          ? 'コース丸ごとに含まれています（個別解除はコース選択を外してください）'
+          : (v.patient_address ?? undefined)
+      }
+      className={cn(
+        'absolute flex flex-col gap-px rounded-md border border-l-[3px] px-1.5 py-0.5 text-left shadow-[var(--shadow-xs)] transition-shadow hover:z-[4] hover:shadow-[var(--shadow-md)] focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary',
+        accOverlap && 'z-[3] ring-2 ring-error',
+        accSelected && !accOverlap && 'z-[3] ring-2 ring-brand-primary',
+      )}
       style={{
         top,
         height: h,
         ...laneStyle,
         background: pal.bg,
-        borderColor: pal.ln,
-        borderLeftColor: pal.bar,
+        borderColor: accOverlap ? 'var(--error)' : pal.ln,
+        borderLeftColor: accOverlap ? 'var(--error)' : pal.bar,
         color: pal.ink,
       }}
     >
+      {/* 同行モード: 選択チェック (実効選択集合に入っている訪問)。 */}
+      {accActive && accSelected && (
+        <span
+          className="absolute left-0.5 top-0.5 z-[2] grid h-3.5 w-3.5 place-items-center rounded-full bg-brand-primary text-[8px] font-bold text-white"
+          aria-hidden="true"
+        >
+          ✓
+        </span>
+      )}
+      {/* 常時表示 (モード外): 個別同行バッジ 👥新人名 (§7.2)。 */}
+      {accBadge && (
+        <span
+          className="absolute left-0.5 top-0.5 z-[2] rounded-full bg-info-bg px-1 text-[8px] font-bold text-info"
+          data-testid={`wtl-accompaniment-badge-${v.id}`}
+        >
+          👥{accBadge}
+        </span>
+      )}
       {/* ピン留め: 右上に打ち込んだ画鋲 (📍住所と誤認しない・PO要望 2026-07-08)。 */}
       {v.is_pinned && <CornerPushPin className="h-4 w-4" />}
       {/* 1行目: アイコン + 患者名 (フル表示)。 */}
@@ -239,11 +287,14 @@ function WeekPairBox({
   item,
   laneInfo,
   onPatientClick,
+  accompaniment,
 }: {
   item: Extract<WeekRenderItem, { kind: 'pair' }>;
   laneInfo?: CardLane;
   onPatientClick?: (patientId: string) => void;
+  accompaniment?: AccompanimentBinding;
 }) {
+  const accActive = accompaniment?.active === true;
   const cs = Math.max(item.startMin, TL_DAY_START_MIN);
   const ce = Math.min(item.endMin, TL_DAY_END_MIN);
   if (ce <= cs) return null;
@@ -277,20 +328,58 @@ function WeekPairBox({
           const s = parseHM(v.start_time);
           const e = parseHM(v.end_time) ?? (s !== null ? s + WTL_DEFAULT_SERVICE_MIN : null);
           const dm = s !== null && e !== null && e > s ? e - s : null;
+          const accSelected = accActive && accompaniment!.isVisitSelected(v.id);
+          const accInCourse = accActive && accompaniment!.isVisitInSelectedCourse(v.id);
+          const accOverlap = accActive && accompaniment!.isVisitOverlapping(v.id);
+          const accBadge =
+            accompaniment && !accompaniment.active ? accompaniment.visitBadgeName(v.id) : null;
+          const onCardClick = accActive
+            ? accInCourse
+              ? undefined
+              : () => accompaniment!.toggleVisit(v.id)
+            : onPatientClick
+              ? () => onPatientClick(v.patient_id)
+              : undefined;
           return (
             <button
               key={v.id}
               type="button"
               data-testid={`wtl-visit-${v.id}`}
-              onClick={onPatientClick ? () => onPatientClick(v.patient_id) : undefined}
-              className="relative flex min-h-0 flex-1 flex-col justify-center gap-px rounded border border-l-[3px] px-1 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary"
+              data-accompaniment-selected={accSelected ? 'true' : undefined}
+              onClick={onCardClick}
+              title={
+                accInCourse
+                  ? 'コース丸ごとに含まれています（個別解除はコース選択を外してください）'
+                  : undefined
+              }
+              className={cn(
+                'relative flex min-h-0 flex-1 flex-col justify-center gap-px rounded border border-l-[3px] px-1 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary',
+                accOverlap && 'ring-2 ring-error',
+                accSelected && !accOverlap && 'ring-2 ring-brand-primary',
+              )}
               style={{
                 background: pal.bg,
-                borderColor: pal.ln,
-                borderLeftColor: pal.bar,
+                borderColor: accOverlap ? 'var(--error)' : pal.ln,
+                borderLeftColor: accOverlap ? 'var(--error)' : pal.bar,
                 color: pal.ink,
               }}
             >
+              {accActive && accSelected && (
+                <span
+                  className="absolute left-0.5 top-0.5 z-[2] grid h-3 w-3 place-items-center rounded-full bg-brand-primary text-[7px] font-bold text-white"
+                  aria-hidden="true"
+                >
+                  ✓
+                </span>
+              )}
+              {accBadge && (
+                <span
+                  className="absolute left-0.5 top-0.5 z-[2] rounded-full bg-info-bg px-1 text-[7.5px] font-bold text-info"
+                  data-testid={`wtl-accompaniment-badge-${v.id}`}
+                >
+                  👥{accBadge}
+                </span>
+              )}
               {v.is_pinned && <CornerPushPin className="h-4 w-4" />}
               <span className="flex min-w-0 items-center gap-1">
                 <span className="truncate text-[11px] font-bold leading-tight">
@@ -338,6 +427,7 @@ export function WeekTimelineBoard({
   onPatientClick,
   capacityByWeekday,
   staffByWeekday,
+  accompaniment,
 }: WeekTimelineBoardProps) {
   if (options.length === 0) {
     return (
@@ -361,6 +451,7 @@ export function WeekTimelineBoard({
           onPatientClick={onPatientClick}
           capacityByWeekday={capacityByWeekday}
           staffByWeekday={staffByWeekday}
+          accompaniment={accompaniment}
         />
       ))}
     </div>
@@ -375,6 +466,7 @@ function CourseWeekSection({
   onPatientClick,
   capacityByWeekday,
   staffByWeekday,
+  accompaniment,
 }: {
   option: WeekTimelineOption;
   visits: WeekOverviewVisit[];
@@ -385,7 +477,9 @@ function CourseWeekSection({
     templateId: string,
     weekday: number,
   ) => { name: string; sex?: string | null } | null;
+  accompaniment?: AccompanimentBinding;
 }) {
+  const accActive = accompaniment?.active === true;
   const H = height();
   const hours: number[] = [];
   for (let m = TL_DAY_START_MIN; m <= TL_DAY_END_MIN; m += 120) hours.push(m);
@@ -427,13 +521,60 @@ function CourseWeekSection({
             const cap = capacityByWeekday?.(option.templateId, wd);
             const staff = staffByWeekday?.(option.templateId, wd) ?? null;
             const pal = genderPalette(staff?.sex);
+            // 同行モード: この曜日のコースインスタンスを解決し、ヘッダを選択トグルにする。
+            const courseId = accompaniment?.resolveCourseId(option.templateId, wd) ?? null;
+            const headerSelectable = accActive && !!courseId;
+            const headerSelected = accActive && accompaniment!.isCourseSelected(courseId);
+            const courseBadge =
+              accompaniment && !accompaniment.active
+                ? accompaniment.courseBadgeName(courseId)
+                : null;
             return (
               <div
                 key={d}
-                className="border-l border-[var(--border-subtle)] px-2 py-1.5"
+                role={headerSelectable ? 'button' : undefined}
+                tabIndex={headerSelectable ? 0 : undefined}
+                onClick={
+                  headerSelectable
+                    ? () => accompaniment!.toggleCourse(courseId, option.templateId, wd)
+                    : undefined
+                }
+                onKeyDown={
+                  headerSelectable
+                    ? (ev) => {
+                        if (ev.key === 'Enter' || ev.key === ' ') {
+                          ev.preventDefault();
+                          accompaniment!.toggleCourse(courseId, option.templateId, wd);
+                        }
+                      }
+                    : undefined
+                }
+                data-testid={
+                  accActive ? `wtl-course-header-${option.templateId}-${wd}` : undefined
+                }
+                data-accompaniment-selected={headerSelected ? 'true' : undefined}
+                className={cn(
+                  'border-l border-[var(--border-subtle)] px-2 py-1.5',
+                  headerSelectable &&
+                    'cursor-pointer outline-none ring-inset hover:bg-brand-primary-light focus-visible:ring-2 focus-visible:ring-brand-primary',
+                  headerSelected && 'bg-brand-primary-light ring-2 ring-inset ring-brand-primary',
+                )}
                 style={{ flex: 1, minWidth: COL_MIN_W }}
               >
-                <div className="text-[12px] font-bold text-text-primary">
+                <div className="flex items-center text-[12px] font-bold text-text-primary">
+                  {accActive && (
+                    <span
+                      className={cn(
+                        'mr-1 grid h-4 w-4 shrink-0 place-items-center rounded border text-[9px] font-bold',
+                        headerSelected
+                          ? 'border-brand-primary bg-brand-primary text-white'
+                          : 'border-border-default text-transparent',
+                      )}
+                      aria-hidden="true"
+                    >
+                      ✓
+                    </span>
+                  )}
                   {d}
                   {weekdayDates?.[wd] && (
                     <span className="tnum ml-1.5 text-[10px] font-medium text-text-muted">
@@ -441,6 +582,15 @@ function CourseWeekSection({
                     </span>
                   )}
                 </div>
+                {/* 常時表示 (§7.2): コース丸ごと同行の曜日は「同行: ◯◯（新人）」。 */}
+                {courseBadge && (
+                  <div
+                    className="mt-0.5 w-fit rounded-full bg-info-bg px-1.5 py-px text-[9px] font-bold text-info"
+                    data-testid={`wtl-course-accompaniment-${option.templateId}-${wd}`}
+                  >
+                    同行: {courseBadge}（新人）
+                  </div>
+                )}
                 {/* 曜日ごとの担当スタッフ: 日ビューヘッダと同じ性別色アバター + 太字名。 */}
                 <div className="mt-0.5 flex items-center gap-1.5">
                   <span
@@ -512,6 +662,7 @@ function CourseWeekSection({
                       item={it}
                       laneInfo={lanes.get(it.id)}
                       onPatientClick={onPatientClick}
+                      accompaniment={accompaniment}
                     />
                   ) : (
                     <WeekCard
@@ -519,6 +670,7 @@ function CourseWeekSection({
                       v={it.v}
                       laneInfo={lanes.get(it.id)}
                       onClick={onPatientClick ? () => onPatientClick(it.v.patient_id) : undefined}
+                      accompaniment={accompaniment}
                     />
                   ),
                 );

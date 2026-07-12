@@ -742,6 +742,15 @@ export default function MobileVisitDetailPage() {
                   <span className="whitespace-pre-wrap">{visit.note}</span>
                 </div>
               )}
+              {/* 新人同行 (§7.4): 訪問詳細でも「同行: ◯◯」を表示。 */}
+              {visit.accompaniment && (
+                <div
+                  className="flex items-center gap-2 font-medium text-info"
+                  data-testid="mobile-detail-accompaniment"
+                >
+                  <span>同行: {visit.accompaniment.staff_name ?? '同行スタッフ'}</span>
+                </div>
+              )}
               {/* Address / phone live on the patient record; surfaced as
                   TODO until the patient relation is included in VisitRead. */}
               <div className="flex items-center gap-2 text-text-muted">

@@ -2,7 +2,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 
-import { MonitorTimeline } from '../MonitorTimeline';
+import { MonitorTimeline, monitorRowKey } from '../MonitorTimeline';
 import { makeRow, makeVisit } from './fixtures';
 
 describe('MonitorTimeline', () => {
@@ -196,5 +196,66 @@ describe('MonitorTimeline', () => {
     );
     fireEvent.click(screen.getByTestId('monitor-row-0'));
     expect(onSelectRow).toHaveBeenCalledWith('unassigned-Aコース');
+  });
+
+  it('新人同行がある行は「＋◯◯（同行）」を表示する', () => {
+    const v = makeVisit({ accompaniment_staff_name: '新人 一郎' });
+    const row = makeRow({ visits: [v] });
+    render(
+      <MonitorTimeline
+        rows={[row]}
+        selectedRowKey={null}
+        selectedVisitId={null}
+        nowMinutes={-1}
+        onSelectRow={vi.fn()}
+        onSelectVisit={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('＋新人 一郎（同行）')).toBeTruthy();
+  });
+
+  it('新人同行が無い行はラベルを表示しない', () => {
+    const v = makeVisit({ accompaniment_staff_name: null });
+    const row = makeRow({ visits: [v] });
+    render(
+      <MonitorTimeline
+        rows={[row]}
+        selectedRowKey={null}
+        selectedVisitId={null}
+        nowMinutes={-1}
+        onSelectRow={vi.fn()}
+        onSelectVisit={vi.fn()}
+      />,
+    );
+    expect(screen.queryByText(/（同行）/)).toBeNull();
+  });
+
+  it('担当乖離⚠と新人同行ラベルは別物として共存する', () => {
+    const staffId = 'staff-course-1';
+    const v = makeVisit({ accompaniment_staff_name: '新人 花子' });
+    const row = makeRow({
+      staff_id: 'staff-actual-2',
+      staff_name: '実担当 太郎',
+      staff_ids: ['staff-actual-2'],
+      course_staff_id: staffId,
+      course_staff_name: 'コース担当 次郎',
+      course_label: 'Aコース',
+      visits: [v],
+    });
+    render(
+      <MonitorTimeline
+        rows={[row]}
+        selectedRowKey={null}
+        selectedVisitId={null}
+        nowMinutes={-1}
+        onSelectRow={vi.fn()}
+        onSelectVisit={vi.fn()}
+      />,
+    );
+    // ⚠ 乖離警告
+    expect(screen.getByText('⚠')).toBeTruthy();
+    // ＋◯◯（同行）ラベル (別要素として共存)
+    const accompanimentLabel = screen.getByTestId(`monitor-row-accompaniment-${monitorRowKey(row)}`);
+    expect(accompanimentLabel.textContent).toContain('＋新人 花子（同行）');
   });
 });

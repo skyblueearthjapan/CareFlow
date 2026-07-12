@@ -37,6 +37,10 @@ from app.models.staff import (
 )
 from app.models.staff_companion_assignment import StaffCompanionAssignment
 from app.models.suggestion_dismissal import SuggestionDismissal
+from app.models.trainee_accompaniment import (
+    TraineeAccompaniment,
+    TraineeAccompanimentDefault,
+)
 from app.models.user import User
 from app.models.visit import Visit
 from app.models.visit_checkin import VisitCheckin
@@ -81,6 +85,8 @@ __all__ = [
     "StaffSecondaryOffice",
     "StaffShift",
     "StaffWeeklyOverride",
+    "TraineeAccompaniment",
+    "TraineeAccompanimentDefault",
     "User",
     "Visit",
     "VisitCheckin",

@@ -20,6 +20,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.trainee_accompaniment import AccompanimentRef
 from app.schemas.v2.visit import VisitStaffAssignmentV2Read
 from app.schemas.visit_checkin import CheckinRead
 
@@ -121,9 +122,14 @@ class VisitRead(VisitBase):
     # QR チェックイン (Phase 1) の最新打刻 (非破壊追加). 未打刻なら None.
     # 既存クライアント (me.ts の MyVisit) は本フィールドを無視できる.
     latest_checkin: CheckinRead | None = None
+    # 新人同行 (非破壊追加・R-9 の patient_sex と同じ流儀). 同行新人が付く訪問なら
+    # その最小参照、無ければ None. 同行リンクは trainee_accompaniments が唯一の正典で、
+    # 読み出し時に JOIN 解決する (visits.*_staff_id には書かない)。
+    accompaniment: AccompanimentRef | None = None
 
 
 __all__ = [
+    "AccompanimentRef",
     "CheckinRead",
     "VisitBase",
     "VisitCreate",

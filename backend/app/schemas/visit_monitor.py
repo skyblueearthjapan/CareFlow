@@ -58,6 +58,9 @@ class MonitorVisit(BaseModel):
     # 2 名体制 (required_staff_count=2) のグルーピングキー。同一値の visit が 2 行。
     # 通常訪問は None。KPI / アラートはこの単位で 1 論理訪問に重複排除する。
     visit_group_id: UUID | None = None
+    # 新人同行 (非破壊追加). 同行新人が付く訪問なら姓名、無ければ None (行ヘッダ/詳細
+    # パネルで「＋◯◯（同行）」表示用)。同行リンクは JOIN 解決 (visits には書かない)。
+    accompaniment_staff_name: str | None = None
     patient_id: UUID
     patient_name: str | None = None
     patient_code: str | None = None

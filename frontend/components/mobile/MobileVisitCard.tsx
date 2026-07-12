@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { ChevronRight, MapPin } from 'lucide-react';
+import { useSession } from 'next-auth/react';
 
 import { Badge } from '@/components/ui/badge';
 import { Card } from '@/components/ui/card';
@@ -50,6 +51,11 @@ export function MobileVisitCard({ visit, address }: MobileVisitCardProps) {
   // 地色=患者性別ウォッシュ・左帯/性別ドット=性別色・時刻 tnum・📍住所。
   const pal = genderPalette(visit.patient_sex ?? null);
   const shownAddress = address ?? visit.patient_address ?? null;
+  // 新人同行 (§7.4): 先輩側は「同行: ◯◯」、新人本人は「同行」バッジ。
+  const { data: session } = useSession();
+  const myStaffId = session?.user?.staffId ?? null;
+  const accompaniment = visit.accompaniment ?? null;
+  const isTrainee = accompaniment != null && accompaniment.staff_id === myStaffId;
   return (
     <Link
       href={`/m/today/${visit.id}`}
@@ -82,7 +88,20 @@ export function MobileVisitCard({ visit, address }: MobileVisitCardProps) {
             />
             <p className="truncate font-bold">{visit.patient_name ?? '(患者名未設定)'}</p>
             <Badge variant={meta.variant}>{meta.label}</Badge>
+            {isTrainee && (
+              <Badge variant="info" data-testid="mobile-visit-accompaniment">
+                同行
+              </Badge>
+            )}
           </div>
+          {accompaniment && !isTrainee && (
+            <p
+              className="mt-1 truncate text-xs font-medium text-info"
+              data-testid="mobile-visit-accompaniment"
+            >
+              同行: {accompaniment.staff_name ?? '同行スタッフ'}
+            </p>
+          )}
           {shownAddress && (
             <p className="mt-1 flex items-center gap-1 truncate text-xs opacity-80">
               <MapPin className="h-3 w-3 shrink-0" />

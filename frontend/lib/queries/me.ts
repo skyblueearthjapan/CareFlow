@@ -90,6 +90,12 @@ export interface MyVisit {
    * don't yet send it (or list endpoints that omit it) keep type-checking.
    */
   latest_checkin?: LatestCheckin | null;
+  /**
+   * 新人同行 (§7.4): この訪問に同行する新人スタッフ。null = 同行なし。
+   * 先輩側は「同行: ◯◯」、新人本人 (accompaniment.staff_id === 自分の staff_id) は
+   * 「同行」バッジを出す。BE `_serialize_visit` が非破壊追加 (旧デプロイは undefined)。
+   */
+  accompaniment?: { staff_id: string; staff_name: string | null } | null;
 }
 
 const ME_KEY = ['me'] as const;

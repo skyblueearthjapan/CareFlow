@@ -10210,6 +10210,13 @@ async def reset_visits_to_fixed(
         visit.primary_staff_id = sid
     await db.flush()
 
+    # 新人同行 (§5.1-2): 固定枠に戻した週へ既定を再展開する (孤立リンク掃除 S-1 込み)。
+    # 本関数は flush のみで commit は呼び出し側 (reset-to-fixed / sync-fixed-to-week /
+    # apply-individual-proposal の 3 経路) が行うため、ここでも flush に留める。
+    from app.services.trainee_accompaniment import expand_accompaniment_defaults
+
+    await expand_accompaniment_defaults(db, iso_year, iso_week)
+
     return {
         "visits_regenerated": inserted_visits,
         "visits_soft_deleted": soft_deleted_count,

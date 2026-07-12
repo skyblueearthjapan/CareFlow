@@ -53,6 +53,8 @@ import {
 } from '@/lib/scheduling/timeline';
 import { cn } from '@/lib/utils';
 
+import type { AccompanimentBinding } from './accompaniment/types';
+
 const COL_MIN_W = 172;
 const TIME_RAIL_W = 54;
 
@@ -174,6 +176,13 @@ export interface TimelineDayBoardProps {
    * 未指定なら非クリックの表示専用チップになる (テーブルの read-only 表示と同じ)。
    */
   onPromoteWeekOnly?: (patientId: string, patientName: string) => void;
+  /**
+   * 新人同行 (§7.1/§7.2)。active なら列ヘッダ/カードが選択トグル (通常操作は親が抑止)、
+   * inactive なら常時表示バッジを描く。
+   */
+  accompaniment?: AccompanimentBinding;
+  /** 同行モードの defaults 化に使う現在の曜日 (0=月..6=日)。 */
+  accompanimentWeekday?: number;
 }
 
 /** カード / ペア行の右下に置く訪問削除 (×) ボタン (G2)。 */
@@ -323,6 +332,7 @@ function VisitCard({
   drag,
   onDeleteVisit,
   onPromoteWeekOnly,
+  accompaniment,
 }: {
   visit: CourseGridVisit;
   onClick?: () => void;
@@ -333,10 +343,18 @@ function VisitCard({
   onDeleteVisit?: (visitId: string, patientName: string) => void;
   /** G3: 「今週のみ」チップの昇格ハンドラ。未指定でもチップ自体は表示する。 */
   onPromoteWeekOnly?: (patientId: string, patientName: string) => void;
+  /** 新人同行 (§7.1/§7.2)。 */
+  accompaniment?: AccompanimentBinding;
 }) {
   // T-2 ②-c: ピン留めカードを掴もうとしたら shake で「不可侵」を伝える (ドラッグは
   // disabled で始まらないため、pointerdown を合図に演出だけ出す)。
   const [shake, setShake] = useState(false);
+  const accActive = accompaniment?.active === true;
+  const accSelected = accActive && accompaniment!.isVisitSelected(visit.id);
+  const accInCourse = accActive && accompaniment!.isVisitInSelectedCourse(visit.id);
+  const accOverlap = accActive && accompaniment!.isVisitOverlapping(visit.id);
+  const accBadge =
+    accompaniment && !accompaniment.active ? accompaniment.visitBadgeName(visit.id) : null;
   const startMin = parseHM(visit.start_time);
   const endMin = parseHM(visit.end_time);
   if (startMin === null || endMin === null || endMin <= startMin) return null;
@@ -371,6 +389,12 @@ function VisitCard({
   if (isMulti) pills.push('2名');
   if (visit.same_address_group_id) pills.push('📍同住所');
   const isWeekOnly = visit.source === 'manual_week';
+  // 同行モード中はカードクリック=選択トグル (選択済みコース内は個別不可)。
+  const accClick = accActive
+    ? accInCourse
+      ? undefined
+      : () => accompaniment!.toggleVisit(visit.id)
+    : onClick;
 
   return (
     // G2: 内部に × ボタンを置くため、ルートは <button> ではなく div role=button。
@@ -380,7 +404,7 @@ function VisitCard({
       role="button"
       tabIndex={0}
       ref={drag?.setNodeRef}
-      onClick={onClick}
+      onClick={accClick}
       // DnD 有効カード = dnd-kit の listeners/attributes、ピン留め = shake ハンドラ、を
       // 1 つの spread に合成する。別プロップで onPointerDown を書くと undefined でも
       // 後勝ちで listeners の onPointerDown を上書きし、ドラッグが死ぬ (②-c で実バグ化)。
@@ -393,13 +417,16 @@ function VisitCard({
         : {})}
       // onKeyDown は spread の「後」に置く (後勝ち)。将来 KeyboardSensor を足しても
       // listeners.onKeyDown に黙って上書きされずキーボード操作が生き残る (レビューMED)。
-      onKeyDown={cardKeyDownHandler(onClick)}
+      onKeyDown={cardKeyDownHandler(accClick)}
       onAnimationEnd={shake ? () => setShake(false) : undefined}
       data-testid={`tl-visit-${visit.id}`}
+      data-accompaniment-selected={accSelected ? 'true' : undefined}
       data-tl-drag={drag ? (drag.disabled ? 'disabled' : 'enabled') : undefined}
       // 小さいカードは行が出ないため、相方情報はツールチップで必ず補完する。
       title={
-        [
+        accInCourse
+          ? 'コース丸ごとに含まれています（個別解除はコース選択を外してください）'
+          : [
           drag?.disabled
             ? visit.is_pinned
               ? 'ピン留め中のため移動できません（ピンを解除してから移動）'
@@ -420,18 +447,42 @@ function VisitCard({
         drag && !drag.disabled && 'cursor-grab touch-none active:cursor-grabbing',
         drag?.isDragging && 'opacity-40',
         shake && 'tl-shake',
+        accActive && !accInCourse && 'cursor-pointer',
+        accOverlap && 'z-[4] ring-2 ring-error',
+        accSelected && !accOverlap && 'z-[4] ring-2 ring-brand-primary',
       )}
       style={{
         top,
         height,
         ...laneStyle,
         background: isCancelled ? 'var(--bg-muted)' : pal.bg,
-        borderColor: isCancelled ? 'var(--border-default)' : pal.ln,
-        borderLeftColor: isCancelled ? 'var(--text-muted)' : pal.bar,
+        borderColor: accOverlap ? 'var(--error)' : isCancelled ? 'var(--border-default)' : pal.ln,
+        borderLeftColor: accOverlap
+          ? 'var(--error)'
+          : isCancelled
+            ? 'var(--text-muted)'
+            : pal.bar,
         color: isCancelled ? 'var(--text-muted)' : pal.ink,
         opacity: isCancelled ? 0.7 : 1,
       }}
     >
+      {/* 同行モード: 選択チェック / 常時表示: 個別同行バッジ (§7.2)。 */}
+      {accActive && accSelected && (
+        <span
+          className="absolute left-0.5 top-0.5 z-[3] grid h-4 w-4 place-items-center rounded-full bg-brand-primary text-[9px] font-bold text-white"
+          aria-hidden="true"
+        >
+          ✓
+        </span>
+      )}
+      {accBadge && (
+        <span
+          className="absolute left-0.5 top-0.5 z-[3] rounded-full bg-info-bg px-1 text-[8.5px] font-bold text-info"
+          data-testid={`tl-accompaniment-badge-${visit.id}`}
+        >
+          👥{accBadge}
+        </span>
+      )}
       {/* ピン留め: 右上に打ち込んだ画鋲 (📍住所と誤認しない・PO要望 2026-07-08)。 */}
       {visit.is_pinned && <CornerPushPin />}
       {/* 1行目: アイコン + 患者名 (名前に行を専有させフル表示。切れにくくする)。 */}
@@ -534,12 +585,14 @@ function DraggableVisitCard({
   laneInfo,
   onDeleteVisit,
   onPromoteWeekOnly,
+  accompaniment,
 }: {
   visit: CourseGridVisit;
   onClick?: () => void;
   laneInfo?: CardLane;
   onDeleteVisit?: (visitId: string, patientName: string) => void;
   onPromoteWeekOnly?: (patientId: string, patientName: string) => void;
+  accompaniment?: AccompanimentBinding;
 }) {
   const dragDisabled =
     visit.is_pinned === true || visit.status === 'cancelled' || Boolean(visit.visit_group_id);
@@ -556,6 +609,7 @@ function DraggableVisitCard({
       drag={{ attributes, listeners, setNodeRef, isDragging, disabled: dragDisabled }}
       onDeleteVisit={onDeleteVisit}
       onPromoteWeekOnly={onPromoteWeekOnly}
+      accompaniment={accompaniment}
     />
   );
 }
@@ -571,12 +625,14 @@ function DraggablePairBox({
   onPatientClick,
   onDeleteVisit,
   onPromoteWeekOnly,
+  accompaniment,
 }: {
   item: Extract<RenderItem, { kind: 'pair' }>;
   laneInfo?: CardLane;
   onPatientClick?: (patientId: string) => void;
   onDeleteVisit?: (visitId: string, patientName: string) => void;
   onPromoteWeekOnly?: (patientId: string, patientName: string) => void;
+  accompaniment?: AccompanimentBinding;
 }) {
   const dragDisabled = item.visits.some(
     (v) => v.is_pinned === true || v.status === 'cancelled' || Boolean(v.visit_group_id),
@@ -597,6 +653,7 @@ function DraggablePairBox({
       memberDndEnabled
       onDeleteVisit={onDeleteVisit}
       onPromoteWeekOnly={onPromoteWeekOnly}
+      accompaniment={accompaniment}
     />
   );
 }
@@ -773,6 +830,7 @@ function PairMemberRowView({
   drag,
   onDeleteVisit,
   onPromoteWeekOnly,
+  accompaniment,
 }: {
   v: CourseGridVisit;
   onPatientClick?: (patientId: string) => void;
@@ -781,13 +839,27 @@ function PairMemberRowView({
   onDeleteVisit?: (visitId: string, patientName: string) => void;
   /** G3: ペア行の「今週のみ」チップ。 */
   onPromoteWeekOnly?: (patientId: string, patientName: string) => void;
+  /** 新人同行 (§7.1/§7.2)。 */
+  accompaniment?: AccompanimentBinding;
 }) {
   const pal = genderPalette(v.patient_sex);
   const s = parseHM(v.start_time);
   const e = parseHM(v.end_time);
   const dm = s !== null && e !== null && e > s ? e - s : null;
   const showHandle = drag != null && !drag.disabled;
-  const onRowClick = onPatientClick ? () => onPatientClick(v.patient_id) : undefined;
+  const accActive = accompaniment?.active === true;
+  const accSelected = accActive && accompaniment!.isVisitSelected(v.id);
+  const accInCourse = accActive && accompaniment!.isVisitInSelectedCourse(v.id);
+  const accOverlap = accActive && accompaniment!.isVisitOverlapping(v.id);
+  const accBadge =
+    accompaniment && !accompaniment.active ? accompaniment.visitBadgeName(v.id) : null;
+  const onRowClick = accActive
+    ? accInCourse
+      ? undefined
+      : () => accompaniment!.toggleVisit(v.id)
+    : onPatientClick
+      ? () => onPatientClick(v.patient_id)
+      : undefined;
   return (
     // G2: 行内に × ボタン (と 今週のみ チップ) を置くため div role=button 化。
     // drag の setNodeRef / listeners はルートのまま = ペア行の個別移動は不変。
@@ -797,21 +869,46 @@ function PairMemberRowView({
       ref={drag?.setNodeRef}
       data-testid={`tl-visit-${v.id}`}
       data-tl-member-drag={drag ? (drag.disabled ? 'disabled' : 'enabled') : undefined}
+      data-accompaniment-selected={accSelected ? 'true' : undefined}
       onClick={onRowClick}
       onKeyDown={cardKeyDownHandler(onRowClick)}
+      title={
+        accInCourse
+          ? 'コース丸ごとに含まれています（個別解除はコース選択を外してください）'
+          : undefined
+      }
       className={cn(
         'group relative flex min-h-0 flex-1 flex-col justify-center gap-px rounded-md border border-l-[3px] px-1.5 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary',
         showHandle && 'pl-4',
         onDeleteVisit && 'pr-4',
         drag?.isDragging && 'opacity-40',
+        accActive && !accInCourse && 'cursor-pointer',
+        accOverlap && 'ring-2 ring-error',
+        accSelected && !accOverlap && 'ring-2 ring-brand-primary',
       )}
       style={{
         background: pal.bg,
-        borderColor: pal.ln,
-        borderLeftColor: pal.bar,
+        borderColor: accOverlap ? 'var(--error)' : pal.ln,
+        borderLeftColor: accOverlap ? 'var(--error)' : pal.bar,
         color: pal.ink,
       }}
     >
+      {accActive && accSelected && (
+        <span
+          className="absolute left-0.5 top-0.5 z-[3] grid h-3 w-3 place-items-center rounded-full bg-brand-primary text-[7px] font-bold text-white"
+          aria-hidden="true"
+        >
+          ✓
+        </span>
+      )}
+      {accBadge && (
+        <span
+          className="absolute left-0.5 top-0.5 z-[3] rounded-full bg-info-bg px-1 text-[7.5px] font-bold text-info"
+          data-testid={`tl-accompaniment-badge-${v.id}`}
+        >
+          👥{accBadge}
+        </span>
+      )}
       {v.is_pinned && <CornerPushPin />}
       {showHandle ? (
         <span
@@ -891,11 +988,13 @@ function DraggablePairMemberRow({
   onPatientClick,
   onDeleteVisit,
   onPromoteWeekOnly,
+  accompaniment,
 }: {
   v: CourseGridVisit;
   onPatientClick?: (patientId: string) => void;
   onDeleteVisit?: (visitId: string, patientName: string) => void;
   onPromoteWeekOnly?: (patientId: string, patientName: string) => void;
+  accompaniment?: AccompanimentBinding;
 }) {
   const dragDisabled =
     v.is_pinned === true || v.status === 'cancelled' || Boolean(v.visit_group_id);
@@ -911,6 +1010,7 @@ function DraggablePairMemberRow({
       drag={{ attributes, listeners, setNodeRef, isDragging, disabled: dragDisabled }}
       onDeleteVisit={onDeleteVisit}
       onPromoteWeekOnly={onPromoteWeekOnly}
+      accompaniment={accompaniment}
     />
   );
 }
@@ -924,6 +1024,7 @@ function PairBox({
   memberDndEnabled,
   onDeleteVisit,
   onPromoteWeekOnly,
+  accompaniment,
 }: {
   item: Extract<RenderItem, { kind: 'pair' }>;
   laneInfo?: CardLane;
@@ -934,6 +1035,8 @@ function PairBox({
   memberDndEnabled?: boolean;
   onDeleteVisit?: (visitId: string, patientName: string) => void;
   onPromoteWeekOnly?: (patientId: string, patientName: string) => void;
+  /** 新人同行 (§7.1/§7.2)。 */
+  accompaniment?: AccompanimentBinding;
 }) {
   const [shake, setShake] = useState(false);
   const anyPinned = item.visits.some((v) => v.is_pinned === true);
@@ -1002,6 +1105,7 @@ function PairBox({
               onPatientClick={onPatientClick}
               onDeleteVisit={onDeleteVisit}
               onPromoteWeekOnly={onPromoteWeekOnly}
+              accompaniment={accompaniment}
             />
           ) : (
             <PairMemberRowView
@@ -1010,6 +1114,7 @@ function PairBox({
               onPatientClick={onPatientClick}
               onDeleteVisit={onDeleteVisit}
               onPromoteWeekOnly={onPromoteWeekOnly}
+              accompaniment={accompaniment}
             />
           ),
         )}
@@ -1190,6 +1295,7 @@ function TimelineColumn({
   dndEnabled,
   onDeleteVisit,
   onPromoteWeekOnly,
+  accompaniment,
 }: {
   col: TimelineCourseColumn;
   onPatientClick?: (patientId: string) => void;
@@ -1198,6 +1304,7 @@ function TimelineColumn({
   dndEnabled?: boolean;
   onDeleteVisit?: (visitId: string, patientName: string) => void;
   onPromoteWeekOnly?: (patientId: string, patientName: string) => void;
+  accompaniment?: AccompanimentBinding;
 }) {
   const height = timelineHeightPx();
   // 勤務外バンド: スタッフイベント以外に、コース未生成/担当なしを表す薄いハッチは出さない
@@ -1301,6 +1408,7 @@ function TimelineColumn({
               onPatientClick={onPatientClick}
               onDeleteVisit={onDeleteVisit}
               onPromoteWeekOnly={onPromoteWeekOnly}
+              accompaniment={accompaniment}
             />
           ) : (
             <PairBox
@@ -1310,6 +1418,7 @@ function TimelineColumn({
               onPatientClick={onPatientClick}
               onDeleteVisit={onDeleteVisit}
               onPromoteWeekOnly={onPromoteWeekOnly}
+              accompaniment={accompaniment}
             />
           )
         ) : dndEnabled ? (
@@ -1320,6 +1429,7 @@ function TimelineColumn({
             onClick={onPatientClick ? () => onPatientClick(it.v.patient_id) : undefined}
             onDeleteVisit={onDeleteVisit}
             onPromoteWeekOnly={onPromoteWeekOnly}
+            accompaniment={accompaniment}
           />
         ) : (
           <VisitCard
@@ -1329,6 +1439,7 @@ function TimelineColumn({
             onClick={onPatientClick ? () => onPatientClick(it.v.patient_id) : undefined}
             onDeleteVisit={onDeleteVisit}
             onPromoteWeekOnly={onPromoteWeekOnly}
+            accompaniment={accompaniment}
           />
         ),
       )}
@@ -1350,7 +1461,10 @@ export function TimelineDayBoard({
   isStaffMutating,
   onDeleteVisit,
   onPromoteWeekOnly,
+  accompaniment,
+  accompanimentWeekday,
 }: TimelineDayBoardProps) {
+  const accActive = accompaniment?.active === true;
   const height = timelineHeightPx();
   const hours: number[] = [];
   for (let m = TL_DAY_START_MIN; m <= TL_DAY_END_MIN; m += 60) hours.push(m);
@@ -1381,12 +1495,67 @@ export function TimelineDayBoard({
           const pal = genderPalette(col.assignedStaff?.sex);
           const staffName = col.assignedStaff?.name ?? '（未割当）';
           const full = col.capacity.filled >= col.capacity.max;
+          // 同行モード: 列ヘッダ = その日のこのコース全体を選択トグル。
+          const accCourseId = col.course?.id ?? null;
+          const headerSelectable =
+            accActive && !!accCourseId && typeof accompanimentWeekday === 'number';
+          const headerSelected = accActive && accompaniment!.isCourseSelected(accCourseId);
+          const courseBadge =
+            accompaniment && !accompaniment.active
+              ? accompaniment.courseBadgeName(accCourseId)
+              : null;
           return (
             <div
               key={col.key}
-              className="flex items-center gap-2 border-l border-[var(--border-subtle)] px-2.5 py-2"
+              role={headerSelectable ? 'button' : undefined}
+              tabIndex={headerSelectable ? 0 : undefined}
+              onClick={
+                headerSelectable
+                  ? () =>
+                      accompaniment!.toggleCourse(
+                        accCourseId,
+                        col.template.id,
+                        accompanimentWeekday as number,
+                      )
+                  : undefined
+              }
+              onKeyDown={
+                headerSelectable
+                  ? (ev) => {
+                      if (ev.key === 'Enter' || ev.key === ' ') {
+                        ev.preventDefault();
+                        accompaniment!.toggleCourse(
+                          accCourseId,
+                          col.template.id,
+                          accompanimentWeekday as number,
+                        );
+                      }
+                    }
+                  : undefined
+              }
+              data-testid={accActive ? `tl-course-header-${col.key}` : undefined}
+              data-accompaniment-selected={headerSelected ? 'true' : undefined}
+              className={cn(
+                'flex items-center gap-2 border-l border-[var(--border-subtle)] px-2.5 py-2',
+                headerSelectable &&
+                  'cursor-pointer outline-none hover:bg-brand-primary-light focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand-primary',
+                headerSelected && 'bg-brand-primary-light ring-2 ring-inset ring-brand-primary',
+              )}
               style={{ flex: 1, minWidth: COL_MIN_W }}
             >
+              {accActive && (
+                <span
+                  className={cn(
+                    'grid h-4 w-4 shrink-0 place-items-center rounded border text-[9px] font-bold',
+                    headerSelected
+                      ? 'border-brand-primary bg-brand-primary text-white'
+                      : 'border-border-default text-transparent',
+                  )}
+                  aria-hidden="true"
+                >
+                  ✓
+                </span>
+              )}
               <span
                 className="grid h-7 w-7 shrink-0 place-items-center rounded-full border-[1.5px] text-[11px] font-bold"
                 style={{
@@ -1458,6 +1627,15 @@ export function TimelineDayBoard({
                     {col.capacity.filled}/{col.capacity.max}件
                   </span>
                 </div>
+                {/* 常時表示 (§7.2): コース丸ごと同行の日は「同行: ◯◯（新人）」。 */}
+                {courseBadge && (
+                  <div
+                    className="mt-0.5 w-fit rounded-full bg-info-bg px-1.5 py-px text-[9px] font-bold text-info"
+                    data-testid={`tl-course-accompaniment-${col.key}`}
+                  >
+                    同行: {courseBadge}（新人）
+                  </div>
+                )}
               </div>
             </div>
           );
@@ -1489,6 +1667,7 @@ export function TimelineDayBoard({
             dndEnabled={dndEnabled}
             onDeleteVisit={onDeleteVisit}
             onPromoteWeekOnly={onPromoteWeekOnly}
+            accompaniment={accompaniment}
           />
         ))}
 

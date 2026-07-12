@@ -42,6 +42,7 @@ from app.api.v1 import (
     staff_excel,
     staff_overrides,
     staff_shifts,
+    trainee_accompaniments,
     visit_monitor,
     visit_photos,
     visit_review,
@@ -151,6 +152,9 @@ api_router.include_router(
 )
 # W3-BE-FIX: POST /schedule/fix (週レイアウト → patients.weekly_pattern).
 # W4-BE7 で /schedule/generate-week が同じ router に追加される予定。
+# 新人同行 (trainee accompaniment): 週リンク一覧/一括置換 + 既定 GET/PUT.
+# ルートは絶対パス (/trainee-accompaniments[-defaults]) のため prefix なしで登録する。
+api_router.include_router(trainee_accompaniments.router, tags=["trainee-accompaniments"])
 api_router.include_router(schedule.router, prefix="/schedule", tags=["schedule"])
 # W41 v2.0: auto-schedule v2 (差分追加 / 全面最適化 / 個別採用 / 固定枠に戻す).
 # v1 (``/schedule/auto-allocate`` 等) は schedule.router にそのまま残し、UI 完成後の

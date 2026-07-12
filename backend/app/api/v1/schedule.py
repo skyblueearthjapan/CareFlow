@@ -98,6 +98,7 @@ from app.services.scheduling.layer3_assignment import (
     StaffAssignment,
     UnresolvedGenderWarning,
 )
+from app.services.trainee_accompaniment import expand_accompaniment_defaults
 
 logger = logging.getLogger(__name__)
 
@@ -1573,6 +1574,9 @@ async def generate_week_only(
             office_id=payload.office_id,
         )
 
+        # 新人同行 (§5.1-1): 展開成功後・commit 前に既定を当該週へ物質化する (冪等)。
+        await expand_accompaniment_defaults(db, payload.iso_year, payload.iso_week)
+
         await db.commit()
     except Layer1ExpandError as exc:
         await db.rollback()
@@ -1748,6 +1752,22 @@ async def _assign_staff_only_impl(
     except Exception:
         await db.rollback()
         raise
+
+    # 新人同行 (§5.1-3): proposed→確定 に遷移したコースへ既定を展開する (取りこぼし
+    # 回収)。割付 commit は済んでいるため、直下の G-89 警告収集と同じく best-effort
+    # とする (ここで 500 を返すと「割付成功なのに失敗に見える」→ 二度押しを誘発する。
+    # 展開は冪等で、失敗分は次回の週生成 / 固定枠に戻す / 本 API 再実行で回収される)。
+    try:
+        await expand_accompaniment_defaults(db, payload.iso_year, payload.iso_week)
+        await db.commit()
+    except Exception:  # noqa: BLE001 — 事後展開の失敗で確定済み割付を壊さない
+        logger.warning(
+            "trainee accompaniment expand after assign-staff-only failed (week %s-W%02d)",
+            payload.iso_year,
+            payload.iso_week,
+            exc_info=True,
+        )
+        await db.rollback()
 
     # ----- Phase G-89: ローテ衝突 / 未割当コースの warnings 収集 (commit 後・graceful) -----
     # commit 済みなので以降は読み取り専用 SELECT のみ。 警告構築が失敗しても

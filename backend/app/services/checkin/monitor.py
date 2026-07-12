@@ -47,6 +47,7 @@ from app.schemas.visit_monitor import (
     NearbyResponse,
 )
 from app.services.checkin.judge import load_thresholds
+from app.services.trainee_accompaniment import resolve_accompaniment_by_visit
 from app.utils.geo import haversine_m
 
 JST = ZoneInfo("Asia/Tokyo")
@@ -320,6 +321,11 @@ async def build_monitor(
 
     visit_ids = [v.id for v in visits]
 
+    # 新人同行 (§6.4): その日の訪問群の同行者を 1 度に解決し、行ヘッダ/詳細パネルの
+    # 「＋◯◯（同行）」表示に使う。同行リンクは trainee_accompaniments が唯一の正典で、
+    # ここで JOIN 解決する (visits には書かない)。
+    accompaniment_by_visit = await resolve_accompaniment_by_visit(db, list(visits))
+
     # 全 checkin を 1 クエリで取得し、(visit_id, kind) ごと最新を採用 (scanned_at DESC)。
     latest: dict[tuple[UUID, str], VisitCheckin] = {}
     if visit_ids:
@@ -516,6 +522,7 @@ async def build_monitor(
             )
 
             patient = v.patient
+            _acc = accompaniment_by_visit.get(v.id)
             mvisits.append(
                 MonitorVisit(
                     visit_id=v.id,
@@ -525,6 +532,7 @@ async def build_monitor(
                         if v.primary_staff is not None
                         else None
                     ),
+                    accompaniment_staff_name=_acc[1] if _acc is not None else None,
                     visit_group_id=v.visit_group_id,
                     patient_id=v.patient_id,
                     patient_name=getattr(patient, "name", None) if patient is not None else None,

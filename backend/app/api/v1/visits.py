@@ -39,12 +39,21 @@ from app.schemas.visit_checkin import CheckinCreate
 from app.services.checkin.judge import judge_checkin
 from app.services.checkin.notify import notify_checkin_mismatch, resolve_checkin_missing
 from app.services.op_log_service import fmt_time, fmt_weekday, record_op
+from app.services.trainee_accompaniment import (
+    accompaniment_visibility_condition,
+    is_accompaniment_visit_for_staff,
+    resolve_accompaniment_by_visit,
+)
 
 router = APIRouter()
 
 
 def _staff_visibility_filter(staff_id: UUID):
-    """Visit が当該スタッフに見える条件 (primary/secondary/mentor または assignments)."""
+    """Visit が当該スタッフに見える条件 (primary/secondary/mentor または assignments).
+
+    新人同行 (§6.4 C-1): 新人本人の「今日の訪問」「今週の予定」に同行訪問が出るよう、
+    同行リンク条件 (visit 直リンク OR course リンク・live JOIN) を OR で足す。
+    """
     # Note: visit_staff_assignments のサブクエリでも該当する visit を含める
     assignments_subq = select(VisitStaffAssignment.visit_id).where(
         VisitStaffAssignment.staff_id == staff_id
@@ -54,6 +63,7 @@ def _staff_visibility_filter(staff_id: UUID):
         Visit.secondary_staff_id == staff_id,
         Visit.mentor_staff_id == staff_id,
         Visit.id.in_(assignments_subq),
+        accompaniment_visibility_condition(staff_id),
     )
 
 
@@ -132,6 +142,7 @@ def _serialize_visit(
     visit: Visit,
     assignments: list[dict] | None = None,
     latest_checkin: dict | None = None,
+    accompaniment: dict | None = None,
 ) -> dict:
     """Project a Visit (with optional eager-loaded patient/primary_staff) into
     the VisitRead shape, including denormalized `patient_name`/`staff_name`
@@ -182,8 +193,18 @@ def _serialize_visit(
         "staff_assignments": assignments or [],
         # QR チェックイン (Phase 1) の最新打刻. 既存呼出は None のまま (非破壊).
         "latest_checkin": latest_checkin,
+        # 新人同行 (非破壊追加). 同行新人が付く訪問なら {staff_id, staff_name}、無ければ None.
+        "accompaniment": accompaniment,
     }
     return data
+
+
+def _accompaniment_payload(resolved: tuple[UUID, str | None] | None) -> dict | None:
+    """resolve_accompaniment_by_visit の (staff_id, name) を VisitRead.accompaniment 形へ."""
+    if resolved is None:
+        return None
+    staff_id, staff_name = resolved
+    return {"staff_id": staff_id, "staff_name": staff_name}
 
 
 @router.get("", response_model=list[VisitRead], summary="List visits")
@@ -266,11 +287,14 @@ async def list_visits(
     # 最新打刻を 1 クエリでバッチ取得し (N+1 回避)、各 visit に紐付ける。GET /visits/{id}
     # との契約対称性のため一覧でも latest_checkin を返す (QR チェックイン)。
     latest_by_visit = await _load_latest_checkins_bulk(db, visit_ids)
+    # 新人同行 (§6.4): 訪問群の同行者を 1 度に解決し、各 visit に非破壊で載せる。
+    accompaniment_by_visit = await resolve_accompaniment_by_visit(db, list(rows))
     return [
         _serialize_visit(
             v,
             assignments=assignments_by_visit.get(v.id, []),
             latest_checkin=latest_by_visit.get(v.id),
+            accompaniment=_accompaniment_payload(accompaniment_by_visit.get(v.id)),
         )
         for v in rows
     ]
@@ -303,14 +327,27 @@ async def get_visit(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
         # Visibility: primary/secondary/mentor staff OR a visit_staff_assignments row
         assigned_staff_ids = {a["staff_id"] for a in assignments}
-        if user.staff_id not in (
+        visible = user.staff_id in (
             {visit.primary_staff_id, visit.secondary_staff_id, visit.mentor_staff_id}
             | assigned_staff_ids
-        ):
+        )
+        # 新人同行 (§6.4 C-1): 同行リンク (visit 直リンク OR course リンク) も可視に
+        # 含める (漏れると新人がカードをタップした瞬間 404)。
+        if not visible:
+            visible = await is_accompaniment_visit_for_staff(
+                db, visit_id=visit.id, course_id=visit.course_id, staff_id=user.staff_id
+            )
+        if not visible:
             # Hide existence from non-assigned staff.
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     latest_checkin = await _load_latest_checkin(db, visit.id)
-    return _serialize_visit(visit, assignments=assignments, latest_checkin=latest_checkin)
+    accompaniment_by_visit = await resolve_accompaniment_by_visit(db, [visit])
+    return _serialize_visit(
+        visit,
+        assignments=assignments,
+        latest_checkin=latest_checkin,
+        accompaniment=_accompaniment_payload(accompaniment_by_visit.get(visit.id)),
+    )
 
 
 @router.post(
@@ -673,10 +710,19 @@ async def _load_visit_for_checkin(db, visit_id: UUID, user: User) -> tuple[Visit
 
     assignments = await _load_assignments(db, visit.id)
     assigned_staff_ids = {a["staff_id"] for a in assignments}
-    if staff_id not in (
+    visible = staff_id in (
         {visit.primary_staff_id, visit.secondary_staff_id, visit.mentor_staff_id}
         | assigned_staff_ids
-    ):
+    )
+    # 新人同行 (§6.4 C-1): 同行リンクも可視に含める。新人は自分の ID でチェックイン
+    # 可能 (カイポケ上も正規 2 人目扱いのため打刻も本人が行う設計判断)。judge_checkin は
+    # 渡された staff_id で VisitCheckin を記録するのみで「担当≠打刻者」を警告する経路は
+    # 無いため、同行者打刻はそのまま正当な打刻として扱われる (別途の抑止は不要)。
+    if not visible:
+        visible = await is_accompaniment_visit_for_staff(
+            db, visit_id=visit.id, course_id=visit.course_id, staff_id=staff_id
+        )
+    if not visible:
         # 担当外には存在を秘匿する。
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     return visit, staff_id
@@ -694,7 +740,13 @@ async def _checkin_response(db, visit_id: UUID) -> dict:
     )
     assignments = await _load_assignments(db, visit_id)
     latest_checkin = await _load_latest_checkin(db, visit_id)
-    return _serialize_visit(visit, assignments=assignments, latest_checkin=latest_checkin)
+    accompaniment_by_visit = await resolve_accompaniment_by_visit(db, [visit])
+    return _serialize_visit(
+        visit,
+        assignments=assignments,
+        latest_checkin=latest_checkin,
+        accompaniment=_accompaniment_payload(accompaniment_by_visit.get(visit_id)),
+    )
 
 
 @router.post(

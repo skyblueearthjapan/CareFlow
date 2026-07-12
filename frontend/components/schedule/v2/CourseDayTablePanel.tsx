@@ -160,6 +160,9 @@ import {
   WeekTimelineBoard,
   type WeekTimelineOption,
 } from '@/components/schedule/timeline/WeekTimelineBoard';
+import { AccompanimentBar } from '@/components/schedule/timeline/accompaniment/AccompanimentBar';
+import { useAccompanimentController } from '@/components/schedule/timeline/accompaniment/useAccompanimentController';
+import type { AccompanimentWeekVisit } from '@/components/schedule/timeline/accompaniment/types';
 import { PartnerCourseDialog } from './PartnerCourseDialog';
 import { cn } from '@/lib/utils';
 import { type TimelineRowMeta } from './CourseMoveTimeline';
@@ -2704,6 +2707,66 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     });
   }, [weekStart]);
 
+  // ─── 新人同行モード (§7.1/§7.2) ─────────────────────────────────────────
+  const templateLabelById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const o of weekTimelineOptions) m.set(o.templateId, o.label);
+    return m;
+  }, [weekTimelineOptions]);
+
+  // (course_template_id, weekday) → その週のコースインスタンス id。
+  const resolveAccompanimentCourseId = useCallback(
+    (templateId: string, weekday: number): string | null => {
+      const t = templates.find((tpl) => tpl.id === templateId);
+      if (!t) return null;
+      return findCourseForTemplate({ template: t, weekday, isoYear, isoWeek, courses })?.id ?? null;
+    },
+    [templates, isoYear, isoWeek, courses],
+  );
+
+  // 週の全訪問を同行判定用の索引へ。コース id とラベルを解決して埋める。
+  const accompanimentWeekVisits = useMemo<AccompanimentWeekVisit[]>(() => {
+    return overviewVisits.map((v) => {
+      const startMin = parseHM(v.start_time);
+      const endMin = parseHM(v.end_time ?? null) ?? (startMin !== null ? startMin + 35 : null);
+      return {
+        visitId: v.id,
+        patientId: v.patient_id,
+        patientName: v.patient_name,
+        weekday: v.weekday,
+        courseId: resolveAccompanimentCourseId(v.course_template_id, v.weekday),
+        courseTemplateId: v.course_template_id,
+        courseLabel: templateLabelById.get(v.course_template_id) ?? null,
+        startMin,
+        endMin,
+      };
+    });
+  }, [overviewVisits, resolveAccompanimentCourseId, templateLabelById]);
+
+  const weekdayDateLabel = useCallback(
+    (weekday: number): string => {
+      const date = weekdayDates[weekday] ?? '';
+      const wd = WEEKDAY_LABELS[weekday] ?? '';
+      return date ? `${date}(${wd})` : wd;
+    },
+    [weekdayDates],
+  );
+
+  const activeTrainees = useMemo(
+    () => allStaff.filter((s) => s.is_trainee === true && s.status === 'active'),
+    [allStaff],
+  );
+
+  const accompaniment = useAccompanimentController({
+    isoYear,
+    isoWeek,
+    canEdit,
+    trainees: activeTrainees,
+    weekVisits: accompanimentWeekVisits,
+    resolveCourseId: resolveAccompanimentCourseId,
+    weekdayDateLabel,
+  });
+
   // ─── Wave U-3: undo/redo 中は両ボタン disabled ─────────────────────────
   const undoRedoPending = undoMut.isPending || redoMut.isPending;
 
@@ -3096,6 +3159,20 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                       officeId={officeId}
                       disabled={!canEdit || isProcessing}
                     />
+                    {/* 新人同行モード (§7.1)。active な新人が 1 人以上・編集権限ありのときのみ。 */}
+                    {accompaniment.available && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={accompaniment.enter}
+                        disabled={accompaniment.active}
+                        data-testid="accompaniment-enter-button"
+                        title="新人が先輩の訪問に同行する設定を編集します"
+                      >
+                        👥 新人同行
+                      </Button>
+                    )}
                   </div>
 
                   {/* γ / δ 間の区切り線. */}
@@ -3167,9 +3244,13 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                     options={weekTimelineOptions}
                     visits={overviewVisits}
                     weekdayDates={weekdayDates}
-                    onPatientClick={handleOpenPatientDetail}
+                    // 同行モード中は患者詳細を抑止 (§7.1 N-2)。
+                    onPatientClick={
+                      accompaniment.active ? undefined : handleOpenPatientDetail
+                    }
                     capacityByWeekday={weekTimelineCapacityByWeekday}
                     staffByWeekday={weekTimelineStaffByWeekday}
+                    accompaniment={accompaniment.binding}
                   />
                 ) : (
                   <CourseWeekOverview
@@ -3236,17 +3317,24 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                     <TimelineDayBoard
                       columns={timelineColumns}
                       weekdayLabel={WEEKDAY_LABELS[activeWeekday] ?? ''}
-                      onPatientClick={handleOpenPatientDetail}
+                      // 同行モード中は通常のクリック/DnD/空き枠/イベントを全て抑止 (§7.1 N-2)。
+                      onPatientClick={
+                        accompaniment.active ? undefined : handleOpenPatientDetail
+                      }
                       nowMinutes={timelineNowMinutes}
                       // T-2 ②-a: canEdit のときだけ空き枠クリック登録を解禁。
-                      onFreeSlotClick={canEdit ? handleFreeSlotClick : undefined}
+                      onFreeSlotClick={
+                        canEdit && !accompaniment.active ? handleFreeSlotClick : undefined
+                      }
                       // イベント帯クリック → 編集/削除 (canEdit のみ)。
-                      onEventClick={canEdit ? handleTimelineEventClick : undefined}
+                      onEventClick={
+                        canEdit && !accompaniment.active ? handleTimelineEventClick : undefined
+                      }
                       // T-2 ②-b: カード DnD (15分スナップ移動) は canEdit のみ。
-                      dndEnabled={canEdit}
+                      dndEnabled={canEdit && !accompaniment.active}
                       // G1: 列ヘッダの担当スタッフ変更 (テーブルの dropdown と同機能)。
                       onChangeAssignedStaff={
-                        canEdit
+                        canEdit && !accompaniment.active
                           ? (col, staffId) => {
                               if (!col.course) {
                                 toast.warning(
@@ -3261,7 +3349,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                       isStaffMutating={updateCourseMut.isPending}
                       // G2: カード右下の × (訪問削除)。確認ダイアログは既存ハンドラが持つ。
                       onDeleteVisit={
-                        canEdit
+                        canEdit && !accompaniment.active
                           ? (visitId, patientName) => {
                               void handleDeleteVisit(visitId, patientName);
                             }
@@ -3269,10 +3357,12 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                       }
                       // G3: 「今週のみ」チップ → 固定訪問週間 (毎週の型) へ昇格。
                       onPromoteWeekOnly={
-                        canEdit
+                        canEdit && !accompaniment.active
                           ? (patientId, patientName) => promoteWeekToFixed([patientId], patientName)
                           : undefined
                       }
+                      accompaniment={accompaniment.binding}
+                      accompanimentWeekday={activeWeekday}
                     />
                   </div>
                 ) : (
@@ -3652,6 +3742,9 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
             patientMetaById={patientRowMetaById}
           />
         ) : null}
+
+        {/* 新人同行モードの下部固定バー (§7.1)。active のときだけ描画。 */}
+        {accompaniment.bar ? <AccompanimentBar {...accompaniment.bar} /> : null}
       </section>
     </DndContext>
   );

@@ -28,6 +28,9 @@ export const monitorVisitSchema = z.object({
   staff_name: z.string().nullable().optional(),
   // 2 名体制のグルーピングキー。同一値の visit が 2 行 (各スタッフ 1 行)。通常は null。
   visit_group_id: z.string().uuid().nullable().optional(),
+  // 新人同行 (§7.3): この訪問に同行する新人スタッフ名。null=同行なし。
+  // 担当乖離 ⚠ (course_staff_name ≠ staff_name) とは別ラベル「＋◯◯（同行）」で表示する。
+  accompaniment_staff_name: z.string().nullable().optional(),
   patient_id: z.string().uuid(),
   patient_name: z.string().nullable().optional(),
   patient_code: z.string().nullable().optional(),

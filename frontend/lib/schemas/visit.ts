@@ -82,6 +82,15 @@ export const visitReadSchema = visitBaseSchema.extend({
    */
   fixed_visit_id: z.string().uuid().nullable().optional(),
   is_pinned: z.boolean().nullable().optional(),
+  /**
+   * 新人同行 (§6.4 / §7.4): この訪問に同行する新人スタッフ。null = 同行なし。
+   * BE `_serialize_visit` が同行テーブル (`trainee_accompaniments`) から JOIN 解決して
+   * 非破壊追加する (R-9 の patient_sex 追加と同じ流儀。旧デプロイは undefined)。
+   */
+  accompaniment: z
+    .object({ staff_id: z.string().uuid(), staff_name: z.string().nullable() })
+    .nullable()
+    .optional(),
 });
 
 export type VisitCreate = z.infer<typeof visitCreateSchema>;

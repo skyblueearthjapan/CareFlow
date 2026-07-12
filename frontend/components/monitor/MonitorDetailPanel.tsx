@@ -233,6 +233,16 @@ function VisitDetail({
           .join(' ／ ')}
       </div>
 
+      {/* 新人同行 (§7.3): 担当乖離とは別枠の情報表示。 */}
+      {visit.accompaniment_staff_name && (
+        <div
+          className="mb-3 text-xs font-medium text-info"
+          data-testid="monitor-detail-accompaniment"
+        >
+          同行: {visit.accompaniment_staff_name}
+        </div>
+      )}
+
       <div
         className={cn(
           'mb-3 flex items-center gap-2.5 rounded px-3 py-2.5 text-[13px] font-semibold',
