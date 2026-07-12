@@ -338,6 +338,29 @@ soft-delete 済み visit / course を参照する `trainee_accompaniments` 行�
   `required_staff_count=2` への昇格・`secondary_staff_id` への書き込みをしない**
   （突合しないと、送った同行が「要2名患者」として返ってくるラウンドトリップ汚染が起きる）
 
+- **案B: 新人 staff2 の自動同行化（PO承認 2026-07-12・上記の拡張）**:
+  逆取込の staff2 解決結果 `sid2` を edit/add 両経路で **3 段階判定** する。
+  従来は「既存リンクと一致しない新人 staff2」を `secondary+required_staff_count=2`
+  （要2名化）で取り込んでいたが、盤面に2人目コース列の無い不整合を生む（PO指摘）ため
+  改める。
+  1. **既存の同行リンクと一致** → スキップ（secondary へ書かず要2名化しない）。
+     注記「担当2「◯◯」は同行のため未反映（要2名化しない）」
+  2. **リンクは無いが `staff.is_trainee=true`（active・未削除）** → **同行リンクを自動作成**:
+     `TraineeAccompaniment(trainee_staff_id=sid2, target_type='visit',
+     visit_id=<対象/新設visit>, source='manual', created_by=None)`。
+     `secondary_staff_id` へは書かず `required_staff_count` も昇格しない。
+     注記「担当2「◯◯」は新人のため同行として取り込みました」。
+     - `source` に `'inbound'` 値は追加しない（CHECK制約の migration を避ける。既定の
+       再展開が上書きしない挙動は `'manual'` で正しい）。コメントで inbound 由来を明記
+     - edit 経路: 他に変更点が無くてもリンク作成を実変更とみなし **updated** 集計
+     - add 経路: 新設 visit の flush 後（visit.id 確定後）にリンク作成
+     - dry_run 時は書き込まず注記のみ（status は実書き込み時と同じ扱い）
+     - 冪等性: `UNIQUE(trainee_staff_id, visit_id)` と、同一実行内は突合集合への書き戻しで
+       二重作成を防ぐ。別実行の二重取込は再ロードされた突合集合で判定 1 に落ちる
+     - 新人判定は週処理冒頭で `is_trainee=true AND status='active' AND deleted_at IS NULL`
+       の staff id 集合を 1 クエリでロードして使う（N+1 禁止）
+  3. **新人でない実スタッフ** → 従来どおり `secondary_staff_id`+`required_staff_count=2`
+
 ## 10. テスト観点
 
 ### BE

@@ -415,19 +415,23 @@ async def test_inbound_add_real_staff2_promotes(db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_inbound_edit_after_unlink_promotes_normally(db) -> None:
-    """同行リンク解除後は live 判定により元新人の staff2 も通常昇格へ戻る (NIT-3 b).
+async def test_inbound_edit_trainee_staff2_auto_accompaniment(db) -> None:
+    """案B①: リンク未作成でも新人 staff2 は同行リンクを自動作成し要2名化しない (edit).
 
-    解除→カイポケ側に staff2 が残る窓では「要2名」扱いになり、次の apply の
-    クリア Correction で解消される (一過性・設計 §9 の live 判定の帰結)。
+    旧仕様 (Phase 3 初版) では未リンク新人の staff2 は secondary へ昇格していたが、
+    盤面に2人目コース列の無い不整合を生む (PO指摘) ため案B (PO承認 2026-07-12) で
+    「未リンク新人は同行リンクを自動作成・要2名化しない」へ転換した。他に変更点が
+    無くてもリンク作成を実変更とみなし updated として集計する。
     """
+    from sqlalchemy import select
+
     office = await _office(db)
     mentor = await _staff(db, "先輩太郎", office)
     trainee = await _staff(db, "新人花子", office, is_trainee=True)
     patient = await _patient(db, "山田様", office)
     course = await _course(db, office, mentor, weekday=1, code="A")
     visit = await _visit(db, patient, mentor, course=course)
-    # リンクを張らない (= 解除済み状態)。
+    # リンクを張らない (= 未作成状態)。案B ではここで自動作成される。
     await db.commit()
 
     item = _edit_item(patient, visit, staff1="先輩太郎", staff2="新人花子")
@@ -443,9 +447,19 @@ async def test_inbound_edit_after_unlink_promotes_normally(db) -> None:
     await db.commit()
     await db.refresh(visit)
 
-    assert visit.secondary_staff_id == trainee.id  # リンクが無ければ通常の2人目扱い。
-    assert visit.required_staff_count == 2
-    assert summary.updated == 1
+    assert visit.secondary_staff_id is None  # 同行は secondary へ書かない。
+    assert visit.required_staff_count == 1  # 要2名化しない。
+    assert summary.updated == 1  # リンク作成を実変更として updated 集計。
+
+    link = await db.scalar(
+        select(TraineeAccompaniment).where(
+            TraineeAccompaniment.trainee_staff_id == trainee.id,
+            TraineeAccompaniment.visit_id == visit.id,
+        )
+    )
+    assert link is not None
+    assert link.target_type == "visit"
+    assert link.source == "manual"  # 'inbound' 値は追加しない (CHECK 制約 migration 回避)。
 
 
 @pytest.mark.asyncio
@@ -520,3 +534,145 @@ async def test_inbound_edit_multiple_trainees_membership(db) -> None:
         assert visit.secondary_staff_id is None, trainee_name
         assert visit.required_staff_count == 1, trainee_name
         assert summary.skipped == 1, trainee_name
+
+
+# --- D. 案B: 未リンク新人 staff2 の自動同行化 (edit / add / dry_run / 冪等) --------
+
+
+def _add_item(patient: Patient, *, staff1: str, staff2: str, start: str = "15:00") -> CorrectionSheetItem:
+    return CorrectionSheetItem(
+        sheet_id=uuid.uuid4(),
+        patient_id=patient.id,
+        action="add",
+        before=None,
+        after={
+            "user_name": patient.name,
+            "date": "7",
+            "start_time": start,
+            "end_time": "15:35",
+            "staff1": staff1,
+            "staff2": staff2,
+        },
+        include=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_inbound_add_trainee_staff2_auto_accompaniment(db) -> None:
+    """案B②: add で未リンク新人 staff2 → visit 新設 + 同行リンク自動作成 (要2名化しない)."""
+    from sqlalchemy import select
+
+    office = await _office(db)
+    mentor = await _staff(db, "先輩太郎", office)
+    trainee = await _staff(db, "新人花子", office, is_trainee=True)
+    patient = await _patient(db, "山田様", office)
+    await _course(db, office, mentor, weekday=1, code="A")  # 同行リンクは張らない。
+    await db.commit()
+
+    item = _add_item(patient, staff1="先輩太郎", staff2="新人花子")
+    summary = await apply_inbound_items(
+        db,
+        items=[item],
+        week_start=WEEK_START,
+        week_end=WEEK_END,
+        days=None,
+        dry_run=False,
+        now=_now(),
+    )
+    await db.commit()
+
+    new_visit = await db.scalar(
+        select(Visit).where(Visit.patient_id == patient.id, Visit.start_time == time(15, 0))
+    )
+    assert summary.added == 1
+    assert new_visit is not None
+    assert new_visit.secondary_staff_id is None  # 同行は secondary へ書かない。
+    assert new_visit.required_staff_count == 1  # 要2名化しない。
+
+    link = await db.scalar(
+        select(TraineeAccompaniment).where(
+            TraineeAccompaniment.trainee_staff_id == trainee.id,
+            TraineeAccompaniment.visit_id == new_visit.id,
+        )
+    )
+    assert link is not None
+    assert link.target_type == "visit"
+    assert link.source == "manual"
+
+
+@pytest.mark.asyncio
+async def test_inbound_dry_run_no_accompaniment_created(db) -> None:
+    """案B: dry_run では同行リンクを作成しない (edit / add とも)."""
+    from sqlalchemy import func, select
+
+    office = await _office(db)
+    mentor = await _staff(db, "先輩太郎", office)
+    await _staff(db, "新人花子", office, is_trainee=True)
+    patient = await _patient(db, "山田様", office)
+    course = await _course(db, office, mentor, weekday=1, code="A")
+    visit = await _visit(db, patient, mentor, course=course)
+    patient2 = await _patient(db, "佐藤様", office)
+    await db.commit()
+
+    edit = _edit_item(patient, visit, staff1="先輩太郎", staff2="新人花子")
+    add = _add_item(patient2, staff1="先輩太郎", staff2="新人花子")
+    summary = await apply_inbound_items(
+        db,
+        items=[edit, add],
+        week_start=WEEK_START,
+        week_end=WEEK_END,
+        days=None,
+        dry_run=True,
+        now=_now(),
+    )
+    await db.commit()
+
+    count = await db.scalar(select(func.count()).select_from(TraineeAccompaniment))
+    assert count == 0  # dry_run では一切書き込まない。
+    # dry_run でも判定は実書き込み時と同じ (edit=updated / add=added)。
+    assert summary.updated == 1
+    assert summary.added == 1
+
+
+@pytest.mark.asyncio
+async def test_inbound_edit_trainee_staff2_idempotent_reapply(db) -> None:
+    """案B: 同じ item を再 apply しても 2 回目は判定①でスキップ・リンクは 1 件のまま."""
+    from sqlalchemy import func, select
+
+    office = await _office(db)
+    mentor = await _staff(db, "先輩太郎", office)
+    trainee = await _staff(db, "新人花子", office, is_trainee=True)
+    patient = await _patient(db, "山田様", office)
+    course = await _course(db, office, mentor, weekday=1, code="A")
+    visit = await _visit(db, patient, mentor, course=course)
+    await db.commit()
+
+    async def _apply() -> object:
+        item = _edit_item(patient, visit, staff1="先輩太郎", staff2="新人花子")
+        s = await apply_inbound_items(
+            db,
+            items=[item],
+            week_start=WEEK_START,
+            week_end=WEEK_END,
+            days=None,
+            dry_run=False,
+            now=_now(),
+        )
+        await db.commit()
+        return s
+
+    first = await _apply()
+    assert first.updated == 1  # 1 回目: リンク作成 → updated。
+
+    second = await _apply()
+    assert second.skipped == 1  # 2 回目: 既存リンクと一致 → 判定① スキップ。
+
+    count = await db.scalar(
+        select(func.count())
+        .select_from(TraineeAccompaniment)
+        .where(
+            TraineeAccompaniment.trainee_staff_id == trainee.id,
+            TraineeAccompaniment.visit_id == visit.id,
+        )
+    )
+    assert count == 1  # 冪等: リンクは 1 件のまま。

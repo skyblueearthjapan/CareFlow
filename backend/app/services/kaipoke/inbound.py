@@ -29,6 +29,7 @@ from app.models.course_template import CourseTemplate
 from app.models.kaipoke_job import KaipokeJob
 from app.models.patient import Patient
 from app.models.staff import Staff
+from app.models.trainee_accompaniment import TraineeAccompaniment
 from app.models.visit import VISIT_STATUS_CANCELLED, Visit
 from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.services.kaipoke.name_match import build_name_index, match_name
@@ -344,6 +345,22 @@ async def apply_inbound_items(
         db, list(course_idx.by_id.keys())
     )
 
+    # 案B (設計 §9 拡張・PO承認 2026-07-12): カイポケ側 staff2 がリンク未作成でも新人
+    # (is_trainee) なら「要2名患者」化せず同行リンクを自動作成する。判定用に active・
+    # 未削除の新人 staff id を1クエリでロード (N+1 回避)。match_name で解決した staff.id
+    # がこの集合に含まれるかで判定 2 (自動同行化) と判定 3 (実スタッフの要2名化) を分岐。
+    trainee_ids: set[uuid.UUID] = set(
+        (
+            await db.scalars(
+                select(Staff.id).where(
+                    Staff.is_trainee.is_(True),
+                    Staff.status == "active",
+                    Staff.deleted_at.is_(None),
+                )
+            )
+        ).all()
+    )
+
     # 患者 → 拠点 (コース解決に使う)。
     pids = {it.patient_id for it in items if it.patient_id is not None}
     patient_office: dict[uuid.UUID, uuid.UUID] = {}
@@ -482,6 +499,7 @@ async def apply_inbound_items(
             sid = uuid.UUID(sid_str)
             staff2_name = str(after.get("staff2") or "")
             sid2: uuid.UUID | None = None
+            accompaniment_sid2: uuid.UUID | None = None
             staff2_note = ""
             if staff2_name:
                 sid2_str = match_name(staff2_name, staff_index)
@@ -495,16 +513,21 @@ async def apply_inbound_items(
                 continue
             weekday = target_date.weekday()
             course = course_idx.by_staff.get((weekday, office_id, sid))
-            # 同行由来 staff2 の突合 (設計 §9): 新設 visit が張り付くコースに同行リンクが
-            # あり staff2 がその新人と一致するなら、secondary へ書かず要2名化もしない
-            # (同行の新人が「要2名患者」として返ってくるラウンドトリップ汚染を防ぐ)。
-            if (
-                sid2 is not None
-                and course is not None
-                and sid2 in accompaniment_by_course.get(course.id, set())
-            ):
-                sid2 = None
-                staff2_note = "／担当2は同行のため未反映（要2名化しない）"
+            # staff2 の 3 段階判定 (案B・設計 §9 拡張):
+            # ① 既存の同行リンクと一致 (新設 visit が張り付くコースの同行新人と一致) →
+            #    secondary へ書かず要2名化もしない (ラウンドトリップ汚染防止)。
+            # ② リンクは無いが新人 (is_trainee) → visit 新設後に同行リンクを自動作成し、
+            #    secondary へは書かない・要2名化しない (盤面に2人目コース列の無い不整合を
+            #    生む「要2名化」を避ける・PO指摘)。
+            # ③ 新人でない実スタッフ → 従来どおり secondary + required_staff_count=2。
+            if sid2 is not None:
+                if course is not None and sid2 in accompaniment_by_course.get(course.id, set()):
+                    sid2 = None
+                    staff2_note = "／担当2は同行のため未反映（要2名化しない）"
+                elif sid2 in trainee_ids:
+                    accompaniment_sid2 = sid2
+                    sid2 = None
+                    staff2_note = f"／担当2「{staff2_name}」は新人のため同行として取り込みました"
             course_note = f"コース{course.code}" if course is not None else "臨時コース新設"
             detail = (
                 f"{target_date.month}/{target_date.day} {after.get('start_time')} を追加"
@@ -547,6 +570,21 @@ async def apply_inbound_items(
                         await _replace_assignments(
                             db, new_visit, [s for s in (sid, sid2) if s is not None]
                         )
+                        # 案B②: 新人 staff2 を同行リンク (visit 直リンク) として自動作成。
+                        # flush 後 = new_visit.id が確定してから。source='inbound' 値は
+                        # 追加せず 'manual' を刻む (CHECK 制約 migration を避ける・既定の
+                        # 再展開が上書きしない挙動は 'manual' で正しい)。UNIQUE(trainee,
+                        # visit_id) が冪等を担保 (新設 visit の id は毎回新規のため衝突なし)。
+                        if accompaniment_sid2 is not None:
+                            db.add(
+                                TraineeAccompaniment(
+                                    trainee_staff_id=accompaniment_sid2,
+                                    target_type="visit",
+                                    visit_id=new_visit.id,
+                                    source="manual",
+                                    created_by=None,
+                                )
+                            )
                 except IntegrityError:
                     _finish(
                         "failed",
@@ -632,25 +670,36 @@ async def apply_inbound_items(
         # 担当2: 解決できたときだけ反映 (解除 = 空文字も反映)。
         staff2_update = False
         new_sid2: uuid.UUID | None = None
+        accompaniment_sid2: uuid.UUID | None = None
         if staff2_changed:
             if not staff2_after_name:
                 staff2_update = True  # 2人目の解除。
             else:
                 sid2_str = match_name(staff2_after_name, staff_index)
                 if sid2_str:
-                    new_sid2 = uuid.UUID(sid2_str)
-                    # 同行由来 staff2 の突合 (設計 §9): この visit の同行新人と一致するなら
-                    # secondary へ書かず要2名化もしない (ラウンドトリップ汚染防止。同行は
-                    # trainee_accompaniments が唯一の正典)。
-                    if new_sid2 in accompaniment_by_visit.get(visit.id, set()):
-                        new_sid2 = None
+                    resolved_sid2 = uuid.UUID(sid2_str)
+                    # staff2 の 3 段階判定 (案B・設計 §9 拡張):
+                    # ① 既存の同行リンクと一致 → secondary へ書かず要2名化しない
+                    #    (ラウンドトリップ汚染防止。同行は trainee_accompaniments が唯一の正典)。
+                    if resolved_sid2 in accompaniment_by_visit.get(visit.id, set()):
                         notes.append(f"担当2「{staff2_after_name}」は同行のため未反映（要2名化しない）")
+                    # ② リンクは無いが新人 → 同行リンクを自動作成し要2名化しない。
+                    elif resolved_sid2 in trainee_ids:
+                        accompaniment_sid2 = resolved_sid2
+                    # ③ 新人でない実スタッフ → 従来どおり secondary + 要2名化。
                     else:
+                        new_sid2 = resolved_sid2
                         staff2_update = True
                 else:
                     notes.append(f"担当2「{staff2_after_name}」未解決（未反映）")
 
-        if not time_changed and not date_changed and new_sid is None and not staff2_update:
+        if (
+            not time_changed
+            and not date_changed
+            and new_sid is None
+            and not staff2_update
+            and accompaniment_sid2 is None
+        ):
             _finish("skipped", "・".join(notes) or "変更点なし", target_date)
             continue
 
@@ -695,6 +744,10 @@ async def apply_inbound_items(
                     )
         if staff2_update:
             changes.append(f"担当2 →{staff2_after_name}" if new_sid2 is not None else "担当2を解除")
+        # 案B②: 新人 staff2 の自動同行化はリンク作成が実変更 → updated として集計する
+        # (他に変更点が無くても skipped にしない)。
+        if accompaniment_sid2 is not None:
+            changes.append(f"担当2「{staff2_after_name}」は新人のため同行として取り込みました")
 
         if not changes:
             _finish("skipped", "・".join(notes) or "変更点なし", target_date)
@@ -748,6 +801,22 @@ async def apply_inbound_items(
                     await _replace_assignments(
                         db, v, [s for s in (primary, secondary) if s is not None]
                     )
+            # 案B②: 新人 staff2 を同行リンク (visit 直リンク) として自動作成 (対象 visit へ)。
+            # source='inbound' 値は追加せず 'manual' を刻む (CHECK 制約 migration を避ける)。
+            # 同一実行内の item 重複でも二重に張らないよう、作成後は突合集合へ反映して
+            # 以降は判定 ① (スキップ) に落ちるようにする。UNIQUE(trainee, visit_id) も冪等
+            # を担保 (別実行の二重取込は再ロードされた突合集合で判定 ① に落ちる)。
+            if accompaniment_sid2 is not None:
+                db.add(
+                    TraineeAccompaniment(
+                        trainee_staff_id=accompaniment_sid2,
+                        target_type="visit",
+                        visit_id=visit.id,
+                        source="manual",
+                        created_by=None,
+                    )
+                )
+                accompaniment_by_visit.setdefault(visit.id, set()).add(accompaniment_sid2)
         _finish("updated", detail, target_date)
 
     return summary
