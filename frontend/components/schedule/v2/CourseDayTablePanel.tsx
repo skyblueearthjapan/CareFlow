@@ -163,6 +163,13 @@ import {
 import { AccompanimentBar } from '@/components/schedule/timeline/accompaniment/AccompanimentBar';
 import { useAccompanimentController } from '@/components/schedule/timeline/accompaniment/useAccompanimentController';
 import type { AccompanimentWeekVisit } from '@/components/schedule/timeline/accompaniment/types';
+import { useTraineeAccompaniments } from '@/lib/queries/trainee_accompaniments';
+import {
+  augmentAssignedSlotsWithAccompaniment,
+  buildAccompanimentLinkIndex,
+  planSecondStaffToggle,
+  type FulfillmentVisit,
+} from '@/lib/scheduling/accompanimentFulfillment';
 import { PartnerCourseDialog } from './PartnerCourseDialog';
 import { cn } from '@/lib/utils';
 import { type TimelineRowMeta } from './CourseMoveTimeline';
@@ -1107,6 +1114,32 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     }
     return m;
   }, [weekVisits, visitsByGroupId]);
+
+  // ─── 新人同行の充足判定用: 患者ごとの「配置済み訪問」 ─────────────────
+  //   複数名対応患者の 2 人目 (slot1) を新人同行で賄えているかを判定するため、
+  //   assignedSlotsByPatient と同じ raw weekVisits を材料に、各訪問の
+  //   id / course_id / course_template_id / weekday を解決したものを患者単位で集める。
+  //   (course_id → template は courseTemplateByCourseId、weekday は visit_date から。)
+  const placedVisitsByPatient = useMemo(() => {
+    const m = new Map<string, FulfillmentVisit[]>();
+    for (const v of weekVisits) {
+      const courseId = v.course_id ?? null;
+      const courseTemplateId = courseId
+        ? (courseTemplateByCourseId.get(courseId) ?? null)
+        : null;
+      let weekday: number | null = null;
+      if (v.visit_date) {
+        const d = new Date(v.visit_date + 'T00:00:00');
+        weekday = (d.getDay() + 6) % 7;
+      } else if (courseId) {
+        weekday = courses.find((c) => c.id === courseId)?.weekday ?? null;
+      }
+      const arr = m.get(v.patient_id) ?? [];
+      arr.push({ id: v.id, courseId, courseTemplateId, weekday });
+      m.set(v.patient_id, arr);
+    }
+    return m;
+  }, [weekVisits, courseTemplateByCourseId, courses]);
 
   // ─── Pool patients ────────────────────────────────────────────────
   // Phase G-44: 「希望訪問パターン (= weekly_pattern.frequency_per_week) を
@@ -2775,6 +2808,43 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     weekdayDateLabel,
   });
 
+  // ─── 新人同行で「2人目 (slot1)」を充足した複数名対応患者をプールから消す ───
+  //   週の全新人リンク (保存済みサーバデータ) を取得し、複数名対応患者のうち
+  //   配置済み訪問がすべて同行つきの患者について slot1 を上乗せする。これにより
+  //   PoolPanel の②カード (2人目未配置) がプールから消える。同行を外して確定すれば
+  //   invalidate → 再取得で復活する。新人が 0 人なら取得しない (enabled:false)。
+  //   ※ controller 内の displayQuery と同一キーのため React Query が dedupe する。
+  const traineeAccompanimentsQuery = useTraineeAccompaniments({
+    isoYear,
+    isoWeek,
+    enabled: activeTrainees.length > 0,
+  });
+  const accompanimentLinkIndex = useMemo(
+    () => buildAccompanimentLinkIndex(traineeAccompanimentsQuery.data),
+    [traineeAccompanimentsQuery.data],
+  );
+  const multiStaffPatientIds = useMemo(
+    () =>
+      allPatients
+        .filter(
+          (p) =>
+            (p as { requires_multiple_staff?: boolean | null }).requires_multiple_staff === true,
+        )
+        .map((p) => p.id),
+    [allPatients],
+  );
+  // プールへ渡す「同行充足を織り込んだ」配置済み slot マップ。
+  const assignedSlotsForPool = useMemo(
+    () =>
+      augmentAssignedSlotsWithAccompaniment(
+        assignedSlotsByPatient,
+        multiStaffPatientIds,
+        placedVisitsByPatient,
+        accompanimentLinkIndex,
+      ),
+    [assignedSlotsByPatient, multiStaffPatientIds, placedVisitsByPatient, accompanimentLinkIndex],
+  );
+
   // ─── Wave U-3: undo/redo 中は両ボタン disabled ─────────────────────────
   const undoRedoPending = undoMut.isPending || redoMut.isPending;
 
@@ -3433,9 +3503,9 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
             data-testid="course-day-pool-pane"
             // Wave 37 Phase 3-C: 配置済み slot マップを serialize してテスト・debug 用に露出.
             // 形式: "patientId:slot,...,patientId:slot"
-            // Phase 3-B が PoolGroupedByWeekday に assignedSlotsByPatient prop を
-            // 追加し次第、ここで { p.id → Set } マップを直接 prop で渡すように切替える。
-            data-assigned-slots={Array.from(assignedSlotsByPatient.entries())
+            // 新人同行で 2 人目を充足した複数名対応患者は slot1 が上乗せされる
+            // (assignedSlotsForPool) ため、②カードが消えた状態がここにも反映される。
+            data-assigned-slots={Array.from(assignedSlotsForPool.entries())
               .flatMap(([pid, slots]) => Array.from(slots).map((s) => `${pid}:${s}`))
               .sort()
               .join(',')}
@@ -3454,7 +3524,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
             <PoolOverviewPane
               patients={poolPatients}
               disabled={!canEdit}
-              assignedSlotsByPatient={assignedSlotsByPatient}
+              assignedSlotsByPatient={assignedSlotsForPool}
               partnerLocationByPatientSlot={partnerLocationByPatientSlot}
               isoYear={isoYear}
               isoWeek={isoWeek}
@@ -3497,13 +3567,46 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                 };
                 // ドラッグ開始時にゴーストへ流用するため「表示中のデータ」を記録。
                 poolCardDataRef.current.set(draggableId, cardData);
+
+                // ── 新人同行モード連携 ─────────────────────────────────
+                //   ②カード (複数名対応・2人目未配置) を、同行モード中にクリック
+                //   したら、その患者の配置済み訪問を個別リンクとして一括トグルする
+                //   (既にコース選択に内包される訪問はスキップ)。モード中は通常の
+                //   カードクリック (患者詳細) は抑止する。
+                const isSecondStaffCard =
+                  isMultiStaff && slotInfo.slotIndex === 1 && slotInfo.partnerAssigned === true;
+                const accSelectableVisitIds =
+                  accompaniment.active && isSecondStaffCard
+                    ? (placedVisitsByPatient.get(p.id) ?? [])
+                        .map((v) => v.id)
+                        .filter((id) => !accompaniment.binding.isVisitInSelectedCourse(id))
+                    : [];
+                const accSelected =
+                  accSelectableVisitIds.length > 0 &&
+                  accSelectableVisitIds.every((id) => accompaniment.binding.isVisitSelected(id));
+                const handlePoolCardClick = () => {
+                  if (accompaniment.active) {
+                    if (isSecondStaffCard) {
+                      // 全選択済みなら解除、そうでなければ全選択 (タイムライン選択と同言語)。
+                      const { toggleIds } = planSecondStaffToggle(
+                        accSelectableVisitIds,
+                        accompaniment.binding.isVisitSelected,
+                      );
+                      for (const id of toggleIds) accompaniment.binding.toggleVisit(id);
+                    }
+                    return; // モード中は患者詳細を開かない。
+                  }
+                  handleOpenPoolPatientDetail(p.id);
+                };
                 return (
                   <PatientCard
                     draggableId={draggableId}
                     patient={cardData}
                     disabled={!canEdit}
                     // 保留プールの患者カードクリックで詳細 + プール投入提案を開く.
-                    onCardClick={() => handleOpenPoolPatientDetail(p.id)}
+                    // 同行モード中は②カードで訪問をトグル選択 (詳細は抑止)。
+                    onCardClick={handlePoolCardClick}
+                    selected={accSelected}
                   />
                 );
               }}

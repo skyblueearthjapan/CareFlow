@@ -45,6 +45,12 @@ import {
 } from '../PoolPanel';
 import { formatPreferredTimeLabel, emptyWeeklyPattern } from '@/lib/schemas/patient';
 import type { PatientRead } from '@/lib/schemas/patient';
+import {
+  augmentAssignedSlotsWithAccompaniment,
+  buildAccompanimentLinkIndex,
+  type FulfillmentVisit,
+} from '@/lib/scheduling/accompanimentFulfillment';
+import type { TraineeAccompanimentItem } from '@/lib/schemas/trainee_accompaniment';
 
 describe('poolGroupKey / poolGroupLabel (B-3)', () => {
   it('preferred_weekdays が空 → __none__ / "希望なし"', () => {
@@ -553,5 +559,108 @@ describe('PoolGroupedByWeekday — partnerLocationLabel 注入 (Wave 38)', () =>
     );
     const card = screen.getByTestId('card-pool-patient:p-norm');
     expect(card.getAttribute('data-partner-location-label')).toBe('');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// 新人同行で 2 人目を充足 → ②カードがプールから消える (augment 経由の統合確認)
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('PoolGroupedByWeekday — 新人同行による②カード消滅', () => {
+  function makeMultiPatient(id: string, name: string): PatientRead {
+    return {
+      id,
+      code: id,
+      name,
+      kana: null,
+      sex: null,
+      status: 'active',
+      insurance: null,
+      address: null,
+      lat: null,
+      lng: null,
+      primary_office_id: null,
+      sex_restriction: null,
+      requires_multiple_staff: true,
+      note: null,
+      weekly_pattern: { preferred_weekdays: ['Mon'] },
+      special_weekly_pattern: null,
+      special_week_active: [],
+      created_at: '',
+      updated_at: '',
+      deleted_at: null,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any;
+  }
+
+  function renderCardForTest(p: PatientRead, info: PoolCardSlotInfo) {
+    const id = buildPoolDraggableId(p.id, info.slotIndex);
+    return (
+      <div data-testid={`card-${id}`} data-patient-id={p.id}>
+        {p.name}
+      </div>
+    );
+  }
+
+  // slot 0 だけ配置済み (= ②カードが出る初期状態)。
+  const baseAssigned = () =>
+    new Map<string, Set<0 | 1>>([['p-multi', new Set<0 | 1>([0])]]);
+  // 患者 p-multi は月曜コース c1 (template t1) に単独配置されている。
+  const placed = new Map<string, FulfillmentVisit[]>([
+    ['p-multi', [{ id: 'v1', courseId: 'c1', courseTemplateId: 't1', weekday: 0 }]],
+  ]);
+
+  it('同行リンクなし → ②カードは表示される (regression)', () => {
+    const p = makeMultiPatient('p-multi', '鈴木');
+    const assigned = augmentAssignedSlotsWithAccompaniment(
+      baseAssigned(),
+      ['p-multi'],
+      placed,
+      buildAccompanimentLinkIndex([]),
+    );
+    render(
+      <PoolGroupedByWeekday
+        patients={[p]}
+        renderCard={renderCardForTest}
+        assignedSlotsByPatient={assigned}
+      />,
+    );
+    expect(screen.getByTestId('card-pool-patient:p-multi:slot:1')).toBeInTheDocument();
+  });
+
+  it('コースリンクで配置済み訪問が同行つき → ②カードが消える', () => {
+    const p = makeMultiPatient('p-multi', '鈴木');
+    const links: TraineeAccompanimentItem[] = [
+      {
+        id: '00000000-0000-0000-0000-000000000901',
+        trainee_staff_id: '00000000-0000-0000-0000-000000000001',
+        trainee_staff_name: '新人A',
+        target_type: 'course',
+        source: 'manual',
+        course: {
+          id: 'c1',
+          code: 'INAGE-A',
+          weekday: 0,
+          template_id: 't1',
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any,
+    ];
+    const assigned = augmentAssignedSlotsWithAccompaniment(
+      baseAssigned(),
+      ['p-multi'],
+      placed,
+      buildAccompanimentLinkIndex(links),
+    );
+    render(
+      <PoolGroupedByWeekday
+        patients={[p]}
+        renderCard={renderCardForTest}
+        assignedSlotsByPatient={assigned}
+      />,
+    );
+    // slot1 が上乗せされ、両 slot 埋まり扱い → カード 0 枚。
+    expect(screen.queryByTestId('card-pool-patient:p-multi:slot:0')).toBeNull();
+    expect(screen.queryByTestId('card-pool-patient:p-multi:slot:1')).toBeNull();
   });
 });

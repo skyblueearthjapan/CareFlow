@@ -130,6 +130,11 @@ export interface PatientCardProps {
    * カードと同じ内容を描く。ドラッグ中も表示情報を 1 つも落とさないための流用。
    */
   ghost?: boolean;
+  /**
+   * 新人同行モードでの選択状態。true のとき ring でハイライトする
+   * (タイムラインの訪問カード選択と同じ視覚言語 = ring-2 ring-brand-primary)。
+   */
+  selected?: boolean;
 }
 
 /**
@@ -149,6 +154,7 @@ export function PatientCard({
   compact = false,
   onCardClick,
   ghost = false,
+  selected = false,
 }: PatientCardProps) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     // ghost は DragOverlay 内の描画専用。実 draggable と id が衝突しないよう接頭辞を付け
@@ -244,6 +250,7 @@ export function PatientCard({
       style={style}
       title={slotTooltip}
       data-slot-index={isMultiSlotCard ? slotIndex : undefined}
+      data-accompaniment-selected={selected ? 'true' : undefined}
       data-testid={isMultiSlotCard ? `patient-card-slot-${slotIndex}-${patient.id}` : undefined}
       className={cn(
         'group flex items-start justify-between gap-1 border px-2 py-1 text-xs',
@@ -260,6 +267,8 @@ export function PatientCard({
             ),
         // W37 Phase 3-B: 2 名体制カードはペアで同色の左ボーダーを強調表示
         isMultiSlotCard && 'border-l-4 border-l-brand-primary',
+        // 新人同行モードの選択ハイライト (タイムラインカードと同言語)。
+        selected && 'z-[1] ring-2 ring-brand-primary',
         ghost
           ? 'h-full w-full cursor-grabbing shadow-[var(--shadow-md)]'
           : disabled

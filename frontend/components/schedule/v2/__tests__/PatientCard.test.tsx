@@ -260,3 +260,34 @@ describe('PatientCard — Wave 38 (相方の現在地併記)', () => {
     ).not.toBeInTheDocument();
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 新人同行モード: selected プロップによる選択ハイライト
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('PatientCard — selected (同行モード選択ハイライト)', () => {
+  it('selected=true → data-accompaniment-selected="true" + ring クラス', () => {
+    render(
+      <PatientCard
+        draggableId="pool-patient:test-patient-1:slot:1"
+        patient={makePatient({ slotIndex: 1, partnerAssigned: true })}
+        selected
+      />,
+    );
+    const card = screen.getByTestId('patient-card-slot-1-test-patient-1');
+    expect(card.getAttribute('data-accompaniment-selected')).toBe('true');
+    expect(card.className).toContain('ring-2');
+  });
+
+  it('selected 未指定 → data-accompaniment-selected は付かない', () => {
+    render(
+      <PatientCard
+        draggableId="pool-patient:test-patient-1:slot:1"
+        patient={makePatient({ slotIndex: 1, partnerAssigned: true })}
+      />,
+    );
+    const card = screen.getByTestId('patient-card-slot-1-test-patient-1');
+    expect(card.getAttribute('data-accompaniment-selected')).toBeNull();
+    expect(card.className).not.toContain('ring-2');
+  });
+});
