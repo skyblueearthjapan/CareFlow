@@ -74,8 +74,8 @@ async def _make_template(db, office: Office, label: str) -> CourseTemplate:
     return t
 
 
-async def _make_patient(db, name: str) -> Patient:
-    p = Patient(code=f"P-{uuid.uuid4().hex[:8]}", name=name)
+async def _make_patient(db, name: str, *, lat: float | None = None, lng: float | None = None) -> Patient:
+    p = Patient(code=f"P-{uuid.uuid4().hex[:8]}", name=name, lat=lat, lng=lng)
     db.add(p)
     await db.commit()
     await db.refresh(p)
@@ -407,6 +407,69 @@ async def test_put_week_overlap_same_time_422(client, db) -> None:
     detail = res.json()["detail"]
     assert "overlaps" in detail
     assert len(detail["overlaps"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_put_week_overlap_same_address_pair_allowed(client, db) -> None:
+    """同住所×同時刻ペア (座標バケット一致) は 90 分占有ルールの正当な同時刻
+    → 重複扱いせず 200 (PO報告 2026-07-12)。異住所の重複は従来どおり 422。"""
+    admin = await _make_user(db, "ta-ov-sa@example.com", "admin")
+    trainee = await _make_staff(db, "新人SA", is_trainee=True)
+    office = await _make_office(db)
+    c1 = await _make_course(db, office, weekday=0, code="A")
+    c2 = await _make_course(db, office, weekday=0, code="C")
+    # 同住所ペア (夫婦想定・同一座標)。
+    p1 = await _make_patient(db, "本名(夫)", lat=35.6001, lng=140.1001)
+    p2 = await _make_patient(db, "本名(妻)", lat=35.6001, lng=140.1001)
+    await _make_visit(
+        db, p1, visit_date=_week_date(0), start=time(10, 0), end=time(11, 0), course_id=c1.id
+    )
+    await _make_visit(
+        db, p2, visit_date=_week_date(0), start=time(10, 0), end=time(11, 0), course_id=c2.id
+    )
+
+    res = await client.put(
+        "/api/v1/trainee-accompaniments",
+        headers=_bearer(admin),
+        json={
+            "trainee_staff_id": str(trainee.id),
+            "iso_year": ISO_YEAR,
+            "iso_week": ISO_WEEK,
+            "course_ids": [str(c1.id), str(c2.id)],
+        },
+    )
+    assert res.status_code == 200, res.text
+    assert len(res.json()["items"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_put_week_overlap_different_address_still_422(client, db) -> None:
+    """座標があっても住所が異なれば従来どおり 422 (免除は同一バケットのみ)。"""
+    admin = await _make_user(db, "ta-ov-da@example.com", "admin")
+    trainee = await _make_staff(db, "新人DA", is_trainee=True)
+    office = await _make_office(db)
+    c1 = await _make_course(db, office, weekday=0, code="A")
+    c2 = await _make_course(db, office, weekday=0, code="C")
+    p1 = await _make_patient(db, "遠方A", lat=35.6001, lng=140.1001)
+    p2 = await _make_patient(db, "遠方B", lat=35.7001, lng=140.2001)
+    await _make_visit(
+        db, p1, visit_date=_week_date(0), start=time(10, 0), end=time(11, 0), course_id=c1.id
+    )
+    await _make_visit(
+        db, p2, visit_date=_week_date(0), start=time(10, 0), end=time(11, 0), course_id=c2.id
+    )
+
+    res = await client.put(
+        "/api/v1/trainee-accompaniments",
+        headers=_bearer(admin),
+        json={
+            "trainee_staff_id": str(trainee.id),
+            "iso_year": ISO_YEAR,
+            "iso_week": ISO_WEEK,
+            "course_ids": [str(c1.id), str(c2.id)],
+        },
+    )
+    assert res.status_code == 422, res.text
 
 
 @pytest.mark.asyncio

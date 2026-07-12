@@ -22,6 +22,11 @@ export interface AccompanimentWeekVisit {
   startMin: number | null;
   /** 終了 (0時起点の分)。null=時刻不明。 */
   endMin: number | null;
+  /**
+   * 同住所グループキー (buildSameAddressKey(lat,lng))。同住所×同時刻ペアの
+   * 90分占有ルールを重複判定から免除するために使う。null=座標なし。
+   */
+  sameAddressKey: string | null;
 }
 
 /**

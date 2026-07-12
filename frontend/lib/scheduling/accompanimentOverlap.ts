@@ -23,6 +23,13 @@ export interface AccompanimentOverlapEntry {
   patientName: string | null;
   /** コースラベル (例: '稲毛A')。メッセージ表示用。 */
   courseLabel: string | null;
+  /**
+   * 同住所グループキー (buildSameAddressKey(lat,lng)・null=座標なし)。
+   * 同住所×同時刻ペアは「90分の間に2人とも回る」運用ルールが既にあり
+   * (SAME_ADDRESS_PAIR_MIN_OCCUPANCY)、同行者も同じ玄関に居られるため
+   * 時間重複として**ブロックしない** (PO報告 2026-07-12)。
+   */
+  sameAddressKey?: string | null;
 }
 
 export interface AccompanimentOverlapPair {
@@ -100,6 +107,9 @@ export function computeAccompanimentOverlaps(
         const a = sorted[i]!;
         const b = sorted[j]!;
         if (!overlaps(a, b)) continue;
+        // 同住所ペア (90分占有ルール) は物理矛盾ではないため重複扱いしない。
+        // 両方に座標キーがあり一致する場合のみ免除 (キー欠落時は保守的にブロック)。
+        if (a.sameAddressKey != null && a.sameAddressKey === b.sameAddressKey) continue;
         overlapVisitIds.add(a.visitId);
         overlapVisitIds.add(b.visitId);
         pairs.push({ dayLabel: a.dayLabel, a, b });

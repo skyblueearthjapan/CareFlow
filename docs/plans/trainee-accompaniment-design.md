@@ -235,6 +235,11 @@ soft-delete 済み visit / course を参照する `trainee_accompaniments` 行�
   - `staff.is_trainee = true` でなければ 409（既存 companion PUT と同じ流儀）
   - 実効同行訪問集合（§1）を構築し、**時間重複があれば 422**。
     レスポンスに重複ペアの詳細（日付・時刻・患者名×2）を含めFEがそのまま表示できる形にする
+  - **同住所ペアの免除（2026-07-12 PO報告で追加）**: 重複ペアのうち患者座標バケット
+    （`SAME_ADDRESS_TOLERANCE`=0.001・FE `buildSameAddressKey` と同じ .3f 量子化）が
+    一致するものは**重複扱いしない**。同住所×同時刻は「90分の間に2人とも回る」
+    正当な運用（90分占有ルール）であり物理矛盾ではないため。座標が無い患者は
+    免除せず保守的にブロック。FE/BE 双方に同一の免除を実装
   - course_ids / visit_ids の存在・週一致・soft delete チェック
 - 置換範囲はその新人×その週のみ。defaults の扱い（曖昧性排除）:
   **キー省略 or null = 既定に一切触れない。配列が来た場合も「含まれた曜日の upsert のみ」**

@@ -201,6 +201,7 @@ export function useAccompanimentController({
         endMin: v.endMin,
         patientName: v.patientName,
         courseLabel: v.courseLabel,
+        sameAddressKey: v.sameAddressKey,
       });
     }
     return computeAccompanimentOverlaps(entries);

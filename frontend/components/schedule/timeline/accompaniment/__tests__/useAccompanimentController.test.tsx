@@ -35,6 +35,7 @@ function visit(
     courseLabel: '稲毛A',
     startMin: 600,
     endMin: 630,
+    sameAddressKey: null,
     ...over,
   };
 }

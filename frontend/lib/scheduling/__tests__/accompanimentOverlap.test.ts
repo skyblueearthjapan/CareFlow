@@ -31,6 +31,31 @@ describe('computeAccompanimentOverlaps', () => {
     expect(res.messages).toHaveLength(0);
   });
 
+  it('同住所ペア (sameAddressKey 一致) は同時刻でも重複としない (90分占有ルール)', () => {
+    const res = computeAccompanimentOverlaps([
+      entry({ visitId: 'a', startMin: 600, endMin: 660, sameAddressKey: '35.600:140.100' }),
+      entry({ visitId: 'b', startMin: 600, endMin: 660, sameAddressKey: '35.600:140.100' }),
+    ]);
+    expect(res.overlapVisitIds.size).toBe(0);
+    expect(res.messages).toHaveLength(0);
+  });
+
+  it('座標キーが片方 null なら免除しない (保守的にブロック)', () => {
+    const res = computeAccompanimentOverlaps([
+      entry({ visitId: 'a', startMin: 600, endMin: 660, sameAddressKey: null }),
+      entry({ visitId: 'b', startMin: 600, endMin: 660, sameAddressKey: '35.600:140.100' }),
+    ]);
+    expect(res.overlapVisitIds.size).toBe(2);
+  });
+
+  it('座標キーが異なれば従来どおり重複', () => {
+    const res = computeAccompanimentOverlaps([
+      entry({ visitId: 'a', startMin: 600, endMin: 660, sameAddressKey: '35.600:140.100' }),
+      entry({ visitId: 'b', startMin: 600, endMin: 660, sameAddressKey: '35.700:140.200' }),
+    ]);
+    expect(res.overlapVisitIds.size).toBe(2);
+  });
+
   it('同一日で時間帯が交差 → 両方を重複として検出', () => {
     const res = computeAccompanimentOverlaps([
       entry({ visitId: 'a', startMin: 600, endMin: 660, patientName: '山田', courseLabel: '稲毛A' }),

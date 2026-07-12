@@ -2742,9 +2742,11 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         courseLabel: templateLabelById.get(v.course_template_id) ?? null,
         startMin,
         endMin,
+        // 同住所×同時刻ペア (90分占有) を重複判定から免除するためのキー。
+        sameAddressKey: sameAddressKeyByPatientId.get(v.patient_id) ?? null,
       };
     });
-  }, [overviewVisits, resolveAccompanimentCourseId, templateLabelById]);
+  }, [overviewVisits, resolveAccompanimentCourseId, templateLabelById, sameAddressKeyByPatientId]);
 
   const weekdayDateLabel = useCallback(
     (weekday: number): string => {

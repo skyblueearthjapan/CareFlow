@@ -432,11 +432,31 @@ async def load_effective_visits(
     return list(seen.values())
 
 
+def _same_address_key(visit: Visit) -> str | None:
+    """患者座標の同住所バケットキー (FE ``buildSameAddressKey`` と同じ .3f 量子化).
+
+    同住所×同時刻ペアは「90分の間に 2 人とも回る」運用ルール
+    (``SAME_ADDRESS_PAIR_MIN_OCCUPANCY`` / 同住所ペア占有) が既に存在し、
+    同行者も同じ玄関に居られるため時間重複としてブロックしない (PO 2026-07-12)。
+    座標が無い患者は None (= 免除しない・保守的にブロック)。
+    """
+    patient = visit.patient
+    if patient is None:
+        return None
+    lat = patient.lat
+    lng = patient.lng
+    if lat is None or lng is None:
+        return None
+    return f"{lat:.3f}:{lng:.3f}"
+
+
 def find_time_overlaps(visits: list[Visit]) -> list[tuple[Visit, Visit]]:
     """同一日で時間帯 (start〜end) が交差する visit ペアを列挙する.
 
     同一人物 (新人) が同時刻に 2 箇所は物理的に不可能 → 確定ブロック (422) の根拠。
     区間交差の定義: ``a.start < b.end AND b.start < a.end``。
+    例外: **同住所ペア** (患者座標バケット一致) は 90 分占有ルールの正当な同時刻
+    のため重複扱いしない (FE ``computeAccompanimentOverlaps`` と同一の免除)。
     """
     by_date: dict[date, list[Visit]] = defaultdict(list)
     for v in visits:
@@ -448,6 +468,10 @@ def find_time_overlaps(visits: list[Visit]) -> list[tuple[Visit, Visit]]:
         for i in range(len(group)):
             for j in range(i + 1, len(group)):
                 a, b = group[i], group[j]
-                if a.start_time < b.end_time and b.start_time < a.end_time:
-                    pairs.append((a, b))
+                if not (a.start_time < b.end_time and b.start_time < a.end_time):
+                    continue
+                ka = _same_address_key(a)
+                if ka is not None and ka == _same_address_key(b):
+                    continue  # 同住所ペア (90分占有) — 物理矛盾ではない。
+                pairs.append((a, b))
     return pairs
