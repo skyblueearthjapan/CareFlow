@@ -1140,6 +1140,41 @@ function PairBox({
 }
 
 /**
+ * 📝 メモチップ行 — 開始=終了 (ゼロ長) のイベントを列上部にまとめて表示する。
+ *
+ * カイポケ個別業務取込 (kaipoke-event-inbound-design.md E-3) のメモ系
+ * (例: 00:00〜00:00「渡辺様：COCOLO3号館」) の受け皿。時間帯を持たないため
+ * イベント帯にならず、従来は不可視だった。hover で全文 (title 属性)。
+ */
+export function MemoChipsRow({ events, colKey }: { events: EventRead[]; colKey: string }) {
+  const memos = events.filter((ev) => {
+    const s = parseHM(ev.start_time);
+    const e = parseHM(ev.end_time);
+    return s !== null && e !== null && e === s;
+  });
+  if (memos.length === 0) return null;
+  return (
+    <div
+      data-testid={`tl-memos-${colKey}`}
+      className="absolute inset-x-1 top-0.5 z-[3] flex flex-wrap gap-1"
+    >
+      {memos.map((ev) => (
+        <span
+          key={`memo-${ev.id}`}
+          data-testid={`tl-memo-${colKey}-${ev.id}`}
+          className="inline-flex max-w-full items-center gap-1 truncate rounded-full border bg-bg-base px-2 py-0.5 text-[10px] font-medium shadow-[var(--shadow-sm)]"
+          style={{ color: 'var(--sched-event-ink)', borderColor: 'var(--sched-event-ln)' }}
+          title={`📝 メモ: ${ev.title || ev.type}${ev.note ? `\n備考: ${ev.note}` : ''}\n（時間を持たない予定・カイポケ取込）`}
+        >
+          <span className="shrink-0">📝</span>
+          <span className="min-w-0 truncate">{ev.title || ev.type}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/**
  * イベント帯 1 本の描画 (表示専用/クリック編集/DnD 共用ビュー)。
  * drag 指定時は掴んだ帯自体が transform で動く (T-6 パリティ②)。
  */
@@ -1412,6 +1447,11 @@ function TimelineColumn({
           <EventBandView key={`ev-${ev.id}`} ev={ev} col={col} onEventClick={onEventClick} />
         ),
       )}
+
+      {/* 📝 メモチップ (開始=終了のゼロ長イベント・カイポケ個別業務取込のメモ系)。
+          帯 (EventBandView) は e<=s で描かれないため、列上部にチップで表示する。
+          割当への影響はゼロ (Layer3 の重複判定はゼロ長と重ならない)。表示専用。 */}
+      <MemoChipsRow events={col.staffEvents} colKey={col.key} />
 
       {/* 訪問カード (単独 or 同住所90分ペアボックス)。DnD 有効時は単独カードが draggable。 */}
       {items.map((it) =>
