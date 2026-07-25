@@ -30,6 +30,13 @@ from app.schemas.integrations import (
     CorrectionItemUpdate,
     CorrectionSheetRead,
     DiffAccepted,
+    EventsInboundApplyItemRead,
+    EventsInboundApplyRequest,
+    EventsInboundApplyResult,
+    EventsInboundChange,
+    EventsInboundPreviewRead,
+    EventsInboundPreviewRequest,
+    EventsInboundUnmatchedRead,
     ExpandStatusRead,
     GeneratedCsvRead,
     GeocodingCacheRead,
@@ -1966,3 +1973,265 @@ async def bulk_update_correction_items(
     res = await db.execute(stmt)
     await _commit_or_409(db)
     return {"updated": int(res.rowcount or 0)}
+
+
+# --- イベント取り込み (個別業務・kaipoke-event-inbound-design.md E-1) --------
+
+
+_EVENTS_GATE_DETAIL = (
+    "この週はまだカイポケへ反映（実apply）されていません。先に④反映を実行してください。"
+)
+
+
+def _hhmm(t) -> str:
+    return f"{t.hour:02d}:{t.minute:02d}"
+
+
+@router.post(
+    "/events-inbound-preview",
+    response_model=EventsInboundPreviewRead,
+    summary="Fetch kaipoke individual tasks and build an events diff plan (admin)",
+)
+async def events_inbound_preview(
+    payload: EventsInboundPreviewRequest,
+    db: DbDep,
+    user: Annotated[User, Depends(require_role("admin"))],
+    kaipoke: Annotated[KaipokeClient, Depends(_kaipoke_dep)],
+) -> EventsInboundPreviewRead:
+    """カイポケ個別業務(イベント)を取得して staff_events との差分計画を返す。
+
+    read-only (staff_events への書込なし・シート永続化なし。KaipokeJob の監査
+    記録のみ作成)。RPA 同期取得のため ~60-90s かかる。
+    取り込みゲート = 訪問取り込みと同一 (対象週に実apply 記録が必要)。
+    """
+    from app.services.kaipoke.events_inbound import (
+        EventsFetchError,
+        build_events_plan,
+        fetch_week_tasks,
+    )
+    from app.services.kaipoke.inbound import real_apply_record
+
+    if payload.week_start.weekday() != 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="weekStart は月曜日を指定してください",
+        )
+    record = await real_apply_record(db, payload.week_start)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=_EVENTS_GATE_DETAIL,
+        )
+
+    credentials = await _kaipoke_credentials(db)
+    now = datetime.now(UTC)
+    job = KaipokeJob(
+        job_type="fetch",
+        week_start=payload.week_start,
+        params={"op": "events-preview", "week_start": payload.week_start.isoformat()},
+        status="running",
+        started_at=now,
+        created_by_user_id=user.id,
+    )
+    db.add(job)
+    await db.flush()
+
+    try:
+        result = await fetch_week_tasks(kaipoke, payload.week_start, credentials)
+    except KaipokeBusyError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="kaipoke busy"
+        ) from exc
+    except (KaipokeApiError, EventsFetchError) as exc:
+        job.status = "failed"
+        job.completed_at = datetime.now(UTC)
+        job.result_summary = {"error": str(exc)}
+        await _commit_or_409(db)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
+        ) from exc
+
+    plan = await build_events_plan(
+        db, week_start=payload.week_start, tasks=result["tasks"]
+    )
+
+    adds = sum(1 for c in plan.changes if c.action == "add")
+    updates = sum(1 for c in plan.changes if c.action == "update")
+    deletes = sum(1 for c in plan.changes if c.action == "delete")
+    job.status = "completed"
+    job.completed_at = datetime.now(UTC)
+    job.result_summary = {
+        "fetched": plan.fetched_total,
+        "adds": adds,
+        "updates": updates,
+        "deletes": deletes,
+        "unmatched": sum(plan.unmatched.values()),
+        "sunday_skipped": plan.sunday_skipped,
+    }
+    await _commit_or_409(db)
+
+    return EventsInboundPreviewRead(
+        week_start=plan.week_start,
+        week_end=plan.week_end,
+        fetched_total=plan.fetched_total,
+        sunday_skipped=plan.sunday_skipped,
+        memo_count=plan.memo_count,
+        adds=adds,
+        updates=updates,
+        deletes=deletes,
+        changes=[
+            EventsInboundChange(
+                action=c.action,
+                external_id=c.external_id,
+                staff_id=c.staff_id,
+                staff_name=c.staff_name,
+                target_date=c.date,
+                start=_hhmm(c.start),
+                end=_hhmm(c.end),
+                title=c.title,
+                is_memo=c.is_memo,
+                before_start=_hhmm(c.before_start) if c.before_start else None,
+                before_end=_hhmm(c.before_end) if c.before_end else None,
+                before_title=c.before_title,
+            )
+            for c in plan.changes
+        ],
+        unmatched=[
+            EventsInboundUnmatchedRead(staff_name=name, count=count)
+            for name, count in sorted(plan.unmatched.items())
+        ],
+    )
+
+
+@router.post(
+    "/events-inbound-apply",
+    response_model=EventsInboundApplyResult,
+    summary="Apply an events diff plan to staff_events (admin)",
+)
+async def events_inbound_apply(
+    payload: EventsInboundApplyRequest,
+    db: DbDep,
+    user: Annotated[User, Depends(require_role("admin"))],
+) -> EventsInboundApplyResult:
+    """プレビューの changes をエコーバックで受けて staff_events へ適用する。
+
+    dry_run 既定 true (無書込・明示 rollback)。upsert 意味論のため stale 耐性あり。
+    source='kaipoke' の行のみ管理 (手動イベントには触れない)。
+    """
+    from datetime import time as _time
+
+    from app.services.kaipoke.events_inbound import (
+        EventChange,
+        apply_events_changes,
+    )
+    from app.services.kaipoke.inbound import real_apply_record
+
+    if payload.week_start.weekday() != 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="weekStart は月曜日を指定してください",
+        )
+    record = await real_apply_record(db, payload.week_start)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=_EVENTS_GATE_DETAIL,
+        )
+    if not payload.changes:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="適用対象の変更がありません（先にプレビューを実行してください）",
+        )
+
+    def _parse(hhmm: str) -> _time:
+        hh, mm = hhmm.split(":")
+        return _time(int(hh), int(mm))
+
+    changes = [
+        EventChange(
+            action=c.action,
+            external_id=c.external_id,
+            staff_id=c.staff_id,
+            staff_name=c.staff_name,
+            date=c.target_date,
+            start=_parse(c.start),
+            end=_parse(c.end),
+            title=c.title[:255],
+        )
+        for c in payload.changes
+    ]
+
+    now = datetime.now(UTC)
+    summary = await apply_events_changes(
+        db,
+        week_start=payload.week_start,
+        changes=changes,
+        dry_run=payload.dry_run,
+        now=now,
+    )
+
+    job_id: UUID | None = None
+    if payload.dry_run:
+        # dry-run は mutate しない (apply_events_changes も no-write)。明示 rollback。
+        await db.rollback()
+    else:
+        job = KaipokeJob(
+            job_type="fetch",
+            week_start=payload.week_start,
+            params={
+                "op": "apply-events",
+                "week_start": payload.week_start.isoformat(),
+                "changes": len(payload.changes),
+            },
+            status="completed",
+            started_at=now,
+            completed_at=now,
+            created_by_user_id=user.id,
+        )
+        job.result_summary = summary.as_dict()
+        db.add(job)
+        await db.flush()
+        if summary.failed > 0:
+            from app.services.checkin.notify import (
+                _active_admin_manager_users,
+                _create_idempotent,
+            )
+
+            users = await _active_admin_manager_users(db)
+            await _create_idempotent(
+                db,
+                users=users,
+                type_="kaipoke_import_result",
+                reference_type="kaipoke_import",
+                reference_id=job.id,
+                title=f"イベント取り込みに要確認（失敗{summary.failed}件）",
+                body=(
+                    f"週 {payload.week_start.isoformat()} のイベント取り込みで "
+                    f"失敗{summary.failed}件があります。カイポケ連携画面で内訳を確認してください。"
+                ),
+            )
+        await _commit_or_409(db)
+        job_id = job.id
+
+    return EventsInboundApplyResult(
+        job_id=job_id,
+        dry_run=payload.dry_run,
+        added=summary.added,
+        updated=summary.updated,
+        deleted=summary.deleted,
+        skipped=summary.skipped,
+        failed=summary.failed,
+        results=[
+            EventsInboundApplyItemRead(
+                action=r.action,
+                external_id=r.external_id,
+                staff_name=r.staff_name,
+                target_date=r.date,
+                title=r.title,
+                outcome=r.outcome,
+                detail=r.detail,
+            )
+            for r in summary.results
+        ],
+    )

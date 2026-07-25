@@ -168,5 +168,22 @@ class StaffEvent(Base, TimestampMixin):
     ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     title: Mapped[str | None] = mapped_column(String(255), nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # イベント取り込み (kaipoke-event-inbound-design.md §2・mig 0062):
+    # source='kaipoke' はカイポケ個別業務取り込みが管理する行 (手動='manual' には触れない)。
+    # external_id = "{個別業務ID}:{職員内部ID}:{YYYY-MM-DD}" (複合・冪等 upsert キー)。
+    source: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="manual", default="manual"
+    )
+    external_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
-    __table_args__ = (Index("ix_staff_events_when", "staff_id", "starts_at"),)
+    __table_args__ = (
+        Index("ix_staff_events_when", "staff_id", "starts_at"),
+        Index(
+            "uq_staff_events_source_external",
+            "source",
+            "external_id",
+            unique=True,
+            postgresql_where=text("external_id IS NOT NULL"),
+            sqlite_where=text("external_id IS NOT NULL"),
+        ),
+    )

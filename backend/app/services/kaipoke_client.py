@@ -91,6 +91,16 @@ class KaipokeClient:
     async def diff(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         return await self._request("POST", "/api/diff", json=payload)
 
+    async def individual_tasks(
+        self, payload: Mapping[str, Any], *, timeout: float | None = None
+    ) -> dict[str, Any]:
+        """個別業務(イベント)取得 (read-only・同期 ~60-90s)。
+
+        職員スケジュール画面(週間)の btnIndividual 行を返す。呼び出し側で
+        timeout を延長すること (既定 30s では足りない)。
+        """
+        return await self._request("POST", "/api/individual-tasks", json=payload, timeout=timeout)
+
     async def login_test(
         self, payload: Mapping[str, Any], *, timeout: float | None = None
     ) -> dict[str, Any]:

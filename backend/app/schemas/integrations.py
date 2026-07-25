@@ -352,3 +352,84 @@ class CorrectionBulkSelect(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
     ids: list[UUID]
     patch: CorrectionItemUpdate
+
+
+# --- イベント取り込み (個別業務・kaipoke-event-inbound-design.md E-1) --------
+
+
+class EventsInboundPreviewRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    week_start: date = Field(alias="weekStart")
+
+
+class EventsInboundChange(BaseModel):
+    """プレビュー→適用でエコーバックされる1変更。
+
+    apply は upsert 意味論 (add=既存なら update / update=消えていれば add /
+    delete=消えていれば skip) のため、プレビュー後にカイポケ側が動いても安全。
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    action: Literal["add", "update", "delete"]
+    external_id: str = Field(alias="externalId", max_length=40)
+    staff_id: UUID = Field(alias="staffId")
+    staff_name: str = Field(default="", alias="staffName")
+    target_date: date = Field(alias="date")
+    start: str = Field(pattern=r"^\d{2}:\d{2}$")
+    end: str = Field(pattern=r"^\d{2}:\d{2}$")
+    title: str = Field(default="", max_length=255)
+    is_memo: bool = Field(default=False, alias="isMemo")
+    before_start: str | None = Field(default=None, alias="beforeStart")
+    before_end: str | None = Field(default=None, alias="beforeEnd")
+    before_title: str | None = Field(default=None, alias="beforeTitle")
+
+
+class EventsInboundUnmatchedRead(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    staff_name: str = Field(alias="staffName")
+    count: int
+
+
+class EventsInboundPreviewRead(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    week_start: date = Field(alias="weekStart")
+    week_end: date = Field(alias="weekEnd")
+    fetched_total: int = Field(alias="fetchedTotal")
+    sunday_skipped: int = Field(alias="sundaySkipped")
+    memo_count: int = Field(alias="memoCount")
+    adds: int = 0
+    updates: int = 0
+    deletes: int = 0
+    changes: list[EventsInboundChange] = Field(default_factory=list)
+    unmatched: list[EventsInboundUnmatchedRead] = Field(default_factory=list)
+
+
+class EventsInboundApplyRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    week_start: date = Field(alias="weekStart")
+    # 既定は dry_run=True (安全側)。実適用は明示的に dryRun:false。
+    dry_run: bool = Field(default=True, alias="dryRun")
+    changes: list[EventsInboundChange]
+
+
+class EventsInboundApplyItemRead(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    action: str
+    external_id: str = Field(alias="externalId")
+    staff_name: str = Field(alias="staffName")
+    target_date: str = Field(alias="date")
+    title: str = ""
+    outcome: Literal["added", "updated", "deleted", "skipped", "failed"]
+    detail: str = ""
+
+
+class EventsInboundApplyResult(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    job_id: UUID | None = Field(default=None, alias="jobId")
+    dry_run: bool = Field(alias="dryRun")
+    added: int = 0
+    updated: int = 0
+    deleted: int = 0
+    skipped: int = 0
+    failed: int = 0
+    results: list[EventsInboundApplyItemRead] = Field(default_factory=list)
