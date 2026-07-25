@@ -684,6 +684,11 @@ def _has_event_overlap_with_buffer(
         for event in events:
             ev_start = _strip_tz(event.starts_at)
             ev_end = _strip_tz(event.ends_at)
+            if ev_start == ev_end:
+                # ゼロ長イベント (カイポケ個別業務取込のメモ系・00:00〜00:00 等) は
+                # 実時間を持たないため、バッファ付き判定でも重複扱いしない
+                # (kaipoke-event-inbound-design.md E-3)。
+                continue
             ev_start_buffered = ev_start - buf
             ev_end_buffered = ev_end + buf
             if ev_start_buffered < visit_end_dt and ev_end_buffered > visit_start_dt:

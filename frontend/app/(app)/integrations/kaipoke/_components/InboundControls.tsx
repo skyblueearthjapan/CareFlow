@@ -369,8 +369,8 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
                 </span>
               )}
               <span className="block text-error">
-                らく助のスケジュールに実際に書き込まれます。この操作は Ctrl+Z
-                の対象外です（定期パターンは変わりません）。
+                らく助のスケジュールに実際に書き込まれます。この操作は Ctrl+Z の対象外です
+                {hasSelectedDays ? '（定期パターンは変わりません）' : ''}。
               </span>
             </DialogDescription>
           </DialogHeader>

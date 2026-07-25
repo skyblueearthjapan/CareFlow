@@ -594,6 +594,8 @@ export function useApplyEventsInbound() {
         body: JSON.stringify(payload),
         accessToken,
         refreshToken,
+        // apply は DB 書込のみ (RPA 非経由) だが、明示タイムアウトで preview と揃える。
+        signal: AbortSignal.timeout(30_000),
       }),
     onSuccess: (res) => {
       if (res.dryRun) return;

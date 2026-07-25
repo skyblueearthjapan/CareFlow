@@ -226,7 +226,8 @@ async def build_events_plan(
 
     for external_id, row in existing.items():
         if external_id not in desired:
-            staff_row = await db.get(Staff, row.staff_id)
+            # staff_map (名寄せ用に全スタッフをロード済み) を流用して N+1 を避ける
+            staff_row = staff_map.get(row.staff_id)
             plan.changes.append(
                 EventChange(
                     action="delete",
