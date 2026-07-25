@@ -23,6 +23,10 @@ import type {
   DiffInboundRequest,
   DiffLocalRequest,
   DiffRequest,
+  EventsInboundApplyRequest,
+  EventsInboundApplyResult,
+  EventsInboundPreview,
+  EventsInboundPreviewRequest,
   ExpandRequest,
   ExportRequest,
   GeocodingCache,
@@ -547,5 +551,55 @@ export function useTestKaipokeCredentials() {
         refreshToken,
         signal: AbortSignal.timeout(90_000),
       }),
+  });
+}
+
+// --- イベント取り込み (個別業務・kaipoke-event-inbound-design.md E-2) -------
+
+/**
+ * カイポケ個別業務(イベント)を取得して staff_events との差分計画を返す。
+ * RPA 同期取得のため 〜2分かかる (訪問の diff-inbound と直列で使う)。
+ */
+export function useEventsInboundPreview() {
+  const { data: session } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+
+  return useMutation<EventsInboundPreview, Error, EventsInboundPreviewRequest>({
+    mutationFn: (payload) =>
+      fetcher<EventsInboundPreview>('/api/v1/integrations/events-inbound-preview', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+        accessToken,
+        refreshToken,
+        signal: AbortSignal.timeout(180_000),
+      }),
+  });
+}
+
+/**
+ * プレビューの changes をエコーバックして staff_events へ適用する (dry_run 既定 true)。
+ * 実適用後は staff-events 系クエリを invalidate してイベント帯を最新化する。
+ */
+export function useApplyEventsInbound() {
+  const { data: session } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+  const qc = useQueryClient();
+
+  return useMutation<EventsInboundApplyResult, Error, EventsInboundApplyRequest>({
+    mutationFn: (payload) =>
+      fetcher<EventsInboundApplyResult>('/api/v1/integrations/events-inbound-apply', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+        accessToken,
+        refreshToken,
+      }),
+    onSuccess: (res) => {
+      if (res.dryRun) return;
+      void qc.invalidateQueries({ queryKey: ['integrations', 'kaipoke', 'jobs'] });
+      // イベント帯 (スケジュール画面) を最新化する。
+      void qc.invalidateQueries({ queryKey: ['staff', 'events'] });
+    },
   });
 }

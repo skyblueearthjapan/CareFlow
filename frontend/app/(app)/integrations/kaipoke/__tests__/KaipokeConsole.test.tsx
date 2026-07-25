@@ -25,10 +25,12 @@ vi.mock('@/lib/queries/integrations', () => ({
   useInboundEligibility: () => ({ ...idleQuery, data: { eligible: false } }),
   useStartDiffInbound: () => ({ ...idleMutation, error: null }),
   useApplyInbound: () => ({ ...idleMutation, error: null }),
+  useEventsInboundPreview: () => ({ ...idleMutation, error: null }),
+  useApplyEventsInbound: () => ({ ...idleMutation, error: null }),
   useStopJob: () => ({ ...idleMutation }),
 }));
 
-vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() } }));
 
 // LiveMonitorCard は noVNC 探針 (Image/URL) を持つため、ここではスタブして副作用を避ける。
 vi.mock('../_components/LiveMonitorCard', () => ({

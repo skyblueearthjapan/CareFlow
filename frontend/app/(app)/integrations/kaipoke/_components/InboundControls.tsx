@@ -17,7 +17,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import type { ApplyInboundResultItem } from '@/lib/schemas/integration';
+import type {
+  ApplyInboundResultItem,
+  EventsInboundApplyResult,
+  EventsInboundChange,
+  EventsInboundPreview,
+} from '@/lib/schemas/integration';
 
 import { type InboundVm, WEEKDAYS, fmtWeekLabel } from './useInbound';
 
@@ -25,8 +30,15 @@ const OUTCOME_META: Record<string, { label: string; cls: string }> = {
   cancelled: { label: 'キャンセル', cls: 'bg-error-bg text-error' },
   updated: { label: '更新', cls: 'bg-success-bg text-success' },
   added: { label: '追加', cls: 'bg-info-bg text-info' },
+  deleted: { label: '削除', cls: 'bg-error-bg text-error' },
   skipped: { label: 'スキップ', cls: 'bg-bg-muted text-text-muted' },
   failed: { label: '失敗', cls: 'bg-error-bg text-error' },
+};
+
+const EVENT_ACTION_META: Record<string, { label: string; cls: string }> = {
+  add: { label: '追加', cls: 'bg-info-bg text-info' },
+  update: { label: '変更', cls: 'bg-warning-bg text-warning-strong' },
+  delete: { label: '削除', cls: 'bg-error-bg text-error' },
 };
 
 type WeekOption = 'this' | 'next';
@@ -60,7 +72,18 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
     runApply,
     hasSelectedDays,
     selectedDayLabels,
+    applyEvents,
+    eventsPlan,
+    eventsError,
+    eventsDryRunResult,
+    hasEventChanges,
+    fetching,
   } = vm;
+
+  const applying = applyInbound.isPending || applyEvents.isPending;
+  const canDryRun = hasSelectedDays || hasEventChanges;
+  const showApplyArea = sheetId !== null || eventsPlan !== null;
+  const hasDryRun = dryRunResult !== null || eventsDryRunResult !== null;
 
   return (
     <div>
@@ -124,20 +147,22 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
 
       {/* ── 操作エリア（eligible でない場合はグレーアウト） ── */}
       <div className={eligible ? '' : 'pointer-events-none opacity-40'}>
-        {/* ❶ 差分取得 */}
+        {/* ❶ 差分取得（訪問 → イベントを直列で取得） */}
         <div className="mb-5 space-y-2">
           <Button
             size="sm"
             onClick={() => void runDiff()}
-            disabled={!credentialsConfigured || !eligible || diffInbound.isPending || busy}
+            disabled={!credentialsConfigured || !eligible || fetching || busy}
           >
-            {diffInbound.isPending
-              ? 'カイポケ現況を取得中…（約1分）'
-              : '❶ カイポケの現況を取得して差分を見る'}
+            {fetching
+              ? diffInbound.isPending
+                ? '訪問の現況を取得中…（1/2）'
+                : 'イベントの現況を取得中…（2/2）'
+              : '❶ カイポケの現況を取得して差分を見る（訪問＋イベント）'}
           </Button>
-          {diffInbound.isPending && (
+          {fetching && (
             <p className="text-xs text-text-muted">
-              カイポケからエクスポートして差分を計算しています。約1分かかります。
+              カイポケから訪問とイベント（個別業務）を順番に取得しています。合計で約2分かかります。
             </p>
           )}
           {sheetId && summary !== null && (
@@ -160,13 +185,27 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
           )}
           {diffInbound.isError && (
             <Alert variant="destructive">
-              <AlertTitle>差分取得に失敗しました</AlertTitle>
+              <AlertTitle>訪問の差分取得に失敗しました</AlertTitle>
               <AlertDescription>
                 {diffInbound.error instanceof Error ? diffInbound.error.message : '不明なエラー'}
               </AlertDescription>
             </Alert>
           )}
+          {eventsError && (
+            <Alert variant="destructive">
+              <AlertTitle>イベント（個別業務）の取得に失敗しました</AlertTitle>
+              <AlertDescription>
+                {eventsError}
+                {sheetId ? ' — 訪問の差分は取得済みのため、訪問だけ取り込めます。' : ''}
+              </AlertDescription>
+            </Alert>
+          )}
         </div>
+
+        {/* ── イベント（個別業務）差分 ── */}
+        {eventsPlan && (
+          <EventsPlanSection plan={eventsPlan} />
+        )}
 
         {/* ❷ 曜日選択 */}
         {sheetId && (
@@ -219,38 +258,38 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
           </div>
         )}
 
-        {/* ❸ dry-run + 実取り込み */}
-        {sheetId && (
+        {/* ❸ dry-run + 実取り込み（訪問＋イベントを直列適用） */}
+        {showApplyArea && (
           <div className="space-y-3">
             <div className="flex flex-wrap items-center gap-2">
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() => void runApply(true)}
-                disabled={
-                  !credentialsConfigured || !hasSelectedDays || applyInbound.isPending || busy
-                }
+                disabled={!credentialsConfigured || !canDryRun || applying || busy}
               >
-                {applyInbound.isPending && !dryRunResult ? '実行中…' : '❸ dry-run で確認'}
+                {applying && !hasDryRun ? '実行中…' : '❸ dry-run で確認'}
               </Button>
-              {dryRunResult && (
+              {hasDryRun && (
                 <Button
                   variant="destructive"
                   size="sm"
                   onClick={() => setConfirm(true)}
-                  disabled={busy || applyInbound.isPending}
+                  disabled={busy || applying}
                 >
-                  選んだ曜日を取り込む
+                  取り込む
                 </Button>
               )}
-              {!hasSelectedDays && (
-                <span className="text-xs text-text-muted">曜日を1つ以上選択してください</span>
+              {!canDryRun && (
+                <span className="text-xs text-text-muted">
+                  取り込む対象がありません（訪問は曜日を選択・イベントは差分があるときに有効）
+                </span>
               )}
             </div>
 
             {applyInbound.isError && (
               <Alert variant="destructive">
-                <AlertTitle>実行に失敗しました</AlertTitle>
+                <AlertTitle>訪問の実行に失敗しました</AlertTitle>
                 <AlertDescription>
                   {applyInbound.error instanceof Error
                     ? applyInbound.error.message
@@ -258,8 +297,16 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
                 </AlertDescription>
               </Alert>
             )}
+            {applyEvents.isError && (
+              <Alert variant="destructive">
+                <AlertTitle>イベントの実行に失敗しました</AlertTitle>
+                <AlertDescription>
+                  {applyEvents.error instanceof Error ? applyEvents.error.message : '不明なエラー'}
+                </AlertDescription>
+              </Alert>
+            )}
 
-            {/* dry-run 結果テーブル */}
+            {/* dry-run 結果テーブル（訪問） */}
             {dryRunResult && (
               <div className="overflow-x-auto rounded-lg border border-border-default">
                 <table className="min-w-full text-xs">
@@ -281,11 +328,16 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
                   </tbody>
                 </table>
                 <div className="border-t border-border-default bg-bg-muted px-3 py-2 text-xs text-text-secondary">
-                  キャンセル: {dryRunResult.cancelled} / 更新: {dryRunResult.updated} / 追加:{' '}
-                  {dryRunResult.added} / スキップ: {dryRunResult.skipped} / 失敗:{' '}
+                  訪問 — キャンセル: {dryRunResult.cancelled} / 更新: {dryRunResult.updated} /
+                  追加: {dryRunResult.added} / スキップ: {dryRunResult.skipped} / 失敗:{' '}
                   {dryRunResult.failed}
                 </div>
               </div>
+            )}
+
+            {/* dry-run 結果テーブル（イベント） */}
+            {eventsDryRunResult && (
+              <EventsDryRunTable result={eventsDryRunResult} />
             )}
           </div>
         )}
@@ -295,15 +347,27 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
       <Dialog open={confirm} onOpenChange={(o) => !o && setConfirm(false)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>選んだ曜日を取り込みますか？</DialogTitle>
+            <DialogTitle>カイポケの確定内容を取り込みますか？</DialogTitle>
             <DialogDescription className="space-y-2">
               <span className="block">
                 対象週:{' '}
                 <span className="font-medium text-text-primary">{fmtWeekLabel(weekStart)}</span>
               </span>
-              <span className="block">
-                対象曜日: <span className="font-medium text-text-primary">{selectedDayLabels}</span>
-              </span>
+              {hasSelectedDays && (
+                <span className="block">
+                  訪問の対象曜日:{' '}
+                  <span className="font-medium text-text-primary">{selectedDayLabels}</span>
+                </span>
+              )}
+              {hasEventChanges && eventsPlan && (
+                <span className="block">
+                  イベント:{' '}
+                  <span className="font-medium text-text-primary">
+                    追加 {eventsPlan.adds} / 変更 {eventsPlan.updates} / 削除 {eventsPlan.deletes}
+                    （週全体）
+                  </span>
+                </span>
+              )}
               <span className="block text-error">
                 らく助のスケジュールに実際に書き込まれます。この操作は Ctrl+Z
                 の対象外です（定期パターンは変わりません）。
@@ -314,11 +378,7 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
             <Button variant="outline" onClick={() => setConfirm(false)}>
               やめる
             </Button>
-            <Button
-              variant="destructive"
-              disabled={applyInbound.isPending}
-              onClick={() => void runApply(false)}
-            >
+            <Button variant="destructive" disabled={applying} onClick={() => void runApply(false)}>
               取り込む
             </Button>
           </DialogFooter>
@@ -347,6 +407,136 @@ function SummaryChip({
     <span className={`inline-flex items-center gap-1 rounded px-2 py-1 text-xs ${cls}`}>
       {label} <span className="font-mono font-bold tabular-nums">{value}</span>
     </span>
+  );
+}
+
+/** イベント（個別業務）差分のプレビューセクション。週丸ごと取り込み（曜日絞りなし）。 */
+function EventsPlanSection({ plan }: { plan: EventsInboundPreview }) {
+  const hasChanges = plan.changes.length > 0;
+  return (
+    <div className="mb-5 space-y-2" data-testid="events-plan-section">
+      <p className="text-xs font-medium text-text-secondary">
+        イベント（個別業務） — 休み・面談・会議など職員の予定（週全体をまとめて取り込み）
+      </p>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <SummaryChip label="追加" value={plan.adds} tone="success" />
+        <SummaryChip label="変更" value={plan.updates} tone="warning" />
+        <SummaryChip label="削除" value={plan.deletes} tone="error" />
+        {plan.memoCount > 0 && (
+          <span className="inline-flex items-center gap-1 rounded bg-bg-muted px-2 py-1 text-xs text-text-secondary">
+            📝 メモ <span className="font-mono font-bold tabular-nums">{plan.memoCount}</span>
+          </span>
+        )}
+      </div>
+      {plan.unmatched.length > 0 && (
+        <p className="text-xs text-text-muted">
+          らく助未登録のため対象外:{' '}
+          {plan.unmatched.map((u) => `${u.staffName}（${u.count}件）`).join('・')}
+        </p>
+      )}
+      {!hasChanges && (
+        <p className="text-xs text-text-muted">イベントの差分はありません（らく助と一致）。</p>
+      )}
+      {hasChanges && (
+        <div className="overflow-x-auto rounded-lg border border-border-default">
+          <table className="min-w-full text-xs">
+            <thead>
+              <tr className="border-b border-border-default bg-bg-muted">
+                <th className="px-3 py-2 text-left font-medium text-text-secondary">職員</th>
+                <th className="px-3 py-2 text-left font-medium text-text-secondary">日付</th>
+                <th className="px-3 py-2 text-left font-medium text-text-secondary">時間</th>
+                <th className="px-3 py-2 text-left font-medium text-text-secondary">内容</th>
+                <th className="px-3 py-2 text-left font-medium text-text-secondary">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {plan.changes.map((c) => (
+                <EventChangeRow key={`${c.action}-${c.externalId}`} change={c} />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EventChangeRow({ change }: { change: EventsInboundChange }) {
+  const meta = EVENT_ACTION_META[change.action] ?? {
+    label: change.action,
+    cls: 'bg-bg-muted text-text-muted',
+  };
+  const timeLabel = change.isMemo ? '📝 メモ' : `${change.start}〜${change.end}`;
+  const beforeTime =
+    change.action === 'update' && change.beforeStart && change.beforeEnd
+      ? `${change.beforeStart}〜${change.beforeEnd} → `
+      : '';
+  return (
+    <tr className="border-b border-border-subtle">
+      <td className="px-3 py-2 text-text-primary">{change.staffName}</td>
+      <td className="px-3 py-2 tabular-nums text-text-secondary">{change.date}</td>
+      <td className="px-3 py-2 tabular-nums text-text-secondary">
+        {beforeTime}
+        {timeLabel}
+      </td>
+      <td className="px-3 py-2 text-text-primary">{change.title || '—'}</td>
+      <td className="px-3 py-2">
+        <span
+          className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium ${meta.cls}`}
+        >
+          {meta.label}
+        </span>
+      </td>
+    </tr>
+  );
+}
+
+/** イベント dry-run 結果テーブル。 */
+function EventsDryRunTable({ result }: { result: EventsInboundApplyResult }) {
+  return (
+    <div
+      className="overflow-x-auto rounded-lg border border-border-default"
+      data-testid="events-dryrun-table"
+    >
+      <table className="min-w-full text-xs">
+        <thead>
+          <tr className="border-b border-border-default bg-bg-muted">
+            <th className="px-3 py-2 text-left font-medium text-text-secondary">職員</th>
+            <th className="px-3 py-2 text-left font-medium text-text-secondary">日付</th>
+            <th className="px-3 py-2 text-left font-medium text-text-secondary">内容</th>
+            <th className="px-3 py-2 text-left font-medium text-text-secondary">結果</th>
+            <th className="px-3 py-2 text-left font-medium text-text-secondary">詳細</th>
+          </tr>
+        </thead>
+        <tbody>
+          {result.results.map((r) => {
+            const meta = OUTCOME_META[r.outcome] ?? {
+              label: r.outcome,
+              cls: 'bg-bg-muted text-text-muted',
+            };
+            return (
+              <tr key={r.externalId} className="border-b border-border-subtle">
+                <td className="px-3 py-2 text-text-primary">{r.staffName || '—'}</td>
+                <td className="px-3 py-2 tabular-nums text-text-secondary">{r.date || '—'}</td>
+                <td className="px-3 py-2 text-text-primary">{r.title || '—'}</td>
+                <td className="px-3 py-2">
+                  <span
+                    className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium ${meta.cls}`}
+                  >
+                    {meta.label}
+                  </span>
+                </td>
+                <td className="px-3 py-2 text-text-muted">{r.detail ?? ''}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <div className="border-t border-border-default bg-bg-muted px-3 py-2 text-xs text-text-secondary">
+        イベント — 追加: {result.added} / 更新: {result.updated} / 削除: {result.deleted} /
+        スキップ: {result.skipped} / 失敗: {result.failed}
+      </div>
+    </div>
   );
 }
 

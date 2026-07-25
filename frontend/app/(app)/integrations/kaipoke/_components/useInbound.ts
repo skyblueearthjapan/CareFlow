@@ -10,12 +10,18 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 
 import {
+  useApplyEventsInbound,
   useApplyInbound,
   useCorrectionItems,
+  useEventsInboundPreview,
   useInboundEligibility,
   useStartDiffInbound,
 } from '@/lib/queries/integrations';
-import type { ApplyInboundResult } from '@/lib/schemas/integration';
+import type {
+  ApplyInboundResult,
+  EventsInboundApplyResult,
+  EventsInboundPreview,
+} from '@/lib/schemas/integration';
 
 // ──────────────────────────── 定数 ────────────────────────────
 
@@ -81,6 +87,12 @@ export function useInbound({
   const [dryRunResult, setDryRunResult] = useState<ApplyInboundResult | null>(null);
   const [confirm, setConfirm] = useState(false);
   const autoSelectedRef = useRef(false);
+  // イベント (個別業務) 取り込み — 訪問と同じ❶❸ボタンで直列実行する (1ボタン統合)。
+  const [eventsPlan, setEventsPlan] = useState<EventsInboundPreview | null>(null);
+  const [eventsError, setEventsError] = useState<string | null>(null);
+  const [eventsDryRunResult, setEventsDryRunResult] = useState<EventsInboundApplyResult | null>(
+    null,
+  );
 
   const thisElig = useInboundEligibility(fmtDate(thisMonday));
   const nextElig = useInboundEligibility(fmtDate(nextMonday));
@@ -89,6 +101,8 @@ export function useInbound({
 
   const diffInbound = useStartDiffInbound();
   const applyInbound = useApplyInbound();
+  const eventsPreview = useEventsInboundPreview();
+  const applyEvents = useApplyEventsInbound();
   const itemsQuery = useCorrectionItems(sheetId ?? undefined, { limit: 500 });
   const items = useMemo(() => itemsQuery.data?.items ?? [], [itemsQuery.data?.items]);
 
@@ -138,6 +152,9 @@ export function useInbound({
     setSummary(null);
     setSelectedDays(new Set());
     setDryRunResult(null);
+    setEventsPlan(null);
+    setEventsError(null);
+    setEventsDryRunResult(null);
     autoSelectedRef.current = false;
   };
 
@@ -148,31 +165,84 @@ export function useInbound({
 
   const runDiff = async () => {
     resetDiff();
+    // ❶ 訪問 → イベント を直列で取得 (RPA は単一スロットのため並列不可)。
+    // 片方が失敗しても他方は続行し、失敗側は Alert / eventsError で明示する。
+    let visitsOk = false;
     try {
       const res = await diffInbound.mutateAsync({ month, weekStart: weekStartStr });
       setSheetId(res.sheetId);
       setSummary(res.summary as Record<string, number>);
+      visitsOk = true;
     } catch {
-      // エラーは Alert で表示。
+      // エラーは Alert で表示。イベント取得は続行する。
+    }
+    try {
+      const plan = await eventsPreview.mutateAsync({ weekStart: weekStartStr });
+      setEventsPlan(plan);
+      setEventsError(null);
+    } catch (e) {
+      setEventsError(e instanceof Error ? e.message : 'イベント取得に失敗しました');
+      if (visitsOk) {
+        toast.warning('イベント（個別業務）の取得に失敗しました。訪問の差分のみ表示しています。');
+      }
     }
   };
 
   const runApply = async (dryRun: boolean) => {
-    if (!sheetId) return;
+    const hasVisitTarget = sheetId !== null && selectedDays.size > 0;
+    const hasEventTarget = (eventsPlan?.changes.length ?? 0) > 0;
+    if (!hasVisitTarget && !hasEventTarget) return;
     setConfirm(false);
-    const days = Array.from(selectedDays);
-    try {
-      const res = await applyInbound.mutateAsync({ sheetId, dryRun, days });
-      if (dryRun) {
-        setDryRunResult(res);
-      } else {
-        toast.success(
-          `取り込み完了: キャンセル ${res.cancelled}件 / 更新 ${res.updated}件 / 追加 ${res.added}件 / スキップ ${res.skipped}件`,
-        );
+    const parts: string[] = [];
+    let failed = false;
+
+    // 訪問 (既存フロー・曜日チップ選択に従う)
+    if (hasVisitTarget && sheetId) {
+      const days = Array.from(selectedDays);
+      try {
+        const res = await applyInbound.mutateAsync({ sheetId, dryRun, days });
+        if (dryRun) {
+          setDryRunResult(res);
+        } else {
+          parts.push(
+            `訪問: キャンセル ${res.cancelled} / 更新 ${res.updated} / 追加 ${res.added} / スキップ ${res.skipped}`,
+          );
+        }
+      } catch (e) {
+        failed = true;
+        toast.error(e instanceof Error ? e.message : '訪問の取り込みに失敗しました');
+      }
+    }
+
+    // イベント (週丸ごと・プレビューの changes をエコーバック)
+    if (hasEventTarget && eventsPlan) {
+      try {
+        const res = await applyEvents.mutateAsync({
+          weekStart: weekStartStr,
+          dryRun,
+          changes: eventsPlan.changes,
+        });
+        if (dryRun) {
+          setEventsDryRunResult(res);
+        } else {
+          parts.push(
+            `イベント: 追加 ${res.added} / 更新 ${res.updated} / 削除 ${res.deleted}` +
+              (res.failed > 0 ? ` / 失敗 ${res.failed}` : ''),
+          );
+        }
+      } catch (e) {
+        failed = true;
+        toast.error(e instanceof Error ? e.message : 'イベントの取り込みに失敗しました');
+      }
+    }
+
+    if (!dryRun) {
+      if (parts.length > 0) {
+        toast.success(`取り込み完了 — ${parts.join(' ｜ ')}`);
+      }
+      if (!failed) {
         resetDiff();
       }
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : '実行に失敗しました');
     }
   };
 
@@ -181,6 +251,8 @@ export function useInbound({
     .filter((d) => selectedDays.has(d))
     .map((d, i) => WEEKDAYS[weekDays.indexOf(d)] ?? WEEKDAYS[i])
     .join('・');
+  const hasEventChanges = (eventsPlan?.changes.length ?? 0) > 0;
+  const fetching = diffInbound.isPending || eventsPreview.isPending;
 
   return {
     busy,
@@ -212,6 +284,14 @@ export function useInbound({
     runApply,
     hasSelectedDays,
     selectedDayLabels,
+    // イベント (個別業務) 取り込み
+    eventsPreview,
+    applyEvents,
+    eventsPlan,
+    eventsError,
+    eventsDryRunResult,
+    hasEventChanges,
+    fetching,
   };
 }
 

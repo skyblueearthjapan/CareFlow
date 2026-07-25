@@ -325,3 +325,86 @@ export const TestKaipokeCredentialsResultSchema = z.object({
   message: z.string(),
 });
 export type TestKaipokeCredentialsResult = z.infer<typeof TestKaipokeCredentialsResultSchema>;
+
+// --- イベント取り込み (個別業務・kaipoke-event-inbound-design.md E-2) -------
+
+export const EVENTS_INBOUND_ACTIONS = ['add', 'update', 'delete'] as const;
+
+export const EventsInboundChangeSchema = z.object({
+  action: z.enum(EVENTS_INBOUND_ACTIONS),
+  externalId: z.string(),
+  staffId: z.string().uuid(),
+  staffName: z.string().default(''),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  start: z.string().regex(/^\d{2}:\d{2}$/),
+  end: z.string().regex(/^\d{2}:\d{2}$/),
+  title: z.string().default(''),
+  isMemo: z.boolean().default(false),
+  beforeStart: z.string().nullable().optional(),
+  beforeEnd: z.string().nullable().optional(),
+  beforeTitle: z.string().nullable().optional(),
+});
+export type EventsInboundChange = z.infer<typeof EventsInboundChangeSchema>;
+
+export const EventsInboundUnmatchedSchema = z.object({
+  staffName: z.string(),
+  count: z.number().int(),
+});
+export type EventsInboundUnmatched = z.infer<typeof EventsInboundUnmatchedSchema>;
+
+export const EventsInboundPreviewSchema = z.object({
+  weekStart: z.string(),
+  weekEnd: z.string(),
+  fetchedTotal: z.number().int().default(0),
+  sundaySkipped: z.number().int().default(0),
+  memoCount: z.number().int().default(0),
+  adds: z.number().int().default(0),
+  updates: z.number().int().default(0),
+  deletes: z.number().int().default(0),
+  changes: z.array(EventsInboundChangeSchema).default([]),
+  unmatched: z.array(EventsInboundUnmatchedSchema).default([]),
+});
+export type EventsInboundPreview = z.infer<typeof EventsInboundPreviewSchema>;
+
+export const EventsInboundPreviewRequestSchema = z.object({
+  weekStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+});
+export type EventsInboundPreviewRequest = z.infer<typeof EventsInboundPreviewRequestSchema>;
+
+export const EventsInboundApplyRequestSchema = z.object({
+  weekStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  dryRun: z.boolean().optional(),
+  changes: z.array(EventsInboundChangeSchema),
+});
+export type EventsInboundApplyRequest = z.infer<typeof EventsInboundApplyRequestSchema>;
+
+export const EVENTS_INBOUND_OUTCOMES = [
+  'added',
+  'updated',
+  'deleted',
+  'skipped',
+  'failed',
+] as const;
+
+export const EventsInboundApplyItemSchema = z.object({
+  action: z.string(),
+  externalId: z.string(),
+  staffName: z.string().default(''),
+  date: z.string().default(''),
+  title: z.string().default(''),
+  outcome: z.enum(EVENTS_INBOUND_OUTCOMES),
+  detail: z.string().nullable().optional(),
+});
+export type EventsInboundApplyItem = z.infer<typeof EventsInboundApplyItemSchema>;
+
+export const EventsInboundApplyResultSchema = z.object({
+  jobId: z.string().uuid().nullable(),
+  dryRun: z.boolean(),
+  added: z.number().int().default(0),
+  updated: z.number().int().default(0),
+  deleted: z.number().int().default(0),
+  skipped: z.number().int().default(0),
+  failed: z.number().int().default(0),
+  results: z.array(EventsInboundApplyItemSchema).default([]),
+});
+export type EventsInboundApplyResult = z.infer<typeof EventsInboundApplyResultSchema>;
