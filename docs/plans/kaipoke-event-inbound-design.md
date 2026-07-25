@@ -1,6 +1,9 @@
 # 設計書：カイポケ個別業務（イベント）取り込み
 
-作成 2026-07-25 / ステータス: **ドラフト（PO要件確定済み・レビュー前）**
+作成 2026-07-25 / 更新 2026-07-26 / ステータス: **E-0〜E-3 実装完了・code-reviewer
+レビュー済み（CRITICAL/MAJOR 0・MINOR 5 全反映）**。
+実装コミット: RPA=`b79f28d`(PlaywrightTest1) / BE=`e876671` / FE=`260136f` /
+メモチップ=`9b0222f` / レビュー反映=直後のfixコミット。
 前提正典: `docs/plans/kaipoke-reverse-sync-design.md`（週のバトンリレー・訪問の取り込み）/
 メモリ `careflow-kaipoke-individual-tasks.md`（本件の調査正典）
 
